@@ -320,6 +320,70 @@ let e_rec_update_type_mismatch = assert_err
 bad p = { p | x = "nope" }
 |}
 
+(* ── Do notation ───────────────────────────────────── *)
+
+(* Single DoExpr: x must be monadic, so f's arg is constrained to m a *)
+let t_do_single_expr = assert_type
+  "f x =\n  do\n    x\n"
+  "f" "'a 'b -> 'a 'b"
+
+(* DoBind then pure: monad is left abstract (works for any monad) *)
+let t_do_bind_pure = assert_type
+  "addOne opt =\n  do\n    x <- opt\n    pure (x + 1)\n"
+  "addOne" "'a Int -> 'a Int"
+
+(* Two binds then pure *)
+let t_do_two_binds = assert_type
+  "f a b =\n  do\n    x <- a\n    y <- b\n    pure (x + y)\n"
+  "f" "'a Int -> 'a Int -> 'a Int"
+
+(* DoLet: plain binding inside a do block, no monadic wrapping *)
+let t_do_let = assert_type
+  "f opt =\n  do\n    x <- opt\n    let y = x + 1\n    pure y\n"
+  "f" "'a Int -> 'a Int"
+
+(* pure alone: wrap any value in any monad *)
+let t_do_pure = assert_type
+  "wrap x =\n  do\n    pure x\n"
+  "wrap" "'a -> 'b 'a"
+
+(* pure after bind: identity for any monad *)
+let t_do_pure_after_bind = assert_type
+  "identity opt =\n  do\n    x <- opt\n    pure x\n"
+  "identity" "'a 'b -> 'a 'b"
+
+(* Tuple destructuring in a DoBind *)
+let t_do_tuple_bind = assert_type
+  "f opt =\n  do\n    (x, y) <- opt\n    pure (x + y)\n"
+  "f" "'a (Int, Int) -> 'a Int"
+
+(* DoExpr in the middle: value is discarded but must still be monadic *)
+let t_do_skip_middle = assert_type
+  "f opt1 opt2 =\n  do\n    x <- opt1\n    opt2\n    pure x\n"
+  "f" "'a 'b -> 'a 'c -> 'a 'b"
+
+(* Top-level do block with a concrete monad (Option) *)
+let t_do_toplevel = assert_type
+  "result =\n  do\n    x <- Some 10\n    pure (x * 2)\n"
+  "result" "Option Int"
+
+(* DoLet with a local function *)
+let t_do_let_fn = assert_type
+  "f opt =\n  do\n    x <- opt\n    let double n = n + n\n    pure (double x)\n"
+  "f" "'a Int -> 'a Int"
+
+(* Error: mixing two different monads *)
+let e_do_mixed_monads = assert_err
+  "bad x =\n  do\n    a <- Some x\n    b <- Ok a\n    pure b\n"
+
+(* Error: binding a non-monadic value (Int is not m a) *)
+let e_do_bind_non_monad = assert_err
+  "bad =\n  do\n    x <- 42\n    pure x\n"
+
+(* Error: DoExpr that is not monadic (print returns Unit, not m a) *)
+let e_do_non_monadic_expr = assert_err
+  "bad opt =\n  do\n    x <- opt\n    print x\n    pure x\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -398,5 +462,20 @@ let () =
       test_case "err: unknown access" `Quick e_rec_unknown_field_access;
       test_case "err: field type mismatch" `Quick e_rec_field_type_mismatch;
       test_case "err: update type mismatch" `Quick e_rec_update_type_mismatch;
+    ];
+    "do notation", [
+      test_case "single expr"            `Quick t_do_single_expr;
+      test_case "bind + pure"            `Quick t_do_bind_pure;
+      test_case "two binds"              `Quick t_do_two_binds;
+      test_case "let in do"              `Quick t_do_let;
+      test_case "pure"                   `Quick t_do_pure;
+      test_case "pure after bind"        `Quick t_do_pure_after_bind;
+      test_case "tuple bind"             `Quick t_do_tuple_bind;
+      test_case "skip middle expr"       `Quick t_do_skip_middle;
+      test_case "top level Option"       `Quick t_do_toplevel;
+      test_case "let fn in do"           `Quick t_do_let_fn;
+      test_case "err: mixed monads"      `Quick e_do_mixed_monads;
+      test_case "err: bind non-monad"    `Quick e_do_bind_non_monad;
+      test_case "err: non-monadic expr"  `Quick e_do_non_monadic_expr;
     ];
   ]

@@ -16,14 +16,14 @@ The front-end of the Medaka compiler is in place. We have:
 | Resolver        | `lib/resolve.ml`    | Validates that every identifier reference is bound          |
 | Type checker    | `lib/typecheck.ml`  | Hindley-Milner with let-polymorphism, ADTs, records, patterns |
 
-178 tests pass across 4 test suites:
+191 tests pass across 4 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
 | Parser            | `test/test_parser.ml`           | 42    | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 50    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 34    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 52    | Inferred types for valid programs + type-error cases  |
+| Type checker      | `test/test_typecheck.ml`        | 65    | Inferred types for valid programs + type-error cases  |
 
 Two debug binaries in `test/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
@@ -185,34 +185,35 @@ refs and spuriously unify.
   validates field membership in `ERecordCreate` / `ERecordUpdate`
 - 18 new tests (14 typecheck, 4 resolver)
 
-### Phase 2: `do` notation typing (next)
+### Phase 2: `do` notation typing ✅ DONE
 
-**Goal.** Currently `EDo` raises `"Do notation typing not yet implemented"`.
-We need to type-check do blocks even before we have full typeclass support.
+Implemented in the commit following Phase 1.
 
-**Design decisions.**
+**What was added:**
+- `EDo` case in `infer` (approach b): per-block monad tyvar `m`; each
+  `DoBind(pat, e)` unifies `e` with `TApp(m, inner)` and binds `pat : inner`;
+  each `DoExpr e` unifies `e` with `TApp(m, _)` (discards inner); `DoLet`
+  introduces a plain let-polymorphic binding inside the block; last statement
+  determines the block's result type.
+- `pure` in `initial_env` corrected to `forall m a. a -> m a` (was `a -> a`),
+  achieved by wrapping fresh-var creation in `enter_level/exit_level` so the
+  vars get properly quantified.
+- 13 new typecheck tests (10 valid, 3 errors).
 
-The clean path needs interfaces (a `Monad` interface and instances for `Option`,
-`Result`, `List`, etc.). That's a bigger investment. A pragmatic interim:
-hard-code `pure : a -> M a` and `andThen : M a -> (a -> M b) -> M b` where `M`
-is a single per-do-block tyvar. Effectively make every `do` block monomorphic
-in its monad until we have interfaces.
+**Key design note — parser constraint.** The Menhir grammar has a
+shift/reduce conflict for `stmt: pat LARROW ... | expr_no_block newlines`. When
+a `DoExpr` stmt starts with an uppercase identifier (`UPPER`), the parser tries
+it as a pattern, causing a parse error. Consequence: the last statement of a do
+block should not be `Some x`, `Ok x`, etc. — use `pure (...)` instead. This is
+a cosmetic restriction, not a fundamental one; fixing it requires a grammar
+change (Phase 7 or earlier).
 
-This gives users do-notation that works for a single monad inside a single
-function. Worth doing now if Phase 4 (interfaces) is still a session away.
+**Limitation.** Without real `Monad` interface instances, the monad tyvar
+stays abstract (`'a 'b -> 'a 'b` rather than `Option Int -> Option Int`) unless
+a specific constructor like `Some 10` or `Ok x` appears in a `DoBind` and
+forces it. Full resolution awaits Phase 4 (interfaces).
 
-**Implementation hint.** A do block desugars to nested `andThen` and `pure`
-calls. Either:
-- (a) Type the desugared form directly (clean but requires `andThen`/`pure` to
-  exist as values with the right scheme — invent a `forall m a b. m a -> (a ->
-  m b) -> m b` placeholder).
-- (b) Type it inline: introduce a per-block `m` tyvar, type each `DoBind
-  (pat, e)` as `e : m _`, bind `pat` to the inner type; type each `DoExpr e` as
-  `e : m _`; last statement determines result type.
-
-Approach (b) is simpler to get right without a real `andThen` in scope.
-
-### Phase 3: Effect tracking
+### Phase 3: Effect tracking (next)
 
 **Goal.** Currently `from_ast_type` ignores effect annotations
 (`<IO> String` is treated as just `String`). The language wants effects in

@@ -267,11 +267,23 @@ let initial_env () =
        match s with
        | Forall (_, t) -> Some (generalize t))
     env.ctors;
-  (* A couple of primitives to write tests *)
+  (* A couple of primitives to write tests.
+     Each is created at level 1 so generalize can quantify the vars. *)
+  let mk_scheme f =
+    enter_level ();
+    let t = f () in
+    exit_level ();
+    generalize t
+  in
+  (* pure : forall m a. a -> m a   (HKT: m is a tyvar for a type constructor) *)
   let env = extend_var env "pure"
-              (let a = fresh_var () in generalize (TFun (a, a))) in
+              (mk_scheme (fun () ->
+                 let a = fresh_var () in
+                 let m = fresh_var () in
+                 TFun (a, TApp (m, a)))) in
   let env = extend_var env "print"
-              (let a = fresh_var () in generalize (TFun (a, t_unit))) in
+              (mk_scheme (fun () ->
+                 let a = fresh_var () in TFun (a, t_unit))) in
   env
 
 (* ── Translating AST types to mono ──────────────── *)
@@ -464,10 +476,57 @@ let rec infer env = function
     unify tf (TFun (tl, TFun (tr, result)));
     result
 
-  | EDo _stmts ->
-    (* Defer monadic do-typing; for now infer as if `pure`/`bind` were generic.
-       Type the body sequence with a placeholder. *)
-    fail (Other "Do notation typing not yet implemented")
+  | EDo stmts ->
+    (* Approach (b): introduce one per-block monad tyvar `m`.
+       DoBind(pat, e) : e must be `m a`; pat binds `a`.
+       DoExpr e       : e must be `m _` (value discarded).
+       DoLet(pat, e)  : plain let — no monadic wrapping.
+       The last statement determines the result type. *)
+    if stmts = [] then fail (Other "Empty do block");
+    let m = fresh_var () in
+    let rec type_stmts env = function
+      | [] -> assert false
+      | [DoExpr e] ->
+        let te = infer env e in
+        let inner = fresh_var () in
+        unify te (TApp (m, inner));
+        te
+      | [DoBind (pat, e)] ->
+        (* Trailing bind discards the bound variable; result is m Unit *)
+        let te = infer env e in
+        let inner = fresh_var () in
+        unify te (TApp (m, inner));
+        let tp, _ = type_pat env pat in
+        unify tp inner;
+        TApp (m, t_unit)
+      | [DoLet _] ->
+        fail (Other "do block cannot end with a let binding")
+      | DoExpr e :: rest ->
+        let te = infer env e in
+        let inner = fresh_var () in
+        unify te (TApp (m, inner));
+        type_stmts env rest
+      | DoBind (pat, e) :: rest ->
+        let te = infer env e in
+        let inner = fresh_var () in
+        unify te (TApp (m, inner));
+        let tp, bindings = type_pat env pat in
+        unify tp inner;
+        type_stmts (extend_vars env bindings) rest
+      | DoLet (_mut, pat, e) :: rest ->
+        enter_level ();
+        let t1 = infer env e in
+        exit_level ();
+        let env' = match pat with
+          | PVar x -> extend_var env x (generalize t1)
+          | _ ->
+            let tp, bindings = type_pat env pat in
+            unify tp t1;
+            extend_vars env bindings
+        in
+        type_stmts env' rest
+    in
+    type_stmts env stmts
 
   | ERecordCreate (name, provided) ->
     let info =
