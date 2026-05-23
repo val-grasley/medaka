@@ -59,6 +59,8 @@ let ex_lambda    = mk "f = x => x + 1\n"
 let ex_lam_tup   = mk "add = (x, y) => x + y\n"
 let ex_let       = mk "f = let x = 5 in x + 1\n"
 let ex_let_mut   = mk "f = let mut x = 5 in x\n"
+let ex_let_fn    = mk "f = let g x = x + 1 in g 5\n"
+let ex_let_fn_m  = mk "f = let g x y = x + y in g 1 2\n"
 let ex_if        = mk "abs x = if x > 0 then x else -x\n"
 let ex_app       = mk "v = f x y\n"
 let ex_infix     = mk "v = x `div` y\n"
@@ -185,6 +187,8 @@ let () =
       test_case "lambda tuple"     `Quick ex_lam_tup;
       test_case "let"              `Quick ex_let;
       test_case "let mut"          `Quick ex_let_mut;
+      test_case "let fn"           `Quick ex_let_fn;
+      test_case "let fn multi"     `Quick ex_let_fn_m;
       test_case "if-then-else"     `Quick ex_if;
       test_case "application"      `Quick ex_app;
       test_case "infix backtick"   `Quick ex_infix;

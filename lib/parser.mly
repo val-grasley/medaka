@@ -10,6 +10,10 @@ let stmts_to_expr = function
   | [DoExpr e] -> e
   | stmts      -> EDo stmts
 
+(* Desugar `let f x y = body` to `let f = (x => y => body)`. *)
+let curry_lam pats body =
+  List.fold_right (fun pat acc -> ELam ([pat], acc)) pats body
+
 (* Convert an expression back into a pattern when used as a lambda parameter.
    Supported: identifiers, literals, tuples, lists, cons, constructor apps. *)
 let rec expr_to_pat = function
@@ -170,6 +174,8 @@ expr_lam:
     { ELet (true,  $3, $5, $7) }
   | LET pat EQUAL expr_no_block IN expr_lam
     { ELet (false, $2, $4, $6) }
+  | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block IN expr_lam
+    { ELet (false, PVar $2, curry_lam $3 $5, $7) }
   | IF expr_or THEN expr_lam ELSE expr_lam
     { EIf ($2, $4, $6) }
   | MATCH expr_or INDENT nonempty_list(match_arm) DEDENT
@@ -277,6 +283,8 @@ stmt:
   | pat LARROW expr_no_block newlines         { DoBind ($1, $3) }
   | LET MUT pat EQUAL expr_no_block newlines  { DoLet (true,  $3, $5) }
   | LET pat EQUAL expr_no_block newlines      { DoLet (false, $2, $4) }
+  | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block newlines
+    { DoLet (false, PVar $2, curry_lam $3 $5) }
   | expr_no_block newlines                    { DoExpr $1 }
 
 (* ── Data declarations ───────────────────────────────── *)

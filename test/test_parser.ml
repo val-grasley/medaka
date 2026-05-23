@@ -124,6 +124,23 @@ let test_expr_let_mut () =
   | ELet (true, PVar "x", ELit (LInt 5), EVar "x") -> ()
   | _ -> failwith "wrong"
 
+let test_expr_let_fn_one_arg () =
+  (* let f x = x + 1 in f 5  ⇒  let f = (x => x + 1) in f 5 *)
+  match parse_expr "let f x = x + 1 in f 5\n" with
+  | ELet (false, PVar "f",
+          ELam ([PVar "x"], EBinOp ("+", EVar "x", ELit (LInt 1))),
+          EApp (EVar "f", ELit (LInt 5))) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_let_fn_multi_arg () =
+  (* let g x y = x + y in g 1 2  ⇒  let g = (x => y => x + y) in g 1 2 *)
+  match parse_expr "let g x y = x + y in g 1 2\n" with
+  | ELet (false, PVar "g",
+          ELam ([PVar "x"],
+                ELam ([PVar "y"], EBinOp ("+", EVar "x", EVar "y"))),
+          EApp (EApp (EVar "g", ELit (LInt 1)), ELit (LInt 2))) -> ()
+  | _ -> failwith "wrong"
+
 let test_expr_if () =
   match parse_expr "if x > 0 then x else 0\n" with
   | EIf (EBinOp (">", EVar "x", ELit (LInt 0)), EVar "x", ELit (LInt 0)) -> ()
@@ -344,6 +361,8 @@ let () =
       test_case "lambda multi-arg"  `Quick test_expr_lambda_multi_arg;
       test_case "let"               `Quick test_expr_let;
       test_case "let mut"           `Quick test_expr_let_mut;
+      test_case "let fn one arg"    `Quick test_expr_let_fn_one_arg;
+      test_case "let fn multi arg"  `Quick test_expr_let_fn_multi_arg;
       test_case "if-then-else"      `Quick test_expr_if;
       test_case "application"       `Quick test_expr_application;
       test_case "infix backtick"    `Quick test_expr_infix_backtick;

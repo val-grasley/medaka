@@ -44,7 +44,8 @@ let v_recursive = assert_ok "fact n = if n == 0 then 1 else n * fact (n - 1)\n"
 let v_let       = assert_ok "f = let x = 5 in x + 1\n"
 let v_let_chain = assert_ok "f = let x = 5 in let y = x + 1 in x + y\n"
 let v_lambda    = assert_ok "apply = (x => x + 1) 5\n"
-let v_nested    = assert_ok "f x = let g = (y => x + y) in g 10\n"
+let v_nested    = assert_ok "f x = let g y = x + y in g 10\n"
+let v_nested_multi = assert_ok "f x = let g y z = x + y + z in g 10 20\n"
 
 let v_match = assert_ok
 {|f opt =
@@ -157,6 +158,7 @@ let () =
       test_case "let chain"         `Quick v_let_chain;
       test_case "lambda"            `Quick v_lambda;
       test_case "nested closure"    `Quick v_nested;
+      test_case "nested multi-arg"  `Quick v_nested_multi;
       test_case "match"             `Quick v_match;
       test_case "match with data"   `Quick v_match_with_data;
       test_case "do block"          `Quick v_do;
