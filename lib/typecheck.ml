@@ -23,6 +23,15 @@ and mono =
 (* A type scheme: forall <ids>. mono. The bound ids are tyvar IDs from `mono`. *)
 type scheme = Forall of int list * mono
 
+(* Per-record metadata used for creation, access, and update typing.
+   The TVars in rec_result / rec_fields are the same refs as those in
+   rec_params, so substituting one set substitutes all. *)
+type record_info = {
+  rec_params : int list;              (* quantified tyvar IDs *)
+  rec_result : mono;                  (* TCon R applied to param TVars *)
+  rec_fields : (ident * mono) list;  (* field name → field type (shares param TVars) *)
+}
+
 (* ── Errors ─────────────────────────────────────── *)
 
 type type_error =
@@ -31,6 +40,9 @@ type type_error =
   | UnboundVar    of ident
   | UnknownCtor   of ident
   | ArityMismatch of ident * int * int  (* name, expected, got *)
+  | UnknownRecord of ident
+  | UnknownField  of ident * ident      (* field, record *)
+  | MissingField  of ident * ident      (* field, record *)
   | Other         of string
 
 exception Type_error of type_error
@@ -184,18 +196,27 @@ let pp_error = function
   | UnknownCtor n  -> Printf.sprintf "Unknown constructor: %s" n
   | ArityMismatch (n, exp, got) ->
     Printf.sprintf "Constructor %s expects %d args, got %d" n exp got
+  | UnknownRecord r -> Printf.sprintf "Unknown record type: %s" r
+  | UnknownField (f, r) ->
+    Printf.sprintf "Field %s does not belong to record %s" f r
+  | MissingField (f, r) ->
+    Printf.sprintf "Missing field %s in construction of record %s" f r
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
 
 type env = {
-  vars  : (ident * scheme) list;
-  ctors : (ident, scheme) Hashtbl.t;     (* constructor name → scheme *)
+  vars         : (ident * scheme) list;
+  ctors        : (ident, scheme) Hashtbl.t;   (* constructor name → scheme *)
+  records      : (ident, record_info) Hashtbl.t;  (* record name → info *)
+  field_owners : (ident, ident) Hashtbl.t;    (* field name → record name *)
 }
 
 let empty_env () = {
-  vars  = [];
-  ctors = Hashtbl.create 16;
+  vars         = [];
+  ctors        = Hashtbl.create 16;
+  records      = Hashtbl.create 8;
+  field_owners = Hashtbl.create 16;
 }
 
 let lookup_var env x =
@@ -324,6 +345,27 @@ let rec type_pat env = function
     unify ctor_t expected;
     (result_t, bindings)
 
+(* ── Record instantiation ───────────────────────── *)
+
+(* Instantiate a record_info: substitute quantified param IDs with fresh vars,
+   returning (concrete result type, concrete field list). *)
+let instantiate_record info =
+  let sub = List.map (fun id -> (id, fresh_var ())) info.rec_params in
+  let rec walk t = match normalize t with
+    | TVar v ->
+      (match !v with
+       | Unbound (id, _) ->
+         (try List.assoc id sub with Not_found -> TVar v)
+       | Link _ -> assert false)
+    | TCon _ as t -> t
+    | TApp (a, b)  -> TApp (walk a, walk b)
+    | TFun (a, b)  -> TFun (walk a, walk b)
+    | TTuple ts    -> TTuple (List.map walk ts)
+  in
+  let result = walk info.rec_result in
+  let fields = List.map (fun (n, t) -> (n, walk t)) info.rec_fields in
+  (result, fields)
+
 (* ── Expression typing ──────────────────────────── *)
 
 let rec infer env = function
@@ -427,8 +469,58 @@ let rec infer env = function
        Type the body sequence with a placeholder. *)
     fail (Other "Do notation typing not yet implemented")
 
-  | EFieldAccess _ | ERecordCreate _ | ERecordUpdate _ ->
-    fail (Other "Record typing not yet implemented")
+  | ERecordCreate (name, provided) ->
+    let info =
+      try Hashtbl.find env.records name
+      with Not_found -> fail (UnknownRecord name)
+    in
+    let (result_t, field_types) = instantiate_record info in
+    (* Every declared field must be supplied. *)
+    List.iter (fun (fname, ftype) ->
+      match List.assoc_opt fname provided with
+      | None -> fail (MissingField (fname, name))
+      | Some expr -> unify (infer env expr) ftype
+    ) field_types;
+    (* No extra (unknown) fields. *)
+    List.iter (fun (fname, _) ->
+      if not (List.mem_assoc fname field_types) then
+        fail (UnknownField (fname, name))
+    ) provided;
+    result_t
+
+  | EFieldAccess (e, field) ->
+    let te = infer env e in
+    let record_name =
+      try Hashtbl.find env.field_owners field
+      with Not_found -> fail (UnknownField (field, "<unknown>"))
+    in
+    let info = Hashtbl.find env.records record_name in
+    let (result_t, field_types) = instantiate_record info in
+    unify te result_t;
+    (try List.assoc field field_types
+     with Not_found -> assert false)  (* field_owners guarantees this exists *)
+
+  | ERecordUpdate (e, updated) ->
+    let te = infer env e in
+    if updated = [] then te
+    else begin
+      let first_field = fst (List.hd updated) in
+      let record_name =
+        try Hashtbl.find env.field_owners first_field
+        with Not_found -> fail (UnknownField (first_field, "<unknown>"))
+      in
+      let info = Hashtbl.find env.records record_name in
+      let (result_t, field_types) = instantiate_record info in
+      unify te result_t;
+      List.iter (fun (fname, expr) ->
+        let ftype =
+          try List.assoc fname field_types
+          with Not_found -> fail (UnknownField (fname, record_name))
+        in
+        unify (infer env expr) ftype
+      ) updated;
+      result_t
+    end
 
   | EIndex (arr, idx) ->
     let ta = infer env arr in
@@ -523,6 +615,48 @@ let register_data env (name, params, variants) =
   ) variants;
   exit_level ()
 
+(* Register a record declaration in env.  Mirrors register_data.
+   Errors on field-name collision (the resolver should have caught it first,
+   but we guard defensively). *)
+let register_record env (name, params, fields) =
+  enter_level ();
+  let param_vars = List.map (fun p -> (p, fresh_var ())) params in
+  let result_t =
+    List.fold_left
+      (fun acc (_, v) -> TApp (acc, v))
+      (TCon name)
+      param_vars
+  in
+  let go_ty ast_ty =
+    let rec go = function
+      | Ast.TyCon n ->
+        (try List.assoc n param_vars with Not_found -> TCon n)
+      | Ast.TyVar n ->
+        (try List.assoc n param_vars with Not_found -> fresh_var ())
+      | Ast.TyApp (a, b)  -> TApp (go a, go b)
+      | Ast.TyFun (a, b)  -> TFun (go a, go b)
+      | Ast.TyTuple ts    -> TTuple (List.map go ts)
+      | Ast.TyEffect (_, t) -> go t
+    in
+    go ast_ty
+  in
+  let field_monos =
+    List.map (fun f -> (f.Ast.field_name, go_ty f.Ast.field_type)) fields
+  in
+  (* exit_level BEFORE free_unbound so vars at level 1 satisfy level > 0 and
+     get included in rec_params. This is what makes instantiate_record create
+     fresh copies — without it every use would share the same TVar refs. *)
+  exit_level ();
+  let rec_params = free_unbound [] result_t in
+  let info = { rec_params; rec_result = result_t; rec_fields = field_monos } in
+  Hashtbl.replace env.records name info;
+  List.iter (fun (fname, _) ->
+    if Hashtbl.mem env.field_owners fname then
+      fail (Other (Printf.sprintf
+        "Field name collision: '%s' is already declared by another record" fname));
+    Hashtbl.replace env.field_owners fname name
+  ) field_monos
+
 (* Build the clause's expression form: nested lambdas if there are args. *)
 let clause_to_expr (pats, body) =
   if pats = [] then body
@@ -543,9 +677,10 @@ let check_program (prog : program) : (ident * scheme) list =
   reset_state ();
   let env = initial_env () in
 
-  (* Phase 1: register data declarations *)
+  (* Phase 1: register data and record declarations *)
   List.iter (function
     | DData (n, ps, vs) -> register_data env (n, ps, vs)
+    | DRecord (n, ps, fs) -> register_record env (n, ps, fs)
     | _ -> ()
   ) prog;
 

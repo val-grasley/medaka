@@ -11,6 +11,8 @@ type error =
   | UnknownConstructor  of ident
   | UnknownType         of ident
   | UnknownEffect       of ident
+  | UnknownField        of ident          (* field name not declared in any record *)
+  | FieldNotInRecord    of ident * ident  (* field, record — field exists but not in this record *)
   | DuplicateDefinition of string * ident  (* kind, name *)
 
 let pp_error = function
@@ -18,6 +20,8 @@ let pp_error = function
   | UnknownConstructor n   -> Printf.sprintf "Unknown constructor: %s" n
   | UnknownType n          -> Printf.sprintf "Unknown type: %s" n
   | UnknownEffect n        -> Printf.sprintf "Unknown effect: %s" n
+  | UnknownField n         -> Printf.sprintf "Unknown field: %s" n
+  | FieldNotInRecord (f, r)-> Printf.sprintf "Field %s does not belong to record %s" f r
   | DuplicateDefinition (k, n) -> Printf.sprintf "Duplicate %s: %s" k n
 
 (* ── Built-ins ─────────────────────────────────── *)
@@ -53,6 +57,7 @@ type module_env = {
   types        : (ident, unit) Hashtbl.t;
   constructors : (ident, unit) Hashtbl.t;
   fields       : (ident, unit) Hashtbl.t;
+  field_owners : (ident, string) Hashtbl.t;  (* field name → record type name *)
   interfaces   : (ident, unit) Hashtbl.t;
   imported     : (ident, unit) Hashtbl.t;
 }
@@ -63,6 +68,7 @@ let create_env () =
     types        = Hashtbl.create 16;
     constructors = Hashtbl.create 16;
     fields       = Hashtbl.create 16;
+    field_owners = Hashtbl.create 16;
     interfaces   = Hashtbl.create 8;
     imported     = Hashtbl.create 8;
   } in
@@ -110,7 +116,10 @@ let build_env (prog : program) : module_env * error list =
       ) vs
     | DRecord (n, _, fs) ->
       add_unique env.types "type" n;
-      List.iter (fun f -> add_or_skip env.fields f.field_name) fs
+      List.iter (fun f ->
+        add_or_skip env.fields f.field_name;
+        Hashtbl.replace env.field_owners f.field_name n
+      ) fs
     | DInterface { iface_name; methods; _ } ->
       add_unique env.interfaces "interface" iface_name;
       List.iter (fun m -> add_or_skip env.values m.method_name) methods
@@ -213,11 +222,41 @@ let rec check_expr env scope errors e =
     check_expr env scope errors e
   | ERecordCreate (name, fs) ->
     if not (Hashtbl.mem env.types name || Hashtbl.mem env.imported name) then
-      errors := UnknownType name :: !errors;
+      errors := UnknownType name :: !errors
+    else begin
+      (* Each field must belong to the named record *)
+      List.iter (fun (fname, _) ->
+        match Hashtbl.find_opt env.field_owners fname with
+        | None -> errors := UnknownField fname :: !errors
+        | Some owner when owner <> name ->
+          errors := FieldNotInRecord (fname, name) :: !errors
+        | Some _ -> ()
+      ) fs
+    end;
     List.iter (fun (_, v) -> check_expr env scope errors v) fs
   | ERecordUpdate (e, fs) ->
     check_expr env scope errors e;
-    List.iter (fun (_, v) -> check_expr env scope errors v) fs
+    (* All updated fields must belong to the same record *)
+    let record_name =
+      match fs with
+      | [] -> None
+      | (fname, _) :: _ ->
+        (match Hashtbl.find_opt env.field_owners fname with
+         | None ->
+           errors := UnknownField fname :: !errors; None
+         | Some r -> Some r)
+    in
+    List.iter (fun (fname, v) ->
+      check_expr env scope errors v;
+      (match record_name with
+       | None -> ()
+       | Some r ->
+         match Hashtbl.find_opt env.field_owners fname with
+         | None -> errors := UnknownField fname :: !errors
+         | Some owner when owner <> r ->
+           errors := FieldNotInRecord (fname, r) :: !errors
+         | Some _ -> ())
+    ) fs
   | EArrayLit es | EListLit es | ETuple es ->
     List.iter (check_expr env scope errors) es
   | EIndex (e, i) ->

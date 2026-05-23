@@ -35,6 +35,8 @@ let unbound n        = function UnboundVariable x     -> x = n | _ -> false
 let unknown_type n   = function UnknownType x         -> x = n | _ -> false
 let unknown_ctor n   = function UnknownConstructor x  -> x = n | _ -> false
 let unknown_effect n = function UnknownEffect x       -> x = n | _ -> false
+let unknown_field n  = function UnknownField x        -> x = n | _ -> false
+let field_not_in n r = function FieldNotInRecord (x, y) -> x = n && y = r | _ -> false
 let duplicate n      = function DuplicateDefinition (_, x) -> x = n | _ -> false
 
 (* ── Valid programs ─────────────────────────── *)
@@ -146,6 +148,55 @@ let e_unknown_ctor_create =
 let e_unbound_infix =
   assert_err (unbound "myop") "f x y = x `myop` y\n"
 
+(* ── Record field resolution errors ─────────── *)
+
+(* Field in record create doesn't belong to the named record *)
+let e_field_not_in_record =
+  assert_err (field_not_in "age" "Point")
+{|record Point
+  x : Int
+  y : Int
+
+record Person
+  name : String
+  age : Int
+
+bad = Point { x = 0, y = 0, age = 99 }
+|}
+
+(* Unknown field in record creation *)
+let e_unknown_field_in_create =
+  assert_err (unknown_field "z")
+{|record Point
+  x : Int
+  y : Int
+
+bad = Point { x = 0, y = 0, z = 1 }
+|}
+
+(* Unknown field in record update *)
+let e_unknown_field_in_update =
+  assert_err (unknown_field "z")
+{|record Point
+  x : Int
+  y : Int
+
+bad p = { p | z = 1 }
+|}
+
+(* Field from different record in record update *)
+let e_cross_record_update =
+  assert_err (field_not_in "name" "Point")
+{|record Point
+  x : Int
+  y : Int
+
+record Person
+  name : String
+
+bad p = { p | x = 0, name = "Alice" }
+|}
+
 (* ── Test runner ─────────────────────────────── *)
 
 let () =
@@ -184,5 +235,9 @@ let () =
       test_case "unknown type in rec"  `Quick e_unknown_type_in_record;
       test_case "unknown rec type"     `Quick e_unknown_ctor_create;
       test_case "unbound infix"        `Quick e_unbound_infix;
+      test_case "field not in record"  `Quick e_field_not_in_record;
+      test_case "unknown field create" `Quick e_unknown_field_in_create;
+      test_case "unknown field update" `Quick e_unknown_field_in_update;
+      test_case "cross-record update"  `Quick e_cross_record_update;
     ];
   ]

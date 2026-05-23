@@ -191,6 +191,135 @@ let e_recursive_mismatch = assert_err
 let e_sig_mismatch = assert_err
   "f : Int -> Int\nf x = x + \"hi\"\n"
 
+(* ── Records ────────────────────────────────────── *)
+
+(* Basic monomorphic record: create and access *)
+let t_rec_create = assert_type
+  {|record Point
+  x : Int
+  y : Int
+
+origin = Point { x = 0, y = 0 }
+|} "origin" "Point"
+
+let t_rec_access = assert_type
+  {|record Point
+  x : Int
+  y : Int
+
+getX p = p.x
+|} "getX" "Point -> Int"
+
+(* Field access returns the correct type *)
+let t_rec_access_string = assert_type
+  {|record Person
+  name : String
+  age : Int
+
+getName p = p.name
+|} "getName" "Person -> String"
+
+(* Record update preserves the type *)
+let t_rec_update = assert_type
+  {|record Point
+  x : Int
+  y : Int
+
+moveRight p = { p | x = p.x + 1 }
+|} "moveRight" "Point -> Point"
+
+(* Polymorphic record *)
+let t_rec_poly_create = assert_type
+  {|record Pair a b
+  first : a
+  second : b
+
+swap p = Pair { first = p.second, second = p.first }
+|} "swap" "Pair 'a 'b -> Pair 'b 'a"
+
+(* Polymorphic record — access *)
+let t_rec_poly_access = assert_type
+  {|record Box a
+  value : a
+
+unbox b = b.value
+|} "unbox" "Box 'a -> 'a"
+
+(* Multiple fields accessed and used *)
+let t_rec_multi_access = assert_type
+  {|record Point
+  x : Int
+  y : Int
+
+distance p = p.x * p.x + p.y * p.y
+|} "distance" "Point -> Int"
+
+(* Record used inside a function, return type inferred from field *)
+let t_rec_in_fn = assert_type
+  {|record Rect
+  width : Int
+  height : Int
+
+area r = r.width * r.height
+|} "area" "Rect -> Int"
+
+(* ── Record errors ──────────────────────────────── *)
+
+(* Field access on wrong type: type sig says String, but .x expects Point *)
+let e_rec_wrong_type = assert_err
+  {|record Point
+  x : Int
+  y : Int
+
+bad : String -> Int
+bad n = n.x
+|}
+
+(* Missing field in creation *)
+let e_rec_missing_field = assert_err
+  {|record Point
+  x : Int
+  y : Int
+
+p = Point { x = 1 }
+|}
+
+(* Unknown field in creation *)
+let e_rec_unknown_field_create = assert_err
+  {|record Point
+  x : Int
+  y : Int
+
+p = Point { x = 1, y = 2, z = 3 }
+|}
+
+(* Unknown field access *)
+let e_rec_unknown_field_access = assert_err
+  {|record Point
+  x : Int
+  y : Int
+
+bad p = p.z
+|}
+
+(* Type mismatch in field value *)
+let e_rec_field_type_mismatch = assert_err
+  {|record Point
+  x : Int
+  y : Int
+
+bad = Point { x = "hello", y = 0 }
+|}
+
+(* Record update with wrong field type *)
+let e_rec_update_type_mismatch = assert_err
+  {|record Point
+  x : Int
+  y : Int
+
+bad p = { p | x = "nope" }
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -253,5 +382,21 @@ let () =
       test_case "pat type mismatch"   `Quick e_pattern_mismatch;
       test_case "recursive mismatch"  `Quick e_recursive_mismatch;
       test_case "sig mismatch"        `Quick e_sig_mismatch;
+    ];
+    "records", [
+      test_case "create monomorphic"  `Quick t_rec_create;
+      test_case "access Int field"    `Quick t_rec_access;
+      test_case "access String field" `Quick t_rec_access_string;
+      test_case "update"              `Quick t_rec_update;
+      test_case "poly create"         `Quick t_rec_poly_create;
+      test_case "poly access"         `Quick t_rec_poly_access;
+      test_case "multi-field access"  `Quick t_rec_multi_access;
+      test_case "field in fn"         `Quick t_rec_in_fn;
+      test_case "err: wrong type"     `Quick e_rec_wrong_type;
+      test_case "err: missing field"  `Quick e_rec_missing_field;
+      test_case "err: unknown in create" `Quick e_rec_unknown_field_create;
+      test_case "err: unknown access" `Quick e_rec_unknown_field_access;
+      test_case "err: field type mismatch" `Quick e_rec_field_type_mismatch;
+      test_case "err: update type mismatch" `Quick e_rec_update_type_mismatch;
     ];
   ]
