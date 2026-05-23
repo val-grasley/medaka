@@ -131,14 +131,21 @@ pat:
   | pat_cons  { $1 }
 
 pat_cons:
-  | pat_atom CONS pat_cons  { PCons ($1, $3) }
-  | pat_atom                { $1 }
+  | pat_app CONS pat_cons   { PCons ($1, $3) }
+  | pat_app                 { $1 }
+
+(* A constructor application without surrounding parens.
+   Allowed wherever a full `pat` is expected (match arms, let bindings,
+   do binds, etc.); function arguments still use `pat_atom` and so
+   require parens for constructor patterns with args. *)
+pat_app:
+  | UPPER nonempty_list(pat_atom)  { PCon ($1, $2) }
+  | pat_atom                       { $1 }
 
 pat_atom:
   | IDENT                                                  { PVar $1 }
   | UNDERSCORE                                             { PWild }
   | UPPER                                                  { PCon ($1, []) }
-  | LPAREN UPPER nonempty_list(pat_atom) RPAREN            { PCon ($2, $3) }
   | lit                                                    { PLit $1 }
   | LPAREN RPAREN                                          { PLit LUnit }
   | LPAREN pat RPAREN                                      { $2 }

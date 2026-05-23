@@ -1,6 +1,6 @@
 (library
  (name medaka_lib)
- (modules ast lexer parser)
+ (modules ast lexer parser printer)
  (libraries menhirLib))
 
 (ocamllex lexer)

@@ -1,5 +1,5 @@
-(test
- (name test_parser)
+(tests
+ (names test_parser test_roundtrip)
  (libraries medaka_lib alcotest))
 
 (executable
