@@ -1,7 +1,7 @@
 (tests
- (names test_parser test_roundtrip test_resolve)
+ (names test_parser test_roundtrip test_resolve test_typecheck)
  (libraries medaka_lib alcotest))
 
-(executable
- (name debug)
+(executables
+ (names debug tc_debug)
  (libraries medaka_lib))

@@ -220,22 +220,24 @@ expr_add:
   | expr_mul                 { $1 }
 
 expr_mul:
-  | expr_mul STAR  expr_infix  { EBinOp ("*", $1, $3) }
-  | expr_mul SLASH expr_infix  { EBinOp ("/", $1, $3) }
-  | expr_infix                 { $1 }
+  | expr_mul STAR  expr_unary  { EBinOp ("*", $1, $3) }
+  | expr_mul SLASH expr_unary  { EBinOp ("/", $1, $3) }
+  | expr_unary                 { $1 }
+
+(* Unary minus binds tighter than `*` / `+` but looser than application.
+   This means `f -x` parses as `f - x` (binary). For `f (-x)` use parens. *)
+expr_unary:
+  | MINUS expr_unary   { EUnOp ("-", $2) }
+  | BANG  expr_unary   { EUnOp ("!", $2) }
+  | expr_infix         { $1 }
 
 expr_infix:
   | expr_infix BACKTICK_IDENT expr_app  { EInfix ($2, $1, $3) }
   | expr_app                            { $1 }
 
 expr_app:
-  | expr_app expr_unary  { EApp ($1, $2) }
-  | expr_unary           { $1 }
-
-expr_unary:
-  | MINUS expr_postfix   { EUnOp ("-", $2) }
-  | BANG  expr_postfix   { EUnOp ("!", $2) }
-  | expr_postfix         { $1 }
+  | expr_app expr_postfix  { EApp ($1, $2) }
+  | expr_postfix           { $1 }
 
 expr_postfix:
   | expr_postfix DOT IDENT                        { EFieldAccess ($1, $3) }
