@@ -14,16 +14,16 @@ The front-end of the Medaka compiler is in place. We have:
 | Parser          | `lib/parser.mly`    | Menhir grammar, full language syntax                        |
 | Printer         | `lib/printer.ml`    | AST → parseable source (used by round-trip tests)           |
 | Resolver        | `lib/resolve.ml`    | Validates that every identifier reference is bound          |
-| Type checker    | `lib/typecheck.ml`  | Hindley-Milner with let-polymorphism, ADTs, records, patterns, pipe/compose |
+| Type checker    | `lib/typecheck.ml`  | Hindley-Milner with let-polymorphism, ADTs, records, patterns, pipe/compose, effects |
 
-206 tests pass across 4 test suites:
+216 tests pass across 4 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
 | Parser            | `test/test_parser.ml`           | 48    | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 50    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 34    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 74    | Inferred types for valid programs + type-error cases  |
+| Type checker      | `test/test_typecheck.ml`        | 84    | Inferred types for valid programs + type-error cases  |
 
 Two debug binaries in `test/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
@@ -227,7 +227,7 @@ Added in response to `language-design.md` explicitly specifying `|>`, `>>`, `<<`
   - `<<` : `(b -> c) -> (a -> b) -> (a -> c)`
 - 6 new parser tests, 9 new typecheck tests
 
-### Phase 3: Effect tracking (next)
+### Phase 3: Effect tracking ✅ DONE
 
 **Goal.** Currently `from_ast_type` ignores effect annotations
 (`<IO> String` is treated as just `String`). The language wants effects in
@@ -244,15 +244,28 @@ signatures and inferred automatically (see `language-design.md` §Effect System)
 5. Annotated effect signatures constrain — code that escapes the declared
    effects is a type error.
 
-**Big call.** This changes `TFun`'s representation everywhere. Touches
-`typecheck.ml` (extensive), `from_ast_type`, `pp_mono`, and signatures in the
-test suite. Substantial but well-bounded.
+**Implementation chose the alternative (separate pass).** `TFun` is unchanged;
+effects are tracked in a separate `eff_env : (string, effect_set) Hashtbl.t`
+that is populated after HM type checking.
 
-**Alternative.** Track effects in a separate analysis pass after type checking
-rather than threading them through. Less integrated, but doesn't ripple
-through the type representation.
+**What was added:**
+- `type effect_set = string list` (sorted, dedup)
+- `type_error` variants: `ImpureFunction (name, effs)` and `EffectEscape (name, declared, extras)`
+- `declared_effects : Ast.ty -> effect_set` — extracts effect annotation from a type sig
+- `expr_effects` / `do_stmt_effects` — computes the effects of evaluating an expression
+  (direct `EApp(EVar f, ...)` calls contribute `eff_env[f]`; `|>` pipes correctly;
+  `>>` / `<<` compositions include effects of both sides; lambda bodies propagate)
+- `infer_and_check_effects groups` — builds eff_env in declaration order; checks
+  each function against its declared effects (or enforces purity when unannotated)
+- Primitives in eff_env: `"print" → ["IO"]`
+- 10 new typecheck tests (6 valid, 4 error cases)
 
-### Phase 4: Interfaces (typeclasses)
+**Known limitation.** Higher-order functions that receive effectful callbacks are
+not tracked: `bad = runWith print` where `runWith` ignores effects in its
+parameter type won't be flagged. Full tracking requires integrating effects into
+`TFun` (the original "big call" path), which can be done in a future pass.
+
+### Phase 4: Interfaces (typeclasses) — next
 
 **Goal.** Type-check `interface` and `impl` declarations. Resolve interface
 methods at use sites.

@@ -32,18 +32,24 @@ type record_info = {
   rec_fields : (ident * mono) list;  (* field name → field type (shares param TVars) *)
 }
 
+(* ── Effects ─────────────────────────────────────── *)
+
+type effect_set = string list  (* sorted, deduplicated *)
+
 (* ── Errors ─────────────────────────────────────── *)
 
 type type_error =
-  | TypeMismatch  of mono * mono
-  | InfiniteType  of int * mono
-  | UnboundVar    of ident
-  | UnknownCtor   of ident
-  | ArityMismatch of ident * int * int  (* name, expected, got *)
-  | UnknownRecord of ident
-  | UnknownField  of ident * ident      (* field, record *)
-  | MissingField  of ident * ident      (* field, record *)
-  | Other         of string
+  | TypeMismatch   of mono * mono
+  | InfiniteType   of int * mono
+  | UnboundVar     of ident
+  | UnknownCtor    of ident
+  | ArityMismatch  of ident * int * int   (* name, expected, got *)
+  | UnknownRecord  of ident
+  | UnknownField   of ident * ident       (* field, record *)
+  | MissingField   of ident * ident       (* field, record *)
+  | ImpureFunction of ident * effect_set  (* unannotated fn with inferred effects *)
+  | EffectEscape   of ident * effect_set * effect_set  (* fn, declared, undeclared extras *)
+  | Other          of string
 
 exception Type_error of type_error
 
@@ -201,6 +207,12 @@ let pp_error = function
     Printf.sprintf "Field %s does not belong to record %s" f r
   | MissingField (f, r) ->
     Printf.sprintf "Missing field %s in construction of record %s" f r
+  | ImpureFunction (name, effs) ->
+    Printf.sprintf "Function '%s' has no effect annotation but performs <%s>"
+      name (String.concat ", " effs)
+  | EffectEscape (name, declared, extras) ->
+    Printf.sprintf "Function '%s' declared with <%s> but also performs <%s>"
+      name (String.concat ", " declared) (String.concat ", " extras)
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -737,6 +749,97 @@ let clause_to_expr (pats, body) =
   if pats = [] then body
   else List.fold_right (fun p acc -> ELam ([p], acc)) pats body
 
+(* ── Effect inference ────────────────────────────── *)
+
+let effect_union a b = List.sort_uniq String.compare (a @ b)
+
+(* Extract the declared effect set from an AST type signature.
+   Follows TyFun arrows right-most; the first TyEffect on the return side
+   is the function's declared effect.  `String -> <IO> Unit` → ["IO"]. *)
+let rec declared_effects : Ast.ty -> effect_set = function
+  | Ast.TyFun (_, ret) -> declared_effects ret
+  | Ast.TyEffect (effs, _) -> List.sort_uniq String.compare effs
+  | _ -> []
+
+(* Compute the effect set that evaluating expression `e` produces.
+   Direct calls (EApp, |>) contribute the callee's known effect set.
+   Lambda bodies propagate their effects conservatively (lambdas may be called).
+   Composition (>>, <<) includes effects of both composed functions. *)
+let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : effect_set =
+  let call name = try Hashtbl.find eff_env name with Not_found -> [] in
+  let sub e   = expr_effects eff_env e in
+  (* Effects from calling `e` as a function — if it's a bare name we can look
+     it up directly; otherwise fall back to the expression's own effects. *)
+  let call_effs = function
+    | EVar n -> call n
+    | e -> sub e
+  in
+  match e with
+  | ELit _ | EVar _ -> []
+  | EApp (f, x) ->
+    effect_union (call_effs f) (effect_union (sub f) (sub x))
+  | ELam (_, body) ->
+    sub body  (* conservative: include body effects in enclosing fn *)
+  | ELet (_, _, e1, e2) -> effect_union (sub e1) (sub e2)
+  | EIf (c, t, f)       -> effect_union (sub c) (effect_union (sub t) (sub f))
+  | EBinOp ("|>", x, f) ->
+    (* x |> f  ≡  f x — calling f contributes its effects *)
+    effect_union (call_effs f) (sub x)
+  | EBinOp (">>", f, g) | EBinOp ("<<", f, g) ->
+    (* Composition — both functions may be called later; include both *)
+    effect_union (call_effs f) (call_effs g)
+  | EBinOp (_, l, r)    -> effect_union (sub l) (sub r)
+  | EUnOp (_, e)         -> sub e
+  | EMatch (sc, arms)    ->
+    List.fold_left
+      (fun acc (_, guard, body) ->
+        let ge = match guard with None -> [] | Some g -> sub g in
+        effect_union acc (effect_union ge (sub body)))
+      (sub sc) arms
+  | EDo stmts ->
+    List.fold_left
+      (fun acc s -> effect_union acc (do_stmt_effects eff_env s))
+      [] stmts
+  | EFieldAccess (e, _)      -> sub e
+  | ERecordCreate (_, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) [] fs
+  | ERecordUpdate (e, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) (sub e) fs
+  | EArrayLit es | EListLit es ->
+    List.fold_left (fun a e -> effect_union a (sub e)) [] es
+  | ETuple es               -> List.fold_left (fun a e -> effect_union a (sub e)) [] es
+  | EIndex (e, i)           -> effect_union (sub e) (sub i)
+  | EAnnot (e, _)           -> sub e
+  | EInfix (_, l, r)        -> effect_union (sub l) (sub r)
+
+and do_stmt_effects eff_env = function
+  | DoBind (_, e) | DoExpr e | DoLet (_, _, e) -> expr_effects eff_env e
+
+(* Process each function group in declaration order:
+     1. Infer its effect set (union of all clause bodies).
+     2. Store it in eff_env so later definitions see it.
+     3. Check against the declared signature; raise Type_error on violation.
+
+   Purity rule: a function with NO effect annotation must infer the empty set.
+   Annotation rule: declared effects must be a superset of inferred effects. *)
+let infer_and_check_effects groups =
+  let eff_env = Hashtbl.create 16 in
+  Hashtbl.add eff_env "print" ["IO"];
+  List.iter (fun (name, sig_opt, clauses) ->
+    let inferred =
+      List.fold_left
+        (fun acc clause ->
+          effect_union acc (expr_effects eff_env (clause_to_expr clause)))
+        [] clauses
+    in
+    Hashtbl.replace eff_env name inferred;
+    (match sig_opt with
+     | None ->
+       if inferred <> [] then fail (ImpureFunction (name, inferred))
+     | Some sig_ty ->
+       let decl = declared_effects sig_ty in
+       let extras = List.filter (fun e -> not (List.mem e decl)) inferred in
+       if extras <> [] then fail (EffectEscape (name, decl, extras)))
+  ) groups
+
 (* Type-check a whole program; return a (name → scheme) list.
 
    Strategy: pre-bind every top-level name with an unbound placeholder at
@@ -788,4 +891,8 @@ let check_program (prog : program) : (ident * scheme) list =
     env := extend_var !env name scheme;
     (name, scheme)
   ) groups in
+
+  (* Phase 5: effect inference and checking *)
+  infer_and_check_effects groups;
+
   results

@@ -420,6 +420,51 @@ let e_pipe_type_mismatch = assert_err
 let e_compose_type_mismatch = assert_err
   "inc x = x + 1\nf s = s == \"hi\"\nr = inc >> f\n"
 
+(* ── Effect tracking ─────────────────────────────── *)
+
+(* Pure function — no annotation, no effects: fine *)
+let t_eff_pure = assert_type
+  "add x y = x + y\n" "add" "Int -> Int -> Int"
+
+(* IO function with correct annotation *)
+let t_eff_io_annotated = assert_type
+  "greet : String -> <IO> Unit\ngreet name = print name\n"
+  "greet" "String -> Unit"
+
+(* Transitive IO: calling an IO fn propagates the effect to its caller *)
+let t_eff_transitive = assert_type
+  "greet : String -> <IO> Unit\ngreet name = print name\n\
+   welcome : String -> <IO> Unit\nwelcome name = greet name\n"
+  "welcome" "String -> Unit"
+
+(* Over-annotation is OK: declared <IO, Rand> but only performs <IO> *)
+let t_eff_over_annotated = assert_type
+  "f : <IO, Rand> Unit\nf = print \"hi\"\n" "f" "Unit"
+
+(* Pipe into an effectful function: f : <IO> Unit;  f = "hello" |> print *)
+let t_eff_pipe_io = assert_type
+  "f : <IO> Unit\nf = \"hello\" |> print\n" "f" "Unit"
+
+(* Compose of two pure functions — composed result is also pure *)
+let t_eff_compose_pure = assert_type
+  "inc x = x + 1\ndbl x = x * 2\nf = inc >> dbl\n" "f" "Int -> Int"
+
+(* Error: unannotated function calls print → ImpureFunction *)
+let e_eff_impure_no_annot = assert_err
+  "f = print \"hi\"\n"
+
+(* Error: function annotated as pure (no <...>) but calls print → EffectEscape *)
+let e_eff_escape_annotated_pure = assert_err
+  "f : String -> Unit\nf x = print x\n"
+
+(* Error: annotated as <Rand> but performs <IO> → EffectEscape (extra: IO) *)
+let e_eff_escape_wrong_effect = assert_err
+  "f : <Rand> Unit\nf = print \"hi\"\n"
+
+(* Error: IO effect escapes through a lambda body inside the unannotated fn *)
+let e_eff_lambda_body_propagates = assert_err
+  "bad = (x => print x) \"hi\"\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -498,6 +543,18 @@ let () =
       test_case "err: unknown access" `Quick e_rec_unknown_field_access;
       test_case "err: field type mismatch" `Quick e_rec_field_type_mismatch;
       test_case "err: update type mismatch" `Quick e_rec_update_type_mismatch;
+    ];
+    "effects", [
+      test_case "pure fn no annotation"  `Quick t_eff_pure;
+      test_case "IO with annotation"     `Quick t_eff_io_annotated;
+      test_case "transitive IO"          `Quick t_eff_transitive;
+      test_case "over-annotation ok"     `Quick t_eff_over_annotated;
+      test_case "pipe into IO fn"        `Quick t_eff_pipe_io;
+      test_case "compose pure"           `Quick t_eff_compose_pure;
+      test_case "err: impure no annot"   `Quick e_eff_impure_no_annot;
+      test_case "err: escape pure annot" `Quick e_eff_escape_annotated_pure;
+      test_case "err: wrong effect"      `Quick e_eff_escape_wrong_effect;
+      test_case "err: lambda propagates" `Quick e_eff_lambda_body_propagates;
     ];
     "pipe and compose", [
       test_case "pipe Int"               `Quick t_pipe_int;
