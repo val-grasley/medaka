@@ -426,28 +426,152 @@ pipeline — parse → resolve → type-check — with Elm-style error output
 
 **Design note.** `Ref T` is represented as `TApp(TCon "Ref", T)` — no new `mono` variant needed. The `.value` field reads through `Ref` without consuming a `<Mut>` effect (reads are pure); writes require calling `set_ref` which carries `<Mut>` through the existing effect-propagation pass. `let mut x` binding reassignment is tracked separately from `Ref` — `let mut x = 5` followed by `x = 10` in a do-block is a `DoAssign`, while `Ref` provides explicit shared mutable cells. Value/reference semantics documentation deferred to Phase 9 (eval pass).
 
-### Phase 9: Backend
+### Phase 8.6: Housekeeping pass (before backend) ⬅ NEXT
 
-**Goal.** Make Medaka programs actually run.
+Small, independent cleanups uncovered while auditing the frontend. None block
+the backend, but tackling them in one short session leaves the codebase in a
+better state to build on.
 
-Per design doc, Phase 1 of the project is "interpret directly or transpile to
-OCaml". Recommended start: a tree-walking interpreter (`lib/eval.ml`) that
-operates on the typed AST. Fast to build, fine for testing the language design.
+- **Update `README.md`.** Stale: claims "Not yet: name resolution, type
+  checking, codegen, anything that runs Medaka code" and lists only 40 parser
+  tests. Sync with current reality (275 tests, full frontend in place).
+- **Move `tc_debug.ml` and `debug.ml` out of `test/` into `dev/`.** They are
+  exploratory probes, not tests, and they confuse `dune test` reasoning.
+- **Add a `.editorconfig`.** Enforce 2-space OCaml indentation so future
+  contributors don't drift.
+- **Fix `pp_ty` over-parenthesisation.** `pp_ty (TyApp _)` always wraps in
+  parens (`(List Int)`); precedence-aware printing would read better.
+- **Decide on `Eq`-deriving for AST equality.** Structural `=` works today,
+  but `TVar ref` in `typecheck.ml`'s `mono` is already mutable; the round-trip
+  contract will start to bite if more mutable bits creep in.
 
-Don't optimise. Don't add a stdlib until the interpreter works on the existing
-test programs.
+Not in scope here (tracked in Section 5): polymorphic numeric/comparison
+operators, higher-order effect tracking, `@Name` impl selection, cons-pattern
+`DoBind`, `r.value = e` field assignment, local recursion. These are revisited
+once the stdlib forces real use cases.
+
+---
+
+## Phase 9 onwards: Backend
+
+**Overall goal.** Make Medaka programs actually run. Per the design doc, this
+is Phase 1 of the project — a tree-walking interpreter over the typed AST.
+Don't optimise; the goal is to validate the language design, not raw speed.
+
+**Decisions baked into this roadmap.**
+- Effects stay compile-time only. The interpreter does not enforce them at
+  runtime; the type checker is the single source of truth.
+- Single-file programs only. Cross-file `use` is parsed but rejected by the
+  driver; multi-file resolution becomes its own phase later.
+- Primitives are exposed via `extern` declarations from day one, not
+  hard-coded in `eval.ml`. Establishes the runtime boundary the design doc
+  promises (Runtime Primitives & Abstraction Layer).
+- Runtime failures (pattern-match failure, division by zero, OOB, etc.) raise
+  an OCaml exception that the driver catches and prints as a Medaka `Panic`
+  with the source location of the failing expression (`ELoc`).
+- Numeric/comparison op polymorphism (`Eq`/`Ord`/`Num` interfaces) is *not* a
+  prerequisite. Built-in ops stay Int-only until the stdlib lands.
+
+### Phase 9: `extern` declarations
+
+**Goal.** Promote today's hard-coded primitives (`print`, `pure`, `Ref`,
+`set_ref`, `map`, `filter`, `fold`, `pi`, `e`) into first-class `extern`
+declarations. Establish the runtime-boundary the design doc calls for, so
+later backend changes don't have to chase implicit primitives.
+
+**Scope.**
+- `extern name : ty` parses as a new top-level `decl` variant `DExtern`.
+- Resolver: an `extern` declaration registers the name in scope just like a
+  type-sig; it must not have an accompanying definition.
+- Type checker: an extern's declared type becomes its scheme directly (no
+  body to infer). Effects from the `<...>` annotation populate `eff_env`.
+- A blessed `runtime.med` (or equivalent in-OCaml table) replaces the
+  hand-rolled entries in `resolve.ml`'s `primitive_values` and
+  `typecheck.ml`'s `initial_env`. The two lists become derived data.
+- Tests: existing test programs continue to type-check; add a few exercising
+  `extern` directly (effect propagation through an extern, unknown extern
+  rejected, extern with body rejected).
+
+**Done when.** No primitive value is referenced by string in `resolve.ml` or
+`typecheck.ml` outside the runtime registry; all 275+ existing tests pass.
+
+### Phase 10: Tree-walking interpreter (`lib/eval.ml`)
+
+**Goal.** Evaluate any well-typed Medaka expression to a runtime value.
+Programs that don't have side effects can be tested by asserting value
+equality.
+
+**Scope.**
+- `type value` covering: integers, floats, strings, chars, bools, unit,
+  closures, constructors (`VCon of ident * value list`), records,
+  tuples, lists, arrays, `Ref` cells, primitive function thunks.
+- `eval : env -> expr` over the typed AST. Pattern matching, let-binding,
+  do-blocks (option/result/IO monad behaviours come from `extern` impls),
+  records and field access, `Ref` reads via `.value`.
+- Extern dispatch: an in-OCaml table mapping `extern` names → OCaml functions
+  on `value`. Initially: `print`, `println`, `pure`, `Ref`, `set_ref`, arith
+  helpers if needed beyond built-in ops, plus enough of `map`/`filter`/`fold`
+  to satisfy current test programs.
+- Runtime errors raise `Eval_error of string * Ast.loc option`; the
+  outermost driver catches and prints them with the source snippet
+  (`bin/main.ml`'s existing snippet helper).
+- Tests: a new `test_eval.ml` suite that evaluates expressions and asserts
+  on resulting `value`s. Tests cover constants, arithmetic, lambdas/closures,
+  recursion (factorial, list length), pattern matching across `data`/`record`
+  shapes, do-blocks with `Option`/`Result`, `Ref` mutation.
+
+**Done when.** The evaluator can run every existing type-checked test program
+to a value and the new `test_eval.ml` suite is green.
+
+### Phase 11: Driver — running whole programs
+
+**Goal.** `medaka run file.mdk` actually executes a program.
+
+**Scope.**
+- `bin/main.ml` gains a `run` subcommand (or treats invocation without
+  flags as run-after-typecheck).
+- Convention: the program's entry point is a top-level binding `main` of
+  type `Unit` (or `<IO> Unit` once effects are real). Reject programs
+  without a `main`.
+- Runtime panics print `file:line:col: panic: <msg>` plus the source snippet
+  (re-use the helper in `bin/main.ml`).
+- Golden-file test harness in `test/test_run.ml`: each fixture is a pair
+  (program, expected stdout). The harness redirects stdout, runs `main`,
+  compares.
+- Fixture suite covers the canonical examples from `language-design.md`
+  (factorial, hello world, simple match-on-data) plus a couple of programs
+  exercising `do`/`Result` and `Ref`.
+
+**Done when.** `medaka run` produces correct output for the fixtures and
+`test_run.ml` is wired into `dune test`.
+
+### Phase 12: REPL
+
+**Goal.** Match the design doc's Phase 2: an interactive read-eval-print
+loop. Forces clean incremental typechecking and evaluation.
+
+**Scope.**
+- `medaka repl` subcommand (separate binary or `bin/main.ml` mode).
+- Per-line parse/resolve/typecheck/eval, with persistent env carried across
+  inputs (vars, type schemes, constructors, interface info, eval bindings).
+- Multi-line input handling: re-prompt while the parser reports an
+  unexpected EOF (i.e. block not yet closed). Indentation-sensitive lexer
+  needs a small driver that knows when input is complete.
+- Top-level declarations (`x = ...`, `data ...`, `record ...`, `interface
+  ...`, `impl ...`) update the persistent env. Bare expressions print their
+  value and inferred type.
+- `:type expr`, `:quit`, `:reset` meta-commands. Resist adding more.
+
+**Done when.** The REPL can be used to incrementally develop a small program
+end-to-end. No test suite is required initially beyond a smoke test.
+
+---
 
 ## 4. Smaller cleanups (good warm-up tasks)
 
-- **Remove debug helper `lib/typecheck.ml` no longer uses.** None right now,
-  but keep an eye.
-- **Move `tc_debug.ml` and `debug.ml` out of `test/` into a `dev/` directory.**
-  They're not tests.
-- **Add a `.editorconfig`.** Currently nothing enforces 2-space OCaml
-  indentation.
-- **Consider an `Eq`-deriving approach for AST equality** instead of OCaml's
-  structural `=` — works fine now but will break if we add mutable bits
-  (`TVar ref` already in `typecheck.ml`'s `mono`).
+See Phase 8.6 above for the consolidated housekeeping list. After the backend
+phases land, revisit the limitations in Section 5 — most of them turn into
+concrete work once real programs are running through the interpreter.
 
 ## 5. Known limitations to keep in mind
 
@@ -456,16 +580,37 @@ These aren't blockers, but a less-careful change could trip over them:
 - `let mut` binding reassignment (`DoAssign`) is now type-checked in do-blocks,
   but `ELet(true, ...)` in expression context only tracks `mut_vars` — there is
   no syntax for reassigning a `let mut` binding outside a do-block. The `Ref`
-  type is fully type-checked; actual mutation happens at runtime (Phase 9).
+  type is fully type-checked; actual mutation happens at runtime (Phase 10).
 - `r.value = expr` field-assignment syntax for `Ref` is not yet supported.
   Use `set_ref r expr` instead.
 - `let f x = ...` is purely sugar; the parser desugars to nested lambdas at
   parse time. There is no `let-rec` for locals; if you need local recursion,
   use a top-level def.
 - The resolver bakes in a list of "primitive values" (`pure`, `print`, `map`,
-  …) and "primitive types" (`List`, `Option`, …). When the stdlib lands, those
-  lists move out of `resolve.ml` and `typecheck.ml`'s `initial_env`.
+  …) and "primitive types" (`List`, `Option`, …). Phase 9 (extern) replaces
+  the value list with a runtime registry; primitive types still live there
+  until the stdlib lands.
 - `EUnOp "-"` only types as `Int -> Int`. Float negation isn't supported.
 - All comparison ops (`==`, `<`, …) currently force `Int`. They should be
-  polymorphic (`forall a. a -> a -> Bool` for `==`, ordered types for `<`).
-- Effects: parsed, AST-stored, but ignored by the type checker (see Phase 3).
+  polymorphic (`forall a. a -> a -> Bool` for `==`, ordered types for `<`)
+  via `Eq`/`Ord` interfaces — deferred until interface instance resolution
+  has real use cases (post-Phase 11).
+- Arithmetic ops (`+`, `-`, `*`, `/`) likewise force `Int`. Will become
+  `Num`-interface-dispatched in the same pass.
+- Effects: tracked in a separate `eff_env`, not in `TFun`. Higher-order
+  callbacks that *receive* an effectful function aren't tracked (Phase 3
+  limitation). Real fix requires merging effects into `TFun`.
+- `@Name` impl-disambiguation hints parse and type-check but do not actually
+  select a specific impl at runtime; ambiguous impls are still rejected at
+  check time. Selection is deferred to a post-backend pass.
+- DoBind LHS cannot be a cons (`x::xs <- list`) or literal pattern — grammar
+  limitation documented in `parser.mly`.
+- The last statement of a do-block cannot start with an uppercase identifier
+  (`Some x` etc.) — wrap in `pure (...)`. Same grammar root cause.
+- Module system: `use` declarations parse but no cross-file resolution
+  exists. Backend roadmap is single-file only; multi-file support is a
+  separate later phase.
+- Standard library: nothing is implemented in Medaka yet. Once the
+  interpreter runs (Phase 10–11) the existing collection types (`List`,
+  `Array`, `Map`, etc.) can begin to migrate from compiler-side primitives
+  into Medaka source on top of `extern`.

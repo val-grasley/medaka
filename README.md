@@ -9,14 +9,22 @@ self-host.
 
 ## Status
 
-Very early. So far:
+Frontend complete; backend not yet started.
 
 - **AST** — `lib/ast.ml`
 - **Lexer** — `lib/lexer.mll` (indentation-sensitive, OCaml-style)
 - **Parser** — `lib/parser.mly` (Menhir)
-- **Test suite** — `test/test_parser.ml` (40 cases via Alcotest)
+- **Printer** — `lib/printer.ml` (AST → parseable source)
+- **Resolver** — `lib/resolve.ml` (every reference is bound)
+- **Type checker** — `lib/typecheck.ml` (Hindley-Milner with let-polymorphism,
+  ADTs, records, pattern matching, interfaces with constraint checking,
+  effect tracking, exhaustiveness/usefulness)
+- **CLI** — `bin/main.ml` runs the full pipeline with Elm-style error output
+- **Test suite** — 275 cases across `test/test_parser.ml`,
+  `test/test_roundtrip.ml`, `test/test_resolve.ml`, `test/test_typecheck.ml`
 
-Not yet: name resolution, type checking, codegen, anything that runs Medaka code.
+Not yet: evaluation, REPL, codegen, stdlib. See [PLAN.md](./PLAN.md) for the
+backend roadmap.
 
 ## Building
 
@@ -30,29 +38,43 @@ dune build
 ## Running tests
 
 ```sh
-dune build && ./_build/default/test/test_parser.exe --compact
+dune build
+./_build/default/test/test_parser.exe     --compact
+./_build/default/test/test_roundtrip.exe  --compact
+./_build/default/test/test_resolve.exe    --compact
+./_build/default/test/test_typecheck.exe  --compact
 ```
 
-(Running via `dune test` works too, just slower.)
+(Running via `dune test` is supported, but PLAN.md §2.2 documents an
+environment-specific hang — run the binaries directly when in doubt.)
 
-## Trying the parser
+## Trying the compiler
 
 ```sh
 dune build && ./_build/default/bin/main.exe path/to/file.mdk
 ```
 
-Prints a one-line summary of each top-level declaration found in the file.
+Runs parse → resolve → type-check, printing Elm-style errors on failure or
+`OK — N bindings` on success.
 
 ## Layout
 
 ```
 lib/
-  ast.ml          AST type definitions + pretty printer
+  ast.ml          AST type definitions + pretty printer + ELoc helpers
   lexer.mll       Tokenizer with INDENT/DEDENT handling
-  parser.mly      Grammar
+  parser.mly      Menhir grammar
+  printer.ml      AST → source (round-trip)
+  resolve.ml      Name resolution
+  typecheck.ml    Hindley-Milner + interfaces + effects + exhaustiveness
+  exhaust.ml      Maranget's pattern-matrix algorithm
 bin/
   main.ml         CLI entry point
 test/
-  test_parser.ml  Alcotest suite
-  debug.ml        Quick parse-and-print harness for ad-hoc inspection
+  test_parser.ml      AST shape per construct
+  test_roundtrip.ml   parse → print → parse stability
+  test_resolve.ml     Resolution errors
+  test_typecheck.ml   Inferred types, type errors, exhaustiveness warnings
+  debug.ml            Ad-hoc parse-and-print probe
+  tc_debug.ml         Ad-hoc type-check probe
 ```
