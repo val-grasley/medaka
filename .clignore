@@ -1,0 +1,5 @@
+# Build output — large, generated, never needs to be read into context
+_build/
+
+# Local opam switch (if ever created inside the project)
+_opam/
