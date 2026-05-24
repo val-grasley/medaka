@@ -607,6 +607,22 @@ and binop_type env op l r =
     let elem = fresh_var () in
     let lt = t_list elem in
     unify tl lt; unify tr lt; lt
+  | "|>" ->
+    (* x |> f  :  a -> (a -> b) -> b *)
+    let b = fresh_var () in
+    unify tr (TFun (tl, b)); b
+  | ">>" ->
+    (* f >> g  :  (a -> b) -> (b -> c) -> (a -> c) *)
+    let a = fresh_var () in
+    let b = fresh_var () in
+    let c = fresh_var () in
+    unify tl (TFun (a, b)); unify tr (TFun (b, c)); TFun (a, c)
+  | "<<" ->
+    (* f << g  :  (b -> c) -> (a -> b) -> (a -> c) *)
+    let a = fresh_var () in
+    let b = fresh_var () in
+    let c = fresh_var () in
+    unify tl (TFun (b, c)); unify tr (TFun (a, b)); TFun (a, c)
   | _ ->
     fail (Other ("Unknown binop: " ^ op))
 

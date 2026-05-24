@@ -129,6 +129,9 @@ and read = parse
   | ">="  { GEQ }
   | "&&"  { AND }
   | "||"  { OR }
+  | "|>"  { PIPE_RIGHT }
+  | ">>"  { RCOMPOSE }
+  | "<<"  { LCOMPOSE }
   | ".{"  { DOT_LBRACE }
   | ".*"  { DOT_STAR }
   | "@"   { AT }

@@ -15,6 +15,19 @@ The north star: **the language a pragmatic functional programmer would design if
 
 **Key design filter:** *Does this feature earn its complexity in practical use, or is it just theoretically neat?*
 
+### One Language, No Extensions
+Medaka has no language extensions, no compiler pragmas that alter semantics, and no opt-in type system features. Every feature is either in the language or it isn't. No pragma at the top of a file changes how the language works.
+
+This is a direct rejection of Haskell's extension system, where enabling `OverloadedStrings`, `TypeFamilies`, `UndecidableInstances`, `RankNTypes`, `GADTs` etc. effectively creates a family of related but different languages. The consequences of that approach are real:
+- Code is harder to read without knowing which extensions are active
+- Libraries impose their extension choices on users
+- The learning curve is multiplied
+- Tooling and error messages become harder to reason about
+
+In Medaka, features that didn't make the cut (GADTs, existential types, dependent types) are simply absent — not available via an opt-in flag. The language you learn is the language everyone uses.
+
+The closest parallel is Go, which is famously rigid about this. It's one of Go's most quietly important design decisions and one worth emulating.
+
 ### Influences
 - **OCaml** — strict evaluation, pragmatic side effects, practical functional programming
 - **Haskell** — type system, typeclasses, syntax, higher-kinded types, do-notation
@@ -138,6 +151,28 @@ x `andThen` f
 ```
 
 Functions always have real names. Infix is a calling convenience, not a way to invent hieroglyphics.
+
+### Pipe and Composition Operators
+
+Three operators, three unambiguous meanings:
+
+```
+-- |> pipe: apply a value through a pipeline
+"alice" |> toUpper |> trim |> greet
+
+-- >> composition: build a reusable function pipeline (left to right, F#/OCaml style)
+let processName = toUpper >> trim >> greet
+processName "alice"
+
+-- << composition: right to left (available but less idiomatic)
+let processName = greet << trim << toUpper
+
+-- . dot: field access and module access only, always
+person.name
+utils.greet
+```
+
+**Dot is never function composition.** This is an explicit departure from Haskell, where `.` is the composition operator — a decision that confuses anyone coming from virtually any other language. In Medaka, `.` means one thing: access. `>>` and `<<` handle composition, following F# and OCaml conventions.
 
 ### Do Notation
 General monad abstraction, not tied to effects:
@@ -299,16 +334,46 @@ main =
 
 ## Implementation Plan
 
-### Phase 1: OCaml-hosted compiler
+### Phase 1: OCaml-hosted compiler + Tree-sitter grammar
 - Write the compiler in OCaml (fitting given the influence, and Rust did the same initially)
 - Transpile to OCaml or interpret directly
 - Focus entirely on nailing language design — type system, syntax, semantics
 - Do not optimize for performance, codegen, or multiple architecture targets
+- **Tree-sitter grammar in parallel** — purely syntactic, no type checker needed, gives syntax highlighting in VSCode immediately. Writing the grammar formally also benefits the parser design.
 
-### Phase 2: Revisit backend if warranted
+### Phase 2: REPL
+- Interactive read-eval-print loop
+- Forces clean incremental typechecking and evaluation
+- Makes language features immediately explorable and testable
+- Essential for developing the standard library interactively
+- Good for motivation — the language feels alive early
+
+### Phase 3: Basic LSP
+- Error reporting only — red squiggles for type errors
+- Needs a working type checker but nothing more
+- Ships as part of the blessed toolchain (`medaka lsp`)
+- Makes day-to-day development significantly more pleasant early
+
+### Phase 4: Standard Library
+- Implemented in Medaka itself, on top of `extern` primitives
+- Developed and tested interactively via the REPL
+- Stress tests the type system, interfaces, and collections design
+
+### Phase 5: Proof of Concept Projects
+In order:
+1. **Web server framework** — stress tests effects, `<Async>`, `<IO>`, monads, do-notation, JSON. The real world test of whether the effect system earns its keep.
+2. **Additional projects** — driven by what the language needs at that point
+
+### Phase 6: Rich LSP
+- Go-to-definition, autocomplete, hover for type signatures, find references
+- Requires the compiler to track source spans carefully throughout — design for this from day one even if implementation comes later
+- Added incrementally once the language is stable enough that the AST isn't changing constantly
+
+### Phase 7: Revisit backend if warranted
 Once the language design is stable and the project feels worth continuing:
 - **LLVM** is the likely long-term target for native compilation
 - Could also explore self-hosting — writing the compiler in the language itself
+- The `extern` abstraction layer makes this transition clean (see Runtime Primitives)
 - JVM remains an option if ecosystem access becomes a priority
 
 ### Non-goals (for now)
@@ -510,6 +575,163 @@ Rough target: Go's stdlib scope, maybe slightly smaller.
 - Cryptography — too security-sensitive to get half right
 - GUI
 - Domain-specific libraries (ML, graphics, etc.)
+
+---
+
+## Effects vs Monads — The Full Picture
+
+This is a fundamental design decision worth stating explicitly, as it resolves a tension that plagues Haskell.
+
+### The Core Insight
+Strict evaluation means **execution order is always well defined by syntax**. You don't need monads to sequence side effects — the language already sequences things top to bottom. This eliminates Haskell's "monad infection" problem entirely.
+
+### What Monads Are For in Medaka
+Monads and do-notation are for **abstraction over computational patterns**, not for containing or ordering effects:
+- `Option` — chaining computations that might be absent
+- `Result` — chaining computations that might fail
+- `Async` — chaining asynchronous computations
+- Custom monads — user-defined computational patterns
+
+### What Effects Are For
+The effect system tracks **what a function can do**, independently of whether monads are involved:
+```
+-- side effects just work, sequenced by evaluation order
+greet : String -> <IO> String
+greet name =
+  let loud = String.toUpper name    -- pure, no ceremony
+  println "What's your name?"       -- IO, just works
+  let input = readLine ()           -- IO, just works
+  pure (loud ++ input)
+
+-- monads for computational abstraction, not effect sequencing
+fetchAndProcess : String -> <IO, Async> Result Json Error
+fetchAndProcess url =
+  let response = await fetch url    -- IO + Async, just works
+  json <- parseJson response        -- Result chaining via do-notation
+  pure (transform json)
+```
+
+### The Division of Responsibility
+- **Effect system** answers: *"what does this function do?"*
+- **Monads/do-notation** answers: *"how do I compose these computational patterns?"*
+
+These are orthogonal tools for orthogonal problems. Neither steps on the other.
+
+---
+
+## Pipe Operator
+
+The `|>` pipe operator is included as a first-class operator, following Elm, F#, and Gleam:
+
+```
+[1, 2, 3]
+  |> map (x => x * 2)
+  |> filter (x => x > 2)
+  |> fold 0 (acc, x => acc + x)
+```
+
+This replaces Haskell's `$` operator (which is a workaround for the same problem) with something more readable and widely understood. Pipelines read left to right, matching the natural flow of data transformation.
+
+---
+
+## Stdlib Design Principles
+
+Beyond the collections and modules already documented, a few explicit principles:
+
+### No Partial Functions
+The stdlib never exports functions that can crash on valid input. Every function that might not return a value returns `Option`. Every function that might fail returns `Result`.
+
+```
+-- this does not exist in Medaka stdlib
+head : List a -> a          -- crashes on empty list, NEVER
+
+-- this does
+head : List a -> Option a   -- always safe
+```
+
+This is a direct lesson from Haskell's Prelude, which exports partial functions like `head`, `tail`, `fromJust` that undermine the "if it compiles it runs" guarantee.
+
+### Consistent Naming Across Collections
+`map`, `filter`, `fold`, `insert`, `remove`, `contains` work identically across `List`, `Array`, `Map`, `Set` etc. via shared interfaces. Switching collection types requires changing the data structure, not relearning the API.
+
+### No Orphan Instances
+Interface instances must be defined either in the module that defines the type, or the module that defines the interface. Never in a third unrelated module. This prevents coherence problems and makes instance resolution predictable.
+
+---
+
+## Tooling
+
+A single blessed build tool ships with the language from day one. No competing tools, no ecosystem fragmentation. Cargo and Go's toolchain are the reference points.
+
+### Core Commands
+```
+medaka new myproject      -- create new project
+medaka build              -- compile
+medaka run                -- compile and run
+medaka run --release      -- optimized build
+medaka check              -- typecheck only, fast feedback
+medaka check --json       -- machine readable output for tooling/AI agents
+medaka test               -- run all tests
+medaka test mymodule      -- run specific module
+medaka fmt                -- format code (one blessed style, no arguments)
+medaka lsp                -- start language server
+medaka add somepackage    -- add dependency
+medaka remove somepackage -- remove dependency
+medaka update             -- update dependencies
+medaka doc                -- generate documentation
+```
+
+### Project Config
+Cargo-style `medaka.toml` for project configuration, `medaka.lock` for reproducible builds.
+
+### One Blessed Formatter
+`medaka fmt` is the official style. No competing formatters, no style arguments. Gofmt proved this is the right call — a community with one style is healthier than a community fragmented by style wars.
+
+### Structured Compiler Output
+`medaka check --json` emits machine-readable errors for tooling and AI agent consumption. Building with AI-assisted development in mind from day one.
+
+### Language Server
+Ships with the toolchain, not a third party plugin. Provides syntax highlighting, inline type errors, go-to-definition, autocomplete. Tree-sitter grammar for fast, incremental syntax highlighting.
+
+---
+
+## Runtime Primitives & Abstraction Layer
+
+### The Problem
+The OCaml-hosted compiler calls into OCaml primitives for IO, memory, etc. If/when Medaka moves to a self-hosted compiler targeting LLVM, those primitives need to be reimplemented. Without a clean abstraction layer, this requires rewriting large parts of the language.
+
+### The Solution: `extern` Declarations
+A thin runtime abstraction layer defined in Medaka, implemented externally by the host runtime. The `extern` keyword declares primitives that the runtime must provide:
+
+```
+-- runtime.med
+extern println  : String -> <IO> Unit
+extern readLine : Unit -> <IO> String
+extern readFile : String -> <IO> Result String IoError
+extern writeFile : String -> String -> <IO> Result Unit IoError
+extern exit     : Int -> <Panic> Unit
+```
+
+During the OCaml phase, these are backed by OCaml implementations. During the LLVM phase, they're backed by C or LLVM IR implementations. The Medaka code above this layer never changes.
+
+### The Primitive Surface Area
+The extern layer is intentionally small. Only the things that genuinely require host language support:
+- Basic IO (print, file read/write, stdin)
+- Memory allocation hooks for the GC
+- Arithmetic primitives (the compiler handles most of this)
+- String primitives (UTF-8 encoding/decoding)
+- Concurrency primitives for `<Async>`
+- Clock/time access for `<Time>`
+- Random number generation for `<Rand>`
+
+Everything else — `List`, `Map`, `Option`, `Result`, the entire collections hierarchy — is implemented in pure Medaka on top of these primitives. This means the standard library is largely portable across backends automatically.
+
+### Bootstrap Path
+This design enables a clean bootstrap sequence:
+1. OCaml compiler, OCaml runtime primitives → working language
+2. Add LLVM backend to OCaml compiler, C runtime primitives → native binaries
+3. Rewrite compiler in Medaka using the same `extern` interface → self-hosted
+4. Compile the Medaka compiler with itself → bootstrap complete, retire OCaml implementation
 
 ---
 

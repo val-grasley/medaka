@@ -57,6 +57,7 @@ let rec expr_to_pat = function
 %token EQ_EQ NEQ LT GT LEQ GEQ
 %token AND OR
 %token CONS PLUSPLUS
+%token PIPE_RIGHT RCOMPOSE LCOMPOSE
 %token FAT_ARROW ARROW LARROW
 %token AT BANG
 
@@ -184,10 +185,22 @@ expr_lam:
     { EDo $3 }
   | UNDERSCORE FAT_ARROW expr_lam
     { ELam ([PWild], $3) }
-  | expr_or FAT_ARROW expr_lam
+  | expr_pipe FAT_ARROW expr_lam
     { ELam ([expr_to_pat $1], $3) }
-  | expr_or
+  | expr_pipe
     { $1 }
+
+(* Pipe: x |> f  ≡  f x   (left-associative, lower than all other operators) *)
+expr_pipe:
+  | expr_pipe PIPE_RIGHT expr_compose  { EBinOp ("|>", $1, $3) }
+  | expr_compose                       { $1 }
+
+(* Composition: f >> g  ≡  fun x -> g (f x)
+                f << g  ≡  fun x -> f (g x)  *)
+expr_compose:
+  | expr_compose RCOMPOSE expr_or  { EBinOp (">>", $1, $3) }
+  | expr_compose LCOMPOSE expr_or  { EBinOp ("<<", $1, $3) }
+  | expr_or                        { $1 }
 
 expr_or:
   | expr_or OR expr_and   { EBinOp ("||", $1, $3) }

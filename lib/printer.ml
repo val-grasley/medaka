@@ -102,28 +102,32 @@ and print_pat_atom p pat = match pat with
 
 (* Precedence: higher binds tighter. *)
 let prec_top     = 0
-let prec_or      = 1
-let prec_and     = 2
-let prec_cmp     = 3
-let prec_cons    = 4
-let prec_append  = 5
-let prec_add     = 6
-let prec_mul     = 7
-let prec_infix   = 8
-let prec_app     = 9
-let prec_unary   = 10
-let prec_postfix = 11
-let prec_atom    = 12
+let prec_pipe    = 1   (* |>  *)
+let prec_compose = 2   (* >>  << *)
+let prec_or      = 3
+let prec_and     = 4
+let prec_cmp     = 5
+let prec_cons    = 6
+let prec_append  = 7
+let prec_add     = 8
+let prec_mul     = 9
+let prec_infix   = 10
+let prec_app     = 11
+let prec_unary   = 12
+let prec_postfix = 13
+let prec_atom    = 14
 
 let binop_prec = function
-  | "||" -> prec_or
-  | "&&" -> prec_and
+  | "|>"          -> prec_pipe
+  | ">>" | "<<"   -> prec_compose
+  | "||"          -> prec_or
+  | "&&"          -> prec_and
   | "==" | "!=" | "<" | ">" | "<=" | ">=" -> prec_cmp
-  | "::" -> prec_cons
-  | "++" -> prec_append
-  | "+" | "-" -> prec_add
-  | "*" | "/" -> prec_mul
-  | _    -> prec_infix
+  | "::"          -> prec_cons
+  | "++"          -> prec_append
+  | "+" | "-"     -> prec_add
+  | "*" | "/"     -> prec_mul
+  | _             -> prec_infix
 
 let is_right_assoc = function "::" -> true | _ -> false
 

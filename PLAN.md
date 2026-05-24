@@ -14,16 +14,16 @@ The front-end of the Medaka compiler is in place. We have:
 | Parser          | `lib/parser.mly`    | Menhir grammar, full language syntax                        |
 | Printer         | `lib/printer.ml`    | AST → parseable source (used by round-trip tests)           |
 | Resolver        | `lib/resolve.ml`    | Validates that every identifier reference is bound          |
-| Type checker    | `lib/typecheck.ml`  | Hindley-Milner with let-polymorphism, ADTs, records, patterns |
+| Type checker    | `lib/typecheck.ml`  | Hindley-Milner with let-polymorphism, ADTs, records, patterns, pipe/compose |
 
-191 tests pass across 4 test suites:
+206 tests pass across 4 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 42    | AST shape for each construct                          |
+| Parser            | `test/test_parser.ml`           | 48    | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 50    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 34    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 65    | Inferred types for valid programs + type-error cases  |
+| Type checker      | `test/test_typecheck.ml`        | 74    | Inferred types for valid programs + type-error cases  |
 
 Two debug binaries in `test/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
@@ -212,6 +212,20 @@ change (Phase 7 or earlier).
 stays abstract (`'a 'b -> 'a 'b` rather than `Option Int -> Option Int`) unless
 a specific constructor like `Some 10` or `Ok x` appears in a `DoBind` and
 forces it. Full resolution awaits Phase 4 (interfaces).
+
+### Phase 2.5: Pipe and composition operators ✅ DONE
+
+Added in response to `language-design.md` explicitly specifying `|>`, `>>`, `<<` (see "Pipe and Composition Operators" section). These were absent from the previous roadmap.
+
+**What was added:**
+- Lexer tokens: `PIPE_RIGHT` (`|>`), `RCOMPOSE` (`>>`), `LCOMPOSE` (`<<`)
+- Parser: two new precedence levels (`expr_pipe` below `expr_compose` below `expr_or`); `|>` is left-associative and lowest; `>>` and `<<` are left-associative and just above `|>`
+- Printer: `prec_pipe` and `prec_compose` constants (renumbered existing levels to make room); `binop_prec` extended
+- Type checker: `binop_type` cases:
+  - `|>` : `a -> (a -> b) -> b`
+  - `>>` : `(a -> b) -> (b -> c) -> (a -> c)`
+  - `<<` : `(b -> c) -> (a -> b) -> (a -> c)`
+- 6 new parser tests, 9 new typecheck tests
 
 ### Phase 3: Effect tracking (next)
 

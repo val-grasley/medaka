@@ -384,6 +384,42 @@ let e_do_bind_non_monad = assert_err
 let e_do_non_monadic_expr = assert_err
   "bad opt =\n  do\n    x <- opt\n    print x\n    pure x\n"
 
+(* ── Pipe and compose operators ─────────────────── *)
+
+(* x |> f  :  (a -> b) -> a -> b  from caller's perspective, but as an expr
+   it's just b.  The top-level def `r = 42 |> inc` should be Int. *)
+let t_pipe_int = assert_type
+  "inc x = x + 1\nr = 42 |> inc\n" "r" "Int"
+
+let t_pipe_string = assert_type
+  "r = \"hello\" |> (x => x)\n" "r" "String"
+
+let t_pipe_chain = assert_type
+  "inc x = x + 1\ndbl x = x * 2\nr = 3 |> inc |> dbl\n" "r" "Int"
+
+(* f >> g  :  (a -> b) -> (b -> c) -> (a -> c) *)
+let t_compose_right = assert_type
+  "inc x = x + 1\ndbl x = x * 2\nf = inc >> dbl\n" "f" "Int -> Int"
+
+(* f << g  :  (b -> c) -> (a -> b) -> (a -> c) *)
+let t_compose_left = assert_type
+  "inc x = x + 1\ndbl x = x * 2\nf = dbl << inc\n" "f" "Int -> Int"
+
+let t_compose_chain = assert_type
+  "inc x = x + 1\ndbl x = x * 2\nneg x = 0 - x\nf = inc >> dbl >> neg\n" "f" "Int -> Int"
+
+(* polymorphic compose: id >> inc should give Int -> Int *)
+let t_compose_poly = assert_type
+  "inc x = x + 1\nf = (x => x) >> inc\n" "f" "Int -> Int"
+
+(* error: pipe type mismatch — Int |> (String -> Bool) *)
+let e_pipe_type_mismatch = assert_err
+  "f s = s == \"hi\"\nr = 42 |> f\n"
+
+(* error: compose type mismatch — Int->Int >> String->Bool *)
+let e_compose_type_mismatch = assert_err
+  "inc x = x + 1\nf s = s == \"hi\"\nr = inc >> f\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -462,6 +498,17 @@ let () =
       test_case "err: unknown access" `Quick e_rec_unknown_field_access;
       test_case "err: field type mismatch" `Quick e_rec_field_type_mismatch;
       test_case "err: update type mismatch" `Quick e_rec_update_type_mismatch;
+    ];
+    "pipe and compose", [
+      test_case "pipe Int"               `Quick t_pipe_int;
+      test_case "pipe String"            `Quick t_pipe_string;
+      test_case "pipe chain"             `Quick t_pipe_chain;
+      test_case "compose >>"            `Quick t_compose_right;
+      test_case "compose <<"            `Quick t_compose_left;
+      test_case "compose chain"          `Quick t_compose_chain;
+      test_case "compose poly"           `Quick t_compose_poly;
+      test_case "err: pipe mismatch"     `Quick e_pipe_type_mismatch;
+      test_case "err: compose mismatch"  `Quick e_compose_type_mismatch;
     ];
     "do notation", [
       test_case "single expr"            `Quick t_do_single_expr;

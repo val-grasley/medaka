@@ -323,6 +323,40 @@ let test_use_wildcard () =
 
 (* ── Multi-declaration tests ─────────────────────────── *)
 
+(* ── Pipe and compose ────────────────────────────────── *)
+
+let test_pipe () =
+  match parse_expr "x |> f" with
+  | EBinOp ("|>", EVar "x", EVar "f") -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (pp_expr e))
+
+let test_pipe_chain () =
+  (* left-associative: x |> f |> g  =  (x |> f) |> g *)
+  match parse_expr "x |> f |> g" with
+  | EBinOp ("|>", EBinOp ("|>", EVar "x", EVar "f"), EVar "g") -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (pp_expr e))
+
+let test_compose_right () =
+  match parse_expr "f >> g" with
+  | EBinOp (">>", EVar "f", EVar "g") -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (pp_expr e))
+
+let test_compose_left () =
+  match parse_expr "f << g" with
+  | EBinOp ("<<", EVar "f", EVar "g") -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (pp_expr e))
+
+let test_pipe_lower_than_or () =
+  (* x |> f  should not capture the `||` inside f — `||` binds tighter *)
+  match parse_expr "a || b |> f" with
+  | EBinOp ("|>", EBinOp ("||", EVar "a", EVar "b"), EVar "f") -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (pp_expr e))
+
+let test_compose_lower_than_or () =
+  match parse_expr "f >> a || b" with
+  | EBinOp (">>", EVar "f", EBinOp ("||", EVar "a", EVar "b")) -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (pp_expr e))
+
 let test_multi_decl () =
   let src = "x : Int\nx = 42\n" in
   match parse src with
@@ -396,6 +430,14 @@ let () =
       test_case "pub"       `Quick test_use_pub;
       test_case "alias"     `Quick test_use_alias;
       test_case "wildcard"  `Quick test_use_wildcard;
+    ];
+    "pipe and compose", [
+      test_case "pipe"                  `Quick test_pipe;
+      test_case "pipe chain"            `Quick test_pipe_chain;
+      test_case "compose >>"           `Quick test_compose_right;
+      test_case "compose <<"           `Quick test_compose_left;
+      test_case "pipe lower than ||"    `Quick test_pipe_lower_than_or;
+      test_case "compose lower than ||" `Quick test_compose_lower_than_or;
     ];
     "multiple declarations", [
       test_case "sig + def"       `Quick test_multi_decl;
