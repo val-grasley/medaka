@@ -82,6 +82,80 @@ let rec expr_to_pat = function
 
 %%
 
+(* ═══════════════════════════════════════════════════════
+   Grammar conflicts — audit notes (Phase 7)
+   ═══════════════════════════════════════════════════════
+
+   Menhir reports 4 S/R states (13 conflicts) and 5 R/R states (20 conflicts).
+   Every conflict is documented below.  All default resolutions are correct for
+   the intended semantics — none require restructuring.
+
+   ── Shift/reduce conflicts ──────────────────────────────
+
+   S/R state 108  •  lookahead: LBRACE
+     Stack: … EQUAL UPPER
+     Reduce: expr_atom → UPPER          (UPPER as a bare constructor reference)
+     Shift:  UPPER . LBRACE … RBRACE    (start of a record-creation expression)
+     Resolution: SHIFT (default).  Record creation must win.  A bare UPPER
+     followed by { is unambiguously a record literal; the atom-reduce path
+     would leave { to be the start of a record-update expression, which
+     requires { expr | … } and won't parse correctly here anyway.
+
+   S/R state 134  •  lookahead: LBRACKET
+     Stack: … EQUAL expr_postfix
+     Reduce: expr_app → expr_postfix    (close the application)
+     Shift:  expr_postfix . LBRACKET … RBRACKET   (indexing: e[i])
+     Resolution: SHIFT (default).  Indexing must bind tighter than application
+     so that `f x[0]` parses as `f (x[0])` not `(f x)[0]`.
+
+   S/R state 138  •  lookaheads: UPPER STRING RPAREN RBRACKET LPAREN
+                                  LBRACKET LBRACE INT IDENT FLOAT CONS
+                                  COMMA CHAR BOOL   (14 tokens)
+     Stack: … INDENT UPPER
+     Explanation concentrates on UPPER:
+     Reduce: expr_atom → UPPER          (first token of a DoExpr statement)
+     Shift:  UPPER . nonempty_list(pat_atom)  (constructor pattern in DoBind)
+     Resolution: SHIFT (default).  Attempting DoBind first is correct — if
+     `<-` does not follow, the parse will fail with a helpful error.  The
+     practical consequence (documented in PLAN.md §Phase 2) is that a DoExpr
+     whose first token is `UPPER` followed by an atom-like token must be
+     written with parens, e.g. `pure (Some 5)` instead of `Some 5`.
+     The other 13 tokens for this state fall under the R/R analysis below.
+
+   S/R state 160  •  lookahead: LBRACKET
+     Stack: … EQUAL expr_app expr_postfix
+     Reduce: expr_app → expr_app expr_postfix   (close the application)
+     Shift:  expr_postfix . LBRACKET … RBRACKET (chain another index)
+     Resolution: SHIFT (default).  Chained indexing `a[i][j]` must be
+     left-associative; the rightmost postfix must keep extending.
+
+   ── Reduce/reduce conflicts ─────────────────────────────
+
+   States 138, 141, 143, 144, 147  •  lookaheads: CONS COMMA RPAREN RBRACKET
+     These states share the same root cause: inside a `do` block the parser
+     has seen a single atom (UPPER / IDENT / lit / `()` / `[]`) and now sees
+     a token that could continue either a pattern (DoBind) or an expression
+     (DoExpr).  Two reductions are possible for each atom:
+
+       expr_atom → UPPER  |  pat_atom → UPPER   (state 138)
+       expr_atom → IDENT  |  pat_atom → IDENT   (state 144)
+       expr_atom → lit    |  pat_atom → lit      (state 147)
+       expr_atom → ()     |  pat_atom → ()       (state 141)
+       expr_atom → []     |  pat_atom → []       (state 143)
+
+     Resolution: REDUCE expr_atom (default: earliest rule in the file).
+     Choosing expr_atom is correct for the common case: the `stmt` rule
+     tries `pat LARROW` first (state 138 S/R above), so by the time we reach
+     one of these states the parser has already committed to reading the atom
+     as part of an expression.  The practical limitation: a DoBind whose LHS
+     is a cons pattern (`x :: xs <- list`) or a literal pattern (`42 <- xs`)
+     will fail to parse because the atom is reduced as expr_atom before the
+     `::` / `<-` is seen.  These patterns are unusual enough that the
+     restriction is acceptable; fixing it would require an `expr_to_pat`
+     pass on the entire `stmt` LHS (analogous to the lambda trick), which
+     is deferred to a future grammar pass.
+   ═══════════════════════════════════════════════════════ *)
+
 (* ── Top level ───────────────────────────────────────── *)
 
 program:

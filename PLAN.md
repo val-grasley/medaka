@@ -379,28 +379,34 @@ redundant.
   `Some (Some v) | Some None | None`. Fixed by wrapping creation in
   `enter_level`/`exit_level` so vars land at level 1 and get quantified.
 
-### Phase 7: Audit parser conflicts
+### Phase 7: Audit parser conflicts ✅ DONE
 
-**Goal.** Bring the conflict count to zero or document each remaining one.
+**Goal.** Document every conflict so that future grammar changes can't alter
+resolutions silently.
 
-**Approach.**
+**What was found (commit following Phase 6).**
 
-1. Build with `-rebuild`, read `_build/default/lib/parser.conflicts`.
-2. For each, decide: is the default resolution correct? If yes, document
-   inline in `parser.mly` why. If no, restructure.
+The grammar has 4 S/R states (13 conflicts) and 5 R/R states (20 conflicts).
+All default resolutions are correct.  A single block comment was added just
+after the `%%` separator in `lib/parser.mly` documenting every conflict state:
 
-Some conflicts may be fundamental (e.g., dangling-else style); accept those.
-Others may be accidental and removable.
+| State | Type | Lookahead(s) | Resolution | Rationale |
+|-------|------|-------------|------------|-----------|
+| 108   | S/R  | LBRACE      | Shift      | `UPPER {…}` is always record creation |
+| 134   | S/R  | LBRACKET    | Shift      | Indexing (`e[i]`) binds tighter than application |
+| 138   | S/R  | 14 tokens   | Shift      | DoBind tried first; DoExpr starting with UPPER needs parens (known restriction) |
+| 160   | S/R  | LBRACKET    | Shift      | Chained indexing `a[i][j]` must keep extending |
+| 138/141/143/144/147 | R/R | CONS COMMA ) ] | Reduce expr_atom | expr_atom is earliest rule; DoBind cons-patterns (`x::xs <- list`) are an accepted limitation |
 
-### Phase 8: Driver / CLI
+No `%prec` directives were added (all resolutions were already correct;
+restructuring would risk new conflicts with no test coverage benefit).
+260 tests still pass.
 
-**Goal.** Make `medaka file.mdk` actually do something useful end-to-end:
-parse, resolve, type-check, report errors with positions, optionally print
-inferred types.
+### Phase 8: Driver / CLI ✅ DONE
 
-`bin/main.ml` currently only prints parsed declarations. Plug in the resolver
-and type checker. Decide on a CLI surface (probably `medaka check file.mdk`,
-later `medaka run`, `medaka build`).
+Implemented as part of Phase 5.  `bin/main.ml` already runs the full
+pipeline — parse → resolve → type-check — with Elm-style error output
+(file:line:col messages + source snippets).  Nothing left to do here.
 
 ### Phase 8.5: Mutation semantics and `Ref`
 
