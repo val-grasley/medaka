@@ -29,6 +29,7 @@ let pp_decl d =
   | DInterface { iface_name; _ } -> Printf.sprintf "DInterface(%s)" iface_name
   | DImpl { iface_name; _ }      -> Printf.sprintf "DImpl(%s)" iface_name
   | DUse (pub, _)      -> Printf.sprintf "DUse(pub=%b, ...)" pub
+  | DExtern (n, t)    -> Printf.sprintf "DExtern(%s, %s)" n (Ast.pp_ty t)
 
 let parse_one src =
   match parse src with
@@ -373,6 +374,34 @@ let test_multi_clause () =
      DFunDef ("factorial", [PVar "n"], _)] -> ()
   | _ -> failwith "wrong"
 
+(* ── Extern declaration tests ───────────────────────── *)
+
+let test_extern_simple () =
+  match parse_one "extern foo : Int -> String\n" with
+  | DExtern ("foo", TyFun (TyCon "Int", TyCon "String")) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
+let test_extern_typevar () =
+  match parse_one "extern id : a -> a\n" with
+  | DExtern ("id", TyFun (TyVar "a", TyVar "a")) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
+let test_extern_effect () =
+  match parse_one "extern print : a -> <IO> Unit\n" with
+  | DExtern ("print", TyFun (TyVar "a", TyEffect (["IO"], TyCon "Unit"))) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
+let test_extern_constant () =
+  match parse_one "extern pi : Float\n" with
+  | DExtern ("pi", TyCon "Float") -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
+let test_extern_multiarg () =
+  match parse_one "extern set_ref : Ref a -> a -> <Mut> Unit\n" with
+  | DExtern ("set_ref", TyFun (TyApp (TyCon "Ref", TyVar "a"),
+                          TyFun (TyVar "a", TyEffect (["Mut"], TyCon "Unit")))) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -445,5 +474,12 @@ let () =
     "multiple declarations", [
       test_case "sig + def"       `Quick test_multi_decl;
       test_case "multi-clause fn" `Quick test_multi_clause;
+    ];
+    "extern declarations", [
+      test_case "simple arrow"    `Quick test_extern_simple;
+      test_case "type variable"   `Quick test_extern_typevar;
+      test_case "effect"          `Quick test_extern_effect;
+      test_case "constant"        `Quick test_extern_constant;
+      test_case "multi-arg"       `Quick test_extern_multiarg;
     ];
   ]

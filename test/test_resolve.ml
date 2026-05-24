@@ -38,6 +38,7 @@ let unknown_effect n = function UnknownEffect x       -> x = n | _ -> false
 let unknown_field n  = function UnknownField x        -> x = n | _ -> false
 let field_not_in n r = function FieldNotInRecord (x, y) -> x = n && y = r | _ -> false
 let duplicate n      = function DuplicateDefinition (_, x) -> x = n | _ -> false
+let extern_with_body n = function ExternWithBody x -> x = n | _ -> false
 
 (* ── Valid programs ─────────────────────────── *)
 
@@ -197,6 +198,23 @@ record Person
 bad p = { p | x = 0, name = "Alice" }
 |}
 
+(* ── Extern declarations ─────────────────────── *)
+
+let v_extern_basic = assert_ok "extern foo : Int -> Int\nbar = foo 5\n"
+
+let v_extern_effect = assert_ok "extern myPrint : a -> <IO> Unit\nf x = myPrint x\n"
+
+let v_extern_constant = assert_ok "extern pi : Float\narea r = pi * r * r\n"
+
+let e_extern_with_body =
+  assert_err (extern_with_body "foo") "extern foo : Int\nfoo = 5\n"
+
+let e_extern_unknown_type =
+  assert_err (unknown_type "Banana") "extern f : Banana -> Int\n"
+
+let e_extern_unknown_effect =
+  assert_err (unknown_effect "Warp") "extern f : Int -> <Warp> Unit\n"
+
 (* ── Test runner ─────────────────────────────── *)
 
 let () =
@@ -239,5 +257,13 @@ let () =
       test_case "unknown field create" `Quick e_unknown_field_in_create;
       test_case "unknown field update" `Quick e_unknown_field_in_update;
       test_case "cross-record update"  `Quick e_cross_record_update;
+    ];
+    "extern declarations", [
+      test_case "basic ok"            `Quick v_extern_basic;
+      test_case "with effect ok"      `Quick v_extern_effect;
+      test_case "constant ok"         `Quick v_extern_constant;
+      test_case "err: with body"      `Quick e_extern_with_body;
+      test_case "err: unknown type"   `Quick e_extern_unknown_type;
+      test_case "err: unknown effect" `Quick e_extern_unknown_effect;
     ];
   ]

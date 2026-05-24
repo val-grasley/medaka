@@ -29,6 +29,7 @@ let pp_decl d =
       (String.concat ", " (List.map pf fs))
   | DInterface { iface_name; _ } -> Printf.sprintf "DInterface(%s)" iface_name
   | DImpl { iface_name; _ }      -> Printf.sprintf "DImpl(%s)" iface_name
+  | DExtern (n, t) -> Printf.sprintf "DExtern(%s, %s)" n (pp_ty t)
   | DUse (pub, p) ->
     let pp_use = function
       | UseName  ns -> "UseName " ^ String.concat "." ns

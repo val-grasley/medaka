@@ -307,6 +307,9 @@ let print_decl p = function
   | DTypeSig (n, t) ->
     write p n; write p " : "; print_type p t
 
+  | DExtern (n, t) ->
+    write p "extern "; write p n; write p " : "; print_type p t
+
   | DFunDef (n, pats, body) ->
     write p n;
     List.iter (fun pat -> write p " "; print_pat_atom p pat) pats;

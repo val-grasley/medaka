@@ -16,6 +16,7 @@ type error =
   | DuplicateDefinition of string * ident  (* kind, name *)
   | UnknownInterface    of ident           (* impl references an unknown interface *)
   | MethodNotInInterface of ident * ident  (* method name, interface name *)
+  | ExternWithBody      of ident           (* extern name also has a fun_def *)
 
 let current_loc : Ast.loc option ref = ref None
 
@@ -30,6 +31,8 @@ let pp_error = function
   | UnknownInterface n     -> Printf.sprintf "Unknown interface: %s" n
   | MethodNotInInterface (m, iface) ->
     Printf.sprintf "Method '%s' is not part of interface %s" m iface
+  | ExternWithBody n ->
+    Printf.sprintf "extern '%s' must not have a definition body" n
 
 (* ── Built-ins ─────────────────────────────────── *)
 
@@ -45,14 +48,7 @@ let primitive_constructors = [
   "True"; "False"; "Some"; "None"; "Ok"; "Err";
 ]
 
-(* These exist because their absence would make the round-trip / parser tests
-   unrunnable as resolution suites. As soon as we have a stdlib, drop them. *)
-let primitive_values = [
-  "pure"; "print"; "println";
-  "map"; "filter"; "fold";
-  "pi"; "e";
-  "Ref"; "set_ref";
-]
+let primitive_values = Runtime.names
 
 let built_in_effects = [
   "IO"; "Mut"; "Async"; "Panic"; "Rand"; "Time";
@@ -111,12 +107,19 @@ let build_env (prog : program) : module_env * (error * Ast.loc option) list =
       Hashtbl.replace tbl name ()
   in
   let add_or_skip tbl name = Hashtbl.replace tbl name () in
+  (* Pre-collect extern names so DFunDef can check for conflicts in any order *)
+  let extern_names =
+    List.filter_map (function DExtern (n, _) -> Some n | _ -> None) prog
+  in
   List.iter (fun d ->
     match d with
     | DTypeSig (n, _) ->
       (* Type sig pairs with later fun_def; either order works *)
       add_or_skip env.values n
+    | DExtern (n, _) ->
+      add_or_skip env.values n
     | DFunDef (n, _, _) ->
+      if List.mem n extern_names then report (ExternWithBody n);
       (* Multi-clause definitions add the same name repeatedly *)
       add_or_skip env.values n
     | DData (n, _, vs) ->
@@ -316,6 +319,8 @@ let check_decl env errors = function
     let scope = List.concat_map pat_bindings pats in
     check_expr env scope errors body
   | DTypeSig (_, t) ->
+    check_type env errors t
+  | DExtern (_, t) ->
     check_type env errors t
   | DData (_, _, vs) ->
     List.iter (fun v -> List.iter (check_type env errors) v.con_fields) vs

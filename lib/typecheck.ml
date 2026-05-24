@@ -359,6 +359,27 @@ let t_array  t = TApp (TCon "Array",  t)
 let t_option t = TApp (TCon "Option", t)
 let t_result a b = TApp (TApp (TCon "Result", a), b)
 
+(* Translate an AST type to a mono for use in type signatures and externs.
+   Each TyVar is canonicalized per-call via a local hashtable so that the
+   same name maps to the same fresh TVar within one type.
+   TyEffect wrappers are stripped — effects are tracked separately. *)
+let from_ast_type t =
+  let env = Hashtbl.create 4 in
+  let rec go = function
+    | Ast.TyCon n -> TCon n
+    | Ast.TyVar n ->
+      (try Hashtbl.find env n
+       with Not_found ->
+         let v = fresh_var () in
+         Hashtbl.add env n v;
+         v)
+    | Ast.TyApp (a, b) -> TApp (go a, go b)
+    | Ast.TyFun (a, b) -> TFun (go a, go b)
+    | Ast.TyTuple ts -> TTuple (List.map go ts)
+    | Ast.TyEffect (_effs, t) -> go t  (* effects tracked separately via eff_env *)
+  in
+  go t
+
 (* Build the initial environment with built-in constructors and a few primitives.
    These let our test programs compile without a stdlib in place. *)
 let initial_env () =
@@ -398,32 +419,19 @@ let initial_env () =
        match s with
        | Forall (_, t) -> Some (generalize t))
     env.ctors;
-  (* A couple of primitives to write tests.
-     Each is created at level 1 so generalize can quantify the vars. *)
-  let mk_scheme f =
-    enter_level ();
-    let t = f () in
-    exit_level ();
-    generalize t
-  in
-  (* pure : forall m a. a -> m a   (HKT: m is a tyvar for a type constructor) *)
-  let env = extend_var env "pure"
-              (mk_scheme (fun () ->
-                 let a = fresh_var () in
-                 let m = fresh_var () in
-                 TFun (a, TApp (m, a)))) in
-  let env = extend_var env "print"
-              (mk_scheme (fun () ->
-                 let a = fresh_var () in TFun (a, t_unit))) in
-  (* Ref constructor: forall a. a -> Ref a *)
-  let env = extend_var env "Ref"
-              (mk_scheme (fun () ->
-                 let a = fresh_var () in TFun (a, TApp (TCon "Ref", a)))) in
-  (* set_ref: forall a. Ref a -> a -> Unit *)
-  let env = extend_var env "set_ref"
-              (mk_scheme (fun () ->
-                 let a = fresh_var () in
-                 TFun (TApp (TCon "Ref", a), TFun (a, t_unit)))) in
+  (* Primitives from the runtime registry.
+     from_ast_type strips TyEffect wrappers (see its definition), so
+     effect annotations on return types are automatically ignored here —
+     effects are tracked separately via eff_env in infer_and_check_effects. *)
+  let env = List.fold_left (fun env (name, ast_ty) ->
+    let scheme =
+      enter_level ();
+      let mono = from_ast_type ast_ty in
+      exit_level ();
+      generalize mono
+    in
+    extend_var env name scheme
+  ) env Runtime.entries in
   env
 
 (* ── Translating AST types to mono ──────────────── *)
@@ -431,23 +439,6 @@ let initial_env () =
 (* Used for type sigs and explicit annotations. Each TyVar is treated as
    universally quantified at the outer level (generalized after the whole
    sig is built). *)
-let from_ast_type t =
-  let env = Hashtbl.create 4 in
-  let rec go = function
-    | Ast.TyCon n -> TCon n
-    | Ast.TyVar n ->
-      (try Hashtbl.find env n
-       with Not_found ->
-         let v = fresh_var () in
-         Hashtbl.add env n v;
-         v)
-    | Ast.TyApp (a, b) -> TApp (go a, go b)
-    | Ast.TyFun (a, b) -> TFun (go a, go b)
-    | Ast.TyTuple ts -> TTuple (List.map go ts)
-    | Ast.TyEffect (_effs, t) -> go t  (* effects ignored for now *)
-  in
-  go t
-
 (* ── Pattern typing ─────────────────────────────── *)
 
 let type_lit = function
@@ -1229,10 +1220,18 @@ and do_stmt_effects eff_env = function
 
    Purity rule: a function with NO effect annotation must infer the empty set.
    Annotation rule: declared effects must be a superset of inferred effects. *)
-let infer_and_check_effects groups =
+let infer_and_check_effects ~extern_decls groups =
   let eff_env = Hashtbl.create 16 in
-  Hashtbl.add eff_env "print"   ["IO"];
-  Hashtbl.add eff_env "set_ref" ["Mut"];
+  (* Seed eff_env from runtime registry entries *)
+  List.iter (fun (name, ast_ty) ->
+    let effs = declared_effects ast_ty in
+    if effs <> [] then Hashtbl.add eff_env name effs
+  ) Runtime.entries;
+  (* Also seed from user-written extern declarations in the source program *)
+  List.iter (fun (name, ast_ty) ->
+    let effs = declared_effects ast_ty in
+    if effs <> [] then Hashtbl.replace eff_env name effs
+  ) extern_decls;
   List.iter (fun (name, sig_opt, clauses) ->
     let inferred =
       List.fold_left
@@ -1266,14 +1265,23 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   current_loc := None;
   let env = initial_env () in
 
-  (* Phase 1: register data, record, interface, and impl declarations *)
+  (* Phase 1: register data, record, interface, impl, and extern declarations *)
   let iface_method_schemes = ref [] in
+  let extern_schemes = ref [] in
   List.iter (function
     | DData (n, ps, vs) -> register_data env (n, ps, vs)
     | DRecord (n, ps, fs) -> register_record env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
       let ms = register_interface env (iface_name, type_params, methods) in
       iface_method_schemes := ms @ !iface_method_schemes
+    | DExtern (name, ast_ty) ->
+      let scheme =
+        enter_level ();
+        let mono = from_ast_type ast_ty in
+        exit_level ();
+        generalize mono
+      in
+      extern_schemes := (name, scheme) :: !extern_schemes
     | _ -> ()
   ) prog;
   (* register_impl runs after all interfaces are registered *)
@@ -1291,7 +1299,8 @@ let check_program (prog : program) : (ident * scheme) list * string list =
     let e = List.fold_left
       (fun e (n, t) -> extend_var e n (monotype t))
       env placeholders in
-    List.fold_left (fun e (n, s) -> extend_var e n s) e !iface_method_schemes
+    let e = List.fold_left (fun e (n, s) -> extend_var e n s) e !iface_method_schemes in
+    List.fold_left (fun e (n, s) -> extend_var e n s) e !extern_schemes
   ) in
 
   (* Phase 4: process each group sequentially. *)
@@ -1323,8 +1332,13 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   check_method_usages !env;
 
   (* Phase 5: effect inference and checking *)
-  infer_and_check_effects groups;
+  let user_extern_decls =
+    List.filter_map (function
+      | DExtern (n, t) -> Some (n, t)
+      | _ -> None) prog
+  in
+  infer_and_check_effects ~extern_decls:user_extern_decls groups;
 
-  (* Include interface methods in the returned env so callers can inspect them *)
+  (* Include interface methods and extern schemes in the returned env *)
   let final_env = !env in
-  (results @ !iface_method_schemes, List.rev !(final_env.warnings))
+  (results @ !iface_method_schemes @ !extern_schemes, List.rev !(final_env.warnings))

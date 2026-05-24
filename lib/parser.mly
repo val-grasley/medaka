@@ -56,7 +56,7 @@ let rec expr_to_pat = function
 
 (* Keywords *)
 %token LET MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
-%token USE PUB WHERE OF DO AS
+%token USE PUB WHERE OF DO AS EXTERN
 
 (* Operators *)
 %token PLUS MINUS STAR SLASH
@@ -173,6 +173,12 @@ decl:
   | iface_decl  { [$1] }
   | impl_decl   { [$1] }
   | use_decl    { [$1] }
+  | extern_decl { [$1] }
+
+(* ── Extern declarations ─────────────────────────────── *)
+
+extern_decl:
+  | EXTERN IDENT COLON ty newlines  { DExtern ($2, $4) }
 
 (* ── Type signatures ─────────────────────────────────── *)
 

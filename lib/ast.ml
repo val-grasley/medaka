@@ -82,6 +82,7 @@ type iface_method = {
 
 type decl =
   | DTypeSig   of ident * ty
+  | DExtern    of ident * ty  (* extern name : ty — no body *)
   | DFunDef    of ident * pat list * expr
   | DData      of ident * ident list * data_variant list
   | DRecord    of ident * ident list * record_field list

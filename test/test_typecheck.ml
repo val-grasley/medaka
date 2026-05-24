@@ -973,6 +973,32 @@ let e_do_assign_unbound = assert_err
 let e_do_assign_as_last = assert_err
   "bad =\n  do\n    let mut x = 5\n    x = 1\n"
 
+(* ── Extern declarations ────────────────────────── *)
+
+(* extern with concrete type: add 1 2 should type as Int *)
+let t_extern_concrete = assert_type
+  "extern add : Int -> Int -> Int\nresult = add 1 2\n"
+  "result" "Int"
+
+(* extern with polymorphic type: id 42 should be Int *)
+let t_extern_poly = assert_type
+  "extern id : a -> a\nresult = id 42\n"
+  "result" "Int"
+
+(* extern constant: used in an expression *)
+let t_extern_constant = assert_type
+  "extern zero : Int\nresult = zero + 1\n"
+  "result" "Int"
+
+(* extern with effect: caller without annotation → ImpureFunction *)
+let e_extern_effect_impure = assert_err
+  "extern myPrint : a -> <IO> Unit\nbad = myPrint 42\n"
+
+(* extern with effect: caller with matching annotation → ok *)
+let t_extern_effect_annotated = assert_type
+  "extern myPrint : a -> <IO> Unit\nf : a -> <IO> Unit\nf x = myPrint x\n"
+  "f" "'a -> Unit"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1158,5 +1184,12 @@ let () =
       test_case "err: assign type mismatch" `Quick e_do_assign_type_mismatch;
       test_case "err: assign unbound"       `Quick e_do_assign_unbound;
       test_case "err: assign as last stmt"  `Quick e_do_assign_as_last;
+    ];
+    "extern declarations", [
+      test_case "concrete type"             `Quick t_extern_concrete;
+      test_case "polymorphic type"          `Quick t_extern_poly;
+      test_case "constant"                  `Quick t_extern_constant;
+      test_case "err: impure without annot" `Quick e_extern_effect_impure;
+      test_case "effect annotated ok"       `Quick t_extern_effect_annotated;
     ];
   ]

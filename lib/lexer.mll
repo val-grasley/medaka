@@ -53,6 +53,7 @@ let keyword_or_ident s =
   | "of"        -> OF
   | "do"        -> DO
   | "as"        -> AS
+  | "extern"    -> EXTERN
   | "True"      -> BOOL true
   | "False"     -> BOOL false
   | _           -> IDENT s

@@ -236,4 +236,10 @@ let () =
       test_case "interface basic"  `Quick iface_basic;
       test_case "impl basic"       `Quick impl_basic;
     ];
+    "extern", [
+      test_case "constant"         `Quick (mk "extern pi : Float\n");
+      test_case "simple arrow"     `Quick (mk "extern foo : Int -> String\n");
+      test_case "with effect"      `Quick (mk "extern print : a -> <IO> Unit\n");
+      test_case "multi-arg effect" `Quick (mk "extern set_ref : Ref a -> a -> <Mut> Unit\n");
+    ];
   ]
