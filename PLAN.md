@@ -408,16 +408,23 @@ Implemented as part of Phase 5.  `bin/main.ml` already runs the full
 pipeline — parse → resolve → type-check — with Elm-style error output
 (file:line:col messages + source snippets).  Nothing left to do here.
 
-### Phase 8.5: Mutation semantics and `Ref`
+### Phase 8.5: Mutation semantics and `Ref` ✅ DONE
 
-**Goal.** Implement the mutability model from `language-design.md` §"Mutability and Passing Values":
+**Goal.** Implement the mutability model from `language-design.md` §"Mutability and Passing Values".
 
-1. **Type checker — `let mut`:** bind the `mut` flag to the binding's assignability (not its type). Reassigning an immutable binding is a type error.
-2. **Type checker — `Ref` type:** add `TRef of mono` to `mono`; add `Ref` as a built-in type constructor. `Ref e` constructs a `Ref T` when `e : T`. Field access `r.value` yields `T`. The type checker must propagate `<Mut>` on any expression that reads/writes through a `Ref`.
-3. **Value/reference semantics:** primitives passed to functions are copied (already true in a tree-walking interpreter); `MutArray`/`HashMap`/`HashSet` are heap-allocated references (share identity by default). Document this in the eval pass.
-4. **Effect enforcement:** a function that mutates a `Ref` but declares no `<Mut>` effect is a type error (reuse the existing effect-checking infrastructure from Phase 3).
+**What was added (this session).**
+- `DoAssign of ident * expr` variant added to `Ast.do_stmt`; printed as `x = e` in do-blocks
+- `lib/parser.mly`: `IDENT EQUAL expr_no_block newlines` rule added to `stmt` before the `DoExpr` catch-all. Introduced 1 new R/R state (state 235 — same class as existing 141/143/144/147, resolved identically: reduce `expr_atom`). Conflict count updated to 4 S/R (13) + 6 R/R (21).
+- `module StringSet = Set.Make(String)` and `mut_vars : StringSet.t` field added to `env`; populated when `ELet(true, PVar x, ...)` or `DoLet(true, PVar x, ...)` is processed
+- `DoAssign(x, e)` in `type_stmts`: looks up `x`, unifies its type with `e`'s type, raises `ImmutableAssignment x` if `x ∉ env.mut_vars`; does not participate in the monadic `m` constraint; error if it is the last statement in a do-block
+- `Ref` constructor in `initial_env`: type `forall a. a -> Ref a` (reuses `TApp(TCon "Ref", a)`)
+- `set_ref` in `initial_env`: type `forall a. Ref a -> a -> Unit`, with `["Mut"]` in `eff_env`
+- `EFieldAccess(e, "value")` special-cases `TApp(TCon "Ref", inner)` before the record lookup path, returning `inner`
+- `ImmutableAssignment of ident` error variant and `pp_error` case
+- `"Ref"` added to `primitive_types` and `primitive_values` in `resolve.ml`; `DoAssign` handled in `EDo` fold
+- 15 new type checker tests (9 valid, 6 error); 275 tests total
 
-**Order dependency:** do the type-checker pieces (steps 1–2, 4) before the backend (Phase 9) so the interpreter can assume `Ref` is well-typed by the time it evaluates it.
+**Design note.** `Ref T` is represented as `TApp(TCon "Ref", T)` — no new `mono` variant needed. The `.value` field reads through `Ref` without consuming a `<Mut>` effect (reads are pure); writes require calling `set_ref` which carries `<Mut>` through the existing effect-propagation pass. `let mut x` binding reassignment is tracked separately from `Ref` — `let mut x = 5` followed by `x = 10` in a do-block is a `DoAssign`, while `Ref` provides explicit shared mutable cells. Value/reference semantics documentation deferred to Phase 9 (eval pass).
 
 ### Phase 9: Backend
 
@@ -446,10 +453,12 @@ test programs.
 
 These aren't blockers, but a less-careful change could trip over them:
 
-- `let mut` is parsed and the AST distinguishes it, but the type checker
-  ignores the `mut` flag. Mutation is unimplemented. The `Ref` type (explicit
-  mutable cell per `language-design.md` §"Mutability and Passing Values") is
-  not yet in the AST, type checker, or runtime.
+- `let mut` binding reassignment (`DoAssign`) is now type-checked in do-blocks,
+  but `ELet(true, ...)` in expression context only tracks `mut_vars` — there is
+  no syntax for reassigning a `let mut` binding outside a do-block. The `Ref`
+  type is fully type-checked; actual mutation happens at runtime (Phase 9).
+- `r.value = expr` field-assignment syntax for `Ref` is not yet supported.
+  Use `set_ref r expr` instead.
 - `let f x = ...` is purely sugar; the parser desugars to nested lambdas at
   parse time. There is no `let-rec` for locals; if you need local recursion,
   use a top-level def.

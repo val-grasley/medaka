@@ -276,6 +276,10 @@ and print_do_stmt p = function
     print_pat p pat;
     write p " = ";
     print_expr p prec_top e
+  | DoAssign (x, e) ->
+    write p x;
+    write p " = ";
+    print_expr p prec_top e
 
 (* ── Declarations ────────────────────────────────── *)
 

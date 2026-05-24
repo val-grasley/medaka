@@ -37,7 +37,7 @@ let pp_error = function
 
 let primitive_types = [
   "Int"; "Float"; "String"; "Char"; "Bool"; "Unit";
-  "List"; "Option"; "Result";
+  "List"; "Option"; "Result"; "Ref";
   "Array"; "MutArray"; "Map"; "HashMap"; "Set"; "HashSet";
 ]
 
@@ -51,6 +51,7 @@ let primitive_values = [
   "pure"; "print"; "println";
   "map"; "filter"; "fold";
   "pi"; "e";
+  "Ref"; "set_ref";
 ]
 
 let built_in_effects = [
@@ -293,6 +294,11 @@ let rec check_expr env scope errors e =
           check_pat env errors pat;
           check_expr env scope errors e;
           pat_bindings pat @ scope
+        | DoAssign (x, e) ->
+          if not (lookup_value env scope x) then
+            emit errors (UnboundVariable x);
+          check_expr env scope errors e;
+          scope
       ) scope stmts
     in ()
   | EAnnot (e, t) ->

@@ -910,6 +910,69 @@ f x = match x
   (a, b) => a + b
 |}
 
+(* ── Phase 8.5: Ref type ────────────────────────── *)
+
+(* Ref 5 constructs a Ref Int *)
+let t_ref_int = assert_type "r = Ref 5\n" "r" "Ref Int"
+
+(* Ref "hi" constructs a Ref String *)
+let t_ref_string = assert_type "r = Ref \"hi\"\n" "r" "Ref String"
+
+(* (Ref r).value reads back the contents — polymorphic *)
+let t_ref_value_poly = assert_type "f r = (Ref r).value\n" "f" "'a -> 'a"
+
+(* Ref Int read: r = Ref 5; v = r.value : Int *)
+let t_ref_value_read = assert_type "r = Ref 5\nv = r.value\n" "v" "Int"
+
+(* Nested Ref: Ref (Ref 0) : Ref (Ref Int) *)
+let t_ref_nested = assert_type "r = Ref (Ref 0)\n" "r" "Ref (Ref Int)"
+
+(* set_ref with <Mut> annotation: Int cell *)
+let t_set_ref_type = assert_type
+  "f : Ref Int -> <Mut> Unit\nf r = set_ref r 10\n"
+  "f" "Ref Int -> Unit"
+
+(* set_ref with <Mut> annotation: String cell *)
+let t_set_ref_mut_ok = assert_type
+  "f : Ref String -> <Mut> Unit\nf r = set_ref r \"hi\"\n"
+  "f" "Ref String -> Unit"
+
+(* set_ref type mismatch: r : Ref Int, but passing String *)
+let e_set_ref_type_mismatch = assert_err
+  "r = Ref 5\nbad = set_ref r \"hello\"\n"
+
+(* set_ref without <Mut> annotation → ImpureFunction *)
+let e_set_ref_impure = assert_err
+  "f : Ref Int -> Unit\nf r = set_ref r 0\n"
+
+(* ── Phase 8.5: let mut + DoAssign ──────────────── *)
+
+(* DoAssign on a let-mut binding succeeds *)
+let t_do_assign_valid = assert_type
+  "f =\n  do\n    let mut x = 5\n    x = 10\n    pure x\n"
+  "f" "'a Int"
+
+(* DoAssign after DoBind *)
+let t_do_assign_after_bind = assert_type
+  "f opt =\n  do\n    let mut x = 0\n    y <- opt\n    x = y\n    pure x\n"
+  "f" "'a Int -> 'a Int"
+
+(* DoAssign to an immutable binding → ImmutableAssignment *)
+let e_do_assign_immutable = assert_err
+  "bad =\n  do\n    let x = 5\n    x = 10\n    pure x\n"
+
+(* DoAssign type mismatch: mut Int, assign String *)
+let e_do_assign_type_mismatch = assert_err
+  "bad =\n  do\n    let mut x = 5\n    x = \"hello\"\n    pure x\n"
+
+(* DoAssign unbound variable → UnboundVar *)
+let e_do_assign_unbound = assert_err
+  "bad =\n  do\n    x = 10\n    pure 42\n"
+
+(* do block ending with DoAssign → error *)
+let e_do_assign_as_last = assert_err
+  "bad =\n  do\n    let mut x = 5\n    x = 1\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1076,5 +1139,24 @@ let () =
       test_case "nested fully exhaustive"   `Quick w_nested_exhaustive;
       test_case "nested missing branch"     `Quick w_nested_missing;
       test_case "tuple exhaustive"          `Quick w_tuple_exhaustive;
+    ];
+    "Ref type", [
+      test_case "Ref Int"                   `Quick t_ref_int;
+      test_case "Ref String"                `Quick t_ref_string;
+      test_case "value read poly"           `Quick t_ref_value_poly;
+      test_case "value read concrete"       `Quick t_ref_value_read;
+      test_case "nested Ref"                `Quick t_ref_nested;
+      test_case "set_ref type"              `Quick t_set_ref_type;
+      test_case "set_ref Mut ok"            `Quick t_set_ref_mut_ok;
+      test_case "err: set_ref mismatch"     `Quick e_set_ref_type_mismatch;
+      test_case "err: set_ref impure"       `Quick e_set_ref_impure;
+    ];
+    "let mut / DoAssign", [
+      test_case "assign valid"              `Quick t_do_assign_valid;
+      test_case "assign after bind"         `Quick t_do_assign_after_bind;
+      test_case "err: assign immutable"     `Quick e_do_assign_immutable;
+      test_case "err: assign type mismatch" `Quick e_do_assign_type_mismatch;
+      test_case "err: assign unbound"       `Quick e_do_assign_unbound;
+      test_case "err: assign as last stmt"  `Quick e_do_assign_as_last;
     ];
   ]

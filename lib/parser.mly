@@ -86,7 +86,7 @@ let rec expr_to_pat = function
    Grammar conflicts — audit notes (Phase 7)
    ═══════════════════════════════════════════════════════
 
-   Menhir reports 4 S/R states (13 conflicts) and 5 R/R states (20 conflicts).
+   Menhir reports 4 S/R states (13 conflicts) and 6 R/R states (21 conflicts).
    Every conflict is documented below.  All default resolutions are correct for
    the intended semantics — none require restructuring.
 
@@ -131,14 +131,14 @@ let rec expr_to_pat = function
 
    ── Reduce/reduce conflicts ─────────────────────────────
 
-   States 138, 141, 143, 144, 147  •  lookaheads: CONS COMMA RPAREN RBRACKET
+   States 138, 141, 143, 144, 147, 235  •  lookaheads: CONS COMMA RPAREN RBRACKET
      These states share the same root cause: inside a `do` block the parser
      has seen a single atom (UPPER / IDENT / lit / `()` / `[]`) and now sees
      a token that could continue either a pattern (DoBind) or an expression
      (DoExpr).  Two reductions are possible for each atom:
 
        expr_atom → UPPER  |  pat_atom → UPPER   (state 138)
-       expr_atom → IDENT  |  pat_atom → IDENT   (state 144)
+       expr_atom → IDENT  |  pat_atom → IDENT   (states 144, 235)
        expr_atom → lit    |  pat_atom → lit      (state 147)
        expr_atom → ()     |  pat_atom → ()       (state 141)
        expr_atom → []     |  pat_atom → []       (state 143)
@@ -380,6 +380,7 @@ stmt:
   | LET pat EQUAL expr_no_block newlines      { DoLet (false, $2, $4) }
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block newlines
     { DoLet (false, PVar $2, curry_lam $3 $5) }
+  | IDENT EQUAL expr_no_block newlines        { DoAssign ($1, $3) }
   | expr_no_block newlines                    { DoExpr $1 }
 
 (* ── Data declarations ───────────────────────────────── *)

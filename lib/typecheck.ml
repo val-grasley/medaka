@@ -5,6 +5,8 @@
 
 open Ast
 
+module StringSet = Set.Make(String)
+
 (* ── Types ──────────────────────────────────────── *)
 
 type level = int
@@ -71,9 +73,10 @@ type type_error =
   | MissingMethod      of ident * ident       (* iface_name, missing required method *)
   | MethodTypeMismatch of ident * mono * mono (* method_name, expected, actual *)
   | ImplArityMismatch  of ident * int * int   (* iface_name, expected params, got type_args *)
-  | NoImplFound   of ident * mono list        (* iface_name, concrete type args *)
-  | AmbiguousImpl of ident * mono list        (* iface_name, concrete type args *)
-  | Other          of string
+  | NoImplFound        of ident * mono list        (* iface_name, concrete type args *)
+  | AmbiguousImpl      of ident * mono list        (* iface_name, concrete type args *)
+  | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
+  | Other              of string
 
 exception Type_error of type_error * Ast.loc option
 
@@ -299,6 +302,8 @@ let pp_error = function
   | AmbiguousImpl (iface, args) ->
     Printf.sprintf "Ambiguous: multiple impls of %s for %s — use @ImplName to disambiguate"
       iface (String.concat " " (List.map pp_mono args))
+  | ImmutableAssignment x ->
+    Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -314,6 +319,7 @@ type env = {
   method_usages : (ident * tyvar_info ref list) list ref;  (* (method, param_var_refs) *)
   type_ctors    : (ident, ident list) Hashtbl.t;  (* type name → ctor names in order *)
   warnings      : string list ref;             (* accumulated warning messages *)
+  mut_vars      : StringSet.t;                 (* bindings declared with let mut *)
 }
 
 let empty_env () = {
@@ -327,6 +333,7 @@ let empty_env () = {
   method_usages = ref [];
   type_ctors    = Hashtbl.create 8;
   warnings      = ref [];
+  mut_vars      = StringSet.empty;
 }
 
 let lookup_var env x =
@@ -408,6 +415,15 @@ let initial_env () =
   let env = extend_var env "print"
               (mk_scheme (fun () ->
                  let a = fresh_var () in TFun (a, t_unit))) in
+  (* Ref constructor: forall a. a -> Ref a *)
+  let env = extend_var env "Ref"
+              (mk_scheme (fun () ->
+                 let a = fresh_var () in TFun (a, TApp (TCon "Ref", a)))) in
+  (* set_ref: forall a. Ref a -> a -> Unit *)
+  let env = extend_var env "set_ref"
+              (mk_scheme (fun () ->
+                 let a = fresh_var () in
+                 TFun (TApp (TCon "Ref", a), TFun (a, t_unit)))) in
   env
 
 (* ── Translating AST types to mono ──────────────── *)
@@ -551,14 +567,16 @@ let rec infer env = function
     let tb = infer env' body in
     List.fold_right (fun pt acc -> TFun (pt, acc)) pat_types tb
 
-  | ELet (_mut, pat, e1, e2) ->
+  | ELet (mut, pat, e1, e2) ->
     enter_level ();
     let t1 = infer env e1 in
     exit_level ();
     (match pat with
      | PVar x ->
        let s = generalize t1 in
-       infer (extend_var env x s) e2
+       let env' = extend_var env x s in
+       let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
+       infer env' e2
      | _ ->
        (* Non-trivial pattern: no generalization (value restriction-like) *)
        let tp, bindings = type_pat env pat in
@@ -711,6 +729,8 @@ let rec infer env = function
         TApp (m, t_unit)
       | [DoLet _] ->
         fail (Other "do block cannot end with a let binding")
+      | [DoAssign _] ->
+        fail (Other "do block cannot end with an assignment")
       | DoExpr e :: rest ->
         let te = infer env e in
         let inner = fresh_var () in
@@ -723,18 +743,27 @@ let rec infer env = function
         let tp, bindings = type_pat env pat in
         unify tp inner;
         type_stmts (extend_vars env bindings) rest
-      | DoLet (_mut, pat, e) :: rest ->
+      | DoLet (mut, pat, e) :: rest ->
         enter_level ();
         let t1 = infer env e in
         exit_level ();
         let env' = match pat with
-          | PVar x -> extend_var env x (generalize t1)
+          | PVar x ->
+            let env' = extend_var env x (generalize t1) in
+            if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
           | _ ->
             let tp, bindings = type_pat env pat in
             unify tp t1;
             extend_vars env bindings
         in
         type_stmts env' rest
+      | DoAssign (x, e) :: rest ->
+        let tx = instantiate (lookup_var env x) in
+        let te = infer env e in
+        unify tx te;
+        if not (StringSet.mem x env.mut_vars) then
+          fail (ImmutableAssignment x);
+        type_stmts env rest
     in
     type_stmts env stmts
 
@@ -759,15 +788,20 @@ let rec infer env = function
 
   | EFieldAccess (e, field) ->
     let te = infer env e in
-    let record_name =
-      try Hashtbl.find env.field_owners field
-      with Not_found -> fail (UnknownField (field, "<unknown>"))
-    in
-    let info = Hashtbl.find env.records record_name in
-    let (result_t, field_types) = instantiate_record info in
-    unify te result_t;
-    (try List.assoc field field_types
-     with Not_found -> assert false)  (* field_owners guarantees this exists *)
+    (* Special case: (Ref a).value → a *)
+    (match normalize te, field with
+     | TApp (TCon "Ref", inner), "value" -> inner
+     | _ ->
+       let record_name =
+         try Hashtbl.find env.field_owners field
+         with Not_found -> fail (UnknownField (field, "<unknown>"))
+       in
+       let info = Hashtbl.find env.records record_name in
+       let (result_t, field_types) = instantiate_record info in
+       unify te result_t;
+       (try List.assoc field field_types
+        with Not_found -> assert false)  (* field_owners guarantees this exists *)
+    )
 
   | ERecordUpdate (e, updated) ->
     let te = infer env e in
@@ -1185,7 +1219,8 @@ let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : eff
   | ELoc (_, e)             -> sub e
 
 and do_stmt_effects eff_env = function
-  | DoBind (_, e) | DoExpr e | DoLet (_, _, e) -> expr_effects eff_env e
+  | DoBind (_, e) | DoExpr e | DoLet (_, _, e) | DoAssign (_, e) ->
+    expr_effects eff_env e
 
 (* Process each function group in declaration order:
      1. Infer its effect set (union of all clause bodies).
@@ -1196,7 +1231,8 @@ and do_stmt_effects eff_env = function
    Annotation rule: declared effects must be a superset of inferred effects. *)
 let infer_and_check_effects groups =
   let eff_env = Hashtbl.create 16 in
-  Hashtbl.add eff_env "print" ["IO"];
+  Hashtbl.add eff_env "print"   ["IO"];
+  Hashtbl.add eff_env "set_ref" ["Mut"];
   List.iter (fun (name, sig_opt, clauses) ->
     let inferred =
       List.fold_left
