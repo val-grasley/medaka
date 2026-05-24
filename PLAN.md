@@ -16,18 +16,18 @@ The front-end of the Medaka compiler is in place. We have:
 | Resolver        | `lib/resolve.ml`    | Validates that every identifier reference is bound          |
 | Type checker    | `lib/typecheck.ml`  | Hindley-Milner with let-polymorphism, ADTs, records, patterns, pipe/compose, effects |
 
-241 tests pass across 4 test suites (unchanged since Phase 4.2):
+Two debug binaries in `test/` (not run as part of `dune test`):
+- `debug.ml` — quick parse-and-print probe
+- `tc_debug.ml` — quick type-check probe
+
+260 tests pass across 4 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
 | Parser            | `test/test_parser.ml`           | 48    | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 50    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 34    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 109   | Inferred types for valid programs + type-error cases  |
-
-Two debug binaries in `test/` (not run as part of `dune test`):
-- `debug.ml` — quick parse-and-print probe
-- `tc_debug.ml` — quick type-check probe
+| Type checker      | `test/test_typecheck.ml`        | 128   | Inferred types, type errors, exhaustiveness warnings  |
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -355,15 +355,29 @@ bad.mdk:1:14: Type mismatch: String vs Int
 
 All 241 tests still pass.
 
-### Phase 6: Exhaustiveness and usefulness checking
+### Phase 6: Exhaustiveness and usefulness checking ✅ DONE
 
 **Goal.** Warn when a `match` doesn't cover all cases; warn when an arm is
 redundant.
 
-**Algorithm.** Implement the pattern-matrix algorithm from Maranget's "Warnings
-for pattern matching" (2007). It's not enormous but takes care to get right.
-Add as a pass that runs after type checking (since it needs the data type's
-constructor list).
+**What was added (commit `0671015`).**
+- `lib/exhaust.ml` — Maranget's pattern-matrix algorithm (2007): pattern
+  desugaring (`PList`/`PCons` → Cons/Nil, `PLit LBool` → True/False,
+  `PTuple` → `PCon("__tuple__", ...)`), `specialize_con`, `specialize_lit`,
+  `default_matrix`, `useful` recursion, `check_match` public entry point
+- `env.type_ctors` — new hashtbl mapping type name → ctor list; seeded for
+  Bool/Option/Result/List/`__tuple__`; populated in `register_data`
+- `env.warnings` — accumulated warning strings; returned by `check_program`
+  as a second element `(bindings, warnings)`; printed to stderr by `bin/main.ml`
+- `EMatch` case in `infer` calls `Exhaust.check_match` after arm typing, with
+  callbacks for `get_ctors`/`get_arity`/`get_ctor_type` and `col0_type` derived
+  from the scrutinee's inferred mono type (tuples map to `"__tuple__"`)
+- 19 new typecheck tests (`assert_warns` / `assert_no_warns` helpers)
+- **Bonus fix:** builtin constructors (`Some`, `None`, `Ok`, `Err`) were created
+  at level 0 in `initial_env` and never properly quantified, causing all uses
+  to share the same `TVar ref` and spuriously unify in nested patterns like
+  `Some (Some v) | Some None | None`. Fixed by wrapping creation in
+  `enter_level`/`exit_level` so vars land at level 1 and get quantified.
 
 ### Phase 7: Audit parser conflicts
 
