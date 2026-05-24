@@ -578,7 +578,47 @@ Rough target: Go's stdlib scope, maybe slightly smaller.
 
 ---
 
-## Effects vs Monads — The Full Picture
+## Mutability and Passing Values
+
+### Value vs Reference Semantics
+Medaka uses **value semantics by default** for primitive types — passing a mutable primitive to a function gives the function a copy, consistent with functional expectations. Mutable collections (`MutArray`, `HashMap`, `HashSet`) use reference semantics naturally since they are heap allocated.
+
+```
+-- primitives: value semantics, copy on pass
+let mut x = 5
+addOne x         -- x unchanged, function got a copy
+
+-- mutable collections: reference semantics
+let mut arr = [|1, 2, 3|]
+fillZeros arr    -- arr is mutated, function got a reference
+```
+
+### The `Ref` Type
+For the specific case of shared mutable state across multiple call sites, Medaka provides a `Ref` type — an explicit mutable cell. This is the escape hatch for when you genuinely need reference semantics on a primitive:
+
+```
+let x : Ref Int = Ref 5
+increment x      -- x's contents are now 6
+x.value          -- 6
+```
+
+The key distinction:
+- `let mut x` — the *binding* can be repointed to a different value
+- `Ref` — the *binding* is stable but the *contents* are mutable
+
+You can combine them:
+```
+let mut x : Ref Int = Ref 5   -- binding can be repointed AND contents mutable
+let x : Ref Int = Ref 5       -- binding stable, contents mutable
+let mut x : Int = 5           -- binding can be repointed, no shared mutation
+```
+
+The `<Mut>` effect is still tracked — functions that mutate a `Ref` carry `<Mut>` in their signature:
+```
+increment : Ref Int -> <Mut> Unit
+```
+
+So even though `Ref` doesn't require `let mut` on the binding, mutation is never invisible — it always shows up in the effect system. `Ref` makes shared mutable state explicit in the type, so it's never hidden or surprising.
 
 This is a fundamental design decision worth stating explicitly, as it resolves a tension that plagues Haskell.
 

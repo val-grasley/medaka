@@ -373,6 +373,17 @@ inferred types.
 and type checker. Decide on a CLI surface (probably `medaka check file.mdk`,
 later `medaka run`, `medaka build`).
 
+### Phase 8.5: Mutation semantics and `Ref`
+
+**Goal.** Implement the mutability model from `language-design.md` §"Mutability and Passing Values":
+
+1. **Type checker — `let mut`:** bind the `mut` flag to the binding's assignability (not its type). Reassigning an immutable binding is a type error.
+2. **Type checker — `Ref` type:** add `TRef of mono` to `mono`; add `Ref` as a built-in type constructor. `Ref e` constructs a `Ref T` when `e : T`. Field access `r.value` yields `T`. The type checker must propagate `<Mut>` on any expression that reads/writes through a `Ref`.
+3. **Value/reference semantics:** primitives passed to functions are copied (already true in a tree-walking interpreter); `MutArray`/`HashMap`/`HashSet` are heap-allocated references (share identity by default). Document this in the eval pass.
+4. **Effect enforcement:** a function that mutates a `Ref` but declares no `<Mut>` effect is a type error (reuse the existing effect-checking infrastructure from Phase 3).
+
+**Order dependency:** do the type-checker pieces (steps 1–2, 4) before the backend (Phase 9) so the interpreter can assume `Ref` is well-typed by the time it evaluates it.
+
 ### Phase 9: Backend
 
 **Goal.** Make Medaka programs actually run.
@@ -401,7 +412,9 @@ test programs.
 These aren't blockers, but a less-careful change could trip over them:
 
 - `let mut` is parsed and the AST distinguishes it, but the type checker
-  ignores the `mut` flag. Mutation is unimplemented.
+  ignores the `mut` flag. Mutation is unimplemented. The `Ref` type (explicit
+  mutable cell per `language-design.md` §"Mutability and Passing Values") is
+  not yet in the AST, type checker, or runtime.
 - `let f x = ...` is purely sugar; the parser desugars to nested lambdas at
   parse time. There is no `let-rec` for locals; if you need local recursion,
   use a top-level def.
