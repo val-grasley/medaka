@@ -16,7 +16,7 @@ The front-end of the Medaka compiler is in place. We have:
 | Resolver        | `lib/resolve.ml`    | Validates that every identifier reference is bound          |
 | Type checker    | `lib/typecheck.ml`  | Hindley-Milner with let-polymorphism, ADTs, records, patterns, pipe/compose, effects |
 
-241 tests pass across 4 test suites:
+241 tests pass across 4 test suites (unchanged since Phase 4.2):
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
@@ -327,18 +327,33 @@ inferred argument types. Handle the `@Name` disambiguation hint properly.
 - Higher-order callbacks that receive effectful/constrained functions aren't
   tracked (same limitation as Phase 3 effect tracking).
 
-### Phase 5: Position-tracked errors
+### Phase 5: Position-tracked errors ✅ DONE
 
-**Goal.** Every error message currently lacks source positions. Add line/column
-to AST nodes; thread positions through the resolver and type checker.
+**Goal.** Every error message now includes source positions and an Elm-style
+snippet showing the relevant line with a caret.
 
-**Implementation hint.** Wrap every AST node in `{ value : 'a; loc : loc }` or
-add a `loc` field to each variant. Menhir auto-provides `$startpos`/`$endpos`
-in actions — use those when constructing AST nodes. Update `pp_error` to print
-positions. Update `bin/main.ml` to read source lines and show a snippet around
-errors (Elm-style — it's a stated design goal).
+**What was added (commit `86303fa`).**
+- `type loc = { file; line; col }` in `ast.ml`
+- `ELoc of loc * expr` ghost node — parser injects it at every `expr_atom`
+  alternative and every block-expression form in `expr_lam` using `$startpos`
+- Mutable `current_loc` ref in `typecheck.ml` and `resolve.ml`; updated in
+  the `ELoc` case of `infer` / `check_expr`; carried in the `Type_error`
+  exception and `(error * loc option)` accumulator
+- `strip_locs_program` in `ast.ml` — used by parser tests and roundtrip tests
+  so `ELoc` positions don't break structural AST equality checks
+- `bin/main.ml` replaced stub with full pipeline: parse → resolve → typecheck,
+  with Elm-style `file:line:col: message\n  |\nN | source\n  | ^` output
+- `call_effs` in `typecheck.ml` updated to see through `ELoc` (effects pass)
 
-This is a refactor more than a feature, but pays off forever.
+**Output example.**
+```
+bad.mdk:1:14: Type mismatch: String vs Int
+  |
+1 | x = 5 + "hello"
+  |               ^
+```
+
+All 241 tests still pass.
 
 ### Phase 6: Exhaustiveness and usefulness checking
 
