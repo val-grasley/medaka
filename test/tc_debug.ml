@@ -23,7 +23,8 @@ f x =
     pure (y + 1)
 |} in
   match check_program (parse src) with
-  | result ->
+  | (result, warnings) ->
+    List.iter (fun w -> Printf.printf "Warning: %s\n" w) warnings;
     List.iter (fun (n, s) ->
       Printf.printf "%s : %s\n" n (pp_scheme s)) result
   | exception Type_error (e, _) ->

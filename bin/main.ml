@@ -53,7 +53,8 @@ let () =
     exit 1
   end;
   (try
-    let env = Medaka_lib.Typecheck.check_program program in
+    let (env, warnings) = Medaka_lib.Typecheck.check_program program in
+    List.iter (fun w -> Printf.eprintf "%s\n" w) warnings;
     Printf.printf "OK — %d bindings\n" (List.length env)
   with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
     Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);

@@ -13,8 +13,34 @@ let parse src =
                 src)
 
 let check src =
-  try Ok (check_program (parse src))
+  try Ok (fst (check_program (parse src)))
   with Type_error (e, _) -> Error e
+
+(* assert_warns: expect at least one exhaustiveness/redundancy warning *)
+let assert_warns src () =
+  match
+    (try Some (snd (check_program (parse src)))
+     with Type_error _ -> None)
+  with
+  | None ->
+    failwith ("Expected warnings but got a type error.\nSource:\n" ^ src)
+  | Some [] ->
+    failwith ("Expected warnings but got none.\nSource:\n" ^ src)
+  | Some _ -> ()
+
+(* assert_no_warns: expect zero exhaustiveness/redundancy warnings *)
+let assert_no_warns src () =
+  match
+    (try Some (snd (check_program (parse src)))
+     with Type_error _ -> None)
+  with
+  | None ->
+    failwith ("Expected no warnings but got a type error.\nSource:\n" ^ src)
+  | Some [] -> ()
+  | Some ws ->
+    failwith (Printf.sprintf
+      "Expected no warnings, got %d.\nWarnings:\n  %s\n\nSource:\n%s"
+      (List.length ws) (String.concat "\n  " ws) src)
 
 (* assert_type src name expected — check that `name` in `src` types as `expected` *)
 let assert_type src name expected () =
@@ -747,6 +773,143 @@ check : String -> String -> Bool
 check x y = eq x y
 |}
 
+(* ── Exhaustiveness / redundancy ────────────────── *)
+
+(* Option: both arms *)
+let w_option_both = assert_no_warns {|
+f x = match x
+  Some v => v
+  None   => 0
+|}
+
+(* Option: missing None *)
+let w_option_missing_none = assert_warns {|
+f x = match x
+  Some v => v
+|}
+
+(* Option: missing Some *)
+let w_option_missing_some = assert_warns {|
+f : Option Int -> Int
+f x = match x
+  None => 0
+|}
+
+(* Bool: both arms *)
+let w_bool_both = assert_no_warns {|
+f x = match x
+  True  => 1
+  False => 0
+|}
+
+(* Bool: only True *)
+let w_bool_missing_false = assert_warns {|
+f x = match x
+  True => 1
+|}
+
+(* Single wildcard covers everything *)
+let w_wildcard = assert_no_warns {|
+f x = match x
+  _ => 0
+|}
+
+(* Int literals without wildcard: non-exhaustive *)
+let w_int_no_wildcard = assert_warns {|
+f x = match x
+  1 => "one"
+  2 => "two"
+|}
+
+(* Int literals with wildcard: exhaustive *)
+let w_int_with_wildcard = assert_no_warns {|
+f x = match x
+  1 => "one"
+  2 => "two"
+  _ => "other"
+|}
+
+(* Redundant: duplicate arm *)
+let w_redundant_dup = assert_warns {|
+f x = match x
+  None   => 0
+  None   => 1
+  Some v => v
+|}
+
+(* Redundant: wildcard then another arm *)
+let w_redundant_after_wild = assert_warns {|
+f x = match x
+  _      => 0
+  Some v => v
+|}
+
+(* Redundant: ctor arm after wildcard *)
+let w_redundant_ctor_after_wild = assert_warns {|
+f x = match x
+  _    => 0
+  None => 1
+|}
+
+(* User ADT: all constructors covered *)
+let w_adt_all = assert_no_warns {|
+data Color = Red | Green | Blue
+
+f x = match x
+  Red   => 0
+  Green => 1
+  Blue  => 2
+|}
+
+(* User ADT: missing one constructor *)
+let w_adt_missing = assert_warns {|
+data Color = Red | Green | Blue
+
+f x = match x
+  Red   => 0
+  Green => 1
+|}
+
+(* List: [] and x::_ *)
+let w_list_exhaustive = assert_no_warns {|
+f xs = match xs
+  []     => 0
+  x :: _ => x
+|}
+
+(* List: [] only *)
+let w_list_missing_cons = assert_warns {|
+f xs = match xs
+  [] => 0
+|}
+
+(* Guarded arm: guard may fail, so non-exhaustive without fallback *)
+let w_guarded_non_exhaustive = assert_warns {|
+f x = match x
+  Some v if v > 0 => v
+|}
+
+(* Nested: Some(Some _) | Some None | None — fully exhaustive *)
+let w_nested_exhaustive = assert_no_warns {|
+f x = match x
+  Some (Some v) => v
+  Some None     => 0
+  None          => 0
+|}
+
+(* Nested: Some(Some _) | None — missing Some None *)
+let w_nested_missing = assert_warns {|
+f x = match x
+  Some (Some v) => v
+  None          => 0
+|}
+
+(* Tuple: single arm with wildcard fields — always exhaustive *)
+let w_tuple_exhaustive = assert_no_warns {|
+f x = match x
+  (a, b) => a + b
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -892,5 +1055,26 @@ let () =
       test_case "err: missing impl"      `Quick e_constraint_missing_impl;
       test_case "err: ambiguous"         `Quick e_constraint_ambiguous;
       test_case "err: concrete context"  `Quick e_constraint_concrete_in_context;
+    ];
+    "exhaustiveness", [
+      test_case "Option both arms"          `Quick w_option_both;
+      test_case "Option missing None"       `Quick w_option_missing_none;
+      test_case "Option missing Some"       `Quick w_option_missing_some;
+      test_case "Bool both arms"            `Quick w_bool_both;
+      test_case "Bool missing False"        `Quick w_bool_missing_false;
+      test_case "wildcard covers all"       `Quick w_wildcard;
+      test_case "Int literals no wildcard"  `Quick w_int_no_wildcard;
+      test_case "Int literals with wildcard"`Quick w_int_with_wildcard;
+      test_case "redundant duplicate arm"   `Quick w_redundant_dup;
+      test_case "redundant after wildcard"  `Quick w_redundant_after_wild;
+      test_case "redundant ctor after wild" `Quick w_redundant_ctor_after_wild;
+      test_case "ADT all ctors covered"     `Quick w_adt_all;
+      test_case "ADT missing constructor"   `Quick w_adt_missing;
+      test_case "List exhaustive"           `Quick w_list_exhaustive;
+      test_case "List missing cons"         `Quick w_list_missing_cons;
+      test_case "guarded non-exhaustive"    `Quick w_guarded_non_exhaustive;
+      test_case "nested fully exhaustive"   `Quick w_nested_exhaustive;
+      test_case "nested missing branch"     `Quick w_nested_missing;
+      test_case "tuple exhaustive"          `Quick w_tuple_exhaustive;
     ];
   ]

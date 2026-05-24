@@ -312,6 +312,8 @@ type env = {
   method_iface  : (ident, ident) Hashtbl.t;    (* method name → interface name *)
   impls         : impl_entry list ref;          (* all registered impls *)
   method_usages : (ident * tyvar_info ref list) list ref;  (* (method, param_var_refs) *)
+  type_ctors    : (ident, ident list) Hashtbl.t;  (* type name → ctor names in order *)
+  warnings      : string list ref;             (* accumulated warning messages *)
 }
 
 let empty_env () = {
@@ -323,6 +325,8 @@ let empty_env () = {
   method_iface  = Hashtbl.create 16;
   impls         = ref [];
   method_usages = ref [];
+  type_ctors    = Hashtbl.create 8;
+  warnings      = ref [];
 }
 
 let lookup_var env x =
@@ -352,6 +356,11 @@ let t_result a b = TApp (TApp (TCon "Result", a), b)
    These let our test programs compile without a stdlib in place. *)
 let initial_env () =
   let env = empty_env () in
+  (* Create constructor TVars at level 1 so that generalize (called at level 0
+     below) will properly quantify them.  Without enter_level here the vars
+     would sit at level 0 and never get quantified, causing all uses of a
+     constructor to share the same TVar ref and spuriously unify. *)
+  enter_level ();
   (* Option *)
   let a = fresh_var () in
   Hashtbl.replace env.ctors "Some" (Forall ([], TFun (a, t_option a)));
@@ -364,10 +373,19 @@ let initial_env () =
   let a = fresh_var () in
   let b = fresh_var () in
   Hashtbl.replace env.ctors "Err" (Forall ([], TFun (b, t_result a b)));
-  (* Bool *)
+  (* Bool — TCon only, no polymorphic TVars needed *)
   Hashtbl.replace env.ctors "True"  (monotype t_bool);
   Hashtbl.replace env.ctors "False" (monotype t_bool);
-  (* Generalize all the fresh vars introduced above by resetting level state *)
+  exit_level ();
+  (* type_ctors: closed types the exhaustiveness checker can enumerate.
+     Int, Float, String, Char intentionally absent (open types).
+     "__tuple__" is a synthetic singleton used for tuple patterns. *)
+  Hashtbl.replace env.type_ctors "Bool"      ["True"; "False"];
+  Hashtbl.replace env.type_ctors "Option"    ["Some"; "None"];
+  Hashtbl.replace env.type_ctors "Result"    ["Ok"; "Err"];
+  Hashtbl.replace env.type_ctors "List"      ["Cons"; "Nil"];
+  Hashtbl.replace env.type_ctors "__tuple__" ["__tuple__"];
+  (* Generalize: vars are now at level 1, current_level = 0, so they get quantified *)
   Hashtbl.filter_map_inplace
     (fun _name s ->
        match s with
@@ -578,6 +596,67 @@ let rec infer env = function
        | Some g -> unify (infer env' g) t_bool);
       unify (infer env' body) result
     ) arms;
+    (* Phase 6: exhaustiveness + redundancy checking *)
+    let rec follow t = match t with
+      | TVar v -> (match !v with Link t' -> follow t' | _ -> t)
+      | _ -> t
+    in
+    let rec type_head t = match t with
+      | TCon n     -> Some n
+      | TApp (f,_) -> type_head f
+      | TVar v     -> (match !v with Link t' -> type_head t' | _ -> None)
+      | _          -> None
+    in
+    let col0_type =
+      match type_head tsc with
+      | Some _ as t -> t
+      | None ->
+        (* Tuples have no TCon head; treat them as a synthetic singleton type. *)
+        (match follow tsc with TTuple _ -> Some "__tuple__" | _ -> None)
+    in
+    let get_ctors tname = Hashtbl.find_opt env.type_ctors tname in
+    let get_arity c =
+      if c = "__tuple__" then
+        (match follow tsc with TTuple ts -> List.length ts | _ -> 0)
+      else
+        match Hashtbl.find_opt env.ctors c with
+        | None -> (match c with "Cons" -> 2 | _ -> 0)
+        | Some (Forall (_, t)) ->
+          let rec count = function
+            | TFun (_, r) -> 1 + count r
+            | TVar v -> (match !v with Link t' -> count t' | _ -> 0)
+            | _ -> 0
+          in
+          count t
+    in
+    (* get_ctor_type: given a constructor name, return its parent type name.
+       Used by exhaust.ml to infer the type of a column when it is unknown. *)
+    let get_ctor_type c =
+      if c = "__tuple__" then Some "__tuple__"
+      else
+        match Hashtbl.find_opt env.ctors c with
+        | None ->
+          (match c with
+           | "Cons" | "Nil"   -> Some "List"
+           | "True" | "False" -> Some "Bool"
+           | "Unit"           -> Some "Unit"
+           | _                -> None)
+        | Some (Forall (_, t)) ->
+          let rec result_type = function
+            | TFun (_, r) -> result_type r
+            | TApp (f, _) -> result_type f
+            | TCon n      -> Some n
+            | TVar v      -> (match !v with Link t' -> result_type t' | _ -> None)
+            | _           -> None
+          in
+          result_type t
+    in
+    Exhaust.check_match
+      ~get_ctors ~get_arity ~get_ctor_type
+      ~warnings:env.warnings
+      ~col0_type
+      ~match_loc:!current_loc
+      (List.map (fun (p, g, _) -> (p, g <> None)) arms);
     result
 
   | ETuple es ->
@@ -819,6 +898,7 @@ let register_data env (name, params, variants) =
     in
     Hashtbl.replace env.ctors v.con_name (generalize ctor_t)
   ) variants;
+  Hashtbl.replace env.type_ctors name (List.map (fun v -> v.con_name) variants);
   exit_level ()
 
 (* Register a record declaration in env.  Mirrors register_data.
@@ -1145,7 +1225,7 @@ let infer_and_check_effects groups =
    `id x = x` then `a = id 5` then `b = id "hi"` works), while mutual
    recursion still type-checks because the forward reference unifies with
    the (still-monomorphic) placeholder. *)
-let check_program (prog : program) : (ident * scheme) list =
+let check_program (prog : program) : (ident * scheme) list * string list =
   reset_state ();
   current_loc := None;
   let env = initial_env () in
@@ -1210,4 +1290,5 @@ let check_program (prog : program) : (ident * scheme) list =
   infer_and_check_effects groups;
 
   (* Include interface methods in the returned env so callers can inspect them *)
-  results @ !iface_method_schemes
+  let final_env = !env in
+  (results @ !iface_method_schemes, List.rev !(final_env.warnings))
