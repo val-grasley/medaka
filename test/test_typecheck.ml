@@ -465,6 +465,160 @@ let e_eff_escape_wrong_effect = assert_err
 let e_eff_lambda_body_propagates = assert_err
   "bad = (x => print x) \"hi\"\n"
 
+(* ── Interfaces ─────────────────────────────────── *)
+
+(* Interface method is bound with the right polymorphic type *)
+let t_iface_method_type = assert_type
+  {|interface Eq a where
+  eq : a -> a -> Bool
+|}
+  "eq" "'a -> 'a -> Bool"
+
+(* Impl type-checks successfully *)
+let t_iface_impl_ok = assert_type
+  {|interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+|}
+  "eq" "'a -> 'a -> Bool"
+
+(* Method is usable in a top-level function *)
+let t_iface_method_use = assert_type
+  {|interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+
+f x y = eq x y
+|}
+  "f" "'a -> 'a -> Bool"
+
+(* Zero-param interface — just type-checks without errors *)
+let t_iface_zero_param = assert_type
+  {|interface Printable where
+  defaultSep : String
+|}
+  "defaultSep" "String"
+
+(* Multi-method interface *)
+let t_iface_multi_method = assert_type
+  {|interface Show a where
+  show : a -> String
+  showList : List a -> String
+
+impl Show Int where
+  show x = "int"
+  showList xs = "list"
+|}
+  "show" "'a -> String"
+
+(* Polymorphic impl — Show for Option *)
+let t_iface_poly_impl = assert_type
+  {|interface Show a where
+  show : a -> String
+
+impl Show Int where
+  show x = "int"
+
+impl Show Bool where
+  show x = "bool"
+|}
+  "show" "'a -> String"
+
+(* Higher-kinded interface — Mappable f *)
+let t_iface_hkt = assert_type
+  {|interface Mappable f where
+  fmap : (a -> b) -> f a -> f b
+|}
+  "fmap" "('a -> 'b) -> 'c 'a -> 'c 'b"
+
+(* Named impl — impl_name (lowercase per parser grammar) is stored, no type error.
+   The parser uses IDENT for the impl name so it must be lowercase. *)
+let t_iface_named_impl = assert_type
+  {|interface Monoid a where
+  mempty : a
+  mappend : a -> a -> a
+
+impl additive of Monoid Int where
+  mempty = 0
+  mappend x y = x + y
+|}
+  "mempty" "'a"
+
+(* Default impl — interface with a default; an impl that omits the default method
+   compiles without a MissingMethod error.  We verify the interface itself type-checks
+   and the non-default method is bound. *)
+let t_iface_default_method = assert_type
+  {|interface Container f where
+  empty : f a
+  isEmpty x = False
+
+impl Container List where
+  empty = []
+|}
+  "empty" "'a 'b"
+
+(* @Name annotation type-checks as Unit — it's a disambiguation hint and does
+   not affect the method's type; a program that mentions @Name compiles. *)
+let t_iface_at_annotation = assert_type
+  {|interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+
+annot = @Eq
+|}
+  "annot" "Unit"
+
+(* Error: impl references an unknown interface *)
+let e_iface_unknown = assert_err
+  {|impl Unknown Int where
+  foo x = x
+|}
+
+(* Error: impl is missing a required method (parser requires at least one method,
+   so we provide a wrong method name — the type checker catches the extra/missing) *)
+let e_iface_missing_method = assert_err
+  {|interface Eq a where
+  eq : a -> a -> Bool
+  lt : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+|}
+
+(* Error: impl method body has the wrong type *)
+let e_iface_wrong_type = assert_err
+  {|interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x + y
+|}
+
+(* Error: impl provides a method not in the interface *)
+let e_iface_extra_method = assert_err
+  {|interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+  bogus x = x
+|}
+
+(* Error: impl provides wrong number of type args *)
+let e_iface_arity = assert_err
+  {|interface Pair a b where
+  swap : (a, b) -> (b, a)
+
+impl Pair Int where
+  swap p = p
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -581,5 +735,22 @@ let () =
       test_case "err: mixed monads"      `Quick e_do_mixed_monads;
       test_case "err: bind non-monad"    `Quick e_do_bind_non_monad;
       test_case "err: non-monadic expr"  `Quick e_do_non_monadic_expr;
+    ];
+    "interfaces", [
+      test_case "method type"            `Quick t_iface_method_type;
+      test_case "impl ok"                `Quick t_iface_impl_ok;
+      test_case "method use"             `Quick t_iface_method_use;
+      test_case "zero-param interface"   `Quick t_iface_zero_param;
+      test_case "multi-method"           `Quick t_iface_multi_method;
+      test_case "poly impl"              `Quick t_iface_poly_impl;
+      test_case "HKT"                    `Quick t_iface_hkt;
+      test_case "named impl"             `Quick t_iface_named_impl;
+      test_case "default method"         `Quick t_iface_default_method;
+      test_case "@Name annotation"       `Quick t_iface_at_annotation;
+      test_case "err: unknown interface" `Quick e_iface_unknown;
+      test_case "err: missing method"    `Quick e_iface_missing_method;
+      test_case "err: wrong type"        `Quick e_iface_wrong_type;
+      test_case "err: extra method"      `Quick e_iface_extra_method;
+      test_case "err: arity mismatch"    `Quick e_iface_arity;
     ];
   ]

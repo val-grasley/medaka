@@ -14,6 +14,8 @@ type error =
   | UnknownField        of ident          (* field name not declared in any record *)
   | FieldNotInRecord    of ident * ident  (* field, record — field exists but not in this record *)
   | DuplicateDefinition of string * ident  (* kind, name *)
+  | UnknownInterface    of ident           (* impl references an unknown interface *)
+  | MethodNotInInterface of ident * ident  (* method name, interface name *)
 
 let pp_error = function
   | UnboundVariable n      -> Printf.sprintf "Unbound variable: %s" n
@@ -23,6 +25,9 @@ let pp_error = function
   | UnknownField n         -> Printf.sprintf "Unknown field: %s" n
   | FieldNotInRecord (f, r)-> Printf.sprintf "Field %s does not belong to record %s" f r
   | DuplicateDefinition (k, n) -> Printf.sprintf "Duplicate %s: %s" k n
+  | UnknownInterface n     -> Printf.sprintf "Unknown interface: %s" n
+  | MethodNotInInterface (m, iface) ->
+    Printf.sprintf "Method '%s' is not part of interface %s" m iface
 
 (* ── Built-ins ─────────────────────────────────── *)
 
@@ -53,24 +58,26 @@ let built_in_effects = [
 (* ── Module environment ────────────────────────── *)
 
 type module_env = {
-  values       : (ident, unit) Hashtbl.t;
-  types        : (ident, unit) Hashtbl.t;
-  constructors : (ident, unit) Hashtbl.t;
-  fields       : (ident, unit) Hashtbl.t;
-  field_owners : (ident, string) Hashtbl.t;  (* field name → record type name *)
-  interfaces   : (ident, unit) Hashtbl.t;
-  imported     : (ident, unit) Hashtbl.t;
+  values         : (ident, unit) Hashtbl.t;
+  types          : (ident, unit) Hashtbl.t;
+  constructors   : (ident, unit) Hashtbl.t;
+  fields         : (ident, unit) Hashtbl.t;
+  field_owners   : (ident, string) Hashtbl.t;  (* field name → record type name *)
+  interfaces     : (ident, unit) Hashtbl.t;
+  iface_methods  : (ident, ident list) Hashtbl.t;  (* iface name → method names *)
+  imported       : (ident, unit) Hashtbl.t;
 }
 
 let create_env () =
   let env = {
-    values       = Hashtbl.create 32;
-    types        = Hashtbl.create 16;
-    constructors = Hashtbl.create 16;
-    fields       = Hashtbl.create 16;
-    field_owners = Hashtbl.create 16;
-    interfaces   = Hashtbl.create 8;
-    imported     = Hashtbl.create 8;
+    values         = Hashtbl.create 32;
+    types          = Hashtbl.create 16;
+    constructors   = Hashtbl.create 16;
+    fields         = Hashtbl.create 16;
+    field_owners   = Hashtbl.create 16;
+    interfaces     = Hashtbl.create 8;
+    iface_methods  = Hashtbl.create 8;
+    imported       = Hashtbl.create 8;
   } in
   List.iter (fun n -> Hashtbl.replace env.types n ()) primitive_types;
   List.iter (fun n -> Hashtbl.replace env.constructors n ()) primitive_constructors;
@@ -122,7 +129,9 @@ let build_env (prog : program) : module_env * error list =
       ) fs
     | DInterface { iface_name; methods; _ } ->
       add_unique env.interfaces "interface" iface_name;
-      List.iter (fun m -> add_or_skip env.values m.method_name) methods
+      List.iter (fun m -> add_or_skip env.values m.method_name) methods;
+      Hashtbl.replace env.iface_methods iface_name
+        (List.map (fun m -> m.method_name) methods)
     | DImpl _ ->
       ()
     | DUse (_, path) ->
@@ -310,13 +319,24 @@ let check_decl env errors = function
         let scope = List.concat_map pat_bindings pats in
         check_expr env scope errors body
     ) methods
-  | DImpl { type_args; methods; _ } ->
+  | DImpl { iface_name; type_args; methods; _ } ->
     List.iter (check_type env errors) type_args;
     List.iter (fun (_, pats, body) ->
       List.iter (check_pat env errors) pats;
       let scope = List.concat_map pat_bindings pats in
       check_expr env scope errors body
-    ) methods
+    ) methods;
+    if not (Hashtbl.mem env.interfaces iface_name) then
+      errors := UnknownInterface iface_name :: !errors
+    else begin
+      let known_methods =
+        try Hashtbl.find env.iface_methods iface_name with Not_found -> []
+      in
+      List.iter (fun (mname, _, _) ->
+        if not (List.mem mname known_methods) then
+          errors := MethodNotInInterface (mname, iface_name) :: !errors
+      ) methods
+    end
 
 (* ── Public entry point ───────────────────────── *)
 

@@ -32,6 +32,15 @@ type record_info = {
   rec_fields : (ident * mono) list;  (* field name → field type (shares param TVars) *)
 }
 
+(* Per-interface metadata. iface_param_ids are the bound tyvar IDs for the
+   interface's type parameters; used in check_impl to build a directed
+   substitution (id → concrete mono) when validating a specific impl. *)
+type iface_info = {
+  iface_param_ids : int list;
+  iface_methods   : (ident * scheme) list;  (* method name → general scheme *)
+  iface_defaults  : ident list;             (* method names that have default impls *)
+}
+
 (* ── Effects ─────────────────────────────────────── *)
 
 type effect_set = string list  (* sorted, deduplicated *)
@@ -49,6 +58,11 @@ type type_error =
   | MissingField   of ident * ident       (* field, record *)
   | ImpureFunction of ident * effect_set  (* unannotated fn with inferred effects *)
   | EffectEscape   of ident * effect_set * effect_set  (* fn, declared, undeclared extras *)
+  | UnknownInterface   of ident               (* impl references unknown interface *)
+  | ExtraMethod        of ident * ident       (* iface_name, method not in interface *)
+  | MissingMethod      of ident * ident       (* iface_name, missing required method *)
+  | MethodTypeMismatch of ident * mono * mono (* method_name, expected, actual *)
+  | ImplArityMismatch  of ident * int * int   (* iface_name, expected params, got type_args *)
   | Other          of string
 
 exception Type_error of type_error
@@ -152,6 +166,25 @@ let instantiate (Forall (vars, t)) =
 
 let monotype t = Forall ([], t)
 
+(* Like instantiate, but maps specific bound IDs to provided monos instead of
+   always creating fresh vars.  Used by check_impl to substitute the impl's
+   concrete type args for the interface's type-parameter IDs. *)
+let instantiate_with (Forall (vars, t)) (subs : (int * mono) list) =
+  let sub = List.map (fun id ->
+    (id, try List.assoc id subs with Not_found -> fresh_var ())
+  ) vars in
+  let rec walk t = match normalize t with
+    | TVar v ->
+      (match !v with
+       | Unbound (id, _) -> (try List.assoc id sub with Not_found -> TVar v)
+       | Link _ -> assert false)
+    | TCon _ as t -> t
+    | TApp (a, b)  -> TApp (walk a, walk b)
+    | TFun (a, b)  -> TFun (walk a, walk b)
+    | TTuple ts    -> TTuple (List.map walk ts)
+  in
+  walk t
+
 (* ── Pretty printing ────────────────────────────── *)
 
 let pp_mono t =
@@ -213,6 +246,18 @@ let pp_error = function
   | EffectEscape (name, declared, extras) ->
     Printf.sprintf "Function '%s' declared with <%s> but also performs <%s>"
       name (String.concat ", " declared) (String.concat ", " extras)
+  | UnknownInterface n ->
+    Printf.sprintf "Unknown interface: %s" n
+  | ExtraMethod (iface, m) ->
+    Printf.sprintf "Method '%s' is not part of interface %s" m iface
+  | MissingMethod (iface, m) ->
+    Printf.sprintf "Interface %s requires method '%s' but it is not provided" iface m
+  | MethodTypeMismatch (m, expected, actual) ->
+    Printf.sprintf "Method '%s': expected type %s but got %s"
+      m (pp_mono expected) (pp_mono actual)
+  | ImplArityMismatch (iface, expected, got) ->
+    Printf.sprintf "Interface %s has %d type parameter(s) but impl provides %d type argument(s)"
+      iface expected got
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -222,6 +267,7 @@ type env = {
   ctors        : (ident, scheme) Hashtbl.t;   (* constructor name → scheme *)
   records      : (ident, record_info) Hashtbl.t;  (* record name → info *)
   field_owners : (ident, ident) Hashtbl.t;    (* field name → record name *)
+  interfaces   : (ident, iface_info) Hashtbl.t;  (* interface name → info *)
 }
 
 let empty_env () = {
@@ -229,6 +275,7 @@ let empty_env () = {
   ctors        = Hashtbl.create 16;
   records      = Hashtbl.create 8;
   field_owners = Hashtbl.create 16;
+  interfaces   = Hashtbl.create 8;
 }
 
 let lookup_var env x =
@@ -396,8 +443,13 @@ let rec infer env = function
   | ELit l -> type_lit l
 
   | EVar x ->
-    (try instantiate (Hashtbl.find env.ctors x)
-     with Not_found -> instantiate (lookup_var env x))
+    if String.length x > 0 && x.[0] = '@' then
+      (* @ImplName is a disambiguation hint — treated as Unit for now;
+         full impl selection is Phase 4.2. *)
+      t_unit
+    else
+      (try instantiate (Hashtbl.find env.ctors x)
+       with Not_found -> instantiate (lookup_var env x))
 
   | EApp (f, x) ->
     let tf = infer env f in
@@ -749,6 +801,104 @@ let clause_to_expr (pats, body) =
   if pats = [] then body
   else List.fold_right (fun p acc -> ELam ([p], acc)) pats body
 
+(* Register an interface declaration.
+   Creates fresh tvars for the type parameters at level 1, converts each
+   method's AST type to mono, then generalizes — yielding a fully polymorphic
+   scheme per method.  Returns the method scheme list so check_program can
+   bind them in the env before typing top-level functions. *)
+let register_interface env (iface_name, type_params, methods) =
+  enter_level ();
+  let param_vars = List.map (fun p -> (p, fresh_var ())) type_params in
+  (* Each call to go_ty gets its own memoization table for method-level tvars.
+     This ensures that occurrences of the same name within one method type
+     (e.g., both `a`s in `(a -> b) -> f a -> f b`) resolve to the same TVar,
+     while still being independent across different methods. *)
+  let go_ty ast_ty =
+    let method_vars = Hashtbl.create 4 in
+    let rec go = function
+      | Ast.TyCon n ->
+        (try List.assoc n param_vars with Not_found -> TCon n)
+      | Ast.TyVar n ->
+        (match List.assoc_opt n param_vars with
+         | Some v -> v
+         | None ->
+           (try Hashtbl.find method_vars n
+            with Not_found ->
+              let v = fresh_var () in
+              Hashtbl.add method_vars n v;
+              v))
+      | Ast.TyApp (a, b)  -> TApp (go a, go b)
+      | Ast.TyFun (a, b)  -> TFun (go a, go b)
+      | Ast.TyTuple ts    -> TTuple (List.map go ts)
+      | Ast.TyEffect (_, t) -> go t
+    in
+    go ast_ty
+  in
+  let method_monos = List.map (fun m ->
+    (m.Ast.method_name, go_ty m.Ast.method_type)
+  ) methods in
+  (* exit_level BEFORE generalizing so param tvars (at level 1) satisfy
+     level > current_level (0) and get quantified. *)
+  exit_level ();
+  let param_ids =
+    List.map (fun (_, v) ->
+      match normalize v with
+      | TVar r -> (match !r with Unbound (id, _) -> id | _ -> assert false)
+      | _ -> assert false
+    ) param_vars
+  in
+  let method_schemes =
+    List.map (fun (n, mt) -> (n, generalize mt)) method_monos
+  in
+  let defaults = List.filter_map (fun m ->
+    if m.Ast.method_default <> None then Some m.Ast.method_name else None
+  ) methods in
+  let info = {
+    iface_param_ids = param_ids;
+    iface_methods   = method_schemes;
+    iface_defaults  = defaults;
+  } in
+  Hashtbl.replace env.interfaces iface_name info;
+  method_schemes
+
+(* Validate a DImpl declaration against the registered interface.
+   Instantiates each method's scheme with the impl's concrete type args and
+   type-checks the provided method body against the resulting expected type. *)
+let check_impl env (decl : decl) = match decl with
+  | DImpl { iface_name; type_args; methods; _ } ->
+    let info =
+      try Hashtbl.find env.interfaces iface_name
+      with Not_found -> fail (UnknownInterface iface_name)
+    in
+    let n_params = List.length info.iface_param_ids in
+    let n_args   = List.length type_args in
+    if n_params <> n_args then
+      fail (ImplArityMismatch (iface_name, n_params, n_args));
+    let concrete = List.map from_ast_type type_args in
+    let subs = List.combine info.iface_param_ids concrete in
+    (* Verify each required method is present and has the right type *)
+    List.iter (fun (mname, mscheme) ->
+      let expected_t = instantiate_with mscheme subs in
+      match List.find_opt (fun (n, _, _) -> n = mname) methods with
+      | None ->
+        if not (List.mem mname info.iface_defaults) then
+          fail (MissingMethod (iface_name, mname))
+      | Some (_, pats, body) ->
+        let impl_expr = clause_to_expr (pats, body) in
+        enter_level ();
+        let actual_t = infer env impl_expr in
+        exit_level ();
+        (try unify expected_t actual_t
+         with Type_error (TypeMismatch (a, b)) ->
+           fail (MethodTypeMismatch (mname, a, b)))
+    ) info.iface_methods;
+    (* Check for extra methods that are not part of the interface *)
+    List.iter (fun (n, _, _) ->
+      if not (List.mem_assoc n info.iface_methods) then
+        fail (ExtraMethod (iface_name, n))
+    ) methods
+  | _ -> ()
+
 (* ── Effect inference ────────────────────────────── *)
 
 let effect_union a b = List.sort_uniq String.compare (a @ b)
@@ -855,23 +1005,31 @@ let check_program (prog : program) : (ident * scheme) list =
   reset_state ();
   let env = initial_env () in
 
-  (* Phase 1: register data and record declarations *)
+  (* Phase 1: register data, record, and interface declarations *)
+  let iface_method_schemes = ref [] in
   List.iter (function
     | DData (n, ps, vs) -> register_data env (n, ps, vs)
     | DRecord (n, ps, fs) -> register_record env (n, ps, fs)
+    | DInterface { iface_name; type_params; methods; _ } ->
+      let ms = register_interface env (iface_name, type_params, methods) in
+      iface_method_schemes := ms @ !iface_method_schemes
     | _ -> ()
   ) prog;
 
   (* Phase 2: collect type sigs and fn clause groups *)
   let groups = group_fundefs prog in
 
-  (* Phase 3: pre-bind every top-level name with a placeholder at level 1. *)
+  (* Phase 3: pre-bind every top-level name with a placeholder at level 1.
+     Also bind all interface methods so they are visible in function bodies. *)
   enter_level ();
   let placeholders = List.map (fun (n, _, _) -> (n, fresh_var ())) groups in
   exit_level ();
-  let env = ref (List.fold_left
-                   (fun e (n, t) -> extend_var e n (monotype t))
-                   env placeholders) in
+  let env = ref (
+    let e = List.fold_left
+      (fun e (n, t) -> extend_var e n (monotype t))
+      env placeholders in
+    List.fold_left (fun e (n, s) -> extend_var e n s) e !iface_method_schemes
+  ) in
 
   (* Phase 4: process each group sequentially. *)
   let results = List.map (fun (name, sig_opt, clauses) ->
@@ -892,7 +1050,14 @@ let check_program (prog : program) : (ident * scheme) list =
     (name, scheme)
   ) groups in
 
+  (* Phase 4.5: validate impl method bodies against their interfaces *)
+  List.iter (function
+    | DImpl _ as d -> check_impl !env d
+    | _ -> ()
+  ) prog;
+
   (* Phase 5: effect inference and checking *)
   infer_and_check_effects groups;
 
-  results
+  (* Include interface methods in the returned env so callers can inspect them *)
+  results @ !iface_method_schemes
