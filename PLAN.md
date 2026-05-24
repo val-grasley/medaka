@@ -16,14 +16,14 @@ The front-end of the Medaka compiler is in place. We have:
 | Resolver        | `lib/resolve.ml`    | Validates that every identifier reference is bound          |
 | Type checker    | `lib/typecheck.ml`  | Hindley-Milner with let-polymorphism, ADTs, records, patterns, pipe/compose, effects |
 
-216 tests pass across 4 test suites:
+231 tests pass across 4 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
 | Parser            | `test/test_parser.ml`           | 48    | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 50    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 34    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 84    | Inferred types for valid programs + type-error cases  |
+| Type checker      | `test/test_typecheck.ml`        | 99    | Inferred types for valid programs + type-error cases  |
 
 Two debug binaries in `test/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
@@ -265,28 +265,49 @@ not tracked: `bad = runWith print` where `runWith` ignores effects in its
 parameter type won't be flagged. Full tracking requires integrating effects into
 `TFun` (the original "big call" path), which can be done in a future pass.
 
-### Phase 4: Interfaces (typeclasses) — next
+### Phase 4.1: Interfaces (typeclasses) ✅ DONE
 
-**Goal.** Type-check `interface` and `impl` declarations. Resolve interface
-methods at use sites.
+**Goal.** Type-check `interface` and `impl` declarations; expose interface
+methods as polymorphic bindings in the env.
 
-**Design.** Read the "Named Instances with Defaults" section of
-`language-design.md` carefully. The compiler needs to:
-1. Build a table of interfaces and their methods.
-2. Build a table of impls per interface.
-3. At each use of an interface method, find the applicable impl from the
-   inferred argument types. Use the default impl if multiple match and one is
-   marked `default`. Fail with a useful message if ambiguous.
+**What was added (commit `b5845ac`).**
+- `iface_info` type in `typecheck.ml`; `interfaces` hashtbl in `env`
+- `register_interface` — creates fresh tvars per type param, builds method
+  schemes with per-call memoization for method-level tvars (fixes HKT like
+  `(a -> b) -> f a -> f b`); stores `iface_defaults` for optional methods
+- `instantiate_with` — directed instantiation mapping bound IDs to concrete monos
+- `check_impl` — validates each impl method body against the instantiated interface
+  type; catches `UnknownInterface`, `MissingMethod`, `ExtraMethod`,
+  `MethodTypeMismatch`, `ImplArityMismatch`
+- `check_program` Phase 1.5: register interfaces, bind method schemes in env
+- `check_program` Phase 4.5: validate all DImpl bodies
+- `@Name` annotations (parsed as `EVar "@Name"`) type-check as `Unit`
+- `resolve.ml`: `iface_methods` table; DImpl checks interface existence and
+  method membership; `UnknownInterface` + `MethodNotInInterface` errors
+- 15 new typecheck tests (10 valid, 5 error cases); 231 total
 
-**Why this is hard.** Method resolution interacts with type inference: the
-type of `eq x y` depends on which `Eq` impl applies, which depends on `x`'s
-type, which may itself be inferred. The standard technique is *constraint-based
-inference*: collect constraints during the first pass, solve them after. This
-is a substantial rewrite of the type checker.
+**Known limitations (Phase 4.2).**
+- No constraint checking at call sites: `eq 1.0 2.0` succeeds even if no
+  `Eq Float` impl exists (full constraint solving deferred)
+- Superinterface constraints (`of Monoid Int`) stored in AST, not validated
+- `@Name` disambiguation doesn't select a specific impl yet
+- Named impl names must be lowercase (parser uses `IDENT`; fix in Phase 7)
 
-**Recommended.** Don't start interfaces until records and basic do-notation are
-done — too many things will change together. When you start, plan for two
-sessions.
+### Phase 4.2: Interfaces — constraint solving at call sites — next
+
+**Goal.** At each method call site, verify that a valid impl exists for the
+inferred argument types. Handle the `@Name` disambiguation hint properly.
+
+**Design.** After the HM pass, walk the typed program; at each `EVar m` for a
+method `m`, check that the inferred type is compatible with at least one impl's
+type args. If multiple match, require exactly one to be marked `default` or an
+explicit `@Name` annotation. Error with a helpful message if ambiguous or absent.
+
+This is substantially simpler than a full constraint-based rewrite because HM
+already inferred concrete types — we just need to check post-hoc.
+
+**Recommended.** Consider whether this is actually needed before the interpreter
+(Phase 9) — without a runtime, impls are only used for type-checking guarantees.
 
 ### Phase 5: Position-tracked errors
 
