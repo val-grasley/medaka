@@ -34,7 +34,8 @@ let assert_run_err src () =
 (* ── Hello world ─────────────────────────────────────────────────────────── *)
 
 let t_hello = assert_output
-  {|main = println "Hello, world!"
+  {|main : <IO> Unit
+main = println "Hello, world!"
 |}
   "Hello, world!\n"
 
@@ -46,6 +47,7 @@ let t_factorial = assert_output
     0 => 1
     n => n * factorial (n - 1)
 
+main : <IO> Unit
 main = println (factorial 10)
 |}
   "3628800\n"
@@ -64,6 +66,7 @@ name c =
     Green => "green"
     Blue  => "blue"
 
+main : <IO> Unit
 main = println (name Green)
 |}
   "green\n"
@@ -71,7 +74,8 @@ main = println (name Green)
 (* ── Multiple prints in a do-block ───────────────────────────────────────── *)
 
 let t_multi_print = assert_output
-  {|main =
+  {|main : <IO> Unit
+main =
   do
     println "one"
     println "two"
@@ -82,7 +86,8 @@ let t_multi_print = assert_output
 (* ── let mut + DoAssign reassignment ─────────────────────────────────────── *)
 
 let t_let_mut = assert_output
-  {|main =
+  {|main : <IO> Unit
+main =
   do
     let mut x = 0
     x = x + 1
@@ -99,6 +104,7 @@ let t_runtime_err = assert_run_err
     1 => "one"
     2 => "two"
 
+main : <IO> Unit
 main = println (f 99)
 |}
 
