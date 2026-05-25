@@ -33,6 +33,29 @@ let reset () =
   indent_stack := [0];
   Queue.clear pending
 
+(* Strip common leading indentation from a multiline string (one that starts
+   with '\n').  Blank lines are ignored when computing the minimum indent. *)
+let strip_indent s =
+  if String.length s = 0 || s.[0] <> '\n' then s
+  else begin
+    let rest = String.sub s 1 (String.length s - 1) in
+    let lines = String.split_on_char '\n' rest in
+    let indent_of line =
+      let n = String.length line in
+      let i = ref 0 in
+      while !i < n && line.[!i] = ' ' do incr i done;
+      if !i = n then max_int else !i
+    in
+    let raw_min = List.fold_left (fun acc l -> min acc (indent_of l)) max_int lines in
+    let min_ind = if raw_min = max_int then 0 else raw_min in
+    let strip line =
+      let n = String.length line in
+      let k = min min_ind n in
+      String.sub line k (n - k)
+    in
+    String.concat "\n" (List.map strip lines)
+  end
+
 let keyword_or_ident s =
   match s with
   | "let"       -> LET
@@ -102,7 +125,10 @@ and read = parse
   | float_lit    { FLOAT (float_of_string (Lexing.lexeme lexbuf)) }
 
   | '"'          { read_string (Buffer.create 64) lexbuf }
-  | '\'' ([^ '\''] as c) '\'' { CHAR (String.make 1 c) }
+  | '\'' [^ '\'']+ '\'' {
+      let lxm = Lexing.lexeme lexbuf in
+      CHAR (String.sub lxm 1 (String.length lxm - 2))
+    }
 
   (* Identifiers — order matters: longer matches win, ties go to earlier rule *)
   | lower alnum*           { keyword_or_ident (Lexing.lexeme lexbuf) }
@@ -177,11 +203,17 @@ and read = parse
     }
 
 and read_string buf = parse
-  | '"'           { STRING (Buffer.contents buf) }
+  | '"'           { STRING (strip_indent (Buffer.contents buf)) }
   | '\\' 'n'      { Buffer.add_char buf '\n'; read_string buf lexbuf }
   | '\\' 't'      { Buffer.add_char buf '\t'; read_string buf lexbuf }
   | '\\' '"'      { Buffer.add_char buf '"';  read_string buf lexbuf }
   | '\\' '\\'     { Buffer.add_char buf '\\'; read_string buf lexbuf }
+  | '\\' 'r'      { Buffer.add_char buf '\r'; read_string buf lexbuf }
+  | '\\' '0'      { Buffer.add_char buf '\000'; read_string buf lexbuf }
+  | '\\' 'u' '{' (['0'-'9' 'a'-'f' 'A'-'F']+ as hex) '}'
+    { let cp = int_of_string ("0x" ^ hex) in
+      Buffer.add_utf_8_uchar buf (Uchar.of_int cp);
+      read_string buf lexbuf }
   | [^ '"' '\\']+ {
       Buffer.add_string buf (Lexing.lexeme lexbuf);
       read_string buf lexbuf

@@ -11,6 +11,8 @@ let fold_ty_app = function
   | [t]     -> t
   | t :: ts -> List.fold_left (fun acc a -> TyApp (acc, a)) t ts
 
+type kv_item = KV of expr * expr | Elem of expr
+
 let stmts_to_expr = function
   | [DoExpr e] -> e
   | stmts      -> EDo stmts
@@ -87,7 +89,7 @@ let rec expr_to_pat = function
    Grammar conflicts — audit notes (Phase 7)
    ═══════════════════════════════════════════════════════
 
-   Menhir reports 2 S/R states (11 conflicts) and 6 R/R states (21 conflicts).
+   Menhir reports 3 S/R states (12 conflicts) and 7 R/R states (23 conflicts).
    Every conflict is documented below.  All default resolutions are correct for
    the intended semantics — none require restructuring.
 
@@ -101,6 +103,16 @@ let rec expr_to_pat = function
      followed by { is unambiguously a record literal; the atom-reduce path
      would leave { to be the start of a record-update expression, which
      requires { expr | … } and won't parse correctly here anyway.
+
+   S/R state (new, Phase 16)  •  lookahead: EQUAL
+     Stack: … UPPER LBRACE IDENT
+     Reduce: expr_atom → IDENT    (path toward kv_or_e → expr_no_block or expr_pipe FAT_ARROW …)
+     Shift:  IDENT . EQUAL expr   (start of record_field_expr)
+     Resolution: SHIFT (default).  Record field wins: `Type { field = value }`
+     uses EQUAL and is unambiguous.  If the token after IDENT were FAT_ARROW
+     instead, the shift/reduce conflict does not arise (record rule doesn't
+     apply), so map keys that start with IDENT parse correctly via the reduce
+     path.
 
    S/R state 138  •  lookaheads: UPPER STRING RPAREN RBRACKET LPAREN
                                   LBRACKET LBRACE INT IDENT FLOAT CONS
@@ -141,6 +153,17 @@ let rec expr_to_pat = function
      restriction is acceptable; fixing it would require an `expr_to_pat`
      pass on the entire `stmt` LHS (analogous to the lambda trick), which
      is deferred to a future grammar pass.
+
+   State 317  •  lookaheads: RBRACE COMMA COLON   (Phase 16 — kv_or_e)
+     Stack: … UPPER LBRACE expr_pipe FAT_ARROW expr_lam
+     Context: inside `UPPER { kv_or_e, … }` after parsing `expr_pipe => expr_lam`.
+     Two reductions are possible for the trailing expr_lam:
+       expr_annot → expr_lam          (path A: complete the RHS of kv_or_e → expr_pipe FAT_ARROW expr_no_block)
+       expr_lam → expr_pipe FAT_ARROW expr_lam   (path B: treat the whole thing as a lambda, part of kv_or_e → expr_no_block)
+     Resolution: REDUCE expr_annot → expr_lam (default: earlier production).
+     Path A is correct — it produces KV("a", 1) for `Map { "a" => 1 }`.
+     Path B would produce a lambda-valued set element, which is semantically
+     wrong and would type-check as a Set of function values.
    ═══════════════════════════════════════════════════════ *)
 
 (* ── Top level ───────────────────────────────────────── *)
@@ -375,6 +398,18 @@ expr_atom:
     { ELoc (of_pos $startpos, EArrayLit $2) }
   | UPPER LBRACE separated_list(COMMA, record_field_expr) RBRACE
     { ELoc (of_pos $startpos, ERecordCreate ($1, $3)) }
+  | UPPER LBRACE separated_nonempty_list(COMMA, kv_or_e) RBRACE
+    { let items = $3 and name = $1 in
+      let has_kv = List.exists (function KV _ -> true | Elem _ -> false) items in
+      let all_kv = List.for_all (function KV _ -> true | Elem _ -> false) items in
+      if has_kv && not all_kv then
+        failwith (Printf.sprintf "Mixed map/set entries in %s { ... }" name)
+      else if has_kv then
+        ELoc (of_pos $startpos, EMapLit (name,
+          List.map (function KV (k,v) -> (k,v) | Elem _ -> assert false) items))
+      else
+        ELoc (of_pos $startpos, ESetLit (name,
+          List.map (function Elem e -> e | KV _ -> assert false) items)) }
   | LBRACE expr_no_block PIPE separated_nonempty_list(COMMA, record_field_expr) RBRACE
     { ELoc (of_pos $startpos, ERecordUpdate ($2, $4)) }
   | AT UPPER
@@ -382,6 +417,10 @@ expr_atom:
 
 record_field_expr:
   | IDENT EQUAL expr_no_block  { ($1, $3) }
+
+kv_or_e:
+  | expr_pipe FAT_ARROW expr_no_block  { KV ($1, $3) }
+  | expr_no_block                      { Elem $1 }
 
 (* ── Match arms ──────────────────────────────────────── *)
 

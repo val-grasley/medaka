@@ -212,6 +212,80 @@ let test_expr_list_arg () =
   | EApp (EVar "f", EListLit [ELit (LInt 1); ELit (LInt 2)]) -> ()
   | _ -> failwith "wrong"
 
+(* ── Collection literal tests ────────────────────────── *)
+
+let test_map_literal () =
+  match parse_expr "Map { \"a\" => 1, \"b\" => 2 }\n" with
+  | EMapLit ("Map", [(ELit (LString "a"), ELit (LInt 1));
+                     (ELit (LString "b"), ELit (LInt 2))]) -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_map_literal_hashmap () =
+  match parse_expr "HashMap { \"x\" => True }\n" with
+  | EMapLit ("HashMap", [(ELit (LString "x"), EVar "True")]) -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_set_literal () =
+  match parse_expr "Set { 1, 2, 3 }\n" with
+  | ESetLit ("Set", [ELit (LInt 1); ELit (LInt 2); ELit (LInt 3)]) -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_map_singleton () =
+  match parse_expr "Map { 42 => \"answer\" }\n" with
+  | EMapLit ("Map", [(ELit (LInt 42), ELit (LString "answer"))]) -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_record_still_works () =
+  (* Existing record creation must still parse correctly *)
+  match parse_expr "Person { name = \"Alice\", age = 30 }\n" with
+  | ERecordCreate ("Person", [("name", ELit (LString "Alice")); ("age", ELit (LInt 30))]) -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+(* ── Char / string upgrade tests ─────────────────────── *)
+
+let test_char_multibyte () =
+  (* UTF-8 char literal: wave emoji is 4 bytes *)
+  match parse_expr "'👋'\n" with
+  | ELit (LChar c) when String.length c > 1 -> ()  (* multi-byte UTF-8 *)
+  | ELit (LChar c) -> failwith (Printf.sprintf "char too short (%d bytes)" (String.length c))
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_char_ascii () =
+  match parse_expr "'a'\n" with
+  | ELit (LChar "a") -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_string_escape_r () =
+  match parse_expr "\"hello\\rworld\"\n" with
+  | ELit (LString s) when String.contains s '\r' -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_string_escape_zero () =
+  match parse_expr "\"nul\\0end\"\n" with
+  | ELit (LString s) when String.contains s '\000' -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_string_escape_unicode () =
+  match parse_expr "\"\\u{48}i\"\n" with
+  | ELit (LString "Hi") -> ()
+  | ELit (LString s) -> failwith (Printf.sprintf "wrong string: %S" s)
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_string_multiline () =
+  (* Multiline string: leading newline triggers indent stripping *)
+  let src = "v = \"\n  hello\n  world\n  \"\n" in
+  match parse src with
+  | [DFunDef (_, _, [], ELit (LString s))] ->
+    if s = "hello\nworld\n" then ()
+    else failwith (Printf.sprintf "wrong multiline content: %S" s)
+  | _ -> failwith "wrong parse"
+
+let test_string_no_multiline () =
+  (* A string not starting with newline is unaffected *)
+  match parse_expr "\"hello world\"\n" with
+  | ELit (LString "hello world") -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
 (* ── Match expression tests ──────────────────────────── *)
 
 let test_match_basic () =
@@ -464,6 +538,22 @@ let () =
       test_case "array index"       `Quick test_expr_index;
       test_case "operator section"  `Quick test_expr_section;
       test_case "list as arg"       `Quick test_expr_list_arg;
+    ];
+    "collection literals", [
+      test_case "map literal"          `Quick test_map_literal;
+      test_case "hashmap literal"      `Quick test_map_literal_hashmap;
+      test_case "set literal"          `Quick test_set_literal;
+      test_case "map singleton"        `Quick test_map_singleton;
+      test_case "record still works"   `Quick test_record_still_works;
+    ];
+    "char and string upgrades", [
+      test_case "char multibyte"         `Quick test_char_multibyte;
+      test_case "char ascii"             `Quick test_char_ascii;
+      test_case "string escape \\r"      `Quick test_string_escape_r;
+      test_case "string escape \\0"      `Quick test_string_escape_zero;
+      test_case "string escape \\u{}"    `Quick test_string_escape_unicode;
+      test_case "multiline string"       `Quick test_string_multiline;
+      test_case "non-multiline unchanged"`Quick test_string_no_multiline;
     ];
     "match", [
       test_case "basic match"       `Quick test_match_basic;

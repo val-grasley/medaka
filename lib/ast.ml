@@ -51,6 +51,8 @@ and expr =
   | ERecordUpdate of expr * (ident * expr) list         (* { p | age = 31 } *)
   | EArrayLit     of expr list                          (* [|1, 2, 3|] *)
   | EListLit      of expr list                          (* [1, 2, 3] *)
+  | EMapLit       of ident * (expr * expr) list         (* Map { k => v, ... } *)
+  | ESetLit       of ident * expr list                  (* Set { e, ... } *)
   | ETuple        of expr list                          (* (1, "hello") *)
   | EIndex        of expr * expr                        (* arr[0] *)
   | EDo           of do_stmt list
@@ -173,6 +175,10 @@ let rec pp_expr = function
     Printf.sprintf "{ %s | %s }" (pp_expr e) (String.concat ", " (List.map pp_f fs))
   | EArrayLit es         -> Printf.sprintf "[|%s|]" (String.concat ", " (List.map pp_expr es))
   | EListLit es          -> Printf.sprintf "[%s]" (String.concat ", " (List.map pp_expr es))
+  | EMapLit (n, kvs)     ->
+    let pp_kv (k, v) = Printf.sprintf "%s => %s" (pp_expr k) (pp_expr v) in
+    Printf.sprintf "%s { %s }" n (String.concat ", " (List.map pp_kv kvs))
+  | ESetLit (n, es)      -> Printf.sprintf "%s { %s }" n (String.concat ", " (List.map pp_expr es))
   | ETuple es            -> Printf.sprintf "(%s)" (String.concat ", " (List.map pp_expr es))
   | EIndex (e, i)        -> Printf.sprintf "%s[%s]" (pp_expr e) (pp_expr i)
   | EDo stmts            -> Printf.sprintf "(do %s)" (String.concat "; " (List.map pp_do_stmt stmts))
@@ -205,6 +211,8 @@ let rec strip_locs_expr = function
   | ERecordUpdate (e, fs) -> ERecordUpdate (strip_locs_expr e, List.map (fun (k, v) -> (k, strip_locs_expr v)) fs)
   | EArrayLit es          -> EArrayLit (List.map strip_locs_expr es)
   | EListLit es           -> EListLit (List.map strip_locs_expr es)
+  | EMapLit (n, kvs)      -> EMapLit (n, List.map (fun (k, v) -> (strip_locs_expr k, strip_locs_expr v)) kvs)
+  | ESetLit (n, es)       -> ESetLit (n, List.map strip_locs_expr es)
   | ETuple es             -> ETuple (List.map strip_locs_expr es)
   | EIndex (e, i)         -> EIndex (strip_locs_expr e, strip_locs_expr i)
   | EDo stmts             -> EDo (List.map strip_locs_do stmts)

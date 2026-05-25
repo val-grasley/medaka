@@ -133,6 +133,7 @@ let is_right_assoc = function "::" -> true | _ -> false
 
 let rec expr_prec = function
   | ELit _ | EVar _ | ETuple _ | EArrayLit _ | EListLit _
+  | EMapLit _ | ESetLit _
   | ERecordCreate _ | ERecordUpdate _ -> prec_atom
   | EFieldAccess _ | EIndex _          -> prec_postfix
   | EUnOp _                            -> prec_unary
@@ -216,6 +217,17 @@ and print_expr_raw p = function
     write p "[";
     List.iteri (fun i e -> if i > 0 then write p ", "; print_expr p prec_top e) es;
     write p "]"
+  | EMapLit (n, kvs) ->
+    write p n; write p " { ";
+    List.iteri (fun i (k, v) ->
+      if i > 0 then write p ", ";
+      print_expr p prec_top k; write p " => "; print_expr p prec_top v
+    ) kvs;
+    write p " }"
+  | ESetLit (n, es) ->
+    write p n; write p " { ";
+    List.iteri (fun i e -> if i > 0 then write p ", "; print_expr p prec_top e) es;
+    write p " }"
   | ETuple es ->
     write p "(";
     List.iteri (fun i e -> if i > 0 then write p ", "; print_expr p prec_top e) es;

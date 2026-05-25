@@ -366,6 +366,8 @@ let t_unit   = TCon "Unit"
 
 let t_list   t = TApp (TCon "List",   t)
 let t_array  t = TApp (TCon "Array",  t)
+let t_map  k v = TApp (TApp (TCon "Map",  k), v)
+let t_set  e   = TApp (TCon "Set",  e)
 let t_option t = TApp (TCon "Option", t)
 let t_result a b = TApp (TApp (TCon "Result", a), b)
 
@@ -690,6 +692,19 @@ let rec infer env = function
     let elem = fresh_var () in
     List.iter (fun e -> unify (infer env e) elem) es;
     t_array elem
+
+  | EMapLit (_, kvs) ->
+    let kt = fresh_var () and vt = fresh_var () in
+    List.iter (fun (k, v) ->
+      unify (infer env k) kt;
+      unify (infer env v) vt
+    ) kvs;
+    t_map kt vt
+
+  | ESetLit (_, es) ->
+    let et = fresh_var () in
+    List.iter (fun e -> unify (infer env e) et) es;
+    t_set et
 
   | EAnnot (e, ast_t) ->
     let te = infer env e in
@@ -1211,8 +1226,10 @@ let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : eff
   | EFieldAccess (e, _)      -> sub e
   | ERecordCreate (_, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) [] fs
   | ERecordUpdate (e, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) (sub e) fs
-  | EArrayLit es | EListLit es ->
+  | EArrayLit es | EListLit es | ESetLit (_, es) ->
     List.fold_left (fun a e -> effect_union a (sub e)) [] es
+  | EMapLit (_, kvs) ->
+    List.fold_left (fun a (k, v) -> effect_union a (effect_union (sub k) (sub v))) [] kvs
   | ETuple es               -> List.fold_left (fun a e -> effect_union a (sub e)) [] es
   | EIndex (e, i)           -> effect_union (sub e) (sub i)
   | EAnnot (e, _)           -> sub e

@@ -20,14 +20,14 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-357 tests pass across 7 test suites:
+381 tests pass across 7 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 55    | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 54    | parse → print → parse yields the same AST             |
+| Parser            | `test/test_parser.ml`           | 69    | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 57    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 40    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 152   | Inferred types, type errors, exhaustiveness warnings  |
+| Type checker      | `test/test_typecheck.ml`        | 159   | Inferred types, type errors, exhaustiveness warnings  |
 | Evaluator         | `test/test_eval.ml`             | 41    | Runtime values, recursion, do-blocks, Ref, errors     |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
@@ -760,35 +760,37 @@ with the other Phase 14/16/17 work if desired.
 
 ---
 
-### Phase 16: Collection literal syntax + Char/string upgrades
+### Phase 16: Collection literal syntax + Char/string upgrades ✅ DONE
 
 **Goal.** Give the stdlib enough surface syntax to define `Map`, `Set`,
 `String`, and `Char` cleanly.
 
-**Scope.**
-- Map/Set literal sugar: `Map { "alice" => 30, "bob" => 25 }` and `Set {
-  1, 2, 3 }`.  Lexer needs no new tokens (`{`, `}`, `=>`, `,` already
-  exist); parser adds an `expr_atom` alternative `UPPER LBRACE
-  separated_list(COMMA, kv_or_e) RBRACE` where `kv_or_e` is
-  `expr_no_block FAT_ARROW expr_no_block` OR `expr_no_block`.  AST:
-  `EMapLit of (expr * expr) list` and `ESetLit of expr list` (or fold
-  both into a single `EAssocLit`).  Or, alternatively, leave it as
-  ordinary `ERecordCreate`/function application until interfaces can
-  drive desugaring — pick whichever is least invasive when starting.
-- Multiline string indentation stripping per the design doc: a string
-  that begins with `"\n  ` strips the common-leading-whitespace prefix
-  off every subsequent line.  Lexer-side transform; behind a literal
-  flag if it turns out to be surprising in some cases.
-- Char as a grapheme cluster: change the lexer's `CHAR` rule to accept
-  `'X'` where `X` is any UTF-8 sequence; carry the bytes as `LChar
-  string` (already a string in the AST — just the lexer is byte-bound
-  today).  No grapheme segmentation library yet; this phase only fixes
-  multibyte char *literals*, not iteration over a string.
-- String escape upgrades: `\n`, `\t`, `\\`, `\"` already work; add
-  `\r`, `\0`, and `\u{XXXX}` for unicode codepoints.
-
-**Done when.** All four design-doc string/char examples in `language-
-design.md` lex and parse, plus tests for Map/Set literals.
+**What was added (this session).**
+- `EMapLit of ident * (expr * expr) list` and `ESetLit of ident * expr list`
+  added to `Ast.expr`; `pp_expr`, `strip_locs_expr` extended accordingly.
+- Parser: `kv_or_e` rule (`expr_pipe FAT_ARROW expr_no_block | expr_no_block`);
+  new `expr_atom` alternative `UPPER LBRACE separated_nonempty_list(COMMA, kv_or_e) RBRACE`
+  that dispatches to `EMapLit`/`ESetLit` based on entry shape.  The UPPER
+  name (`"Map"`, `"HashMap"`, `"Set"`, `"HashSet"`, etc.) is stored in the node.
+  Conflict count: 3 S/R (12) + 7 R/R (23) — one new S/R (EQUAL lookahead,
+  resolved shift→record) and one new R/R state (FAT_ARROW in kv_or_e vs
+  lambda, resolved correctly by Menhir's default).  Both documented in
+  `parser.mly`'s conflict audit block.
+- Printer: `EMapLit`/`ESetLit` print as `Name { k => v, ... }` and
+  `Name { e, ... }`; both classified as `prec_atom`.
+- Resolver: `check_expr` recurses into kv pairs / element lists.
+- Typechecker: `t_map k v = TApp(TApp(TCon "Map", k), v)` and
+  `t_set e = TApp(TCon "Set", e)` helpers; `infer` cases unify all keys /
+  values / elements to a single type variable; effects pass extended.
+- Evaluator: `EMapLit`/`ESetLit` desugar to `VCon("Name.fromList", [VList ...])`;
+  real implementation awaits the stdlib Map/Set modules.
+- Lexer — Char: `'\'' [^ '\'']+ '\''` captures any UTF-8 byte sequence;
+  `LChar` was already `string`.
+- Lexer — String escapes: `\r`, `\0`, `\u{XXXX}` (Unicode codepoint via
+  `Buffer.add_utf_8_uchar`) added to `read_string`.
+- Lexer — Multiline strings: `strip_indent` helper strips common leading
+  whitespace from strings that begin with `\n`; applied at string close.
+- 24 new tests (14 parser, 3 round-trip, 7 typecheck).  381 total.
 
 ---
 
@@ -958,15 +960,12 @@ a phase in §6 unless noted.
   touching a `let mut` binding picks up `<Mut>`. Today only direct calls
   to extern `set_ref` add it via the `eff_env` path. The merge of effects
   into `TFun` (already noted) is the right place to fix this too.
-- **Multiline string indentation stripping not implemented.** The lexer
-  preserves all whitespace. Design doc shows leading-indent stripping;
-  scheduled in Phase 16.
-- **`Char` is byte-based.** Lexer rule
-  `'\'' ([^ '\''] as c) '\''` accepts exactly one byte; the design wants
-  a grapheme cluster. Phase 16.
-- **No `\u{XXXX}` / `\r` / `\0` in string literals.** Only `\n`, `\t`,
-  `\"`, `\\` today. Phase 16.
-- **No `Map { ... => ... }` or `Set { ... }` literal syntax.** Phase 16.
+- **Multiline string indentation stripping.** ✅ Phase 16 done.
+- **`Char` accepts multi-byte UTF-8.** ✅ Phase 16 done (byte sequence, not
+  validated grapheme cluster; segmentation library deferred to stdlib).
+- **`\r`, `\0`, `\u{XXXX}` string escapes.** ✅ Phase 16 done.
+- **`Map { ... => ... }` and `Set { ... }` literal syntax.** ✅ Phase 16 done.
+  Runtime representation (`Map.fromList`/`Set.fromList`) awaits stdlib.
 - **`%` modulo not lexed.** `eval_arith` already handles `%` but no token
   exists for it in the lexer. Phase 17.
 - **`+.` / `-.` / `*.` / `/.` referenced in `eval_arith` but not lexed.**

@@ -1007,6 +1007,33 @@ let t_extern_effect_annotated = assert_type
   "extern myPrint : a -> <IO> Unit\nf : a -> <IO> Unit\nf x = myPrint x\n"
   "f" "a -> Unit"
 
+(* ── Collection literal tests ───────────────────── *)
+
+let t_map_string_int = assert_type
+  "m = Map { \"a\" => 1, \"b\" => 2 }\n"
+  "m" "Map String Int"
+
+let t_map_int_bool = assert_type
+  "m = Map { 1 => True, 2 => False }\n"
+  "m" "Map Int Bool"
+
+let t_set_int = assert_type
+  "s = Set { 1, 2, 3 }\n"
+  "s" "Set Int"
+
+let t_set_string = assert_type
+  "s = Set { \"a\", \"b\" }\n"
+  "s" "Set String"
+
+let e_map_key_mismatch = assert_err
+  "m = Map { 1 => true, \"x\" => false }\n"
+
+let e_map_val_mismatch = assert_err
+  "m = Map { \"a\" => 1, \"b\" => True }\n"
+
+let e_set_type_mismatch = assert_err
+  "s = Set { 1, \"two\" }\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1205,5 +1232,14 @@ let () =
       test_case "constant"                  `Quick t_extern_constant;
       test_case "err: impure without annot" `Quick e_extern_effect_impure;
       test_case "effect annotated ok"       `Quick t_extern_effect_annotated;
+    ];
+    "collection literals", [
+      test_case "map String Int"         `Quick t_map_string_int;
+      test_case "map Int Bool"           `Quick t_map_int_bool;
+      test_case "set Int"                `Quick t_set_int;
+      test_case "set String"             `Quick t_set_string;
+      test_case "err: map key mismatch"  `Quick e_map_key_mismatch;
+      test_case "err: map val mismatch"  `Quick e_map_val_mismatch;
+      test_case "err: set type mismatch" `Quick e_set_type_mismatch;
     ];
   ]

@@ -388,6 +388,10 @@ let rec check_expr env scope errors e =
     ) fs
   | EArrayLit es | EListLit es | ETuple es ->
     List.iter (check_expr env scope errors) es
+  | EMapLit (_, kvs) ->
+    List.iter (fun (k, v) -> check_expr env scope errors k; check_expr env scope errors v) kvs
+  | ESetLit (_, es) ->
+    List.iter (check_expr env scope errors) es
   | EIndex (e, i) ->
     check_expr env scope errors e;
     check_expr env scope errors i

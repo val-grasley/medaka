@@ -242,4 +242,9 @@ let () =
       test_case "with effect"      `Quick (mk "extern print : a -> <IO> Unit\n");
       test_case "multi-arg effect" `Quick (mk "extern set_ref : Ref a -> a -> <Mut> Unit\n");
     ];
+    "collection literals", [
+      test_case "map literal"  `Quick (mk "m = Map { \"a\" => 1, \"b\" => 2 }\n");
+      test_case "set literal"  `Quick (mk "s = Set { 1, 2, 3 }\n");
+      test_case "hashmap"      `Quick (mk "m = HashMap { \"x\" => True }\n");
+    ];
   ]
