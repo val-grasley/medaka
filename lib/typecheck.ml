@@ -854,11 +854,21 @@ and binop_type env op l r =
   let tr = infer env r in
   match op with
   | "+" | "-" | "*" | "/" ->
-    unify tl t_int; unify tr t_int; t_int
+    let a = fresh_var () in
+    let r = match a with TVar r -> r | _ -> assert false in
+    unify tl a; unify tr a;
+    env.method_usages := ("__num__", [r]) :: !(env.method_usages);
+    a
   | "==" | "!=" ->
     unify tl tr; t_bool
   | "<" | ">" | "<=" | ">=" ->
-    unify tl t_int; unify tr t_int; t_bool
+    let a = fresh_var () in
+    let r = match a with TVar r -> r | _ -> assert false in
+    unify tl a; unify tr a;
+    env.method_usages := ("__ord__", [r]) :: !(env.method_usages);
+    t_bool
+  | "%" ->
+    unify tl t_int; unify tr t_int; t_int
   | "&&" | "||" ->
     unify tl t_bool; unify tr t_bool; t_bool
   | "::" ->
@@ -1114,6 +1124,26 @@ let register_impl env = function
     env.impls := entry :: !(env.impls)
   | _ -> ()
 
+(* Register built-in Num and Ord interfaces directly in OCaml.
+   Uses synthetic witness method names (prefixed/suffixed __) that will never
+   appear in user source; they exist solely so check_method_usages can find the
+   interface's param_ids and verify matching impl_entry records in env.impls.
+   Called from check_program and typecheck_module after initial_env is in place. *)
+let seed_builtin_interfaces env =
+  let mk name = [{ Ast.method_name = "__" ^ name ^ "__";
+                   Ast.method_type = Ast.TyCon "Unit";
+                   Ast.method_default = None }] in
+  let _ = register_interface env ("Num", ["a"], mk "num") in
+  let _ = register_interface env ("Ord", ["a"], mk "ord") in
+  let push iface ty =
+    env.impls := { impl_iface = iface; impl_name = None;
+                   impl_is_default = false; impl_type_mono = [ty] }
+                 :: !(env.impls)
+  in
+  push "Num" t_int;    push "Num" t_float;
+  push "Ord" t_int;    push "Ord" t_float;
+  push "Ord" t_string; push "Ord" t_char
+
 (* ── Constraint checking ─────────────────────────── *)
 
 (* One-directional structural matching: pattern (from impl type_args) may
@@ -1291,6 +1321,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   reset_state ();
   current_loc := None;
   let env = initial_env () in
+  seed_builtin_interfaces env;
 
   (* Phase 1: register data, record, interface, impl, and extern declarations *)
   let iface_method_schemes = ref [] in
@@ -1382,6 +1413,7 @@ let typecheck_module
   reset_state ();
   current_loc := None;
   let env = initial_env () in
+  seed_builtin_interfaces env;
 
   (* Seed env with all known module exports *)
   List.iter (fun te ->
@@ -1550,7 +1582,9 @@ let typecheck_module
 (* Create a fresh typecheck env seeded with built-ins.
    Does NOT call reset_state so the TVar counter is shared across REPL inputs. *)
 let make_repl_tc_env () : env ref =
-  ref (initial_env ())
+  let env = initial_env () in
+  seed_builtin_interfaces env;
+  ref env
 
 (* Deep-copy an env: all hashtable fields get fresh copies, list refs get fresh
    refs.  Used by the REPL's :load command for atomic snapshot/restore. *)

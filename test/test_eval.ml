@@ -229,6 +229,11 @@ let t_ref = assert_val {|r = do
 
 (* ── Runtime errors ─────────────────────────────────────────────────────── *)
 
+(* ── Phase 17: Float arithmetic and modulo ──────────────────────────── *)
+let t_float_add = assert_val "x = 1.5 + 2.0\n" "x" (VFloat 3.5)
+let t_float_mul = assert_val "x = 3.0 * 2.0\n" "x" (VFloat 6.0)
+let t_int_mod   = assert_val "x = 10 % 3\n"    "x" (VInt 1)
+
 let t_div_by_zero = assert_runtime_err "x = 1 / 0\n" "x"
 let t_match_fail  = assert_runtime_err {|r =
   match 5
@@ -308,5 +313,10 @@ let () =
     "runtime errors", [
       test_case "div_by_zero" `Quick t_div_by_zero;
       test_case "match_fail"  `Quick t_match_fail;
+    ];
+    "float arithmetic and modulo (Phase 17)", [
+      test_case "1.5 + 2.0"  `Quick t_float_add;
+      test_case "3.0 * 2.0"  `Quick t_float_mul;
+      test_case "10 % 3"     `Quick t_int_mod;
     ];
   ]

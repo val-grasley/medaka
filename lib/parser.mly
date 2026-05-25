@@ -61,7 +61,7 @@ let rec expr_to_pat = function
 %token IMPORT EXPORT WHERE OF DO AS EXTERN
 
 (* Operators *)
-%token PLUS MINUS STAR SLASH
+%token PLUS MINUS STAR SLASH MOD
 %token EQ_EQ NEQ LT GT LEQ GEQ
 %token AND OR
 %token CONS PLUSPLUS
@@ -342,6 +342,7 @@ expr_add:
 expr_mul:
   | expr_mul STAR  expr_unary  { EBinOp ("*", $1, $3) }
   | expr_mul SLASH expr_unary  { EBinOp ("/", $1, $3) }
+  | expr_mul MOD   expr_unary  { EBinOp ("%", $1, $3) }
   | expr_unary                 { $1 }
 
 (* Unary minus binds tighter than `*` / `+` but looser than application.

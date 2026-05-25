@@ -83,7 +83,7 @@ let t_const_unit   = assert_type "x = ()\n"     "x" "Unit"
 
 let t_identity   = assert_type "id x = x\n"           "id"   "a -> a"
 let t_const_fn   = assert_type "const x _ = x\n"      "const" "a -> b -> a"
-let t_double     = assert_type "double x = x + x\n"   "double" "Int -> Int"
+let t_double     = assert_type "double x = x + x\n"   "double" "a -> a"
 let t_inc        = assert_type "inc x = x + 1\n"      "inc"  "Int -> Int"
 let t_apply      = assert_type "apply f x = f x\n"    "apply" "(a -> b) -> a -> b"
 let t_compose    = assert_type "compose f g x = f (g x)\n"  "compose"
@@ -369,7 +369,7 @@ let t_do_bind_pure = assert_type
 (* Two binds then pure *)
 let t_do_two_binds = assert_type
   "f a b =\n  do\n    x <- a\n    y <- b\n    pure (x + y)\n"
-  "f" "a Int -> a Int -> a Int"
+  "f" "a b -> a b -> a b"
 
 (* DoLet: plain binding inside a do block, no monadic wrapping *)
 let t_do_let = assert_type
@@ -389,7 +389,7 @@ let t_do_pure_after_bind = assert_type
 (* Tuple destructuring in a DoBind *)
 let t_do_tuple_bind = assert_type
   "f opt =\n  do\n    (x, y) <- opt\n    pure (x + y)\n"
-  "f" "a (Int, Int) -> a Int"
+  "f" "a (b, b) -> a b"
 
 (* DoExpr in the middle: value is discarded but must still be monadic *)
 let t_do_skip_middle = assert_type
@@ -404,7 +404,7 @@ let t_do_toplevel = assert_type
 (* DoLet with a local function *)
 let t_do_let_fn = assert_type
   "f opt =\n  do\n    x <- opt\n    let double n = n + n\n    pure (double x)\n"
-  "f" "a Int -> a Int"
+  "f" "a b -> a b"
 
 (* Error: mixing two different monads *)
 let e_do_mixed_monads = assert_err
@@ -458,7 +458,7 @@ let e_compose_type_mismatch = assert_err
 
 (* Pure function — no annotation, no effects: fine *)
 let t_eff_pure = assert_type
-  "add x y = x + y\n" "add" "Int -> Int -> Int"
+  "add x y = x + y\n" "add" "a -> a -> a"
 
 (* IO function with correct annotation *)
 let t_eff_io_annotated = assert_type
@@ -1034,6 +1034,29 @@ let e_map_val_mismatch = assert_err
 let e_set_type_mismatch = assert_err
   "s = Set { 1, \"two\" }\n"
 
+(* ── Phase 17: polymorphic arithmetic / comparison / modulo ───── *)
+
+(* Float arithmetic via Num *)
+let t_float_add = assert_type "x = 1.5 + 2.0\n" "x" "Float"
+let t_float_mul = assert_type "x = 1.5 * 2.0\n" "x" "Float"
+let t_int_add_regression = assert_type "x = 1 + 2\n" "x" "Int"
+
+(* Polymorphic equality unchanged *)
+let t_float_eq = assert_type "x = 1.5 == 2.0\n" "x" "Bool"
+let t_string_eq = assert_type "x = \"a\" == \"b\"\n" "x" "Bool"
+
+(* Comparison via Ord — now works on Float and String *)
+let t_string_lt = assert_type "x = \"a\" < \"b\"\n" "x" "Bool"
+let t_float_lt  = assert_type "x = 1.5 < 2.0\n"  "x" "Bool"
+
+(* Modulo — Int only *)
+let t_int_mod = assert_type "x = 5 % 2\n" "x" "Int"
+
+(* Errors *)
+let e_string_num = assert_err "x = \"a\" + \"b\"\n"
+let e_int_float_mismatch = assert_err "x = 1 + 1.5\n"
+let e_float_mod = assert_err "x = 5.0 % 2.0\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1241,5 +1264,18 @@ let () =
       test_case "err: map key mismatch"  `Quick e_map_key_mismatch;
       test_case "err: map val mismatch"  `Quick e_map_val_mismatch;
       test_case "err: set type mismatch" `Quick e_set_type_mismatch;
+    ];
+    "polymorphic ops (Phase 17)", [
+      test_case "Float add"              `Quick t_float_add;
+      test_case "Float mul"              `Quick t_float_mul;
+      test_case "Int add regression"     `Quick t_int_add_regression;
+      test_case "Float eq"               `Quick t_float_eq;
+      test_case "String eq"              `Quick t_string_eq;
+      test_case "String lt"              `Quick t_string_lt;
+      test_case "Float lt"               `Quick t_float_lt;
+      test_case "Int mod"                `Quick t_int_mod;
+      test_case "err: String Num"        `Quick e_string_num;
+      test_case "err: Int+Float mismatch" `Quick e_int_float_mismatch;
+      test_case "err: Float mod"         `Quick e_float_mod;
     ];
   ]

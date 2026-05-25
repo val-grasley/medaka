@@ -20,15 +20,15 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-381 tests pass across 7 test suites:
+396 tests pass across 7 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 69    | AST shape for each construct                          |
+| Parser            | `test/test_parser.ml`           | 70    | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 57    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 40    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 159   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 41    | Runtime values, recursion, do-blocks, Ref, errors     |
+| Type checker      | `test/test_typecheck.ml`        | 170   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 44    | Runtime values, recursion, do-blocks, Ref, errors     |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
 
@@ -794,30 +794,34 @@ with the other Phase 14/16/17 work if desired.
 
 ---
 
-### Phase 17: Float / Bool / polymorphic ops (small but unblocks stdlib)
+### Phase 17: Float / Bool / polymorphic ops ✅ DONE
 
 **Goal.** Move arithmetic and comparison off the Int-only built-ins so
 that stdlib code defining `Map`, `Float`, `Ord` etc. type-checks.
 
-**Scope.**
-- `+`, `-`, `*`, `/` desugar to method calls on a built-in `Num`
-  interface; `==`/`!=` to `Eq`; `<`/`>`/`<=`/`>=` to `Ord`.  Built-in
-  impls for `Int` and `Float` ship in the runtime registry.
-- Unary `-` becomes `Num.negate`; `!` stays Bool-only.
-- Lexer/parser get `+.` / `-.` / `*.` / `/.` only if the user thinks
-  ML-style explicit Float ops are worth it — by default, drop them; the
-  `Num` interface dispatch handles `+` on Floats just fine.  (My
-  recommendation: drop them; `print 1.0 +. 2.0` is uglier than the
-  inferred-Num version.)
-- `%` modulo: add `MOD` token, parser slot at `expr_mul` precedence;
-  routes through `Num` (or a new `Integral` interface) so it stays
-  Int-only at the type level.
-- This phase exposes any holes in interface constraint solving — fix
-  them as they surface rather than speculatively.
+**What was added (this session).**
+- `seed_builtin_interfaces env` in `typecheck.ml` — registers `Num` and
+  `Ord` interfaces with synthetic witness methods (`__num__`, `__ord__`)
+  and pushes built-in `impl_entry` records for `Int`/`Float` (Num) and
+  `Int`/`Float`/`String`/`Char` (Ord).  Called from `check_program`,
+  `typecheck_module`, and `make_repl_tc_env`.
+- `binop_type` updated: `+`/`-`/`*`/`/` now create a fresh TVar `a`,
+  unify both operands with `a`, and record `("__num__", [r])` in
+  `env.method_usages` so `check_method_usages` verifies `Num a` exists;
+  `<`/`>`/`<=`/`>=` do the same with `__ord__`; `%` stays Int-only.
+- `eval_arith` extended with `VFloat` cases for `+`, `-`, `*`, `/`.
+- Lexer: `%` token (`MOD`).
+- Parser: `expr_mul MOD expr_unary` rule at `expr_mul` precedence.
+  Conflict count unchanged: 3 S/R (12) + 7 R/R (23).
+- 15 new tests (1 parser, 11 typecheck, 3 eval).  396 total.
 
-**Done when.** A test program using `1.5 +. 2.0` (or just `1.5 + 2.0`
-under the new dispatch) type-checks and runs; the polymorphic `==` works
-across user types that derive / impl `Eq`.
+**Key design note.** `==`/`!=` are unchanged — `unify tl tr` already
+correctly accepts any two values of the same type. Adding an `Eq`
+constraint was deferred because it would break list/tuple equality in
+existing code until `impl Eq (List a)` etc. are registered.
+`double x = x + x` now infers `a -> a` (polymorphic) instead of
+`Int -> Int`.  Five existing tests were updated to reflect the new
+inferred types.
 
 ---
 
@@ -908,12 +912,14 @@ These aren't blockers, but a less-careful change could trip over them:
   `lib/runtime.ml` (Phase 9 ✅). Primitive types (`List`, `Option`, …) are
   still hard-coded in `resolve.ml`/`typecheck.ml` until the stdlib lands.
 - `EUnOp "-"` only types as `Int -> Int`. Float negation isn't supported.
-- All comparison ops (`==`, `<`, …) currently force `Int`. They should be
-  polymorphic (`forall a. a -> a -> Bool` for `==`, ordered types for `<`)
-  via `Eq`/`Ord` interfaces — deferred until interface instance resolution
-  has real use cases (post-Phase 11).
-- Arithmetic ops (`+`, `-`, `*`, `/`) likewise force `Int`. Will become
-  `Num`-interface-dispatched in the same pass.
+- `==`/`!=` accept any two values of the same type (already polymorphic via
+  `unify tl tr`). An `Eq` constraint is not yet checked — deferred until
+  `impl Eq (List a)`, `impl Eq (Option a)` etc. can be registered so
+  existing code doesn't break.
+- `<`/`>`/`<=`/`>=` now use `Ord` constraint (Phase 17 ✅). Int, Float,
+  String, and Char are the registered built-in impls.
+- Arithmetic ops (`+`, `-`, `*`, `/`) now use `Num` constraint (Phase 17 ✅).
+  Int and Float are the registered built-in impls.
 - Effects: tracked in a separate `eff_env`, not in `TFun`. Higher-order
   callbacks that *receive* an effectful function aren't tracked (Phase 3
   limitation). Real fix requires merging effects into `TFun`.
@@ -966,11 +972,10 @@ a phase in §6 unless noted.
 - **`\r`, `\0`, `\u{XXXX}` string escapes.** ✅ Phase 16 done.
 - **`Map { ... => ... }` and `Set { ... }` literal syntax.** ✅ Phase 16 done.
   Runtime representation (`Map.fromList`/`Set.fromList`) awaits stdlib.
-- **`%` modulo not lexed.** `eval_arith` already handles `%` but no token
-  exists for it in the lexer. Phase 17.
-- **`+.` / `-.` / `*.` / `/.` referenced in `eval_arith` but not lexed.**
-  Either drop them (recommended once `Num` interface dispatch lands) or
-  add tokens. Phase 17.
+- **`%` modulo.** ✅ Phase 17 done. Lexer token `MOD`, parser rule, Int-only.
+- **`+.` / `-.` / `*.` / `/.` in `eval_arith`.** Now dead code (Phase 17
+  made `+`/`-`/`*`/`/` dispatch on value type, so `+.` etc. can never be
+  emitted). Harmless; can be pruned in a later housekeeping pass.
 - **Tree-sitter grammar absent.** Design doc Phase 1 calls for it in
   parallel with the compiler. Phase 15.
 - **CLI surface is minimal.** The design specifies `medaka new`, `build`,

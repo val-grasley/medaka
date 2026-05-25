@@ -181,6 +181,7 @@ and read = parse
   | '{'   { LBRACE }
   | '}'   { RBRACE }
   | '!'   { BANG }
+  | '%'   { MOD }
 
   | eof   {
       let rec close_all () =

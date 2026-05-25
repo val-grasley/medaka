@@ -212,6 +212,11 @@ let test_expr_list_arg () =
   | EApp (EVar "f", EListLit [ELit (LInt 1); ELit (LInt 2)]) -> ()
   | _ -> failwith "wrong"
 
+let test_expr_modulo () =
+  match parse_expr "5 % 2\n" with
+  | EBinOp ("%", ELit (LInt 5), ELit (LInt 2)) -> ()
+  | _ -> failwith "wrong"
+
 (* ── Collection literal tests ────────────────────────── *)
 
 let test_map_literal () =
@@ -538,6 +543,7 @@ let () =
       test_case "array index"       `Quick test_expr_index;
       test_case "operator section"  `Quick test_expr_section;
       test_case "list as arg"       `Quick test_expr_list_arg;
+      test_case "modulo"            `Quick test_expr_modulo;
     ];
     "collection literals", [
       test_case "map literal"          `Quick test_map_literal;
