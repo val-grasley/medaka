@@ -571,8 +571,8 @@ to a value and the new `test_eval.ml` suite is green.
 - `lib/eval.ml` gains `output_hook : (string -> unit) ref` (defaults to
   `print_string`); `print`/`println` primitives use it. Tests swap it to a
   `Buffer.add_string buf` to capture output without touching real stdout.
-- `main` is exempt from the effect-purity check in `typecheck.ml` (it is the
-  program's entry point and is expected to call IO-effectful functions).
+- Convention: `main` must be annotated `main : <IO> Unit` (or whatever effects
+  it performs). It is subject to the same purity check as any other function.
 - `test/test_run.ml` — 6 tests: hello world, factorial (recursion), ADT
   match, multi-print do-block, let-mut reassignment, non-exhaustive match panic.
 - `test/dune` updated to include `test_run`.
