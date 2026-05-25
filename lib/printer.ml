@@ -304,13 +304,16 @@ let print_use_path p = function
     write p " as "; write p alias
 
 let print_decl p = function
-  | DTypeSig (n, t) ->
+  | DTypeSig (pub, n, t) ->
+    if pub then write p "pub ";
     write p n; write p " : "; print_type p t
 
-  | DExtern (n, t) ->
+  | DExtern (pub, n, t) ->
+    if pub then write p "pub ";
     write p "extern "; write p n; write p " : "; print_type p t
 
-  | DFunDef (n, pats, body) ->
+  | DFunDef (pub, n, pats, body) ->
+    if pub then write p "pub ";
     write p n;
     List.iter (fun pat -> write p " "; print_pat_atom p pat) pats;
     write p " =";
@@ -321,7 +324,8 @@ let print_decl p = function
       print_expr p prec_top body
     end
 
-  | DData (n, params, variants) ->
+  | DData (pub, n, params, variants) ->
+    if pub then write p "pub ";
     write p "data "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
     indented p (fun () ->
@@ -332,7 +336,8 @@ let print_decl p = function
       ) variants
     )
 
-  | DRecord (n, params, fields) ->
+  | DRecord (pub, n, params, fields) ->
+    if pub then write p "pub ";
     write p "record "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
     indented p (fun () ->
@@ -344,7 +349,8 @@ let print_decl p = function
       ) fields
     )
 
-  | DInterface { is_default; iface_name; type_params; super; methods } ->
+  | DInterface { is_pub; is_default; iface_name; type_params; super; methods } ->
+    if is_pub then write p "pub ";
     if is_default then write p "default ";
     write p "interface "; write p iface_name;
     List.iter (fun pa -> write p " "; write p pa) type_params;
@@ -372,7 +378,8 @@ let print_decl p = function
       ) methods
     )
 
-  | DImpl { is_default; iface_name; type_args; impl_name; methods } ->
+  | DImpl { is_pub; is_default; iface_name; type_args; impl_name; methods } ->
+    if is_pub then write p "pub ";
     if is_default then write p "default ";
     write p "impl ";
     (match impl_name with

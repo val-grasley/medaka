@@ -77,17 +77,17 @@ let process_item source resolve_env tc_env eval_state pending_sigs user_bindings
     | Ast.ReplDecl decls ->
       (* Augment with pending type sigs from prior inputs, then update the list *)
       let defined_names = List.filter_map
-        (function Ast.DFunDef (n,_,_) -> Some n | _ -> None) decls in
+        (function Ast.DFunDef (_,n,_,_) -> Some n | _ -> None) decls in
       let relevant_sigs = List.filter
-        (function Ast.DTypeSig (n, _) -> List.mem n defined_names | _ -> false)
+        (function Ast.DTypeSig (_, n, _) -> List.mem n defined_names | _ -> false)
         !pending_sigs
       in
       let new_pending_sigs = List.filter
-        (function Ast.DTypeSig (n, _) -> not (List.mem n defined_names) | _ -> true)
+        (function Ast.DTypeSig (_, n, _) -> not (List.mem n defined_names) | _ -> true)
         !pending_sigs
       in
       let standalone_sigs = List.filter
-        (function Ast.DTypeSig (n, _) -> not (List.mem n defined_names) | _ -> false)
+        (function Ast.DTypeSig (_, n, _) -> not (List.mem n defined_names) | _ -> false)
         decls
       in
       pending_sigs := new_pending_sigs @ standalone_sigs;
@@ -102,8 +102,8 @@ let process_item source resolve_env tc_env eval_state pending_sigs user_bindings
          ) bindings;
          List.iter (fun decl ->
            match decl with
-           | Ast.DData (n, _, _)     -> Printf.printf "type %s\n%!" n
-           | Ast.DRecord (n, _, _)   -> Printf.printf "record %s\n%!" n
+           | Ast.DData (_, n, _, _)   -> Printf.printf "type %s\n%!" n
+           | Ast.DRecord (_, n, _, _) -> Printf.printf "record %s\n%!" n
            | Ast.DInterface { iface_name; _ } ->
              Printf.printf "interface %s\n%!" iface_name
            | _ -> ()

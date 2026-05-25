@@ -640,7 +640,7 @@ were already passing with updated counts).
 
 ---
 
-### Phase 14: Module system v1 — single-namespace cross-file `use`
+### Phase 14: Module system v1 — single-namespace cross-file `use` ✓ DONE
 
 **Goal.** The smallest possible working module system: each file is a
 module, imports work, privacy is enforced, no nested namespaces yet.  Just

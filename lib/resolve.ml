@@ -7,16 +7,18 @@ open Ast
 (* ── Errors ────────────────────────────────────── *)
 
 type error =
-  | UnboundVariable     of ident
-  | UnknownConstructor  of ident
-  | UnknownType         of ident
-  | UnknownEffect       of ident
-  | UnknownField        of ident          (* field name not declared in any record *)
-  | FieldNotInRecord    of ident * ident  (* field, record — field exists but not in this record *)
-  | DuplicateDefinition of string * ident  (* kind, name *)
-  | UnknownInterface    of ident           (* impl references an unknown interface *)
-  | MethodNotInInterface of ident * ident  (* method name, interface name *)
-  | ExternWithBody      of ident           (* extern name also has a fun_def *)
+  | UnboundVariable      of ident
+  | UnknownConstructor   of ident
+  | UnknownType          of ident
+  | UnknownEffect        of ident
+  | UnknownField         of ident          (* field name not declared in any record *)
+  | FieldNotInRecord     of ident * ident  (* field, record — field exists but not in this record *)
+  | DuplicateDefinition  of string * ident  (* kind, name *)
+  | UnknownInterface     of ident           (* impl references an unknown interface *)
+  | MethodNotInInterface of ident * ident   (* method name, interface name *)
+  | ExternWithBody       of ident           (* extern name also has a fun_def *)
+  | PrivateNameAccess    of ident * string  (* name, owning module *)
+  | UnknownModule        of ident           (* use references a module that can't be found *)
 
 let current_loc : Ast.loc option ref = ref None
 
@@ -33,6 +35,10 @@ let pp_error = function
     Printf.sprintf "Method '%s' is not part of interface %s" m iface
   | ExternWithBody n ->
     Printf.sprintf "extern '%s' must not have a definition body" n
+  | PrivateNameAccess (n, m) ->
+    Printf.sprintf "'%s' is private to module %s" n m
+  | UnknownModule n ->
+    Printf.sprintf "Unknown module: %s" n
 
 (* ── Built-ins ─────────────────────────────────── *)
 
@@ -54,6 +60,19 @@ let built_in_effects = [
   "IO"; "Mut"; "Async"; "Panic"; "Rand"; "Time";
 ]
 
+(* ── Module exports (public interface of a resolved module) ── *)
+
+type module_exports = {
+  exp_mod_id          : string;
+  exp_values          : (ident, unit) Hashtbl.t;
+  exp_types           : (ident, unit) Hashtbl.t;
+  exp_constructors    : (ident, unit) Hashtbl.t;
+  exp_fields          : (ident, unit) Hashtbl.t;
+  exp_field_owners    : (ident, string) Hashtbl.t;
+  exp_interfaces      : (ident, unit) Hashtbl.t;
+  exp_iface_methods   : (ident, ident list) Hashtbl.t;
+}
+
 (* ── Module environment ────────────────────────── *)
 
 type module_env = {
@@ -65,6 +84,8 @@ type module_env = {
   interfaces     : (ident, unit) Hashtbl.t;
   iface_methods  : (ident, ident list) Hashtbl.t;  (* iface name → method names *)
   imported       : (ident, unit) Hashtbl.t;
+  (* Alias map: for `use foo as F` or qualified `use foo`, F/foo → module_exports *)
+  module_aliases : (ident, module_exports) Hashtbl.t;
 }
 
 let create_env () =
@@ -77,6 +98,7 @@ let create_env () =
     interfaces     = Hashtbl.create 8;
     iface_methods  = Hashtbl.create 8;
     imported       = Hashtbl.create 8;
+    module_aliases = Hashtbl.create 4;
   } in
   List.iter (fun n -> Hashtbl.replace env.types n ()) primitive_types;
   List.iter (fun n -> Hashtbl.replace env.constructors n ()) primitive_constructors;
@@ -96,7 +118,58 @@ let rec pat_bindings = function
 
 (* ── Phase 1: build env from top-level decls ──── *)
 
-let build_env (prog : program) : module_env * (error * Ast.loc option) list =
+(* Resolve a use_path against known module exports, returning the module_id
+   that the path refers to. *)
+let use_path_module_id = function
+  | UseName ns ->
+    (* use foo.bar → module "foo", name "bar";  use foo → module "foo" (alias) *)
+    if List.length ns > 1 then
+      String.concat "." (List.rev (List.tl (List.rev ns)))
+    else
+      List.hd ns
+  | UseGroup (ns, _) -> String.concat "." ns
+  | UseWild  ns      -> String.concat "." ns
+  | UseAlias (ns, _) -> String.concat "." ns
+
+(* Names introduced into scope by a use_path, given the referenced module's exports.
+   Returns (values, types) lists to add. *)
+let imported_names (path : use_path) (exp : module_exports)
+    (report : error -> unit) =
+  let add_val   n = Hashtbl.mem exp.exp_values   n in
+  let add_type  n = Hashtbl.mem exp.exp_types    n in
+  let add_ctor  n = Hashtbl.mem exp.exp_constructors n in
+  let is_pub    n = add_val n || add_type n || add_ctor n
+                    || Hashtbl.mem exp.exp_interfaces n in
+  let check_pub n =
+    if not (is_pub n) then
+      report (PrivateNameAccess (n, exp.exp_mod_id))
+  in
+  match path with
+  | UseName ns ->
+    (* use foo.bar: bring "bar" into scope if public *)
+    if List.length ns > 1 then begin
+      let name = List.hd (List.rev ns) in
+      check_pub name;
+      [name]
+    end else
+      (* use foo alone: just register alias, no individual names *)
+      []
+  | UseGroup (_, members) ->
+    List.iter check_pub members;
+    members
+  | UseWild _ ->
+    (* bring all public names *)
+    let names = ref [] in
+    Hashtbl.iter (fun n () -> names := n :: !names) exp.exp_values;
+    Hashtbl.iter (fun n () -> names := n :: !names) exp.exp_types;
+    Hashtbl.iter (fun n () -> names := n :: !names) exp.exp_constructors;
+    !names
+  | UseAlias (_, alias) ->
+    (* alias only; the alias itself is in module_aliases, no individual names *)
+    [alias]
+
+let build_env ?(known_modules : module_exports list = [])
+    (prog : program) : module_env * (error * Ast.loc option) list =
   let env = create_env () in
   let errors = ref [] in
   let report e = errors := (e, None) :: !errors in
@@ -109,25 +182,25 @@ let build_env (prog : program) : module_env * (error * Ast.loc option) list =
   let add_or_skip tbl name = Hashtbl.replace tbl name () in
   (* Pre-collect extern names so DFunDef can check for conflicts in any order *)
   let extern_names =
-    List.filter_map (function DExtern (n, _) -> Some n | _ -> None) prog
+    List.filter_map (function DExtern (_, n, _) -> Some n | _ -> None) prog
   in
   List.iter (fun d ->
     match d with
-    | DTypeSig (n, _) ->
+    | DTypeSig (_, n, _) ->
       (* Type sig pairs with later fun_def; either order works *)
       add_or_skip env.values n
-    | DExtern (n, _) ->
+    | DExtern (_, n, _) ->
       add_or_skip env.values n
-    | DFunDef (n, _, _) ->
+    | DFunDef (_, n, _, _) ->
       if List.mem n extern_names then report (ExternWithBody n);
       (* Multi-clause definitions add the same name repeatedly *)
       add_or_skip env.values n
-    | DData (n, _, vs) ->
+    | DData (_, n, _, vs) ->
       add_unique env.types "type" n;
       List.iter (fun v ->
         add_unique env.constructors "constructor" v.con_name
       ) vs
-    | DRecord (n, _, fs) ->
+    | DRecord (_, n, _, fs) ->
       add_unique env.types "type" n;
       List.iter (fun f ->
         add_or_skip env.fields f.field_name;
@@ -141,19 +214,55 @@ let build_env (prog : program) : module_env * (error * Ast.loc option) list =
     | DImpl _ ->
       ()
     | DUse (_, path) ->
-      (* Bring imported names into scope as both values and types
-         (we don't know which without the imported module's interface) *)
-      let names = match path with
-        | UseName ns       -> [List.hd (List.rev ns)]
-        | UseGroup (_, ms) -> ms
-        | UseWild _        -> []
-        | UseAlias (_, a)  -> [a]
-      in
-      List.iter (fun n ->
-        add_or_skip env.imported n;
-        add_or_skip env.values n;
-        add_or_skip env.types n
-      ) names
+      let mod_id = use_path_module_id path in
+      (match List.find_opt (fun e -> e.exp_mod_id = mod_id) known_modules with
+       | None ->
+         if known_modules <> [] then
+           (* Only report if we're in multi-module mode *)
+           report (UnknownModule mod_id)
+         else begin
+           (* Single-file mode: stub (legacy behaviour) *)
+           let names = match path with
+             | UseName ns       -> [List.hd (List.rev ns)]
+             | UseGroup (_, ms) -> ms
+             | UseWild _        -> []
+             | UseAlias (_, a)  -> [a]
+           in
+           List.iter (fun n ->
+             add_or_skip env.imported n;
+             add_or_skip env.values n;
+             add_or_skip env.types n
+           ) names
+         end
+       | Some exp ->
+         (* Import names from the module's public exports *)
+         let names = imported_names path exp (fun e -> report e) in
+         List.iter (fun n ->
+           add_or_skip env.imported n;
+           (* Add to values/types/constructors as appropriate *)
+           if Hashtbl.mem exp.exp_values n then add_or_skip env.values n;
+           if Hashtbl.mem exp.exp_types  n then add_or_skip env.types  n;
+           if Hashtbl.mem exp.exp_constructors n then
+             add_or_skip env.constructors n;
+           if Hashtbl.mem exp.exp_interfaces n then
+             add_or_skip env.interfaces n
+         ) names;
+         (* Copy field ownership for imported record types *)
+         Hashtbl.iter (fun field owner ->
+           if Hashtbl.mem exp.exp_types owner then begin
+             add_or_skip env.fields field;
+             Hashtbl.replace env.field_owners field owner
+           end
+         ) exp.exp_field_owners;
+         (* Register module alias / qualified-access name *)
+         let alias = match path with
+           | UseAlias (_, a)      -> Some a
+           | UseName [single]     -> Some single  (* use foo → foo.x syntax *)
+           | _                    -> None
+         in
+         (match alias with
+          | Some a -> Hashtbl.replace env.module_aliases a exp
+          | None   -> ()))
   ) prog;
   env, List.rev !errors
 
@@ -314,17 +423,17 @@ let rec check_expr env scope errors e =
     check_expr env scope errors r
 
 let check_decl env errors = function
-  | DFunDef (_, pats, body) ->
+  | DFunDef (_, _, pats, body) ->
     List.iter (check_pat env errors) pats;
     let scope = List.concat_map pat_bindings pats in
     check_expr env scope errors body
-  | DTypeSig (_, t) ->
+  | DTypeSig (_, _, t) ->
     check_type env errors t
-  | DExtern (_, t) ->
+  | DExtern (_, _, t) ->
     check_type env errors t
-  | DData (_, _, vs) ->
+  | DData (_, _, _, vs) ->
     List.iter (fun v -> List.iter (check_type env errors) v.con_fields) vs
-  | DRecord (_, _, fs) ->
+  | DRecord (_, _, _, fs) ->
     List.iter (fun f -> check_type env errors f.field_type) fs
   | DUse _ -> ()
   | DInterface { methods; _ } ->
@@ -356,7 +465,61 @@ let check_decl env errors = function
       ) methods
     end
 
-(* ── Public entry point ───────────────────────── *)
+(* ── Build module exports from a resolved env ─── *)
+
+(* Collect all public names from a program into module_exports *)
+let build_exports (mod_id : string) (prog : program) (env : module_env)
+    : module_exports =
+  let exp = {
+    exp_mod_id        = mod_id;
+    exp_values        = Hashtbl.create 16;
+    exp_types         = Hashtbl.create 8;
+    exp_constructors  = Hashtbl.create 8;
+    exp_fields        = Hashtbl.create 8;
+    exp_field_owners  = Hashtbl.create 8;
+    exp_interfaces    = Hashtbl.create 4;
+    exp_iface_methods = Hashtbl.create 4;
+  } in
+  List.iter (fun d ->
+    match d with
+    | DTypeSig (true, n, _) ->
+      Hashtbl.replace exp.exp_values n ()
+    | DExtern (true, n, _) ->
+      Hashtbl.replace exp.exp_values n ()
+    | DFunDef (true, n, _, _) ->
+      Hashtbl.replace exp.exp_values n ()
+    | DData (true, n, _, vs) ->
+      Hashtbl.replace exp.exp_types n ();
+      List.iter (fun v ->
+        Hashtbl.replace exp.exp_constructors v.con_name ()
+      ) vs
+    | DRecord (true, n, _, fs) ->
+      Hashtbl.replace exp.exp_types n ();
+      List.iter (fun f ->
+        Hashtbl.replace exp.exp_fields f.field_name ();
+        Hashtbl.replace exp.exp_field_owners f.field_name n
+      ) fs
+    | DInterface { is_pub = true; iface_name; methods; _ } ->
+      Hashtbl.replace exp.exp_interfaces iface_name ();
+      Hashtbl.replace exp.exp_iface_methods iface_name
+        (List.map (fun m -> m.method_name) methods)
+    | DImpl { is_pub = true; _ } ->
+      (* Impl declarations export their methods via the interface's methods;
+         we don't need to separately export the impl itself. *)
+      ()
+    | _ -> ()
+  ) prog;
+  (* Also export interface method names whose interface is public *)
+  Hashtbl.iter (fun iface_name methods ->
+    if Hashtbl.mem exp.exp_interfaces iface_name then
+      List.iter (fun mn ->
+        if Hashtbl.mem env.values mn then
+          Hashtbl.replace exp.exp_values mn ()
+      ) methods
+  ) exp.exp_iface_methods;
+  exp
+
+(* ── Public entry points ──────────────────────── *)
 
 let resolve_program (prog : program) : (error * Ast.loc option) list =
   current_loc := None;
@@ -364,6 +527,20 @@ let resolve_program (prog : program) : (error * Ast.loc option) list =
   let errors = ref build_errors in
   List.iter (check_decl env errors) prog;
   List.rev !errors
+
+(* Multi-module entry point: resolve one module given previously-resolved exports.
+   Returns (module_exports, errors). *)
+let resolve_module
+    (known_modules : module_exports list)
+    (mod_id        : string)
+    (prog          : program)
+    : module_exports * (error * Ast.loc option) list =
+  current_loc := None;
+  let env, build_errors = build_env ~known_modules prog in
+  let errors = ref build_errors in
+  List.iter (check_decl env errors) prog;
+  let exports = build_exports mod_id prog env in
+  (exports, List.rev !errors)
 
 (* ── REPL incremental interface ──────────────── *)
 
@@ -386,19 +563,19 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
     | Ast.ReplExpr _ -> []
   in
   let extern_names =
-    List.filter_map (function Ast.DExtern (n, _) -> Some n | _ -> None) decls
+    List.filter_map (function Ast.DExtern (_, n, _) -> Some n | _ -> None) decls
   in
   List.iter (fun d ->
     match d with
-    | Ast.DTypeSig (n, _) -> add_or_skip env.values n
-    | Ast.DExtern (n, _)  -> add_or_skip env.values n
-    | Ast.DFunDef (n, _, _) ->
+    | Ast.DTypeSig (_, n, _) -> add_or_skip env.values n
+    | Ast.DExtern (_, n, _)  -> add_or_skip env.values n
+    | Ast.DFunDef (_, n, _, _) ->
       if List.mem n extern_names then report (ExternWithBody n);
       add_or_skip env.values n
-    | Ast.DData (n, _, vs) ->
+    | Ast.DData (_, n, _, vs) ->
       add_unique env.types "type" n;
       List.iter (fun v -> add_unique env.constructors "constructor" v.Ast.con_name) vs
-    | Ast.DRecord (n, _, fs) ->
+    | Ast.DRecord (_, n, _, fs) ->
       add_unique env.types "type" n;
       List.iter (fun f ->
         add_or_skip env.fields f.Ast.field_name;

@@ -168,18 +168,22 @@ decl:
 (* ── Extern declarations ─────────────────────────────── *)
 
 extern_decl:
-  | EXTERN IDENT COLON ty newlines  { DExtern ($2, $4) }
+  | PUB EXTERN IDENT COLON ty newlines  { DExtern (true,  $3, $5) }
+  | EXTERN IDENT COLON ty newlines      { DExtern (false, $2, $4) }
 
 (* ── Type signatures ─────────────────────────────────── *)
 
 type_sig:
-  | IDENT COLON ty newlines  { DTypeSig ($1, $3) }
+  | PUB IDENT COLON ty newlines  { DTypeSig (true,  $2, $4) }
+  | IDENT COLON ty newlines      { DTypeSig (false, $1, $3) }
 
 (* ── Function definitions ────────────────────────────── *)
 
 fun_def:
+  | PUB IDENT list(pat_atom) EQUAL fun_body newlines
+    { DFunDef (true,  $2, $3, $5) }
   | IDENT list(pat_atom) EQUAL fun_body newlines
-    { DFunDef ($1, $2, $4) }
+    { DFunDef (false, $1, $2, $4) }
 
 fun_body:
   | expr_no_block                       { $1 }
@@ -397,10 +401,14 @@ stmt:
 (* ── Data declarations ───────────────────────────────── *)
 
 data_decl:
+  | PUB DATA UPPER list(IDENT) INDENT nonempty_list(data_variant_line) DEDENT newlines
+    { DData (true,  $3, $4, $6) }
+  | PUB DATA UPPER list(IDENT) EQUAL separated_nonempty_list(PIPE, data_variant_inline) newlines
+    { DData (true,  $3, $4, $6) }
   | DATA UPPER list(IDENT) INDENT nonempty_list(data_variant_line) DEDENT newlines
-    { DData ($2, $3, $5) }
+    { DData (false, $2, $3, $5) }
   | DATA UPPER list(IDENT) EQUAL separated_nonempty_list(PIPE, data_variant_inline) newlines
-    { DData ($2, $3, $5) }
+    { DData (false, $2, $3, $5) }
 
 data_variant_line:
   | PIPE UPPER list(ty_atom) newlines  { { con_name = $2; con_fields = $3 } }
@@ -411,8 +419,10 @@ data_variant_inline:
 (* ── Record declarations ─────────────────────────────── *)
 
 record_decl:
+  | PUB RECORD UPPER list(IDENT) INDENT nonempty_list(record_field_decl) DEDENT newlines
+    { DRecord (true,  $3, $4, $6) }
   | RECORD UPPER list(IDENT) INDENT nonempty_list(record_field_decl) DEDENT newlines
-    { DRecord ($2, $3, $5) }
+    { DRecord (false, $2, $3, $5) }
 
 record_field_decl:
   | IDENT COLON ty newlines  { { field_name = $1; field_type = $3 } }
@@ -420,9 +430,21 @@ record_field_decl:
 (* ── Interface declarations ──────────────────────────── *)
 
 iface_decl:
+  | PUB option(DEFAULT) INTERFACE UPPER list(IDENT) option(iface_super) WHERE
+    INDENT nonempty_list(iface_member) DEDENT newlines
+    { DInterface {
+        is_pub      = true;
+        is_default  = $2 <> None;
+        iface_name  = $4;
+        type_params = $5;
+        super       = Option.value ~default:[] $6;
+        methods     = $9;
+      }
+    }
   | option(DEFAULT) INTERFACE UPPER list(IDENT) option(iface_super) WHERE
     INDENT nonempty_list(iface_member) DEDENT newlines
     { DInterface {
+        is_pub      = false;
         is_default  = $1 <> None;
         iface_name  = $3;
         type_params = $4;
@@ -446,9 +468,32 @@ iface_member:
 (* ── Impl declarations ───────────────────────────────── *)
 
 impl_decl:
+  | PUB option(DEFAULT) IMPL UPPER nonempty_list(ty_atom) WHERE
+    INDENT nonempty_list(impl_method) DEDENT newlines
+    { DImpl {
+        is_pub     = true;
+        is_default = $2 <> None;
+        iface_name = $4;
+        type_args  = $5;
+        impl_name  = None;
+        methods    = $8;
+      }
+    }
+  | PUB option(DEFAULT) IMPL IDENT OF UPPER nonempty_list(ty_atom) WHERE
+    INDENT nonempty_list(impl_method) DEDENT newlines
+    { DImpl {
+        is_pub     = true;
+        is_default = $2 <> None;
+        iface_name = $6;
+        type_args  = $7;
+        impl_name  = Some $4;
+        methods    = $10;
+      }
+    }
   | option(DEFAULT) IMPL UPPER nonempty_list(ty_atom) WHERE
     INDENT nonempty_list(impl_method) DEDENT newlines
     { DImpl {
+        is_pub     = false;
         is_default = $1 <> None;
         iface_name = $3;
         type_args  = $4;
@@ -459,6 +504,7 @@ impl_decl:
   | option(DEFAULT) IMPL IDENT OF UPPER nonempty_list(ty_atom) WHERE
     INDENT nonempty_list(impl_method) DEDENT newlines
     { DImpl {
+        is_pub     = false;
         is_default = $1 <> None;
         iface_name = $5;
         type_args  = $6;

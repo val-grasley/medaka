@@ -1,0 +1,6 @@
+use list.{map, filter, length}
+
+double x = x * 2
+
+main : <IO> Unit
+main = println (length (map double [1, 2, 3, 4, 5]))

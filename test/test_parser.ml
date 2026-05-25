@@ -20,16 +20,16 @@ let parse src =
 
 let pp_decl d =
   match d with
-  | DTypeSig (n, t)    -> Printf.sprintf "DTypeSig(%s, %s)" n (Ast.pp_ty t)
-  | DFunDef (n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
-                            (String.concat "; " (List.map Ast.pp_pat ps))
-                            (Ast.pp_expr e)
-  | DData (n, _, _)    -> Printf.sprintf "DData(%s, ...)" n
-  | DRecord (n, _, _)  -> Printf.sprintf "DRecord(%s, ...)" n
+  | DTypeSig (_, n, t)    -> Printf.sprintf "DTypeSig(%s, %s)" n (Ast.pp_ty t)
+  | DFunDef (_, n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
+                               (String.concat "; " (List.map Ast.pp_pat ps))
+                               (Ast.pp_expr e)
+  | DData (_, n, _, _)    -> Printf.sprintf "DData(%s, ...)" n
+  | DRecord (_, n, _, _)  -> Printf.sprintf "DRecord(%s, ...)" n
   | DInterface { iface_name; _ } -> Printf.sprintf "DInterface(%s)" iface_name
   | DImpl { iface_name; _ }      -> Printf.sprintf "DImpl(%s)" iface_name
-  | DUse (pub, _)      -> Printf.sprintf "DUse(pub=%b, ...)" pub
-  | DExtern (n, t)    -> Printf.sprintf "DExtern(%s, %s)" n (Ast.pp_ty t)
+  | DUse (pub, _)         -> Printf.sprintf "DUse(pub=%b, ...)" pub
+  | DExtern (_, n, t)     -> Printf.sprintf "DExtern(%s, %s)" n (Ast.pp_ty t)
 
 let parse_one src =
   match parse src with
@@ -41,7 +41,7 @@ let parse_one src =
 
 let parse_expr src =
   match parse_one ("v = " ^ src ^ "\n") with
-  | DFunDef (_, [], e) -> e
+  | DFunDef (_, _, [], e) -> e
   | d -> failwith (Printf.sprintf "expected fun def, got: %s" (pp_decl d))
 
 let _ = pp_decl  (* silence unused warning until tests use it *)
@@ -50,60 +50,60 @@ let _ = pp_decl  (* silence unused warning until tests use it *)
 
 let test_typesig_simple () =
   match parse_one "add : Int -> Int -> Int\n" with
-  | DTypeSig ("add", TyFun (TyCon "Int", TyFun (TyCon "Int", TyCon "Int"))) -> ()
+  | DTypeSig (false, "add", TyFun (TyCon "Int", TyFun (TyCon "Int", TyCon "Int"))) -> ()
   | _ -> failwith "wrong"
 
 let test_typesig_typevar () =
   match parse_one "id : a -> a\n" with
-  | DTypeSig ("id", TyFun (TyVar "a", TyVar "a")) -> ()
+  | DTypeSig (false, "id", TyFun (TyVar "a", TyVar "a")) -> ()
   | _ -> failwith "wrong"
 
 let test_typesig_effect () =
   match parse_one "readFile : String -> <IO> String\n" with
-  | DTypeSig ("readFile", TyFun (TyCon "String", TyEffect (["IO"], TyCon "String"))) -> ()
+  | DTypeSig (false, "readFile", TyFun (TyCon "String", TyEffect (["IO"], TyCon "String"))) -> ()
   | _ -> failwith "wrong"
 
 let test_typesig_multieffect () =
   match parse_one "fetch : String -> <Async, IO> String\n" with
-  | DTypeSig ("fetch", TyFun (TyCon "String", TyEffect (["Async"; "IO"], TyCon "String"))) -> ()
+  | DTypeSig (false, "fetch", TyFun (TyCon "String", TyEffect (["Async"; "IO"], TyCon "String"))) -> ()
   | _ -> failwith "wrong"
 
 let test_typesig_typeapp () =
   match parse_one "head : List a -> Option a\n" with
-  | DTypeSig ("head", TyFun (TyApp (TyCon "List", TyVar "a"),
-                             TyApp (TyCon "Option", TyVar "a"))) -> ()
+  | DTypeSig (false, "head", TyFun (TyApp (TyCon "List", TyVar "a"),
+                                    TyApp (TyCon "Option", TyVar "a"))) -> ()
   | _ -> failwith "wrong"
 
 (* ── Function definition tests ──────────────────────── *)
 
 let test_fundef_simple () =
   match parse_one "answer = 42\n" with
-  | DFunDef ("answer", [], ELit (LInt 42)) -> ()
+  | DFunDef (false, "answer", [], ELit (LInt 42)) -> ()
   | _ -> failwith "wrong"
 
 let test_fundef_with_arg () =
   match parse_one "double x = x + x\n" with
-  | DFunDef ("double", [PVar "x"], EBinOp ("+", EVar "x", EVar "x")) -> ()
+  | DFunDef (false, "double", [PVar "x"], EBinOp ("+", EVar "x", EVar "x")) -> ()
   | _ -> failwith "wrong"
 
 let test_fundef_pattern_lit () =
   match parse_one "factorial 0 = 1\n" with
-  | DFunDef ("factorial", [PLit (LInt 0)], ELit (LInt 1)) -> ()
+  | DFunDef (false, "factorial", [PLit (LInt 0)], ELit (LInt 1)) -> ()
   | _ -> failwith "wrong"
 
 let test_fundef_wildcard () =
   match parse_one "const x _ = x\n" with
-  | DFunDef ("const", [PVar "x"; PWild], EVar "x") -> ()
+  | DFunDef (false, "const", [PVar "x"; PWild], EVar "x") -> ()
   | _ -> failwith "wrong"
 
 let test_fundef_cons_pattern () =
   match parse_one "head (x::_) = x\n" with
-  | DFunDef ("head", [PCons (PVar "x", PWild)], EVar "x") -> ()
+  | DFunDef (false, "head", [PCons (PVar "x", PWild)], EVar "x") -> ()
   | _ -> failwith "wrong"
 
 let test_fundef_constructor_pattern () =
   match parse_one "unwrap (Some x) = x\n" with
-  | DFunDef ("unwrap", [PCon ("Some", [PVar "x"])], EVar "x") -> ()
+  | DFunDef (false, "unwrap", [PCon ("Some", [PVar "x"])], EVar "x") -> ()
   | _ -> failwith "wrong"
 
 (* ── Expression tests ────────────────────────────────── *)
@@ -222,7 +222,7 @@ f x =
     _ => "nonzero"
 |} in
   match parse_one src with
-  | DFunDef ("f", [PVar "x"],
+  | DFunDef (false, "f", [PVar "x"],
       EMatch (EVar "x", [
         (PLit (LInt 0), None, ELit (LString "zero"));
         (PWild, None, ELit (LString "nonzero"));
@@ -238,7 +238,7 @@ sign x =
     _ => 0
 |} in
   match parse_one src with
-  | DFunDef ("sign", [PVar "x"],
+  | DFunDef (false, "sign", [PVar "x"],
       EMatch (EVar "x", [
         (PVar "n", Some (EBinOp (">", EVar "n", ELit (LInt 0))), ELit (LInt 1));
         (PVar "n", Some (EBinOp ("<", EVar "n", ELit (LInt 0))), EUnOp ("-", ELit (LInt 1)));
@@ -250,7 +250,7 @@ sign x =
 
 let test_data_inline () =
   match parse_one "data Bool = True | False\n" with
-  | DData ("Bool", [], [
+  | DData (false, "Bool", [], [
       { con_name = "True";  con_fields = [] };
       { con_name = "False"; con_fields = [] };
     ]) -> ()
@@ -258,7 +258,7 @@ let test_data_inline () =
 
 let test_data_with_fields () =
   match parse_one "data Option a = Some a | None\n" with
-  | DData ("Option", ["a"], [
+  | DData (false, "Option", ["a"], [
       { con_name = "Some"; con_fields = [TyVar "a"] };
       { con_name = "None"; con_fields = [] };
     ]) -> ()
@@ -271,7 +271,7 @@ data Shape
   | Rectangle Float Float
 |} in
   match parse_one src with
-  | DData ("Shape", [], [
+  | DData (false, "Shape", [], [
       { con_name = "Circle";    con_fields = [TyCon "Float"] };
       { con_name = "Rectangle"; con_fields = [TyCon "Float"; TyCon "Float"] };
     ]) -> ()
@@ -286,7 +286,7 @@ record Person
   age : Int
 |} in
   match parse_one src with
-  | DRecord ("Person", [], [
+  | DRecord (false, "Person", [], [
       { field_name = "name"; field_type = TyCon "String" };
       { field_name = "age";  field_type = TyCon "Int" };
     ]) -> ()
@@ -303,7 +303,7 @@ result =
     pure (x + y)
 |} in
   match parse_one src with
-  | DFunDef ("result", [], EDo [
+  | DFunDef (false, "result", [], EDo [
       DoBind (PVar "x", EVar "foo");
       DoBind (PVar "y", EApp (EVar "bar", EVar "x"));
       DoExpr (EApp (EVar "pure", EBinOp ("+", EVar "x", EVar "y")));
@@ -376,42 +376,42 @@ let test_compose_lower_than_or () =
 let test_multi_decl () =
   let src = "x : Int\nx = 42\n" in
   match parse src with
-  | [DTypeSig ("x", TyCon "Int"); DFunDef ("x", [], ELit (LInt 42))] -> ()
+  | [DTypeSig (false, "x", TyCon "Int"); DFunDef (false, "x", [], ELit (LInt 42))] -> ()
   | _ -> failwith "wrong"
 
 let test_multi_clause () =
   let src = "factorial 0 = 1\nfactorial n = n * factorial n\n" in
   match parse src with
-  | [DFunDef ("factorial", [PLit (LInt 0)], ELit (LInt 1));
-     DFunDef ("factorial", [PVar "n"], _)] -> ()
+  | [DFunDef (false, "factorial", [PLit (LInt 0)], ELit (LInt 1));
+     DFunDef (false, "factorial", [PVar "n"], _)] -> ()
   | _ -> failwith "wrong"
 
 (* ── Extern declaration tests ───────────────────────── *)
 
 let test_extern_simple () =
   match parse_one "extern foo : Int -> String\n" with
-  | DExtern ("foo", TyFun (TyCon "Int", TyCon "String")) -> ()
+  | DExtern (false, "foo", TyFun (TyCon "Int", TyCon "String")) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 let test_extern_typevar () =
   match parse_one "extern id : a -> a\n" with
-  | DExtern ("id", TyFun (TyVar "a", TyVar "a")) -> ()
+  | DExtern (false, "id", TyFun (TyVar "a", TyVar "a")) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 let test_extern_effect () =
   match parse_one "extern print : a -> <IO> Unit\n" with
-  | DExtern ("print", TyFun (TyVar "a", TyEffect (["IO"], TyCon "Unit"))) -> ()
+  | DExtern (false, "print", TyFun (TyVar "a", TyEffect (["IO"], TyCon "Unit"))) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 let test_extern_constant () =
   match parse_one "extern pi : Float\n" with
-  | DExtern ("pi", TyCon "Float") -> ()
+  | DExtern (false, "pi", TyCon "Float") -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 let test_extern_multiarg () =
   match parse_one "extern set_ref : Ref a -> a -> <Mut> Unit\n" with
-  | DExtern ("set_ref", TyFun (TyApp (TyCon "Ref", TyVar "a"),
-                          TyFun (TyVar "a", TyEffect (["Mut"], TyCon "Unit")))) -> ()
+  | DExtern (false, "set_ref", TyFun (TyApp (TyCon "Ref", TyVar "a"),
+                                 TyFun (TyVar "a", TyEffect (["Mut"], TyCon "Unit")))) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 (* ── Test runner ─────────────────────────────────────── *)

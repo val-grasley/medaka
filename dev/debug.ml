@@ -15,21 +15,21 @@ let parse src =
 
 let pp_decl d =
   match d with
-  | DTypeSig (n, t)    -> Printf.sprintf "DTypeSig(%s, %s)" n (pp_ty t)
-  | DFunDef (n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
-                            (String.concat "; " (List.map pp_pat ps))
-                            (pp_expr e)
-  | DData (n, ps, vs)  ->
+  | DTypeSig (_, n, t)    -> Printf.sprintf "DTypeSig(%s, %s)" n (pp_ty t)
+  | DFunDef (_, n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
+                               (String.concat "; " (List.map pp_pat ps))
+                               (pp_expr e)
+  | DData (_, n, ps, vs)  ->
     let pv v = Printf.sprintf "%s [%s]" v.con_name (String.concat ", " (List.map pp_ty v.con_fields)) in
     Printf.sprintf "DData(%s, [%s], [%s])" n (String.concat " " ps)
       (String.concat " | " (List.map pv vs))
-  | DRecord (n, ps, fs) ->
+  | DRecord (_, n, ps, fs) ->
     let pf f = Printf.sprintf "%s : %s" f.field_name (pp_ty f.field_type) in
     Printf.sprintf "DRecord(%s, [%s], {%s})" n (String.concat " " ps)
       (String.concat ", " (List.map pf fs))
   | DInterface { iface_name; _ } -> Printf.sprintf "DInterface(%s)" iface_name
   | DImpl { iface_name; _ }      -> Printf.sprintf "DImpl(%s)" iface_name
-  | DExtern (n, t) -> Printf.sprintf "DExtern(%s, %s)" n (pp_ty t)
+  | DExtern (_, n, t) -> Printf.sprintf "DExtern(%s, %s)" n (pp_ty t)
   | DUse (pub, p) ->
     let pp_use = function
       | UseName  ns -> "UseName " ^ String.concat "." ns

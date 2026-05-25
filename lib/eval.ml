@@ -470,11 +470,11 @@ let eval_program program =
   (* Pass 1: collect DData constructors and DFunDef/DImpl method names *)
   List.iter (fun decl ->
     match decl with
-    | DData (_, _, variants) ->
+    | DData (_, _, _, variants) ->
       List.iter (fun v ->
         add_to_frame v.con_name (make_ctor v.con_name (List.length v.con_fields))
       ) variants
-    | DFunDef (name, _, _) ->
+    | DFunDef (_, name, _, _) ->
       add_to_frame name VUnit
     | DImpl { methods; _ } ->
       List.iter (fun (name, _, _) -> add_to_frame name VUnit) methods
@@ -492,7 +492,7 @@ let eval_program program =
   (* Pass 2: evaluate DFunDef and DImpl bodies *)
   List.iter (fun decl ->
     match decl with
-    | DFunDef (name, pats, body) ->
+    | DFunDef (_, name, pats, body) ->
       let v = if pats = [] then eval env body
               else VClosure (env, pats, body) in
       fill_cell name v
@@ -536,11 +536,11 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
   in
   rs.eval_env := [!(rs.top_frame)];
   (match decl with
-   | DData (_, _, variants) ->
+   | DData (_, _, _, variants) ->
      List.iter (fun v ->
        add v.con_name (make_ctor v.con_name (List.length v.con_fields))
      ) variants
-   | DFunDef (name, pats, body) ->
+   | DFunDef (_, name, pats, body) ->
      add name VUnit;
      rs.eval_env := [!(rs.top_frame)];
      let v = if pats = [] then eval !(rs.eval_env) body

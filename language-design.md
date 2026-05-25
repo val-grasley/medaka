@@ -744,7 +744,7 @@ The OCaml-hosted compiler calls into OCaml primitives for IO, memory, etc. If/wh
 A thin runtime abstraction layer defined in Medaka, implemented externally by the host runtime. The `extern` keyword declares primitives that the runtime must provide:
 
 ```
--- runtime.med
+-- runtime.mdk
 extern println  : String -> <IO> Unit
 extern readLine : Unit -> <IO> String
 extern readFile : String -> <IO> Result String IoError

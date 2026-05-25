@@ -51,6 +51,16 @@ type impl_entry = {
   impl_type_mono  : mono list;  (* from_ast_type of each type_arg *)
 }
 
+(* Public type-level interface of a processed module *)
+type module_type_exports = {
+  te_mod_id    : string;
+  te_schemes   : (ident * scheme) list;   (* public value+method schemes *)
+  te_records   : (ident * record_info) list;
+  te_ctors     : (ident * scheme) list;   (* public constructor schemes *)
+  te_interfaces : (ident * iface_info) list;
+  te_impls     : impl_entry list;
+}
+
 (* ── Effects ─────────────────────────────────────── *)
 
 type effect_set = string list  (* sorted, deduplicated *)
@@ -872,11 +882,11 @@ let group_fundefs decls =
   let clauses = Hashtbl.create 16 in
   let order = ref [] in
   List.iter (function
-    | DTypeSig (n, t) ->
+    | DTypeSig (_, n, t) ->
       if not (Hashtbl.mem clauses n) && not (Hashtbl.mem sigs n) then
         order := n :: !order;
       Hashtbl.replace sigs n t
-    | DFunDef (n, pats, body) ->
+    | DFunDef (_, n, pats, body) ->
       if not (Hashtbl.mem clauses n) then begin
         if not (Hashtbl.mem sigs n) then order := n :: !order
       end;
@@ -1269,12 +1279,12 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
   List.iter (function
-    | DData (n, ps, vs) -> register_data env (n, ps, vs)
-    | DRecord (n, ps, fs) -> register_record env (n, ps, fs)
+    | DData (_, n, ps, vs) -> register_data env (n, ps, vs)
+    | DRecord (_, n, ps, fs) -> register_record env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
       let ms = register_interface env (iface_name, type_params, methods) in
       iface_method_schemes := ms @ !iface_method_schemes
-    | DExtern (name, ast_ty) ->
+    | DExtern (_, name, ast_ty) ->
       let scheme =
         enter_level ();
         let mono = from_ast_type ast_ty in
@@ -1334,7 +1344,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   (* Phase 5: effect inference and checking *)
   let user_extern_decls =
     List.filter_map (function
-      | DExtern (n, t) -> Some (n, t)
+      | DExtern (_, n, t) -> Some (n, t)
       | _ -> None) prog
   in
   infer_and_check_effects ~extern_decls:user_extern_decls groups;
@@ -1342,6 +1352,181 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   (* Include interface methods and extern schemes in the returned env *)
   let final_env = !env in
   (results @ !iface_method_schemes @ !extern_schemes, List.rev !(final_env.warnings))
+
+(* Multi-module type-checking entry point.
+   Accepts public type exports of all previously-processed modules;
+   seeds the env with imported names from use-declarations;
+   returns this module's public type exports. *)
+let typecheck_module
+    (known_modules : module_type_exports list)
+    (mod_id        : string)
+    (prog          : program)
+    : module_type_exports * (ident * scheme) list * string list =
+  reset_state ();
+  current_loc := None;
+  let env = initial_env () in
+
+  (* Seed env with all known module exports *)
+  List.iter (fun te ->
+    List.iter (fun (n, s) -> Hashtbl.replace env.ctors n s) te.te_ctors;
+    List.iter (fun (n, ri) -> Hashtbl.replace env.records n ri) te.te_records;
+    List.iter (fun (n, _) ->
+      List.iter (fun (fn, _) ->
+        Hashtbl.replace env.field_owners fn n
+      ) (try (Hashtbl.find env.records n).rec_fields with Not_found -> [])
+    ) te.te_records;
+    List.iter (fun (n, ii) -> Hashtbl.replace env.interfaces n ii) te.te_interfaces;
+    env.impls := te.te_impls @ !(env.impls);
+  ) known_modules;
+
+  (* Build the set of module-imported schemes from DUse decls *)
+  let use_schemes = ref [] in
+  List.iter (function
+    | DUse (_, path) ->
+      let mod_id_ref =
+        let parts = match path with
+          | UseName ns -> if List.length ns > 1
+              then String.concat "." (List.rev (List.tl (List.rev ns)))
+              else List.hd ns
+          | UseGroup (ns, _) | UseWild ns | UseAlias (ns, _) ->
+              String.concat "." ns
+        in parts
+      in
+      (match List.find_opt (fun te -> te.te_mod_id = mod_id_ref) known_modules with
+       | None -> ()
+       | Some te ->
+         let imported_names = match path with
+           | UseName ns ->
+             if List.length ns > 1 then [List.hd (List.rev ns)]
+             else [] (* alias only *)
+           | UseGroup (_, ms) -> ms
+           | UseWild _ -> List.map fst te.te_schemes
+           | UseAlias _ -> [] (* alias: don't auto-import names *)
+         in
+         List.iter (fun n ->
+           match List.assoc_opt n te.te_schemes with
+           | Some s -> use_schemes := (n, s) :: !use_schemes
+           | None -> ()
+         ) imported_names)
+    | _ -> ()
+  ) prog;
+
+  let iface_method_schemes = ref [] in
+  let extern_schemes = ref [] in
+  List.iter (function
+    | DData (_, n, ps, vs) -> register_data env (n, ps, vs)
+    | DRecord (_, n, ps, fs) -> register_record env (n, ps, fs)
+    | DInterface { iface_name; type_params; methods; _ } ->
+      let ms = register_interface env (iface_name, type_params, methods) in
+      iface_method_schemes := ms @ !iface_method_schemes
+    | DExtern (_, name, ast_ty) ->
+      let scheme =
+        enter_level ();
+        let mono = from_ast_type ast_ty in
+        exit_level ();
+        generalize mono
+      in
+      extern_schemes := (name, scheme) :: !extern_schemes
+    | _ -> ()
+  ) prog;
+  List.iter (register_impl env) prog;
+
+  let groups = group_fundefs prog in
+  enter_level ();
+  let placeholders = List.map (fun (n, _, _) -> (n, fresh_var ())) groups in
+  exit_level ();
+  let env = ref (
+    let e = List.fold_left (fun e (n, t) -> extend_var e n (monotype t)) env placeholders in
+    let e = List.fold_left (fun e (n, s) -> extend_var e n s) e !iface_method_schemes in
+    let e = List.fold_left (fun e (n, s) -> extend_var e n s) e !extern_schemes in
+    List.fold_left (fun e (n, s) -> extend_var e n s) e !use_schemes
+  ) in
+
+  let results = List.map (fun (name, sig_opt, clauses) ->
+    let placeholder = List.assoc name placeholders in
+    enter_level ();
+    (match sig_opt with
+     | None -> ()
+     | Some sig_ast ->
+       let sig_t = from_ast_type sig_ast in
+       unify placeholder sig_t);
+    List.iter (fun clause ->
+      let t = infer !env (clause_to_expr clause) in
+      unify placeholder t
+    ) clauses;
+    exit_level ();
+    let scheme = generalize placeholder in
+    env := extend_var !env name scheme;
+    (name, scheme)
+  ) groups in
+
+  List.iter (function DImpl _ as d -> check_impl !env d | _ -> ()) prog;
+  check_method_usages !env;
+  let user_extern_decls =
+    List.filter_map (function DExtern (_, n, t) -> Some (n, t) | _ -> None) prog
+  in
+  infer_and_check_effects ~extern_decls:user_extern_decls groups;
+
+  let all_schemes = results @ !iface_method_schemes @ !extern_schemes in
+  let warnings = List.rev !(!env.warnings) in
+
+  (* Build this module's public exports *)
+  let pub_schemes = List.filter_map (fun d ->
+    match d with
+    | DFunDef (true, n, _, _) ->
+      (match List.assoc_opt n all_schemes with Some s -> Some (n, s) | None -> None)
+    | DTypeSig (true, n, _) ->
+      (match List.assoc_opt n all_schemes with Some s -> Some (n, s) | None -> None)
+    | DExtern (true, n, _) ->
+      (match List.assoc_opt n all_schemes with Some s -> Some (n, s) | None -> None)
+    | _ -> None
+  ) prog in
+  (* Interface methods from pub interfaces are also exported *)
+  let pub_iface_schemes = List.filter_map (fun d ->
+    match d with
+    | DInterface { is_pub = true; _ } ->
+      Some (List.filter (fun (n, _) -> List.mem_assoc n !iface_method_schemes) all_schemes)
+    | _ -> None
+  ) prog |> List.concat in
+  let pub_ctors = List.filter_map (fun d ->
+    match d with
+    | DData (true, _, _, vs) ->
+      Some (List.filter_map (fun v ->
+        match Hashtbl.find_opt (!env).ctors v.Ast.con_name with
+        | Some s -> Some (v.Ast.con_name, s)
+        | None -> None
+      ) vs)
+    | _ -> None
+  ) prog |> List.concat in
+  let pub_records = List.filter_map (fun d ->
+    match d with
+    | DRecord (true, n, _, _) ->
+      (match Hashtbl.find_opt (!env).records n with
+       | Some ri -> Some (n, ri)
+       | None -> None)
+    | _ -> None
+  ) prog in
+  let pub_interfaces = List.filter_map (fun d ->
+    match d with
+    | DInterface { is_pub = true; iface_name; _ } ->
+      (match Hashtbl.find_opt (!env).interfaces iface_name with
+       | Some ii -> Some (iface_name, ii)
+       | None -> None)
+    | _ -> None
+  ) prog in
+  let te = {
+    te_mod_id    = mod_id;
+    te_schemes   = pub_schemes @ pub_iface_schemes;
+    te_records   = pub_records;
+    te_ctors     = pub_ctors;
+    te_interfaces = pub_interfaces;
+    te_impls     = List.filter (fun ie ->
+      List.exists (fun d -> match d with
+        | DImpl { is_pub = true; iface_name; _ } -> ie.impl_iface = iface_name
+        | _ -> false) prog
+    ) !(!env.impls);
+  } in
+  (te, all_schemes, warnings)
 
 (* ── REPL incremental interface ──────────────── *)
 
@@ -1374,12 +1559,12 @@ let check_repl_decl (env : env ref) (decls : decl list)
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
   List.iter (function
-    | DData (n, ps, vs) -> register_data !env (n, ps, vs)
-    | DRecord (n, ps, fs) -> register_record !env (n, ps, fs)
+    | DData (_, n, ps, vs) -> register_data !env (n, ps, vs)
+    | DRecord (_, n, ps, fs) -> register_record !env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
       let ms = register_interface !env (iface_name, type_params, methods) in
       iface_method_schemes := ms @ !iface_method_schemes
-    | DExtern (name, ast_ty) ->
+    | DExtern (_, name, ast_ty) ->
       let scheme =
         enter_level ();
         let mono = from_ast_type ast_ty in
@@ -1424,7 +1609,7 @@ let check_repl_decl (env : env ref) (decls : decl list)
   ) decls;
   check_method_usages !env;
   let user_extern_decls =
-    List.filter_map (function DExtern (n, t) -> Some (n, t) | _ -> None) decls
+    List.filter_map (function DExtern (_, n, t) -> Some (n, t) | _ -> None) decls
   in
   infer_and_check_effects ~extern_decls:user_extern_decls groups;
   (results @ !iface_method_schemes @ !extern_schemes,

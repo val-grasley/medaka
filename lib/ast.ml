@@ -81,12 +81,13 @@ type iface_method = {
 }
 
 type decl =
-  | DTypeSig   of ident * ty
-  | DExtern    of ident * ty  (* extern name : ty — no body *)
-  | DFunDef    of ident * pat list * expr
-  | DData      of ident * ident list * data_variant list
-  | DRecord    of ident * ident list * record_field list
+  | DTypeSig   of bool * ident * ty          (* pub? name type *)
+  | DExtern    of bool * ident * ty          (* pub? name type *)
+  | DFunDef    of bool * ident * pat list * expr  (* pub? name pats body *)
+  | DData      of bool * ident * ident list * data_variant list  (* pub? *)
+  | DRecord    of bool * ident * ident list * record_field list  (* pub? *)
   | DInterface of {
+      is_pub      : bool;
       is_default  : bool;
       iface_name  : ident;
       type_params : ident list;
@@ -94,6 +95,7 @@ type decl =
       methods     : iface_method list;
     }
   | DImpl of {
+      is_pub     : bool;
       is_default : bool;
       iface_name : ident;
       type_args  : ty list;
@@ -222,7 +224,7 @@ let strip_locs_iface_method m =
   | Some (ps, e) -> { m with method_default = Some (ps, strip_locs_expr e) }
 
 let strip_locs_decl = function
-  | DFunDef (n, ps, e) -> DFunDef (n, ps, strip_locs_expr e)
+  | DFunDef (pub, n, ps, e) -> DFunDef (pub, n, ps, strip_locs_expr e)
   | DInterface d ->
     DInterface { d with methods = List.map strip_locs_iface_method d.methods }
   | DImpl d ->
