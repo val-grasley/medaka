@@ -24,9 +24,11 @@ let show_snippet source loc_opt =
          (String.make l.Medaka_lib.Ast.col ' '))
 
 let () =
-  let filename =
-    if Array.length Sys.argv > 1 then Sys.argv.(1)
-    else (print_endline "Usage: medaka <file.mdk>"; exit 1)
+  let mode, filename = match Sys.argv with
+    | [| _; "check"; file |] -> `Check, file
+    | [| _; "run";   file |] -> `Run,   file
+    | [| _; file |]           -> `Run,   file
+    | _ -> print_endline "Usage: medaka [check|run] <file.mdk>"; exit 1
   in
   let source = read_file filename in
   let lexbuf = Lexing.from_string source in
@@ -55,7 +57,19 @@ let () =
   (try
     let (env, warnings) = Medaka_lib.Typecheck.check_program program in
     List.iter (fun w -> Printf.eprintf "%s\n" w) warnings;
-    Printf.printf "OK — %d bindings\n" (List.length env)
+    (match mode with
+     | `Check ->
+       Printf.printf "OK — %d bindings\n" (List.length env)
+     | `Run ->
+       (try
+         let top_env = Medaka_lib.Eval.eval_program program in
+         if not (List.mem_assoc "main" top_env) then begin
+           Printf.eprintf "error: program has no 'main' binding\n"; exit 1
+         end
+       with Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
+         Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
+         show_snippet source loc_opt;
+         exit 1))
   with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
     Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
     show_snippet source loc_opt;

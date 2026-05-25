@@ -22,6 +22,8 @@ and env = (string * value ref) list list
 
 exception Eval_error of string * loc option
 
+let output_hook : (string -> unit) ref = ref print_string
+
 (* ── Env helpers ─────────────────────────────────────────────────────────── *)
 
 let lookup env name =
@@ -401,8 +403,8 @@ let unwrap_list = function
 
 let primitives : (string * value) list =
   [
-    ("print",   VPrim (fun v -> print_string (pp_value v); VUnit));
-    ("println", VPrim (fun v -> print_endline (pp_value v); VUnit));
+    ("print",   VPrim (fun v -> !output_hook (pp_value v); VUnit));
+    ("println", VPrim (fun v -> !output_hook (pp_value v); !output_hook "\n"; VUnit));
     ("pure",    VPrim (fun v ->
       match !current_monad with
       | MOption        -> VCon ("Some", [v])

@@ -20,7 +20,7 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-336 tests pass across 5 test suites:
+342 tests pass across 6 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
@@ -29,6 +29,7 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 | Resolver          | `test/test_resolve.ml`          | 40    | Unbound vars, unknown types/ctors, duplicates, fields |
 | Type checker      | `test/test_typecheck.ml`        | 148   | Inferred types, type errors, exhaustiveness warnings  |
 | Evaluator         | `test/test_eval.ml`             | 41    | Runtime values, recursion, do-blocks, Ref, errors     |
+| Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -553,29 +554,30 @@ to a value and the new `test_eval.ml` suite is green.
   `current_monad` ref. See §5 Known limitations for the holes.
 - `test/test_eval.ml` — 41 tests across 14 groups (336 total)
 
-### Phase 11: Driver — running whole programs ⬅ NEXT
+### Phase 11: Driver — running whole programs ✅ DONE
 
 **Goal.** `medaka run file.mdk` actually executes a program.
 
-**Scope.**
-- `bin/main.ml` gains a `run` subcommand (or treats invocation without
-  flags as run-after-typecheck).
-- Convention: the program's entry point is a top-level binding `main` of
-  type `Unit` (or `<IO> Unit` once effects are real). Reject programs
-  without a `main`.
+**What was added.**
+- `bin/main.ml` subcommand parsing: `medaka check file.mdk` (parse +
+  resolve + typecheck only, prints "OK — N bindings"), `medaka run
+  file.mdk` (full pipeline), `medaka file.mdk` (same as run).
+- After a successful typecheck, `run` mode calls `Eval.eval_program`; all
+  no-arg top-level bindings (including `main`) are evaluated eagerly in
+  pass 2, so side effects happen during that call. The driver checks that
+  `main` is present in the result and catches `Eval_error` for panic output.
 - Runtime panics print `file:line:col: panic: <msg>` plus the source snippet
-  (re-use the helper in `bin/main.ml`).
-- Golden-file test harness in `test/test_run.ml`: each fixture is a pair
-  (program, expected stdout). The harness redirects stdout, runs `main`,
-  compares.
-- Fixture suite covers the canonical examples from `language-design.md`
-  (factorial, hello world, simple match-on-data) plus a couple of programs
-  exercising `do`/`Result` and `Ref`.
+  using the existing `show_snippet` helper.
+- `lib/eval.ml` gains `output_hook : (string -> unit) ref` (defaults to
+  `print_string`); `print`/`println` primitives use it. Tests swap it to a
+  `Buffer.add_string buf` to capture output without touching real stdout.
+- `main` is exempt from the effect-purity check in `typecheck.ml` (it is the
+  program's entry point and is expected to call IO-effectful functions).
+- `test/test_run.ml` — 6 tests: hello world, factorial (recursion), ADT
+  match, multi-print do-block, let-mut reassignment, non-exhaustive match panic.
+- `test/dune` updated to include `test_run`.
 
-**Done when.** `medaka run` produces correct output for the fixtures and
-`test_run.ml` is wired into `dune test`.
-
-### Phase 12: REPL
+### Phase 12: REPL ⬅ NEXT
 
 **Goal.** Match the design doc's Phase 2: an interactive read-eval-print
 loop. Forces clean incremental typechecking and evaluation.

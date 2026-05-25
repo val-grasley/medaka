@@ -1242,7 +1242,8 @@ let infer_and_check_effects ~extern_decls groups =
     Hashtbl.replace eff_env name inferred;
     (match sig_opt with
      | None ->
-       if inferred <> [] then fail (ImpureFunction (name, inferred))
+       if inferred <> [] && name <> "main" then
+         fail (ImpureFunction (name, inferred))
      | Some sig_ty ->
        let decl = declared_effects sig_ty in
        let extras = List.filter (fun e -> not (List.mem e decl)) inferred in
