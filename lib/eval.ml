@@ -446,7 +446,40 @@ let primitives : (string * value) list =
             (unwrap_list lst)))));
     ("pi",      VFloat Float.pi);
     ("e",       VFloat (exp 1.0));
+    ("readLine", VPrim (fun _ -> VString (input_line stdin)));
+    ("readFile", VPrim (fun path ->
+      match path with
+      | VString p ->
+        (try
+           let ic = open_in p in
+           let s = really_input_string ic (in_channel_length ic) in
+           close_in ic;
+           VCon ("Ok", [VString s])
+         with Sys_error msg -> VCon ("Err", [VString msg]))
+      | _ -> raise (Eval_error ("readFile: expected String", None))));
+    ("writeFile", VPrim (fun path ->
+      VPrim (fun content ->
+        match path, content with
+        | VString p, VString s ->
+          (try
+             let oc = open_out p in
+             output_string oc s;
+             close_out oc;
+             VCon ("Ok", [VUnit])
+           with Sys_error msg -> VCon ("Err", [VString msg]))
+        | _ -> raise (Eval_error ("writeFile: expected String String", None)))));
+    ("exit", VPrim (fun code ->
+      match code with
+      | VInt n -> Stdlib.exit n
+      | _ -> raise (Eval_error ("exit: expected Int", None))));
   ]
+
+let () =
+  let dispatch_names = List.map fst primitives in
+  List.iter (fun n ->
+    if not (List.mem n dispatch_names) then
+      failwith ("runtime.mdk extern '" ^ n ^ "' has no OCaml impl in eval.ml")
+  ) Runtime.names
 
 (* ── Constructor thunks for data declarations ────────────────────────────── *)
 

@@ -1,6 +1,14 @@
+(rule
+ (target stdlib_content.ml)
+ (deps ../stdlib/runtime.mdk)
+ (action
+  (with-stdout-to %{target}
+   (run ../gen/embed.exe runtime_mdk ../stdlib/runtime.mdk))))
+
 (library
  (name medaka_lib)
- (modules ast eval lexer loader parser printer resolve repl runtime typecheck exhaust)
+ (modules ast eval exhaust lexer loader parser printer resolve repl
+          runtime stdlib_content typecheck)
  (libraries menhirLib))
 
 (ocamllex lexer)

@@ -1057,6 +1057,27 @@ let e_string_num = assert_err "x = \"a\" + \"b\"\n"
 let e_int_float_mismatch = assert_err "x = 1 + 1.5\n"
 let e_float_mod = assert_err "x = 5.0 % 2.0\n"
 
+(* ── Phase 18: runtime.mdk externs ─────────────── *)
+
+(* readLine is in initial_env via runtime.mdk; annotated caller is ok *)
+let t_readLine_type = assert_type
+  "f : Unit -> <IO> String\nf u = readLine u\n"
+  "f" "Unit -> String"
+
+(* readFile: takes a String path, returns Result String String *)
+let t_readFile_type = assert_type
+  "f : String -> <IO> (Result String String)\nf p = readFile p\n"
+  "f" "String -> Result String String"
+
+(* effect propagation: function calling readFile picks up IO *)
+let e_readFile_impure = assert_err
+  "bad p = readFile p\n"
+
+(* extern with uppercase name (Ref constructor) accepted by parser *)
+let t_extern_upper = assert_type
+  "extern Blorp : Int -> Blorp\nx = Blorp\n"
+  "x" "Int -> Blorp"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1277,5 +1298,11 @@ let () =
       test_case "err: String Num"        `Quick e_string_num;
       test_case "err: Int+Float mismatch" `Quick e_int_float_mismatch;
       test_case "err: Float mod"         `Quick e_float_mod;
+    ];
+    "runtime.mdk externs (Phase 18)", [
+      test_case "readLine type"          `Quick t_readLine_type;
+      test_case "readFile type"          `Quick t_readFile_type;
+      test_case "err: readFile impure"   `Quick e_readFile_impure;
+      test_case "extern uppercase name"  `Quick t_extern_upper;
     ];
   ]

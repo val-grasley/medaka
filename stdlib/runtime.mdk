@@ -1,0 +1,20 @@
+-- Built-in extern declarations.
+-- Every name here must have a matching OCaml implementation in lib/eval.ml.
+-- To add a new primitive: add an extern line here, add its OCaml impl in
+-- eval.ml's `primitives` list, and (if non-pure) its effect annotation here
+-- ensures eff_env is seeded automatically.
+
+extern pure    : a -> m a
+extern print   : a -> <IO> Unit
+extern println : a -> <IO> Unit
+extern Ref     : a -> Ref a
+extern set_ref : Ref a -> a -> <Mut> Unit
+extern map     : (a -> b) -> List a -> List b
+extern filter  : (a -> Bool) -> List a -> List a
+extern fold    : (b -> a -> b) -> b -> List a -> b
+extern pi      : Float
+extern e       : Float
+extern readLine  : Unit -> <IO> String
+extern readFile  : String -> <IO> (Result String String)
+extern writeFile : String -> String -> <IO> (Result Unit String)
+extern exit      : Int -> <Panic> Unit

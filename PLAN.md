@@ -20,14 +20,14 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-396 tests pass across 7 test suites:
+400 tests pass across 7 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
 | Parser            | `test/test_parser.ml`           | 70    | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 57    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 40    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 170   | Inferred types, type errors, exhaustiveness warnings  |
+| Type checker      | `test/test_typecheck.ml`        | 174   | Inferred types, type errors, exhaustiveness warnings  |
 | Evaluator         | `test/test_eval.ml`             | 44    | Runtime values, recursion, do-blocks, Ref, errors     |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
@@ -825,29 +825,42 @@ inferred types.
 
 ---
 
-### Phase 18: `runtime.mdk` and structured extern catalog
+### Phase 18: `runtime.mdk` and structured extern catalog ✅ DONE
 
 **Goal.** Promote `lib/runtime.ml`'s primitive registry to a real
-`runtime.mdk` file with `extern` declarations.  Establishes the
-abstraction boundary the design doc calls for and gets us out of the
-business of mirroring `extern` decls in OCaml source.
+`runtime.mdk` file with `extern` declarations.
 
-**Scope.**
-- Move the eight entries currently in `lib/runtime.ml` into
-  `stdlib/runtime.mdk` as `extern` decls.
-- Compiler driver loads `runtime.mdk` first (path relative to the
-  binary; configurable via `MEDAKA_STDLIB_PATH`) and treats its decls as
-  built-in.
-- `lib/runtime.ml` becomes a tiny module that just maps extern names to
-  OCaml implementations — no type information lives there anymore.
-- Add the rest of the design-doc primitives (`readLine`, `readFile`,
-  `writeFile`, `exit`, time/random hooks) as extern decls + OCaml
-  impls.
-- Document the convention in `stdlib/README.md`.
+**What was added (this session).**
+- `stdlib/runtime.mdk` (new) — 14 `extern` declarations (10 existing
+  + `readLine`, `readFile`, `writeFile`, `exit`).  This is the
+  authoritative source for all primitive type signatures.
+- `gen/embed.ml` + `gen/dune` (new) — tiny helper binary that wraps a
+  file's content as an OCaml quoted-string literal.
+- `lib/dune` — added a dune rule that runs `gen/embed.exe` to generate
+  `lib/stdlib_content.ml` (the embedded `runtime.mdk` string) at build
+  time; added `stdlib_content` to the `medaka_lib` modules list.
+- `lib/runtime.ml` — replaced the hardcoded `entries` list with a call
+  to `Parser.program Lexer.token` on `Stdlib_content.runtime_mdk`.
+  `names` is derived from parsed entries.  No primitive name appears as
+  a string literal in this file; no OCaml `Ast.ty` constructors mirror
+  the extern types.
+- `lib/eval.ml` — added OCaml implementations for the four new externs
+  (`readLine`, `readFile`, `writeFile`, `exit`) in the `primitives`
+  dispatch list; added a startup completeness assertion that fails if
+  any name from `Runtime.names` lacks an OCaml impl.
+- `lib/parser.mly` — `inner_extern_decl` now accepts both `IDENT` and
+  `UPPER` names, enabling `extern Ref : ...` (constructor-style externs).
+  Conflict count unchanged: 3 S/R (12) + 7 R/R (23).
+- `stdlib/README.md` (new) — documents the convention for adding new
+  primitives.
+- 4 new typecheck tests.  400 tests total.
 
-**Done when.** The primitive type list in `resolve.ml` and the scheme
-list in `typecheck.ml` derive solely from loading `runtime.mdk`; no
-primitive name appears as a string literal in either file.
+**Design note — embedded string approach.** Rather than reading a file
+at runtime (which requires path resolution for test binaries),
+`stdlib/runtime.mdk` is embedded into the library at build time via a
+generated `lib/stdlib_content.ml`.  The module dependency order
+`Runtime → Parser → Lexer → Ast` has no cycle.  The `Lexer.reset()`
+call in every test parser invocation keeps global indent-state clean.
 
 ---
 

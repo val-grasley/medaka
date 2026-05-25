@@ -199,6 +199,8 @@ inner_decl_body:
 inner_extern_decl:
   | EXTERN IDENT COLON ty newlines
     { fun is_pub -> DExtern (is_pub, $2, $4) }
+  | EXTERN UPPER COLON ty newlines
+    { fun is_pub -> DExtern (is_pub, $2, $4) }
 
 (* ── Type signatures ─────────────────────────────────── *)
 
