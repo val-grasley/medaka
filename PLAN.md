@@ -695,6 +695,41 @@ program runs.
 
 ---
 
+### Phase 16: Idris-style `export`/`import` module syntax ✅ DONE
+
+**Goal.** Replace the Rust-inspired `pub`/`use` keywords with Idris-style
+`export`/`import`, and add support for `export` as a standalone line
+preceding a declaration.
+
+**Motivation.** The standalone `export` form reads more naturally for
+functional code where type signatures and definitions are separate
+declarations:
+
+```
+export
+toList : BTree a -> List a
+toList Leaf = []
+toList (Node l v r) = toList l ++ (v :: toList r)
+```
+
+Both inline (`export toList : ...`) and standalone (`export\ntoList : ...`)
+forms are supported.  Re-exports use `export import path` on one line.
+
+**Key design.**
+- `pub` → `export`, `use` → `import`, `pub use` → `export import`
+- Parser restructured: each declaration rule factored into an `inner_*`
+  variant returning `bool -> decl`; the top-level `decl` rule handles
+  `EXPORT newlines inner_decl_body` (standalone), `EXPORT inner_decl_body`
+  (inline), and `EXPORT IMPORT path` (re-export).  No new LALR(1) conflicts.
+- AST unchanged — the `is_pub : bool` flags remain as-is.
+- Tree-sitter grammar updated with a shared `_export_marker` rule covering
+  both the standalone and inline forms; `use_decl` renamed to `import_decl`.
+
+**Done when.** All tests pass with the new keywords; `tests/stdlib/` uses
+`export`/`import` and runs correctly.
+
+---
+
 ### Phase 15: Tree-sitter grammar ✅
 
 **Goal.** Honor the design doc's Phase 1 promise: a tree-sitter grammar
