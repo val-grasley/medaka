@@ -1,0 +1,169 @@
+==================
+Wildcard pattern
+==================
+
+f _ = 0
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom)
+    body: (literal
+      (int_lit))))
+
+==================
+Variable pattern
+==================
+
+f x = x
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (ident)))
+
+==================
+Constructor pattern — no args (nullary)
+==================
+
+isNone None = True
+isNone _ = False
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      constructor: (upper))
+    body: (literal
+      (bool_lit)))
+  (fun_def
+    name: (ident)
+    param: (pat_atom)
+    body: (literal
+      (bool_lit))))
+
+==================
+Constructor pattern — with arg in parens
+==================
+
+unwrap (Some x) = x
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      (pat
+        (pat_app
+          constructor: (upper)
+          arg: (pat_atom
+            var: (ident)))))
+    body: (ident)))
+
+==================
+Literal pattern in match
+==================
+
+isZero n =
+  match n
+    0 => True
+    _ => False
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (do_body
+      (stmt
+        (do_stmt_expr
+          value: (match_expr
+            scrutinee: (ident)
+            (match_arm
+              pattern: (pat
+                (pat_atom
+                  (literal
+                    (int_lit))))
+              body: (literal
+                (bool_lit)))
+            (match_arm
+              pattern: (pat
+                (pat_atom))
+              body: (literal
+                (bool_lit)))))))))
+
+==================
+Cons pattern in match
+==================
+
+head xs =
+  match xs
+    h :: _ => h
+    [] => 0
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (do_body
+      (stmt
+        (do_stmt_expr
+          value: (match_expr
+            scrutinee: (ident)
+            (match_arm
+              pattern: (pat
+                (pat_cons
+                  head: (pat_atom
+                    var: (ident))
+                  tail: (pat
+                    (pat_atom))))
+              body: (ident))
+            (match_arm
+              pattern: (pat
+                (pat_atom))
+              body: (literal
+                (int_lit)))))))))
+
+==================
+Tuple pattern in match
+==================
+
+fst pair =
+  match pair
+    (a, _) => a
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (do_body
+      (stmt
+        (do_stmt_expr
+          value: (match_expr
+            scrutinee: (ident)
+            (match_arm
+              pattern: (pat
+                (pat_atom
+                  (pat
+                    (pat_atom
+                      var: (ident)))
+                  (pat
+                    (pat_atom))))
+              body: (ident))))))))

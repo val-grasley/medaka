@@ -1,0 +1,20 @@
+{
+  "name": "tree-sitter-medaka",
+  "version": "0.1.0",
+  "description": "Tree-sitter grammar for the Medaka language",
+  "main": "bindings/node",
+  "scripts": {
+    "build": "tree-sitter generate",
+    "test": "tree-sitter test"
+  },
+  "devDependencies": {
+    "tree-sitter-cli": "^0.21.0"
+  },
+  "tree-sitter": [
+    {
+      "scope": "source.medaka",
+      "file-types": ["mdk"],
+      "highlights": "queries/highlights.scm"
+    }
+  ]
+}

@@ -1,0 +1,166 @@
+==================
+Function with indented do-block
+==================
+
+main =
+  do
+    x <- foo
+    pure x
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (do_body
+      (stmt
+        (do_stmt_expr
+          value: (do_expr
+            (stmt
+              (do_bind
+                pat: (pat
+                  (pat_atom
+                    var: (ident)))
+                value: (ident)))
+            (stmt
+              (do_stmt_expr
+                value: (expr_app
+                  function: (ident)
+                  argument: (ident))))))))))
+
+==================
+Match with multi-line arms
+==================
+
+classify x =
+  match x
+    0 => "zero"
+    1 => "one"
+    _ => "many"
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (do_body
+      (stmt
+        (do_stmt_expr
+          value: (match_expr
+            scrutinee: (ident)
+            (match_arm
+              pattern: (pat
+                (pat_atom
+                  (literal
+                    (int_lit))))
+              body: (literal
+                (string_lit)))
+            (match_arm
+              pattern: (pat
+                (pat_atom
+                  (literal
+                    (int_lit))))
+              body: (literal
+                (string_lit)))
+            (match_arm
+              pattern: (pat
+                (pat_atom))
+              body: (literal
+                (string_lit)))))))))
+
+==================
+Do-block with let-mut and reassign
+==================
+
+counter =
+  do
+    let mut n = 0
+    n = n + 1
+    pure n
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (do_body
+      (stmt
+        (do_stmt_expr
+          value: (do_expr
+            (stmt
+              (do_let_mut
+                pat: (pat
+                  (pat_atom
+                    var: (ident)))
+                value: (literal
+                  (int_lit))))
+            (stmt
+              (do_assign
+                name: (ident)
+                value: (binary_expr
+                  left: (ident)
+                  right: (literal
+                    (int_lit)))))
+            (stmt
+              (do_stmt_expr
+                value: (expr_app
+                  function: (ident)
+                  argument: (ident))))))))))
+
+==================
+Interface with default method
+==================
+
+interface Greet a where
+  greet : a -> String
+  greetLoud x = greet x
+
+---
+
+(source_file
+  (interface_decl
+    name: (upper)
+    type_param: (ident)
+    (iface_member
+      name: (ident)
+      (ty_fun
+        arg: (ty_atom
+          (ident))
+        result: (ty_atom
+          (upper))))
+    (iface_member
+      name: (ident)
+      (pat_atom
+        var: (ident))
+      (expr_app
+        function: (ident)
+        argument: (ident)))))
+
+==================
+Multiple top-level definitions
+==================
+
+x = 1
+
+y = 2
+
+z = x + y
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (literal
+      (int_lit)))
+  (fun_def
+    name: (ident)
+    body: (literal
+      (int_lit)))
+  (fun_def
+    name: (ident)
+    body: (binary_expr
+      left: (ident)
+      right: (ident))))

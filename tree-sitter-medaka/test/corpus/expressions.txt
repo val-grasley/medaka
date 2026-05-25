@@ -1,0 +1,255 @@
+==================
+Lambda expression
+==================
+
+f = x => x + 1
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (lambda_expr
+      param: (pat_atom
+        var: (ident))
+      body: (binary_expr
+        left: (ident)
+        right: (literal
+          (int_lit))))))
+
+==================
+If-then-else
+==================
+
+abs x = if x < 0 then 0 - x else x
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (if_expr
+      condition: (binary_expr
+        left: (ident)
+        right: (literal
+          (int_lit)))
+      then: (expr_app
+        function: (literal
+          (int_lit))
+        argument: (unary_expr
+          operand: (ident)))
+      else: (ident))))
+
+==================
+Let-in expression
+==================
+
+f x = let y = x + 1 in y * 2
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (let_expr
+      pat: (pat
+        (pat_atom
+          var: (ident)))
+      value: (binary_expr
+        left: (ident)
+        right: (literal
+          (int_lit)))
+      body: (binary_expr
+        left: (ident)
+        right: (literal
+          (int_lit))))))
+
+==================
+Pipe operator
+==================
+
+f xs = xs |> map double
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (binary_expr
+      left: (ident)
+      right: (expr_app
+        function: (ident)
+        argument: (ident)))))
+
+==================
+Record creation
+==================
+
+p = Person { name = "Alice", age = 30 }
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (record_create
+      type: (upper)
+      (record_field_expr
+        name: (ident)
+        value: (literal
+          (string_lit)))
+      (record_field_expr
+        name: (ident)
+        value: (literal
+          (int_lit))))))
+
+==================
+Record update
+==================
+
+older = { p | age = 31 }
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (record_update
+      base: (ident)
+      (record_field_expr
+        name: (ident)
+        value: (literal
+          (int_lit))))))
+
+==================
+Field access
+==================
+
+n = alice.age
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (field_access
+      object: (ident)
+      field: (ident))))
+
+==================
+List literal
+==================
+
+xs = [1, 2, 3]
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (list_expr
+      (literal
+        (int_lit))
+      (literal
+        (int_lit))
+      (literal
+        (int_lit)))))
+
+==================
+Empty list
+==================
+
+empty = []
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (list_expr)))
+
+==================
+Tuple
+==================
+
+pair = (1, True)
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (tuple_expr
+      (literal
+        (int_lit))
+      (literal
+        (bool_lit)))))
+
+==================
+Impl selection
+==================
+
+result = eq @EqInt 1 2
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (expr_app
+      function: (expr_app
+        function: (expr_app
+          function: (ident)
+          argument: (impl_selection
+            name: (upper)))
+        argument: (literal
+          (int_lit)))
+      argument: (literal
+        (int_lit)))))
+
+==================
+String literal
+==================
+
+greeting = "Hello, world!"
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (literal
+      (string_lit))))
+
+==================
+Float literal
+==================
+
+pi = 3.14159
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (literal
+      (float_lit))))
+
+==================
+Unit value
+==================
+
+nothing = ()
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (unit_expr)))

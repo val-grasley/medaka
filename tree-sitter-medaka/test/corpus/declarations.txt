@@ -1,0 +1,322 @@
+==================
+Type signature — simple arrow
+==================
+
+add : Int -> Int -> Int
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_fun
+      arg: (ty_atom
+        (upper))
+      result: (ty_fun
+        arg: (ty_atom
+          (upper))
+        result: (ty_atom
+          (upper))))))
+
+==================
+Type signature — effect annotation
+==================
+
+readFile : String -> <IO> String
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_fun
+      arg: (ty_atom
+        (upper))
+      result: (ty_atom
+        (effect_type
+          effect: (upper)
+          type: (ty_atom
+            (upper)))))))
+
+==================
+Type signature — pub
+==================
+
+pub length : List a -> Int
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_fun
+      arg: (ty_app
+        constructor: (ty_atom
+          (upper))
+        arg: (ty_atom
+          (ident)))
+      result: (ty_atom
+        (upper)))))
+
+==================
+Function definition — no params
+==================
+
+answer = 42
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (literal
+      (int_lit))))
+
+==================
+Function definition — two params
+==================
+
+add x y = x + y
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    param: (pat_atom
+      var: (ident))
+    body: (binary_expr
+      left: (ident)
+      right: (ident))))
+
+==================
+Function definition — pub
+==================
+
+pub double x = x * 2
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (binary_expr
+      left: (ident)
+      right: (literal
+        (int_lit)))))
+
+==================
+Data declaration — inline
+==================
+
+data Bool = True | False
+
+---
+
+(source_file
+  (data_decl
+    name: (upper)
+    (data_variant
+      name: (upper))
+    (data_variant
+      name: (upper))))
+
+==================
+Data declaration — with type param inline
+==================
+
+data Option a = Some a | None
+
+---
+
+(source_file
+  (data_decl
+    name: (upper)
+    type_param: (ident)
+    (data_variant
+      name: (upper)
+      arg: (ty_atom
+        (ident)))
+    (data_variant
+      name: (upper))))
+
+==================
+Data declaration — block form
+==================
+
+data Shape
+  | Circle Float
+  | Rectangle Float Float
+
+---
+
+(source_file
+  (data_decl
+    name: (upper)
+    (data_variant_line
+      name: (upper)
+      arg: (ty_atom
+        (upper)))
+    (data_variant_line
+      name: (upper)
+      arg: (ty_atom
+        (upper))
+      arg: (ty_atom
+        (upper)))))
+
+==================
+Record declaration
+==================
+
+record Person
+  name : String
+  age : Int
+
+---
+
+(source_file
+  (record_decl
+    name: (upper)
+    (record_field_decl
+      name: (ident)
+      type: (ty_atom
+        (upper)))
+    (record_field_decl
+      name: (ident)
+      type: (ty_atom
+        (upper)))))
+
+==================
+Interface declaration
+==================
+
+interface Show a where
+  show : a -> String
+
+---
+
+(source_file
+  (interface_decl
+    name: (upper)
+    type_param: (ident)
+    (iface_member
+      name: (ident)
+      (ty_fun
+        arg: (ty_atom
+          (ident))
+        result: (ty_atom
+          (upper))))))
+
+==================
+Impl declaration — unnamed
+==================
+
+impl Show Int where
+  show n = "number"
+
+---
+
+(source_file
+  (impl_decl
+    iface: (upper)
+    type_arg: (ty_atom
+      (upper))
+    (impl_method
+      name: (ident)
+      param: (pat_atom
+        var: (ident))
+      body: (literal
+        (string_lit)))))
+
+==================
+Impl declaration — named
+==================
+
+impl myShow of Show Int where
+  show n = "number"
+
+---
+
+(source_file
+  (impl_decl
+    impl_name: (ident)
+    iface: (upper)
+    type_arg: (ty_atom
+      (upper))
+    (impl_method
+      name: (ident)
+      param: (pat_atom
+        var: (ident))
+      body: (literal
+        (string_lit)))))
+
+==================
+Use declaration — qualified import
+==================
+
+use list.map
+
+---
+
+(source_file
+  (use_decl
+    (use_path
+      (use_qual
+        (ident)
+        (ident)))))
+
+==================
+Use declaration — alias
+==================
+
+use collections as C
+
+---
+
+(source_file
+  (use_decl
+    (use_path
+      (use_qual
+        (ident))
+      (upper))))
+
+==================
+Extern declaration
+==================
+
+extern println : String -> <IO> Unit
+
+---
+
+(source_file
+  (extern_decl
+    name: (ident)
+    type: (ty_fun
+      arg: (ty_atom
+        (upper))
+      result: (ty_atom
+        (effect_type
+          effect: (upper)
+          type: (ty_atom
+            (upper)))))))
+
+==================
+Extern declaration — pub
+==================
+
+pub extern readLine : <IO> String
+
+---
+
+(source_file
+  (extern_decl
+    name: (ident)
+    type: (ty_atom
+      (effect_type
+        effect: (upper)
+        type: (ty_atom
+          (upper))))))

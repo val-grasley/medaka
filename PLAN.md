@@ -695,7 +695,7 @@ program runs.
 
 ---
 
-### Phase 15: Tree-sitter grammar
+### Phase 15: Tree-sitter grammar ✅
 
 **Goal.** Honor the design doc's Phase 1 promise: a tree-sitter grammar
 that gives syntax highlighting in editors that support it (VS Code via

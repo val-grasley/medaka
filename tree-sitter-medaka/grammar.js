@@ -1,0 +1,611 @@
+/**
+ * Tree-sitter grammar for Medaka.
+ *
+ * Indentation is handled by an external scanner (src/scanner.c) that emits
+ * _newline / _indent / _dedent as structural tokens.
+ *
+ * Rules prefixed with _ are "hidden" (transparent) nodes — they don't appear
+ * in the concrete syntax tree and their children surface directly in the
+ * parent node.  This keeps the CST clean for editors and query writers.
+ */
+
+module.exports = grammar({
+  name: 'medaka',
+
+  /* External tokens — order must match TokenType enum in scanner.c */
+  externals: $ => [
+    $._newline,
+    $._indent,
+    $._dedent,
+  ],
+
+  /* Whitespace (including newlines) and comments are extras — skipped between
+   * all tokens.  The external scanner intercepts '\n' first whenever a
+   * structural token (NEWLINE / INDENT / DEDENT) is valid in the current
+   * parse state and consumes it as part of that token.  When no structural
+   * token is valid (e.g. blank lines between top-level declarations), the
+   * regular lexer skips the '\n' via this extras rule. */
+  extras: $ => [
+    /[ \t\n\r]+/,
+    $.comment,
+  ],
+
+  /* GLR conflicts: parser uses all interpretations simultaneously */
+  conflicts: $ => [
+    /* `Upper {` — record_create vs expr followed by block */
+    [$._expr, $.record_create],
+    /* lambda vs application: `f x =>` */
+    [$.lambda_expr, $.expr_app],
+    /* type_sig and fun_def both start with ident */
+    [$.type_sig, $.fun_def],
+    /* iface_member: method sig vs default impl */
+    [$.iface_member],
+    /* pat_atom vs expr in do-blocks (`ident ::` etc.) */
+    [$._expr, $.pat_atom],
+    /* do_bind (pat <- expr) vs do_stmt_expr (expr) */
+    [$.do_bind, $.do_stmt_expr],
+    /* do_assign (ident = expr) vs do_stmt_expr (expr = ...) */
+    [$.do_assign, $.do_stmt_expr],
+    /* binary_expr vs expr_app on right-hand side */
+    [$.binary_expr, $.expr_app],
+    /* pat_app vs expr_app for constructor application */
+    [$.pat_app, $.expr_app],
+    /* pat_app vs _expr for patterns in do-binds */
+    [$.pat_app, $._expr],
+    /* list pattern vs list expression */
+    [$.pat_atom, $.list_expr],
+    /* unit pat `()` vs unit_expr `()` */
+    [$.pat_atom, $.unit_expr],
+  ],
+
+  word: $ => $.ident,
+
+  rules: {
+
+    /* ═══════════════════════════════════════════════════
+     * Source file
+     * ═══════════════════════════════════════════════════ */
+
+    source_file: $ => seq(
+      repeat($._newline),
+      repeat($._declaration),
+    ),
+
+    /* _declaration is transparent — its child appears directly in source_file */
+    _declaration: $ => choice(
+      $.type_sig,
+      $.fun_def,
+      $.data_decl,
+      $.record_decl,
+      $.interface_decl,
+      $.impl_decl,
+      $.use_decl,
+      $.extern_decl,
+    ),
+
+    /* ═══════════════════════════════════════════════════
+     * Terminals
+     * ═══════════════════════════════════════════════════ */
+
+    ident:          $ => /[a-z_][a-zA-Z0-9_']*/,
+    upper:          $ => /[A-Z][a-zA-Z0-9_']*/,
+    backtick_ident: $ => /`[a-z_][a-zA-Z0-9_']*`/,
+
+    /* float before int so "3.14" matches float, not "3" then ".14" */
+    float_lit:  $ => /[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?/,
+    int_lit:    $ => /[0-9]+/,
+    string_lit: $ => /"([^"\\]|\\.)*"/,
+    char_lit:   $ => /'([^'\\]|\\.)'/,
+    bool_lit:   $ => choice('True', 'False'),
+
+    comment: $ => /--[^\n]*/,
+
+    literal: $ => choice(
+      $.float_lit,
+      $.int_lit,
+      $.string_lit,
+      $.char_lit,
+      $.bool_lit,
+    ),
+
+    /* ═══════════════════════════════════════════════════
+     * Types
+     * ═══════════════════════════════════════════════════ */
+
+    /* _type_expr is transparent — callers get ty_fun / ty_app / ty_atom */
+    _type_expr: $ => choice(
+      $.ty_fun,
+      $.ty_app,
+      $.ty_atom,
+    ),
+
+    ty_fun: $ => prec.right(1, seq(
+      field('arg', choice($.ty_app, $.ty_atom)),
+      '->',
+      field('result', choice($.ty_fun, $.ty_app, $.ty_atom)),
+    )),
+
+    /* Flat type application: `List Int` → (ty_app (ty_atom List) (ty_atom Int)) */
+    ty_app: $ => prec.left(2, seq(
+      field('constructor', $.ty_atom),
+      repeat1(field('arg', $.ty_atom)),
+    )),
+
+    ty_atom: $ => choice(
+      $.upper,
+      $.ident,
+      seq('(', $._type_expr, ')'),
+      /* Tuple type: (a, b) */
+      seq('(', $._type_expr, ',', $._type_expr, repeat(seq(',', $._type_expr)), ')'),
+      $.effect_type,
+    ),
+
+    /* <IO> String  or  <IO, Mut> String */
+    effect_type: $ => seq(
+      '<',
+      field('effect', $.upper),
+      repeat(seq(',', field('effect', $.upper))),
+      '>',
+      field('type', $.ty_atom),
+    ),
+
+    /* ═══════════════════════════════════════════════════
+     * Patterns
+     * ═══════════════════════════════════════════════════ */
+
+    pat: $ => choice(
+      $.pat_cons,
+      $.pat_app,
+      $.pat_atom,
+    ),
+
+    pat_cons: $ => prec.right(6, seq(
+      field('head', choice($.pat_app, $.pat_atom)),
+      '::',
+      field('tail', $.pat),
+    )),
+
+    /* Constructor application: Some x  or  Ok (a, b) */
+    pat_app: $ => prec.left(11, seq(
+      field('constructor', $.upper),
+      repeat1(field('arg', $.pat_atom)),
+    )),
+
+    pat_atom: $ => choice(
+      field('var', $.ident),
+      '_',
+      field('constructor', $.upper),
+      $.literal,
+      seq('(', ')'),
+      seq('(', $.pat, ')'),
+      seq('(', $.pat, ',', $.pat, repeat(seq(',', $.pat)), ')'),
+      seq('[', ']'),
+      seq('[', $.pat, repeat(seq(',', $.pat)), ']'),
+    ),
+
+    /* ═══════════════════════════════════════════════════
+     * Declarations
+     * ═══════════════════════════════════════════════════ */
+
+    /* f : Int -> Int */
+    type_sig: $ => seq(
+      optional('pub'),
+      field('name', $.ident),
+      ':',
+      field('type', $._type_expr),
+      $._newline,
+    ),
+
+    /* pub? name pat* = body */
+    fun_def: $ => seq(
+      optional('pub'),
+      field('name', $.ident),
+      repeat(field('param', $.pat_atom)),
+      '=',
+      field('body', $._fun_body),
+      $._newline,
+    ),
+
+    /* _fun_body is transparent: callers see the concrete expression directly */
+    _fun_body: $ => choice(
+      $._expr,
+      /* Indented-stmts form (desugars to do-block, no `do` keyword) */
+      $.do_body,
+    ),
+
+    /* Indented statement block without the `do` keyword — equivalent to do-block */
+    do_body: $ => seq(
+      $._indent,
+      repeat1($.stmt),
+      $._dedent,
+    ),
+
+    /* data Bool = True | False
+     * data Option a = Some a | None
+     * data Shape
+     *   | Circle Float           */
+    data_decl: $ => seq(
+      optional('pub'),
+      'data',
+      field('name', $.upper),
+      repeat(field('type_param', $.ident)),
+      choice(
+        seq('=', $.data_variant, repeat(seq('|', $.data_variant)), $._newline),
+        seq($._indent, repeat1($.data_variant_line), $._dedent, $._newline),
+      ),
+    ),
+
+    data_variant: $ => seq(
+      field('name', $.upper),
+      repeat(field('arg', $.ty_atom)),
+    ),
+
+    data_variant_line: $ => seq(
+      '|',
+      field('name', $.upper),
+      repeat(field('arg', $.ty_atom)),
+      $._newline,
+    ),
+
+    /* record Person
+     *   name : String            */
+    record_decl: $ => seq(
+      optional('pub'),
+      'record',
+      field('name', $.upper),
+      repeat(field('type_param', $.ident)),
+      $._indent,
+      repeat1($.record_field_decl),
+      $._dedent,
+      $._newline,
+    ),
+
+    record_field_decl: $ => seq(
+      field('name', $.ident),
+      ':',
+      field('type', $._type_expr),
+      $._newline,
+    ),
+
+    /* interface Show a where
+     *   show : a -> String       */
+    interface_decl: $ => seq(
+      optional('pub'),
+      optional('default'),
+      'interface',
+      field('name', $.upper),
+      repeat(field('type_param', $.ident)),
+      optional($.iface_super),
+      'where',
+      $._indent,
+      repeat1($.iface_member),
+      $._dedent,
+      $._newline,
+    ),
+
+    iface_super: $ => seq(
+      'of',
+      $.iface_super_entry,
+      repeat(seq(',', $.iface_super_entry)),
+    ),
+
+    iface_super_entry: $ => seq(
+      field('name', $.upper),
+      repeat(field('type_param', $.ident)),
+    ),
+
+    iface_member: $ => choice(
+      seq(field('name', $.ident), ':', $._type_expr, $._newline),
+      seq(field('name', $.ident), repeat($.pat_atom), '=', $._fun_body, $._newline),
+    ),
+
+    /* impl Show Int where
+     *   show n = ...
+     * impl myEq of Eq Int where  (named) */
+    impl_decl: $ => seq(
+      optional('pub'),
+      optional('default'),
+      'impl',
+      choice(
+        seq(field('impl_name', $.ident), 'of', field('iface', $.upper),
+            repeat1(field('type_arg', $.ty_atom)), 'where'),
+        seq(field('iface', $.upper), repeat1(field('type_arg', $.ty_atom)), 'where'),
+      ),
+      $._indent,
+      repeat1($.impl_method),
+      $._dedent,
+      $._newline,
+    ),
+
+    impl_method: $ => seq(
+      field('name', $.ident),
+      repeat(field('param', $.pat_atom)),
+      '=',
+      field('body', $._fun_body),
+      $._newline,
+    ),
+
+    /* use list.{map, filter}
+     * use utils as U
+     * pub use core.*            */
+    use_decl: $ => seq(
+      optional('pub'),
+      'use',
+      $.use_path,
+      $._newline,
+    ),
+
+    use_path: $ => choice(
+      seq($.use_qual, '.{', $.ident, repeat(seq(',', $.ident)), '}'),
+      seq($.use_qual, '.*'),
+      seq($.use_qual, 'as', choice($.upper, $.ident)),
+      $.use_qual,
+    ),
+
+    use_qual: $ => seq(
+      choice($.ident, $.upper),
+      repeat(seq('.', choice($.ident, $.upper))),
+    ),
+
+    /* extern println : String -> <IO> Unit */
+    extern_decl: $ => seq(
+      optional('pub'),
+      'extern',
+      field('name', $.ident),
+      ':',
+      field('type', $._type_expr),
+      $._newline,
+    ),
+
+    /* ═══════════════════════════════════════════════════
+     * Expressions
+     * ═══════════════════════════════════════════════════ */
+
+    /* _expr is transparent — the concrete expression node surfaces directly */
+    _expr: $ => choice(
+      $.type_annotation,
+      $.lambda_expr,
+      $.let_expr,
+      $.if_expr,
+      $.match_expr,
+      $.do_expr,
+      $.binary_expr,
+      $.unary_expr,
+      $.expr_app,
+      $.field_access,
+      $.index_expr,
+      $.record_create,
+      $.record_update,
+      $.operator_section,
+      $.impl_selection,
+      $.tuple_expr,
+      $.list_expr,
+      $.array_expr,
+      $.literal,
+      $.ident,
+      $.upper,
+      seq('(', $._expr, ')'),
+      $.unit_expr,
+    ),
+
+    unit_expr: $ => seq('(', ')'),
+
+    type_annotation: $ => prec(-1, seq(
+      $._expr, ':', $._type_expr,
+    )),
+
+    lambda_expr: $ => prec.right(0, seq(
+      field('param', $.pat_atom),
+      '=>',
+      field('body', $._expr),
+    )),
+
+    let_expr: $ => prec.right(0, choice(
+      seq('let', 'mut', field('pat', $.pat), '=',
+          field('value', $._expr), 'in', field('body', $._expr)),
+      seq('let', field('pat', $.pat), '=',
+          field('value', $._expr), 'in', field('body', $._expr)),
+      seq('let', field('name', $.ident), repeat1(field('param', $.pat_atom)),
+          '=', field('value', $._expr), 'in', field('body', $._expr)),
+    )),
+
+    if_expr: $ => prec.right(0, seq(
+      'if',   field('condition', $._expr),
+      'then', field('then', $._expr),
+      'else', field('else', $._expr),
+    )),
+
+    match_expr: $ => prec.right(0, seq(
+      'match',
+      field('scrutinee', $._expr),
+      $._indent,
+      repeat1($.match_arm),
+      $._dedent,
+    )),
+
+    match_arm: $ => seq(
+      field('pattern', $.pat),
+      optional(seq('if', field('guard', $._expr))),
+      '=>',
+      field('body', $._expr),
+      $._newline,
+    ),
+
+    /* do\n  stmt* */
+    do_expr: $ => prec.right(0, seq(
+      'do',
+      $._indent,
+      repeat1($.stmt),
+      $._dedent,
+    )),
+
+    /* Binary operators — flat rule, Python-style */
+    binary_expr: $ => choice(
+      prec.left(1,  seq(field('left', $._expr), '|>',  field('right', $._expr))),
+      prec.left(2,  seq(field('left', $._expr), '>>',  field('right', $._expr))),
+      prec.left(2,  seq(field('left', $._expr), '<<',  field('right', $._expr))),
+      prec.left(3,  seq(field('left', $._expr), '||',  field('right', $._expr))),
+      prec.left(4,  seq(field('left', $._expr), '&&',  field('right', $._expr))),
+      prec.left(5,  seq(field('left', $._expr), '==',  field('right', $._expr))),
+      prec.left(5,  seq(field('left', $._expr), '!=',  field('right', $._expr))),
+      prec.left(5,  seq(field('left', $._expr), '<',   field('right', $._expr))),
+      prec.left(5,  seq(field('left', $._expr), '>',   field('right', $._expr))),
+      prec.left(5,  seq(field('left', $._expr), '<=',  field('right', $._expr))),
+      prec.left(5,  seq(field('left', $._expr), '>=',  field('right', $._expr))),
+      prec.right(6, seq(field('left', $._expr), '::',  field('right', $._expr))),
+      prec.left(7,  seq(field('left', $._expr), '++',  field('right', $._expr))),
+      prec.left(8,  seq(field('left', $._expr), '+',   field('right', $._expr))),
+      prec.left(8,  seq(field('left', $._expr), '-',   field('right', $._expr))),
+      prec.left(9,  seq(field('left', $._expr), '*',   field('right', $._expr))),
+      prec.left(9,  seq(field('left', $._expr), '/',   field('right', $._expr))),
+      prec.left(10, seq(field('left', $._expr),
+                        field('op', $.backtick_ident),
+                        field('right', $._expr))),
+    ),
+
+    /* Unary: must beat expr_app (prec 12) so `-e` reduces before application */
+    unary_expr: $ => choice(
+      prec(15, seq(field('op', '-'), field('operand', $._expr))),
+      prec(15, seq(field('op', '!'), field('operand', $._expr))),
+    ),
+
+    /* Function application — left-associative, highest after postfix */
+    expr_app: $ => prec.left(12, seq(
+      field('function', $._expr),
+      field('argument', $._expr),
+    )),
+
+    /* Field access: expr.field */
+    field_access: $ => prec.left(13, seq(
+      field('object', $._expr),
+      '.',
+      field('field', $.ident),
+    )),
+
+    /* Array index: expr.[idx] */
+    index_expr: $ => prec.left(13, seq(
+      field('object', $._expr),
+      '.',
+      '[',
+      field('index', $._expr),
+      ']',
+    )),
+
+    /* TypeName { field = val, ... } */
+    record_create: $ => seq(
+      field('type', $.upper),
+      '{',
+      $.record_field_expr,
+      repeat(seq(',', $.record_field_expr)),
+      '}',
+    ),
+
+    /* { base | field = val, ... } */
+    record_update: $ => seq(
+      '{',
+      field('base', $._expr),
+      '|',
+      $.record_field_expr,
+      repeat(seq(',', $.record_field_expr)),
+      '}',
+    ),
+
+    record_field_expr: $ => seq(
+      field('name', $.ident),
+      '=',
+      field('value', $._expr),
+    ),
+
+    /* Operator section: (+5) → \x -> x + 5 */
+    operator_section: $ => seq(
+      '(',
+      field('op', $.section_op),
+      field('operand', $._expr),
+      ')',
+    ),
+
+    section_op: $ => choice(
+      '+', '*', '/', '==', '!=', '<', '>', '<=', '>=',
+      '&&', '||', '::', '++', '|>', '>>', '<<',
+    ),
+
+    /* @Name — impl disambiguation hint */
+    impl_selection: $ => seq('@', field('name', $.upper)),
+
+    /* (a, b, c) */
+    tuple_expr: $ => seq(
+      '(',
+      $._expr,
+      ',',
+      $._expr,
+      repeat(seq(',', $._expr)),
+      ')',
+    ),
+
+    /* [1, 2, 3]  or  [] */
+    list_expr: $ => seq(
+      '[',
+      optional(seq($._expr, repeat(seq(',', $._expr)))),
+      ']',
+    ),
+
+    /* [| 1, 2, 3 |]  or  [| |] */
+    array_expr: $ => seq(
+      '[|',
+      optional(seq($._expr, repeat(seq(',', $._expr)))),
+      '|]',
+    ),
+
+    /* ═══════════════════════════════════════════════════
+     * Do-notation statements
+     * ═══════════════════════════════════════════════════ */
+
+    stmt: $ => choice(
+      $.do_bind,
+      $.do_let,
+      $.do_let_mut,
+      $.do_assign,
+      $.do_stmt_expr,
+    ),
+
+    /* pat <- expr */
+    do_bind: $ => seq(
+      field('pat', $.pat),
+      '<-',
+      field('value', $._expr),
+      $._newline,
+    ),
+
+    /* let x = expr */
+    do_let: $ => seq(
+      'let',
+      field('pat', $.pat),
+      '=',
+      field('value', $._expr),
+      $._newline,
+    ),
+
+    /* let mut x = expr */
+    do_let_mut: $ => seq(
+      'let', 'mut',
+      field('pat', $.pat),
+      '=',
+      field('value', $._expr),
+      $._newline,
+    ),
+
+    /* x = expr  (reassignment of let-mut var) */
+    do_assign: $ => seq(
+      field('name', $.ident),
+      '=',
+      field('value', $._expr),
+      $._newline,
+    ),
+
+    /* expr  (discard result) */
+    do_stmt_expr: $ => seq(
+      field('value', $._expr),
+      $._newline,
+    ),
+  },
+});

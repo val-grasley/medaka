@@ -1,0 +1,132 @@
+==================
+Simple type
+==================
+
+x : Int
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_atom
+      (upper))))
+
+==================
+Arrow type
+==================
+
+f : Int -> String
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_fun
+      arg: (ty_atom
+        (upper))
+      result: (ty_atom
+        (upper)))))
+
+==================
+Type application — flat
+==================
+
+f : List Int
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_app
+      constructor: (ty_atom
+        (upper))
+      arg: (ty_atom
+        (upper)))))
+
+==================
+Type variable
+==================
+
+identity : a -> a
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_fun
+      arg: (ty_atom
+        (ident))
+      result: (ty_atom
+        (ident)))))
+
+==================
+Effect type — single
+==================
+
+main : <IO> Unit
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_atom
+      (effect_type
+        effect: (upper)
+        type: (ty_atom
+          (upper))))))
+
+==================
+Effect type — multiple
+==================
+
+fetch : String -> <IO, Async> String
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_fun
+      arg: (ty_atom
+        (upper))
+      result: (ty_atom
+        (effect_type
+          effect: (upper)
+          effect: (upper)
+          type: (ty_atom
+            (upper)))))))
+
+==================
+Higher-order function type
+==================
+
+map : (a -> b) -> List a -> List b
+
+---
+
+(source_file
+  (type_sig
+    name: (ident)
+    type: (ty_fun
+      arg: (ty_atom
+        (ty_fun
+          arg: (ty_atom
+            (ident))
+          result: (ty_atom
+            (ident))))
+      result: (ty_fun
+        arg: (ty_app
+          constructor: (ty_atom
+            (upper))
+          arg: (ty_atom
+            (ident)))
+        result: (ty_app
+          constructor: (ty_atom
+            (upper))
+          arg: (ty_atom
+            (ident)))))))
