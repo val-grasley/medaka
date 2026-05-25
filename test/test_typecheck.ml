@@ -81,13 +81,21 @@ let t_const_unit   = assert_type "x = ()\n"     "x" "Unit"
 
 (* ── Function inference ─────────────────────────── *)
 
-let t_identity   = assert_type "id x = x\n"           "id"   "'a -> 'a"
-let t_const_fn   = assert_type "const x _ = x\n"      "const" "'a -> 'b -> 'a"
+let t_identity   = assert_type "id x = x\n"           "id"   "a -> a"
+let t_const_fn   = assert_type "const x _ = x\n"      "const" "a -> b -> a"
 let t_double     = assert_type "double x = x + x\n"   "double" "Int -> Int"
 let t_inc        = assert_type "inc x = x + 1\n"      "inc"  "Int -> Int"
-let t_apply      = assert_type "apply f x = f x\n"    "apply" "('a -> 'b) -> 'a -> 'b"
+let t_apply      = assert_type "apply f x = f x\n"    "apply" "(a -> b) -> a -> b"
 let t_compose    = assert_type "compose f g x = f (g x)\n"  "compose"
-                     "('a -> 'b) -> ('c -> 'a) -> 'c -> 'b"
+                     "(a -> b) -> (c -> a) -> c -> b"
+
+(* ── Operator sections ──────────────────────────── *)
+
+let t_section_add  = assert_type "f = (+1)\n"      "f"  "Int -> Int"
+let t_section_mul  = assert_type "f = (*2)\n"      "f"  "Int -> Int"
+let t_section_cmp  = assert_type "f = (>0)\n"      "f"  "Int -> Bool"
+let t_section_map  = assert_type
+  "result = map (+5) [1, 2, 3]\n" "result" "List Int"
 
 (* ── Polymorphism in use ────────────────────────── *)
 
@@ -117,7 +125,7 @@ let t_sig_simple = assert_type
   "f : Int -> Int\nf x = x + 1\n" "f" "Int -> Int"
 
 let t_sig_poly = assert_type
-  "id : a -> a\nid x = x\n" "id" "'a -> 'a"
+  "id : a -> a\nid x = x\n" "id" "a -> a"
 
 (* ── Recursion ──────────────────────────────────── *)
 
@@ -137,7 +145,7 @@ let t_option_default = assert_type
   match opt
     Some x => x
     None => d
-|} "withDefault" "'a -> Option 'a -> 'a"
+|} "withDefault" "a -> Option a -> a"
 
 let t_some_int = assert_type
   "x = Some 5\n" "x" "Option Int"
@@ -148,7 +156,7 @@ let t_user_adt = assert_type
   | Node (Tree a) a (Tree a)
 
 singleton x = Node Leaf x Leaf
-|} "singleton" "'a -> Tree 'a"
+|} "singleton" "a -> Tree a"
 
 let t_size = assert_type
   {|data Tree a
@@ -159,27 +167,27 @@ size t =
   match t
     Leaf => 0
     Node l _ r => 1 + size l + size r
-|} "size" "Tree 'a -> Int"
+|} "size" "Tree a -> Int"
 
 (* ── Lists ──────────────────────────────────────── *)
 
 let t_list_int = assert_type "xs = [1, 2, 3]\n" "xs" "List Int"
 
-let t_list_empty = assert_type "xs = []\n" "xs" "List 'a"
+let t_list_empty = assert_type "xs = []\n" "xs" "List a"
 
 let t_length = assert_type
   {|len xs =
   match xs
     [] => 0
     _ :: rest => 1 + len rest
-|} "len" "List 'a -> Int"
+|} "len" "List a -> Int"
 
 let t_map = assert_type
   {|map f xs =
   match xs
     [] => []
     x :: rest => f x :: map f rest
-|} "map" "('a -> 'b) -> List 'a -> List 'b"
+|} "map" "(a -> b) -> List a -> List b"
 
 (* ── Tuples ─────────────────────────────────────── *)
 
@@ -187,7 +195,7 @@ let t_swap = assert_type
   {|swap p =
   match p
     (a, b) => (b, a)
-|} "swap" "('a, 'b) -> ('b, 'a)"
+|} "swap" "(a, b) -> (b, a)"
 
 let t_pair = assert_type "p = (1, \"hello\")\n" "p" "(Int, String)"
 
@@ -261,7 +269,7 @@ let t_rec_poly_create = assert_type
   second : b
 
 swap p = Pair { first = p.second, second = p.first }
-|} "swap" "Pair 'a 'b -> Pair 'b 'a"
+|} "swap" "Pair a b -> Pair b a"
 
 (* Polymorphic record — access *)
 let t_rec_poly_access = assert_type
@@ -269,7 +277,7 @@ let t_rec_poly_access = assert_type
   value : a
 
 unbox b = b.value
-|} "unbox" "Box 'a -> 'a"
+|} "unbox" "Box a -> a"
 
 (* Multiple fields accessed and used *)
 let t_rec_multi_access = assert_type
@@ -351,42 +359,42 @@ bad p = { p | x = "nope" }
 (* Single DoExpr: x must be monadic, so f's arg is constrained to m a *)
 let t_do_single_expr = assert_type
   "f x =\n  do\n    x\n"
-  "f" "'a 'b -> 'a 'b"
+  "f" "a b -> a b"
 
 (* DoBind then pure: monad is left abstract (works for any monad) *)
 let t_do_bind_pure = assert_type
   "addOne opt =\n  do\n    x <- opt\n    pure (x + 1)\n"
-  "addOne" "'a Int -> 'a Int"
+  "addOne" "a Int -> a Int"
 
 (* Two binds then pure *)
 let t_do_two_binds = assert_type
   "f a b =\n  do\n    x <- a\n    y <- b\n    pure (x + y)\n"
-  "f" "'a Int -> 'a Int -> 'a Int"
+  "f" "a Int -> a Int -> a Int"
 
 (* DoLet: plain binding inside a do block, no monadic wrapping *)
 let t_do_let = assert_type
   "f opt =\n  do\n    x <- opt\n    let y = x + 1\n    pure y\n"
-  "f" "'a Int -> 'a Int"
+  "f" "a Int -> a Int"
 
 (* pure alone: wrap any value in any monad *)
 let t_do_pure = assert_type
   "wrap x =\n  do\n    pure x\n"
-  "wrap" "'a -> 'b 'a"
+  "wrap" "a -> b a"
 
 (* pure after bind: identity for any monad *)
 let t_do_pure_after_bind = assert_type
   "identity opt =\n  do\n    x <- opt\n    pure x\n"
-  "identity" "'a 'b -> 'a 'b"
+  "identity" "a b -> a b"
 
 (* Tuple destructuring in a DoBind *)
 let t_do_tuple_bind = assert_type
   "f opt =\n  do\n    (x, y) <- opt\n    pure (x + y)\n"
-  "f" "'a (Int, Int) -> 'a Int"
+  "f" "a (Int, Int) -> a Int"
 
 (* DoExpr in the middle: value is discarded but must still be monadic *)
 let t_do_skip_middle = assert_type
   "f opt1 opt2 =\n  do\n    x <- opt1\n    opt2\n    pure x\n"
-  "f" "'a 'b -> 'a 'c -> 'a 'b"
+  "f" "a b -> a c -> a b"
 
 (* Top-level do block with a concrete monad (Option) *)
 let t_do_toplevel = assert_type
@@ -396,7 +404,7 @@ let t_do_toplevel = assert_type
 (* DoLet with a local function *)
 let t_do_let_fn = assert_type
   "f opt =\n  do\n    x <- opt\n    let double n = n + n\n    pure (double x)\n"
-  "f" "'a Int -> 'a Int"
+  "f" "a Int -> a Int"
 
 (* Error: mixing two different monads *)
 let e_do_mixed_monads = assert_err
@@ -498,7 +506,7 @@ let t_iface_method_type = assert_type
   {|interface Eq a where
   eq : a -> a -> Bool
 |}
-  "eq" "'a -> 'a -> Bool"
+  "eq" "a -> a -> Bool"
 
 (* Impl type-checks successfully *)
 let t_iface_impl_ok = assert_type
@@ -508,7 +516,7 @@ let t_iface_impl_ok = assert_type
 impl Eq Int where
   eq x y = x == y
 |}
-  "eq" "'a -> 'a -> Bool"
+  "eq" "a -> a -> Bool"
 
 (* Method is usable in a top-level function *)
 let t_iface_method_use = assert_type
@@ -520,7 +528,7 @@ impl Eq Int where
 
 f x y = eq x y
 |}
-  "f" "'a -> 'a -> Bool"
+  "f" "a -> a -> Bool"
 
 (* Zero-param interface — just type-checks without errors *)
 let t_iface_zero_param = assert_type
@@ -539,7 +547,7 @@ impl Show Int where
   show x = "int"
   showList xs = "list"
 |}
-  "show" "'a -> String"
+  "show" "a -> String"
 
 (* Polymorphic impl — Show for Option *)
 let t_iface_poly_impl = assert_type
@@ -552,14 +560,14 @@ impl Show Int where
 impl Show Bool where
   show x = "bool"
 |}
-  "show" "'a -> String"
+  "show" "a -> String"
 
 (* Higher-kinded interface — Mappable f *)
 let t_iface_hkt = assert_type
   {|interface Mappable f where
   fmap : (a -> b) -> f a -> f b
 |}
-  "fmap" "('a -> 'b) -> 'c 'a -> 'c 'b"
+  "fmap" "(a -> b) -> c a -> c b"
 
 (* Named impl — impl_name (lowercase per parser grammar) is stored, no type error.
    The parser uses IDENT for the impl name so it must be lowercase. *)
@@ -572,7 +580,7 @@ impl additive of Monoid Int where
   mempty = 0
   mappend x y = x + y
 |}
-  "mempty" "'a"
+  "mempty" "a"
 
 (* Default impl — interface with a default; an impl that omits the default method
    compiles without a MissingMethod error.  We verify the interface itself type-checks
@@ -585,7 +593,7 @@ let t_iface_default_method = assert_type
 impl Container List where
   empty = []
 |}
-  "empty" "'a 'b"
+  "empty" "a b"
 
 (* @Name annotation type-checks as Unit — it's a disambiguation hint and does
    not affect the method's type; a program that mentions @Name compiles. *)
@@ -669,7 +677,7 @@ impl Eq Int where
 
 f x y = eq x y
 |}
-  "f" "'a -> 'a -> Bool"
+  "f" "a -> a -> Bool"
 
 (* Zero-param interface: no constraint check needed *)
 let t_constraint_zero_param = assert_type
@@ -709,7 +717,7 @@ impl Show (Option a) where
 
 f x = show (Some x)
 |}
-  "f" "'a -> String"
+  "f" "a -> String"
 
 (* @Name hint in application position drops silently — method types correctly *)
 let t_constraint_at_name_drop = assert_type
@@ -919,7 +927,7 @@ let t_ref_int = assert_type "r = Ref 5\n" "r" "Ref Int"
 let t_ref_string = assert_type "r = Ref \"hi\"\n" "r" "Ref String"
 
 (* (Ref r).value reads back the contents — polymorphic *)
-let t_ref_value_poly = assert_type "f r = (Ref r).value\n" "f" "'a -> 'a"
+let t_ref_value_poly = assert_type "f r = (Ref r).value\n" "f" "a -> a"
 
 (* Ref Int read: r = Ref 5; v = r.value : Int *)
 let t_ref_value_read = assert_type "r = Ref 5\nv = r.value\n" "v" "Int"
@@ -950,12 +958,12 @@ let e_set_ref_impure = assert_err
 (* DoAssign on a let-mut binding succeeds *)
 let t_do_assign_valid = assert_type
   "f =\n  do\n    let mut x = 5\n    x = 10\n    pure x\n"
-  "f" "'a Int"
+  "f" "a Int"
 
 (* DoAssign after DoBind *)
 let t_do_assign_after_bind = assert_type
   "f opt =\n  do\n    let mut x = 0\n    y <- opt\n    x = y\n    pure x\n"
-  "f" "'a Int -> 'a Int"
+  "f" "a Int -> a Int"
 
 (* DoAssign to an immutable binding → ImmutableAssignment *)
 let e_do_assign_immutable = assert_err
@@ -997,7 +1005,7 @@ let e_extern_effect_impure = assert_err
 (* extern with effect: caller with matching annotation → ok *)
 let t_extern_effect_annotated = assert_type
   "extern myPrint : a -> <IO> Unit\nf : a -> <IO> Unit\nf x = myPrint x\n"
-  "f" "'a -> Unit"
+  "f" "a -> Unit"
 
 (* ── Runner ─────────────────────────────────────── *)
 
@@ -1017,6 +1025,12 @@ let () =
       test_case "inc"                 `Quick t_inc;
       test_case "apply"               `Quick t_apply;
       test_case "compose"             `Quick t_compose;
+    ];
+    "operator sections", [
+      test_case "(+1)"                `Quick t_section_add;
+      test_case "(*2)"                `Quick t_section_mul;
+      test_case "(>0)"                `Quick t_section_cmp;
+      test_case "map (+5) list"       `Quick t_section_map;
     ];
     "polymorphism", [
       test_case "id twice"            `Quick t_use_id_twice;

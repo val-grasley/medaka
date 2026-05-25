@@ -79,6 +79,7 @@ let rec expr_to_pat = function
 %token EOF
 
 %start <Ast.program> program
+%start <Ast.expr>    repl_expr
 
 %%
 
@@ -86,7 +87,7 @@ let rec expr_to_pat = function
    Grammar conflicts — audit notes (Phase 7)
    ═══════════════════════════════════════════════════════
 
-   Menhir reports 4 S/R states (13 conflicts) and 6 R/R states (21 conflicts).
+   Menhir reports 2 S/R states (11 conflicts) and 6 R/R states (21 conflicts).
    Every conflict is documented below.  All default resolutions are correct for
    the intended semantics — none require restructuring.
 
@@ -101,13 +102,6 @@ let rec expr_to_pat = function
      would leave { to be the start of a record-update expression, which
      requires { expr | … } and won't parse correctly here anyway.
 
-   S/R state 134  •  lookahead: LBRACKET
-     Stack: … EQUAL expr_postfix
-     Reduce: expr_app → expr_postfix    (close the application)
-     Shift:  expr_postfix . LBRACKET … RBRACKET   (indexing: e[i])
-     Resolution: SHIFT (default).  Indexing must bind tighter than application
-     so that `f x[0]` parses as `f (x[0])` not `(f x)[0]`.
-
    S/R state 138  •  lookaheads: UPPER STRING RPAREN RBRACKET LPAREN
                                   LBRACKET LBRACE INT IDENT FLOAT CONS
                                   COMMA CHAR BOOL   (14 tokens)
@@ -121,13 +115,6 @@ let rec expr_to_pat = function
      whose first token is `UPPER` followed by an atom-like token must be
      written with parens, e.g. `pure (Some 5)` instead of `Some 5`.
      The other 13 tokens for this state fall under the R/R analysis below.
-
-   S/R state 160  •  lookahead: LBRACKET
-     Stack: … EQUAL expr_app expr_postfix
-     Reduce: expr_app → expr_app expr_postfix   (close the application)
-     Shift:  expr_postfix . LBRACKET … RBRACKET (chain another index)
-     Resolution: SHIFT (default).  Chained indexing `a[i][j]` must be
-     left-associative; the rightmost postfix must keep extending.
 
    ── Reduce/reduce conflicts ─────────────────────────────
 
@@ -160,6 +147,9 @@ let rec expr_to_pat = function
 
 program:
   | option(newlines) decl_list EOF  { $2 }
+
+repl_expr:
+  | option(newlines) expr_no_block option(newlines) EOF  { $2 }
 
 decl_list:
   |                  { [] }
@@ -340,14 +330,29 @@ expr_app:
 
 expr_postfix:
   | expr_postfix DOT IDENT                        { EFieldAccess ($1, $3) }
-  | expr_postfix LBRACKET expr_no_block RBRACKET  { EIndex ($1, $3) }
+  | expr_postfix DOT LBRACKET expr_no_block RBRACKET  { EIndex ($1, $4) }
   | expr_atom                                     { $1 }
+
+(* Operator sections: (+e) desugars to \x -> x + e.
+   MINUS is excluded — (-e) stays as unary negation, matching Haskell's convention.
+   Left sections (e+) cannot be parsed unambiguously in LR without whitespace
+   tokens; use an explicit lambda instead: (x => e + x). *)
+section_op:
+  | PLUS       { "+" }   | STAR       { "*" }   | SLASH      { "/" }
+  | EQ_EQ      { "==" }  | NEQ        { "!=" }
+  | LT         { "<" }   | GT         { ">" }   | LEQ        { "<=" }  | GEQ { ">=" }
+  | AND        { "&&" }  | OR         { "||" }
+  | CONS       { "::" }  | PLUSPLUS   { "++" }
+  | PIPE_RIGHT { "|>" }  | RCOMPOSE   { ">>" }  | LCOMPOSE   { "<<" }
 
 expr_atom:
   | lit                                              { ELoc (of_pos $startpos, ELit $1) }
   | IDENT                                            { ELoc (of_pos $startpos, EVar $1) }
   | UPPER                                            { ELoc (of_pos $startpos, EVar $1) }
   | LPAREN RPAREN                                    { ELoc (of_pos $startpos, ELit LUnit) }
+  | LPAREN section_op expr_no_block RPAREN
+    { let op = $2 and e = $3 in
+      ELoc (of_pos $startpos, ELam ([PVar "_s"], EBinOp (op, EVar "_s", e))) }
   | LPAREN expr_no_block RPAREN                      { $2 }
   | LPAREN expr_no_block COMMA
       separated_nonempty_list(COMMA, expr_no_block) RPAREN

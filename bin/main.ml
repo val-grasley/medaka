@@ -25,10 +25,11 @@ let show_snippet source loc_opt =
 
 let () =
   let mode, filename = match Sys.argv with
+    | [| _; "repl" |] | [| _ |] -> Repl.run (); exit 0
     | [| _; "check"; file |] -> `Check, file
     | [| _; "run";   file |] -> `Run,   file
     | [| _; file |]           -> `Run,   file
-    | _ -> print_endline "Usage: medaka [check|run] <file.mdk>"; exit 1
+    | _ -> print_endline "Usage: medaka [check|run|repl] <file.mdk>"; exit 1
   in
   let source = read_file filename in
   let lexbuf = Lexing.from_string source in

@@ -577,7 +577,7 @@ to a value and the new `test_eval.ml` suite is green.
   match, multi-print do-block, let-mut reassignment, non-exhaustive match panic.
 - `test/dune` updated to include `test_run`.
 
-### Phase 12: REPL ⬅ NEXT
+### Phase 12: REPL ✓ DONE
 
 **Goal.** Match the design doc's Phase 2: an interactive read-eval-print
 loop. Forces clean incremental typechecking and evaluation.

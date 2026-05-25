@@ -222,7 +222,7 @@ and print_expr_raw p = function
     write p ")"
   | EIndex (e, i) ->
     print_expr p prec_postfix e;
-    write p "[";
+    write p ".[";
     print_expr p prec_top i;
     write p "]"
   | EMatch (sc, arms) ->

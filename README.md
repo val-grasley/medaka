@@ -9,7 +9,7 @@ self-host.
 
 ## Status
 
-Frontend complete; backend not yet started.
+Frontend and interpreter complete; codegen not yet started.
 
 - **AST** — `lib/ast.ml`
 - **Lexer** — `lib/lexer.mll` (indentation-sensitive, OCaml-style)
@@ -19,12 +19,13 @@ Frontend complete; backend not yet started.
 - **Type checker** — `lib/typecheck.ml` (Hindley-Milner with let-polymorphism,
   ADTs, records, pattern matching, interfaces with constraint checking,
   effect tracking, exhaustiveness/usefulness)
-- **CLI** — `bin/main.ml` runs the full pipeline with Elm-style error output
-- **Test suite** — 275 cases across `test/test_parser.ml`,
-  `test/test_roundtrip.ml`, `test/test_resolve.ml`, `test/test_typecheck.ml`
+- **Evaluator** — `lib/eval.ml` (tree-walking interpreter)
+- **REPL** — `bin/repl.ml` (incremental parse/typecheck/eval with persistent env)
+- **CLI** — `bin/main.ml` — `check`, `run`, and `repl` subcommands
+- **Test suite** — 354 cases across parser, roundtrip, resolve, typecheck,
+  eval, and run suites
 
-Not yet: evaluation, REPL, codegen, stdlib. See [PLAN.md](./PLAN.md) for the
-backend roadmap.
+Not yet: codegen, stdlib. See [PLAN.md](./PLAN.md) for the roadmap.
 
 ## Building
 
@@ -38,43 +39,85 @@ dune build
 ## Running tests
 
 ```sh
-dune build
-./_build/default/test/test_parser.exe     --compact
-./_build/default/test/test_roundtrip.exe  --compact
-./_build/default/test/test_resolve.exe    --compact
-./_build/default/test/test_typecheck.exe  --compact
+dune test
 ```
 
-(Running via `dune test` is supported, but PLAN.md §2.2 documents an
-environment-specific hang — run the binaries directly when in doubt.)
-
-## Trying the compiler
+Or run individual suites directly:
 
 ```sh
-dune build && ./_build/default/bin/main.exe path/to/file.mdk
+./_build/default/test/test_parser.exe    --compact
+./_build/default/test/test_typecheck.exe --compact
+./_build/default/test/test_eval.exe      --compact
+./_build/default/test/test_run.exe       --compact
 ```
 
-Runs parse → resolve → type-check, printing Elm-style errors on failure or
-`OK — N bindings` on success.
+## Using the compiler
+
+**Type-check a file:**
+```sh
+./_build/default/bin/main.exe check path/to/file.mdk
+```
+
+**Run a file** (requires a `main : <IO> Unit` binding):
+```sh
+./_build/default/bin/main.exe run path/to/file.mdk
+```
+
+**Interactive REPL:**
+```sh
+./_build/default/bin/main.exe repl
+```
+
+```
+medaka repl  (:quit to exit, :reset to clear session)
+> x = 42
+val x : Int
+> x + 1
+43 : Int
+> data Color = Red | Green | Blue
+type Color
+> Red
+Red : Color
+> :type [1, 2, 3]
+List Int
+> :quit
+```
+
+Multi-line definitions work naturally — keep typing indented lines and press
+Enter on a blank line to commit:
+
+```
+> insert x t = match t
+    Leaf => Node x Leaf Leaf
+    Node v l r => if x < v
+                    then Node v (insert x l) r
+                    else Node v l (insert x r)
+  
+val insert : Int -> Tree Int -> Tree Int
+```
 
 ## Layout
 
 ```
 lib/
-  ast.ml          AST type definitions + pretty printer + ELoc helpers
+  ast.ml          AST type definitions
   lexer.mll       Tokenizer with INDENT/DEDENT handling
   parser.mly      Menhir grammar
   printer.ml      AST → source (round-trip)
   resolve.ml      Name resolution
   typecheck.ml    Hindley-Milner + interfaces + effects + exhaustiveness
   exhaust.ml      Maranget's pattern-matrix algorithm
+  eval.ml         Tree-walking interpreter
 bin/
-  main.ml         CLI entry point
+  main.ml         CLI entry point (check / run / repl)
+  repl.ml         Interactive REPL loop
 test/
   test_parser.ml      AST shape per construct
   test_roundtrip.ml   parse → print → parse stability
   test_resolve.ml     Resolution errors
   test_typecheck.ml   Inferred types, type errors, exhaustiveness warnings
+  test_eval.ml        Interpreter correctness
+  test_run.ml         End-to-end program runs
 dev/
   debug.ml            Ad-hoc parse-and-print probe
   tc_debug.ml         Ad-hoc type-check probe

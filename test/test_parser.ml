@@ -196,8 +196,20 @@ let test_expr_type_annot () =
   | _ -> failwith "wrong"
 
 let test_expr_index () =
-  match parse_expr "arr[0]\n" with
+  match parse_expr "arr.[0]\n" with
   | EIndex (EVar "arr", ELit (LInt 0)) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_section () =
+  (* (+5) desugars to \x -> x + 5 *)
+  match parse_expr "(+5)\n" with
+  | ELam ([PVar "_s"], EBinOp ("+", EVar "_s", ELit (LInt 5))) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_list_arg () =
+  (* f [1, 2] should parse as application, not indexing *)
+  match parse_expr "f [1, 2]\n" with
+  | EApp (EVar "f", EListLit [ELit (LInt 1); ELit (LInt 2)]) -> ()
   | _ -> failwith "wrong"
 
 (* ── Match expression tests ──────────────────────────── *)
@@ -440,6 +452,8 @@ let () =
       test_case "record update"     `Quick test_expr_record_update;
       test_case "type annotation"   `Quick test_expr_type_annot;
       test_case "array index"       `Quick test_expr_index;
+      test_case "operator section"  `Quick test_expr_section;
+      test_case "list as arg"       `Quick test_expr_list_arg;
     ];
     "match", [
       test_case "basic match"       `Quick test_match_basic;

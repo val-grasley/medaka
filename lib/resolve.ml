@@ -364,3 +364,54 @@ let resolve_program (prog : program) : (error * Ast.loc option) list =
   let errors = ref build_errors in
   List.iter (check_decl env errors) prog;
   List.rev !errors
+
+(* ── REPL incremental interface ──────────────── *)
+
+let make_repl_resolve_env () : module_env = create_env ()
+
+(* Add declarations from `decls` into an existing `env` in place, then check
+   references.  Returns any errors found. *)
+let resolve_repl_item (env : module_env) (item : Ast.repl_item)
+    : (error * Ast.loc option) list =
+  current_loc := None;
+  let errors = ref [] in
+  let report e = errors := (e, None) :: !errors in
+  let add_unique tbl kind name =
+    if Hashtbl.mem tbl name then report (DuplicateDefinition (kind, name))
+    else Hashtbl.replace tbl name ()
+  in
+  let add_or_skip tbl name = Hashtbl.replace tbl name () in
+  let decls = match item with
+    | Ast.ReplDecl ds -> ds
+    | Ast.ReplExpr _ -> []
+  in
+  let extern_names =
+    List.filter_map (function Ast.DExtern (n, _) -> Some n | _ -> None) decls
+  in
+  List.iter (fun d ->
+    match d with
+    | Ast.DTypeSig (n, _) -> add_or_skip env.values n
+    | Ast.DExtern (n, _)  -> add_or_skip env.values n
+    | Ast.DFunDef (n, _, _) ->
+      if List.mem n extern_names then report (ExternWithBody n);
+      add_or_skip env.values n
+    | Ast.DData (n, _, vs) ->
+      add_unique env.types "type" n;
+      List.iter (fun v -> add_unique env.constructors "constructor" v.Ast.con_name) vs
+    | Ast.DRecord (n, _, fs) ->
+      add_unique env.types "type" n;
+      List.iter (fun f ->
+        add_or_skip env.fields f.Ast.field_name;
+        Hashtbl.replace env.field_owners f.Ast.field_name n
+      ) fs
+    | Ast.DInterface { iface_name; methods; _ } ->
+      add_unique env.interfaces "interface" iface_name;
+      List.iter (fun m -> add_or_skip env.values m.Ast.method_name) methods;
+      Hashtbl.replace env.iface_methods iface_name
+        (List.map (fun m -> m.Ast.method_name) methods)
+    | Ast.DImpl _ | Ast.DUse _ -> ()
+  ) decls;
+  (match item with
+   | Ast.ReplDecl ds -> List.iter (check_decl env errors) ds
+   | Ast.ReplExpr e  -> check_expr env [] errors e);
+  List.rev !errors

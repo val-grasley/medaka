@@ -104,6 +104,8 @@ type decl =
 
 type program = decl list
 
+type repl_item = ReplDecl of decl list | ReplExpr of expr
+
 (* Pretty-printing helpers *)
 (* Precedence-aware type printer.
    0 = top level / no wrap

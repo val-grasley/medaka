@@ -234,8 +234,8 @@ let pp_mono t =
       let n = !counter in
       incr counter;
       let s =
-        if n < 26 then Printf.sprintf "'%c" (Char.chr (Char.code 'a' + n))
-        else Printf.sprintf "'t%d" n
+        if n < 26 then String.make 1 (Char.chr (Char.code 'a' + n))
+        else Printf.sprintf "t%d" n
       in
       Hashtbl.add names id s;
       s
@@ -1342,3 +1342,85 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   (* Include interface methods and extern schemes in the returned env *)
   let final_env = !env in
   (results @ !iface_method_schemes @ !extern_schemes, List.rev !(final_env.warnings))
+
+(* ── REPL incremental interface ──────────────── *)
+
+(* Create a fresh typecheck env seeded with built-ins.
+   Does NOT call reset_state so the TVar counter is shared across REPL inputs. *)
+let make_repl_tc_env () : env ref =
+  ref (initial_env ())
+
+(* Type-check one or more declarations against an existing env.
+   Updates env in place and returns (new_bindings, warnings). *)
+let check_repl_decl (env : env ref) (decls : decl list)
+    : (ident * scheme) list * string list =
+  current_loc := None;
+  let iface_method_schemes = ref [] in
+  let extern_schemes = ref [] in
+  List.iter (function
+    | DData (n, ps, vs) -> register_data !env (n, ps, vs)
+    | DRecord (n, ps, fs) -> register_record !env (n, ps, fs)
+    | DInterface { iface_name; type_params; methods; _ } ->
+      let ms = register_interface !env (iface_name, type_params, methods) in
+      iface_method_schemes := ms @ !iface_method_schemes
+    | DExtern (name, ast_ty) ->
+      let scheme =
+        enter_level ();
+        let mono = from_ast_type ast_ty in
+        exit_level ();
+        generalize mono
+      in
+      extern_schemes := (name, scheme) :: !extern_schemes
+    | _ -> ()
+  ) decls;
+  List.iter (register_impl !env) decls;
+  let groups = group_fundefs decls in
+  enter_level ();
+  let placeholders = List.map (fun (n, _, _) -> (n, fresh_var ())) groups in
+  exit_level ();
+  env := (
+    let e = List.fold_left
+      (fun e (n, t) -> extend_var e n (monotype t))
+      !env placeholders in
+    let e = List.fold_left (fun e (n, s) -> extend_var e n s) e !iface_method_schemes in
+    List.fold_left (fun e (n, s) -> extend_var e n s) e !extern_schemes
+  );
+  let results = List.map (fun (name, sig_opt, clauses) ->
+    let placeholder = List.assoc name placeholders in
+    enter_level ();
+    (match sig_opt with
+     | None -> ()
+     | Some sig_ast ->
+       let sig_t = from_ast_type sig_ast in
+       unify placeholder sig_t);
+    List.iter (fun clause ->
+      let t = infer !env (clause_to_expr clause) in
+      unify placeholder t
+    ) clauses;
+    exit_level ();
+    let scheme = generalize placeholder in
+    env := extend_var !env name scheme;
+    (name, scheme)
+  ) groups in
+  List.iter (function
+    | DImpl _ as d -> check_impl !env d
+    | _ -> ()
+  ) decls;
+  check_method_usages !env;
+  let user_extern_decls =
+    List.filter_map (function DExtern (n, t) -> Some (n, t) | _ -> None) decls
+  in
+  infer_and_check_effects ~extern_decls:user_extern_decls groups;
+  (results @ !iface_method_schemes @ !extern_schemes,
+   List.rev !(!env.warnings))
+
+(* Infer the type of a bare expression without updating the env.
+   Returns (mono_type, warnings). *)
+let infer_repl_expr (env : env) (e : expr) : mono * string list =
+  current_loc := None;
+  enter_level ();
+  let t = infer env e in
+  exit_level ();
+  let scheme = generalize t in
+  let (Forall (_, mono)) = scheme in
+  (mono, List.rev !(env.warnings))

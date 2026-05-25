@@ -506,3 +506,56 @@ let eval_program program =
   ) program;
 
   List.map (fun (k, cell) -> (k, !cell)) !top_frame
+
+(* ── REPL incremental interface ─────────────────────────────────────────── *)
+
+type repl_state = {
+  top_frame : (string * value ref) list ref;
+  eval_env  : env ref;
+}
+
+let make_repl_eval_state () : repl_state =
+  let top_frame : (string * value ref) list ref = ref [] in
+  let add name v = top_frame := (name, ref v) :: !top_frame in
+  add "True"  (VBool true);
+  add "False" (VBool false);
+  add "None"  (VCon ("None", []));
+  add "Some"  (make_ctor "Some" 1);
+  add "Ok"    (make_ctor "Ok" 1);
+  add "Err"   (make_ctor "Err" 1);
+  List.iter (fun (name, v) -> add name v) (List.rev primitives);
+  let eval_env = ref [!top_frame] in
+  { top_frame; eval_env }
+
+let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
+  let add name v = rs.top_frame := (name, ref v) :: !(rs.top_frame) in
+  let fill name v =
+    match List.assoc_opt name !(rs.top_frame) with
+    | Some cell -> cell := v
+    | None -> add name v
+  in
+  rs.eval_env := [!(rs.top_frame)];
+  (match decl with
+   | DData (_, _, variants) ->
+     List.iter (fun v ->
+       add v.con_name (make_ctor v.con_name (List.length v.con_fields))
+     ) variants
+   | DFunDef (name, pats, body) ->
+     add name VUnit;
+     rs.eval_env := [!(rs.top_frame)];
+     let v = if pats = [] then eval !(rs.eval_env) body
+             else VClosure (!(rs.eval_env), pats, body) in
+     fill name v
+   | DImpl { methods; _ } ->
+     List.iter (fun (name, _, _) -> add name VUnit) methods;
+     rs.eval_env := [!(rs.top_frame)];
+     List.iter (fun (name, pats, body) ->
+       let v = if pats = [] then eval !(rs.eval_env) body
+               else VClosure (!(rs.eval_env), pats, body) in
+       fill name v
+     ) methods
+   | DRecord _ | DInterface _ | DTypeSig _ | DExtern _ | DUse _ -> ())
+
+let eval_repl_expr (rs : repl_state) (e : expr) : value =
+  rs.eval_env := [!(rs.top_frame)];
+  eval !(rs.eval_env) e
