@@ -1,6 +1,6 @@
 (library
  (name medaka_lib)
- (modules ast eval lexer parser printer resolve runtime typecheck exhaust)
+ (modules ast eval lexer parser printer resolve repl runtime typecheck exhaust)
  (libraries menhirLib))
 
 (ocamllex lexer)

@@ -1350,6 +1350,22 @@ let check_program (prog : program) : (ident * scheme) list * string list =
 let make_repl_tc_env () : env ref =
   ref (initial_env ())
 
+(* Deep-copy an env: all hashtable fields get fresh copies, list refs get fresh
+   refs.  Used by the REPL's :load command for atomic snapshot/restore. *)
+let copy_tc_env (e : env) : env = {
+  vars          = e.vars;                      (* persistent list *)
+  ctors         = Hashtbl.copy e.ctors;
+  records       = Hashtbl.copy e.records;
+  field_owners  = Hashtbl.copy e.field_owners;
+  interfaces    = Hashtbl.copy e.interfaces;
+  method_iface  = Hashtbl.copy e.method_iface;
+  impls         = ref !(e.impls);
+  method_usages = ref !(e.method_usages);
+  type_ctors    = Hashtbl.copy e.type_ctors;
+  warnings      = ref !(e.warnings);
+  mut_vars      = e.mut_vars;                  (* persistent set *)
+}
+
 (* Type-check one or more declarations against an existing env.
    Updates env in place and returns (new_bindings, warnings). *)
 let check_repl_decl (env : env ref) (decls : decl list)

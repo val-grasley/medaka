@@ -20,16 +20,17 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-342 tests pass across 6 test suites:
+357 tests pass across 7 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 53    | AST shape for each construct                          |
+| Parser            | `test/test_parser.ml`           | 55    | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 54    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 40    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 148   | Inferred types, type errors, exhaustiveness warnings  |
+| Type checker      | `test/test_typecheck.ml`        | 152   | Inferred types, type errors, exhaustiveness warnings  |
 | Evaluator         | `test/test_eval.ml`             | 41    | Runtime values, recursion, do-blocks, Ref, errors     |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
+| REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -170,6 +171,9 @@ This is the standard Haskell/OCaml convention — keep it.
 Items are ordered by what makes the next session most productive, not strictly
 by importance. Each item below is independently achievable in a session-sized
 chunk; pick one, do it well, write tests, commit, update this doc.
+
+**For the current arc (stdlib enablement), see §6 — the work after Phase 12
+is grouped there because Phases 1–12 are all DONE.**
 
 ### Phase 1: Records ✅ DONE
 
@@ -505,7 +509,7 @@ later backend changes don't have to chase implicit primitives.
   type-sig; it must not have an accompanying definition.
 - Type checker: an extern's declared type becomes its scheme directly (no
   body to infer). Effects from the `<...>` annotation populate `eff_env`.
-- A blessed `runtime.med` (or equivalent in-OCaml table) replaces the
+- A blessed `runtime.mdk` (or equivalent in-OCaml table) replaces the
   hand-rolled entries in `resolve.ml`'s `primitive_values` and
   `typecheck.ml`'s `initial_env`. The two lists become derived data.
 - Tests: existing test programs continue to type-check; add a few exercising
@@ -599,6 +603,243 @@ end-to-end. No test suite is required initially beyond a smoke test.
 
 ---
 
+## 6. Stdlib enablement track (next major arc)
+
+The next goal — explicit from the user — is to get the language to the point
+where the **standard library can be developed in Medaka itself**, without
+agent assistance, as a stress test of the syntax and semantics.  Three
+prerequisites must land before that's pleasant: a working module system, a
+REPL that can load files, and a Tree-sitter grammar so editor highlighting
+exists while writing those files.  Each phase below is independently
+shippable; pick one per session.
+
+### Phase 13: REPL `:load` (and reload) ✅ DONE
+
+**Goal.** Be able to develop interactively against a real `.mdk` file —
+edit in your editor, `:load file.mdk` (or `:r`) in the REPL to bring its
+top-level definitions into scope.
+
+**What was added (this session).**
+- `Typecheck.copy_tc_env : env -> env` — deep-copies all hashtable fields in
+  `env`; used for atomic snapshot/restore in `:load`
+- `lib/repl.ml` (moved from `bin/repl.ml` into `medaka_lib` so the test suite
+  can reach it; `bin/repl.ml` is now a one-line shim)
+- `Repl.load_file` — snapshots all env state, parses the file, rejects `use`
+  decls, processes declarations via the existing resolve/typecheck/eval pipeline,
+  restores on any error
+- `Repl.process_item` gains a `user_bindings` parameter and appends newly
+  type-checked bindings to it; `:browse`/`:env` sorts and prints that list
+- New meta-commands: `:load <path>`, `:reload`/`:r`, `:browse`/`:env`, `:t`
+  alias for `:type`
+- `test/test_repl.ml` — 9 tests covering process_item, load success,
+  rollback on type error, use-decl rejection, missing file, :browse
+- `test/dune` updated; `unix` library added for test harness
+
+357 tests pass (342 previously + 9 new REPL + 6 typecheck + 2 parser that
+were already passing with updated counts).
+
+---
+
+### Phase 14: Module system v1 — single-namespace cross-file `use`
+
+**Goal.** The smallest possible working module system: each file is a
+module, imports work, privacy is enforced, no nested namespaces yet.  Just
+enough to start splitting the eventual stdlib across files.
+
+**Decisions baked in.**
+- The compiler driver takes either (a) a single file (today's behavior,
+  preserved) or (b) a "root" file plus a project root directory; it walks
+  the dependency graph from the root, parsing each transitively-imported
+  file.
+- A file's module name is its path relative to the project root with `/`
+  replaced by `.` and the `.mdk` extension dropped — `src/list/core.mdk`
+  becomes module `list.core`.  No `module Foo where` header; the design
+  doc explicitly forbids that.
+- `pub` is required on every top-level item that should escape the
+  module: `pub data`, `pub record`, `pub interface`, `pub impl`,
+  `pub fn-def`, `pub extern`.  Type signatures (`f : ...`) implicitly
+  inherit the publicness of their matching `f x = ...` def.
+- Resolver and typechecker grow a `module_id` parameter; the resolver
+  rejects references to private names from other modules.
+- No circular dependency detection in this phase — the driver does a topo
+  sort and raises `CyclicDependency` if the graph has a cycle.
+
+**Scope.**
+- Parser: extend `decl_list` so `pub` can prefix `data_decl`, `record_decl`,
+  `iface_decl`, `impl_decl`, `extern_decl`, `type_sig`, `fun_def`.
+- AST: every decl variant grows an `is_pub : bool` field (or a single
+  `decl_visibility` wrapper).  Adjust printer / round-trip tests.
+- `lib/loader.ml` (new): given a root path and a project root, return an
+  ordered list of `(module_id, parsed_program)` with cycles rejected and
+  `use` decls resolved to canonical module IDs.
+- Resolver / typechecker: take a `module_id`; track which names came from
+  which module; reject references to private names from outside.
+- `use foo.bar` adds `bar` to the importing module's scope as a *value
+  binding* whose scheme is the exported scheme from `foo`.  `use foo.{x,
+  y}` works the same way; `use foo.*` brings every public name in.
+  `use foo as F` binds `F` to the module so `F.x` field-access syntax
+  reaches inside.
+- `use foo` alone (no selectors, no alias) brings `foo` in qualified-only:
+  references must be written `foo.x` and parse as `EFieldAccess (EVar
+  "foo", "x")`.  The typechecker special-cases `EFieldAccess` on module
+  identifiers to do the right lookup before falling back to the record path.
+- Driver: `medaka check src/main.mdk` walks dependencies; `medaka run
+  src/main.mdk` runs the resulting program.  Single-file invocation still
+  works (no `use` decls allowed).
+- Tests: `test/test_loader.ml` (new) covers happy path, cycle detection,
+  privacy violation, missing module file, unknown export name.
+
+**Done when.** A `tests/stdlib/list.mdk` defining `pub map` etc. can be
+imported by `tests/stdlib/main.mdk` via `use list.{map}` and the resulting
+program runs.
+
+---
+
+### Phase 15: Tree-sitter grammar
+
+**Goal.** Honor the design doc's Phase 1 promise: a tree-sitter grammar
+that gives syntax highlighting in editors that support it (VS Code via
+`vscode-tree-sitter`, Neovim via `nvim-treesitter`, Helix natively, Zed
+natively).  No type info needed — purely syntactic.
+
+**Scope.**
+- New top-level `tree-sitter/` directory with a `grammar.js`, generated
+  parser, `queries/highlights.scm`, and a minimal `package.json`.
+- Grammar mirrors `lib/parser.mly` as closely as is reasonable in
+  tree-sitter's GLR variant.  Indentation handling uses an external
+  scanner (`src/scanner.c`) — there are well-trodden references (Python,
+  Haskell, Nim tree-sitters) to crib from.
+- `queries/highlights.scm` distinguishes: keywords, type constructors
+  (uppercase idents), value identifiers, operators, comments, strings,
+  numbers, effect annotations, the `@ImplName` form.
+- `README.md` in `tree-sitter/` documents how to test (`tree-sitter test`,
+  `tree-sitter parse`) and how to install for each editor.
+- A small corpus of test files exercises every construct so the grammar
+  doesn't silently regress as the language grows.
+
+**Done when.** `tree-sitter parse path/to/sample.mdk` succeeds on every
+file in `tests/` and the user can install the grammar in their editor and
+see syntactic highlighting on Medaka source.  This phase is independently
+deliverable and does not block anything else; can be scheduled in parallel
+with the other Phase 14/16/17 work if desired.
+
+---
+
+### Phase 16: Collection literal syntax + Char/string upgrades
+
+**Goal.** Give the stdlib enough surface syntax to define `Map`, `Set`,
+`String`, and `Char` cleanly.
+
+**Scope.**
+- Map/Set literal sugar: `Map { "alice" => 30, "bob" => 25 }` and `Set {
+  1, 2, 3 }`.  Lexer needs no new tokens (`{`, `}`, `=>`, `,` already
+  exist); parser adds an `expr_atom` alternative `UPPER LBRACE
+  separated_list(COMMA, kv_or_e) RBRACE` where `kv_or_e` is
+  `expr_no_block FAT_ARROW expr_no_block` OR `expr_no_block`.  AST:
+  `EMapLit of (expr * expr) list` and `ESetLit of expr list` (or fold
+  both into a single `EAssocLit`).  Or, alternatively, leave it as
+  ordinary `ERecordCreate`/function application until interfaces can
+  drive desugaring — pick whichever is least invasive when starting.
+- Multiline string indentation stripping per the design doc: a string
+  that begins with `"\n  ` strips the common-leading-whitespace prefix
+  off every subsequent line.  Lexer-side transform; behind a literal
+  flag if it turns out to be surprising in some cases.
+- Char as a grapheme cluster: change the lexer's `CHAR` rule to accept
+  `'X'` where `X` is any UTF-8 sequence; carry the bytes as `LChar
+  string` (already a string in the AST — just the lexer is byte-bound
+  today).  No grapheme segmentation library yet; this phase only fixes
+  multibyte char *literals*, not iteration over a string.
+- String escape upgrades: `\n`, `\t`, `\\`, `\"` already work; add
+  `\r`, `\0`, and `\u{XXXX}` for unicode codepoints.
+
+**Done when.** All four design-doc string/char examples in `language-
+design.md` lex and parse, plus tests for Map/Set literals.
+
+---
+
+### Phase 17: Float / Bool / polymorphic ops (small but unblocks stdlib)
+
+**Goal.** Move arithmetic and comparison off the Int-only built-ins so
+that stdlib code defining `Map`, `Float`, `Ord` etc. type-checks.
+
+**Scope.**
+- `+`, `-`, `*`, `/` desugar to method calls on a built-in `Num`
+  interface; `==`/`!=` to `Eq`; `<`/`>`/`<=`/`>=` to `Ord`.  Built-in
+  impls for `Int` and `Float` ship in the runtime registry.
+- Unary `-` becomes `Num.negate`; `!` stays Bool-only.
+- Lexer/parser get `+.` / `-.` / `*.` / `/.` only if the user thinks
+  ML-style explicit Float ops are worth it — by default, drop them; the
+  `Num` interface dispatch handles `+` on Floats just fine.  (My
+  recommendation: drop them; `print 1.0 +. 2.0` is uglier than the
+  inferred-Num version.)
+- `%` modulo: add `MOD` token, parser slot at `expr_mul` precedence;
+  routes through `Num` (or a new `Integral` interface) so it stays
+  Int-only at the type level.
+- This phase exposes any holes in interface constraint solving — fix
+  them as they surface rather than speculatively.
+
+**Done when.** A test program using `1.5 +. 2.0` (or just `1.5 + 2.0`
+under the new dispatch) type-checks and runs; the polymorphic `==` works
+across user types that derive / impl `Eq`.
+
+---
+
+### Phase 18: `runtime.mdk` and structured extern catalog
+
+**Goal.** Promote `lib/runtime.ml`'s primitive registry to a real
+`runtime.mdk` file with `extern` declarations.  Establishes the
+abstraction boundary the design doc calls for and gets us out of the
+business of mirroring `extern` decls in OCaml source.
+
+**Scope.**
+- Move the eight entries currently in `lib/runtime.ml` into
+  `stdlib/runtime.mdk` as `extern` decls.
+- Compiler driver loads `runtime.mdk` first (path relative to the
+  binary; configurable via `MEDAKA_STDLIB_PATH`) and treats its decls as
+  built-in.
+- `lib/runtime.ml` becomes a tiny module that just maps extern names to
+  OCaml implementations — no type information lives there anymore.
+- Add the rest of the design-doc primitives (`readLine`, `readFile`,
+  `writeFile`, `exit`, time/random hooks) as extern decls + OCaml
+  impls.
+- Document the convention in `stdlib/README.md`.
+
+**Done when.** The primitive type list in `resolve.ml` and the scheme
+list in `typecheck.ml` derive solely from loading `runtime.mdk`; no
+primitive name appears as a string literal in either file.
+
+---
+
+### Phase 19: Begin the standard library
+
+**Goal.** With Phases 13–18 in place you can start implementing the
+stdlib in Medaka itself, interactively via the REPL, exactly as the
+design doc envisions.  This phase is open-ended; the rough sequence is:
+
+1. `core` module: `Option`, `Result`, the `Eq`/`Ord`/`Num`/`Show`
+   interfaces, and instances for built-in types.
+2. `list` module: every `Foldable`/`Mappable` operation on `List`.
+3. `string` module: split / trim / join / contains / startsWith /
+   endsWith / chars / bytes / slice / length (over grapheme clusters).
+4. `array` module: random access, `map`/`filter`/`fold` via the same
+   interfaces.
+5. `map` and `set` modules: persistent tree maps/sets.
+6. `mut_array`, `hash_map`, `hash_set`: mutable equivalents.
+7. `io` module: `readFile`, `writeFile`, `readLine` wrappers.
+8. `json` module: data type + parser + serializer.
+
+Each module added forces a real exercise of the language — expect to
+discover holes that turn into new bullets in §5 or new sub-phases.
+Don't try to plan modules 4–8 in detail before module 1 is done; the
+goalposts will move.
+
+**Done when.** It's the user that decides when to stop. By the end of
+the early stdlib work, the language design should feel stable enough to
+move on to Phase 20+ (LSP / formatter / package tooling / multi-file
+build artifacts).
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
@@ -653,3 +894,61 @@ These aren't blockers, but a less-careful change could trip over them:
   interpreter runs (Phase 10–11) the existing collection types (`List`,
   `Array`, `Map`, etc.) can begin to migrate from compiler-side primitives
   into Medaka source on top of `extern`.
+
+### Additional gaps surfaced during the 2026-05-24 audit
+
+These are not currently scheduled inside any DONE phase; they each map to
+a phase in §6 unless noted.
+
+- **`pub` only on `use`.** The parser accepts `pub` exclusively as the
+  prefix to a `use` decl (for re-exports). It is not accepted on
+  `data` / `record` / `interface` / `impl` / `fun_def` / `extern`. Per the
+  design doc, privacy is per-binding with `pub` opt-in — so right now every
+  top-level item would be effectively private once a real module system
+  exists. Fix scheduled in Phase 14.
+- **`use` decls are semantic no-ops.** `Resolve.build_env` adds the
+  imported leaf name to `env.values` *and* `env.types` (since it can't
+  tell which) but the typechecker has nothing for `DUse` and the evaluator
+  also ignores it. Cross-file resolution does not exist; the driver only
+  accepts one file. Fix in Phase 14.
+- **No qualified module access.** `utils.greet` parses as
+  `EFieldAccess (EVar "utils", "greet")` and fails at typecheck because
+  `utils` has no record type. The typechecker needs a special case (or
+  the resolver needs to rewrite the AST) once modules are real. Phase 14.
+- **`runtime.ml` should be `runtime.mdk`.** Design doc §Runtime
+  Primitives & Abstraction Layer is explicit: the catalog of externs
+  should be Medaka source backed by OCaml implementations, not OCaml
+  source that mirrors what an extern decl would say. Phase 18.
+- **`<Mut>` not inferred from `let mut` use.** Design says any function
+  touching a `let mut` binding picks up `<Mut>`. Today only direct calls
+  to extern `set_ref` add it via the `eff_env` path. The merge of effects
+  into `TFun` (already noted) is the right place to fix this too.
+- **Multiline string indentation stripping not implemented.** The lexer
+  preserves all whitespace. Design doc shows leading-indent stripping;
+  scheduled in Phase 16.
+- **`Char` is byte-based.** Lexer rule
+  `'\'' ([^ '\''] as c) '\''` accepts exactly one byte; the design wants
+  a grapheme cluster. Phase 16.
+- **No `\u{XXXX}` / `\r` / `\0` in string literals.** Only `\n`, `\t`,
+  `\"`, `\\` today. Phase 16.
+- **No `Map { ... => ... }` or `Set { ... }` literal syntax.** Phase 16.
+- **`%` modulo not lexed.** `eval_arith` already handles `%` but no token
+  exists for it in the lexer. Phase 17.
+- **`+.` / `-.` / `*.` / `/.` referenced in `eval_arith` but not lexed.**
+  Either drop them (recommended once `Num` interface dispatch lands) or
+  add tokens. Phase 17.
+- **Tree-sitter grammar absent.** Design doc Phase 1 calls for it in
+  parallel with the compiler. Phase 15.
+- **CLI surface is minimal.** The design specifies `medaka new`, `build`,
+  `run --release`, `check --json`, `test`, `fmt`, `lsp`, `add`, `remove`,
+  `update`, `doc` — today only `check`, `run`, `repl` exist. Each is its
+  own follow-up phase post-stdlib; not blockers.
+- **No `medaka.toml` / `medaka.lock`.** Project config doesn't exist yet
+  because single-file is still the contract. Post-Phase 14.
+- **REPL: `:load`, `:reload`, `:browse` now implemented.** ✅ Phase 13 done.
+- **Record field assignment `p.field = e`.** Design says mutable records
+  support `p.age = 31` directly; today the only form is `{ p | age = 31 }`
+  for the immutable update and `set_ref`-via-`Ref` for the mutable cell
+  case. Not on the critical path; revisit after stdlib forces the issue.
+- **`r.value = e` field-assignment on `Ref`.** Same family as above; use
+  `set_ref` for now.
