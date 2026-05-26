@@ -108,6 +108,7 @@ type decl =
       methods    : (ident * pat list * expr) list;
     }
   | DTypeAlias of bool * ident * ident list * ty  (* pub? name params rhs *)
+  | DNewtype   of bool * ident * ident list * ident * ty * ident list  (* pub? tyname typarams conname fty derives *)
   | DUse of bool * use_path  (* pub? use path *)
 
 type program = decl list

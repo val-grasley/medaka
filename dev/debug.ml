@@ -40,6 +40,7 @@ let pp_decl d =
       | UseAlias (ns, a) -> Printf.sprintf "UseAlias(%s as %s)" (String.concat "." ns) a
     in
     Printf.sprintf "DUse(pub=%b, %s)" pub (pp_use p)
+  | DNewtype (_, n, _, con, _, _) -> Printf.sprintf "DNewtype(%s, %s)" n con
 
 let show label src =
   Printf.printf "── %s ──\n" label;

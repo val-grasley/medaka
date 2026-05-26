@@ -273,4 +273,10 @@ let () =
       test_case "function"    `Quick (mk "type Parser a = String -> Option a\n");
       test_case "export"      `Quick (mk "export type Name = String\n");
     ];
+    "newtype declarations", [
+      test_case "simple"      `Quick (mk "newtype UserId = UserId Int\n");
+      test_case "parametric"  `Quick (mk "newtype Wrapper a = Wrap a\n");
+      test_case "export"      `Quick (mk "export newtype UserId = UserId Int\n");
+      test_case "deriving"    `Quick (mk "newtype Age = Age Int deriving (Eq)\n");
+    ];
   ]

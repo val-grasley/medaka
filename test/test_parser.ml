@@ -31,6 +31,7 @@ let pp_decl d =
   | DUse (pub, _)         -> Printf.sprintf "DUse(pub=%b, ...)" pub
   | DExtern (_, n, t)     -> Printf.sprintf "DExtern(%s, %s)" n (Ast.pp_ty t)
   | DTypeAlias (_, n, _, _) -> Printf.sprintf "DTypeAlias(%s, ...)" n
+  | DNewtype (_, n, _, con, _, _) -> Printf.sprintf "DNewtype(%s, %s, ...)" n con
 
 let parse_one src =
   match parse src with
@@ -636,6 +637,26 @@ let test_type_alias_export () =
   | DTypeAlias (true, "Name", [], TyCon "String") -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
+let test_newtype_simple () =
+  match parse_one "newtype UserId = UserId Int\n" with
+  | DNewtype (false, "UserId", [], "UserId", TyCon "Int", []) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_newtype_param () =
+  match parse_one "newtype Wrapper a = Wrap a\n" with
+  | DNewtype (false, "Wrapper", ["a"], "Wrap", TyVar "a", []) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_newtype_export () =
+  match parse_one "export newtype UserId = UserId Int\n" with
+  | DNewtype (true, "UserId", [], "UserId", TyCon "Int", []) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_newtype_deriving () =
+  match parse_one "newtype Age = Age Int deriving (Eq)\n" with
+  | DNewtype (false, "Age", [], "Age", TyCon "Int", ["Eq"]) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -757,5 +778,11 @@ let () =
       test_case "parametric alias" `Quick test_type_alias_param;
       test_case "function alias"   `Quick test_type_alias_fun;
       test_case "export alias"     `Quick test_type_alias_export;
+    ];
+    "newtype declarations", [
+      test_case "simple newtype"     `Quick test_newtype_simple;
+      test_case "parametric newtype" `Quick test_newtype_param;
+      test_case "export newtype"     `Quick test_newtype_export;
+      test_case "newtype deriving"   `Quick test_newtype_deriving;
     ];
   ]

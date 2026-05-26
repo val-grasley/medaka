@@ -307,6 +307,17 @@ f x
 r = f 0
 |} "r"
 
+(* ── Newtype tests ──────────────────────────────────────────────────── *)
+
+let t_newtype_wrap =
+  assert_val "newtype Foo = Foo Int\nx = Foo 5\n" "x" (VCon ("Foo", [VInt 5]))
+
+let t_newtype_unwrap =
+  assert_val {|newtype Foo = Foo Int
+unwrap (Foo n) = n
+r = unwrap (Foo 42)
+|} "r" (VInt 42)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -399,5 +410,9 @@ let () =
       test_case "pos branch"        `Quick t_guard_basic_pos;
       test_case "zero branch"       `Quick t_guard_basic_zero;
       test_case "non-exhaustive"    `Quick t_guard_non_exhaustive;
+    ];
+    "newtype declarations", [
+      test_case "wrap value"        `Quick t_newtype_wrap;
+      test_case "pattern unwrap"    `Quick t_newtype_unwrap;
     ];
   ]
