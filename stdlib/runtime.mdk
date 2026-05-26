@@ -3,13 +3,15 @@
 -- To add a new primitive: add an extern line here, add its OCaml impl in
 -- eval.ml's `primitives` list, and (if non-pure) its effect annotation here
 -- ensures eff_env is seeded automatically.
+--
+-- `pure` and `map` are *not* externs: they're interface methods of
+-- Applicative and Mappable declared in stdlib/core.mdk, and dispatched
+-- through user-written impl bodies.
 
-extern pure    : a -> m a
 extern print   : a -> <IO> Unit
 extern println : a -> <IO> Unit
 extern Ref     : a -> Ref a
 extern set_ref : Ref a -> a -> <Mut> Unit
-extern map     : (a -> b) -> List a -> List b
 extern filter  : (a -> Bool) -> List a -> List a
 extern fold    : (b -> a -> b) -> b -> List a -> b
 extern pi      : Float
