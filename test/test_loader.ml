@@ -138,6 +138,173 @@ let test_export_round_trip () =
   if not (String.sub printed 0 7 = "export ") then
     failwith (Printf.sprintf "expected 'export ' prefix in printed output, got: %s" printed)
 
+(* ── Re-export helpers ───────────────────────────── *)
+
+(* Resolve all modules in load order and return per-module exports list. *)
+let resolve_all modules =
+  let resolve_exports = ref [] in
+  let errors = ref [] in
+  List.iter (fun (mod_id, _, prog) ->
+    let (exp, errs) = Resolve.resolve_module !resolve_exports mod_id prog in
+    resolve_exports := exp :: !resolve_exports;
+    if errs <> [] then errors := (mod_id, errs) :: !errors
+  ) modules;
+  (List.rev !resolve_exports, !errors)
+
+let find_exp exports mod_id =
+  match List.find_opt (fun e -> e.Resolve.exp_mod_id = mod_id) exports with
+  | Some e -> e
+  | None -> failwith (Printf.sprintf "module '%s' not found in exports" mod_id)
+
+(* ── Re-export tests ──────────────────────────────── *)
+
+(* export import a.foo (UseName) re-exports a single value *)
+let test_reexport_value_selective () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "export foo = 42\n" in
+    let _ = write_file dir "b.mdk" "export import a.foo\n" in
+    let main = write_file dir "main.mdk" "import b.{foo}\nresult = foo\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let b_exp = find_exp exports "b" in
+    if not (Hashtbl.mem b_exp.Resolve.exp_values "foo") then
+      failwith "expected 'foo' in b's exports"
+  )
+
+(* export import a.{x, y} (UseGroup) re-exports selected names *)
+let test_reexport_group () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "export foo = 1\nexport bar = 2\nexport baz = 3\n" in
+    let _ = write_file dir "b.mdk" "export import a.{foo, bar}\n" in
+    let main = write_file dir "main.mdk" "import b.{foo}\nimport b.{bar}\nresult = foo\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let b_exp = find_exp exports "b" in
+    if not (Hashtbl.mem b_exp.Resolve.exp_values "foo") then
+      failwith "expected 'foo' in b's exports";
+    if not (Hashtbl.mem b_exp.Resolve.exp_values "bar") then
+      failwith "expected 'bar' in b's exports";
+    if Hashtbl.mem b_exp.Resolve.exp_values "baz" then
+      failwith "did not expect 'baz' in b's exports"
+  )
+
+(* export import a.* (UseWild) re-exports all public names *)
+let test_reexport_wildcard () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "export foo = 1\nexport bar = 2\nprivate_val = 3\n" in
+    let _ = write_file dir "b.mdk" "export import a.*\n" in
+    let main = write_file dir "main.mdk" "import b.{foo}\nimport b.{bar}\nresult = foo\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let b_exp = find_exp exports "b" in
+    if not (Hashtbl.mem b_exp.Resolve.exp_values "foo") then
+      failwith "expected 'foo' in b's exports";
+    if not (Hashtbl.mem b_exp.Resolve.exp_values "bar") then
+      failwith "expected 'bar' in b's exports";
+    if Hashtbl.mem b_exp.Resolve.exp_values "private_val" then
+      failwith "did not expect 'private_val' in b's exports"
+  )
+
+(* wildcard re-export includes data types and their constructors *)
+let test_reexport_data_wildcard () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "export data Color = Red | Green | Blue\n" in
+    let _ = write_file dir "b.mdk" "export import a.*\n" in
+    let main = write_file dir "main.mdk"
+      "import b.{Color, Red, Green, Blue}\nfavorite : Color\nfavorite = Red\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let b_exp = find_exp exports "b" in
+    if not (Hashtbl.mem b_exp.Resolve.exp_types "Color") then
+      failwith "expected 'Color' in b's exports";
+    if not (Hashtbl.mem b_exp.Resolve.exp_constructors "Red") then
+      failwith "expected 'Red' in b's exports"
+  )
+
+(* group re-export includes named constructors *)
+let test_reexport_data_group () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "export data Color = Red | Green | Blue\n" in
+    let _ = write_file dir "b.mdk" "export import a.{Color, Red, Green, Blue}\n" in
+    let main = write_file dir "main.mdk"
+      "import b.{Color, Red}\nfavorite : Color\nfavorite = Red\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let b_exp = find_exp exports "b" in
+    if not (Hashtbl.mem b_exp.Resolve.exp_types "Color") then
+      failwith "expected 'Color' in b's exports";
+    if not (Hashtbl.mem b_exp.Resolve.exp_constructors "Red") then
+      failwith "expected 'Red' in b's exports"
+  )
+
+(* wildcard re-export includes interfaces and their methods *)
+let test_reexport_interface () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk"
+      "export interface Pretty a where\n  pretty : a -> String\n" in
+    let _ = write_file dir "b.mdk" "export import a.*\n" in
+    let main = write_file dir "main.mdk"
+      "import b.{Pretty, pretty}\ndisplay : Pretty a => a -> String\ndisplay x = pretty x\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let b_exp = find_exp exports "b" in
+    if not (Hashtbl.mem b_exp.Resolve.exp_interfaces "Pretty") then
+      failwith "expected 'Pretty' in b's exports";
+    if not (Hashtbl.mem b_exp.Resolve.exp_values "pretty") then
+      failwith "expected 'pretty' method in b's exports"
+  )
+
+(* group re-export of an interface includes its methods *)
+let test_reexport_interface_group () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk"
+      "export interface Pretty a where\n  pretty : a -> String\n" in
+    let _ = write_file dir "b.mdk" "export import a.{Pretty}\n" in
+    let main = write_file dir "main.mdk"
+      "import b.{Pretty, pretty}\ndisplay : Pretty a => a -> String\ndisplay x = pretty x\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let b_exp = find_exp exports "b" in
+    if not (Hashtbl.mem b_exp.Resolve.exp_interfaces "Pretty") then
+      failwith "expected 'Pretty' in b's exports";
+    if not (Hashtbl.mem b_exp.Resolve.exp_values "pretty") then
+      failwith "expected 'pretty' method in b's exports"
+  )
+
+(* chained re-exports: A -> B -> C -> D *)
+let test_reexport_chained () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "export foo = 42\n" in
+    let _ = write_file dir "b.mdk" "export import a.foo\n" in
+    let _ = write_file dir "c.mdk" "export import b.foo\n" in
+    let main = write_file dir "main.mdk" "import c.{foo}\nresult = foo\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let c_exp = find_exp exports "c" in
+    if not (Hashtbl.mem c_exp.Resolve.exp_values "foo") then
+      failwith "expected 'foo' in c's exports"
+  )
+
+(* private import (no export) is not visible to third modules *)
+let test_private_import_not_reexported () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "export foo = 42\n" in
+    let _ = write_file dir "b.mdk" "import a.foo\n" in
+    let main = write_file dir "main.mdk" "import b.{foo}\nresult = foo\n" in
+    let modules = Loader.load_program main dir in
+    let (_exports, errors) = resolve_all modules in
+    if errors = [] then
+      failwith "expected PrivateNameAccess error but got none"
+  )
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -157,5 +324,16 @@ let () =
       test_case "cycle detection"  `Quick test_cycle_detection;
       test_case "missing file"     `Quick test_missing_file;
       test_case "privacy violation" `Quick test_privacy_violation;
+    ];
+    "re-exports", [
+      test_case "selective (UseName)"          `Quick test_reexport_value_selective;
+      test_case "group (UseGroup)"             `Quick test_reexport_group;
+      test_case "wildcard (UseWild)"           `Quick test_reexport_wildcard;
+      test_case "data type wildcard"           `Quick test_reexport_data_wildcard;
+      test_case "data type group"              `Quick test_reexport_data_group;
+      test_case "interface wildcard"           `Quick test_reexport_interface;
+      test_case "interface group"              `Quick test_reexport_interface_group;
+      test_case "chained A->B->C"              `Quick test_reexport_chained;
+      test_case "private import not reexported" `Quick test_private_import_not_reexported;
     ];
   ]

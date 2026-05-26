@@ -529,7 +529,8 @@ let check_decl env errors = function
 (* ── Build module exports from a resolved env ─── *)
 
 (* Collect all public names from a program into module_exports *)
-let build_exports (mod_id : string) (prog : program) (env : module_env)
+let build_exports ?(known_modules : module_exports list = [])
+    (mod_id : string) (prog : program) (env : module_env)
     : module_exports =
   let exp = {
     exp_mod_id        = mod_id;
@@ -541,6 +542,36 @@ let build_exports (mod_id : string) (prog : program) (env : module_env)
     exp_interfaces    = Hashtbl.create 4;
     exp_iface_methods = Hashtbl.create 4;
   } in
+  (* Re-export one name from a source module's exports *)
+  let reexport_name src_exp name =
+    if Hashtbl.mem src_exp.exp_values name then
+      Hashtbl.replace exp.exp_values name ();
+    if Hashtbl.mem src_exp.exp_types name then
+      Hashtbl.replace exp.exp_types name ();
+    if Hashtbl.mem src_exp.exp_constructors name then
+      Hashtbl.replace exp.exp_constructors name ();
+    if Hashtbl.mem src_exp.exp_interfaces name then begin
+      Hashtbl.replace exp.exp_interfaces name ();
+      (* Also re-export the interface's methods *)
+      (match Hashtbl.find_opt src_exp.exp_iface_methods name with
+       | Some methods ->
+         Hashtbl.replace exp.exp_iface_methods name methods;
+         List.iter (fun mn ->
+           if Hashtbl.mem src_exp.exp_values mn then
+             Hashtbl.replace exp.exp_values mn ()
+         ) methods
+       | None -> ())
+    end
+  in
+  (* Re-export all fields for any re-exported record type *)
+  let reexport_fields src_exp =
+    Hashtbl.iter (fun field owner ->
+      if Hashtbl.mem exp.exp_types owner then begin
+        Hashtbl.replace exp.exp_fields field ();
+        Hashtbl.replace exp.exp_field_owners field owner
+      end
+    ) src_exp.exp_field_owners
+  in
   List.iter (fun d ->
     match d with
     | DTypeSig (true, n, _) ->
@@ -571,6 +602,34 @@ let build_exports (mod_id : string) (prog : program) (env : module_env)
       (* Impl declarations export their methods via the interface's methods;
          we don't need to separately export the impl itself. *)
       ()
+    | DUse (true, path) ->
+      let src_mod_id = use_path_module_id path in
+      (match List.find_opt (fun e -> e.exp_mod_id = src_mod_id) known_modules with
+       | None -> ()
+       | Some src_exp ->
+         (match path with
+          | UseName ns when List.length ns > 1 ->
+            let name = List.hd (List.rev ns) in
+            reexport_name src_exp name;
+            reexport_fields src_exp
+          | UseName _ ->
+            (* use foo alone as re-export: no individual names, alias only — skip *)
+            ()
+          | UseGroup (_, members) ->
+            List.iter (reexport_name src_exp) members;
+            reexport_fields src_exp
+          | UseWild _ ->
+            (* Re-export everything from the source module *)
+            Hashtbl.iter (fun n () -> Hashtbl.replace exp.exp_values n ()) src_exp.exp_values;
+            Hashtbl.iter (fun n () -> Hashtbl.replace exp.exp_types n ()) src_exp.exp_types;
+            Hashtbl.iter (fun n () -> Hashtbl.replace exp.exp_constructors n ()) src_exp.exp_constructors;
+            Hashtbl.iter (fun n () -> Hashtbl.replace exp.exp_interfaces n ()) src_exp.exp_interfaces;
+            Hashtbl.iter (fun n ms -> Hashtbl.replace exp.exp_iface_methods n ms) src_exp.exp_iface_methods;
+            Hashtbl.iter (fun f () -> Hashtbl.replace exp.exp_fields f ()) src_exp.exp_fields;
+            Hashtbl.iter (fun f owner -> Hashtbl.replace exp.exp_field_owners f owner) src_exp.exp_field_owners
+          | UseAlias _ ->
+            (* export import foo as F: module-alias re-export not yet supported *)
+            ()))
     | _ -> ()
   ) prog;
   (* Also export interface method names whose interface is public *)
@@ -603,7 +662,7 @@ let resolve_module
   let env, build_errors = build_env ~known_modules prog in
   let errors = ref build_errors in
   List.iter (check_decl env errors) prog;
-  let exports = build_exports mod_id prog env in
+  let exports = build_exports ~known_modules mod_id prog env in
   (exports, List.rev !errors)
 
 (* ── REPL incremental interface ──────────────── *)
