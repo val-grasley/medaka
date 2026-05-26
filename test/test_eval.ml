@@ -240,6 +240,27 @@ let t_match_fail  = assert_runtime_err {|r =
     0 => "zero"
 |} "r"
 
+(* ── Where clauses ──────────────────────────────────────────────────────── *)
+
+let t_where_single = assert_val {|r = double 5 where
+    double x = x * 2
+|} "r" (VInt 10)
+
+let t_where_multi = assert_val {|r = double 5 + triple 5 where
+    double x = x * 2
+    triple x = x * 3
+|} "r" (VInt 25)
+
+let t_where_sequential = assert_val {|r = result where
+    base = 10
+    result = base + 5
+|} "r" (VInt 15)
+
+let t_where_nested = assert_val {|r = outer 3 where
+    outer n = inner n + 1 where
+        inner k = k * 2
+|} "r" (VInt 7)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -318,5 +339,11 @@ let () =
       test_case "1.5 + 2.0"  `Quick t_float_add;
       test_case "3.0 * 2.0"  `Quick t_float_mul;
       test_case "10 % 3"     `Quick t_int_mod;
+    ];
+    "where clauses", [
+      test_case "single helper"     `Quick t_where_single;
+      test_case "multiple helpers"  `Quick t_where_multi;
+      test_case "sequential"        `Quick t_where_sequential;
+      test_case "nested"            `Quick t_where_nested;
     ];
   ]

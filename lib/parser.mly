@@ -21,6 +21,13 @@ let stmts_to_expr = function
 let curry_lam pats body =
   List.fold_right (fun pat acc -> ELam ([pat], acc)) pats body
 
+(* Desugar `where` bindings into nested ELet expressions. *)
+let desugar_where bindings main_expr =
+  List.fold_right
+    (fun (name, pats, rhs) acc ->
+      ELet (false, PVar name, curry_lam pats rhs, acc))
+    bindings main_expr
+
 (* Convert an expression back into a pattern when used as a lambda parameter.
    Supported: identifiers, literals, tuples, lists, cons, constructor apps. *)
 let rec expr_to_pat = function
@@ -215,8 +222,12 @@ inner_fun_def:
     { fun is_pub -> DFunDef (is_pub, $1, $2, $4) }
 
 fun_body:
-  | expr_no_block                       { $1 }
-  | INDENT nonempty_list(stmt) DEDENT   { stmts_to_expr $2 }
+  | expr_no_block                                                    { $1 }
+  | expr_no_block WHERE INDENT nonempty_list(where_binding) DEDENT   { desugar_where $4 $1 }
+  | INDENT nonempty_list(stmt) DEDENT                                { stmts_to_expr $2 }
+
+where_binding:
+  | IDENT list(pat_atom) EQUAL fun_body newlines  { ($1, $2, $4) }
 
 (* ── Types ───────────────────────────────────────────── *)
 
