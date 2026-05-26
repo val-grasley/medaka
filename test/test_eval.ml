@@ -435,6 +435,45 @@ let t_dispatch_list_empty = assert_val (dispatch_iface ^ {|
 r = describe ([])
 |}) "r" (VString "empty-list")
 
+(* ── Phase 28: field assignment ─────────────────────────────────────────── *)
+
+let person_src = {|record Person
+  name : String
+  age  : Int
+
+|}
+
+(* Assign a record field and read it back *)
+let t_field_assign_record = assert_val
+  (person_src ^ {|result =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 31
+    pure p.age
+|})
+  "result" (VInt 31)
+
+(* Multiple sequential field assignments *)
+let t_field_assign_multi = assert_val
+  (person_src ^ {|result =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 99
+    p.name = "Bob"
+    pure p.name
+|})
+  "result" (VString "Bob")
+
+(* Ref .value assignment via DoFieldAssign *)
+let t_field_assign_ref_value = assert_val
+  {|result =
+  do
+    let mut r = Ref 0
+    r.value = 42
+    pure r.value
+|}
+  "result" (VInt 42)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -577,5 +616,10 @@ let () =
       test_case "\\0"          `Quick t_escape_null;
       test_case "\\r"          `Quick t_escape_cr;
       test_case "\\u{2603}"    `Quick t_escape_unicode;
+    ];
+    "field assignment (Phase 28)", [
+      test_case "record field update"         `Quick t_field_assign_record;
+      test_case "multiple field updates"      `Quick t_field_assign_multi;
+      test_case "Ref .value assign"           `Quick t_field_assign_ref_value;
     ];
   ]

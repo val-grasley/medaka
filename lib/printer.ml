@@ -330,6 +330,12 @@ and print_do_stmt p = function
     write p x;
     write p " = ";
     print_expr p prec_top e
+  | DoFieldAssign (x, field, e) ->
+    write p x;
+    write p ".";
+    write p field;
+    write p " = ";
+    print_expr p prec_top e
 
 (* ── Declarations ────────────────────────────────── *)
 

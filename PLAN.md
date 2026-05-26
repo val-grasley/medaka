@@ -20,18 +20,18 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-590 tests pass across 8 test suites:
+587 tests pass across 8 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
 | Parser            | `test/test_parser.ml`           | 110   | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 81    | parse → print → parse yields the same AST             |
-| Resolver          | `test/test_resolve.ml`          | 55    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 214   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 90    | Runtime values, recursion, do-blocks, Ref, errors, escapes |
-| Run               | `test/test_run.ml`              | 8     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
-| REPL              | `test/test_repl.ml`             | 11    | process_item, :load atomicity, rollback, :browse      |
-| Loader            | `test/test_loader.ml`           | 21    | Multi-file imports, topo sort, cycle detection, prelude no-op |
+| Round-trip        | `test/test_roundtrip.ml`        | 79    | parse → print → parse yields the same AST             |
+| Resolver          | `test/test_resolve.ml`          | 53    | Unbound vars, unknown types/ctors, duplicates, fields |
+| Type checker      | `test/test_typecheck.ml`        | 220   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 91    | Runtime values, recursion, do-blocks, Ref, errors, escapes |
+| Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
+| REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
+| Loader            | `test/test_loader.ml`           | 19    | Multi-file imports, topo sort, cycle detection, prelude no-op |
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -468,8 +468,8 @@ backend.
 
 Not in scope here (tracked in Section 5): polymorphic numeric/comparison
 operators, higher-order effect tracking, `@Name` impl selection, cons-pattern
-`DoBind`, `r.value = e` field assignment, local recursion. These are revisited
-once the stdlib forces real use cases.
+`DoBind`, local recursion. These are revisited once the stdlib forces real use
+cases. (`r.value = e` / `p.field = e` field assignment now done in Phase 28.)
 
 ### Phase 9: `extern` declarations ✅ DONE
 
@@ -1116,27 +1116,39 @@ implementation.
 
 ---
 
-### Phase 28: Record field assignment `r.field = e` ⏳ TODO
+### Phase 28: Record field assignment `r.field = e` ✅ DONE
 
-The design doc explicitly calls for this on mutable records:
+**What was added.**
+- `DoFieldAssign of ident * ident * expr` variant added to `Ast.do_stmt`;
+  `pp_do_stmt` and `strip_locs_do` extended.
+- Parser: **replaced** the token-level `IDENT EQUAL expr_no_block newlines`
+  (DoAssign) rule with a general `expr_no_block EQUAL expr_no_block newlines`
+  rule that dispatches in the semantic action:
+  `EVar x → DoAssign`, `EFieldAccess(EVar x, field) → DoFieldAssign`.
+  The `IDENT DOT IDENT EQUAL` form cannot be a separate token-level rule in
+  LALR(1) (requires 2-token lookahead); parsing through `expr_no_block` is
+  the correct solution. Net effect: **−1 S/R state, −1 R/R state** (old
+  IDENT-EQUAL R/R state 235 eliminated; no new state added).
+  Conflict count now 6 S/R (16) + 7 R/R (26).
+- Printer: `print_do_stmt` extended for `DoFieldAssign`.
+- Resolver: `EDo` fold extended; checks binding is in scope.
+- Type checker:
+  - `NotARecord of ident` error variant + `pp_error` case
+  - `DoFieldAssign` case in `type_stmts`: checks `mut_vars`; resolves the
+    variable's type via `normalize`; for `Ref T` + `"value"` extracts `T`;
+    for record types looks up `instantiate_record` + field; unifies with RHS
+  - Last-stmt guard: `[DoFieldAssign _]` → error
+  - `do_stmt_effects` extended
+- Evaluator: `eval_do` extended for `DoFieldAssign` in both singleton and
+  non-last positions: `VRef cell` + `"value"` mutates in place; `VRecord`
+  rebuilds with field replaced and shadows the binding.
+- `lib/desugar.ml` `map_do_stmt` extended for `DoFieldAssign`.
+- 13 new tests: 2 parser, 8 typecheck, 3 eval. **587 tests total.**
 
-```
-let mut p = Person { name = "Alice", age = 30 }
-p.age = 31
-```
-
-Today only `{ p | age = 31 }` (immutable update) works.  Mutable record
-support requires:
-
-- Parser: `IDENT DOT IDENT EQUAL expr` as a new `stmt` form in do-blocks.
-- AST: a `DoFieldAssign of expr * ident * expr` variant (or fold into
-  `DoAssign`).
-- Type checker: verify the record was `let mut`, look up the field, add
-  `<Mut>` to the enclosing function's effect set.
-- Evaluator: rebuild the record's `VRecord` with the field replaced (or
-  switch to a mutable cell representation for `let mut` records).
-
-Same family as `r.value = e` on `Ref` — both should be implemented together.
+**Semantics note.** `VRecord` field assignment shadows the binding in the
+continuation's env; closures captured before the assignment see the old value.
+`VRef .value` assignment mutates the OCaml `ref` cell in place — all readers
+see the update immediately.
 
 ---
 
@@ -1276,8 +1288,9 @@ These aren't blockers, but a less-careful change could trip over them:
   but `ELet(true, ...)` in expression context only tracks `mut_vars` — there is
   no syntax for reassigning a `let mut` binding outside a do-block. The `Ref`
   type is fully type-checked; actual mutation happens at runtime (Phase 10 ✅).
-- `r.value = expr` field-assignment syntax for `Ref` is not yet supported.
-  Use `set_ref r expr` instead.
+- `r.value = expr` field-assignment is supported via `DoFieldAssign` in do-blocks
+  (Phase 28 ✅). Multi-level chains (`a.b.c = e`) are not yet supported — only
+  single-level `x.field = e` where `x` is a `let mut` binding.
 - `let f x = ...` is purely sugar; the parser desugars to nested lambdas at
   parse time. There is no `let-rec` for locals; if you need local recursion,
   use a top-level def.
@@ -1358,12 +1371,8 @@ a phase in §6 unless noted.
 - **No `medaka.toml` / `medaka.lock`.** Project config doesn't exist yet
   because single-file is still the contract. Post-Phase 14.
 - **REPL: `:load`, `:reload`, `:browse` now implemented.** ✅ Phase 13 done.
-- **Record field assignment `p.field = e`.** Design says mutable records
-  support `p.age = 31` directly; today the only form is `{ p | age = 31 }`
-  for the immutable update and `set_ref`-via-`Ref` for the mutable cell
-  case. Not on the critical path; revisit after stdlib forces the issue.
-- **`r.value = e` field-assignment on `Ref`.** Same family as above; use
-  `set_ref` for now.
+- **Record field assignment `p.field = e`.** ✅ Phase 28 done. Single-level
+  `x.field = e` in do-blocks for `let mut` records and `Ref .value`.
 - **`Eq`, `Num`, and `Ord` stdlib interfaces disconnected from built-in operator constraints.**
   `==`/`!=` unify both sides and return `Bool` with no interface lookup — `deriving (Eq)`
   generates an impl with `eq`/`neq` that is never called by those operators.

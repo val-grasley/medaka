@@ -1080,6 +1080,90 @@ let e_do_assign_unbound = assert_err
 let e_do_assign_as_last = assert_err
   "bad =\n  do\n    let mut x = 5\n    x = 1\n"
 
+(* ── Phase 28: DoFieldAssign ────────────────────── *)
+
+let person_src = {|record Person
+  name : String
+  age  : Int
+
+|}
+
+(* Basic field assignment on a mutable record *)
+let t_field_assign_valid = assert_type
+  (person_src ^ {|go =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 31
+    pure p
+|})
+  "go" "a Person"
+
+(* Multiple field assignments *)
+let t_field_assign_multi = assert_type
+  (person_src ^ {|go =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 31
+    p.name = "Bob"
+    pure p
+|})
+  "go" "a Person"
+
+(* Ref .value assignment *)
+let t_ref_value_assign = assert_type
+  {|go =
+  do
+    let mut r = Ref 0
+    r.value = 42
+    pure r.value
+|}
+  "go" "a Int"
+
+(* Field assignment after reading the old value *)
+let t_field_assign_read_back = assert_type
+  (person_src ^ {|go =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = p.age + 1
+    pure p.age
+|})
+  "go" "a Int"
+
+(* Field assignment on immutable binding → ImmutableAssignment *)
+let e_field_assign_immutable = assert_err
+  (person_src ^ {|bad =
+  do
+    let p = Person { name = "Alice", age = 30 }
+    p.age = 31
+    pure p
+|})
+
+(* Unknown field → UnknownField *)
+let e_field_assign_unknown_field = assert_err
+  (person_src ^ {|bad =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.nosuchfield = 99
+    pure p
+|})
+
+(* Type mismatch: field is Int, assign String *)
+let e_field_assign_type_mismatch = assert_err
+  (person_src ^ {|bad =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = "wrong"
+    pure p
+|})
+
+(* Field assignment as last stmt → error *)
+let e_field_assign_as_last = assert_err
+  (person_src ^ {|bad =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 31
+|})
+
 (* ── Extern declarations ────────────────────────── *)
 
 (* extern with concrete type: add 1 2 should type as Int *)
@@ -1600,6 +1684,16 @@ let () =
       test_case "err: assign type mismatch" `Quick e_do_assign_type_mismatch;
       test_case "err: assign unbound"       `Quick e_do_assign_unbound;
       test_case "err: assign as last stmt"  `Quick e_do_assign_as_last;
+    ];
+    "field assignment (Phase 28)", [
+      test_case "record field valid"              `Quick t_field_assign_valid;
+      test_case "multiple fields"                 `Quick t_field_assign_multi;
+      test_case "Ref .value assign"               `Quick t_ref_value_assign;
+      test_case "read back assigned field"        `Quick t_field_assign_read_back;
+      test_case "err: immutable record"           `Quick e_field_assign_immutable;
+      test_case "err: unknown field"              `Quick e_field_assign_unknown_field;
+      test_case "err: type mismatch"              `Quick e_field_assign_type_mismatch;
+      test_case "err: field assign as last stmt"  `Quick e_field_assign_as_last;
     ];
     "extern declarations", [
       test_case "concrete type"             `Quick t_extern_concrete;
