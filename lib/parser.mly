@@ -666,7 +666,7 @@ import_path:
   | import_qual                                       { UseName $1 }
   | import_qual AS UPPER                              { UseAlias ($1, $3) }
   | import_qual AS IDENT                              { UseAlias ($1, $3) }
-  | import_qual DOT_LBRACE separated_nonempty_list(COMMA, IDENT) RBRACE
+  | import_qual DOT_LBRACE separated_nonempty_list(COMMA, import_ident) RBRACE
                                                       { UseGroup ($1, $3) }
   | import_qual DOT_STAR                              { UseWild $1 }
 
