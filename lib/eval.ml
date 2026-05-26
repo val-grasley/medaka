@@ -234,6 +234,14 @@ and eval env expr =
      | None -> raise (Eval_error ("let pattern match failure", !current_loc))
      | Some binds -> eval (extend env binds) e2)
 
+  | ELetGroup (bindings, body) ->
+    let cells = List.map (fun (name, _) -> (name, ref VUnit)) bindings in
+    let env' = cells :: env in
+    List.iter (fun (name, rhs) ->
+      (List.assoc name cells) := eval env' rhs
+    ) bindings;
+    eval env' body
+
   | EMatch (scrut, arms) ->
     let sv = eval env scrut in
     let rec try_arms = function
@@ -433,6 +441,12 @@ and eval_do env stmts =
      | Some _ -> VUnit)
   | [DoAssign (_, e)] ->
     let _ = wrap_match_errors (fun () -> eval env e) in VUnit
+  | [DoFieldAssign (x, field, e)] ->
+    let new_val = wrap_match_errors (fun () -> eval env e) in
+    (match lookup env x with
+     | VRef cell when field = "value" -> cell := new_val; VUnit
+     | VRecord _ -> VUnit  (* last stmt: shadow would be discarded anyway *)
+     | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
   | [DoBind (_, _)] ->
     raise (Eval_error ("do-block cannot end with <-", !current_loc))
 
@@ -449,6 +463,18 @@ and eval_do env stmts =
   | (DoAssign (x, e)) :: rest ->
     let v = wrap_match_errors (fun () -> eval env e) in
     eval_do (extend env [(x, v)]) rest
+
+  | (DoFieldAssign (x, field, e)) :: rest ->
+    let new_val = wrap_match_errors (fun () -> eval env e) in
+    (match lookup env x with
+     | VRef cell when field = "value" ->
+       cell := new_val;
+       eval_do env rest
+     | VRecord fields ->
+       let updated = VRecord (List.map (fun (k, v) ->
+         if k = field then (k, new_val) else (k, v)) fields) in
+       eval_do (extend env [(x, updated)]) rest
+     | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
 
   | (DoBind (pat, e)) :: rest ->
     let v = wrap_match_errors (fun () -> eval env e) in

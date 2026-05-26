@@ -555,6 +555,36 @@ result =
     ]) -> ()
   | _ -> failwith "wrong"
 
+let test_do_field_assign () =
+  let src = {|
+go p =
+  do
+    p.age = 31
+    p.name = "Bob"
+    pure p
+|} in
+  match parse_one src with
+  | DFunDef (false, "go", [PVar "p"], EDo [
+      DoFieldAssign ("p", "age", ELit (LInt 31));
+      DoFieldAssign ("p", "name", ELit (LString "Bob"));
+      DoExpr (EApp (EVar "pure", EVar "p"));
+    ]) -> ()
+  | _ -> failwith "wrong shape for field assign do-block"
+
+let test_do_ref_value_assign () =
+  let src = {|
+go r =
+  do
+    r.value = 42
+    pure r.value
+|} in
+  match parse_one src with
+  | DFunDef (false, "go", [PVar "r"], EDo [
+      DoFieldAssign ("r", "value", ELit (LInt 42));
+      DoExpr (EApp (EVar "pure", EFieldAccess (EVar "r", "value")));
+    ]) -> ()
+  | _ -> failwith "wrong"
+
 (* ── Import/export declaration tests ─────────────────── *)
 
 let test_use_simple () =
@@ -874,7 +904,9 @@ let () =
       test_case "record declaration"  `Quick test_record_decl;
     ];
     "do notation", [
-      test_case "basic do"  `Quick test_do_basic;
+      test_case "basic do"            `Quick test_do_basic;
+      test_case "field assign"        `Quick test_do_field_assign;
+      test_case "ref value assign"    `Quick test_do_ref_value_assign;
     ];
     "import declarations", [
       test_case "simple"                   `Quick test_use_simple;

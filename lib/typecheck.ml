@@ -99,6 +99,8 @@ type type_error =
   | NoImplFound        of ident * mono list        (* iface_name, concrete type args *)
   | AmbiguousImpl      of ident * mono list        (* iface_name, concrete type args *)
   | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
+  | NotARecord          of ident                   (* field assignment on non-record type *)
+  | RecursiveTypeAlias  of ident                   (* type alias that expands to itself *)
   | Other              of string
 
 exception Type_error of type_error * Ast.loc option
@@ -329,6 +331,10 @@ let pp_error = function
       iface (String.concat " " (List.map pp_mono args))
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
+  | NotARecord x ->
+    Printf.sprintf "Field assignment on '%s': type is not a record or Ref" x
+  | RecursiveTypeAlias n ->
+    Printf.sprintf "Recursive type alias: '%s' expands to itself" n
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -404,12 +410,16 @@ let _ = t_result
    TyApp chain (e.g. `Parser Int` → head=TyCon "Parser", args=[TyCon "Int"]),
    checks whether the head is a known alias, and if so substitutes.
    Non-alias TyCon references are left untouched. *)
-let rec expand_aliases aliases t =
-  let go = expand_aliases aliases in
+let rec expand_aliases ?(seen=StringSet.empty) aliases t =
+  let go t = expand_aliases ~seen aliases t in
   match t with
   | Ast.TyCon n ->
     (match Hashtbl.find_opt aliases n with
-     | Some ([], rhs) -> go rhs
+     | Some ([], rhs) ->
+       if StringSet.mem n seen then
+         raise (Type_error (RecursiveTypeAlias n, None))
+       else
+         expand_aliases ~seen:(StringSet.add n seen) aliases rhs
      | _ -> t)
   | Ast.TyApp _ ->
     (* Collect the application spine *)
@@ -422,21 +432,27 @@ let rec expand_aliases aliases t =
      | Ast.TyCon n ->
        (match Hashtbl.find_opt aliases n with
         | Some (params, rhs) when List.length params = List.length args ->
-          let subst = List.combine params args in
-          let rec apply_subst s = function
-            | Ast.TyVar v ->
-              (match List.assoc_opt v s with Some t -> t | None -> Ast.TyVar v)
-            | Ast.TyCon _ as c -> go c
-            | Ast.TyApp (a, b) -> go (Ast.TyApp (apply_subst s a, apply_subst s b))
-            | Ast.TyFun (a, b) -> Ast.TyFun (apply_subst s a, apply_subst s b)
-            | Ast.TyTuple ts   -> Ast.TyTuple (List.map (apply_subst s) ts)
-            | Ast.TyEffect (es, u) -> Ast.TyEffect (es, apply_subst s u)
-            | Ast.TyConstrained (cs, u) ->
-              Ast.TyConstrained (
-                List.map (fun (iface, as_) -> (iface, List.map (apply_subst s) as_)) cs,
-                apply_subst s u)
-          in
-          go (apply_subst subst rhs)
+          if StringSet.mem n seen then
+            raise (Type_error (RecursiveTypeAlias n, None))
+          else
+            let seen' = StringSet.add n seen in
+            let subst = List.combine params args in
+            let rec apply_subst s = function
+              | Ast.TyVar v ->
+                (match List.assoc_opt v s with Some t -> t | None -> Ast.TyVar v)
+              | Ast.TyCon _ as c -> expand_aliases ~seen:seen' aliases c
+              | Ast.TyApp (a, b) ->
+                expand_aliases ~seen:seen' aliases
+                  (Ast.TyApp (apply_subst s a, apply_subst s b))
+              | Ast.TyFun (a, b) -> Ast.TyFun (apply_subst s a, apply_subst s b)
+              | Ast.TyTuple ts   -> Ast.TyTuple (List.map (apply_subst s) ts)
+              | Ast.TyEffect (es, u) -> Ast.TyEffect (es, apply_subst s u)
+              | Ast.TyConstrained (cs, u) ->
+                Ast.TyConstrained (
+                  List.map (fun (iface, as_) -> (iface, List.map (apply_subst s) as_)) cs,
+                  apply_subst s u)
+            in
+            expand_aliases ~seen:seen' aliases (apply_subst subst rhs)
         | _ ->
           List.fold_left (fun acc arg -> Ast.TyApp (acc, arg)) (go head) args)
      | other ->
@@ -713,6 +729,19 @@ let rec infer env = function
           unify tp t1;
           infer (extend_vars env bindings) e2))
 
+  | ELetGroup (bindings, body) ->
+    enter_level ();
+    let placeholders = List.map (fun (n, _) -> (n, fresh_var ())) bindings in
+    let env' = List.fold_left
+      (fun e (n, t) -> extend_var e n (monotype t)) env placeholders in
+    List.iter (fun (n, rhs) ->
+      unify (infer env' rhs) (List.assoc n placeholders)
+    ) bindings;
+    exit_level ();
+    let env'' = List.fold_left
+      (fun e (n, t) -> extend_var e n (generalize t)) env placeholders in
+    infer env'' body
+
   | EIf (c, t, e) ->
     unify (infer env c) t_bool;
     let tt = infer env t in
@@ -881,6 +910,8 @@ let rec infer env = function
         fail (Other "do block cannot end with a let binding")
       | [DoAssign _] ->
         fail (Other "do block cannot end with an assignment")
+      | [DoFieldAssign _] ->
+        fail (Other "do block cannot end with a field assignment")
       | DoExpr e :: rest ->
         let te = infer env e in
         let inner = fresh_var () in
@@ -913,6 +944,34 @@ let rec infer env = function
         unify tx te;
         if not (StringSet.mem x env.mut_vars) then
           fail (ImmutableAssignment x);
+        type_stmts env rest
+      | DoFieldAssign (x, field, e) :: rest ->
+        if not (StringSet.mem x env.mut_vars) then
+          fail (ImmutableAssignment x);
+        let tx = instantiate (lookup_var env x) in
+        let field_t =
+          match normalize tx with
+          | TApp (TCon "Ref", inner) when field = "value" -> inner
+          | TCon r ->
+            (match Hashtbl.find_opt env.records r with
+             | None -> fail (UnknownRecord r)
+             | Some info ->
+               let (_result_t, field_types) = instantiate_record info in
+               (match List.assoc_opt field field_types with
+                | None -> fail (UnknownField (field, r))
+                | Some ft -> ft))
+          | TApp (TCon r, _) ->
+            (match Hashtbl.find_opt env.records r with
+             | None -> fail (UnknownRecord r)
+             | Some info ->
+               let (_result_t, field_types) = instantiate_record info in
+               (match List.assoc_opt field field_types with
+                | None -> fail (UnknownField (field, r))
+                | Some ft -> ft))
+          | _ -> fail (NotARecord x)
+        in
+        let te = infer env e in
+        unify field_t te;
         type_stmts env rest
     in
     type_stmts env stmts
@@ -1420,6 +1479,8 @@ let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : eff
   | ELam (_, body) ->
     sub body  (* conservative: include body effects in enclosing fn *)
   | ELet (_, _, _, e1, e2) -> effect_union (sub e1) (sub e2)
+  | ELetGroup (bs, e2) ->
+    List.fold_left (fun a (_, e) -> effect_union a (sub e)) (sub e2) bs
   | EIf (c, t, f)       -> effect_union (sub c) (effect_union (sub t) (sub f))
   | EBinOp ("|>", x, f) ->
     (* x |> f  ≡  f x — calling f contributes its effects *)
@@ -1459,7 +1520,8 @@ let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : eff
   | EListComp _             -> assert false (* eliminated by desugar_list_comps *)
 
 and do_stmt_effects eff_env = function
-  | DoBind (_, e) | DoExpr e | DoLet (_, _, e) | DoAssign (_, e) ->
+  | DoBind (_, e) | DoExpr e | DoLet (_, _, e) | DoAssign (_, e)
+  | DoFieldAssign (_, _, e) ->
     expr_effects eff_env e
 
 (* Process each function group in declaration order:

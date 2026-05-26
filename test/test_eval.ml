@@ -296,6 +296,17 @@ let t_where_nested = assert_val {|r = outer 3 where
         inner k = k * 2
 |} "r" (VInt 7)
 
+let t_where_mutual_recursion = assert_val {|r = isEven 4 where
+    isEven n = if n == 0 then True else isOdd (n - 1)
+    isOdd  n = if n == 0 then False else isEven (n - 1)
+|} "r" (VBool true)
+
+let t_where_match_arm = assert_val {|classify n = match n
+  x => doubled x where
+      doubled y = y * 2
+r = classify 5
+|} "r" (VInt 10)
+
 (* ── Top-level function guards ──────────────────────────────────────────── *)
 
 let t_guard_basic_neg = assert_val {|
@@ -338,6 +349,22 @@ let t_newtype_unwrap =
 unwrap (Foo n) = n
 r = unwrap (Foo 42)
 |} "r" (VInt 42)
+
+let t_newtype_deriving_num_add =
+  assert_val
+    {|newtype Dist = Dist Int deriving (Num)
+r : Dist
+r = add (Dist 3) (Dist 4)
+|}
+    "r" (VCon ("Dist", [VInt 7]))
+
+let t_newtype_deriving_num_mul =
+  assert_val
+    {|newtype Dist = Dist Int deriving (Num)
+r : Dist
+r = mul (Dist 3) (Dist 4)
+|}
+    "r" (VCon ("Dist", [VInt 12]))
 
 (* ── Phase 22: Semigroup / Monoid ────────────────────────────────────────── *)
 
@@ -452,6 +479,45 @@ result = sumTo 5
 |}
   "result" (VInt 15)
 
+(* ── Phase 28: field assignment ─────────────────────────────────────────── *)
+
+let person_src = {|record Person
+  name : String
+  age  : Int
+
+|}
+
+(* Assign a record field and read it back *)
+let t_field_assign_record = assert_val
+  (person_src ^ {|result =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 31
+    pure p.age
+|})
+  "result" (VInt 31)
+
+(* Multiple sequential field assignments *)
+let t_field_assign_multi = assert_val
+  (person_src ^ {|result =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 99
+    p.name = "Bob"
+    pure p.name
+|})
+  "result" (VString "Bob")
+
+(* Ref .value assignment via DoFieldAssign *)
+let t_field_assign_ref_value = assert_val
+  {|result =
+  do
+    let mut r = Ref 0
+    r.value = 42
+    pure r.value
+|}
+  "result" (VInt 42)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -548,6 +614,8 @@ let () =
       test_case "multiple helpers"  `Quick t_where_multi;
       test_case "sequential"        `Quick t_where_sequential;
       test_case "nested"            `Quick t_where_nested;
+      test_case "mutual recursion"  `Quick t_where_mutual_recursion;
+      test_case "match arm"         `Quick t_where_match_arm;
     ];
     "top-level function guards", [
       test_case "neg branch"        `Quick t_guard_basic_neg;
@@ -558,6 +626,8 @@ let () =
     "newtype declarations", [
       test_case "wrap value"        `Quick t_newtype_wrap;
       test_case "pattern unwrap"    `Quick t_newtype_unwrap;
+      test_case "deriving Num add"  `Quick t_newtype_deriving_num_add;
+      test_case "deriving Num mul"  `Quick t_newtype_deriving_num_mul;
     ];
     "Semigroup / Monoid (Phase 22)", [
       test_case "List ++ List"              `Quick t_list_semigroup;
@@ -599,5 +669,10 @@ let () =
       test_case "factorial"        `Quick t_let_rec_fact;
       test_case "accumulator"      `Quick t_let_rec_acc;
       test_case "where self-rec"   `Quick t_where_self_rec;
+    ];
+    "field assignment (Phase 28)", [
+      test_case "record field update"         `Quick t_field_assign_record;
+      test_case "multiple field updates"      `Quick t_field_assign_multi;
+      test_case "Ref .value assign"           `Quick t_field_assign_ref_value;
     ];
   ]

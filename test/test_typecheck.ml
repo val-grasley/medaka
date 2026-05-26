@@ -1080,6 +1080,90 @@ let e_do_assign_unbound = assert_err
 let e_do_assign_as_last = assert_err
   "bad =\n  do\n    let mut x = 5\n    x = 1\n"
 
+(* ── Phase 28: DoFieldAssign ────────────────────── *)
+
+let person_src = {|record Person
+  name : String
+  age  : Int
+
+|}
+
+(* Basic field assignment on a mutable record *)
+let t_field_assign_valid = assert_type
+  (person_src ^ {|go =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 31
+    pure p
+|})
+  "go" "a Person"
+
+(* Multiple field assignments *)
+let t_field_assign_multi = assert_type
+  (person_src ^ {|go =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 31
+    p.name = "Bob"
+    pure p
+|})
+  "go" "a Person"
+
+(* Ref .value assignment *)
+let t_ref_value_assign = assert_type
+  {|go =
+  do
+    let mut r = Ref 0
+    r.value = 42
+    pure r.value
+|}
+  "go" "a Int"
+
+(* Field assignment after reading the old value *)
+let t_field_assign_read_back = assert_type
+  (person_src ^ {|go =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = p.age + 1
+    pure p.age
+|})
+  "go" "a Int"
+
+(* Field assignment on immutable binding → ImmutableAssignment *)
+let e_field_assign_immutable = assert_err
+  (person_src ^ {|bad =
+  do
+    let p = Person { name = "Alice", age = 30 }
+    p.age = 31
+    pure p
+|})
+
+(* Unknown field → UnknownField *)
+let e_field_assign_unknown_field = assert_err
+  (person_src ^ {|bad =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.nosuchfield = 99
+    pure p
+|})
+
+(* Type mismatch: field is Int, assign String *)
+let e_field_assign_type_mismatch = assert_err
+  (person_src ^ {|bad =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = "wrong"
+    pure p
+|})
+
+(* Field assignment as last stmt → error *)
+let e_field_assign_as_last = assert_err
+  (person_src ^ {|bad =
+  do
+    let mut p = Person { name = "Alice", age = 30 }
+    p.age = 31
+|})
+
 (* ── Extern declarations ────────────────────────── *)
 
 (* extern with concrete type: add 1 2 should type as Int *)
@@ -1332,6 +1416,21 @@ let t_newtype_pattern_match =
     "newtype UserId = UserId Int\nunwrap (UserId n) = n\n"
     "unwrap" "UserId -> Int"
 
+(* ── Phase 26: Type alias / newtype coverage ─────── *)
+
+let e_alias_recursive =
+  assert_err
+    "type Loop = Loop\nf x = (x : Loop)\n"
+
+let e_alias_mutual_recursive =
+  assert_err
+    "type A = B\ntype B = A\nf x = (x : A)\n"
+
+let t_newtype_deriving_num_type =
+  assert_type
+    "newtype Dist = Dist Int deriving (Num)\nadd_dists : Dist -> Dist -> Dist\nadd_dists a b = add a b\n"
+    "add_dists" "Dist -> Dist -> Dist"
+
 (* ── Phase 22: Semigroup / Monoid ────────────────── *)
 
 let t_list_semigroup =
@@ -1426,6 +1525,29 @@ let t_where_helper_rec =
     go acc k = if k <= 0 then acc else go (acc + k) (k - 1)
 result = sumTo 5
 |} "result" "Int"
+
+(* ── Where clauses (Phase 25) ───────────────────── *)
+
+let t_where_simple_type =
+  assert_type {|r = double 5 where
+    double x = x * 2
+|} "r" "Int"
+
+let t_where_mutual_type =
+  assert_type {|r = isEven 4 where
+    isEven n = if n == 0 then True else isOdd (n - 1)
+    isOdd  n = if n == 0 then False else isEven (n - 1)
+|} "r" "Bool"
+
+let t_where_polymorphic =
+  assert_type {|r = myId 42 where
+  myId x = x
+|} "r" "Int"
+
+let e_where_type_mismatch =
+  assert_err {|r = helper 5 where
+    helper x = x + "oops"
+|}
 
 (* ── Runner ─────────────────────────────────────── *)
 
@@ -1634,6 +1756,16 @@ let () =
       test_case "err: assign unbound"       `Quick e_do_assign_unbound;
       test_case "err: assign as last stmt"  `Quick e_do_assign_as_last;
     ];
+    "field assignment (Phase 28)", [
+      test_case "record field valid"              `Quick t_field_assign_valid;
+      test_case "multiple fields"                 `Quick t_field_assign_multi;
+      test_case "Ref .value assign"               `Quick t_ref_value_assign;
+      test_case "read back assigned field"        `Quick t_field_assign_read_back;
+      test_case "err: immutable record"           `Quick e_field_assign_immutable;
+      test_case "err: unknown field"              `Quick e_field_assign_unknown_field;
+      test_case "err: type mismatch"              `Quick e_field_assign_type_mismatch;
+      test_case "err: field assign as last stmt"  `Quick e_field_assign_as_last;
+    ];
     "extern declarations", [
       test_case "concrete type"             `Quick t_extern_concrete;
       test_case "polymorphic type"          `Quick t_extern_poly;
@@ -1688,12 +1820,15 @@ let () =
       test_case "parametric alias"       `Quick t_alias_param;
       test_case "pair alias"             `Quick t_alias_pair;
       test_case "alias in annotation"    `Quick t_alias_in_annot;
+      test_case "err: recursive alias"           `Quick e_alias_recursive;
+      test_case "err: mutually recursive aliases" `Quick e_alias_mutual_recursive;
     ];
     "newtype declarations", [
       test_case "constructor type"       `Quick t_newtype_ctor_type;
       test_case "distinct from wrapped"  `Quick t_newtype_distinct;
       test_case "parametric newtype"     `Quick t_newtype_param;
       test_case "pattern match unwrap"   `Quick t_newtype_pattern_match;
+      test_case "deriving Num typechecks" `Quick t_newtype_deriving_num_type;
     ];
     "Semigroup / Monoid (Phase 22)", [
       test_case "List ++ List"           `Quick t_list_semigroup;
@@ -1714,5 +1849,11 @@ let () =
       test_case "diverging self-call"      `Quick t_let_rec_diverge;
       test_case "non-recursive val unchanged" `Quick t_let_nonrec_val;
       test_case "where helper self-rec"    `Quick t_where_helper_rec;
+    ];
+    "where clauses (Phase 25)", [
+      test_case "simple helper type"       `Quick t_where_simple_type;
+      test_case "mutual recursion type"    `Quick t_where_mutual_type;
+      test_case "polymorphic helper"       `Quick t_where_polymorphic;
+      test_case "err: type mismatch"       `Quick e_where_type_mismatch;
     ];
   ]

@@ -402,6 +402,10 @@ let rec check_expr env scope errors e =
     check_expr env scope errors e1;     (* RHS in outer scope *)
     let scope' = pat_bindings pat @ scope in
     check_expr env scope' errors e2     (* body in extended scope *)
+  | ELetGroup (bindings, body) ->
+    let scope' = List.map fst bindings @ scope in
+    List.iter (fun (_, rhs) -> check_expr env scope' errors rhs) bindings;
+    check_expr env scope' errors body
   | EMatch (sc, arms) ->
     check_expr env scope errors sc;
     List.iter (fun (pat, guard, body) ->
@@ -491,6 +495,11 @@ let rec check_expr env scope errors e =
           check_expr env scope errors e;
           pat_bindings pat @ scope
         | DoAssign (x, e) ->
+          if not (lookup_value env scope x) then
+            emit errors (UnboundVariable x);
+          check_expr env scope errors e;
+          scope
+        | DoFieldAssign (x, _field, e) ->
           if not (lookup_value env scope x) then
             emit errors (UnboundVariable x);
           check_expr env scope errors e;
