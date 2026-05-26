@@ -20,15 +20,15 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-587 tests pass across 8 test suites:
+606 tests pass across 8 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 110   | AST shape for each construct                          |
+| Parser            | `test/test_parser.ml`           | 112   | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 79    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 53    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 220   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 91    | Runtime values, recursion, do-blocks, Ref, errors, escapes |
+| Type checker      | `test/test_typecheck.ml`        | 233   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 95    | Runtime values, recursion, do-blocks, Ref, errors, escapes |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
 | Loader            | `test/test_loader.ml`           | 19    | Multi-file imports, topo sort, cycle detection, prelude no-op |
@@ -1209,18 +1209,30 @@ The grammar slot is in `pat_atom`; the typechecker reuses
 
 ---
 
-### Phase 32: Naming impls and `default impl` ⏳ TODO
+### Phase 32: Naming impls and `default impl` ✅ DONE
 
-Idris-style `impl IDENT of UPPER ...` parses today but is not actually
-selectable.  This phase wires up:
+**What was added (commit `de657e7`).**
+- Parser: `impl UPPER of UPPER ...` form added so impl names can be uppercase
+  (e.g. `impl Additive of Monoid Int`), consistent with `@Name` which uses
+  `AT UPPER`. Lowercase form (`impl ident of UPPER`) preserved for compat.
+- `current_impl_hint` global ref in `typecheck.ml` captures the bare name from
+  an `@Name` hint at an EApp site and threads it into method_usages as a third
+  element `(method, param_vars, hint_opt)`.
+- `check_method_usages` updated: when `hint_opt = Some name`, filters matching
+  impls to those with `impl_name = Some name`; unknown name raises
+  `UnknownImplName`; otherwise the named impl is selected over default
+  disambiguation.
+- `check_coherence`: new post-registration pass ensuring at most one default
+  impl per (iface, type_pattern) pair; raises `MultipleDefaultImpls`. Called in
+  `check_program`, `typecheck_module`, and `check_repl_decl`.
+- Evaluator: strips `@Name` hints at runtime (`EApp(f, EVar "@X") → eval f`),
+  preventing lookup failures; runtime dispatch continues via VMulti default.
+- 2 new parser tests, 6 new typecheck tests. **606 tests total.**
 
-- The `default` modifier on `impl` and `interface default` declarations.
-- `@Name` selection (Phase 30) to consult the impl's name when given.
-- Coherence checks: at most one default per interface-type pair.
-
-The named-instance design from the language doc gets us most of the
-way to a Haskell-like coherence story without giving up explicit user
-override.
+**Known limitation.** Runtime dictionary-passing (making `@Name` affect method
+calls *inside* a higher-order function like `fold @Multiplicative`) requires a
+language-level change and is deferred. `@Name` is fully validated at compile
+time; at runtime the VMulti default-dispatch fires regardless of the hint.
 
 ---
 
@@ -1311,9 +1323,10 @@ These aren't blockers, but a less-careful change could trip over them:
 - Effects: tracked in a separate `eff_env`, not in `TFun`. Higher-order
   callbacks that *receive* an effectful function aren't tracked (Phase 3
   limitation). Real fix requires merging effects into `TFun`.
-- `@Name` impl-disambiguation hints parse and type-check but do not actually
-  select a specific impl at runtime; ambiguous impls are still rejected at
-  check time. Selection is deferred to a post-backend pass.
+- `@Name` impl-disambiguation hints now validated at compile time (Phase 32 ✅):
+  named impls must exist and `@Name` selects among multiple matching impls.
+  At runtime the VMulti default-dispatch fires regardless of the hint — full
+  dictionary-passing (for higher-order use) is deferred.
 - DoBind LHS cannot be a cons (`x::xs <- list`) or literal pattern — grammar
   limitation documented in `parser.mly`.
 - The last statement of a do-block cannot start with an uppercase identifier
