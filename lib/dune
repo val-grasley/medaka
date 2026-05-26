@@ -5,10 +5,17 @@
   (with-stdout-to %{target}
    (run ../gen/embed.exe runtime_mdk ../stdlib/runtime.mdk))))
 
+(rule
+ (target prelude_content.ml)
+ (deps ../stdlib/core.mdk)
+ (action
+  (with-stdout-to %{target}
+   (run ../gen/embed.exe core_mdk ../stdlib/core.mdk))))
+
 (library
  (name medaka_lib)
- (modules ast desugar eval exhaust lexer loader parser printer resolve repl
-          runtime stdlib_content typecheck)
+ (modules ast builtins desugar eval exhaust lexer loader parser printer
+          prelude prelude_content resolve repl runtime stdlib_content typecheck)
  (libraries menhirLib))
 
 (ocamllex lexer)

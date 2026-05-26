@@ -16,6 +16,6 @@ extern pi      : Float
 extern e       : Float
 extern readLine  : Unit -> <IO> String
 extern readFile  : String -> <IO> (Result String String)
-extern writeFile : String -> String -> <IO> (Result Unit String)
+extern writeFile : String -> String -> <IO> (Result String Unit)
 extern exit      : Int -> <Panic> Unit
 extern panic     : String -> a

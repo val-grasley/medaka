@@ -221,7 +221,7 @@ let unknown_iface n = function UnknownInterface x -> x = n | _ -> false
 
 let v_constraint_known_iface =
   assert_ok
-    "interface Eq a where\n  eq : a -> a -> Bool\n\nneq : Eq a => a -> a -> Bool\nneq x y = eq x y\n"
+    "interface MyEq a where\n  myeq : a -> a -> Bool\n\nmyneq : MyEq a => a -> a -> Bool\nmyneq x y = myeq x y\n"
 
 let e_constraint_unknown_iface =
   assert_err (unknown_iface "Bogus")
