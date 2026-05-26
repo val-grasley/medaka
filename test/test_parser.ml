@@ -692,6 +692,43 @@ let test_newtype_deriving () =
   | DNewtype (false, "Age", [], "Age", TyCon "Int", ["Eq"]) -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
+(* ── Numeric literal extensions ──────────────────────── *)
+
+let test_hex_literal () =
+  match parse_expr "0xFF" with
+  | ELit (LInt 255) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_hex_literal_upper () =
+  match parse_expr "0xDEAD" with
+  | ELit (LInt 57005) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_hex_with_underscores () =
+  match parse_expr "0xFF_00" with
+  | ELit (LInt 65280) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_bin_literal () =
+  match parse_expr "0b1010" with
+  | ELit (LInt 10) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_oct_literal () =
+  match parse_expr "0o17" with
+  | ELit (LInt 15) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_int_with_underscores () =
+  match parse_expr "1_000_000" with
+  | ELit (LInt 1000000) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_float_with_underscores () =
+  match parse_expr "3.141_592" with
+  | ELit (LFloat f) when Float.equal f 3.141592 -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -824,5 +861,14 @@ let () =
       test_case "parametric newtype" `Quick test_newtype_param;
       test_case "export newtype"     `Quick test_newtype_export;
       test_case "newtype deriving"   `Quick test_newtype_deriving;
+    ];
+    "numeric literal extensions", [
+      test_case "hex literal"            `Quick test_hex_literal;
+      test_case "hex upper"              `Quick test_hex_literal_upper;
+      test_case "hex with underscores"   `Quick test_hex_with_underscores;
+      test_case "binary literal"         `Quick test_bin_literal;
+      test_case "octal literal"          `Quick test_oct_literal;
+      test_case "int with underscores"   `Quick test_int_with_underscores;
+      test_case "float with underscores" `Quick test_float_with_underscores;
     ];
   ]

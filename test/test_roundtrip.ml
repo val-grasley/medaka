@@ -279,4 +279,10 @@ let () =
       test_case "export"      `Quick (mk "export newtype UserId = UserId Int\n");
       test_case "deriving"    `Quick (mk "newtype Age = Age Int deriving (Eq)\n");
     ];
+    "numeric literal extensions", [
+      test_case "hex"              `Quick (mk "x = 0xFF\n");
+      test_case "binary"           `Quick (mk "x = 0b1010\n");
+      test_case "octal"            `Quick (mk "x = 0o17\n");
+      test_case "int underscores"  `Quick (mk "x = 1_000_000\n");
+    ];
   ]

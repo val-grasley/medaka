@@ -56,6 +56,9 @@ let strip_indent s =
     String.concat "\n" (List.map strip lines)
   end
 
+let strip_underscores s =
+  String.concat "" (String.split_on_char '_' s)
+
 let keyword_or_ident s =
   match s with
   | "let"       -> LET
@@ -89,11 +92,17 @@ let keyword_or_ident s =
 let white     = [' ' '\t']
 let newline   = '\n' | '\r' '\n'
 let digit     = ['0'-'9']
+let hex_digit = ['0'-'9' 'a'-'f' 'A'-'F']
+let bin_digit = ['0'-'1']
+let oct_digit = ['0'-'7']
 let lower     = ['a'-'z']
 let upper     = ['A'-'Z']
 let alnum     = ['a'-'z' 'A'-'Z' '0'-'9' '_' '\'']
-let int_lit   = digit+
-let float_lit = digit+ '.' digit+
+let int_lit   = digit (digit | '_')*
+let float_lit = digit (digit | '_')* '.' digit (digit | '_')*
+let hex_lit   = "0x" hex_digit (hex_digit | '_')*
+let bin_lit   = "0b" bin_digit (bin_digit | '_')*
+let oct_lit   = "0o" oct_digit (oct_digit | '_')*
 
 rule token = parse
   | "" {
@@ -125,8 +134,11 @@ and read = parse
       token lexbuf
     }
 
-  | int_lit      { INT (int_of_string (Lexing.lexeme lexbuf)) }
-  | float_lit    { FLOAT (float_of_string (Lexing.lexeme lexbuf)) }
+  | hex_lit      { INT (int_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
+  | bin_lit      { INT (int_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
+  | oct_lit      { INT (int_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
+  | float_lit    { FLOAT (float_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
+  | int_lit      { INT (int_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
 
   | "\"\"\""     { read_triple_string (Buffer.create 64) lexbuf }
   | '"'          { read_string (Buffer.create 64) lexbuf }

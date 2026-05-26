@@ -1109,7 +1109,7 @@ This was assembled after reviewing `lib/parser.mly`, `lib/ast.ml`,
 | **String interpolation** | `"Hello, {name}!"` | Not Haskell-native, but widely expected in modern languages. Especially useful given Medaka's scripting-friendly goals. |
 | **`otherwise` alias** | `otherwise = True` so guard chains have a named catch-all | Trivial to add as a stdlib `extern`-free binding; purely cosmetic. |
 | **Constraint syntax in type signatures** | `f : Eq a => a -> a -> Bool` | ✅ Phase 20 done. |
-| **Numeric literal extensions** | `0xFF`, `0b1010`, `1_000_000` underscores | `0x` hex and `_` separators are the most practically useful additions. |
+| **Numeric literal extensions** | `0xFF`, `0b1010`, `1_000_000` underscores | ✅ Done. Lexer-only change: hex (`0x`), binary (`0b`), octal (`0o`), and underscore separators in int and float literals. 16 new tests. |
 | **Custom symbolic operators** | `(<\|>) = …` user-defined infix symbols | Medaka intentionally restricts operators; backtick infix is the approved escape hatch. Worth revisiting if DSL users push on it. |
 | **Tuple sections** | `(,3)` or `(1,)` to partially apply tuple constructors | Niche; explicit lambdas are fine. |
 | **Lazy / irrefutable patterns** | `~pat` defers matching | Rarely useful in a strict language; probably not worth the complexity. |
