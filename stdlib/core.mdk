@@ -15,7 +15,7 @@ export
 neq : Eq a => a -> a -> Bool
 neq x y = not (eq x y)
 
-impl Eq (List a) requires Eq a where
+export impl Eq (List a) requires Eq a where
     eq [] [] = True
     eq (x::xs) (y::ys) = eq x y && eq xs ys
     eq _ _ = False
@@ -104,8 +104,9 @@ export impl Applicative List where
     pure a = [a]
 
     ap [] _ = []
-    ap _ [] = []
-    ap (f::fs) (x::xs) = (f x)::(ap fs xs)
+    ap (f::fs) xs = apRow f xs ++ ap fs xs where
+        apRow _ [] = []
+        apRow g (y::ys) = g y :: apRow g ys
 
 export impl Applicative Option where
     pure a = Some a
@@ -133,7 +134,7 @@ flat : Thenable m => m (m a) -> m a
 flat x = andThen x identity
 
 export
-when : Thenable m => T Bool -> m Unit -> m Unit
+when : Thenable m => Bool -> m Unit -> m Unit
 when b m = if b then m else pure ()
 
 export
@@ -142,7 +143,7 @@ unless b m = if b then pure () else m
 
 export impl Thenable List where
     andThen [] _ = []
-    andThen (x::xs) f = (f x) ++ (andThen f xs)
+    andThen (x::xs) f = (f x) ++ (andThen xs f)
 
 export impl Thenable Option where
     andThen None _ = None
@@ -172,7 +173,7 @@ export impl Foldable List where
     fold f acc (x::xs) = fold f (f acc x) xs
 
     foldRight _ acc [] = acc
-    foldRight f acc (x::xs) = foldRight f (f x acc) xs
+    foldRight f acc (x::xs) = f x (foldRight f acc xs)
 
     toList = identity
 
