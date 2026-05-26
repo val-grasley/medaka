@@ -56,6 +56,7 @@ and expr =
   | EApp          of expr * expr
   | ELam          of pat list * expr                    (* pat+ => body *)
   | ELet          of bool * pat * expr * expr           (* let [mut] p = e1 in e2 *)
+  | ELetGroup     of (ident * expr) list * expr         (* mutually-recursive where group *)
   | EMatch        of expr * (pat * expr option * expr) list  (* match e; pat [if g] => e *)
   | EIf           of expr * expr * expr
   | EBinOp        of string * expr * expr
@@ -187,6 +188,9 @@ let rec pp_expr = function
   | ELet (mut, p, e1, e2) ->
     Printf.sprintf "(let %s%s = %s in %s)"
       (if mut then "mut " else "") (pp_pat p) (pp_expr e1) (pp_expr e2)
+  | ELetGroup (bs, e2) ->
+    let pp_b (n, e) = Printf.sprintf "%s = %s" n (pp_expr e) in
+    Printf.sprintf "(where [%s] in %s)" (String.concat "; " (List.map pp_b bs)) (pp_expr e2)
   | EMatch (e, arms) ->
     let pp_arm (p, g, body) =
       let guard = match g with None -> "" | Some ge -> Printf.sprintf " if %s" (pp_expr ge) in
@@ -244,6 +248,7 @@ let rec strip_locs_expr = function
   | EApp (f, x)            -> EApp (strip_locs_expr f, strip_locs_expr x)
   | ELam (ps, e)           -> ELam (ps, strip_locs_expr e)
   | ELet (m, p, e1, e2)   -> ELet (m, p, strip_locs_expr e1, strip_locs_expr e2)
+  | ELetGroup (bs, e)     -> ELetGroup (List.map (fun (n, x) -> (n, strip_locs_expr x)) bs, strip_locs_expr e)
   | EMatch (e, arms)       ->
     EMatch (strip_locs_expr e,
             List.map (fun (p, g, b) -> (p, Option.map strip_locs_expr g, strip_locs_expr b)) arms)

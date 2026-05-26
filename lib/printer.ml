@@ -155,7 +155,7 @@ let rec expr_prec = function
   | EApp _                             -> prec_app
   | EInfix _                           -> prec_infix
   | EBinOp (op, _, _)                  -> binop_prec op
-  | ELam _ | ELet _ | EIf _
+  | ELam _ | ELet _ | ELetGroup _ | EIf _
   | EMatch _ | EDo _ | EAnnot _        -> prec_top
   | ELoc (_, e)                        -> expr_prec e
 
@@ -189,6 +189,13 @@ and print_expr_raw p = function
     print_expr p prec_top e1;
     write p " in ";
     print_expr p prec_top e2
+  | ELetGroup (bindings, body) ->
+    print_expr p prec_top body;
+    write p " where";
+    List.iter (fun (name, rhs) ->
+      write p "\n    "; write p name; write p " = ";
+      print_expr p prec_top rhs
+    ) bindings
   | EIf (c, t, e) ->
     write p "if ";
     print_expr p prec_top c;

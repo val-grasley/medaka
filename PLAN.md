@@ -1059,26 +1059,21 @@ placeholder is the unambiguous alternative.
 
 ---
 
-### Phase 25: Where clauses ⏳ TODO
+### Phase 25: Where clauses ✅ DONE
 
 **Goal.** Allow Haskell-style `where` clauses on top-level `fun_def` and
 on `match`-arm bodies, so locally-scoped helpers can sit beneath the main
 expression rather than living above it as `let ... in`.
 
-The grammar already accepts `where` on a `fun_body` (see [parser.mly:284](lib/parser.mly:284)),
-desugaring to nested `ELet`s.  What's missing:
+**What was done:**
 
-- Mutually-recursive helpers in a single `where` block — today each binding
-  desugars to a fresh `ELet`, so the second helper cannot see the first's
-  fully generalised scheme.  Phase 25 should desugar a whole `where` block
-  to a single group of mutually recursive bindings.
-- `where` on match arms / impl methods / interface defaults — not yet
-  parsed.  The parser change is small once the grammar slot is identified.
-- Tests covering nested `where` and `where` inside `match` arms.
-
-**Done when.** A typical numeric program with several small helpers
-expressible as `where`-locals (e.g. `quicksort`, `mergeSort` with their
-recursion helpers) type-checks and runs correctly.
+- Added `ELetGroup of (ident * expr) list * expr` to the AST for mutually-recursive where groups.
+- Changed `desugar_where` in `parser.mly` to produce `ELetGroup` instead of nested `ELet`s.
+- Added a second `match_arm` alternative supporting `expr_no_block WHERE INDENT where_bindings DEDENT newlines`.
+- Added `ELetGroup` evaluation in `eval.ml` using the two-pass forward-reference trick (same as top-level mutual recursion).
+- Added `ELetGroup` type-checking in `typecheck.ml` using placeholder + generalize approach.
+- Propagated `ELetGroup` through `desugar.ml`, `printer.ml`, `resolve.ml`, and `ast.ml`'s effects pass and strip_locs.
+- Added tests: mutual recursion in where blocks, where clause on match arm bodies, polymorphic where helpers, type error detection.
 
 ---
 
@@ -1104,10 +1099,11 @@ deriving (Eq, Show, Ord)`).  What was added:
 
 ---
 
-### Phase 27: Where-bound mutual recursion + local `let-rec` ⏳ TODO
+### Phase 27: Local `let-rec` ⏳ TODO
 
-Local recursion is currently impossible — `let f x = ... in f` does not see
-itself in its own body because `ELet` is non-recursive sugar.  Two routes:
+`where`-bound mutual recursion is now handled by `ELetGroup` (Phase 25).
+What remains: `let f x = ... in f` does not see itself in its own body
+because inline `ELet` is non-recursive.  Two routes:
 
 1. Treat every `let f x = ...` (i.e. with at least one `pat_atom` argument)
    as implicitly recursive; the desugar would wrap the RHS in a Y-combinator
@@ -1228,11 +1224,12 @@ override.
 
 ---
 
-### Phase 33: Where clauses on `match` arms and interfaces ⏳ TODO
+### Phase 33: Where clauses on interface defaults ⏳ TODO
 
-Currently `where` is only allowed at the top level of a function body.
-Allowing it on individual match arms and interface default methods is
-the natural follow-on once Phase 25 settles local-recursion semantics.
+`where` on `match` arms (Phase 25) and `impl` methods (already worked via
+`fun_body`) are now supported.  What remains is `where` on interface default
+method bodies, which requires identifying the grammar slot in
+`iface_method_default`.
 
 ---
 
@@ -1436,7 +1433,7 @@ This was assembled after reviewing `lib/parser.mly`, `lib/ast.ml`,
 
 | Feature | Description | Notes |
 |---------|-------------|-------|
-| **Where clauses** | `f x = body where helper y = …` — local helper definitions at the bottom of a binding | Without this, all locals must be chained `let … in`, which can't express mutually-recursive helpers. High-value ergonomic win. |
+| **Where clauses** | `f x = body where helper y = …` — local helper definitions at the bottom of a binding | ✅ Phase 25 done. Mutual recursion via `ELetGroup`; `where` supported on function bodies and match-arm bodies. |
 | **Type aliases** | `type Name = String`, `type Parser a = String -> Option (a, String)` | No way to name a type synonym today. Needed for readable API signatures in the stdlib. |
 | **Newtype declarations** | `newtype UserId = UserId Int` — zero-cost wrapper for type safety | `deriving` infrastructure is already there; relatviely cheap to add. Blocks domain-modelling patterns. |
 | **As-patterns** | `f all@(x::xs) = …` — name the whole value and destructure simultaneously | Without this, you have to manually reconstruct the matched value. Comes up constantly in list/tree recursion. |

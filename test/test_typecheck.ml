@@ -1493,6 +1493,29 @@ let t_interp_empty_ok =
 let e_interp_int_in_hole =
   assert_err "x = \"value: \\{42}\"\n"
 
+(* ── Where clauses (Phase 25) ───────────────────── *)
+
+let t_where_simple_type =
+  assert_type {|r = double 5 where
+    double x = x * 2
+|} "r" "Int"
+
+let t_where_mutual_type =
+  assert_type {|r = isEven 4 where
+    isEven n = if n == 0 then True else isOdd (n - 1)
+    isOdd  n = if n == 0 then False else isEven (n - 1)
+|} "r" "Bool"
+
+let t_where_polymorphic =
+  assert_type {|r = myId 42 where
+  myId x = x
+|} "r" "Int"
+
+let e_where_type_mismatch =
+  assert_err {|r = helper 5 where
+    helper x = x + "oops"
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1786,5 +1809,11 @@ let () =
       test_case "string hole ok"           `Quick t_interp_string_hole;
       test_case "no holes plain"           `Quick t_interp_empty_ok;
       test_case "err: Int in hole"         `Quick e_interp_int_in_hole;
+    ];
+    "where clauses (Phase 25)", [
+      test_case "simple helper type"       `Quick t_where_simple_type;
+      test_case "mutual recursion type"    `Quick t_where_mutual_type;
+      test_case "polymorphic helper"       `Quick t_where_polymorphic;
+      test_case "err: type mismatch"       `Quick e_where_type_mismatch;
     ];
   ]

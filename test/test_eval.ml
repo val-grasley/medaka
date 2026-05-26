@@ -296,6 +296,17 @@ let t_where_nested = assert_val {|r = outer 3 where
         inner k = k * 2
 |} "r" (VInt 7)
 
+let t_where_mutual_recursion = assert_val {|r = isEven 4 where
+    isEven n = if n == 0 then True else isOdd (n - 1)
+    isOdd  n = if n == 0 then False else isEven (n - 1)
+|} "r" (VBool true)
+
+let t_where_match_arm = assert_val {|classify n = match n
+  x => doubled x where
+      doubled y = y * 2
+r = classify 5
+|} "r" (VInt 10)
+
 (* ── Top-level function guards ──────────────────────────────────────────── *)
 
 let t_guard_basic_neg = assert_val {|
@@ -586,6 +597,8 @@ let () =
       test_case "multiple helpers"  `Quick t_where_multi;
       test_case "sequential"        `Quick t_where_sequential;
       test_case "nested"            `Quick t_where_nested;
+      test_case "mutual recursion"  `Quick t_where_mutual_recursion;
+      test_case "match arm"         `Quick t_where_match_arm;
     ];
     "top-level function guards", [
       test_case "neg branch"        `Quick t_guard_basic_neg;

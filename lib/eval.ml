@@ -226,6 +226,14 @@ and eval env expr =
      | None -> raise (Eval_error ("let pattern match failure", !current_loc))
      | Some binds -> eval (extend env binds) e2)
 
+  | ELetGroup (bindings, body) ->
+    let cells = List.map (fun (name, _) -> (name, ref VUnit)) bindings in
+    let env' = cells :: env in
+    List.iter (fun (name, rhs) ->
+      (List.assoc name cells) := eval env' rhs
+    ) bindings;
+    eval env' body
+
   | EMatch (scrut, arms) ->
     let sv = eval env scrut in
     let rec try_arms = function

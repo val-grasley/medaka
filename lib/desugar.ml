@@ -292,6 +292,7 @@ let rec map_expr f e =
     | EApp (e1, e2)           -> EApp (map_expr f e1, map_expr f e2)
     | ELam (ps, body)         -> ELam (ps, map_expr f body)
     | ELet (m, p, e1, e2)    -> ELet (m, p, map_expr f e1, map_expr f e2)
+    | ELetGroup (bs, e2)      -> ELetGroup (List.map (fun (n, e) -> (n, map_expr f e)) bs, map_expr f e2)
     | EMatch (e0, arms)       ->
         EMatch (map_expr f e0,
           List.map (fun (p, g, b) -> (p, Option.map (map_expr f) g, map_expr f b)) arms)

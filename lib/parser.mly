@@ -21,12 +21,9 @@ let stmts_to_expr = function
 let curry_lam pats body =
   List.fold_right (fun pat acc -> ELam ([pat], acc)) pats body
 
-(* Desugar `where` bindings into nested ELet expressions. *)
+(* Desugar `where` bindings into a mutually-recursive ELetGroup. *)
 let desugar_where bindings main_expr =
-  List.fold_right
-    (fun (name, pats, rhs) acc ->
-      ELet (false, PVar name, curry_lam pats rhs, acc))
-    bindings main_expr
+  ELetGroup (List.map (fun (name, pats, rhs) -> (name, curry_lam pats rhs)) bindings, main_expr)
 
 (* Convert an expression back into a pattern when used as a lambda parameter.
    Supported: identifiers, literals, tuples, lists, cons, constructor apps. *)
@@ -532,6 +529,8 @@ kv_or_e:
 
 match_arm:
   | pat option(guard) FAT_ARROW expr_no_block newlines  { ($1, $2, $4) }
+  | pat option(guard) FAT_ARROW expr_no_block WHERE INDENT nonempty_list(where_binding) DEDENT newlines
+    { ($1, $2, desugar_where $7 $4) }
 
 guard:
   | IF expr_or  { $2 }

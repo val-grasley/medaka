@@ -714,6 +714,19 @@ let rec infer env = function
        unify tp t1;
        infer (extend_vars env bindings) e2)
 
+  | ELetGroup (bindings, body) ->
+    enter_level ();
+    let placeholders = List.map (fun (n, _) -> (n, fresh_var ())) bindings in
+    let env' = List.fold_left
+      (fun e (n, t) -> extend_var e n (monotype t)) env placeholders in
+    List.iter (fun (n, rhs) ->
+      unify (infer env' rhs) (List.assoc n placeholders)
+    ) bindings;
+    exit_level ();
+    let env'' = List.fold_left
+      (fun e (n, t) -> extend_var e n (generalize t)) env placeholders in
+    infer env'' body
+
   | EIf (c, t, e) ->
     unify (infer env c) t_bool;
     let tt = infer env t in
@@ -1451,6 +1464,8 @@ let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : eff
   | ELam (_, body) ->
     sub body  (* conservative: include body effects in enclosing fn *)
   | ELet (_, _, e1, e2) -> effect_union (sub e1) (sub e2)
+  | ELetGroup (bs, e2) ->
+    List.fold_left (fun a (_, e) -> effect_union a (sub e)) (sub e2) bs
   | EIf (c, t, f)       -> effect_union (sub c) (effect_union (sub t) (sub f))
   | EBinOp ("|>", x, f) ->
     (* x |> f  ≡  f x — calling f contributes its effects *)
