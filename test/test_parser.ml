@@ -24,8 +24,8 @@ let pp_decl d =
   | DFunDef (_, n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
                                (String.concat "; " (List.map Ast.pp_pat ps))
                                (Ast.pp_expr e)
-  | DData (_, n, _, _)    -> Printf.sprintf "DData(%s, ...)" n
-  | DRecord (_, n, _, _)  -> Printf.sprintf "DRecord(%s, ...)" n
+  | DData (_, n, _, _, _)    -> Printf.sprintf "DData(%s, ...)" n
+  | DRecord (_, n, _, _, _)  -> Printf.sprintf "DRecord(%s, ...)" n
   | DInterface { iface_name; _ } -> Printf.sprintf "DInterface(%s)" iface_name
   | DImpl { iface_name; _ }      -> Printf.sprintf "DImpl(%s)" iface_name
   | DUse (pub, _)         -> Printf.sprintf "DUse(pub=%b, ...)" pub
@@ -332,7 +332,7 @@ let test_data_inline () =
   | DData (false, "Bool", [], [
       { con_name = "True";  con_fields = [] };
       { con_name = "False"; con_fields = [] };
-    ]) -> ()
+    ], []) -> ()
   | _ -> failwith "wrong"
 
 let test_data_with_fields () =
@@ -340,7 +340,7 @@ let test_data_with_fields () =
   | DData (false, "Option", ["a"], [
       { con_name = "Some"; con_fields = [TyVar "a"] };
       { con_name = "None"; con_fields = [] };
-    ]) -> ()
+    ], []) -> ()
   | _ -> failwith "wrong"
 
 let test_data_block () =
@@ -353,7 +353,7 @@ data Shape
   | DData (false, "Shape", [], [
       { con_name = "Circle";    con_fields = [TyCon "Float"] };
       { con_name = "Rectangle"; con_fields = [TyCon "Float"; TyCon "Float"] };
-    ]) -> ()
+    ], []) -> ()
   | _ -> failwith "wrong"
 
 (* ── Record type tests ───────────────────────────────── *)
@@ -368,7 +368,7 @@ record Person
   | DRecord (false, "Person", [], [
       { field_name = "name"; field_type = TyCon "String" };
       { field_name = "age";  field_type = TyCon "Int" };
-    ]) -> ()
+    ], []) -> ()
   | _ -> failwith "wrong"
 
 (* ── Do notation tests ───────────────────────────────── *)

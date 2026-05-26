@@ -864,6 +864,35 @@ call in every test parser invocation keeps global indent-state clean.
 
 ---
 
+### Phase 18.5: `deriving` — automatic interface instances ✅ DONE
+
+**Goal.** Add Haskell-style `deriving (Eq, Show, Ord)` to `data` and `record`
+declarations so the compiler generates `impl` nodes automatically.
+
+**What was added.**
+- `DData`/`DRecord` gain a `derives: ident list` field (5th tuple element).
+  All pattern-match sites in `printer.ml`, `resolve.ml`, `typecheck.ml`,
+  `eval.ml`, `repl.ml`, `dev/debug.ml`, and `test/test_parser.ml` updated.
+- `lib/lexer.mll`: `DERIVING` keyword.
+- `lib/parser.mly`: `deriving_clause` (block form — includes trailing `newlines`)
+  and `inline_deriving` (inline form — no surrounding newlines); block data/record
+  rules use `DEDENT newlines option(deriving_clause)`; inline data uses
+  `option(inline_deriving) newlines`. Conflict count unchanged: 3 S/R (12) /
+  7 R/R (23).
+- `lib/desugar.ml` (new): `desugar_program` expands `DData`/`DRecord` with
+  non-empty `derives` into the original decl (derives cleared) followed by
+  generated `DImpl` nodes. Supports `Eq`, `Show`, and `Ord` for both data and
+  record types. Generated `Eq` uses tuple pattern-match; `Show` builds strings
+  with `++`; `Ord` uses lexicographic field comparison via nested `match`.
+- `lib/dune`: `desugar` added to `medaka_lib` modules.
+- Pipeline: `desugar_program` called in `bin/main.ml` (both single-file and
+  multi-file paths) and in `lib/repl.ml` (`process_item` and `load_file`).
+- `++` operator in typecheck.ml widened from `List a -> List a -> List a` to
+  `a -> a -> a` so string concatenation in derived `show` type-checks.
+- 7 new typecheck tests. 407 tests total.
+
+---
+
 ### Phase 19: Begin the standard library
 
 **Goal.** With Phases 13–18 in place you can start implementing the
@@ -1004,3 +1033,33 @@ a phase in §6 unless noted.
   case. Not on the critical path; revisit after stdlib forces the issue.
 - **`r.value = e` field-assignment on `Ref`.** Same family as above; use
   `set_ref` for now.
+- **`Eq`, `Num`, and `Ord` stdlib interfaces disconnected from built-in operator constraints.**
+  `==`/`!=` unify both sides and return `Bool` with no interface lookup — `deriving (Eq)`
+  generates an impl with `eq`/`neq` that is never called by those operators.
+  `+`/`-`/`*`/`/` check a synthetic `__num__` witness and `<`/`>`/`<=`/`>=` check
+  `__ord__`, both seeded in `seed_builtin_interfaces` with hardcoded impls for
+  `Int`/`Float` (Num) and `Int`/`Float`/`String`/`Char` (Ord). These are entirely
+  separate from any `interface Num`/`interface Ord` defined in `core.mdk` — the
+  typechecker does not connect the two. `core.mdk` does not yet define `Num` at all.
+  User-defined `impl Num MyType` or `impl Ord MyType` will not make the operators
+  work on `MyType`, and `deriving (Ord)` generates an impl for the user-land `Ord`
+  that the `<`/`>` operators will not consult. `deriving (Show)` is unaffected —
+  `show` is a plain method call with no operator magic. All three wiring problems
+  are resolved together in Phase 19 stdlib/typeclass wiring.
+- **`do`-notation is not wired to `Thenable`.** The typechecker handles `do`
+  structurally: each `<-` line just unifies its expression against `m a` for a
+  fresh `m` typevar. It never looks up or calls `andThen`. This means do-notation
+  works on any type that fits `m a` structurally, but `Thenable` in `core.mdk` is
+  inert — deleting it would not break anything. To make the interface load-bearing,
+  `<-` should desugar to `andThen` calls (Haskell style) so the `Thenable`
+  constraint is actually checked. Scheduled with Phase 19 stdlib/typeclass wiring.
+- **No constraint syntax in function type signatures.** There is no way to write
+  `f : Eq a => a -> a -> Bool` in a type annotation or `type_sig` declaration.
+  The AST `ty` type has no constraint/forall node, and the parser has no rule for
+  `=>` in type position (only in match arms and lambda sugar). This blocks several
+  stdlib functions (`elem`, `sort`, `sum`, `maximum`, etc.) from being expressible
+  as type signatures, and prevents `Foldable` derived methods with extra constraints
+  from being interface members. Requires: new `TyConstraint` (or `TyForall`) AST
+  node, parser rule for `(IfaceName a, …) =>` prefix in `_type_expr`, and
+  typechecker support for threading the constraint into the inferred scheme.
+  Tracked as a future phase; unblocks full stdlib type-sig coverage.

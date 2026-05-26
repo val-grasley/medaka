@@ -8,10 +8,20 @@
     { "include": "#string" },
     { "include": "#char" },
     { "include": "#effect-annotation" },
+    { "include": "#interface-name" },
+    { "include": "#interface-constraint" },
+    { "include": "#impl-named-decl" },
+    { "include": "#impl-decl" },
+    { "include": "#data-name" },
+    { "include": "#data-name-block" },
+    { "include": "#record-name" },
+    { "include": "#type-param" },
+    { "include": "#pipe-constructor" },
+    { "include": "#deriving-iface" },
     { "include": "#keyword" },
     { "include": "#bool-literal" },
     { "include": "#number" },
-    { "include": "#type-constructor" },
+    { "include": "#uppercase-ident" },
     { "include": "#impl-selection" },
     { "include": "#operator" },
     { "include": "#punctuation" }
@@ -37,12 +47,103 @@
       "match": "'[^'\\\\]'|'\\\\.[^']*'"
     },
     "effect-annotation": {
-      "name": "meta.effect.medaka",
-      "match": "<(?:[A-Z][a-zA-Z0-9_']*,?\\s*)+>",
+      "match": "(<)(?:[A-Z][a-zA-Z0-9_']*,?\\s*)+(>)",
       "captures": {
         "0": { "name": "storage.modifier.effect.medaka" }
       }
     },
+
+    "interface-name": {
+      "comment": "interface Eq a — color the interface name being declared",
+      "match": "\\b(interface)\\s+([A-Z][a-zA-Z0-9_']*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.medaka" },
+        "2": { "name": "entity.name.class.medaka" }
+      }
+    },
+
+    "interface-constraint": {
+      "comment": "requires Eq a / of Eq a — color the constraint interface name",
+      "match": "\\b(requires|of)\\s+([A-Z][a-zA-Z0-9_']*)",
+      "captures": {
+        "1": { "name": "keyword.other.medaka" },
+        "2": { "name": "entity.name.class.medaka" }
+      }
+    },
+
+    "impl-named-decl": {
+      "comment": "impl name of Interface Type — named impl",
+      "match": "\\b(impl)\\s+([a-z_][a-zA-Z0-9_']*)\\s+(of)\\s+([A-Z][a-zA-Z0-9_']*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.medaka" },
+        "2": { "name": "entity.name.function.medaka" },
+        "3": { "name": "keyword.other.medaka" },
+        "4": { "name": "entity.name.class.medaka" }
+      }
+    },
+
+    "impl-decl": {
+      "comment": "impl Interface Type — color the interface name",
+      "match": "\\b(impl)\\s+([A-Z][a-zA-Z0-9_']*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.medaka" },
+        "2": { "name": "entity.name.class.medaka" }
+      }
+    },
+
+    "data-name": {
+      "comment": "data TypeName — inline form: also captures first constructor after =",
+      "match": "\\b(data)\\s+([A-Z][a-zA-Z0-9_']*)(?:\\s+[a-z][a-zA-Z0-9_']*)*\\s*=\\s*([A-Z][a-zA-Z0-9_']*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.medaka" },
+        "2": { "name": "entity.name.type.medaka" },
+        "3": { "name": "entity.name.function.medaka" }
+      }
+    },
+
+    "data-name-block": {
+      "comment": "data TypeName — block form (no = on this line)",
+      "match": "\\b(data)\\s+([A-Z][a-zA-Z0-9_']*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.medaka" },
+        "2": { "name": "entity.name.type.medaka" }
+      }
+    },
+
+    "record-name": {
+      "comment": "record TypeName — color the type name being declared",
+      "match": "\\b(record)\\s+([A-Z][a-zA-Z0-9_']*)",
+      "captures": {
+        "1": { "name": "keyword.declaration.medaka" },
+        "2": { "name": "entity.name.type.medaka" }
+      }
+    },
+
+    "type-param": {
+      "comment": "type params in declaration headers and constraint positions",
+      "match": "(?<=\\b(?:data|record|interface)\\s{1,40}[A-Za-z0-9_']{1,40}\\s{1,10}|\\b(?:data|record|interface)\\s{1,40}[A-Za-z0-9_']{1,40}(?:\\s{1,10}[a-z][a-zA-Z0-9_']*){1}\\s{1,10}|\\b(?:data|record|interface)\\s{1,40}[A-Za-z0-9_']{1,40}(?:\\s{1,10}[a-z][a-zA-Z0-9_']*){2}\\s{1,10}|\\b(?:data|record|interface)\\s{1,40}[A-Za-z0-9_']{1,40}(?:\\s{1,10}[a-z][a-zA-Z0-9_']*){3}\\s{1,10}|\\b(?:requires|of)\\s{1,20}[A-Z][a-zA-Z0-9_']{0,40}\\s{1,10}|\\b(?:requires|of)\\s{1,20}[A-Z][a-zA-Z0-9_']{0,40}(?:\\s{1,10}[a-z][a-zA-Z0-9_']*){1}\\s{1,10})(?!(?:where|requires|of|deriving|let|in|if|then|else|match|do|mut|as|import|export|data|record|interface|impl|default|extern)\\b)([a-z][a-zA-Z0-9_']*)",
+      "captures": {
+        "1": { "name": "variable.parameter.type.medaka" }
+      }
+    },
+
+    "pipe-constructor": {
+      "comment": "| ConName — data constructor after pipe, inline or block",
+      "match": "\\|\\s*([A-Z][a-zA-Z0-9_']*)",
+      "captures": {
+        "1": { "name": "entity.name.function.medaka" }
+      }
+    },
+
+    "deriving-iface": {
+      "comment": "deriving (Eq, Show) — color each interface name inside parens",
+      "match": "\\b(deriving)\\s*\\(([A-Z][a-zA-Z0-9_']*(?:\\s*,\\s*[A-Z][a-zA-Z0-9_']*)*)\\)",
+      "captures": {
+        "1": { "name": "keyword.other.medaka" },
+        "2": { "name": "entity.name.class.medaka" }
+      }
+    },
+
     "keyword": {
       "patterns": [
         {
@@ -51,11 +152,11 @@
         },
         {
           "name": "keyword.declaration.medaka",
-          "match": "\\b(data|record|interface|impl|default)\\b"
+          "match": "\\b(data|record|interface|impl|default|extern)\\b"
         },
         {
           "name": "keyword.modifier.medaka",
-          "match": "\\b(export|extern)\\b"
+          "match": "\\b(export)\\b"
         },
         {
           "name": "keyword.import.medaka",
@@ -63,14 +164,16 @@
         },
         {
           "name": "keyword.other.medaka",
-          "match": "\\b(where|of|as)\\b"
+          "match": "\\b(where|of|as|requires|deriving)\\b"
         }
       ]
     },
+
     "bool-literal": {
       "name": "constant.language.medaka",
       "match": "\\b(True|False)\\b"
     },
+
     "number": {
       "patterns": [
         {
@@ -83,18 +186,23 @@
         }
       ]
     },
-    "type-constructor": {
+
+    "uppercase-ident": {
+      "comment": "General uppercase identifier — type constructors and data constructors in expression/type position",
       "name": "entity.name.type.medaka",
       "match": "\\b[A-Z][a-zA-Z0-9_']*\\b"
     },
+
     "impl-selection": {
-      "name": "entity.name.type.instance.medaka",
+      "name": "entity.name.class.medaka",
       "match": "@[A-Z][a-zA-Z0-9_']*"
     },
+
     "operator": {
       "name": "keyword.operator.medaka",
-      "match": "\\|>|>>|<<|\\+\\+|::|==|!=|<=|>=|<-|=>|->|[+\\-*/%<>!&|=:]"
+      "match": "\\|>|>>|<<|\\+\\+|<>|::|==|!=|<=|>=|<-|=>|->|[+\\-*/%<>!&|=:]"
     },
+
     "punctuation": {
       "patterns": [
         {

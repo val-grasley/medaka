@@ -1,2 +1,170 @@
 -- core.mdk — foundation interfaces and instances
 -- See STDLIB.md for the full implementation plan.
+
+-- Datatypes
+
+export data Ordering = Lt | Eq | Gt
+
+-- Interfaces
+
+export interface Eq a where
+    eq : a -> a -> Bool
+    neq : a -> a -> Bool
+
+    neq x y = not (eq x y)
+
+impl Eq (List a) requires Eq a where
+    eq [] [] = True
+    eq (x::xs) (y::ys) = eq x y && eq xs ys
+    eq _ _ = False
+
+export interface Ord a requires Eq a where
+    compare : a -> a -> Ordering
+    lt : a -> a -> Bool
+    gt : a -> a -> Bool
+    lte : a -> a -> Bool
+    gte : a -> a -> Bool
+    min : a -> a -> a
+    max : a -> a -> a
+    clamp : a -> a -> a -> a
+
+    lt x y = match compare x y of
+        Lt => True
+        _ => False
+    gt x y = match compare x y of
+        Gt => True
+        _ => False
+    lte x y = match compare x y of
+        Gt => False
+        _ => True
+    gte x y = match compare x y of
+        Lt => False
+        _ => True
+    min x y = match compare x y of
+        Gt => y
+        _ => x
+    max x y = match compare x y of
+        Lt => y
+        _ => x
+    clamp mn mx = min mx >> max mn
+
+export interface Show a where
+    show : a -> String
+
+export interface Num a requires Eq a where
+    add : a -> a -> a
+    sub : a -> a -> a
+    mul : a -> a -> a
+    div : a -> a -> a
+    negate: a -> a
+    abs: a -> a
+    signum: a -> a
+    fromInt: Int -> a
+
+export interface Bounded a where
+    minBound : a
+    maxBound : a
+
+export interface Mappable f where
+    map : (a -> b) -> f a -> f b
+
+export impl Mappable List where
+    map f [] = []
+    map f (x::xs) = (f x)::(map f xs)
+
+export impl Mappable Option where
+    map f (Some a) = Some (f a)
+    map _ None = None
+
+export interface (Mappable f) => Applicative f where
+    pure : a -> f a
+    ap : f (a -> b) -> f a -> f b
+
+export interface (Applicative m) => Thenable m where
+    andThen : m a -> (a -> m b) -> m b
+    flatMap : (a -> m b) -> m a -> m b
+    flat : m (m a) -> m a
+    when : Bool -> m Unit -> m Unit
+    unless : Bool -> m Unit -> m Unit
+
+    flatMap f ma = andThen ma f
+    flat x = andThen x identity
+    when b m = if b then m else pure ()
+    unless b m = if b then pure () else m
+
+export interface Foldable t where
+    fold : (b -> a -> b) -> b -> t a -> b
+    foldRight : (a -> b -> b) -> b -> t a -> b
+    toList : t a -> List a
+    isEmpty : t a -> Bool
+    length : t a -> Int
+
+-- Bool helpers
+
+export
+not : Bool -> Bool
+not b = if b then False else True
+
+export
+and : Bool -> Bool -> Bool
+and True True = True
+and _ _ = False
+
+export
+or : Bool -> Bool -> Bool
+or False False = False
+or _ _ = True
+
+export
+xor : Bool -> Bool -> Bool
+xor False True = True
+xor True False = True
+xor _ _ = False
+
+-- Option helpers
+
+export
+isSome : Option a -> Bool
+isSome None = False
+isSome _ = True
+
+export
+isNone : Option a -> Bool
+isNone None = True
+isNone _ = False
+
+export
+fromOption : a -> Option a -> a
+fromOption d None = d
+fromOption _ (Some a) = a
+
+export
+toResult : e -> Option a -> Result e a
+toResult e None = Err e
+toResult _ (Some a) = Ok a
+
+-- Utility functions
+
+export
+identity : a -> a
+identity x = x
+
+export
+const : a -> b -> a
+const x _ = x
+
+export
+flip : (a -> b -> c) -> b -> a -> c
+flip f b a = f a b
+
+export
+compose : (b -> c) -> (a -> b) -> a -> c
+compose g f a = g (f a)
+
+export
+pipe : (a -> b) -> (b -> c) -> a -> c
+pipe f g a = g (f a)
+
+export
+apply : (a -> b) -> a -> b
+apply f a = f a

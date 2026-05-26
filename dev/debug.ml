@@ -19,11 +19,11 @@ let pp_decl d =
   | DFunDef (_, n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
                                (String.concat "; " (List.map pp_pat ps))
                                (pp_expr e)
-  | DData (_, n, ps, vs)  ->
+  | DData (_, n, ps, vs, _)  ->
     let pv v = Printf.sprintf "%s [%s]" v.con_name (String.concat ", " (List.map pp_ty v.con_fields)) in
     Printf.sprintf "DData(%s, [%s], [%s])" n (String.concat " " ps)
       (String.concat " | " (List.map pv vs))
-  | DRecord (_, n, ps, fs) ->
+  | DRecord (_, n, ps, fs, _) ->
     let pf f = Printf.sprintf "%s : %s" f.field_name (pp_ty f.field_type) in
     Printf.sprintf "DRecord(%s, [%s], {%s})" n (String.concat " " ps)
       (String.concat ", " (List.map pf fs))

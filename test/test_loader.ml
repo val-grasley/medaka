@@ -126,7 +126,7 @@ let test_export_data_parsing () =
   let lexbuf = Lexing.from_string "export data Color = Red | Green | Blue\n" in
   let prog = Parser.program Lexer.token lexbuf in
   match prog with
-  | [Ast.DData (true, "Color", [], _)] -> ()
+  | [Ast.DData (true, "Color", [], _, _)] -> ()
   | _ -> failwith "expected exported DData"
 
 let test_export_round_trip () =

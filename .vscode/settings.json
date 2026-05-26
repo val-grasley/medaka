@@ -1,0 +1,42 @@
+{
+  "editor.tokenColorCustomizations": {
+    "textMateRules": [
+      {
+        "comment": "Keywords  (let, if, match, data, interface, export, where, requires …)",
+        "scope": [
+          "keyword.control.medaka",
+          "keyword.declaration.medaka",
+          "keyword.modifier.medaka",
+          "keyword.import.medaka",
+          "keyword.other.medaka"
+        ],
+        "settings": { "foreground": "#569CD6" }
+      },
+      {
+        "comment": "Interface / typeclass names  (Eq, Show, Ord, Mappable …)",
+        "scope": "entity.name.class.medaka",
+        "settings": { "foreground": "#BC8CFF" }
+      },
+      {
+        "comment": "Type constructors  (Bool, List, Option, Ordering …)",
+        "scope": "entity.name.type.medaka",
+        "settings": { "foreground": "#4EC9B0" }
+      },
+      {
+        "comment": "Data constructors  (Some, None, Ok, Err, Lt …)",
+        "scope": "entity.name.function.medaka",
+        "settings": { "foreground": "#D4A76A" }
+      },
+      {
+        "comment": "Type variables in declarations  (a, b, f …)",
+        "scope": "variable.parameter.type.medaka",
+        "settings": { "foreground": "#9CDCFE", "fontStyle": "italic" }
+      },
+      {
+        "comment": "Effect annotations  (<IO>, <Mut> …)",
+        "scope": "storage.modifier.effect.medaka",
+        "settings": { "foreground": "#F7C948" }
+      }
+    ]
+  }
+}

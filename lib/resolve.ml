@@ -195,12 +195,12 @@ let build_env ?(known_modules : module_exports list = [])
       if List.mem n extern_names then report (ExternWithBody n);
       (* Multi-clause definitions add the same name repeatedly *)
       add_or_skip env.values n
-    | DData (_, n, _, vs) ->
+    | DData (_, n, _, vs, _) ->
       add_unique env.types "type" n;
       List.iter (fun v ->
         add_unique env.constructors "constructor" v.con_name
       ) vs
-    | DRecord (_, n, _, fs) ->
+    | DRecord (_, n, _, fs, _) ->
       add_unique env.types "type" n;
       List.iter (fun f ->
         add_or_skip env.fields f.field_name;
@@ -435,9 +435,9 @@ let check_decl env errors = function
     check_type env errors t
   | DExtern (_, _, t) ->
     check_type env errors t
-  | DData (_, _, _, vs) ->
+  | DData (_, _, _, vs, _) ->
     List.iter (fun v -> List.iter (check_type env errors) v.con_fields) vs
-  | DRecord (_, _, _, fs) ->
+  | DRecord (_, _, _, fs, _) ->
     List.iter (fun f -> check_type env errors f.field_type) fs
   | DUse _ -> ()
   | DInterface { methods; _ } ->
@@ -492,12 +492,12 @@ let build_exports (mod_id : string) (prog : program) (env : module_env)
       Hashtbl.replace exp.exp_values n ()
     | DFunDef (true, n, _, _) ->
       Hashtbl.replace exp.exp_values n ()
-    | DData (true, n, _, vs) ->
+    | DData (true, n, _, vs, _) ->
       Hashtbl.replace exp.exp_types n ();
       List.iter (fun v ->
         Hashtbl.replace exp.exp_constructors v.con_name ()
       ) vs
-    | DRecord (true, n, _, fs) ->
+    | DRecord (true, n, _, fs, _) ->
       Hashtbl.replace exp.exp_types n ();
       List.iter (fun f ->
         Hashtbl.replace exp.exp_fields f.field_name ();
@@ -576,10 +576,10 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
     | Ast.DFunDef (_, n, _, _) ->
       if List.mem n extern_names then report (ExternWithBody n);
       add_or_skip env.values n
-    | Ast.DData (_, n, _, vs) ->
+    | Ast.DData (_, n, _, vs, _) ->
       add_unique env.types "type" n;
       List.iter (fun v -> add_unique env.constructors "constructor" v.Ast.con_name) vs
-    | Ast.DRecord (_, n, _, fs) ->
+    | Ast.DRecord (_, n, _, fs, _) ->
       add_unique env.types "type" n;
       List.iter (fun f ->
         add_or_skip env.fields f.Ast.field_name;

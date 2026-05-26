@@ -57,7 +57,7 @@ let t_mul  = assert_val "x = 3 * 4\n"  "x" (VInt 12)
 let t_div  = assert_val "x = 10 / 2\n" "x" (VInt 5)
 let t_neg  = assert_val "x = -(5)\n"   "x" (VInt (-5))
 
-let t_concat = assert_val {|x = "hello" ++ " world"
+let t_concat = assert_val {|x = "hello" <> " world"
 |} "x" (VString "hello world")
 
 (* ── If / let ───────────────────────────────────────────────────────────── *)

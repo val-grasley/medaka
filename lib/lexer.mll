@@ -77,6 +77,8 @@ let keyword_or_ident s =
   | "do"        -> DO
   | "as"        -> AS
   | "extern"    -> EXTERN
+  | "requires"  -> REQUIRES
+  | "deriving"  -> DERIVING
   | "True"      -> BOOL true
   | "False"     -> BOOL false
   | _           -> IDENT s
@@ -150,6 +152,7 @@ and read = parse
   | "<-"  { LARROW }
   | "::"  { CONS }
   | "++"  { PLUSPLUS }
+  | "<>"  { STRAPPEND }
   | "=="  { EQ_EQ }
   | "!="  { NEQ }
   | "<="  { LEQ }

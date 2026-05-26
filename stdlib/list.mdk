@@ -2,3 +2,59 @@
 -- See STDLIB.md for the full implementation plan.
 
 import core.{Eq, Ord, Show, Foldable, Mappable}
+
+-- Instances
+
+-- Does this have to be an orphan instance since we're defining list as a built-in for syntactic reasons?
+
+-- Construction
+
+export
+empty : List a
+empty = []
+
+export
+singleton : a -> List a
+singleton a = [a]
+
+-- Inspection
+
+export
+isEmpty : List a -> Bool
+isEmpty [] = True
+isEmpty _ = False
+
+export
+length : List a -> Int
+length [] = 0
+length (_::xs) = 1 + length xs
+
+export
+head : List a -> Option a
+head [] = None
+head (x::_) = Some x
+
+export
+tail : List a -> Option (List a)
+tail [] = None
+tail (_::xs) = Some xs
+
+export
+last : List a -> Option a
+last [] = None
+last [x] = Some x
+last (x::xs) = last xs
+
+export
+init : List a -> Option (List a)
+init [] = None
+init (x::[]) = Some []
+init (x::xs) = map (ys => x::ys) (init xs)
+
+export
+get : Int -> List a -> Option a
+get _ [] = None
+get 0 (x::_) = Some x
+get i (_::xs) = get (i - 1) xs
+
+-- Transformation

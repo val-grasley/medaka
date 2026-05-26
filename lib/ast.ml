@@ -86,8 +86,8 @@ type decl =
   | DTypeSig   of bool * ident * ty          (* pub? name type *)
   | DExtern    of bool * ident * ty          (* pub? name type *)
   | DFunDef    of bool * ident * pat list * expr  (* pub? name pats body *)
-  | DData      of bool * ident * ident list * data_variant list  (* pub? *)
-  | DRecord    of bool * ident * ident list * record_field list  (* pub? *)
+  | DData      of bool * ident * ident list * data_variant list * ident list  (* pub? derives *)
+  | DRecord    of bool * ident * ident list * record_field list * ident list  (* pub? derives *)
   | DInterface of {
       is_pub      : bool;
       is_default  : bool;
@@ -102,6 +102,7 @@ type decl =
       iface_name : ident;
       type_args  : ty list;
       impl_name  : ident option;
+      requires   : (ident * ty list) list;  (* e.g. requires Eq a, Ord b *)
       methods    : (ident * pat list * expr) list;
     }
   | DUse of bool * use_path  (* pub? use path *)

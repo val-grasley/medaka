@@ -58,13 +58,13 @@ let rec expr_to_pat = function
 
 (* Keywords *)
 %token LET MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
-%token IMPORT EXPORT WHERE OF DO AS EXTERN
+%token IMPORT EXPORT WHERE OF REQUIRES DO AS EXTERN DERIVING
 
 (* Operators *)
 %token PLUS MINUS STAR SLASH MOD
 %token EQ_EQ NEQ LT GT LEQ GEQ
 %token AND OR
-%token CONS PLUSPLUS
+%token CONS PLUSPLUS STRAPPEND
 %token PIPE_RIGHT RCOMPOSE LCOMPOSE
 %token FAT_ARROW ARROW LARROW
 %token AT BANG
@@ -333,8 +333,9 @@ expr_cons:
   | expr_append                 { $1 }
 
 expr_append:
-  | expr_append PLUSPLUS expr_add  { EBinOp ("++", $1, $3) }
-  | expr_add                       { $1 }
+  | expr_append PLUSPLUS   expr_add  { EBinOp ("++", $1, $3) }
+  | expr_append STRAPPEND  expr_add  { EBinOp ("<>", $1, $3) }
+  | expr_add                         { $1 }
 
 expr_add:
   | expr_add PLUS  expr_mul  { EBinOp ("+", $1, $3) }
@@ -376,7 +377,7 @@ section_op:
   | EQ_EQ      { "==" }  | NEQ        { "!=" }
   | LT         { "<" }   | GT         { ">" }   | LEQ        { "<=" }  | GEQ { ">=" }
   | AND        { "&&" }  | OR         { "||" }
-  | CONS       { "::" }  | PLUSPLUS   { "++" }
+  | CONS       { "::" }  | PLUSPLUS   { "++" }  | STRAPPEND  { "<>" }
   | PIPE_RIGHT { "|>" }  | RCOMPOSE   { ">>" }  | LCOMPOSE   { "<<" }
 
 expr_atom:
@@ -444,13 +445,26 @@ stmt:
   | IDENT EQUAL expr_no_block newlines        { DoAssign ($1, $3) }
   | expr_no_block newlines                    { DoExpr $1 }
 
+(* ── Deriving clause ─────────────────────────────────── *)
+(* Block forms (after DEDENT): the mandatory DEDENT newlines come first, so
+   deriving_clause doesn't need a leading newline; it owns its trailing newlines. *)
+deriving_clause:
+  | DERIVING LPAREN separated_nonempty_list(COMMA, UPPER) RPAREN newlines  { $3 }
+
+(* Inline form (same line as variants): no surrounding newlines — the outer rule
+   handles the trailing newline after the entire declaration. *)
+inline_deriving:
+  | DERIVING LPAREN separated_nonempty_list(COMMA, UPPER) RPAREN  { $3 }
+
 (* ── Data declarations ───────────────────────────────── *)
 
 inner_data_decl:
-  | DATA UPPER list(IDENT) INDENT nonempty_list(data_variant_line) DEDENT newlines
-    { fun is_pub -> DData (is_pub, $2, $3, $5) }
-  | DATA UPPER list(IDENT) EQUAL separated_nonempty_list(PIPE, data_variant_inline) newlines
-    { fun is_pub -> DData (is_pub, $2, $3, $5) }
+  (* Block form: DEDENT, then mandatory newlines (from handle_indent), then optional deriving *)
+  | DATA UPPER list(IDENT) INDENT nonempty_list(data_variant_line) DEDENT newlines option(deriving_clause)
+    { fun is_pub -> DData (is_pub, $2, $3, $5, Option.value ~default:[] $8) }
+  (* Inline form: optional deriving before the terminating newlines *)
+  | DATA UPPER list(IDENT) EQUAL separated_nonempty_list(PIPE, data_variant_inline) option(inline_deriving) newlines
+    { fun is_pub -> DData (is_pub, $2, $3, $5, Option.value ~default:[] $6) }
 
 data_variant_line:
   | PIPE UPPER list(ty_atom) newlines  { { con_name = $2; con_fields = $3 } }
@@ -461,8 +475,9 @@ data_variant_inline:
 (* ── Record declarations ─────────────────────────────── *)
 
 inner_record_decl:
-  | RECORD UPPER list(IDENT) INDENT nonempty_list(record_field_decl) DEDENT newlines
-    { fun is_pub -> DRecord (is_pub, $2, $3, $5) }
+  (* Block form: same structure as block data — newlines consumed before optional deriving *)
+  | RECORD UPPER list(IDENT) INDENT nonempty_list(record_field_decl) DEDENT newlines option(deriving_clause)
+    { fun is_pub -> DRecord (is_pub, $2, $3, $5, Option.value ~default:[] $8) }
 
 record_field_decl:
   | IDENT COLON ty newlines  { { field_name = $1; field_type = $3 } }
@@ -483,7 +498,7 @@ inner_iface_decl:
     }
 
 iface_super:
-  | OF separated_nonempty_list(COMMA, iface_super_entry)  { $2 }
+  | REQUIRES separated_nonempty_list(COMMA, iface_super_entry)  { $2 }
 
 iface_super_entry:
   | UPPER list(IDENT)  { ($1, $2) }
@@ -497,7 +512,7 @@ iface_member:
 (* ── Impl declarations ───────────────────────────────── *)
 
 inner_impl_decl:
-  | option(DEFAULT) IMPL UPPER nonempty_list(ty_atom) WHERE
+  | option(DEFAULT) IMPL UPPER nonempty_list(ty_atom) option(impl_requires) WHERE
     INDENT nonempty_list(impl_method) DEDENT newlines
     { fun is_pub -> DImpl {
         is_pub;
@@ -505,10 +520,11 @@ inner_impl_decl:
         iface_name = $3;
         type_args  = $4;
         impl_name  = None;
-        methods    = $7;
+        requires   = Option.value ~default:[] $5;
+        methods    = $8;
       }
     }
-  | option(DEFAULT) IMPL IDENT OF UPPER nonempty_list(ty_atom) WHERE
+  | option(DEFAULT) IMPL IDENT OF UPPER nonempty_list(ty_atom) option(impl_requires) WHERE
     INDENT nonempty_list(impl_method) DEDENT newlines
     { fun is_pub -> DImpl {
         is_pub;
@@ -516,9 +532,16 @@ inner_impl_decl:
         iface_name = $5;
         type_args  = $6;
         impl_name  = Some $3;
-        methods    = $9;
+        requires   = Option.value ~default:[] $7;
+        methods    = $10;
       }
     }
+
+impl_requires:
+  | REQUIRES separated_nonempty_list(COMMA, impl_requires_entry)  { $2 }
+
+impl_requires_entry:
+  | UPPER nonempty_list(ty_atom)  { ($1, $2) }
 
 impl_method:
   | IDENT list(pat_atom) EQUAL fun_body newlines  { ($1, $2, $4) }

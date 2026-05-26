@@ -13,13 +13,13 @@ let parse src =
                 src)
 
 let check src =
-  try Ok (fst (check_program (parse src)))
+  try Ok (fst (check_program (Desugar.desugar_program (parse src))))
   with Type_error (e, _) -> Error e
 
 (* assert_warns: expect at least one exhaustiveness/redundancy warning *)
 let assert_warns src () =
   match
-    (try Some (snd (check_program (parse src)))
+    (try Some (snd (check_program (Desugar.desugar_program (parse src))))
      with Type_error _ -> None)
   with
   | None ->
@@ -31,7 +31,7 @@ let assert_warns src () =
 (* assert_no_warns: expect zero exhaustiveness/redundancy warnings *)
 let assert_no_warns src () =
   match
-    (try Some (snd (check_program (parse src)))
+    (try Some (snd (check_program (Desugar.desugar_program (parse src))))
      with Type_error _ -> None)
   with
   | None ->
@@ -1078,6 +1078,95 @@ let t_extern_upper = assert_type
   "extern Blorp : Int -> Blorp\nx = Blorp\n"
   "x" "Int -> Blorp"
 
+(* ── Deriving (Phase 19) ─────────────────────────── *)
+
+(* deriving Eq on a simple enum: eq on concrete Color values type-checks *)
+let t_derive_eq_enum = assert_type
+  {|
+interface Eq a where
+  eq : a -> a -> Bool
+data Color = Red | Green | Blue deriving (Eq)
+f = eq Red Green
+|}
+  "f" "Bool"
+
+(* deriving Eq on a data type with fields *)
+let t_derive_eq_fields = assert_type
+  {|
+interface Eq a where
+  eq : a -> a -> Bool
+impl Eq Int where
+  eq x y = x == y
+data Pair = Pair Int Int deriving (Eq)
+f = eq (Pair 1 2) (Pair 3 4)
+|}
+  "f" "Bool"
+
+(* deriving Show on an enum: show on concrete value type-checks *)
+let t_derive_show_enum = assert_type
+  {|
+interface Show a where
+  show : a -> String
+data Dir = North | South | East | West deriving (Show)
+f = show North
+|}
+  "f" "String"
+
+(* deriving Show on a type with fields *)
+let t_derive_show_fields = assert_type
+  {|
+interface Show a where
+  show : a -> String
+impl Show Int where
+  show x = "int"
+data Box = Box Int deriving (Show)
+f = show (Box 42)
+|}
+  "f" "String"
+
+(* deriving Ord on a simple enum: compare on concrete values type-checks *)
+let t_derive_ord_enum = assert_type
+  {|
+interface Eq a where
+  eq : a -> a -> Bool
+data Ordering = Lt | Eq | Gt
+interface Ord a where
+  compare : a -> a -> Ordering
+data Priority = Low | Medium | High deriving (Ord)
+f = compare Low High
+|}
+  "f" "Ordering"
+
+(* deriving multiple interfaces at once *)
+let t_derive_multi = assert_type
+  {|
+interface Eq a where
+  eq : a -> a -> Bool
+interface Show a where
+  show : a -> String
+data Suit = Clubs | Diamonds | Hearts | Spades deriving (Eq, Show)
+useEq = eq Clubs Diamonds
+useShow = show Hearts
+|}
+  "useEq" "Bool"
+
+(* deriving Eq on a record: eq on concrete record values type-checks *)
+let t_derive_eq_record = assert_type
+  {|
+interface Eq a where
+  eq : a -> a -> Bool
+impl Eq Int where
+  eq x y = x == y
+record Point
+  x : Int
+  y : Int
+deriving (Eq)
+p1 = Point { x = 1, y = 2 }
+p2 = Point { x = 3, y = 4 }
+f = eq p1 p2
+|}
+  "f" "Bool"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1304,5 +1393,14 @@ let () =
       test_case "readFile type"          `Quick t_readFile_type;
       test_case "err: readFile impure"   `Quick e_readFile_impure;
       test_case "extern uppercase name"  `Quick t_extern_upper;
+    ];
+    "deriving (Phase 19)", [
+      test_case "Eq enum"                `Quick t_derive_eq_enum;
+      test_case "Eq with fields"         `Quick t_derive_eq_fields;
+      test_case "Show enum"              `Quick t_derive_show_enum;
+      test_case "Show with fields"       `Quick t_derive_show_fields;
+      test_case "Ord enum"               `Quick t_derive_ord_enum;
+      test_case "multi-derive"           `Quick t_derive_multi;
+      test_case "Eq record"              `Quick t_derive_eq_record;
     ];
   ]

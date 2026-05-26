@@ -49,6 +49,7 @@ type impl_entry = {
   impl_name       : ident option;
   impl_is_default : bool;
   impl_type_mono  : mono list;  (* from_ast_type of each type_arg *)
+  impl_requires   : (ident * mono list) list;  (* constraint: iface, type args *)
 }
 
 (* Public type-level interface of a processed module *)
@@ -877,6 +878,8 @@ and binop_type env op l r =
     let elem = fresh_var () in
     let lt = t_list elem in
     unify tl lt; unify tr lt; lt
+  | "<>" ->
+    unify tl t_string; unify tr t_string; t_string
   | "|>" ->
     (* x |> f  :  a -> (a -> b) -> b *)
     let b = fresh_var () in
@@ -1112,7 +1115,7 @@ let check_impl env (decl : decl) = match decl with
 (* Record an impl declaration in env.impls so call-site constraint checking
    can find it.  Must run after register_interface so the interface exists. *)
 let register_impl env = function
-  | DImpl { iface_name; type_args; impl_name; is_default; _ } ->
+  | DImpl { iface_name; type_args; impl_name; is_default; requires; _ } ->
     if not (Hashtbl.mem env.interfaces iface_name) then
       fail (UnknownInterface iface_name);
     let entry = {
@@ -1120,6 +1123,8 @@ let register_impl env = function
       impl_name;
       impl_is_default = is_default;
       impl_type_mono  = List.map from_ast_type type_args;
+      impl_requires   = List.map (fun (iface, args) ->
+                          (iface, List.map from_ast_type args)) requires;
     } in
     env.impls := entry :: !(env.impls)
   | _ -> ()
@@ -1137,7 +1142,8 @@ let seed_builtin_interfaces env =
   let _ = register_interface env ("Ord", ["a"], mk "ord") in
   let push iface ty =
     env.impls := { impl_iface = iface; impl_name = None;
-                   impl_is_default = false; impl_type_mono = [ty] }
+                   impl_is_default = false; impl_type_mono = [ty];
+                   impl_requires = [] }
                  :: !(env.impls)
   in
   push "Num" t_int;    push "Num" t_float;
@@ -1327,8 +1333,8 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
   List.iter (function
-    | DData (_, n, ps, vs) -> register_data env (n, ps, vs)
-    | DRecord (_, n, ps, fs) -> register_record env (n, ps, fs)
+    | DData (_, n, ps, vs, _) -> register_data env (n, ps, vs)
+    | DRecord (_, n, ps, fs, _) -> register_record env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
       let ms = register_interface env (iface_name, type_params, methods) in
       iface_method_schemes := ms @ !iface_method_schemes
@@ -1463,8 +1469,8 @@ let typecheck_module
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
   List.iter (function
-    | DData (_, n, ps, vs) -> register_data env (n, ps, vs)
-    | DRecord (_, n, ps, fs) -> register_record env (n, ps, fs)
+    | DData (_, n, ps, vs, _) -> register_data env (n, ps, vs)
+    | DRecord (_, n, ps, fs, _) -> register_record env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
       let ms = register_interface env (iface_name, type_params, methods) in
       iface_method_schemes := ms @ !iface_method_schemes
@@ -1539,7 +1545,7 @@ let typecheck_module
   ) prog |> List.concat in
   let pub_ctors = List.filter_map (fun d ->
     match d with
-    | DData (true, _, _, vs) ->
+    | DData (true, _, _, vs, _) ->
       Some (List.filter_map (fun v ->
         match Hashtbl.find_opt (!env).ctors v.Ast.con_name with
         | Some s -> Some (v.Ast.con_name, s)
@@ -1549,7 +1555,7 @@ let typecheck_module
   ) prog |> List.concat in
   let pub_records = List.filter_map (fun d ->
     match d with
-    | DRecord (true, n, _, _) ->
+    | DRecord (true, n, _, _, _) ->
       (match Hashtbl.find_opt (!env).records n with
        | Some ri -> Some (n, ri)
        | None -> None)
@@ -1610,8 +1616,8 @@ let check_repl_decl (env : env ref) (decls : decl list)
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
   List.iter (function
-    | DData (_, n, ps, vs) -> register_data !env (n, ps, vs)
-    | DRecord (_, n, ps, fs) -> register_record !env (n, ps, fs)
+    | DData (_, n, ps, vs, _) -> register_data !env (n, ps, vs)
+    | DRecord (_, n, ps, fs, _) -> register_record !env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
       let ms = register_interface !env (iface_name, type_params, methods) in
       iface_method_schemes := ms @ !iface_method_schemes

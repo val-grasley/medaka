@@ -74,7 +74,8 @@ let process_item source resolve_env tc_env eval_state pending_sigs user_bindings
     ) resolve_errs
   else
     match item with
-    | Ast.ReplDecl decls ->
+    | Ast.ReplDecl raw_decls ->
+      let decls = Desugar.desugar_program raw_decls in
       (* Augment with pending type sigs from prior inputs, then update the list *)
       let defined_names = List.filter_map
         (function Ast.DFunDef (_,n,_,_) -> Some n | _ -> None) decls in
@@ -102,8 +103,8 @@ let process_item source resolve_env tc_env eval_state pending_sigs user_bindings
          ) bindings;
          List.iter (fun decl ->
            match decl with
-           | Ast.DData (_, n, _, _)   -> Printf.printf "type %s\n%!" n
-           | Ast.DRecord (_, n, _, _) -> Printf.printf "record %s\n%!" n
+           | Ast.DData (_, n, _, _, _)   -> Printf.printf "type %s\n%!" n
+           | Ast.DRecord (_, n, _, _, _) -> Printf.printf "record %s\n%!" n
            | Ast.DInterface { iface_name; _ } ->
              Printf.printf "interface %s\n%!" iface_name
            | _ -> ()
@@ -211,7 +212,7 @@ let load_file path resolve_env tc_env eval_state pending_sigs user_bindings =
   let program =
     match parse_file_source path source with
     | Error msg -> Printf.eprintf "%s\n%!" msg; restore (); raise Exit
-    | Ok p -> p
+    | Ok p -> Desugar.desugar_program p
   in
   (* reject use decls — need Phase 14 *)
   if List.exists (function Ast.DUse _ -> true | _ -> false) program then begin

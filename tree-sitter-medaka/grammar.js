@@ -240,9 +240,19 @@ module.exports = grammar({
       field('name', $.upper),
       repeat(field('type_param', $.ident)),
       choice(
-        seq('=', $.data_variant, repeat(seq('|', $.data_variant)), $._newline),
-        seq($._indent, repeat1($.data_variant_line), $._dedent, $._newline),
+        seq('=', $.data_variant, repeat(seq('|', $.data_variant)),
+            optional($.deriving_clause), $._newline),
+        seq($._indent, repeat1($.data_variant_line), $._dedent,
+            optional($.deriving_clause), $._newline),
       ),
+    ),
+
+    deriving_clause: $ => seq(
+      'deriving',
+      '(',
+      field('iface', $.upper),
+      repeat(seq(',', field('iface', $.upper))),
+      ')',
     ),
 
     data_variant: $ => seq(
@@ -267,6 +277,7 @@ module.exports = grammar({
       $._indent,
       repeat1($.record_field_decl),
       $._dedent,
+      optional($.deriving_clause),
       $._newline,
     ),
 
@@ -294,7 +305,7 @@ module.exports = grammar({
     ),
 
     iface_super: $ => seq(
-      'of',
+      'requires',
       $.iface_super_entry,
       repeat(seq(',', $.iface_super_entry)),
     ),
@@ -318,13 +329,26 @@ module.exports = grammar({
       'impl',
       choice(
         seq(field('impl_name', $.ident), 'of', field('iface', $.upper),
-            repeat1(field('type_arg', $.ty_atom)), 'where'),
-        seq(field('iface', $.upper), repeat1(field('type_arg', $.ty_atom)), 'where'),
+            repeat1(field('type_arg', $.ty_atom)),
+            optional($.impl_requires), 'where'),
+        seq(field('iface', $.upper), repeat1(field('type_arg', $.ty_atom)),
+            optional($.impl_requires), 'where'),
       ),
       $._indent,
       repeat1($.impl_method),
       $._dedent,
       $._newline,
+    ),
+
+    impl_requires: $ => seq(
+      'requires',
+      $.impl_requires_entry,
+      repeat(seq(',', $.impl_requires_entry)),
+    ),
+
+    impl_requires_entry: $ => seq(
+      field('iface', $.upper),
+      repeat1(field('type_arg', $.ty_atom)),
     ),
 
     impl_method: $ => seq(
@@ -467,6 +491,7 @@ module.exports = grammar({
       prec.left(5,  seq(field('left', $._expr), '>=',  field('right', $._expr))),
       prec.right(6, seq(field('left', $._expr), '::',  field('right', $._expr))),
       prec.left(7,  seq(field('left', $._expr), '++',  field('right', $._expr))),
+      prec.left(7,  seq(field('left', $._expr), '<>',  field('right', $._expr))),
       prec.left(8,  seq(field('left', $._expr), '+',   field('right', $._expr))),
       prec.left(8,  seq(field('left', $._expr), '-',   field('right', $._expr))),
       prec.left(9,  seq(field('left', $._expr), '*',   field('right', $._expr))),
@@ -564,7 +589,7 @@ module.exports = grammar({
 
     section_op: $ => choice(
       '+', '*', '/', '%', '==', '!=', '<', '>', '<=', '>=',
-      '&&', '||', '::', '++', '|>', '>>', '<<',
+      '&&', '||', '::', '++', '<>', '|>', '>>', '<<',
     ),
 
     /* @Name — impl disambiguation hint */

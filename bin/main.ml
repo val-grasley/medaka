@@ -55,6 +55,8 @@ let () =
        exit 1)
   in
 
+  let root_program = Medaka_lib.Desugar.desugar_program root_program in
+
   if not (has_use_decls root_program) then begin
     (* ── Single-file mode (legacy) ── *)
     let resolve_errs = Medaka_lib.Resolve.resolve_program root_program in
@@ -100,6 +102,9 @@ let () =
        | Failure msg ->
          Printf.eprintf "error: %s\n" msg; exit 1)
     in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Medaka_lib.Desugar.desugar_program prog)
+    ) modules in
 
     (* Resolve all modules in dependency order *)
     let resolve_exports = ref [] in

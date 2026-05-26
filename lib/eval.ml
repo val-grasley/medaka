@@ -315,8 +315,12 @@ and eval_binop env op l r =
      | _ -> raise (Eval_error ("cons (::) rhs is not a list", !current_loc)))
   | "++" ->
     (match eval env l, eval env r with
+     | VList xs, VList ys -> VList (xs @ ys)
+     | _ -> raise (Eval_error ("'++' requires two lists", !current_loc)))
+  | "<>" ->
+    (match eval env l, eval env r with
      | VString a, VString b -> VString (a ^ b)
-     | _ -> raise (Eval_error ("'++' on non-Strings", !current_loc)))
+     | _ -> raise (Eval_error ("'<>' requires two strings", !current_loc)))
   | _ ->
     let lv = eval env l and rv = eval env r in
     eval_arith op lv rv
@@ -515,7 +519,7 @@ let eval_program program =
   (* Pass 1: collect DData constructors and DFunDef/DImpl method names *)
   List.iter (fun decl ->
     match decl with
-    | DData (_, _, _, variants) ->
+    | DData (_, _, _, variants, _) ->
       List.iter (fun v ->
         add_to_frame v.con_name (make_ctor v.con_name (List.length v.con_fields))
       ) variants
@@ -581,7 +585,7 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
   in
   rs.eval_env := [!(rs.top_frame)];
   (match decl with
-   | DData (_, _, _, variants) ->
+   | DData (_, _, _, variants, _) ->
      List.iter (fun v ->
        add v.con_name (make_ctor v.con_name (List.length v.con_fields))
      ) variants

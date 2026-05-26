@@ -124,7 +124,7 @@ let binop_prec = function
   | "&&"          -> prec_and
   | "==" | "!=" | "<" | ">" | "<=" | ">=" -> prec_cmp
   | "::"          -> prec_cons
-  | "++"          -> prec_append
+  | "++" | "<>"   -> prec_append
   | "+" | "-"     -> prec_add
   | "*" | "/"     -> prec_mul
   | _             -> prec_infix
@@ -336,7 +336,7 @@ let print_decl p = function
       print_expr p prec_top body
     end
 
-  | DData (pub, n, params, variants) ->
+  | DData (pub, n, params, variants, derives) ->
     if pub then write p "export ";
     write p "data "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
@@ -346,9 +346,15 @@ let print_decl p = function
         write p "| "; write p v.con_name;
         List.iter (fun t -> write p " "; print_type_atom p t) v.con_fields
       ) variants
-    )
+    );
+    if derives <> [] then begin
+      newline p;
+      write p "deriving (";
+      write p (String.concat ", " derives);
+      write p ")"
+    end
 
-  | DRecord (pub, n, params, fields) ->
+  | DRecord (pub, n, params, fields, derives) ->
     if pub then write p "export ";
     write p "record "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
@@ -359,7 +365,13 @@ let print_decl p = function
         write p " : ";
         print_type p f.field_type
       ) fields
-    )
+    );
+    if derives <> [] then begin
+      newline p;
+      write p "deriving (";
+      write p (String.concat ", " derives);
+      write p ")"
+    end
 
   | DInterface { is_pub; is_default; iface_name; type_params; super; methods } ->
     if is_pub then write p "export ";
@@ -367,7 +379,7 @@ let print_decl p = function
     write p "interface "; write p iface_name;
     List.iter (fun pa -> write p " "; write p pa) type_params;
     if super <> [] then begin
-      write p " of ";
+      write p " requires ";
       List.iteri (fun i (n, ps) ->
         if i > 0 then write p ", ";
         write p n;
@@ -390,7 +402,7 @@ let print_decl p = function
       ) methods
     )
 
-  | DImpl { is_pub; is_default; iface_name; type_args; impl_name; methods } ->
+  | DImpl { is_pub; is_default; iface_name; type_args; impl_name; requires; methods } ->
     if is_pub then write p "export ";
     if is_default then write p "default ";
     write p "impl ";
@@ -401,6 +413,16 @@ let print_decl p = function
      | Some name ->
        write p name; write p " of "; write p iface_name;
        List.iter (fun t -> write p " "; print_type_atom p t) type_args);
+    (match requires with
+     | [] -> ()
+     | cs ->
+       write p " requires ";
+       let pp_entry i (iface, args) =
+         if i > 0 then write p ", ";
+         write p iface;
+         List.iter (fun t -> write p " "; print_type_atom p t) args
+       in
+       List.iteri pp_entry cs);
     write p " where";
     indented p (fun () ->
       List.iteri (fun i (n, pats, body) ->

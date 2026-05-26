@@ -18,16 +18,20 @@ The foundation every other module depends on. Implement this first.
 - `Eq a` — equality comparison
   - `eq : a -> a -> Bool`
   - `neq : a -> a -> Bool` (default: `not (eq x y)`)
+    — *move to standalone once constraint syntax lands; as a method it allows
+    inconsistent implementations where `neq` disagrees with `eq`*
 
-- `Ord a` of `Eq a` — total ordering
+- `Ord a` requires `Eq a` — total ordering
   - `compare : a -> a -> Ordering`
   - `lt : a -> a -> Bool` (default from `compare`)
-  - `gt : a -> a -> Bool`
-  - `lte : a -> a -> Bool`
-  - `gte : a -> a -> Bool`
-  - `min : a -> a -> a`
-  - `max : a -> a -> a`
-  - `clamp : a -> a -> a -> a`
+    — *keep as method; direct comparison can be faster than `compare` + pattern match*
+  - `gt : a -> a -> Bool` (default from `compare`) — *same, keep as method*
+  - `lte : a -> a -> Bool` (default from `compare`) — *same, keep as method*
+  - `gte : a -> a -> Bool` (default from `compare`) — *same, keep as method*
+  - `min : a -> a -> a` (default from `compare`) — *keep as method; override for NaN semantics etc.*
+  - `max : a -> a -> a` (default from `compare`) — *same, keep as method*
+  - `clamp : a -> a -> a -> a` (default from `min`/`max`)
+    — *move to standalone once constraint syntax lands; purely derivable, no reason to override*
 
 - `Show a` — human-readable string representation
   - `show : a -> String`
@@ -53,26 +57,34 @@ The foundation every other module depends on. Implement this first.
   - `fold : (b -> a -> b) -> b -> t a -> b`
   - `foldRight : (a -> b -> b) -> b -> t a -> b`
   - `toList : t a -> List a`
-  - `isEmpty : t a -> Bool` (default from `toList`)
-  - `length : t a -> Int` (default)
-  - `sum : t Int -> Int` (default)
-  - `product : t Int -> Int` (default)
-  - `any : (a -> Bool) -> t a -> Bool` (default)
-  - `all : (a -> Bool) -> t a -> Bool` (default)
-  - `elem : Eq a => a -> t a -> Bool` (default)
-  - `find : (a -> Bool) -> t a -> Option a` (default)
-  - `count : (a -> Bool) -> t a -> Int` (default)
+  - `isEmpty : t a -> Bool` (default via `toList`; override for O(1) structures)
+  - `length : t a -> Int` (default via `fold`; override for O(1) structures)
+
+  The following are **standalone functions** (not interface methods) because they
+  require additional constraints (`Eq a`, `Num a`) that cannot be expressed in
+  interface member types until Medaka gains constraint syntax in signatures:
+  - `any : Foldable t => (a -> Bool) -> t a -> Bool`
+  - `all : Foldable t => (a -> Bool) -> t a -> Bool`
+  - `find : Foldable t => (a -> Bool) -> t a -> Option a`
+  - `count : Foldable t => (a -> Bool) -> t a -> Int`
+  - `sum : (Foldable t, Num a) => t a -> a`
+  - `product : (Foldable t, Num a) => t a -> a`
+  - `elem : (Foldable t, Eq a) => a -> t a -> Bool`
 
 - `Applicative f` of `Mappable f`
   - `pure : a -> f a`
   - `ap : f (a -> b) -> f a -> f b`
 
-- `Monad m` of `Applicative m`
+- `Monad m` requires `Applicative m`
   - `andThen : m a -> (a -> m b) -> m b` (flatMap / bind)
-  - `flatMap : (a -> m b) -> m a -> m b` (default: flip andThen)
-  - `join : m (m a) -> m a` (default)
+  - `flatMap : (a -> m b) -> m a -> m b` (default: `flip andThen`)
+  - `join : m (m a) -> m a` (default: `andThen identity`)
   - `when : Bool -> m Unit -> m Unit` (default)
   - `unless : Bool -> m Unit -> m Unit` (default)
+
+  `flatMap`, `join`, `when`, `unless` are purely definitional aliases with no
+  reason to override — *move all four to standalone functions once constraint
+  syntax lands*
 
 ### Data types
 
@@ -160,7 +172,7 @@ Depends on `core`. Implement all List operations here; the `extern` primitives
 
 - `fold : (b -> a -> b) -> b -> List a -> b`
 - `foldRight : (a -> b -> b) -> b -> List a -> b`
-- `foldMap : Monoid m => (a -> m) -> List a -> m`
+- `foldMap : Monoid m => (a -> m) -> List a -> m` — *blocked: `Monoid` is not defined anywhere in this plan; add a `Monoid` interface to `core` or drop this function*
 - `scanLeft : (b -> a -> b) -> b -> List a -> List b`
 - `scanRight : (a -> b -> b) -> b -> List a -> List b`
 - `sum : List Int -> Int`
