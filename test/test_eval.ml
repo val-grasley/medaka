@@ -518,6 +518,60 @@ let t_field_assign_ref_value = assert_val
 |}
   "result" (VInt 42)
 
+(* ── Record pattern tests (Phase 31) ────────────────────────────────────── *)
+
+let t_rec_pat_pun = assert_val
+  (person_src ^ {|result =
+  match Person { name = "Alice", age = 30 }
+    Person { name } => name
+|})
+  "result" (VString "Alice")
+
+let t_rec_pat_explicit = assert_val
+  (person_src ^ {|result =
+  match Person { name = "Alice", age = 30 }
+    Person { age = 30 } => 1
+    Person { ... } => 0
+|})
+  "result" (VInt 1)
+
+let t_rec_pat_rest = assert_val
+  (person_src ^ {|result =
+  match Person { name = "Bob", age = 25 }
+    Person { name = "Alice" } => 1
+    Person { ... } => 99
+|})
+  "result" (VInt 99)
+
+(* ── Interface default method bodies (Phase 33) ─────────────────────────── *)
+
+(* Default method runs when the impl doesn't override it *)
+let t_iface_default_runs = assert_val
+  {|interface Greet a where
+  name : a -> String
+  hello x = "Hello " ++ name x
+
+impl Greet Int where
+  name _ = "World"
+
+result = hello 0
+|}
+  "result" (VString "Hello World")
+
+(* Default method with a where helper runs correctly *)
+let t_iface_default_where_runs = assert_val
+  {|interface Greet a where
+  name : a -> String
+  hello x = prefix ++ name x where
+    prefix = "Hi "
+
+impl Greet Int where
+  name _ = "there"
+
+result = hello 42
+|}
+  "result" (VString "Hi there")
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -674,5 +728,14 @@ let () =
       test_case "record field update"         `Quick t_field_assign_record;
       test_case "multiple field updates"      `Quick t_field_assign_multi;
       test_case "Ref .value assign"           `Quick t_field_assign_ref_value;
+    ];
+    "record patterns (Phase 31)", [
+      test_case "pun binds field"            `Quick t_rec_pat_pun;
+      test_case "explicit pattern match"     `Quick t_rec_pat_explicit;
+      test_case "wildcard rest catch-all"    `Quick t_rec_pat_rest;
+    ];
+    "interface default methods (Phase 33)", [
+      test_case "default method runs"         `Quick t_iface_default_runs;
+      test_case "default with where helper"   `Quick t_iface_default_where_runs;
     ];
   ]

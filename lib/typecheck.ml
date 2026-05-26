@@ -573,6 +573,27 @@ let initial_env () =
 (* Used for type sigs and explicit annotations. Each TyVar is treated as
    universally quantified at the outer level (generalized after the whole
    sig is built). *)
+(* ── Record instantiation ───────────────────────── *)
+
+(* Instantiate a record_info: substitute quantified param IDs with fresh vars,
+   returning (concrete result type, concrete field list). *)
+let instantiate_record info =
+  let sub = List.map (fun id -> (id, fresh_var ())) info.rec_params in
+  let rec walk t = match normalize t with
+    | TVar v ->
+      (match !v with
+       | Unbound (id, _) ->
+         (try List.assoc id sub with Not_found -> TVar v)
+       | Link _ -> assert false)
+    | TCon _ as t -> t
+    | TApp (a, b)  -> TApp (walk a, walk b)
+    | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
+    | TTuple ts    -> TTuple (List.map walk ts)
+  in
+  let result = walk info.rec_result in
+  let fields = List.map (fun (n, t) -> (n, walk t)) info.rec_fields in
+  (result, fields)
+
 (* ── Pattern typing ─────────────────────────────── *)
 
 let type_lit = function
@@ -624,27 +645,31 @@ let rec type_pat env = function
   | PAs (x, p) ->
     let (t, bindings) = type_pat env p in
     (t, (x, monotype t) :: bindings)
-
-(* ── Record instantiation ───────────────────────── *)
-
-(* Instantiate a record_info: substitute quantified param IDs with fresh vars,
-   returning (concrete result type, concrete field list). *)
-let instantiate_record info =
-  let sub = List.map (fun id -> (id, fresh_var ())) info.rec_params in
-  let rec walk t = match normalize t with
-    | TVar v ->
-      (match !v with
-       | Unbound (id, _) ->
-         (try List.assoc id sub with Not_found -> TVar v)
-       | Link _ -> assert false)
-    | TCon _ as t -> t
-    | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
-    | TTuple ts    -> TTuple (List.map walk ts)
-  in
-  let result = walk info.rec_result in
-  let fields = List.map (fun (n, t) -> (n, walk t)) info.rec_fields in
-  (result, fields)
+  | PRec (record_name, fields, _rest) ->
+    let info =
+      try Hashtbl.find env.records record_name
+      with Not_found -> fail (UnknownRecord record_name)
+    in
+    let (result_t, field_types) = instantiate_record info in
+    let bindings =
+      List.concat_map (fun (fname, pat_opt) ->
+        let field_t =
+          match List.assoc_opt fname field_types with
+          | Some t -> t
+          | None   -> fail (UnknownField (fname, record_name))
+        in
+        match pat_opt with
+        | None ->
+          let v = fresh_var () in
+          unify v field_t;
+          [(fname, monotype v)]
+        | Some q ->
+          let (pt, bs) = type_pat env q in
+          unify pt field_t;
+          bs
+      ) fields
+    in
+    (result_t, bindings)
 
 (* ── Expression typing ──────────────────────────── *)
 
@@ -1290,6 +1315,39 @@ let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params,
   let defaults = List.filter_map (fun m ->
     if m.Ast.method_default <> None then Some m.Ast.method_name else None
   ) methods in
+  (* Type-check each default method body.  Build a temporary env that includes
+     all interface methods so a default can call peer methods.
+     For methods whose type was inferred (TyVar "_"), update the scheme to the
+     inferred type so callers see the real type rather than a naked TVar. *)
+  let method_schemes = ref method_schemes in
+  let env_with_methods () =
+    List.fold_right (fun (n, s) e -> extend_var e n s) !method_schemes env
+  in
+  List.iter (fun m ->
+    match m.Ast.method_default with
+    | None -> ()
+    | Some (pats, body) ->
+      let mscheme = List.assoc m.Ast.method_name !method_schemes in
+      let expected_t = instantiate mscheme in
+      enter_level ();
+      let actual_t = infer (env_with_methods ()) (clause_to_expr (pats, body)) in
+      exit_level ();
+      (try unify expected_t actual_t
+       with
+       | Type_error (TypeMismatch (a, b), _) ->
+         fail (MethodTypeMismatch (m.Ast.method_name, a, b))
+       | Type_error (InfiniteType _ as e, _) -> fail e);
+      (* When no explicit type annotation was given, upgrade the scheme from the
+         generic placeholder to the actual inferred type. *)
+      (match m.Ast.method_type with
+       | Ast.TyVar "_" ->
+         let inferred_scheme = generalize (normalize actual_t) in
+         method_schemes := List.map (fun (n, s) ->
+           if n = m.Ast.method_name then (n, inferred_scheme) else (n, s)
+         ) !method_schemes
+       | _ -> ())
+  ) methods;
+  let method_schemes = !method_schemes in
   let info = {
     iface_param_ids = param_ids;
     iface_methods   = method_schemes;

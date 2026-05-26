@@ -687,6 +687,43 @@ impl Pair Int where
   swap p = p
 |}
 
+(* ── Phase 33: where on interface default method bodies ── *)
+
+(* Default method body with a where helper type-checks *)
+let t_iface_default_where =
+  assert_type
+    {|interface Greeter a where
+  greet : a -> String
+  describe x = label ++ greet x where
+    label = "item: "
+
+impl Greeter Int where
+  greet _ = "an int"
+|}
+    "describe" "a -> String"
+
+(* Impl that omits a default method with a where helper compiles *)
+let t_iface_default_where_omit =
+  assert_type
+    {|interface Greeter a where
+  greet : a -> String
+  describe x = label ++ greet x where
+    label = "item: "
+
+impl Greeter Int where
+  greet _ = "an int"
+|}
+    "greet" "a -> String"
+
+(* Type error in default body's where helper is caught *)
+let e_iface_default_where_type_error =
+  assert_err
+    {|interface Broken a where
+  method : a -> Int
+  badDefault x = helper x where
+    helper y = y + "oops"
+|}
+
 (* ── Phase 4.2: constraint checking at call sites ── *)
 
 (* Method called with a concrete type that has a matching impl — no error *)
@@ -1562,6 +1599,33 @@ let e_where_type_mismatch =
     helper x = x + "oops"
 |}
 
+(* ── Record patterns (Phase 31) ─────────────────── *)
+
+let record_person = "record Person\n  name : String\n  age : Int\n"
+
+let t_rec_pat_pun_type =
+  assert_type
+    (record_person ^ "f p =\n  match p\n    Person { name } => name\n")
+    "f" "Person -> String"
+
+let t_rec_pat_explicit_type =
+  assert_type
+    (record_person ^ "f p =\n  match p\n    Person { age = 30 } => 1\n    Person { ... } => 0\n")
+    "f" "Person -> Int"
+
+let t_rec_pat_poly =
+  assert_type
+    ("record Box a\n  value : a\n" ^
+     "getVal b =\n  match b\n    Box { value } => value\n")
+    "getVal" "Box a -> a"
+
+let e_rec_pat_type_mismatch =
+  assert_err
+    (record_person ^ "f p =\n  match p\n    Person { name = 42 } => 0\n    Person { ... } => 1\n")
+
+let e_rec_pat_unknown_record =
+  assert_err "f p =\n  match p\n    Ghost { x } => x\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1705,13 +1769,16 @@ let () =
       test_case "poly impl"              `Quick t_iface_poly_impl;
       test_case "HKT"                    `Quick t_iface_hkt;
       test_case "named impl"             `Quick t_iface_named_impl;
-      test_case "default method"         `Quick t_iface_default_method;
-      test_case "@Name annotation"       `Quick t_iface_at_annotation;
-      test_case "err: unknown interface" `Quick e_iface_unknown;
-      test_case "err: missing method"    `Quick e_iface_missing_method;
-      test_case "err: wrong type"        `Quick e_iface_wrong_type;
-      test_case "err: extra method"      `Quick e_iface_extra_method;
-      test_case "err: arity mismatch"    `Quick e_iface_arity;
+      test_case "default method"             `Quick t_iface_default_method;
+      test_case "@Name annotation"           `Quick t_iface_at_annotation;
+      test_case "default method where"       `Quick t_iface_default_where;
+      test_case "default method where omit"  `Quick t_iface_default_where_omit;
+      test_case "err: unknown interface"     `Quick e_iface_unknown;
+      test_case "err: missing method"        `Quick e_iface_missing_method;
+      test_case "err: wrong type"            `Quick e_iface_wrong_type;
+      test_case "err: extra method"          `Quick e_iface_extra_method;
+      test_case "err: arity mismatch"        `Quick e_iface_arity;
+      test_case "err: default where type"    `Quick e_iface_default_where_type_error;
     ];
     "constraint checking", [
       test_case "single impl"            `Quick t_constraint_single_impl;
@@ -1871,5 +1938,12 @@ let () =
       test_case "mutual recursion type"    `Quick t_where_mutual_type;
       test_case "polymorphic helper"       `Quick t_where_polymorphic;
       test_case "err: type mismatch"       `Quick e_where_type_mismatch;
+    ];
+    "record patterns (Phase 31)", [
+      test_case "pun infers field type"    `Quick t_rec_pat_pun_type;
+      test_case "explicit + rest"          `Quick t_rec_pat_explicit_type;
+      test_case "polymorphic record"       `Quick t_rec_pat_poly;
+      test_case "err: type mismatch"       `Quick e_rec_pat_type_mismatch;
+      test_case "err: unknown record"      `Quick e_rec_pat_unknown_record;
     ];
   ]

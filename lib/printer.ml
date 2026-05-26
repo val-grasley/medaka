@@ -108,9 +108,23 @@ let rec print_pat p = function
     write p "]"
   | PAs (x, inner) ->
     write p x; write p "@"; print_pat_atom p inner
+  | PRec (name, fields, rest) ->
+    write p name; write p " { ";
+    List.iteri (fun i (k, pat_opt) ->
+      if i > 0 then write p ", ";
+      match pat_opt with
+      | None   -> write p k
+      | Some q -> write p k; write p " = "; print_pat p q
+    ) fields;
+    if rest then begin
+      if fields <> [] then write p ", ";
+      write p "..."
+    end;
+    write p " }"
 
 and print_pat_atom p pat = match pat with
-  | PVar _ | PWild | PLit _ | PCon (_, []) | PTuple _ | PList _ -> print_pat p pat
+  | PVar _ | PWild | PLit _ | PCon (_, []) | PTuple _ | PList _ | PRec _ ->
+    print_pat p pat
   | _ -> write p "("; print_pat p pat; write p ")"
 
 (* ── Expressions ─────────────────────────────────── *)

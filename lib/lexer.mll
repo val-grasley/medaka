@@ -204,6 +204,7 @@ and read = parse
   | '='   { EQUAL }
   | ':'   { COLON }
   | ','   { COMMA }
+  | "..."  { ELLIPSIS }
   | '.'   { DOT }
   | '|'   { PIPE }
   | '('   { LPAREN }

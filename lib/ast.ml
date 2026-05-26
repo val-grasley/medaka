@@ -30,6 +30,8 @@ type pat =
   | PTuple of pat list           (* (x, y) *)
   | PList  of pat list           (* [x, y, z] *)
   | PAs    of ident * pat        (* x@pat *)
+  | PRec   of ident * (ident * pat option) list * bool
+             (* PRec("Person", [(field, None=pun | Some pat)], has_rest) *)
 
 (* String interpolation parts *)
 type interp_part =
@@ -179,6 +181,13 @@ let rec pp_pat = function
   | PTuple ps       -> Printf.sprintf "(%s)" (String.concat ", " (List.map pp_pat ps))
   | PList ps        -> Printf.sprintf "[%s]" (String.concat ", " (List.map pp_pat ps))
   | PAs (x, p)      -> Printf.sprintf "%s@%s" x (pp_pat p)
+  | PRec (name, fields, rest) ->
+    let pp_field (k, opt) = match opt with
+      | None   -> k
+      | Some p -> k ^ " = " ^ pp_pat p
+    in
+    let parts = List.map pp_field fields @ (if rest then ["..."] else []) in
+    Printf.sprintf "%s { %s }" name (String.concat ", " parts)
 
 let rec pp_expr = function
   | ELit l              -> pp_lit l

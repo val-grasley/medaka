@@ -334,4 +334,16 @@ let () =
       test_case "bound var ok"          `Quick (assert_ok "name = \"Alice\"\nx = \"hello \\{name}!\"\n");
       test_case "err: unbound in hole"  `Quick (assert_err (unbound "missing") "x = \"hi \\{missing}!\"\n");
     ];
+    "record patterns", [
+      test_case "pun ok" `Quick (assert_ok
+        "record Person\n  name : String\n  age : Int\nf p =\n  match p\n    Person { name } => name\n");
+      test_case "explicit ok" `Quick (assert_ok
+        "record Person\n  name : String\n  age : Int\nf p =\n  match p\n    Person { name = \"Alice\" } => 0\n");
+      test_case "err: unknown record type" `Quick (assert_err (unknown_type "Ghost")
+        "f p =\n  match p\n    Ghost { name } => name\n");
+      test_case "err: unknown field" `Quick (assert_err (unknown_field "missing")
+        "record Person\n  name : String\nf p =\n  match p\n    Person { missing } => 0\n");
+      test_case "err: field from other record" `Quick (assert_err (field_not_in "age" "Person")
+        "record Person\n  name : String\nrecord Dog\n  age : Int\nf p =\n  match p\n    Person { age } => 0\n");
+    ];
   ]
