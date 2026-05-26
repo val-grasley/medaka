@@ -192,6 +192,23 @@ let test_expr_record_update () =
   | ERecordUpdate (EVar "p", [("age", ELit (LInt 31))]) -> ()
   | _ -> failwith "wrong"
 
+let test_expr_record_create_pun () =
+  (* All-pun: parser emits ESetLit; Desugar.desugar_program rewrites to ERecordCreate *)
+  match parse_expr "Person { name, age }\n" with
+  | ESetLit ("Person", [EVar "name"; EVar "age"]) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_record_create_mixed_pun () =
+  (* Mixed: at least one explicit field → parser emits ERecordCreate directly *)
+  match parse_expr "Person { name = \"Alice\", age }\n" with
+  | ERecordCreate ("Person", [("name", ELit (LString "Alice")); ("age", EVar "age")]) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_record_update_pun () =
+  match parse_expr "{ p | age }\n" with
+  | ERecordUpdate (EVar "p", [("age", EVar "age")]) -> ()
+  | _ -> failwith "wrong"
+
 let test_expr_type_annot () =
   match parse_expr "x : Int\n" with
   | EAnnot (EVar "x", TyCon "Int") -> ()
@@ -693,6 +710,9 @@ let () =
       test_case "field access"      `Quick test_expr_field_access;
       test_case "record create"     `Quick test_expr_record_create;
       test_case "record update"     `Quick test_expr_record_update;
+      test_case "record create pun (all)"    `Quick test_expr_record_create_pun;
+      test_case "record create pun (mixed)"  `Quick test_expr_record_create_mixed_pun;
+      test_case "record update pun"          `Quick test_expr_record_update_pun;
       test_case "type annotation"   `Quick test_expr_type_annot;
       test_case "array index"       `Quick test_expr_index;
       test_case "operator section"  `Quick test_expr_section;

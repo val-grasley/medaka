@@ -11,7 +11,7 @@ let fold_ty_app = function
   | [t]     -> t
   | t :: ts -> List.fold_left (fun acc a -> TyApp (acc, a)) t ts
 
-type kv_item = KV of expr * expr | Elem of expr
+type kv_item = KV of expr * expr | Elem of expr | Field of string * expr
 
 let stmts_to_expr = function
   | [DoExpr e] -> e
@@ -442,20 +442,32 @@ expr_atom:
     { ELoc (of_pos $startpos, EArrayLit []) }
   | LARRAY separated_nonempty_list(COMMA, expr_no_block) RARRAY
     { ELoc (of_pos $startpos, EArrayLit $2) }
-  | UPPER LBRACE separated_list(COMMA, record_field_expr) RBRACE
-    { ELoc (of_pos $startpos, ERecordCreate ($1, $3)) }
-  | UPPER LBRACE separated_nonempty_list(COMMA, kv_or_e) RBRACE
+  | UPPER LBRACE separated_list(COMMA, kv_or_e) RBRACE
     { let items = $3 and name = $1 in
-      let has_kv = List.exists (function KV _ -> true | Elem _ -> false) items in
-      let all_kv = List.for_all (function KV _ -> true | Elem _ -> false) items in
-      if has_kv && not all_kv then
-        failwith (Printf.sprintf "Mixed map/set entries in %s { ... }" name)
-      else if has_kv then
-        ELoc (of_pos $startpos, EMapLit (name,
-          List.map (function KV (k,v) -> (k,v) | Elem _ -> assert false) items))
+      let has_field = List.exists (function Field _ -> true | _ -> false) items in
+      let has_kv    = List.exists (function KV _ -> true | _ -> false) items in
+      if has_field then
+        (* Record creation: Elem (EVar n) items are field puns *)
+        let fields = List.map (function
+          | Field (k, v)  -> (k, v)
+          | Elem (ELoc (_, EVar n)) | Elem (EVar n) ->
+              (n, ELoc (of_pos $startpos, EVar n))
+          | Elem _ ->
+              failwith (Printf.sprintf "non-identifier in pun position in %s { ... }" name)
+          | KV _ ->
+              failwith (Printf.sprintf "map entry (=>) mixed with record fields in %s { ... }" name)
+        ) items in
+        ELoc (of_pos $startpos, ERecordCreate (name, fields))
       else
-        ELoc (of_pos $startpos, ESetLit (name,
-          List.map (function Elem e -> e | KV _ -> assert false) items)) }
+        let all_kv = List.for_all (function KV _ -> true | _ -> false) items in
+        if has_kv && not all_kv then
+          failwith (Printf.sprintf "Mixed map/set entries in %s { ... }" name)
+        else if has_kv then
+          ELoc (of_pos $startpos, EMapLit (name,
+            List.map (function KV (k,v) -> (k,v) | _ -> assert false) items))
+        else
+          ELoc (of_pos $startpos, ESetLit (name,
+            List.map (function Elem e -> e | _ -> assert false) items)) }
   | LBRACE expr_no_block PIPE separated_nonempty_list(COMMA, record_field_expr) RBRACE
     { ELoc (of_pos $startpos, ERecordUpdate ($2, $4)) }
   | AT UPPER
@@ -463,8 +475,10 @@ expr_atom:
 
 record_field_expr:
   | IDENT EQUAL expr_no_block  { ($1, $3) }
+  | IDENT                      { ($1, ELoc (of_pos $startpos, EVar $1)) }
 
 kv_or_e:
+  | IDENT EQUAL expr_no_block          { Field ($1, $3) }
   | expr_pipe FAT_ARROW expr_no_block  { KV ($1, $3) }
   | expr_no_block                      { Elem $1 }
 

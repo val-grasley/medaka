@@ -236,6 +236,14 @@ let t_rec_create = assert_type
 origin = Point { x = 0, y = 0 }
 |} "origin" "Point"
 
+let t_rec_create_pun = assert_type
+  {|record Point
+  x : Int
+  y : Int
+
+make x y = Point { x, y }
+|} "make" "Int -> Int -> Point"
+
 let t_rec_access = assert_type
   {|record Point
   x : Int
@@ -1382,6 +1390,7 @@ let () =
     ];
     "records", [
       test_case "create monomorphic"  `Quick t_rec_create;
+      test_case "create pun"          `Quick t_rec_create_pun;
       test_case "access Int field"    `Quick t_rec_access;
       test_case "access String field" `Quick t_rec_access_string;
       test_case "update"              `Quick t_rec_update;

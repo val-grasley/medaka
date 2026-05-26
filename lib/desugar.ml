@@ -222,5 +222,77 @@ let expand_decl = function
     DRecord (pub, name, params, fields, []) :: impls
   | d -> [d]
 
+(* ── Record field pun desugaring ─────────────────────────────────────────
+   `Name { a, b, c }` where Name is a record type and all items are bare
+   variable references is syntactic sugar for `Name { a = a, b = b, c = c }`.
+   The parser emits ESetLit for these (no IDENT = expr markers), so we rewrite
+   them here after collecting record type names from DRecord declarations. *)
+
+let strip_loc = function ELoc (_, e) -> e | e -> e
+let is_var e = match strip_loc e with EVar _ -> true | _ -> false
+let var_name e = match strip_loc e with EVar n -> n | _ -> assert false
+
+let rec map_expr f e =
+  let e' = match e with
+    | ELoc (loc, inner)       -> ELoc (loc, map_expr f inner)
+    | EApp (e1, e2)           -> EApp (map_expr f e1, map_expr f e2)
+    | ELam (ps, body)         -> ELam (ps, map_expr f body)
+    | ELet (m, p, e1, e2)    -> ELet (m, p, map_expr f e1, map_expr f e2)
+    | EMatch (e0, arms)       ->
+        EMatch (map_expr f e0,
+          List.map (fun (p, g, b) -> (p, Option.map (map_expr f) g, map_expr f b)) arms)
+    | EIf (c, t, el)          -> EIf (map_expr f c, map_expr f t, map_expr f el)
+    | EBinOp (op, e1, e2)    -> EBinOp (op, map_expr f e1, map_expr f e2)
+    | EUnOp (op, e0)          -> EUnOp (op, map_expr f e0)
+    | EFieldAccess (e0, n)    -> EFieldAccess (map_expr f e0, n)
+    | ERecordCreate (n, flds) -> ERecordCreate (n, List.map (fun (k,v) -> (k, map_expr f v)) flds)
+    | ERecordUpdate (e0, flds)-> ERecordUpdate (map_expr f e0, List.map (fun (k,v) -> (k, map_expr f v)) flds)
+    | EArrayLit es            -> EArrayLit (List.map (map_expr f) es)
+    | EListLit es             -> EListLit (List.map (map_expr f) es)
+    | ETuple es               -> ETuple (List.map (map_expr f) es)
+    | EMapLit (n, kvs)        -> EMapLit (n, List.map (fun (k,v) -> (map_expr f k, map_expr f v)) kvs)
+    | ESetLit (n, es)         -> ESetLit (n, List.map (map_expr f) es)
+    | EIndex (e0, i)          -> EIndex (map_expr f e0, map_expr f i)
+    | EDo stmts               -> EDo (List.map (map_do_stmt f) stmts)
+    | EAnnot (e0, t)          -> EAnnot (map_expr f e0, t)
+    | EInfix (op, e1, e2)    -> EInfix (op, map_expr f e1, map_expr f e2)
+    | e0                      -> e0
+  in
+  f e'
+
+and map_do_stmt f = function
+  | DoBind (p, e)   -> DoBind (p, map_expr f e)
+  | DoExpr e        -> DoExpr (map_expr f e)
+  | DoLet (m, p, e) -> DoLet (m, p, map_expr f e)
+  | DoAssign (x, e) -> DoAssign (x, map_expr f e)
+
+let map_decl f = function
+  | DFunDef (pub, n, ps, e)    -> DFunDef (pub, n, ps, map_expr f e)
+  | DInterface iface           ->
+      DInterface { iface with methods =
+        List.map (fun m ->
+          { m with method_default =
+            Option.map (fun (ps, e) -> (ps, map_expr f e)) m.method_default })
+        iface.methods }
+  | DImpl impl                 ->
+      DImpl { impl with methods =
+        List.map (fun (n, ps, e) -> (n, ps, map_expr f e)) impl.methods }
+  | d -> d
+
+(* Rewrite ESetLit(name, [EVar n; ...]) → ERecordCreate when name is a record type *)
+let desugar_record_puns record_names prog =
+  let is_record n = List.mem n record_names in
+  let rewrite = function
+    | ESetLit (name, items)
+      when is_record name && items <> [] && List.for_all is_var items ->
+        ERecordCreate (name, List.map (fun e -> let n = var_name e in (n, EVar n)) items)
+    | e -> e
+  in
+  List.map (map_decl rewrite) prog
+
 let desugar_program (prog : program) : program =
-  List.concat_map expand_decl prog
+  let expanded = List.concat_map expand_decl prog in
+  let record_names = List.filter_map (function
+    | DRecord (_, name, _, _, _) -> Some name
+    | _ -> None) expanded in
+  desugar_record_puns record_names expanded
