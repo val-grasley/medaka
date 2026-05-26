@@ -17,10 +17,14 @@ type value =
   | VRef    of value ref
   | VClosure of env * pat list * expr
   | VPrim   of (value -> value)
+  | VMulti  of value list  (* ordered impl closures for the same method; tried in sequence *)
 
 and env = (string * value ref) list list
 
 exception Eval_error of string * loc option
+(* Raised instead of Eval_error when a pattern/match fails during dispatch so
+   that VMulti.apply can silently fall through to the next impl candidate. *)
+exception Impl_no_match
 
 let output_hook : (string -> unit) ref = ref print_string
 
@@ -62,6 +66,7 @@ let rec pp_value = function
   | VRef cell -> "Ref(" ^ pp_value !cell ^ ")"
   | VClosure _ -> "<closure>"
   | VPrim _    -> "<prim>"
+  | VMulti vs  -> Printf.sprintf "<dispatch/%d>" (List.length vs)
 
 and pp_value_atom v = match v with
   | VCon (_, _ :: _) | VTuple _ -> "(" ^ pp_value v ^ ")"
@@ -127,23 +132,48 @@ let detect_monad = function
   | VCon ("Ok", _)   | VCon ("Err", _)   -> MResult
   | _ -> MIO
 
+(* Convert Impl_no_match → Eval_error at the boundary of user-visible code.
+   Used at every eval site that is NOT inside a VMulti dispatch chain. *)
+let wrap_match_errors f =
+  try f ()
+  with Impl_no_match ->
+    raise (Eval_error ("non-exhaustive match", !current_loc))
+
 (* ── Mutually recursive evaluator ───────────────────────────────────────── *)
 
 let rec apply fn arg =
   match fn with
   | VClosure (env, [p], body) ->
     (match match_pat p arg with
-     | None ->
-       raise (Eval_error ("pattern match failure in function argument", !current_loc))
+     | None -> raise Impl_no_match
      | Some binds -> eval (extend env binds) body)
   | VClosure (env, p :: ps, body) ->
     (match match_pat p arg with
-     | None ->
-       raise (Eval_error ("pattern match failure in function argument", !current_loc))
+     | None -> raise Impl_no_match
      | Some binds -> VClosure (extend env binds, ps, body))
   | VClosure (_, [], _) ->
     raise (Eval_error ("applied closure with no parameters", !current_loc))
   | VPrim f -> f arg
+  | VMulti vs ->
+    (* Apply each impl to arg; collect results.
+       - Terminal result (non-closure): first one wins (return immediately).
+       - VClosure/VMulti result (partial application): collect ALL that succeeded;
+         return as a new VMulti so the next argument can dispatch correctly.
+       - If all fail: dispatch error. *)
+    let rec collect_partials acc = function
+      | [] ->
+        (match acc with
+         | [] -> raise (Eval_error ("no matching impl for dispatch", !current_loc))
+         | [v] -> v
+         | many -> VMulti (List.rev many))
+      | v :: rest ->
+        (match (try Some (apply v arg) with Impl_no_match -> None) with
+         | None -> collect_partials acc rest
+         | Some (VClosure _ as c) -> collect_partials (c :: acc) rest
+         | Some (VMulti _ as m) -> collect_partials (m :: acc) rest
+         | Some terminal -> terminal)  (* first terminal result wins *)
+    in
+    collect_partials [] vs
   | _ ->
     raise (Eval_error ("applied non-function: " ^ pp_value fn, !current_loc))
 
@@ -178,7 +208,7 @@ and eval env expr =
   | EMatch (scrut, arms) ->
     let sv = eval env scrut in
     let rec try_arms = function
-      | [] -> raise (Eval_error ("non-exhaustive match", !current_loc))
+      | [] -> raise Impl_no_match
       | (pat, guard, body) :: rest ->
         (match match_pat pat sv with
          | None -> try_arms rest
@@ -320,7 +350,8 @@ and eval_binop env op l r =
   | "++" ->
     (match eval env l, eval env r with
      | VList xs, VList ys -> VList (xs @ ys)
-     | _ -> raise (Eval_error ("'++' requires two lists", !current_loc)))
+     | VString a, VString b -> VString (a ^ b)
+     | _ -> raise (Eval_error ("'++' requires two lists or two strings", !current_loc)))
   | "<>" ->
     (match eval env l, eval env r with
      | VString a, VString b -> VString (a ^ b)
@@ -360,33 +391,33 @@ and eval_arith op lv rv =
 and eval_do env stmts =
   match stmts with
   | [] -> VUnit
-  | [DoExpr e] -> eval env e
+  | [DoExpr e] -> wrap_match_errors (fun () -> eval env e)
   | [DoLet (_, pat, e)] ->
-    let v = eval env e in
+    let v = wrap_match_errors (fun () -> eval env e) in
     (match match_pat pat v with
      | None -> raise (Eval_error ("let pattern match failure in do", !current_loc))
      | Some _ -> VUnit)
   | [DoAssign (_, e)] ->
-    let _ = eval env e in VUnit
+    let _ = wrap_match_errors (fun () -> eval env e) in VUnit
   | [DoBind (_, _)] ->
     raise (Eval_error ("do-block cannot end with <-", !current_loc))
 
   | (DoExpr e) :: rest ->
-    let _ = eval env e in
+    let _ = wrap_match_errors (fun () -> eval env e) in
     eval_do env rest
 
   | (DoLet (_, pat, e)) :: rest ->
-    let v = eval env e in
+    let v = wrap_match_errors (fun () -> eval env e) in
     (match match_pat pat v with
      | None -> raise (Eval_error ("let pattern match failure in do", !current_loc))
      | Some binds -> eval_do (extend env binds) rest)
 
   | (DoAssign (x, e)) :: rest ->
-    let v = eval env e in
+    let v = wrap_match_errors (fun () -> eval env e) in
     eval_do (extend env [(x, v)]) rest
 
   | (DoBind (pat, e)) :: rest ->
-    let v = eval env e in
+    let v = wrap_match_errors (fun () -> eval env e) in
     if !current_monad = MUnknown then
       current_monad := detect_monad v;
     (match !current_monad, v with
@@ -493,6 +524,22 @@ let () =
       failwith ("runtime.mdk extern '" ^ n ^ "' has no OCaml impl in eval.ml")
   ) Runtime.names
 
+(* ── Specificity helpers for impl dispatch ordering ─────────────────────── *)
+
+(* Count free type variables in a type.  Fewer = more specific = higher priority
+   in VMulti dispatch.  E.g. TyCon "List" → 0; TyApp(TyCon "Result", TyVar "e") → 1. *)
+let rec count_tyvars_ty = function
+  | TyVar _          -> 1
+  | TyApp (a, b)     -> count_tyvars_ty a + count_tyvars_ty b
+  | TyFun (a, b)     -> count_tyvars_ty a + count_tyvars_ty b
+  | TyTuple ts       -> List.fold_left (fun n t -> n + count_tyvars_ty t) 0 ts
+  | TyEffect (_, t)  -> count_tyvars_ty t
+  | TyConstrained (_, t) -> count_tyvars_ty t
+  | TyCon _          -> 0
+
+let tyvars_in_args args =
+  List.fold_left (fun n t -> n + count_tyvars_ty t) 0 args
+
 (* ── Constructor thunks for data declarations ────────────────────────────── *)
 
 let make_ctor name arity =
@@ -524,6 +571,11 @@ let eval_program program =
   (* Seed with primitives *)
   List.iter (fun (name, v) -> add_to_frame name v) (List.rev primitives);
 
+  (* Externs that use OCaml runtime context and must NOT be shadowed by
+     impl definitions.  Everything else (map, filter, fold, …) CAN be
+     overridden so that typeclass impls take effect. *)
+  let context_dependent_externs = ["pure"] in
+
   (* Pass 1: collect DData constructors and DFunDef/DImpl method names *)
   List.iter (fun decl ->
     match decl with
@@ -534,7 +586,10 @@ let eval_program program =
     | DFunDef (_, name, _, _) ->
       add_to_frame name VUnit
     | DImpl { methods; _ } ->
-      List.iter (fun (name, _, _) -> add_to_frame name VUnit) methods
+      List.iter (fun (name, _, _) ->
+        if not (List.mem name context_dependent_externs) then
+          add_to_frame name VUnit
+      ) methods
     | _ -> ()
   ) program;
 
@@ -546,18 +601,38 @@ let eval_program program =
     | None -> ()
   in
 
-  (* Pass 2: evaluate DFunDef and DImpl bodies *)
+  (* Pass 2: evaluate all declaration bodies in declaration order.
+     For DImpl, closures are accumulated per method name with their specificity
+     score so that a sorted VMulti is built and installed immediately — before
+     any later DFunDef body that calls the method is evaluated. *)
+  (* method name → accumulated (score, closure) list in insertion order *)
+  let impl_acc : (string, (int * value) list) Hashtbl.t = Hashtbl.create 16 in
+
   List.iter (fun decl ->
     match decl with
     | DFunDef (_, name, pats, body) ->
-      let v = if pats = [] then eval env body
-              else VClosure (env, pats, body) in
+      let v = wrap_match_errors (fun () ->
+        if pats = [] then eval env body
+        else VClosure (env, pats, body)) in
       fill_cell name v
-    | DImpl { methods; _ } ->
+    | DImpl { type_args; methods; _ } ->
+      let score = tyvars_in_args type_args in
       List.iter (fun (name, pats, body) ->
-        let v = if pats = [] then eval env body
-                else VClosure (env, pats, body) in
-        fill_cell name v
+        (* Only protect externs that use OCaml runtime context (e.g. `pure`
+           uses current_monad and must not be overridden by impl defs).
+           Other externs like `map`, `filter`, `fold` CAN be overridden. *)
+        if not (List.mem name context_dependent_externs) then begin
+          let new_v = if pats = [] then wrap_match_errors (fun () -> eval env body)
+                      else VClosure (env, pats, body) in
+          let prev = try Hashtbl.find impl_acc name with Not_found -> [] in
+          let updated = prev @ [(score, new_v)] in
+          Hashtbl.replace impl_acc name updated;
+          (* Re-sort and install immediately so subsequent DFunDef bodies that
+             call this method see the correct VMulti binding. *)
+          let sorted  = List.stable_sort (fun (s1,_) (s2,_) -> compare s1 s2) updated in
+          let closures = List.map snd sorted in
+          fill_cell name (match closures with [v] -> v | many -> VMulti many)
+        end
       ) methods
     | _ -> ()
   ) program;
@@ -600,19 +675,45 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
    | DFunDef (_, name, pats, body) ->
      add name VUnit;
      rs.eval_env := [!(rs.top_frame)];
-     let v = if pats = [] then eval !(rs.eval_env) body
-             else VClosure (!(rs.eval_env), pats, body) in
+     let v = wrap_match_errors (fun () ->
+       if pats = [] then eval !(rs.eval_env) body
+       else VClosure (!(rs.eval_env), pats, body)) in
      fill name v
-   | DImpl { methods; _ } ->
-     List.iter (fun (name, _, _) -> add name VUnit) methods;
+   | DImpl { type_args; methods; _ } ->
+     let score = tyvars_in_args type_args in
+     let context_dependent_externs = ["pure"] in
+     (* Reserve slots for overridable impl methods before evaluating bodies. *)
+     List.iter (fun (name, _, _) ->
+       if not (List.mem name context_dependent_externs) then
+         (match List.assoc_opt name !(rs.top_frame) with
+          | None -> add name VUnit
+          | Some _ -> ())
+     ) methods;
      rs.eval_env := [!(rs.top_frame)];
      List.iter (fun (name, pats, body) ->
-       let v = if pats = [] then eval !(rs.eval_env) body
-               else VClosure (!(rs.eval_env), pats, body) in
-       fill name v
+       if not (List.mem name context_dependent_externs) then begin
+         let new_v = wrap_match_errors (fun () ->
+           if pats = [] then eval !(rs.eval_env) body
+           else VClosure (!(rs.eval_env), pats, body)) in
+         (* Merge with existing binding: extend VMulti (score-sorted) or set fresh. *)
+         let merged =
+           match List.assoc_opt name !(rs.top_frame) with
+           | Some cell ->
+             let existing = match !cell with
+               | VMulti vs -> List.map (fun v -> (0, v)) vs  (* existing scores unknown; keep order *)
+               | VUnit     -> []
+               | old_v     -> [(0, old_v)]
+             in
+             let updated = existing @ [(score, new_v)] in
+             let sorted  = List.stable_sort (fun (s1,_) (s2,_) -> compare s1 s2) updated in
+             VMulti (List.map snd sorted)
+           | None -> new_v
+         in
+         fill name merged
+       end
      ) methods
    | DRecord _ | DInterface _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ -> ())
 
 let eval_repl_expr (rs : repl_state) (e : expr) : value =
   rs.eval_env := [!(rs.top_frame)];
-  eval !(rs.eval_env) e
+  wrap_match_errors (fun () -> eval !(rs.eval_env) e)

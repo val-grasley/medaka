@@ -79,9 +79,13 @@ let () =
            if not (List.mem_assoc "main" top_env) then begin
              Printf.eprintf "error: program has no 'main' binding\n"; exit 1
            end
-         with Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
+         with
+         | Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
            Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
            show_snippet source loc_opt;
+           exit 1
+         | Medaka_lib.Eval.Impl_no_match ->
+           Printf.eprintf "%s: panic: non-exhaustive match\n" (pp_loc !Medaka_lib.Eval.current_loc);
            exit 1))
     with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
       Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);

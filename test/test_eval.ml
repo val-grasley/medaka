@@ -307,6 +307,41 @@ f x
 r = f 0
 |} "r"
 
+(* ── Multi-impl dispatch (VMulti) ───────────────────────────────────────── *)
+
+(* Three impls for the same interface method 'describe'.
+   Each impl uses constructor-specific patterns (no bare wildcards) that are
+   structurally disjoint across types, mirroring how stdlib impls are written. *)
+
+let dispatch_iface = {|
+interface Describable f where
+    describe : f -> String
+
+impl Describable (List a) where
+    describe [] = "empty-list"
+    describe (_::_) = "list"
+
+impl Describable (Option a) where
+    describe None = "none"
+    describe (Some _) = "some"
+|}
+
+let t_dispatch_list = assert_val (dispatch_iface ^ {|
+r = describe ([1, 2, 3])
+|}) "r" (VString "list")
+
+let t_dispatch_option_some = assert_val (dispatch_iface ^ {|
+r = describe (Some 42)
+|}) "r" (VString "some")
+
+let t_dispatch_option_none = assert_val (dispatch_iface ^ {|
+r = describe (None)
+|}) "r" (VString "none")
+
+let t_dispatch_list_empty = assert_val (dispatch_iface ^ {|
+r = describe ([])
+|}) "r" (VString "empty-list")
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -399,5 +434,11 @@ let () =
       test_case "pos branch"        `Quick t_guard_basic_pos;
       test_case "zero branch"       `Quick t_guard_basic_zero;
       test_case "non-exhaustive"    `Quick t_guard_non_exhaustive;
+    ];
+    "multi-impl dispatch (VMulti)", [
+      test_case "list non-empty"    `Quick t_dispatch_list;
+      test_case "option Some"       `Quick t_dispatch_option_some;
+      test_case "option None"       `Quick t_dispatch_option_none;
+      test_case "list empty"        `Quick t_dispatch_list_empty;
     ];
   ]
