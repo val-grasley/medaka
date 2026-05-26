@@ -21,12 +21,9 @@ let stmts_to_expr = function
 let curry_lam pats body =
   List.fold_right (fun pat acc -> ELam ([pat], acc)) pats body
 
-(* Desugar `where` bindings into nested ELet expressions. *)
+(* Desugar `where` bindings into a mutually-recursive ELetGroup. *)
 let desugar_where bindings main_expr =
-  List.fold_right
-    (fun (name, pats, rhs) acc ->
-      ELet (false, PVar name, curry_lam pats rhs, acc))
-    bindings main_expr
+  ELetGroup (List.map (fun (name, pats, rhs) -> (name, curry_lam pats rhs)) bindings, main_expr)
 
 (* Convert an expression back into a pattern when used as a lambda parameter.
    Supported: identifiers, literals, tuples, lists, cons, constructor apps. *)
@@ -355,11 +352,11 @@ expr_annot:
    FAT_ARROW follows. This avoids the IDENT-vs-IDENT ambiguity with application. *)
 expr_lam:
   | LET MUT pat EQUAL expr_no_block IN expr_lam
-    { ELoc (of_pos $startpos, ELet (true,  $3, $5, $7)) }
+    { ELoc (of_pos $startpos, ELet (true,  false, $3, $5, $7)) }
   | LET pat EQUAL expr_no_block IN expr_lam
-    { ELoc (of_pos $startpos, ELet (false, $2, $4, $6)) }
+    { ELoc (of_pos $startpos, ELet (false, false, $2, $4, $6)) }
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block IN expr_lam
-    { ELoc (of_pos $startpos, ELet (false, PVar $2, curry_lam $3 $5, $7)) }
+    { ELoc (of_pos $startpos, ELet (false, true, PVar $2, curry_lam $3 $5, $7)) }
   | IF expr_or THEN expr_lam ELSE expr_lam
     { ELoc (of_pos $startpos, EIf ($2, $4, $6)) }
   | MATCH expr_or INDENT nonempty_list(match_arm) DEDENT
@@ -532,6 +529,8 @@ kv_or_e:
 
 match_arm:
   | pat option(guard) FAT_ARROW expr_no_block newlines  { ($1, $2, $4) }
+  | pat option(guard) FAT_ARROW expr_no_block WHERE INDENT nonempty_list(where_binding) DEDENT newlines
+    { ($1, $2, desugar_where $7 $4) }
 
 guard:
   | IF expr_or  { $2 }
@@ -552,7 +551,12 @@ stmt:
   | LET pat EQUAL expr_no_block newlines      { DoLet (false, $2, $4) }
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block newlines
     { DoLet (false, PVar $2, curry_lam $3 $5) }
-  | IDENT EQUAL expr_no_block newlines        { DoAssign ($1, $3) }
+  | expr_no_block EQUAL expr_no_block newlines {
+      match strip_locs_expr $1 with
+      | EVar x -> DoAssign (x, $3)
+      | EFieldAccess (EVar x, field) -> DoFieldAssign (x, field, $3)
+      | _ -> failwith "invalid assignment target in do-block"
+    }
   | expr_no_block newlines                    { DoExpr $1 }
 
 (* ── Deriving clause ─────────────────────────────────── *)

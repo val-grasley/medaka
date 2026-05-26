@@ -122,26 +122,26 @@ let test_expr_lambda_multi_arg () =
 
 let test_expr_let () =
   match parse_expr "let x = 5 in x + 1\n" with
-  | ELet (false, PVar "x", ELit (LInt 5), EBinOp ("+", EVar "x", ELit (LInt 1))) -> ()
+  | ELet (false, false, PVar "x", ELit (LInt 5), EBinOp ("+", EVar "x", ELit (LInt 1))) -> ()
   | _ -> failwith "wrong"
 
 let test_expr_let_mut () =
   match parse_expr "let mut x = 5 in x\n" with
-  | ELet (true, PVar "x", ELit (LInt 5), EVar "x") -> ()
+  | ELet (true, false, PVar "x", ELit (LInt 5), EVar "x") -> ()
   | _ -> failwith "wrong"
 
 let test_expr_let_fn_one_arg () =
-  (* let f x = x + 1 in f 5  ⇒  let f = (x => x + 1) in f 5 *)
+  (* let f x = x + 1 in f 5  ⇒  ELet(false, true, PVar "f", ELam..., ...) *)
   match parse_expr "let f x = x + 1 in f 5\n" with
-  | ELet (false, PVar "f",
+  | ELet (false, true, PVar "f",
           ELam ([PVar "x"], EBinOp ("+", EVar "x", ELit (LInt 1))),
           EApp (EVar "f", ELit (LInt 5))) -> ()
   | _ -> failwith "wrong"
 
 let test_expr_let_fn_multi_arg () =
-  (* let g x y = x + y in g 1 2  ⇒  let g = (x => y => x + y) in g 1 2 *)
+  (* let g x y = x + y in g 1 2  ⇒  ELet(false, true, PVar "g", ELam..., ...) *)
   match parse_expr "let g x y = x + y in g 1 2\n" with
-  | ELet (false, PVar "g",
+  | ELet (false, true, PVar "g",
           ELam ([PVar "x"],
                 ELam ([PVar "y"], EBinOp ("+", EVar "x", EVar "y"))),
           EApp (EApp (EVar "g", ELit (LInt 1)), ELit (LInt 2))) -> ()
@@ -555,6 +555,36 @@ result =
     ]) -> ()
   | _ -> failwith "wrong"
 
+let test_do_field_assign () =
+  let src = {|
+go p =
+  do
+    p.age = 31
+    p.name = "Bob"
+    pure p
+|} in
+  match parse_one src with
+  | DFunDef (false, "go", [PVar "p"], EDo [
+      DoFieldAssign ("p", "age", ELit (LInt 31));
+      DoFieldAssign ("p", "name", ELit (LString "Bob"));
+      DoExpr (EApp (EVar "pure", EVar "p"));
+    ]) -> ()
+  | _ -> failwith "wrong shape for field assign do-block"
+
+let test_do_ref_value_assign () =
+  let src = {|
+go r =
+  do
+    r.value = 42
+    pure r.value
+|} in
+  match parse_one src with
+  | DFunDef (false, "go", [PVar "r"], EDo [
+      DoFieldAssign ("r", "value", ELit (LInt 42));
+      DoExpr (EApp (EVar "pure", EFieldAccess (EVar "r", "value")));
+    ]) -> ()
+  | _ -> failwith "wrong"
+
 (* ── Import/export declaration tests ─────────────────── *)
 
 let test_use_simple () =
@@ -874,7 +904,9 @@ let () =
       test_case "record declaration"  `Quick test_record_decl;
     ];
     "do notation", [
-      test_case "basic do"  `Quick test_do_basic;
+      test_case "basic do"            `Quick test_do_basic;
+      test_case "field assign"        `Quick test_do_field_assign;
+      test_case "ref value assign"    `Quick test_do_ref_value_assign;
     ];
     "import declarations", [
       test_case "simple"                   `Quick test_use_simple;

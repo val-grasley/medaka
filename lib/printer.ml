@@ -155,7 +155,7 @@ let rec expr_prec = function
   | EApp _                             -> prec_app
   | EInfix _                           -> prec_infix
   | EBinOp (op, _, _)                  -> binop_prec op
-  | ELam _ | ELet _ | EIf _
+  | ELam _ | ELet _ | ELetGroup _ | EIf _
   | EMatch _ | EDo _ | EAnnot _        -> prec_top
   | ELoc (_, e)                        -> expr_prec e
 
@@ -181,7 +181,21 @@ and print_expr_raw p = function
     ) pats;
     write p " => ";
     print_expr p prec_top body
-  | ELet (mut, pat, e1, e2) ->
+  | ELet (mut, true, PVar f, rhs, e2) ->
+    let rec unwrap_lams acc = function
+      | ELam (pats, body) -> unwrap_lams (acc @ pats) body
+      | ELoc (_, e)       -> unwrap_lams acc e
+      | body              -> (acc, body)
+    in
+    let (args, body) = unwrap_lams [] rhs in
+    write p (if mut then "let mut " else "let ");
+    write p f;
+    List.iter (fun pat -> write p " "; print_pat p pat) args;
+    write p " = ";
+    print_expr p prec_top body;
+    write p " in ";
+    print_expr p prec_top e2
+  | ELet (mut, _, pat, e1, e2) ->
     write p "let ";
     if mut then write p "mut ";
     print_pat p pat;
@@ -189,6 +203,13 @@ and print_expr_raw p = function
     print_expr p prec_top e1;
     write p " in ";
     print_expr p prec_top e2
+  | ELetGroup (bindings, body) ->
+    print_expr p prec_top body;
+    write p " where";
+    List.iter (fun (name, rhs) ->
+      write p "\n    "; write p name; write p " = ";
+      print_expr p prec_top rhs
+    ) bindings
   | EIf (c, t, e) ->
     write p "if ";
     print_expr p prec_top c;
@@ -328,6 +349,12 @@ and print_do_stmt p = function
     print_expr p prec_top e
   | DoAssign (x, e) ->
     write p x;
+    write p " = ";
+    print_expr p prec_top e
+  | DoFieldAssign (x, field, e) ->
+    write p x;
+    write p ".";
+    write p field;
     write p " = ";
     print_expr p prec_top e
 
