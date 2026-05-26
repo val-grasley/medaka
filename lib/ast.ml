@@ -31,8 +31,13 @@ type pat =
   | PList  of pat list           (* [x, y, z] *)
   | PAs    of ident * pat        (* x@pat *)
 
+(* String interpolation parts *)
+type interp_part =
+  | InterpStr  of string
+  | InterpExpr of expr
+
 (* Do-notation statements *)
-type do_stmt =
+and do_stmt =
   | DoBind   of pat * expr          (* x <- e *)
   | DoExpr   of expr                (* e *)
   | DoLet    of bool * pat * expr   (* let [mut] p = e *)
@@ -60,6 +65,7 @@ and expr =
   | EDo           of do_stmt list
   | EAnnot        of expr * ty
   | EInfix        of ident * expr * expr                (* x `div` y *)
+  | EStringInterp of interp_part list                  (* "text\{expr}text" *)
   | ELoc          of loc * expr                         (* source position; transparent to semantics *)
 
 type use_path =
@@ -200,6 +206,12 @@ let rec pp_expr = function
   | EDo stmts            -> Printf.sprintf "(do %s)" (String.concat "; " (List.map pp_do_stmt stmts))
   | EAnnot (e, t)        -> Printf.sprintf "(%s : %s)" (pp_expr e) (pp_ty t)
   | EInfix (op, l, r)    -> Printf.sprintf "(%s `%s` %s)" (pp_expr l) op (pp_expr r)
+  | EStringInterp parts  ->
+    let pp_part = function
+      | InterpStr s  -> String.escaped s
+      | InterpExpr e -> "\\{" ^ pp_expr e ^ "}"
+    in
+    Printf.sprintf "\"%s\"" (String.concat "" (List.map pp_part parts))
   | ELoc (_, e)          -> pp_expr e
 
 and pp_do_stmt = function
@@ -234,6 +246,11 @@ let rec strip_locs_expr = function
   | EDo stmts             -> EDo (List.map strip_locs_do stmts)
   | EAnnot (e, t)         -> EAnnot (strip_locs_expr e, t)
   | EInfix (op, l, r)    -> EInfix (op, strip_locs_expr l, strip_locs_expr r)
+  | EStringInterp parts  ->
+    EStringInterp (List.map (function
+      | InterpStr s  -> InterpStr s
+      | InterpExpr e -> InterpExpr (strip_locs_expr e)
+    ) parts)
   | e                     -> e  (* ELit, EVar *)
 
 and strip_locs_do = function

@@ -345,6 +345,25 @@ let test_triple_unterminated () =
     failwith "expected exception"
   with Failure _ -> ()
 
+(* ── String interpolation tests ─────────────────────── *)
+
+let test_interp_single () =
+  match parse_expr "\"hello \\{name}!\"\n" with
+  | EStringInterp [InterpStr "hello "; InterpExpr (EVar "name"); InterpStr "!"] -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_interp_two_segments () =
+  match parse_expr "\"\\{a} and \\{b}\"\n" with
+  | EStringInterp [InterpStr ""; InterpExpr (EVar "a");
+                   InterpStr " and "; InterpExpr (EVar "b"); InterpStr ""] -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_interp_expression () =
+  match parse_expr "\"result: \\{1 + 2}\"\n" with
+  | EStringInterp [InterpStr "result: ";
+                   InterpExpr (EBinOp ("+", ELit (LInt 1), ELit (LInt 2)));
+                   InterpStr ""] -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 (* ── Match expression tests ──────────────────────────── *)
 
 let test_match_basic () =
@@ -890,5 +909,10 @@ let () =
       test_case "octal literal"          `Quick test_oct_literal;
       test_case "int with underscores"   `Quick test_int_with_underscores;
       test_case "float with underscores" `Quick test_float_with_underscores;
+    ];
+    "string interpolation", [
+      test_case "single hole"        `Quick test_interp_single;
+      test_case "two holes"          `Quick test_interp_two_segments;
+      test_case "expression hole"    `Quick test_interp_expression;
     ];
   ]

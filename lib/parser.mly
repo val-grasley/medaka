@@ -77,6 +77,11 @@ let desugar_constraint lhs rhs =
 %token <string> CHAR
 %token <bool>   BOOL
 
+(* String interpolation *)
+%token <string> INTERP_OPEN
+%token <string> INTERP_MID
+%token <string> INTERP_END
+
 (* Identifiers *)
 %token <string> IDENT
 %token <string> UPPER
@@ -472,6 +477,8 @@ expr_atom:
     { ELoc (of_pos $startpos, ERecordUpdate ($2, $4)) }
   | AT UPPER
     { ELoc (of_pos $startpos, EVar ("@" ^ $2)) }
+  | interp_string
+    { ELoc (of_pos $startpos, EStringInterp $1) }
 
 record_field_expr:
   | IDENT EQUAL expr_no_block  { ($1, $3) }
@@ -633,6 +640,20 @@ import_qual:
 import_ident:
   | IDENT  { $1 }
   | UPPER  { $1 }
+
+(* ── String interpolation ────────────────────────────── *)
+
+interp_string:
+  | INTERP_OPEN expr_no_block INTERP_END
+      { [InterpStr $1; InterpExpr $2; InterpStr $3] }
+  | INTERP_OPEN expr_no_block interp_tail
+      { InterpStr $1 :: InterpExpr $2 :: $3 }
+
+interp_tail:
+  | INTERP_MID expr_no_block INTERP_END
+      { [InterpStr $1; InterpExpr $2; InterpStr $3] }
+  | INTERP_MID expr_no_block interp_tail
+      { InterpStr $1 :: InterpExpr $2 :: $3 }
 
 (* ── Literals ────────────────────────────────────────── *)
 

@@ -349,6 +349,23 @@ let t_oct_lit = assert_val "x = 0o17\n" "x" (VInt 15)
 let t_int_underscores = assert_val "x = 1_000_000\n" "x" (VInt 1000000)
 let t_int_underscore_arith = assert_val "x = 1_000 + 2_000\n" "x" (VInt 3000)
 
+(* ── String interpolation ─────────────────────────────────────────────── *)
+
+let t_interp_basic =
+  assert_val
+    "name = \"world\"\nx = \"Hello, \\{name}!\"\n"
+    "x" (VString "Hello, world!")
+
+let t_interp_two_holes =
+  assert_val
+    "a = \"foo\"\nb = \"bar\"\nx = \"\\{a} and \\{b}\"\n"
+    "x" (VString "foo and bar")
+
+let t_interp_expr =
+  assert_val
+    "n = \"Alice\"\ngreeting = \"Hi\"\nx = \"\\{greeting}, \\{n}! Welcome.\"\n"
+    "x" (VString "Hi, Alice! Welcome.")
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -459,5 +476,10 @@ let () =
       test_case "octal literal"       `Quick t_oct_lit;
       test_case "int underscores"     `Quick t_int_underscores;
       test_case "int underscore arith" `Quick t_int_underscore_arith;
+    ];
+    "string interpolation", [
+      test_case "basic hole"    `Quick t_interp_basic;
+      test_case "two holes"     `Quick t_interp_two_holes;
+      test_case "greeting expr" `Quick t_interp_expr;
     ];
   ]

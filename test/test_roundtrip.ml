@@ -285,4 +285,8 @@ let () =
       test_case "octal"            `Quick (mk "x = 0o17\n");
       test_case "int underscores"  `Quick (mk "x = 1_000_000\n");
     ];
+    "string interpolation", [
+      test_case "single hole"   `Quick (mk "x = \"hello \\{name}!\"\n");
+      test_case "two holes"     `Quick (mk "x = \"\\{a} and \\{b}\"\n");
+    ];
   ]

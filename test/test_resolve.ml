@@ -330,4 +330,8 @@ let () =
       test_case "err: unknown type"    `Quick e_newtype_unknown_type;
       test_case "err: duplicate"       `Quick e_newtype_duplicate;
     ];
+    "string interpolation", [
+      test_case "bound var ok"          `Quick (assert_ok "name = \"Alice\"\nx = \"hello \\{name}!\"\n");
+      test_case "err: unbound in hole"  `Quick (assert_err (unbound "missing") "x = \"hi \\{missing}!\"\n");
+    ];
   ]

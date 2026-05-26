@@ -5,6 +5,10 @@ open Parser
 let indent_stack : int list ref = ref [0]
 let pending : token Queue.t = Queue.create ()
 
+(* String interpolation state *)
+let interp_depth : int ref = ref 0
+let interp_buf   : Buffer.t = Buffer.create 64
+
 let push_pending t = Queue.push t pending
 
 let handle_indent col =
@@ -31,7 +35,9 @@ let handle_indent col =
 
 let reset () =
   indent_stack := [0];
-  Queue.clear pending
+  Queue.clear pending;
+  interp_depth := 0;
+  Buffer.clear interp_buf
 
 (* Strip common leading indentation from a multiline string (one that starts
    with '\n').  Blank lines are ignored when computing the minimum indent. *)
@@ -196,8 +202,21 @@ and read = parse
   | ')'   { RPAREN }
   | '['   { LBRACKET }
   | ']'   { RBRACKET }
-  | '{'   { LBRACE }
-  | '}'   { RBRACE }
+  | '{'   {
+      if !interp_depth > 0 then incr interp_depth;
+      LBRACE
+    }
+  | '}'   {
+      if !interp_depth > 0 then begin
+        decr interp_depth;
+        if !interp_depth = 0 then begin
+          Buffer.clear interp_buf;
+          read_interp_continue interp_buf lexbuf
+        end else
+          RBRACE
+      end else
+        RBRACE
+    }
   | '!'   { BANG }
   | '%'   { MOD }
 
@@ -223,6 +242,7 @@ and read = parse
 
 and read_string buf = parse
   | '"'           { STRING (strip_indent (Buffer.contents buf)) }
+  | '\\' '{'      { interp_depth := 1; INTERP_OPEN (Buffer.contents buf) }
   | '\\' 'n'      { Buffer.add_char buf '\n'; read_string buf lexbuf }
   | '\\' 't'      { Buffer.add_char buf '\t'; read_string buf lexbuf }
   | '\\' '"'      { Buffer.add_char buf '"';  read_string buf lexbuf }
@@ -261,3 +281,22 @@ and read_triple_string buf = parse
     { Buffer.add_string buf (Lexing.lexeme lexbuf);
       read_triple_string buf lexbuf }
   | eof       { failwith "Unterminated triple-quoted string" }
+
+and read_interp_continue buf = parse
+  | '"'       { INTERP_END (Buffer.contents buf) }
+  | '\\' '{'  { interp_depth := 1; INTERP_MID (Buffer.contents buf) }
+  | '\\' 'n'  { Buffer.add_char buf '\n'; read_interp_continue buf lexbuf }
+  | '\\' 't'  { Buffer.add_char buf '\t'; read_interp_continue buf lexbuf }
+  | '\\' '"'  { Buffer.add_char buf '"';  read_interp_continue buf lexbuf }
+  | '\\' '\\' { Buffer.add_char buf '\\'; read_interp_continue buf lexbuf }
+  | '\\' 'r'  { Buffer.add_char buf '\r'; read_interp_continue buf lexbuf }
+  | '\\' '0'  { Buffer.add_char buf '\000'; read_interp_continue buf lexbuf }
+  | '\\' 'u' '{' (['0'-'9' 'a'-'f' 'A'-'F']+ as hex) '}'
+    { let cp = int_of_string ("0x" ^ hex) in
+      Buffer.add_utf_8_uchar buf (Uchar.of_int cp);
+      read_interp_continue buf lexbuf }
+  | [^ '"' '\\']+ {
+      Buffer.add_string buf (Lexing.lexeme lexbuf);
+      read_interp_continue buf lexbuf
+    }
+  | eof { failwith "Unterminated interpolated string" }

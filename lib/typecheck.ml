@@ -813,6 +813,13 @@ let rec infer env = function
     List.iter (fun e -> unify (infer env e) et) es;
     t_set et
 
+  | EStringInterp parts ->
+    List.iter (function
+      | InterpStr _  -> ()
+      | InterpExpr e -> unify (infer env e) (TCon "String")
+    ) parts;
+    TCon "String"
+
   | EAnnot (e, ast_t) ->
     let te = infer env e in
     let ta = from_ast_type ~aliases:env.aliases ast_t in
@@ -1409,6 +1416,11 @@ let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : eff
     List.fold_left (fun a e -> effect_union a (sub e)) [] es
   | EMapLit (_, kvs) ->
     List.fold_left (fun a (k, v) -> effect_union a (effect_union (sub k) (sub v))) [] kvs
+  | EStringInterp parts ->
+    List.fold_left (fun a -> function
+      | InterpStr _  -> a
+      | InterpExpr e -> effect_union a (sub e)
+    ) [] parts
   | ETuple es               -> List.fold_left (fun a e -> effect_union a (sub e)) [] es
   | EIndex (e, i)           -> effect_union (sub e) (sub i)
   | EAnnot (e, _)           -> sub e
