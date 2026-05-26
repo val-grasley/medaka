@@ -122,6 +122,11 @@ and match_pats pats vals =
 
 (* ── Monad context for do-blocks ─────────────────────────────────────────── *)
 
+(* monad_kind tracks which constructor `pure` should wrap with inside a
+   do-block.  It is *only* consulted by the `pure` extern; the bind operator
+   itself dispatches through the stdlib Thenable interface via VMulti, so this
+   enum no longer drives bind behaviour and shrinks once Step 5 reconciles
+   `pure` against the Applicative interface. *)
 type monad_kind = MIO | MOption | MResult | MUnknown
 
 let current_monad : monad_kind ref = ref MUnknown
@@ -131,6 +136,13 @@ let detect_monad = function
   | VCon ("Some", _) | VCon ("None", []) -> MOption
   | VCon ("Ok", _)   | VCon ("Err", _)   -> MResult
   | _ -> MIO
+
+(* Constructors known to belong to a Thenable impl.  Populated from the
+   program's `impl Thenable T` declarations at eval init, plus the stdlib
+   prelude's Option / Result / List.  When a do-block bind sees a value whose
+   head constructor is in this set, it dispatches the bind through the
+   `andThen` VMulti rather than falling through to direct pattern matching. *)
+let monadic_ctors : (string, unit) Hashtbl.t = Hashtbl.create 8
 
 (* Convert Impl_no_match → Eval_error at the boundary of user-visible code.
    Used at every eval site that is NOT inside a VMulti dispatch chain. *)
@@ -427,31 +439,28 @@ and eval_do env stmts =
     let v = wrap_match_errors (fun () -> eval env e) in
     if !current_monad = MUnknown then
       current_monad := detect_monad v;
-    (match !current_monad, v with
-     | MOption, VCon ("None", []) -> VCon ("None", [])
-     | MOption, VCon ("Some", [inner]) ->
-       (match match_pat pat inner with
-        | None -> raise (Eval_error ("bind pattern match failure", !current_loc))
-        | Some binds -> eval_do (extend env binds) rest)
-     | MOption, VCon ("Some", _) ->
-       raise (Eval_error ("Some with unexpected arity", !current_loc))
-     | MResult, VCon ("Err", err_args) -> VCon ("Err", err_args)
-     | MResult, VCon ("Ok", [inner]) ->
-       (match match_pat pat inner with
-        | None -> raise (Eval_error ("bind pattern match failure", !current_loc))
-        | Some binds -> eval_do (extend env binds) rest)
-     | MResult, VCon ("Ok", _) ->
-       raise (Eval_error ("Ok with unexpected arity", !current_loc))
-     | MIO, _ | MUnknown, _ ->
+    (* If `v`'s head constructor belongs to a Thenable impl, dispatch the bind
+       through the stdlib `andThen` VMulti.  The Thenable impl's clauses do
+       the short-circuiting (e.g. `andThen None _ = None`).  Otherwise fall
+       through to direct pattern matching — same shape as the old MIO mode. *)
+    let dispatch_via_thenable cname =
+      let and_then = lookup env "andThen" in
+      let continuation = VPrim (fun bound_v ->
+        match match_pat pat bound_v with
+        | None ->
+          raise (Eval_error ("bind pattern match failure", !current_loc))
+        | Some binds -> eval_do (extend env binds) rest
+      ) in
+      ignore cname;
+      apply (apply and_then v) continuation
+    in
+    (match v with
+     | VCon (cname, _) when Hashtbl.mem monadic_ctors cname ->
+       dispatch_via_thenable cname
+     | _ ->
        (match match_pat pat v with
         | None -> raise (Eval_error ("bind pattern match failure", !current_loc))
-        | Some binds -> eval_do (extend env binds) rest)
-     | _ ->
-       let monad_name = match !current_monad with
-         | MOption -> "Option" | MResult -> "Result" | _ -> "?" in
-       raise (Eval_error
-                ("monad mismatch: expected " ^ monad_name
-                 ^ " but got: " ^ pp_value v, !current_loc)))
+        | Some binds -> eval_do (extend env binds) rest))
 
 (* ── Extern / primitive dispatch table ──────────────────────────────────── *)
 
@@ -581,6 +590,43 @@ let eval_program program =
 
   (* Seed with primitives *)
   List.iter (fun (name, v) -> add_to_frame name v) (List.rev primitives);
+
+  (* Prepend stdlib/core.mdk so its data types, interfaces, and impl bodies
+     are bound for the user program.  Mirrors what Typecheck.check_program
+     does on the type-checking side.  Do-block bind dispatches through the
+     prelude's `andThen` VMulti, so this is what makes Step 3 work. *)
+  let program = Prelude.program @ program in
+
+  (* Record constructor names that belong to a Thenable impl, so DoBind can
+     decide whether to dispatch via `andThen` or fall through. *)
+  Hashtbl.clear monadic_ctors;
+  let type_ctors : (string, string list) Hashtbl.t = Hashtbl.create 8 in
+  List.iter (function
+    | DData (_, n, _, vs, _) ->
+      Hashtbl.replace type_ctors n (List.map (fun v -> v.con_name) vs)
+    | _ -> ()
+  ) program;
+  (* Built-in types whose constructors are seeded in OCaml. *)
+  Hashtbl.replace type_ctors "List" ["Cons"; "Nil"];
+  let rec head_tycon = function
+    | Ast.TyCon n          -> Some n
+    | Ast.TyApp (a, _)     -> head_tycon a
+    | Ast.TyConstrained (_, t) | Ast.TyEffect (_, t) -> head_tycon t
+    | _ -> None
+  in
+  List.iter (function
+    | DImpl { iface_name = "Thenable"; type_args; _ } ->
+      List.iter (fun ta ->
+        match head_tycon ta with
+        | Some tn ->
+          (match Hashtbl.find_opt type_ctors tn with
+           | Some ctors ->
+             List.iter (fun c -> Hashtbl.replace monadic_ctors c ()) ctors
+           | None -> ())
+        | None -> ()
+      ) type_args
+    | _ -> ()
+  ) program;
 
   (* Externs that use OCaml runtime context and must NOT be shadowed by
      impl definitions.  Everything else (map, filter, fold, …) CAN be
