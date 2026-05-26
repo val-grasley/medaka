@@ -20,18 +20,18 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-625 tests pass across 8 test suites:
+609 tests pass across 8 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 112   | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 84    | parse → print → parse yields the same AST             |
-| Resolver          | `test/test_resolve.ml`          | 55    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 234   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 100   | Runtime values, recursion, do-blocks, Ref, errors, escapes |
-| Run               | `test/test_run.ml`              | 8     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
-| REPL              | `test/test_repl.ml`             | 11    | process_item, :load atomicity, rollback, :browse      |
-| Loader            | `test/test_loader.ml`           | 21    | Multi-file imports, topo sort, cycle detection, prelude no-op |
+| Parser            | `test/test_parser.ml`           | 110   | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 82    | parse → print → parse yields the same AST             |
+| Resolver          | `test/test_resolve.ml`          | 53    | Unbound vars, unknown types/ctors, duplicates, fields |
+| Type checker      | `test/test_typecheck.ml`        | 232   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 98    | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
+| Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
+| REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
+| Loader            | `test/test_loader.ml`           | 19    | Multi-file imports, topo sort, cycle detection, prelude no-op |
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
