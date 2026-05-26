@@ -12,11 +12,14 @@
 module.exports = grammar({
   name: 'medaka',
 
-  /* External tokens — order must match TokenType enum in scanner.c */
+  /* External tokens — order must match the TokenType enum in scanner.c */
   externals: $ => [
     $._newline,
     $._indent,
     $._dedent,
+    $._interp_open,   /* "prefix\{  — opening quote through first \{  */
+    $._interp_mid,    /* }middle\{  — closing } through next \{        */
+    $._interp_end,    /* }suffix"   — closing } through closing quote  */
   ],
 
   /* Whitespace (including newlines) and comments are extras — skipped between
@@ -32,12 +35,15 @@ module.exports = grammar({
 
   /* GLR conflicts: parser uses all interpretations simultaneously */
   conflicts: $ => [
-    /* `Upper {` — record_create vs map_lit vs set_lit vs expr followed by block */
+    /* `Upper {` — record_create vs map_lit vs set_lit vs record_pat vs expr */
+    [$._expr, $.pat_atom, $.record_create, $.map_lit, $.set_lit],
     [$._expr, $.record_create, $.map_lit, $.set_lit],
+    [$._expr, $.pat_atom, $.record_create],
     [$._expr, $.record_create],
     [$.record_create, $.map_lit],
     [$.record_create, $.set_lit],
     [$.map_lit, $.set_lit],
+    [$.pat_atom, $.map_lit, $.set_lit],
     /* lambda vs application: `f x =>` */
     [$.lambda_expr, $.expr_app],
     /* type_sig and fun_def both start with ident */
@@ -60,6 +66,22 @@ module.exports = grammar({
     [$.pat_atom, $.list_expr],
     /* unit pat `()` vs unit_expr `()` */
     [$.pat_atom, $.unit_expr],
+    /* pat_as vs pat_atom/expr: ident starts all three, @ disambiguates */
+    [$.pat_as, $.pat_atom],
+    [$.pat_as, $._expr],
+    /* list_comp vs list_expr: both start with [expr, | disambiguates */
+    [$.list_comp, $.list_expr],
+    /* lc_qual guard form is just _expr — needs GLR to try both */
+    [$.lc_qual, $._expr],
+    /* record_pat_field: ident vs ident = pat; pun form same start as _expr */
+    [$.record_pat_field],
+    [$.record_pat_field, $._expr],
+    /* where_body starts with _expr; needs lookahead for `where` keyword */
+    [$.where_body, $._expr],
+    /* record pattern in pat_atom vs record_create in _expr */
+    [$.pat_atom, $.record_create],
+    /* guard_arm `|` vs data_variant_line `|` in block context */
+    [$.type_sig, $.fun_def, $.guard_arm],
   ],
 
   word: $ => $.ident,
@@ -82,6 +104,7 @@ module.exports = grammar({
       $.data_decl,
       $.record_decl,
       $.type_alias_decl,
+      $.newtype_decl,
       $.interface_decl,
       $.impl_decl,
       $.import_decl,
@@ -105,7 +128,8 @@ module.exports = grammar({
     /* float before int so "3.14" matches float, not "3" then ".14" */
     float_lit:  $ => /[0-9]+\.[0-9]+([eE][+-]?[0-9]+)?/,
     int_lit:    $ => /[0-9]+/,
-    string_lit: $ => /"([^"\\]|\\.)*"/,
+    /* \\[^{] matches any escape except \{ so interp_string wins for "...\{...}" */
+    string_lit: $ => /"([^"\\]|\\[^{])*"/,
     char_lit:   $ => /'([^'\\]|\\.)'/,
     bool_lit:   $ => choice('True', 'False'),
 
@@ -165,9 +189,17 @@ module.exports = grammar({
      * ═══════════════════════════════════════════════════ */
 
     pat: $ => choice(
+      $.pat_as,
       $.pat_cons,
       $.pat_app,
       $.pat_atom,
+    ),
+
+    /* name @ pattern — alias binding */
+    pat_as: $ => seq(
+      field('name', $.ident),
+      '@',
+      field('pat', $.pat),
     ),
 
     pat_cons: $ => prec.right(6, seq(
@@ -192,6 +224,24 @@ module.exports = grammar({
       seq('(', $.pat, ',', $.pat, repeat(seq(',', $.pat)), ')'),
       seq('[', ']'),
       seq('[', $.pat, repeat(seq(',', $.pat)), ']'),
+      /* Record pattern: Point { x, y }  or  Point { x = px, ... } */
+      seq(field('type', $.upper), '{', $.record_pat_fields, '}'),
+    ),
+
+    /* Record pattern fields: supports puns (field), bindings (field = pat), and rest (...) */
+    record_pat_fields: $ => choice(
+      '...',
+      seq(
+        $.record_pat_field,
+        repeat(seq(',', $.record_pat_field)),
+        optional(seq(',', '...')),
+      ),
+    ),
+
+    /* A single field in a record pattern */
+    record_pat_field: $ => choice(
+      seq(field('name', $.ident), '=', field('pat', $.pat)),
+      field('name', $.ident),
     ),
 
     /* ═══════════════════════════════════════════════════
@@ -207,11 +257,23 @@ module.exports = grammar({
       $._newline,
     ),
 
-    /* export? name pat* = body */
+    /* export? name pat* = body
+     * export? name pat*\n  | guard = body\n  ... */
     fun_def: $ => seq(
       optional($._export_marker),
       field('name', $.ident),
       repeat(field('param', $.pat_atom)),
+      choice(
+        seq('=', field('body', $._fun_body)),
+        seq($._indent, repeat1($.guard_arm), $._dedent),
+      ),
+      $._newline,
+    ),
+
+    /* Guard arm:  | condition = body */
+    guard_arm: $ => seq(
+      '|',
+      field('guard', $._expr),
       '=',
       field('body', $._fun_body),
       $._newline,
@@ -220,8 +282,28 @@ module.exports = grammar({
     /* _fun_body is transparent: callers see the concrete expression directly */
     _fun_body: $ => choice(
       $._expr,
+      /* expr where\n  binding*  — local where-clause */
+      $.where_body,
       /* Indented-stmts form (desugars to do-block, no `do` keyword) */
       $.do_body,
+    ),
+
+    /* expr\n  where\n    bindings */
+    where_body: $ => seq(
+      field('expr', $._expr),
+      'where',
+      $._indent,
+      repeat1($.where_binding),
+      $._dedent,
+    ),
+
+    /* A single binding in a where clause: name params = body */
+    where_binding: $ => seq(
+      field('name', $.ident),
+      repeat(field('param', $.pat_atom)),
+      '=',
+      field('body', $._fun_body),
+      $._newline,
     ),
 
     /* Indented statement block without the `do` keyword — equivalent to do-block */
@@ -298,6 +380,19 @@ module.exports = grammar({
       repeat(field('type_param', $.ident)),
       '=',
       field('rhs', $._type_expr),
+      $._newline,
+    ),
+
+    /* newtype Age = MkAge Int deriving (Show) */
+    newtype_decl: $ => seq(
+      optional($._export_marker),
+      'newtype',
+      field('name', $.upper),
+      repeat(field('type_param', $.ident)),
+      '=',
+      field('constructor', $.upper),
+      field('type', $.ty_atom),
+      optional($.deriving_clause),
       $._newline,
     ),
 
@@ -429,8 +524,10 @@ module.exports = grammar({
       $.operator_section,
       $.impl_selection,
       $.tuple_expr,
+      $.list_comp,
       $.list_expr,
       $.array_expr,
+      $.interp_string,
       $.literal,
       $.ident,
       $.upper,
@@ -478,6 +575,7 @@ module.exports = grammar({
       optional(seq('if', field('guard', $._expr))),
       '=>',
       field('body', $._expr),
+      optional(seq('where', $._indent, repeat1($.where_binding), $._dedent)),
       $._newline,
     ),
 
@@ -618,6 +716,24 @@ module.exports = grammar({
       ')',
     ),
 
+    /* [x | x <- xs, x > 0]  — list comprehension */
+    list_comp: $ => seq(
+      '[',
+      field('expr', $._expr),
+      '|',
+      $.lc_qual,
+      repeat(seq(',', $.lc_qual)),
+      ']',
+    ),
+
+    /* A single list comprehension qualifier */
+    lc_qual: $ => choice(
+      seq(field('pat', $.pat), '<-', field('value', $._expr)),
+      seq('let', 'mut', field('pat', $.pat), '=', field('value', $._expr)),
+      seq('let', field('pat', $.pat), '=', field('value', $._expr)),
+      field('guard', $._expr),
+    ),
+
     /* [1, 2, 3]  or  [] */
     list_expr: $ => seq(
       '[',
@@ -630,6 +746,15 @@ module.exports = grammar({
       '[|',
       optional(seq($._expr, repeat(seq(',', $._expr)))),
       '|]',
+    ),
+
+    /* "hello \{name}, you are \{age} years old!"
+     * External tokens carry the string segments; expressions are parsed normally. */
+    interp_string: $ => seq(
+      $._interp_open,
+      $._expr,
+      repeat(seq($._interp_mid, $._expr)),
+      $._interp_end,
     ),
 
     /* ═══════════════════════════════════════════════════

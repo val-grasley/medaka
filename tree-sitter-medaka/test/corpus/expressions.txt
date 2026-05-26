@@ -253,3 +253,65 @@ nothing = ()
   (fun_def
     name: (ident)
     body: (unit_expr)))
+
+==================
+List comprehension — generator and guard
+==================
+
+evens xs = [x | x <- xs, x % 2 == 0]
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (list_comp
+      expr: (ident)
+      (lc_qual
+        pat: (pat
+          (pat_atom
+            var: (ident)))
+        value: (ident))
+      (lc_qual
+        guard: (binary_expr
+          left: (binary_expr
+            left: (ident)
+            right: (literal
+              (int_lit)))
+          right: (literal
+            (int_lit)))))))
+
+==================
+String interpolation — single expression
+==================
+
+x = "hello \{y}!"
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    body: (interp_string
+      (ident))))
+
+==================
+String interpolation — multiple expressions
+==================
+
+msg a b = "hello \{a} and \{b}!"
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    param: (pat_atom
+      var: (ident))
+    body: (interp_string
+      (ident)
+      (ident))))

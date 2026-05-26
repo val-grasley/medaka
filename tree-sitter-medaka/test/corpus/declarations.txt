@@ -356,3 +356,94 @@ extern Ref : a -> Ref a
           (upper))
         arg: (ty_atom
           (ident))))))
+
+==================
+Newtype declaration — simple
+==================
+
+newtype Age = MkAge Int
+
+---
+
+(source_file
+  (newtype_decl
+    name: (upper)
+    constructor: (upper)
+    type: (ty_atom
+      (upper))))
+
+==================
+Newtype declaration — with deriving
+==================
+
+newtype Name = MkName String deriving (Show)
+
+---
+
+(source_file
+  (newtype_decl
+    name: (upper)
+    constructor: (upper)
+    type: (ty_atom
+      (upper))
+    (deriving_clause
+      iface: (upper))))
+
+==================
+Function definition — guard arms
+==================
+
+abs n
+  | n < 0 = 0 - n
+  | n >= 0 = n
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    (guard_arm
+      guard: (binary_expr
+        left: (ident)
+        right: (literal
+          (int_lit)))
+      body: (expr_app
+        function: (literal
+          (int_lit))
+        argument: (unary_expr
+          operand: (ident))))
+    (guard_arm
+      guard: (binary_expr
+        left: (ident)
+        right: (literal
+          (int_lit)))
+      body: (ident))))
+
+==================
+Function definition — where clause
+==================
+
+f x = g x where
+  g y = y + 1
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (where_body
+      expr: (expr_app
+        function: (ident)
+        argument: (ident))
+      (where_binding
+        name: (ident)
+        param: (pat_atom
+          var: (ident))
+        body: (binary_expr
+          left: (ident)
+          right: (literal
+            (int_lit)))))))

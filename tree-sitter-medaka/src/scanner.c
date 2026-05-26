@@ -9,6 +9,9 @@ typedef enum {
     NEWLINE,
     INDENT,
     DEDENT,
+    INTERP_OPEN,  /* "prefix\{  — opening quote through first \{  */
+    INTERP_MID,   /* }middle\{  — closing } through next \{        */
+    INTERP_END,   /* }suffix"   — closing } through closing quote  */
 } TokenType;
 
 /*
@@ -144,6 +147,73 @@ bool tree_sitter_medaka_external_scanner_scan(void *payload,
                                                TSLexer *lexer,
                                                const bool *valid_symbols) {
     Scanner *s = (Scanner *)payload;
+
+    /* ── String interpolation tokens ───────────────────────────────── */
+
+    /* INTERP_OPEN: scan "prefix\{  — starts at '"', ends after consuming '\{'.
+     * Skip leading whitespace first (extras are handled by the internal lexer
+     * but the external scanner sees raw positions). */
+    if (valid_symbols[INTERP_OPEN]) {
+        while (lexer->lookahead == ' ' || lexer->lookahead == '\t')
+            lexer->advance(lexer, true); /* skip as whitespace */
+        if (lexer->lookahead == '"') {
+            lexer->advance(lexer, false); /* consume opening '"' */
+            while (!lexer->eof(lexer)) {
+                int32_t c = lexer->lookahead;
+                if (c == '"') return false; /* plain string, no interpolation */
+                if (c == '\\') {
+                    lexer->advance(lexer, false);
+                    if (lexer->lookahead == '{') {
+                        lexer->advance(lexer, false); /* consume '{' */
+                        lexer->result_symbol = INTERP_OPEN;
+                        return true;
+                    }
+                    /* other escape — skip the escaped character */
+                    if (!lexer->eof(lexer)) lexer->advance(lexer, false);
+                    continue;
+                }
+                lexer->advance(lexer, false);
+            }
+            return false;
+        }
+    }
+
+    /* INTERP_MID / INTERP_END: both start with '}' after an interpolated expr.
+     * Scan forward to decide: '\{' → MID, '"' → END.
+     * When both are valid (grammar is in an ambiguous state), we scan and
+     * emit whichever delimiter we find first. */
+    if ((valid_symbols[INTERP_MID] || valid_symbols[INTERP_END])
+            && lexer->lookahead == '}') {
+        lexer->advance(lexer, false); /* consume '}' */
+        while (!lexer->eof(lexer)) {
+            int32_t c = lexer->lookahead;
+            if (c == '\\') {
+                lexer->advance(lexer, false);
+                if (lexer->lookahead == '{') {
+                    lexer->advance(lexer, false);
+                    if (valid_symbols[INTERP_MID]) {
+                        lexer->result_symbol = INTERP_MID;
+                        return true;
+                    }
+                    return false;
+                }
+                if (!lexer->eof(lexer)) lexer->advance(lexer, false);
+                continue;
+            }
+            if (c == '"') {
+                lexer->advance(lexer, false); /* consume closing '"' */
+                if (valid_symbols[INTERP_END]) {
+                    lexer->result_symbol = INTERP_END;
+                    return true;
+                }
+                return false;
+            }
+            lexer->advance(lexer, false);
+        }
+        return false;
+    }
+
+    /* ── Indent / dedent / newline tokens ───────────────────────────── */
 
     bool any_indent = valid_symbols[NEWLINE] ||
                       valid_symbols[INDENT]  ||

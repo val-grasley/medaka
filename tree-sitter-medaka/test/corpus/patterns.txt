@@ -167,3 +167,89 @@ fst pair =
                   (pat
                     (pat_atom))))
               body: (ident))))))))
+
+==================
+Record pattern — field pun
+==================
+
+getName p =
+  match p
+    Person { name } => name
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (do_body
+      (stmt
+        (do_stmt_expr
+          value: (match_expr
+            scrutinee: (ident)
+            (match_arm
+              pattern: (pat
+                (pat_atom
+                  type: (upper)
+                  (record_pat_fields
+                    (record_pat_field
+                      name: (ident)))))
+              body: (ident))))))))
+
+==================
+Record pattern — named field
+==================
+
+getX p =
+  match p
+    Point { x = px } => px
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      var: (ident))
+    body: (do_body
+      (stmt
+        (do_stmt_expr
+          value: (match_expr
+            scrutinee: (ident)
+            (match_arm
+              pattern: (pat
+                (pat_atom
+                  type: (upper)
+                  (record_pat_fields
+                    (record_pat_field
+                      name: (ident)
+                      pat: (pat
+                        (pat_atom
+                          var: (ident)))))))
+              body: (ident))))))))
+
+==================
+As-pattern
+==================
+
+f (xs@(h :: _)) = xs
+
+---
+
+(source_file
+  (fun_def
+    name: (ident)
+    param: (pat_atom
+      (pat
+        (pat_as
+          name: (ident)
+          pat: (pat
+            (pat_atom
+              (pat
+                (pat_cons
+                  head: (pat_atom
+                    var: (ident))
+                  tail: (pat
+                    (pat_atom)))))))))
+    body: (ident)))

@@ -44,11 +44,19 @@
           "named": true
         },
         {
+          "type": "interp_string",
+          "named": true
+        },
+        {
           "type": "lambda_expr",
           "named": true
         },
         {
           "type": "let_expr",
+          "named": true
+        },
+        {
+          "type": "list_comp",
           "named": true
         },
         {
@@ -159,11 +167,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -279,11 +295,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -522,11 +546,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -648,11 +680,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -804,11 +844,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -930,11 +978,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -1046,11 +1102,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -1188,11 +1252,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -1298,11 +1370,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -1462,11 +1542,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -1531,7 +1619,7 @@
     "fields": {
       "body": {
         "multiple": true,
-        "required": true,
+        "required": false,
         "types": [
           {
             "type": "(",
@@ -1582,11 +1670,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -1640,6 +1736,10 @@
           {
             "type": "upper",
             "named": true
+          },
+          {
+            "type": "where_body",
+            "named": true
           }
         ]
       },
@@ -1659,6 +1759,266 @@
         "types": [
           {
             "type": "pat_atom",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "guard_arm",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
+    "type": "guard_arm",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "(",
+            "named": false
+          },
+          {
+            "type": ")",
+            "named": false
+          },
+          {
+            "type": "array_expr",
+            "named": true
+          },
+          {
+            "type": "binary_expr",
+            "named": true
+          },
+          {
+            "type": "do_body",
+            "named": true
+          },
+          {
+            "type": "do_expr",
+            "named": true
+          },
+          {
+            "type": "expr_app",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "ident",
+            "named": true
+          },
+          {
+            "type": "if_expr",
+            "named": true
+          },
+          {
+            "type": "impl_selection",
+            "named": true
+          },
+          {
+            "type": "index_expr",
+            "named": true
+          },
+          {
+            "type": "interp_string",
+            "named": true
+          },
+          {
+            "type": "lambda_expr",
+            "named": true
+          },
+          {
+            "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
+            "named": true
+          },
+          {
+            "type": "list_expr",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map_lit",
+            "named": true
+          },
+          {
+            "type": "match_expr",
+            "named": true
+          },
+          {
+            "type": "operator_section",
+            "named": true
+          },
+          {
+            "type": "record_create",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "set_lit",
+            "named": true
+          },
+          {
+            "type": "tuple_expr",
+            "named": true
+          },
+          {
+            "type": "type_annotation",
+            "named": true
+          },
+          {
+            "type": "unary_expr",
+            "named": true
+          },
+          {
+            "type": "unit_expr",
+            "named": true
+          },
+          {
+            "type": "upper",
+            "named": true
+          },
+          {
+            "type": "where_body",
+            "named": true
+          }
+        ]
+      },
+      "guard": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "(",
+            "named": false
+          },
+          {
+            "type": ")",
+            "named": false
+          },
+          {
+            "type": "array_expr",
+            "named": true
+          },
+          {
+            "type": "binary_expr",
+            "named": true
+          },
+          {
+            "type": "do_expr",
+            "named": true
+          },
+          {
+            "type": "expr_app",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "ident",
+            "named": true
+          },
+          {
+            "type": "if_expr",
+            "named": true
+          },
+          {
+            "type": "impl_selection",
+            "named": true
+          },
+          {
+            "type": "index_expr",
+            "named": true
+          },
+          {
+            "type": "interp_string",
+            "named": true
+          },
+          {
+            "type": "lambda_expr",
+            "named": true
+          },
+          {
+            "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
+            "named": true
+          },
+          {
+            "type": "list_expr",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map_lit",
+            "named": true
+          },
+          {
+            "type": "match_expr",
+            "named": true
+          },
+          {
+            "type": "operator_section",
+            "named": true
+          },
+          {
+            "type": "record_create",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "set_lit",
+            "named": true
+          },
+          {
+            "type": "tuple_expr",
+            "named": true
+          },
+          {
+            "type": "type_annotation",
+            "named": true
+          },
+          {
+            "type": "unary_expr",
+            "named": true
+          },
+          {
+            "type": "unit_expr",
+            "named": true
+          },
+          {
+            "type": "upper",
             "named": true
           }
         ]
@@ -1718,11 +2078,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -1828,11 +2196,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -1938,11 +2314,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -2061,11 +2445,19 @@
           "named": true
         },
         {
+          "type": "interp_string",
+          "named": true
+        },
+        {
           "type": "lambda_expr",
           "named": true
         },
         {
           "type": "let_expr",
+          "named": true
+        },
+        {
+          "type": "list_comp",
           "named": true
         },
         {
@@ -2134,6 +2526,10 @@
         },
         {
           "type": "upper",
+          "named": true
+        },
+        {
+          "type": "where_body",
           "named": true
         }
       ]
@@ -2287,11 +2683,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -2344,6 +2748,10 @@
           },
           {
             "type": "upper",
+            "named": true
+          },
+          {
+            "type": "where_body",
             "named": true
           }
         ]
@@ -2537,11 +2945,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -2647,11 +3063,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -2751,6 +3175,121 @@
     }
   },
   {
+    "type": "interp_string",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "array_expr",
+          "named": true
+        },
+        {
+          "type": "binary_expr",
+          "named": true
+        },
+        {
+          "type": "do_expr",
+          "named": true
+        },
+        {
+          "type": "expr_app",
+          "named": true
+        },
+        {
+          "type": "field_access",
+          "named": true
+        },
+        {
+          "type": "ident",
+          "named": true
+        },
+        {
+          "type": "if_expr",
+          "named": true
+        },
+        {
+          "type": "impl_selection",
+          "named": true
+        },
+        {
+          "type": "index_expr",
+          "named": true
+        },
+        {
+          "type": "interp_string",
+          "named": true
+        },
+        {
+          "type": "lambda_expr",
+          "named": true
+        },
+        {
+          "type": "let_expr",
+          "named": true
+        },
+        {
+          "type": "list_comp",
+          "named": true
+        },
+        {
+          "type": "list_expr",
+          "named": true
+        },
+        {
+          "type": "literal",
+          "named": true
+        },
+        {
+          "type": "map_lit",
+          "named": true
+        },
+        {
+          "type": "match_expr",
+          "named": true
+        },
+        {
+          "type": "operator_section",
+          "named": true
+        },
+        {
+          "type": "record_create",
+          "named": true
+        },
+        {
+          "type": "record_update",
+          "named": true
+        },
+        {
+          "type": "set_lit",
+          "named": true
+        },
+        {
+          "type": "tuple_expr",
+          "named": true
+        },
+        {
+          "type": "type_annotation",
+          "named": true
+        },
+        {
+          "type": "unary_expr",
+          "named": true
+        },
+        {
+          "type": "unit_expr",
+          "named": true
+        },
+        {
+          "type": "upper",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "lambda_expr",
     "named": true,
     "fields": {
@@ -2803,11 +3342,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -2877,6 +3424,258 @@
     }
   },
   {
+    "type": "lc_qual",
+    "named": true,
+    "fields": {
+      "guard": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "(",
+            "named": false
+          },
+          {
+            "type": ")",
+            "named": false
+          },
+          {
+            "type": "array_expr",
+            "named": true
+          },
+          {
+            "type": "binary_expr",
+            "named": true
+          },
+          {
+            "type": "do_expr",
+            "named": true
+          },
+          {
+            "type": "expr_app",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "ident",
+            "named": true
+          },
+          {
+            "type": "if_expr",
+            "named": true
+          },
+          {
+            "type": "impl_selection",
+            "named": true
+          },
+          {
+            "type": "index_expr",
+            "named": true
+          },
+          {
+            "type": "interp_string",
+            "named": true
+          },
+          {
+            "type": "lambda_expr",
+            "named": true
+          },
+          {
+            "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
+            "named": true
+          },
+          {
+            "type": "list_expr",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map_lit",
+            "named": true
+          },
+          {
+            "type": "match_expr",
+            "named": true
+          },
+          {
+            "type": "operator_section",
+            "named": true
+          },
+          {
+            "type": "record_create",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "set_lit",
+            "named": true
+          },
+          {
+            "type": "tuple_expr",
+            "named": true
+          },
+          {
+            "type": "type_annotation",
+            "named": true
+          },
+          {
+            "type": "unary_expr",
+            "named": true
+          },
+          {
+            "type": "unit_expr",
+            "named": true
+          },
+          {
+            "type": "upper",
+            "named": true
+          }
+        ]
+      },
+      "pat": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "pat",
+            "named": true
+          }
+        ]
+      },
+      "value": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "(",
+            "named": false
+          },
+          {
+            "type": ")",
+            "named": false
+          },
+          {
+            "type": "array_expr",
+            "named": true
+          },
+          {
+            "type": "binary_expr",
+            "named": true
+          },
+          {
+            "type": "do_expr",
+            "named": true
+          },
+          {
+            "type": "expr_app",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "ident",
+            "named": true
+          },
+          {
+            "type": "if_expr",
+            "named": true
+          },
+          {
+            "type": "impl_selection",
+            "named": true
+          },
+          {
+            "type": "index_expr",
+            "named": true
+          },
+          {
+            "type": "interp_string",
+            "named": true
+          },
+          {
+            "type": "lambda_expr",
+            "named": true
+          },
+          {
+            "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
+            "named": true
+          },
+          {
+            "type": "list_expr",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map_lit",
+            "named": true
+          },
+          {
+            "type": "match_expr",
+            "named": true
+          },
+          {
+            "type": "operator_section",
+            "named": true
+          },
+          {
+            "type": "record_create",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "set_lit",
+            "named": true
+          },
+          {
+            "type": "tuple_expr",
+            "named": true
+          },
+          {
+            "type": "type_annotation",
+            "named": true
+          },
+          {
+            "type": "unary_expr",
+            "named": true
+          },
+          {
+            "type": "unit_expr",
+            "named": true
+          },
+          {
+            "type": "upper",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "let_expr",
     "named": true,
     "fields": {
@@ -2929,11 +3728,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -3069,11 +3876,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -3133,6 +3948,140 @@
     }
   },
   {
+    "type": "list_comp",
+    "named": true,
+    "fields": {
+      "expr": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "(",
+            "named": false
+          },
+          {
+            "type": ")",
+            "named": false
+          },
+          {
+            "type": "array_expr",
+            "named": true
+          },
+          {
+            "type": "binary_expr",
+            "named": true
+          },
+          {
+            "type": "do_expr",
+            "named": true
+          },
+          {
+            "type": "expr_app",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "ident",
+            "named": true
+          },
+          {
+            "type": "if_expr",
+            "named": true
+          },
+          {
+            "type": "impl_selection",
+            "named": true
+          },
+          {
+            "type": "index_expr",
+            "named": true
+          },
+          {
+            "type": "interp_string",
+            "named": true
+          },
+          {
+            "type": "lambda_expr",
+            "named": true
+          },
+          {
+            "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
+            "named": true
+          },
+          {
+            "type": "list_expr",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map_lit",
+            "named": true
+          },
+          {
+            "type": "match_expr",
+            "named": true
+          },
+          {
+            "type": "operator_section",
+            "named": true
+          },
+          {
+            "type": "record_create",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "set_lit",
+            "named": true
+          },
+          {
+            "type": "tuple_expr",
+            "named": true
+          },
+          {
+            "type": "type_annotation",
+            "named": true
+          },
+          {
+            "type": "unary_expr",
+            "named": true
+          },
+          {
+            "type": "unit_expr",
+            "named": true
+          },
+          {
+            "type": "upper",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "lc_qual",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "list_expr",
     "named": true,
     "fields": {},
@@ -3177,11 +4126,19 @@
           "named": true
         },
         {
+          "type": "interp_string",
+          "named": true
+        },
+        {
           "type": "lambda_expr",
           "named": true
         },
         {
           "type": "let_expr",
+          "named": true
+        },
+        {
+          "type": "list_comp",
           "named": true
         },
         {
@@ -3323,11 +4280,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -3433,11 +4398,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -3575,11 +4548,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -3685,11 +4666,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -3756,6 +4745,16 @@
           }
         ]
       }
+    },
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "where_binding",
+          "named": true
+        }
+      ]
     }
   },
   {
@@ -3811,11 +4810,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -3885,6 +4892,62 @@
     }
   },
   {
+    "type": "newtype_decl",
+    "named": true,
+    "fields": {
+      "constructor": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "upper",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "upper",
+            "named": true
+          }
+        ]
+      },
+      "type": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "ty_atom",
+            "named": true
+          }
+        ]
+      },
+      "type_param": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "ident",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "deriving_clause",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "operator_section",
     "named": true,
     "fields": {
@@ -3947,11 +5010,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -4023,6 +5094,10 @@
           "named": true
         },
         {
+          "type": "pat_as",
+          "named": true
+        },
+        {
           "type": "pat_atom",
           "named": true
         },
@@ -4060,10 +5135,46 @@
     }
   },
   {
+    "type": "pat_as",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "ident",
+            "named": true
+          }
+        ]
+      },
+      "pat": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "pat",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "pat_atom",
     "named": true,
     "fields": {
       "constructor": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "upper",
+            "named": true
+          }
+        ]
+      },
+      "type": {
         "multiple": false,
         "required": false,
         "types": [
@@ -4094,6 +5205,10 @@
         },
         {
           "type": "pat",
+          "named": true
+        },
+        {
+          "type": "record_pat_fields",
           "named": true
         }
       ]
@@ -4292,11 +5407,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -4356,6 +5479,47 @@
     }
   },
   {
+    "type": "record_pat_field",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "ident",
+            "named": true
+          }
+        ]
+      },
+      "pat": {
+        "multiple": false,
+        "required": false,
+        "types": [
+          {
+            "type": "pat",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "record_pat_fields",
+    "named": true,
+    "fields": {},
+    "children": {
+      "multiple": true,
+      "required": false,
+      "types": [
+        {
+          "type": "record_pat_field",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "record_update",
     "named": true,
     "fields": {
@@ -4408,11 +5572,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -4542,11 +5714,19 @@
           "named": true
         },
         {
+          "type": "interp_string",
+          "named": true
+        },
+        {
           "type": "lambda_expr",
           "named": true
         },
         {
           "type": "let_expr",
+          "named": true
+        },
+        {
+          "type": "list_comp",
           "named": true
         },
         {
@@ -4637,7 +5817,15 @@
           "named": true
         },
         {
+          "type": "newtype_decl",
+          "named": true
+        },
+        {
           "type": "record_decl",
+          "named": true
+        },
+        {
+          "type": "type_alias_decl",
           "named": true
         },
         {
@@ -4723,11 +5911,19 @@
           "named": true
         },
         {
+          "type": "interp_string",
+          "named": true
+        },
+        {
           "type": "lambda_expr",
           "named": true
         },
         {
           "type": "let_expr",
+          "named": true
+        },
+        {
+          "type": "list_comp",
           "named": true
         },
         {
@@ -4885,6 +6081,50 @@
     }
   },
   {
+    "type": "type_alias_decl",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "upper",
+            "named": true
+          }
+        ]
+      },
+      "rhs": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "ty_app",
+            "named": true
+          },
+          {
+            "type": "ty_atom",
+            "named": true
+          },
+          {
+            "type": "ty_fun",
+            "named": true
+          }
+        ]
+      },
+      "type_param": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "ident",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
     "type": "type_annotation",
     "named": true,
     "fields": {},
@@ -4929,11 +6169,19 @@
           "named": true
         },
         {
+          "type": "interp_string",
+          "named": true
+        },
+        {
           "type": "lambda_expr",
           "named": true
         },
         {
           "type": "let_expr",
+          "named": true
+        },
+        {
+          "type": "list_comp",
           "named": true
         },
         {
@@ -5104,11 +6352,19 @@
             "named": true
           },
           {
+            "type": "interp_string",
+            "named": true
+          },
+          {
             "type": "lambda_expr",
             "named": true
           },
           {
             "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
             "named": true
           },
           {
@@ -5173,6 +6429,292 @@
     "fields": {}
   },
   {
+    "type": "where_binding",
+    "named": true,
+    "fields": {
+      "body": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "(",
+            "named": false
+          },
+          {
+            "type": ")",
+            "named": false
+          },
+          {
+            "type": "array_expr",
+            "named": true
+          },
+          {
+            "type": "binary_expr",
+            "named": true
+          },
+          {
+            "type": "do_body",
+            "named": true
+          },
+          {
+            "type": "do_expr",
+            "named": true
+          },
+          {
+            "type": "expr_app",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "ident",
+            "named": true
+          },
+          {
+            "type": "if_expr",
+            "named": true
+          },
+          {
+            "type": "impl_selection",
+            "named": true
+          },
+          {
+            "type": "index_expr",
+            "named": true
+          },
+          {
+            "type": "interp_string",
+            "named": true
+          },
+          {
+            "type": "lambda_expr",
+            "named": true
+          },
+          {
+            "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
+            "named": true
+          },
+          {
+            "type": "list_expr",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map_lit",
+            "named": true
+          },
+          {
+            "type": "match_expr",
+            "named": true
+          },
+          {
+            "type": "operator_section",
+            "named": true
+          },
+          {
+            "type": "record_create",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "set_lit",
+            "named": true
+          },
+          {
+            "type": "tuple_expr",
+            "named": true
+          },
+          {
+            "type": "type_annotation",
+            "named": true
+          },
+          {
+            "type": "unary_expr",
+            "named": true
+          },
+          {
+            "type": "unit_expr",
+            "named": true
+          },
+          {
+            "type": "upper",
+            "named": true
+          },
+          {
+            "type": "where_body",
+            "named": true
+          }
+        ]
+      },
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "ident",
+            "named": true
+          }
+        ]
+      },
+      "param": {
+        "multiple": true,
+        "required": false,
+        "types": [
+          {
+            "type": "pat_atom",
+            "named": true
+          }
+        ]
+      }
+    }
+  },
+  {
+    "type": "where_body",
+    "named": true,
+    "fields": {
+      "expr": {
+        "multiple": true,
+        "required": true,
+        "types": [
+          {
+            "type": "(",
+            "named": false
+          },
+          {
+            "type": ")",
+            "named": false
+          },
+          {
+            "type": "array_expr",
+            "named": true
+          },
+          {
+            "type": "binary_expr",
+            "named": true
+          },
+          {
+            "type": "do_expr",
+            "named": true
+          },
+          {
+            "type": "expr_app",
+            "named": true
+          },
+          {
+            "type": "field_access",
+            "named": true
+          },
+          {
+            "type": "ident",
+            "named": true
+          },
+          {
+            "type": "if_expr",
+            "named": true
+          },
+          {
+            "type": "impl_selection",
+            "named": true
+          },
+          {
+            "type": "index_expr",
+            "named": true
+          },
+          {
+            "type": "interp_string",
+            "named": true
+          },
+          {
+            "type": "lambda_expr",
+            "named": true
+          },
+          {
+            "type": "let_expr",
+            "named": true
+          },
+          {
+            "type": "list_comp",
+            "named": true
+          },
+          {
+            "type": "list_expr",
+            "named": true
+          },
+          {
+            "type": "literal",
+            "named": true
+          },
+          {
+            "type": "map_lit",
+            "named": true
+          },
+          {
+            "type": "match_expr",
+            "named": true
+          },
+          {
+            "type": "operator_section",
+            "named": true
+          },
+          {
+            "type": "record_create",
+            "named": true
+          },
+          {
+            "type": "record_update",
+            "named": true
+          },
+          {
+            "type": "set_lit",
+            "named": true
+          },
+          {
+            "type": "tuple_expr",
+            "named": true
+          },
+          {
+            "type": "type_annotation",
+            "named": true
+          },
+          {
+            "type": "unary_expr",
+            "named": true
+          },
+          {
+            "type": "unit_expr",
+            "named": true
+          },
+          {
+            "type": "upper",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": true,
+      "required": true,
+      "types": [
+        {
+          "type": "where_binding",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "!",
     "named": false
   },
@@ -5226,6 +6768,10 @@
   },
   {
     "type": ".*",
+    "named": false
+  },
+  {
+    "type": "...",
     "named": false
   },
   {
@@ -5405,6 +6951,10 @@
     "named": false
   },
   {
+    "type": "newtype",
+    "named": false
+  },
+  {
     "type": "of",
     "named": false
   },
@@ -5422,6 +6972,10 @@
   },
   {
     "type": "then",
+    "named": false
+  },
+  {
+    "type": "type",
     "named": false
   },
   {
