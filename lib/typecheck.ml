@@ -1044,7 +1044,9 @@ let group_fundefs decls =
 
 (* Register data type constructors in env *)
 let register_data ?(aliases=Hashtbl.create 0) env (name, params, variants) =
-  (* Build a fresh tyvar per param *)
+  (* Build a fresh tyvar per param.  We enter a level so the freshly created
+     vars sit at level (current + 1); after exit_level the surrounding scope
+     drops back to current_level and `generalize` can quantify them. *)
   enter_level ();
   let param_vars = List.map (fun p -> (p, fresh_var ())) params in
   let result_t =
@@ -1053,7 +1055,7 @@ let register_data ?(aliases=Hashtbl.create 0) env (name, params, variants) =
       (TCon name)
       param_vars
   in
-  List.iter (fun v ->
+  let ctor_monos = List.map (fun v ->
     let rec go = function
       | Ast.TyCon n ->
         (try List.assoc n param_vars
@@ -1073,10 +1075,15 @@ let register_data ?(aliases=Hashtbl.create 0) env (name, params, variants) =
     let ctor_t =
       List.fold_right (fun a acc -> TFun (a, acc)) arg_types result_t
     in
-    Hashtbl.replace env.ctors v.con_name (generalize ctor_t)
-  ) variants;
+    (v.Ast.con_name, ctor_t)
+  ) variants in
   Hashtbl.replace env.type_ctors name (List.map (fun v -> v.con_name) variants);
-  exit_level ()
+  exit_level ();
+  (* Generalize after dropping back to the outer level so the parameter TVars
+     get quantified into the constructor schemes. *)
+  List.iter (fun (cname, ct) ->
+    Hashtbl.replace env.ctors cname (generalize ct)
+  ) ctor_monos
 
 (* Register a record declaration in env.  Mirrors register_data.
    Errors on field-name collision (the resolver should have caught it first,
@@ -1223,8 +1230,11 @@ let check_impl env (decl : decl) = match decl with
         let actual_t = infer env impl_expr in
         exit_level ();
         (try unify expected_t actual_t
-         with Type_error (TypeMismatch (a, b), _) ->
-           fail (MethodTypeMismatch (mname, a, b)))
+         with
+         | Type_error (TypeMismatch (a, b), _) ->
+           fail (MethodTypeMismatch (mname, a, b))
+         | Type_error (InfiniteType _ as e, _) ->
+           fail e)
     ) info.iface_methods;
     (* Check for extra methods that are not part of the interface *)
     List.iter (fun (n, _, _) ->
@@ -1484,6 +1494,14 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   let env = initial_env () in
   seed_builtin_interfaces env;
 
+  (* Prepend core stdlib so its data types, interfaces, and impls are in scope
+     for all user code.  Prelude declarations are processed through the same
+     Phase 1–5 pipeline as user code; the synthetic __num__ / __ord__ /
+     __semigroup__ witness entries added by seed_builtin_interfaces survive
+     because register_interface only replaces interface info (not method_iface
+     entries), so the operator constraint checking machinery keeps working. *)
+  let prog = Prelude.program @ prog in
+
   (* Phase 1: register data, record, interface, impl, and extern declarations *)
   (* First sub-pass: collect all type aliases so they are available for expansion *)
   List.iter (function
@@ -1500,6 +1518,10 @@ let check_program (prog : program) : (ident * scheme) list * string list =
     | DRecord (_, n, ps, fs, _) -> register_record ~aliases:env.aliases env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
       let ms = register_interface ~aliases:env.aliases env (iface_name, type_params, methods) in
+      (* Prepend so later (user-side) declarations come first in the list:
+         List.assoc on the returned env finds them, and the fold_right below
+         pushes them onto env.vars last (i.e., at the front), so name lookups
+         during type-checking also resolve to the user's version. *)
       iface_method_schemes := ms @ !iface_method_schemes
     | DExtern (_, name, ast_ty) ->
       let scheme =
@@ -1526,7 +1548,11 @@ let check_program (prog : program) : (ident * scheme) list * string list =
     let e = List.fold_left
       (fun e (n, t) -> extend_var e n (monotype t))
       env placeholders in
-    let e = List.fold_left (fun e (n, s) -> extend_var e n s) e !iface_method_schemes in
+    (* fold_right so the LAST item in iface_method_schemes is prepended FIRST
+       (lands at the bottom of env.vars), and the FIRST item — the most
+       recently declared interface, e.g. a user-side redeclaration of a
+       prelude interface — is prepended LAST and wins lookup. *)
+    let e = List.fold_right (fun (n, s) e -> extend_var e n s) !iface_method_schemes e in
     List.fold_left (fun e (n, s) -> extend_var e n s) e !extern_schemes
   ) in
 
@@ -1584,6 +1610,22 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   in
   infer_and_check_effects ~extern_decls:user_extern_decls groups;
 
+  (* Validate the built-in registry against what the prelude loaded.
+     This is a compiler-build invariant: if any expected stdlib name is
+     absent the stdlib was edited in a breaking way. *)
+  List.iter (fun (role : Builtins.iface_role) ->
+    if not (Hashtbl.mem (!env).interfaces role.iface) then
+      failwith (Printf.sprintf
+        "Builtins registry error: interface '%s' (role '%s') not found after \
+         loading core.mdk" role.iface role.role)
+  ) Builtins.ifaces;
+  List.iter (fun (role : Builtins.ctor_role) ->
+    if not (Hashtbl.mem (!env).ctors role.ctor) then
+      failwith (Printf.sprintf
+        "Builtins registry error: constructor '%s' (role '%s') not found after \
+         loading core.mdk" role.ctor role.role)
+  ) Builtins.ctors;
+
   (* Include interface methods and extern schemes in the returned env *)
   let final_env = !env in
   (results @ !iface_method_schemes @ !extern_schemes, List.rev !(final_env.warnings))
@@ -1601,6 +1643,9 @@ let typecheck_module
   current_loc := None;
   let env = initial_env () in
   seed_builtin_interfaces env;
+
+  (* Core stdlib is always available in every module. *)
+  let prog = Prelude.program @ prog in
 
   (* Seed env with all known module exports *)
   List.iter (fun te ->
@@ -1685,7 +1730,7 @@ let typecheck_module
   exit_level ();
   let env = ref (
     let e = List.fold_left (fun e (n, t) -> extend_var e n (monotype t)) env placeholders in
-    let e = List.fold_left (fun e (n, s) -> extend_var e n s) e !iface_method_schemes in
+    let e = List.fold_right (fun (n, s) e -> extend_var e n s) !iface_method_schemes e in
     let e = List.fold_left (fun e (n, s) -> extend_var e n s) e !extern_schemes in
     List.fold_left (fun e (n, s) -> extend_var e n s) e !use_schemes
   ) in
@@ -1874,7 +1919,7 @@ let check_repl_decl (env : env ref) (decls : decl list)
     let e = List.fold_left
       (fun e (n, t) -> extend_var e n (monotype t))
       !env placeholders in
-    let e = List.fold_left (fun e (n, s) -> extend_var e n s) e !iface_method_schemes in
+    let e = List.fold_right (fun (n, s) e -> extend_var e n s) !iface_method_schemes e in
     List.fold_left (fun e (n, s) -> extend_var e n s) e !extern_schemes
   );
   let results = List.map (fun (name, sig_opt, clauses) ->

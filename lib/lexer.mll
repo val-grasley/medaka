@@ -119,24 +119,32 @@ rule token = parse
 and read = parse
   | white+         { read lexbuf }
   | "--" [^ '\n']* { read lexbuf }
-  | newline white* {
-      Lexing.new_line lexbuf;
+  | (newline white*)+ {
+      (* Consume one or more (newline + optional indent) sequences so that
+         blank lines inside a block do not trigger spurious DEDENT tokens.
+         Only the indent of the final non-blank line is used for INDENT/DEDENT. *)
       let s = Lexing.lexeme lexbuf in
-      (* Skip the leading newline char(s) to count only the indent *)
-      let nl_len =
-        if String.length s > 0 && s.[0] = '\r' then 2 else 1
-      in
-      let indent =
-        let i = ref 0 in
-        for k = nl_len to String.length s - 1 do
-          match s.[k] with
-          | ' '  -> incr i
-          | '\t' -> i := (!i / 8 + 1) * 8
-          | _    -> ()
-        done;
-        !i
-      in
-      handle_indent indent;
+      let n = String.length s in
+      let indent = ref 0 in
+      let i = ref 0 in
+      while !i < n do
+        if s.[!i] = '\r' && !i + 1 < n && s.[!i + 1] = '\n' then begin
+          Lexing.new_line lexbuf;
+          indent := 0;
+          i := !i + 2
+        end else if s.[!i] = '\n' then begin
+          Lexing.new_line lexbuf;
+          indent := 0;
+          incr i
+        end else begin
+          (match s.[!i] with
+           | ' '  -> incr indent
+           | '\t' -> indent := (!indent / 8 + 1) * 8
+           | _    -> ());
+          incr i
+        end
+      done;
+      handle_indent !indent;
       token lexbuf
     }
 

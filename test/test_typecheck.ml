@@ -580,21 +580,24 @@ impl Show Bool where
 |}
   "show" "a -> String"
 
-(* Higher-kinded interface — Mappable f *)
+(* Higher-kinded interface — MyMappable f (named distinctly from the prelude's
+   Mappable so the prelude's existing impls don't conflict with the test's
+   different method name). *)
 let t_iface_hkt = assert_type
-  {|interface Mappable f where
+  {|interface MyMappable f where
   fmap : (a -> b) -> f a -> f b
 |}
   "fmap" "(a -> b) -> c a -> c b"
 
 (* Named impl — impl_name (lowercase per parser grammar) is stored, no type error.
-   The parser uses IDENT for the impl name so it must be lowercase. *)
+   The parser uses IDENT for the impl name so it must be lowercase.
+   Uses MyMonoid to avoid clashing with the prelude's Monoid. *)
 let t_iface_named_impl = assert_type
-  {|interface Monoid a where
+  {|interface MyMonoid a where
   mempty : a
   mappend : a -> a -> a
 
-impl additive of Monoid Int where
+impl additive of MyMonoid Int where
   mempty = 0
   mappend x y = x + y
 |}
@@ -708,15 +711,15 @@ f = sep
 
 (* Multiple impls, one marked default — default is selected without error at a concrete type *)
 let t_constraint_default_impl = assert_type
-  {|interface Monoid a where
+  {|interface MyMonoid a where
   mempty : a
   mappend : a -> a -> a
 
-default impl additive of Monoid Int where
+default impl additive of MyMonoid Int where
   mempty = 0
   mappend x y = x + y
 
-impl multiplicative of Monoid Int where
+impl multiplicative of MyMonoid Int where
   mempty = 1
   mappend x y = x * y
 
@@ -1360,11 +1363,11 @@ x = Foo 1 ++ Foo 2
 
 let t_monoid_string_empty =
   assert_type
-    {|interface Semigroup a where
+    {|interface MySemigroup a where
     append : a -> a -> a
-interface Monoid a requires Semigroup a where
+interface MyMonoid a requires MySemigroup a where
     empty : a
-impl Monoid String where
+impl MyMonoid String where
     empty = ""
 x : String
 x = empty

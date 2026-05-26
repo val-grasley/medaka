@@ -5,11 +5,14 @@
 
 export data Ordering = Lt | Eq | Gt
 
+export data Option a = Some a | None
+
+export data Result e a = Ok a | Err e
+
 -- Interfaces
 
 export interface Eq a where
     eq : a -> a -> Bool
-    neq : a -> a -> Bool
 
 export
 neq : Eq a => a -> a -> Bool
@@ -96,7 +99,7 @@ export default impl Mappable (Result e) where
     map f (Ok a) = Ok (f a)
     map _ e = e
 
-export interface (Mappable f) => Applicative f where
+export interface Applicative f requires Mappable f where
     pure : a -> f a
     ap : f (a -> b) -> f a -> f b
 
@@ -118,11 +121,11 @@ export impl Applicative Option where
 export impl Applicative (Result e) where
     pure a = Ok a
 
-    ap e@(Err _) _ = e
-    ap _ e@(Err _) = e
     ap (Ok f) (Ok a) = Ok (f a)
+    ap (Err e) _ = Err e
+    ap _ (Err e) = Err e
 
-export interface (Applicative m) => Thenable m where
+export interface Thenable m requires Applicative m where
     andThen : m a -> (a -> m b) -> m b
 
 export 
@@ -150,7 +153,7 @@ export impl Thenable Option where
     andThen (Some a) f = f a
 
 export impl Thenable (Result e) where
-    andThen e@(Err _) _ = e
+    andThen (Err e) _ = Err e
     andThen (Ok a) f = f a
 
 export interface Foldable t where
@@ -162,11 +165,11 @@ export interface Foldable t where
 
 export
 any : Foldable t => (a -> Bool) -> t a -> Bool
-any f = fold (acc x => acc || f x) False
+any f = fold (acc => x => acc || f x) False
 
 export
 all : Foldable t => (a -> Bool) -> t a -> Bool
-all f = fold (acc x => acc && f x) True
+all f = fold (acc => x => acc && f x) True
 
 export impl Foldable List where
     fold _ acc [] = acc

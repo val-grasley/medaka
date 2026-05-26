@@ -60,6 +60,32 @@ let built_in_effects = [
   "IO"; "Mut"; "Async"; "Panic"; "Rand"; "Time";
 ]
 
+(* Names derived once from the parsed prelude (stdlib/core.mdk). *)
+let prelude_types : string list =
+  List.filter_map (function
+    | Ast.DData (_, n, _, _, _) | Ast.DRecord (_, n, _, _, _)
+    | Ast.DNewtype (_, n, _, _, _, _) -> Some n
+    | _ -> None) Prelude.program
+
+let prelude_constructors : string list =
+  List.concat_map (function
+    | Ast.DData (_, _, _, vs, _) -> List.map (fun v -> v.Ast.con_name) vs
+    | Ast.DNewtype (_, _, _, con, _, _) -> [con]
+    | _ -> []) Prelude.program
+
+let prelude_interfaces : (string * string list) list =
+  List.filter_map (function
+    | Ast.DInterface { iface_name; methods; _ } ->
+      Some (iface_name, List.map (fun m -> m.Ast.method_name) methods)
+    | _ -> None) Prelude.program
+
+let prelude_values : string list =
+  List.concat_map (function
+    | Ast.DFunDef (_, n, _, _) -> [n]
+    | Ast.DTypeSig (_, n, _)   -> [n]
+    | Ast.DImpl { methods; _ } -> List.map (fun (n, _, _) -> n) methods
+    | _ -> []) Prelude.program
+
 (* ── Module exports (public interface of a resolved module) ── *)
 
 type module_exports = {
@@ -103,6 +129,14 @@ let create_env () =
   List.iter (fun n -> Hashtbl.replace env.types n ()) primitive_types;
   List.iter (fun n -> Hashtbl.replace env.constructors n ()) primitive_constructors;
   List.iter (fun n -> Hashtbl.replace env.values n ()) primitive_values;
+  (* Seed names from the core stdlib prelude *)
+  List.iter (fun n -> Hashtbl.replace env.types n ()) prelude_types;
+  List.iter (fun n -> Hashtbl.replace env.constructors n ()) prelude_constructors;
+  List.iter (fun (iface, methods) ->
+    Hashtbl.replace env.interfaces iface ();
+    Hashtbl.replace env.iface_methods iface methods
+  ) prelude_interfaces;
+  List.iter (fun n -> Hashtbl.replace env.values n ()) prelude_values;
   env
 
 (* ── Pattern utilities ─────────────────────────── *)
