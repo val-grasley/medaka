@@ -98,6 +98,8 @@ type type_error =
   | ImplArityMismatch  of ident * int * int   (* iface_name, expected params, got type_args *)
   | NoImplFound        of ident * mono list        (* iface_name, concrete type args *)
   | AmbiguousImpl      of ident * mono list        (* iface_name, concrete type args *)
+  | UnknownImplName    of ident * ident * mono list (* iface_name, hint_name, concrete type args *)
+  | MultipleDefaultImpls of ident * mono list      (* iface_name, concrete type args *)
   | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
   | NotARecord          of ident                   (* field assignment on non-record type *)
   | RecursiveTypeAlias  of ident                   (* type alias that expands to itself *)
@@ -106,6 +108,7 @@ type type_error =
 exception Type_error of type_error * Ast.loc option
 
 let current_loc : Ast.loc option ref = ref None
+let current_impl_hint : string option ref = ref None
 
 let fail e = raise (Type_error (e, !current_loc))
 
@@ -329,6 +332,12 @@ let pp_error = function
   | AmbiguousImpl (iface, args) ->
     Printf.sprintf "Ambiguous: multiple impls of %s for %s — use @ImplName to disambiguate"
       iface (String.concat " " (List.map pp_mono args))
+  | UnknownImplName (iface, name, args) ->
+    Printf.sprintf "No impl named '%s' found for %s %s"
+      name iface (String.concat " " (List.map pp_mono args))
+  | MultipleDefaultImpls (iface, args) ->
+    Printf.sprintf "Multiple default impls of %s for %s — at most one default allowed"
+      iface (String.concat " " (List.map pp_mono args))
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
   | NotARecord x ->
@@ -347,7 +356,7 @@ type env = {
   interfaces    : (ident, iface_info) Hashtbl.t;  (* interface name → info *)
   method_iface  : (ident, ident) Hashtbl.t;    (* method name → interface name *)
   impls         : impl_entry list ref;          (* all registered impls *)
-  method_usages : (ident * tyvar_info ref list) list ref;  (* (method, param_var_refs) *)
+  method_usages : (ident * tyvar_info ref list * string option) list ref;  (* (method, param_var_refs, impl_hint) *)
   fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
     (* fn_name → [(iface_name, [bound_var_ids_in_scheme])] *)
   constraint_obligations : (ident * mono list) list ref;
@@ -661,7 +670,9 @@ let rec infer env = function
       | Some iface_name ->
         let info = Hashtbl.find env.interfaces iface_name in
         let (t, param_vars) = instantiate_method scheme info.iface_param_ids in
-        env.method_usages := (x, param_vars) :: !(env.method_usages);
+        let hint = !current_impl_hint in
+        current_impl_hint := None;
+        env.method_usages := (x, param_vars, hint) :: !(env.method_usages);
         t
       | None ->
         let (sub, mono) = instantiate_raw scheme in
@@ -677,11 +688,17 @@ let rec infer env = function
     end
 
   | EApp (f, EVar hint) when String.length hint > 0 && hint.[0] = '@' ->
-    infer env f
+    (* @ImplName is a disambiguation hint — set it as a pending impl name so
+       the next method usage records it, then drop the arg from f's type. *)
+    current_impl_hint := Some (String.sub hint 1 (String.length hint - 1));
+    let t = infer env f in
+    current_impl_hint := None;   (* clear if f wasn't a method call *)
+    t
   | EApp (f, ELoc (_, EVar hint)) when String.length hint > 0 && hint.[0] = '@' ->
-    (* @ImplName is a disambiguation hint — drop it silently so it does not
-       consume an argument position in f's type.  Full impl selection deferred. *)
-    infer env f
+    current_impl_hint := Some (String.sub hint 1 (String.length hint - 1));
+    let t = infer env f in
+    current_impl_hint := None;
+    t
 
   | EApp (f, x) ->
     let tf = infer env f in
@@ -1039,7 +1056,7 @@ and binop_type env op l r =
     let a = fresh_var () in
     let r = match a with TVar r -> r | _ -> assert false in
     unify tl a; unify tr a;
-    env.method_usages := (method_name, [r]) :: !(env.method_usages);
+    env.method_usages := (method_name, [r], None) :: !(env.method_usages);
     a
   in
   let method_of op =
@@ -1329,6 +1346,33 @@ let register_impl env = function
     env.impls := entry :: !(env.impls)
   | _ -> ()
 
+(* Structural key for coherence: TVars become "_" (wildcard), so two default
+   impls for `impl F of Iface (List a)` and `impl G of Iface (List b)` are
+   caught as duplicates.  Does not catch partial overlap like (List Int) vs
+   (List a) — full overlap detection would require unification. *)
+let rec impl_type_pattern t = match normalize t with
+  | TVar _ -> "_"
+  | TCon n -> n
+  | TApp (a, b) -> "(" ^ impl_type_pattern a ^ " " ^ impl_type_pattern b ^ ")"
+  | TFun (a, b) -> impl_type_pattern a ^ " -> " ^ impl_type_pattern b
+  | TTuple ts   -> "(" ^ String.concat "," (List.map impl_type_pattern ts) ^ ")"
+
+(* After all impls are registered, ensure at most one default impl per
+   (iface, type_pattern) pair. *)
+let check_coherence env =
+  let seen : (string, bool) Hashtbl.t = Hashtbl.create 8 in
+  List.iter (fun entry ->
+    if entry.impl_is_default then begin
+      let type_key = String.concat " "
+        (List.map impl_type_pattern entry.impl_type_mono) in
+      let key = entry.impl_iface ^ "\x00" ^ type_key in
+      if Hashtbl.mem seen key then
+        fail (MultipleDefaultImpls (entry.impl_iface, entry.impl_type_mono))
+      else
+        Hashtbl.add seen key true
+    end
+  ) !(env.impls)
+
 (* Push hardcoded impl_entry records for primitive types satisfying Num, Ord,
    and Semigroup.  These have no AST counterpart (so they don't go through
    check_impl) and exist only so operator constraints — e.g. `Num Int` raised
@@ -1379,7 +1423,7 @@ let check_method_usages env =
     | TApp (a, b) | TFun (a, b) -> is_concrete a && is_concrete b
     | TTuple ts -> List.for_all is_concrete ts
   in
-  List.iter (fun (method_name, param_vars) ->
+  List.iter (fun (method_name, param_vars, hint_opt) ->
     let iface_name = Hashtbl.find env.method_iface method_name in
     let n = n_iface_params iface_name in
     if n = 0 || List.length param_vars <> n then ()
@@ -1394,13 +1438,21 @@ let check_method_usages env =
             (fun p c -> mono_matches ~pattern:p ~concrete:c)
             e.impl_type_mono concrete_args
         ) !(env.impls) in
-        match matching with
-        | [] -> fail (NoImplFound (iface_name, concrete_args))
-        | [_] -> ()
-        | entries ->
-          let defaults = List.filter (fun e -> e.impl_is_default) entries in
-          if List.length defaults = 1 then ()
-          else fail (AmbiguousImpl (iface_name, concrete_args))
+        if matching = [] then fail (NoImplFound (iface_name, concrete_args))
+        else match hint_opt with
+        | None ->
+          (match matching with
+          | [_] -> ()
+          | entries ->
+            let defaults = List.filter (fun e -> e.impl_is_default) entries in
+            if List.length defaults = 1 then ()
+            else fail (AmbiguousImpl (iface_name, concrete_args)))
+        | Some name ->
+          let named = List.filter (fun e -> e.impl_name = Some name) matching in
+          (match named with
+          | [] -> fail (UnknownImplName (iface_name, name, concrete_args))
+          | [_] -> ()
+          | _ -> fail (AmbiguousImpl (iface_name, concrete_args)))
       end
     end
   ) !(env.method_usages)
@@ -1570,6 +1622,7 @@ let program_is_core (prog : program) : bool =
 let check_program (prog : program) : (ident * scheme) list * string list =
   reset_state ();
   current_loc := None;
+  current_impl_hint := None;
   let env = initial_env () in
   seed_builtin_impls env;
 
@@ -1614,6 +1667,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   ) prog;
   (* register_impl runs after all interfaces are registered *)
   List.iter (register_impl env) prog;
+  check_coherence env;
 
   (* Phase 2: collect type sigs and fn clause groups *)
   let groups = group_fundefs prog in
@@ -1720,6 +1774,7 @@ let typecheck_module
     : module_type_exports * (ident * scheme) list * string list =
   reset_state ();
   current_loc := None;
+  current_impl_hint := None;
   let env = initial_env () in
   seed_builtin_impls env;
 
@@ -1803,6 +1858,7 @@ let typecheck_module
     | _ -> ()
   ) prog;
   List.iter (register_impl env) prog;
+  check_coherence env;
 
   let groups = group_fundefs prog in
   enter_level ();
@@ -1959,6 +2015,7 @@ let copy_tc_env (e : env) : env = {
 let check_repl_decl (env : env ref) (decls : decl list)
     : (ident * scheme) list * string list =
   current_loc := None;
+  current_impl_hint := None;
   (* First sub-pass: collect all type aliases *)
   List.iter (function
     | DTypeAlias (_, n, ps, rhs) -> register_alias !env (n, ps, rhs)
@@ -1986,6 +2043,7 @@ let check_repl_decl (env : env ref) (decls : decl list)
     | _ -> ()
   ) decls;
   List.iter (register_impl !env) decls;
+  check_coherence !env;
   let groups = group_fundefs decls in
   enter_level ();
   let placeholders = List.map (fun (n, _, _) -> (n, fresh_var ())) groups in
@@ -2059,6 +2117,7 @@ let make_repl_tc_env () : env ref =
    Returns (mono_type, warnings). *)
 let infer_repl_expr (env : env) (e : expr) : mono * string list =
   current_loc := None;
+  current_impl_hint := None;
   enter_level ();
   let t = infer env e in
   exit_level ();

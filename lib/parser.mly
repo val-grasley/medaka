@@ -664,6 +664,18 @@ inner_impl_decl:
         methods    = $10;
       }
     }
+  | option(DEFAULT) IMPL UPPER OF UPPER nonempty_list(ty_atom) option(impl_requires) WHERE
+    INDENT nonempty_list(impl_method) DEDENT newlines
+    { fun is_pub -> DImpl {
+        is_pub;
+        is_default = $1 <> None;
+        iface_name = $5;
+        type_args  = $6;
+        impl_name  = Some $3;
+        requires   = Option.value ~default:[] $7;
+        methods    = $10;
+      }
+    }
 
 impl_requires:
   | REQUIRES separated_nonempty_list(COMMA, impl_requires_entry)  { $2 }

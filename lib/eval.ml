@@ -213,6 +213,11 @@ and eval env expr =
 
   | EVar x -> lookup env x
 
+  | EApp (f, EVar hint) when String.length hint > 0 && hint.[0] = '@' ->
+    eval env f
+  | EApp (f, ELoc (_, EVar hint)) when String.length hint > 0 && hint.[0] = '@' ->
+    eval env f
+
   | EApp (f, x) ->
     let fv = eval env f in
     let xv = eval env x in
