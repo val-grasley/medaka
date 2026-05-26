@@ -237,7 +237,7 @@ let rec map_expr f e =
     | ELoc (loc, inner)       -> ELoc (loc, map_expr f inner)
     | EApp (e1, e2)           -> EApp (map_expr f e1, map_expr f e2)
     | ELam (ps, body)         -> ELam (ps, map_expr f body)
-    | ELet (m, p, e1, e2)    -> ELet (m, p, map_expr f e1, map_expr f e2)
+    | ELet (m, r, p, e1, e2) -> ELet (m, r, p, map_expr f e1, map_expr f e2)
     | EMatch (e0, arms)       ->
         EMatch (map_expr f e0,
           List.map (fun (p, g, b) -> (p, Option.map (map_expr f) g, map_expr f b)) arms)
@@ -310,7 +310,7 @@ let desugar_list_comp body quals =
     | LCGuard cond ->
         EIf (cond, acc, EListLit [])
     | LCLet (mut, pat, e) ->
-        ELet (mut, pat, e, acc)
+        ELet (mut, false, pat, e, acc)
   ) quals (EListLit [body])
 
 let desugar_list_comps prog =

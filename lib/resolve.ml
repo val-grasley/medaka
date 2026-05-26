@@ -392,7 +392,12 @@ let rec check_expr env scope errors e =
     List.iter (check_pat env errors) pats;
     let scope' = List.concat_map pat_bindings pats @ scope in
     check_expr env scope' errors body
-  | ELet (_, pat, e1, e2) ->
+  | ELet (_, true, PVar f, e1, e2) ->
+    (* Self-recursive: f is in scope in its own RHS *)
+    let scope_rec = f :: scope in
+    check_expr env scope_rec errors e1;
+    check_expr env scope_rec errors e2
+  | ELet (_, _, pat, e1, e2) ->
     check_pat env errors pat;
     check_expr env scope errors e1;     (* RHS in outer scope *)
     let scope' = pat_bindings pat @ scope in

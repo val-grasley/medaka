@@ -122,26 +122,26 @@ let test_expr_lambda_multi_arg () =
 
 let test_expr_let () =
   match parse_expr "let x = 5 in x + 1\n" with
-  | ELet (false, PVar "x", ELit (LInt 5), EBinOp ("+", EVar "x", ELit (LInt 1))) -> ()
+  | ELet (false, false, PVar "x", ELit (LInt 5), EBinOp ("+", EVar "x", ELit (LInt 1))) -> ()
   | _ -> failwith "wrong"
 
 let test_expr_let_mut () =
   match parse_expr "let mut x = 5 in x\n" with
-  | ELet (true, PVar "x", ELit (LInt 5), EVar "x") -> ()
+  | ELet (true, false, PVar "x", ELit (LInt 5), EVar "x") -> ()
   | _ -> failwith "wrong"
 
 let test_expr_let_fn_one_arg () =
-  (* let f x = x + 1 in f 5  ⇒  let f = (x => x + 1) in f 5 *)
+  (* let f x = x + 1 in f 5  ⇒  ELet(false, true, PVar "f", ELam..., ...) *)
   match parse_expr "let f x = x + 1 in f 5\n" with
-  | ELet (false, PVar "f",
+  | ELet (false, true, PVar "f",
           ELam ([PVar "x"], EBinOp ("+", EVar "x", ELit (LInt 1))),
           EApp (EVar "f", ELit (LInt 5))) -> ()
   | _ -> failwith "wrong"
 
 let test_expr_let_fn_multi_arg () =
-  (* let g x y = x + y in g 1 2  ⇒  let g = (x => y => x + y) in g 1 2 *)
+  (* let g x y = x + y in g 1 2  ⇒  ELet(false, true, PVar "g", ELam..., ...) *)
   match parse_expr "let g x y = x + y in g 1 2\n" with
-  | ELet (false, PVar "g",
+  | ELet (false, true, PVar "g",
           ELam ([PVar "x"],
                 ELam ([PVar "y"], EBinOp ("+", EVar "x", EVar "y"))),
           EApp (EApp (EVar "g", ELit (LInt 1)), ELit (LInt 2))) -> ()

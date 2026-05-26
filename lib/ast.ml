@@ -54,7 +54,7 @@ and expr =
   | EVar          of ident
   | EApp          of expr * expr
   | ELam          of pat list * expr                    (* pat+ => body *)
-  | ELet          of bool * pat * expr * expr           (* let [mut] p = e1 in e2 *)
+  | ELet          of bool * bool * pat * expr * expr    (* let [mut] [is_fun_def] p = e1 in e2 *)
   | EMatch        of expr * (pat * expr option * expr) list  (* match e; pat [if g] => e *)
   | EIf           of expr * expr * expr
   | EBinOp        of string * expr * expr
@@ -183,7 +183,7 @@ let rec pp_expr = function
   | EVar x              -> x
   | EApp (f, x)         -> Printf.sprintf "(%s %s)" (pp_expr f) (pp_expr x)
   | ELam (ps, e)        -> Printf.sprintf "(%s => %s)" (String.concat " " (List.map pp_pat ps)) (pp_expr e)
-  | ELet (mut, p, e1, e2) ->
+  | ELet (mut, _, p, e1, e2) ->
     Printf.sprintf "(let %s%s = %s in %s)"
       (if mut then "mut " else "") (pp_pat p) (pp_expr e1) (pp_expr e2)
   | EMatch (e, arms) ->
@@ -241,7 +241,7 @@ let rec strip_locs_expr = function
   | ELoc (_, e)            -> strip_locs_expr e
   | EApp (f, x)            -> EApp (strip_locs_expr f, strip_locs_expr x)
   | ELam (ps, e)           -> ELam (ps, strip_locs_expr e)
-  | ELet (m, p, e1, e2)   -> ELet (m, p, strip_locs_expr e1, strip_locs_expr e2)
+  | ELet (m, f, p, e1, e2) -> ELet (m, f, p, strip_locs_expr e1, strip_locs_expr e2)
   | EMatch (e, arms)       ->
     EMatch (strip_locs_expr e,
             List.map (fun (p, g, b) -> (p, Option.map strip_locs_expr g, strip_locs_expr b)) arms)

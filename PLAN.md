@@ -20,15 +20,15 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-590 tests pass across 8 test suites:
+601 tests pass across 8 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
 | Parser            | `test/test_parser.ml`           | 110   | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 81    | parse → print → parse yields the same AST             |
+| Round-trip        | `test/test_roundtrip.ml`        | 84    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 55    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 214   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 90    | Runtime values, recursion, do-blocks, Ref, errors, escapes |
+| Type checker      | `test/test_typecheck.ml`        | 219   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 93    | Runtime values, recursion, do-blocks, Ref, errors, escapes |
 | Run               | `test/test_run.ml`              | 8     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 11    | process_item, :load atomicity, rollback, :browse      |
 | Loader            | `test/test_loader.ml`           | 21    | Multi-file imports, topo sort, cycle detection, prelude no-op |
@@ -468,7 +468,7 @@ backend.
 
 Not in scope here (tracked in Section 5): polymorphic numeric/comparison
 operators, higher-order effect tracking, `@Name` impl selection, cons-pattern
-`DoBind`, `r.value = e` field assignment, local recursion. These are revisited
+`DoBind`, `r.value = e` field assignment. These are revisited
 once the stdlib forces real use cases.
 
 ### Phase 9: `extern` declarations ✅ DONE
@@ -1099,20 +1099,35 @@ deriving (Eq, Show, Ord)`).  Remaining work:
 
 ---
 
-### Phase 27: Where-bound mutual recursion + local `let-rec` ⏳ TODO
+### Phase 27: Where-bound mutual recursion + local `let-rec` ✅ DONE
 
-Local recursion is currently impossible — `let f x = ... in f` does not see
-itself in its own body because `ELet` is non-recursive sugar.  Two routes:
+**Goal.** Make `let f x = ...` implicitly self-recursive so helpers can be
+defined locally without a top-level definition.
 
-1. Treat every `let f x = ...` (i.e. with at least one `pat_atom` argument)
-   as implicitly recursive; the desugar would wrap the RHS in a Y-combinator
-   or generate a thunked fixpoint.
-2. Add an explicit `letrec` form to the AST and the grammar; non-recursive
-   `let` keeps current semantics.
+**What was added.**
 
-Haskell-style implicit recursion (option 1) is more ergonomic but more
-surprising.  The design doc is silent — needs a decision before
-implementation.
+- `ELet` widened to `bool * bool * pat * expr * expr`; the second bool is
+  `is_fun_def`, set to `true` by the parser when the form has at least one
+  explicit argument (`let IDENT pat_atom+ = body`).  Value bindings (`let x =
+  expr`) remain non-recursive (`is_fun_def = false`).
+- `desugar_where` updated: where-helpers with arguments get `is_fun_def = true`
+  so they can call themselves.
+- **Typechecker** (`infer`): when `is_fun_def = true` and `pat = PVar x`, the
+  RHS is typed with `x` pre-bound to a fresh placeholder TVar (same
+  enter/exit-level + unify + generalize pattern as top-level `group_fundefs`).
+- **Evaluator**: a mutable `ref VUnit` frame is prepended to the env before
+  evaluating the RHS; after the RHS produces a closure, the ref cell is
+  updated so all recursive calls see the closure.
+- **Resolver**: `ELet (_, true, PVar f, e1, e2)` — `f` is added to scope
+  for both `e1` (enabling the self-reference) and `e2`.
+- **Printer**: `ELet (_, true, PVar f, ELam ..., e2)` prints as
+  `let f x = body in e2` so round-trips are preserved.
+- All other ELet match sites updated to accept the new 5-tuple.
+- 11 new tests: +3 round-trip, +5 typecheck, +3 eval. **601 tests total.**
+
+**Known gap.** True mutual recursion inside a single `where` block (`f` calls
+`g` and `g` calls `f`) still requires an `ELetGroup` AST node (all names
+pre-bound before any body is evaluated). Deferred to Phase 25.
 
 ---
 
@@ -1278,9 +1293,10 @@ These aren't blockers, but a less-careful change could trip over them:
   type is fully type-checked; actual mutation happens at runtime (Phase 10 ✅).
 - `r.value = expr` field-assignment syntax for `Ref` is not yet supported.
   Use `set_ref r expr` instead.
-- `let f x = ...` is purely sugar; the parser desugars to nested lambdas at
-  parse time. There is no `let-rec` for locals; if you need local recursion,
-  use a top-level def.
+- `let f x = ...` is implicitly self-recursive (Phase 27 ✅). `let x = expr`
+  (no arguments) is still non-recursive. True mutual recursion between
+  `where`-helpers (f calls g and g calls f) requires an `ELetGroup` node —
+  deferred to Phase 25.
 - Primitive values (`pure`, `print`, `map`, …) now live exclusively in
   `lib/runtime.ml` (Phase 9 ✅). Primitive types (`List`, `Option`, …) are
   still hard-coded in `resolve.ml`/`typecheck.ml` until the stdlib lands.

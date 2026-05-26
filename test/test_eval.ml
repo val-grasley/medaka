@@ -435,6 +435,23 @@ let t_dispatch_list_empty = assert_val (dispatch_iface ^ {|
 r = describe ([])
 |}) "r" (VString "empty-list")
 
+(* ── Local let-rec (Phase 27) ─────────────────────────────────────────── *)
+
+let t_let_rec_fact = assert_val
+  "result = let fact n = if n <= 0 then 1 else n * fact (n - 1) in fact 5\n"
+  "result" (VInt 120)
+
+let t_let_rec_acc = assert_val
+  "result = let go acc n = if n <= 0 then acc else go (acc + n) (n - 1) in go 0 5\n"
+  "result" (VInt 15)
+
+let t_where_self_rec = assert_val
+  {|sumTo n = go 0 n where
+    go acc k = if k <= 0 then acc else go (acc + k) (k - 1)
+result = sumTo 5
+|}
+  "result" (VInt 15)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -577,5 +594,10 @@ let () =
       test_case "\\0"          `Quick t_escape_null;
       test_case "\\r"          `Quick t_escape_cr;
       test_case "\\u{2603}"    `Quick t_escape_unicode;
+    ];
+    "local let-rec (Phase 27)", [
+      test_case "factorial"        `Quick t_let_rec_fact;
+      test_case "accumulator"      `Quick t_let_rec_acc;
+      test_case "where self-rec"   `Quick t_where_self_rec;
     ];
   ]

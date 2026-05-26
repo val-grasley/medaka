@@ -297,4 +297,9 @@ let () =
       test_case "multi gen"  `Quick (mk "r = [(x, y) | x <- xs, y <- ys]\n");
       test_case "let"        `Quick (mk "r = [y | x <- xs, let y = x * x, y > 2]\n");
     ];
+    "local let-rec (Phase 27)", [
+      test_case "fun-def form"  `Quick (mk "r = let f x = x + 1 in f 5\n");
+      test_case "multi-arg"     `Quick (mk "r = let g x y = x + y in g 1 2\n");
+      test_case "value form unchanged" `Quick (mk "r = let x = 5 in x + 1\n");
+    ];
   ]

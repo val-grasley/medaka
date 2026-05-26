@@ -181,7 +181,21 @@ and print_expr_raw p = function
     ) pats;
     write p " => ";
     print_expr p prec_top body
-  | ELet (mut, pat, e1, e2) ->
+  | ELet (mut, true, PVar f, rhs, e2) ->
+    let rec unwrap_lams acc = function
+      | ELam (pats, body) -> unwrap_lams (acc @ pats) body
+      | ELoc (_, e)       -> unwrap_lams acc e
+      | body              -> (acc, body)
+    in
+    let (args, body) = unwrap_lams [] rhs in
+    write p (if mut then "let mut " else "let ");
+    write p f;
+    List.iter (fun pat -> write p " "; print_pat p pat) args;
+    write p " = ";
+    print_expr p prec_top body;
+    write p " in ";
+    print_expr p prec_top e2
+  | ELet (mut, _, pat, e1, e2) ->
     write p "let ";
     if mut then write p "mut ";
     print_pat p pat;

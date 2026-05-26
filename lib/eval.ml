@@ -220,7 +220,15 @@ and eval env expr =
 
   | ELam (pats, body) -> VClosure (env, pats, body)
 
-  | ELet (_, pat, e1, e2) ->
+  | ELet (_, true, PVar f, e1, e2) ->
+    (* Self-recursive: create a mutable ref cell so the closure can call itself *)
+    let cell = ref VUnit in
+    let rec_env = [(f, cell)] :: env in
+    let v = eval rec_env e1 in
+    cell := v;
+    eval rec_env e2
+
+  | ELet (_, _, pat, e1, e2) ->
     let v = eval env e1 in
     (match match_pat pat v with
      | None -> raise (Eval_error ("let pattern match failure", !current_loc))

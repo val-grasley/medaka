@@ -25,7 +25,8 @@ let curry_lam pats body =
 let desugar_where bindings main_expr =
   List.fold_right
     (fun (name, pats, rhs) acc ->
-      ELet (false, PVar name, curry_lam pats rhs, acc))
+      let is_fun = pats <> [] in
+      ELet (false, is_fun, PVar name, curry_lam pats rhs, acc))
     bindings main_expr
 
 (* Convert an expression back into a pattern when used as a lambda parameter.
@@ -355,11 +356,11 @@ expr_annot:
    FAT_ARROW follows. This avoids the IDENT-vs-IDENT ambiguity with application. *)
 expr_lam:
   | LET MUT pat EQUAL expr_no_block IN expr_lam
-    { ELoc (of_pos $startpos, ELet (true,  $3, $5, $7)) }
+    { ELoc (of_pos $startpos, ELet (true,  false, $3, $5, $7)) }
   | LET pat EQUAL expr_no_block IN expr_lam
-    { ELoc (of_pos $startpos, ELet (false, $2, $4, $6)) }
+    { ELoc (of_pos $startpos, ELet (false, false, $2, $4, $6)) }
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block IN expr_lam
-    { ELoc (of_pos $startpos, ELet (false, PVar $2, curry_lam $3 $5, $7)) }
+    { ELoc (of_pos $startpos, ELet (false, true, PVar $2, curry_lam $3 $5, $7)) }
   | IF expr_or THEN expr_lam ELSE expr_lam
     { ELoc (of_pos $startpos, EIf ($2, $4, $6)) }
   | MATCH expr_or INDENT nonempty_list(match_arm) DEDENT

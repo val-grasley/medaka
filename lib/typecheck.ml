@@ -682,21 +682,36 @@ let rec infer env = function
     let tb = infer env' body in
     List.fold_right (fun pt acc -> TFun (pt, acc)) pat_types tb
 
-  | ELet (mut, pat, e1, e2) ->
-    enter_level ();
-    let t1 = infer env e1 in
-    exit_level ();
-    (match pat with
-     | PVar x ->
+  | ELet (mut, is_fun, pat, e1, e2) ->
+    (match is_fun, pat with
+     | true, PVar x ->
+       (* Self-recursive: pre-bind x with a monomorphic placeholder so the
+          RHS can reference x; generalize after unification. *)
+       enter_level ();
+       let placeholder = fresh_var () in
+       let env_self = extend_var env x (monotype placeholder) in
+       let t1 = infer env_self e1 in
+       unify placeholder t1;
+       exit_level ();
        let s = generalize t1 in
        let env' = extend_var env x s in
        let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
        infer env' e2
      | _ ->
-       (* Non-trivial pattern: no generalization (value restriction-like) *)
-       let tp, bindings = type_pat env pat in
-       unify tp t1;
-       infer (extend_vars env bindings) e2)
+       enter_level ();
+       let t1 = infer env e1 in
+       exit_level ();
+       (match pat with
+        | PVar x ->
+          let s = generalize t1 in
+          let env' = extend_var env x s in
+          let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
+          infer env' e2
+        | _ ->
+          (* Non-trivial pattern: no generalization (value restriction-like) *)
+          let tp, bindings = type_pat env pat in
+          unify tp t1;
+          infer (extend_vars env bindings) e2))
 
   | EIf (c, t, e) ->
     unify (infer env c) t_bool;
@@ -1404,7 +1419,7 @@ let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : eff
     effect_union (call_effs f) (effect_union (sub f) (sub x))
   | ELam (_, body) ->
     sub body  (* conservative: include body effects in enclosing fn *)
-  | ELet (_, _, e1, e2) -> effect_union (sub e1) (sub e2)
+  | ELet (_, _, _, e1, e2) -> effect_union (sub e1) (sub e2)
   | EIf (c, t, f)       -> effect_union (sub c) (effect_union (sub t) (sub f))
   | EBinOp ("|>", x, f) ->
     (* x |> f  ≡  f x — calling f contributes its effects *)

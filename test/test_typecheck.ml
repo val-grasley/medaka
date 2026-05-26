@@ -1394,6 +1394,39 @@ let t_interp_empty_ok =
 let e_interp_int_in_hole =
   assert_err "x = \"value: \\{42}\"\n"
 
+(* ── Local let-rec (Phase 27) ───────────────────── *)
+
+let t_let_rec_factorial =
+  assert_type
+    "result = let fact n = if n <= 0 then 1 else n * fact (n - 1) in fact 5\n"
+    "result" "Int"
+
+let t_let_rec_acc =
+  (* Accumulator-style tail recursion *)
+  assert_type
+    "result = let go acc n = if n <= 0 then acc else go (acc + n) (n - 1) in go 0 5\n"
+    "result" "Int"
+
+let t_let_rec_diverge =
+  (* let f x = f x is well-typed: a -> b *)
+  assert_type
+    "result = let loop x = loop x in loop\n"
+    "result" "a -> b"
+
+let t_let_nonrec_val =
+  (* let x = expr (no args) stays non-recursive; x refers to outer scope *)
+  assert_type
+    "x = 10\nresult = let x = x + 1 in x\n"
+    "result" "Int"
+
+let t_where_helper_rec =
+  (* where-bound helper can call itself *)
+  assert_type
+    {|sumTo n = go 0 n where
+    go acc k = if k <= 0 then acc else go (acc + k) (k - 1)
+result = sumTo 5
+|} "result" "Int"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1674,5 +1707,12 @@ let () =
       test_case "string hole ok"           `Quick t_interp_string_hole;
       test_case "no holes plain"           `Quick t_interp_empty_ok;
       test_case "err: Int in hole"         `Quick e_interp_int_in_hole;
+    ];
+    "local let-rec (Phase 27)", [
+      test_case "self-recursive factorial" `Quick t_let_rec_factorial;
+      test_case "accumulator tail-rec"     `Quick t_let_rec_acc;
+      test_case "diverging self-call"      `Quick t_let_rec_diverge;
+      test_case "non-recursive val unchanged" `Quick t_let_nonrec_val;
+      test_case "where helper self-rec"    `Quick t_where_helper_rec;
     ];
   ]
