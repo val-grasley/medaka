@@ -3,3 +3,10 @@ _build/
 
 # Local opam switch (if ever created inside the project)
 _opam/
+
+# Tree-sitter generated C/JSON — source of truth is grammar.js, not these
+tree-sitter-medaka/src/
+
+# Lockfiles — not useful for understanding or editing code
+editors/vscode-medaka/package-lock.json
+tree-sitter-medaka/package-lock.json

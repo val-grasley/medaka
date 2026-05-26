@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./tree-sitter-medaka/src/parser.c)",
+      "Read(./tree-sitter-medaka/src/grammar.json)",
+      "Read(./tree-sitter-medaka/src/node-types.json)",
+      "Read(./tree-sitter-medaka/src/tree_sitter/parser.h)",
+      "Read(./editors/vscode-medaka/package-lock.json)",
+      "Read(./tree-sitter-medaka/package-lock.json)"
+    ]
+  }
+}
