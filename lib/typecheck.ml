@@ -966,20 +966,27 @@ let rec infer env = function
 and binop_type env op l r =
   let tl = infer env l in
   let tr = infer env r in
-  match op with
-  | "+" | "-" | "*" | "/" ->
+  (* Record a usage of `method` (an entry from Builtins.operator_iface) at the
+     type variable [r], so check_method_usages can verify that a matching impl
+     exists once [r] is grounded.  Returns [r] wrapped back as a TVar's ref. *)
+  let record_iface_usage method_name tl tr =
     let a = fresh_var () in
     let r = match a with TVar r -> r | _ -> assert false in
     unify tl a; unify tr a;
-    env.method_usages := ("__num__", [r]) :: !(env.method_usages);
+    env.method_usages := (method_name, [r]) :: !(env.method_usages);
     a
+  in
+  let method_of op =
+    let (_, _, m) = List.find (fun (o, _, _) -> o = op) Builtins.operator_iface in
+    m
+  in
+  match op with
+  | "+" | "-" | "*" | "/" ->
+    record_iface_usage (method_of op) tl tr
   | "==" | "!=" ->
     unify tl tr; t_bool
   | "<" | ">" | "<=" | ">=" ->
-    let a = fresh_var () in
-    let r = match a with TVar r -> r | _ -> assert false in
-    unify tl a; unify tr a;
-    env.method_usages := ("__ord__", [r]) :: !(env.method_usages);
+    let _ = record_iface_usage (method_of op) tl tr in
     t_bool
   | "%" ->
     unify tl t_int; unify tr t_int; t_int
@@ -988,11 +995,7 @@ and binop_type env op l r =
   | "::" ->
     unify tr (t_list tl); tr
   | "++" ->
-    let a = fresh_var () in
-    let r = match a with TVar r -> r | _ -> assert false in
-    unify tl a; unify tr a;
-    env.method_usages := ("__semigroup__", [r]) :: !(env.method_usages);
-    a
+    record_iface_usage (method_of op) tl tr
   | "|>" ->
     (* x |> f  :  a -> (a -> b) -> b *)
     let b = fresh_var () in
@@ -1260,18 +1263,13 @@ let register_impl env = function
     env.impls := entry :: !(env.impls)
   | _ -> ()
 
-(* Register built-in Num and Ord interfaces directly in OCaml.
-   Uses synthetic witness method names (prefixed/suffixed __) that will never
-   appear in user source; they exist solely so check_method_usages can find the
-   interface's param_ids and verify matching impl_entry records in env.impls.
-   Called from check_program and typecheck_module after initial_env is in place. *)
-let seed_builtin_interfaces env =
-  let mk name = [{ Ast.method_name = "__" ^ name ^ "__";
-                   Ast.method_type = Ast.TyCon "Unit";
-                   Ast.method_default = None }] in
-  let _ = register_interface env ("Num",       ["a"], mk "num")       in
-  let _ = register_interface env ("Ord",       ["a"], mk "ord")       in
-  let _ = register_interface env ("Semigroup", ["a"], mk "semigroup") in
+(* Push hardcoded impl_entry records for primitive types satisfying Num, Ord,
+   and Semigroup.  These have no AST counterpart (so they don't go through
+   check_impl) and exist only so operator constraints — e.g. `Num Int` raised
+   by `1 + 2` — find a matching entry in env.impls.  The interfaces themselves
+   are declared by the prelude (stdlib/core.mdk); we just supply the ground
+   instances the evaluator handles via OCaml-side primitive operations. *)
+let seed_builtin_impls env =
   let push iface ty =
     env.impls := { impl_iface = iface; impl_name = None;
                    impl_is_default = false; impl_type_mono = [ty];
@@ -1492,14 +1490,13 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   reset_state ();
   current_loc := None;
   let env = initial_env () in
-  seed_builtin_interfaces env;
+  seed_builtin_impls env;
 
   (* Prepend core stdlib so its data types, interfaces, and impls are in scope
      for all user code.  Prelude declarations are processed through the same
-     Phase 1–5 pipeline as user code; the synthetic __num__ / __ord__ /
-     __semigroup__ witness entries added by seed_builtin_interfaces survive
-     because register_interface only replaces interface info (not method_iface
-     entries), so the operator constraint checking machinery keeps working. *)
+     Phase 1–5 pipeline as user code.  seed_builtin_impls (above) supplies
+     ground impl_entries for primitive types — Num/Ord on Int/Float, etc. —
+     so operator constraints raised by binop_type find a matching impl. *)
   let prog = Prelude.program @ prog in
 
   (* Phase 1: register data, record, interface, impl, and extern declarations *)
@@ -1642,7 +1639,7 @@ let typecheck_module
   reset_state ();
   current_loc := None;
   let env = initial_env () in
-  seed_builtin_interfaces env;
+  seed_builtin_impls env;
 
   (* Core stdlib is always available in every module. *)
   let prog = Prelude.program @ prog in
@@ -1855,11 +1852,6 @@ let typecheck_module
 
 (* Create a fresh typecheck env seeded with built-ins.
    Does NOT call reset_state so the TVar counter is shared across REPL inputs. *)
-let make_repl_tc_env () : env ref =
-  let env = initial_env () in
-  seed_builtin_interfaces env;
-  ref env
-
 (* Deep-copy an env: all hashtable fields get fresh copies, list refs get fresh
    refs.  Used by the REPL's :load command for atomic snapshot/restore. *)
 let copy_tc_env (e : env) : env = {
@@ -1967,6 +1959,18 @@ let check_repl_decl (env : env ref) (decls : decl list)
   infer_and_check_effects ~extern_decls:user_extern_decls groups;
   (results @ !iface_method_schemes @ !extern_schemes,
    List.rev !(!env.warnings))
+
+(* Build a fresh REPL type-checking env with the prelude already loaded.
+   Processes Prelude.program through check_repl_decl so core.mdk's data
+   types, interfaces, and impls — and crucially, env.method_iface bindings
+   for operator methods like add/sub/lt — are in scope for subsequent
+   incremental REPL input. *)
+let make_repl_tc_env () : env ref =
+  let env = initial_env () in
+  seed_builtin_impls env;
+  let env_ref = ref env in
+  let _ = check_repl_decl env_ref Prelude.program in
+  env_ref
 
 (* Infer the type of a bare expression without updating the env.
    Returns (mono_type, warnings). *)
