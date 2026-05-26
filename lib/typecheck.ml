@@ -1479,6 +1479,8 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   let extern_schemes = ref [] in
   List.iter (function
     | DTypeAlias _ -> ()  (* already handled *)
+    | DNewtype (_, n, ps, con, fty, _) ->
+      register_data ~aliases:env.aliases env (n, ps, [{ Ast.con_name = con; con_fields = [fty] }])
     | DData (_, n, ps, vs, _) -> register_data ~aliases:env.aliases env (n, ps, vs)
     | DRecord (_, n, ps, fs, _) -> register_record ~aliases:env.aliases env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
@@ -1643,6 +1645,8 @@ let typecheck_module
   let extern_schemes = ref [] in
   List.iter (function
     | DTypeAlias _ -> ()  (* already handled *)
+    | DNewtype (_, n, ps, con, fty, _) ->
+      register_data ~aliases:env.aliases env (n, ps, [{ Ast.con_name = con; con_fields = [fty] }])
     | DData (_, n, ps, vs, _) -> register_data ~aliases:env.aliases env (n, ps, vs)
     | DRecord (_, n, ps, fs, _) -> register_record ~aliases:env.aliases env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
@@ -1736,6 +1740,10 @@ let typecheck_module
   ) prog |> List.concat in
   let pub_ctors = List.filter_map (fun d ->
     match d with
+    | DNewtype (true, _, _, con, _, _) ->
+      (match Hashtbl.find_opt (!env).ctors con with
+       | Some s -> Some [(con, s)]
+       | None -> None)
     | DData (true, _, _, vs, _) ->
       Some (List.filter_map (fun v ->
         match Hashtbl.find_opt (!env).ctors v.Ast.con_name with
@@ -1825,6 +1833,8 @@ let check_repl_decl (env : env ref) (decls : decl list)
   let extern_schemes = ref [] in
   List.iter (function
     | DTypeAlias _ -> ()  (* already handled *)
+    | DNewtype (_, n, ps, con, fty, _) ->
+      register_data ~aliases:(!env).aliases !env (n, ps, [{ Ast.con_name = con; con_fields = [fty] }])
     | DData (_, n, ps, vs, _) -> register_data ~aliases:(!env).aliases !env (n, ps, vs)
     | DRecord (_, n, ps, fs, _) -> register_record ~aliases:(!env).aliases !env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->

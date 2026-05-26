@@ -246,6 +246,22 @@ let e_alias_duplicate =
   assert_err (duplicate "Foo")
     "type Foo = String\ntype Foo = Int\n"
 
+(* ── Newtype tests ───────────────────────────── *)
+
+let v_newtype_simple =
+  assert_ok "newtype UserId = UserId Int\n"
+
+let v_newtype_param =
+  assert_ok "newtype Wrapper a = Wrap a\n"
+
+let e_newtype_unknown_type =
+  assert_err (unknown_type "Bogus")
+    "newtype Foo = Foo Bogus\n"
+
+let e_newtype_duplicate =
+  assert_err (duplicate "Foo")
+    "newtype Foo = Foo Int\nnewtype Foo = Foo String\n"
+
 (* ── Test runner ─────────────────────────────── *)
 
 let () =
@@ -307,5 +323,11 @@ let () =
       test_case "typevar alias ok"     `Quick v_alias_typevar_ok;
       test_case "err: unknown type"    `Quick e_alias_unknown_type;
       test_case "err: duplicate"       `Quick e_alias_duplicate;
+    ];
+    "newtype declarations", [
+      test_case "simple newtype ok"    `Quick v_newtype_simple;
+      test_case "parametric newtype ok" `Quick v_newtype_param;
+      test_case "err: unknown type"    `Quick e_newtype_unknown_type;
+      test_case "err: duplicate"       `Quick e_newtype_duplicate;
     ];
   ]

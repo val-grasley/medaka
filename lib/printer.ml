@@ -395,6 +395,18 @@ let print_decl p = function
     write p " = ";
     print_type p rhs
 
+  | DNewtype (pub, n, params, con, fty, derives) ->
+    if pub then write p "export ";
+    write p "newtype "; write p n;
+    List.iter (fun pa -> write p " "; write p pa) params;
+    write p " = "; write p con; write p " ";
+    print_type_atom p fty;
+    if derives <> [] then begin
+      write p " deriving (";
+      write p (String.concat ", " derives);
+      write p ")"
+    end
+
   | DInterface { is_pub; is_default; iface_name; type_params; super; methods } ->
     if is_pub then write p "export ";
     if is_default then write p "default ";

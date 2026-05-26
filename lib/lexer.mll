@@ -80,6 +80,7 @@ let keyword_or_ident s =
   | "requires"  -> REQUIRES
   | "deriving"  -> DERIVING
   | "type"      -> TYPE
+  | "newtype"   -> NEWTYPE
   | "True"      -> BOOL true
   | "False"     -> BOOL false
   | _           -> IDENT s

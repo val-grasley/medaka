@@ -1290,6 +1290,27 @@ let t_alias_in_annot =
     "type Name = String\ngreet x = (x : Name)\n"
     "greet" "String -> String"
 
+(* ── Newtype tests ──────────────────────────────── *)
+
+let t_newtype_ctor_type =
+  assert_type
+    "newtype UserId = UserId Int\nmk n = UserId n\n"
+    "mk" "Int -> UserId"
+
+let t_newtype_distinct =
+  assert_err
+    "newtype UserId = UserId Int\nf : UserId -> Int\nf x = x\n"
+
+let t_newtype_param =
+  assert_type
+    "newtype Wrapper a = Wrap a\nmk x = Wrap x\n"
+    "mk" "a -> Wrapper a"
+
+let t_newtype_pattern_match =
+  assert_type
+    "newtype UserId = UserId Int\nunwrap (UserId n) = n\n"
+    "unwrap" "UserId -> Int"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1543,5 +1564,11 @@ let () =
       test_case "parametric alias"       `Quick t_alias_param;
       test_case "pair alias"             `Quick t_alias_pair;
       test_case "alias in annotation"    `Quick t_alias_in_annot;
+    ];
+    "newtype declarations", [
+      test_case "constructor type"       `Quick t_newtype_ctor_type;
+      test_case "distinct from wrapped"  `Quick t_newtype_distinct;
+      test_case "parametric newtype"     `Quick t_newtype_param;
+      test_case "pattern match unwrap"   `Quick t_newtype_pattern_match;
     ];
   ]

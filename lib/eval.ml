@@ -527,6 +527,8 @@ let eval_program program =
   (* Pass 1: collect DData constructors and DFunDef/DImpl method names *)
   List.iter (fun decl ->
     match decl with
+    | DNewtype (_, _, _, con, _, _) ->
+      add_to_frame con (make_ctor con 1)
     | DData (_, _, _, variants, _) ->
       List.iter (fun v ->
         add_to_frame v.con_name (make_ctor v.con_name (List.length v.con_fields))
@@ -611,6 +613,8 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
                else VClosure (!(rs.eval_env), pats, body) in
        fill name v
      ) methods
+   | DNewtype (_, _, _, con, _, _) ->
+     add con (make_ctor con 1)
    | DRecord _ | DInterface _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ -> ())
 
 let eval_repl_expr (rs : repl_state) (e : expr) : value =

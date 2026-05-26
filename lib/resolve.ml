@@ -198,6 +198,9 @@ let build_env ?(known_modules : module_exports list = [])
       add_or_skip env.values n
     | DTypeAlias (_, n, _, _) ->
       add_unique env.types "type" n
+    | DNewtype (_, n, _, con, _, _) ->
+      add_unique env.types "type" n;
+      add_unique env.constructors "constructor" con
     | DData (_, n, _, vs, _) ->
       add_unique env.types "type" n;
       List.iter (fun v ->
@@ -448,6 +451,8 @@ let check_decl env errors = function
     check_type env errors t
   | DTypeAlias (_, _, _, rhs) ->
     check_type env errors rhs
+  | DNewtype (_, _, _, _, fty, _) ->
+    check_type env errors fty
   | DData (_, _, _, vs, _) ->
     List.iter (fun v -> List.iter (check_type env errors) v.con_fields) vs
   | DRecord (_, _, _, fs, _) ->
@@ -505,6 +510,9 @@ let build_exports (mod_id : string) (prog : program) (env : module_env)
       Hashtbl.replace exp.exp_values n ()
     | DFunDef (true, n, _, _) ->
       Hashtbl.replace exp.exp_values n ()
+    | DNewtype (true, n, _, con, _, _) ->
+      Hashtbl.replace exp.exp_types n ();
+      Hashtbl.replace exp.exp_constructors con ()
     | DData (true, n, _, vs, _) ->
       Hashtbl.replace exp.exp_types n ();
       List.iter (fun v ->
@@ -603,7 +611,7 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
       List.iter (fun m -> add_or_skip env.values m.Ast.method_name) methods;
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.Ast.method_name) methods)
-    | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ -> ()
+    | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ | Ast.DNewtype _ -> ()
   ) decls;
   (match item with
    | Ast.ReplDecl ds -> List.iter (check_decl env errors) ds

@@ -84,7 +84,7 @@ let desugar_constraint lhs rhs =
 
 (* Keywords *)
 %token LET MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
-%token IMPORT EXPORT WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE
+%token IMPORT EXPORT WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE
 
 (* Operators *)
 %token PLUS MINUS STAR SLASH MOD
@@ -216,8 +216,9 @@ inner_decl_body:
   | inner_fun_def         { $1 }
   | inner_data_decl       { $1 }
   | inner_record_decl     { $1 }
-  | inner_type_alias_decl { $1 }
-  | inner_iface_decl      { $1 }
+  | inner_type_alias_decl   { $1 }
+  | inner_type_newtype_decl { $1 }
+  | inner_iface_decl        { $1 }
   | inner_impl_decl       { $1 }
   | inner_extern_decl     { $1 }
 
@@ -528,6 +529,14 @@ record_field_decl:
 inner_type_alias_decl:
   | TYPE UPPER list(IDENT) EQUAL ty newlines
     { fun is_pub -> DTypeAlias (is_pub, $2, $3, $5) }
+
+(* ── Newtype declarations ────────────────────────────── *)
+
+inner_type_newtype_decl:
+  | NEWTYPE UPPER list(IDENT) EQUAL UPPER ty newlines
+    { fun is_pub -> DNewtype (is_pub, $2, $3, $5, $6, []) }
+  | NEWTYPE UPPER list(IDENT) EQUAL UPPER ty inline_deriving newlines
+    { fun is_pub -> DNewtype (is_pub, $2, $3, $5, $6, $7) }
 
 (* ── Interface declarations ──────────────────────────── *)
 
