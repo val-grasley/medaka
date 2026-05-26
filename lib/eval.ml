@@ -320,11 +320,11 @@ and eval_binop env op l r =
   | "++" ->
     (match eval env l, eval env r with
      | VList xs, VList ys -> VList (xs @ ys)
-     | _ -> raise (Eval_error ("'++' requires two lists", !current_loc)))
-  | "<>" ->
-    (match eval env l, eval env r with
      | VString a, VString b -> VString (a ^ b)
-     | _ -> raise (Eval_error ("'<>' requires two strings", !current_loc)))
+     | lv, rv ->
+       (try apply (apply (lookup env "append") lv) rv
+        with Eval_error _ ->
+          raise (Eval_error ("'++' requires Semigroup (List, String, or a type with append)", !current_loc))))
   | _ ->
     let lv = eval env l and rv = eval env r in
     eval_arith op lv rv

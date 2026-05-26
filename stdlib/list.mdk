@@ -6,10 +6,6 @@ import core.{Eq, Ord, Show, Foldable, Mappable}
 -- Construction
 
 export
-empty : List a
-empty = []
-
-export
 singleton : a -> List a
 singleton a = [a]
 

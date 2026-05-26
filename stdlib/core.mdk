@@ -20,6 +20,18 @@ impl Eq (List a) requires Eq a where
     eq (x::xs) (y::ys) = eq x y && eq xs ys
     eq _ _ = False
 
+export interface Semigroup a where
+    append : a -> a -> a
+
+export interface Monoid a requires Semigroup a where
+    empty : a
+
+impl Monoid (List a) where
+    empty = []
+
+impl Monoid String where
+    empty = ""
+
 export interface Ord a requires Eq a where
     compare : a -> a -> Ordering
     lt : a -> a -> Bool

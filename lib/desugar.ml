@@ -6,7 +6,7 @@ let concat_strings parts =
   | [] -> ELit (LString "")
   | [x] -> x
   | first :: rest ->
-    List.fold_left (fun acc e -> EBinOp ("<>", acc, e)) first rest
+    List.fold_left (fun acc e -> EBinOp ("++", acc, e)) first rest
 
 (* Left-fold &&: e0 && e1 && ... *)
 let and_all = function

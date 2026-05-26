@@ -57,7 +57,7 @@ let t_mul  = assert_val "x = 3 * 4\n"  "x" (VInt 12)
 let t_div  = assert_val "x = 10 / 2\n" "x" (VInt 5)
 let t_neg  = assert_val "x = -(5)\n"   "x" (VInt (-5))
 
-let t_concat = assert_val {|x = "hello" <> " world"
+let t_concat = assert_val {|x = "hello" ++ " world"
 |} "x" (VString "hello world")
 
 (* ── If / let ───────────────────────────────────────────────────────────── *)
@@ -307,6 +307,26 @@ f x
 r = f 0
 |} "r"
 
+(* ── Phase 22: Semigroup / Monoid ────────────────────────────────────────── *)
+
+let t_list_semigroup =
+  assert_val "x = [1,2] ++ [3,4]\n" "x" (VList [VInt 1; VInt 2; VInt 3; VInt 4])
+
+let t_string_semigroup =
+  assert_val {|x = "hello" ++ " world"
+|} "x" (VString "hello world")
+
+let t_user_semigroup_dispatch =
+  assert_val
+    {|interface Semigroup a where
+    append : a -> a -> a
+data Sum = Sum Int
+impl Semigroup Sum where
+    append (Sum a) (Sum b) = Sum (a + b)
+x = Sum 1 ++ Sum 2
+|}
+    "x" (VCon ("Sum", [VInt 3]))
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -399,5 +419,10 @@ let () =
       test_case "pos branch"        `Quick t_guard_basic_pos;
       test_case "zero branch"       `Quick t_guard_basic_zero;
       test_case "non-exhaustive"    `Quick t_guard_non_exhaustive;
+    ];
+    "Semigroup / Monoid (Phase 22)", [
+      test_case "List ++ List"              `Quick t_list_semigroup;
+      test_case "String ++ String"          `Quick t_string_semigroup;
+      test_case "user-defined dispatch"     `Quick t_user_semigroup_dispatch;
     ];
   ]

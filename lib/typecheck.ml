@@ -981,11 +981,11 @@ and binop_type env op l r =
   | "::" ->
     unify tr (t_list tl); tr
   | "++" ->
-    let elem = fresh_var () in
-    let lt = t_list elem in
-    unify tl lt; unify tr lt; lt
-  | "<>" ->
-    unify tl t_string; unify tr t_string; t_string
+    let a = fresh_var () in
+    let r = match a with TVar r -> r | _ -> assert false in
+    unify tl a; unify tr a;
+    env.method_usages := ("__semigroup__", [r]) :: !(env.method_usages);
+    a
   | "|>" ->
     (* x |> f  :  a -> (a -> b) -> b *)
     let b = fresh_var () in
@@ -1252,17 +1252,20 @@ let seed_builtin_interfaces env =
   let mk name = [{ Ast.method_name = "__" ^ name ^ "__";
                    Ast.method_type = Ast.TyCon "Unit";
                    Ast.method_default = None }] in
-  let _ = register_interface env ("Num", ["a"], mk "num") in
-  let _ = register_interface env ("Ord", ["a"], mk "ord") in
+  let _ = register_interface env ("Num",       ["a"], mk "num")       in
+  let _ = register_interface env ("Ord",       ["a"], mk "ord")       in
+  let _ = register_interface env ("Semigroup", ["a"], mk "semigroup") in
   let push iface ty =
     env.impls := { impl_iface = iface; impl_name = None;
                    impl_is_default = false; impl_type_mono = [ty];
                    impl_requires = [] }
                  :: !(env.impls)
   in
-  push "Num" t_int;    push "Num" t_float;
-  push "Ord" t_int;    push "Ord" t_float;
-  push "Ord" t_string; push "Ord" t_char
+  push "Num"       t_int;    push "Num"    t_float;
+  push "Ord"       t_int;    push "Ord"    t_float;
+  push "Ord"       t_string; push "Ord"    t_char;
+  push "Semigroup" (t_list (fresh_var ())); (* TVar wildcard matches any List T *)
+  push "Semigroup" t_string
 
 (* ── Constraint checking ─────────────────────────── *)
 

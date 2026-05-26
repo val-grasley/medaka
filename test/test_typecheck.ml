@@ -1290,6 +1290,48 @@ let t_alias_in_annot =
     "type Name = String\ngreet x = (x : Name)\n"
     "greet" "String -> String"
 
+(* ── Phase 22: Semigroup / Monoid ────────────────── *)
+
+let t_list_semigroup =
+  assert_type "x = [1,2] ++ [3,4]\n" "x" "List Int"
+
+let t_string_semigroup =
+  assert_type {|x = "hello" ++ " world"
+|} "x" "String"
+
+let t_user_semigroup =
+  assert_type
+    {|interface Semigroup a where
+    append : a -> a -> a
+data Sum = Sum Int
+impl Semigroup Sum where
+    append (Sum a) (Sum b) = Sum (a + b)
+x : Sum
+x = Sum 1 ++ Sum 2
+|}
+    "x" "Sum"
+
+let e_no_semigroup =
+  assert_err
+    {|interface Semigroup a where
+    append : a -> a -> a
+data Foo = Foo Int
+x = Foo 1 ++ Foo 2
+|}
+
+let t_monoid_string_empty =
+  assert_type
+    {|interface Semigroup a where
+    append : a -> a -> a
+interface Monoid a requires Semigroup a where
+    empty : a
+impl Monoid String where
+    empty = ""
+x : String
+x = empty
+|}
+    "x" "String"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1543,5 +1585,12 @@ let () =
       test_case "parametric alias"       `Quick t_alias_param;
       test_case "pair alias"             `Quick t_alias_pair;
       test_case "alias in annotation"    `Quick t_alias_in_annot;
+    ];
+    "Semigroup / Monoid (Phase 22)", [
+      test_case "List ++ List"           `Quick t_list_semigroup;
+      test_case "String ++ String"       `Quick t_string_semigroup;
+      test_case "user-defined Semigroup" `Quick t_user_semigroup;
+      test_case "err: missing Semigroup" `Quick e_no_semigroup;
+      test_case "Monoid String empty"    `Quick t_monoid_string_empty;
     ];
   ]
