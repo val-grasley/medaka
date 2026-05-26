@@ -256,9 +256,16 @@ let rec map_expr f e =
     | EDo stmts               -> EDo (List.map (map_do_stmt f) stmts)
     | EAnnot (e0, t)          -> EAnnot (map_expr f e0, t)
     | EInfix (op, e1, e2)    -> EInfix (op, map_expr f e1, map_expr f e2)
+    | EListComp (body, quals) ->
+        EListComp (map_expr f body, List.map (map_lc_qual f) quals)
     | e0                      -> e0
   in
   f e'
+
+and map_lc_qual f = function
+  | LCGen (p, e)    -> LCGen (p, map_expr f e)
+  | LCGuard e       -> LCGuard (map_expr f e)
+  | LCLet (m, p, e) -> LCLet (m, p, map_expr f e)
 
 and map_do_stmt f = function
   | DoBind (p, e)   -> DoBind (p, map_expr f e)
@@ -290,9 +297,33 @@ let desugar_record_puns record_names prog =
   in
   List.map (map_decl rewrite) prog
 
+(* ── List comprehension desugaring ──────────────────────────────────────────
+   [body | x <- xs, guard, let p = e, ...]
+   desugars right-to-left into nested andThen / if-else / let calls. *)
+
+let desugar_list_comp body quals =
+  List.fold_right (fun qual acc ->
+    match qual with
+    | LCGen (pat, xs) ->
+        (* andThen xs (pat => acc) *)
+        EApp (EApp (EVar "andThen", xs), ELam ([pat], acc))
+    | LCGuard cond ->
+        EIf (cond, acc, EListLit [])
+    | LCLet (mut, pat, e) ->
+        ELet (mut, pat, e, acc)
+  ) quals (EListLit [body])
+
+let desugar_list_comps prog =
+  let rewrite = function
+    | EListComp (body, quals) -> desugar_list_comp body quals
+    | e -> e
+  in
+  List.map (map_decl rewrite) prog
+
 let desugar_program (prog : program) : program =
   let expanded = List.concat_map expand_decl prog in
   let record_names = List.filter_map (function
     | DRecord (_, name, _, _, _) -> Some name
     | _ -> None) expanded in
-  desugar_record_puns record_names expanded
+  let after_puns = desugar_record_puns record_names expanded in
+  desugar_list_comps after_puns

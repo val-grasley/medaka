@@ -164,6 +164,12 @@ export interface Foldable t where
     length : t a -> Int
 
 export
+filter : (a -> Bool) -> List a -> List a
+filter p xs = match xs
+    [] => []
+    (x::rest) => if p x then x :: filter p rest else filter p rest
+
+export
 any : Foldable t => (a -> Bool) -> t a -> Bool
 any f = fold (acc => x => acc || f x) False
 

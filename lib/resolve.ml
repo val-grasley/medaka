@@ -481,6 +481,7 @@ let rec check_expr env scope errors e =
       emit errors (UnboundVariable op);
     check_expr env scope errors l;
     check_expr env scope errors r
+  | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
 
 let check_decl env errors = function
   | DFunDef (_, _, pats, body) ->

@@ -12,7 +12,6 @@ extern print   : a -> <IO> Unit
 extern println : a -> <IO> Unit
 extern Ref     : a -> Ref a
 extern set_ref : Ref a -> a -> <Mut> Unit
-extern filter  : (a -> Bool) -> List a -> List a
 extern fold    : (b -> a -> b) -> b -> List a -> b
 extern pi      : Float
 extern e       : Float

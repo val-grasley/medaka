@@ -344,6 +344,8 @@ and eval env expr =
 
   | EAnnot (e, _) -> eval env e
 
+  | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
+
   | EInfix (op, l, r) ->
     let f  = lookup env op in
     let lv = eval env l in
@@ -496,16 +498,8 @@ let primitives : (string * value) list =
         match r with
         | VRef cell -> cell := v; VUnit
         | _ -> raise (Eval_error ("set_ref: not a Ref", None)))));
-    (* `map` is no longer a primitive — its stdlib home is the Mappable.map
-       interface method, dispatched through the user-written impl bodies via
-       VMulti.  See stdlib/core.mdk's `impl Mappable List/Option/...`. *)
-    ("filter",  VPrim (fun f ->
-      VPrim (fun lst ->
-        VList (List.filter
-                 (fun v -> match apply f v with
-                    | VBool b -> b
-                    | _ -> raise (Eval_error ("filter: predicate not Bool", None)))
-                 (unwrap_list lst)))));
+    (* `map` and `filter` are no longer primitives — they are defined in
+       stdlib/core.mdk as regular Medaka functions. *)
     ("fold",    VPrim (fun f ->
       VPrim (fun acc ->
         VPrim (fun lst ->

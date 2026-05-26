@@ -14,7 +14,7 @@ let parse src =
 
 (* Run src and return the value bound to name *)
 let run src name =
-  let prog = parse src in
+  let prog = Desugar.desugar_program (parse src) in
   let env  = eval_program prog in
   match List.assoc_opt name env with
   | Some v -> v
@@ -198,6 +198,19 @@ r = filter is_even ([1, 2, 3, 4, 5, 6])
 
 let t_fold = assert_val {|r = fold (x => y => x + y) 0 ([1, 2, 3, 4, 5])
 |} "r" (VInt 15)
+
+let t_list_comp_guard = assert_val
+  {|r = [x * 2 | x <- [1, 2, 3, 4, 5], x > 2]
+|} "r" (VList [VInt 6; VInt 8; VInt 10])
+
+let t_list_comp_multi_gen = assert_val
+  {|r = [(x, y) | x <- [1, 2], y <- [3, 4]]
+|} "r" (VList [VTuple [VInt 1; VInt 3]; VTuple [VInt 1; VInt 4];
+               VTuple [VInt 2; VInt 3]; VTuple [VInt 2; VInt 4]])
+
+let t_list_comp_let = assert_val
+  {|r = [y | x <- [1, 2, 3], let y = x * x, y > 2]
+|} "r" (VList [VInt 4; VInt 9])
 
 (* ── Pipe operator ──────────────────────────────────────────────────────── *)
 
@@ -467,6 +480,11 @@ let () =
       test_case "map"     `Quick t_map;
       test_case "filter"  `Quick t_filter;
       test_case "fold"    `Quick t_fold;
+    ];
+    "list comprehensions", [
+      test_case "guard"         `Quick t_list_comp_guard;
+      test_case "multi_gen"     `Quick t_list_comp_multi_gen;
+      test_case "let_binding"   `Quick t_list_comp_let;
     ];
     "pipe/compose", [
       test_case "pipe"    `Quick t_pipe;

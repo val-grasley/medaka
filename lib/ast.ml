@@ -36,6 +36,12 @@ type interp_part =
   | InterpStr  of string
   | InterpExpr of expr
 
+(* List comprehension qualifiers *)
+and lc_qual =
+  | LCGen   of pat * expr          (* x <- xs *)
+  | LCGuard of expr                (* boolean guard *)
+  | LCLet   of bool * pat * expr   (* let [mut] p = e *)
+
 (* Do-notation statements *)
 and do_stmt =
   | DoBind   of pat * expr          (* x <- e *)
@@ -66,6 +72,7 @@ and expr =
   | EAnnot        of expr * ty
   | EInfix        of ident * expr * expr                (* x `div` y *)
   | EStringInterp of interp_part list                  (* "text\{expr}text" *)
+  | EListComp     of expr * lc_qual list               (* [e | x <- xs, guard, ...] *)
   | ELoc          of loc * expr                         (* source position; transparent to semantics *)
 
 type use_path =
@@ -212,6 +219,13 @@ let rec pp_expr = function
       | InterpExpr e -> "\\{" ^ pp_expr e ^ "}"
     in
     Printf.sprintf "\"%s\"" (String.concat "" (List.map pp_part parts))
+  | EListComp (body, quals) ->
+    let pp_qual = function
+      | LCGen (p, e)    -> Printf.sprintf "%s <- %s" (pp_pat p) (pp_expr e)
+      | LCGuard e       -> pp_expr e
+      | LCLet (m, p, e) -> Printf.sprintf "let %s%s = %s" (if m then "mut " else "") (pp_pat p) (pp_expr e)
+    in
+    Printf.sprintf "[%s | %s]" (pp_expr body) (String.concat ", " (List.map pp_qual quals))
   | ELoc (_, e)          -> pp_expr e
 
 and pp_do_stmt = function
@@ -251,6 +265,12 @@ let rec strip_locs_expr = function
       | InterpStr s  -> InterpStr s
       | InterpExpr e -> InterpExpr (strip_locs_expr e)
     ) parts)
+  | EListComp (body, quals) ->
+    EListComp (strip_locs_expr body, List.map (function
+      | LCGen (p, e)    -> LCGen (p, strip_locs_expr e)
+      | LCGuard e       -> LCGuard (strip_locs_expr e)
+      | LCLet (m, p, e) -> LCLet (m, p, strip_locs_expr e)
+    ) quals)
   | e                     -> e  (* ELit, EVar *)
 
 and strip_locs_do = function

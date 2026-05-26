@@ -478,6 +478,8 @@ expr_atom:
     { ELoc (of_pos $startpos, ETuple ($2 :: $4)) }
   | LBRACKET RBRACKET
     { ELoc (of_pos $startpos, EListLit []) }
+  | LBRACKET expr_no_block PIPE separated_nonempty_list(COMMA, lc_qual) RBRACKET
+    { ELoc (of_pos $startpos, EListComp ($2, $4)) }
   | LBRACKET separated_nonempty_list(COMMA, expr_no_block) RBRACKET
     { ELoc (of_pos $startpos, EListLit $2) }
   | LARRAY RARRAY
@@ -533,6 +535,14 @@ match_arm:
 
 guard:
   | IF expr_or  { $2 }
+
+(* ── List comprehension qualifiers ──────────────────── *)
+
+lc_qual:
+  | pat LARROW expr_no_block             { LCGen ($1, $3) }
+  | LET pat EQUAL expr_no_block          { LCLet (false, $2, $4) }
+  | LET MUT pat EQUAL expr_no_block      { LCLet (true,  $3, $5) }
+  | expr_no_block                        { LCGuard $1 }
 
 (* ── Do-notation statements ──────────────────────────── *)
 

@@ -147,7 +147,7 @@ let binop_prec = function
 let is_right_assoc = function "::" -> true | _ -> false
 
 let rec expr_prec = function
-  | ELit _ | EVar _ | ETuple _ | EArrayLit _ | EListLit _
+  | ELit _ | EVar _ | ETuple _ | EArrayLit _ | EListLit _ | EListComp _
   | EMapLit _ | ESetLit _ | EStringInterp _
   | ERecordCreate _ | ERecordUpdate _ -> prec_atom
   | EFieldAccess _ | EIndex _          -> prec_postfix
@@ -289,6 +289,22 @@ and print_expr_raw p = function
       | InterpExpr e -> write p "\\{"; print_expr p prec_top e; write p "}"
     ) parts;
     write p "\""
+  | EListComp (body, quals) ->
+    write p "[";
+    print_expr p prec_top body;
+    write p " | ";
+    List.iteri (fun i qual ->
+      if i > 0 then write p ", ";
+      match qual with
+      | LCGen (pat, xs) ->
+        print_pat p pat; write p " <- "; print_expr p prec_top xs
+      | LCGuard cond ->
+        print_expr p prec_top cond
+      | LCLet (mut, pat, e) ->
+        write p "let "; if mut then write p "mut ";
+        print_pat p pat; write p " = "; print_expr p prec_top e
+    ) quals;
+    write p "]"
   | ELoc (_, e) -> print_expr_raw p e
 
 (* Body position: a Match/Do can use its natural multi-line layout

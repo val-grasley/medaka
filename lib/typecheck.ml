@@ -957,6 +957,8 @@ let rec infer env = function
     unify ti t_int;
     elem
 
+  | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
+
 and binop_type env op l r =
   let tl = infer env l in
   let tr = infer env r in
@@ -1428,6 +1430,7 @@ let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : eff
   | EAnnot (e, _)           -> sub e
   | EInfix (_, l, r)        -> effect_union (sub l) (sub r)
   | ELoc (_, e)             -> sub e
+  | EListComp _             -> assert false (* eliminated by desugar_list_comps *)
 
 and do_stmt_effects eff_env = function
   | DoBind (_, e) | DoExpr e | DoLet (_, _, e) | DoAssign (_, e) ->
