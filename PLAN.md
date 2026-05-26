@@ -1082,20 +1082,25 @@ recursion helpers) type-checks and runs correctly.
 
 ---
 
-### Phase 26: Type aliases and newtypes — coverage gaps ⏳ TODO
+### Phase 26: Type aliases and newtypes — coverage gaps ✅ DONE
 
 The syntax is already in place (`type T a = ...`, `newtype UserId = UserId Int
-deriving (Eq, Show, Ord)`).  Remaining work:
+deriving (Eq, Show, Ord)`).  What was added:
 
-- **Recursive type aliases** are not yet rejected.  `type Loop = Loop`
-  silently produces an infinite expansion in `from_ast_type`'s alias
-  expansion.  Detect at registration time and emit `RecursiveTypeAlias`.
-- **Newtype eta-expansion** — currently a newtype wrapper is treated as a
-  unary constructor, but pattern-match elimination should be free.  Today
-  `match UserId 1 of UserId n => n + 1` is fine, but optimisation later
-  may want to erase the wrapper at codegen time.  Not blocking.
-- **Newtype `deriving (Num)`** — derive arithmetic instances by
-  unwrapping/rewrapping.  Useful for `Distance`-style domain wrappers.
+- **Recursive type alias detection** — `type Loop = Loop` now raises
+  `RecursiveTypeAlias` instead of looping.  `expand_aliases` threads a
+  `~seen:StringSet` through its recursion; the error is raised when a cycle
+  is detected (both direct and mutual).  2 new typecheck error tests.
+- **Newtype `deriving (Num)`** — `DNewtype` is now handled in `desugar.ml`'s
+  `expand_decl`.  `derive_num_newtype` generates an `impl Num T` whose method
+  bodies use `EBinOp`/`EUnOp`/`EIf` directly, so dispatch works through the
+  evaluator's primitive arithmetic path without requiring a `Num Int` closure
+  in scope.  2 new eval tests + 1 typecheck test.  Limitation: generated impls
+  are correct for `Int`-backed newtypes; `Float`-backed newtypes would need
+  float-literal comparisons in `abs`/`signum`.
+- **Newtype eta-expansion** — deferred (not blocking; optimisation only relevant
+  after a codegen backend exists).
+- **579 tests total.**
 
 ---
 

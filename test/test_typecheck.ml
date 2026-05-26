@@ -1332,6 +1332,21 @@ let t_newtype_pattern_match =
     "newtype UserId = UserId Int\nunwrap (UserId n) = n\n"
     "unwrap" "UserId -> Int"
 
+(* ── Phase 26: Type alias / newtype coverage ─────── *)
+
+let e_alias_recursive =
+  assert_err
+    "type Loop = Loop\nf x = (x : Loop)\n"
+
+let e_alias_mutual_recursive =
+  assert_err
+    "type A = B\ntype B = A\nf x = (x : A)\n"
+
+let t_newtype_deriving_num_type =
+  assert_type
+    "newtype Dist = Dist Int deriving (Num)\nadd_dists : Dist -> Dist -> Dist\nadd_dists a b = add a b\n"
+    "add_dists" "Dist -> Dist -> Dist"
+
 (* ── Phase 22: Semigroup / Monoid ────────────────── *)
 
 let t_list_semigroup =
@@ -1655,12 +1670,15 @@ let () =
       test_case "parametric alias"       `Quick t_alias_param;
       test_case "pair alias"             `Quick t_alias_pair;
       test_case "alias in annotation"    `Quick t_alias_in_annot;
+      test_case "err: recursive alias"           `Quick e_alias_recursive;
+      test_case "err: mutually recursive aliases" `Quick e_alias_mutual_recursive;
     ];
     "newtype declarations", [
       test_case "constructor type"       `Quick t_newtype_ctor_type;
       test_case "distinct from wrapped"  `Quick t_newtype_distinct;
       test_case "parametric newtype"     `Quick t_newtype_param;
       test_case "pattern match unwrap"   `Quick t_newtype_pattern_match;
+      test_case "deriving Num typechecks" `Quick t_newtype_deriving_num_type;
     ];
     "Semigroup / Monoid (Phase 22)", [
       test_case "List ++ List"           `Quick t_list_semigroup;
