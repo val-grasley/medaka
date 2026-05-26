@@ -102,6 +102,7 @@ let desugar_constraint lhs rhs =
 %token LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE
 %token LARRAY RARRAY
 %token DOT_LBRACE DOT_STAR
+%token ELLIPSIS
 
 (* Indentation *)
 %token NEWLINE INDENT DEDENT
@@ -117,7 +118,7 @@ let desugar_constraint lhs rhs =
    Grammar conflicts — audit notes (Phase 7)
    ═══════════════════════════════════════════════════════
 
-   Menhir reports 7 S/R states (17 conflicts) and 8 R/R states (27 conflicts).
+   Menhir reports 6 S/R states (16 conflicts) and 8 R/R states (34 conflicts).
    Every conflict is documented below.  All default resolutions are correct for
    the intended semantics — none require restructuring.
 
@@ -208,6 +209,20 @@ let desugar_constraint lhs rhs =
      the expected behaviour.  The left-section desugaring happens earlier in
      the semantic action on LPAREN expr_no_block RPAREN, before any ambiguous
      atom context arises.
+
+   Phase 31 (record patterns): IDENT in record_pat_field vs expr_atom
+   New R/R state (state 194)  •  lookaheads: RBRACE COMMA
+     Stack: … DO INDENT … IDENT
+     Two reductions when IDENT is followed by RBRACE or COMMA:
+       record_pat_field → IDENT   (field pun inside UPPER { … } pattern)
+       expr_atom → IDENT          (variable reference inside an expression)
+     Resolution: REDUCE expr_atom (default: earlier production).
+     This is the same class as the existing 141/143/144/147 conflicts.
+     In pattern context (match arms), the grammar unambiguously uses
+     `record_pat_fields` inside `UPPER { … }`, so the correct reduction is
+     always reached.  The conflict only manifests in do-block DoBind context,
+     where the existing grammar already limits UPPER-headed patterns to
+     require parens; the same applies to record patterns in DoBind.
 
    State 317  •  lookaheads: RBRACE COMMA COLON   (Phase 16 — kv_or_e)
      Stack: … UPPER LBRACE expr_pipe FAT_ARROW expr_lam
@@ -327,10 +342,28 @@ pat_app:
   | UPPER nonempty_list(pat_atom)  { PCon ($1, $2) }
   | pat_atom                       { $1 }
 
+(* Record pattern fields.  Returns (field_list, has_rest). *)
+record_pat_field:
+  | IDENT EQUAL pat  { ($1, Some $3) }
+  | IDENT            { ($1, None) }
+
+(* Tail of a record_pat_fields list: either "..." or another field [, ...]. *)
+record_pat_rest:
+  | ELLIPSIS                                  { ([], true) }
+  | record_pat_field                          { ([$1], false) }
+  | record_pat_field COMMA record_pat_rest    { let (fs, r) = $3 in ($1 :: fs, r) }
+
+record_pat_fields:
+  | ELLIPSIS                                  { ([], true) }
+  | record_pat_field COMMA record_pat_rest    { let (fs, r) = $3 in ($1 :: fs, r) }
+  | record_pat_field                          { ([$1], false) }
+
 pat_atom:
   | IDENT                                                  { PVar $1 }
   | UNDERSCORE                                             { PWild }
   | UPPER                                                  { PCon ($1, []) }
+  | UPPER LBRACE record_pat_fields RBRACE
+    { let (fs, r) = $3 in PRec ($1, fs, r) }
   | lit                                                    { PLit $1 }
   | LPAREN RPAREN                                          { PLit LUnit }
   | LPAREN pat RPAREN                                      { $2 }

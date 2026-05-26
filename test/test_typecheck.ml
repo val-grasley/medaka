@@ -1549,6 +1549,33 @@ let e_where_type_mismatch =
     helper x = x + "oops"
 |}
 
+(* ── Record patterns (Phase 31) ─────────────────── *)
+
+let record_person = "record Person\n  name : String\n  age : Int\n"
+
+let t_rec_pat_pun_type =
+  assert_type
+    (record_person ^ "f p =\n  match p\n    Person { name } => name\n")
+    "f" "Person -> String"
+
+let t_rec_pat_explicit_type =
+  assert_type
+    (record_person ^ "f p =\n  match p\n    Person { age = 30 } => 1\n    Person { ... } => 0\n")
+    "f" "Person -> Int"
+
+let t_rec_pat_poly =
+  assert_type
+    ("record Box a\n  value : a\n" ^
+     "getVal b =\n  match b\n    Box { value } => value\n")
+    "getVal" "Box a -> a"
+
+let e_rec_pat_type_mismatch =
+  assert_err
+    (record_person ^ "f p =\n  match p\n    Person { name = 42 } => 0\n    Person { ... } => 1\n")
+
+let e_rec_pat_unknown_record =
+  assert_err "f p =\n  match p\n    Ghost { x } => x\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1855,5 +1882,12 @@ let () =
       test_case "mutual recursion type"    `Quick t_where_mutual_type;
       test_case "polymorphic helper"       `Quick t_where_polymorphic;
       test_case "err: type mismatch"       `Quick e_where_type_mismatch;
+    ];
+    "record patterns (Phase 31)", [
+      test_case "pun infers field type"    `Quick t_rec_pat_pun_type;
+      test_case "explicit + rest"          `Quick t_rec_pat_explicit_type;
+      test_case "polymorphic record"       `Quick t_rec_pat_poly;
+      test_case "err: type mismatch"       `Quick e_rec_pat_type_mismatch;
+      test_case "err: unknown record"      `Quick e_rec_pat_unknown_record;
     ];
   ]

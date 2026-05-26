@@ -34,6 +34,12 @@ let rec desugar = function
   | PList []           -> PCon ("Nil",  [])
   | PList (h :: rest)  -> PCon ("Cons", [desugar h; desugar (PList rest)])
   | PAs (_, p)         -> desugar p
+  | PRec (_, _, true)  -> PWild
+    (* `{ ... }` — matches any record; treat as wildcard for exhaustiveness *)
+  | PRec (name, _, false) ->
+    PLit (LString ("__partial_rec_" ^ name ^ "__"))
+    (* Partial match without rest — open "literal" so non-exhaustiveness
+       warnings still fire when no catch-all arm follows *)
 
 (* ── Matrix types ───────────────────────────────────── *)
 

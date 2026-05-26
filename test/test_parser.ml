@@ -813,6 +813,61 @@ let test_float_with_underscores () =
   | ELit (LFloat f) when Float.equal f 3.141592 -> ()
   | e -> failwith ("wrong: " ^ Ast.pp_expr e)
 
+(* ── Record pattern tests ────────────────────────────── *)
+
+let test_record_pat_pun () =
+  let src = {|
+f p =
+  match p
+    Person { name } => name
+|} in
+  match parse_one src with
+  | DFunDef (false, "f", [PVar "p"],
+      EMatch (EVar "p", [
+        (PRec ("Person", [("name", None)], false), None, EVar "name");
+      ])) -> ()
+  | _ -> failwith "wrong"
+
+let test_record_pat_explicit () =
+  let src = {|
+f p =
+  match p
+    Person { name = "Alice", age } => age
+|} in
+  match parse_one src with
+  | DFunDef (false, "f", [PVar "p"],
+      EMatch (EVar "p", [
+        (PRec ("Person", [("name", Some (PLit (LString "Alice"))); ("age", None)], false),
+         None, EVar "age");
+      ])) -> ()
+  | _ -> failwith "wrong"
+
+let test_record_pat_rest_only () =
+  let src = {|
+f p =
+  match p
+    Person { ... } => 0
+|} in
+  match parse_one src with
+  | DFunDef (false, "f", [PVar "p"],
+      EMatch (EVar "p", [
+        (PRec ("Person", [], true), None, ELit (LInt 0));
+      ])) -> ()
+  | _ -> failwith "wrong"
+
+let test_record_pat_with_rest () =
+  let src = {|
+f p =
+  match p
+    Person { name, ... } => name
+|} in
+  match parse_one src with
+  | DFunDef (false, "f", [PVar "p"],
+      EMatch (EVar "p", [
+        (PRec ("Person", [("name", None)], true), None, EVar "name");
+      ])) -> ()
+  | _ -> failwith "wrong"
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -967,5 +1022,11 @@ let () =
       test_case "single hole"        `Quick test_interp_single;
       test_case "two holes"          `Quick test_interp_two_segments;
       test_case "expression hole"    `Quick test_interp_expression;
+    ];
+    "record patterns", [
+      test_case "field pun"          `Quick test_record_pat_pun;
+      test_case "explicit + pun"     `Quick test_record_pat_explicit;
+      test_case "rest only"          `Quick test_record_pat_rest_only;
+      test_case "field with rest"    `Quick test_record_pat_with_rest;
     ];
   ]

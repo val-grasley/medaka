@@ -169,6 +169,12 @@ let rec pat_bindings = function
   | PTuple ps    -> List.concat_map pat_bindings ps
   | PList ps     -> List.concat_map pat_bindings ps
   | PAs (x, p)  -> x :: pat_bindings p
+  | PRec (_, fields, _) ->
+    List.concat_map (fun (fname, pat_opt) ->
+      match pat_opt with
+      | None   -> [fname]
+      | Some p -> pat_bindings p
+    ) fields
 
 (* ── Phase 1: build env from top-level decls ──── *)
 
@@ -351,6 +357,19 @@ let rec check_pat env errors p =
   | PTuple ps | PList ps ->
     List.iter (check_pat env errors) ps
   | PAs (_, p) -> check_pat env errors p
+  | PRec (record_name, fields, _rest) ->
+    if not (Hashtbl.mem env.types record_name) then
+      emit errors (UnknownType record_name);
+    List.iter (fun (fname, pat_opt) ->
+      (match Hashtbl.find_opt env.field_owners fname with
+       | None -> emit errors (UnknownField fname)
+       | Some owner when owner <> record_name ->
+         emit errors (FieldNotInRecord (fname, record_name))
+       | _ -> ());
+      match pat_opt with
+      | None   -> ()
+      | Some q -> check_pat env errors q
+    ) fields
 
 let rec check_type env errors t =
   match t with

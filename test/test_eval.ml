@@ -518,6 +518,31 @@ let t_field_assign_ref_value = assert_val
 |}
   "result" (VInt 42)
 
+(* ── Record pattern tests (Phase 31) ────────────────────────────────────── *)
+
+let t_rec_pat_pun = assert_val
+  (person_src ^ {|result =
+  match Person { name = "Alice", age = 30 }
+    Person { name } => name
+|})
+  "result" (VString "Alice")
+
+let t_rec_pat_explicit = assert_val
+  (person_src ^ {|result =
+  match Person { name = "Alice", age = 30 }
+    Person { age = 30 } => 1
+    Person { ... } => 0
+|})
+  "result" (VInt 1)
+
+let t_rec_pat_rest = assert_val
+  (person_src ^ {|result =
+  match Person { name = "Bob", age = 25 }
+    Person { name = "Alice" } => 1
+    Person { ... } => 99
+|})
+  "result" (VInt 99)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -674,5 +699,10 @@ let () =
       test_case "record field update"         `Quick t_field_assign_record;
       test_case "multiple field updates"      `Quick t_field_assign_multi;
       test_case "Ref .value assign"           `Quick t_field_assign_ref_value;
+    ];
+    "record patterns (Phase 31)", [
+      test_case "pun binds field"            `Quick t_rec_pat_pun;
+      test_case "explicit pattern match"     `Quick t_rec_pat_explicit;
+      test_case "wildcard rest catch-all"    `Quick t_rec_pat_rest;
     ];
   ]

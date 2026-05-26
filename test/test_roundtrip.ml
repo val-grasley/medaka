@@ -302,4 +302,10 @@ let () =
       test_case "multi-arg"     `Quick (mk "r = let g x y = x + y in g 1 2\n");
       test_case "value form unchanged" `Quick (mk "r = let x = 5 in x + 1\n");
     ];
+    "record patterns", [
+      test_case "pun"          `Quick (mk "f p =\n  match p\n    Person { name } => name\n");
+      test_case "explicit"     `Quick (mk "f p =\n  match p\n    Person { age = 30 } => age\n");
+      test_case "rest only"    `Quick (mk "f p =\n  match p\n    Person { ... } => 0\n");
+      test_case "field + rest" `Quick (mk "f p =\n  match p\n    Person { name, ... } => name\n");
+    ];
   ]

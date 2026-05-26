@@ -20,15 +20,15 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-609 tests pass across 8 test suites:
+630 tests pass across 8 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 110   | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 82    | parse → print → parse yields the same AST             |
-| Resolver          | `test/test_resolve.ml`          | 53    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 232   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 98    | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
+| Parser            | `test/test_parser.ml`           | 114   | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 86    | parse → print → parse yields the same AST             |
+| Resolver          | `test/test_resolve.ml`          | 58    | Unbound vars, unknown types/ctors, duplicates, fields |
+| Type checker      | `test/test_typecheck.ml`        | 237   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 101   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
 | Loader            | `test/test_loader.ml`           | 19    | Multi-file imports, topo sort, cycle detection, prelude no-op |
@@ -1206,20 +1206,41 @@ Needs:
 
 ---
 
-### Phase 31: Records — pattern matching and field puns in patterns ⏳ TODO
+### Phase 31: Records — pattern matching and field puns in patterns ✅ DONE
 
-Today records can only be destructured by field access (`r.name`).
-Pattern-matching syntax would help in `match`-driven flow.  Suggested:
+**What was added.**
+- `PRec of ident * (ident * pat option) list * bool` variant added to `Ast.pat`
+  (field pun = `None`, explicit sub-pattern = `Some p`, `bool` = has `...` rest)
+- `pp_pat` in `ast.ml` extended
+- Lexer: `ELLIPSIS` token for `"..."` (placed before the single `.` rule)
+- Parser: `record_pat_field`, `record_pat_rest`, `record_pat_fields` rules;
+  `pat_atom` extended with `UPPER LBRACE record_pat_fields RBRACE`.
+  Conflict count: 6 S/R (16) + 8 R/R (34) — one new R/R state from IDENT
+  in `record_pat_field` vs `expr_atom` (same class as existing do-block conflicts;
+  documented in the audit block).
+- Printer: `print_pat` and `print_pat_atom` extended for `PRec`
+- Resolver: `check_pat` validates record type name via `env.types` and each
+  field name via `env.field_owners`; `pat_bindings` extended
+- Type checker: `type_pat` adds `PRec` case reusing `instantiate_record`
+  (moved before `type_pat` in source order); field puns introduce a binding of
+  the field's type; explicit sub-patterns unify against the field type
+- Evaluator: `match_pat` adds `PRec` case matching against `VRecord`
+- Exhaustiveness: `desugar` treats `PRec(..., true)` as `PWild` (catch-all)
+  and `PRec(name, _, false)` as `PLit (LString "__partial_rec_NAME__")` (open
+  literal, so non-exhaustive matches still warn)
+- 21 new tests (4 parser, 4 roundtrip, 5 resolver, 5 typecheck, 3 eval). **608 total.**
 
+**Supported syntax.**
 ```
 match p
-  Person { name = "Alice", age } => use name age
-  Person { ... } => default
+  Person { name = "Alice", age } => ...  -- explicit field + pun (binds age)
+  Person { ... }                 => ...  -- wildcard catch-all
+  Person { name, ... }           => ...  -- pun + rest
 ```
 
-Builds naturally on the existing field-pun infrastructure (`Phase 23`).
-The grammar slot is in `pat_atom`; the typechecker reuses
-`instantiate_record` to type-check the partial-field pattern.
+**Known limitation.** Record patterns in DoBind LHS (`Person { name } <- act`)
+require parens — `(Person { name }) <- act` — due to the same grammar ambiguity
+that affects all UPPER-headed DoBind patterns (documented in Phase 2).
 
 ---
 

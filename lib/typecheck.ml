@@ -567,6 +567,27 @@ let initial_env () =
 (* Used for type sigs and explicit annotations. Each TyVar is treated as
    universally quantified at the outer level (generalized after the whole
    sig is built). *)
+(* ── Record instantiation ───────────────────────── *)
+
+(* Instantiate a record_info: substitute quantified param IDs with fresh vars,
+   returning (concrete result type, concrete field list). *)
+let instantiate_record info =
+  let sub = List.map (fun id -> (id, fresh_var ())) info.rec_params in
+  let rec walk t = match normalize t with
+    | TVar v ->
+      (match !v with
+       | Unbound (id, _) ->
+         (try List.assoc id sub with Not_found -> TVar v)
+       | Link _ -> assert false)
+    | TCon _ as t -> t
+    | TApp (a, b)  -> TApp (walk a, walk b)
+    | TFun (a, b)  -> TFun (walk a, walk b)
+    | TTuple ts    -> TTuple (List.map walk ts)
+  in
+  let result = walk info.rec_result in
+  let fields = List.map (fun (n, t) -> (n, walk t)) info.rec_fields in
+  (result, fields)
+
 (* ── Pattern typing ─────────────────────────────── *)
 
 let type_lit = function
@@ -618,27 +639,31 @@ let rec type_pat env = function
   | PAs (x, p) ->
     let (t, bindings) = type_pat env p in
     (t, (x, monotype t) :: bindings)
-
-(* ── Record instantiation ───────────────────────── *)
-
-(* Instantiate a record_info: substitute quantified param IDs with fresh vars,
-   returning (concrete result type, concrete field list). *)
-let instantiate_record info =
-  let sub = List.map (fun id -> (id, fresh_var ())) info.rec_params in
-  let rec walk t = match normalize t with
-    | TVar v ->
-      (match !v with
-       | Unbound (id, _) ->
-         (try List.assoc id sub with Not_found -> TVar v)
-       | Link _ -> assert false)
-    | TCon _ as t -> t
-    | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, b)  -> TFun (walk a, walk b)
-    | TTuple ts    -> TTuple (List.map walk ts)
-  in
-  let result = walk info.rec_result in
-  let fields = List.map (fun (n, t) -> (n, walk t)) info.rec_fields in
-  (result, fields)
+  | PRec (record_name, fields, _rest) ->
+    let info =
+      try Hashtbl.find env.records record_name
+      with Not_found -> fail (UnknownRecord record_name)
+    in
+    let (result_t, field_types) = instantiate_record info in
+    let bindings =
+      List.concat_map (fun (fname, pat_opt) ->
+        let field_t =
+          match List.assoc_opt fname field_types with
+          | Some t -> t
+          | None   -> fail (UnknownField (fname, record_name))
+        in
+        match pat_opt with
+        | None ->
+          let v = fresh_var () in
+          unify v field_t;
+          [(fname, monotype v)]
+        | Some q ->
+          let (pt, bs) = type_pat env q in
+          unify pt field_t;
+          bs
+      ) fields
+    in
+    (result_t, bindings)
 
 (* ── Expression typing ──────────────────────────── *)
 

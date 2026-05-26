@@ -107,6 +107,23 @@ let rec match_pat pat value =
     (match match_pat p v with
      | None -> None
      | Some binds -> Some ((x, v) :: binds))
+  | PRec (_, fields, _rest), VRecord record_fields ->
+    let result = ref (Some []) in
+    List.iter (fun (fname, pat_opt) ->
+      if !result <> None then
+        match List.assoc_opt fname record_fields with
+        | None -> result := None
+        | Some v ->
+          (match pat_opt with
+           | None ->
+             result := Option.map (fun bs -> bs @ [(fname, v)]) !result
+           | Some q ->
+             match match_pat q v with
+             | None   -> result := None
+             | Some b -> result := Option.map (fun bs -> bs @ b) !result)
+    ) fields;
+    !result
+  | PRec _, _ -> None
   | _ -> None
 
 and match_pats pats vals =
