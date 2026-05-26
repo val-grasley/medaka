@@ -341,6 +341,14 @@ x = Sum 1 ++ Sum 2
 |}
     "x" (VCon ("Sum", [VInt 3]))
 
+(* ── Numeric literal extensions ─────────────────────────────────────────── *)
+
+let t_hex_lit = assert_val "x = 0xFF\n" "x" (VInt 255)
+let t_bin_lit = assert_val "x = 0b1010\n" "x" (VInt 10)
+let t_oct_lit = assert_val "x = 0o17\n" "x" (VInt 15)
+let t_int_underscores = assert_val "x = 1_000_000\n" "x" (VInt 1000000)
+let t_int_underscore_arith = assert_val "x = 1_000 + 2_000\n" "x" (VInt 3000)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -444,5 +452,12 @@ let () =
       test_case "List ++ List"              `Quick t_list_semigroup;
       test_case "String ++ String"          `Quick t_string_semigroup;
       test_case "user-defined dispatch"     `Quick t_user_semigroup_dispatch;
+    ];
+    "numeric literal extensions", [
+      test_case "hex literal"         `Quick t_hex_lit;
+      test_case "binary literal"      `Quick t_bin_lit;
+      test_case "octal literal"       `Quick t_oct_lit;
+      test_case "int underscores"     `Quick t_int_underscores;
+      test_case "int underscore arith" `Quick t_int_underscore_arith;
     ];
   ]
