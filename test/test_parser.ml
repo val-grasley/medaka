@@ -225,6 +225,24 @@ let test_expr_section () =
   | ELam ([PVar "_s"], EBinOp ("+", EVar "_s", ELit (LInt 5))) -> ()
   | _ -> failwith "wrong"
 
+let test_expr_left_section () =
+  (* (2 * _) desugars to \x -> 2 * x *)
+  match parse_expr "(2 * _)\n" with
+  | ELam ([PVar "_s"], EBinOp ("*", ELit (LInt 2), EVar "_s")) -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_expr_left_section_minus () =
+  (* (3 - _) desugars to \x -> 3 - x *)
+  match parse_expr "(3 - _)\n" with
+  | ELam ([PVar "_s"], EBinOp ("-", ELit (LInt 3), EVar "_s")) -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_expr_left_section_app () =
+  (* (foo 1 * _) — application on the left *)
+  match parse_expr "(foo 1 * _)\n" with
+  | ELam ([PVar "_s"], EBinOp ("*", EApp (EVar "foo", ELit (LInt 1)), EVar "_s")) -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
 let test_expr_list_arg () =
   (* f [1, 2] should parse as application, not indexing *)
   match parse_expr "f [1, 2]\n" with
@@ -806,7 +824,10 @@ let () =
       test_case "record update pun"          `Quick test_expr_record_update_pun;
       test_case "type annotation"   `Quick test_expr_type_annot;
       test_case "array index"       `Quick test_expr_index;
-      test_case "operator section"  `Quick test_expr_section;
+      test_case "operator section"       `Quick test_expr_section;
+      test_case "left section (2 * _)"  `Quick test_expr_left_section;
+      test_case "left section (3 - _)"  `Quick test_expr_left_section_minus;
+      test_case "left section app lhs"  `Quick test_expr_left_section_app;
       test_case "list as arg"       `Quick test_expr_list_arg;
       test_case "modulo"            `Quick test_expr_modulo;
     ];

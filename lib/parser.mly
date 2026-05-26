@@ -120,7 +120,7 @@ let desugar_constraint lhs rhs =
    Grammar conflicts — audit notes (Phase 7)
    ═══════════════════════════════════════════════════════
 
-   Menhir reports 3 S/R states (12 conflicts) and 7 R/R states (23 conflicts).
+   Menhir reports 7 S/R states (17 conflicts) and 8 R/R states (27 conflicts).
    Every conflict is documented below.  All default resolutions are correct for
    the intended semantics — none require restructuring.
 
@@ -184,6 +184,33 @@ let desugar_constraint lhs rhs =
      restriction is acceptable; fixing it would require an `expr_to_pat`
      pass on the entire `stmt` LHS (analogous to the lambda trick), which
      is deferred to a future grammar pass.
+
+   Phase 23 (left sections): UNDERSCORE as expr_atom
+   Adding UNDERSCORE as expr_atom (for the left-section placeholder `_`) creates
+   new S/R and R/R states wherever UNDERSCORE was previously unambiguous as a
+   pattern wildcard.
+
+   S/R  •  lookahead: FAT_ARROW  (states near "UNDERSCORE" in repl_expr / do-block)
+     Stack: … UNDERSCORE
+     Reduce: expr_atom → UNDERSCORE    (treat _ as expression EVar "_")
+     Shift:  UNDERSCORE . FAT_ARROW    (start of lambda _ => expr)
+     Resolution: SHIFT (default).  Lambda _ => expr must still work.  When
+     _ is followed by FAT_ARROW the only sensible parse is a wildcard lambda.
+
+   S/R  •  lookaheads: UPPER UNDERSCORE … (do-block atom list, 14+ tokens)
+     Same root as existing state 138 / 176 — now UNDERSCORE is in the token set.
+     Resolution: SHIFT (default) — same reasoning as existing state 138.
+
+   R/R  •  lookaheads: RPAREN RBRACKET CONS COMMA
+     Stack: … LPAREN RPAREN  (or similar atom)
+     Same root as existing R/R states 141/143/144/147/235 — the UNDERSCORE now
+     adds analogous states where `_` is seen as either pat_atom (PWild) or
+     expr_atom (EVar "_").
+     Resolution: REDUCE pat_atom (default: earlier rule).  This is correct:
+     `_` in a do-block atom position defaults to a pattern wildcard, which is
+     the expected behaviour.  The left-section desugaring happens earlier in
+     the semantic action on LPAREN expr_no_block RPAREN, before any ambiguous
+     atom context arises.
 
    State 317  •  lookaheads: RBRACE COMMA COLON   (Phase 16 — kv_or_e)
      Stack: … UPPER LBRACE expr_pipe FAT_ARROW expr_lam
@@ -415,10 +442,13 @@ expr_postfix:
   | expr_postfix DOT LBRACKET expr_no_block RBRACKET  { EIndex ($1, $4) }
   | expr_atom                                     { $1 }
 
-(* Operator sections: (+e) desugars to \x -> x + e.
-   MINUS is excluded — (-e) stays as unary negation, matching Haskell's convention.
-   Left sections (e+) cannot be parsed unambiguously in LR without whitespace
-   tokens; use an explicit lambda instead: (x => e + x). *)
+(* Operator sections.
+   Right section (+e) desugars to \x -> x + e.  MINUS is excluded: (-e) stays
+   as unary negation, matching Haskell's convention.
+   Left section (e op _) desugars to \x -> e op x.  The _ placeholder makes
+   the syntax unambiguous in LALR(1): (2 * _) parses as EBinOp("*",2,EVar"_")
+   and the semantic action on LPAREN expr_no_block RPAREN converts it to a
+   lambda.  MINUS works too: (3 - _) = \x -> 3 - x. *)
 section_op:
   | PLUS       { "+" }   | STAR       { "*" }   | SLASH      { "/" }
   | EQ_EQ      { "==" }  | NEQ        { "!=" }
@@ -431,11 +461,18 @@ expr_atom:
   | lit                                              { ELoc (of_pos $startpos, ELit $1) }
   | IDENT                                            { ELoc (of_pos $startpos, EVar $1) }
   | UPPER                                            { ELoc (of_pos $startpos, EVar $1) }
+  | UNDERSCORE                                       { ELoc (of_pos $startpos, EVar "_") }
   | LPAREN RPAREN                                    { ELoc (of_pos $startpos, ELit LUnit) }
   | LPAREN section_op expr_no_block RPAREN
     { let op = $2 and e = $3 in
       ELoc (of_pos $startpos, ELam ([PVar "_s"], EBinOp (op, EVar "_s", e))) }
-  | LPAREN expr_no_block RPAREN                      { $2 }
+  | LPAREN expr_no_block RPAREN
+    { (* Left section: (e op _) desugars to \x -> e op x *)
+      let rec strip = function ELoc (_, e) -> strip e | e -> e in
+      match strip $2 with
+      | EBinOp (op, lhs, rhs) when (match strip rhs with EVar "_" -> true | _ -> false) ->
+          ELoc (of_pos $startpos, ELam ([PVar "_s"], EBinOp (op, lhs, EVar "_s")))
+      | _ -> $2 }
   | LPAREN expr_no_block COMMA
       separated_nonempty_list(COMMA, expr_no_block) RPAREN
     { ELoc (of_pos $startpos, ETuple ($2 :: $4)) }

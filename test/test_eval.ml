@@ -89,6 +89,11 @@ add3 = add 3
 r = add3 4
 |} "r" (VInt 7)
 
+let t_left_section_mul = assert_val "r = (2 * _) 5\n" "r" (VInt 10)
+let t_left_section_sub = assert_val "r = (10 - _) 3\n" "r" (VInt 7)
+let t_left_section_map = assert_val
+  "r = map (2 * _) [1, 2, 3]\n" "r" (VList [VInt 2; VInt 4; VInt 6])
+
 (* ── Recursion ──────────────────────────────────────────────────────────── *)
 
 let t_factorial = assert_val {|fact n =
@@ -394,9 +399,12 @@ let () =
       test_case "let"      `Quick t_let;
     ];
     "lambdas", [
-      test_case "identity" `Quick t_id;
-      test_case "const"    `Quick t_const;
-      test_case "partial"  `Quick t_partial;
+      test_case "identity"              `Quick t_id;
+      test_case "const"                 `Quick t_const;
+      test_case "partial"               `Quick t_partial;
+      test_case "left section (2 * _)"  `Quick t_left_section_mul;
+      test_case "left section (10 - _)" `Quick t_left_section_sub;
+      test_case "left section map"      `Quick t_left_section_map;
     ];
     "recursion", [
       test_case "factorial" `Quick t_factorial;

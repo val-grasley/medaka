@@ -967,6 +967,35 @@ build artifacts).
 
 ---
 
+### Phase 24: Left operator sections ✅ DONE
+
+**Goal.** Support `(2 * _)` / `(3 - _)` / `(0 < _)` left sections that desugar
+to lambdas, complementing the existing right sections `(+1)`.
+
+**Syntax.** `(e op _)` desugars at parse time to `\x -> e op x`.  The `_`
+placeholder makes the form unambiguous in LALR(1): `2 * _` is a complete
+expression `EBinOp("*", 2, EVar "_")`, and the semantic action on
+`LPAREN expr_no_block RPAREN` converts it to `ELam([PVar "_s"], EBinOp("*", 2, EVar "_s"))`.
+MINUS works too: `(3 - _)` = `\x -> 3 - x`.
+
+**Why not `(2*)` Haskell style.** After `LPAREN expr_app .` with a binary
+operator lookahead, LALR(1) cannot distinguish a left section from a binary
+expression inside parens (requires 2-token lookahead).  The explicit `_`
+placeholder is the unambiguous alternative.
+
+**What was added.**
+- `lib/parser.mly`: `UNDERSCORE` added as `expr_atom` → `EVar "_"`.
+  Semantic action on `LPAREN expr_no_block RPAREN` checks if the inner
+  expression is `EBinOp(op, lhs, EVar "_")` (after stripping ELoc wrappers)
+  and rewrites to `ELam([PVar "_s"], EBinOp(op, lhs, EVar "_s"))`.
+- Conflict count updated to 7 S/R (17) + 8 R/R (27); 4 new S/R states and
+  1 new R/R state, all from UNDERSCORE being valid as both `pat_atom` and
+  `expr_atom`. All new resolutions are correct (documented in audit block).
+- 3 new parser tests, 1 roundtrip test, 5 typecheck tests, 3 eval tests.
+  **523 tests total.**
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
@@ -1116,7 +1145,7 @@ This was assembled after reviewing `lib/parser.mly`, `lib/ast.ml`,
 | **Newtype declarations** | `newtype UserId = UserId Int` — zero-cost wrapper for type safety | `deriving` infrastructure is already there; relatviely cheap to add. Blocks domain-modelling patterns. |
 | **As-patterns** | `f all@(x::xs) = …` — name the whole value and destructure simultaneously | Without this, you have to manually reconstruct the matched value. Comes up constantly in list/tree recursion. |
 | **Record field punning** | `{ name }` as shorthand for `{ name = name }` in record creation and patterns | Without it, records with many fields produce very verbose code. |
-| **Left operator sections** | `(3-)` means `\x -> 3 - x` | Medaka has right sections already. Left sections are common: `map (2*) xs`, `filter (0<) xs`. |
+| **Left operator sections** | `(e op _)` means `\x -> e op x` | ✅ Phase 24 done. Syntax uses `_` placeholder: `map (2 * _) xs`, `filter (0 < _) xs`. Haskell-style `(2*)` not feasible in LALR(1). |
 | **Multiline string / heredoc** | Formal `"""…"""` or backslash-newline string continuation | Medaka already strips leading newlines from strings that start with `\n`; formalising a `"""` delimiter would make embedding source/templates much cleaner. |
 
 ### Nice-to-have / maybe

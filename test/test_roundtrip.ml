@@ -57,7 +57,9 @@ let fd_cons_pat  = mk "head (x::_) = x\n"
 let fd_con_pat   = mk "unwrap (Some x) = x\n"
 
 (* Expressions in fn bodies *)
-let ex_lambda    = mk "f = x => x + 1\n"
+let ex_lambda       = mk "f = x => x + 1\n"
+(* left section (2 * _) desugars to a lambda; printer emits the lambda form *)
+let ex_left_section = mk "f = _s => 2 * _s\n"
 let ex_lam_tup   = mk "add = (x, y) => x + y\n"
 let ex_let       = mk "f = let x = 5 in x + 1\n"
 let ex_let_mut   = mk "f = let mut x = 5 in x\n"
@@ -200,6 +202,7 @@ let () =
     ];
     "expressions", [
       test_case "lambda"           `Quick ex_lambda;
+      test_case "left section"     `Quick ex_left_section;
       test_case "lambda tuple"     `Quick ex_lam_tup;
       test_case "let"              `Quick ex_let;
       test_case "let mut"          `Quick ex_let_mut;
