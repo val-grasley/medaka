@@ -490,6 +490,11 @@ let rec check_expr env scope errors e =
             emit errors (UnboundVariable x);
           check_expr env scope errors e;
           scope
+        | DoFieldAssign (x, _field, e) ->
+          if not (lookup_value env scope x) then
+            emit errors (UnboundVariable x);
+          check_expr env scope errors e;
+          scope
       ) scope stmts
     in ()
   | EAnnot (e, t) ->

@@ -99,6 +99,7 @@ type type_error =
   | NoImplFound        of ident * mono list        (* iface_name, concrete type args *)
   | AmbiguousImpl      of ident * mono list        (* iface_name, concrete type args *)
   | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
+  | NotARecord          of ident                   (* field assignment on non-record type *)
   | Other              of string
 
 exception Type_error of type_error * Ast.loc option
@@ -329,6 +330,8 @@ let pp_error = function
       iface (String.concat " " (List.map pp_mono args))
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
+  | NotARecord x ->
+    Printf.sprintf "Field assignment on '%s': type is not a record or Ref" x
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -866,6 +869,8 @@ let rec infer env = function
         fail (Other "do block cannot end with a let binding")
       | [DoAssign _] ->
         fail (Other "do block cannot end with an assignment")
+      | [DoFieldAssign _] ->
+        fail (Other "do block cannot end with a field assignment")
       | DoExpr e :: rest ->
         let te = infer env e in
         let inner = fresh_var () in
@@ -898,6 +903,34 @@ let rec infer env = function
         unify tx te;
         if not (StringSet.mem x env.mut_vars) then
           fail (ImmutableAssignment x);
+        type_stmts env rest
+      | DoFieldAssign (x, field, e) :: rest ->
+        if not (StringSet.mem x env.mut_vars) then
+          fail (ImmutableAssignment x);
+        let tx = instantiate (lookup_var env x) in
+        let field_t =
+          match normalize tx with
+          | TApp (TCon "Ref", inner) when field = "value" -> inner
+          | TCon r ->
+            (match Hashtbl.find_opt env.records r with
+             | None -> fail (UnknownRecord r)
+             | Some info ->
+               let (_result_t, field_types) = instantiate_record info in
+               (match List.assoc_opt field field_types with
+                | None -> fail (UnknownField (field, r))
+                | Some ft -> ft))
+          | TApp (TCon r, _) ->
+            (match Hashtbl.find_opt env.records r with
+             | None -> fail (UnknownRecord r)
+             | Some info ->
+               let (_result_t, field_types) = instantiate_record info in
+               (match List.assoc_opt field field_types with
+                | None -> fail (UnknownField (field, r))
+                | Some ft -> ft))
+          | _ -> fail (NotARecord x)
+        in
+        let te = infer env e in
+        unify field_t te;
         type_stmts env rest
     in
     type_stmts env stmts
@@ -1444,7 +1477,8 @@ let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : eff
   | EListComp _             -> assert false (* eliminated by desugar_list_comps *)
 
 and do_stmt_effects eff_env = function
-  | DoBind (_, e) | DoExpr e | DoLet (_, _, e) | DoAssign (_, e) ->
+  | DoBind (_, e) | DoExpr e | DoLet (_, _, e) | DoAssign (_, e)
+  | DoFieldAssign (_, _, e) ->
     expr_effects eff_env e
 
 (* Process each function group in declaration order:

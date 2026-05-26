@@ -552,7 +552,12 @@ stmt:
   | LET pat EQUAL expr_no_block newlines      { DoLet (false, $2, $4) }
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block newlines
     { DoLet (false, PVar $2, curry_lam $3 $5) }
-  | IDENT EQUAL expr_no_block newlines        { DoAssign ($1, $3) }
+  | expr_no_block EQUAL expr_no_block newlines {
+      match strip_locs_expr $1 with
+      | EVar x -> DoAssign (x, $3)
+      | EFieldAccess (EVar x, field) -> DoFieldAssign (x, field, $3)
+      | _ -> failwith "invalid assignment target in do-block"
+    }
   | expr_no_block newlines                    { DoExpr $1 }
 
 (* ── Deriving clause ─────────────────────────────────── *)
