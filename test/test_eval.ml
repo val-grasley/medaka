@@ -338,6 +338,23 @@ x = Sum 1 ++ Sum 2
 |}
     "x" (VCon ("Sum", [VInt 3]))
 
+(* ── String interpolation ─────────────────────────────────────────────── *)
+
+let t_interp_basic =
+  assert_val
+    "name = \"world\"\nx = \"Hello, \\{name}!\"\n"
+    "x" (VString "Hello, world!")
+
+let t_interp_two_holes =
+  assert_val
+    "a = \"foo\"\nb = \"bar\"\nx = \"\\{a} and \\{b}\"\n"
+    "x" (VString "foo and bar")
+
+let t_interp_expr =
+  assert_val
+    "n = \"Alice\"\ngreeting = \"Hi\"\nx = \"\\{greeting}, \\{n}! Welcome.\"\n"
+    "x" (VString "Hi, Alice! Welcome.")
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -439,5 +456,10 @@ let () =
       test_case "List ++ List"              `Quick t_list_semigroup;
       test_case "String ++ String"          `Quick t_string_semigroup;
       test_case "user-defined dispatch"     `Quick t_user_semigroup_dispatch;
+    ];
+    "string interpolation", [
+      test_case "basic hole"    `Quick t_interp_basic;
+      test_case "two holes"     `Quick t_interp_two_holes;
+      test_case "greeting expr" `Quick t_interp_expr;
     ];
   ]

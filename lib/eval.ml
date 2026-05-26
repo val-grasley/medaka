@@ -249,6 +249,14 @@ and eval env expr =
 
   | EArrayLit es -> VArray (Array.of_list (List.map (eval env) es))
   | EListLit es  -> VList (List.map (eval env) es)
+  | EStringInterp parts ->
+    let strs = List.map (function
+      | InterpStr s  -> s
+      | InterpExpr e -> (match eval env e with
+          | VString s -> s
+          | v -> pp_value v)
+    ) parts in
+    VString (String.concat "" strs)
   | EMapLit (name, kvs) ->
     (* Desugar to a constructor applied to a list of (key, value) tuples.
        Real implementation awaits the stdlib Map module. *)

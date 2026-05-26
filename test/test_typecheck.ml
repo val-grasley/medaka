@@ -1353,6 +1353,26 @@ x = empty
 |}
     "x" "String"
 
+(* ── String interpolation ───────────────────────── *)
+
+let t_interp_type =
+  assert_type
+    "name = \"Alice\"\nx = \"Hello, \\{name}!\"\n"
+    "x" "String"
+
+let t_interp_string_hole =
+  assert_type
+    "greeting = \"hi\"\nx = \"\\{greeting} world\"\n"
+    "x" "String"
+
+let t_interp_empty_ok =
+  assert_type
+    "a = \"start\"\nb = \"end\"\nx = \"\\{a}\\{b}\"\n"
+    "x" "String"
+
+let e_interp_int_in_hole =
+  assert_err "x = \"value: \\{42}\"\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1619,5 +1639,11 @@ let () =
       test_case "user-defined Semigroup" `Quick t_user_semigroup;
       test_case "err: missing Semigroup" `Quick e_no_semigroup;
       test_case "Monoid String empty"    `Quick t_monoid_string_empty;
+    ];
+    "string interpolation", [
+      test_case "result is String"         `Quick t_interp_type;
+      test_case "string hole ok"           `Quick t_interp_string_hole;
+      test_case "no holes plain"           `Quick t_interp_empty_ok;
+      test_case "err: Int in hole"         `Quick e_interp_int_in_hole;
     ];
   ]

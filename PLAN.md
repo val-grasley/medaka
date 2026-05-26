@@ -20,17 +20,17 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-420 tests pass across 7 test suites:
+511 tests pass across 7 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 74    | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 59    | parse → print → parse yields the same AST             |
-| Resolver          | `test/test_resolve.ml`          | 42    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 186   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 44    | Runtime values, recursion, do-blocks, Ref, errors     |
-| Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
-| REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
+| Parser            | `test/test_parser.ml`           | 92    | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 73    | parse → print → parse yields the same AST             |
+| Resolver          | `test/test_resolve.ml`          | 55    | Unbound vars, unknown types/ctors, duplicates, fields |
+| Type checker      | `test/test_typecheck.ml`        | 208   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 64    | Runtime values, recursion, do-blocks, Ref, errors     |
+| Run               | `test/test_run.ml`              | 8     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
+| REPL              | `test/test_repl.ml`             | 11    | process_item, :load atomicity, rollback, :browse      |
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -948,6 +948,25 @@ build artifacts).
 
 ---
 
+### Phase 23: String interpolation ✅ DONE
+
+**Goal.** `"Hello, \{name}!"` — embed expressions inside string literals. Familiar ergonomic win for formatting, logging, and template generation.
+
+**Syntax chosen.** `\{expr}` — extends the existing `\n`/`\t`/`\u{}` escape model. No new delimiters, no prefix. Unescaped `{` is always literal. Closest precedent: Swift's `\(...)`.
+
+**What was added.**
+- `type interp_part = InterpStr of string | InterpExpr of expr` and `EStringInterp of interp_part list` in `lib/ast.ml` (mutual `type ... and ...` with `do_stmt` and `expr`). `pp_expr` and `strip_locs_expr` extended.
+- `interp_depth : int ref` and `interp_buf : Buffer.t` globals in `lib/lexer.mll`; `reset()` clears both. New `'\\' '{'` rule in `read_string` emits `INTERP_OPEN` and sets `interp_depth := 1`. New `read_interp_continue` rule (mirrors `read_string` but emits `INTERP_MID`/`INTERP_END`). `{` and `}` rules in the main `read` rule track `interp_depth`; closing `}` at depth 1 calls `read_interp_continue`.
+- Three new tokens `INTERP_OPEN/MID/END of string` in `lib/parser.mly`; `interp_string` and `interp_tail` grammar rules; `expr_atom` alternative.
+- `EStringInterp` handled in `lib/printer.ml` (`prec_atom`; prints `"text\{expr}text"`), `lib/resolve.ml` (recurses into expression parts), `lib/typecheck.ml` (`infer`: each hole must be `String`; result is `String`; effects pass extended), `lib/eval.ml` (concatenates string parts with evaluated holes).
+- 14 new tests (3 parser, 2 roundtrip, 2 resolver, 4 typecheck, 3 eval). **511 tests total.**
+
+**Design note — explicit `show`.** Embedded expressions must be `String`; users write `\{show age}` rather than having the type checker auto-insert `show`. Consistent with Medaka's no-magic philosophy.
+
+**Conflict count.** 5 S/R (14) + 7 R/R (23) — up from 3 S/R (12). The 2 new S/R states involve `AT` (`@`) lookahead in do-block and REPL expression contexts, introduced by as-patterns (`PAs`). Resolutions are identical to the existing class of S/R conflicts (shift wins); documented in `parser.mly`.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
@@ -1106,7 +1125,7 @@ This was assembled after reviewing `lib/parser.mly`, `lib/ast.ml`,
 |---------|-------------|-------|
 | **Top-level function guards** | Guards directly on equation heads: `classify n \| n < 0 = "neg" \| otherwise = "pos"` | Medaka supports guards inside `match` arms. This form is sugar over `match` but reads more naturally for numeric/boolean logic. |
 | **List comprehensions** | `[x*2 \| x <- xs, x > 0]` | Expressible via `map`/`filter`/`concatMap`; nice to have for readability. Not blocking anything. |
-| **String interpolation** | `"Hello, {name}!"` | Not Haskell-native, but widely expected in modern languages. Especially useful given Medaka's scripting-friendly goals. |
+| **String interpolation** | `"Hello, \{name}!"` | ✅ Phase 23 done. `\{expr}` syntax; embedded expr must be `String` (use `show` explicitly for other types). |
 | **`otherwise` alias** | `otherwise = True` so guard chains have a named catch-all | Trivial to add as a stdlib `extern`-free binding; purely cosmetic. |
 | **Constraint syntax in type signatures** | `f : Eq a => a -> a -> Bool` | ✅ Phase 20 done. |
 | **Numeric literal extensions** | `0xFF`, `0b1010`, `1_000_000` underscores | `0x` hex and `_` separators are the most practically useful additions. |

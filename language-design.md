@@ -514,6 +514,13 @@ let multiline = "
   "
 ```
 
+String interpolation uses `\{expr}` — the same escape-sequence model as `\n`, `\t`, `\u{XXXX}`. The embedded expression must be a `String`; use `show` explicitly for other types:
+```
+greeting = "Hello, \{name}!"
+summary  = "Count: \{show n}, total: \{show total}"
+```
+Unescaped `{` is always literal.
+
 **Why no indexing:** String indexing by integer is almost always a bug waiting to happen in non-ASCII text. Elm takes this approach and it's been validated in practice. Interact with strings through functions — honest about what strings actually are.
 
 ### Naming Conventions

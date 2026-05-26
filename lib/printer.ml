@@ -148,7 +148,7 @@ let is_right_assoc = function "::" -> true | _ -> false
 
 let rec expr_prec = function
   | ELit _ | EVar _ | ETuple _ | EArrayLit _ | EListLit _
-  | EMapLit _ | ESetLit _
+  | EMapLit _ | ESetLit _ | EStringInterp _
   | ERecordCreate _ | ERecordUpdate _ -> prec_atom
   | EFieldAccess _ | EIndex _          -> prec_postfix
   | EUnOp _                            -> prec_unary
@@ -282,6 +282,13 @@ and print_expr_raw p = function
     print_expr p (prec_infix + 1) l;
     write p " `"; write p op; write p "` ";
     print_expr p (prec_infix + 1) r
+  | EStringInterp parts ->
+    write p "\"";
+    List.iter (function
+      | InterpStr s  -> write p (String.escaped s)
+      | InterpExpr e -> write p "\\{"; print_expr p prec_top e; write p "}"
+    ) parts;
+    write p "\""
   | ELoc (_, e) -> print_expr_raw p e
 
 (* Body position: a Match/Do can use its natural multi-line layout

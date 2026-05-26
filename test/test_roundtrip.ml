@@ -279,4 +279,8 @@ let () =
       test_case "export"      `Quick (mk "export newtype UserId = UserId Int\n");
       test_case "deriving"    `Quick (mk "newtype Age = Age Int deriving (Eq)\n");
     ];
+    "string interpolation", [
+      test_case "single hole"   `Quick (mk "x = \"hello \\{name}!\"\n");
+      test_case "two holes"     `Quick (mk "x = \"\\{a} and \\{b}\"\n");
+    ];
   ]
