@@ -790,17 +790,112 @@ f x = show (Some x)
 |}
   "f" "a -> String"
 
-(* @Name hint in application position drops silently — method types correctly *)
+(* @Name hint in application position selects the named impl — method types correctly *)
 let t_constraint_at_name_drop = assert_type
   {|interface Eq a where
   eq : a -> a -> Bool
 
-impl Eq Int where
+impl MyEq of Eq Int where
   eq x y = x == y
 
-f = eq @Eq 1 2
+f = eq @MyEq 1 2
 |}
   "f" "Bool"
+
+(* ── Phase 32: named impls, @Name selection, coherence ── *)
+
+(* UPPER-named impl type-checks; its methods resolve correctly *)
+let t_named_impl_upper = assert_type
+  {|interface Combine a where
+  empty : a
+  combine : a -> a -> a
+
+impl Additive of Combine Int where
+  empty = 0
+  combine x y = x + y
+
+f : Int
+f = empty
+|}
+  "f" "Int"
+
+(* @Name hint selects the named impl among multiple candidates *)
+let t_at_name_selects_named_impl = assert_type
+  {|interface Combine a where
+  empty : a
+  combine : a -> a -> a
+
+impl Additive of Combine Int where
+  empty = 0
+  combine x y = x + y
+
+impl Multiplicative of Combine Int where
+  empty = 1
+  combine x y = x * y
+
+f : Int
+f = combine @Additive 2 3
+|}
+  "f" "Int"
+
+(* @Name on a plain (non-method) function is silently ignored *)
+let t_at_name_on_non_method = assert_type
+  {|id x = x
+
+f = id @Whatever 42
+|}
+  "f" "Int"
+
+(* Two impls with one marked default resolve without @Name hint *)
+let t_default_impl_wins_no_hint = assert_type
+  {|interface Combine a where
+  empty : a
+  combine : a -> a -> a
+
+impl Additive of Combine Int where
+  empty = 0
+  combine x y = x + y
+
+default impl Multiplicative of Combine Int where
+  empty = 1
+  combine x y = x * y
+
+f : Int
+f = empty
+|}
+  "f" "Int"
+
+(* Error: @Name hint names an impl that doesn't exist *)
+let e_at_name_unknown = assert_err
+  {|interface Combine a where
+  empty : a
+  combine : a -> a -> a
+
+impl Additive of Combine Int where
+  empty = 0
+  combine x y = x + y
+
+f : Int
+f = combine @NoSuchImpl 2 3
+|}
+
+(* Error: two default impls for the same (iface, type) pair *)
+let e_multiple_default_impls = assert_err
+  {|interface Combine a where
+  empty : a
+  combine : a -> a -> a
+
+default impl Additive of Combine Int where
+  empty = 0
+  combine x y = x + y
+
+default impl Multiplicative of Combine Int where
+  empty = 1
+  combine x y = x * y
+
+f : Int
+f = empty
+|}
 
 (* Error: method called with a type that has no impl *)
 let e_constraint_no_impl = assert_err
@@ -1791,6 +1886,14 @@ let () =
       test_case "err: missing impl"      `Quick e_constraint_missing_impl;
       test_case "err: ambiguous"         `Quick e_constraint_ambiguous;
       test_case "err: concrete context"  `Quick e_constraint_concrete_in_context;
+    ];
+    "named impls and @Name selection (Phase 32)", [
+      test_case "UPPER named impl"          `Quick t_named_impl_upper;
+      test_case "@Name selects named impl"  `Quick t_at_name_selects_named_impl;
+      test_case "@Name on non-method"       `Quick t_at_name_on_non_method;
+      test_case "default impl wins"         `Quick t_default_impl_wins_no_hint;
+      test_case "err: unknown @Name"        `Quick e_at_name_unknown;
+      test_case "err: multiple defaults"    `Quick e_multiple_default_impls;
     ];
     "constraint annotation syntax (Phase 20)", [
       test_case "basic annotation"             `Quick t_constraint_annot_basic;

@@ -776,6 +776,18 @@ let test_newtype_deriving () =
   | DNewtype (false, "Age", [], "Age", TyCon "Int", ["Eq"]) -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
+(* ── Named impl declarations ────────────────────────── *)
+
+let test_named_impl_upper () =
+  match parse_one "impl Additive of Monoid Int where\n  mempty = 0\n" with
+  | DImpl { impl_name = Some "Additive"; iface_name = "Monoid"; is_default = false; _ } -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_named_impl_default () =
+  match parse_one "default impl Additive of Monoid Int where\n  mempty = 0\n" with
+  | DImpl { impl_name = Some "Additive"; iface_name = "Monoid"; is_default = true; _ } -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
 (* ── Numeric literal extensions ──────────────────────── *)
 
 let test_hex_literal () =
@@ -1029,6 +1041,10 @@ let () =
       test_case "parametric newtype" `Quick test_newtype_param;
       test_case "export newtype"     `Quick test_newtype_export;
       test_case "newtype deriving"   `Quick test_newtype_deriving;
+    ];
+    "named impl declarations", [
+      test_case "UPPER named impl"         `Quick test_named_impl_upper;
+      test_case "default UPPER named impl" `Quick test_named_impl_default;
     ];
     "numeric literal extensions", [
       test_case "hex literal"            `Quick test_hex_literal;

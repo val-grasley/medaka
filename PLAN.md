@@ -1254,18 +1254,30 @@ that affects all UPPER-headed DoBind patterns (documented in Phase 2).
 
 ---
 
-### Phase 32: Naming impls and `default impl` ⏳ TODO
+### Phase 32: Naming impls and `default impl` ✅ DONE
 
-Idris-style `impl IDENT of UPPER ...` parses today but is not actually
-selectable.  This phase wires up:
+**What was added (commit `de657e7`).**
+- Parser: `impl UPPER of UPPER ...` form added so impl names can be uppercase
+  (e.g. `impl Additive of Monoid Int`), consistent with `@Name` which uses
+  `AT UPPER`. Lowercase form (`impl ident of UPPER`) preserved for compat.
+- `current_impl_hint` global ref in `typecheck.ml` captures the bare name from
+  an `@Name` hint at an EApp site and threads it into method_usages as a third
+  element `(method, param_vars, hint_opt)`.
+- `check_method_usages` updated: when `hint_opt = Some name`, filters matching
+  impls to those with `impl_name = Some name`; unknown name raises
+  `UnknownImplName`; otherwise the named impl is selected over default
+  disambiguation.
+- `check_coherence`: new post-registration pass ensuring at most one default
+  impl per (iface, type_pattern) pair; raises `MultipleDefaultImpls`. Called in
+  `check_program`, `typecheck_module`, and `check_repl_decl`.
+- Evaluator: strips `@Name` hints at runtime (`EApp(f, EVar "@X") → eval f`),
+  preventing lookup failures; runtime dispatch continues via VMulti default.
+- 2 new parser tests, 6 new typecheck tests. **606 tests total.**
 
-- The `default` modifier on `impl` and `interface default` declarations.
-- `@Name` selection (Phase 30) to consult the impl's name when given.
-- Coherence checks: at most one default per interface-type pair.
-
-The named-instance design from the language doc gets us most of the
-way to a Haskell-like coherence story without giving up explicit user
-override.
+**Known limitation.** Runtime dictionary-passing (making `@Name` affect method
+calls *inside* a higher-order function like `fold @Multiplicative`) requires a
+language-level change and is deferred. `@Name` is fully validated at compile
+time; at runtime the VMulti default-dispatch fires regardless of the hint.
 
 ---
 
@@ -1376,9 +1388,10 @@ These aren't blockers, but a less-careful change could trip over them:
   call sites that pass a named effectful function are tracked.  Effect
   inference for unannotated HOFs (effect-polymorphic `map`) still requires
   effect variables, which is not implemented.
-- `@Name` impl-disambiguation hints parse and type-check but do not actually
-  select a specific impl at runtime; ambiguous impls are still rejected at
-  check time. Selection is deferred to a post-backend pass.
+- `@Name` impl-disambiguation hints now validated at compile time (Phase 32 ✅):
+  named impls must exist and `@Name` selects among multiple matching impls.
+  At runtime the VMulti default-dispatch fires regardless of the hint — full
+  dictionary-passing (for higher-order use) is deferred.
 - DoBind LHS cannot be a cons (`x::xs <- list`) or literal pattern — grammar
   limitation documented in `parser.mly`.
 - The last statement of a do-block cannot start with an uppercase identifier
