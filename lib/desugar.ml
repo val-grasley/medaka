@@ -212,6 +212,57 @@ let derive_for_record type_name fields iface =
   | "Ord"  -> Some (derive_ord_record  type_name fields)
   | _      -> None
 
+(* ------------------------------------------------------------------ *)
+(* Derive Num for newtypes                                             *)
+(* ------------------------------------------------------------------ *)
+
+let derive_num_newtype type_name con_name =
+  let wrap e = EApp (EVar con_name, e) in
+  let bin op name =
+    (name,
+     [PCon (con_name, [PVar "__a"]); PCon (con_name, [PVar "__b"])],
+     wrap (EBinOp (op, EVar "__a", EVar "__b")))
+  in
+  let abs_method =
+    ("abs",
+     [PCon (con_name, [PVar "__a"])],
+     wrap (EIf (
+       EBinOp ("<", EVar "__a", ELit (LInt 0)),
+       EUnOp ("-", EVar "__a"),
+       EVar "__a")))
+  in
+  let signum_method =
+    ("signum",
+     [PCon (con_name, [PVar "__a"])],
+     wrap (EIf (
+       EBinOp ("<", EVar "__a", ELit (LInt 0)),
+       ELit (LInt (-1)),
+       EIf (
+         EBinOp (">", EVar "__a", ELit (LInt 0)),
+         ELit (LInt 1),
+         ELit (LInt 0)))))
+  in
+  let from_int_method =
+    ("fromInt", [PVar "__n"], wrap (EVar "__n"))
+  in
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    iface_name = "Num";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [ bin "+" "add"; bin "-" "sub"; bin "*" "mul"; bin "/" "div"
+                 ; ("negate", [PCon (con_name, [PVar "__a"])],
+                    wrap (EUnOp ("-", EVar "__a")))
+                 ; abs_method; signum_method; from_int_method ];
+  }
+
+let derive_for_newtype type_name con_name iface =
+  match iface with
+  | "Num" -> Some (derive_num_newtype type_name con_name)
+  | _     -> None
+
 (* Expand a single decl into itself plus any generated impls. *)
 let expand_decl = function
   | DData (pub, name, params, variants, derives) ->
@@ -220,6 +271,9 @@ let expand_decl = function
   | DRecord (pub, name, params, fields, derives) ->
     let impls = List.filter_map (derive_for_record name fields) derives in
     DRecord (pub, name, params, fields, []) :: impls
+  | DNewtype (pub, name, params, con, fty, derives) ->
+    let impls = List.filter_map (derive_for_newtype name con) derives in
+    DNewtype (pub, name, params, con, fty, []) :: impls
   | d -> [d]
 
 (* ── Record field pun desugaring ─────────────────────────────────────────

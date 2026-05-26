@@ -339,6 +339,22 @@ unwrap (Foo n) = n
 r = unwrap (Foo 42)
 |} "r" (VInt 42)
 
+let t_newtype_deriving_num_add =
+  assert_val
+    {|newtype Dist = Dist Int deriving (Num)
+r : Dist
+r = add (Dist 3) (Dist 4)
+|}
+    "r" (VCon ("Dist", [VInt 7]))
+
+let t_newtype_deriving_num_mul =
+  assert_val
+    {|newtype Dist = Dist Int deriving (Num)
+r : Dist
+r = mul (Dist 3) (Dist 4)
+|}
+    "r" (VCon ("Dist", [VInt 12]))
+
 (* ── Phase 22: Semigroup / Monoid ────────────────────────────────────────── *)
 
 let t_list_semigroup =
@@ -580,6 +596,8 @@ let () =
     "newtype declarations", [
       test_case "wrap value"        `Quick t_newtype_wrap;
       test_case "pattern unwrap"    `Quick t_newtype_unwrap;
+      test_case "deriving Num add"  `Quick t_newtype_deriving_num_add;
+      test_case "deriving Num mul"  `Quick t_newtype_deriving_num_mul;
     ];
     "Semigroup / Monoid (Phase 22)", [
       test_case "List ++ List"              `Quick t_list_semigroup;
