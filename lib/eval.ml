@@ -550,15 +550,8 @@ let primitives : (string * value) list =
         match r with
         | VRef cell -> cell := v; VUnit
         | _ -> raise (Eval_error ("set_ref: not a Ref", None)))));
-    (* `map` and `filter` are no longer primitives — they are defined in
-       stdlib/core.mdk as regular Medaka functions. *)
-    ("fold",    VPrim (fun f ->
-      VPrim (fun acc ->
-        VPrim (fun lst ->
-          List.fold_left
-            (fun a v -> apply (apply f a) v)
-            acc
-            (unwrap_list lst)))));
+    (* `map`, `filter`, and `fold` are no longer primitives — they are
+       defined in stdlib/core.mdk as regular Medaka functions. *)
     ("pi",      VFloat Float.pi);
     ("e",       VFloat (exp 1.0));
     ("readLine", VPrim (fun _ -> VString (input_line stdin)));

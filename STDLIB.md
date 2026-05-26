@@ -7,399 +7,468 @@ No code snippets — just the names, grouped so nothing slips through.
 Work interactively via the REPL (`:load stdlib/core.mdk`, `:reload` after edits).
 Expect to discover language gaps as you go; record them in PLAN.md §5.
 
+**Status legend**
+
+- ✅ implemented in the indicated file
+- ⏳ planned, not yet started
+- 🟡 partially implemented (see note)
+
+**Notes on the current state (as of 2026-05-26).**
+
+- The compiler prepends `stdlib/core.mdk` to every user program (`lib/prelude.ml`),
+  so every name marked ✅ in `core` is in scope without an `import`.
+- Constraint syntax has landed (Phase 20 ✅). Items previously blocked on
+  "move to standalone once constraint syntax lands" can now be standalone
+  functions. They are listed that way below.
+- `Monad` has been renamed `Thenable` and now drives `do`-notation dispatch.
+- A `Semigroup` interface was added (Phase 22 ✅) and now backs `++`.
+- The runtime extern catalog lives in `stdlib/runtime.mdk` (see §0 below); the
+  evaluator's primitive table mirrors it.
+
 ---
 
-## Module 1 — `core`
+## Module 0 — `runtime` (extern catalog) ✅ implemented
 
-The foundation every other module depends on. Implement this first.
+These are the OCaml-backed primitives declared as `extern` in
+`stdlib/runtime.mdk`. They are visible to every Medaka program without an
+import. The list is authoritative — adding a new primitive means editing this
+file and the matching impl in `lib/eval.ml`.
+
+- `print : a -> <IO> Unit` — write a value to stdout, no trailing newline
+- `println : a -> <IO> Unit` — write a value to stdout followed by `\n`
+- `Ref : a -> Ref a` — wrap a value in a mutable cell
+- `set_ref : Ref a -> a -> <Mut> Unit` — overwrite the contents of a `Ref`
+- `pi : Float` — math constant π
+- `e : Float` — math constant e
+- `readLine : Unit -> <IO> String` — read one line from stdin
+- `readFile : String -> <IO> (Result String String)` — read file, `Ok contents` or `Err message`
+- `writeFile : String -> String -> <IO> (Result String Unit)` — write file, `Ok ()` or `Err message`
+- `exit : Int -> <Panic> Unit` — terminate the process with the given exit code
+- `panic : String -> a` — abort with a runtime panic carrying the message
+
+`pure` and `map` are *not* externs — they are interface methods (see `core`).
+
+---
+
+## Module 1 — `core` 🟡 mostly implemented
+
+The foundation every other module depends on. Implemented in `stdlib/core.mdk`
+and prepended to every program by the compiler.
 
 ### Interfaces
 
-- `Eq a` — equality comparison
-  - `eq : a -> a -> Bool`
-  - `neq : a -> a -> Bool` (default: `not (eq x y)`)
-    — *move to standalone once constraint syntax lands; as a method it allows
-    inconsistent implementations where `neq` disagrees with `eq`*
+- ✅ `Eq a` — equality comparison
+  - `eq : a -> a -> Bool` — true when the two values are structurally equal
+  - `neq : Eq a => a -> a -> Bool` (standalone, default `not (eq x y)`) — negation of `eq`; standalone so impls cannot make it disagree with `eq`
 
-- `Ord a` requires `Eq a` — total ordering
-  - `compare : a -> a -> Ordering`
-  - `lt : a -> a -> Bool` (default from `compare`)
-    — *keep as method; direct comparison can be faster than `compare` + pattern match*
-  - `gt : a -> a -> Bool` (default from `compare`) — *same, keep as method*
-  - `lte : a -> a -> Bool` (default from `compare`) — *same, keep as method*
-  - `gte : a -> a -> Bool` (default from `compare`) — *same, keep as method*
-  - `min : a -> a -> a` (default from `compare`) — *keep as method; override for NaN semantics etc.*
-  - `max : a -> a -> a` (default from `compare`) — *same, keep as method*
-  - `clamp : a -> a -> a -> a` (default from `min`/`max`)
-    — *move to standalone once constraint syntax lands; purely derivable, no reason to override*
+- ✅ `Ord a` requires `Eq a` — total ordering
+  - `compare : a -> a -> Ordering` — return `Lt`, `Eq`, or `Gt`
+  - `lt : a -> a -> Bool` (default from `compare`) — strict less-than; method (not standalone) so impls can override for speed or NaN semantics
+  - `gt : a -> a -> Bool` (default from `compare`) — strict greater-than
+  - `lte : a -> a -> Bool` (default from `compare`) — less-than-or-equal
+  - `gte : a -> a -> Bool` (default from `compare`) — greater-than-or-equal
+  - `min : a -> a -> a` (default from `compare`) — pick the smaller of two values
+  - `max : a -> a -> a` (default from `compare`) — pick the larger of two values
+  - ✅ `clamp : Ord a => a -> a -> a -> a` (standalone) — `clamp lo hi x` constrains `x` to `[lo, hi]`
 
-- `Show a` — human-readable string representation
-  - `show : a -> String`
+- ✅ `Show a` — human-readable string representation
+  - `show : a -> String` — render a value as a `String` for display
 
-- `Num a` of `Eq a` — numeric arithmetic (already seeded as a builtin)
-  - `add : a -> a -> a`
-  - `sub : a -> a -> a`
-  - `mul : a -> a -> a`
-  - `div : a -> a -> a`
-  - `negate : a -> a`
-  - `abs : a -> a`
-  - `signum : a -> a`
-  - `fromInt : Int -> a`
+- ✅ `Semigroup a` — associative combine (used by the `++` operator)
+  - `append : a -> a -> a` — combine two values; must be associative
 
-- `Bounded a` — types with a minimum and maximum value
-  - `minBound : a`
-  - `maxBound : a`
+- ✅ `Monoid a` requires `Semigroup a` — semigroup with identity element
+  - `empty : a` — identity such that `append empty x == x == append x empty`
 
-- `Mappable f` — structure-preserving map (Functor)
-  - `map : (a -> b) -> f a -> f b`
+- ✅ `Num a` requires `Eq a` — numeric arithmetic (backs `+`/`-`/`*`/`/`)
+  - `add : a -> a -> a` — addition
+  - `sub : a -> a -> a` — subtraction
+  - `mul : a -> a -> a` — multiplication
+  - `div : a -> a -> a` — division (semantics impl-defined: truncating for `Int`, true for `Float`)
+  - `negate : a -> a` — additive inverse
+  - `abs : a -> a` — absolute value
+  - `signum : a -> a` — sign as `-1`, `0`, or `1`
+  - `fromInt : Int -> a` — convert an `Int` literal to this numeric type
 
-- `Foldable t` — collapsible into a summary value
-  - `fold : (b -> a -> b) -> b -> t a -> b`
-  - `foldRight : (a -> b -> b) -> b -> t a -> b`
-  - `toList : t a -> List a`
-  - `isEmpty : t a -> Bool` (default via `toList`; override for O(1) structures)
-  - `length : t a -> Int` (default via `fold`; override for O(1) structures)
+- ✅ `Bounded a` — types with a minimum and maximum value
+  - `minBound : a` — smallest representable value
+  - `maxBound : a` — largest representable value
 
-  The following are **standalone functions** (not interface methods) because they
-  require additional constraints (`Eq a`, `Num a`) that cannot be expressed in
-  interface member types until Medaka gains constraint syntax in signatures:
-  - `any : Foldable t => (a -> Bool) -> t a -> Bool`
-  - `all : Foldable t => (a -> Bool) -> t a -> Bool`
-  - `find : Foldable t => (a -> Bool) -> t a -> Option a`
-  - `count : Foldable t => (a -> Bool) -> t a -> Int`
-  - `sum : (Foldable t, Num a) => t a -> a`
-  - `product : (Foldable t, Num a) => t a -> a`
-  - `elem : (Foldable t, Eq a) => a -> t a -> Bool`
+- ✅ `Mappable f` — structure-preserving map (Functor)
+  - `map : (a -> b) -> f a -> f b` — apply a function inside the structure
 
-- `Applicative f` of `Mappable f`
-  - `pure : a -> f a`
-  - `ap : f (a -> b) -> f a -> f b`
+- ✅ `Applicative f` requires `Mappable f`
+  - `pure : a -> f a` — lift a value into the minimal context
+  - `ap : f (a -> b) -> f a -> f b` — apply an effectful function to an effectful argument
 
-- `Monad m` requires `Applicative m`
-  - `andThen : m a -> (a -> m b) -> m b` (flatMap / bind)
-  - `flatMap : (a -> m b) -> m a -> m b` (default: `flip andThen`)
-  - `join : m (m a) -> m a` (default: `andThen identity`)
-  - `when : Bool -> m Unit -> m Unit` (default)
-  - `unless : Bool -> m Unit -> m Unit` (default)
+- ✅ `Thenable m` requires `Applicative m` — drives `do`-notation
+  - `andThen : m a -> (a -> m b) -> m b` — sequence two computations, threading the result; equivalent to Haskell's `>>=` with arguments flipped. `do`-block `<-` desugars to this (Phase 19 wiring TODO).
 
-  `flatMap`, `join`, `when`, `unless` are purely definitional aliases with no
-  reason to override — *move all four to standalone functions once constraint
-  syntax lands*
+  Standalone helpers (constraint syntax has landed, so these no longer need to
+  be methods):
+  - ✅ `flatMap : Thenable m => (a -> m b) -> m a -> m b` — `andThen` with arguments flipped
+  - ✅ `flat : Thenable m => m (m a) -> m a` — collapse a nested wrapped value (was `join`)
+  - ✅ `when : Thenable m => Bool -> m Unit -> m Unit` — run the action only when the condition is true
+  - ✅ `unless : Thenable m => Bool -> m Unit -> m Unit` — run the action only when the condition is false
+
+- ✅ `Foldable t` — collapsible into a summary value
+  - `fold : (b -> a -> b) -> b -> t a -> b` — left fold
+  - `foldRight : (a -> b -> b) -> b -> t a -> b` — right fold
+  - `toList : t a -> List a` — flatten to a plain list (linearises order)
+  - `isEmpty : t a -> Bool` (default via `toList`; override for O(1) structures) — true when there are no elements
+  - `length : t a -> Int` (default via `fold`; override for O(1) structures) — element count
+
+  Standalone helpers (all use constraint syntax now that Phase 20 has landed):
+  - ✅ `any : Foldable t => (a -> Bool) -> t a -> Bool` — true when the predicate holds for at least one element
+  - ✅ `all : Foldable t => (a -> Bool) -> t a -> Bool` — true when the predicate holds for every element
+  - ⏳ `find : Foldable t => (a -> Bool) -> t a -> Option a` — first element satisfying the predicate, or `None`
+  - ⏳ `count : Foldable t => (a -> Bool) -> t a -> Int` — number of elements satisfying the predicate
+  - ⏳ `sum : (Foldable t, Num a) => t a -> a` — additive fold; identity is `fromInt 0`
+  - ⏳ `product : (Foldable t, Num a) => t a -> a` — multiplicative fold; identity is `fromInt 1`
+  - ⏳ `elem : (Foldable t, Eq a) => a -> t a -> Bool` — true when the element is present (compared via `Eq`)
 
 ### Data types
 
-- `Ordering` — `Lt | Eq | Gt`
+- ✅ `Ordering` — `Lt | Eq | Gt` — three-way comparison result
 
-- `Option a` — already a builtin; add instances and helpers:
-  - `isSome : Option a -> Bool`
-  - `isNone : Option a -> Bool`
-  - `fromOption : a -> Option a -> a`
-  - `mapOption : (a -> b) -> Option a -> Option b`
-  - `withDefault : a -> Option a -> a`
-  - `toResult : e -> Option a -> Result e a`
-  - Instances: `Eq (Option a)`, `Ord (Option a)`, `Show (Option a)`,
-    `Mappable Option`, `Foldable Option`, `Applicative Option`, `Monad Option`
+- ✅ `Option a` — `Some a | None` — value that may be absent
+  Helpers:
+  - ✅ `isSome : Option a -> Bool` — true if `Some _`
+  - ✅ `isNone : Option a -> Bool` — true if `None`
+  - ✅ `fromOption : a -> Option a -> a` — extract value or fall back to default (also known as `withDefault` in some langs)
+  - ⏳ `mapOption : (a -> b) -> Option a -> Option b` — apply function to `Some`, leave `None` alone *(redundant with `Mappable Option.map`; consider dropping)*
+  - ✅ `toResult : e -> Option a -> Result e a` — `Some x → Ok x`, `None → Err e`
+  - ⏳ `fromResult : Result e a -> Option a` — `Ok x → Some x`, `Err _ → None` *(was named `toOption` in earlier draft)*
+  - ⏳ Instances: `Eq (Option a)`, `Ord (Option a)`, `Show (Option a)`, `Mappable Option` ✅, `Foldable Option`, `Applicative Option` ✅, `Thenable Option` ✅
 
-- `Result e a` — already a builtin; add instances and helpers:
-  - `isOk : Result e a -> Bool`
-  - `isErr : Result e a -> Bool`
-  - `fromResult : a -> Result e a -> a`
-  - `mapResult : (a -> b) -> Result e a -> Result e b`
-  - `mapErr : (e -> f) -> Result e a -> Result f a`
-  - `andThenResult : Result e a -> (a -> Result e b) -> Result e b`
-  - `toOption : Result e a -> Option a`
-  - `fromOption : e -> Option a -> Result e a`
-  - Instances: `Eq (Result e a)`, `Show (Result e a)`,
-    `Mappable (Result e)`, `Monad (Result e)`
+- ✅ `Result e a` — `Ok a | Err e` — success-or-error value
+  Helpers:
+  - ✅ `isOk : Result e a -> Bool` — true if `Ok _`
+  - ✅ `isErr : Result e a -> Bool` — true if `Err _`
+  - ⏳ `fromResultOr : a -> Result e a -> a` — extract `Ok` value or fall back to default (rename `fromResult` from the earlier draft to avoid collision with `Option`'s)
+  - ⏳ `mapResult : (a -> b) -> Result e a -> Result e b` — apply to `Ok`, pass `Err` through *(redundant with `Mappable (Result e).map`; consider dropping)*
+  - ⏳ `mapErr : (e -> f) -> Result e a -> Result f a` — apply to the `Err` side, pass `Ok` through
+  - ⏳ `andThenResult : Result e a -> (a -> Result e b) -> Result e b` *(redundant with `Thenable.andThen`; consider dropping)*
+  - ⏳ `okToOption : Result e a -> Option a` — `Ok x → Some x`, `Err _ → None`
+  - ⏳ `fromOptionResult : e -> Option a -> Result e a` — `Some x → Ok x`, `None → Err e` *(inverse of `toResult`)*
+  - ⏳ Instances: `Eq (Result e a)`, `Show (Result e a)`, `Mappable (Result e)` ✅, `Thenable (Result e)` ✅
 
 ### Utility functions
 
-- `identity : a -> a`
-- `const : a -> b -> a`
-- `flip : (a -> b -> c) -> b -> a -> c`
-- `compose : (b -> c) -> (a -> b) -> a -> c`
-- `pipe : (a -> b) -> (b -> c) -> a -> c`
-- `apply : (a -> b) -> a -> b`
-- `not : Bool -> Bool`
-- `and : Bool -> Bool -> Bool`
-- `or : Bool -> Bool -> Bool`
-- `xor : Bool -> Bool -> Bool`
-- `panic : String -> a` (wrapper around the extern)
+- ✅ `identity : a -> a` — return the argument unchanged
+- ✅ `const : a -> b -> a` — return the first argument, ignoring the second
+- ✅ `flip : (a -> b -> c) -> b -> a -> c` — swap the first two arguments of a binary function
+- ✅ `compose : (b -> c) -> (a -> b) -> a -> c` — right-to-left function composition (`g . f`)
+- ✅ `pipe : (a -> b) -> (b -> c) -> a -> c` — left-to-right function composition
+- ✅ `apply : (a -> b) -> a -> b` — function application as a function
+- ✅ `not : Bool -> Bool` — logical negation
+- ✅ `and : Bool -> Bool -> Bool` — logical AND (strict; both args evaluated)
+- ✅ `or : Bool -> Bool -> Bool` — logical OR (strict)
+- ✅ `xor : Bool -> Bool -> Bool` — logical XOR
+- ✅ `otherwise : Bool` — alias for `True`, idiomatic in guard chains
+- ✅ `filter : (a -> Bool) -> List a -> List a` — keep elements satisfying the predicate *(currently lives in `core.mdk`; could move to `list.mdk` since it's List-specific)*
+- ⏳ `panic : String -> a` — already an extern in `runtime.mdk`; no stdlib re-export needed
+
+### Impls already provided
+
+- ✅ `impl Eq (List a) requires Eq a`
+- ✅ `impl Monoid (List a)`
+- ✅ `impl Monoid String`
+- ✅ `impl Mappable List`, `impl Mappable Option`, `impl Mappable (Result e)` (default)
+- ✅ `impl Applicative List`, `impl Applicative Option`, `impl Applicative (Result e)`
+- ✅ `impl Thenable List`, `impl Thenable Option`, `impl Thenable (Result e)`
+- ✅ `impl Foldable List`
+
+### Impls still missing (track here as `core` grows)
+
+- ⏳ `impl Semigroup (List a)`, `impl Semigroup String` (currently `Monoid` impls exist but the `Semigroup` parent's `append` for each comes from the `++` operator dispatch path; formalise explicit impls)
+- ⏳ `impl Eq` for `Int`, `Float`, `Bool`, `Char`, `String`, `Unit`, `Option a`, `Result e a`, tuples
+- ⏳ `impl Ord` for `Int`, `Float`, `Char`, `String`, `Option a`, `Result e a`, tuples, `List a`
+- ⏳ `impl Show` for every built-in type and for `Option`, `Result`, `List`, tuples
+- ⏳ `impl Num Int`, `impl Num Float` (today these are seeded by `seed_builtin_interfaces` in the typechecker — should be replaced by Medaka-side impls)
+- ⏳ `impl Bounded Int`, `impl Bounded Char`
+- ⏳ `impl Foldable Option`, `impl Foldable (Result e)`, `impl Foldable Array`
+- ⏳ `impl Mappable Array`
 
 ---
 
-## Module 2 — `list`
+## Module 2 — `list` 🟡 partially implemented
 
-Depends on `core`. Implement all List operations here; the `extern` primitives
-`map`, `filter`, `fold` can be re-exported or superseded.
+Depends on `core`. `fold` is provided via `impl Foldable List` in `core.mdk`
+and `filter` currently lives there too. The rest is up to this module.
 
 ### Construction
 
-- `empty : List a`
-- `singleton : a -> List a`
-- `range : Int -> Int -> List Int`
-- `rangeStep : Int -> Int -> Int -> List Int`
-- `replicate : Int -> a -> List a`
-- `iterate : Int -> (a -> a) -> a -> List a`
-- `unfold : (b -> Option (a, b)) -> b -> List a`
+- ⏳ `empty : List a` — the empty list (alias for `[]`)
+- ✅ `singleton : a -> List a` — one-element list
+- ⏳ `range : Int -> Int -> List Int` — `range lo hi` produces `[lo, lo+1, …, hi-1]` (exclusive upper bound)
+- ⏳ `rangeStep : Int -> Int -> Int -> List Int` — `rangeStep lo hi step`; sign of `step` must match `hi - lo` or result is empty
+- ⏳ `replicate : Int -> a -> List a` — list containing the value repeated N times
+- ⏳ `iterate : Int -> (a -> a) -> a -> List a` — `[seed, f seed, f (f seed), …]` of length N
+- ⏳ `unfold : (b -> Option (a, b)) -> b -> List a` — generate a list from a seed; stops when the generator returns `None`
 
 ### Observation
 
-- `isEmpty : List a -> Bool`
-- `length : List a -> Int`
-- `head : List a -> Option a`
-- `tail : List a -> Option (List a)`
-- `last : List a -> Option a`
-- `init : List a -> Option (List a)`
-- `get : Int -> List a -> Option a`
+- ✅ `isEmpty : List a -> Bool` — true for the empty list
+- ⏳ `length : List a -> Int` — element count (O(N)); also available via `Foldable.length`
+- ✅ `head : List a -> Option a` — first element, or `None` if empty
+- ✅ `tail : List a -> Option (List a)` — all elements after the first, or `None` if empty
+- ✅ `last : List a -> Option a` — final element, or `None` if empty
+- ✅ `init : List a -> Option (List a)` — all elements except the last, or `None` if empty
+- ✅ `get : Int -> List a -> Option a` — element at index (0-based), or `None` if out of range
 
 ### Transformation
 
-- `map : (a -> b) -> List a -> List b`
-- `filter : (a -> Bool) -> List a -> List a`
-- `filterMap : (a -> Option b) -> List a -> List b`
-- `reverse : List a -> List a`
-- `concat : List (List a) -> List a`
-- `concatMap : (a -> List b) -> List a -> List b`
-- `flatten : List (List a) -> List a`
-- `intersperse : a -> List a -> List a`
-- `intercalate : List a -> List (List a) -> List a`
-- `transpose : List (List a) -> List (List a)`
-- `subsequences : List a -> List (List a)`
-- `permutations : List a -> List (List a)`
+- ⏳ `map : (a -> b) -> List a -> List b` — apply function to each element (delegate to `Mappable List.map` or re-export)
+- ⏳ `filter : (a -> Bool) -> List a -> List a` — keep elements satisfying the predicate *(currently lives in `core.mdk` — see note above)*
+- ⏳ `filterMap : (a -> Option b) -> List a -> List b` — apply a partial function; keep `Some` results, drop `None`
+- ⏳ `reverse : List a -> List a` — list in opposite order
+- ⏳ `concat : List (List a) -> List a` — flatten one level (alias for `flatten`)
+- ⏳ `concatMap : (a -> List b) -> List a -> List b` — `map` then `concat`; equivalent to `andThen` on `List` (`Thenable`)
+- ⏳ `flatten : List (List a) -> List a` — flatten one level
+- ⏳ `intersperse : a -> List a -> List a` — insert separator between every pair of elements
+- ⏳ `intercalate : List a -> List (List a) -> List a` — `concat` after `intersperse`
+- ⏳ `transpose : List (List a) -> List (List a)` — turn rows into columns
+- ⏳ `subsequences : List a -> List (List a)` — every subset of the list (2^N of them)
+- ⏳ `permutations : List a -> List (List a)` — every ordering of the list (N! of them)
 
 ### Folds and scans
 
-- `fold : (b -> a -> b) -> b -> List a -> b`
-- `foldRight : (a -> b -> b) -> b -> List a -> b`
-- `foldMap : Monoid m => (a -> m) -> List a -> m` — *blocked: `Monoid` is not defined anywhere in this plan; add a `Monoid` interface to `core` or drop this function*
-- `scanLeft : (b -> a -> b) -> b -> List a -> List b`
-- `scanRight : (a -> b -> b) -> b -> List a -> List b`
-- `sum : List Int -> Int`
-- `sumFloat : List Float -> Float`
-- `product : List Int -> Int`
-- `maximum : Ord a => List a -> Option a`
-- `minimum : Ord a => List a -> Option a`
+- ⏳ `fold : (b -> a -> b) -> b -> List a -> b` — left fold (re-export of `Foldable.fold`; already provided by the `impl Foldable List` in `core.mdk`)
+- ⏳ `foldRight : (a -> b -> b) -> b -> List a -> b` — right fold (re-export of `Foldable.foldRight`; already provided by `impl Foldable List`)
+- ⏳ `foldMap : (Foldable t, Monoid m) => (a -> m) -> t a -> m` — map each element to a monoid value and combine; lives in `core` once both interfaces are present
+- ⏳ `scanLeft : (b -> a -> b) -> b -> List a -> List b` — like `fold` but keeps every intermediate accumulator
+- ⏳ `scanRight : (a -> b -> b) -> b -> List a -> List b` — right-associated `scanLeft`
+- ⏳ `sum : List Int -> Int` — sum of integers; `Foldable+Num` generalisation lives in `core`
+- ⏳ `sumFloat : List Float -> Float` — sum of floats (separate name until `Num` impls are wired through dispatch)
+- ⏳ `product : List Int -> Int` — product of integers
+- ⏳ `maximum : Ord a => List a -> Option a` — largest element, or `None` if empty
+- ⏳ `minimum : Ord a => List a -> Option a` — smallest element, or `None` if empty
 
 ### Search
 
-- `elem : Eq a => a -> List a -> Bool`
-- `notElem : Eq a => a -> List a -> Bool`
-- `find : (a -> Bool) -> List a -> Option a`
-- `findIndex : (a -> Bool) -> List a -> Option Int`
-- `findIndices : (a -> Bool) -> List a -> List Int`
-- `elemIndex : Eq a => a -> List a -> Option Int`
-- `any : (a -> Bool) -> List a -> Bool`
-- `all : (a -> Bool) -> List a -> Bool`
-- `count : (a -> Bool) -> List a -> Int`
+- ⏳ `elem : Eq a => a -> List a -> Bool` — true when the value appears in the list
+- ⏳ `notElem : Eq a => a -> List a -> Bool` — `not (elem x xs)`
+- ⏳ `find : (a -> Bool) -> List a -> Option a` — first element satisfying the predicate, or `None`
+- ⏳ `findIndex : (a -> Bool) -> List a -> Option Int` — index of the first match, or `None`
+- ⏳ `findIndices : (a -> Bool) -> List a -> List Int` — all indices that match
+- ⏳ `elemIndex : Eq a => a -> List a -> Option Int` — index of the first occurrence of the value
+- ⏳ `any : (a -> Bool) -> List a -> Bool` — at least one element matches (re-export of `Foldable.any`)
+- ⏳ `all : (a -> Bool) -> List a -> Bool` — every element matches (re-export of `Foldable.all`)
+- ⏳ `count : (a -> Bool) -> List a -> Int` — number of matches
 
 ### Sublists
 
-- `take : Int -> List a -> List a`
-- `drop : Int -> List a -> List a`
-- `takeWhile : (a -> Bool) -> List a -> List a`
-- `dropWhile : (a -> Bool) -> List a -> List a`
-- `span : (a -> Bool) -> List a -> (List a, List a)`
-- `break : (a -> Bool) -> List a -> (List a, List a)`
-- `splitAt : Int -> List a -> (List a, List a)`
-- `slice : Int -> Int -> List a -> List a`
-- `chunks : Int -> List a -> List (List a)`
+- ⏳ `take : Int -> List a -> List a` — first N elements (fewer if the list is shorter)
+- ⏳ `drop : Int -> List a -> List a` — everything after the first N elements
+- ⏳ `takeWhile : (a -> Bool) -> List a -> List a` — prefix where the predicate holds
+- ⏳ `dropWhile : (a -> Bool) -> List a -> List a` — drop the leading run where the predicate holds
+- ⏳ `span : (a -> Bool) -> List a -> (List a, List a)` — `(takeWhile p xs, dropWhile p xs)`
+- ⏳ `break : (a -> Bool) -> List a -> (List a, List a)` — `span (not . p) xs`
+- ⏳ `splitAt : Int -> List a -> (List a, List a)` — `(take n xs, drop n xs)`
+- ⏳ `slice : Int -> Int -> List a -> List a` — `slice lo hi xs` is `drop lo (take hi xs)`
+- ⏳ `chunks : Int -> List a -> List (List a)` — split into consecutive groups of N (last group may be shorter)
 
 ### Zipping and combining
 
-- `zip : List a -> List b -> List (a, b)`
-- `zip3 : List a -> List b -> List c -> List (a, b, c)`
-- `zipWith : (a -> b -> c) -> List a -> List b -> List c`
-- `unzip : List (a, b) -> (List a, List b)`
+- ⏳ `zip : List a -> List b -> List (a, b)` — pair up elements; result length is the shorter input
+- ⏳ `zip3 : List a -> List b -> List c -> List (a, b, c)` — triple-up version of `zip`
+- ⏳ `zipWith : (a -> b -> c) -> List a -> List b -> List c` — generalised `zip`; result length is the shorter input
+- ⏳ `unzip : List (a, b) -> (List a, List b)` — split a list of pairs into two parallel lists
 
 ### Sorting
 
-- `sort : Ord a => List a -> List a`
-- `sortBy : (a -> a -> Ordering) -> List a -> List a`
-- `sortOn : Ord b => (a -> b) -> List a -> List a`
-- `nub : Eq a => List a -> List a`
-- `nubBy : (a -> a -> Bool) -> List a -> List a`
+- ⏳ `sort : Ord a => List a -> List a` — ascending sort (stable)
+- ⏳ `sortBy : (a -> a -> Ordering) -> List a -> List a` — custom comparator
+- ⏳ `sortOn : Ord b => (a -> b) -> List a -> List a` — sort by a derived key (compute the key once per element if possible)
+- ⏳ `nub : Eq a => List a -> List a` — remove duplicates, keeping the first occurrence; O(N²) baseline
+- ⏳ `nubBy : (a -> a -> Bool) -> List a -> List a` — `nub` with a custom equality test
 
 ### Grouping
 
-- `group : Eq a => List a -> List (List a)`
-- `groupBy : (a -> a -> Bool) -> List a -> List (List a)`
-- `partition : (a -> Bool) -> List a -> (List a, List a)`
-- `tally : Eq a => List a -> List (a, Int)`
+- ⏳ `group : Eq a => List a -> List (List a)` — group runs of equal adjacent elements
+- ⏳ `groupBy : (a -> a -> Bool) -> List a -> List (List a)` — `group` with a custom equivalence
+- ⏳ `partition : (a -> Bool) -> List a -> (List a, List a)` — `(filter p xs, filter (not . p) xs)` in one pass
+- ⏳ `tally : Eq a => List a -> List (a, Int)` — element → count; order of keys unspecified (insertion-stable would be a nice-to-have)
 
 ### Instances
 
-- `impl Eq (List a)` where `Eq a`
-- `impl Ord (List a)` where `Ord a`
-- `impl Show (List a)` where `Show a`
-- `impl Mappable List`
-- `impl Foldable List`
-- `impl Applicative List`
-- `impl Monad List`
+- ⏳ `impl Eq (List a)` where `Eq a` — *(already in `core.mdk`; could be moved here once stdlib layering is clarified)*
+- ⏳ `impl Ord (List a)` where `Ord a` — lexicographic ordering
+- ⏳ `impl Show (List a)` where `Show a` — bracketed comma-separated form
+- ⏳ `impl Mappable List` — *(already in `core.mdk`)*
+- ⏳ `impl Foldable List` — *(already in `core.mdk`)*
+- ⏳ `impl Applicative List` — *(already in `core.mdk`)*
+- ⏳ `impl Thenable List` — *(already in `core.mdk`)*
+- ⏳ `impl Semigroup (List a)` — concatenation (currently driven by the `++` dispatch path)
+- ⏳ `impl Monoid (List a)` — *(already in `core.mdk`)*
 
 ---
 
-## Module 3 — `string`
+## Module 3 — `string` ⏳ not started
 
-Depends on `core`. Also provides `Char` utilities.
+Depends on `core`. Also provides `Char` utilities. File `stdlib/string.mdk`
+currently contains only an `import` line.
 
 ### Char operations
 
-- `isDigit : Char -> Bool`
-- `isAlpha : Char -> Bool`
-- `isAlphaNum : Char -> Bool`
-- `isSpace : Char -> Bool`
-- `isUpper : Char -> Bool`
-- `isLower : Char -> Bool`
-- `isPunct : Char -> Bool`
-- `toUpper : Char -> Char`
-- `toLower : Char -> Char`
-- `digitToInt : Char -> Option Int`
-- `intToDigit : Int -> Option Char`
-- `charCode : Char -> Int`
-- `charFromCode : Int -> Option Char`
+- ⏳ `isDigit : Char -> Bool` — `'0'..'9'`
+- ⏳ `isAlpha : Char -> Bool` — Unicode letter
+- ⏳ `isAlphaNum : Char -> Bool` — letter or digit
+- ⏳ `isSpace : Char -> Bool` — Unicode whitespace
+- ⏳ `isUpper : Char -> Bool` — uppercase letter
+- ⏳ `isLower : Char -> Bool` — lowercase letter
+- ⏳ `isPunct : Char -> Bool` — Unicode punctuation category
+- ⏳ `toUpper : Char -> Char` — case fold to upper (identity for non-letters)
+- ⏳ `toLower : Char -> Char` — case fold to lower
+- ⏳ `digitToInt : Char -> Option Int` — `'0'..'9' → Some 0..9`, `'a'..'f' → Some 10..15`, else `None`
+- ⏳ `intToDigit : Int -> Option Char` — inverse of `digitToInt` for `0..15`
+- ⏳ `charCode : Char -> Int` — Unicode codepoint
+- ⏳ `charFromCode : Int -> Option Char` — codepoint → `Char`, `None` if out of range / surrogate
 
 ### Conversion
 
-- `fromChar : Char -> String`
-- `toChars : String -> List Char`
-- `fromChars : List Char -> String`
-- `toString : Show a => a -> String`
-- `toInt : String -> Option Int`
-- `toFloat : String -> Option Float`
-- `fromInt : Int -> String`
-- `fromFloat : Float -> String`
+- ⏳ `fromChar : Char -> String` — one-character string
+- ⏳ `toChars : String -> List Char` — codepoint list (note: not grapheme clusters)
+- ⏳ `fromChars : List Char -> String` — inverse of `toChars`
+- ⏳ `toString : Show a => a -> String` — alias for `show`
+- ⏳ `toInt : String -> Option Int` — parse a decimal integer (leading sign allowed); `None` on any failure
+- ⏳ `toFloat : String -> Option Float` — parse a decimal float; `None` on any failure
+- ⏳ `fromInt : Int -> String` — decimal representation
+- ⏳ `fromFloat : Float -> String` — decimal representation (shortest round-tripping form preferred)
 
 ### Inspection
 
-- `length : String -> Int`
-- `isEmpty : String -> Bool`
-- `startsWith : String -> String -> Bool`
-- `endsWith : String -> String -> Bool`
-- `contains : String -> String -> Bool`
-- `indexOf : String -> String -> Option Int`
-- `lastIndexOf : String -> String -> Option Int`
-- `count : String -> String -> Int`
+- ⏳ `length : String -> Int` — code-unit count (TBD: clarify byte vs codepoint vs grapheme once the runtime rep is locked)
+- ⏳ `isEmpty : String -> Bool` — true for `""`
+- ⏳ `startsWith : String -> String -> Bool` — `startsWith prefix s` — true when `s` begins with `prefix`
+- ⏳ `endsWith : String -> String -> Bool` — `endsWith suffix s` — true when `s` ends with `suffix`
+- ⏳ `contains : String -> String -> Bool` — `contains needle haystack`
+- ⏳ `indexOf : String -> String -> Option Int` — first index of `needle` in `haystack`, or `None`
+- ⏳ `lastIndexOf : String -> String -> Option Int` — last index of `needle` in `haystack`
+- ⏳ `count : String -> String -> Int` — number of non-overlapping occurrences
 
 ### Transformation
 
-- `append : String -> String -> String`
-- `prepend : String -> String -> String`
-- `concat : List String -> String`
-- `join : String -> List String -> String`
-- `repeat : Int -> String -> String`
-- `reverse : String -> String`
-- `trim : String -> String`
-- `trimLeft : String -> String`
-- `trimRight : String -> String`
-- `toUpper : String -> String`
-- `toLower : String -> String`
-- `capitalize : String -> String`
-- `replace : String -> String -> String -> String`
-- `replaceAll : String -> String -> String -> String`
+- ⏳ `append : String -> String -> String` — `s1 ++ s2`; available via the `Semigroup` impl
+- ⏳ `prepend : String -> String -> String` — `flip append`
+- ⏳ `concat : List String -> String` — concatenate all strings in order
+- ⏳ `join : String -> List String -> String` — `join sep parts` — concatenate with `sep` between each pair
+- ⏳ `repeat : Int -> String -> String` — repeat the string N times
+- ⏳ `reverse : String -> String` — codepoint-reversed string
+- ⏳ `trim : String -> String` — strip whitespace from both ends
+- ⏳ `trimLeft : String -> String` — strip leading whitespace
+- ⏳ `trimRight : String -> String` — strip trailing whitespace
+- ⏳ `toUpper : String -> String` — case fold each char to upper
+- ⏳ `toLower : String -> String` — case fold each char to lower
+- ⏳ `capitalize : String -> String` — uppercase first char, leave the rest alone
+- ⏳ `replace : String -> String -> String -> String` — `replace old new s` — replace the first occurrence
+- ⏳ `replaceAll : String -> String -> String -> String` — replace every non-overlapping occurrence
 
 ### Slicing and splitting
 
-- `slice : Int -> Int -> String -> String`
-- `take : Int -> String -> String`
-- `drop : Int -> String -> String`
-- `split : String -> String -> List String`
-- `splitAt : Int -> String -> (String, String)`
-- `lines : String -> List String`
-- `words : String -> List String`
-- `unlines : List String -> String`
-- `unwords : List String -> String`
+- ⏳ `slice : Int -> Int -> String -> String` — `slice lo hi s` — substring `[lo, hi)`
+- ⏳ `take : Int -> String -> String` — first N codepoints (fewer if shorter)
+- ⏳ `drop : Int -> String -> String` — drop the first N codepoints
+- ⏳ `split : String -> String -> List String` — `split sep s` — split on `sep`, dropping the separator
+- ⏳ `splitAt : Int -> String -> (String, String)` — `(take n s, drop n s)`
+- ⏳ `lines : String -> List String` — split on `\n` (also accept `\r\n`)
+- ⏳ `words : String -> List String` — split on runs of whitespace, drop empties
+- ⏳ `unlines : List String -> String` — join with `\n` and append a trailing newline
+- ⏳ `unwords : List String -> String` — join with single spaces
 
 ### Padding
 
-- `padLeft : Int -> Char -> String -> String`
-- `padRight : Int -> Char -> String -> String`
-- `center : Int -> Char -> String -> String`
+- ⏳ `padLeft : Int -> Char -> String -> String` — left-pad with the given char up to total length N
+- ⏳ `padRight : Int -> Char -> String -> String` — right-pad
+- ⏳ `center : Int -> Char -> String -> String` — center the string, splitting padding evenly (extra goes on the right)
 
 ### Instances
 
-- `impl Eq String` (already in Ord built-in; formalize here)
-- `impl Ord String`
-- `impl Show String`
-- `impl Eq Char`
-- `impl Ord Char`
-- `impl Show Char`
+- ⏳ `impl Eq String` — already type-checks structurally; formalise with explicit method
+- ⏳ `impl Ord String` — lexicographic codepoint order
+- ⏳ `impl Show String` — quoted, with escape handling
+- ⏳ `impl Semigroup String` — already in `core.mdk` via `Monoid`
+- ⏳ `impl Eq Char`
+- ⏳ `impl Ord Char` — codepoint order
+- ⏳ `impl Show Char` — quoted
 
 ---
 
-## Module 4 — `array`
+## Module 4 — `array` ⏳ not started
 
 Depends on `core`. Arrays are fixed-size and support O(1) random access.
 Mutations use `Ref` or `let mut` internally; the external API can be pure or
-effectful, depending on what the language exposes cleanly.
+effectful, depending on what the language exposes cleanly. File
+`stdlib/array.mdk` currently contains only an `import` line.
 
 ### Construction
 
-- `make : Int -> a -> Array a`
-- `makeWith : Int -> (Int -> a) -> Array a`
-- `fromList : List a -> Array a`
-- `singleton : a -> Array a`
-- `empty : Array a`
-- `range : Int -> Int -> Array Int`
-- `replicate : Int -> a -> Array a`
-- `copy : Array a -> Array a`
+- ⏳ `make : Int -> a -> Array a` — array of length N filled with the value
+- ⏳ `makeWith : Int -> (Int -> a) -> Array a` — generate element at each index via the function
+- ⏳ `fromList : List a -> Array a` — copy list contents into a new array
+- ⏳ `singleton : a -> Array a` — one-element array
+- ⏳ `empty : Array a` — the empty array
+- ⏳ `range : Int -> Int -> Array Int` — `[lo, hi)` as an array
+- ⏳ `replicate : Int -> a -> Array a` — alias for `make`; included for symmetry with `List`
+- ⏳ `copy : Array a -> Array a` — fresh array with the same contents (useful before mutation)
 
 ### Observation
 
-- `length : Array a -> Int`
-- `isEmpty : Array a -> Bool`
-- `get : Int -> Array a -> Option a`
-- `getUnsafe : Int -> Array a -> a`
-- `first : Array a -> Option a`
-- `last : Array a -> Option a`
-- `toList : Array a -> List a`
+- ⏳ `length : Array a -> Int` — element count (O(1))
+- ⏳ `isEmpty : Array a -> Bool` — true for length-0 arrays
+- ⏳ `get : Int -> Array a -> Option a` — bounds-checked indexing
+- ⏳ `getUnsafe : Int -> Array a -> a` — unchecked indexing; panics on out-of-range
+- ⏳ `first : Array a -> Option a` — element at index 0, or `None`
+- ⏳ `last : Array a -> Option a` — final element, or `None`
+- ⏳ `toList : Array a -> List a` — copy contents into a list
 
 ### Transformation (pure — return new arrays)
 
-- `map : (a -> b) -> Array a -> Array b`
-- `filter : (a -> Bool) -> Array a -> Array a`
-- `filterMap : (a -> Option b) -> Array a -> Array b`
-- `reverse : Array a -> Array a`
-- `slice : Int -> Int -> Array a -> Array a`
-- `take : Int -> Array a -> Array a`
-- `drop : Int -> Array a -> Array a`
-- `append : Array a -> Array a -> Array a`
-- `concat : Array (Array a) -> Array a`
-- `zip : Array a -> Array b -> Array (a, b)`
-- `zipWith : (a -> b -> c) -> Array a -> Array b -> Array c`
-- `unzip : Array (a, b) -> (Array a, Array b)`
+- ⏳ `map : (a -> b) -> Array a -> Array b` — apply to each element
+- ⏳ `filter : (a -> Bool) -> Array a -> Array a` — keep matching elements
+- ⏳ `filterMap : (a -> Option b) -> Array a -> Array b` — keep `Some` results
+- ⏳ `reverse : Array a -> Array a` — fresh array in opposite order
+- ⏳ `slice : Int -> Int -> Array a -> Array a` — `[lo, hi)` slice as a new array
+- ⏳ `take : Int -> Array a -> Array a` — first N elements
+- ⏳ `drop : Int -> Array a -> Array a` — everything after the first N
+- ⏳ `append : Array a -> Array a -> Array a` — concatenate two arrays
+- ⏳ `concat : Array (Array a) -> Array a` — flatten one level
+- ⏳ `zip : Array a -> Array b -> Array (a, b)` — pair up by index; result length is the shorter input
+- ⏳ `zipWith : (a -> b -> c) -> Array a -> Array b -> Array c` — generalised `zip`
+- ⏳ `unzip : Array (a, b) -> (Array a, Array b)` — split into two parallel arrays
 
 ### Mutation (effectful — modify in place)
 
-- `set : Int -> a -> Array a -> <Mut> Unit`
-- `swap : Int -> Int -> Array a -> <Mut> Unit`
-- `fill : a -> Array a -> <Mut> Unit`
-- `sortInPlace : Ord a => Array a -> <Mut> Unit`
-- `sortInPlaceBy : (a -> a -> Ordering) -> Array a -> <Mut> Unit`
+- ⏳ `set : Int -> a -> Array a -> <Mut> Unit` — write a value at the given index (bounds-checked; panic on OOB)
+- ⏳ `swap : Int -> Int -> Array a -> <Mut> Unit` — exchange the elements at two indices
+- ⏳ `fill : a -> Array a -> <Mut> Unit` — overwrite every cell with the value
+- ⏳ `sortInPlace : Ord a => Array a -> <Mut> Unit` — sort the array in place
+- ⏳ `sortInPlaceBy : (a -> a -> Ordering) -> Array a -> <Mut> Unit` — in-place sort with a custom comparator
 
 ### Folds and search
 
-- `fold : (b -> a -> b) -> b -> Array a -> b`
-- `foldRight : (a -> b -> b) -> b -> Array a -> b`
-- `any : (a -> Bool) -> Array a -> Bool`
-- `all : (a -> Bool) -> Array a -> Bool`
-- `find : (a -> Bool) -> Array a -> Option a`
-- `findIndex : (a -> Bool) -> Array a -> Option Int`
-- `elem : Eq a => a -> Array a -> Bool`
-- `sum : Array Int -> Int`
-- `product : Array Int -> Int`
-- `maximum : Ord a => Array a -> Option a`
-- `minimum : Ord a => Array a -> Option a`
+- ⏳ `fold : (b -> a -> b) -> b -> Array a -> b` — left fold
+- ⏳ `foldRight : (a -> b -> b) -> b -> Array a -> b` — right fold
+- ⏳ `any : (a -> Bool) -> Array a -> Bool` — at least one element matches
+- ⏳ `all : (a -> Bool) -> Array a -> Bool` — every element matches
+- ⏳ `find : (a -> Bool) -> Array a -> Option a` — first match, or `None`
+- ⏳ `findIndex : (a -> Bool) -> Array a -> Option Int` — index of the first match
+- ⏳ `elem : Eq a => a -> Array a -> Bool` — value is present
+- ⏳ `sum : Array Int -> Int` — additive fold
+- ⏳ `product : Array Int -> Int` — multiplicative fold
+- ⏳ `maximum : Ord a => Array a -> Option a` — largest element, or `None` if empty
+- ⏳ `minimum : Ord a => Array a -> Option a` — smallest element, or `None` if empty
 
 ### Sorting (pure)
 
-- `sort : Ord a => Array a -> Array a`
-- `sortBy : (a -> a -> Ordering) -> Array a -> Array a`
-- `sortOn : Ord b => (a -> b) -> Array a -> Array a`
+- ⏳ `sort : Ord a => Array a -> Array a` — return a freshly sorted copy
+- ⏳ `sortBy : (a -> a -> Ordering) -> Array a -> Array a` — custom comparator, fresh array
+- ⏳ `sortOn : Ord b => (a -> b) -> Array a -> Array a` — sort by a derived key, fresh array
 
 ### Instances
 
-- `impl Eq (Array a)` where `Eq a`
-- `impl Show (Array a)` where `Show a`
-- `impl Mappable Array`
-- `impl Foldable Array`
+- ⏳ `impl Eq (Array a)` where `Eq a` — element-wise
+- ⏳ `impl Show (Array a)` where `Show a` — bracketed comma-separated
+- ⏳ `impl Mappable Array`
+- ⏳ `impl Foldable Array`
