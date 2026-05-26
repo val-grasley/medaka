@@ -122,27 +122,36 @@ and match_pats pats vals =
 
 (* ── Monad context for do-blocks ─────────────────────────────────────────── *)
 
-(* monad_kind tracks which constructor `pure` should wrap with inside a
-   do-block.  It is *only* consulted by the `pure` extern; the bind operator
-   itself dispatches through the stdlib Thenable interface via VMulti, so this
-   enum no longer drives bind behaviour and shrinks once Step 5 reconciles
-   `pure` against the Applicative interface. *)
-type monad_kind = MIO | MOption | MResult | MUnknown
-
-let current_monad : monad_kind ref = ref MUnknown
-let current_loc   : loc option ref = ref None
-
-let detect_monad = function
-  | VCon ("Some", _) | VCon ("None", []) -> MOption
-  | VCon ("Ok", _)   | VCon ("Err", _)   -> MResult
-  | _ -> MIO
+(* The current monadic context inside a do-block.  Bind itself dispatches
+   through the stdlib `andThen` VMulti — this state is consulted only by the
+   `pure` primitive, which needs a type name to pick the right Applicative
+   impl body from `pure_impls`. *)
+let current_monad_type : string option ref = ref None
+let current_loc : loc option ref = ref None
 
 (* Constructors known to belong to a Thenable impl.  Populated from the
-   program's `impl Thenable T` declarations at eval init, plus the stdlib
-   prelude's Option / Result / List.  When a do-block bind sees a value whose
-   head constructor is in this set, it dispatches the bind through the
-   `andThen` VMulti rather than falling through to direct pattern matching. *)
+   program's `impl Thenable T` declarations at eval init.  When a do-block
+   bind sees a value whose head constructor is in this set, it dispatches
+   through the `andThen` VMulti rather than falling through to direct
+   pattern matching. *)
 let monadic_ctors : (string, unit) Hashtbl.t = Hashtbl.create 8
+
+(* Constructor name → type name.  Populated from DData declarations at eval
+   init.  Used by detect_monad to map a value's head constructor back to the
+   type whose Applicative impl `pure` should dispatch into. *)
+let ctor_to_type : (string, string) Hashtbl.t = Hashtbl.create 8
+
+(* Type name → `pure` impl body.  Populated from `impl Applicative T` (and
+   `impl Thenable T` if it overrides pure) declarations at eval init.  The
+   `pure` primitive looks up this table using the current monad type. *)
+let pure_impls : (string, value) Hashtbl.t = Hashtbl.create 4
+
+let detect_monad = function
+  | VCon (cname, _) ->
+    (match Hashtbl.find_opt ctor_to_type cname with
+     | Some tname -> Some tname
+     | None -> None)
+  | _ -> None
 
 (* Convert Impl_no_match → Eval_error at the boundary of user-visible code.
    Used at every eval site that is NOT inside a VMulti dispatch chain. *)
@@ -327,10 +336,10 @@ and eval env expr =
      | _ -> raise (Eval_error ("index on non-array/list", !current_loc)))
 
   | EDo stmts ->
-    let saved = !current_monad in
-    current_monad := MUnknown;
+    let saved = !current_monad_type in
+    current_monad_type := None;
     let result = eval_do env stmts in
-    current_monad := saved;
+    current_monad_type := saved;
     result
 
   | EAnnot (e, _) -> eval env e
@@ -437,13 +446,13 @@ and eval_do env stmts =
 
   | (DoBind (pat, e)) :: rest ->
     let v = wrap_match_errors (fun () -> eval env e) in
-    if !current_monad = MUnknown then
-      current_monad := detect_monad v;
+    if !current_monad_type = None then
+      current_monad_type := detect_monad v;
     (* If `v`'s head constructor belongs to a Thenable impl, dispatch the bind
        through the stdlib `andThen` VMulti.  The Thenable impl's clauses do
        the short-circuiting (e.g. `andThen None _ = None`).  Otherwise fall
        through to direct pattern matching — same shape as the old MIO mode. *)
-    let dispatch_via_thenable cname =
+    let dispatch_via_thenable () =
       let and_then = lookup env "andThen" in
       let continuation = VPrim (fun bound_v ->
         match match_pat pat bound_v with
@@ -451,12 +460,11 @@ and eval_do env stmts =
           raise (Eval_error ("bind pattern match failure", !current_loc))
         | Some binds -> eval_do (extend env binds) rest
       ) in
-      ignore cname;
       apply (apply and_then v) continuation
     in
     (match v with
      | VCon (cname, _) when Hashtbl.mem monadic_ctors cname ->
-       dispatch_via_thenable cname
+       dispatch_via_thenable ()
      | _ ->
        (match match_pat pat v with
         | None -> raise (Eval_error ("bind pattern match failure", !current_loc))
@@ -472,19 +480,25 @@ let primitives : (string * value) list =
   [
     ("print",   VPrim (fun v -> !output_hook (pp_value v); VUnit));
     ("println", VPrim (fun v -> !output_hook (pp_value v); !output_hook "\n"; VUnit));
+    (* `pure` dispatches through the user-written Applicative impl body for
+       the current monad type, which the do-block records in
+       `current_monad_type` when a bind sees a known monadic constructor.
+       Outside that context (or for monads with no `pure` impl loaded yet),
+       fall through unchanged — matches the previous MIO/MUnknown branch. *)
     ("pure",    VPrim (fun v ->
-      match !current_monad with
-      | MOption        -> VCon ("Some", [v])
-      | MResult        -> VCon ("Ok", [v])
-      | MIO | MUnknown -> v));
+      match !current_monad_type with
+      | Some tname when Hashtbl.mem pure_impls tname ->
+        apply (Hashtbl.find pure_impls tname) v
+      | _ -> v));
     ("Ref",     VPrim (fun v -> VRef (ref v)));
     ("set_ref", VPrim (fun r ->
       VPrim (fun v ->
         match r with
         | VRef cell -> cell := v; VUnit
         | _ -> raise (Eval_error ("set_ref: not a Ref", None)))));
-    ("map",     VPrim (fun f ->
-      VPrim (fun lst -> VList (List.map (apply f) (unwrap_list lst)))));
+    (* `map` is no longer a primitive — its stdlib home is the Mappable.map
+       interface method, dispatched through the user-written impl bodies via
+       VMulti.  See stdlib/core.mdk's `impl Mappable List/Option/...`. *)
     ("filter",  VPrim (fun f ->
       VPrim (fun lst ->
         VList (List.filter
@@ -593,12 +607,17 @@ let eval_program program =
   let program = Prelude.program @ program in
 
   (* Record constructor names that belong to a Thenable impl, so DoBind can
-     decide whether to dispatch via `andThen` or fall through. *)
+     decide whether to dispatch via `andThen` or fall through; and the
+     reverse mapping ctor → type used by detect_monad to flag `pure`'s
+     target for impl lookup. *)
   Hashtbl.clear monadic_ctors;
+  Hashtbl.clear ctor_to_type;
   let type_ctors : (string, string list) Hashtbl.t = Hashtbl.create 8 in
   List.iter (function
     | DData (_, n, _, vs, _) ->
-      Hashtbl.replace type_ctors n (List.map (fun v -> v.con_name) vs)
+      let cnames = List.map (fun v -> v.con_name) vs in
+      Hashtbl.replace type_ctors n cnames;
+      List.iter (fun c -> Hashtbl.replace ctor_to_type c n) cnames
     | _ -> ()
   ) program;
   (* Built-in types whose constructors are seeded in OCaml. *)
@@ -662,6 +681,7 @@ let eval_program program =
   (* method name → accumulated (score, closure) list in insertion order *)
   let impl_acc : (string, (int * value) list) Hashtbl.t = Hashtbl.create 16 in
 
+  Hashtbl.clear pure_impls;
   List.iter (fun decl ->
     match decl with
     | DFunDef (_, name, pats, body) ->
@@ -669,12 +689,27 @@ let eval_program program =
         if pats = [] then eval env body
         else VClosure (env, pats, body)) in
       fill_cell name v
-    | DImpl { type_args; methods; _ } ->
+    | DImpl { iface_name; type_args; methods; _ } ->
       let score = tyvars_in_args type_args in
+      (* If this is an Applicative impl, record its `pure` body in pure_impls
+         keyed by the impl type's head TyCon name.  The `pure` primitive
+         consults this table once the do-block has identified its monad. *)
+      if iface_name = "Applicative" then begin
+        match type_args, List.find_opt (fun (n, _, _) -> n = "pure") methods with
+        | [t], Some (_, pats, body) ->
+          (match head_tycon t with
+           | Some tname ->
+             let v = if pats = [] then wrap_match_errors (fun () -> eval env body)
+                     else VClosure (env, pats, body) in
+             Hashtbl.replace pure_impls tname v
+           | None -> ())
+        | _ -> ()
+      end;
       List.iter (fun (name, pats, body) ->
-        (* Only protect externs that use OCaml runtime context (e.g. `pure`
-           uses current_monad and must not be overridden by impl defs).
-           Other externs like `map`, `filter`, `fold` CAN be overridden. *)
+        (* `pure` stays a primitive (it consults current_monad_type to pick
+           the right impl from pure_impls); everything else, including
+           interface methods like `map`/`fold`, is collected here so the
+           regular VMulti dispatch path picks it up. *)
         if not (List.mem name context_dependent_externs) then begin
           let new_v = if pats = [] then wrap_match_errors (fun () -> eval env body)
                       else VClosure (env, pats, body) in
@@ -709,9 +744,10 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
   in
   rs.eval_env := [!(rs.top_frame)];
   (match decl with
-   | DData (_, _, _, variants, _) ->
+   | DData (_, type_name, _, variants, _) ->
      List.iter (fun v ->
-       add v.con_name (make_ctor v.con_name (List.length v.con_fields))
+       add v.con_name (make_ctor v.con_name (List.length v.con_fields));
+       Hashtbl.replace ctor_to_type v.con_name type_name
      ) variants
    | DFunDef (_, name, pats, body) ->
      add name VUnit;
@@ -720,7 +756,7 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
        if pats = [] then eval !(rs.eval_env) body
        else VClosure (!(rs.eval_env), pats, body)) in
      fill name v
-   | DImpl { type_args; methods; _ } ->
+   | DImpl { iface_name; type_args; methods; _ } ->
      let score = tyvars_in_args type_args in
      let context_dependent_externs = ["pure"] in
      (* Reserve slots for overridable impl methods before evaluating bodies. *)
@@ -731,6 +767,35 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
           | Some _ -> ())
      ) methods;
      rs.eval_env := [!(rs.top_frame)];
+     (* Mirror eval_program's bookkeeping: for Applicative impls, record
+        the `pure` body keyed by the impl type's head TyCon name; for
+        Thenable impls, add the type's constructors to monadic_ctors. *)
+     let rec head_tycon = function
+       | Ast.TyCon n      -> Some n
+       | Ast.TyApp (a, _) -> head_tycon a
+       | Ast.TyConstrained (_, t) | Ast.TyEffect (_, t) -> head_tycon t
+       | _ -> None
+     in
+     let tname_opt = match type_args with
+       | [t] -> head_tycon t
+       | _ -> None
+     in
+     (if iface_name = "Applicative" then
+        match List.find_opt (fun (n, _, _) -> n = "pure") methods, tname_opt with
+        | Some (_, pats, body), Some tname ->
+          let v = wrap_match_errors (fun () ->
+            if pats = [] then eval !(rs.eval_env) body
+            else VClosure (!(rs.eval_env), pats, body)) in
+          Hashtbl.replace pure_impls tname v
+        | _ -> ());
+     (if iface_name = "Thenable" then
+        match tname_opt with
+        | Some tname ->
+          (* All of `tname`'s constructors should dispatch via andThen. *)
+          Hashtbl.iter (fun cname tn ->
+            if tn = tname then Hashtbl.replace monadic_ctors cname ()
+          ) ctor_to_type
+        | None -> ());
      List.iter (fun (name, pats, body) ->
        if not (List.mem name context_dependent_externs) then begin
          let new_v = wrap_match_errors (fun () ->
