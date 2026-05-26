@@ -185,6 +185,65 @@ result =
 
 `do` is for abstracting over monadic patterns (Option, Result, custom monads) — not a required wrapper for side effects.
 
+### `if let` and `let else`
+
+Two sugars for the common pattern of binding through a single-constructor match.
+
+`if let` binds when the pattern matches, with an `else` branch for the no-match case:
+```
+if let Some name = lookup id users then
+  greet name
+else
+  print "no user"
+```
+
+`let else` is a refutable binding that *must* match — the `else` branch must diverge (return early, panic, etc.):
+```
+fetchProfile : Int -> Result Profile Error
+fetchProfile id =
+  let Some user = lookup id users else
+    return Err NotFound
+  let Ok prefs = readPrefs user else
+    return Err CorruptPrefs
+  Ok (Profile user prefs)
+```
+
+Both are strictly sugar — they desugar to `match`. They exist because the single-arm extraction pattern is too common to spell out in full every time, and a full `do`-block is heavy when you want one variable.
+
+### `function` Keyword
+
+A one-argument lambda that immediately pattern-matches:
+```
+filter (function
+  | Some x => x > 0
+  | None   => false
+) results
+```
+
+Equivalent to `(x => match x with Some x => x > 0 | None => false)`. Restricted to a single argument to keep the desugar trivial; for multi-argument matches, use `match` directly.
+
+### Range Literals
+
+`1..10` is the half-open range `[1, 10)`. `1..=10` is the inclusive range `[1, 10]`. Ranges work in three places:
+
+```
+-- as collections
+[1..10]              -- List Int: [1, 2, ..., 9]
+[|1..=100|]          -- Array Int: [|1, 2, ..., 100|]
+
+-- in slicing
+chars[0..5]          -- substring
+
+-- in patterns
+match c
+  'a'..='z' => Lower
+  'A'..='Z' => Upper
+  '0'..='9' => Digit
+  _         => Other
+```
+
+The pattern-match case is the highest-value: it replaces ugly chains of `&&` guards with a syntactic form the exhaustiveness checker can reason about.
+
 ---
 
 ## Data Types
@@ -201,6 +260,22 @@ area (Circle r)      = pi * r * r
 area (Rectangle w h) = w * h
 ```
 
+#### Variants with Named Fields
+For variants carrying multiple payloads, named fields are clearer than positional ones. A variant can use record-style syntax inline — no separate `record` declaration required:
+```
+data Event
+  = Click { x : Int, y : Int }
+  | KeyPress { key : Char, shift : Bool }
+  | Scroll Int
+
+handle : Event -> <IO> Unit
+handle (Click { x, y })          = println "click at \{show x},\{show y}"
+handle (KeyPress { key, shift }) = println "key \{show key} (shift=\{show shift})"
+handle (Scroll n)                = println "scroll \{show n}"
+```
+
+Field punning works in patterns (`{ x, y }` is shorthand for `{ x = x, y = y }`). Positional variants and named-field variants can coexist in the same `data` declaration. Field names are namespaced to the variant.
+
 ### Product Types (`record`)
 ```
 record Person
@@ -213,6 +288,11 @@ record Person
   ```
   let p2 = { p | age = 31 }
   ```
+- **Nested update sugar** — dotted paths on the left of `=`:
+  ```
+  let p2 = { p | address.city = "Boston" }
+  ```
+  Equivalent to `{ p | address = { p.address | city = "Boston" } }`. The path can only appear on the LHS; the RHS is a plain expression.
 - **Construction requires all fields** — no partial construction, no runtime surprises
 - **Fields are namespaced** to the type — no global namespace pollution
 
@@ -247,6 +327,25 @@ match divide 10 0
 ```
 
 Errors are data. Pattern match to handle them. Library authors cannot be lazy and throw — they must model failure explicitly.
+
+#### `?` — Short-Circuit on Error
+The postfix `?` operator unwraps a `Result` or `Option`, returning the error (or `None`) from the enclosing function on failure:
+```
+parseConfig : String -> Result Config String
+parseConfig path =
+  let raw    = readFile path ?     -- on Err, return that Err
+  let parsed = decode raw ?
+  validate parsed
+
+lookupAge : String -> Map String Person -> Option Int
+lookupAge name m =
+  let p = Map.lookup name m ?     -- on None, return None
+  Some p.age
+```
+
+`?` desugars to a match-and-early-return. The enclosing function's return type must agree with the type being unwrapped: a `?` on a `Result _ E` requires the function to return `Result _ E`; a `?` on `Option _` requires the function to return `Option _`.
+
+Use `?` for lightweight error chains; reach for `do`-notation when you want explicit binds across many steps or are working in a non-`Result`/`Option` monad.
 
 ### Unrecoverable Errors → `Panic`
 For genuine invariant violations, index out of bounds, stack overflow — situations where the program cannot reasonably continue. Tracked as an effect in the type system (see Effects).
@@ -339,6 +438,46 @@ toList (Node l v r) = toList l ++ (v :: toList r)
 - **`import` for imports** — clean and explicit
 - **No circular dependencies** — enforced by compiler
 - **No first-class modules or functors** — OCaml-style complexity explicitly rejected
+
+### Abstract Type Exports
+
+For data types, `export` exposes only the **type name** — constructors stay private to the defining module. To additionally expose constructors, use `public export`. This follows Idris's visibility model directly:
+
+```
+-- in collections/map.mdk
+
+-- abstract: users see the type, can't pattern-match or construct directly
+export data Map k v
+  = Empty
+  | Node k v (Map k v) (Map k v)
+
+export lookup : Ord k => k -> Map k v -> Option v
+export insert : Ord k => k -> v -> Map k v -> Map k v
+```
+
+```
+-- in user code
+import collections.map.{Map, lookup, insert}
+
+m : Map String Int
+m = empty |> insert "alice" 30   -- fine, uses the public API
+
+-- compile error: constructor `Node` not exported from collections.map
+bad m = match m with Node _ v _ _ => v | _ => 0
+```
+
+When you genuinely want constructors public — for transparent ADTs like `Option`, `Result`, `Ordering` — use `public export`:
+
+```
+public export data Option a = Some a | None
+public export data Result e a = Ok a | Err e
+```
+
+The same applies to `record` types: `export record Foo` exposes the type name; `public export record Foo` additionally exposes the fields (for construction, dot access, and update syntax). An abstractly-exported record can only be used via the operations the defining module chooses to expose.
+
+**Why default-abstract:** library invariants (`Map` balance, `NonEmpty` non-emptiness, `Email` well-formedness) need compiler enforcement, not convention. Defaulting to abstract pushes authors toward designing a public API; defaulting to concrete bakes the representation into every call site. The cost is one extra word (`public`) when you want full transparency.
+
+Derived instances survive abstract export: `deriving (Show, Eq)` on an abstract type still gives downstream users working `show` and `eq` — only pattern matching and direct construction are gated.
 
 ### To Be Decided (follow Rust's lead)
 - Selective imports: `import utils.{greet, helper}`
@@ -742,6 +881,7 @@ medaka add somepackage    -- add dependency
 medaka remove somepackage -- remove dependency
 medaka update             -- update dependencies
 medaka doc                -- generate documentation
+medaka bench              -- run benchmarks
 ```
 
 ### Project Config
@@ -755,6 +895,57 @@ Cargo-style `medaka.toml` for project configuration, `medaka.lock` for reproduci
 
 ### Language Server
 Ships with the toolchain, not a third party plugin. Provides syntax highlighting, inline type errors, go-to-definition, autocomplete. Tree-sitter grammar for fast, incremental syntax highlighting.
+
+### Testing
+
+The blessed test runner (`medaka test`) supports three flavours of test, all first-class:
+
+**Example tests** — ordinary functions that return `Bool` or assert via `assertEq`:
+```
+test "factorial of 5" =
+  factorial 5 == 120
+```
+
+**Property tests** — quantified over the type, generated automatically via a derivable `Arbitrary` interface:
+```
+prop "reverse is its own inverse" (xs : List Int) =
+  reverse (reverse xs) == xs
+
+prop "sort preserves length" (xs : List Int) =
+  length (sort xs) == length xs
+```
+`Arbitrary` is derivable for any `data`/`record` whose fields are themselves `Arbitrary`. Shrinking is built in. This is the QuickCheck/Hypothesis lineage, made cheap by Medaka's HM types and `deriving` infrastructure.
+
+**Doctests** — executable examples embedded in doc comments:
+```
+-- | Returns the first element of a list, if any.
+--
+-- > head [1, 2, 3]
+-- Some 1
+-- > head []
+-- None
+head : List a -> Option a
+```
+`medaka test` runs these alongside regular tests. `medaka doc` renders them into the generated documentation. Examples stay correct because the build fails when they go stale.
+
+### Snapshot Tests
+For structured output (rendered HTML, generated code, formatted JSON), snapshot tests compare a fresh result against a stored reference, with `medaka test --update-snapshots` to refresh them deliberately.
+
+### Coverage and Benchmarks
+- `medaka test --coverage` produces line coverage as part of the standard toolchain — no third-party tool needed.
+- `medaka bench` is a first-class benchmark target alongside `medaka test`, following Rust's `cargo bench` model.
+
+### Workspaces
+`medaka.toml` supports Cargo-style workspaces — a single root `medaka.toml` can declare member packages, share a lockfile, and build the whole graph. Designed in from day one so multi-package projects never need third-party tooling.
+
+### Attributes
+A small, fixed set of declaration attributes for metadata the compiler or tooling consumes:
+- `@deprecated "use newName instead"` — warning at call sites
+- `@inline` — hint to inline the body (advisory)
+- `@must_use` — warn if the result is discarded
+- `@test` / `@prop` / `@bench` — already the keywords for `test`/`prop`/`bench` declarations
+
+Attributes are not user-extensible. Same philosophy as the rest of the language: a closed set, no extension mechanism.
 
 ---
 

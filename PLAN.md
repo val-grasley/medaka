@@ -1428,6 +1428,186 @@ the root file's directory).
 
 ---
 
+## Cross-language inspiration arc
+
+These phases come from the 2026-05-26 design review that audited Medaka
+against OCaml, F#, Rust, Elm, and Clojure for features worth borrowing.
+See `language-design.md` for the user-facing description of each. Listed
+roughly in order of expected difficulty.
+
+### Phase 37: `?` postfix operator for `Result` and `Option` ⏳ TODO
+
+Postfix `?` desugars to a match-and-early-return: `let x = expr ?`
+becomes `match expr with Ok v => v | Err e => return (Err e)` (and
+analogously for `Option`). The enclosing function's return type must
+agree with the unwrapped type.
+
+Scope:
+- Parser: new postfix operator at expression precedence.
+- Typechecker: check enclosing return type vs the `?` site; emit a
+  good error when they disagree.
+- Desugar to existing `match` + early-return machinery.
+- Document interaction with `do`-notation (both are legal; `?` is
+  for short chains, `do` for many steps or non-`Result`/`Option`
+  monads).
+
+### Phase 38: `if let` and `let else` ⏳ TODO
+
+Two sugars over single-arm pattern match:
+- `if let pat = expr then a else b` — bind through `pat`, fall through
+  to `b` if it doesn't match.
+- `let pat = expr else { divergent }` — refutable bind that requires
+  the `else` branch to diverge (return / panic / etc.).
+
+Scope:
+- Parser additions.
+- Desugar to `match`.
+- For `let else`, the divergence check rides on the existing return-type
+  inference; the body must have type `Never` or unconditionally exit.
+
+### Phase 39: Variants with named fields ⏳ TODO
+
+Inline record-style payloads on `data` constructors:
+```
+data Event
+  = Click { x : Int, y : Int }
+  | KeyPress { key : Char, shift : Bool }
+  | Scroll Int
+```
+
+Scope:
+- Grammar: allow `{ field : Ty, ... }` after a constructor name in
+  `data` declarations.
+- AST: variant payload becomes a sum (positional list | named record).
+- Patterns: `Click { x, y }` with field punning support (Phase 31
+  already implemented record-pattern field puns; reuse).
+- Exhaustiveness: existing checker treats named-field variants
+  identically to positional ones once parsed.
+
+### Phase 40: Range literals ⏳ TODO
+
+`1..10` (half-open), `1..=10` (inclusive). Three contexts:
+- Expression: `[1..10]` produces `List Int`, `[|1..=100|]` produces
+  `Array Int`.
+- Slicing: `arr[lo..hi]`, `str[lo..hi]`.
+- Patterns: `'a'..='z'` in a `match` arm.
+
+Scope:
+- Lexer/parser: new `..` and `..=` operators (watch precedence vs.
+  module-path `.`).
+- New `Range` / `RangeInclusive` types in the stdlib (or special-case
+  lowering — decide at implementation time).
+- Pattern-match support is the highest-value piece; do not ship range
+  literals without it.
+
+### Phase 41: Doctests ⏳ TODO
+
+Executable examples embedded in doc comments. Lines beginning with
+`-- > ` are the input; following non-`> ` lines are the expected
+result; a blank line ends the example.
+
+Scope:
+- Doc-comment parser: extract `> example` blocks alongside the prose.
+- Test runner: register each doctest as a test case; compare the
+  evaluated form's `show` output against the expected text.
+- `medaka doc`: render examples back into generated HTML/markdown.
+
+### Phase 42: Property testing (`prop` + `Arbitrary`) ⏳ TODO
+
+`prop "name" (x : T) = ...` declares a property quantified over `T`,
+generated automatically via an `Arbitrary` interface (derivable).
+Shrinking is built in.
+
+Scope:
+- Stdlib: `Arbitrary a` interface with `arbitrary : <Rand> a` and
+  `shrink : a -> List a`. Derivable for any `data`/`record` whose
+  fields are themselves `Arbitrary`.
+- Test runner: `prop` declarations run N (configurable) times,
+  reporting the smallest shrunk counterexample on failure.
+- Built-in `Arbitrary` impls for `Int`, `Float`, `Bool`, `Char`,
+  `String`, `List`, `Array`, `Option`, `Result`, tuples.
+- Plug into `deriving` machinery already in place from Phase 18.5.
+
+### Phase 43: Abstract type exports ⏳ TODO
+
+`export data T = ...` exposes only the type name; `public export
+data T = ...` additionally exposes constructors. Same applies to
+`record`. **Breaking change**: existing `export data` declarations
+must be audited and either left abstract (preferred) or updated to
+`public export` where transparency is intentional (`Option`,
+`Result`, `Ordering`, etc.).
+
+Scope:
+- Parser: `public` modifier on `export`.
+- Module export table: track type-visible vs. constructors-visible
+  separately.
+- Typechecker: reject pattern matching against an abstractly-exported
+  constructor in foreign modules; reject foreign field access on
+  abstractly-exported records.
+- Error messages: when matching/accessing is rejected, point at the
+  defining module and suggest the public API.
+- Derived instances must survive abstract export (they're synthesised
+  in the defining module, so this should fall out for free — verify).
+- Audit pass: walk `stdlib/*.mdk` and choose `export` vs.
+  `public export` for every type.
+
+### Phase 44: `function` keyword ⏳ TODO
+
+`function | pat1 => e1 | pat2 => e2` is sugar for
+`(x => match x with pat1 => e1 | pat2 => e2)`. Single argument only.
+
+Scope:
+- Parser only — desugar to lambda + match in the AST.
+
+### Phase 45: Nested record update sugar ⏳ TODO
+
+`{ p | address.city = "Boston" }` desugars to
+`{ p | address = { p.address | city = "Boston" } }`. LHS is a dotted
+path; RHS is any expression. One-level only at first; deeper paths
+nest the desugaring further.
+
+Scope:
+- Parser: dotted paths allowed on the LHS of `=` inside update braces.
+- Desugar in the AST builder.
+- Decide whether to support multiple field updates with overlapping
+  prefixes in one brace (e.g. `{ p | address.city = ..., address.zip = ...}`);
+  reject as a non-goal initially — explicit nesting is fine.
+
+---
+
+## Tooling arc (also from the 2026-05-26 review)
+
+### Phase 46: Snapshot tests ⏳ TODO
+
+`assert_snapshot expr` compares `show expr` against a stored
+reference under `snapshots/`. `medaka test --update-snapshots`
+refreshes them deliberately.
+
+### Phase 47: Coverage via `medaka test --coverage` ⏳ TODO
+
+Line-coverage instrumentation as part of the standard toolchain.
+Depends on backend stability.
+
+### Phase 48: `medaka bench` ⏳ TODO
+
+First-class benchmark target. `bench "name" = expr` declarations
+collected and run separately from `test`. Reports throughput and
+variance.
+
+### Phase 49: Declaration attributes ⏳ TODO
+
+Closed set: `@deprecated "msg"`, `@inline`, `@must_use`. Parser-level
+only; semantics dispatched to the typechecker (`@deprecated`,
+`@must_use`) or the backend (`@inline`). Not user-extensible.
+
+### Phase 50: Workspaces in `medaka.toml` ⏳ TODO
+
+Cargo-style multi-package workspaces: a root `medaka.toml` declares
+`[workspace] members = [...]`, sharing one lockfile and resolving
+the dependency graph across the whole tree. Builds on Phase 36.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
@@ -1617,3 +1797,49 @@ This was assembled after reviewing `lib/parser.mly`, `lib/ast.ml`,
 | **Custom symbolic operators** | `(<\|>) = …` user-defined infix symbols | Medaka intentionally restricts operators; backtick infix is the approved escape hatch. Worth revisiting if DSL users push on it. |
 | **Tuple sections** | `(,3)` or `(1,)` to partially apply tuple constructors | Niche; explicit lambdas are fine. |
 | **Lazy / irrefutable patterns** | `~pat` defers matching | Rarely useful in a strict language; probably not worth the complexity. |
+
+---
+
+## 8. Cross-language sugar / features (vs. OCaml, F#, Rust, Elm, Clojure)
+
+Compiled from the 2026-05-26 design review. Committed entries are
+linked to phases above; rejected ones are listed so the rejection
+stays intentional.
+
+### Committed (Phase 37–45, 46–50)
+
+| Feature | Source | Phase |
+|---------|--------|-------|
+| **`?` postfix for `Result`/`Option`** | Rust | Phase 37 |
+| **`if let` and `let else`** | Rust, Swift | Phase 38 |
+| **Variants with named fields** | Rust, Swift, OCaml | Phase 39 |
+| **Range literals (`1..10`, `1..=10`)** | Rust, Kotlin | Phase 40 |
+| **Doctests** | Rust, Elixir | Phase 41 |
+| **Property testing + `Arbitrary`** | QuickCheck, Hypothesis | Phase 42 |
+| **Abstract type exports (`public export`)** | Idris, Elm, OCaml | Phase 43 |
+| **`function` keyword** | OCaml | Phase 44 |
+| **Nested record update sugar** | F# `with` precedent | Phase 45 |
+| **Snapshot tests** | Jest, insta | Phase 46 |
+| **Coverage (`--coverage`)** | Rust, Go | Phase 47 |
+| **`medaka bench`** | Rust | Phase 48 |
+| **Declaration attributes** | Rust | Phase 49 |
+| **Workspaces in `medaka.toml`** | Cargo | Phase 50 |
+
+### Rejected (with reason)
+
+| Feature | Source | Why no |
+|---------|--------|--------|
+| Labeled / named arguments | OCaml, F#, Swift | Real complexity in call resolution and partial application; records are the chosen idiom for clarity |
+| Active patterns | F# | Complicates pattern matching and exhaustiveness; "elegant but theoretical" — the kind of thing the design filter is meant to catch |
+| Computation expressions | F# | Generalises `do` into something only library authors understand; too magical |
+| Custom literal sigils (`~D"…"`, `~r"…"`) | Clojure, Elixir | Conflicts with "named functions over special syntax" |
+| Polymorphic variants | OCaml | Inference complexity; duplicates ADTs without earning it |
+| First-class modules / functors | OCaml | Already rejected in `language-design.md` |
+| Row polymorphism / extensible records | PureScript, Elm | Significant inference cost; nominal records are deliberate |
+| Units of measure | F# | Niche; would need to permeate the `Num` interface |
+| Multimethods / value dispatch | Clojure | Conflicts with HM inference; resolution model unclear |
+| Macros / reader macros | Lisp family | Conflicts with "one language, no extensions" |
+| Lazy sequences (`seq { … }`) | F#, Clojure | Conflicts with strict-by-default evaluation |
+| Pin operator `^x` | Elixir | Solves a problem Medaka doesn't have (no implicit rebinding-in-pattern) |
+| Custom symbolic operators | ML family | Explicitly rejected — backtick infix is the escape hatch |
+| Higher-rank polymorphism | Haskell `RankNTypes` | Damages inference, violates "no extensions" |
