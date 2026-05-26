@@ -247,4 +247,8 @@ let () =
       test_case "set literal"  `Quick (mk "s = Set { 1, 2, 3 }\n");
       test_case "hashmap"      `Quick (mk "m = HashMap { \"x\" => True }\n");
     ];
+    "constraint type signatures", [
+      test_case "single constraint"    `Quick (mk "neq : Eq a => a -> a -> Bool\n");
+      test_case "multi constraint"     `Quick (mk "f : (Eq a, Ord b) => a -> b -> Bool\n");
+    ];
   ]

@@ -20,14 +20,14 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-400 tests pass across 7 test suites:
+420 tests pass across 7 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 70    | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 57    | parse → print → parse yields the same AST             |
-| Resolver          | `test/test_resolve.ml`          | 40    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 174   | Inferred types, type errors, exhaustiveness warnings  |
+| Parser            | `test/test_parser.ml`           | 74    | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 59    | parse → print → parse yields the same AST             |
+| Resolver          | `test/test_resolve.ml`          | 42    | Unbound vars, unknown types/ctors, duplicates, fields |
+| Type checker      | `test/test_typecheck.ml`        | 186   | Inferred types, type errors, exhaustiveness warnings  |
 | Evaluator         | `test/test_eval.ml`             | 44    | Runtime values, recursion, do-blocks, Ref, errors     |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
@@ -923,6 +923,31 @@ build artifacts).
 
 ---
 
+### Phase 20: Constraint syntax in function type signatures ✅ DONE
+
+**Goal.** Allow `f : Eq a => a -> a -> Bool` and `f : (Eq a, Ord b) => a -> b -> Bool` in type annotations and type-sig declarations. Unblocks the stdlib track — `elem`, `sort`, `maximum`, and all other constraint-polymorphic functions can now be expressed.
+
+**What was added.**
+- `TyConstrained of (ident * ty list) list * ty` variant added to `Ast.ty`; `pp_ty_prec` prints `Eq a => t` (single) or `(Eq a, Ord b) => t` (multiple)
+- Parser: `desugar_constraint` helper in the prologue; `ty: ty_fun FAT_ARROW ty` rule interprets the LHS as a constraint list via semantic action. No new grammar conflicts — conflict count unchanged at 3 S/R (12) / 7 R/R (23)
+- Printer: `TyConstrained` case in `print_type`
+- Resolver: `check_type` validates constraint iface names against `env.interfaces`
+- Typechecker:
+  - `from_ast_type` strips `TyConstrained` (inner type only)
+  - `from_ast_type_with_constraints` — like `from_ast_type` but extracts constraint entries using a shared TVar table so constraint type-variable names map to the same fresh TVar as in the body type
+  - `instantiate_raw` — factored from `instantiate`, returns `(sub, mono)` so call sites can correlate bound IDs to fresh TVars
+  - `env.fun_constraints` — per-function registry mapping bound type-var IDs to interface names; populated when a constrained type sig is processed
+  - `env.constraint_obligations` — accumulated at `EVar` call sites when a constrained function is used
+  - `check_constraint_obligations` — post-HM pass that verifies concrete constraint obligations against the impl registry (skips unbound TVars, correct for polymorphic call sites)
+  - Called in all three check paths: `check_program`, `typecheck_module`, `check_repl_decl`
+- 20 new tests (4 parser, 2 roundtrip, 2 resolver, 5 typecheck annotation tests + all prior tests still pass). **420 tests total.**
+
+**Known limitations.**
+- Constraint inference not implemented. Callers of a constrained function that use it polymorphically must carry their own explicit constraint annotation.
+- Interface method members with extra constraints are not yet handled in `iface_member` type signatures.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
@@ -1053,13 +1078,38 @@ a phase in §6 unless noted.
   inert — deleting it would not break anything. To make the interface load-bearing,
   `<-` should desugar to `andThen` calls (Haskell style) so the `Thenable`
   constraint is actually checked. Scheduled with Phase 19 stdlib/typeclass wiring.
-- **No constraint syntax in function type signatures.** There is no way to write
-  `f : Eq a => a -> a -> Bool` in a type annotation or `type_sig` declaration.
-  The AST `ty` type has no constraint/forall node, and the parser has no rule for
-  `=>` in type position (only in match arms and lambda sugar). This blocks several
-  stdlib functions (`elem`, `sort`, `sum`, `maximum`, etc.) from being expressible
-  as type signatures, and prevents `Foldable` derived methods with extra constraints
-  from being interface members. Requires: new `TyConstraint` (or `TyForall`) AST
-  node, parser rule for `(IfaceName a, …) =>` prefix in `_type_expr`, and
-  typechecker support for threading the constraint into the inferred scheme.
-  Tracked as a future phase; unblocks full stdlib type-sig coverage.
+- **Constraint syntax in function type signatures.** ✅ Phase 20 done. `f : Eq a => a -> a -> Bool` now parses, round-trips, and type-checks. Constraint obligations are emitted at call sites and verified post-HM. Known limitation: constraint inference is not implemented — callers that use a constrained function polymorphically must also carry the explicit constraint annotation.
+
+---
+
+## 7. Syntactic sugar gap analysis (vs. Haskell)
+
+Features Haskell has that Medaka currently lacks, split by priority.
+This was assembled after reviewing `lib/parser.mly`, `lib/ast.ml`,
+`language-design.md`, and the test suite (2026-05-25).
+
+### Must-have
+
+| Feature | Description | Notes |
+|---------|-------------|-------|
+| **Where clauses** | `f x = body where helper y = …` — local helper definitions at the bottom of a binding | Without this, all locals must be chained `let … in`, which can't express mutually-recursive helpers. High-value ergonomic win. |
+| **Type aliases** | `type Name = String`, `type Parser a = String -> Option (a, String)` | No way to name a type synonym today. Needed for readable API signatures in the stdlib. |
+| **Newtype declarations** | `newtype UserId = UserId Int` — zero-cost wrapper for type safety | `deriving` infrastructure is already there; relatviely cheap to add. Blocks domain-modelling patterns. |
+| **As-patterns** | `f all@(x::xs) = …` — name the whole value and destructure simultaneously | Without this, you have to manually reconstruct the matched value. Comes up constantly in list/tree recursion. |
+| **Record field punning** | `{ name }` as shorthand for `{ name = name }` in record creation and patterns | Without it, records with many fields produce very verbose code. |
+| **Left operator sections** | `(3-)` means `\x -> 3 - x` | Medaka has right sections already. Left sections are common: `map (2*) xs`, `filter (0<) xs`. |
+| **Multiline string / heredoc** | Formal `"""…"""` or backslash-newline string continuation | Medaka already strips leading newlines from strings that start with `\n`; formalising a `"""` delimiter would make embedding source/templates much cleaner. |
+
+### Nice-to-have / maybe
+
+| Feature | Description | Notes |
+|---------|-------------|-------|
+| **Top-level function guards** | Guards directly on equation heads: `classify n \| n < 0 = "neg" \| otherwise = "pos"` | Medaka supports guards inside `match` arms. This form is sugar over `match` but reads more naturally for numeric/boolean logic. |
+| **List comprehensions** | `[x*2 \| x <- xs, x > 0]` | Expressible via `map`/`filter`/`concatMap`; nice to have for readability. Not blocking anything. |
+| **String interpolation** | `"Hello, {name}!"` | Not Haskell-native, but widely expected in modern languages. Especially useful given Medaka's scripting-friendly goals. |
+| **`otherwise` alias** | `otherwise = True` so guard chains have a named catch-all | Trivial to add as a stdlib `extern`-free binding; purely cosmetic. |
+| **Constraint syntax in type signatures** | `f : Eq a => a -> a -> Bool` | ✅ Phase 20 done. |
+| **Numeric literal extensions** | `0xFF`, `0b1010`, `1_000_000` underscores | `0x` hex and `_` separators are the most practically useful additions. |
+| **Custom symbolic operators** | `(<\|>) = …` user-defined infix symbols | Medaka intentionally restricts operators; backtick infix is the approved escape hatch. Worth revisiting if DSL users push on it. |
+| **Tuple sections** | `(,3)` or `(1,)` to partially apply tuple constructors | Niche; explicit lambdas are fine. |
+| **Lazy / irrefutable patterns** | `~pat` defers matching | Rarely useful in a strict language; probably not worth the complexity. |

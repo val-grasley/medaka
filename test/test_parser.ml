@@ -503,6 +503,40 @@ let test_extern_multiarg () =
                                  TyFun (TyVar "a", TyEffect (["Mut"], TyCon "Unit")))) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
+(* ── Constraint type signature tests ────────────────── *)
+
+let test_constraint_single () =
+  match parse_one "neq : Eq a => a -> a -> Bool\n" with
+  | DTypeSig (false, "neq",
+      TyConstrained (
+        [("Eq", [TyVar "a"])],
+        TyFun (TyVar "a", TyFun (TyVar "a", TyCon "Bool")))) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_constraint_multi () =
+  match parse_one "f : (Eq a, Ord b) => a -> b -> Bool\n" with
+  | DTypeSig (false, "f",
+      TyConstrained (
+        [("Eq", [TyVar "a"]); ("Ord", [TyVar "b"])],
+        TyFun (TyVar "a", TyFun (TyVar "b", TyCon "Bool")))) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_constraint_no_args () =
+  match parse_one "f : Show a => a -> String\n" with
+  | DTypeSig (false, "f",
+      TyConstrained (
+        [("Show", [TyVar "a"])],
+        TyFun (TyVar "a", TyCon "String"))) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_constraint_type_app_arg () =
+  match parse_one "f : Eq (List a) => List a -> Bool\n" with
+  | DTypeSig (false, "f",
+      TyConstrained (
+        [("Eq", [TyApp (TyCon "List", TyVar "a")])],
+        TyFun (TyApp (TyCon "List", TyVar "a"), TyCon "Bool"))) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -603,5 +637,11 @@ let () =
       test_case "effect"          `Quick test_extern_effect;
       test_case "constant"        `Quick test_extern_constant;
       test_case "multi-arg"       `Quick test_extern_multiarg;
+    ];
+    "constraint type signatures", [
+      test_case "single constraint"        `Quick test_constraint_single;
+      test_case "multiple constraints"     `Quick test_constraint_multi;
+      test_case "zero-arg constraint"      `Quick test_constraint_no_args;
+      test_case "type-app constraint arg"  `Quick test_constraint_type_app_arg;
     ];
   ]

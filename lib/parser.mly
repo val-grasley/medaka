@@ -42,6 +42,17 @@ let rec expr_to_pat = function
     in
     collect [] e
   | _ -> failwith "Invalid lambda parameter pattern"
+
+(* Interpret a ty_fun as a constraint-list prefix in `ty_fun FAT_ARROW ty`.
+   TyApp(TyCon iface, arg) → single constraint; TyTuple → multiple constraints. *)
+let desugar_constraint lhs rhs =
+  let rec extract = function
+    | TyApp (TyCon iface, arg) -> [(iface, [arg])]
+    | TyCon iface              -> [(iface, [])]
+    | TyTuple cs               -> List.concat_map extract cs
+    | t -> failwith ("invalid constraint syntax: " ^ Ast.pp_ty t)
+  in
+  TyConstrained (extract lhs, rhs)
 %}
 
 (* Literals *)
@@ -221,7 +232,8 @@ fun_body:
 (* ── Types ───────────────────────────────────────────── *)
 
 ty:
-  | ty_fun  { $1 }
+  | ty_fun FAT_ARROW ty  { desugar_constraint $1 $3 }
+  | ty_fun               { $1 }
 
 ty_fun:
   | ty_app ARROW ty_fun  { TyFun ($1, $3) }

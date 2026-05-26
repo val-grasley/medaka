@@ -61,6 +61,19 @@ let rec print_type p t = match t with
     ) es;
     write p "> ";
     print_type_atom p t
+  | TyConstrained (cs, t) ->
+    let pp_c (iface, args) =
+      write p iface;
+      List.iter (fun a -> write p " "; print_type_atom p a) args
+    in
+    (match cs with
+     | [c] -> pp_c c
+     | _ ->
+       write p "(";
+       List.iteri (fun i c -> if i > 0 then write p ", "; pp_c c) cs;
+       write p ")");
+    write p " => ";
+    print_type p t
 
 and print_type_atom p t = match t with
   | TyCon _ | TyVar _ | TyTuple _ -> print_type p t

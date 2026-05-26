@@ -781,6 +781,84 @@ check : String -> String -> Bool
 check x y = eq x y
 |}
 
+(* ── Phase 20: constraint annotation syntax ──────── *)
+
+(* Function with Eq a => annotation type-checks and gets the right type *)
+let t_constraint_annot_basic = assert_type
+  {|interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+
+neq : Eq a => a -> a -> Bool
+neq x y = eq x y
+|}
+  "neq" "a -> a -> Bool"
+
+(* The annotated function infers the same type it would without the annotation *)
+let t_constraint_annot_same_as_unannotated = assert_type
+  {|interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+
+neq : Eq a => a -> a -> Bool
+neq x y = eq x y
+
+check = neq 1 2
+|}
+  "check" "Bool"
+
+(* Multiple constraints in one annotation — uses non-builtin interface names *)
+let t_constraint_annot_multi = assert_type
+  {|interface MyEq a where
+  myeq : a -> a -> Bool
+
+interface MyOrd a where
+  mylt : a -> a -> Bool
+
+impl MyEq Int where
+  myeq x y = x == y
+
+impl MyOrd Int where
+  mylt x y = x < y
+
+f : (MyEq a, MyOrd a) => a -> a -> Bool
+f x y = myeq x y && mylt x y
+|}
+  "f" "a -> a -> Bool"
+
+(* Calling a constrained fn with a type that has a matching impl — OK *)
+let t_constraint_annot_call_site_ok = assert_type
+  {|interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+
+neq : Eq a => a -> a -> Bool
+neq x y = eq x y
+
+result = neq 1 2
+|}
+  "result" "Bool"
+
+(* Error: calling a constrained fn with a type that has no matching impl *)
+let e_constraint_annot_call_no_impl = assert_err
+  {|interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+
+neq : Eq a => a -> a -> Bool
+neq x y = eq x y
+
+bad = neq 1.0 2.0
+|}
+
 (* ── Exhaustiveness / redundancy ────────────────── *)
 
 (* Option: both arms *)
@@ -1318,6 +1396,13 @@ let () =
       test_case "err: missing impl"      `Quick e_constraint_missing_impl;
       test_case "err: ambiguous"         `Quick e_constraint_ambiguous;
       test_case "err: concrete context"  `Quick e_constraint_concrete_in_context;
+    ];
+    "constraint annotation syntax (Phase 20)", [
+      test_case "basic annotation"             `Quick t_constraint_annot_basic;
+      test_case "same type as unannotated"     `Quick t_constraint_annot_same_as_unannotated;
+      test_case "multiple constraints"         `Quick t_constraint_annot_multi;
+      test_case "call site impl found"         `Quick t_constraint_annot_call_site_ok;
+      test_case "err: call site no impl"       `Quick e_constraint_annot_call_no_impl;
     ];
     "exhaustiveness", [
       test_case "Option both arms"          `Quick w_option_both;

@@ -215,6 +215,18 @@ let e_extern_unknown_type =
 let e_extern_unknown_effect =
   assert_err (unknown_effect "Warp") "extern f : Int -> <Warp> Unit\n"
 
+(* ── Constraint annotation tests ────────────── *)
+
+let unknown_iface n = function UnknownInterface x -> x = n | _ -> false
+
+let v_constraint_known_iface =
+  assert_ok
+    "interface Eq a where\n  eq : a -> a -> Bool\n\nneq : Eq a => a -> a -> Bool\nneq x y = eq x y\n"
+
+let e_constraint_unknown_iface =
+  assert_err (unknown_iface "Bogus")
+    "f : Bogus a => a -> Bool\nf x = True\n"
+
 (* ── Test runner ─────────────────────────────── *)
 
 let () =
@@ -265,5 +277,9 @@ let () =
       test_case "err: with body"      `Quick e_extern_with_body;
       test_case "err: unknown type"   `Quick e_extern_unknown_type;
       test_case "err: unknown effect" `Quick e_extern_unknown_effect;
+    ];
+    "constraint annotations", [
+      test_case "known iface ok"       `Quick v_constraint_known_iface;
+      test_case "err: unknown iface"   `Quick e_constraint_unknown_iface;
     ];
   ]

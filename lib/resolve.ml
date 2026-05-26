@@ -305,6 +305,13 @@ let rec check_type env errors t =
         emit errors (UnknownEffect e)
     ) es;
     check_type env errors t
+  | TyConstrained (cs, t) ->
+    List.iter (fun (iface, args) ->
+      if not (Hashtbl.mem env.interfaces iface) then
+        emit errors (UnknownInterface iface);
+      List.iter (check_type env errors) args
+    ) cs;
+    check_type env errors t
 
 let rec check_expr env scope errors e =
   match e with

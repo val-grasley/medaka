@@ -176,7 +176,7 @@ let rec free_unbound acc = function
 
 let generalize t = Forall (free_unbound [] t, t)
 
-let instantiate (Forall (vars, t)) =
+let instantiate_raw (Forall (vars, t)) =
   let sub = List.map (fun id -> (id, fresh_var ())) vars in
   let rec walk t = match normalize t with
     | TVar v ->
@@ -188,7 +188,9 @@ let instantiate (Forall (vars, t)) =
     | TFun (a, b)  -> TFun (walk a, walk b)
     | TTuple ts    -> TTuple (List.map walk ts)
   in
-  walk t
+  (sub, walk t)
+
+let instantiate s = snd (instantiate_raw s)
 
 let monotype t = Forall ([], t)
 
@@ -328,6 +330,10 @@ type env = {
   method_iface  : (ident, ident) Hashtbl.t;    (* method name → interface name *)
   impls         : impl_entry list ref;          (* all registered impls *)
   method_usages : (ident * tyvar_info ref list) list ref;  (* (method, param_var_refs) *)
+  fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
+    (* fn_name → [(iface_name, [bound_var_ids_in_scheme])] *)
+  constraint_obligations : (ident * mono list) list ref;
+    (* (iface_name, mono_args) accumulated at call sites, verified post-HM *)
   type_ctors    : (ident, ident list) Hashtbl.t;  (* type name → ctor names in order *)
   warnings      : string list ref;             (* accumulated warning messages *)
   mut_vars      : StringSet.t;                 (* bindings declared with let mut *)
@@ -342,6 +348,8 @@ let empty_env () = {
   method_iface  = Hashtbl.create 16;
   impls         = ref [];
   method_usages = ref [];
+  fun_constraints        = Hashtbl.create 8;
+  constraint_obligations = ref [];
   type_ctors    = Hashtbl.create 8;
   warnings      = ref [];
   mut_vars      = StringSet.empty;
@@ -390,8 +398,38 @@ let from_ast_type t =
     | Ast.TyFun (a, b) -> TFun (go a, go b)
     | Ast.TyTuple ts -> TTuple (List.map go ts)
     | Ast.TyEffect (_effs, t) -> go t  (* effects tracked separately via eff_env *)
+    | Ast.TyConstrained (_, inner) -> go inner  (* constraints handled by from_ast_type_with_constraints *)
   in
   go t
+
+(* Like from_ast_type, but also extracts constraint annotations from TyConstrained.
+   Uses a shared TVar table so constraint type-variable names (e.g. the `a` in
+   `Eq a`) map to the same fresh TVar as the same name in the inner function type. *)
+let from_ast_type_with_constraints ast_ty =
+  let tbl = Hashtbl.create 4 in
+  let lookup n =
+    match Hashtbl.find_opt tbl n with
+    | Some v -> v
+    | None ->
+      let v = fresh_var () in
+      Hashtbl.add tbl n v;
+      v
+  in
+  let rec go = function
+    | Ast.TyCon n             -> TCon n
+    | Ast.TyVar n             -> lookup n
+    | Ast.TyApp (a, b)        -> TApp (go a, go b)
+    | Ast.TyFun (a, b)        -> TFun (go a, go b)
+    | Ast.TyTuple ts          -> TTuple (List.map go ts)
+    | Ast.TyEffect (_, t)     -> go t
+    | Ast.TyConstrained (_, inner) -> go inner
+  in
+  match ast_ty with
+  | Ast.TyConstrained (cs, inner) ->
+    let mono = go inner in
+    let constraints = List.map (fun (iface, args) -> (iface, List.map go args)) cs in
+    (constraints, mono)
+  | other -> ([], go other)
 
 (* Build the initial environment with built-in constructors and a few primitives.
    These let our test programs compile without a stdlib in place. *)
@@ -546,7 +584,16 @@ let rec infer env = function
         env.method_usages := (x, param_vars) :: !(env.method_usages);
         t
       | None ->
-        instantiate scheme
+        let (sub, mono) = instantiate_raw scheme in
+        (match Hashtbl.find_opt env.fun_constraints x with
+         | None -> ()
+         | Some constraints ->
+           List.iter (fun (iface, var_ids) ->
+             let args = List.filter_map (fun id -> List.assoc_opt id sub) var_ids in
+             if args <> [] then
+               env.constraint_obligations := (iface, args) :: !(env.constraint_obligations)
+           ) constraints);
+        mono
     end
 
   | EApp (f, EVar hint) when String.length hint > 0 && hint.[0] = '@' ->
@@ -954,6 +1001,7 @@ let register_data env (name, params, variants) =
       | Ast.TyFun (a, b) -> TFun (go a, go b)
       | Ast.TyTuple ts -> TTuple (List.map go ts)
       | Ast.TyEffect (_, t) -> go t
+      | Ast.TyConstrained (_, inner) -> go inner
     in
     let arg_types = List.map go v.con_fields in
     let ctor_t =
@@ -986,6 +1034,7 @@ let register_record env (name, params, fields) =
       | Ast.TyFun (a, b)  -> TFun (go a, go b)
       | Ast.TyTuple ts    -> TTuple (List.map go ts)
       | Ast.TyEffect (_, t) -> go t
+      | Ast.TyConstrained (_, inner) -> go inner
     in
     go ast_ty
   in
@@ -1041,6 +1090,7 @@ let register_interface env (iface_name, type_params, methods) =
       | Ast.TyFun (a, b)  -> TFun (go a, go b)
       | Ast.TyTuple ts    -> TTuple (List.map go ts)
       | Ast.TyEffect (_, t) -> go t
+      | Ast.TyConstrained (_, inner) -> go inner
     in
     go ast_ty
   in
@@ -1207,6 +1257,32 @@ let check_method_usages env =
     end
   ) !(env.method_usages)
 
+(* Verify that every constraint obligation emitted at call sites has a
+   matching impl.  Skips obligations where the concrete type is still a
+   polymorphic TVar — those are correctly left unchecked until a concrete
+   call site grounds the type. *)
+let check_constraint_obligations env =
+  let rec is_concrete = function
+    | TVar v -> (match !v with Unbound _ -> false | Link t -> is_concrete t)
+    | TCon _ -> true
+    | TApp (a, b) | TFun (a, b) -> is_concrete a && is_concrete b
+    | TTuple ts -> List.for_all is_concrete ts
+  in
+  List.iter (fun (iface_name, mono_args) ->
+    let concrete = List.map normalize mono_args in
+    if not (List.for_all is_concrete concrete) then ()
+    else begin
+      let matching = List.filter (fun e ->
+        e.impl_iface = iface_name &&
+        List.length e.impl_type_mono = List.length concrete &&
+        List.for_all2
+          (fun p c -> mono_matches ~pattern:p ~concrete:c)
+          e.impl_type_mono concrete
+      ) !(env.impls) in
+      if matching = [] then fail (NoImplFound (iface_name, concrete))
+    end
+  ) !(env.constraint_obligations)
+
 (* ── Effect inference ────────────────────────────── *)
 
 let effect_union a b = List.sort_uniq String.compare (a @ b)
@@ -1371,17 +1447,34 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   let results = List.map (fun (name, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
     enter_level ();
-    (match sig_opt with
-     | None -> ()
-     | Some sig_ast ->
-       let sig_t = from_ast_type sig_ast in
-       unify placeholder sig_t);
+    let cs_monos =
+      match sig_opt with
+      | None -> []
+      | Some sig_ast ->
+        let (cs, sig_t) = from_ast_type_with_constraints sig_ast in
+        unify placeholder sig_t;
+        cs
+    in
     List.iter (fun clause ->
       let t = infer !env (clause_to_expr clause) in
       unify placeholder t
     ) clauses;
     exit_level ();
     let scheme = generalize placeholder in
+    (* Register any constraints from the type signature in fun_constraints *)
+    (match scheme with
+     | Forall (bound_ids, _) when cs_monos <> [] ->
+       let extract_id m = match normalize m with
+         | TVar {contents = Unbound (id, _)} when List.mem id bound_ids -> Some id
+         | _ -> None
+       in
+       let cs = List.filter_map (fun (iface, arg_monos) ->
+         let ids = List.filter_map extract_id arg_monos in
+         if ids <> [] then Some (iface, ids) else None
+       ) cs_monos in
+       if cs <> [] then
+         Hashtbl.replace (!env).fun_constraints name cs
+     | _ -> ());
     env := extend_var !env name scheme;
     (name, scheme)
   ) groups in
@@ -1392,8 +1485,9 @@ let check_program (prog : program) : (ident * scheme) list * string list =
     | _ -> ()
   ) prog;
 
-  (* Phase 4.6: verify method call sites have matching impls *)
+  (* Phase 4.6: verify method call sites have matching impls and constraints *)
   check_method_usages !env;
+  check_constraint_obligations !env;
 
   (* Phase 5: effect inference and checking *)
   let user_extern_decls =
@@ -1500,23 +1594,40 @@ let typecheck_module
   let results = List.map (fun (name, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
     enter_level ();
-    (match sig_opt with
-     | None -> ()
-     | Some sig_ast ->
-       let sig_t = from_ast_type sig_ast in
-       unify placeholder sig_t);
+    let cs_monos =
+      match sig_opt with
+      | None -> []
+      | Some sig_ast ->
+        let (cs, sig_t) = from_ast_type_with_constraints sig_ast in
+        unify placeholder sig_t;
+        cs
+    in
     List.iter (fun clause ->
       let t = infer !env (clause_to_expr clause) in
       unify placeholder t
     ) clauses;
     exit_level ();
     let scheme = generalize placeholder in
+    (match scheme with
+     | Forall (bound_ids, _) when cs_monos <> [] ->
+       let extract_id m = match normalize m with
+         | TVar {contents = Unbound (id, _)} when List.mem id bound_ids -> Some id
+         | _ -> None
+       in
+       let cs = List.filter_map (fun (iface, arg_monos) ->
+         let ids = List.filter_map extract_id arg_monos in
+         if ids <> [] then Some (iface, ids) else None
+       ) cs_monos in
+       if cs <> [] then
+         Hashtbl.replace (!env).fun_constraints name cs
+     | _ -> ());
     env := extend_var !env name scheme;
     (name, scheme)
   ) groups in
 
   List.iter (function DImpl _ as d -> check_impl !env d | _ -> ()) prog;
   check_method_usages !env;
+  check_constraint_obligations !env;
   let user_extern_decls =
     List.filter_map (function DExtern (_, n, t) -> Some (n, t) | _ -> None) prog
   in
@@ -1603,6 +1714,8 @@ let copy_tc_env (e : env) : env = {
   method_iface  = Hashtbl.copy e.method_iface;
   impls         = ref !(e.impls);
   method_usages = ref !(e.method_usages);
+  fun_constraints        = Hashtbl.copy e.fun_constraints;
+  constraint_obligations = ref !(e.constraint_obligations);
   type_ctors    = Hashtbl.copy e.type_ctors;
   warnings      = ref !(e.warnings);
   mut_vars      = e.mut_vars;                  (* persistent set *)
@@ -1646,17 +1759,33 @@ let check_repl_decl (env : env ref) (decls : decl list)
   let results = List.map (fun (name, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
     enter_level ();
-    (match sig_opt with
-     | None -> ()
-     | Some sig_ast ->
-       let sig_t = from_ast_type sig_ast in
-       unify placeholder sig_t);
+    let cs_monos =
+      match sig_opt with
+      | None -> []
+      | Some sig_ast ->
+        let (cs, sig_t) = from_ast_type_with_constraints sig_ast in
+        unify placeholder sig_t;
+        cs
+    in
     List.iter (fun clause ->
       let t = infer !env (clause_to_expr clause) in
       unify placeholder t
     ) clauses;
     exit_level ();
     let scheme = generalize placeholder in
+    (match scheme with
+     | Forall (bound_ids, _) when cs_monos <> [] ->
+       let extract_id m = match normalize m with
+         | TVar {contents = Unbound (id, _)} when List.mem id bound_ids -> Some id
+         | _ -> None
+       in
+       let cs = List.filter_map (fun (iface, arg_monos) ->
+         let ids = List.filter_map extract_id arg_monos in
+         if ids <> [] then Some (iface, ids) else None
+       ) cs_monos in
+       if cs <> [] then
+         Hashtbl.replace (!env).fun_constraints name cs
+     | _ -> ());
     env := extend_var !env name scheme;
     (name, scheme)
   ) groups in
@@ -1665,6 +1794,7 @@ let check_repl_decl (env : env ref) (decls : decl list)
     | _ -> ()
   ) decls;
   check_method_usages !env;
+  check_constraint_obligations !env;
   let user_extern_decls =
     List.filter_map (function DExtern (_, n, t) -> Some (n, t) | _ -> None) decls
   in

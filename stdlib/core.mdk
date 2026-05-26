@@ -11,7 +11,9 @@ export interface Eq a where
     eq : a -> a -> Bool
     neq : a -> a -> Bool
 
-    neq x y = not (eq x y)
+export
+neq : Eq a => a -> a -> Bool
+neq x y = not (eq x y)
 
 impl Eq (List a) requires Eq a where
     eq [] [] = True
@@ -26,7 +28,6 @@ export interface Ord a requires Eq a where
     gte : a -> a -> Bool
     min : a -> a -> a
     max : a -> a -> a
-    clamp : a -> a -> a -> a
 
     lt x y = match compare x y of
         Lt => True
@@ -46,7 +47,10 @@ export interface Ord a requires Eq a where
     max x y = match compare x y of
         Lt => y
         _ => x
-    clamp mn mx = min mx >> max mn
+
+export
+clamp : Ord a => a -> a -> a -> a
+clamp mn mx = min mx >> max mn
 
 export interface Show a where
     show : a -> String
@@ -76,21 +80,65 @@ export impl Mappable Option where
     map f (Some a) = Some (f a)
     map _ None = None
 
+export default impl Mappable (Result e) where
+    map f (Ok a) = Ok (f a)
+    map _ e = e
+
 export interface (Mappable f) => Applicative f where
     pure : a -> f a
     ap : f (a -> b) -> f a -> f b
 
+export impl Applicative List where
+    pure a = [a]
+
+    ap [] _ = []
+    ap _ [] = []
+    ap (f::fs) (x::xs) = (f x)::(ap fs xs)
+
+export impl Applicative Option where
+    pure a = Some a
+
+    ap None _ = None
+    ap _ None = None
+    ap (Some f) (Some a) = Some (f a)
+
+export impl Applicative (Result e) where
+    pure a = Ok a
+
+    ap e@(Err _) _ = e
+    ap _ e@(Err _) = e
+    ap (Ok f) (Ok a) = Ok (f a)
+
 export interface (Applicative m) => Thenable m where
     andThen : m a -> (a -> m b) -> m b
-    flatMap : (a -> m b) -> m a -> m b
-    flat : m (m a) -> m a
-    when : Bool -> m Unit -> m Unit
-    unless : Bool -> m Unit -> m Unit
 
-    flatMap f ma = andThen ma f
-    flat x = andThen x identity
-    when b m = if b then m else pure ()
-    unless b m = if b then pure () else m
+export 
+flatMap : Thenable m => (a -> m b) -> m a -> m b
+flatMap f ma = andThen ma f
+
+export 
+flat : Thenable m => m (m a) -> m a
+flat x = andThen x identity
+
+export
+when : Thenable m => T Bool -> m Unit -> m Unit
+when b m = if b then m else pure ()
+
+export
+unless : Thenable m => Bool -> m Unit -> m Unit
+unless b m = if b then pure () else m
+
+export impl Thenable List where
+    andThen [] _ = []
+    andThen (x::xs) f = (f x) ++ (andThen f xs)
+
+export impl Thenable Option where
+    andThen None _ = None
+    andThen (Some a) f = f a
+
+export impl Thenable (Result e) where
+    andThen e@(Err _) _ = e
+    andThen (Ok a) f = f a
 
 export interface Foldable t where
     fold : (b -> a -> b) -> b -> t a -> b
@@ -98,6 +146,29 @@ export interface Foldable t where
     toList : t a -> List a
     isEmpty : t a -> Bool
     length : t a -> Int
+
+export
+any : Foldable t => (a -> Bool) -> t a -> Bool
+any f = fold (acc x => acc || f x) False
+
+export
+all : Foldable t => (a -> Bool) -> t a -> Bool
+all f = fold (acc x => acc && f x) True
+
+export impl Foldable List where
+    fold _ acc [] = acc
+    fold f acc (x::xs) = fold f (f acc x) xs
+
+    foldRight _ acc [] = acc
+    foldRight f acc (x::xs) = foldRight f (f x acc) xs
+
+    toList = identity
+
+    isEmpty [] = True
+    isEmpty _ = False
+
+    length [] = 0
+    length (_::xs) = 1 + length xs
 
 -- Bool helpers
 
@@ -142,6 +213,18 @@ export
 toResult : e -> Option a -> Result e a
 toResult e None = Err e
 toResult _ (Some a) = Ok a
+
+-- Result helpers 
+
+export
+isOk : Result e a -> Bool
+isOk (Err _) = False
+isOk _ = True
+
+export
+isErr : Result e a -> Bool
+isErr (Err _) = True 
+isErr _ = False 
 
 -- Utility functions
 

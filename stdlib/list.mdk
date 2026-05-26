@@ -3,10 +3,6 @@
 
 import core.{Eq, Ord, Show, Foldable, Mappable}
 
--- Instances
-
--- Does this have to be an orphan instance since we're defining list as a built-in for syntactic reasons?
-
 -- Construction
 
 export
@@ -23,11 +19,6 @@ export
 isEmpty : List a -> Bool
 isEmpty [] = True
 isEmpty _ = False
-
-export
-length : List a -> Int
-length [] = 0
-length (_::xs) = 1 + length xs
 
 export
 head : List a -> Option a

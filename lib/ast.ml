@@ -17,7 +17,8 @@ type ty =
   | TyApp    of ty * ty          (* List a, Option a *)
   | TyFun    of ty * ty          (* a -> b *)
   | TyTuple  of ty list          (* (Int, String) *)
-  | TyEffect of ident list * ty  (* <IO, Mut> t *)
+  | TyEffect      of ident list * ty       (* <IO, Mut> t *)
+  | TyConstrained of (ident * ty list) list * ty  (* [(Iface, args); ...] => ty *)
 
 (* Patterns *)
 type pat =
@@ -129,6 +130,16 @@ let rec pp_ty_prec p = function
   | TyEffect (effs, t) ->
     let s = Printf.sprintf "<%s> %s" (String.concat ", " effs) (pp_ty_prec 0 t) in
     if p >= 1 then "(" ^ s ^ ")" else s
+  | TyConstrained (cs, t) ->
+    let pp_c (iface, args) =
+      if args = [] then iface
+      else Printf.sprintf "%s %s" iface (String.concat " " (List.map (pp_ty_prec 2) args))
+    in
+    let cs_str = match cs with
+      | [c] -> pp_c c
+      | _   -> Printf.sprintf "(%s)" (String.concat ", " (List.map pp_c cs))
+    in
+    Printf.sprintf "%s => %s" cs_str (pp_ty_prec 0 t)
 
 let pp_ty t = pp_ty_prec 0 t
 

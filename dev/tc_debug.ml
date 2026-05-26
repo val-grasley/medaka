@@ -17,10 +17,16 @@ let parse src =
 
 let () =
   let src = {|
-f x =
-  do
-    y <- x
-    pure (y + 1)
+interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq x y = x == y
+
+neq : Eq a => a -> a -> Bool
+neq x y = eq x y
+
+check = neq 1 2
 |} in
   match check_program (parse src) with
   | (result, warnings) ->
