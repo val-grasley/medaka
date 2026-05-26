@@ -41,22 +41,22 @@ export interface Ord a requires Eq a where
     min : a -> a -> a
     max : a -> a -> a
 
-    lt x y = match compare x y of
+    lt x y = match compare x y
         Lt => True
         _ => False
-    gt x y = match compare x y of
+    gt x y = match compare x y
         Gt => True
         _ => False
-    lte x y = match compare x y of
+    lte x y = match compare x y
         Gt => False
         _ => True
-    gte x y = match compare x y of
+    gte x y = match compare x y
         Lt => False
         _ => True
-    min x y = match compare x y of
+    min x y = match compare x y
         Gt => y
         _ => x
-    max x y = match compare x y of
+    max x y = match compare x y
         Lt => y
         _ => x
 
