@@ -79,6 +79,7 @@ let keyword_or_ident s =
   | "extern"    -> EXTERN
   | "requires"  -> REQUIRES
   | "deriving"  -> DERIVING
+  | "type"      -> TYPE
   | "True"      -> BOOL true
   | "False"     -> BOOL false
   | _           -> IDENT s

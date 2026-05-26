@@ -30,6 +30,7 @@ let pp_decl d =
   | DImpl { iface_name; _ }      -> Printf.sprintf "DImpl(%s)" iface_name
   | DUse (pub, _)         -> Printf.sprintf "DUse(pub=%b, ...)" pub
   | DExtern (_, n, t)     -> Printf.sprintf "DExtern(%s, %s)" n (Ast.pp_ty t)
+  | DTypeAlias (_, n, _, _) -> Printf.sprintf "DTypeAlias(%s, ...)" n
 
 let parse_one src =
   match parse src with
@@ -612,6 +613,29 @@ let test_constraint_type_app_arg () =
         TyFun (TyApp (TyCon "List", TyVar "a"), TyCon "Bool"))) -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
+(* ── Type alias tests ───────────────────────────────── *)
+
+let test_type_alias_simple () =
+  match parse_one "type Name = String\n" with
+  | DTypeAlias (false, "Name", [], TyCon "String") -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_type_alias_param () =
+  match parse_one "type Wrapper a = Option a\n" with
+  | DTypeAlias (false, "Wrapper", ["a"], TyApp (TyCon "Option", TyVar "a")) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_type_alias_fun () =
+  match parse_one "type Parser a = String -> Option a\n" with
+  | DTypeAlias (false, "Parser", ["a"],
+      TyFun (TyCon "String", TyApp (TyCon "Option", TyVar "a"))) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_type_alias_export () =
+  match parse_one "export type Name = String\n" with
+  | DTypeAlias (true, "Name", [], TyCon "String") -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -727,5 +751,11 @@ let () =
       test_case "multiple constraints"     `Quick test_constraint_multi;
       test_case "zero-arg constraint"      `Quick test_constraint_no_args;
       test_case "type-app constraint arg"  `Quick test_constraint_type_app_arg;
+    ];
+    "type aliases", [
+      test_case "simple alias"     `Quick test_type_alias_simple;
+      test_case "parametric alias" `Quick test_type_alias_param;
+      test_case "function alias"   `Quick test_type_alias_fun;
+      test_case "export alias"     `Quick test_type_alias_export;
     ];
   ]

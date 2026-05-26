@@ -388,6 +388,13 @@ let print_decl p = function
       write p ")"
     end
 
+  | DTypeAlias (pub, n, params, rhs) ->
+    if pub then write p "export ";
+    write p "type "; write p n;
+    List.iter (fun pa -> write p " "; write p pa) params;
+    write p " = ";
+    print_type p rhs
+
   | DInterface { is_pub; is_default; iface_name; type_params; super; methods } ->
     if is_pub then write p "export ";
     if is_default then write p "default ";

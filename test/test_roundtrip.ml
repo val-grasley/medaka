@@ -267,4 +267,10 @@ let () =
       test_case "single constraint"    `Quick (mk "neq : Eq a => a -> a -> Bool\n");
       test_case "multi constraint"     `Quick (mk "f : (Eq a, Ord b) => a -> b -> Bool\n");
     ];
+    "type aliases", [
+      test_case "simple"      `Quick (mk "type Name = String\n");
+      test_case "parametric"  `Quick (mk "type Wrapper a = Option a\n");
+      test_case "function"    `Quick (mk "type Parser a = String -> Option a\n");
+      test_case "export"      `Quick (mk "export type Name = String\n");
+    ];
   ]

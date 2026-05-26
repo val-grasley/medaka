@@ -30,6 +30,8 @@ let pp_decl d =
   | DInterface { iface_name; _ } -> Printf.sprintf "DInterface(%s)" iface_name
   | DImpl { iface_name; _ }      -> Printf.sprintf "DImpl(%s)" iface_name
   | DExtern (_, n, t) -> Printf.sprintf "DExtern(%s, %s)" n (pp_ty t)
+  | DTypeAlias (_, n, ps, rhs) ->
+    Printf.sprintf "DTypeAlias(%s, [%s], %s)" n (String.concat " " ps) (pp_ty rhs)
   | DUse (pub, p) ->
     let pp_use = function
       | UseName  ns -> "UseName " ^ String.concat "." ns

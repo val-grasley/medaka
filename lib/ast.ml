@@ -107,6 +107,7 @@ type decl =
       requires   : (ident * ty list) list;  (* e.g. requires Eq a, Ord b *)
       methods    : (ident * pat list * expr) list;
     }
+  | DTypeAlias of bool * ident * ident list * ty  (* pub? name params rhs *)
   | DUse of bool * use_path  (* pub? use path *)
 
 type program = decl list

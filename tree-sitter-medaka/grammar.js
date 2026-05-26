@@ -81,6 +81,7 @@ module.exports = grammar({
       $.fun_def,
       $.data_decl,
       $.record_decl,
+      $.type_alias_decl,
       $.interface_decl,
       $.impl_decl,
       $.import_decl,
@@ -285,6 +286,18 @@ module.exports = grammar({
       field('name', $.ident),
       ':',
       field('type', $._type_expr),
+      $._newline,
+    ),
+
+    /* type Name = String
+     * type Parser a = String -> Option (a, String) */
+    type_alias_decl: $ => seq(
+      optional($._export_marker),
+      'type',
+      field('name', $.upper),
+      repeat(field('type_param', $.ident)),
+      '=',
+      field('rhs', $._type_expr),
       $._newline,
     ),
 

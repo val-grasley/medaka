@@ -60,6 +60,7 @@ type module_type_exports = {
   te_ctors     : (ident * scheme) list;   (* public constructor schemes *)
   te_interfaces : (ident * iface_info) list;
   te_impls     : impl_entry list;
+  te_aliases   : (ident * (ident list * Ast.ty)) list;  (* public type alias expansions *)
 }
 
 (* ── Effects ─────────────────────────────────────── *)
@@ -335,6 +336,7 @@ type env = {
   constraint_obligations : (ident * mono list) list ref;
     (* (iface_name, mono_args) accumulated at call sites, verified post-HM *)
   type_ctors    : (ident, ident list) Hashtbl.t;  (* type name → ctor names in order *)
+  aliases       : (ident, ident list * Ast.ty) Hashtbl.t;  (* type alias name → (params, rhs) *)
   warnings      : string list ref;             (* accumulated warning messages *)
   mut_vars      : StringSet.t;                 (* bindings declared with let mut *)
 }
@@ -351,6 +353,7 @@ let empty_env () = {
   fun_constraints        = Hashtbl.create 8;
   constraint_obligations = ref [];
   type_ctors    = Hashtbl.create 8;
+  aliases       = Hashtbl.create 4;
   warnings      = ref [];
   mut_vars      = StringSet.empty;
 }
@@ -380,11 +383,63 @@ let t_set  e   = TApp (TCon "Set",  e)
 let t_option t = TApp (TCon "Option", t)
 let t_result a b = TApp (TApp (TCon "Result", a), b)
 
+(* Expand type aliases in an AST type.  Collects the argument spine of a
+   TyApp chain (e.g. `Parser Int` → head=TyCon "Parser", args=[TyCon "Int"]),
+   checks whether the head is a known alias, and if so substitutes.
+   Non-alias TyCon references are left untouched. *)
+let rec expand_aliases aliases t =
+  let go = expand_aliases aliases in
+  match t with
+  | Ast.TyCon n ->
+    (match Hashtbl.find_opt aliases n with
+     | Some ([], rhs) -> go rhs
+     | _ -> t)
+  | Ast.TyApp _ ->
+    (* Collect the application spine *)
+    let rec spine acc = function
+      | Ast.TyApp (f, x) -> spine (go x :: acc) f
+      | other -> (other, acc)
+    in
+    let (head, args) = spine [] t in
+    (match head with
+     | Ast.TyCon n ->
+       (match Hashtbl.find_opt aliases n with
+        | Some (params, rhs) when List.length params = List.length args ->
+          let subst = List.combine params args in
+          let rec apply_subst s = function
+            | Ast.TyVar v ->
+              (match List.assoc_opt v s with Some t -> t | None -> Ast.TyVar v)
+            | Ast.TyCon _ as c -> go c
+            | Ast.TyApp (a, b) -> go (Ast.TyApp (apply_subst s a, apply_subst s b))
+            | Ast.TyFun (a, b) -> Ast.TyFun (apply_subst s a, apply_subst s b)
+            | Ast.TyTuple ts   -> Ast.TyTuple (List.map (apply_subst s) ts)
+            | Ast.TyEffect (es, u) -> Ast.TyEffect (es, apply_subst s u)
+            | Ast.TyConstrained (cs, u) ->
+              Ast.TyConstrained (
+                List.map (fun (iface, as_) -> (iface, List.map (apply_subst s) as_)) cs,
+                apply_subst s u)
+          in
+          go (apply_subst subst rhs)
+        | _ ->
+          List.fold_left (fun acc arg -> Ast.TyApp (acc, arg)) (go head) args)
+     | other ->
+       List.fold_left (fun acc arg -> Ast.TyApp (acc, arg)) (go other) args)
+  | Ast.TyFun (a, b)    -> Ast.TyFun (go a, go b)
+  | Ast.TyTuple ts       -> Ast.TyTuple (List.map go ts)
+  | Ast.TyEffect (es, u) -> Ast.TyEffect (es, go u)
+  | Ast.TyConstrained (cs, u) ->
+    Ast.TyConstrained (
+      List.map (fun (iface, as_) -> (iface, List.map go as_)) cs,
+      go u)
+  | Ast.TyVar _ -> t
+
 (* Translate an AST type to a mono for use in type signatures and externs.
    Each TyVar is canonicalized per-call via a local hashtable so that the
    same name maps to the same fresh TVar within one type.
-   TyEffect wrappers are stripped — effects are tracked separately. *)
-let from_ast_type t =
+   TyEffect wrappers are stripped — effects are tracked separately.
+   If ~aliases is provided, type alias names are expanded before conversion. *)
+let from_ast_type ?(aliases=Hashtbl.create 0) t =
+  let t = expand_aliases aliases t in
   let env = Hashtbl.create 4 in
   let rec go = function
     | Ast.TyCon n -> TCon n
@@ -405,7 +460,8 @@ let from_ast_type t =
 (* Like from_ast_type, but also extracts constraint annotations from TyConstrained.
    Uses a shared TVar table so constraint type-variable names (e.g. the `a` in
    `Eq a`) map to the same fresh TVar as the same name in the inner function type. *)
-let from_ast_type_with_constraints ast_ty =
+let from_ast_type_with_constraints ?(aliases=Hashtbl.create 0) ast_ty =
+  let ast_ty = expand_aliases aliases ast_ty in
   let tbl = Hashtbl.create 4 in
   let lookup n =
     match Hashtbl.find_opt tbl n with
@@ -759,7 +815,7 @@ let rec infer env = function
 
   | EAnnot (e, ast_t) ->
     let te = infer env e in
-    let ta = from_ast_type ast_t in
+    let ta = from_ast_type ~aliases:env.aliases ast_t in
     unify te ta;
     te
 
@@ -980,7 +1036,7 @@ let group_fundefs decls =
   |> List.filter (fun (_, _, cs) -> cs <> [])  (* skip sigs with no def *)
 
 (* Register data type constructors in env *)
-let register_data env (name, params, variants) =
+let register_data ?(aliases=Hashtbl.create 0) env (name, params, variants) =
   (* Build a fresh tyvar per param *)
   enter_level ();
   let param_vars = List.map (fun p -> (p, fresh_var ())) params in
@@ -1006,7 +1062,7 @@ let register_data env (name, params, variants) =
       | Ast.TyEffect (_, t) -> go t
       | Ast.TyConstrained (_, inner) -> go inner
     in
-    let arg_types = List.map go v.con_fields in
+    let arg_types = List.map (fun f -> go (expand_aliases aliases f)) v.con_fields in
     let ctor_t =
       List.fold_right (fun a acc -> TFun (a, acc)) arg_types result_t
     in
@@ -1018,7 +1074,7 @@ let register_data env (name, params, variants) =
 (* Register a record declaration in env.  Mirrors register_data.
    Errors on field-name collision (the resolver should have caught it first,
    but we guard defensively). *)
-let register_record env (name, params, fields) =
+let register_record ?(aliases=Hashtbl.create 0) env (name, params, fields) =
   enter_level ();
   let param_vars = List.map (fun p -> (p, fresh_var ())) params in
   let result_t =
@@ -1028,6 +1084,7 @@ let register_record env (name, params, fields) =
       param_vars
   in
   let go_ty ast_ty =
+    let ast_ty = expand_aliases aliases ast_ty in
     let rec go = function
       | Ast.TyCon n ->
         (try List.assoc n param_vars with Not_found -> TCon n)
@@ -1058,6 +1115,9 @@ let register_record env (name, params, fields) =
     Hashtbl.replace env.field_owners fname name
   ) field_monos
 
+let register_alias env (name, params, rhs) =
+  Hashtbl.replace env.aliases name (params, rhs)
+
 (* Build the clause's expression form: nested lambdas if there are args. *)
 let clause_to_expr (pats, body) =
   if pats = [] then body
@@ -1068,7 +1128,7 @@ let clause_to_expr (pats, body) =
    method's AST type to mono, then generalizes — yielding a fully polymorphic
    scheme per method.  Returns the method scheme list so check_program can
    bind them in the env before typing top-level functions. *)
-let register_interface env (iface_name, type_params, methods) =
+let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params, methods) =
   enter_level ();
   let param_vars = List.map (fun p -> (p, fresh_var ())) type_params in
   (* Each call to go_ty gets its own memoization table for method-level tvars.
@@ -1076,6 +1136,7 @@ let register_interface env (iface_name, type_params, methods) =
      (e.g., both `a`s in `(a -> b) -> f a -> f b`) resolve to the same TVar,
      while still being independent across different methods. *)
   let go_ty ast_ty =
+    let ast_ty = expand_aliases aliases ast_ty in
     let method_vars = Hashtbl.create 4 in
     let rec go = function
       | Ast.TyCon n ->
@@ -1140,7 +1201,7 @@ let check_impl env (decl : decl) = match decl with
     let n_args   = List.length type_args in
     if n_params <> n_args then
       fail (ImplArityMismatch (iface_name, n_params, n_args));
-    let concrete = List.map from_ast_type type_args in
+    let concrete = List.map (from_ast_type ~aliases:env.aliases) type_args in
     let subs = List.combine info.iface_param_ids concrete in
     (* Verify each required method is present and has the right type *)
     List.iter (fun (mname, mscheme) ->
@@ -1175,9 +1236,9 @@ let register_impl env = function
       impl_iface      = iface_name;
       impl_name;
       impl_is_default = is_default;
-      impl_type_mono  = List.map from_ast_type type_args;
+      impl_type_mono  = List.map (from_ast_type ~aliases:env.aliases) type_args;
       impl_requires   = List.map (fun (iface, args) ->
-                          (iface, List.map from_ast_type args)) requires;
+                          (iface, List.map (from_ast_type ~aliases:env.aliases) args)) requires;
     } in
     env.impls := entry :: !(env.impls)
   | _ -> ()
@@ -1409,18 +1470,24 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   seed_builtin_interfaces env;
 
   (* Phase 1: register data, record, interface, impl, and extern declarations *)
+  (* First sub-pass: collect all type aliases so they are available for expansion *)
+  List.iter (function
+    | DTypeAlias (_, n, ps, rhs) -> register_alias env (n, ps, rhs)
+    | _ -> ()
+  ) prog;
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
   List.iter (function
-    | DData (_, n, ps, vs, _) -> register_data env (n, ps, vs)
-    | DRecord (_, n, ps, fs, _) -> register_record env (n, ps, fs)
+    | DTypeAlias _ -> ()  (* already handled *)
+    | DData (_, n, ps, vs, _) -> register_data ~aliases:env.aliases env (n, ps, vs)
+    | DRecord (_, n, ps, fs, _) -> register_record ~aliases:env.aliases env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
-      let ms = register_interface env (iface_name, type_params, methods) in
+      let ms = register_interface ~aliases:env.aliases env (iface_name, type_params, methods) in
       iface_method_schemes := ms @ !iface_method_schemes
     | DExtern (_, name, ast_ty) ->
       let scheme =
         enter_level ();
-        let mono = from_ast_type ast_ty in
+        let mono = from_ast_type ~aliases:env.aliases ast_ty in
         exit_level ();
         generalize mono
       in
@@ -1454,7 +1521,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
       match sig_opt with
       | None -> []
       | Some sig_ast ->
-        let (cs, sig_t) = from_ast_type_with_constraints sig_ast in
+        let (cs, sig_t) = from_ast_type_with_constraints ~aliases:(!env).aliases sig_ast in
         unify placeholder sig_t;
         cs
     in
@@ -1563,18 +1630,28 @@ let typecheck_module
     | _ -> ()
   ) prog;
 
+  (* First sub-pass: collect all type aliases *)
+  List.iter (function
+    | DTypeAlias (_, n, ps, rhs) -> register_alias env (n, ps, rhs)
+    | _ -> ()
+  ) prog;
+  (* Also seed aliases from imported modules *)
+  List.iter (fun te ->
+    List.iter (fun (n, (ps, rhs)) -> register_alias env (n, ps, rhs)) te.te_aliases
+  ) known_modules;
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
   List.iter (function
-    | DData (_, n, ps, vs, _) -> register_data env (n, ps, vs)
-    | DRecord (_, n, ps, fs, _) -> register_record env (n, ps, fs)
+    | DTypeAlias _ -> ()  (* already handled *)
+    | DData (_, n, ps, vs, _) -> register_data ~aliases:env.aliases env (n, ps, vs)
+    | DRecord (_, n, ps, fs, _) -> register_record ~aliases:env.aliases env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
-      let ms = register_interface env (iface_name, type_params, methods) in
+      let ms = register_interface ~aliases:env.aliases env (iface_name, type_params, methods) in
       iface_method_schemes := ms @ !iface_method_schemes
     | DExtern (_, name, ast_ty) ->
       let scheme =
         enter_level ();
-        let mono = from_ast_type ast_ty in
+        let mono = from_ast_type ~aliases:env.aliases ast_ty in
         exit_level ();
         generalize mono
       in
@@ -1601,7 +1678,7 @@ let typecheck_module
       match sig_opt with
       | None -> []
       | Some sig_ast ->
-        let (cs, sig_t) = from_ast_type_with_constraints sig_ast in
+        let (cs, sig_t) = from_ast_type_with_constraints ~aliases:(!env).aliases sig_ast in
         unify placeholder sig_t;
         cs
     in
@@ -1683,6 +1760,14 @@ let typecheck_module
        | None -> None)
     | _ -> None
   ) prog in
+  let pub_aliases = List.filter_map (fun d ->
+    match d with
+    | DTypeAlias (true, n, _, _) ->
+      (match Hashtbl.find_opt (!env).aliases n with
+       | Some v -> Some (n, v)
+       | None -> None)
+    | _ -> None
+  ) prog in
   let te = {
     te_mod_id    = mod_id;
     te_schemes   = pub_schemes @ pub_iface_schemes;
@@ -1694,6 +1779,7 @@ let typecheck_module
         | DImpl { is_pub = true; iface_name; _ } -> ie.impl_iface = iface_name
         | _ -> false) prog
     ) !(!env.impls);
+    te_aliases   = pub_aliases;
   } in
   (te, all_schemes, warnings)
 
@@ -1720,6 +1806,7 @@ let copy_tc_env (e : env) : env = {
   fun_constraints        = Hashtbl.copy e.fun_constraints;
   constraint_obligations = ref !(e.constraint_obligations);
   type_ctors    = Hashtbl.copy e.type_ctors;
+  aliases       = Hashtbl.copy e.aliases;
   warnings      = ref !(e.warnings);
   mut_vars      = e.mut_vars;                  (* persistent set *)
 }
@@ -1729,18 +1816,24 @@ let copy_tc_env (e : env) : env = {
 let check_repl_decl (env : env ref) (decls : decl list)
     : (ident * scheme) list * string list =
   current_loc := None;
+  (* First sub-pass: collect all type aliases *)
+  List.iter (function
+    | DTypeAlias (_, n, ps, rhs) -> register_alias !env (n, ps, rhs)
+    | _ -> ()
+  ) decls;
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
   List.iter (function
-    | DData (_, n, ps, vs, _) -> register_data !env (n, ps, vs)
-    | DRecord (_, n, ps, fs, _) -> register_record !env (n, ps, fs)
+    | DTypeAlias _ -> ()  (* already handled *)
+    | DData (_, n, ps, vs, _) -> register_data ~aliases:(!env).aliases !env (n, ps, vs)
+    | DRecord (_, n, ps, fs, _) -> register_record ~aliases:(!env).aliases !env (n, ps, fs)
     | DInterface { iface_name; type_params; methods; _ } ->
-      let ms = register_interface !env (iface_name, type_params, methods) in
+      let ms = register_interface ~aliases:(!env).aliases !env (iface_name, type_params, methods) in
       iface_method_schemes := ms @ !iface_method_schemes
     | DExtern (_, name, ast_ty) ->
       let scheme =
         enter_level ();
-        let mono = from_ast_type ast_ty in
+        let mono = from_ast_type ~aliases:(!env).aliases ast_ty in
         exit_level ();
         generalize mono
       in
@@ -1766,7 +1859,7 @@ let check_repl_decl (env : env ref) (decls : decl list)
       match sig_opt with
       | None -> []
       | Some sig_ast ->
-        let (cs, sig_t) = from_ast_type_with_constraints sig_ast in
+        let (cs, sig_t) = from_ast_type_with_constraints ~aliases:(!env).aliases sig_ast in
         unify placeholder sig_t;
         cs
     in

@@ -1268,6 +1268,28 @@ f x
   | True = "oops"
 |}
 
+(* ── Type alias tests ─────────────────────────────── *)
+
+let t_alias_simple =
+  assert_type
+    "type Name = String\ngreet : Name -> String\ngreet n = n\n"
+    "greet" "String -> String"
+
+let t_alias_param =
+  assert_type
+    "type Wrapper a = Option a\nunwrap : Wrapper a -> a -> a\nunwrap w d = match w\n  Some x => x\n  None => d\n"
+    "unwrap" "Option a -> a -> a"
+
+let t_alias_pair =
+  assert_type
+    "type Pair a b = (a, b)\nfst : Pair a b -> a\nfst (x, _) = x\n"
+    "fst" "(a, b) -> a"
+
+let t_alias_in_annot =
+  assert_type
+    "type Name = String\ngreet x = (x : Name)\n"
+    "greet" "String -> String"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -1515,5 +1537,11 @@ let () =
       test_case "Int -> String"           `Quick t_guard_int_to_string;
       test_case "Int -> Int"              `Quick t_guard_int_to_int;
       test_case "err: body type mismatch" `Quick e_guard_body_mismatch;
+    ];
+    "type aliases", [
+      test_case "simple alias"           `Quick t_alias_simple;
+      test_case "parametric alias"       `Quick t_alias_param;
+      test_case "pair alias"             `Quick t_alias_pair;
+      test_case "alias in annotation"    `Quick t_alias_in_annot;
     ];
   ]

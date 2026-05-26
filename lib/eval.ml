@@ -611,7 +611,7 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
                else VClosure (!(rs.eval_env), pats, body) in
        fill name v
      ) methods
-   | DRecord _ | DInterface _ | DTypeSig _ | DExtern _ | DUse _ -> ())
+   | DRecord _ | DInterface _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ -> ())
 
 let eval_repl_expr (rs : repl_state) (e : expr) : value =
   rs.eval_env := [!(rs.top_frame)];

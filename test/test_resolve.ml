@@ -227,6 +227,25 @@ let e_constraint_unknown_iface =
   assert_err (unknown_iface "Bogus")
     "f : Bogus a => a -> Bool\nf x = True\n"
 
+(* ── Type alias tests ────────────────────────── *)
+
+let v_alias_simple =
+  assert_ok "type Name = String\ngreet : Name -> String\ngreet n = n\n"
+
+let v_alias_param =
+  assert_ok "type Wrapper a = Option a\n"
+
+let v_alias_typevar_ok =
+  assert_ok "type Pair a b = (a, b)\n"
+
+let e_alias_unknown_type =
+  assert_err (unknown_type "Bogus")
+    "type Foo = Bogus\n"
+
+let e_alias_duplicate =
+  assert_err (duplicate "Foo")
+    "type Foo = String\ntype Foo = Int\n"
+
 (* ── Test runner ─────────────────────────────── *)
 
 let () =
@@ -281,5 +300,12 @@ let () =
     "constraint annotations", [
       test_case "known iface ok"       `Quick v_constraint_known_iface;
       test_case "err: unknown iface"   `Quick e_constraint_unknown_iface;
+    ];
+    "type aliases", [
+      test_case "simple alias ok"      `Quick v_alias_simple;
+      test_case "parametric alias ok"  `Quick v_alias_param;
+      test_case "typevar alias ok"     `Quick v_alias_typevar_ok;
+      test_case "err: unknown type"    `Quick e_alias_unknown_type;
+      test_case "err: duplicate"       `Quick e_alias_duplicate;
     ];
   ]
