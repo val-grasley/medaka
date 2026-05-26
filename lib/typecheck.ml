@@ -3,16 +3,15 @@
    Covered: ADTs (`data`), records, type aliases, newtypes, pattern matching,
    exhaustiveness/usefulness (via [Exhaust]), interfaces with named instances,
    constraint solving at call sites, `Eq a => ...` constraint syntax in signatures,
-   effect tracking (separate `eff_env` pass after HM), `Ref a` and `<Mut>` for
+   effect tracking (`TFun` carries effect_set; separate `eff_env` post-pass reads
+   it to detect higher-order effectful callbacks), `Ref a` and `<Mut>` for
    shared mutable state, multi-module type-checking.
 
    Uses Rémy-style level-based generalization (no env scan needed).
 
-   Not yet covered: effects threaded through `TFun` (today they live in a
-   separate `eff_env`, so higher-order callbacks that receive effectful
-   functions aren't tracked); `@Name` impl selection at runtime; constraint
-   inference (callers of a constrained function must carry the explicit
-   constraint annotation).  See PLAN.md §5 for the full list. *)
+   Not yet covered: `@Name` impl selection at runtime; constraint inference
+   (callers of a constrained function must carry the explicit constraint
+   annotation).  See PLAN.md §5 for the full list. *)
 
 open Ast
 
@@ -22,6 +21,8 @@ module StringSet = Set.Make(String)
 
 type level = int
 
+type effect_set = string list  (* sorted, deduplicated *)
+
 type tyvar_info =
   | Unbound of int * level
   | Link    of mono
@@ -30,7 +31,7 @@ and mono =
   | TVar   of tyvar_info ref
   | TCon   of string
   | TApp   of mono * mono
-  | TFun   of mono * mono
+  | TFun   of mono * effect_set * mono
   | TTuple of mono list
 
 (* A type scheme: forall <ids>. mono. The bound ids are tyvar IDs from `mono`. *)
@@ -75,8 +76,6 @@ type module_type_exports = {
 }
 
 (* ── Effects ─────────────────────────────────────── *)
-
-type effect_set = string list  (* sorted, deduplicated *)
 
 (* ── Errors ─────────────────────────────────────── *)
 
@@ -143,7 +142,7 @@ let rec occurs_adjust id level = function
        else if level' > level then
          v := Unbound (id', level))
   | TCon _ -> ()
-  | TApp (a, b) | TFun (a, b) ->
+  | TApp (a, b) | TFun (a, _, b) ->
     occurs_adjust id level a; occurs_adjust id level b
   | TTuple ts ->
     List.iter (occurs_adjust id level) ts
@@ -164,7 +163,7 @@ let rec unify t1 t2 =
   | TCon n1, TCon n2 when n1 = n2 -> ()
   | TApp (a1, b1), TApp (a2, b2) ->
     unify a1 a2; unify b1 b2
-  | TFun (a1, b1), TFun (a2, b2) ->
+  | TFun (a1, _, b1), TFun (a2, _, b2) ->
     unify a1 a2; unify b1 b2
   | TTuple ts1, TTuple ts2 when List.length ts1 = List.length ts2 ->
     List.iter2 unify ts1 ts2
@@ -181,7 +180,7 @@ let rec free_unbound acc = function
        if level > !current_level && not (List.mem id acc) then id :: acc
        else acc)
   | TCon _ -> acc
-  | TApp (a, b) | TFun (a, b) ->
+  | TApp (a, b) | TFun (a, _, b) ->
     free_unbound (free_unbound acc a) b
   | TTuple ts ->
     List.fold_left free_unbound acc ts
@@ -197,7 +196,7 @@ let instantiate_raw (Forall (vars, t)) =
        | Link _ -> assert false)
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, b)  -> TFun (walk a, walk b)
+    | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
     | TTuple ts    -> TTuple (List.map walk ts)
   in
   (sub, walk t)
@@ -220,7 +219,7 @@ let instantiate_with (Forall (vars, t)) (subs : (int * mono) list) =
        | Link _ -> assert false)
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, b)  -> TFun (walk a, walk b)
+    | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
     | TTuple ts    -> TTuple (List.map walk ts)
   in
   walk t
@@ -237,7 +236,7 @@ let instantiate_method (Forall (vars, t)) track_ids =
        | Link _ -> assert false)
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, b)  -> TFun (walk a, walk b)
+    | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
     | TTuple ts    -> TTuple (List.map walk ts)
   in
   let result = walk t in
@@ -277,10 +276,12 @@ let pp_mono t =
       let sb = go 3 b in
       let s = sa ^ " " ^ sb in
       if prec > 2 then "(" ^ s ^ ")" else s
-    | TFun (a, b) ->
+    | TFun (a, effs, b) ->
+      let eff_str = if effs = [] then ""
+                    else Printf.sprintf "<%s> " (String.concat ", " effs) in
       let sa = go 2 a in
       let sb = go 1 b in
-      let s = sa ^ " -> " ^ sb in
+      let s = sa ^ " -> " ^ eff_str ^ sb in
       if prec > 1 then "(" ^ s ^ ")" else s
     | TTuple ts ->
       Printf.sprintf "(%s)" (String.concat ", " (List.map (go 0) ts))
@@ -467,9 +468,12 @@ let from_ast_type ?(aliases=Hashtbl.create 0) t =
          Hashtbl.add env n v;
          v)
     | Ast.TyApp (a, b) -> TApp (go a, go b)
-    | Ast.TyFun (a, b) -> TFun (go a, go b)
+    | Ast.TyFun (a, b) ->
+      let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
+      let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
+      TFun (go a, effs, bm)
     | Ast.TyTuple ts -> TTuple (List.map go ts)
-    | Ast.TyEffect (_effs, t) -> go t  (* effects tracked separately via eff_env *)
+    | Ast.TyEffect (_, t) -> go t
     | Ast.TyConstrained (_, inner) -> go inner  (* constraints handled by from_ast_type_with_constraints *)
   in
   go t
@@ -492,7 +496,10 @@ let from_ast_type_with_constraints ?(aliases=Hashtbl.create 0) ast_ty =
     | Ast.TyCon n             -> TCon n
     | Ast.TyVar n             -> lookup n
     | Ast.TyApp (a, b)        -> TApp (go a, go b)
-    | Ast.TyFun (a, b)        -> TFun (go a, go b)
+    | Ast.TyFun (a, b)        ->
+      let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
+      let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
+      TFun (go a, effs, bm)
     | Ast.TyTuple ts          -> TTuple (List.map go ts)
     | Ast.TyEffect (_, t)     -> go t
     | Ast.TyConstrained (_, inner) -> go inner
@@ -532,9 +539,8 @@ let initial_env () =
        | Forall (_, t) -> Some (generalize t))
     env.ctors;
   (* Primitives from the runtime registry.
-     from_ast_type strips TyEffect wrappers (see its definition), so
-     effect annotations on return types are automatically ignored here —
-     effects are tracked separately via eff_env in infer_and_check_effects. *)
+     from_ast_type now populates the TFun effect slot from TyEffect return-type
+     annotations, so `print : String -> <IO> Unit` gets TFun(String,["IO"],Unit). *)
   let env = List.fold_left (fun env (name, ast_ty) ->
     let scheme =
       enter_level ();
@@ -595,7 +601,7 @@ let rec type_pat env = function
     let arg_types = List.map fst typed_args in
     let bindings  = List.concat_map snd typed_args in
     let result_t  = fresh_var () in
-    let expected  = List.fold_right (fun at acc -> TFun (at, acc))
+    let expected  = List.fold_right (fun at acc -> TFun (at, [], acc))
                       arg_types result_t in
     unify ctor_t expected;
     (result_t, bindings)
@@ -617,7 +623,7 @@ let instantiate_record info =
        | Link _ -> assert false)
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, b)  -> TFun (walk a, walk b)
+    | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
     | TTuple ts    -> TTuple (List.map walk ts)
   in
   let result = walk info.rec_result in
@@ -671,7 +677,7 @@ let rec infer env = function
     let tf = infer env f in
     let tx = infer env x in
     let tr = fresh_var () in
-    unify tf (TFun (tx, tr));
+    unify tf (TFun (tx, [], tr));
     tr
 
   | ELam (pats, body) ->
@@ -680,7 +686,7 @@ let rec infer env = function
     let bindings   = List.concat_map snd typed_pats in
     let env' = extend_vars env bindings in
     let tb = infer env' body in
-    List.fold_right (fun pt acc -> TFun (pt, acc)) pat_types tb
+    List.fold_right (fun pt acc -> TFun (pt, [], acc)) pat_types tb
 
   | ELet (mut, pat, e1, e2) ->
     enter_level ();
@@ -756,7 +762,7 @@ let rec infer env = function
         | None -> (match c with "Cons" -> 2 | _ -> 0)
         | Some (Forall (_, t)) ->
           let rec count = function
-            | TFun (_, r) -> 1 + count r
+            | TFun (_, _, r) -> 1 + count r
             | TVar v -> (match !v with Link t' -> count t' | _ -> 0)
             | _ -> 0
           in
@@ -776,7 +782,7 @@ let rec infer env = function
            | _                -> None)
         | Some (Forall (_, t)) ->
           let rec result_type = function
-            | TFun (_, r) -> result_type r
+            | TFun (_, _, r) -> result_type r
             | TApp (f, _) -> result_type f
             | TCon n      -> Some n
             | TVar v      -> (match !v with Link t' -> result_type t' | _ -> None)
@@ -836,7 +842,7 @@ let rec infer env = function
     let tl = infer env l in
     let tr = infer env r in
     let result = fresh_var () in
-    unify tf (TFun (tl, TFun (tr, result)));
+    unify tf (TFun (tl, [], TFun (tr, [], result)));
     result
 
   | EDo stmts ->
@@ -1006,19 +1012,19 @@ and binop_type env op l r =
   | "|>" ->
     (* x |> f  :  a -> (a -> b) -> b *)
     let b = fresh_var () in
-    unify tr (TFun (tl, b)); b
+    unify tr (TFun (tl, [], b)); b
   | ">>" ->
     (* f >> g  :  (a -> b) -> (b -> c) -> (a -> c) *)
     let a = fresh_var () in
     let b = fresh_var () in
     let c = fresh_var () in
-    unify tl (TFun (a, b)); unify tr (TFun (b, c)); TFun (a, c)
+    unify tl (TFun (a, [], b)); unify tr (TFun (b, [], c)); TFun (a, [], c)
   | "<<" ->
     (* f << g  :  (b -> c) -> (a -> b) -> (a -> c) *)
     let a = fresh_var () in
     let b = fresh_var () in
     let c = fresh_var () in
-    unify tl (TFun (b, c)); unify tr (TFun (a, b)); TFun (a, c)
+    unify tl (TFun (b, [], c)); unify tr (TFun (a, [], b)); TFun (a, [], c)
   | _ ->
     fail (Other ("Unknown binop: " ^ op))
 
@@ -1076,14 +1082,17 @@ let register_data ?(aliases=Hashtbl.create 0) env (name, params, variants) =
            (* unknown type var; treat as fresh *)
            fresh_var ())
       | Ast.TyApp (a, b) -> TApp (go a, go b)
-      | Ast.TyFun (a, b) -> TFun (go a, go b)
+      | Ast.TyFun (a, b) ->
+        let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
+        let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
+        TFun (go a, effs, bm)
       | Ast.TyTuple ts -> TTuple (List.map go ts)
       | Ast.TyEffect (_, t) -> go t
       | Ast.TyConstrained (_, inner) -> go inner
     in
     let arg_types = List.map (fun f -> go (expand_aliases aliases f)) v.con_fields in
     let ctor_t =
-      List.fold_right (fun a acc -> TFun (a, acc)) arg_types result_t
+      List.fold_right (fun a acc -> TFun (a, [], acc)) arg_types result_t
     in
     (v.Ast.con_name, ctor_t)
   ) variants in
@@ -1115,7 +1124,10 @@ let register_record ?(aliases=Hashtbl.create 0) env (name, params, fields) =
       | Ast.TyVar n ->
         (try List.assoc n param_vars with Not_found -> fresh_var ())
       | Ast.TyApp (a, b)  -> TApp (go a, go b)
-      | Ast.TyFun (a, b)  -> TFun (go a, go b)
+      | Ast.TyFun (a, b)  ->
+        let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
+        let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
+        TFun (go a, effs, bm)
       | Ast.TyTuple ts    -> TTuple (List.map go ts)
       | Ast.TyEffect (_, t) -> go t
       | Ast.TyConstrained (_, inner) -> go inner
@@ -1175,7 +1187,10 @@ let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params,
               Hashtbl.add method_vars n v;
               v))
       | Ast.TyApp (a, b)  -> TApp (go a, go b)
-      | Ast.TyFun (a, b)  -> TFun (go a, go b)
+      | Ast.TyFun (a, b)  ->
+        let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
+        let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
+        TFun (go a, effs, bm)
       | Ast.TyTuple ts    -> TTuple (List.map go ts)
       | Ast.TyEffect (_, t) -> go t
       | Ast.TyConstrained (_, inner) -> go inner
@@ -1300,7 +1315,7 @@ let rec mono_matches ~pattern ~concrete =
   | TApp (f1, a1), TApp (f2, a2) ->
     mono_matches ~pattern:f1 ~concrete:f2 &&
     mono_matches ~pattern:a1 ~concrete:a2
-  | TFun (a1, b1), TFun (a2, b2) ->
+  | TFun (a1, _, b1), TFun (a2, _, b2) ->
     mono_matches ~pattern:a1 ~concrete:a2 &&
     mono_matches ~pattern:b1 ~concrete:b2
   | TTuple ps, TTuple cs when List.length ps = List.length cs ->
@@ -1317,7 +1332,7 @@ let check_method_usages env =
   let rec is_concrete = function
     | TVar v -> (match !v with Unbound _ -> false | Link t -> is_concrete t)
     | TCon _ -> true
-    | TApp (a, b) | TFun (a, b) -> is_concrete a && is_concrete b
+    | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
     | TTuple ts -> List.for_all is_concrete ts
   in
   List.iter (fun (method_name, param_vars) ->
@@ -1354,7 +1369,7 @@ let check_constraint_obligations env =
   let rec is_concrete = function
     | TVar v -> (match !v with Unbound _ -> false | Link t -> is_concrete t)
     | TCon _ -> true
-    | TApp (a, b) | TFun (a, b) -> is_concrete a && is_concrete b
+    | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
     | TTuple ts -> List.for_all is_concrete ts
   in
   List.iter (fun (iface_name, mono_args) ->
@@ -1387,65 +1402,110 @@ let rec declared_effects : Ast.ty -> effect_set = function
 (* Compute the effect set that evaluating expression `e` produces.
    Direct calls (EApp, |>) contribute the callee's known effect set.
    Lambda bodies propagate their effects conservatively (lambdas may be called).
-   Composition (>>, <<) includes effects of both composed functions. *)
-let rec expr_effects (eff_env : (string, effect_set) Hashtbl.t) (e : expr) : effect_set =
+   Composition (>>, <<) includes effects of both composed functions.
+   `scheme_env` is the HM-inferred scheme list; it lets us read the effect_set
+   embedded in TFun types so that passing an effectful function as an argument
+   to a HOF propagates those effects to the call site.
+   `bound` tracks names locally bound by lambdas / let / match / do, so we
+   don't confuse a local parameter with a global function of the same name. *)
+let expr_effects
+    (eff_env    : (string, effect_set) Hashtbl.t)
+    (scheme_env : (ident * scheme) list)
+    (e : expr) : effect_set =
   let call name = try Hashtbl.find eff_env name with Not_found -> [] in
-  let sub e   = expr_effects eff_env e in
-  (* Effects from calling `e` as a function — if it's a bare name we can look
-     it up directly; otherwise fall back to the expression's own effects. *)
-  let rec call_effs = function
-    | EVar n -> call n
-    | ELoc (_, e) -> call_effs e
-    | e -> sub e
+  let pat_names p = Resolve.pat_bindings p in
+  let add_pats ps bound =
+    List.fold_left (fun s p ->
+      List.fold_left (fun s n -> StringSet.add n s) s (pat_names p)
+    ) bound ps
   in
-  match e with
-  | ELit _ | EVar _ -> []
-  | EApp (f, x) ->
-    effect_union (call_effs f) (effect_union (sub f) (sub x))
-  | ELam (_, body) ->
-    sub body  (* conservative: include body effects in enclosing fn *)
-  | ELet (_, _, e1, e2) -> effect_union (sub e1) (sub e2)
-  | EIf (c, t, f)       -> effect_union (sub c) (effect_union (sub t) (sub f))
-  | EBinOp ("|>", x, f) ->
-    (* x |> f  ≡  f x — calling f contributes its effects *)
-    effect_union (call_effs f) (sub x)
-  | EBinOp (">>", f, g) | EBinOp ("<<", f, g) ->
-    (* Composition — both functions may be called later; include both *)
-    effect_union (call_effs f) (call_effs g)
-  | EBinOp (_, l, r)    -> effect_union (sub l) (sub r)
-  | EUnOp (_, e)         -> sub e
-  | EMatch (sc, arms)    ->
-    List.fold_left
-      (fun acc (_, guard, body) ->
-        let ge = match guard with None -> [] | Some g -> sub g in
-        effect_union acc (effect_union ge (sub body)))
-      (sub sc) arms
-  | EDo stmts ->
-    List.fold_left
-      (fun acc s -> effect_union acc (do_stmt_effects eff_env s))
-      [] stmts
-  | EFieldAccess (e, _)      -> sub e
-  | ERecordCreate (_, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) [] fs
-  | ERecordUpdate (e, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) (sub e) fs
-  | EArrayLit es | EListLit es | ESetLit (_, es) ->
-    List.fold_left (fun a e -> effect_union a (sub e)) [] es
-  | EMapLit (_, kvs) ->
-    List.fold_left (fun a (k, v) -> effect_union a (effect_union (sub k) (sub v))) [] kvs
-  | EStringInterp parts ->
-    List.fold_left (fun a -> function
-      | InterpStr _  -> a
-      | InterpExpr e -> effect_union a (sub e)
-    ) [] parts
-  | ETuple es               -> List.fold_left (fun a e -> effect_union a (sub e)) [] es
-  | EIndex (e, i)           -> effect_union (sub e) (sub i)
-  | EAnnot (e, _)           -> sub e
-  | EInfix (_, l, r)        -> effect_union (sub l) (sub r)
-  | ELoc (_, e)             -> sub e
-  | EListComp _             -> assert false (* eliminated by desugar_list_comps *)
+  let rec go (bound : StringSet.t) e : effect_set =
+    let sub e = go bound e in
+    (* Effects of a named function when used as a value (not yet called).
+       Skip locally-bound names — a parameter `p` is not the global `p`. *)
+    let fn_effects_of n =
+      if StringSet.mem n bound then []
+      else
+        let from_scheme = match List.assoc_opt n scheme_env with
+          | Some (Forall (_, t)) ->
+            (match normalize t with
+             | TFun (_, effs, _) -> effs
+             | _ -> [])
+          | None -> []
+        in
+        let from_eff = try Hashtbl.find eff_env n with Not_found -> [] in
+        effect_union from_scheme from_eff
+    in
+    (* Effects from calling `e` as a function — if it's a bare name we can look
+       it up directly; otherwise fall back to the expression's own effects.
+       Locally-bound names contribute nothing (their effects are unknown here). *)
+    let rec call_effs = function
+      | EVar n -> if StringSet.mem n bound then [] else call n
+      | ELoc (_, e) -> call_effs e
+      | e -> sub e
+    in
+    match e with
+    | ELit _ | EVar _ -> []
+    | EApp (f, x) ->
+      (* If the argument is a named effectful function, those effects propagate:
+         the HOF may call it, so we conservatively include them at the call site. *)
+      let x_fn_effs = match x with
+        | EVar n | ELoc (_, EVar n) -> fn_effects_of n
+        | _ -> []
+      in
+      effect_union (call_effs f) (effect_union (sub f) (effect_union (sub x) x_fn_effs))
+    | ELam (pats, body) ->
+      go (add_pats pats bound) body  (* conservative: include body effects *)
+    | ELet (_, pat, e1, e2) ->
+      effect_union (sub e1) (go (add_pats [pat] bound) e2)
+    | EIf (c, t, f)       -> effect_union (sub c) (effect_union (sub t) (sub f))
+    | EBinOp ("|>", x, f) ->
+      (* x |> f  ≡  f x — calling f contributes its effects *)
+      effect_union (call_effs f) (sub x)
+    | EBinOp (">>", f, g) | EBinOp ("<<", f, g) ->
+      (* Composition — both functions may be called later; include both *)
+      effect_union (call_effs f) (call_effs g)
+    | EBinOp (_, l, r)    -> effect_union (sub l) (sub r)
+    | EUnOp (_, e)         -> sub e
+    | EMatch (sc, arms)    ->
+      List.fold_left
+        (fun acc (pat, guard, body) ->
+          let bound' = add_pats [pat] bound in
+          let ge = match guard with None -> [] | Some g -> go bound' g in
+          effect_union acc (effect_union ge (go bound' body)))
+        (sub sc) arms
+    | EDo stmts ->
+      let _, effs = List.fold_left (fun (b, acc) s ->
+        let (b', e) = do_stmt_effects b s in
+        (b', effect_union acc e)
+      ) (bound, []) stmts in
+      effs
+    | EFieldAccess (e, _)      -> sub e
+    | ERecordCreate (_, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) [] fs
+    | ERecordUpdate (e, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) (sub e) fs
+    | EArrayLit es | EListLit es | ESetLit (_, es) ->
+      List.fold_left (fun a e -> effect_union a (sub e)) [] es
+    | EMapLit (_, kvs) ->
+      List.fold_left (fun a (k, v) -> effect_union a (effect_union (sub k) (sub v))) [] kvs
+    | EStringInterp parts ->
+      List.fold_left (fun a -> function
+        | InterpStr _  -> a
+        | InterpExpr e -> effect_union a (sub e)
+      ) [] parts
+    | ETuple es               -> List.fold_left (fun a e -> effect_union a (sub e)) [] es
+    | EIndex (e, i)           -> effect_union (sub e) (sub i)
+    | EAnnot (e, _)           -> sub e
+    | EInfix (_, l, r)        -> effect_union (sub l) (sub r)
+    | ELoc (_, e)             -> sub e
+    | EListComp _             -> assert false (* eliminated by desugar_list_comps *)
 
-and do_stmt_effects eff_env = function
-  | DoBind (_, e) | DoExpr e | DoLet (_, _, e) | DoAssign (_, e) ->
-    expr_effects eff_env e
+  and do_stmt_effects (bound : StringSet.t) = function
+    | DoExpr e         -> (bound, go bound e)
+    | DoBind (pat, e)  -> (add_pats [pat] bound, go bound e)
+    | DoLet (_, pat, e) -> (add_pats [pat] bound, go bound e)
+    | DoAssign (_, e)  -> (bound, go bound e)
+  in
+  go StringSet.empty e
 
 (* Process each function group in declaration order:
      1. Infer its effect set (union of all clause bodies).
@@ -1454,7 +1514,7 @@ and do_stmt_effects eff_env = function
 
    Purity rule: a function with NO effect annotation must infer the empty set.
    Annotation rule: declared effects must be a superset of inferred effects. *)
-let infer_and_check_effects ~extern_decls groups =
+let infer_and_check_effects ~extern_decls ~scheme_env groups =
   let eff_env = Hashtbl.create 16 in
   (* Seed eff_env from runtime registry entries *)
   List.iter (fun (name, ast_ty) ->
@@ -1470,7 +1530,7 @@ let infer_and_check_effects ~extern_decls groups =
     let inferred =
       List.fold_left
         (fun acc clause ->
-          effect_union acc (expr_effects eff_env (clause_to_expr clause)))
+          effect_union acc (expr_effects eff_env scheme_env (clause_to_expr clause)))
         [] clauses
     in
     Hashtbl.replace eff_env name inferred;
@@ -1625,7 +1685,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
       | DExtern (_, n, t) -> Some (n, t)
       | _ -> None) prog
   in
-  infer_and_check_effects ~extern_decls:user_extern_decls groups;
+  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results groups;
 
   (* Validate the built-in registry against what the prelude loaded.
      This is a compiler-build invariant: if any expected stdlib name is
@@ -1793,7 +1853,7 @@ let typecheck_module
   let user_extern_decls =
     List.filter_map (function DExtern (_, n, t) -> Some (n, t) | _ -> None) prog
   in
-  infer_and_check_effects ~extern_decls:user_extern_decls groups;
+  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results groups;
 
   let all_schemes = results @ !iface_method_schemes @ !extern_schemes in
   let warnings = List.rev !(!env.warnings) in
@@ -1977,7 +2037,7 @@ let check_repl_decl (env : env ref) (decls : decl list)
   let user_extern_decls =
     List.filter_map (function DExtern (_, n, t) -> Some (n, t) | _ -> None) decls
   in
-  infer_and_check_effects ~extern_decls:user_extern_decls groups;
+  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results groups;
   (results @ !iface_method_schemes @ !extern_schemes,
    List.rev !(!env.warnings))
 

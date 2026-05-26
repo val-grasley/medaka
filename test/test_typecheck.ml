@@ -481,13 +481,13 @@ let t_eff_pure = assert_type
 (* IO function with correct annotation *)
 let t_eff_io_annotated = assert_type
   "greet : String -> <IO> Unit\ngreet name = print name\n"
-  "greet" "String -> Unit"
+  "greet" "String -> <IO> Unit"
 
 (* Transitive IO: calling an IO fn propagates the effect to its caller *)
 let t_eff_transitive = assert_type
   "greet : String -> <IO> Unit\ngreet name = print name\n\
    welcome : String -> <IO> Unit\nwelcome name = greet name\n"
-  "welcome" "String -> Unit"
+  "welcome" "String -> <IO> Unit"
 
 (* Over-annotation is OK: declared <IO, Rand> but only performs <IO> *)
 let t_eff_over_annotated = assert_type
@@ -516,6 +516,19 @@ let e_eff_escape_wrong_effect = assert_err
 (* Error: IO effect escapes through a lambda body inside the unannotated fn *)
 let e_eff_lambda_body_propagates = assert_err
   "bad = (x => print x) \"hi\"\n"
+
+(* HOF: passing effectful function as argument — call site must be impure *)
+let e_hof_effectful_arg = assert_err
+  "runWith f = f ()\nbad = runWith print\n"
+
+(* HOF: transitive alias of effectful function still propagates *)
+let e_hof_alias_propagates = assert_err
+  "runWith f = f ()\np = print\nbad = runWith p\n"
+
+(* HOF: pure callback — no error *)
+let t_hof_pure_arg = assert_type
+  "runWith f = f ()\nresult = runWith (x => x)\n"
+  "result" "Unit"
 
 (* ── Interfaces ─────────────────────────────────── *)
 
@@ -1037,12 +1050,12 @@ let t_ref_nested = assert_type "r = Ref (Ref 0)\n" "r" "Ref (Ref Int)"
 (* set_ref with <Mut> annotation: Int cell *)
 let t_set_ref_type = assert_type
   "f : Ref Int -> <Mut> Unit\nf r = set_ref r 10\n"
-  "f" "Ref Int -> Unit"
+  "f" "Ref Int -> <Mut> Unit"
 
 (* set_ref with <Mut> annotation: String cell *)
 let t_set_ref_mut_ok = assert_type
   "f : Ref String -> <Mut> Unit\nf r = set_ref r \"hi\"\n"
-  "f" "Ref String -> Unit"
+  "f" "Ref String -> <Mut> Unit"
 
 (* set_ref type mismatch: r : Ref Int, but passing String *)
 let e_set_ref_type_mismatch = assert_err
@@ -1104,7 +1117,7 @@ let e_extern_effect_impure = assert_err
 (* extern with effect: caller with matching annotation → ok *)
 let t_extern_effect_annotated = assert_type
   "extern myPrint : a -> <IO> Unit\nf : a -> <IO> Unit\nf x = myPrint x\n"
-  "f" "a -> Unit"
+  "f" "a -> <IO> Unit"
 
 (* ── Collection literal tests ───────────────────── *)
 
@@ -1161,12 +1174,12 @@ let e_float_mod = assert_err "x = 5.0 % 2.0\n"
 (* readLine is in initial_env via runtime.mdk; annotated caller is ok *)
 let t_readLine_type = assert_type
   "f : Unit -> <IO> String\nf u = readLine u\n"
-  "f" "Unit -> String"
+  "f" "Unit -> <IO> String"
 
 (* readFile: takes a String path, returns Result String String *)
 let t_readFile_type = assert_type
   "f : String -> <IO> (Result String String)\nf p = readFile p\n"
-  "f" "String -> Result String String"
+  "f" "String -> <IO> Result String String"
 
 (* effect propagation: function calling readFile picks up IO *)
 let e_readFile_impure = assert_err
@@ -1498,6 +1511,9 @@ let () =
       test_case "err: escape pure annot" `Quick e_eff_escape_annotated_pure;
       test_case "err: wrong effect"      `Quick e_eff_escape_wrong_effect;
       test_case "err: lambda propagates" `Quick e_eff_lambda_body_propagates;
+      test_case "err: HOF effectful arg" `Quick e_hof_effectful_arg;
+      test_case "err: HOF alias propagates" `Quick e_hof_alias_propagates;
+      test_case "HOF pure arg ok"        `Quick t_hof_pure_arg;
     ];
     "pipe and compose", [
       test_case "pipe Int"               `Quick t_pipe_int;

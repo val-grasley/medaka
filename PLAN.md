@@ -1140,23 +1140,33 @@ Same family as `r.value = e` on `Ref` — both should be implemented together.
 
 ---
 
-### Phase 29: Higher-order effect tracking via `TFun` ⏳ TODO
+### Phase 29: Higher-order effect tracking via `TFun` ✅ DONE
 
-Today effects live in a separate `eff_env`; higher-order callbacks that
-receive effectful functions aren't tracked.  The fix is to merge effects
-into the `TFun` constructor:
+Effects are now carried in the `TFun` constructor itself:
 
 ```ocaml
 TFun of mono * effect_set * mono
 ```
 
-This is invasive: every `infer` case that constructs a function type
-gains an effect slot.  Pure functions still annotate-as-empty.  The
-upside is `<Mut>` on `let mut` use, effect-polymorphic `map`, and
-better error messages from `let runEffect = somethingEffectful`.
+**What was added:**
+- `mono.TFun` gained an `effect_set` slot, populated by `from_ast_type`
+  from `TyEffect` on the function's return type.  Pure functions get `[]`.
+- HM unification ignores the effect slot — passing an effectful function to
+  a HOF (e.g. `runWith print`) no longer fails type unification, while
+  effects flow through the type naturally via aliases (`p = print`).
+- `pp_mono` renders the effect set inline: `String -> <IO> Unit`.
+- The post-HM `expr_effects` pass now receives `scheme_env` (the HM result
+  schemes) and reads the TFun effect slot for function arguments: when an
+  `EApp`'s argument is a named function whose TFun carries effects, those
+  effects propagate to the call site.  This catches the previously-missed
+  `bad = runWith print` and `p = print; bad = runWith p` cases.
+- `expr_effects` also tracks locally-bound names (lambda parameters, let,
+  match arms, do-bind) so that a local parameter named `p` is not confused
+  with a global function `p`.
+- 3 new typecheck tests in the `effects` suite cover the HOF cases.
 
-Scheduled when the stdlib has enough higher-order combinators that
-the current limitation actually starts producing wrong types.
+Still not handled: effect-polymorphic inference for unannotated HOFs (would
+require effect variables in `TFun`, not just concrete effect sets).
 
 ---
 
@@ -1293,9 +1303,10 @@ These aren't blockers, but a less-careful change could trip over them:
   String, and Char are the registered built-in impls.
 - Arithmetic ops (`+`, `-`, `*`, `/`) now use `Num` constraint (Phase 17 ✅).
   Int and Float are the registered built-in impls.
-- Effects: tracked in a separate `eff_env`, not in `TFun`. Higher-order
-  callbacks that *receive* an effectful function aren't tracked (Phase 3
-  limitation). Real fix requires merging effects into `TFun`.
+- Effects: `TFun` now carries an `effect_set` slot (Phase 29 ✅); higher-order
+  call sites that pass a named effectful function are tracked.  Effect
+  inference for unannotated HOFs (effect-polymorphic `map`) still requires
+  effect variables, which is not implemented.
 - `@Name` impl-disambiguation hints parse and type-check but do not actually
   select a specific impl at runtime; ambiguous impls are still rejected at
   check time. Selection is deferred to a post-backend pass.
@@ -1337,8 +1348,9 @@ a phase in §6 unless noted.
   source that mirrors what an extern decl would say. Phase 18.
 - **`<Mut>` not inferred from `let mut` use.** Design says any function
   touching a `let mut` binding picks up `<Mut>`. Today only direct calls
-  to extern `set_ref` add it via the `eff_env` path. The merge of effects
-  into `TFun` (already noted) is the right place to fix this too.
+  to extern `set_ref` add it via the `eff_env` path. Phase 29 added the
+  TFun effect slot the design relied on; the `let mut` propagation is now
+  a smaller follow-on to wire `let mut` references through the new slot.
 - **Multiline string indentation stripping.** ✅ Phase 16 done.
 - **`Char` accepts multi-byte UTF-8.** ✅ Phase 16 done (byte sequence, not
   validated grapheme cluster; segmentation library deferred to stdlib).
