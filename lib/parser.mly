@@ -516,6 +516,8 @@ expr_atom:
     { ELoc (of_pos $startpos, ERecordUpdate ($2, $4)) }
   | AT UPPER
     { ELoc (of_pos $startpos, EVar ("@" ^ $2)) }
+  | AT IDENT
+    { ELoc (of_pos $startpos, EVar ("@" ^ $2)) }
   | interp_string
     { ELoc (of_pos $startpos, EStringInterp $1) }
 
@@ -649,6 +651,18 @@ inner_impl_decl:
       }
     }
   | option(DEFAULT) IMPL IDENT OF UPPER nonempty_list(ty_atom) option(impl_requires) WHERE
+    INDENT nonempty_list(impl_method) DEDENT newlines
+    { fun is_pub -> DImpl {
+        is_pub;
+        is_default = $1 <> None;
+        iface_name = $5;
+        type_args  = $6;
+        impl_name  = Some $3;
+        requires   = Option.value ~default:[] $7;
+        methods    = $10;
+      }
+    }
+  | option(DEFAULT) IMPL UPPER OF UPPER nonempty_list(ty_atom) option(impl_requires) WHERE
     INDENT nonempty_list(impl_method) DEDENT newlines
     { fun is_pub -> DImpl {
         is_pub;

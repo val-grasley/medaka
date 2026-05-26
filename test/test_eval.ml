@@ -400,6 +400,34 @@ let t_escape_cr      = assert_val "x = \"a\\rb\"\n" "x" (VString "a\rb")
 (* \u{2603} → ☃ (encoded as 3 UTF-8 bytes "\xe2\x98\x83") *)
 let t_escape_unicode = assert_val "x = \"\\u{2603}\"\n" "x" (VString "\xe2\x98\x83")
 
+(* ── @Name impl selection (Phase 30) ───────────────────────────────────── *)
+
+(* Two named impls for the same interface method — @Name picks one explicitly. *)
+let named_impl_src = {|
+interface Combine a where
+    combine : a -> a -> a
+impl Additive of Combine Int where
+    combine x y = x + y
+impl Multiplicative of Combine Int where
+    combine x y = x * y
+|}
+
+let t_named_additive =
+  assert_val (named_impl_src ^ "r = combine @Additive 3 4\n")
+    "r" (VInt 7)
+
+let t_named_multiplicative =
+  assert_val (named_impl_src ^ "r = combine @Multiplicative 3 4\n")
+    "r" (VInt 12)
+
+(* @Name hint used standalone evaluates to VUnit (matches typechecker's Unit inference) *)
+let t_at_name_standalone =
+  assert_val "r = @Foo\n" "r" VUnit
+
+(* @Name hint that matches no named impl raises Eval_error *)
+let t_named_unknown =
+  assert_runtime_err (named_impl_src ^ "r = combine @Unknown 3 4\n") "r"
+
 (* ── Multi-impl dispatch (VMulti) ───────────────────────────────────────── *)
 
 (* Three impls for the same interface method 'describe'.
@@ -558,6 +586,12 @@ let () =
       test_case "basic hole"    `Quick t_interp_basic;
       test_case "two holes"     `Quick t_interp_two_holes;
       test_case "greeting expr" `Quick t_interp_expr;
+    ];
+    "@Name impl selection (Phase 30)", [
+      test_case "@Additive selects +"       `Quick t_named_additive;
+      test_case "@Multiplicative selects *" `Quick t_named_multiplicative;
+      test_case "@Name standalone = Unit"   `Quick t_at_name_standalone;
+      test_case "@Unknown raises error"     `Quick t_named_unknown;
     ];
     "multi-impl dispatch (VMulti)", [
       test_case "list non-empty"    `Quick t_dispatch_list;

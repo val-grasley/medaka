@@ -20,18 +20,18 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-590 tests pass across 8 test suites:
+578 tests pass across 8 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 110   | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 81    | parse → print → parse yields the same AST             |
-| Resolver          | `test/test_resolve.ml`          | 55    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 214   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 90    | Runtime values, recursion, do-blocks, Ref, errors, escapes |
-| Run               | `test/test_run.ml`              | 8     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
-| REPL              | `test/test_repl.ml`             | 11    | process_item, :load atomicity, rollback, :browse      |
-| Loader            | `test/test_loader.ml`           | 21    | Multi-file imports, topo sort, cycle detection, prelude no-op |
+| Parser            | `test/test_parser.ml`           | 108   | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 79    | parse → print → parse yields the same AST             |
+| Resolver          | `test/test_resolve.ml`          | 53    | Unbound vars, unknown types/ctors, duplicates, fields |
+| Type checker      | `test/test_typecheck.ml`        | 212   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 92    | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
+| Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
+| REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
+| Loader            | `test/test_loader.ml`           | 19    | Multi-file imports, topo sort, cycle detection, prelude no-op |
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -85,7 +85,7 @@ binary-searching through the test suite.
 
 ### 2.4 Grammar conflicts are silently resolved
 
-Menhir reports ~13 shift/reduce + ~20 reduce/reduce conflicts. They are all
+Menhir reports 17 shift/reduce + 27 reduce/reduce conflicts. They are all
 resolved in a way that passes the tests, but adding new grammar can change how
 they resolve. **After any change to `lib/parser.mly`, check the conflict count
 in a clean build** (see 2.1). If it goes up, audit which productions are
@@ -1160,22 +1160,35 @@ the current limitation actually starts producing wrong types.
 
 ---
 
-### Phase 30: `@Name` impl selection at runtime ⏳ TODO
+### Phase 30: `@Name` impl selection at runtime ✅ DONE
 
-Today `@Name` parses and the typechecker silently consumes the hint
-without selecting a specific impl — ambiguous impl errors are still
-raised at check time when no default is present.  The runtime should
-actually dispatch through the named impl when `@Name` is present:
+**What was added.**
+- `VNamedImpl of string * value` added to `value` in `lib/eval.ml` —
+  wraps a method closure with its declared impl name.
+- DImpl handlers in `eval_program` and `eval_repl_decl` tag each method
+  value with `VNamedImpl(n, v)` when the impl has `impl_name = Some n`;
+  unnamed impls are left unwrapped.
+- `apply` (`VMulti` branch) unwraps `VNamedImpl` before applying and
+  re-wraps partial-application results to preserve the name across
+  multi-argument dispatch.
+- `eval` gains two special cases (before the general `EApp`):
+  - `EVar hint` where `hint.[0] = '@'` → `VUnit` (matches typechecker's
+    Unit inference; prevents unbound-identifier crash for standalone hints).
+  - `EApp(f, EVar hint)` / `EApp(f, ELoc(_, EVar hint))` where
+    `hint.[0] = '@'` → evaluates `f`, filters VMulti to entries whose
+    name matches; error if no named impl found; ignores hint gracefully on
+    non-VMulti values.
+- Parser: `impl UPPER OF UPPER ...` rule added for uppercase impl names
+  (e.g. `impl Multiplicative of Combine Int where`); `AT IDENT` added as
+  an `expr_atom` alternative so lowercase `@name` hints also parse.
+  Conflict count unchanged: 7 S/R (17) + 8 R/R (27).
+- 4 new eval tests (`@Additive`, `@Multiplicative`, standalone `@Foo`,
+  `@Unknown` error). **578 tests total.**
 
-```
-fold @Multiplicative [1, 2, 3]  -- explicit opt-out from default
-```
-
-Needs:
-- AST hook so the typechecker can record which impl was selected.
-- Evaluator: VMulti dispatch can short-circuit to the named impl.
-- `interface default Additive of Monoid Int` parsing (the `default`
-  keyword already exists, but resolution by name is incomplete).
+**Design note.** No AST changes were needed: the evaluator intercepts the
+`EApp(f, EVar "@Name")` shape that the typechecker already silently drops.
+The typechecker still treats `@Name` as `Unit`; typecheck-level validation
+that the named impl actually exists is deferred to a follow-up phase.
 
 ---
 
@@ -1296,9 +1309,9 @@ These aren't blockers, but a less-careful change could trip over them:
 - Effects: tracked in a separate `eff_env`, not in `TFun`. Higher-order
   callbacks that *receive* an effectful function aren't tracked (Phase 3
   limitation). Real fix requires merging effects into `TFun`.
-- `@Name` impl-disambiguation hints parse and type-check but do not actually
-  select a specific impl at runtime; ambiguous impls are still rejected at
-  check time. Selection is deferred to a post-backend pass.
+- `@Name` impl-disambiguation hints now select a specific impl at runtime
+  (Phase 30 ✅). The typechecker still types `@Name` as `Unit` without
+  validating that the named impl actually exists — that check is deferred.
 - DoBind LHS cannot be a cons (`x::xs <- list`) or literal pattern — grammar
   limitation documented in `parser.mly`.
 - The last statement of a do-block cannot start with an uppercase identifier
