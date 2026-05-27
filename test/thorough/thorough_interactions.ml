@@ -484,6 +484,107 @@ let t_program_pipeline =
 (* squares of [2,4,6,8,10] = [4,16,36,64,100] sum = 220 *)
 
 (* =====================================================================
+   19. Recursive impl methods
+   ===================================================================== *)
+
+(* A `Sized` interface impl on a recursive Tree type — the impl method
+   is allowed to call itself.  Tests the resolver/typechecker handling
+   of impl-method recursion. *)
+let t_recursive_impl_method =
+  assert_typed_val
+    {|data Tree = Leaf | Node Tree Tree
+interface Sized t where
+  sz : t -> Int
+impl Sized Tree where
+  sz Leaf = 0
+  sz (Node l r) = 1 + sz l + sz r
+r = sz (Node (Node Leaf Leaf) Leaf)
+|}
+    "r" "Int" (VInt 2)
+
+(* =====================================================================
+   20. User-defined Foldable impl
+   ===================================================================== *)
+
+let t_user_foldable =
+  assert_typed_val
+    {|data Wrap a = Wrap (List a)
+impl Foldable Wrap where
+  fold f acc (Wrap xs) = fold f acc xs
+  foldRight f acc (Wrap xs) = foldRight f acc xs
+  toList (Wrap xs) = xs
+  isEmpty (Wrap xs) = isEmpty xs
+  length (Wrap xs) = length xs
+r = fold (a => b => a + b) 0 (Wrap [10, 20, 30])
+|}
+    "r" "Int" (VInt 60)
+
+(* =====================================================================
+   21. Nested do-blocks
+   ===================================================================== *)
+
+let t_nested_do =
+  assert_val
+    {|r = do
+  x <- Some 5
+  inner <- do
+    y <- Some 10
+    pure (x + y)
+  pure inner
+|}
+    "r" (VCon ("Some", [VInt 15]))
+
+(* =====================================================================
+   22. Constructor as function value
+   ===================================================================== *)
+
+let t_ctor_as_function =
+  assert_val
+    {|f = Some
+r = f 42
+|}
+    "r" (VCon ("Some", [VInt 42]))
+
+let t_ctor_in_pipe =
+  assert_val
+    {|r = 5 |> Some
+|}
+    "r" (VCon ("Some", [VInt 5]))
+
+let t_ctor_in_map =
+  assert_val
+    {|r = map Some [1, 2, 3]
+|}
+    "r" (VList [VCon ("Some", [VInt 1]); VCon ("Some", [VInt 2]); VCon ("Some", [VInt 3])])
+
+(* =====================================================================
+   23. Field access chained with function call
+   ===================================================================== *)
+
+let t_field_then_call =
+  assert_val
+    {|record P
+  v : List Int
+p = P { v = [1, 2, 3] }
+r = length p.v
+|}
+    "r" (VInt 3)
+
+(* =====================================================================
+   24. Where-clause shadowing
+   ===================================================================== *)
+
+(* In where clauses, the where binding shadows outer bindings of the
+   same name within the function body. *)
+let t_where_shadow =
+  assert_val
+    {|x = 10
+r = x where
+  x = 20
+|}
+    "r" (VInt 20)
+
+(* =====================================================================
    Test registration
    ===================================================================== *)
 
@@ -559,5 +660,25 @@ let () =
         ; test_case "fizz/buzz"      `Quick t_program_fizz
         ; test_case "BST inorder"    `Quick t_program_bst_inorder
         ; test_case "filter|map|fold" `Quick t_program_pipeline
+        ] );
+      ( "recursive impl methods",
+        [ test_case "Sized over Tree" `Quick t_recursive_impl_method
+        ] );
+      ( "user Foldable",
+        [ test_case "Wrap List + fold" `Quick t_user_foldable
+        ] );
+      ( "nested do",
+        [ test_case "Option in Option" `Quick t_nested_do
+        ] );
+      ( "constructor as value",
+        [ test_case "Some bound directly" `Quick t_ctor_as_function
+        ; test_case "Some in pipe"        `Quick t_ctor_in_pipe
+        ; test_case "Some in map"         `Quick t_ctor_in_map
+        ] );
+      ( "field then call",
+        [ test_case "length p.v"     `Quick t_field_then_call
+        ] );
+      ( "where shadow",
+        [ test_case "binding shadows outer" `Quick t_where_shadow
         ] );
     ]
