@@ -715,6 +715,38 @@ c = Rgb { r = "x", g = 2, b = 3 }
 (* NOTE: removed `e_ctor_too_few_args` — Medaka constructors are curried, so
    `MkPair 1` is the function `b -> Pair Int b` rather than a type error. *)
 
+(* Partially-applied curried constructor: `MkPair 1` should type as
+   `b -> Pair Int b`. *)
+let t_ctor_partial_app =
+  assert_type
+    {|data Pair a b = MkPair a b
+mkPair1 = MkPair 1
+|}
+    "mkPair1" "a -> Pair Int a"
+
+(* Self-referential record (forward reference via Option) *)
+let t_record_self_ref =
+  assert_type
+    {|record Node
+  v : Int
+  next : Option Node
+n = Node { v = 1, next = None }
+|}
+    "n" "Node"
+
+(* Mutually recursive record types — neither is parametric, both reference
+   each other only through name (not in a way that forms a real cycle). *)
+let t_record_mutual =
+  assert_type
+    {|record A
+  b : Int
+record B
+  a : Int
+x : A
+x = A { b = 5 }
+|}
+    "x" "A"
+
 (* =====================================================================
    18. Annotations & explicit type errors
    ===================================================================== *)
@@ -939,6 +971,9 @@ let () =
         ; test_case "named-field Color"    `Quick t_data_named_fields
         ; test_case "err: missing field"   `Quick e_data_named_missing_field
         ; test_case "err: wrong field ty"  `Quick e_data_named_wrong_type
+        ; test_case "partial app ctor"     `Quick t_ctor_partial_app
+        ; test_case "self-ref record"      `Quick t_record_self_ref
+        ; test_case "mutual record types"  `Quick t_record_mutual
         ] );
       ( "annotations",
         [ test_case "value Int"            `Quick t_annot_match_inferred

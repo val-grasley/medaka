@@ -921,6 +921,53 @@ r = len [1, 2, 3, 4, 5]
     "r" (VInt 5)
 
 (* =====================================================================
+   34. List monad in do — KNOWN LIMITATION (PLAN.md §5)
+   ===================================================================== *)
+
+(* Per PLAN.md §5: "do-block monad dispatch in eval.ml is a runtime
+   heuristic ... (b) the List monad is not supported".  Concretely:
+   `do { x <- [1,2,3]; pure (x*2) }` does NOT iterate — instead x
+   binds to the whole VList because VList values don't carry a VCon
+   tag that monadic_ctors recognizes.  Pin the (broken) behavior so
+   the eventual fix is detectable. *)
+let t_list_monad_in_do_broken =
+  assert_runtime_err
+    {|r = do
+  x <- [1, 2, 3]
+  pure (x * 2)
+|}
+    "r"
+
+(* Direct `andThen` works for Lists when the body returns a list. *)
+let t_andThen_list_direct =
+  assert_val
+    {|r = andThen [1, 2, 3] (x => [x, x])
+|}
+    "r" (VList [VInt 1; VInt 1; VInt 2; VInt 2; VInt 3; VInt 3])
+
+(* List comprehension is the right replacement for List-monad do. *)
+let t_list_comp_as_list_monad =
+  assert_val
+    {|r = [x * 2 | x <- [1, 2, 3]]
+|}
+    "r" (VList [VInt 2; VInt 4; VInt 6])
+
+(* =====================================================================
+   35. Empty record pattern
+   ===================================================================== *)
+
+let t_empty_record_pat =
+  assert_val
+    {|record P
+  x : Int
+  y : Int
+f p = match p
+  P { ... } => "any"
+r = f (P { x = 1, y = 2 })
+|}
+    "r" (VString "any")
+
+(* =====================================================================
    Test registration
    ===================================================================== *)
 
@@ -1107,5 +1154,13 @@ let () =
         ] );
       ( "rec where helper",
         [ test_case "len with go acc"       `Quick t_rec_with_where_acc
+        ] );
+      ( "List monad in do",
+        [ test_case "broken: x*2 on whole list" `Quick t_list_monad_in_do_broken
+        ; test_case "andThen direct works"      `Quick t_andThen_list_direct
+        ; test_case "list-comp as replacement"  `Quick t_list_comp_as_list_monad
+        ] );
+      ( "empty record pat",
+        [ test_case "P { ... }"             `Quick t_empty_record_pat
         ] );
     ]
