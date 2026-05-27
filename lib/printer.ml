@@ -554,3 +554,53 @@ let expr_to_string e =
   let p = create () in
   print_expr p prec_top e;
   contents p
+
+(* ── Comment-preserving formatter ────────────────── *)
+
+(* Format a program, interleaving captured line comments at their original
+   source positions.  `decl_locs` is parallel to `decls` (one location per
+   top-level declaration, in source order — produced by the parser's
+   side-channel; see lib/parser_state.ml).  `comments` is the lexer's
+   captured comment list, also in source order.
+
+   If `decl_locs` is empty but `decls` is not, falls back to the plain
+   [program_to_string] (no position info available). *)
+let format_program decls decl_locs (comments : Lexer.comment list) =
+  if List.length decl_locs <> List.length decls then
+    program_to_string decls
+  else begin
+    let p = create () in
+    let cs = ref comments in
+    let cursor = ref 0 in       (* last consumed source line *)
+    let started = ref false in
+    let blank_line_if_needed target_line =
+      if !started && target_line - !cursor >= 2 then
+        Buffer.add_char p.buf '\n'
+    in
+    let emit_comment (c : Lexer.comment) =
+      blank_line_if_needed c.c_line;
+      write p c.c_text;
+      Buffer.add_char p.buf '\n';
+      cursor := c.c_line;
+      started := true
+    in
+    let flush_before line =
+      let rec loop () =
+        match !cs with
+        | c :: rest when c.c_line < line ->
+          cs := rest; emit_comment c; loop ()
+        | _ -> ()
+      in
+      loop ()
+    in
+    List.iter2 (fun decl (loc : Ast.loc) ->
+      flush_before loc.line;
+      blank_line_if_needed loc.line;
+      print_decl p decl;
+      Buffer.add_char p.buf '\n';
+      cursor := loc.end_line;
+      started := true
+    ) decls decl_locs;
+    flush_before max_int;
+    contents p
+  end

@@ -9,6 +9,26 @@ let pending : token Queue.t = Queue.create ()
 let interp_depth : int ref = ref 0
 let interp_buf   : Buffer.t = Buffer.create 64
 
+(* Comment side channel.  Lexer drops `--` line comments from the token
+   stream (parser stays untouched) but records them here so tools such as
+   `medaka fmt` can re-emit them at faithful positions. *)
+type comment = {
+  c_line : int;          (* 1-based start line *)
+  c_col  : int;          (* 0-based start column *)
+  c_text : string;       (* full lexeme including the `--` prefix *)
+}
+let comments : comment list ref = ref []
+
+let record_comment lexbuf =
+  let sp = lexbuf.Lexing.lex_start_p in
+  let text = Lexing.lexeme lexbuf in
+  comments := { c_line = sp.Lexing.pos_lnum;
+                c_col  = sp.Lexing.pos_cnum - sp.Lexing.pos_bol;
+                c_text = text } :: !comments
+
+let take_comments () = List.rev !comments
+
+
 let push_pending t = Queue.push t pending
 
 let handle_indent col =
@@ -37,7 +57,9 @@ let reset () =
   indent_stack := [0];
   Queue.clear pending;
   interp_depth := 0;
-  Buffer.clear interp_buf
+  Buffer.clear interp_buf;
+  comments := [];
+  Parser_state.reset ()
 
 (* Strip common leading indentation from a multiline string (one that starts
    with '\n').  Blank lines are ignored when computing the minimum indent. *)
@@ -118,7 +140,7 @@ rule token = parse
 
 and read = parse
   | white+         { read lexbuf }
-  | "--" [^ '\n']* { read lexbuf }
+  | "--" [^ '\n']* { record_comment lexbuf; read lexbuf }
   | (newline white*)+ {
       (* Consume one or more (newline + optional indent) sequences so that
          blank lines inside a block do not trigger spurious DEDENT tokens.

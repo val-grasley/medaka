@@ -14,9 +14,9 @@
 
 (library
  (name medaka_lib)
- (modules ast builtins desugar diagnostics eval exhaust lexer loader
-          lsp_server parser printer prelude prelude_content resolve repl
-          runtime stdlib_content typecheck)
+ (modules ast builtins desugar diagnostics eval exhaust fmt lexer loader
+          lsp_server parser parser_state printer prelude prelude_content
+          resolve repl runtime stdlib_content typecheck)
  (libraries menhirLib lsp jsonrpc))
 
 (ocamllex lexer)

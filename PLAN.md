@@ -1409,12 +1409,29 @@ time; at runtime the VMulti default-dispatch fires regardless of the hint.
 
 ---
 
-### Phase 35: Code formatter `medaka fmt` ⏳ TODO
+### Phase 35: Code formatter `medaka fmt` ✅ DONE
 
-The pretty-printer already produces parseable source.  A `medaka fmt`
-subcommand that wraps `parse → strip locations → print` is the
-single-style formatter the design doc asks for.  Cost is low; this is
-a half-day task once we agree on whitespace/break conventions.
+Shipped a single-style formatter that wraps the pretty-printer with
+comment preservation, file/directory walking, and a round-trip safety
+net that re-parses formatted output and aborts the write if the AST
+changed.
+
+CLI: `medaka fmt [--check | --stdout | --write] <path>...`
+- Default mode rewrites each file in place (atomic via `path.tmp` rename).
+- `--check` reports unformatted files and exits 1 (suitable for CI).
+- `--stdout` prints to stdout; requires exactly one file.
+- Paths may be `.mdk` files or directories (recursed).
+
+Comment preservation: the lexer now records `--` line comments on a
+side channel (lib/lexer.mll), and the parser records top-level
+declaration positions via a shared `Parser_state` module. The new
+`Printer.format_program` interleaves comments at faithful source
+positions and preserves single blank-line spacing between declarations.
+
+Known limitation (acceptable for v1): comments that appear *inside* a
+declaration body in source are emitted to the gap between that decl and
+the next. Comments are line-only (`-- ...`); the language has no block
+comments.
 
 ---
 

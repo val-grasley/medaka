@@ -39,12 +39,16 @@ let () =
   if has_sub "lsp" then begin
     Medaka_lib.Lsp_server.run (); exit 0
   end;
+  if has_sub "fmt" then begin
+    let rest = Array.sub argv 2 (argc - 2) in
+    exit (Medaka_lib.Fmt.run rest)
+  end;
   let mode, filename =
     if has_sub "check" && argc >= 3 then `Check, argv.(2)
     else if has_sub "run" && argc >= 3 then `Run, argv.(2)
     else if argc = 2 then `Run, argv.(1)
     else begin
-      print_endline "Usage: medaka [check|run|repl|lsp] <file.mdk>"; exit 1
+      print_endline "Usage: medaka [check|run|repl|lsp|fmt] <file.mdk>"; exit 1
     end
   in
   let project_dir = Filename.dirname filename in

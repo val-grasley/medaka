@@ -8,6 +8,15 @@ let of_pos sp ep =
     end_line = ep.Lexing.pos_lnum;
     end_col  = ep.Lexing.pos_cnum - ep.Lexing.pos_bol }
 
+(* Record the position of a top-level declaration on the shared
+   `Parser_state.decl_positions` list.  The end_line is taken from the
+   lexer's `last_content_line` side channel, which excludes the trailing
+   newlines/indentation that `$endpos` would otherwise span. *)
+let record_decl_pos sp ep =
+  let loc = of_pos sp ep in
+  let loc = { loc with end_line = !Parser_state.last_content_line } in
+  Parser_state.record_decl_pos loc
+
 let fold_ty_app = function
   | []      -> failwith "empty type application"
   | [t]     -> t
@@ -251,11 +260,11 @@ decl_list:
   | decl decl_list   { $1 @ $2 }
 
 decl:
-  | EXPORT newlines inner_decl_body  { [$3 true]  }
-  | EXPORT inner_decl_body           { [$2 true]  }
-  | inner_decl_body                  { [$1 false] }
-  | EXPORT IMPORT import_path newlines  { [DUse (true,  $3)] }
-  | IMPORT import_path newlines         { [DUse (false, $2)] }
+  | EXPORT newlines inner_decl_body  { record_decl_pos $startpos $endpos; [$3 true]  }
+  | EXPORT inner_decl_body           { record_decl_pos $startpos $endpos; [$2 true]  }
+  | inner_decl_body                  { record_decl_pos $startpos $endpos; [$1 false] }
+  | EXPORT IMPORT import_path newlines  { record_decl_pos $startpos $endpos; [DUse (true,  $3)] }
+  | IMPORT import_path newlines         { record_decl_pos $startpos $endpos; [DUse (false, $2)] }
 
 inner_decl_body:
   | inner_type_sig        { $1 }
