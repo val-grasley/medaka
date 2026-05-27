@@ -20,11 +20,11 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-784 tests pass across 9 test suites:
+789 tests pass across 13 base test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 149   | AST shape for each construct                          |
+| Parser            | `test/test_parser.ml`           | 154   | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 103   | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 60    | Unbound vars, unknown types/ctors, duplicates, fields |
 | Type checker      | `test/test_typecheck.ml`        | 282   | Inferred types, type errors, exhaustiveness warnings  |
@@ -33,6 +33,9 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
 | Loader            | `test/test_loader.ml`           | 24    | Multi-file imports, topo sort, cycle detection, prelude no-op, abstract exports |
 | Diagnostics       | `test/test_diagnostics.ml`      | 11    | LSP diagnostic output, multi-file analysis            |
+
+…plus `test_fmt` / `test_project_config` / `test_new_cmd` / `test_doctest`
+which round out the toolchain.
 
 A **thorough test suite** under `test/thorough/` (not run by default
 `dune test`) exercises edge cases across the type checker, evaluator,
@@ -43,6 +46,18 @@ directly.  Each file is its own alcotest executable; the shared
 `assert_val` / `assert_runtime_err` / `assert_warns` / `assert_stdout`
 following the same self-diagnosing pattern as the base suites
 (failure messages embed the source).
+
+| Suite          | File                                       | Cases |
+|----------------|--------------------------------------------|-------|
+| Typecheck      | `test/thorough/thorough_typecheck.ml`      | 105   |
+| Evaluator      | `test/thorough/thorough_eval.ml`           | 118   |
+| Interactions   | `test/thorough/thorough_interactions.ml`   | 41    |
+| Stdlib         | `test/thorough/thorough_stdlib.ml`         | 92    |
+
+356 thorough tests total.  Failing tests there are documented in PLAN.md
+under §3 phases 45.5–45.9 (some FIXED, some ⏳ TODO).  Several tests
+deliberately *pin* current buggy behavior so an eventual fix will be
+detectable.
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
