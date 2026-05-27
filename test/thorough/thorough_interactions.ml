@@ -401,6 +401,89 @@ r = 1 |> (add 10) |> (add 20)
     "r" "Int" (VInt 31)
 
 (* =====================================================================
+   17. Multi-clause function definitions
+   ===================================================================== *)
+
+let t_multi_clause_literal =
+  assert_typed_val
+    {|describe 0 = "zero"
+describe 1 = "one"
+describe _ = "many"
+r = (describe 0, describe 1, describe 5)
+|}
+    "r" "(String, String, String)"
+    (VTuple [VString "zero"; VString "one"; VString "many"])
+
+let t_multi_clause_ctor =
+  assert_typed_val
+    {|unwrap (Some n) = n
+unwrap None = 0
+r = (unwrap (Some 42), unwrap None)
+|}
+    "r" "(Int, Int)"
+    (VTuple [VInt 42; VInt 0])
+
+let t_multi_clause_with_guard =
+  assert_typed_val
+    {|classify n
+  | n < 0 = "neg"
+  | n > 0 = "pos"
+  | True  = "zero"
+r = (classify 5, classify (-3), classify 0)
+|}
+    "r" "(String, String, String)"
+    (VTuple [VString "pos"; VString "neg"; VString "zero"])
+
+(* =====================================================================
+   18. End-to-end: a small real-ish program
+   ===================================================================== *)
+
+(* Word count over a list of strings, using stdlib HOFs *)
+let t_program_word_count =
+  assert_typed_val
+    {|wordCount xs = fold (acc => s => acc + 1) 0 xs
+r = wordCount ["the", "quick", "brown", "fox"]
+|}
+    "r" "Int" (VInt 4)
+
+(* FizzBuzz-style classification.  Uses single-line if-else-if because
+   multi-line if-else-if doesn't parse (Phase 45.7 in PLAN.md). *)
+let t_program_fizz =
+  assert_typed_val
+    {|fizz n = if n % 15 == 0 then "FizzBuzz" else if n % 3 == 0 then "Fizz" else if n % 5 == 0 then "Buzz" else "n"
+r = (fizz 15, fizz 9, fizz 25, fizz 7)
+|}
+    "r" "(String, String, String, String)"
+    (VTuple [VString "FizzBuzz"; VString "Fizz"; VString "Buzz"; VString "n"])
+
+(* Binary tree: insert + flatten.  Match-arm bodies use single-line
+   if-else (Phase 45.7) and the helper `chooseInsert` for clarity. *)
+let t_program_bst_inorder =
+  assert_typed_val
+    {|data Tree = Leaf | Node Tree Int Tree
+insert t v = match t
+  Leaf => Node Leaf v Leaf
+  Node l x rest => if v < x then Node (insert l v) x rest else if v > x then Node l x (insert rest v) else t
+flatten t = match t
+  Leaf => []
+  Node l x rest => flatten l ++ [x] ++ flatten rest
+t = insert (insert (insert (insert Leaf 5) 2) 8) 3
+r = flatten t
+|}
+    "r" "List Int"
+    (VList [VInt 2; VInt 3; VInt 5; VInt 8])
+
+(* Pipeline: filter + map + fold.  Pipe operators must stay on the
+   same line as the preceding expression (newline-broken pipe chains
+   don't parse, also Phase 45.7-area). *)
+let t_program_pipeline =
+  assert_typed_val
+    {|r = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] |> filter (x => x % 2 == 0) |> map (x => x * x) |> fold (a => b => a + b) 0
+|}
+    "r" "Int" (VInt 220)
+(* squares of [2,4,6,8,10] = [4,16,36,64,100] sum = 220 *)
+
+(* =====================================================================
    Test registration
    ===================================================================== *)
 
@@ -465,5 +548,16 @@ let () =
         ] );
       ( "curry + pipe",
         [ test_case "1 |> add 10 |> add 20" `Quick t_curry_then_pipe
+        ] );
+      ( "multi-clause defs",
+        [ test_case "by literal"     `Quick t_multi_clause_literal
+        ; test_case "by ctor"        `Quick t_multi_clause_ctor
+        ; test_case "with guard"     `Quick t_multi_clause_with_guard
+        ] );
+      ( "end-to-end programs",
+        [ test_case "word count"     `Quick t_program_word_count
+        ; test_case "fizz/buzz"      `Quick t_program_fizz
+        ; test_case "BST inorder"    `Quick t_program_bst_inorder
+        ; test_case "filter|map|fold" `Quick t_program_pipeline
         ] );
     ]

@@ -1821,6 +1821,75 @@ Scope:
   prefixes in one brace (e.g. `{ p | address.city = ..., address.zip = ...}`);
   reject as a non-goal initially — explicit nesting is fine.
 
+### Phase 45.7: Multi-line if-then-else parsing ⏳ TODO
+
+Discovered while writing thorough tests.  The current grammar for `if`:
+
+```
+expr_lam:
+  | IF expr_or THEN expr_lam ELSE expr_lam
+```
+
+…requires the THEN-branch and ELSE-branch expressions to inline directly
+after `then` / `else`.  These DO parse:
+
+```medaka
+f n = if n > 0 then 1 else 0                  -- single-line
+let x = if cond then a else b                 -- in a let
+f n = if n > 0 then 1 else (0 - 1)            -- parenthesized branch
+```
+
+These DO NOT parse (very common Haskell-style forms):
+
+```medaka
+f n =                       -- if on its own indented line
+  if n > 0
+    then 1
+    else 0
+
+sign x =                    -- else-if chain on multi-line
+  if x > 0 then 1
+  else if x < 0 then -1
+  else 0
+
+main =                      -- do-bodies in branches
+  if cond then do
+    println "yes"
+  else do
+    println "no"
+```
+
+Adding alternative `if` grammar productions to accept these is a
+medium-sized parser change.  Probably requires careful interaction
+with the INDENT/DEDENT lexer hand-shake.
+
+### Phase 45.8: Multi-line match arm and lambda bodies ⏳ TODO
+
+A match arm body using indented stmts requires an explicit `do`:
+
+```medaka
+match xs                       -- BROKEN
+  (x::rest) =>
+    let s = x + 1
+    s
+
+match xs                       -- WORKS
+  (x::rest) => do
+    let s = x + 1
+    s
+```
+
+Similarly, a parenthesized lambda body with indented stmts doesn't
+parse:
+
+```medaka
+g = (x =>                      -- BROKEN
+  let a = x + 1
+  a)
+```
+
+Same parser issue family as Phase 45.7; same area of grammar.
+
 ### Phase 45.6: VRecord must carry its type name ⏳ TODO
 
 Discovered while writing thorough interaction tests.  `ERecordCreate`
