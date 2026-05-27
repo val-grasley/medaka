@@ -2264,16 +2264,22 @@ Scope:
 - `eval_do` reads it; `detect_monad` and `current_monad_type`
   become unnecessary.
 
-### Phase 54: `<Mut>` inference from `let mut` ⏳ TODO
+### Phase 54: `<Mut>` inference from `let mut` ✅ DONE
 
-Design says any function touching a `let mut` binding picks up the
-`<Mut>` effect.  Today only direct calls to extern `set_ref` add it
-(via the `eff_env` path).  Phase 29 provided the `TFun.effect_set`
-slot; this phase wires `let mut` references through it.
+`DoAssign` and `DoFieldAssign` in do-blocks now emit `["Mut"]` in
+`do_stmt_effects`, so any function containing `x = e` or `r.field = e`
+assignment to a `let mut` binding has `<Mut>` inferred.  Previously only
+direct calls to `set_ref` added the effect via `eff_env`.
 
-Small, mechanical follow-on to Phase 29.  Likely subsumed by Phase
-51 (general effect inference) — if Phase 51 lands first, this
-becomes "make sure mut also propagates."
+**What was added:**
+- Two-line change in `do_stmt_effects` (`typecheck.ml`): `DoAssign`
+  and `DoFieldAssign` now call `effect_union ["Mut"] (go bound e)`.
+- Six existing positive tests in `test_typecheck.ml` updated to carry
+  explicit `<Mut>` annotations (previously they accidentally passed
+  because the mutation was invisible to the effect checker).
+- Four new tests in `thorough_typecheck.ml` "effects" suite: error when
+  `DoAssign` used without annotation, acceptance when annotated, same
+  for `DoFieldAssign`, and combined `<IO, Mut>` annotation.
 
 ### Phase 55: `let mut` reassignment outside `do`-blocks ⏳ TODO
 
