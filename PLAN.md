@@ -2212,7 +2212,7 @@ Scope:
 - Annotated functions: check inferred ⊆ declared, error if extra.
 - Tests under `thorough_typecheck` "effects" group.
 
-### Phase 52: Eq/Num/Ord wiring to operators ⏳ TODO
+### Phase 52: Eq/Num/Ord wiring to operators ✅ DONE
 
 Currently `+`/`-`/`*`/`/` dispatch through a synthetic `__num__`
 witness, `<`/`>`/`<=`/`>=` through `__ord__`, and `==`/`!=` skip

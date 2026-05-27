@@ -64,10 +64,10 @@ type impl_entry = {
   impl_is_default : bool;
   impl_type_mono  : mono list;  (* from_ast_type of each type_arg *)
   impl_requires   : (ident * mono list) list;  (* constraint: iface, type args *)
-  impl_seeded     : bool;  (* true for entries pushed by seed_builtin_impls.
-                              When constraint resolution finds both seeded
-                              and user-defined impls for the same (iface, ty),
-                              user-defined wins (seeded acts as fallback). *)
+  impl_seeded     : bool;  (* currently always false; reserved for future use
+                              where a built-in fallback might be needed again.
+                              When true, user-defined impls take priority over
+                              seeded ones for the same (iface, ty). *)
 }
 
 (* Public type-level interface of a processed module *)
@@ -1297,7 +1297,8 @@ and binop_type env op l r =
   | "+" | "-" | "*" | "/" ->
     let (i, m) = iface_and_method_of op in record_iface_usage i m tl tr
   | "==" | "!=" ->
-    unify tl tr; t_bool
+    let _ = record_iface_usage "Eq" "eq" tl tr in
+    t_bool
   | "<" | ">" | "<=" | ">=" ->
     let (i, m) = iface_and_method_of op in
     let _ = record_iface_usage i m tl tr in
@@ -1663,7 +1664,7 @@ let check_impl env (decl : decl) = match decl with
 
 (* Record an impl declaration in env.impls so call-site constraint checking
    can find it.  Must run after register_interface so the interface exists. *)
-let register_impl env = function
+let register_impl ?(seeded=false) env = function
   | DImpl { iface_name; type_args; impl_name; is_default; requires; _ } ->
     if not (Hashtbl.mem env.interfaces iface_name) then
       fail (UnknownInterface iface_name);
@@ -1674,7 +1675,7 @@ let register_impl env = function
       impl_type_mono  = List.map (from_ast_type ~aliases:env.aliases) type_args;
       impl_requires   = List.map (fun (iface, args) ->
                           (iface, List.map (from_ast_type ~aliases:env.aliases) args)) requires;
-      impl_seeded     = false;
+      impl_seeded     = seeded;
     } in
     env.impls := entry :: !(env.impls)
   | _ -> ()
@@ -1712,19 +1713,6 @@ let check_coherence env =
    by `1 + 2` — find a matching entry in env.impls.  The interfaces themselves
    are declared by the prelude (stdlib/core.mdk); we just supply the ground
    instances the evaluator handles via OCaml-side primitive operations. *)
-let seed_builtin_impls env =
-  let push iface ty =
-    env.impls := { impl_iface = iface; impl_name = None;
-                   impl_is_default = false; impl_type_mono = [ty];
-                   impl_requires = []; impl_seeded = true }
-                 :: !(env.impls)
-  in
-  push "Num"       t_int;    push "Num"    t_float;
-  push "Ord"       t_int;    push "Ord"    t_float;
-  push "Ord"       t_string; push "Ord"    t_char;
-  push "Semigroup" (t_list (fresh_var ())); (* TVar wildcard matches any List T *)
-  push "Semigroup" t_string
-
 (* ── Constraint checking ─────────────────────────── *)
 
 (* One-directional structural matching: pattern (from impl type_args) may
@@ -2045,14 +2033,13 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   current_loc := None;
   current_impl_hint := None;
   let env = initial_env () in
-  seed_builtin_impls env;
 
   (* Prepend core stdlib so its data types, interfaces, and impls are in scope
      for all user code.  Prelude declarations are processed through the same
-     Phase 1–5 pipeline as user code.  seed_builtin_impls (above) supplies
-     ground impl_entries for primitive types — Num/Ord on Int/Float, etc. —
-     so operator constraints raised by binop_type find a matching impl.
+     Phase 1–5 pipeline as user code.  Impl entries for primitive types
+     (Num/Ord/Eq on Int/Float/etc.) come from core.mdk declarations.
      Skip prepending when type-checking core.mdk itself (would duplicate). *)
+  let user_prog = prog in
   let prog = if program_is_core prog then prog else Prelude.program @ prog in
 
   register_attrs env prog;
@@ -2088,8 +2075,15 @@ let check_program (prog : program) : (ident * scheme) list * string list =
       extern_schemes := (name, scheme) :: !extern_schemes
     | _ -> ()
   ) prog;
-  (* register_impl runs after all interfaces are registered *)
-  List.iter (fun d -> register_impl env (Ast.inner_decl d)) prog;
+  (* register_impl runs after all interfaces are registered.
+     Prelude impls are marked seeded=true so user redefinitions take priority
+     (same semantics as the old seed_builtin_impls fallback mechanism). *)
+  if program_is_core user_prog then
+    List.iter (fun d -> register_impl env (Ast.inner_decl d)) prog
+  else begin
+    List.iter (fun d -> register_impl ~seeded:true  env (Ast.inner_decl d)) Prelude.program;
+    List.iter (fun d -> register_impl ~seeded:false env (Ast.inner_decl d)) user_prog
+  end;
   check_coherence env;
 
   (* Phase 2: collect type sigs and fn clause groups *)
@@ -2213,7 +2207,6 @@ let typecheck_module
   current_loc := None;
   current_impl_hint := None;
   let env = initial_env () in
-  seed_builtin_impls env;
 
   (* Core stdlib is always available in every module.
      Skip when this module itself IS core (avoid duplicates).
@@ -2299,7 +2292,12 @@ let typecheck_module
       extern_schemes := (name, scheme) :: !extern_schemes
     | _ -> ()
   ) prog;
-  List.iter (fun d -> register_impl env (Ast.inner_decl d)) prog;
+  if program_is_core user_prog then
+    List.iter (fun d -> register_impl env (Ast.inner_decl d)) prog
+  else begin
+    List.iter (fun d -> register_impl ~seeded:true  env (Ast.inner_decl d)) Prelude.program;
+    List.iter (fun d -> register_impl ~seeded:false env (Ast.inner_decl d)) user_prog
+  end;
   check_coherence env;
 
   let groups = group_fundefs prog in
@@ -2468,8 +2466,10 @@ let copy_tc_env (e : env) : env = {
 }
 
 (* Type-check one or more declarations against an existing env.
-   Updates env in place and returns (new_bindings, warnings). *)
-let check_repl_decl (env : env ref) (decls : decl list)
+   Updates env in place and returns (new_bindings, warnings).
+   ~seeded:true marks any registered impls as prelude-seeded so that later
+   user-defined impls for the same (iface, ty) take priority without ambiguity. *)
+let check_repl_decl ?(seeded=false) (env : env ref) (decls : decl list)
     : (ident * scheme) list * string list =
   current_loc := None;
   current_impl_hint := None;
@@ -2500,7 +2500,7 @@ let check_repl_decl (env : env ref) (decls : decl list)
       extern_schemes := (name, scheme) :: !extern_schemes
     | _ -> ()
   ) decls;
-  List.iter (fun d -> register_impl !env (Ast.inner_decl d)) decls;
+  List.iter (fun d -> register_impl ~seeded !env (Ast.inner_decl d)) decls;
   check_coherence !env;
   let groups = group_fundefs decls in
   enter_level ();
@@ -2578,9 +2578,8 @@ let check_repl_decl (env : env ref) (decls : decl list)
    incremental REPL input. *)
 let make_repl_tc_env () : env ref =
   let env = initial_env () in
-  seed_builtin_impls env;
   let env_ref = ref env in
-  let _ = check_repl_decl env_ref Prelude.program in
+  let _ = check_repl_decl ~seeded:true env_ref Prelude.program in
   env_ref
 
 (* Infer the type of a bare expression without updating the env.

@@ -28,6 +28,8 @@ let operator_iface : (string * string * string) list = [
   ("<=", "Ord",       "lte");
   (">=", "Ord",       "gte");
   ("++", "Semigroup", "append");
+  ("==", "Eq",        "eq");
+  ("!=", "Eq",        "eq");
 ]
 
 (* Interfaces the compiler relies on for syntax / operator dispatch. *)

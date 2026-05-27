@@ -990,13 +990,9 @@ f = empty
 
 (* Error: method called with a type that has no impl *)
 let e_constraint_no_impl = assert_err
-  {|interface Eq a where
-  eq : a -> a -> Bool
+  {|data Blob = Blob
 
-impl Eq Int where
-  eq x y = x == y
-
-f = eq 1.0 2.0
+f = eq Blob Blob
 |}
 
 (* Error: method called on a type entirely absent from the impl registry *)
@@ -1028,13 +1024,9 @@ f = mempty
 (* Error: method used in a function whose return type is made concrete
    downstream, and there is no matching impl *)
 let e_constraint_concrete_in_context = assert_err
-  {|interface Eq a where
-  eq : a -> a -> Bool
+  {|data Blob = Blob
 
-impl Eq Int where
-  eq x y = x == y
-
-check : String -> String -> Bool
+check : Blob -> Blob -> Bool
 check x y = eq x y
 |}
 
@@ -1104,16 +1096,12 @@ result = neq 1 2
 
 (* Error: calling a constrained fn with a type that has no matching impl *)
 let e_constraint_annot_call_no_impl = assert_err
-  {|interface Eq a where
-  eq : a -> a -> Bool
-
-impl Eq Int where
-  eq x y = x == y
+  {|data Blob = Blob
 
 neq : Eq a => a -> a -> Bool
-neq x y = eq x y
+neq x y = not (eq x y)
 
-bad = neq 1.0 2.0
+bad = neq Blob Blob
 |}
 
 (* ── Method-level constraint annotations ─────────── *)
@@ -2079,6 +2067,63 @@ foo x = x
 main = foo 1
 |}
 
+(* ── Phase 52: Eq/Num/Ord wiring to operators ───── *)
+
+(* == on a type with Eq impl type-checks to Bool *)
+let t_eq52_builtin_eq = assert_type
+  {|f = 1 == 2|}
+  "Bool"
+
+(* == on String (prelude Eq String) type-checks *)
+let t_eq52_string_eq = assert_type
+  {|f = "hello" == "world"|}
+  "Bool"
+
+(* == on custom type without Eq impl raises NoImplFound *)
+let e_eq52_no_impl = assert_err
+  {|data Blob = Blob
+f = Blob == Blob
+|}
+
+(* custom impl Num type-checks without error *)
+let t_eq52_custom_num = assert_type
+  {|interface Num2 a where
+  add2 : a -> a -> a
+
+data MyNum = MyNum Int
+
+impl Num2 MyNum where
+  add2 (MyNum a) (MyNum b) = MyNum (a + b)
+
+f x y = add2 x y
+|}
+  "MyNum -> MyNum -> MyNum"
+
+(* + on a user-defined Num type type-checks *)
+let t_eq52_custom_num_plus = assert_type
+  {|data MyNum = MyNum Int
+
+impl Num MyNum where
+  add a b = a
+  sub a b = a
+  mul a b = a
+  div a b = a
+  negate a = a
+  abs a = a
+  signum a = MyNum 0
+  fromInt _ = MyNum 0
+
+f : MyNum -> MyNum -> MyNum
+f a b = a + b
+|}
+  "MyNum -> MyNum -> MyNum"
+
+(* != on a non-Eq type also raises NoImplFound *)
+let e_eq52_neq_no_impl = assert_err
+  {|data Blob = Blob
+f = Blob != Blob
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -2458,5 +2503,13 @@ let () =
       test_case "@must_use discard warns"          `Quick t_must_use_warns;
       test_case "@inline no error"                 `Quick t_inline_no_error;
       test_case "non-deprecated no warning"        `Quick t_no_warn_non_deprecated;
+    ];
+    "Eq/Num/Ord wiring (Phase 52)", [
+      test_case "== on Int is Bool"                `Quick t_eq52_builtin_eq;
+      test_case "== on String is Bool"             `Quick t_eq52_string_eq;
+      test_case "err: == on no-Eq type"            `Quick e_eq52_no_impl;
+      test_case "err: != on no-Eq type"            `Quick e_eq52_neq_no_impl;
+      test_case "custom interface impl ok"         `Quick t_eq52_custom_num;
+      test_case "custom Num impl with + operator"  `Quick t_eq52_custom_num_plus;
     ];
   ]

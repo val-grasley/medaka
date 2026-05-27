@@ -819,6 +819,14 @@ let primitives : (string * value) list =
       match c with
       | VChar s -> VString s
       | _ -> raise (Eval_error ("charToStr: expected Char", None))));
+    ("intToFloat", VPrim (fun v ->
+      match v with
+      | VInt n -> VFloat (Float.of_int n)
+      | _ -> raise (Eval_error ("intToFloat: expected Int", None))));
+    ("floatToInt", VPrim (fun v ->
+      match v with
+      | VFloat f -> VInt (Int.of_float f)
+      | _ -> raise (Eval_error ("floatToInt: expected Float", None))));
     ("assert_snapshot", VPrim (fun name_v ->
       VPrim (fun value_v ->
         match name_v, value_v with

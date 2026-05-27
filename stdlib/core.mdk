@@ -23,8 +23,42 @@ export impl Eq (List a) requires Eq a where
     eq (x::xs) (y::ys) = eq x y && eq xs ys
     eq _ _ = False
 
+export impl Eq Int where
+    eq a b = a == b
+
+export impl Eq Float where
+    eq a b = a == b
+
+export impl Eq Bool where
+    eq a b = a == b
+
+export impl Eq String where
+    eq a b = a == b
+
+export impl Eq Char where
+    eq a b = a == b
+
+export impl Eq Unit where
+    eq _ _ = True
+
+export impl Eq (Option a) requires Eq a where
+    eq None None = True
+    eq (Some x) (Some y) = eq x y
+    eq _ _ = False
+
+export impl Eq (Result a b) requires Eq a, Eq b where
+    eq (Ok x) (Ok y) = eq x y
+    eq (Err x) (Err y) = eq x y
+    eq _ _ = False
+
 export interface Semigroup a where
     append : a -> a -> a
+
+export impl Semigroup (List a) where
+    append xs ys = xs ++ ys
+
+export impl Semigroup String where
+    append s1 s2 = s1 ++ s2
 
 export interface Monoid a requires Semigroup a where
     empty : a
@@ -67,6 +101,18 @@ export
 clamp : Ord a => a -> a -> a -> a
 clamp mn mx = min mx >> max mn
 
+export impl Ord Int where
+    compare a b = if a < b then Lt else if a > b then Gt else Eq
+
+export impl Ord Float where
+    compare a b = if a < b then Lt else if a > b then Gt else Eq
+
+export impl Ord String where
+    compare a b = if a < b then Lt else if a > b then Gt else Eq
+
+export impl Ord Char where
+    compare a b = if a < b then Lt else if a > b then Gt else Eq
+
 export interface Show a where
     show : a -> String
 
@@ -79,6 +125,26 @@ export interface Num a requires Eq a where
     abs: a -> a
     signum: a -> a
     fromInt: Int -> a
+
+export impl Num Int where
+    add a b = a + b
+    sub a b = a - b
+    mul a b = a * b
+    div a b = a / b
+    negate a = 0 - a
+    abs a = if a < 0 then 0 - a else a
+    signum a = if a > 0 then 1 else if a < 0 then 0 - 1 else 0
+    fromInt x = x
+
+export impl Num Float where
+    add a b = a + b
+    sub a b = a - b
+    mul a b = a * b
+    div a b = a / b
+    negate a = 0.0 - a
+    abs a = if a < 0.0 then 0.0 - a else a
+    signum a = if a > 0.0 then 1.0 else if a < 0.0 then 0.0 - 1.0 else 0.0
+    fromInt x = intToFloat x
 
 export interface Bounded a where
     minBound : a
