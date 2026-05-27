@@ -1605,6 +1605,59 @@ Scope:
   `String`, `List`, `Array`, `Option`, `Result`, tuples.
 - Plug into `deriving` machinery already in place from Phase 18.5.
 
+### Phase 42.5: `where`-binding fixes ✅ DONE
+
+**What was added.**
+Two latent gaps in `where`-binding handling (uncovered while writing
+`find`/`count` in the stdlib) plus the equivalent gap for top-level
+multi-clause function definitions:
+
+- **Guards in `where` bindings.** `where_binding` in `lib/parser.mly`
+  gained a second production reusing `desugar_guards`:
+  `IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines`.
+- **Multi-clause `where` bindings.** `ELetGroup` changed from
+  `(ident * expr) list * expr` to
+  `(ident * (pat list * expr) list) list * expr`. `desugar_where`
+  now groups same-named bindings (first-appearance order). Each
+  group becomes a single cell holding a `VMulti` when there are 2+
+  clauses, matching the existing impl-method dispatch mechanism.
+  Eval (`lib/eval.ml`), typecheck (reusing `clause_to_expr`), resolve,
+  printer, and the `map_expr` traversal in desugar were all updated
+  for the new shape.
+- **Top-level multi-clause function definitions.** Eval's pass-2 over
+  `DFunDef`s and the REPL-style incremental path now accumulate per
+  name and emit `VMulti` for 2+ clauses, mirroring `impl_acc`. Type
+  inference already handled this via `group_fundefs`; only eval was
+  silently overwriting cells.
+- **Haskell-style newline-before-`where`.** Added a new `fun_body`
+  alternative `expr_no_block INDENT WHERE INDENT bindings DEDENT
+  newlines DEDENT` (and the analogous form in `match_arm`) so the
+  user can write
+  ```
+  find f = fold g None
+      where
+          g (acc@Some _) _ = acc
+          g None x
+              | f x = Some x
+              | otherwise = None
+  ```
+  in addition to the existing `body where ...` same-line form.
+
+**Tests added.** 4 parser, 5 eval — `t_where_guards`,
+`t_where_multi_clause`, `t_where_multi_clause_with_guards`,
+`t_toplevel_multi_clause`, `t_where_on_new_line`. The drafted `find`
+and `count` in `stdlib/core.mdk:181-195` are now the end-to-end
+regression.
+
+Parser-conflict accounting unchanged in structure (the new productions
+introduce 2 S/R and 1 R/R compared to the previous baseline — within
+the LALR(1) noise already tolerated).
+
+**Out of scope.** The pre-existing "Known gap" at the bottom of Phase
+26 (true mutual recursion in `where` blocks waiting on `ELetGroup`)
+was already resolved when `ELetGroup` was first introduced; this
+phase did not revisit it.
+
 ### Phase 43: Abstract type exports ⏳ TODO
 
 `export data T = ...` exposes only the type name; `public export

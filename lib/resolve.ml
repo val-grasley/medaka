@@ -440,7 +440,13 @@ let rec check_expr env scope errors e =
     check_expr env scope' errors e2     (* body in extended scope *)
   | ELetGroup (bindings, body) ->
     let scope' = List.map fst bindings @ scope in
-    List.iter (fun (_, rhs) -> check_expr env scope' errors rhs) bindings;
+    List.iter (fun (_, clauses) ->
+      List.iter (fun (pats, rhs) ->
+        List.iter (check_pat env errors) pats;
+        let clause_scope = List.concat_map pat_bindings pats @ scope' in
+        check_expr env clause_scope errors rhs
+      ) clauses
+    ) bindings;
     check_expr env scope' errors body
   | EMatch (sc, arms) ->
     check_expr env scope errors sc;

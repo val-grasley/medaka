@@ -343,6 +343,47 @@ let t_where_match_arm = assert_val {|classify n = match n
 r = classify 5
 |} "r" (VInt 10)
 
+(* Guards inside a where binding (count-style). *)
+let t_where_guards = assert_val {|countPos xs = fold g 0 xs where
+    g acc x
+        | x > 0 = acc + 1
+        | otherwise = acc
+r = countPos [(-1), 2, (-3), 4]
+|} "r" (VInt 2)
+
+(* Multi-clause where binding (find-style: dispatch on pattern). *)
+let t_where_multi_clause = assert_val {|findGt n xs = fold g None xs where
+    g (Some a) _ = Some a
+    g None x = if x > n then Some x else None
+r = findGt 2 [1, 2, 3, 4]
+|} "r" (VCon ("Some", [VInt 3]))
+
+(* Multi-clause + guards in the same where binding (full find pattern). *)
+let t_where_multi_clause_with_guards = assert_val {|findFirst f xs = fold g None xs where
+    g (acc@Some _) _ = acc
+    g None x
+        | f x = Some x
+        | otherwise = None
+r = findFirst (x => x > 10) [1, 5, 20, 30]
+|} "r" (VCon ("Some", [VInt 20]))
+
+(* Top-level multi-clause function definition: two same-named DFunDefs
+   should dispatch via VMulti just like impl methods. *)
+let t_toplevel_multi_clause = assert_val {|describe 0 = "zero"
+describe _ = "other"
+r = (describe 0, describe 7)
+|} "r" (VTuple [VString "zero"; VString "other"])
+
+(* Haskell-style: `where` on its own line, indented under the body. *)
+let t_where_on_new_line = assert_val {|findFirst f xs = fold g None xs
+    where
+        g (acc@Some _) _ = acc
+        g None x
+            | f x = Some x
+            | otherwise = None
+r = findFirst (x => x > 10) [1, 5, 20, 30]
+|} "r" (VCon ("Some", [VInt 20]))
+
 (* ── Top-level function guards ──────────────────────────────────────────── *)
 
 let t_guard_basic_neg = assert_val {|
@@ -840,6 +881,11 @@ let () =
       test_case "nested"            `Quick t_where_nested;
       test_case "mutual recursion"  `Quick t_where_mutual_recursion;
       test_case "match arm"         `Quick t_where_match_arm;
+      test_case "guards in where"   `Quick t_where_guards;
+      test_case "multi-clause"      `Quick t_where_multi_clause;
+      test_case "multi-clause + guards" `Quick t_where_multi_clause_with_guards;
+      test_case "top-level multi-clause" `Quick t_toplevel_multi_clause;
+      test_case "where on new line"      `Quick t_where_on_new_line;
     ];
     "top-level function guards", [
       test_case "neg branch"        `Quick t_guard_basic_neg;

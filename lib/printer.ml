@@ -226,9 +226,15 @@ and print_expr_raw p = function
   | ELetGroup (bindings, body) ->
     print_expr p prec_top body;
     write p " where";
-    List.iter (fun (name, rhs) ->
-      write p "\n    "; write p name; write p " = ";
-      print_expr p prec_top rhs
+    List.iter (fun (name, clauses) ->
+      List.iter (fun (pats, rhs) ->
+        write p "\n    "; write p name;
+        List.iter (fun pat ->
+          write p " "; print_pat p pat
+        ) pats;
+        write p " = ";
+        print_expr p prec_top rhs
+      ) clauses
     ) bindings
   | EIf (c, t, e) ->
     write p "if ";

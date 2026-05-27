@@ -318,8 +318,13 @@ and eval env expr =
   | ELetGroup (bindings, body) ->
     let cells = List.map (fun (name, _) -> (name, ref VUnit)) bindings in
     let env' = cells :: env in
-    List.iter (fun (name, rhs) ->
-      (List.assoc name cells) := eval env' rhs
+    List.iter (fun (name, clauses) ->
+      let closures = List.map (fun (pats, rhs) ->
+        if pats = [] then eval env' rhs
+        else VClosure (env', pats, rhs)) clauses in
+      (List.assoc name cells) := (match closures with
+        | [v] -> v
+        | many -> VMulti many)
     ) bindings;
     eval env' body
 
@@ -893,6 +898,10 @@ let eval_program program =
      any later DFunDef body that calls the method is evaluated. *)
   (* method name → accumulated (score, closure) list in insertion order *)
   let impl_acc : (string, (int * value) list) Hashtbl.t = Hashtbl.create 16 in
+  (* top-level function name → accumulated clause closures, so multi-clause
+     `f pat1 = ...` / `f pat2 = ...` at the top level dispatches via VMulti
+     just like impl methods. *)
+  let fundef_acc : (string, value list) Hashtbl.t = Hashtbl.create 16 in
 
   Hashtbl.clear pure_impls;
   List.iter (fun decl ->
@@ -901,7 +910,10 @@ let eval_program program =
       let v = wrap_match_errors (fun () ->
         if pats = [] then eval env body
         else VClosure (env, pats, body)) in
-      fill_cell name v
+      let prev = try Hashtbl.find fundef_acc name with Not_found -> [] in
+      let updated = prev @ [v] in
+      Hashtbl.replace fundef_acc name updated;
+      fill_cell name (match updated with [v] -> v | many -> VMulti many)
     | DImpl { iface_name; type_args; methods; impl_name; _ } ->
       let score = tyvars_in_args type_args in
       (* If this is an Applicative impl, record its `pure` body in pure_impls
@@ -1017,7 +1029,20 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
      let v = wrap_match_errors (fun () ->
        if pats = [] then eval !(rs.eval_env) body
        else VClosure (!(rs.eval_env), pats, body)) in
-     fill name v
+     (* Multi-clause `f pat1 = ...` / `f pat2 = ...` entered separately at the
+        REPL should dispatch via VMulti, mirroring eval_program. A value
+        binding (pats = []) replaces any prior binding. *)
+     let merged =
+       if pats = [] then v
+       else match List.assoc_opt name !(rs.top_frame) with
+         | Some cell ->
+           (match !cell with
+            | VMulti vs        -> VMulti (vs @ [v])
+            | VClosure _ as c  -> VMulti [c; v]
+            | _                -> v)
+         | None -> v
+     in
+     fill name merged
    | DImpl { iface_name; type_args; methods; impl_name; _ } ->
      let score = tyvars_in_args type_args in
      let context_dependent_externs = ["pure"] in

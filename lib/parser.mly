@@ -32,9 +32,18 @@ let stmts_to_expr = function
 let curry_lam pats body =
   List.fold_right (fun pat acc -> ELam ([pat], acc)) pats body
 
-(* Desugar `where` bindings into a mutually-recursive ELetGroup. *)
+(* Desugar `where` bindings into a mutually-recursive ELetGroup.
+   Same-named bindings are coalesced into a single entry with multiple
+   clauses, preserving first-appearance order across distinct names. *)
 let desugar_where bindings main_expr =
-  ELetGroup (List.map (fun (name, pats, rhs) -> (name, curry_lam pats rhs)) bindings, main_expr)
+  let order = ref [] and groups = Hashtbl.create 8 in
+  List.iter (fun (name, pats, rhs) ->
+    if not (Hashtbl.mem groups name) then order := name :: !order;
+    let prev = try Hashtbl.find groups name with Not_found -> [] in
+    Hashtbl.replace groups name (prev @ [(pats, rhs)])
+  ) bindings;
+  let grouped = List.rev_map (fun n -> (n, Hashtbl.find groups n)) !order in
+  ELetGroup (grouped, main_expr)
 
 (* Convert an expression back into a pattern when used as a lambda parameter.
    Supported: identifiers, literals, tuples, lists, cons, constructor apps. *)
@@ -336,10 +345,17 @@ guard_arm:
 fun_body:
   | expr_no_block                                                    { $1 }
   | expr_no_block WHERE INDENT nonempty_list(where_binding) DEDENT   { desugar_where $4 $1 }
+  (* Haskell-style: `where` on its own line, indented under the body.
+     Token stream: expr INDENT WHERE INDENT bindings DEDENT NEWLINE DEDENT *)
+  | expr_no_block INDENT WHERE INDENT nonempty_list(where_binding) DEDENT newlines DEDENT
+    { desugar_where $5 $1 }
   | INDENT nonempty_list(stmt) DEDENT                                { stmts_to_expr $2 }
 
 where_binding:
-  | IDENT list(pat_atom) EQUAL fun_body newlines  { ($1, $2, $4) }
+  | IDENT list(pat_atom) EQUAL fun_body newlines
+    { ($1, $2, $4) }
+  | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines
+    { ($1, $2, desugar_guards $4) }
 
 (* ── Types ───────────────────────────────────────────── *)
 
@@ -631,6 +647,9 @@ match_arm:
   | pat option(guard) FAT_ARROW expr_no_block newlines  { ($1, $2, $4) }
   | pat option(guard) FAT_ARROW expr_no_block WHERE INDENT nonempty_list(where_binding) DEDENT newlines
     { ($1, $2, desugar_where $7 $4) }
+  (* Haskell-style `where` on its own indented line within a match arm. *)
+  | pat option(guard) FAT_ARROW expr_no_block INDENT WHERE INDENT nonempty_list(where_binding) DEDENT newlines DEDENT newlines
+    { ($1, $2, desugar_where $8 $4) }
 
 guard:
   | IF expr_or  { $2 }

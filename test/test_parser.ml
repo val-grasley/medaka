@@ -953,7 +953,7 @@ let test_iface_default_where () =
     (match m with
      | { method_name = "greet";
          method_default = Some ([PVar "x"],
-           ELetGroup (["prefix", ELit (LString "Hello, ")],
+           ELetGroup (["prefix", [([], ELit (LString "Hello, "))]],
              EBinOp ("++", EVar "prefix", EVar "x"))); _ } -> ()
      | _ -> failwith (Printf.sprintf "wrong method shape: name=%s, default=%s"
               m.method_name
@@ -961,6 +961,57 @@ let test_iface_default_where () =
                | None -> "None"
                | Some (_, e) -> Ast.pp_expr e)))
   | d -> failwith ("wrong decl: " ^ pp_decl d)
+
+(* ── where bindings: guards and multi-clause ─────────── *)
+
+(* Single clause + guards in a where binding (count-style). *)
+let test_where_binding_guards () =
+  let src = {|countPos f xs = fold g 0 xs where
+    g acc x
+        | f x = acc + 1
+        | otherwise = acc
+|} in
+  match parse_one src with
+  | DFunDef (_, "countPos", _, ELetGroup ([("g", [([PVar "acc"; PVar "x"], _body)])], _)) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+(* Multi-clause where binding (find-style). *)
+let test_where_binding_multi_clause () =
+  let src = {|findFirst f xs = fold g None xs where
+    g (Some a) _ = Some a
+    g None x = if f x then Some x else None
+|} in
+  match parse_one src with
+  | DFunDef (_, "findFirst", _,
+      ELetGroup ([("g", [_; _])], _)) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+(* Multi-clause + guards combined (the full find pattern). *)
+let test_where_binding_multi_clause_with_guards () =
+  let src = {|find f xs = fold g None xs where
+    g (acc@Some _) _ = acc
+    g None x
+        | f x = Some x
+        | otherwise = None
+|} in
+  match parse_one src with
+  | DFunDef (_, "find", _,
+      ELetGroup ([("g", [_; _])], _)) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+(* Haskell-style: `where` on its own indented line below the body. *)
+let test_where_on_new_line () =
+  let src = {|find f xs = fold g None xs
+    where
+        g (acc@Some _) _ = acc
+        g None x
+            | f x = Some x
+            | otherwise = None
+|} in
+  match parse_one src with
+  | DFunDef (_, "find", _,
+      ELetGroup ([("g", [_; _])], _)) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
 
 (* ── if let / let else (Phase 38) ───────────────────── *)
 
@@ -1262,6 +1313,12 @@ let () =
     ];
     "interface default where", [
       test_case "where in default body" `Quick test_iface_default_where;
+    ];
+    "where bindings (guards + multi-clause)", [
+      test_case "guards in where binding"          `Quick test_where_binding_guards;
+      test_case "multi-clause where binding"       `Quick test_where_binding_multi_clause;
+      test_case "multi-clause + guards combined"   `Quick test_where_binding_multi_clause_with_guards;
+      test_case "where on its own line (Haskell-style)" `Quick test_where_on_new_line;
     ];
     "if let / let else (Phase 38)", [
       test_case "if let Some"      `Quick test_if_let_some;

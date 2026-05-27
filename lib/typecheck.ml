@@ -726,6 +726,13 @@ let rec type_pat env = function
 
 (* ── Expression typing ──────────────────────────── *)
 
+(* Build a clause's expression form: nested lambdas if there are args. Used
+   by both the top-level multi-clause grouping below and the ELetGroup
+   inference for multi-clause `where` bindings. *)
+let clause_to_expr (pats, body) =
+  if pats = [] then body
+  else List.fold_right (fun p acc -> ELam ([p], acc)) pats body
+
 let rec infer env = function
   | ELoc (l, e) ->
     current_loc := Some l;
@@ -826,8 +833,11 @@ let rec infer env = function
     let placeholders = List.map (fun (n, _) -> (n, fresh_var ())) bindings in
     let env' = List.fold_left
       (fun e (n, t) -> extend_var e n (monotype t)) env placeholders in
-    List.iter (fun (n, rhs) ->
-      unify (infer env' rhs) (List.assoc n placeholders)
+    List.iter (fun (n, clauses) ->
+      let ph = List.assoc n placeholders in
+      List.iter (fun clause ->
+        unify (infer env' (clause_to_expr clause)) ph
+      ) clauses
     ) bindings;
     exit_level ();
     let env'' = List.fold_left
@@ -1394,10 +1404,8 @@ let register_record ?(aliases=Hashtbl.create 0) env (name, params, fields) =
 let register_alias env (name, params, rhs) =
   Hashtbl.replace env.aliases name (params, rhs)
 
-(* Build the clause's expression form: nested lambdas if there are args. *)
-let clause_to_expr (pats, body) =
-  if pats = [] then body
-  else List.fold_right (fun p acc -> ELam ([p], acc)) pats body
+(* clause_to_expr is defined above, before `infer`, so the ELetGroup case
+   can reuse it for multi-clause `where` bindings. *)
 
 (* Register an interface declaration.
    Creates fresh tvars for the type parameters at level 1, converts each
@@ -1767,7 +1775,11 @@ let expr_effects
       effect_union (sub e1) (go (add_pats [pat] bound) e2)
     | ELetGroup (bs, e2) ->
       let bound' = List.fold_left (fun s (n, _) -> StringSet.add n s) bound bs in
-      List.fold_left (fun a (_, e) -> effect_union a (go bound' e)) (go bound' e2) bs
+      List.fold_left (fun a (_, clauses) ->
+        List.fold_left (fun acc (pats, body) ->
+          effect_union acc (go (add_pats pats bound') body)
+        ) a clauses
+      ) (go bound' e2) bs
     | EIf (c, t, f)       -> effect_union (sub c) (effect_union (sub t) (sub f))
     | EBinOp ("|>", x, f) ->
       (* x |> f  ≡  f x — calling f contributes its effects *)

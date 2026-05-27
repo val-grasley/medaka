@@ -177,6 +177,23 @@ export
 all : Foldable t => (a -> Bool) -> t a -> Bool
 all f = fold (acc => x => acc && f x) True
 
+export
+find : Foldable t => (a -> Bool) -> t a -> Option a
+find f = fold g None
+    where
+        g (acc@Some _) _ = acc
+        g None x
+            | f x = Some x
+            | otherwise = None
+
+export
+count : Foldable t => (a -> Bool) -> t a -> Int
+count f = fold g 0
+    where
+        g acc x
+            | f x = acc + 1
+            | otherwise = acc
+
 export impl Foldable List where
     fold _ acc [] = acc
     fold f acc (x::xs) = fold f (f acc x) xs
