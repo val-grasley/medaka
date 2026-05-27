@@ -347,7 +347,7 @@ let derive_for_record type_name fields iface =
   | _           -> None
 
 (* Expand a single decl into itself plus any generated impls. *)
-let expand_decl = function
+let rec expand_decl = function
   | DData (vis, name, params, variants, derives) ->
     let impls = List.filter_map (derive_for_data name variants) derives in
     DData (vis, name, params, variants, []) :: impls
@@ -357,6 +357,10 @@ let expand_decl = function
   | DNewtype (pub, name, params, con, fty, derives) ->
     let impls = List.filter_map (derive_for_newtype name con) derives in
     DNewtype (pub, name, params, con, fty, []) :: impls
+  | DAttrib (attrs, d) ->
+    (match expand_decl d with
+     | [] -> []
+     | first :: rest -> DAttrib (attrs, first) :: rest)
   | d -> [d]
 
 (* ── Record field pun desugaring ─────────────────────────────────────────
@@ -422,7 +426,7 @@ and map_do_stmt f = function
   | DoFieldAssign (x, fld, e) -> DoFieldAssign (x, fld, map_expr f e)
   | DoLetElse (p, e, alt)   -> DoLetElse (p, map_expr f e, map_expr f alt)
 
-let map_decl f = function
+let rec map_decl f = function
   | DFunDef (pub, n, ps, e)    -> DFunDef (pub, n, ps, map_expr f e)
   | DInterface iface           ->
       DInterface { iface with methods =
@@ -434,6 +438,7 @@ let map_decl f = function
       DImpl { impl with methods =
         List.map (fun (n, ps, e) -> (n, ps, map_expr f e)) impl.methods }
   | DProp p -> DProp { p with prop_body = map_expr f p.prop_body }
+  | DAttrib (attrs, d) -> DAttrib (attrs, map_decl f d)
   | d -> d
 
 (* Rewrite ESetLit(name, [EVar n; ...]) → ERecordCreate when name is a record type *)

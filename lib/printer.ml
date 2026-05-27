@@ -435,7 +435,7 @@ let print_use_path p = function
     write p (String.concat "." names);
     write p " as "; write p alias
 
-let print_decl p = function
+let rec print_decl p = function
   | DTypeSig (pub, n, t) ->
     if pub then write p "export ";
     write p n; write p " : "; print_type p t
@@ -609,6 +609,16 @@ let print_decl p = function
     write p (Printf.sprintf "%S" bench_name);
     write p " = ";
     print_expr p prec_top bench_body
+
+  | DAttrib (attrs, inner) ->
+    List.iter (fun a ->
+      (match a with
+       | AttrDeprecated msg -> write p (Printf.sprintf "@deprecated %S" msg)
+       | AttrInline         -> write p "@inline"
+       | AttrMustUse        -> write p "@must_use");
+      write p "\n"
+    ) attrs;
+    print_decl p inner
 
 let print_program p decls =
   List.iter (fun d ->

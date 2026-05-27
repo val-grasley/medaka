@@ -247,10 +247,11 @@ let build_env ?(known_modules : module_exports list = [])
   let add_or_skip tbl name = Hashtbl.replace tbl name () in
   (* Pre-collect extern names so DFunDef can check for conflicts in any order *)
   let extern_names =
-    List.filter_map (function DExtern (_, n, _) -> Some n | _ -> None) prog
+    List.filter_map (fun d -> match Ast.inner_decl d with
+      | DExtern (_, n, _) -> Some n | _ -> None) prog
   in
   List.iter (fun d ->
-    match d with
+    match Ast.inner_decl d with
     | DTypeSig (_, n, _) ->
       (* Type sig pairs with later fun_def; either order works *)
       add_or_skip env.values n
@@ -345,6 +346,7 @@ let build_env ?(known_modules : module_exports list = [])
          (match alias with
           | Some a -> Hashtbl.replace env.module_aliases a exp
           | None   -> ()))
+    | DAttrib _ -> ()
   ) prog;
   env, List.rev !errors
 
@@ -576,7 +578,7 @@ let rec check_expr env scope errors e =
     emit errors QuestionMisplaced;
     check_expr env scope errors e
 
-let check_decl env errors = function
+let rec check_decl env errors = function
   | DFunDef (_, _, pats, body) ->
     List.iter (check_pat env errors) pats;
     let scope = List.concat_map pat_bindings pats in
@@ -635,6 +637,8 @@ let check_decl env errors = function
       ) methods
     end
 
+  | DAttrib (_, inner) -> check_decl env errors inner
+
 (* ── Build module exports from a resolved env ─── *)
 
 (* Collect all public names from a program into module_exports *)
@@ -682,7 +686,7 @@ let build_exports ?(known_modules : module_exports list = [])
     ) src_exp.exp_field_owners
   in
   List.iter (fun d ->
-    match d with
+    match Ast.inner_decl d with
     | DTypeSig (true, n, _) ->
       Hashtbl.replace exp.exp_values n ()
     | DExtern (true, n, _) ->
@@ -806,10 +810,11 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
     | Ast.ReplExpr _ -> []
   in
   let extern_names =
-    List.filter_map (function Ast.DExtern (_, n, _) -> Some n | _ -> None) decls
+    List.filter_map (fun d -> match Ast.inner_decl d with
+      | Ast.DExtern (_, n, _) -> Some n | _ -> None) decls
   in
   List.iter (fun d ->
-    match d with
+    match Ast.inner_decl d with
     | Ast.DTypeSig (_, n, _) -> add_or_skip env.values n
     | Ast.DExtern (_, n, _)  -> add_or_skip env.values n
     | Ast.DFunDef (_, n, _, _) ->
@@ -829,7 +834,8 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
       List.iter (fun m -> add_or_skip env.values m.Ast.method_name) methods;
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.Ast.method_name) methods)
-    | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ | Ast.DNewtype _ | Ast.DProp _ | Ast.DBench _ -> ()
+    | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ | Ast.DNewtype _ | Ast.DProp _ | Ast.DBench _
+    | Ast.DAttrib _ -> ()
   ) decls;
   (match item with
    | Ast.ReplDecl ds -> List.iter (check_decl env errors) ds

@@ -122,6 +122,11 @@ type data_vis =
   | DataAbstract  (* export data T = ...         -- type name only *)
   | DataPublic    (* public export data T = ...  -- type + constructors *)
 
+type attr =
+  | AttrDeprecated of string   (* @deprecated "reason" *)
+  | AttrInline                 (* @inline *)
+  | AttrMustUse                (* @must_use *)
+
 type decl =
   | DTypeSig   of bool * ident * ty          (* pub? name type *)
   | DExtern    of bool * ident * ty          (* pub? name type *)
@@ -159,8 +164,14 @@ type decl =
       bench_name : string;
       bench_body : expr;
     }
+  | DAttrib of attr list * decl   (* @attr… annotations wrapping the next decl *)
 
 type program = decl list
+
+(* Strip DAttrib wrappers: return the innermost non-DAttrib decl *)
+let rec inner_decl = function
+  | DAttrib (_, d) -> inner_decl d
+  | d -> d
 
 type repl_item = ReplDecl of decl list | ReplExpr of expr
 
@@ -354,7 +365,7 @@ let strip_locs_iface_method m =
   | None -> m
   | Some (ps, e) -> { m with method_default = Some (ps, strip_locs_expr e) }
 
-let strip_locs_decl = function
+let rec strip_locs_decl = function
   | DFunDef (pub, n, ps, e) -> DFunDef (pub, n, ps, strip_locs_expr e)
   | DInterface d ->
     DInterface { d with methods = List.map strip_locs_iface_method d.methods }
@@ -362,6 +373,7 @@ let strip_locs_decl = function
     DImpl { d with methods = List.map (fun (n, ps, e) -> (n, ps, strip_locs_expr e)) d.methods }
   | DProp d -> DProp { d with prop_body = strip_locs_expr d.prop_body }
   | DBench d -> DBench { d with bench_body = strip_locs_expr d.bench_body }
+  | DAttrib (attrs, d) -> DAttrib (attrs, strip_locs_decl d)
   | d -> d
 
 let strip_locs_program = List.map strip_locs_decl

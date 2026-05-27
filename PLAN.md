@@ -20,15 +20,15 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-789 tests pass across 13 base test suites:
+798 tests pass across 13 base test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 154   | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 103   | parse → print → parse yields the same AST             |
+| Parser            | `test/test_parser.ml`           | 161   | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 108   | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 60    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 282   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 140   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
+| Type checker      | `test/test_typecheck.ml`        | 287   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 142   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
 | Loader            | `test/test_loader.ml`           | 24    | Multi-file imports, topo sort, cycle detection, prelude no-op, abstract exports |
@@ -2137,11 +2137,16 @@ First-class benchmark target. `bench "name" = expr` declarations
 collected and run separately from `test`. Reports throughput and
 variance.
 
-### Phase 49: Declaration attributes ⏳ TODO
+### Phase 49: Declaration attributes ✅ Done
 
 Closed set: `@deprecated "msg"`, `@inline`, `@must_use`. Parser-level
 only; semantics dispatched to the typechecker (`@deprecated`,
 `@must_use`) or the backend (`@inline`). Not user-extensible.
+
+`DAttrib` AST node wraps inner decl; `Ast.inner_decl` strips all layers
+for passes that need the bare decl. `register_attrs` populates
+`env.deprecated_fns` / `env.must_use_fns` before type inference.
+161/108/287/142 tests pass.
 
 ### Phase 50: Workspaces in `medaka.toml` ⏳ TODO
 

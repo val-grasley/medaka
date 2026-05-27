@@ -373,8 +373,10 @@ type env = {
   type_ctors    : (ident, ident list) Hashtbl.t;  (* type name → ctor names in order *)
   ctor_fields   : (ident, (ident * mono) list) Hashtbl.t;  (* named-field ctor → ordered (field, mono_ty) *)
   aliases       : (ident, ident list * Ast.ty) Hashtbl.t;  (* type alias name → (params, rhs) *)
-  warnings      : string list ref;             (* accumulated warning messages *)
-  mut_vars      : StringSet.t;                 (* bindings declared with let mut *)
+  warnings        : string list ref;           (* accumulated warning messages *)
+  mut_vars        : StringSet.t;               (* bindings declared with let mut *)
+  deprecated_fns  : (ident, string) Hashtbl.t; (* name → deprecation message *)
+  must_use_fns    : (ident, unit) Hashtbl.t;   (* names whose return values must be used *)
 }
 
 let empty_env () = {
@@ -391,8 +393,10 @@ let empty_env () = {
   type_ctors    = Hashtbl.create 8;
   ctor_fields   = Hashtbl.create 4;
   aliases       = Hashtbl.create 4;
-  warnings      = ref [];
-  mut_vars      = StringSet.empty;
+  warnings        = ref [];
+  mut_vars        = StringSet.empty;
+  deprecated_fns  = Hashtbl.create 8;
+  must_use_fns    = Hashtbl.create 8;
 }
 
 let lookup_var env x =
@@ -752,6 +756,14 @@ let rec infer env = function
     if String.length x > 0 && x.[0] = '@' then
       t_unit
     else begin
+      (match Hashtbl.find_opt env.deprecated_fns x with
+       | Some msg ->
+         let loc_str = match !current_loc with
+           | Some l -> Printf.sprintf "%s:%d: " l.file l.line
+           | None -> ""
+         in
+         env.warnings := (loc_str ^ "'" ^ x ^ "' is deprecated: " ^ msg) :: !(env.warnings)
+       | None -> ());
       let scheme =
         try Hashtbl.find env.ctors x
         with Not_found -> lookup_var env x
@@ -1034,6 +1046,12 @@ let rec infer env = function
            tyvar so the caller can still bind it (no-op binding in practice). *)
         fresh_var ()
     in
+    let rec head_fn_name = function
+      | ELoc (_, e) -> head_fn_name e
+      | EVar x -> Some x
+      | EApp (f, _) -> head_fn_name f
+      | _ -> None
+    in
     let rec type_stmts env = function
       | [] -> assert false
       | [DoExpr e] ->
@@ -1058,6 +1076,15 @@ let rec infer env = function
       | DoExpr e :: rest ->
         let te = infer env e in
         let _ = unify_monadic te in
+        (match head_fn_name e with
+         | Some f when Hashtbl.mem env.must_use_fns f ->
+           let loc_str = match !current_loc with
+             | Some l -> Printf.sprintf "%s:%d: " l.file l.line
+             | None -> ""
+           in
+           env.warnings := (loc_str ^ "return value of '" ^ f ^ "' is unused (marked @must_use)")
+                           :: !(env.warnings)
+         | _ -> ());
         type_stmts env rest
       | DoBind (pat, e) :: rest ->
         let te = infer env e in
@@ -1312,7 +1339,7 @@ let group_fundefs decls =
   let sigs = Hashtbl.create 16 in
   let clauses = Hashtbl.create 16 in
   let order = ref [] in
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DTypeSig (_, n, t) ->
       if not (Hashtbl.mem clauses n) && not (Hashtbl.mem sigs n) then
         order := n :: !order;
@@ -1971,6 +1998,26 @@ let infer_and_check_effects ~extern_decls ~scheme_env groups =
        if extras <> [] then fail (EffectEscape (name, decl, extras)))
   ) groups
 
+(* Register DAttrib attribute metadata (deprecated_fns, must_use_fns) into env. *)
+let register_attrs env decls =
+  let decl_name d = match d with
+    | DFunDef (_, n, _, _) -> Some n
+    | DExtern  (_, n, _)   -> Some n
+    | _                    -> None
+  in
+  List.iter (function
+    | DAttrib (attrs, inner) ->
+      (match decl_name (Ast.inner_decl inner) with
+       | None -> ()
+       | Some name ->
+         List.iter (function
+           | AttrDeprecated msg -> Hashtbl.replace env.deprecated_fns name msg
+           | AttrMustUse        -> Hashtbl.replace env.must_use_fns name ()
+           | AttrInline         -> ()
+         ) attrs)
+    | _ -> ()
+  ) decls
+
 (* Type-check a whole program; return a (name → scheme) list.
 
    Strategy: pre-bind every top-level name with an unbound placeholder at
@@ -2008,15 +2055,17 @@ let check_program (prog : program) : (ident * scheme) list * string list =
      Skip prepending when type-checking core.mdk itself (would duplicate). *)
   let prog = if program_is_core prog then prog else Prelude.program @ prog in
 
+  register_attrs env prog;
+
   (* Phase 1: register data, record, interface, impl, and extern declarations *)
   (* First sub-pass: collect all type aliases so they are available for expansion *)
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DTypeAlias (_, n, ps, rhs) -> register_alias env (n, ps, rhs)
     | _ -> ()
   ) prog;
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DTypeAlias _ -> ()  (* already handled *)
     | DNewtype (_, n, ps, con, fty, _) ->
       register_data ~aliases:env.aliases env (n, ps, [{ Ast.con_name = con; con_payload = Ast.ConPos [fty] }])
@@ -2040,7 +2089,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
     | _ -> ()
   ) prog;
   (* register_impl runs after all interfaces are registered *)
-  List.iter (register_impl env) prog;
+  List.iter (fun d -> register_impl env (Ast.inner_decl d)) prog;
   check_coherence env;
 
   (* Phase 2: collect type sigs and fn clause groups *)
@@ -2100,13 +2149,13 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   ) groups in
 
   (* Phase 4.5: validate impl method bodies against their interfaces *)
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DImpl _ as d -> check_impl !env d
     | _ -> ()
   ) prog;
 
   (* Phase 4.55: type-check prop declarations *)
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DProp { prop_params; prop_body; _ } ->
       let local_env = List.fold_left (fun e (x, ast_ty) ->
         let mono = from_ast_type ~aliases:e.aliases ast_ty in
@@ -2125,7 +2174,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
 
   (* Phase 5: effect inference and checking *)
   let user_extern_decls =
-    List.filter_map (function
+    List.filter_map (fun d -> match Ast.inner_decl d with
       | DExtern (_, n, t) -> Some (n, t)
       | _ -> None) prog
   in
@@ -2173,6 +2222,8 @@ let typecheck_module
   let user_prog = prog in
   let prog = if program_is_core prog then prog else Prelude.program @ prog in
 
+  register_attrs env prog;
+
   (* Seed env with all known module exports *)
   List.iter (fun te ->
     List.iter (fun (n, s) -> Hashtbl.replace env.ctors n s) te.te_ctors;
@@ -2219,7 +2270,7 @@ let typecheck_module
   ) prog;
 
   (* First sub-pass: collect all type aliases *)
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DTypeAlias (_, n, ps, rhs) -> register_alias env (n, ps, rhs)
     | _ -> ()
   ) prog;
@@ -2229,7 +2280,7 @@ let typecheck_module
   ) known_modules;
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DTypeAlias _ -> ()  (* already handled *)
     | DNewtype (_, n, ps, con, fty, _) ->
       register_data ~aliases:env.aliases env (n, ps, [{ Ast.con_name = con; con_payload = Ast.ConPos [fty] }])
@@ -2248,7 +2299,7 @@ let typecheck_module
       extern_schemes := (name, scheme) :: !extern_schemes
     | _ -> ()
   ) prog;
-  List.iter (register_impl env) prog;
+  List.iter (fun d -> register_impl env (Ast.inner_decl d)) prog;
   check_coherence env;
 
   let groups = group_fundefs prog in
@@ -2296,8 +2347,8 @@ let typecheck_module
     (name, scheme)
   ) groups in
 
-  List.iter (function DImpl _ as d -> check_impl !env d | _ -> ()) prog;
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with DImpl _ as d -> check_impl !env d | _ -> ()) prog;
+  List.iter (fun d -> match Ast.inner_decl d with
     | DProp { prop_params; prop_body; _ } ->
       let local_env = List.fold_left (fun e (x, ast_ty) ->
         let mono = from_ast_type ~aliases:e.aliases ast_ty in
@@ -2312,7 +2363,7 @@ let typecheck_module
   check_method_usages !env;
   check_constraint_obligations !env;
   let user_extern_decls =
-    List.filter_map (function DExtern (_, n, t) -> Some (n, t) | _ -> None) prog
+    List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) prog
   in
   infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results groups;
 
@@ -2321,7 +2372,7 @@ let typecheck_module
 
   (* Build this module's public exports *)
   let pub_schemes = List.filter_map (fun d ->
-    match d with
+    match Ast.inner_decl d with
     | DFunDef (true, n, _, _) ->
       (match List.assoc_opt n all_schemes with Some s -> Some (n, s) | None -> None)
     | DTypeSig (true, n, _) ->
@@ -2332,13 +2383,13 @@ let typecheck_module
   ) prog in
   (* Interface methods from pub interfaces are also exported *)
   let pub_iface_schemes = List.filter_map (fun d ->
-    match d with
+    match Ast.inner_decl d with
     | DInterface { is_pub = true; _ } ->
       Some (List.filter (fun (n, _) -> List.mem_assoc n !iface_method_schemes) all_schemes)
     | _ -> None
   ) prog |> List.concat in
   let pub_ctors = List.filter_map (fun d ->
-    match d with
+    match Ast.inner_decl d with
     | DNewtype (true, _, _, con, _, _) ->
       (match Hashtbl.find_opt (!env).ctors con with
        | Some s -> Some [(con, s)]
@@ -2352,7 +2403,7 @@ let typecheck_module
     | _ -> None
   ) prog |> List.concat in
   let pub_records = List.filter_map (fun d ->
-    match d with
+    match Ast.inner_decl d with
     | DRecord (DataPublic, n, _, _, _) ->
       (match Hashtbl.find_opt (!env).records n with
        | Some ri -> Some (n, ri)
@@ -2360,7 +2411,7 @@ let typecheck_module
     | _ -> None
   ) prog in
   let pub_interfaces = List.filter_map (fun d ->
-    match d with
+    match Ast.inner_decl d with
     | DInterface { is_pub = true; iface_name; _ } ->
       (match Hashtbl.find_opt (!env).interfaces iface_name with
        | Some ii -> Some (iface_name, ii)
@@ -2368,7 +2419,7 @@ let typecheck_module
     | _ -> None
   ) prog in
   let pub_aliases = List.filter_map (fun d ->
-    match d with
+    match Ast.inner_decl d with
     | DTypeAlias (true, n, _, _) ->
       (match Hashtbl.find_opt (!env).aliases n with
        | Some v -> Some (n, v)
@@ -2382,7 +2433,7 @@ let typecheck_module
     te_ctors     = pub_ctors;
     te_interfaces = pub_interfaces;
     te_impls     = List.filter (fun ie ->
-      List.exists (fun d -> match d with
+      List.exists (fun d -> match Ast.inner_decl d with
         | DImpl { is_pub = true; iface_name; _ } -> ie.impl_iface = iface_name
         | _ -> false) user_prog
     ) !(!env.impls);
@@ -2410,8 +2461,10 @@ let copy_tc_env (e : env) : env = {
   type_ctors    = Hashtbl.copy e.type_ctors;
   ctor_fields   = Hashtbl.copy e.ctor_fields;
   aliases       = Hashtbl.copy e.aliases;
-  warnings      = ref !(e.warnings);
-  mut_vars      = e.mut_vars;                  (* persistent set *)
+  warnings        = ref !(e.warnings);
+  mut_vars        = e.mut_vars;                (* persistent set *)
+  deprecated_fns  = Hashtbl.copy e.deprecated_fns;
+  must_use_fns    = Hashtbl.copy e.must_use_fns;
 }
 
 (* Type-check one or more declarations against an existing env.
@@ -2420,14 +2473,15 @@ let check_repl_decl (env : env ref) (decls : decl list)
     : (ident * scheme) list * string list =
   current_loc := None;
   current_impl_hint := None;
+  register_attrs !env decls;
   (* First sub-pass: collect all type aliases *)
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DTypeAlias (_, n, ps, rhs) -> register_alias !env (n, ps, rhs)
     | _ -> ()
   ) decls;
   let iface_method_schemes = ref [] in
   let extern_schemes = ref [] in
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DTypeAlias _ -> ()  (* already handled *)
     | DNewtype (_, n, ps, con, fty, _) ->
       register_data ~aliases:(!env).aliases !env (n, ps, [{ Ast.con_name = con; con_payload = Ast.ConPos [fty] }])
@@ -2446,7 +2500,7 @@ let check_repl_decl (env : env ref) (decls : decl list)
       extern_schemes := (name, scheme) :: !extern_schemes
     | _ -> ()
   ) decls;
-  List.iter (register_impl !env) decls;
+  List.iter (fun d -> register_impl !env (Ast.inner_decl d)) decls;
   check_coherence !env;
   let groups = group_fundefs decls in
   enter_level ();
@@ -2492,11 +2546,11 @@ let check_repl_decl (env : env ref) (decls : decl list)
     env := extend_var !env name scheme;
     (name, scheme)
   ) groups in
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DImpl _ as d -> check_impl !env d
     | _ -> ()
   ) decls;
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DProp { prop_params; prop_body; _ } ->
       let local_env = List.fold_left (fun e (x, ast_ty) ->
         let mono = from_ast_type ~aliases:e.aliases ast_ty in
@@ -2511,7 +2565,7 @@ let check_repl_decl (env : env ref) (decls : decl list)
   check_method_usages !env;
   check_constraint_obligations !env;
   let user_extern_decls =
-    List.filter_map (function DExtern (_, n, t) -> Some (n, t) | _ -> None) decls
+    List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) decls
   in
   infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results groups;
   (results @ !iface_method_schemes @ !extern_schemes,

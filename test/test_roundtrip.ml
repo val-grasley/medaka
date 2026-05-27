@@ -343,4 +343,12 @@ let () =
       test_case "simple literal"  `Quick (mk "bench \"identity\" = 42\n");
       test_case "expr body"       `Quick (mk "bench \"add\" = 1 + 2\n");
     ];
+    "declaration attributes (Phase 49)", [
+      test_case "@deprecated round-trips" `Quick
+        (mk "@deprecated \"use bar\"\nfoo x = x\n");
+      test_case "@inline round-trips" `Quick
+        (mk "@inline\nfoo x = x\n");
+      test_case "@must_use round-trips" `Quick
+        (mk "@must_use\nextern foo : Int -> Int\n");
+    ];
   ]

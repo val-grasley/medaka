@@ -9,6 +9,13 @@ let decl_positions : Ast.loc list ref = ref []
 let record_decl_pos (loc : Ast.loc) =
   decl_positions := loc :: !decl_positions
 
+(* Remove the most recently recorded position.  Used by the attribute `decl`
+   production to replace the inner decl's position with the outer span. *)
+let pop_decl_pos () =
+  match !decl_positions with
+  | _ :: rest -> decl_positions := rest
+  | [] -> ()
+
 let take_decl_positions () = List.rev !decl_positions
 
 (* Line number of the most recently consumed non-trivia content.  The

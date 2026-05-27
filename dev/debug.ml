@@ -13,7 +13,7 @@ let parse src =
              pos.Lexing.pos_lnum
              (pos.Lexing.pos_cnum - pos.Lexing.pos_bol))
 
-let pp_decl d =
+let rec pp_decl d =
   match d with
   | DTypeSig (_, n, t)    -> Printf.sprintf "DTypeSig(%s, %s)" n (pp_ty t)
   | DFunDef (_, n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
@@ -49,6 +49,7 @@ let pp_decl d =
   | DNewtype (_, n, _, con, _, _) -> Printf.sprintf "DNewtype(%s, %s)" n con
   | DProp { prop_name; _ } -> Printf.sprintf "DProp(%S, ...)" prop_name
   | DBench { bench_name; _ } -> Printf.sprintf "DBench(%S, ...)" bench_name
+  | DAttrib (_, d) -> Printf.sprintf "DAttrib(..., %s)" (pp_decl d)
 
 let show label src =
   Printf.printf "── %s ──\n" label;

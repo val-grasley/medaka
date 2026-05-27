@@ -102,6 +102,16 @@ let desugar_constraint lhs rhs =
     | t -> failwith ("invalid constraint syntax: " ^ Ast.pp_ty t)
   in
   TyConstrained (extract lhs, rhs)
+
+(* Parse an attribute name + optional string argument into an Ast.attr.
+   Raises Failure for unknown or ill-formed attributes. *)
+let parse_attr name msg_opt =
+  match name, msg_opt with
+  | "deprecated", Some msg -> Ast.AttrDeprecated msg
+  | "deprecated", None     -> failwith "@deprecated requires a message: @deprecated \"reason\""
+  | "inline",     None     -> Ast.AttrInline
+  | "must_use",   None     -> Ast.AttrMustUse
+  | n, _                   -> failwith (Printf.sprintf "Unknown attribute: @%s" n)
 %}
 
 (* Literals *)
@@ -305,6 +315,20 @@ decl_list:
   | decl decl_list   { $1 @ $2 }
 
 decl:
+  (* Declaration attributes: @deprecated "msg", @inline, @must_use.
+     The inner `decl` production has already called record_decl_pos for its own
+     span; we pop that entry and replace it with the outer attribute-inclusive span
+     so `decl_positions` stays parallel to the returned `decl list`. *)
+  | AT IDENT STRING newlines decl
+    { Parser_state.pop_decl_pos ();
+      record_decl_pos $startpos $endpos;
+      let attr = parse_attr $2 (Some $3) in
+      match $5 with d :: rest -> DAttrib ([attr], d) :: rest | [] -> assert false }
+  | AT IDENT newlines decl
+    { Parser_state.pop_decl_pos ();
+      record_decl_pos $startpos $endpos;
+      let attr = parse_attr $2 None in
+      match $4 with d :: rest -> DAttrib ([attr], d) :: rest | [] -> assert false }
   (* public export data/record — DataPublic: type + constructors visible *)
   | PUBLIC EXPORT newlines inner_data_or_record  { record_decl_pos $startpos $endpos; [$4 DataPublic]   }
   | PUBLIC EXPORT inner_data_or_record           { record_decl_pos $startpos $endpos; [$3 DataPublic]   }

@@ -71,7 +71,7 @@ and collect_do_stmt acc = function
   | Ast.DoAssign (_, e) | Ast.DoFieldAssign (_, _, e) -> collect_expr acc e
   | Ast.DoLetElse (_, e, alt) -> collect_expr (collect_expr acc e) alt
 
-let collect_decl acc = function
+let rec collect_decl acc = function
   | Ast.DFunDef (_, _, _, body) -> collect_expr acc body
   | Ast.DImpl { methods; _ } ->
     List.fold_left (fun a (_, _, body) -> collect_expr a body) acc methods
@@ -83,6 +83,7 @@ let collect_decl acc = function
     ) acc methods
   | Ast.DProp { prop_body; _ } -> collect_expr acc prop_body
   | Ast.DBench { bench_body; _ } -> collect_expr acc bench_body
+  | Ast.DAttrib (_, d) -> collect_decl acc d
   | _ -> acc
 
 let collect_executable (program : Ast.decl list) : (string * int) list =

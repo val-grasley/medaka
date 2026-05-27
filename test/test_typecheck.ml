@@ -42,6 +42,30 @@ let assert_no_warns src () =
       "Expected no warnings, got %d.\nWarnings:\n  %s\n\nSource:\n%s"
       (List.length ws) (String.concat "\n  " ws) src)
 
+(* assert_warns_msg: expect at least one warning containing the substring *)
+let contains_substr haystack needle =
+  let hn = String.length haystack and nn = String.length needle in
+  if nn = 0 then true
+  else if hn < nn then false
+  else
+    let rec check i =
+      if i + nn > hn then false
+      else if String.sub haystack i nn = needle then true
+      else check (i + 1)
+    in
+    check 0
+
+let assert_warns_msg substr src () =
+  let ws =
+    try snd (check_program (Desugar.desugar_program (parse src)))
+    with Type_error (e, _) ->
+      failwith ("Expected warnings but got a type error: " ^ pp_error e)
+  in
+  if not (List.exists (fun w -> contains_substr w substr) ws) then
+    failwith (Printf.sprintf
+      "Expected warning containing %S.\nGot warnings:\n  %s\n\nSource:\n%s"
+      substr (String.concat "\n  " ws) src)
+
 (* assert_type src name expected — check that `name` in `src` types as `expected` *)
 let assert_type src name expected () =
   match check src with
@@ -2021,6 +2045,40 @@ r = map fromOpt xs
 |}
     "r" "List Int"
 
+(* ── Declaration attributes (Phase 49) ─────────── *)
+
+let t_deprecated_warns = assert_warns_msg "is deprecated" {|
+@deprecated "use bar instead"
+foo x = x
+main = foo 1
+|}
+
+let t_deprecated_still_typechecks = assert_type {|
+@deprecated "use bar instead"
+foo x = x
+|} "foo" "a -> a"
+
+let t_must_use_warns = assert_warns_msg "unused (marked @must_use)" {|
+compute2 : Int -> Int
+@must_use
+compute2 x = x
+
+main =
+  do
+    compute2 42
+    pure 0
+|}
+
+let t_inline_no_error = assert_no_warns {|
+@inline
+double x = x + x
+|}
+
+let t_no_warn_non_deprecated = assert_no_warns {|
+foo x = x
+main = foo 1
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -2393,5 +2451,12 @@ let () =
       test_case "Option Int -> Int"   `Quick t_function_option;
       test_case "Bool -> Int"         `Quick t_function_bool;
       test_case "used as map arg"     `Quick t_function_as_arg;
+    ];
+    "declaration attributes (Phase 49)", [
+      test_case "@deprecated emits warning"        `Quick t_deprecated_warns;
+      test_case "@deprecated fn still type-checks" `Quick t_deprecated_still_typechecks;
+      test_case "@must_use discard warns"          `Quick t_must_use_warns;
+      test_case "@inline no error"                 `Quick t_inline_no_error;
+      test_case "non-deprecated no warning"        `Quick t_no_warn_non_deprecated;
     ];
   ]

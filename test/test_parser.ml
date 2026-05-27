@@ -18,7 +18,7 @@ let parse src =
   in
   Ast.strip_locs_program prog
 
-let pp_decl d =
+let rec pp_decl d =
   match d with
   | DTypeSig (_, n, t)    -> Printf.sprintf "DTypeSig(%s, %s)" n (Ast.pp_ty t)
   | DFunDef (_, n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
@@ -34,6 +34,7 @@ let pp_decl d =
   | DNewtype (_, n, _, con, _, _) -> Printf.sprintf "DNewtype(%s, %s, ...)" n con
   | DProp { prop_name; _ } -> Printf.sprintf "DProp(%S, ...)" prop_name
   | DBench { bench_name; _ } -> Printf.sprintf "DBench(%S, ...)" bench_name
+  | DAttrib (_, d) -> Printf.sprintf "DAttrib(..., %s)" (pp_decl d)
 
 let parse_one src =
   match parse src with
@@ -1273,6 +1274,28 @@ sign =
             ]))) -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
+(* ── Declaration attributes (Phase 49) ──────────────── *)
+
+let test_attr_deprecated () =
+  match parse_one "@deprecated \"use bar\"\nfoo x = x\n" with
+  | DAttrib ([AttrDeprecated "use bar"], DFunDef (false, "foo", [PVar "x"], EVar "x")) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_attr_inline () =
+  match parse_one "@inline\nfoo x = x\n" with
+  | DAttrib ([AttrInline], DFunDef (false, "foo", [PVar "x"], EVar "x")) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_attr_must_use () =
+  match parse_one "@must_use\nextern foo : Int -> Int\n" with
+  | DAttrib ([AttrMustUse], DExtern (false, "foo", _)) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_attr_unknown () =
+  match parse "@badattr\nfoo x = x\n" with
+  | exception Failure msg when String.length msg > 0 -> ()
+  | _ -> failwith "expected parse failure for unknown attribute"
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -1494,5 +1517,11 @@ let () =
     "function keyword (Phase 44)", [
       test_case "basic two arms"   `Quick test_function_basic;
       test_case "arms with guards" `Quick test_function_guard;
+    ];
+    "declaration attributes (Phase 49)", [
+      test_case "@deprecated"  `Quick test_attr_deprecated;
+      test_case "@inline"      `Quick test_attr_inline;
+      test_case "@must_use"    `Quick test_attr_must_use;
+      test_case "unknown attr" `Quick test_attr_unknown;
     ];
   ]

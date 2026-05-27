@@ -911,9 +911,9 @@ let eval_program program =
      prelude's `andThen` VMulti, so this is what makes Step 3 work.
      Skip when the program IS core (avoid duplicates). *)
   let is_core =
-    let has_ordering = List.exists (function
+    let has_ordering = List.exists (fun d -> match Ast.inner_decl d with
       | DData (_, "Ordering", _, _, _) -> true | _ -> false) program in
-    let has_foldable = List.exists (function
+    let has_foldable = List.exists (fun d -> match Ast.inner_decl d with
       | DInterface { iface_name = "Foldable"; _ } -> true | _ -> false) program in
     has_ordering && has_foldable
   in
@@ -928,7 +928,7 @@ let eval_program program =
   Hashtbl.clear ctor_field_order;
   Hashtbl.clear arbitrary_registry;
   let type_ctors : (string, string list) Hashtbl.t = Hashtbl.create 8 in
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DData (_, n, _, vs, _) ->
       let cnames = List.map (fun v -> v.con_name) vs in
       Hashtbl.replace type_ctors n cnames;
@@ -950,7 +950,7 @@ let eval_program program =
     | Ast.TyConstrained (_, t) | Ast.TyEffect (_, t) -> head_tycon t
     | _ -> None
   in
-  List.iter (function
+  List.iter (fun d -> match Ast.inner_decl d with
     | DImpl { iface_name = "Thenable"; type_args; _ } ->
       List.iter (fun ta ->
         match head_tycon ta with
@@ -971,7 +971,7 @@ let eval_program program =
 
   (* Pass 1: collect DData constructors and DFunDef/DImpl method names *)
   List.iter (fun decl ->
-    match decl with
+    match Ast.inner_decl decl with
     | DNewtype (_, _, _, con, _, _) ->
       add_to_frame con (make_ctor con 1)
     | DData (_, _, _, variants, _) ->
@@ -1019,7 +1019,7 @@ let eval_program program =
 
   Hashtbl.clear pure_impls;
   List.iter (fun decl ->
-    match decl with
+    match Ast.inner_decl decl with
     | DFunDef (_, name, pats, body) ->
       let v = wrap_match_errors (fun () ->
         if pats = [] then eval env body
@@ -1122,7 +1122,7 @@ type repl_state = {
   eval_env  : env ref;
 }
 
-let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
+let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
   let add name v = rs.top_frame := (name, ref v) :: !(rs.top_frame) in
   let fill name v =
     match List.assoc_opt name !(rs.top_frame) with
@@ -1270,7 +1270,9 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
          fill name merged
      ) methods
    | DRecord _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ | DProp _
-   | DBench _ -> ())
+   | DBench _ -> ()
+   | DAttrib (_, d) ->
+     eval_repl_decl rs d)
 
 let eval_repl_expr (rs : repl_state) (e : expr) : value =
   rs.eval_env := [!(rs.top_frame)];
