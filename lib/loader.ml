@@ -1,14 +1,20 @@
 (* Loader: parse a program's transitive file dependencies and return them
    in topological (dependency-first) order.
 
-   Module ID derivation: given project_dir and a file path, strip the
-   project_dir prefix and the .mdk suffix, then replace / with dots.
-   Example: project_dir=/p/src, file=/p/src/list/core.mdk → "list.core" *)
+   Module ID derivation: given a list of search roots and a file path, try
+   each root as a prefix, take the first match, strip the .mdk suffix, then
+   replace / with dots.
+   Example: roots=["/p/src"], file=/p/src/list/core.mdk → "list.core"
+
+   Multi-root (workspace) mode: pass one root per workspace member.  A module
+   ID is ambiguous if it resolves to a file in two or more roots — this raises
+   AmbiguousModule. *)
 
 type load_error =
   | FileNotFound     of string          (* file path *)
   | CyclicDependency of string list     (* module path forming the cycle *)
   | UnknownModule    of { mod_id: string; importer_file: string option }
+  | AmbiguousModule  of { mod_id: string; found_in: string list }
 
 exception LoadError of load_error
 
@@ -20,16 +26,22 @@ let normalize_path p =
     String.sub p 0 (String.length p - 1)
   else p
 
-let module_id_of_path project_dir file_path =
-  let project_dir = normalize_path project_dir in
-  let file_path   = normalize_path file_path in
-  let prefix = project_dir ^ "/" in
-  let rel =
+(* Derive the module ID for a file by trying each root as a prefix.
+   Falls back to the bare filename (no extension) if no root matches. *)
+let module_id_of_path roots file_path =
+  let file_path = normalize_path file_path in
+  let rel = List.find_map (fun root ->
+    let root = normalize_path root in
+    let prefix = root ^ "/" in
     if String.length file_path > String.length prefix
        && String.sub file_path 0 (String.length prefix) = prefix
-    then String.sub file_path (String.length prefix)
-           (String.length file_path - String.length prefix)
-    else Filename.basename file_path
+    then Some (String.sub file_path (String.length prefix)
+                 (String.length file_path - String.length prefix))
+    else None
+  ) roots in
+  let rel = match rel with
+    | Some r -> r
+    | None -> Filename.basename file_path
   in
   (* Strip .mdk suffix *)
   let rel =
@@ -40,6 +52,7 @@ let module_id_of_path project_dir file_path =
   (* Replace path separators with dots *)
   String.concat "." (String.split_on_char '/' rel)
 
+(* Compute the file path for a module ID under a single root (no existence check). *)
 let file_of_module_id project_dir mod_id =
   let project_dir = normalize_path project_dir in
   let rel = String.concat "/" (String.split_on_char '.' mod_id) ^ ".mdk" in
@@ -135,13 +148,21 @@ let file_available ?read path =
   | Some _ -> true
   | None   -> Sys.file_exists path
 
+(* Find all candidate file paths for a module ID across multiple search roots.
+   Returns a list of existing paths (0 = not found, 1 = unique, 2+ = ambiguous). *)
+let find_module_files ?read roots mod_id =
+  List.filter_map (fun root ->
+    let path = file_of_module_id root mod_id in
+    if file_available ?read path then Some path else None
+  ) roots
+
 (* Returns modules in dependency-first order (leaves before roots) *)
 let topo_sort
     ?read
-    (project_dir : string)
-    (root_id     : string)
-    (root_path   : string)
-    (root_prog   : Ast.program)
+    (roots      : string list)
+    (root_id    : string)
+    (root_path  : string)
+    (root_prog  : Ast.program)
   : (string * string * Ast.program) list =
   (* module_id → (file_path, program) *)
   let loaded : (string, string * Ast.program) Hashtbl.t = Hashtbl.create 8 in
@@ -168,12 +189,16 @@ let topo_sort
         match Hashtbl.find_opt loaded mod_id with
         | Some p -> p
         | None ->
-          let path = file_of_module_id project_dir mod_id in
-          if not (file_available ?read path) then
-            raise (LoadError (UnknownModule { mod_id; importer_file = importer }));
-          let prog = parse_file ?read path in
-          Hashtbl.replace loaded mod_id (path, prog);
-          (path, prog)
+          let candidates = find_module_files ?read roots mod_id in
+          (match candidates with
+           | [] ->
+             raise (LoadError (UnknownModule { mod_id; importer_file = importer }))
+           | [path] ->
+             let prog = parse_file ?read path in
+             Hashtbl.replace loaded mod_id (path, prog);
+             (path, prog)
+           | paths ->
+             raise (LoadError (AmbiguousModule { mod_id; found_in = paths })))
       in
       List.iter (fun dep_id ->
         visit ~stack:(mod_id :: stack) ~importer:(Some file_path) dep_id
@@ -187,9 +212,11 @@ let topo_sort
 (* ── Public entry point ───────────────────────────── *)
 
 (* Load a root .mdk file and all its transitive dependencies.
-   project_dir is the directory used to resolve module IDs to file paths.
+   roots is a list of directories used to resolve module IDs to file paths.
+   For single-package projects pass [project_dir]; for workspaces pass one
+   entry per member directory.
    Returns (module_id, file_path, program) list in dependency-first order. *)
-let load_program ?read root_file project_dir =
-  let root_id   = module_id_of_path project_dir root_file in
+let load_program ?read root_file roots =
+  let root_id   = module_id_of_path roots root_file in
   let root_prog = parse_file ?read root_file in
-  topo_sort ?read project_dir root_id root_file root_prog
+  topo_sort ?read roots root_id root_file root_prog

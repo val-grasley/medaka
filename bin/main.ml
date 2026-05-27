@@ -83,7 +83,11 @@ let () =
           (match Medaka_lib.Project_config.load_from_dir root with
            | None ->
              Printf.eprintf "error: no entry in medaka.toml\n"; exit 1
-           | Some cfg -> Filename.concat root cfg.entry)
+           | Some cfg ->
+             (match cfg.Medaka_lib.Project_config.entry with
+              | Some e -> Filename.concat root e
+              | None ->
+                Printf.eprintf "error: workspace root has no [package] entry\n"; exit 1))
       end
     in
     let source = read_file filename in
@@ -145,7 +149,11 @@ let () =
           (match Medaka_lib.Project_config.load_from_dir root with
            | None ->
              Printf.eprintf "error: no entry in medaka.toml\n"; exit 1
-           | Some cfg -> Filename.concat root cfg.entry)
+           | Some cfg ->
+             (match cfg.Medaka_lib.Project_config.entry with
+              | Some e -> Filename.concat root e
+              | None ->
+                Printf.eprintf "error: workspace root has no [package] entry\n"; exit 1))
       end
     in
     let source = read_file filename in
@@ -190,7 +198,9 @@ let () =
   end;
   (* Resolve a zero-arg `run`/`check` against `medaka.toml` in the cwd
      (walking up).  Returns the entry file path, or None if no config
-     is found. *)
+     is found.  Raises WS_root when the nearest config is a workspace-only
+     root (no [package] entry). *)
+  let module WS = struct exception Root of string end in
   let entry_from_cwd_config () =
     let cwd = Sys.getcwd () in
     let probe = Filename.concat cwd "_probe_.mdk" in
@@ -199,7 +209,122 @@ let () =
     | Some root ->
       (match Medaka_lib.Project_config.load_from_dir root with
        | None -> None
-       | Some cfg -> Some (Filename.concat root cfg.entry))
+       | Some cfg ->
+         match cfg.Medaka_lib.Project_config.entry with
+         | Some e -> Some (Filename.concat root e)
+         | None ->
+           if cfg.Medaka_lib.Project_config.workspace <> None then
+             raise (WS.Root root)
+           else None)
+  in
+  (* Run type-check on all members of a workspace and report errors per-member.
+     Returns true if all members passed. *)
+  let workspace_check root =
+    let members =
+      try Medaka_lib.Project_config.load_workspace_members root
+      with Medaka_lib.Project_config.Parse_error msg ->
+        Printf.eprintf "error: workspace config: %s\n" msg; exit 1
+    in
+    let member_roots = List.map fst members in
+    let all_ok = ref true in
+    List.iter (fun (member_dir, member_cfg) ->
+      match member_cfg.Medaka_lib.Project_config.entry with
+      | None ->
+        Printf.eprintf "warning: member %s has no [package], skipping\n" member_dir
+      | Some entry ->
+        let entry_file = Filename.concat member_dir entry in
+        let msource =
+          (try read_file entry_file
+           with Sys_error msg ->
+             Printf.eprintf "error: %s\n" msg; all_ok := false; "")
+        in
+        if msource = "" then ()
+        else begin
+          let lexbuf = Lexing.from_string msource in
+          lexbuf.Lexing.lex_curr_p <-
+            { lexbuf.Lexing.lex_curr_p with Lexing.pos_fname = entry_file };
+          Medaka_lib.Lexer.reset ();
+          let prog =
+            (try Medaka_lib.Parser.program Medaka_lib.Lexer.token lexbuf
+             with
+             | Failure msg ->
+               Printf.eprintf "%s: %s\n" entry_file msg; all_ok := false; []
+             | Medaka_lib.Parser.Error ->
+               let pos = lexbuf.Lexing.lex_curr_p in
+               Printf.eprintf "%s:%d:%d: Parse error\n"
+                 pos.Lexing.pos_fname pos.Lexing.pos_lnum
+                 (pos.Lexing.pos_cnum - pos.Lexing.pos_bol);
+               all_ok := false; [])
+          in
+          if prog = [] then ()
+          else begin
+            let modules =
+              (try Medaka_lib.Loader.load_program entry_file member_roots
+               with
+               | Medaka_lib.Loader.LoadError
+                   (Medaka_lib.Loader.FileNotFound f) ->
+                 Printf.eprintf "error: file not found: %s\n" f;
+                 all_ok := false; []
+               | Medaka_lib.Loader.LoadError
+                   (Medaka_lib.Loader.CyclicDependency cycle) ->
+                 Printf.eprintf "error: cyclic dependency: %s\n"
+                   (String.concat " → " cycle);
+                 all_ok := false; []
+               | Medaka_lib.Loader.LoadError
+                   (Medaka_lib.Loader.UnknownModule { mod_id; _ }) ->
+                 Printf.eprintf "error: unknown module: %s\n" mod_id;
+                 all_ok := false; []
+               | Medaka_lib.Loader.LoadError
+                   (Medaka_lib.Loader.AmbiguousModule { mod_id; found_in }) ->
+                 Printf.eprintf "error: ambiguous module '%s' found in: %s\n"
+                   mod_id (String.concat ", " found_in);
+                 all_ok := false; []
+               | Failure msg ->
+                 Printf.eprintf "error: %s\n" msg; all_ok := false; [])
+            in
+            if modules = [] then ()
+            else begin
+              let modules = List.map (fun (mid, fp, p) ->
+                (mid, fp, Medaka_lib.Desugar.desugar_program p)) modules in
+              let resolve_exports = ref [] in
+              let resolve_ok = ref true in
+              List.iter (fun (mod_id, file_path, p) ->
+                let fsrc =
+                  if file_path = entry_file then msource
+                  else (try read_file file_path with Sys_error _ -> "")
+                in
+                let (exports, errs) =
+                  Medaka_lib.Resolve.resolve_module !resolve_exports mod_id p
+                in
+                List.iter (fun (err, loc_opt) ->
+                  Printf.eprintf "%s: %s\n"
+                    (pp_loc loc_opt) (Medaka_lib.Resolve.pp_error err);
+                  show_snippet fsrc loc_opt;
+                  resolve_ok := false; all_ok := false
+                ) errs;
+                resolve_exports := exports :: !resolve_exports
+              ) modules;
+              if !resolve_ok then begin
+                let type_exports = ref [] in
+                List.iter (fun (mod_id, _fp, p) ->
+                  (try
+                    let (te, _schemes, warnings) =
+                      Medaka_lib.Typecheck.typecheck_module !type_exports mod_id p
+                    in
+                    type_exports := te :: !type_exports;
+                    List.iter (fun w -> Printf.eprintf "%s\n" w) warnings
+                   with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
+                     Printf.eprintf "%s: %s\n"
+                       (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
+                     show_snippet msource loc_opt;
+                     all_ok := false)
+                ) modules
+              end
+            end
+          end
+        end
+    ) members;
+    !all_ok
   in
   let mode, filename =
     if has_sub "check" && argc >= 3 then `Check, argv.(2)
@@ -209,6 +334,11 @@ let () =
       | Some f -> (if has_sub "check" then `Check else `Run), f
       | None ->
         Printf.eprintf "error: no file given and no medaka.toml found\n"; exit 1
+      | exception WS.Root root when has_sub "check" ->
+        exit (if workspace_check root then 0 else 1)
+      | exception WS.Root _ ->
+        Printf.eprintf "error: workspace root has no [package] entry; \
+cd into a member or specify a file\n"; exit 1
     end
     else if argc = 2 then `Run, argv.(1)
     else begin
@@ -279,7 +409,7 @@ let () =
   end else begin
     (* ── Multi-file mode ── *)
     let modules =
-      (try Medaka_lib.Loader.load_program filename project_dir
+      (try Medaka_lib.Loader.load_program filename [project_dir]
        with
        | Medaka_lib.Loader.LoadError (Medaka_lib.Loader.FileNotFound f) ->
          Printf.eprintf "error: file not found: %s\n" f; exit 1
@@ -288,6 +418,10 @@ let () =
            (String.concat " → " cycle); exit 1
        | Medaka_lib.Loader.LoadError (Medaka_lib.Loader.UnknownModule { mod_id; _ }) ->
          Printf.eprintf "error: unknown module: %s\n" mod_id; exit 1
+       | Medaka_lib.Loader.LoadError
+           (Medaka_lib.Loader.AmbiguousModule { mod_id; found_in }) ->
+         Printf.eprintf "error: ambiguous module '%s' found in: %s\n"
+           mod_id (String.concat ", " found_in); exit 1
        | Failure msg ->
          Printf.eprintf "error: %s\n" msg; exit 1)
     in

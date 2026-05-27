@@ -249,6 +249,13 @@ let attribute_load_error
       loc;
       message  = Printf.sprintf "Unknown module: %s" mod_id;
     }
+  | Loader.AmbiguousModule { mod_id; found_in } ->
+    push_into b root_file {
+      severity = Error;
+      loc      = dummy_loc ~file:root_file;
+      message  = Printf.sprintf "Ambiguous module '%s' found in: %s"
+                   mod_id (String.concat ", " found_in);
+    }
 
 (* Public entry point for multi-file analysis.  Loads [root_file]'s
    import graph using [read] for buffer overrides, then runs the
@@ -264,7 +271,7 @@ let analyze_project
   let buckets : buckets = Hashtbl.create 8 in
 
   let modules_opt =
-    try Some (Loader.load_program ~read root_file project_dir)
+    try Some (Loader.load_program ~read root_file [project_dir])
     with Loader.LoadError e ->
       attribute_load_error buckets ~root_file ~read e;
       None

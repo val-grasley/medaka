@@ -27,17 +27,17 @@ let write_file dir name content =
 (* ── Tests ───────────────────────────────────────── *)
 
 let test_module_id_of_path () =
-  let f = Loader.module_id_of_path "/proj/src" "/proj/src/list.mdk" in
+  let f = Loader.module_id_of_path ["/proj/src"] "/proj/src/list.mdk" in
   if f <> "list" then
     failwith (Printf.sprintf "expected 'list', got '%s'" f);
-  let g = Loader.module_id_of_path "/proj/src" "/proj/src/utils/text.mdk" in
+  let g = Loader.module_id_of_path ["/proj/src"] "/proj/src/utils/text.mdk" in
   if g <> "utils.text" then
     failwith (Printf.sprintf "expected 'utils.text', got '%s'" g)
 
 let test_single_file () =
   with_tmp_dir (fun dir ->
     let path = write_file dir "hello.mdk" "answer = 42\n" in
-    let modules = Loader.load_program path dir in
+    let modules = Loader.load_program path [dir] in
     match modules with
     | [(mod_id, _, prog)] ->
       if mod_id <> "hello" then
@@ -56,7 +56,7 @@ let test_happy_path () =
     let main_path = write_file dir "main.mdk"
       "import list.{map}\ndouble x = x * 2\nmain : <IO> Unit\nmain =\n  do\n    let r = map double [1, 2, 3]\n    pure ()\n"
     in
-    let modules = Loader.load_program main_path dir in
+    let modules = Loader.load_program main_path [dir] in
     let ids = List.map (fun (id, _, _) -> id) modules in
     (* list must appear before main *)
     (match ids with
@@ -69,7 +69,7 @@ let test_cycle_detection () =
     let _ = write_file dir "a.mdk" "import b.{foo}\nx = 1\n" in
     let a_path = write_file dir "b.mdk" "import a.{x}\nfoo = 2\n" in
     try
-      let _ = Loader.load_program a_path dir in
+      let _ = Loader.load_program a_path [dir] in
       failwith "expected CyclicDependency error"
     with
     | Loader.LoadError (Loader.CyclicDependency _cycle) -> ()
@@ -82,7 +82,7 @@ let test_missing_file () =
       "import nonexistent.{foo}\nmain : <IO> Unit\nmain = pure ()\n"
     in
     try
-      let _ = Loader.load_program main_path dir in
+      let _ = Loader.load_program main_path [dir] in
       failwith "expected UnknownModule error"
     with
     | Loader.LoadError (Loader.UnknownModule _) -> ()
@@ -98,7 +98,7 @@ let test_privacy_violation () =
     let main_path = write_file dir "main.mdk"
       "import list.{internal_helper}\nmain : <IO> Unit\nmain = pure ()\n"
     in
-    let modules = Loader.load_program main_path dir in
+    let modules = Loader.load_program main_path [dir] in
     (* Load succeeds; privacy violation is caught at resolve time *)
     let resolve_exports = ref [] in
     let has_error = ref false in
@@ -164,7 +164,7 @@ let test_reexport_value_selective () =
     let _ = write_file dir "a.mdk" "export foo = 42\n" in
     let _ = write_file dir "b.mdk" "export import a.foo\n" in
     let main = write_file dir "main.mdk" "import b.{foo}\nresult = foo\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let b_exp = find_exp exports "b" in
@@ -178,7 +178,7 @@ let test_reexport_group () =
     let _ = write_file dir "a.mdk" "export foo = 1\nexport bar = 2\nexport baz = 3\n" in
     let _ = write_file dir "b.mdk" "export import a.{foo, bar}\n" in
     let main = write_file dir "main.mdk" "import b.{foo}\nimport b.{bar}\nresult = foo\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let b_exp = find_exp exports "b" in
@@ -196,7 +196,7 @@ let test_reexport_wildcard () =
     let _ = write_file dir "a.mdk" "export foo = 1\nexport bar = 2\nprivate_val = 3\n" in
     let _ = write_file dir "b.mdk" "export import a.*\n" in
     let main = write_file dir "main.mdk" "import b.{foo}\nimport b.{bar}\nresult = foo\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let b_exp = find_exp exports "b" in
@@ -215,7 +215,7 @@ let test_reexport_data_wildcard () =
     let _ = write_file dir "b.mdk" "export import a.*\n" in
     let main = write_file dir "main.mdk"
       "import b.{Color, Red, Green, Blue}\nfavorite : Color\nfavorite = Red\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let b_exp = find_exp exports "b" in
@@ -232,7 +232,7 @@ let test_reexport_data_group () =
     let _ = write_file dir "b.mdk" "export import a.{Color, Red, Green, Blue}\n" in
     let main = write_file dir "main.mdk"
       "import b.{Color, Red}\nfavorite : Color\nfavorite = Red\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let b_exp = find_exp exports "b" in
@@ -250,7 +250,7 @@ let test_reexport_interface () =
     let _ = write_file dir "b.mdk" "export import a.*\n" in
     let main = write_file dir "main.mdk"
       "import b.{Pretty, pretty}\ndisplay : Pretty a => a -> String\ndisplay x = pretty x\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let b_exp = find_exp exports "b" in
@@ -268,7 +268,7 @@ let test_reexport_interface_group () =
     let _ = write_file dir "b.mdk" "export import a.{Pretty}\n" in
     let main = write_file dir "main.mdk"
       "import b.{Pretty, pretty}\ndisplay : Pretty a => a -> String\ndisplay x = pretty x\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let b_exp = find_exp exports "b" in
@@ -285,7 +285,7 @@ let test_reexport_chained () =
     let _ = write_file dir "b.mdk" "export import a.foo\n" in
     let _ = write_file dir "c.mdk" "export import b.foo\n" in
     let main = write_file dir "main.mdk" "import c.{foo}\nresult = foo\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let c_exp = find_exp exports "c" in
@@ -299,7 +299,7 @@ let test_private_import_not_reexported () =
     let _ = write_file dir "a.mdk" "export foo = 42\n" in
     let _ = write_file dir "b.mdk" "import a.foo\n" in
     let main = write_file dir "main.mdk" "import b.{foo}\nresult = foo\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (_exports, errors) = resolve_all modules in
     if errors = [] then
       failwith "expected PrivateNameAccess error but got none"
@@ -315,7 +315,7 @@ let test_read_override () =
     let read path =
       if path = main_path then Some "answer = 99\n" else None
     in
-    let modules = Loader.load_program ~read main_path dir in
+    let modules = Loader.load_program ~read main_path [dir] in
     match modules with
     | [(_mid, _fp, prog)] ->
       (match prog with
@@ -342,7 +342,7 @@ let test_import_core_is_noop () =
   with_tmp_dir (fun dir ->
     let main = write_file dir "main.mdk"
       "import core.{identity}\nx = identity 5\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let ids = List.map (fun (id, _, _) -> id) modules in
     match ids with
     | ["main"] -> ()
@@ -356,7 +356,7 @@ let test_import_core_is_noop () =
 let test_abstract_export_type_only () =
   with_tmp_dir (fun dir ->
     let main = write_file dir "a.mdk" "export data Color = Red | Green | Blue\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let a_exp = find_exp exports "a" in
@@ -370,7 +370,7 @@ let test_abstract_export_type_only () =
 let test_public_export_ctors_visible () =
   with_tmp_dir (fun dir ->
     let main = write_file dir "a.mdk" "public export data Color = Red | Green | Blue\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (exports, errors) = resolve_all modules in
     if errors <> [] then failwith "unexpected resolve errors";
     let a_exp = find_exp exports "a" in
@@ -386,7 +386,7 @@ let test_import_abstract_ctor_rejected () =
     let _ = write_file dir "a.mdk" "export data Color = Red | Green | Blue\n" in
     let main = write_file dir "main.mdk"
       "import a.{Color}\nfavorite : Color\nfavorite = Red\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (_exports, errors) = resolve_all modules in
     let all_errs = List.concat_map snd errors in
     let has_unbound = List.exists (function
@@ -402,11 +402,75 @@ let test_import_public_ctor_allowed () =
     let _ = write_file dir "a.mdk" "public export data Color = Red | Green | Blue\n" in
     let main = write_file dir "main.mdk"
       "import a.{Color, Red}\nfavorite : Color\nfavorite = Red\n" in
-    let modules = Loader.load_program main dir in
+    let modules = Loader.load_program main [dir] in
     let (_exports, errors) = resolve_all modules in
     if errors <> [] then
       failwith "unexpected errors for public export constructor"
   )
+
+(* ── Workspace / multi-root tests ───────────────── *)
+
+(* Create a nested directory structure for workspace tests *)
+let with_workspace_dirs f =
+  with_tmp_dir (fun ws ->
+    let core_dir = Filename.concat ws "packages/core" in
+    let app_dir  = Filename.concat ws "packages/app" in
+    Unix.mkdir (Filename.concat ws "packages") 0o755;
+    Unix.mkdir core_dir 0o755;
+    Unix.mkdir app_dir  0o755;
+    f ws core_dir app_dir)
+
+(* Cross-member import: app imports a module defined in core *)
+let test_workspace_cross_member_import () =
+  with_workspace_dirs (fun _ws core_dir app_dir ->
+    (* core has utils.mdk *)
+    let _ = write_file core_dir "utils.mdk"
+      "export helper x = x + 1\n"
+    in
+    (* app/main.mdk imports utils from the core member *)
+    let main = write_file app_dir "main.mdk"
+      "import utils.{helper}\nresult = helper 10\n"
+    in
+    let roots = [core_dir; app_dir] in
+    let modules = Loader.load_program main roots in
+    let ids = List.map (fun (id, _, _) -> id) modules in
+    (* utils must appear before main *)
+    (match ids with
+     | ["utils"; "main"] -> ()
+     | _ -> failwith (Printf.sprintf "wrong order: [%s]" (String.concat ", " ids))))
+
+(* Ambiguous module: same module ID exists in two roots *)
+let test_workspace_ambiguous_module () =
+  with_workspace_dirs (fun _ws core_dir app_dir ->
+    (* Both roots have utils.mdk *)
+    let _ = write_file core_dir "utils.mdk" "export a = 1\n" in
+    let _ = write_file app_dir  "utils.mdk" "export b = 2\n" in
+    let main = write_file app_dir "main.mdk"
+      "import utils.{a}\nresult = a\n"
+    in
+    let roots = [core_dir; app_dir] in
+    (try
+      let _ = Loader.load_program main roots in
+      failwith "expected AmbiguousModule error"
+     with
+     | Loader.LoadError (Loader.AmbiguousModule { mod_id; _ }) ->
+       if mod_id <> "utils" then
+         failwith (Printf.sprintf "wrong mod_id in AmbiguousModule: %s" mod_id)
+     | Loader.LoadError _ -> failwith "wrong load error type"))
+
+(* Single-element roots list behaves identically to old project_dir API *)
+let test_single_root_compat () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "lib.mdk" "export f x = x * 2\n" in
+    let main = write_file dir "main.mdk"
+      "import lib.{f}\nresult = f 21\n"
+    in
+    let modules = Loader.load_program main [dir] in
+    let ids = List.map (fun (id, _, _) -> id) modules in
+    (match ids with
+     | ["lib"; "main"] -> ()
+     | _ -> failwith (Printf.sprintf "unexpected order: [%s]"
+                        (String.concat ", " ids))))
 
 (* ── Runner ──────────────────────────────────────── *)
 
@@ -446,5 +510,10 @@ let () =
       test_case "public export: ctors visible"        `Quick test_public_export_ctors_visible;
       test_case "import abstract: ctor rejected"      `Quick test_import_abstract_ctor_rejected;
       test_case "import public export: ctor allowed"  `Quick test_import_public_ctor_allowed;
+    ];
+    "workspace / multi-root", [
+      test_case "cross-member import"    `Quick test_workspace_cross_member_import;
+      test_case "ambiguous module"       `Quick test_workspace_ambiguous_module;
+      test_case "single-root compat"     `Quick test_single_root_compat;
     ];
   ]

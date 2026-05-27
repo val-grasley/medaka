@@ -49,7 +49,12 @@ let run (argv : string array) : int =
          (match Project_config.load_from_dir root with
           | None ->
             Printf.eprintf "medaka test: no medaka.toml in %s\n" root; exit 1
-          | Some cfg -> [Filename.concat root cfg.Project_config.entry]))
+          | Some cfg ->
+            (match cfg.Project_config.entry with
+             | Some e -> [Filename.concat root e]
+             | None ->
+               Printf.eprintf "medaka test: workspace root has no [package] entry\n";
+               exit 1)))
     | fs -> fs
   in
   let all_ok = List.for_all run_one files in

@@ -2143,11 +2143,37 @@ Closed set: `@deprecated "msg"`, `@inline`, `@must_use`. Parser-level
 only; semantics dispatched to the typechecker (`@deprecated`,
 `@must_use`) or the backend (`@inline`). Not user-extensible.
 
-### Phase 50: Workspaces in `medaka.toml` ⏳ TODO
+### Phase 50: Workspaces in `medaka.toml` ✅ DONE
 
 Cargo-style multi-package workspaces: a root `medaka.toml` declares
 `[workspace] members = [...]`, sharing one lockfile and resolving
 the dependency graph across the whole tree. Builds on Phase 36.
+
+**What was added.**
+- `type workspace = { ws_members : string list }` added to `ProjectConfig.t`;
+  `name`/`version`/`entry` made `string option` (required if `[package]` present,
+  `None` for workspace-only roots).
+- TOML parser extended with array literal support (`["a", "b"]` via
+  `parse_array_value`); `toml_value = Str of string | Arr of string list`
+  replaces the former `(string * string) list` internal representation.
+- `find_workspace_root : string -> string option` — walks up from a file's
+  directory stopping at the first `medaka.toml` with a `[workspace]` table.
+- `load_workspace_members : string -> (string * t) list` — resolves each
+  member path relative to the workspace root and loads its config.
+- `Loader.load_program` signature changed to accept `roots : string list`
+  instead of a single `project_dir`. All existing call sites pass `[project_dir]`
+  (backward compatible). Workspace calls pass one root per member directory.
+- `Loader.module_id_of_path` now takes `roots : string list`; tries each root
+  as a prefix and uses the first match.
+- `AmbiguousModule of { mod_id; found_in }` added to `Loader.load_error` (and
+  handled in `diagnostics.ml` and `bin/main.ml`).
+- `medaka check` (no args) from a workspace-only root iterates all members,
+  runs resolve + typecheck on each with the full member-roots list, and exits 1
+  if any member fails.  `medaka run` from a workspace-only root errors helpfully.
+- `lib/test_cmd.ml` updated for `entry : string option`.
+- 8 new `test_project_config` cases (workspace parse, `find_workspace_root`,
+  `load_workspace_members`); 3 new `test_loader` cases (cross-member import,
+  ambiguous module, single-root compat). All prior tests still pass.
 
 ---
 

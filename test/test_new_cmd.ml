@@ -54,7 +54,7 @@ let scaffold_creates_files () =
       failwith ("toml lacks project name; got:\n" ^ toml);
     (* The scaffolded toml must be parseable by our own reader. *)
     let cfg = Project_config.parse_string toml in
-    if cfg.name <> "demo" then failwith "round-trip name mismatch")
+    if cfg.name <> Some "demo" then failwith "round-trip name mismatch")
 
 let scaffold_refuses_existing () =
   with_temp_cwd (fun () ->
