@@ -374,10 +374,12 @@ bad p = { p | x = "nope" }
 
 (* ── Do notation ───────────────────────────────────── *)
 
-(* Single DoExpr: x must be monadic, so f's arg is constrained to m a *)
+(* Single DoExpr in a do-block with no `<-` bind: the typechecker no longer
+   forces x to be `m a` (only blocks with at least one `<-` bind get the
+   per-block monad treatment).  So `do x` with no bind just types x as-is. *)
 let t_do_single_expr = assert_type
   "f x =\n  do\n    x\n"
-  "f" "a b -> a b"
+  "f" "a -> a"
 
 (* DoBind then pure: monad is left abstract (works for any monad) *)
 let t_do_bind_pure = assert_type
@@ -435,6 +437,71 @@ let e_do_bind_non_monad = assert_err
 (* Error: DoExpr that is not monadic (print returns Unit, not m a) *)
 let e_do_non_monadic_expr = assert_err
   "bad opt =\n  do\n    x <- opt\n    print x\n    pure x\n"
+
+(* ── Regression tests for indented-body / non-monadic do (Phase 45.5) ─────
+   Before the EDo `has_bind` split, these all failed with "Type mismatch:
+   X vs a b" because the parser lowers any multi-stmt function body to
+   EDo, and EDo forced every DoExpr to unify with `m a`. *)
+
+(* Indented function body: two let-bindings followed by an Int expression.
+   Should type as `f : Int -> Int`. *)
+let t_indented_body_lets = assert_type
+  {|f x =
+  let a = x + 1
+  let b = a + 1
+  b
+|}
+  "f" "Int -> Int"
+
+(* Single let in an indented body. *)
+let t_indented_body_single_let = assert_type
+  {|f x =
+  let a = x + 1
+  a
+|}
+  "f" "Int -> Int"
+
+(* Top-level `x = (let a = ..; let b = ..; expr)` indented. *)
+let t_indented_toplevel_lets = assert_type
+  {|x =
+  let a = 3
+  let b = 4
+  a + b
+|}
+  "x" "Int"
+
+(* Polymorphic let-binding inside an indented body used at two distinct
+   types — proves the inner let IS being generalized.  `id 5` pins the
+   second element to Int, but x is left free, so the type is `a -> (a, Int)`
+   rather than `Int -> (Int, Int)`. *)
+let t_indented_body_poly_let = assert_type
+  {|f x =
+  let id y = y
+  (id x, id 5)
+|}
+  "f" "a -> (a, Int)"
+
+(* `do { println; println }` — no `<-` bind, just effectful sequencing.
+   `main` is a value binding annotated `<IO> Unit`; pp_scheme prints
+   only the bare value type `Unit` (effects are tracked on TFun arrows,
+   not in printed value-scheme types). *)
+let t_do_seq_no_bind = assert_type
+  {|main : <IO> Unit
+main = do
+  println "one"
+  println "two"
+|}
+  "main" "Unit"
+
+(* Non-do indented function body with two effectful calls (parses as EDo
+   under the hood via stmts_to_expr).  Same expected type as above. *)
+let t_indented_body_effectful_seq = assert_type
+  {|main : <IO> Unit
+main =
+  println "one"
+  println "two"
+|}
+  "main" "Unit"
 
 (* ── Pipe and compose operators ─────────────────── *)
 
@@ -2075,6 +2142,12 @@ let () =
     ];
     "do notation", [
       test_case "single expr"            `Quick t_do_single_expr;
+      test_case "indented body: lets+expr" `Quick t_indented_body_lets;
+      test_case "indented body: 1 let"    `Quick t_indented_body_single_let;
+      test_case "indented toplevel lets"  `Quick t_indented_toplevel_lets;
+      test_case "indented body: poly let" `Quick t_indented_body_poly_let;
+      test_case "do seq, no bind"         `Quick t_do_seq_no_bind;
+      test_case "indented effectful seq"  `Quick t_indented_body_effectful_seq;
       test_case "bind + pure"            `Quick t_do_bind_pure;
       test_case "two binds"              `Quick t_do_two_binds;
       test_case "let in do"              `Quick t_do_let;

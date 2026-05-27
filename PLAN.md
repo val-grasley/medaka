@@ -20,19 +20,29 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-778 tests pass across 9 test suites:
+784 tests pass across 9 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
 | Parser            | `test/test_parser.ml`           | 149   | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 103   | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 60    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 276   | Inferred types, type errors, exhaustiveness warnings  |
+| Type checker      | `test/test_typecheck.ml`        | 282   | Inferred types, type errors, exhaustiveness warnings  |
 | Evaluator         | `test/test_eval.ml`             | 140   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
 | Loader            | `test/test_loader.ml`           | 24    | Multi-file imports, topo sort, cycle detection, prelude no-op, abstract exports |
 | Diagnostics       | `test/test_diagnostics.ml`      | 11    | LSP diagnostic output, multi-file analysis            |
+
+A **thorough test suite** under `test/thorough/` (not run by default
+`dune test`) exercises edge cases across the type checker, evaluator,
+feature interactions, and stdlib.  Run with
+`dune build @thorough` or invoke `./_build/default/test/thorough/thorough_*.exe`
+directly.  Each file is its own alcotest executable; the shared
+`Thorough_helpers` library provides `assert_type` / `assert_err` /
+`assert_val` / `assert_runtime_err` / `assert_warns` / `assert_stdout`
+following the same self-diagnosing pattern as the base suites
+(failure messages embed the source).
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -1810,6 +1820,43 @@ Scope:
 - Decide whether to support multiple field updates with overlapping
   prefixes in one brace (e.g. `{ p | address.city = ..., address.zip = ...}`);
   reject as a non-goal initially — explicit nesting is fine.
+
+### Phase 45.5: EDo `has_bind` split ✅ DONE
+
+Found while building the thorough test suite (2026-05-26 night session).
+The parser lowers any multi-stmt indented function body to `EDo`
+(via `stmts_to_expr`).  The typechecker's old `EDo` handler introduced
+a per-block monad tyvar `m` and forced *every* `DoExpr` / `DoBind` RHS
+to unify with `m a` — which is correct for monadic `do { x <- m; ... }`
+patterns but wrong for two large classes of valid programs that the
+existing test suite never exercised end-to-end (eval and typecheck were
+tested separately):
+
+1. **Indented function bodies with `let` + pure expr.**
+   `f x = (indent) let a = x + 1 (newline) a (dedent)` parses as
+   `EDo [DoLet; DoExpr]` and was rejected with `Type mismatch: Int vs a b`
+   because `a : Int` couldn't unify with `m a`.
+
+2. **Effectful sequencing with no `<-` bind.**
+   `main : <IO> Unit; main = do { println "one"; println "two" }` —
+   the bread-and-butter IO pattern — was rejected with
+   `Type mismatch: Unit vs a b` because `println` returns `Unit` (the
+   `<IO>` effect lives on `TFun`, not the return type), and `Unit`
+   couldn't unify with `m a`.
+
+Fix: split EDo into two modes by whether *any* stmt is a `DoBind`.
+With a bind, the existing per-block-`m` logic runs unchanged.  Without,
+each `DoExpr` is just typed and its result discarded — no `m a`
+constraint.  `DoLet` / `DoAssign` / `DoFieldAssign` / `DoLetElse`
+handling is shared.  Eval already handled both modes correctly
+(`eval_do` sequences stmts directly), so the runtime needed no changes.
+
+Regression tests landed in `test/test_typecheck.ml` under the existing
+`"do notation"` suite: `indented body: lets+expr`, `indented body: 1 let`,
+`indented toplevel lets`, `indented body: poly let`, `do seq, no bind`,
+`indented effectful seq`.  Existing `t_do_single_expr` was updated to
+match the new (correct) behavior: `f x = do x` now types as `a -> a`
+rather than `a b -> a b`.
 
 ---
 

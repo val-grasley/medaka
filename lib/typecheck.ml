@@ -1000,25 +1000,46 @@ let rec infer env = function
     result
 
   | EDo stmts ->
-    (* Approach (b): introduce one per-block monad tyvar `m`.
-       DoBind(pat, e) : e must be `m a`; pat binds `a`.
-       DoExpr e       : e must be `m _` (value discarded).
-       DoLet(pat, e)  : plain let — no monadic wrapping.
-       The last statement determines the result type. *)
+    (* Two modes, distinguished by whether any stmt is a `<-` bind:
+
+       - Monadic (has at least one DoBind):  introduce one per-block monad
+         tyvar `m`; every DoExpr and DoBind RHS must be `m a`.  The last
+         stmt's type determines the block result.
+
+       - Sequential (no DoBind):  type each stmt in turn; DoExpr stmts have
+         their result discarded except the final one.  This covers the
+         common patterns `f = do { let a = ...; expr }` (which the parser
+         emits as EDo whenever the body is indented multi-line stmts) and
+         `main = do { println "a"; println "b" }` (effectful sequencing,
+         where effect tracking handles the propagation, not monadic m).
+
+       Both modes share the DoLet / DoAssign / DoFieldAssign / DoLetElse
+       handling — those don't depend on `m`. *)
     if stmts = [] then fail (Other "Empty do block");
+    let has_bind =
+      List.exists (function DoBind _ -> true | _ -> false) stmts
+    in
     let m = fresh_var () in
+    let unify_monadic te =
+      if has_bind then begin
+        let inner = fresh_var () in
+        unify te (TApp (m, inner));
+        inner
+      end else
+        (* Sequential mode: don't constrain te to be `m a`.  Return a fresh
+           tyvar so the caller can still bind it (no-op binding in practice). *)
+        fresh_var ()
+    in
     let rec type_stmts env = function
       | [] -> assert false
       | [DoExpr e] ->
         let te = infer env e in
-        let inner = fresh_var () in
-        unify te (TApp (m, inner));
+        let _ = unify_monadic te in
         te
       | [DoBind (pat, e)] ->
         (* Trailing bind discards the bound variable; result is m Unit *)
         let te = infer env e in
-        let inner = fresh_var () in
-        unify te (TApp (m, inner));
+        let inner = unify_monadic te in
         let tp, _ = type_pat env pat in
         unify tp inner;
         TApp (m, t_unit)
@@ -1032,13 +1053,11 @@ let rec infer env = function
         fail (Other "do block cannot end with a let-else binding")
       | DoExpr e :: rest ->
         let te = infer env e in
-        let inner = fresh_var () in
-        unify te (TApp (m, inner));
+        let _ = unify_monadic te in
         type_stmts env rest
       | DoBind (pat, e) :: rest ->
         let te = infer env e in
-        let inner = fresh_var () in
-        unify te (TApp (m, inner));
+        let inner = unify_monadic te in
         let tp, bindings = type_pat env pat in
         unify tp inner;
         type_stmts (extend_vars env bindings) rest
