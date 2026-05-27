@@ -122,7 +122,7 @@ let t_project_clean () =
       "export double x = x * 2\n"
     in
     let main = write_file dir "main.mdk"
-      "import dep.{double}\nmain : <IO> Unit\nmain =\n  do\n    let r = double 3\n    pure ()\n"
+      "import dep.{double}\nmain : <IO> Unit\nmain = print (double 3)\n"
     in
     let results = analyze_project ~root_file:main ~project_dir:dir
                     ~read:no_override in
@@ -140,7 +140,7 @@ let t_project_error_in_dep () =
       "export broken = undefinedThing\n"
     in
     let main = write_file dir "main.mdk"
-      "import dep.{broken}\nmain : <IO> Unit\nmain = pure ()\n"
+      "import dep.{broken}\nmain : <IO> Unit\nmain = print broken\n"
     in
     let results = analyze_project ~root_file:main ~project_dir:dir
                     ~read:no_override in
@@ -155,7 +155,7 @@ let t_project_error_in_dep () =
 let t_project_unknown_module () =
   with_tmp_dir (fun dir ->
     let main = write_file dir "main.mdk"
-      "import nope.{foo}\nmain : <IO> Unit\nmain = pure ()\n"
+      "import nope.{foo}\nmain : <IO> Unit\nmain = print foo\n"
     in
     let results = analyze_project ~root_file:main ~project_dir:dir
                     ~read:no_override in

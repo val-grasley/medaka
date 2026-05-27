@@ -1913,7 +1913,10 @@ let typecheck_module
   seed_builtin_impls env;
 
   (* Core stdlib is always available in every module.
-     Skip when this module itself IS core (avoid duplicates). *)
+     Skip when this module itself IS core (avoid duplicates).
+     Keep a reference to the user-only decls for export filtering — otherwise
+     prelude impls would leak into every module's te_impls. *)
+  let user_prog = prog in
   let prog = if program_is_core prog then prog else Prelude.program @ prog in
 
   (* Seed env with all known module exports *)
@@ -2115,7 +2118,7 @@ let typecheck_module
     te_impls     = List.filter (fun ie ->
       List.exists (fun d -> match d with
         | DImpl { is_pub = true; iface_name; _ } -> ie.impl_iface = iface_name
-        | _ -> false) prog
+        | _ -> false) user_prog
     ) !(!env.impls);
     te_aliases   = pub_aliases;
   } in
