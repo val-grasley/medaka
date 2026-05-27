@@ -585,6 +585,81 @@ r = x where
     "r" (VInt 20)
 
 (* =====================================================================
+   25. Multi-method interface constraint usage
+   ===================================================================== *)
+
+let t_multi_method_constraint =
+  assert_typed_val
+    {|interface Container c where
+  isEmpty : c a -> Bool
+  size : c a -> Int
+impl Container List where
+  isEmpty [] = True
+  isEmpty _ = False
+  size = length
+both : Container c => c a -> (Bool, Int)
+both x = (isEmpty x, size x)
+r = both [1, 2, 3]
+|}
+    "r" "(Bool, Int)"
+    (VTuple [VBool false; VInt 3])
+
+(* =====================================================================
+   26. Nested ADT — Expr evaluator
+   ===================================================================== *)
+
+let t_nested_adt_expr =
+  assert_typed_val
+    {|data Expr
+  | Lit Int
+  | Add Expr Expr
+  | Mul Expr Expr
+evalExpr e = match e
+  Lit n => n
+  Add a b => evalExpr a + evalExpr b
+  Mul a b => evalExpr a * evalExpr b
+r = evalExpr (Mul (Add (Lit 1) (Lit 2)) (Lit 3))
+|}
+    "r" "Int" (VInt 9)
+
+(* =====================================================================
+   27. Default impl declaration via `default impl`
+   ===================================================================== *)
+
+let t_default_impl =
+  assert_val
+    {|interface Show2 a where
+  show2 : a -> String
+data D = MkD
+default impl Show2 D where
+  show2 _ = "D"
+r = show2 MkD
+|}
+    "r" (VString "D")
+
+(* =====================================================================
+   28. if-let with else binding via pair test
+   ===================================================================== *)
+
+let t_if_let_else_pair =
+  assert_val
+    {|f opt = if let Some n = opt then n else 0
+r = (f (Some 5), f None)
+|}
+    "r" (VTuple [VInt 5; VInt 0])
+
+(* =====================================================================
+   29. Pair lambda
+   ===================================================================== *)
+
+let t_pair_lambda =
+  assert_val
+    {|swap = ((a, b) => (b, a))
+r = swap (1, "x")
+|}
+    "r" (VTuple [VString "x"; VInt 1])
+
+(* =====================================================================
    Test registration
    ===================================================================== *)
 
@@ -680,5 +755,20 @@ let () =
         ] );
       ( "where shadow",
         [ test_case "binding shadows outer" `Quick t_where_shadow
+        ] );
+      ( "multi-method constraint",
+        [ test_case "Container [List]"   `Quick t_multi_method_constraint
+        ] );
+      ( "nested ADT",
+        [ test_case "Expr evaluator"     `Quick t_nested_adt_expr
+        ] );
+      ( "default impl",
+        [ test_case "Show2 D default"    `Quick t_default_impl
+        ] );
+      ( "if-let",
+        [ test_case "with else pair"     `Quick t_if_let_else_pair
+        ] );
+      ( "pair lambda",
+        [ test_case "swap"               `Quick t_pair_lambda
         ] );
     ]

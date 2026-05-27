@@ -51,13 +51,13 @@ following the same self-diagnosing pattern as the base suites
 |----------------|--------------------------------------------|-------|
 | Typecheck      | `test/thorough/thorough_typecheck.ml`      | 105   |
 | Evaluator      | `test/thorough/thorough_eval.ml`           | 118   |
-| Interactions   | `test/thorough/thorough_interactions.ml`   | 41    |
+| Interactions   | `test/thorough/thorough_interactions.ml`   | 46    |
 | Stdlib         | `test/thorough/thorough_stdlib.ml`         | 92    |
 
-356 thorough tests total.  Failing tests there are documented in PLAN.md
-under §3 phases 45.5–45.9 (some FIXED, some ⏳ TODO).  Several tests
-deliberately *pin* current buggy behavior so an eventual fix will be
-detectable.
+361 thorough tests total.  Bugs surfaced and either fixed or
+documented during the 2026-05-26 thorough-testing session are listed
+in §3 phases 45.5–45.9.  Several tests deliberately *pin* current
+buggy behavior so an eventual fix will be detectable.
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
