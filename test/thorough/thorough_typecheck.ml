@@ -358,6 +358,51 @@ let t_eff_option_pure =
 |}
     "f" "Option Int"
 
+(* Phase 54: DoAssign (x <- e in a do-block) infers <Mut> effect. *)
+
+(* Without <Mut> annotation, a function containing DoAssign is rejected. *)
+let e_mut_do_assign_unannotated =
+  assert_err
+    {|f = do
+  let mut x = 0
+  x = 42
+  pure x
+|}
+
+(* With <Mut> annotation, the same function is accepted. *)
+let t_mut_do_assign_annotated =
+  assert_type
+    {|f : <Mut> (a Int)
+f = do
+  let mut x = 0
+  x = 42
+  pure x
+|}
+    "f" "a Int"
+
+(* DoFieldAssign also triggers <Mut>: field mutation without annotation is rejected. *)
+let e_mut_field_assign_unannotated =
+  assert_err
+    {|record Box
+  val : Int
+
+go = do
+  let mut b = Box { val = 0 }
+  b.val = 1
+  pure b
+|}
+
+(* A function performing both IO and mutation needs both effects declared. *)
+let t_mut_and_io_together =
+  assert_type
+    {|f : <IO, Mut> Unit
+f = do
+  let mut x = 0
+  x = 42
+  println x
+|}
+    "f" "Unit"
+
 (* =====================================================================
    6. Exhaustiveness — extra corners
    ===================================================================== *)
@@ -910,9 +955,13 @@ let () =
         ; test_case "seeded fallback still works"  `Quick t_iface_seeded_still_works
         ] );
       ( "effects",
-        [ test_case "print => <IO>"      `Quick t_eff_print_io
-        ; test_case "pure arithmetic"    `Quick t_eff_pure_no_eff
-        ; test_case "Option do is pure"  `Quick t_eff_option_pure
+        [ test_case "print => <IO>"                `Quick t_eff_print_io
+        ; test_case "pure arithmetic"              `Quick t_eff_pure_no_eff
+        ; test_case "Option do is pure"            `Quick t_eff_option_pure
+        ; test_case "err: DoAssign without <Mut>"  `Quick e_mut_do_assign_unannotated
+        ; test_case "<Mut> allows DoAssign"        `Quick t_mut_do_assign_annotated
+        ; test_case "err: DoFieldAssign no <Mut>"  `Quick e_mut_field_assign_unannotated
+        ; test_case "<IO, Mut> combined"           `Quick t_mut_and_io_together
         ] );
       ( "exhaustiveness corners",
         [ test_case "warns: nested Some/None"  `Quick w_exhaust_nested_some

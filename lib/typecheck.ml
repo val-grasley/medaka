@@ -1956,8 +1956,8 @@ let expr_effects
     | DoExpr e             -> (bound, go bound e)
     | DoBind (pat, e)      -> (add_pats [pat] bound, go bound e)
     | DoLet (_, pat, e)    -> (add_pats [pat] bound, go bound e)
-    | DoAssign (_, e)      -> (bound, go bound e)
-    | DoFieldAssign (_, _, e) -> (bound, go bound e)
+    | DoAssign (_, e)         -> (bound, effect_union ["Mut"] (go bound e))
+    | DoFieldAssign (_, _, e) -> (bound, effect_union ["Mut"] (go bound e))
     | DoLetElse (pat, e, alt) -> (add_pats [pat] bound, effect_union (go bound e) (go bound alt))
   in
   go StringSet.empty e

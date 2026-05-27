@@ -1373,15 +1373,15 @@ let e_set_ref_impure = assert_err
 
 (* ── Phase 8.5: let mut + DoAssign ──────────────── *)
 
-(* DoAssign on a let-mut binding succeeds *)
+(* DoAssign on a let-mut binding succeeds — requires <Mut> annotation *)
 let t_do_assign_valid = assert_type
-  "f =\n  do\n    let mut x = 5\n    x = 10\n    pure x\n"
+  "f : <Mut> (a Int)\nf =\n  do\n    let mut x = 5\n    x = 10\n    pure x\n"
   "f" "a Int"
 
-(* DoAssign after DoBind *)
+(* DoAssign after DoBind — requires <Mut> annotation *)
 let t_do_assign_after_bind = assert_type
-  "f opt =\n  do\n    let mut x = 0\n    y <- opt\n    x = y\n    pure x\n"
-  "f" "a Int -> a Int"
+  "f : a Int -> <Mut> (a Int)\nf opt =\n  do\n    let mut x = 0\n    y <- opt\n    x = y\n    pure x\n"
+  "f" "a Int -> <Mut> a Int"
 
 (* DoAssign to an immutable binding → ImmutableAssignment *)
 let e_do_assign_immutable = assert_err
@@ -1407,9 +1407,10 @@ let person_src = {|record Person
 
 |}
 
-(* Basic field assignment on a mutable record *)
+(* Basic field assignment on a mutable record — requires <Mut> annotation *)
 let t_field_assign_valid = assert_type
-  (person_src ^ {|go =
+  (person_src ^ {|go : <Mut> (a Person)
+go =
   do
     let mut p = Person { name = "Alice", age = 30 }
     p.age = 31
@@ -1417,9 +1418,10 @@ let t_field_assign_valid = assert_type
 |})
   "go" "a Person"
 
-(* Multiple field assignments *)
+(* Multiple field assignments — requires <Mut> annotation *)
 let t_field_assign_multi = assert_type
-  (person_src ^ {|go =
+  (person_src ^ {|go : <Mut> (a Person)
+go =
   do
     let mut p = Person { name = "Alice", age = 30 }
     p.age = 31
@@ -1428,9 +1430,10 @@ let t_field_assign_multi = assert_type
 |})
   "go" "a Person"
 
-(* Ref .value assignment *)
+(* Ref .value assignment — requires <Mut> annotation *)
 let t_ref_value_assign = assert_type
-  {|go =
+  {|go : <Mut> (a Int)
+go =
   do
     let mut r = Ref 0
     r.value = 42
@@ -1438,9 +1441,10 @@ let t_ref_value_assign = assert_type
 |}
   "go" "a Int"
 
-(* Field assignment after reading the old value *)
+(* Field assignment after reading the old value — requires <Mut> annotation *)
 let t_field_assign_read_back = assert_type
-  (person_src ^ {|go =
+  (person_src ^ {|go : <Mut> (a Int)
+go =
   do
     let mut p = Person { name = "Alice", age = 30 }
     p.age = p.age + 1
