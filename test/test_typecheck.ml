@@ -2114,20 +2114,18 @@ let () =
       test_case "err: type mismatch"       `Quick e_rec_pat_type_mismatch;
       test_case "err: unknown record"      `Quick e_rec_pat_unknown_record;
     ];
-<<<<<<< HEAD
     "if let / let else (Phase 38)", [
       test_case "if let match"             `Quick t_if_let_match;
       test_case "if let no match"          `Quick t_if_let_no_match;
       test_case "err: branch type mismatch" `Quick e_if_let_branch_mismatch;
       test_case "let else bind"            `Quick t_let_else_bind;
       test_case "err: let else last stmt"  `Quick e_let_else_last_stmt;
-=======
+    ];
     "named-field variants (Phase 39)", [
       test_case "construction"             `Quick t_named_ctor_create;
       test_case "pattern pun"              `Quick t_named_ctor_pat_pun;
       test_case "mixed positional+named"   `Quick t_named_ctor_mixed;
       test_case "err: missing field"       `Quick e_named_ctor_missing_field;
       test_case "err: wrong field type"    `Quick e_named_ctor_wrong_field_type;
->>>>>>> 3ec8f47 (Phase 39: variants with named fields)
     ];
   ]
