@@ -1704,6 +1704,81 @@ desugars at parse time to `ELam([PVar "__fn_arg"], EMatch(EVar "__fn_arg", arms)
   Conflict count unchanged: 8 S/R (20) + 8 R/R (34).
 - 8 new tests (2 parser, 1 roundtrip, 3 typecheck, 2 eval). **758 tests total.**
 
+### Phase 44.5: Method-level interface constraints + type-tagged dispatch ✅ DONE
+
+**Motivation.** Modelling Haskell-style `Foldable.foldMap` ergonomics
+required two interlocking features:
+1. An interface method may carry extra constraints on locally-quantified
+   tyvars beyond the interface's own type parameter (e.g.
+   `foldMap : Monoid m => (a -> m) -> t a -> m` inside `Foldable t`).
+2. At runtime, a polymorphic body invoking a zero-arg method like
+   `empty : Monoid m => m` must eventually resolve to the right impl —
+   which the existing eval handled only at do-block boundaries via the
+   `pure_impls` / `current_monad_type` mechanism, leaving anything else
+   as an unresolved `VMulti` that recursed infinitely under `++`.
+
+**Typechecker changes (`lib/typecheck.ml`).**
+- `iface_info` gained `iface_method_constraints : (ident * (ident * int
+  list) list) list`, mirroring the shape of `fun_constraints`.
+- `register_interface` stops dropping `Ast.TyConstrained` on method
+  types. The inner type and per-method constraint args share one
+  `method_vars` table so their TVar references coincide; after
+  `generalize`, the bound IDs in `iface_method_constraints` line up
+  with the method scheme.
+- `instantiate_method` now returns the full `(int * mono) sub` alongside
+  the result and tracked param refs. The `EVar` method-dispatch branch
+  uses the sub to emit `constraint_obligations` for the extra
+  method-level constraints. Skip-when-still-polymorphic in
+  `check_constraint_obligations` already handles defaults gracefully.
+- `register_interface` builds `env_with_methods` from **prior**
+  interface methods plus the current one, so a default body can call
+  methods from previously-registered interfaces (Foldable's default
+  calls `Monoid.append`/`empty`).
+
+**Eval changes (`lib/eval.ml`).**
+- New `VTypedImpl of string * value` variant: each impl method is
+  tagged with `head_tycon` of its impl's first `type_arg` (e.g.
+  `"String"`, `"List"`). Both the program-load and REPL impl paths
+  produce the tag, then layer `VNamedImpl` on top if the impl is named.
+- New `runtime_type_tag` derives a tag from any value (`VString →
+  "String"`, `VCon → ctor_to_type`, etc.).
+- `apply` for `VMulti` filters candidates by the arg's runtime tag
+  when known; partial-application results re-wrap with their tag so
+  subsequent args still route correctly.
+- `apply` for `VTypedImpl` is a pass-through that re-wraps any
+  partial-application result back into `VTypedImpl(t, …)` — preserving
+  the routing tag across each step of a multi-arg call.
+- The `++` binop handler, when one operand is a `VMulti` of
+  differently-typed candidates and the other has a concrete tag,
+  picks the matching candidate before falling into the
+  `VList`/`VString` short-circuits. This is the trick that lets
+  `acc ++ f x` in `Foldable.foldMap`'s default work when `acc` started
+  life as the still-polymorphic `empty`.
+
+**Stdlib (`stdlib/core.mdk`).** `foldMap` moved from a top-level
+`(Foldable t, Monoid m) =>` function into a `Foldable` method with a
+default `foldMap f = fold (acc => x => acc ++ f x) empty`. Existing
+`Foldable` impls don't need to change.
+
+**Tests added.**
+- `test/test_typecheck.ml` — 3 new cases under
+  "method-level constraints": extra constraint resolves at a concrete
+  call site, default body uses the extra constraint, error when no
+  impl exists for the constrained arg.
+- `test/test_eval.ml` — 2 new cases under "lists": `foldMap` on the
+  String monoid and on the List monoid, both exercising the typed
+  dispatch end-to-end.
+
+**Known limits.**
+- The `++` resolver only grounds `VMulti` when the **other** operand
+  has a runtime tag. Two `VMulti` operands meeting in `++` still
+  fall through. That's fine for the foldMap default (the mapped value
+  always grounds).
+- Type-driven dispatch only filters by the **head** TyCon. Impls with
+  the same head but different parameters (e.g. `impl Eq (Map k v)` vs
+  `impl Eq (Map String v)`) still rely on the existing score-based
+  ordering — same as before this phase.
+
 ### Phase 45: Nested record update sugar ⏳ TODO
 
 `{ p | address.city = "Boston" }` desugars to

@@ -199,6 +199,17 @@ r = filter is_even ([1, 2, 3, 4, 5, 6])
 let t_fold = assert_val {|r = fold (x => y => x + y) 0 ([1, 2, 3, 4, 5])
 |} "r" (VInt 15)
 
+(* foldMap uses Foldable's default impl with the String Monoid:
+   concatenates the mapped strings via ++. *)
+let t_foldmap_string = assert_val
+  {|r = foldMap (s => s) ["a", "b", "c"]
+|} "r" (VString "abc")
+
+(* foldMap with the List Monoid: results concatenate. *)
+let t_foldmap_list = assert_val
+  {|r = foldMap (x => [x, x]) [1, 2, 3]
+|} "r" (VList [VInt 1; VInt 1; VInt 2; VInt 2; VInt 3; VInt 3])
+
 let t_list_comp_guard = assert_val
   {|r = [x * 2 | x <- [1, 2, 3, 4, 5], x > 2]
 |} "r" (VList [VInt 6; VInt 8; VInt 10])
@@ -859,6 +870,8 @@ let () =
       test_case "map"     `Quick t_map;
       test_case "filter"  `Quick t_filter;
       test_case "fold"    `Quick t_fold;
+      test_case "foldMap string" `Quick t_foldmap_string;
+      test_case "foldMap list"   `Quick t_foldmap_list;
     ];
     "list comprehensions", [
       test_case "guard"         `Quick t_list_comp_guard;

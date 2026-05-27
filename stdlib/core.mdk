@@ -159,9 +159,12 @@ export impl Thenable (Result e) where
 export interface Foldable t where
     fold : (b -> a -> b) -> b -> t a -> b
     foldRight : (a -> b -> b) -> b -> t a -> b
+    foldMap : Monoid m => (a -> m) -> t a -> m
     toList : t a -> List a
     isEmpty : t a -> Bool
     length : t a -> Int
+
+    foldMap f = fold (acc => x => acc ++ f x) empty
 
 export
 filter : (a -> Bool) -> List a -> List a

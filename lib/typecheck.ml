@@ -53,6 +53,8 @@ type iface_info = {
   iface_param_ids : int list;
   iface_methods   : (ident * scheme) list;  (* method name → general scheme *)
   iface_defaults  : ident list;             (* method names that have default impls *)
+  iface_method_constraints : (ident * (ident * int list) list) list;
+    (* method name → extra method-level constraints (besides the iface's own) *)
 }
 
 (* Per-impl metadata used for constraint checking at call sites. *)
@@ -230,8 +232,10 @@ let instantiate_with (Forall (vars, t)) (subs : (int * mono) list) =
   walk t
 
 (* Like instantiate, but also returns the fresh TVar refs corresponding to
-   specific bound IDs (the interface's iface_param_ids). Used to track which
-   concrete types a method call is dispatching on, for constraint checking. *)
+   specific bound IDs (the interface's iface_param_ids) and the full sub
+   mapping bound IDs to fresh monos. Used to track which concrete types a
+   method call is dispatching on (for impl resolution) and to expand
+   per-method extra constraint arguments (for constraint checking). *)
 let instantiate_method (Forall (vars, t)) track_ids =
   let sub = List.map (fun id -> (id, fresh_var ())) vars in
   let rec walk t = match normalize t with
@@ -250,7 +254,7 @@ let instantiate_method (Forall (vars, t)) track_ids =
     | Some (TVar r) -> Some r
     | _ -> None  (* param not present in this method's scheme: skip *)
   ) track_ids in
-  (result, tracked)
+  (result, tracked, sub)
 
 (* ── Pretty printing ────────────────────────────── *)
 
@@ -751,10 +755,20 @@ let rec infer env = function
       match Hashtbl.find_opt env.method_iface x with
       | Some iface_name ->
         let info = Hashtbl.find env.interfaces iface_name in
-        let (t, param_vars) = instantiate_method scheme info.iface_param_ids in
+        let (t, param_vars, sub) = instantiate_method scheme info.iface_param_ids in
         let hint = !current_impl_hint in
         current_impl_hint := None;
         env.method_usages := (x, iface_name, param_vars, hint) :: !(env.method_usages);
+        (* Emit obligations for any extra method-level constraints
+           (e.g. the `Monoid m` in `foldMap : Monoid m => (a -> m) -> t a -> m`). *)
+        (match List.assoc_opt x info.iface_method_constraints with
+         | None -> ()
+         | Some cs ->
+           List.iter (fun (iface, var_ids) ->
+             let args = List.filter_map (fun id -> List.assoc_opt id sub) var_ids in
+             if args <> [] then
+               env.constraint_obligations := (iface, args) :: !(env.constraint_obligations)
+           ) cs);
         t
       | None ->
         let (sub, mono) = instantiate_raw scheme in
@@ -1443,11 +1457,26 @@ let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params,
       | Ast.TyEffect (_, t) -> go t
       | Ast.TyConstrained (_, inner) -> go inner
     in
-    go ast_ty
+    (* Extract per-method extra constraints. Constraint args share TVar refs
+       with the inner type via the same method_vars table, so the bound IDs
+       line up after generalize. *)
+    let (cs_ast, inner_ast) = match ast_ty with
+      | Ast.TyConstrained (cs, inner) -> (cs, inner)
+      | _ -> ([], ast_ty)
+    in
+    let inner_mono = go inner_ast in
+    let cs_monos =
+      List.map (fun (iface, args) -> (iface, List.map go args)) cs_ast
+    in
+    (inner_mono, cs_monos)
   in
-  let method_monos = List.map (fun m ->
-    (m.Ast.method_name, go_ty m.Ast.method_type)
+  let method_results = List.map (fun m ->
+    let (mono, cs) = go_ty m.Ast.method_type in
+    (m.Ast.method_name, mono, cs)
   ) methods in
+  let method_monos =
+    List.map (fun (n, t, _) -> (n, t)) method_results
+  in
   (* exit_level BEFORE generalizing so param tvars (at level 1) satisfy
      level > current_level (0) and get quantified. *)
   exit_level ();
@@ -1469,8 +1498,24 @@ let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params,
      For methods whose type was inferred (TyVar "_"), update the scheme to the
      inferred type so callers see the real type rather than a naked TVar. *)
   let method_schemes = ref method_schemes in
+  (* Default bodies may call methods from previously-registered interfaces
+     (e.g. Foldable.foldMap's default calls Monoid.append/empty).  Pull every
+     prior method scheme out of env.interfaces so they're visible too. *)
+  let prior_method_schemes () =
+    Hashtbl.fold (fun mname iname acc ->
+      match Hashtbl.find_opt env.interfaces iname with
+      | Some info ->
+        (match List.assoc_opt mname info.iface_methods with
+         | Some s -> (mname, s) :: acc
+         | None -> acc)
+      | None -> acc
+    ) env.method_iface []
+  in
   let env_with_methods () =
-    List.fold_right (fun (n, s) e -> extend_var e n s) !method_schemes env
+    let with_prior =
+      List.fold_right (fun (n, s) e -> extend_var e n s) (prior_method_schemes ()) env
+    in
+    List.fold_right (fun (n, s) e -> extend_var e n s) !method_schemes with_prior
   in
   List.iter (fun m ->
     match m.Ast.method_default with
@@ -1497,10 +1542,27 @@ let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params,
        | _ -> ())
   ) methods;
   let method_schemes = !method_schemes in
+  let iface_method_constraints =
+    List.filter_map (fun (name, _mono, cs) ->
+      if cs = [] then None
+      else begin
+        let extract_id m = match normalize m with
+          | TVar {contents = Unbound (id, _)} -> Some id
+          | _ -> None
+        in
+        let cs' = List.filter_map (fun (iface, args) ->
+          let ids = List.filter_map extract_id args in
+          if ids <> [] then Some (iface, ids) else None
+        ) cs in
+        if cs' = [] then None else Some (name, cs')
+      end
+    ) method_results
+  in
   let info = {
     iface_param_ids = param_ids;
     iface_methods   = method_schemes;
     iface_defaults  = defaults;
+    iface_method_constraints;
   } in
   Hashtbl.replace env.interfaces iface_name info;
   List.iter (fun m ->

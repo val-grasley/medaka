@@ -1025,6 +1025,89 @@ neq x y = eq x y
 bad = neq 1.0 2.0
 |}
 
+(* ── Method-level constraint annotations ─────────── *)
+
+(* An interface method may declare extra constraints on locally-quantified
+   tyvars beyond the interface's own type parameters. *)
+let t_method_extra_constraint = assert_type
+  {|interface MySemi a where
+  combine : a -> a -> a
+
+interface MyZero a requires MySemi a where
+  zero : a
+
+impl MySemi Int where
+  combine x y = x + y
+
+impl MyZero Int where
+  zero = 0
+
+interface Bag t where
+  reduce : MyZero m => (a -> m) -> t a -> m
+
+impl Bag List where
+  reduce f xs = match xs
+    []      => zero
+    (x::ys) => combine (f x) (reduce f ys)
+
+f = reduce (x => x) [1, 2, 3]
+|}
+  "f" "Int"
+
+(* Calling a method whose extra constraint cannot be satisfied is rejected. *)
+let e_method_extra_constraint_no_impl = assert_err
+  {|interface MySemi a where
+  combine : a -> a -> a
+
+interface MyZero a requires MySemi a where
+  zero : a
+
+impl MySemi Int where
+  combine x y = x + y
+
+impl MyZero Int where
+  zero = 0
+
+interface Bag t where
+  reduce : MyZero m => (a -> m) -> t a -> m
+
+impl Bag List where
+  reduce f xs = match xs
+    []      => zero
+    (x::ys) => combine (f x) (reduce f ys)
+
+bad = reduce (x => x) [True, False]
+|}
+
+(* A method with extra constraint and a default impl works end-to-end. *)
+let t_method_extra_constraint_default = assert_type
+  {|interface MySemi a where
+  combine : a -> a -> a
+
+interface MyZero a requires MySemi a where
+  zero : a
+
+impl MySemi Int where
+  combine x y = x + y
+
+impl MyZero Int where
+  zero = 0
+
+interface Bag t where
+  reduce : MyZero m => (a -> m) -> t a -> m
+  collapse : MyZero a => t a -> a
+
+  collapse xs = reduce (x => x) xs
+
+impl Bag List where
+  reduce f xs = match xs
+    []      => zero
+    (x::ys) => combine (f x) (reduce f ys)
+
+f = collapse [1, 2, 3]
+|}
+  "f" "Int"
+
 (* ── Exhaustiveness / redundancy ────────────────── *)
 
 (* Option: both arms *)
@@ -2051,6 +2134,11 @@ let () =
       test_case "multiple constraints"         `Quick t_constraint_annot_multi;
       test_case "call site impl found"         `Quick t_constraint_annot_call_site_ok;
       test_case "err: call site no impl"       `Quick e_constraint_annot_call_no_impl;
+    ];
+    "method-level constraints", [
+      test_case "extra constraint resolves"    `Quick t_method_extra_constraint;
+      test_case "default body uses constraint" `Quick t_method_extra_constraint_default;
+      test_case "err: no impl for extra"       `Quick e_method_extra_constraint_no_impl;
     ];
     "exhaustiveness", [
       test_case "Option both arms"          `Quick w_option_both;

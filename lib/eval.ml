@@ -19,6 +19,7 @@ type value =
   | VPrim   of (value -> value)
   | VMulti  of value list  (* ordered impl closures for the same method; tried in sequence *)
   | VNamedImpl of string * value  (* impl closure tagged with its declared name *)
+  | VTypedImpl of string * value  (* impl method tagged with its impl's head type ctor *)
 
 and env = (string * value ref) list list
 
@@ -69,6 +70,7 @@ let rec pp_value = function
   | VPrim _    -> "<prim>"
   | VMulti vs  -> Printf.sprintf "<dispatch/%d>" (List.length vs)
   | VNamedImpl (n, _) -> Printf.sprintf "<impl:%s>" n
+  | VTypedImpl (t, inner) -> Printf.sprintf "<impl@%s:%s>" t (pp_value inner)
 
 and pp_value_atom v = match v with
   | VCon (_, _ :: _) | VTuple _ -> "(" ^ pp_value v ^ ")"
@@ -210,6 +212,22 @@ let detect_monad = function
      | None -> None)
   | _ -> None
 
+(* Runtime "head type" tag for a value.  Used to filter VMulti candidates
+   tagged via VTypedImpl when dispatching on a value of known shape. *)
+let rec runtime_type_tag = function
+  | VInt _    -> Some "Int"
+  | VFloat _  -> Some "Float"
+  | VString _ -> Some "String"
+  | VChar _   -> Some "Char"
+  | VBool _   -> Some "Bool"
+  | VUnit     -> Some "Unit"
+  | VList _   -> Some "List"
+  | VArray _  -> Some "Array"
+  | VCon (cname, _) -> Hashtbl.find_opt ctor_to_type cname
+  | VTypedImpl (t, _) -> Some t
+  | VNamedImpl (_, inner) -> runtime_type_tag inner
+  | _ -> None
+
 (* Convert Impl_no_match → Eval_error at the boundary of user-visible code.
    Used at every eval site that is NOT inside a VMulti dispatch chain. *)
 let wrap_match_errors f =
@@ -232,16 +250,43 @@ let rec apply fn arg =
   | VClosure (_, [], _) ->
     raise (Eval_error ("applied closure with no parameters", !current_loc))
   | VPrim f -> f arg
+  | VTypedImpl (t, inner) ->
+    (* Pass through to the inner value but preserve the type tag through
+       partial applications so subsequent VMulti dispatch can still route
+       to the right typed candidate. *)
+    let result = apply inner arg in
+    (match result with
+     | VClosure _ | VPrim _ | VMulti _ -> VTypedImpl (t, result)
+     | _ -> result)
   | VMulti vs ->
     (* Apply each impl to arg; collect results.
        - Terminal result (non-closure): first one wins (return immediately).
        - VClosure/VMulti result (partial application): collect ALL that succeeded;
          return as a new VMulti so the next argument can dispatch correctly.
        - If all fail: dispatch error.
-       VNamedImpl entries are unwrapped before applying; the name is re-attached
-       to partial-application results so hint-based filtering still works across
-       multiple arguments. *)
-    let unwrap_named = function VNamedImpl (_, inner) -> inner | v -> v in
+       VNamedImpl/VTypedImpl entries are unwrapped before applying; the tag is
+       re-attached to partial-application results so subsequent dispatch still
+       sees the routing info.
+       When the arg has a known runtime type tag, VTypedImpl candidates are
+       filtered to matching ones first; this prevents irrelevant impls from
+       contributing partial applications that would later misroute dispatch. *)
+    let unwrap_tags = function
+      | VNamedImpl (_, inner) -> inner
+      | VTypedImpl (_, inner) -> inner
+      | v -> v
+    in
+    let vs =
+      match runtime_type_tag arg with
+      | None -> vs
+      | Some tag ->
+        let is_match = function
+          | VTypedImpl (t, _) -> t = tag
+          | VNamedImpl (_, VTypedImpl (t, _)) -> t = tag
+          | _ -> true  (* untagged candidates always considered *)
+        in
+        let filtered = List.filter is_match vs in
+        if filtered = [] then vs else filtered
+    in
     let rec collect_partials acc = function
       | [] ->
         (match acc with
@@ -249,12 +294,14 @@ let rec apply fn arg =
          | [v] -> v
          | many -> VMulti (List.rev many))
       | v :: rest ->
-        (match (try Some (apply (unwrap_named v) arg) with Impl_no_match -> None) with
+        (match (try Some (apply (unwrap_tags v) arg) with Impl_no_match -> None) with
          | None -> collect_partials acc rest
-         | Some (VClosure _ as c) ->
-           let wrapped = (match v with VNamedImpl (n, _) -> VNamedImpl (n, c) | _ -> c) in
+         | Some (VClosure _ | VPrim _ | VMulti _ as c) ->
+           let wrapped = (match v with
+             | VNamedImpl (n, _) -> VNamedImpl (n, c)
+             | VTypedImpl (t, _) -> VTypedImpl (t, c)
+             | _ -> c) in
            collect_partials (wrapped :: acc) rest
-         | Some (VMulti _ as m) -> collect_partials (m :: acc) rest
          | Some terminal -> terminal)  (* first terminal result wins *)
     in
     collect_partials [] vs
@@ -541,7 +588,26 @@ and eval_binop env op l r =
      | VList xs -> VList (hv :: xs)
      | _ -> raise (Eval_error ("cons (::) rhs is not a list", !current_loc)))
   | "++" ->
-    (match eval env l, eval env r with
+    let lv = eval env l and rv = eval env r in
+    (* If one operand is a VMulti of differently-typed candidates (e.g. the
+       polymorphic `empty` of Monoid), ground it using the other operand's
+       runtime type tag.  This is what lets `acc ++ f x` in a polymorphic
+       body work when acc started life as `empty`. *)
+    let resolve other v = match v with
+      | VMulti vs ->
+        (match runtime_type_tag other with
+         | None -> v
+         | Some tag ->
+           (match List.filter_map (function
+              | VTypedImpl (t, inner) when t = tag -> Some inner
+              | _ -> None) vs with
+            | [single] -> single
+            | _ -> v))
+      | _ -> v
+    in
+    let lv = resolve rv lv in
+    let rv = resolve lv rv in
+    (match lv, rv with
      | VList xs, VList ys -> VList (xs @ ys)
      | VString a, VString b -> VString (a ^ b)
      | lv, rv ->
@@ -948,6 +1014,10 @@ let eval_program program =
            | None -> ())
         | None -> ()
       end;
+      let impl_type_tag = match type_args with
+        | t :: _ -> head_tycon t
+        | [] -> None
+      in
       List.iter (fun (name, pats, body) ->
         (* `pure` stays a primitive (it consults current_monad_type to pick
            the right impl from pure_impls); everything else, including
@@ -956,9 +1026,13 @@ let eval_program program =
         if not (List.mem name context_dependent_externs) then begin
           let new_v = if pats = [] then wrap_match_errors (fun () -> eval env body)
                       else VClosure (env, pats, body) in
-          let tagged_v = match impl_name with
-            | Some n -> VNamedImpl (n, new_v)
+          let typed_v = match impl_type_tag with
+            | Some t -> VTypedImpl (t, new_v)
             | None   -> new_v
+          in
+          let tagged_v = match impl_name with
+            | Some n -> VNamedImpl (n, typed_v)
+            | None   -> typed_v
           in
           let prev = try Hashtbl.find impl_acc name with Not_found -> [] in
           let updated = prev @ [(score, tagged_v)] in
@@ -1083,14 +1157,22 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
             if tn = tname then Hashtbl.replace monadic_ctors cname ()
           ) ctor_to_type
         | None -> ());
+     let impl_type_tag = match type_args with
+       | t :: _ -> head_tycon t
+       | [] -> None
+     in
      List.iter (fun (name, pats, body) ->
        if not (List.mem name context_dependent_externs) then begin
          let new_v = wrap_match_errors (fun () ->
            if pats = [] then eval !(rs.eval_env) body
            else VClosure (!(rs.eval_env), pats, body)) in
-         let tagged_v = match impl_name with
-           | Some n -> VNamedImpl (n, new_v)
+         let typed_v = match impl_type_tag with
+           | Some t -> VTypedImpl (t, new_v)
            | None   -> new_v
+         in
+         let tagged_v = match impl_name with
+           | Some n -> VNamedImpl (n, typed_v)
+           | None   -> typed_v
          in
          (* Merge with existing binding: extend VMulti (score-sorted) or set fresh. *)
          let merged =
