@@ -1839,6 +1839,38 @@ let e_prop_body_not_bool =
   x + 1
 |}
 
+(* ── function keyword (Phase 44) ────────────────────── *)
+
+let t_function_option =
+  assert_type
+    {|f =
+  function
+    None => 0
+    Some x => x
+|}
+    "f" "Option Int -> Int"
+
+let t_function_bool =
+  assert_type
+    {|f =
+  function
+    True => 1
+    False => 0
+|}
+    "f" "Bool -> Int"
+
+let t_function_as_arg =
+  assert_type
+    {|xs : List (Option Int)
+xs = []
+fromOpt =
+  function
+    None => 0
+    Some x => x
+r = map fromOpt xs
+|}
+    "r" "List Int"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -2195,5 +2227,10 @@ let () =
       test_case "Bool param"          `Quick t_prop_bool_param;
       test_case "List param"          `Quick t_prop_list_param;
       test_case "err: body not Bool"  `Quick e_prop_body_not_bool;
+    ];
+    "function keyword (Phase 44)", [
+      test_case "Option Int -> Int"   `Quick t_function_option;
+      test_case "Bool -> Int"         `Quick t_function_bool;
+      test_case "used as map arg"     `Quick t_function_as_arg;
     ];
   ]

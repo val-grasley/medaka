@@ -1681,13 +1681,28 @@ Scope:
 - Audit pass: walk `stdlib/*.mdk` and choose `export` vs.
   `public export` for every type.
 
-### Phase 44: `function` keyword ⏳ TODO
+### Phase 44: `function` keyword ✅ DONE
 
-`function | pat1 => e1 | pat2 => e2` is sugar for
-`(x => match x with pat1 => e1 | pat2 => e2)`. Single argument only.
+`function` is sugar for a lambda that immediately pattern-matches its
+single argument:
 
-Scope:
-- Parser only — desugar to lambda + match in the AST.
+```
+sign =
+  function
+    n if n > 0 => 1
+    n if n < 0 => -1
+    _ => 0
+```
+
+desugars at parse time to `ELam([PVar "__fn_arg"], EMatch(EVar "__fn_arg", arms))`.
+
+**What was added.**
+- `lib/lexer.mll`: `"function" -> FUNCTION` keyword.
+- `lib/parser.mly`: `%token FUNCTION`; new `expr_lam` alternative
+  `FUNCTION INDENT nonempty_list(match_arm) DEDENT` that desugars
+  inline — no new AST node, no changes to resolver/typechecker/evaluator.
+  Conflict count unchanged: 8 S/R (20) + 8 R/R (34).
+- 8 new tests (2 parser, 1 roundtrip, 3 typecheck, 2 eval). **758 tests total.**
 
 ### Phase 45: Nested record update sugar ⏳ TODO
 

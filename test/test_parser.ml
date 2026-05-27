@@ -1138,6 +1138,42 @@ let test_prop_list_param () =
             prop_params = [("xs", TyApp (TyCon "List", TyCon "Int"))]; _ } -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
+(* ── function keyword (Phase 44) ────────────────────────── *)
+
+let test_function_basic () =
+  let src = {|
+classify =
+  function
+    0 => "zero"
+    _ => "nonzero"
+|} in
+  match parse_one src with
+  | DFunDef (false, "classify", [],
+      ELam ([PVar "__fn_arg"],
+            EMatch (EVar "__fn_arg", [
+              (PLit (LInt 0), None, ELit (LString "zero"));
+              (PWild, None, ELit (LString "nonzero"));
+            ]))) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_function_guard () =
+  let src = {|
+sign =
+  function
+    n if n > 0 => 1
+    n if n < 0 => -1
+    _ => 0
+|} in
+  match parse_one src with
+  | DFunDef (false, "sign", [],
+      ELam ([PVar "__fn_arg"],
+            EMatch (EVar "__fn_arg", [
+              (PVar "n", Some (EBinOp (">", EVar "n", ELit (LInt 0))), ELit (LInt 1));
+              (PVar "n", Some (EBinOp ("<", EVar "n", ELit (LInt 0))), EUnOp ("-", ELit (LInt 1)));
+              (PWild, None, ELit (LInt 0));
+            ]))) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -1340,5 +1376,9 @@ let () =
       test_case "single param"  `Quick test_prop_single_param;
       test_case "multi param"   `Quick test_prop_multi_param;
       test_case "list param"    `Quick test_prop_list_param;
+    ];
+    "function keyword (Phase 44)", [
+      test_case "basic two arms"   `Quick test_function_basic;
+      test_case "arms with guards" `Quick test_function_guard;
     ];
   ]

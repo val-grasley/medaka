@@ -775,6 +775,29 @@ let t_range_pat_char_miss =
     "isLower c =\n  match c\n    'a'..='z' => True\n    _ => False\nresult = isLower 'G'\n"
     "result" (VBool false)
 
+(* ── function keyword (Phase 44) ────────────────────────────────────────── *)
+
+let t_function_eval =
+  assert_val
+    {|classify =
+  function
+    0 => "zero"
+    _ => "nonzero"
+result = classify 0
+|}
+    "result" (VString "zero")
+
+let t_function_guard_eval =
+  assert_val
+    {|sign =
+  function
+    n if n > 0 => 1
+    n if n < 0 => -1
+    _ => 0
+result = sign (-5)
+|}
+    "result" (VInt (-1))
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -982,5 +1005,9 @@ let () =
       test_case "pat int inclusive boundary (9 in 1..=9)" `Quick t_range_pat_int_inclusive_boundary;
       test_case "pat char hit ('g' in 'a'..'z')"    `Quick t_range_pat_char_hit;
       test_case "pat char miss ('G' not in 'a'..'z')" `Quick t_range_pat_char_miss;
+    ];
+    "function keyword (Phase 44)", [
+      test_case "classify 0 = zero"          `Quick t_function_eval;
+      test_case "sign (-5) = -1 with guard"  `Quick t_function_guard_eval;
     ];
   ]

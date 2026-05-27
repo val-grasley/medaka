@@ -106,7 +106,7 @@ let desugar_constraint lhs rhs =
 
 (* Keywords *)
 %token LET MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
-%token IMPORT EXPORT WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP
+%token IMPORT EXPORT WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP FUNCTION
 
 (* Operators *)
 %token PLUS MINUS STAR SLASH MOD
@@ -458,6 +458,9 @@ expr_lam:
     { ELoc (of_pos $startpos $endpos, EIf ($2, $4, $6)) }
   | MATCH expr_or INDENT nonempty_list(match_arm) DEDENT
     { ELoc (of_pos $startpos $endpos, EMatch ($2, $4)) }
+  | FUNCTION INDENT nonempty_list(match_arm) DEDENT
+    { ELoc (of_pos $startpos $endpos,
+            ELam ([PVar "__fn_arg"], EMatch (EVar "__fn_arg", $3))) }
   | DO INDENT nonempty_list(stmt) DEDENT
     { ELoc (of_pos $startpos $endpos, EDo $3) }
   | UNDERSCORE FAT_ARROW expr_lam

@@ -330,4 +330,8 @@ let () =
       test_case "range pattern char"  `Quick
         (mk "f c =\n  match c\n    'a'..='z' => True\n    _ => False\n");
     ];
+    "function keyword (Phase 44)", [
+      test_case "basic arms" `Quick
+        (mk "classify =\n  function\n    0 => \"zero\"\n    _ => \"nonzero\"\n");
+    ];
   ]
