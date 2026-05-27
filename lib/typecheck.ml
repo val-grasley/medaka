@@ -357,7 +357,7 @@ type env = {
   interfaces    : (ident, iface_info) Hashtbl.t;  (* interface name → info *)
   method_iface  : (ident, ident) Hashtbl.t;    (* method name → interface name *)
   impls         : impl_entry list ref;          (* all registered impls *)
-  method_usages : (ident * tyvar_info ref list * string option) list ref;  (* (method, param_var_refs, impl_hint) *)
+  method_usages : (ident * ident * tyvar_info ref list * string option) list ref;  (* (method, iface, param_var_refs, impl_hint) *)
   fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
     (* fn_name → [(iface_name, [bound_var_ids_in_scheme])] *)
   constraint_obligations : (ident * mono list) list ref;
@@ -703,7 +703,7 @@ let rec infer env = function
         let (t, param_vars) = instantiate_method scheme info.iface_param_ids in
         let hint = !current_impl_hint in
         current_impl_hint := None;
-        env.method_usages := (x, param_vars, hint) :: !(env.method_usages);
+        env.method_usages := (x, iface_name, param_vars, hint) :: !(env.method_usages);
         t
       | None ->
         let (sub, mono) = instantiate_raw scheme in
@@ -1106,24 +1106,25 @@ and binop_type env op l r =
   (* Record a usage of `method` (an entry from Builtins.operator_iface) at the
      type variable [r], so check_method_usages can verify that a matching impl
      exists once [r] is grounded.  Returns [r] wrapped back as a TVar's ref. *)
-  let record_iface_usage method_name tl tr =
+  let record_iface_usage iface_name method_name tl tr =
     let a = fresh_var () in
     let r = match a with TVar r -> r | _ -> assert false in
     unify tl a; unify tr a;
-    env.method_usages := (method_name, [r], None) :: !(env.method_usages);
+    env.method_usages := (method_name, iface_name, [r], None) :: !(env.method_usages);
     a
   in
-  let method_of op =
-    let (_, _, m) = List.find (fun (o, _, _) -> o = op) Builtins.operator_iface in
-    m
+  let iface_and_method_of op =
+    let (_, i, m) = List.find (fun (o, _, _) -> o = op) Builtins.operator_iface in
+    (i, m)
   in
   match op with
   | "+" | "-" | "*" | "/" ->
-    record_iface_usage (method_of op) tl tr
+    let (i, m) = iface_and_method_of op in record_iface_usage i m tl tr
   | "==" | "!=" ->
     unify tl tr; t_bool
   | "<" | ">" | "<=" | ">=" ->
-    let _ = record_iface_usage (method_of op) tl tr in
+    let (i, m) = iface_and_method_of op in
+    let _ = record_iface_usage i m tl tr in
     t_bool
   | "%" ->
     unify tl t_int; unify tr t_int; t_int
@@ -1132,7 +1133,7 @@ and binop_type env op l r =
   | "::" ->
     unify tr (t_list tl); tr
   | "++" ->
-    record_iface_usage (method_of op) tl tr
+    let (i, m) = iface_and_method_of op in record_iface_usage i m tl tr
   | "|>" ->
     (* x |> f  :  a -> (a -> b) -> b *)
     let b = fresh_var () in
@@ -1519,8 +1520,7 @@ let check_method_usages env =
     | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
     | TTuple ts -> List.for_all is_concrete ts
   in
-  List.iter (fun (method_name, param_vars, hint_opt) ->
-    let iface_name = Hashtbl.find env.method_iface method_name in
+  List.iter (fun (_method_name, iface_name, param_vars, hint_opt) ->
     let n = n_iface_params iface_name in
     if n = 0 || List.length param_vars <> n then ()
     else begin
