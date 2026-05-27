@@ -348,12 +348,12 @@ let derive_for_record type_name fields iface =
 
 (* Expand a single decl into itself plus any generated impls. *)
 let expand_decl = function
-  | DData (pub, name, params, variants, derives) ->
+  | DData (vis, name, params, variants, derives) ->
     let impls = List.filter_map (derive_for_data name variants) derives in
-    DData (pub, name, params, variants, []) :: impls
-  | DRecord (pub, name, params, fields, derives) ->
+    DData (vis, name, params, variants, []) :: impls
+  | DRecord (vis, name, params, fields, derives) ->
     let impls = List.filter_map (derive_for_record name fields) derives in
-    DRecord (pub, name, params, fields, []) :: impls
+    DRecord (vis, name, params, fields, []) :: impls
   | DNewtype (pub, name, params, con, fty, derives) ->
     let impls = List.filter_map (derive_for_newtype name con) derives in
     DNewtype (pub, name, params, con, fty, []) :: impls

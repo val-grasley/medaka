@@ -456,8 +456,11 @@ let print_decl p = function
       print_expr p prec_top body
     end
 
-  | DData (pub, n, params, variants, derives) ->
-    if pub then write p "export ";
+  | DData (vis, n, params, variants, derives) ->
+    (match vis with
+     | Ast.DataPublic   -> write p "public export "
+     | Ast.DataAbstract -> write p "export "
+     | Ast.DataPrivate  -> ());
     write p "data "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
     indented p (fun () ->
@@ -484,8 +487,11 @@ let print_decl p = function
       write p ")"
     end
 
-  | DRecord (pub, n, params, fields, derives) ->
-    if pub then write p "export ";
+  | DRecord (vis, n, params, fields, derives) ->
+    (match vis with
+     | Ast.DataPublic   -> write p "public export "
+     | Ast.DataAbstract -> write p "export "
+     | Ast.DataPrivate  -> ());
     write p "record "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
     indented p (fun () ->
