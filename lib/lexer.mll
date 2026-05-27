@@ -112,6 +112,7 @@ let keyword_or_ident s =
   | "deriving"  -> DERIVING
   | "type"      -> TYPE
   | "newtype"   -> NEWTYPE
+  | "prop"      -> PROP
   | "True"      -> BOOL true
   | "False"     -> BOOL false
   | _           -> IDENT s

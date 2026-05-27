@@ -19,3 +19,9 @@ extern readFile  : String -> <IO> (Result String String)
 extern writeFile : String -> String -> <IO> (Result String Unit)
 extern exit      : Int -> <Panic> Unit
 extern panic     : String -> a
+extern randomInt   : Int -> Int -> <Rand> Int
+extern randomBool  : Unit -> <Rand> Bool
+extern randomFloat : Unit -> <Rand> Float
+extern randomChar  : Unit -> <Rand> Char
+extern setSeed     : Int -> <Rand> Unit
+extern charToStr   : Char -> String

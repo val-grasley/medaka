@@ -276,8 +276,8 @@ let build_env ?(known_modules : module_exports list = [])
       List.iter (fun m -> add_or_skip env.values m.method_name) methods;
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.method_name) methods)
-    | DImpl _ ->
-      ()
+    | DImpl _ -> ()
+    | DProp _ -> ()
     | DUse (_, path) ->
       let mod_id = use_path_module_id path in
       (* "core" is the implicit prelude — `import core.{...}` is a no-op
@@ -558,6 +558,12 @@ let check_decl env errors = function
   | DRecord (_, _, _, fs, _) ->
     List.iter (fun f -> check_type env errors f.field_type) fs
   | DUse _ -> ()
+  | DProp { prop_params; prop_body; _ } ->
+    let scope = List.map (fun (x, ty) ->
+      check_type env errors ty;
+      x
+    ) prop_params in
+    check_expr env scope errors prop_body
   | DInterface { methods; _ } ->
     List.iter (fun m ->
       check_type env errors m.method_type;
@@ -770,7 +776,7 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
       List.iter (fun m -> add_or_skip env.values m.Ast.method_name) methods;
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.Ast.method_name) methods)
-    | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ | Ast.DNewtype _ -> ()
+    | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ | Ast.DNewtype _ | Ast.DProp _ -> ()
   ) decls;
   (match item with
    | Ast.ReplDecl ds -> List.iter (check_decl env errors) ds

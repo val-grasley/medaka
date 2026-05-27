@@ -1760,6 +1760,32 @@ let e_let_else_last_stmt =
     let Some x = opt else pure 0
 |}
 
+(* ── prop declarations (Phase 42) ───────────────────── *)
+
+let t_prop_int_param =
+  assert_no_warns
+    {|prop "identity_add" (x : Int) =
+  x + 0 == x
+|}
+
+let t_prop_bool_param =
+  assert_no_warns
+    {|prop "double_neg" (b : Bool) =
+  not (not b) == b
+|}
+
+let t_prop_list_param =
+  assert_no_warns
+    {|prop "length_ge_zero" (xs : List Int) =
+  length xs >= 0
+|}
+
+let e_prop_body_not_bool =
+  assert_err
+    {|prop "bad_body" (x : Int) =
+  x + 1
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -2094,5 +2120,11 @@ let () =
       test_case "err: branch type mismatch" `Quick e_if_let_branch_mismatch;
       test_case "let else bind"            `Quick t_let_else_bind;
       test_case "err: let else last stmt"  `Quick e_let_else_last_stmt;
+    ];
+    "prop declarations (Phase 42)", [
+      test_case "Int param"           `Quick t_prop_int_param;
+      test_case "Bool param"          `Quick t_prop_bool_param;
+      test_case "List param"          `Quick t_prop_list_param;
+      test_case "err: body not Bool"  `Quick e_prop_body_not_bool;
     ];
   ]

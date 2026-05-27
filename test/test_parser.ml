@@ -32,6 +32,7 @@ let pp_decl d =
   | DExtern (_, n, t)     -> Printf.sprintf "DExtern(%s, %s)" n (Ast.pp_ty t)
   | DTypeAlias (_, n, _, _) -> Printf.sprintf "DTypeAlias(%s, ...)" n
   | DNewtype (_, n, _, con, _, _) -> Printf.sprintf "DNewtype(%s, %s, ...)" n con
+  | DProp { prop_name; _ } -> Printf.sprintf "DProp(%S, ...)" prop_name
 
 let parse_one src =
   match parse src with
@@ -942,6 +943,28 @@ let test_if_let_nested () =
     ]) -> ()
   | e -> failwith ("wrong: " ^ Ast.pp_expr e)
 
+(* ── prop declarations (Phase 42) ───────────────────── *)
+
+let test_prop_single_param () =
+  match parse_one {|prop "commutative" (x : Int) = x + 0 == x
+|} with
+  | DProp { prop_name = "commutative"; prop_params = [("x", TyCon "Int")]; _ } -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_prop_multi_param () =
+  match parse_one {|prop "add_comm" (x : Int) (y : Int) = x + y == y + x
+|} with
+  | DProp { prop_name = "add_comm";
+            prop_params = [("x", TyCon "Int"); ("y", TyCon "Int")]; _ } -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_prop_list_param () =
+  match parse_one {|prop "nonempty" (xs : List Int) = length xs >= 0
+|} with
+  | DProp { prop_name = "nonempty";
+            prop_params = [("xs", TyApp (TyCon "List", TyCon "Int"))]; _ } -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -1115,5 +1138,10 @@ let () =
       test_case "if let tuple"     `Quick test_if_let_tuple;
       test_case "let else do"      `Quick test_let_else_do;
       test_case "if let nested"    `Quick test_if_let_nested;
+    ];
+    "prop declarations (Phase 42)", [
+      test_case "single param"  `Quick test_prop_single_param;
+      test_case "multi param"   `Quick test_prop_multi_param;
+      test_case "list param"    `Quick test_prop_list_param;
     ];
   ]

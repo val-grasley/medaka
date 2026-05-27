@@ -47,6 +47,62 @@ let () =
     let rest = Array.sub argv 2 (argc - 2) in
     exit (Medaka_lib.New_cmd.run rest)
   end;
+  if has_sub "test" then begin
+    (* medaka test [file.mdk]  — runs all prop declarations *)
+    let filename =
+      if argc >= 3 then argv.(2)
+      else begin
+        let cwd = Sys.getcwd () in
+        let probe = Filename.concat cwd "_probe_.mdk" in
+        match Medaka_lib.Project_config.find_project_root probe with
+        | None ->
+          Printf.eprintf "error: no file given and no medaka.toml found\n"; exit 1
+        | Some root ->
+          (match Medaka_lib.Project_config.load_from_dir root with
+           | None ->
+             Printf.eprintf "error: no entry in medaka.toml\n"; exit 1
+           | Some cfg -> Filename.concat root cfg.entry)
+      end
+    in
+    let source = read_file filename in
+    let lexbuf = Lexing.from_string source in
+    lexbuf.Lexing.lex_curr_p <- { lexbuf.Lexing.lex_curr_p with Lexing.pos_fname = filename };
+    Medaka_lib.Lexer.reset ();
+    let program =
+      (try Medaka_lib.Parser.program Medaka_lib.Lexer.token lexbuf
+       with
+       | Failure msg -> Printf.eprintf "Error: %s\n" msg; exit 1
+       | Medaka_lib.Parser.Error ->
+         let pos = lexbuf.Lexing.lex_curr_p in
+         Printf.eprintf "%s:%d:%d: Parse error\n"
+           pos.Lexing.pos_fname pos.Lexing.pos_lnum
+           (pos.Lexing.pos_cnum - pos.Lexing.pos_bol);
+         exit 1)
+    in
+    let program = Medaka_lib.Desugar.desugar_program program in
+    let resolve_errs = Medaka_lib.Resolve.resolve_program program in
+    if resolve_errs <> [] then begin
+      List.iter (fun (err, loc_opt) ->
+        Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Resolve.pp_error err);
+        show_snippet source loc_opt
+      ) resolve_errs;
+      exit 1
+    end;
+    (try
+       let (_env, warnings) = Medaka_lib.Typecheck.check_program program in
+       List.iter (fun w -> Printf.eprintf "%s\n" w) warnings
+     with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
+       Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
+       show_snippet source loc_opt;
+       exit 1);
+    (try
+       let eval_env = Medaka_lib.Eval.eval_program program in
+       Medaka_lib.Prop_runner.run_all eval_env program
+     with Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
+       Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
+       show_snippet source loc_opt;
+       exit 1)
+  end;
   (* Resolve a zero-arg `run`/`check` against `medaka.toml` in the cwd
      (walking up).  Returns the entry file path, or None if no config
      is found. *)
@@ -72,7 +128,7 @@ let () =
     else if argc = 2 then `Run, argv.(1)
     else begin
       print_endline
-        "Usage: medaka [check|run|repl|lsp|fmt|new] <file.mdk|name>"; exit 1
+        "Usage: medaka [check|run|test|repl|lsp|fmt|new] <file.mdk|name>"; exit 1
     end
   in
   let project_dir =

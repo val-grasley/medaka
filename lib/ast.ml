@@ -134,6 +134,12 @@ type decl =
   | DTypeAlias of bool * ident * ident list * ty  (* pub? name params rhs *)
   | DNewtype   of bool * ident * ident list * ident * ty * ident list  (* pub? tyname typarams conname fty derives *)
   | DUse of bool * use_path  (* pub? use path *)
+  | DProp of {
+      is_pub      : bool;
+      prop_name   : string;
+      prop_params : (ident * ty) list;
+      prop_body   : expr;
+    }
 
 type program = decl list
 
@@ -316,6 +322,7 @@ let strip_locs_decl = function
     DInterface { d with methods = List.map strip_locs_iface_method d.methods }
   | DImpl d ->
     DImpl { d with methods = List.map (fun (n, ps, e) -> (n, ps, strip_locs_expr e)) d.methods }
+  | DProp d -> DProp { d with prop_body = strip_locs_expr d.prop_body }
   | d -> d
 
 let strip_locs_program = List.map strip_locs_decl

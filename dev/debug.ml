@@ -41,6 +41,7 @@ let pp_decl d =
     in
     Printf.sprintf "DUse(pub=%b, %s)" pub (pp_use p)
   | DNewtype (_, n, _, con, _, _) -> Printf.sprintf "DNewtype(%s, %s)" n con
+  | DProp { prop_name; _ } -> Printf.sprintf "DProp(%S, ...)" prop_name
 
 let show label src =
   Printf.printf "── %s ──\n" label;

@@ -195,24 +195,6 @@ let derive_ord_record type_name fields =
   }
 
 (* ------------------------------------------------------------------ *)
-(* Dispatch                                                            *)
-(* ------------------------------------------------------------------ *)
-
-let derive_for_data type_name variants iface =
-  match iface with
-  | "Eq"   -> Some (derive_eq_data   type_name variants)
-  | "Show" -> Some (derive_show_data type_name variants)
-  | "Ord"  -> Some (derive_ord_data  type_name variants)
-  | _      -> None  (* unknown derive ignored — typecheck will catch it *)
-
-let derive_for_record type_name fields iface =
-  match iface with
-  | "Eq"   -> Some (derive_eq_record   type_name fields)
-  | "Show" -> Some (derive_show_record type_name fields)
-  | "Ord"  -> Some (derive_ord_record  type_name fields)
-  | _      -> None
-
-(* ------------------------------------------------------------------ *)
 (* Derive Num for newtypes                                             *)
 (* ------------------------------------------------------------------ *)
 
@@ -262,6 +244,97 @@ let derive_for_newtype type_name con_name iface =
   match iface with
   | "Num" -> Some (derive_num_newtype type_name con_name)
   | _     -> None
+
+(* ── Derive Arbitrary ─────────────────────────────────────────────────── *)
+
+(* Map a field type to a random-value expression using specific rand externs. *)
+let rec arbitrary_expr_for_ty = function
+  | TyCon "Int"    -> EApp (EApp (EVar "randomInt", EUnOp ("-", ELit (LInt 1000))), ELit (LInt 1000))
+  | TyCon "Bool"   -> EApp (EVar "randomBool", ELit LUnit)
+  | TyCon "Float"  -> EApp (EVar "randomFloat", ELit LUnit)
+  | TyCon "Char"   -> EApp (EVar "randomChar", ELit LUnit)
+  | TyCon "String" ->
+    (* Generate a short random string via concatenation of random chars *)
+    EApp (EVar "arbitraryString", ELit LUnit)
+  | TyVar _ ->
+    (* Type variable: call arbitrary () and hope dispatch works *)
+    EApp (EVar "arbitrary", ELit LUnit)
+  | TyApp (TyCon "List", t) ->
+    (* Build a list of up to 5 elements *)
+    EApp (EApp (EVar "arbitraryList",
+      arbitrary_expr_for_ty t),
+      EApp (EApp (EVar "randomInt", ELit (LInt 0)), ELit (LInt 5)))
+  | TyApp (TyCon "Option", t) ->
+    EIf (EApp (EVar "randomBool", ELit LUnit),
+      EApp (EVar "Some", arbitrary_expr_for_ty t),
+      EVar "None")
+  | _ ->
+    (* Unknown type: fall back to calling arbitrary () *)
+    EApp (EVar "arbitrary", ELit LUnit)
+
+(* Generate `impl Arbitrary TypeName` for an enum-like data type. *)
+let derive_arbitrary_data type_name variants =
+  let n_ctors = List.length variants in
+  (* Build match arms: 0 → Ctor0, 1 → Ctor1, ..., n-1 → CtorLast *)
+  let arms =
+    List.mapi (fun i v ->
+      let pat = if i = n_ctors - 1 then PWild else PLit (LInt i) in
+      let body =
+        if v.con_fields = [] then EVar v.con_name
+        else
+          List.fold_left (fun acc field_ty ->
+            EApp (acc, arbitrary_expr_for_ty field_ty)
+          ) (EVar v.con_name) v.con_fields
+      in
+      (pat, None, body)
+    ) variants
+  in
+  let gen_body =
+    EMatch (
+      EApp (EApp (EVar "randomInt", ELit (LInt 0)), ELit (LInt (n_ctors - 1))),
+      arms)
+  in
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    iface_name = "Arbitrary";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [("arbitrary", [PLit LUnit], gen_body)];
+  }
+
+(* Generate `impl Arbitrary TypeName` for a record type. *)
+let derive_arbitrary_record type_name fields =
+  let field_exprs = List.map (fun f ->
+    (f.field_name, arbitrary_expr_for_ty f.field_type)
+  ) fields in
+  let gen_body = ERecordCreate (type_name, field_exprs) in
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    iface_name = "Arbitrary";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [("arbitrary", [PLit LUnit], gen_body)];
+  }
+
+let derive_for_data type_name variants iface =
+  match iface with
+  | "Eq"        -> Some (derive_eq_data   type_name variants)
+  | "Show"      -> Some (derive_show_data type_name variants)
+  | "Ord"       -> Some (derive_ord_data  type_name variants)
+  | "Arbitrary" -> Some (derive_arbitrary_data type_name variants)
+  | _           -> None  (* unknown derive ignored — typecheck will catch it *)
+
+let derive_for_record type_name fields iface =
+  match iface with
+  | "Eq"        -> Some (derive_eq_record   type_name fields)
+  | "Show"      -> Some (derive_show_record type_name fields)
+  | "Ord"       -> Some (derive_ord_record  type_name fields)
+  | "Arbitrary" -> Some (derive_arbitrary_record type_name fields)
+  | _           -> None
 
 (* Expand a single decl into itself plus any generated impls. *)
 let expand_decl = function
@@ -341,6 +414,7 @@ let map_decl f = function
   | DImpl impl                 ->
       DImpl { impl with methods =
         List.map (fun (n, ps, e) -> (n, ps, map_expr f e)) impl.methods }
+  | DProp p -> DProp { p with prop_body = map_expr f p.prop_body }
   | d -> d
 
 (* Rewrite ESetLit(name, [EVar n; ...]) → ERecordCreate when name is a record type *)

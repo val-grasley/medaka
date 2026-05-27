@@ -1874,6 +1874,18 @@ let check_program (prog : program) : (ident * scheme) list * string list =
     | _ -> ()
   ) prog;
 
+  (* Phase 4.55: type-check prop declarations *)
+  List.iter (function
+    | DProp { prop_params; prop_body; _ } ->
+      let local_env = List.fold_left (fun e (x, ast_ty) ->
+        let mono = from_ast_type ~aliases:e.aliases ast_ty in
+        extend_var e x (monotype mono)
+      ) !env prop_params in
+      let body_ty = infer local_env prop_body in
+      unify body_ty t_bool
+    | _ -> ()
+  ) prog;
+
   (* Phase 4.6: verify method call sites have matching impls and constraints *)
   check_method_usages !env;
   check_constraint_obligations !env;
@@ -2052,6 +2064,16 @@ let typecheck_module
   ) groups in
 
   List.iter (function DImpl _ as d -> check_impl !env d | _ -> ()) prog;
+  List.iter (function
+    | DProp { prop_params; prop_body; _ } ->
+      let local_env = List.fold_left (fun e (x, ast_ty) ->
+        let mono = from_ast_type ~aliases:e.aliases ast_ty in
+        extend_var e x (monotype mono)
+      ) !env prop_params in
+      let body_ty = infer local_env prop_body in
+      unify body_ty t_bool
+    | _ -> ()
+  ) prog;
   check_method_usages !env;
   check_constraint_obligations !env;
   let user_extern_decls =
@@ -2236,6 +2258,16 @@ let check_repl_decl (env : env ref) (decls : decl list)
   ) groups in
   List.iter (function
     | DImpl _ as d -> check_impl !env d
+    | _ -> ()
+  ) decls;
+  List.iter (function
+    | DProp { prop_params; prop_body; _ } ->
+      let local_env = List.fold_left (fun e (x, ast_ty) ->
+        let mono = from_ast_type ~aliases:e.aliases ast_ty in
+        extend_var e x (monotype mono)
+      ) !env prop_params in
+      let body_ty = infer local_env prop_body in
+      unify body_ty t_bool
     | _ -> ()
   ) decls;
   check_method_usages !env;

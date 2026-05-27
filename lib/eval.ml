@@ -163,6 +163,11 @@ let ctor_to_type : (string, string) Hashtbl.t = Hashtbl.create 8
    `pure` primitive looks up this table using the current monad type. *)
 let pure_impls : (string, value) Hashtbl.t = Hashtbl.create 4
 
+(* Type name → arbitrary generator function.  Populated from `impl Arbitrary T`
+   declarations at eval init.  Used by prop_runner to generate random values
+   for user-defined types without going through VMulti dispatch. *)
+let arbitrary_registry : (string, unit -> value) Hashtbl.t = Hashtbl.create 8
+
 let detect_monad = function
   | VCon (cname, _) ->
     (match Hashtbl.find_opt ctor_to_type cname with
@@ -593,6 +598,25 @@ let primitives : (string * value) list =
       match msg with
       | VString s -> raise (Eval_error ("panic: " ^ s, !current_loc))
       | _ -> raise (Eval_error ("panic", !current_loc))));
+    ("randomInt", VPrim (fun lo ->
+      VPrim (fun hi ->
+        match lo, hi with
+        | VInt lo', VInt hi' ->
+          let range = hi' - lo' + 1 in
+          VInt (if range <= 0 then lo' else lo' + Random.int range)
+        | _ -> raise (Eval_error ("randomInt: expected Int Int", None)))));
+    ("randomBool", VPrim (fun _ -> VBool (Random.bool ())));
+    ("randomFloat", VPrim (fun _ -> VFloat (Random.float 2.0 -. 1.0)));
+    ("randomChar", VPrim (fun _ ->
+      VChar (String.make 1 (Char.chr (32 + Random.int 95)))));
+    ("setSeed", VPrim (fun n ->
+      match n with
+      | VInt seed -> Random.init seed; VUnit
+      | _ -> raise (Eval_error ("setSeed: expected Int", None))));
+    ("charToStr", VPrim (fun c ->
+      match c with
+      | VChar s -> VString s
+      | _ -> raise (Eval_error ("charToStr: expected Char", None))));
   ]
 
 let () =
@@ -668,6 +692,7 @@ let eval_program program =
      target for impl lookup. *)
   Hashtbl.clear monadic_ctors;
   Hashtbl.clear ctor_to_type;
+  Hashtbl.clear arbitrary_registry;
   let type_ctors : (string, string list) Hashtbl.t = Hashtbl.create 8 in
   List.iter (function
     | DData (_, n, _, vs, _) ->
@@ -766,6 +791,24 @@ let eval_program program =
              Hashtbl.replace pure_impls tname v
            | None -> ())
         | _ -> ()
+      end;
+      (* For Arbitrary impls: register in arbitrary_registry so prop_runner can
+         look up generators for user-defined types by type name. *)
+      if iface_name = "Arbitrary" then begin
+        match List.find_opt (fun (n, _, _) -> n = "arbitrary") methods with
+        | Some (_, pats, body) ->
+          let type_key = match type_args with
+            | [t] -> (match head_tycon t with Some n -> Some n | None -> None)
+            | _ -> None
+          in
+          (match type_key with
+           | Some tname ->
+             let v = if pats = [] then wrap_match_errors (fun () -> eval env body)
+                     else VClosure (env, pats, body) in
+             Hashtbl.replace arbitrary_registry tname
+               (fun () -> apply v VUnit)
+           | None -> ())
+        | None -> ()
       end;
       List.iter (fun (name, pats, body) ->
         (* `pure` stays a primitive (it consults current_monad_type to pick
@@ -928,7 +971,7 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
          in
          fill name merged
      ) methods
-   | DRecord _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ -> ())
+   | DRecord _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ | DProp _ -> ())
 
 let eval_repl_expr (rs : repl_state) (e : expr) : value =
   rs.eval_env := [!(rs.top_frame)];

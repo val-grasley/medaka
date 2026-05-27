@@ -544,6 +544,16 @@ let print_decl p = function
     write p "import ";
     print_use_path p path
 
+  | DProp { is_pub; prop_name; prop_params; prop_body } ->
+    if is_pub then write p "export\n";
+    write p "prop ";
+    write p (Printf.sprintf "%S" prop_name);
+    List.iter (fun (x, ty) ->
+      write p (Printf.sprintf " (%s : %s)" x (Ast.pp_ty ty))
+    ) prop_params;
+    write p " = ";
+    print_expr p prec_top prop_body
+
 let print_program p decls =
   List.iter (fun d ->
     print_decl p d;

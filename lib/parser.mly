@@ -97,7 +97,7 @@ let desugar_constraint lhs rhs =
 
 (* Keywords *)
 %token LET MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
-%token IMPORT EXPORT WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE
+%token IMPORT EXPORT WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP
 
 (* Operators *)
 %token PLUS MINUS STAR SLASH MOD
@@ -283,6 +283,18 @@ inner_decl_body:
   | inner_iface_decl        { $1 }
   | inner_impl_decl       { $1 }
   | inner_extern_decl     { $1 }
+  | inner_prop_decl       { $1 }
+
+(* ── Property declarations ───────────────────────────── *)
+
+prop_param:
+  | LPAREN IDENT COLON ty RPAREN  { ($2, $4) }
+
+inner_prop_decl:
+  | PROP STRING nonempty_list(prop_param) EQUAL fun_body newlines
+    { fun is_pub ->
+        DProp { is_pub; prop_name = $2;
+                prop_params = $3; prop_body = $5 } }
 
 (* ── Extern declarations ─────────────────────────────── *)
 

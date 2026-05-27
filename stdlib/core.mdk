@@ -277,3 +277,48 @@ pipe f g a = g (f a)
 export
 apply : (a -> b) -> a -> b
 apply f a = f a
+
+-- Arbitrary interface for property-based testing.
+-- arbitrary () generates a random value of type a.
+-- shrink returns smaller candidates for counterexample reduction.
+export
+interface Arbitrary a where
+  arbitrary : Unit -> <Rand> a
+  shrink : a -> List a
+  shrink _ = []
+
+export
+impl Arbitrary Int where
+  arbitrary () = randomInt (-1000) 1000
+  shrink 0 = []
+  shrink n = [0, n / 2]
+
+export
+impl Arbitrary Bool where
+  arbitrary () = randomBool ()
+
+export
+impl Arbitrary Float where
+  arbitrary () = randomFloat ()
+
+export
+impl Arbitrary Char where
+  arbitrary () = randomChar ()
+
+-- arbitraryString: generate a random string of 0-10 printable ASCII chars
+export
+arbitraryString : Unit -> <Rand> String
+arbitraryString () = go (randomInt 0 10) "" where
+  go 0 acc = acc
+  go n acc = go (n - 1) (acc ++ charToStr (randomChar ()))
+
+export
+impl Arbitrary String where
+  arbitrary () = arbitraryString ()
+
+-- arbitraryList: generate a list of up to maxLen elements using a generator
+export
+arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> (List a)
+arbitraryList gen maxLen = go (randomInt 0 maxLen) [] where
+  go 0 acc = acc
+  go n acc = go (n - 1) (gen () :: acc)
