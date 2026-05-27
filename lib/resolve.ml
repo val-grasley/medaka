@@ -689,7 +689,7 @@ let build_exports ?(known_modules : module_exports list = [])
     | DNewtype (true, n, _, con, _, _) ->
       Hashtbl.replace exp.exp_types n ();
       Hashtbl.replace exp.exp_constructors con ()
-    | DData (true, n, _, vs, _) ->
+    | DData (DataPublic, n, _, vs, _) ->
       Hashtbl.replace exp.exp_types n ();
       List.iter (fun v ->
         Hashtbl.replace exp.exp_constructors v.con_name ();
@@ -701,12 +701,16 @@ let build_exports ?(known_modules : module_exports list = [])
            ) fields
          | ConPos _ -> ())
       ) vs
-    | DRecord (true, n, _, fs, _) ->
+    | DData (DataAbstract, n, _, _, _) ->
+      Hashtbl.replace exp.exp_types n ()
+    | DRecord (DataPublic, n, _, fs, _) ->
       Hashtbl.replace exp.exp_types n ();
       List.iter (fun f ->
         Hashtbl.replace exp.exp_fields f.field_name ();
         Hashtbl.replace exp.exp_field_owners f.field_name n
       ) fs
+    | DRecord (DataAbstract, n, _, _, _) ->
+      Hashtbl.replace exp.exp_types n ()
     | DInterface { is_pub = true; iface_name; methods; _ } ->
       Hashtbl.replace exp.exp_interfaces iface_name ();
       Hashtbl.replace exp.exp_iface_methods iface_name

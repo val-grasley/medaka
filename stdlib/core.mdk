@@ -3,11 +3,11 @@
 
 -- Datatypes
 
-export data Ordering = Lt | Eq | Gt
+public export data Ordering = Lt | Eq | Gt
 
-export data Option a = Some a | None
+public export data Option a = Some a | None
 
-export data Result e a = Ok a | Err e
+public export data Result e a = Ok a | Err e
 
 -- Interfaces
 

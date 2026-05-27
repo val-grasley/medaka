@@ -126,7 +126,7 @@ let test_export_data_parsing () =
   let lexbuf = Lexing.from_string "export data Color = Red | Green | Blue\n" in
   let prog = Parser.program Lexer.token lexbuf in
   match prog with
-  | [Ast.DData (true, "Color", [], _, _)] -> ()
+  | [Ast.DData (Ast.DataAbstract, "Color", [], _, _)] -> ()
   | _ -> failwith "expected exported DData"
 
 let test_export_round_trip () =
@@ -211,7 +211,7 @@ let test_reexport_wildcard () =
 (* wildcard re-export includes data types and their constructors *)
 let test_reexport_data_wildcard () =
   with_tmp_dir (fun dir ->
-    let _ = write_file dir "a.mdk" "export data Color = Red | Green | Blue\n" in
+    let _ = write_file dir "a.mdk" "public export data Color = Red | Green | Blue\n" in
     let _ = write_file dir "b.mdk" "export import a.*\n" in
     let main = write_file dir "main.mdk"
       "import b.{Color, Red, Green, Blue}\nfavorite : Color\nfavorite = Red\n" in
@@ -228,7 +228,7 @@ let test_reexport_data_wildcard () =
 (* group re-export includes named constructors *)
 let test_reexport_data_group () =
   with_tmp_dir (fun dir ->
-    let _ = write_file dir "a.mdk" "export data Color = Red | Green | Blue\n" in
+    let _ = write_file dir "a.mdk" "public export data Color = Red | Green | Blue\n" in
     let _ = write_file dir "b.mdk" "export import a.{Color, Red, Green, Blue}\n" in
     let main = write_file dir "main.mdk"
       "import b.{Color, Red}\nfavorite : Color\nfavorite = Red\n" in
@@ -350,6 +350,64 @@ let test_import_core_is_noop () =
             "expected ['main'], got %s" (String.concat ", " ids))
   )
 
+(* ── Abstract type export tests ─────────────────── *)
+
+(* export data → type in exp_types, constructors NOT in exp_constructors *)
+let test_abstract_export_type_only () =
+  with_tmp_dir (fun dir ->
+    let main = write_file dir "a.mdk" "export data Color = Red | Green | Blue\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let a_exp = find_exp exports "a" in
+    if not (Hashtbl.mem a_exp.Resolve.exp_types "Color") then
+      failwith "expected 'Color' in exp_types";
+    if Hashtbl.mem a_exp.Resolve.exp_constructors "Red" then
+      failwith "expected 'Red' NOT in exp_constructors (abstract export)"
+  )
+
+(* public export data → type AND constructors in export tables *)
+let test_public_export_ctors_visible () =
+  with_tmp_dir (fun dir ->
+    let main = write_file dir "a.mdk" "public export data Color = Red | Green | Blue\n" in
+    let modules = Loader.load_program main dir in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let a_exp = find_exp exports "a" in
+    if not (Hashtbl.mem a_exp.Resolve.exp_types "Color") then
+      failwith "expected 'Color' in exp_types";
+    if not (Hashtbl.mem a_exp.Resolve.exp_constructors "Red") then
+      failwith "expected 'Red' in exp_constructors"
+  )
+
+(* importing abstract type and using constructor → UnknownConstructor *)
+let test_import_abstract_ctor_rejected () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "export data Color = Red | Green | Blue\n" in
+    let main = write_file dir "main.mdk"
+      "import a.{Color}\nfavorite : Color\nfavorite = Red\n" in
+    let modules = Loader.load_program main dir in
+    let (_exports, errors) = resolve_all modules in
+    let all_errs = List.concat_map snd errors in
+    let has_unbound = List.exists (function
+      | (Resolve.UnboundVariable "Red", _) -> true
+      | _ -> false) all_errs in
+    if not has_unbound then
+      failwith "expected UnboundVariable(Red) error for abstract constructor"
+  )
+
+(* importing public export type and using constructor → no error *)
+let test_import_public_ctor_allowed () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "public export data Color = Red | Green | Blue\n" in
+    let main = write_file dir "main.mdk"
+      "import a.{Color, Red}\nfavorite : Color\nfavorite = Red\n" in
+    let modules = Loader.load_program main dir in
+    let (_exports, errors) = resolve_all modules in
+    if errors <> [] then
+      failwith "unexpected errors for public export constructor"
+  )
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -382,5 +440,11 @@ let () =
       test_case "interface group"              `Quick test_reexport_interface_group;
       test_case "chained A->B->C"              `Quick test_reexport_chained;
       test_case "private import not reexported" `Quick test_private_import_not_reexported;
+    ];
+    "abstract type exports", [
+      test_case "export data: type only in exports"  `Quick test_abstract_export_type_only;
+      test_case "public export: ctors visible"        `Quick test_public_export_ctors_visible;
+      test_case "import abstract: ctor rejected"      `Quick test_import_abstract_ctor_rejected;
+      test_case "import public export: ctor allowed"  `Quick test_import_public_ctor_allowed;
     ];
   ]

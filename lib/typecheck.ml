@@ -2301,7 +2301,7 @@ let typecheck_module
       (match Hashtbl.find_opt (!env).ctors con with
        | Some s -> Some [(con, s)]
        | None -> None)
-    | DData (true, _, _, vs, _) ->
+    | DData (DataPublic, _, _, vs, _) ->
       Some (List.filter_map (fun v ->
         match Hashtbl.find_opt (!env).ctors v.Ast.con_name with
         | Some s -> Some (v.Ast.con_name, s)
@@ -2311,7 +2311,7 @@ let typecheck_module
   ) prog |> List.concat in
   let pub_records = List.filter_map (fun d ->
     match d with
-    | DRecord (true, n, _, _, _) ->
+    | DRecord (DataPublic, n, _, _, _) ->
       (match Hashtbl.find_opt (!env).records n with
        | Some ri -> Some (n, ri)
        | None -> None)

@@ -117,12 +117,17 @@ type iface_method = {
   method_default : (pat list * expr) option;
 }
 
+type data_vis =
+  | DataPrivate   (* data T = ...                -- not exported *)
+  | DataAbstract  (* export data T = ...         -- type name only *)
+  | DataPublic    (* public export data T = ...  -- type + constructors *)
+
 type decl =
   | DTypeSig   of bool * ident * ty          (* pub? name type *)
   | DExtern    of bool * ident * ty          (* pub? name type *)
   | DFunDef    of bool * ident * pat list * expr  (* pub? name pats body *)
-  | DData      of bool * ident * ident list * data_variant list * ident list  (* pub? derives *)
-  | DRecord    of bool * ident * ident list * record_field list * ident list  (* pub? derives *)
+  | DData      of data_vis * ident * ident list * data_variant list * ident list  (* vis derives *)
+  | DRecord    of data_vis * ident * ident list * record_field list * ident list  (* vis derives *)
   | DInterface of {
       is_pub      : bool;
       is_default  : bool;

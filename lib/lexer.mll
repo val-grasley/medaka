@@ -103,6 +103,7 @@ let keyword_or_ident s =
   | "impl"      -> IMPL
   | "import"    -> IMPORT
   | "export"    -> EXPORT
+  | "public"    -> PUBLIC
   | "where"     -> WHERE
   | "of"        -> OF
   | "do"        -> DO

@@ -508,7 +508,7 @@ r
 
 let test_data_inline () =
   match parse_one "data Bool = True | False\n" with
-  | DData (false, "Bool", [], [
+  | DData (DataPrivate, "Bool", [], [
       { con_name = "True";  con_payload = ConPos [] };
       { con_name = "False"; con_payload = ConPos [] };
     ], []) -> ()
@@ -516,7 +516,7 @@ let test_data_inline () =
 
 let test_data_with_fields () =
   match parse_one "data Option a = Some a | None\n" with
-  | DData (false, "Option", ["a"], [
+  | DData (DataPrivate, "Option", ["a"], [
       { con_name = "Some"; con_payload = ConPos [TyVar "a"] };
       { con_name = "None"; con_payload = ConPos [] };
     ], []) -> ()
@@ -529,7 +529,7 @@ data Shape
   | Rectangle Float Float
 |} in
   match parse_one src with
-  | DData (false, "Shape", [], [
+  | DData (DataPrivate, "Shape", [], [
       { con_name = "Circle";    con_payload = ConPos [TyCon "Float"] };
       { con_name = "Rectangle"; con_payload = ConPos [TyCon "Float"; TyCon "Float"] };
     ], []) -> ()
@@ -544,7 +544,7 @@ record Person
   age : Int
 |} in
   match parse_one src with
-  | DRecord (false, "Person", [], [
+  | DRecord (DataPrivate, "Person", [], [
       { field_name = "name"; field_type = TyCon "String" };
       { field_name = "age";  field_type = TyCon "Int" };
     ], []) -> ()
@@ -633,6 +633,36 @@ let test_export_standalone_type_sig () =
 let test_export_standalone_fun_def () =
   match parse_one "export\nfoo x = x\n" with
   | DFunDef (true, "foo", _, _) -> ()
+  | _ -> failwith "wrong"
+
+let test_export_data_abstract () =
+  (* export data → DataAbstract: type name only *)
+  match parse_one "export data Color = Red | Green | Blue\n" with
+  | DData (DataAbstract, "Color", [], _, []) -> ()
+  | _ -> failwith "wrong"
+
+let test_public_export_data () =
+  (* public export data → DataPublic: type + constructors *)
+  match parse_one "public export data Color = Red | Green | Blue\n" with
+  | DData (DataPublic, "Color", [], _, []) -> ()
+  | _ -> failwith "wrong"
+
+let test_private_data () =
+  (* bare data → DataPrivate *)
+  match parse_one "data Color = Red | Green | Blue\n" with
+  | DData (DataPrivate, "Color", [], _, []) -> ()
+  | _ -> failwith "wrong"
+
+let test_public_export_record () =
+  let src = "public export record Point\n  x : Int\n  y : Int\n" in
+  match parse_one src with
+  | DRecord (DataPublic, "Point", [], _, []) -> ()
+  | _ -> failwith "wrong"
+
+let test_export_record_abstract () =
+  let src = "export record Point\n  x : Int\n  y : Int\n" in
+  match parse_one src with
+  | DRecord (DataAbstract, "Point", [], _, []) -> ()
   | _ -> failwith "wrong"
 
 (* ── Multi-declaration tests ─────────────────────────── *)
@@ -897,7 +927,7 @@ f p =
 
 let test_data_named_inline () =
   match parse_one "data Point = Pt { x : Int, y : Int }\n" with
-  | DData (false, "Point", [], [
+  | DData (DataPrivate, "Point", [], [
       { con_name = "Pt"; con_payload = ConNamed [
         { field_name = "x"; field_type = TyCon "Int" };
         { field_name = "y"; field_type = TyCon "Int" };
@@ -912,7 +942,7 @@ data Event
   | Scroll Int
 |} in
   match parse_one src with
-  | DData (false, "Event", [], [
+  | DData (DataPrivate, "Event", [], [
       { con_name = "Click"; con_payload = ConNamed [
         { field_name = "x"; field_type = TyCon "Int" };
         { field_name = "y"; field_type = TyCon "Int" };
@@ -1279,6 +1309,11 @@ let () =
       test_case "wildcard"                 `Quick test_use_wildcard;
       test_case "export standalone type sig" `Quick test_export_standalone_type_sig;
       test_case "export standalone fun def"  `Quick test_export_standalone_fun_def;
+      test_case "export data abstract"       `Quick test_export_data_abstract;
+      test_case "public export data"         `Quick test_public_export_data;
+      test_case "private data"               `Quick test_private_data;
+      test_case "public export record"       `Quick test_public_export_record;
+      test_case "export record abstract"     `Quick test_export_record_abstract;
     ];
     "pipe and compose", [
       test_case "pipe"                  `Quick test_pipe;

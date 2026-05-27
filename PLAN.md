@@ -20,18 +20,19 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-675 tests pass across 9 test suites:
+764 tests pass across 9 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 121   | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 89    | parse → print → parse yields the same AST             |
-| Resolver          | `test/test_resolve.ml`          | 58    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 254   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 107   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
+| Parser            | `test/test_parser.ml`           | 147   | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 102   | parse → print → parse yields the same AST             |
+| Resolver          | `test/test_resolve.ml`          | 60    | Unbound vars, unknown types/ctors, duplicates, fields |
+| Type checker      | `test/test_typecheck.ml`        | 270   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 135   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
-| Loader            | `test/test_loader.ml`           | 20    | Multi-file imports, topo sort, cycle detection, prelude no-op |
+| Loader            | `test/test_loader.ml`           | 24    | Multi-file imports, topo sort, cycle detection, prelude no-op, abstract exports |
+| Diagnostics       | `test/test_diagnostics.ml`      | 11    | LSP diagnostic output, multi-file analysis            |
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -1658,28 +1659,45 @@ the LALR(1) noise already tolerated).
 was already resolved when `ELetGroup` was first introduced; this
 phase did not revisit it.
 
-### Phase 43: Abstract type exports ⏳ TODO
+### Phase 43: Abstract type exports ✅ DONE
 
-`export data T = ...` exposes only the type name; `public export
-data T = ...` additionally exposes constructors. Same applies to
-`record`. **Breaking change**: existing `export data` declarations
-must be audited and either left abstract (preferred) or updated to
-`public export` where transparency is intentional (`Option`,
-`Result`, `Ordering`, etc.).
+`export data T = ...` exposes only the type name (abstract); `public
+export data T = ...` additionally exposes constructors. Same applies
+to `record`.
 
-Scope:
-- Parser: `public` modifier on `export`.
-- Module export table: track type-visible vs. constructors-visible
-  separately.
-- Typechecker: reject pattern matching against an abstractly-exported
-  constructor in foreign modules; reject foreign field access on
-  abstractly-exported records.
-- Error messages: when matching/accessing is rejected, point at the
-  defining module and suggest the public API.
-- Derived instances must survive abstract export (they're synthesised
-  in the defining module, so this should fall out for free — verify).
-- Audit pass: walk `stdlib/*.mdk` and choose `export` vs.
-  `public export` for every type.
+**What was added.**
+- `type data_vis = DataPrivate | DataAbstract | DataPublic` in
+  `lib/ast.ml`; `DData` and `DRecord` changed from a single `bool`
+  to `data_vis` as the first field.
+- `"public"` → `PUBLIC` keyword added to `lib/lexer.mll`.
+- `lib/parser.mly`: `PUBLIC` token; `inner_decl_body` split into
+  `inner_data_or_record` (returns `data_vis -> decl`) and
+  `inner_non_data_decl` (returns `bool -> decl`); `decl` rule
+  rewritten with `PUBLIC EXPORT` alternatives producing `DataPublic`,
+  bare `EXPORT` for data/record producing `DataAbstract`. Conflict
+  count unchanged: 8 S/R (20) + 8 R/R (34).
+- `lib/printer.ml`: three-way visibility printing — `"public export "`,
+  `"export "`, or nothing.
+- `lib/resolve.ml` `build_exports`: `DData (DataPublic, ...)` exports
+  type + all constructors; `DData (DataAbstract, ...)` exports type
+  name only; `DataPrivate` exports nothing.
+- `lib/typecheck.ml` `typecheck_module`: `pub_ctors` and `pub_records`
+  filtered to `DataPublic` only (abstract types don't expose
+  constructors to importers' type env).
+- Enforcement: natural — if a constructor isn't in `exp_constructors`,
+  it never enters the importing module's env, giving `UnboundVariable`
+  on use. No special typechecker changes needed.
+- `stdlib/core.mdk`: `Ordering`, `Option`, `Result` changed to
+  `public export data` (users must pattern-match their constructors).
+- 14 new tests: 5 parser (DataPrivate/DataAbstract/DataPublic shapes
+  for data and record), 5 roundtrip (printer output verified), 4
+  loader (export table membership and cross-module enforcement).
+  **764 tests total.**
+
+**Known limitation.** Error messages say `UnboundVariable "Red"` when
+a user tries to use a constructor from an abstractly-exported type.
+A future improvement would detect that the type exists but is abstract
+and suggest `public export`.
 
 ### Phase 44: `function` keyword ✅ DONE
 

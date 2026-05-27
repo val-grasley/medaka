@@ -106,7 +106,7 @@ let desugar_constraint lhs rhs =
 
 (* Keywords *)
 %token LET MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
-%token IMPORT EXPORT WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP FUNCTION
+%token IMPORT EXPORT PUBLIC WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP FUNCTION
 
 (* Operators *)
 %token PLUS MINUS STAR SLASH MOD
@@ -288,23 +288,37 @@ decl_list:
   | decl decl_list   { $1 @ $2 }
 
 decl:
-  | EXPORT newlines inner_decl_body  { record_decl_pos $startpos $endpos; [$3 true]  }
-  | EXPORT inner_decl_body           { record_decl_pos $startpos $endpos; [$2 true]  }
-  | inner_decl_body                  { record_decl_pos $startpos $endpos; [$1 false] }
-  | EXPORT IMPORT import_path newlines  { record_decl_pos $startpos $endpos; [DUse (true,  $3)] }
-  | IMPORT import_path newlines         { record_decl_pos $startpos $endpos; [DUse (false, $2)] }
+  (* public export data/record — DataPublic: type + constructors visible *)
+  | PUBLIC EXPORT newlines inner_data_or_record  { record_decl_pos $startpos $endpos; [$4 DataPublic]   }
+  | PUBLIC EXPORT inner_data_or_record           { record_decl_pos $startpos $endpos; [$3 DataPublic]   }
+  (* export data/record — DataAbstract: type name only *)
+  | EXPORT newlines inner_data_or_record         { record_decl_pos $startpos $endpos; [$3 DataAbstract] }
+  | EXPORT inner_data_or_record                  { record_decl_pos $startpos $endpos; [$2 DataAbstract] }
+  (* export non-data/record — normal bool pub *)
+  | EXPORT newlines inner_non_data_decl          { record_decl_pos $startpos $endpos; [$3 true]  }
+  | EXPORT inner_non_data_decl                   { record_decl_pos $startpos $endpos; [$2 true]  }
+  (* bare data/record — DataPrivate *)
+  | inner_data_or_record                         { record_decl_pos $startpos $endpos; [$1 DataPrivate]  }
+  (* bare non-data/record — private *)
+  | inner_non_data_decl                          { record_decl_pos $startpos $endpos; [$1 false] }
+  | EXPORT IMPORT import_path newlines           { record_decl_pos $startpos $endpos; [DUse (true,  $3)] }
+  | IMPORT import_path newlines                  { record_decl_pos $startpos $endpos; [DUse (false, $2)] }
 
-inner_decl_body:
-  | inner_type_sig        { $1 }
-  | inner_fun_def         { $1 }
-  | inner_data_decl       { $1 }
-  | inner_record_decl     { $1 }
+(* data_vis -> decl: data and record declarations only *)
+inner_data_or_record:
+  | inner_data_decl    { $1 }
+  | inner_record_decl  { $1 }
+
+(* bool -> decl: everything except data and record *)
+inner_non_data_decl:
+  | inner_type_sig          { $1 }
+  | inner_fun_def           { $1 }
   | inner_type_alias_decl   { $1 }
   | inner_type_newtype_decl { $1 }
   | inner_iface_decl        { $1 }
-  | inner_impl_decl       { $1 }
-  | inner_extern_decl     { $1 }
-  | inner_prop_decl       { $1 }
+  | inner_impl_decl         { $1 }
+  | inner_extern_decl       { $1 }
+  | inner_prop_decl         { $1 }
 
 (* ── Property declarations ───────────────────────────── *)
 
@@ -698,10 +712,10 @@ inline_deriving:
 inner_data_decl:
   (* Block form: DEDENT, then mandatory newlines (from handle_indent), then optional deriving *)
   | DATA UPPER list(IDENT) INDENT nonempty_list(data_variant_line) DEDENT newlines option(deriving_clause)
-    { fun is_pub -> DData (is_pub, $2, $3, $5, Option.value ~default:[] $8) }
+    { fun vis -> DData (vis, $2, $3, $5, Option.value ~default:[] $8) }
   (* Inline form: optional deriving before the terminating newlines *)
   | DATA UPPER list(IDENT) EQUAL separated_nonempty_list(PIPE, data_variant_inline) option(inline_deriving) newlines
-    { fun is_pub -> DData (is_pub, $2, $3, $5, Option.value ~default:[] $6) }
+    { fun vis -> DData (vis, $2, $3, $5, Option.value ~default:[] $6) }
 
 data_variant_line:
   | PIPE UPPER list(ty_atom) newlines
@@ -723,7 +737,7 @@ inline_field_decl:
 inner_record_decl:
   (* Block form: same structure as block data — newlines consumed before optional deriving *)
   | RECORD UPPER list(IDENT) INDENT nonempty_list(record_field_decl) DEDENT newlines option(deriving_clause)
-    { fun is_pub -> DRecord (is_pub, $2, $3, $5, Option.value ~default:[] $8) }
+    { fun vis -> DRecord (vis, $2, $3, $5, Option.value ~default:[] $8) }
 
 record_field_decl:
   | IDENT COLON ty newlines  { { field_name = $1; field_type = $3 } }

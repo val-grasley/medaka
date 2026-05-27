@@ -247,6 +247,11 @@ let () =
       test_case "export import"    `Quick u_pub;
       test_case "alias"            `Quick u_alias;
       test_case "wildcard"         `Quick u_wild;
+      test_case "export data abstract"  `Quick (mk "export data Color = Red | Green | Blue\n");
+      test_case "public export data"    `Quick (mk "public export data Color = Red | Green | Blue\n");
+      test_case "private data"          `Quick (mk "data Color = Red | Green | Blue\n");
+      test_case "public export record"  `Quick (mk "public export record Point\n  x : Int\n  y : Int\n");
+      test_case "export record abstract" `Quick (mk "export record Point\n  x : Int\n  y : Int\n");
     ];
     "multi-decl", [
       test_case "mixed"            `Quick multi;
