@@ -331,18 +331,33 @@ r = both_equal Opaque Opaque
    5. Effect propagation
    ===================================================================== *)
 
-(* A function that calls `print` must explicitly declare the IO effect.
-   PLAN.md §Effect System ("inference propagates effects up the call
-   stack") describes the *intended* behavior, but the current checker
-   requires explicit annotation.  Until effect inference is implemented
-   (deferred), the annotation form is the working pattern.  See PLAN.md
-   §5 "Effects: TFun now carries an effect_set slot (Phase 29)". *)
+(* An explicitly annotated IO function works as before. *)
 let t_eff_print_io =
   assert_type
     {|f : a -> <IO> Unit
 f x = print x
 |}
     "f" "a -> <IO> Unit"
+
+(* Phase 51: unannotated function calling print gets IO inferred. *)
+let t_eff_infer_unannotated =
+  assert_type "f x = print x\n" "f" "a -> Unit"
+
+(* Phase 51: transitive inference — unannotated A calling unannotated B calling print. *)
+let t_eff_infer_transitive =
+  assert_type
+    {|inner x = print x
+outer x = inner x
+|}
+    "outer" "a -> Unit"
+
+(* Phase 51: annotated caller of unannotated callee must cover callee's inferred effects. *)
+let e_eff_escape_via_inferred_callee =
+  assert_err
+    {|helper x = print x
+f : String -> Unit
+f x = helper x
+|}
 
 (* A function that only manipulates pure data should have no effects. *)
 let t_eff_pure_no_eff =
@@ -910,9 +925,12 @@ let () =
         ; test_case "seeded fallback still works"  `Quick t_iface_seeded_still_works
         ] );
       ( "effects",
-        [ test_case "print => <IO>"      `Quick t_eff_print_io
-        ; test_case "pure arithmetic"    `Quick t_eff_pure_no_eff
-        ; test_case "Option do is pure"  `Quick t_eff_option_pure
+        [ test_case "print => <IO>"                   `Quick t_eff_print_io
+        ; test_case "infer IO unannotated"            `Quick t_eff_infer_unannotated
+        ; test_case "infer IO transitive"             `Quick t_eff_infer_transitive
+        ; test_case "err: escape via inferred callee" `Quick e_eff_escape_via_inferred_callee
+        ; test_case "pure arithmetic"                 `Quick t_eff_pure_no_eff
+        ; test_case "Option do is pure"               `Quick t_eff_option_pure
         ] );
       ( "exhaustiveness corners",
         [ test_case "warns: nested Some/None"  `Quick w_exhaust_nested_some

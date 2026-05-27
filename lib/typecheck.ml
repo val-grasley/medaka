@@ -94,7 +94,6 @@ type type_error =
   | UnknownRecord  of ident
   | UnknownField   of ident * ident       (* field, record *)
   | MissingField   of ident * ident       (* field, record *)
-  | ImpureFunction of ident * effect_set  (* unannotated fn with inferred effects *)
   | EffectEscape   of ident * effect_set * effect_set  (* fn, declared, undeclared extras *)
   | UnknownInterface   of ident               (* impl references unknown interface *)
   | ExtraMethod        of ident * ident       (* iface_name, method not in interface *)
@@ -317,9 +316,6 @@ let pp_error = function
     Printf.sprintf "Field %s does not belong to record %s" f r
   | MissingField (f, r) ->
     Printf.sprintf "Missing field %s in construction of record %s" f r
-  | ImpureFunction (name, effs) ->
-    Printf.sprintf "Function '%s' has no effect annotation but performs <%s>"
-      name (String.concat ", " effs)
   | EffectEscape (name, declared, extras) ->
     Printf.sprintf "Function '%s' declared with <%s> but also performs <%s>"
       name (String.concat ", " declared) (String.concat ", " extras)
@@ -1990,8 +1986,7 @@ let infer_and_check_effects ~extern_decls ~scheme_env groups =
     in
     Hashtbl.replace eff_env name inferred;
     (match sig_opt with
-     | None ->
-       if inferred <> [] then fail (ImpureFunction (name, inferred))
+     | None -> ()
      | Some sig_ty ->
        let decl = declared_effects sig_ty in
        let extras = List.filter (fun e -> not (List.mem e decl)) inferred in

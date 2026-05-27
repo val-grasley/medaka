@@ -592,9 +592,9 @@ let t_eff_pipe_io = assert_type
 let t_eff_compose_pure = assert_type
   "inc x = x + 1\ndbl x = x * 2\nf = inc >> dbl\n" "f" "Int -> Int"
 
-(* Error: unannotated function calls print → ImpureFunction *)
-let e_eff_impure_no_annot = assert_err
-  "f = print \"hi\"\n"
+(* Unannotated function calls print → effect inferred, no error *)
+let t_eff_infer_io = assert_type
+  "f = print \"hi\"\n" "f" "Unit"
 
 (* Error: function annotated as pure (no <...>) but calls print → EffectEscape *)
 let e_eff_escape_annotated_pure = assert_err
@@ -604,17 +604,21 @@ let e_eff_escape_annotated_pure = assert_err
 let e_eff_escape_wrong_effect = assert_err
   "f : <Rand> Unit\nf = print \"hi\"\n"
 
-(* Error: IO effect escapes through a lambda body inside the unannotated fn *)
-let e_eff_lambda_body_propagates = assert_err
-  "bad = (x => print x) \"hi\"\n"
+(* IO effect inferred through a lambda body in an unannotated fn — no error *)
+let t_eff_infer_lambda = assert_type
+  "bad = (x => print x) \"hi\"\n" "bad" "Unit"
 
-(* HOF: passing effectful function as argument — call site must be impure *)
-let e_hof_effectful_arg = assert_err
-  "runWith f = f ()\nbad = runWith print\n"
+(* HOF: passing effectful function — effect inferred, no error *)
+let t_eff_infer_hof = assert_type
+  "runWith f = f ()\nbad = runWith print\n" "bad" "Unit"
 
-(* HOF: transitive alias of effectful function still propagates *)
-let e_hof_alias_propagates = assert_err
-  "runWith f = f ()\np = print\nbad = runWith p\n"
+(* HOF: transitive alias of effectful function — effect inferred, no error *)
+let t_eff_infer_hof_alias = assert_type
+  "runWith f = f ()\np = print\nbad = runWith p\n" "bad" "Unit"
+
+(* Escape via inferred callee: annotated pure fn calls unannotated IO fn → EffectEscape *)
+let e_eff_escape_via_inferred = assert_err
+  "helper x = print x\nf : String -> Unit\nf x = helper x\n"
 
 (* HOF: pure callback — no error *)
 let t_hof_pure_arg = assert_type
@@ -1367,7 +1371,7 @@ let t_set_ref_mut_ok = assert_type
 let e_set_ref_type_mismatch = assert_err
   "r = Ref 5\nbad = set_ref r \"hello\"\n"
 
-(* set_ref without <Mut> annotation → ImpureFunction *)
+(* set_ref without <Mut> annotation: annotated pure fn → EffectEscape *)
 let e_set_ref_impure = assert_err
   "f : Ref Int -> Unit\nf r = set_ref r 0\n"
 
@@ -1500,9 +1504,9 @@ let t_extern_constant = assert_type
   "extern zero : Int\nresult = zero + 1\n"
   "result" "Int"
 
-(* extern with effect: caller without annotation → ImpureFunction *)
-let e_extern_effect_impure = assert_err
-  "extern myPrint : a -> <IO> Unit\nbad = myPrint 42\n"
+(* extern with effect: caller without annotation → effect inferred, no error *)
+let t_eff_infer_extern = assert_type
+  "extern myPrint : a -> <IO> Unit\nbad = myPrint 42\n" "bad" "Unit"
 
 (* extern with effect: caller with matching annotation → ok *)
 let t_extern_effect_annotated = assert_type
@@ -1571,9 +1575,9 @@ let t_readFile_type = assert_type
   "f : String -> <IO> (Result String String)\nf p = readFile p\n"
   "f" "String -> <IO> Result String String"
 
-(* effect propagation: function calling readFile picks up IO *)
-let e_readFile_impure = assert_err
-  "bad p = readFile p\n"
+(* effect propagation: function calling readFile infers IO, no error *)
+let t_readFile_infer = assert_type
+  "bad p = readFile p\n" "bad" "String -> Result String String"
 
 (* extern with uppercase name (Ref constructor) accepted by parser *)
 let t_extern_upper = assert_type
@@ -2173,19 +2177,20 @@ let () =
       test_case "err: update type mismatch" `Quick e_rec_update_type_mismatch;
     ];
     "effects", [
-      test_case "pure fn no annotation"  `Quick t_eff_pure;
-      test_case "IO with annotation"     `Quick t_eff_io_annotated;
-      test_case "transitive IO"          `Quick t_eff_transitive;
-      test_case "over-annotation ok"     `Quick t_eff_over_annotated;
-      test_case "pipe into IO fn"        `Quick t_eff_pipe_io;
-      test_case "compose pure"           `Quick t_eff_compose_pure;
-      test_case "err: impure no annot"   `Quick e_eff_impure_no_annot;
-      test_case "err: escape pure annot" `Quick e_eff_escape_annotated_pure;
-      test_case "err: wrong effect"      `Quick e_eff_escape_wrong_effect;
-      test_case "err: lambda propagates" `Quick e_eff_lambda_body_propagates;
-      test_case "err: HOF effectful arg" `Quick e_hof_effectful_arg;
-      test_case "err: HOF alias propagates" `Quick e_hof_alias_propagates;
-      test_case "HOF pure arg ok"        `Quick t_hof_pure_arg;
+      test_case "pure fn no annotation"     `Quick t_eff_pure;
+      test_case "IO with annotation"        `Quick t_eff_io_annotated;
+      test_case "transitive IO"             `Quick t_eff_transitive;
+      test_case "over-annotation ok"        `Quick t_eff_over_annotated;
+      test_case "pipe into IO fn"           `Quick t_eff_pipe_io;
+      test_case "compose pure"              `Quick t_eff_compose_pure;
+      test_case "infer IO no annot"         `Quick t_eff_infer_io;
+      test_case "infer lambda effect"       `Quick t_eff_infer_lambda;
+      test_case "err: escape pure annot"    `Quick e_eff_escape_annotated_pure;
+      test_case "err: wrong effect"         `Quick e_eff_escape_wrong_effect;
+      test_case "infer HOF effectful arg"   `Quick t_eff_infer_hof;
+      test_case "infer HOF alias"           `Quick t_eff_infer_hof_alias;
+      test_case "err: escape via inferred"  `Quick e_eff_escape_via_inferred;
+      test_case "HOF pure arg ok"           `Quick t_hof_pure_arg;
     ];
     "pipe and compose", [
       test_case "pipe Int"               `Quick t_pipe_int;
@@ -2325,8 +2330,8 @@ let () =
       test_case "concrete type"             `Quick t_extern_concrete;
       test_case "polymorphic type"          `Quick t_extern_poly;
       test_case "constant"                  `Quick t_extern_constant;
-      test_case "err: impure without annot" `Quick e_extern_effect_impure;
-      test_case "effect annotated ok"       `Quick t_extern_effect_annotated;
+      test_case "infer effect no annot"      `Quick t_eff_infer_extern;
+      test_case "effect annotated ok"        `Quick t_extern_effect_annotated;
     ];
     "collection literals", [
       test_case "map String Int"         `Quick t_map_string_int;
@@ -2353,7 +2358,7 @@ let () =
     "runtime.mdk externs (Phase 18)", [
       test_case "readLine type"          `Quick t_readLine_type;
       test_case "readFile type"          `Quick t_readFile_type;
-      test_case "err: readFile impure"   `Quick e_readFile_impure;
+      test_case "readFile infer IO"       `Quick t_readFile_infer;
       test_case "extern uppercase name"  `Quick t_extern_upper;
     ];
     "deriving (Phase 19)", [

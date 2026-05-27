@@ -2191,26 +2191,22 @@ self-hosting reimplementation.  Many are already mentioned in §5;
 this section gives each a phase number so they can be tracked,
 prioritized, and closed.
 
-### Phase 51: Effect inference for unannotated functions ⏳ TODO
+### Phase 51: Effect inference for unannotated functions ✅ DONE
 
 Design doc §Effect System promises automatic propagation: "call an
 `<IO>` and `<Rand>` function, your function is inferred as
-`<IO, Rand>`."  Today the typechecker requires explicit annotation
-on the calling function — `f x = print x` fails with "Function 'f'
-has no effect annotation but performs `<IO>`."
+`<IO, Rand>`."  Previously the typechecker required explicit annotation
+— `f x = print x` failed with "Function 'f' has no effect annotation
+but performs `<IO>`."
 
-Phase 29 added the `TFun.effect_set` slot the design relied on.
-Inference would walk function bodies, union the effect sets of all
-called functions, and pin that as the inferred effect.  Effect
-*variables* (effect-polymorphic `map`, etc.) are a follow-on after
-basic inference works.
+The `TFun.effect_set` slot (Phase 29) and the `infer_and_check_effects`
+pass already built up inferred effects in `eff_env` before checking.
+The fix was to remove the `ImpureFunction` rejection in the `None`
+branch so unannotated functions silently accept their inferred effects.
+Annotated functions still enforce `inferred ⊆ declared` via
+`EffectEscape`. `ImpureFunction` was removed from `type_error`.
 
-Scope:
-- Inference pass in `typecheck.ml` (effect union across `EApp`,
-  `EBinOp`, `EDo` stmts).
-- Unannotated functions get the inferred set as their declared set.
-- Annotated functions: check inferred ⊆ declared, error if extra.
-- Tests under `thorough_typecheck` "effects" group.
+161/108/288/142 tests pass; thorough effects group: 6 tests (3 new).
 
 ### Phase 52: Eq/Num/Ord wiring to operators ⏳ TODO
 
