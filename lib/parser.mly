@@ -245,6 +245,13 @@ let desugar_constraint lhs rhs =
      Path A is correct — it produces KV("a", 1) for `Map { "a" => 1 }`.
      Path B would produce a lambda-valued set element, which is semantically
      wrong and would type-check as a Set of function values.
+
+   Phase 38 (`if let` / `let else`): no new conflicts
+     `IF LET` is unambiguous: `LET` is not a valid first token for `expr_or`,
+     so the parser resolves the choice at the `IF` state by lookahead.
+     `LET pat EQUAL expr_no_block ELSE` in `stmt`: after fully reducing
+     `expr_no_block`, lookahead `ELSE` deterministically shifts (DoLetElse)
+     vs. `NEWLINE`/`DEDENT` which reduces (DoLet). No additional conflicts.
    ═══════════════════════════════════════════════════════ *)
 
 (* ── Top level ───────────────────────────────────────── *)
@@ -401,6 +408,8 @@ expr_lam:
     { ELoc (of_pos $startpos $endpos, ELet (false, false, $2, $4, $6)) }
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block IN expr_lam
     { ELoc (of_pos $startpos $endpos, ELet (false, true, PVar $2, curry_lam $3 $5, $7)) }
+  | IF LET pat EQUAL expr_or THEN expr_lam ELSE expr_lam
+    { ELoc (of_pos $startpos $endpos, EMatch ($5, [($3, None, $7); (PWild, None, $9)])) }
   | IF expr_or THEN expr_lam ELSE expr_lam
     { ELoc (of_pos $startpos $endpos, EIf ($2, $4, $6)) }
   | MATCH expr_or INDENT nonempty_list(match_arm) DEDENT
@@ -592,6 +601,7 @@ lc_qual:
 stmt:
   | pat LARROW expr_no_block newlines         { DoBind ($1, $3) }
   | LET MUT pat EQUAL expr_no_block newlines  { DoLet (true,  $3, $5) }
+  | LET pat EQUAL expr_no_block ELSE expr_no_block newlines { DoLetElse ($2, $4, $6) }
   | LET pat EQUAL expr_no_block newlines      { DoLet (false, $2, $4) }
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block newlines
     { DoLet (false, PVar $2, curry_lam $3 $5) }

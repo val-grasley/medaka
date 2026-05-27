@@ -960,6 +960,8 @@ let rec infer env = function
         fail (Other "do block cannot end with an assignment")
       | [DoFieldAssign _] ->
         fail (Other "do block cannot end with a field assignment")
+      | [DoLetElse _] ->
+        fail (Other "do block cannot end with a let-else binding")
       | DoExpr e :: rest ->
         let te = infer env e in
         let inner = fresh_var () in
@@ -1021,6 +1023,12 @@ let rec infer env = function
         let te = infer env e in
         unify field_t te;
         type_stmts env rest
+      | DoLetElse (pat, e, alt) :: rest ->
+        let te = infer env e in
+        let tp, bindings = type_pat env pat in
+        unify tp te;
+        let _ = infer env alt in  (* no divergence check in v1 *)
+        type_stmts (extend_vars env bindings) rest
     in
     type_stmts env stmts
 
@@ -1692,6 +1700,7 @@ let expr_effects
     | DoLet (_, pat, e)    -> (add_pats [pat] bound, go bound e)
     | DoAssign (_, e)      -> (bound, go bound e)
     | DoFieldAssign (_, _, e) -> (bound, go bound e)
+    | DoLetElse (pat, e, alt) -> (add_pats [pat] bound, effect_union (go bound e) (go bound alt))
   in
   go StringSet.empty e
 

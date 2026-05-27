@@ -572,6 +572,31 @@ result = hello 42
 |}
   "result" (VString "Hi there")
 
+(* ── if let / let else (Phase 38) ─────────────────────────────────────── *)
+
+let t_if_let_match =
+  assert_val "r = if let Some x = Some 5 then x else 0\n" "r" (VInt 5)
+
+let t_if_let_no_match =
+  assert_val "r = if let Some x = None then x else 0\n" "r" (VInt 0)
+
+(* Establish Option monad context via DoBind so pure wraps the result *)
+let t_let_else_match = assert_val
+  {|r = do
+  _ <- Some ()
+  let Some x = Some 42 else None
+  pure x
+|}
+  "r" (VCon ("Some", [VInt 42]))
+
+let t_let_else_no_match = assert_val
+  {|r = do
+  _ <- Some ()
+  let Some x = None else None
+  pure 1
+|}
+  "r" (VCon ("None", []))
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -737,5 +762,11 @@ let () =
     "interface default methods (Phase 33)", [
       test_case "default method runs"         `Quick t_iface_default_runs;
       test_case "default with where helper"   `Quick t_iface_default_where_runs;
+    ];
+    "if let / let else (Phase 38)", [
+      test_case "if let match"         `Quick t_if_let_match;
+      test_case "if let no match"      `Quick t_if_let_no_match;
+      test_case "let else match"       `Quick t_let_else_match;
+      test_case "let else no match"    `Quick t_let_else_no_match;
     ];
   ]

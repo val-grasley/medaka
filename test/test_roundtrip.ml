@@ -312,4 +312,10 @@ let () =
       test_case "where in default body" `Quick
         (mk "interface Greeter a where\n  greet x = prefix ++ x where\n    prefix = \"Hi \"\n");
     ];
+    "if let / let else (Phase 38)", [
+      test_case "if let desugars to match" `Quick
+        (mk "f opt =\n  if let Some x = opt then x else 0\n");
+      test_case "let else in do-block" `Quick
+        (mk "f opt =\n  do\n    let Some x = opt else pure 0\n    pure x\n");
+    ];
   ]

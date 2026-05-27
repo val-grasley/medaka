@@ -523,6 +523,11 @@ let rec check_expr env scope errors e =
             emit errors (UnboundVariable x);
           check_expr env scope errors e;
           scope
+        | DoLetElse (pat, e, alt) ->
+          check_pat env errors pat;
+          check_expr env scope errors e;
+          check_expr env scope errors alt;
+          pat_bindings pat @ scope
       ) scope stmts
     in ()
   | EAnnot (e, t) ->

@@ -371,6 +371,13 @@ and print_do_stmt p = function
     write p field;
     write p " = ";
     print_expr p prec_top e
+  | DoLetElse (pat, e, alt) ->
+    write p "let ";
+    print_pat p pat;
+    write p " = ";
+    print_expr p prec_top e;
+    write p " else ";
+    print_expr p prec_top alt
 
 (* ── Declarations ────────────────────────────────── *)
 
