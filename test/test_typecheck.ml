@@ -1721,6 +1721,45 @@ let e_rec_pat_type_mismatch =
 let e_rec_pat_unknown_record =
   assert_err "f p =\n  match p\n    Ghost { x } => x\n"
 
+(* ── if let / let else (Phase 38) ─────────────────── *)
+
+let t_if_let_match =
+  assert_type
+    {|f opt =
+  if let Some x = opt then x + 1 else 0
+|}
+    "f" "Option Int -> Int"
+
+let t_if_let_no_match =
+  assert_type
+    {|f s =
+  if let "yes" = s then True else False
+|}
+    "f" "String -> Bool"
+
+let e_if_let_branch_mismatch =
+  assert_err
+    {|f opt =
+  if let Some x = opt then x + 1 else "fallback"
+|}
+
+let t_let_else_bind =
+  assert_type
+    {|f opt =
+  do
+    _ <- Some ()
+    let Some x = opt else pure 0
+    pure (x + 1)
+|}
+    "f" "Option Int -> Option Int"
+
+let e_let_else_last_stmt =
+  assert_err
+    {|f opt =
+  do
+    let Some x = opt else pure 0
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -2048,5 +2087,12 @@ let () =
       test_case "polymorphic record"       `Quick t_rec_pat_poly;
       test_case "err: type mismatch"       `Quick e_rec_pat_type_mismatch;
       test_case "err: unknown record"      `Quick e_rec_pat_unknown_record;
+    ];
+    "if let / let else (Phase 38)", [
+      test_case "if let match"             `Quick t_if_let_match;
+      test_case "if let no match"          `Quick t_if_let_no_match;
+      test_case "err: branch type mismatch" `Quick e_if_let_branch_mismatch;
+      test_case "let else bind"            `Quick t_let_else_bind;
+      test_case "err: let else last stmt"  `Quick e_let_else_last_stmt;
     ];
   ]

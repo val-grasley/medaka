@@ -901,6 +901,47 @@ let test_iface_default_where () =
                | Some (_, e) -> Ast.pp_expr e)))
   | d -> failwith ("wrong decl: " ^ pp_decl d)
 
+(* ── if let / let else (Phase 38) ───────────────────── *)
+
+let test_if_let_some () =
+  match parse_expr "if let Some x = opt then x else 0\n" with
+  | EMatch (EVar "opt", [
+      (PCon ("Some", [PVar "x"]), None, EVar "x");
+      (PWild, None, ELit (LInt 0));
+    ]) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_if_let_tuple () =
+  match parse_expr "if let (a, b) = pair then a else 0\n" with
+  | EMatch (EVar "pair", [
+      (PTuple [PVar "a"; PVar "b"], None, EVar "a");
+      (PWild, None, ELit (LInt 0));
+    ]) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_let_else_do () =
+  let src = {|
+f opt =
+  do
+    let Some x = opt else pure 0
+    pure x
+|} in
+  match parse_one src with
+  | DFunDef (false, "f", [PVar "opt"], EDo [
+      DoLetElse (PCon ("Some", [PVar "x"]), EVar "opt",
+                 EApp (EVar "pure", ELit (LInt 0)));
+      DoExpr (EApp (EVar "pure", EVar "x"));
+    ]) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_if_let_nested () =
+  match parse_expr "if let Some x = f y then x + 1 else 0\n" with
+  | EMatch (EApp (EVar "f", EVar "y"), [
+      (PCon ("Some", [PVar "x"]), None, EBinOp ("+", EVar "x", ELit (LInt 1)));
+      (PWild, None, ELit (LInt 0));
+    ]) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -1068,5 +1109,11 @@ let () =
     ];
     "interface default where", [
       test_case "where in default body" `Quick test_iface_default_where;
+    ];
+    "if let / let else (Phase 38)", [
+      test_case "if let Some"      `Quick test_if_let_some;
+      test_case "if let tuple"     `Quick test_if_let_tuple;
+      test_case "let else do"      `Quick test_let_else_do;
+      test_case "if let nested"    `Quick test_if_let_nested;
     ];
   ]

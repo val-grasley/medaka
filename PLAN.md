@@ -20,18 +20,18 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-637 tests pass across 8 test suites:
+675 tests pass across 9 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 115   | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 87    | parse → print → parse yields the same AST             |
+| Parser            | `test/test_parser.ml`           | 121   | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 89    | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 58    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 240   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 103   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
+| Type checker      | `test/test_typecheck.ml`        | 254   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 107   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
-| Loader            | `test/test_loader.ml`           | 19    | Multi-file imports, topo sort, cycle detection, prelude no-op |
+| Loader            | `test/test_loader.ml`           | 20    | Multi-file imports, topo sort, cycle detection, prelude no-op |
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -1480,19 +1480,30 @@ Scope:
   for short chains, `do` for many steps or non-`Result`/`Option`
   monads).
 
-### Phase 38: `if let` and `let else` ⏳ TODO
+### Phase 38: `if let` and `let else` ✅ DONE
 
 Two sugars over single-arm pattern match:
 - `if let pat = expr then a else b` — bind through `pat`, fall through
-  to `b` if it doesn't match.
-- `let pat = expr else { divergent }` — refutable bind that requires
-  the `else` branch to diverge (return / panic / etc.).
+  to `b` if it doesn't match. Desugars at parse time to
+  `EMatch(expr, [(pat, None, a); (PWild, None, b)])` — no new AST node.
+- `let pat = expr else body` in do-blocks — new `DoLetElse of pat * expr * expr`
+  do-stmt variant. Scrutinee is a plain value (not monadic); else branch
+  executes when the pattern doesn't match.
 
-Scope:
-- Parser additions.
-- Desugar to `match`.
-- For `let else`, the divergence check rides on the existing return-type
-  inference; the body must have type `Never` or unconditionally exit.
+**What was added.**
+- `DoLetElse of pat * expr * expr` added to `Ast.do_stmt`; `pp_do_stmt` and
+  `strip_locs_do` extended.
+- `parser.mly`: `IF LET pat EQUAL expr_or THEN expr_lam ELSE expr_lam` rule
+  in `expr_lam`; `LET pat EQUAL expr_no_block ELSE expr_no_block newlines` rule
+  in `stmt`. No new grammar conflicts — 6 S/R + 8 R/R unchanged.
+- `printer.ml`, `resolve.ml`, `typecheck.ml` (type_stmts + do_stmt_effects),
+  `eval.ml` (eval_do), `desugar.ml` (map_do_stmt) all updated for `DoLetElse`.
+- 15 new tests (4 parser, 2 roundtrip, 5 typecheck, 4 eval). **675 tests total.**
+
+**Known limitation.** `let else` does not enforce that the else branch diverges.
+A non-diverging else branch typechecks (the rest of the block is silently skipped
+at runtime when the pattern fails). Full enforcement requires a `Never` type —
+deferred alongside Phase 37's `?` early-return operator.
 
 ### Phase 39: Variants with named fields ⏳ TODO
 
@@ -1840,7 +1851,7 @@ stays intentional.
 | Feature | Source | Phase |
 |---------|--------|-------|
 | **`?` postfix for `Result`/`Option`** | Rust | Phase 37 |
-| **`if let` and `let else`** | Rust, Swift | Phase 38 |
+| **`if let` and `let else`** | Rust, Swift | Phase 38 ✅ |
 | **Variants with named fields** | Rust, Swift, OCaml | Phase 39 |
 | **Range literals (`1..10`, `1..=10`)** | Rust, Kotlin | Phase 40 |
 | **Doctests** | Rust, Elixir | Phase 41 |

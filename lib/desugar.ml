@@ -328,6 +328,7 @@ and map_do_stmt f = function
   | DoLet (m, p, e) -> DoLet (m, p, map_expr f e)
   | DoAssign (x, e)         -> DoAssign (x, map_expr f e)
   | DoFieldAssign (x, fld, e) -> DoFieldAssign (x, fld, map_expr f e)
+  | DoLetElse (p, e, alt)   -> DoLetElse (p, map_expr f e, map_expr f alt)
 
 let map_decl f = function
   | DFunDef (pub, n, ps, e)    -> DFunDef (pub, n, ps, map_expr f e)

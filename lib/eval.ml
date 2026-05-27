@@ -498,6 +498,15 @@ and eval_do env stmts =
        eval_do (extend env [(x, updated)]) rest
      | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
 
+  | [DoLetElse _] ->
+    raise (Eval_error ("do-block cannot end with a let-else binding", !current_loc))
+
+  | (DoLetElse (pat, e, alt)) :: rest ->
+    let v = wrap_match_errors (fun () -> eval env e) in
+    (match match_pat pat v with
+     | None -> eval env alt
+     | Some binds -> eval_do (extend env binds) rest)
+
   | (DoBind (pat, e)) :: rest ->
     let v = wrap_match_errors (fun () -> eval env e) in
     if !current_monad_type = None then

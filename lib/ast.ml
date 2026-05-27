@@ -57,6 +57,7 @@ and do_stmt =
   | DoLet    of bool * pat * expr   (* let [mut] p = e *)
   | DoAssign      of ident * expr              (* x = e  (only valid when x was let mut) *)
   | DoFieldAssign of ident * ident * expr      (* x.field = e (mutable record or Ref) *)
+  | DoLetElse     of pat * expr * expr         (* let pat = e else diverge *)
 
 and expr =
   | ELit          of literal
@@ -255,6 +256,7 @@ and pp_do_stmt = function
     Printf.sprintf "let %s%s = %s" (if mut then "mut " else "") (pp_pat p) (pp_expr e)
   | DoAssign (x, e)          -> Printf.sprintf "%s = %s" x (pp_expr e)
   | DoFieldAssign (x, f, e) -> Printf.sprintf "%s.%s = %s" x f (pp_expr e)
+  | DoLetElse (p, e, alt)   -> Printf.sprintf "let %s = %s else %s" (pp_pat p) (pp_expr e) (pp_expr alt)
 
 (* Strip all ELoc annotations from an expression/program — used by round-trip
    tests so that position metadata doesn't break structural equality. *)
@@ -301,6 +303,7 @@ and strip_locs_do = function
   | DoLet (m, p, e)  -> DoLet (m, p, strip_locs_expr e)
   | DoAssign (x, e)         -> DoAssign (x, strip_locs_expr e)
   | DoFieldAssign (x, f, e) -> DoFieldAssign (x, f, strip_locs_expr e)
+  | DoLetElse (p, e, alt)   -> DoLetElse (p, strip_locs_expr e, strip_locs_expr alt)
 
 let strip_locs_iface_method m =
   match m.method_default with
