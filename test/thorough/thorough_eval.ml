@@ -1090,6 +1090,58 @@ main =
     "yes\n"
 
 (* =====================================================================
+   34c. Annotated let (Phase 45.11)
+   ===================================================================== *)
+
+let t_annotated_let_in =
+  assert_val
+    {|f x = let y : Int = x + 1 in y * 2
+r = f 5
+|}
+    "r" (VInt 12)
+
+let t_annotated_let_mut_in =
+  assert_val
+    {|f x = let mut y : Int = x + 1 in y * 2
+r = f 5
+|}
+    "r" (VInt 12)
+
+(* =====================================================================
+   34d. Empty impl body and empty interface (Phase 45.12)
+   ===================================================================== *)
+
+let t_empty_impl_body =
+  assert_val
+    {|interface Marker a where
+  mark : a -> Bool
+  mark _ = True
+data D = MkD
+impl Marker D where
+r = mark MkD
+|}
+    "r" (VBool true)
+
+let t_empty_impl_no_where =
+  assert_val
+    {|interface Marker a where
+  mark : a -> Bool
+  mark _ = True
+data D = MkD
+impl Marker D
+r = mark MkD
+|}
+    "r" (VBool true)
+
+let t_marker_interface =
+  assert_val
+    {|interface Marker a
+data D = MkD
+r = 42
+|}
+    "r" (VInt 42)
+
+(* =====================================================================
    35. Empty record pattern
    ===================================================================== *)
 
@@ -1301,6 +1353,15 @@ let () =
         ] );
       ( "empty record pat",
         [ test_case "P { ... }"             `Quick t_empty_record_pat
+        ] );
+      ( "annotated let (Phase 45.11)",
+        [ test_case "let y : Int = ... in"   `Quick t_annotated_let_in
+        ; test_case "let mut y : Int = ..."  `Quick t_annotated_let_mut_in
+        ] );
+      ( "empty bodies (Phase 45.12)",
+        [ test_case "empty impl body w/ WHERE" `Quick t_empty_impl_body
+        ; test_case "empty impl no WHERE"      `Quick t_empty_impl_no_where
+        ; test_case "marker interface"         `Quick t_marker_interface
         ] );
       ( "multi-line match arm (Phase 45.8)",
         [ test_case "indented body"          `Quick t_match_arm_indented_body

@@ -483,6 +483,14 @@ expr_lam:
     { ELoc (of_pos $startpos $endpos, ELet (false, false, $2, $4, $6)) }
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block IN expr_lam
     { ELoc (of_pos $startpos $endpos, ELet (false, true, PVar $2, curry_lam $3 $5, $7)) }
+  (* Phase 45.11: annotated let-in.  `let x : T = e in rest` wraps the
+     RHS in an EAnnot so the typechecker pins the binding's type. *)
+  | LET IDENT COLON ty EQUAL expr_no_block IN expr_lam
+    { ELoc (of_pos $startpos $endpos,
+            ELet (false, false, PVar $2, EAnnot ($6, $4), $8)) }
+  | LET MUT IDENT COLON ty EQUAL expr_no_block IN expr_lam
+    { ELoc (of_pos $startpos $endpos,
+            ELet (true, false, PVar $3, EAnnot ($7, $5), $9)) }
   | IF LET pat EQUAL expr_or THEN expr_lam ELSE expr_lam
     { ELoc (of_pos $startpos $endpos, EMatch ($5, [($3, None, $7); (PWild, None, $9)])) }
   | IF expr_or THEN expr_lam ELSE expr_lam
@@ -816,6 +824,17 @@ inner_iface_decl:
         methods     = $8;
       }
     }
+  (* Phase 45.12: marker interface — no methods.  WHERE keyword optional. *)
+  | option(DEFAULT) INTERFACE UPPER list(IDENT) option(iface_super) option(WHERE) newlines
+    { fun is_pub -> DInterface {
+        is_pub;
+        is_default  = $1 <> None;
+        iface_name  = $3;
+        type_params = $4;
+        super       = Option.value ~default:[] $5;
+        methods     = [];
+      }
+    }
 
 iface_super:
   | REQUIRES separated_nonempty_list(COMMA, iface_super_entry)  { $2 }
@@ -866,6 +885,42 @@ inner_impl_decl:
         impl_name  = Some $3;
         requires   = Option.value ~default:[] $7;
         methods    = $10;
+      }
+    }
+  (* Empty impl bodies: when every method has a default in the
+     interface, the user can write just `impl Foo X` (no methods).
+     The `WHERE` keyword is optional in this form. *)
+  | option(DEFAULT) IMPL UPPER nonempty_list(ty_atom) option(impl_requires) option(WHERE) newlines
+    { fun is_pub -> DImpl {
+        is_pub;
+        is_default = $1 <> None;
+        iface_name = $3;
+        type_args  = $4;
+        impl_name  = None;
+        requires   = Option.value ~default:[] $5;
+        methods    = [];
+      }
+    }
+  | option(DEFAULT) IMPL IDENT OF UPPER nonempty_list(ty_atom) option(impl_requires) option(WHERE) newlines
+    { fun is_pub -> DImpl {
+        is_pub;
+        is_default = $1 <> None;
+        iface_name = $5;
+        type_args  = $6;
+        impl_name  = Some $3;
+        requires   = Option.value ~default:[] $7;
+        methods    = [];
+      }
+    }
+  | option(DEFAULT) IMPL UPPER OF UPPER nonempty_list(ty_atom) option(impl_requires) option(WHERE) newlines
+    { fun is_pub -> DImpl {
+        is_pub;
+        is_default = $1 <> None;
+        iface_name = $5;
+        type_args  = $6;
+        impl_name  = Some $3;
+        requires   = Option.value ~default:[] $7;
+        methods    = [];
       }
     }
 
