@@ -49,15 +49,15 @@ following the same self-diagnosing pattern as the base suites
 
 | Suite          | File                                       | Cases |
 |----------------|--------------------------------------------|-------|
-| Typecheck      | `test/thorough/thorough_typecheck.ml`      | 105   |
-| Evaluator      | `test/thorough/thorough_eval.ml`           | 118   |
-| Interactions   | `test/thorough/thorough_interactions.ml`   | 46    |
+| Typecheck      | `test/thorough/thorough_typecheck.ml`      | 107   |
+| Evaluator      | `test/thorough/thorough_eval.ml`           | 141   |
+| Interactions   | `test/thorough/thorough_interactions.ml`   | 49    |
 | Stdlib         | `test/thorough/thorough_stdlib.ml`         | 92    |
 
-361 thorough tests total.  Bugs surfaced and either fixed or
-documented during the 2026-05-26 thorough-testing session are listed
-in §3 phases 45.5–45.9.  Several tests deliberately *pin* current
-buggy behavior so an eventual fix will be detectable.
+389 thorough tests total.  Bugs surfaced and fixed during the
+2026-05-26 / 2026-05-27 thorough-testing session are listed in §3
+phases 45.5–45.14 (all ✅ DONE except Phase 45.8's lambda-body
+sub-case, which is documented as still TODO).
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
