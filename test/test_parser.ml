@@ -611,11 +611,11 @@ result =
     pure (x + y)
 |} in
   match parse_one src with
-  | DFunDef (false, "result", [], EDo [
+  | DFunDef (false, "result", [], EDo (_, [
       DoBind (PVar "x", EVar "foo");
       DoBind (PVar "y", EApp (EVar "bar", EVar "x"));
       DoExpr (EApp (EVar "pure", EBinOp ("+", EVar "x", EVar "y")));
-    ]) -> ()
+    ])) -> ()
   | _ -> failwith "wrong"
 
 let test_do_field_assign () =
@@ -627,11 +627,11 @@ go p =
     pure p
 |} in
   match parse_one src with
-  | DFunDef (false, "go", [PVar "p"], EDo [
+  | DFunDef (false, "go", [PVar "p"], EDo (_, [
       DoFieldAssign ("p", "age", ELit (LInt 31));
       DoFieldAssign ("p", "name", ELit (LString "Bob"));
       DoExpr (EApp (EVar "pure", EVar "p"));
-    ]) -> ()
+    ])) -> ()
   | _ -> failwith "wrong shape for field assign do-block"
 
 let test_do_ref_value_assign () =
@@ -642,10 +642,10 @@ go r =
     pure r.value
 |} in
   match parse_one src with
-  | DFunDef (false, "go", [PVar "r"], EDo [
+  | DFunDef (false, "go", [PVar "r"], EDo (_, [
       DoFieldAssign ("r", "value", ELit (LInt 42));
       DoExpr (EApp (EVar "pure", EFieldAccess (EVar "r", "value")));
-    ]) -> ()
+    ])) -> ()
   | _ -> failwith "wrong"
 
 (* ── Import/export declaration tests ─────────────────── *)
@@ -1119,11 +1119,11 @@ f opt =
     pure x
 |} in
   match parse_one src with
-  | DFunDef (false, "f", [PVar "opt"], EDo [
+  | DFunDef (false, "f", [PVar "opt"], EDo (_, [
       DoLetElse (PCon ("Some", [PVar "x"]), EVar "opt",
                  EApp (EVar "pure", ELit (LInt 0)));
       DoExpr (EApp (EVar "pure", EVar "x"));
-    ]) -> ()
+    ])) -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
 let test_if_let_nested () =

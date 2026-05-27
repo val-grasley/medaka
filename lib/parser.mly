@@ -40,7 +40,7 @@ type kv_item = KV of expr * expr | Elem of expr | Field of string * expr
 
 let stmts_to_expr = function
   | [DoExpr e] -> e
-  | stmts      -> EDo stmts
+  | stmts      -> EDo (ref None, stmts)
 
 (* Desugar `let f x y = body` to `let f = (x => y => body)`. *)
 let curry_lam pats body =
@@ -561,7 +561,7 @@ expr_lam:
     { ELoc (of_pos $startpos $endpos,
             ELam ([PVar "__fn_arg"], EMatch (EVar "__fn_arg", $3))) }
   | DO INDENT nonempty_list(stmt) DEDENT
-    { ELoc (of_pos $startpos $endpos, EDo $3) }
+    { ELoc (of_pos $startpos $endpos, EDo (ref None, $3)) }
   | UNDERSCORE FAT_ARROW expr_lam
     { ELoc (of_pos $startpos $endpos, ELam ([PWild], $3)) }
   | expr_pipe FAT_ARROW expr_lam

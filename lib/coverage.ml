@@ -48,7 +48,7 @@ let rec collect_expr acc = function
   | Ast.EMapLit (_, kvs) ->
     List.fold_left (fun a (k, v) -> collect_expr (collect_expr a k) v) acc kvs
   | Ast.EIndex (e, i) -> collect_expr (collect_expr acc e) i
-  | Ast.EDo stmts ->
+  | Ast.EDo (_, stmts) ->
     List.fold_left (fun a stmt -> collect_do_stmt a stmt) acc stmts
   | Ast.EStringInterp parts ->
     List.fold_left (fun a p -> match p with

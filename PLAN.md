@@ -2239,26 +2239,28 @@ Related: "do-notation is not wired to `Thenable`" from §5 — `<-`
 should desugar to `andThen` calls so the `Thenable` constraint is
 actually checked.  Same arc, bundle with this phase.
 
-### Phase 53: Type-annotated AST for do-blocks ⏳ TODO
+### Phase 53: Type-annotated AST for do-blocks ✅ DONE
 
-`eval.ml`'s do-block dispatch uses a runtime heuristic
-(`detect_monad`) that inspects the first `DoBind` result's
-constructor shape.  Phase 45.10 fixed the List-monad case by
-special-casing `VList`, but the underlying fragility remains: any
-new monadic type (user-defined or otherwise) needs the heuristic
-to recognize it.
-
-The clean fix is a post-typecheck pass that tags each `EDo` node
-with its resolved monad type.  At eval time, dispatch consults the
-tag instead of guessing.  Removes the special case and makes the
-runtime model match the design.
-
-Scope:
-- Add `EDo` payload for the resolved monad (or a separate
-  annotated-AST type).
-- Typecheck pass writes the tag.
-- `eval_do` reads it; `detect_monad` and `current_monad_type`
-  become unnecessary.
+**What was added (commit `96588f0`).**
+- `EDo of do_stmt list` → `EDo of string option ref * do_stmt list`.
+  The ref carries the resolved monad type name (e.g. `"Option"`,
+  `"List"`, `"Result"`); the parser initialises it to `ref None`.
+- `typecheck.ml` `infer` for `EDo`: after `type_stmts` completes on a
+  monadic do-block, normalises the monad tyvar `m` and writes the head
+  TyCon into the ref (`Some tname`).  Polymorphic / unresolved monads
+  leave it `None`.
+- `eval_do` signature changed to accept `monad_tag : string option`;
+  at block entry, seeds `current_monad_type := monad_tag` when `Some`.
+  This means `pure` dispatches correctly for any Thenable type before
+  the first `DoBind` is evaluated, without the `detect_monad` heuristic.
+  `detect_monad` and the VList / VCon dispatch checks are kept as
+  fallback for the `None` (still-polymorphic) case.
+- Round-trip safety: `strip_locs_expr` resets the tag to `ref None`;
+  OCaml's `=` compares ref contents by value, so `ref None = ref None`
+  is true and structural equality in test comparisons is preserved.
+- All passes updated: `parser.mly`, `printer.ml`, `resolve.ml`,
+  `desugar.ml`, `coverage.ml`, `test/test_parser.ml`.
+- All 798 base tests and 389 thorough tests pass.
 
 ### Phase 54: `<Mut>` inference from `let mut` ⏳ TODO
 

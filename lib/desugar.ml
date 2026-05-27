@@ -403,7 +403,7 @@ let rec map_expr f e =
     | ERangeList (lo, hi, incl)  -> ERangeList  (map_expr f lo, map_expr f hi, incl)
     | ERangeArray (lo, hi, incl) -> ERangeArray (map_expr f lo, map_expr f hi, incl)
     | ESlice (e0, lo, hi, incl)  -> ESlice (map_expr f e0, map_expr f lo, map_expr f hi, incl)
-    | EDo stmts               -> EDo (List.map (map_do_stmt f) stmts)
+    | EDo (tag, stmts)        -> EDo (tag, List.map (map_do_stmt f) stmts)
     | EAnnot (e0, t)          -> EAnnot (map_expr f e0, t)
     | EInfix (op, e1, e2)    -> EInfix (op, map_expr f e1, map_expr f e2)
     | EListComp (body, quals) ->
@@ -493,7 +493,7 @@ let rewrite_question_expr = function
      | EQuestion inner ->
        EApp (EApp (EVar "andThen", inner), ELam ([pat], e2))
      | _ -> ELet (mut, is_fun, pat, e1, e2))
-  | EDo stmts ->
+  | EDo (tag, stmts) ->
     let rewrite_stmt = function
       | DoLet (_, pat, e) as s ->
         (match strip_loc e with
@@ -501,7 +501,7 @@ let rewrite_question_expr = function
          | _ -> s)
       | s -> s
     in
-    EDo (List.map rewrite_stmt stmts)
+    EDo (tag, List.map rewrite_stmt stmts)
   | e -> e
 
 let desugar_questions prog =
