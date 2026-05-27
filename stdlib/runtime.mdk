@@ -25,3 +25,4 @@ extern randomFloat : Unit -> <Rand> Float
 extern randomChar  : Unit -> <Rand> Char
 extern setSeed     : Int -> <Rand> Unit
 extern charToStr   : Char -> String
+extern assert_snapshot : String -> String -> <IO> Unit

@@ -35,6 +35,9 @@ exception Impl_no_match
 
 let output_hook : (string -> unit) ref = ref print_string
 
+let snapshot_dir    : string ref = ref "snapshots"
+let snapshot_update : bool ref   = ref false
+
 (* ── Env helpers ─────────────────────────────────────────────────────────── *)
 
 let lookup env name =
@@ -319,6 +322,7 @@ and eval env expr =
   match expr with
   | ELoc (loc, e) ->
     current_loc := Some loc;
+    Coverage.record_hit loc.file loc.line;
     eval env e
 
   | ELit (LInt n)    -> VInt n
@@ -815,6 +819,37 @@ let primitives : (string * value) list =
       match c with
       | VChar s -> VString s
       | _ -> raise (Eval_error ("charToStr: expected Char", None))));
+    ("assert_snapshot", VPrim (fun name_v ->
+      VPrim (fun value_v ->
+        match name_v, value_v with
+        | VString name, VString value ->
+          let safe = String.map (fun c ->
+            if (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+               (c >= '0' && c <= '9') || c = '-' then c else '_') name in
+          let dir  = !snapshot_dir in
+          let path = Filename.concat dir (safe ^ ".snap") in
+          let ensure_dir () =
+            (try Unix.mkdir dir 0o755
+             with Unix.Unix_error (Unix.EEXIST, _, _) -> ()) in
+          if !snapshot_update then begin
+            ensure_dir ();
+            let oc = open_out path in
+            output_string oc value; close_out oc; VUnit
+          end else begin
+            match (try Some (In_channel.input_all (open_in path))
+                   with Sys_error _ -> None) with
+            | None ->
+              ensure_dir ();
+              let oc = open_out path in
+              output_string oc value; close_out oc; VUnit
+            | Some stored ->
+              if stored = value then VUnit
+              else raise (Eval_error (
+                Printf.sprintf
+                  "snapshot mismatch for '%s':\n  stored: %s\n  actual: %s"
+                  name stored value, None))
+          end
+        | _ -> raise (Eval_error ("assert_snapshot: expected String String", None)))));
   ]
 
 let () =
@@ -1234,7 +1269,8 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
          in
          fill name merged
      ) methods
-   | DRecord _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ | DProp _ -> ())
+   | DRecord _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ | DProp _
+   | DBench _ -> ())
 
 let eval_repl_expr (rs : repl_state) (e : expr) : value =
   rs.eval_env := [!(rs.top_frame)];

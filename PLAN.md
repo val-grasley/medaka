@@ -2088,11 +2088,39 @@ rather than `a b -> a b`.
 
 ## Tooling arc (also from the 2026-05-26 review)
 
-### Phase 46: Snapshot tests ⏳ TODO
+### Phase 46: Snapshot tests ✅ DONE
 
-`assert_snapshot expr` compares `show expr` against a stored
-reference under `snapshots/`. `medaka test --update-snapshots`
-refreshes them deliberately.
+`assert_snapshot "name" value` compares `value` (a `String`) against a stored
+reference under `{project_root}/snapshots/name.snap`. `medaka test
+--update-snapshots` refreshes snapshots deliberately.
+
+**What was added.**
+- `stdlib/runtime.mdk`: `extern assert_snapshot : String -> String -> <IO> Unit`.
+- `lib/eval.ml`: `snapshot_dir : string ref` and `snapshot_update : bool ref`
+  module-level refs (defaults: `"snapshots"`, `false`). `"assert_snapshot"` in
+  the `primitives` dispatch table: sanitizes the name (non-alphanumeric → `_`),
+  creates the `snapshots/` directory if absent, creates the snapshot on first
+  run, compares on subsequent runs, raises `Eval_error` on mismatch. In
+  `--update-snapshots` mode overwrites the file unconditionally.
+- `bin/main.ml`: strips `--update-snapshots` from the test-subcommand arg list
+  (alongside the existing `--coverage` strip), finds the project root, and sets
+  `Eval.snapshot_dir`/`Eval.snapshot_update` before calling `Test_cmd.run` or
+  `Prop_runner.run_all`.
+- `test/test_snapshot.ml` + `test/dune`: 6 new tests (creates on first run,
+  passes on match, fails on mismatch, update mode, name sanitization, doctest
+  integration). **795 tests total.**
+
+**Usage example (doctest):**
+```medaka
+greeting : String
+greeting = "hello world"
+
+-- > assert_snapshot "greet" greeting
+-- ()
+```
+First run: `snapshots/greet.snap` is created and the test passes.
+Subsequent runs: content is compared.
+`medaka test --update-snapshots file.mdk` overwrites on change.
 
 ### Phase 47: Coverage via `medaka test --coverage` ⏳ TODO
 
