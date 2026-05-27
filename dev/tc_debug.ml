@@ -1,7 +1,7 @@
-(* Quick type-check probe — not part of the test suite. *)
+(* Probe: Phase 45.6 fix verification *)
 
 open Medaka_lib
-open Typecheck
+open Eval
 
 let parse src =
   Lexer.reset ();
@@ -14,23 +14,37 @@ let parse src =
                 (pos.Lexing.pos_cnum - pos.Lexing.pos_bol)
                 src)
 
+let try_eval label src =
+  Printf.printf "[%s]\n" label;
+  (try
+     let prog = Desugar.desugar_program (parse src) in
+     let env = eval_program prog in
+     List.iter (fun (n, v) ->
+       if List.mem n ["r"; "intShow"; "recShow"; "p"] then
+         Printf.printf "  %s = %s\n" n (pp_value v)) env
+   with
+   | Eval_error (m, _) -> Printf.printf "  ERR: %s\n" m
+   | Failure m -> Printf.printf "  PARSE: %s\n" m);
+  print_endline ""
+
 let () =
-  let src = {|
-interface Eq a where
-  eq : a -> a -> Bool
+  (* The Phase 45.6 reproduction: Show on Int collides with Show on Point.
+     With the fix, show should dispatch correctly to each impl. *)
+  try_eval "Phase 45.6 fix" {|impl Show Int where
+  show x = "I"
+record Point
+  x : Int
+  y : Int
+deriving (Show)
+p = Point { x = 3, y = 4 }
+intShow = show 5
+recShow = show p
+|};
 
-impl Eq Int where
-  eq x y = x == y
-
-neq : Eq a => a -> a -> Bool
-neq x y = eq x y
-
-check = neq 1 2
-|} in
-  match check_program (parse src) with
-  | (result, warnings) ->
-    List.iter (fun w -> Printf.printf "Warning: %s\n" w) warnings;
-    List.iter (fun (n, s) ->
-      Printf.printf "%s : %s\n" n (pp_scheme s)) result
-  | exception Type_error (e, _) ->
-    Printf.printf "Error: %s\n" (pp_error e)
+  (* Should print the new pp_value format. *)
+  try_eval "pp_value with name" {|record P
+  x : Int
+p = P { x = 5 }
+r = p
+|};
+  ()

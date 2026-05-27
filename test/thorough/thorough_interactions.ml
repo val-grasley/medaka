@@ -26,27 +26,28 @@ open Thorough_helpers
    1. Records ⊗ interfaces
    ===================================================================== *)
 
-(* BUG (Phase 45.6 candidate): records lose their type name in eval.
+(* Phase 45.6 FIXED — VRecord now carries its type name, so VMulti
+   dispatch on a method like `show` routes to the correct impl even
+   when another impl with a wildcard pattern (like `impl Show Int
+   where show x = "I"`) is in scope. *)
 
-   `Point { x = 3, y = 4 }` becomes `VRecord [("x", 3); ("y", 4)]`
-   with no "Point" tag — see lib/eval.ml ERecordCreate which falls
-   through to VRecord when ctor_field_order has no entry for the
-   record's type name.  This means `runtime_type_tag` returns None
-   for record values, so VMulti dispatch CANNOT route a `show` call on
-   a Point to the derived Point impl when other untagged candidates
-   exist.
+(* Custom Show Int + derived Show Point: each dispatches correctly. *)
+let t_record_show_with_int_show =
+  assert_val
+    {|impl Show Int where
+  show x = "I"
+record Point
+  x : Int
+  y : Int
+deriving (Show)
+p = Point { x = 3, y = 4 }
+intShow = show 5
+recShow = show p
+r = (intShow, recShow)
+|}
+    "r" (VTuple [VString "I"; VString "Point { x = I, y = I }"])
 
-   Concrete failure observed: with `impl Show Int` AND derived
-   `impl Show Point` both registered as VMulti, `show pt` returns the
-   Int impl's result (the Int wildcard matches Point).
-
-   The fix is invasive (VRecord must carry the type name; every match
-   on VRecord throughout eval.ml needs updating).  Documented as a
-   roadmap item; tests below pin the *current* (buggy) behavior so
-   the suite stays green and a future fix is detectable. *)
-
-(* WORKAROUND: until VRecord carries its type name, deriving Show
-   works only if there is exactly ONE show impl in scope.  Pin that. *)
+(* Simple derived Show case (single impl in scope). *)
 let t_record_deriving_show_no_other_impl =
   assert_val
     {|record Point
@@ -60,8 +61,9 @@ r = match p
 |}
     "r" (VString "somewhere")
 
-(* deriving Eq on a record — fails because there's no Eq impl for
-   the Int fields.  Document via the existing constraint failure. *)
+(* deriving Eq on a record — still fails because there's no Eq impl
+   for the Int fields, but for a different reason (constraint
+   solving), not the VRecord type-tag bug. *)
 let e_record_deriving_eq_no_int_impl =
   assert_err
     {|record Point
@@ -72,6 +74,22 @@ p1 = Point { x = 1, y = 2 }
 p2 = Point { x = 1, y = 2 }
 r = eq p1 p2
 |}
+
+(* With a user-provided Eq Int impl, deriving Eq on a record works. *)
+let t_record_deriving_eq_with_int_eq =
+  assert_val
+    {|impl Eq Int where
+  eq a b = a == b
+record Point
+  x : Int
+  y : Int
+deriving (Eq)
+p1 = Point { x = 1, y = 2 }
+p2 = Point { x = 1, y = 2 }
+p3 = Point { x = 1, y = 3 }
+r = (eq p1 p2, eq p1 p3)
+|}
+    "r" (VTuple [VBool true; VBool false])
 
 (* User-defined impl over a record. *)
 let t_record_user_impl =
@@ -180,7 +198,7 @@ r = do
   y <- Some 7
   pure (P { a = x, b = y })
 |}
-    "r" (VCon ("Some", [VRecord [("a", VInt 5); ("b", VInt 7)]]))
+    "r" (VCon ("Some", [VRecord ("P", [("a", VInt 5); ("b", VInt 7)])]))
 
 let t_do_record_field_in_pat =
   assert_val
@@ -296,8 +314,23 @@ let tc_eval_skew_interp_int_hole_tc =
 
 (* show on a record (deriving Show) used inside an interpolation hole.
    The hole expects String, and `show p` returns String — should work. *)
-(* Removed: would hit the VRecord type-tag bug.  Instead, use a
-   non-record type whose VMulti dispatch is sound. *)
+(* With Phase 45.6 fixed, `show p` on a record dispatches correctly
+   when other Show impls are in scope.  This test combines a custom
+   Show Int impl, deriving (Show) on the record, and interpolation. *)
+let t_interp_with_show_record =
+  assert_typed_val
+    {|impl Show Int where
+  show x = "I"
+record P
+  x : Int
+  y : Int
+deriving (Show)
+p = P { x = 1, y = 2 }
+r = "point: \{show p}"
+|}
+    "r" "String"
+    (VString "point: P { x = I, y = I }")
+
 let t_interp_with_show_string =
   assert_typed_val
     {|n = "Alice"
@@ -668,8 +701,10 @@ let () =
   run "thorough interactions"
     [
       ( "records + interfaces",
-        [ test_case "deriving Show (sole impl)" `Quick t_record_deriving_show_no_other_impl
+        [ test_case "Show dispatches by type"   `Quick t_record_show_with_int_show
+        ; test_case "deriving Show (sole impl)" `Quick t_record_deriving_show_no_other_impl
         ; test_case "err: deriving Eq no Int Eq" `Quick e_record_deriving_eq_no_int_impl
+        ; test_case "deriving Eq w/ Int Eq"     `Quick t_record_deriving_eq_with_int_eq
         ; test_case "user impl over record"     `Quick t_record_user_impl
         ] );
       ( "newtypes + interfaces",
@@ -704,7 +739,8 @@ let () =
         [ test_case "interp int hole: tc rejects" `Quick tc_eval_skew_interp_int_hole_tc
         ] );
       ( "interp + show",
-        [ test_case "string hole"           `Quick t_interp_with_show_string
+        [ test_case "record via show"       `Quick t_interp_with_show_record
+        ; test_case "string hole"           `Quick t_interp_with_show_string
         ] );
       ( "effects + do",
         [ test_case "if in do <IO>"         `Quick t_do_if_in_io

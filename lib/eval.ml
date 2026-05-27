@@ -13,7 +13,12 @@ type value =
   | VList   of value list
   | VArray  of value array
   | VCon    of string * value list
-  | VRecord of (string * value) list
+  | VRecord of string * (string * value) list
+                                  (* type_name, fields.  The type name is
+                                     used by runtime_type_tag so that VMulti
+                                     dispatch on a method like `show` can
+                                     route through to the right impl when
+                                     multiple candidates exist. *)
   | VRef    of value ref
   | VClosure of env * pat list * expr
   | VPrim   of (value -> value)
@@ -62,9 +67,9 @@ let rec pp_value = function
   | VCon (name, []) -> name
   | VCon (name, vs) ->
     name ^ " " ^ String.concat " " (List.map pp_value_atom vs)
-  | VRecord fields ->
+  | VRecord (name, fields) ->
     let pp_f (k, v) = k ^ " = " ^ pp_value v in
-    "{ " ^ String.concat ", " (List.map pp_f fields) ^ " }"
+    name ^ " { " ^ String.concat ", " (List.map pp_f fields) ^ " }"
   | VRef cell -> "Ref(" ^ pp_value !cell ^ ")"
   | VClosure _ -> "<closure>"
   | VPrim _    -> "<prim>"
@@ -135,7 +140,7 @@ let rec match_pat pat value =
                 | Some b -> result := Option.map (fun bs -> bs @ b) !result)
        ) fields;
        !result)
-  | PRec (_, fields, _rest), VRecord record_fields ->
+  | PRec (_, fields, _rest), VRecord (_, record_fields) ->
     let result = ref (Some []) in
     List.iter (fun (fname, pat_opt) ->
       if !result <> None then
@@ -224,6 +229,7 @@ let rec runtime_type_tag = function
   | VList _   -> Some "List"
   | VArray _  -> Some "Array"
   | VCon (cname, _) -> Hashtbl.find_opt ctor_to_type cname
+  | VRecord (name, _) -> Some name
   | VTypedImpl (t, _) -> Some t
   | VNamedImpl (_, inner) -> runtime_type_tag inner
   | _ -> None
@@ -418,7 +424,7 @@ and eval env expr =
   | EFieldAccess (e, "value") ->
     (match eval env e with
      | VRef cell -> !cell
-     | VRecord fields ->
+     | VRecord (_, fields) ->
        (match List.assoc_opt "value" fields with
         | Some v -> v
         | None -> raise (Eval_error ("record has no field 'value'", !current_loc)))
@@ -426,7 +432,7 @@ and eval env expr =
 
   | EFieldAccess (e, field) ->
     (match eval env e with
-     | VRecord fields ->
+     | VRecord (_, fields) ->
        (match List.assoc_opt field fields with
         | Some v -> v
         | None -> raise (Eval_error ("unknown field: " ^ field, !current_loc)))
@@ -442,18 +448,18 @@ and eval env expr =
        ) order in
        VCon (name, vals)
      | None ->
-       VRecord (List.map (fun (k, e) -> (k, eval env e)) fields))
+       VRecord (name, List.map (fun (k, e) -> (k, eval env e)) fields))
 
   | ERecordUpdate (base, fields) ->
     (match eval env base with
-     | VRecord existing ->
+     | VRecord (name, existing) ->
        let updates = List.map (fun (k, e) -> (k, eval env e)) fields in
        let merged = List.map (fun (k, v) ->
          match List.assoc_opt k updates with
          | Some v' -> (k, v')
          | None -> (k, v)) existing
        in
-       VRecord merged
+       VRecord (name, merged)
      | _ -> raise (Eval_error ("record update on non-record", !current_loc)))
 
   | EArrayLit es -> VArray (Array.of_list (List.map (eval env) es))
@@ -657,7 +663,7 @@ and eval_do env stmts =
     let new_val = wrap_match_errors (fun () -> eval env e) in
     (match lookup env x with
      | VRef cell when field = "value" -> cell := new_val; VUnit
-     | VRecord _ -> VUnit  (* last stmt: shadow would be discarded anyway *)
+     | VRecord (_, _) -> VUnit  (* last stmt: shadow would be discarded anyway *)
      | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
   | [DoBind (_, _)] ->
     raise (Eval_error ("do-block cannot end with <-", !current_loc))
@@ -682,8 +688,8 @@ and eval_do env stmts =
      | VRef cell when field = "value" ->
        cell := new_val;
        eval_do env rest
-     | VRecord fields ->
-       let updated = VRecord (List.map (fun (k, v) ->
+     | VRecord (name, fields) ->
+       let updated = VRecord (name, List.map (fun (k, v) ->
          if k = field then (k, new_val) else (k, v)) fields) in
        eval_do (extend env [(x, updated)]) rest
      | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))

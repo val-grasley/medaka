@@ -1932,51 +1932,38 @@ g = (x =>                      -- BROKEN
 
 Same parser issue family as Phase 45.7; same area of grammar.
 
-### Phase 45.6: VRecord must carry its type name ⏳ TODO
+### Phase 45.6: VRecord must carry its type name ✅ DONE
 
-Discovered while writing thorough interaction tests.  `ERecordCreate`
-in `lib/eval.ml` falls through to `VRecord of (string * value) list`
-when `ctor_field_order` has no entry for the type name (i.e., for plain
-records that aren't named-field ADT variants).  Result: `Point { x=3,
-y=4 }` becomes `VRecord [("x", 3); ("y", 4)]` with no "Point" tag.
+Fixed in this session.  `VRecord of (string * value) list` became
+`VRecord of string * (string * value) list`, carrying the declared
+type name.  `runtime_type_tag` now returns `Some tn` for record
+values, so VMulti dispatch routes method calls on a record to the
+correct impl even when other impl candidates match wildcard-style.
 
-`runtime_type_tag` then returns `None` for any record value, so VMulti
-dispatch cannot route a method call on a record to the right impl when
-other impl candidates exist whose patterns also match wildcard-style.
+Updated all VRecord match sites in `lib/eval.ml`:
+- type declaration
+- `pp_value` (now prints `Point { x = 3, y = 4 }` rather than just
+  `{ x = 3, y = 4 }`)
+- `match_pat` for `PRec`
+- `EFieldAccess` (both the "value" special-case and the general case)
+- `ERecordCreate` (fallthrough to plain VRecord)
+- `ERecordUpdate` (preserves the existing record's type name)
+- `[DoFieldAssign _]` last-stmt no-op case
+- `DoFieldAssign :: rest` general case
+- `runtime_type_tag`
 
-Reproduction:
+Test changes:
+- Single existing test (`t_do_build_record` in thorough_interactions)
+  updated to use new `VRecord ("P", [...])` constructor.
+- New tests proving the fix:
+  `t_record_show_with_int_show` (dispatch routes correctly when both
+  `impl Show Int` and derived `impl Show Point` are in scope), and
+  `t_record_deriving_eq_with_int_eq` (deriving Eq on a record works
+  when the field types have Eq impls).
+- New `t_interp_with_show_record` test (record value used inside a
+  string interpolation hole via show).
 
-```
-impl Show Int where
-  show x = "I"
-record Point
-  x : Int
-  y : Int
-deriving (Show)
-p = Point { x = 3, y = 4 }
-r = show p   -- evaluates to "I", not "Point { ... }"
-```
-
-Both `intShow = show 5` and `recShow = show p` evaluate to `"I"` because
-the Int impl's `show x = "I"` pattern (PVar) matches ANY value, including
-VRecord, and the VRecord candidate isn't preferred via type-tag filter.
-
-Fix outline:
-1. Change `value`: `VRecord of string * (string * value) list` (carry
-   the record's declared type name as the head tag).
-2. Update every match on `VRecord` throughout eval.ml (pp_value,
-   match_pat for PRec, ERecordCreate fallthrough, ERecordUpdate,
-   field access, DoFieldAssign).
-3. Update `runtime_type_tag VRecord (tag, _) -> Some tag`.
-
-Estimated effort: medium.  Touches ~10 sites in eval.ml.  The eval
-test suite should catch any regression because most tests inspect the
-result via structural equality.  A few of the existing tests likely
-need updating to wrap their expected VRecord with a type tag.
-
-Existing thorough tests under `test/thorough/thorough_interactions.ml`
-pin the *current* buggy behavior (`t_record_deriving_show_no_other_impl`)
-so a future fix will be detectable.
+All 13 base test binaries pass; all 4 thorough binaries pass.
 
 ### Phase 45.5: EDo `has_bind` split ✅ DONE
 
