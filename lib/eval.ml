@@ -384,6 +384,8 @@ and eval env expr =
 
   | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
 
+  | EQuestion _ -> assert false (* eliminated by desugar_questions *)
+
   | EInfix (op, l, r) ->
     let f  = lookup env op in
     let lv = eval env l in

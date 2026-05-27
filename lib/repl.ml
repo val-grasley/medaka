@@ -66,6 +66,7 @@ let try_parse source =
        Error (prog_at_eof || expr_at_eof))
 
 let process_item source resolve_env tc_env eval_state pending_sigs user_bindings item =
+  let item = Desugar.desugar_repl_item item in
   let resolve_errs = Resolve.resolve_repl_item resolve_env item in
   if resolve_errs <> [] then
     List.iter (fun (err, loc_opt) ->
@@ -74,8 +75,7 @@ let process_item source resolve_env tc_env eval_state pending_sigs user_bindings
     ) resolve_errs
   else
     match item with
-    | Ast.ReplDecl raw_decls ->
-      let decls = Desugar.desugar_program raw_decls in
+    | Ast.ReplDecl decls -> (* already desugared above *)
       (* Augment with pending type sigs from prior inputs, then update the list *)
       let defined_names = List.filter_map
         (function Ast.DFunDef (_,n,_,_) -> Some n | _ -> None) decls in

@@ -39,6 +39,7 @@ let unknown_field n  = function UnknownField x        -> x = n | _ -> false
 let field_not_in n r = function FieldNotInRecord (x, y) -> x = n && y = r | _ -> false
 let duplicate n      = function DuplicateDefinition (_, x) -> x = n | _ -> false
 let extern_with_body n = function ExternWithBody x -> x = n | _ -> false
+let question_misplaced     = function QuestionMisplaced -> true | _ -> false
 
 (* ── Valid programs ─────────────────────────── *)
 
@@ -262,6 +263,16 @@ let e_newtype_duplicate =
   assert_err (duplicate "Foo")
     "newtype Foo = Foo Int\nnewtype Foo = Foo String\n"
 
+(* `?` is only legal as the RHS of a `let` binding.  Misplaced uses survive
+   the desugar pass and are flagged here. *)
+let e_question_in_arith =
+  assert_err question_misplaced
+    "f = (Ok 5 ?) + 1\n"
+
+let e_question_in_arg =
+  assert_err question_misplaced
+    "f = Ok (5 ?)\n"
+
 (* ── Test runner ─────────────────────────────── *)
 
 let () =
@@ -304,6 +315,8 @@ let () =
       test_case "unknown field create" `Quick e_unknown_field_in_create;
       test_case "unknown field update" `Quick e_unknown_field_in_update;
       test_case "cross-record update"  `Quick e_cross_record_update;
+      test_case "? in arith"           `Quick e_question_in_arith;
+      test_case "? in fn arg"          `Quick e_question_in_arg;
     ];
     "extern declarations", [
       test_case "basic ok"            `Quick v_extern_basic;

@@ -249,6 +249,7 @@ and read = parse
         RBRACE
     }
   | '!'   { BANG }
+  | '?'   { QUESTION }
   | '%'   { MOD }
 
   | eof   {

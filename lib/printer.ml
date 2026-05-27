@@ -164,7 +164,8 @@ let rec expr_prec = function
   | ELit _ | EVar _ | ETuple _ | EArrayLit _ | EListLit _ | EListComp _
   | EMapLit _ | ESetLit _ | EStringInterp _
   | ERecordCreate _ | ERecordUpdate _ -> prec_atom
-  | EFieldAccess _ | EIndex _          -> prec_postfix
+  | EFieldAccess _ | EIndex _
+  | EQuestion _                        -> prec_postfix
   | EUnOp _                            -> prec_unary
   | EApp _                             -> prec_app
   | EInfix _                           -> prec_infix
@@ -243,6 +244,9 @@ and print_expr_raw p = function
   | EFieldAccess (e, f) ->
     print_expr p prec_postfix e;
     write p "."; write p f
+  | EQuestion e ->
+    print_expr p prec_postfix e;
+    write p " ?"
   | ERecordCreate (n, fs) ->
     write p n; write p " { ";
     List.iteri (fun i (k, v) ->

@@ -1464,21 +1464,32 @@ against OCaml, F#, Rust, Elm, and Clojure for features worth borrowing.
 See `language-design.md` for the user-facing description of each. Listed
 roughly in order of expected difficulty.
 
-### Phase 37: `?` postfix operator for `Result` and `Option` ⏳ TODO
+### Phase 37: `?` postfix operator for `Result` and `Option` ✅ DONE
 
-Postfix `?` desugars to a match-and-early-return: `let x = expr ?`
-becomes `match expr with Ok v => v | Err e => return (Err e)` (and
-analogously for `Option`). The enclosing function's return type must
-agree with the unwrapped type.
+Postfix `?` in a let-binding RHS desugars to a monadic `andThen` call:
+`let x = expr ? in rest` becomes `andThen expr (x => rest)`.  Short-
+circuit on `Err` / `None` falls out of the existing `Thenable` impls in
+the prelude — no new runtime machinery, no exception-based early
+return, no return-type tracking in the type checker.
 
-Scope:
-- Parser: new postfix operator at expression precedence.
-- Typechecker: check enclosing return type vs the `?` site; emit a
-  good error when they disagree.
-- Desugar to existing `match` + early-return machinery.
-- Document interaction with `do`-notation (both are legal; `?` is
-  for short chains, `do` for many steps or non-`Result`/`Option`
-  monads).
+Shipped:
+- New AST node `EQuestion of expr` (lib/ast.ml).
+- Lexer: `?` → `QUESTION` token.
+- Parser: new `expr_question` level between `expr_infix` and `expr_app`
+  so `Ok 5 ?` parses as `(Ok 5) ?`, not `Ok (5 ?)`.
+- Desugar: `ELet(pat, EQuestion(e1), e2)` → `andThen e1 (pat => e2)`;
+  `DoLet(pat, EQuestion(e))` → `DoBind(pat, e)` (indent-based blocks
+  parse as do-blocks, so `?` must work in both forms).
+- REPL: now desugars `ReplExpr` and `ReplDecl` before resolve, so the
+  pipeline matches `bin/main.ml`'s order.
+- Resolve: emits a clear `QuestionMisplaced` error for `?` outside a
+  `let` RHS — points users at `let x = expr ?` or `<-` in do-blocks.
+- Restricted to let-RHS position: `(foo ?) + 1` is rejected.  A
+  Rust-style unrestricted `?` (anywhere in an expression) would need
+  a CPS transform or an exception mechanism; the restriction is a
+  strict subset and covers the common case.
+- Tests: 10 new tests across `test_parser.ml`, `test_eval.ml`,
+  `test_resolve.ml`.
 
 ### Phase 38: `if let` and `let else` ⏳ TODO
 

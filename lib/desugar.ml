@@ -313,6 +313,7 @@ let rec map_expr f e =
     | EInfix (op, e1, e2)    -> EInfix (op, map_expr f e1, map_expr f e2)
     | EListComp (body, quals) ->
         EListComp (map_expr f body, List.map (map_lc_qual f) quals)
+    | EQuestion e0            -> EQuestion (map_expr f e0)
     | e0                      -> e0
   in
   f e'
@@ -376,10 +377,59 @@ let desugar_list_comps prog =
   in
   List.map (map_decl rewrite) prog
 
+(* ── ? operator desugaring ────────────────────────────────────────────────
+   `let pat = e ? in rest` rewrites to `andThen e (pat => rest)`.
+   The runtime semantics fall out of `andThen`'s short-circuit on Err / None.
+
+   Inside a do-block, the indent-based block parses as DoLet/DoBind/DoExpr
+   stmts.  `let pat = e ?` becomes a DoLet, which we rewrite to DoBind —
+   the do-block already dispatches DoBind through the Thenable VMulti, which
+   short-circuits identically.
+
+   Misplaced `?` (anywhere else) survives this pass as a raw EQuestion node
+   and is flagged by resolve.ml. *)
+
+let rewrite_question_expr = function
+  | ELet (mut, is_fun, pat, e1, e2) ->
+    (match strip_loc e1 with
+     | EQuestion inner ->
+       EApp (EApp (EVar "andThen", inner), ELam ([pat], e2))
+     | _ -> ELet (mut, is_fun, pat, e1, e2))
+  | EDo stmts ->
+    let rewrite_stmt = function
+      | DoLet (_, pat, e) as s ->
+        (match strip_loc e with
+         | EQuestion inner -> DoBind (pat, inner)
+         | _ -> s)
+      | s -> s
+    in
+    EDo (List.map rewrite_stmt stmts)
+  | e -> e
+
+let desugar_questions prog =
+  List.map (map_decl rewrite_question_expr) prog
+
 let desugar_program (prog : program) : program =
   let expanded = List.concat_map expand_decl prog in
   let record_names = List.filter_map (function
     | DRecord (_, name, _, _, _) -> Some name
     | _ -> None) expanded in
   let after_puns = desugar_record_puns record_names expanded in
-  desugar_list_comps after_puns
+  let after_lc   = desugar_list_comps after_puns in
+  desugar_questions after_lc
+
+(* Desugar a standalone expression (e.g. a REPL ReplExpr).  Applies the
+   passes that don't require program-level context: list-comp rewrites and
+   `?` rewrites.  Record-pun desugaring needs the list of record-type names,
+   which is only available at program scope, so it's skipped here. *)
+let desugar_expr (e : expr) : expr =
+  let rewrite_lc = function
+    | EListComp (body, quals) -> desugar_list_comp body quals
+    | e -> e
+  in
+  map_expr rewrite_question_expr (map_expr rewrite_lc e)
+
+let desugar_repl_item (item : repl_item) : repl_item =
+  match item with
+  | ReplDecl decls -> ReplDecl (desugar_program decls)
+  | ReplExpr e     -> ReplExpr (desugar_expr e)

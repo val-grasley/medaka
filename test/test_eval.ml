@@ -252,6 +252,42 @@ let t_do_result_err = assert_val {|r = do
   pure x
 |} "r" (VCon ("Err", [VString "oops"]))
 
+(* ── `?` operator: desugars to andThen ──────────────────────────────────── *)
+
+let t_question_ok = assert_val {|r =
+  let x = Ok 5 ?
+  pure (x + 1)
+|} "r" (VCon ("Ok", [VInt 6]))
+
+let t_question_err = assert_val {|r =
+  let x = Err "bad" ?
+  pure (x + 1)
+|} "r" (VCon ("Err", [VString "bad"]))
+
+let t_question_some = assert_val {|r =
+  let x = Some 42 ?
+  pure (x + 1)
+|} "r" (VCon ("Some", [VInt 43]))
+
+let t_question_none = assert_val {|r =
+  let x = None ?
+  pure 99
+|} "r" (VCon ("None", []))
+
+(* Multiple ?-binds chain via nested andThen *)
+let t_question_chain = assert_val {|r =
+  let x = Ok 10 ?
+  let y = Ok 5 ?
+  pure (x - y)
+|} "r" (VCon ("Ok", [VInt 5]))
+
+(* Short-circuit hits the second ? *)
+let t_question_chain_err = assert_val {|r =
+  let x = Ok 10 ?
+  let y = Err "stop" ?
+  pure (x - y)
+|} "r" (VCon ("Err", [VString "stop"]))
+
 (* ── Ref mutation ───────────────────────────────────────────────────────── *)
 
 (* Use an Option bind to establish monad context so pure wraps the result *)
@@ -650,6 +686,14 @@ let () =
     "do Result", [
       test_case "ok"  `Quick t_do_result_ok;
       test_case "err" `Quick t_do_result_err;
+    ];
+    "? operator", [
+      test_case "Ok unwraps"          `Quick t_question_ok;
+      test_case "Err short-circuits"  `Quick t_question_err;
+      test_case "Some unwraps"        `Quick t_question_some;
+      test_case "None short-circuits" `Quick t_question_none;
+      test_case "chain Ok/Ok"         `Quick t_question_chain;
+      test_case "chain Ok/Err"        `Quick t_question_chain_err;
     ];
     "ref mutation", [
       test_case "ref_set_read" `Quick t_ref;

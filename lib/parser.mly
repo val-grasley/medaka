@@ -106,7 +106,7 @@ let desugar_constraint lhs rhs =
 %token CONS PLUSPLUS STRAPPEND
 %token PIPE_RIGHT RCOMPOSE LCOMPOSE
 %token FAT_ARROW ARROW LARROW
-%token AT BANG
+%token AT BANG QUESTION
 
 (* Punctuation *)
 %token EQUAL COLON COMMA DOT PIPE UNDERSCORE
@@ -471,8 +471,15 @@ expr_unary:
   | expr_infix         { $1 }
 
 expr_infix:
-  | expr_infix BACKTICK_IDENT expr_app  { EInfix ($2, $1, $3) }
-  | expr_app                            { $1 }
+  | expr_infix BACKTICK_IDENT expr_question  { EInfix ($2, $1, $3) }
+  | expr_question                            { $1 }
+
+(* Postfix `?` binds looser than function application: `Ok 5 ?` is `(Ok 5) ?`.
+   This level sits between `expr_infix` and `expr_app` so the whole call is
+   what gets `?`-applied. *)
+expr_question:
+  | expr_question QUESTION  { EQuestion $1 }
+  | expr_app                { $1 }
 
 expr_app:
   | expr_app expr_postfix  { EApp ($1, $2) }

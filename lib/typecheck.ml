@@ -1092,6 +1092,8 @@ let rec infer env = function
 
   | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
 
+  | EQuestion _ -> assert false (* eliminated by desugar_questions; misplaced uses caught by resolve *)
+
 and binop_type env op l r =
   let tl = infer env l in
   let tr = infer env r in
@@ -1685,6 +1687,7 @@ let expr_effects
     | EInfix (_, l, r)        -> effect_union (sub l) (sub r)
     | ELoc (_, e)             -> sub e
     | EListComp _             -> assert false (* eliminated by desugar_list_comps *)
+    | EQuestion _             -> assert false (* eliminated by desugar_questions *)
 
   and do_stmt_effects (bound : StringSet.t) = function
     | DoExpr e             -> (bound, go bound e)

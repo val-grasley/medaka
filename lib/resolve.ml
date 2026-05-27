@@ -19,6 +19,7 @@ type error =
   | ExternWithBody       of ident           (* extern name also has a fun_def *)
   | PrivateNameAccess    of ident * string  (* name, owning module *)
   | UnknownModule        of ident           (* use references a module that can't be found *)
+  | QuestionMisplaced                       (* `?` outside `let pat = e ?` position *)
 
 let current_loc : Ast.loc option ref = ref None
 
@@ -39,6 +40,9 @@ let pp_error = function
     Printf.sprintf "'%s' is private to module %s" n m
   | UnknownModule n ->
     Printf.sprintf "Unknown module: %s" n
+  | QuestionMisplaced ->
+    "`?` is only allowed as the right-hand side of a `let` binding, \
+     e.g. `let x = expr ?`. Use `<-` inside do-blocks."
 
 (* ── Built-ins ─────────────────────────────────── *)
 
@@ -534,6 +538,9 @@ let rec check_expr env scope errors e =
     check_expr env scope errors l;
     check_expr env scope errors r
   | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
+  | EQuestion e ->
+    emit errors QuestionMisplaced;
+    check_expr env scope errors e
 
 let check_decl env errors = function
   | DFunDef (_, _, pats, body) ->

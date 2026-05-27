@@ -83,6 +83,7 @@ and expr =
   | EInfix        of ident * expr * expr                (* x `div` y *)
   | EStringInterp of interp_part list                  (* "text\{expr}text" *)
   | EListComp     of expr * lc_qual list               (* [e | x <- xs, guard, ...] *)
+  | EQuestion     of expr                              (* e ? — desugared to andThen in let-RHS position *)
   | ELoc          of loc * expr                         (* source position; transparent to semantics *)
 
 type use_path =
@@ -246,6 +247,7 @@ let rec pp_expr = function
       | LCLet (m, p, e) -> Printf.sprintf "let %s%s = %s" (if m then "mut " else "") (pp_pat p) (pp_expr e)
     in
     Printf.sprintf "[%s | %s]" (pp_expr body) (String.concat ", " (List.map pp_qual quals))
+  | EQuestion e          -> Printf.sprintf "(%s ?)" (pp_expr e)
   | ELoc (_, e)          -> pp_expr e
 
 and pp_do_stmt = function
@@ -293,6 +295,7 @@ let rec strip_locs_expr = function
       | LCGuard e       -> LCGuard (strip_locs_expr e)
       | LCLet (m, p, e) -> LCLet (m, p, strip_locs_expr e)
     ) quals)
+  | EQuestion e           -> EQuestion (strip_locs_expr e)
   | e                     -> e  (* ELit, EVar *)
 
 and strip_locs_do = function
