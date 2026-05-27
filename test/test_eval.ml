@@ -210,6 +210,22 @@ let t_foldmap_list = assert_val
   {|r = foldMap (x => [x, x]) [1, 2, 3]
 |} "r" (VList [VInt 1; VInt 1; VInt 2; VInt 2; VInt 3; VInt 3])
 
+(* foldMap with a user-defined Monoid: exercises the VCon → ctor_to_type
+   path in runtime_type_tag, not just the built-in VString/VList tags. *)
+let t_foldmap_user_monoid = assert_val
+  {|data Sum = MkSum Int
+
+impl Semigroup Sum where
+    append (MkSum a) (MkSum b) = MkSum (a + b)
+
+impl Monoid Sum where
+    empty = MkSum 0
+
+unwrap (MkSum n) = n
+
+r = unwrap (foldMap MkSum [1, 2, 3, 4])
+|} "r" (VInt 10)
+
 let t_list_comp_guard = assert_val
   {|r = [x * 2 | x <- [1, 2, 3, 4, 5], x > 2]
 |} "r" (VList [VInt 6; VInt 8; VInt 10])
@@ -872,6 +888,7 @@ let () =
       test_case "fold"    `Quick t_fold;
       test_case "foldMap string" `Quick t_foldmap_string;
       test_case "foldMap list"   `Quick t_foldmap_list;
+      test_case "foldMap user monoid" `Quick t_foldmap_user_monoid;
     ];
     "list comprehensions", [
       test_case "guard"         `Quick t_list_comp_guard;
