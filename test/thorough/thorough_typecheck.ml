@@ -298,6 +298,25 @@ r = both_equal (Box 1) (Box 2) (Box 3)
 |}
     "r" "Bool"
 
+(* Phase 45.9: user-defined impl over a primitive type used to conflict
+   with the seeded built-in impl_entry (Ambiguous: multiple impls of Ord
+   for Int).  Now user impls win — the seeded entries are treated as
+   fallbacks. *)
+let t_iface_user_impl_over_primitive =
+  assert_type
+    {|impl Eq Int where
+  eq a b = a == b
+impl Ord Int where
+  compare a b = if a < b then Lt else if a > b then Gt else Eq
+r = lt 1 2
+|}
+    "r" "Bool"
+
+(* Built-in operator constraint still resolves via the seeded impl
+   when no user impl is provided. *)
+let t_iface_seeded_still_works =
+  assert_type "r = 1 < 2\n" "r" "Bool"
+
 (* Calling an explicit-constraint function with a type that has no Eq
    impl: define a type without Eq and try to use it. *)
 let e_constraint_no_eq_impl =
@@ -887,6 +906,8 @@ let () =
         ; test_case "err: unknown named impl"      `Quick e_iface_unknown_named_impl
         ; test_case "explicit Eq constraint"       `Quick t_constraint_explicit_eq
         ; test_case "err: type has no Eq impl"     `Quick e_constraint_no_eq_impl
+        ; test_case "user impl over primitive"     `Quick t_iface_user_impl_over_primitive
+        ; test_case "seeded fallback still works"  `Quick t_iface_seeded_still_works
         ] );
       ( "effects",
         [ test_case "print => <IO>"      `Quick t_eff_print_io

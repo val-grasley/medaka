@@ -64,6 +64,10 @@ type impl_entry = {
   impl_is_default : bool;
   impl_type_mono  : mono list;  (* from_ast_type of each type_arg *)
   impl_requires   : (ident * mono list) list;  (* constraint: iface, type args *)
+  impl_seeded     : bool;  (* true for entries pushed by seed_builtin_impls.
+                              When constraint resolution finds both seeded
+                              and user-defined impls for the same (iface, ty),
+                              user-defined wins (seeded acts as fallback). *)
 }
 
 (* Public type-level interface of a processed module *)
@@ -1643,6 +1647,7 @@ let register_impl env = function
       impl_type_mono  = List.map (from_ast_type ~aliases:env.aliases) type_args;
       impl_requires   = List.map (fun (iface, args) ->
                           (iface, List.map (from_ast_type ~aliases:env.aliases) args)) requires;
+      impl_seeded     = false;
     } in
     env.impls := entry :: !(env.impls)
   | _ -> ()
@@ -1684,7 +1689,7 @@ let seed_builtin_impls env =
   let push iface ty =
     env.impls := { impl_iface = iface; impl_name = None;
                    impl_is_default = false; impl_type_mono = [ty];
-                   impl_requires = [] }
+                   impl_requires = []; impl_seeded = true }
                  :: !(env.impls)
   in
   push "Num"       t_int;    push "Num"    t_float;
@@ -1738,6 +1743,14 @@ let check_method_usages env =
             (fun p c -> mono_matches ~pattern:p ~concrete:c)
             e.impl_type_mono concrete_args
         ) !(env.impls) in
+        (* If any user-defined impls match, drop the seeded built-in
+           impls so the user can override built-in primitives without
+           an ambiguity error.  (Phase 45.9.) *)
+        let matching =
+          if List.exists (fun e -> not e.impl_seeded) matching
+          then List.filter (fun e -> not e.impl_seeded) matching
+          else matching
+        in
         if matching = [] then fail (NoImplFound (iface_name, concrete_args))
         else match hint_opt with
         | None ->
@@ -1779,6 +1792,12 @@ let check_constraint_obligations env =
           (fun p c -> mono_matches ~pattern:p ~concrete:c)
           e.impl_type_mono concrete
       ) !(env.impls) in
+      (* Same Phase 45.9 preference: user impls trump seeded built-ins. *)
+      let matching =
+        if List.exists (fun e -> not e.impl_seeded) matching
+        then List.filter (fun e -> not e.impl_seeded) matching
+        else matching
+      in
       if matching = [] then fail (NoImplFound (iface_name, concrete))
     end
   ) !(env.constraint_obligations)

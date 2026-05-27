@@ -1836,32 +1836,35 @@ Scope:
   prefixes in one brace (e.g. `{ p | address.city = ..., address.zip = ...}`);
   reject as a non-goal initially — explicit nesting is fine.
 
-### Phase 45.9: User-defined impl conflicts with seeded built-in ⏳ TODO
+### Phase 45.9: User-defined impl conflicts with seeded built-in ✅ DONE
 
-`seed_builtin_impls` in `lib/typecheck.ml` pushes hardcoded
-impl_entries for `Num Int`, `Num Float`, `Ord Int`, `Ord Float`,
-`Ord String`, `Ord Char`, `Semigroup (List a)`, `Semigroup String`
-so that operator constraints (`+`, `<`, `++`, etc.) resolve.  These
-are seeded *unconditionally*, separately from anything in core.mdk.
+Fixed in this session.  `impl_entry` now carries `impl_seeded : bool`.
+In both `check_method_usages` and `check_constraint_obligations`,
+after collecting all matching impls, if at least one non-seeded
+(user-defined) impl is present, the seeded entries are filtered out
+before the final ambiguity check.  Net effect: user impls override
+seeded built-ins; the built-in still resolves when no user impl is
+in scope.
 
-A user that writes `impl Ord Int where compare a b = ...` adds a
-second entry, and the next call to an Ord method (e.g. `lt 1 2`)
-finds *two* matching impls and errors with `Ambiguous: multiple
-impls of Ord for Int — use @ImplName to disambiguate`.  Worse: the
-seeded impl has no name, so `@` disambiguation only lets you pick
-the user's impl, never the built-in.
+Concrete fix verified:
+```
+impl Eq Int where eq a b = a == b
+impl Ord Int where
+  compare a b = if a < b then Lt else if a > b then Gt else Eq
+r = lt 1 2     -- works, no ambiguity
+```
 
-Options:
-- Treat seeded impls as last-resort defaults — only consult them when
-  there is no user impl in scope.
-- Name the seeded impls (`@Builtin`?) so users can opt back in.
-- Skip seeding if the user has supplied their own impl for the same
-  (iface, type) pair.
+…and `r = 1 < 2` (no user impl) still resolves through the seeded
+entry as before.
 
-Related to PLAN.md §5 entry "Eq, Num, Ord stdlib interfaces
-disconnected from built-in operator constraints" (Phase 19) — the
-right long-term fix wires `+`/`<`/etc. through the stdlib's interfaces
-directly, which makes the seeded impls unnecessary.
+This is a stopgap — the right long-term fix per §5 entry "Eq, Num,
+Ord stdlib interfaces disconnected from built-in operator
+constraints" (Phase 19) wires `+`/`<`/etc. through the stdlib's
+interfaces directly, which makes the seeded impls unnecessary.
+
+Regression tests added under `test/thorough/thorough_typecheck.ml`
+in the "interfaces / constraints" group:
+`user impl over primitive` and `seeded fallback still works`.
 
 ### Phase 45.7: Multi-line if-then-else parsing ⏳ TODO
 
