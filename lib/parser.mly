@@ -22,6 +22,20 @@ let fold_ty_app = function
   | [t]     -> t
   | t :: ts -> List.fold_left (fun acc a -> TyApp (acc, a)) t ts
 
+(* Desugar a dotted-path field update into a flat (field, expr) pair.
+   { base | a.b.c = v }  →  ("a", { base.a | b = { base.a.b | c = v } }) *)
+let desugar_dotted_field base path value =
+  match path with
+  | [field] -> (field, value)
+  | field :: rest ->
+    let rec go base = function
+      | [f]     -> ERecordUpdate (base, [(f, value)])
+      | f :: fs -> ERecordUpdate (base, [(f, go (EFieldAccess (base, f)) fs)])
+      | []      -> assert false
+    in
+    (field, go (EFieldAccess (base, field)) rest)
+  | [] -> assert false
+
 type kv_item = KV of expr * expr | Elem of expr | Field of string * expr
 
 let stmts_to_expr = function
@@ -641,7 +655,9 @@ expr_atom:
           ELoc (of_pos $startpos $endpos, ESetLit (name,
             List.map (function Elem e -> e | _ -> assert false) items)) }
   | LBRACE expr_no_block PIPE separated_nonempty_list(COMMA, record_field_expr) RBRACE
-    { ELoc (of_pos $startpos $endpos, ERecordUpdate ($2, $4)) }
+    { let base = $2 in
+      let fields = List.map (fun (path, v) -> desugar_dotted_field base path v) $4 in
+      ELoc (of_pos $startpos $endpos, ERecordUpdate (base, fields)) }
   | AT UPPER
     { ELoc (of_pos $startpos $endpos, EVar ("@" ^ $2)) }
   | AT IDENT
@@ -650,8 +666,8 @@ expr_atom:
     { ELoc (of_pos $startpos $endpos, EStringInterp $1) }
 
 record_field_expr:
-  | IDENT EQUAL expr_no_block  { ($1, $3) }
-  | IDENT                      { ($1, ELoc (of_pos $startpos $endpos, EVar $1)) }
+  | separated_nonempty_list(DOT, IDENT) EQUAL expr_no_block  { ($1, $3) }
+  | IDENT                      { ([$1], ELoc (of_pos $startpos $endpos, EVar $1)) }
 
 kv_or_e:
   | IDENT EQUAL expr_no_block          { Field ($1, $3) }

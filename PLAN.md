@@ -1797,7 +1797,7 @@ default `foldMap f = fold (acc => x => acc ++ f x) empty`. Existing
   `impl Eq (Map String v)`) still rely on the existing score-based
   ordering — same as before this phase.
 
-### Phase 45: Nested record update sugar ⏳ TODO
+### Phase 45: Nested record update sugar ✅ DONE
 
 `{ p | address.city = "Boston" }` desugars to
 `{ p | address = { p.address | city = "Boston" } }`. LHS is a dotted

@@ -222,6 +222,36 @@ let test_expr_record_update_pun () =
   | ERecordUpdate (EVar "p", [("age", EVar "age")]) -> ()
   | _ -> failwith "wrong"
 
+let test_expr_record_update_nested () =
+  (* { p | address.city = "Boston" }
+     desugars to { p | address = { p.address | city = "Boston" } } *)
+  match parse_expr ({|{ p | address.city = "Boston" }|} ^ "\n") with
+  | ERecordUpdate (EVar "p",
+      [("address", ERecordUpdate (EFieldAccess (EVar "p", "address"),
+          [("city", ELit (LString "Boston"))]))]) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_record_update_nested_deep () =
+  (* { p | a.b.c = 0 }
+     desugars to { p | a = { p.a | b = { p.a.b | c = 0 } } } *)
+  match parse_expr "{ p | a.b.c = 0 }\n" with
+  | ERecordUpdate (EVar "p",
+      [("a",
+        ERecordUpdate (EFieldAccess (EVar "p", "a"),
+          [("b",
+            ERecordUpdate (EFieldAccess (EFieldAccess (EVar "p", "a"), "b"),
+              [("c", ELit (LInt 0))]))]))]) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_record_update_mixed () =
+  (* { p | age = 31, address.city = "Boston" } — flat and dotted in one update *)
+  match parse_expr ({|{ p | age = 31, address.city = "Boston" }|} ^ "\n") with
+  | ERecordUpdate (EVar "p",
+      [ ("age", ELit (LInt 31))
+      ; ("address", ERecordUpdate (EFieldAccess (EVar "p", "address"),
+            [("city", ELit (LString "Boston"))])) ]) -> ()
+  | _ -> failwith "wrong"
+
 let test_expr_type_annot () =
   match parse_expr "x : Int\n" with
   | EAnnot (EVar "x", TyCon "Int") -> ()
@@ -1245,6 +1275,9 @@ let () =
       test_case "record create pun (all)"    `Quick test_expr_record_create_pun;
       test_case "record create pun (mixed)"  `Quick test_expr_record_create_mixed_pun;
       test_case "record update pun"          `Quick test_expr_record_update_pun;
+      test_case "record update nested"       `Quick test_expr_record_update_nested;
+      test_case "record update nested deep"  `Quick test_expr_record_update_nested_deep;
+      test_case "record update nested mixed" `Quick test_expr_record_update_mixed;
       test_case "type annotation"   `Quick test_expr_type_annot;
       test_case "array index"       `Quick test_expr_index;
       test_case "operator section"       `Quick test_expr_section;

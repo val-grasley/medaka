@@ -178,6 +178,28 @@ p2 = { p | x = 10 }
 r = p2.x
 |} "r" (VInt 10)
 
+let t_record_update_nested = assert_val {|record Address
+  city : String
+record Person
+  name : String
+  address : Address
+addr = Address { city = "Cambridge" }
+p = Person { name = "Alice", address = addr }
+p2 = { p | address.city = "Boston" }
+r = p2.address.city
+|} "r" (VString "Boston")
+
+let t_record_update_nested_unchanged = assert_val {|record Address
+  city : String
+record Person
+  name : String
+  address : Address
+addr = Address { city = "Cambridge" }
+p = Person { name = "Alice", address = addr }
+p2 = { p | address.city = "Boston" }
+r = p2.name
+|} "r" (VString "Alice")
+
 (* ── Tuples ─────────────────────────────────────────────────────────────── *)
 
 let t_tuple = assert_val {|r = (1, "hello", True)
@@ -876,6 +898,8 @@ let () =
     "records", [
       test_case "create" `Quick t_record;
       test_case "update" `Quick t_record_update;
+      test_case "update nested"           `Quick t_record_update_nested;
+      test_case "update nested unchanged" `Quick t_record_update_nested_unchanged;
     ];
     "tuples", [
       test_case "create" `Quick t_tuple;
