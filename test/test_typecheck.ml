@@ -1399,6 +1399,25 @@ let e_do_assign_unbound = assert_err
 let e_do_assign_as_last = assert_err
   "bad =\n  do\n    let mut x = 5\n    x = 1\n"
 
+(* ── Phase 55: let mut outside do-block ─────────── *)
+
+(* let mut in expression context → MutLetOutsideDo *)
+let e_let_mut_outside_do = assert_err
+  "f x = let mut n = x in n\n"
+
+(* let mut in inline expression with use → MutLetOutsideDo *)
+let e_let_mut_inline_expr = assert_err
+  "r = let mut x = 0 in x + 1\n"
+
+(* let mut with type annotation in expression context → MutLetOutsideDo *)
+let e_let_mut_with_annotation = assert_err
+  "f x = let mut n : Int = x in n\n"
+
+(* let mut inside do-block is still valid *)
+let t_let_mut_in_do_ok = assert_type
+  "f =\n  do\n    let mut x = 5\n    x = 10\n    pure x\n"
+  "f" "a Int"
+
 (* ── Phase 28: DoFieldAssign ────────────────────── *)
 
 let person_src = {|record Person
@@ -2310,6 +2329,10 @@ let () =
       test_case "err: assign type mismatch" `Quick e_do_assign_type_mismatch;
       test_case "err: assign unbound"       `Quick e_do_assign_unbound;
       test_case "err: assign as last stmt"  `Quick e_do_assign_as_last;
+      test_case "err: let mut outside do"   `Quick e_let_mut_outside_do;
+      test_case "err: let mut inline expr"  `Quick e_let_mut_inline_expr;
+      test_case "err: let mut with annot"   `Quick e_let_mut_with_annotation;
+      test_case "let mut in do still ok"    `Quick t_let_mut_in_do_ok;
     ];
     "field assignment (Phase 28)", [
       test_case "record field valid"              `Quick t_field_assign_valid;

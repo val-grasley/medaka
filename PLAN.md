@@ -2275,19 +2275,23 @@ Small, mechanical follow-on to Phase 29.  Likely subsumed by Phase
 51 (general effect inference) — if Phase 51 lands first, this
 becomes "make sure mut also propagates."
 
-### Phase 55: `let mut` reassignment outside `do`-blocks ⏳ TODO
+### Phase 55: `let mut` reassignment outside `do`-blocks ✅ DONE
 
-`let mut x = 0` parses and type-checks in expression context, but
-there's no syntax for reassigning `x` outside a `do`-block.  `x =
-e` (DoAssign) is a do-stmt only.  Either:
+`let mut x = 0 in body` (inline expression form) is now rejected by
+the type-checker with `MutLetOutsideDo`.  `DoLet(true, ...)` inside
+do-blocks is unchanged.
 
-- Allow `x = e` as an `expr_lam` form (probably bad — ambiguous
-  with regular `=` bindings),
-- Or require `let mut` to be inside a `do`-block (rejecting it in
-  pure expression position).
-
-The latter is cleaner.  Update the type-checker to error on `let
-mut` outside `EDo` context.
+**What was added.**
+- `MutLetOutsideDo of ident` error variant in `typecheck.ml`;
+  `pp_error` message: `"'let mut x' can only be used inside a
+  do-block (no syntax to reassign outside one)"`.
+- Guard at the top of the `ELet(mut=true, ...)` case in `infer`:
+  raises `Type_error(MutLetOutsideDo name, !current_loc)` immediately.
+  The parser still emits `ELet(true, ...)` for `let mut … in …`;
+  the type-checker is the enforcer.
+- 4 new typecheck tests: `err: let mut outside do`,
+  `err: let mut inline expr`, `err: let mut with annot`,
+  `let mut in do still ok`. **295 tests total.**
 
 ### Phase 56: Multi-level nested record updates ⏳ TODO
 
