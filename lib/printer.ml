@@ -121,9 +121,13 @@ let rec print_pat p = function
       write p "..."
     end;
     write p " }"
+  | PRng (lo, hi, incl) ->
+    print_lit p lo;
+    write p (if incl then "..=" else "..");
+    print_lit p hi
 
 and print_pat_atom p pat = match pat with
-  | PVar _ | PWild | PLit _ | PCon (_, []) | PTuple _ | PList _ | PRec _ ->
+  | PVar _ | PWild | PLit _ | PCon (_, []) | PTuple _ | PList _ | PRec _ | PRng _ ->
     print_pat p pat
   | _ -> write p "("; print_pat p pat; write p ")"
 
@@ -163,7 +167,8 @@ let is_right_assoc = function "::" -> true | _ -> false
 let rec expr_prec = function
   | ELit _ | EVar _ | ETuple _ | EArrayLit _ | EListLit _ | EListComp _
   | EMapLit _ | ESetLit _ | EStringInterp _
-  | ERecordCreate _ | ERecordUpdate _ -> prec_atom
+  | ERecordCreate _ | ERecordUpdate _
+  | ERangeList _ | ERangeArray _ | ESlice _ -> prec_atom
   | EFieldAccess _ | EIndex _
   | EQuestion _                        -> prec_postfix
   | EUnOp _                            -> prec_unary
@@ -343,6 +348,25 @@ and print_expr_raw p = function
         write p "let "; if mut then write p "mut ";
         print_pat p pat; write p " = "; print_expr p prec_top e
     ) quals;
+    write p "]"
+  | ERangeList (lo, hi, incl) ->
+    write p "[";
+    print_expr p prec_top lo;
+    write p (if incl then "..=" else "..");
+    print_expr p prec_top hi;
+    write p "]"
+  | ERangeArray (lo, hi, incl) ->
+    write p "[|";
+    print_expr p prec_top lo;
+    write p (if incl then "..=" else "..");
+    print_expr p prec_top hi;
+    write p "|]"
+  | ESlice (e, lo, hi, incl) ->
+    print_expr p prec_postfix e;
+    write p ".[";
+    print_expr p prec_top lo;
+    write p (if incl then "..=" else "..");
+    print_expr p prec_top hi;
     write p "]"
   | ELoc (_, e) -> print_expr_raw p e
 

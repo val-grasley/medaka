@@ -660,6 +660,52 @@ let t_let_else_no_match = assert_val
 |}
   "r" (VCon ("None", []))
 
+(* ── Range literals (Phase 40) ──────────────────────────────────────────── *)
+
+let t_range_list_half_open =
+  assert_val "r = [1..5]\n" "r"
+    (VList [VInt 1; VInt 2; VInt 3; VInt 4])
+
+let t_range_list_inclusive =
+  assert_val "r = [1..=5]\n" "r"
+    (VList [VInt 1; VInt 2; VInt 3; VInt 4; VInt 5])
+
+let t_range_list_empty =
+  assert_val "r = [5..3]\n" "r" (VList [])
+
+let t_range_array_half_open =
+  assert_val "r = [|0..3|]\n" "r"
+    (VArray [| VInt 0; VInt 1; VInt 2 |])
+
+let t_range_array_inclusive =
+  assert_val "r = [|1..=3|]\n" "r"
+    (VArray [| VInt 1; VInt 2; VInt 3 |])
+
+let t_range_pat_int_hit =
+  assert_val
+    "f n =\n  match n\n    1..9 => True\n    _ => False\nresult = f 5\n"
+    "result" (VBool true)
+
+let t_range_pat_int_miss =
+  assert_val
+    "f n =\n  match n\n    1..9 => True\n    _ => False\nresult = f 9\n"
+    "result" (VBool false)
+
+let t_range_pat_int_inclusive_boundary =
+  assert_val
+    "f n =\n  match n\n    1..=9 => True\n    _ => False\nresult = f 9\n"
+    "result" (VBool true)
+
+let t_range_pat_char_hit =
+  assert_val
+    "isLower c =\n  match c\n    'a'..='z' => True\n    _ => False\nresult = isLower 'g'\n"
+    "result" (VBool true)
+
+let t_range_pat_char_miss =
+  assert_val
+    "isLower c =\n  match c\n    'a'..='z' => True\n    _ => False\nresult = isLower 'G'\n"
+    "result" (VBool false)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -844,5 +890,17 @@ let () =
       test_case "if let no match"      `Quick t_if_let_no_match;
       test_case "let else match"       `Quick t_let_else_match;
       test_case "let else no match"    `Quick t_let_else_no_match;
+    ];
+    "range literals (Phase 40)", [
+      test_case "list [1..5] = [1,2,3,4]"          `Quick t_range_list_half_open;
+      test_case "list [1..=5] = [1,2,3,4,5]"       `Quick t_range_list_inclusive;
+      test_case "list empty when lo > hi"            `Quick t_range_list_empty;
+      test_case "array [|0..3|] = |0,1,2|"          `Quick t_range_array_half_open;
+      test_case "array [|1..=3|] = |1,2,3|"         `Quick t_range_array_inclusive;
+      test_case "pat int hit (5 in 1..9)"            `Quick t_range_pat_int_hit;
+      test_case "pat int miss (9 not in 1..9)"       `Quick t_range_pat_int_miss;
+      test_case "pat int inclusive boundary (9 in 1..=9)" `Quick t_range_pat_int_inclusive_boundary;
+      test_case "pat char hit ('g' in 'a'..'z')"    `Quick t_range_pat_char_hit;
+      test_case "pat char miss ('G' not in 'a'..'z')" `Quick t_range_pat_char_miss;
     ];
   ]

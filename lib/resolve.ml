@@ -179,6 +179,7 @@ let rec pat_bindings = function
       | None   -> [fname]
       | Some p -> pat_bindings p
     ) fields
+  | PRng _ -> []
 
 (* ── Phase 1: build env from top-level decls ──── *)
 
@@ -369,6 +370,7 @@ let rec check_pat env errors p =
   | PTuple ps | PList ps ->
     List.iter (check_pat env errors) ps
   | PAs (_, p) -> check_pat env errors p
+  | PRng _ -> ()   (* literal bounds need no resolution *)
   | PRec (name, fields, _rest) ->
     (* name can be a record type (DRecord) or a named-field constructor (DData ConNamed) *)
     let is_record = Hashtbl.mem env.types name in
@@ -515,6 +517,13 @@ let rec check_expr env scope errors e =
   | EIndex (e, i) ->
     check_expr env scope errors e;
     check_expr env scope errors i
+  | ERangeList (lo, hi, _) | ERangeArray (lo, hi, _) ->
+    check_expr env scope errors lo;
+    check_expr env scope errors hi
+  | ESlice (e, lo, hi, _) ->
+    check_expr env scope errors e;
+    check_expr env scope errors lo;
+    check_expr env scope errors hi
   | EDo stmts ->
     let _final_scope =
       List.fold_left (fun scope stmt ->

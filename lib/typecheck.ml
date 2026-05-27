@@ -656,6 +656,9 @@ let rec type_pat env = function
   | PAs (x, p) ->
     let (t, bindings) = type_pat env p in
     (t, (x, monotype t) :: bindings)
+  | PRng (LInt _, LInt _, _)   -> (t_int,  [])
+  | PRng (LChar _, LChar _, _) -> (t_char, [])
+  | PRng _ -> fail (TypeMismatch (t_int, t_char))  (* only Int and Char ranges are valid *)
   | PRec (name, fields, _rest) ->
     (match Hashtbl.find_opt env.ctor_fields name with
      | Some field_monos ->
@@ -1176,6 +1179,28 @@ let rec infer env = function
   | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
 
   | EQuestion _ -> assert false (* eliminated by desugar_questions; misplaced uses caught by resolve *)
+
+  | ERangeList (lo, hi, _) ->
+    unify (infer env lo) t_int;
+    unify (infer env hi) t_int;
+    t_list t_int
+
+  | ERangeArray (lo, hi, _) ->
+    unify (infer env lo) t_int;
+    unify (infer env hi) t_int;
+    t_array t_int
+
+  | ESlice (e, lo, hi, _) ->
+    let te = infer env e in
+    unify (infer env lo) t_int;
+    unify (infer env hi) t_int;
+    (* Slice preserves container type: Array a, List a, or String *)
+    let elem = fresh_var () in
+    (try unify te (t_array elem); te
+     with _ ->
+       try unify te (t_list elem); te
+       with _ ->
+         unify te t_string; te)
 
 and binop_type env op l r =
   let tl = infer env l in
@@ -1779,6 +1804,9 @@ let expr_effects
       ) [] parts
     | ETuple es               -> List.fold_left (fun a e -> effect_union a (sub e)) [] es
     | EIndex (e, i)           -> effect_union (sub e) (sub i)
+    | ERangeList (lo, hi, _)  -> effect_union (sub lo) (sub hi)
+    | ERangeArray (lo, hi, _) -> effect_union (sub lo) (sub hi)
+    | ESlice (e, lo, hi, _)   -> effect_union (sub e) (effect_union (sub lo) (sub hi))
     | EAnnot (e, _)           -> sub e
     | EInfix (_, l, r)        -> effect_union (sub l) (sub r)
     | ELoc (_, e)             -> sub e

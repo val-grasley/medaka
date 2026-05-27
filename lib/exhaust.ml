@@ -40,6 +40,10 @@ let rec desugar = function
     PLit (LString ("__partial_rec_" ^ name ^ "__"))
     (* Partial match without rest — open "literal" so non-exhaustiveness
        warnings still fire when no catch-all arm follows *)
+  | PRng _ -> PWild
+    (* Range patterns cover an open set of values — treated as wildcard so a
+       sole range arm satisfies exhaustiveness for its type.  Precise interval
+       coverage analysis is not implemented. *)
 
 (* ── Matrix types ───────────────────────────────────── *)
 

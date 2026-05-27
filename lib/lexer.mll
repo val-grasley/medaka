@@ -227,6 +227,8 @@ and read = parse
   | ':'   { COLON }
   | ','   { COMMA }
   | "..."  { ELLIPSIS }
+  | "..=" { DOTDOT_EQ }
+  | ".."  { DOTDOT }
   | '.'   { DOT }
   | '|'   { PIPE }
   | '('   { LPAREN }
