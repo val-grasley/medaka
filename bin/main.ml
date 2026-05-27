@@ -47,6 +47,10 @@ let () =
     let rest = Array.sub argv 2 (argc - 2) in
     exit (Medaka_lib.New_cmd.run rest)
   end;
+  if has_sub "test" then begin
+    let rest = Array.sub argv 2 (argc - 2) in
+    exit (Medaka_lib.Test_cmd.run rest)
+  end;
   (* Resolve a zero-arg `run`/`check` against `medaka.toml` in the cwd
      (walking up).  Returns the entry file path, or None if no config
      is found. *)
@@ -72,7 +76,7 @@ let () =
     else if argc = 2 then `Run, argv.(1)
     else begin
       print_endline
-        "Usage: medaka [check|run|repl|lsp|fmt|new] <file.mdk|name>"; exit 1
+        "Usage: medaka [check|run|test|repl|lsp|fmt|new] <file.mdk|name>"; exit 1
     end
   in
   let project_dir =
