@@ -20,15 +20,15 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-764 tests pass across 9 test suites:
+778 tests pass across 9 test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
-| Parser            | `test/test_parser.ml`           | 147   | AST shape for each construct                          |
-| Round-trip        | `test/test_roundtrip.ml`        | 102   | parse → print → parse yields the same AST             |
+| Parser            | `test/test_parser.ml`           | 149   | AST shape for each construct                          |
+| Round-trip        | `test/test_roundtrip.ml`        | 103   | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 60    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 270   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 135   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
+| Type checker      | `test/test_typecheck.ml`        | 276   | Inferred types, type errors, exhaustiveness warnings  |
+| Evaluator         | `test/test_eval.ml`             | 140   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
 | Loader            | `test/test_loader.ml`           | 24    | Multi-file imports, topo sort, cycle detection, prelude no-op, abstract exports |
