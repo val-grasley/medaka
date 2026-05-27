@@ -2119,6 +2119,219 @@ the dependency graph across the whole tree. Builds on Phase 36.
 
 ---
 
+## Implementation & parser gaps (2026-05-27 self-hosting prep)
+
+Items audited during the 2026-05-27 self-hosting discussion.  Each
+is either a long-standing implementation gap or a parser/lexer
+limitation that should be addressed before (or as part of) the
+self-hosting reimplementation.  Many are already mentioned in §5;
+this section gives each a phase number so they can be tracked,
+prioritized, and closed.
+
+### Phase 51: Effect inference for unannotated functions ⏳ TODO
+
+Design doc §Effect System promises automatic propagation: "call an
+`<IO>` and `<Rand>` function, your function is inferred as
+`<IO, Rand>`."  Today the typechecker requires explicit annotation
+on the calling function — `f x = print x` fails with "Function 'f'
+has no effect annotation but performs `<IO>`."
+
+Phase 29 added the `TFun.effect_set` slot the design relied on.
+Inference would walk function bodies, union the effect sets of all
+called functions, and pin that as the inferred effect.  Effect
+*variables* (effect-polymorphic `map`, etc.) are a follow-on after
+basic inference works.
+
+Scope:
+- Inference pass in `typecheck.ml` (effect union across `EApp`,
+  `EBinOp`, `EDo` stmts).
+- Unannotated functions get the inferred set as their declared set.
+- Annotated functions: check inferred ⊆ declared, error if extra.
+- Tests under `thorough_typecheck` "effects" group.
+
+### Phase 52: Eq/Num/Ord wiring to operators ⏳ TODO
+
+Currently `+`/`-`/`*`/`/` dispatch through a synthetic `__num__`
+witness, `<`/`>`/`<=`/`>=` through `__ord__`, and `==`/`!=` skip
+constraint lookup entirely.  These are seeded in
+`seed_builtin_impls` with hardcoded impls for `Int`, `Float`,
+`String`, `Char`.  They are *not* connected to the `interface Num`
+/ `interface Ord` / `interface Eq` defined in `core.mdk`.
+
+Net effect: `impl Num MyType` doesn't make `+` work on `MyType`;
+`deriving (Ord)` generates an impl the `<` operator won't consult.
+
+Phase 45.9 added a stopgap (user impls override seeded fallbacks
+for the synthetic interfaces) but the proper fix wires the
+operators through the actual stdlib interfaces:
+- `+` ↦ `add` method of `Num`
+- `<` ↦ `lt` method of `Ord`
+- `==` ↦ `eq` method of `Eq`
+- Remove `__num__`/`__ord__` synthetic witnesses.
+- Remove `seed_builtin_impls`; provide `impl Num Int`, `impl Eq
+  Int`, etc. directly in `core.mdk`.
+
+Touches `typecheck.ml` (constraint emission for operators) and
+`core.mdk` (provide the missing impls).  Big test impact — most
+existing operator usages will start emitting Num/Ord/Eq
+constraints.
+
+Related: "do-notation is not wired to `Thenable`" from §5 — `<-`
+should desugar to `andThen` calls so the `Thenable` constraint is
+actually checked.  Same arc, bundle with this phase.
+
+### Phase 53: Type-annotated AST for do-blocks ⏳ TODO
+
+`eval.ml`'s do-block dispatch uses a runtime heuristic
+(`detect_monad`) that inspects the first `DoBind` result's
+constructor shape.  Phase 45.10 fixed the List-monad case by
+special-casing `VList`, but the underlying fragility remains: any
+new monadic type (user-defined or otherwise) needs the heuristic
+to recognize it.
+
+The clean fix is a post-typecheck pass that tags each `EDo` node
+with its resolved monad type.  At eval time, dispatch consults the
+tag instead of guessing.  Removes the special case and makes the
+runtime model match the design.
+
+Scope:
+- Add `EDo` payload for the resolved monad (or a separate
+  annotated-AST type).
+- Typecheck pass writes the tag.
+- `eval_do` reads it; `detect_monad` and `current_monad_type`
+  become unnecessary.
+
+### Phase 54: `<Mut>` inference from `let mut` ⏳ TODO
+
+Design says any function touching a `let mut` binding picks up the
+`<Mut>` effect.  Today only direct calls to extern `set_ref` add it
+(via the `eff_env` path).  Phase 29 provided the `TFun.effect_set`
+slot; this phase wires `let mut` references through it.
+
+Small, mechanical follow-on to Phase 29.  Likely subsumed by Phase
+51 (general effect inference) — if Phase 51 lands first, this
+becomes "make sure mut also propagates."
+
+### Phase 55: `let mut` reassignment outside `do`-blocks ⏳ TODO
+
+`let mut x = 0` parses and type-checks in expression context, but
+there's no syntax for reassigning `x` outside a `do`-block.  `x =
+e` (DoAssign) is a do-stmt only.  Either:
+
+- Allow `x = e` as an `expr_lam` form (probably bad — ambiguous
+  with regular `=` bindings),
+- Or require `let mut` to be inside a `do`-block (rejecting it in
+  pure expression position).
+
+The latter is cleaner.  Update the type-checker to error on `let
+mut` outside `EDo` context.
+
+### Phase 56: Multi-level nested record updates ⏳ TODO
+
+Phase 45 (nested record update sugar) supports single-level
+`{ p | address.city = "Boston" }`.  Multi-level paths
+(`{ p | address.country.code = "US" }`) are not yet desugared.
+
+The desugaring rule generalizes naturally:
+`{ p | a.b.c = e }` ↦
+  `{ p | a = { p.a | b = { p.a.b | c = e } } }`.
+
+Recursive application of the existing sugar.  Probably 10-20 lines
+in `desugar.ml`.
+
+### Phase 57: `let x = e` (non-fn) recursion / mutual recursion ⏳ TODO
+
+`let f x = e` is implicitly self-recursive (Phase 27).  `let x = e`
+(no args) is non-recursive — a forward reference to `x` in `e` is
+unbound.  Mutual recursion between value bindings is also
+unsupported (where-helpers handle this via `ELetGroup` but
+top-level value mutual recursion doesn't).
+
+Decisions:
+- Should top-level value bindings be implicitly recursive?  Haskell
+  says yes (`let rec` is automatic).  Today we say no.  Pick one
+  and document.
+- If yes: add a fixed-point / `ELetGroup` lowering for top-level
+  values; care needed to avoid infinite eval loops for non-fn
+  bindings.
+
+### Phase 58: List comprehension `pat <- xs` should filter ⏳ TODO
+
+In Haskell, `[x | Just x <- xs]` silently skips `Nothing` values.
+In Medaka today, the same expression panics on the first non-
+matching element with "non-exhaustive match" (the `pat => body`
+desugars to `andThen xs (pat => body)`, and the lambda's pattern
+match failure propagates).
+
+Fix: desugar `pat <- xs` in list comps to a filter step before the
+bind, when `pat` is refutable.  Roughly:
+`[body | pat <- xs]` for refutable `pat` ↦
+  `[body | x <- xs, isMatch pat x, let pat = x]`
+…where `isMatch` is generated from `pat`.
+
+Or use `match` inside the lambda with a `Nothing → []` arm.
+
+### Phase 59: Small parser/lexer gaps ⏳ TODO
+
+A grab-bag of small grammar holes worth closing in one pass:
+
+- **Tuple field access `p.0`, `p.1`** — `.0` currently lexes as
+  the float `0.0`.  Either change the lexer to peek for `INT` after
+  `.` in identifier-position, or just don't support positional
+  tuple access (require pattern destructuring `let (x, y) = p`).
+  Pick a side and document.
+- **Triple-quoted string interpolation** — `read_triple_string`
+  has no `\\' '{'` branch.  Extend with the same `INTERP_OPEN`
+  logic `read_string` uses.
+- **DoBind LHS cannot be cons or literal pattern** — `x::xs <- xs`
+  fails to parse.  Same root cause as the next item.
+- **Last stmt of do-block can't start with an uppercase ctor** —
+  `do { ... ; Some x }` fails; wrap in `pure (Some x)` as a
+  workaround.  Grammar conflict between PCon-as-pat and EApp-as-
+  expr at the start of a do-stmt position.  See `parser.mly`
+  conflict comments.
+- **Int literal max** — `int_of_string` on `9223372036854775807`
+  overflows OCaml's 63-bit int.  Self-hosting opens the door to
+  arbitrary-precision ints, but for the OCaml-hosted compiler,
+  document `max_int = 4611686018427387903` and reject literals
+  above with a clear error rather than a `Failure`.
+- **`pub` only on `use`** — accept `pub` on `data`/`record`/
+  `interface`/`impl`/`fun_def`/`extern` too.  Per design doc,
+  privacy should be per-binding.
+- **`+.` / `-.` / `*.` / `/.` are dead code** — Phase 17 made
+  `+`/etc. dispatch on value type, so these can never be emitted.
+  Prune from `eval_arith`.
+- **`(- 1)` is unary minus, not a section** — same as Haskell.
+  Document; provide `(subtract 1)` if a real subtraction section
+  is desired.
+- **Negative range patterns with parens** — `-100..=(-1)` doesn't
+  parse (Phase 45.14 added bare `-100..=-1`).  The parenthesized
+  form needs a different rule; low priority.
+- **Paren-suppressed `do INDENT … DEDENT`** — see Phase 45.8
+  design limitation; workarounds documented.  Could be revisited
+  with a stateful lexer (`do` re-enables indentation tracking) but
+  not for the OCaml-hosted compiler.
+
+### Phase 60: Pre-self-host parser-conflict audit ⏳ TODO
+
+Before reimplementing the parser in Medaka, walk through every
+shift/reduce and reduce/reduce conflict in `lib/parser.conflicts`
+and confirm Menhir's default resolution is what we actually want.
+Each conflict is currently documented in `lib/parser.mly`
+headnotes; this is the moment to re-validate, because a hand-
+written parser must make each decision explicitly.
+
+Output: a checklist alongside the existing conflict documentation,
+mapping each Menhir conflict to its intended behavior, so the
+Medaka-hosted parser can reproduce it without surprises.
+
+The 8+8 conflict count itself goes to zero after self-hosting
+because a Pratt-style or PEG parser has no "conflicts" — every
+disambiguation is an explicit line of code.  Phase 60 ensures
+those explicit lines say the right thing.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
