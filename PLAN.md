@@ -1551,7 +1551,7 @@ Scope:
 - Pattern-match support is the highest-value piece; do not ship range
   literals without it.
 
-### Phase 41: Doctests ⏳ TODO
+### Phase 41: Doctests ✅ DONE
 
 Executable examples embedded in doc comments. Lines beginning with
 `-- > ` are the input; following non-`> ` lines are the expected
