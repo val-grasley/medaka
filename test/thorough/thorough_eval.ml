@@ -1090,6 +1090,51 @@ main =
     "yes\n"
 
 (* =====================================================================
+   34d2. Paren lambda body workarounds (Phase 45.8 limit)
+   ===================================================================== *)
+
+(* Inside parens, a lambda body of `let X = Y \n Z` does NOT parse —
+   the lexer suppresses INDENT/DEDENT inside parens (Phase 45.13), and
+   `let X = Y` outside a stmt-block context needs explicit `in`.  All
+   three working alternatives below are pinned. *)
+
+(* Inline let-in. *)
+let t_paren_lambda_let_in_inline =
+  assert_val
+    {|g = (x => let a = x + 1 in a)
+r = g 5
+|}
+    "r" (VInt 6)
+
+(* let-in with body on next line — `in` keeps it unambiguous. *)
+let t_paren_lambda_let_in_wrapped =
+  assert_val
+    {|g = (x => let a = x + 1 in
+          a)
+r = g 5
+|}
+    "r" (VInt 6)
+
+(* Chained let-ins for multiple helper bindings. *)
+let t_paren_lambda_let_in_chained =
+  assert_val
+    {|g = (x => let a = x + 1 in let b = a * 2 in b)
+r = g 5
+|}
+    "r" (VInt 12)
+
+(* Or: extract to a named function — fun_body has its own indented
+   stmt block rule, so this works fine. *)
+let t_named_fn_indented_body =
+  assert_val
+    {|g x =
+  let a = x + 1
+  a
+r = map g [1, 2, 3]
+|}
+    "r" (VList [VInt 2; VInt 3; VInt 4])
+
+(* =====================================================================
    34e. Multi-line expressions inside groupings (Phase 45.13)
    ===================================================================== *)
 
@@ -1415,6 +1460,12 @@ let () =
         ] );
       ( "empty record pat",
         [ test_case "P { ... }"             `Quick t_empty_record_pat
+        ] );
+      ( "paren lambda workarounds (Phase 45.8 limit)",
+        [ test_case "inline let-in"            `Quick t_paren_lambda_let_in_inline
+        ; test_case "let-in body wrapped"      `Quick t_paren_lambda_let_in_wrapped
+        ; test_case "let-in chained"           `Quick t_paren_lambda_let_in_chained
+        ; test_case "named fn w/ indented body" `Quick t_named_fn_indented_body
         ] );
       ( "multi-line groupings (Phase 45.13)",
         [ test_case "tuple split"           `Quick t_tuple_multi_line

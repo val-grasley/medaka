@@ -56,8 +56,9 @@ following the same self-diagnosing pattern as the base suites
 
 389 thorough tests total.  Bugs surfaced and fixed during the
 2026-05-26 / 2026-05-27 thorough-testing session are listed in §3
-phases 45.5–45.14 (all ✅ DONE except Phase 45.8's lambda-body
-sub-case, which is documented as still TODO).
+phases 45.5–45.14 — all ✅ DONE.  Phase 45.8's parenthesized-lambda
+sub-case is a design limitation (not a TODO) with documented
+workarounds inline there.
 
 The source of truth for what the language *is* is `language-design.md`. Read it
 before designing new features.
@@ -1903,11 +1904,10 @@ Regression tests under `test/thorough/thorough_eval.ml` group
 "multi-line if (Phase 45.7)": both branches indented, only-then,
 only-else, multi-stmt then, else-if multi-line, do bodies.
 
-### Phase 45.8: Multi-line match arm bodies ✅ DONE (partial)
+### Phase 45.8: Multi-line match arm bodies ✅ DONE
 
-Fixed in this session — for match arm bodies.  A new `match_arm`
-production accepts `INDENT nonempty_list(stmt) DEDENT newlines` as
-the body:
+Fixed in this session.  A new `match_arm` production accepts
+`INDENT nonempty_list(stmt) DEDENT newlines` as the body:
 
 ```
 pat option(guard) FAT_ARROW INDENT nonempty_list(stmt) DEDENT newlines
@@ -1940,21 +1940,41 @@ match x
 Regression tests under `test/thorough/thorough_eval.ml` group
 "multi-line match arm (Phase 45.8)".
 
-**Not fixed (still TODO):** parenthesized lambda bodies with
-indented stmts.
+**Design limitation (not a bug):** parenthesized lambda bodies with
+indented stmt sequences don't parse:
 
 ```medaka
-g = (x =>           -- BROKEN
+g = (x =>           -- DOES NOT PARSE
   let a = x + 1
   a)
 ```
 
-This is a less common pattern.  Workarounds: extract to a `where`
-binding, or use a named function definition.  Fixing it requires
-adding a similar indented-block variant to the lambda body grammar,
-but the lexer's indentation tracking inside parens makes the
-INDENT/DEDENT structure interact with `)` in ways that need more
-care than the match-arm case.
+Three constraints conflict: (1) Phase 45.13's lexer change suppresses
+INDENT/DEDENT inside `(…)`/`[…]`/`{…}`/`[|…|]` to make multi-line
+groupings work; (2) lambda bodies are `expr_lam`, which has no
+multi-stmt block form; (3) `do INDENT … DEDENT` is the only way to
+delimit a stmt sequence, and INDENT is suppressed inside parens.
+Any of these three would have to be relaxed to allow the form above —
+all options have non-trivial tradeoffs.
+
+Working alternatives (all parse today):
+
+```medaka
+g = (x => let a = x + 1 in a)                 -- inline let-in
+g = (x => let a = x + 1 in                    -- let-in with body on
+          a)                                  -- next line
+g = (x => let a = x + 1 in let b = a*2 in b)  -- chained let-ins
+
+-- Or extract the body to a named function (indented body works
+-- there because fun_body has its own indented-stmt rule):
+g x =
+  let a = x + 1
+  a
+r = map g xs
+```
+
+Regression tests in `thorough_eval` group "paren lambda workarounds
+(Phase 45.8 limit)" pin the working alternatives.
 
 ### Phase 45.10: List monad in do-blocks ✅ DONE
 
