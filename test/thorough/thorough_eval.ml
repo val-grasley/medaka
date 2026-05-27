@@ -1090,6 +1090,68 @@ main =
     "yes\n"
 
 (* =====================================================================
+   34e. Multi-line expressions inside groupings (Phase 45.13)
+   ===================================================================== *)
+
+(* Lexer now suppresses INDENT/DEDENT/NEWLINE inside `(...)`, `[...]`,
+   `[|...|]`, and `{...}`.  Multi-line tuples / lists / records parse. *)
+let t_tuple_multi_line =
+  assert_val
+    {|r = (1,
+     2)
+|}
+    "r" (VTuple [VInt 1; VInt 2])
+
+let t_list_multi_line =
+  assert_val
+    {|r = [1,
+     2,
+     3]
+|}
+    "r" (VList [VInt 1; VInt 2; VInt 3])
+
+let t_record_multi_line =
+  assert_val
+    {|record P
+  x : Int
+  y : Int
+p = P { x = 1,
+        y = 2 }
+r = p.x + p.y
+|}
+    "r" (VInt 3)
+
+let t_array_multi_line =
+  assert_val
+    {|r = [|1,
+       2,
+       3|]
+|}
+    "r" (VArray [| VInt 1; VInt 2; VInt 3 |])
+
+(* =====================================================================
+   34f. Negative integer in range pattern (Phase 45.14)
+   ===================================================================== *)
+
+let t_neg_range_lhs =
+  assert_val
+    {|f n = match n
+  -10..=-1 => "neg"
+  _ => "other"
+r = (f (-5), f 5)
+|}
+    "r" (VTuple [VString "neg"; VString "other"])
+
+let t_neg_range_lhs_only =
+  assert_val
+    {|f n = match n
+  -10..=0 => "low"
+  _ => "other"
+r = (f (-5), f 0, f 5)
+|}
+    "r" (VTuple [VString "low"; VString "low"; VString "other"])
+
+(* =====================================================================
    34c. Annotated let (Phase 45.11)
    ===================================================================== *)
 
@@ -1353,6 +1415,16 @@ let () =
         ] );
       ( "empty record pat",
         [ test_case "P { ... }"             `Quick t_empty_record_pat
+        ] );
+      ( "multi-line groupings (Phase 45.13)",
+        [ test_case "tuple split"           `Quick t_tuple_multi_line
+        ; test_case "list split"            `Quick t_list_multi_line
+        ; test_case "record literal split"  `Quick t_record_multi_line
+        ; test_case "array split"           `Quick t_array_multi_line
+        ] );
+      ( "negative range pattern (Phase 45.14)",
+        [ test_case "-10..=-1"              `Quick t_neg_range_lhs
+        ; test_case "-10..=0"               `Quick t_neg_range_lhs_only
         ] );
       ( "annotated let (Phase 45.11)",
         [ test_case "let y : Int = ... in"   `Quick t_annotated_let_in

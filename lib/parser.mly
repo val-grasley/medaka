@@ -457,6 +457,14 @@ pat_atom:
   | INT  DOTDOT_EQ INT   { PRng (LInt $1,  LInt $3,  true) }
   | CHAR DOTDOT    CHAR  { PRng (LChar $1, LChar $3, false) }
   | CHAR DOTDOT_EQ CHAR  { PRng (LChar $1, LChar $3, true) }
+  (* Negative integer literals in range patterns.  Permit `MINUS INT`
+     wherever an `INT` bound is expected, in all four combinations. *)
+  | MINUS INT DOTDOT INT       { PRng (LInt (-$2), LInt $4, false) }
+  | MINUS INT DOTDOT_EQ INT    { PRng (LInt (-$2), LInt $4, true) }
+  | INT DOTDOT MINUS INT       { PRng (LInt $1, LInt (-$4), false) }
+  | INT DOTDOT_EQ MINUS INT    { PRng (LInt $1, LInt (-$4), true) }
+  | MINUS INT DOTDOT MINUS INT { PRng (LInt (-$2), LInt (-$5), false) }
+  | MINUS INT DOTDOT_EQ MINUS INT { PRng (LInt (-$2), LInt (-$5), true) }
   | lit                                                    { PLit $1 }
   | LPAREN RPAREN                                          { PLit LUnit }
   | LPAREN pat RPAREN                                      { $2 }

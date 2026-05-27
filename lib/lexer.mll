@@ -5,6 +5,14 @@ open Parser
 let indent_stack : int list ref = ref [0]
 let pending : token Queue.t = Queue.create ()
 
+(* Paren-grouping depth.  Incremented on `(`, `[`, `{`, `[|` and
+   decremented on the matching close tokens.  While > 0, the
+   indentation-driven tokens (NEWLINE, INDENT, DEDENT) are
+   suppressed so multi-line expressions inside groupers like
+   `(1, \n  2)`, `[1, \n  2]`, `P { x = 1, \n y = 2 }` parse
+   regardless of how the line is broken. *)
+let paren_depth : int ref = ref 0
+
 (* String interpolation state *)
 let interp_depth : int ref = ref 0
 let interp_buf   : Buffer.t = Buffer.create 64
@@ -32,30 +40,35 @@ let take_comments () = List.rev !comments
 let push_pending t = Queue.push t pending
 
 let handle_indent col =
-  let current = List.hd !indent_stack in
-  if col > current then begin
-    indent_stack := col :: !indent_stack;
-    push_pending INDENT
-  end else if col < current then begin
-    (* Emit NEWLINE for end-of-previous-stmt, then NEWLINE+DEDENT pairs
-       so every enclosing block sees a terminator before its DEDENT. *)
-    push_pending NEWLINE;
-    let rec pop () =
-      match !indent_stack with
-      | top :: rest when top > col ->
-        indent_stack := rest;
-        push_pending DEDENT;
-        push_pending NEWLINE;
-        pop ()
-      | _ -> ()
-    in
-    pop ()
-  end else
-    push_pending NEWLINE
+  (* When inside `(...)`/`[...]`/`{...}`, ignore indentation changes
+     — the grouping characters carry the structure, not whitespace. *)
+  if !paren_depth > 0 then ()
+  else
+    let current = List.hd !indent_stack in
+    if col > current then begin
+      indent_stack := col :: !indent_stack;
+      push_pending INDENT
+    end else if col < current then begin
+      (* Emit NEWLINE for end-of-previous-stmt, then NEWLINE+DEDENT pairs
+         so every enclosing block sees a terminator before its DEDENT. *)
+      push_pending NEWLINE;
+      let rec pop () =
+        match !indent_stack with
+        | top :: rest when top > col ->
+          indent_stack := rest;
+          push_pending DEDENT;
+          push_pending NEWLINE;
+          pop ()
+        | _ -> ()
+      in
+      pop ()
+    end else
+      push_pending NEWLINE
 
 let reset () =
   indent_stack := [0];
   Queue.clear pending;
+  paren_depth := 0;
   interp_depth := 0;
   Buffer.clear interp_buf;
   comments := [];
@@ -199,8 +212,8 @@ and read = parse
     }
 
   (* Compound tokens — must come before single-char rules *)
-  | "[|"  { LARRAY }
-  | "|]"  { RARRAY }
+  | "[|"  { incr paren_depth; LARRAY }
+  | "|]"  { decr paren_depth; RARRAY }
   | "=>"  { FAT_ARROW }
   | "->"  { ARROW }
   | "<-"  { LARROW }
@@ -234,12 +247,13 @@ and read = parse
   | ".."  { DOTDOT }
   | '.'   { DOT }
   | '|'   { PIPE }
-  | '('   { LPAREN }
-  | ')'   { RPAREN }
-  | '['   { LBRACKET }
-  | ']'   { RBRACKET }
+  | '('   { incr paren_depth; LPAREN }
+  | ')'   { decr paren_depth; RPAREN }
+  | '['   { incr paren_depth; LBRACKET }
+  | ']'   { decr paren_depth; RBRACKET }
   | '{'   {
-      if !interp_depth > 0 then incr interp_depth;
+      if !interp_depth > 0 then incr interp_depth
+      else incr paren_depth;
       LBRACE
     }
   | '}'   {
@@ -250,8 +264,10 @@ and read = parse
           read_interp_continue interp_buf lexbuf
         end else
           RBRACE
-      end else
+      end else begin
+        decr paren_depth;
         RBRACE
+      end
     }
   | '!'   { BANG }
   | '?'   { QUESTION }
