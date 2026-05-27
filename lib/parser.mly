@@ -114,6 +114,7 @@ let desugar_constraint lhs rhs =
 %token LARRAY RARRAY
 %token DOT_LBRACE DOT_STAR
 %token ELLIPSIS
+%token DOTDOT DOTDOT_EQ
 
 (* Indentation *)
 %token NEWLINE INDENT DEDENT
@@ -129,7 +130,7 @@ let desugar_constraint lhs rhs =
    Grammar conflicts — audit notes (Phase 7)
    ═══════════════════════════════════════════════════════
 
-   Menhir reports 6 S/R states (16 conflicts) and 8 R/R states (34 conflicts).
+   Menhir reports 8 S/R states (20 conflicts) and 8 R/R states (34 conflicts).
    Every conflict is documented below.  All default resolutions are correct for
    the intended semantics — none require restructuring.
 
@@ -252,6 +253,17 @@ let desugar_constraint lhs rhs =
      `LET pat EQUAL expr_no_block ELSE` in `stmt`: after fully reducing
      `expr_no_block`, lookahead `ELSE` deterministically shifts (DoLetElse)
      vs. `NEWLINE`/`DEDENT` which reduces (DoLet). No additional conflicts.
+
+   Phase 40 (range literals): INT/CHAR DOTDOT/DOTDOT_EQ in pat_atom
+   2 new S/R states (states 104, 113)  •  lookaheads: DOTDOT DOTDOT_EQ
+     Stack: … LBRACKET INT   (or … LBRACKET CHAR)
+     Reduce: lit → INT (or lit → CHAR)  (path toward PLit in a do-block DoBind)
+     Shift:  INT . DOTDOT_EQ INT        (start of PRng range pattern)
+     Resolution: SHIFT (default).  Range pattern wins: 1..9 or 'a'..'z'
+     inside a pattern position correctly becomes PRng rather than a standalone
+     literal.  These states arise because the same INT/CHAR token appears both
+     in `pat_atom: lit` and `pat_atom: INT DOTDOT INT`; Menhir's default shift
+     resolution is the desired behaviour.
    ═══════════════════════════════════════════════════════ *)
 
 (* ── Top level ───────────────────────────────────────── *)
@@ -382,6 +394,10 @@ pat_atom:
   | UPPER                                                  { PCon ($1, []) }
   | UPPER LBRACE record_pat_fields RBRACE
     { let (fs, r) = $3 in PRec ($1, fs, r) }
+  | INT  DOTDOT    INT   { PRng (LInt $1,  LInt $3,  false) }
+  | INT  DOTDOT_EQ INT   { PRng (LInt $1,  LInt $3,  true) }
+  | CHAR DOTDOT    CHAR  { PRng (LChar $1, LChar $3, false) }
+  | CHAR DOTDOT_EQ CHAR  { PRng (LChar $1, LChar $3, true) }
   | lit                                                    { PLit $1 }
   | LPAREN RPAREN                                          { PLit LUnit }
   | LPAREN pat RPAREN                                      { $2 }
@@ -497,6 +513,8 @@ expr_app:
 expr_postfix:
   | expr_postfix DOT IDENT                        { EFieldAccess ($1, $3) }
   | expr_postfix DOT LBRACKET expr_no_block RBRACKET  { EIndex ($1, $4) }
+  | expr_postfix DOT LBRACKET expr_no_block DOTDOT    expr_no_block RBRACKET  { ESlice ($1, $4, $6, false) }
+  | expr_postfix DOT LBRACKET expr_no_block DOTDOT_EQ expr_no_block RBRACKET  { ESlice ($1, $4, $6, true) }
   | expr_atom                                     { $1 }
 
 (* Operator sections.
@@ -543,6 +561,14 @@ expr_atom:
     { ELoc (of_pos $startpos $endpos, EArrayLit []) }
   | LARRAY separated_nonempty_list(COMMA, expr_no_block) RARRAY
     { ELoc (of_pos $startpos $endpos, EArrayLit $2) }
+  | LBRACKET expr_no_block DOTDOT    expr_no_block RBRACKET
+    { ELoc (of_pos $startpos $endpos, ERangeList ($2, $4, false)) }
+  | LBRACKET expr_no_block DOTDOT_EQ expr_no_block RBRACKET
+    { ELoc (of_pos $startpos $endpos, ERangeList ($2, $4, true)) }
+  | LARRAY   expr_no_block DOTDOT    expr_no_block RARRAY
+    { ELoc (of_pos $startpos $endpos, ERangeArray ($2, $4, false)) }
+  | LARRAY   expr_no_block DOTDOT_EQ expr_no_block RARRAY
+    { ELoc (of_pos $startpos $endpos, ERangeArray ($2, $4, true)) }
   | UPPER LBRACE separated_list(COMMA, kv_or_e) RBRACE
     { let items = $3 and name = $1 in
       let has_field = List.exists (function Field _ -> true | _ -> false) items in

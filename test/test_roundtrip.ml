@@ -318,4 +318,16 @@ let () =
       test_case "let else in do-block" `Quick
         (mk "f opt =\n  do\n    let Some x = opt else pure 0\n    pure x\n");
     ];
+    "range literals (Phase 40)", [
+      test_case "list half-open"      `Quick (mk "r = [1..10]\n");
+      test_case "list inclusive"      `Quick (mk "r = [1..=10]\n");
+      test_case "array half-open"     `Quick (mk "r = [|0..5|]\n");
+      test_case "array inclusive"     `Quick (mk "r = [|1..=100|]\n");
+      test_case "slice half-open"     `Quick (mk "r arr = arr.[2..5]\n");
+      test_case "slice inclusive"     `Quick (mk "r arr = arr.[0..=3]\n");
+      test_case "range pattern int"   `Quick
+        (mk "f n =\n  match n\n    1..9 => True\n    _ => False\n");
+      test_case "range pattern char"  `Quick
+        (mk "f c =\n  match c\n    'a'..='z' => True\n    _ => False\n");
+    ];
   ]

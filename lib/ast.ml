@@ -38,6 +38,7 @@ type pat =
   | PAs    of ident * pat        (* x@pat *)
   | PRec   of ident * (ident * pat option) list * bool
              (* PRec("Person", [(field, None=pun | Some pat)], has_rest) *)
+  | PRng   of literal * literal * bool   (* lo..hi / lo..=hi in match arms; bool=inclusive *)
 
 (* String interpolation parts *)
 type interp_part =
@@ -85,6 +86,9 @@ and expr =
   | EStringInterp of interp_part list                  (* "text\{expr}text" *)
   | EListComp     of expr * lc_qual list               (* [e | x <- xs, guard, ...] *)
   | EQuestion     of expr                              (* e ? — desugared to andThen in let-RHS position *)
+  | ERangeList    of expr * expr * bool                 (* [lo..hi] / [lo..=hi]; bool=inclusive *)
+  | ERangeArray   of expr * expr * bool                 (* [|lo..hi|] / [|lo..=hi|]; bool=inclusive *)
+  | ESlice        of expr * expr * expr * bool          (* e.[lo..hi] / e.[lo..=hi]; bool=inclusive *)
   | ELoc          of loc * expr                         (* source position; transparent to semantics *)
 
 type use_path =
@@ -200,6 +204,8 @@ let rec pp_pat = function
     in
     let parts = List.map pp_field fields @ (if rest then ["..."] else []) in
     Printf.sprintf "%s { %s }" name (String.concat ", " parts)
+  | PRng (lo, hi, incl) ->
+    Printf.sprintf "%s%s%s" (pp_lit lo) (if incl then "..=" else "..") (pp_lit hi)
 
 let rec pp_expr = function
   | ELit l              -> pp_lit l
@@ -253,6 +259,12 @@ let rec pp_expr = function
     in
     Printf.sprintf "[%s | %s]" (pp_expr body) (String.concat ", " (List.map pp_qual quals))
   | EQuestion e          -> Printf.sprintf "(%s ?)" (pp_expr e)
+  | ERangeList (lo, hi, incl) ->
+    Printf.sprintf "[%s%s%s]" (pp_expr lo) (if incl then "..=" else "..") (pp_expr hi)
+  | ERangeArray (lo, hi, incl) ->
+    Printf.sprintf "[|%s%s%s|]" (pp_expr lo) (if incl then "..=" else "..") (pp_expr hi)
+  | ESlice (e, lo, hi, incl) ->
+    Printf.sprintf "%s.[%s%s%s]" (pp_expr e) (pp_expr lo) (if incl then "..=" else "..") (pp_expr hi)
   | ELoc (_, e)          -> pp_expr e
 
 and pp_do_stmt = function
@@ -302,6 +314,9 @@ let rec strip_locs_expr = function
       | LCLet (m, p, e) -> LCLet (m, p, strip_locs_expr e)
     ) quals)
   | EQuestion e           -> EQuestion (strip_locs_expr e)
+  | ERangeList  (lo, hi, incl) -> ERangeList  (strip_locs_expr lo, strip_locs_expr hi, incl)
+  | ERangeArray (lo, hi, incl) -> ERangeArray (strip_locs_expr lo, strip_locs_expr hi, incl)
+  | ESlice      (e, lo, hi, incl) -> ESlice (strip_locs_expr e, strip_locs_expr lo, strip_locs_expr hi, incl)
   | e                     -> e  (* ELit, EVar *)
 
 and strip_locs_do = function

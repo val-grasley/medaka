@@ -1002,6 +1002,68 @@ let test_if_let_nested () =
     ]) -> ()
   | e -> failwith ("wrong: " ^ Ast.pp_expr e)
 
+(* ── Range literal tests (Phase 40) ──────────────────── *)
+
+let test_range_list_half_open () =
+  match parse_expr "[1..10]" with
+  | ERangeList (ELit (LInt 1), ELit (LInt 10), false) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_range_list_inclusive () =
+  match parse_expr "[1..=10]" with
+  | ERangeList (ELit (LInt 1), ELit (LInt 10), true) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_range_array_inclusive () =
+  match parse_expr "[|1..=100|]" with
+  | ERangeArray (ELit (LInt 1), ELit (LInt 100), true) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_range_array_half_open () =
+  match parse_expr "[|0..5|]" with
+  | ERangeArray (ELit (LInt 0), ELit (LInt 5), false) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_slice_half_open () =
+  match parse_expr "arr.[2..5]" with
+  | ESlice (EVar "arr", ELit (LInt 2), ELit (LInt 5), false) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_slice_inclusive () =
+  match parse_expr "arr.[0..=3]" with
+  | ESlice (EVar "arr", ELit (LInt 0), ELit (LInt 3), true) -> ()
+  | e -> failwith ("wrong: " ^ Ast.pp_expr e)
+
+let test_range_pat_int_half_open () =
+  let src = {|
+classify n =
+  match n
+    1..9 => "single"
+    _ => "other"
+|} in
+  match parse_one src with
+  | DFunDef (false, "classify", [PVar "n"],
+      EMatch (EVar "n", [
+        (PRng (LInt 1, LInt 9, false), None, ELit (LString "single"));
+        (PWild, None, ELit (LString "other"));
+      ])) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_range_pat_char_inclusive () =
+  let src = {|
+isLower c =
+  match c
+    'a'..='z' => True
+    _ => False
+|} in
+  match parse_one src with
+  | DFunDef (false, "isLower", [PVar "c"],
+      EMatch (EVar "c", [
+        (PRng (LChar "a", LChar "z", true), None, EVar "True");
+        (PWild, None, EVar "False");
+      ])) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -1183,5 +1245,15 @@ let () =
       test_case "if let tuple"     `Quick test_if_let_tuple;
       test_case "let else do"      `Quick test_let_else_do;
       test_case "if let nested"    `Quick test_if_let_nested;
+    ];
+    "range literals (Phase 40)", [
+      test_case "list half-open [lo..hi]"       `Quick test_range_list_half_open;
+      test_case "list inclusive [lo..=hi]"      `Quick test_range_list_inclusive;
+      test_case "array inclusive [|lo..=hi|]"   `Quick test_range_array_inclusive;
+      test_case "array half-open [|lo..hi|]"    `Quick test_range_array_half_open;
+      test_case "slice half-open e.[lo..hi]"    `Quick test_slice_half_open;
+      test_case "slice inclusive e.[lo..=hi]"   `Quick test_slice_inclusive;
+      test_case "pattern int half-open lo..hi"  `Quick test_range_pat_int_half_open;
+      test_case "pattern char inclusive 'a'..='z'" `Quick test_range_pat_char_inclusive;
     ];
   ]

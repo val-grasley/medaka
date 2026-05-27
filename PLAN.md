@@ -1535,21 +1535,34 @@ Scope:
 - Exhaustiveness: existing checker treats named-field variants
   identically to positional ones once parsed.
 
-### Phase 40: Range literals ⏳ TODO
+### Phase 40: Range literals ✅ DONE
 
-`1..10` (half-open), `1..=10` (inclusive). Three contexts:
-- Expression: `[1..10]` produces `List Int`, `[|1..=100|]` produces
-  `Array Int`.
-- Slicing: `arr[lo..hi]`, `str[lo..hi]`.
-- Patterns: `'a'..='z'` in a `match` arm.
+`1..10` (half-open), `1..=10` (inclusive). All three contexts implemented.
 
-Scope:
-- Lexer/parser: new `..` and `..=` operators (watch precedence vs.
-  module-path `.`).
-- New `Range` / `RangeInclusive` types in the stdlib (or special-case
-  lowering — decide at implementation time).
-- Pattern-match support is the highest-value piece; do not ship range
-  literals without it.
+**What was added.**
+- Lexer: `DOTDOT` (`..`) and `DOTDOT_EQ` (`..=`) tokens, placed before `DOT`
+  after `ELLIPSIS` so longest-match gives `...` → ELLIPSIS, `..=` → DOTDOT_EQ,
+  `..` → DOTDOT, `.` → DOT.
+- AST: `ERangeList of expr * expr * bool`, `ERangeArray of expr * expr * bool`,
+  `ESlice of expr * expr * expr * bool` (bool = inclusive), `PRng of literal * literal * bool`.
+- Parser: range rules in `expr_atom` for `[lo..hi]` / `[|lo..=hi|]`; slice rules
+  in `expr_postfix` for `e.[lo..hi]`; range pattern rules in `pat_atom` for
+  `INT DOTDOT INT` / `CHAR DOTDOT_EQ CHAR` etc.
+- Printer, resolver, typechecker, evaluator, exhaustiveness checker, desugarer:
+  pass-through or handle all new variants.
+- Typechecker: `ERangeList`/`ERangeArray` type as `List Int`/`Array Int`;
+  `ESlice` preserves container type (Array, List, or String); `PRng` types as
+  `Int` (int range) or `Char` (char range).
+- Evaluator: range literals produce `VList`/`VArray` of `VInt`s; slice produces
+  sub-array/sub-list/substring; `PRng` in `match_pat` checks bounds.
+- Exhaustiveness: `PRng` desugars to `PWild` (conservative open-type treatment).
+- Conflict count: 8 S/R (20) + 8 R/R (34) — 2 new S/R states from INT/CHAR
+  in pat_atom, both resolved shift (range pattern wins), documented in audit block.
+- 33 new tests across parser (8), roundtrip (8), typecheck (7), eval (10).
+  **711 tests total.**
+
+**Special-case lowering chosen**: no `Range` type in the runtime; ranges evaluate
+directly to `VList`/`VArray`. Slicing works on `Array`, `List`, and `String`.
 
 ### Phase 41: Doctests ✅ DONE
 

@@ -1786,6 +1786,33 @@ let e_named_ctor_missing_field =
 let e_named_ctor_wrong_field_type =
   assert_err (named_event ^ "v = Click { x = \"bad\", y = 2 }\n")
 
+(* ── Range literals (Phase 40) ───────────────────── *)
+
+let t_range_list_type =
+  assert_type "r = [1..10]\n" "r" "List Int"
+
+let t_range_list_inclusive_type =
+  assert_type "r = [1..=10]\n" "r" "List Int"
+
+let t_range_array_type =
+  assert_type "r = [|0..5|]\n" "r" "Array Int"
+
+let t_range_array_inclusive_type =
+  assert_type "r = [|1..=100|]\n" "r" "Array Int"
+
+let t_range_pat_int_type =
+  assert_type
+    "classify n =\n  match n\n    1..9 => \"single\"\n    _ => \"other\"\n"
+    "classify" "Int -> String"
+
+let t_range_pat_char_type =
+  assert_type
+    "isLower c =\n  match c\n    'a'..='z' => True\n    _ => False\n"
+    "isLower" "Char -> Bool"
+
+let e_range_list_non_int =
+  assert_err "r = [True..False]\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -2127,5 +2154,14 @@ let () =
       test_case "mixed positional+named"   `Quick t_named_ctor_mixed;
       test_case "err: missing field"       `Quick e_named_ctor_missing_field;
       test_case "err: wrong field type"    `Quick e_named_ctor_wrong_field_type;
+    ];
+    "range literals (Phase 40)", [
+      test_case "list half-open : List Int"   `Quick t_range_list_type;
+      test_case "list inclusive : List Int"   `Quick t_range_list_inclusive_type;
+      test_case "array half-open : Array Int" `Quick t_range_array_type;
+      test_case "array inclusive : Array Int" `Quick t_range_array_inclusive_type;
+      test_case "pattern int in match"        `Quick t_range_pat_int_type;
+      test_case "pattern char in match"       `Quick t_range_pat_char_type;
+      test_case "err: non-int range bounds"   `Quick e_range_list_non_int;
     ];
   ]

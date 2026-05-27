@@ -148,6 +148,14 @@ let rec match_pat pat value =
     ) fields;
     !result
   | PRec _, _ -> None
+  | PRng (LInt lo, LInt hi, incl), VInt v ->
+    let hi' = if incl then hi else hi - 1 in
+    if v >= lo && v <= hi' then Some [] else None
+  | PRng (LChar lo, LChar hi, incl), VChar c ->
+    let cmp = String.compare in
+    if cmp c lo >= 0 && (if incl then cmp c hi <= 0 else cmp c hi < 0)
+    then Some [] else None
+  | PRng _, _ -> None
   | _ -> None
 
 and match_pats pats vals =
@@ -419,6 +427,55 @@ and eval env expr =
   | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
 
   | EQuestion _ -> assert false (* eliminated by desugar_questions *)
+
+  | ERangeList (elo, ehi, incl) ->
+    let lo = match eval env elo with
+      | VInt n -> n
+      | _ -> raise (Eval_error ("range bound must be Int", !current_loc))
+    in
+    let hi = match eval env ehi with
+      | VInt n -> n
+      | _ -> raise (Eval_error ("range bound must be Int", !current_loc))
+    in
+    let hi' = if incl then hi + 1 else hi in
+    VList (List.init (max 0 (hi' - lo)) (fun i -> VInt (lo + i)))
+
+  | ERangeArray (elo, ehi, incl) ->
+    let lo = match eval env elo with
+      | VInt n -> n
+      | _ -> raise (Eval_error ("range bound must be Int", !current_loc))
+    in
+    let hi = match eval env ehi with
+      | VInt n -> n
+      | _ -> raise (Eval_error ("range bound must be Int", !current_loc))
+    in
+    let hi' = if incl then hi + 1 else hi in
+    VArray (Array.init (max 0 (hi' - lo)) (fun i -> VInt (lo + i)))
+
+  | ESlice (earr, elo, ehi, incl) ->
+    let lo = match eval env elo with
+      | VInt n -> n
+      | _ -> raise (Eval_error ("slice index must be Int", !current_loc))
+    in
+    let hi = match eval env ehi with
+      | VInt n -> n
+      | _ -> raise (Eval_error ("slice index must be Int", !current_loc))
+    in
+    let hi' = if incl then hi + 1 else hi in
+    (match eval env earr with
+     | VArray a ->
+       let len = hi' - lo in
+       if lo < 0 || hi' > Array.length a || len < 0 then
+         raise (Eval_error (Printf.sprintf "slice [%d..%d] out of bounds" lo (hi'-1), !current_loc))
+       else VArray (Array.sub a lo len)
+     | VList vs ->
+       VList (List.filteri (fun i _ -> i >= lo && i < hi') vs)
+     | VString s ->
+       let len = hi' - lo in
+       if lo < 0 || hi' > String.length s || len < 0 then
+         raise (Eval_error (Printf.sprintf "slice [%d..%d] out of bounds" lo (hi'-1), !current_loc))
+       else VString (String.sub s lo len)
+     | _ -> raise (Eval_error ("slice on non-array/list/string", !current_loc)))
 
   | EInfix (op, l, r) ->
     let f  = lookup env op in
