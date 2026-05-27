@@ -1435,13 +1435,25 @@ comments.
 
 ---
 
-### Phase 36: `medaka.toml` project config + `medaka new` ⏳ TODO
+### Phase 36: `medaka.toml` project config + `medaka new` ✅ DONE
 
 Multi-file projects need a stable project root marker.  A minimal
 `medaka.toml` (Cargo-style) at the root, with a `medaka new` command
 that scaffolds it, unblocks the multi-file CLI we already support but
 have no nice way to invoke (today the loader infers project_dir from
 the root file's directory).
+
+Shipped:
+- `medaka new <name>` scaffolds `medaka.toml`, `main.mdk`, `.gitignore`,
+  and `README.md` in a new directory.
+- `medaka.toml` schema: `[package]` table with `name`, `version`,
+  `entry` (parsed by a hand-rolled mini-TOML reader in
+  `lib/project_config.ml`; no new opam dep).
+- CLI: `project_dir` is now found by walking up for `medaka.toml`,
+  falling back to the file's directory if none is found.
+- `medaka run` / `medaka check` with no file argument resolves `entry`
+  from the cwd's `medaka.toml`.
+- `lib/lsp_server.ml` now shares the walk-up helper with the CLI.
 
 ---
 

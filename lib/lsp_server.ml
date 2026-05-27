@@ -56,23 +56,29 @@ let project_roots : (string, string) Hashtbl.t = Hashtbl.create 8
    Used to clear stale diagnostics in files that have since become clean. *)
 let published_uris : (string, unit) Hashtbl.t = Hashtbl.create 16
 
-(* ── Project root inference ────────────────────────────────── *)
+(* ── Project root inference ──────────────────────────────────
 
-let dir_has_marker dir =
-  Sys.file_exists (Filename.concat dir "medaka.toml")
-  || Sys.file_exists (Filename.concat dir ".git")
+   Prefer the canonical `medaka.toml` marker (shared with the CLI via
+   [Project_config.find_project_root]).  Fall back to `.git` or `core/`
+   so projects without a toml still get analyzed sensibly. *)
+
+let dir_has_fallback_marker dir =
+  Sys.file_exists (Filename.concat dir ".git")
   || Sys.file_exists (Filename.concat dir "core")
 
 let find_project_root (file_path : string) : string =
-  let start = Filename.dirname file_path in
-  let rec walk dir =
-    if dir_has_marker dir then dir
-    else
-      let parent = Filename.dirname dir in
-      if parent = dir then start  (* hit / *)
-      else walk parent
-  in
-  walk start
+  match Project_config.find_project_root file_path with
+  | Some d -> d
+  | None ->
+    let start = Filename.dirname file_path in
+    let rec walk dir =
+      if dir_has_fallback_marker dir then dir
+      else
+        let parent = Filename.dirname dir in
+        if parent = dir then start
+        else walk parent
+    in
+    walk start
 
 let project_root_for ~(uri_str : string) ~(file_path : string) : string =
   match Hashtbl.find_opt project_roots uri_str with

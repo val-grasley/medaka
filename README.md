@@ -26,12 +26,14 @@ Frontend and interpreter complete; standard library underway; codegen not yet st
 - **Evaluator** — `lib/eval.ml` (tree-walking interpreter with VMulti-based
   typeclass dispatch)
 - **REPL** — `lib/repl.ml` (incremental parse/typecheck/eval with persistent env)
-- **CLI** — `bin/main.ml` — `check`, `run`, `repl`, and `lsp` subcommands
+- **CLI** — `bin/main.ml` — `check`, `run`, `repl`, `lsp`, `fmt`, and `new` subcommands
+- **Formatter** — `lib/fmt.ml` (comment-preserving pretty printer with `--check` / `--write` / `--stdout`)
+- **Project config** — `lib/project_config.ml` (minimal `medaka.toml` reader; shared project-root walk-up between CLI and LSP)
 - **Diagnostics** — `lib/diagnostics.ml` (accumulating error pipeline)
 - **Language server** — `lib/lsp_server.ml` (stdio LSP server with
   document open/change/close → publishDiagnostics)
-- **Test suite** — 655 cases across parser, roundtrip, resolve, typecheck,
-  eval, run, repl, loader, and diagnostics suites
+- **Test suite** — parser, roundtrip, resolve, typecheck, eval, run,
+  repl, loader, diagnostics, fmt, project_config, and new_cmd suites
 
 The standard library is being developed in Medaka itself on top of the
 `extern` primitives — see [STDLIB.md](./STDLIB.md). Codegen has not started.
@@ -82,6 +84,39 @@ Or run individual suites directly (preferred — `dune test` can hang):
 ```sh
 ./_build/default/bin/main.exe lsp
 ```
+
+**Scaffold a new project:**
+```sh
+./_build/default/bin/main.exe new myproj
+cd myproj && ../_build/default/bin/main.exe run
+```
+
+This creates `myproj/` containing `medaka.toml`, `main.mdk`,
+`.gitignore`, and `README.md`. The `medaka.toml` is a minimal
+Cargo-style file:
+
+```toml
+[package]
+name = "myproj"
+version = "0.1.0"
+entry = "main.mdk"
+```
+
+Its presence marks the project root: `medaka run` / `medaka check`
+with no file argument resolves `entry` from `medaka.toml` in the cwd
+(walking up), and `import` paths in any file under the project tree
+are resolved relative to the root.
+
+**Format source code:**
+```sh
+./_build/default/bin/main.exe fmt path/to/file.mdk        # rewrite in place
+./_build/default/bin/main.exe fmt --check src/            # report-only, exit 1 if any
+./_build/default/bin/main.exe fmt --stdout one_file.mdk   # print to stdout
+```
+
+The formatter parses, re-prints, and verifies the output reparses to
+the same AST. Line comments are preserved at their original
+positions.
 
 ```
 medaka repl  (:quit to exit, :reset to clear session)
@@ -255,8 +290,11 @@ lib/
   repl.ml         REPL loop (`:load`, `:reload`, `:browse`, `:type`, …)
   diagnostics.ml  Accumulating parse/resolve/typecheck pipeline (no exit-on-error)
   lsp_server.ml   LSP server: stdio JSON-RPC, publishDiagnostics on edit
+  fmt.ml          `medaka fmt` — comment-preserving formatter
+  new_cmd.ml      `medaka new` — project scaffolder
+  project_config.ml  `medaka.toml` reader + project-root walk-up
 bin/
-  main.ml         CLI entry point (check / run / repl)
+  main.ml         CLI entry point (check / run / repl / lsp / fmt / new)
   repl.ml         Interactive REPL loop shim
 gen/
   embed.ml        Build-time helper: embeds runtime.mdk/core.mdk as an OCaml string
@@ -276,6 +314,9 @@ test/
   test_repl.ml        REPL meta-commands and load atomicity
   test_loader.ml      Module loader and cross-file imports
   test_diagnostics.ml Diagnostics module — parse/resolve/typecheck → diagnostic list
+  test_fmt.ml         Formatter: idempotency, round-trip, comment preservation
+  test_project_config.ml  `medaka.toml` parsing + project-root walk-up
+  test_new_cmd.ml     `medaka new` scaffolding
 dev/
   debug.ml            Ad-hoc parse-and-print probe
   tc_debug.ml         Ad-hoc type-check probe

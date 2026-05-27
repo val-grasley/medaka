@@ -43,15 +43,43 @@ let () =
     let rest = Array.sub argv 2 (argc - 2) in
     exit (Medaka_lib.Fmt.run rest)
   end;
+  if has_sub "new" then begin
+    let rest = Array.sub argv 2 (argc - 2) in
+    exit (Medaka_lib.New_cmd.run rest)
+  end;
+  (* Resolve a zero-arg `run`/`check` against `medaka.toml` in the cwd
+     (walking up).  Returns the entry file path, or None if no config
+     is found. *)
+  let entry_from_cwd_config () =
+    let cwd = Sys.getcwd () in
+    let probe = Filename.concat cwd "_probe_.mdk" in
+    match Medaka_lib.Project_config.find_project_root probe with
+    | None -> None
+    | Some root ->
+      (match Medaka_lib.Project_config.load_from_dir root with
+       | None -> None
+       | Some cfg -> Some (Filename.concat root cfg.entry))
+  in
   let mode, filename =
     if has_sub "check" && argc >= 3 then `Check, argv.(2)
     else if has_sub "run" && argc >= 3 then `Run, argv.(2)
+    else if (has_sub "check" || has_sub "run") && argc = 2 then begin
+      match entry_from_cwd_config () with
+      | Some f -> (if has_sub "check" then `Check else `Run), f
+      | None ->
+        Printf.eprintf "error: no file given and no medaka.toml found\n"; exit 1
+    end
     else if argc = 2 then `Run, argv.(1)
     else begin
-      print_endline "Usage: medaka [check|run|repl|lsp|fmt] <file.mdk>"; exit 1
+      print_endline
+        "Usage: medaka [check|run|repl|lsp|fmt|new] <file.mdk|name>"; exit 1
     end
   in
-  let project_dir = Filename.dirname filename in
+  let project_dir =
+    match Medaka_lib.Project_config.find_project_root filename with
+    | Some d -> d
+    | None   -> Filename.dirname filename
+  in
 
   (* Single-file fast path: no use declarations → bypass loader *)
   let source = read_file filename in
