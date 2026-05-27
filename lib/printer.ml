@@ -176,7 +176,7 @@ let rec expr_prec = function
   | EInfix _                           -> prec_infix
   | EBinOp (op, _, _)                  -> binop_prec op
   | ELam _ | ELet _ | ELetGroup _ | EIf _
-  | EMatch _ | EDo _ | EAnnot _        -> prec_top
+  | EMatch _ | EDo (_, _) | EAnnot _   -> prec_top
   | ELoc (_, e)                        -> expr_prec e
 
 let rec print_expr p min_prec e =
@@ -316,7 +316,7 @@ and print_expr_raw p = function
         print_expr_body p body
       ) arms
     )
-  | EDo stmts ->
+  | EDo (_, stmts) ->
     write p "do";
     indented p (fun () ->
       List.iteri (fun i s ->

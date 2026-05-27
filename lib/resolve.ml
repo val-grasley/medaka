@@ -533,7 +533,7 @@ let rec check_expr env scope errors e =
     check_expr env scope errors e;
     check_expr env scope errors lo;
     check_expr env scope errors hi
-  | EDo stmts ->
+  | EDo (_, stmts) ->
     let _final_scope =
       List.fold_left (fun scope stmt ->
         match stmt with

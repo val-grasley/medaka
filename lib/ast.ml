@@ -80,7 +80,7 @@ and expr =
   | ESetLit       of ident * expr list                  (* Set { e, ... } *)
   | ETuple        of expr list                          (* (1, "hello") *)
   | EIndex        of expr * expr                        (* arr[0] *)
-  | EDo           of do_stmt list
+  | EDo           of string option ref * do_stmt list
   | EAnnot        of expr * ty
   | EInfix        of ident * expr * expr                (* x `div` y *)
   | EStringInterp of interp_part list                  (* "text\{expr}text" *)
@@ -272,7 +272,7 @@ let rec pp_expr = function
   | ESetLit (n, es)      -> Printf.sprintf "%s { %s }" n (String.concat ", " (List.map pp_expr es))
   | ETuple es            -> Printf.sprintf "(%s)" (String.concat ", " (List.map pp_expr es))
   | EIndex (e, i)        -> Printf.sprintf "%s[%s]" (pp_expr e) (pp_expr i)
-  | EDo stmts            -> Printf.sprintf "(do %s)" (String.concat "; " (List.map pp_do_stmt stmts))
+  | EDo (_, stmts)       -> Printf.sprintf "(do %s)" (String.concat "; " (List.map pp_do_stmt stmts))
   | EAnnot (e, t)        -> Printf.sprintf "(%s : %s)" (pp_expr e) (pp_ty t)
   | EInfix (op, l, r)    -> Printf.sprintf "(%s `%s` %s)" (pp_expr l) op (pp_expr r)
   | EStringInterp parts  ->
@@ -332,7 +332,7 @@ let rec strip_locs_expr = function
   | ESetLit (n, es)       -> ESetLit (n, List.map strip_locs_expr es)
   | ETuple es             -> ETuple (List.map strip_locs_expr es)
   | EIndex (e, i)         -> EIndex (strip_locs_expr e, strip_locs_expr i)
-  | EDo stmts             -> EDo (List.map strip_locs_do stmts)
+  | EDo (_, stmts)        -> EDo (ref None, List.map strip_locs_do stmts)
   | EAnnot (e, t)         -> EAnnot (strip_locs_expr e, t)
   | EInfix (op, l, r)    -> EInfix (op, strip_locs_expr l, strip_locs_expr r)
   | EStringInterp parts  ->

@@ -1015,7 +1015,7 @@ let rec infer env = function
     unify tf (TFun (tl, [], TFun (tr, [], result)));
     result
 
-  | EDo stmts ->
+  | EDo (monad_tag_ref, stmts) ->
     (* Two modes, distinguished by whether any stmt is a `<-` bind:
 
        - Monadic (has at least one DoBind):  introduce one per-block monad
@@ -1148,7 +1148,13 @@ let rec infer env = function
         let _ = infer env alt in  (* no divergence check in v1 *)
         type_stmts (extend_vars env bindings) rest
     in
-    type_stmts env stmts
+    let result = type_stmts env stmts in
+    if has_bind then
+      monad_tag_ref := (match normalize m with
+        | TApp (TCon tname, _) -> Some tname
+        | TCon tname           -> Some tname
+        | _                    -> None);
+    result
 
   | ERecordCreate (name, provided) ->
     (match Hashtbl.find_opt env.ctor_fields name with
@@ -1923,7 +1929,7 @@ let expr_effects
           let ge = match guard with None -> [] | Some g -> go bound' g in
           effect_union acc (effect_union ge (go bound' body)))
         (sub sc) arms
-    | EDo stmts ->
+    | EDo (_, stmts) ->
       let _, effs = List.fold_left (fun (b, acc) s ->
         let (b', e) = do_stmt_effects b s in
         (b', effect_union acc e)
