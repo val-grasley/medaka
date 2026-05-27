@@ -599,6 +599,8 @@ expr_atom:
     { ELoc (of_pos $startpos $endpos, ERecordUpdate ($2, $4)) }
   | AT UPPER
     { ELoc (of_pos $startpos $endpos, EVar ("@" ^ $2)) }
+  | AT IDENT
+    { ELoc (of_pos $startpos $endpos, EVar ("@" ^ $2)) }
   | interp_string
     { ELoc (of_pos $startpos $endpos, EStringInterp $1) }
 

@@ -18,6 +18,7 @@ type value =
   | VClosure of env * pat list * expr
   | VPrim   of (value -> value)
   | VMulti  of value list  (* ordered impl closures for the same method; tried in sequence *)
+  | VNamedImpl of string * value  (* impl closure tagged with its declared name *)
 
 and env = (string * value ref) list list
 
@@ -67,6 +68,7 @@ let rec pp_value = function
   | VClosure _ -> "<closure>"
   | VPrim _    -> "<prim>"
   | VMulti vs  -> Printf.sprintf "<dispatch/%d>" (List.length vs)
+  | VNamedImpl (n, _) -> Printf.sprintf "<impl:%s>" n
 
 and pp_value_atom v = match v with
   | VCon (_, _ :: _) | VTuple _ -> "(" ^ pp_value v ^ ")"
@@ -230,7 +232,11 @@ let rec apply fn arg =
        - Terminal result (non-closure): first one wins (return immediately).
        - VClosure/VMulti result (partial application): collect ALL that succeeded;
          return as a new VMulti so the next argument can dispatch correctly.
-       - If all fail: dispatch error. *)
+       - If all fail: dispatch error.
+       VNamedImpl entries are unwrapped before applying; the name is re-attached
+       to partial-application results so hint-based filtering still works across
+       multiple arguments. *)
+    let unwrap_named = function VNamedImpl (_, inner) -> inner | v -> v in
     let rec collect_partials acc = function
       | [] ->
         (match acc with
@@ -238,9 +244,11 @@ let rec apply fn arg =
          | [v] -> v
          | many -> VMulti (List.rev many))
       | v :: rest ->
-        (match (try Some (apply v arg) with Impl_no_match -> None) with
+        (match (try Some (apply (unwrap_named v) arg) with Impl_no_match -> None) with
          | None -> collect_partials acc rest
-         | Some (VClosure _ as c) -> collect_partials (c :: acc) rest
+         | Some (VClosure _ as c) ->
+           let wrapped = (match v with VNamedImpl (n, _) -> VNamedImpl (n, c) | _ -> c) in
+           collect_partials (wrapped :: acc) rest
          | Some (VMulti _ as m) -> collect_partials (m :: acc) rest
          | Some terminal -> terminal)  (* first terminal result wins *)
     in
@@ -261,12 +269,25 @@ and eval env expr =
   | ELit (LBool b)   -> VBool b
   | ELit LUnit       -> VUnit
 
+  | EVar hint when String.length hint > 0 && hint.[0] = '@' ->
+    VUnit  (* @Name as standalone expr; typechecker types it as Unit *)
+
   | EVar x -> lookup env x
 
-  | EApp (f, EVar hint) when String.length hint > 0 && hint.[0] = '@' ->
-    eval env f
-  | EApp (f, ELoc (_, EVar hint)) when String.length hint > 0 && hint.[0] = '@' ->
-    eval env f
+  | EApp (f_expr, EVar hint)
+  | EApp (f_expr, ELoc (_, EVar hint))
+    when String.length hint > 0 && hint.[0] = '@' ->
+    (* @Name hint: evaluate f, then filter VMulti to the named impl *)
+    let name = String.sub hint 1 (String.length hint - 1) in
+    (match eval env f_expr with
+     | VMulti vs ->
+       let filtered = List.filter (function
+         | VNamedImpl (n, _) -> n = name | _ -> false) vs in
+       (match filtered with
+        | []                  -> raise (Eval_error ("no impl named '" ^ name ^ "'", !current_loc))
+        | [VNamedImpl (_, v)] -> v
+        | many                -> VMulti many)
+     | other -> other)  (* hint on non-VMulti: ignore gracefully *)
 
   | EApp (f, x) ->
     let fv = eval env f in
@@ -856,7 +877,7 @@ let eval_program program =
         if pats = [] then eval env body
         else VClosure (env, pats, body)) in
       fill_cell name v
-    | DImpl { iface_name; type_args; methods; _ } ->
+    | DImpl { iface_name; type_args; methods; impl_name; _ } ->
       let score = tyvars_in_args type_args in
       (* If this is an Applicative impl, record its `pure` body in pure_impls
          keyed by the impl type's head TyCon name.  The `pure` primitive
@@ -880,8 +901,12 @@ let eval_program program =
         if not (List.mem name context_dependent_externs) then begin
           let new_v = if pats = [] then wrap_match_errors (fun () -> eval env body)
                       else VClosure (env, pats, body) in
+          let tagged_v = match impl_name with
+            | Some n -> VNamedImpl (n, new_v)
+            | None   -> new_v
+          in
           let prev = try Hashtbl.find impl_acc name with Not_found -> [] in
-          let updated = prev @ [(score, new_v)] in
+          let updated = prev @ [(score, tagged_v)] in
           Hashtbl.replace impl_acc name updated;
           (* Re-sort and install immediately so subsequent DFunDef bodies that
              call this method see the correct VMulti binding. *)
@@ -950,7 +975,7 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
        if pats = [] then eval !(rs.eval_env) body
        else VClosure (!(rs.eval_env), pats, body)) in
      fill name v
-   | DImpl { iface_name; type_args; methods; _ } ->
+   | DImpl { iface_name; type_args; methods; impl_name; _ } ->
      let score = tyvars_in_args type_args in
      let context_dependent_externs = ["pure"] in
      (* Reserve slots for overridable impl methods before evaluating bodies. *)
@@ -995,6 +1020,10 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
          let new_v = wrap_match_errors (fun () ->
            if pats = [] then eval !(rs.eval_env) body
            else VClosure (!(rs.eval_env), pats, body)) in
+         let tagged_v = match impl_name with
+           | Some n -> VNamedImpl (n, new_v)
+           | None   -> new_v
+         in
          (* Merge with existing binding: extend VMulti (score-sorted) or set fresh. *)
          let merged =
            match List.assoc_opt name !(rs.top_frame) with
@@ -1004,10 +1033,10 @@ let eval_repl_decl (rs : repl_state) (decl : decl) : unit =
                | VUnit     -> []
                | old_v     -> [(0, old_v)]
              in
-             let updated = existing @ [(score, new_v)] in
+             let updated = existing @ [(score, tagged_v)] in
              let sorted  = List.stable_sort (fun (s1,_) (s2,_) -> compare s1 s2) updated in
              VMulti (List.map snd sorted)
-           | None -> new_v
+           | None -> tagged_v
          in
          fill name merged
        end
