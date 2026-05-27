@@ -105,6 +105,7 @@ type type_error =
   | UnknownImplName    of ident * ident * mono list (* iface_name, hint_name, concrete type args *)
   | MultipleDefaultImpls of ident * mono list      (* iface_name, concrete type args *)
   | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
+  | MutLetOutsideDo     of ident                   (* let mut in expression context, no reassign syntax *)
   | NotARecord          of ident                   (* field assignment on non-record type *)
   | RecursiveTypeAlias  of ident                   (* type alias that expands to itself *)
   | Other              of string
@@ -345,6 +346,8 @@ let pp_error = function
       iface (String.concat " " (List.map pp_mono args))
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
+  | MutLetOutsideDo x ->
+    Printf.sprintf "'let mut %s' can only be used inside a do-block (no syntax to reassign outside one)" x
   | NotARecord x ->
     Printf.sprintf "Field assignment on '%s': type is not a record or Ref" x
   | RecursiveTypeAlias n ->
@@ -824,6 +827,9 @@ let rec infer env = function
     List.fold_right (fun pt acc -> TFun (pt, [], acc)) pat_types tb
 
   | ELet (mut, is_fun, pat, e1, e2) ->
+    (if mut then
+       let name = (match pat with PVar x -> x | _ -> "_") in
+       raise (Type_error (MutLetOutsideDo name, !current_loc)));
     (match is_fun, pat with
      | true, PVar x ->
        (* Self-recursive: pre-bind x with a monomorphic placeholder so the

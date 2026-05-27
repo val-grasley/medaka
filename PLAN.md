@@ -20,22 +20,25 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-798 tests pass across 13 base test suites:
+877 tests pass across 15 base test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
 | Parser            | `test/test_parser.ml`           | 161   | AST shape for each construct                          |
 | Round-trip        | `test/test_roundtrip.ml`        | 108   | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 60    | Unbound vars, unknown types/ctors, duplicates, fields |
-| Type checker      | `test/test_typecheck.ml`        | 287   | Inferred types, type errors, exhaustiveness warnings  |
+| Type checker      | `test/test_typecheck.ml`        | 291   | Inferred types, type errors, exhaustiveness warnings  |
 | Evaluator         | `test/test_eval.ml`             | 142   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
-| Loader            | `test/test_loader.ml`           | 24    | Multi-file imports, topo sort, cycle detection, prelude no-op, abstract exports |
+| Loader            | `test/test_loader.ml`           | 27    | Multi-file imports, topo sort, cycle detection, prelude no-op, abstract exports |
 | Diagnostics       | `test/test_diagnostics.ml`      | 11    | LSP diagnostic output, multi-file analysis            |
-
-…plus `test_fmt` / `test_project_config` / `test_new_cmd` / `test_doctest`
-which round out the toolchain.
+| Formatter         | `test/test_fmt.ml`              | 10    | `medaka fmt` round-trip and --check mode              |
+| Project config    | `test/test_project_config.ml`   | 15    | `medaka.toml` parse, workspace root discovery         |
+| New command       | `test/test_new_cmd.ml`          | 4     | `medaka new` scaffold                                 |
+| Doctests          | `test/test_doctest.ml`          | 15    | doctest extraction and execution                      |
+| Snapshots         | `test/test_snapshot.ml`         | 6     | `assert_snapshot` create/compare/update               |
+| Coverage          | `test/test_coverage.ml`         | 12    | `--coverage` instrumentation and reporting            |
 
 A **thorough test suite** under `test/thorough/` (not run by default
 `dune test`) exercises edge cases across the type checker, evaluator,
@@ -50,11 +53,11 @@ following the same self-diagnosing pattern as the base suites
 | Suite          | File                                       | Cases |
 |----------------|--------------------------------------------|-------|
 | Typecheck      | `test/thorough/thorough_typecheck.ml`      | 107   |
-| Evaluator      | `test/thorough/thorough_eval.ml`           | 141   |
+| Evaluator      | `test/thorough/thorough_eval.ml`           | 145   |
 | Interactions   | `test/thorough/thorough_interactions.ml`   | 49    |
 | Stdlib         | `test/thorough/thorough_stdlib.ml`         | 92    |
 
-389 thorough tests total.  Bugs surfaced and fixed during the
+393 thorough tests total.  Bugs surfaced and fixed during the
 2026-05-26 / 2026-05-27 thorough-testing session are listed in §3
 phases 45.5–45.14 — all ✅ DONE.  Phase 45.8's parenthesized-lambda
 sub-case is a design limitation (not a TODO) with documented
@@ -2273,19 +2276,23 @@ Small, mechanical follow-on to Phase 29.  Likely subsumed by Phase
 51 (general effect inference) — if Phase 51 lands first, this
 becomes "make sure mut also propagates."
 
-### Phase 55: `let mut` reassignment outside `do`-blocks ⏳ TODO
+### Phase 55: `let mut` reassignment outside `do`-blocks ✅ DONE
 
-`let mut x = 0` parses and type-checks in expression context, but
-there's no syntax for reassigning `x` outside a `do`-block.  `x =
-e` (DoAssign) is a do-stmt only.  Either:
+`let mut x = 0 in body` (inline expression form) is now rejected by
+the type-checker with `MutLetOutsideDo`.  `DoLet(true, ...)` inside
+do-blocks is unchanged.
 
-- Allow `x = e` as an `expr_lam` form (probably bad — ambiguous
-  with regular `=` bindings),
-- Or require `let mut` to be inside a `do`-block (rejecting it in
-  pure expression position).
-
-The latter is cleaner.  Update the type-checker to error on `let
-mut` outside `EDo` context.
+**What was added.**
+- `MutLetOutsideDo of ident` error variant in `typecheck.ml`;
+  `pp_error` message: `"'let mut x' can only be used inside a
+  do-block (no syntax to reassign outside one)"`.
+- Guard at the top of the `ELet(mut=true, ...)` case in `infer`:
+  raises `Type_error(MutLetOutsideDo name, !current_loc)` immediately.
+  The parser still emits `ELet(true, ...)` for `let mut … in …`;
+  the type-checker is the enforcer.
+- 4 new typecheck tests: `err: let mut outside do`,
+  `err: let mut inline expr`, `err: let mut with annot`,
+  `let mut in do still ok`. **877 tests total (base suites).**
 
 ### Phase 56: Multi-level nested record updates ⏳ TODO
 
