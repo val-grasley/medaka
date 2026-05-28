@@ -953,6 +953,8 @@ let eval_program program =
              (List.map (fun f -> f.field_name) fields)
          | ConPos _ -> ())
       ) vs
+    | DNewtype (_, type_name, _, con_name, _, _) ->
+      Hashtbl.replace ctor_to_type con_name type_name
     | _ -> ()
   ) program;
   (* Built-in types whose constructors are seeded in OCaml. *)
