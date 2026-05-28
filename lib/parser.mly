@@ -87,6 +87,26 @@ let rec expr_to_pat = function
     collect [] e
   | _ -> failwith "Invalid lambda parameter pattern"
 
+(* Convert a lambda LHS expression to a list of patterns.
+   - EApp chain with a lowercase/wild/literal head → multiple patterns (multi-arg lambda)
+   - EApp chain with an uppercase head → single constructor pattern via expr_to_pat
+   - Anything else → single pattern via expr_to_pat *)
+and expr_to_pats e =
+  let rec strip = function ELoc (_, e) -> strip e | e -> e in
+  let rec spine acc e = match strip e with
+    | EApp (f, a) -> spine (a :: acc) f
+    | head        -> (head, acc)
+  in
+  match strip e with
+  | EApp _ as app ->
+    let (head, args) = spine [] app in
+    (match strip head with
+     | EVar c when String.length c > 0 && Char.uppercase_ascii c.[0] = c.[0] ->
+       [expr_to_pat app]
+     | _ ->
+       List.map expr_to_pat (head :: args))
+  | e -> [expr_to_pat e]
+
 (* Desugar top-level guard arms into a nested if-then-else chain.
    A missing catch-all panics at runtime, matching Haskell's behaviour. *)
 let desugar_guards arms =
@@ -596,7 +616,7 @@ expr_lam:
   | UNDERSCORE FAT_ARROW expr_lam
     { ELoc (of_pos $startpos $endpos, ELam ([PWild], $3)) }
   | expr_pipe FAT_ARROW expr_lam
-    { ELoc (of_pos $startpos $endpos, ELam ([expr_to_pat $1], $3)) }
+    { ELoc (of_pos $startpos $endpos, ELam (expr_to_pats $1, $3)) }
   | expr_pipe
     { $1 }
 

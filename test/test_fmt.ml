@@ -75,6 +75,13 @@ let rt_stdlib_like () =
      map f opt = match opt\n  Some x => Some (f x)\n  None => None\n"
   in ()
 
+(* Multi-param lambda should round-trip as `x y => x + y`, not `x => y => x + y`. *)
+let rt_multi_param_lambda () =
+  let src = "add = x y => x + y\n" in
+  let out = format src in
+  if not (contains "x y =>" out) then
+    failwith (Printf.sprintf "Expected 'x y =>' in formatted output, got:\n%s" out)
+
 (* ── Entry point ─────────────────────────────────── *)
 
 let () =
@@ -93,6 +100,7 @@ let () =
       Alcotest.test_case "eof trailing"  `Quick cp_eof_trailing;
     ];
     "round-trip safety", [
-      Alcotest.test_case "stdlib-like"   `Quick rt_stdlib_like;
+      Alcotest.test_case "stdlib-like"       `Quick rt_stdlib_like;
+      Alcotest.test_case "multi-param lambda" `Quick rt_multi_param_lambda;
     ];
   ]
