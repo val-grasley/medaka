@@ -457,12 +457,32 @@ let desugar_record_puns record_names prog =
    [body | x <- xs, guard, let p = e, ...]
    desugars right-to-left into nested andThen / if-else / let calls. *)
 
+let rec is_refutable = function
+  | PVar _     -> false
+  | PWild      -> false
+  | PLit _     -> true
+  | PCon _     -> true
+  | PCons _    -> true
+  | PList _    -> true
+  | PRng _     -> true
+  | PRec _     -> true
+  | PTuple ps  -> List.exists is_refutable ps
+  | PAs (_, p) -> is_refutable p
+
 let desugar_list_comp body quals =
   List.fold_right (fun qual acc ->
     match qual with
     | LCGen (pat, xs) ->
-        (* andThen xs (pat => acc) *)
-        EApp (EApp (EVar "andThen", xs), ELam ([pat], acc))
+        let lam =
+          if is_refutable pat then
+            ELam ([PVar "__lc_x"],
+                  EMatch (EVar "__lc_x",
+                          [(pat,  None, acc);
+                           (PWild, None, EListLit [])]))
+          else
+            ELam ([pat], acc)
+        in
+        EApp (EApp (EVar "andThen", xs), lam)
     | LCGuard cond ->
         EIf (cond, acc, EListLit [])
     | LCLet (mut, pat, e) ->

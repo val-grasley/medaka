@@ -2397,7 +2397,7 @@ Decisions:
   values; care needed to avoid infinite eval loops for non-fn
   bindings.
 
-### Phase 58: List comprehension `pat <- xs` should filter ⏳ TODO
+### Phase 58: List comprehension `pat <- xs` should filter ✅ DONE
 
 In Haskell, `[x | Just x <- xs]` silently skips `Nothing` values.
 In Medaka today, the same expression panics on the first non-
@@ -2412,6 +2412,11 @@ bind, when `pat` is refutable.  Roughly:
 …where `isMatch` is generated from `pat`.
 
 Or use `match` inside the lambda with a `Nothing → []` arm.
+
+**Implemented** in `lib/desugar.ml`: added `is_refutable` and updated
+`desugar_list_comp` to wrap refutable `LCGen` patterns in an
+`EMatch` with a `PWild => []` fallback arm.  Non-refutable patterns
+(`PVar`, `PWild`, irrefutable `PTuple`) use the original direct lambda.
 
 ### Phase 59: Small parser/lexer gaps ⏳ TODO
 

@@ -275,6 +275,10 @@ let t_list_comp_let = assert_val
   {|r = [y | x <- [1, 2, 3], let y = x * x, y > 2]
 |} "r" (VList [VInt 4; VInt 9])
 
+let t_list_comp_refutable_con = assert_val
+  {|r = [x | Some x <- [Some 1, None, Some 2, None, Some 3]]
+|} "r" (VList [VInt 1; VInt 2; VInt 3])
+
 (* ── Pipe operator ──────────────────────────────────────────────────────── *)
 
 let t_pipe = assert_val {|double x = x * 2
@@ -930,9 +934,10 @@ let () =
       test_case "foldMap user monoid" `Quick t_foldmap_user_monoid;
     ];
     "list comprehensions", [
-      test_case "guard"         `Quick t_list_comp_guard;
-      test_case "multi_gen"     `Quick t_list_comp_multi_gen;
-      test_case "let_binding"   `Quick t_list_comp_let;
+      test_case "guard"              `Quick t_list_comp_guard;
+      test_case "multi_gen"          `Quick t_list_comp_multi_gen;
+      test_case "let_binding"        `Quick t_list_comp_let;
+      test_case "refutable_con"      `Quick t_list_comp_refutable_con;
     ];
     "pipe/compose", [
       test_case "pipe"    `Quick t_pipe;
