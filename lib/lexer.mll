@@ -103,6 +103,8 @@ let strip_underscores s =
 let keyword_or_ident s =
   match s with
   | "let"       -> LET
+  | "rec"       -> REC
+  | "with"      -> WITH
   | "mut"       -> MUT
   | "in"        -> IN
   | "if"        -> IF

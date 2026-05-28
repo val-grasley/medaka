@@ -46,18 +46,21 @@ let stmts_to_expr = function
 let curry_lam pats body =
   List.fold_right (fun pat acc -> ELam ([pat], acc)) pats body
 
-(* Desugar `where` bindings into a mutually-recursive ELetGroup.
-   Same-named bindings are coalesced into a single entry with multiple
-   clauses, preserving first-appearance order across distinct names. *)
-let desugar_where bindings main_expr =
+(* Coalesce same-named bindings into multi-clause entries, preserving
+   first-appearance order across distinct names.  Shared by `where`-clauses,
+   inline `let rec`, and top-level `let rec`. *)
+let coalesce_clauses bindings =
   let order = ref [] and groups = Hashtbl.create 8 in
   List.iter (fun (name, pats, rhs) ->
     if not (Hashtbl.mem groups name) then order := name :: !order;
     let prev = try Hashtbl.find groups name with Not_found -> [] in
     Hashtbl.replace groups name (prev @ [(pats, rhs)])
   ) bindings;
-  let grouped = List.rev_map (fun n -> (n, Hashtbl.find groups n)) !order in
-  ELetGroup (grouped, main_expr)
+  List.rev_map (fun n -> (n, Hashtbl.find groups n)) !order
+
+(* Desugar `where` bindings into a mutually-recursive ELetGroup. *)
+let desugar_where bindings main_expr =
+  ELetGroup (coalesce_clauses bindings, main_expr)
 
 (* Convert an expression back into a pattern when used as a lambda parameter.
    Supported: identifiers, literals, tuples, lists, cons, constructor apps. *)
@@ -132,7 +135,7 @@ let parse_attr name msg_opt =
 %token <string> BACKTICK_IDENT
 
 (* Keywords *)
-%token LET MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
+%token LET REC WITH MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
 %token IMPORT EXPORT PUBLIC WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP BENCH FUNCTION
 
 (* Operators *)
@@ -354,6 +357,7 @@ inner_data_or_record:
 inner_non_data_decl:
   | inner_type_sig          { $1 }
   | inner_fun_def           { $1 }
+  | inner_let_rec_decl      { $1 }
   | inner_type_alias_decl   { $1 }
   | inner_type_newtype_decl { $1 }
   | inner_iface_decl        { $1 }
@@ -418,6 +422,31 @@ where_binding:
     { ($1, $2, $4) }
   | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines
     { ($1, $2, desugar_guards $4) }
+
+(* ── `let rec ... with ...` (Phase 57) ────────────────────
+   Inline form: `let rec f x = e1 with g x = e2 in body`.
+   Each clause is `IDENT pat-atoms = expr_no_block`.  WITH separates
+   clauses without consuming a newline, so the inline form fits on one
+   or more visually contiguous lines bracketed by LET REC ... IN. *)
+let_rec_inline_clause:
+  | IDENT list(pat_atom) EQUAL expr_no_block      { ($1, $2, $4) }
+
+let_rec_inline_clauses:
+  | let_rec_inline_clause                                          { [$1] }
+  | let_rec_inline_clause WITH let_rec_inline_clauses              { $1 :: $3 }
+
+(* Top-level form: each clause is terminated by `newlines`, and `WITH`
+   begins the next clause at the same indentation as `LET REC`. *)
+inner_let_rec_decl:
+  | LET REC let_rec_decl_clauses
+    { fun is_pub -> DLetGroup (is_pub, coalesce_clauses $3) }
+
+let_rec_decl_clause:
+  | IDENT list(pat_atom) EQUAL fun_body newlines  { ($1, $2, $4) }
+
+let_rec_decl_clauses:
+  | let_rec_decl_clause                                            { [$1] }
+  | let_rec_decl_clause WITH let_rec_decl_clauses                  { $1 :: $3 }
 
 (* ── Types ───────────────────────────────────────────── *)
 
@@ -522,6 +551,8 @@ expr_lam:
     { ELoc (of_pos $startpos $endpos, ELet (false, false, $2, $4, $6)) }
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block IN expr_lam
     { ELoc (of_pos $startpos $endpos, ELet (false, true, PVar $2, curry_lam $3 $5, $7)) }
+  | LET REC let_rec_inline_clauses IN expr_lam
+    { ELoc (of_pos $startpos $endpos, ELetGroup (coalesce_clauses $3, $5)) }
   (* Phase 45.11: annotated let-in.  `let x : T = e in rest` wraps the
      RHS in an EAnnot so the typechecker pins the binding's type. *)
   | LET IDENT COLON ty EQUAL expr_no_block IN expr_lam

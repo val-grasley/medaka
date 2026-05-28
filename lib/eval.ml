@@ -1054,6 +1054,8 @@ let eval_program program =
       ) variants
     | DFunDef (_, name, _, _) ->
       add_to_frame name VUnit
+    | DLetGroup (_, bindings) ->
+      List.iter (fun (name, _) -> add_to_frame name VUnit) bindings
     | DImpl { methods; _ } ->
       List.iter (fun (name, _, _) ->
         if not (List.mem name context_dependent_externs) then
@@ -1098,6 +1100,20 @@ let eval_program program =
       let updated = prev @ [v] in
       Hashtbl.replace fundef_acc name updated;
       fill_cell name (match updated with [v] -> v | many -> VMulti many)
+    | DLetGroup (_, bindings) ->
+      (* All group names already have VUnit cells installed by Pass 1, so
+         each clause's body can reference any group name through env.
+         Mirrors the ELetGroup expression case. *)
+      List.iter (fun (name, clauses) ->
+        let closures = List.map (fun (pats, rhs) ->
+          if pats = [] then wrap_match_errors (fun () -> eval env rhs)
+          else VClosure (env, pats, rhs)) clauses in
+        let v = match closures with
+          | [v] -> v
+          | many -> VMulti many
+        in
+        fill_cell name v
+      ) bindings
     | DImpl { iface_name; type_args; methods; impl_name; _ } ->
       let score = tyvars_in_args type_args in
       (* If this is an Applicative impl, record its `pure` body in pure_impls
@@ -1339,6 +1355,25 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
          in
          fill name merged
      ) methods
+   | DLetGroup (_, bindings) ->
+     (* Pre-allocate VUnit cells so each clause body can reference any
+        group name; then fill them with closures or evaluated values. *)
+     List.iter (fun (name, _) ->
+       (match List.assoc_opt name !(rs.top_frame) with
+        | None   -> add name VUnit
+        | Some _ -> ())
+     ) bindings;
+     rs.eval_env := [!(rs.top_frame)];
+     List.iter (fun (name, clauses) ->
+       let closures = List.map (fun (pats, rhs) ->
+         if pats = [] then wrap_match_errors (fun () -> eval !(rs.eval_env) rhs)
+         else VClosure (!(rs.eval_env), pats, rhs)) clauses in
+       let v = match closures with
+         | [v] -> v
+         | many -> VMulti many
+       in
+       fill name v
+     ) bindings
    | DRecord _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ | DProp _
    | DBench _ -> ()
    | DAttrib (_, d) ->

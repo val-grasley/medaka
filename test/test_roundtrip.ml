@@ -177,6 +177,17 @@ let impl_basic = mk
   eq x y = x == y
 |}
 
+(* Phase 57: let rec *)
+let lr_top_single = mk
+  "let rec fact = n => if n == 0 then 1 else n * fact (n - 1)\n"
+
+let lr_top_mutual = mk
+  "let rec is_even = n => if n == 0 then True else is_odd (n - 1)\n\
+   with is_odd = n => if n == 0 then False else is_even (n - 1)\n"
+
+let lr_inline = mk
+  "r = let rec fact = n => if n == 0 then 1 else n * fact (n - 1) in fact 5\n"
+
 (* ── Test runner ─────────────────────────────────── *)
 
 let () =
@@ -255,6 +266,11 @@ let () =
     ];
     "multi-decl", [
       test_case "mixed"            `Quick multi;
+    ];
+    "let rec (Phase 57)", [
+      test_case "top single"       `Quick lr_top_single;
+      test_case "top mutual"       `Quick lr_top_mutual;
+      test_case "inline"           `Quick lr_inline;
     ];
     "interface/impl", [
       test_case "interface basic"  `Quick iface_basic;

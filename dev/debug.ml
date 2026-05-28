@@ -19,6 +19,12 @@ let rec pp_decl d =
   | DFunDef (_, n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
                                (String.concat "; " (List.map pp_pat ps))
                                (pp_expr e)
+  | DLetGroup (_, bs) ->
+    let pp_clause n (ps, body) =
+      Printf.sprintf "%s [%s] = %s" n
+        (String.concat "; " (List.map pp_pat ps)) (pp_expr body) in
+    let pp_b (n, cs) = String.concat "; " (List.map (pp_clause n) cs) in
+    Printf.sprintf "DLetGroup([%s])" (String.concat "; " (List.map pp_b bs))
   | DData (_, n, ps, vs, _)  ->
     let pv v =
       let fields_str = match v.con_payload with

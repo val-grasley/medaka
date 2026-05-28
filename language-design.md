@@ -218,6 +218,39 @@ fetchProfile id =
 
 Both are strictly sugar — they desugar to `match`. They exist because the single-arm extraction pattern is too common to spell out in full every time, and a full `do`-block is heavy when you want one variable.
 
+### Recursion and `let rec`
+
+Function definitions are implicitly self-recursive — `factorial n = n * factorial (n - 1)` works without any keyword:
+
+```
+fact n = if n == 0 then 1 else n * fact (n - 1)
+```
+
+Plain value bindings are **not** recursive. `let x = ... x ...` is an error because Medaka evaluates strictly — without lazy thunks, a self-referencing value either loops forever or produces nonsense. Forgetting this gets a targeted diagnostic suggesting `let rec`.
+
+For explicit value recursion and mutual recursion, use `let rec ... with ...`:
+
+```
+-- single recursive value (must be a lambda)
+let rec fact = n => if n == 0 then 1 else n * fact (n - 1)
+
+-- mutually recursive at the top level
+let rec is_even = n => if n == 0 then True else is_odd (n - 1)
+with is_odd  = n => if n == 0 then False else is_even (n - 1)
+
+-- inline form (single line)
+sum = let rec go = acc => xs => match xs
+  []      => acc
+  x :: rest => go (acc + x) rest
+in go 0 [1, 2, 3]
+```
+
+`with` is the binding-group separator. `and` is deliberately not used because it's a stdlib function for short-circuit-free boolean conjunction; reclaiming it would break existing code.
+
+**Lambda-only restriction on value RHS.** Inside a `let rec` group, a clause with no formal parameters must have a lambda right-hand side. This is stricter than OCaml's "syntactic value" rule because Medaka's strict evaluator has no special support for cyclic data structures — `let rec ones = 1 :: ones` would silently produce `Cons(1, Unit)` (a placeholder cell) rather than a cyclic list. The typechecker rejects this case explicitly.
+
+Mutual recursion between *functions* declared as ordinary top-level `f x = ...` is already implicit (top-level names are all in scope in each other's bodies through closure capture). `let rec ... with ...` is what you reach for when you need mutual recursion between *values* — including lambdas not declared in function-definition form.
+
 ### `function` Keyword
 
 A one-argument lambda that immediately pattern-matches:

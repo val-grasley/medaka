@@ -20,6 +20,7 @@ type error =
   | PrivateNameAccess    of ident * string  (* name, owning module *)
   | UnknownModule        of ident           (* use references a module that can't be found *)
   | QuestionMisplaced                       (* `?` outside `let pat = e ?` position *)
+  | NonRecursiveValueLet of ident           (* `let x = ... x ...` (no `rec`) where x is in scope on RHS *)
 
 let current_loc : Ast.loc option ref = ref None
 
@@ -43,6 +44,12 @@ let pp_error = function
   | QuestionMisplaced ->
     "`?` is only allowed as the right-hand side of a `let` binding, \
      e.g. `let x = expr ?`. Use `<-` inside do-blocks."
+  | NonRecursiveValueLet n ->
+    Printf.sprintf
+      "'%s' is not in scope on the right-hand side of its own binding. \
+       Non-function `let` bindings are not recursive — write `let rec %s = ...` \
+       to opt in to recursion (the RHS must be a lambda)."
+      n n
 
 (* ── Built-ins ─────────────────────────────────── *)
 
@@ -93,6 +100,7 @@ let prelude_interfaces : (string * string list) list =
 let prelude_values : string list =
   List.concat_map (function
     | Ast.DFunDef (_, n, _, _) -> [n]
+    | Ast.DLetGroup (_, bs)    -> List.map fst bs
     | Ast.DTypeSig (_, n, _)   -> [n]
     | Ast.DImpl { methods; _ } -> List.map (fun (n, _, _) -> n) methods
     | _ -> []) Prelude.program
@@ -261,6 +269,11 @@ let build_env ?(known_modules : module_exports list = [])
       if List.mem n extern_names then report (ExternWithBody n);
       (* Multi-clause definitions add the same name repeatedly *)
       add_or_skip env.values n
+    | DLetGroup (_, bs) ->
+      List.iter (fun (n, _) ->
+        if List.mem n extern_names then report (ExternWithBody n);
+        add_or_skip env.values n
+      ) bs
     | DTypeAlias (_, n, _, _) ->
       add_unique env.types "type" n
     | DNewtype (_, n, _, con, _, _) ->
@@ -438,9 +451,22 @@ let rec check_expr env scope errors e =
     check_expr env scope_rec errors e2
   | ELet (_, _, pat, e1, e2) ->
     check_pat env errors pat;
-    check_expr env scope errors e1;     (* RHS in outer scope *)
-    let scope' = pat_bindings pat @ scope in
-    check_expr env scope' errors e2     (* body in extended scope *)
+    let bound = pat_bindings pat in
+    let pre_count = List.length !errors in
+    check_expr env scope errors e1;
+    (* Rewrite any UnboundVariable error that hit one of this let's pattern
+       bindings into a targeted NonRecursiveValueLet diagnostic — the user
+       likely forgot `rec`. *)
+    let new_count = List.length !errors - pre_count in
+    errors := List.mapi (fun i (e, l) ->
+      if i < new_count then
+        match e with
+        | UnboundVariable n when List.mem n bound -> (NonRecursiveValueLet n, l)
+        | _ -> (e, l)
+      else (e, l)
+    ) !errors;
+    let scope' = bound @ scope in
+    check_expr env scope' errors e2
   | ELetGroup (bindings, body) ->
     let scope' = List.map fst bindings @ scope in
     List.iter (fun (_, clauses) ->
@@ -583,6 +609,16 @@ let rec check_decl env errors = function
     List.iter (check_pat env errors) pats;
     let scope = List.concat_map pat_bindings pats in
     check_expr env scope errors body
+  | DLetGroup (_, bindings) ->
+    (* All group names are pre-bound; each clause's RHS can see all of them. *)
+    let group_names = List.map fst bindings in
+    List.iter (fun (_, clauses) ->
+      List.iter (fun (pats, rhs) ->
+        List.iter (check_pat env errors) pats;
+        let scope = List.concat_map pat_bindings pats @ group_names in
+        check_expr env scope errors rhs
+      ) clauses
+    ) bindings
   | DTypeSig (_, _, t) ->
     check_type env errors t
   | DExtern (_, _, t) ->
@@ -820,6 +856,11 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
     | Ast.DFunDef (_, n, _, _) ->
       if List.mem n extern_names then report (ExternWithBody n);
       add_or_skip env.values n
+    | Ast.DLetGroup (_, bs) ->
+      List.iter (fun (n, _) ->
+        if List.mem n extern_names then report (ExternWithBody n);
+        add_or_skip env.values n
+      ) bs
     | Ast.DData (_, n, _, vs, _) ->
       add_unique env.types "type" n;
       List.iter (fun v -> add_unique env.constructors "constructor" v.Ast.con_name) vs
