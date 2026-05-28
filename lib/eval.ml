@@ -25,7 +25,18 @@ type value =
   | VMulti  of value list  (* ordered impl closures for the same method; tried in sequence *)
   | VThunk  of value Lazy.t  (* deferred top-level zero-param binding; forced on first lookup *)
   | VNamedImpl of string * value  (* impl closure tagged with its declared name *)
-  | VTypedImpl of string * value  (* impl method tagged with its impl's head type ctor *)
+  | VTypedImpl of string * int list * int * value
+      (* impl method: (tag, dispatch_positions, args_seen, inner).
+         `tag`  is the impl's head type-ctor name (e.g. "List" for Foldable List).
+         `dispatch_positions` is the set of argument indices whose runtime type
+            actually determines impl selection, computed from the interface
+            method's type signature.  For `fold : (b -> a -> b) -> b -> t a -> b`
+            of `Foldable t`, only position 2 mentions `t`, so positions = [2].
+         `args_seen` is the number of args already applied to this impl method.
+            VMulti's tag-filter only fires when `args_seen ∈ dispatch_positions`;
+            other arg slots (like fold's accumulator) pass through untouched.
+            An empty `dispatch_positions` (e.g. `pure : a -> f a`) means no
+            positional dispatch is possible from arguments alone. *)
 
 and env = (string * value ref) list list
 
@@ -86,7 +97,7 @@ let rec pp_value = function
   | VMulti vs  -> Printf.sprintf "<dispatch/%d>" (List.length vs)
   | VThunk t   -> pp_value (Lazy.force t)
   | VNamedImpl (n, _) -> Printf.sprintf "<impl:%s>" n
-  | VTypedImpl (t, inner) -> Printf.sprintf "<impl@%s:%s>" t (pp_value inner)
+  | VTypedImpl (t, _, _, inner) -> Printf.sprintf "<impl@%s:%s>" t (pp_value inner)
 
 and pp_value_atom v = match v with
   | VCon (_, _ :: _) | VTuple _ -> "(" ^ pp_value v ^ ")"
@@ -210,6 +221,49 @@ let monadic_ctors : (string, unit) Hashtbl.t = Hashtbl.create 8
    type whose Applicative impl `pure` should dispatch into. *)
 let ctor_to_type : (string, string) Hashtbl.t = Hashtbl.create 8
 
+(* (iface_name, method_name) → list of argument positions whose types mention
+   any of the interface's type parameters.  Populated when DInterface declarations
+   are processed; consulted at DImpl registration so each impl method is wrapped
+   in a VTypedImpl carrying the right dispatch metadata. *)
+let iface_dispatch : (string * string, int list) Hashtbl.t = Hashtbl.create 8
+
+(* Walk a method's declared type and find argument positions that mention any
+   of the given interface type parameters.  Strips leading `TyConstrained` and
+   `TyEffect` wrappers; recurses into TyApp/TyFun/TyTuple looking for matching
+   TyVars. *)
+let dispatch_positions_of (method_ty : Ast.ty) (iface_params : Ast.ident list)
+    : int list =
+  let rec mentions = function
+    | Ast.TyVar n -> List.mem n iface_params
+    | Ast.TyCon _ -> false
+    | Ast.TyApp (a, b) | Ast.TyFun (a, b) -> mentions a || mentions b
+    | Ast.TyTuple ts -> List.exists mentions ts
+    | Ast.TyEffect (_, t) | Ast.TyConstrained (_, t) -> mentions t
+  in
+  let rec args_of = function
+    | Ast.TyConstrained (_, t) -> args_of t
+    | Ast.TyEffect (_, t) -> args_of t
+    | Ast.TyFun (a, b) -> a :: args_of b
+    | _ -> []
+  in
+  args_of method_ty
+  |> List.mapi (fun i a -> (i, a))
+  |> List.filter_map (fun (i, a) -> if mentions a then Some i else None)
+
+let record_iface_dispatch (iface_name : string) (type_params : Ast.ident list)
+    (methods : Ast.iface_method list) : unit =
+  List.iter (fun (m : Ast.iface_method) ->
+    let positions = dispatch_positions_of m.method_type type_params in
+    Hashtbl.replace iface_dispatch (iface_name, m.method_name) positions
+  ) methods
+
+(* Look up the dispatch positions for an impl method.  Defaults to [0] when
+   the interface declaration hasn't been seen yet — this matches the pre-fix
+   behaviour where every arg triggered the tag filter on dispatch. *)
+let lookup_dispatch_positions (iface_name : string) (method_name : string) : int list =
+  try Hashtbl.find iface_dispatch (iface_name, method_name)
+  with Not_found -> [0]
+
 
 (* Type name → `pure` impl body.  Populated from `impl Applicative T` (and
    `impl Thenable T` if it overrides pure) declarations at eval init.  The
@@ -242,7 +296,7 @@ let rec runtime_type_tag = function
   | VArray _  -> Some "Array"
   | VCon (cname, _) -> Hashtbl.find_opt ctor_to_type cname
   | VRecord (name, _) -> Some name
-  | VTypedImpl (t, _) -> Some t
+  | VTypedImpl (t, _, _, _) -> Some t
   | VNamedImpl (_, inner) -> runtime_type_tag inner
   | _ -> None
 
@@ -268,13 +322,13 @@ let rec apply fn arg =
   | VClosure (_, [], _) ->
     raise (Eval_error ("applied closure with no parameters", !current_loc))
   | VPrim f -> f arg
-  | VTypedImpl (t, inner) ->
-    (* Pass through to the inner value but preserve the type tag through
-       partial applications so subsequent VMulti dispatch can still route
-       to the right typed candidate. *)
+  | VTypedImpl (t, positions, seen, inner) ->
+    (* Pass through to the inner value but preserve the dispatch metadata
+       across partial applications so subsequent VMulti dispatch can still
+       route to the right typed candidate. *)
     let result = apply inner arg in
     (match result with
-     | VClosure _ | VPrim _ | VMulti _ -> VTypedImpl (t, result)
+     | VClosure _ | VPrim _ | VMulti _ -> VTypedImpl (t, positions, seen + 1, result)
      | _ -> result)
   | VMulti vs ->
     (* Apply each impl to arg; collect results.
@@ -282,28 +336,43 @@ let rec apply fn arg =
        - VClosure/VMulti result (partial application): collect ALL that succeeded;
          return as a new VMulti so the next argument can dispatch correctly.
        - If all fail: dispatch error.
-       VNamedImpl/VTypedImpl entries are unwrapped before applying; the tag is
-       re-attached to partial-application results so subsequent dispatch still
-       sees the routing info.
-       When the arg has a known runtime type tag, VTypedImpl candidates are
-       filtered to matching ones first; this prevents irrelevant impls from
-       contributing partial applications that would later misroute dispatch. *)
+       VNamedImpl/VTypedImpl entries are unwrapped before applying; the tag
+       and dispatch metadata are re-attached to partial-application results
+       so subsequent dispatch still sees the routing info.
+       The tag-filter only fires for VTypedImpl candidates whose `args_seen`
+       is in their declared `dispatch_positions` set — i.e. the arg about to
+       be applied is the one that determines impl selection.  Candidates not
+       at a dispatching slot (e.g. fold's accumulator) pass through unfiltered;
+       candidates with empty positions (e.g. `pure : a -> f a`, where no arg
+       mentions the interface type param) are never filtered positionally. *)
     let unwrap_tags = function
       | VNamedImpl (_, inner) -> inner
-      | VTypedImpl (_, inner) -> inner
+      | VTypedImpl (_, _, _, inner) -> inner
       | v -> v
+    in
+    let is_dispatching = function
+      | VTypedImpl (_, positions, seen, _) -> List.mem seen positions
+      | VNamedImpl (_, VTypedImpl (_, positions, seen, _)) -> List.mem seen positions
+      | _ -> false
     in
     let vs =
       match runtime_type_tag arg with
       | None -> vs
       | Some tag ->
-        let is_match = function
-          | VTypedImpl (t, _) -> t = tag
-          | VNamedImpl (_, VTypedImpl (t, _)) -> t = tag
+        let matches_tag = function
+          | VTypedImpl (t, _, _, _) -> t = tag
+          | VNamedImpl (_, VTypedImpl (t, _, _, _)) -> t = tag
           | _ -> true  (* untagged candidates always considered *)
         in
-        let filtered = List.filter is_match vs in
-        if filtered = [] then vs else filtered
+        (* Only filter candidates that are at a dispatching slot.  A
+           non-dispatching candidate (e.g. a Foldable impl with `args_seen`
+           still on the accumulator) gets a free pass regardless of tag. *)
+        let should_filter = List.exists is_dispatching vs in
+        if not should_filter then vs
+        else
+          let keep v = (not (is_dispatching v)) || matches_tag v in
+          let filtered = List.filter keep vs in
+          if filtered = [] then vs else filtered
     in
     let rec collect_partials acc = function
       | [] ->
@@ -317,7 +386,8 @@ let rec apply fn arg =
          | Some (VClosure _ | VPrim _ | VMulti _ as c) ->
            let wrapped = (match v with
              | VNamedImpl (n, _) -> VNamedImpl (n, c)
-             | VTypedImpl (t, _) -> VTypedImpl (t, c)
+             | VTypedImpl (t, positions, seen, _) ->
+               VTypedImpl (t, positions, seen + 1, c)
              | _ -> c) in
            collect_partials (wrapped :: acc) rest
          | Some terminal -> terminal)  (* first terminal result wins *)
@@ -620,7 +690,7 @@ and eval_binop env op l r =
          | None -> v
          | Some tag ->
            (match List.filter_map (function
-              | VTypedImpl (t, inner) when t = tag -> Some inner
+              | VTypedImpl (t, _, _, inner) when t = tag -> Some inner
               | _ -> None) vs with
             | [single] -> single
             | _ -> v))
@@ -1101,6 +1171,16 @@ let eval_program program =
   let deferred_zero_params : string list ref = ref [] in
 
   Hashtbl.clear pure_impls;
+  Hashtbl.clear iface_dispatch;
+  (* Pre-pass: record dispatch positions for every interface method, so that
+     DImpl declarations encountered later can look up the right positions
+     regardless of source order. *)
+  List.iter (fun decl ->
+    match Ast.inner_decl decl with
+    | DInterface { iface_name; type_params; methods; _ } ->
+      record_iface_dispatch iface_name type_params methods
+    | _ -> ()
+  ) program;
   List.iter (fun decl ->
     match Ast.inner_decl decl with
     | DFunDef (_, name, pats, body) ->
@@ -1172,8 +1252,9 @@ let eval_program program =
         if not (List.mem name context_dependent_externs) then begin
           let new_v = if pats = [] then wrap_match_errors (fun () -> eval env body)
                       else VClosure (env, pats, body) in
+          let positions = lookup_dispatch_positions iface_name name in
           let typed_v = match impl_type_tag with
-            | Some t -> VTypedImpl (t, new_v)
+            | Some t -> VTypedImpl (t, positions, 0, new_v)
             | None   -> new_v
           in
           let tagged_v = match impl_name with
@@ -1318,8 +1399,9 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
          let new_v = wrap_match_errors (fun () ->
            if pats = [] then eval !(rs.eval_env) body
            else VClosure (!(rs.eval_env), pats, body)) in
+         let positions = lookup_dispatch_positions iface_name name in
          let typed_v = match impl_type_tag with
-           | Some t -> VTypedImpl (t, new_v)
+           | Some t -> VTypedImpl (t, positions, 0, new_v)
            | None   -> new_v
          in
          let tagged_v = match impl_name with
@@ -1345,7 +1427,8 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
      ) methods
    | DNewtype (_, _, _, con, _, _) ->
      add con (make_ctor con 1)
-   | DInterface { type_params; methods; _ } ->
+   | DInterface { iface_name; type_params; methods; _ } ->
+     record_iface_dispatch iface_name type_params methods;
      let score = List.length type_params in
      List.iter (fun m ->
        match m.method_default with

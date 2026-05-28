@@ -1,27 +1,59 @@
--- core.mdk — foundation interfaces and instances
--- See STDLIB.md for the full implementation plan.
+-- core.mdk — the foundation every other Medaka module rests on.
+--
+-- This file is automatically prepended to every program by the compiler
+-- (see lib/prelude.ml), so everything declared here is in scope without
+-- an `import`.  See STDLIB.md for the full plan and Module 1 checklist.
+--
+-- Layout:
+--   1. Foundational data types (Ordering, Option, Result)
+--   2. Interface hierarchy in dependency order:
+--        Eq → Ord, Semigroup → Monoid, Show, Num, Bounded,
+--        Mappable → Applicative → Thenable, Foldable
+--      Each interface is followed by its impls for built-in types.
+--   3. Standalone helpers (Bool, Option, Result, Foldable, utility)
+--   4. Arbitrary (property-testing generator interface)
+--
+-- Style notes:
+--   * Strict evaluation: prefer tail-recursive helpers in `where` clauses
+--     over right-leaning recursion when traversing potentially-large data.
+--   * `default` on an impl is only required when more than one impl is
+--     visible for the same head; we mark `Mappable (Result e)` default
+--     in case a user later adds an `Err`-mapping variant.
 
--- Datatypes
+-- ─── 1. Data types ──────────────────────────────────────────────────────
 
+-- | Three-way comparison result, produced by `Ord.compare`.
 public export data Ordering = Lt | Eq | Gt
 
+-- | A value that may be absent.  Medaka's name for Haskell's `Maybe`.
+--
+-- > isSome (Some 1)
+-- true
+-- > isSome None
+-- false
 public export data Option a = Some a | None
 
+-- | A computation that either succeeded with `Ok a` or failed with `Err e`.
+-- Errors are data; pattern-match to handle them.  See language-design.md.
+--
+-- > isOk (Ok 1)
+-- true
+-- > isOk (Err "boom")
+-- false
 public export data Result e a = Ok a | Err e
 
--- Interfaces
+-- ─── 2. Interfaces and built-in impls ───────────────────────────────────
 
+-- | Structural equality.  Reflexive, symmetric, transitive.
+-- `==` on primitives is a builtin and does *not* dispatch through this
+-- interface; the impls below exist so generic `Eq a => ...` code works.
 export interface Eq a where
     eq : a -> a -> Bool
 
+-- | Negation of `eq`.  Standalone so impls cannot make it disagree with `eq`.
 export
 neq : Eq a => a -> a -> Bool
 neq x y = not (eq x y)
-
-export impl Eq (List a) requires Eq a where
-    eq [] [] = True
-    eq (x::xs) (y::ys) = eq x y && eq xs ys
-    eq _ _ = False
 
 export impl Eq Int where
     eq a b = a == b
@@ -41,16 +73,24 @@ export impl Eq Char where
 export impl Eq Unit where
     eq _ _ = True
 
+export impl Eq (List a) requires Eq a where
+    eq [] [] = True
+    eq (x::xs) (y::ys) = eq x y && eq xs ys
+    eq _ _ = False
+
 export impl Eq (Option a) requires Eq a where
     eq None None = True
     eq (Some x) (Some y) = eq x y
     eq _ _ = False
 
-export impl Eq (Result a b) requires Eq a, Eq b where
+export impl Eq (Result e a) requires Eq e, Eq a where
     eq (Ok x) (Ok y) = eq x y
     eq (Err x) (Err y) = eq x y
     eq _ _ = False
 
+-- | Associative combine.  Backs the `++` operator and is the parent of
+-- `Monoid`.  Implementations *must* satisfy
+--     append a (append b c) == append (append a b) c.
 export interface Semigroup a where
     append : a -> a -> a
 
@@ -60,19 +100,25 @@ export impl Semigroup (List a) where
 export impl Semigroup String where
     append s1 s2 = s1 ++ s2
 
+-- | A `Semigroup` with an identity element.  Laws:
+--     append empty x == x       (left identity)
+--     append x empty == x       (right identity)
 export interface Monoid a requires Semigroup a where
     empty : a
 
-impl Monoid (List a) where
+export impl Monoid (List a) where
     empty = []
 
-impl Monoid String where
+export impl Monoid String where
     empty = ""
 
+-- | Total ordering.  `compare` is the primitive method; the comparison
+-- helpers all have defaults expressed through it, but impls may override
+-- any of them for performance or to encode special semantics (e.g. NaN).
 export interface Ord a requires Eq a where
     compare : a -> a -> Ordering
-    lt : a -> a -> Bool
-    gt : a -> a -> Bool
+    lt  : a -> a -> Bool
+    gt  : a -> a -> Bool
     lte : a -> a -> Bool
     gte : a -> a -> Bool
     min : a -> a -> a
@@ -80,26 +126,35 @@ export interface Ord a requires Eq a where
 
     lt x y = match compare x y
         Lt => True
-        _ => False
+        _  => False
     gt x y = match compare x y
         Gt => True
-        _ => False
+        _  => False
     lte x y = match compare x y
         Gt => False
-        _ => True
+        _  => True
     gte x y = match compare x y
         Lt => False
-        _ => True
+        _  => True
     min x y = match compare x y
         Gt => y
-        _ => x
+        _  => x
     max x y = match compare x y
         Lt => y
-        _ => x
+        _  => x
 
+-- | `clamp lo hi x` constrains `x` into the inclusive interval `[lo, hi]`.
+-- Precondition: `lo <= hi`; otherwise the result is `lo`.
+--
+-- > clamp 0 10 5
+-- 5
+-- > clamp 0 10 (-3)
+-- 0
+-- > clamp 0 10 99
+-- 10
 export
 clamp : Ord a => a -> a -> a -> a
-clamp mn mx = min mx >> max mn
+clamp lo hi = min hi >> max lo
 
 export impl Ord Int where
     compare a b = if a < b then Lt else if a > b then Gt else Eq
@@ -113,17 +168,27 @@ export impl Ord String where
 export impl Ord Char where
     compare a b = if a < b then Lt else if a > b then Gt else Eq
 
+-- | Human-readable string rendering.
+-- Impls live in their owning module: `Show Int`/`Show Float` live in
+-- `core` once an `intToString` extern lands; `Show String` and `Show Char`
+-- in `string.mdk`; `Show (List a)` in `list.mdk`.
 export interface Show a where
     show : a -> String
 
+-- | Numeric arithmetic.  Backs `+`, `-`, `*`, `/` for user-defined numeric
+-- types; the operators are hard-wired for `Int` and `Float` and only
+-- dispatch through `add`/`sub`/... for other types.
+--
+-- `div` is truncating for `Int` and true division for `Float`, matching
+-- the host operator.
 export interface Num a requires Eq a where
-    add : a -> a -> a
-    sub : a -> a -> a
-    mul : a -> a -> a
-    div : a -> a -> a
-    negate: a -> a
-    abs: a -> a
-    signum: a -> a
+    add    : a -> a -> a
+    sub    : a -> a -> a
+    mul    : a -> a -> a
+    div    : a -> a -> a
+    negate : a -> a
+    abs    : a -> a
+    signum : a -> a
     fromInt: Int -> a
 
 export impl Num Int where
@@ -146,277 +211,475 @@ export impl Num Float where
     signum a = if a > 0.0 then 1.0 else if a < 0.0 then 0.0 - 1.0 else 0.0
     fromInt x = intToFloat x
 
+-- | Types with a smallest and largest representable value.
+-- Impls for `Int`, `Char` etc. land once the corresponding extern
+-- constants are added; the interface itself is here so generic
+-- bounded-type code can be written today.
 export interface Bounded a where
     minBound : a
     maxBound : a
 
+-- | Structure-preserving map (a.k.a. Functor).  Laws:
+--     map identity      == identity
+--     map (g `compose` f) == map g `compose` map f
 export interface Mappable f where
     map : (a -> b) -> f a -> f b
 
 export impl Mappable List where
-    map f [] = []
-    map f (x::xs) = (f x)::(map f xs)
+    map _ []      = []
+    map f (x::xs) = f x :: map f xs
 
 export impl Mappable Option where
     map f (Some a) = Some (f a)
-    map _ None = None
+    map _ None     = None
 
+-- `default` so a user-defined alternative (e.g. one that maps over the
+-- `Err` side) can coexist without forcing every call site to qualify.
 export default impl Mappable (Result e) where
     map f (Ok a) = Ok (f a)
-    map _ e = e
+    map _ e      = e
 
+-- | `Mappable` plus the ability to lift a plain value and apply a wrapped
+-- function to a wrapped argument.  Laws (identity, homomorphism,
+-- interchange, composition) follow Haskell's `Applicative`.
 export interface Applicative f requires Mappable f where
     pure : a -> f a
-    ap : f (a -> b) -> f a -> f b
+    ap   : f (a -> b) -> f a -> f b
 
 export impl Applicative List where
     pure a = [a]
 
-    ap [] _ = []
-    ap (f::fs) xs = apRow f xs ++ ap fs xs where
-        apRow _ [] = []
-        apRow g (y::ys) = g y :: apRow g ys
+    -- List of functions × list of arguments → cross product of applications.
+    -- Equivalent to `concatMap (f => map f xs) fs` but spelled out so we
+    -- don't depend on `concatMap` at this point in the file.
+    ap []      _  = []
+    ap (f::fs) xs = map f xs ++ ap fs xs
 
 export impl Applicative Option where
     pure a = Some a
 
-    ap None _ = None
-    ap _ None = None
-    ap (Some f) (Some a) = Some (f a)
+    ap None _              = None
+    ap _    None           = None
+    ap (Some f) (Some a)   = Some (f a)
 
 export impl Applicative (Result e) where
     pure a = Ok a
 
-    ap (Ok f) (Ok a) = Ok (f a)
-    ap (Err e) _ = Err e
-    ap _ (Err e) = Err e
+    ap (Ok f)  (Ok a)  = Ok (f a)
+    ap (Err e) _       = Err e
+    ap _       (Err e) = Err e
 
+-- | Sequencing of computations, threading the result.  Equivalent to
+-- Haskell's `>>=` with arguments swapped to match the readable
+-- "value first, then action" reading order.  Drives `do`-notation.
 export interface Thenable m requires Applicative m where
     andThen : m a -> (a -> m b) -> m b
 
-export 
+-- | `andThen` with arguments flipped — the Haskell/Scala `flatMap`.
+export
 flatMap : Thenable m => (a -> m b) -> m a -> m b
 flatMap f ma = andThen ma f
 
-export 
+-- | Collapse one layer of nesting.  Haskell calls this `join`.
+export
 flat : Thenable m => m (m a) -> m a
 flat x = andThen x identity
 
+-- | Run an action only when the condition holds.
 export
 when : Thenable m => Bool -> m Unit -> m Unit
 when b m = if b then m else pure ()
 
+-- | Run an action only when the condition is false.  Dual of `when`.
 export
 unless : Thenable m => Bool -> m Unit -> m Unit
 unless b m = if b then pure () else m
 
 export impl Thenable List where
-    andThen [] _ = []
-    andThen (x::xs) f = (f x) ++ (andThen xs f)
+    andThen []      _ = []
+    andThen (x::xs) f = f x ++ andThen xs f
 
 export impl Thenable Option where
-    andThen None _ = None
+    andThen None     _ = None
     andThen (Some a) f = f a
 
 export impl Thenable (Result e) where
     andThen (Err e) _ = Err e
-    andThen (Ok a) f = f a
+    andThen (Ok a)  f = f a
 
+-- | Collapse a container down to a summary value.
+--
+-- `fold` is a strict left fold; `foldRight` is the natural recursive form
+-- and is the one you want for operations that need to preserve element
+-- order (or that would otherwise allocate a reversed accumulator).
+--
+-- `length`, `isEmpty`, and `foldMap` come with defaults so impls only
+-- need to define `fold`, `foldRight`, and `toList`; override the others
+-- when the data structure admits a faster implementation (e.g. O(1)
+-- `length` for arrays).
 export interface Foldable t where
-    fold : (b -> a -> b) -> b -> t a -> b
+    fold      : (b -> a -> b) -> b -> t a -> b
     foldRight : (a -> b -> b) -> b -> t a -> b
-    foldMap : Monoid m => (a -> m) -> t a -> m
-    toList : t a -> List a
-    isEmpty : t a -> Bool
-    length : t a -> Int
+    foldMap   : Monoid m => (a -> m) -> t a -> m
+    toList    : t a -> List a
+    isEmpty   : t a -> Bool
+    length    : t a -> Int
 
-    foldMap f = fold (acc => x => acc ++ f x) empty
+    foldMap f = fold (acc x => acc ++ f x) empty
 
-export
-filter : (a -> Bool) -> List a -> List a
-filter p xs = match xs
-    [] => []
-    (x::rest) => if p x then x :: filter p rest else filter p rest
+export impl Foldable List where
+    fold _ acc []      = acc
+    fold f acc (x::xs) = fold f (f acc x) xs
 
+    foldRight _ acc []      = acc
+    foldRight f acc (x::xs) = f x (foldRight f acc xs)
+
+    toList  = identity
+
+    isEmpty []      = True
+    isEmpty _       = False
+
+    -- Tail-recursive via the strict left fold; `1 + length xs` would
+    -- accumulate stack frames proportional to list length.
+    length = fold (acc _ => acc + 1) 0
+
+-- `Option` and `Result e` each foldable as a 0-or-1-element container.
+-- `default` on the Result impl mirrors `Mappable (Result e)`: a user-defined
+-- alternative (e.g. folding over the `Err` side) can coexist without
+-- forcing every call site to qualify.
+export impl Foldable Option where
+    fold _ acc None     = acc
+    fold f acc (Some x) = f acc x
+
+    foldRight _ acc None     = acc
+    foldRight f acc (Some x) = f x acc
+
+    toList None     = []
+    toList (Some x) = [x]
+
+    isEmpty None     = True
+    isEmpty (Some _) = False
+
+    length None     = 0
+    length (Some _) = 1
+
+export default impl Foldable (Result e) where
+    fold _ acc (Err _) = acc
+    fold f acc (Ok x)  = f acc x
+
+    foldRight _ acc (Err _) = acc
+    foldRight f acc (Ok x)  = f x acc
+
+    toList (Err _) = []
+    toList (Ok x)  = [x]
+
+    isEmpty (Err _) = True
+    isEmpty (Ok _)  = False
+
+    length (Err _) = 0
+    length (Ok _)  = 1
+
+-- ─── 3. Standalone helpers ──────────────────────────────────────────────
+
+-- Foldable helpers — generic over any Foldable container.
+--
+-- These do *not* short-circuit because `fold` itself doesn't; that's the
+-- price of staying generic.  Container-specific versions in `list.mdk`,
+-- `array.mdk`, etc. can short-circuit where it matters.
+
+-- | True when at least one element satisfies the predicate.
+--
+-- > any (x => x > 2) [1, 2, 3]
+-- true
+-- > any (x => x > 10) [1, 2, 3]
+-- false
 export
 any : Foldable t => (a -> Bool) -> t a -> Bool
-any f = fold (acc => x => acc || f x) False
+any f = fold (acc x => acc || f x) False
 
+-- | True when every element satisfies the predicate.  Vacuously true on
+-- the empty container.
+--
+-- > all (x => x > 0) [1, 2, 3]
+-- true
+-- > all (x => x > 0) []
+-- true
 export
 all : Foldable t => (a -> Bool) -> t a -> Bool
-all f = fold (acc => x => acc && f x) True
+all f = fold (acc x => acc && f x) True
 
+-- | First element satisfying the predicate, or `None` if none do.
+-- Latches the first hit via an as-pattern so subsequent elements don't
+-- overwrite the answer.
 export
 find : Foldable t => (a -> Bool) -> t a -> Option a
 find f = fold g None
     where
         g (acc@Some _) _ = acc
         g None x
-            | f x = Some x
+            | f x       = Some x
             | otherwise = None
 
+-- | Number of elements satisfying the predicate.
 export
 count : Foldable t => (a -> Bool) -> t a -> Int
 count f = fold g 0
     where
         g acc x
-            | f x = acc + 1
+            | f x       = acc + 1
             | otherwise = acc
 
-export impl Foldable List where
-    fold _ acc [] = acc
-    fold f acc (x::xs) = fold f (f acc x) xs
-
-    foldRight _ acc [] = acc
-    foldRight f acc (x::xs) = f x (foldRight f acc xs)
-
-    toList = identity
-
-    isEmpty [] = True
-    isEmpty _ = False
-
-    length [] = 0
-    length (_::xs) = 1 + length xs
-
+-- | Sum of a numeric foldable.  Identity is `0`; in practice this only
+-- works for `Int` today because `(+)` is a builtin that doesn't yet
+-- dispatch through `Num.add` for user-defined numeric types.
 export
 sum : (Foldable t, Num a) => t a -> a
 sum = fold (+) 0
 
+-- | Product of a numeric foldable.  Identity is `1`.  Same caveat as `sum`.
 export
 product : (Foldable t, Num a) => t a -> a
 product = fold (*) 1
 
+-- | True when the value appears in the container (by `Eq`).
 export
 elem : (Foldable t, Eq a) => a -> t a -> Bool
-elem a = fold (acc => x => acc || x == a) False
+elem a = fold (acc x => acc || x == a) False
 
--- Bool helpers
+-- | Keep elements satisfying the predicate.  Lives here (rather than in
+-- `list.mdk`) because it's needed by `core` itself for a few interface
+-- defaults; `list.mdk` re-exports it for discoverability.
+--
+-- > filter (x => x > 2) [1, 2, 3, 4]
+-- [3, 4]
+export
+filter : (a -> Bool) -> List a -> List a
+filter p xs = match xs
+    [] => []
+    (x::rest) => if p x then x :: filter p rest else filter p rest
 
+-- ─── Bool helpers ───────────────────────────────────────────────────────
+
+-- | Alias for `True`, idiomatic in guard chains.
 export
 otherwise : Bool
 otherwise = True
 
+-- | Logical negation.
 export
 not : Bool -> Bool
-not b = if b then False else True
+not True  = False
+not False = True
 
+-- | Strict logical AND.  The lazy short-circuiting form is the `&&`
+-- operator, which is hard-wired in the evaluator.
 export
 and : Bool -> Bool -> Bool
 and True True = True
-and _ _ = False
+and _    _    = False
 
+-- | Strict logical OR.  See `and` for the lazy form.
 export
 or : Bool -> Bool -> Bool
 or False False = False
-or _ _ = True
+or _     _     = True
 
+-- | Exclusive OR.
 export
 xor : Bool -> Bool -> Bool
-xor False True = True
-xor True False = True
-xor _ _ = False
+xor a b = a != b
 
--- Option helpers
+-- ─── Option helpers ─────────────────────────────────────────────────────
 
+-- | True if the value is present.
 export
 isSome : Option a -> Bool
-isSome None = False
-isSome _ = True
+isSome (Some _) = True
+isSome None     = False
 
+-- | True if the value is absent.
 export
 isNone : Option a -> Bool
-isNone None = True
-isNone _ = False
+isNone None     = True
+isNone (Some _) = False
 
+-- | Unwrap with a default for `None`.
+--
+-- > fromOption 0 (Some 42)
+-- 42
+-- > fromOption 0 None
+-- 0
 export
 fromOption : a -> Option a -> a
-fromOption d None = d
 fromOption _ (Some a) = a
+fromOption d None     = d
 
+-- | Turn an `Option` into a `Result`, supplying the error for `None`.
 export
 toResult : e -> Option a -> Result e a
-toResult e None = Err e
 toResult _ (Some a) = Ok a
+toResult e None     = Err e
 
--- Result helpers 
+-- | Forget the error: `Ok x → Some x`, `Err _ → None`.
+-- Named to match the "from-Result" intuition; this is the inverse of
+-- `toResult` modulo the discarded error value.
+export
+fromResult : Result e a -> Option a
+fromResult (Ok a)  = Some a
+fromResult (Err _) = None
 
+-- ─── Result helpers ─────────────────────────────────────────────────────
+
+-- | True if the result is `Ok`.
 export
 isOk : Result e a -> Bool
+isOk (Ok _)  = True
 isOk (Err _) = False
-isOk _ = True
 
+-- | True if the result is `Err`.
 export
 isErr : Result e a -> Bool
-isErr (Err _) = True 
-isErr _ = False 
+isErr (Err _) = True
+isErr (Ok _)  = False
 
--- Utility functions
+-- | Unwrap with a default for `Err`.  Named distinctly from
+-- `fromOption` so the two don't collide when both are in scope.
+export
+fromResultOr : a -> Result e a -> a
+fromResultOr _ (Ok a)  = a
+fromResultOr d (Err _) = d
 
+-- | Apply a function to the `Err` side, leaving `Ok` alone.  The `Ok`
+-- analogue is just `map` from `Mappable (Result e)`.
+export
+mapErr : (e -> f) -> Result e a -> Result f a
+mapErr f (Err e) = Err (f e)
+mapErr _ (Ok a)  = Ok a
+
+-- | Alias for `fromResult` chosen for symmetry with `toResult`.
+-- Useful when the calling code already speaks in `Option`s and the
+-- error payload is irrelevant.
+export
+okToOption : Result e a -> Option a
+okToOption = fromResult
+
+-- | Build a `Result` from an `Option`, supplying the error.  Inverse of
+-- `fromResult`.  Same shape as `toResult`, given a different name so it
+-- reads naturally at call sites that start from an `Option`.
+export
+fromOptionResult : e -> Option a -> Result e a
+fromOptionResult = toResult
+
+-- ─── Utility functions ──────────────────────────────────────────────────
+
+-- | Return the argument unchanged.
 export
 identity : a -> a
 identity x = x
 
+-- | Return the first argument; useful as a building block for ignoring
+-- a callback's input (`map (const 0) xs == replicate (length xs) 0`).
 export
 const : a -> b -> a
 const x _ = x
 
+-- | Swap the first two arguments of a binary function.
 export
 flip : (a -> b -> c) -> b -> a -> c
 flip f b a = f a b
 
+-- | Right-to-left function composition: `(compose g f) x == g (f x)`.
+-- Spelled `<<` as an operator.
 export
 compose : (b -> c) -> (a -> b) -> a -> c
 compose g f a = g (f a)
 
+-- | Left-to-right function composition: `(pipe f g) x == g (f x)`.
+-- Spelled `>>` as an operator.
 export
 pipe : (a -> b) -> (b -> c) -> a -> c
 pipe f g a = g (f a)
 
+-- | Function application as a function.  Mainly useful for higher-order
+-- code that wants to defer "actually call this" decisions.
 export
 apply : (a -> b) -> a -> b
 apply f a = f a
 
--- Arbitrary interface for property-based testing.
--- arbitrary () generates a random value of type a.
--- shrink returns smaller candidates for counterexample reduction.
+-- ─── 4. Arbitrary (property-test generators) ────────────────────────────
+
+-- | Sources of random values for property-based testing (`prop` decls).
+-- `arbitrary` produces a value in the `<Rand>` effect; `shrink` returns
+-- progressively smaller candidates used to reduce a failing example.
 export
 interface Arbitrary a where
-  arbitrary : Unit -> <Rand> a
-  shrink : a -> List a
-  shrink _ = []
+    arbitrary : Unit -> <Rand> a
+    shrink    : a -> List a
+
+    shrink _ = []
 
 export
 impl Arbitrary Int where
-  arbitrary () = randomInt (-1000) 1000
-  shrink 0 = []
-  shrink n = [0, n / 2]
+    arbitrary () = randomInt (-1000) 1000
+    shrink 0 = []
+    shrink n = [0, n / 2]
 
 export
 impl Arbitrary Bool where
-  arbitrary () = randomBool ()
+    arbitrary () = randomBool ()
 
 export
 impl Arbitrary Float where
-  arbitrary () = randomFloat ()
+    arbitrary () = randomFloat ()
 
 export
 impl Arbitrary Char where
-  arbitrary () = randomChar ()
+    arbitrary () = randomChar ()
 
--- arbitraryString: generate a random string of 0-10 printable ASCII chars
+-- | Generate a random string of 0–10 printable ASCII chars.
 export
 arbitraryString : Unit -> <Rand> String
 arbitraryString () = go (randomInt 0 10) "" where
-  go 0 acc = acc
-  go n acc = go (n - 1) (acc ++ charToStr (randomChar ()))
+    go 0 acc = acc
+    go n acc = go (n - 1) (acc ++ charToStr (randomChar ()))
 
 export
 impl Arbitrary String where
-  arbitrary () = arbitraryString ()
+    arbitrary () = arbitraryString ()
 
--- arbitraryList: generate a list of up to maxLen elements using a generator
+-- | Generate a list of up to `maxLen` elements using `gen`.
 export
 arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> (List a)
 arbitraryList gen maxLen = go (randomInt 0 maxLen) [] where
-  go 0 acc = acc
-  go n acc = go (n - 1) (gen () :: acc)
+    go 0 acc = acc
+    go n acc = go (n - 1) (gen () :: acc)
+
+-- ─── 5. Properties (executed by `medaka test`) ──────────────────────────
+
+prop "neq is the negation of eq" (x : Int) (y : Int) =
+    neq x y == not (eq x y)
+
+prop "compare agrees with lt/gt/eq" (x : Int) (y : Int) =
+    match compare x y
+        Lt => lt x y && not (gt x y) && neq x y
+        Gt => gt x y && not (lt x y) && neq x y
+        Eq => eq x y && not (lt x y) && not (gt x y)
+
+prop "clamp keeps values inside the interval" (x : Int) =
+    let c = clamp 0 100 x
+    c >= 0 && c <= 100
+
+prop "filter . filter p == filter p" (xs : List Int) =
+    eq (filter (x => x > 0) (filter (x => x > 0) xs)) (filter (x => x > 0) xs)
+
+prop "length matches a counting fold" (xs : List Int) =
+    length xs == fold (acc _ => acc + 1) 0 xs
+
+prop "any/all duality" (xs : List Int) =
+    any (x => x > 0) xs == not (all (x => x <= 0) xs)
+
+prop "fromOption d (Some x) == x" (x : Int) (d : Int) =
+    fromOption d (Some x) == x
+
+prop "toResult/fromResult round-trip on Some" (x : Int) =
+    eq (fromResult (toResult "missing" (Some x))) (Some x)

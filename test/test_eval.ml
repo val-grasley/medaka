@@ -684,6 +684,63 @@ let t_dispatch_list_empty = assert_val (dispatch_iface ^ {|
 r = describe ([])
 |}) "r" (VString "empty-list")
 
+(* ── Mixed-Foldable dispatch (positional dispatch metadata) ─────────────
+
+   Regression coverage for the eval-side dispatch fix.  All three Foldable
+   impls — List, Option, Result — coexist in the prelude; generic helpers
+   like `find` / `count` / `fold` use an Option-typed accumulator (`None`)
+   whose runtime tag would, under the old "filter at every arg" logic,
+   prematurely commit dispatch to `Foldable Option` before the data arg
+   arrived.  These tests pin behaviour for the three container shapes and
+   for `Mappable` (whose dispatching arg is the second one, the data). *)
+
+let t_find_on_list_mixed = assert_val
+  "r = find (x => x > 2) [1, 2, 3, 4]\n"
+  "r" (VCon ("Some", [VInt 3]))
+
+let t_find_on_option_some = assert_val
+  "r = find (x => x > 0) (Some 5)\n"
+  "r" (VCon ("Some", [VInt 5]))
+
+let t_find_on_option_none = assert_val
+  "r : Option Int\nr = find (x => x > 0) None\n"
+  "r" (VCon ("None", []))
+
+let t_count_on_list_mixed = assert_val
+  "r = count (x => x > 0) [1, 2, 3]\n"
+  "r" (VInt 3)
+
+let t_fold_on_some = assert_val
+  "r = fold (acc x => acc + x) 0 (Some 10)\n"
+  "r" (VInt 10)
+
+let t_fold_on_none = assert_val
+  "r : Int\nr = fold (acc x => acc + x) 0 (None : Option Int)\n"
+  "r" (VInt 0)
+
+let t_fold_on_ok = assert_val
+  "r = fold (acc x => acc + x) 0 (Ok 7 : Result String Int)\n"
+  "r" (VInt 7)
+
+let t_length_some = assert_val
+  "r = length (Some 5)\n"
+  "r" (VInt 1)
+
+let t_length_none = assert_val
+  "r = length (None : Option Int)\n"
+  "r" (VInt 0)
+
+(* `Mappable` dispatches on position 1 (the container), not 0 (the function).
+   With `Mappable List`, `Mappable Option`, `Mappable (Result e)` all in scope,
+   both arms must route to the right impl. *)
+let t_map_on_list_mixed = assert_val
+  "r = map (x => x + 1) [1, 2, 3]\n"
+  "r" (VList [VInt 2; VInt 3; VInt 4])
+
+let t_map_on_some_mixed = assert_val
+  "r = map (x => x + 1) (Some 5)\n"
+  "r" (VCon ("Some", [VInt 6]))
+
 (* ── Local let-rec (Phase 27) ─────────────────────────────────────────── *)
 
 let t_let_rec_fact = assert_val
@@ -1146,6 +1203,19 @@ let () =
       test_case "option Some"       `Quick t_dispatch_option_some;
       test_case "option None"       `Quick t_dispatch_option_none;
       test_case "list empty"        `Quick t_dispatch_list_empty;
+    ];
+    "mixed-Foldable dispatch", [
+      test_case "find on List"      `Quick t_find_on_list_mixed;
+      test_case "find on Some"      `Quick t_find_on_option_some;
+      test_case "find on None"      `Quick t_find_on_option_none;
+      test_case "count on List"     `Quick t_count_on_list_mixed;
+      test_case "fold on Some"      `Quick t_fold_on_some;
+      test_case "fold on None"      `Quick t_fold_on_none;
+      test_case "fold on Ok"        `Quick t_fold_on_ok;
+      test_case "length (Some _)"   `Quick t_length_some;
+      test_case "length None"       `Quick t_length_none;
+      test_case "map on List"       `Quick t_map_on_list_mixed;
+      test_case "map on Some"       `Quick t_map_on_some_mixed;
     ];
     "unary operators", [
       test_case "!True"        `Quick t_bang_true;

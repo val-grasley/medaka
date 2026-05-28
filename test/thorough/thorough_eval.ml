@@ -1264,6 +1264,72 @@ r = f (P { x = 1, y = 2 })
     "r" (VString "any")
 
 (* =====================================================================
+   Mixed-Foldable dispatch (positional dispatch metadata)
+
+   All three Foldable impls (List, Option, Result e) coexist in the prelude.
+   These tests exercise every generic helper that uses an Option-typed
+   accumulator (the pattern that triggered the pre-fix misdispatch bug) and
+   every container shape, in a single program.
+   ===================================================================== *)
+
+let t_kitchen_sink_foldable =
+  assert_val
+    {|
+xs : List Int
+xs = [1, 2, 3, 4, 5]
+
+s        = sum xs
+prod     = product xs
+n_pos    = count (x => x > 0) xs
+first    = find (x => x > 3) xs
+allpos   = all (x => x > 0) xs
+anyzero  = any (x => x == 0) xs
+
+opt_sum  = fold (acc x => acc + x) 100 (Some 5)
+opt_none : Int
+opt_none = fold (acc x => acc + x) 100 (None : Option Int)
+opt_len  = length (Some 99)
+opt_list = toList (Some 99)
+
+ok_v     = fold (acc x => acc + x) 100 (Ok 7 : Result String Int)
+err_v    = fold (acc x => acc + x) 100 (Err "boom" : Result String Int)
+
+r = (s, prod, n_pos, first, allpos, anyzero, opt_sum, opt_none, opt_len, opt_list, ok_v, err_v)
+|}
+    "r"
+    (VTuple [
+      VInt 15;                         (* sum *)
+      VInt 120;                        (* product *)
+      VInt 5;                          (* count *)
+      VCon ("Some", [VInt 4]);         (* find *)
+      VBool true;                      (* all *)
+      VBool false;                     (* any *)
+      VInt 105;                        (* fold (Some 5) *)
+      VInt 100;                        (* fold None *)
+      VInt 1;                          (* length (Some _) *)
+      VList [VInt 99];                 (* toList (Some _) *)
+      VInt 107;                        (* fold (Ok 7) *)
+      VInt 100;                        (* fold (Err _) *)
+    ])
+
+(* `Mappable` dispatches on its second arg (the container).  Mixed-impl run. *)
+let t_kitchen_sink_mappable =
+  assert_val
+    {|
+a = map (x => x + 1) [10, 20, 30]
+b = map (x => x + 1) (Some 5)
+c : Result String Int
+c = map (x => x + 1) (Ok 7 : Result String Int)
+r = (a, b, c)
+|}
+    "r"
+    (VTuple [
+      VList [VInt 11; VInt 21; VInt 31];
+      VCon ("Some", [VInt 6]);
+      VCon ("Ok",   [VInt 8]);
+    ])
+
+(* =====================================================================
    Test registration
    ===================================================================== *)
 
@@ -1499,5 +1565,9 @@ let () =
         ; test_case "multi-stmt then body"   `Quick t_if_multi_stmt_then
         ; test_case "else-if multi-line"     `Quick t_if_else_if_chain
         ; test_case "do bodies in branches"  `Quick t_if_do_in_branches
+        ] );
+      ( "mixed-Foldable kitchen sink",
+        [ test_case "Foldable across List/Option/Result" `Quick t_kitchen_sink_foldable
+        ; test_case "Mappable across List/Option/Result" `Quick t_kitchen_sink_mappable
         ] );
     ]
