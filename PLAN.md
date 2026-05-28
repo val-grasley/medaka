@@ -2465,7 +2465,7 @@ A grab-bag of small grammar holes closed in one pass:
   OCaml-hosted compiler.  See Phase 45.8 design limitation.  Could
   be revisited with a stateful lexer in the self-hosted compiler.
 
-### Phase 59.5: Top-level binding order shouldn't matter ⏳ TODO
+### Phase 59.5: Top-level binding order shouldn't matter ✅ DONE
 
 Today the evaluator processes top-level decls in source order, and a
 value binding (no params) is evaluated **eagerly** the moment its

@@ -23,6 +23,7 @@ type value =
   | VClosure of env * pat list * expr
   | VPrim   of (value -> value)
   | VMulti  of value list  (* ordered impl closures for the same method; tried in sequence *)
+  | VThunk  of value Lazy.t  (* deferred top-level zero-param binding; forced on first lookup *)
   | VNamedImpl of string * value  (* impl closure tagged with its declared name *)
   | VTypedImpl of string * value  (* impl method tagged with its impl's head type ctor *)
 
@@ -45,7 +46,13 @@ let lookup env name =
     | [] -> raise (Eval_error ("unbound identifier: " ^ name, None))
     | frame :: rest ->
       (match List.assoc_opt name frame with
-       | Some cell -> !cell
+       | Some cell ->
+         (match !cell with
+          | VThunk t ->
+            let v = Lazy.force t in
+            cell := v;
+            v
+          | v -> v)
        | None -> search rest)
   in search env
 
@@ -77,6 +84,7 @@ let rec pp_value = function
   | VClosure _ -> "<closure>"
   | VPrim _    -> "<prim>"
   | VMulti vs  -> Printf.sprintf "<dispatch/%d>" (List.length vs)
+  | VThunk t   -> pp_value (Lazy.force t)
   | VNamedImpl (n, _) -> Printf.sprintf "<impl:%s>" n
   | VTypedImpl (t, inner) -> Printf.sprintf "<impl@%s:%s>" t (pp_value inner)
 
@@ -1088,14 +1096,18 @@ let eval_program program =
      `f pat1 = ...` / `f pat2 = ...` at the top level dispatches via VMulti
      just like impl methods. *)
   let fundef_acc : (string, value list) Hashtbl.t = Hashtbl.create 16 in
+  (* Zero-param DFunDef names in source order; thunks are forced after all
+     DImpl methods are installed so forward impl references resolve correctly. *)
+  let deferred_zero_params : string list ref = ref [] in
 
   Hashtbl.clear pure_impls;
   List.iter (fun decl ->
     match Ast.inner_decl decl with
     | DFunDef (_, name, pats, body) ->
-      let v = wrap_match_errors (fun () ->
-        if pats = [] then eval env body
-        else VClosure (env, pats, body)) in
+      let v = if pats = [] then begin
+        deferred_zero_params := name :: !deferred_zero_params;
+        VThunk (lazy (wrap_match_errors (fun () -> eval env body)))
+      end else wrap_match_errors (fun () -> VClosure (env, pats, body)) in
       let prev = try Hashtbl.find fundef_acc name with Not_found -> [] in
       let updated = prev @ [v] in
       Hashtbl.replace fundef_acc name updated;
@@ -1198,6 +1210,12 @@ let eval_program program =
       ) methods
     | _ -> ()
   ) program;
+
+  (* Force all deferred zero-param thunks in source order now that every DImpl
+     has been installed.  Transitive thunk dependencies resolve automatically
+     via the memoising lookup. *)
+  List.iter (fun name -> ignore (lookup env name))
+    (List.rev !deferred_zero_params);
 
   List.map (fun (k, cell) -> (k, !cell)) !top_frame
 
