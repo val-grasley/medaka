@@ -25,8 +25,9 @@
    thorough_typecheck
    thorough_eval
    thorough_interactions
-   thorough_stdlib)
- (modules thorough_typecheck thorough_eval thorough_interactions thorough_stdlib)
+   thorough_stdlib
+   thorough_recent)
+ (modules thorough_typecheck thorough_eval thorough_interactions thorough_stdlib thorough_recent)
  (libraries thorough_helpers medaka_lib alcotest unix))
 
 (alias
@@ -35,4 +36,5 @@
    thorough_typecheck.exe
    thorough_eval.exe
    thorough_interactions.exe
-   thorough_stdlib.exe))
+   thorough_stdlib.exe
+   thorough_recent.exe))
