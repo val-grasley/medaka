@@ -195,6 +195,84 @@ let test_definition_unknown_returns_none () =
   | None -> ()
   | Some _ -> Alcotest.fail "expected None when cursor isn't on a name"
 
+(* ── Document highlight ────────────────────────────────────── *)
+
+let test_highlight_three_uses () =
+  let uri = uri_of_path "/tmp/lsp_hi.mdk" in
+  let src = "double x = x + x\ntriple y = y + y + y\n" in
+  prime_doc uri src;
+  (* Cursor on the second `x` on line 0 (column 11, the LHS of +). *)
+  let p = DocumentHighlightParams.create
+    ~position:(Position.create ~line:0 ~character:11)
+    ~textDocument:(TextDocumentIdentifier.create ~uri) ()
+  in
+  match Lsp_server.handle_highlight p with
+  | None -> Alcotest.fail "expected highlights for `x`"
+  | Some hs ->
+    Alcotest.(check int) "three occurrences of x" 3 (List.length hs);
+    (* All highlights must be on line 0 — line 1 references y, not x. *)
+    List.iter (fun (h : DocumentHighlight.t) ->
+      Alcotest.(check int) "x highlight on line 0" 0 h.range.start.line
+    ) hs
+
+let test_highlight_boundaries () =
+  let uri = uri_of_path "/tmp/lsp_hi_b.mdk" in
+  (* `is` appears as an identifier on line 0 col 0 and as a substring
+     inside `isOdd` on line 1.  Boundary check must reject the
+     substring match. *)
+  let src = "is = True\nisOdd n = if n == 0 then False else True\n" in
+  prime_doc uri src;
+  let p = DocumentHighlightParams.create
+    ~position:(Position.create ~line:0 ~character:0)
+    ~textDocument:(TextDocumentIdentifier.create ~uri) ()
+  in
+  match Lsp_server.handle_highlight p with
+  | Some hs ->
+    Alcotest.(check int) "only the standalone `is` matches" 1
+      (List.length hs)
+  | None -> Alcotest.fail "expected at least one highlight"
+
+(* ── Completion ────────────────────────────────────────────── *)
+
+let item_labels = function
+  | Some (`List items) -> List.map (fun (i : CompletionItem.t) -> i.label) items
+  | Some (`CompletionList cl) ->
+    List.map (fun (i : CompletionItem.t) -> i.label) cl.CompletionList.items
+  | None -> []
+
+let test_completion_prefix_filters_env () =
+  let uri = uri_of_path "/tmp/lsp_cmp.mdk" in
+  (* The buffer must still parse for the typechecker to run.  We embed
+     the full identifier `double` on a third line and query just after
+     its first four characters — the prefix-extractor returns "doub". *)
+  let src = "double x = x + x\ntriple x = x * 3\nresult = double 5\n" in
+  prime_doc uri src;
+  (* Line 2 = "result = double 5"; cursor right after the 4th char of
+     `double` (after the column-prefix `result = `, which is 9 chars,
+     so col 9+4 = 13). *)
+  let p = CompletionParams.create
+    ~position:(Position.create ~line:2 ~character:13)
+    ~textDocument:(TextDocumentIdentifier.create ~uri) ()
+  in
+  let labels = item_labels (Lsp_server.handle_completion p) in
+  if not (List.mem "double" labels) then
+    Alcotest.failf "expected `double` in completions, got: %s"
+      (String.concat ", " labels);
+  if List.mem "triple" labels then
+    Alcotest.fail "did not expect `triple` for prefix `doub`"
+
+let test_completion_no_prefix_returns_env () =
+  let uri = uri_of_path "/tmp/lsp_cmp2.mdk" in
+  let src = "alpha = 1\nbeta = 2\n" in
+  prime_doc uri src;
+  let p = CompletionParams.create
+    ~position:(Position.create ~line:2 ~character:0)
+    ~textDocument:(TextDocumentIdentifier.create ~uri) ()
+  in
+  let labels = item_labels (Lsp_server.handle_completion p) in
+  Alcotest.(check bool) "alpha in completions" true (List.mem "alpha" labels);
+  Alcotest.(check bool) "beta in completions"  true (List.mem "beta" labels)
+
 (* ── Entry ──────────────────────────────────────────────────── *)
 
 let () =
@@ -217,5 +295,13 @@ let () =
       [ test_case "top-level call site"   `Quick test_definition_top_level
       ; test_case "decl self-definition"  `Quick test_definition_record_field
       ; test_case "off-identifier None"   `Quick test_definition_unknown_returns_none
+      ]
+    ; "highlight",
+      [ test_case "three uses of x"       `Quick test_highlight_three_uses
+      ; test_case "respects word boundaries" `Quick test_highlight_boundaries
+      ]
+    ; "completion",
+      [ test_case "prefix filters env"    `Quick test_completion_prefix_filters_env
+      ; test_case "no prefix lists env"   `Quick test_completion_no_prefix_returns_env
       ]
     ]

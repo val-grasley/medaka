@@ -202,6 +202,8 @@ let handle_initialize (_p : InitializeParams.t) : InitializeResult.t =
     ~documentSymbolProvider:(`Bool true)
     ~hoverProvider:(`Bool true)
     ~definitionProvider:(`Bool true)
+    ~documentHighlightProvider:(`Bool true)
+    ~completionProvider:(CompletionOptions.create ())
     ()
   in
   let info = InitializeResult.create_serverInfo
@@ -538,6 +540,149 @@ let handle_definition (p : DefinitionParams.t) : Locations.t option =
              in
              Some (`Location [location]))))
 
+(* ── Document highlight ────────────────────────────────────── *)
+
+(* Textual highlight: find every occurrence of the identifier under the
+   cursor in the buffer, with identifier-boundary checks so a search
+   for `is` doesn't match the substring inside `isOdd`.  This is a
+   pragmatic baseline — scope-aware (semantic) highlight would require
+   re-walking the AST against the resolver's symbol table, which can
+   be a follow-up. *)
+
+(* Convert a byte offset into the source string into a 0-based
+   (line, column) pair.  Used to map [identifier_at]'s offsets back
+   into Position.t values for the highlight result range. *)
+let offset_to_position (src : string) (off : int) : Position.t =
+  let line = ref 0 and last_nl = ref (-1) in
+  let i = ref 0 in
+  while !i < off do
+    if src.[!i] = '\n' then begin
+      incr line;
+      last_nl := !i
+    end;
+    incr i
+  done;
+  Position.create ~line:!line ~character:(off - !last_nl - 1)
+
+let find_all_occurrences (src : string) (name : string) : Range.t list =
+  let len = String.length src and nlen = String.length name in
+  if nlen = 0 then [] else
+    let acc = ref [] in
+    let i = ref 0 in
+    while !i + nlen <= len do
+      let matches =
+        String.sub src !i nlen = name
+        && (!i = 0 || not (is_ident_char src.[!i - 1]))
+        && (!i + nlen = len || not (is_ident_char src.[!i + nlen]))
+      in
+      if matches then begin
+        let start = offset_to_position src !i in
+        let end_  = offset_to_position src (!i + nlen) in
+        acc := Range.create ~start ~end_ :: !acc;
+        i := !i + nlen
+      end else
+        incr i
+    done;
+    List.rev !acc
+
+let handle_highlight (p : DocumentHighlightParams.t)
+  : DocumentHighlight.t list option =
+  let uri = p.textDocument.uri in
+  let uri_str = DocumentUri.to_string uri in
+  match Hashtbl.find_opt docs uri_str with
+  | None -> None
+  | Some src ->
+    let line = p.position.line and col = p.position.character in
+    (match identifier_at src ~line ~col with
+     | None -> None
+     | Some (name, _, _) ->
+       let ranges = find_all_occurrences src name in
+       Some (List.map (fun range ->
+         DocumentHighlight.create ~range ()) ranges))
+
+(* ── Completion ───────────────────────────────────────────── *)
+
+(* Compute the identifier prefix immediately before the cursor — i.e.,
+   the longest run of identifier characters ending at column [col-1].
+   Returns "" when the cursor sits after a non-identifier character. *)
+let prefix_before (src : string) ~(line : int) ~(col : int) : string =
+  let len = String.length src in
+  let cur_line = ref 0 and line_start = ref 0 in
+  let i = ref 0 in
+  while !cur_line < line && !i < len do
+    if src.[!i] = '\n' then begin
+      incr cur_line;
+      line_start := !i + 1
+    end;
+    incr i
+  done;
+  if !cur_line < line then ""
+  else
+    let pos = !line_start + col - 1 in
+    if pos < !line_start then ""
+    else
+      let stop = pos in
+      let start = ref stop in
+      while !start >= !line_start
+            && !start >= 0
+            && !start < len
+            && is_ident_char src.[!start]
+      do decr start done;
+      let first = !start + 1 in
+      if first > stop then ""
+      else String.sub src first (stop - first + 1)
+
+(* Filter names by prefix, deduplicating to keep the list small. *)
+let filter_completions (names : (string * Typecheck.scheme) list)
+    (prefix : string) : (string * Typecheck.scheme) list =
+  let plen = String.length prefix in
+  let seen = Hashtbl.create 32 in
+  List.filter (fun (n, _) ->
+    let n_ok =
+      plen = 0
+      || (String.length n >= plen && String.sub n 0 plen = prefix)
+    in
+    if n_ok && not (Hashtbl.mem seen n) then begin
+      Hashtbl.add seen n ();
+      true
+    end else false
+  ) names
+
+let completion_kind_for_scheme (_sch : Typecheck.scheme) : CompletionItemKind.t =
+  (* Without poking at the inferred ty we can't easily distinguish
+     function vs. value here.  Defaulting to Function is the right
+     guess for most identifiers a user would complete. *)
+  CompletionItemKind.Function
+
+let handle_completion (p : CompletionParams.t)
+  : [ `CompletionList of CompletionList.t
+    | `List of CompletionItem.t list ] option =
+  let uri = p.textDocument.uri in
+  let uri_str = DocumentUri.to_string uri in
+  match Hashtbl.find_opt docs uri_str with
+  | None -> None
+  | Some src ->
+    let line = p.position.line and col = p.position.character in
+    let prefix = prefix_before src ~line ~col in
+    (match parse_buffer src uri with
+     | None -> None
+     | Some (prog, _) ->
+       let prog = Desugar.desugar_program prog in
+       if Resolve.resolve_program prog <> [] then None
+       else
+         try
+           let (env, _) = Typecheck.check_program prog in
+           let items =
+             filter_completions env prefix
+             |> List.map (fun (name, sch) ->
+               CompletionItem.create
+                 ~label:name
+                 ~kind:(completion_kind_for_scheme sch)
+                 ~detail:(Typecheck.pp_scheme sch) ())
+           in
+           Some (`List items)
+         with _ -> None)
+
 (* Top-level catch-all: any exception from a notification handler is logged
    and swallowed.  Notifications have no response, so the client never
    learns about the failure — but the server stays alive. *)
@@ -575,6 +720,14 @@ let handle_request_unsafe (req : Jsonrpc.Request.t) : Jsonrpc.Response.t =
          (Client_request.yojson_of_result cr result)
      | Client_request.TextDocumentDefinition p as cr ->
        let result = handle_definition p in
+       Jsonrpc.Response.ok req.id
+         (Client_request.yojson_of_result cr result)
+     | Client_request.TextDocumentHighlight p as cr ->
+       let result = handle_highlight p in
+       Jsonrpc.Response.ok req.id
+         (Client_request.yojson_of_result cr result)
+     | Client_request.TextDocumentCompletion p as cr ->
+       let result = handle_completion p in
        Jsonrpc.Response.ok req.id
          (Client_request.yojson_of_result cr result)
      | _ ->
