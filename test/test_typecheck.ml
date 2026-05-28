@@ -398,12 +398,11 @@ bad p = { p | x = "nope" }
 
 (* ── Do notation ───────────────────────────────────── *)
 
-(* Single DoExpr in a do-block with no `<-` bind: the typechecker no longer
-   forces x to be `m a` (only blocks with at least one `<-` bind get the
-   per-block monad treatment).  So `do x` with no bind just types x as-is. *)
+(* Single DoExpr in a `do` block: a do-block ALWAYS introduces a per-block
+   monad tyvar (post split of EDo into EBlock/EDo). So `do x` types x as `m a`. *)
 let t_do_single_expr = assert_type
   "f x =\n  do\n    x\n"
-  "f" "a -> a"
+  "f" "a b -> a b"
 
 (* DoBind then pure: monad is left abstract (works for any monad) *)
 let t_do_bind_pure = assert_type
@@ -505,17 +504,16 @@ let t_indented_body_poly_let = assert_type
 |}
   "f" "a -> (a, Int)"
 
-(* `do { println; println }` — no `<-` bind, just effectful sequencing.
-   `main` is a value binding annotated `<IO> Unit`; pp_scheme prints
-   only the bare value type `Unit` (effects are tracked on TFun arrows,
-   not in printed value-scheme types). *)
-let t_do_seq_no_bind = assert_type
+(* `do { println; println }` is NOT valid under the EBlock/EDo split.  `do`
+   is now monad-only: every DoExpr must unify with `m a`.  `println` returns
+   Unit, not `m a`, so this is rejected.  Effectful sequencing should use a
+   bare block (no `do` keyword) instead. *)
+let e_do_seq_no_bind_now_fails = assert_err
   {|main : <IO> Unit
 main = do
   println "one"
   println "two"
 |}
-  "main" "Unit"
 
 (* Non-do indented function body with two effectful calls (parses as EDo
    under the hood via stmts_to_expr).  Same expected type as above. *)
@@ -1365,50 +1363,66 @@ let e_set_ref_impure = assert_err
 
 (* ── Phase 8.5: let mut + DoAssign ──────────────── *)
 
-(* DoAssign on a let-mut binding succeeds — requires <Mut> annotation *)
+(* Assign on a let-mut binding succeeds — in a bare sequential block.
+   After EBlock/EDo split, `let mut` and reassignment live in EBlock, not `do`. *)
 let t_do_assign_valid = assert_type
-  "f : <Mut> (a Int)\nf =\n  do\n    let mut x = 5\n    x = 10\n    pure x\n"
-  "f" "a Int"
+  "f : <Mut> Int\nf =\n  let mut x = 5\n  x = 10\n  x\n"
+  "f" "Int"
 
-(* DoAssign after DoBind — requires <Mut> annotation *)
-let t_do_assign_after_bind = assert_type
-  "f : a Int -> <Mut> (a Int)\nf opt =\n  do\n    let mut x = 0\n    y <- opt\n    x = y\n    pure x\n"
-  "f" "a Int -> <Mut> a Int"
+(* let mut inside a `do` block is now an error *)
+let e_let_mut_in_do = assert_err
+  "f =\n  do\n    let mut x = 5\n    x = 10\n    pure x\n"
 
-(* DoAssign to an immutable binding → ImmutableAssignment *)
+(* Reassignment inside a `do` block is now an error *)
+let e_assign_in_do = assert_err
+  "f opt =\n  do\n    y <- opt\n    y = 0\n    pure y\n"
+
+(* Assign to an immutable binding → ImmutableAssignment, inside a bare block *)
 let e_do_assign_immutable = assert_err
-  "bad =\n  do\n    let x = 5\n    x = 10\n    pure x\n"
+  "bad =\n  let x = 5\n  x = 10\n  x\n"
 
-(* DoAssign type mismatch: mut Int, assign String *)
+(* Assign type mismatch: mut Int, assign String, inside a bare block *)
 let e_do_assign_type_mismatch = assert_err
-  "bad =\n  do\n    let mut x = 5\n    x = \"hello\"\n    pure x\n"
+  "bad =\n  let mut x = 5\n  x = \"hello\"\n  x\n"
 
-(* DoAssign unbound variable → UnboundVar *)
+(* Assign unbound variable → UnboundVar, inside a bare block *)
 let e_do_assign_unbound = assert_err
-  "bad =\n  do\n    x = 10\n    pure 42\n"
+  "bad =\n  x = 10\n  42\n"
 
-(* do block ending with DoAssign → error *)
+(* Bare block ending with assignment → error *)
 let e_do_assign_as_last = assert_err
-  "bad =\n  do\n    let mut x = 5\n    x = 1\n"
+  "bad =\n  let mut x = 5\n  x = 1\n"
 
-(* ── Phase 55: let mut outside do-block ─────────── *)
+(* ── let mut: only inside a bare block, not in expression context ─── *)
 
-(* let mut in expression context → MutLetOutsideDo *)
 let e_let_mut_outside_do = assert_err
   "f x = let mut n = x in n\n"
 
-(* let mut in inline expression with use → MutLetOutsideDo *)
 let e_let_mut_inline_expr = assert_err
   "r = let mut x = 0 in x + 1\n"
 
-(* let mut with type annotation in expression context → MutLetOutsideDo *)
 let e_let_mut_with_annotation = assert_err
   "f x = let mut n : Int = x in n\n"
 
-(* let mut inside do-block is still valid *)
-let t_let_mut_in_do_ok = assert_type
-  "f =\n  do\n    let mut x = 5\n    x = 10\n    pure x\n"
-  "f" "a Int"
+(* let mut inside a bare block is valid *)
+let t_let_mut_in_block_ok = assert_type
+  "f =\n  let mut x = 5\n  x = 10\n  x\n"
+  "f" "Int"
+
+(* `<-` outside a `do` block (i.e. in a bare block) is an error *)
+let e_bind_outside_do = assert_err
+  "bad opt =\n  x <- opt\n  x\n"
+
+(* Mixed: a bare-block function body that locally uses `do` for monadic chaining. *)
+let t_mixed_block_with_inner_do = assert_type
+  {|f opt =
+  let mut x = 0
+  let r = do
+    y <- opt
+    pure y
+  r
+|}
+  "f" "a b -> a b"
 
 (* ── Phase 28: DoFieldAssign ────────────────────── *)
 
@@ -1418,67 +1432,61 @@ let person_src = {|record Person
 
 |}
 
-(* Basic field assignment on a mutable record — requires <Mut> annotation *)
+(* Basic field assignment on a mutable record — in a bare block now. *)
 let t_field_assign_valid = assert_type
-  (person_src ^ {|go : <Mut> (a Person)
+  (person_src ^ {|go : <Mut> Person
 go =
-  do
-    let mut p = Person { name = "Alice", age = 30 }
-    p.age = 31
-    pure p
+  let mut p = Person { name = "Alice", age = 30 }
+  p.age = 31
+  p
 |})
-  "go" "a Person"
+  "go" "Person"
 
-(* Multiple field assignments — requires <Mut> annotation *)
+(* Multiple field assignments — bare block. *)
 let t_field_assign_multi = assert_type
-  (person_src ^ {|go : <Mut> (a Person)
+  (person_src ^ {|go : <Mut> Person
 go =
-  do
-    let mut p = Person { name = "Alice", age = 30 }
-    p.age = 31
-    p.name = "Bob"
-    pure p
+  let mut p = Person { name = "Alice", age = 30 }
+  p.age = 31
+  p.name = "Bob"
+  p
 |})
-  "go" "a Person"
+  "go" "Person"
 
-(* Ref .value assignment — requires <Mut> annotation *)
+(* Ref .value assignment — bare block. *)
 let t_ref_value_assign = assert_type
-  {|go : <Mut> (a Int)
+  {|go : <Mut> Int
 go =
-  do
-    let mut r = Ref 0
-    r.value = 42
-    pure r.value
+  let mut r = Ref 0
+  r.value = 42
+  r.value
 |}
-  "go" "a Int"
+  "go" "Int"
 
-(* Field assignment after reading the old value — requires <Mut> annotation *)
+(* Field assignment after reading the old value — bare block. *)
 let t_field_assign_read_back = assert_type
-  (person_src ^ {|go : <Mut> (a Int)
+  (person_src ^ {|go : <Mut> Int
 go =
-  do
-    let mut p = Person { name = "Alice", age = 30 }
-    p.age = p.age + 1
-    pure p.age
+  let mut p = Person { name = "Alice", age = 30 }
+  p.age = p.age + 1
+  p.age
 |})
-  "go" "a Int"
+  "go" "Int"
 
-(* Field assignment on immutable binding → ImmutableAssignment *)
+(* Field assignment on immutable binding → ImmutableAssignment, bare block. *)
 let e_field_assign_immutable = assert_err
   (person_src ^ {|bad =
-  do
-    let p = Person { name = "Alice", age = 30 }
-    p.age = 31
-    pure p
+  let p = Person { name = "Alice", age = 30 }
+  p.age = 31
+  p
 |})
 
-(* Unknown field → UnknownField *)
+(* Unknown field → UnknownField, bare block. *)
 let e_field_assign_unknown_field = assert_err
   (person_src ^ {|bad =
-  do
-    let mut p = Person { name = "Alice", age = 30 }
-    p.nosuchfield = 99
-    pure p
+  let mut p = Person { name = "Alice", age = 30 }
+  p.nosuchfield = 99
+  p
 |})
 
 (* Type mismatch: field is Int, assign String *)
@@ -2079,9 +2087,8 @@ compute2 : Int -> Int
 compute2 x = x
 
 main =
-  do
-    compute2 42
-    pure 0
+  compute2 42
+  0
 |}
 
 let t_inline_no_error = assert_no_warns {|
@@ -2277,7 +2284,7 @@ let () =
       test_case "indented body: 1 let"    `Quick t_indented_body_single_let;
       test_case "indented toplevel lets"  `Quick t_indented_toplevel_lets;
       test_case "indented body: poly let" `Quick t_indented_body_poly_let;
-      test_case "do seq, no bind"         `Quick t_do_seq_no_bind;
+      test_case "do seq, no bind (now errors)"  `Quick e_do_seq_no_bind_now_fails;
       test_case "indented effectful seq"  `Quick t_indented_body_effectful_seq;
       test_case "bind + pure"            `Quick t_do_bind_pure;
       test_case "two binds"              `Quick t_do_two_binds;
@@ -2376,17 +2383,20 @@ let () =
       test_case "err: set_ref mismatch"     `Quick e_set_ref_type_mismatch;
       test_case "err: set_ref impure"       `Quick e_set_ref_impure;
     ];
-    "let mut / DoAssign", [
-      test_case "assign valid"              `Quick t_do_assign_valid;
-      test_case "assign after bind"         `Quick t_do_assign_after_bind;
-      test_case "err: assign immutable"     `Quick e_do_assign_immutable;
-      test_case "err: assign type mismatch" `Quick e_do_assign_type_mismatch;
-      test_case "err: assign unbound"       `Quick e_do_assign_unbound;
-      test_case "err: assign as last stmt"  `Quick e_do_assign_as_last;
-      test_case "err: let mut outside do"   `Quick e_let_mut_outside_do;
-      test_case "err: let mut inline expr"  `Quick e_let_mut_inline_expr;
-      test_case "err: let mut with annot"   `Quick e_let_mut_with_annotation;
-      test_case "let mut in do still ok"    `Quick t_let_mut_in_do_ok;
+    "let mut / Assign", [
+      test_case "assign valid (bare block)"  `Quick t_do_assign_valid;
+      test_case "err: let mut in `do`"       `Quick e_let_mut_in_do;
+      test_case "err: assign in `do`"        `Quick e_assign_in_do;
+      test_case "err: assign immutable"      `Quick e_do_assign_immutable;
+      test_case "err: assign type mismatch"  `Quick e_do_assign_type_mismatch;
+      test_case "err: assign unbound"        `Quick e_do_assign_unbound;
+      test_case "err: assign as last stmt"   `Quick e_do_assign_as_last;
+      test_case "err: let mut in inline let" `Quick e_let_mut_outside_do;
+      test_case "err: let mut inline expr"   `Quick e_let_mut_inline_expr;
+      test_case "err: let mut with annot"    `Quick e_let_mut_with_annotation;
+      test_case "let mut in bare block ok"   `Quick t_let_mut_in_block_ok;
+      test_case "err: `<-` outside `do`"     `Quick e_bind_outside_do;
+      test_case "mixed: block w/ inner do"   `Quick t_mixed_block_with_inner_do;
     ];
     "field assignment (Phase 28)", [
       test_case "record field valid"              `Quick t_field_assign_valid;

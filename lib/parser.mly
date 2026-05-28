@@ -40,7 +40,7 @@ type kv_item = KV of expr * expr | Elem of expr | Field of string * expr
 
 let stmts_to_expr = function
   | [DoExpr e] -> e
-  | stmts      -> EDo (ref None, stmts)
+  | stmts      -> EBlock stmts
 
 (* Desugar `let f x y = body` to `let f = (x => y => body)`. *)
 let curry_lam pats body =

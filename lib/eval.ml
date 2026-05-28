@@ -504,6 +504,8 @@ and eval env expr =
           raise (Eval_error (Printf.sprintf "index %d out of bounds" i, !current_loc)))
      | _ -> raise (Eval_error ("index on non-array/list", !current_loc)))
 
+  | EBlock stmts -> eval_block env stmts
+
   | EDo (monad_tag_ref, stmts) ->
     let saved = !current_monad_type in
     current_monad_type := None;
@@ -652,6 +654,59 @@ and eval_arith op lv rv =
     raise (Eval_error
              (Printf.sprintf "unknown op '%s' for %s, %s"
                 op (pp_value lv) (pp_value rv), !current_loc))
+
+and eval_block env stmts =
+  (* Bare sequential block: no monadic dispatch.  Value of the last stmt is
+     the block's result. *)
+  match stmts with
+  | [] -> VUnit
+  | [DoExpr e] -> wrap_match_errors (fun () -> eval env e)
+  | [DoLet (_, pat, e)] ->
+    let v = wrap_match_errors (fun () -> eval env e) in
+    (match match_pat pat v with
+     | None -> raise (Eval_error ("let pattern match failure in block", !current_loc))
+     | Some _ -> VUnit)
+  | [DoAssign (_, e)] ->
+    let _ = wrap_match_errors (fun () -> eval env e) in VUnit
+  | [DoFieldAssign (x, field, e)] ->
+    let new_val = wrap_match_errors (fun () -> eval env e) in
+    (match lookup env x with
+     | VRef cell when field = "value" -> cell := new_val; VUnit
+     | VRecord (_, _) -> VUnit
+     | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
+  | [DoLetElse _] ->
+    raise (Eval_error ("block cannot end with a let-else binding", !current_loc))
+  | [DoBind _] ->
+    raise (Eval_error ("`<-` is only allowed inside a `do` block", !current_loc))
+  | (DoExpr e) :: rest ->
+    let _ = wrap_match_errors (fun () -> eval env e) in
+    eval_block env rest
+  | (DoLet (_, pat, e)) :: rest ->
+    let v = wrap_match_errors (fun () -> eval env e) in
+    (match match_pat pat v with
+     | None -> raise (Eval_error ("let pattern match failure in block", !current_loc))
+     | Some binds -> eval_block (extend env binds) rest)
+  | (DoAssign (x, e)) :: rest ->
+    let v = wrap_match_errors (fun () -> eval env e) in
+    eval_block (extend env [(x, v)]) rest
+  | (DoFieldAssign (x, field, e)) :: rest ->
+    let new_val = wrap_match_errors (fun () -> eval env e) in
+    (match lookup env x with
+     | VRef cell when field = "value" ->
+       cell := new_val;
+       eval_block env rest
+     | VRecord (name, fields) ->
+       let updated = VRecord (name, List.map (fun (k, v) ->
+         if k = field then (k, new_val) else (k, v)) fields) in
+       eval_block (extend env [(x, updated)]) rest
+     | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
+  | (DoLetElse (pat, e, alt)) :: rest ->
+    let v = wrap_match_errors (fun () -> eval env e) in
+    (match match_pat pat v with
+     | None -> eval env alt
+     | Some binds -> eval_block (extend env binds) rest)
+  | (DoBind _) :: _ ->
+    raise (Eval_error ("`<-` is only allowed inside a `do` block", !current_loc))
 
 and eval_do env monad_tag stmts =
   (* If the typechecker resolved the monad type, seed current_monad_type now

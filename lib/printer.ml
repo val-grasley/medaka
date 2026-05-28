@@ -176,7 +176,7 @@ let rec expr_prec = function
   | EInfix _                           -> prec_infix
   | EBinOp (op, _, _)                  -> binop_prec op
   | ELam _ | ELet _ | ELetGroup _ | EIf _
-  | EMatch _ | EDo (_, _) | EAnnot _   -> prec_top
+  | EMatch _ | EBlock _ | EDo (_, _) | EAnnot _   -> prec_top
   | ELoc (_, e)                        -> expr_prec e
 
 let rec print_expr p min_prec e =
@@ -316,6 +316,14 @@ and print_expr_raw p = function
         print_expr_body p body
       ) arms
     )
+  | EBlock stmts ->
+    (* Bare block: no `do` prefix, just an indented stmt list. *)
+    indented p (fun () ->
+      List.iteri (fun i s ->
+        if i > 0 then newline p;
+        print_do_stmt p s
+      ) stmts
+    )
   | EDo (_, stmts) ->
     write p "do";
     indented p (fun () ->
@@ -379,7 +387,7 @@ and print_expr_raw p = function
 (* Body position: a Match/Do can use its natural multi-line layout
    without surrounding parens. *)
 and print_expr_body p e = match e with
-  | EMatch _ | EDo _ -> print_expr_raw p e
+  | EMatch _ | EBlock _ | EDo _ -> print_expr_raw p e
   | ELoc (_, e')     -> print_expr_body p e'
   | _ -> print_expr p prec_top e
 
@@ -416,7 +424,7 @@ and print_do_stmt p = function
 (* ── Declarations ────────────────────────────────── *)
 
 let rec is_block_body = function
-  | EMatch _ | EDo _ -> true
+  | EMatch _ | EBlock _ | EDo _ -> true
   | ELoc (_, e)      -> is_block_body e
   | _ -> false
 

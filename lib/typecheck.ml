@@ -105,7 +105,11 @@ type type_error =
   | UnknownImplName    of ident * ident * mono list (* iface_name, hint_name, concrete type args *)
   | MultipleDefaultImpls of ident * mono list      (* iface_name, concrete type args *)
   | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
-  | MutLetOutsideDo     of ident                   (* let mut in expression context, no reassign syntax *)
+  | MutLetInDo          of ident                   (* let mut inside a do block (only allowed in EBlock) *)
+  | MutLetRequiresBlock of ident                   (* let mut in inline `let ... in ...` position; needs a block *)
+  | BindOutsideDo                                  (* `<-` used in a bare block, not a do block *)
+  | AssignInDo          of ident                   (* `x = e` reassignment inside a do block *)
+  | FieldAssignInDo     of ident * ident           (* `x.field = e` inside a do block *)
   | NotARecord          of ident                   (* field assignment on non-record type *)
   | RecursiveTypeAlias  of ident                   (* type alias that expands to itself *)
   | Other              of string
@@ -346,8 +350,16 @@ let pp_error = function
       iface (String.concat " " (List.map pp_mono args))
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
-  | MutLetOutsideDo x ->
-    Printf.sprintf "'let mut %s' can only be used inside a do-block (no syntax to reassign outside one)" x
+  | MutLetInDo x ->
+    Printf.sprintf "'let mut %s' is not allowed inside a `do` block; do blocks are for monadic composition. Use a bare sequential block instead." x
+  | MutLetRequiresBlock x ->
+    Printf.sprintf "'let mut %s' must be inside an indented block; reassignment is only possible in sequential blocks, not inline `let ... in ...` expressions" x
+  | BindOutsideDo ->
+    "monadic bind `<-` is only allowed inside a `do` block; prefix this block with the `do` keyword"
+  | AssignInDo x ->
+    Printf.sprintf "reassignment '%s = ...' is not allowed inside a `do` block; do blocks are for monadic composition, not mutation" x
+  | FieldAssignInDo (x, f) ->
+    Printf.sprintf "field assignment '%s.%s = ...' is not allowed inside a `do` block; do blocks are for monadic composition, not mutation" x f
   | NotARecord x ->
     Printf.sprintf "Field assignment on '%s': type is not a record or Ref" x
   | RecursiveTypeAlias n ->
@@ -829,7 +841,7 @@ let rec infer env = function
   | ELet (mut, is_fun, pat, e1, e2) ->
     (if mut then
        let name = (match pat with PVar x -> x | _ -> "_") in
-       raise (Type_error (MutLetOutsideDo name, !current_loc)));
+       raise (Type_error (MutLetRequiresBlock name, !current_loc)));
     (match is_fun, pat with
      | true, PVar x ->
        (* Self-recursive: pre-bind x with a monomorphic placeholder so the
@@ -1017,36 +1029,108 @@ let rec infer env = function
     unify tf (TFun (tl, [], TFun (tr, [], result)));
     result
 
-  | EDo (monad_tag_ref, stmts) ->
-    (* Two modes, distinguished by whether any stmt is a `<-` bind:
-
-       - Monadic (has at least one DoBind):  introduce one per-block monad
-         tyvar `m`; every DoExpr and DoBind RHS must be `m a`.  The last
-         stmt's type determines the block result.
-
-       - Sequential (no DoBind):  type each stmt in turn; DoExpr stmts have
-         their result discarded except the final one.  This covers the
-         common patterns `f = do { let a = ...; expr }` (which the parser
-         emits as EDo whenever the body is indented multi-line stmts) and
-         `main = do { println "a"; println "b" }` (effectful sequencing,
-         where effect tracking handles the propagation, not monadic m).
-
-       Both modes share the DoLet / DoAssign / DoFieldAssign / DoLetElse
-       handling — those don't depend on `m`. *)
-    if stmts = [] then fail (Other "Empty do block");
-    let has_bind =
-      List.exists (function DoBind _ -> true | _ -> false) stmts
+  | EBlock stmts ->
+    (* Bare sequential indented block.  No monad constraint — stmts are
+       executed in order, value of the last stmt is the block's result.
+       Allowed: DoLet (incl. mut), DoExpr, DoAssign, DoFieldAssign, DoLetElse.
+       Forbidden: DoBind. *)
+    if stmts = [] then fail (Other "Empty block");
+    let rec head_fn_name = function
+      | ELoc (_, e) -> head_fn_name e
+      | EVar x -> Some x
+      | EApp (f, _) -> head_fn_name f
+      | _ -> None
     in
+    let rec type_block env = function
+      | [] -> assert false
+      | [DoBind _] -> fail BindOutsideDo
+      | [DoExpr e] -> infer env e
+      | [DoLet _] -> fail (Other "block cannot end with a let binding")
+      | [DoAssign _] -> fail (Other "block cannot end with an assignment")
+      | [DoFieldAssign _] -> fail (Other "block cannot end with a field assignment")
+      | [DoLetElse _] -> fail (Other "block cannot end with a let-else binding")
+      | DoBind _ :: _ -> fail BindOutsideDo
+      | DoExpr e :: rest ->
+        let _ = infer env e in
+        (match head_fn_name e with
+         | Some f when Hashtbl.mem env.must_use_fns f ->
+           let loc_str = match !current_loc with
+             | Some l -> Printf.sprintf "%s:%d: " l.file l.line
+             | None -> ""
+           in
+           env.warnings := (loc_str ^ "return value of '" ^ f ^ "' is unused (marked @must_use)")
+                           :: !(env.warnings)
+         | _ -> ());
+        type_block env rest
+      | DoLet (mut, pat, e) :: rest ->
+        enter_level ();
+        let t1 = infer env e in
+        exit_level ();
+        let env' = match pat with
+          | PVar x ->
+            let env' = extend_var env x (generalize t1) in
+            if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
+          | _ ->
+            let tp, bindings = type_pat env pat in
+            unify tp t1;
+            extend_vars env bindings
+        in
+        type_block env' rest
+      | DoAssign (x, e) :: rest ->
+        let tx = instantiate (lookup_var env x) in
+        let te = infer env e in
+        unify tx te;
+        if not (StringSet.mem x env.mut_vars) then
+          fail (ImmutableAssignment x);
+        type_block env rest
+      | DoFieldAssign (x, field, e) :: rest ->
+        if not (StringSet.mem x env.mut_vars) then
+          fail (ImmutableAssignment x);
+        let tx = instantiate (lookup_var env x) in
+        let field_t =
+          match normalize tx with
+          | TApp (TCon "Ref", inner) when field = "value" -> inner
+          | TCon r ->
+            (match Hashtbl.find_opt env.records r with
+             | None -> fail (UnknownRecord r)
+             | Some info ->
+               let (_result_t, field_types) = instantiate_record info in
+               (match List.assoc_opt field field_types with
+                | None -> fail (UnknownField (field, r))
+                | Some ft -> ft))
+          | TApp (TCon r, _) ->
+            (match Hashtbl.find_opt env.records r with
+             | None -> fail (UnknownRecord r)
+             | Some info ->
+               let (_result_t, field_types) = instantiate_record info in
+               (match List.assoc_opt field field_types with
+                | None -> fail (UnknownField (field, r))
+                | Some ft -> ft))
+          | _ -> fail (NotARecord x)
+        in
+        let te = infer env e in
+        unify field_t te;
+        type_block env rest
+      | DoLetElse (pat, e, alt) :: rest ->
+        let te = infer env e in
+        let tp, bindings = type_pat env pat in
+        unify tp te;
+        let _ = infer env alt in
+        type_block (extend_vars env bindings) rest
+    in
+    type_block env stmts
+
+  | EDo (monad_tag_ref, stmts) ->
+    (* Monadic do-block (introduced by the `do` keyword).  Always introduces
+       a per-block monad tyvar `m`; every DoExpr and DoBind RHS must be `m a`.
+       The last stmt's type determines the block result.
+       Forbidden: DoLet with mut, DoAssign, DoFieldAssign. *)
+    if stmts = [] then fail (Other "Empty do block");
     let m = fresh_var () in
     let unify_monadic te =
-      if has_bind then begin
-        let inner = fresh_var () in
-        unify te (TApp (m, inner));
-        inner
-      end else
-        (* Sequential mode: don't constrain te to be `m a`.  Return a fresh
-           tyvar so the caller can still bind it (no-op binding in practice). *)
-        fresh_var ()
+      let inner = fresh_var () in
+      unify te (TApp (m, inner));
+      inner
     in
     let rec head_fn_name = function
       | ELoc (_, e) -> head_fn_name e
@@ -1095,54 +1179,25 @@ let rec infer env = function
         unify tp inner;
         type_stmts (extend_vars env bindings) rest
       | DoLet (mut, pat, e) :: rest ->
+        if mut then begin
+          let name = (match pat with PVar x -> x | _ -> "_") in
+          fail (MutLetInDo name)
+        end;
         enter_level ();
         let t1 = infer env e in
         exit_level ();
         let env' = match pat with
-          | PVar x ->
-            let env' = extend_var env x (generalize t1) in
-            if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
+          | PVar x -> extend_var env x (generalize t1)
           | _ ->
             let tp, bindings = type_pat env pat in
             unify tp t1;
             extend_vars env bindings
         in
         type_stmts env' rest
-      | DoAssign (x, e) :: rest ->
-        let tx = instantiate (lookup_var env x) in
-        let te = infer env e in
-        unify tx te;
-        if not (StringSet.mem x env.mut_vars) then
-          fail (ImmutableAssignment x);
-        type_stmts env rest
-      | DoFieldAssign (x, field, e) :: rest ->
-        if not (StringSet.mem x env.mut_vars) then
-          fail (ImmutableAssignment x);
-        let tx = instantiate (lookup_var env x) in
-        let field_t =
-          match normalize tx with
-          | TApp (TCon "Ref", inner) when field = "value" -> inner
-          | TCon r ->
-            (match Hashtbl.find_opt env.records r with
-             | None -> fail (UnknownRecord r)
-             | Some info ->
-               let (_result_t, field_types) = instantiate_record info in
-               (match List.assoc_opt field field_types with
-                | None -> fail (UnknownField (field, r))
-                | Some ft -> ft))
-          | TApp (TCon r, _) ->
-            (match Hashtbl.find_opt env.records r with
-             | None -> fail (UnknownRecord r)
-             | Some info ->
-               let (_result_t, field_types) = instantiate_record info in
-               (match List.assoc_opt field field_types with
-                | None -> fail (UnknownField (field, r))
-                | Some ft -> ft))
-          | _ -> fail (NotARecord x)
-        in
-        let te = infer env e in
-        unify field_t te;
-        type_stmts env rest
+      | DoAssign (x, _) :: _ ->
+        fail (AssignInDo x)
+      | DoFieldAssign (x, field, _) :: _ ->
+        fail (FieldAssignInDo (x, field))
       | DoLetElse (pat, e, alt) :: rest ->
         let te = infer env e in
         let tp, bindings = type_pat env pat in
@@ -1151,11 +1206,10 @@ let rec infer env = function
         type_stmts (extend_vars env bindings) rest
     in
     let result = type_stmts env stmts in
-    if has_bind then
-      monad_tag_ref := (match normalize m with
-        | TApp (TCon tname, _) -> Some tname
-        | TCon tname           -> Some tname
-        | _                    -> None);
+    monad_tag_ref := (match normalize m with
+      | TApp (TCon tname, _) -> Some tname
+      | TCon tname           -> Some tname
+      | _                    -> None);
     result
 
   | ERecordCreate (name, provided) ->
@@ -1919,7 +1973,7 @@ let expr_effects
           let ge = match guard with None -> [] | Some g -> go bound' g in
           effect_union acc (effect_union ge (go bound' body)))
         (sub sc) arms
-    | EDo (_, stmts) ->
+    | EBlock stmts | EDo (_, stmts) ->
       let _, effs = List.fold_left (fun (b, acc) s ->
         let (b', e) = do_stmt_effects b s in
         (b', effect_union acc e)

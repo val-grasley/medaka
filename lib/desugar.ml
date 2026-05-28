@@ -403,6 +403,7 @@ let rec map_expr f e =
     | ERangeList (lo, hi, incl)  -> ERangeList  (map_expr f lo, map_expr f hi, incl)
     | ERangeArray (lo, hi, incl) -> ERangeArray (map_expr f lo, map_expr f hi, incl)
     | ESlice (e0, lo, hi, incl)  -> ESlice (map_expr f e0, map_expr f lo, map_expr f hi, incl)
+    | EBlock stmts            -> EBlock (List.map (map_do_stmt f) stmts)
     | EDo (tag, stmts)        -> EDo (tag, List.map (map_do_stmt f) stmts)
     | EAnnot (e0, t)          -> EAnnot (map_expr f e0, t)
     | EInfix (op, e1, e2)    -> EInfix (op, map_expr f e1, map_expr f e2)
@@ -502,6 +503,29 @@ let rewrite_question_expr = function
       | s -> s
     in
     EDo (tag, List.map rewrite_stmt stmts)
+  | EBlock stmts ->
+    (* If any DoLet has `?` on its RHS, the whole block is implicitly monadic
+       (Result/Option chaining via `andThen`).  Promote the EBlock to an EDo
+       and rewrite the `?` stmts to DoBind, so the existing EDo dispatch
+       (which sets current_monad_type) handles `pure` correctly inside. *)
+    let has_question =
+      List.exists (function
+        | DoLet (_, _, e) ->
+          (match strip_loc e with EQuestion _ -> true | _ -> false)
+        | _ -> false
+      ) stmts
+    in
+    if has_question then
+      let rewrite_stmt = function
+        | DoLet (_, pat, e) as s ->
+          (match strip_loc e with
+           | EQuestion inner -> DoBind (pat, inner)
+           | _ -> s)
+        | s -> s
+      in
+      EDo (ref None, List.map rewrite_stmt stmts)
+    else
+      EBlock stmts
   | e -> e
 
 let desugar_questions prog =

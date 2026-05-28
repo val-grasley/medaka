@@ -2300,6 +2300,68 @@ do-blocks is unchanged.
   `err: let mut inline expr`, `err: let mut with annot`,
   `let mut in do still ok`. **877 tests total (base suites).**
 
+### Phase 55.5: Split `EDo` into `EBlock` + `EDo` ✅ DONE
+
+Phase 45.5 disambiguated monadic vs sequential bodies *inside one node*
+by branching on whether any stmt is a `DoBind`.  That worked, but the
+single-node approach silently conflated two different concepts: the
+language design says do-notation is for monadic abstraction (Option /
+Result / Async / user monads), and procedural sequencing of effects is
+a separate thing handled by the effect system.  Every multi-stmt
+indented body (function body, if/else branch, match arm) lowered to
+`EDo`, so a reader had to scan for `<-` to know which mode applied.
+
+Split the node:
+
+- **`EBlock of do_stmt list`** — bare indented blocks.  Allowed:
+  `let`, `let mut`, expr stmts, `x = e` reassignment, `x.f = e` field
+  assignment, `let else`.  Forbidden: `<-` bind.
+- **`EDo of … * do_stmt list`** — monadic, introduced only by the
+  `do` keyword.  Allowed: `let` (no `mut`), `<-` binds, expr stmts
+  (each must unify to `m a`), `let else`.  Forbidden: `let mut`,
+  reassignment, field assignment.
+
+The parser's `stmts_to_expr` helper now produces `EBlock`; only the
+explicit `DO INDENT … DEDENT` rule produces `EDo`.  The typechecker's
+`EDo` handler no longer dispatches on `has_bind` — it always
+introduces a monad tyvar `m` and unifies every expr stmt with `m a`.
+`EBlock` runs the sequential path with no monad constraint.
+
+The breaking change is small: any existing code with `<-` inside an
+implicit-block branch body (e.g. `if cond then\n  x <- foo\n  pure x`)
+now requires `then do\n  x <- foo\n  pure x`.
+
+**Errors added** (all structured, all live in `typecheck.ml`):
+- `MutLetInDo` — `let mut` inside a `do` block.
+- `BindOutsideDo` — `<-` outside a `do` block.
+- `AssignInDo` — `x = e` reassignment inside a `do` block.
+- `FieldAssignInDo` — `x.f = e` inside a `do` block.
+- `MutLetRequiresBlock` — `let mut` in inline `let … in …` position
+  (replaces the old `MutLetOutsideDo` from Phase 55; that name no
+  longer fits since `let mut` is now valid in `EBlock`, not in `EDo`).
+
+**Other touched files.** `ast.ml`, `parser.mly`, `printer.ml`,
+`desugar.ml`, `eval.ml`, `resolve.ml`, `coverage.ml`,
+`test/test_typecheck.ml`, plus `language-design.md` (Do Notation
+section rewritten, mutability section noted, Async/Result examples
+updated to use `do`).
+
+**Note on Phase 45.5.** That phase introduced the `has_bind` split
+inside a single `EDo`.  Phase 55.5 supersedes that mechanism by moving
+the distinction up into separate AST nodes — `EDo` now has only one
+mode (monadic).  The Phase 45.5 motivating cases (indented function
+bodies, effectful `do` sequencing without `<-`) still work: the first
+is now `EBlock`, and the second is still allowed in `EDo` because a
+`do` block with all expr stmts and no binds is legal (each stmt
+unifies to `m a` for the inferred `m`).
+
+**Tests.** Existing typecheck tests for `let mut` / assignment / field
+assignment updated to use bare-block form; new error tests
+`e_let_mut_in_do`, `e_assign_in_do`, `e_bind_outside_do`,
+`e_do_seq_no_bind_now_fails`, and a `t_mixed_block_with_inner_do`
+covering the legal mixed case (outer `EBlock` with `let mut`,
+inner `EDo` for monadic chaining).  All 787 base-suite tests pass.
+
 ### Phase 56: Multi-level nested record updates ⏳ TODO
 
 Phase 45 (nested record update sugar) supports single-level

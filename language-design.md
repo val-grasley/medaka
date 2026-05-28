@@ -175,15 +175,23 @@ utils.greet
 **Dot is never function composition.** This is an explicit departure from Haskell, where `.` is the composition operator — a decision that confuses anyone coming from virtually any other language. In Medaka, `.` means one thing: access. `>>` and `<<` handle composition, following F# and OCaml conventions.
 
 ### Do Notation
-General monad abstraction, not tied to effects:
+General monad abstraction, not tied to effects. **The `do` keyword is required** to introduce a monadic block — bare indented blocks are sequential procedural blocks, not monadic ones.
+
 ```
-result =
+result = do
   x <- computation1
   y <- computation2 x
   pure (x + y)
 ```
 
 `do` is for abstracting over monadic patterns (Option, Result, custom monads) — not a required wrapper for side effects.
+
+**Bare blocks vs `do` blocks.** Medaka distinguishes two kinds of indented blocks:
+
+- **Bare sequential blocks** (function bodies, `if`/`else` branches, match-arm bodies, any indented multi-statement block without a `do` keyword): purely sequential evaluation. Allowed statements: `let`, `let mut`, expression statements, reassignment (`x = e`), field assignment (`x.f = e`), `let else`. **`<-` is forbidden.**
+- **Monadic `do` blocks** (introduced by the explicit `do` keyword): every statement is sequenced through monadic bind. Allowed statements: `let` (no `mut`), `<-` bind, expression statements (each must unify to `m a`), `let else`. **`let mut`, reassignment, and field assignment are forbidden** — monads are for computational composition, not in-place mutation.
+
+If you write `<-` inside a bare block, the typechecker emits a clear error pointing you at the `do` keyword.
 
 ### `if let` and `let else`
 
@@ -691,7 +699,7 @@ fetch : String -> <Async> Response
 parse : Response -> <Async> Json
 
 result : <Async> Json
-result =
+result = do
   response <- fetch "https://api.example.com"
   json <- parse response
   pure json
@@ -783,6 +791,8 @@ The key distinction:
 - `let mut x` — the *binding* can be repointed to a different value
 - `Ref` — the *binding* is stable but the *contents* are mutable
 
+**`let mut`, reassignment (`x = e`), and field assignment (`x.f = e`) are only allowed inside bare sequential blocks**, not inside a `do` block. Monads are for composing computational patterns, not for in-place mutation — mixing the two would muddle both. If you need mutation inside a function that also uses `do`, keep the `do` block scoped to the monadic piece and do the mutation in the surrounding bare block.
+
 You can combine them:
 ```
 let mut x : Ref Int = Ref 5   -- binding can be repointed AND contents mutable
@@ -824,8 +834,9 @@ greet name =
 fetchAndProcess : String -> <IO, Async> Result Json Error
 fetchAndProcess url =
   let response = await fetch url    -- IO + Async, just works
-  json <- parseJson response        -- Result chaining via do-notation
-  pure (transform json)
+  do                                -- `do` keyword required for monadic block
+    json <- parseJson response      -- Result chaining via do-notation
+    pure (transform json)
 ```
 
 ### The Division of Responsibility
