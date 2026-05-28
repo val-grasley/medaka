@@ -162,12 +162,45 @@ let publish_project_diagnostics ~(root_uri : DocumentUri.t) =
   Hashtbl.reset published_uris;
   Hashtbl.iter (fun u () -> Hashtbl.replace published_uris u ()) this_round
 
+(* ── Helpers shared by request handlers ────────────────────── *)
+
+(* Range covering the whole document: from (0,0) to one-past-the-last-line.
+   Using `~end_:(N, 0)` where N = line_count covers every line without
+   needing to know the trailing line's length, and clients accept it. *)
+let full_document_range (src : string) : Range.t =
+  let lines = ref 0 in
+  String.iter (fun c -> if c = '\n' then incr lines) src;
+  let nl = !lines + 1 in
+  let start = Position.create ~line:0 ~character:0 in
+  let end_  = Position.create ~line:nl ~character:0 in
+  Range.create ~start ~end_
+
+(* Parse a buffer purely (no diagnostics, no exceptions).  Returns the
+   program plus the parser-side-channel decl positions, or None on a
+   parse error.  Used by all language-feature handlers. *)
+let parse_buffer (src : string) (uri : DocumentUri.t)
+  : (Ast.program * Ast.loc list) option =
+  Lexer.reset ();
+  Parser_state.reset ();
+  let lexbuf = Lexing.from_string src in
+  lexbuf.Lexing.lex_curr_p <-
+    { lexbuf.Lexing.lex_curr_p with
+      Lexing.pos_fname = DocumentUri.to_path uri };
+  try
+    let prog = Parser.program Lexer.token lexbuf in
+    let locs = Parser_state.take_decl_positions () in
+    Some (prog, locs)
+  with _ -> None
+
 (* ── Handlers ──────────────────────────────────────────────── *)
 
 let handle_initialize (_p : InitializeParams.t) : InitializeResult.t =
   let sync = TextDocumentSyncKind.Full in
   let caps = ServerCapabilities.create
     ~textDocumentSync:(`TextDocumentSyncKind sync)
+    ~documentFormattingProvider:(`Bool true)
+    ~documentSymbolProvider:(`Bool true)
+    ~hoverProvider:(`Bool true)
     ()
   in
   let info = InitializeResult.create_serverInfo
@@ -220,6 +253,226 @@ let handle_notification_unsafe (n : Client_notification.t) =
     Hashtbl.remove published_uris uri_str
   | _ -> ()
 
+(* ── Document formatting ───────────────────────────────────── *)
+
+(* Run [Fmt.format_source] on the buffer's current text and return a
+   single TextEdit that replaces the entire document.  If formatting
+   fails (parse error, formatter bug, etc.) we return None so the
+   client just keeps its buffer unchanged. *)
+let handle_formatting (p : DocumentFormattingParams.t) : TextEdit.t list option =
+  let uri = p.textDocument.uri in
+  let uri_str = DocumentUri.to_string uri in
+  match Hashtbl.find_opt docs uri_str with
+  | None -> None
+  | Some src ->
+    let filename = DocumentUri.to_path uri in
+    (try
+       let formatted = Fmt.format_source ~filename src in
+       if formatted = src then Some []
+       else
+         let edit =
+           TextEdit.create ~newText:formatted ~range:(full_document_range src)
+         in
+         Some [edit]
+     with e ->
+       Lsp_log.exn "formatting failed" e;
+       None)
+
+(* ── Document symbols ──────────────────────────────────────── *)
+
+(* Map a Medaka decl into a flat DocumentSymbol entry.  We use the
+   parser-recorded location for the symbol range and selectionRange.
+   Children (record fields, data variants, interface methods, impl
+   methods) get nested so the outline view collapses neatly. *)
+
+(* Strip the optional `decl` wrapping that DAttrib introduces and the
+   `pub?` flag of public decls so the switch below is unambiguous. *)
+let symbol_of_decl (d : Ast.decl) (loc : Ast.loc) : DocumentSymbol.t option =
+  let open Ast in
+  let range = range_of_loc loc in
+  let mk ?(children : DocumentSymbol.t list option) name kind detail =
+    Some
+      (DocumentSymbol.create ~name ~kind ~range ~selectionRange:range
+         ?detail ?children ())
+  in
+  match inner_decl d with
+  | DTypeSig (_, name, ty) ->
+    mk name SymbolKind.Variable (Some (pp_ty ty))
+  | DExtern (_, name, ty) ->
+    mk name SymbolKind.Function (Some (pp_ty ty))
+  | DFunDef (_, name, _, _) ->
+    mk name SymbolKind.Function None
+  | DLetGroup (_, binds) ->
+    (* Surface every name in a `let rec x = ... with y = ...` group. *)
+    (match binds with
+     | [] -> None
+     | (n, _) :: _ ->
+       let children =
+         List.filter_map (fun (n', _) ->
+           Some (DocumentSymbol.create ~name:n' ~kind:SymbolKind.Function
+                   ~range ~selectionRange:range ()))
+           binds
+       in
+       mk ~children n SymbolKind.Function None)
+  | DData (_, name, params, variants, _) ->
+    let detail =
+      if params = [] then None
+      else Some (String.concat " " (name :: params))
+    in
+    let children = List.map (fun v ->
+      DocumentSymbol.create ~name:v.con_name
+        ~kind:SymbolKind.EnumMember ~range ~selectionRange:range ()) variants
+    in
+    mk ~children name SymbolKind.Enum detail
+  | DRecord (_, name, params, fields, _) ->
+    let detail =
+      if params = [] then None
+      else Some (String.concat " " (name :: params))
+    in
+    let children = List.map (fun (f : record_field) ->
+      DocumentSymbol.create ~name:f.field_name ~kind:SymbolKind.Field
+        ~range ~selectionRange:range
+        ~detail:(pp_ty f.field_type) ()) fields
+    in
+    mk ~children name SymbolKind.Struct detail
+  | DInterface { iface_name; methods; _ } ->
+    let children = List.map (fun m ->
+      DocumentSymbol.create ~name:m.method_name ~kind:SymbolKind.Method
+        ~range ~selectionRange:range
+        ~detail:(pp_ty m.method_type) ()) methods
+    in
+    mk ~children iface_name SymbolKind.Interface None
+  | DImpl { iface_name; type_args; impl_name; methods; _ } ->
+    let label =
+      let tag = match impl_name with
+        | Some n -> Printf.sprintf "%s of " n
+        | None -> ""
+      in
+      Printf.sprintf "%simpl %s%s" tag iface_name
+        (if type_args = [] then ""
+         else " " ^ String.concat " " (List.map pp_ty type_args))
+    in
+    let children = List.map (fun (n, _, _) ->
+      DocumentSymbol.create ~name:n ~kind:SymbolKind.Method
+        ~range ~selectionRange:range ()) methods
+    in
+    mk ~children label SymbolKind.Class None
+  | DTypeAlias (_, name, params, rhs) ->
+    let detail =
+      Printf.sprintf "%s = %s"
+        (if params = [] then name else String.concat " " (name :: params))
+        (pp_ty rhs)
+    in
+    mk name SymbolKind.TypeParameter (Some detail)
+  | DNewtype (_, name, _, con, ty, _) ->
+    mk name SymbolKind.Struct (Some (Printf.sprintf "%s %s" con (pp_ty ty)))
+  | DUse _ -> None  (* import directives clutter the outline *)
+  | DProp { prop_name; _ } ->
+    mk prop_name SymbolKind.Function (Some "prop")
+  | DBench { bench_name; _ } ->
+    mk bench_name SymbolKind.Function (Some "bench")
+  | DAttrib _ -> None  (* unreachable via inner_decl *)
+
+let handle_document_symbol (p : DocumentSymbolParams.t)
+  : [ `DocumentSymbol of DocumentSymbol.t list
+    | `SymbolInformation of SymbolInformation.t list ] option =
+  let uri = p.textDocument.uri in
+  let uri_str = DocumentUri.to_string uri in
+  match Hashtbl.find_opt docs uri_str with
+  | None -> None
+  | Some src ->
+    (match parse_buffer src uri with
+     | None -> None
+     | Some (prog, locs) ->
+       (* Pair each decl with its source position.  When a DAttrib wraps
+          a decl, the parser pops the inner position and records the outer
+          span, so the lists should match 1:1.  Defensive: zip the shorter
+          of the two so a length mismatch falls back to a partial outline
+          rather than crashing. *)
+       let rec zip ds ls = match ds, ls with
+         | d :: dr, l :: lr -> (d, l) :: zip dr lr
+         | _ -> []
+       in
+       let symbols =
+         zip prog locs
+         |> List.filter_map (fun (d, l) -> symbol_of_decl d l)
+       in
+       Some (`DocumentSymbol symbols))
+
+(* ── Hover ─────────────────────────────────────────────────── *)
+
+(* Whole-buffer hover: type-check the document, then look up the name
+   directly under the cursor in the result env.  We scan the source text
+   to extract the identifier under the cursor (cheaper than re-walking
+   the AST for now) and probe the typecheck env.  Falls back to None on
+   any failure. *)
+
+let is_ident_char c =
+  (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')
+  || (c >= '0' && c <= '9') || c = '_' || c = '\''
+
+(* Given source text and a 0-based (line, column), return the identifier
+   spanning that position along with its absolute byte offsets, or None
+   if the cursor is not on an identifier. *)
+let identifier_at (src : string) ~(line : int) ~(col : int)
+  : (string * int * int) option =
+  let len = String.length src in
+  let cur_line = ref 0 and line_start = ref 0 in
+  let i = ref 0 in
+  while !cur_line < line && !i < len do
+    if src.[!i] = '\n' then begin
+      incr cur_line;
+      line_start := !i + 1
+    end;
+    incr i
+  done;
+  if !cur_line < line then None
+  else begin
+    let pos = !line_start + col in
+    if pos < 0 || pos >= len then None
+    else
+      let c = src.[pos] in
+      if not (is_ident_char c) then None
+      else
+        let start = ref pos in
+        while !start > 0 && is_ident_char src.[!start - 1] do decr start done;
+        let stop = ref pos in
+        while !stop + 1 < len && is_ident_char src.[!stop + 1] do incr stop done;
+        let s = String.sub src !start (!stop - !start + 1) in
+        Some (s, !start, !stop + 1)
+  end
+
+let handle_hover (p : HoverParams.t) : Hover.t option =
+  let uri = p.textDocument.uri in
+  let uri_str = DocumentUri.to_string uri in
+  match Hashtbl.find_opt docs uri_str with
+  | None -> None
+  | Some src ->
+    let line = p.position.line and col = p.position.character in
+    (match identifier_at src ~line ~col with
+     | None -> None
+     | Some (name, _, _) ->
+       (match parse_buffer src uri with
+        | None -> None
+        | Some (prog, _) ->
+          let prog = Desugar.desugar_program prog in
+          (* Resolver may legitimately reject; skip if so since the
+             typechecker would fail too. *)
+          if Resolve.resolve_program prog <> [] then None
+          else
+            try
+              let (env, _) = Typecheck.check_program prog in
+              match List.assoc_opt name env with
+              | None -> None
+              | Some sch ->
+                let value =
+                  MarkupContent.create ~kind:MarkupKind.Markdown
+                    ~value:(Printf.sprintf "```medaka\n%s : %s\n```"
+                              name (Typecheck.pp_scheme sch))
+                in
+                Some (Hover.create ~contents:(`MarkupContent value) ())
+            with _ -> None))
+
 (* Top-level catch-all: any exception from a notification handler is logged
    and swallowed.  Notifications have no response, so the client never
    learns about the failure — but the server stays alive. *)
@@ -243,6 +496,18 @@ let handle_request_unsafe (req : Jsonrpc.Request.t) : Jsonrpc.Response.t =
        Jsonrpc.Response.ok req.id (InitializeResult.yojson_of_t result)
      | Client_request.Shutdown ->
        Jsonrpc.Response.ok req.id `Null
+     | Client_request.TextDocumentFormatting p as cr ->
+       let result = handle_formatting p in
+       Jsonrpc.Response.ok req.id
+         (Client_request.yojson_of_result cr result)
+     | Client_request.DocumentSymbol p as cr ->
+       let result = handle_document_symbol p in
+       Jsonrpc.Response.ok req.id
+         (Client_request.yojson_of_result cr result)
+     | Client_request.TextDocumentHover p as cr ->
+       let result = handle_hover p in
+       Jsonrpc.Response.ok req.id
+         (Client_request.yojson_of_result cr result)
      | _ ->
        Jsonrpc.Response.error req.id
          (Jsonrpc.Response.Error.make
