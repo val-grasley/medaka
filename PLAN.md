@@ -2503,7 +2503,7 @@ correctly, and that a genuine forward reference to a non-existent
 name still produces a clear error rather than a generic
 `applied non-function: ()`.
 
-### Phase 59.6: Multi-variable lambdas `x y => body` ⏳ TODO
+### Phase 59.6: Multi-variable lambdas `x y => body` ✅ DONE
 
 Haskell writes multi-param lambdas as `\x y -> body`, desugared to
 `\x -> \y -> body`.  Medaka today only accepts a single pattern on

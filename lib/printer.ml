@@ -194,9 +194,8 @@ and print_expr_raw p = function
     write p " ";
     print_expr p (prec_app + 1) x
   | ELam (pats, body) ->
-    (* Print as curried if multiple pats, though parser only produces one *)
     List.iteri (fun i pat ->
-      if i > 0 then write p " => ";
+      if i > 0 then write p " ";
       print_pat_atom p pat
     ) pats;
     write p " => ";

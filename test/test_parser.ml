@@ -147,6 +147,27 @@ let test_expr_lambda_ctor_pat_two () =
   | other ->
     failwith (Printf.sprintf "wrong: got %s" (Ast.pp_expr other))
 
+(* Multi-param lambda: `x y => x + y` desugars to ELam with two PVar patterns. *)
+let test_expr_lambda_two_params () =
+  match parse_expr "x y => x + y\n" with
+  | ELam ([PVar "x"; PVar "y"], EBinOp ("+", EVar "x", EVar "y")) -> ()
+  | other ->
+    failwith (Printf.sprintf "wrong: got %s" (Ast.pp_expr other))
+
+(* Three-param lambda. *)
+let test_expr_lambda_three_params () =
+  match parse_expr "f a b c => f a b c\n" with
+  | ELam ([PVar "f"; PVar "a"; PVar "b"; PVar "c"], _) -> ()
+  | other ->
+    failwith (Printf.sprintf "wrong: got %s" (Ast.pp_expr other))
+
+(* Regression: constructor pattern still works as a single pattern. *)
+let test_expr_lambda_ctor_single_pat_regression () =
+  match parse_expr "Some x => x\n" with
+  | ELam ([PCon ("Some", [PVar "x"])], EVar "x") -> ()
+  | other ->
+    failwith (Printf.sprintf "wrong: got %s" (Ast.pp_expr other))
+
 let test_expr_let () =
   match parse_expr "let x = 5 in x + 1\n" with
   | ELet (false, false, PVar "x", ELit (LInt 5), EBinOp ("+", EVar "x", ELit (LInt 1))) -> ()
@@ -1382,6 +1403,9 @@ let () =
       test_case "lambda multi-arg"  `Quick test_expr_lambda_multi_arg;
       test_case "lambda ctor pat"   `Quick test_expr_lambda_ctor_pat;
       test_case "lambda ctor pat 2 args" `Quick test_expr_lambda_ctor_pat_two;
+      test_case "lambda two params"  `Quick test_expr_lambda_two_params;
+      test_case "lambda three params" `Quick test_expr_lambda_three_params;
+      test_case "lambda ctor single pat regression" `Quick test_expr_lambda_ctor_single_pat_regression;
       test_case "let"               `Quick test_expr_let;
       test_case "let mut"           `Quick test_expr_let_mut;
       test_case "let fn one arg"    `Quick test_expr_let_fn_one_arg;

@@ -103,6 +103,9 @@ let t_bare_section_cons     = assert_val "r = (::) 1 [2, 3]\n"
 let t_bare_section_fold     = assert_val
   "r = fold (+) 0 [1, 2, 3, 4]\n" "r" (VInt 10)
 
+let t_multi_param_lambda_two  = assert_val "r = (x y => x + y) 1 2\n" "r" (VInt 3)
+let t_multi_param_lambda_three = assert_val "r = (f a b => f a + b) (x => x * 2) 3 4\n" "r" (VInt 10)
+
 (* ── Recursion ──────────────────────────────────────────────────────────── *)
 
 let t_factorial = assert_val {|fact n =
@@ -973,6 +976,8 @@ let () =
       test_case "bare section (==) F"   `Quick t_bare_section_eq_false;
       test_case "bare section (::)"     `Quick t_bare_section_cons;
       test_case "bare section fold (+)" `Quick t_bare_section_fold;
+      test_case "multi-param lambda 2"  `Quick t_multi_param_lambda_two;
+      test_case "multi-param lambda 3"  `Quick t_multi_param_lambda_three;
     ];
     "recursion", [
       test_case "factorial" `Quick t_factorial;

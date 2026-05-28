@@ -107,6 +107,7 @@ let t_const_unit   = assert_type "x = ()\n"     "x" "Unit"
 
 let t_identity   = assert_type "id x = x\n"           "id"   "a -> a"
 let t_const_fn   = assert_type "const x _ = x\n"      "const" "a -> b -> a"
+let t_multi_param_lam = assert_type "f = x y => x + y\n" "f" "a -> a -> a"
 let t_double     = assert_type "double x = x + x\n"   "double" "a -> a"
 let t_inc        = assert_type "inc x = x + 1\n"      "inc"  "Int -> Int"
 let t_apply      = assert_type "apply f x = f x\n"    "apply" "(a -> b) -> a -> b"
@@ -2220,6 +2221,7 @@ let () =
       test_case "inc"                 `Quick t_inc;
       test_case "apply"               `Quick t_apply;
       test_case "compose"             `Quick t_compose;
+      test_case "multi-param lambda"  `Quick t_multi_param_lam;
     ];
     "operator sections", [
       test_case "(+1)"                `Quick t_section_add;
