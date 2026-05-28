@@ -933,6 +933,40 @@ let t_letrec_inline_mutual = assert_val
   "r = let rec is_even = n => if n == 0 then True else is_odd (n - 1) with is_odd = n => if n == 0 then False else is_even (n - 1) in is_even 6\n"
   "r" (VBool true)
 
+(* ── Top-level binding order (Phase 59.5) ──────────────────────────────── *)
+
+(* Zero-param binding before the function it calls (which has params). *)
+let t_order_zero_param_before_fun =
+  assert_val
+    "x = f 0\nf n = n + 1\n"
+    "x" (VInt 1)
+
+(* Zero-param binding before the impl that provides the method it calls. *)
+let t_order_zero_param_before_impl =
+  assert_val
+    {|interface Tag a where
+  tag : a -> Int
+
+x = tag True
+
+impl Tag Bool where
+  tag _ = 99
+|}
+    "x" (VInt 99)
+
+(* Two zero-param bindings where the first references the second. *)
+let t_order_zero_param_chain =
+  assert_val
+    "x = y + 1\ny = 41\n"
+    "x" (VInt 42)
+
+(* Genuine unbound name should still produce a clear error, not "applied
+   non-function: ()" from an unresolved VUnit placeholder. *)
+let t_order_unbound_is_clear_error =
+  assert_runtime_err
+    "x = noSuchThing\n"
+    "x"
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -1166,5 +1200,11 @@ let () =
     "function keyword (Phase 44)", [
       test_case "classify 0 = zero"          `Quick t_function_eval;
       test_case "sign (-5) = -1 with guard"  `Quick t_function_guard_eval;
+    ];
+    "top-level binding order (Phase 59.5)", [
+      test_case "zero-param before fun"        `Quick t_order_zero_param_before_fun;
+      test_case "zero-param before impl"       `Quick t_order_zero_param_before_impl;
+      test_case "zero-param chain"             `Quick t_order_zero_param_chain;
+      test_case "unbound gives clear error"    `Quick t_order_unbound_is_clear_error;
     ];
   ]
