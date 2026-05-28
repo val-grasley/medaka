@@ -555,6 +555,44 @@ let t_interp_expr =
     "n = \"Alice\"\ngreeting = \"Hi\"\nx = \"\\{greeting}, \\{n}! Welcome.\"\n"
     "x" (VString "Hi, Alice! Welcome.")
 
+let t_interp_triple_basic =
+  assert_val
+    "name = \"world\"\nx = \"\"\"Hello, \\{name}!\"\"\"\n"
+    "x" (VString "Hello, world!")
+
+let t_interp_triple_two_holes =
+  assert_val
+    "a = \"foo\"\nb = \"bar\"\nx = \"\"\"\\{a} and \\{b}\"\"\"\n"
+    "x" (VString "foo and bar")
+
+(* Assert that lexing src raises Failure with a message containing substr *)
+let string_contains haystack needle =
+  let hn = String.length haystack and nn = String.length needle in
+  if nn = 0 then true
+  else if nn > hn then false
+  else
+    let found = ref false in
+    for i = 0 to hn - nn do
+      if not !found && String.sub haystack i nn = needle then found := true
+    done;
+    !found
+
+let assert_lex_err substr src () =
+  match (try ignore (parse src); None
+         with Failure msg -> Some msg) with
+  | Some msg when string_contains msg substr -> ()
+  | Some msg ->
+    failwith (Printf.sprintf
+      "Expected lex error containing %S, got: %s\nSource:\n%s" substr msg src)
+  | None ->
+    failwith (Printf.sprintf
+      "Expected lex error containing %S, but no error was raised\nSource:\n%s"
+      substr src)
+
+let t_int_overflow =
+  assert_lex_err "overflows"
+    "x = 99999999999999999999\n"
+
 (* ── Unary operators ────────────────────────────────────────────────────── *)
 
 let t_bang_true  = assert_val "r = !True\n"  "r" (VBool false)
@@ -1009,9 +1047,14 @@ let () =
       test_case "int underscore arith" `Quick t_int_underscore_arith;
     ];
     "string interpolation", [
-      test_case "basic hole"    `Quick t_interp_basic;
-      test_case "two holes"     `Quick t_interp_two_holes;
-      test_case "greeting expr" `Quick t_interp_expr;
+      test_case "basic hole"          `Quick t_interp_basic;
+      test_case "two holes"           `Quick t_interp_two_holes;
+      test_case "greeting expr"       `Quick t_interp_expr;
+      test_case "triple basic"        `Quick t_interp_triple_basic;
+      test_case "triple two holes"    `Quick t_interp_triple_two_holes;
+    ];
+    "int literal errors", [
+      test_case "overflow" `Quick t_int_overflow;
     ];
     "@Name impl selection (Phase 30)", [
       test_case "@Additive selects +"       `Quick t_named_additive;

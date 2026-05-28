@@ -14,8 +14,10 @@ let pending : token Queue.t = Queue.create ()
 let paren_depth : int ref = ref 0
 
 (* String interpolation state *)
-let interp_depth : int ref = ref 0
-let interp_buf   : Buffer.t = Buffer.create 64
+let interp_depth     : int ref  = ref 0
+let interp_buf       : Buffer.t = Buffer.create 64
+(* true when the active interpolation started inside a triple-quoted string *)
+let interp_in_triple : bool ref = ref false
 
 (* Comment side channel.  Lexer drops `--` line comments from the token
    stream (parser stays untouched) but records them here so tools such as
@@ -70,6 +72,7 @@ let reset () =
   Queue.clear pending;
   paren_depth := 0;
   interp_depth := 0;
+  interp_in_triple := false;
   Buffer.clear interp_buf;
   comments := [];
   Parser_state.reset ()
@@ -99,6 +102,14 @@ let strip_indent s =
 
 let strip_underscores s =
   String.concat "" (String.split_on_char '_' s)
+
+let parse_int s =
+  match int_of_string_opt s with
+  | Some n -> n
+  | None ->
+    failwith (Printf.sprintf
+      "integer literal '%s' overflows OCaml int \
+       (max = 4611686018427387903 on this platform)" s)
 
 let keyword_or_ident s =
   match s with
@@ -187,11 +198,11 @@ and read = parse
       token lexbuf
     }
 
-  | hex_lit      { INT (int_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
-  | bin_lit      { INT (int_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
-  | oct_lit      { INT (int_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
+  | hex_lit      { INT (parse_int (strip_underscores (Lexing.lexeme lexbuf))) }
+  | bin_lit      { INT (parse_int (strip_underscores (Lexing.lexeme lexbuf))) }
+  | oct_lit      { INT (parse_int (strip_underscores (Lexing.lexeme lexbuf))) }
   | float_lit    { FLOAT (float_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
-  | int_lit      { INT (int_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
+  | int_lit      { INT (parse_int (strip_underscores (Lexing.lexeme lexbuf))) }
 
   | "\"\"\""     { read_triple_string (Buffer.create 64) lexbuf }
   | '"'          { read_string (Buffer.create 64) lexbuf }
@@ -262,7 +273,10 @@ and read = parse
         decr interp_depth;
         if !interp_depth = 0 then begin
           Buffer.clear interp_buf;
-          read_interp_continue interp_buf lexbuf
+          if !interp_in_triple then
+            read_interp_triple_continue interp_buf lexbuf
+          else
+            read_interp_continue interp_buf lexbuf
         end else
           RBRACE
       end else begin
@@ -296,7 +310,7 @@ and read = parse
 
 and read_string buf = parse
   | '"'           { STRING (strip_indent (Buffer.contents buf)) }
-  | '\\' '{'      { interp_depth := 1; INTERP_OPEN (Buffer.contents buf) }
+  | '\\' '{'      { interp_in_triple := false; interp_depth := 1; INTERP_OPEN (Buffer.contents buf) }
   | '\\' 'n'      { Buffer.add_char buf '\n'; read_string buf lexbuf }
   | '\\' 't'      { Buffer.add_char buf '\t'; read_string buf lexbuf }
   | '\\' '"'      { Buffer.add_char buf '"';  read_string buf lexbuf }
@@ -315,6 +329,7 @@ and read_string buf = parse
 
 and read_triple_string buf = parse
   | "\"\"\""  { STRING (strip_indent (Buffer.contents buf)) }
+  | '\\' '{'  { interp_in_triple := true; interp_depth := 1; INTERP_OPEN (Buffer.contents buf) }
   | '\\' 'n'  { Buffer.add_char buf '\n'; read_triple_string buf lexbuf }
   | '\\' 't'  { Buffer.add_char buf '\t'; read_triple_string buf lexbuf }
   | '\\' '"'  { Buffer.add_char buf '"';  read_triple_string buf lexbuf }
@@ -338,7 +353,7 @@ and read_triple_string buf = parse
 
 and read_interp_continue buf = parse
   | '"'       { INTERP_END (Buffer.contents buf) }
-  | '\\' '{'  { interp_depth := 1; INTERP_MID (Buffer.contents buf) }
+  | '\\' '{'  { interp_in_triple := false; interp_depth := 1; INTERP_MID (Buffer.contents buf) }
   | '\\' 'n'  { Buffer.add_char buf '\n'; read_interp_continue buf lexbuf }
   | '\\' 't'  { Buffer.add_char buf '\t'; read_interp_continue buf lexbuf }
   | '\\' '"'  { Buffer.add_char buf '"';  read_interp_continue buf lexbuf }
@@ -354,3 +369,27 @@ and read_interp_continue buf = parse
       read_interp_continue buf lexbuf
     }
   | eof { failwith "Unterminated interpolated string" }
+
+and read_interp_triple_continue buf = parse
+  | "\"\"\""  { INTERP_END (strip_indent (Buffer.contents buf)) }
+  | '\\' '{'  { interp_in_triple := true; interp_depth := 1; INTERP_MID (Buffer.contents buf) }
+  | '\\' 'n'  { Buffer.add_char buf '\n'; read_interp_triple_continue buf lexbuf }
+  | '\\' 't'  { Buffer.add_char buf '\t'; read_interp_triple_continue buf lexbuf }
+  | '\\' '"'  { Buffer.add_char buf '"';  read_interp_triple_continue buf lexbuf }
+  | '\\' '\\' { Buffer.add_char buf '\\'; read_interp_triple_continue buf lexbuf }
+  | '\\' 'r'  { Buffer.add_char buf '\r'; read_interp_triple_continue buf lexbuf }
+  | '\\' '0'  { Buffer.add_char buf '\000'; read_interp_triple_continue buf lexbuf }
+  | '\\' 'u' '{' (['0'-'9' 'a'-'f' 'A'-'F']+ as hex) '}'
+    { let cp = int_of_string ("0x" ^ hex) in
+      Buffer.add_utf_8_uchar buf (Uchar.of_int cp);
+      read_interp_triple_continue buf lexbuf }
+  | '\n'
+    { Lexing.new_line lexbuf;
+      Buffer.add_char buf '\n';
+      read_interp_triple_continue buf lexbuf }
+  | '"' '"'   { Buffer.add_string buf "\"\""; read_interp_triple_continue buf lexbuf }
+  | '"'       { Buffer.add_char  buf '"';    read_interp_triple_continue buf lexbuf }
+  | [^ '"' '\\' '\n']+
+    { Buffer.add_string buf (Lexing.lexeme lexbuf);
+      read_interp_triple_continue buf lexbuf }
+  | eof { failwith "Unterminated interpolated triple-quoted string" }

@@ -2418,46 +2418,43 @@ Or use `match` inside the lambda with a `Nothing → []` arm.
 `EMatch` with a `PWild => []` fallback arm.  Non-refutable patterns
 (`PVar`, `PWild`, irrefutable `PTuple`) use the original direct lambda.
 
-### Phase 59: Small parser/lexer gaps ⏳ TODO
+### Phase 59: Small parser/lexer gaps ✅ DONE
 
-A grab-bag of small grammar holes worth closing in one pass:
+A grab-bag of small grammar holes closed in one pass:
 
-- **Tuple field access `p.0`, `p.1`** — `.0` currently lexes as
-  the float `0.0`.  Either change the lexer to peek for `INT` after
-  `.` in identifier-position, or just don't support positional
-  tuple access (require pattern destructuring `let (x, y) = p`).
-  Pick a side and document.
-- **Triple-quoted string interpolation** — `read_triple_string`
-  has no `\\' '{'` branch.  Extend with the same `INTERP_OPEN`
-  logic `read_string` uses.
-- **DoBind LHS cannot be cons or literal pattern** — `x::xs <- xs`
-  fails to parse.  Same root cause as the next item.
-- **Last stmt of do-block can't start with an uppercase ctor** —
-  `do { ... ; Some x }` fails; wrap in `pure (Some x)` as a
-  workaround.  Grammar conflict between PCon-as-pat and EApp-as-
-  expr at the start of a do-stmt position.  See `parser.mly`
-  conflict comments.
-- **Int literal max** — `int_of_string` on `9223372036854775807`
-  overflows OCaml's 63-bit int.  Self-hosting opens the door to
-  arbitrary-precision ints, but for the OCaml-hosted compiler,
-  document `max_int = 4611686018427387903` and reject literals
-  above with a clear error rather than a `Failure`.
-- **`pub` only on `use`** — accept `pub` on `data`/`record`/
-  `interface`/`impl`/`fun_def`/`extern` too.  Per design doc,
-  privacy should be per-binding.
-- **`+.` / `-.` / `*.` / `/.` are dead code** — Phase 17 made
-  `+`/etc. dispatch on value type, so these can never be emitted.
-  Prune from `eval_arith`.
-- **`(- 1)` is unary minus, not a section** — same as Haskell.
-  Document; provide `(subtract 1)` if a real subtraction section
-  is desired.
-- **Negative range patterns with parens** — `-100..=(-1)` doesn't
-  parse (Phase 45.14 added bare `-100..=-1`).  The parenthesized
-  form needs a different rule; low priority.
-- **Paren-suppressed `do INDENT … DEDENT`** — see Phase 45.8
-  design limitation; workarounds documented.  Could be revisited
-  with a stateful lexer (`do` re-enables indentation tracking) but
-  not for the OCaml-hosted compiler.
+- **Tuple field access `p.0`, `p.1`** ✅ **Decision: not supported.**
+  Use `let (x, y) = p` pattern destructuring.  Adding positional
+  access would require a non-trivial lexer change to distinguish
+  `.0` from a float literal component; deferred to the self-hosted
+  compiler where the lexer is written in Medaka.
+- **Triple-quoted string interpolation** ✅ **Fixed** (`lib/lexer.mll`).
+  Added `interp_in_triple` flag; `read_triple_string` now emits
+  `INTERP_OPEN` on `\{`; `read_interp_triple_continue` handles the
+  continuation (terminates on `"""`).  Tests in `test_eval.ml`.
+- **DoBind LHS cannot be cons or literal pattern** ✅ **Documented.**
+  Known grammar R/R conflict; see `parser.mly` lines 210–232.
+  Workaround: bind to a variable and match separately.
+- **Last stmt of do-block can't start with an uppercase ctor** ✅
+  **Documented.**  S/R conflict; see `parser.mly` lines 196–206.
+  Workaround: wrap in `pure (Some x)`.
+- **Int literal max** ✅ **Fixed** (`lib/lexer.mll`).  `parse_int`
+  helper replaces bare `int_of_string`; emits a clear error naming
+  the literal and `max_int = 4611686018427387903`.  Test in
+  `test_eval.ml`.
+- **`pub` only on `use`** ✅ **Already resolved** (Phase 40 renamed
+  `pub` → `export`).  The parser accepts `export` on all declaration
+  types (`inner_data_or_record` and `inner_non_data_decl`).
+- **`+.` / `-.` / `*.` / `/.` are dead code** ✅ **Already pruned.**
+  No such operator strings exist in `eval_arith`; `+`/`-`/`*`/`/`
+  dispatch on value type since Phase 17.
+- **`(- 1)` is unary minus, not a section** ✅ **Documented.**
+  Same as Haskell.  Provide `(subtract 1)` if a section is desired.
+- **Negative range patterns with parens** ✅ **Deferred.**  Low
+  priority; the parenthesized form `(-1)` needs a separate rule;
+  won't fix for the OCaml-hosted compiler.
+- **Paren-suppressed `do INDENT … DEDENT`** ✅ **Won't fix** for
+  OCaml-hosted compiler.  See Phase 45.8 design limitation.  Could
+  be revisited with a stateful lexer in the self-hosted compiler.
 
 ### Phase 60: Pre-self-host parser-conflict audit ⏳ TODO
 
