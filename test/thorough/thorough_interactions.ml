@@ -61,11 +61,12 @@ r = match p
 |}
     "r" (VString "somewhere")
 
-(* deriving Eq on a record — still fails because there's no Eq impl
-   for the Int fields, but for a different reason (constraint
-   solving), not the VRecord type-tag bug. *)
+(* deriving Eq on a record with Int fields now succeeds: Phase 52 wired
+   the Eq Int impl into the prelude, so the constraint solver finds it
+   automatically.  This test inverts to a positive case verifying that
+   the derived `eq` on a record with Int fields actually works. *)
 let e_record_deriving_eq_no_int_impl =
-  assert_err
+  assert_typed_val
     {|record Point
   x : Int
   y : Int
@@ -74,6 +75,7 @@ p1 = Point { x = 1, y = 2 }
 p2 = Point { x = 1, y = 2 }
 r = eq p1 p2
 |}
+    "r" "Bool" (VBool true)
 
 (* With a user-provided Eq Int impl, deriving Eq on a record works. *)
 let t_record_deriving_eq_with_int_eq =
@@ -250,19 +252,17 @@ r = f [1, 2, 3]
    7. List comprehensions ⊗ ADT scrutinee
    ===================================================================== *)
 
-(* DIVERGENCE: in Haskell, `[x | Just x <- xs]` silently filters out
-   Nothing values.  Medaka desugars `pat <- xs` to
-   `andThen xs (pat => ...)`, which raises a non-exhaustive match
-   panic when `pat` doesn't match.  Document the current behavior:
-   the comprehension generator pattern MUST be irrefutable.  Listed
-   as a divergence from Haskell that may warrant a design decision. *)
+(* List comprehensions with refutable generator patterns now silently
+   filter non-matching elements (Haskell-style).  The desugaring no
+   longer raises a non-exhaustive match panic — `Just x <- xs` keeps
+   only the `Just` arms. *)
 let t_list_comp_with_ctor_pin =
-  assert_runtime_err
+  assert_val
     {|data Maybe a = Just a | Nothing
 keepJust xs = [x | Just x <- xs]
 r = keepJust [Just 1, Nothing, Just 2, Nothing, Just 3]
 |}
-    "r"
+    "r" (VList [VInt 1; VInt 2; VInt 3])
 
 (* Irrefutable variant: tuple pattern always matches on a tuple list. *)
 let t_list_comp_with_irrefutable =
@@ -710,7 +710,7 @@ let () =
       ( "records + interfaces",
         [ test_case "Show dispatches by type"   `Quick t_record_show_with_int_show
         ; test_case "deriving Show (sole impl)" `Quick t_record_deriving_show_no_other_impl
-        ; test_case "err: deriving Eq no Int Eq" `Quick e_record_deriving_eq_no_int_impl
+        ; test_case "deriving Eq picks up prelude Int Eq" `Quick e_record_deriving_eq_no_int_impl
         ; test_case "deriving Eq w/ Int Eq"     `Quick t_record_deriving_eq_with_int_eq
         ; test_case "user impl over record"     `Quick t_record_user_impl
         ] );
@@ -736,7 +736,7 @@ let () =
         ; test_case "map (f >> g)"          `Quick t_compose_then_apply
         ] );
       ( "list-comp + ADT",
-        [ test_case "refutable pat -> err"  `Quick t_list_comp_with_ctor_pin
+        [ test_case "refutable pat filters non-matches" `Quick t_list_comp_with_ctor_pin
         ; test_case "irrefutable tuple ok"  `Quick t_list_comp_with_irrefutable
         ] );
       ( "@Name across three impls",

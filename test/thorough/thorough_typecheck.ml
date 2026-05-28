@@ -168,15 +168,17 @@ get_value b = b.value
 |}
     "get_value" "Box a -> a"
 
-(* Record with two same-typed fields is fine. *)
+(* Record with two same-typed fields is fine.
+   (Use `total` rather than `sum` to avoid clashing with the prelude's
+   `sum : a Int -> Int` Foldable method via VMulti dispatch.) *)
 let t_rec_two_int_fields =
   assert_type
     {|record P
   x : Int
   y : Int
-sum p = p.x + p.y
+total p = p.x + p.y
 |}
-    "sum" "P -> Int"
+    "total" "P -> Int"
 
 (* Record update on a polymorphic record.  Medaka records are NOT
    row-polymorphic — an update preserves the record's type, so a value
@@ -375,23 +377,25 @@ let t_eff_option_pure =
 
 (* Phase 54: DoAssign in a do-block infers <Mut>; DoFieldAssign too. *)
 
-(* Unannotated function with DoAssign: <Mut> is inferred but no error
-   (Phase 51 silences the ImpureFunction diagnostic; effects still
-   propagate to callers via eff_env). *)
+(* Unannotated function with mutation in a bare sequential block:
+   <Mut> is inferred but no error (Phase 51 silences the ImpureFunction
+   diagnostic; effects still propagate to callers via eff_env).  Phase
+   55.5: `let mut` is allowed only in bare (procedural) blocks — `do` is
+   reserved for monadic composition. *)
 let t_mut_inferred_ok =
   assert_type
-    {|f = do
+    {|f =
   let mut x = 0
   x = 42
   pure x
 |}
     "f" "a Int"
 
-(* Explicit <Mut> annotation on a DoAssign function is accepted. *)
+(* Explicit <Mut> annotation on a mutating function is accepted. *)
 let t_mut_do_assign_annotated =
   assert_type
     {|f : <Mut> (a Int)
-f = do
+f =
   let mut x = 0
   x = 42
   pure x
@@ -425,11 +429,13 @@ bad : Box -> Int -> a Box
 bad b v = mutBox b v
 |}
 
-(* A function performing both IO and mutation can declare both effects. *)
+(* A function performing both IO and mutation can declare both effects.
+   Uses a bare sequential block (Phase 55.5): `let mut` is not allowed
+   inside `do`, so the body is plain sequencing. *)
 let t_mut_and_io_together =
   assert_type
     {|f : <IO, Mut> Unit
-f = do
+f =
   let mut x = 0
   x = 42
   println x
