@@ -217,6 +217,85 @@ let t_project_buffered_override () =
         "Expected clean with override, got:\n%s" (pp_results results))
   )
 
+(* ── Pathological inputs: no exception escapes ──
+
+   The LSP runs `analyze` and `analyze_project` on every keystroke, so an
+   uncaught exception kills the language server.  These tests feed a small
+   corpus of malformed/edge-case sources through both entry points and
+   assert that they return a diagnostic list without raising. *)
+
+let pathological_sources = [
+  "empty", "";
+  "whitespace only", "   \n\n   \n";
+  "unterminated string", "f = \"hello";
+  "unterminated interpolation", "f = \"hi ${1 + ";
+  "unterminated nested interp", "f = \"a${\"b${1";
+  "deeply nested parens", "f = " ^ String.make 200 '(' ^ "1" ^ String.make 200 ')';
+  "unmatched open paren", "f = (1 + 2";
+  "unmatched close paren", "f = 1 + 2)";
+  "unmatched open brace", "f = { x = 1";
+  "unmatched open bracket", "f = [1, 2, 3";
+  "random punctuation", "@#$%^&*~`?!|\\";
+  "lone backslash", "\\";
+  "null bytes", "f = \x00\x00\x00";
+  "high-bit bytes", "f = \xff\xfe\xfd";
+  "very long ident",
+    "f = " ^ String.make 5000 'a';
+  "many decls all broken",
+    String.concat "\n" (List.init 50 (fun i ->
+      Printf.sprintf "f%d = nope%d +" i i));
+  "mismatched indent", "f x =\n    1\n  2\n      3\n 4\n";
+  "tabs and spaces mixed", "f x =\n\t  1\n  \t2\n";
+  "trailing operator", "f x = x +\n";
+  "leading operator", "f = + 1\n";
+  "comment unterminated", "(* this never closes\nf = 1\n";
+  "binding with no body", "f =\n";
+  "import malformed", "import ...\nf = 1\n";
+  "double equals", "f == 1\n";
+  "unicode salad", "f = \xe2\x98\x83\xe2\x9c\xa8";  (* ☃✨ *)
+]
+
+let t_analyze_no_escape () =
+  List.iter (fun (label, src) ->
+    try
+      let _ : diagnostic list = analyze src in
+      ()
+    with e ->
+      failwith (Printf.sprintf
+        "analyze raised on %S: %s\nSource:\n%s"
+        label (Printexc.to_string e) src)
+  ) pathological_sources
+
+let t_analyze_project_no_escape () =
+  List.iter (fun (label, src) ->
+    with_tmp_dir (fun dir ->
+      let path = write_file dir "main.mdk" src in
+      try
+        let _ : (string * diagnostic list) list =
+          analyze_project ~root_file:path ~project_dir:dir ~read:no_override
+        in
+        ()
+      with e ->
+        failwith (Printf.sprintf
+          "analyze_project raised on %S: %s\nSource:\n%s"
+          label (Printexc.to_string e) src)
+    )
+  ) pathological_sources
+
+(* Cyclic imports with malformed sources — combines two failure modes. *)
+let t_cyclic_with_garbage_no_escape () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "import b.{y}\nexport x = ((( nope\n" in
+    let b = write_file dir "b.mdk" "import a.{x}\nexport y = \"unterminated\n" in
+    try
+      let _ = analyze_project ~root_file:b ~project_dir:dir ~read:no_override in
+      ()
+    with e ->
+      failwith (Printf.sprintf
+        "analyze_project raised on cycle+garbage: %s"
+        (Printexc.to_string e))
+  )
+
 (* ── Runner ─────────────────────────────────── *)
 
 let () =
@@ -238,5 +317,13 @@ let () =
       test_case "unknown module"      `Quick t_project_unknown_module;
       test_case "cyclic dependency"   `Quick t_project_cycle;
       test_case "buffered override"   `Quick t_project_buffered_override;
+    ];
+    "resilience", [
+      test_case "analyze: no exception escapes"
+        `Quick t_analyze_no_escape;
+      test_case "analyze_project: no exception escapes"
+        `Quick t_analyze_project_no_escape;
+      test_case "cyclic + garbage: no exception escapes"
+        `Quick t_cyclic_with_garbage_no_escape;
     ];
   ]

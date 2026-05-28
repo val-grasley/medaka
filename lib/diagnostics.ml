@@ -45,6 +45,20 @@ let loc_of_lex_pos (p : Lexing.position) : Ast.loc =
     end_col  = col + 1;
   }
 
+(* Push a generic "internal error" diagnostic — used when an unexpected
+   exception escapes a pipeline stage.  We log the full backtrace via
+   [Lsp_log.exn] and surface a short marker in the editor so the user can
+   tell the analyzer hit a bug. *)
+let push_internal_error push ~file ~stage e =
+  Lsp_log.exn
+    (Printf.sprintf "internal error in %s for %s" stage file) e;
+  push {
+    severity = Error;
+    loc      = dummy_loc ~file;
+    message  = Printf.sprintf "Internal error in %s: %s"
+                 stage (Printexc.to_string e);
+  }
+
 let analyze ~(file : string) ~(source : string) : diagnostic list =
   let diags = ref [] in
   let push d = diags := d :: !diags in
@@ -70,39 +84,55 @@ let analyze ~(file : string) ~(source : string) : diagnostic list =
         message  = msg;
       };
       None
+    | e ->
+      push_internal_error push ~file ~stage:"parse" e;
+      None
   in
-  match program_opt with
-  | None -> List.rev !diags
-  | Some prog ->
-    let prog = Desugar.desugar_program prog in
+  (match program_opt with
+   | None -> ()
+   | Some prog ->
+     let prog_opt =
+       try Some (Desugar.desugar_program prog) with e ->
+         push_internal_error push ~file ~stage:"desugar" e; None
+     in
+     (match prog_opt with
+      | None -> ()
+      | Some prog ->
+        let resolve_errs_opt =
+          try Some (Resolve.resolve_program prog) with e ->
+            push_internal_error push ~file ~stage:"resolve" e; None
+        in
+        (match resolve_errs_opt with
+         | None -> ()
+         | Some resolve_errs ->
+           List.iter (fun (err, loc_opt) ->
+             push {
+               severity = Error;
+               loc      = loc_or_dummy ~file loc_opt;
+               message  = pp_resolve_error err;
+             }
+           ) resolve_errs;
 
-    let resolve_errs = Resolve.resolve_program prog in
-    List.iter (fun (err, loc_opt) ->
-      push {
-        severity = Error;
-        loc      = loc_or_dummy ~file loc_opt;
-        message  = pp_resolve_error err;
-      }
-    ) resolve_errs;
-
-    (* Only run typecheck if resolve had no errors — typecheck calls into
-       env state that resolve populates, and running it on an inconsistent
-       AST can produce nonsense errors. *)
-    if resolve_errs = [] then begin
-      try
-        let (_env, warnings) = Typecheck.check_program prog in
-        List.iter (fun msg ->
-          push { severity = Warning; loc = dummy_loc ~file; message = msg }
-        ) warnings
-      with Typecheck.Type_error (e, loc_opt) ->
-        push {
-          severity = Error;
-          loc      = loc_or_dummy ~file loc_opt;
-          message  = pp_type_error e;
-        }
-    end;
-
-    List.rev !diags
+           (* Only run typecheck if resolve had no errors — typecheck calls into
+              env state that resolve populates, and running it on an inconsistent
+              AST can produce nonsense errors. *)
+           if resolve_errs = [] then begin
+             try
+               let (_env, warnings) = Typecheck.check_program prog in
+               List.iter (fun msg ->
+                 push { severity = Warning; loc = dummy_loc ~file; message = msg }
+               ) warnings
+             with
+             | Typecheck.Type_error (e, loc_opt) ->
+               push {
+                 severity = Error;
+                 loc      = loc_or_dummy ~file loc_opt;
+                 message  = pp_type_error e;
+               }
+             | e ->
+               push_internal_error push ~file ~stage:"typecheck" e
+           end)));
+  List.rev !diags
 
 (* Render a diagnostic the way tests print it on failure. *)
 let pp_diagnostic d =
@@ -270,10 +300,25 @@ let analyze_project
   : (string * diagnostic list) list =
   let buckets : buckets = Hashtbl.create 8 in
 
+  let push_module_internal_error ~file_path ~stage e =
+    Lsp_log.exn
+      (Printf.sprintf "internal error in %s for %s" stage file_path) e;
+    push_into buckets file_path {
+      severity = Error;
+      loc      = dummy_loc ~file:file_path;
+      message  = Printf.sprintf "Internal error in %s: %s"
+                   stage (Printexc.to_string e);
+    }
+  in
+
   let modules_opt =
     try Some (Loader.load_program ~read root_file [project_dir])
-    with Loader.LoadError e ->
+    with
+    | Loader.LoadError e ->
       attribute_load_error buckets ~root_file ~read e;
+      None
+    | e ->
+      push_module_internal_error ~file_path:root_file ~stage:"loader" e;
       None
   in
   match modules_opt with
@@ -286,35 +331,44 @@ let analyze_project
       let _ = bucket_for buckets fp in ()
     ) modules;
 
+    (* Desugar per-module so a bug on one file doesn't kill the rest.
+       Modules that fail to desugar are dropped from the downstream
+       pipeline (resolve/typecheck) and replaced with None. *)
     let modules =
       List.map (fun (mid, fp, prog) ->
-        (mid, fp, Desugar.desugar_program prog)
+        try Some (mid, fp, Desugar.desugar_program prog) with e ->
+          push_module_internal_error ~file_path:fp ~stage:"desugar" e;
+          None
       ) modules
     in
+    let modules = List.filter_map (fun x -> x) modules in
 
     (* Resolve all modules in dependency order, accumulating exports. *)
     let resolve_exports = ref [] in
     List.iter (fun (mod_id, file_path, prog) ->
-      let (exports, errs) =
-        Resolve.resolve_module !resolve_exports mod_id prog
-      in
-      List.iter (fun (err, loc_opt) ->
-        push_into buckets (loc_or_dummy ~file:file_path loc_opt).file {
-          severity = Error;
-          loc      = loc_or_dummy ~file:file_path loc_opt;
-          message  = pp_resolve_error err;
-        }
-      ) errs;
-      (* Always accumulate exports — even on errors — so later modules
-         don't cascade into "unknown module" noise. *)
-      resolve_exports := exports :: !resolve_exports
+      try
+        let (exports, errs) =
+          Resolve.resolve_module !resolve_exports mod_id prog
+        in
+        List.iter (fun (err, loc_opt) ->
+          push_into buckets (loc_or_dummy ~file:file_path loc_opt).file {
+            severity = Error;
+            loc      = loc_or_dummy ~file:file_path loc_opt;
+            message  = pp_resolve_error err;
+          }
+        ) errs;
+        (* Always accumulate exports — even on errors — so later modules
+           don't cascade into "unknown module" noise. *)
+        resolve_exports := exports :: !resolve_exports
+      with e ->
+        push_module_internal_error ~file_path ~stage:"resolve" e
     ) modules;
 
     (* Typecheck all modules in dependency order.  One Type_error per
        module max (typecheck still raises on first failure). *)
     let type_exports = ref [] in
     List.iter (fun (mod_id, file_path, prog) ->
-      (try
+      try
         let (te, _schemes, warnings) =
           Typecheck.typecheck_module !type_exports mod_id prog
         in
@@ -323,13 +377,16 @@ let analyze_project
           push_into buckets file_path
             { severity = Warning; loc = dummy_loc ~file:file_path; message = msg }
         ) warnings
-       with Typecheck.Type_error (e, loc_opt) ->
-         let loc = loc_or_dummy ~file:file_path loc_opt in
-         push_into buckets loc.file {
-           severity = Error;
-           loc;
-           message  = pp_type_error e;
-         })
+      with
+      | Typecheck.Type_error (e, loc_opt) ->
+        let loc = loc_or_dummy ~file:file_path loc_opt in
+        push_into buckets loc.file {
+          severity = Error;
+          loc;
+          message  = pp_type_error e;
+        }
+      | e ->
+        push_module_internal_error ~file_path ~stage:"typecheck" e
     ) modules;
 
     Hashtbl.fold (fun file r acc -> (file, List.rev !r) :: acc) buckets []

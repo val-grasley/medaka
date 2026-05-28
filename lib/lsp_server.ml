@@ -167,7 +167,16 @@ let handle_initialize (_p : InitializeParams.t) : InitializeResult.t =
   in
   InitializeResult.create ~capabilities:caps ~serverInfo:info ()
 
-let handle_notification (n : Client_notification.t) =
+let notification_label (n : Client_notification.t) : string =
+  match n with
+  | Client_notification.TextDocumentDidOpen _   -> "textDocument/didOpen"
+  | Client_notification.TextDocumentDidChange _ -> "textDocument/didChange"
+  | Client_notification.TextDocumentDidClose _  -> "textDocument/didClose"
+  | Client_notification.Initialized             -> "initialized"
+  | Client_notification.Exit                    -> "exit"
+  | _                                           -> "<other>"
+
+let handle_notification_unsafe (n : Client_notification.t) =
   match n with
   | Client_notification.TextDocumentDidOpen p ->
     let uri_str = DocumentUri.to_string p.textDocument.uri in
@@ -201,7 +210,16 @@ let handle_notification (n : Client_notification.t) =
     Hashtbl.remove published_uris uri_str
   | _ -> ()
 
-let handle_request (req : Jsonrpc.Request.t) : Jsonrpc.Response.t =
+(* Top-level catch-all: any exception from a notification handler is logged
+   and swallowed.  Notifications have no response, so the client never
+   learns about the failure — but the server stays alive. *)
+let handle_notification (n : Client_notification.t) =
+  try handle_notification_unsafe n with e ->
+    Lsp_log.exn
+      (Printf.sprintf "uncaught exception in notification handler (%s)"
+        (notification_label n)) e
+
+let handle_request_unsafe (req : Jsonrpc.Request.t) : Jsonrpc.Response.t =
   match Client_request.of_jsonrpc req with
   | Error msg ->
     Jsonrpc.Response.error req.id
@@ -222,22 +240,51 @@ let handle_request (req : Jsonrpc.Request.t) : Jsonrpc.Response.t =
            ~message:(Printf.sprintf "method %s not implemented" req.method_)
            ()))
 
+(* Top-level catch-all: any exception is logged with a backtrace and turned
+   into an InternalError response, so the client gets a clean reply and the
+   server stays alive. *)
+let handle_request (req : Jsonrpc.Request.t) : Jsonrpc.Response.t =
+  try handle_request_unsafe req with e ->
+    Lsp_log.exn
+      (Printf.sprintf "uncaught exception handling request %s" req.method_) e;
+    Jsonrpc.Response.error req.id
+      (Jsonrpc.Response.Error.make
+        ~code:Jsonrpc.Response.Error.Code.InternalError
+        ~message:(Printf.sprintf "internal error: %s" (Printexc.to_string e))
+        ())
+
 (* ── Main loop ─────────────────────────────────────────────── *)
 
 let run () =
+  Printexc.record_backtrace true;
   set_binary_mode_in  stdin  true;
   set_binary_mode_out stdout true;
+  Lsp_log.info "LSP starting";
   let continue = ref true in
   while !continue do
-    match Rpc_io.read stdin with
-    | None -> continue := false
-    | Some (Jsonrpc.Packet.Request req) ->
-      let resp = handle_request req in
-      Rpc_io.write stdout (Jsonrpc.Packet.Response resp)
-    | Some (Jsonrpc.Packet.Notification jsonrpc_notif) ->
-      (match Client_notification.of_jsonrpc jsonrpc_notif with
-       | Ok Client_notification.Exit -> continue := false
-       | Ok n -> handle_notification n
-       | Error _ -> ())
-    | Some _ -> ()  (* Responses/batches not expected from clients we target. *)
-  done
+    (* Wrap the per-iteration body so a single bad frame doesn't kill the
+       loop.  Genuine EOF / broken-pipe conditions still end the session
+       (see the End_of_file / Sys_error arms below). *)
+    try
+      match Rpc_io.read stdin with
+      | None -> continue := false
+      | Some (Jsonrpc.Packet.Request req) ->
+        let resp = handle_request req in
+        Rpc_io.write stdout (Jsonrpc.Packet.Response resp)
+      | Some (Jsonrpc.Packet.Notification jsonrpc_notif) ->
+        (match Client_notification.of_jsonrpc jsonrpc_notif with
+         | Ok Client_notification.Exit -> continue := false
+         | Ok n -> handle_notification n
+         | Error _ -> ())
+      | Some _ -> ()  (* Responses/batches not expected from clients we target. *)
+    with
+    | End_of_file ->
+      continue := false
+    | Sys_error msg ->
+      (* Broken pipe / closed stdout: nothing we can do, exit cleanly. *)
+      Lsp_log.error (Printf.sprintf "I/O error, exiting: %s" msg);
+      continue := false
+    | e ->
+      Lsp_log.exn "uncaught exception in main loop iteration" e
+  done;
+  Lsp_log.info "LSP exiting"
