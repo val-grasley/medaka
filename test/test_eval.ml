@@ -189,6 +189,20 @@ p2 = { p | address.city = "Boston" }
 r = p2.address.city
 |} "r" (VString "Boston")
 
+let t_record_update_nested_deep = assert_val {|record Country
+  code : String
+record Address
+  country : Country
+record Person
+  name : String
+  address : Address
+c = Country { code = "UK" }
+addr = Address { country = c }
+p = Person { name = "Alice", address = addr }
+p2 = { p | address.country.code = "US" }
+r = p2.address.country.code
+|} "r" (VString "US")
+
 let t_record_update_nested_unchanged = assert_val {|record Address
   city : String
 record Person
@@ -899,6 +913,7 @@ let () =
       test_case "create" `Quick t_record;
       test_case "update" `Quick t_record_update;
       test_case "update nested"           `Quick t_record_update_nested;
+      test_case "update nested deep"      `Quick t_record_update_nested_deep;
       test_case "update nested unchanged" `Quick t_record_update_nested_unchanged;
     ];
     "tuples", [

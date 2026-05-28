@@ -304,6 +304,19 @@ let t_rec_update = assert_type
 moveRight p = { p | x = p.x + 1 }
 |} "moveRight" "Point -> Point"
 
+(* Multi-level nested record update preserves the outermost type *)
+let t_rec_update_multi_level = assert_type
+  {|record Country
+  code : String
+record Address
+  country : Country
+record Person
+  name : String
+  address : Address
+
+updateCode p = { p | address.country.code = "US" }
+|} "updateCode" "Person -> Person"
+
 (* Polymorphic record *)
 let t_rec_poly_create = assert_type
   {|record Pair a b
@@ -2240,6 +2253,7 @@ let () =
       test_case "access Int field"    `Quick t_rec_access;
       test_case "access String field" `Quick t_rec_access_string;
       test_case "update"              `Quick t_rec_update;
+      test_case "update multi-level"  `Quick t_rec_update_multi_level;
       test_case "poly create"         `Quick t_rec_poly_create;
       test_case "poly access"         `Quick t_rec_poly_access;
       test_case "multi-field access"  `Quick t_rec_multi_access;
