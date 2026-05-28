@@ -27,12 +27,35 @@ let show_snippet source loc_opt =
 let has_use_decls prog =
   List.exists (function Medaka_lib.Ast.DUse _ -> true | _ -> false) prog
 
+let print_usage () =
+  print_endline {|medaka — language for thinking out loud
+
+Usage:
+  medaka                    Start the REPL.
+  medaka repl               Start the REPL.
+  medaka run <file.mdk>     Type-check and run a program.
+  medaka check <file.mdk>   Type-check without running.
+  medaka test [file.mdk]    Run doctests + prop tests.
+  medaka bench [file.mdk]   Run bench declarations.
+  medaka fmt [paths...]     Format .mdk files in place (or --check).
+  medaka new <name>         Scaffold a new project directory.
+  medaka lsp                Run the language server over stdio.
+  medaka help               Show this message.
+
+Run inside a project (medaka.toml) and the file argument may be
+omitted: medaka run / check / test will use the [package].entry.|}
+
 let () =
   (* Permissive subcommand match: tolerate trailing args from clients
      that pass --stdio or similar flags. *)
   let argv = Sys.argv in
   let argc = Array.length argv in
   let has_sub s = argc >= 2 && argv.(1) = s in
+  let is_help_flag () =
+    argc >= 2
+    && (argv.(1) = "help" || argv.(1) = "--help" || argv.(1) = "-h")
+  in
+  if is_help_flag () then begin print_usage (); exit 0 end;
   if argc = 1 || has_sub "repl" then begin
     Medaka_lib.Repl.run (); exit 0
   end;
@@ -342,8 +365,7 @@ cd into a member or specify a file\n"; exit 1
     end
     else if argc = 2 then `Run, argv.(1)
     else begin
-      print_endline
-        "Usage: medaka [check|run|test|bench|repl|lsp|fmt|new] <file.mdk|name>"; exit 1
+      print_usage (); exit 1
     end
   in
   let project_dir =
