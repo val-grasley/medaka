@@ -112,6 +112,7 @@ type type_error =
   | FieldAssignInDo     of ident * ident           (* `x.field = e` inside a do block *)
   | NotARecord          of ident                   (* field assignment on non-record type *)
   | RecursiveTypeAlias  of ident                   (* type alias that expands to itself *)
+  | LetRecNonFunction   of ident                   (* `let rec x = ...` where RHS isn't a lambda *)
   | Other              of string
 
 exception Type_error of type_error * Ast.loc option
@@ -364,6 +365,10 @@ let pp_error = function
     Printf.sprintf "Field assignment on '%s': type is not a record or Ref" x
   | RecursiveTypeAlias n ->
     Printf.sprintf "Recursive type alias: '%s' expands to itself" n
+  | LetRecNonFunction n ->
+    Printf.sprintf
+      "'%s' is bound by 'let rec' but its right-hand side is not a function. Recursive value bindings must have a lambda right-hand side; cyclic data structures are not supported."
+      n
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -1397,30 +1402,126 @@ and binop_type env op l r =
 (* Group fn defs by name, preserving first-appearance order in source.
    Order matters for type-checking — later defs can use earlier defs at
    polymorphic types only if earlier defs are processed (and generalized)
-   first. *)
-let group_fundefs decls =
+   first.
+
+   Result: list of "letrec groups" — each group is a list of (name, sig_opt,
+   clauses) that must be type-checked together as a mutual-recursion unit.
+   `is_letrec` is true when the group came from `DLetGroup` (let rec ...).
+   `DFunDef`s become singleton groups (is_letrec = false). *)
+let group_fundefs decls
+  : (bool * (string * Ast.ty option * (pat list * expr) list) list) list
+  =
   let sigs = Hashtbl.create 16 in
-  let clauses = Hashtbl.create 16 in
-  let order = ref [] in
   List.iter (fun d -> match Ast.inner_decl d with
-    | DTypeSig (_, n, t) ->
-      if not (Hashtbl.mem clauses n) && not (Hashtbl.mem sigs n) then
-        order := n :: !order;
-      Hashtbl.replace sigs n t
-    | DFunDef (_, n, pats, body) ->
-      if not (Hashtbl.mem clauses n) then begin
-        if not (Hashtbl.mem sigs n) then order := n :: !order
-      end;
-      let existing = try Hashtbl.find clauses n with Not_found -> [] in
-      Hashtbl.replace clauses n (existing @ [(pats, body)])
+    | DTypeSig (_, n, t) -> Hashtbl.replace sigs n t
     | _ -> ()
   ) decls;
-  List.rev_map (fun n ->
-    let cs = try Hashtbl.find clauses n with Not_found -> [] in
-    let sg = try Some (Hashtbl.find sigs n) with Not_found -> None in
-    (n, sg, cs)
-  ) !order
-  |> List.filter (fun (_, _, cs) -> cs <> [])  (* skip sigs with no def *)
+  (* Single-fn clauses get coalesced by name, preserving source order. *)
+  let single_clauses = Hashtbl.create 16 in
+  let groups_in_order = ref [] in
+  let push_single n =
+    if not (Hashtbl.mem single_clauses n) then
+      groups_in_order := `Single n :: !groups_in_order
+  in
+  List.iter (fun d -> match Ast.inner_decl d with
+    | DFunDef (_, n, pats, body) ->
+      push_single n;
+      let existing = try Hashtbl.find single_clauses n with Not_found -> [] in
+      Hashtbl.replace single_clauses n (existing @ [(pats, body)])
+    | DLetGroup (_, bindings) ->
+      let members = List.map (fun (n, clauses) ->
+        let sig_opt = try Some (Hashtbl.find sigs n) with Not_found -> None in
+        (n, sig_opt, clauses)
+      ) bindings in
+      groups_in_order := `Letrec members :: !groups_in_order
+    | _ -> ()
+  ) decls;
+  let lookup_sig n =
+    try Some (Hashtbl.find sigs n) with Not_found -> None
+  in
+  List.rev_map (function
+    | `Single n ->
+      let cs = try Hashtbl.find single_clauses n with Not_found -> [] in
+      (false, [(n, lookup_sig n, cs)])
+    | `Letrec members ->
+      (true, members)
+  ) !groups_in_order
+  |> List.filter (fun (_, members) ->
+    List.for_all (fun (_, _, cs) -> cs <> []) members)
+
+(* Flatten the grouped output for callers that just want a (name, sig, clauses) list. *)
+let flatten_groups groups =
+  List.concat_map snd groups
+
+(* Recognize syntactic lambdas, peeling location wrappers. *)
+let rec is_syntactic_lambda = function
+  | ELam _      -> true
+  | ELoc (_, e) -> is_syntactic_lambda e
+  | _           -> false
+
+(* Find the first source-location annotation in an expression — used to attach
+   a position to diagnostics raised outside the normal inference walk. *)
+let rec first_loc = function
+  | ELoc (l, _)        -> Some l
+  | EApp (f, _)        -> first_loc f
+  | ELam (_, body)     -> first_loc body
+  | EBinOp (_, l, _)   -> first_loc l
+  | EUnOp (_, e)       -> first_loc e
+  | EIf (c, _, _)      -> first_loc c
+  | EFieldAccess (e, _) -> first_loc e
+  | EAnnot (e, _)      -> first_loc e
+  | _                  -> None
+
+(* Type-check one letrec group (a list of name/sig/clauses entries).
+   Pre-bound placeholders for all names must already live in `!env_ref`.
+   On a let-rec group (is_letrec = true), zero-arg clauses are required to
+   have a lambda RHS — strict-evaluation rules out cyclic non-function data. *)
+let process_letrec_group env_ref placeholders (is_letrec, members) =
+  enter_level ();
+  let cs_monos_list = List.map (fun (name, sig_opt, clauses) ->
+    let placeholder = List.assoc name placeholders in
+    let cs_monos =
+      match sig_opt with
+      | None -> []
+      | Some sig_ast ->
+        let (cs, sig_t) = from_ast_type_with_constraints
+                            ~aliases:(!env_ref).aliases sig_ast in
+        unify placeholder sig_t;
+        cs
+    in
+    if is_letrec then
+      List.iter (fun (pats, rhs) ->
+        if pats = [] && not (is_syntactic_lambda rhs) then begin
+          current_loc := first_loc rhs;
+          fail (LetRecNonFunction name)
+        end
+      ) clauses;
+    List.iter (fun clause ->
+      let t = infer !env_ref (clause_to_expr clause) in
+      unify placeholder t
+    ) clauses;
+    (name, cs_monos)
+  ) members in
+  exit_level ();
+  List.map (fun (name, cs_monos) ->
+    let placeholder = List.assoc name placeholders in
+    let scheme = generalize placeholder in
+    (match scheme with
+     | Forall (bound_ids, _) when cs_monos <> [] ->
+       let extract_id m = match normalize m with
+         | TVar {contents = Unbound (id, _)} when List.mem id bound_ids -> Some id
+         | _ -> None
+       in
+       let cs = List.filter_map (fun (iface, arg_monos) ->
+         let ids = List.filter_map extract_id arg_monos in
+         if ids <> [] then Some (iface, ids) else None
+       ) cs_monos in
+       if cs <> [] then
+         Hashtbl.replace (!env_ref).fun_constraints name cs
+     | _ -> ());
+    env_ref := extend_var !env_ref name scheme;
+    (name, scheme)
+  ) cs_monos_list
 
 (* Register data type constructors in env *)
 let register_data ?(aliases=Hashtbl.create 0) env (name, params, variants) =
@@ -2052,6 +2153,9 @@ let register_attrs env decls =
   let decl_name d = match d with
     | DFunDef (_, n, _, _) -> Some n
     | DExtern  (_, n, _)   -> Some n
+    (* DLetGroup binds multiple names; @attrs on a let-rec apply to the first
+       member, mirroring how multi-clause attrs work. *)
+    | DLetGroup (_, ((n, _) :: _)) -> Some n
     | _                    -> None
   in
   List.iter (function
@@ -2153,55 +2257,21 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   (* Phase 3: pre-bind every top-level name with a placeholder at level 1.
      Also bind all interface methods so they are visible in function bodies. *)
   enter_level ();
-  let placeholders = List.map (fun (n, _, _) -> (n, fresh_var ())) groups in
+  let placeholders = List.concat_map (fun (_, members) ->
+    List.map (fun (n, _, _) -> (n, fresh_var ())) members
+  ) groups in
   exit_level ();
   let env = ref (
     let e = List.fold_left
       (fun e (n, t) -> extend_var e n (monotype t))
       env placeholders in
-    (* fold_right so the LAST item in iface_method_schemes is prepended FIRST
-       (lands at the bottom of env.vars), and the FIRST item — the most
-       recently declared interface, e.g. a user-side redeclaration of a
-       prelude interface — is prepended LAST and wins lookup. *)
     let e = List.fold_right (fun (n, s) e -> extend_var e n s) !iface_method_schemes e in
     List.fold_left (fun e (n, s) -> extend_var e n s) e !extern_schemes
   ) in
 
-  (* Phase 4: process each group sequentially. *)
-  let results = List.map (fun (name, sig_opt, clauses) ->
-    let placeholder = List.assoc name placeholders in
-    enter_level ();
-    let cs_monos =
-      match sig_opt with
-      | None -> []
-      | Some sig_ast ->
-        let (cs, sig_t) = from_ast_type_with_constraints ~aliases:(!env).aliases sig_ast in
-        unify placeholder sig_t;
-        cs
-    in
-    List.iter (fun clause ->
-      let t = infer !env (clause_to_expr clause) in
-      unify placeholder t
-    ) clauses;
-    exit_level ();
-    let scheme = generalize placeholder in
-    (* Register any constraints from the type signature in fun_constraints *)
-    (match scheme with
-     | Forall (bound_ids, _) when cs_monos <> [] ->
-       let extract_id m = match normalize m with
-         | TVar {contents = Unbound (id, _)} when List.mem id bound_ids -> Some id
-         | _ -> None
-       in
-       let cs = List.filter_map (fun (iface, arg_monos) ->
-         let ids = List.filter_map extract_id arg_monos in
-         if ids <> [] then Some (iface, ids) else None
-       ) cs_monos in
-       if cs <> [] then
-         Hashtbl.replace (!env).fun_constraints name cs
-     | _ -> ());
-    env := extend_var !env name scheme;
-    (name, scheme)
-  ) groups in
+  (* Phase 4: process each letrec group as a batch (singleton DFunDefs included). *)
+  let results = List.concat_map
+    (process_letrec_group env placeholders) groups in
 
   (* Phase 4.5: validate impl method bodies against their interfaces *)
   List.iter (fun d -> match Ast.inner_decl d with
@@ -2233,7 +2303,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
       | DExtern (_, n, t) -> Some (n, t)
       | _ -> None) prog
   in
-  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results groups;
+  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results (flatten_groups groups);
 
   (* Validate the built-in registry against what the prelude loaded.
      This is a compiler-build invariant: if any expected stdlib name is
@@ -2363,7 +2433,8 @@ let typecheck_module
 
   let groups = group_fundefs prog in
   enter_level ();
-  let placeholders = List.map (fun (n, _, _) -> (n, fresh_var ())) groups in
+  let placeholders = List.concat_map (fun (_, members) ->
+    List.map (fun (n, _, _) -> (n, fresh_var ())) members) groups in
   exit_level ();
   let env = ref (
     let e = List.fold_left (fun e (n, t) -> extend_var e n (monotype t)) env placeholders in
@@ -2372,39 +2443,7 @@ let typecheck_module
     List.fold_left (fun e (n, s) -> extend_var e n s) e !use_schemes
   ) in
 
-  let results = List.map (fun (name, sig_opt, clauses) ->
-    let placeholder = List.assoc name placeholders in
-    enter_level ();
-    let cs_monos =
-      match sig_opt with
-      | None -> []
-      | Some sig_ast ->
-        let (cs, sig_t) = from_ast_type_with_constraints ~aliases:(!env).aliases sig_ast in
-        unify placeholder sig_t;
-        cs
-    in
-    List.iter (fun clause ->
-      let t = infer !env (clause_to_expr clause) in
-      unify placeholder t
-    ) clauses;
-    exit_level ();
-    let scheme = generalize placeholder in
-    (match scheme with
-     | Forall (bound_ids, _) when cs_monos <> [] ->
-       let extract_id m = match normalize m with
-         | TVar {contents = Unbound (id, _)} when List.mem id bound_ids -> Some id
-         | _ -> None
-       in
-       let cs = List.filter_map (fun (iface, arg_monos) ->
-         let ids = List.filter_map extract_id arg_monos in
-         if ids <> [] then Some (iface, ids) else None
-       ) cs_monos in
-       if cs <> [] then
-         Hashtbl.replace (!env).fun_constraints name cs
-     | _ -> ());
-    env := extend_var !env name scheme;
-    (name, scheme)
-  ) groups in
+  let results = List.concat_map (process_letrec_group env placeholders) groups in
 
   List.iter (fun d -> match Ast.inner_decl d with DImpl _ as d -> check_impl !env d | _ -> ()) prog;
   List.iter (fun d -> match Ast.inner_decl d with
@@ -2424,21 +2463,23 @@ let typecheck_module
   let user_extern_decls =
     List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) prog
   in
-  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results groups;
+  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results (flatten_groups groups);
 
   let all_schemes = results @ !iface_method_schemes @ !extern_schemes in
   let warnings = List.rev !(!env.warnings) in
 
   (* Build this module's public exports *)
-  let pub_schemes = List.filter_map (fun d ->
+  let pub_schemes = List.concat_map (fun d ->
+    let pick n = match List.assoc_opt n all_schemes with
+      | Some s -> [(n, s)]
+      | None   -> []
+    in
     match Ast.inner_decl d with
-    | DFunDef (true, n, _, _) ->
-      (match List.assoc_opt n all_schemes with Some s -> Some (n, s) | None -> None)
-    | DTypeSig (true, n, _) ->
-      (match List.assoc_opt n all_schemes with Some s -> Some (n, s) | None -> None)
-    | DExtern (true, n, _) ->
-      (match List.assoc_opt n all_schemes with Some s -> Some (n, s) | None -> None)
-    | _ -> None
+    | DFunDef (true, n, _, _) -> pick n
+    | DLetGroup (true, bs)    -> List.concat_map (fun (n, _) -> pick n) bs
+    | DTypeSig (true, n, _)   -> pick n
+    | DExtern (true, n, _)    -> pick n
+    | _                       -> []
   ) prog in
   (* Interface methods from pub interfaces are also exported *)
   let pub_iface_schemes = List.filter_map (fun d ->
@@ -2565,7 +2606,8 @@ let check_repl_decl ?(seeded=false) (env : env ref) (decls : decl list)
   check_coherence !env;
   let groups = group_fundefs decls in
   enter_level ();
-  let placeholders = List.map (fun (n, _, _) -> (n, fresh_var ())) groups in
+  let placeholders = List.concat_map (fun (_, members) ->
+    List.map (fun (n, _, _) -> (n, fresh_var ())) members) groups in
   exit_level ();
   env := (
     let e = List.fold_left
@@ -2574,39 +2616,7 @@ let check_repl_decl ?(seeded=false) (env : env ref) (decls : decl list)
     let e = List.fold_right (fun (n, s) e -> extend_var e n s) !iface_method_schemes e in
     List.fold_left (fun e (n, s) -> extend_var e n s) e !extern_schemes
   );
-  let results = List.map (fun (name, sig_opt, clauses) ->
-    let placeholder = List.assoc name placeholders in
-    enter_level ();
-    let cs_monos =
-      match sig_opt with
-      | None -> []
-      | Some sig_ast ->
-        let (cs, sig_t) = from_ast_type_with_constraints ~aliases:(!env).aliases sig_ast in
-        unify placeholder sig_t;
-        cs
-    in
-    List.iter (fun clause ->
-      let t = infer !env (clause_to_expr clause) in
-      unify placeholder t
-    ) clauses;
-    exit_level ();
-    let scheme = generalize placeholder in
-    (match scheme with
-     | Forall (bound_ids, _) when cs_monos <> [] ->
-       let extract_id m = match normalize m with
-         | TVar {contents = Unbound (id, _)} when List.mem id bound_ids -> Some id
-         | _ -> None
-       in
-       let cs = List.filter_map (fun (iface, arg_monos) ->
-         let ids = List.filter_map extract_id arg_monos in
-         if ids <> [] then Some (iface, ids) else None
-       ) cs_monos in
-       if cs <> [] then
-         Hashtbl.replace (!env).fun_constraints name cs
-     | _ -> ());
-    env := extend_var !env name scheme;
-    (name, scheme)
-  ) groups in
+  let results = List.concat_map (process_letrec_group env placeholders) groups in
   List.iter (fun d -> match Ast.inner_decl d with
     | DImpl _ as d -> check_impl !env d
     | _ -> ()
@@ -2628,7 +2638,7 @@ let check_repl_decl ?(seeded=false) (env : env ref) (decls : decl list)
   let user_extern_decls =
     List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) decls
   in
-  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results groups;
+  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results (flatten_groups groups);
   (results @ !iface_method_schemes @ !extern_schemes,
    List.rev !(!env.warnings))
 

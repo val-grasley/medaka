@@ -24,6 +24,12 @@ let rec pp_decl d =
   | DFunDef (_, n, ps, e) -> Printf.sprintf "DFunDef(%s, [%s], %s)" n
                                (String.concat "; " (List.map Ast.pp_pat ps))
                                (Ast.pp_expr e)
+  | DLetGroup (_, bs) ->
+    let pp_clause n (ps, body) =
+      Printf.sprintf "%s [%s] = %s" n
+        (String.concat "; " (List.map Ast.pp_pat ps)) (Ast.pp_expr body) in
+    let pp_b (n, cs) = String.concat "; " (List.map (pp_clause n) cs) in
+    Printf.sprintf "DLetGroup([%s])" (String.concat "; " (List.map pp_b bs))
   | DData (_, n, _, _, _)    -> Printf.sprintf "DData(%s, ...)" n
   | DRecord (_, n, _, _, _)  -> Printf.sprintf "DRecord(%s, ...)" n
   | DInterface { iface_name; _ } -> Printf.sprintf "DInterface(%s)" iface_name
@@ -166,6 +172,28 @@ let test_expr_let_fn_multi_arg () =
           ELam ([PVar "x"],
                 ELam ([PVar "y"], EBinOp ("+", EVar "x", EVar "y"))),
           EApp (EApp (EVar "g", ELit (LInt 1)), ELit (LInt 2))) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_let_rec_inline () =
+  match parse_expr "let rec f = x => f x in f 0\n" with
+  | ELetGroup ([("f", [([], ELam ([PVar "x"], EApp (EVar "f", EVar "x")))])],
+               EApp (EVar "f", ELit (LInt 0))) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_let_rec_inline_mutual () =
+  match parse_expr "let rec f = x => g x with g = x => f x in f 0\n" with
+  | ELetGroup ([("f", [([], ELam _)]); ("g", [([], ELam _)])],
+               EApp (EVar "f", ELit (LInt 0))) -> ()
+  | _ -> failwith "wrong"
+
+let test_decl_let_rec_top () =
+  match parse "let rec fact = n => fact n\n" with
+  | [DLetGroup (false, [("fact", [([], ELam ([PVar "n"], EApp (EVar "fact", EVar "n")))])])] -> ()
+  | _ -> failwith "wrong"
+
+let test_decl_let_rec_top_mutual () =
+  match parse "let rec is_even = n => is_odd n\nwith is_odd = n => is_even n\n" with
+  | [DLetGroup (false, [("is_even", _); ("is_odd", _)])] -> ()
   | _ -> failwith "wrong"
 
 let test_expr_if () =
@@ -1325,6 +1353,10 @@ let () =
       test_case "let mut"           `Quick test_expr_let_mut;
       test_case "let fn one arg"    `Quick test_expr_let_fn_one_arg;
       test_case "let fn multi arg"  `Quick test_expr_let_fn_multi_arg;
+      test_case "let rec inline"    `Quick test_expr_let_rec_inline;
+      test_case "let rec inline mutual" `Quick test_expr_let_rec_inline_mutual;
+      test_case "let rec top-level"        `Quick test_decl_let_rec_top;
+      test_case "let rec top-level mutual" `Quick test_decl_let_rec_top_mutual;
       test_case "if-then-else"      `Quick test_expr_if;
       test_case "application"       `Quick test_expr_application;
       test_case "infix backtick"    `Quick test_expr_infix_backtick;

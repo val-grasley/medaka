@@ -273,6 +273,26 @@ let e_question_in_arg =
   assert_err question_misplaced
     "f = Ok (5 ?)\n"
 
+(* ── Phase 57: let rec ──────────────────────── *)
+
+let nonrec_value_let n = function NonRecursiveValueLet x -> x = n | _ -> false
+
+let v_letrec_inline = assert_ok
+  "f = let rec fact = n => if n == 0 then 1 else n * fact (n - 1) in fact 5\n"
+
+let v_letrec_top = assert_ok
+  "let rec fact = n => if n == 0 then 1 else n * fact (n - 1)\n\
+   main = fact 5\n"
+
+let v_letrec_mutual_top = assert_ok
+  "let rec is_even = n => if n == 0 then True else is_odd (n - 1)\n\
+   with is_odd = n => if n == 0 then False else is_even (n - 1)\n\
+   main = is_even 4\n"
+
+let e_let_value_self_ref =
+  assert_err (nonrec_value_let "x")
+    "f = let x = x + 1 in x\n"
+
 (* ── Test runner ─────────────────────────────── *)
 
 let () =
@@ -297,6 +317,9 @@ let () =
       test_case "type vars OK"      `Quick v_typevars;
       test_case "shadowing OK"      `Quick v_shadowing;
       test_case "multi-clause fn"   `Quick v_multi_clause;
+      test_case "let rec inline"          `Quick v_letrec_inline;
+      test_case "let rec top-level"       `Quick v_letrec_top;
+      test_case "let rec mutual top"      `Quick v_letrec_mutual_top;
     ];
     "errors", [
       test_case "unbound local"        `Quick e_unbound;
@@ -317,6 +340,7 @@ let () =
       test_case "cross-record update"  `Quick e_cross_record_update;
       test_case "? in arith"           `Quick e_question_in_arith;
       test_case "? in fn arg"          `Quick e_question_in_arg;
+      test_case "let value self-ref"   `Quick e_let_value_self_ref;
     ];
     "extern declarations", [
       test_case "basic ok"            `Quick v_extern_basic;

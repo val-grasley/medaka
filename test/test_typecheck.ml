@@ -2171,6 +2171,24 @@ let e_eq52_neq_no_impl = assert_err
 f = Blob != Blob
 |}
 
+(* ── Phase 57: let rec ──────────────────────────── *)
+
+let t_letrec_fact = assert_type
+  "let rec fact = n => if n == 0 then 1 else n * fact (n - 1)\n"
+  "fact" "Int -> Int"
+
+let t_letrec_mutual = assert_type
+  "let rec is_even = n => if n == 0 then True else is_odd (n - 1)\n\
+   with is_odd = n => if n == 0 then False else is_even (n - 1)\n"
+  "is_even" "Int -> Bool"
+
+(* `let rec` value with non-lambda RHS is rejected. *)
+let e_letrec_nonfn_arith = assert_err
+  "let rec x = x + 1\n"
+
+let e_letrec_cyclic_cons = assert_err
+  "let rec ones = 1 :: ones\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -2219,6 +2237,10 @@ let () =
     "recursion", [
       test_case "factorial"           `Quick t_factorial;
       test_case "mutual"              `Quick t_mutual_rec;
+      test_case "let rec fact"        `Quick t_letrec_fact;
+      test_case "let rec mutual"      `Quick t_letrec_mutual;
+      test_case "err: let rec non-fn"      `Quick e_letrec_nonfn_arith;
+      test_case "err: let rec cyclic cons" `Quick e_letrec_cyclic_cons;
     ];
     "ADTs", [
       test_case "default opt"         `Quick t_option_default;

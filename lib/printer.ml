@@ -464,6 +464,25 @@ let rec print_decl p = function
       print_expr p prec_top body
     end
 
+  | DLetGroup (pub, bindings) ->
+    if pub then write p "export ";
+    let first = ref true in
+    List.iter (fun (name, clauses) ->
+      List.iter (fun (pats, body) ->
+        if !first then begin write p "let rec "; first := false end
+        else begin newline p; write p "with " end;
+        write p name;
+        List.iter (fun pat -> write p " "; print_pat_atom p pat) pats;
+        write p " =";
+        if is_block_body body then
+          indented p (fun () -> print_expr_body p body)
+        else begin
+          write p " ";
+          print_expr p prec_top body
+        end
+      ) clauses
+    ) bindings
+
   | DData (vis, n, params, variants, derives) ->
     (match vis with
      | Ast.DataPublic   -> write p "public export "

@@ -2381,21 +2381,30 @@ shape; end-to-end typecheck and eval coverage was the only gap.
 
 **879 tests total** (up from 877).
 
-### Phase 57: `let x = e` (non-fn) recursion / mutual recursion ⏳ TODO
+### Phase 57: `let rec` for value and mutually-recursive bindings ✅ DONE
 
-`let f x = e` is implicitly self-recursive (Phase 27).  `let x = e`
-(no args) is non-recursive — a forward reference to `x` in `e` is
-unbound.  Mutual recursion between value bindings is also
-unsupported (where-helpers handle this via `ELetGroup` but
-top-level value mutual recursion doesn't).
+Added explicit `let rec ... with ...` syntax for value recursion and
+mutual recursion, at both the top level and inline.  Reuses the
+existing `ELetGroup` machinery for inline forms and adds a new
+`DLetGroup` decl for top-level mutual groups.
 
-Decisions:
-- Should top-level value bindings be implicitly recursive?  Haskell
-  says yes (`let rec` is automatic).  Today we say no.  Pick one
-  and document.
-- If yes: add a fixed-point / `ELetGroup` lowering for top-level
-  values; care needed to avoid infinite eval loops for non-fn
-  bindings.
+- `let f x = e` (no `rec`) keeps Phase 27's implicit self-recursion.
+- `let x = e` (no `rec`, no args) stays non-recursive.  When the RHS
+  references the bound name, the resolver emits a targeted
+  `NonRecursiveValueLet` diagnostic suggesting `let rec`.
+- `let rec` with a zero-argument clause requires a lambda RHS at
+  type-check time (`LetRecNonFunction`).  This is stricter than
+  OCaml's "syntactic value" rule because Medaka's strict evaluator
+  has no support for cyclic data — `let rec ones = 1 :: ones` would
+  silently produce `Cons(1, Unit)` rather than diverge or loop.
+- `with` was reclaimed as a binding-group separator (previously
+  unused).  `and` was deliberately avoided since it's an existing
+  stdlib function for short-circuit-free boolean conjunction.
+
+Inline form is single-line; multi-line mutual recursion uses the
+top-level form (the layout-sensitive lexer makes `LET REC ... newlines
+WITH ... newlines IN ...` clash with the existing single-line shape
+in LALR(1)).
 
 ### Phase 58: List comprehension `pat <- xs` should filter ✅ DONE
 

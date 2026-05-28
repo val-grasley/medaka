@@ -132,6 +132,8 @@ type decl =
   | DTypeSig   of bool * ident * ty          (* pub? name type *)
   | DExtern    of bool * ident * ty          (* pub? name type *)
   | DFunDef    of bool * ident * pat list * expr  (* pub? name pats body *)
+  | DLetGroup  of bool * (ident * (pat list * expr) list) list
+                  (* pub? mutually-recursive top-level group from `let rec ... with ...` *)
   | DData      of data_vis * ident * ident list * data_variant list * ident list  (* vis derives *)
   | DRecord    of data_vis * ident * ident list * record_field list * ident list  (* vis derives *)
   | DInterface of {
@@ -370,6 +372,9 @@ let strip_locs_iface_method m =
 
 let rec strip_locs_decl = function
   | DFunDef (pub, n, ps, e) -> DFunDef (pub, n, ps, strip_locs_expr e)
+  | DLetGroup (pub, bs) ->
+    DLetGroup (pub, List.map (fun (n, clauses) ->
+      (n, List.map (fun (ps, body) -> (ps, strip_locs_expr body)) clauses)) bs)
   | DInterface d ->
     DInterface { d with methods = List.map strip_locs_iface_method d.methods }
   | DImpl d ->

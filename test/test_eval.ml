@@ -903,6 +903,27 @@ result = sign (-5)
 |}
     "result" (VInt (-1))
 
+(* ── Phase 57: let rec ────────────────────────────────────────────────── *)
+
+let t_letrec_top_fact = assert_val
+  "let rec fact = n => if n == 0 then 1 else n * fact (n - 1)\n\
+   r = fact 5\n"
+  "r" (VInt 120)
+
+let t_letrec_top_mutual = assert_val
+  "let rec is_even = n => if n == 0 then True else is_odd (n - 1)\n\
+   with is_odd = n => if n == 0 then False else is_even (n - 1)\n\
+   r = is_even 8\n"
+  "r" (VBool true)
+
+let t_letrec_inline = assert_val
+  "r = let rec fact = n => if n == 0 then 1 else n * fact (n - 1) in fact 6\n"
+  "r" (VInt 720)
+
+let t_letrec_inline_mutual = assert_val
+  "r = let rec is_even = n => if n == 0 then True else is_odd (n - 1) with is_odd = n => if n == 0 then False else is_even (n - 1) in is_even 6\n"
+  "r" (VBool true)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -941,6 +962,10 @@ let () =
     "recursion", [
       test_case "factorial" `Quick t_factorial;
       test_case "list_len"  `Quick t_list_len;
+      test_case "let rec top fact"        `Quick t_letrec_top_fact;
+      test_case "let rec top mutual"      `Quick t_letrec_top_mutual;
+      test_case "let rec inline"          `Quick t_letrec_inline;
+      test_case "let rec inline mutual"   `Quick t_letrec_inline_mutual;
     ];
     "pattern match", [
       test_case "literal"     `Quick t_match_lit;
