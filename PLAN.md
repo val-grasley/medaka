@@ -20,7 +20,7 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 - `debug.ml` — quick parse-and-print probe
 - `tc_debug.ml` — quick type-check probe
 
-877 tests pass across 15 base test suites:
+879 tests pass across 15 base test suites:
 
 | Suite             | File                            | Cases | Coverage                                              |
 |-------------------|---------------------------------|-------|-------------------------------------------------------|
@@ -2362,18 +2362,24 @@ assignment updated to use bare-block form; new error tests
 covering the legal mixed case (outer `EBlock` with `let mut`,
 inner `EDo` for monadic chaining).  All 787 base-suite tests pass.
 
-### Phase 56: Multi-level nested record updates ⏳ TODO
+### Phase 56: Multi-level nested record updates ✅ DONE
 
-Phase 45 (nested record update sugar) supports single-level
-`{ p | address.city = "Boston" }`.  Multi-level paths
-(`{ p | address.country.code = "US" }`) are not yet desugared.
+**What was found.** The `desugar_dotted_field` helper added in Phase 45
+(`lib/parser.mly` lines 27–37) already handles arbitrarily deep dotted
+paths recursively — `{ p | a.b.c = v }` desugars to
+`{ p | a = { p.a | b = { p.a.b | c = v } } }` at parse time.  A parser
+test (`test_expr_record_update_nested_deep`) already verified the AST
+shape; end-to-end typecheck and eval coverage was the only gap.
 
-The desugaring rule generalizes naturally:
-`{ p | a.b.c = e }` ↦
-  `{ p | a = { p.a | b = { p.a.b | c = e } } }`.
+**What was added.**
+- `t_rec_update_multi_level` in `test/test_typecheck.ml` — verifies
+  `{ p | address.country.code = "US" }` type-checks to `Person -> Person`
+  for a 3-level deep record hierarchy.
+- `t_record_update_nested_deep` in `test/test_eval.ml` — builds a
+  3-level record (`Person → Address → Country`), updates
+  `address.country.code`, and asserts the new value is read back correctly.
 
-Recursive application of the existing sugar.  Probably 10-20 lines
-in `desugar.ml`.
+**879 tests total** (up from 877).
 
 ### Phase 57: `let x = e` (non-fn) recursion / mutual recursion ⏳ TODO
 
