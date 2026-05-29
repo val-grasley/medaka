@@ -1,5 +1,19 @@
 {
   "permissions": {
+    "allow": [
+      "Bash(dune build)",
+      "Bash(dune build *)",
+      "Bash(dune build @thorough)",
+      "Bash(./_build/default/test/*.exe *)",
+      "Bash(./_build/default/dev/debug.exe *)",
+      "Bash(./_build/default/dev/tc_debug.exe *)",
+      "Bash(./_build/default/bin/main.exe check *)",
+      "Bash(git log *)",
+      "Bash(git status *)",
+      "Bash(git diff *)",
+      "Bash(opam list *)",
+      "Bash(opam exec *)"
+    ],
     "deny": [
       "Read(./tree-sitter-medaka/src/parser.c)",
       "Read(./tree-sitter-medaka/src/grammar.json)",
