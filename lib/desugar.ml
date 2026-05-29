@@ -555,7 +555,41 @@ let rewrite_question_expr = function
 let desugar_questions prog =
   List.map (map_decl rewrite_question_expr) prog
 
+(* Coalesce interface method entries that the parser splits in two: a signature
+   line `f : T` (method_default = None) and a default-clause line `f p = body`
+   (method_type = TyVar "_", method_default = Some) become a single entry that
+   carries both the declared type and the default body.  Without this, the lone
+   `TyVar "_"` default entry makes register_interface re-generalize a
+   level-0-instantiated body type to Forall[] (clobbering the real scheme) and
+   makes the evaluator's record_iface_dispatch overwrite the method's dispatch
+   positions with []. *)
+let merge_iface_methods (methods : iface_method list) : iface_method list =
+  let order = ref [] in
+  let tbl : (string, iface_method) Hashtbl.t = Hashtbl.create 8 in
+  List.iter (fun m ->
+    match Hashtbl.find_opt tbl m.method_name with
+    | None ->
+      order := m.method_name :: !order;
+      Hashtbl.replace tbl m.method_name m
+    | Some prev ->
+      let typed = match prev.method_type with TyVar "_" -> m.method_type | t -> t in
+      let default =
+        match prev.method_default with Some d -> Some d | None -> m.method_default
+      in
+      Hashtbl.replace tbl m.method_name
+        { method_name = m.method_name; method_type = typed; method_default = default }
+  ) methods;
+  List.rev_map (fun n -> Hashtbl.find tbl n) !order
+
+let merge_iface_defaults prog =
+  List.map (function
+    | DInterface iface ->
+      DInterface { iface with methods = merge_iface_methods iface.methods }
+    | d -> d
+  ) prog
+
 let desugar_program (prog : program) : program =
+  let prog = merge_iface_defaults prog in
   let expanded = List.concat_map expand_decl prog in
   let record_names = List.filter_map (function
     | DRecord (_, name, _, _, _) -> Some name

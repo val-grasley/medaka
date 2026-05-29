@@ -327,6 +327,16 @@ export interface Foldable t where
 
     foldMap f = fold (acc x => acc ++ f x) empty
 
+-- | Containers that can drop elements (and transform-while-dropping).
+-- Modeled on Haskell's `witherable` Filterable: `filterMap` is the
+-- primitive, `filter` falls out as a derived default.  Kept separate
+-- from `Mappable` because not every functor can shrink — a fixed-shape
+-- container has no sensible `filterMap`.
+export interface Filterable f requires Mappable f where
+    filterMap : (a -> Option b) -> f a -> f b
+    filter    : (a -> Bool) -> f a -> f a
+    filter p = filterMap (x => if p x then Some x else None)
+
 export impl Foldable List where
     fold _ acc []      = acc
     fold f acc (x::xs) = fold f (f acc x) xs
@@ -446,17 +456,17 @@ export
 elem : (Foldable t, Eq a) => a -> t a -> Bool
 elem a = fold (acc x => acc || x == a) False
 
--- | Keep elements satisfying the predicate.  Lives here (rather than in
--- `list.mdk`) because it's needed by `core` itself for a few interface
--- defaults; `list.mdk` re-exports it for discoverability.
+-- | `Filterable List`.  Lives in `core` (rather than `list.mdk`) so the
+-- `filter` name is in scope for the rest of the stdlib; `list.mdk`
+-- re-exports it for discoverability.
 --
 -- > filter (x => x > 2) [1, 2, 3, 4]
 -- [3, 4]
-export
-filter : (a -> Bool) -> List a -> List a
-filter p xs = match xs
-    [] => []
-    (x::rest) => if p x then x :: filter p rest else filter p rest
+export impl Filterable List where
+    filterMap _ []      = []
+    filterMap f (x::xs) = match f x
+        Some y => y :: filterMap f xs
+        None   => filterMap f xs
 
 -- ─── Bool helpers ───────────────────────────────────────────────────────
 

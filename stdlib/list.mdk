@@ -3,6 +3,10 @@
 
 import core.{Eq, Ord, Show, Foldable, Mappable}
 
+-- Re-export the Filterable container ops so they're discoverable as
+-- `list.filter` / `list.filterMap`.
+export import core.{Filterable, filter, filterMap}
+
 -- Construction
 
 export
@@ -43,11 +47,3 @@ get : Int -> List a -> Option a
 get _ [] = None
 get 0 (x::_) = Some x
 get i (_::xs) = get (i - 1) xs
-
--- Transformation
-
-filterMap : (a -> Option b) -> List a -> List b
-filterMap f [] = []
-filterMap f (x::xs)
-    | Some y <- f x = y::(filterMap f xs)
-    | None <- f x = filterMap f xs

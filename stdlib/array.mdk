@@ -24,7 +24,7 @@
 -- two lines of Medaka built on `arrayMakeWith` + `arrayGetUnsafe`, which
 -- compile to a tight loop in the host runtime.
 
-import core.{Eq, Ord, Show, Foldable, Mappable, Semigroup, Monoid, Ordering, Option}
+import core.{Eq, Ord, Show, Foldable, Mappable, Filterable, Semigroup, Monoid, Ordering, Option}
 
 -- ── Construction ────────────────────────────────────────────────────────
 
@@ -163,32 +163,15 @@ zipWith f a b =
   let n = if arrayLength a < arrayLength b then arrayLength a else arrayLength b
   arrayMakeWith n (i => f (arrayGetUnsafe i a) (arrayGetUnsafe i b))
 
--- | Filter via list intermediate (tail-recursive, builds reversed then
--- `arrayFromList` after a final reverse).  Single O(N) traversal of the
--- input + one O(M) list construction + one O(M) array copy.  Doesn't use
--- mutation, so signature stays pure.
--- | Named `filterA` (not `filter`) because `core.filter` is a List-
--- specific standalone — overloading two top-level functions with the
--- same name across modules isn't supported yet.  When `core.filter`
--- moves to `list.mdk` (per the note in core.mdk), this can become
--- plain `filter`.
-export
-filterA : (a -> Bool) -> Array a -> Array a
-filterA pred arr =
-  let n = arrayLength arr
-  arrayFromList (revList (filterGo pred arr 0 n []) [])
-
-filterGo : (a -> Bool) -> Array a -> Int -> Int -> List a -> List a
-filterGo pred arr i n acc =
-  if i >= n then acc
-  else if pred (arrayGetUnsafe i arr) then filterGo pred arr (i + 1) n (arrayGetUnsafe i arr :: acc)
-  else filterGo pred arr (i + 1) n acc
-
-export
-filterMap : (a -> Option b) -> Array a -> Array b
-filterMap f arr =
-  let n = arrayLength arr
-  arrayFromList (revList (filterMapGo f arr 0 n []) [])
+-- | `Filterable Array`.  Only `filterMap` is defined; `filter` comes from
+-- the interface default.  `filterMap` filters via a list intermediate
+-- (tail-recursive, builds reversed then `arrayFromList` after a final
+-- reverse): one O(N) traversal + one O(M) list build + one O(M) array
+-- copy, no mutation so the signature stays pure.
+export impl Filterable Array where
+    filterMap f arr =
+      let n = arrayLength arr
+      arrayFromList (revList (filterMapGo f arr 0 n []) [])
 
 filterMapGo : (a -> Option b) -> Array a -> Int -> Int -> List b -> List b
 filterMapGo f arr i n acc =
