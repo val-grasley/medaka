@@ -278,7 +278,12 @@ let handle_formatting (p : DocumentFormattingParams.t) : TextEdit.t list option 
            TextEdit.create ~newText:formatted ~range:(full_document_range src)
          in
          Some [edit]
-     with e ->
+     with
+     | Failure msg ->
+       (* Source doesn't parse — normal user state, not a server bug. *)
+       Lsp_log.info (Printf.sprintf "formatting skipped (unparseable): %s" msg);
+       None
+     | e ->
        Lsp_log.exn "formatting failed" e;
        None)
 

@@ -418,6 +418,31 @@ let t_cache_no_entry_no_crash () =
         (Printexc.to_string e))
   )
 
+(* Parse error in a dependency file (with no last-good cache) is reported
+   as a proper parse diagnostic attributed to the dep — not as a generic
+   "Internal error in loader". *)
+let t_project_parse_error_in_dep () =
+  with_tmp_dir (fun dir ->
+    let dep_path = write_file dir "dep.mdk" "export broken = (" in
+    let main_path = write_file dir "main.mdk"
+      "import dep.{broken}\nmain = broken\n"
+    in
+    let results = analyze_project ~root_file:main_path ~project_dir:dir
+                    ~read:no_override () in
+    let dd = diags_for results dep_path in
+    if not (List.exists (fun d ->
+      is_error d && msg_contains "Parse" d) dd) then
+      failwith (Printf.sprintf
+        "Expected parse-error diagnostic on dep, got:\n%s" (pp_results results));
+    List.iter (fun (_, ds) ->
+      List.iter (fun d ->
+        if msg_contains "Internal error" d then
+          failwith (Printf.sprintf
+            "Unexpected internal-error diagnostic:\n%s" (pp_results results))
+      ) ds
+    ) results
+  )
+
 (* ── Runner ─────────────────────────────────── *)
 
 let () =
@@ -439,6 +464,7 @@ let () =
       test_case "unknown module"      `Quick t_project_unknown_module;
       test_case "cyclic dependency"   `Quick t_project_cycle;
       test_case "buffered override"   `Quick t_project_buffered_override;
+      test_case "parse error in dep"  `Quick t_project_parse_error_in_dep;
     ];
     "resilience", [
       test_case "analyze: no exception escapes"

@@ -303,6 +303,18 @@ let attribute_load_error
       message  = Printf.sprintf "Ambiguous module '%s' found in: %s"
                    mod_id (String.concat ", " found_in);
     }
+  | Loader.ParseError { file; line; col; message } ->
+    push_into b file {
+      severity = Error;
+      loc      = {
+        Ast.file;
+        line;
+        col;
+        end_line = line;
+        end_col  = col + 1;
+      };
+      message;
+    }
 
 (* Public entry point for multi-file analysis.  Loads [root_file]'s
    import graph using [read] for buffer overrides, then runs the

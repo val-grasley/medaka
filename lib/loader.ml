@@ -15,6 +15,7 @@ type load_error =
   | CyclicDependency of string list     (* module path forming the cycle *)
   | UnknownModule    of { mod_id: string; importer_file: string option }
   | AmbiguousModule  of { mod_id: string; found_in: string list }
+  | ParseError       of { file: string; line: int; col: int; message: string }
 
 exception LoadError of load_error
 
@@ -86,13 +87,19 @@ let parse_file ?read path =
   lexbuf.Lexing.lex_curr_p <-
     { lexbuf.Lexing.lex_curr_p with Lexing.pos_fname = path };
   Lexer.reset ();
+  let raise_parse_error message =
+    let pos = lexbuf.Lexing.lex_curr_p in
+    raise (LoadError (ParseError {
+      file = path;
+      line = pos.Lexing.pos_lnum;
+      col  = pos.Lexing.pos_cnum - pos.Lexing.pos_bol;
+      message;
+    }))
+  in
   try Parser.program Lexer.token lexbuf
   with
-  | Parser.Error ->
-    let pos = lexbuf.Lexing.lex_curr_p in
-    failwith (Printf.sprintf "%s:%d:%d: Parse error"
-                pos.Lexing.pos_fname pos.Lexing.pos_lnum
-                (pos.Lexing.pos_cnum - pos.Lexing.pos_bol))
+  | Parser.Error -> raise_parse_error "Parse error"
+  | Failure msg  -> raise_parse_error msg
 
 (* ── Dependency extraction ────────────────────────── *)
 

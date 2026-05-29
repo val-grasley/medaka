@@ -302,6 +302,10 @@ let () =
                  Printf.eprintf "error: ambiguous module '%s' found in: %s\n"
                    mod_id (String.concat ", " found_in);
                  all_ok := false; []
+               | Medaka_lib.Loader.LoadError
+                   (Medaka_lib.Loader.ParseError { file; line; col; message }) ->
+                 Printf.eprintf "%s:%d:%d: %s\n" file line col message;
+                 all_ok := false; []
                | Failure msg ->
                  Printf.eprintf "error: %s\n" msg; all_ok := false; [])
             in
@@ -444,6 +448,9 @@ cd into a member or specify a file\n"; exit 1
            (Medaka_lib.Loader.AmbiguousModule { mod_id; found_in }) ->
          Printf.eprintf "error: ambiguous module '%s' found in: %s\n"
            mod_id (String.concat ", " found_in); exit 1
+       | Medaka_lib.Loader.LoadError
+           (Medaka_lib.Loader.ParseError { file; line; col; message }) ->
+         Printf.eprintf "%s:%d:%d: %s\n" file line col message; exit 1
        | Failure msg ->
          Printf.eprintf "error: %s\n" msg; exit 1)
     in
