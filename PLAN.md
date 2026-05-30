@@ -2560,6 +2560,318 @@ those explicit lines say the right thing.
 
 ---
 
+## Typechecker & interface hardening arc (agent-pickup tasks)
+
+These phases came out of a 2026-05-30 audit of `lib/typecheck.ml` and the
+interface/typeclass pipeline (`typecheck.ml` + `resolve.ml` + `eval.ml` +
+`desugar.ml`). The user is building the stdlib by hand and keeps hitting
+typechecker and interface bugs; the goal of this arc is to iron those out
+*ahead* of the stdlib work so the manual stdlib effort is pleasant.
+
+Each item is independently pickable, has concrete code pointers, and is
+sized for one session. They are ordered by how much pain they remove from
+the stdlib track, not strictly by severity. Line numbers are approximate
+(2026-05-30) — grep the named function if they've drifted. **Verify the bug
+still reproduces before fixing** (write the failing test first); some may be
+partially addressed by the time an agent picks them up.
+
+### Phase 62: Instance/constraint errors point at the wrong source line ⏳ TODO
+
+**Goal.** Make `No impl of Eq for C` / `Ambiguous impl` / unsatisfied-constraint
+errors point at the *call site*, not a random stdlib line.
+
+**Why it matters now.** This is the single biggest day-to-day annoyance for
+stdlib authoring. `method_usages` and `constraint_obligations` carry no
+location, so `check_method_usages` / `check_constraint_obligations` (the
+post-HM passes) call `fail`, which reads the global `!current_loc` ref — by
+then it points at the last declaration processed (often a prop in
+`core.mdk`). Every instance error blames the prelude.
+
+**Where.** `lib/typecheck.ml`: `method_usages` tuple type (~:384),
+`constraint_obligations` (~:387), the record sites (~:793, :802, :813, :1364),
+and the consumers `check_method_usages` (~:1908) / `check_constraint_obligations`
+(~:1963). `fail` is :123.
+
+**Scope.** Add a `Ast.loc option` field to both accumulator tuples, captured
+from `!current_loc` at record time; thread it into the `fail` call (or a
+`fail_at loc e` helper) in the two post-HM passes. Add tests asserting the
+reported `loc` matches the offending expression, not the prelude.
+
+**Done when.** A program with a missing impl reports the user's call-site
+line; all existing tests pass.
+
+### Phase 63: `deriving` is broken for parametric types ⏳ TODO
+
+**Goal.** `data Box a = Box a deriving (Eq)` and `record Pair a b = { ... }
+deriving (Eq, Show, Ord)` generate *correct* impls.
+
+**Why it matters now.** The stdlib is full of parametric types
+(`Option`, `Result`, tree maps, etc.). Today `deriving` drops the type
+params: `desugar.ml` calls `derive_for_data name variants` without `params`,
+and every derive helper hardcodes `type_args = [TyCon type_name]` and
+`requires = []`. So `deriving (Eq)` on `Box a` emits `impl Eq Box` (nullary
+con, no `requires Eq a`), and `eq (Box 1) (Box 1)` fails to typecheck with
+`expected type Box but got Box a` — reported at a stdlib line (see Phase 62).
+**Main's `deriving (Generic)` (Phase 61, merged 2026-05-30) replicates this
+exact bug**: `derive_generic_{data,record,newtype}` also hardcode
+`type_args = [TyCon type_name]` / `requires = []`, so `deriving (Generic)`
+on a parametric type produces a malformed `impl Generic Box`. Fix all derivers
+at once.
+
+**Where.** `lib/desugar.ml`: the `DData`/`DRecord`/newtype derive expansion
+(~:397-410) and the helpers (`derive_for_data`, `derive_for_record`,
+`derive_for_newtype`, and the per-iface builders incl. the new
+`derive_generic_*`, ~:63-327) that hardcode `type_args`/`requires`.
+
+**Scope.** Thread `params` through. Emit `type_args = [TyApp (TyCon name,
+TyVar p…)]` (the type applied to its params) and
+`requires = [(iface, [p]) for each param p]` so the generated impl reads
+`impl Eq (Box a) requires Eq a`. Cover every deriver — Eq/Show/Ord/Arbitrary
+**and Generic**. Test each on a parametric `data` and a parametric `record`.
+
+**Done when.** Deriving on a parametric type produces a usable instance and
+round-trips through the existing derive tests.
+
+### Phase 64: Superinterface (`requires`) constraints are never enforced ⏳ TODO
+
+**Goal.** `impl Ord C` without a corresponding `impl Eq C` is rejected when
+`interface Ord a requires Eq a`.
+
+**Why it matters now.** The stdlib interface hierarchy
+(`Ord`→`Eq`, `Monoid`→`Semigroup`, etc.) is meaningless if superclass
+obligations aren't checked: programs that should fail typecheck, and a generic
+`Ord a => …` body that calls `eq` is only saved by laziness, not soundness.
+
+**Where.** `lib/typecheck.ml`: `register_interface` (~:1651) is called with
+`(iface_name, type_params, methods)` — the `super` field is dropped at all
+three call sites (~:2243, :2430, :2615). Resolver also never validates the
+`super` interface *names* (see Phase 67).
+
+**Scope.** Thread `super` into `register_interface` and store it on
+`iface_info`. When an `impl I T` is registered/checked, require that an impl
+exists for each `(SuperI, T)` in `I`'s superinterface list (recursively).
+Decide and document the entailment story for generic bodies (`Ord a => …`
+should make `Eq a` available). Tests: missing-superclass-impl is an error;
+present one passes.
+
+**Done when.** Superclass obligations are enforced at impl sites; the stdlib's
+`Ord`/`Eq` split is real.
+
+### Phase 65: Impl-level `requires` constraints are never discharged ⏳ TODO
+
+**Goal.** Selecting `impl Eq (Box a) requires Eq a` for `Box T` verifies that
+`Eq T` actually holds.
+
+**Why it matters now.** Soundness hole that crashes at runtime: today
+`impl_requires` is stored on `impl_entry` but the resolution passes only match
+the impl *head type* via `mono_matches ~pattern:impl_type_mono` and never check
+`requires`. Repro from the audit: `eq` on `Box (Int -> Int)` typechecks, then
+runs to `Out of memory`.
+
+**Where.** `lib/typecheck.ml`: `impl_entry` / `impl_requires` (~:1847),
+`check_method_usages` (~:1908), `check_constraint_obligations` (~:1963),
+`mono_matches` (~:1891).
+
+**Scope.** When an impl is selected for concrete argument types, recursively
+emit its `requires` entries as fresh obligations against the resolved concrete
+sub-types and verify them (re-entering the same matching machinery). Pairs
+naturally with Phase 62 (so the recursive failure points at the call site).
+Tests: an impl whose `requires` is unsatisfiable is rejected at the call site.
+
+**Done when.** Constrained impls only resolve when their `requires` hold; the
+`Box (Int -> Int)` repro is a clean type error.
+
+### Phase 66: Value restriction — stop over-generalizing non-value `let` bindings ⏳ TODO
+
+**Goal.** Don't assign a polymorphic scheme to a `let x = <effectful/non-value>`
+binding. Classic ML soundness fix.
+
+**Why it matters now.** With `Ref`/`<Mut>` in the language, generalizing a
+non-value RHS is unsound: `let r = newRef []` would get
+`forall a. Ref (List a)`, letting one cell be used at two types. The stdlib's
+mutable structures (`mut_array`, `hash_map`) will exercise exactly this.
+
+**Where.** `lib/typecheck.ml`: `ELet` `PVar` path generalizes unconditionally
+(~:870); same unconditional generalization in `DoLet`
+(`EBlock` ~:1078, `EDo` ~:1194) and `ELetGroup` (~:880). The author already
+applied a "value-restriction-like" guard to the *non-`PVar`* pattern case
+(~:875) — the dangerous `PVar`-of-non-value case is the one missing it.
+
+**Scope.** Add an `is_nonexpansive`/`is_value` predicate (lambda, literal,
+constructor application of values, var) and generalize only when it holds
+(or never generalize a syntactically-non-value RHS). Keep the existing
+self-recursive lambda path. Tests: `let r = newRef []` does not generalize;
+`let id = \x => x` still does.
+
+**Done when.** The polymorphic-reference unsoundness is closed; existing
+let-polymorphism tests still pass.
+
+### Phase 67: Resolver validates `requires` / `super` interface names ⏳ TODO
+
+**Goal.** `impl Eq (Box a) requires Bogus a` and `interface Foo a requires
+Bogus a` are rejected with `UnknownInterface`.
+
+**Why it matters now.** Cheap correctness win; typos in constraint lists
+currently pass silently. Good warm-up task.
+
+**Where.** `lib/resolve.ml`: interface-name validation today only covers
+`TyConstrained` (~:430) and the `DImpl` head iface (~:678); the `DImpl.requires`
+and `DInterface.super` lists are not walked.
+
+**Scope.** In the `DImpl` and `DInterface` resolve cases, iterate `requires` /
+`super` entries and emit `UnknownInterface` for any name not in scope. Small,
+self-contained, no typechecker changes.
+
+**Done when.** Bogus constraint interface names are caught at resolve time.
+
+### Phase 68: Overlap / coherence checking for impls ⏳ TODO
+
+**Goal.** Reject incoherent instance sets at *declaration* time, including
+partial overlaps like `impl Eq (List Int)` vs `impl Eq (List a)`.
+
+**Why it matters now.** Stdlib will define many instances; today overlaps are
+only detected lazily (and inconsistently) when a concrete call site happens to
+exercise them, and runtime "first terminal wins" silently picks one. The
+existing `check_coherence` only runs for `default impl`s and its own comment
+says it misses partial overlap.
+
+**Where.** `lib/typecheck.ml`: `check_coherence` (~:1854-1879),
+`impl_type_pattern` (~:1858), `mono_matches` (~:1891).
+
+**Scope.** Add a global per-interface overlap check using unification-based
+matching (two impls overlap if their head types unify). Decide policy: hard
+error vs. "most specific wins" — document it in `language-design.md`. Consider
+an orphan-instance check (impl defined in neither the interface's nor the
+type's module) once the module story supports it. Tests: duplicate and
+partial-overlap impls are flagged.
+
+**Done when.** Overlapping impls are reported at declaration; resolution is no
+longer order-dependent.
+
+### Phase 69: Type-directed / return-position dispatch (dictionary passing) ⏳ TODO
+
+**Goal.** Methods discriminated by their *result* type (`fromInt : Int -> a`,
+`pure`, `empty`, `minBound`, **`from_rep : Rep -> a`**) and multi-parameter
+interfaces dispatch to the impl the typechecker actually chose.
+
+**Why it matters now.** This is the deepest interface hole and the one most
+likely to produce *silently wrong stdlib results*. Runtime `VMulti` dispatch
+filters only on the *argument's* `runtime_type_tag`; when the discriminating
+type is in the result (or is a non-first interface param), the **first** impl
+always wins. Audit repros: `(fromInt 3 : Float)` yields an `Int` value;
+`Convert Int String` vs `Convert Int Bool` picks the wrong one. The
+`pure_impls` special-case in `eval.ml` is a point workaround for exactly this.
+**Main's Phase 61 (`deriving (Generic)`) is now blocked on this**: its
+`from_rep : Rep -> a` ships as a `panic` stub because, in that phase's own
+words, real `from_rep` deriving is "blocked on return-type-directed dispatch
+(dictionary-passing or type-application)." Completing this phase unblocks the
+*decode* direction of Generic (parsers, deserializers), not just `to_rep`.
+
+**Where.** `lib/eval.ml`: `VMulti` apply / dispatch (~:333-395),
+`dispatch_positions_of` (~:234-251), `pure_impls` (~:271),
+`impl_type_tag`/`runtime_type_tag` (~:1337). The fix needs the call site's
+*resolved* impl from the typechecker.
+
+**Scope.** Large — this likely requires the long-deferred "type-annotated AST"
+or explicit dictionary passing: after typechecking, tag each method call with
+the impl the checker selected (or pass dictionaries) so `eval` doesn't guess.
+Note the related deferred item in §5 (do-notation `Thenable` wiring and EDo
+monad tagging) shares this root cause; consider scoping them together. May
+warrant a design note in `language-design.md` before coding.
+
+**Done when.** Result-typed and multi-param method calls run the impl the type
+checker chose; the `fromInt`/`Convert` repros are correct.
+
+### Phase 70: Smaller typechecker correctness & diagnostics fixes ⏳ TODO
+
+A grab-bag of self-contained fixes, each ~an hour, each with its own test.
+Pick one or batch a few. All in `lib/typecheck.ml` unless noted.
+
+- **`ESlice` swallows errors and corrupts state** (~:1342). The
+  `try unify … with _ -> try unify … with _ -> …` cascade catches *all*
+  exceptions and re-unifies against a `te` already partially mutated by the
+  failed unification, producing wrong types downstream. Snapshot/restore TVar
+  state between attempts, or unify against a proper container union.
+- **Constructor-pattern arity is unchecked; `ArityMismatch` is dead code**
+  (`PCon` ~:670; `ArityMismatch` defined ~:93 but never raised). Wrong-arity
+  constructor patterns produce a generic mismatch. Check arity and raise the
+  dedicated error.
+- **Unknown type vars in `data`/`record` payloads silently become fresh vars**
+  (`register_data` ~:1552, `register_record` ~:1611). `data T a = MkT b`
+  (stray `b`) is accepted as `forall a b. b -> T a`. Reject unbound payload
+  type vars.
+- **Type-alias arity mismatch falls through silently** (`expand_aliases`
+  ~:474). A partially-applied alias is left as a raw `TyApp` and surfaces as a
+  confusing `TCon` mismatch later. Emit an arity error.
+- **`EAnnot` doesn't skolemize** (~:1031). `(f : a -> a)` unifies `a` with
+  fresh vars, so an annotation can't *check* that `f` is that polymorphic —
+  it'll accept `Int -> Int`. Skolemize the annotation's quantified vars and add
+  an escape check.
+- **`pp_mono` uses a separate name table per side of a mismatch** (~:312).
+  `TypeMismatch (a, b)` prints each with fresh names, so two distinct vars can
+  both print as `a`. Share one naming context across both types.
+- **Float unary negation and `%` are Int-only** (`EUnOp "-"` ~:906; `%`
+  ~:1381). Already noted in §5. Lift both to a `Num a` constraint via
+  `record_iface_usage` so they work for any `Num` impl; `eval_arith` already
+  handles `VFloat`.
+
+### Phase 71: Typechecker robustness — no `assert false` / raw `Not_found` / leaked levels ⏳ TODO
+
+**Goal.** A bug elsewhere surfaces as a Medaka diagnostic, not an opaque
+"Internal error" or a wedged REPL.
+
+**Why it matters now.** During heavy stdlib editing these landmines turn small
+mistakes into confusing crashes — especially in the REPL, which reuses
+typechecker state across inputs.
+
+**Where.** `lib/typecheck.ml`: `assert false` in `unify`/`pp`/etc. (~:175,
+212, 235, 254, 289, 626); unguarded `Hashtbl.find env.interfaces` and friends
+(~:789, :1291, :1307, :1910) that can raise raw `Not_found`; the many
+hand-balanced `enter_level ()` / `exit_level ()` pairs — an early `fail`
+between them permanently increments `current_level`, corrupting generalization
+for everything after (the REPL deliberately does not `reset_state`, ~:2569).
+
+**Scope.** Replace `assert false` invariant-violation paths with a proper
+`InternalError`/diagnostic carrying context. Guard the `Hashtbl.find`s that can
+miss across module boundaries. Make level bracketing exception-safe (a
+`with_level` combinator that restores `current_level` in a `finally`, or reset
+levels at each REPL input). Tests: a forced internal inconsistency yields a
+diagnostic; a type error mid-`register_*` doesn't corrupt the next REPL input.
+
+**Done when.** No `assert false` on the error path; REPL state survives a type
+error without leaking levels.
+
+### Phase 72: Record row polymorphism (or, at minimum, drop the field-name collision error) ⏳ TODO
+
+**Goal.** Allow two records to share a field name, and let `\r => r.x` be
+polymorphic over "any record with field `x`".
+
+**Why it matters now.** The stdlib will define many records; today a field name
+may be declared by only one record type — `Field name collision: 'name' is
+already declared by another type` is a hard error — and field access resolves
+purely by global field name via `env.field_owners`. This forces awkward unique
+field naming across the whole stdlib. (Main's Phase 61 commit only made the
+collision check *idempotent* — re-registering the *same* record across the
+multi-file prelude path no longer fires — and seeded prelude `field_owners` in
+`resolve.ml`. A genuine cross-type collision is still a hard error, so the
+limitation this phase targets is unchanged.)
+
+**Where.** `lib/typecheck.ml`: `EFieldAccess` (~:1281), the (now idempotent)
+collision check in `register_record` (~:1631), `field_owners`;
+`lib/resolve.ml` `prelude_field_owners` seeding.
+
+**Scope.** The full fix is row-polymorphic record types (a `mono` extension
+with row variables) — a substantial design change; write a `language-design.md`
+note first. A cheaper interim step: scope field resolution by the record type
+inferred for the receiver (allowing reuse of field names across types) without
+full row polymorphism. Decide which with the user before committing. Tests:
+two records sharing a field name coexist; field access picks the right one.
+
+**Done when.** Field-name reuse across record types is allowed; pick the scope
+(interim vs. full rows) deliberately.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
