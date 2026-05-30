@@ -28,7 +28,7 @@ Two debug binaries in `dev/` (not run as part of `dune test`):
 | Round-trip        | `test/test_roundtrip.ml`        | 108   | parse → print → parse yields the same AST             |
 | Resolver          | `test/test_resolve.ml`          | 60    | Unbound vars, unknown types/ctors, duplicates, fields |
 | Type checker      | `test/test_typecheck.ml`        | 291   | Inferred types, type errors, exhaustiveness warnings  |
-| Evaluator         | `test/test_eval.ml`             | 142   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch |
+| Evaluator         | `test/test_eval.ml`             | 142   | Runtime values, recursion, do-blocks, Ref, errors, escapes, @Name dispatch, Generic `to_rep` |
 | Run               | `test/test_run.ml`              | 6     | Stdout capture, factorial, ADT match, do-block, Ref, panic |
 | REPL              | `test/test_repl.ml`             | 9     | process_item, :load atomicity, rollback, :browse      |
 | Loader            | `test/test_loader.ml`           | 27    | Multi-file imports, topo sort, cycle detection, prelude no-op, abstract exports |
@@ -2557,6 +2557,79 @@ The 8+8 conflict count itself goes to zero after self-hosting
 because a Pratt-style or PEG parser has no "conflicts" — every
 disambiguation is an explicit line of code.  Phase 60 ensures
 those explicit lines say the right thing.
+
+---
+
+### Phase 61: Structural deriving — `deriving (Generic)` ✅ DONE
+
+**Goal.** GHC-Generics-style structural deriving. Instead of hard-coding each
+new deriver into the compiler, library authors can `deriving (Generic)` on any
+`data`/`record`/`newtype` to get `to_rep : a -> Rep`, a uniform reflection of
+the value into a flat tagged tree. They then write *one* function over `Rep`
+(serializer, hasher, pretty-printer, …) and obtain their typeclass for every
+deriving type — no type-level machinery (no associated types, no compile-time
+evaluation).
+
+**What was added.**
+
+- **`stdlib/core.mdk`** — a new "Generic" section defining:
+  - `data Rep = RCon String (List Rep) | RRecord String (List RField) | RInt Int
+    | RFloat Float | RString String | RBool Bool | RChar Char | RUnit` — the
+    flat tagged representation, carrying constructor/type names (for
+    Show/JSON) plus primitive leaves.
+  - `record RField = { fld_name : String, fld_rep : Rep }` — **the first record
+    ever defined in the prelude** (this flushed out two latent prelude-record
+    infrastructure gaps, see below).
+  - `interface Generic a where to_rep : a -> Rep; from_rep : Rep -> a` with a
+    `panic` **default** for `from_rep`, plus base impls for
+    `Int`/`Float`/`String`/`Bool`/`Char`/`Unit`.
+- **`lib/desugar.ml`** — three generators mirroring the existing derivers:
+  `derive_generic_data` (one match arm per constructor → `RCon name [to_rep
+  field…]`), `derive_generic_record` (→ `RRecord typename [RField {fld_name;
+  fld_rep = to_rep r.f}…]`), `derive_generic_newtype` (→ `RCon con [to_rep a]`).
+  Wired into `derive_for_data`/`derive_for_record`/`derive_for_newtype`. No
+  parser/lexer/printer changes — `deriving (Generic)` already parses and
+  round-trips (no derive-name allowlist exists anywhere).
+- **Prelude-record infrastructure fixes** (latent bugs, triggered by `RField`):
+  - `lib/resolve.ml`: the resolver seeded prelude types/ctors/interfaces/values
+    but **not record field owners**, so generated `ERecordCreate ("RField", …)`
+    failed with "Unknown field: fld_name". Added `prelude_field_owners` and
+    seeding into the `with_prelude` env.
+  - `lib/typecheck.ml`: `register_record`'s field-collision check was
+    non-idempotent — the multi-file path prepends the prelude per-module *and*
+    seeds from exports, double-registering `RField` → spurious "Field name
+    collision". Now fires only when the owner actually differs.
+- **`test/test_eval.ml`** — 5 tests: `to_rep` on positional/nullary `data`,
+  on a `record`, on a `newtype`, plus an end-to-end `ToJson` loop (define a
+  `ToJson` interface + recursive `rep_to_json : Rep -> String`, derive `Generic`
+  on a data type and a record, `impl ToJson T where to_json x = rep_to_json
+  (to_rep x)`) proving "derive once, write one generic function, get the
+  typeclass for free".
+
+**Scope shipped: the consumer direction (`to_rep`) only.**
+
+**Limitations / next steps (future phases):**
+
+- **`from_rep` is a stub.** `from_rep : Rep -> a` is *return-type
+  polymorphic* — the runtime's `VMulti` dispatch keys on argument runtime type
+  tags, and a return-type-only method gets empty dispatch positions (same
+  limitation as `fromInt`/`pure`, see `eval.ml`). So `from_rep` is declared in
+  the interface with a `panic` default to future-proof the signature, but no
+  real bodies are generated. Real `from_rep` deriving is blocked on
+  return-type-directed dispatch (e.g. a dictionary-passing or
+  type-application mechanism).
+- **Named-field *data* constructors are reflected positionally.** A
+  `ConNamed` payload on a `data` constructor currently emits `RCon name
+  [reps…]` (field names dropped), consistent with how `deriving (Eq/Show)`
+  treat them. Emitting `RRecord` for named-field data constructors (preserving
+  field names) is a future enhancement; `record` types already get `RRecord`.
+- **Numeric leaves can't be rendered by `Rep` consumers yet.** The end-to-end
+  `ToJson` example uses `String`/`Bool` fields because the prelude still has no
+  `Show Int`/`intToString` extern (see the note at `core.mdk`'s `Show` section).
+  Once that extern lands, generic numeric serialization works without changes
+  to this feature.
+- **Parameterized container types** beyond what call-site constraint checking
+  already covers are not specially handled.
 
 ---
 

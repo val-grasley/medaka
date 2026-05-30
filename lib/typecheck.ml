@@ -1631,9 +1631,14 @@ let register_record ?(aliases=Hashtbl.create 0) env (name, params, fields) =
   let info = { rec_params; rec_result = result_t; rec_fields = field_monos } in
   Hashtbl.replace env.records name info;
   List.iter (fun (fname, _) ->
-    if Hashtbl.mem env.field_owners fname then
-      fail (Other (Printf.sprintf
-        "Field name collision: '%s' is already declared by another record" fname));
+    (* A genuine collision is the same field owned by a *different* record.
+       Re-registering the same record (prelude prepended per-module in the
+       multi-file path, plus seeded from module exports) is idempotent. *)
+    (match Hashtbl.find_opt env.field_owners fname with
+     | Some owner when owner <> name ->
+       fail (Other (Printf.sprintf
+         "Field name collision: '%s' is already declared by another record" fname))
+     | _ -> ());
     Hashtbl.replace env.field_owners fname name
   ) field_monos
 

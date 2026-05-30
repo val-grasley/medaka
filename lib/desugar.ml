@@ -244,10 +244,71 @@ let derive_num_newtype type_name con_name =
                  ; abs_method; signum_method; from_int_method ];
   }
 
+(* ------------------------------------------------------------------ *)
+(* Derive Generic — structural `to_rep : a -> Rep`                     *)
+(* ------------------------------------------------------------------ *)
+
+(* `RCon "Name" [to_rep a0; to_rep a1; ...]` — name + positional field reps. *)
+let generic_rcon con_name vars =
+  let field_reps = List.map (fun x -> EApp (EVar "to_rep", EVar x)) vars in
+  EApp (EApp (EVar "RCon", ELit (LString con_name)), EListLit field_reps)
+
+let derive_generic_data type_name variants =
+  (* One arm per constructor; named-field constructors are matched
+     positionally, consistent with derive_eq_data/derive_show_data. *)
+  let arms = List.map (fun v ->
+    let n = con_arity v in
+    let vars = List.init n (fun i -> Printf.sprintf "__a%d" i) in
+    let pat =
+      if n = 0 then PCon (v.con_name, [])
+      else PCon (v.con_name, List.map (fun x -> PVar x) vars)
+    in
+    (pat, [], generic_rcon v.con_name vars)
+  ) variants in
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    iface_name = "Generic";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [("to_rep", [PVar "__x"], EMatch (EVar "__x", arms))];
+  }
+
+let derive_generic_record type_name fields =
+  let field_reps = List.map (fun f ->
+    ERecordCreate ("RField",
+      [ ("fld_name", ELit (LString f.field_name))
+      ; ("fld_rep",  EApp (EVar "to_rep", EFieldAccess (EVar "__r", f.field_name))) ])
+  ) fields in
+  let body = EApp (EApp (EVar "RRecord", ELit (LString type_name)), EListLit field_reps) in
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    iface_name = "Generic";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [("to_rep", [PVar "__r"], body)];
+  }
+
+let derive_generic_newtype type_name con_name =
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    iface_name = "Generic";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [("to_rep", [PCon (con_name, [PVar "__a"])],
+                   generic_rcon con_name ["__a"])];
+  }
+
 let derive_for_newtype type_name con_name iface =
   match iface with
-  | "Num" -> Some (derive_num_newtype type_name con_name)
-  | _     -> None
+  | "Num"     -> Some (derive_num_newtype type_name con_name)
+  | "Generic" -> Some (derive_generic_newtype type_name con_name)
+  | _         -> None
 
 (* ── Derive Arbitrary ─────────────────────────────────────────────────── *)
 
@@ -336,6 +397,7 @@ let derive_for_data type_name variants iface =
   | "Show"      -> Some (derive_show_data type_name variants)
   | "Ord"       -> Some (derive_ord_data  type_name variants)
   | "Arbitrary" -> Some (derive_arbitrary_data type_name variants)
+  | "Generic"   -> Some (derive_generic_data type_name variants)
   | _           -> None  (* unknown derive ignored — typecheck will catch it *)
 
 let derive_for_record type_name fields iface =
@@ -344,6 +406,7 @@ let derive_for_record type_name fields iface =
   | "Show"      -> Some (derive_show_record type_name fields)
   | "Ord"       -> Some (derive_ord_record  type_name fields)
   | "Arbitrary" -> Some (derive_arbitrary_record type_name fields)
+  | "Generic"   -> Some (derive_generic_record type_name fields)
   | _           -> None
 
 (* Expand a single decl into itself plus any generated impls. *)

@@ -112,6 +112,20 @@ let prelude_values : string list =
       List.map (fun m -> m.Ast.method_name) methods
     | _ -> []) Prelude.program
 
+(* Record (and named-field constructor) fields from the prelude, mapped to
+   their owning type/constructor.  Without this, field access and record
+   construction for prelude records (e.g. `RField`, used by derived
+   `Generic` impls) fail resolution. *)
+let prelude_field_owners : (string * string) list =
+  List.concat_map (function
+    | Ast.DRecord (_, n, _, fs, _) ->
+      List.map (fun f -> (f.Ast.field_name, n)) fs
+    | Ast.DData (_, _, _, vs, _) ->
+      List.concat_map (fun v -> match v.Ast.con_payload with
+        | Ast.ConNamed fs -> List.map (fun f -> (f.Ast.field_name, v.Ast.con_name)) fs
+        | Ast.ConPos _ -> []) vs
+    | _ -> []) Prelude.program
+
 (* ── Module exports (public interface of a resolved module) ── *)
 
 type module_exports = {
@@ -163,7 +177,11 @@ let create_env ?(with_prelude=true) () =
       Hashtbl.replace env.interfaces iface ();
       Hashtbl.replace env.iface_methods iface methods
     ) prelude_interfaces;
-    List.iter (fun n -> Hashtbl.replace env.values n ()) prelude_values
+    List.iter (fun n -> Hashtbl.replace env.values n ()) prelude_values;
+    List.iter (fun (fname, owner) ->
+      Hashtbl.replace env.fields fname ();
+      Hashtbl.replace env.field_owners fname owner
+    ) prelude_field_owners
   end;
   env
 

@@ -664,6 +664,59 @@ arbitraryList gen maxLen = go (randomInt 0 maxLen) [] where
     go 0 acc = acc
     go n acc = go (n - 1) (gen () :: acc)
 
+-- ─── 4b. Generic (structural representation / `deriving (Generic)`) ──────
+
+-- | A uniform, flat structural view of any value.  `deriving (Generic)`
+-- synthesises `to_rep`, turning a value into this tagged tree; a library
+-- author writes one function over `Rep` and gets their typeclass for any
+-- deriving type (serialisation, hashing, pretty-printing, …).
+--
+-- `RCon` carries a constructor's name and its positional fields' reps;
+-- `RRecord` carries a record type's name and its named fields.  The
+-- remaining constructors are primitive leaves.
+public export data Rep
+    | RCon    String (List Rep)
+    | RRecord String (List RField)
+    | RInt    Int
+    | RFloat  Float
+    | RString String
+    | RBool   Bool
+    | RChar   Char
+    | RUnit
+
+-- | A named field inside an `RRecord`.
+public export record RField
+    fld_name : String
+    fld_rep  : Rep
+
+-- | Types with a structural representation.  `to_rep` is synthesised by
+-- `deriving (Generic)`.  `from_rep` is return-type polymorphic, which the
+-- runtime cannot dispatch on arguments alone, so it is a stub for now —
+-- the signature is fixed so a later phase can fill in real bodies.
+export interface Generic a where
+    to_rep   : a -> Rep
+    from_rep : Rep -> a
+
+    from_rep _ = panic "from_rep: not implemented (Phase 1 is to_rep only)"
+
+export impl Generic Int where
+    to_rep n = RInt n
+
+export impl Generic Float where
+    to_rep x = RFloat x
+
+export impl Generic String where
+    to_rep s = RString s
+
+export impl Generic Bool where
+    to_rep b = RBool b
+
+export impl Generic Char where
+    to_rep c = RChar c
+
+export impl Generic Unit where
+    to_rep _ = RUnit
+
 -- ─── 5. Properties (executed by `medaka test`) ──────────────────────────
 
 prop "neq is the negation of eq" (x : Int) (y : Int) =

@@ -570,6 +570,95 @@ r = mul (Dist 3) (Dist 4)
 |}
     "r" (VCon ("Dist", [VInt 12]))
 
+(* ── Generic deriving (structural to_rep) ────────────────────────────────── *)
+
+let rint n = VCon ("RInt", [VInt n])
+
+let t_generic_data_positional =
+  assert_val
+    {|data Color = Red | RGB Int Int Int deriving (Generic)
+r = to_rep (RGB 1 2 3)
+|}
+    "r" (VCon ("RCon", [VString "RGB"; VList [rint 1; rint 2; rint 3]]))
+
+let t_generic_data_nullary =
+  assert_val
+    {|data Color = Red | RGB Int Int Int deriving (Generic)
+r = to_rep Red
+|}
+    "r" (VCon ("RCon", [VString "Red"; VList []]))
+
+let t_generic_record =
+  assert_val
+    {|record Point
+  x : Int
+  y : Int
+deriving (Generic)
+r = to_rep (Point { x = 1, y = 2 })
+|}
+    "r" (VCon ("RRecord",
+      [ VString "Point"
+      ; VList
+          [ VRecord ("RField", [("fld_name", VString "x"); ("fld_rep", rint 1)])
+          ; VRecord ("RField", [("fld_name", VString "y"); ("fld_rep", rint 2)]) ] ]))
+
+let t_generic_newtype =
+  assert_val
+    {|newtype Wrap = Wrap Int deriving (Generic)
+r = to_rep (Wrap 5)
+|}
+    "r" (VCon ("RCon", [VString "Wrap"; VList [rint 5]]))
+
+(* End-to-end: derive Generic once, write one function over Rep, and get a
+   ToJson instance for any deriving type (a data type and a record).  Uses
+   String/Bool fields only since the prelude has no Int Show yet. *)
+let t_generic_tojson_loop =
+  assert_val
+    {|interface ToJson a where
+    to_json : a -> String
+
+strJson : String -> String
+strJson s = "\"" ++ s ++ "\""
+
+rep_to_json : Rep -> String
+rep_to_json r = match r
+    RString s => strJson s
+    RBool b => if b then "true" else "false"
+    RCon name fields => "{" ++ strJson "tag" ++ ": " ++ strJson name ++ ", " ++ strJson "fields" ++ ": [" ++ joinReps fields ++ "]}"
+    RRecord _ fields => "{" ++ joinFields fields ++ "}"
+    _ => "null"
+
+joinReps : List Rep -> String
+joinReps [] = ""
+joinReps [r] = rep_to_json r
+joinReps (r :: rs) = rep_to_json r ++ ", " ++ joinReps rs
+
+joinFields : List RField -> String
+joinFields [] = ""
+joinFields [f] = strJson f.fld_name ++ ": " ++ rep_to_json f.fld_rep
+joinFields (f :: fs) = strJson f.fld_name ++ ": " ++ rep_to_json f.fld_rep ++ ", " ++ joinFields fs
+
+data Shape = Circle String deriving (Generic)
+
+record User
+  name : String
+  active : Bool
+deriving (Generic)
+
+impl ToJson Shape where
+    to_json x = rep_to_json (to_rep x)
+
+impl ToJson User where
+    to_json x = rep_to_json (to_rep x)
+
+shapeJson = to_json (Circle "red")
+userJson  = to_json (User { name = "ann", active = True })
+r = (shapeJson, userJson)
+|}
+    "r" (VTuple
+      [ VString {|{"tag": "Circle", "fields": ["red"]}|}
+      ; VString {|{"name": "ann", "active": true}|} ])
+
 (* ── Phase 22: Semigroup / Monoid ────────────────────────────────────────── *)
 
 let t_list_semigroup =
@@ -1305,6 +1394,13 @@ let () =
       test_case "pattern unwrap"    `Quick t_newtype_unwrap;
       test_case "deriving Num add"  `Quick t_newtype_deriving_num_add;
       test_case "deriving Num mul"  `Quick t_newtype_deriving_num_mul;
+    ];
+    "Generic deriving (to_rep)", [
+      test_case "data positional"   `Quick t_generic_data_positional;
+      test_case "data nullary"      `Quick t_generic_data_nullary;
+      test_case "record"            `Quick t_generic_record;
+      test_case "newtype"           `Quick t_generic_newtype;
+      test_case "ToJson end-to-end" `Quick t_generic_tojson_loop;
     ];
     "Semigroup / Monoid (Phase 22)", [
       test_case "List ++ List"              `Quick t_list_semigroup;
