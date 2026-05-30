@@ -116,8 +116,8 @@ are resolved relative to the root.
 ```
 
 The formatter parses, re-prints, and verifies the output reparses to
-the same AST. Line comments are preserved at their original
-positions.
+the same AST. Line comments (`--`) and block comments (`{- … -}`,
+nesting) are preserved at their original positions.
 
 ```
 medaka repl  (:quit to exit, :reset to clear session)

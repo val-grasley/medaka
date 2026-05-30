@@ -135,7 +135,7 @@ module.exports = grammar({
     char_lit:   $ => /'([^'\\]|\\.)'/,
     bool_lit:   $ => choice('True', 'False'),
 
-    comment: $ => /--[^\n]*/,
+    comment: $ => choice(/--[^\n]*/, /\{-[^]*?-\}/),
 
     literal: $ => choice(
       $.float_lit,

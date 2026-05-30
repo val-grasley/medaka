@@ -28,8 +28,24 @@
   ],
   "repository": {
     "comment": {
-      "name": "comment.line.double-dash.medaka",
-      "match": "--.*$"
+      "patterns": [
+        {
+          "name": "comment.line.double-dash.medaka",
+          "match": "--.*$"
+        },
+        {
+          "name": "comment.block.medaka",
+          "begin": "\\{-",
+          "end": "-\\}",
+          "patterns": [{ "include": "#comment-block-nested" }]
+        }
+      ]
+    },
+    "comment-block-nested": {
+      "name": "comment.block.medaka",
+      "begin": "\\{-",
+      "end": "-\\}",
+      "patterns": [{ "include": "#comment-block-nested" }]
     },
     "string": {
       "name": "string.quoted.double.medaka",

@@ -698,7 +698,8 @@ let format_program decls decl_locs (comments : Lexer.comment list) =
       blank_line_if_needed c.c_line;
       write p c.c_text;
       Buffer.add_char p.buf '\n';
-      cursor := c.c_line;
+      let nls = String.fold_left (fun n ch -> if ch = '\n' then n + 1 else n) 0 c.c_text in
+      cursor := c.c_line + nls;
       started := true
     in
     let flush_before line =

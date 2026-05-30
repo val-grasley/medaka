@@ -1430,6 +1430,31 @@ let test_attr_unknown () =
   | exception Failure msg when String.length msg > 0 -> ()
   | _ -> failwith "expected parse failure for unknown attribute"
 
+(* ── Block comments ──────────────────────────────────── *)
+(* Block comments are lexed as whitespace and never reach the parser. *)
+
+let test_block_comment_inline () =
+  match parse_one "x = {- c -} 1\n" with
+  | DFunDef (false, "x", [], ELit (LInt 1)) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_block_comment_spanning () =
+  match parse "x = 1\n{- multi\nline -}\ny = 2\n" with
+  | [DFunDef (false, "x", [], ELit (LInt 1));
+     DFunDef (false, "y", [], ELit (LInt 2))] -> ()
+  | ds -> failwith ("wrong: " ^ String.concat "; " (List.map pp_decl ds))
+
+let test_block_comment_nested () =
+  match parse "{- a {- b -} c -}\nx = 1\n" with
+  | [DFunDef (false, "x", [], ELit (LInt 1))] -> ()
+  | ds -> failwith ("wrong: " ^ String.concat "; " (List.map pp_decl ds))
+
+let test_block_comment_trailing_code () =
+  match parse "x = 1 {- note\nmore -}\ny = 2\n" with
+  | [DFunDef (false, "x", [], ELit (LInt 1));
+     DFunDef (false, "y", [], ELit (LInt 2))] -> ()
+  | ds -> failwith ("wrong: " ^ String.concat "; " (List.map pp_decl ds))
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -1673,5 +1698,11 @@ let () =
       test_case "@inline"      `Quick test_attr_inline;
       test_case "@must_use"    `Quick test_attr_must_use;
       test_case "unknown attr" `Quick test_attr_unknown;
+    ];
+    "block comments", [
+      test_case "inline"         `Quick test_block_comment_inline;
+      test_case "spanning lines" `Quick test_block_comment_spanning;
+      test_case "nested"         `Quick test_block_comment_nested;
+      test_case "trailing code"  `Quick test_block_comment_trailing_code;
     ];
   ]

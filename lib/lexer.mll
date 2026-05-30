@@ -36,6 +36,12 @@ let record_comment lexbuf =
                 c_col  = sp.Lexing.pos_cnum - sp.Lexing.pos_bol;
                 c_text = text } :: !comments
 
+(* Block comments span several tokens, so the start position must be captured
+   at the `{-` opener rather than derived from [lex_start_p] (which would point
+   at the closing `-}`). *)
+let record_comment_at line col text =
+  comments := { c_line = line; c_col = col; c_text = text } :: !comments
+
 let take_comments () = List.rev !comments
 
 
@@ -171,6 +177,15 @@ rule token = parse
 and read = parse
   | white+         { read lexbuf }
   | "--" [^ '\n']* { record_comment lexbuf; read lexbuf }
+  | "{-" {
+      let sp   = lexbuf.Lexing.lex_start_p in
+      let line = sp.Lexing.pos_lnum in
+      let col  = sp.Lexing.pos_cnum - sp.Lexing.pos_bol in
+      let buf  = Buffer.create 64 in
+      Buffer.add_string buf "{-";
+      read_block_comment buf 1 line col lexbuf;
+      read lexbuf
+    }
   | (newline white*)+ {
       (* Consume one or more (newline + optional indent) sequences so that
          blank lines inside a block do not trigger spurious DEDENT tokens.
@@ -395,3 +410,17 @@ and read_interp_triple_continue buf = parse
     { Buffer.add_string buf (Lexing.lexeme lexbuf);
       read_interp_triple_continue buf lexbuf }
   | eof { failwith "Unterminated interpolated triple-quoted string" }
+
+(* Haskell-style nested block comment.  `depth` tracks `{-`/`-}` nesting;
+   `line`/`col` are the opener position carried through for the side channel. *)
+and read_block_comment buf depth line col = parse
+  | "{-"  { Buffer.add_string buf "{-"; read_block_comment buf (depth + 1) line col lexbuf }
+  | "-}"  { Buffer.add_string buf "-}";
+            if depth = 1 then record_comment_at line col (Buffer.contents buf)
+            else read_block_comment buf (depth - 1) line col lexbuf }
+  | '\n'  { Lexing.new_line lexbuf; Buffer.add_char buf '\n';
+            read_block_comment buf depth line col lexbuf }
+  | [^ '{' '-' '\n']+ { Buffer.add_string buf (Lexing.lexeme lexbuf);
+                        read_block_comment buf depth line col lexbuf }
+  | _ as c { Buffer.add_char buf c; read_block_comment buf depth line col lexbuf }
+  | eof   { failwith "Unterminated block comment" }

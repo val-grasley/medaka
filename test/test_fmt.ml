@@ -64,6 +64,17 @@ let cp_eof_trailing =
   preserves ["-- after last decl"]
     "x = 1\n\n-- after last decl\n"
 
+let cp_block =
+  preserves ["{- block -}"]
+    "{- block -}\nx = 1\n"
+
+let cp_block_multiline =
+  preserves ["{- a\nb -}"]
+    "{- a\nb -}\nx = 1\n"
+
+let id_block_between =
+  idempotent "x = 1\n\n{- between decls -}\ny = 2\n"
+
 (* ── Round-trip safety net ───────────────────────── *)
 
 (* If the formatter ever produces output whose AST differs from the
@@ -92,12 +103,15 @@ let () =
       Alcotest.test_case "data type"     `Quick id_data;
       Alcotest.test_case "match expr"    `Quick id_match;
       Alcotest.test_case "with comments" `Quick id_with_comments;
+      Alcotest.test_case "block between" `Quick id_block_between;
     ];
     "comment preservation", [
       Alcotest.test_case "top of file"   `Quick cp_top;
       Alcotest.test_case "between decls" `Quick cp_between;
       Alcotest.test_case "multiple"      `Quick cp_multiple;
       Alcotest.test_case "eof trailing"  `Quick cp_eof_trailing;
+      Alcotest.test_case "block"         `Quick cp_block;
+      Alcotest.test_case "block multiline" `Quick cp_block_multiline;
     ];
     "round-trip safety", [
       Alcotest.test_case "stdlib-like"       `Quick rt_stdlib_like;
