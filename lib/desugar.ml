@@ -472,6 +472,10 @@ let is_var e = match strip_loc e with EVar _ -> true | _ -> false
 let var_name e = match strip_loc e with EVar n -> n | _ -> assert false
 
 let rec map_expr f e =
+  let map_qual = function
+    | GBool g      -> GBool (map_expr f g)
+    | GBind (p, g) -> GBind (p, map_expr f g)
+  in
   let e' = match e with
     | ELoc (loc, inner)       -> ELoc (loc, map_expr f inner)
     | EApp (e1, e2)           -> EApp (map_expr f e1, map_expr f e2)
@@ -484,10 +488,6 @@ let rec map_expr f e =
         ) bs,
         map_expr f e2)
     | EMatch (e0, arms)       ->
-        let map_qual = function
-          | GBool g      -> GBool (map_expr f g)
-          | GBind (p, g) -> GBind (p, map_expr f g)
-        in
         EMatch (map_expr f e0,
           List.map (fun (p, gs, b) -> (p, List.map map_qual gs, map_expr f b)) arms)
     | EIf (c, t, el)          -> EIf (map_expr f c, map_expr f t, map_expr f el)
@@ -512,6 +512,14 @@ let rec map_expr f e =
     | EListComp (body, quals) ->
         EListComp (map_expr f body, List.map (map_lc_qual f) quals)
     | EQuestion e0            -> EQuestion (map_expr f e0)
+    | EGuards arms ->
+        EGuards (List.map (fun (gs, b) ->
+          (List.map map_qual gs, map_expr f b)) arms)
+    | EFunction arms ->
+        EFunction (List.map (fun (p, gs, b) ->
+          (p, List.map map_qual gs, map_expr f b)) arms)
+    | ESection (SecRight (op, e0)) -> ESection (SecRight (op, map_expr f e0))
+    | ESection (SecLeft (e0, op))  -> ESection (SecLeft (map_expr f e0, op))
     | e0                      -> e0
   in
   f e'
@@ -686,6 +694,40 @@ let merge_iface_defaults prog =
     | d -> d
   ) prog
 
+(* ── Surface-sugar lowering ───────────────────────────────────────────────
+   The parser keeps function/where guards, the `function` keyword, and
+   operator sections as dedicated nodes so the formatter can round-trip them.
+   Lower them here, before resolve/typecheck/eval (which carry assert-false
+   arms for these nodes). *)
+
+(* Guard arms → nested if/match chain threading a fallback continuation.  A
+   boolean qualifier lowers to `if`; a pattern-bind lowers to a 2-arm `match`
+   whose wildcard arm is the fallback.  A missing catch-all panics at runtime,
+   matching Haskell's behaviour. *)
+let guards_to_core arms =
+  let rec arm quals body els = match quals with
+    | []                 -> body
+    | GBool e :: qs      -> EIf (e, arm qs body els, els)
+    | GBind (p, e) :: qs -> EMatch (e, [(p, [], arm qs body els); (PWild, [], els)])
+  in
+  List.fold_right
+    (fun (quals, body) els -> arm quals body els)
+    arms
+    (EApp (EVar "panic", ELit (LString "Non-exhaustive guards")))
+
+let section_to_core = function
+  | SecBare op       -> ELam ([PVar "_a"; PVar "_b"], EBinOp (op, EVar "_a", EVar "_b"))
+  | SecRight (op, e) -> ELam ([PVar "_s"], EBinOp (op, EVar "_s", e))
+  | SecLeft (e, op)  -> ELam ([PVar "_s"], EBinOp (op, e, EVar "_s"))
+
+let rewrite_sugar = function
+  | EGuards arms   -> guards_to_core arms
+  | EFunction arms -> ELam ([PVar "__fn_arg"], EMatch (EVar "__fn_arg", arms))
+  | ESection s     -> section_to_core s
+  | e              -> e
+
+let desugar_sugar prog = List.map (map_decl rewrite_sugar) prog
+
 let desugar_program (prog : program) : program =
   let prog = merge_iface_defaults prog in
   let expanded = List.concat_map expand_decl prog in
@@ -694,7 +736,8 @@ let desugar_program (prog : program) : program =
     | _ -> None) expanded in
   let after_puns = desugar_record_puns record_names expanded in
   let after_lc   = desugar_list_comps after_puns in
-  desugar_questions after_lc
+  let after_q    = desugar_questions after_lc in
+  desugar_sugar after_q
 
 (* Desugar a standalone expression (e.g. a REPL ReplExpr).  Applies the
    passes that don't require program-level context: list-comp rewrites and
@@ -705,7 +748,7 @@ let desugar_expr (e : expr) : expr =
     | EListComp (body, quals) -> desugar_list_comp body quals
     | e -> e
   in
-  map_expr rewrite_question_expr (map_expr rewrite_lc e)
+  map_expr rewrite_sugar (map_expr rewrite_question_expr (map_expr rewrite_lc e))
 
 let desugar_repl_item (item : repl_item) : repl_item =
   match item with

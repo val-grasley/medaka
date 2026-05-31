@@ -68,6 +68,21 @@ let rec collect_expr acc = function
     collect_expr (collect_expr acc lo) hi
   | Ast.ESlice (e, lo, hi, _) ->
     collect_expr (collect_expr (collect_expr acc e) lo) hi
+  | Ast.EGuards arms ->
+    List.fold_left (fun a (guards, body) ->
+      let a' = List.fold_left (fun a q -> match q with
+        | Ast.GBool g | Ast.GBind (_, g) -> collect_expr a g) a guards in
+      collect_expr a' body
+    ) acc arms
+  | Ast.EFunction arms ->
+    List.fold_left (fun a (_, guards, body) ->
+      let a' = List.fold_left (fun a q -> match q with
+        | Ast.GBool g | Ast.GBind (_, g) -> collect_expr a g) a guards in
+      collect_expr a' body
+    ) acc arms
+  | Ast.ESection (Ast.SecRight (_, e)) | Ast.ESection (Ast.SecLeft (e, _)) ->
+    collect_expr acc e
+  | Ast.ESection (Ast.SecBare _) -> acc
 
 and collect_do_stmt acc = function
   | Ast.DoBind (_, e) | Ast.DoExpr e | Ast.DoLet (_, _, e)

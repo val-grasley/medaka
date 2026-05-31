@@ -1475,6 +1475,9 @@ let rec infer env = function
 
   | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
 
+  | EGuards _ | EFunction _ | ESection _ ->
+    assert false (* eliminated by desugar_sugar *)
+
   | EQuestion _ -> assert false (* eliminated by desugar_questions; misplaced uses caught by resolve *)
 
   | ERangeList (lo, hi, _) ->
@@ -2671,6 +2674,8 @@ let expr_effects
     | ELoc (_, e)             -> sub e
     | EListComp _             -> assert false (* eliminated by desugar_list_comps *)
     | EQuestion _             -> assert false (* eliminated by desugar_questions *)
+    | EGuards _ | EFunction _ | ESection _ ->
+      assert false (* eliminated by desugar_sugar *)
 
   and do_stmt_effects (bound : StringSet.t) = function
     | DoExpr e             -> (bound, go bound e)

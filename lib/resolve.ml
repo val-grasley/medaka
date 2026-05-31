@@ -634,6 +634,8 @@ let rec check_expr env scope errors e =
     check_expr env scope errors l;
     check_expr env scope errors r
   | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
+  | EGuards _ | EFunction _ | ESection _ ->
+    assert false (* eliminated by desugar_sugar *)
   | EQuestion e ->
     emit errors QuestionMisplaced;
     check_expr env scope errors e

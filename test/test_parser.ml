@@ -332,53 +332,53 @@ let test_expr_index () =
   | _ -> failwith "wrong"
 
 let test_expr_section () =
-  (* (+5) desugars to \x -> x + 5 *)
+  (* (+5) parses to a right section; desugar.ml lowers it to \x -> x + 5 *)
   match parse_expr "(+5)\n" with
-  | ELam ([PVar "_s"], EBinOp ("+", EVar "_s", ELit (LInt 5))) -> ()
+  | ESection (SecRight ("+", ELit (LInt 5))) -> ()
   | _ -> failwith "wrong"
 
 let test_expr_left_section () =
-  (* (2 * _) desugars to \x -> 2 * x *)
+  (* (2 * _) parses to a left section; lowered to \x -> 2 * x *)
   match parse_expr "(2 * _)\n" with
-  | ELam ([PVar "_s"], EBinOp ("*", ELit (LInt 2), EVar "_s")) -> ()
+  | ESection (SecLeft (ELit (LInt 2), "*")) -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
 let test_expr_left_section_minus () =
-  (* (3 - _) desugars to \x -> 3 - x *)
+  (* (3 - _) parses to a left section; lowered to \x -> 3 - x *)
   match parse_expr "(3 - _)\n" with
-  | ELam ([PVar "_s"], EBinOp ("-", ELit (LInt 3), EVar "_s")) -> ()
+  | ESection (SecLeft (ELit (LInt 3), "-")) -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
 let test_expr_left_section_app () =
   (* (foo 1 * _) — application on the left *)
   match parse_expr "(foo 1 * _)\n" with
-  | ELam ([PVar "_s"], EBinOp ("*", EApp (EVar "foo", ELit (LInt 1)), EVar "_s")) -> ()
+  | ESection (SecLeft (EApp (EVar "foo", ELit (LInt 1)), "*")) -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
 let test_expr_bare_section_plus () =
-  (* (+) desugars to \a b -> a + b *)
+  (* (+) parses to a bare section; lowered to \a b -> a + b *)
   match parse_expr "(+)\n" with
-  | ELam ([PVar "_a"; PVar "_b"], EBinOp ("+", EVar "_a", EVar "_b")) -> ()
+  | ESection (SecBare "+") -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
 let test_expr_bare_section_minus () =
   match parse_expr "(-)\n" with
-  | ELam ([PVar "_a"; PVar "_b"], EBinOp ("-", EVar "_a", EVar "_b")) -> ()
+  | ESection (SecBare "-") -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
 let test_expr_bare_section_eq () =
   match parse_expr "(==)\n" with
-  | ELam ([PVar "_a"; PVar "_b"], EBinOp ("==", EVar "_a", EVar "_b")) -> ()
+  | ESection (SecBare "==") -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
 let test_expr_bare_section_cons () =
   match parse_expr "(::)\n" with
-  | ELam ([PVar "_a"; PVar "_b"], EBinOp ("::", EVar "_a", EVar "_b")) -> ()
+  | ESection (SecBare "::") -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
 let test_expr_bare_section_append () =
   match parse_expr "(<>)\n" with
-  | ELam ([PVar "_a"; PVar "_b"], EBinOp ("<>", EVar "_a", EVar "_b")) -> ()
+  | ESection (SecBare "<>") -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
 let test_expr_unary_minus_paren () =
@@ -595,6 +595,8 @@ f xs =
 
 (* ── Top-level function guard tests ─────────────────── *)
 
+(* Guards are kept as an EGuards node by the parser; desugar.ml lowers them
+   to the nested if/match chain. *)
 let test_guard_single () =
   let src = {|
 f x
@@ -603,9 +605,8 @@ f x
 |} in
   match parse_one src with
   | DFunDef (false, "f", [PVar "x"],
-      EIf (EBinOp (">", EVar "x", ELit (LInt 0)), ELit (LInt 1),
-        EIf (EVar "otherwise", ELit (LInt 0),
-          EApp (EVar "panic", ELit (LString "Non-exhaustive guards"))))) -> ()
+      EGuards [ ([GBool (EBinOp (">", EVar "x", ELit (LInt 0)))], ELit (LInt 1))
+              ; ([GBool (EVar "otherwise")], ELit (LInt 0)) ]) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 let test_guard_multi () =
@@ -617,10 +618,9 @@ classify n
 |} in
   match parse_one src with
   | DFunDef (false, "classify", [PVar "n"],
-      EIf (EBinOp ("<", EVar "n", ELit (LInt 0)), ELit (LString "neg"),
-        EIf (EBinOp (">", EVar "n", ELit (LInt 0)), ELit (LString "pos"),
-          EIf (EVar "otherwise", ELit (LString "zero"),
-            EApp (EVar "panic", ELit (LString "Non-exhaustive guards")))))) -> ()
+      EGuards [ ([GBool (EBinOp ("<", EVar "n", ELit (LInt 0)))], ELit (LString "neg"))
+              ; ([GBool (EBinOp (">", EVar "n", ELit (LInt 0)))], ELit (LString "pos"))
+              ; ([GBool (EVar "otherwise")], ELit (LString "zero")) ]) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 let test_guard_no_params () =
@@ -631,13 +631,11 @@ r
 |} in
   match parse_one src with
   | DFunDef (false, "r", [],
-      EIf (EVar "True", ELit (LInt 42),
-        EIf (EVar "otherwise", ELit (LInt 0),
-          EApp (EVar "panic", ELit (LString "Non-exhaustive guards"))))) -> ()
+      EGuards [ ([GBool (EVar "True")], ELit (LInt 42))
+              ; ([GBool (EVar "otherwise")], ELit (LInt 0)) ]) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
-(* Pattern-bind guard lowers to a 2-arm match whose wildcard arm is the
-   fallback (here: the next guard arm / final panic). *)
+(* A pattern-bind qualifier (`Some y <- o`) is preserved as a GBind in the arm. *)
 let test_guard_pattern_bind () =
   let src = {|
 f o
@@ -646,15 +644,11 @@ f o
 |} in
   match parse_one src with
   | DFunDef (false, "f", [PVar "o"],
-      EMatch (EVar "o",
-        [ (PCon ("Some", [PVar "y"]), [], EVar "y")
-        ; (PWild, [],
-           EIf (EVar "otherwise", ELit (LInt 0),
-             EApp (EVar "panic", ELit (LString "Non-exhaustive guards")))) ])) -> ()
+      EGuards [ ([GBind (PCon ("Some", [PVar "y"]), EVar "o")], EVar "y")
+              ; ([GBool (EVar "otherwise")], ELit (LInt 0)) ]) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
-(* Comma-separated qualifiers: a pattern bind followed by a boolean test.
-   The boolean's fallback is the same continuation as the bind's miss. *)
+(* Comma-separated qualifiers: a pattern bind followed by a boolean test. *)
 let test_guard_bind_then_bool () =
   let src = {|
 f o
@@ -663,11 +657,9 @@ f o
 |} in
   match parse_one src with
   | DFunDef (false, "f", [PVar "o"],
-      EMatch (EVar "o",
-        [ (PCon ("Some", [PVar "y"]), [],
-           EIf (EBinOp (">", EVar "y", ELit (LInt 0)), EVar "y", fallback1))
-        ; (PWild, [], fallback2) ]))
-    when fallback1 = fallback2 -> ()
+      EGuards [ ([ GBind (PCon ("Some", [PVar "y"]), EVar "o")
+                 ; GBool (EBinOp (">", EVar "y", ELit (LInt 0))) ], EVar "y")
+              ; ([GBool (EVar "otherwise")], ELit (LInt 0)) ]) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 (* Pattern-bind qualifier inside a match-arm guard. *)
@@ -1381,13 +1373,14 @@ classify =
     0 => "zero"
     _ => "nonzero"
 |} in
+  (* The parser keeps `function` as an EFunction node; desugar.ml lowers it
+     to \__fn_arg => match __fn_arg ... *)
   match parse_one src with
   | DFunDef (false, "classify", [],
-      ELam ([PVar "__fn_arg"],
-            EMatch (EVar "__fn_arg", [
-              (PLit (LInt 0), [], ELit (LString "zero"));
-              (PWild, [], ELit (LString "nonzero"));
-            ]))) -> ()
+      EFunction [
+        (PLit (LInt 0), [], ELit (LString "zero"));
+        (PWild, [], ELit (LString "nonzero"));
+      ]) -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
 let test_function_guard () =
@@ -1400,12 +1393,11 @@ sign =
 |} in
   match parse_one src with
   | DFunDef (false, "sign", [],
-      ELam ([PVar "__fn_arg"],
-            EMatch (EVar "__fn_arg", [
-              (PVar "n", [GBool (EBinOp (">", EVar "n", ELit (LInt 0)))], ELit (LInt 1));
-              (PVar "n", [GBool (EBinOp ("<", EVar "n", ELit (LInt 0)))], EUnOp ("-", ELit (LInt 1)));
-              (PWild, [], ELit (LInt 0));
-            ]))) -> ()
+      EFunction [
+        (PVar "n", [GBool (EBinOp (">", EVar "n", ELit (LInt 0)))], ELit (LInt 1));
+        (PVar "n", [GBool (EBinOp ("<", EVar "n", ELit (LInt 0)))], EUnOp ("-", ELit (LInt 1)));
+        (PWild, [], ELit (LInt 0));
+      ]) -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
 (* ── Declaration attributes (Phase 49) ──────────────── *)

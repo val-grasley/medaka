@@ -126,6 +126,17 @@ and expr =
   | ELoc          of loc * expr                         (* source position; transparent to semantics *)
   | EMethodRef    of resolved option ref * ident         (* interface-method occurrence; ref filled by typecheck (Phase 69) *)
   | EDictApp      of res_route list option ref * ident   (* constrained-function occurrence; routes filled by typecheck (Phase 69.x) *)
+  (* Surface-only sugar nodes.  The parser produces these so the formatter can
+     round-trip the original syntax; `desugar.ml` lowers them to core nodes
+     before resolve/typecheck/eval (which carry `assert false` arms). *)
+  | EGuards       of (guard_qual list * expr) list       (* function/where guard arms: `| g.. = body` *)
+  | EFunction     of (pat * guard_qual list * expr) list (* `function` keyword: anonymous match on one arg *)
+  | ESection      of section                             (* operator section: (op) / (op e) / (e op _) *)
+
+and section =
+  | SecBare  of string          (* (op)     → \a b => a op b *)
+  | SecRight of string * expr   (* (op e)   → \s => s op e   *)
+  | SecLeft  of expr * string   (* (e op _) → \s => e op s   *)
 
 type use_path =
   | UseName  of ident list                   (* use utils.greet *)
@@ -364,6 +375,31 @@ let rec pp_expr = function
   | ELoc (_, e)          -> pp_expr e
   | EMethodRef (_, x)    -> x
   | EDictApp (_, x)      -> x
+  | EGuards arms ->
+    let pp_qual = function
+      | GBool ge      -> pp_expr ge
+      | GBind (p, ge) -> Printf.sprintf "%s <- %s" (pp_pat p) (pp_expr ge)
+    in
+    let pp_arm (gs, body) =
+      Printf.sprintf "| %s = %s"
+        (String.concat ", " (List.map pp_qual gs)) (pp_expr body)
+    in
+    Printf.sprintf "(guards %s)" (String.concat " " (List.map pp_arm arms))
+  | EFunction arms ->
+    let pp_qual = function
+      | GBool ge      -> pp_expr ge
+      | GBind (p, ge) -> Printf.sprintf "%s <- %s" (pp_pat p) (pp_expr ge)
+    in
+    let pp_arm (p, gs, body) =
+      let guard = match gs with
+        | [] -> ""
+        | _  -> Printf.sprintf " if %s" (String.concat ", " (List.map pp_qual gs)) in
+      Printf.sprintf "%s%s => %s" (pp_pat p) guard (pp_expr body)
+    in
+    Printf.sprintf "(function %s)" (String.concat " | " (List.map pp_arm arms))
+  | ESection (SecBare op)       -> Printf.sprintf "(%s)" op
+  | ESection (SecRight (op, e)) -> Printf.sprintf "(%s %s)" op (pp_expr e)
+  | ESection (SecLeft (e, op))  -> Printf.sprintf "(%s %s _)" (pp_expr e) op
 
 and pp_do_stmt = function
   | DoBind (p, e)       -> Printf.sprintf "%s <- %s" (pp_pat p) (pp_expr e)
@@ -423,6 +459,23 @@ let rec strip_locs_expr = function
   | ERangeList  (lo, hi, incl) -> ERangeList  (strip_locs_expr lo, strip_locs_expr hi, incl)
   | ERangeArray (lo, hi, incl) -> ERangeArray (strip_locs_expr lo, strip_locs_expr hi, incl)
   | ESlice      (e, lo, hi, incl) -> ESlice (strip_locs_expr e, strip_locs_expr lo, strip_locs_expr hi, incl)
+  | EGuards arms ->
+    let strip_qual = function
+      | GBool ge      -> GBool (strip_locs_expr ge)
+      | GBind (p, ge) -> GBind (p, strip_locs_expr ge)
+    in
+    EGuards (List.map (fun (gs, b) ->
+      (List.map strip_qual gs, strip_locs_expr b)) arms)
+  | EFunction arms ->
+    let strip_qual = function
+      | GBool ge      -> GBool (strip_locs_expr ge)
+      | GBind (p, ge) -> GBind (p, strip_locs_expr ge)
+    in
+    EFunction (List.map (fun (p, gs, b) ->
+      (p, List.map strip_qual gs, strip_locs_expr b)) arms)
+  | ESection (SecRight (op, e)) -> ESection (SecRight (op, strip_locs_expr e))
+  | ESection (SecLeft (e, op))  -> ESection (SecLeft (strip_locs_expr e, op))
+  | ESection (SecBare _) as e   -> e
   | e                     -> e  (* ELit, EVar *)
 
 and strip_locs_do = function

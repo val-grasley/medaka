@@ -93,6 +93,37 @@ let rt_multi_param_lambda () =
   if not (contains "x y =>" out) then
     failwith (Printf.sprintf "Expected 'x y =>' in formatted output, got:\n%s" out)
 
+(* Surface sugar must survive formatting rather than being printed as its
+   desugared core form. *)
+let id_guards   = idempotent
+  "classify n\n  | n < 0 = \"neg\"\n  | otherwise = \"pos\"\n"
+let id_section  = idempotent "f = map (+ 1) xs\n"
+let id_function = idempotent "k =\n  function\n    0 => \"z\"\n    _ => \"nz\"\n"
+
+(* Function guards stay as guard arms, not a desugared if/else chain. *)
+let rt_guards_preserved () =
+  let out = format "classify n\n  | n < 0 = \"neg\"\n  | otherwise = \"pos\"\n" in
+  if contains "if " out || contains "Non-exhaustive" out then
+    failwith (Printf.sprintf "Guards were desugared on format:\n%s" out);
+  if not (contains "| n < 0 = " out) then
+    failwith (Printf.sprintf "Guard arm not preserved:\n%s" out)
+
+(* Sections stay as sections, not a lambda over a synthetic variable. *)
+let rt_section_preserved () =
+  let out = format "f = map (+ 1) xs\n" in
+  if contains "_s" out || contains "=>" out then
+    failwith (Printf.sprintf "Section was desugared on format:\n%s" out);
+  if not (contains "(+ 1)" out) then
+    failwith (Printf.sprintf "Section not preserved:\n%s" out)
+
+(* `function` stays a function block, not a lambda + match. *)
+let rt_function_preserved () =
+  let out = format "k =\n  function\n    0 => \"z\"\n    _ => \"nz\"\n" in
+  if contains "__fn_arg" out then
+    failwith (Printf.sprintf "function keyword was desugared on format:\n%s" out);
+  if not (contains "function" out) then
+    failwith (Printf.sprintf "function keyword not preserved:\n%s" out)
+
 (* ── Entry point ─────────────────────────────────── *)
 
 let () =
@@ -104,6 +135,9 @@ let () =
       Alcotest.test_case "match expr"    `Quick id_match;
       Alcotest.test_case "with comments" `Quick id_with_comments;
       Alcotest.test_case "block between" `Quick id_block_between;
+      Alcotest.test_case "guards"        `Quick id_guards;
+      Alcotest.test_case "section"       `Quick id_section;
+      Alcotest.test_case "function kw"   `Quick id_function;
     ];
     "comment preservation", [
       Alcotest.test_case "top of file"   `Quick cp_top;
@@ -116,5 +150,8 @@ let () =
     "round-trip safety", [
       Alcotest.test_case "stdlib-like"       `Quick rt_stdlib_like;
       Alcotest.test_case "multi-param lambda" `Quick rt_multi_param_lambda;
+      Alcotest.test_case "guards preserved"   `Quick rt_guards_preserved;
+      Alcotest.test_case "section preserved"  `Quick rt_section_preserved;
+      Alcotest.test_case "function preserved" `Quick rt_function_preserved;
     ];
   ]

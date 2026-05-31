@@ -116,21 +116,8 @@ and expr_to_pats e =
        List.map expr_to_pat (head :: args))
   | e -> [expr_to_pat e]
 
-(* Desugar guard arms (a sequence of qualifiers + body each) into a nested
-   if/match chain that threads a fallback continuation.  A boolean qualifier
-   lowers to `if`; a pattern-bind qualifier lowers to a 2-arm `match` whose
-   wildcard arm is the fallback (so it stays exhaustive).  A missing catch-all
-   panics at runtime, matching Haskell's behaviour. *)
-let desugar_guards arms =
-  let rec arm quals body els = match quals with
-    | []                 -> body
-    | GBool e :: qs      -> EIf (e, arm qs body els, els)
-    | GBind (p, e) :: qs -> EMatch (e, [(p, [], arm qs body els); (PWild, [], els)])
-  in
-  List.fold_right
-    (fun (quals, body) els -> arm quals body els)
-    arms
-    (EApp (EVar "panic", ELit (LString "Non-exhaustive guards")))
+(* Guard arms (`| g.. = body`) are kept as an `EGuards` node so the formatter
+   can round-trip them; `desugar.ml` lowers them to a nested if/match chain. *)
 
 (* Interpret a ty_fun as a constraint-list prefix in `ty_fun FAT_ARROW ty`.
    TyApp(TyCon iface, arg) → single constraint; TyTuple → multiple constraints. *)
@@ -440,7 +427,7 @@ inner_fun_def:
   | IDENT list(pat_atom) EQUAL fun_body newlines
     { fun is_pub -> DFunDef (is_pub, $1, $2, $4) }
   | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines
-    { fun is_pub -> DFunDef (is_pub, $1, $2, desugar_guards $4) }
+    { fun is_pub -> DFunDef (is_pub, $1, $2, EGuards $4) }
 
 guard_arm:
   | PIPE separated_nonempty_list(COMMA, guard_qual) EQUAL fun_body newlines  { ($2, $4) }
@@ -462,7 +449,7 @@ where_binding:
   | IDENT list(pat_atom) EQUAL fun_body newlines
     { ($1, $2, $4) }
   | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines
-    { ($1, $2, desugar_guards $4) }
+    { ($1, $2, EGuards $4) }
 
 (* ── `let rec ... with ...` (Phase 57) ────────────────────
    Inline form: `let rec f x = e1 with g x = e2 in body`.
@@ -630,8 +617,7 @@ expr_lam:
   | MATCH expr_or INDENT nonempty_list(match_arm) DEDENT
     { ELoc (of_pos $startpos $endpos, EMatch ($2, $4)) }
   | FUNCTION INDENT nonempty_list(match_arm) DEDENT
-    { ELoc (of_pos $startpos $endpos,
-            ELam ([PVar "__fn_arg"], EMatch (EVar "__fn_arg", $3))) }
+    { ELoc (of_pos $startpos $endpos, EFunction $3) }
   | DO INDENT nonempty_list(stmt) DEDENT
     { ELoc (of_pos $startpos $endpos, EDo (ref None, $3)) }
   | UNDERSCORE FAT_ARROW expr_lam
@@ -748,19 +734,16 @@ expr_atom:
   | UNDERSCORE                                       { ELoc (of_pos $startpos $endpos, EVar "_") }
   | LPAREN RPAREN                                    { ELoc (of_pos $startpos $endpos, ELit LUnit) }
   | LPAREN section_op_bare RPAREN
-    { let op = $2 in
-      ELoc (of_pos $startpos $endpos,
-            ELam ([PVar "_a"; PVar "_b"],
-                  EBinOp (op, EVar "_a", EVar "_b"))) }
+    { ELoc (of_pos $startpos $endpos, ESection (SecBare $2)) }
   | LPAREN section_op expr_no_block RPAREN
-    { let op = $2 and e = $3 in
-      ELoc (of_pos $startpos $endpos, ELam ([PVar "_s"], EBinOp (op, EVar "_s", e))) }
+    { ELoc (of_pos $startpos $endpos, ESection (SecRight ($2, $3))) }
   | LPAREN expr_no_block RPAREN
-    { (* Left section: (e op _) desugars to \x -> e op x *)
+    { (* Left section (e op _) becomes ESection (SecLeft ...); a plain
+         parenthesised expression just unwraps to its inner expr. *)
       let rec strip = function ELoc (_, e) -> strip e | e -> e in
       match strip $2 with
       | EBinOp (op, lhs, rhs) when (match strip rhs with EVar "_" -> true | _ -> false) ->
-          ELoc (of_pos $startpos $endpos, ELam ([PVar "_s"], EBinOp (op, lhs, EVar "_s")))
+          ELoc (of_pos $startpos $endpos, ESection (SecLeft (lhs, op)))
       | _ -> $2 }
   | LPAREN expr_no_block COMMA
       separated_nonempty_list(COMMA, expr_no_block) RPAREN

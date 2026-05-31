@@ -175,9 +175,13 @@ let rec expr_prec = function
   | EApp _                             -> prec_app
   | EInfix _                           -> prec_infix
   | EBinOp (op, _, _)                  -> binop_prec op
+  | ESection _                         -> prec_atom
   | ELam _ | ELet _ | ELetGroup _ | EIf _
-  | EMatch _ | EBlock _ | EDo (_, _) | EAnnot _   -> prec_top
+  | EMatch _ | EBlock _ | EDo (_, _) | EAnnot _
+  | EFunction _ | EGuards _            -> prec_top
   | ELoc (_, e)                        -> expr_prec e
+
+let rec strip_loc = function ELoc (_, e) -> strip_loc e | e -> e
 
 let rec print_expr p min_prec e =
   let ep = expr_prec e in
@@ -227,16 +231,22 @@ and print_expr_raw p = function
   | ELetGroup (bindings, body) ->
     print_expr p prec_top body;
     write p " where";
+    (* Indent clauses two levels (4 spaces at top level) via the indent
+       machinery so guarded/block bodies nest consistently beneath them. *)
+    let saved = p.indent in
+    p.indent <- p.indent + 2;
     List.iter (fun (name, clauses) ->
       List.iter (fun (pats, rhs) ->
-        write p "\n    "; write p name;
+        newline p; write p name;
         List.iter (fun pat ->
           write p " "; print_pat p pat
         ) pats;
-        write p " = ";
-        print_expr p prec_top rhs
+        (match strip_loc rhs with
+         | EGuards arms -> print_guard_arms p arms
+         | _ -> write p " = "; print_expr p prec_top rhs)
       ) clauses
-    ) bindings
+    ) bindings;
+    p.indent <- saved
   | EIf (c, t, e) ->
     write p "if ";
     print_expr p prec_top c;
@@ -306,25 +316,19 @@ and print_expr_raw p = function
   | EMatch (sc, arms) ->
     write p "match ";
     print_expr p prec_top sc;
-    indented p (fun () ->
-      List.iteri (fun i (pat, guards, body) ->
-        if i > 0 then newline p;
-        print_pat p pat;
-        (match guards with
-         | [] -> ()
-         | _ ->
-           write p " if ";
-           List.iteri (fun j q ->
-             if j > 0 then write p ", ";
-             match q with
-             | GBool g      -> print_expr p prec_top g
-             | GBind (gp, g) ->
-               print_pat p gp; write p " <- "; print_expr p prec_top g
-           ) guards);
-        write p " => ";
-        print_expr_body p body
-      ) arms
-    )
+    print_match_arms p arms
+  | EFunction arms ->
+    write p "function";
+    print_match_arms p arms
+  | EGuards arms -> print_guard_arms p arms
+  | ESection (SecBare op)       -> write p "("; write p op; write p ")"
+  | ESection (SecRight (op, e)) ->
+    write p "("; write p op; write p " ";
+    print_expr p prec_top e; write p ")"
+  | ESection (SecLeft (e, op))  ->
+    write p "(";
+    print_expr p prec_top e;
+    write p " "; write p op; write p " _)"
   | EBlock stmts ->
     (* Bare block: no `do` prefix, just an indented stmt list. *)
     indented p (fun () ->
@@ -400,6 +404,49 @@ and print_expr_body p e = match e with
   | ELoc (_, e')     -> print_expr_body p e'
   | _ -> print_expr p prec_top e
 
+(* Shared by EMatch and the `function` keyword: an indented block of
+   `pat [if guards] => body` arms. *)
+and print_match_arms p arms =
+  indented p (fun () ->
+    List.iteri (fun i (pat, guards, body) ->
+      if i > 0 then newline p;
+      print_pat p pat;
+      (match guards with
+       | [] -> ()
+       | _ ->
+         write p " if ";
+         List.iteri (fun j q ->
+           if j > 0 then write p ", ";
+           match q with
+           | GBool g      -> print_expr p prec_top g
+           | GBind (gp, g) ->
+             print_pat p gp; write p " <- "; print_expr p prec_top g
+         ) guards);
+      write p " => ";
+      print_expr_body p body
+    ) arms
+  )
+
+(* Function/where guard arms: an indented block of `| guards = body`.  Used as
+   a DFunDef / where-clause body, where the `name pats` header is printed by
+   the caller (no `=` separator before the arms). *)
+and print_guard_arms p arms =
+  indented p (fun () ->
+    List.iteri (fun i (guards, body) ->
+      if i > 0 then newline p;
+      write p "| ";
+      List.iteri (fun j q ->
+        if j > 0 then write p ", ";
+        match q with
+        | GBool g      -> print_expr p prec_top g
+        | GBind (gp, g) ->
+          print_pat p gp; write p " <- "; print_expr p prec_top g
+      ) guards;
+      write p " = ";
+      print_expr_body p body
+    ) arms
+  )
+
 and print_do_stmt p = function
   | DoBind (pat, e) ->
     print_pat p pat;
@@ -433,7 +480,7 @@ and print_do_stmt p = function
 (* ── Declarations ────────────────────────────────── *)
 
 let rec is_block_body = function
-  | EMatch _ | EBlock _ | EDo _ -> true
+  | EMatch _ | EBlock _ | EDo _ | EGuards _ | EFunction _ -> true
   | ELoc (_, e)      -> is_block_body e
   | _ -> false
 
@@ -454,27 +501,37 @@ let print_use_path p = function
 
 let rec print_decl p = function
   | DTypeSig (pub, n, t) ->
-    if pub then write p "export ";
+    if pub then write p "export\n";
     write p n; write p " : "; print_type p t
 
   | DExtern (pub, n, t) ->
-    if pub then write p "export ";
+    if pub then write p "export\n";
     write p "extern "; write p n; write p " : "; print_type p t
 
   | DFunDef (pub, n, pats, body) ->
-    if pub then write p "export ";
+    if pub then write p (if is_block_body body then "export\n" else "export ");
     write p n;
     List.iter (fun pat -> write p " "; print_pat_atom p pat) pats;
-    write p " =";
-    if is_block_body body then
-      indented p (fun () -> print_expr_body p body)
-    else begin
-      write p " ";
-      print_expr p prec_top body
-    end
+    (match strip_loc body with
+     | EGuards arms -> print_guard_arms p arms
+     | EBlock _ ->
+       (* A bare block self-indents in print_expr_raw; wrapping it in another
+          `indented` here would double-indent and leave a blank line under the
+          `=`. EMatch/EDo/EFunction write a keyword on the first indented line,
+          so they still need the outer `indented`. *)
+       write p " =";
+       print_expr_body p body
+     | _ ->
+       write p " =";
+       if is_block_body body then
+         indented p (fun () -> print_expr_body p body)
+       else begin
+         write p " ";
+         print_expr p prec_top body
+       end)
 
   | DLetGroup (pub, bindings) ->
-    if pub then write p "export ";
+    if pub then write p "export\n";
     let first = ref true in
     List.iter (fun (name, clauses) ->
       List.iter (fun (pats, body) ->
@@ -483,19 +540,25 @@ let rec print_decl p = function
         write p name;
         List.iter (fun pat -> write p " "; print_pat_atom p pat) pats;
         write p " =";
-        if is_block_body body then
-          indented p (fun () -> print_expr_body p body)
-        else begin
-          write p " ";
-          print_expr p prec_top body
-        end
+        (match strip_loc body with
+         | EBlock _ ->
+           (* See DFunDef: a bare block self-indents; an outer `indented`
+              would double-indent and emit a blank line. *)
+           print_expr_body p body
+         | _ ->
+           if is_block_body body then
+             indented p (fun () -> print_expr_body p body)
+           else begin
+             write p " ";
+             print_expr p prec_top body
+           end)
       ) clauses
     ) bindings
 
   | DData (vis, n, params, variants, derives) ->
     (match vis with
-     | Ast.DataPublic   -> write p "public export "
-     | Ast.DataAbstract -> write p "export "
+     | Ast.DataPublic   -> write p "public export\n"
+     | Ast.DataAbstract -> write p "export\n"
      | Ast.DataPrivate  -> ());
     write p "data "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
@@ -525,8 +588,8 @@ let rec print_decl p = function
 
   | DRecord (vis, n, params, fields, derives) ->
     (match vis with
-     | Ast.DataPublic   -> write p "public export "
-     | Ast.DataAbstract -> write p "export "
+     | Ast.DataPublic   -> write p "public export\n"
+     | Ast.DataAbstract -> write p "export\n"
      | Ast.DataPrivate  -> ());
     write p "record "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
@@ -546,14 +609,14 @@ let rec print_decl p = function
     end
 
   | DTypeAlias (pub, n, params, rhs) ->
-    if pub then write p "export ";
+    if pub then write p "export\n";
     write p "type "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
     write p " = ";
     print_type p rhs
 
   | DNewtype (pub, n, params, con, fty, derives) ->
-    if pub then write p "export ";
+    if pub then write p "export\n";
     write p "newtype "; write p n;
     List.iter (fun pa -> write p " "; write p pa) params;
     write p " = "; write p con; write p " ";
@@ -565,7 +628,7 @@ let rec print_decl p = function
     end
 
   | DInterface { is_pub; is_default; iface_name; type_params; super; methods } ->
-    if is_pub then write p "export ";
+    if is_pub then write p "export\n";
     if is_default then write p "default ";
     write p "interface "; write p iface_name;
     List.iter (fun pa -> write p " "; write p pa) type_params;

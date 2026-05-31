@@ -676,6 +676,9 @@ and eval env expr =
 
   | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
 
+  | EGuards _ | EFunction _ | ESection _ ->
+    assert false (* eliminated by desugar_sugar *)
+
   | EQuestion _ -> assert false (* eliminated by desugar_questions *)
 
   | ERangeList (elo, ehi, incl) ->

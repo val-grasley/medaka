@@ -58,8 +58,14 @@ let fd_con_pat   = mk "unwrap (Some x) = x\n"
 
 (* Expressions in fn bodies *)
 let ex_lambda       = mk "f = x => x + 1\n"
-(* left section (2 * _) desugars to a lambda; printer emits the lambda form *)
-let ex_left_section = mk "f = _s => 2 * _s\n"
+(* Operator sections are preserved as ESection nodes, so the original surface
+   syntax round-trips (rather than being printed as the desugared lambda). *)
+let ex_right_section = mk "f = (+ 1)\n"
+let ex_left_section  = mk "f = (2 * _)\n"
+let ex_left_sec_app  = mk "f = (foo 1 * _)\n"
+let ex_bare_section  = mk "f = (+)\n"
+let ex_bare_sec_cons = mk "f = (::)\n"
+let ex_section_arg   = mk "g = map (> 2) xs\n"
 let ex_lam_tup   = mk "add = (x, y) => x + y\n"
 let ex_let       = mk "f = let x = 5 in x + 1\n"
 let ex_let_mut   = mk "f = let mut x = 5 in x\n"
@@ -92,6 +98,38 @@ let m_guard = mk
   match x
     n if n > 0 => 1
     n if n < 0 => -1
+    _ => 0
+|}
+
+(* Function-clause guards (EGuards): round-trip as guard arms, not the
+   desugared if/else chain. *)
+let g_fun = mk
+{|classify n
+  | n < 0 = "neg"
+  | n == 0 = "zero"
+  | otherwise = "pos"
+|}
+
+(* Pattern-bind guard qualifier. *)
+let g_bind = mk
+{|f o
+  | Some y <- o = y
+  | otherwise = 0
+|}
+
+(* Guards inside a where binding (the stdlib count/find shape). *)
+let g_where = mk
+{|count f = fold g 0 where
+    g acc x
+      | f x = acc + 1
+      | otherwise = acc
+|}
+
+(* `function` keyword with guarded arms. *)
+let fn_guard = mk
+{|sign =
+  function
+    n if n > 0 => 1
     _ => 0
 |}
 
@@ -213,7 +251,12 @@ let () =
     ];
     "expressions", [
       test_case "lambda"           `Quick ex_lambda;
+      test_case "right section"    `Quick ex_right_section;
       test_case "left section"     `Quick ex_left_section;
+      test_case "left section app" `Quick ex_left_sec_app;
+      test_case "bare section"     `Quick ex_bare_section;
+      test_case "bare section cons" `Quick ex_bare_sec_cons;
+      test_case "section as arg"   `Quick ex_section_arg;
       test_case "lambda tuple"     `Quick ex_lam_tup;
       test_case "let"              `Quick ex_let;
       test_case "let mut"          `Quick ex_let_mut;
@@ -239,6 +282,12 @@ let () =
       test_case "constructor arms" `Quick m_constructor;
       test_case "as-pattern cons"  `Quick m_as_cons;
       test_case "as-pattern list"  `Quick m_as_list;
+    ];
+    "guards", [
+      test_case "function clause"  `Quick g_fun;
+      test_case "pattern bind"     `Quick g_bind;
+      test_case "in where"         `Quick g_where;
+      test_case "function keyword" `Quick fn_guard;
     ];
     "data types", [
       test_case "inline"           `Quick d_inline;
