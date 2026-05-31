@@ -2863,6 +2863,28 @@ run t = match t
   Thunk f => f 1
 |} "run" "Thunk -> Int"
 
+(* Unbound payload type vars (Phase 70): a type variable in a constructor or
+   record-field payload that isn't in the type's parameter list is rejected,
+   not silently turned into a fresh quantified var. *)
+let e_unbound_payload_data = assert_err_msg "Unbound type variable 'b'"
+  "data Box a = Box b\n"
+
+let e_unbound_payload_data_nested = assert_err_msg "Unbound type variable 'b'"
+  "data T a = MkT (List b)\n"
+
+let e_unbound_payload_record = assert_err_msg "Unbound type variable 'b'"
+  {|record Pair a
+  fst : a
+  snd : b
+|}
+
+let t_payload_bound_ok = assert_type
+  {|data Box a = Box a
+unbox : Box a -> a
+unbox b = match b
+  Box x => x
+|} "unbox" "Box a -> a"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -3332,5 +3354,9 @@ let () =
       test_case "err: nullary ctor pat w/ arg" `Quick e_pat_arity_nullary;
       test_case "ctor pat correct arity ok"    `Quick t_pat_arity_ok;
       test_case "ctor pat fn payload arity 1"  `Quick t_pat_arity_fn_payload;
+      test_case "err: unbound payload tyvar (data)"    `Quick e_unbound_payload_data;
+      test_case "err: unbound payload tyvar (nested)"  `Quick e_unbound_payload_data_nested;
+      test_case "err: unbound payload tyvar (record)"  `Quick e_unbound_payload_record;
+      test_case "bound payload tyvar ok"               `Quick t_payload_bound_ok;
     ];
   ]

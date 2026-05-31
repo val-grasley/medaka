@@ -104,6 +104,7 @@ type type_error =
   | UnboundVar     of ident
   | UnknownCtor    of ident
   | ArityMismatch  of ident * int * int   (* name, expected, got *)
+  | UnboundTypeVar of ident * ident        (* tyvar, declaring type name *)
   | UnknownRecord  of ident
   | UnknownField   of ident * ident       (* field, record *)
   | MissingField   of ident * ident       (* field, record *)
@@ -418,6 +419,10 @@ let pp_error = function
   | UnknownCtor n  -> Printf.sprintf "Unknown constructor: %s" n
   | ArityMismatch (n, exp, got) ->
     Printf.sprintf "Constructor %s expects %d args, got %d" n exp got
+  | UnboundTypeVar (v, tname) ->
+    Printf.sprintf
+      "Unbound type variable '%s' in the definition of '%s' — every type variable in a payload must appear in the type's parameter list (e.g. 'data %s %s = ...')"
+      v tname tname v
   | UnknownRecord r -> Printf.sprintf "Unknown record type: %s" r
   | UnknownField (f, r) ->
     Printf.sprintf "Field %s does not belong to record %s" f r
@@ -1749,8 +1754,10 @@ let register_data ?(aliases=Hashtbl.create 0) env (name, params, variants) =
       | Ast.TyVar n ->
         (try List.assoc n param_vars
          with Not_found ->
-           (* unknown type var; treat as fresh *)
-           fresh_var ())
+           (* A payload type variable not bound by the type's parameter list is
+              an error (no existential quantification): reject it instead of
+              silently minting a fresh var and over-generalizing the ctor. *)
+           fail (UnboundTypeVar (n, name)))
       | Ast.TyApp (a, b) -> TApp (go a, go b)
       | Ast.TyFun (a, b) ->
         let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
@@ -1805,7 +1812,8 @@ let register_record ?(aliases=Hashtbl.create 0) env (name, params, fields) =
       | Ast.TyCon n ->
         (try List.assoc n param_vars with Not_found -> TCon n)
       | Ast.TyVar n ->
-        (try List.assoc n param_vars with Not_found -> fresh_var ())
+        (try List.assoc n param_vars
+         with Not_found -> fail (UnboundTypeVar (n, name)))
       | Ast.TyApp (a, b)  -> TApp (go a, go b)
       | Ast.TyFun (a, b)  ->
         let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
