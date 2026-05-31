@@ -136,7 +136,6 @@ and prepended to every program by the compiler.
   - ✅ `isSome : Option a -> Bool` — true if `Some _`
   - ✅ `isNone : Option a -> Bool` — true if `None`
   - ✅ `fromOption : a -> Option a -> a` — extract value or fall back to default (also known as `withDefault` in some langs)
-  - ⏳ `mapOption : (a -> b) -> Option a -> Option b` — apply function to `Some`, leave `None` alone *(redundant with `Mappable Option.map`; consider dropping)*
   - ✅ `toResult : e -> Option a -> Result e a` — `Some x → Ok x`, `None → Err e`
   - ⏳ `fromResult : Result e a -> Option a` — `Ok x → Some x`, `Err _ → None` *(was named `toOption` in earlier draft)*
   - ⏳ Instances: `Eq (Option a)`, `Ord (Option a)`, `Show (Option a)`, `Mappable Option` ✅, `Foldable Option`, `Applicative Option` ✅, `Thenable Option` ✅
@@ -146,11 +145,7 @@ and prepended to every program by the compiler.
   - ✅ `isOk : Result e a -> Bool` — true if `Ok _`
   - ✅ `isErr : Result e a -> Bool` — true if `Err _`
   - ⏳ `fromResultOr : a -> Result e a -> a` — extract `Ok` value or fall back to default (rename `fromResult` from the earlier draft to avoid collision with `Option`'s)
-  - ⏳ `mapResult : (a -> b) -> Result e a -> Result e b` — apply to `Ok`, pass `Err` through *(redundant with `Mappable (Result e).map`; consider dropping)*
   - ⏳ `mapErr : (e -> f) -> Result e a -> Result f a` — apply to the `Err` side, pass `Ok` through
-  - ⏳ `andThenResult : Result e a -> (a -> Result e b) -> Result e b` *(redundant with `Thenable.andThen`; consider dropping)*
-  - ⏳ `okToOption : Result e a -> Option a` — `Ok x → Some x`, `Err _ → None`
-  - ⏳ `fromOptionResult : e -> Option a -> Result e a` — `Some x → Ok x`, `None → Err e` *(inverse of `toResult`)*
   - ⏳ Instances: `Eq (Result e a)`, `Show (Result e a)`, `Mappable (Result e)` ✅, `Thenable (Result e)` ✅
 
 ### Utility functions
@@ -194,8 +189,10 @@ and prepended to every program by the compiler.
 
 ## Module 2 — `list` 🟡 partially implemented
 
-Depends on `core`. `fold` is provided via `impl Foldable List` in `core.mdk`
-and `filter` currently lives there too. The rest is up to this module.
+Depends on `core`. `filter` currently lives in `core.mdk` but is List-specific
+and may move here. Functions already covered by `impl Foldable List` or
+`impl Mappable List` (fold, foldRight, map, any, all, find, count, elem, sum,
+product) do not need implementations here — use the typeclass dispatch path.
 
 ### Construction
 
@@ -210,7 +207,6 @@ and `filter` currently lives there too. The rest is up to this module.
 ### Observation
 
 - ✅ `isEmpty : List a -> Bool` — true for the empty list
-- ⏳ `length : List a -> Int` — element count (O(N)); also available via `Foldable.length`
 - ✅ `head : List a -> Option a` — first element, or `None` if empty
 - ✅ `tail : List a -> Option (List a)` — all elements after the first, or `None` if empty
 - ✅ `last : List a -> Option a` — final element, or `None` if empty
@@ -219,7 +215,6 @@ and `filter` currently lives there too. The rest is up to this module.
 
 ### Transformation
 
-- ⏳ `map : (a -> b) -> List a -> List b` — apply function to each element (delegate to `Mappable List.map` or re-export)
 - ⏳ `filter : (a -> Bool) -> List a -> List a` — keep elements satisfying the predicate *(currently lives in `core.mdk` — see note above)*
 - ⏳ `filterMap : (a -> Option b) -> List a -> List b` — apply a partial function; keep `Some` results, drop `None`
 - ⏳ `reverse : List a -> List a` — list in opposite order
@@ -234,28 +229,17 @@ and `filter` currently lives there too. The rest is up to this module.
 
 ### Folds and scans
 
-- ⏳ `fold : (b -> a -> b) -> b -> List a -> b` — left fold (re-export of `Foldable.fold`; already provided by the `impl Foldable List` in `core.mdk`)
-- ⏳ `foldRight : (a -> b -> b) -> b -> List a -> b` — right fold (re-export of `Foldable.foldRight`; already provided by `impl Foldable List`)
-- ⏳ `foldMap : (Foldable t, Monoid m) => (a -> m) -> t a -> m` — map each element to a monoid value and combine; lives in `core` once both interfaces are present
 - ⏳ `scanLeft : (b -> a -> b) -> b -> List a -> List b` — like `fold` but keeps every intermediate accumulator
 - ⏳ `scanRight : (a -> b -> b) -> b -> List a -> List b` — right-associated `scanLeft`
-- ⏳ `sum : List Int -> Int` — sum of integers; `Foldable+Num` generalisation lives in `core`
-- ⏳ `sumFloat : List Float -> Float` — sum of floats (separate name until `Num` impls are wired through dispatch)
-- ⏳ `product : List Int -> Int` — product of integers
 - ⏳ `maximum : Ord a => List a -> Option a` — largest element, or `None` if empty
 - ⏳ `minimum : Ord a => List a -> Option a` — smallest element, or `None` if empty
 
 ### Search
 
-- ⏳ `elem : Eq a => a -> List a -> Bool` — true when the value appears in the list
 - ⏳ `notElem : Eq a => a -> List a -> Bool` — `not (elem x xs)`
-- ⏳ `find : (a -> Bool) -> List a -> Option a` — first element satisfying the predicate, or `None`
 - ⏳ `findIndex : (a -> Bool) -> List a -> Option Int` — index of the first match, or `None`
 - ⏳ `findIndices : (a -> Bool) -> List a -> List Int` — all indices that match
 - ⏳ `elemIndex : Eq a => a -> List a -> Option Int` — index of the first occurrence of the value
-- ⏳ `any : (a -> Bool) -> List a -> Bool` — at least one element matches (re-export of `Foldable.any`)
-- ⏳ `all : (a -> Bool) -> List a -> Bool` — every element matches (re-export of `Foldable.all`)
-- ⏳ `count : (a -> Bool) -> List a -> Int` — number of matches
 
 ### Sublists
 
@@ -293,15 +277,15 @@ and `filter` currently lives there too. The rest is up to this module.
 
 ### Instances
 
-- ⏳ `impl Eq (List a)` where `Eq a` — *(already in `core.mdk`; could be moved here once stdlib layering is clarified)*
+- ✅ `impl Eq (List a)` where `Eq a` — *(in `core.mdk`)*
 - ⏳ `impl Ord (List a)` where `Ord a` — lexicographic ordering
 - ⏳ `impl Show (List a)` where `Show a` — bracketed comma-separated form
-- ⏳ `impl Mappable List` — *(already in `core.mdk`)*
-- ⏳ `impl Foldable List` — *(already in `core.mdk`)*
-- ⏳ `impl Applicative List` — *(already in `core.mdk`)*
-- ⏳ `impl Thenable List` — *(already in `core.mdk`)*
+- ✅ `impl Mappable List` — *(in `core.mdk`)*
+- ✅ `impl Foldable List` — *(in `core.mdk`)*
+- ✅ `impl Applicative List` — *(in `core.mdk`)*
+- ✅ `impl Thenable List` — *(in `core.mdk`)*
 - ⏳ `impl Semigroup (List a)` — concatenation (currently driven by the `++` dispatch path)
-- ⏳ `impl Monoid (List a)` — *(already in `core.mdk`)*
+- ✅ `impl Monoid (List a)` — *(in `core.mdk`)*
 
 ---
 

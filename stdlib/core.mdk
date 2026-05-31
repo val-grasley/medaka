@@ -566,20 +566,6 @@ mapErr : (e -> f) -> Result e a -> Result f a
 mapErr f (Err e) = Err (f e)
 mapErr _ (Ok a)  = Ok a
 
--- | Alias for `fromResult` chosen for symmetry with `toResult`.
--- Useful when the calling code already speaks in `Option`s and the
--- error payload is irrelevant.
-export
-okToOption : Result e a -> Option a
-okToOption = fromResult
-
--- | Build a `Result` from an `Option`, supplying the error.  Inverse of
--- `fromResult`.  Same shape as `toResult`, given a different name so it
--- reads naturally at call sites that start from an `Option`.
-export
-fromOptionResult : e -> Option a -> Result e a
-fromOptionResult = toResult
-
 -- ─── Utility functions ──────────────────────────────────────────────────
 
 -- | Return the argument unchanged.
