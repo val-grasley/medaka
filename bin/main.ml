@@ -137,6 +137,7 @@ let () =
       ) resolve_errs;
       exit 1
     end;
+    let program = Medaka_lib.Method_marker.mark_with_prelude program in
     (try
        let (_env, warnings) = Medaka_lib.Typecheck.check_program program in
        List.iter (fun w -> Printf.eprintf "%s\n" w) warnings
@@ -203,6 +204,7 @@ let () =
       ) resolve_errs;
       exit 1
     end;
+    let program = Medaka_lib.Method_marker.mark_with_prelude program in
     (try
        let (_env, warnings) = Medaka_lib.Typecheck.check_program program in
        List.iter (fun w -> Printf.eprintf "%s\n" w) warnings
@@ -408,6 +410,7 @@ cd into a member or specify a file\n"; exit 1
       ) resolve_errs;
       exit 1
     end;
+    let root_program = Medaka_lib.Method_marker.mark_with_prelude root_program in
     (try
       let (env, warnings) = Medaka_lib.Typecheck.check_program root_program in
       List.iter (fun w -> Printf.eprintf "%s\n" w) warnings;
@@ -478,6 +481,20 @@ cd into a member or specify a file\n"; exit 1
       end;
       resolve_exports := exports :: !resolve_exports
     ) modules;
+
+    (* Phase 69: mark interface-method occurrences across every module (against
+       the union of all modules' + the prelude's interface methods) so the
+       typechecker can stamp each resolved impl and eval can route by it.  Runs
+       after resolve — which only validates the bare names — and rebinds
+       `modules` so both the typecheck loop and the concatenated eval program
+       below consume the same marked trees. *)
+    let method_names =
+      Medaka_lib.Method_marker.interface_method_names
+        (Medaka_lib.Prelude.program :: List.map (fun (_, _, p) -> p) modules)
+    in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Medaka_lib.Method_marker.mark_program method_names prog)
+    ) modules in
 
     (* Typecheck all modules in dependency order *)
     let type_exports = ref [] in

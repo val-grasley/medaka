@@ -165,7 +165,7 @@ let binop_prec = function
 let is_right_assoc = function "::" -> true | _ -> false
 
 let rec expr_prec = function
-  | ELit _ | EVar _ | ETuple _ | EArrayLit _ | EListLit _ | EListComp _
+  | ELit _ | EVar _ | EMethodRef _ | ETuple _ | EArrayLit _ | EListLit _ | EListComp _
   | EMapLit _ | ESetLit _ | EStringInterp _
   | ERecordCreate _ | ERecordUpdate _
   | ERangeList _ | ERangeArray _ | ESlice _ -> prec_atom
@@ -189,6 +189,7 @@ let rec print_expr p min_prec e =
 and print_expr_raw p = function
   | ELit l -> print_lit p l
   | EVar n -> write p n
+  | EMethodRef (_, n) -> write p n
   | EApp (f, x) ->
     print_expr p prec_app f;
     write p " ";

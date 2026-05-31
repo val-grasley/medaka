@@ -25,9 +25,14 @@ type value =
   | VMulti  of value list  (* ordered impl closures for the same method; tried in sequence *)
   | VThunk  of value Lazy.t  (* deferred top-level zero-param binding; forced on first lookup *)
   | VNamedImpl of string * value  (* impl closure tagged with its declared name *)
-  | VTypedImpl of string * int list * int * value
-      (* impl method: (tag, dispatch_positions, args_seen, inner).
+  | VTypedImpl of string * string * int list * int * value
+      (* impl method: (tag, key, dispatch_positions, args_seen, inner).
          `tag`  is the impl's head type-ctor name (e.g. "List" for Foldable List).
+         `key`  is the canonical Ast.impl_key for this impl (iface + full type
+            args + opt name).  Unlike `tag`, it distinguishes impls that share a
+            head ctor — `Convert Int String` vs `Convert Int Bool` — so Phase 69
+            return-position / multi-param dispatch can pick the impl the
+            typechecker resolved, recorded in the call site's EMethodRef.
          `dispatch_positions` is the set of argument indices whose runtime type
             actually determines impl selection, computed from the interface
             method's type signature.  For `fold : (b -> a -> b) -> b -> t a -> b`
@@ -97,7 +102,7 @@ let rec pp_value = function
   | VMulti vs  -> Printf.sprintf "<dispatch/%d>" (List.length vs)
   | VThunk t   -> pp_value (Lazy.force t)
   | VNamedImpl (n, _) -> Printf.sprintf "<impl:%s>" n
-  | VTypedImpl (t, _, _, inner) -> Printf.sprintf "<impl@%s:%s>" t (pp_value inner)
+  | VTypedImpl (t, _, _, _, inner) -> Printf.sprintf "<impl@%s:%s>" t (pp_value inner)
 
 and pp_value_atom v = match v with
   | VCon (_, _ :: _) | VTuple _ -> "(" ^ pp_value v ^ ")"
@@ -296,9 +301,29 @@ let rec runtime_type_tag = function
   | VArray _  -> Some "Array"
   | VCon (cname, _) -> Hashtbl.find_opt ctor_to_type cname
   | VRecord (name, _) -> Some name
-  | VTypedImpl (t, _, _, _) -> Some t
+  | VTypedImpl (t, _, _, _, _) -> Some t
   | VNamedImpl (_, inner) -> runtime_type_tag inner
   | _ -> None
+
+(* Phase 69: the canonical impl key a VMulti candidate carries (through any
+   VNamedImpl wrapper), or None if it isn't a typed impl. *)
+let rec candidate_key = function
+  | VTypedImpl (_, key, _, _, _) -> Some key
+  | VNamedImpl (_, inner) -> candidate_key inner
+  | _ -> None
+
+(* Phase 69: narrow a method binding to the single impl the typechecker chose,
+   identified by its canonical key.  Only fires for VMulti bindings; if exactly
+   one candidate matches the key, return it (keeping its dispatch wrapper so
+   partial application still works).  No unique match — wrong key, single-impl
+   binding, or a value that isn't a VMulti — leaves the binding untouched so the
+   arg-tag dispatch path runs as before. *)
+let select_impl_by_key key = function
+  | VMulti vs as v ->
+    (match List.filter (fun c -> candidate_key c = Some key) vs with
+     | [c] -> c
+     | _ -> v)
+  | v -> v
 
 (* Convert Impl_no_match → Eval_error at the boundary of user-visible code.
    Used at every eval site that is NOT inside a VMulti dispatch chain. *)
@@ -322,13 +347,13 @@ let rec apply fn arg =
   | VClosure (_, [], _) ->
     raise (Eval_error ("applied closure with no parameters", !current_loc))
   | VPrim f -> f arg
-  | VTypedImpl (t, positions, seen, inner) ->
+  | VTypedImpl (t, key, positions, seen, inner) ->
     (* Pass through to the inner value but preserve the dispatch metadata
        across partial applications so subsequent VMulti dispatch can still
        route to the right typed candidate. *)
     let result = apply inner arg in
     (match result with
-     | VClosure _ | VPrim _ | VMulti _ -> VTypedImpl (t, positions, seen + 1, result)
+     | VClosure _ | VPrim _ | VMulti _ -> VTypedImpl (t, key, positions, seen + 1, result)
      | _ -> result)
   | VMulti vs ->
     (* Apply each impl to arg; collect results.
@@ -347,12 +372,12 @@ let rec apply fn arg =
        mentions the interface type param) are never filtered positionally. *)
     let unwrap_tags = function
       | VNamedImpl (_, inner) -> inner
-      | VTypedImpl (_, _, _, inner) -> inner
+      | VTypedImpl (_, _, _, _, inner) -> inner
       | v -> v
     in
     let is_dispatching = function
-      | VTypedImpl (_, positions, seen, _) -> List.mem seen positions
-      | VNamedImpl (_, VTypedImpl (_, positions, seen, _)) -> List.mem seen positions
+      | VTypedImpl (_, _, positions, seen, _) -> List.mem seen positions
+      | VNamedImpl (_, VTypedImpl (_, _, positions, seen, _)) -> List.mem seen positions
       | _ -> false
     in
     let vs =
@@ -360,8 +385,8 @@ let rec apply fn arg =
       | None -> vs
       | Some tag ->
         let matches_tag = function
-          | VTypedImpl (t, _, _, _) -> t = tag
-          | VNamedImpl (_, VTypedImpl (t, _, _, _)) -> t = tag
+          | VTypedImpl (t, _, _, _, _) -> t = tag
+          | VNamedImpl (_, VTypedImpl (t, _, _, _, _)) -> t = tag
           | _ -> true  (* untagged candidates always considered *)
         in
         (* Only filter candidates that are at a dispatching slot.  A
@@ -386,8 +411,8 @@ let rec apply fn arg =
          | Some (VClosure _ | VPrim _ | VMulti _ as c) ->
            let wrapped = (match v with
              | VNamedImpl (n, _) -> VNamedImpl (n, c)
-             | VTypedImpl (t, positions, seen, _) ->
-               VTypedImpl (t, positions, seen + 1, c)
+             | VTypedImpl (t, key, positions, seen, _) ->
+               VTypedImpl (t, key, positions, seen + 1, c)
              | _ -> c) in
            collect_partials (wrapped :: acc) rest
          | Some terminal -> terminal)  (* first terminal result wins *)
@@ -414,6 +439,18 @@ and eval env expr =
     VUnit  (* @Name as standalone expr; typechecker types it as Unit *)
 
   | EVar x -> lookup env x
+
+  (* Phase 69: resolved method occurrence.  If the typechecker stamped this
+     site with the impl it chose, narrow the VMulti to that one candidate by its
+     canonical key — this is what makes return-position / multi-param dispatch
+     pick the right impl instead of letting "first arg-tag match wins".  When
+     unstamped (genuinely polymorphic site, 69.x) or the key isn't found, fall
+     back to the whole VMulti and the arg-tag dispatch path. *)
+  | EMethodRef (r, x) ->
+    let v = lookup env x in
+    (match !r with
+     | Some { Ast.res_key; _ } -> select_impl_by_key res_key v
+     | None -> v)
 
   | EApp (f_expr, EVar hint)
   | EApp (f_expr, ELoc (_, EVar hint))
@@ -699,7 +736,7 @@ and eval_binop env op l r =
          | None -> v
          | Some tag ->
            (match List.filter_map (function
-              | VTypedImpl (t, _, _, inner) when t = tag -> Some inner
+              | VTypedImpl (t, _, _, _, inner) when t = tag -> Some inner
               | _ -> None) vs with
             | [single] -> single
             | _ -> v))
@@ -1338,6 +1375,7 @@ let eval_program program =
         | t :: _ -> head_tycon t
         | [] -> None
       in
+      let impl_key = Ast.impl_key ~iface:iface_name ~type_args ~name:impl_name in
       List.iter (fun (name, pats, body) ->
         (* `pure` stays a primitive (it consults current_monad_type to pick
            the right impl from pure_impls); everything else, including
@@ -1348,7 +1386,7 @@ let eval_program program =
                       else VClosure (env, pats, body) in
           let positions = lookup_dispatch_positions iface_name name in
           let typed_v = match impl_type_tag with
-            | Some t -> VTypedImpl (t, positions, 0, new_v)
+            | Some t -> VTypedImpl (t, impl_key, positions, 0, new_v)
             | None   -> new_v
           in
           let tagged_v = match impl_name with
@@ -1488,6 +1526,7 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
        | t :: _ -> head_tycon t
        | [] -> None
      in
+     let impl_key = Ast.impl_key ~iface:iface_name ~type_args ~name:impl_name in
      List.iter (fun (name, pats, body) ->
        if not (List.mem name context_dependent_externs) then begin
          let new_v = wrap_match_errors (fun () ->
@@ -1495,7 +1534,7 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
            else VClosure (!(rs.eval_env), pats, body)) in
          let positions = lookup_dispatch_positions iface_name name in
          let typed_v = match impl_type_tag with
-           | Some t -> VTypedImpl (t, positions, 0, new_v)
+           | Some t -> VTypedImpl (t, impl_key, positions, 0, new_v)
            | None   -> new_v
          in
          let tagged_v = match impl_name with

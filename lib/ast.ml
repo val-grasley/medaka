@@ -40,6 +40,17 @@ type pat =
              (* PRec("Person", [(field, None=pun | Some pat)], has_rest) *)
   | PRng   of literal * literal * bool   (* lo..hi / lo..=hi in match arms; bool=inclusive *)
 
+(* The impl a method call site resolves to, chosen by the typechecker and
+   filled in (in place) into an EMethodRef's ref.  `res_key` is the canonical
+   impl key — `iface | pp_ty(type_args) | name` — that eval matches against the
+   key it tags each VMulti candidate with, so return-position / multi-param
+   dispatch routes to the impl the checker actually picked.  None until 69.x
+   handles genuinely-polymorphic sites; eval falls back to arg-tag dispatch. *)
+type resolved = {
+  res_iface : ident;
+  res_key   : string;
+}
+
 (* String interpolation parts *)
 type interp_part =
   | InterpStr  of string
@@ -98,6 +109,7 @@ and expr =
   | ERangeArray   of expr * expr * bool                 (* [|lo..hi|] / [|lo..=hi|]; bool=inclusive *)
   | ESlice        of expr * expr * expr * bool          (* e.[lo..hi] / e.[lo..=hi]; bool=inclusive *)
   | ELoc          of loc * expr                         (* source position; transparent to semantics *)
+  | EMethodRef    of resolved option ref * ident         (* interface-method occurrence; ref filled by typecheck (Phase 69) *)
 
 type use_path =
   | UseName  of ident list                   (* use utils.greet *)
@@ -216,6 +228,16 @@ let rec pp_ty_prec p = function
 
 let pp_ty t = pp_ty_prec 0 t
 
+(* Canonical key identifying one impl, shared by typecheck (which stamps it on
+   each resolved [resolved.res_key]) and eval (which tags every VMulti candidate
+   with it).  Built from the same source — the impl's AST [type_args] — on both
+   sides, so the strings agree by construction.  The optional impl name keeps
+   distinct named impls of the same iface/type apart. *)
+let impl_key ~(iface : ident) ~(type_args : ty list) ~(name : ident option) : string =
+  let tys = String.concat " " (List.map (pp_ty_prec 2) type_args) in
+  let nm = match name with Some n -> n | None -> "" in
+  iface ^ "|" ^ tys ^ "|" ^ nm
+
 let pp_lit = function
   | LInt n    -> string_of_int n
   | LFloat f  -> string_of_float f
@@ -313,6 +335,7 @@ let rec pp_expr = function
   | ESlice (e, lo, hi, incl) ->
     Printf.sprintf "%s.[%s%s%s]" (pp_expr e) (pp_expr lo) (if incl then "..=" else "..") (pp_expr hi)
   | ELoc (_, e)          -> pp_expr e
+  | EMethodRef (_, x)    -> x
 
 and pp_do_stmt = function
   | DoBind (p, e)       -> Printf.sprintf "%s <- %s" (pp_pat p) (pp_expr e)

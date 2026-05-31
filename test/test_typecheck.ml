@@ -2290,6 +2290,73 @@ let e_letrec_nonfn_arith = assert_err
 let e_letrec_cyclic_cons = assert_err
   "let rec ones = 1 :: ones\n"
 
+(* ── Phase 69: key agreement ────────────────────────────────────────────
+   After mark + typecheck, every EMethodRef at a dispatch site must carry the
+   canonical impl key the checker resolved.  This is the same string eval
+   recomputes from the DImpl AST, so equality here means dispatch will route. *)
+
+(* Run the real pipeline (mark_with_prelude → check_program) and collect the
+   res_key stamped into every filled EMethodRef in the program. *)
+let resolved_keys src =
+  let prog = Method_marker.mark_with_prelude (Desugar.desugar_program (parse src)) in
+  ignore (check_program prog);
+  let keys = ref [] in
+  let collect = function
+    | Ast.EMethodRef (r, _) as e ->
+      (match !r with Some { Ast.res_key; _ } -> keys := res_key :: !keys | None -> ());
+      e
+    | e -> e
+  in
+  List.iter (fun d -> ignore (Desugar.map_decl collect d)) prog;
+  List.rev !keys
+
+let assert_keys expected src () =
+  let actual = resolved_keys src in
+  if List.sort compare actual <> List.sort compare expected then
+    failwith (Printf.sprintf "Expected keys [%s]\nGot [%s]\nSource:\n%s"
+                (String.concat "; " expected)
+                (String.concat "; " actual) src)
+
+(* Return-position dispatch: `decode 1` resolves by the annotated result type,
+   so the two call sites must stamp the String and Bool impl keys. *)
+let t_key_return_position = assert_keys
+  ["Decode|String|"; "Decode|Bool|"]
+  {|interface Decode a where
+  decode : Int -> a
+
+impl Decode String where
+  decode n = "S"
+
+impl Decode Bool where
+  decode n = n > 0
+
+main : <IO> Unit
+main =
+  let s = (decode 1 : String)
+  let b = (decode 1 : Bool)
+  ()
+|}
+
+(* Multi-parameter dispatch: both impls share the Int first arg, so the key
+   must distinguish them by the result type the checker picked. *)
+let t_key_multiparam = assert_keys
+  ["Convert|Int String|"; "Convert|Int Bool|"]
+  {|interface Convert a b where
+  convert : a -> b
+
+impl Convert Int String where
+  convert n = "str"
+
+impl Convert Int Bool where
+  convert n = n > 0
+
+main : <IO> Unit
+main =
+  let s = (convert 5 : String)
+  let b = (convert 5 : Bool)
+  ()
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -2709,5 +2776,9 @@ let () =
       test_case "err: != on no-Eq type"            `Quick e_eq52_neq_no_impl;
       test_case "custom interface impl ok"         `Quick t_eq52_custom_num;
       test_case "custom Num impl with + operator"  `Quick t_eq52_custom_num_plus;
+    ];
+    "impl-key dispatch (Phase 69)", [
+      test_case "return-position keys"  `Quick t_key_return_position;
+      test_case "multi-param keys"      `Quick t_key_multiparam;
     ];
   ]

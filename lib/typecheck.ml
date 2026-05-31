@@ -63,6 +63,8 @@ type impl_entry = {
   impl_name       : ident option;
   impl_is_default : bool;
   impl_type_mono  : mono list;  (* from_ast_type of each type_arg *)
+  impl_key        : string;     (* canonical Ast.impl_key from the AST type_args;
+                                   matched against eval's VTypedImpl key (Phase 69) *)
   impl_requires   : (ident * mono list) list;  (* constraint: iface, type args *)
   impl_seeded     : bool;  (* True for impls registered from the prelude
                               (Prelude.program), false for user-defined.
@@ -120,6 +122,11 @@ exception Type_error of type_error * Ast.loc option
 
 let current_loc : Ast.loc option ref = ref None
 let current_impl_hint : string option ref = ref None
+(* Phase 69: the EMethodRef ref of the method occurrence currently being
+   inferred, if any.  Set by infer's EMethodRef case and consumed once by the
+   EVar method branch (which records it in method_usages so check_method_usages
+   can fill it with the resolved impl key).  Mirrors current_impl_hint. *)
+let current_method_ref : Ast.resolved option ref option ref = ref None
 
 let fail e = raise (Type_error (e, !current_loc))
 
@@ -388,7 +395,7 @@ type env = {
   interfaces    : (ident, iface_info) Hashtbl.t;  (* interface name → info *)
   method_iface  : (ident, ident) Hashtbl.t;    (* method name → interface name *)
   impls         : impl_entry list ref;          (* all registered impls *)
-  method_usages : (ident * ident * tyvar_info ref list * string option) list ref;  (* (method, iface, param_var_refs, impl_hint) *)
+  method_usages : (ident * ident * tyvar_info ref list * string option * Ast.resolved option ref option) list ref;  (* (method, iface, param_var_refs, impl_hint, method_occurrence_ref) *)
   fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
     (* fn_name → [(iface_name, [bound_var_ids_in_scheme])] *)
   constraint_obligations : (ident * mono list) list ref;
@@ -773,6 +780,11 @@ let rec infer env = function
     current_loc := Some l;
     infer env e
 
+  (* Phase 69: resolved method occurrence.  Stash the ref so the EVar method
+     branch records it in method_usages; check_method_usages fills it with the
+     resolved impl key once the call site's type args are ground. *)
+  | EMethodRef (r, x) -> current_method_ref := Some r; infer env (EVar x)
+
   | ELit l -> type_lit l
 
   | EVar x ->
@@ -797,7 +809,9 @@ let rec infer env = function
         let (t, param_vars, sub) = instantiate_method scheme info.iface_param_ids in
         let hint = !current_impl_hint in
         current_impl_hint := None;
-        env.method_usages := (x, iface_name, param_vars, hint) :: !(env.method_usages);
+        let mref = !current_method_ref in
+        current_method_ref := None;
+        env.method_usages := (x, iface_name, param_vars, hint, mref) :: !(env.method_usages);
         (* Emit obligations for any extra method-level constraints
            (e.g. the `Monoid m` in `foldMap : Monoid m => (a -> m) -> t a -> m`). *)
         (match List.assoc_opt x info.iface_method_constraints with
@@ -810,6 +824,7 @@ let rec infer env = function
            ) cs);
         t
       | None ->
+        current_method_ref := None;  (* not a method occurrence; don't leak the ref *)
         let (sub, mono) = instantiate_raw scheme in
         (match Hashtbl.find_opt env.fun_constraints x with
          | None -> ()
@@ -1058,6 +1073,7 @@ let rec infer env = function
     let rec head_fn_name = function
       | ELoc (_, e) -> head_fn_name e
       | EVar x -> Some x
+      | EMethodRef (_, x) -> Some x
       | EApp (f, _) -> head_fn_name f
       | _ -> None
     in
@@ -1155,6 +1171,7 @@ let rec infer env = function
     let rec head_fn_name = function
       | ELoc (_, e) -> head_fn_name e
       | EVar x -> Some x
+      | EMethodRef (_, x) -> Some x
       | EApp (f, _) -> head_fn_name f
       | _ -> None
     in
@@ -1368,7 +1385,7 @@ and binop_type env op l r =
     let a = fresh_var () in
     let r = match a with TVar r -> r | _ -> assert false in
     unify tl a; unify tr a;
-    env.method_usages := (method_name, iface_name, [r], None) :: !(env.method_usages);
+    env.method_usages := (method_name, iface_name, [r], None, None) :: !(env.method_usages);
     a
   in
   let iface_and_method_of op =
@@ -1856,6 +1873,7 @@ let register_impl ?(seeded=false) env = function
       impl_name;
       impl_is_default = is_default;
       impl_type_mono  = List.map (from_ast_type ~aliases:env.aliases) type_args;
+      impl_key        = Ast.impl_key ~iface:iface_name ~type_args ~name:impl_name;
       impl_requires   = List.map (fun (iface, args) ->
                           (iface, List.map (from_ast_type ~aliases:env.aliases) args)) requires;
       impl_seeded     = seeded;
@@ -1970,8 +1988,17 @@ let check_method_usages env =
     | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
     | TTuple ts -> List.for_all is_concrete ts
   in
-  List.iter (fun (_method_name, iface_name, param_vars, hint_opt) ->
+  List.iter (fun (_method_name, iface_name, param_vars, hint_opt, occ_ref) ->
     let n = n_iface_params iface_name in
+    (* Phase 69: stamp the resolved impl's canonical key onto this method
+       occurrence (if it carries an EMethodRef) so eval routes return-position
+       / multi-param dispatch to the impl the checker actually picked. *)
+    let resolved_to entry =
+      match occ_ref with
+      | Some cell ->
+        cell := Some { Ast.res_iface = iface_name; res_key = entry.impl_key }
+      | None -> ()
+    in
     if n = 0 || List.length param_vars <> n then ()
     else begin
       let concrete_args = List.map (fun r -> normalize (TVar r)) param_vars in
@@ -1996,16 +2023,17 @@ let check_method_usages env =
         else match hint_opt with
         | None ->
           (match matching with
-          | [_] -> ()
+          | [e] -> resolved_to e
           | entries ->
             let defaults = List.filter (fun e -> e.impl_is_default) entries in
-            if List.length defaults = 1 then ()
-            else fail (AmbiguousImpl (iface_name, concrete_args)))
+            (match defaults with
+             | [e] -> resolved_to e
+             | _ -> fail (AmbiguousImpl (iface_name, concrete_args))))
         | Some name ->
           let named = List.filter (fun e -> e.impl_name = Some name) matching in
           (match named with
           | [] -> fail (UnknownImplName (iface_name, name, concrete_args))
-          | [_] -> ()
+          | [e] -> resolved_to e
           | _ -> fail (AmbiguousImpl (iface_name, concrete_args)))
       end
     end
@@ -2101,11 +2129,12 @@ let expr_effects
        Locally-bound names contribute nothing (their effects are unknown here). *)
     let rec call_effs = function
       | EVar n -> if StringSet.mem n bound then [] else call n
+      | EMethodRef (_, n) -> if StringSet.mem n bound then [] else call n
       | ELoc (_, e) -> call_effs e
       | e -> sub e
     in
     match e with
-    | ELit _ | EVar _ -> []
+    | ELit _ | EVar _ | EMethodRef _ -> []
     | EApp (f, x) ->
       (* If the argument is a named effectful function, those effects propagate:
          the HOF may call it, so we conservatively include them at the call site. *)
@@ -2428,7 +2457,14 @@ let typecheck_module
         Hashtbl.replace env.field_owners fn n
       ) (try (Hashtbl.find env.records n).rec_fields with Not_found -> [])
     ) te.te_records;
-    List.iter (fun (n, ii) -> Hashtbl.replace env.interfaces n ii) te.te_interfaces;
+    List.iter (fun (n, ii) ->
+      Hashtbl.replace env.interfaces n ii;
+      (* Register imported interface methods so call sites in this module are
+         recognized as method occurrences (records method_usages, enabling
+         Phase 69 impl resolution) rather than treated as ordinary functions. *)
+      List.iter (fun (mname, _) -> Hashtbl.replace env.method_iface mname n)
+        ii.iface_methods
+    ) te.te_interfaces;
     env.impls := te.te_impls @ !(env.impls);
   ) known_modules;
 
@@ -2738,6 +2774,11 @@ let infer_repl_expr (env : env) (e : expr) : mono * string list =
   enter_level ();
   let t = infer env e in
   exit_level ();
+  (* Phase 69: resolve method occurrences so EMethodRef refs in [e] get stamped
+     with the chosen impl key before eval runs on the same tree.  Mirrors
+     check_repl_decl; like there, usages accumulate in the persistent env and
+     are re-checked idempotently (concrete usages re-fill to the same key). *)
+  check_method_usages env;
   let scheme = generalize t in
   let (Forall (_, mono)) = scheme in
   (mono, List.rev !(env.warnings))

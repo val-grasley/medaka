@@ -22,6 +22,7 @@ lexer.mll  →  parser.mly  →  ast.ml  →  resolve.ml  →  typecheck.ml
 | Parse | `lib/parser.mly` | Menhir grammar |
 | AST | `lib/ast.ml` | Node types + source locations |
 | Resolve | `lib/resolve.ml` | Name binding, single- and multi-module |
+| Mark | `lib/method_marker.ml` | Phase 69: runs after desugar+resolve, before typecheck. Rewrites interface-method `EVar`→`EMethodRef` so typecheck can stamp the resolved impl key per call site and eval routes return-position/multi-param dispatch by it |
 | Typecheck | `lib/typecheck.ml` | Hindley-Milner + interfaces + effects + exhaustiveness |
 | Exhaust | `lib/exhaust.ml` | Maranget pattern-matrix algorithm |
 | Desugar | `lib/desugar.ml` | `deriving`, record puns, list comprehensions |
@@ -103,9 +104,12 @@ re-deriving the workflow:
 - **add-primitive** — add/modify a stdlib `extern` primitive.
 - **debug-pipeline** — diagnose a parse/typecheck/eval failure.
 - **add-lsp-capability** — add/extend an LSP feature.
-- **harden-typechecker** — typechecker-internal correctness/diagnostics work
-  (the Phase 62–72 arc): add a `type_error`, tighten constraint/coherence/
-  unification logic, without breaking error accumulation or level bracketing.
+- **harden-typechecker** — typechecker-*internal* correctness/diagnostics work
+  (most of the Phase 62–72 arc): add a `type_error`, tighten constraint/
+  coherence/unification logic, without breaking error accumulation or level
+  bracketing. Note: cross-cutting dispatch work (Phase 69 done; 69.x dictionary
+  passing touches resolve/typecheck/eval + a marker pass) is *not* this skill —
+  treat it like **add-language-feature** (thread a node through the pipeline).
 
 ## Doc index
 

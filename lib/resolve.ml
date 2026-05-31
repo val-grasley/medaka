@@ -459,6 +459,7 @@ let rec check_expr env scope errors e =
     current_loc := Some l;
     check_expr env scope errors e'
   | ELit _ -> ()
+  | EMethodRef _ -> ()  (* marker pass runs after resolve; method already bound *)
   | EVar n ->
     if not (lookup_value env scope n) then
       emit errors (UnboundVariable n)

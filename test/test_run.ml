@@ -31,6 +31,72 @@ let assert_run_err src () =
   | Some out ->
     failwith (Printf.sprintf "Expected runtime error but got:\n%s\n\nSource:\n%s" out src)
 
+(* Full pipeline: desugar → resolve → mark (Phase 69) → typecheck → eval.
+   Unlike capture_run this runs the typechecker, which is what stamps each
+   EMethodRef with its resolved impl key — required to exercise return-position
+   and multi-parameter dispatch. *)
+let capture_run_typed src =
+  let prog = Desugar.desugar_program (parse src) in
+  (match Resolve.resolve_program prog with
+   | [] -> ()
+   | (err, _) :: _ -> failwith ("resolve error: " ^ Resolve.pp_error err));
+  let prog = Method_marker.mark_with_prelude prog in
+  ignore (Typecheck.check_program prog);
+  let buf = Buffer.create 64 in
+  output_hook := Buffer.add_string buf;
+  (try ignore (eval_program prog)
+   with e -> output_hook := print_string; raise e);
+  output_hook := print_string;
+  Buffer.contents buf
+
+let assert_output_typed src expected () =
+  let actual = capture_run_typed src in
+  if actual <> expected then
+    failwith (Printf.sprintf "Expected:\n%s\nGot:\n%s\n\nSource:\n%s"
+                expected actual src)
+
+(* ── Phase 69: return-position dispatch ──────────────────────────────────── *)
+(* `decode : Int -> a` discriminates on its RESULT type, which no argument
+   carries.  Pre-Phase-69 the first registered impl always won (and `if <str>`
+   would panic); now the typechecker's chosen impl is recorded per call site. *)
+let t_return_position_dispatch = assert_output_typed
+  {|interface Decode a where
+  decode : Int -> a
+
+impl Decode String where
+  decode n = "S"
+
+impl Decode Bool where
+  decode n = n > 0
+
+main : <IO> Unit
+main =
+  println (decode 1)
+  if (decode 1 : Bool) then println "T" else println "F"
+  if (decode 0 : Bool) then println "T" else println "F"
+|}
+  "S\nT\nF\n"
+
+(* ── Phase 69: multi-parameter dispatch ──────────────────────────────────── *)
+(* Both impls share the first type arg (Int), so the runtime arg tag can't tell
+   them apart — selection must follow the result type the checker resolved. *)
+let t_multiparam_dispatch = assert_output_typed
+  {|interface Convert a b where
+  convert : a -> b
+
+impl Convert Int String where
+  convert n = "str"
+
+impl Convert Int Bool where
+  convert n = n > 0
+
+main : <IO> Unit
+main =
+  println (convert 5 : String)
+  if (convert 5 : Bool) then println "T" else println "F"
+|}
+  "str\nT\n"
+
 (* ── Hello world ─────────────────────────────────────────────────────────── *)
 
 let t_hello = assert_output
@@ -112,6 +178,8 @@ main = println (f 99)
 
 let () = Alcotest.run "Run"
   [("run", [
+    "return-position dispatch", `Quick, t_return_position_dispatch;
+    "multi-param dispatch",     `Quick, t_multiparam_dispatch;
     "hello world",   `Quick, t_hello;
     "factorial",     `Quick, t_factorial;
     "adt match",     `Quick, t_adt_match;

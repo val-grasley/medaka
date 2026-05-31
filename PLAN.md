@@ -2837,7 +2837,31 @@ don't false-positive. Tests in `test/test_typecheck.ml` group "impl coherence
 longer order-dependent. *(Declaration-time reporting: done. Order-independent
 most-specific resolution: pending Phase 69.)*
 
-### Phase 69: Type-directed / return-position dispatch (dictionary passing) ⏳ TODO
+### Phase 69: Type-directed / return-position dispatch (dictionary passing) ✅ DONE (69.x still TODO)
+
+**Status.** Phase 69 (elaboration at concrete sites) landed: the five-part
+design below is implemented (`EMethodRef` node in `ast.ml`, marker pass in
+`lib/method_marker.ml`, canonical `impl_key` shared by `typecheck.ml`'s
+`register_impl` and `eval.ml`'s `DImpl` registration, in-place ref fill in
+`check_method_usages`, key-directed selection in eval). Return-position and
+multi-param repros route correctly end-to-end — see `test/test_run.ml`
+(`t_return_position_dispatch`, `t_multiparam_dispatch`) and the key-agreement
+tests in `test/test_typecheck.ml` ("impl-key dispatch (Phase 69)"). The marker
+is wired into single-file `check`/`run`, multi-module, and the repl. **Phase
+69.x (dictionary passing) remains TODO** — see carve-out below.
+
+**Known gaps / follow-ups (not regressions; pre-existing, surfaced during 69):**
+- **Doctests are not type-directed.** The doctest runner has no typecheck phase,
+  so the marker pass cannot fill `EMethodRef` cells there; doctests that rely on
+  return-position/multi-param dispatch fall back to arg-tag "first impl wins".
+  Deliberately skipped for Phase 69 (decided with the user). Fix requires
+  running mark + typecheck before doctest eval, or threading resolved keys some
+  other way. Tracked under Phase 70.
+- **Repl rebinds method names across multiple impls.** Defining several `impl`s
+  of one interface in the repl overwrites the interface method's polymorphic
+  scheme with the last impl's concrete type, so typed calls like
+  `(decode 1 : String)` fail to check interactively (works in whole-file mode).
+  Pre-existing repl behavior, independent of 69; spun out as a separate task.
 
 **Goal.** Methods discriminated by their *result* type (`fromInt : Int -> a`,
 `pure`, `empty`, `minBound`, **`from_rep : Rep -> a`**) and multi-parameter
@@ -2861,15 +2885,80 @@ words, real `from_rep` deriving is "blocked on return-type-directed dispatch
 `impl_type_tag`/`runtime_type_tag` (~:1337). The fix needs the call site's
 *resolved* impl from the typechecker.
 
-**Scope.** Large — this likely requires the long-deferred "type-annotated AST"
-or explicit dictionary passing: after typechecking, tag each method call with
-the impl the checker selected (or pass dictionaries) so `eval` doesn't guess.
-Note the related deferred item in §5 (do-notation `Thenable` wiring and EDo
-monad tagging) shares this root cause; consider scoping them together. May
-warrant a design note in `language-design.md` before coding.
+**Scope (decided).** Split in two. **Phase 69 = elaboration** (type-annotated
+AST): handles every call site where the discriminating type is *concrete at the
+site* — all audit repros (`(fromInt 3 : Float)`, `Convert Int String`) and
+Generic *decode* (`from_rep` at a concrete target). **Phase 69.x = dictionary
+passing** (carved out below): genuine value-level polymorphic propagation.
 
-**Done when.** Result-typed and multi-param method calls run the impl the type
-checker chose; the `fromInt`/`Convert` repros are correct.
+**Pipeline note.** `check`/`run` desugar *before* typecheck (`bin/main.ml`:131
+/197/399), so by typecheck time the tree already contains derived `impl` bodies
+and comprehension expansions — elaboration over the typechecked tree therefore
+also covers synthesized `from_rep`/`to_rep` sites. Argument-position dispatch
+already works via `runtime_type_tag` on the argument; the hole is strictly
+*result-position* and *non-first multi-param* dispatch.
+
+**Phase 69 design — elaborated AST via embedded refs (decided).** Five parts.
+
+1. **Node — `EMethodRef of resolved option ref * ident`** (new `expr`
+   constructor, `ast.ml`). Transparent like `ELoc`; created only by the marker
+   pass (part 2), so its blast radius is just `typecheck.ml` + `eval.ml` (plus a
+   one-line passthrough in `pp_expr`/`strip_locs_expr` for safety) — printer,
+   `fmt`, `resolve`, `desugar`, `coverage`, `exhaust` never see it. `resolved`
+   is the canonical impl key (part 3). The mutable ref is the EDo precedent
+   (`EDo`'s `string option ref`, `ast.ml`:91) generalized: parser can't identify
+   method names, so a marker pass installs the ref instead.
+2. **Marker pass — install refs after resolve, before typecheck.** Walks each
+   (already desugared + resolved) program and rewrites every interface-method
+   name occurrence `EVar m` → `EMethodRef (ref None, m)`, using the union of
+   interface-method names (global per `resolve.ml`; available from resolve
+   exports across all modules). One rebuild, *before* the typecheck/eval fork.
+3. **Impl key — canonical string** `iface | pp_ty(type_args) | name`. Computed
+   from the **AST `type_args`** at `register_impl` and stored on a new
+   `impl_entry.impl_key` field; eval computes the identical string from the same
+   `type_args` at `DImpl` registration and tags the `VMulti` candidate with it
+   (extend `VTypedImpl` to carry the key). One shared AST-based printer, so the
+   two sides agree. Disambiguates multi-param (`Convert Int String` vs
+   `Convert Int Bool`), nested specialization (`List Int` vs `List a` — so
+   most-specific-wins becomes routable), `@Name`, and overlaps. The few AST-less
+   hardcoded `impl_entry` stubs (`typecheck.ml`:1936, operator constraints only)
+   synthesize an equivalent key from `impl_type_mono` (flat ground types only —
+   spellings trivially agree); eval never dispatches on them, so a mismatch can
+   only fall back, never mis-route. `impl Num Int`/`Num Float` are *real* impls
+   in `core.mdk` (:194/:204), so `fromInt` needs no seeded special-casing.
+4. **Fill refs in place — no return-threading.** `check_method_usages`
+   (`typecheck.ml`:1963) already resolves the unique matching `impl_entry`
+   (seeded/override/`@Name` dedup included); we retain that choice and write its
+   `impl_key` into the call site's ref. Because every eval-bearing caller already
+   shares the *post-marker* tree with typecheck (single-file `root_program`
+   :412/:419; multi-module same `modules` progs :489/:508; `run` mode :141/:149;
+   doctest; repl per-batch) and typecheck doesn't deep-copy exprs, in-place
+   mutation is visible to eval with **no change to `check_program` /
+   `typecheck_module` return types**. LSP (`lsp_server.ml`:473…) and diagnostics
+   only typecheck, never eval → untouched. Each eval-bearing site just runs the
+   marker before the fork.
+5. **Eval honors the key.** At an `EMethodRef` whose ref is `Some key`, select
+   the matching `VTypedImpl`/`VNamedImpl` out of the `VMulti` up front by key
+   (`eval.ml`:333), instead of inferring a tag from an argument value. No
+   synthetic-tag hack; `None` refs (genuinely polymorphic 69.x sites) fall back
+   to the current arg-tag path.
+
+**Unblocks.** Phase 68 most-specific-wins becomes sound once eval honors the
+checker's choice — document that policy and the resolution semantics in
+`language-design.md` when 69 lands.
+
+**Phase 69.x — dictionary passing (carved out) ⏳ TODO.** Thread dictionaries
+through constrained functions so *polymorphic* code (`Num a => … a` helpers,
+generic `pure`) resolves return-position methods at runtime instead of relying
+on a concrete call site. Touches the calling convention across resolve /
+typecheck / eval. Subsumes the §5 deferred item (do-notation `Thenable` wiring
+and EDo monad tagging) — same root cause, scope together. Retires the
+`pure_impls` + `current_monad_type` point workaround in `eval.ml`.
+
+**Done when.** *(69)* Result-typed and multi-param method calls at concrete
+sites run the impl the type checker chose; the `fromInt`/`Convert` repros are
+correct and Generic decode works. *(69.x)* Polymorphic call sites resolve via
+dictionaries; `pure_impls` is gone.
 
 ### Phase 70: Smaller typechecker correctness & diagnostics fixes ⏳ TODO
 
@@ -2903,6 +2992,14 @@ Pick one or batch a few. All in `lib/typecheck.ml` unless noted.
   ~:1381). Already noted in §5. Lift both to a `Num a` constraint via
   `record_iface_usage` so they work for any `Num` impl; `eval_arith` already
   handles `VFloat`.
+- **Doctests skip typecheck, so Phase 69 dispatch doesn't reach them**
+  (`lib/doctest.ml` / the doctest driver in `bin/main.ml`). The doctest runner
+  parses + evals example snippets without a typecheck phase, so the Phase 69
+  marker pass has nothing to fill `EMethodRef` cells against and return-position
+  / multi-param method calls in doctests fall back to arg-tag "first impl wins".
+  Run mark + `check_program` before doctest eval (mirror `capture_run_typed` in
+  `test/test_run.ml`) so doctests share the typed dispatch path. Deliberately
+  deferred when Phase 69 landed.
 
 ### Phase 71: Typechecker robustness — no `assert false` / raw `Not_found` / leaked levels ⏳ TODO
 

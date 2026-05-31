@@ -74,6 +74,23 @@ let process_item source resolve_env tc_env eval_state pending_sigs user_bindings
       show_snippet source loc_opt
     ) resolve_errs
   else
+    (* Phase 69: mark interface-method occurrences so typecheck can stamp the
+       resolved impl and eval routes by it.  The method-name set is the session's
+       known methods (tc_env.method_iface — prelude + interfaces from prior
+       inputs) plus any this item itself declares. *)
+    let item =
+      let methods =
+        let item_progs = match item with
+          | Ast.ReplDecl decls -> [decls]
+          | Ast.ReplExpr _ -> []
+        in
+        let tbl = Method_marker.interface_method_names item_progs in
+        Hashtbl.iter (fun m _ -> Hashtbl.replace tbl m ())
+          (!tc_env).Typecheck.method_iface;
+        tbl
+      in
+      Method_marker.mark_repl_item methods item
+    in
     match item with
     | Ast.ReplDecl decls -> (* already desugared above *)
       (* Augment with pending type sigs from prior inputs, then update the list *)
@@ -235,6 +252,15 @@ let load_file path resolve_env tc_env eval_state pending_sigs user_bindings =
     ) resolve_errs
   end else begin
     (try
+       (* Phase 69: mark method occurrences (against session methods + this
+          file's own interfaces) so check_repl_decl stamps resolved impls and
+          eval — running on the same marked tree — routes by them. *)
+       let program =
+         let methods = Method_marker.interface_method_names [program] in
+         Hashtbl.iter (fun m _ -> Hashtbl.replace methods m ())
+           (!tc_env).Typecheck.method_iface;
+         Method_marker.mark_program methods program
+       in
        let (bindings, warnings) = Typecheck.check_repl_decl tc_env program in
        List.iter (fun w -> Printf.eprintf "%s\n%!" w) warnings;
        List.iter (Eval.eval_repl_decl eval_state) program;
