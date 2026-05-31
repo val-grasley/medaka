@@ -13,6 +13,10 @@ export
 singleton : a -> List a
 singleton a = [a]
 
+export
+range : Int -> Int -> List Int
+range lo hi = [lo..hi]
+
 -- Inspection
 -- `isEmpty` and `length` come from `impl Foldable List` in core.mdk.
 
@@ -36,7 +40,7 @@ export
 init : List a -> Option (List a)
 init [] = None
 init (x::[]) = Some []
-init (x::xs) = map (ys => x::ys) (init xs)
+init (x::xs) = map (ys => x :: ys) (init xs)
 
 export
 get : Int -> List a -> Option a
