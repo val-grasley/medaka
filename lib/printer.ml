@@ -592,7 +592,7 @@ let rec print_decl p = function
       ) methods
     )
 
-  | DImpl { is_pub; is_default; iface_name; type_args; impl_name; requires; methods } ->
+  | DImpl { is_pub; is_default; iface_name; type_args; impl_name; requires; methods; _ } ->
     if is_pub then write p "export ";
     if is_default then write p "default ";
     write p "impl ";

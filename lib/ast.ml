@@ -171,6 +171,8 @@ type decl =
       impl_name  : ident option;
       requires   : (ident * ty list) list;  (* e.g. requires Eq a, Ord b *)
       methods    : (ident * pat list * expr) list;
+      impl_loc   : loc option;  (* source loc of the impl decl (Phase 68 coherence
+                                   errors); None for desugar-synthesized impls *)
     }
   | DTypeAlias of bool * ident * ident list * ty  (* pub? name params rhs *)
   | DNewtype   of bool * ident * ident list * ident * ty * ident list  (* pub? tyname typarams conname fty derives *)

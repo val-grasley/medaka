@@ -1079,10 +1079,11 @@ f : Int
 f = empty
 |}
 
-(* Error: two anonymous, non-default impls partially overlap — `(List a)` and
-   `(List Int)` can both match a `List Int`, with no `default` or `@Name` to
-   pick one (Phase 68 coherence). *)
-let e_overlapping_anon_impls = assert_err
+(* OK (Phase 68 most-specific-wins): two anonymous, non-default impls where one
+   head is a strict specialization of the other — `(List Int)` ⊏ `(List a)` —
+   are coherent.  No `default` marker needed; the call site commits the most
+   specific.  (Selection itself is asserted by t_overlap_picks_specific below.) *)
+let t_overlap_specialization_ok = assert_type
   {|interface Tag a where
   tag : a -> Int
 
@@ -1091,10 +1092,40 @@ impl Tag (List a) where
 
 impl Tag (List Int) where
   tag xs = 1
+
+f : Int
+f = tag [1, 2, 3]
+|}
+  "f" "Int"
+
+(* Error: two anonymous impls that overlap but neither subsumes the other —
+   `(Int, a)` and `(a, Bool)` both match `(Int, Bool)`, yet there is no most
+   specific one to pick (Phase 68 incomparable overlap). *)
+let e_overlapping_incomparable = assert_err
+  {|interface Tag a where
+  tag : a -> Int
+
+impl Tag (Int, a) where
+  tag p = 0
+
+impl Tag (a, Bool) where
+  tag p = 1
 |}
 
 (* Error: two anonymous impls for the identical head type. *)
 let e_overlapping_dup_impls = assert_err
+  {|interface Tag a where
+  tag : a -> Int
+
+impl Tag Int where
+  tag x = 0
+
+impl Tag Int where
+  tag x = 1
+|}
+
+(* The coherence error is reported at a user source line (not the prelude). *)
+let e_coherence_has_loc = assert_err_at ~line:4
   {|interface Tag a where
   tag : a -> Int
 
@@ -2516,6 +2547,26 @@ main =
   ()
 |}
 
+(* Phase 68 most-specific-wins: with both `impl Tag (List a)` and
+   `impl Tag (List Int)` in scope, a call at `List Int` must commit the
+   specialization — the resolved key is the `List Int` impl, not the fallback. *)
+let t_overlap_picks_specific = assert_keys
+  ["Tag|(List Int)|"]
+  {|interface Tag a where
+  tag : a -> Int
+
+impl Tag (List a) where
+  tag xs = 0
+
+impl Tag (List Int) where
+  tag xs = 1
+
+main : <IO> Unit
+main =
+  let n = tag [1, 2, 3]
+  ()
+|}
+
 (* ── Phase 64: superinterface (`requires`) obligations ── *)
 
 (* impl Child Int with no impl Parent Int → rejected. *)
@@ -2816,8 +2867,11 @@ let () =
       test_case "err: multiple defaults"    `Quick e_multiple_default_impls;
     ];
     "impl coherence (Phase 68)", [
-      test_case "err: overlapping anon impls"   `Quick e_overlapping_anon_impls;
+      test_case "ok: strict specialization"     `Quick t_overlap_specialization_ok;
+      test_case "picks most specific"           `Quick t_overlap_picks_specific;
+      test_case "err: incomparable overlap"     `Quick e_overlapping_incomparable;
       test_case "err: duplicate anon impls"     `Quick e_overlapping_dup_impls;
+      test_case "coherence error has loc"       `Quick e_coherence_has_loc;
       test_case "default blesses specialization" `Quick t_default_blesses_specialization;
       test_case "disjoint multiparam ok"        `Quick t_disjoint_multiparam_no_overlap;
     ];

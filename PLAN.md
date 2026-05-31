@@ -2870,7 +2870,7 @@ clauses) still resolves, typechecks, and evals unchanged.
 **Why it mattered.** Cheap correctness win; typos in constraint lists previously
 passed silently.
 
-### Phase 68: Overlap / coherence checking for impls 🟡 PARTIAL
+### Phase 68: Overlap / coherence checking for impls ✅ DONE (orphan check TODO)
 
 **Goal.** Reject incoherent instance sets at *declaration* time, including
 partial overlaps like `impl Eq (List Int)` vs `impl Eq (List a)`.
@@ -2896,19 +2896,31 @@ impls are excluded so user overrides (Phase 45.9) and multi-module duplicates
 don't false-positive. Tests in `test/test_typecheck.ml` group "impl coherence
 (Phase 68)".
 
-**Still TODO.**
-- **Most-specific-wins** (general specialization, inferring the specificity
-  order instead of requiring a `default` marker) — blocked on Phase 69's dispatch
-  work, since it's unsound until the runtime honors the impl the checker chose.
-  Document the policy in `language-design.md` when it lands.
-- **Source locations on the error** — `impl_entry` carries no `loc`, so the
-  message names the interface and both type-arg lists but can't point at a line.
-- **Orphan-instance check** (impl defined in neither the interface's nor the
-  type's module) — once the module story supports it.
+**Done (2026-05-30, now that Phase 69 dispatch landed).**
+- **Most-specific-wins** — `subsumes` / `strictly_more_specific` (one-directional
+  head matching in `typecheck.ml`, sibling of `impls_overlap`) order overlapping
+  impls by specificity. `check_coherence` now *allows* an overlapping anonymous
+  pair when one head is a strict specialization of the other (`List Int` ⊏
+  `List a`); only equal duplicates and incomparable partial overlaps
+  (`Conv Int a` vs `Conv a Bool`) remain `OverlappingImpls` errors.
+  `check_method_usages` commits the unique most-specific matching impl at each
+  concrete call site (precedence `@Name` > most-specific > `default`-fallback),
+  and Phase 69's `EMethodRef` key dispatch honors that choice end to end. Tests:
+  `t_overlap_specialization_ok`, `t_overlap_picks_specific` (asserts the
+  resolved key), `e_overlapping_incomparable`.
+- **Source locations on the error** — `DImpl` gained an `impl_loc` (the parser
+  fills it via `of_pos`; desugar-synthesized impls use `None`), threaded onto
+  `impl_entry`; `check_coherence` reports via `fail_at (coherence_loc e1 e2)`.
+  Test: `e_coherence_has_loc` (`assert_err_at`).
 
-**Done when.** Overlapping impls are reported at declaration; resolution is no
-longer order-dependent. *(Declaration-time reporting: done. Order-independent
-most-specific resolution: pending Phase 69.)*
+**Still TODO.**
+- **Orphan-instance check** (impl defined in neither the interface's nor the
+  type's module) — once the module story supports it. No type→defining-module
+  map exists yet across resolve/typecheck/loader, so this is a separate effort.
+
+**Done when.** Overlapping impls are reported at declaration *with a source
+line*; resolution is order-independent — the checker commits the most-specific
+impl and eval honors it. *(Done, except the orphan-instance check.)*
 
 ### Phase 69: Type-directed / return-position dispatch (dictionary passing) ✅ DONE (69.x still TODO)
 
