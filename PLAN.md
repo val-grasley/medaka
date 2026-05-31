@@ -2540,23 +2540,37 @@ Sketch of the fix:
   `x y => x + y`, `f a b c => …`, and constructor-pattern parity
   (`(Some x) => x`, `(Ok x y) => x` still work).
 
-### Phase 60: Pre-self-host parser-conflict audit ⏳ TODO
+### Phase 60: Pre-self-host parser-conflict audit ✅ DONE
 
-Before reimplementing the parser in Medaka, walk through every
-shift/reduce and reduce/reduce conflict in `lib/parser.conflicts`
-and confirm Menhir's default resolution is what we actually want.
-Each conflict is currently documented in `lib/parser.mly`
-headnotes; this is the moment to re-validate, because a hand-
-written parser must make each decision explicitly.
+**Done (2026-05-31).** Re-ran `menhir --explain` against the current grammar
+and walked every conflict, confirming each default resolution is the intended
+behaviour and that the historical audit notes were still accurate in *outcome*
+(state ids had drifted; the resolutions had not).  The result is a fresh
+validation table appended to the conflict-audit block in `lib/parser.mly`
+(after the per-phase notes), mapping every conflict to:
+- the competing reduce-vs-shift (or reduce-vs-reduce) productions,
+- the intended winner, and
+- a one-line rule the eventual hand-written parser should encode.
 
-Output: a checklist alongside the existing conflict documentation,
-mapping each Menhir conflict to its intended behavior, so the
-Medaka-hosted parser can reproduce it without surprises.
+Findings:
+- The count grew from the documented 8/8 to **9 S/R states (23 conflicts) +
+  9 R/R states (35 conflicts)**; the header line in `parser.mly` was corrected.
+- `menhir --explain` emits witness derivations for 14 of the 18 states
+  (8 S/R + 6 R/R); the other 4 are additional members of families already
+  covered (do-block bare-atom ambiguity, range-literal-in-pattern, `_` as
+  pat/expr) and resolve identically — documented as such.
+- Every do-block bare-atom R/R resolves to the *expression* reading (verified
+  empirically with `dev/debug.exe`: `()`, `[]`, and bare literals in stmt
+  position all parse as `DoExpr`), so the only practical limitation is that a
+  cons/literal/record-pun/UPPER DoBind LHS must be parenthesised — the
+  long-standing accepted restriction.
 
-The 8+8 conflict count itself goes to zero after self-hosting
-because a Pratt-style or PEG parser has no "conflicts" — every
-disambiguation is an explicit line of code.  Phase 60 ensures
-those explicit lines say the right thing.
+For the hand-written parser the rules reduce to: S/R → "prefer the longer
+form"; R/R → "in statement/element position an ambiguous bare atom is an
+expression; pattern-only DoBind LHSs must be parenthesised."  The 9+9 conflict
+count goes to zero after self-hosting (a Pratt/PEG parser has no conflicts —
+each disambiguation is an explicit line); this audit ensures those lines say
+the right thing.
 
 ---
 

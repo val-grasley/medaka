@@ -193,9 +193,12 @@ let parse_attr name msg_opt =
    Grammar conflicts — audit notes (Phase 7)
    ═══════════════════════════════════════════════════════
 
-   Menhir reports 8 S/R states (20 conflicts) and 8 R/R states (34 conflicts).
-   Every conflict is documented below.  All default resolutions are correct for
-   the intended semantics — none require restructuring.
+   Menhir reports 9 S/R states (23 conflicts) and 9 R/R states (35 conflicts)
+   as of 2026-05-31 (was 8/8 at Phase 7; grew with later phases).  Every
+   conflict is documented below; the Phase 60 re-validation table at the end of
+   this block is the authoritative, current cross-check.  All default
+   resolutions are correct for the intended semantics — none require
+   restructuring.
 
    ── Shift/reduce conflicts ──────────────────────────────
 
@@ -327,6 +330,66 @@ let parse_attr name msg_opt =
      literal.  These states arise because the same INT/CHAR token appears both
      in `pat_atom: lit` and `pat_atom: INT DOTDOT INT`; Menhir's default shift
      resolution is the desired behaviour.
+
+   ═══════════════════════════════════════════════════════
+   Phase 60 — pre-self-host re-validation (2026-05-31)
+   ═══════════════════════════════════════════════════════
+
+   Re-ran `menhir --explain` against the *current* grammar and walked every
+   conflict to confirm the default resolution is the intended behaviour, so a
+   future hand-written (Pratt/PEG) parser can reproduce each decision as an
+   explicit rule.  Two notes up front:
+
+     • Recount: the dune build now reports 9 S/R states (23 conflicts) and
+       9 R/R states (35 conflicts).  Of these, `menhir --explain` emits a
+       witness derivation for 8 S/R + 6 R/R = 14 states (tabled below); for the
+       remaining 1 S/R + 3 R/R states it emits none — they are additional
+       members of the same families already covered (do-block bare-atom
+       ambiguity, range-literal-in-pattern, `_` as pat/expr) and resolve by the
+       identical rules, so the hand-written parser needs no extra cases.
+     • State numbers below are the *current* menhir state ids and differ from
+       the historical ids above (108/138/…) — the grammar evolved.  The
+       *resolutions* are unchanged.
+
+   Every decision was confirmed against observable parser output (the do-block
+   atom cases were checked with dev/debug.exe: `()`, `[]`, and bare-literal
+   stmts all parse as DoExpr expressions — the "expression" column below).
+
+   ── Shift/reduce (8 of 9 detailed) — all SHIFT (menhir default), all intended ──
+     | State | Lookahead(s)   | Reduce  vs  Shift                         | Intended (SHIFT) |
+     |-------|----------------|-------------------------------------------|------------------|
+     | 121   | LBRACE         | expr_atom->UPPER / UPPER {…} record        | record creation  |
+     | 123   | FAT_ARROW      | expr_atom->UNDERSCORE / `_ =>` lambda      | wildcard lambda  |
+     | 165   | DOTDOT(_EQ)    | lit->INT / INT..INT range pattern          | range pattern    |
+     | 178   | DOTDOT(_EQ)    | lit->CHAR / CHAR..CHAR range pattern       | range pattern    |
+     | 248   | 18 tokens      | expr_atom->UPPER / `UPPER pat…` ctor pat   | DoBind ctor pat  |
+     | 252   | FAT_ARROW,…    | expr_atom->UNDERSCORE / `_ =>` lambda      | wildcard lambda  |
+     | 254   | DOTDOT(_EQ)    | lit->INT (after MINUS) / -INT.. range pat  | range pattern    |
+     | 270   | AT             | expr_atom->IDENT / `x@pat` as-pattern      | as-pattern       |
+     Rationale: 121/123/252/270 are genuine "the longer form is the only
+     sensible parse"; 165/178/254/248 implement the documented do-block DoBind
+     limitation (an UPPER/range/ctor DoBind LHS is tried first, so a DoExpr
+     that starts that way needs parens, e.g. `pure (Some x)`).
+
+   ── Reduce/reduce (6 of 9 detailed) — menhir picks the expression production ──
+     | State | Lookahead(s)       | Competing reductions                        | Intended    |
+     |-------|--------------------|---------------------------------------------|-------------|
+     | 250   | RBRACE COMMA       | expr_atom->IDENT / record_pat_field->IDENT  | expression  |
+     | 263   | CONS COMMA …       | expr_atom->`()` / pat_atom->`()`            | expression  |
+     | 269   | CONS COMMA …       | expr_atom->`[]` / pat_atom->`[]`            | expression  |
+     | 370   | CONS COMMA …       | expr_atom->lit / pat_atom->lit              | expression  |
+     | 439   | RBRACE COMMA COLON | expr_annot->expr_lam / expr_lam->…FAT_ARROW | KV (path A) |
+     | 441   | CONS               | expr_atom->`_` / pat_atom->`_`              | expression  |
+     Rationale: 250/263/269/370/441 are the do-block "bare atom" ambiguity — in
+     stmt position the atom is taken as a DoExpr expression (confirmed
+     empirically), so a cons/literal/record-pun DoBind LHS requires parens
+     (accepted limitation; see the DoBind notes above).  439 keeps
+     `Map { k => v }` parsing as a key/value entry rather than a lambda-valued
+     set element (path A — the earlier `expr_annot -> expr_lam` reduction).
+
+   For the hand-written parser: encode each S/R row as "prefer the longer
+   form", and each R/R row as "in statement/element position an ambiguous bare
+   atom is an expression; pattern-only DoBind LHSs must be parenthesised."
    ═══════════════════════════════════════════════════════ *)
 
 (* ── Top level ───────────────────────────────────────── *)
