@@ -192,11 +192,10 @@ and prepended to every program by the compiler.
 Depends on `core`. `filter` currently lives in `core.mdk` but is List-specific
 and may move here. Functions already covered by `impl Foldable List` or
 `impl Mappable List` (fold, foldRight, map, any, all, find, count, elem, sum,
-product) do not need implementations here — use the typeclass dispatch path.
+product, empty) do not need implementations here — use the typeclass dispatch path.
 
 ### Construction
 
-- ⏳ `empty : List a` — the empty list (alias for `[]`)
 - ✅ `singleton : a -> List a` — one-element list
 - ⏳ `range : Int -> Int -> List Int` — `range lo hi` produces `[lo, lo+1, …, hi-1]` (exclusive upper bound)
 - ⏳ `rangeStep : Int -> Int -> Int -> List Int` — `rangeStep lo hi step`; sign of `step` must match `hi - lo` or result is empty
@@ -334,8 +333,7 @@ currently contains only an `import` line.
 
 ### Transformation
 
-- ⏳ `append : String -> String -> String` — `s1 ++ s2`; available via the `Semigroup` impl
-- ⏳ `prepend : String -> String -> String` — `flip append`
+- ⏳ `prepend : String -> String -> String` — prepend a prefix; `flip` of `Semigroup.append`
 - ⏳ `concat : List String -> String` — concatenate all strings in order
 - ⏳ `join : String -> List String -> String` — `join sep parts` — concatenate with `sep` between each pair
 - ⏳ `repeat : Int -> String -> String` — repeat the string N times
