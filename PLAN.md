@@ -2870,7 +2870,7 @@ clauses) still resolves, typechecks, and evals unchanged.
 **Why it mattered.** Cheap correctness win; typos in constraint lists previously
 passed silently.
 
-### Phase 68: Overlap / coherence checking for impls ✅ DONE (orphan check TODO)
+### Phase 68: Overlap / coherence checking for impls ✅ DONE
 
 **Goal.** Reject incoherent instance sets at *declaration* time, including
 partial overlaps like `impl Eq (List Int)` vs `impl Eq (List a)`.
@@ -2913,14 +2913,32 @@ don't false-positive. Tests in `test/test_typecheck.ml` group "impl coherence
   `impl_entry`; `check_coherence` reports via `fail_at (coherence_loc e1 e2)`.
   Test: `e_coherence_has_loc` (`assert_err_at`).
 
-**Still TODO.**
-- **Orphan-instance check** (impl defined in neither the interface's nor the
-  type's module) — once the module story supports it. No type→defining-module
-  map exists yet across resolve/typecheck/loader, so this is a separate effort.
+**Done (orphan-instance check).** An impl declared in a module that owns neither
+the interface nor any head type is an orphan, reported via a new `OrphanImpl`
+`type_error`. The supposed blocker — "no type→defining-module map" — was
+sidestepped: the check needs only *local* knowledge plus the names exported by
+*imported user modules*, since the impl is checked in the module that declares
+it ("in the interface's module" ⟺ "interface declared locally", likewise for
+head types). `check_orphans` (`typecheck.ml`, sibling of `check_coherence`,
+called only from `typecheck_module`) flags an *anonymous* impl iff its interface
+is non-local **and** no head-type constructor is local **and** the interface or
+a head type originates from an imported user module. The prelude (`core`) is
+never a known-module (the loader skips it), so prelude/runtime names (e.g.
+`Eq`/`Array`) never count as "imported" — `stdlib/array.mdk`'s `impl Eq (Array a)`
+and single-file prelude overrides (`impl Show Int`) stay in scope. Imported type
+names are carried on a new `module_type_exports.te_types` field (built from
+`user_prog`, so the prelude prepend doesn't leak in; prelude *interface* names
+that do leak into `te_interfaces` are filtered out explicitly). Named impls
+(`@Name`) are exempt — an explicit opt-in escape hatch, consistent with Phase
+68's overlap leniency. Tests in `test/test_typecheck.ml` group "impl coherence
+(Phase 68)" use a new in-memory `check_modules` helper:
+`e_orphan_impl_rejected`, `e_orphan_core_iface_remote_type`,
+`t_orphan_local_type_ok`, `t_orphan_local_iface_ok`, `t_orphan_named_exempt`,
+`t_orphan_prelude_override_ok`.
 
 **Done when.** Overlapping impls are reported at declaration *with a source
 line*; resolution is order-independent — the checker commits the most-specific
-impl and eval honors it. *(Done, except the orphan-instance check.)*
+impl and eval honors it; orphan impls are rejected at declaration time. *(Done.)*
 
 ### Phase 69: Type-directed / return-position dispatch (dictionary passing) ✅ DONE (69.x still TODO)
 
