@@ -2909,6 +2909,16 @@ swap (x, y) = (y, x)
 r = swap (1, 2)
 |} "r" "(Int, Int)"
 
+(* Slice typing (Phase 70): the rewritten branch-on-normalized-type logic
+   preserves the container type for Array/List/String when the container is
+   concrete, and reports a clean mismatch for a non-container — with no
+   corrupted-state fallout from a failed trial unification.  (A slice on a
+   not-yet-grounded value still defaults to Array, as before this fix.) *)
+let t_slice_array  = assert_type "r = [|1, 2, 3, 4|].[1..3]\n" "r" "Array Int"
+let t_slice_list   = assert_type "r = [1, 2, 3, 4].[1..3]\n"   "r" "List Int"
+let t_slice_string = assert_type "r = \"hello\".[1..3]\n"      "r" "String"
+let e_slice_non_container = assert_err "r = True.[0..1]\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -3386,5 +3396,9 @@ let () =
       test_case "err: alias under-applied"             `Quick e_alias_under_applied;
       test_case "err: alias over-applied"              `Quick e_alias_over_applied;
       test_case "alias fully applied ok"               `Quick t_alias_fully_applied_ok;
+      test_case "slice array preserves type"           `Quick t_slice_array;
+      test_case "slice list preserves type"            `Quick t_slice_list;
+      test_case "slice string preserves type"          `Quick t_slice_string;
+      test_case "err: slice non-container"             `Quick e_slice_non_container;
     ];
   ]

@@ -1560,13 +1560,26 @@ let rec infer env = function
     let te = infer env e in
     unify (infer env lo) t_int;
     unify (infer env hi) t_int;
-    (* Slice preserves container type: Array a, List a, or String *)
+    (* Slice preserves container type: Array a, List a, or String.  Branch on
+       the normalized container type rather than trying destructive unifications
+       in a `try ... with _` cascade: a failed trial unify left `te` partially
+       mutated and the catch-all swallowed non-unification exceptions too.  Here
+       the single unify per branch only refines the element type and cannot fail
+       on the head; the non-container case produces one clean mismatch. *)
     let elem = fresh_var () in
-    (try unify te (t_array elem); te
-     with _ ->
-       try unify te (t_list elem); te
-       with _ ->
-         unify te t_string; te)
+    (match normalize te with
+     | TCon "String"            -> te
+     | TApp (TCon "Array", _)   -> unify te (t_array elem); te
+     | TApp (TCon "List", _)    -> unify te (t_list elem); te
+     | TVar _ ->
+       (* Container type not yet determined; default to Array (a slice most
+          often targets an array).  A wrong guess surfaces as an ordinary
+          mismatch where the value is later used at a different type. *)
+       unify te (t_array elem); te
+     | _ ->
+       (* Not a sliceable container: report a clean mismatch against one of the
+          three valid container types instead of a corrupted-state type. *)
+       unify te t_string; te)
 
 and binop_type env op l r =
   let tl = infer env l in
