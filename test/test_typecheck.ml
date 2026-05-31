@@ -16,6 +16,13 @@ let check src =
   try Ok (fst (check_program (Desugar.desugar_program (parse src))))
   with Type_error (e, _) -> Error e
 
+(* Like [check] but preserves the reported location (Phase 62), so tests can
+   assert that instance/constraint errors point at the call site, not a
+   prelude line. *)
+let check_loc src =
+  try Ok (fst (check_program (Desugar.desugar_program (parse src))))
+  with Type_error (e, loc) -> Error (e, loc)
+
 (* assert_warns: expect at least one exhaustiveness/redundancy warning *)
 let assert_warns src () =
   match
@@ -95,6 +102,25 @@ let assert_err src () =
     failwith (Printf.sprintf
       "Expected type error, but program type-checked.\n\nEnv: %s\n\nSource:\n%s"
       summary src)
+
+(* assert_err_at ~line src — Phase 62: check that src fails AND the error is
+   reported at the given call-site line in the user source (not a prelude
+   line in core.mdk). *)
+let assert_err_at ~line src () =
+  match check_loc src with
+  | Ok _ -> failwith (Printf.sprintf
+      "Expected type error, but program type-checked.\n\nSource:\n%s" src)
+  | Error (_, None) -> failwith (Printf.sprintf
+      "Type error carried no location.\n\nSource:\n%s" src)
+  | Error (_, Some l) ->
+    if l.Ast.file = "core.mdk" then
+      failwith (Printf.sprintf
+        "Error blamed the prelude (core.mdk:%d) instead of the call site.\n\nSource:\n%s"
+        l.Ast.line src);
+    if l.Ast.line <> line then
+      failwith (Printf.sprintf
+        "Expected error at line %d, got line %d (file %S).\n\nSource:\n%s"
+        line l.Ast.line l.Ast.file src)
 
 (* ── Basic types ────────────────────────────────── *)
 
@@ -1127,6 +1153,44 @@ let e_constraint_concrete_in_context = assert_err
 
 check : Blob -> Blob -> Bool
 check x y = eq x y
+|}
+
+(* Phase 62: instance/constraint errors must point at the user's call site,
+   not a prelude line.  These mirror the fixtures above but assert the loc. *)
+
+(* NoImplFound via a method usage (check_method_usages): `eq` on line 3. *)
+let e_loc_no_impl = assert_err_at ~line:3
+  {|data Blob = Blob
+
+f = eq Blob Blob
+|}
+
+(* AmbiguousImpl via a method usage (check_method_usages): `pick` on line 11.
+   Uses a fresh interface name (not Monoid) to avoid colliding with the
+   prelude, so the only error raised is the genuine ambiguity. *)
+let e_loc_ambiguous = assert_err_at ~line:11
+  {|interface Pick a where
+  pick : a
+
+impl one of Pick Int where
+  pick = 1
+
+impl two of Pick Int where
+  pick = 2
+
+f : Int
+f = pick
+|}
+
+(* Unsatisfied function-constraint obligation (check_constraint_obligations):
+   `neq Blob Blob` on line 6. *)
+let e_loc_fun_constraint = assert_err_at ~line:6
+  {|data Blob = Blob
+
+neq : Eq a => a -> a -> Bool
+neq x y = not (eq x y)
+
+bad = neq Blob Blob
 |}
 
 (* ── Phase 20: constraint annotation syntax ──────── *)
@@ -2604,6 +2668,9 @@ let () =
       test_case "err: missing impl"      `Quick e_constraint_missing_impl;
       test_case "err: ambiguous"         `Quick e_constraint_ambiguous;
       test_case "err: concrete context"  `Quick e_constraint_concrete_in_context;
+      test_case "loc: no impl at call site"     `Quick e_loc_no_impl;
+      test_case "loc: ambiguous at call site"   `Quick e_loc_ambiguous;
+      test_case "loc: fun constraint at call site" `Quick e_loc_fun_constraint;
     ];
     "named impls and @Name selection (Phase 32)", [
       test_case "UPPER named impl"          `Quick t_named_impl_upper;

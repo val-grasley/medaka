@@ -38,14 +38,24 @@ The mechanical loop — four edits, all in `typecheck.ml` unless noted:
 2. **Pretty-printer** — add a case to `pp_error`. Use `pp_mono` for types,
    `pp_scheme` for schemes. Phrase the message as *what's wrong + how to fix*.
 3. **Raise site** — `fail (YourError …)` from the phase that detects it.
-   `current_loc` supplies the source location automatically *if* it's set;
-   several registries (`impl_entry`, etc.) carry no loc, so the message must
-   stand on its own.
+   `fail` reads the global `current_loc`, which is correct *during* the `infer`
+   walk but **stale in post-HM passes** (`check_method_usages`,
+   `check_constraint_obligations`) — by then it points at the last expression
+   inferred. If your error fires from a deferred/post-HM pass, capture
+   `!current_loc` into the accumulator tuple at record time and raise with
+   `fail_at loc …` instead (Phase 62 did exactly this for the two constraint
+   passes — follow that pattern). Some registries (`impl_entry`, etc.) still
+   carry no loc, so when none is available the message must stand on its own.
 4. **Test** — add to `test/test_typecheck.ml`. `assert_err src` expects any type
-   error; `assert_type src name expected` asserts a successful inferred type.
-   Put cases in the group matching the feature, or add a new named group to the
-   suite list at the bottom. Tests embed the source inline so failures read
-   cleanly.
+   error; `assert_type src name expected` asserts a successful inferred type;
+   `assert_err_at ~line src` (Phase 62) asserts the error is reported at a
+   specific call-site line and not in the prelude — use it for any
+   location-sensitive diagnostic. Put cases in the group matching the feature,
+   or add a new named group to the suite list at the bottom. Tests embed the
+   source inline so failures read cleanly. **Watch for prelude name
+   collisions:** an `assert_err` fixture that reuses a stdlib interface name
+   (e.g. `Monoid`) may pass on a *duplicate-interface* error rather than the
+   error you intend — use a fresh name so the test exercises what it claims.
 
 ## Where things live (grep these names, don't trust line numbers)
 
@@ -68,7 +78,7 @@ The mechanical loop — four edits, all in `typecheck.ml` unless noted:
 
 ```sh
 export PATH="$HOME/.opam/5.4.1/bin:$PATH"   # only if `dune` is not found
-dune build
+dune build                                  # add --root . inside a .claude/worktrees/ checkout
 ./_build/default/test/test_typecheck.exe --compact
 ```
 
