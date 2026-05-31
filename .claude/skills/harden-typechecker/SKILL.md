@@ -28,6 +28,27 @@ numbers drift; confirm with `grep` before trusting them.
   inputs. If you add a code path that can `fail` mid-bracket, restore the level
   (a `finally`, or reset at the boundary). This is Phase 71's whole subject.
 
+## Generalization is value-restricted (Phase 66)
+
+`let`/`do`-`let` bindings are only generalized when their RHS is a **syntactic
+value**. The gate is `is_nonexpansive` (literal / var / lambda; tuple or
+list-literal of values; `ELoc`/`EAnnot` transparent — *everything else,
+including all applications, is expansive*). Generalization goes through
+`gen_restricted is_value t` (not bare `generalize`) at every binding site: `ELet`
+`PVar`, `DoLet` in `EBlock`/`EDo`, per-binding in `ELetGroup`, and the top-level
+non-letrec path in `process_letrec_group`.
+
+The non-obvious rule if you touch any of this: **a non-generalized binding must
+have its free vars *lowered* to `current_level`, not merely wrapped in
+`monotype`.** Otherwise the vars sit at a deeper level and an *enclosing* `let`'s
+`generalize` picks them up — reopening the unsoundness one scope out.
+`gen_restricted` does this via `lower_to_current`; the non-`PVar` pattern path
+gets it for free because `unify tp t1` lowers through `occurs_adjust`. Note
+`Ref` is a *constructor* (`extern Ref : a -> Ref a`), so — like SML/OCaml's
+`ref` — constructor applications are deliberately expansive; do not add a
+"constructor application of values is a value" carve-out or `r = Ref []` becomes
+polymorphic again.
+
 ## Adding a `type_error`
 
 The mechanical loop — four edits, all in `typecheck.ml` unless noted:
@@ -60,7 +81,8 @@ The mechanical loop — four edits, all in `typecheck.ml` unless noted:
 ## Where things live (grep these names, don't trust line numbers)
 
 - **Unification / generalization** — `unify`, `normalize`, `generalize`,
-  `instantiate`, `enter_level`/`exit_level`, `fresh_var`.
+  `instantiate`, `enter_level`/`exit_level`, `fresh_var`. Value restriction:
+  `is_nonexpansive`, `gen_restricted`, `lower_to_current` (see section above).
 - **Interfaces & impls** — `register_interface`, `register_impl`, `impl_entry`,
   `iface_info`. Call-site constraint solving is a *family* of post-HM passes that
   share `matching_impls` + the top-level `is_concrete` + `fail_at loc`:

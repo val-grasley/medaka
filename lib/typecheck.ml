@@ -242,6 +242,41 @@ let instantiate s = snd (instantiate_raw s)
 
 let monotype t = Forall ([], t)
 
+(* ── Value restriction (Phase 66) ───────────────── *)
+
+(* A syntactically non-expansive (value) expression may be generalized; every
+   other RHS is value-restricted (bound monomorphically) to close the classic
+   polymorphic-reference hole: `r = Ref []` must NOT get `forall a. Ref (List a)`.
+   `Ref` is a constructor here, so — like SML/OCaml's `ref` — ALL applications
+   (constructor or otherwise) are treated as expansive. ELoc/EAnnot are
+   transparent. Lists are immutable cons-lists (value if their elements are);
+   arrays, records, maps and sets are potentially mutable, hence expansive. *)
+let rec is_nonexpansive = function
+  | ELit _ | EVar _ | ELam _      -> true
+  | ELoc (_, e) | EAnnot (e, _)   -> is_nonexpansive e
+  | ETuple es | EListLit es       -> List.for_all is_nonexpansive es
+  | _                             -> false
+
+(* Lower every unbound var in t at level > current down to current_level, so a
+   value-restricted (non-generalized) binding's vars can't be picked up by an
+   enclosing let's generalize. Mirrors the lowering `unify tp t1` performs in
+   the non-PVar pattern path via occurs_adjust. *)
+let rec lower_to_current t = match normalize t with
+  | TVar v ->
+    (match !v with
+     | Link t -> lower_to_current t
+     | Unbound (id, level) ->
+       if level > !current_level then v := Unbound (id, !current_level))
+  | TCon _ -> ()
+  | TApp (a, b) | TFun (a, _, b) -> lower_to_current a; lower_to_current b
+  | TTuple ts -> List.iter lower_to_current ts
+
+(* Generalize a value RHS; value-restrict (monomorphize, lowering free vars)
+   otherwise. *)
+let gen_restricted is_value t =
+  if is_value then generalize t
+  else (lower_to_current t; monotype t)
+
 (* Like instantiate, but maps specific bound IDs to provided monos instead of
    always creating fresh vars.  Used by check_impl to substitute the impl's
    concrete type args for the interface's type-parameter IDs. *)
@@ -912,7 +947,7 @@ let rec infer env = function
        exit_level ();
        (match pat with
         | PVar x ->
-          let s = generalize t1 in
+          let s = gen_restricted (is_nonexpansive e1) t1 in
           let env' = extend_var env x s in
           let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
           infer env' e2
@@ -934,8 +969,13 @@ let rec infer env = function
       ) clauses
     ) bindings;
     exit_level ();
-    let env'' = List.fold_left
-      (fun e (n, t) -> extend_var e n (generalize t)) env placeholders in
+    (* Generalize per binding by value restriction: a binding with parameters
+       is a function (value); a zero-arg binding is gated on its RHS. *)
+    let env'' = List.fold_left (fun e (n, clauses) ->
+      let t = List.assoc n placeholders in
+      let is_val =
+        List.for_all (fun (pats, rhs) -> pats <> [] || is_nonexpansive rhs) clauses in
+      extend_var e n (gen_restricted is_val t)) env bindings in
     infer env'' body
 
   | EIf (c, t, e) ->
@@ -1127,7 +1167,7 @@ let rec infer env = function
         exit_level ();
         let env' = match pat with
           | PVar x ->
-            let env' = extend_var env x (generalize t1) in
+            let env' = extend_var env x (gen_restricted (is_nonexpansive e) t1) in
             if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
           | _ ->
             let tp, bindings = type_pat env pat in
@@ -1247,7 +1287,7 @@ let rec infer env = function
         let t1 = infer env e in
         exit_level ();
         let env' = match pat with
-          | PVar x -> extend_var env x (generalize t1)
+          | PVar x -> extend_var env x (gen_restricted (is_nonexpansive e) t1)
           | _ ->
             let tp, bindings = type_pat env pat in
             unify tp t1;
@@ -1555,12 +1595,17 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
       let t = infer !env_ref (clause_to_expr clause) in
       unify placeholder t
     ) clauses;
-    (name, cs_monos)
+    (* Value restriction (Phase 66): a let-rec member is always a function;
+       a non-letrec zero-arg binding is gated on its RHS so e.g. `r = Ref []`
+       is not over-generalized. *)
+    let is_val = is_letrec
+      || List.for_all (fun (pats, rhs) -> pats <> [] || is_nonexpansive rhs) clauses in
+    (name, cs_monos, is_val)
   ) members in
   exit_level ();
-  List.map (fun (name, cs_monos) ->
+  List.map (fun (name, cs_monos, is_val) ->
     let placeholder = List.assoc name placeholders in
-    let scheme = generalize placeholder in
+    let scheme = gen_restricted is_val placeholder in
     (match scheme with
      | Forall (bound_ids, _) when cs_monos <> [] ->
        let extract_id m = match normalize m with

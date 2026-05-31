@@ -228,6 +228,24 @@ let e_constraint_unknown_iface =
   assert_err (unknown_iface "Bogus")
     "f : Bogus a => a -> Bool\nf x = True\n"
 
+(* ── requires / super constraint name validation (Phase 67) ───── *)
+
+let e_impl_requires_unknown_iface =
+  assert_err (unknown_iface "Bogus")
+    "interface MyEq a where\n  myeq : a -> a -> Bool\n\nimpl MyEq (List a) requires Bogus a where\n  myeq x y = True\n"
+
+let e_interface_super_unknown_iface =
+  assert_err (unknown_iface "Bogus")
+    "interface Foo a requires Bogus a where\n  foo : a -> a\n"
+
+let v_impl_requires_known_iface =
+  assert_ok
+    "interface MyEq a where\n  myeq : a -> a -> Bool\n\nimpl MyEq (List a) requires MyEq a where\n  myeq x y = True\n"
+
+let v_interface_super_known_iface =
+  assert_ok
+    "interface MyEq a where\n  myeq : a -> a -> Bool\n\ninterface MyOrd a requires MyEq a where\n  mycompare : a -> a -> Bool\n"
+
 (* Methods declared in core.mdk's interfaces must be in scope in user
    files even when no impl in core provides them — bare interface
    defaults count.  Regression test for the resolver gap that left
@@ -374,6 +392,12 @@ let () =
     "constraint annotations", [
       test_case "known iface ok"       `Quick v_constraint_known_iface;
       test_case "err: unknown iface"   `Quick e_constraint_unknown_iface;
+    ];
+    "requires / super constraints", [
+      test_case "impl requires known ok"   `Quick v_impl_requires_known_iface;
+      test_case "interface super known ok" `Quick v_interface_super_known_iface;
+      test_case "err: impl requires unknown"   `Quick e_impl_requires_unknown_iface;
+      test_case "err: interface super unknown" `Quick e_interface_super_unknown_iface;
     ];
     "prelude methods in user scope", [
       test_case "max ok"     `Quick v_prelude_method_max_in_scope;

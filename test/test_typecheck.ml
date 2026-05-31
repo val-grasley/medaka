@@ -279,6 +279,32 @@ let t_let_poly = assert_type
   {|f = let id = (x => x) in (id 5, id "hi")
 |} "f" "(Int, String)"
 
+(* ── Value restriction (Phase 66) ───────────────── *)
+
+(* A mutable cell (`Ref`, a constructor) must NOT be generalized: `r = Ref []`
+   may not be used at two element types. Top-level binding path. *)
+let e_value_restriction_toplevel = assert_err
+  {|r = Ref []
+a = 1 :: r.value
+b = True :: r.value
+|}
+
+(* Same, exercising the in-block DoLet binding path. *)
+let e_value_restriction_block = assert_err
+  {|f =
+  let r = Ref []
+  let a = 1 :: r.value
+  let b = True :: r.value
+  b
+|}
+
+(* Immutable list literals stay values: `empty = []` is still generalized and
+   may be used at two element types. *)
+let t_empty_list_still_poly = assert_type
+  {|empty = []
+pair = (1 :: empty, True :: empty)
+|} "pair" "(List Int, List Bool)"
+
 (* ── Errors ─────────────────────────────────────── *)
 
 let e_int_plus_string  = assert_err "x = 5 + \"hi\"\n"
@@ -2838,6 +2864,11 @@ let () =
       test_case "set_ref Mut ok"            `Quick t_set_ref_mut_ok;
       test_case "err: set_ref mismatch"     `Quick e_set_ref_type_mismatch;
       test_case "err: set_ref impure"       `Quick e_set_ref_impure;
+    ];
+    "value restriction (Phase 66)", [
+      test_case "err: Ref not generalized (top-level)" `Quick e_value_restriction_toplevel;
+      test_case "err: Ref not generalized (block)"     `Quick e_value_restriction_block;
+      test_case "empty list still polymorphic"         `Quick t_empty_list_still_poly;
     ];
     "let mut / Assign", [
       test_case "assign valid (bare block)"  `Quick t_do_assign_valid;

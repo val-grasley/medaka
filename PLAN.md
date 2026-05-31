@@ -2752,8 +2752,8 @@ obligations aren't checked: programs that should fail typecheck, and a generic
 
 **Where.** `lib/typecheck.ml`: `register_interface` (~:1651) is called with
 `(iface_name, type_params, methods)` — the `super` field is dropped at all
-three call sites (~:2243, :2430, :2615). Resolver also never validates the
-`super` interface *names* (see Phase 67).
+three call sites (~:2243, :2430, :2615). (Resolver validation of the `super`
+interface *names* was since added — see Phase 67.)
 
 **Scope.** Thread `super` into `register_interface` and store it on
 `iface_info`. When an `impl I T` is registered/checked, require that an impl
@@ -2804,7 +2804,7 @@ through the recursive descent.
 **Done when.** Constrained impls only resolve when their `requires` hold; the
 `Box (Int -> Int)` repro is a clean type error. ✅
 
-### Phase 66: Value restriction — stop over-generalizing non-value `let` bindings ⏳ TODO
+### Phase 66: Value restriction — stop over-generalizing non-value `let` bindings ✅ DONE
 
 **Goal.** Don't assign a polymorphic scheme to a `let x = <effectful/non-value>`
 binding. Classic ML soundness fix.
@@ -2829,23 +2829,46 @@ self-recursive lambda path. Tests: `let r = newRef []` does not generalize;
 **Done when.** The polymorphic-reference unsoundness is closed; existing
 let-polymorphism tests still pass.
 
-### Phase 67: Resolver validates `requires` / `super` interface names ⏳ TODO
+**What was done.** Added `is_nonexpansive` (value iff literal/var/lambda, or
+tuple/list-literal of values; `ELoc`/`EAnnot` transparent), plus
+`lower_to_current` + `gen_restricted` helpers in `lib/typecheck.ml` (after
+`monotype`). Replaced unconditional `generalize` at all four inner sites — `ELet`
+`PVar`, `DoLet` in `EBlock` and `EDo`, and per-binding in `ELetGroup` — and at
+the **top-level** non-letrec path in `process_letrec_group` (gated on the
+binding's clauses; `let rec` members are always functions). The self-recursive
+lambda path and the existing non-`PVar` guard are untouched.
+
+Two deviations from the original write-up: (1) the top-level path was included
+(the real stdlib motivation — top-level `mut_array`/`hash_map`), beyond the
+inner-only "Where" list. (2) `Ref` is a *constructor* (`extern Ref : a -> Ref a`),
+not a `newRef` function, so — like SML/OCaml's `ref` — **all applications
+(including constructor applications) are treated as expansive**; the
+"constructor application of values" carve-out would have reopened the `Ref []`
+hole. No regression: every constructor-application binding in the suite has a
+concrete type, so generalizing it was already a no-op. Tests in
+`test/test_typecheck.ml` ("value restriction (Phase 66)"): `r = Ref []` used at
+two element types is rejected (top-level + in-block paths), `empty = []` stays
+polymorphic.
+
+### Phase 67: Resolver validates `requires` / `super` interface names ✅ DONE
 
 **Goal.** `impl Eq (Box a) requires Bogus a` and `interface Foo a requires
 Bogus a` are rejected with `UnknownInterface`.
 
-**Why it matters now.** Cheap correctness win; typos in constraint lists
-currently pass silently. Good warm-up task.
+**Outcome.** The `DImpl` resolve case now destructures `requires` and iterates
+it, emitting `UnknownInterface` for any constraint-interface name not in
+`env.interfaces` and walking each constraint's type args through `check_type`
+(so unknown types in a constraint are caught too, matching the `TyConstrained`
+path). The `DInterface` case likewise destructures `super` and validates each
+superinterface name. Reused the existing `UnknownInterface` constructor + `emit`
+helper — no new error types, no `build_env` change, no typechecker change. Tests
+added in `test/test_resolve.ml` under "requires / super constraints": unknown
+iface in `impl … requires` and `interface … requires` are errors; known ifaces
+in both positions resolve clean. The stdlib (`core.mdk`'s real `requires`/`super`
+clauses) still resolves, typechecks, and evals unchanged.
 
-**Where.** `lib/resolve.ml`: interface-name validation today only covers
-`TyConstrained` (~:430) and the `DImpl` head iface (~:678); the `DImpl.requires`
-and `DInterface.super` lists are not walked.
-
-**Scope.** In the `DImpl` and `DInterface` resolve cases, iterate `requires` /
-`super` entries and emit `UnknownInterface` for any name not in scope. Small,
-self-contained, no typechecker changes.
-
-**Done when.** Bogus constraint interface names are caught at resolve time.
+**Why it mattered.** Cheap correctness win; typos in constraint lists previously
+passed silently.
 
 ### Phase 68: Overlap / coherence checking for impls 🟡 PARTIAL
 
