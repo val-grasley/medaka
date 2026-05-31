@@ -2936,6 +2936,18 @@ bad = (intId : a -> a)
 let e_annot_too_general_collapse = assert_err_msg "more polymorphic"
   "bad = ((x => x) : a -> b)\n"
 
+(* ── Robustness (Phase 71) ────────────────────────── *)
+
+(* A node that should have been removed by desugar (here a list comprehension)
+   now surfaces as a catchable InternalError diagnostic instead of an opaque
+   OCaml Assert_failure when typecheck is run without the desugar pass. *)
+let t_internal_error_not_assert () =
+  let prog = parse "r = [x | x <- [1, 2, 3]]\n" in  (* intentionally NOT desugared *)
+  match (try Ok (check_program prog) with Type_error (e, _) -> Error e) with
+  | Error (InternalError _) -> ()
+  | Error e -> failwith ("Expected InternalError, got: " ^ pp_error e)
+  | Ok _ -> failwith "Expected InternalError, but it type-checked"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -3421,5 +3433,8 @@ let () =
       test_case "annot concrete ok"                    `Quick t_annot_concrete_ok;
       test_case "err: annot too general (concrete)"    `Quick e_annot_too_general_concrete;
       test_case "err: annot too general (collapse)"    `Quick e_annot_too_general_collapse;
+    ];
+    "robustness (Phase 71)", [
+      test_case "non-desugared node -> InternalError"  `Quick t_internal_error_not_assert;
     ];
   ]

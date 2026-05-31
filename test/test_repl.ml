@@ -270,6 +270,32 @@ let t_multiline_dict_passing () =
     failwith (Printf.sprintf "Expected \"S\\nT\\n\" from cross-input dispatch, got %S" out);
   ignore ub
 
+(* ── Phase 71: REPL recovers cleanly from a type error ────────────────────── *)
+
+(* A type error in one input fails *between* an enter_level/exit_level pair.
+   The next input must still type-check normally: process_item resets the level
+   at each input boundary (and rolls back state) so a prior failure doesn't
+   corrupt later inputs.  Here, after a failing input we define a polymorphic
+   `id` and use it at two different types in separate inputs — which only
+   succeeds if the session state survived intact and `id` generalized to
+   `forall a. a -> a`. *)
+let t_repl_recovers_from_type_error () =
+  let (r, tc, ev, ps, ub) = make_state () in
+  let run src =
+    match Repl.try_parse src with
+    | Ok item -> Repl.process_item src r tc ev ps ub item  (* catches Type_error internally *)
+    | Error _ -> failwith ("parse failed: " ^ src)
+  in
+  run "bad = 1 + \"x\"\n";   (* type error mid-RHS *)
+  run "id x = x\n";          (* must generalize to forall a. a -> a *)
+  run "a = id 5\n";
+  run "b = id True\n";
+  let names = binding_names !ub in
+  if not (List.mem "a" names && List.mem "b" names) then
+    failwith (Printf.sprintf
+      "id failed to be used at two types after a prior type error; bindings: %s"
+      (String.concat ", " names))
+
 (* ── Suite ────────────────────────────────────────────────────────────────── *)
 
 let () = Alcotest.run "Repl"
@@ -296,5 +322,8 @@ let () = Alcotest.run "Repl"
     ]);
     ("dictionary passing (Phase 69.x)", [
       "cross-input constrained dispatch", `Quick, t_multiline_dict_passing;
+    ]);
+    ("robustness (Phase 71)", [
+      "recovers from prior type error", `Quick, t_repl_recovers_from_type_error;
     ]);
   ]

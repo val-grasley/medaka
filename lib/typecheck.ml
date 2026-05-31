@@ -136,6 +136,7 @@ type type_error =
   | TypeAliasArity      of ident * int * int        (* alias, expected params, got args *)
   | AnnotationTooGeneral of Ast.ty                  (* annotation claims more polymorphism than expr has *)
   | LetRecNonFunction   of ident                   (* `let rec x = ...` where RHS isn't a lambda *)
+  | InternalError       of string                   (* a broken compiler invariant, surfaced as a diagnostic *)
   | Other              of string
 
 exception Type_error of type_error * Ast.loc option
@@ -212,7 +213,7 @@ let rec unify t1 t2 =
   | TVar v1, TVar v2 when v1 == v2 -> ()
   | TVar v, t | t, TVar v ->
     (match !v with
-     | Link _ -> assert false
+     | Link _ -> fail (InternalError "unify: Link survived normalize")
      | Unbound (id, level) ->
        occurs_adjust id level t;
        v := Link t)
@@ -249,7 +250,7 @@ let instantiate_raw (Forall (vars, t)) =
     | TVar v ->
       (match !v with
        | Unbound (id, _) -> (try List.assoc id sub with Not_found -> TVar v)
-       | Link _ -> assert false)
+       | Link _ -> fail (InternalError "instantiate: Link survived normalize"))
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
     | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
@@ -307,7 +308,7 @@ let instantiate_with (Forall (vars, t)) (subs : (int * mono) list) =
     | TVar v ->
       (match !v with
        | Unbound (id, _) -> (try List.assoc id sub with Not_found -> TVar v)
-       | Link _ -> assert false)
+       | Link _ -> fail (InternalError "instantiate: Link survived normalize"))
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
     | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
@@ -326,7 +327,7 @@ let instantiate_method (Forall (vars, t)) track_ids =
     | TVar v ->
       (match !v with
        | Unbound (id, _) -> (try List.assoc id sub with Not_found -> TVar v)
-       | Link _ -> assert false)
+       | Link _ -> fail (InternalError "instantiate: Link survived normalize"))
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
     | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
@@ -364,7 +365,9 @@ let pp_mono_in (names, counter) t =
   let rec go prec t = match normalize t with
     | TVar v ->
       (match !v with
-       | Link _ -> assert false
+       (* Unreachable after normalize; never raise from a rendering path
+          (this runs while formatting an error message). *)
+       | Link _ -> "_"
        | Unbound (id, _) -> name_of id)
     | TCon n -> n
     | TApp (a, b) ->
@@ -516,6 +519,8 @@ let pp_error = function
     Printf.sprintf
       "'%s' is bound by 'let rec' but its right-hand side is not a function. Recursive value bindings must have a lambda right-hand side; cyclic data structures are not supported."
       n
+  | InternalError msg ->
+    Printf.sprintf "Internal type-checker error: %s (this is a compiler bug — please report it)" msg
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -784,7 +789,7 @@ let instantiate_record info =
       (match !v with
        | Unbound (id, _) ->
          (try List.assoc id sub with Not_found -> TVar v)
-       | Link _ -> assert false)
+       | Link _ -> fail (InternalError "instantiate_record: Link survived normalize"))
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
     | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
@@ -972,7 +977,10 @@ let rec infer env = function
       match Hashtbl.find_opt env.method_iface x with
       | Some iface_name ->
         current_dict_ref := None;  (* a method name is never a constrained fn *)
-        let info = Hashtbl.find env.interfaces iface_name in
+        let info =
+          try Hashtbl.find env.interfaces iface_name
+          with Not_found -> fail (UnknownInterface iface_name)
+        in
         let (t, param_vars, sub) = instantiate_method scheme info.iface_param_ids in
         let hint = !current_impl_hint in
         current_impl_hint := None;
@@ -1117,7 +1125,7 @@ let rec infer env = function
     (* Negation is a `Num a` operation (dispatches to Num.negate), so it works
        for Int, Float, and any user Num impl — not Int-only. *)
     let a = fresh_var () in
-    let r = match a with TVar r -> r | _ -> assert false in
+    let r = match a with TVar r -> r | _ -> fail (InternalError "fresh_var did not yield a TVar") in
     unify te a;
     env.method_usages :=
       ("negate", "Num", [r], None, None, !current_loc) :: !(env.method_usages);
@@ -1289,7 +1297,7 @@ let rec infer env = function
       | _ -> None
     in
     let rec type_block env = function
-      | [] -> assert false
+      | [] -> fail (InternalError "type_block: empty block (should be guarded earlier)")
       | [DoBind _] -> fail BindOutsideDo
       | [DoExpr e] -> infer env e
       | [DoLet _] -> fail (Other "block cannot end with a let binding")
@@ -1388,7 +1396,7 @@ let rec infer env = function
       | _ -> None
     in
     let rec type_stmts env = function
-      | [] -> assert false
+      | [] -> fail (InternalError "type_stmts: empty do block (should be guarded earlier)")
       | [DoExpr e] ->
         let te = infer env e in
         let _ = unify_monadic te in
@@ -1524,11 +1532,14 @@ let rec infer env = function
          try Hashtbl.find env.field_owners field
          with Not_found -> fail (UnknownField (field, "<unknown>"))
        in
-       let info = Hashtbl.find env.records record_name in
+       let info =
+         try Hashtbl.find env.records record_name
+         with Not_found -> fail (UnknownRecord record_name)
+       in
        let (result_t, field_types) = instantiate_record info in
        unify te result_t;
        (try List.assoc field field_types
-        with Not_found -> assert false)  (* field_owners guarantees this exists *)
+        with Not_found -> fail (UnknownField (field, record_name)))
     )
 
   | ERecordUpdate (e, updated) ->
@@ -1540,7 +1551,10 @@ let rec infer env = function
         try Hashtbl.find env.field_owners first_field
         with Not_found -> fail (UnknownField (first_field, "<unknown>"))
       in
-      let info = Hashtbl.find env.records record_name in
+      let info =
+        try Hashtbl.find env.records record_name
+        with Not_found -> fail (UnknownRecord record_name)
+      in
       let (result_t, field_types) = instantiate_record info in
       unify te result_t;
       List.iter (fun (fname, expr) ->
@@ -1561,12 +1575,17 @@ let rec infer env = function
     unify ti t_int;
     elem
 
-  | EListComp _ -> assert false (* eliminated by desugar_list_comps *)
+  (* The following node shapes are removed by the desugar pass before typecheck;
+     reaching one means the desugar pass was skipped (a pipeline-wiring bug), so
+     surface a diagnostic rather than crashing with Assert_failure. *)
+  | EListComp _ ->
+    fail (InternalError "EListComp reached typecheck — desugar pass was not run")
 
   | EGuards _ | EFunction _ | ESection _ ->
-    assert false (* eliminated by desugar_sugar *)
+    fail (InternalError "guard/function/section reached typecheck — desugar pass was not run")
 
-  | EQuestion _ -> assert false (* eliminated by desugar_questions; misplaced uses caught by resolve *)
+  | EQuestion _ ->
+    fail (InternalError "EQuestion reached typecheck — desugar pass was not run")
 
   | ERangeList (lo, hi, _) ->
     unify (infer env lo) t_int;
@@ -1611,7 +1630,7 @@ and binop_type env op l r =
      exists once [r] is grounded.  Returns [r] wrapped back as a TVar's ref. *)
   let record_iface_usage iface_name method_name tl tr =
     let a = fresh_var () in
-    let r = match a with TVar r -> r | _ -> assert false in
+    let r = match a with TVar r -> r | _ -> fail (InternalError "fresh_var did not yield a TVar") in
     unify tl a; unify tr a;
     env.method_usages := (method_name, iface_name, [r], None, None, !current_loc) :: !(env.method_usages);
     a
@@ -1974,8 +1993,11 @@ let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params,
   let param_ids =
     List.map (fun (_, v) ->
       match normalize v with
-      | TVar r -> (match !r with Unbound (id, _) -> id | _ -> assert false)
-      | _ -> assert false
+      | TVar r ->
+        (match !r with
+         | Unbound (id, _) -> id
+         | Link _ -> fail (InternalError "interface param: Link survived normalize"))
+      | _ -> fail (InternalError "interface type parameter was unexpectedly constrained to a concrete type")
     ) param_vars
   in
   let method_schemes =
@@ -2471,8 +2493,13 @@ let find_enclosing_dict env iface (ids_present : int list) : Ast.ident option =
    registry.  Skips usages where types are still polymorphic or where the method
    scheme doesn't mention all interface params (uncommon). *)
 let check_method_usages env =
+  (* An interface recorded in a usage but absent from env.interfaces would be an
+     internal inconsistency; degrade to 0 (which skips this usage's check below)
+     rather than crashing the REPL with a raw Not_found. *)
   let n_iface_params iface_name =
-    List.length (Hashtbl.find env.interfaces iface_name).iface_param_ids
+    match Hashtbl.find_opt env.interfaces iface_name with
+    | Some info -> List.length info.iface_param_ids
+    | None -> 0
   in
   List.iter (fun (_method_name, iface_name, param_vars, hint_opt, occ_ref, loc) ->
     let n = n_iface_params iface_name in
@@ -2780,10 +2807,10 @@ let expr_effects
     | EAnnot (e, _)           -> sub e
     | EInfix (_, l, r)        -> effect_union (sub l) (sub r)
     | ELoc (_, e)             -> sub e
-    | EListComp _             -> assert false (* eliminated by desugar_list_comps *)
-    | EQuestion _             -> assert false (* eliminated by desugar_questions *)
+    | EListComp _             -> fail (InternalError "EListComp reached the effects pass — desugar not run")
+    | EQuestion _             -> fail (InternalError "EQuestion reached the effects pass — desugar not run")
     | EGuards _ | EFunction _ | ESection _ ->
-      assert false (* eliminated by desugar_sugar *)
+      fail (InternalError "guard/function/section reached the effects pass — desugar not run")
 
   and do_stmt_effects (bound : StringSet.t) = function
     | DoExpr e             -> (bound, go bound e)
@@ -3291,6 +3318,12 @@ let check_repl_decl ?(seeded=false) (env : env ref) (decls : decl list)
     : (ident * scheme) list * string list =
   current_loc := None;
   current_impl_hint := None;
+  (* Phase 71: the REPL deliberately keeps the TVar counter across inputs (so it
+     doesn't call reset_state), but a prior input that failed *between* an
+     enter_level/exit_level pair would leave current_level > 0 and corrupt
+     generalization for every later input.  Reset just the level at each input
+     boundary; a completed check always balances its own brackets. *)
+  current_level := 0;
   register_attrs !env decls;
   (* First sub-pass: collect all type aliases *)
   List.iter (fun d -> match Ast.inner_decl d with
