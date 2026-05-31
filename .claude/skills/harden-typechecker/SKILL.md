@@ -84,9 +84,20 @@ The mechanical loop — four edits, all in `typecheck.ml` unless noted:
   `instantiate`, `enter_level`/`exit_level`, `fresh_var`. Value restriction:
   `is_nonexpansive`, `gen_restricted`, `lower_to_current` (see section above).
 - **Interfaces & impls** — `register_interface`, `register_impl`, `impl_entry`,
-  `iface_info`. Call-site constraint solving: `check_method_usages`,
-  `check_constraint_obligations`, `mono_matches` (one-directional wildcard match:
-  pattern may have TVars, concrete must be ground).
+  `iface_info`. Call-site constraint solving is a *family* of post-HM passes that
+  share `matching_impls` + the top-level `is_concrete` + `fail_at loc`:
+  `check_method_usages`, `check_constraint_obligations`,
+  `check_superinterface_obligations` (Phase 64), `check_entry_requires`
+  (Phase 65, recurses for nested `requires`). `mono_matches` is the
+  one-directional wildcard match (pattern may have TVars, concrete must be
+  ground). Two payoffs to remember: (1) folding a new obligation check *into* the
+  selection passes (rather than a new standalone pass) covers all the
+  `typecheck_*` entry points at once — grep `check_method_usages` to confirm
+  every entry point still calls the pair; (2) to *correlate* a TVar across two
+  obligations (e.g. an impl's head `a` and its `requires Eq a`), build an
+  id-keyed substitution with the `impls_overlap` idiom and apply it
+  non-destructively — never `Link` a registry TVar, the `impl_entry` is shared
+  across call sites.
 - **Coherence** — `check_coherence`, `impls_overlap` (bidirectional unification:
   two impls overlap iff their head-type lists unify under one substitution).
   **Seeded (prelude) impls** (`impl_seeded`) are excluded from coherence — user
@@ -94,7 +105,13 @@ The mechanical loop — four edits, all in `typecheck.ml` unless noted:
   appear twice via multi-module imports. Any new global impl check must respect
   that exclusion or it will false-positive on the stdlib itself.
 - **Data/record/alias registration** — `register_data`, `register_record`,
-  `register_alias`, `expand_aliases`, `from_ast_type`.
+  `register_alias`, `expand_aliases`, `from_ast_type`. **Gotcha:** plain
+  `from_ast_type` mints a *fresh* TVar table per call, so the same source name
+  `a` in two separate calls becomes two unrelated TVars. When two `ty` values
+  must share variables (impl head ↔ `requires`, signature ↔ its constraints),
+  thread one table: pass `~tbl` to `from_ast_type`, or follow
+  `from_ast_type_with_constraints`, which already shares a `tbl` for exactly this
+  reason.
 
 ## Verify
 

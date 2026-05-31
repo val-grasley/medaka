@@ -2765,29 +2765,44 @@ present one passes.
 **Done when.** Superclass obligations are enforced at impl sites; the stdlib's
 `Ord`/`Eq` split is real.
 
-### Phase 65: Impl-level `requires` constraints are never discharged ⏳ TODO
+### Phase 65: Impl-level `requires` constraints are never discharged ✅ DONE
 
 **Goal.** Selecting `impl Eq (Box a) requires Eq a` for `Box T` verifies that
 `Eq T` actually holds.
 
-**Why it matters now.** Soundness hole that crashes at runtime: today
-`impl_requires` is stored on `impl_entry` but the resolution passes only match
-the impl *head type* via `mono_matches ~pattern:impl_type_mono` and never check
-`requires`. Repro from the audit: `eq` on `Box (Int -> Int)` typechecks, then
-runs to `Out of memory`.
+**Outcome.** `register_impl` now threads one shared TVar table through both the
+impl head and its `requires` clause (via a new `?tbl` param on `from_ast_type`),
+so the `a` in `impl_type_mono` and the `a` in `impl_requires` are the *same*
+TVar — the prerequisite for correlating them. Two helpers next to
+`matching_impls`: `impl_head_subst` (matches a ground concrete head against the
+impl pattern, returning an id-keyed substitution, modeled on `impls_overlap`)
+and a non-destructive `subst_apply`. A recursive `check_entry_requires`
+substitutes the head TVars into each `requires` entry and, for ground results,
+requires a `matching_impls` hit — recursing into the chosen sub-impl's own
+`requires` (so `Eq (List (List Int))` → `Eq (List Int)` → `Eq Int`; terminates
+because each step structurally shrinks). Non-ground requirements are deferred
+exactly like the other passes. The check is folded *into* the two selection
+passes (`check_method_usages` via a `commit` wrapper around `resolved_to`, and
+`check_constraint_obligations`), so it runs at every typecheck entry point with
+no new wiring. Failures raise the new descriptive `MissingImplRequirement`
+(mirroring Phase 64's `MissingSuperImpl`) at the call-site `loc` (Phase 62). The
+shared `is_concrete` was hoisted to one top-level definition. The stdlib's
+`Eq (List a)`/`Eq (Option a)`/`Eq (Result e a)`/`Eq (Array a)` load unchanged.
 
-**Where.** `lib/typecheck.ml`: `impl_entry` / `impl_requires` (~:1847),
-`check_method_usages` (~:1908), `check_constraint_obligations` (~:1963),
-`mono_matches` (~:1891).
+**Where.** `lib/typecheck.ml`: `from_ast_type` (`?tbl`), `register_impl`,
+`impl_head_subst` / `subst_apply` / `check_entry_requires` (beside
+`matching_impls`), `check_method_usages`, `check_constraint_obligations`,
+`MissingImplRequirement` variant + `pp_error`.
 
-**Scope.** When an impl is selected for concrete argument types, recursively
-emit its `requires` entries as fresh obligations against the resolved concrete
-sub-types and verify them (re-entering the same matching machinery). Pairs
-naturally with Phase 62 (so the recursive failure points at the call site).
-Tests: an impl whose `requires` is unsatisfiable is rejected at the call site.
+**Tests.** `test/test_typecheck.ml` "impl requires obligations (Phase 65)":
+unsatisfiable requirement rejected at the call site (`assert_err_at`); the
+`Box (Int -> Int)` repro is now a clean type error instead of runtime
+`Out of memory`; satisfiable (`Box Int`) and nested structural
+(`Eq [[Int]]`) accepted; a transitive `Eq (Box [Int -> Int])` gap is caught
+through the recursive descent.
 
 **Done when.** Constrained impls only resolve when their `requires` hold; the
-`Box (Int -> Int)` repro is a clean type error.
+`Box (Int -> Int)` repro is a clean type error. ✅
 
 ### Phase 66: Value restriction — stop over-generalizing non-value `let` bindings ✅ DONE
 

@@ -2574,6 +2574,47 @@ f = useParent 1
 |}
   "f" "Int"
 
+(* ── Phase 65: impl-level `requires` obligations ── *)
+
+(* The audit repro: `impl Eq (Box a) requires Eq a` selected for
+   `Box (Int -> Int)` must verify `Eq (Int -> Int)`, which has no impl.  Before
+   Phase 65 this type-checked and ran to `Out of memory`; now it's a clean error
+   blamed at the call site (line 6), not the prelude. *)
+let e_impl_requires_unsat = assert_err_at ~line:6
+  {|data Box a = Box a
+impl Eq (Box a) requires Eq a where
+  eq (Box x) (Box y) = eq x y
+inc : Int -> Int
+inc x = x
+f = eq (Box inc) (Box inc)
+|}
+
+(* Same impl used where the requirement holds (`Eq Int`) → accepted. *)
+let t_impl_requires_sat = assert_type
+  {|data Box a = Box a
+impl Eq (Box a) requires Eq a where
+  eq (Box x) (Box y) = eq x y
+f = eq (Box 1) (Box 2)
+|}
+  "f" "Bool"
+
+(* Recursive/structural: `Eq (List (List Int))` discharges
+   `Eq (List Int)` → `Eq Int` without looping. *)
+let t_impl_requires_nested = assert_type
+  "f = eq [[1], [2]] [[3]]\n" "f" "Bool"
+
+(* Transitive gap: `Eq (Box (List (Int -> Int)))` → `Eq (List (Int -> Int))`
+   → `Eq (Int -> Int)`, missing.  Exercises the recursive descent through the
+   chosen sub-impl's own `requires`. *)
+let e_impl_requires_transitive = assert_err
+  {|data Box a = Box a
+impl Eq (Box a) requires Eq a where
+  eq (Box x) (Box y) = eq x y
+inc : Int -> Int
+inc x = x
+f = eq (Box [inc]) (Box [inc])
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -3017,5 +3058,11 @@ let () =
       test_case "super impl present ok"        `Quick t_super_present;
       test_case "err: transitive super gap"    `Quick e_super_transitive;
       test_case "generic body entailment ok"   `Quick t_super_generic_entailment;
+    ];
+    "impl requires obligations (Phase 65)", [
+      test_case "err: unsatisfiable requirement" `Quick e_impl_requires_unsat;
+      test_case "satisfiable requirement ok"     `Quick t_impl_requires_sat;
+      test_case "nested structural ok"           `Quick t_impl_requires_nested;
+      test_case "err: transitive requirement gap" `Quick e_impl_requires_transitive;
     ];
   ]

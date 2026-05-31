@@ -112,6 +112,8 @@ type type_error =
   | MultipleDefaultImpls of ident * mono list      (* iface_name, concrete type args *)
   | OverlappingImpls   of ident * mono list * mono list  (* iface_name, type args of each conflicting impl *)
   | MissingSuperImpl   of ident * ident * mono list  (* iface_name, super_iface, concrete super args *)
+  | MissingImplRequirement of ident * mono list * ident * mono list
+    (* selected iface + its concrete args, required iface + its concrete args *)
   | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
   | MutLetInDo          of ident                   (* let mut inside a do block (only allowed in EBlock) *)
   | MutLetRequiresBlock of ident                   (* let mut in inline `let ... in ...` position; needs a block *)
@@ -414,6 +416,11 @@ let pp_error = function
       "impl %s %s requires a superinterface impl 'impl %s %s', which is missing"
       iface (String.concat " " (List.map pp_mono args))
       super (String.concat " " (List.map pp_mono args))
+  | MissingImplRequirement (iface, args, req_iface, req_args) ->
+    Printf.sprintf
+      "impl %s %s requires '%s %s', which has no impl"
+      iface (String.concat " " (List.map pp_mono args))
+      req_iface (String.concat " " (List.map pp_mono req_args))
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
   | MutLetInDo x ->
@@ -576,9 +583,9 @@ let rec expand_aliases ?(seen=StringSet.empty) aliases t =
    same name maps to the same fresh TVar within one type.
    TyEffect wrappers are stripped — effects are tracked separately.
    If ~aliases is provided, type alias names are expanded before conversion. *)
-let from_ast_type ?(aliases=Hashtbl.create 0) t =
+let from_ast_type ?(aliases=Hashtbl.create 0) ?(tbl=Hashtbl.create 4) t =
   let t = expand_aliases aliases t in
-  let env = Hashtbl.create 4 in
+  let env = tbl in
   let rec go = function
     | Ast.TyCon n -> TCon n
     | Ast.TyVar n ->
@@ -1941,14 +1948,19 @@ let register_impl ?(seeded=false) env = function
   | DImpl { iface_name; type_args; impl_name; is_default; requires; _ } ->
     if not (Hashtbl.mem env.interfaces iface_name) then
       fail (UnknownInterface iface_name);
+    (* Share one TVar table across the head and the `requires` clause so that a
+       type variable (`a` in `impl Eq (Box a) requires Eq a`) maps to the same
+       fresh TVar in both — Phase 65 correlates them to discharge the
+       requirement at concrete call sites. *)
+    let tbl = Hashtbl.create 4 in
     let entry = {
       impl_iface      = iface_name;
       impl_name;
       impl_is_default = is_default;
-      impl_type_mono  = List.map (from_ast_type ~aliases:env.aliases) type_args;
+      impl_type_mono  = List.map (from_ast_type ~aliases:env.aliases ~tbl) type_args;
       impl_key        = Ast.impl_key ~iface:iface_name ~type_args ~name:impl_name;
       impl_requires   = List.map (fun (iface, args) ->
-                          (iface, List.map (from_ast_type ~aliases:env.aliases) args)) requires;
+                          (iface, List.map (from_ast_type ~aliases:env.aliases ~tbl) args)) requires;
       impl_seeded     = seeded;
     } in
     env.impls := entry :: !(env.impls)
@@ -2032,6 +2044,15 @@ let check_coherence env =
    instances the evaluator handles via OCaml-side primitive operations. *)
 (* ── Constraint checking ─────────────────────────── *)
 
+(* A mono is concrete when it has no unbound TVars — i.e. inference has ground
+   it fully.  Constraint/obligation passes defer non-concrete types until a
+   concrete call site grounds them. *)
+let rec is_concrete = function
+  | TVar v -> (match !v with Unbound _ -> false | Link t -> is_concrete t)
+  | TCon _ -> true
+  | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
+  | TTuple ts -> List.for_all is_concrete ts
+
 (* One-directional structural matching: pattern (from impl type_args) may
    contain unbound TVars that act as wildcards; concrete must be fully resolved. *)
 let rec mono_matches ~pattern ~concrete =
@@ -2063,18 +2084,66 @@ let matching_impls env iface_name concrete_args =
   then List.filter (fun e -> not e.impl_seeded) matching
   else matching
 
+(* Phase 65: build the substitution mapping an impl head's TVars to the concrete
+   sub-types it was selected for.  Patterns come from `impl_type_mono`; concrete
+   args are fully ground (the caller checked `is_concrete`).  Models the
+   id-keyed `subst` idiom of `impls_overlap`.  Returns None if the head doesn't
+   structurally match — defensive only; selection already guaranteed a match. *)
+let impl_head_subst (patterns : mono list) (concrete : mono list)
+  : (int, mono) Hashtbl.t option =
+  let subst : (int, mono) Hashtbl.t = Hashtbl.create 8 in
+  let rec go p c = match normalize p, normalize c with
+    | TVar { contents = Unbound (id, _) }, c -> Hashtbl.replace subst id c; true
+    | TCon a, TCon b -> a = b
+    | TApp (f1, a1), TApp (f2, a2) -> go f1 f2 && go a1 a2
+    | TFun (a1, _, b1), TFun (a2, _, b2) -> go a1 a2 && go b1 b2
+    | TTuple a, TTuple b -> List.length a = List.length b && List.for_all2 go a b
+    | _ -> false
+  in
+  if List.length patterns = List.length concrete
+     && List.for_all2 go patterns concrete
+  then Some subst else None
+
+(* Apply an `impl_head_subst` substitution to a mono, non-destructively (impl
+   entries are shared across call sites, so we must not Link their TVars). *)
+let rec subst_apply subst m = match normalize m with
+  | TVar { contents = Unbound (id, _) } as tv ->
+    (match Hashtbl.find_opt subst id with Some t -> t | None -> tv)
+  | TVar _ as tv -> tv
+  | TCon _ as t -> t
+  | TApp (a, b) -> TApp (subst_apply subst a, subst_apply subst b)
+  | TFun (a, e, b) -> TFun (subst_apply subst a, e, subst_apply subst b)
+  | TTuple ts -> TTuple (List.map (subst_apply subst) ts)
+
+(* Phase 65: discharge an impl's `requires` constraints.  Given an `entry`
+   selected for ground `concrete_args`, substitute the head TVars into each
+   `requires` clause and verify a matching impl exists — recursively, so the
+   chosen sub-impl's own requires are checked too (e.g. `Eq (List (List Int))`
+   → `Eq (List Int)` → `Eq Int`).  Recursion terminates because each step
+   strictly shrinks the type structurally.  Non-ground requirements are deferred
+   like the other constraint passes.  Blames `loc` (the call site, Phase 62). *)
+let rec check_entry_requires env loc entry concrete_args =
+  match impl_head_subst entry.impl_type_mono concrete_args with
+  | None -> ()
+  | Some subst ->
+    List.iter (fun (req_iface, req_args) ->
+      let req_concrete =
+        List.map (fun a -> normalize (subst_apply subst a)) req_args in
+      if List.for_all is_concrete req_concrete then
+        match matching_impls env req_iface req_concrete with
+        | [] ->
+          fail_at loc
+            (MissingImplRequirement
+               (entry.impl_iface, concrete_args, req_iface, req_concrete))
+        | e' :: _ -> check_entry_requires env loc e' req_concrete
+    ) entry.impl_requires
+
 (* After HM inference, check every recorded method call site against the impl
    registry.  Skips usages where types are still polymorphic or where the method
    scheme doesn't mention all interface params (uncommon). *)
 let check_method_usages env =
   let n_iface_params iface_name =
     List.length (Hashtbl.find env.interfaces iface_name).iface_param_ids
-  in
-  let rec is_concrete = function
-    | TVar v -> (match !v with Unbound _ -> false | Link t -> is_concrete t)
-    | TCon _ -> true
-    | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
-    | TTuple ts -> List.for_all is_concrete ts
   in
   List.iter (fun (_method_name, iface_name, param_vars, hint_opt, occ_ref, loc) ->
     let n = n_iface_params iface_name in
@@ -2090,6 +2159,11 @@ let check_method_usages env =
     if n = 0 || List.length param_vars <> n then ()
     else begin
       let concrete_args = List.map (fun r -> normalize (TVar r)) param_vars in
+      (* Phase 65: committing to an impl also verifies its `requires` hold. *)
+      let commit entry =
+        resolved_to entry;
+        check_entry_requires env loc entry concrete_args
+      in
       if not (List.for_all is_concrete concrete_args) then ()
       else begin
         let matching = List.filter (fun e ->
@@ -2111,17 +2185,17 @@ let check_method_usages env =
         else match hint_opt with
         | None ->
           (match matching with
-          | [e] -> resolved_to e
+          | [e] -> commit e
           | entries ->
             let defaults = List.filter (fun e -> e.impl_is_default) entries in
             (match defaults with
-             | [e] -> resolved_to e
+             | [e] -> commit e
              | _ -> fail_at loc (AmbiguousImpl (iface_name, concrete_args))))
         | Some name ->
           let named = List.filter (fun e -> e.impl_name = Some name) matching in
           (match named with
           | [] -> fail_at loc (UnknownImplName (iface_name, name, concrete_args))
-          | [e] -> resolved_to e
+          | [e] -> commit e
           | _ -> fail_at loc (AmbiguousImpl (iface_name, concrete_args)))
       end
     end
@@ -2132,17 +2206,13 @@ let check_method_usages env =
    polymorphic TVar — those are correctly left unchecked until a concrete
    call site grounds the type. *)
 let check_constraint_obligations env =
-  let rec is_concrete = function
-    | TVar v -> (match !v with Unbound _ -> false | Link t -> is_concrete t)
-    | TCon _ -> true
-    | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
-    | TTuple ts -> List.for_all is_concrete ts
-  in
   List.iter (fun (iface_name, mono_args, loc) ->
     let concrete = List.map normalize mono_args in
     if not (List.for_all is_concrete concrete) then ()
-    else if matching_impls env iface_name concrete = [] then
-      fail_at loc (NoImplFound (iface_name, concrete))
+    else match matching_impls env iface_name concrete with
+      | [] -> fail_at loc (NoImplFound (iface_name, concrete))
+      (* Phase 65: the matched impl's own `requires` must hold too. *)
+      | e :: _ -> check_entry_requires env loc e concrete
   ) !(env.constraint_obligations)
 
 (* Phase 64: enforce superinterface (`requires`) obligations at impl sites.
@@ -2161,12 +2231,6 @@ let check_constraint_obligations env =
    without any extra constraint-solver work (the deferred `Eq a` obligation is
    entailed by the enforced `Ord` impl). *)
 let check_superinterface_obligations env =
-  let rec is_concrete = function
-    | TVar v -> (match !v with Unbound _ -> false | Link t -> is_concrete t)
-    | TCon _ -> true
-    | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
-    | TTuple ts -> List.for_all is_concrete ts
-  in
   List.iter (fun entry ->
     match Hashtbl.find_opt env.interfaces entry.impl_iface with
     | None -> ()  (* unknown interface already reported by register_impl *)

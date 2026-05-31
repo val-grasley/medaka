@@ -22,5 +22,17 @@
       "Read(./editors/vscode-medaka/package-lock.json)",
       "Read(./tree-sitter-medaka/package-lock.json)"
     ]
+  },
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/skill-triage.py\""
+          }
+        ]
+      }
+    ]
   }
 }

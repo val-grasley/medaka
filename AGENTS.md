@@ -110,7 +110,12 @@ you changed (e.g. parser change → `test/test_parser.ml`).
 ## Task playbooks (skills)
 
 For recurring multi-file tasks, load the matching skill rather than
-re-deriving the workflow:
+re-deriving the workflow. **Skills are planning inputs, not just
+implementation aids** — at task triage (including during plan-mode
+exploration, *before* writing the plan) match the task against this table and
+load the matching skill. A roadmap/Phase task is the cue: confirm where the
+fix lands, then load. (A `UserPromptSubmit` hook,
+`.claude/hooks/skill-triage.py`, nudges this on PLAN.md/Phase prompts.)
 
 - **add-language-feature** — thread a new construct through the whole pipeline.
 - **add-primitive** — add/modify a stdlib `extern` primitive.
