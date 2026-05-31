@@ -18,6 +18,26 @@ let and_all = function
   | first :: rest ->
     List.fold_left (fun acc e -> EBinOp ("&&", acc, e)) first rest
 
+(* Type applied to its params: Box a => TyApp (TyCon "Box", TyVar "a");
+   Pair a b => TyApp (TyApp (TyCon "Pair", TyVar "a"), TyVar "b").
+   With params = [], returns exactly TyCon type_name. *)
+let applied_head type_name params =
+  List.fold_left (fun acc p -> TyApp (acc, TyVar p)) (TyCon type_name) params
+
+(* requires Iface p for each param p — empty when non-parametric. *)
+let param_requires iface params =
+  List.map (fun p -> (iface, [TyVar p])) params
+
+(* Rewrite a freshly-built derived impl's head/constraints for the type's
+   params, so `data Box a deriving (Eq)` yields `impl Eq (Box a) requires Eq a`
+   instead of a malformed nullary `impl Eq Box`. *)
+let apply_derive_params type_name params = function
+  | DImpl r ->
+    DImpl { r with
+            type_args = [applied_head type_name params];
+            requires  = param_requires r.iface_name params }
+  | d -> d
+
 (* Apply compare to two expressions; wrap same-constructor fields
    in a lexicographic cascade:
      match compare e0a e0b of Eq => (match compare e1a e1b of ...) | c => c *)
@@ -304,10 +324,11 @@ let derive_generic_newtype type_name con_name =
                    generic_rcon con_name ["__a"])];
   }
 
-let derive_for_newtype type_name con_name iface =
+let derive_for_newtype type_name params con_name iface =
+  let mk f = Some (apply_derive_params type_name params (f type_name con_name)) in
   match iface with
-  | "Num"     -> Some (derive_num_newtype type_name con_name)
-  | "Generic" -> Some (derive_generic_newtype type_name con_name)
+  | "Num"     -> mk derive_num_newtype
+  | "Generic" -> mk derive_generic_newtype
   | _         -> None
 
 (* ── Derive Arbitrary ─────────────────────────────────────────────────── *)
@@ -391,34 +412,36 @@ let derive_arbitrary_record type_name fields =
     methods    = [("arbitrary", [PLit LUnit], gen_body)];
   }
 
-let derive_for_data type_name variants iface =
+let derive_for_data type_name params variants iface =
+  let mk f = Some (apply_derive_params type_name params (f type_name variants)) in
   match iface with
-  | "Eq"        -> Some (derive_eq_data   type_name variants)
-  | "Show"      -> Some (derive_show_data type_name variants)
-  | "Ord"       -> Some (derive_ord_data  type_name variants)
-  | "Arbitrary" -> Some (derive_arbitrary_data type_name variants)
-  | "Generic"   -> Some (derive_generic_data type_name variants)
+  | "Eq"        -> mk derive_eq_data
+  | "Show"      -> mk derive_show_data
+  | "Ord"       -> mk derive_ord_data
+  | "Arbitrary" -> mk derive_arbitrary_data
+  | "Generic"   -> mk derive_generic_data
   | _           -> None  (* unknown derive ignored — typecheck will catch it *)
 
-let derive_for_record type_name fields iface =
+let derive_for_record type_name params fields iface =
+  let mk f = Some (apply_derive_params type_name params (f type_name fields)) in
   match iface with
-  | "Eq"        -> Some (derive_eq_record   type_name fields)
-  | "Show"      -> Some (derive_show_record type_name fields)
-  | "Ord"       -> Some (derive_ord_record  type_name fields)
-  | "Arbitrary" -> Some (derive_arbitrary_record type_name fields)
-  | "Generic"   -> Some (derive_generic_record type_name fields)
+  | "Eq"        -> mk derive_eq_record
+  | "Show"      -> mk derive_show_record
+  | "Ord"       -> mk derive_ord_record
+  | "Arbitrary" -> mk derive_arbitrary_record
+  | "Generic"   -> mk derive_generic_record
   | _           -> None
 
 (* Expand a single decl into itself plus any generated impls. *)
 let rec expand_decl = function
   | DData (vis, name, params, variants, derives) ->
-    let impls = List.filter_map (derive_for_data name variants) derives in
+    let impls = List.filter_map (derive_for_data name params variants) derives in
     DData (vis, name, params, variants, []) :: impls
   | DRecord (vis, name, params, fields, derives) ->
-    let impls = List.filter_map (derive_for_record name fields) derives in
+    let impls = List.filter_map (derive_for_record name params fields) derives in
     DRecord (vis, name, params, fields, []) :: impls
   | DNewtype (pub, name, params, con, fty, derives) ->
-    let impls = List.filter_map (derive_for_newtype name con) derives in
+    let impls = List.filter_map (derive_for_newtype name params con) derives in
     DNewtype (pub, name, params, con, fty, []) :: impls
   | DAttrib (attrs, d) ->
     (match expand_decl d with

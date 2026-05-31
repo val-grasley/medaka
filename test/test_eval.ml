@@ -659,6 +659,45 @@ r = (shapeJson, userJson)
       [ VString {|{"tag": "Circle", "fields": ["red"]}|}
       ; VString {|{"name": "ann", "active": true}|} ])
 
+(* ── deriving on parametric types (Phase 63) ─────────────────────────────── *)
+
+(* Deriving Eq on `Box a` generates `impl Eq (Box a) requires Eq a`, so the
+   derived `eq` dispatches through the prelude's `Eq Int` for the field. *)
+let t_derive_eq_param_true =
+  assert_val
+    {|data Box a = Box a deriving (Eq)
+r = eq (Box 1) (Box 1)
+|}
+    "r" (VBool true)
+
+let t_derive_eq_param_false =
+  assert_val
+    {|data Box a = Box a deriving (Eq)
+r = eq (Box 1) (Box 2)
+|}
+    "r" (VBool false)
+
+(* Generic on a parametric type — the Phase 61 regression: to_rep must recurse
+   through the field via the prelude's `Generic Int`. *)
+let t_derive_generic_param =
+  assert_val
+    {|data Box a = Box a deriving (Generic)
+r = to_rep (Box 5)
+|}
+    "r" (VCon ("RCon", [VString "Box"; VList [rint 5]]))
+
+(* Deriving Show on a parametric record renders fields via the field's Show. *)
+let t_derive_show_param_record =
+  assert_val
+    {|impl Show Int where
+  show x = if x == 5 then "5" else "?"
+record Box a
+  value : a
+deriving (Show)
+r = show (Box { value = 5 })
+|}
+    "r" (VString "Box { value = 5 }")
+
 (* ── Phase 22: Semigroup / Monoid ────────────────────────────────────────── *)
 
 let t_list_semigroup =
@@ -1401,6 +1440,12 @@ let () =
       test_case "record"            `Quick t_generic_record;
       test_case "newtype"           `Quick t_generic_newtype;
       test_case "ToJson end-to-end" `Quick t_generic_tojson_loop;
+    ];
+    "deriving on parametric types (Phase 63)", [
+      test_case "Eq param data true"  `Quick t_derive_eq_param_true;
+      test_case "Eq param data false" `Quick t_derive_eq_param_false;
+      test_case "Generic param data"  `Quick t_derive_generic_param;
+      test_case "Show param record"   `Quick t_derive_show_param_record;
     ];
     "Semigroup / Monoid (Phase 22)", [
       test_case "List ++ List"              `Quick t_list_semigroup;
