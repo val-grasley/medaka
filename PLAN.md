@@ -3112,39 +3112,45 @@ correct and Generic decode works. *(69.x-a/b)* Polymorphic call sites in user
 code resolve via dictionaries. *(69.x-c/d)* `pure_impls`/`current_monad_type`
 gone; prelude monadic functions route via dictionaries.
 
-### Phase 70: Smaller typechecker correctness & diagnostics fixes ⏳ TODO
+### Phase 70: Smaller typechecker correctness & diagnostics fixes ⏳ MOSTLY DONE
 
 A grab-bag of self-contained fixes, each ~an hour, each with its own test.
-Pick one or batch a few. All in `lib/typecheck.ml` unless noted.
+All but the last (doctests) are ✅ DONE (2026-05-31). All in `lib/typecheck.ml`
+unless noted. New tests live in `test/test_typecheck.ml`'s "diagnostics
+(Phase 70)" group (plus eval cases for Float `%` / negation).
 
-- **`ESlice` swallows errors and corrupts state** (~:1342). The
-  `try unify … with _ -> try unify … with _ -> …` cascade catches *all*
-  exceptions and re-unifies against a `te` already partially mutated by the
-  failed unification, producing wrong types downstream. Snapshot/restore TVar
-  state between attempts, or unify against a proper container union.
-- **Constructor-pattern arity is unchecked; `ArityMismatch` is dead code**
-  (`PCon` ~:670; `ArityMismatch` defined ~:93 but never raised). Wrong-arity
-  constructor patterns produce a generic mismatch. Check arity and raise the
-  dedicated error.
-- **Unknown type vars in `data`/`record` payloads silently become fresh vars**
-  (`register_data` ~:1552, `register_record` ~:1611). `data T a = MkT b`
-  (stray `b`) is accepted as `forall a b. b -> T a`. Reject unbound payload
-  type vars.
-- **Type-alias arity mismatch falls through silently** (`expand_aliases`
-  ~:474). A partially-applied alias is left as a raw `TyApp` and surfaces as a
-  confusing `TCon` mismatch later. Emit an arity error.
-- **`EAnnot` doesn't skolemize** (~:1031). `(f : a -> a)` unifies `a` with
-  fresh vars, so an annotation can't *check* that `f` is that polymorphic —
-  it'll accept `Int -> Int`. Skolemize the annotation's quantified vars and add
-  an escape check.
-- **`pp_mono` uses a separate name table per side of a mismatch** (~:312).
-  `TypeMismatch (a, b)` prints each with fresh names, so two distinct vars can
-  both print as `a`. Share one naming context across both types.
-- **Float unary negation and `%` are Int-only** (`EUnOp "-"` ~:906; `%`
-  ~:1381). Already noted in §5. Lift both to a `Num a` constraint via
-  `record_iface_usage` so they work for any `Num` impl; `eval_arith` already
-  handles `VFloat`.
-- **Doctests skip typecheck, so Phase 69 dispatch doesn't reach them**
+- ✅ **`ESlice` swallows errors and corrupts state.** The
+  `try unify … with _ -> try unify … with _ -> …` cascade caught *all*
+  exceptions and re-unified against a partially-mutated `te`. Fixed by
+  branching on the *normalized* container type (`String` / `Array _` / `List _`
+  / a TVar default to Array / else one clean mismatch) — one non-failing unify
+  per branch, no destructive trial. The not-yet-grounded case still defaults to
+  Array, as before.
+- ✅ **Constructor-pattern arity is unchecked; `ArityMismatch` was dead code.**
+  `PCon` now counts the arrow spine of the instantiated constructor type and
+  raises `ArityMismatch` on a wrong-arity pattern (a function-typed payload
+  still counts as arity 1).
+- ✅ **Unknown type vars in `data`/`record` payloads silently became fresh
+  vars.** `data Box a = Box b` is now rejected with the new `UnboundTypeVar`
+  in both `register_data` and `register_record` (the resolver ignores `TyVar`,
+  so typecheck is the enforcement point).
+- ✅ **Type-alias arity mismatch fell through silently.** `expand_aliases`
+  now raises the new `TypeAliasArity` for both a wrong-arg-count `TyApp` spine
+  and a bare parametric alias used with zero args.
+- ✅ **`EAnnot` didn't skolemize.** After unifying, every type variable named
+  in the annotation must remain a *distinct unbound* variable; otherwise the
+  expression is less polymorphic than claimed (`(intId : a -> a)` for
+  intId : Int -> Int is now rejected via `AnnotationTooGeneral`). This is the
+  skolemize-and-escape-check realized by variable identity, no rank-N machinery.
+- ✅ **`pp_mono` used a separate name table per side of a mismatch.** Factored
+  into `pp_mono_in` over a shared naming context; `pp_mono_pair` / `pp_monos` /
+  `pp_monos_pair` render the two-type and arg-list error messages so distinct
+  vars never collide on one letter.
+- ✅ **Float unary negation and `%` were Int-only.** `EUnOp "-"` records a
+  `Num.negate` usage and `%` records a `Num` usage, so both work on Int, Float,
+  and any user `Num` impl. `eval_arith` gained a Float `%` case (`Float.rem`);
+  negation already handled `VFloat`.
+- ⏳ **Doctests skip typecheck, so Phase 69 dispatch doesn't reach them** (TODO)
   (`lib/doctest.ml` / the doctest driver in `bin/main.ml`). The doctest runner
   parses + evals example snippets without a typecheck phase, so the Phase 69
   marker pass has nothing to fill `EMethodRef` cells against and return-position
