@@ -23,10 +23,33 @@ numbers drift; confirm with `grep` before trusting them.
   one failed.
 - **Level bracketing must be exception-safe.** Generalization uses Rémy levels:
   hand-balanced `enter_level ()` / `exit_level ()` pairs. A `fail` *between* them
-  permanently increments `current_level` and corrupts generalization for
-  everything after — and the REPL deliberately does **not** `reset_state` between
-  inputs. If you add a code path that can `fail` mid-bracket, restore the level
-  (a `finally`, or reset at the boundary). This is Phase 71's whole subject.
+  permanently increments `current_level`. **Nuance confirmed in Phase 71:** the
+  whole-program entry points (`check_program`, `typecheck_module`) call
+  `reset_state` on entry, so a leak there is wiped before the next run; and
+  within a single run the leak is *relative* — each `process_letrec_group`
+  brackets against whatever base it starts at and generalizes against that same
+  base, so a uniform leak does **not** by itself break generalization (a test
+  that "exercises a level leak" via two sequential definitions will *not*
+  discriminate — don't write one). The real exposure is the **REPL**, which
+  reuses typechecker state and (to preserve the TVar counter) does *not* call
+  `reset_state`: a leak there violates the absolute "top-level names pre-bound at
+  level 1" invariant (§2.9). Phase 71's fix: `check_repl_decl` resets
+  `current_level := 0` at each input boundary. Still: if you add a path that can
+  `fail` mid-bracket, prefer restoring the level (a `finally`, or reset at the
+  boundary).
+
+## Broken invariants are diagnostics, not crashes (Phase 71)
+
+There is **no `assert false` left in `typecheck.ml`** — don't reintroduce one.
+For a "can't happen" invariant violation, `fail (InternalError "context")`
+(a `type_error` variant that renders as "Internal type-checker error: …"); it's
+catchable and survives the REPL. **Exception:** a *rendering* path must never
+raise — `pp_mono`'s post-`normalize` `Link` case returns the placeholder `"_"`
+rather than failing, because it runs while formatting an error message. Also
+guard `Hashtbl.find` that can miss across module boundaries (`env.interfaces`,
+`env.records`): fall back to the matching user-facing error (`UnknownInterface`,
+`UnknownRecord`) or degrade gracefully (e.g. `n_iface_params` returns 0 → skips
+the usage) rather than letting a raw `Not_found` escape.
 
 ## Generalization is value-restricted (Phase 66)
 
@@ -56,8 +79,12 @@ The mechanical loop — four edits, all in `typecheck.ml` unless noted:
 1. **Constructor** — add a variant to `type_error` (~the `TypeMismatch … | Other`
    block). Carry enough payload to render a useful message (names + the `mono`s
    involved).
-2. **Pretty-printer** — add a case to `pp_error`. Use `pp_mono` for types,
-   `pp_scheme` for schemes. Phrase the message as *what's wrong + how to fix*.
+2. **Pretty-printer** — add a case to `pp_error`. Use `pp_mono` for a single
+   type, `pp_scheme` for schemes. **When a message names two or more types**
+   (a mismatch, or two impl-head arg lists), render them through one shared
+   naming context — `pp_mono_pair a b` / `pp_monos args` / `pp_monos_pair a b`
+   (Phase 70) — not separate `pp_mono` calls, or two distinct tyvars can both
+   print as `a`. Phrase the message as *what's wrong + how to fix*.
 3. **Raise site** — `fail (YourError …)` from the phase that detects it.
    `fail` reads the global `current_loc`, which is correct *during* the `infer`
    walk but **stale in post-HM passes** (`check_method_usages`,
@@ -112,6 +139,19 @@ The mechanical loop — four edits, all in `typecheck.ml` unless noted:
   thread one table: pass `~tbl` to `from_ast_type`, or follow
   `from_ast_type_with_constraints`, which already shares a `tbl` for exactly this
   reason.
+
+## Writing tests: a parameter's type is a free var during body inference
+
+A type signature does **not** pre-ground a function's parameter types before the
+body is inferred. `process_letrec_group` infers the body with each param as a
+fresh TVar and unifies the result against the declared type *afterwards*. So a
+body expression that branches on the *concrete* type of a parameter (e.g.
+`ESlice`'s "is the container Array/List/String?") sees a free var, not the
+annotated type. Practical fallout for tests: `f : List Int -> List Int` /
+`f xs = xs.[1..3]` does **not** type the slice as `List` — the container is
+still a TVar at that point (so e.g. `ESlice` falls back to its Array default).
+To exercise a type-directed branch, ground the value at the expression itself
+(`[1,2,3].[1..2]`, `"abc".[0..1]`), not via a parameter annotation.
 
 ## Verify
 
