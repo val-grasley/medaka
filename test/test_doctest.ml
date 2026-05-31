@@ -152,6 +152,30 @@ x = 42
     if r.passed <> 1 then
       failwith (Printf.sprintf "expected 1 pass (no expected = crash-free), got %d" r.passed))
 
+(* Phase 70: doctests now run mark + typecheck before eval, so a return-position
+   method call with a result-type annotation dispatches to the impl the checker
+   chose.  Without that, `decode` would fall back to "first impl wins" (String)
+   and the example would evaluate to "S" instead of True. *)
+let t_return_position_dispatch () =
+  let src = {|interface Decode a where
+  decode : Int -> a
+
+impl Decode String where
+  decode n = "S"
+
+impl Decode Bool where
+  decode n = n > 0
+
+-- > (decode 1 : Bool)
+-- true
+|} in
+  with_tmp_file src (fun path ->
+    let r = Doctest.run_file path in
+    if r.passed <> 1 || r.failed <> 0 then
+      failwith (Printf.sprintf
+        "expected return-position dispatch doctest to pass, got passed=%d failed=%d errors=%d"
+        r.passed r.failed r.errors))
+
 let t_parse_error_example () =
   let src = {|-- > let ??? broken
 x = 0
@@ -204,6 +228,7 @@ let () =
       Alcotest.test_case "one fail"                   `Quick t_one_fail;
       Alcotest.test_case "references file binding"    `Quick t_references_file_binding;
       Alcotest.test_case "no expected = crash-free"   `Quick t_no_expected_passes;
+      Alcotest.test_case "return-position dispatch"   `Quick t_return_position_dispatch;
       Alcotest.test_case "parse error example"        `Quick t_parse_error_example;
       Alcotest.test_case "no doctests in file"        `Quick t_no_doctests_in_file;
       Alcotest.test_case "multiple examples"          `Quick t_multiple_examples;

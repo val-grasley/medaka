@@ -3126,12 +3126,13 @@ correct and Generic decode works. *(69.x-a/b)* Polymorphic call sites in user
 code resolve via dictionaries. *(69.x-c/d)* `pure_impls`/`current_monad_type`
 gone; prelude monadic functions route via dictionaries.
 
-### Phase 70: Smaller typechecker correctness & diagnostics fixes ⏳ MOSTLY DONE
+### Phase 70: Smaller typechecker correctness & diagnostics fixes ✅ DONE
 
 A grab-bag of self-contained fixes, each ~an hour, each with its own test.
-All but the last (doctests) are ✅ DONE (2026-05-31). All in `lib/typecheck.ml`
-unless noted. New tests live in `test/test_typecheck.ml`'s "diagnostics
-(Phase 70)" group (plus eval cases for Float `%` / negation).
+All ✅ DONE (2026-05-31). Most in `lib/typecheck.ml`; the doctest item is in
+`lib/doctest.ml`. New tests live in `test/test_typecheck.ml`'s "diagnostics
+(Phase 70)" group (plus eval cases for Float `%` / negation and a
+`test_doctest` return-position-dispatch case).
 
 - ✅ **`ESlice` swallows errors and corrupts state.** The
   `try unify … with _ -> try unify … with _ -> …` cascade caught *all*
@@ -3164,7 +3165,15 @@ unless noted. New tests live in `test/test_typecheck.ml`'s "diagnostics
   `Num.negate` usage and `%` records a `Num` usage, so both work on Int, Float,
   and any user `Num` impl. `eval_arith` gained a Float `%` case (`Float.rem`);
   negation already handled `VFloat`.
-- ⏳ **Doctests skip typecheck, so Phase 69 dispatch doesn't reach them** (TODO)
+- ✅ **Doctests skip typecheck, so Phase 69 dispatch doesn't reach them.**
+  `Doctest.run_file` now runs `Method_marker.mark_with_prelude` →
+  `Typecheck.check_program` (fills each `EMethodRef` impl-key ref in place) →
+  `Dict_pass.run` before `Eval.eval_program`, mirroring the run-mode pipeline.
+  On a typecheck failure it falls back to the original untyped eval, so a
+  doctest's own type error doesn't mask its result.  Return-position /
+  multi-param dispatch now resolves in doctests (test: `test_doctest`
+  "return-position dispatch" — `(decode 1 : Bool)` dispatches to the `Bool`
+  impl instead of "first impl wins").
   (`lib/doctest.ml` / the doctest driver in `bin/main.ml`). The doctest runner
   parses + evals example snippets without a typecheck phase, so the Phase 69
   marker pass has nothing to fill `EMethodRef` cells against and return-position

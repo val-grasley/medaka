@@ -163,6 +163,21 @@ let run_file (filename : string) : run_result =
     in
     let combined = base_decls @ synth_decls in
 
+    (* Phase 70: run the marker + typecheck before eval so return-position and
+       multi-parameter interface dispatch resolves to the impl the checker
+       chose (the marker fills each EMethodRef's impl-key ref *in place*, and
+       eval reads it).  Without this, doctests fell back to arg-tag "first impl
+       wins".  Mirror the run-mode pipeline (mark_with_prelude → check_program →
+       Dict_pass.run).  If typecheck fails, fall back to evaluating the original
+       (unmarked) program so a doctest's own type error doesn't mask its result
+       — eval then degrades to the old arg-tag dispatch. *)
+    let combined =
+      let marked = Method_marker.mark_with_prelude combined in
+      match (try Some (Typecheck.check_program marked) with _ -> None) with
+      | Some _ -> Dict_pass.run marked
+      | None   -> combined
+    in
+
     (* Suppress side-effect output during doctest evaluation *)
     let buf = Buffer.create 64 in
     Eval.output_hook := Buffer.add_string buf;
