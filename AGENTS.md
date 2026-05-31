@@ -76,7 +76,10 @@ Dev probes (build to `_build/default/dev/`):
 
 - **Environment is pre-set.** opam env vars (switch `5.4.1`, PATH) are already
   exported via `.claude/settings.local.json`. **Never** prefix commands with
-  `eval $(opam env)` — it's redundant.
+  `eval $(opam env)` — it's redundant. *Exception:* a sandboxed shell sometimes
+  strips PATH, so `dune` reports `command not found`. If that happens, prepend
+  the switch bin inline — `export PATH="$HOME/.opam/5.4.1/bin:$PATH"` — rather
+  than reaching for `eval $(opam env)`.
 - **Medaka multi-arg lambdas are `x y => body`**, not curried
   `x => y => body`. Curried forms predating Phase 59.6 are legacy artifacts,
   not the current style — match the `x y => body` form in new code.
@@ -100,6 +103,9 @@ re-deriving the workflow:
 - **add-primitive** — add/modify a stdlib `extern` primitive.
 - **debug-pipeline** — diagnose a parse/typecheck/eval failure.
 - **add-lsp-capability** — add/extend an LSP feature.
+- **harden-typechecker** — typechecker-internal correctness/diagnostics work
+  (the Phase 62–72 arc): add a `type_error`, tighten constraint/coherence/
+  unification logic, without breaking error accumulation or level bracketing.
 
 ## Doc index
 
