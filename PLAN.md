@@ -2673,7 +2673,7 @@ reported `loc` matches the offending expression, not the prelude.
 **Done when.** A program with a missing impl reports the user's call-site
 line; all existing tests pass.
 
-### Phase 63: `deriving` is broken for parametric types ⏳ TODO
+### Phase 63: `deriving` is broken for parametric types ✅ DONE
 
 **Goal.** `data Box a = Box a deriving (Eq)` and `record Pair a b = { ... }
 deriving (Eq, Show, Ord)` generate *correct* impls.
@@ -2704,6 +2704,18 @@ TyVar p…)]` (the type applied to its params) and
 
 **Done when.** Deriving on a parametric type produces a usable instance and
 round-trips through the existing derive tests.
+
+**Done (2026-05-30).** Fixed *centrally* in the three dispatchers
+(`derive_for_data`/`derive_for_record`/`derive_for_newtype`) rather than in all
+14 per-iface builders: a new `apply_derive_params type_name params` helper
+rewrites the freshly-built `DImpl`'s `type_args` (to `applied_head` — the type
+left-folded over its params into nested `TyApp`, matching `parser.mly`) and
+`requires` (to `[(iface_name, [TyVar p]) for each p]`, reusing the impl's own
+`iface_name`). `params` is threaded from `expand_decl`. Non-parametric behaviour
+is byte-identical (`params = []` ⇒ `TyCon name`, `requires = []`). Covers
+Eq/Show/Ord/Arbitrary/Generic (and Num on newtypes). Tests in
+`test_typecheck.ml` (parametric data Eq/Show/Ord + record) and `test_eval.ml`
+(parametric Eq dispatch, parametric Generic `to_rep`, parametric record Show).
 
 ### Phase 64: Superinterface (`requires`) constraints are never enforced ⏳ TODO
 

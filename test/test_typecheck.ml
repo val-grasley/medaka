@@ -1789,6 +1789,65 @@ f = eq p1 p2
 |}
   "f" "Bool"
 
+(* ── deriving on parametric types (Phase 63) ──────────────────── *)
+
+(* deriving Eq on a parametric data type: the generated impl head is `Box a`
+   with `requires Eq a`, so eq on a concrete Box typechecks. *)
+let t_derive_eq_param_data = assert_type
+  {|
+interface Eq a where
+  eq : a -> a -> Bool
+impl Eq Int where
+  eq x y = x == y
+data Box a = Box a deriving (Eq)
+f = eq (Box 1) (Box 2)
+|}
+  "f" "Bool"
+
+(* deriving Show on a parametric data type. *)
+let t_derive_show_param_data = assert_type
+  {|
+interface Show a where
+  show : a -> String
+impl Show Int where
+  show x = "int"
+data Box a = Box a deriving (Show)
+f = show (Box 1)
+|}
+  "f" "String"
+
+(* deriving Ord on a parametric data type. *)
+let t_derive_ord_param_data = assert_type
+  {|
+interface Eq a where
+  eq : a -> a -> Bool
+data Ordering = Lt | Eq | Gt
+interface Ord a where
+  compare : a -> a -> Ordering
+impl Ord Int where
+  compare x y = if x < y then Lt else if x > y then Gt else Eq
+data Box a = Box a deriving (Ord)
+f = compare (Box 1) (Box 2)
+|}
+  "f" "Ordering"
+
+(* deriving Eq/Show/Ord on a parametric record with two params. *)
+let t_derive_param_record = assert_type
+  {|
+interface Eq a where
+  eq : a -> a -> Bool
+impl Eq Int where
+  eq x y = x == y
+record Pair a b
+  first : a
+  second : b
+deriving (Eq)
+p1 = Pair { first = 1, second = 2 }
+p2 = Pair { first = 3, second = 4 }
+f = eq p1 p2
+|}
+  "f" "Bool"
+
 (* ── Top-level function guards ──────────────────── *)
 
 let t_guard_int_to_string = assert_type {|
@@ -2672,6 +2731,12 @@ let () =
       test_case "Ord enum"               `Quick t_derive_ord_enum;
       test_case "multi-derive"           `Quick t_derive_multi;
       test_case "Eq record"              `Quick t_derive_eq_record;
+    ];
+    "deriving on parametric types (Phase 63)", [
+      test_case "Eq param data"          `Quick t_derive_eq_param_data;
+      test_case "Show param data"        `Quick t_derive_show_param_data;
+      test_case "Ord param data"         `Quick t_derive_ord_param_data;
+      test_case "Eq param record"        `Quick t_derive_param_record;
     ];
     "top-level function guards", [
       test_case "Int -> String"           `Quick t_guard_int_to_string;

@@ -81,6 +81,11 @@ Dev probes (build to `_build/default/dev/`):
   strips PATH, so `dune` reports `command not found`. If that happens, prepend
   the switch bin inline — `export PATH="$HOME/.opam/5.4.1/bin:$PATH"` — rather
   than reaching for `eval $(opam env)`.
+- **In a worktree, build with `dune build --root .`.** When the working
+  directory is under `.claude/worktrees/`, a plain `dune build` climbs to the
+  parent checkout and fails with `No rule found for alias …/default`. Pass
+  `--root .` to pin the build (and tests) to the worktree. Combine with the
+  PATH fix above if the sandbox also stripped PATH.
 - **Medaka multi-arg lambdas are `x y => body`**, not curried
   `x => y => body`. Curried forms predating Phase 59.6 are legacy artifacts,
   not the current style — match the `x y => body` form in new code.
@@ -107,9 +112,12 @@ re-deriving the workflow:
 - **harden-typechecker** — typechecker-*internal* correctness/diagnostics work
   (most of the Phase 62–72 arc): add a `type_error`, tighten constraint/
   coherence/unification logic, without breaking error accumulation or level
-  bracketing. Note: cross-cutting dispatch work (Phase 69 done; 69.x dictionary
-  passing touches resolve/typecheck/eval + a marker pass) is *not* this skill —
-  treat it like **add-language-feature** (thread a node through the pipeline).
+  bracketing. Note: not every Phase 62–72 item lives in the typechecker —
+  cross-cutting dispatch work (Phase 69 done; 69.x dictionary passing touches
+  resolve/typecheck/eval + a marker pass) and `desugar.ml`-rooted work (e.g.
+  Phase 63, fixing `deriving` for parametric types) are *not* this skill —
+  treat them like **add-language-feature** (thread the change through the
+  pipeline). Check where the fix actually lands before loading this skill.
 
 ## Doc index
 
