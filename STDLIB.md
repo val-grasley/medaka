@@ -114,6 +114,7 @@ and prepended to every program by the compiler.
 - ✅ `Foldable t` — collapsible into a summary value
   - `fold : (b -> a -> b) -> b -> t a -> b` — left fold
   - `foldRight : (a -> b -> b) -> b -> t a -> b` — right fold
+  - `foldMap : Monoid m => (a -> m) -> t a -> m` (default via `fold` + `append`/`empty`) — map each element to a monoid and combine
   - `toList : t a -> List a` — flatten to a plain list (linearises order)
   - `isEmpty : t a -> Bool` (default via `toList`; override for O(1) structures) — true when there are no elements
   - `length : t a -> Int` (default via `fold`; override for O(1) structures) — element count
@@ -121,11 +122,15 @@ and prepended to every program by the compiler.
   Standalone helpers (all use constraint syntax now that Phase 20 has landed):
   - ✅ `any : Foldable t => (a -> Bool) -> t a -> Bool` — true when the predicate holds for at least one element
   - ✅ `all : Foldable t => (a -> Bool) -> t a -> Bool` — true when the predicate holds for every element
-  - ⏳ `find : Foldable t => (a -> Bool) -> t a -> Option a` — first element satisfying the predicate, or `None`
-  - ⏳ `count : Foldable t => (a -> Bool) -> t a -> Int` — number of elements satisfying the predicate
-  - ⏳ `sum : (Foldable t, Num a) => t a -> a` — additive fold; identity is `fromInt 0`
-  - ⏳ `product : (Foldable t, Num a) => t a -> a` — multiplicative fold; identity is `fromInt 1`
-  - ⏳ `elem : (Foldable t, Eq a) => a -> t a -> Bool` — true when the element is present (compared via `Eq`)
+  - ✅ `find : Foldable t => (a -> Bool) -> t a -> Option a` — first element satisfying the predicate, or `None`
+  - ✅ `count : Foldable t => (a -> Bool) -> t a -> Int` — number of elements satisfying the predicate
+  - ✅ `sum : (Foldable t, Num a) => t a -> a` — additive fold; identity is `fromInt 0`
+  - ✅ `product : (Foldable t, Num a) => t a -> a` — multiplicative fold; identity is `fromInt 1`
+  - ✅ `elem : (Foldable t, Eq a) => a -> t a -> Bool` — true when the element is present (compared via `Eq`)
+
+- ✅ `Filterable f` requires `Mappable f` — containers that can drop elements
+  - `filterMap : (a -> Option b) -> f a -> f b` — the primitive; apply a partial function, keep `Some` results
+  - `filter : (a -> Bool) -> f a -> f a` (default via `filterMap`) — keep elements satisfying the predicate
 
 ### Data types
 
@@ -161,8 +166,10 @@ and prepended to every program by the compiler.
 - ✅ `or : Bool -> Bool -> Bool` — logical OR (strict)
 - ✅ `xor : Bool -> Bool -> Bool` — logical XOR
 - ✅ `otherwise : Bool` — alias for `True`, idiomatic in guard chains
-- ✅ `filter : (a -> Bool) -> List a -> List a` — keep elements satisfying the predicate *(currently lives in `core.mdk`; could move to `list.mdk` since it's List-specific)*
 - ⏳ `panic : String -> a` — already an extern in `runtime.mdk`; no stdlib re-export needed
+
+(`filter` is no longer a List-specific standalone here — it is a `Filterable`
+method; see the interface above and `impl Filterable List` below.)
 
 ### Impls already provided
 
@@ -173,6 +180,7 @@ and prepended to every program by the compiler.
 - ✅ `impl Applicative List`, `impl Applicative Option`, `impl Applicative (Result e)`
 - ✅ `impl Thenable List`, `impl Thenable Option`, `impl Thenable (Result e)`
 - ✅ `impl Foldable List`
+- ✅ `impl Filterable List`
 
 ### Impls still missing (track here as `core` grows)
 
@@ -189,10 +197,14 @@ and prepended to every program by the compiler.
 
 ## Module 2 — `list` 🟡 partially implemented
 
-Depends on `core`. `filter` currently lives in `core.mdk` but is List-specific
-and may move here. Functions already covered by `impl Foldable List` or
-`impl Mappable List` (fold, foldRight, map, any, all, find, count, elem, sum,
-product, empty) do not need implementations here — use the typeclass dispatch path.
+Depends on `core`. Functions already covered by a typeclass instance do not need
+implementations here — use the dispatch path instead:
+
+- `impl Foldable List` / `impl Mappable List`: fold, foldRight, map, any, all,
+  find, count, elem, sum, product, isEmpty, length
+- `impl Filterable List`: filter, filterMap
+- `impl Monoid List`: empty
+- `impl Thenable List`: concat / flatten (via `flat`), concatMap (via `flatMap`)
 
 ### Construction
 
@@ -205,7 +217,6 @@ product, empty) do not need implementations here — use the typeclass dispatch 
 
 ### Observation
 
-- ✅ `isEmpty : List a -> Bool` — true for the empty list
 - ✅ `head : List a -> Option a` — first element, or `None` if empty
 - ✅ `tail : List a -> Option (List a)` — all elements after the first, or `None` if empty
 - ✅ `last : List a -> Option a` — final element, or `None` if empty
@@ -214,14 +225,9 @@ product, empty) do not need implementations here — use the typeclass dispatch 
 
 ### Transformation
 
-- ⏳ `filter : (a -> Bool) -> List a -> List a` — keep elements satisfying the predicate *(currently lives in `core.mdk` — see note above)*
-- ⏳ `filterMap : (a -> Option b) -> List a -> List b` — apply a partial function; keep `Some` results, drop `None`
 - ⏳ `reverse : List a -> List a` — list in opposite order
-- ⏳ `concat : List (List a) -> List a` — flatten one level (alias for `flatten`)
-- ⏳ `concatMap : (a -> List b) -> List a -> List b` — `map` then `concat`; equivalent to `andThen` on `List` (`Thenable`)
-- ⏳ `flatten : List (List a) -> List a` — flatten one level
 - ⏳ `intersperse : a -> List a -> List a` — insert separator between every pair of elements
-- ⏳ `intercalate : List a -> List (List a) -> List a` — `concat` after `intersperse`
+- ⏳ `intercalate : List a -> List (List a) -> List a` — `flat` (flatten) after `intersperse`
 - ⏳ `transpose : List (List a) -> List (List a)` — turn rows into columns
 - ⏳ `subsequences : List a -> List (List a)` — every subset of the list (2^N of them)
 - ⏳ `permutations : List a -> List (List a)` — every ordering of the list (N! of them)
@@ -281,6 +287,7 @@ product, empty) do not need implementations here — use the typeclass dispatch 
 - ⏳ `impl Show (List a)` where `Show a` — bracketed comma-separated form
 - ✅ `impl Mappable List` — *(in `core.mdk`)*
 - ✅ `impl Foldable List` — *(in `core.mdk`)*
+- ✅ `impl Filterable List` — *(in `core.mdk`)*
 - ✅ `impl Applicative List` — *(in `core.mdk`)*
 - ✅ `impl Thenable List` — *(in `core.mdk`)*
 - ⏳ `impl Semigroup (List a)` — concatenation (currently driven by the `++` dispatch path)
@@ -314,7 +321,6 @@ currently contains only an `import` line.
 - ⏳ `fromChar : Char -> String` — one-character string
 - ⏳ `toChars : String -> List Char` — codepoint list (note: not grapheme clusters)
 - ⏳ `fromChars : List Char -> String` — inverse of `toChars`
-- ⏳ `toString : Show a => a -> String` — alias for `show`
 - ⏳ `toInt : String -> Option Int` — parse a decimal integer (leading sign allowed); `None` on any failure
 - ⏳ `toFloat : String -> Option Float` — parse a decimal float; `None` on any failure
 - ⏳ `fromInt : Int -> String` — decimal representation
@@ -399,8 +405,8 @@ literals (`[|lo..hi|]`/`[|lo..=hi|]`), and panicking bracket indexing
 2. **Pure stdlib** (Medaka) built on the kernel via `arrayMakeWith`
    and tail-recursive helpers.
 3. **Effectful stdlib** (Medaka) with explicit `<Mut>` in signatures.
-4. **Typeclass impls**: `Mappable`, `Foldable`, `Semigroup`, `Monoid`,
-   `Eq`.  Deliberately *not* `Applicative` / `Thenable` — the natural
+4. **Typeclass impls**: `Mappable`, `Foldable`, `Filterable`, `Semigroup`,
+   `Monoid`, `Eq`.  Deliberately *not* `Applicative` / `Thenable` — the natural
    definitions encode cartesian-style allocation that's a performance
    trap on bulk data.  `Show` is blocked on a resolver gap (see below).
 
@@ -452,13 +458,12 @@ typechecked as if it had no declared effect, then errored on the
 ### Transformation (pure — return new arrays)
 
 - 🟡 `map` — via `impl Mappable Array`
-- ✅ `filterA : (a -> Bool) -> Array a -> Array a` — keep matching elements (two-pass via list intermediate; pure).  Named `filterA` not `filter` because `core.filter` is a List-specific standalone and Medaka doesn't yet allow two top-level functions to share a name across modules.  When `core.filter` moves to `list.mdk` (already noted as planned in core.mdk), this can be renamed to plain `filter`.
-- ✅ `filterMap : (a -> Option b) -> Array a -> Array b` — keep `Some` results
+- 🟡 `filter`, `filterMap` — via `impl Filterable Array` (no longer a standalone `filterA`; `filter`/`filterMap` are `Filterable` methods now)
 - ✅ `reverse : Array a -> Array a` — fresh array in opposite order
 - ✅ `slice : Int -> Int -> Array a -> Array a` — `[lo, hi)`; clamps to bounds, does not panic (use `arr[lo..hi]` for the panicking variant)
 - ✅ `take : Int -> Array a -> Array a` — first N elements
 - ✅ `drop : Int -> Array a -> Array a` — everything after the first N
-- ✅ `append : Array a -> Array a -> Array a` — concatenate two arrays
+- 🟡 `append` — via `impl Semigroup (Array a)` (also the `++` operator); no separate standalone
 - ✅ `concat : Array (Array a) -> Array a` — flatten one level
 - ✅ `zip : Array a -> Array b -> Array (a, b)` — pair up by index; result length is the shorter input
 - ✅ `zipWith : (a -> b -> c) -> Array a -> Array b -> Array c` — generalised `zip`
@@ -495,6 +500,7 @@ typechecked as if it had no declared effect, then errored on the
 - ⏳ `impl Show (Array a)` where `Show a` — blocked on the prelude-method-resolution gap (see note above)
 - ✅ `impl Mappable Array`
 - ✅ `impl Foldable Array`
+- ✅ `impl Filterable Array`
 - ✅ `impl Semigroup (Array a)` — array concatenation
 - ✅ `impl Monoid (Array a)` — identity is `[||]`
 - **Skipped:** `Applicative Array`, `Thenable Array` — semantically definable but encourage O(N·M) allocation; arrays should drop into `List` for monadic non-determinism and convert back at the boundary

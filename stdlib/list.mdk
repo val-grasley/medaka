@@ -14,11 +14,7 @@ singleton : a -> List a
 singleton a = [a]
 
 -- Inspection
-
-export
-isEmpty : List a -> Bool
-isEmpty [] = True
-isEmpty _ = False
+-- `isEmpty` and `length` come from `impl Foldable List` in core.mdk.
 
 export
 head : List a -> Option a
