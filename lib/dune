@@ -14,7 +14,7 @@
 
 (library
  (name medaka_lib)
- (modules ast bench_runner builtins coverage desugar diagnostics doctest eval exhaust fmt lexer loader
+ (modules ast bench_runner builtins coverage desugar diagnostics dict_pass doctest eval exhaust fmt lexer loader
           lsp_log lsp_server method_marker new_cmd parser parser_state printer prelude prelude_content
           project_config prop_runner resolve repl runtime stdlib_content test_cmd typecheck)
  (libraries menhirLib lsp jsonrpc unix))

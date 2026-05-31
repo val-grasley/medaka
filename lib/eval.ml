@@ -42,6 +42,14 @@ type value =
             other arg slots (like fold's accumulator) pass through untouched.
             An empty `dispatch_positions` (e.g. `pure : a -> f a`) means no
             positional dispatch is possible from arguments alone. *)
+  | VDict   of string
+      (* Phase 69.x: a runtime dictionary — just the canonical impl key of the
+         constraint it satisfies.  Passed as a leading argument to constrained
+         functions (EDictApp builds it, dict_pass binds it as a parameter); an
+         EMethodRef stamped `RDict d` reads `d`'s VDict and narrows its method
+         VMulti by that key via select_impl_by_key.  An empty key means
+         "unresolved" — narrowing finds nothing and dispatch falls back to
+         arg-tag, as it did before 69.x. *)
 
 and env = (string * value ref) list list
 
@@ -103,6 +111,7 @@ let rec pp_value = function
   | VThunk t   -> pp_value (Lazy.force t)
   | VNamedImpl (n, _) -> Printf.sprintf "<impl:%s>" n
   | VTypedImpl (t, _, _, _, inner) -> Printf.sprintf "<impl@%s:%s>" t (pp_value inner)
+  | VDict key -> Printf.sprintf "<dict:%s>" key
 
 and pp_value_atom v = match v with
   | VCon (_, _ :: _) | VTuple _ -> "(" ^ pp_value v ^ ")"
@@ -440,17 +449,43 @@ and eval env expr =
 
   | EVar x -> lookup env x
 
-  (* Phase 69: resolved method occurrence.  If the typechecker stamped this
-     site with the impl it chose, narrow the VMulti to that one candidate by its
-     canonical key — this is what makes return-position / multi-param dispatch
-     pick the right impl instead of letting "first arg-tag match wins".  When
-     unstamped (genuinely polymorphic site, 69.x) or the key isn't found, fall
-     back to the whole VMulti and the arg-tag dispatch path. *)
+  (* Phase 69 / 69.x: resolved method occurrence.  If the typechecker stamped
+     this site with the impl it chose, narrow the VMulti to that one candidate by
+     its canonical key — this is what makes return-position / multi-param
+     dispatch pick the right impl instead of letting "first arg-tag match wins".
+     - RKey key: the discriminating type was concrete at this site; narrow by key.
+     - RDict d:  the discriminating type is the enclosing function's constraint
+       var; read the runtime dictionary parameter `d` (a VDict key passed in by
+       the caller) and narrow by that.
+     When unstamped (genuinely polymorphic site with no enclosing constraint) or
+     the key isn't found, fall back to the whole VMulti and arg-tag dispatch. *)
   | EMethodRef (r, x) ->
     let v = lookup env x in
     (match !r with
-     | Some { Ast.res_key; _ } -> select_impl_by_key res_key v
+     | Some { Ast.res_route = RKey key; _ } -> select_impl_by_key key v
+     | Some { Ast.res_route = RDict d; _ } ->
+       (match lookup env d with
+        | VDict key -> select_impl_by_key key v
+        | _ -> v)
      | None -> v)
+
+  (* Phase 69.x: constrained-function occurrence.  Evaluate the function value,
+     then apply the resolved dictionaries (one per constraint) as leading
+     arguments — matching the dict parameters dict_pass prepended to its
+     definition.  RKey builds a literal VDict; RDict forwards a dictionary
+     parameter of the enclosing function.  Unstamped (no surviving constraints,
+     or a name that didn't reach the recorder) → apply nothing. *)
+  | EDictApp (r, x) ->
+    let vf = lookup env x in
+    (match !r with
+     | None -> vf
+     | Some routes ->
+       List.fold_left (fun f route ->
+         let dict = match route with
+           | RKey key -> VDict key
+           | RDict d -> (match lookup env d with VDict _ as vd -> vd | _ -> VDict "")
+         in
+         apply f dict) vf routes)
 
   | EApp (f_expr, EVar hint)
   | EApp (f_expr, ELoc (_, EVar hint))

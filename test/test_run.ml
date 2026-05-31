@@ -42,6 +42,7 @@ let capture_run_typed src =
    | (err, _) :: _ -> failwith ("resolve error: " ^ Resolve.pp_error err));
   let prog = Method_marker.mark_with_prelude prog in
   ignore (Typecheck.check_program prog);
+  let prog = Dict_pass.run prog in  (* Phase 69.x: insert dictionary parameters *)
   let buf = Buffer.create 64 in
   output_hook := Buffer.add_string buf;
   (try ignore (eval_program prog)
@@ -96,6 +97,60 @@ main =
   if (convert 5 : Bool) then println "T" else println "F"
 |}
   "str\nT\n"
+
+(* ── Phase 69.x: dictionary passing ──────────────────────────────────────── *)
+(* `tag : Int -> a` discriminates on its result, which the helper `mk` is
+   *polymorphic* over — the type is concrete only at `mk`'s call sites, not in
+   `mk`'s body.  Pre-69.x the body's `tag` left its EMethodRef unstamped and the
+   first impl always won (both calls would print the same impl's result); 69.x
+   passes `mk` a runtime dictionary so each call routes to the impl the caller's
+   annotation chose.  The argument to `tag` is an `Int` in both impls, so arg-tag
+   dispatch genuinely cannot tell them apart — distinct output proves the dict. *)
+let t_dict_polymorphic_helper = assert_output_typed
+  {|interface Tag a where
+  tag : Int -> a
+
+impl Tag String where
+  tag n = "S"
+
+impl Tag Bool where
+  tag n = n > 0
+
+mk : Tag a => Int -> a
+mk n = tag n
+
+main : <IO> Unit
+main =
+  println (mk 5 : String)
+  if (mk 5 : Bool) then println "T" else println "F"
+|}
+  "S\nT\n"
+
+(* Transitive pass-through: `mk2` (constrained) calls `mk` (constrained), so
+   `mk2`'s dictionary parameter must forward into `mk` (RDict route), without
+   re-resolving at the inner site. *)
+let t_dict_transitive = assert_output_typed
+  {|interface Tag a where
+  tag : Int -> a
+
+impl Tag String where
+  tag n = "S"
+
+impl Tag Bool where
+  tag n = n > 0
+
+mk : Tag a => Int -> a
+mk n = tag n
+
+mk2 : Tag a => Int -> a
+mk2 n = mk n
+
+main : <IO> Unit
+main =
+  println (mk2 5 : String)
+  if (mk2 5 : Bool) then println "T" else println "F"
+|}
+  "S\nT\n"
 
 (* ── Hello world ─────────────────────────────────────────────────────────── *)
 
@@ -180,6 +235,8 @@ let () = Alcotest.run "Run"
   [("run", [
     "return-position dispatch", `Quick, t_return_position_dispatch;
     "multi-param dispatch",     `Quick, t_multiparam_dispatch;
+    "dict polymorphic helper",  `Quick, t_dict_polymorphic_helper;
+    "dict transitive",          `Quick, t_dict_transitive;
     "hello world",   `Quick, t_hello;
     "factorial",     `Quick, t_factorial;
     "adt match",     `Quick, t_adt_match;

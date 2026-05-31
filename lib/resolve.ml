@@ -460,6 +460,7 @@ let rec check_expr env scope errors e =
     check_expr env scope errors e'
   | ELit _ -> ()
   | EMethodRef _ -> ()  (* marker pass runs after resolve; method already bound *)
+  | EDictApp _ -> ()    (* marker pass runs after resolve; name already bound *)
   | EVar n ->
     if not (lookup_value env scope n) then
       emit errors (UnboundVariable n)

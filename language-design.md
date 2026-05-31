@@ -75,6 +75,29 @@ fold @Multiplicative [1, 2, 3]  -- explicit opt-out
 
 This eliminates the `newtype` hack entirely.
 
+### How impl resolution reaches runtime
+
+Resolution is *order-independent*: the type checker commits the chosen impl at
+each call site (most-specific-wins, `@Name` hint, or `default` tiebreaker), and
+the evaluator honours that choice rather than guessing from a runtime value.
+Two cooperating mechanisms make this sound even when the discriminating type is
+in *result* position (e.g. `fromInt : Int -> a`, `pure : a -> f a`) or a
+non-first interface parameter, where no argument's runtime tag could pick the
+impl:
+
+- **At concrete call sites** the checker stamps the resolved impl's canonical
+  key onto the method occurrence; eval narrows the method's dispatch table to
+  that one impl. (`(fromInt 3 : Float)` runs the `Float` impl, not the first
+  registered one.)
+- **In polymorphic code** — a `Num a => … a` helper, a generic container
+  function — the discriminating type isn't known until a caller fixes it, so the
+  compiler uses **dictionary passing**: a constrained function takes a hidden
+  dictionary argument per constraint, and method calls in its body consult that
+  dictionary. The caller supplies the concrete dictionary (when it knows the
+  type) or forwards its own (when it's itself still generic). Dictionaries are
+  lightweight — just the identity of the chosen impl — so this reuses the same
+  resolution machinery rather than duplicating it.
+
 ### Friendly Naming
 Abstract concepts get accessible names:
 - `interface` instead of typeclass

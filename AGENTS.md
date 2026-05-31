@@ -98,6 +98,16 @@ Dev probes (build to `_build/default/dev/`):
   not the current style — match the `x y => body` form in new code.
 - **Errors accumulate.** Phases push into `diagnostics.ml` rather than raising
   on the first error; don't add early `exit`/`raise` paths.
+- **`lib/dune` has an explicit `(modules …)` list.** A new `lib/<name>.ml` is
+  *not* picked up automatically — add it to that stanza or the build fails with
+  `Unbound module Medaka_lib.<Name>`.
+- **The prelude is prepended *raw and unmarked*.** `Typecheck.check_program` /
+  `typecheck_module` and `Eval.eval_program` each do `Prelude.program @ prog`
+  internally; the marker pass (Phase 69) only marks *user* code. So
+  dispatch-elaboration features (EMethodRef/Phase 69, EDictApp/69.x) are
+  user-code-only by default — prelude methods fall back to arg-tag dispatch.
+  Extending elaboration into the prelude means marking + transforming it too,
+  which is a deliberate, larger change (see PLAN.md Phase 69.x-c/d).
 - Development is organized by numbered **Phases** — see `PLAN.md`. Commit
   messages and code comments reference them.
 

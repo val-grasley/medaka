@@ -87,6 +87,10 @@ type module_type_exports = {
   te_interfaces : (ident * iface_info) list;
   te_impls     : impl_entry list;
   te_aliases   : (ident * (ident list * Ast.ty)) list;  (* public type alias expansions *)
+  te_fun_constraints : (ident * (ident * int list) list) list;
+    (* Phase 69.x: public constrained functions' constraints, so importers wrap
+       their occurrences in EDictApp and dict_pass gives them dict parameters.
+       Bound var ids are the same ones in the exported te_schemes entry. *)
 }
 
 (* ── Effects ─────────────────────────────────────── *)
@@ -136,6 +140,12 @@ let current_impl_hint : string option ref = ref None
    EVar method branch (which records it in method_usages so check_method_usages
    can fill it with the resolved impl key).  Mirrors current_impl_hint. *)
 let current_method_ref : Ast.resolved option ref option ref = ref None
+(* Phase 69.x: the EDictApp routes-ref of the constrained-function occurrence
+   currently being inferred, if any.  Set by infer's EDictApp case and consumed
+   once by the EVar non-method branch (which records it in dict_app_usages so
+   resolve_dict_apps can fill it with one route per constraint).  Mirrors
+   current_method_ref. *)
+let current_dict_ref : Ast.res_route list option ref option ref = ref None
 
 let fail e = raise (Type_error (e, !current_loc))
 
@@ -458,6 +468,10 @@ type env = {
   method_usages : (ident * ident * tyvar_info ref list * string option * Ast.resolved option ref option * Ast.loc option) list ref;  (* (method, iface, param_var_refs, impl_hint, method_occurrence_ref, call_site_loc) *)
   fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
     (* fn_name → [(iface_name, [bound_var_ids_in_scheme])] *)
+  dict_app_usages : (ident * (ident * mono list) list * Ast.res_route list option ref * Ast.loc option) list ref;
+    (* Phase 69.x: (fn_name, [(constraint_iface, instantiated_args)] in slot order,
+       EDictApp_routes_ref, call_site_loc).  Recorded at each constrained-function
+       occurrence; resolve_dict_apps turns each constraint into an RKey/RDict route. *)
   constraint_obligations : (ident * mono list * Ast.loc option) list ref;
     (* (iface_name, mono_args, call_site_loc) accumulated at call sites, verified post-HM *)
   type_ctors    : (ident, ident list) Hashtbl.t;  (* type name → ctor names in order *)
@@ -480,6 +494,7 @@ let empty_env () = {
   method_usages = ref [];
   fun_constraints        = Hashtbl.create 8;
   constraint_obligations = ref [];
+  dict_app_usages        = ref [];
   type_ctors    = Hashtbl.create 8;
   ctor_fields   = Hashtbl.create 4;
   aliases       = Hashtbl.create 4;
@@ -845,6 +860,13 @@ let rec infer env = function
      resolved impl key once the call site's type args are ground. *)
   | EMethodRef (r, x) -> current_method_ref := Some r; infer env (EVar x)
 
+  (* Phase 69.x: constrained-function occurrence.  Stash the routes ref so the
+     EVar non-method branch records its per-constraint instantiated args in
+     dict_app_usages; resolve_dict_apps fills the routes once the call site's
+     constraint args are ground (RKey) or recognized as an enclosing function's
+     constraint var (RDict). *)
+  | EDictApp (r, x) -> current_dict_ref := Some r; infer env (EVar x)
+
   | ELit l -> type_lit l
 
   | EVar x ->
@@ -865,6 +887,7 @@ let rec infer env = function
       in
       match Hashtbl.find_opt env.method_iface x with
       | Some iface_name ->
+        current_dict_ref := None;  (* a method name is never a constrained fn *)
         let info = Hashtbl.find env.interfaces iface_name in
         let (t, param_vars, sub) = instantiate_method scheme info.iface_param_ids in
         let hint = !current_impl_hint in
@@ -885,6 +908,8 @@ let rec infer env = function
         t
       | None ->
         current_method_ref := None;  (* not a method occurrence; don't leak the ref *)
+        let dref = !current_dict_ref in
+        current_dict_ref := None;
         let (sub, mono) = instantiate_raw scheme in
         (match Hashtbl.find_opt env.fun_constraints x with
          | None -> ()
@@ -893,7 +918,20 @@ let rec infer env = function
              let args = List.filter_map (fun id -> List.assoc_opt id sub) var_ids in
              if args <> [] then
                env.constraint_obligations := (iface, args, !current_loc) :: !(env.constraint_obligations)
-           ) constraints);
+           ) constraints;
+           (* Phase 69.x: if this occurrence was wrapped in an EDictApp, record
+              the per-constraint instantiated args (one entry per constraint, in
+              slot order) so resolve_dict_apps can fill the routes ref.  Slot
+              order must match dict_pass's parameter order — both iterate this
+              same fun_constraints list. *)
+           (match dref with
+            | None -> ()
+            | Some r ->
+              let per_constraint = List.map (fun (iface, var_ids) ->
+                (iface, List.filter_map (fun id -> List.assoc_opt id sub) var_ids))
+                constraints in
+              env.dict_app_usages :=
+                (x, per_constraint, r, !current_loc) :: !(env.dict_app_usages)));
         mono
     end
 
@@ -1139,6 +1177,7 @@ let rec infer env = function
       | ELoc (_, e) -> head_fn_name e
       | EVar x -> Some x
       | EMethodRef (_, x) -> Some x
+      | EDictApp (_, x) -> Some x
       | EApp (f, _) -> head_fn_name f
       | _ -> None
     in
@@ -1237,6 +1276,7 @@ let rec infer env = function
       | ELoc (_, e) -> head_fn_name e
       | EVar x -> Some x
       | EMethodRef (_, x) -> Some x
+      | EDictApp (_, x) -> Some x
       | EApp (f, _) -> head_fn_name f
       | _ -> None
     in
@@ -2195,6 +2235,33 @@ let rec check_entry_requires env loc entry concrete_args =
         | e' :: _ -> check_entry_requires env loc e' req_concrete
     ) entry.impl_requires
 
+(* Phase 69.x: extract the ids of all still-unbound type variables in a mono. *)
+let rec mono_unbound_ids m =
+  match normalize m with
+  | TVar {contents = Unbound (id, _)} -> [id]
+  | TVar _ -> []
+  | TCon _ -> []
+  | TApp (a, b) | TFun (a, _, b) -> mono_unbound_ids a @ mono_unbound_ids b
+  | TTuple ts -> List.concat_map mono_unbound_ids ts
+
+(* Phase 69.x: a method/dict occurrence whose discriminating type is still a
+   type variable may be one of the *enclosing* constrained function's type
+   variables.  Search fun_constraints for an entry of interface [iface] whose
+   bound ids include one of [ids_present]; return the synthetic dict-param name
+   to read at runtime (dict_pass binds it on that function).  tyvar ids are
+   globally unique, so at most one (function, slot) matches. *)
+let find_enclosing_dict env iface (ids_present : int list) : Ast.ident option =
+  let result = ref None in
+  Hashtbl.iter (fun fname constraints ->
+    if !result = None then
+      List.iteri (fun slot (ci, cids) ->
+        if !result = None && ci = iface
+           && List.exists (fun id -> List.mem id cids) ids_present
+        then result := Some (Ast.dict_param_name fname slot)
+      ) constraints
+  ) env.fun_constraints;
+  !result
+
 (* After HM inference, check every recorded method call site against the impl
    registry.  Skips usages where types are still polymorphic or where the method
    scheme doesn't mention all interface params (uncommon). *)
@@ -2204,13 +2271,12 @@ let check_method_usages env =
   in
   List.iter (fun (_method_name, iface_name, param_vars, hint_opt, occ_ref, loc) ->
     let n = n_iface_params iface_name in
-    (* Phase 69: stamp the resolved impl's canonical key onto this method
-       occurrence (if it carries an EMethodRef) so eval routes return-position
-       / multi-param dispatch to the impl the checker actually picked. *)
-    let resolved_to entry =
+    (* Phase 69: stamp the resolved impl's route onto this method occurrence (if
+       it carries an EMethodRef) so eval routes return-position / multi-param
+       dispatch to the impl the checker actually picked. *)
+    let set_route route =
       match occ_ref with
-      | Some cell ->
-        cell := Some { Ast.res_iface = iface_name; res_key = entry.impl_key }
+      | Some cell -> cell := Some { Ast.res_iface = iface_name; res_route = route }
       | None -> ()
     in
     if n = 0 || List.length param_vars <> n then ()
@@ -2218,10 +2284,21 @@ let check_method_usages env =
       let concrete_args = List.map (fun r -> normalize (TVar r)) param_vars in
       (* Phase 65: committing to an impl also verifies its `requires` hold. *)
       let commit entry =
-        resolved_to entry;
+        set_route (Ast.RKey entry.impl_key);
         check_entry_requires env loc entry concrete_args
       in
-      if not (List.for_all is_concrete concrete_args) then ()
+      if not (List.for_all is_concrete concrete_args) then begin
+        (* Phase 69.x: not ground at this site, but the discriminating var may be
+           the enclosing constrained function's type variable — route to its
+           runtime dictionary so eval picks the impl the caller passed in. *)
+        match occ_ref with
+        | Some _ ->
+          let ids = List.concat_map mono_unbound_ids concrete_args in
+          (match find_enclosing_dict env iface_name ids with
+           | Some dvar -> set_route (Ast.RDict dvar)
+           | None -> ())
+        | None -> ()
+      end
       else begin
         let matching = List.filter (fun e ->
           e.impl_iface = iface_name &&
@@ -2282,6 +2359,56 @@ let check_constraint_obligations env =
       (* Phase 65: the matched impl's own `requires` must hold too. *)
       | e :: _ -> check_entry_requires env loc e concrete
   ) !(env.constraint_obligations)
+
+(* Phase 69.x: among the impls matching a ground constraint, pick the one eval
+   should dispatch into — the unique most-specific (Phase 68), else the unique
+   default, else none.  Mirrors check_method_usages's selection so the dict key
+   we pass agrees with the impl the checker would have committed at a concrete
+   site. *)
+let pick_dispatch_impl env iface concrete : impl_entry option =
+  match matching_impls env iface concrete with
+  | [] -> None
+  | [e] -> Some e
+  | entries ->
+    let most_specific = List.filter (fun e ->
+      List.for_all (fun e' ->
+        e == e' || subsumes ~general:e'.impl_type_mono ~specific:e.impl_type_mono
+      ) entries) entries in
+    (match most_specific with
+     | [e] -> Some e
+     | _ ->
+       (match List.filter (fun e -> e.impl_is_default) entries with
+        | [e] -> Some e
+        | _ -> None))
+
+(* Phase 69.x: turn each recorded constrained-function occurrence into a list of
+   dictionary routes (one per constraint, in slot order) and fill its EDictApp
+   ref, so eval applies the right dictionaries as leading arguments.
+
+   - All args ground → the matching impl's canonical key (RKey); eval narrows
+     the function's internal-method VMultis to that impl.
+   - Args carry the enclosing function's constraint var → that function's dict
+     param (RDict pass-through); the caller's dictionary flows transitively in.
+   - Anything else (e.g. a polymorphic use inside an *unsignatured* caller, which
+     has no dict param) → a sentinel empty key, so eval still supplies a
+     dictionary for arity but select_impl_by_key falls back to arg-tag dispatch —
+     never worse than pre-69.x behaviour. *)
+let resolve_dict_apps env =
+  List.iter (fun (_fname, per_constraint, routes_ref, _loc) ->
+    let routes = List.map (fun (iface, args) ->
+      let args = List.map normalize args in
+      if args <> [] && List.for_all is_concrete args then
+        (match pick_dispatch_impl env iface args with
+         | Some e -> Ast.RKey e.impl_key
+         | None -> Ast.RKey "")
+      else
+        let ids = List.concat_map mono_unbound_ids args in
+        (match find_enclosing_dict env iface ids with
+         | Some dvar -> Ast.RDict dvar
+         | None -> Ast.RKey "")
+    ) per_constraint in
+    routes_ref := Some routes
+  ) !(env.dict_app_usages)
 
 (* Phase 64: enforce superinterface (`requires`) obligations at impl sites.
    For `interface Ord a requires Eq a`, every concrete `impl Ord T` must be
@@ -2377,11 +2504,12 @@ let expr_effects
     let rec call_effs = function
       | EVar n -> if StringSet.mem n bound then [] else call n
       | EMethodRef (_, n) -> if StringSet.mem n bound then [] else call n
+      | EDictApp (_, n) -> if StringSet.mem n bound then [] else call n
       | ELoc (_, e) -> call_effs e
       | e -> sub e
     in
     match e with
-    | ELit _ | EVar _ | EMethodRef _ -> []
+    | ELit _ | EVar _ | EMethodRef _ | EDictApp _ -> []
     | EApp (f, x) ->
       (* If the argument is a named effectful function, those effects propagate:
          the HOF may call it, so we conservatively include them at the call site. *)
@@ -2643,6 +2771,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   (* Phase 4.6: verify method call sites have matching impls and constraints *)
   check_method_usages !env;
   check_constraint_obligations !env;
+  resolve_dict_apps !env;
   check_superinterface_obligations !env;
 
   (* Phase 5: effect inference and checking *)
@@ -2714,6 +2843,10 @@ let typecheck_module
         ii.iface_methods
     ) te.te_interfaces;
     env.impls := te.te_impls @ !(env.impls);
+    (* Phase 69.x: import constrained-function constraints so occurrences here are
+       recorded as dict applications and dict_pass agrees on their arity. *)
+    List.iter (fun (n, cs) -> Hashtbl.replace env.fun_constraints n cs)
+      te.te_fun_constraints;
   ) known_modules;
 
   (* Build the set of module-imported schemes from DUse decls *)
@@ -2815,6 +2948,7 @@ let typecheck_module
   ) prog;
   check_method_usages !env;
   check_constraint_obligations !env;
+  resolve_dict_apps !env;
   check_superinterface_obligations !env;
   let user_extern_decls =
     List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) prog
@@ -2900,6 +3034,13 @@ let typecheck_module
         | _ -> false) user_prog
     ) !(!env.impls);
     te_aliases   = pub_aliases;
+    (* Phase 69.x: export constraints of public functions so importers route
+       and parameterize them.  Keyed off the exported schemes' names. *)
+    te_fun_constraints =
+      List.filter_map (fun (n, _) ->
+        match Hashtbl.find_opt (!env).fun_constraints n with
+        | Some cs -> Some (n, cs)
+        | None -> None) pub_schemes;
   } in
   (te, all_schemes, warnings)
 
@@ -2920,6 +3061,7 @@ let copy_tc_env (e : env) : env = {
   method_usages = ref !(e.method_usages);
   fun_constraints        = Hashtbl.copy e.fun_constraints;
   constraint_obligations = ref !(e.constraint_obligations);
+  dict_app_usages        = ref !(e.dict_app_usages);
   type_ctors    = Hashtbl.copy e.type_ctors;
   ctor_fields   = Hashtbl.copy e.ctor_fields;
   aliases       = Hashtbl.copy e.aliases;
@@ -2997,6 +3139,7 @@ let check_repl_decl ?(seeded=false) (env : env ref) (decls : decl list)
   ) decls;
   check_method_usages !env;
   check_constraint_obligations !env;
+  resolve_dict_apps !env;
   check_superinterface_obligations !env;
   let user_extern_decls =
     List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) decls
@@ -3029,6 +3172,7 @@ let infer_repl_expr (env : env) (e : expr) : mono * string list =
      check_repl_decl; like there, usages accumulate in the persistent env and
      are re-checked idempotently (concrete usages re-fill to the same key). *)
   check_method_usages env;
+  resolve_dict_apps env;
   let scheme = generalize t in
   let (Forall (_, mono)) = scheme in
   (mono, List.rev !(env.warnings))

@@ -100,17 +100,25 @@ let process_item source resolve_env tc_env eval_state pending_sigs user_bindings
        known methods (tc_env.method_iface — prelude + interfaces from prior
        inputs) plus any this item itself declares. *)
     let item =
+      let item_progs = match item with
+        | Ast.ReplDecl decls -> [decls]
+        | Ast.ReplExpr _ -> []
+      in
       let methods =
-        let item_progs = match item with
-          | Ast.ReplDecl decls -> [decls]
-          | Ast.ReplExpr _ -> []
-        in
         let tbl = Method_marker.interface_method_names item_progs in
         Hashtbl.iter (fun m _ -> Hashtbl.replace tbl m ())
           (!tc_env).Typecheck.method_iface;
         tbl
       in
-      Method_marker.mark_repl_item methods item
+      (* Constrained functions: this item's own constrained signatures plus any
+         declared on prior inputs (fun_constraints accrues across the session). *)
+      let constrained =
+        let tbl = Method_marker.constrained_fn_names item_progs in
+        Hashtbl.iter (fun f _ -> Hashtbl.replace tbl f ())
+          (!tc_env).Typecheck.fun_constraints;
+        tbl
+      in
+      Method_marker.mark_repl_item methods constrained item
     in
     match item with
     | Ast.ReplDecl decls -> (* already desugared above *)
@@ -134,6 +142,10 @@ let process_item source resolve_env tc_env eval_state pending_sigs user_bindings
       (try
          let (bindings, warnings) = Typecheck.check_repl_decl tc_env augmented_decls in
          List.iter (fun w -> Printf.eprintf "%s\n%!" w) warnings;
+         (* Phase 69.x: add dictionary parameters to any constrained functions
+            defined here (arity from fun_constraints, since this batch may hold no
+            reference to learn it from) before eval registers their closures. *)
+         let decls = Dict_pass.run ~fun_constraints:(!tc_env).Typecheck.fun_constraints decls in
          List.iter (Eval.eval_repl_decl eval_state) decls;
          user_bindings := !user_bindings @ bindings;
          List.iter (fun (name, scheme) ->
@@ -280,10 +292,14 @@ let load_file path resolve_env tc_env eval_state pending_sigs user_bindings =
          let methods = Method_marker.interface_method_names [program] in
          Hashtbl.iter (fun m _ -> Hashtbl.replace methods m ())
            (!tc_env).Typecheck.method_iface;
-         Method_marker.mark_program methods program
+         let constrained = Method_marker.constrained_fn_names [program] in
+         Hashtbl.iter (fun f _ -> Hashtbl.replace constrained f ())
+           (!tc_env).Typecheck.fun_constraints;
+         Method_marker.mark_program methods constrained program
        in
        let (bindings, warnings) = Typecheck.check_repl_decl tc_env program in
        List.iter (fun w -> Printf.eprintf "%s\n%!" w) warnings;
+       let program = Dict_pass.run ~fun_constraints:(!tc_env).Typecheck.fun_constraints program in
        List.iter (Eval.eval_repl_decl eval_state) program;
        user_bindings := !user_bindings @ bindings;
        let n = List.length bindings in

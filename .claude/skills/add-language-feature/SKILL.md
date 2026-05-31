@@ -20,7 +20,13 @@ When you emit **Medaka** code in examples/tests, use multi-arg lambda form
 2. **Parse** — `lib/parser.mly` (Menhir). Add grammar productions. Rebuild
    surfaces shift/reduce conflicts — resolve them, don't ignore new ones.
 3. **AST** — `lib/ast.ml`. Add node variants; carry source locations like
-   neighboring nodes (LSP and `ParseError` depend on them).
+   neighboring nodes (LSP and `ParseError` depend on them). A new `expr`
+   constructor must get an arm in every *exhaustive* match over `expr` or the
+   build fails: `pp_expr` (`ast.ml`), `expr_prec` **and** `print_expr_raw`
+   (`printer.ml`), `collect_expr` (`coverage.ml`), and `check_expr`
+   (`resolve.ml`). `strip_locs_expr` (`ast.ml`) and `map_expr` (`desugar.ml`)
+   have catch-alls, so a leaf node falls through them safely. Let the compiler's
+   non-exhaustive warnings drive you to each site.
 4. **Resolve** — `lib/resolve.ml`. Bind every new name/reference. Add an arm
    for the new node so nothing falls through unresolved.
 5. **Typecheck** — `lib/typecheck.ml`. Infer/check types (HM + interfaces +
@@ -32,6 +38,21 @@ When you emit **Medaka** code in examples/tests, use multi-arg lambda form
    desugaring.
 8. **Printer/fmt** — `lib/printer.ml` (and `lib/fmt.ml`). Round-trip must hold:
    parse → print → parse yields the same AST. `test_roundtrip` enforces this.
+
+## Nodes introduced by a pass, not the parser
+
+Not every construct enters through the lexer/parser. A *transparent* node —
+created by a pipeline pass and invisible to surface syntax — skips steps 1–2
+entirely. Precedent: Phase 69's `EMethodRef` and 69.x's `EDictApp` are installed
+by `lib/method_marker.ml` (after resolve, before typecheck) and consumed by
+typecheck + eval; the parser, printer, and `fmt` never produce them. For such a
+node: add the constructor (step 3) with its exhaustive-match arms, give it a
+trivial/transparent `pp_expr`/`printer` arm (it isn't round-tripped), thread it
+through typecheck + eval, and **add any new `lib/<name>.ml` pass to the
+`(modules …)` stanza in `lib/dune`** (it is not auto-discovered — see AGENTS.md).
+A pass that *changes a node's shape* (e.g. inserting parameters) runs after
+typecheck and returns a new tree, so the driver must consume its return value;
+a pass that only fills mutable refs can mutate in place and needs no rewiring.
 
 ## Surrounding surfaces
 

@@ -145,6 +145,7 @@ let () =
        Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
        show_snippet source loc_opt;
        exit 1);
+    let program = Medaka_lib.Dict_pass.run program in  (* Phase 69.x: dict params *)
     let prop_ok =
       (try
          let eval_env = Medaka_lib.Eval.eval_program program in
@@ -212,6 +213,7 @@ let () =
        Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
        show_snippet source loc_opt;
        exit 1);
+    let program = Medaka_lib.Dict_pass.run program in  (* Phase 69.x: dict params *)
     (try
        let eval_env = Medaka_lib.Eval.eval_program program in
        Medaka_lib.Bench_runner.run_all eval_env program
@@ -419,6 +421,10 @@ cd into a member or specify a file\n"; exit 1
          Printf.printf "OK — %d bindings\n" (List.length env)
        | `Run ->
          (try
+           (* Phase 69.x: insert dictionary parameters on constrained functions
+              (their refs were filled in place by check_program above) so eval
+              routes polymorphic methods by the dictionaries EDictApp passes. *)
+           let root_program = Medaka_lib.Dict_pass.run root_program in
            let top_env = Medaka_lib.Eval.eval_program root_program in
            if not (List.mem_assoc "main" top_env) then begin
              Printf.eprintf "error: program has no 'main' binding\n"; exit 1
@@ -492,8 +498,15 @@ cd into a member or specify a file\n"; exit 1
       Medaka_lib.Method_marker.interface_method_names
         (Medaka_lib.Prelude.program :: List.map (fun (_, _, p) -> p) modules)
     in
+    (* Phase 69.x: constrained functions may be referenced across modules, so
+       wrap occurrences against the union of every user module's constrained
+       signatures (the prelude is excluded — its constrained fns stay arg-tag). *)
+    let constrained_names =
+      Medaka_lib.Method_marker.constrained_fn_names
+        (List.map (fun (_, _, p) -> p) modules)
+    in
     let modules = List.map (fun (mid, fp, prog) ->
-      (mid, fp, Medaka_lib.Method_marker.mark_program method_names prog)
+      (mid, fp, Medaka_lib.Method_marker.mark_program method_names constrained_names prog)
     ) modules in
 
     (* Typecheck all modules in dependency order *)
@@ -521,6 +534,9 @@ cd into a member or specify a file\n"; exit 1
      | `Run ->
        (* Evaluate all modules; later modules' eval envs shadow earlier ones *)
        let combined_program = List.concat_map (fun (_, _, prog) -> prog) modules in
+       (* Phase 69.x: insert dictionary parameters on constrained functions
+          across all modules (EDictApp refs were filled by typecheck_module). *)
+       let combined_program = Medaka_lib.Dict_pass.run combined_program in
        (try
          let top_env = Medaka_lib.Eval.eval_program combined_program in
          if not (List.mem_assoc "main" top_env) then begin

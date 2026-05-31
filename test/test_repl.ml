@@ -232,6 +232,44 @@ let t_multiline_return_position_dispatch () =
   check_expr "(decode 1 : Bool)\n";
   ignore ub
 
+(* Phase 69.x: a constrained function defined on one input must dispatch
+   correctly when called (at different concrete result types) on later inputs —
+   i.e. dict parameters added to its definition and dict arguments at the use
+   sites agree across REPL batches.  `tag`'s argument is an Int either way, so
+   arg-tag dispatch cannot distinguish String from Bool; distinct output proves
+   the dictionary flows in. *)
+let t_multiline_dict_passing () =
+  let st = make_state () in
+  let (r, tc, ev, ps, ub) = st in
+  feed_lines st
+    [ "interface Tag a where";
+      "  tag : Int -> a";
+      "";
+      "impl Tag String where";
+      "  tag n = \"S\"";
+      "";
+      "impl Tag Bool where";
+      "  tag n = n > 0";
+      "";
+      "mk : Tag a => Int -> a";
+      "mk n = tag n";
+      "" ];
+  let buf = Buffer.create 32 in
+  let saved = !Eval.output_hook in
+  Eval.output_hook := Buffer.add_string buf;
+  let check_expr src =
+    match Repl.try_parse src with
+    | Ok item -> Repl.process_item src r tc ev ps ub item
+    | _ -> failwith ("parse failed: " ^ src)
+  in
+  (Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+     check_expr "println (mk 1 : String)\n";
+     check_expr "if (mk 1 : Bool) then println \"T\" else println \"F\"\n"));
+  let out = Buffer.contents buf in
+  if out <> "S\nT\n" then
+    failwith (Printf.sprintf "Expected \"S\\nT\\n\" from cross-input dispatch, got %S" out);
+  ignore ub
+
 (* ── Suite ────────────────────────────────────────────────────────────────── *)
 
 let () = Alcotest.run "Repl"
@@ -255,5 +293,8 @@ let () = Alcotest.run "Repl"
     ("multi-line blocks", [
       "interface/impl where collection", `Quick, t_multiline_interface_impl_dispatch;
       "return-position dispatch",         `Quick, t_multiline_return_position_dispatch;
+    ]);
+    ("dictionary passing (Phase 69.x)", [
+      "cross-input constrained dispatch", `Quick, t_multiline_dict_passing;
     ]);
   ]

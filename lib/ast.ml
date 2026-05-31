@@ -41,14 +41,29 @@ type pat =
   | PRng   of literal * literal * bool   (* lo..hi / lo..=hi in match arms; bool=inclusive *)
 
 (* The impl a method call site resolves to, chosen by the typechecker and
-   filled in (in place) into an EMethodRef's ref.  `res_key` is the canonical
-   impl key — `iface | pp_ty(type_args) | name` — that eval matches against the
-   key it tags each VMulti candidate with, so return-position / multi-param
-   dispatch routes to the impl the checker actually picked.  None until 69.x
-   handles genuinely-polymorphic sites; eval falls back to arg-tag dispatch. *)
+   filled in (in place) into an EMethodRef's ref.  The route tells eval how to
+   pick the impl out of the method's VMulti binding:
+
+   - [RKey key]: the discriminating type is *concrete* at this site (Phase 69).
+     `key` is the canonical impl key — `iface | pp_ty(type_args) | name` — that
+     eval matches against the key it tags each VMulti candidate with, so
+     return-position / multi-param dispatch routes to the impl the checker
+     picked.
+   - [RDict dvar]: the discriminating type is the *enclosing function's*
+     constrained type variable (Phase 69.x dictionary passing).  `dvar` is the
+     name of the synthetic dictionary parameter that `dict_pass` inserts on that
+     function; at runtime it holds a `VDict key`, and eval reads it then selects
+     by that key.
+
+   `None` until both passes run; an unfilled ref means eval falls back to
+   arg-tag dispatch (genuinely unconstrained-but-runtime-polymorphic code). *)
+type res_route =
+  | RKey  of string     (* concrete: select_impl_by_key this literal key *)
+  | RDict of ident      (* polymorphic: read this synthetic dict-param var *)
+
 type resolved = {
   res_iface : ident;
-  res_key   : string;
+  res_route : res_route;
 }
 
 (* String interpolation parts *)
@@ -110,6 +125,7 @@ and expr =
   | ESlice        of expr * expr * expr * bool          (* e.[lo..hi] / e.[lo..=hi]; bool=inclusive *)
   | ELoc          of loc * expr                         (* source position; transparent to semantics *)
   | EMethodRef    of resolved option ref * ident         (* interface-method occurrence; ref filled by typecheck (Phase 69) *)
+  | EDictApp      of res_route list option ref * ident   (* constrained-function occurrence; routes filled by typecheck (Phase 69.x) *)
 
 type use_path =
   | UseName  of ident list                   (* use utils.greet *)
@@ -231,7 +247,7 @@ let rec pp_ty_prec p = function
 let pp_ty t = pp_ty_prec 0 t
 
 (* Canonical key identifying one impl, shared by typecheck (which stamps it on
-   each resolved [resolved.res_key]) and eval (which tags every VMulti candidate
+   each resolved [RKey] route) and eval (which tags every VMulti candidate
    with it).  Built from the same source — the impl's AST [type_args] — on both
    sides, so the strings agree by construction.  The optional impl name keeps
    distinct named impls of the same iface/type apart. *)
@@ -239,6 +255,15 @@ let impl_key ~(iface : ident) ~(type_args : ty list) ~(name : ident option) : st
   let tys = String.concat " " (List.map (pp_ty_prec 2) type_args) in
   let nm = match name with Some n -> n | None -> "" in
   iface ^ "|" ^ tys ^ "|" ^ nm
+
+(* Name of the synthetic dictionary parameter that dict_pass prepends to a
+   constrained function for its [slot]-th constraint (Phase 69.x).  Shared by
+   typecheck (which stamps it as the [RDict] route on polymorphic method/dict
+   occurrences inside that function) and dict_pass (which binds it).  Keyed by
+   function name + slot so it is unique within a function and never shadows an
+   enclosing function's dict param; the `$` prefix can't appear in user source. *)
+let dict_param_name (fname : ident) (slot : int) : string =
+  Printf.sprintf "$dict_%s_%d" fname slot
 
 let pp_lit = function
   | LInt n    -> string_of_int n
@@ -338,6 +363,7 @@ let rec pp_expr = function
     Printf.sprintf "%s.[%s%s%s]" (pp_expr e) (pp_expr lo) (if incl then "..=" else "..") (pp_expr hi)
   | ELoc (_, e)          -> pp_expr e
   | EMethodRef (_, x)    -> x
+  | EDictApp (_, x)      -> x
 
 and pp_do_stmt = function
   | DoBind (p, e)       -> Printf.sprintf "%s <- %s" (pp_pat p) (pp_expr e)

@@ -2922,7 +2922,7 @@ don't false-positive. Tests in `test/test_typecheck.ml` group "impl coherence
 line*; resolution is order-independent — the checker commits the most-specific
 impl and eval honors it. *(Done, except the orphan-instance check.)*
 
-### Phase 69: Type-directed / return-position dispatch (dictionary passing) ✅ DONE (69.x still TODO)
+### Phase 69: Type-directed / return-position dispatch (dictionary passing) ✅ DONE (69.x-a/b done; 69.x-c/d TODO)
 
 **Status.** Phase 69 (elaboration at concrete sites) landed: the five-part
 design below is implemented (`EMethodRef` node in `ast.ml`, marker pass in
@@ -3042,18 +3042,57 @@ already works via `runtime_type_tag` on the argument; the hole is strictly
 checker's choice — document that policy and the resolution semantics in
 `language-design.md` when 69 lands.
 
-**Phase 69.x — dictionary passing (carved out) ⏳ TODO.** Thread dictionaries
+**Phase 69.x — dictionary passing (carved out).** Thread dictionaries
 through constrained functions so *polymorphic* code (`Num a => … a` helpers,
 generic `pure`) resolves return-position methods at runtime instead of relying
-on a concrete call site. Touches the calling convention across resolve /
-typecheck / eval. Subsumes the §5 deferred item (do-notation `Thenable` wiring
-and EDo monad tagging) — same root cause, scope together. Retires the
-`pure_impls` + `current_monad_type` point workaround in `eval.ml`.
+on a concrete call site.
+
+**69.x-a/b ✅ DONE (2026-05-30).** The dictionary-passing mechanism for
+*user code* (single-file, multi-module, and repl). Design — a lightweight
+**key-as-dictionary** scheme that reuses Phase 69's `impl_key` + eval's
+`select_impl_by_key`, so a dictionary is just the canonical impl-key string
+(`VDict of string`), never a record of method closures:
+- **`EDictApp of res_route list option ref * ident`** (`ast.ml`) — the dual of
+  `EMethodRef`, installed by the marker pass on every occurrence of a
+  user-defined constrained function, filled in place by typecheck, and applied
+  by eval as leading dictionary arguments. `resolved` now carries a
+  `res_route = RKey of string | RDict of ident` (concrete impl key vs. a
+  synthetic dict-param name to read at runtime). `Ast.dict_param_name`.
+- **Marker** (`method_marker.ml`) wraps user constrained-fn references
+  (constrained set from `DTypeSig … =>`); prelude stays unmarked.
+- **Typecheck** records per-occurrence `dict_app_usages`; `resolve_dict_apps`
+  fills each route (concrete → `RKey`, enclosing-constraint var → `RDict` via
+  `find_enclosing_dict`); `check_method_usages` stamps `RDict` for polymorphic
+  in-body method refs. `fun_constraints` is threaded across modules via a new
+  `te_fun_constraints` export.
+- **`dict_pass.ml`** (new, post-typecheck) prepends one `$dict_<fn>_<slot>`
+  parameter per constraint to each constrained function's definition; arity is
+  read off the filled `EDictApp` routes (whole-program) or `fun_constraints`
+  (repl). Eval: `EMethodRef`/`RDict` reads the dict param, `EDictApp` applies
+  the resolved `VDict`s. Tests: `test_run` (`t_dict_polymorphic_helper`,
+  `t_dict_transitive`), `test_typecheck` (`t_dict_routes_helper`),
+  `test_repl` (cross-input), `test_loader` (cross-module).
+
+**69.x-c/d ⏳ TODO (attempted, reverted).** Retiring the
+`pure_impls` + `current_monad_type` workaround (and the EDo monad tag) needs
+`pure` to become an ordinary VMulti method routed by dictionary. That requires
+**marking + dict-passing the prelude** (its `when`/`unless` use return-position
+`pure`), which Phase 69 deliberately avoided. A spike got prelude marking +
+combined dict-pass green *with the workaround intact*, but removing the
+workaround destabilized parametric monads and prelude interface-method defaults:
+`pure x : Result e a` is only head-concrete (`e`/`a` free) so the strict
+`is_concrete` gate doesn't route it, and `foldMap`'s default body uses a
+*method-level* `Monoid m` constraint (`iface_method_constraints`, not
+`fun_constraints`) that the dict mechanism doesn't parameterize, so its `empty`
+mis-routed once the prelude was marked. Closing 69.x-c needs (a) head/partial
+dispatch that doesn't regress prelude method defaults, and (b) dictionary
+passing for method-level constraints — a dedicated follow-up.
 
 **Done when.** *(69)* Result-typed and multi-param method calls at concrete
 sites run the impl the type checker chose; the `fromInt`/`Convert` repros are
-correct and Generic decode works. *(69.x)* Polymorphic call sites resolve via
-dictionaries; `pure_impls` is gone.
+correct and Generic decode works. *(69.x-a/b)* Polymorphic call sites in user
+code resolve via dictionaries. *(69.x-c/d)* `pure_impls`/`current_monad_type`
+gone; prelude monadic functions route via dictionaries.
 
 ### Phase 70: Smaller typechecker correctness & diagnostics fixes ⏳ TODO
 

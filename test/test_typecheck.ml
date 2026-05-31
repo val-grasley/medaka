@@ -2486,14 +2486,17 @@ let e_letrec_cyclic_cons = assert_err
    recomputes from the DImpl AST, so equality here means dispatch will route. *)
 
 (* Run the real pipeline (mark_with_prelude → check_program) and collect the
-   res_key stamped into every filled EMethodRef in the program. *)
+   concrete-impl key (RKey route) stamped into every filled EMethodRef in the
+   program.  RDict routes (Phase 69.x dictionary passing) carry no key here. *)
 let resolved_keys src =
   let prog = Method_marker.mark_with_prelude (Desugar.desugar_program (parse src)) in
   ignore (check_program prog);
   let keys = ref [] in
   let collect = function
     | Ast.EMethodRef (r, _) as e ->
-      (match !r with Some { Ast.res_key; _ } -> keys := res_key :: !keys | None -> ());
+      (match !r with
+       | Some { Ast.res_route = Ast.RKey k; _ } -> keys := k :: !keys
+       | Some { Ast.res_route = Ast.RDict _; _ } | None -> ());
       e
     | e -> e
   in
@@ -2565,6 +2568,63 @@ main : <IO> Unit
 main =
   let n = tag [1, 2, 3]
   ()
+|}
+
+(* ── Phase 69.x: dictionary-passing routes ── *)
+
+(* Collect every filled EMethodRef / EDictApp route as a readable string, so we
+   can assert that a polymorphic method inside a constrained function is stamped
+   RDict (reads a dict param) and the function's call sites are stamped RKey. *)
+let dict_routes src =
+  let prog = Method_marker.mark_with_prelude (Desugar.desugar_program (parse src)) in
+  ignore (check_program prog);
+  let out = ref [] in
+  let collect = function
+    | Ast.EMethodRef (r, m) as e ->
+      (match !r with
+       | Some { Ast.res_route = Ast.RDict d; _ } -> out := Printf.sprintf "%s->RDict(%s)" m d :: !out
+       | Some { Ast.res_route = Ast.RKey k; _ }  -> out := Printf.sprintf "%s->RKey(%s)" m k :: !out
+       | None -> ());
+      e
+    | Ast.EDictApp (r, f) as e ->
+      (match !r with
+       | Some routes ->
+         let s = List.map (function Ast.RKey k -> "K:" ^ k | Ast.RDict d -> "D:" ^ d) routes in
+         out := Printf.sprintf "%s[%s]" f (String.concat "," s) :: !out
+       | None -> ());
+      e
+    | e -> e
+  in
+  List.iter (fun d -> ignore (Desugar.map_decl collect d)) prog;
+  List.sort compare !out
+
+let assert_routes expected src () =
+  let actual = dict_routes src in
+  if actual <> List.sort compare expected then
+    failwith (Printf.sprintf "Expected routes [%s]\nGot [%s]\nSource:\n%s"
+                (String.concat "; " (List.sort compare expected))
+                (String.concat "; " actual) src)
+
+(* `tag` inside the polymorphic helper `mk` routes through `mk`'s dictionary
+   param; `mk`'s two annotated call sites resolve to concrete impl keys. *)
+let t_dict_routes_helper = assert_routes
+  ["mk[K:Tag|Bool|]"; "mk[K:Tag|String|]"; "tag->RDict($dict_mk_0)"]
+  {|interface Tag a where
+  tag : Int -> a
+
+impl Tag String where
+  tag n = "S"
+
+impl Tag Bool where
+  tag n = n > 0
+
+mk : Tag a => Int -> a
+mk n = tag n
+
+main : <IO> Unit
+main =
+  println (mk 5 : String)
+  if (mk 5 : Bool) then println "T" else println "F"
 |}
 
 (* ── Phase 64: superinterface (`requires`) obligations ── *)
@@ -3106,6 +3166,9 @@ let () =
     "impl-key dispatch (Phase 69)", [
       test_case "return-position keys"  `Quick t_key_return_position;
       test_case "multi-param keys"      `Quick t_key_multiparam;
+    ];
+    "dictionary passing (Phase 69.x)", [
+      test_case "RDict in body, RKey at sites" `Quick t_dict_routes_helper;
     ];
     "superinterface obligations (Phase 64)", [
       test_case "err: missing super impl"      `Quick e_super_missing;

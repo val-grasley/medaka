@@ -532,6 +532,54 @@ let test_typecheck_impl_list_in_dep_module () =
       failwith ("unexpected type error: " ^ Typecheck.pp_error e)
   )
 
+(* Phase 69.x: dictionary passing across module boundaries.  A constrained
+   function `mk` defined and exported in one module must, when imported and
+   called at two concrete result types in another, dispatch to the right impl.
+   This mirrors bin/main.ml's multi-file pipeline: mark (with the constrained-fn
+   set) → typecheck chain (threads fun_constraints through type exports) →
+   Dict_pass over the combined program → eval. *)
+let test_eval_dict_passing_cross_module () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "tagmod.mdk"
+      "export interface Tag a where\n\
+      \  tag : Int -> a\n\n\
+       export impl Tag String where\n\
+      \  tag n = \"S\"\n\n\
+       export impl Tag Bool where\n\
+      \  tag n = n > 0\n\n\
+       export mk : Tag a => Int -> a\n\
+       mk n = tag n\n" in
+    let main_path = write_file dir "main.mdk"
+      "import tagmod.{Tag, tag, mk}\n\n\
+       main : <IO> Unit\n\
+       main =\n\
+      \  println (mk 5 : String)\n\
+      \  if (mk 5 : Bool) then println \"T\" else println \"F\"\n" in
+    let modules = Loader.load_program main_path [dir] in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Desugar.desugar_program prog)) modules in
+    let method_names = Method_marker.interface_method_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let constrained = Method_marker.constrained_fn_names
+      (List.map (fun (_, _, p) -> p) modules) in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Method_marker.mark_program method_names constrained prog)) modules in
+    let te_acc = ref [] in
+    List.iter (fun (mid, _, prog) ->
+      let (te, _, _) = Typecheck.typecheck_module !te_acc mid prog in
+      te_acc := te :: !te_acc) modules;
+    let combined = List.concat_map (fun (_, _, p) -> p) modules in
+    let combined = Dict_pass.run combined in
+    let buf = Buffer.create 32 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+      ignore (Eval.eval_program combined));
+    let out = Buffer.contents buf in
+    if out <> "S\nT\n" then
+      failwith (Printf.sprintf "Expected \"S\\nT\\n\" from cross-module dispatch, got %S" out)
+  )
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -574,6 +622,9 @@ let () =
     "multi-file typecheck", [
       test_case "impl Mappable Array in dep module" `Quick test_typecheck_impl_in_dep_module;
       test_case "impl Mappable Wrapper in dep module" `Quick test_typecheck_impl_list_in_dep_module;
+    ];
+    "multi-file dictionary passing (Phase 69.x)", [
+      test_case "cross-module constrained dispatch" `Quick test_eval_dict_passing_cross_module;
     ];
     "workspace / multi-root", [
       test_case "cross-member import"    `Quick test_workspace_cross_member_import;
