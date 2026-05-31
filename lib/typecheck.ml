@@ -1109,8 +1109,14 @@ let rec infer env = function
 
   | EUnOp ("-", e) ->
     let te = infer env e in
-    (* Allow Int or Float — pick Int for now *)
-    unify te t_int; t_int
+    (* Negation is a `Num a` operation (dispatches to Num.negate), so it works
+       for Int, Float, and any user Num impl — not Int-only. *)
+    let a = fresh_var () in
+    let r = match a with TVar r -> r | _ -> assert false in
+    unify te a;
+    env.method_usages :=
+      ("negate", "Num", [r], None, None, !current_loc) :: !(env.method_usages);
+    a
   | EUnOp ("!", e) ->
     unify (infer env e) t_bool; t_bool
   | EUnOp (op, _) ->
@@ -1590,7 +1596,11 @@ and binop_type env op l r =
     let _ = record_iface_usage i m tl tr in
     t_bool
   | "%" ->
-    unify tl t_int; unify tr t_int; t_int
+    (* Modulo is not a distinct Num method, but it requires its operands to be a
+       numeric type; recording a `Num a` usage lets it work on Int and Float
+       (and any user Num impl) instead of being Int-only.  The method name is
+       ignored by constraint resolution, which keys on the interface. *)
+    record_iface_usage "Num" "mod" tl tr
   | "&&" | "||" ->
     unify tl t_bool; unify tr t_bool; t_bool
   | "::" ->

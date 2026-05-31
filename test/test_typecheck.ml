@@ -1867,13 +1867,15 @@ let t_string_eq = assert_type "x = \"a\" == \"b\"\n" "x" "Bool"
 let t_string_lt = assert_type "x = \"a\" < \"b\"\n" "x" "Bool"
 let t_float_lt  = assert_type "x = 1.5 < 2.0\n"  "x" "Bool"
 
-(* Modulo — Int only *)
+(* Modulo via Num — works on Int and Float (Phase 70) *)
 let t_int_mod = assert_type "x = 5 % 2\n" "x" "Int"
+let t_float_mod = assert_type "x = 5.0 % 2.0\n" "x" "Float"
 
 (* Errors *)
 let e_string_num = assert_err "x = \"a\" + \"b\"\n"
 let e_int_float_mismatch = assert_err "x = 1 + 1.5\n"
-let e_float_mod = assert_err "x = 5.0 % 2.0\n"
+(* `%` still rejects non-Num operands (no `Num String` impl). *)
+let e_string_mod = assert_err "x = \"a\" % \"b\"\n"
 
 (* ── Phase 18: runtime.mdk externs ─────────────── *)
 
@@ -3221,9 +3223,10 @@ let () =
       test_case "String lt"              `Quick t_string_lt;
       test_case "Float lt"               `Quick t_float_lt;
       test_case "Int mod"                `Quick t_int_mod;
+      test_case "Float mod"              `Quick t_float_mod;
       test_case "err: String Num"        `Quick e_string_num;
       test_case "err: Int+Float mismatch" `Quick e_int_float_mismatch;
-      test_case "err: Float mod"         `Quick e_float_mod;
+      test_case "err: String mod"        `Quick e_string_mod;
     ];
     "runtime.mdk externs (Phase 18)", [
       test_case "readLine type"          `Quick t_readLine_type;

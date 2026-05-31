@@ -806,6 +806,7 @@ and eval_arith op lv rv =
   | "-",  VFloat a, VFloat b -> VFloat (a -. b)
   | "*",  VFloat a, VFloat b -> VFloat (a *. b)
   | "/",  VFloat a, VFloat b -> VFloat (a /. b)
+  | "%",  VFloat a, VFloat b -> VFloat (Float.rem a b)
   | "==", a, b -> VBool (a = b)
   | "!=", a, b -> VBool (a <> b)
   | "<",  a, b -> VBool (compare a b < 0)

@@ -383,6 +383,10 @@ let t_ref = assert_val {|r = do
 let t_float_add = assert_val "x = 1.5 + 2.0\n" "x" (VFloat 3.5)
 let t_float_mul = assert_val "x = 3.0 * 2.0\n" "x" (VFloat 6.0)
 let t_int_mod   = assert_val "x = 10 % 3\n"    "x" (VInt 1)
+(* Phase 70: Float modulo and Float unary negation. *)
+let t_float_mod = assert_val "x = 5.5 % 2.0\n" "x" (VFloat 1.5)
+let t_float_neg = assert_val "x = 0.0 - 3.5\ny = -x\n" "y" (VFloat 3.5)
+let t_float_neg_lit = assert_val "f = -2.5\n" "f" (VFloat (-2.5))
 
 let t_div_by_zero = assert_runtime_err "x = 1 / 0\n" "x"
 let t_match_fail  = assert_runtime_err {|r =
@@ -1403,6 +1407,9 @@ let () =
       test_case "1.5 + 2.0"  `Quick t_float_add;
       test_case "3.0 * 2.0"  `Quick t_float_mul;
       test_case "10 % 3"     `Quick t_int_mod;
+      test_case "5.5 % 2.0"  `Quick t_float_mod;
+      test_case "negate float var" `Quick t_float_neg;
+      test_case "negate float lit" `Quick t_float_neg_lit;
     ];
     "where clauses", [
       test_case "single helper"     `Quick t_where_single;
