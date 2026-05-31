@@ -677,7 +677,11 @@ let rec check_decl env errors = function
     check_expr env scope errors prop_body
   | DBench { bench_body; _ } ->
     check_expr env [] errors bench_body
-  | DInterface { methods; _ } ->
+  | DInterface { super; methods; _ } ->
+    List.iter (fun (super_iface, _params) ->
+      if not (Hashtbl.mem env.interfaces super_iface) then
+        emit errors (UnknownInterface super_iface)
+    ) super;
     List.iter (fun m ->
       check_type env errors m.method_type;
       match m.method_default with
@@ -687,8 +691,13 @@ let rec check_decl env errors = function
         let scope = List.concat_map pat_bindings pats in
         check_expr env scope errors body
     ) methods
-  | DImpl { iface_name; type_args; methods; _ } ->
+  | DImpl { iface_name; type_args; requires; methods; _ } ->
     List.iter (check_type env errors) type_args;
+    List.iter (fun (req_iface, req_tys) ->
+      if not (Hashtbl.mem env.interfaces req_iface) then
+        emit errors (UnknownInterface req_iface);
+      List.iter (check_type env errors) req_tys
+    ) requires;
     List.iter (fun (_, pats, body) ->
       List.iter (check_pat env errors) pats;
       let scope = List.concat_map pat_bindings pats in
