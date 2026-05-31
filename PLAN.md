@@ -3334,7 +3334,7 @@ relaxed update).
 
 ---
 
-### Phase 73: Signature-driven parameter typing (bidirectional checking for signed defs) ⏳ TODO
+### Phase 73: Signature-driven parameter typing (bidirectional checking for signed defs) ✅ DONE (2026-05-31)
 
 **Goal.** When a top-level definition carries a type signature, push the
 signature's argument types into the function's parameter patterns *before*
@@ -3357,10 +3357,29 @@ guards, partial application, and effect annotations on the arrow; preserve the
 value restriction (Phase 66) and constraint extraction. Treat as
 `add-language-feature` (delicate inference path), not a small `harden`.
 
-**Done when.** A signed definition type-checks its body against the declared
+**What landed.** `process_letrec_group` (`typecheck.ml`) now peels the declared
+signature into per-parameter argument types and **pre-unifies** them onto the
+clause's parameter patterns *before* inferring the body — replacing the bare
+`infer (clause_to_expr clause)` path for signed clauses only. The change is
+purely additive: the existing final `unify placeholder t` imposes the same
+equalities, so the solution is unchanged; the param types are merely available
+*during* body inference. Peeling stops at `min(arity, n_params)`, so signatures
+that return a function (`add : Int -> Int -> Int; add x = y => …`) push only the
+covered domains and the lambda body supplies the rest; a signature with fewer
+arrows than params pushes nothing and the mismatch still surfaces at the final
+unify. Constraint extraction, the value restriction (Phase 66), and level
+bracketing are untouched (the new work sits inside the existing
+`enter_level`/`exit_level` pair and reuses `sig_t`'s vars). Beyond shared
+fields, any type-directed expression now sees the declared param type — e.g.
+`f : List Int -> List Int; f xs = xs.[1..3]` resolves `ESlice` to `List` instead
+of the Array default.
+
+**Done when.** ✅ A signed definition type-checks its body against the declared
 parameter types; `f : Point -> Int; f p = p.x` resolves a shared field; no
-regression in `test_typecheck`/`@thorough` (especially polymorphic and
-constrained signatures, and the value restriction).
+regression in `test_typecheck`/`@thorough` (polymorphic + constrained signatures
+and the value restriction all still pass). Tests: `test_typecheck` (sig
+disambiguates shared field Int/Float, sig drives slice container, constrained
+sig, polymorphic identity, partial-peel returns-function, body-field mismatch).
 
 ---
 

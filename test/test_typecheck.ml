@@ -551,6 +551,79 @@ record Person
 bad = { (Point { x = 0, y = 0 }) | name = "Alice" }
 |}
 
+(* ── Phase 73: signature-driven parameter typing (bidirectional checking) ── *)
+
+(* Headline: a top-level signature alone disambiguates a shared field — the
+   parameter type is pushed into the body before inference, so `p.x` resolves to
+   Point without a construction-pin or `(p : Point).x` annotation (pre-73 this
+   was AmbiguousField). *)
+let t_sig_shared_field_int = assert_type
+  {|record Point
+  x : Int
+  y : Int
+
+record Vec
+  x : Float
+  z : Float
+
+getX : Point -> Int
+getX p = p.x
+|} "getX" "Point -> Int"
+
+(* The Float twin, resolved by the signature alone. *)
+let t_sig_shared_field_float = assert_type
+  {|record Point
+  x : Int
+  y : Int
+
+record Vec
+  x : Float
+  z : Float
+
+getX : Vec -> Float
+getX v = v.x
+|} "getX" "Vec -> Float"
+
+(* A type-directed expression (ESlice container) now sees the declared param
+   type instead of falling back to the Array default. *)
+let t_sig_slice_list = assert_type
+  {|f : List Int -> List Int
+f xs = xs.[1..3]
+|} "f" "List Int -> List Int"
+
+(* A constrained signature still type-checks (constraint vars are shared with
+   the peeled arrow domains; constraint extraction is unchanged). *)
+let t_sig_constrained = assert_type
+  {|f : Show a => a -> String
+f x = show x
+|} "f" "a -> String"
+
+(* A fully polymorphic signature is neither over- nor under-generalized. *)
+let t_sig_poly_identity = assert_type
+  {|f : a -> a
+f x = x
+|} "f" "a -> a"
+
+(* The signature has more arrows than the clause has params: peel only one,
+   the lambda body supplies the rest. *)
+let t_sig_returns_function = assert_type
+  {|add : Int -> Int -> Int
+add x = y => x + y
+|} "add" "Int -> Int -> Int"
+
+(* Body contradicts the declared parameter type (field `z` not on Point): the
+   final unify still surfaces the mismatch. *)
+let e_sig_body_mismatch = assert_err
+  {|record Point
+  x : Int
+
+record Vec
+  z : Float
+
+getZ : Point -> Float
+getZ p = p.z
+|}
+
 (* ── Do notation ───────────────────────────────────── *)
 
 (* Single DoExpr in a `do` block: a do-block ALWAYS introduces a per-block
@@ -3187,6 +3260,13 @@ let () =
       test_case "shared field update"       `Quick t_rec_shared_field_update;
       test_case "err: shared field ambiguous" `Quick e_rec_shared_field_ambiguous;
       test_case "err: cross-record update"  `Quick e_rec_cross_record_update;
+      test_case "sig disambiguates shared field (Int)"   `Quick t_sig_shared_field_int;
+      test_case "sig disambiguates shared field (Float)" `Quick t_sig_shared_field_float;
+      test_case "sig drives slice container type"        `Quick t_sig_slice_list;
+      test_case "sig with constraint ok"                 `Quick t_sig_constrained;
+      test_case "sig polymorphic identity"               `Quick t_sig_poly_identity;
+      test_case "sig returns function (partial peel)"    `Quick t_sig_returns_function;
+      test_case "err: sig body field mismatch"           `Quick e_sig_body_mismatch;
     ];
     "effects", [
       test_case "pure fn no annotation"     `Quick t_eff_pure;

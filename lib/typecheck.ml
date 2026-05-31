@@ -1869,14 +1869,14 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
   enter_level ();
   let cs_monos_list = List.map (fun (name, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
-    let cs_monos =
+    let (cs_monos, sig_t_opt) =
       match sig_opt with
-      | None -> []
+      | None -> ([], None)
       | Some sig_ast ->
         let (cs, sig_t) = from_ast_type_with_constraints
                             ~aliases:(!env_ref).aliases sig_ast in
         unify placeholder sig_t;
-        cs
+        (cs, Some sig_t)
     in
     if is_letrec then
       List.iter (fun (pats, rhs) ->
@@ -1885,8 +1885,45 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
           fail (LetRecNonFunction name)
         end
       ) clauses;
-    List.iter (fun clause ->
-      let t = infer !env_ref (clause_to_expr clause) in
+    List.iter (fun (pats, body) ->
+      let t =
+        match sig_t_opt with
+        | Some sig_t when pats <> [] ->
+          (* Phase 73: signature-driven parameter typing (bidirectional check).
+             Push the signature's argument types into the parameter patterns
+             *before* inferring the body, so the body sees concrete parameter
+             types — this lets a shared record field (`f : Point -> Int; f p =
+             p.x`) and other type-directed expressions (`ESlice` container) be
+             resolved by the signature alone.  Purely additive: the final
+             `unify placeholder t` below imposes the same equalities anyway, so
+             the solution is unchanged; we only make them available earlier.
+             Mirrors the `ELam` branch (type the pats, extend the env, infer the
+             body) plus the pre-unification against the peeled arrow domains. *)
+          let typed_pats = List.map (type_pat !env_ref) pats in
+          let pat_types  = List.map fst typed_pats in
+          let bindings   = List.concat_map snd typed_pats in
+          (* Peel up to one arrow per parameter.  A signature with fewer arrows
+             than the clause has params (`f : Int; f x = …`) stops early and
+             pushes nothing — the mismatch then surfaces at the final unify. *)
+          let rec peel n t =
+            if n = 0 then ([], t)
+            else match normalize t with
+              | TFun (a, _, b) -> let (args, ret) = peel (n - 1) b in (a :: args, ret)
+              | _ -> ([], t)
+          in
+          let (sig_args, _sig_ret) = peel (List.length pats) sig_t in
+          (* Unify the equal-length prefix; sig_args may be shorter than the
+             parameter list (see above). *)
+          let rec zip_unify ps qs = match ps, qs with
+            | p :: ps', q :: qs' -> unify p q; zip_unify ps' qs'
+            | _ -> ()
+          in
+          zip_unify pat_types sig_args;
+          let body_t = infer (extend_vars !env_ref bindings) body in
+          List.fold_right (fun pt acc -> TFun (pt, [], acc)) pat_types body_t
+        | _ ->
+          infer !env_ref (clause_to_expr (pats, body))
+      in
       unify placeholder t
     ) clauses;
     (* Value restriction (Phase 66): a let-rec member is always a function;
