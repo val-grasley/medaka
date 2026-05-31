@@ -2801,6 +2801,32 @@ inc x = x
 f = eq (Box [inc]) (Box [inc])
 |}
 
+(* ── Diagnostics: shared tyvar naming (Phase 70) ──── *)
+
+(* assert_err_msg substr src — fails AND the rendered message contains substr. *)
+let assert_err_msg substr src () =
+  match check src with
+  | Ok _ ->
+    failwith (Printf.sprintf
+      "Expected type error, but program type-checked.\n\nSource:\n%s" src)
+  | Error e ->
+    let msg = pp_error e in
+    if not (contains_substr msg substr) then
+      failwith (Printf.sprintf
+        "Expected error message to contain %S, but got:\n  %s\n\nSource:\n%s"
+        substr msg src)
+
+(* A mismatch whose two sides each carry distinct free tyvars: the tuple side
+   has vars a,b and the function side has its own var.  With a shared naming
+   context the function's var prints as a third name (c); the old per-side
+   numbering reused "a", colliding two distinct vars.  Asserting a third name
+   "c" appears proves the two types share one naming context. *)
+let t_mismatch_shared_naming = assert_err_msg "c"
+  {|fst (a, b) = a
+g x = x 1
+bad = fst g
+|}
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -3262,5 +3288,8 @@ let () =
       test_case "satisfiable requirement ok"     `Quick t_impl_requires_sat;
       test_case "nested structural ok"           `Quick t_impl_requires_nested;
       test_case "err: transitive requirement gap" `Quick e_impl_requires_transitive;
+    ];
+    "diagnostics (Phase 70)", [
+      test_case "mismatch shares tyvar naming" `Quick t_mismatch_shared_naming;
     ];
   ]

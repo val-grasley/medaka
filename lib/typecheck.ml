@@ -339,9 +339,13 @@ let instantiate_method (Forall (vars, t)) track_ids =
 
 (* ── Pretty printing ────────────────────────────── *)
 
-let pp_mono t =
-  let names = Hashtbl.create 8 in
-  let counter = ref 0 in
+(* A naming context: a shared table + counter so the same tyvar gets the same
+   printed name across every type rendered against this context.  Pass one
+   context to several [pp_mono_in] calls (e.g. both sides of a mismatch) so two
+   distinct vars never collide on the same letter. *)
+let new_name_ctx () = (Hashtbl.create 8, ref 0)
+
+let pp_mono_in (names, counter) t =
   let name_of id =
     try Hashtbl.find names id
     with Not_found ->
@@ -378,11 +382,36 @@ let pp_mono t =
   in
   go 0 t
 
+let pp_mono t = pp_mono_in (new_name_ctx ()) t
+
+(* Render two types against one shared naming context, so a var that appears in
+   both prints identically and two distinct vars never share a letter. *)
+let pp_mono_pair a b =
+  let ctx = new_name_ctx () in
+  let sa = pp_mono_in ctx a in
+  let sb = pp_mono_in ctx b in
+  (sa, sb)
+
+(* Render a list of types space-separated, sharing one naming context across
+   the whole list (so distinct vars in an arg list don't all become "a"). *)
+let pp_monos args =
+  let ctx = new_name_ctx () in
+  String.concat " " (List.map (pp_mono_in ctx) args)
+
+(* Render two arg lists against one shared context, returning the two
+   space-separated strings — for errors that name two related impl heads. *)
+let pp_monos_pair args1 args2 =
+  let ctx = new_name_ctx () in
+  let s1 = String.concat " " (List.map (pp_mono_in ctx) args1) in
+  let s2 = String.concat " " (List.map (pp_mono_in ctx) args2) in
+  (s1, s2)
+
 let pp_scheme (Forall (_vars, t)) = pp_mono t
 
 let pp_error = function
   | TypeMismatch (a, b) ->
-    Printf.sprintf "Type mismatch: %s vs %s" (pp_mono a) (pp_mono b)
+    let sa, sb = pp_mono_pair a b in
+    Printf.sprintf "Type mismatch: %s vs %s" sa sb
   | InfiniteType (_, t) ->
     Printf.sprintf "Cannot construct infinite type involving %s" (pp_mono t)
   | UnboundVar n   -> Printf.sprintf "Unbound variable: %s" n
@@ -404,29 +433,29 @@ let pp_error = function
   | MissingMethod (iface, m) ->
     Printf.sprintf "Interface %s requires method '%s' but it is not provided" iface m
   | MethodTypeMismatch (m, expected, actual) ->
+    let se, sa = pp_mono_pair expected actual in
     Printf.sprintf "Method '%s': expected type %s but got %s"
-      m (pp_mono expected) (pp_mono actual)
+      m se sa
   | ImplArityMismatch (iface, expected, got) ->
     Printf.sprintf "Interface %s has %d type parameter(s) but impl provides %d type argument(s)"
       iface expected got
   | NoImplFound (iface, args) ->
     Printf.sprintf "No impl of %s for %s"
-      iface (String.concat " " (List.map pp_mono args))
+      iface (pp_monos args)
   | AmbiguousImpl (iface, args) ->
     Printf.sprintf "Ambiguous: multiple impls of %s for %s — use @ImplName to disambiguate"
-      iface (String.concat " " (List.map pp_mono args))
+      iface (pp_monos args)
   | UnknownImplName (iface, name, args) ->
     Printf.sprintf "No impl named '%s' found for %s %s"
-      name iface (String.concat " " (List.map pp_mono args))
+      name iface (pp_monos args)
   | MultipleDefaultImpls (iface, args) ->
     Printf.sprintf "Multiple default impls of %s for %s — at most one default allowed"
-      iface (String.concat " " (List.map pp_mono args))
+      iface (pp_monos args)
   | OverlappingImpls (iface, args1, args2) ->
+    let s1, s2 = pp_monos_pair args1 args2 in
     Printf.sprintf
       "Overlapping impls of %s: %s and %s can match the same type — mark the more general one `default impl`, or make them disjoint"
-      iface
-      (String.concat " " (List.map pp_mono args1))
-      (String.concat " " (List.map pp_mono args2))
+      iface s1 s2
   | OrphanImpl (iface, args, iface_mod, type_mod) ->
     let where =
       match iface_mod, type_mod with
@@ -441,17 +470,17 @@ let pp_error = function
     in
     Printf.sprintf
       "Orphan impl of %s for %s: an impl must be declared in the module that defines the interface or one of its head types%s, or wrap the type in a local newtype"
-      iface (String.concat " " (List.map pp_mono args)) where
+      iface (pp_monos args) where
   | MissingSuperImpl (iface, super, args) ->
+    let s = pp_monos args in
     Printf.sprintf
       "impl %s %s requires a superinterface impl 'impl %s %s', which is missing"
-      iface (String.concat " " (List.map pp_mono args))
-      super (String.concat " " (List.map pp_mono args))
+      iface s super s
   | MissingImplRequirement (iface, args, req_iface, req_args) ->
+    let s1, s2 = pp_monos_pair args req_args in
     Printf.sprintf
       "impl %s %s requires '%s %s', which has no impl"
-      iface (String.concat " " (List.map pp_mono args))
-      req_iface (String.concat " " (List.map pp_mono req_args))
+      iface s1 req_iface s2
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
   | MutLetInDo x ->
