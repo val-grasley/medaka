@@ -87,6 +87,7 @@ type module_type_exports = {
   te_interfaces : (ident * iface_info) list;
   te_impls     : impl_entry list;
   te_aliases   : (ident * (ident list * Ast.ty)) list;  (* public type alias expansions *)
+  te_types     : ident list;  (* public data/record/newtype/alias type-constructor names *)
 }
 
 (* ── Effects ─────────────────────────────────────── *)
@@ -113,6 +114,9 @@ type type_error =
   | UnknownImplName    of ident * ident * mono list (* iface_name, hint_name, concrete type args *)
   | MultipleDefaultImpls of ident * mono list      (* iface_name, concrete type args *)
   | OverlappingImpls   of ident * mono list * mono list  (* iface_name, type args of each conflicting impl *)
+  | OrphanImpl         of ident * mono list * string option * string option
+    (* iface_name, head type args, defining module of iface (if known),
+       defining module of a head type (if known) — orphan-instance check *)
   | MissingSuperImpl   of ident * ident * mono list  (* iface_name, super_iface, concrete super args *)
   | MissingImplRequirement of ident * mono list * ident * mono list
     (* selected iface + its concrete args, required iface + its concrete args *)
@@ -413,6 +417,21 @@ let pp_error = function
       iface
       (String.concat " " (List.map pp_mono args1))
       (String.concat " " (List.map pp_mono args2))
+  | OrphanImpl (iface, args, iface_mod, type_mod) ->
+    let where =
+      match iface_mod, type_mod with
+      | Some im, Some tm ->
+        Printf.sprintf " — declare it in module '%s' (which defines %s) or module '%s' (which defines the type)"
+          im iface tm
+      | Some im, None ->
+        Printf.sprintf " — declare it in module '%s' (which defines %s)" im iface
+      | None, Some tm ->
+        Printf.sprintf " — declare it in module '%s' (which defines the type)" tm
+      | None, None -> ""
+    in
+    Printf.sprintf
+      "Orphan impl of %s for %s: an impl must be declared in the module that defines the interface or one of its head types%s, or wrap the type in a local newtype"
+      iface (String.concat " " (List.map pp_mono args)) where
   | MissingSuperImpl (iface, super, args) ->
     Printf.sprintf
       "impl %s %s requires a superinterface impl 'impl %s %s', which is missing"
@@ -2093,6 +2112,81 @@ let check_coherence env =
   in
   pairs user_impls
 
+(* Orphan-instance check (Phase 68).  An impl declared in the current module is
+   an *orphan* when it lives in neither the interface's module nor any head
+   type's module.  Since the impl is checked *in the module that declares it*,
+   "impl is in the interface's module" reduces to "the interface is declared
+   locally", and likewise for the head types — so the check needs only local
+   knowledge plus the names exported by *imported user modules* (the prelude
+   `core` is never a known-module — the loader skips it — so prelude/runtime
+   names like Eq/Array are never "imported", which keeps the stdlib's
+   `impl Eq (Array a)` and single-file prelude overrides out of scope).
+
+   Rule: an *anonymous* impl `impl Iface T1 T2 …` is an orphan iff
+     (1) Iface is not declared locally, and
+     (2) no head-type constructor is declared locally, and
+     (3) Iface — or some head-type constructor — comes from an imported user
+         module.
+   Named (`@Name`) impls are an explicit opt-in escape hatch and are exempt. *)
+let rec tycons_of (t : Ast.ty) : ident list =
+  match t with
+  | Ast.TyCon n -> [n]
+  | Ast.TyVar _ -> []
+  | Ast.TyApp (f, a) -> tycons_of f @ tycons_of a
+  | Ast.TyFun (a, b) -> tycons_of a @ tycons_of b
+  | Ast.TyTuple ts -> List.concat_map tycons_of ts
+  | Ast.TyEffect (_, t) -> tycons_of t
+  | Ast.TyConstrained (cs, t) ->
+    List.concat_map (fun (_, args) -> List.concat_map tycons_of args) cs
+    @ tycons_of t
+
+(* Interface and type names declared by the implicit prelude (core).  Used to
+   strip prelude entries that leak into every module's te_interfaces (built from
+   the prelude-prepended `prog`): otherwise a module that merely *imports* a user
+   module would see Show/Eq/etc. attributed to it, and a legitimate prelude
+   override like `impl Show Int` would be mis-flagged as an orphan. *)
+let iface_names_of_decls decls =
+  List.filter_map (fun d -> match Ast.inner_decl d with
+    | DInterface { iface_name; _ } -> Some iface_name | _ -> None) decls
+let type_names_of_decls decls =
+  List.filter_map (fun d -> match Ast.inner_decl d with
+    | DData (_, n, _, _, _) | DRecord (_, n, _, _, _)
+    | DNewtype (_, n, _, _, _, _) | DTypeAlias (_, n, _, _) -> Some n
+    | _ -> None) decls
+
+let check_orphans ~known_modules ~user_prog env =
+  let prelude_ifaces = iface_names_of_decls Prelude.program in
+  let prelude_types  = type_names_of_decls Prelude.program in
+  (* names declared in this module *)
+  let local_ifaces = iface_names_of_decls user_prog in
+  let local_types  = type_names_of_decls user_prog in
+  (* name -> defining module, over imported user modules only (prelude excluded) *)
+  let iface_origin = List.concat_map (fun te ->
+    List.filter_map (fun (n, _) ->
+      if List.mem n prelude_ifaces then None else Some (n, te.te_mod_id))
+      te.te_interfaces) known_modules in
+  let type_origin = List.concat_map (fun te ->
+    List.filter_map (fun n ->
+      if List.mem n prelude_types then None else Some (n, te.te_mod_id))
+      te.te_types) known_modules in
+  List.iter (fun d -> match Ast.inner_decl d with
+    | DImpl { iface_name; type_args; impl_name = None; impl_loc; _ } ->
+      let heads = List.concat_map tycons_of type_args in
+      let iface_local = List.mem iface_name local_ifaces in
+      let type_local  = List.exists (fun c -> List.mem c local_types) heads in
+      let iface_imported = List.assoc_opt iface_name iface_origin in
+      let type_imported  = List.find_map (fun c -> List.assoc_opt c type_origin) heads in
+      if (not iface_local) && (not type_local)
+         && (iface_imported <> None || type_imported <> None)
+      then
+        fail_at impl_loc
+          (OrphanImpl
+             (iface_name,
+              List.map (from_ast_type ~aliases:env.aliases) type_args,
+              iface_imported, type_imported))
+    | _ -> ()
+  ) user_prog
+
 (* Push hardcoded impl_entry records for primitive types satisfying Num, Ord,
    and Semigroup.  These have no AST counterpart (so they don't go through
    check_impl) and exist only so operator constraints — e.g. `Num Int` raised
@@ -2785,6 +2879,7 @@ let typecheck_module
     List.iter (fun d -> register_impl ~seeded:false env (Ast.inner_decl d)) user_prog
   end;
   check_coherence env;
+  check_orphans ~known_modules ~user_prog env;
 
   let groups = group_fundefs prog in
   enter_level ();
@@ -2900,6 +2995,10 @@ let typecheck_module
         | _ -> false) user_prog
     ) !(!env.impls);
     te_aliases   = pub_aliases;
+    (* User-declared type-constructor names of this module (prelude excluded
+       since they come from user_prog) — consumed by the orphan-instance check
+       to tell whether an impl's head type originates in an imported module. *)
+    te_types     = type_names_of_decls user_prog;
   } in
   (te, all_schemes, warnings)
 

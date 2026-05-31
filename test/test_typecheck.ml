@@ -1170,6 +1170,81 @@ f = conv 1
 |}
   "f" "String"
 
+(* ── Phase 68: orphan-instance check ─────────────────────────────────────────
+   Orphans only arise across modules, so these drive [typecheck_module] directly
+   (in-memory, no temp files).  [check_modules] type-checks a list of
+   (module-id, source) pairs in dependency order, threading each module's public
+   exports into the next module's known-modules; it returns the first module that
+   errors, else Ok. *)
+let check_modules mods =
+  let rec go known = function
+    | [] -> Ok ()
+    | (mid, src) :: rest ->
+      (match
+         (try `Te (typecheck_module known mid (Desugar.desugar_program (parse src)))
+          with Type_error (e, loc) -> `Err (e, loc))
+       with
+       | `Err el -> Error el
+       | `Te (te, _, _) -> go (known @ [te]) rest)
+  in
+  go [] mods
+
+let assert_orphan mods () =
+  match check_modules mods with
+  | Error (OrphanImpl _, _) -> ()
+  | Error (e, _) ->
+    failwith ("Expected OrphanImpl error, got: " ^ pp_error e)
+  | Ok () -> failwith "Expected OrphanImpl error, but all modules type-checked"
+
+let assert_modules_ok mods () =
+  match check_modules mods with
+  | Ok () -> ()
+  | Error (e, _) ->
+    failwith ("Expected modules to type-check, got: " ^ pp_error e)
+
+let m_iface = ("a", "export interface Iface a where\n  m : a -> Int\n")
+let m_type  = ("b", "export data T = MkT\n")
+
+(* Orphan: `impl Iface T` declared in module c, which owns neither Iface (a) nor
+   T (b). *)
+let e_orphan_impl_rejected = assert_orphan
+  [ m_iface; m_type;
+    ("c", "impl Iface T where\n  m x = 0\n") ]
+
+(* Orphan on a *core* interface: `impl Show T` in c, where T comes from b.  The
+   prelude interface isn't an imported-user name, but the remote type T is — so
+   the te_types path catches it. *)
+let e_orphan_core_iface_remote_type = assert_orphan
+  [ m_type;
+    ("c", "impl Show T where\n  show x = \"T\"\n") ]
+
+(* OK: the impl lives in the module that defines the head type (interface
+   imported). *)
+let t_orphan_local_type_ok = assert_modules_ok
+  [ m_iface;
+    ("b", "export data T = MkT\n\nimpl Iface T where\n  m x = 0\n") ]
+
+(* OK: the impl lives in the module that defines the interface (type imported). *)
+let t_orphan_local_iface_ok = assert_modules_ok
+  [ m_type;
+    ("a", "export interface Iface a where\n  m : a -> Int\n\nimpl Iface T where\n  m x = 0\n") ]
+
+(* OK: a named impl is an explicit opt-in escape hatch — exempt from the check. *)
+let t_orphan_named_exempt = assert_modules_ok
+  [ m_iface; m_type;
+    ("c", "impl mine of Iface T where\n  m x = 0\n") ]
+
+(* OK (regression): a single-file prelude override — `impl Show Int` — has no
+   imported modules, so it is never an orphan. *)
+let t_orphan_prelude_override_ok = assert_type
+  {|impl Show Int where
+  show n = "int"
+
+f : String
+f = show 5
+|}
+  "f" "String"
+
 (* Error: method called with a type that has no impl *)
 let e_constraint_no_impl = assert_err
   {|data Blob = Blob
@@ -2874,6 +2949,12 @@ let () =
       test_case "coherence error has loc"       `Quick e_coherence_has_loc;
       test_case "default blesses specialization" `Quick t_default_blesses_specialization;
       test_case "disjoint multiparam ok"        `Quick t_disjoint_multiparam_no_overlap;
+      test_case "err: orphan impl rejected"     `Quick e_orphan_impl_rejected;
+      test_case "err: orphan core-iface remote type" `Quick e_orphan_core_iface_remote_type;
+      test_case "ok: impl in type's module"     `Quick t_orphan_local_type_ok;
+      test_case "ok: impl in iface's module"    `Quick t_orphan_local_iface_ok;
+      test_case "ok: named impl exempt"         `Quick t_orphan_named_exempt;
+      test_case "ok: prelude override"          `Quick t_orphan_prelude_override_ok;
     ];
     "constraint annotation syntax (Phase 20)", [
       test_case "basic annotation"             `Quick t_constraint_annot_basic;
