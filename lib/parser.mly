@@ -981,6 +981,7 @@ inner_impl_decl:
     { fun is_pub -> DImpl {
         is_pub;
         is_default = $1 <> None;
+        impl_loc   = Some (of_pos $startpos $endpos);
         iface_name = $3;
         type_args  = $4;
         impl_name  = None;
@@ -993,6 +994,7 @@ inner_impl_decl:
     { fun is_pub -> DImpl {
         is_pub;
         is_default = $1 <> None;
+        impl_loc   = Some (of_pos $startpos $endpos);
         iface_name = $5;
         type_args  = $6;
         impl_name  = Some $3;
@@ -1005,6 +1007,7 @@ inner_impl_decl:
     { fun is_pub -> DImpl {
         is_pub;
         is_default = $1 <> None;
+        impl_loc   = Some (of_pos $startpos $endpos);
         iface_name = $5;
         type_args  = $6;
         impl_name  = Some $3;
@@ -1019,6 +1022,7 @@ inner_impl_decl:
     { fun is_pub -> DImpl {
         is_pub;
         is_default = $1 <> None;
+        impl_loc   = Some (of_pos $startpos $endpos);
         iface_name = $3;
         type_args  = $4;
         impl_name  = None;
@@ -1030,6 +1034,7 @@ inner_impl_decl:
     { fun is_pub -> DImpl {
         is_pub;
         is_default = $1 <> None;
+        impl_loc   = Some (of_pos $startpos $endpos);
         iface_name = $5;
         type_args  = $6;
         impl_name  = Some $3;
@@ -1041,6 +1046,7 @@ inner_impl_decl:
     { fun is_pub -> DImpl {
         is_pub;
         is_default = $1 <> None;
+        impl_loc   = Some (of_pos $startpos $endpos);
         iface_name = $5;
         type_args  = $6;
         impl_name  = Some $3;

@@ -57,6 +57,13 @@ Solves Haskell's coherence problem without sacrificing inference:
 - One instance → resolved automatically
 - Multiple instances → one can be marked `default`, used unless annotated otherwise
 - Multiple instances, no default → compiler requires explicit annotation
+- Overlapping instances where one is *strictly more specific* (e.g.
+  `impl Eq (List Int)` alongside `impl Eq (List a)`) → resolved by
+  **most-specific-wins**: each call site commits the most specific matching
+  impl, with no `default` marker needed. Instances that overlap but where
+  neither is more specific (`Conv Int a` vs `Conv a Bool`), or exact
+  duplicates, are rejected at declaration time (reported at a source line).
+  `default` remains the tiebreaker when overlapping impls are incomparable.
 
 ```
 interface default Additive of Monoid Int where ...

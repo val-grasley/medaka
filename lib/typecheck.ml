@@ -74,6 +74,8 @@ type impl_entry = {
                               (Prelude.program), false for user-defined.
                               Used by typecheck_module's te_impls filter
                               so prelude impls aren't leaked across modules. *)
+  impl_loc        : Ast.loc option;  (* source loc of the impl decl, for
+                                        Phase 68 coherence-error reporting *)
 }
 
 (* Public type-level interface of a processed module *)
@@ -1945,7 +1947,7 @@ let check_impl env (decl : decl) = match decl with
 (* Record an impl declaration in env.impls so call-site constraint checking
    can find it.  Must run after register_interface so the interface exists. *)
 let register_impl ?(seeded=false) env = function
-  | DImpl { iface_name; type_args; impl_name; is_default; requires; _ } ->
+  | DImpl { iface_name; type_args; impl_name; is_default; requires; impl_loc; _ } ->
     if not (Hashtbl.mem env.interfaces iface_name) then
       fail (UnknownInterface iface_name);
     (* Share one TVar table across the head and the `requires` clause so that a
@@ -1962,6 +1964,7 @@ let register_impl ?(seeded=false) env = function
       impl_requires   = List.map (fun (iface, args) ->
                           (iface, List.map (from_ast_type ~aliases:env.aliases ~tbl) args)) requires;
       impl_seeded     = seeded;
+      impl_loc;
     } in
     env.impls := entry :: !(env.impls)
   | _ -> ()
@@ -1994,6 +1997,44 @@ let impls_overlap (xs : mono list) (ys : mono list) : bool =
   in
   List.length xs = List.length ys && List.for_all2 go xs ys
 
+(* One-directional cousin of [impls_overlap]: is [specific] an instance of
+   [general]?  Only the *general* side's TVars may be bound (they act as
+   wildcards); the *specific* side's TVars are rigid and match only the same id.
+   Binding is *consistent* — a general TVar bound twice must see structurally
+   equal types — so `subsumes ~general:[a; a] ~specific:[Int; Bool]` is false,
+   while `subsumes ~general:[List a] ~specific:[List Int]` is true.  This orders
+   overlapping impls by specificity (Phase 68 most-specific-wins). *)
+let subsumes ~(general : mono list) ~(specific : mono list) : bool =
+  let subst : (int, mono) Hashtbl.t = Hashtbl.create 8 in
+  let rec eq t1 t2 = match normalize t1, normalize t2 with
+    | TVar { contents = Unbound (i1, _) }, TVar { contents = Unbound (i2, _) } ->
+      i1 = i2
+    | TCon a, TCon b -> a = b
+    | TApp (f1, a1), TApp (f2, a2) -> eq f1 f2 && eq a1 a2
+    | TFun (a1, _, b1), TFun (a2, _, b2) -> eq a1 a2 && eq b1 b2
+    | TTuple a, TTuple b -> List.length a = List.length b && List.for_all2 eq a b
+    | _ -> false
+  in
+  let rec go g s = match normalize g, normalize s with
+    | TVar { contents = Unbound (id, _) }, s ->
+      (match Hashtbl.find_opt subst id with
+       | Some prev -> eq prev s
+       | None -> Hashtbl.replace subst id s; true)
+    | TCon a, TCon b -> a = b
+    | TApp (f1, a1), TApp (f2, a2) -> go f1 f2 && go a1 a2
+    | TFun (a1, _, b1), TFun (a2, _, b2) -> go a1 a2 && go b1 b2
+    | TTuple a, TTuple b -> List.length a = List.length b && List.for_all2 go a b
+    | _ -> false
+  in
+  List.length general = List.length specific && List.for_all2 go general specific
+
+(* [a] is *strictly* more specific than [b] when [b] subsumes [a] but not vice
+   versa.  Equal heads (mutual subsumption, e.g. `List a` / `List b`) and
+   incomparable partial overlaps (`Conv Int a` / `Conv a Bool`, neither way)
+   are *not* strict — so they remain genuine coherence conflicts. *)
+let strictly_more_specific (a : mono list) (b : mono list) : bool =
+  subsumes ~general:b ~specific:a && not (subsumes ~general:a ~specific:b)
+
 (* After all impls are registered, reject incoherent impl sets at declaration
    time.  Two impls for the same interface whose head types can match the same
    concrete type (see [impls_overlap]) are a problem only when the overlap is
@@ -2015,6 +2056,12 @@ let impls_overlap (xs : mono list) (ys : mono list) : bool =
    Seeded (prelude) impls are excluded: user impls are *meant* to overlap and
    override them (Phase 45.9), and the same prelude impl can appear more than
    once via multi-module imports. *)
+(* Best source location for a coherence conflict: prefer the second (later-
+   declared) impl, which is usually the offending duplicate/specialization; fall
+   back to the first, then to None when neither carries a loc. *)
+let coherence_loc e1 e2 =
+  match e2.impl_loc with Some _ as l -> l | None -> e1.impl_loc
+
 let check_coherence env =
   let user_impls =
     List.filter (fun e -> not e.impl_seeded) !(env.impls) in
@@ -2026,10 +2073,20 @@ let check_coherence env =
            && impls_overlap e1.impl_type_mono e2.impl_type_mono
         then match e1.impl_is_default, e2.impl_is_default with
           | true, true ->
-            fail (MultipleDefaultImpls (e1.impl_iface, e1.impl_type_mono))
+            fail_at (coherence_loc e1 e2)
+              (MultipleDefaultImpls (e1.impl_iface, e1.impl_type_mono))
           | false, false when e1.impl_name = None && e2.impl_name = None ->
-            fail (OverlappingImpls
-                    (e1.impl_iface, e1.impl_type_mono, e2.impl_type_mono))
+            (* Phase 68 most-specific-wins: a strict specialization (one head an
+               instance of the other, e.g. `List Int` vs `List a`) is coherent —
+               check_method_usages commits the most specific at each call site,
+               and Phase 69 dispatch honors that choice.  Only equal duplicates
+               and incomparable partial overlaps stay unresolvable. *)
+            if strictly_more_specific e1.impl_type_mono e2.impl_type_mono
+            || strictly_more_specific e2.impl_type_mono e1.impl_type_mono
+            then ()
+            else fail_at (coherence_loc e1 e2)
+                   (OverlappingImpls
+                      (e1.impl_iface, e1.impl_type_mono, e2.impl_type_mono))
           | _ -> ()  (* exactly one default, or a named impl disambiguates *)
       ) rest;
       pairs rest
@@ -2187,10 +2244,21 @@ let check_method_usages env =
           (match matching with
           | [e] -> commit e
           | entries ->
-            let defaults = List.filter (fun e -> e.impl_is_default) entries in
-            (match defaults with
+            (* Phase 68 most-specific-wins: commit the unique impl that every
+               other matching impl subsumes (the most specific one).  A `default`
+               impl is only the tiebreaker of last resort, when no unique
+               most-specific exists (incomparable overlap). *)
+            let most_specific = List.filter (fun e ->
+              List.for_all (fun e' ->
+                e == e' ||
+                subsumes ~general:e'.impl_type_mono ~specific:e.impl_type_mono
+              ) entries) entries in
+            (match most_specific with
              | [e] -> commit e
-             | _ -> fail_at loc (AmbiguousImpl (iface_name, concrete_args))))
+             | _ ->
+               (match List.filter (fun e -> e.impl_is_default) entries with
+                | [e] -> commit e
+                | _ -> fail_at loc (AmbiguousImpl (iface_name, concrete_args)))))
         | Some name ->
           let named = List.filter (fun e -> e.impl_name = Some name) matching in
           (match named with

@@ -79,6 +79,7 @@ let derive_eq_data type_name variants =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Eq";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -99,6 +100,7 @@ let derive_eq_record type_name fields =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Eq";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -137,6 +139,7 @@ let derive_show_data type_name variants =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Show";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -159,6 +162,7 @@ let derive_show_record type_name fields =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Show";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -195,6 +199,7 @@ let derive_ord_data type_name variants =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Ord";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -211,6 +216,7 @@ let derive_ord_record type_name fields =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Ord";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -254,6 +260,7 @@ let derive_num_newtype type_name con_name =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Num";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -288,6 +295,7 @@ let derive_generic_data type_name variants =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Generic";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -305,6 +313,7 @@ let derive_generic_record type_name fields =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Generic";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -316,6 +325,7 @@ let derive_generic_newtype type_name con_name =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Generic";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -389,6 +399,7 @@ let derive_arbitrary_data type_name variants =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Arbitrary";
     type_args  = [TyCon type_name];
     impl_name  = None;
@@ -405,6 +416,7 @@ let derive_arbitrary_record type_name fields =
   DImpl {
     is_pub     = true;
     is_default = false;
+    impl_loc   = None;
     iface_name = "Arbitrary";
     type_args  = [TyCon type_name];
     impl_name  = None;
