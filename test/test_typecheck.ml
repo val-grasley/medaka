@@ -1027,6 +1027,66 @@ f : Int
 f = empty
 |}
 
+(* Error: two anonymous, non-default impls partially overlap — `(List a)` and
+   `(List Int)` can both match a `List Int`, with no `default` or `@Name` to
+   pick one (Phase 68 coherence). *)
+let e_overlapping_anon_impls = assert_err
+  {|interface Tag a where
+  tag : a -> Int
+
+impl Tag (List a) where
+  tag xs = 0
+
+impl Tag (List Int) where
+  tag xs = 1
+|}
+
+(* Error: two anonymous impls for the identical head type. *)
+let e_overlapping_dup_impls = assert_err
+  {|interface Tag a where
+  tag : a -> Int
+
+impl Tag Int where
+  tag x = 0
+
+impl Tag Int where
+  tag x = 1
+|}
+
+(* OK: marking the more general impl `default` blesses the specialization —
+   `(List Int)` overrides the `(List a)` fallback (Phase 68). *)
+let t_default_blesses_specialization = assert_type
+  {|interface Tag a where
+  tag : a -> Int
+
+default impl Tag (List a) where
+  tag xs = 0
+
+impl Tag (List Int) where
+  tag xs = 1
+
+f : Int
+f = tag [1, 2, 3]
+|}
+  "f" "Int"
+
+(* OK: disjoint multi-arg heads don't overlap — `Conv Int String` and
+   `Conv Int Bool` agree on arg 1 but not arg 2, so no single type matches both. *)
+let t_disjoint_multiparam_no_overlap = assert_type
+  {|interface Conv a b where
+  conv : a -> b
+
+impl Conv Int String where
+  conv x = "n"
+
+impl Conv Int Bool where
+  conv x = True
+
+f : String
+f = conv 1
+|}
+  "f" "String"
+
 (* Error: method called with a type that has no impl *)
 let e_constraint_no_impl = assert_err
   {|data Blob = Blob
@@ -2426,6 +2486,12 @@ let () =
       test_case "default impl wins"         `Quick t_default_impl_wins_no_hint;
       test_case "err: unknown @Name"        `Quick e_at_name_unknown;
       test_case "err: multiple defaults"    `Quick e_multiple_default_impls;
+    ];
+    "impl coherence (Phase 68)", [
+      test_case "err: overlapping anon impls"   `Quick e_overlapping_anon_impls;
+      test_case "err: duplicate anon impls"     `Quick e_overlapping_dup_impls;
+      test_case "default blesses specialization" `Quick t_default_blesses_specialization;
+      test_case "disjoint multiparam ok"        `Quick t_disjoint_multiparam_no_overlap;
     ];
     "constraint annotation syntax (Phase 20)", [
       test_case "basic annotation"             `Quick t_constraint_annot_basic;

@@ -104,6 +104,7 @@ type type_error =
   | AmbiguousImpl      of ident * mono list        (* iface_name, concrete type args *)
   | UnknownImplName    of ident * ident * mono list (* iface_name, hint_name, concrete type args *)
   | MultipleDefaultImpls of ident * mono list      (* iface_name, concrete type args *)
+  | OverlappingImpls   of ident * mono list * mono list  (* iface_name, type args of each conflicting impl *)
   | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
   | MutLetInDo          of ident                   (* let mut inside a do block (only allowed in EBlock) *)
   | MutLetRequiresBlock of ident                   (* let mut in inline `let ... in ...` position; needs a block *)
@@ -349,6 +350,12 @@ let pp_error = function
   | MultipleDefaultImpls (iface, args) ->
     Printf.sprintf "Multiple default impls of %s for %s — at most one default allowed"
       iface (String.concat " " (List.map pp_mono args))
+  | OverlappingImpls (iface, args1, args2) ->
+    Printf.sprintf
+      "Overlapping impls of %s: %s and %s can match the same type — mark the more general one `default impl`, or make them disjoint"
+      iface
+      (String.concat " " (List.map pp_mono args1))
+      (String.concat " " (List.map pp_mono args2))
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
   | MutLetInDo x ->
@@ -1856,32 +1863,75 @@ let register_impl ?(seeded=false) env = function
     env.impls := entry :: !(env.impls)
   | _ -> ()
 
-(* Structural key for coherence: TVars become "_" (wildcard), so two default
-   impls for `impl F of Iface (List a)` and `impl G of Iface (List b)` are
-   caught as duplicates.  Does not catch partial overlap like (List Int) vs
-   (List a) — full overlap detection would require unification. *)
-let rec impl_type_pattern t = match normalize t with
-  | TVar _ -> "_"
-  | TCon n -> n
-  | TApp (a, b) -> "(" ^ impl_type_pattern a ^ " " ^ impl_type_pattern b ^ ")"
-  | TFun (a, _, b) -> impl_type_pattern a ^ " -> " ^ impl_type_pattern b
-  | TTuple ts   -> "(" ^ String.concat "," (List.map impl_type_pattern ts) ^ ")"
+(* Do the head types of two impls share a common instance?  Treats every
+   TVar in either impl as a unification variable (a wildcard), so the two
+   overlap iff there is one substitution unifying them position-by-position.
+   This catches partial overlap — `(List Int)` vs `(List a)` unify via a:=Int —
+   which the old structural-string key could not.  Var sharing *within* an impl
+   (e.g. `Convert a a`) is respected because the same source var is the same
+   ref/id; vars from different impls have distinct ids, so they never alias. *)
+let impls_overlap (xs : mono list) (ys : mono list) : bool =
+  let subst : (int, mono) Hashtbl.t = Hashtbl.create 8 in
+  let rec resolve t = match normalize t with
+    | TVar { contents = Unbound (id, _) } as tv ->
+      (match Hashtbl.find_opt subst id with Some t' -> resolve t' | None -> tv)
+    | t -> t
+  in
+  let rec go t1 t2 = match resolve t1, resolve t2 with
+    | TVar { contents = Unbound (id1, _) }, TVar { contents = Unbound (id2, _) }
+      when id1 = id2 -> true
+    | TVar { contents = Unbound (id, _) }, t
+    | t, TVar { contents = Unbound (id, _) } -> Hashtbl.replace subst id t; true
+    | TCon a, TCon b -> a = b
+    | TApp (f1, a1), TApp (f2, a2) -> go f1 f2 && go a1 a2
+    | TFun (a1, _, b1), TFun (a2, _, b2) -> go a1 a2 && go b1 b2
+    | TTuple a, TTuple b ->
+      List.length a = List.length b && List.for_all2 go a b
+    | _ -> false
+  in
+  List.length xs = List.length ys && List.for_all2 go xs ys
 
-(* After all impls are registered, ensure at most one default impl per
-   (iface, type_pattern) pair. *)
+(* After all impls are registered, reject incoherent impl sets at declaration
+   time.  Two impls for the same interface whose head types can match the same
+   concrete type (see [impls_overlap]) are a problem only when the overlap is
+   *unresolvable*.  An overlap is fine when the user has a disambiguation path:
+
+   - exactly one is a `default impl` — the explicitly-blessed fallback that a
+     more specific impl may override (Phase 68, conservative policy;
+     most-specific-wins is deferred to Phase 69's dispatch work);
+   - at least one is a *named* impl — the user selects it with `@Name` at the
+     call site (Phase 32).  (An ambiguous unhinted use is still caught lazily
+     at that call site by check_method_usages.)
+
+   The genuinely incoherent configurations, flagged here:
+   - two overlapping `default` impls — ambiguous fallback (MultipleDefaultImpls);
+   - two overlapping *anonymous, non-default* impls — no way to ever pick one
+     (OverlappingImpls).  This is the accidental duplicate / partial-overlap
+     case the stdlib's anonymous impls are prone to.
+
+   Seeded (prelude) impls are excluded: user impls are *meant* to overlap and
+   override them (Phase 45.9), and the same prelude impl can appear more than
+   once via multi-module imports. *)
 let check_coherence env =
-  let seen : (string, bool) Hashtbl.t = Hashtbl.create 8 in
-  List.iter (fun entry ->
-    if entry.impl_is_default then begin
-      let type_key = String.concat " "
-        (List.map impl_type_pattern entry.impl_type_mono) in
-      let key = entry.impl_iface ^ "\x00" ^ type_key in
-      if Hashtbl.mem seen key then
-        fail (MultipleDefaultImpls (entry.impl_iface, entry.impl_type_mono))
-      else
-        Hashtbl.add seen key true
-    end
-  ) !(env.impls)
+  let user_impls =
+    List.filter (fun e -> not e.impl_seeded) !(env.impls) in
+  let rec pairs = function
+    | [] | [_] -> ()
+    | e1 :: rest ->
+      List.iter (fun e2 ->
+        if e1.impl_iface = e2.impl_iface
+           && impls_overlap e1.impl_type_mono e2.impl_type_mono
+        then match e1.impl_is_default, e2.impl_is_default with
+          | true, true ->
+            fail (MultipleDefaultImpls (e1.impl_iface, e1.impl_type_mono))
+          | false, false when e1.impl_name = None && e2.impl_name = None ->
+            fail (OverlappingImpls
+                    (e1.impl_iface, e1.impl_type_mono, e2.impl_type_mono))
+          | _ -> ()  (* exactly one default, or a named impl disambiguates *)
+      ) rest;
+      pairs rest
+  in
+  pairs user_impls
 
 (* Push hardcoded impl_entry records for primitive types satisfying Num, Ord,
    and Semigroup.  These have no AST counterpart (so they don't go through

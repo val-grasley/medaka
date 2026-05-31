@@ -2797,7 +2797,7 @@ self-contained, no typechecker changes.
 
 **Done when.** Bogus constraint interface names are caught at resolve time.
 
-### Phase 68: Overlap / coherence checking for impls ⏳ TODO
+### Phase 68: Overlap / coherence checking for impls 🟡 PARTIAL
 
 **Goal.** Reject incoherent instance sets at *declaration* time, including
 partial overlaps like `impl Eq (List Int)` vs `impl Eq (List a)`.
@@ -2808,18 +2808,34 @@ exercise them, and runtime "first terminal wins" silently picks one. The
 existing `check_coherence` only runs for `default impl`s and its own comment
 says it misses partial overlap.
 
-**Where.** `lib/typecheck.ml`: `check_coherence` (~:1854-1879),
-`impl_type_pattern` (~:1858), `mono_matches` (~:1891).
+**Where.** `lib/typecheck.ml`: `impls_overlap` + `check_coherence` (~:1866),
+`mono_matches` (call-site matcher, ~:1900).
 
-**Scope.** Add a global per-interface overlap check using unification-based
-matching (two impls overlap if their head types unify). Decide policy: hard
-error vs. "most specific wins" — document it in `language-design.md`. Consider
-an orphan-instance check (impl defined in neither the interface's nor the
-type's module) once the module story supports it. Tests: duplicate and
-partial-overlap impls are flagged.
+**Done so far (conservative policy).** `check_coherence` now does a
+unification-based pairwise overlap check (`impls_overlap`: two impls overlap iff
+their head-type lists unify under one substitution, treating all TVars as
+wildcards). Policy is deliberately conservative — overlap is an error only when
+*unresolvable*: two overlapping `default` impls (`MultipleDefaultImpls`), or two
+overlapping **anonymous, non-default** impls (`OverlappingImpls`). Overlap is
+*allowed* when exactly one side is `default` (blessed specialization) or either
+side is **named** (`@Name` disambiguates — preserves Phase 32). Seeded (prelude)
+impls are excluded so user overrides (Phase 45.9) and multi-module duplicates
+don't false-positive. Tests in `test/test_typecheck.ml` group "impl coherence
+(Phase 68)".
+
+**Still TODO.**
+- **Most-specific-wins** (general specialization, inferring the specificity
+  order instead of requiring a `default` marker) — blocked on Phase 69's dispatch
+  work, since it's unsound until the runtime honors the impl the checker chose.
+  Document the policy in `language-design.md` when it lands.
+- **Source locations on the error** — `impl_entry` carries no `loc`, so the
+  message names the interface and both type-arg lists but can't point at a line.
+- **Orphan-instance check** (impl defined in neither the interface's nor the
+  type's module) — once the module story supports it.
 
 **Done when.** Overlapping impls are reported at declaration; resolution is no
-longer order-dependent.
+longer order-dependent. *(Declaration-time reporting: done. Order-independent
+most-specific resolution: pending Phase 69.)*
 
 ### Phase 69: Type-directed / return-position dispatch (dictionary passing) ⏳ TODO
 
