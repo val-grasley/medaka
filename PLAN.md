@@ -2705,10 +2705,25 @@ TyVar p…)]` (the type applied to its params) and
 **Done when.** Deriving on a parametric type produces a usable instance and
 round-trips through the existing derive tests.
 
-### Phase 64: Superinterface (`requires`) constraints are never enforced ⏳ TODO
+### Phase 64: Superinterface (`requires`) constraints are never enforced ✅ DONE
 
 **Goal.** `impl Ord C` without a corresponding `impl Eq C` is rejected when
 `interface Ord a requires Eq a`.
+
+**Outcome.** `iface_info` gained an `iface_supers : (ident * int list) list`
+field (super iface + its arg positions into the interface's params).
+`register_interface` now takes `super` and stores it; all three `DInterface`
+call sites pass it through. A new post-pass `check_superinterface_obligations`
+(beside `check_constraint_obligations`, sharing a `matching_impls` helper)
+walks every registered impl and, for each *direct* super, substitutes the
+impl's concrete head monos positionally and requires a matching impl — emitting
+`MissingSuperImpl`. Transitivity falls out from checking direct supers only
+(the presence of `impl B T` already implies B's own super check ran).
+Non-concrete impl heads are deferred like the other passes; that deferral is
+exactly what makes generic `Ord a => … eq …` bodies sound — the deferred
+`Eq a` obligation is entailed by the enforced `Ord` impl at the concrete call
+site (no constraint-solver change). The stdlib already pairs every `Ord`/`Eq`
+and `Monoid`/`Semigroup` impl, so it loads unchanged.
 
 **Why it matters now.** The stdlib interface hierarchy
 (`Ord`→`Eq`, `Monoid`→`Semigroup`, etc.) is meaningless if superclass

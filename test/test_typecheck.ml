@@ -1883,8 +1883,10 @@ let e_alias_mutual_recursive =
     "type A = B\ntype B = A\nf x = (x : A)\n"
 
 let t_newtype_deriving_num_type =
+  (* Num requires Eq (Phase 64); newtype deriving only supports Num/Generic, so
+     supply Eq explicitly to satisfy the superinterface obligation. *)
   assert_type
-    "newtype Dist = Dist Int deriving (Num)\nadd_dists : Dist -> Dist -> Dist\nadd_dists a b = add a b\n"
+    "newtype Dist = Dist Int deriving (Num)\nimpl Eq Dist where\n  eq a b = True\nadd_dists : Dist -> Dist -> Dist\nadd_dists a b = add a b\n"
     "add_dists" "Dist -> Dist -> Dist"
 
 (* ── Phase 22: Semigroup / Monoid ────────────────── *)
@@ -1917,11 +1919,15 @@ x = Foo 1 ++ Foo 2
 |}
 
 let t_monoid_string_empty =
+  (* Phase 64: MyMonoid requires MySemigroup, so the superinterface impl must be
+     present for impl MyMonoid String to be accepted. *)
   assert_type
     {|interface MySemigroup a where
     append : a -> a -> a
 interface MyMonoid a requires MySemigroup a where
     empty : a
+impl MySemigroup String where
+    append a b = a
 impl MyMonoid String where
     empty = ""
 x : String
@@ -2247,9 +2253,13 @@ f x y = add2 x y
 |}
   "f" "a -> a -> a"
 
-(* + on a user-defined Num type type-checks *)
+(* + on a user-defined Num type type-checks.  Num requires Eq (Phase 64), so
+   the type must also have an Eq impl. *)
 let t_eq52_custom_num_plus = assert_type
   {|data MyNum = MyNum Int
+
+impl Eq MyNum where
+  eq a b = True
 
 impl Num MyNum where
   add a b = a
@@ -2356,6 +2366,64 @@ main =
   let b = (convert 5 : Bool)
   ()
 |}
+
+(* ── Phase 64: superinterface (`requires`) obligations ── *)
+
+(* impl Child Int with no impl Parent Int → rejected. *)
+let e_super_missing = assert_err
+  {|interface Parent a where
+  p : a -> a
+interface Child a requires Parent a where
+  c : a -> a
+impl Child Int where
+  c x = x
+|}
+
+(* Superinterface impl present → accepted. *)
+let t_super_present = assert_type
+  {|interface Parent a where
+  p : a -> a
+interface Child a requires Parent a where
+  c : a -> a
+impl Parent Int where
+  p x = x
+impl Child Int where
+  c x = x
+f = c 1
+|}
+  "f" "Int"
+
+(* Transitive chain C requires B requires A: impl C Int + impl B Int but no
+   impl A Int → the missing A obligation is reported (at B's site). *)
+let e_super_transitive = assert_err
+  {|interface A a where
+  fa : a -> a
+interface B a requires A a where
+  fb : a -> a
+interface C a requires B a where
+  fc : a -> a
+impl B Int where
+  fb x = x
+impl C Int where
+  fc x = x
+|}
+
+(* Generic body using a Parent method type-checks at a type with both impls —
+   the deferred Parent obligation is entailed by the enforced Child impl. *)
+let t_super_generic_entailment = assert_type
+  {|interface Parent a where
+  p : a -> a
+interface Child a requires Parent a where
+  c : a -> a
+useParent : Child a => a -> a
+useParent x = p (c x)
+impl Parent Int where
+  p x = x
+impl Child Int where
+  c x = x
+f = useParent 1
+|}
+  "f" "Int"
 
 (* ── Runner ─────────────────────────────────────── *)
 
@@ -2780,5 +2848,11 @@ let () =
     "impl-key dispatch (Phase 69)", [
       test_case "return-position keys"  `Quick t_key_return_position;
       test_case "multi-param keys"      `Quick t_key_multiparam;
+    ];
+    "superinterface obligations (Phase 64)", [
+      test_case "err: missing super impl"      `Quick e_super_missing;
+      test_case "super impl present ok"        `Quick t_super_present;
+      test_case "err: transitive super gap"    `Quick e_super_transitive;
+      test_case "generic body entailment ok"   `Quick t_super_generic_entailment;
     ];
   ]

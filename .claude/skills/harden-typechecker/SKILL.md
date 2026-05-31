@@ -88,6 +88,15 @@ and *many* suites break at once — that's the signal your rule is too broad
 (usual culprit: not excluding seeded impls, or treating a legitimate
 named/`default` impl as a conflict).
 
+Distinguish that from **expected tightening**: making the checker reject more
+will break old `test_typecheck` cases that were written under the looser rule
+and are now genuinely unsound (e.g. a Phase 64 super-obligation rule fails
+existing `impl Ord T`-without-`impl Eq T` tests). A handful of such failures —
+each a `assert_type` program that *should* now error — is correct, not a
+regression: update those tests to satisfy the new obligation (or flip them to
+`assert_err`). The tell is the count and locus: a few related `test_typecheck`
+cases = tightening; the prelude/many-suites collapse = too broad.
+
 ## Diagnosing before fixing
 
 If you're not yet sure which stage or construct is at fault, use the

@@ -55,6 +55,10 @@ type iface_info = {
   iface_defaults  : ident list;             (* method names that have default impls *)
   iface_method_constraints : (ident * (ident * int list) list) list;
     (* method name → extra method-level constraints (besides the iface's own) *)
+  iface_supers : (ident * int list) list;
+    (* superinterface obligations (`interface Ord a requires Eq a`): each entry
+       is (super_iface, [param_ids]) where the ids index into iface_param_ids.
+       Phase 64: enforced at impl sites by check_superinterface_obligations. *)
 }
 
 (* Per-impl metadata used for constraint checking at call sites. *)
@@ -107,6 +111,7 @@ type type_error =
   | UnknownImplName    of ident * ident * mono list (* iface_name, hint_name, concrete type args *)
   | MultipleDefaultImpls of ident * mono list      (* iface_name, concrete type args *)
   | OverlappingImpls   of ident * mono list * mono list  (* iface_name, type args of each conflicting impl *)
+  | MissingSuperImpl   of ident * ident * mono list  (* iface_name, super_iface, concrete super args *)
   | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
   | MutLetInDo          of ident                   (* let mut inside a do block (only allowed in EBlock) *)
   | MutLetRequiresBlock of ident                   (* let mut in inline `let ... in ...` position; needs a block *)
@@ -363,6 +368,11 @@ let pp_error = function
       iface
       (String.concat " " (List.map pp_mono args1))
       (String.concat " " (List.map pp_mono args2))
+  | MissingSuperImpl (iface, super, args) ->
+    Printf.sprintf
+      "impl %s %s requires a superinterface impl 'impl %s %s', which is missing"
+      iface (String.concat " " (List.map pp_mono args))
+      super (String.concat " " (List.map pp_mono args))
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
   | MutLetInDo x ->
@@ -1677,7 +1687,7 @@ let register_alias env (name, params, rhs) =
    method's AST type to mono, then generalizes — yielding a fully polymorphic
    scheme per method.  Returns the method scheme list so check_program can
    bind them in the env before typing top-level functions. *)
-let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params, methods) =
+let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params, methods, super) =
   enter_level ();
   let param_vars = List.map (fun p -> (p, fresh_var ())) type_params in
   (* Each call to go_ty gets its own memoization table for method-level tvars.
@@ -1809,11 +1819,23 @@ let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params,
       end
     ) method_results
   in
+  (* Resolve each superinterface obligation's type-arg names to the bound ids of
+     the interface's own params, so check_superinterface_obligations can later
+     substitute an impl's concrete type args positionally. *)
+  let param_id_of_name = List.combine type_params param_ids in
+  let iface_supers =
+    List.map (fun (super_name, super_args) ->
+      let ids = List.filter_map
+        (fun n -> List.assoc_opt n param_id_of_name) super_args in
+      (super_name, ids)
+    ) super
+  in
   let info = {
     iface_param_ids = param_ids;
     iface_methods   = method_schemes;
     iface_defaults  = defaults;
     iface_method_constraints;
+    iface_supers;
   } in
   Hashtbl.replace env.interfaces iface_name info;
   List.iter (fun m ->
@@ -1975,6 +1997,21 @@ let rec mono_matches ~pattern ~concrete =
     List.for_all2 (fun p c -> mono_matches ~pattern:p ~concrete:c) ps cs
   | _ -> false
 
+(* Impls in env.impls whose head matches (iface_name, concrete_args), after the
+   Phase 45.9 preference (user impls trump seeded built-ins).  Shared by the
+   constraint-obligation and superinterface-obligation passes. *)
+let matching_impls env iface_name concrete_args =
+  let matching = List.filter (fun e ->
+    e.impl_iface = iface_name &&
+    List.length e.impl_type_mono = List.length concrete_args &&
+    List.for_all2
+      (fun p c -> mono_matches ~pattern:p ~concrete:c)
+      e.impl_type_mono concrete_args
+  ) !(env.impls) in
+  if List.exists (fun e -> not e.impl_seeded) matching
+  then List.filter (fun e -> not e.impl_seeded) matching
+  else matching
+
 (* After HM inference, check every recorded method call site against the impl
    registry.  Skips usages where types are still polymorphic or where the method
    scheme doesn't mention all interface params (uncommon). *)
@@ -2053,23 +2090,50 @@ let check_constraint_obligations env =
   List.iter (fun (iface_name, mono_args) ->
     let concrete = List.map normalize mono_args in
     if not (List.for_all is_concrete concrete) then ()
-    else begin
-      let matching = List.filter (fun e ->
-        e.impl_iface = iface_name &&
-        List.length e.impl_type_mono = List.length concrete &&
-        List.for_all2
-          (fun p c -> mono_matches ~pattern:p ~concrete:c)
-          e.impl_type_mono concrete
-      ) !(env.impls) in
-      (* Same Phase 45.9 preference: user impls trump seeded built-ins. *)
-      let matching =
-        if List.exists (fun e -> not e.impl_seeded) matching
-        then List.filter (fun e -> not e.impl_seeded) matching
-        else matching
-      in
-      if matching = [] then fail (NoImplFound (iface_name, concrete))
-    end
+    else if matching_impls env iface_name concrete = [] then
+      fail (NoImplFound (iface_name, concrete))
   ) !(env.constraint_obligations)
+
+(* Phase 64: enforce superinterface (`requires`) obligations at impl sites.
+   For `interface Ord a requires Eq a`, every concrete `impl Ord T` must be
+   accompanied by an `impl Eq T`.  We check each registered impl's *direct*
+   supers: transitivity falls out for free, because the existence of `impl B T`
+   already implies B's own super check (`impl A T`) ran when B's impl was
+   declared.  Runs as a post-pass over !(env.impls), so declaration order is
+   irrelevant — every impl is registered before any obligation is checked.
+
+   Impls with non-concrete heads (e.g. `impl Ord (List a)`) are deferred, like
+   the other constraint passes: their super obligation carries the impl's own
+   TVars, which a concrete call site grounds.  At that call site `Ord [T]` is
+   checked, and this pass already guaranteed the matching concrete `Eq [T]`
+   impl exists — which is also why a generic `Ord a => … eq …` body is sound
+   without any extra constraint-solver work (the deferred `Eq a` obligation is
+   entailed by the enforced `Ord` impl). *)
+let check_superinterface_obligations env =
+  let rec is_concrete = function
+    | TVar v -> (match !v with Unbound _ -> false | Link t -> is_concrete t)
+    | TCon _ -> true
+    | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
+    | TTuple ts -> List.for_all is_concrete ts
+  in
+  List.iter (fun entry ->
+    match Hashtbl.find_opt env.interfaces entry.impl_iface with
+    | None -> ()  (* unknown interface already reported by register_impl *)
+    | Some info ->
+      if List.length info.iface_param_ids <> List.length entry.impl_type_mono
+      then ()  (* arity mismatch already reported by check_impl *)
+      else begin
+        let subst = List.combine info.iface_param_ids entry.impl_type_mono in
+        List.iter (fun (super_name, param_ids) ->
+          let concrete = List.filter_map
+            (fun id -> List.assoc_opt id subst) param_ids in
+          if List.length concrete = List.length param_ids
+             && List.for_all is_concrete (List.map normalize concrete)
+             && matching_impls env super_name concrete = []
+          then fail (MissingSuperImpl (entry.impl_iface, super_name, concrete))
+        ) info.iface_supers
+      end
+  ) !(env.impls)
 
 (* ── Effect inference ────────────────────────────── *)
 
@@ -2323,8 +2387,8 @@ let check_program (prog : program) : (ident * scheme) list * string list =
       register_data ~aliases:env.aliases env (n, ps, [{ Ast.con_name = con; con_payload = Ast.ConPos [fty] }])
     | DData (_, n, ps, vs, _) -> register_data ~aliases:env.aliases env (n, ps, vs)
     | DRecord (_, n, ps, fs, _) -> register_record ~aliases:env.aliases env (n, ps, fs)
-    | DInterface { iface_name; type_params; methods; _ } ->
-      let ms = register_interface ~aliases:env.aliases env (iface_name, type_params, methods) in
+    | DInterface { iface_name; type_params; methods; super; _ } ->
+      let ms = register_interface ~aliases:env.aliases env (iface_name, type_params, methods, super) in
       (* Prepend so later (user-side) declarations come first in the list:
          List.assoc on the returned env finds them, and the fold_right below
          pushes them onto env.vars last (i.e., at the front), so name lookups
@@ -2396,6 +2460,7 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   (* Phase 4.6: verify method call sites have matching impls and constraints *)
   check_method_usages !env;
   check_constraint_obligations !env;
+  check_superinterface_obligations !env;
 
   (* Phase 5: effect inference and checking *)
   let user_extern_decls =
@@ -2517,8 +2582,8 @@ let typecheck_module
       register_data ~aliases:env.aliases env (n, ps, [{ Ast.con_name = con; con_payload = Ast.ConPos [fty] }])
     | DData (_, n, ps, vs, _) -> register_data ~aliases:env.aliases env (n, ps, vs)
     | DRecord (_, n, ps, fs, _) -> register_record ~aliases:env.aliases env (n, ps, fs)
-    | DInterface { iface_name; type_params; methods; _ } ->
-      let ms = register_interface ~aliases:env.aliases env (iface_name, type_params, methods) in
+    | DInterface { iface_name; type_params; methods; super; _ } ->
+      let ms = register_interface ~aliases:env.aliases env (iface_name, type_params, methods, super) in
       iface_method_schemes := ms @ !iface_method_schemes
     | DExtern (_, name, ast_ty) ->
       let scheme =
@@ -2567,6 +2632,7 @@ let typecheck_module
   ) prog;
   check_method_usages !env;
   check_constraint_obligations !env;
+  check_superinterface_obligations !env;
   let user_extern_decls =
     List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) prog
   in
@@ -2702,8 +2768,8 @@ let check_repl_decl ?(seeded=false) (env : env ref) (decls : decl list)
       register_data ~aliases:(!env).aliases !env (n, ps, [{ Ast.con_name = con; con_payload = Ast.ConPos [fty] }])
     | DData (_, n, ps, vs, _) -> register_data ~aliases:(!env).aliases !env (n, ps, vs)
     | DRecord (_, n, ps, fs, _) -> register_record ~aliases:(!env).aliases !env (n, ps, fs)
-    | DInterface { iface_name; type_params; methods; _ } ->
-      let ms = register_interface ~aliases:(!env).aliases !env (iface_name, type_params, methods) in
+    | DInterface { iface_name; type_params; methods; super; _ } ->
+      let ms = register_interface ~aliases:(!env).aliases !env (iface_name, type_params, methods, super) in
       iface_method_schemes := ms @ !iface_method_schemes
     | DExtern (_, name, ast_ty) ->
       let scheme =
@@ -2748,6 +2814,7 @@ let check_repl_decl ?(seeded=false) (env : env ref) (decls : decl list)
   ) decls;
   check_method_usages !env;
   check_constraint_obligations !env;
+  check_superinterface_obligations !env;
   let user_extern_decls =
     List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) decls
   in

@@ -53,6 +53,11 @@ Support files:
 dune build      # also regenerates lib/stdlib_content.ml from gen/embed.ml
 ```
 
+**In a git worktree** (path under `.claude/worktrees/`), plain `dune build`
+fails with `No rule found for alias .../default` — dune walks up to the parent
+checkout and treats the worktree as a subdir. Build/test with
+`dune build --root .` to pin the worktree as the project root.
+
 **Do NOT run `dune test` — it can hang.** Run individual suites instead:
 
 ```sh
