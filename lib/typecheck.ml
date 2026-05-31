@@ -130,6 +130,12 @@ let current_method_ref : Ast.resolved option ref option ref = ref None
 
 let fail e = raise (Type_error (e, !current_loc))
 
+(* Like [fail] but reports at an explicitly-captured location instead of the
+   global [!current_loc].  Used by the post-HM instance/constraint passes, which
+   run after the whole module is walked — by then [!current_loc] is stale, so
+   the call-site loc captured at record time must be threaded through. *)
+let fail_at loc e = raise (Type_error (e, loc))
+
 (* ── State: fresh vars + current level ──────────── *)
 
 let tyvar_counter = ref 0
@@ -395,11 +401,11 @@ type env = {
   interfaces    : (ident, iface_info) Hashtbl.t;  (* interface name → info *)
   method_iface  : (ident, ident) Hashtbl.t;    (* method name → interface name *)
   impls         : impl_entry list ref;          (* all registered impls *)
-  method_usages : (ident * ident * tyvar_info ref list * string option * Ast.resolved option ref option) list ref;  (* (method, iface, param_var_refs, impl_hint, method_occurrence_ref) *)
+  method_usages : (ident * ident * tyvar_info ref list * string option * Ast.resolved option ref option * Ast.loc option) list ref;  (* (method, iface, param_var_refs, impl_hint, method_occurrence_ref, call_site_loc) *)
   fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
     (* fn_name → [(iface_name, [bound_var_ids_in_scheme])] *)
-  constraint_obligations : (ident * mono list) list ref;
-    (* (iface_name, mono_args) accumulated at call sites, verified post-HM *)
+  constraint_obligations : (ident * mono list * Ast.loc option) list ref;
+    (* (iface_name, mono_args, call_site_loc) accumulated at call sites, verified post-HM *)
   type_ctors    : (ident, ident list) Hashtbl.t;  (* type name → ctor names in order *)
   ctor_fields   : (ident, (ident * mono) list) Hashtbl.t;  (* named-field ctor → ordered (field, mono_ty) *)
   aliases       : (ident, ident list * Ast.ty) Hashtbl.t;  (* type alias name → (params, rhs) *)
@@ -811,7 +817,7 @@ let rec infer env = function
         current_impl_hint := None;
         let mref = !current_method_ref in
         current_method_ref := None;
-        env.method_usages := (x, iface_name, param_vars, hint, mref) :: !(env.method_usages);
+        env.method_usages := (x, iface_name, param_vars, hint, mref, !current_loc) :: !(env.method_usages);
         (* Emit obligations for any extra method-level constraints
            (e.g. the `Monoid m` in `foldMap : Monoid m => (a -> m) -> t a -> m`). *)
         (match List.assoc_opt x info.iface_method_constraints with
@@ -820,7 +826,7 @@ let rec infer env = function
            List.iter (fun (iface, var_ids) ->
              let args = List.filter_map (fun id -> List.assoc_opt id sub) var_ids in
              if args <> [] then
-               env.constraint_obligations := (iface, args) :: !(env.constraint_obligations)
+               env.constraint_obligations := (iface, args, !current_loc) :: !(env.constraint_obligations)
            ) cs);
         t
       | None ->
@@ -832,7 +838,7 @@ let rec infer env = function
            List.iter (fun (iface, var_ids) ->
              let args = List.filter_map (fun id -> List.assoc_opt id sub) var_ids in
              if args <> [] then
-               env.constraint_obligations := (iface, args) :: !(env.constraint_obligations)
+               env.constraint_obligations := (iface, args, !current_loc) :: !(env.constraint_obligations)
            ) constraints);
         mono
     end
@@ -1385,7 +1391,7 @@ and binop_type env op l r =
     let a = fresh_var () in
     let r = match a with TVar r -> r | _ -> assert false in
     unify tl a; unify tr a;
-    env.method_usages := (method_name, iface_name, [r], None, None) :: !(env.method_usages);
+    env.method_usages := (method_name, iface_name, [r], None, None, !current_loc) :: !(env.method_usages);
     a
   in
   let iface_and_method_of op =
@@ -1988,7 +1994,7 @@ let check_method_usages env =
     | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
     | TTuple ts -> List.for_all is_concrete ts
   in
-  List.iter (fun (_method_name, iface_name, param_vars, hint_opt, occ_ref) ->
+  List.iter (fun (_method_name, iface_name, param_vars, hint_opt, occ_ref, loc) ->
     let n = n_iface_params iface_name in
     (* Phase 69: stamp the resolved impl's canonical key onto this method
        occurrence (if it carries an EMethodRef) so eval routes return-position
@@ -2019,7 +2025,7 @@ let check_method_usages env =
           then List.filter (fun e -> not e.impl_seeded) matching
           else matching
         in
-        if matching = [] then fail (NoImplFound (iface_name, concrete_args))
+        if matching = [] then fail_at loc (NoImplFound (iface_name, concrete_args))
         else match hint_opt with
         | None ->
           (match matching with
@@ -2028,13 +2034,13 @@ let check_method_usages env =
             let defaults = List.filter (fun e -> e.impl_is_default) entries in
             (match defaults with
              | [e] -> resolved_to e
-             | _ -> fail (AmbiguousImpl (iface_name, concrete_args))))
+             | _ -> fail_at loc (AmbiguousImpl (iface_name, concrete_args))))
         | Some name ->
           let named = List.filter (fun e -> e.impl_name = Some name) matching in
           (match named with
-          | [] -> fail (UnknownImplName (iface_name, name, concrete_args))
+          | [] -> fail_at loc (UnknownImplName (iface_name, name, concrete_args))
           | [e] -> resolved_to e
-          | _ -> fail (AmbiguousImpl (iface_name, concrete_args)))
+          | _ -> fail_at loc (AmbiguousImpl (iface_name, concrete_args)))
       end
     end
   ) !(env.method_usages)
@@ -2050,7 +2056,7 @@ let check_constraint_obligations env =
     | TApp (a, b) | TFun (a, _, b) -> is_concrete a && is_concrete b
     | TTuple ts -> List.for_all is_concrete ts
   in
-  List.iter (fun (iface_name, mono_args) ->
+  List.iter (fun (iface_name, mono_args, loc) ->
     let concrete = List.map normalize mono_args in
     if not (List.for_all is_concrete concrete) then ()
     else begin
@@ -2067,7 +2073,7 @@ let check_constraint_obligations env =
         then List.filter (fun e -> not e.impl_seeded) matching
         else matching
       in
-      if matching = [] then fail (NoImplFound (iface_name, concrete))
+      if matching = [] then fail_at loc (NoImplFound (iface_name, concrete))
     end
   ) !(env.constraint_obligations)
 

@@ -2648,7 +2648,7 @@ the stdlib track, not strictly by severity. Line numbers are approximate
 still reproduces before fixing** (write the failing test first); some may be
 partially addressed by the time an agent picks them up.
 
-### Phase 62: Instance/constraint errors point at the wrong source line ⏳ TODO
+### Phase 62: Instance/constraint errors point at the wrong source line ✅ DONE
 
 **Goal.** Make `No impl of Eq for C` / `Ambiguous impl` / unsatisfied-constraint
 errors point at the *call site*, not a random stdlib line.
@@ -2672,6 +2672,14 @@ reported `loc` matches the offending expression, not the prelude.
 
 **Done when.** A program with a missing impl reports the user's call-site
 line; all existing tests pass.
+
+**Follow-up nit (surfaced while doing 62).** The pre-existing
+`e_constraint_ambiguous` fixture (`test/test_typecheck.ml`) reuses the
+interface name `Monoid`, which collides with the prelude's `Monoid`. So its
+`assert_err` passes on a *duplicate-interface* error, not the ambiguity it
+claims to test. Phase 62 added a separate, clean `e_loc_ambiguous` fixture
+(fresh interface name `Pick`) that genuinely exercises `AmbiguousImpl`, but the
+old fixture should be renamed to a unique interface so it tests what it says.
 
 ### Phase 63: `deriving` is broken for parametric types ⏳ TODO
 

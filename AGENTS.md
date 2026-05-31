@@ -53,6 +53,13 @@ Support files:
 dune build      # also regenerates lib/stdlib_content.ml from gen/embed.ml
 ```
 
+**In a `.claude/worktrees/<name>` worktree, use `dune build --root .`** (and
+the same `--root .` for `@thorough`). Plain `dune build` fails with `No rule
+found for alias .../default`: the worktree lives physically inside the main
+checkout, so dune walks up to the parent repo and treats the worktree as a
+subdir. `--root .` pins the worktree as the project root. The built exes still
+run from `./_build/default/...` as below.
+
 **Do NOT run `dune test` — it can hang.** Run individual suites instead:
 
 ```sh
