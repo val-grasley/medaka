@@ -228,20 +228,17 @@ export impl Show Bool where
 export impl Show Unit where
   show _ = "()"
 
--- The element join recurses in a `where`-local helper (closing over the
--- impl's `Show a` dict lexically) rather than a top-level constrained
--- `showListItems : Show a => List a -> String`.  The top-level form works for
--- user code (the Phase 74 self-call dictionary-drop bug is fixed), but
--- `medaka test stdlib/core.mdk` prepends the prelude to itself, so a top-level
--- helper here is *duplicated* — two `Show (List a)` impls plus two helpers make
--- `show` on an element resolve to an ambiguous VMulti, which sends `++` into the
--- `append` method (`xs ++ ys`) and loops forever.  The `where`-local helper
--- introduces no duplicated top-level name, so it survives that doubling.
+-- Comma-joined element rendering for `Show (List a)`: a top-level recursive
+-- constrained helper.  Its self-call forwards the `Show a` dictionary and the
+-- impl body forwards its own `requires Show a` dict into it (Phase 74 follow-up
+-- fix to dictionary passing for recursive constrained functions).
+showListItems : Show a => List a -> String
+showListItems [] = ""
+showListItems [x] = show x
+showListItems (y::rest) = show y ++ ", " ++ showListItems rest
+
 export impl Show (List a) requires Show a where
-  show xs = "[" ++ go xs ++ "]" where
-    go [] = ""
-    go [x] = show x
-    go (y::rest) = show y ++ ", " ++ go rest
+  show xs = "[" ++ showListItems xs ++ "]"
 
 export impl Show (Option a) requires Show a where
   show None = "None"

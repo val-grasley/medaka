@@ -3430,15 +3430,19 @@ expected line* as `show (<expr>)` (smoke examples stay raw); `pp_value (VString)
   self-call to that function's dict (`RDict`). Regression tests:
   `test/test_eval.ml` "recursion" group (`rec Eq-constraint`,
   `rec Show-constraint`, `rec mutual constraint`).
-  - **The `Show (List a)` `where`-local helper in `stdlib/core.mdk` stays.** The
-    top-level form now works for user code, but it can't replace the helper:
-    `medaka test stdlib/core.mdk` prepends the prelude to the file under test —
-    which *is* the prelude — duplicating every top-level decl. A duplicated
-    top-level constrained helper makes `show` on a list element resolve to an
-    ambiguous `VMulti`, sending `++` into the `append` method (`xs ++ ys`) →
-    infinite loop. The `where`-local helper introduces no duplicated top-level
-    name, so it survives. (A real fix would be to stop the doctest harness
-    self-prepending the prelude when the file under test is itself the prelude.)
+  - **`Show (List a)` simplified to a top-level `showListItems` helper**, once
+    the doctest-harness duplication below was fixed.
+- **Doctest harness no longer prepends the prelude to the prelude.** ✅ FIXED
+  (2026-05-31). `medaka test stdlib/core.mdk` ran the file *and* prepended the
+  prelude — which is that same file — duplicating every top-level decl. With the
+  `Show (List a)` element join as a top-level constrained helper, the duplicate
+  made `show` on a list element resolve to an ambiguous `VMulti`, sending `++`
+  into the `append` method (`xs ++ ys`) → infinite loop. `Typecheck.check_program`
+  already skipped its internal prelude prepend for core via `program_is_core`;
+  `lib/doctest.ml` now mirrors that on the eval side (skip
+  `marked_prelude @ …` and the raw-prelude fallback prepend when
+  `program_is_core base_decls`). Smoke test: `test/test_doctest.ml`
+  "prelude self-doctest no dup".
 - **`showsPrec`-style precedence** for `deriving (Show)` and `Show
   Option`/`Result`: nested constructors render ambiguously (`Some (Some 1)` →
   `Some Some 1`). No doctest nests constructors, so non-blocking.

@@ -246,6 +246,24 @@ let t_multiple_examples () =
       failwith (Printf.sprintf "expected 3 passes, got total=%d passed=%d"
                   r.total r.passed))
 
+(* Smoke test for `medaka test stdlib/core.mdk`: the real prelude's own doctests
+   must run cleanly through `Doctest.run_file` (the exact path the CLI uses).
+   When the file under test is itself the prelude (`program_is_core` true) the
+   harness must NOT prepend the prelude — doing so duplicates every top-level
+   decl, and the prelude's top-level constrained `showListItems` helper then has
+   two copies, which (in `medaka test stdlib/core.mdk`) made `show` on a list
+   element resolve to an ambiguous VMulti, sending `++` into the `append` method
+   and looping forever.  Using the embedded `core.mdk` keeps this CWD-independent
+   and in lock-step with the actual prelude (its `filter`/etc. examples render
+   lists via `Show (List a)`, exercising the constrained helper end-to-end). *)
+let t_prelude_self_doctest_no_duplication () =
+  with_tmp_file Prelude_content.core_mdk (fun path ->
+    let r = Doctest.run_file path in
+    if r.passed = 0 || r.failed <> 0 || r.errors <> 0 then
+      failwith (Printf.sprintf
+        "expected prelude self-doctest to pass cleanly (no prelude duplication), \
+         got passed=%d failed=%d errors=%d" r.passed r.failed r.errors))
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () =
@@ -269,6 +287,7 @@ let () =
       Alcotest.test_case "no expected = crash-free"   `Quick t_no_expected_passes;
       Alcotest.test_case "block comment doctest runs"  `Quick t_block_comment_run;
       Alcotest.test_case "return-position dispatch"   `Quick t_return_position_dispatch;
+      Alcotest.test_case "prelude self-doctest no dup" `Quick t_prelude_self_doctest_no_duplication;
       Alcotest.test_case "parse error example"        `Quick t_parse_error_example;
       Alcotest.test_case "no doctests in file"        `Quick t_no_doctests_in_file;
       Alcotest.test_case "multiple examples"          `Quick t_multiple_examples;

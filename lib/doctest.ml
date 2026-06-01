@@ -220,12 +220,26 @@ let run_file (filename : string) : run_result =
        — eval then degrades to the old arg-tag dispatch. *)
     (* Phase 69.x-c: on a successful typecheck, dict-pass the marked prelude with
        the marked program and eval without re-prepending; on failure, fall back
-       to the original (unmarked) program with the legacy raw-prelude prepend. *)
+       to the original (unmarked) program with the legacy raw-prelude prepend.
+
+       When the file under test *is* the prelude (`medaka test stdlib/core.mdk`),
+       it already declares everything the prelude provides, so prepending the
+       prelude here would duplicate every top-level decl — two `Show (List a)`
+       impls, etc. — which corrupts dispatch (a duplicated constrained helper can
+       send `++` into an infinite `append` loop).  `Typecheck.check_program`
+       already skips its internal prelude prepend via `program_is_core`; mirror
+       that on the eval side so both stay symmetric. *)
+    let is_core = Typecheck.program_is_core base_decls in
     let (combined, prepend_prelude) =
       let marked = Method_marker.mark_with_prelude combined in
       match (try Some (Typecheck.check_program marked) with _ -> None) with
-      | Some _ -> (Dict_pass.run (Method_marker.marked_prelude @ marked), false)
-      | None   -> (combined, true)
+      | Some _ ->
+        let dict_passed =
+          if is_core then Dict_pass.run marked
+          else Dict_pass.run (Method_marker.marked_prelude @ marked)
+        in
+        (dict_passed, false)
+      | None -> (combined, not is_core)
     in
 
     (* Suppress side-effect output during doctest evaluation *)
