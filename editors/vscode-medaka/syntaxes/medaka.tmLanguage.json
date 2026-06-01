@@ -12,12 +12,13 @@
     { "include": "#interface-constraint" },
     { "include": "#impl-named-decl" },
     { "include": "#impl-decl" },
-    { "include": "#data-name" },
-    { "include": "#data-name-block" },
+    { "include": "#data-decl" },
+    { "include": "#block-constructor" },
     { "include": "#record-name" },
     { "include": "#type-param" },
     { "include": "#pipe-constructor" },
     { "include": "#deriving-iface" },
+    { "include": "#type-signature" },
     { "include": "#keyword" },
     { "include": "#bool-literal" },
     { "include": "#number" },
@@ -127,23 +128,61 @@
       }
     },
 
-    "data-name": {
-      "comment": "data TypeName — inline form: also captures first constructor after =",
-      "match": "\\b(data)\\s+([A-Z][a-zA-Z0-9_']*)(?:\\s+[a-z][a-zA-Z0-9_']*)*\\s*=\\s*([A-Z][a-zA-Z0-9_']*)",
-      "captures": {
-        "1": { "name": "keyword.declaration.medaka" },
-        "2": { "name": "entity.name.type.medaka" },
-        "3": { "name": "entity.name.function.medaka" }
-      }
+    "data-decl": {
+      "comment": "A `data`/`newtype` declaration line. Spans to end of line and highlights the type name (uppercase), header + constructor-argument type variables (lowercase), constructor names (uppercase after =/|), and argument type constructors. Keying on the `data` keyword is what makes it safe to color lowercase identifiers as type variables here without misfiring on value bindings. Block-form constructor clauses on following lines are handled by #block-constructor.",
+      "begin": "\\b(data|newtype)\\b",
+      "end": "$",
+      "beginCaptures": {
+        "1": { "name": "keyword.declaration.medaka" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#effect-annotation" },
+        { "include": "#constructor-clause" },
+        {
+          "comment": "the type name being declared, plus any argument type constructors not caught by a constructor clause",
+          "match": "\\b[A-Z][a-zA-Z0-9_']*\\b",
+          "name": "entity.name.type.medaka"
+        },
+        {
+          "comment": "type variables — header params and constructor-argument type vars",
+          "match": "\\b[a-z_][a-zA-Z0-9_']*\\b",
+          "name": "variable.parameter.type.medaka"
+        },
+        { "include": "#punctuation" }
+      ]
     },
 
-    "data-name-block": {
-      "comment": "data TypeName — block form (no = on this line)",
-      "match": "\\b(data)\\s+([A-Z][a-zA-Z0-9_']*)",
-      "captures": {
-        "1": { "name": "keyword.declaration.medaka" },
-        "2": { "name": "entity.name.type.medaka" }
-      }
+    "block-constructor": {
+      "comment": "Block-form data constructor on its own line: a leading `=` or `|` followed by an uppercase constructor. Line-leading `=`/`|` before an uppercase name occurs only in block-form data declarations — value bindings are `name = …`, guard arms start with a lowercase condition (`| otherwise = …`), and pipe continuations are `|>`. So this never fires outside a data declaration.",
+      "begin": "^\\s*(?=[=|]\\s*[A-Z])",
+      "end": "$",
+      "patterns": [{ "include": "#constructor-clause" }]
+    },
+
+    "constructor-clause": {
+      "comment": "`= Con args` or `| Con args` — a data constructor and its argument types. Shared by #data-decl and #block-constructor. Ends before the next `|`/`=` (next clause) or end of line.",
+      "begin": "([=|])\\s*([A-Z][a-zA-Z0-9_']*)",
+      "end": "(?=[=|]|$)",
+      "beginCaptures": {
+        "1": { "name": "keyword.operator.medaka" },
+        "2": { "name": "entity.name.function.medaka" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#effect-annotation" },
+        {
+          "comment": "argument type constructors",
+          "match": "\\b[A-Z][a-zA-Z0-9_']*\\b",
+          "name": "entity.name.type.medaka"
+        },
+        {
+          "comment": "argument type variables",
+          "match": "\\b[a-z_][a-zA-Z0-9_']*\\b",
+          "name": "variable.parameter.type.medaka"
+        },
+        { "include": "#punctuation" }
+      ]
     },
 
     "record-name": {
@@ -161,6 +200,38 @@
       "captures": {
         "1": { "name": "variable.parameter.type.medaka" }
       }
+    },
+
+    "type-signature": {
+      "comment": "Type context after a single `:` (top-level signatures `f : T`, inline annotations `(x : T)`, annotated `let x : T = …`). Everything here is a type, so lowercase identifiers are type variables and get their own scope. Begins at a lone `:` (not `::`), ends before a binding `=` (but not the `=>` constraint arrow) or at end of line — type signatures never wrap.",
+      "begin": "(?<!:):(?!:)",
+      "end": "(?==(?!>))|$",
+      "beginCaptures": {
+        "0": { "name": "keyword.operator.medaka" }
+      },
+      "patterns": [
+        { "include": "#comment" },
+        { "include": "#effect-annotation" },
+        {
+          "comment": "constraint interface name — an uppercase name applied to type vars and standing before the `=>` constraint arrow (e.g. `Eq a =>`). Colored like the interface declaration, not like an ordinary type.",
+          "match": "\\b[A-Z][a-zA-Z0-9_']*\\b(?=(?:\\s+[a-z][a-zA-Z0-9_']*)*\\s*(?:,|=>))",
+          "name": "entity.name.class.medaka"
+        },
+        {
+          "comment": "type constructors",
+          "match": "\\b[A-Z][a-zA-Z0-9_']*\\b",
+          "name": "entity.name.type.medaka"
+        },
+        {
+          "comment": "type variables — lowercase identifiers in type position",
+          "match": "\\b[a-z_][a-zA-Z0-9_']*\\b",
+          "name": "variable.parameter.type.medaka"
+        },
+        {
+          "name": "keyword.operator.medaka",
+          "match": "->|=>|\\|"
+        }
+      ]
     },
 
     "pipe-constructor": {
