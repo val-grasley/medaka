@@ -2360,8 +2360,14 @@ let t_interp_empty_ok =
     "a = \"start\"\nb = \"end\"\nx = \"\\{a}\\{b}\"\n"
     "x" "String"
 
-let e_interp_int_in_hole =
-  assert_err "x = \"value: \\{42}\"\n"
+(* A non-String hole no longer needs explicit `show`: the hole desugars to
+   `display e`, and `Display Int` renders it unquoted. *)
+let t_interp_int_in_hole =
+  assert_type "x = \"value: \\{42}\"\n" "x" "String"
+
+(* A type with no `Display` instance is still rejected (no silent fallback). *)
+let e_interp_no_display =
+  assert_err "data W = W\nx = \"\\{W}\"\n"
 
 (* ── Local let-rec (Phase 27) ───────────────────── *)
 
@@ -3535,7 +3541,8 @@ let () =
       test_case "result is String"         `Quick t_interp_type;
       test_case "string hole ok"           `Quick t_interp_string_hole;
       test_case "no holes plain"           `Quick t_interp_empty_ok;
-      test_case "err: Int in hole"         `Quick e_interp_int_in_hole;
+      test_case "Int hole auto-displays"   `Quick t_interp_int_in_hole;
+      test_case "err: no Display instance" `Quick e_interp_no_display;
     ];
     "local let-rec (Phase 27)", [
       test_case "self-recursive factorial" `Quick t_let_rec_factorial;

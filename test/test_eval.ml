@@ -788,6 +788,31 @@ let t_interp_triple_two_holes =
     "a = \"foo\"\nb = \"bar\"\nx = \"\"\"\\{a} and \\{b}\"\"\"\n"
     "x" (VString "foo and bar")
 
+(* Non-String hole auto-displays (no manual `show`); `Display Int` is unquoted. *)
+let t_interp_int_hole =
+  assert_val
+    "n = 42\nx = \"count: \\{n}\"\n"
+    "x" (VString "count: 42")
+
+(* A Char hole splices the character, not a quoted literal. *)
+let t_interp_char_hole =
+  assert_val
+    "c = 'z'\nx = \"got \\{c}\"\n"
+    "x" (VString "got z")
+
+(* Structural recursion: a String inside a list stays unquoted under Display,
+   so the hole renders `[a, b]`, not `["a", "b"]` (the Show form). *)
+let t_interp_nested_unquoted =
+  assert_val
+    "xs = [\"a\", \"b\"]\nx = \"items: \\{xs}\"\n"
+    "x" (VString "items: [a, b]")
+
+(* `deriving (Display)` on a user type works through interpolation. *)
+let t_interp_derived =
+  assert_val
+    "data Color = Red | Green deriving (Display)\nc = Green\nx = \"color: \\{c}\"\n"
+    "x" (VString "color: Green")
+
 (* Assert that lexing src raises Failure with a message containing substr *)
 let string_contains haystack needle =
   let hn = String.length haystack and nn = String.length needle in
@@ -1560,6 +1585,10 @@ let () =
       test_case "greeting expr"       `Quick t_interp_expr;
       test_case "triple basic"        `Quick t_interp_triple_basic;
       test_case "triple two holes"    `Quick t_interp_triple_two_holes;
+      test_case "Int hole displays"   `Quick t_interp_int_hole;
+      test_case "Char hole unquoted"  `Quick t_interp_char_hole;
+      test_case "nested unquoted"     `Quick t_interp_nested_unquoted;
+      test_case "derived Display"     `Quick t_interp_derived;
     ];
     "int literal errors", [
       test_case "overflow" `Quick t_int_overflow;

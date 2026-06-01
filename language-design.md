@@ -819,12 +819,12 @@ let multiline = "
   "
 ```
 
-String interpolation uses `\{expr}` — the same escape-sequence model as `\n`, `\t`, `\u{XXXX}`. The embedded expression must be a `String`; use `show` explicitly for other types:
+String interpolation uses `\{expr}` — the same escape-sequence model as `\n`, `\t`, `\u{XXXX}`. Each hole `\{e}` desugars to `display e`, so the embedded expression only needs a `Display` instance — no explicit `show`:
 ```
 greeting = "Hello, \{name}!"
-summary  = "Count: \{show n}, total: \{show total}"
+summary  = "Count: \{n}, total: \{total}"
 ```
-Unescaped `{` is always literal.
+`Display` is the display half of the Debug-vs-`Show` split: unlike `show`, it does *not* quote `String`/`Char` (interpolating a string splices its characters), and it renders every other type the same as `show` while recursing with `display` so nested strings stay unquoted. The base instances live in `core.mdk` (interpolation is core syntax, so they can't depend on an imported module); user types get one via `deriving (Display)`. A hole whose type has no `Display` instance is a type error. Unescaped `{` is always literal.
 
 **Why no indexing:** String indexing by integer is almost always a bug waiting to happen in non-ASCII text. Elm takes this approach and it's been validated in practice. Interact with strings through functions — honest about what strings actually are.
 

@@ -171,6 +171,69 @@ let derive_show_record type_name fields =
   }
 
 (* ------------------------------------------------------------------ *)
+(* Derive Display                                                      *)
+(* ------------------------------------------------------------------ *)
+(* Mirrors derive_show_* but recurses with `display` (no quoting), so a
+   derived type's nested strings stay unquoted when interpolated. *)
+
+let derive_display_data type_name variants =
+  let arms = List.map (fun v ->
+    let n = con_arity v in
+    let vars = List.init n (fun i -> Printf.sprintf "__a%d" i) in
+    let pat =
+      if n = 0 then PCon (v.con_name, [])
+      else PCon (v.con_name, List.map (fun x -> PVar x) vars)
+    in
+    let body =
+      if n = 0 then ELit (LString v.con_name)
+      else
+        let parts =
+          ELit (LString (v.con_name ^ " ")) ::
+          (List.concat_map (fun (i, var) ->
+            if i = 0 then [EApp (EVar "display", EVar var)]
+            else [ELit (LString " "); EApp (EVar "display", EVar var)]
+          ) (List.mapi (fun i v -> (i, v)) vars))
+        in
+        concat_strings parts
+    in
+    (pat, [], body)
+  ) variants in
+  let body = EMatch (EVar "__x", arms) in
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    impl_loc   = None;
+    iface_name = "Display";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [("display", [PVar "__x"], body)];
+  }
+
+let derive_display_record type_name fields =
+  let parts =
+    [ELit (LString (type_name ^ " {"))]
+    @ (List.concat_map (fun (i, f) ->
+        let prefix = if i = 0 then " " else ", " in
+        [ ELit (LString (prefix ^ f.field_name ^ " = "))
+        ; EApp (EVar "display", EFieldAccess (EVar "__r", f.field_name))
+        ]
+      ) (List.mapi (fun i f -> (i, f)) fields))
+    @ [ELit (LString " }")]
+  in
+  let body = concat_strings parts in
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    impl_loc   = None;
+    iface_name = "Display";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [("display", [PVar "__r"], body)];
+  }
+
+(* ------------------------------------------------------------------ *)
 (* Derive Ord                                                          *)
 (* ------------------------------------------------------------------ *)
 
@@ -429,6 +492,7 @@ let derive_for_data type_name params variants iface =
   match iface with
   | "Eq"        -> mk derive_eq_data
   | "Show"      -> mk derive_show_data
+  | "Display"   -> mk derive_display_data
   | "Ord"       -> mk derive_ord_data
   | "Arbitrary" -> mk derive_arbitrary_data
   | "Generic"   -> mk derive_generic_data
@@ -439,6 +503,7 @@ let derive_for_record type_name params fields iface =
   match iface with
   | "Eq"        -> mk derive_eq_record
   | "Show"      -> mk derive_show_record
+  | "Display"   -> mk derive_display_record
   | "Ord"       -> mk derive_ord_record
   | "Arbitrary" -> mk derive_arbitrary_record
   | "Generic"   -> mk derive_generic_record
@@ -512,6 +577,10 @@ let rec map_expr f e =
     | EListComp (body, quals) ->
         EListComp (map_expr f body, List.map (map_lc_qual f) quals)
     | EQuestion e0            -> EQuestion (map_expr f e0)
+    | EStringInterp parts ->
+        EStringInterp (List.map (function
+          | InterpStr s  -> InterpStr s
+          | InterpExpr e -> InterpExpr (map_expr f e)) parts)
     | EGuards arms ->
         EGuards (List.map (fun (gs, b) ->
           (List.map map_qual gs, map_expr f b)) arms)
@@ -720,11 +789,21 @@ let section_to_core = function
   | SecRight (op, e) -> ELam ([PVar "_s"], EBinOp (op, EVar "_s", e))
   | SecLeft (e, op)  -> ELam ([PVar "_s"], EBinOp (op, e, EVar "_s"))
 
+(* `"a\{e}b"` → `"a" ++ display e ++ "b"`.  The `display` calls flow through
+   the marker (→ EMethodRef) and dict-passing like any other interface-method
+   reference, so user `Display` instances are honoured.  Run as part of
+   rewrite_sugar, after map_expr has desugared each hole's inner expr. *)
+let interp_to_core parts =
+  concat_strings (List.map (function
+    | InterpStr s  -> ELit (LString s)
+    | InterpExpr e -> EApp (EVar "display", e)) parts)
+
 let rewrite_sugar = function
-  | EGuards arms   -> guards_to_core arms
-  | EFunction arms -> ELam ([PVar "__fn_arg"], EMatch (EVar "__fn_arg", arms))
-  | ESection s     -> section_to_core s
-  | e              -> e
+  | EGuards arms       -> guards_to_core arms
+  | EFunction arms     -> ELam ([PVar "__fn_arg"], EMatch (EVar "__fn_arg", arms))
+  | ESection s         -> section_to_core s
+  | EStringInterp parts -> interp_to_core parts
+  | e                  -> e
 
 let desugar_sugar prog = List.map (map_decl rewrite_sugar) prog
 
