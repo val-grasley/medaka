@@ -335,7 +335,8 @@ module.exports = grammar({
     /* data Bool = True | False
      * data Option a = Some a | None
      * data Shape
-     *   | Circle Float           */
+     *   = Circle Float
+     *   | Rectangle Float Float    */
     data_decl: $ => seq(
       optional($._export_marker),
       'data',
@@ -344,7 +345,7 @@ module.exports = grammar({
       choice(
         seq('=', $.data_variant, repeat(seq('|', $.data_variant)),
             optional($.deriving_clause), $._newline),
-        seq($._indent, repeat1($.data_variant_line), $._dedent,
+        seq($._indent, $.data_variant_head, repeat($.data_variant_line), $._dedent,
             optional($.deriving_clause), $._newline),
       ),
     ),
@@ -360,6 +361,14 @@ module.exports = grammar({
     data_variant: $ => seq(
       field('name', $.upper),
       repeat(field('arg', $.ty_atom)),
+    ),
+
+    /* First variant of the indented block form, introduced by `=`. */
+    data_variant_head: $ => seq(
+      '=',
+      field('name', $.upper),
+      repeat(field('arg', $.ty_atom)),
+      $._newline,
     ),
 
     data_variant_line: $ => seq(

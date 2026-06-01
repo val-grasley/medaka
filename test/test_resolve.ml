@@ -60,7 +60,7 @@ let v_match = assert_ok
 
 let v_match_with_data = assert_ok
 {|data Tree
-  | Leaf
+  = Leaf
   | Node Tree Tree
 
 size t =

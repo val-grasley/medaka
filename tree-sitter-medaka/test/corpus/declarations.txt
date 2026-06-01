@@ -150,7 +150,7 @@ Data declaration — block form
 ==================
 
 data Shape
-  | Circle Float
+  = Circle Float
   | Rectangle Float Float
 
 ---
@@ -158,7 +158,7 @@ data Shape
 (source_file
   (data_decl
     name: (upper)
-    (data_variant_line
+    (data_variant_head
       name: (upper)
       arg: (ty_atom
         (upper)))

@@ -1034,7 +1034,7 @@ let t_rec_pat_rest = assert_val
 (* ── Named-field variants (Phase 39) ───────────────────────────────────── *)
 
 let named_event_src = {|data Event
-  | Click { x : Int, y : Int }
+  = Click { x : Int, y : Int }
   | Scroll Int
 |}
 

@@ -935,13 +935,27 @@ inline_deriving:
 (* ── Data declarations ───────────────────────────────── *)
 
 inner_data_decl:
-  (* Block form: DEDENT, then mandatory newlines (from handle_indent), then optional deriving *)
-  | DATA UPPER list(IDENT) INDENT nonempty_list(data_variant_line) DEDENT newlines option(deriving_clause)
-    { fun vis -> DData (vis, $2, $3, $5, Option.value ~default:[] $8) }
+  (* Block form (Haskell-style): the first variant is introduced by `=`, the
+     rest by `|`, one per indented line:
+         data Rep
+           = RCon String (List Rep)
+           | RInt Int
+     DEDENT is followed by mandatory newlines (from handle_indent), then
+     optional deriving. *)
+  | DATA UPPER list(IDENT) INDENT data_variant_head list(data_variant_line) DEDENT newlines option(deriving_clause)
+    { fun vis -> DData (vis, $2, $3, $5 :: $6, Option.value ~default:[] $9) }
   (* Inline form: optional deriving before the terminating newlines *)
   | DATA UPPER list(IDENT) EQUAL separated_nonempty_list(PIPE, data_variant_inline) option(inline_deriving) newlines
     { fun vis -> DData (vis, $2, $3, $5, Option.value ~default:[] $6) }
 
+(* First variant of the block form, introduced by `=`. *)
+data_variant_head:
+  | EQUAL UPPER list(ty_atom) newlines
+    { { con_name = $2; con_payload = Ast.ConPos $3 } }
+  | EQUAL UPPER LBRACE separated_nonempty_list(COMMA, inline_field_decl) RBRACE newlines
+    { { con_name = $2; con_payload = Ast.ConNamed $4 } }
+
+(* Subsequent variants of the block form, introduced by `|`. *)
 data_variant_line:
   | PIPE UPPER list(ty_atom) newlines
     { { con_name = $2; con_payload = Ast.ConPos $3 } }

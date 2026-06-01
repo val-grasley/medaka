@@ -159,7 +159,7 @@ let d_inline     = mk "data Bool = True | False\n"
 let d_param      = mk "data Option a = Some a | None\n"
 let d_block      = mk
 {|data Shape
-  | Circle Float
+  = Circle Float
   | Rectangle Float Float
 |}
 

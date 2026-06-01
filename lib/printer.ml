@@ -11,6 +11,11 @@ let create () = { buf = Buffer.create 256; indent = 0 }
 let contents p = Buffer.contents p.buf
 let write p s = Buffer.add_string p.buf s
 
+(* A `data` declaration is kept on one line when it fits within this many
+   columns (counting its current indentation); longer ones split to the
+   one-variant-per-line form. *)
+let max_data_width = 80
+
 let newline p =
   Buffer.add_char p.buf '\n';
   for _ = 1 to p.indent do Buffer.add_string p.buf "  " done
@@ -39,7 +44,9 @@ let print_lit p = function
 let rec print_type p t = match t with
   | TyCon n | TyVar n -> write p n
   | TyApp (a, b) ->
-    print_type_atom p a;
+    (* Type application is left-associative: `Result e a` = `(Result e) a`, so
+       the left operand needs no parens even when it is itself a TyApp. *)
+    print_type_app_lhs p a;
     write p " ";
     print_type_atom p b
   | TyFun (a, b) ->
@@ -82,6 +89,12 @@ and print_type_atom p t = match t with
 and print_type_fun_lhs p t = match t with
   | TyFun _ -> write p "("; print_type p t; write p ")"
   | _ -> print_type p t
+
+(* Left operand of a TyApp: left-associative, so a nested TyApp prints bare
+   (`Result e a`, not `(Result e) a`); anything else parenthesizes as an atom. *)
+and print_type_app_lhs p t = match t with
+  | TyApp _ -> print_type p t
+  | _ -> print_type_atom p t
 
 (* ── Patterns ────────────────────────────────────── *)
 
@@ -127,7 +140,9 @@ let rec print_pat p = function
     print_lit p hi
 
 and print_pat_atom p pat = match pat with
-  | PVar _ | PWild | PLit _ | PCon (_, []) | PTuple _ | PList _ | PRec _ | PRng _ ->
+  (* PCon with args already self-parenthesizes in print_pat (`(Some x)`), so it
+     is atom-safe at any arity; wrapping again would double up: `((Some x))`. *)
+  | PVar _ | PWild | PLit _ | PCon _ | PTuple _ | PList _ | PRec _ | PRng _ ->
     print_pat p pat
   | _ -> write p "("; print_pat p pat; write p ")"
 
@@ -198,7 +213,10 @@ and print_expr_raw p = function
   | EApp (f, x) ->
     print_expr p prec_app f;
     write p " ";
-    print_expr p (prec_app + 1) x
+    (* Grammar: `expr_app expr_postfix` — an argument is at least postfix-level,
+       so a unary operand (e.g. `f (-x)`) must be parenthesized or it reparses
+       as a binary operator (`f - x`). *)
+    print_expr p prec_postfix x
   | ELam (pats, body) ->
     List.iteri (fun i pat ->
       if i > 0 then write p " ";
@@ -215,7 +233,7 @@ and print_expr_raw p = function
     let (args, body) = unwrap_lams [] rhs in
     write p (if mut then "let mut " else "let ");
     write p f;
-    List.iter (fun pat -> write p " "; print_pat p pat) args;
+    List.iter (fun pat -> write p " "; print_pat_atom p pat) args;
     write p " = ";
     print_expr p prec_top body;
     write p " in ";
@@ -239,7 +257,7 @@ and print_expr_raw p = function
       List.iter (fun (pats, rhs) ->
         newline p; write p name;
         List.iter (fun pat ->
-          write p " "; print_pat p pat
+          write p " "; print_pat_atom p pat
         ) pats;
         (match strip_loc rhs with
          | EGuards arms -> print_guard_arms p arms
@@ -499,6 +517,47 @@ let print_use_path p = function
     write p (String.concat "." names);
     write p " as "; write p alias
 
+(* A single `data` variant: `Con`, `Con T1 T2`, or `Con { f : T, … }`
+   (without the leading `| `).  Shared by the one-line and multi-line forms. *)
+let print_variant p v =
+  write p v.con_name;
+  match v.con_payload with
+  | Ast.ConPos tys ->
+    List.iter (fun t -> write p " "; print_type_atom p t) tys
+  | Ast.ConNamed fields ->
+    write p " { ";
+    List.iteri (fun i f ->
+      if i > 0 then write p ", ";
+      write p f.Ast.field_name; write p " : ";
+      print_type p f.Ast.field_type
+    ) fields;
+    write p " }"
+
+let print_derives p = function
+  | []      -> ()
+  | derives ->
+    write p "deriving (";
+    write p (String.concat ", " derives);
+    write p ")"
+
+(* Render a `data` declaration on one line: `[vis ]data Name params = V1 | V2
+   [deriving (…)]`.  Returns the string so the caller can measure its width. *)
+let data_one_line vis n params variants derives =
+  let p = create () in
+  (match vis with
+   | Ast.DataPublic   -> write p "public export "
+   | Ast.DataAbstract -> write p "export "
+   | Ast.DataPrivate  -> ());
+  write p "data "; write p n;
+  List.iter (fun pa -> write p " "; write p pa) params;
+  write p " =";
+  List.iteri (fun i v ->
+    write p (if i = 0 then " " else " | ");
+    print_variant p v
+  ) variants;
+  if derives <> [] then begin write p " "; print_derives p derives end;
+  contents p
+
 let rec print_decl p = function
   | DTypeSig (pub, n, t) ->
     if pub then write p "export\n";
@@ -556,34 +615,29 @@ let rec print_decl p = function
     ) bindings
 
   | DData (vis, n, params, variants, derives) ->
-    (match vis with
-     | Ast.DataPublic   -> write p "public export\n"
-     | Ast.DataAbstract -> write p "export\n"
-     | Ast.DataPrivate  -> ());
-    write p "data "; write p n;
-    List.iter (fun pa -> write p " "; write p pa) params;
-    indented p (fun () ->
-      List.iteri (fun i v ->
-        if i > 0 then newline p;
-        write p "| "; write p v.con_name;
-        (match v.con_payload with
-         | Ast.ConPos tys ->
-           List.iter (fun t -> write p " "; print_type_atom p t) tys
-         | Ast.ConNamed fields ->
-           write p " { ";
-           List.iteri (fun i f ->
-             if i > 0 then write p ", ";
-             write p f.Ast.field_name; write p " : ";
-             print_type p f.Ast.field_type
-           ) fields;
-           write p " }")
-      ) variants
-    );
-    if derives <> [] then begin
-      newline p;
-      write p "deriving (";
-      write p (String.concat ", " derives);
-      write p ")"
+    let one_line = data_one_line vis n params variants derives in
+    if p.indent * 2 + String.length one_line <= max_data_width then
+      (* Short enough: keep it on one line, `data T = A | B`. *)
+      write p one_line
+    else begin
+      (* Too wide: vis on its own line, one variant per line. *)
+      (match vis with
+       | Ast.DataPublic   -> write p "public export\n"
+       | Ast.DataAbstract -> write p "export\n"
+       | Ast.DataPrivate  -> ());
+      write p "data "; write p n;
+      List.iter (fun pa -> write p " "; write p pa) params;
+      indented p (fun () ->
+        List.iteri (fun i v ->
+          if i > 0 then newline p;
+          (* Haskell-style: `=` introduces the first variant, `|` the rest. *)
+          write p (if i = 0 then "= " else "| "); print_variant p v
+        ) variants
+      );
+      if derives <> [] then begin
+        newline p;
+        print_derives p derives
+      end
     end
 
   | DRecord (vis, n, params, fields, derives) ->

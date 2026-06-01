@@ -226,7 +226,7 @@ let t_some_int = assert_type
 
 let t_user_adt = assert_type
   {|data Tree a
-  | Leaf
+  = Leaf
   | Node (Tree a) a (Tree a)
 
 singleton x = Node Leaf x Leaf
@@ -234,7 +234,7 @@ singleton x = Node Leaf x Leaf
 
 let t_size = assert_type
   {|data Tree a
-  | Leaf
+  = Leaf
   | Node (Tree a) a (Tree a)
 
 size t =
@@ -2486,7 +2486,7 @@ let e_let_else_last_stmt =
 (* ── Named-field variants (Phase 39) ────────────── *)
 
 let named_event =
-  "data Event\n  | Click { x : Int, y : Int }\n  | Scroll Int\n"
+  "data Event\n  = Click { x : Int, y : Int }\n  | Scroll Int\n"
 
 let t_named_ctor_create =
   assert_type

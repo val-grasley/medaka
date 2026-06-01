@@ -124,6 +124,87 @@ let rt_function_preserved () =
   if not (contains "function" out) then
     failwith (Printf.sprintf "function keyword not preserved:\n%s" out)
 
+(* An as-pattern in argument position must stay parenthesized as a whole
+   (`g (acc@Some _) = acc`); a bare `acc@(Some _)` fails to reparse. *)
+let rt_as_pattern_arg () =
+  let _ = format
+    "f xs = g xs where\n  g (acc@Some _) = acc\n  g None = None\n"
+  in ()
+
+let id_as_pattern_arg = idempotent
+  "f xs = g xs where\n  g (acc@Some _) = acc\n  g None = None\n"
+
+(* A negative (unary-minus) argument must be parenthesized: `randomInt (-1000) 1000`.
+   Without parens it reparses as the binary `randomInt - 1000 1000`. *)
+let rt_negative_arg () =
+  let out = format "x = randomInt (-1000) 1000\n" in
+  if not (contains "(-1000)" out) then
+    failwith (Printf.sprintf "Negative arg lost its parens:\n%s" out)
+
+let id_negative_arg = idempotent "x = randomInt (-1000) 1000\n"
+
+(* impl_loc is a source position and must be ignored by the round-trip AST
+   comparison: when a preceding decl reflows (here a single-line data decl
+   expands to multiple lines), the impl moves to a different line. *)
+let rt_impl_loc_reflow () =
+  let _ = format
+    "data Foo = A | B\nexport impl Eq Int where\n  eq a b = a == b\n"
+  in ()
+
+(* A constructor pattern in argument position parenthesizes exactly once:
+   `f (Some x)`, never `f ((Some x))`. *)
+let rt_no_double_paren_con () =
+  let out = format "f (Some x) = x\nf None = 0\n" in
+  if contains "((" out then
+    failwith (Printf.sprintf "Constructor pattern double-parenthesized:\n%s" out)
+
+let id_con_pattern_arg = idempotent "f (Some x) = x\nf None = 0\n"
+
+(* A nested type application prints left-associatively: `Result e a`,
+   never `(Result e) a`. *)
+let rt_no_paren_type_app () =
+  let out = format "g : Result e a -> Int\ng x = 0\n" in
+  if contains "(Result" out then
+    failwith (Printf.sprintf "Type application left operand parenthesized:\n%s" out)
+
+let id_type_app = idempotent "g : Result e a -> Int\ng x = 0\n"
+
+(* A short `data` declaration stays on one line rather than splitting to the
+   one-variant-per-line form. *)
+let rt_short_data_one_line () =
+  let out = format "public export data Option a = Some a | None\n" in
+  if contains "\n  |" out then
+    failwith (Printf.sprintf "Short data decl was split to multiline:\n%s" out);
+  if not (contains "data Option a = Some a | None" out) then
+    failwith (Printf.sprintf "Single-line data form not produced:\n%s" out)
+
+let id_short_data = idempotent "public export data Option a = Some a | None\n"
+
+(* A short data decl with inline `deriving` also stays on one line. *)
+let id_short_data_deriving =
+  idempotent "data C = Red | RGB Int Int Int deriving (Generic)\n"
+
+(* A data declaration too wide for one line splits to one variant per line. *)
+let rt_wide_data_splits () =
+  let out = format
+    "data Rep = RCon String (List Rep) | RRecord String (List RField) \
+     | RInt Int | RFloat Float | RString String | RBool Bool | RChar Char | RUnit\n"
+  in
+  (* Haskell-style: first variant introduced by `=`, the rest by `|`. *)
+  if not (contains "\n  = RCon" out) then
+    failwith (Printf.sprintf "Wide data decl was not split:\n%s" out);
+  if not (contains "\n  | RRecord" out) then
+    failwith (Printf.sprintf "Wide data decl rest-variants not piped:\n%s" out)
+
+let id_wide_data = idempotent
+  "data Rep = RCon String (List Rep) | RRecord String (List RField) \
+   | RInt Int | RFloat Float | RString String | RBool Bool | RChar Char | RUnit\n"
+
+(* The Haskell-style multiline block form (`= ` first, `| ` rest) parses and
+   round-trips unchanged. *)
+let id_block_data = idempotent
+  "data Tree a\n  = Leaf\n  | Node (Tree a) a (Tree a)\n  | Tip Int Int Int Int Int Int Int Int\n"
+
 (* ── Entry point ─────────────────────────────────── *)
 
 let () =
@@ -138,6 +219,14 @@ let () =
       Alcotest.test_case "guards"        `Quick id_guards;
       Alcotest.test_case "section"       `Quick id_section;
       Alcotest.test_case "function kw"   `Quick id_function;
+      Alcotest.test_case "as-pattern arg" `Quick id_as_pattern_arg;
+      Alcotest.test_case "negative arg"   `Quick id_negative_arg;
+      Alcotest.test_case "con pattern arg" `Quick id_con_pattern_arg;
+      Alcotest.test_case "type app"       `Quick id_type_app;
+      Alcotest.test_case "short data"     `Quick id_short_data;
+      Alcotest.test_case "short data deriving" `Quick id_short_data_deriving;
+      Alcotest.test_case "wide data"      `Quick id_wide_data;
+      Alcotest.test_case "block data"     `Quick id_block_data;
     ];
     "comment preservation", [
       Alcotest.test_case "top of file"   `Quick cp_top;
@@ -153,5 +242,12 @@ let () =
       Alcotest.test_case "guards preserved"   `Quick rt_guards_preserved;
       Alcotest.test_case "section preserved"  `Quick rt_section_preserved;
       Alcotest.test_case "function preserved" `Quick rt_function_preserved;
+      Alcotest.test_case "as-pattern arg"     `Quick rt_as_pattern_arg;
+      Alcotest.test_case "negative arg"       `Quick rt_negative_arg;
+      Alcotest.test_case "impl_loc reflow"    `Quick rt_impl_loc_reflow;
+      Alcotest.test_case "no double paren con" `Quick rt_no_double_paren_con;
+      Alcotest.test_case "no paren type app"  `Quick rt_no_paren_type_app;
+      Alcotest.test_case "short data one line" `Quick rt_short_data_one_line;
+      Alcotest.test_case "wide data splits"    `Quick rt_wide_data_splits;
     ];
   ]

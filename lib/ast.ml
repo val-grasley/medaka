@@ -512,7 +512,9 @@ let rec strip_locs_decl = function
   | DInterface d ->
     DInterface { d with methods = List.map strip_locs_iface_method d.methods }
   | DImpl d ->
-    DImpl { d with methods = List.map (fun (n, ps, e) -> (n, ps, strip_locs_expr e)) d.methods }
+    DImpl { d with
+            impl_loc = None;  (* source position; not part of structural identity *)
+            methods = List.map (fun (n, ps, e) -> (n, ps, strip_locs_expr e)) d.methods }
   | DProp d -> DProp { d with prop_body = strip_locs_expr d.prop_body }
   | DBench d -> DBench { d with bench_body = strip_locs_expr d.bench_body }
   | DAttrib (attrs, d) -> DAttrib (attrs, strip_locs_decl d)

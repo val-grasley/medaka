@@ -47,8 +47,9 @@ public export data Result e a = Ok a | Err e
 {- | Structural equality.  Reflexive, symmetric, transitive.
    `==` on primitives is a builtin and does *not* dispatch through this
    interface; the impls below exist so generic `Eq a => ...` code works. -}
-export interface Eq a where
-    eq : a -> a -> Bool
+export
+interface Eq a where
+  eq : a -> a -> Bool
 
 -- | Negation of `eq`.  Standalone so impls cannot make it disagree with `eq`.
 export
@@ -56,92 +57,94 @@ neq : Eq a => a -> a -> Bool
 neq x y = not (eq x y)
 
 export impl Eq Int where
-    eq a b = a == b
+  eq a b = a == b
 
 export impl Eq Float where
-    eq a b = a == b
+  eq a b = a == b
 
 export impl Eq Bool where
-    eq a b = a == b
+  eq a b = a == b
 
 export impl Eq String where
-    eq a b = a == b
+  eq a b = a == b
 
 export impl Eq Char where
-    eq a b = a == b
+  eq a b = a == b
 
 export impl Eq Unit where
-    eq _ _ = True
+  eq _ _ = True
 
 export impl Eq (List a) requires Eq a where
-    eq [] [] = True
-    eq (x::xs) (y::ys) = eq x y && eq xs ys
-    eq _ _ = False
+  eq [] [] = True
+  eq (x::xs) (y::ys) = eq x y && eq xs ys
+  eq _ _ = False
 
 export impl Eq (Option a) requires Eq a where
-    eq None None = True
-    eq (Some x) (Some y) = eq x y
-    eq _ _ = False
+  eq None None = True
+  eq (Some x) (Some y) = eq x y
+  eq _ _ = False
 
 export impl Eq (Result e a) requires Eq e, Eq a where
-    eq (Ok x) (Ok y) = eq x y
-    eq (Err x) (Err y) = eq x y
-    eq _ _ = False
+  eq (Ok x) (Ok y) = eq x y
+  eq (Err x) (Err y) = eq x y
+  eq _ _ = False
 
 {- | Associative combine.  Backs the `++` operator and is the parent of
    `Monoid`.  Implementations *must* satisfy
        append a (append b c) == append (append a b) c. -}
-export interface Semigroup a where
-    append : a -> a -> a
+export
+interface Semigroup a where
+  append : a -> a -> a
 
 export impl Semigroup (List a) where
-    append xs ys = xs ++ ys
+  append xs ys = xs ++ ys
 
 export impl Semigroup String where
-    append s1 s2 = s1 ++ s2
+  append s1 s2 = s1 ++ s2
 
 {- | A `Semigroup` with an identity element.  Laws:
        append empty x == x       (left identity)
        append x empty == x       (right identity) -}
-export interface Monoid a requires Semigroup a where
-    empty : a
+export
+interface Monoid a requires Semigroup a where
+  empty : a
 
 export impl Monoid (List a) where
-    empty = []
+  empty = []
 
 export impl Monoid String where
-    empty = ""
+  empty = ""
 
 {- | Total ordering.  `compare` is the primitive method; the comparison
    helpers all have defaults expressed through it, but impls may override
    any of them for performance or to encode special semantics (e.g. NaN). -}
-export interface Ord a requires Eq a where
-    compare : a -> a -> Ordering
-    lt  : a -> a -> Bool
-    gt  : a -> a -> Bool
-    lte : a -> a -> Bool
-    gte : a -> a -> Bool
-    min : a -> a -> a
-    max : a -> a -> a
-
-    lt x y = match compare x y
-        Lt => True
-        _  => False
-    gt x y = match compare x y
-        Gt => True
-        _  => False
-    lte x y = match compare x y
-        Gt => False
-        _  => True
-    gte x y = match compare x y
-        Lt => False
-        _  => True
-    min x y = match compare x y
-        Gt => y
-        _  => x
-    max x y = match compare x y
-        Lt => y
-        _  => x
+export
+interface Ord a requires Eq a where
+  compare : a -> a -> Ordering
+  lt : a -> a -> Bool
+  gt : a -> a -> Bool
+  lte : a -> a -> Bool
+  gte : a -> a -> Bool
+  min : a -> a -> a
+  max : a -> a -> a
+  lt x y = match compare x y
+    Lt => True
+    _ => False
+  gt x y = match compare x y
+    Gt => True
+    _ => False
+  lte x y = match compare x y
+    Gt => False
+    _ => True
+  gte x y = match compare x y
+    Lt => False
+    _ => True
+  min x y = match compare x y
+    Gt => y
+    _ => x
+  max x y = match compare x y
+    Lt => y
+    _ => x
 
 {- | `clamp lo hi x` constrains `x` into the inclusive interval `[lo, hi]`.
    Precondition: `lo <= hi`; otherwise the result is `lo`.
@@ -157,23 +160,24 @@ clamp : Ord a => a -> a -> a -> a
 clamp lo hi = min hi >> max lo
 
 export impl Ord Int where
-    compare a b = if a < b then Lt else if a > b then Gt else Eq
+  compare a b = if a < b then Lt else if a > b then Gt else Eq
 
 export impl Ord Float where
-    compare a b = if a < b then Lt else if a > b then Gt else Eq
+  compare a b = if a < b then Lt else if a > b then Gt else Eq
 
 export impl Ord String where
-    compare a b = if a < b then Lt else if a > b then Gt else Eq
+  compare a b = if a < b then Lt else if a > b then Gt else Eq
 
 export impl Ord Char where
-    compare a b = if a < b then Lt else if a > b then Gt else Eq
+  compare a b = if a < b then Lt else if a > b then Gt else Eq
 
 {- | Human-readable string rendering.
    Impls live in their owning module: `Show Int`/`Show Float` live in
    `core` once an `intToString` extern lands; `Show String` and `Show Char`
    in `string.mdk`; `Show (List a)` in `list.mdk`. -}
-export interface Show a where
-    show : a -> String
+export
+interface Show a where
+  show : a -> String
 
 {- | Numeric arithmetic.  Backs `+`, `-`, `*`, `/` for user-defined numeric
    types; the operators are hard-wired for `Int` and `Float` and only
@@ -181,101 +185,103 @@ export interface Show a where
 
    `div` is truncating for `Int` and true division for `Float`, matching
    the host operator. -}
-export interface Num a requires Eq a where
-    add    : a -> a -> a
-    sub    : a -> a -> a
-    mul    : a -> a -> a
-    div    : a -> a -> a
-    negate : a -> a
-    abs    : a -> a
-    signum : a -> a
-    fromInt: Int -> a
+export
+interface Num a requires Eq a where
+  add : a -> a -> a
+  sub : a -> a -> a
+  mul : a -> a -> a
+  div : a -> a -> a
+  negate : a -> a
+  abs : a -> a
+  signum : a -> a
+  fromInt : Int -> a
 
 export impl Num Int where
-    add a b = a + b
-    sub a b = a - b
-    mul a b = a * b
-    div a b = a / b
-    negate a = 0 - a
-    abs a = if a < 0 then 0 - a else a
-    signum a = if a > 0 then 1 else if a < 0 then 0 - 1 else 0
-    fromInt x = x
+  add a b = a + b
+  sub a b = a - b
+  mul a b = a * b
+  div a b = a / b
+  negate a = 0 - a
+  abs a = if a < 0 then 0 - a else a
+  signum a = if a > 0 then 1 else if a < 0 then 0 - 1 else 0
+  fromInt x = x
 
 export impl Num Float where
-    add a b = a + b
-    sub a b = a - b
-    mul a b = a * b
-    div a b = a / b
-    negate a = 0.0 - a
-    abs a = if a < 0.0 then 0.0 - a else a
-    signum a = if a > 0.0 then 1.0 else if a < 0.0 then 0.0 - 1.0 else 0.0
-    fromInt x = intToFloat x
+  add a b = a + b
+  sub a b = a - b
+  mul a b = a * b
+  div a b = a / b
+  negate a = 0.0 - a
+  abs a = if a < 0.0 then 0.0 - a else a
+  signum a = if a > 0.0 then 1.0 else if a < 0.0 then 0.0 - 1.0 else 0.0
+  fromInt x = intToFloat x
 
 {- | Types with a smallest and largest representable value.
    Impls for `Int`, `Char` etc. land once the corresponding extern
    constants are added; the interface itself is here so generic
    bounded-type code can be written today. -}
-export interface Bounded a where
-    minBound : a
-    maxBound : a
+export
+interface Bounded a where
+  minBound : a
+  maxBound : a
 
 {- | Structure-preserving map (a.k.a. Functor).  Laws:
        map identity      == identity
        map (g `compose` f) == map g `compose` map f -}
-export interface Mappable f where
-    map : (a -> b) -> f a -> f b
+export
+interface Mappable f where
+  map : (a -> b) -> f a -> f b
 
 export impl Mappable List where
-    map _ []      = []
-    map f (x::xs) = f x :: map f xs
+  map _ [] = []
+  map f (x::xs) = f x :: map f xs
 
 export impl Mappable Option where
-    map f (Some a) = Some (f a)
-    map _ None     = None
+  map f (Some a) = Some (f a)
+  map _ None = None
 
 {- `default` so a user-defined alternative (e.g. one that maps over the
    `Err` side) can coexist without forcing every call site to qualify. -}
 export default impl Mappable (Result e) where
-    map f (Ok a) = Ok (f a)
-    map _ e      = e
+  map f (Ok a) = Ok (f a)
+  map _ e = e
 
 {- | `Mappable` plus the ability to lift a plain value and apply a wrapped
    function to a wrapped argument.  Laws (identity, homomorphism,
    interchange, composition) follow Haskell's `Applicative`. -}
-export interface Applicative f requires Mappable f where
-    pure : a -> f a
-    ap   : f (a -> b) -> f a -> f b
+export
+interface Applicative f requires Mappable f where
+  pure : a -> f a
+  ap : f (a -> b) -> f a -> f b
 
 export impl Applicative List where
-    pure a = [a]
-
-    {- List of functions × list of arguments → cross product of applications.
+  pure a = [a]
+  ap [] _ = []
+  ap (f::fs) xs = map f xs ++ ap fs xs
+{- List of functions × list of arguments → cross product of applications.
        Equivalent to `concatMap (f => map f xs) fs` but spelled out so we
        don't depend on `concatMap` at this point in the file. -}
-    ap []      _  = []
-    ap (f::fs) xs = map f xs ++ ap fs xs
 
 export impl Applicative Option where
-    pure a = Some a
-
-    ap None _              = None
-    ap _    None           = None
-    ap (Some f) (Some a)   = Some (f a)
+  pure a = Some a
+  ap None _ = None
+  ap _ None = None
+  ap (Some f) (Some a) = Some (f a)
 
 {- `default` (like `Mappable (Result e)`) so an error-accumulating
    alternative — a `Validation`-style applicative — can coexist. -}
 export default impl Applicative (Result e) where
-    pure a = Ok a
-
-    ap (Ok f)  (Ok a)  = Ok (f a)
-    ap (Err e) _       = Err e
-    ap _       (Err e) = Err e
+  pure a = Ok a
+  ap (Ok f) (Ok a) = Ok (f a)
+  ap (Err e) _ = Err e
+  ap _ (Err e) = Err e
 
 {- | Sequencing of computations, threading the result.  Equivalent to
    Haskell's `>>=` with arguments swapped to match the readable
    "value first, then action" reading order.  Drives `do`-notation. -}
-export interface Thenable m requires Applicative m where
-    andThen : m a -> (a -> m b) -> m b
+export
+interface Thenable m requires Applicative m where
+  andThen : m a -> (a -> m b) -> m b
 
 -- | `andThen` with arguments flipped — the Haskell/Scala `flatMap`.
 export
@@ -298,18 +304,18 @@ unless : Thenable m => Bool -> m Unit -> m Unit
 unless b m = if b then pure () else m
 
 export impl Thenable List where
-    andThen []      _ = []
-    andThen (x::xs) f = f x ++ andThen xs f
+  andThen [] _ = []
+  andThen (x::xs) f = f x ++ andThen xs f
 
 export impl Thenable Option where
-    andThen None     _ = None
-    andThen (Some a) f = f a
+  andThen None _ = None
+  andThen (Some a) f = f a
 
 {- `default` (like the rest of the `Result e` family) so a short-circuiting
    alternative can coexist with the standard error-propagating sequence. -}
 export default impl Thenable (Result e) where
-    andThen (Err e) _ = Err e
-    andThen (Ok a)  f = f a
+  andThen (Err e) _ = Err e
+  andThen (Ok a) f = f a
 
 {- | Collapse a container down to a summary value.
 
@@ -321,77 +327,66 @@ export default impl Thenable (Result e) where
    need to define `fold`, `foldRight`, and `toList`; override the others
    when the data structure admits a faster implementation (e.g. O(1)
    `length` for arrays). -}
-export interface Foldable t where
-    fold      : (b -> a -> b) -> b -> t a -> b
-    foldRight : (a -> b -> b) -> b -> t a -> b
-    foldMap   : Monoid m => (a -> m) -> t a -> m
-    toList    : t a -> List a
-    isEmpty   : t a -> Bool
-    length    : t a -> Int
-
-    foldMap f = fold (acc x => acc ++ f x) empty
+export
+interface Foldable t where
+  fold : (b -> a -> b) -> b -> t a -> b
+  foldRight : (a -> b -> b) -> b -> t a -> b
+  foldMap : Monoid m => (a -> m) -> t a -> m
+  toList : t a -> List a
+  isEmpty : t a -> Bool
+  length : t a -> Int
+  foldMap f = fold (acc x => acc ++ f x) empty
 
 {- | Containers that can drop elements (and transform-while-dropping).
    Modeled on Haskell's `witherable` Filterable: `filterMap` is the
    primitive, `filter` falls out as a derived default.  Kept separate
    from `Mappable` because not every functor can shrink — a fixed-shape
    container has no sensible `filterMap`. -}
-export interface Filterable f requires Mappable f where
-    filterMap : (a -> Option b) -> f a -> f b
-    filter    : (a -> Bool) -> f a -> f a
-    filter p = filterMap (x => if p x then Some x else None)
+export
+interface Filterable f requires Mappable f where
+  filterMap : (a -> Option b) -> f a -> f b
+  filter : (a -> Bool) -> f a -> f a
+  filter p = filterMap (x => if p x then Some x else None)
 
 export impl Foldable List where
-    fold _ acc []      = acc
-    fold f acc (x::xs) = fold f (f acc x) xs
-
-    foldRight _ acc []      = acc
-    foldRight f acc (x::xs) = f x (foldRight f acc xs)
-
-    toList  = identity
-
-    isEmpty []      = True
-    isEmpty _       = False
-
-    {- Tail-recursive via the strict left fold; `1 + length xs` would
+  fold _ acc [] = acc
+  fold f acc (x::xs) = fold f (f acc x) xs
+  foldRight _ acc [] = acc
+  foldRight f acc (x::xs) = f x (foldRight f acc xs)
+  toList = identity
+  isEmpty [] = True
+  isEmpty _ = False
+  length = fold (acc _ => acc + 1) 0
+{- Tail-recursive via the strict left fold; `1 + length xs` would
        accumulate stack frames proportional to list length. -}
-    length = fold (acc _ => acc + 1) 0
 
 {- `Option` and `Result e` each foldable as a 0-or-1-element container.
    `default` on the Result impl mirrors `Mappable (Result e)`: a user-defined
    alternative (e.g. folding over the `Err` side) can coexist without
    forcing every call site to qualify. -}
 export impl Foldable Option where
-    fold _ acc None     = acc
-    fold f acc (Some x) = f acc x
-
-    foldRight _ acc None     = acc
-    foldRight f acc (Some x) = f x acc
-
-    toList None     = []
-    toList (Some x) = [x]
-
-    isEmpty None     = True
-    isEmpty (Some _) = False
-
-    length None     = 0
-    length (Some _) = 1
+  fold _ acc None = acc
+  fold f acc (Some x) = f acc x
+  foldRight _ acc None = acc
+  foldRight f acc (Some x) = f x acc
+  toList None = []
+  toList (Some x) = [x]
+  isEmpty None = True
+  isEmpty (Some _) = False
+  length None = 0
+  length (Some _) = 1
 
 export default impl Foldable (Result e) where
-    fold _ acc (Err _) = acc
-    fold f acc (Ok x)  = f acc x
-
-    foldRight _ acc (Err _) = acc
-    foldRight f acc (Ok x)  = f x acc
-
-    toList (Err _) = []
-    toList (Ok x)  = [x]
-
-    isEmpty (Err _) = True
-    isEmpty (Ok _)  = False
-
-    length (Err _) = 0
-    length (Ok _)  = 1
+  fold _ acc (Err _) = acc
+  fold f acc (Ok x) = f acc x
+  foldRight _ acc (Err _) = acc
+  foldRight f acc (Ok x) = f x acc
+  toList (Err _) = []
+  toList (Ok x) = [x]
+  isEmpty (Err _) = True
+  isEmpty (Ok _) = False
+  length (Err _) = 0
+  length (Ok _) = 1
 
 -- ─── 3. Standalone helpers ──────────────────────────────────────────────
 
@@ -427,21 +422,19 @@ all f = fold (acc x => acc && f x) True
    overwrite the answer. -}
 export
 find : Foldable t => (a -> Bool) -> t a -> Option a
-find f = fold g None
-    where
-        g (acc@Some _) _ = acc
-        g None x
-            | f x       = Some x
-            | otherwise = None
+find f = fold g None where
+    g (acc@(Some _)) _ = acc
+    g None x
+      | f x = Some x
+      | otherwise = None
 
 -- | Number of elements satisfying the predicate.
 export
 count : Foldable t => (a -> Bool) -> t a -> Int
-count f = fold g 0
-    where
-        g acc x
-            | f x       = acc + 1
-            | otherwise = acc
+count f = fold g 0 where
+    g acc x
+      | f x = acc + 1
+      | otherwise = acc
 
 {- | Sum of a numeric foldable.  Identity is `0`; in practice this only
    works for `Int` today because `(+)` is a builtin that doesn't yet
@@ -467,10 +460,10 @@ elem a = fold (acc x => acc || x == a) False
    > filter (x => x > 2) [1, 2, 3, 4]
    [3, 4] -}
 export impl Filterable List where
-    filterMap _ []      = []
-    filterMap f (x::xs) = match f x
-        Some y => y :: filterMap f xs
-        None   => filterMap f xs
+  filterMap _ [] = []
+  filterMap f (x::xs) = match f x
+    (Some y) => y :: filterMap f xs
+    None => filterMap f xs
 
 -- ─── Bool helpers ───────────────────────────────────────────────────────
 
@@ -482,7 +475,7 @@ otherwise = True
 -- | Logical negation.
 export
 not : Bool -> Bool
-not True  = False
+not True = False
 not False = True
 
 {- | Strict logical AND.  The lazy short-circuiting form is the `&&`
@@ -490,13 +483,13 @@ not False = True
 export
 and : Bool -> Bool -> Bool
 and True True = True
-and _    _    = False
+and _ _ = False
 
 -- | Strict logical OR.  See `and` for the lazy form.
 export
 or : Bool -> Bool -> Bool
 or False False = False
-or _     _     = True
+or _ _ = True
 
 -- | Exclusive OR.
 export
@@ -509,12 +502,12 @@ xor a b = a != b
 export
 isSome : Option a -> Bool
 isSome (Some _) = True
-isSome None     = False
+isSome None = False
 
 -- | True if the value is absent.
 export
 isNone : Option a -> Bool
-isNone None     = True
+isNone None = True
 isNone (Some _) = False
 
 {- | Unwrap with a default for `None`.
@@ -526,20 +519,20 @@ isNone (Some _) = False
 export
 fromOption : a -> Option a -> a
 fromOption _ (Some a) = a
-fromOption d None     = d
+fromOption d None = d
 
 -- | Turn an `Option` into a `Result`, supplying the error for `None`.
 export
 toResult : e -> Option a -> Result e a
 toResult _ (Some a) = Ok a
-toResult e None     = Err e
+toResult e None = Err e
 
 {- | Forget the error: `Ok x → Some x`, `Err _ → None`.
    Named to match the "from-Result" intuition; this is the inverse of
    `toResult` modulo the discarded error value. -}
 export
 fromResult : Result e a -> Option a
-fromResult (Ok a)  = Some a
+fromResult (Ok a) = Some a
 fromResult (Err _) = None
 
 -- ─── Result helpers ─────────────────────────────────────────────────────
@@ -547,20 +540,20 @@ fromResult (Err _) = None
 -- | True if the result is `Ok`.
 export
 isOk : Result e a -> Bool
-isOk (Ok _)  = True
+isOk (Ok _) = True
 isOk (Err _) = False
 
 -- | True if the result is `Err`.
 export
 isErr : Result e a -> Bool
 isErr (Err _) = True
-isErr (Ok _)  = False
+isErr (Ok _) = False
 
 {- | Unwrap with a default for `Err`.  Named distinctly from
    `fromOption` so the two don't collide when both are in scope. -}
 export
 fromResultOr : a -> Result e a -> a
-fromResultOr _ (Ok a)  = a
+fromResultOr _ (Ok a) = a
 fromResultOr d (Err _) = d
 
 {- | Apply a function to the `Err` side, leaving `Ok` alone.  The `Ok`
@@ -568,7 +561,7 @@ fromResultOr d (Err _) = d
 export
 mapErr : (e -> f) -> Result e a -> Result f a
 mapErr f (Err e) = Err (f e)
-mapErr _ (Ok a)  = Ok a
+mapErr _ (Ok a) = Ok a
 
 -- ─── Utility functions ──────────────────────────────────────────────────
 
@@ -613,28 +606,23 @@ apply f a = f a
    progressively smaller candidates used to reduce a failing example. -}
 export
 interface Arbitrary a where
-    arbitrary : Unit -> <Rand> a
-    shrink    : a -> List a
+  arbitrary : Unit -> <Rand> a
+  shrink : a -> List a
+  shrink _ = []
 
-    shrink _ = []
+export impl Arbitrary Int where
+  arbitrary () = randomInt (-1000) 1000
+  shrink 0 = []
+  shrink n = [0, n / 2]
 
-export
-impl Arbitrary Int where
-    arbitrary () = randomInt (-1000) 1000
-    shrink 0 = []
-    shrink n = [0, n / 2]
+export impl Arbitrary Bool where
+  arbitrary () = randomBool ()
 
-export
-impl Arbitrary Bool where
-    arbitrary () = randomBool ()
+export impl Arbitrary Float where
+  arbitrary () = randomFloat ()
 
-export
-impl Arbitrary Float where
-    arbitrary () = randomFloat ()
-
-export
-impl Arbitrary Char where
-    arbitrary () = randomChar ()
+export impl Arbitrary Char where
+  arbitrary () = randomChar ()
 
 -- | Generate a random string of 0–10 printable ASCII chars.
 export
@@ -643,9 +631,8 @@ arbitraryString () = go (randomInt 0 10) "" where
     go 0 acc = acc
     go n acc = go (n - 1) (acc ++ charToStr (randomChar ()))
 
-export
-impl Arbitrary String where
-    arbitrary () = arbitraryString ()
+export impl Arbitrary String where
+  arbitrary () = arbitraryString ()
 
 -- | Generate a list of up to `maxLen` elements using `gen`.
 export
@@ -664,75 +651,70 @@ arbitraryList gen maxLen = go (randomInt 0 maxLen) [] where
    `RCon` carries a constructor's name and its positional fields' reps;
    `RRecord` carries a record type's name and its named fields.  The
    remaining constructors are primitive leaves. -}
-public export data Rep
-    | RCon    String (List Rep)
-    | RRecord String (List RField)
-    | RInt    Int
-    | RFloat  Float
-    | RString String
-    | RBool   Bool
-    | RChar   Char
-    | RUnit
+public export
+data Rep
+  = RCon String (List Rep)
+  | RRecord String (List RField)
+  | RInt Int
+  | RFloat Float
+  | RString String
+  | RBool Bool
+  | RChar Char
+  | RUnit
 
 -- | A named field inside an `RRecord`.
-public export record RField
-    fld_name : String
-    fld_rep  : Rep
+public export
+record RField
+  fld_name : String
+  fld_rep : Rep
 
 {- | Types with a structural representation.  `to_rep` is synthesised by
    `deriving (Generic)`.  `from_rep` is return-type polymorphic, which the
    runtime cannot dispatch on arguments alone, so it is a stub for now —
    the signature is fixed so a later phase can fill in real bodies. -}
-export interface Generic a where
-    to_rep   : a -> Rep
-    from_rep : Rep -> a
-
-    from_rep _ = panic "from_rep: not implemented (Phase 1 is to_rep only)"
+export
+interface Generic a where
+  to_rep : a -> Rep
+  from_rep : Rep -> a
+  from_rep _ = panic "from_rep: not implemented (Phase 1 is to_rep only)"
 
 export impl Generic Int where
-    to_rep n = RInt n
+  to_rep n = RInt n
 
 export impl Generic Float where
-    to_rep x = RFloat x
+  to_rep x = RFloat x
 
 export impl Generic String where
-    to_rep s = RString s
+  to_rep s = RString s
 
 export impl Generic Bool where
-    to_rep b = RBool b
+  to_rep b = RBool b
 
 export impl Generic Char where
-    to_rep c = RChar c
+  to_rep c = RChar c
 
 export impl Generic Unit where
-    to_rep _ = RUnit
+  to_rep _ = RUnit
 
 -- ─── 5. Properties (executed by `medaka test`) ──────────────────────────
 
-prop "neq is the negation of eq" (x : Int) (y : Int) =
-    neq x y == not (eq x y)
+prop "neq is the negation of eq" (x : Int) (y : Int) = neq x y == not (eq x y)
 
-prop "compare agrees with lt/gt/eq" (x : Int) (y : Int) =
-    match compare x y
-        Lt => lt x y && not (gt x y) && neq x y
-        Gt => gt x y && not (lt x y) && neq x y
-        Eq => eq x y && not (lt x y) && not (gt x y)
+prop "compare agrees with lt/gt/eq" (x : Int) (y : Int) = match compare x y
+  Lt => lt x y && not (gt x y) && neq x y
+  Gt => gt x y && not (lt x y) && neq x y
+  Eq => eq x y && not (lt x y) && not (gt x y)
 
-prop "clamp keeps values inside the interval" (x : Int) =
-    let c = clamp 0 100 x
-    c >= 0 && c <= 100
+prop "clamp keeps values inside the interval" (x : Int) = 
+  let c = clamp 0 100 x
+  c >= 0 && c <= 100
 
-prop "filter . filter p == filter p" (xs : List Int) =
-    eq (filter (x => x > 0) (filter (x => x > 0) xs)) (filter (x => x > 0) xs)
+prop "filter . filter p == filter p" (xs : List Int) = eq (filter (x => x > 0) (filter (x => x > 0) xs)) (filter (x => x > 0) xs)
 
-prop "length matches a counting fold" (xs : List Int) =
-    length xs == fold (acc _ => acc + 1) 0 xs
+prop "length matches a counting fold" (xs : List Int) = length xs == fold (acc _ => acc + 1) 0 xs
 
-prop "any/all duality" (xs : List Int) =
-    any (x => x > 0) xs == not (all (x => x <= 0) xs)
+prop "any/all duality" (xs : List Int) = any (x => x > 0) xs == not (all (x => x <= 0) xs)
 
-prop "fromOption d (Some x) == x" (x : Int) (d : Int) =
-    fromOption d (Some x) == x
+prop "fromOption d (Some x) == x" (x : Int) (d : Int) = fromOption d (Some x) == x
 
-prop "toResult/fromResult round-trip on Some" (x : Int) =
-    eq (fromResult (toResult "missing" (Some x))) (Some x)
+prop "toResult/fromResult round-trip on Some" (x : Int) = eq (fromResult (toResult "missing" (Some x))) (Some x)

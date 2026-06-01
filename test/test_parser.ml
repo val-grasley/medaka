@@ -701,7 +701,7 @@ let test_data_with_fields () =
 let test_data_block () =
   let src = {|
 data Shape
-  | Circle Float
+  = Circle Float
   | Rectangle Float Float
 |} in
   match parse_one src with
@@ -1114,7 +1114,7 @@ let test_data_named_inline () =
 let test_data_named_block () =
   let src = {|
 data Event
-  | Click { x : Int, y : Int }
+  = Click { x : Int, y : Int }
   | Scroll Int
 |} in
   match parse_one src with

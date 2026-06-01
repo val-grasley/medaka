@@ -335,7 +335,7 @@ main = println (factorial 10)
 
 let t_adt_match = assert_output
   {|data Color
-  | Red
+  = Red
   | Green
   | Blue
 
