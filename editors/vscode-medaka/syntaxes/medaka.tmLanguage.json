@@ -164,15 +164,15 @@
       "patterns": [
         {
           "name": "keyword.control.medaka",
-          "match": "\\b(if|then|else|match|do|let|in|mut)\\b"
+          "match": "\\b(if|then|else|match|do|let|in|mut|rec|with)\\b"
         },
         {
           "name": "keyword.declaration.medaka",
-          "match": "\\b(data|record|interface|impl|default|extern)\\b"
+          "match": "\\b(data|record|interface|impl|default|extern|type|newtype|prop|bench|function)\\b"
         },
         {
           "name": "keyword.modifier.medaka",
-          "match": "\\b(export)\\b"
+          "match": "\\b(export|public)\\b"
         },
         {
           "name": "keyword.import.medaka",

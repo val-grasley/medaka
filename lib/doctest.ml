@@ -40,6 +40,37 @@ let expected_body (c : Lexer.comment) =
 
 let is_blank_comment (c : Lexer.comment) = c.c_text = "--"
 
+(* ── Block-comment expansion ────────────────────────────────────────────── *)
+
+(* Doctests are authored line-by-line (`-- > expr` then `-- result`).  The
+   lexer captures a `{- ... -}` block comment as a *single* record whose
+   [c_text] carries embedded newlines, so to let doctests live inside block
+   comments we expand each block into virtual per-line records shaped exactly
+   like the line-comment form the extractor below already understands:
+
+     a blank inner line   → "--"          (block separator — as the blank
+                                            `--` between prose and examples)
+     any other inner line → "-- <trimmed>" so an inner `> expr` becomes
+                            "-- > expr" (an input line) and a bare value
+                            becomes an expected-output line.
+
+   Line comments pass straight through, so the line-comment doctest path is
+   byte-for-byte unchanged. *)
+let is_block_comment (c : Lexer.comment) =
+  String.length c.c_text >= 2 && String.sub c.c_text 0 2 = "{-"
+
+let expand_block (c : Lexer.comment) : Lexer.comment list =
+  let n = String.length c.c_text in
+  (* Strip the `{-` opener and `-}` closer; tolerate a malformed short text. *)
+  let inner = if n >= 4 then String.sub c.c_text 2 (n - 4) else "" in
+  String.split_on_char '\n' inner
+  |> List.mapi (fun i line ->
+       let trimmed = String.trim line in
+       let c_text = if trimmed = "" then "--" else "-- " ^ trimmed in
+       (* Line numbers stay accurate: inner line i sits on the opener line
+          plus i, so adjacency in [split_into_blocks] is preserved. *)
+       { c with Lexer.c_line = c.c_line + i; c_text })
+
 (* ── Phase 1: split comment list into adjacent blocks ───────────────────── *)
 
 (* A `--` bare comment or a gap in line numbers ends the current block. *)
@@ -100,6 +131,11 @@ let extract_examples_from_block block =
 (* ── Public extraction entry point ─────────────────────────────────────── *)
 
 let extract_doctests (file : string) (comments : Lexer.comment list) : doctest list =
+  let comments =
+    List.concat_map
+      (fun c -> if is_block_comment c then expand_block c else [c])
+      comments
+  in
   split_into_blocks comments
   |> List.filter_map (fun block ->
     let examples = extract_examples_from_block block in

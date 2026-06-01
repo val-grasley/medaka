@@ -1,45 +1,55 @@
--- array.mdk — operations on Array a
--- See STDLIB.md (Module 4) for the plan.
---
--- Design notes
--- ────────────
--- Arrays are fixed-size, O(1) random access, and backed by mutable memory
--- under the hood.  Two design tensions shape this module:
---
---   1. Performance vs. functional feel.  The public API is a pure facade
---      where it can be (`map`, `filter`, `sort`, etc. return fresh arrays)
---      and explicitly effectful where mutation is the whole point
---      (`set`, `swap`, `sortInPlace`, `<Mut>` in the signature).
---
---   2. Opaque builtin vs. typeclass member.  `Array a` cannot be pattern-
---      matched like `List a`, so the impls below dispatch through the
---      `array*` primitives declared in stdlib/runtime.mdk.  We implement
---      `Mappable`, `Foldable`, `Eq`, `Show`, `Semigroup`, `Monoid` — and
---      deliberately skip `Applicative` / `Thenable`, because the natural
---      definitions would encode cartesian-style allocation that's a
---      performance trap on bulk data.
---
--- The kernel of OCaml-backed primitives lives in stdlib/runtime.mdk and is
--- the surface this module sits on top of.  Most operations here are one or
--- two lines of Medaka built on `arrayMakeWith` + `arrayGetUnsafe`, which
--- compile to a tight loop in the host runtime.
+{- array.mdk — operations on Array a
+   See STDLIB.md (Module 4) for the plan.
+
+   Design notes
+   ────────────
+   Arrays are fixed-size, O(1) random access, and backed by mutable memory
+   under the hood.  Two design tensions shape this module:
+
+     1. Performance vs. functional feel.  The public API is a pure facade
+        where it can be (`map`, `filter`, `sort`, etc. return fresh arrays)
+        and explicitly effectful where mutation is the whole point
+        (`set`, `swap`, `sortInPlace`, `<Mut>` in the signature).
+
+     2. Opaque builtin vs. typeclass member.  `Array a` cannot be pattern-
+        matched like `List a`, so the impls below dispatch through the
+        `array*` primitives declared in stdlib/runtime.mdk.  We implement
+        `Mappable`, `Foldable`, `Eq`, `Show`, `Semigroup`, `Monoid` — and
+        deliberately skip `Applicative` / `Thenable`, because the natural
+        definitions would encode cartesian-style allocation that's a
+        performance trap on bulk data.
+
+   The kernel of OCaml-backed primitives lives in stdlib/runtime.mdk and is
+   the surface this module sits on top of.  Most operations here are one or
+   two lines of Medaka built on `arrayMakeWith` + `arrayGetUnsafe`, which
+   compile to a tight loop in the host runtime. -}
 
 import core.{Eq, Ord, Show, Foldable, Mappable, Filterable, Semigroup, Monoid, Ordering, Option}
 
 -- ── Construction ────────────────────────────────────────────────────────
 
+-- | The empty array.
 export
 empty : Array a
 empty = [||]
 
+{- | A one-element array.
+
+   > toList (singleton 5)
+   [5] -}
 export
 singleton : a -> Array a
 singleton x = [|x|]
 
+{- | `make n x` — a fresh array of `n` copies of `x`.
+
+   > toList (make 3 0)
+   [0, 0, 0] -}
 export
 make : Int -> a -> Array a
 make n x = arrayMake n x
 
+-- | `makeWith n f` — a fresh array whose element `i` is `f i`.
 export
 makeWith : Int -> (Int -> a) -> Array a
 makeWith n f = arrayMakeWith n f
@@ -49,38 +59,55 @@ export
 replicate : Int -> a -> Array a
 replicate n x = arrayMake n x
 
+-- | Build an array from a list, preserving order.
 export
 fromList : List a -> Array a
 fromList xs = arrayFromList xs
 
--- | Half-open `[lo, hi)`.  Empty when `hi <= lo`.
+{- | Half-open `[lo, hi)`.  Empty when `hi <= lo`.
+
+   > toList (range 0 4)
+   [0, 1, 2, 3] -}
 export
 range : Int -> Int -> Array Int
 range lo hi = arrayMakeWith (if hi > lo then hi - lo else 0) (i => lo + i)
 
--- | Fresh copy with the same contents.  Useful before in-place mutation
--- when you want to preserve the original.
+{- | Fresh copy with the same contents.  Useful before in-place mutation
+   when you want to preserve the original. -}
 export
 copy : Array a -> Array a
 copy arr = arrayCopy arr
 
 -- ── Observation ─────────────────────────────────────────────────────────
---
--- `length`, `isEmpty`, `toList` are provided by `impl Foldable Array`
--- below; they're not re-exported as standalone names because that would
--- collide with the polymorphic Foldable methods of the same name.
 
--- | Bounds-checked indexing.  `arr[i]` (which panics on OOB) is the fast
--- path; `get` is the safe one.
+{- `length`, `isEmpty`, `toList` are provided by `impl Foldable Array`
+   below; they're not re-exported as standalone names because that would
+   collide with the polymorphic Foldable methods of the same name. -}
+
+{- | Bounds-checked indexing.  `arr[i]` (which panics on OOB) is the fast
+   path; `get` is the safe one.
+
+   > get 0 (fromList [1, 2, 3])
+   Some 1
+   > get 5 (fromList [1, 2, 3])
+   None -}
 export
 get : Int -> Array a -> Option a
 get i arr =
   if i < 0 || i >= arrayLength arr then None else Some (arrayGetUnsafe i arr)
 
+{- | First element, or `None` when empty.
+
+   > first (fromList [1, 2, 3])
+   Some 1 -}
 export
 first : Array a -> Option a
 first arr = get 0 arr
 
+{- | Last element, or `None` when empty.
+
+   > last (fromList [1, 2, 3])
+   Some 3 -}
 export
 last : Array a -> Option a
 last arr = get (arrayLength arr - 1) arr
@@ -92,19 +119,26 @@ toListGo arr i acc =
   else toListGo arr (i - 1) (arrayGetUnsafe i arr :: acc)
 
 -- ── Pure transformation (return fresh arrays, no <Mut>) ─────────────────
---
--- `map` is provided by `impl Mappable Array` below; not re-exported as a
--- standalone name to avoid colliding with `Mappable.map`.
 
+{- `map` is provided by `impl Mappable Array` below; not re-exported as a
+   standalone name to avoid colliding with `Mappable.map`. -}
+
+{- | Reverse the array into a fresh one.
+
+   > toList (reverse (fromList [1, 2, 3]))
+   [3, 2, 1] -}
 export
 reverse : Array a -> Array a
 reverse arr =
   let n = arrayLength arr
   arrayMakeWith n (i => arrayGetUnsafe (n - 1 - i) arr)
 
--- | `slice lo hi arr` — half-open `[lo, hi)`.  Clamps to the array bounds:
--- a request outside `[0, length arr]` is silently truncated, never panics.
--- Use `arr[lo..hi]` if you want OOB to panic instead.
+{- | `slice lo hi arr` — half-open `[lo, hi)`.  Clamps to the array bounds:
+   a request outside `[0, length arr]` is silently truncated, never panics.
+   Use `arr[lo..hi]` if you want OOB to panic instead.
+
+   > toList (slice 1 3 (fromList [1, 2, 3, 4, 5]))
+   [2, 3] -}
 export
 slice : Int -> Int -> Array a -> Array a
 slice lo hi arr =
@@ -113,10 +147,18 @@ slice lo hi arr =
   let hi' = if hi < lo' then lo' else if hi > n then n else hi
   arrayMakeWith (hi' - lo') (i => arrayGetUnsafe (lo' + i) arr)
 
+{- | First `n` elements (fewer if the array is shorter).
+
+   > toList (take 2 (fromList [1, 2, 3, 4]))
+   [1, 2] -}
 export
 take : Int -> Array a -> Array a
 take n arr = slice 0 n arr
 
+{- | All but the first `n` elements.
+
+   > toList (drop 2 (fromList [1, 2, 3, 4]))
+   [3, 4] -}
 export
 drop : Int -> Array a -> Array a
 drop n arr = slice n (arrayLength arr) arr
@@ -136,9 +178,9 @@ concatTotal arrs i acc outer =
   if i >= outer then acc
   else concatTotal arrs (i + 1) (acc + arrayLength (arrayGetUnsafe i arrs)) outer
 
--- | Find element `i` by walking the outer array, subtracting inner
--- lengths.  O(outer) per lookup → O(outer * total) overall.  Fine for
--- typical use; a future optimisation could precompute a prefix-sum index.
+{- | Find element `i` by walking the outer array, subtracting inner
+   lengths.  O(outer) per lookup → O(outer * total) overall.  Fine for
+   typical use; a future optimisation could precompute a prefix-sum index. -}
 concatLookup : Array (Array a) -> Int -> Int -> Int -> a
 concatLookup arrs target k outer =
   let inner = arrayGetUnsafe k arrs
@@ -146,24 +188,29 @@ concatLookup arrs target k outer =
   if target < len then arrayGetUnsafe target inner
   else concatLookup arrs (target - len) (k + 1) outer
 
+-- | Pair up two arrays element-wise, truncating to the shorter length.
 export
 zip : Array a -> Array b -> Array (a, b)
 zip a b =
   let n = if arrayLength a < arrayLength b then arrayLength a else arrayLength b
   arrayMakeWith n (i => (arrayGetUnsafe i a, arrayGetUnsafe i b))
 
+{- | Combine two arrays element-wise with `f`, truncating to the shorter.
+
+   > toList (zipWith (x y => x + y) (fromList [1, 2]) (fromList [10, 20]))
+   [11, 22] -}
 export
 zipWith : (a -> b -> c) -> Array a -> Array b -> Array c
 zipWith f a b =
   let n = if arrayLength a < arrayLength b then arrayLength a else arrayLength b
   arrayMakeWith n (i => f (arrayGetUnsafe i a) (arrayGetUnsafe i b))
 
--- | `Filterable Array`.  Only `filterMap` is defined; `filter` comes from
--- the interface default.  `filterMap` filters via a list intermediate
--- (tail-recursive, builds reversed then `arrayFromList` after a final
--- reverse): one O(N) traversal + one O(M) list build + one O(M) array
--- copy, no mutation so the signature stays pure.
-export impl Filterable Array where
+{- | `Filterable Array`.  Only `filterMap` is defined; `filter` comes from
+   the interface default.  `filterMap` filters via a list intermediate
+   (tail-recursive, builds reversed then `arrayFromList` after a final
+   reverse): one O(N) traversal + one O(M) list build + one O(M) array
+   copy, no mutation so the signature stays pure. -}
+export default impl Filterable Array where
     filterMap f arr =
       let n = arrayLength arr
       arrayFromList (revList (filterMapGo f arr 0 n []) [])
@@ -190,6 +237,7 @@ set : Int -> a -> Array a -> <Mut> Unit
 set i x arr =
   if i < 0 || i >= arrayLength arr then panic "Array.set: index out of bounds" else arraySetUnsafe i x arr
 
+-- | Exchange the elements at indices `i` and `j` in place.
 export
 swap : Int -> Int -> Array a -> <Mut> Unit
 swap i j arr =
@@ -198,39 +246,45 @@ swap i j arr =
   arraySetUnsafe i xj arr
   arraySetUnsafe j xi arr
 
+-- | Overwrite every element with `x` in place.
 export
 fill : a -> Array a -> <Mut> Unit
 fill x arr = arrayFill x arr
 
+-- | Sort in place using the supplied comparison.
 export
 sortInPlaceBy : (a -> a -> Ordering) -> Array a -> <Mut> Unit
 sortInPlaceBy cmp arr = arraySortInPlaceBy cmp arr
 
+-- | Sort in place by the `Ord` instance.
 export
 sortInPlace : Ord a => Array a -> <Mut> Unit
 sortInPlace arr = arraySortInPlaceBy compare arr
 
 -- ── Pure sort (returns fresh sorted array) ──────────────────────────────
 
+-- | Sort into a fresh array using the supplied comparison.
 export
 sortBy : (a -> a -> Ordering) -> Array a -> Array a
 sortBy cmp arr = arraySortBy cmp arr
 
+-- | Sort into a fresh array by the `Ord` instance.
 export
 sort : Ord a => Array a -> Array a
 sort arr = arraySortBy compare arr
 
+-- | Sort into a fresh array by a key projection.
 export
 sortOn : Ord b => (a -> b) -> Array a -> Array a
 sortOn key arr = arraySortBy (x y => compare (key x) (key y)) arr
 
 -- ── Folds and search ────────────────────────────────────────────────────
---
--- `fold`, `foldRight`, `any`, `all` are reachable via the Foldable
--- machinery in core once `impl Foldable Array` is loaded.  We define the
--- tail-recursive helpers here because the impl bodies and the search
--- functions below both call them, but we don't re-export them as
--- standalone names.
+
+{- `fold`, `foldRight`, `any`, `all` are reachable via the Foldable
+   machinery in core once `impl Foldable Array` is loaded.  We define the
+   tail-recursive helpers here because the impl bodies and the search
+   functions below both call them, but we don't re-export them as
+   standalone names. -}
 
 foldGo : (b -> a -> b) -> Array a -> Int -> Int -> b -> b
 foldGo f arr i n acc =
@@ -242,6 +296,7 @@ foldRightGo f arr i acc =
   if i < 0 then acc
   else foldRightGo f arr (i - 1) (f (arrayGetUnsafe i arr) acc)
 
+-- | First element satisfying the predicate, or `None`.
 export
 find : (a -> Bool) -> Array a -> Option a
 find pred arr = findGo pred arr 0 (arrayLength arr)
@@ -252,6 +307,10 @@ findGo pred arr i n =
   else if pred (arrayGetUnsafe i arr) then Some (arrayGetUnsafe i arr)
   else findGo pred arr (i + 1) n
 
+{- | Index of the first element satisfying the predicate, or `None`.
+
+   > findIndex (x => x > 2) (fromList [1, 2, 3])
+   Some 2 -}
 export
 findIndex : (a -> Bool) -> Array a -> Option Int
 findIndex pred arr = findIndexGo pred arr 0 (arrayLength arr)
@@ -262,26 +321,39 @@ findIndexGo pred arr i n =
   else if pred (arrayGetUnsafe i arr) then Some i
   else findIndexGo pred arr (i + 1) n
 
+{- | True when the value appears in the array (by `Eq`).
+
+   > elem 2 (fromList [1, 2, 3])
+   true -}
 export
 elem : Eq a => a -> Array a -> Bool
 elem x arr = any (y => x == y) arr
 
--- | Integer sum.  A polymorphic `Num a` version belongs in core once
--- `Num` dispatch is wired through `fold` cleanly.
+{- | Integer sum.  A polymorphic `Num a` version belongs in core once
+   `Num` dispatch is wired through `fold` cleanly. -}
 export
 sum : Array Int -> Int
 sum arr = foldGo (acc x => acc + x) arr 0 (arrayLength arr) 0
 
+-- | Integer product.
 export
 product : Array Int -> Int
 product arr = foldGo (acc x => acc * x) arr 0 (arrayLength arr) 1
 
+{- | Largest element by `Ord`, or `None` when empty.
+
+   > maximum (fromList [3, 1, 2])
+   Some 3 -}
 export
 maximum : Ord a => Array a -> Option a
 maximum arr =
   if arrayLength arr == 0 then None
   else Some (foldGo max arr 0 (arrayLength arr) (arrayGetUnsafe 0 arr))
 
+{- | Smallest element by `Ord`, or `None` when empty.
+
+   > minimum (fromList [3, 1, 2])
+   Some 1 -}
 export
 minimum : Ord a => Array a -> Option a
 minimum arr =
@@ -290,23 +362,23 @@ minimum arr =
 
 -- ── Typeclass impls ─────────────────────────────────────────────────────
 
-export impl Mappable Array where
+export default impl Mappable Array where
     map f arr = arrayMakeWith (arrayLength arr) (i => f (arrayGetUnsafe i arr))
 
-export impl Foldable Array where
+export default impl Foldable Array where
     fold f z arr = foldGo f arr 0 (arrayLength arr) z
     foldRight f z arr = foldRightGo f arr (arrayLength arr - 1) z
     toList arr = toListGo arr (arrayLength arr - 1) []
     isEmpty arr = arrayLength arr == 0
     length arr = arrayLength arr
 
-export impl Semigroup (Array a) where
+export default impl Semigroup (Array a) where
     append a b = arrayMakeWith (arrayLength a + arrayLength b) (i => if i < arrayLength a then arrayGetUnsafe i a else arrayGetUnsafe (i - arrayLength a) b)
 
-export impl Monoid (Array a) where
+export default impl Monoid (Array a) where
     empty = [||]
 
-export impl Eq (Array a) requires Eq a where
+export default impl Eq (Array a) requires Eq a where
     eq a b =
       if arrayLength a != arrayLength b then False
       else eqGo a b 0 (arrayLength a)
@@ -317,8 +389,8 @@ eqGo a b i n =
   else if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then eqGo a b (i + 1) n
   else False
 
--- TODO: `impl Show (Array a) requires Show a` — `show` now resolves
--- (resolver gap closed) but the recursive `show (arrayGetUnsafe i arr)`
--- on element type `a` needs `Show a` to actually dispatch.  Blocked on
--- `impl Show Int`, `impl Show Float`, `impl Show Bool`, etc. landing
--- in core.  See STDLIB.md Module 1.
+{- TODO: `impl Show (Array a) requires Show a` — `show` now resolves
+   (resolver gap closed) but the recursive `show (arrayGetUnsafe i arr)`
+   on element type `a` needs `Show a` to actually dispatch.  Blocked on
+   `impl Show Int`, `impl Show Float`, `impl Show Bool`, etc. landing
+   in core.  See STDLIB.md Module 1. -}

@@ -109,6 +109,35 @@ let t_prose_before_input_ignored () =
     if ex.expected <> Some "2" then failwith "wrong expected"
   | _ -> failwith (Printf.sprintf "expected 1 doctest with 1 example, got %d" (List.length result))
 
+(* A block comment is captured by the lexer as one record with embedded
+   newlines; the extractor expands it so inner `> expr`/result lines become
+   doctests, and the leading `| prose` and blank line are ignored. *)
+let t_block_comment_extraction () =
+  let text = "{- | double it.\n\n   > 1 + 1\n   2\n-}" in
+  let comments = [mk_comment 3 text] in
+  let result = Doctest.extract_doctests "f.mdk" comments in
+  match result with
+  | [{ dt_examples = [ex]; _ }] ->
+    if ex.input <> "1 + 1" then failwith ("wrong input: " ^ ex.input);
+    if ex.expected <> Some "2" then
+      failwith (Printf.sprintf "wrong expected: %s"
+                  (match ex.expected with None -> "None" | Some s -> s))
+  | _ ->
+    failwith (Printf.sprintf "expected 1 example from block comment, got %d groups"
+                (List.length result))
+
+let t_block_comment_two_examples () =
+  let text = "{-\n   > 1 + 1\n   2\n   > 2 + 2\n   4\n-}" in
+  let comments = [mk_comment 10 text] in
+  let result = Doctest.extract_doctests "f.mdk" comments in
+  match result with
+  | [{ dt_examples = [ex1; ex2]; _ }] ->
+    if ex1.expected <> Some "2" then failwith "wrong first expected";
+    if ex2.input <> "2 + 2" then failwith ("wrong second input: " ^ ex2.input)
+  | _ ->
+    failwith (Printf.sprintf "expected 1 group with 2 examples, got %d groups"
+                (List.length result))
+
 (* ── Integration tests ───────────────────────────────────────────────────── *)
 
 let t_all_pass () =
@@ -151,6 +180,14 @@ x = 42
     let r = Doctest.run_file path in
     if r.passed <> 1 then
       failwith (Printf.sprintf "expected 1 pass (no expected = crash-free), got %d" r.passed))
+
+let t_block_comment_run () =
+  let src = "double x = x * 2\n{- | doubles its argument.\n\n   > double 5\n   10\n-}\n" in
+  with_tmp_file src (fun path ->
+    let r = Doctest.run_file path in
+    if r.passed <> 1 || r.failed <> 0 then
+      failwith (Printf.sprintf "expected block-comment doctest to pass, got passed=%d failed=%d errors=%d"
+                  r.passed r.failed r.errors))
 
 (* Phase 70: doctests now run mark + typecheck before eval, so a return-position
    method call with a result-type annotation dispatches to the impl the checker
@@ -222,12 +259,15 @@ let () =
       Alcotest.test_case "gap creates two groups"     `Quick t_gap_creates_two_groups;
       Alcotest.test_case "blank comment ends block"   `Quick t_blank_comment_ends_block;
       Alcotest.test_case "prose before input ignored" `Quick t_prose_before_input_ignored;
+      Alcotest.test_case "block comment extraction"    `Quick t_block_comment_extraction;
+      Alcotest.test_case "block comment two examples"  `Quick t_block_comment_two_examples;
     ];
     "runner", [
       Alcotest.test_case "all pass"                   `Quick t_all_pass;
       Alcotest.test_case "one fail"                   `Quick t_one_fail;
       Alcotest.test_case "references file binding"    `Quick t_references_file_binding;
       Alcotest.test_case "no expected = crash-free"   `Quick t_no_expected_passes;
+      Alcotest.test_case "block comment doctest runs"  `Quick t_block_comment_run;
       Alcotest.test_case "return-position dispatch"   `Quick t_return_position_dispatch;
       Alcotest.test_case "parse error example"        `Quick t_parse_error_example;
       Alcotest.test_case "no doctests in file"        `Quick t_no_doctests_in_file;

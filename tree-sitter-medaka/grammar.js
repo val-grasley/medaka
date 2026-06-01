@@ -135,6 +135,14 @@ module.exports = grammar({
     char_lit:   $ => /'([^'\\]|\\.)'/,
     bool_lit:   $ => choice('True', 'False'),
 
+    // `{-[^]*?-}` is non-greedy, so it stops at the FIRST `-}` and does not
+    // track nesting — a nested `{- {- -} -}` is mis-tokenized (the outer close
+    // is left dangling).  The compiler's lexer (lib/lexer.mll,
+    // read_block_comment) handles arbitrary nesting via a depth counter;
+    // matching that here needs an external scanner (scanner.c), deferred for
+    // now.  The VS Code TextMate grammar (syntaxes/medaka.tmLanguage.json)
+    // already highlights nested block comments correctly, so editor
+    // highlighting is unaffected.
     comment: $ => choice(/--[^\n]*/, /\{-[^]*?-\}/),
 
     literal: $ => choice(
