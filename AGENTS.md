@@ -40,8 +40,9 @@ Support files:
 | `lib/builtins.ml` | Operator → stdlib method-name registry |
 | `lib/lsp_server.ml` | LSP over stdio: diagnostics, formatting, symbols, hover, definition, highlight, completion, inlay hints |
 | `lib/project_config.ml` | `medaka.toml` reader + project-root walk-up |
+| `lib/doctest.ml` | Extracts + runs doctests for `medaka test`. Reads the lexer comment side-channel: `-- > expr` then `-- result` lines (block comments `{- … > expr … -}` are expanded to the same line form). Typechecks the *whole file* once, then evals each example; a typecheck failure falls back to broken arg-tag dispatch — so a name collision with a core prelude standalone can make every example ERROR at once |
 | `gen/embed.ml` | Build-time: embeds `runtime.mdk`/`core.mdk` into generated `lib/stdlib_content.ml` |
-| `bin/main.ml` | CLI: `check` / `run` / `repl` / `lsp` / `fmt` / `new` |
+| `bin/main.ml` | CLI: `check` / `run` / `test` (doctests + prop tests) / `repl` / `lsp` / `fmt` / `new` |
 
 `stdlib/`: `runtime.mdk` (extern primitive catalog, embedded), `core.mdk`
 (implicit prelude — `Eq`/`Ord`/`Show`/`Num`/…), `list.mdk`/`string.mdk`/`array.mdk`
