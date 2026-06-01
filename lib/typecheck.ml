@@ -21,7 +21,7 @@ module StringSet = Set.Make(String)
 
 type level = int
 
-type effect_set = string list  (* sorted, deduplicated *)
+type effect_set = string list  (* sorted, deduplicated set of concrete effect labels *)
 
 type tyvar_info =
   | Unbound of int * level
@@ -31,11 +31,25 @@ and mono =
   | TVar   of tyvar_info ref
   | TCon   of string
   | TApp   of mono * mono
-  | TFun   of mono * effect_set * mono
+  | TFun   of mono * effrow * mono    (* arg -> effect row -> result *)
   | TTuple of mono list
 
-(* A type scheme: forall <ids>. mono. The bound ids are tyvar IDs from `mono`. *)
-type scheme = Forall of int list * mono
+(* An effect row (Phase 79): a set of concrete effect labels plus an optional
+   tail variable.
+     tail = None    ⇒ closed row, exactly [labels].
+     tail = Some ρ  ⇒ open row <labels | ρ>: ρ can absorb further effects.
+   Inference-synthesized arrows use open rows so the effect-subsumption
+   discipline survives *equality* unification; user annotations are closed
+   unless they explicitly name a tail (`<IO | e>`). *)
+and effrow = { labels : effect_set; tail : effvar option }
+and effvar_info =
+  | EUnbound of int * level
+  | ELink    of effrow
+and effvar = effvar_info ref
+
+(* A type scheme: forall <tyvar ids> <effvar ids>. mono. The bound ids are tyvar
+   IDs and effect-var IDs that occur free in `mono`. *)
+type scheme = Forall of int list * int list * mono
 
 (* Per-record metadata used for creation, access, and update typing.
    The TVars in rec_result / rec_fields are the same refs as those in
@@ -172,10 +186,12 @@ let fail_at loc e = raise (Type_error (e, loc))
 (* ── State: fresh vars + current level ──────────── *)
 
 let tyvar_counter = ref 0
+let effvar_counter = ref 0
 let current_level = ref 0
 
 let reset_state () =
   tyvar_counter := 0;
+  effvar_counter := 0;
   current_level := 0
 
 let fresh_var () =
@@ -184,6 +200,26 @@ let fresh_var () =
 
 let enter_level () = incr current_level
 let exit_level  () = decr current_level
+
+(* ── Effect rows (Phase 79) ─────────────────────── *)
+
+(* The empty closed row — a pure arrow. *)
+let pure_row = { labels = []; tail = None }
+
+(* A closed row over the given concrete labels. *)
+let closed_row labels = { labels = List.sort_uniq String.compare labels; tail = None }
+
+(* Follow ELink tails (merging labels along the way) to a canonical row whose
+   tail, if present, is an unbound effvar. *)
+let rec effrow_norm r =
+  match r.tail with
+  | Some { contents = ELink r' } ->
+    let r' = effrow_norm r' in
+    { labels = List.sort_uniq String.compare (r.labels @ r'.labels); tail = r'.tail }
+  | _ -> r
+
+(* The concrete labels currently known for a row (ignores the open tail). *)
+let effrow_labels r = (effrow_norm r).labels
 
 (* ── Following links and union-find compaction ──── *)
 
@@ -248,9 +284,9 @@ let rec free_unbound acc = function
   | TTuple ts ->
     List.fold_left free_unbound acc ts
 
-let generalize t = Forall (free_unbound [] t, t)
+let generalize t = Forall (free_unbound [] t, [], t)
 
-let instantiate_raw (Forall (vars, t)) =
+let instantiate_raw (Forall (vars, _evars, t)) =
   let sub = List.map (fun id -> (id, fresh_var ())) vars in
   let rec walk t = match normalize t with
     | TVar v ->
@@ -266,7 +302,7 @@ let instantiate_raw (Forall (vars, t)) =
 
 let instantiate s = snd (instantiate_raw s)
 
-let monotype t = Forall ([], t)
+let monotype t = Forall ([], [], t)
 
 (* Phase 74 follow-up: find the live (still-unbound) tyvar carrying [id] inside a
    mono type, if present.  instantiate_raw produces an empty substitution for a
@@ -324,7 +360,7 @@ let gen_restricted is_value t =
 (* Like instantiate, but maps specific bound IDs to provided monos instead of
    always creating fresh vars.  Used by check_impl to substitute the impl's
    concrete type args for the interface's type-parameter IDs. *)
-let instantiate_with (Forall (vars, t)) (subs : (int * mono) list) =
+let instantiate_with (Forall (vars, _evars, t)) (subs : (int * mono) list) =
   let sub = List.map (fun id ->
     (id, try List.assoc id subs with Not_found -> fresh_var ())
   ) vars in
@@ -345,7 +381,7 @@ let instantiate_with (Forall (vars, t)) (subs : (int * mono) list) =
    mapping bound IDs to fresh monos. Used to track which concrete types a
    method call is dispatching on (for impl resolution) and to expand
    per-method extra constraint arguments (for constraint checking). *)
-let instantiate_method (Forall (vars, t)) track_ids =
+let instantiate_method (Forall (vars, _evars, t)) track_ids =
   let sub = List.map (fun id -> (id, fresh_var ())) vars in
   let rec walk t = match normalize t with
     | TVar v ->
@@ -401,8 +437,12 @@ let pp_mono_in (names, counter) t =
       let s = sa ^ " " ^ sb in
       if prec > 2 then "(" ^ s ^ ")" else s
     | TFun (a, effs, b) ->
-      let eff_str = if effs = [] then ""
-                    else Printf.sprintf "<%s> " (String.concat ", " effs) in
+      (* Empty-open rows render as pure: a generalized/unconstrained effect tail
+         carries no information for the reader, and printing it would churn every
+         existing golden type string. *)
+      let labels = effrow_labels effs in
+      let eff_str = if labels = [] then ""
+                    else Printf.sprintf "<%s> " (String.concat ", " labels) in
       let sa = go 2 a in
       let sb = go 1 b in
       let s = sa ^ " -> " ^ eff_str ^ sb in
@@ -436,7 +476,7 @@ let pp_monos_pair args1 args2 =
   let s2 = String.concat " " (List.map (pp_mono_in ctx) args2) in
   (s1, s2)
 
-let pp_scheme (Forall (_vars, t)) = pp_mono t
+let pp_scheme (Forall (_vars, _evars, t)) = pp_mono t
 
 let pp_error = function
   | TypeMismatch (a, b) ->
@@ -739,7 +779,7 @@ let from_ast_type ?(aliases=Hashtbl.create 0) ?(tbl=Hashtbl.create 4) t =
     | Ast.TyFun (a, b) ->
       let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
       let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
-      TFun (go a, effs, bm)
+      TFun (go a, closed_row effs, bm)
     | Ast.TyTuple ts -> TTuple (List.map go ts)
     | Ast.TyEffect (_, t) -> go t
     | Ast.TyConstrained (_, inner) -> go inner  (* constraints handled by from_ast_type_with_constraints *)
@@ -767,7 +807,7 @@ let from_ast_type_with_constraints ?(aliases=Hashtbl.create 0) ast_ty =
     | Ast.TyFun (a, b)        ->
       let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
       let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
-      TFun (go a, effs, bm)
+      TFun (go a, closed_row effs, bm)
     | Ast.TyTuple ts          -> TTuple (List.map go ts)
     | Ast.TyEffect (_, t)     -> go t
     | Ast.TyConstrained (_, inner) -> go inner
@@ -804,7 +844,7 @@ let initial_env () =
   Hashtbl.filter_map_inplace
     (fun _name s ->
        match s with
-       | Forall (_, t) -> Some (generalize t))
+       | Forall (_, _, t) -> Some (generalize t))
     env.ctors;
   (* Primitives from the runtime registry.
      from_ast_type now populates the TFun effect slot from TyEffect return-type
@@ -921,7 +961,7 @@ let rec type_pat env = function
     let arg_types = List.map fst typed_args in
     let bindings  = List.concat_map snd typed_args in
     let result_t  = fresh_var () in
-    let expected  = List.fold_right (fun at acc -> TFun (at, [], acc))
+    let expected  = List.fold_right (fun at acc -> TFun (at, pure_row, acc))
                       arg_types result_t in
     unify ctor_t expected;
     (result_t, bindings)
@@ -948,7 +988,7 @@ let rec type_pat env = function
        let result_t = ref ctor_t in
        List.iter (fun (_, ftype) ->
          let ret = fresh_var () in
-         unify !result_t (TFun (ftype, [], ret));
+         unify !result_t (TFun (ftype, pure_row, ret));
          result_t := ret
        ) field_types;
        let bindings =
@@ -1129,7 +1169,7 @@ let rec infer env = function
     let tf = infer env f in
     let tx = infer env x in
     let tr = fresh_var () in
-    unify tf (TFun (tx, [], tr));
+    unify tf (TFun (tx, pure_row, tr));
     tr
 
   | ELam (pats, body) ->
@@ -1138,7 +1178,7 @@ let rec infer env = function
     let bindings   = List.concat_map snd typed_pats in
     let env' = extend_vars env bindings in
     let tb = infer env' body in
-    List.fold_right (fun pt acc -> TFun (pt, [], acc)) pat_types tb
+    List.fold_right (fun pt acc -> TFun (pt, pure_row, acc)) pat_types tb
 
   | ELet (mut, is_fun, pat, e1, e2) ->
     (if mut then
@@ -1265,7 +1305,7 @@ let rec infer env = function
       else
         match Hashtbl.find_opt env.ctors c with
         | None -> (match c with "Cons" -> 2 | _ -> 0)
-        | Some (Forall (_, t)) ->
+        | Some (Forall (_, _, t)) ->
           let rec count = function
             | TFun (_, _, r) -> 1 + count r
             | TVar v -> (match !v with Link t' -> count t' | _ -> 0)
@@ -1285,7 +1325,7 @@ let rec infer env = function
            | "True" | "False" -> Some "Bool"
            | "Unit"           -> Some "Unit"
            | _                -> None)
-        | Some (Forall (_, t)) ->
+        | Some (Forall (_, _, t)) ->
           let rec result_type = function
             | TFun (_, _, r) -> result_type r
             | TApp (f, _) -> result_type f
@@ -1364,7 +1404,7 @@ let rec infer env = function
     let tl = infer env l in
     let tr = infer env r in
     let result = fresh_var () in
-    unify tf (TFun (tl, [], TFun (tr, [], result)));
+    unify tf (TFun (tl, pure_row, TFun (tr, pure_row, result)));
     result
 
   | EBlock stmts ->
@@ -1584,7 +1624,7 @@ let rec infer env = function
        let result_t = ref ctor_t in
        List.iter (fun (_, ftype) ->
          let ret = fresh_var () in
-         unify !result_t (TFun (ftype, [], ret));
+         unify !result_t (TFun (ftype, pure_row, ret));
          result_t := ret
        ) field_types;
        !result_t
@@ -1785,19 +1825,19 @@ and binop_type env op l r =
   | "|>" ->
     (* x |> f  :  a -> (a -> b) -> b *)
     let b = fresh_var () in
-    unify tr (TFun (tl, [], b)); b
+    unify tr (TFun (tl, pure_row, b)); b
   | ">>" ->
     (* f >> g  :  (a -> b) -> (b -> c) -> (a -> c) *)
     let a = fresh_var () in
     let b = fresh_var () in
     let c = fresh_var () in
-    unify tl (TFun (a, [], b)); unify tr (TFun (b, [], c)); TFun (a, [], c)
+    unify tl (TFun (a, pure_row, b)); unify tr (TFun (b, pure_row, c)); TFun (a, pure_row, c)
   | "<<" ->
     (* f << g  :  (b -> c) -> (a -> b) -> (a -> c) *)
     let a = fresh_var () in
     let b = fresh_var () in
     let c = fresh_var () in
-    unify tl (TFun (b, [], c)); unify tr (TFun (a, [], b)); TFun (a, [], c)
+    unify tl (TFun (b, pure_row, c)); unify tr (TFun (a, pure_row, b)); TFun (a, pure_row, c)
   | _ ->
     fail (Other ("Unknown binop: " ^ op))
 
@@ -1989,7 +2029,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
           in
           zip_unify pat_types sig_args;
           let body_t = infer (extend_vars !env_ref bindings) body in
-          List.fold_right (fun pt acc -> TFun (pt, [], acc)) pat_types body_t
+          List.fold_right (fun pt acc -> TFun (pt, pure_row, acc)) pat_types body_t
         | _ ->
           infer !env_ref (clause_to_expr (pats, body))
       in
@@ -2007,7 +2047,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     let placeholder = List.assoc name placeholders in
     let scheme = gen_restricted is_val placeholder in
     (match scheme with
-     | Forall (bound_ids, _) when cs_monos <> [] ->
+     | Forall (bound_ids, _, _) when cs_monos <> [] ->
        let extract_id m = match normalize m with
          | TVar {contents = Unbound (id, _)} when List.mem id bound_ids -> Some id
          | _ -> None
@@ -2068,7 +2108,7 @@ let register_data ?(aliases=Hashtbl.create 0) env (name, params, variants) =
       | Ast.TyFun (a, b) ->
         let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
         let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
-        TFun (go a, effs, bm)
+        TFun (go a, closed_row effs, bm)
       | Ast.TyTuple ts -> TTuple (List.map go ts)
       | Ast.TyEffect (_, t) -> go t
       | Ast.TyConstrained (_, inner) -> go inner
@@ -2087,7 +2127,7 @@ let register_data ?(aliases=Hashtbl.create 0) env (name, params, variants) =
         List.map snd monos
     in
     let ctor_t =
-      List.fold_right (fun a acc -> TFun (a, [], acc)) arg_types result_t
+      List.fold_right (fun a acc -> TFun (a, pure_row, acc)) arg_types result_t
     in
     (v.Ast.con_name, ctor_t)
   ) variants in
@@ -2123,7 +2163,7 @@ let register_record ?(aliases=Hashtbl.create 0) env (name, params, fields) =
       | Ast.TyFun (a, b)  ->
         let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
         let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
-        TFun (go a, effs, bm)
+        TFun (go a, closed_row effs, bm)
       | Ast.TyTuple ts    -> TTuple (List.map go ts)
       | Ast.TyEffect (_, t) -> go t
       | Ast.TyConstrained (_, inner) -> go inner
@@ -2185,7 +2225,7 @@ let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params,
       | Ast.TyFun (a, b)  ->
         let effs = match b with Ast.TyEffect (es, _) -> List.sort_uniq String.compare es | _ -> [] in
         let bm   = match b with Ast.TyEffect (_, t)  -> go t | t -> go t in
-        TFun (go a, effs, bm)
+        TFun (go a, closed_row effs, bm)
       | Ast.TyTuple ts    -> TTuple (List.map go ts)
       | Ast.TyEffect (_, t) -> go t
       | Ast.TyConstrained (_, inner) -> go inner
@@ -3033,9 +3073,9 @@ let expr_effects
       if StringSet.mem n bound then []
       else
         let from_scheme = match List.assoc_opt n scheme_env with
-          | Some (Forall (_, t)) ->
+          | Some (Forall (_, _, t)) ->
             (match normalize t with
-             | TFun (_, effs, _) -> effs
+             | TFun (_, effs, _) -> effrow_labels effs
              | _ -> [])
           | None -> []
         in
@@ -3781,5 +3821,5 @@ let infer_repl_expr (env : env) (e : expr) : mono * string list =
   resolve_dict_apps env;
   resolve_method_dicts env;
   let scheme = generalize t in
-  let (Forall (_, mono)) = scheme in
+  let (Forall (_, _, mono)) = scheme in
   (mono, List.rev !(env.warnings))

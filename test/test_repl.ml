@@ -198,7 +198,7 @@ let t_multiline_interface_impl_dispatch () =
      failwith (Printf.sprintf
        "Expected exactly one 'decode' binding, got %d (impl bodies leaked as \
         standalone functions)" (List.length decode_schemes))
-   | [ Typecheck.Forall (ids, _) as s ] ->
+   | [ Typecheck.Forall (ids, _, _) as s ] ->
      if ids = [] then
        failwith (Printf.sprintf
          "Expected 'decode' to keep its polymorphic interface scheme, got \
