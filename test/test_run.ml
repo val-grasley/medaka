@@ -498,6 +498,28 @@ main =
 |}
   "A\nB\nC\n"
 
+(* Bracket index `s.[i]` on a String is codepoint-based (Phase 77): returns the
+   i-th codepoint as a Char, not the i-th byte.  "héllo→" has multibyte é (cp 1)
+   and → (cp 5).  Parallels the array bracket; panics on OOB. *)
+let t_string_bracket_index = assert_output
+  {|main : <IO> Unit
+main =
+  let s = "héllo→"
+  println (s.[0])
+  println (s.[1])
+  println (s.[5])
+|}
+  "h\né\n→\n"
+
+(* `s.[i]` panics on out-of-bounds like the array bracket (codepoint count is
+   6, so index 6 is past the end). *)
+let t_string_bracket_index_oob = assert_run_err
+  {|main : <IO> Unit
+main =
+  let s = "héllo→"
+  println (s.[6])
+|}
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () = Alcotest.run "Run"
@@ -522,6 +544,8 @@ let () = Alcotest.run "Run"
     "string indexOf",     `Quick, t_string_index_of;
     "string unicode",     `Quick, t_string_unicode;
     "string bracket slice", `Quick, t_string_bracket_slice;
+    "string bracket index", `Quick, t_string_bracket_index;
+    "string bracket index oob", `Quick, t_string_bracket_index_oob;
     "prelude fn shadow",    `Quick, t_prelude_fn_shadow;
     "prelude method shadow", `Quick, t_prelude_method_shadow;
   ])]

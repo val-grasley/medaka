@@ -3608,34 +3608,61 @@ operator wiring to `core.mdk` interfaces, `do`→`Thenable` desugar — stays
 parked under "Phase 19 stdlib/typeclass wiring" in §5 and is deliberately
 excluded here.) Each is independently shippable; pick one per session.
 
-### Phase 76: Lexer string-literal fixes ⏳ TODO
+### Phase 76: Lexer string-literal fixes ✅ DONE
 
-Two independent string bugs, both rooted in `lib/lexer.mll`:
+Two string bugs were scheduled here; on investigation only one was still real:
 
-- **Triple-quoted strings drop `\{…}` interpolation.** `read_triple_string`
-  has no `INTERP_OPEN` branch, so `\{expr}` inside `"""…"""` lexes as a literal
-  `\{expr}` rather than a hole. Port the interpolation logic `read_string`
-  already uses. (Follow-up to Phase 23; see §5 audit-gap note.)
-- **A literal that starts with `\n` collapses.** `strip_indent` (multiline
-  dedent) fires on *any* `STRING` whose first byte is `\n`, so `"\n"` lexes to
-  `""` and a lone-newline string is unwritable. Fix: only dedent triple-quoted
-  strings, or never collapse a 1-char `"\n"`. (`stdlib/string.mdk` currently
-  works around it via `charFromCode 10`.)
+- **Triple-quoted strings drop `\{…}` interpolation.** — **Was already fixed in
+  Phase 59** (`0609b51`): `read_triple_string` + `read_interp_triple_continue`
+  already emit `INTERP_OPEN`/`INTERP_MID`/`INTERP_END` like the single-quoted
+  rules. The eval side was even covered (`t_interp_triple_basic/_two_holes`);
+  the only gap was *parser* coverage. Phase 76 added the missing parser tests
+  (`test_interp_triple`, `test_interp_triple_two_holes`).
+- **A literal that starts with `\n` collapses.** — **Fixed.** Root cause:
+  `strip_indent` (multiline dedent) keyed on the first byte being `\n`, which
+  conflated an *escaped* `\n` with a *raw* source newline, so `"\n"` lexed to
+  `""` and `"\n  foo"` dedented to `"foo"`. Naively skipping dedent for
+  single-quoted strings is wrong — single-quoted *raw-newline* multiline
+  literals are a real feature (`test_string_multiline`). Fix: a
+  `string_raw_leading_nl` flag, set only when the literal's first content char
+  comes from a **raw** source newline (the catch-all in `read_string` / the
+  `'\n'` rule in `read_triple_string`), reset at every opening quote; dedent
+  fires only when the flag is set. Applied symmetrically to single- and
+  triple-quoted close rules (so `"""\nfoo"""` with an *escaped* leading newline
+  no longer dedents either). Eval tests added: `t_lone_newline`,
+  `t_leading_newline_indent`.
 
-Scope: `lib/lexer.mll` only; add round-trip + eval tests for both. No
-grammar/AST change. Skill: **add-language-feature** (lexer-local).
+`stdlib/string.mdk`'s `nl = charToStr (unwrapChar (charFromCode 10))` workaround
+(plus its now-orphaned `unwrapChar` helper) was simplified to `nl = "\n"` once
+the lexer fix landed.
 
-### Phase 77: `s.[i]` single-codepoint string indexing ⏳ TODO
+Scope: `lib/lexer.mll` + parser/eval tests. No grammar/AST change.
+Skill: **add-language-feature** (lexer-local).
 
-`s.[lo..hi]` codepoint slicing works (Phase 75 step 5) but `s.[i]`
-single-codepoint indexing does not — `EIndex` only unifies its receiver with
-`Array a` in `typecheck.ml`, so strings are rejected at typecheck (no eval
+### Phase 77: `s.[i]` single-codepoint string indexing ✅ DONE (2026-06-01)
+
+`s.[lo..hi]` codepoint slicing worked (Phase 75 step 5) but `s.[i]`
+single-codepoint indexing did not — `EIndex` only unified its receiver with
+`Array a` in `typecheck.ml`, so strings were rejected at typecheck (no eval
 inconsistency; a missing feature, not a bug).
 
-Scope: add a type-directed `EIndex` branch `String -> Int -> Char` paralleling
-the existing `ESlice` branch; back it with a codepoint get (or
-`stringSlice i (i+1)`) in `eval.ml`. Panic-on-OOB to match the array bracket.
-Skill: **add-language-feature** (threads typecheck + eval).
+Done: rewrote the `EIndex` typecheck arm (`lib/typecheck.ml`) to be
+type-directed on the normalized receiver head, paralleling the `ESlice` branch —
+`String -> Char`, `Array a -> a`, `List a -> a`, `TVar` defaults to Array. Added
+a `VString` arm to the `EIndex` eval match (`lib/eval.ml`) backed by an inline
+codepoint get (`utf8_length`/`utf8_byte_offset`, returning the one-codepoint
+`VChar`), panic-on-OOB to match the array bracket.
+
+Also closed a **pre-existing gap**: `EIndex` eval already handled `VList`, but
+the old typecheck arm unconditionally unified the receiver with `Array a`, so
+`xs.[i]` on a `List` was rejected at typecheck despite working in eval. The
+type-directed rewrite adds the `List a -> a` branch, so list indexing now
+typechecks consistently.
+
+Tests: `test/test_run.ml` ("string bracket index", "string bracket index oob"),
+`test/test_typecheck.ml` ("index array/list/string"). Skill:
+**add-language-feature** (threaded typecheck + eval; parser/resolve/desugar/
+printer unchanged — `s.[i]` already parsed to `EIndex`).
 
 ### Phase 78: Prelude name shadowing ✅ DONE (78a + 78b; 78c won't-do)
 

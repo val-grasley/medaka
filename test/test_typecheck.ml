@@ -3126,6 +3126,14 @@ let t_slice_list   = assert_type "r = [1, 2, 3, 4].[1..3]\n"   "r" "List Int"
 let t_slice_string = assert_type "r = \"hello\".[1..3]\n"      "r" "String"
 let e_slice_non_container = assert_err "r = True.[0..1]\n"
 
+(* Index typing (Phase 77): the EIndex branch now mirrors the slice branch,
+   yielding the element type per container — Array a -> a, List a -> a, and the
+   new String -> Char.  List indexing typechecks (closing a prior gap where eval
+   handled VList but typecheck unified the receiver with Array unconditionally). *)
+let t_index_array  = assert_type "r = [|1, 2, 3, 4|].[1]\n" "r" "Int"
+let t_index_list   = assert_type "r = [1, 2, 3, 4].[1]\n"   "r" "Int"
+let t_index_string = assert_type "r = \"hello\".[1]\n"      "r" "Char"
+
 (* EAnnot polymorphism check (Phase 70): a polymorphic annotation must match a
    genuinely polymorphic expression; a concrete one is rejected. *)
 let t_annot_poly_ok = assert_type
@@ -3673,6 +3681,9 @@ let () =
       test_case "slice list preserves type"            `Quick t_slice_list;
       test_case "slice string preserves type"          `Quick t_slice_string;
       test_case "err: slice non-container"             `Quick e_slice_non_container;
+      test_case "index array yields element"           `Quick t_index_array;
+      test_case "index list yields element"            `Quick t_index_list;
+      test_case "index string yields Char"             `Quick t_index_string;
       test_case "annot polymorphic ok"                 `Quick t_annot_poly_ok;
       test_case "annot concrete ok"                    `Quick t_annot_concrete_ok;
       test_case "err: annot too general (concrete)"    `Quick e_annot_too_general_concrete;
