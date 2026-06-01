@@ -237,10 +237,10 @@ export impl Show Unit where
 showListItems : Show a => List a -> String
 showListItems [] = ""
 showListItems [x] = show x
-showListItems (y::rest) = show y ++ ", " ++ showListItems rest
+showListItems (y::rest) = "\{show y}, \{showListItems rest}"
 
 export impl Show (List a) requires Show a where
-  show xs = "[" ++ showListItems xs ++ "]"
+  show xs = "[\{showListItems xs}]"
 
 export impl Show (Option a) requires Show a where
   show None = "None"
@@ -253,34 +253,16 @@ export impl Show (Result e a) requires Show e, Show a where
 -- Tuple rendering (arities 2–5): `(a, b)`, matching the interpreter's
 -- value printer.
 export impl Show (a, b) requires Show a, Show b where
-  show (a, b) = "(" ++ show a ++ ", " ++ show b ++ ")"
+  show (a, b) = "(\{show a}, \{show b})"
 
 export impl Show (a, b, c) requires Show a, Show b, Show c where
-  show (a, b, c) = "(" ++ show a ++ ", " ++ show b ++ ", " ++ show c ++ ")"
+  show (a, b, c) = "(\{show a}, \{show b}, \{show c})"
 
 export impl Show (a, b, c, d) requires Show a, Show b, Show c, Show d where
-  show (a, b, c, d) = "("
-    ++ show a
-    ++ ", "
-    ++ show b
-    ++ ", "
-    ++ show c
-    ++ ", "
-    ++ show d
-    ++ ")"
+  show (a, b, c, d) = "(\{show a}, \{show b}, \{show c}, \{show d})"
 
 export impl Show (a, b, c, d, e) requires Show a, Show b, Show c, Show d, Show e where
-  show (a, b, c, d, e) = "("
-    ++ show a
-    ++ ", "
-    ++ show b
-    ++ ", "
-    ++ show c
-    ++ ", "
-    ++ show d
-    ++ ", "
-    ++ show e
-    ++ ")"
+  show (a, b, c, d, e) = "(\{show a}, \{show b}, \{show c}, \{show d}, \{show e})"
 
 {- | Display rendering for string interpolation.  A `"\{e}"` hole desugars to
    `display e`, so this is what `\{...}` calls.  Unlike `Show`, `Display` does
@@ -319,10 +301,10 @@ export impl Display Char where
 displayListItems : Display a => List a -> String
 displayListItems [] = ""
 displayListItems [x] = display x
-displayListItems (y::rest) = display y ++ ", " ++ displayListItems rest
+displayListItems (y::rest) = "\{y}, \{displayListItems rest}"
 
 export impl Display (List a) requires Display a where
-  display xs = "[" ++ displayListItems xs ++ "]"
+  display xs = "[\{displayListItems xs}]"
 
 export impl Display (Option a) requires Display a where
   display None = "None"
@@ -333,34 +315,16 @@ export impl Display (Result e a) requires Display e, Display a where
   display (Err e) = "Err " ++ display e
 
 export impl Display (a, b) requires Display a, Display b where
-  display (a, b) = "(" ++ display a ++ ", " ++ display b ++ ")"
+  display (a, b) = "(\{a}, \{b})"
 
 export impl Display (a, b, c) requires Display a, Display b, Display c where
-  display (a, b, c) = "(" ++ display a ++ ", " ++ display b ++ ", " ++ display c ++ ")"
+  display (a, b, c) = "(\{a}, \{b}, \{c})"
 
 export impl Display (a, b, c, d) requires Display a, Display b, Display c, Display d where
-  display (a, b, c, d) = "("
-    ++ display a
-    ++ ", "
-    ++ display b
-    ++ ", "
-    ++ display c
-    ++ ", "
-    ++ display d
-    ++ ")"
+  display (a, b, c, d) = "(\{a}, \{b}, \{c}, \{d})"
 
 export impl Display (a, b, c, d, e) requires Display a, Display b, Display c, Display d, Display e where
-  display (a, b, c, d, e) = "("
-    ++ display a
-    ++ ", "
-    ++ display b
-    ++ ", "
-    ++ display c
-    ++ ", "
-    ++ display d
-    ++ ", "
-    ++ display e
-    ++ ")"
+  display (a, b, c, d, e) = "(\{a}, \{b}, \{c}, \{d}, \{e})"
 
 {- | Numeric arithmetic.  Backs `+`, `-`, `*`, `/` for user-defined numeric
    types; the operators are hard-wired for `Int` and `Float` and only
