@@ -1677,11 +1677,17 @@ let rec infer env = function
 
   | EIndex (arr, idx) ->
     let ta = infer env arr in
-    let ti = infer env idx in
+    unify (infer env idx) t_int;
+    (* Index preserves container element type: Array a -> a, List a -> a, and
+       String -> Char (codepoint, Phase 77).  Branch on the normalized head like
+       ESlice does, rather than a single destructive unify against Array. *)
     let elem = fresh_var () in
-    unify ta (t_array elem);
-    unify ti t_int;
-    elem
+    (match normalize ta with
+     | TCon "String"          -> t_char                  (* String -> Char *)
+     | TApp (TCon "Array", _) -> unify ta (t_array elem); elem
+     | TApp (TCon "List", _)  -> unify ta (t_list elem); elem
+     | TVar _ -> unify ta (t_array elem); elem           (* undetermined: default Array *)
+     | _      -> unify ta (t_array elem); elem)          (* clean Array mismatch *)
 
   (* The following node shapes are removed by the desugar pass before typecheck;
      reaching one means the desugar pass was skipped (a pipeline-wiring bug), so

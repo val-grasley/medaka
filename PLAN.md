@@ -3638,17 +3638,30 @@ the lexer fix landed.
 Scope: `lib/lexer.mll` + parser/eval tests. No grammar/AST change.
 Skill: **add-language-feature** (lexer-local).
 
-### Phase 77: `s.[i]` single-codepoint string indexing ⏳ TODO
+### Phase 77: `s.[i]` single-codepoint string indexing ✅ DONE (2026-06-01)
 
-`s.[lo..hi]` codepoint slicing works (Phase 75 step 5) but `s.[i]`
-single-codepoint indexing does not — `EIndex` only unifies its receiver with
-`Array a` in `typecheck.ml`, so strings are rejected at typecheck (no eval
+`s.[lo..hi]` codepoint slicing worked (Phase 75 step 5) but `s.[i]`
+single-codepoint indexing did not — `EIndex` only unified its receiver with
+`Array a` in `typecheck.ml`, so strings were rejected at typecheck (no eval
 inconsistency; a missing feature, not a bug).
 
-Scope: add a type-directed `EIndex` branch `String -> Int -> Char` paralleling
-the existing `ESlice` branch; back it with a codepoint get (or
-`stringSlice i (i+1)`) in `eval.ml`. Panic-on-OOB to match the array bracket.
-Skill: **add-language-feature** (threads typecheck + eval).
+Done: rewrote the `EIndex` typecheck arm (`lib/typecheck.ml`) to be
+type-directed on the normalized receiver head, paralleling the `ESlice` branch —
+`String -> Char`, `Array a -> a`, `List a -> a`, `TVar` defaults to Array. Added
+a `VString` arm to the `EIndex` eval match (`lib/eval.ml`) backed by an inline
+codepoint get (`utf8_length`/`utf8_byte_offset`, returning the one-codepoint
+`VChar`), panic-on-OOB to match the array bracket.
+
+Also closed a **pre-existing gap**: `EIndex` eval already handled `VList`, but
+the old typecheck arm unconditionally unified the receiver with `Array a`, so
+`xs.[i]` on a `List` was rejected at typecheck despite working in eval. The
+type-directed rewrite adds the `List a -> a` branch, so list indexing now
+typechecks consistently.
+
+Tests: `test/test_run.ml` ("string bracket index", "string bracket index oob"),
+`test/test_typecheck.ml` ("index array/list/string"). Skill:
+**add-language-feature** (threaded typecheck + eval; parser/resolve/desugar/
+printer unchanged — `s.[i]` already parsed to `EIndex`).
 
 ### Phase 78: Prelude name shadowing in the resolver ⏳ TODO
 
