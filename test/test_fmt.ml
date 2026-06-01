@@ -205,6 +205,50 @@ let id_wide_data = idempotent
 let id_block_data = idempotent
   "data Tree a\n  = Leaf\n  | Node (Tree a) a (Tree a)\n  | Tip Int Int Int Int Int Int Int Int\n"
 
+(* ── Width-aware line splitting ──────────────────── *)
+
+(* A collection literal that fits within the 80-column budget stays on one
+   line. *)
+let rt_short_list_one_line () =
+  let out = format "xs = [1, 2, 3, 4, 5]\n" in
+  if contains "\n" (String.sub out 0 (String.length out - 1)) then
+    failwith (Printf.sprintf "Short list was split:\n%s" out)
+
+let id_short_list = idempotent "xs = [1, 2, 3, 4, 5]\n"
+
+(* A list literal too wide for one line breaks to one element per line inside
+   the brackets (legal because the lexer suppresses layout inside `[ ]`). *)
+let rt_wide_list_splits () =
+  let out = format
+    "xs = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000]\n"
+  in
+  if not (contains "[\n  1000," out) then
+    failwith (Printf.sprintf "Wide list was not split one-per-line:\n%s" out)
+
+let id_wide_list = idempotent
+  "xs = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000]\n"
+
+(* A pipeline too wide for one line breaks with each operator leading its
+   continuation line — which only reparses because of the lexer's
+   leading-operator continuation rule.  (If it did not reparse, [format] would
+   raise via the round-trip net.) *)
+let rt_wide_pipeline_splits () =
+  let out = format
+    "process input =\n  input |> normalize |> validate |> transform |> persist |> notifyAll\n"
+  in
+  if not (contains "\n  |> normalize" out) then
+    failwith (Printf.sprintf "Wide pipeline did not break to leading-|> lines:\n%s" out)
+
+let id_wide_pipeline = idempotent
+  "process input =\n  input |> normalize |> validate |> transform |> persist |> notifyAll\n"
+
+(* A short pipeline stays on one line. *)
+let id_short_pipeline = idempotent "f x = x |> g |> h\n"
+
+(* A logical chain breaks the same way and reparses. *)
+let id_wide_logical = idempotent
+  "ok a b c d e =\n  a && b && c && d && e && a && b && c && d && e && a && b && c && d && e\n"
+
 (* ── Entry point ─────────────────────────────────── *)
 
 let () =
@@ -227,6 +271,11 @@ let () =
       Alcotest.test_case "short data deriving" `Quick id_short_data_deriving;
       Alcotest.test_case "wide data"      `Quick id_wide_data;
       Alcotest.test_case "block data"     `Quick id_block_data;
+      Alcotest.test_case "short list"     `Quick id_short_list;
+      Alcotest.test_case "wide list"      `Quick id_wide_list;
+      Alcotest.test_case "short pipeline" `Quick id_short_pipeline;
+      Alcotest.test_case "wide pipeline"  `Quick id_wide_pipeline;
+      Alcotest.test_case "wide logical"   `Quick id_wide_logical;
     ];
     "comment preservation", [
       Alcotest.test_case "top of file"   `Quick cp_top;
@@ -249,5 +298,8 @@ let () =
       Alcotest.test_case "no paren type app"  `Quick rt_no_paren_type_app;
       Alcotest.test_case "short data one line" `Quick rt_short_data_one_line;
       Alcotest.test_case "wide data splits"    `Quick rt_wide_data_splits;
+      Alcotest.test_case "short list one line" `Quick rt_short_list_one_line;
+      Alcotest.test_case "wide list splits"    `Quick rt_wide_list_splits;
+      Alcotest.test_case "wide pipeline splits" `Quick rt_wide_pipeline_splits;
     ];
   ]

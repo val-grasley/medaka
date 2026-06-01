@@ -877,6 +877,58 @@ let test_compose_lower_than_or () =
   | EBinOp (">>", EVar "f", EBinOp ("||", EVar "a", EVar "b")) -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (pp_expr e))
 
+(* ── Leading-operator line continuation ──────────────── *)
+
+(* A line break immediately before |> >> << && || ++ <> continues the previous
+   expression rather than ending the statement.  Because continuation only
+   *removes* layout tokens that a one-line form never had, every continued form
+   must parse to exactly the same AST as its one-line equivalent. *)
+let same_ast one_line continued () =
+  let a = parse one_line and b = parse continued in
+  if a <> b then
+    failwith (Printf.sprintf
+                "continuation changed the AST.\none-line:\n%s\ncontinued:\n%s"
+                one_line continued)
+
+let test_cont_pipe =
+  same_ast
+    "f x = x |> g |> h\n"
+    "f x =\n  x\n  |> g\n  |> h\n"
+
+let test_cont_logical =
+  same_ast
+    "f a b c = a && b || c\n"
+    "f a b c =\n  a\n  && b\n  || c\n"
+
+let test_cont_all_ops =
+  same_ast
+    "f a b = a |> b >> b << b && b || b ++ b <> b\n"
+    "f a b =\n  a\n  |> b\n  >> b\n  << b\n  && b\n  || b\n  ++ b\n  <> b\n"
+
+let test_cont_dedented =
+  (* the continuation line may sit at any indent — even left of the enclosing
+     block — without triggering a premature dedent *)
+  same_ast
+    "f x = x && True\n"
+    "f x =\n  x\n&& True\n"
+
+let test_cont_blank_line =
+  (* blank lines before the operator are swallowed too *)
+  same_ast
+    "f x = x |> g\n"
+    "f x =\n  x\n\n  |> g\n"
+
+let test_cont_comment_not_rescued () =
+  (* a comment physically between the operand and the operator stops the
+     newline run, so continuation does not apply; this was a parse error before
+     the rule existed and remains one (documented limitation) *)
+  match
+    (try ignore (parse "f x =\n  x\n  -- note\n  && True\n"); `Parsed
+     with Failure _ -> `Error)
+  with
+  | `Error  -> ()
+  | `Parsed -> failwith "expected comment-between-operand-and-operator to error"
+
 let test_multi_decl () =
   let src = "x : Int\nx = 42\n" in
   match parse src with
@@ -1602,6 +1654,14 @@ let () =
       test_case "compose <<"           `Quick test_compose_left;
       test_case "pipe lower than ||"    `Quick test_pipe_lower_than_or;
       test_case "compose lower than ||" `Quick test_compose_lower_than_or;
+    ];
+    "leading-operator continuation", [
+      test_case "pipe across lines"      `Quick test_cont_pipe;
+      test_case "logical across lines"   `Quick test_cont_logical;
+      test_case "all trigger operators"  `Quick test_cont_all_ops;
+      test_case "dedented continuation"  `Quick test_cont_dedented;
+      test_case "blank line before op"   `Quick test_cont_blank_line;
+      test_case "comment not rescued"    `Quick test_cont_comment_not_rescued;
     ];
     "multiple declarations", [
       test_case "sig + def"       `Quick test_multi_decl;

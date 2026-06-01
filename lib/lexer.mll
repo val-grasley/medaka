@@ -73,6 +73,22 @@ let handle_indent col =
     end else
       push_pending NEWLINE
 
+(* After matching a multi-line lexeme [s] whose match ends at the current
+   position, fix up pos_lnum/pos_bol so column reporting on the lexeme's final
+   line stays correct.  ocamllex advances pos_cnum automatically but leaves
+   line/bol to the lexer, so a rule that swallows newlines (the leading-operator
+   continuation rule below) must call this or downstream locations drift. *)
+let advance_over lexbuf s =
+  let p = lexbuf.Lexing.lex_curr_p in
+  let start_cnum = p.Lexing.pos_cnum - String.length s in
+  let nls = ref 0 and last_nl = ref (-1) in
+  String.iteri (fun i c -> if c = '\n' then (incr nls; last_nl := i)) s;
+  if !nls > 0 then
+    lexbuf.Lexing.lex_curr_p <-
+      { p with
+        Lexing.pos_lnum = p.Lexing.pos_lnum + !nls;
+        Lexing.pos_bol  = start_cnum + !last_nl + 1 }
+
 let reset () =
   indent_stack := [0];
   Queue.clear pending;
@@ -185,6 +201,32 @@ and read = parse
       Buffer.add_string buf "{-";
       read_block_comment buf 1 line col lexbuf;
       read lexbuf
+    }
+  | (newline white*)+ (("|>" | ">>" | "<<" | "&&" | "||" | "++" | "<>") as op) {
+      (* Leading-operator line continuation: a line break immediately before one
+         of these infix operators is *not* a statement boundary — the operator
+         continues the previous expression.  We emit the operator token directly
+         and skip all layout (no NEWLINE/INDENT/DEDENT, indent_stack untouched),
+         exactly as if the break had happened inside parentheses.
+
+         Safe because every operator here is infix-only: none can legally begin a
+         declaration or statement, so any program that parsed before still parses
+         identically — we only rescue layouts that were previously parse errors.
+         `|` is deliberately excluded (it opens guard arms / data variants).
+
+         A comment physically between the operand and the operator defeats this
+         (the newline run stops at the comment); that case was already a parse
+         error, so it stays one. *)
+      advance_over lexbuf (Lexing.lexeme lexbuf);
+      (match op with
+       | "|>" -> PIPE_RIGHT
+       | ">>" -> RCOMPOSE
+       | "<<" -> LCOMPOSE
+       | "&&" -> AND
+       | "||" -> OR
+       | "++" -> PLUSPLUS
+       | "<>" -> STRAPPEND
+       | _    -> assert false)
     }
   | (newline white*)+ {
       (* Consume one or more (newline + optional indent) sequences so that

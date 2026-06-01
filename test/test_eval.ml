@@ -1367,6 +1367,13 @@ let t_order_unbound_is_clear_error =
     "x = noSuchThing\n"
     "x"
 
+(* A logical expression continued across indented lines (leading-operator
+   continuation) evaluates exactly as its one-line form. *)
+let t_cont_logical_eval =
+  assert_val
+    "f a b c =\n  a\n  && b\n  || c\nresult = f True False True\n"
+    "result" (VBool true)
+
 (* ── Test registration ──────────────────────────────────────────────────── *)
 
 let () =
@@ -1654,6 +1661,9 @@ let () =
     "function keyword (Phase 44)", [
       test_case "classify 0 = zero"          `Quick t_function_eval;
       test_case "sign (-5) = -1 with guard"  `Quick t_function_guard_eval;
+    ];
+    "leading-operator continuation", [
+      test_case "continued && || evaluates as one-line" `Quick t_cont_logical_eval;
     ];
     "top-level binding order (Phase 59.5)", [
       test_case "zero-param before fun"        `Quick t_order_zero_param_before_fun;
