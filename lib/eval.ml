@@ -797,7 +797,18 @@ and eval env expr =
         | Some v -> v
         | None ->
           raise (Eval_error (Printf.sprintf "index %d out of bounds" i, !current_loc)))
-     | _ -> raise (Eval_error ("index on non-array/list", !current_loc)))
+     | VString s ->
+       (* Codepoint-based (Phase 77): bound-check against the codepoint count
+          and cut on codepoint boundaries, like the ESlice String arm.  Panics
+          on OOB to match the array bracket.  Result is the one-codepoint VChar. *)
+       let n = utf8_length s in
+       if i < 0 || i >= n then
+         raise (Eval_error (Printf.sprintf "index %d out of bounds" i, !current_loc))
+       else
+         let b_lo = utf8_byte_offset s i in
+         let b_hi = utf8_byte_offset s (i + 1) in
+         VChar (String.sub s b_lo (b_hi - b_lo))
+     | _ -> raise (Eval_error ("index on non-array/list/string", !current_loc)))
 
   | EBlock stmts -> eval_block env stmts
 
