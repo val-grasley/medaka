@@ -3343,7 +3343,13 @@ let check_program_impl (prog : program) : (ident * scheme) list * string list =
 
   (* Include interface methods and extern schemes in the returned env *)
   let final_env = !env in
-  (results @ !iface_method_schemes @ !extern_schemes, List.rev !(final_env.warnings))
+  (* Phase 78b: report a renamed shadowing binding under its original name, so
+     `length` (not the internal `length#shadow`) appears in the returned env.
+     The user binding sits in [results] (ahead of the prelude method's scheme in
+     iface_method_schemes), so a name lookup still resolves to the user's. *)
+  let unshadow (n, s) = (Method_marker.strip_shadow n, s) in
+  (List.map unshadow (results @ !iface_method_schemes @ !extern_schemes),
+   List.rev !(final_env.warnings))
 
 (* Phase 78a: a user binding may shadow a prelude *plain* function.  Droppable
    ones (no internal prelude use) are removed by [prelude_for] and shadow
@@ -3355,6 +3361,13 @@ let check_program_impl (prog : program) : (ident * scheme) list * string list =
    user's own definition with an actionable message.  Compatible merges (which
    type-check) are untouched — they still work as before. *)
 let check_program (prog : program) : (ident * scheme) list * string list =
+  (* Phase 78b: rename safe user bindings that shadow a prelude interface method
+     to internal names, so they type-check as ordinary functions.  Done here so
+     every typecheck caller is consistent — including LSP and diagnostics, which
+     don't go through mark_with_prelude.  mark_with_prelude applies the same
+     (idempotent) rename to the program the drivers later eval, keeping the two
+     in step. *)
+  let prog = if program_is_core prog then prog else Method_marker.shadow_rename prog in
   let shadow =
     if program_is_core prog then None
     else Method_marker.nondroppable_shadow prog in

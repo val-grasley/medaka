@@ -3170,6 +3170,13 @@ let t_prelude_fn_shadow =
 let e_shadow_internal_prelude_fn =
   assert_err_at ~line:2 "identity : Int -> Int\nidentity n = n + 100\n"
 
+(* Phase 78b: a user top-level binding may shadow a prelude *interface method*
+   (`length`, a Foldable method) with a type the method could never have.  It is
+   renamed to an internal non-method name so it type-checks as an ordinary
+   function, and is reported back under its original name `length`. *)
+let t_prelude_method_shadow =
+  assert_type "length : Int -> Int\nlength n = n + 1\n" "length" "Int -> Int"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -3677,5 +3684,6 @@ let () =
     "prelude shadowing (Phase 78a)", [
       test_case "user fn shadows prelude plain fn"      `Quick t_prelude_fn_shadow;
       test_case "err: shadow internally-used prelude fn" `Quick e_shadow_internal_prelude_fn;
+      test_case "user fn shadows prelude method"        `Quick t_prelude_method_shadow;
     ];
   ]

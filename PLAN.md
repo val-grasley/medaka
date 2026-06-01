@@ -3721,15 +3721,47 @@ Tests: `test_run` `prelude fn shadow`, `test_typecheck` `user fn shadows prelude
 plain fn`. Done: a single file defining a standalone `count` type-checks and runs
 with the module's `count`; an untouched prelude method (`length`) still resolves.
 
-#### Phase 78b: Interface-method shadowing ⏳ TODO
+#### Phase 78b: Interface-method shadowing (single-file) ✅ DONE
 
-The actual `array.mdk` unblocker; depends on 78a. Let a user top-level binding
-shadow a prelude **interface method** (`length`/`isEmpty`/`toList`, and
-`map`/`filter`). Adds shadow-aware marking (`method_marker.ml`) on top of 78a's
-origin machinery, resolves the env double-binding across all three typecheck
-drivers, and the `EMethodRef`/`impl_acc` interaction in `eval.ml`. Done when:
-`array.mdk` defines its own `length`/`isEmpty`/`toList`, those win for it and its
-importers, and Foldable dispatch for List/Option/Result is unchanged.
+Single-file method shadowing; the multi-module `array.mdk` unblocker is split out
+to 78c. A user top-level binding may shadow a prelude **interface method**
+(`length`/`isEmpty`/`toList`, `map`, `filter`) — even with a type the method
+could never have (`length : Int -> Int`).
+
+The blocker: the EVar infer branch routes any name in `env.method_iface` through
+dispatch regardless of `EMethodRef` marking (`typecheck.ml`), so a bare user
+`length` is still treated as the method. Shadow-aware marking alone can't fix it
+— the name is globally a method.
+
+Mechanism (**user-side rename**, the dual of 78a): `Method_marker.shadow_rename`
+renames the user's shadowing binding (and its in-module refs) to an internal name
+`length#shadow` (`#` can't occur in a source ident). The renamed name isn't in
+`method_iface`, so it type-checks and evals as an ordinary function, while the
+prelude's method + impls + internal uses are untouched. No dispatch/eval changes.
+Restricted to **safe** names — a shadowed method name never also bound by a local
+pattern anywhere (so a plain substitution can't capture); an unsafe one is left
+alone and falls through to the `CannotShadowPrelude` diagnostic (now extended to
+method names). Applied in `mark_with_prelude` (for the eval-bound program) and,
+idempotently, in `check_program` (so LSP/diagnostics, which skip marking, stay
+consistent). `check_program` strips the sentinel from returned env keys
+(`strip_shadow`), so the binding is reported under its original name.
+
+Tests: `test_run` `prelude method shadow` (user `length` wins; `isEmpty`/`toList`
+still dispatch for List/Option), `test_typecheck` `user fn shadows prelude
+method`. Limitations: single-file only (multi-module → 78c); shadowing a method
+name that is also locally rebound is rejected with the diagnostic rather than
+renamed.
+
+#### Phase 78c: Multi-module method shadowing ⏳ TODO
+
+The actual `array.mdk` unblocker. Extend 78a/78b shadowing across the
+multi-module path (`typecheck_module` + combined eval) with **per-module** scope:
+`array.mdk` reclaims `length`/`isEmpty`/`toList` and its importers see those,
+while other modules keep the prelude's. Needs the export/import name handling
+(the user-side rename must keep the original name in the module's exports) and a
+per-module rather than whole-program shadow set. Done when: `array.mdk` defines
+its own `length`/`isEmpty`/`toList`, those win for it and its importers, and
+Foldable dispatch for List/Option/Result elsewhere is unchanged.
 
 ### Phase 79: Effect-polymorphic higher-order functions ⏳ TODO
 

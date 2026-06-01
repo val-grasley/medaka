@@ -481,6 +481,23 @@ main =
 |}
   "OK\nOK\n"
 
+(* Phase 78b: a user module-level function may shadow a prelude *interface
+   method* (`length`, a Foldable method).  The user's `length` is renamed to an
+   internal non-method name, so it type-checks and runs as an ordinary function
+   even with a type the method could never have (`Int -> Int`); the prelude's
+   Foldable methods (`isEmpty`, `toList`) still dispatch for List/Option. *)
+let t_prelude_method_shadow = assert_output_typed
+  {|length : Int -> Int
+length n = n * 2
+
+main : <IO> Unit
+main =
+  if length 3 == 6 then println "A" else println "X"
+  if isEmpty [1] then println "X" else println "B"
+  if toList (Some 5) == [5] then println "C" else println "X"
+|}
+  "A\nB\nC\n"
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () = Alcotest.run "Run"
@@ -506,4 +523,5 @@ let () = Alcotest.run "Run"
     "string unicode",     `Quick, t_string_unicode;
     "string bracket slice", `Quick, t_string_bracket_slice;
     "prelude fn shadow",    `Quick, t_prelude_fn_shadow;
+    "prelude method shadow", `Quick, t_prelude_method_shadow;
   ])]
