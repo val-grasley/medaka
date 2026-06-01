@@ -47,3 +47,56 @@ get : Int -> List a -> Option a
 get _ [] = None
 get 0 (x::_) = Some x
 get i (_::xs) = get (i - 1) xs
+
+-- Zipping
+
+{- | Pair up elements of two lists positionally.  The result is as long as
+   the *shorter* input; trailing elements of the longer one are dropped.
+
+   > zip [1, 2, 3] [10, 20]
+   [(1, 10), (2, 20)]
+   > zip [] [1, 2]
+   [] -}
+export
+zip : List a -> List b -> List (a, b)
+zip [] _ = []
+zip _ [] = []
+zip (x::xs) (y::ys) = (x, y) :: zip xs ys
+
+{- | Like `zip`, but for three lists, producing triples.  Stops at the
+   shortest input.
+
+   > zip3 [1, 2] [3, 4] [5, 6]
+   [(1, 3, 5), (2, 4, 6)]
+   > zip3 [1, 2, 3] [4, 5] [6]
+   [(1, 4, 6)] -}
+export
+zip3 : List a -> List b -> List c -> List (a, b, c)
+zip3 [] _ _ = []
+zip3 _ [] _ = []
+zip3 _ _ [] = []
+zip3 (x::xs) (y::ys) (z::zs) = (x, y, z) :: zip3 xs ys zs
+
+{- | Combine two lists element-wise with `f`, stopping at the shorter.
+   `zip` is the special case `zipWith (x y => (x, y))`.
+
+   > zipWith (x y => x + y) [1, 2, 3] [10, 20, 30]
+   [11, 22, 33]
+   > zipWith (x y => x * y) [1, 2, 3, 4] [10, 20]
+   [10, 40] -}
+export
+zipWith : (a -> b -> c) -> List a -> List b -> List c
+zipWith _ [] _ = []
+zipWith _ _ [] = []
+zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
+
+{- | Split a list of pairs into a pair of lists — the inverse of `zip`.
+
+   > unzip [(1, 2), (3, 4)]
+   ([1, 3], [2, 4])
+   > unzip []
+   ([], []) -}
+export
+unzip : List (a, b) -> (List a, List b)
+unzip [] = ([], [])
+unzip ((x, y)::xys) = let (xs, ys) = unzip xys in (x :: xs, y :: ys)
