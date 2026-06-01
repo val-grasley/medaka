@@ -617,6 +617,16 @@ let t_newtype_deriving_display =
     "newtype UserId = UserId Int deriving (Display)\nx = \"id: \\{UserId 42}\"\n"
     "x" (VString "id: UserId 42")
 
+let t_newtype_deriving_eq =
+  assert_val
+    "newtype UserId = UserId Int deriving (Eq)\nx = (UserId 3 == UserId 3) && not (UserId 3 == UserId 5)\n"
+    "x" (VBool true)
+
+let t_newtype_deriving_ord =
+  assert_val
+    "newtype UserId = UserId Int deriving (Ord)\nx = lt (UserId 3) (UserId 5) && gt (UserId 9) (UserId 5)\n"
+    "x" (VBool true)
+
 (* ── Generic deriving (structural to_rep) ────────────────────────────────── *)
 
 let rint n = VCon ("RInt", [VInt n])
@@ -1567,6 +1577,8 @@ let () =
       test_case "deriving Num mul"  `Quick t_newtype_deriving_num_mul;
       test_case "deriving Show"     `Quick t_newtype_deriving_show;
       test_case "deriving Display"  `Quick t_newtype_deriving_display;
+      test_case "deriving Eq"       `Quick t_newtype_deriving_eq;
+      test_case "deriving Ord"      `Quick t_newtype_deriving_ord;
     ];
     "Generic deriving (to_rep)", [
       test_case "data positional"   `Quick t_generic_data_positional;

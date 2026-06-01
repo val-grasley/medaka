@@ -74,8 +74,15 @@ let derive_eq_data type_name variants =
     in
     (PTuple [apat; bpat], [], body)
   ) variants in
-  let wild_arm = (PTuple [PWild; PWild], [], EVar "False") in
-  let body = EMatch (ETuple [EVar "__x"; EVar "__y"], same_con_arms @ [wild_arm]) in
+  (* The cross-constructor fallback is only reachable with ≥2 constructors;
+     for a single-constructor type (incl. any newtype) the same-constructor arm
+     is already exhaustive, so omitting it avoids a redundant-arm warning. *)
+  let arms =
+    if List.length variants > 1
+    then same_con_arms @ [(PTuple [PWild; PWild], [], EVar "False")]
+    else same_con_arms
+  in
+  let body = EMatch (ETuple [EVar "__x"; EVar "__y"], arms) in
   DImpl {
     is_pub     = true;
     is_default = false;
@@ -409,6 +416,8 @@ let derive_for_newtype type_name params con_name fty iface =
   | "Generic" -> mk derive_generic_newtype
   | "Show"    -> mk_data derive_show_data
   | "Display" -> mk_data derive_display_data
+  | "Eq"      -> mk_data derive_eq_data
+  | "Ord"     -> mk_data derive_ord_data
   | _         -> None
 
 (* ── Derive Arbitrary ─────────────────────────────────────────────────── *)
