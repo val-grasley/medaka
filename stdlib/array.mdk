@@ -93,8 +93,7 @@ copy arr = arrayCopy arr
    None -}
 export
 get : Int -> Array a -> Option a
-get i arr =
-  if i < 0 || i >= arrayLength arr then None else Some (arrayGetUnsafe i arr)
+get i arr = if i < 0 || i >= arrayLength arr then None else Some (arrayGetUnsafe i arr)
 
 {- | First element, or `None` when empty.
 
@@ -114,9 +113,7 @@ last arr = get (arrayLength arr - 1) arr
 
 -- Tail-recursive list build, used by the Foldable Array impl's `toList`.
 toListGo : Array a -> Int -> List a -> List a
-toListGo arr i acc =
-  if i < 0 then acc
-  else toListGo arr (i - 1) (arrayGetUnsafe i arr :: acc)
+toListGo arr i acc = if i < 0 then acc else toListGo arr (i - 1) (arrayGetUnsafe i arr :: acc)
 
 -- ── Pure transformation (return fresh arrays, no <Mut>) ─────────────────
 
@@ -174,9 +171,7 @@ concat arrs =
   arrayMakeWith total (i => concatLookup arrs i 0 outer)
 
 concatTotal : Array (Array a) -> Int -> Int -> Int -> Int
-concatTotal arrs i acc outer =
-  if i >= outer then acc
-  else concatTotal arrs (i + 1) (acc + arrayLength (arrayGetUnsafe i arrs)) outer
+concatTotal arrs i acc outer = if i >= outer then acc else concatTotal arrs (i + 1) (acc + arrayLength (arrayGetUnsafe i arrs)) outer
 
 {- | Find element `i` by walking the outer array, subtracting inner
    lengths.  O(outer) per lookup → O(outer * total) overall.  Fine for
@@ -185,8 +180,7 @@ concatLookup : Array (Array a) -> Int -> Int -> Int -> a
 concatLookup arrs target k outer =
   let inner = arrayGetUnsafe k arrs
   let len = arrayLength inner
-  if target < len then arrayGetUnsafe target inner
-  else concatLookup arrs (target - len) (k + 1) outer
+  if target < len then arrayGetUnsafe target inner else concatLookup arrs (target - len) (k + 1) outer
 
 -- | Pair up two arrays element-wise, truncating to the shorter length.
 export
@@ -211,18 +205,16 @@ zipWith f a b =
    reverse): one O(N) traversal + one O(M) list build + one O(M) array
    copy, no mutation so the signature stays pure. -}
 export default impl Filterable Array where
-    filterMap f arr =
-      let n = arrayLength arr
-      arrayFromList (revList (filterMapGo f arr 0 n []) [])
+  filterMap f arr =
+    let n = arrayLength arr
+    arrayFromList (revList (filterMapGo f arr 0 n []) [])
 
 filterMapGo : (a -> Option b) -> Array a -> Int -> Int -> List b -> List b
-filterMapGo f arr i n acc =
-  if i >= n then acc
-  else filterMapStep f arr i n acc (f (arrayGetUnsafe i arr))
+filterMapGo f arr i n acc = if i >= n then acc else filterMapStep f arr i n acc (f (arrayGetUnsafe i arr))
 
 filterMapStep : (a -> Option b) -> Array a -> Int -> Int -> List b -> Option b -> List b
 filterMapStep f arr i n acc (Some y) = filterMapGo f arr (i + 1) n (y :: acc)
-filterMapStep f arr i n acc None     = filterMapGo f arr (i + 1) n acc
+filterMapStep f arr i n acc None = filterMapGo f arr (i + 1) n acc
 
 -- Local tail-recursive list reverse (avoids depending on stdlib/list.mdk).
 revList : List a -> List a -> List a
@@ -234,8 +226,7 @@ revList (x::xs) acc = revList xs (x :: acc)
 -- | Bounds-checked write.  Panics on OOB.
 export
 set : Int -> a -> Array a -> <Mut> Unit
-set i x arr =
-  if i < 0 || i >= arrayLength arr then panic "Array.set: index out of bounds" else arraySetUnsafe i x arr
+set i x arr = if i < 0 || i >= arrayLength arr then panic "Array.set: index out of bounds" else arraySetUnsafe i x arr
 
 -- | Exchange the elements at indices `i` and `j` in place.
 export
@@ -287,14 +278,10 @@ sortOn key arr = arraySortBy (x y => compare (key x) (key y)) arr
    standalone names. -}
 
 foldGo : (b -> a -> b) -> Array a -> Int -> Int -> b -> b
-foldGo f arr i n acc =
-  if i >= n then acc
-  else foldGo f arr (i + 1) n (f acc (arrayGetUnsafe i arr))
+foldGo f arr i n acc = if i >= n then acc else foldGo f arr (i + 1) n (f acc (arrayGetUnsafe i arr))
 
 foldRightGo : (a -> b -> b) -> Array a -> Int -> b -> b
-foldRightGo f arr i acc =
-  if i < 0 then acc
-  else foldRightGo f arr (i - 1) (f (arrayGetUnsafe i arr) acc)
+foldRightGo f arr i acc = if i < 0 then acc else foldRightGo f arr (i - 1) (f (arrayGetUnsafe i arr) acc)
 
 -- | First element satisfying the predicate, or `None`.
 export
@@ -302,10 +289,7 @@ find : (a -> Bool) -> Array a -> Option a
 find pred arr = findGo pred arr 0 (arrayLength arr)
 
 findGo : (a -> Bool) -> Array a -> Int -> Int -> Option a
-findGo pred arr i n =
-  if i >= n then None
-  else if pred (arrayGetUnsafe i arr) then Some (arrayGetUnsafe i arr)
-  else findGo pred arr (i + 1) n
+findGo pred arr i n = if i >= n then None else if pred (arrayGetUnsafe i arr) then Some (arrayGetUnsafe i arr) else findGo pred arr (i + 1) n
 
 {- | Index of the first element satisfying the predicate, or `None`.
 
@@ -316,10 +300,7 @@ findIndex : (a -> Bool) -> Array a -> Option Int
 findIndex pred arr = findIndexGo pred arr 0 (arrayLength arr)
 
 findIndexGo : (a -> Bool) -> Array a -> Int -> Int -> Option Int
-findIndexGo pred arr i n =
-  if i >= n then None
-  else if pred (arrayGetUnsafe i arr) then Some i
-  else findIndexGo pred arr (i + 1) n
+findIndexGo pred arr i n = if i >= n then None else if pred (arrayGetUnsafe i arr) then Some i else findIndexGo pred arr (i + 1) n
 
 {- | True when the value appears in the array (by `Eq`).
 
@@ -346,9 +327,7 @@ product arr = foldGo (acc x => acc * x) arr 0 (arrayLength arr) 1
    Some 3 -}
 export
 maximum : Ord a => Array a -> Option a
-maximum arr =
-  if arrayLength arr == 0 then None
-  else Some (foldGo max arr 0 (arrayLength arr) (arrayGetUnsafe 0 arr))
+maximum arr = if arrayLength arr == 0 then None else Some (foldGo max arr 0 (arrayLength arr) (arrayGetUnsafe 0 arr))
 
 {- | Smallest element by `Ord`, or `None` when empty.
 
@@ -356,38 +335,31 @@ maximum arr =
    Some 1 -}
 export
 minimum : Ord a => Array a -> Option a
-minimum arr =
-  if arrayLength arr == 0 then None
-  else Some (foldGo min arr 0 (arrayLength arr) (arrayGetUnsafe 0 arr))
+minimum arr = if arrayLength arr == 0 then None else Some (foldGo min arr 0 (arrayLength arr) (arrayGetUnsafe 0 arr))
 
 -- ── Typeclass impls ─────────────────────────────────────────────────────
 
 export default impl Mappable Array where
-    map f arr = arrayMakeWith (arrayLength arr) (i => f (arrayGetUnsafe i arr))
+  map f arr = arrayMakeWith (arrayLength arr) (i => f (arrayGetUnsafe i arr))
 
 export default impl Foldable Array where
-    fold f z arr = foldGo f arr 0 (arrayLength arr) z
-    foldRight f z arr = foldRightGo f arr (arrayLength arr - 1) z
-    toList arr = toListGo arr (arrayLength arr - 1) []
-    isEmpty arr = arrayLength arr == 0
-    length arr = arrayLength arr
+  fold f z arr = foldGo f arr 0 (arrayLength arr) z
+  foldRight f z arr = foldRightGo f arr (arrayLength arr - 1) z
+  toList arr = toListGo arr (arrayLength arr - 1) []
+  isEmpty arr = arrayLength arr == 0
+  length arr = arrayLength arr
 
 export default impl Semigroup (Array a) where
-    append a b = arrayMakeWith (arrayLength a + arrayLength b) (i => if i < arrayLength a then arrayGetUnsafe i a else arrayGetUnsafe (i - arrayLength a) b)
+  append a b = arrayMakeWith (arrayLength a + arrayLength b) (i => if i < arrayLength a then arrayGetUnsafe i a else arrayGetUnsafe (i - arrayLength a) b)
 
 export default impl Monoid (Array a) where
-    empty = [||]
+  empty = [||]
 
 export default impl Eq (Array a) requires Eq a where
-    eq a b =
-      if arrayLength a != arrayLength b then False
-      else eqGo a b 0 (arrayLength a)
+  eq a b = if arrayLength a != arrayLength b then False else eqGo a b 0 (arrayLength a)
 
 eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
-eqGo a b i n =
-  if i >= n then True
-  else if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then eqGo a b (i + 1) n
-  else False
+eqGo a b i n = if i >= n then True else if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then eqGo a b (i + 1) n else False
 
 {- TODO: `impl Show (Array a) requires Show a` — `show` now resolves
    (resolver gap closed) but the recursive `show (arrayGetUnsafe i arr)`

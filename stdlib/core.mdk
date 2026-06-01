@@ -47,8 +47,7 @@ public export data Result e a = Ok a | Err e
 {- | Structural equality.  Reflexive, symmetric, transitive.
    `==` on primitives is a builtin and does *not* dispatch through this
    interface; the impls below exist so generic `Eq a => ...` code works. -}
-export
-interface Eq a where
+export interface Eq a where
   eq : a -> a -> Bool
 
 -- | Negation of `eq`.  Standalone so impls cannot make it disagree with `eq`.
@@ -97,16 +96,22 @@ export impl Eq (a, b, c) requires Eq a, Eq b, Eq c where
   eq (a1, b1, c1) (a2, b2, c2) = eq a1 a2 && eq b1 b2 && eq c1 c2
 
 export impl Eq (a, b, c, d) requires Eq a, Eq b, Eq c, Eq d where
-  eq (a1, b1, c1, d1) (a2, b2, c2, d2) = eq a1 a2 && eq b1 b2 && eq c1 c2 && eq d1 d2
+  eq (a1, b1, c1, d1) (a2, b2, c2, d2) = eq a1 a2
+    && eq b1 b2
+    && eq c1 c2
+    && eq d1 d2
 
 export impl Eq (a, b, c, d, e) requires Eq a, Eq b, Eq c, Eq d, Eq e where
-  eq (a1, b1, c1, d1, e1) (a2, b2, c2, d2, e2) = eq a1 a2 && eq b1 b2 && eq c1 c2 && eq d1 d2 && eq e1 e2
+  eq (a1, b1, c1, d1, e1) (a2, b2, c2, d2, e2) = eq a1 a2
+    && eq b1 b2
+    && eq c1 c2
+    && eq d1 d2
+    && eq e1 e2
 
 {- | Associative combine.  Backs the `++` operator and is the parent of
    `Monoid`.  Implementations *must* satisfy
        append a (append b c) == append (append a b) c. -}
-export
-interface Semigroup a where
+export interface Semigroup a where
   append : a -> a -> a
 
 export impl Semigroup (List a) where
@@ -118,8 +123,7 @@ export impl Semigroup String where
 {- | A `Semigroup` with an identity element.  Laws:
        append empty x == x       (left identity)
        append x empty == x       (right identity) -}
-export
-interface Monoid a requires Semigroup a where
+export interface Monoid a requires Semigroup a where
   empty : a
 
 export impl Monoid (List a) where
@@ -131,8 +135,7 @@ export impl Monoid String where
 {- | Total ordering.  `compare` is the primitive method; the comparison
    helpers all have defaults expressed through it, but impls may override
    any of them for performance or to encode special semantics (e.g. NaN). -}
-export
-interface Ord a requires Eq a where
+export interface Ord a requires Eq a where
   compare : a -> a -> Ordering
   lt : a -> a -> Bool
   gt : a -> a -> Bool
@@ -211,8 +214,7 @@ export impl Ord (a, b, c, d, e) requires Ord a, Ord b, Ord c, Ord d, Ord e where
    Numeric/Bool `show` matches the interpreter's `pp_value` (so it agrees with
    `println`); `String`/`Char` render *quoted* (round-trippable, so `show`
    intentionally differs from `println` — cf. Haskell `show` vs `putStr`). -}
-export
-interface Show a where
+export interface Show a where
   show : a -> String
 
 export impl Show Int where
@@ -257,10 +259,28 @@ export impl Show (a, b, c) requires Show a, Show b, Show c where
   show (a, b, c) = "(" ++ show a ++ ", " ++ show b ++ ", " ++ show c ++ ")"
 
 export impl Show (a, b, c, d) requires Show a, Show b, Show c, Show d where
-  show (a, b, c, d) = "(" ++ show a ++ ", " ++ show b ++ ", " ++ show c ++ ", " ++ show d ++ ")"
+  show (a, b, c, d) = "("
+    ++ show a
+    ++ ", "
+    ++ show b
+    ++ ", "
+    ++ show c
+    ++ ", "
+    ++ show d
+    ++ ")"
 
 export impl Show (a, b, c, d, e) requires Show a, Show b, Show c, Show d, Show e where
-  show (a, b, c, d, e) = "(" ++ show a ++ ", " ++ show b ++ ", " ++ show c ++ ", " ++ show d ++ ", " ++ show e ++ ")"
+  show (a, b, c, d, e) = "("
+    ++ show a
+    ++ ", "
+    ++ show b
+    ++ ", "
+    ++ show c
+    ++ ", "
+    ++ show d
+    ++ ", "
+    ++ show e
+    ++ ")"
 
 {- | Numeric arithmetic.  Backs `+`, `-`, `*`, `/` for user-defined numeric
    types; the operators are hard-wired for `Int` and `Float` and only
@@ -268,8 +288,7 @@ export impl Show (a, b, c, d, e) requires Show a, Show b, Show c, Show d, Show e
 
    `div` is truncating for `Int` and true division for `Float`, matching
    the host operator. -}
-export
-interface Num a requires Eq a where
+export interface Num a requires Eq a where
   add : a -> a -> a
   sub : a -> a -> a
   mul : a -> a -> a
@@ -303,16 +322,14 @@ export impl Num Float where
    Impls for `Int`, `Char` etc. land once the corresponding extern
    constants are added; the interface itself is here so generic
    bounded-type code can be written today. -}
-export
-interface Bounded a where
+export interface Bounded a where
   minBound : a
   maxBound : a
 
 {- | Structure-preserving map (a.k.a. Functor).  Laws:
        map identity      == identity
        map (g `compose` f) == map g `compose` map f -}
-export
-interface Mappable f where
+export interface Mappable f where
   map : (a -> b) -> f a -> f b
 
 export impl Mappable List where
@@ -332,8 +349,7 @@ export default impl Mappable (Result e) where
 {- | `Mappable` plus the ability to lift a plain value and apply a wrapped
    function to a wrapped argument.  Laws (identity, homomorphism,
    interchange, composition) follow Haskell's `Applicative`. -}
-export
-interface Applicative f requires Mappable f where
+export interface Applicative f requires Mappable f where
   pure : a -> f a
   ap : f (a -> b) -> f a -> f b
 
@@ -362,8 +378,7 @@ export default impl Applicative (Result e) where
 {- | Sequencing of computations, threading the result.  Equivalent to
    Haskell's `>>=` with arguments swapped to match the readable
    "value first, then action" reading order.  Drives `do`-notation. -}
-export
-interface Thenable m requires Applicative m where
+export interface Thenable m requires Applicative m where
   andThen : m a -> (a -> m b) -> m b
 
 -- | `andThen` with arguments flipped — the Haskell/Scala `flatMap`.
@@ -410,8 +425,7 @@ export default impl Thenable (Result e) where
    need to define `fold`, `foldRight`, and `toList`; override the others
    when the data structure admits a faster implementation (e.g. O(1)
    `length` for arrays). -}
-export
-interface Foldable t where
+export interface Foldable t where
   fold : (b -> a -> b) -> b -> t a -> b
   foldRight : (a -> b -> b) -> b -> t a -> b
   foldMap : Monoid m => (a -> m) -> t a -> m
@@ -425,8 +439,7 @@ interface Foldable t where
    primitive, `filter` falls out as a derived default.  Kept separate
    from `Mappable` because not every functor can shrink — a fixed-shape
    container has no sensible `filterMap`. -}
-export
-interface Filterable f requires Mappable f where
+export interface Filterable f requires Mappable f where
   filterMap : (a -> Option b) -> f a -> f b
   filter : (a -> Bool) -> f a -> f a
   filter p = filterMap (x => if p x then Some x else None)
@@ -544,9 +557,10 @@ elem a = fold (acc x => acc || x == a) False
    [3, 4] -}
 export impl Filterable List where
   filterMap _ [] = []
-  filterMap f (x::xs) = match f x
-    (Some y) => y :: filterMap f xs
-    None => filterMap f xs
+  filterMap f (x::xs) =
+    match f x
+      (Some y) => y :: filterMap f xs
+      None => filterMap f xs
 
 -- ─── Bool helpers ───────────────────────────────────────────────────────
 
@@ -687,8 +701,7 @@ apply f a = f a
 {- | Sources of random values for property-based testing (`prop` decls).
    `arbitrary` produces a value in the `<Rand>` effect; `shrink` returns
    progressively smaller candidates used to reduce a failing example. -}
-export
-interface Arbitrary a where
+export interface Arbitrary a where
   arbitrary : Unit -> <Rand> a
   shrink : a -> List a
   shrink _ = []
@@ -734,8 +747,7 @@ arbitraryList gen maxLen = go (randomInt 0 maxLen) [] where
    `RCon` carries a constructor's name and its positional fields' reps;
    `RRecord` carries a record type's name and its named fields.  The
    remaining constructors are primitive leaves. -}
-public export
-data Rep
+public export data Rep
   = RCon String (List Rep)
   | RRecord String (List RField)
   | RInt Int
@@ -746,8 +758,7 @@ data Rep
   | RUnit
 
 -- | A named field inside an `RRecord`.
-public export
-record RField
+public export record RField
   fld_name : String
   fld_rep : Rep
 
@@ -755,8 +766,7 @@ record RField
    `deriving (Generic)`.  `from_rep` is return-type polymorphic, which the
    runtime cannot dispatch on arguments alone, so it is a stub for now —
    the signature is fixed so a later phase can fill in real bodies. -}
-export
-interface Generic a where
+export interface Generic a where
   to_rep : a -> Rep
   from_rep : Rep -> a
   from_rep _ = panic "from_rep: not implemented (Phase 1 is to_rep only)"
@@ -783,12 +793,13 @@ export impl Generic Unit where
 
 prop "neq is the negation of eq" (x : Int) (y : Int) = neq x y == not (eq x y)
 
-prop "compare agrees with lt/gt/eq" (x : Int) (y : Int) = match compare x y
-  Lt => lt x y && not (gt x y) && neq x y
-  Gt => gt x y && not (lt x y) && neq x y
-  Eq => eq x y && not (lt x y) && not (gt x y)
+prop "compare agrees with lt/gt/eq" (x : Int) (y : Int) =
+  match compare x y
+    Lt => lt x y && not (gt x y) && neq x y
+    Gt => gt x y && not (lt x y) && neq x y
+    Eq => eq x y && not (lt x y) && not (gt x y)
 
-prop "clamp keeps values inside the interval" (x : Int) = 
+prop "clamp keeps values inside the interval" (x : Int) =
   let c = clamp 0 100 x
   c >= 0 && c <= 100
 

@@ -482,6 +482,21 @@ let rec is_block_body = function
   | ELoc (_, e)      -> is_block_body e
   | _ -> false
 
+(* The RHS of a `<header> = <body>` definition (function clause, impl method,
+   prop/bench), with the `=` spaced correctly for the body shape:
+   - guard arms print their own `| … = …` block, so there is no leading `=`;
+   - a bare block puts `=` at the end of the header line and self-indents the
+     body on the next (a trailing `" = "` here would leave a dangling space);
+   - other multi-line bodies (match/do/function) need the outer indent_block;
+   - a simple expression stays inline after `= `. *)
+let print_def_rhs body = match strip_loc body with
+  | EGuards arms -> print_guard_arms arms
+  | EBlock _     -> text " =" ^^ print_expr_body body
+  | _ ->
+    text " ="
+    ^^ (if is_block_body body then indent_block (print_expr_body body)
+        else text " " ^^ print_expr_body body)
+
 let print_use_path = function
   | UseName names -> text (String.concat "." names)
   | UseGroup (names, members) ->
@@ -514,26 +529,16 @@ let rec print_decl = function
     (if pub then text "export\n" else Nil) ^^ text n ^^ text " : " ^^ print_type t
 
   | DExtern (pub, n, t) ->
-    (if pub then text "export\n" else Nil)
+    (if pub then text "export " else Nil)
     ^^ text "extern " ^^ text n ^^ text " : " ^^ print_type t
 
   | DFunDef (pub, n, pats, body) ->
     let header =
-      (if pub then text (if is_block_body body then "export\n" else "export ") else Nil)
+      (if pub then text "export " else Nil)
       ^^ text n
       ^^ concat (List.map (fun p -> text " " ^^ print_pat_atom p) pats)
     in
-    (match strip_loc body with
-     | EGuards arms -> header ^^ print_guard_arms arms
-     | EBlock _ ->
-       (* A bare block self-indents in print_expr_raw; an outer indent_block
-          here would double-indent.  EMatch/EDo/EFunction write a keyword on the
-          first indented line, so they still need the outer indent. *)
-       header ^^ text " =" ^^ print_expr_body body
-     | _ ->
-       header ^^ text " ="
-       ^^ (if is_block_body body then indent_block (print_expr_body body)
-           else text " " ^^ print_expr_body body))
+    header ^^ print_def_rhs body
 
   | DLetGroup (pub, bindings) ->
     let clause first name (pats, body) =
@@ -554,12 +559,12 @@ let rec print_decl = function
           let d = clause !first name c in
           first := false; d) cs) bindings
     in
-    (if pub then text "export\n" else Nil) ^^ concat docs
+    (if pub then text "export " else Nil) ^^ concat docs
 
   | DData (vis, n, params, variants, derives) ->
     let vis_prefix = match vis with
-      | Ast.DataPublic   -> text "public export" ^^ Line
-      | Ast.DataAbstract -> text "export" ^^ Line
+      | Ast.DataPublic   -> text "public export "
+      | Ast.DataAbstract -> text "export "
       | Ast.DataPrivate  -> Nil
     in
     let head =
@@ -583,8 +588,8 @@ let rec print_decl = function
 
   | DRecord (vis, n, params, fields, derives) ->
     let vis_prefix = match vis with
-      | Ast.DataPublic   -> text "public export\n"
-      | Ast.DataAbstract -> text "export\n"
+      | Ast.DataPublic   -> text "public export "
+      | Ast.DataAbstract -> text "export "
       | Ast.DataPrivate  -> Nil
     in
     let field f =
@@ -598,13 +603,13 @@ let rec print_decl = function
         else Hardline ^^ text "deriving (" ^^ text (String.concat ", " derives) ^^ text ")")
 
   | DTypeAlias (pub, n, params, rhs) ->
-    (if pub then text "export\n" else Nil)
+    (if pub then text "export " else Nil)
     ^^ text "type " ^^ text n
     ^^ concat (List.map (fun pa -> text " " ^^ text pa) params)
     ^^ text " = " ^^ print_type rhs
 
   | DNewtype (pub, n, params, con, fty, derives) ->
-    (if pub then text "export\n" else Nil)
+    (if pub then text "export " else Nil)
     ^^ text "newtype " ^^ text n
     ^^ concat (List.map (fun pa -> text " " ^^ text pa) params)
     ^^ text " = " ^^ text con ^^ text " " ^^ print_type_atom fty
@@ -620,7 +625,7 @@ let rec print_decl = function
             concat (List.map (fun p -> text " " ^^ print_pat_atom p) pats)
             ^^ text " = " ^^ print_expr_body body)
     in
-    (if is_pub then text "export\n" else Nil)
+    (if is_pub then text "export " else Nil)
     ^^ (if is_default then text "default " else Nil)
     ^^ text "interface " ^^ text iface_name
     ^^ concat (List.map (fun pa -> text " " ^^ text pa) type_params)
@@ -637,7 +642,7 @@ let rec print_decl = function
     let method_doc (n, pats, body) =
       text n
       ^^ concat (List.map (fun p -> text " " ^^ print_pat_atom p) pats)
-      ^^ text " = " ^^ print_expr_body body
+      ^^ print_def_rhs body
     in
     (if is_pub then text "export " else Nil)
     ^^ (if is_default then text "default " else Nil)
@@ -663,16 +668,16 @@ let rec print_decl = function
     (if pub then text "export " else Nil) ^^ text "import " ^^ print_use_path path
 
   | DProp { is_pub; prop_name; prop_params; prop_body } ->
-    (if is_pub then text "export\n" else Nil)
+    (if is_pub then text "export " else Nil)
     ^^ text "prop " ^^ text (Printf.sprintf "%S" prop_name)
     ^^ concat (List.map (fun (x, ty) ->
         text (Printf.sprintf " (%s : %s)" x (Ast.pp_ty ty))) prop_params)
-    ^^ text " = " ^^ print_expr prec_top prop_body
+    ^^ print_def_rhs prop_body
 
   | DBench { is_pub; bench_name; bench_body } ->
-    (if is_pub then text "export\n" else Nil)
+    (if is_pub then text "export " else Nil)
     ^^ text "bench " ^^ text (Printf.sprintf "%S" bench_name)
-    ^^ text " = " ^^ print_expr prec_top bench_body
+    ^^ print_def_rhs bench_body
 
   | DAttrib (attrs, inner) ->
     concat (List.map (fun a ->

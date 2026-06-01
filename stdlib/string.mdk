@@ -116,10 +116,10 @@ digitToInt c = digitVal (charCode c)
 
 digitVal : Int -> Option Int
 digitVal n
-  | n >= 48 && n <= 57  = Some (n - 48)
+  | n >= 48 && n <= 57 = Some (n - 48)
   | n >= 97 && n <= 102 = Some (n - 87)
-  | n >= 65 && n <= 70  = Some (n - 55)
-  | otherwise           = None
+  | n >= 65 && n <= 70 = Some (n - 55)
+  | otherwise = None
 
 {- | Inverse of `digitToInt` for `0`..`15` (lowercase hex); `None` otherwise.
 
@@ -132,9 +132,9 @@ digitVal n
 export
 intToDigit : Int -> Option Char
 intToDigit n
-  | n >= 0 && n <= 9   = charFromCode (n + 48)
+  | n >= 0 && n <= 9 = charFromCode (n + 48)
   | n >= 10 && n <= 15 = charFromCode (n + 87)
-  | otherwise          = None
+  | otherwise = None
 
 -- ── Conversion ──────────────────────────────────────────────────────────────
 
@@ -182,13 +182,13 @@ parseInt a n = if n == 0 then None else parseSign a n (arrayGetUnsafe 0 a)
 
 parseSign : Array Char -> Int -> Char -> Option Int
 parseSign a n c
-  | c == '-'  = negOpt (parseDigits a n 1 0 False)
-  | c == '+'  = parseDigits a n 1 0 False
+  | c == '-' = negOpt (parseDigits a n 1 0 False)
+  | c == '+' = parseDigits a n 1 0 False
   | otherwise = parseDigits a n 0 0 False
 
 parseDigits : Array Char -> Int -> Int -> Int -> Bool -> Option Int
 parseDigits a n i acc seen
-  | i >= n    = finishInt seen acc
+  | i >= n = finishInt seen acc
   | otherwise = parseDigitStep a n i acc seen (arrayGetUnsafe i a)
 
 parseDigitStep : Array Char -> Int -> Int -> Int -> Bool -> Char -> Option Int
@@ -281,8 +281,8 @@ join sep parts = stringConcat (intersperse sep parts)
 
 intersperse : a -> List a -> List a
 intersperse _ [] = []
-intersperse _ (x :: []) = [x]
-intersperse sep (x :: xs) = x :: sep :: intersperse sep xs
+intersperse _ (x::[]) = [x]
+intersperse sep (x::xs) = x :: sep :: intersperse sep xs
 
 {- | Repeat the string `n` times (empty when `n <= 0`).
 
@@ -336,21 +336,21 @@ trim s =
 
 firstNonSpace : Array Char -> Int -> Int -> Int
 firstNonSpace a i n
-  | i >= n                       = n
+  | i >= n = n
   | isSpace (arrayGetUnsafe i a) = firstNonSpace a (i + 1) n
-  | otherwise                    = i
+  | otherwise = i
 
 lastNonSpace : Array Char -> Int -> Int
 lastNonSpace a i
-  | i < 0                        = -1
+  | i < 0 = -1
   | isSpace (arrayGetUnsafe i a) = lastNonSpace a (i - 1)
-  | otherwise                    = i
+  | otherwise = i
 
 firstSpace : Array Char -> Int -> Int -> Int
 firstSpace a i n
-  | i >= n                       = n
+  | i >= n = n
   | isSpace (arrayGetUnsafe i a) = i
-  | otherwise                    = firstSpace a (i + 1) n
+  | otherwise = firstSpace a (i + 1) n
 
 {- | Uppercase every character (full Unicode — expands 1→N, e.g. ß → SS).
 
@@ -391,10 +391,12 @@ replaceFirst : String -> String -> String -> String
 replaceFirst old new s =
   match indexOf old s
     None => s
-    Some i => spliceAt i (stringLength old) new s
+    (Some i) => spliceAt i (stringLength old) new s
 
 spliceAt : Int -> Int -> String -> String -> String
-spliceAt i oldLen new s = stringSlice 0 i s ++ new ++ stringSlice (i + oldLen) (stringLength s) s
+spliceAt i oldLen new s = stringSlice 0 i s
+  ++ new
+  ++ stringSlice (i + oldLen) (stringLength s) s
 
 {- | Replace every non-overlapping occurrence of `old` with `new`.
 
@@ -408,7 +410,9 @@ replaceAllGo : Int -> String -> String -> String -> String
 replaceAllGo oldLen old new s =
   match indexOf old s
     None => s
-    Some i => stringSlice 0 i s ++ new ++ replaceAllGo oldLen old new (stringSlice (i + oldLen) (stringLength s) s)
+    (Some i) => stringSlice 0 i s
+      ++ new
+      ++ replaceAllGo oldLen old new (stringSlice (i + oldLen) (stringLength s) s)
 
 -- ── Slicing and splitting ────────────────────────────────────────────────────
 
@@ -459,7 +463,7 @@ splitGo : Int -> String -> String -> List String
 splitGo sepLen sep s =
   match indexOf sep s
     None => [s]
-    Some i => stringSlice 0 i s :: splitGo sepLen sep (stringSlice (i + sepLen) (stringLength s) s)
+    (Some i) => stringSlice 0 i s :: splitGo sepLen sep (stringSlice (i + sepLen) (stringLength s) s)
 
 {- | Split into lines on `\n`, also stripping a trailing `\r` (so `\r\n` works).
 
@@ -544,10 +548,12 @@ padRight n c s = if stringLength s >= n then s else s ++ stringConcat (replic (n
    ".ab.." -}
 export
 center : Int -> Char -> String -> String
-center n c s = if stringLength s >= n then s else centerPad (half (n - stringLength s)) ((n - stringLength s) - half (n - stringLength s)) c s
+center n c s = if stringLength s >= n then s else centerPad (half (n - stringLength s)) (n - stringLength s - half (n - stringLength s)) c s
 
 centerPad : Int -> Int -> Char -> String -> String
-centerPad l r c s = stringConcat (replic l (charToStr c)) ++ s ++ stringConcat (replic r (charToStr c))
+centerPad l r c s = stringConcat (replic l (charToStr c))
+  ++ s
+  ++ stringConcat (replic r (charToStr c))
 
 half : Int -> Int
 half k = if k <= 1 then 0 else 1 + half (k - 2)

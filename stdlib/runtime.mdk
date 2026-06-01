@@ -8,69 +8,69 @@
 -- Applicative and Mappable declared in stdlib/core.mdk, and dispatched
 -- through user-written impl bodies.
 
-extern print   : a -> <IO> Unit
+extern print : a -> <IO> Unit
 extern println : a -> <IO> Unit
-extern Ref     : a -> Ref a
+extern Ref : a -> Ref a
 extern set_ref : Ref a -> a -> <Mut> Unit
-extern pi      : Float
-extern e       : Float
-extern readLine  : Unit -> <IO> String
-extern readFile  : String -> <IO> (Result String String)
+extern pi : Float
+extern e : Float
+extern readLine : Unit -> <IO> String
+extern readFile : String -> <IO> (Result String String)
 extern writeFile : String -> String -> <IO> (Result String Unit)
-extern exit      : Int -> <Panic> Unit
-extern panic     : String -> a
-extern randomInt   : Int -> Int -> <Rand> Int
-extern randomBool  : Unit -> <Rand> Bool
+extern exit : Int -> <Panic> Unit
+extern panic : String -> a
+extern randomInt : Int -> Int -> <Rand> Int
+extern randomBool : Unit -> <Rand> Bool
 extern randomFloat : Unit -> <Rand> Float
-extern randomChar  : Unit -> <Rand> Char
-extern setSeed     : Int -> <Rand> Unit
-extern charToStr   : Char -> String
-extern intToFloat  : Int -> Float
-extern floatToInt  : Float -> Int
+extern randomChar : Unit -> <Rand> Char
+extern setSeed : Int -> <Rand> Unit
+extern charToStr : Char -> String
+extern intToFloat : Int -> Float
+extern floatToInt : Float -> Int
 -- Leaf renderers backing the `Show` impls in core.mdk / string.mdk.  These
 -- expose the same OCaml formatting `pp_value` uses, so `show` agrees with
 -- `println` on numbers.  `showStringLit`/`showCharLit` produce the *quoted,
 -- escaped* literal form (round-trippable into source), so `show` on a String
 -- intentionally differs from `println` (cf. Haskell `show` vs `putStr`).
-extern intToString   : Int -> String
+extern intToString : Int -> String
 extern floatToString : Float -> String
 extern showStringLit : String -> String
-extern showCharLit   : Char -> String
+extern showCharLit : Char -> String
 extern assert_snapshot : String -> String -> <IO> Unit
 
 -- Array primitives.  These are the minimal kernel; stdlib/array.mdk is
 -- built on top.  *Unsafe variants skip the bounds check — they're used by
 -- stdlib internals where the surrounding loop already enforces validity.
 -- Public, bounds-checked indexing goes through `arr[i]` (panics on OOB).
-extern arrayLength        : Array a -> Int
-extern arrayMake          : Int -> a -> Array a
-extern arrayMakeWith      : Int -> (Int -> a) -> Array a
-extern arrayGetUnsafe     : Int -> Array a -> a
-extern arraySetUnsafe     : Int -> a -> Array a -> <Mut> Unit
-extern arrayCopy          : Array a -> Array a
-extern arrayBlit          : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
-extern arrayFill          : a -> Array a -> <Mut> Unit
+extern arrayLength : Array a -> Int
+extern arrayMake : Int -> a -> Array a
+extern arrayMakeWith : Int -> (Int -> a) -> Array a
+extern arrayGetUnsafe : Int -> Array a -> a
+extern arraySetUnsafe : Int -> a -> Array a -> <Mut> Unit
+extern arrayCopy : Array a -> Array a
+extern arrayBlit : Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit
+extern arrayFill : a -> Array a -> <Mut> Unit
 extern arraySortInPlaceBy : (a -> a -> Ordering) -> Array a -> <Mut> Unit
 -- Pure wrappers.  Encapsulate "alloc + locally mutate + return fresh" so
 -- the <Mut> doesn't leak into pure callers (Medaka has no effect masking).
-extern arraySortBy        : (a -> a -> Ordering) -> Array a -> Array a
-extern arrayFromList      : List a -> Array a
+extern arraySortBy : (a -> a -> Ordering) -> Array a -> Array a
+extern arrayFromList : List a -> Array a
 
 -- String/Char kernel (Phase 75).  String is a sequence of Unicode codepoints,
 -- UTF-8 backed; Char is one codepoint.  The bridge to Array Char + the few
 -- codepoint-aware perf externs below are the minimal host surface; the bulk of
 -- stdlib/string.mdk is written in Medaka on top.  Unicode classification/case
 -- folding (charIs*/charTo*, needs a Unicode database) lands separately.
-extern stringToChars   : String -> Array Char
+extern stringToChars : String -> Array Char
 extern stringFromChars : Array Char -> String
-extern charCode        : Char -> Int
-extern charFromCode    : Int -> Option Char
-extern stringLength    : String -> Int
-extern stringSlice     : Int -> Int -> String -> String
-extern stringConcat    : List String -> String
-extern stringIndexOf   : String -> String -> Option Int
-extern stringCompare   : String -> String -> Ordering
-extern stringToFloat   : String -> Option Float
+extern charCode : Char -> Int
+extern charFromCode : Int -> Option Char
+extern stringLength : String -> Int
+extern stringSlice : Int -> Int -> String -> String
+extern stringConcat : List String -> String
+extern stringIndexOf : String -> String -> Option Int
+extern stringCompare : String -> String -> Ordering
+extern stringToFloat : String -> Option Float
 
 -- Unicode classification & case folding (Phase 75).  Backed by the Unicode
 -- character database (uucp) in the host; this is part of the runtime contract
@@ -78,12 +78,12 @@ extern stringToFloat   : String -> Option Float
 -- charToLower are Char -> Char and are the *identity* where a Unicode case
 -- mapping would expand to several codepoints (e.g. ß); full-fidelity case
 -- folding lives in stringToUpper/stringToLower, which expand 1 -> N.
-extern charIsAlpha   : Char -> Bool
-extern charIsSpace   : Char -> Bool
-extern charIsUpper   : Char -> Bool
-extern charIsLower   : Char -> Bool
-extern charIsPunct   : Char -> Bool
-extern charToUpper   : Char -> Char
-extern charToLower   : Char -> Char
+extern charIsAlpha : Char -> Bool
+extern charIsSpace : Char -> Bool
+extern charIsUpper : Char -> Bool
+extern charIsLower : Char -> Bool
+extern charIsPunct : Char -> Bool
+extern charToUpper : Char -> Char
+extern charToLower : Char -> Char
 extern stringToUpper : String -> String
 extern stringToLower : String -> String
