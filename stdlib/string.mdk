@@ -505,15 +505,9 @@ unlines parts = stringConcat (map addNL parts)
 addNL : String -> String
 addNL p = p ++ nl
 
-{- A single newline.  The string literal "\n" can't express this: the lexer's
-   multiline-indent stripping collapses a newline-leading literal to "" (see
-   PLAN.md Phase 75 — a candidate lexer fix).  Build it from codepoint 10. -}
+{- A single newline. -}
 nl : String
-nl = charToStr (unwrapChar (charFromCode 10))
-
-unwrapChar : Option Char -> Char
-unwrapChar (Some c) = c
-unwrapChar None = ' '
+nl = "\n"
 
 {- | Join with single spaces.
 

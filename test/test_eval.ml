@@ -879,6 +879,13 @@ let t_escape_cr      = assert_val "x = \"a\\rb\"\n" "x" (VString "a\rb")
 (* \u{2603} → ☃ (encoded as 3 UTF-8 bytes "\xe2\x98\x83") *)
 let t_escape_unicode = assert_val "x = \"\\u{2603}\"\n" "x" (VString "\xe2\x98\x83")
 
+(* Phase 76: single-quoted literals are never dedented.  Pre-fix, [strip_indent]
+   fired on any string whose first byte is '\n', so [`"\n"`] collapsed to [`""`]
+   and [`"\n  foo"`] dedented to [`"foo"`].  Dedent is triple-quoted-only. *)
+let t_lone_newline   = assert_val "x = \"\\n\"\n" "x" (VString "\n")
+let t_leading_newline_indent =
+  assert_val "x = \"\\n  foo\"\n" "x" (VString "\n  foo")
+
 (* ── @Name impl selection (Phase 30) ───────────────────────────────────── *)
 
 (* Two named impls for the same interface method — @Name picks one explicitly. *)
@@ -1656,6 +1663,8 @@ let () =
       test_case "\\0"          `Quick t_escape_null;
       test_case "\\r"          `Quick t_escape_cr;
       test_case "\\u{2603}"    `Quick t_escape_unicode;
+      test_case "lone \\n not collapsed" `Quick t_lone_newline;
+      test_case "leading \\n not dedented" `Quick t_leading_newline_indent;
     ];
     "local let-rec (Phase 27)", [
       test_case "factorial"        `Quick t_let_rec_fact;

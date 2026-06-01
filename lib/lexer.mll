@@ -19,6 +19,13 @@ let interp_buf       : Buffer.t = Buffer.create 64
 (* true when the active interpolation started inside a triple-quoted string *)
 let interp_in_triple : bool ref = ref false
 
+(* True once the current string literal's first content character was a *raw*
+   source newline (not an escaped `\n`).  Multiline indent-stripping fires only
+   for raw-newline-led literals, so `"\n"` stays a one-char newline and
+   `"\n  foo"` keeps its spaces, while a literal written across source lines is
+   still dedented.  Reset at every opening quote (see [token]). *)
+let string_raw_leading_nl : bool ref = ref false
+
 (* Comment side channel.  Lexer drops `--` line comments from the token
    stream (parser stays untouched) but records them here so tools such as
    `medaka fmt` can re-emit them at faithful positions. *)
@@ -263,8 +270,8 @@ and read = parse
   | float_lit    { FLOAT (float_of_string (strip_underscores (Lexing.lexeme lexbuf))) }
   | int_lit      { INT (parse_int (strip_underscores (Lexing.lexeme lexbuf))) }
 
-  | "\"\"\""     { read_triple_string (Buffer.create 64) lexbuf }
-  | '"'          { read_string (Buffer.create 64) lexbuf }
+  | "\"\"\""     { string_raw_leading_nl := false; read_triple_string (Buffer.create 64) lexbuf }
+  | '"'          { string_raw_leading_nl := false; read_string (Buffer.create 64) lexbuf }
   | '\'' [^ '\'']+ '\'' {
       let lxm = Lexing.lexeme lexbuf in
       CHAR (String.sub lxm 1 (String.length lxm - 2))
@@ -376,7 +383,11 @@ and read = parse
     }
 
 and read_string buf = parse
-  | '"'           { STRING (strip_indent (Buffer.contents buf)) }
+  (* Dedent only when the literal *opened* with a raw source newline; an escaped
+     `\n` must survive verbatim.  Pre-fix [strip_indent] keyed on the first byte
+     being '\n', conflating the two, so `"\n"` collapsed to `""`. *)
+  | '"'           { let s = Buffer.contents buf in
+                    STRING (if !string_raw_leading_nl then strip_indent s else s) }
   | '\\' '{'      { interp_in_triple := false; interp_depth := 1; INTERP_OPEN (Buffer.contents buf) }
   | '\\' 'n'      { Buffer.add_char buf '\n'; read_string buf lexbuf }
   | '\\' 't'      { Buffer.add_char buf '\t'; read_string buf lexbuf }
@@ -389,13 +400,16 @@ and read_string buf = parse
       Buffer.add_utf_8_uchar buf (Uchar.of_int cp);
       read_string buf lexbuf }
   | [^ '"' '\\']+ {
-      Buffer.add_string buf (Lexing.lexeme lexbuf);
+      let lx = Lexing.lexeme lexbuf in
+      if Buffer.length buf = 0 && lx.[0] = '\n' then string_raw_leading_nl := true;
+      Buffer.add_string buf lx;
       read_string buf lexbuf
     }
   | eof           { failwith "Unterminated string literal" }
 
 and read_triple_string buf = parse
-  | "\"\"\""  { STRING (strip_indent (Buffer.contents buf)) }
+  | "\"\"\""  { let s = Buffer.contents buf in
+                STRING (if !string_raw_leading_nl then strip_indent s else s) }
   | '\\' '{'  { interp_in_triple := true; interp_depth := 1; INTERP_OPEN (Buffer.contents buf) }
   | '\\' 'n'  { Buffer.add_char buf '\n'; read_triple_string buf lexbuf }
   | '\\' 't'  { Buffer.add_char buf '\t'; read_triple_string buf lexbuf }
@@ -409,6 +423,7 @@ and read_triple_string buf = parse
       read_triple_string buf lexbuf }
   | '\n'
     { Lexing.new_line lexbuf;
+      if Buffer.length buf = 0 then string_raw_leading_nl := true;
       Buffer.add_char buf '\n';
       read_triple_string buf lexbuf }
   | '"' '"'   { Buffer.add_string buf "\"\""; read_triple_string buf lexbuf }

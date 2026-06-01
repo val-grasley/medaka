@@ -527,6 +527,18 @@ let test_interp_expression () =
                    InterpExpr (EBinOp ("+", ELit (LInt 1), ELit (LInt 2)));
                    InterpStr ""] -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+(* Triple-quoted strings interpolate too (Phase 59); pin it on the parser side. *)
+let test_interp_triple () =
+  match parse_expr "\"\"\"hello \\{name}!\"\"\"\n" with
+  | EStringInterp [InterpStr "hello "; InterpExpr (EVar "name"); InterpStr "!"] -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_interp_triple_two_holes () =
+  match parse_expr "\"\"\"\\{a} and \\{b}\"\"\"\n" with
+  | EStringInterp [InterpStr ""; InterpExpr (EVar "a");
+                   InterpStr " and "; InterpExpr (EVar "b"); InterpStr ""] -> ()
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 (* ── Match expression tests ──────────────────────────── *)
 
 let test_match_basic () =
@@ -1755,6 +1767,8 @@ let () =
       test_case "single hole"        `Quick test_interp_single;
       test_case "two holes"          `Quick test_interp_two_segments;
       test_case "expression hole"    `Quick test_interp_expression;
+      test_case "triple hole"        `Quick test_interp_triple;
+      test_case "triple two holes"   `Quick test_interp_triple_two_holes;
     ];
     "record patterns", [
       test_case "field pun"          `Quick test_record_pat_pun;
