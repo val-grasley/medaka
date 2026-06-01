@@ -605,6 +605,18 @@ r = mul (Dist 3) (Dist 4)
 |}
     "r" (VCon ("Dist", [VInt 12]))
 
+(* Newtypes derive Show/Display via the data deriver: tagged rendering
+   (`Con x`), matching Haskell's default `deriving Show`. *)
+let t_newtype_deriving_show =
+  assert_val
+    "newtype UserId = UserId Int deriving (Show)\nx = show (UserId 42)\n"
+    "x" (VString "UserId 42")
+
+let t_newtype_deriving_display =
+  assert_val
+    "newtype UserId = UserId Int deriving (Display)\nx = \"id: \\{UserId 42}\"\n"
+    "x" (VString "id: UserId 42")
+
 (* ── Generic deriving (structural to_rep) ────────────────────────────────── *)
 
 let rint n = VCon ("RInt", [VInt n])
@@ -1553,6 +1565,8 @@ let () =
       test_case "pattern unwrap"    `Quick t_newtype_unwrap;
       test_case "deriving Num add"  `Quick t_newtype_deriving_num_add;
       test_case "deriving Num mul"  `Quick t_newtype_deriving_num_mul;
+      test_case "deriving Show"     `Quick t_newtype_deriving_show;
+      test_case "deriving Display"  `Quick t_newtype_deriving_display;
     ];
     "Generic deriving (to_rep)", [
       test_case "data positional"   `Quick t_generic_data_positional;

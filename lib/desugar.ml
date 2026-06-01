@@ -397,11 +397,18 @@ let derive_generic_newtype type_name con_name =
                    generic_rcon con_name ["__a"])];
   }
 
-let derive_for_newtype type_name params con_name iface =
+let derive_for_newtype type_name params con_name fty iface =
   let mk f = Some (apply_derive_params type_name params (f type_name con_name)) in
+  (* A newtype is structurally a single-constructor, single-field data type, so
+     the data derivers produce the right tagged rendering (`Con x`, matching
+     Haskell's default `deriving Show`); reuse them via a synthetic variant. *)
+  let synthetic = [{ con_name; con_payload = ConPos [fty] }] in
+  let mk_data f = Some (apply_derive_params type_name params (f type_name synthetic)) in
   match iface with
   | "Num"     -> mk derive_num_newtype
   | "Generic" -> mk derive_generic_newtype
+  | "Show"    -> mk_data derive_show_data
+  | "Display" -> mk_data derive_display_data
   | _         -> None
 
 (* ── Derive Arbitrary ─────────────────────────────────────────────────── *)
@@ -518,7 +525,7 @@ let rec expand_decl = function
     let impls = List.filter_map (derive_for_record name params fields) derives in
     DRecord (vis, name, params, fields, []) :: impls
   | DNewtype (pub, name, params, con, fty, derives) ->
-    let impls = List.filter_map (derive_for_newtype name params con) derives in
+    let impls = List.filter_map (derive_for_newtype name params con fty) derives in
     DNewtype (pub, name, params, con, fty, []) :: impls
   | DAttrib (attrs, d) ->
     (match expand_decl d with
