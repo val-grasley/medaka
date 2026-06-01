@@ -150,7 +150,7 @@ let () =
        Prop/coverage keep the pre-dict-pass user `program` — dict_pass only
        alters DFunDef arities, not prop bodies or line coverage. *)
     let combined =
-      Medaka_lib.Dict_pass.run (Medaka_lib.Method_marker.marked_prelude @ program) in
+      Medaka_lib.Dict_pass.run (Medaka_lib.Method_marker.prelude_for program @ program) in
     let prop_ok =
       (try
          let eval_env = Medaka_lib.Eval.eval_program ~prelude:false combined in
@@ -219,7 +219,7 @@ let () =
        show_snippet source loc_opt;
        exit 1);
     let combined =
-      Medaka_lib.Dict_pass.run (Medaka_lib.Method_marker.marked_prelude @ program) in
+      Medaka_lib.Dict_pass.run (Medaka_lib.Method_marker.prelude_for program @ program) in
     (try
        let eval_env = Medaka_lib.Eval.eval_program ~prelude:false combined in
        Medaka_lib.Bench_runner.run_all eval_env program
@@ -433,7 +433,7 @@ cd into a member or specify a file\n"; exit 1
               Phase 69.x-c: dict-pass the marked prelude with user code and eval
               without re-prepending. *)
            let combined =
-             Medaka_lib.Dict_pass.run (Medaka_lib.Method_marker.marked_prelude @ root_program) in
+             Medaka_lib.Dict_pass.run (Medaka_lib.Method_marker.prelude_for root_program @ root_program) in
            let top_env = Medaka_lib.Eval.eval_program ~prelude:false combined in
            if not (List.mem_assoc "main" top_env) then begin
              Printf.eprintf "error: program has no 'main' binding\n"; exit 1

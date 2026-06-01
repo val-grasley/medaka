@@ -3155,6 +3155,21 @@ let t_internal_error_not_assert () =
   | Error e -> failwith ("Expected InternalError, got: " ^ pp_error e)
   | Ok _ -> failwith "Expected InternalError, but it type-checked"
 
+(* Phase 78a: a user top-level binding may shadow a prelude *plain* function
+   (`count`, a standalone DFunDef in core.mdk).  Previously the user clause
+   coalesced with the prelude clause in group_fundefs and the program failed to
+   type-check; now the prelude's `count` is dropped and the user's wins. *)
+let t_prelude_fn_shadow =
+  assert_type "count : Int -> Int\ncount n = n + 1\n" "count" "Int -> Int"
+
+(* Shadowing a prelude plain function the stdlib uses *internally* (here
+   `identity`, referenced by `toList = identity`) cannot drop the prelude copy,
+   so the clauses coalesce.  When that merge fails to type-check, the error is
+   re-blamed on the user's definition line with a clear message — not left as a
+   bare type mismatch pointing inside core.mdk. *)
+let e_shadow_internal_prelude_fn =
+  assert_err_at ~line:2 "identity : Int -> Int\nidentity n = n + 100\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -3658,5 +3673,9 @@ let () =
     ];
     "robustness (Phase 71)", [
       test_case "non-desugared node -> InternalError"  `Quick t_internal_error_not_assert;
+    ];
+    "prelude shadowing (Phase 78a)", [
+      test_case "user fn shadows prelude plain fn"      `Quick t_prelude_fn_shadow;
+      test_case "err: shadow internally-used prelude fn" `Quick e_shadow_internal_prelude_fn;
     ];
   ]

@@ -142,6 +142,7 @@ type type_error =
   | AnnotationTooGeneral of Ast.ty                  (* annotation claims more polymorphism than expr has *)
   | LetRecNonFunction   of ident                   (* `let rec x = ...` where RHS isn't a lambda *)
   | InternalError       of string                   (* a broken compiler invariant, surfaced as a diagnostic *)
+  | CannotShadowPrelude of ident                    (* Phase 78a: redefining a prelude fn the stdlib uses internally *)
   | Other              of string
 
 exception Type_error of type_error * Ast.loc option
@@ -548,6 +549,12 @@ let pp_error = function
       n
   | InternalError msg ->
     Printf.sprintf "Internal type-checker error: %s (this is a compiler bug — please report it)" msg
+  | CannotShadowPrelude n ->
+    Printf.sprintf
+      "Cannot redefine '%s': it is a standard-library function the prelude uses \
+       internally, so it cannot be shadowed. Rename your definition to a \
+       different name."
+      n
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -3201,7 +3208,7 @@ let program_is_core (prog : program) : bool =
     | DInterface { iface_name = "Foldable"; _ } -> true | _ -> false) prog in
   has_ordering && has_foldable
 
-let check_program (prog : program) : (ident * scheme) list * string list =
+let check_program_impl (prog : program) : (ident * scheme) list * string list =
   reset_state ();
   current_loc := None;
   current_impl_hint := None;
@@ -3213,7 +3220,9 @@ let check_program (prog : program) : (ident * scheme) list * string list =
      (Num/Ord/Eq on Int/Float/etc.) come from core.mdk declarations.
      Skip prepending when type-checking core.mdk itself (would duplicate). *)
   let user_prog = prog in
-  let prog = if program_is_core prog then prog else Method_marker.marked_prelude @ prog in
+  (* Phase 78a: prepend the prelude with any plain function [user_prog] shadows
+     dropped, so the user's definition isn't coalesced with the prelude's. *)
+  let prog = if program_is_core prog then prog else Method_marker.prelude_for user_prog @ prog in
 
   register_attrs env prog;
 
@@ -3335,6 +3344,26 @@ let check_program (prog : program) : (ident * scheme) list * string list =
   (* Include interface methods and extern schemes in the returned env *)
   let final_env = !env in
   (results @ !iface_method_schemes @ !extern_schemes, List.rev !(final_env.warnings))
+
+(* Phase 78a: a user binding may shadow a prelude *plain* function.  Droppable
+   ones (no internal prelude use) are removed by [prelude_for] and shadow
+   cleanly.  A *non*-droppable one (used internally, so it can't be dropped)
+   coalesces the user clause with the prelude's; if that merge fails to
+   type-check it errors *inside* the prelude — a confusing message that blames
+   core.mdk.  A well-formed user program never legitimately errors at a prelude
+   location, so when one does and the program shadows such a name, re-blame the
+   user's own definition with an actionable message.  Compatible merges (which
+   type-check) are untouched — they still work as before. *)
+let check_program (prog : program) : (ident * scheme) list * string list =
+  let shadow =
+    if program_is_core prog then None
+    else Method_marker.nondroppable_shadow prog in
+  match shadow with
+  | None -> check_program_impl prog
+  | Some (name, uloc) ->
+    (try check_program_impl prog
+     with Type_error (_, Some l) when l.Ast.file = "core.mdk" ->
+       fail_at uloc (CannotShadowPrelude name))
 
 (* Multi-module type-checking entry point.
    Accepts public type exports of all previously-processed modules;

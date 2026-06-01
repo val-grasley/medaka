@@ -3580,12 +3580,13 @@ desugar/eval path).
   so the original draft was over-conservative omitting it.
 - Real root cause: Medaka's prelude is **prepended source**, so its names are
   unconditionally in scope and **unshadowable** (unlike Haskell, where
-  `Data.Text.length` shadows `Prelude.length`). The genuine lever is a resolver
-  change letting a module shadow prelude names — a `harden-typechecker`/resolver
-  task that would also let `array.mdk` reclaim `length`/`isEmpty`/`toList`.
+  `Data.Text.length` shadows `Prelude.length`). The genuine lever is letting a
+  module shadow prelude names — which would also let `array.mdk` reclaim
+  `length`/`isEmpty`/`toList`. (The root cause turned out NOT to be the resolver
+  but downstream name-keyed coalescing + a global method-name set; see Phase 78.)
 - Options on the table: (a) split for organization only; (b) fix prelude
-  shadowing in the resolver; (c) keep as-is; (d) both. Undecided. Option (b) is
-  now tracked as → Phase 78.
+  shadowing; (c) keep as-is; (d) both. Undecided. Option (b) is now tracked as →
+  Phase 78 (split into 78a plain-function / 78b interface-method).
 
 **Follow-up (separate bug, surfaced while writing `string.mdk`):**
 - **A string literal that *starts* with a newline collapses to part-of/empty.**
@@ -3636,21 +3637,99 @@ the existing `ESlice` branch; back it with a codepoint get (or
 `stringSlice i (i+1)`) in `eval.ml`. Panic-on-OOB to match the array bracket.
 Skill: **add-language-feature** (threads typecheck + eval).
 
-### Phase 78: Prelude name shadowing in the resolver ⏳ TODO
+### Phase 78: Prelude name shadowing ⏳ TODO
 
-The prelude (`core.mdk`) is **prepended source**, so its names (`length`,
-`isEmpty`, `count`, `map`, `filter`, `toList`, …) are unconditionally in scope
-and **unshadowable** — defining a standalone `length` in a module errors
-*inside* `core.mdk` because core re-resolves its own internal use to the new
-binding. This is the root cause behind several stdlib naming compromises
+The prelude (`core.mdk`) is **prepended source** (re-elaborated and concatenated
+ahead of every user program), so its names (`length`, `isEmpty`, `count`, `map`,
+`filter`, `toList`, …) are unshadowable — defining a standalone one in a module
+errors *inside* `core.mdk`. This blocks several stdlib naming compromises
 (`array.mdk`/`string.mdk` can't reclaim natural names; see Phase 75's deferred
 decision).
 
-Scope: a resolver change letting a module-level binding shadow a prelude name
-(Haskell-style, where `Data.Text.length` shadows `Prelude.length`) without
-breaking core's internal references. Verify `array.mdk` can define its own
-`length`/`isEmpty`/`toList`. Skill: **harden-typechecker** (resolver-internal
-scoping).
+**Root cause is NOT the resolver** (the original framing was wrong). `resolve.ml`
+preserves the AST and silently `Hashtbl.replace`s on a top-level collision
+(`add_or_skip`) — it neither errors nor renames, and needs no change. The
+breakage is downstream, in two distinct modes:
+
+- **(A) plain function** (`count`, `core.mdk:573`): `group_fundefs`
+  (`typecheck.ml`) coalesces single-clause `DFunDef`s **by name** into one merged
+  multi-clause function, and `eval.ml`'s `fundef_acc` does the same — so a user
+  `count` and the prelude `count` merge, the bodies unify-fail against one
+  signature, and the error is reported inside `core.mdk` (prelude clause first).
+  Root cause: name-keyed coalescing with no prelude-vs-user origin.
+- **(B) interface method** (`length`/`isEmpty`/`toList` are Foldable methods,
+  `core.mdk:476-478`; `map` Functor; `filter`): `method_marker` builds its
+  method-name set from `[Prelude.program; prog]` and unconditionally rewrites
+  every `length x` → `EMethodRef`, so the user can't reference their own
+  definition; compounded by the env double-binding (placeholder vs method scheme)
+  and the same coalescing. Root cause: a global, prelude-inclusive method-name
+  set capturing the name before any shadowing notion exists.
+
+The prelude is concatenated at 5+ chokepoints that must stay consistent
+(`check_program`, `typecheck_module`, `check_repl_decl`, `eval_program`,
+`make_repl_eval_state`, doctest). The motivating `array.mdk` goal
+(`length`/`isEmpty`/`toList`) is the **(B)** case.
+
+**Mechanism (both sub-phases):** origin-tagging + shadow-aware marking — *not*
+alpha-renaming methods (renaming a method name breaks dispatch coherence:
+`iface_methods`/`impl_key`/`EMethodRef` payloads/`check_coherence` all key on the
+original name). Shadow-aware marking skips `EMethodRef`/`EDictApp` for any name
+the user shadows; origin-aware coalescing keeps user and prelude clauses
+separate; the specific names the prelude calls internally keep a prelude-internal
+binding so core's own references still resolve.
+
+Skill: **add-language-feature** (threads `method_marker` → `typecheck` → `eval`
+plus the prepend drivers; shadowing is a name-resolution rule, not a typechecker
+correctness bug). `harden-typechecker` is a secondary lens for 78b's
+env-binding precedence inside `typecheck.ml`.
+
+#### Phase 78a: Plain-function shadowing ✅ DONE
+
+Stepping stone; ships standalone. A user top-level `DFunDef`/`DLetGroup` name may
+shadow a prelude **plain function** (the `count` case). Does not touch dispatch.
+
+Mechanism: **drop-on-shadow**, in `method_marker.ml`. `prelude_for prog` returns
+`marked_prelude` with the plain functions `prog` shadows (and their type sigs)
+removed — via `List.filter`, so surviving decls keep object identity and the
+in-place `EMethodRef`/`EDictApp` refs typecheck fills stay shared with eval.
+Dropping is restricted to `droppable_prelude_fns`: standalone prelude `DFunDef`s,
+not interface methods, **not referenced by any other prelude declaration** (a
+name the prelude uses internally is left in place — shadowing it still hits the
+old coalescing path rather than silently rebinding the prelude's use; e.g.
+`identity`, used by `toList = identity`, is not droppable). `mark_with_prelude`
+also drops a shadowed name from the constrained-fn set unless the user
+re-declared it constrained, so the user's reference stays a bare `EVar`.
+
+Wired at the single-file driver chokepoints only: `check_program`
+(`typecheck.ml`), the paired eval prepends in `bin/main.ml` (run/prop/bench),
+`doctest.ml`, and the `test_run` typed helper. **Multi-module** (`typecheck_module`
++ combined eval) and the **REPL** still use the full prelude — per-module
+shadowing across the flat eval namespace is deferred (it's what actually
+unblocks `array.mdk`, and pairs naturally with 78b).
+
+Diagnostic: shadowing a **non**-droppable name (one the prelude uses internally)
+still coalesces the user clause with the prelude's. A *compatible* merge keeps
+type-checking unchanged (no behavior change); an *incompatible* one previously
+errored with a confusing `core.mdk`-located type mismatch. `check_program` now
+wraps `check_program_impl` and, when the program shadows such a name and the run
+errors at a prelude location, re-raises `CannotShadowPrelude` (`typecheck.ml`)
+pointing at the user's own definition — "rename your definition." This is
+post-hoc (no name reservation), so it never rejects a program that previously
+type-checked.
+
+Tests: `test_run` `prelude fn shadow`, `test_typecheck` `user fn shadows prelude
+plain fn`. Done: a single file defining a standalone `count` type-checks and runs
+with the module's `count`; an untouched prelude method (`length`) still resolves.
+
+#### Phase 78b: Interface-method shadowing ⏳ TODO
+
+The actual `array.mdk` unblocker; depends on 78a. Let a user top-level binding
+shadow a prelude **interface method** (`length`/`isEmpty`/`toList`, and
+`map`/`filter`). Adds shadow-aware marking (`method_marker.ml`) on top of 78a's
+origin machinery, resolves the env double-binding across all three typecheck
+drivers, and the `EMethodRef`/`impl_acc` interaction in `eval.ml`. Done when:
+`array.mdk` defines its own `length`/`isEmpty`/`toList`, those win for it and its
+importers, and Foldable dispatch for List/Option/Result is unchanged.
 
 ### Phase 79: Effect-polymorphic higher-order functions ⏳ TODO
 

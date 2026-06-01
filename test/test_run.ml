@@ -45,7 +45,7 @@ let capture_run_typed src =
   (* Phase 69.x-c: dict-pass the marked prelude together with user code (the
      same marked_prelude object typecheck filled refs on), then eval without
      re-prepending. *)
-  let combined = Method_marker.marked_prelude @ prog in
+  let combined = Method_marker.prelude_for prog @ prog in
   let combined = Dict_pass.run combined in
   let buf = Buffer.create 64 in
   output_hook := Buffer.add_string buf;
@@ -464,6 +464,23 @@ main =
 |}
   "éll\nhél\n→\n"
 
+(* Phase 78a: a user module-level function may shadow a prelude *plain*
+   function (here `count`, a standalone `DFunDef` in core.mdk).  Before the fix
+   the user clause coalesced with the prelude clause and the program failed to
+   type-check; now the user's `count` wins.  The second line confirms an
+   untouched prelude method (`length`) still resolves — only the shadowed name
+   is dropped from the prepended prelude. *)
+let t_prelude_fn_shadow = assert_output_typed
+  {|count : Int -> Int
+count n = n + 1
+
+main : <IO> Unit
+main =
+  if count 5 == 6 then println "OK" else println "BAD"
+  if length [1, 2, 3] == 3 then println "OK" else println "BAD"
+|}
+  "OK\nOK\n"
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () = Alcotest.run "Run"
@@ -488,4 +505,5 @@ let () = Alcotest.run "Run"
     "string indexOf",     `Quick, t_string_index_of;
     "string unicode",     `Quick, t_string_unicode;
     "string bracket slice", `Quick, t_string_bracket_slice;
+    "prelude fn shadow",    `Quick, t_prelude_fn_shadow;
   ])]

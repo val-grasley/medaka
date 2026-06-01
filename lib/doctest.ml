@@ -236,7 +236,7 @@ let run_file (filename : string) : run_result =
       | Some _ ->
         let dict_passed =
           if is_core then Dict_pass.run marked
-          else Dict_pass.run (Method_marker.marked_prelude @ marked)
+          else Dict_pass.run (Method_marker.prelude_for marked @ marked)
         in
         (dict_passed, false)
       | None -> (combined, not is_core)
