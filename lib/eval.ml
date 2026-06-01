@@ -133,6 +133,99 @@ let escape_string_lit s =
     | c      -> Buffer.add_char b c) s;
   Buffer.contents b
 
+(* ── UTF-8 codepoint helpers for the String/Char kernel (Phase 75) ───────────
+   String is a sequence of Unicode scalar values, UTF-8 backed; Char is one
+   codepoint, stored as its UTF-8 bytes (the VChar representation).  These walk
+   codepoint boundaries via the OCaml 5 stdlib (String.get_utf_8_uchar etc.),
+   so no external dependency is needed for the bridge / perf / parse kernel. *)
+
+(* Decode [s] into its codepoints, each kept as its own UTF-8 byte slice. *)
+let utf8_codepoints (s : string) : string list =
+  let n = String.length s in
+  let rec go i acc =
+    if i >= n then List.rev acc
+    else
+      let len = Uchar.utf_decode_length (String.get_utf_8_uchar s i) in
+      go (i + len) (String.sub s i len :: acc)
+  in
+  go 0 []
+
+(* Codepoint count (single pass, no allocation). *)
+let utf8_length (s : string) : int =
+  let n = String.length s in
+  let rec go i count =
+    if i >= n then count
+    else go (i + Uchar.utf_decode_length (String.get_utf_8_uchar s i)) (count + 1)
+  in
+  go 0 0
+
+(* Byte offset where the [cp]-th codepoint begins, clamped to [String.length s]
+   when [cp] runs past the end. *)
+let utf8_byte_offset (s : string) (cp : int) : int =
+  let n = String.length s in
+  let rec go i k =
+    if k <= 0 || i >= n then i
+    else go (i + Uchar.utf_decode_length (String.get_utf_8_uchar s i)) (k - 1)
+  in
+  go 0 cp
+
+(* Half-open codepoint slice [lo, hi), clamped to [0, length] — never raises. *)
+let utf8_slice (lo : int) (hi : int) (s : string) : string =
+  let len = utf8_length s in
+  let lo = if lo < 0 then 0 else if lo > len then len else lo in
+  let hi = if hi < lo then lo else if hi > len then len else hi in
+  let b_lo = utf8_byte_offset s lo in
+  let b_hi = utf8_byte_offset s hi in
+  String.sub s b_lo (b_hi - b_lo)
+
+(* Byte index of the first occurrence of [needle] in [hay], or None.  UTF-8 is
+   self-synchronizing and [needle] is a whole-codepoint string, so a full
+   byte-sequence match can only land on a codepoint boundary — byte search is
+   codepoint-correct.  Non-allocating compare loop. *)
+let byte_search (needle : string) (hay : string) : int option =
+  let nl = String.length needle and hl = String.length hay in
+  if nl = 0 then Some 0
+  else
+    let rec matches i j = j >= nl || (hay.[i + j] = needle.[j] && matches i (j + 1)) in
+    let rec go i =
+      if i + nl > hl then None
+      else if matches i 0 then Some i
+      else go (i + 1)
+    in
+    go 0
+
+(* Codepoint index of byte offset [byte_off] in [s] (count of codepoints before
+   it).  Used to report substring matches as codepoint indices. *)
+let utf8_cp_at_byte (s : string) (byte_off : int) : int =
+  let rec go i cp =
+    if i >= byte_off then cp
+    else go (i + Uchar.utf_decode_length (String.get_utf_8_uchar s i)) (cp + 1)
+  in
+  go 0 0
+
+(* Decode the first codepoint of a Char's UTF-8 bytes. *)
+let char_uchar (s : string) : Uchar.t =
+  Uchar.utf_decode_uchar (String.get_utf_8_uchar s 0)
+
+(* Encode a single codepoint to its UTF-8 byte string (the VChar form). *)
+let uchar_to_string (u : Uchar.t) : string =
+  let b = Buffer.create 4 in
+  Buffer.add_utf_8_uchar b u;
+  Buffer.contents b
+
+(* Whole-string case fold (Phase 75): apply [m] (uucp to_upper/to_lower) to
+   every codepoint, expanding 1→N where Unicode requires it (e.g. ß → SS).
+   This is why String.toUpper/toLower can't be `map charToUpper`: the Char→Char
+   externs are identity on expansion, so full fidelity lives here. *)
+let utf8_case_fold (m : Uchar.t -> [ `Self | `Uchars of Uchar.t list ]) (s : string) : string =
+  let b = Buffer.create (String.length s) in
+  List.iter (fun cp ->
+    match m (char_uchar cp) with
+    | `Self -> Buffer.add_string b cp
+    | `Uchars us -> List.iter (Buffer.add_utf_8_uchar b) us)
+    (utf8_codepoints s);
+  Buffer.contents b
+
 (* Named-field constructor name → field names in declaration order.
    Populated from DData ConNamed variants at eval init. *)
 let ctor_field_order : (string, string list) Hashtbl.t = Hashtbl.create 4
@@ -765,10 +858,18 @@ and eval env expr =
      | VList vs ->
        VList (List.filteri (fun i _ -> i >= lo && i < hi') vs)
      | VString s ->
+       (* Codepoint-based (Phase 75): bounds-check against the codepoint count,
+          then cut on codepoint boundaries — byte indices would split multibyte
+          chars.  Panics on OOB like the array bracket; String.slice /
+          stringSlice are the clamping variants. *)
+       let n = utf8_length s in
        let len = hi' - lo in
-       if lo < 0 || hi' > String.length s || len < 0 then
+       if lo < 0 || hi' > n || len < 0 then
          raise (Eval_error (Printf.sprintf "slice [%d..%d] out of bounds" lo (hi'-1), !current_loc))
-       else VString (String.sub s lo len)
+       else
+         let b_lo = utf8_byte_offset s lo in
+         let b_hi = utf8_byte_offset s hi' in
+         VString (String.sub s b_lo (b_hi - b_lo))
      | _ -> raise (Eval_error ("slice on non-array/list/string", !current_loc)))
 
   | EInfix (op, l, r) ->
@@ -1184,6 +1285,134 @@ let primitives : (string * value) list =
           in
           Array.sort cmp_int a; VUnit
         | _ -> raise (Eval_error ("arraySortInPlaceBy: expected Array", None)))));
+    (* ── String/Char kernel (Phase 75) ─────────────────────────────────────
+       String = sequence of Unicode codepoints, UTF-8 backed; Char = one
+       codepoint.  Bridge to Array Char + a few codepoint-aware perf externs;
+       the bulk of stdlib/string.mdk is written in Medaka on top.  No external
+       dependency here — Unicode classification/case folding (uucp) lands
+       separately. *)
+    ("stringToChars", VPrim (fun v ->
+      match v with
+      | VString s ->
+        VArray (Array.of_list (List.map (fun c -> VChar c) (utf8_codepoints s)))
+      | _ -> raise (Eval_error ("stringToChars: expected String", None))));
+    ("stringFromChars", VPrim (fun v ->
+      match v with
+      | VArray a ->
+        let b = Buffer.create (Array.length a) in
+        Array.iter (fun c -> match c with
+          | VChar s -> Buffer.add_string b s
+          | _ -> raise (Eval_error ("stringFromChars: expected Array Char", None))) a;
+        VString (Buffer.contents b)
+      | _ -> raise (Eval_error ("stringFromChars: expected Array", None))));
+    ("charCode", VPrim (fun v ->
+      match v with
+      | VChar s ->
+        if String.length s = 0 then raise (Eval_error ("charCode: empty Char", None))
+        else VInt (Uchar.to_int (Uchar.utf_decode_uchar (String.get_utf_8_uchar s 0)))
+      | _ -> raise (Eval_error ("charCode: expected Char", None))));
+    ("charFromCode", VPrim (fun v ->
+      match v with
+      | VInt n ->
+        if Uchar.is_valid n then
+          let b = Buffer.create 4 in
+          Buffer.add_utf_8_uchar b (Uchar.of_int n);
+          VCon ("Some", [VChar (Buffer.contents b)])
+        else VCon ("None", [])
+      | _ -> raise (Eval_error ("charFromCode: expected Int", None))));
+    ("stringLength", VPrim (fun v ->
+      match v with
+      | VString s -> VInt (utf8_length s)
+      | _ -> raise (Eval_error ("stringLength: expected String", None))));
+    ("stringSlice", VPrim (fun lo_v ->
+      VPrim (fun hi_v ->
+        VPrim (fun s_v ->
+          match lo_v, hi_v, s_v with
+          | VInt lo, VInt hi, VString s -> VString (utf8_slice lo hi s)
+          | _ -> raise (Eval_error ("stringSlice: expected Int Int String", None))))));
+    ("stringConcat", VPrim (fun v ->
+      match v with
+      | VList xs ->
+        let b = Buffer.create 16 in
+        List.iter (fun x -> match x with
+          | VString s -> Buffer.add_string b s
+          | _ -> raise (Eval_error ("stringConcat: expected List String", None))) xs;
+        VString (Buffer.contents b)
+      | _ -> raise (Eval_error ("stringConcat: expected List", None))));
+    ("stringIndexOf", VPrim (fun needle_v ->
+      VPrim (fun hay_v ->
+        match needle_v, hay_v with
+        | VString needle, VString hay ->
+          (match byte_search needle hay with
+           | Some b -> VCon ("Some", [VInt (utf8_cp_at_byte hay b)])
+           | None -> VCon ("None", []))
+        | _ -> raise (Eval_error ("stringIndexOf: expected String String", None)))));
+    ("stringCompare", VPrim (fun a_v ->
+      VPrim (fun b_v ->
+        match a_v, b_v with
+        | VString a, VString b ->
+          let c = String.compare a b in
+          if c < 0 then VCon ("Lt", [])
+          else if c > 0 then VCon ("Gt", [])
+          else VCon ("Eq", [])
+        | _ -> raise (Eval_error ("stringCompare: expected String String", None)))));
+    ("stringToFloat", VPrim (fun v ->
+      match v with
+      | VString s ->
+        (match float_of_string_opt s with
+         | Some f -> VCon ("Some", [VFloat f])
+         | None -> VCon ("None", []))
+      | _ -> raise (Eval_error ("stringToFloat: expected String", None))));
+    (* ── Unicode classification & case folding (Phase 75, via uucp) ─────────
+       These need the Unicode character database, which OCaml's stdlib lacks.
+       charToUpper/charToLower are Char→Char (single-codepoint, identity where
+       Unicode expands 1→N); stringToUpper/stringToLower do full-fidelity
+       expansion at the String level. *)
+    ("charIsAlpha", VPrim (fun v ->
+      match v with
+      | VChar s when String.length s > 0 -> VBool (Uucp.Alpha.is_alphabetic (char_uchar s))
+      | _ -> raise (Eval_error ("charIsAlpha: expected Char", None))));
+    ("charIsSpace", VPrim (fun v ->
+      match v with
+      | VChar s when String.length s > 0 -> VBool (Uucp.White.is_white_space (char_uchar s))
+      | _ -> raise (Eval_error ("charIsSpace: expected Char", None))));
+    ("charIsUpper", VPrim (fun v ->
+      match v with
+      | VChar s when String.length s > 0 -> VBool (Uucp.Case.is_upper (char_uchar s))
+      | _ -> raise (Eval_error ("charIsUpper: expected Char", None))));
+    ("charIsLower", VPrim (fun v ->
+      match v with
+      | VChar s when String.length s > 0 -> VBool (Uucp.Case.is_lower (char_uchar s))
+      | _ -> raise (Eval_error ("charIsLower: expected Char", None))));
+    ("charIsPunct", VPrim (fun v ->
+      match v with
+      | VChar s when String.length s > 0 ->
+        (match Uucp.Gc.general_category (char_uchar s) with
+         | `Pc | `Pd | `Pe | `Pf | `Pi | `Po | `Ps -> VBool true
+         | _ -> VBool false)
+      | _ -> raise (Eval_error ("charIsPunct: expected Char", None))));
+    ("charToUpper", VPrim (fun v ->
+      match v with
+      | VChar s when String.length s > 0 ->
+        (match Uucp.Case.Map.to_upper (char_uchar s) with
+         | `Uchars [u] -> VChar (uchar_to_string u)
+         | `Self | `Uchars _ -> VChar s)
+      | _ -> raise (Eval_error ("charToUpper: expected Char", None))));
+    ("charToLower", VPrim (fun v ->
+      match v with
+      | VChar s when String.length s > 0 ->
+        (match Uucp.Case.Map.to_lower (char_uchar s) with
+         | `Uchars [u] -> VChar (uchar_to_string u)
+         | `Self | `Uchars _ -> VChar s)
+      | _ -> raise (Eval_error ("charToLower: expected Char", None))));
+    ("stringToUpper", VPrim (fun v ->
+      match v with
+      | VString s -> VString (utf8_case_fold Uucp.Case.Map.to_upper s)
+      | _ -> raise (Eval_error ("stringToUpper: expected String", None))));
+    ("stringToLower", VPrim (fun v ->
+      match v with
+      | VString s -> VString (utf8_case_fold Uucp.Case.Map.to_lower s)
+      | _ -> raise (Eval_error ("stringToLower: expected String", None))));
     ("assert_snapshot", VPrim (fun name_v ->
       VPrim (fun value_v ->
         match name_v, value_v with

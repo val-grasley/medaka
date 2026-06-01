@@ -295,40 +295,115 @@ implementations here — use the dispatch path instead:
 
 ---
 
-## Module 3 — `string` ⏳ not started
+## Module 3 — `string` 🟡 kernel implemented (Phase 75); `string.mdk` drafted, in review
 
 Depends on `core`. Also provides `Char` utilities. File `stdlib/string.mdk`
-currently contains only an `import` line.
+currently contains only an `import` line (the `Show String`/`Show Char` impls).
+
+**Design — locked 2026-05-31.** Mirrors the array layering (Module 4): a tiny
+host-backed kernel in `stdlib/runtime.mdk`, with the bulk of this module
+written in Medaka on top.
+
+- **Representation.** `String` is an immutable sequence of **Unicode scalar
+  values (codepoints)**, UTF-8 backed. `Char` is one codepoint (`VChar` already
+  holds a UTF-8 string, not an OCaml `char`). `length`, indexing, `slice`,
+  `take`/`drop` are all **codepoint**-based — never byte, never grapheme.
+  - *Done (Phase 75):* the `s.[lo..hi]` bracket slice is now **codepoint**-based
+    (was byte-based `String.sub`). Single-codepoint `s.[i]` indexing is not yet
+    supported (`EIndex` rejects strings at typecheck) — deferred.
+- **Kernel shape.** Minimal bridge to `Array Char` (the analog of
+  `arrayFromList`/`arrayMakeWith`) plus a few codepoint-aware perf externs that
+  avoid an `Array Char` round-trip on hot paths.
+- **Unicode.** Classification and case folding are **host-backed now** — they
+  need the Unicode character database, which OCaml's stdlib lacks. Implement via
+  [`uucp`](https://erratique.ch/software/uucp) (add to `lib/dune`). The contract
+  (full Unicode) is part of the runtime and every self-hosting host must re-provide
+  it, exactly like `floatToString`. ASCII-only ops (`isDigit`, `digitToInt`,
+  hex) stay in Medaka — `'0'..'9'`/`'a'..'f'` is exact and needs no tables.
+
+### Runtime kernel (extern, in `stdlib/runtime.mdk`)
+
+The irreducible trusted surface. Everything in the sections below that is *not*
+listed here is written in Medaka over this kernel + the `Array` stdlib.
+
+Bridge to `Array Char`:
+
+- ✅ `stringToChars : String -> Array Char` — decode to codepoints
+- ✅ `stringFromChars : Array Char -> String` — encode
+
+Char ↔ codepoint (UTF-8 decode/encode can't be expressed in Medaka):
+
+- ✅ `charCode : Char -> Int` — scalar value
+- ✅ `charFromCode : Int -> Option Char` — `None` on surrogate / `> 0x10FFFF`
+
+Codepoint-aware perf externs (avoid an `Array Char` round-trip):
+
+- ✅ `stringLength : String -> Int` — single-pass codepoint count
+- ✅ `stringSlice : Int -> Int -> String -> String` — half-open `[lo, hi)`, clamps
+- ✅ `stringConcat : List String -> String` — buffered; backs `concat`/`join`
+- ✅ `stringIndexOf : String -> String -> Option Int` — host byte search → first codepoint index; backs `indexOf`/`contains`/`split`/`replace*`
+- ✅ `stringCompare : String -> String -> Ordering` — UTF-8 byte order == codepoint order
+
+Number parsing/formatting (correct float work is infeasible in Medaka):
+
+- ✅ `stringToFloat : String -> Option Float`
+- ✅ `floatToString : Float -> String` — already an extern
+- ✅ `intToString : Int -> String` — already an extern
+
+Unicode classification & case folding (host Unicode tables via `uucp`):
+
+- ✅ `charIsAlpha : Char -> Bool`
+- ✅ `charIsSpace : Char -> Bool`
+- ✅ `charIsUpper : Char -> Bool`
+- ✅ `charIsLower : Char -> Bool`
+- ✅ `charIsPunct : Char -> Bool`
+- ✅ `charToUpper : Char -> Char` — identity for non-letters **and** where the
+  Unicode mapping would expand 1→N (e.g. `'ß'` is unchanged; it can't become
+  `SS` in a single `Char`)
+- ✅ `charToLower : Char -> Char` — same identity-on-expansion caveat
+- ✅ `stringToUpper : String -> String` — full-fidelity uppercasing, expands
+  1→N (`"Straße" → "STRASSE"`). Why a separate extern: `charToUpper` can't
+  express expansion, so `String.toUpper` is **not** `map charToUpper`.
+- ✅ `stringToLower : String -> String` — full-fidelity lowercasing
+
+Already present and reused: `charToStr` (= `fromChar`), `showStringLit`,
+`showCharLit`, `randomChar`.
 
 ### Char operations
 
-- ⏳ `isDigit : Char -> Bool` — `'0'..'9'`
-- ⏳ `isAlpha : Char -> Bool` — Unicode letter
-- ⏳ `isAlphaNum : Char -> Bool` — letter or digit
-- ⏳ `isSpace : Char -> Bool` — Unicode whitespace
-- ⏳ `isUpper : Char -> Bool` — uppercase letter
-- ⏳ `isLower : Char -> Bool` — lowercase letter
-- ⏳ `isPunct : Char -> Bool` — Unicode punctuation category
-- ⏳ `toUpper : Char -> Char` — case fold to upper (identity for non-letters)
-- ⏳ `toLower : Char -> Char` — case fold to lower
-- ⏳ `digitToInt : Char -> Option Int` — `'0'..'9' → Some 0..9`, `'a'..'f' → Some 10..15`, else `None`
-- ⏳ `intToDigit : Int -> Option Char` — inverse of `digitToInt` for `0..15`
-- ⏳ `charCode : Char -> Int` — Unicode codepoint
-- ⏳ `charFromCode : Int -> Option Char` — codepoint → `Char`, `None` if out of range / surrogate
+*All Medaka, over the kernel above.*
+
+
+
+- ⏳ `isDigit : Char -> Bool` — `'0'..'9'` (ASCII, via `charCode`)
+- ⏳ `isAlpha : Char -> Bool` — wraps `charIsAlpha`
+- ⏳ `isAlphaNum : Char -> Bool` — `isAlpha c || isDigit c`
+- ⏳ `isSpace : Char -> Bool` — wraps `charIsSpace`
+- ⏳ `isUpper : Char -> Bool` — wraps `charIsUpper`
+- ⏳ `isLower : Char -> Bool` — wraps `charIsLower`
+- ⏳ `isPunct : Char -> Bool` — wraps `charIsPunct`
+- ⏳ `toUpper : Char -> Char` — wraps `charToUpper`
+- ⏳ `toLower : Char -> Char` — wraps `charToLower`
+- ⏳ `digitToInt : Char -> Option Int` — `'0'..'9' → Some 0..9`, `'a'..'f' → Some 10..15`, else `None` (ASCII, via `charCode`)
+- ⏳ `intToDigit : Int -> Option Char` — inverse of `digitToInt` for `0..15` (via `charFromCode`)
+- ⏳ `charCode : Char -> Int` — **kernel extern**
+- ⏳ `charFromCode : Int -> Option Char` — **kernel extern**
 
 ### Conversion
 
-- ⏳ `fromChar : Char -> String` — one-character string
-- ⏳ `toChars : String -> List Char` — codepoint list (note: not grapheme clusters)
-- ⏳ `fromChars : List Char -> String` — inverse of `toChars`
-- ⏳ `toInt : String -> Option Int` — parse a decimal integer (leading sign allowed); `None` on any failure
-- ⏳ `toFloat : String -> Option Float` — parse a decimal float; `None` on any failure
-- ⏳ `fromInt : Int -> String` — decimal representation
-- ⏳ `fromFloat : Float -> String` — decimal representation (shortest round-tripping form preferred)
+*All Medaka, over the kernel above, except where noted.*
+
+- ⏳ `fromChar : Char -> String` — one-character string (= existing `charToStr`)
+- ⏳ `toChars : String -> List Char` — codepoint list, not grapheme clusters (`arrayToList ∘ stringToChars`)
+- ⏳ `fromChars : List Char -> String` — inverse of `toChars` (`stringFromChars ∘ arrayFromList`)
+- ⏳ `toInt : String -> Option Int` — parse a decimal integer, leading sign allowed (Medaka, fold `digitToInt`); `None` on any failure
+- ⏳ `toFloat : String -> Option Float` — wraps `stringToFloat`; `None` on any failure
+- ⏳ `fromInt : Int -> String` — decimal representation (= existing `intToString`)
+- ⏳ `fromFloat : Float -> String` — decimal representation (= existing `floatToString`, shortest round-tripping form preferred)
 
 ### Inspection
 
-- ⏳ `length : String -> Int` — code-unit count (TBD: clarify byte vs codepoint vs grapheme once the runtime rep is locked)
+- ⏳ `length : String -> Int` — codepoint count (wraps `stringLength`)
 - ⏳ `isEmpty : String -> Bool` — true for `""`
 - ⏳ `startsWith : String -> String -> Bool` — `startsWith prefix s` — true when `s` begins with `prefix`
 - ⏳ `endsWith : String -> String -> Bool` — `endsWith suffix s` — true when `s` ends with `suffix`
@@ -347,8 +422,8 @@ currently contains only an `import` line.
 - ⏳ `trim : String -> String` — strip whitespace from both ends
 - ⏳ `trimLeft : String -> String` — strip leading whitespace
 - ⏳ `trimRight : String -> String` — strip trailing whitespace
-- ⏳ `toUpper : String -> String` — case fold each char to upper
-- ⏳ `toLower : String -> String` — case fold each char to lower
+- ⏳ `toUpper : String -> String` — wraps `stringToUpper` (full Unicode, expands 1→N; *not* `map charToUpper`)
+- ⏳ `toLower : String -> String` — wraps `stringToLower`
 - ⏳ `capitalize : String -> String` — uppercase first char, leave the rest alone
 - ⏳ `replace : String -> String -> String -> String` — `replace old new s` — replace the first occurrence
 - ⏳ `replaceAll : String -> String -> String -> String` — replace every non-overlapping occurrence
@@ -373,13 +448,13 @@ currently contains only an `import` line.
 
 ### Instances
 
-- ⏳ `impl Eq String` — already type-checks structurally; formalise with explicit method
-- ⏳ `impl Ord String` — lexicographic codepoint order
-- ⏳ `impl Show String` — quoted, with escape handling
+- ⏳ `impl Eq String` — via `stringCompare … == Eq`
+- ⏳ `impl Ord String` — lexicographic codepoint order, via `stringCompare`
+- ✅ `impl Show String` — quoted, escaped (in `string.mdk`, via `showStringLit`)
 - ⏳ `impl Semigroup String` — already in `core.mdk` via `Monoid`
-- ⏳ `impl Eq Char`
-- ⏳ `impl Ord Char` — codepoint order
-- ⏳ `impl Show Char` — quoted
+- ⏳ `impl Eq Char` — via `charCode`
+- ⏳ `impl Ord Char` — codepoint order, via `charCode`
+- ✅ `impl Show Char` — quoted (in `string.mdk`, via `showCharLit`)
 
 ---
 

@@ -3447,6 +3447,153 @@ expected line* as `show (<expr>)` (smoke examples stay raw); `pp_value (VString)
   Option`/`Result`: nested constructors render ambiguously (`Some (Some 1)` →
   `Some Some 1`). No doctest nests constructors, so non-blocking.
 
+### Phase 75: String/Char primitive kernel + `string.mdk` stdlib 🟡 KERNEL DONE; string.mdk drafted (awaiting user review)
+
+**Goal.** Give strings the same treatment arrays got (Module 4): a tiny
+host-backed kernel that holds under self-hosting, with the whole of
+`STDLIB.md` Module 3 written in Medaka on top. Design locked 2026-05-31 —
+see **STDLIB.md Module 3** for the authoritative extern list and rationale.
+Decisions: **codepoint** granularity (UTF-8 backed, `Char` = one scalar
+value); **minimal bridge to `Array Char` + a few codepoint-aware perf
+externs**; **host-backed full Unicode** for classification/case folding.
+
+**Dependency boundary (verified).** OCaml 5.4 stdlib already provides UTF-8
+decode/encode (`String.get_utf_8_uchar`, `Buffer.add_utf_8_uchar`, `Uchar`),
+so the bridge + perf + parse externs need **no new dependency**. Only the 7
+Unicode classification/case externs need a Unicode database — `uucp` (not
+currently installed). This isolates the dependency: everything else lands
+dependency-free.
+
+Skill: **add-primitive** for the externs (steps 1–4); **add-language-feature**
+for the `s[lo..hi]` codepoint-slice change (step 5, threads eval + the slice
+desugar/eval path).
+
+**Ordered implementation steps:**
+
+1. ✅ **DONE (2026-05-31).** **Bridge + Char↔codepoint + perf + parse externs** (no new dep). Add to
+   `stdlib/runtime.mdk` and impl in `lib/eval.ml`'s `primitives` table:
+   - `stringToChars`/`stringFromChars` — decode/encode over `VArray`/`VChar`.
+     `VChar` is a UTF-8 `string`; decode each `Uchar` to a one-codepoint `VChar`.
+   - `charCode` (`String.get_utf_8_uchar … |> Uchar.to_int`),
+     `charFromCode` (`Uchar.is_valid` guard → `VCon "Some"`/`"None"`, encode via
+     `Buffer.add_utf_8_uchar`).
+   - `stringLength` (single-pass codepoint count, no array alloc),
+     `stringSlice` (codepoint `[lo,hi)`, clamping — walk the UTF-8 boundaries),
+     `stringConcat : List String -> String` (fold a `Buffer`),
+     `stringCompare` (raw `String.compare` → `Ordering` con; UTF-8 byte order
+     == codepoint order).
+   - `stringToFloat` (`float_of_string_opt` → `Option`).
+   Effect annotations: all pure (no `<…>`). Mirror the array-kernel section
+   layout in `runtime.mdk`.
+
+2. ✅ **DONE (2026-05-31).** **Unicode externs via `uucp`** — installed `uucp
+   17.0.0`, added to `(libraries …)` in `lib/dune`. Implemented
+   `charIsAlpha`/`charIsSpace`/`charIsUpper`/`charIsLower`/`charIsPunct`/
+   `charToUpper`/`charToLower` in `eval.ml` (decode `VChar`→`Uchar`, query
+   `Uucp.Alpha`/`Uucp.White`/`Uucp.Case`/`Uucp.Gc`). `charToUpper`/`charToLower`
+   are `Char -> Char`, identity where `Uucp.Case.Map` expands 1→N. **Added two
+   externs beyond the original plan:** `stringToUpper`/`stringToLower :
+   String -> String` do the full-fidelity expansion (`Straße → STRASSE`),
+   because `Char -> Char` can't — so `String.toUpper` wraps these, not
+   `map charToUpper`. Helpers `char_uchar`/`uchar_to_string`/`utf8_case_fold`
+   in `eval.ml`. Tests: `test/test_run.ml` "string unicode".
+
+3. ✅ **DONE (2026-05-31, draft — awaiting user review).** **`stdlib/string.mdk`**
+   — wrote the Module 3 surface in Medaka over the kernel. 144 bindings,
+   **45/45 doctests pass**.
+   - **Perf posture (per user: practical > pure).** Internals favour what the
+     machine likes over `List Char`: tier 1 — operate on the String directly
+     (`startsWith`/`endsWith` = `stringSlice` + `==`; `take`/`drop`/`slice`/
+     `concat`/`join`/`repeat` via the string externs); tier 2 — decode once to
+     `Array Char`, scan by **index** with O(1) `arrayGetUnsafe`, then carve out
+     `stringSlice`s or rebuild via `stringFromChars` (`indexOf` substring scan
+     → `contains`/`split`/`replace*` derive from it; `trim*`/`words` find
+     boundary *indices* then slice, no rebuild; `reverse` via `arrayMakeWith`;
+     `capitalize` = first char + slice; `toInt` index-scan). No internal
+     `List Char`. Codepoint-correctness verified on multibyte (`→`/`λ`/`é`).
+   - **`toChars : String -> Array Char`** (was `List Char`) — returns the native
+     array; list is opt-in via `Array.toList`. `fromChars : List Char -> String`
+     kept (permissive consumer form).
+   - ✅ **`stringIndexOf` kernel extern added** (host byte search → codepoint
+     index; UTF-8 self-synchronizing ⇒ byte search is codepoint-correct).
+     `indexOf` wraps it and `contains`/`split`/`replace*` derive from `indexOf`,
+     so all are host-speed (the `Array Char` scan helpers were removed).
+     `eval.ml` helpers `byte_search`/`utf8_cp_at_byte`. Test: `test_run.ml`
+     "string indexOf".
+   - Naming decisions made (flagged for review):
+   - `toUpper`/`toLower` are the **String** versions (wrap `stringToUpper`/
+     `stringToLower`); Char-level case mapping is the externs `charToUpper`/
+     `charToLower` directly (can't have two `toUpper` in one module).
+   - **Omitted** `length`/`isEmpty` (clash with `Foldable` methods — use
+     `stringLength`/`s == ""`), `fromInt`/`fromFloat` (clash with `Num.fromInt`
+     — use the globals `intToString`/`floatToString`), `count`/`lastIndexOf`
+     (`count` clashes with the core standalone). All are open for the user to
+     rename/re-add.
+   - `Eq`/`Ord`/`Semigroup`/`Monoid`/`Show` for String/Char already live in
+     `core.mdk` — **not** redefined here (would conflict).
+
+4. ✅ **DONE (2026-05-31).** `import string.{…}` resolves via sibling-root module
+   lookup (same as `list`/`array`); no embed change (string is a normal imported
+   file, not prepended). Verified with an import smoke test.
+
+5. ✅ **DONE (2026-05-31).** **Codepoint-consistent bracket slice.** `ESlice`
+   on `VString` used byte-based `String.sub`, splitting multibyte chars. Now
+   bounds-checks against the codepoint count and cuts on codepoint boundaries
+   (`utf8_length`/`utf8_byte_offset`), keeping panic-on-OOB to match the array
+   bracket. Syntax is dot-bracket `s.[lo..hi]` (OCaml-style). Test:
+   `test/test_run.ml` "string bracket slice".
+   - **`s.[i]` single-codepoint index deferred.** `EIndex` only unifies its
+     receiver with `Array a` in `typecheck.ml` (strings are rejected at
+     typecheck, so there's no eval inconsistency to fix — it's a *new feature*,
+     not a bug). Adding `String -> Int -> Char` indexing needs a type-directed
+     `EIndex` branch like `ESlice` already has; tracked as the open sub-decision
+     below.
+
+6. ✅ **DONE (2026-05-31).** **Tests.** `test/test_run.ml` gained the kernel
+   smoke ("string kernel"), the codepoint-vs-byte regression on multibyte
+   `"héllo→"` ("string codepoint"), the Unicode/ß-expansion case ("string
+   unicode"), and the codepoint bracket-slice ("string bracket slice").
+   `stdlib/string.mdk` carries 45 doctests (`medaka test stdlib/string.mdk`).
+   All 15 suites pass.
+
+**Open sub-decisions:**
+- ✅ `uucp` dependency (step 2) — resolved: installed.
+- `stringToInt` left as Medaka (`digitToInt` fold in `string.mdk`'s `toInt`);
+  promote to extern only if parsing robustness/perf demands it.
+- `s.[i]` single-codepoint indexing — currently unsupported (typecheck rejects
+  strings in `EIndex`). If wanted: add a type-directed `EIndex` branch
+  (`String -> Int -> Char`) backed by a codepoint get (or `stringSlice i (i+1)`
+  at the Medaka level). Deferred; not blocking string.mdk.
+
+**Deferred decision — Char/String module split + prelude name collisions (next session).**
+`string.mdk` omits `length`/`isEmpty`/`count` and uses `charToUpper` (not a Char
+`toUpper`) to dodge name clashes. Investigated whether splitting into
+`char.mdk` + `string.mdk` would help — it mostly doesn't:
+- The only *Char-vs-String* clash is `toUpper`/`toLower`; splitting fixes that
+  one (and both become usable via qualified access, `char.toUpper` /
+  `string.toUpper`, which Medaka already supports).
+- `length`/`isEmpty`/`count`/`map`/`filter` clash with the **prelude**, which is
+  prepended to *every* module — splitting changes nothing for these. Tested:
+  defining a standalone `length` errors *inside* `core.mdk:798`, `count` inside
+  `core.mdk:520` (core re-resolves its own internal use to the new binding).
+  `fromInt : Int -> String` *does* typecheck (core doesn't use it internally),
+  so the original draft was over-conservative omitting it.
+- Real root cause: Medaka's prelude is **prepended source**, so its names are
+  unconditionally in scope and **unshadowable** (unlike Haskell, where
+  `Data.Text.length` shadows `Prelude.length`). The genuine lever is a resolver
+  change letting a module shadow prelude names — a `harden-typechecker`/resolver
+  task that would also let `array.mdk` reclaim `length`/`isEmpty`/`toList`.
+- Options on the table: (a) split for organization only; (b) fix prelude
+  shadowing in the resolver; (c) keep as-is; (d) both. Undecided.
+
+**Follow-up (separate bug, surfaced while writing `string.mdk`):**
+- **A string literal that *starts* with a newline collapses to part-of/empty.**
+  `lib/lexer.mll`'s `strip_indent` (multiline-string dedent) fires on *any*
+  `STRING` whose first byte is `\n`, so the literal `"\n"` lexes to `""` and a
+  lone-newline string is unwritable. `string.mdk` works around it by building
+  the separator from `charFromCode 10` (`nl` helper). Candidate fix: only apply
+  `strip_indent` to triple-quoted strings (or never collapse a 1-char `"\n"`).
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)

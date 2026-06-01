@@ -1,9 +1,50 @@
 -- string.mdk — operations on String and Char
--- See STDLIB.md for the full implementation plan.
+-- See STDLIB.md (Module 3) for the full implementation plan.
+--
+-- Design notes
+-- ────────────
+-- String is an immutable sequence of Unicode codepoints (scalar values),
+-- UTF-8 backed; Char is one codepoint.  This module is a thin Medaka layer
+-- over the kernel externs in stdlib/runtime.mdk.
+--
+-- Performance posture (Medaka is a *practical* functional language): under the
+-- hood we favour what the machine likes — contiguous `Array Char` with O(1)
+-- indexing and the direct string externs (`stringSlice`/`stringConcat`/
+-- `stringCompare`/`stringLength`) — over a `List Char` of cons cells.  Three
+-- tiers, fastest first:
+--   1. operate on the String directly (no char materialization): `take`/`drop`/
+--      `slice`, `startsWith`/`endsWith` (slice + `==`), `concat`/`join`/`repeat`,
+--      and substring search via the host `stringIndexOf` — `indexOf`, and
+--      `contains`/`split`/`replace*` derived from it;
+--   2. decode once to `Array Char`, scan by index, rebuild via `stringFromChars`
+--      or carve out `stringSlice`s: `trim*`, `words`, `reverse`, `capitalize`,
+--      `toInt`;
+--   3. `List Char` is avoided internally.
+-- The user-facing signatures stay conventional; the array/index machinery is an
+-- implementation detail.
+--
+-- Naming choices (this file holds *both* Char and String utilities, so some
+-- short names would collide):
+--   • `toUpper`/`toLower` here are the *String* versions (full Unicode, so
+--     "Straße" → "STRASSE").  For a single Char, call the kernel externs
+--     `charToUpper`/`charToLower` (Char → Char, identity where Unicode would
+--     expand 1→N — they can't return "SS").
+--   • `length`/`isEmpty` are *not* defined: they'd clash with the `Foldable`
+--     methods of the same name.  Use the global `stringLength`, or `s == ""`.
+--   • Integer rendering is the global `intToString` (clashes with `Num.fromInt`
+--     otherwise); `toInt`/`toFloat` parse, `stringToFloat` is the float extern.
+--
+-- Containers: the collection functions (`split`/`words`/`lines`/`concat`/
+-- `join`/`unlines`/`unwords`) are `List`-typed — the conventional, pattern-
+-- matchable form.  `toChars` is the one `Array` function (element decomposition,
+-- where indexing/perf matter).  No List/Array duals: `List → Array` is the
+-- global `arrayFromList` (no import) and `Array → List` is `Array.toList`, so a
+-- caller who prefers the other container converts in one call rather than us
+-- doubling the API surface.
 
-import core.{Eq, Ord, Show}
+import core.{Eq, Ord, Show, Foldable, Mappable, Option, Ordering}
 
--- Rendering
+-- ── Rendering ─────────────────────────────────────────────────────────────
 
 {- | Render a `String` as a quoted, escaped literal — `show "hi"` is `"hi"`,
    not `hi`.  This is round-trippable (valid Medaka source) and disambiguates
@@ -15,3 +56,498 @@ export impl Show String where
 {- | Render a `Char` as a quoted literal — `show 'a'` is `'a'`. -}
 export impl Show Char where
   show c = showCharLit c
+
+-- ── Char operations ─────────────────────────────────────────────────────────
+-- ASCII-exact predicates (isDigit/digitToInt/intToDigit) compute on the
+-- codepoint directly; the Unicode-aware ones wrap the uucp-backed externs.
+
+{- | True for the ASCII decimal digits `'0'`..`'9'`.
+
+   > isDigit '7'
+   True
+   > isDigit 'x'
+   False -}
+export
+isDigit : Char -> Bool
+isDigit c = charCode c >= 48 && charCode c <= 57
+
+-- | True for any Unicode letter.
+export
+isAlpha : Char -> Bool
+isAlpha c = charIsAlpha c
+
+-- | True for a Unicode letter or an ASCII digit.
+export
+isAlphaNum : Char -> Bool
+isAlphaNum c = charIsAlpha c || isDigit c
+
+-- | True for any Unicode whitespace.
+export
+isSpace : Char -> Bool
+isSpace c = charIsSpace c
+
+-- | True for an uppercase letter.
+export
+isUpper : Char -> Bool
+isUpper c = charIsUpper c
+
+-- | True for a lowercase letter.
+export
+isLower : Char -> Bool
+isLower c = charIsLower c
+
+-- | True for a Unicode punctuation character.
+export
+isPunct : Char -> Bool
+isPunct c = charIsPunct c
+
+{- | `'0'`..`'9'` → `Some 0`..`Some 9`, `'a'`..`'f'`/`'A'`..`'F'` →
+   `Some 10`..`Some 15`, anything else `None`.
+
+   > digitToInt '7'
+   Some 7
+   > digitToInt 'f'
+   Some 15
+   > digitToInt 'z'
+   None -}
+export
+digitToInt : Char -> Option Int
+digitToInt c = digitVal (charCode c)
+
+digitVal : Int -> Option Int
+digitVal n
+  | n >= 48 && n <= 57  = Some (n - 48)
+  | n >= 97 && n <= 102 = Some (n - 87)
+  | n >= 65 && n <= 70  = Some (n - 55)
+  | otherwise           = None
+
+{- | Inverse of `digitToInt` for `0`..`15` (lowercase hex); `None` otherwise.
+
+   > intToDigit 7
+   Some '7'
+   > intToDigit 12
+   Some 'c'
+   > intToDigit 42
+   None -}
+export
+intToDigit : Int -> Option Char
+intToDigit n
+  | n >= 0 && n <= 9   = charFromCode (n + 48)
+  | n >= 10 && n <= 15 = charFromCode (n + 87)
+  | otherwise          = None
+
+-- ── Conversion ──────────────────────────────────────────────────────────────
+
+-- | A one-character string.
+export
+fromChar : Char -> String
+fromChar c = charToStr c
+
+{- | The codepoints of a string as an array (not grapheme clusters).  Returns
+   the native `Array Char` — call `Array.toList` if you want a `List Char`, so
+   the list conversion is opt-in rather than forced.
+
+   > arrayLength (toChars "héllo→")
+   6 -}
+export
+toChars : String -> Array Char
+toChars s = stringToChars s
+
+{- | Build a string from a `List Char`.  For an `Array Char` (e.g. the result
+   of `toChars`), use the kernel `stringFromChars` directly.
+
+   > fromChars ['h', 'i']
+   "hi" -}
+export
+fromChars : List Char -> String
+fromChars cs = stringFromChars (arrayFromList cs)
+
+{- | Parse a decimal integer, an optional leading `-`/`+` allowed; `None` on
+   any other character or on the empty string.
+
+   > toInt "42"
+   Some 42
+   > toInt "-7"
+   Some -7
+   > toInt "12x"
+   None -}
+export
+toInt : String -> Option Int
+toInt s =
+  let a = toChars s
+  parseInt a (arrayLength a)
+
+parseInt : Array Char -> Int -> Option Int
+parseInt a n = if n == 0 then None else parseSign a n (arrayGetUnsafe 0 a)
+
+parseSign : Array Char -> Int -> Char -> Option Int
+parseSign a n c
+  | c == '-'  = negOpt (parseDigits a n 1 0 False)
+  | c == '+'  = parseDigits a n 1 0 False
+  | otherwise = parseDigits a n 0 0 False
+
+parseDigits : Array Char -> Int -> Int -> Int -> Bool -> Option Int
+parseDigits a n i acc seen
+  | i >= n    = finishInt seen acc
+  | otherwise = parseDigitStep a n i acc seen (arrayGetUnsafe i a)
+
+parseDigitStep : Array Char -> Int -> Int -> Int -> Bool -> Char -> Option Int
+parseDigitStep a n i acc seen c = if isDigit c then parseDigits a n (i + 1) (acc * 10 + (charCode c - 48)) True else None
+
+finishInt : Bool -> Int -> Option Int
+finishInt seen acc = if seen then Some acc else None
+
+negOpt : Option Int -> Option Int
+negOpt None = None
+negOpt (Some n) = Some (0 - n)
+
+{- | Parse a decimal float; `None` on failure.
+
+   > toFloat "3.5"
+   Some 3.5
+   > toFloat "nope"
+   None -}
+export
+toFloat : String -> Option Float
+toFloat s = stringToFloat s
+
+-- ── Inspection ──────────────────────────────────────────────────────────────
+-- `length`/`isEmpty` intentionally omitted (see header) — use `stringLength`.
+
+{- | True when `s` begins with `prefix`.  Tier 1: a slice + compare, no char
+   decoding.
+
+   > startsWith "he" "hello"
+   True
+   > startsWith "lo" "hello"
+   False -}
+export
+startsWith : String -> String -> Bool
+startsWith prefix s = stringSlice 0 (stringLength prefix) s == prefix
+
+{- | True when `s` ends with `suffix`.
+
+   > endsWith "lo" "hello"
+   True -}
+export
+endsWith : String -> String -> Bool
+endsWith suffix s = stringSlice (stringLength s - stringLength suffix) (stringLength s) s == suffix
+
+{- | True when `needle` occurs anywhere in `haystack` (the empty string is
+   contained in everything).
+
+   > contains "ell" "hello"
+   True
+   > contains "xyz" "hello"
+   False -}
+export
+contains : String -> String -> Bool
+contains needle haystack = isSome (indexOf needle haystack)
+
+{- | Codepoint index of the first occurrence of `needle` in `haystack`, or
+   `None`.  Host-backed byte search (`stringIndexOf`) reported as a codepoint
+   index — no interpreted per-char scan.
+
+   > indexOf "lo" "hello"
+   Some 3
+   > indexOf "z" "hello"
+   None -}
+export
+indexOf : String -> String -> Option Int
+indexOf needle haystack = stringIndexOf needle haystack
+
+-- ── Transformation ──────────────────────────────────────────────────────────
+
+-- | Prepend a prefix; `flip` of `Semigroup.append`.
+export
+prepend : String -> String -> String
+prepend pre s = pre ++ s
+
+{- | Concatenate all strings in order.
+
+   > concat ["a", "bc", "d"]
+   "abcd" -}
+export
+concat : List String -> String
+concat parts = stringConcat parts
+
+{- | Concatenate with `sep` between each adjacent pair.
+
+   > join ", " ["a", "b", "c"]
+   "a, b, c" -}
+export
+join : String -> List String -> String
+join sep parts = stringConcat (intersperse sep parts)
+
+intersperse : a -> List a -> List a
+intersperse _ [] = []
+intersperse _ (x :: []) = [x]
+intersperse sep (x :: xs) = x :: sep :: intersperse sep xs
+
+{- | Repeat the string `n` times (empty when `n <= 0`).
+
+   > repeat 3 "ab"
+   "ababab" -}
+export
+repeat : Int -> String -> String
+repeat n s = stringConcat (replic n s)
+
+replic : Int -> a -> List a
+replic n x = if n <= 0 then [] else x :: replic (n - 1) x
+
+{- | Reverse the codepoints of a string.
+
+   > reverse "abc"
+   "cba" -}
+export
+reverse : String -> String
+reverse s =
+  let a = toChars s
+  stringFromChars (reverseArr a (arrayLength a))
+
+reverseArr : Array Char -> Int -> Array Char
+reverseArr a n = arrayMakeWith n (i => arrayGetUnsafe (n - 1 - i) a)
+
+{- | Strip leading whitespace.  Finds the first non-space codepoint index, then
+   slices — no rebuild. -}
+export
+trimLeft : String -> String
+trimLeft s =
+  let a = toChars s
+  stringSlice (firstNonSpace a 0 (arrayLength a)) (stringLength s) s
+
+-- | Strip trailing whitespace.
+export
+trimRight : String -> String
+trimRight s =
+  let a = toChars s
+  stringSlice 0 (lastNonSpace a (arrayLength a - 1) + 1) s
+
+{- | Strip whitespace from both ends.
+
+   > trim "  hi  "
+   "hi" -}
+export
+trim : String -> String
+trim s =
+  let a = toChars s
+  let n = arrayLength a
+  stringSlice (firstNonSpace a 0 n) (lastNonSpace a (n - 1) + 1) s
+
+firstNonSpace : Array Char -> Int -> Int -> Int
+firstNonSpace a i n
+  | i >= n                       = n
+  | isSpace (arrayGetUnsafe i a) = firstNonSpace a (i + 1) n
+  | otherwise                    = i
+
+lastNonSpace : Array Char -> Int -> Int
+lastNonSpace a i
+  | i < 0                        = -1
+  | isSpace (arrayGetUnsafe i a) = lastNonSpace a (i - 1)
+  | otherwise                    = i
+
+firstSpace : Array Char -> Int -> Int -> Int
+firstSpace a i n
+  | i >= n                       = n
+  | isSpace (arrayGetUnsafe i a) = i
+  | otherwise                    = firstSpace a (i + 1) n
+
+{- | Uppercase every character (full Unicode — expands 1→N, e.g. ß → SS).
+
+   > toUpper "Straße"
+   "STRASSE" -}
+export
+toUpper : String -> String
+toUpper s = stringToUpper s
+
+{- | Lowercase every character (full Unicode).
+
+   > toLower "HÉLLO"
+   "héllo" -}
+export
+toLower : String -> String
+toLower s = stringToLower s
+
+{- | Uppercase the first character, leave the rest alone.
+
+   > capitalize "hello"
+   "Hello" -}
+export
+capitalize : String -> String
+capitalize s =
+  let a = toChars s
+  if arrayLength a == 0 then "" else charToStr (charToUpper (arrayGetUnsafe 0 a)) ++ stringSlice 1 (stringLength s) s
+
+{- | Replace the first occurrence of `old` with `new`; unchanged if absent or
+   if `old` is empty.
+
+   > replace "l" "L" "hello"
+   "heLlo" -}
+export
+replace : String -> String -> String -> String
+replace old new s = if old == "" then s else replaceFirst old new s
+
+replaceFirst : String -> String -> String -> String
+replaceFirst old new s =
+  match indexOf old s
+    None => s
+    Some i => spliceAt i (stringLength old) new s
+
+spliceAt : Int -> Int -> String -> String -> String
+spliceAt i oldLen new s = stringSlice 0 i s ++ new ++ stringSlice (i + oldLen) (stringLength s) s
+
+{- | Replace every non-overlapping occurrence of `old` with `new`.
+
+   > replaceAll "l" "L" "hello"
+   "heLLo" -}
+export
+replaceAll : String -> String -> String -> String
+replaceAll old new s = if old == "" then s else replaceAllGo (stringLength old) old new s
+
+replaceAllGo : Int -> String -> String -> String -> String
+replaceAllGo oldLen old new s =
+  match indexOf old s
+    None => s
+    Some i => stringSlice 0 i s ++ new ++ replaceAllGo oldLen old new (stringSlice (i + oldLen) (stringLength s) s)
+
+-- ── Slicing and splitting ────────────────────────────────────────────────────
+
+{- | Substring `[lo, hi)` by codepoint, clamped to the string bounds (never
+   panics; use `s.[lo..hi]` to panic on OOB instead).
+
+   > slice 1 4 "hello"
+   "ell" -}
+export
+slice : Int -> Int -> String -> String
+slice lo hi s = stringSlice lo hi s
+
+{- | First `n` codepoints (fewer if shorter).
+
+   > take 3 "hello"
+   "hel" -}
+export
+take : Int -> String -> String
+take n s = stringSlice 0 n s
+
+{- | Drop the first `n` codepoints.
+
+   > drop 3 "hello"
+   "lo" -}
+export
+drop : Int -> String -> String
+drop n s = stringSlice n (stringLength s) s
+
+{- | `(take n s, drop n s)`.
+
+   > splitAt 2 "hello"
+   ("he", "llo") -}
+export
+splitAt : Int -> String -> (String, String)
+splitAt n s = (take n s, drop n s)
+
+{- | Split on `sep`, dropping the separators.  An empty `sep` yields `[s]`.
+
+   > split "," "a,b,c"
+   ["a", "b", "c"]
+   > split "," "abc"
+   ["abc"] -}
+export
+split : String -> String -> List String
+split sep s = if sep == "" then [s] else splitGo (stringLength sep) sep s
+
+splitGo : Int -> String -> String -> List String
+splitGo sepLen sep s =
+  match indexOf sep s
+    None => [s]
+    Some i => stringSlice 0 i s :: splitGo sepLen sep (stringSlice (i + sepLen) (stringLength s) s)
+
+{- | Split into lines on `\n`, also stripping a trailing `\r` (so `\r\n` works).
+
+   > lines "a\nb\nc"
+   ["a", "b", "c"] -}
+export
+lines : String -> List String
+lines s = map stripCR (split nl s)
+
+stripCR : String -> String
+stripCR line = if endsWith "\r" line then stringSlice 0 (stringLength line - 1) line else line
+
+{- | Split on runs of whitespace, dropping empty fields.  Each word is a
+   `stringSlice` of the original — no per-char rebuild.
+
+   > words "  hello   world "
+   ["hello", "world"] -}
+export
+words : String -> List String
+words s =
+  let a = toChars s
+  let n = arrayLength a
+  wordsFrom a n s (firstNonSpace a 0 n)
+
+wordsFrom : Array Char -> Int -> String -> Int -> List String
+wordsFrom a n s start = if start >= n then [] else wordsEmit a n s start (firstSpace a start n)
+
+wordsEmit : Array Char -> Int -> String -> Int -> Int -> List String
+wordsEmit a n s start e = stringSlice start e s :: wordsFrom a n s (firstNonSpace a e n)
+
+{- | Join with `\n` and append a trailing newline.
+
+   > unlines ["a", "b"]
+   "a\nb\n" -}
+export
+unlines : List String -> String
+unlines parts = stringConcat (map addNL parts)
+
+addNL : String -> String
+addNL p = p ++ nl
+
+{- A single newline.  The string literal "\n" can't express this: the lexer's
+   multiline-indent stripping collapses a newline-leading literal to "" (see
+   PLAN.md Phase 75 — a candidate lexer fix).  Build it from codepoint 10. -}
+nl : String
+nl = charToStr (unwrapChar (charFromCode 10))
+
+unwrapChar : Option Char -> Char
+unwrapChar (Some c) = c
+unwrapChar None = ' '
+
+{- | Join with single spaces.
+
+   > unwords ["a", "b", "c"]
+   "a b c" -}
+export
+unwords : List String -> String
+unwords parts = join " " parts
+
+-- ── Padding ──────────────────────────────────────────────────────────────────
+
+{- | Left-pad with `c` up to total length `n` (unchanged if already `>= n`).
+
+   > padLeft 5 '.' "ab"
+   "...ab" -}
+export
+padLeft : Int -> Char -> String -> String
+padLeft n c s = if stringLength s >= n then s else stringConcat (replic (n - stringLength s) (charToStr c)) ++ s
+
+{- | Right-pad with `c` up to total length `n`.
+
+   > padRight 5 '.' "ab"
+   "ab..." -}
+export
+padRight : Int -> Char -> String -> String
+padRight n c s = if stringLength s >= n then s else s ++ stringConcat (replic (n - stringLength s) (charToStr c))
+
+{- | Center the string in width `n`, padding with `c`; any odd extra goes on
+   the right.
+
+   > center 5 '.' "ab"
+   ".ab.." -}
+export
+center : Int -> Char -> String -> String
+center n c s = if stringLength s >= n then s else centerPad (half (n - stringLength s)) ((n - stringLength s) - half (n - stringLength s)) c s
+
+centerPad : Int -> Int -> Char -> String -> String
+centerPad l r c s = stringConcat (replic l (charToStr c)) ++ s ++ stringConcat (replic r (charToStr c))
+
+half : Int -> Int
+half k = if k <= 1 then 0 else 1 + half (k - 2)

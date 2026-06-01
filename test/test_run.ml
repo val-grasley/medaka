@@ -387,6 +387,83 @@ main : <IO> Unit
 main = println (f 99)
 |}
 
+(* ── String/Char kernel (Phase 75) ───────────────────────────────────────── *)
+
+(* Smoke-tests each kernel extern.  Untyped capture_run is enough — these are
+   plain primitives, no typeclass dispatch. *)
+let t_string_kernel = assert_output
+  {|main : <IO> Unit
+main =
+  println (charCode 'A')
+  println (charFromCode 66)
+  println (charFromCode 55296)
+  println (stringConcat ["ab", "cd", "ef"])
+  println (stringCompare "abc" "abd")
+  println (stringCompare "abc" "abc")
+  println (stringCompare "abd" "abc")
+  println (stringToFloat "3.5")
+  println (stringToFloat "nope")
+|}
+  "65\nSome B\nNone\nabcdef\nLt\nEq\nGt\nSome 3.5\nNone\n"
+
+(* Codepoint-vs-byte regression: "héllo→" is 6 codepoints but 9 UTF-8 bytes
+   (é = 2 bytes, → = 3).  length / slice / index must count codepoints, and the
+   Array Char bridge must round-trip. *)
+let t_string_codepoint = assert_output
+  {|main : <IO> Unit
+main =
+  println (stringLength "héllo→")
+  println (stringSlice 1 4 "héllo→")
+  println (stringSlice 5 6 "héllo→")
+  println (stringSlice 0 100 "héllo→")
+  println (charCode '→')
+  println (arrayLength (stringToChars "héllo→"))
+  println (stringFromChars (stringToChars "héllo→") == "héllo→")
+|}
+  "6\néll\n→\nhéllo→\n8594\n6\ntrue\n"
+
+(* Unicode classification + case folding (uucp).  Key case: ß is identity under
+   the Char→Char charToUpper (a 1→N expansion it can't represent), but expands
+   to SS under the String-level stringToUpper. *)
+let t_string_unicode = assert_output
+  {|main : <IO> Unit
+main =
+  println (charIsAlpha 'é')
+  println (charIsAlpha '7')
+  println (charIsSpace ' ')
+  println (charIsPunct '!')
+  println (charToUpper 'é')
+  println (charToUpper 'ß')
+  println (stringToUpper "Straße")
+  println (stringToLower "HÉLLO→")
+|}
+  "true\nfalse\ntrue\ntrue\nÉ\nß\nSTRASSE\nhéllo→\n"
+
+(* stringIndexOf: host byte search reported as a *codepoint* index.  In
+   "a→b→c" the second "→" is at codepoint 3 though its bytes start later; an
+   absent needle is None; the empty needle is Some 0. *)
+let t_string_index_of = assert_output
+  {|main : <IO> Unit
+main =
+  println (stringIndexOf "→" "a→b→c")
+  println (stringIndexOf "b→c" "a→b→c")
+  println (stringIndexOf "z" "a→b→c")
+  println (stringIndexOf "" "abc")
+|}
+  "Some 1\nSome 2\nNone\nSome 0\n"
+
+(* Bracket slice `s.[lo..hi]` on a String is codepoint-based (Phase 75), not
+   byte-based — "héllo→" has multibyte é and →.  Panics on OOB like arrays. *)
+let t_string_bracket_slice = assert_output
+  {|main : <IO> Unit
+main =
+  let s = "héllo→"
+  println (s.[1..4])
+  println (s.[0..=2])
+  println (s.[5..6])
+|}
+  "éll\nhél\n→\n"
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () = Alcotest.run "Run"
@@ -406,4 +483,9 @@ let () = Alcotest.run "Run"
     "multi print",   `Quick, t_multi_print;
     "let mut",       `Quick, t_let_mut;
     "runtime error", `Quick, t_runtime_err;
+    "string kernel",      `Quick, t_string_kernel;
+    "string codepoint",   `Quick, t_string_codepoint;
+    "string indexOf",     `Quick, t_string_index_of;
+    "string unicode",     `Quick, t_string_unicode;
+    "string bracket slice", `Quick, t_string_bracket_slice;
   ])]

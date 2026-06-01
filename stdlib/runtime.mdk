@@ -55,3 +55,35 @@ extern arraySortInPlaceBy : (a -> a -> Ordering) -> Array a -> <Mut> Unit
 -- the <Mut> doesn't leak into pure callers (Medaka has no effect masking).
 extern arraySortBy        : (a -> a -> Ordering) -> Array a -> Array a
 extern arrayFromList      : List a -> Array a
+
+-- String/Char kernel (Phase 75).  String is a sequence of Unicode codepoints,
+-- UTF-8 backed; Char is one codepoint.  The bridge to Array Char + the few
+-- codepoint-aware perf externs below are the minimal host surface; the bulk of
+-- stdlib/string.mdk is written in Medaka on top.  Unicode classification/case
+-- folding (charIs*/charTo*, needs a Unicode database) lands separately.
+extern stringToChars   : String -> Array Char
+extern stringFromChars : Array Char -> String
+extern charCode        : Char -> Int
+extern charFromCode    : Int -> Option Char
+extern stringLength    : String -> Int
+extern stringSlice     : Int -> Int -> String -> String
+extern stringConcat    : List String -> String
+extern stringIndexOf   : String -> String -> Option Int
+extern stringCompare   : String -> String -> Ordering
+extern stringToFloat   : String -> Option Float
+
+-- Unicode classification & case folding (Phase 75).  Backed by the Unicode
+-- character database (uucp) in the host; this is part of the runtime contract
+-- every self-hosting host must re-provide, like floatToString.  charToUpper/
+-- charToLower are Char -> Char and are the *identity* where a Unicode case
+-- mapping would expand to several codepoints (e.g. ß); full-fidelity case
+-- folding lives in stringToUpper/stringToLower, which expand 1 -> N.
+extern charIsAlpha   : Char -> Bool
+extern charIsSpace   : Char -> Bool
+extern charIsUpper   : Char -> Bool
+extern charIsLower   : Char -> Bool
+extern charIsPunct   : Char -> Bool
+extern charToUpper   : Char -> Char
+extern charToLower   : Char -> Char
+extern stringToUpper : String -> String
+extern stringToLower : String -> String
