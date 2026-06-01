@@ -3563,7 +3563,7 @@ desugar/eval path).
 - `s.[i]` single-codepoint indexing — currently unsupported (typecheck rejects
   strings in `EIndex`). If wanted: add a type-directed `EIndex` branch
   (`String -> Int -> Char`) backed by a codepoint get (or `stringSlice i (i+1)`
-  at the Medaka level). Deferred; not blocking string.mdk.
+  at the Medaka level). Deferred; not blocking string.mdk. → Phase 77.
 
 **Deferred decision — Char/String module split + prelude name collisions (next session).**
 `string.mdk` omits `length`/`isEmpty`/`count` and uses `charToUpper` (not a Char
@@ -3584,7 +3584,8 @@ desugar/eval path).
   change letting a module shadow prelude names — a `harden-typechecker`/resolver
   task that would also let `array.mdk` reclaim `length`/`isEmpty`/`toList`.
 - Options on the table: (a) split for organization only; (b) fix prelude
-  shadowing in the resolver; (c) keep as-is; (d) both. Undecided.
+  shadowing in the resolver; (c) keep as-is; (d) both. Undecided. Option (b) is
+  now tracked as → Phase 78.
 
 **Follow-up (separate bug, surfaced while writing `string.mdk`):**
 - **A string literal that *starts* with a newline collapses to part-of/empty.**
@@ -3593,6 +3594,129 @@ desugar/eval path).
   lone-newline string is unwritable. `string.mdk` works around it by building
   the separator from `charFromCode 10` (`nl` helper). Candidate fix: only apply
   `strip_indent` to triple-quoted strings (or never collapse a 1-char `"\n"`).
+  → Phase 76.
+
+---
+
+## Outstanding non-stdlib gaps (2026-06-01 PLAN.md review)
+
+These were surfaced by a sweep of §5 and the audit subsections: everything
+that is genuine outstanding work, *not* the standard library and *not* blocked
+by it. (The stdlib-coupled residue — `==`/`!=` `Eq` checking, `Num`/`Ord`
+operator wiring to `core.mdk` interfaces, `do`→`Thenable` desugar — stays
+parked under "Phase 19 stdlib/typeclass wiring" in §5 and is deliberately
+excluded here.) Each is independently shippable; pick one per session.
+
+### Phase 76: Lexer string-literal fixes ⏳ TODO
+
+Two independent string bugs, both rooted in `lib/lexer.mll`:
+
+- **Triple-quoted strings drop `\{…}` interpolation.** `read_triple_string`
+  has no `INTERP_OPEN` branch, so `\{expr}` inside `"""…"""` lexes as a literal
+  `\{expr}` rather than a hole. Port the interpolation logic `read_string`
+  already uses. (Follow-up to Phase 23; see §5 audit-gap note.)
+- **A literal that starts with `\n` collapses.** `strip_indent` (multiline
+  dedent) fires on *any* `STRING` whose first byte is `\n`, so `"\n"` lexes to
+  `""` and a lone-newline string is unwritable. Fix: only dedent triple-quoted
+  strings, or never collapse a 1-char `"\n"`. (`stdlib/string.mdk` currently
+  works around it via `charFromCode 10`.)
+
+Scope: `lib/lexer.mll` only; add round-trip + eval tests for both. No
+grammar/AST change. Skill: **add-language-feature** (lexer-local).
+
+### Phase 77: `s.[i]` single-codepoint string indexing ⏳ TODO
+
+`s.[lo..hi]` codepoint slicing works (Phase 75 step 5) but `s.[i]`
+single-codepoint indexing does not — `EIndex` only unifies its receiver with
+`Array a` in `typecheck.ml`, so strings are rejected at typecheck (no eval
+inconsistency; a missing feature, not a bug).
+
+Scope: add a type-directed `EIndex` branch `String -> Int -> Char` paralleling
+the existing `ESlice` branch; back it with a codepoint get (or
+`stringSlice i (i+1)`) in `eval.ml`. Panic-on-OOB to match the array bracket.
+Skill: **add-language-feature** (threads typecheck + eval).
+
+### Phase 78: Prelude name shadowing in the resolver ⏳ TODO
+
+The prelude (`core.mdk`) is **prepended source**, so its names (`length`,
+`isEmpty`, `count`, `map`, `filter`, `toList`, …) are unconditionally in scope
+and **unshadowable** — defining a standalone `length` in a module errors
+*inside* `core.mdk` because core re-resolves its own internal use to the new
+binding. This is the root cause behind several stdlib naming compromises
+(`array.mdk`/`string.mdk` can't reclaim natural names; see Phase 75's deferred
+decision).
+
+Scope: a resolver change letting a module-level binding shadow a prelude name
+(Haskell-style, where `Data.Text.length` shadows `Prelude.length`) without
+breaking core's internal references. Verify `array.mdk` can define its own
+`length`/`isEmpty`/`toList`. Skill: **harden-typechecker** (resolver-internal
+scoping).
+
+### Phase 79: Effect-polymorphic higher-order functions ⏳ TODO
+
+Higher-order call sites that pass a *named* effectful function are tracked
+(Phase 29's `TFun` effect slot), but effect-polymorphic HOFs — `map f xs`
+picking up `f`'s effects — are not inferred. This needs **effect variables**
+(an effect-row analogue of type variables) so a HOF's signature can read
+`(a -> <e> b) -> List a -> <e> List b`.
+
+Scope: introduce effect variables; generalize/instantiate them alongside type
+vars; thread through unification and the effects pass. Largest of the
+outstanding typechecker items. Skill: **harden-typechecker** (with
+**add-language-feature** scope if effect-var signature syntax is added).
+
+### Phase 80: Multi-level field assignment `a.b.c = e` ⏳ TODO
+
+`DoFieldAssign` supports single-level `x.field = e` for `let mut` records and
+`Ref .value` (Phase 28). Multi-level chains (`a.b.c = e`) are unsupported.
+
+Scope: extend the field-assignment path (parser → typecheck → eval) to walk a
+chain of field accesses and rebuild/mutate the nested structure; decide
+copy-on-update vs in-place semantics consistent with the existing
+`Ref`/`let mut` model. Skill: **add-language-feature**.
+
+### Phase 81: DoBind pattern & final-statement grammar limitations ⏳ TODO
+
+Two documented grammar restrictions (see the `parser.mly` conflict audit) that
+bite during self-hosting:
+
+- **DoBind LHS can't be a cons or literal pattern** — `x::xs <- list` is
+  rejected; only simple/constructor patterns work.
+- **A do-block's last statement can't start with an uppercase constructor** —
+  `Some x` as the final statement parses as a pattern; must write `pure (...)`.
+
+Both stem from the same `stmt: pat LARROW … | expr …` R/R conflict. Scope:
+restructure the `stmt`/`expr_atom` grammar (or add `%prec` directives) to
+disambiguate, then re-run the conflict audit (§2.4) and confirm the count
+doesn't regress. Skill: **add-language-feature** (grammar; high
+conflict-risk — audit carefully).
+
+### Phase 82: CLI surface completion ⏳ TODO
+
+The design spec lists `new build run check test fmt lsp doc add remove update`;
+today `check / run / test / repl / lsp / fmt / new` exist. Non-stdlib,
+non-package-manager gaps:
+
+- `medaka build` — typecheck + cache without running.
+- `medaka run --release` — flag plumbing (no optimizer yet; can alias `run`).
+- `medaka check --json` — machine-readable diagnostics (reuse the LSP
+  diagnostic shape).
+- `medaka doc` — extract doc comments / signatures to a doc artifact.
+
+(`add`/`remove`/`update` need a package manager — out of scope until one
+exists.) Skill: none specific; lands in `bin/main.ml` + `diagnostics.ml`.
+
+### Phase 83: Constraint inference for constrained functions ⏳ TODO
+
+Phase 20 added constraint *syntax* and call-site obligation checking, but not
+constraint **inference**: a caller that uses a constrained function
+polymorphically must re-annotate the constraint itself (e.g. a wrapper over
+`eq` must carry `Eq a =>` explicitly or it fails to type-check).
+
+Scope: propagate inferred constraints from a binding's body into its
+generalized scheme so wrappers acquire the needed constraints automatically;
+keep coherent with the Phase 64/65 `requires`-discharge machinery.
+Skill: **harden-typechecker**.
 
 ---
 
@@ -3601,6 +3725,11 @@ desugar/eval path).
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
 phases land, revisit the limitations in Section 5 — most of them turn into
 concrete work once real programs are running through the interpreter.
+
+Standing cleanups (small, low-risk):
+- **Prune dead `+.` / `-.` / `*.` / `/.` arithmetic cases** in `eval.ml`'s
+  `eval_arith`. Since Phase 17 made `+`/`-`/`*`/`/` dispatch on value type, the
+  float-suffixed ops can never be emitted (§5). Harmless dead code.
 
 ## 5. Known limitations to keep in mind
 
@@ -3622,7 +3751,7 @@ These aren't blockers, but a less-careful change could trip over them:
   type is fully type-checked; actual mutation happens at runtime (Phase 10 ✅).
 - `r.value = expr` field-assignment is supported via `DoFieldAssign` in do-blocks
   (Phase 28 ✅). Multi-level chains (`a.b.c = e`) are not yet supported — only
-  single-level `x.field = e` where `x` is a `let mut` binding.
+  single-level `x.field = e` where `x` is a `let mut` binding. → Phase 80.
 - `let f x = ...` is implicitly self-recursive (Phase 27 ✅). `let x = expr`
   (no arguments) is still non-recursive. `where`-helpers use `ELetGroup` for
   mutual recursion (Phase 25 ✅).
@@ -3645,16 +3774,16 @@ These aren't blockers, but a less-careful change could trip over them:
 - Effects: `TFun` now carries an `effect_set` slot (Phase 29 ✅); higher-order
   call sites that pass a named effectful function are tracked.  Effect
   inference for unannotated HOFs (effect-polymorphic `map`) still requires
-  effect variables, which is not implemented.
+  effect variables, which is not implemented. → Phase 79.
 - `@Name` impl-disambiguation hints now select a specific impl at runtime
   (Phase 30 ✅) and are validated at compile time (Phase 32 ✅):
   named impls must exist and `@Name` selects among multiple matching impls.
   At runtime the VMulti is filtered by name; full dictionary-passing (for
   higher-order use) is deferred.
 - DoBind LHS cannot be a cons (`x::xs <- list`) or literal pattern — grammar
-  limitation documented in `parser.mly`.
+  limitation documented in `parser.mly`. → Phase 81.
 - The last statement of a do-block cannot start with an uppercase identifier
-  (`Some x` etc.) — wrap in `pure (...)`. Same grammar root cause.
+  (`Some x` etc.) — wrap in `pure (...)`. Same grammar root cause. → Phase 81.
 - Module system: `use` declarations parse but no cross-file resolution
   exists. Backend roadmap is single-file only; multi-file support is a
   separate later phase.
@@ -3701,13 +3830,14 @@ a phase in §6 unless noted.
 - **`%` modulo.** ✅ Phase 17 done. Lexer token `MOD`, parser rule, Int-only.
 - **`+.` / `-.` / `*.` / `/.` in `eval_arith`.** Now dead code (Phase 17
   made `+`/`-`/`*`/`/` dispatch on value type, so `+.` etc. can never be
-  emitted). Harmless; can be pruned in a later housekeeping pass.
+  emitted). Harmless; can be pruned in a later housekeeping pass. → §4.
 - **Tree-sitter grammar absent.** Design doc Phase 1 calls for it in
   parallel with the compiler. Phase 15.
 - **CLI surface is minimal.** The design specifies `medaka new`, `build`,
   `run --release`, `check --json`, `test`, `fmt`, `lsp`, `add`, `remove`,
-  `update`, `doc` — today only `check`, `run`, `repl` exist. Each is its
-  own follow-up phase post-stdlib; not blockers.
+  `update`, `doc` — `check`, `run`, `test`, `repl`, `lsp`, `fmt`, `new` exist.
+  `build` / `run --release` / `check --json` / `doc` → Phase 82; `add` /
+  `remove` / `update` await a package manager.
 - **No `medaka.toml` / `medaka.lock`.** Project config doesn't exist yet
   because single-file is still the contract. Post-Phase 14.
 - **REPL: `:load`, `:reload`, `:browse` now implemented.** ✅ Phase 13 done.
@@ -3733,7 +3863,7 @@ a phase in §6 unless noted.
   inert — deleting it would not break anything. To make the interface load-bearing,
   `<-` should desugar to `andThen` calls (Haskell style) so the `Thenable`
   constraint is actually checked. Scheduled with Phase 19 stdlib/typeclass wiring.
-- **Constraint syntax in function type signatures.** ✅ Phase 20 done. `f : Eq a => a -> a -> Bool` now parses, round-trips, and type-checks. Constraint obligations are emitted at call sites and verified post-HM. Known limitation: constraint inference is not implemented — callers that use a constrained function polymorphically must also carry the explicit constraint annotation.
+- **Constraint syntax in function type signatures.** ✅ Phase 20 done. `f : Eq a => a -> a -> Bool` now parses, round-trips, and type-checks. Constraint obligations are emitted at call sites and verified post-HM. Known limitation: constraint inference is not implemented — callers that use a constrained function polymorphically must also carry the explicit constraint annotation. → Phase 83.
 
 ### Additional gaps surfaced during the 2026-05-26 audit
 
@@ -3741,7 +3871,7 @@ a phase in §6 unless noted.
   `read_triple_string` lexer rule has no `\\' '{'` branch, so any `\{expr}`
   inside a `"""..."""` string is emitted as a literal `\{expr}`.  Easy fix:
   extend `read_triple_string` with the same INTERP_OPEN logic
-  `read_string` uses.  Scheduled as a small follow-up to Phase 23.
+  `read_string` uses.  Scheduled as a small follow-up to Phase 23. → Phase 76.
 - **Float unary negation rejected by the type checker.** ✅ Phase 70 (done).
   `EUnOp "-"` now records a `Num.negate` usage instead of unifying with
   `t_int`, so `-3.14` and `let f = -x` for `x : Float` type-check; the
