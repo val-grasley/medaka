@@ -1447,6 +1447,22 @@ let test_block_comment_trailing_code () =
      DFunDef (false, "y", [], ELit (LInt 2))] -> ()
   | ds -> failwith ("wrong: " ^ String.concat "; " (List.map pp_decl ds))
 
+(* A file with no trailing newline must still parse: the lexer emits a
+   terminating NEWLINE at EOF so the final decl's `newlines` is satisfied.
+   Note the source string deliberately has no '\n' at the end. *)
+let test_no_trailing_newline () =
+  match parse "x = 1\ny = 2" with
+  | [DFunDef (false, "x", [], ELit (LInt 1));
+     DFunDef (false, "y", [], ELit (LInt 2))] -> ()
+  | ds -> failwith ("wrong: " ^ String.concat "; " (List.map pp_decl ds))
+
+(* Same, but the final binding ends inside an indented block — the EOF
+   handler must emit NEWLINE *then* the DEDENT to close the block. *)
+let test_no_trailing_newline_indented () =
+  match parse "foo =\n  let x = 1\n  x" with
+  | [DFunDef (false, "foo", [], _)] -> ()
+  | ds -> failwith ("wrong: " ^ String.concat "; " (List.map pp_decl ds))
+
 (* ── Test runner ─────────────────────────────────────── *)
 
 let () =
@@ -1696,5 +1712,9 @@ let () =
       test_case "spanning lines" `Quick test_block_comment_spanning;
       test_case "nested"         `Quick test_block_comment_nested;
       test_case "trailing code"  `Quick test_block_comment_trailing_code;
+    ];
+    "trailing newline", [
+      test_case "missing at EOF"          `Quick test_no_trailing_newline;
+      test_case "missing at EOF, indented" `Quick test_no_trailing_newline_indented;
     ];
   ]

@@ -306,6 +306,14 @@ and read = parse
   | '%'   { MOD }
 
   | eof   {
+      (* Terminate the final statement even when the file has no trailing
+         newline.  Every top-level decl rule ends in `newlines`, so the last
+         binding needs a NEWLINE; emit one before unwinding the indent stack,
+         mirroring the dedent path in [handle_indent] (leading NEWLINE, then
+         DEDENT/NEWLINE pairs).  Without it, a file lacking a trailing newline
+         runs its last decl straight into EOF and fails to parse.  `newlines`
+         collapses runs of NEWLINE, so the well-formed case is unaffected. *)
+      push_pending NEWLINE;
       let rec close_all () =
         match !indent_stack with
         | [0] -> ()
