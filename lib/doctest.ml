@@ -182,10 +182,21 @@ let run_file (filename : string) : run_result =
   else begin
     let base_decls = Desugar.desugar_program decls in
 
-    (* Parse each example as a synthetic top-level binding *)
+    (* Parse each example as a synthetic top-level binding.  Examples with an
+       expected line are rendered through the user-facing `show` (Show), à la
+       GHCi/doctest, so the comparison is against the language's own rendering
+       contract rather than the interpreter-internal pp_value.  The parens keep
+       precedence (`ex.input` may be an application or operator expression).
+       Examples with no expected line stay raw — forcing `show` on an
+       effectful or non-Show result would turn a passing smoke example into an
+       error (and needlessly enlarge the Show-constraint surface). *)
     let synth_results = List.mapi (fun i ex ->
       let name = synth_name i in
-      let src = name ^ " = " ^ ex.input in
+      let rhs = match ex.expected with
+        | Some _ -> "show (" ^ ex.input ^ ")"
+        | None   -> ex.input
+      in
+      let src = name ^ " = " ^ rhs in
       try
         let raw = parse_snippet src in
         Ok (Desugar.desugar_program raw)
@@ -241,6 +252,10 @@ let run_file (filename : string) : run_result =
              (match List.assoc_opt (synth_name i) env with
               | None -> Error (Printf.sprintf "could not evaluate: %s" ex.input)
               | Some v ->
+                (* For comparison examples the synth binding is `show (...)`, so
+                   `v` is the VString that `show` produced; pp_value (VString s)
+                   = s extracts it verbatim.  Smoke examples (expected = None)
+                   are unwrapped, and their actual value is never compared. *)
                 let actual = Eval.pp_value v in
                 (match ex.expected with
                  | None     -> Pass

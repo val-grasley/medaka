@@ -117,6 +117,22 @@ and pp_value_atom v = match v with
   | VCon (_, _ :: _) | VTuple _ -> "(" ^ pp_value v ^ ")"
   | _ -> pp_value v
 
+(* Escape a string into the body of a Medaka double-quoted literal, mirroring
+   the escapes lexer.mll's read_string understands (backslash n, t, dquote,
+   backslash, r, 0) so the result is valid, round-trippable source.  Backs
+   showStringLit. *)
+let escape_string_lit s =
+  let b = Buffer.create (String.length s + 2) in
+  String.iter (fun c -> match c with
+    | '"'    -> Buffer.add_string b "\\\""
+    | '\\'   -> Buffer.add_string b "\\\\"
+    | '\n'   -> Buffer.add_string b "\\n"
+    | '\t'   -> Buffer.add_string b "\\t"
+    | '\r'   -> Buffer.add_string b "\\r"
+    | '\000' -> Buffer.add_string b "\\0"
+    | c      -> Buffer.add_char b c) s;
+  Buffer.contents b
+
 (* Named-field constructor name → field names in declaration order.
    Populated from DData ConNamed variants at eval init. *)
 let ctor_field_order : (string, string list) Hashtbl.t = Hashtbl.create 4
@@ -306,6 +322,7 @@ let rec runtime_type_tag = function
   | VUnit     -> Some "Unit"
   | VList _   -> Some "List"
   | VArray _  -> Some "Array"
+  | VTuple _  -> Some "__tuple__"   (* matches typecheck's synthetic tuple head *)
   | VCon (cname, _) -> Hashtbl.find_opt ctor_to_type cname
   | VRecord (name, _) -> Some name
   | VTypedImpl (t, _, _, _, _) -> Some t
@@ -1061,6 +1078,27 @@ let primitives : (string * value) list =
       match v with
       | VFloat f -> VInt (Int.of_float f)
       | _ -> raise (Eval_error ("floatToInt: expected Float", None))));
+    ("intToString", VPrim (fun v ->
+      match v with
+      | VInt n -> VString (string_of_int n)
+      | _ -> raise (Eval_error ("intToString: expected Int", None))));
+    ("floatToString", VPrim (fun v ->
+      match v with
+      | VFloat f ->
+        (* Mirror pp_value's Float case exactly so show == println for floats. *)
+        let s = string_of_float f in
+        VString (if String.contains s '.' || String.contains s 'e' then s else s ^ ".0")
+      | _ -> raise (Eval_error ("floatToString: expected Float", None))));
+    ("showStringLit", VPrim (fun v ->
+      match v with
+      | VString s -> VString ("\"" ^ escape_string_lit s ^ "\"")
+      | _ -> raise (Eval_error ("showStringLit: expected String", None))));
+    ("showCharLit", VPrim (fun v ->
+      (* Medaka char literals do no escape processing (`'<bytes>'`), so the
+         round-trippable form is just the bytes wrapped in single quotes. *)
+      match v with
+      | VChar c -> VString ("'" ^ c ^ "'")
+      | _ -> raise (Eval_error ("showCharLit: expected Char", None))));
     ("arrayLength", VPrim (fun v ->
       match v with
       | VArray a -> VInt (Array.length a)
@@ -1282,6 +1320,7 @@ let eval_program ?(prelude = true) program =
     | Ast.TyCon n          -> Some n
     | Ast.TyApp (a, _)     -> head_tycon a
     | Ast.TyConstrained (_, t) | Ast.TyEffect (_, t) -> head_tycon t
+    | Ast.TyTuple _        -> Some "__tuple__"
     | _ -> None
   in
   List.iter (fun d -> match Ast.inner_decl d with
@@ -1527,6 +1566,7 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
        | Ast.TyCon n      -> Some n
        | Ast.TyApp (a, _) -> head_tycon a
        | Ast.TyConstrained (_, t) | Ast.TyEffect (_, t) -> head_tycon t
+       | Ast.TyTuple _    -> Some "__tuple__"
        | _ -> None
      in
      let tname_opt = match type_args with

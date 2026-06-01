@@ -1402,12 +1402,13 @@ let e_constraint_no_impl = assert_err
 f = eq Blob Blob
 |}
 
-(* Error: method called on a type entirely absent from the impl registry *)
+(* Error: method called on a type entirely absent from the impl registry.
+   (Uses a fresh ADT with no `Show` impl — `show` on a prelude type like Bool
+   now resolves, since core carries base `Show` impls.) *)
 let e_constraint_missing_impl = assert_err
-  {|interface Show a where
-  show : a -> String
+  {|data Widget = Widget
 
-g = show True
+g = show Widget
 |}
 
 (* Error: multiple non-default impls, no disambiguation, at a concrete type *)

@@ -324,7 +324,7 @@ findIndexGo pred arr i n =
 {- | True when the value appears in the array (by `Eq`).
 
    > elem 2 (fromList [1, 2, 3])
-   true -}
+   True -}
 export
 elem : Eq a => a -> Array a -> Bool
 elem x arr = any (y => x == y) arr

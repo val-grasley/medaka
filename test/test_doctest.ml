@@ -204,7 +204,7 @@ impl Decode Bool where
   decode n = n > 0
 
 -- > (decode 1 : Bool)
--- true
+-- True
 |} in
   with_tmp_file src (fun path ->
     let r = Doctest.run_file path in

@@ -3383,6 +3383,47 @@ sig, polymorphic identity, partial-peel returns-function, body-field mismatch).
 
 ---
 
+### Phase 74: `Show`-based doctest rendering ✅ DONE (2026-05-31)
+
+**Done.** Doctests now render a result through the user-facing `Show` typeclass
+instead of the interpreter-internal `Eval.pp_value`, matching GHCi/`doctest`
+(one rendering contract). `Doctest.run_file` wraps each example *that has an
+expected line* as `show (<expr>)` (smoke examples stay raw); `pp_value (VString)
+= s` then extracts the rendered text. To make `Show` real:
+
+- Leaf-formatter externs `intToString`/`floatToString`/`showStringLit`/
+  `showCharLit` (`stdlib/runtime.mdk` + `lib/eval.ml`), exposing the same OCaml
+  formatting `pp_value` uses. `String`/`Char` render *quoted + escaped*
+  (round-trippable; `show` intentionally differs from `println`), Int/Float/Bool
+  match `pp_value`.
+- Base `Show` impls: `Int`/`Float`/`Bool` (`True`/`False`)/`Unit`/`List`/
+  `Option`/`Result` in `core.mdk`, `String`/`Char` in `string.mdk`; the tuple
+  impls went live. `Show Bool` renders `True`/`False` (constructor names), so the
+  Bool doctests updated `true`/`false` → `True`/`False`.
+- **Tuple method dispatch fix** (`lib/eval.ml`): `runtime_type_tag` and both
+  `head_tycon` helpers had no tuple case, so methods on tuples fell to arg-tag
+  "first impl wins". `Eq`/`Ord` tuples only *looked* right (their `Int` impl
+  bodies use the builtin structural `==`); `Show` exposed it (`intToString` on a
+  tuple). Both sides now tag tuples `__tuple__`, matching the typechecker.
+
+**Follow-ups (deferred):**
+- **Unify `println`/`print`/REPL onto `Show`** (the remaining half of "one
+  rendering path"). Needs a `Show a =>` constraint on the print builtins —
+  breaking (every printed value needs a `Show` instance), so deferred.
+- **Recursive constrained functions drop their dictionary on the self-call.**
+  A top-level `Show a => List a -> String` (or any `C a => …`) that calls itself
+  recursively mis-dispatches: the self-call resolves to an empty dict route
+  instead of forwarding the enclosing dict param (`resolve_one_route` /
+  `find_enclosing_dict` in `lib/typecheck.ml`), so the recursive call gets the
+  wrong arity/dict and returns a partial application (`Eq`-constrained recursion
+  → non-Bool; `Show` → stack overflow). Worked around in `Show (List a)` with a
+  `where`-local helper (closes over the dict lexically). Needs a focused fix.
+- **`showsPrec`-style precedence** for `deriving (Show)` and `Show
+  Option`/`Result`: nested constructors render ambiguously (`Some (Some 1)` →
+  `Some Some 1`). No doctest nests constructors, so non-blocking.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend

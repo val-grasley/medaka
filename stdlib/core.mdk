@@ -28,18 +28,18 @@ public export data Ordering = Lt | Eq | Gt
 {- | A value that may be absent.  Medaka's name for Haskell's `Maybe`.
 
    > isSome (Some 1)
-   true
+   True
    > isSome None
-   false -}
+   False -}
 public export data Option a = Some a | None
 
 {- | A computation that either succeeded with `Ok a` or failed with `Err e`.
    Errors are data; pattern-match to handle them.  See language-design.md.
 
    > isOk (Ok 1)
-   true
+   True
    > isOk (Err "boom")
-   false -}
+   False -}
 public export data Result e a = Ok a | Err e
 
 -- ─── 2. Interfaces and built-in impls ───────────────────────────────────
@@ -204,17 +204,50 @@ export impl Ord (a, b, c, d) requires Ord a, Ord b, Ord c, Ord d where
 export impl Ord (a, b, c, d, e) requires Ord a, Ord b, Ord c, Ord d, Ord e where
   compare (a1, b1, c1, d1, e1) (a2, b2, c2, d2, e2) = thenCmp (compare a1 a2) (thenCmp (compare b1 b2) (thenCmp (compare c1 c2) (thenCmp (compare d1 d2) (compare e1 e2))))
 
-{- | Human-readable string rendering.
-   Impls live in their owning module: `Show Int`/`Show Float` live in
-   `core` once an `intToString` extern lands; `Show String` and `Show Char`
-   in `string.mdk`; `Show (List a)` in `list.mdk`. -}
+{- | Human-readable string rendering.  Backs `medaka test` doctests, which
+   compare a result's `show` against the expected text (GHCi/doctest parity).
+   `Show Int`/`Float`/`Bool`/`Unit`/`List`/`Option`/`Result` and the tuple
+   impls live here; `Show String`/`Show Char` live in `string.mdk`.
+   Numeric/Bool `show` matches the interpreter's `pp_value` (so it agrees with
+   `println`); `String`/`Char` render *quoted* (round-trippable, so `show`
+   intentionally differs from `println` — cf. Haskell `show` vs `putStr`). -}
 export
 interface Show a where
   show : a -> String
 
--- Tuple rendering (arities 2–5): `(a, b)`, matching the interpreter's own
--- value printer.  Inert until base `Show` impls (e.g. `Show Int`) land —
--- there is no component `show` to call before then.
+export impl Show Int where
+  show n = intToString n
+
+export impl Show Float where
+  show x = floatToString x
+
+export impl Show Bool where
+  show True = "True"
+  show False = "False"
+
+export impl Show Unit where
+  show _ = "()"
+
+-- The element join recurses in a `where`-local helper (closing over the
+-- impl's `Show a` dict lexically) rather than a top-level constrained
+-- function: a recursive top-level `Show a => …` self-call currently drops its
+-- dictionary (Phase 69.x bug — see PLAN.md follow-up).
+export impl Show (List a) requires Show a where
+  show xs = "[" ++ go xs ++ "]" where
+    go [] = ""
+    go [x] = show x
+    go (y::rest) = show y ++ ", " ++ go rest
+
+export impl Show (Option a) requires Show a where
+  show None = "None"
+  show (Some x) = "Some " ++ show x
+
+export impl Show (Result e a) requires Show e, Show a where
+  show (Ok x) = "Ok " ++ show x
+  show (Err e) = "Err " ++ show e
+
+-- Tuple rendering (arities 2–5): `(a, b)`, matching the interpreter's
+-- value printer.
 export impl Show (a, b) requires Show a, Show b where
   show (a, b) = "(" ++ show a ++ ", " ++ show b ++ ")"
 
@@ -447,9 +480,9 @@ export default impl Foldable (Result e) where
 {- | True when at least one element satisfies the predicate.
 
    > any (x => x > 2) [1, 2, 3]
-   true
+   True
    > any (x => x > 10) [1, 2, 3]
-   false -}
+   False -}
 export
 any : Foldable t => (a -> Bool) -> t a -> Bool
 any f = fold (acc x => acc || f x) False
@@ -458,9 +491,9 @@ any f = fold (acc x => acc || f x) False
    the empty container.
 
    > all (x => x > 0) [1, 2, 3]
-   true
+   True
    > all (x => x > 0) []
-   true -}
+   True -}
 export
 all : Foldable t => (a -> Bool) -> t a -> Bool
 all f = fold (acc x => acc && f x) True

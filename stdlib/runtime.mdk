@@ -27,6 +27,15 @@ extern setSeed     : Int -> <Rand> Unit
 extern charToStr   : Char -> String
 extern intToFloat  : Int -> Float
 extern floatToInt  : Float -> Int
+-- Leaf renderers backing the `Show` impls in core.mdk / string.mdk.  These
+-- expose the same OCaml formatting `pp_value` uses, so `show` agrees with
+-- `println` on numbers.  `showStringLit`/`showCharLit` produce the *quoted,
+-- escaped* literal form (round-trippable into source), so `show` on a String
+-- intentionally differs from `println` (cf. Haskell `show` vs `putStr`).
+extern intToString   : Int -> String
+extern floatToString : Float -> String
+extern showStringLit : String -> String
+extern showCharLit   : Char -> String
 extern assert_snapshot : String -> String -> <IO> Unit
 
 -- Array primitives.  These are the minimal kernel; stdlib/array.mdk is

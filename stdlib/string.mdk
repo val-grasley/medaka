@@ -2,3 +2,16 @@
 -- See STDLIB.md for the full implementation plan.
 
 import core.{Eq, Ord, Show}
+
+-- Rendering
+
+{- | Render a `String` as a quoted, escaped literal — `show "hi"` is `"hi"`,
+   not `hi`.  This is round-trippable (valid Medaka source) and disambiguates
+   a string from other values, matching Haskell's `Show`.  It therefore
+   differs from `println`, which emits the raw characters. -}
+export impl Show String where
+  show s = showStringLit s
+
+{- | Render a `Char` as a quoted literal — `show 'a'` is `'a'`. -}
+export impl Show Char where
+  show c = showCharLit c
