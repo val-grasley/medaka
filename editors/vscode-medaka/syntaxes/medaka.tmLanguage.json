@@ -53,6 +53,26 @@
       "end": "\"",
       "patterns": [
         {
+          "comment": "\\{expr} string interpolation — highlight the embedded expression as code",
+          "name": "meta.template.expression.medaka",
+          "begin": "\\\\\\{",
+          "end": "\\}",
+          "beginCaptures": {
+            "0": { "name": "punctuation.definition.template-expression.begin.medaka" }
+          },
+          "endCaptures": {
+            "0": { "name": "punctuation.definition.template-expression.end.medaka" }
+          },
+          "patterns": [
+            { "include": "$self" },
+            {
+              "comment": "embedded identifiers — give them a non-string scope so they render as code, not string text",
+              "match": "[a-z_][a-zA-Z0-9_']*",
+              "name": "variable.other.medaka"
+            }
+          ]
+        },
+        {
           "name": "constant.character.escape.medaka",
           "match": "\\\\(?:[\\\\\"/nrtb0]|u\\{[0-9a-fA-F]+\\})"
         }
