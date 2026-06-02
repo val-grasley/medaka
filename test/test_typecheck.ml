@@ -929,6 +929,22 @@ let t_eff_infer_hof_alias = assert_type
 let e_eff_escape_via_inferred = assert_err
   "helper x = print x\nf : String -> Unit\nf x = helper x\n"
 
+(* Phase 97: a backtick-infix call to an effectful ordinary function must
+   propagate the effect.  `emit a b = print a` infers <IO>; an annotated-pure
+   caller using it infix must be rejected — at parity with the prefix form.
+   Before the fix the EInfix arm opened the operator's effect rows but never
+   performed them, so `x `emit` y` typed pure and `f` slipped through. *)
+let e_eff_escape_backtick = assert_err
+  "emit a b = print a\nf : Int -> Int -> Unit\nf x y = x `emit` y\n"
+
+(* Parity baseline: the prefix form of the same program already errors. *)
+let e_eff_escape_prefix_parity = assert_err
+  "emit a b = print a\nf : Int -> Int -> Unit\nf x y = emit x y\n"
+
+(* Positive: an unannotated caller using backtick infers the <IO> effect. *)
+let t_eff_backtick_infer = assert_type
+  "emit a b = print a\ng x y = x `emit` y\n" "g" "a -> b -> <IO> Unit"
+
 (* HOF: pure callback — no error *)
 let t_hof_pure_arg = assert_type
   "runWith f = f ()\nresult = runWith (x => x)\n"
@@ -3651,6 +3667,9 @@ let () =
       test_case "infer HOF effectful arg"   `Quick t_eff_infer_hof;
       test_case "infer HOF alias"           `Quick t_eff_infer_hof_alias;
       test_case "err: escape via inferred"  `Quick e_eff_escape_via_inferred;
+      test_case "err: escape via backtick infix" `Quick e_eff_escape_backtick;
+      test_case "err: escape prefix parity"  `Quick e_eff_escape_prefix_parity;
+      test_case "infer backtick infix effect" `Quick t_eff_backtick_infer;
       test_case "HOF pure arg ok"           `Quick t_hof_pure_arg;
       test_case "user HOF infers IO"        `Quick t_eff_hof_user_infer;
       test_case "user HOF stays pure"       `Quick t_eff_hof_user_pure;

@@ -4523,7 +4523,7 @@ eval-only change.  No typecheck change was needed.  Regressions in
 and `test_eval.ml` (`nullary empty value/custom`); `foldMap` (RDict) and
 `decode`/`pure` (RHeadKey) paths unchanged.
 
-### Phase 97: Ordinary-function backtick infix under-accounts effects ⏳ TODO
+### Phase 97: Ordinary-function backtick infix under-accounts effects ✅ DONE
 
 Noticed while doing Phase 94.  `infer`'s bare `EInfix` arm (`lib/typecheck.ml`)
 types `a `f` b` as
@@ -4546,6 +4546,15 @@ Mind the two whole-program entry points share the `infer` arm, so the one change
 covers both.  Add a `test_typecheck` regression: a backtick call to an effectful
 ordinary function must require the effect (and the pure form must be rejected),
 at parity with the prefix `f a b`.  Skill: **harden-typechecker**.
+
+**Resolution (2026-06-02).**  The `EInfix` arm now binds both
+operator-application effect rows (`eff1`, `eff2`) and calls
+`perform_effect cur_effect` on each before returning — `` a `f` b `` is `f a b`,
+so each curried arrow's latent effect is performed in the current context, exactly
+as the nested `EApp` path does.  Three `test_typecheck` regressions
+(`e_eff_escape_backtick`, `e_eff_escape_prefix_parity`, `t_eff_backtick_infer`)
+pin: an annotated-pure caller using an effectful ordinary fn infix is rejected, at
+parity with the prefix form, and an unannotated backtick caller infers `<IO>`.
 
 ---
 

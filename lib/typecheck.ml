@@ -1651,7 +1651,13 @@ let rec infer env = function
     let tl = infer env l in
     let tr = infer env r in
     let result = fresh_var () in
-    unify tf (TFun (tl, open_row (), TFun (tr, open_row (), result)));
+    let eff1 = open_row () in
+    let eff2 = open_row () in
+    unify tf (TFun (tl, eff1, TFun (tr, eff2, result)));
+    (* `a `f` b` is `f a b`: applying op to both args performs each arrow's
+       latent effect in the current context, mirroring the EApp arm. *)
+    perform_effect cur_effect eff1;
+    perform_effect cur_effect eff2;
     result
 
   | EBlock stmts ->
