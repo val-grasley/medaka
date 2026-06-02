@@ -3811,18 +3811,42 @@ Phase 78 ships as **78a** (plain-function shadowing) + **78b** (single-file
 interface-method shadowing). Reopen 78c only if a future module has a genuine,
 non-cosmetic need that interface impls can't serve.
 
-### Phase 79: Effect-polymorphic higher-order functions ⏳ TODO
+### Phase 79: Effect-polymorphic higher-order functions ✅ DONE
 
-Higher-order call sites that pass a *named* effectful function are tracked
-(Phase 29's `TFun` effect slot), but effect-polymorphic HOFs — `map f xs`
-picking up `f`'s effects — are not inferred. This needs **effect variables**
-(an effect-row analogue of type variables) so a HOF's signature can read
-`(a -> <e> b) -> List a -> <e> List b`.
+Full effect inference via **open effect rows** (a label set + optional tail
+variable). `map (x => println x) xs` now infers `<IO>`; pure callbacks stay
+pure; an annotated-pure HOF with an effectful callback reports `EffectEscape`.
 
-Scope: introduce effect variables; generalize/instantiate them alongside type
-vars; thread through unification and the effects pass. Largest of the
-outstanding typechecker items. Skill: **harden-typechecker** (with
-**add-language-feature** scope if effect-var signature syntax is added).
+Shipped in sub-phases:
+- **79a** — `effrow` representation (replaces `effect_set = string list` in
+  `TFun`; `scheme` gains an effvar-id list); zero behaviour change.
+- **79b** — `<IO | e>` row-bar surface syntax (parser/AST/printer/`from_ast_type`
+  with a shared `~etbl`).
+- **79c** — effect-row unification (`unify_row`: open/open link via a shared
+  tail, open/closed absorb) + effvars threaded through occurs/level/generalize/
+  instantiate (`free_effvars`, `subst_row`); inference arrows become open.
+- **79d** — ambient effect threading in `infer` (`cur_effect`: application
+  performs the called arrow's effect; a lambda/clause's body effect becomes its
+  arrow's latent effect). Effect polymorphism falls out for user-defined HOFs
+  with bodies.
+- **79d-stdlib / 79f** — `<e>` annotations on the HOF signatures in
+  `core.mdk`/`list.mdk`/`array.mdk` (interface methods carry no body at the call
+  site, so they need the explicit callback→result link; internal `*Go` helpers
+  too, since a closed helper arrow kills the effect mid-chain).
+- **79e** — retired the post-HM effects pass; escape checking now happens inline
+  at each binding's boundary (compare inferred body effects vs `declared_effects`
+  of the signature). `let mut`/field reassignment performs `<Mut>` in `infer`.
+
+**Grammar fix landed here:** an effect annotation now wraps the full following
+application (`ty_app`, not a single `ty_atom`), so `<e> List b` means
+`<e> (List b)`. Previously a multi-atom return after `<…>` silently dropped the
+effect — a latent footgun in the pre-existing `<IO>` grammar too.
+
+**Known limitations:** the single-tail row can't express the union of two
+distinct effect variables, so a 2-callback combinator (`compose`/`pipe`) shares
+one `e` and under-reports a *mix* of differing concrete callback effects.
+Ambient unification is an over-approximation at control-flow joins (sound for
+"may-perform"). `ap`/`mapErr` left unannotated (edge cases).
 
 ### Phase 80: Multi-level field assignment `a.b.c = e` ⏳ TODO
 
@@ -3930,10 +3954,12 @@ These aren't blockers, but a less-careful change could trip over them:
   String, and Char are the registered built-in impls.
 - Arithmetic ops (`+`, `-`, `*`, `/`) now use `Num` constraint (Phase 17 ✅).
   Int and Float are the registered built-in impls.
-- Effects: `TFun` now carries an `effect_set` slot (Phase 29 ✅); higher-order
-  call sites that pass a named effectful function are tracked.  Effect
-  inference for unannotated HOFs (effect-polymorphic `map`) still requires
-  effect variables, which is not implemented. → Phase 79.
+- Effects: `TFun` carries an **effect row** (`effrow` = label set + optional
+  tail effvar, Phase 79 ✅, replacing Phase 29's flat `effect_set`).  Effect
+  polymorphism is fully inferred via open rows + ambient threading: a user HOF's
+  callback effect flows to its result, and the annotated stdlib HOFs
+  (`map`/`filter`/`fold`/…) propagate too.  Escape checking is inline at the
+  binding boundary (Phase 79e retired the post-HM pass).
 - `@Name` impl-disambiguation hints now select a specific impl at runtime
   (Phase 30 ✅) and are validated at compile time (Phase 32 ✅):
   named impls must exist and `@Name` selects among multiple matching impls.
