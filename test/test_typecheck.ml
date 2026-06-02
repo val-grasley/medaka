@@ -652,10 +652,13 @@ let t_do_pure = assert_type
   "wrap x =\n  do\n    pure x\n"
   "wrap" "a -> b a"
 
-(* pure after bind: identity for any monad *)
+(* pure after bind: identity for any monad.  Named [echoM] rather than [identity]
+   so it doesn't shadow the prelude's `identity : a -> a`: under that signature
+   the body's inferred `Applicative` constraint is genuinely unsatisfiable
+   (Phase 83 now rejects it), whereas unsignatured the constraint is inferred. *)
 let t_do_pure_after_bind = assert_type
-  "identity opt =\n  do\n    x <- opt\n    pure x\n"
-  "identity" "a b -> a b"
+  "echoM opt =\n  do\n    x <- opt\n    pure x\n"
+  "echoM" "a b -> a b"
 
 (* Tuple destructuring in a DoBind *)
 let t_do_tuple_bind = assert_type
@@ -1615,6 +1618,59 @@ neq x y = not (eq x y)
 bad = neq Blob Blob
 |}
 
+(* ── Phase 83: constraint inference for constrained functions ──────── *)
+
+(* An unsignatured wrapper over a constrained method acquires the constraint:
+   calling it at a type with no impl now errors at the call site (it didn't
+   before — the obligation used to evaporate). *)
+let t_infer_wrapper_propagates = assert_err_at ~line:5
+  {|data Blob = Blob
+
+myEq x y = eq x y
+
+bad = myEq Blob Blob
+|}
+
+(* The inferred constraint propagates through a second unsignatured wrapper. *)
+let t_infer_wrapper_transitive = assert_err_at ~line:6
+  {|data Blob = Blob
+
+myEq x y = eq x y
+w x y = myEq x y
+
+bad = w Blob Blob
+|}
+
+(* An inferred-constrained wrapper still resolves at a type that has an impl. *)
+let t_infer_wrapper_concrete_ok = assert_type
+  {|myEq x y = eq x y
+
+check = myEq 1 2
+|}
+  "check" "Bool"
+
+(* A body that pins the constrained var to a concrete type infers no constraint
+   (the obligation is concrete and discharged by the post-HM pass, not lifted). *)
+let t_infer_concrete_no_constraint = assert_type
+  {|f x = eq x 1
+|}
+  "f" "Int -> Bool"
+
+(* A signature with an empty constraint context whose body needs one is rejected
+   (the context is a contract). *)
+let e_infer_signature_insufficient = assert_err
+  {|myEq : a -> a -> Bool
+myEq x y = eq x y
+|}
+
+(* A declared superinterface entails the body's constraint: `Ord a` covers the
+   `Eq a` that `eq` needs, so the signature is sufficient. *)
+let t_infer_superinterface_entails = assert_type
+  {|cmp : Ord a => a -> a -> Bool
+cmp x y = eq x y
+|}
+  "cmp" "a -> a -> Bool"
+
 (* ── Method-level constraint annotations ─────────── *)
 
 (* An interface method may declare extra constraints on locally-quantified
@@ -2013,6 +2069,60 @@ let e_field_assign_as_last = assert_err
   do
     let mut p = Person { name = "Alice", age = 30 }
     p.age = 31
+|})
+
+(* ── Phase 80: multi-level field assignment ─────── *)
+
+let nested_src = {|record Inner
+  c : Int
+
+record Outer
+  b : Inner
+
+|}
+
+(* Multi-level chain a.b.c = e typechecks and infers <Mut>. *)
+let t_multi_field_assign = assert_type
+  (nested_src ^ {|go : <Mut> Outer
+go =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.b.c = 42
+  o
+|})
+  "go" "Outer"
+
+(* Read the nested field back after assigning. *)
+let t_multi_field_read_back = assert_type
+  (nested_src ^ {|go : <Mut> Int
+go =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.b.c = 99
+  o.b.c
+|})
+  "go" "Int"
+
+(* Unknown field at an intermediate level → error. *)
+let e_multi_field_unknown_mid = assert_err
+  (nested_src ^ {|bad =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.nosuch.c = 42
+  o
+|})
+
+(* Unknown field at the leaf level → error. *)
+let e_multi_field_unknown_leaf = assert_err
+  (nested_src ^ {|bad =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.b.nosuch = 42
+  o
+|})
+
+(* Type mismatch at the leaf: c is Int, assign String. *)
+let e_multi_field_type_mismatch = assert_err
+  (nested_src ^ {|bad =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.b.c = "wrong"
+  o
 |})
 
 (* ── Extern declarations ────────────────────────── *)
@@ -3494,6 +3604,14 @@ let () =
       test_case "call site impl found"         `Quick t_constraint_annot_call_site_ok;
       test_case "err: call site no impl"       `Quick e_constraint_annot_call_no_impl;
     ];
+    "constraint inference (Phase 83)", [
+      test_case "wrapper propagates"           `Quick t_infer_wrapper_propagates;
+      test_case "wrapper transitive"           `Quick t_infer_wrapper_transitive;
+      test_case "wrapper concrete ok"          `Quick t_infer_wrapper_concrete_ok;
+      test_case "concrete pins, no constraint" `Quick t_infer_concrete_no_constraint;
+      test_case "err: insufficient signature"  `Quick e_infer_signature_insufficient;
+      test_case "superinterface entails"       `Quick t_infer_superinterface_entails;
+    ];
     "method-level constraints", [
       test_case "extra constraint resolves"    `Quick t_method_extra_constraint;
       test_case "default body uses constraint" `Quick t_method_extra_constraint_default;
@@ -3560,6 +3678,11 @@ let () =
       test_case "err: unknown field"              `Quick e_field_assign_unknown_field;
       test_case "err: type mismatch"              `Quick e_field_assign_type_mismatch;
       test_case "err: field assign as last stmt"  `Quick e_field_assign_as_last;
+      test_case "multi-level field assign"        `Quick t_multi_field_assign;
+      test_case "multi-level read back"           `Quick t_multi_field_read_back;
+      test_case "err: unknown mid field"          `Quick e_multi_field_unknown_mid;
+      test_case "err: unknown leaf field"         `Quick e_multi_field_unknown_leaf;
+      test_case "err: multi-level type mismatch"  `Quick e_multi_field_type_mismatch;
     ];
     "extern declarations", [
       test_case "concrete type"             `Quick t_extern_concrete;

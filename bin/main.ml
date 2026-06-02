@@ -33,8 +33,8 @@ let print_usage () =
 Usage:
   medaka                    Start the REPL.
   medaka repl               Start the REPL.
-  medaka run <file.mdk>     Type-check and run a program.
-  medaka check <file.mdk>   Type-check without running.
+  medaka run [--release] <file.mdk>   Type-check and run a program.
+  medaka check [--json] <file.mdk>    Type-check without running.
   medaka test [file.mdk]    Run doctests + prop tests.
   medaka bench [file.mdk]   Run bench declarations.
   medaka fmt [paths...]     Format .mdk files in place (or --check).
@@ -363,6 +363,18 @@ let () =
     ) members;
     !all_ok
   in
+  (* Phase 82: extract check/run flags and rebuild a flag-free argv so the
+     positional parsing below finds the file regardless of flag position.
+     `--release` is accepted but currently a no-op alias for `run` (no optimizer
+     yet); `--json` selects machine-readable diagnostics for `check`. *)
+  let raw_args = Array.to_list argv in
+  let json_mode = List.mem "--json" raw_args in
+  let _release  = List.mem "--release" raw_args in
+  let argv =
+    Array.of_list
+      (List.filter (fun s -> s <> "--json" && s <> "--release") raw_args)
+  in
+  let argc = Array.length argv in
   let mode, filename =
     if has_sub "check" && argc >= 3 then `Check, argv.(2)
     else if has_sub "run" && argc >= 3 then `Run, argv.(2)
@@ -390,6 +402,23 @@ cd into a member or specify a file\n"; exit 1
 
   (* Single-file fast path: no use declarations → bypass loader *)
   let source = read_file filename in
+
+  (* Phase 82: `check --json` — accumulate every diagnostic (not exit-on-first)
+     and emit the LSP diagnostic shape as JSON on stdout.  Single-file analysis
+     only (Diagnostics.analyze does not invoke the multi-file loader); a file
+     with `use` decls is analysed as a single unit. *)
+  (if mode = `Check && json_mode then begin
+    let diags = Medaka_lib.Diagnostics.analyze ~file:filename ~source in
+    print_endline (Medaka_lib.Lsp_server.diagnostics_to_json ~file:filename diags);
+    let has_err =
+      List.exists
+        (fun (d : Medaka_lib.Diagnostics.diagnostic) ->
+           d.severity = Medaka_lib.Diagnostics.Error)
+        diags
+    in
+    exit (if has_err then 1 else 0)
+  end);
+
   let lexbuf = Lexing.from_string source in
   lexbuf.Lexing.lex_curr_p <- { lexbuf.Lexing.lex_curr_p with Lexing.pos_fname = filename };
   Medaka_lib.Lexer.reset ();

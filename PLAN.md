@@ -3848,15 +3848,30 @@ one `e` and under-reports a *mix* of differing concrete callback effects.
 Ambient unification is an over-approximation at control-flow joins (sound for
 "may-perform"). `ap`/`mapErr` left unannotated (edge cases).
 
-### Phase 80: Multi-level field assignment `a.b.c = e` ⏳ TODO
+### Phase 80: Multi-level field assignment `a.b.c = e` ✅ DONE
 
-`DoFieldAssign` supports single-level `x.field = e` for `let mut` records and
-`Ref .value` (Phase 28). Multi-level chains (`a.b.c = e`) are unsupported.
+`DoFieldAssign` now carries a field **path** (`ident * ident list * expr`) and
+supports multi-level chains `a.b.c = e`, not just single-level `x.field = e`
+(Phase 28). The base must still be a bare `let mut` variable; only the path
+deepens.
 
-Scope: extend the field-assignment path (parser → typecheck → eval) to walk a
-chain of field accesses and rebuild/mutate the nested structure; decide
-copy-on-update vs in-place semantics consistent with the existing
-`Ref`/`let mut` model. Skill: **add-language-feature**.
+Shipped across the pipeline:
+- **Parser** — a `flatten_field_path` helper turns the `EFieldAccess` chain on
+  the LHS into `(base_var, [f1; …; fn])`; grammar productions unchanged (still
+  `expr EQUAL expr`), so the conflict count holds.
+- **Typecheck** — the per-level field-type lookup (`Ref .value` + record-field
+  resolution) is extracted into `field_type_of` and `List.fold_left` over the
+  path; the leaf type unifies with the RHS. `<Mut>` is performed as before, so
+  multi-level assignment still propagates the effect to callers.
+- **Eval** — a shared recursive `update_path` walks the chain: records rebuild
+  copy-on-update, a `Ref .value` step mutates the cell in place (shared
+  identity, so surrounding records need no re-shadow). Non-final statements
+  shadow the base var with the rebuilt top; a final-statement assignment runs
+  the walk for its side effects (in-place `Ref` mutations persist) and discards
+  the rebuilt record. Wired into both `eval_block` and `eval_do`.
+
+Tree-sitter needed no change — `field_access` is already recursive on its
+object, so the LHS depth was never constrained. Skill: **add-language-feature**.
 
 ### Phase 81: DoBind pattern & final-statement grammar limitations ✅ DONE
 
@@ -3884,32 +3899,80 @@ Residual (documented, not a regression): `_` after an operator in a binding LHS
 parses as a left section, not a wildcard (`(x :: _) <- m` — use a named tail);
 inherent to the expression-first parse and shared by all binding LHSs.
 
-### Phase 82: CLI surface completion ⏳ TODO
+### Phase 82: CLI surface completion ⏳ TODO (partial)
 
 The design spec lists `new build run check test fmt lsp doc add remove update`;
 today `check / run / test / repl / lsp / fmt / new` exist. Non-stdlib,
 non-package-manager gaps:
 
-- `medaka build` — typecheck + cache without running.
-- `medaka run --release` — flag plumbing (no optimizer yet; can alias `run`).
-- `medaka check --json` — machine-readable diagnostics (reuse the LSP
-  diagnostic shape).
-- `medaka doc` — extract doc comments / signatures to a doc artifact.
+- `medaka run --release` — ✅ flag plumbing. Accepted and parsed; currently a
+  transparent alias for `run` (no optimizer yet).
+- `medaka check --json` — ✅ machine-readable diagnostics, reusing the LSP
+  diagnostic shape via `Lsp_server.diagnostics_to_json`. Routes through
+  `Diagnostics.analyze` so every diagnostic is reported (not exit-on-first).
+  Output: `{"file": …, "diagnostics": [ <LSP Diagnostic> … ]}` on stdout; exit
+  1 iff any `Error`-severity diagnostic. **Single-file only** — `analyze` does
+  not invoke the multi-file loader (see §5); multi-file `--json` is a follow-up.
+- `medaka build` — ⏳ TODO. Split out: "typecheck + cache" has no honest
+  implementation yet — there is no artifact cache or AST/typed-IR serialization
+  format in the tree. Needs its own design before it's more than an alias of
+  `check`.
+- `medaka doc` — ⏳ TODO. Split out: doc comments are not attached to AST nodes
+  (a parallel `Lexer.take_comments()` stream matched by position, like
+  `doctest.ml`), and there is no pretty-printer for a typechecker `scheme`.
+  Needs a comment→decl matcher + signature renderer + an output-format decision.
 
 (`add`/`remove`/`update` need a package manager — out of scope until one
-exists.) Skill: none specific; lands in `bin/main.ml` + `diagnostics.ml`.
+exists.) Skill: none specific; `--json`/`--release` landed in `bin/main.ml` +
+`lib/lsp_server.ml`.
 
-### Phase 83: Constraint inference for constrained functions ⏳ TODO
+### Phase 83: Constraint inference for constrained functions ✅ DONE
 
 Phase 20 added constraint *syntax* and call-site obligation checking, but not
-constraint **inference**: a caller that uses a constrained function
-polymorphically must re-annotate the constraint itself (e.g. a wrapper over
-`eq` must carry `Eq a =>` explicitly or it fails to type-check).
+constraint **inference**: a caller that used a constrained function
+polymorphically had to re-annotate the constraint itself (e.g. a wrapper over
+`eq` had to carry `Eq a =>` explicitly or it lost the constraint silently —
+`myEq x y = eq x y` type-checked but `myEq Blob Blob` slipped past the checker).
 
-Scope: propagate inferred constraints from a binding's body into its
-generalized scheme so wrappers acquire the needed constraints automatically;
-keep coherent with the Phase 64/65 `requires`-discharge machinery.
-Skill: **harden-typechecker**.
+Done in `lib/typecheck.ml`, all in `process_letrec_group`:
+
+- **Harvest.** Snapshot `constraint_obligations` *and* `method_usages` around the
+  Pass-B body inference; the entries added are the constraints the bodies impose
+  (a direct method call like `eq` lands in `method_usages` carrying the interface
+  + its instantiated param vars; a call to another constrained function lands in
+  `constraint_obligations`).
+- **Attribute.** After `gen_restricted`, an obligation/usage whose discriminating
+  var lands in the binding's generalized `bound_ids` is polymorphic in that
+  scheme; concrete ones are left to the post-HM obligation pass.
+- **Unsignatured binding** → register the inferred constraints (super-expanded)
+  in a **new** `env.inferred_constraints` table.  The EVar call-site recorder
+  consults it so a polymorphic wrapper's missing-impl error fires and propagates
+  transitively.  It is **deliberately invisible to `find_enclosing_dict` /
+  `dict_pass`**: the marker runs before inference and never wraps these calls in
+  `EDictApp`, so routing an inner method to a `$dict_<fn>_<slot>` param that
+  dict_pass never creates would crash at eval.  Inner methods in such bodies
+  dispatch by runtime arg tag instead — correct for argument-dispatched wrappers
+  (the realistic case).  Exported/imported across modules alongside
+  `te_fun_constraints` for obligation-checking only.
+- **Signatured binding with an insufficient context** → a new
+  `UnsatisfiedConstraint` `type_error`: the body's required constraints must be
+  entailed by the declared set (incl. superinterfaces via `expand_supers`), else
+  reject at the offending call site (`fail_at`).  (A prelude-name collision in a
+  test — redefining `identity : a -> a` — surfaced this correctly and was fixed
+  by renaming the test fixture.)
+
+Tests: `test/test_typecheck.ml` "constraint inference (Phase 83)" (propagation,
+transitivity, concrete-ok, concrete-pins-no-constraint, insufficient-signature,
+superinterface-entailment) and `test/test_eval.ml` "inferred wrapper true/false"
+(runtime arg-tag dispatch end-to-end).
+
+**Residual / deferred follow-up:** full runtime dict-threading *into* an inferred
+body (so it works in return-position / higher-order dispatch) would require
+re-running the marker after typecheck against the final constraint tables — a
+pipeline restructure touching the single-file / multi-module / REPL drivers.
+Likewise self-/mutually-recursive *unsignatured* wrappers under-infer their own
+recursive-call routing (Pass A only pre-registers from explicit signatures).
+Both are deferred, mirroring the Phase 69.x → 74 layering.
 
 ---
 
@@ -3943,8 +4006,9 @@ These aren't blockers, but a less-careful change could trip over them:
   no syntax for reassigning a `let mut` binding outside a do-block. The `Ref`
   type is fully type-checked; actual mutation happens at runtime (Phase 10 ✅).
 - `r.value = expr` field-assignment is supported via `DoFieldAssign` in do-blocks
-  (Phase 28 ✅). Multi-level chains (`a.b.c = e`) are not yet supported — only
-  single-level `x.field = e` where `x` is a `let mut` binding. → Phase 80.
+  (Phase 28 ✅). Multi-level chains (`a.b.c = e`) are supported too (Phase 80 ✅):
+  `DoFieldAssign` carries a field path and `update_path` rebuilds/mutates the
+  nested structure. The base must still be a `let mut` binding.
 - `let f x = ...` is implicitly self-recursive (Phase 27 ✅). `let x = expr`
   (no arguments) is still non-recursive. `where`-helpers use `ELetGroup` for
   mutual recursion (Phase 25 ✅).
@@ -3983,6 +4047,10 @@ These aren't blockers, but a less-careful change could trip over them:
 - Module system: `use` declarations parse but no cross-file resolution
   exists. Backend roadmap is single-file only; multi-file support is a
   separate later phase.
+- `medaka check --json` (Phase 82) runs `Diagnostics.analyze`, which is
+  single-file — it does not invoke the multi-file `Loader`. A file with `use`
+  decls is analysed as a single unit, so cross-module names may resolve-error
+  in the JSON output. Multi-file `--json` is a follow-up.
 - Standard library: nothing is implemented in Medaka yet. Once the
   interpreter runs (Phase 10–11) the existing collection types (`List`,
   `Array`, `Map`, etc.) can begin to migrate from compiler-side primitives
@@ -4059,7 +4127,7 @@ a phase in §6 unless noted.
   inert — deleting it would not break anything. To make the interface load-bearing,
   `<-` should desugar to `andThen` calls (Haskell style) so the `Thenable`
   constraint is actually checked. Scheduled with Phase 19 stdlib/typeclass wiring.
-- **Constraint syntax in function type signatures.** ✅ Phase 20 done. `f : Eq a => a -> a -> Bool` now parses, round-trips, and type-checks. Constraint obligations are emitted at call sites and verified post-HM. Known limitation: constraint inference is not implemented — callers that use a constrained function polymorphically must also carry the explicit constraint annotation. → Phase 83.
+- **Constraint syntax in function type signatures.** ✅ Phase 20 done. `f : Eq a => a -> a -> Bool` now parses, round-trips, and type-checks. Constraint obligations are emitted at call sites and verified post-HM. Constraint *inference* (✅ Phase 83): an unsignatured binding now infers the constraints its body requires (e.g. `myEq x y = eq x y` acquires `Eq a` automatically and `myEq Blob Blob` is rejected), and an explicit signature whose context is insufficient for its body is rejected with `UnsatisfiedConstraint`. Inferred constraints drive call-site obligation checking only; runtime dictionary-threading *into* an inferred body still uses arg-tag dispatch (correct for argument-dispatched wrappers) — full threading is a deferred follow-up requiring a post-typecheck marker re-run.
 
 ### Additional gaps surfaced during the 2026-05-26 audit
 

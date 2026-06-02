@@ -110,6 +110,10 @@ type module_type_exports = {
     (* Phase 69.x-e: public interface methods' own method-level constraints
        (super-expanded), so importers can stamp res_method_dicts at call sites
        and dict_pass gives the method bodies matching dict parameters. *)
+  te_inferred_constraints : (ident * (ident * int list) list) list;
+    (* Phase 83: public unsignatured functions' *inferred* constraints, so an
+       importer's missing-impl check still fires.  Obligation-checking only (no
+       dict routing) — see the inferred_constraints env field. *)
 }
 
 (* ── Effects ─────────────────────────────────────── *)
@@ -144,6 +148,9 @@ type type_error =
   | MissingSuperImpl   of ident * ident * mono list  (* iface_name, super_iface, concrete super args *)
   | MissingImplRequirement of ident * mono list * ident * mono list
     (* selected iface + its concrete args, required iface + its concrete args *)
+  | UnsatisfiedConstraint of ident * ident
+    (* Phase 83: binding name + interface its body needs on a polymorphic value
+       that its declared signature (and supers) does not provide *)
   | ImmutableAssignment of ident                   (* assignment to a non-mut binding *)
   | MutLetInDo          of ident                   (* let mut inside a do block (only allowed in EBlock) *)
   | MutLetRequiresBlock of ident                   (* let mut in inline `let ... in ...` position; needs a block *)
@@ -721,6 +728,10 @@ let pp_error = function
     Printf.sprintf
       "impl %s %s requires '%s %s', which has no impl"
       iface s1 req_iface s2
+  | UnsatisfiedConstraint (name, iface) ->
+    Printf.sprintf
+      "'%s' uses interface %s on a polymorphic value but its type signature does not require it — add '%s a =>' to the signature, or drop the signature to let the constraint be inferred"
+      name iface iface
   | ImmutableAssignment x ->
     Printf.sprintf "Assignment to immutable binding '%s' (declare with 'let mut')" x
   | MutLetInDo x ->
@@ -772,6 +783,16 @@ type env = {
   method_usages : (ident * ident * tyvar_info ref list * string option * (ident * mono list) list * Ast.resolved option ref option * Ast.loc option) list ref;  (* (method, iface, param_var_refs, impl_hint, method_dict_args, method_occurrence_ref, call_site_loc) *)
   fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
     (* fn_name → [(iface_name, [bound_var_ids_in_scheme])] *)
+  inferred_constraints : (ident, (ident * int list) list) Hashtbl.t;
+    (* Phase 83: same shape as fun_constraints, but for constraints *inferred*
+       from an unsignatured binding's body rather than declared via `=>`.  These
+       drive only call-site obligation recording (so a polymorphic wrapper's
+       missing-impl error fires and propagates transitively).  They are
+       DELIBERATELY invisible to find_enclosing_dict / dict_pass: the marker runs
+       before inference and never wraps these calls in EDictApp, so routing an
+       inner method to a `$dict_<fn>_<slot>` param dict_pass never creates would
+       crash at eval.  Inner methods in such bodies dispatch by runtime arg tag
+       instead — full dict-threading is a deferred follow-up. *)
   method_constraints : (ident, (ident * int list) list) Hashtbl.t;
     (* Phase 69.x-e: interface-method name → its *own* method-level constraints
        (e.g. foldMap → [(Monoid,[m_id]); (Semigroup,[m_id])]), super-expanded,
@@ -808,6 +829,7 @@ let empty_env () = {
   impls         = ref [];
   method_usages = ref [];
   fun_constraints        = Hashtbl.create 8;
+  inferred_constraints   = Hashtbl.create 8;
   method_constraints     = Hashtbl.create 8;
   method_dict_routes     = Hashtbl.create 8;
   constraint_obligations = ref [];
@@ -1279,7 +1301,24 @@ let rec infer env = function
         current_dict_ref := None;
         let (sub, mono) = instantiate_raw scheme in
         (match Hashtbl.find_opt env.fun_constraints x with
-         | None -> ()
+         | None ->
+           (* Phase 83: an inferred-constrained callee records its obligations so
+              the caller's missing-impl check fires (and propagates), but never a
+              dict_app_usage — these have no dict route (see inferred_constraints). *)
+           (match Hashtbl.find_opt env.inferred_constraints x with
+            | None -> ()
+            | Some constraints ->
+              let resolve_arg id =
+                match List.assoc_opt id sub with
+                | Some _ as r -> r
+                | None -> find_tvar_in_mono mono id
+              in
+              List.iter (fun (iface, var_ids) ->
+                let args = List.filter_map resolve_arg var_ids in
+                if args <> [] then
+                  env.constraint_obligations :=
+                    (iface, args, !current_loc) :: !(env.constraint_obligations)
+              ) constraints)
          | Some constraints ->
            (* Map a constraint's tyvar id to its type at this occurrence.  For a
               normal (generalized) callee that's the fresh instantiation var from
@@ -1636,22 +1675,15 @@ let rec infer env = function
         (* Reassigning a `let mut` binding is a mutation. *)
         perform_effect cur_effect (closed_row ["Mut"]);
         type_block env rest
-      | DoFieldAssign (x, field, e) :: rest ->
+      | DoFieldAssign (x, fields, e) :: rest ->
         if not (StringSet.mem x env.mut_vars) then
           fail (ImmutableAssignment x);
-        let tx = instantiate (lookup_var env x) in
-        let field_t =
-          match normalize tx with
+        (* Resolve one field off a record / Ref type, returning the field's type.
+           Folded over the path so `a.b.c` walks record→record→field. *)
+        let field_type_of t field =
+          match normalize t with
           | TApp (TCon "Ref", inner) when field = "value" -> inner
-          | TCon r ->
-            (match Hashtbl.find_opt env.records r with
-             | None -> fail (UnknownRecord r)
-             | Some info ->
-               let (_result_t, field_types) = instantiate_record info in
-               (match List.assoc_opt field field_types with
-                | None -> fail (UnknownField (field, r))
-                | Some ft -> ft))
-          | TApp (TCon r, _) ->
+          | TCon r | TApp (TCon r, _) ->
             (match Hashtbl.find_opt env.records r with
              | None -> fail (UnknownRecord r)
              | Some info ->
@@ -1661,6 +1693,8 @@ let rec infer env = function
                 | Some ft -> ft))
           | _ -> fail (NotARecord x)
         in
+        let tx = instantiate (lookup_var env x) in
+        let field_t = List.fold_left field_type_of tx fields in
         let te = infer env e in
         unify field_t te;
         (* Mutating a record field / Ref cell is a mutation. *)
@@ -1753,8 +1787,8 @@ let rec infer env = function
         type_stmts env' rest
       | DoAssign (x, _) :: _ ->
         fail (AssignInDo x)
-      | DoFieldAssign (x, field, _) :: _ ->
-        fail (FieldAssignInDo (x, field))
+      | DoFieldAssign (x, fields, _) :: _ ->
+        fail (FieldAssignInDo (x, String.concat "." fields))
       | DoLetElse (pat, e, alt) :: rest ->
         let te = infer env e in
         let tp, bindings = type_pat env pat in
@@ -2166,6 +2200,19 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     (name, cs_monos, sig_t_opt, sig_opt, clauses)
   ) members in
   (* Pass B: infer the bodies now that every member's constraints are visible. *)
+  (* Phase 83: snapshot the obligation *and* method-usage accumulators so the
+     entries prepended while inferring this group's bodies can be harvested below.
+     A constraint the body imposes comes from two sources: a call to another
+     constrained function (constraint_obligations) or a direct interface-method
+     call like `eq`/`show` (method_usages, carrying the interface + its
+     instantiated param vars).  When the discriminating var lands in a binding's
+     generalized [bound_ids] the constraint is polymorphic in that scheme —
+     inferred for an unsignatured binding, and checked for sufficiency against a
+     declared signature. *)
+  let obl_ref = (!env_ref).constraint_obligations in
+  let oblig_n0 = List.length !obl_ref in
+  let mu_ref = (!env_ref).method_usages in
+  let mu_n0 = List.length !mu_ref in
   let cs_monos_list = List.map (fun (name, cs_monos, sig_t_opt, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
     if is_letrec then
@@ -2252,41 +2299,93 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
        is not over-generalized. *)
     let is_val = is_letrec
       || List.for_all (fun (pats, rhs) -> pats <> [] || is_nonexpansive rhs) clauses in
-    (name, cs_monos, is_val)
+    (name, cs_monos, is_val, sig_opt <> None)
   ) prepared in
   exit_level ();
-  List.map (fun (name, cs_monos, is_val) ->
+  (* Phase 83: the obligations / method usages this group's bodies generated
+     (prepended after the Pass-B snapshot above; new entries are at the front). *)
+  let rec take n = function
+    | x :: xs when n > 0 -> x :: take (n - 1) xs
+    | _ -> []
+  in
+  let added_obligs  = take (List.length !obl_ref - oblig_n0) !obl_ref in
+  let added_methods = take (List.length !mu_ref - mu_n0) !mu_ref in
+  List.map (fun (name, cs_monos, is_val, has_sig) ->
     let placeholder = List.assoc name placeholders in
     let scheme = gen_restricted is_val placeholder in
     (match scheme with
-     | Forall (bound_ids, _, _) when cs_monos <> [] ->
+     | Forall (bound_ids, _, _) ->
        let extract_id m = match normalize m with
          | TVar {contents = Unbound (id, _)} when List.mem id bound_ids -> Some id
          | _ -> None
        in
-       let cs = List.filter_map (fun (iface, arg_monos) ->
-         let ids = List.filter_map extract_id arg_monos in
-         if ids <> [] then Some (iface, ids) else None
-       ) cs_monos in
-       (* Phase 69.x-c: append a dictionary slot for each *direct* superinterface
-          of a declared constraint (`when : Thenable m =>` body calls `pure`, an
-          Applicative method — Thenable requires Applicative).  Making the super a
-          real fun_constraints entry means find_enclosing_dict resolves the inner
-          method to an honest super dict, and dict_pass / the EDictApp recorder
-          give it a matching slot — all three read this same list.  Appended after
-          the declared constraints so existing slot indices are unchanged; the
-          superinterface impl is guaranteed to exist by the Phase-64 obligation
-          check, so callers can always supply it.  Dead slots (super not used in
-          the body) are harmless. *)
-       let cs = expand_supers (!env_ref).interfaces cs in
-       if cs <> [] then
-         Hashtbl.replace (!env_ref).fun_constraints name cs
-       else
-         (* Constraints didn't survive generalization (e.g. the var was pinned by
-            an outer monomorphic scope): undo Pass A's pre-registration so this
-            function gets no phantom dict parameter. *)
-         Hashtbl.remove (!env_ref).fun_constraints name
-     | _ -> ());
+       (* Constraints the body actually requires on *this* scheme's own
+          quantified vars (Phase 83): an obligation/method-usage whose
+          discriminating var lands in bound_ids is polymorphic here; concrete
+          ones (no overlap) are left to the post-HM obligation/method passes. *)
+       let body_cs =
+         List.filter_map (fun (iface, mono_args, loc) ->
+           let ids = List.filter_map extract_id mono_args in
+           if ids = [] then None else Some (iface, ids, loc)
+         ) added_obligs
+         @ List.filter_map (fun (_m, iface_name, param_vars, _h, _mda, _mr, loc) ->
+             let ids = List.filter_map (fun r -> extract_id (TVar r)) param_vars in
+             if ids = [] then None else Some (iface_name, ids, loc)
+           ) added_methods
+       in
+       (* Declared constraints (explicit signature) surviving generalization. *)
+       let declared_cs =
+         List.filter_map (fun (iface, arg_monos) ->
+           let ids = List.filter_map extract_id arg_monos in
+           if ids <> [] then Some (iface, ids) else None
+         ) cs_monos
+       in
+       (* Phase 69.x-c: [expand_supers] appends a dictionary slot for each direct
+          superinterface of a constraint (`when : Thenable m =>` body calls
+          `pure`, an Applicative method — Thenable requires Applicative).  Making
+          the super a real fun_constraints entry means find_enclosing_dict
+          resolves the inner method to an honest super dict, and dict_pass / the
+          EDictApp recorder give it a matching slot — all three read this same
+          list.  The superinterface impl is guaranteed to exist by the Phase-64
+          obligation check, so callers can always supply it. *)
+       if has_sig then begin
+         (* Phase 83: the signature is authoritative, but must be *sufficient*
+            for the body — each required constraint must be entailed by the
+            declared set (incl. superinterfaces). *)
+         let declared_closed = expand_supers (!env_ref).interfaces declared_cs in
+         List.iter (fun (iface, ids, loc) ->
+           let entailed =
+             List.exists (fun (di, dids) ->
+               di = iface && List.exists (fun id -> List.mem id dids) ids)
+               declared_closed
+           in
+           if not entailed then fail_at loc (UnsatisfiedConstraint (name, iface))
+         ) body_cs;
+         (* Declared constraints drive dict passing — registered in
+            fun_constraints (the marker already wrapped `=>`-signatured calls). *)
+         if declared_closed <> [] then
+           Hashtbl.replace (!env_ref).fun_constraints name declared_closed
+         else
+           (* No surviving constraints (e.g. the var was pinned by an outer
+              monomorphic scope): undo Pass A's pre-registration so this function
+              gets no phantom dict parameter. *)
+           Hashtbl.remove (!env_ref).fun_constraints name
+       end else begin
+         (* No signature: infer the body's required constraints (deduped on
+            (iface, ids), since a constraint is re-recorded per call site) and
+            register them in inferred_constraints — obligation checking only, no
+            dict routing (see the inferred_constraints field comment). *)
+         let inferred =
+           List.fold_left (fun acc (iface, ids, _loc) ->
+             if List.mem (iface, ids) acc then acc else acc @ [(iface, ids)]
+           ) [] body_cs
+         in
+         let inferred = expand_supers (!env_ref).interfaces inferred in
+         if inferred <> [] then
+           Hashtbl.replace (!env_ref).inferred_constraints name inferred
+         else
+           Hashtbl.remove (!env_ref).inferred_constraints name
+       end);
     env_ref := extend_var !env_ref name scheme;
     (name, scheme)
   ) cs_monos_list
@@ -3499,6 +3598,10 @@ let typecheck_module
     (* Phase 69.x-e: import method-level constraints likewise. *)
     List.iter (fun (n, cs) -> Hashtbl.replace env.method_constraints n cs)
       te.te_method_constraints;
+    (* Phase 83: import inferred constraints so occurrences here record
+       obligations (obligation-checking only, no dict routing). *)
+    List.iter (fun (n, cs) -> Hashtbl.replace env.inferred_constraints n cs)
+      te.te_inferred_constraints;
   ) known_modules;
 
   (* Build the set of module-imported schemes from DUse decls *)
@@ -3702,6 +3805,12 @@ let typecheck_module
         match Hashtbl.find_opt (!env).method_constraints n with
         | Some cs -> Some (n, cs)
         | None -> None) pub_schemes;
+    (* Phase 83: export inferred constraints of public unsignatured functions. *)
+    te_inferred_constraints =
+      List.filter_map (fun (n, _) ->
+        match Hashtbl.find_opt (!env).inferred_constraints n with
+        | Some cs -> Some (n, cs)
+        | None -> None) pub_schemes;
   } in
   (te, all_schemes, warnings)
 
@@ -3721,6 +3830,7 @@ let copy_tc_env (e : env) : env = {
   impls         = ref !(e.impls);
   method_usages = ref !(e.method_usages);
   fun_constraints        = Hashtbl.copy e.fun_constraints;
+  inferred_constraints   = Hashtbl.copy e.inferred_constraints;
   method_constraints     = Hashtbl.copy e.method_constraints;
   method_dict_routes     = Hashtbl.copy e.method_dict_routes;
   constraint_obligations = ref !(e.constraint_obligations);

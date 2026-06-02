@@ -961,6 +961,17 @@ let t_dispatch_option_none = assert_val (dispatch_iface ^ {|
 r = describe (None)
 |}) "r" (VString "none")
 
+(* Phase 83: an unsignatured wrapper over the constrained method `eq` acquires
+   the `Eq` constraint by inference and runs correctly end-to-end (the inner
+   `eq` dispatches by runtime arg tag). *)
+let t_infer_wrapper_eval_true = assert_val_typed {|myEq x y = eq x y
+r = myEq 3 3
+|} "r" (VBool true)
+
+let t_infer_wrapper_eval_false = assert_val_typed {|myEq x y = eq x y
+r = myEq 3 4
+|} "r" (VBool false)
+
 let t_dispatch_list_empty = assert_val (dispatch_iface ^ {|
 r = describe ([])
 |}) "r" (VString "empty-list")
@@ -1075,6 +1086,38 @@ let t_field_assign_ref_value = assert_val
   r.value
 |}
   "result" (VInt 42)
+
+(* ── Phase 80: multi-level field assignment ─────────────────────────────── *)
+
+let nested_src = {|record Inner
+  c : Int
+
+record Outer
+  b : Inner
+
+|}
+
+(* Assign a nested field two levels deep and read it back. *)
+let t_multi_field_assign = assert_val
+  (nested_src ^ {|result =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.b.c = 42
+  o.b.c
+|})
+  "result" (VInt 42)
+
+(* An intermediate Ref level: the in-place cell mutation persists even though
+   the surrounding record is rebuilt copy-on-update. *)
+let t_multi_field_ref_mid = assert_val
+  {|record Box
+  cell : Ref Int
+
+result =
+  let mut box = Box { cell = Ref 0 }
+  box.cell.value = 7
+  box.cell.value
+|}
+  "result" (VInt 7)
 
 (* ── Record pattern tests (Phase 31) ────────────────────────────────────── *)
 
@@ -1655,6 +1698,8 @@ let () =
       test_case "option Some"       `Quick t_dispatch_option_some;
       test_case "option None"       `Quick t_dispatch_option_none;
       test_case "list empty"        `Quick t_dispatch_list_empty;
+      test_case "inferred wrapper true"  `Quick t_infer_wrapper_eval_true;
+      test_case "inferred wrapper false" `Quick t_infer_wrapper_eval_false;
     ];
     "mixed-Foldable dispatch", [
       test_case "find on List"      `Quick t_find_on_list_mixed;
@@ -1693,6 +1738,8 @@ let () =
       test_case "record field update"         `Quick t_field_assign_record;
       test_case "multiple field updates"      `Quick t_field_assign_multi;
       test_case "Ref .value assign"           `Quick t_field_assign_ref_value;
+      test_case "multi-level field assign"    `Quick t_multi_field_assign;
+      test_case "multi-level Ref mid"          `Quick t_multi_field_ref_mid;
     ];
     "record patterns (Phase 31)", [
       test_case "pun binds field"            `Quick t_rec_pat_pun;

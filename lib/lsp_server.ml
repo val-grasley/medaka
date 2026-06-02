@@ -115,6 +115,15 @@ let lsp_diag_of (d : Diagnostics.diagnostic) : Diagnostic.t =
     ~source:"medaka"
     ()
 
+(* Render a diagnostic list as the LSP publish shape, for `medaka check --json`.
+   Each element is the exact `Diagnostic` shape the LSP server publishes (range
+   with 0-based start/end positions, integer severity, message, source), wrapped
+   in a top-level object carrying the file path. *)
+let diagnostics_to_json ~(file : string) (diags : Diagnostics.diagnostic list) : string =
+  let arr = List.map (fun d -> Diagnostic.yojson_of_t (lsp_diag_of d)) diags in
+  let obj = `Assoc [ ("file", `String file); ("diagnostics", `List arr) ] in
+  Yojson.Safe.to_string obj
+
 let publish_for_uri (uri : DocumentUri.t) (diags : Diagnostics.diagnostic list) =
   let params = PublishDiagnosticsParams.create
     ~diagnostics:(List.map lsp_diag_of diags) ~uri ()
