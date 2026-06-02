@@ -426,28 +426,28 @@ main = println (name Green)
 |}
   "green\n"
 
-(* ── Multiple prints in a do-block ───────────────────────────────────────── *)
+(* ── Multiple prints in a bare sequential block ──────────────────────────────
+   Phase 99: imperative IO sequencing belongs in a bare indented block (EBlock),
+   not a `do` block (`do` is now pure monadic sugar lowered to andThen/pure). *)
 
 let t_multi_print = assert_output
   {|main : <IO> Unit
 main =
-  do
-    println "one"
-    println "two"
-    println "three"
+  println "one"
+  println "two"
+  println "three"
 |}
   "one\ntwo\nthree\n"
 
-(* ── let mut + DoAssign reassignment ─────────────────────────────────────── *)
+(* ── let mut + reassignment in a bare sequential block ──────────────────────── *)
 
 let t_let_mut = assert_output
   {|main : <IO> Unit
 main =
-  do
-    let mut x = 0
-    x = x + 1
-    x = x + 1
-    println x
+  let mut x = 0
+  x = x + 1
+  x = x + 1
+  println x
 |}
   "2\n"
 

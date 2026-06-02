@@ -691,6 +691,95 @@ let desugar_list_comps prog =
   in
   List.map (map_decl rewrite) prog
 
+(* ── Phase 99: lower monadic do-blocks to nested andThen / pure ────────────
+   `do { x <- e; rest }`     →  `andThen e (x => lower rest)`
+   `do { e; rest }`          →  `andThen e (_ => lower rest)`  (sequences monadically:
+                                  a non-final stmt now short-circuits, e.g. None / Err)
+   `do { e }`                →  `e`
+   `do { x <- e }`           →  `andThen e (x => pure ())`     (trailing bind: m Unit)
+   `do { let p = e; rest }`  →  `let p = e in lower rest`
+   `do { let p = e else alt; rest }` → `match e; p => lower rest; _ => alt`
+
+   The emitted `andThen`/`pure` are bare EVars, so method_marker rewrites them to
+   EMethodRef and bind dispatch flows through the normal dictionary elaboration —
+   the same path as any other constrained call.  This retires eval's `eval_do` +
+   `monadic_ctors` special-casing.  Mirrors the list-comp lowering above: reuses
+   `is_refutable`, and `__fallthrough__` as the refutable-bind failure terminator
+   (surfaced as a non-exhaustive-match error at the eval boundary). *)
+
+exception Do_error of string * Ast.loc option
+
+let rec do_expr_loc = function
+  | ELoc (l, _) -> Some l
+  | EApp (f, _) -> do_expr_loc f
+  | _           -> None
+
+let do_stmt_loc = function
+  | DoBind (_, e) | DoExpr e | DoLet (_, _, e)
+  | DoAssign (_, e) | DoFieldAssign (_, _, e) | DoLetElse (_, e, _) -> do_expr_loc e
+
+(* Reject the statement forms a `do` block may not contain — they belong in a
+   bare sequential block (EBlock).  These errors used to live in the EDo
+   typecheck arm (now retired); the messages are reproduced verbatim. *)
+let check_do_wellformed stmts =
+  let bad msg s = raise (Do_error (msg, do_stmt_loc s)) in
+  (match stmts with [] -> raise (Do_error ("Empty do block", None)) | _ -> ());
+  let rec walk = function
+    | [] -> ()
+    | [last] ->
+      (match last with
+       | DoLet _         -> bad "do block cannot end with a let binding" last
+       | DoAssign _      -> bad "do block cannot end with an assignment" last
+       | DoFieldAssign _ -> bad "do block cannot end with a field assignment" last
+       | DoLetElse _     -> bad "do block cannot end with a let-else binding" last
+       | _ -> ())
+    | s :: rest ->
+      (match s with
+       | DoLet (true, pat, _) ->
+         let x = (match pat with PVar x -> x | _ -> "_") in
+         bad (Printf.sprintf "'let mut %s' is not allowed inside a `do` block; do blocks are for monadic composition. Use a bare sequential block instead." x) s
+       | DoAssign (x, _) ->
+         bad (Printf.sprintf "reassignment '%s = ...' is not allowed inside a `do` block; do blocks are for monadic composition, not mutation" x) s
+       | DoFieldAssign (x, fields, _) ->
+         bad (Printf.sprintf "field assignment '%s.%s = ...' is not allowed inside a `do` block; do blocks are for monadic composition, not mutation" x (String.concat "." fields)) s
+       | _ -> ());
+      walk rest
+  in
+  walk stmts
+
+let do_bind_fail = EApp (EVar "__fallthrough__", ELit LUnit)
+
+(* Continuation binding `pat`: a bare lambda for an irrefutable pattern, else a
+   1-arg lambda + 2-arm match whose wildcard arm fails (matching the list-comp
+   refutable-generator shape, modulo the failure terminator). *)
+let do_cont pat body =
+  if is_refutable pat then
+    ELam ([PVar "__do_x"],
+          EMatch (EVar "__do_x", [(pat, [], body); (PWild, [], do_bind_fail)]))
+  else
+    ELam ([pat], body)
+
+let rec lower_do = function
+  | [DoExpr e]              -> e
+  | [DoBind (pat, e)]       ->
+      EApp (EApp (EVar "andThen", e), do_cont pat (EApp (EVar "pure", ELit LUnit)))
+  | DoExpr e :: rest        ->
+      EApp (EApp (EVar "andThen", e), ELam ([PWild], lower_do rest))
+  | DoBind (pat, e) :: rest ->
+      EApp (EApp (EVar "andThen", e), do_cont pat (lower_do rest))
+  | DoLet (_, pat, e) :: rest ->
+      ELet (false, false, pat, e, lower_do rest)
+  | DoLetElse (pat, e, alt) :: rest ->
+      EMatch (e, [(pat, [], lower_do rest); (PWild, [], alt)])
+  | (DoAssign _ | DoFieldAssign _) :: _ | [] ->
+      assert false   (* rejected by check_do_wellformed before lowering *)
+
+let rewrite_do = function
+  | EDo (_, stmts) -> check_do_wellformed stmts; lower_do stmts
+  | e -> e
+
+let lower_do_blocks prog = List.map (map_decl rewrite_do) prog
+
 (* ── ? operator desugaring ────────────────────────────────────────────────
    `let pat = e ? in rest` rewrites to `andThen e (pat => rest)`.
    The runtime semantics fall out of `andThen`'s short-circuit on Err / None.
@@ -836,7 +925,8 @@ let desugar_program (prog : program) : program =
   let after_puns = desugar_record_puns record_names expanded in
   let after_lc   = desugar_list_comps after_puns in
   let after_q    = desugar_questions after_lc in
-  desugar_sugar after_q
+  let after_do   = lower_do_blocks after_q in
+  desugar_sugar after_do
 
 (* Desugar a standalone expression (e.g. a REPL ReplExpr).  Applies the
    passes that don't require program-level context: list-comp rewrites and
@@ -847,7 +937,8 @@ let desugar_expr (e : expr) : expr =
     | EListComp (body, quals) -> desugar_list_comp body quals
     | e -> e
   in
-  map_expr rewrite_sugar (map_expr rewrite_question_expr (map_expr rewrite_lc e))
+  map_expr rewrite_sugar
+    (map_expr rewrite_do (map_expr rewrite_question_expr (map_expr rewrite_lc e)))
 
 let desugar_repl_item (item : repl_item) : repl_item =
   match item with

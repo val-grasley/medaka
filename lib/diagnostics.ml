@@ -116,7 +116,10 @@ let analyze ~(file : string) ~(source : string) : diagnostic list =
           (Exhaust.check_guard_exhaustiveness prog)
       with e -> push_internal_error push ~file ~stage:"guard-exhaustiveness" e);
      let prog_opt =
-       try Some (Desugar.desugar_program prog) with e ->
+       try Some (Desugar.desugar_program prog) with
+       | Desugar.Do_error (msg, loc_opt) ->
+         push { severity = Error; loc = loc_or_dummy ~file loc_opt; message = msg }; None
+       | e ->
          push_internal_error push ~file ~stage:"desugar" e; None
      in
      (match prog_opt with
@@ -407,7 +410,12 @@ let analyze_project
                { severity = Warning; loc = dummy_loc ~file:fp; message = msg })
              (Exhaust.check_guard_exhaustiveness prog)
          with e -> push_module_internal_error ~file_path:fp ~stage:"guard-exhaustiveness" e);
-        try Some (mid, fp, Desugar.desugar_program prog) with e ->
+        try Some (mid, fp, Desugar.desugar_program prog) with
+        | Desugar.Do_error (msg, loc_opt) ->
+          push_into buckets fp
+            { severity = Error; loc = loc_or_dummy ~file:fp loc_opt; message = msg };
+          None
+        | e ->
           push_module_internal_error ~file_path:fp ~stage:"desugar" e;
           None
       ) modules

@@ -117,33 +117,25 @@ above, it is flagged ⭐.
 
 ### Compiler / language
 
-- **Phase 99 — lower `do` to `andThen`/`pure` (make it true sugar).** Follow-up
-  to Phase 98, which took the self-contained route: a `Thenable` *constraint* on
-  the block monad, with eval still binding `<-` at runtime via the
-  `monadic_ctors` hashtable + the `andThen` VMulti (`lib/eval.ml`'s `eval_do`).
-  The more principled approach deferred there is to **desugar `EDo` into nested
-  `andThen` / `pure` calls** so `do` is pure sugar over the interface and eval's
-  `eval_do` / `monadic_ctors` special-casing can be deleted — bind dispatch then
-  flows through the same typed dictionary elaboration (`EMethodRef`/`EDictApp`)
-  as any other constrained call, instead of an eval-time arg-tag/hashtable
-  lookup. Payoff: one dispatch path, correct routing for polymorphic
-  `Thenable m => … do …` (overlaps the Phase 83/84 `pure`-dispatch residuals),
-  and less runtime machinery.
-  - **Crux (why it's more than a `desugar.ml` edit):** for the lowered
-    `andThen`/`pure` to be dictionary-dispatched, the lowering must happen
-    **before `method_marker` + typecheck** (the marker rewrites method `EVar`s to
-    `EMethodRef` *before* typecheck; the post-typecheck `desugar.ml` stage is too
-    late). So this is a pipeline-placement change, not just a new lowering.
-  - **Semantics to audit:** today a non-final `DoExpr` (`lib/eval.ml`) evaluates
-    and *discards* its value — it does **not** sequence through `andThen`.
-    Lowering `e; rest` to `andThen e (\_ => rest)` makes sequencing genuinely
-    monadic (e.g. `None; …` short-circuits), which is *more* correct but a
-    behavior change to confirm against existing tests. Also handle `DoLet` /
-    `DoLetElse` (lower to plain `let`) and the do-block forbidden forms.
-  - Keep Phase 98's win: a `<-` over a non-`Thenable` type must still be a
-    compile-time error (it will be, since the lowered `andThen` carries the
-    `Thenable` constraint at its use site). Skill: **add-language-feature**
-    (cross-cutting: pipeline ordering + `desugar.ml` + `eval.ml`).
+- **Phase 99 — lower `do` to `andThen`/`pure` (make it true sugar). ✅ DONE.**
+  `Desugar.lower_do_blocks` (`lib/desugar.ml`) now rewrites `EDo` into nested
+  `andThen`/`pure` calls (mirroring the list-comp lowering: bare `ELam [pat]` for
+  irrefutable binds, a 2-arm `EMatch` ending in `__fallthrough__` for refutable
+  ones). It runs **after `desugar_questions`, before `method_marker` + typecheck**
+  (also threaded into `desugar_expr` for the REPL), so the emitted bare
+  `andThen`/`pure` EVars get marked to `EMethodRef`/`EDictApp` and bind dispatch
+  flows through the normal dictionary elaboration — `eval.ml`'s `eval_do` + the
+  `monadic_ctors` hashtable are deleted, and the `EDo` typecheck arm is now an
+  `InternalError` guard. The `Thenable` obligation rides the lowered `andThen`'s
+  constraint, so Phase 98's win is preserved structurally (a `<-` over a
+  non-`Thenable` type is still a compile-time error; a `pure`-only block pulls no
+  Thenable obligation). Behavior changes (intended): a non-final `DoExpr` now
+  sequences monadically (`None; …` short-circuits), and a single-statement
+  `do x` is just `x` (identity, no forced monad). Do-block well-formedness
+  (no `let mut`/assign/field-assign; no bad terminator) moved to a pre-lowering
+  scan raising `Desugar.Do_error`, caught at the driver/test `Type_error` sites.
+  Imperative IO/`let mut` sequences now use a bare indented block (`EBlock`),
+  which is untouched. Skill: **add-language-feature**.
 
 - ✅ **Phase 91 — guard gaps (done).** All three items complete:
   - (1) Fall-through (archived).

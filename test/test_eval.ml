@@ -73,6 +73,16 @@ let assert_runtime_err src name () =
       "Expected runtime error, but got: %s\n\nSource:\n%s"
       (pp_value v) src)
 
+(* Like assert_runtime_err but through the typed (desugaring) pipeline — needed
+   for do-blocks, which are lowered by desugar (the untyped `run` skips it). *)
+let assert_runtime_err_typed src name () =
+  match (try Some (run_typed src name) with Eval_error _ -> None) with
+  | None -> ()
+  | Some v ->
+    failwith (Printf.sprintf
+      "Expected runtime error, but got: %s\n\nSource:\n%s"
+      (pp_value v) src)
+
 (* ── Constants ──────────────────────────────────────────────────────────── *)
 
 let t_int    = assert_val "x = 42\n"      "x" (VInt 42)
@@ -422,6 +432,21 @@ let t_do_result_err = assert_val_typed {|r = do
   _ <- Err "oops"
   pure x
 |} "r" (VCon ("Err", [VString "oops"]))
+
+(* ── Phase 99: non-final DoExpr now sequences monadically ────────────────────
+   `do { None; pure 1 }` lowers to `andThen None (\_ => pure 1)`, so the mid-block
+   `None` short-circuits the whole block (was: evaluated and discarded). *)
+let t_do_seq_short_circuit = assert_val_typed {|r = do
+  None
+  pure 1
+|} "r" (VCon ("None", []))
+
+(* Phase 99: a refutable bind pattern that fails to match surfaces a
+   non-exhaustive-match error (lowered through __fallthrough__). *)
+let t_do_refutable_bind_fail = assert_runtime_err_typed {|r = do
+  (x :: _) <- Some []
+  pure x
+|} "r"
 
 (* ── Phase 84: polymorphic-monad do-block (`pure` routed by the caller's monad)
    An unsignatured wrapper whose monad is a type variable infers `Applicative m`;
@@ -1781,6 +1806,10 @@ let () =
     "do Result", [
       test_case "ok"  `Quick t_do_result_ok;
       test_case "err" `Quick t_do_result_err;
+    ];
+    "do sequencing (Phase 99)", [
+      test_case "non-final stmt short-circuits" `Quick t_do_seq_short_circuit;
+      test_case "refutable bind failure"        `Quick t_do_refutable_bind_fail;
     ];
     "do polymorphic monad (Phase 84)", [
       test_case "Option wrapper"        `Quick t_poly_monad_option;

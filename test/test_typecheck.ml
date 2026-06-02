@@ -22,14 +22,18 @@ let parse src =
    below), or the obligation can spuriously pass. *)
 let check src =
   try Ok (fst (check_program (Desugar.desugar_program (parse src))))
-  with Type_error (e, _) -> Error e
+  with
+  | Type_error (e, _) -> Error e
+  | Desugar.Do_error (msg, _) -> Error (Other msg)  (* Phase 99: do well-formedness *)
 
 (* Like [check] but preserves the reported location (Phase 62), so tests can
    assert that instance/constraint errors point at the call site, not a
    prelude line. *)
 let check_loc src =
   try Ok (fst (check_program (Desugar.desugar_program (parse src))))
-  with Type_error (e, loc) -> Error (e, loc)
+  with
+  | Type_error (e, loc) -> Error (e, loc)
+  | Desugar.Do_error (msg, loc) -> Error (Other msg, loc)
 
 (* assert_warns: expect at least one exhaustiveness/redundancy warning *)
 let assert_warns src () =
@@ -710,11 +714,12 @@ getZ p = p.z
 
 (* ── Do notation ───────────────────────────────────── *)
 
-(* Single DoExpr in a `do` block: a do-block ALWAYS introduces a per-block
-   monad tyvar (post split of EDo into EBlock/EDo). So `do x` types x as `m a`. *)
+(* Single DoExpr in a `do` block: Phase 99 lowers `do x` to just `x` (true
+   sugar — the final statement is the block's value, no monad forced), so
+   `f x = do x` is the identity. *)
 let t_do_single_expr = assert_type
   "f x =\n  do\n    x\n"
-  "f" "a b -> a b"
+  "f" "a -> a"
 
 (* DoBind then pure: monad is left abstract (works for any monad) *)
 let t_do_bind_pure = assert_type

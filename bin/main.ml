@@ -23,6 +23,15 @@ let show_snippet source loc_opt =
          l.Medaka_lib.Ast.line text
          (String.make l.Medaka_lib.Ast.col ' '))
 
+(* Desugar, reporting a Phase 99 do-block well-formedness error cleanly instead
+   of crashing with an uncaught exception. *)
+let desugar_or_die ?(source = "") program =
+  try Medaka_lib.Desugar.desugar_program program
+  with Medaka_lib.Desugar.Do_error (msg, loc_opt) ->
+    Printf.eprintf "%s: %s\n" (pp_loc loc_opt) msg;
+    (if source <> "" then show_snippet source loc_opt);
+    exit 1
+
 (* Check whether a program has any DUse declarations *)
 let has_use_decls prog =
   List.exists (function Medaka_lib.Ast.DUse _ -> true | _ -> false) prog
@@ -128,7 +137,7 @@ let () =
            (pos.Lexing.pos_cnum - pos.Lexing.pos_bol);
          exit 1)
     in
-    let program = Medaka_lib.Desugar.desugar_program program in
+    let program = desugar_or_die ~source program in
     let resolve_errs = Medaka_lib.Resolve.resolve_program program in
     if resolve_errs <> [] then begin
       List.iter (fun (err, loc_opt) ->
@@ -196,7 +205,7 @@ let () =
            (pos.Lexing.pos_cnum - pos.Lexing.pos_bol);
          exit 1)
     in
-    let program = Medaka_lib.Desugar.desugar_program program in
+    let program = desugar_or_die ~source program in
     let resolve_errs = Medaka_lib.Resolve.resolve_program program in
     if resolve_errs <> [] then begin
       List.iter (fun (err, loc_opt) ->
@@ -314,7 +323,7 @@ let () =
             if modules = [] then ()
             else begin
               let modules = List.map (fun (mid, fp, p) ->
-                (mid, fp, Medaka_lib.Desugar.desugar_program p)) modules in
+                (mid, fp, desugar_or_die p)) modules in
               let resolve_exports = ref [] in
               let resolve_ok = ref true in
               List.iter (fun (mod_id, file_path, p) ->
@@ -431,7 +440,7 @@ cd into a member or specify a file\n"; exit 1
   List.iter (fun w -> Printf.eprintf "%s\n" w)
     (Medaka_lib.Exhaust.check_guard_exhaustiveness root_program);
 
-  let root_program = Medaka_lib.Desugar.desugar_program root_program in
+  let root_program = desugar_or_die ~source root_program in
 
   if not (has_use_decls root_program) then begin
     (* ── Single-file mode (legacy) ── *)
@@ -499,7 +508,7 @@ cd into a member or specify a file\n"; exit 1
       (* Phase 91 (2): guard-exhaustiveness warnings, per raw module. *)
       List.iter (fun w -> Printf.eprintf "%s\n" w)
         (Medaka_lib.Exhaust.check_guard_exhaustiveness prog);
-      (mid, fp, Medaka_lib.Desugar.desugar_program prog)
+      (mid, fp, desugar_or_die prog)
     ) modules in
 
     (* Resolve all modules in dependency order *)

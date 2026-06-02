@@ -1752,112 +1752,13 @@ let rec infer env = function
     in
     type_block env stmts
 
-  | EDo (monad_tag_ref, stmts) ->
-    (* Monadic do-block (introduced by the `do` keyword).  Always introduces
-       a per-block monad tyvar `m`; every DoExpr and DoBind RHS must be `m a`.
-       The last stmt's type determines the block result.
-       Forbidden: DoLet with mut, DoAssign, DoFieldAssign. *)
-    if stmts = [] then fail (Other "Empty do block");
-    let m = fresh_var () in
-    let unify_monadic te =
-      let inner = fresh_var () in
-      unify te (TApp (m, inner));
-      inner
-    in
-    let rec head_fn_name = function
-      | ELoc (_, e) -> head_fn_name e
-      | EVar x -> Some x
-      | EMethodRef (_, x) -> Some x
-      | EDictApp (_, x) -> Some x
-      | EApp (f, _) -> head_fn_name f
-      | _ -> None
-    in
-    let rec type_stmts env = function
-      | [] -> fail (InternalError "type_stmts: empty do block (should be guarded earlier)")
-      | [DoExpr e] ->
-        let te = infer env e in
-        let _ = unify_monadic te in
-        te
-      | [DoBind (pat, e)] ->
-        (* Trailing bind discards the bound variable; result is m Unit *)
-        let te = infer env e in
-        let inner = unify_monadic te in
-        let tp, _ = type_pat env pat in
-        unify tp inner;
-        TApp (m, t_unit)
-      | [DoLet _] ->
-        fail (Other "do block cannot end with a let binding")
-      | [DoAssign _] ->
-        fail (Other "do block cannot end with an assignment")
-      | [DoFieldAssign _] ->
-        fail (Other "do block cannot end with a field assignment")
-      | [DoLetElse _] ->
-        fail (Other "do block cannot end with a let-else binding")
-      | DoExpr e :: rest ->
-        let te = infer env e in
-        let _ = unify_monadic te in
-        (match head_fn_name e with
-         | Some f when Hashtbl.mem env.must_use_fns f ->
-           let loc_str = match !current_loc with
-             | Some l -> Printf.sprintf "%s:%d: " l.file l.line
-             | None -> ""
-           in
-           env.warnings := (loc_str ^ "return value of '" ^ f ^ "' is unused (marked @must_use)")
-                           :: !(env.warnings)
-         | _ -> ());
-        type_stmts env rest
-      | DoBind (pat, e) :: rest ->
-        let te = infer env e in
-        let inner = unify_monadic te in
-        let tp, bindings = type_pat env pat in
-        unify tp inner;
-        type_stmts (extend_locals env bindings) rest
-      | DoLet (mut, pat, e) :: rest ->
-        if mut then begin
-          let name = (match pat with PVar x -> x | _ -> "_") in
-          fail (MutLetInDo name)
-        end;
-        enter_level ();
-        let t1 = infer env e in
-        exit_level ();
-        let env' = match pat with
-          | PVar x -> mark_locals (extend_var env x (gen_restricted (is_nonexpansive e) t1)) [x]
-          | _ ->
-            let tp, bindings = type_pat env pat in
-            unify tp t1;
-            extend_locals env bindings
-        in
-        type_stmts env' rest
-      | DoAssign (x, _) :: _ ->
-        fail (AssignInDo x)
-      | DoFieldAssign (x, fields, _) :: _ ->
-        fail (FieldAssignInDo (x, String.concat "." fields))
-      | DoLetElse (pat, e, alt) :: rest ->
-        let te = infer env e in
-        let tp, bindings = type_pat env pat in
-        unify tp te;
-        let _ = infer env alt in  (* no divergence check in v1 *)
-        type_stmts (extend_locals env bindings) rest
-    in
-    let result = type_stmts env stmts in
-    (* Phase 98: a `<-` bind IS `andThen`, so a do-block that binds requires its
-       monad `m` to have a `Thenable` impl.  Emit the obligation only when the
-       block actually binds (matching eval: only `DoBind` routes through the
-       `andThen` VMulti — a bare/`pure`-only block uses no `andThen` and needs
-       only `Applicative`, so constraining it to `Thenable` would over-reject).
-       A `do` that binds over a non-Thenable type is now a compile-time
-       `NoImplFound`.  When `m` stays polymorphic/ungrounded the obligation is
-       concrete-gated in `check_constraint_obligations` and skipped, so this
-       doesn't regress the Phase 83/84 dispatch residuals. *)
-    let binds = List.exists (function Ast.DoBind _ -> true | _ -> false) stmts in
-    if binds then
-      env.constraint_obligations :=
-        ("Thenable", [m], !current_loc) :: !(env.constraint_obligations);
-    monad_tag_ref := (match normalize m with
-      | TApp (TCon tname, _) -> Some tname
-      | TCon tname           -> Some tname
-      | _                    -> None);
-    result
+  | EDo _ ->
+    (* Phase 99: monadic do-blocks are lowered to nested andThen/pure by
+       Desugar.lower_do_blocks (before method_marker + typecheck), so the
+       Thenable obligation now rides the lowered `andThen`'s constraint and
+       bind dispatch flows through the normal dictionary elaboration.  An EDo
+       reaching typecheck means the desugar pass was skipped — a pipeline bug. *)
+    fail (InternalError "EDo survived desugar (Phase 99)")
 
   | ERecordCreate (name, provided) ->
     (match Hashtbl.find_opt env.ctor_fields name with

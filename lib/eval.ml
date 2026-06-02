@@ -327,13 +327,6 @@ and match_pats pats vals =
 
 let current_loc : loc option ref = ref None
 
-(* Constructors known to belong to a Thenable impl.  Populated from the
-   program's `impl Thenable T` declarations at eval init.  When a do-block
-   bind sees a value whose head constructor is in this set, it dispatches
-   through the `andThen` VMulti rather than falling through to direct
-   pattern matching. *)
-let monadic_ctors : (string, unit) Hashtbl.t = Hashtbl.create 8
-
 (* Constructor name → type name.  Populated from DData declarations at eval
    init.  Used by runtime_type_tag to map a value's head constructor back to its
    type for VMulti dispatch. *)
@@ -853,10 +846,7 @@ and eval env expr =
 
   | EBlock stmts -> eval_block env stmts
 
-  | EDo (_monad_tag_ref, stmts) ->
-    (* Phase 69.x-c: the monad-tag ref (filled by typecheck) is no longer
-       consulted — `pure` is a normal VMulti routed by its EMethodRef. *)
-    eval_do env stmts
+  | EDo _ -> assert false (* eliminated by Desugar.lower_do_blocks (Phase 99) *)
 
   | EAnnot (e, _) -> eval env e
 
@@ -1062,83 +1052,6 @@ and eval_block env stmts =
      | Some binds -> eval_block (extend env binds) rest)
   | (DoBind _) :: _ ->
     raise (Eval_error ("`<-` is only allowed inside a `do` block", !current_loc))
-
-and eval_do env stmts =
-  match stmts with
-  | [] -> VUnit
-  | [DoExpr e] -> wrap_match_errors (fun () -> eval env e)
-  | [DoLet (_, pat, e)] ->
-    let v = wrap_match_errors (fun () -> eval env e) in
-    (match match_pat pat v with
-     | None -> raise (Eval_error ("let pattern match failure in do", !current_loc))
-     | Some _ -> VUnit)
-  | [DoAssign (_, e)] ->
-    let _ = wrap_match_errors (fun () -> eval env e) in VUnit
-  | [DoFieldAssign (x, fields, e)] ->
-    let new_val = wrap_match_errors (fun () -> eval env e) in
-    (* last stmt: rebuilt record discarded; in-place Ref mutations persist *)
-    let _ = update_path (lookup env x) fields new_val in
-    VUnit
-  | [DoBind (_, _)] ->
-    raise (Eval_error ("do-block cannot end with <-", !current_loc))
-
-  | (DoExpr e) :: rest ->
-    let _ = wrap_match_errors (fun () -> eval env e) in
-    eval_do env rest
-
-  | (DoLet (_, pat, e)) :: rest ->
-    let v = wrap_match_errors (fun () -> eval env e) in
-    (match match_pat pat v with
-     | None -> raise (Eval_error ("let pattern match failure in do", !current_loc))
-     | Some binds -> eval_do (extend env binds) rest)
-
-  | (DoAssign (x, e)) :: rest ->
-    let v = wrap_match_errors (fun () -> eval env e) in
-    eval_do (extend env [(x, v)]) rest
-
-  | (DoFieldAssign (x, fields, e)) :: rest ->
-    let new_val = wrap_match_errors (fun () -> eval env e) in
-    let updated = update_path (lookup env x) fields new_val in
-    eval_do (extend env [(x, updated)]) rest
-
-  | [DoLetElse _] ->
-    raise (Eval_error ("do-block cannot end with a let-else binding", !current_loc))
-
-  | (DoLetElse (pat, e, alt)) :: rest ->
-    let v = wrap_match_errors (fun () -> eval env e) in
-    (match match_pat pat v with
-     | None -> eval env alt
-     | Some binds -> eval_do (extend env binds) rest)
-
-  | (DoBind (pat, e)) :: rest ->
-    let v = wrap_match_errors (fun () -> eval env e) in
-    (* If `v`'s head constructor belongs to a Thenable impl, dispatch the bind
-       through the stdlib `andThen` VMulti.  The Thenable impl's clauses do
-       the short-circuiting (e.g. `andThen None _ = None`).  Otherwise fall
-       through to direct pattern matching — same shape as the old MIO mode. *)
-    let dispatch_via_thenable () =
-      let and_then = lookup env "andThen" in
-      let continuation = VPrim (fun bound_v ->
-        match match_pat pat bound_v with
-        | None ->
-          raise (Eval_error ("bind pattern match failure", !current_loc))
-        | Some binds -> eval_do (extend env binds) rest
-      ) in
-      apply (apply and_then v) continuation
-    in
-    (match v with
-     | VCon (cname, _) when Hashtbl.mem monadic_ctors cname ->
-       dispatch_via_thenable ()
-     | VList _ when Hashtbl.mem monadic_ctors "Cons" ->
-       (* VList is its own OCaml value (not VCon ("Cons", ...) or
-          VCon ("Nil", [])) but it has a Thenable impl in the stdlib.
-          Dispatch through andThen so List acts as a monad in do-blocks
-          (concat-map semantics). *)
-       dispatch_via_thenable ()
-     | _ ->
-       (match match_pat pat v with
-        | None -> raise (Eval_error ("bind pattern match failure", !current_loc))
-        | Some binds -> eval_do (extend env binds) rest))
 
 (* ── Extern / primitive dispatch table ──────────────────────────────────── *)
 
@@ -1576,19 +1489,13 @@ let eval_program ?(prelude = true) program =
   in
   let program = if is_core || not prelude then program else Prelude.program @ program in
 
-  (* Record constructor names that belong to a Thenable impl, so DoBind can
-     decide whether to dispatch via `andThen` or fall through; and the
-     reverse mapping ctor → type used by runtime_type_tag for VMulti
-     dispatch. *)
-  Hashtbl.clear monadic_ctors;
+  (* Reverse mapping ctor → type used by runtime_type_tag for VMulti dispatch,
+     plus constructor field order for record-style constructors. *)
   Hashtbl.clear ctor_to_type;
   Hashtbl.clear ctor_field_order;
   Hashtbl.clear arbitrary_registry;
-  let type_ctors : (string, string list) Hashtbl.t = Hashtbl.create 8 in
   List.iter (fun d -> match Ast.inner_decl d with
     | DData (_, n, _, vs, _) ->
-      let cnames = List.map (fun v -> v.con_name) vs in
-      Hashtbl.replace type_ctors n cnames;
       List.iter (fun v ->
         Hashtbl.replace ctor_to_type v.con_name n;
         (match v.con_payload with
@@ -1601,8 +1508,6 @@ let eval_program ?(prelude = true) program =
       Hashtbl.replace ctor_to_type con_name type_name
     | _ -> ()
   ) program;
-  (* Built-in types whose constructors are seeded in OCaml. *)
-  Hashtbl.replace type_ctors "List" ["Cons"; "Nil"];
   let rec head_tycon = function
     | Ast.TyCon n          -> Some n
     | Ast.TyApp (a, _)     -> head_tycon a
@@ -1610,19 +1515,6 @@ let eval_program ?(prelude = true) program =
     | Ast.TyTuple _        -> Some "__tuple__"
     | _ -> None
   in
-  List.iter (fun d -> match Ast.inner_decl d with
-    | DImpl { iface_name = "Thenable"; type_args; _ } ->
-      List.iter (fun ta ->
-        match head_tycon ta with
-        | Some tn ->
-          (match Hashtbl.find_opt type_ctors tn with
-           | Some ctors ->
-             List.iter (fun c -> Hashtbl.replace monadic_ctors c ()) ctors
-           | None -> ())
-        | None -> ()
-      ) type_args
-    | _ -> ()
-  ) program;
 
   (* Pass 1: collect DData constructors and DFunDef/DImpl method names *)
   List.iter (fun decl ->
@@ -1847,8 +1739,6 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
        | Some _ -> ()
      ) methods;
      rs.eval_env := [!(rs.top_frame)];
-     (* Mirror eval_program's bookkeeping: for Thenable impls, add the type's
-        constructors to monadic_ctors so do-block binds dispatch via andThen. *)
      let rec head_tycon = function
        | Ast.TyCon n      -> Some n
        | Ast.TyApp (a, _) -> head_tycon a
@@ -1856,18 +1746,6 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
        | Ast.TyTuple _    -> Some "__tuple__"
        | _ -> None
      in
-     let tname_opt = match type_args with
-       | [t] -> head_tycon t
-       | _ -> None
-     in
-     (if iface_name = "Thenable" then
-        match tname_opt with
-        | Some tname ->
-          (* All of `tname`'s constructors should dispatch via andThen. *)
-          Hashtbl.iter (fun cname tn ->
-            if tn = tname then Hashtbl.replace monadic_ctors cname ()
-          ) ctor_to_type
-        | None -> ());
      let impl_type_tag = match type_args with
        | t :: _ -> head_tycon t
        | [] -> None
