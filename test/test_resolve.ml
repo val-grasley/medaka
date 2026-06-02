@@ -275,6 +275,20 @@ let v_interface_super_known_iface =
   assert_ok
     "interface MyEq a where\n  myeq : a -> a -> Bool\n\ninterface MyOrd a requires MyEq a where\n  mycompare : a -> a -> Bool\n"
 
+(* ── @Impl disambiguation hints (Phase 86) ───── *)
+
+(* `@Additive` is a method-dispatch hint, not a value reference — resolve must
+   not flag it as an unbound variable. Unknown hint names are validated later
+   by typecheck (UnknownImplName), so resolve simply accepts any @-prefixed
+   occurrence. *)
+let v_at_impl_hint =
+  assert_ok
+    "interface Combine a where\n  combine : a -> a -> a\n\nimpl Additive of Combine Int where\n  combine x y = x + y\n\nr = combine @Additive 3 4\n"
+
+(* Standalone @Name occurrence reaches resolve through the same EVar path. *)
+let v_at_hint_standalone =
+  assert_ok "r = @Foo\n"
+
 (* Methods declared in core.mdk's interfaces must be in scope in user
    files even when no impl in core provides them — bare interface
    defaults count.  Regression test for the resolver gap that left
@@ -429,6 +443,8 @@ let () =
       test_case "interface super known ok" `Quick v_interface_super_known_iface;
       test_case "err: impl requires unknown"   `Quick e_impl_requires_unknown_iface;
       test_case "err: interface super unknown" `Quick e_interface_super_unknown_iface;
+      test_case "@impl hint resolves ok"   `Quick v_at_impl_hint;
+      test_case "@hint standalone ok"      `Quick v_at_hint_standalone;
     ];
     "prelude methods in user scope", [
       test_case "max ok"     `Quick v_prelude_method_max_in_scope;

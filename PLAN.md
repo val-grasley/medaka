@@ -4022,12 +4022,12 @@ the section feature in value position is unaffected and re-check the parser
 conflict count. Lands in `parser.mly` (`expr_to_pat`/`expr_to_pats`). Skill:
 **add-language-feature** (grammar). Pre-existing; documented in §5.
 
-### Phase 86: `@Impl` hints reported unbound by resolve ⏳ TODO
+### Phase 86: `@Impl` hints reported unbound by resolve ✅ DONE
 
-`medaka check` flags a valid impl-disambiguation hint as unbound even though the
-named impl is registered, so any program using `@Impl` hints gets false-positive
+`medaka check` flagged a valid impl-disambiguation hint as unbound even though the
+named impl is registered, so any program using `@Impl` hints got false-positive
 diagnostics. The hint resolves correctly at eval time (the `@Name impl selection`
-eval tests pass); only resolve's reference check is wrong. Repro:
+eval tests pass); only resolve's reference check was wrong. Repro:
 
 ```
 interface Combine a where
@@ -4037,11 +4037,14 @@ impl Additive of Combine Int where
 r = combine @Additive 3 4   -- check: "Unbound variable: @Additive"
 ```
 
-Scope: in `resolve.ml`, recognise `@`-prefixed hint occurrences (they reach
-`check_expr` as `EVar "@Name"` in application-argument position) and validate
-against registered impl names instead of the value scope — mirroring eval's
-`EApp (f, EVar hint)` handling and the Phase 32 compile-time `@Name` validation.
-Lands in `lib/resolve.ml`. Skill: none specific (resolve-local).
+Fix: `check_expr`'s `EVar` case in `resolve.ml` now accepts any `@`-prefixed
+name as a dispatch hint rather than looking it up in the value scope. Unknown
+hint names are still rejected — by typecheck's existing `UnknownImplName`
+(Phase 32), which carries the interface and concrete type args, so resolve
+doesn't duplicate that check or let a typo reach runtime. Covers both
+application-argument (`combine @Additive 3 4`) and standalone (`r = @Foo`) forms
+through the single `EVar` path. Landed in `lib/resolve.ml`; regression cases in
+`test/test_resolve.ml` (`v_at_impl_hint`, `v_at_hint_standalone`).
 
 ---
 
@@ -4115,8 +4118,9 @@ These aren't blockers, but a less-careful change could trip over them:
   constructor (Phase 81 ✅). One inherent edge: `_` after an operator in such a
   LHS is a left section, not a wildcard (`(x :: _) <- m` — use `(x :: rest)`).
   → Phase 85.
-- `@Impl` disambiguation hints are reported as unbound by resolve (`medaka check`
-  false-positives), though they resolve at eval time. → Phase 86.
+- ~~`@Impl` disambiguation hints are reported as unbound by resolve (`medaka check`
+  false-positives), though they resolve at eval time.~~ ✅ Phase 86: resolve now
+  accepts `@`-prefixed hints; typecheck's `UnknownImplName` still validates them.
 - Module system: `use` declarations parse but no cross-file resolution
   exists. Backend roadmap is single-file only; multi-file support is a
   separate later phase.
