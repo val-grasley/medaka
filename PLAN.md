@@ -3974,13 +3974,10 @@ Likewise self-/mutually-recursive *unsignatured* wrappers under-infer their own
 recursive-call routing (Pass A only pre-registers from explicit signatures).
 Both are deferred, mirroring the Phase 69.x → 74 layering.
 
-### Phase 84: Monad dispatch for polymorphic do-blocks ⏳ TODO
+### Phase 84: Monad dispatch for polymorphic do-blocks ✅ DONE (single-file)
 
-Phase 53 tags `EDo` with its resolved monad and seeds `current_monad_type`, so
-`pure`/bind dispatch correctly when the monad is *concrete* at the do-block. But
-a do-block in a function that is **polymorphic over its monad** leaves the tag
-`None`, falling back to the `detect_monad` runtime heuristic — which mis-routes
-`pure` and panics. Repro (panics at `core.mdk:402` "non-exhaustive match"):
+A do-block in a function **polymorphic over its monad** mis-dispatched its
+return-position `pure`. Repro (used to panic at `core.mdk:401`, the List `pure`):
 
 ```
 f m = do
@@ -3991,14 +3988,62 @@ main = match f (Some 5)
   None => println "none"
 ```
 
-`f`'s monad is a type variable, so the tag is `None`; at the call the heuristic
-inspects the first bind's value (`Some 5` → Option) but `pure` still dispatches
-wrong. Scope: thread the monad through such call sites — e.g. dictionary-pass
-the Thenable/Applicative for the do-block's `m` (like Phase 69.x), or
-monomorphise `f` per call — so `None`-tagged do-blocks dispatch by the caller's
-type, not a value-shape guess. Touches `typecheck.ml` (EDo tagging / constraint
-threading) + `eval.ml` (`eval_do`, `detect_monad`). See the §5 limitation note.
-Skill: **add-language-feature** (cross-cutting: typecheck + eval).
+**The bug was narrower than first described.** The PLAN's `detect_monad` /
+`current_monad_type` eval machinery is stale (removed in Phase 69.x-c;
+`eval.ml`'s `EDo` arm ignores the tag). Two findings drove the fix:
+
+- **Bind already worked.** `x <- m` dispatches through the `andThen` VMulti by the
+  *runtime value* of `m` (`eval_do`), so `Some 5` picks Option's bind without any
+  dictionary. Only return-position `pure` was broken.
+- **`pure` had no route.** The do-block typecheck models the monad structurally
+  and emits no constraint, but the `pure x` `EMethodRef` already records an
+  Applicative usage on `m`; for an unsignatured `f` Phase 83 harvests that into
+  `inferred_constraints` — the table **deliberately invisible** to
+  `find_enclosing_dict` / `dict_pass` / the marker. So `pure`'s route stayed
+  `None` and eval fell back to arg-tag "first impl wins" → List.
+
+**Fix — two-pass elaboration (`lib/elaborate.ml`):** the marker runs *before*
+typecheck and only wraps `=>`-signatured functions in `EDictApp`, so making an
+*inferred* constraint dict-routable needs a second pass. `Elaborate.elaborate`:
+mark → typecheck (discovers promotable names) → if any, re-mark the original tree
+with those names treated as constrained → re-typecheck so their inferred
+constraints register in `fun_constraints` (route-bearing) → `dict_pass` → eval.
+When nothing is promotable (the common case) the second pass is skipped.
+
+- `typecheck.ml`: new `promoted` env field; `check_program_promoting`
+  (`?promoted` in, discovery set out); `check_program` is now a single-pass
+  wrapper (unchanged for LSP/diagnostics). `process_letrec_group`'s no-sig branch
+  registers a promoted name's inferred constraints in `fun_constraints`. The
+  discovery set is filtered to **non-recursive user bindings whose inferred
+  constraints include `Applicative`** — three guards, each against a concrete
+  hazard (prelude-helper arity mismatch; arg-dispatched wrappers that don't need
+  it; recursive wrappers whose self-call would be unrouted — Pass A pre-registers
+  only signatured fns).
+- `method_marker.ml`: `mark_with_prelude ~promoted` unions the promoted names
+  into the constrained set.
+- Drivers: single-file `run`/`test`/`bench` (`bin/main.ml`) and the test helpers
+  (`test_eval` `run_typed`, `test_run` `capture_run_typed`) route through
+  `Elaborate`.
+
+Result: the unsignatured polymorphic-monad do-block now dispatches by the
+caller's monad — at **parity with the signatured `Applicative m =>` version**.
+Verified for Option, List, transitive wrappers (`g x = f x`), and the same `f`
+used at two monads in one program; concrete do-blocks and signatured monads are
+unchanged. Tests: `test_eval` "do polymorphic monad (Phase 84)" (6 cases),
+`test_run` "poly-monad do-block (Phase 84)". Skill: **add-language-feature**.
+
+**Known limitations (deferred):**
+- **`Result e` with a free `e`** (`f (Ok 5)`) still mis-dispatches `pure` — but
+  the **signatured version fails identically**, so this is a pre-existing
+  dict-resolution gap for multi-param type ctors with a free param, orthogonal to
+  Phase 84, not a regression.
+- **No-bind do-block** (`do { pure x }`): the monad is groundable only from
+  surrounding type context; when the context pins it (e.g. a `match` on the
+  result) it works, otherwise it falls back to arg-tag as before.
+- **Self-/mutually-recursive** unsignatured monad wrappers are excluded from
+  promotion (would hit a dict-arity mismatch); they stay on arg-tag dispatch.
+- **REPL and multi-module** drivers are not yet on the two-pass path → Phase 87 /
+  Phase 88 below.
 
 ### Phase 85: `_` after an operator in a binding LHS is a section, not a wildcard ✅ DONE
 
@@ -4049,6 +4094,138 @@ application-argument (`combine @Additive 3 4`) and standalone (`r = @Foo`) forms
 through the single `EVar` path. Landed in `lib/resolve.ml`; regression cases in
 `test/test_resolve.ml` (`v_at_impl_hint`, `v_at_hint_standalone`).
 
+### Phase 87: Phase 84 two-pass elaboration in the REPL ⏳ TODO
+
+Phase 84 fixed polymorphic-monad do-block `pure` dispatch for the single-file
+drivers via `Elaborate.elaborate` (mark → typecheck → re-mark `~promoted` →
+re-typecheck → dict_pass). The **REPL** is still single-pass, so a polymorphic
+monad wrapper defined interactively mis-dispatches its `pure` (arg-tag fallback).
+Repro at the `medaka repl` prompt:
+
+```
+f m = do
+  x <- m
+  pure x
+f (Some 5)   -- should be Some 5; currently mis-routes
+```
+
+The REPL is incremental: it marks each input against the session's accrued
+`fun_constraints`, type-checks via `Typecheck.check_repl_decl` (not
+`check_program`), then dict-passes that input (`lib/repl.ml` ~108–150). Scope:
+after `check_repl_decl`, read the new names in `(!tc_env).inferred_constraints`
+that pass the Phase 84 filter (non-recursive, `Applicative`-bearing), fold them
+into `(!tc_env).fun_constraints`, then re-mark + re-check + re-dict-pass *that
+input* (the env already re-reads `fun_constraints` for both marking and
+dict_pass). Thread a `?promoted` set into `check_repl_decl` mirroring
+`check_program_promoting`. Lands in `lib/repl.ml` + a `check_repl_decl` tweak in
+`lib/typecheck.ml`; add a `test_repl` case. Skill: **add-language-feature**.
+
+### Phase 88: Phase 84 two-pass elaboration across modules ⏳ TODO
+
+Same gap as Phase 87 for the **multi-module** driver (`bin/main.ml` ~525–571):
+each module is marked once against the union of constrained signatures and
+type-checked via `Typecheck.typecheck_module`, with no promotion pass — so an
+exported unsignatured monad wrapper mis-dispatches `pure` when called in another
+module. Scope: run the module loop twice — mark1 all → typecheck1 all → collect
+the promoted names across modules → re-mark all with them constrained →
+typecheck2 all → `dict_pass` the combined program. Thread `?promoted` through
+`typecheck_module` and carry promoted names across module boundaries via
+`module_type_exports` (it already exports `te_inferred_constraints` /
+`te_fun_constraints`). The heaviest/riskiest surface, hence split from Phase 87.
+Lands in `bin/main.ml` (multi-module path) + `lib/typecheck.ml`
+(`typecheck_module` / exports) + possibly `lib/loader.ml`; add a `test_loader`
+case. Skill: **add-language-feature**.
+
+### Gaps surfaced during the 2026-06-01 stdlib completion (Modules 1–4)
+
+All reproduced on the post-merge binary before filing (see notes). Phases 89–93.
+
+### Phase 89: Point-free constraint-polymorphic dispatched defs mis-resolve under multiple impls ⏳ TODO
+
+An **eta-reduced** definition of a `(Foldable t, …) => …` function whose body is
+a partial application of a dispatched method — e.g. `maximum = fold step None` —
+type-errors `Type mismatch: Array vs List` (or, on the path where typecheck
+doesn't catch it, eval-panics `applied non-function: <dispatch/N>`) **once a
+second `Foldable` impl is in scope at a List-typed call site**. The
+eta-*expanded* form `maximum xs = fold step None xs` works. Minimal repro: put
+`probePF = fold pfStep None` (constraint `(Foldable t, Ord a)`) in `core.mdk`,
+then `probePF [3,1,2]` from a file that `import`s `array` → errors at the
+*definition* line; the same call with no array import succeeds. Root cause is
+almost certainly that resolving the dispatch/constraint for a CAF-style binding
+commits the container type before the call-site argument type is known, and
+`default impl Foldable Array` then wins the default. This is why core/list
+eta-expand `maximum`/`minimum` rather than writing them point-free; fixing it
+would restore idiomatic point-free stdlib style and remove a sharp edge for
+users. Lands in `lib/typecheck.ml` (constraint resolution / generalization of
+nullary-but-constrained bindings) + `lib/eval.ml` (dispatch of a partially
+applied VMulti). Add `test_typecheck` + `test_eval` regressions. Skill:
+**harden-typechecker** (confirm during exploration; may spill into eval dispatch).
+
+### Phase 90: Per-use instantiation of a signed recursive HO function leaks (decorate-sort-undecorate monomorphises `sortBy`) ⏳ TODO
+
+A recursive higher-order function **with an explicit polymorphic signature** gets
+monomorphised by one downstream use, breaking its other uses. Concretely, a
+decorate–sort–undecorate `sortOn`
+(`map snd (sortBy cmpOnFst (map (x => (key x, x)) xs))`) forces the shared
+`sortBy : (a -> a -> <e> Ordering) -> List a -> <e> List a` to tuples, so an
+unrelated `sortBy (x y => compare y x) [3,1,2]` then fails
+`Type mismatch: (a, b) vs Int` — even though `sortBy` is signed polymorphic.
+Simpler shapes (a non-`sortOn` recursive signed fn used at two types) do NOT
+repro; the trigger needs the `<e>` effect var + the `Ord` constraint in the
+comparator lambda + the tuple-decoration. Workaround in `stdlib/list.mdk`:
+`sortOn key = sortBy (x y => compare (key x) (key y))` (key recomputed per
+comparison, matching `array.sortOn`); restore the once-per-element form once
+fixed. **Already spawned as a background task** with a minimal repro. Likely the
+letrec-group generalisation not isolating per-use instantiation of an
+explicitly-signed binding. Lands in `lib/typecheck.ml`; add a `test_typecheck`
+regression. Skill: **harden-typechecker**. (Possibly shares a root with Phase 89.)
+
+### Phase 91: Guard semantics — no fall-through, no compile-time exhaustiveness, no inline form ⏳ TODO
+
+Three related guard gaps, all observed writing `list.mdk`:
+1. **No fall-through to the next equation.** If a clause's guards all fail, eval
+   panics `Non-exhaustive guards` instead of trying the next pattern clause
+   (Haskell falls through). So every guarded clause must be self-exhaustive
+   (`| otherwise`), forcing the `n <= 0` case to be folded *inside* the relevant
+   pattern clause. Repro: `tk n _` ⏎ `  | n <= 0 = []` followed by `tk _ [] = …`
+   → `tk 9 [1,2]` panics. Decide intended semantics: implement Haskell-style
+   fall-through, or keep the rule but…
+2. **…detect non-exhaustive guards at compile time** (`exhaust.ml` handles
+   pattern matrices but not guard coverage) — today it's a runtime panic.
+3. **No inline guard form**: `f n _ | n <= 0 = []` is a parse error; guards must
+   be on indented continuation lines.
+Lands across `lib/eval.ml` (fall-through), `lib/exhaust.ml` (coverage warning),
+`lib/parser.mly`/`lib/lexer.mll` (inline form). This is a language-semantics
+decision first; treat as **add-language-feature** after deciding (1).
+
+### Phase 92: Doctest harness can't reach cross-module instances ⏳ TODO
+
+`medaka test <file>` builds its combined program from the **core prelude + that
+file only**, so an instance defined in a *sibling* stdlib module is invisible.
+`Show String`/`Show Char` live in `string.mdk` (not core), so a doctest in
+`core`/`list`/`array` whose result is a `String`/`Char` (or `show` of an array,
+which returns a `String`) fails `No impl of Show for String/Char` → and because
+the harness is all-or-nothing, *every* example then errors. Workaround used:
+phrase such doctests as `show (...) == "literal"` (Bool) or use `Int` data —
+correct but contorted, and it hides what the value actually renders as. Fix: have
+the doctest driver load the full stdlib (or the file's transitive sibling
+modules) so cross-module instances resolve. Lands in `lib/doctest.ml` (+ maybe
+`lib/loader.ml`); add a `test_doctest` case. No dedicated skill — see the
+`extend-stdlib` skill's doctest-harness notes.
+
+### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ⏳ TODO
+
+Deferred from the stdlib completion: the `Bounded` interface exists but `Int`/
+`Char` have no impls, because `minBound`/`maxBound` are **return-type-polymorphic
+nullary constants** (like `pure`) needing native bound values, and `Int`'s bounds
+are platform-dependent (63-bit OCaml `int`). Scope: add `intMinBound`/
+`intMaxBound` externs (`runtime.mdk` + `eval.ml`, via **add-primitive**); define
+`impl Bounded Int` and `impl Bounded Char` (Char via `charFromCode` over
+`0`..`0x10FFFF`) in `core.mdk` (via **extend-stdlib**); and **verify nullary
+return-position dispatch** actually selects the right impl for a bare `maxBound`
+at a known type (the Phase 69 marker handles return-position methods — confirm it
+covers zero-arg constants). Update STDLIB.md (currently ⏳/deferred).
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)
@@ -4066,17 +4243,18 @@ Standing cleanups (small, low-risk):
 
 These aren't blockers, but a less-careful change could trip over them:
 
-- do-block monad dispatch in `eval.ml` is a runtime heuristic: the monad is
-  detected by inspecting the first `DoBind` result's constructor shape. This
-  means (a) `pure` in a do-block with no `<-` statements returns the value
-  unwrapped (monad context unknown); (b) ~~the List monad is not supported~~
-  (FIXED in this session — VList now dispatches via Thenable and detect_monad
-  recognizes VList → "List", so do-block list-monad concat-map semantics work);
-  (c) higher-order functions that receive do-blocks don't thread monad context.
-  Phase 53 ✅ tags `EDo` with its resolved monad when the monad is *concrete*,
-  so `eval` no longer guesses there; the heuristic remains the fallback for
-  *polymorphic-monad* do-blocks (tag `None`), where it still mis-dispatches and
-  can panic. → Phase 84.
+- do-block dispatch in `eval.ml`: **bind** routes through the `andThen` VMulti by
+  the bound value's runtime constructor (`eval_do`), and **`pure`** (return
+  position) routes by its `EMethodRef` route stamped at typecheck. For a
+  *concrete* monad `pure` gets `RHeadKey`; for a *polymorphic* monad in an
+  unsignatured wrapper Phase 84 ✅ promotes the inferred `Applicative` to a
+  dict-routable constraint (two-pass elaboration, `lib/elaborate.ml`) so `pure`
+  routes by the caller's monad — at parity with the signatured `Applicative m =>`
+  form. Residuals (see Phase 84): `pure` in a do-block with **no `<-`** is
+  groundable only from surrounding type context; `Result e` with a free `e`
+  mis-dispatches even when signatured (a separate multi-param dict-resolution
+  gap); recursive unsignatured wrappers stay on arg-tag; the **REPL** and
+  **multi-module** drivers are not yet on the two-pass path → Phase 87 / 88.
 - `let mut` binding reassignment (`DoAssign`) is now type-checked in do-blocks,
   but `ELet(true, ...)` in expression context only tracks `mut_vars` — there is
   no syntax for reassigning a `let mut` binding outside a do-block. The `Ref`
