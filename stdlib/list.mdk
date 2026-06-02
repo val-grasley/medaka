@@ -325,16 +325,17 @@ export
 sort : Ord a => List a -> List a
 sort xs = sortBy compare xs
 
-{- | Sort by a derived key.  (Mirrors `array.sortOn`: the key is recomputed
-   inside each comparison rather than memoised by a decorate–sort–undecorate
-   pass — the decorated form currently trips a generalisation bug that
-   monomorphises the shared `sortBy`.)
+{- | Sort by a derived key, computing the key once per element via a
+   decorate–sort–undecorate pass (the key may be expensive, so this avoids
+   recomputing it inside every comparison).
 
    > sortOn (x => 0 - x) [1, 3, 2]
    [3, 2, 1] -}
 export
 sortOn : Ord b => (a -> <e> b) -> List a -> <e> List a
-sortOn key xs = sortBy (x y => compare (key x) (key y)) xs
+sortOn key xs =
+  let decorated = map (x => (key x, x)) xs
+  map ((_, x) => x) (sortBy ((k1, _) (k2, _) => compare k1 k2) decorated)
 
 {- | Drop duplicates by a custom equality, keeping the first occurrence.
    `O(n²)` baseline.

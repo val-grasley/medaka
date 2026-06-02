@@ -611,6 +611,44 @@ let t_sig_returns_function = assert_type
 add x = y => x + y
 |} "add" "Int -> Int -> Int"
 
+(* Dependency-ordered top-level groups (PLAN.md §2.9): an explicitly-signed
+   polymorphic HOF must stay polymorphic even when
+   a *later* top-level binding instantiates it at a concrete (here tuple) type.
+   `sortB` forward-references `mrg`/`splt`, so before dependency-ordering it shared
+   a live placeholder var with them; `sortO`'s tuple-typed use then re-linked that
+   var underneath `sortB`'s already-generalized scheme, monomorphizing it — and the
+   plain `[3,1,2]` use below failed with `(a, b) vs Int`.  Processing callees first
+   keeps `sortB` polymorphic; the assertion pins the scheme. *)
+let t_sig_poly_hof_not_monomorphized = assert_type
+  {|sortB : (a -> a -> <e> Ordering) -> List a -> <e> List a
+sortB _ [] = []
+sortB _ [x] = [x]
+sortB cmp xs =
+  let (l, r) = splt (length xs / 2) xs
+  mrg cmp (sortB cmp l) (sortB cmp r)
+
+mrg : (a -> a -> <e> Ordering) -> List a -> List a -> <e> List a
+mrg _ [] ys = ys
+mrg _ xs [] = xs
+mrg cmp (xs@(x::xs')) (ys@(y::ys')) =
+  match cmp x y
+    Gt => y :: mrg cmp xs ys'
+    _ => x :: mrg cmp xs' ys
+
+splt : Int -> List a -> (List a, List a)
+splt _ [] = ([], [])
+splt n (xs@(x::rest))
+  | n <= 0 = ([], xs)
+  | otherwise = let (a, b) = splt (n - 1) rest in (x :: a, b)
+
+sortO : Ord b => (a -> <e> b) -> List a -> <e> List a
+sortO key xs =
+  let decorated = map (x => (key x, x)) xs
+  map ((_, x) => x) (sortB ((k1, _) (k2, _) => compare k1 k2) decorated)
+
+da = sortB (x y => compare y x) [3, 1, 2]
+|} "sortB" "(a -> a -> Ordering) -> List a -> List a"
+
 (* Body contradicts the declared parameter type (field `z` not on Point): the
    final unify still surfaces the mismatch. *)
 let e_sig_body_mismatch = assert_err
@@ -3480,6 +3518,7 @@ let () =
       test_case "sig with constraint ok"                 `Quick t_sig_constrained;
       test_case "sig polymorphic identity"               `Quick t_sig_poly_identity;
       test_case "sig returns function (partial peel)"    `Quick t_sig_returns_function;
+      test_case "sig poly HOF not monomorphized by later use" `Quick t_sig_poly_hof_not_monomorphized;
       test_case "err: sig body field mismatch"           `Quick e_sig_body_mismatch;
     ];
     "effects", [

@@ -160,16 +160,35 @@ record, interface).
 
 ### 2.9 Type checker: declaration order matters
 
-`typecheck.ml`'s `group_fundefs` preserves first-appearance order in source.
-Don't switch to `Hashtbl.fold` — its order is unspecified, and we depend on
-sequential processing so that earlier definitions are generalized before later
-ones use them. If a later def's body references an earlier name, it should see
-the generalized scheme.
+`typecheck.ml`'s `group_fundefs` coalesces clauses in first-appearance order,
+then `order_groups_by_deps` reorders the groups into **dependency order** so a
+group's non-cyclic callees are processed (and generalized) before it. We depend
+on this so that when a def's body references another top-level name it sees the
+*generalized scheme*, not a still-monomorphic placeholder. Don't switch to
+`Hashtbl.fold` for the coalescing — its order is unspecified, and the dependency
+reorder needs a deterministic base order.
 
 Mutual recursion still works because all top-level names are pre-bound to
-placeholder TVars at level 1 *before* processing begins. The forward reference
+placeholder TVars at level 1 *before* processing begins. A forward reference
 unifies with the placeholder; when the forward-referenced def is processed, its
 placeholder is already pinned to a concrete shape.
+
+**Why the reorder (not just source order).** A plain forward reference (caller
+defined before a callee it does *not* recurse with) shares a live inference var
+between the caller's body and the callee's monomorphic placeholder. Once the
+caller is generalized and the callee is later unified against its own signature,
+that shared var can be re-linked underneath the caller's already-generalized
+scheme — silently monomorphizing a polymorphic HOF (`sortBy` pinned to a tuple
+element type by an unrelated `sortOn`-style use, surfacing as `(a, b) vs Int` at
+a *different* call site). Processing callees first means the caller instantiates
+a real scheme and never shares the placeholder. Genuine mutual-recursion cycles
+can't be linearized, so `order_groups_by_deps` (Tarjan SCC, dependencies-first)
+keeps each cycle's members adjacent in source order — their placeholder-based
+handling is unchanged. References are over-approximated (every
+`EVar`/`EMethodRef`/`EDictApp` name, ignoring shadowing); a spurious edge only
+merges groups into a larger SCC (falling back to the old behavior), never a
+wrong type. Regression: `test_typecheck`'s "sig poly HOF not monomorphized by
+later use".
 
 ### 2.10 Type checker: levels
 

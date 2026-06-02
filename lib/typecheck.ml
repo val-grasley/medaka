@@ -2068,6 +2068,93 @@ and binop_type env op l r =
 
 (* ── Top-level processing ───────────────────────── *)
 
+(* Reorder top-level groups so that a group's *non-cyclic* callees are processed
+   (and generalized) before it.
+
+   Why this matters (see PLAN.md §2.9): every top-level name is pre-bound as a
+   monomorphic placeholder var, and a forward reference to a not-yet-processed
+   name unifies with that placeholder rather than instantiating a real scheme.
+   That is the right treatment for genuine mutual recursion, but for a plain
+   forward reference (caller defined before a callee it does not recurse with)
+   it shares a live inference var between the caller's body and the callee's
+   placeholder.  Once the caller is generalized and the callee is later unified
+   against its own signature, that shared var can be re-linked underneath the
+   caller's *already-generalized* scheme — silently monomorphizing a polymorphic
+   HOF (e.g. `sortBy` getting pinned to a tuple element type by an unrelated
+   `sortOn`-style use).  Processing callees first means the caller instantiates a
+   proper generalized scheme and never shares the placeholder.
+
+   True mutual-recursion cycles can't be linearized, so we keep each SCC's
+   members adjacent and in source order: their existing placeholder-based
+   handling is unchanged.  References are over-approximated (every
+   EVar/EMethodRef/EDictApp name, ignoring shadowing) — a spurious edge can only
+   merge groups into a larger SCC (falling back to today's behavior), never
+   produce a wrong type.  Tarjan emits SCCs in reverse-topological order, i.e.
+   dependencies-first, which is exactly the order we want. *)
+let order_groups_by_deps groups =
+  let arr = Array.of_list groups in
+  let n = Array.length arr in
+  if n <= 1 then groups else begin
+    (* name -> index of the group that defines it *)
+    let owner = Hashtbl.create 256 in
+    Array.iteri (fun i (_, members) ->
+      List.iter (fun (name, _, _) -> Hashtbl.replace owner name i) members) arr;
+    (* deps.(i) = sorted list of group indices group i references (i excluded) *)
+    let deps = Array.map (fun (_, members) ->
+      let s = ref [] in
+      let note j = if not (List.mem j !s) then s := j :: !s in
+      List.iter (fun (_, _, clauses) ->
+        List.iter (fun (_pats, body) ->
+          ignore (Desugar.map_expr (fun e ->
+            (match e with
+             | EVar x | EMethodRef (_, x) | EDictApp (_, x) ->
+               (match Hashtbl.find_opt owner x with Some j -> note j | None -> ())
+             | _ -> ());
+            e) body)
+        ) clauses
+      ) members;
+      List.sort compare !s
+    ) arr in
+    (* Tarjan's strongly-connected-components. *)
+    let index = Array.make n (-1) in
+    let lowlink = Array.make n 0 in
+    let onstack = Array.make n false in
+    let stack = ref [] in
+    let counter = ref 0 in
+    let out = ref [] in
+    let rec strongconnect v =
+      index.(v) <- !counter; lowlink.(v) <- !counter; incr counter;
+      stack := v :: !stack; onstack.(v) <- true;
+      List.iter (fun w ->
+        if w = v then ()
+        else if index.(w) = -1 then begin
+          strongconnect w;
+          lowlink.(v) <- min lowlink.(v) lowlink.(w)
+        end else if onstack.(w) then
+          lowlink.(v) <- min lowlink.(v) index.(w)
+      ) deps.(v);
+      if lowlink.(v) = index.(v) then begin
+        let scc = ref [] in
+        let stop = ref false in
+        while not !stop do
+          match !stack with
+          | w :: rest ->
+            stack := rest; onstack.(w) <- false; scc := w :: !scc;
+            if w = v then stop := true
+          | [] -> stop := true
+        done;
+        (* members in source order within the SCC *)
+        out := List.sort compare !scc :: !out
+      end
+    in
+    for v = 0 to n - 1 do
+      if index.(v) = -1 then strongconnect v
+    done;
+    (* !out holds SCCs in reverse pop order; pop order is dependencies-first. *)
+    let sccs = List.rev !out in
+    List.concat_map (fun scc -> List.map (fun i -> arr.(i)) scc) sccs
+  end
+
 (* Group fn defs by name, preserving first-appearance order in source.
    Order matters for type-checking — later defs can use earlier defs at
    polymorphic types only if earlier defs are processed (and generalized)
@@ -2117,6 +2204,7 @@ let group_fundefs decls
   ) !groups_in_order
   |> List.filter (fun (_, members) ->
     List.for_all (fun (_, _, cs) -> cs <> []) members)
+  |> order_groups_by_deps
 
 (* Flatten the grouped output for callers that just want a (name, sig, clauses) list. *)
 let flatten_groups groups =
