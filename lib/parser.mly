@@ -71,12 +71,18 @@ let coalesce_clauses bindings =
 let desugar_where bindings main_expr =
   ELetGroup (coalesce_clauses bindings, main_expr)
 
+(* A bare identifier names a constructor iff it starts with an uppercase ASCII
+   letter. NB: `Char.uppercase_ascii c = c` is WRONG here — it is also true for
+   `_` and digits, which mis-classifies a leading-underscore lambda parameter as
+   a constructor (Phase 104). *)
+let is_ctor_name s = String.length s > 0 && s.[0] >= 'A' && s.[0] <= 'Z'
+
 (* Convert an expression back into a pattern when used as a lambda parameter.
    Supported: identifiers, literals, tuples, lists, cons, constructor apps. *)
 let rec expr_to_pat = function
   | ELoc (_, e)  -> expr_to_pat e
   | EVar x when x = "_" -> PWild  (* shouldn't normally reach here; UNDERSCORE has its own rule *)
-  | EVar x when String.length x > 0 && x.[0] >= 'A' && x.[0] <= 'Z' -> PCon (x, [])  (* bare nullary constructor, e.g. `None` *)
+  | EVar x when is_ctor_name x -> PCon (x, [])  (* bare nullary constructor, e.g. `None` *)
   | EVar x       -> PVar x
   | ELit l       -> PLit l
   | ETuple es    -> PTuple (List.map expr_to_pat es)
@@ -91,8 +97,7 @@ let rec expr_to_pat = function
     let rec strip = function ELoc (_, e) -> strip e | e -> e in
     let rec collect acc e = match strip e with
       | EApp (f, a) -> collect (a :: acc) f
-      | EVar c when String.length c > 0
-                  && Char.uppercase_ascii c.[0] = c.[0] ->
+      | EVar c when is_ctor_name c ->
         PCon (c, List.map expr_to_pat acc)
       | _ -> failwith "Invalid lambda parameter pattern"
     in
@@ -126,7 +131,7 @@ and expr_to_pats e =
   | EApp _ as app ->
     let (head, args) = spine [] app in
     (match strip head with
-     | EVar c when String.length c > 0 && Char.uppercase_ascii c.[0] = c.[0] ->
+     | EVar c when is_ctor_name c ->
        [expr_to_pat app]
      | _ ->
        List.map expr_to_pat (head :: args))

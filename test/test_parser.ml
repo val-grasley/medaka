@@ -194,6 +194,29 @@ let test_expr_lambda_ctor_single_pat_regression () =
   | other ->
     failwith (Printf.sprintf "wrong: got %s" (Ast.pp_expr other))
 
+(* Phase 104: a leading bare `_` as the FIRST lambda parameter is a wildcard,
+   not a constructor. Previously failed with `Unknown constructor: _`. *)
+let test_expr_lambda_leading_wild () =
+  match parse_expr "_ x => x\n" with
+  | ELam ([PWild; PVar "x"], EVar "x") -> ()
+  | other ->
+    failwith (Printf.sprintf "wrong: got %s" (Ast.pp_expr other))
+
+(* Phase 104: a leading `_name` first parameter binds a (conventionally-unused)
+   variable, not a constructor application. *)
+let test_expr_lambda_leading_underscore_name () =
+  match parse_expr "_k v acc => acc\n" with
+  | ELam ([PVar "_k"; PVar "v"; PVar "acc"], EVar "acc") -> ()
+  | other ->
+    failwith (Printf.sprintf "wrong: got %s" (Ast.pp_expr other))
+
+(* Phase 104: a `_` in a non-first position kept working throughout. *)
+let test_expr_lambda_nonfirst_wild () =
+  match parse_expr "k _ acc => acc\n" with
+  | ELam ([PVar "k"; PWild; PVar "acc"], EVar "acc") -> ()
+  | other ->
+    failwith (Printf.sprintf "wrong: got %s" (Ast.pp_expr other))
+
 let test_expr_let () =
   match parse_expr "let x = 5 in x + 1\n" with
   | ELet (false, false, PVar "x", ELit (LInt 5), EBinOp ("+", EVar "x", ELit (LInt 1))) -> ()
@@ -1788,6 +1811,9 @@ let () =
       test_case "lambda two params"  `Quick test_expr_lambda_two_params;
       test_case "lambda three params" `Quick test_expr_lambda_three_params;
       test_case "lambda ctor single pat regression" `Quick test_expr_lambda_ctor_single_pat_regression;
+      test_case "lambda leading wild" `Quick test_expr_lambda_leading_wild;
+      test_case "lambda leading underscore name" `Quick test_expr_lambda_leading_underscore_name;
+      test_case "lambda nonfirst wild" `Quick test_expr_lambda_nonfirst_wild;
       test_case "let"               `Quick test_expr_let;
       test_case "let mut"           `Quick test_expr_let_mut;
       test_case "let fn one arg"    `Quick test_expr_let_fn_one_arg;

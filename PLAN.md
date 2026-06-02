@@ -250,15 +250,20 @@ above, it is flagged ⭐.
     `typecheck.ml`/`method_marker.ml`/`dict_pass.ml`/`eval.ml`. Skill:
     **harden-typechecker** (likely cross-cutting → **add-language-feature**).
 
-- **Phase 104 — parser: a leading `_` (or `_name`) as the *first* lambda
-  parameter mis-parses as a constructor.** `(_ x => …)` / `(_k v acc => …)`
-  fail with `Unknown constructor: _`; a `_` in any *non-first* position is fine
-  (`(k _ acc => …)` works), and `_`/`_k` inside a tuple pattern is fine. Root
-  cause is the expr-first binding-LHS path (`expr_to_pat`) treating a leading
-  underscore token as a constructor occurrence. Workaround: name the first
-  param. Lands in `lib/parser.mly` / the `expr_to_pat` lowering. Re-measure
-  `parser.conflicts` after. Skill: **add-language-feature** (parser). See
-  [[project_binding_lhs_expr_first]].
+- ✅ **Phase 104 — parser: a leading `_` (or `_name`) as the *first* lambda
+  parameter mis-parses as a constructor. DONE.** `(_ x => …)` /
+  `(_k v acc => …)` failed with `Unknown constructor: _`; a `_` in any
+  *non-first* position was fine (`(k _ acc => …)`). Root cause was **not** a
+  grammar conflict but a buggy constructor-head test in the expr-first
+  binding-LHS lowering (`expr_to_pat`/`expr_to_pats` in `lib/parser.mly`): both
+  used `Char.uppercase_ascii c.[0] = c.[0]`, which is `true` for `_` (and digits)
+  since underscore has no case — so a leading-`_` application head was lowered to
+  `PCon ("_", …)`. Fixed by factoring `is_ctor_name s` (an explicit `'A'..'Z'`
+  ASCII-range check, matching the already-correct third site) and using it at all
+  three constructor-head checks. No grammar rule changed → `parser.conflicts`
+  unchanged at 3. Regression tests in `test/test_parser.ml`
+  (`lambda leading wild` / `lambda leading underscore name` /
+  `lambda nonfirst wild`). See [[project_binding_lhs_expr_first]].
 
 - **Phase 105 — exhaustiveness false-positive on imported-type constructors.**
   Phase 102's `Exhaust.check_clauses` warns `non-exhaustive clauses` for a
