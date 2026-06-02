@@ -59,8 +59,8 @@ Support files:
 | `bin/main.ml` | CLI: `check` / `run` / `test` (doctests + prop tests) / `repl` / `lsp` / `fmt` / `new` |
 
 `stdlib/`: `runtime.mdk` (extern primitive catalog, embedded), `core.mdk`
-(implicit prelude — `Eq`/`Ord`/`Show`/`Num`/…), `list.mdk`/`string.mdk`/`array.mdk`
-(written in Medaka).
+(implicit prelude — `Eq`/`Ord`/`Show`/`Num`/…), `list.mdk`/`string.mdk`/`array.mdk`/`map.mdk`
+(written in Medaka; `map.mdk` is the weight-balanced ordered `Map k v`).
 
 ## Build & test
 

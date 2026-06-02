@@ -583,3 +583,61 @@ typechecked as if it had no declared effect, then errored on the
 - ✅ `impl Semigroup (Array a)` — array concatenation
 - ✅ `impl Monoid (Array a)` — identity is `[||]`
 - **Skipped:** `Applicative Array`, `Thenable Array` — semantically definable but encourage O(N·M) allocation; arrays should drop into `List` for monadic non-determinism and convert back at the boundary
+
+---
+
+## Module 5 — `map` / `set` (ordered)
+
+Persistent **ordered** containers, keyed by `Ord`. `map` is implemented
+(`stdlib/map.mdk`); `set` is next.
+
+**Representation.** `Map k v` is a **weight-balanced binary search tree** (the
+Adams / Haskell `Data.Map` scheme): `data Map k v = Tip | Bin Int k v (Map k v)
+(Map k v)`, where the cached `Int` is the subtree size. A single smart
+constructor `balance` (`delta = 3`, `ratio = 2`) keeps neither subtree more than
+3× its sibling, so every operation is O(log n) and `size` is O(1). The structure
+is persistent — operations return a fresh map sharing all untouched subtrees.
+Verified: 1000 ascending inserts (the BST worst case) give depth 15 (≈ the
+1.44·log₂n bound), and a `wellFormed` invariant checker (BST order + size caches
++ balance bound) holds across 700 randomized insert/delete/union property cases.
+
+**Name claim (compiler).** `Map` was a reserved primitive type name in
+`lib/resolve.ml` (a placeholder backing the stubbed `Map { k => v }` literal
+sugar). It is now removed from `primitive_types` so `data Map k v` in
+`stdlib/map.mdk` is the canonical definition — mirroring how `Option`/`Result`/
+`Ordering` live in `core.mdk`. **Deferred:** wiring the `Map { k => v }` /
+`Set { … }` literal sugar (parsed to `EMapLit`/`ESetLit`, eval-stubbed as
+`VCon "Map.fromList"`) to actually call the module's `fromList` — its own
+`add-language-feature` phase. The literal is unused anywhere today.
+
+### `map` ✅ implemented (`stdlib/map.mdk`)
+
+- **Construction:** `empty` (= `Tip`; standalone, *not* a `Monoid` method — see
+  below), `singleton`, `fromList` (last write wins on duplicate keys)
+- **Query:** `size` (O(1)), `isEmpty`, `lookup`, `member`, `findWithDefault`
+- **Insertion:** `insert`, `insertWith` (`f new old`), `adjust`
+- **Deletion:** `delete`, `deleteMin`, `deleteMax`
+- **Min/max:** `minView`, `maxView`, `lookupMin`, `lookupMax`
+- **Folds / traversal (ascending key order):** `foldrWithKey`, `foldlWithKey`,
+  `toList` (assoc pairs), `keys`, `elems`, `mapWithKey`, `filterWithKey`
+- **Combining:** `union` (left-biased), `unionWith`, `difference`,
+  `intersectionWith`
+- **Invariant checker:** `wellFormed` (exported; backs the property tests)
+- **Instances:** ✅ `Mappable (Map k)` (over values), `Eq`/`Show` (via the
+  canonical ascending assoc list), `Semigroup (Map k v) requires Ord k`
+  (`++` = left-biased `union`)
+- **⛔ `Monoid (Map k v)` — intentionally not provided.** `Monoid.empty` is
+  nullary, so it dispatches on its *result* type; a return-position dispatch
+  can't supply the `Ord k` the instance requires (the Phase 83/84 flat-dict
+  limitation — confirmed: even `array`'s `empty` mis-resolves through it). Use
+  the standalone `empty` (= `Tip`) as the identity. `Semigroup.append` is fine
+  because it dispatches on its first `Map` argument.
+- **Naming notes:** `toList` returns assoc pairs (the Map-conventional meaning);
+  `Foldable (Map k)` is **not** implemented to avoid hijacking `toList` to mean
+  "values" — use `elems`/`keys`/`size` instead. No `filter` (would clash with
+  `Filterable.filter`); use `filterWithKey`.
+
+### `set` ⏳ planned
+
+Same weight-balanced tree, elements only. Decision pending: a standalone element
+tree vs. a thin wrapper over `Map a Unit`.

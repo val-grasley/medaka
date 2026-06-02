@@ -18,9 +18,10 @@ interpolation, type aliases/newtypes, property testing, doctests, an LSP server,
 a formatter, and a project-config/`medaka new` surface. Operators are wired to
 the real `Eq`/`Ord`/`Num` interfaces in `core.mdk` (Phase 52).
 
-The stdlib in Medaka covers `core`, `list`, `array`, and a drafted `string`
-(STDLIB.md Modules 1–4). The remaining stdlib modules are user-written by
-design (see the stdlib division-of-labor convention).
+The stdlib in Medaka covers `core`, `list`, `array`, a drafted `string`
+(STDLIB.md Modules 1–4), and `map` (Module 5, the weight-balanced ordered map);
+`set` is next. As of 2026-06-02 the user lifted the hand-write-it-myself
+constraint and delegated the remaining modules.
 
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
@@ -224,6 +225,63 @@ above, it is flagged ⭐.
   `type_ctors` builtin seed (now fixed). See PLAN-ARCHIVE.md. Skill:
   **harden-typechecker**.
 
+*(Phases 103–105 + 107 below were surfaced implementing Module 5 `map`,
+2026-06-02 — see the per-item repros.)*
+
+- **Phase 103 — nullary return-position method dispatch is unreliable.** Two
+  facets, both reproduced on the 2026-06-02 binary:
+  - **(a) Shipped bug — type ascription ignored.** `array`'s standalone
+    `empty : Array Int` panics `arrayLength: expected Array` under `medaka run`:
+    the bare nullary `empty` mis-dispatches to the *first* `Monoid` impl
+    (`List`'s `[]`) instead of honoring the `: Array Int` ascription. `empty :
+    List Int` only "works" by luck (List is the first impl). So `array.empty` is
+    effectively broken today wherever it's used through the typed pipeline.
+  - **(b) Constrained impl can't ground its dict.** A nullary return-position
+    method whose impl carries a `requires` (`impl Monoid (Map k v) requires Ord
+    k where empty = Tip`) can't supply the `Ord k` from result-type context — the
+    flat `VDict` can't carry it — so the call errors `no matching impl for
+    dispatch`. This is the **nullary** continuation of the Phase 83/84
+    return-position residuals (Phase 96 fixed the *unconstrained* nullary case
+    like `minBound`; this is the constrained + ascription-driven case).
+  - **Workaround in map.mdk:** no `impl Monoid (Map k v)`; use a standalone
+    `empty` (= `Tip`) and the `Tip` constructor internally. `Semigroup.append`
+    (arg-position) is fine. **Fix unblocks:** maps/sets/arrays as proper
+    `Monoid`s, and removes the `array.empty` footgun. Lands in
+    `typecheck.ml`/`method_marker.ml`/`dict_pass.ml`/`eval.ml`. Skill:
+    **harden-typechecker** (likely cross-cutting → **add-language-feature**).
+
+- **Phase 104 — parser: a leading `_` (or `_name`) as the *first* lambda
+  parameter mis-parses as a constructor.** `(_ x => …)` / `(_k v acc => …)`
+  fail with `Unknown constructor: _`; a `_` in any *non-first* position is fine
+  (`(k _ acc => …)` works), and `_`/`_k` inside a tuple pattern is fine. Root
+  cause is the expr-first binding-LHS path (`expr_to_pat`) treating a leading
+  underscore token as a constructor occurrence. Workaround: name the first
+  param. Lands in `lib/parser.mly` / the `expr_to_pat` lowering. Re-measure
+  `parser.conflicts` after. Skill: **add-language-feature** (parser). See
+  [[project_binding_lhs_expr_first]].
+
+- **Phase 105 — exhaustiveness false-positive on imported-type constructors.**
+  Phase 102's `Exhaust.check_clauses` warns `non-exhaustive clauses` for a
+  function that *fully* covers an **imported** data type's constructors
+  (`depth Tip = …; depth (Bin …) = …` over an imported `Map`), while the
+  identical match on a **locally-declared** type does not warn. The clause oracle
+  (`exhaust_oracle`, from `env.type_ctors`/`env.ctors`) isn't seeing constructors
+  brought in by `import`. Conservative (warning only, eval still runs) but noisy
+  for any module using imported ADTs. Lands in the oracle construction in
+  `lib/typecheck.ml` (feed imported `te_ctors`). Skill: **harden-typechecker**.
+
+- **Phase 106 — minor ergonomics surfaced by Module 5 (low priority).**
+  - **Import a type with its constructors in one token.** `import map.{Map}`
+    does *not* bring `Tip`/`Bin`; each constructor must be listed. A Haskell-style
+    `import map.{Map(..)}` (or auto-importing a `public` type's constructors)
+    would cut friction for ADT-exporting modules. Lands in `lib/resolve.ml` +
+    parser import syntax.
+  - **`Ordering`'s `Eq` constructor clashes with the `Eq` interface name**, so
+    BST code must match `compare` as `Lt`/`Gt`/`_` and can never name the equal
+    case. Longstanding; a rename (`Equal`?) or namespacing would remove the
+    workaround but is a breaking change — likely **won't-do**, recorded for
+    intentionality.
+
 - ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** Lower priority;
   each is a known limitation with a correct-enough fallback today:
   - **Instance-`requires` dict-threading into return-position impl bodies — DONE
@@ -278,21 +336,58 @@ non-package-manager gaps:
   resolve-error in the JSON output. Multi-file `--json` is the follow-up.
 - Skill: none specific (lands in `bin/main.ml` + `lib/lsp_server.ml`).
 
-### Stdlib enablement (Phase 19 — user-owned)
+### Stdlib enablement (Phase 19)
 
-Deliberately hand-written by the user; listed for completeness, not as agent
-work unless explicitly delegated (see the stdlib division-of-labor convention).
+Originally hand-written by the user by design; as of 2026-06-02 the user lifted
+that constraint and delegated the remaining modules (Modules 5–8). STDLIB.md is
+the per-module checklist.
 
-- ⭐ **`stdlib/string.mdk`** is drafted and passes its 45 doctests but is flagged
+- **Phase 107 — `core.mdk` gaps surfaced by Module 5 (2026-06-02).**
+  - **`Foldable.isEmpty` / `length` have no default body** — only `foldMap`
+    does, yet the interface comment *and* STDLIB.md claim all three default. So
+    every `Foldable` impl (List, Array, and any new one like a future tree) is
+    forced to spell out `isEmpty`/`length`. Either add the default bodies
+    (`isEmpty t = ...` via `toList`; `length = fold (acc _ => acc + 1) 0` — mind
+    the point-free-dispatched-method eval trap, eta-expand) or correct the
+    misleading comment + STDLIB.md. Lands in `stdlib/core.mdk`. Skill:
+    **extend-stdlib**.
+  - **No `fst` / `snd` tuple accessors** in core (`fst (1,2)` → `Unbound
+    variable: fst`). Trivial to add (`fst (a, _) = a` / `snd (_, b) = b`); add to
+    `core.mdk` utilities, or decide they're intentionally omitted (pattern-match
+    instead) and document it. Skill: **extend-stdlib**.
+
+- ⭐ **`stdlib/string.mdk`** is drafted and passes its 49 doctests but is flagged
   *awaiting user review* (archive Phase 75 step 3). Open decisions: the
   `length`/`isEmpty`/`count` omissions and `toUpper` vs `charToUpper` naming.
-- **Modules 5–8 unstarted:** `map`/`set` (persistent trees), `mut_array`/
-  `hash_map`/`hash_set`, `io` (`readFile`/`writeFile`/`readLine`), `json`
-  (type + parser + serializer). Expect each to surface new language gaps —
-  record them here as new phases when they do.
-  - ⭐ **`map`/`set` and `io` are the critical-path Stage 0 prerequisites** — a
-    self-hosted compiler can't be written without symbol tables and file I/O.
-    (`mut_array`/`hash_map`/`hash_set` matter mainly for interpreter/compiler
+- **Module 5 — `map`/`set` (ordered):**
+  - ✅ **`stdlib/map.mdk` — DONE (2026-06-02).** Weight-balanced BST (Adams /
+    `Data.Map`, `data Map k v = Tip | Bin Int k v …`, `delta = 3`, `ratio = 2`).
+    Full API (insert/insertWith/adjust/delete/lookup/member/union/unionWith/
+    difference/intersectionWith/min-max views/folds-with-key/keys/elems/
+    filterWithKey) + `Mappable`/`Eq`/`Show`/`Semigroup` instances + an exported
+    `wellFormed` invariant checker. 33 doctests + 7 props (700 cases) green;
+    depth 15 for 1000 ascending inserts. See STDLIB.md Module 5 for the full
+    surface + the two gotchas: (a) **no `Monoid (Map k v)`** — `Monoid.empty` is
+    return-position and can't supply the instance's `Ord k` (Phase 83/84 flat-dict
+    limit); use the standalone `empty`/`Tip`. (b) `Foldable` deliberately skipped
+    so `toList` keeps meaning assoc-pairs.
+    - **Compiler change:** removed `"Map"` from `resolve.ml`'s `primitive_types`
+      (it was a reserved placeholder), so the stdlib `data Map` is canonical —
+      mirroring `Option`/`Result`/`Ordering`.
+  - ⏳ **`stdlib/set.mdk`** — next. Same tree; decide standalone-element-tree vs.
+    `Map a Unit` wrapper.
+  - **Phase 108 (deferred) — wire the `Map { k => v }` / `Set { … }` literal
+    sugar.** Surface syntax already parses to `EMapLit`/`ESetLit` and the names
+    `Map`/`Set` are reserved for it (resolve.ml still reserves `Set`); eval stubs
+    them as `VCon "<Name>.fromList"`. Make them desugar to a real `fromList` call
+    on the imported module (requires the module in scope at the literal site).
+    Unused anywhere today → low priority. Skill: **add-language-feature**.
+- **Modules 6–8 unstarted:** `mut_array`/`hash_map`/`hash_set`, `io`
+  (`readFile`/`writeFile`/`readLine`), `json` (type + parser + serializer).
+  Expect each to surface new language gaps — record them here as new phases.
+  - ⭐ **`set` (finishing Module 5) and `io` are the remaining critical-path
+    Stage 0 prerequisites** — a self-hosted compiler needs symbol tables (have
+    `map` now) and file I/O. (`mut_array`/`hash_map`/`hash_set` matter mainly for
     *performance*; `json` is not on the self-hosting path.)
 
 ### Blocked on a package manager (out of scope until one exists)

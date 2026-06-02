@@ -68,11 +68,15 @@ let pp_error = function
 (* Built-in primitive types not declared in stdlib/core.mdk.  Option/Result/
    Ordering live in core.mdk and flow in via prelude_types — they must not
    appear here, otherwise type-checking core.mdk standalone reports a duplicate
-   (see program_is_core handling below). *)
+   (see program_is_core handling below).  `Map` is likewise *not* listed: it is
+   declared as `data Map k v` in stdlib/map.mdk (Module 5), so files importing
+   that module register it via the regular DData pipeline.  (The `Map { k => v }`
+   literal sugar's typecheck helper still names `TCon "Map"`; it only fires for
+   files that import the module, where the type is in scope.) *)
 let primitive_types = [
   "Int"; "Float"; "String"; "Char"; "Bool"; "Unit";
   "List"; "Ref";
-  "Array"; "MutArray"; "Map"; "HashMap"; "Set"; "HashSet";
+  "Array"; "MutArray"; "HashMap"; "Set"; "HashSet";
 ]
 
 (* True/False are lexer keywords, not declared in stdlib/core.mdk like the
