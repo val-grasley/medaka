@@ -1650,7 +1650,7 @@ Scope:
   evaluated form's `show` output against the expected text.
 - `medaka doc`: render examples back into generated HTML/markdown.
 
-### Phase 42: Property testing (`prop` + `Arbitrary`) ✅ DONE (core); residual generators ⏳ (re-marked 2026-06-02)
+### Phase 42: Property testing (`prop` + `Arbitrary`) ✅ DONE (core + generators); interface-unification residual → Phase 99 (re-marked 2026-06-02)
 
 `prop "name" (x : T) = ...` declares a property quantified over `T`,
 generated automatically via an `Arbitrary` interface (derivable).
@@ -1672,16 +1672,29 @@ stale.** The pipeline is all there:
   `bin/main.ml`. `prop` declarations are exercised in `stdlib/core.mdk` and
   `stdlib/list.mdk`.
 
-**Residual ⏳ (the only gaps vs. the original scope):**
-- `prop_runner.gen_for_type` hard-codes `Int`/`Bool`/`Float`/`Char`/`String`/
-  `Unit`/`List`/`Option`/`Result` and looks up nullary `TyCon` user types in
-  `arbitrary_registry`. **No generation for `Array a` or tuples**, and a
-  *parametric* user type (`TyApp (TyCon custom, _)`) isn't routed through the
-  registry — only nullary `TyCon custom` is.
-- Generation is done natively in OCaml (`gen_for_type`), so the `Arbitrary`
-  interface's `arbitrary`/`shrink` methods aren't actually *called* by the
-  runner for the built-in types — the registry path is `deriving`-only. Unifying
-  the two (drive everything through the Medaka-level interface) is open.
+**Generators completed (2026-06-02, structural-native approach):**
+- `prop_runner.gen_for_type` now also generates **`Array a`** and **tuples**
+  (`TyTuple`), with matching shrinking in `shrink_value` (halve an array; vary
+  one tuple component at a time).
+- **Parametric user types** (`Tree Int`, records, newtypes) generate
+  *structurally*: `run_all` builds a `tydef` map from the program's
+  `DData`/`DRecord`/`DNewtype` declarations, and `gen_for_type` peels the
+  `TyApp` spine, binds the type's parameters to the concrete arguments
+  (`subst_ty`), and recurses over each field's type. So `Tree Int` produces
+  `Int` leaves and `Tree String` strings — no dictionary threading needed,
+  because the runner does the type-argument substitution itself. Nullary user
+  types with a hand-written impl still fall back to `arbitrary_registry`; an
+  unbound type variable now fails with a clear message instead of
+  mis-generating. All changes are self-contained in `lib/prop_runner.ml`.
+
+**Residual → Phase 99 (the principled unification):**
+- Generation/shrinking are still native OCaml in `gen_for_type`/`shrink_value`,
+  so the `Arbitrary` interface's `arbitrary`/`shrink` methods aren't *called* by
+  the runner for built-in or structurally-generated types. Driving everything
+  through the Medaka-level interface (so a hand-written `arbitrary`/`shrink`
+  wins, and element dictionaries flow into parametric instances via the
+  dict-passed pipeline) is deferred — it intersects the Phase 83/84
+  return-position dispatch residuals. Tracked as Phase 99 in PLAN.md.
 
 ### Phase 42.5: `where`-binding fixes ✅ DONE
 

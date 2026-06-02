@@ -150,15 +150,21 @@ above, it is flagged ⭐.
   preserve module separation. Skill: **add-language-feature** (touches the
   doctest harness, not just the typechecker).
 
-- **Phase 42 (residual) — property-test generators.** The `prop`/`Arbitrary`
-  machinery is done, but `lib/prop_runner.ml`'s `gen_for_type` has gaps:
-  - No generation for `Array a` or tuples.
-  - Parametric user types (`TyApp (TyCon custom, _)`) aren't routed through
-    `Eval.arbitrary_registry` — only nullary `TyCon custom` is.
-  - Built-in generation is native OCaml and bypasses the Medaka-level
-    `arbitrary`/`shrink` methods; unifying both paths (drive everything through
-    the interface) is open.
-  - Skill: **add-primitive** / **add-language-feature** depending on approach.
+- **Phase 99 — drive property generation/shrinking through the `Arbitrary`
+  interface.** Phase 42's generator gaps are closed (`lib/prop_runner.ml` now
+  generates `Array`, tuples, and parametric user types structurally, with
+  matching shrinking — see PLAN-ARCHIVE.md Phase 42). What remains is the
+  *principled* version: `gen_for_type`/`shrink_value` are still native OCaml, so
+  a user's hand-written `arbitrary`/`shrink` impl is not actually called for
+  built-in or structurally-generated types, and parametric generation works by
+  the runner substituting type arguments itself rather than by passing element
+  dictionaries. Unifying both paths — drive every generator/shrink through the
+  Medaka-level interface via the dict-passed typed pipeline — would let
+  hand-written impls win and element dictionaries flow into parametric
+  instances. It is deferred because it intersects the Phase 83/84
+  return-position dispatch residuals (a post-typecheck marker re-run / pipeline
+  restructure). Lands in `lib/prop_runner.ml` + the typed/dict-passing pipeline.
+  Skill: **add-language-feature** (cross-cutting).
 
 - ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** Lower priority;
   each is a known limitation with a correct-enough fallback today:
