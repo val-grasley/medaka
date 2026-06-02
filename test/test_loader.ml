@@ -682,6 +682,64 @@ let test_eval_method_dict_cross_module () =
       failwith (Printf.sprintf "Expected \"OK\\n\" from cross-module foldMap method dict, got %S" out)
   )
 
+(* Phase 88: two-pass elaboration across modules.  A polymorphic-monad do-block
+   wrapper (`h m = do { x <- m; pure x }`) defined in the main module of a
+   multi-module program must dispatch its return-position `pure` by the caller's
+   monad, like the single-file driver (Phase 84) and the REPL (Phase 87).  Mirrors
+   bin/main.ml's multi-module pipeline: pass 1 mark+typecheck discovers `h` as
+   promotable; pass 2 re-marks with it constrained and re-typechecks ~promoted so
+   `pure` routes via a threaded dictionary.  Without the second pass `h (Some 5)`
+   renders as `[5]` (arg-tag "first impl wins" → List). *)
+let test_eval_poly_monad_cross_module () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "dep.mdk"
+      "export id2 : a -> a\nid2 x = x\n" in
+    let main_path = write_file dir "main.mdk"
+      "import dep.{id2}\n\n\
+       h m = do\n\
+      \  x <- m\n\
+      \  pure x\n\n\
+       main : <IO> Unit\n\
+       main = println (show (h (Some (id2 5))))\n" in
+    let modules = Loader.load_program main_path [dir] in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Desugar.desugar_program prog)) modules in
+    let method_names = Method_marker.interface_method_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let constrained = Method_marker.constrained_fn_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let typecheck_all ~constrained ?promoted () =
+      let marked = List.map (fun (mid, fp, prog) ->
+        (mid, fp, Method_marker.mark_program method_names constrained prog)) modules in
+      let te_acc = ref [] in
+      let promoted_out = Hashtbl.create 8 in
+      List.iter (fun (mid, _, prog) ->
+        let (te, _, _) =
+          Typecheck.typecheck_module ?promoted ~promoted_out !te_acc mid prog in
+        te_acc := te :: !te_acc) marked;
+      (marked, promoted_out)
+    in
+    let (m1, promoted) = typecheck_all ~constrained () in
+    let final =
+      if Hashtbl.length promoted = 0 then m1
+      else begin
+        let c2 = Hashtbl.copy constrained in
+        Hashtbl.iter (fun k () -> Hashtbl.replace c2 k ()) promoted;
+        fst (typecheck_all ~constrained:c2 ~promoted ())
+      end in
+    let combined = List.concat_map (fun (_, _, p) -> p) final in
+    let combined = Dict_pass.run (Method_marker.marked_prelude @ combined) in
+    let buf = Buffer.create 32 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+      ignore (Eval.eval_program ~prelude:false combined));
+    let out = Buffer.contents buf in
+    if out <> "Some 5\n" then
+      failwith (Printf.sprintf
+        "Expected \"Some 5\\n\" from cross-module poly-monad `pure` dispatch, got %S" out)
+  )
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -729,6 +787,9 @@ let () =
       test_case "cross-module constrained dispatch" `Quick test_eval_dict_passing_cross_module;
       test_case "cross-module super dispatch" `Quick test_eval_super_dict_cross_module;
       test_case "cross-module method-level dict (foldMap)" `Quick test_eval_method_dict_cross_module;
+    ];
+    "two-pass elaboration (Phase 88)", [
+      test_case "cross-module poly-monad pure dispatch" `Quick test_eval_poly_monad_cross_module;
     ];
     "workspace / multi-root", [
       test_case "cross-member import"    `Quick test_workspace_cross_member_import;

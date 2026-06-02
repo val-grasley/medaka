@@ -534,27 +534,52 @@ cd into a member or specify a file\n"; exit 1
       Medaka_lib.Method_marker.constrained_fn_names
         (Medaka_lib.Prelude.program :: List.map (fun (_, _, p) -> p) modules)
     in
-    let modules = List.map (fun (mid, fp, prog) ->
-      (mid, fp, Medaka_lib.Method_marker.mark_program method_names constrained_names prog)
-    ) modules in
-
-    (* Typecheck all modules in dependency order *)
-    let type_exports = ref [] in
-    let final_schemes = ref [] in
-    let all_warnings = ref [] in
-    List.iter (fun (mod_id, _file_path, prog) ->
-      (try
-        let (te, schemes, warnings) =
-          Medaka_lib.Typecheck.typecheck_module !type_exports mod_id prog
-        in
-        type_exports := te :: !type_exports;
-        final_schemes := schemes;
-        all_warnings := !all_warnings @ warnings
-       with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
-         Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
-         show_snippet source loc_opt;
-         exit 1)
-    ) modules;
+    (* Phase 88: two-pass elaboration across modules, mirroring the single-file
+       Elaborate.elaborate and the REPL (Phase 87).  Pass 1 marks against the
+       static constrained signatures and type-checks every module, collecting any
+       unsignatured do-block wrapper whose inferred Applicative should become
+       dict-routable (so its return-position `pure` routes by the caller's monad,
+       not arg-tag "first impl wins").  If any qualify, re-mark every module with
+       those names treated as constrained and re-type-check with them promoted —
+       so their inferred constraints land in fun_constraints and dict_pass threads
+       a dictionary in.  Nothing promotable (the common case) ⇒ one pass. *)
+    let base_modules = modules in
+    let typecheck_all ~constrained ?promoted () =
+      let marked = List.map (fun (mid, fp, prog) ->
+        (mid, fp, Medaka_lib.Method_marker.mark_program method_names constrained prog)
+      ) base_modules in
+      let type_exports = ref [] in
+      let final_schemes = ref [] in
+      let all_warnings = ref [] in
+      let promoted_out = Hashtbl.create 8 in
+      List.iter (fun (mod_id, _file_path, prog) ->
+        (try
+          let (te, schemes, warnings) =
+            Medaka_lib.Typecheck.typecheck_module ?promoted ~promoted_out
+              !type_exports mod_id prog
+          in
+          type_exports := te :: !type_exports;
+          final_schemes := schemes;
+          all_warnings := !all_warnings @ warnings
+         with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
+           Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
+           show_snippet source loc_opt;
+           exit 1)
+      ) marked;
+      (marked, !final_schemes, !all_warnings, promoted_out)
+    in
+    let (modules1, schemes1, warnings1, promoted) =
+      typecheck_all ~constrained:constrained_names () in
+    let (modules, final_schemes, all_warnings) =
+      if Hashtbl.length promoted = 0 then (modules1, ref schemes1, ref warnings1)
+      else begin
+        let constrained2 = Hashtbl.copy constrained_names in
+        Hashtbl.iter (fun k () -> Hashtbl.replace constrained2 k ()) promoted;
+        let (m2, s2, w2, _) =
+          typecheck_all ~constrained:constrained2 ~promoted () in
+        (m2, ref s2, ref w2)
+      end
+    in
     List.iter (fun w -> Printf.eprintf "%s\n" w) !all_warnings;
 
     (match mode with

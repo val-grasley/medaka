@@ -4143,21 +4143,37 @@ introduces no binding to promote — names were promoted when first defined).
   session; fails `[5]` without the fix.  All base suites green; no new
   `@thorough` failures.
 
-### Phase 88: Phase 84 two-pass elaboration across modules ⏳ TODO
+### Phase 88: Phase 84 two-pass elaboration across modules ✅ DONE
 
-Same gap as Phase 87 for the **multi-module** driver (`bin/main.ml` ~525–571):
-each module is marked once against the union of constrained signatures and
-type-checked via `Typecheck.typecheck_module`, with no promotion pass — so an
-exported unsignatured monad wrapper mis-dispatches `pure` when called in another
-module. Scope: run the module loop twice — mark1 all → typecheck1 all → collect
-the promoted names across modules → re-mark all with them constrained →
-typecheck2 all → `dict_pass` the combined program. Thread `?promoted` through
-`typecheck_module` and carry promoted names across module boundaries via
-`module_type_exports` (it already exports `te_inferred_constraints` /
-`te_fun_constraints`). The heaviest/riskiest surface, hence split from Phase 87.
-Lands in `bin/main.ml` (multi-module path) + `lib/typecheck.ml`
-(`typecheck_module` / exports) + possibly `lib/loader.ml`; add a `test_loader`
-case. Skill: **add-language-feature**.
+Same gap as Phase 87 for the **multi-module** driver: each module was marked once
+against the union of constrained signatures and type-checked via
+`Typecheck.typecheck_module` with no promotion pass — so a polymorphic-monad
+do-block wrapper (`h m = do { x <- m; pure x }`) defined in the main module of a
+multi-module program mis-dispatched `pure` (`h (Some 5)` rendered `[5]`).
+
+**Fix.** `bin/main.ml`'s multi-module path now runs the module loop twice via a
+factored `typecheck_all ~constrained ?promoted` (mirroring `Elaborate.elaborate`
+and the REPL).  Pass 1 marks against the static constrained signatures and
+type-checks all modules, collecting promotable names across modules; if any
+qualify, it re-marks every module with those names treated as constrained and
+re-type-checks with them `~promoted`, so their inferred `Applicative` lands in
+`fun_constraints` and `dict_pass` threads a dictionary in.  Nothing promotable ⇒
+one pass.
+
+- `lib/typecheck.ml`: `typecheck_module` gained `?promoted` (installed into
+  `env.promoted`) and `?promoted_out` (filled via the shared `promotable_from`),
+  keeping its 3-tuple return so the other callers (diagnostics, test_loader,
+  test_typecheck) are unchanged.  Cross-module promoted constraints flow through
+  the existing `te_fun_constraints` export (built from `fun_constraints`), so an
+  exported wrapper promoted on pass 2 is route-bearing in importers too.
+- Regression: `test_loader`'s "two-pass elaboration (Phase 88) / cross-module
+  poly-monad pure dispatch".  All base suites green; no new `@thorough` failures.
+
+**Out of scope (filed as Phase 95).** A do-block wrapper that uses `pure` and is
+defined in an *imported* (non-main) module fails to *type-check* with a spurious
+`core.mdk: 'flatMap' uses interface Mappable …` — a pre-existing multi-module
+super-entailment bug that blocks the promotion machinery before it can run.  The
+main-module case (above) is unaffected and is what Phase 88 fixes.
 
 ### Gaps surfaced during the 2026-06-01 stdlib completion (Modules 1–4)
 
@@ -4319,6 +4335,29 @@ method/dict usages).  Lands in `lib/method_marker.ml` + `lib/typecheck.ml`; add
 `test_typecheck` (obligation fires) + `test_eval` (return-position dispatch via
 backtick) regressions.  Skill: **add-language-feature** (cross-cuts marker +
 typecheck + eval).
+
+### Phase 95: `pure` in an imported module's do-block breaks `flatMap` super-entailment ⏳ TODO
+
+Surfaced while doing Phase 88.  A do-block wrapper that uses `pure` and is defined
+in a **non-main (imported) module** fails to type-check with a spurious error
+blaming the prelude:
+`core.mdk: 'flatMap' uses interface Mappable on a polymorphic value but its type
+signature does not require it`.  Minimal repro: `dep.mdk` containing
+`export\nf m = do\n  x <- m\n  pure x`, imported by any `main.mdk` (even if `f`
+is never used) → error.  Triggers on `pure` specifically: a do-block *without*
+`pure` (just `x <- m; n`) or an explicit `andThen` wrapper does **not** repro,
+and the same wrapper in a single file (`check_program_impl`) or in the *main*
+module type-checks fine.  So it is specific to `typecheck_module`: the presence of
+an Applicative return-position `pure` in a module makes the prepended prelude's
+`flatMap : Thenable m => …` (whose body calls only `andThen`) acquire a phantom
+`Mappable` obligation that the Phase-83 `UnsatisfiedConstraint` check then rejects
+— likely `expand_supers`/super-entailment under-expanding the Thenable→
+Applicative→Mappable chain, or a shared inference var leaking the `pure` site's
+`Mappable` onto `flatMap` during the grouped check.  This **blocks the
+cross-module exported-wrapper case of Phase 88** (the main-module case is fixed).
+Lands in `lib/typecheck.ml` (`typecheck_module` super-entailment / constraint
+attribution); add a `test_loader` (or `test_typecheck` multi-module) regression.
+Skill: **harden-typechecker**.
 
 ---
 

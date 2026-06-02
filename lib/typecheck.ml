@@ -3783,6 +3783,8 @@ let check_program (prog : program) : (ident * scheme) list * string list =
    seeds the env with imported names from use-declarations;
    returns this module's public type exports. *)
 let typecheck_module
+    ?(promoted : (ident, unit) Hashtbl.t option)
+    ?(promoted_out : (ident, unit) Hashtbl.t option)
     (known_modules : module_type_exports list)
     (mod_id        : string)
     (prog          : program)
@@ -3791,6 +3793,14 @@ let typecheck_module
   current_loc := None;
   current_impl_hint := None;
   let env = initial_env () in
+  (* Phase 88: pass-2 promotion (mirrors check_program_impl).  [promoted] names —
+     discovered across all modules on pass 1 — have their inferred constraints
+     registered in fun_constraints (dict-routable) by process_letrec_group, so a
+     polymorphic-monad do-block's `pure` routes by the caller's monad instead of
+     arg-tag "first impl wins". *)
+  (match promoted with
+   | Some p -> Hashtbl.iter (fun k () -> Hashtbl.replace env.promoted k ()) p
+   | None -> ());
 
   (* Core stdlib is always available in every module.
      Skip when this module itself IS core (avoid duplicates).
@@ -4040,6 +4050,14 @@ let typecheck_module
         | Some cs -> Some (n, cs)
         | None -> None) pub_schemes;
   } in
+  (* Phase 88: report this module's promotable names (do-block wrappers whose
+     inferred Applicative should become dict-routable on pass 2).  Collected by
+     the driver across all modules and fed back as [promoted]. *)
+  (match promoted_out with
+   | Some out ->
+     Hashtbl.iter (fun k () -> Hashtbl.replace out k ())
+       (promotable_from !env user_prog)
+   | None -> ());
   (te, all_schemes, warnings)
 
 (* ── REPL incremental interface ──────────────── *)
