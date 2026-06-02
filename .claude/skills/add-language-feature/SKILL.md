@@ -50,7 +50,29 @@ When you emit **Medaka** code in examples/tests, use multi-arg lambda form
    it's on the path your driver hits (`check_program` → `check_program_impl`)
    rather than assuming a stale build (compare exe vs `.cmx` mtime).
 6. **Desugar** — `lib/desugar.ml`. If the feature is sugar, lower it to
-   existing core nodes here rather than handling it in eval.
+   existing core nodes here rather than handling it in eval. Desugar runs
+   **first** (before resolve/marker/typecheck), so a node lowered here can emit
+   bare method `EVar`s (e.g. `andThen`/`pure`) that the marker then turns into
+   `EMethodRef`/`EDictApp` — bind/return-position dispatch flows through the
+   normal dictionary elaboration with no eval-time special-casing (Phase 99
+   lowered `EDo` exactly this way). Three things bite when adding a pass:
+   - **Two entry points.** `desugar_program` (the program pass — add your
+     `map_decl rewrite` step to its pipeline, minding *order*, e.g. `?`-rewrite
+     before do-lowering) **and** `desugar_expr` (standalone-expr pass used by the
+     REPL — applies the rewrites individually). A new pass usually belongs in
+     *both* or the REPL silently skips it.
+   - **Lowering an *existing* surface node** (vs. adding a new one) means you also
+     **delete its downstream `typecheck`/`eval` arms** — leave a loud guard
+     (`assert false` / `fail (InternalError "X survived desugar")`) so a
+     pipeline-ordering regression is caught instead of silently mis-evaluated.
+   - **Errors from desugar.** Desugar is *upstream of* typecheck (and
+     `typecheck.ml` already `open`s/refs `Desugar`, so desugar **cannot** depend
+     on `Typecheck` — no `Typecheck.Type_error`). To report a user-facing error
+     from a lowering, raise a `Desugar`-local exception and catch it at **every**
+     driver's `Type_error` site: `bin/main.ml` (single + multi-module),
+     `lib/diagnostics.ml` (single + multi), and the test harness `check` helpers.
+     `Desugar.desugar_program` has ~12 call sites — grep them; the trusted ones
+     (prelude, valid fixtures) never raise, but user-facing drivers must catch.
 7. **Eval** — `lib/eval.ml`. Add evaluation for any node that survives
    desugaring.
 8. **Printer/fmt** — `lib/printer.ml` (and `lib/fmt.ml`). Round-trip must hold:

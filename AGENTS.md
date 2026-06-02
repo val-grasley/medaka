@@ -35,7 +35,7 @@ Two non-obvious facts that bite when deciding *where* a check belongs:
 | Lex | `lib/lexer.mll` | Indentation-sensitive; emits INDENT/DEDENT/NEWLINE |
 | Parse | `lib/parser.mly` | Menhir grammar |
 | AST | `lib/ast.ml` | Node types + source locations |
-| Desugar | `lib/desugar.ml` | Runs FIRST. Lowers surface sugar: `deriving`, record puns, list comprehensions, `EGuards`/`EFunction`/`ESection`/string-interp |
+| Desugar | `lib/desugar.ml` | Runs FIRST. Lowers surface sugar: `deriving`, record puns, list comprehensions, `EGuards`/`EFunction`/`ESection`/string-interp, `EDo` (do-blocks → nested `andThen`/`pure`, Phase 99) |
 | Resolve | `lib/resolve.ml` | Name binding, single- and multi-module |
 | Mark | `lib/method_marker.ml` | Phase 69: runs after desugar+resolve, before typecheck. Rewrites interface-method `EVar`→`EMethodRef` so typecheck can stamp the resolved impl key per call site and eval routes return-position/multi-param dispatch by it |
 | Typecheck | `lib/typecheck.ml` | Hindley-Milner + interfaces + effects; invokes Exhaust per `EMatch` |
