@@ -207,6 +207,28 @@ export impl Ord (a, b, c, d) requires Ord a, Ord b, Ord c, Ord d where
 export impl Ord (a, b, c, d, e) requires Ord a, Ord b, Ord c, Ord d, Ord e where
   compare (a1, b1, c1, d1, e1) (a2, b2, c2, d2, e2) = thenCmp (compare a1 a2) (thenCmp (compare b1 b2) (thenCmp (compare c1 c2) (thenCmp (compare d1 d2) (compare e1 e2))))
 
+{- | Lexicographic ordering: compare element-wise, and a proper prefix sorts
+   before any list that extends it (`[1] < [1, 2]`, `[] < [0]`). -}
+export impl Ord (List a) requires Ord a where
+  compare [] [] = Eq
+  compare [] _ = Lt
+  compare _ [] = Gt
+  compare (x::xs) (y::ys) = thenCmp (compare x y) (compare xs ys)
+
+-- | `None` sorts before every `Some`; two `Some`s compare by their contents.
+export impl Ord (Option a) requires Ord a where
+  compare None None = Eq
+  compare None (Some _) = Lt
+  compare (Some _) None = Gt
+  compare (Some x) (Some y) = compare x y
+
+-- | `Err` sorts before `Ok`; like constructors compare by their payloads.
+export impl Ord (Result e a) requires Ord e, Ord a where
+  compare (Err x) (Err y) = compare x y
+  compare (Err _) (Ok _) = Lt
+  compare (Ok _) (Err _) = Gt
+  compare (Ok x) (Ok y) = compare x y
+
 {- | Human-readable string rendering.  Backs `medaka test` doctests, which
    compare a result's `show` against the expected text (GHCi/doctest parity).
    `Show Int`/`Float`/`Bool`/`Unit`/`List`/`Option`/`Result` and the tuple
@@ -593,6 +615,34 @@ export
 elem : (Foldable t, Eq a) => a -> t a -> Bool
 elem a = fold (acc x => acc || x == a) False
 
+-- | True when the value does *not* appear in the container.  `not . elem`.
+export
+notElem : (Foldable t, Eq a) => a -> t a -> Bool
+notElem a xs = not (elem a xs)
+
+{- | Largest element by `Ord`, or `None` when the container is empty.  Generic
+   over any `Foldable` — `List`, `Array`, `Option`, … all reuse this one body.
+
+   > maximum [3, 1, 2]
+   Some 3
+   > maximum ([] : List Int)
+   None -}
+export
+maximum : (Foldable t, Ord a) => t a -> Option a
+maximum xs = fold step None xs where
+    step None x = Some x
+    step (Some m) x = Some (max m x)
+
+{- | Smallest element by `Ord`, or `None` when empty.  Generic, like `maximum`.
+
+   > minimum [3, 1, 2]
+   Some 1 -}
+export
+minimum : (Foldable t, Ord a) => t a -> Option a
+minimum xs = fold step None xs where
+    step None x = Some x
+    step (Some m) x = Some (min m x)
+
 {- | `Filterable List`.  Lives in `core` (rather than `list.mdk`) so the
    `filter` name is in scope for the rest of the stdlib; `list.mdk`
    re-exports it for discoverability.
@@ -856,3 +906,8 @@ prop "any/all duality" (xs : List Int) = any (x => x > 0) xs == not (all (x => x
 prop "fromOption d (Some x) == x" (x : Int) (d : Int) = fromOption d (Some x) == x
 
 prop "toResult/fromResult round-trip on Some" (x : Int) = eq (fromResult (toResult "missing" (Some x))) (Some x)
+
+prop "Ord (List a) is reflexive" (xs : List Int) =
+  match compare xs xs
+    Eq => True
+    _ => False

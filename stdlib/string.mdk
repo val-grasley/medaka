@@ -256,6 +256,45 @@ export
 indexOf : String -> String -> Option Int
 indexOf needle haystack = stringIndexOf needle haystack
 
+{- | Codepoint index of the *last* occurrence of `needle` in `haystack`, or
+   `None`.  Walks forward from each hit (advancing one codepoint so overlapping
+   matches still count), keeping the latest.
+
+   > lastIndexOf "l" "hello"
+   Some 3
+   > lastIndexOf "z" "hello"
+   None -}
+export
+lastIndexOf : String -> String -> Option Int
+lastIndexOf needle haystack
+  | needle == "" = Some (stringLength haystack)
+  | otherwise = lastIndexOfGo needle haystack 0 None
+
+lastIndexOfGo : String -> String -> Int -> Option Int -> Option Int
+lastIndexOfGo needle haystack from acc =
+  match indexOf needle (stringSlice from (stringLength haystack) haystack)
+    None => acc
+    (Some i) => lastIndexOfGo needle haystack (from + i + 1) (Some (from + i))
+
+{- | Number of non-overlapping occurrences of `needle` in `haystack` (`0` for
+   the empty needle).
+
+   > count "l" "hello"
+   2
+   > count "ll" "lllll"
+   2 -}
+export
+count : String -> String -> Int
+count needle haystack
+  | needle == "" = 0
+  | otherwise = countGo needle (stringLength needle) haystack 0
+
+countGo : String -> Int -> String -> Int -> Int
+countGo needle nlen haystack acc =
+  match indexOf needle haystack
+    None => acc
+    (Some i) => countGo needle nlen (stringSlice (i + nlen) (stringLength haystack) haystack) (acc + 1)
+
 -- ── Transformation ──────────────────────────────────────────────────────────
 
 -- | Prepend a prefix; `flip` of `Semigroup.append`.
