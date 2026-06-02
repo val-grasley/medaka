@@ -762,6 +762,8 @@ let e_do_bind_non_monad = assert_err
 let e_do_non_monadic_expr = assert_err
   "bad opt =\n  do\n    x <- opt\n    print x\n    pure x\n"
 
+(* Phase 98 do→Thenable tests are defined lower down, after `assert_err_msg`. *)
+
 (* ── Regression tests for indented-body / non-monadic do (Phase 45.5) ─────
    Before the EDo `has_bind` split, these all failed with "Type mismatch:
    X vs a b" because the parser lowers any multi-stmt function body to
@@ -3328,6 +3330,50 @@ let assert_err_msg substr src () =
         "Expected error message to contain %S, but got:\n  %s\n\nSource:\n%s"
         substr msg src)
 
+(* ── Phase 98: a `<-` bind requires `Thenable` ─────────────────────────────
+   `<-` is `andThen`, so binding over a type with no `Thenable` impl is a
+   compile-time error.  A `pure`-only / sequencing-only block uses no `andThen`
+   (eval only routes `DoBind` through it) and needs only `Applicative`, so it is
+   deliberately *not* constrained to `Thenable`.  (Defined here, after
+   `assert_err_msg`; registered in the "do notation" group above.) *)
+
+(* Bind over a user ADT with no Thenable impl → NoImplFound Thenable *)
+let e_do_bind_requires_thenable = assert_err_msg "Thenable"
+  "data Box a = Box a\nf b =\n  do\n    x <- b\n    Box x\n"
+
+(* Same bind over a type carrying the full Mappable/Applicative/Thenable stack
+   type-checks — proving the gate is interface-driven, not a hardcoded set. *)
+let t_do_bind_custom_thenable = assert_type
+  {|data Box a = Box a
+impl Mappable Box where
+  map f (Box a) = Box (f a)
+impl Applicative Box where
+  pure a = Box a
+  ap (Box f) (Box a) = Box (f a)
+impl Thenable Box where
+  andThen (Box a) f = f a
+r =
+  do
+    x <- Box 1
+    pure (x + 1)
+|} "r" "Box Int"
+
+(* Refinement: a `pure`-only do-block needs only Applicative, so it checks over
+   an Applicative-but-not-Thenable type — no spurious Thenable obligation. *)
+let t_do_pure_only_no_thenable = assert_type
+  {|data Ap a = Ap a
+impl Mappable Ap where
+  map f (Ap a) = Ap (f a)
+impl Applicative Ap where
+  pure a = Ap a
+  ap (Ap f) (Ap a) = Ap (f a)
+useAp (Ap x) = x
+block =
+  do
+    pure 5
+r = useAp block
+|} "r" "Int"
+
 (* A mismatch whose two sides each carry distinct free tyvars: the tuple side
    has vars a,b and the function side has its own var.  With a shared naming
    context the function's var prints as a third name (c); the old per-side
@@ -3711,6 +3757,9 @@ let () =
       test_case "err: mixed monads"      `Quick e_do_mixed_monads;
       test_case "err: bind non-monad"    `Quick e_do_bind_non_monad;
       test_case "err: non-monadic expr"  `Quick e_do_non_monadic_expr;
+      test_case "err: bind needs Thenable" `Quick e_do_bind_requires_thenable;
+      test_case "bind: custom Thenable"  `Quick t_do_bind_custom_thenable;
+      test_case "pure-only: no Thenable" `Quick t_do_pure_only_no_thenable;
     ];
     "interfaces", [
       test_case "method type"            `Quick t_iface_method_type;

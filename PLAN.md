@@ -60,8 +60,9 @@ What's missing is the supporting surface a real multi-thousand-line program need
 - **Language stability / completeness.** Close the sharp edges that would bite a
   large codebase, then *freeze the surface syntax and semantics* for the duration
   of the port:
-  - Resolve the `do`→`Thenable` question (Phase 98) — monad-heavy compiler code
-    will lean on `do`.
+  - ~~Resolve the `do`→`Thenable` question (Phase 98)~~ — **DONE.** `do` is now
+    load-bearing on `Thenable`: a `<-` bind over a non-`Thenable` type is a
+    compile-time error (see PLAN-ARCHIVE.md Phase 98).
   - Multi-module / return-position dispatch residuals (Phase 83/84) shouldn't
     force arg-tag workarounds in compiler code.
   - Guard exhaustiveness + inline guards (Phase 91) — pervasive in a compiler.
@@ -115,17 +116,33 @@ above, it is flagged ⭐.
 
 ### Compiler / language
 
-- ⭐ **Phase 98 — `do`→`Thenable` desugar.** `<-` is currently handled
-  *structurally* in the typechecker (each line unifies its expression against
-  `m a` for a fresh `m`); the `Thenable` interface in `core.mdk` is never
-  consulted, so it is inert at the type level (eval already routes bind through
-  the `andThen` VMulti at runtime). To make the constraint load-bearing, `<-`
-  should desugar to checked `andThen` calls. **Design question first:** is this
-  worth doing, or should `Thenable` instead be *deleted*? `do` already works on
-  anything shaped like `m a`, so the interface currently earns nothing — wiring
-  it adds a constraint that could reject programs that work today. Decide the
-  direction before implementing. Lands in `lib/typecheck.ml` (+ `lib/desugar.ml`
-  if wiring). Skill: **add-language-feature**.
+- **Phase 99 — lower `do` to `andThen`/`pure` (make it true sugar).** Follow-up
+  to Phase 98, which took the self-contained route: a `Thenable` *constraint* on
+  the block monad, with eval still binding `<-` at runtime via the
+  `monadic_ctors` hashtable + the `andThen` VMulti (`lib/eval.ml`'s `eval_do`).
+  The more principled approach deferred there is to **desugar `EDo` into nested
+  `andThen` / `pure` calls** so `do` is pure sugar over the interface and eval's
+  `eval_do` / `monadic_ctors` special-casing can be deleted — bind dispatch then
+  flows through the same typed dictionary elaboration (`EMethodRef`/`EDictApp`)
+  as any other constrained call, instead of an eval-time arg-tag/hashtable
+  lookup. Payoff: one dispatch path, correct routing for polymorphic
+  `Thenable m => … do …` (overlaps the Phase 83/84 `pure`-dispatch residuals),
+  and less runtime machinery.
+  - **Crux (why it's more than a `desugar.ml` edit):** for the lowered
+    `andThen`/`pure` to be dictionary-dispatched, the lowering must happen
+    **before `method_marker` + typecheck** (the marker rewrites method `EVar`s to
+    `EMethodRef` *before* typecheck; the post-typecheck `desugar.ml` stage is too
+    late). So this is a pipeline-placement change, not just a new lowering.
+  - **Semantics to audit:** today a non-final `DoExpr` (`lib/eval.ml`) evaluates
+    and *discards* its value — it does **not** sequence through `andThen`.
+    Lowering `e; rest` to `andThen e (\_ => rest)` makes sequencing genuinely
+    monadic (e.g. `None; …` short-circuits), which is *more* correct but a
+    behavior change to confirm against existing tests. Also handle `DoLet` /
+    `DoLetElse` (lower to plain `let`) and the do-block forbidden forms.
+  - Keep Phase 98's win: a `<-` over a non-`Thenable` type must still be a
+    compile-time error (it will be, since the lowered `andThen` carries the
+    `Thenable` constraint at its use site). Skill: **add-language-feature**
+    (cross-cutting: pipeline ordering + `desugar.ml` + `eval.ml`).
 
 - ⭐ **Phase 91 (continued) — guard gaps.** Fall-through (item 1) is done; two
   remain:

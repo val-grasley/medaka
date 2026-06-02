@@ -453,9 +453,11 @@ ro = f (Some 1)
 rl = f [2]
 |} "ro" (VCon ("Some", [VInt 1]))
 
-(* A signatured polymorphic monad still works (unchanged by promotion: it was
-   already in fun_constraints via the `=>` path). *)
-let t_poly_monad_signatured = assert_val_typed {|f : Applicative m => m a -> m a
+(* A signatured polymorphic monad still works. Phase 98: a do-block with `<-`
+   requires `Thenable m` (not merely `Applicative m`) — `<-` is `andThen` — so
+   the honest signature names `Thenable`; the constraint reaches the body via
+   the `=>` path in fun_constraints. *)
+let t_poly_monad_signatured = assert_val_typed {|f : Thenable m => m a -> m a
 f m = do
   x <- m
   pure x
@@ -468,6 +470,21 @@ let t_poly_monad_concrete = assert_val_typed {|r = do
   x <- Some 5
   pure x
 |} "r" (VCon ("Some", [VInt 5]))
+
+(* Phase 98: a user type with its own Mappable/Applicative/Thenable stack binds
+   in a do-block and dispatches `andThen`/`pure` through its impls end-to-end. *)
+let t_do_custom_thenable = assert_val_typed {|data Box a = Box a
+impl Mappable Box where
+  map f (Box a) = Box (f a)
+impl Applicative Box where
+  pure a = Box a
+  ap (Box f) (Box a) = Box (f a)
+impl Thenable Box where
+  andThen (Box a) f = f a
+r = do
+  x <- Box 1
+  pure (x + 1)
+|} "r" (VCon ("Box", [VInt 2]))
 
 (* ── `?` operator: desugars to andThen ──────────────────────────────────── *)
 
@@ -1763,6 +1780,7 @@ let () =
       test_case "two monads, one prog"  `Quick t_poly_monad_option_and_list;
       test_case "signatured still ok"   `Quick t_poly_monad_signatured;
       test_case "concrete unchanged"    `Quick t_poly_monad_concrete;
+      test_case "custom Thenable (P98)" `Quick t_do_custom_thenable;
     ];
     "? operator", [
       test_case "Ok unwraps"          `Quick t_question_ok;

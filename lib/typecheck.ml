@@ -1840,6 +1840,19 @@ let rec infer env = function
         type_stmts (extend_locals env bindings) rest
     in
     let result = type_stmts env stmts in
+    (* Phase 98: a `<-` bind IS `andThen`, so a do-block that binds requires its
+       monad `m` to have a `Thenable` impl.  Emit the obligation only when the
+       block actually binds (matching eval: only `DoBind` routes through the
+       `andThen` VMulti — a bare/`pure`-only block uses no `andThen` and needs
+       only `Applicative`, so constraining it to `Thenable` would over-reject).
+       A `do` that binds over a non-Thenable type is now a compile-time
+       `NoImplFound`.  When `m` stays polymorphic/ungrounded the obligation is
+       concrete-gated in `check_constraint_obligations` and skipped, so this
+       doesn't regress the Phase 83/84 dispatch residuals. *)
+    let binds = List.exists (function Ast.DoBind _ -> true | _ -> false) stmts in
+    if binds then
+      env.constraint_obligations :=
+        ("Thenable", [m], !current_loc) :: !(env.constraint_obligations);
     monad_tag_ref := (match normalize m with
       | TApp (TCon tname, _) -> Some tname
       | TCon tname           -> Some tname

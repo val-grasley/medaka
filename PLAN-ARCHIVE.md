@@ -4588,6 +4588,45 @@ parity with the prefix form, and an unannotated backtick caller infers `<IO>`.
 
 ---
 
+### Phase 98: make `do` load-bearing on `Thenable` ✅ DONE
+
+`do`-notation was **structurally duck-typed**: the `EDo` handler
+(`lib/typecheck.ml`) invented a fresh monad tyvar `m`, unified every statement
+against `m a`, and **never consulted the `Thenable` interface** — so a `do`
+block over a type with no `Thenable` impl type-checked, then either fell through
+to direct pattern-matching at eval or misbehaved.  `Thenable` was *inert at the
+type level but load-bearing at runtime* (`eval.ml`'s `monadic_ctors` is built
+from its impls).  The design question (wire vs. delete) was resolved (with the
+user) as **wire via a typecheck constraint** — the minimal option; `Thenable`
+stays (it anchors `Mappable → Applicative → Thenable` and feeds `monadic_ctors`),
+and eval is untouched.
+
+**Resolution (2026-06-02).**  The `EDo` arm now emits a single constraint
+obligation — `("Thenable", [m], loc)` onto `env.constraint_obligations` —
+**but only when the block contains at least one `DoBind`**.  Rationale: `<-` *is*
+`andThen`, and eval only routes `DoBind` through the `andThen` VMulti — a bare /
+`pure`-only / sequencing-only block uses no `andThen` and needs only
+`Applicative`, so constraining it to `Thenable` would over-reject (e.g.
+`do pure 5` over an Applicative-but-not-Thenable type stays legal).  The
+obligation rides the existing post-HM `check_constraint_obligations` pipeline:
+concrete `m` with no impl → `NoImplFound (Thenable, …)` (+ transitive
+`check_entry_requires` on the impl's `requires Applicative`); polymorphic /
+ungrounded `m` is concrete-gated and skipped, so the Phase 83/84 dispatch
+residuals don't regress.  No new `type_error` constructor; eval, desugar, and
+the runtime bind dispatch are unchanged.  The one arm is shared by both
+whole-program entry points (all three `check_constraint_obligations` call sites
+discharge it).  Tests: `test_typecheck` gains `e_do_bind_requires_thenable`
+(bind over a non-Thenable ADT → "Thenable" error), `t_do_bind_custom_thenable`
+(a user `Mappable`/`Applicative`/`Thenable Box` binds and checks — proving the
+gate is interface-driven, not a hardcoded monad list), and
+`t_do_pure_only_no_thenable` (the refinement: a `pure`-only `do` over an
+Applicative-not-Thenable type still checks); `test_eval` gains
+`t_do_custom_thenable` (the `Box` stack evaluates end-to-end).  The existing
+`t_poly_monad_signatured` was tightened from `Applicative m =>` to the now-honest
+`Thenable m =>`.  Skill: **add-language-feature**.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
