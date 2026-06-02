@@ -355,6 +355,44 @@ to name `Eq`.)*
     through typecheck/dict_pass/eval, and needs de-mangling for LSP
     hover/completion/symbols. Fights the architecture.
 
+- **Phase 111 — `print`/`println` leak language internals; route them through a
+  user-facing interface.** Surfaced 2026-06-02 in the Phase 108 `show` discussion.
+  - **Problem (verified):** `println m` for a `Map` prints the raw
+    weight-balanced tree — `Bin 2 1 10 Tip (Bin 1 2 20 Tip Tip)` — i.e. the
+    internal constructors, not a user-facing form like `fromList [(1, 10), …]`.
+    Every user ADT prints its raw `VCon` structure. `show m` is fine
+    (`fromList […]`), but plain `println` is the common path and exposes the
+    implementation.
+  - **Root cause:** `print`/`println : a -> <IO> Unit` (stdlib/runtime.mdk) are
+    **unconstrained** externs; eval's `print`/`println` (`lib/eval.ml` ~1088)
+    call native `pp_value`, which renders a runtime value structurally (`VCon`
+    name + args) with no interface dispatch — at runtime the value is just
+    `VCon "Bin" […]`, so `pp_value` *can't* reach a type's user-defined rendering.
+  - **Goal / the decision to make:** standardize human-facing output on a
+    user-facing interface. Likely **`Display`** (`display : a -> String`,
+    unquoted; already backs `\{…}` interpolation, and matches println's
+    putStr-vs-show intent per runtime.mdk's comment) rather than `Show` (quoted,
+    round-trippable). **Pick one.**
+  - **Clean implementation shape:** make `print`/`println` *Medaka* stdlib
+    functions over a raw string-only extern — `putStr/putStrLn : String -> <IO>
+    Unit` (the only externs), then `println : Display a => a -> <IO> Unit;
+    println x = putStrLn (display x)`. This sidesteps the extern-can't-receive-a-
+    dict wrinkle (externs take raw values; a constrained extern would need eval to
+    supply the dict) by moving the constraint into Medaka where dict-passing
+    already works.
+  - **Cost / fork:** constraining the signature means **`Display` must cover every
+    printable type** — built-ins (Int/Float/Bool/Char/String/Unit/tuples/List/
+    Option/Result/Array/Map/…) plus `deriving (Display)` for user types; printing
+    an un-`Display`able type becomes a *compile error*, losing today's
+    "println anything" ergonomic. Mitigation: keep the current unconstrained raw
+    dump under a debug name (`debug`/`inspect : a -> <IO> Unit`) for REPL/quick
+    prints. `pp_value` is also used by error messages, the REPL result echo, and
+    `applied non-function: …` — leave those raw (internal/debug), scope this to
+    `print`/`println`.
+  - Lands in: stdlib/runtime.mdk (externs) + stdlib/core.mdk (Display coverage +
+    `print`/`println` defs + wider `deriving (Display)`) + `lib/eval.ml` (swap the
+    externs for `putStr`/`putStrLn`). Skill: **add-language-feature**.
+
 - ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** Lower priority;
   each is a known limitation with a correct-enough fallback today:
   - **Instance-`requires` dict-threading into return-position impl bodies — DONE
