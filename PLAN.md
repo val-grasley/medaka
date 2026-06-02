@@ -373,6 +373,21 @@ to name `Eq`.)*
     unquoted; already backs `\{…}` interpolation, and matches println's
     putStr-vs-show intent per runtime.mdk's comment) rather than `Show` (quoted,
     round-trippable). **Pick one.**
+  - **`Display` should use the literal syntax (the Show/Display split, resolved).**
+    Because `Display` does *not* need to round-trip, it is free to render a
+    container with its pretty literal form, while `Show` keeps the re-evaluable
+    function form:
+      - `show m`    → `fromList [(1, 10), (2, 20)]` (round-trips; empty → `fromList []`)
+      - `display m` → `Map { 1 => 10, 2 => 20 }` (pretty; empty → `Map {}`, which
+        Show could *not* emit because it doesn't parse — but Display needn't care)
+    So this phase adds `impl Display (Map k v)` (and per container) rendering the
+    `Map { … }` literal, and `println m` then shows that. This is exactly why the
+    Phase 108 `show` switch was declined but Display is the right home for the
+    literal rendering.
+    - **Sub-decision:** do the keys/values *inside* a Display'd container render
+      via `Display` (unquoted — `Map { ada => 1 }`) or `Show` (quoted —
+      `Map { "ada" => 1 }`)? Unquoted is Display-consistent but makes a string key
+      read like an identifier. Decide when building.
   - **Clean implementation shape:** make `print`/`println` *Medaka* stdlib
     functions over a raw string-only extern — `putStr/putStrLn : String -> <IO>
     Unit` (the only externs), then `println : Display a => a -> <IO> Unit;
