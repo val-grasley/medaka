@@ -81,6 +81,20 @@ let assert_warns_msg substr src () =
       "Expected warning containing %S.\nGot warnings:\n  %s\n\nSource:\n%s"
       substr (String.concat "\n  " ws) src)
 
+(* Phase 91 (2): guard-exhaustiveness lint runs on the *raw* (pre-desugar)
+   program, so it has its own helpers rather than going through check_program. *)
+let assert_guard_warns src () =
+  match Exhaust.check_guard_exhaustiveness (parse src) with
+  | [] -> failwith ("Expected a guard-exhaustiveness warning but got none.\nSource:\n" ^ src)
+  | _  -> ()
+
+let assert_no_guard_warns src () =
+  match Exhaust.check_guard_exhaustiveness (parse src) with
+  | [] -> ()
+  | ws -> failwith (Printf.sprintf
+      "Expected no guard warnings, got %d.\nWarnings:\n  %s\n\nSource:\n%s"
+      (List.length ws) (String.concat "\n  " ws) src)
+
 (* assert_type src name expected — check that `name` in `src` types as `expected` *)
 let assert_type src name expected () =
   match check src with
@@ -1977,6 +1991,56 @@ f x = match x
   (a, b) => a + b
 |}
 
+(* ── Phase 91 (2): non-exhaustive-guard detection (function-clause guards) ──
+   These desugar to EIf chains before exhaust runs, so they're checked by the
+   standalone pre-desugar lint, not check_match. *)
+
+(* Single guarded clause, no catch-all: may fall through → warn. *)
+let wg_single_partial = assert_guard_warns {|
+f x
+  | x > 0 = 1
+|}
+
+(* Inline form, same gap. *)
+let wg_inline_partial = assert_guard_warns "f x | x > 0 = 1\n"
+
+(* `| otherwise` terminal makes the chain decidably exhaustive → no warn. *)
+let wg_otherwise = assert_no_guard_warns {|
+f x
+  | x > 0 = 1
+  | otherwise = 0
+|}
+
+(* `| True` literal terminal → no warn (guards the EVar "True" representation). *)
+let wg_true_terminal = assert_no_guard_warns {|
+f x
+  | x > 0 = 1
+  | True = 0
+|}
+
+(* A sibling unguarded catch-all clause covers the fall-through → no warn. *)
+let wg_sibling_catchall = assert_no_guard_warns {|
+classify n
+  | n < 0 = 0
+  | n == 0 = 1
+classify _ = 2
+|}
+
+(* Multi-clause where sibling *patterns* (not a wildcard) jointly cover the
+   List type → no warn (matrix excuses the partial guard). *)
+let wg_sibling_patterns = assert_no_guard_warns {|
+tk n _
+  | n <= 0 = []
+tk _ [] = []
+tk n (x :: xs) = x :: tk (n - 1) xs
+|}
+
+(* Irrefutable pattern-bind guard is decidably exhaustive → no warn. *)
+let wg_irrefutable_bind = assert_no_guard_warns {|
+f x
+  | y <- x = y
+|}
+
 (* ── Phase 8.5: Ref type ────────────────────────── *)
 
 (* Ref 5 constructs a Ref Int *)
@@ -3810,6 +3874,15 @@ let () =
       test_case "nested fully exhaustive"   `Quick w_nested_exhaustive;
       test_case "nested missing branch"     `Quick w_nested_missing;
       test_case "tuple exhaustive"          `Quick w_tuple_exhaustive;
+    ];
+    "guard exhaustiveness (Phase 91)", [
+      test_case "single partial"            `Quick wg_single_partial;
+      test_case "inline partial"            `Quick wg_inline_partial;
+      test_case "otherwise terminal"        `Quick wg_otherwise;
+      test_case "True terminal"             `Quick wg_true_terminal;
+      test_case "sibling catch-all clause"  `Quick wg_sibling_catchall;
+      test_case "sibling patterns cover"    `Quick wg_sibling_patterns;
+      test_case "irrefutable bind"          `Quick wg_irrefutable_bind;
     ];
     "Ref type", [
       test_case "Ref Int"                   `Quick t_ref_int;

@@ -204,6 +204,14 @@ classify _ = 2
 r = classify 7
 |} "r" (VInt 2)
 
+(* Phase 91 (3): inline guard form — guard on the function-head line.  Same
+   fall-through semantics as the indented block form (`tk` from above, inline). *)
+let t_guard_inline = assert_val {|tk n _ | n <= 0 = []
+tk _ [] = []
+tk n (x :: xs) = x :: tk (n - 1) xs
+r = tk 2 [1, 2, 3, 4]
+|} "r" (VList [VInt 1; VInt 2])
+
 let t_match_constructor = assert_val {|data Shape = Circle Int | Square Int
 area s =
   match s
@@ -1710,6 +1718,7 @@ let () =
       test_case "guard fall-through (take)"     `Quick t_guard_fallthrough_take;
       test_case "guard fall-through (base)"     `Quick t_guard_fallthrough_base;
       test_case "guard fall-through (classify)" `Quick t_guard_fallthrough_classify;
+      test_case "inline guard"                  `Quick t_guard_inline;
       test_case "constructor" `Quick t_match_constructor;
       test_case "list_head"       `Quick t_match_list_head;
       test_case "as-pattern cons" `Quick t_as_pattern_head;

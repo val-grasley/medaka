@@ -64,7 +64,8 @@ What's missing is the supporting surface a real multi-thousand-line program need
     will lean on `do`.
   - Multi-module / return-position dispatch residuals (Phase 83/84) shouldn't
     force arg-tag workarounds in compiler code.
-  - Guard exhaustiveness + inline guards (Phase 91) — pervasive in a compiler.
+  - ✅ Guard exhaustiveness + inline guards (Phase 91) — done. (Plain
+    multi-clause non-guard exhaustiveness remains; see below.)
 - **Interpreter performance, "good enough" to bootstrap.** Running the compiler
   *on* the interpreter must finish in minutes, not hours. May require interpreter
   hot-path work (the eval loop, environment representation) — measure once the
@@ -127,17 +128,30 @@ above, it is flagged ⭐.
   direction before implementing. Lands in `lib/typecheck.ml` (+ `lib/desugar.ml`
   if wiring). Skill: **add-language-feature**.
 
-- ⭐ **Phase 91 (continued) — guard gaps.** Fall-through (item 1) is done; two
-  remain:
-  - **(2) Compile-time non-exhaustive-guard detection.** Today an exhausted
-    guard chain is a runtime error. `exhaust.ml` does pattern matrices but not
-    guard coverage. Guards are arbitrary `Bool`, so only `| otherwise` /
-    literal-`True` coverage is decidable — a conservative "guards may not be
-    exhaustive" warning is the realistic target. Lands in `lib/exhaust.ml`.
-  - **(3) Inline guard form.** `f n | n <= 0 = []` on one line is a parse error;
-    guards must be on indented continuation lines. Lands in `lib/parser.mly` /
-    `lib/lexer.mll` — re-measure parser conflicts after the grammar change.
-  - Skill: **add-language-feature**.
+- ✅ **Phase 91 — guard gaps (done).** All three items complete:
+  - (1) Fall-through (archived).
+  - (2) Compile-time non-exhaustive-guard detection — a conservative "guards may
+    not be exhaustive" warning. Function-clause guards (`EGuards`) desugar to
+    `EIf` chains before exhaust runs, so this is a standalone pre-desugar lint
+    (`Exhaust.check_guard_exhaustiveness`, wired into the `Diagnostics` drivers +
+    `bin/main` `check`/`run`). It reuses the `useful` pattern matrix over a
+    constructor oracle built from the program's own data decls + builtins, so a
+    partial guard chain is *excused* when sibling clause patterns already cover
+    every input (e.g. a final `f _ = ..` clause). Closed prelude types
+    (Option/Result/Ordering) aren't in a user file's AST, so guards discriminating
+    on them conservatively warn — an accepted limitation of the type-free pass.
+  - (3) Inline guard form — `f n | n <= 0 = []` on one line (single arm; further
+    arms keep the indented-block / separate-clause forms). Added to `inner_fun_def`
+    and `where_binding` in `lib/parser.mly`; no new parser conflicts (still 3).
+
+- **Plain multi-clause exhaustiveness.** `Exhaust.check_match` runs only on
+  `EMatch`, so a plain multi-clause function with no guards — `f Nil = ..` with no
+  `Cons` clause — gets *no* exhaustiveness check (only a runtime `Impl_no_match`).
+  Closing it needs the type-aware oracle (run inside typecheck where `env.ctors`
+  is populated, rather than the standalone lint's data-decl-only oracle, which
+  can't see prelude types) and may newly flag partial functions across the stdlib.
+  The Phase 91(2) guard lint deliberately scoped this out. Skill:
+  **harden-typechecker** / **add-language-feature**.
 
 - **Phase 92 (continued) — doctest harness reaches cross-module instances.**
   `medaka test <file>` type-checks via the single-file `check_program`, so a

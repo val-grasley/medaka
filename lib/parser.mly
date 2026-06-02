@@ -250,11 +250,11 @@ let parse_attr name msg_opt =
      |-------|------|-------------|---------------------------------------------|----------------|
      | 134   | S/R  | LBRACE      | expr_atom->UPPER / `UPPER {…}` record literal | record creation|
      | 136   | S/R  | FAT_ARROW   | expr_atom->UNDERSCORE / `_ =>` lambda        | wildcard lambda|
-     | 588   | R/R  | RBRACE COMMA COLON | expr_annot->expr_lam / lambda inside `UPPER { k => v }` | KV (path A) |
+     | 593   | R/R  | RBRACE COMMA COLON | expr_annot->expr_lam / lambda inside `UPPER { k => v }` | KV (path A) |
    Rationale:
      • 134 — a bare `UPPER` followed by `{` is unambiguously a record literal.
      • 136 — `_` followed by `=>` is a wildcard lambda.
-     • 588 — keeps `Map { k => v }` parsing as a key/value entry (path A: the
+     • 593 — keeps `Map { k => v }` parsing as a key/value entry (path A: the
        earlier `expr_annot -> expr_lam` reduction) rather than a lambda-valued
        set element.
    State numbers are current menhir ids and drift as the grammar evolves; the
@@ -371,6 +371,11 @@ inner_fun_def:
     { fun is_pub -> DFunDef (is_pub, $1, $2, $4) }
   | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines
     { fun is_pub -> DFunDef (is_pub, $1, $2, EGuards $4) }
+  (* Phase 91 (3): inline single guard arm — `f n | n <= 0 = []` on one line.
+     Lookahead after the pattern list distinguishes PIPE (this) from EQUAL
+     (plain) and INDENT (block guards), so this adds no parser conflicts. *)
+  | IDENT list(pat_atom) PIPE separated_nonempty_list(COMMA, guard_qual) EQUAL fun_body newlines
+    { fun is_pub -> DFunDef (is_pub, $1, $2, EGuards [($4, $6)]) }
 
 guard_arm:
   | PIPE separated_nonempty_list(COMMA, guard_qual) EQUAL fun_body newlines  { ($2, $4) }
@@ -397,6 +402,9 @@ where_binding:
     { ($1, $2, $4) }
   | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines
     { ($1, $2, EGuards $4) }
+  (* Phase 91 (3): inline single guard arm in a where-binding. *)
+  | IDENT list(pat_atom) PIPE separated_nonempty_list(COMMA, guard_qual) EQUAL fun_body newlines
+    { ($1, $2, EGuards [($4, $6)]) }
 
 (* ── `let rec ... with ...` (Phase 57) ────────────────────
    Inline form: `let rec f x = e1 with g x = e2 in body`.

@@ -108,6 +108,13 @@ let analyze ~(file : string) ~(source : string) : diagnostic list =
   (match program_opt with
    | None -> ()
    | Some prog ->
+     (* Phase 91 (2): guard-exhaustiveness warnings run on the *raw* program
+        (function-clause guards are gone after desugar). *)
+     (try
+        List.iter (fun msg ->
+          push { severity = Warning; loc = dummy_loc ~file; message = msg })
+          (Exhaust.check_guard_exhaustiveness prog)
+      with e -> push_internal_error push ~file ~stage:"guard-exhaustiveness" e);
      let prog_opt =
        try Some (Desugar.desugar_program prog) with e ->
          push_internal_error push ~file ~stage:"desugar" e; None
@@ -393,6 +400,13 @@ let analyze_project
        pipeline (resolve/typecheck) and replaced with None. *)
     let modules =
       List.map (fun (mid, fp, prog) ->
+        (* Phase 91 (2): guard-exhaustiveness warnings on the raw program. *)
+        (try
+           List.iter (fun msg ->
+             push_into buckets fp
+               { severity = Warning; loc = dummy_loc ~file:fp; message = msg })
+             (Exhaust.check_guard_exhaustiveness prog)
+         with e -> push_module_internal_error ~file_path:fp ~stage:"guard-exhaustiveness" e);
         try Some (mid, fp, Desugar.desugar_program prog) with e ->
           push_module_internal_error ~file_path:fp ~stage:"desugar" e;
           None

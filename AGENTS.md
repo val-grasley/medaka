@@ -11,21 +11,35 @@ linear pipeline; each stage is one file.
 
 ## Pipeline — where each stage lives
 
+**Execution order** (the drivers in `diagnostics.ml` / `bin/main.ml` run it this
+way — *not* the order files happen to be listed):
+
 ```
-lexer.mll  →  parser.mly  →  ast.ml  →  resolve.ml  →  typecheck.ml
-  → exhaust.ml  →  desugar.ml  →  eval.ml
+lexer.mll → parser.mly → ast.ml → desugar.ml → resolve.ml → method_marker.ml
+  → typecheck.ml (runs exhaust.ml internally) → eval.ml
 ```
+
+Two non-obvious facts that bite when deciding *where* a check belongs:
+- **`desugar.ml` runs first**, before resolve/typecheck. So surface-sugar nodes
+  (`EGuards`, `EFunction`, `ESection`, list comprehensions, string interp) are
+  **already lowered to core** by the time typecheck/exhaust/eval see the tree. A
+  check that needs the sugar shape (e.g. guard *coverage* on `EGuards`) cannot
+  live in typecheck/exhaust — it must run pre-desugar (see `Exhaust.
+  check_guard_exhaustiveness`, a standalone pass on the raw AST).
+- **`exhaust.ml` is not a standalone later stage** — `Exhaust.check_match` is
+  *called from inside* `typecheck.ml` (once per `EMatch`, with the scrutinee type
+  known). It only ever sees core patterns.
 
 | Stage | File | Role |
 |-------|------|------|
 | Lex | `lib/lexer.mll` | Indentation-sensitive; emits INDENT/DEDENT/NEWLINE |
 | Parse | `lib/parser.mly` | Menhir grammar |
 | AST | `lib/ast.ml` | Node types + source locations |
+| Desugar | `lib/desugar.ml` | Runs FIRST. Lowers surface sugar: `deriving`, record puns, list comprehensions, `EGuards`/`EFunction`/`ESection`/string-interp |
 | Resolve | `lib/resolve.ml` | Name binding, single- and multi-module |
 | Mark | `lib/method_marker.ml` | Phase 69: runs after desugar+resolve, before typecheck. Rewrites interface-method `EVar`→`EMethodRef` so typecheck can stamp the resolved impl key per call site and eval routes return-position/multi-param dispatch by it |
-| Typecheck | `lib/typecheck.ml` | Hindley-Milner + interfaces + effects + exhaustiveness |
-| Exhaust | `lib/exhaust.ml` | Maranget pattern-matrix algorithm |
-| Desugar | `lib/desugar.ml` | `deriving`, record puns, list comprehensions |
+| Typecheck | `lib/typecheck.ml` | Hindley-Milner + interfaces + effects; invokes Exhaust per `EMatch` |
+| Exhaust | `lib/exhaust.ml` | Maranget pattern-matrix algorithm; called *from* typecheck, not standalone |
 | Eval | `lib/eval.ml` | Tree-walking interpreter; VMulti typeclass dispatch |
 
 Support files:

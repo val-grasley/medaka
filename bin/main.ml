@@ -427,6 +427,10 @@ cd into a member or specify a file\n"; exit 1
        exit 1)
   in
 
+  (* Phase 91 (2): guard-exhaustiveness warnings on the raw root program. *)
+  List.iter (fun w -> Printf.eprintf "%s\n" w)
+    (Medaka_lib.Exhaust.check_guard_exhaustiveness root_program);
+
   let root_program = Medaka_lib.Desugar.desugar_program root_program in
 
   if not (has_use_decls root_program) then begin
@@ -492,6 +496,9 @@ cd into a member or specify a file\n"; exit 1
          Printf.eprintf "error: %s\n" msg; exit 1)
     in
     let modules = List.map (fun (mid, fp, prog) ->
+      (* Phase 91 (2): guard-exhaustiveness warnings, per raw module. *)
+      List.iter (fun w -> Printf.eprintf "%s\n" w)
+        (Medaka_lib.Exhaust.check_guard_exhaustiveness prog);
       (mid, fp, Medaka_lib.Desugar.desugar_program prog)
     ) modules in
 

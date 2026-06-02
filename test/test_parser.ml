@@ -718,6 +718,37 @@ describe o =
         ; (PWild, [], ELit (LInt 0)) ])) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
+(* Phase 91 (3): inline guard form — a single `| guards = body` on the function
+   head line parses to the same EGuards node as the indented block form. *)
+let test_guard_inline () =
+  match parse_one "f n | n <= 0 = []\n" with
+  | DFunDef (false, "f", [PVar "n"],
+      EGuards [ ([GBool (EBinOp ("<=", EVar "n", ELit (LInt 0)))], EListLit []) ]) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
+(* Inline form with comma-separated qualifiers. *)
+let test_guard_inline_multi_qual () =
+  match parse_one "f n | n > 0, n < 10 = n\n" with
+  | DFunDef (false, "f", [PVar "n"],
+      EGuards [ ([ GBool (EBinOp (">", EVar "n", ELit (LInt 0)))
+                 ; GBool (EBinOp ("<", EVar "n", ELit (LInt 10))) ], EVar "n") ]) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
+(* Inline guard inside a where-binding. *)
+let test_guard_inline_where () =
+  let src = {|
+f n = g n
+  where
+    g x | x > 0 = x
+|} in
+  match parse_one src with
+  | DFunDef (false, "f", [PVar "n"],
+      ELetGroup ([ ("g", [ ([PVar "x"],
+                            EGuards [ ([GBool (EBinOp (">", EVar "x", ELit (LInt 0)))],
+                                       EVar "x") ]) ]) ],
+                 EApp (EVar "g", EVar "n"))) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
 (* ── Data type tests ─────────────────────────────────── *)
 
 let test_data_inline () =
@@ -1822,6 +1853,9 @@ let () =
       test_case "pattern-bind guard"     `Quick test_guard_pattern_bind;
       test_case "bind-then-bool guard"   `Quick test_guard_bind_then_bool;
       test_case "match-arm pattern bind" `Quick test_match_arm_pattern_bind;
+      test_case "inline guard"           `Quick test_guard_inline;
+      test_case "inline guard multi-qual" `Quick test_guard_inline_multi_qual;
+      test_case "inline guard in where"  `Quick test_guard_inline_where;
     ];
     "data types", [
       test_case "inline variants"     `Quick test_data_inline;
