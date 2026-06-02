@@ -9,8 +9,8 @@ non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md).
 ## Current status (2026-06-02)
 
 The compiler pipeline is complete end-to-end —
-`lexer → parser → resolve → method_marker → typecheck → exhaust → desugar →
-eval` — and 97 numbered phases are done. The language has records, ADTs,
+`lexer → parser → desugar → resolve → method_marker → typecheck (runs exhaust)
+→ eval` — and 97 numbered phases are done. The language has records, ADTs,
 interfaces (with superinterfaces, `deriving`, dictionary-passing for
 return-position/multi-param dispatch), effect rows, exhaustiveness checking,
 `do`-notation, guards (with fall-through), list comprehensions, string
@@ -77,9 +77,9 @@ What's missing is the supporting surface a real multi-thousand-line program need
 
 ### Stage 1 — Self-host on the interpreter
 
-Port the pipeline (`lexer → parser → resolve → typecheck → exhaust → desugar →
-eval`) into Medaka, one stage at a time, checked against the OCaml reference at
-each step. **Done when** Medaka-in-Medaka compiles a real program identically to
+Port the pipeline (`lexer → parser → desugar → resolve → typecheck (runs
+exhaust) → eval`) into Medaka, one stage at a time, checked against the OCaml
+reference at each step. **Done when** Medaka-in-Medaka compiles a real program identically to
 the OCaml compiler, and ultimately compiles *itself*. The output of this stage is
 a validated language and a compiler whose only slow part is the interpreter
 underneath it.
