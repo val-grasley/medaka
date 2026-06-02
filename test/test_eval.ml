@@ -220,6 +220,14 @@ let t_aspat_do_bind = assert_val {|r =
     [a, b]
 |} "r" (VList [VInt 1; VInt 2; VInt 3; VInt 4])
 
+(* Phase 85: `(x :: _)` in a do-block bind discards the tail, binding only the
+   head of each sublist (List monad, untyped eval path via Thenable). *)
+let t_cons_wild_do_bind = assert_val {|r =
+  do
+    (x :: _) <- [[1, 2], [3, 4]]
+    [x]
+|} "r" (VList [VInt 1; VInt 3])
+
 (* ── Records ────────────────────────────────────────────────────────────── *)
 
 let t_record = assert_val {|record Point
@@ -1552,6 +1560,7 @@ let () =
       test_case "as-pattern nil"  `Quick t_as_pattern_empty;
       test_case "as-pattern lambda param" `Quick t_aspat_lambda_param;
       test_case "as-pattern do bind"      `Quick t_aspat_do_bind;
+      test_case "cons wild do bind"       `Quick t_cons_wild_do_bind;
     ];
     "records", [
       test_case "create" `Quick t_record;

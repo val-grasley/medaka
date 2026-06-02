@@ -879,6 +879,34 @@ let test_do_bind_cons_lhs () =
     ])) -> ()
   | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
 
+(* Phase 85: a `_` after an operator in a binding LHS is the section
+   placeholder, so `(x :: _)` parses as ESection (SecLeft (x, "::")) — the `_`
+   is eaten by the left-section rewrite.  expr_to_pat recovers the wildcard so
+   the binding LHS works like `(x :: rest)` but discards the tail. *)
+let test_do_bind_cons_wild_tail () =
+  match parse_one "go =\n  do\n    (x :: _) <- m\n    pure x\n" with
+  | DFunDef (false, "go", [], EDo (_, [
+      DoBind (PCons (PVar "x", PWild), EVar "m");
+      DoExpr (EApp (EVar "pure", EVar "x"));
+    ])) -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
+(* Both operands wildcard: the lhs `_` maps to PWild via the existing EVar "_"
+   case, the tail `_` via the new section-recovery case. *)
+let test_do_bind_cons_wild_both () =
+  match parse_one "go =\n  do\n    (_ :: _) <- m\n    pure m\n" with
+  | DFunDef (false, "go", [], EDo (_, [
+      DoBind (PCons (PWild, PWild), EVar "m");
+      DoExpr (EApp (EVar "pure", EVar "m"));
+    ])) -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
+(* The same recovery on the expr_to_pats path: a lambda parameter `(x :: _)`. *)
+let test_lambda_cons_wild_param () =
+  match parse_expr "(x :: _) => x" with
+  | ELam ([PCons (PVar "x", PWild)], EVar "x") -> ()
+  | e -> failwith (Printf.sprintf "wrong shape: %s" (Ast.pp_expr e))
+
 let test_do_bind_literal_lhs () =
   match parse_one "go =\n  do\n    42 <- m\n    pure m\n" with
   | DFunDef (false, "go", [], EDo (_, [
@@ -1813,6 +1841,9 @@ let () =
       test_case "block body cons + ctor"    `Quick test_block_body_cons_and_ctor;
       test_case "do bind tuple + ctor LHS"  `Quick test_do_bind_tuple_and_ctor;
       test_case "do bind cons LHS"          `Quick test_do_bind_cons_lhs;
+      test_case "do bind cons wild tail"    `Quick test_do_bind_cons_wild_tail;
+      test_case "do bind cons wild both"    `Quick test_do_bind_cons_wild_both;
+      test_case "lambda cons wild param"    `Quick test_lambda_cons_wild_param;
       test_case "do bind literal LHS"       `Quick test_do_bind_literal_lhs;
       test_case "do final ctor stmt"        `Quick test_do_final_ctor_stmt;
       test_case "do bind as-pat simple"     `Quick test_do_bind_aspat_simple;

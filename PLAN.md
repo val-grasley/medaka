@@ -4000,7 +4000,7 @@ type, not a value-shape guess. Touches `typecheck.ml` (EDo tagging / constraint
 threading) + `eval.ml` (`eval_do`, `detect_monad`). See the §5 limitation note.
 Skill: **add-language-feature** (cross-cutting: typecheck + eval).
 
-### Phase 85: `_` after an operator in a binding LHS is a section, not a wildcard ⏳ TODO
+### Phase 85: `_` after an operator in a binding LHS is a section, not a wildcard ✅ DONE
 
 Every binding LHS (do-bind, lambda param, list-comp/guard generator) is parsed
 as an expression and converted by `expr_to_pat` (`parser.mly`). In expression
@@ -4015,12 +4015,15 @@ g m = do
   pure x
 ```
 
-Scope: let a binding LHS recover a wildcard after an operator — e.g. teach
-`expr_to_pat` to map a bare `_`-placeholder section back to `PWild` in
-conversion, or special-case `ESection`/`EVar "_"` in operand position. Confirm
-the section feature in value position is unaffected and re-check the parser
-conflict count. Lands in `parser.mly` (`expr_to_pat`/`expr_to_pats`). Skill:
-**add-language-feature** (grammar). Pre-existing; documented in §5.
+Resolution: `expr_to_pat` (`parser.mly`) now maps `ESection (SecLeft (a, "::"))`
+back to `PCons (expr_to_pat a, PWild)`. `SecLeft` is only ever built when the
+source RHS was `_`, so recovering the discarded wildcard is unambiguous; cons is
+the only binary operator that forms a pattern, so other-operator sections
+(`(x + _)`) and `SecRight`/`SecBare` keep erroring as before. No grammar
+productions changed (header-only edit), so the conflict count stays at 3.
+Value-position sections are unaffected (`test_roundtrip`/`test_expr_left_section*`
+green). Tests: `test_parser.ml` (`do bind cons wild tail`/`both`, `lambda cons
+wild param`) and `test_eval.ml` (`cons wild do bind`, List monad).
 
 ### Phase 86: `@Impl` hints reported unbound by resolve ⏳ TODO
 
@@ -4112,9 +4115,9 @@ These aren't blockers, but a less-careful change could trip over them:
 - A binding LHS (do-bind, lambda param, list-comp/guard generator) is parsed as
   an expression and converted via `expr_to_pat`, so cons/literal/ctor/as-pattern
   LHSs all work and a do-block's last statement may start with an uppercase
-  constructor (Phase 81 ✅). One inherent edge: `_` after an operator in such a
-  LHS is a left section, not a wildcard (`(x :: _) <- m` — use `(x :: rest)`).
-  → Phase 85.
+  constructor (Phase 81 ✅). The one-time edge where `_` after an operator in
+  such a LHS was a left section, not a wildcard (`(x :: _) <- m`), is now
+  recovered by `expr_to_pat` (Phase 85 ✅).
 - `@Impl` disambiguation hints are reported as unbound by resolve (`medaka check`
   false-positives), though they resolve at eval time. → Phase 86.
 - Module system: `use` declarations parse but no cross-file resolution

@@ -82,6 +82,7 @@ let rec expr_to_pat = function
   | ETuple es    -> PTuple (List.map expr_to_pat es)
   | EListLit es  -> PList  (List.map expr_to_pat es)
   | EBinOp ("::", a, b) -> PCons (expr_to_pat a, expr_to_pat b)
+  | ESection (SecLeft (a, "::")) -> PCons (expr_to_pat a, PWild)  (* `(x :: _)` in a binding LHS: the `_` was eaten by the left-section rewrite — recover it *)
   | EAsPat (x, e) -> PAs (x, expr_to_pat e)  (* `x@subpat` in a binding LHS *)
   | EApp _ as e ->
     (* Constructor application: collect head + args, head must be uppercase.
