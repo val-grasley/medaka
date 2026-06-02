@@ -110,6 +110,17 @@ Dev probes (build to `_build/default/dev/`):
 - **`lib/dune` has an explicit `(modules …)` list.** A new `lib/<name>.ml` is
   *not* picked up automatically — add it to that stanza or the build fails with
   `Unbound module Medaka_lib.<Name>`.
+- **The prelude (`core.mdk`) is embedded at build time** (`gen/embed.ml` →
+  `lib/stdlib_content.ml`). After editing `core.mdk`/`runtime.mdk` you **must
+  `dune build`** before `run`/cross-module tests reflect it — they read the
+  *embedded* snapshot. Confusing split: `medaka test stdlib/core.mdk` reads the
+  file directly (sees edits immediately), but a *different* file importing the
+  prelude uses the stale embed until rebuild — symptom is an error citing an old
+  `core.mdk` line number.
+- **To run a whole program, `main` must be a zero-arg value** (`main = …`), not
+  `main () = …`: `medaka run` evaluates top-level bindings and checks `main`
+  exists but never *applies* it, so `main () = …` is a silent no-op (exit 0, no
+  output). Use `main = println …` for scratch probes.
 - **The prelude is marked + dict-passed in the typed pipeline (Phase 69.x-c).**
   `Method_marker.marked_prelude` is the prelude marked against its own interface
   methods + constrained fns; `Typecheck.check_program`/`typecheck_module` prepend
@@ -141,7 +152,10 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 `.claude/hooks/skill-triage.py`, nudges this on PLAN.md/Phase prompts.)
 
 - **add-language-feature** — thread a new construct through the whole pipeline.
-- **add-primitive** — add/modify a stdlib `extern` primitive.
+- **add-primitive** — add/modify a stdlib `extern` primitive (native, in `eval.ml`).
+- **extend-stdlib** — implement/extend a *pure-Medaka* stdlib function, impl,
+  doctest, or prop in `stdlib/{core,list,string,array}.mdk` (per STDLIB.md). Not
+  for externs — that's add-primitive. Normally user-reserved; load when asked.
 - **debug-pipeline** — diagnose a parse/typecheck/eval failure.
 - **add-lsp-capability** — add/extend an LSP feature.
 - **harden-typechecker** — typechecker-*internal* correctness/diagnostics work
