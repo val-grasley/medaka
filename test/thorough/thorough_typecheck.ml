@@ -429,6 +429,24 @@ bad : Box -> Int -> a Box
 bad b v = mutBox b v
 |}
 
+(* Multi-level DoFieldAssign (Phase 80) also triggers <Mut> and escapes. *)
+let e_mut_multi_field_escape =
+  assert_err
+    {|record Inner
+  c : Int
+
+record Outer
+  b : Inner
+
+mutNested o newVal = do
+  let mut o2 = o
+  o2.b.c = newVal
+  pure o2
+
+bad : Outer -> Int -> a Outer
+bad o v = mutNested o v
+|}
+
 (* A function performing both IO and mutation can declare both effects.
    Uses a bare sequential block (Phase 55.5): `let mut` is not allowed
    inside `do`, so the body is plain sequencing. *)
@@ -1004,6 +1022,7 @@ let () =
         ; test_case "<Mut> annotation explicit"       `Quick t_mut_do_assign_annotated
         ; test_case "err: Mut escapes pure caller"    `Quick e_mut_escape_pure_caller
         ; test_case "err: DoFieldAssign Mut escape"   `Quick e_mut_field_assign_escape
+        ; test_case "err: multi field Mut escape"     `Quick e_mut_multi_field_escape
         ; test_case "<IO, Mut> combined"              `Quick t_mut_and_io_together
         ] );
       ( "exhaustiveness corners",

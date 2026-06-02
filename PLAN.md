@@ -3848,15 +3848,30 @@ one `e` and under-reports a *mix* of differing concrete callback effects.
 Ambient unification is an over-approximation at control-flow joins (sound for
 "may-perform"). `ap`/`mapErr` left unannotated (edge cases).
 
-### Phase 80: Multi-level field assignment `a.b.c = e` ⏳ TODO
+### Phase 80: Multi-level field assignment `a.b.c = e` ✅ DONE
 
-`DoFieldAssign` supports single-level `x.field = e` for `let mut` records and
-`Ref .value` (Phase 28). Multi-level chains (`a.b.c = e`) are unsupported.
+`DoFieldAssign` now carries a field **path** (`ident * ident list * expr`) and
+supports multi-level chains `a.b.c = e`, not just single-level `x.field = e`
+(Phase 28). The base must still be a bare `let mut` variable; only the path
+deepens.
 
-Scope: extend the field-assignment path (parser → typecheck → eval) to walk a
-chain of field accesses and rebuild/mutate the nested structure; decide
-copy-on-update vs in-place semantics consistent with the existing
-`Ref`/`let mut` model. Skill: **add-language-feature**.
+Shipped across the pipeline:
+- **Parser** — a `flatten_field_path` helper turns the `EFieldAccess` chain on
+  the LHS into `(base_var, [f1; …; fn])`; grammar productions unchanged (still
+  `expr EQUAL expr`), so the conflict count holds.
+- **Typecheck** — the per-level field-type lookup (`Ref .value` + record-field
+  resolution) is extracted into `field_type_of` and `List.fold_left` over the
+  path; the leaf type unifies with the RHS. `<Mut>` is performed as before, so
+  multi-level assignment still propagates the effect to callers.
+- **Eval** — a shared recursive `update_path` walks the chain: records rebuild
+  copy-on-update, a `Ref .value` step mutates the cell in place (shared
+  identity, so surrounding records need no re-shadow). Non-final statements
+  shadow the base var with the rebuilt top; a final-statement assignment runs
+  the walk for its side effects (in-place `Ref` mutations persist) and discards
+  the rebuilt record. Wired into both `eval_block` and `eval_do`.
+
+Tree-sitter needed no change — `field_access` is already recursive on its
+object, so the LHS depth was never constrained. Skill: **add-language-feature**.
 
 ### Phase 81: DoBind pattern & final-statement grammar limitations ⏳ TODO
 
@@ -3933,8 +3948,9 @@ These aren't blockers, but a less-careful change could trip over them:
   no syntax for reassigning a `let mut` binding outside a do-block. The `Ref`
   type is fully type-checked; actual mutation happens at runtime (Phase 10 ✅).
 - `r.value = expr` field-assignment is supported via `DoFieldAssign` in do-blocks
-  (Phase 28 ✅). Multi-level chains (`a.b.c = e`) are not yet supported — only
-  single-level `x.field = e` where `x` is a `let mut` binding. → Phase 80.
+  (Phase 28 ✅). Multi-level chains (`a.b.c = e`) are supported too (Phase 80 ✅):
+  `DoFieldAssign` carries a field path and `update_path` rebuilds/mutates the
+  nested structure. The base must still be a `let mut` binding.
 - `let f x = ...` is implicitly self-recursive (Phase 27 ✅). `let x = expr`
   (no arguments) is still non-recursive. `where`-helpers use `ELetGroup` for
   mutual recursion (Phase 25 ✅).

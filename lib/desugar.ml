@@ -619,7 +619,7 @@ and map_do_stmt f = function
   | DoExpr e        -> DoExpr (map_expr f e)
   | DoLet (m, p, e) -> DoLet (m, p, map_expr f e)
   | DoAssign (x, e)         -> DoAssign (x, map_expr f e)
-  | DoFieldAssign (x, fld, e) -> DoFieldAssign (x, fld, map_expr f e)
+  | DoFieldAssign (x, flds, e) -> DoFieldAssign (x, flds, map_expr f e)
   | DoLetElse (p, e, alt)   -> DoLetElse (p, map_expr f e, map_expr f alt)
 
 let rec map_decl f = function

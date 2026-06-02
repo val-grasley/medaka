@@ -2015,6 +2015,60 @@ let e_field_assign_as_last = assert_err
     p.age = 31
 |})
 
+(* ── Phase 80: multi-level field assignment ─────── *)
+
+let nested_src = {|record Inner
+  c : Int
+
+record Outer
+  b : Inner
+
+|}
+
+(* Multi-level chain a.b.c = e typechecks and infers <Mut>. *)
+let t_multi_field_assign = assert_type
+  (nested_src ^ {|go : <Mut> Outer
+go =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.b.c = 42
+  o
+|})
+  "go" "Outer"
+
+(* Read the nested field back after assigning. *)
+let t_multi_field_read_back = assert_type
+  (nested_src ^ {|go : <Mut> Int
+go =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.b.c = 99
+  o.b.c
+|})
+  "go" "Int"
+
+(* Unknown field at an intermediate level → error. *)
+let e_multi_field_unknown_mid = assert_err
+  (nested_src ^ {|bad =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.nosuch.c = 42
+  o
+|})
+
+(* Unknown field at the leaf level → error. *)
+let e_multi_field_unknown_leaf = assert_err
+  (nested_src ^ {|bad =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.b.nosuch = 42
+  o
+|})
+
+(* Type mismatch at the leaf: c is Int, assign String. *)
+let e_multi_field_type_mismatch = assert_err
+  (nested_src ^ {|bad =
+  let mut o = Outer { b = Inner { c = 1 } }
+  o.b.c = "wrong"
+  o
+|})
+
 (* ── Extern declarations ────────────────────────── *)
 
 (* extern with concrete type: add 1 2 should type as Int *)
@@ -3560,6 +3614,11 @@ let () =
       test_case "err: unknown field"              `Quick e_field_assign_unknown_field;
       test_case "err: type mismatch"              `Quick e_field_assign_type_mismatch;
       test_case "err: field assign as last stmt"  `Quick e_field_assign_as_last;
+      test_case "multi-level field assign"        `Quick t_multi_field_assign;
+      test_case "multi-level read back"           `Quick t_multi_field_read_back;
+      test_case "err: unknown mid field"          `Quick e_multi_field_unknown_mid;
+      test_case "err: unknown leaf field"         `Quick e_multi_field_unknown_leaf;
+      test_case "err: multi-level type mismatch"  `Quick e_multi_field_type_mismatch;
     ];
     "extern declarations", [
       test_case "concrete type"             `Quick t_extern_concrete;

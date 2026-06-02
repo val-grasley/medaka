@@ -97,6 +97,19 @@ let rec expr_to_pat = function
     collect [] e
   | _ -> failwith "Invalid lambda parameter pattern"
 
+(* Flatten an assignment LHS into (base_var, field_path).
+   `a`        → Some ("a", [])
+   `a.b.c`    → Some ("a", ["b"; "c"])
+   anything not rooted in a bare variable → None.
+   The LHS arrives stripped of ELoc wrappers (via strip_locs_expr). *)
+let rec flatten_field_path = function
+  | EVar x -> Some (x, [])
+  | EFieldAccess (inner, f) ->
+    (match flatten_field_path inner with
+     | Some (x, fs) -> Some (x, fs @ [f])
+     | None -> None)
+  | _ -> None
+
 (* Convert a lambda LHS expression to a list of patterns.
    - EApp chain with a lowercase/wild/literal head → multiple patterns (multi-arg lambda)
    - EApp chain with an uppercase head → single constructor pattern via expr_to_pat
@@ -933,10 +946,10 @@ stmt:
   | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block newlines
     { DoLet (false, PVar $2, curry_lam $3 $5) }
   | expr_no_block EQUAL expr_no_block newlines {
-      match strip_locs_expr $1 with
-      | EVar x -> DoAssign (x, $3)
-      | EFieldAccess (EVar x, field) -> DoFieldAssign (x, field, $3)
-      | _ -> failwith "invalid assignment target in do-block"
+      match flatten_field_path (strip_locs_expr $1) with
+      | Some (x, []) -> DoAssign (x, $3)
+      | Some (x, (_ :: _ as fields)) -> DoFieldAssign (x, fields, $3)
+      | None -> failwith "invalid assignment target in do-block"
     }
   | expr_no_block newlines                    { DoExpr $1 }
 

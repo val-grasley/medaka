@@ -1636,22 +1636,15 @@ let rec infer env = function
         (* Reassigning a `let mut` binding is a mutation. *)
         perform_effect cur_effect (closed_row ["Mut"]);
         type_block env rest
-      | DoFieldAssign (x, field, e) :: rest ->
+      | DoFieldAssign (x, fields, e) :: rest ->
         if not (StringSet.mem x env.mut_vars) then
           fail (ImmutableAssignment x);
-        let tx = instantiate (lookup_var env x) in
-        let field_t =
-          match normalize tx with
+        (* Resolve one field off a record / Ref type, returning the field's type.
+           Folded over the path so `a.b.c` walks record→record→field. *)
+        let field_type_of t field =
+          match normalize t with
           | TApp (TCon "Ref", inner) when field = "value" -> inner
-          | TCon r ->
-            (match Hashtbl.find_opt env.records r with
-             | None -> fail (UnknownRecord r)
-             | Some info ->
-               let (_result_t, field_types) = instantiate_record info in
-               (match List.assoc_opt field field_types with
-                | None -> fail (UnknownField (field, r))
-                | Some ft -> ft))
-          | TApp (TCon r, _) ->
+          | TCon r | TApp (TCon r, _) ->
             (match Hashtbl.find_opt env.records r with
              | None -> fail (UnknownRecord r)
              | Some info ->
@@ -1661,6 +1654,8 @@ let rec infer env = function
                 | Some ft -> ft))
           | _ -> fail (NotARecord x)
         in
+        let tx = instantiate (lookup_var env x) in
+        let field_t = List.fold_left field_type_of tx fields in
         let te = infer env e in
         unify field_t te;
         (* Mutating a record field / Ref cell is a mutation. *)
@@ -1753,8 +1748,8 @@ let rec infer env = function
         type_stmts env' rest
       | DoAssign (x, _) :: _ ->
         fail (AssignInDo x)
-      | DoFieldAssign (x, field, _) :: _ ->
-        fail (FieldAssignInDo (x, field))
+      | DoFieldAssign (x, fields, _) :: _ ->
+        fail (FieldAssignInDo (x, String.concat "." fields))
       | DoLetElse (pat, e, alt) :: rest ->
         let te = infer env e in
         let tp, bindings = type_pat env pat in

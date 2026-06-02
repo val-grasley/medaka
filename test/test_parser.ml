@@ -792,11 +792,25 @@ go p =
 |} in
   match parse_one src with
   | DFunDef (false, "go", [PVar "p"], EDo (_, [
-      DoFieldAssign ("p", "age", ELit (LInt 31));
-      DoFieldAssign ("p", "name", ELit (LString "Bob"));
+      DoFieldAssign ("p", ["age"], ELit (LInt 31));
+      DoFieldAssign ("p", ["name"], ELit (LString "Bob"));
       DoExpr (EApp (EVar "pure", EVar "p"));
     ])) -> ()
   | _ -> failwith "wrong shape for field assign do-block"
+
+let test_do_multi_field_assign () =
+  let src = {|
+go a =
+  do
+    a.b.c = 42
+    pure a
+|} in
+  match parse_one src with
+  | DFunDef (false, "go", [PVar "a"], EDo (_, [
+      DoFieldAssign ("a", ["b"; "c"], ELit (LInt 42));
+      DoExpr (EApp (EVar "pure", EVar "a"));
+    ])) -> ()
+  | _ -> failwith "wrong shape for multi-level field assign do-block"
 
 let test_do_ref_value_assign () =
   let src = {|
@@ -807,7 +821,7 @@ go r =
 |} in
   match parse_one src with
   | DFunDef (false, "go", [PVar "r"], EDo (_, [
-      DoFieldAssign ("r", "value", ELit (LInt 42));
+      DoFieldAssign ("r", ["value"], ELit (LInt 42));
       DoExpr (EApp (EVar "pure", EFieldAccess (EVar "r", "value")));
     ])) -> ()
   | _ -> failwith "wrong"
@@ -1714,6 +1728,7 @@ let () =
     "do notation", [
       test_case "basic do"            `Quick test_do_basic;
       test_case "field assign"        `Quick test_do_field_assign;
+      test_case "multi field assign"  `Quick test_do_multi_field_assign;
       test_case "ref value assign"    `Quick test_do_ref_value_assign;
       test_case "block body list literal"   `Quick test_block_body_list_literal;
       test_case "block body tuple literal"  `Quick test_block_body_tuple_literal;

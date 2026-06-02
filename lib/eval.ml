@@ -471,6 +471,28 @@ let wrap_match_errors f =
   with Impl_no_match ->
     raise (Eval_error ("non-exhaustive match", !current_loc))
 
+(* Walk a field path off [top], setting the final field to [new_val].
+   Records rebuild copy-on-update (immutable fields); a `Ref .value` step
+   mutates the cell in place and the shared cell keeps its identity, so a
+   surrounding record need not be re-shadowed for the effect to persist.
+   Returns the (possibly rebuilt) top value. *)
+let rec update_path top fields new_val =
+  match fields, top with
+  | [], _ -> new_val
+  | f :: rest, VRecord (name, fs) ->
+    let child =
+      match List.assoc_opt f fs with
+      | Some v -> v
+      | None -> raise (Eval_error ("unknown field in assignment: " ^ f, !current_loc))
+    in
+    let child' = update_path child rest new_val in
+    VRecord (name, List.map (fun (k, v) -> if k = f then (k, child') else (k, v)) fs)
+  | f :: rest, VRef cell when f = "value" ->
+    cell := update_path !cell rest new_val;
+    top
+  | _, _ ->
+    raise (Eval_error ("field assignment on non-record/ref value", !current_loc))
+
 (* ── Mutually recursive evaluator ───────────────────────────────────────── *)
 
 let rec apply fn arg =
@@ -984,12 +1006,12 @@ and eval_block env stmts =
      | Some _ -> VUnit)
   | [DoAssign (_, e)] ->
     let _ = wrap_match_errors (fun () -> eval env e) in VUnit
-  | [DoFieldAssign (x, field, e)] ->
+  | [DoFieldAssign (x, fields, e)] ->
     let new_val = wrap_match_errors (fun () -> eval env e) in
-    (match lookup env x with
-     | VRef cell when field = "value" -> cell := new_val; VUnit
-     | VRecord (_, _) -> VUnit
-     | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
+    (* Last stmt: a rebuilt record would be discarded, but in-place Ref
+       mutations along the path still persist — so walk the path for effect. *)
+    let _ = update_path (lookup env x) fields new_val in
+    VUnit
   | [DoLetElse _] ->
     raise (Eval_error ("block cannot end with a let-else binding", !current_loc))
   | [DoBind _] ->
@@ -1005,17 +1027,10 @@ and eval_block env stmts =
   | (DoAssign (x, e)) :: rest ->
     let v = wrap_match_errors (fun () -> eval env e) in
     eval_block (extend env [(x, v)]) rest
-  | (DoFieldAssign (x, field, e)) :: rest ->
+  | (DoFieldAssign (x, fields, e)) :: rest ->
     let new_val = wrap_match_errors (fun () -> eval env e) in
-    (match lookup env x with
-     | VRef cell when field = "value" ->
-       cell := new_val;
-       eval_block env rest
-     | VRecord (name, fields) ->
-       let updated = VRecord (name, List.map (fun (k, v) ->
-         if k = field then (k, new_val) else (k, v)) fields) in
-       eval_block (extend env [(x, updated)]) rest
-     | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
+    let updated = update_path (lookup env x) fields new_val in
+    eval_block (extend env [(x, updated)]) rest
   | (DoLetElse (pat, e, alt)) :: rest ->
     let v = wrap_match_errors (fun () -> eval env e) in
     (match match_pat pat v with
@@ -1035,12 +1050,11 @@ and eval_do env stmts =
      | Some _ -> VUnit)
   | [DoAssign (_, e)] ->
     let _ = wrap_match_errors (fun () -> eval env e) in VUnit
-  | [DoFieldAssign (x, field, e)] ->
+  | [DoFieldAssign (x, fields, e)] ->
     let new_val = wrap_match_errors (fun () -> eval env e) in
-    (match lookup env x with
-     | VRef cell when field = "value" -> cell := new_val; VUnit
-     | VRecord (_, _) -> VUnit  (* last stmt: shadow would be discarded anyway *)
-     | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
+    (* last stmt: rebuilt record discarded; in-place Ref mutations persist *)
+    let _ = update_path (lookup env x) fields new_val in
+    VUnit
   | [DoBind (_, _)] ->
     raise (Eval_error ("do-block cannot end with <-", !current_loc))
 
@@ -1058,17 +1072,10 @@ and eval_do env stmts =
     let v = wrap_match_errors (fun () -> eval env e) in
     eval_do (extend env [(x, v)]) rest
 
-  | (DoFieldAssign (x, field, e)) :: rest ->
+  | (DoFieldAssign (x, fields, e)) :: rest ->
     let new_val = wrap_match_errors (fun () -> eval env e) in
-    (match lookup env x with
-     | VRef cell when field = "value" ->
-       cell := new_val;
-       eval_do env rest
-     | VRecord (name, fields) ->
-       let updated = VRecord (name, List.map (fun (k, v) ->
-         if k = field then (k, new_val) else (k, v)) fields) in
-       eval_do (extend env [(x, updated)]) rest
-     | _ -> raise (Eval_error ("field assignment on non-record/ref: " ^ x, !current_loc)))
+    let updated = update_path (lookup env x) fields new_val in
+    eval_do (extend env [(x, updated)]) rest
 
   | [DoLetElse _] ->
     raise (Eval_error ("do-block cannot end with a let-else binding", !current_loc))

@@ -473,8 +473,8 @@ and print_do_stmt = function
     ^^ print_pat pat ^^ text " = " ^^ print_expr prec_top e
   | DoAssign (x, e) ->
     text x ^^ text " = " ^^ print_expr prec_top e
-  | DoFieldAssign (x, field, e) ->
-    text x ^^ text "." ^^ text field ^^ text " = " ^^ print_expr prec_top e
+  | DoFieldAssign (x, fields, e) ->
+    text x ^^ text "." ^^ text (String.concat "." fields) ^^ text " = " ^^ print_expr prec_top e
   | DoLetElse (pat, e, alt) ->
     text "let " ^^ print_pat pat ^^ text " = " ^^ print_expr prec_top e
     ^^ text " else " ^^ print_expr prec_top alt

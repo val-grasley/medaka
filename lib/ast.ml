@@ -103,7 +103,7 @@ and do_stmt =
   | DoExpr   of expr                (* e *)
   | DoLet    of bool * pat * expr   (* let [mut] p = e *)
   | DoAssign      of ident * expr              (* x = e  (only valid when x was let mut) *)
-  | DoFieldAssign of ident * ident * expr      (* x.field = e (mutable record or Ref) *)
+  | DoFieldAssign of ident * ident list * expr (* x.f1.f2…fn = e (mutable record or Ref) *)
   | DoLetElse     of pat * expr * expr         (* let pat = e else diverge *)
 
 and expr =
@@ -425,7 +425,7 @@ and pp_do_stmt = function
   | DoLet (mut, p, e)   ->
     Printf.sprintf "let %s%s = %s" (if mut then "mut " else "") (pp_pat p) (pp_expr e)
   | DoAssign (x, e)          -> Printf.sprintf "%s = %s" x (pp_expr e)
-  | DoFieldAssign (x, f, e) -> Printf.sprintf "%s.%s = %s" x f (pp_expr e)
+  | DoFieldAssign (x, fs, e) -> Printf.sprintf "%s.%s = %s" x (String.concat "." fs) (pp_expr e)
   | DoLetElse (p, e, alt)   -> Printf.sprintf "let %s = %s else %s" (pp_pat p) (pp_expr e) (pp_expr alt)
 
 (* Strip all ELoc annotations from an expression/program — used by round-trip
@@ -501,7 +501,7 @@ and strip_locs_do = function
   | DoExpr e          -> DoExpr (strip_locs_expr e)
   | DoLet (m, p, e)  -> DoLet (m, p, strip_locs_expr e)
   | DoAssign (x, e)         -> DoAssign (x, strip_locs_expr e)
-  | DoFieldAssign (x, f, e) -> DoFieldAssign (x, f, strip_locs_expr e)
+  | DoFieldAssign (x, fs, e) -> DoFieldAssign (x, fs, strip_locs_expr e)
   | DoLetElse (p, e, alt)   -> DoLetElse (p, strip_locs_expr e, strip_locs_expr alt)
 
 let strip_locs_iface_method m =
