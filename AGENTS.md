@@ -94,6 +94,14 @@ Dev probes (build to `_build/default/dev/`):
   parent checkout and fails with `No rule found for alias …/default`. Pass
   `--root .` to pin the build (and tests) to the worktree. Combine with the
   PATH fix above if the sandbox also stripped PATH.
+- **In a worktree, edit the worktree's files — use the full worktree path.**
+  The shell cwd resets to the main checkout root each call, so a relative
+  `grep -n lib/foo.ml` runs there and prints `lib/foo.ml:NN`; Read/Edit that
+  bare path and you've silently changed the **main checkout**, which the
+  `--root .` build never sees (and which dirties `git status` in main). Always
+  target `/…/.claude/worktrees/<name>/lib/foo.ml`. If you slip: `cp` the edited
+  files into the worktree, then `git -C <main> checkout -- <files>` to restore
+  main.
 - **Medaka multi-arg lambdas are `x y => body`**, not curried
   `x => y => body`. Curried forms predating Phase 59.6 are legacy artifacts,
   not the current style — match the `x y => body` form in new code.
