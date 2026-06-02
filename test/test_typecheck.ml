@@ -649,6 +649,30 @@ sortO key xs =
 da = sortB (x y => compare y x) [3, 1, 2]
 |} "sortB" "(a -> a -> Ordering) -> List a -> List a"
 
+(* Phase 90 residual: the same monomorphization, but the recursive HOF's callee
+   is reached through *backtick infix* (`cmp x x `seq2` rest`).  EInfix carries
+   its callee as the operator string, not an EVar, so the dependency collector
+   used to miss the `sortB2 -> seq2` edge — the SCC ordering then left `sortB2`
+   sharing a placeholder, and `sortO2`'s tuple-typed use monomorphized it, so the
+   `Int` use below failed `(a, b) vs Int`.  Fixed by noting EInfix operators as
+   dependencies. *)
+let t_sig_poly_hof_backtick_dep = assert_type
+  {|sortB2 : (a -> a -> <e> Ordering) -> List a -> <e> List a
+sortB2 _ [] = []
+sortB2 _ [x] = [x]
+sortB2 cmp (x::rest) = cmp x x `seq2` (x :: sortB2 cmp rest)
+
+seq2 : Ordering -> List a -> List a
+seq2 _ ys = ys
+
+sortO2 : Ord b => (a -> <e> b) -> List a -> <e> List a
+sortO2 key xs =
+  let decorated = map (x => (key x, x)) xs
+  map ((_, x) => x) (sortB2 ((k1, _) (k2, _) => compare k1 k2) decorated)
+
+db = sortB2 (x y => compare y x) [3, 1, 2]
+|} "sortB2" "(a -> a -> Ordering) -> List a -> List a"
+
 (* Body contradicts the declared parameter type (field `z` not on Point): the
    final unify still surfaces the mismatch. *)
 let e_sig_body_mismatch = assert_err
@@ -3560,6 +3584,7 @@ let () =
       test_case "sig polymorphic identity"               `Quick t_sig_poly_identity;
       test_case "sig returns function (partial peel)"    `Quick t_sig_returns_function;
       test_case "sig poly HOF not monomorphized by later use" `Quick t_sig_poly_hof_not_monomorphized;
+      test_case "sig poly HOF: backtick callee dependency"    `Quick t_sig_poly_hof_backtick_dep;
       test_case "err: sig body field mismatch"           `Quick e_sig_body_mismatch;
     ];
     "effects", [

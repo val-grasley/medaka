@@ -2107,7 +2107,14 @@ let order_groups_by_deps groups =
         List.iter (fun (_pats, body) ->
           ignore (Desugar.map_expr (fun e ->
             (match e with
-             | EVar x | EMethodRef (_, x) | EDictApp (_, x) ->
+             (* EInfix carries its callee as the operator *string* (backtick
+                infix `a `f` b` looks `f` up as an ordinary value — see infer),
+                so it is a real dependency edge too.  Missing it left a signed
+                recursive HOF (`sortBy cmp xs = … `helper` …`) sharing a live
+                placeholder with its callee, so a later tuple-typed use
+                monomorphized it — the §2.9 bug, surfacing only through backtick
+                infix (Phase 90 residual). *)
+             | EVar x | EMethodRef (_, x) | EDictApp (_, x) | EInfix (x, _, _) ->
                (match Hashtbl.find_opt owner x with Some j -> note j | None -> ())
              | _ -> ());
             e) body)

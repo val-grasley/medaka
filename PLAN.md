@@ -4211,24 +4211,40 @@ function (arrow).  A point-free constrained *non-function* constant
 return-position dispatch (Phase 93's `minBound`/`pure` family), which is a
 separate mechanism.
 
-### Phase 90: Per-use instantiation of a signed recursive HO function leaks (decorate-sort-undecorate monomorphises `sortBy`) ⏳ TODO
+### Phase 90: Per-use instantiation of a signed recursive HO function leaks (decorate-sort-undecorate monomorphises `sortBy`) ✅ DONE
 
-A recursive higher-order function **with an explicit polymorphic signature** gets
-monomorphised by one downstream use, breaking its other uses. Concretely, a
-decorate–sort–undecorate `sortOn`
-(`map snd (sortBy cmpOnFst (map (x => (key x, x)) xs))`) forces the shared
+A recursive higher-order function **with an explicit polymorphic signature** got
+monomorphised by one downstream use, breaking its other uses: a
+decorate–sort–undecorate `sortOn` forced the shared
 `sortBy : (a -> a -> <e> Ordering) -> List a -> <e> List a` to tuples, so an
-unrelated `sortBy (x y => compare y x) [3,1,2]` then fails
-`Type mismatch: (a, b) vs Int` — even though `sortBy` is signed polymorphic.
-Simpler shapes (a non-`sortOn` recursive signed fn used at two types) do NOT
-repro; the trigger needs the `<e>` effect var + the `Ord` constraint in the
-comparator lambda + the tuple-decoration. Workaround in `stdlib/list.mdk`:
-`sortOn key = sortBy (x y => compare (key x) (key y))` (key recomputed per
-comparison, matching `array.sortOn`); restore the once-per-element form once
-fixed. **Already spawned as a background task** with a minimal repro. Likely the
-letrec-group generalisation not isolating per-use instantiation of an
-explicitly-signed binding. Lands in `lib/typecheck.ml`; add a `test_typecheck`
-regression. Skill: **harden-typechecker**. (Possibly shares a root with Phase 89.)
+unrelated `sortBy (x y => compare y x) [3,1,2]` then failed
+`Type mismatch: (a, b) vs Int`.
+
+**The genuine (stdlib) case was already fixed** by commit `59a57b7`
+("process top-level groups in dependency order", PLAN §2.9): `order_groups_by_deps`
+(Tarjan SCC, dependencies-first) processes a signed HOF's non-cyclic callees
+*before* it, so the HOF instantiates a real generalized scheme instead of sharing
+a live placeholder var that a later tuple-typed use re-links. `stdlib/list.mdk`'s
+`sortOn` is back to the once-per-element decorate form and its doctests pass on
+List **and** Array; the regression is `test_typecheck`'s "sig poly HOF not
+monomorphized by later use".
+
+**Residual found and fixed this session.** The same monomorphization still
+reproduced when the recursive HOF reached its callee through **backtick infix**
+(`sortBy cmp (x::rest) = cmp x x `seq2` (x :: sortBy cmp rest)`).  `EInfix`
+carries its callee as the operator *string*, not an `EVar` — and `infer` looks it
+up as an ordinary value (`lookup_var env op`) — but `order_groups_by_deps`'s
+dependency collector only matched `EVar`/`EMethodRef`/`EDictApp`, so it **missed
+the `sortBy → seq2` edge**, mis-ordered the SCCs, and the placeholder-sharing
+monomorphization returned.  Fix (`lib/typecheck.ml`, `order_groups_by_deps`): add
+`EInfix (op, _, _)` to the collected reference forms.  Regression:
+`test_typecheck`'s "sig poly HOF: backtick callee dependency".  All base suites
+green; no new `@thorough` failures.
+
+**Note (latent, not fixed):** `EInfix` is also invisible to `method_marker` and
+records no `dict_app_usages`/`method_usages`, so a *constrained* function or
+interface method invoked via backtick infix is neither dict-routed nor
+obligation-checked.  No stdlib code hits this today; filed as **Phase 94**.
 
 ### Phase 91: Guard semantics — no fall-through, no compile-time exhaustiveness, no inline form ⏳ TODO
 
@@ -4275,6 +4291,30 @@ are platform-dependent (63-bit OCaml `int`). Scope: add `intMinBound`/
 return-position dispatch** actually selects the right impl for a bare `maxBound`
 at a known type (the Phase 69 marker handles return-position methods — confirm it
 covers zero-arg constants). Update STDLIB.md (currently ⏳/deferred).
+
+### Phase 94: Backtick infix bypasses dict-routing and obligation checking ⏳ TODO
+
+Surfaced while fixing the Phase 90 backtick-infix residual.  `a `f` b` parses to
+`EInfix (f, a, b)`, which `infer` types via `instantiate (lookup_var env op)` —
+an ordinary value lookup that records **no** `dict_app_usages` / `method_usages`
+and emits no constraint obligation.  `method_marker` also has no `EInfix` case, so
+it never rewrites the operator to an `EMethodRef`/`EDictApp`.  Consequences when
+the operator is a *constrained* function or an *interface method*:
+1. **No dict routing** — a `Foo a => …` function used as `` x `f` y `` is not
+   wrapped in `EDictApp`, so `dict_pass` threads no dictionary; at eval it falls
+   back to arg-tag dispatch (often fine for argument-dispatched ops, wrong for
+   return-position ones).
+2. **No obligation checking** — `` x `eq` y `` at a type with no `Eq` impl is not
+   flagged (the prefix `eq x y` correctly is).
+No current stdlib code invokes a constrained fn / method via backtick, so this is
+latent.  Fix: give `EInfix` the same method/constrained-fn treatment as the
+`EApp (EVar f, …)` path — handle it in `method_marker` (rewrite to
+`EMethodRef`/`EDictApp` when `f` is a method / constrained fn) and mirror the
+`EVar` recorder logic in `infer`'s `EInfix` case (instantiate_method, record
+method/dict usages).  Lands in `lib/method_marker.ml` + `lib/typecheck.ml`; add
+`test_typecheck` (obligation fires) + `test_eval` (return-position dispatch via
+backtick) regressions.  Skill: **add-language-feature** (cross-cuts marker +
+typecheck + eval).
 
 ---
 
