@@ -60,6 +60,20 @@ let mark_node (methods : (ident, unit) Hashtbl.t)
               (constrained : (ident, unit) Hashtbl.t) = function
   | EVar x when Hashtbl.mem methods x     -> EMethodRef (ref None, x)
   | EVar x when Hashtbl.mem constrained x -> EDictApp (ref None, x)
+  (* Phase 94: backtick infix `a `f` b` parses to EInfix (f, a, b) — the only
+     producer of EInfix.  When the operator names an interface method or a
+     constrained function, lower it to the prefix application of the marked
+     reference (EApp (EApp (EMethodRef/EDictApp, l), r)).  This reuses the whole
+     prefix-method machinery: typecheck's EMethodRef/EDictApp arms record the
+     usage and emit obligations via the shared EVar logic, dict_pass routes the
+     dictionary, and eval reads the stamped route for return-position dispatch.
+     Without it the operator was a plain value lookup — no dict routing, no
+     obligation check.  Method names take precedence, mirroring the EVar arms.
+     `map_expr` runs bottom-up, so `l`/`r` are already marked. *)
+  | EInfix (op, l, r) when Hashtbl.mem methods op ->
+    EApp (EApp (EMethodRef (ref None, op), l), r)
+  | EInfix (op, l, r) when Hashtbl.mem constrained op ->
+    EApp (EApp (EDictApp (ref None, op), l), r)
   | e -> e
 
 (* Map over every expression in a declaration.  Desugar.map_decl skips

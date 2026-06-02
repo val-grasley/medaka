@@ -12,6 +12,14 @@ let parse src =
                 (pos.Lexing.pos_cnum - pos.Lexing.pos_bol)
                 src)
 
+(* NB: this runs check_program on the *unmarked* program — no method_marker pass.
+   That's deliberate (isolates typecheck-internal behavior: unification,
+   generalization, …), but it means dispatch elaboration never happens: backtick
+   infix is not lowered, and method/constrained occurrences carry no
+   EMethodRef/EDictApp.  For a test that depends on dispatch — impl-key routing,
+   dict passing, or a backtick-method obligation — use a marked driver instead
+   (mark_with_prelude → check_program, as in `resolved_keys` / `assert_marked_err`
+   below), or the obligation can spuriously pass. *)
 let check src =
   try Ok (fst (check_program (Desugar.desugar_program (parse src))))
   with Type_error (e, _) -> Error e
@@ -3043,6 +3051,47 @@ main =
   ()
 |}
 
+(* Phase 94: a return-position method dispatched through backtick infix
+   (`True `pick` False : Int`) stamps the impl key just like the prefix call —
+   the marker lowers the EInfix into an EApp of an EMethodRef.  Before the fix
+   the operator was a plain value lookup, producing no EMethodRef and thus no
+   key at all. *)
+let t_key_backtick = assert_keys
+  ["Pick|Int|"]
+  {|interface Pick a where
+  pick : Bool -> Bool -> a
+
+impl Pick Int where
+  pick x y = 1
+
+impl Pick String where
+  pick x y = "s"
+
+main : <IO> Unit
+main =
+  let r = (True `pick` False : Int)
+  ()
+|}
+
+(* Phase 94: an interface method invoked via backtick at a type with no impl must
+   raise a missing-impl obligation, exactly as the prefix `eq x y` form does.
+   This only fires on the marked pipeline (mark_with_prelude rewrites the EInfix),
+   so it uses the marked driver, not the bare `check`. *)
+let assert_marked_err src () =
+  let prog = Method_marker.mark_with_prelude (Desugar.desugar_program (parse src)) in
+  match (try ignore (check_program prog); `Ok with Type_error (e, _) -> `Err e) with
+  | `Err _ -> ()
+  | `Ok ->
+    failwith (Printf.sprintf
+      "Expected type error (marked pipeline), but program type-checked.\nSource:\n%s"
+      src)
+
+let e_backtick_no_impl = assert_marked_err
+  {|data Color = Red | Green
+
+hmm = Red `eq` Green
+|}
+
 (* ── Phase 69.x: dictionary-passing routes ── *)
 
 (* Collect every filled EMethodRef / EDictApp route as a readable string, so we
@@ -3954,6 +4003,8 @@ let () =
     "impl-key dispatch (Phase 69)", [
       test_case "return-position keys"  `Quick t_key_return_position;
       test_case "multi-param keys"      `Quick t_key_multiparam;
+      test_case "backtick return-position key (Phase 94)" `Quick t_key_backtick;
+      test_case "err: backtick method no impl (Phase 94)" `Quick e_backtick_no_impl;
     ];
     "dictionary passing (Phase 69.x)", [
       test_case "RDict in body, RKey at sites" `Quick t_dict_routes_helper;

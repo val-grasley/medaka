@@ -4349,7 +4349,7 @@ step *fails* — nullary return-position dispatch is broadly broken (see **Phase
 `empty` (Monoid) fails identically, even `(empty : List Int)`.  Adding the
 Bounded impls now would just ship broken constants, so Phase 93 waits on Phase 96.
 
-### Phase 94: Backtick infix bypasses dict-routing and obligation checking ⏳ TODO
+### Phase 94: Backtick infix bypasses dict-routing and obligation checking ✅ DONE
 
 Surfaced while fixing the Phase 90 backtick-infix residual.  `a `f` b` parses to
 `EInfix (f, a, b)`, which `infer` types via `instantiate (lookup_var env op)` —
@@ -4363,15 +4363,36 @@ the operator is a *constrained* function or an *interface method*:
    return-position ones).
 2. **No obligation checking** — `` x `eq` y `` at a type with no `Eq` impl is not
    flagged (the prefix `eq x y` correctly is).
-No current stdlib code invokes a constrained fn / method via backtick, so this is
-latent.  Fix: give `EInfix` the same method/constrained-fn treatment as the
-`EApp (EVar f, …)` path — handle it in `method_marker` (rewrite to
-`EMethodRef`/`EDictApp` when `f` is a method / constrained fn) and mirror the
-`EVar` recorder logic in `infer`'s `EInfix` case (instantiate_method, record
-method/dict usages).  Lands in `lib/method_marker.ml` + `lib/typecheck.ml`; add
-`test_typecheck` (obligation fires) + `test_eval` (return-position dispatch via
-backtick) regressions.  Skill: **add-language-feature** (cross-cuts marker +
-typecheck + eval).
+No current stdlib code invokes a constrained fn / method via backtick, so this was
+latent.
+
+**Fix (marker-only).**  `mark_node` (`lib/method_marker.ml`) now lowers a
+method/constrained backtick operator into the prefix application of the marked
+reference: `EInfix (op, l, r)` → `EApp (EApp (EMethodRef/EDictApp (ref None, op),
+l), r)` (method precedence mirrors the `EVar` arms; `EInfix` is the *only*
+producer of backtick infix, so symbolic `EBinOp` operators are untouched).  This
+reuses the entire prefix-method machinery: `infer`'s `EMethodRef`/`EDictApp` arms
+stash the ref and delegate to the shared `EVar` logic (records
+`method_usages`/`dict_app_usages`, emits obligations); `dict_pass` routes the
+`EDictApp`; eval reads the stamped `res_route` for return-position dispatch.  No
+eval change, no new typecheck node logic.
+
+This **subsumes** PLAN's originally-suggested second part (mirroring the recorder
+in `infer`'s bare `EInfix` arm): obligations now flow through the `EVar`
+delegation.  We deliberately left the bare `EInfix` arm untouched — every
+production driver (`Elaborate.elaborate`, the multi-module path, the doctest
+harness) marks before typecheck, so only the bare unit-test `check_program` skips
+the marker, and emitting obligations there would be redundant *and* touch the
+delicate constraint/instantiation code for no production gain.
+
+Lands in `lib/method_marker.ml` (the two `EInfix` arms) only.  Regressions:
+`test_typecheck`'s "backtick return-position key (Phase 94)" (an EMethodRef route
+is stamped via backtick — impossible before, when there was no EMethodRef) and
+"err: backtick method no impl (Phase 94)" (obligation fires, via the marked
+driver); `test_eval`'s "backtick method eval" and "backtick return-position" (a
+two-Bool-arg method only the result annotation can dispatch — unreachable by the
+old arg-tag `EInfix` path).  All base suites green; no new `@thorough` failures.
+Skill: **add-language-feature** (marker + typecheck + eval).
 
 ### Phase 95: `pure` in an imported module's do-block breaks `flatMap` super-entailment ⏳ TODO
 
@@ -4431,6 +4452,30 @@ interface method.  This also subsumes the Phase 84 residual "`pure` in a do-bloc
 with no `<-`".  Add `test_eval`/`test_run` regressions (`empty` at a known type;
 a custom Monoid/Bounded constant).  Skill: **harden-typechecker** (spills into
 eval dispatch — verify both paths).  Unblocks Phase 93.
+
+### Phase 97: Ordinary-function backtick infix under-accounts effects ⏳ TODO
+
+Noticed while doing Phase 94.  `infer`'s bare `EInfix` arm (`lib/typecheck.ml`)
+types `a `f` b` as
+`unify tf (TFun (tl, open_row (), TFun (tr, open_row (), result)))` — it opens the
+two effect rows but, unlike the `EApp` path, **never calls
+`perform_effect cur_effect eff`** on them.  So a latent effect carried by the
+backtick operator's function type is not propagated into the enclosing effect
+context: `` a `f` b `` can type pure where the equivalent `f a b` correctly
+requires the effect.
+
+Phase 94 made this **moot for methods / constrained functions** — the marker now
+lowers those backtick operators to `EApp (EApp (EMethodRef/EDictApp, l), r)`,
+which goes through the effect-performing `EApp` arm.  But an **ordinary** function
+used infix stays an `EInfix` node and keeps the leaky arm.  No stdlib code relies
+on a backtick-infix effectful ordinary function today, so this is latent.
+
+Fix: thread the two operator-application effect rows through
+`perform_effect cur_effect` in the `EInfix` arm, mirroring `EApp` (`lib/typecheck.ml`).
+Mind the two whole-program entry points share the `infer` arm, so the one change
+covers both.  Add a `test_typecheck` regression: a backtick call to an effectful
+ordinary function must require the effect (and the pure form must be rejected),
+at parity with the prefix `f a b`.  Skill: **harden-typechecker**.
 
 ---
 

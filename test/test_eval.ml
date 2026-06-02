@@ -1063,6 +1063,30 @@ let t_infer_wrapper_eval_false = assert_val_typed {|myEq x y = eq x y
 r = myEq 3 4
 |} "r" (VBool false)
 
+(* Phase 94: an interface method invoked through backtick infix (`3 `eq` 3`)
+   evaluates like the prefix form — the marker lowers EInfix to an EApp of an
+   EMethodRef, so it routes through the dispatch machinery instead of a plain
+   value lookup. *)
+let t_backtick_method_eval = assert_val_typed {|r = 3 `eq` 3
+|} "r" (VBool true)
+
+(* Phase 94: a *return-position* method dispatched via backtick.  Both impls take
+   Bool args, so runtime arg-tag dispatch cannot pick between Int and String —
+   only the `r : Int` signature can.  Before the fix the backtick operator was a
+   bare value lookup with no stamped route, so this could not dispatch. *)
+let t_backtick_return_position = assert_val_typed {|interface Pick a where
+  pick : Bool -> Bool -> a
+
+impl Pick Int where
+  pick x y = 1
+
+impl Pick String where
+  pick x y = "s"
+
+r : Int
+r = True `pick` False
+|} "r" (VInt 1)
+
 (* Phase 89: a point-free constrained def (`myMax = fold step None`) dispatches
    correctly at runtime when used at *two* different Foldable containers in one
    program — the typechecker now generalizes it per its signature, and the inner
@@ -1829,6 +1853,8 @@ let () =
       test_case "list empty"        `Quick t_dispatch_list_empty;
       test_case "inferred wrapper true"  `Quick t_infer_wrapper_eval_true;
       test_case "inferred wrapper false" `Quick t_infer_wrapper_eval_false;
+      test_case "backtick method eval"   `Quick t_backtick_method_eval;
+      test_case "backtick return-position" `Quick t_backtick_return_position;
     ];
     "point-free constrained dispatch (Phase 89)", [
       test_case "point-free on List"        `Quick t_pf_dispatch_list;
