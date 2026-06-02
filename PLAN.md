@@ -4266,23 +4266,40 @@ records no `dict_app_usages`/`method_usages`, so a *constrained* function or
 interface method invoked via backtick infix is neither dict-routed nor
 obligation-checked.  No stdlib code hits this today; filed as **Phase 94**.
 
-### Phase 91: Guard semantics — no fall-through, no compile-time exhaustiveness, no inline form ⏳ TODO
+### Phase 91: Guard semantics — fall-through ✅ DONE; compile-time exhaustiveness + inline form ⏳ TODO
 
 Three related guard gaps, all observed writing `list.mdk`:
-1. **No fall-through to the next equation.** If a clause's guards all fail, eval
-   panics `Non-exhaustive guards` instead of trying the next pattern clause
-   (Haskell falls through). So every guarded clause must be self-exhaustive
-   (`| otherwise`), forcing the `n <= 0` case to be folded *inside* the relevant
-   pattern clause. Repro: `tk n _` ⏎ `  | n <= 0 = []` followed by `tk _ [] = …`
-   → `tk 9 [1,2]` panics. Decide intended semantics: implement Haskell-style
-   fall-through, or keep the rule but…
+
+1. **Fall-through to the next equation — ✅ DONE (Haskell semantics, user-chosen).**
+   When a function clause's guards all fail, dispatch now falls through to the
+   next *pattern* clause instead of panicking `Non-exhaustive guards`.
+   `tk n _ | n <= 0 = []` followed by `tk _ [] = …` / `tk n (x::xs) = …` now
+   does the right thing on `tk 9 [1,2]`.
+
+   **Implementation.** A desugared guard chain used to end in
+   `panic "Non-exhaustive guards"`; it now ends in `__fallthrough__ ()` — a new
+   internal extern (`stdlib/runtime.mdk` + `lib/eval.ml`) that raises
+   `Impl_no_match`, the *same* signal a failed pattern raises.  A multi-clause
+   function is a `VMulti` whose `apply` already catches `Impl_no_match` and tries
+   the next candidate, so guard exhaustion in one clause transparently falls
+   through to the next; a single exhausted clause surfaces as a
+   non-exhaustive-match runtime error at the boundary (matching Haskell).  No
+   change to the `VMulti` dispatch itself.  Lands in `lib/desugar.ml`
+   (`guards_to_core` terminator) + `stdlib/runtime.mdk` + `lib/eval.ml`.
+   Regressions: `test_eval` "guard fall-through (take/base/classify)" and
+   `test_run` "guard fall-through / guard exhausted error (Phase 91)".  All base
+   suites green; no new `@thorough` failures.
+
 2. **…detect non-exhaustive guards at compile time** (`exhaust.ml` handles
-   pattern matrices but not guard coverage) — today it's a runtime panic.
+   pattern matrices but not guard coverage) — today it's a runtime error. ⏳ TODO.
 3. **No inline guard form**: `f n _ | n <= 0 = []` is a parse error; guards must
-   be on indented continuation lines.
-Lands across `lib/eval.ml` (fall-through), `lib/exhaust.ml` (coverage warning),
-`lib/parser.mly`/`lib/lexer.mll` (inline form). This is a language-semantics
-decision first; treat as **add-language-feature** after deciding (1).
+   be on indented continuation lines. ⏳ TODO (`lib/parser.mly`/`lib/lexer.mll`).
+
+Remaining (2) + (3) land in `lib/exhaust.ml` (coverage warning — note guards can
+be arbitrary `Bool` so only `| otherwise`/literal-`True` coverage is decidable;
+a conservative "guards may not be exhaustive" warning is the realistic target)
+and `lib/parser.mly`/`lib/lexer.mll` (inline form — re-measure parser conflicts).
+Skill: **add-language-feature**.
 
 ### Phase 92: Doctest harness can't reach cross-module instances ⏳ TODO
 

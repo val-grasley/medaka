@@ -1175,6 +1175,12 @@ let primitives : (string * value) list =
       match msg with
       | VString s -> raise (Eval_error ("panic: " ^ s, !current_loc))
       | _ -> raise (Eval_error ("panic", !current_loc))));
+    (* Phase 91: terminator of a desugared guard chain.  Raising Impl_no_match
+       (the same signal a failed pattern raises) makes a multi-clause function's
+       VMulti dispatch fall through to the next pattern clause when this clause's
+       guards all fail; if no clause matches, the boundary converts it to a
+       non-exhaustive-match runtime error. *)
+    ("__fallthrough__", VPrim (fun _ -> raise Impl_no_match));
     ("randomInt", VPrim (fun lo ->
       VPrim (fun hi ->
         match lo, hi with

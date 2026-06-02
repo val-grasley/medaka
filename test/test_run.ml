@@ -384,6 +384,38 @@ main : <IO> Unit
 main = println (f 99)
 |}
 
+(* ── Phase 91: guard fall-through end-to-end ──────────────────────────────── *)
+
+(* A guarded first clause whose guard fails falls through to a later pattern
+   clause (Haskell semantics) instead of panicking "Non-exhaustive guards".
+   Uses the typed path (capture_run_typed desugars; capture_run does not). *)
+let t_guard_fallthrough = assert_output_typed
+  {|tk n _
+  | n <= 0 = []
+tk _ [] = []
+tk n (x :: xs) = x :: tk (n - 1) xs
+
+main : <IO> Unit
+main = println (show (tk 2 [10, 20, 30, 40]))
+|}
+  "[10, 20]\n"
+
+(* A single clause whose guards are exhausted (no later clause to fall through
+   to) is still a runtime error — the fall-through signal reaches the boundary. *)
+let assert_run_err_typed src () =
+  match (try Some (capture_run_typed src) with Eval_error _ | Impl_no_match -> None) with
+  | None -> ()
+  | Some out ->
+    failwith (Printf.sprintf "Expected runtime error but got:\n%s\n\nSource:\n%s" out src)
+
+let t_guard_exhausted_err = assert_run_err_typed
+  {|big x
+  | x > 100 = "big"
+
+main : <IO> Unit
+main = println (big 5)
+|}
+
 (* ── String/Char kernel (Phase 75) ───────────────────────────────────────── *)
 
 (* Smoke-tests each kernel extern.  Untyped capture_run is enough — these are
@@ -550,6 +582,8 @@ let () = Alcotest.run "Run"
     "multi print",   `Quick, t_multi_print;
     "let mut",       `Quick, t_let_mut;
     "runtime error", `Quick, t_runtime_err;
+    "guard fall-through (Phase 91)", `Quick, t_guard_fallthrough;
+    "guard exhausted error (Phase 91)", `Quick, t_guard_exhausted_err;
     "string kernel",      `Quick, t_string_kernel;
     "string codepoint",   `Quick, t_string_codepoint;
     "string indexOf",     `Quick, t_string_index_of;

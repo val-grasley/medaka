@@ -19,6 +19,11 @@ extern readFile : String -> <IO> (Result String String)
 extern writeFile : String -> String -> <IO> (Result String Unit)
 extern exit : Int -> <Panic> Unit
 extern panic : String -> a
+-- Internal: the terminator of a desugared guard chain (Phase 91).  Raises the
+-- same "no clause matched" signal as a failed pattern, so when a function
+-- clause's guards all fail, dispatch falls through to the next pattern clause
+-- (Haskell semantics) instead of aborting.  Not meant for direct use.
+extern __fallthrough__ : Unit -> a
 extern randomInt : Int -> Int -> <Rand> Int
 extern randomBool : Unit -> <Rand> Bool
 extern randomFloat : Unit -> <Rand> Float

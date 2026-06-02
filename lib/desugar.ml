@@ -787,8 +787,12 @@ let merge_iface_defaults prog =
 
 (* Guard arms → nested if/match chain threading a fallback continuation.  A
    boolean qualifier lowers to `if`; a pattern-bind lowers to a 2-arm `match`
-   whose wildcard arm is the fallback.  A missing catch-all panics at runtime,
-   matching Haskell's behaviour. *)
+   whose wildcard arm is the fallback.  When every guard arm fails the chain
+   ends in `__fallthrough__ ()`, which raises the same "no clause matched"
+   signal as a failed pattern (Phase 91).  For a *multi-clause* function this
+   makes dispatch fall through to the next pattern clause (Haskell semantics);
+   for a single exhausted clause it surfaces as a non-exhaustive-match runtime
+   error at the boundary. *)
 let guards_to_core arms =
   let rec arm quals body els = match quals with
     | []                 -> body
@@ -798,7 +802,7 @@ let guards_to_core arms =
   List.fold_right
     (fun (quals, body) els -> arm quals body els)
     arms
-    (EApp (EVar "panic", ELit (LString "Non-exhaustive guards")))
+    (EApp (EVar "__fallthrough__", ELit LUnit))
 
 let section_to_core = function
   | SecBare op       -> ELam ([PVar "_a"; PVar "_b"], EBinOp (op, EVar "_a", EVar "_b"))

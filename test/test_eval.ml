@@ -176,6 +176,34 @@ let t_match_guard = assert_val {|sign n =
 r = sign (-3)
 |} "r" (VInt (-1))
 
+(* Phase 91: Haskell-style guard fall-through.  When a function clause's guards
+   all fail, dispatch falls through to the next *pattern* clause instead of
+   panicking.  `tk`'s first clause `tk n _ | n <= 0 = []` fails its guard for
+   `tk 2 …`, so the `_::_` clause runs. *)
+let t_guard_fallthrough_take = assert_val {|tk n _
+  | n <= 0 = []
+tk _ [] = []
+tk n (x :: xs) = x :: tk (n - 1) xs
+r = tk 2 [1, 2, 3, 4]
+|} "r" (VList [VInt 1; VInt 2])
+
+(* The guard *succeeds* here, so the first clause wins (no fall-through). *)
+let t_guard_fallthrough_base = assert_val {|tk n _
+  | n <= 0 = []
+tk _ [] = []
+tk n (x :: xs) = x :: tk (n - 1) xs
+r = tk 0 [1, 2, 3, 4]
+|} "r" (VList [])
+
+(* Guards across clauses with a final catch-all pattern clause: each guarded
+   clause that fails falls through to the next. *)
+let t_guard_fallthrough_classify = assert_val {|classify n
+  | n < 0 = 0
+  | n == 0 = 1
+classify _ = 2
+r = classify 7
+|} "r" (VInt 2)
+
 let t_match_constructor = assert_val {|data Shape = Circle Int | Square Int
 area s =
   match s
@@ -1635,6 +1663,9 @@ let () =
       test_case "literal"     `Quick t_match_lit;
       test_case "tuple"       `Quick t_match_tuple;
       test_case "guard"       `Quick t_match_guard;
+      test_case "guard fall-through (take)"     `Quick t_guard_fallthrough_take;
+      test_case "guard fall-through (base)"     `Quick t_guard_fallthrough_base;
+      test_case "guard fall-through (classify)" `Quick t_guard_fallthrough_classify;
       test_case "constructor" `Quick t_match_constructor;
       test_case "list_head"       `Quick t_match_list_head;
       test_case "as-pattern cons" `Quick t_as_pattern_head;
