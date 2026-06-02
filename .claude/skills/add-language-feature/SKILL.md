@@ -41,7 +41,14 @@ When you emit **Medaka** code in examples/tests, use multi-arg lambda form
    for the new node so nothing falls through unresolved.
 5. **Typecheck** — `lib/typecheck.ml`. Infer/check types (HM + interfaces +
    effects). If the construct introduces match arms, update exhaustiveness
-   feeding into `lib/exhaust.ml`.
+   feeding into `lib/exhaust.ml`. Per-node `infer`/`check_expr` arms are shared,
+   but **whole-program orchestration lives in two near-identical entry points** —
+   `check_program_impl` (single-file) and `typecheck_module` (multi-module use-
+   decls), each with its own `process_letrec_group`/results/final-pass block. A
+   change to group processing, constraint registration, or a post-HM pass usually
+   must be mirrored in both; and when a typechecker probe "won't fire," confirm
+   it's on the path your driver hits (`check_program` → `check_program_impl`)
+   rather than assuming a stale build (compare exe vs `.cmx` mtime).
 6. **Desugar** — `lib/desugar.ml`. If the feature is sugar, lower it to
    existing core nodes here rather than handling it in eval.
 7. **Eval** — `lib/eval.ml`. Add evaluation for any node that survives
