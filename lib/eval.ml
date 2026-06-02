@@ -1164,6 +1164,16 @@ let primitives : (string * value) list =
        defined in stdlib/core.mdk as regular Medaka functions. *)
     ("pi",      VFloat Float.pi);
     ("e",       VFloat (exp 1.0));
+    (* Platform bounds for `impl Bounded Int`/`Bounded Char` (Phase 93).
+       Int: 63-bit OCaml `int` limits.  Char: U+0000 / U+10FFFF as UTF-8,
+       built the same way as `charFromCode`. *)
+    ("intMinBound",  VInt min_int);
+    ("intMaxBound",  VInt max_int);
+    ("charMinBound", VChar "\x00");
+    ("charMaxBound",
+      (let b = Buffer.create 4 in
+       Buffer.add_utf_8_uchar b (Uchar.of_int 0x10FFFF);
+       VChar (Buffer.contents b)));
     ("readLine", VPrim (fun _ -> VString (input_line stdin)));
     ("readFile", VPrim (fun path ->
       match path with

@@ -404,6 +404,22 @@ export interface Bounded a where
   minBound : a
   maxBound : a
 
+{- | `Int` bounds are the platform's 63-bit native-integer limits.
+   > (minBound : Int) < (maxBound : Int)
+   True -}
+export impl Bounded Int where
+  minBound = intMinBound
+  maxBound = intMaxBound
+
+{- | `Char` ranges over the Unicode scalar values, U+0000 to U+10FFFF.
+   > charCode (minBound : Char)
+   0
+   > charCode (maxBound : Char)
+   1114111 -}
+export impl Bounded Char where
+  minBound = charMinBound
+  maxBound = charMaxBound
+
 {- | Structure-preserving map (a.k.a. Functor).  Laws:
        map identity      == identity
        map (g `compose` f) == map g `compose` map f -}

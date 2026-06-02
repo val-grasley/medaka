@@ -292,6 +292,29 @@ main =
 |}
   "False\nTrue\n"
 
+(* Phase 93: the *stdlib* `Bounded Int` / `Bounded Char` impls (no local impl),
+   each dispatched purely by an annotated result type.  `Char` bounds go through
+   `charCode` to keep the result an Int (Show Char isn't reachable here). *)
+let t_nullary_bounded_int = assert_output_typed
+  {|lo : Int
+lo = minBound
+hi : Int
+hi = maxBound
+
+main : <IO> Unit
+main =
+  println (show (lo < hi))
+|}
+  "True\n"
+
+let t_nullary_bounded_char = assert_output_typed
+  {|main : <IO> Unit
+main =
+  println (show (charCode (minBound : Char)))
+  println (show (charCode (maxBound : Char)))
+|}
+  "0\n1114111\n"
+
 (* ── Phase 69.x-c: head-concrete (RHeadKey) dispatch ─────────────────────── *)
 (* `wrap : a -> f a` discriminates on its result head `f`.  Inside `mkBox`, `f`
    is fixed to `Box` by the annotation but its arg is still free, so the site is
@@ -635,6 +658,8 @@ let () = Alcotest.run "Run"
     "nullary empty (stdlib Monoid)",     `Quick, t_nullary_empty_stdlib_monoid;
     "nullary empty (custom Monoid)",     `Quick, t_nullary_empty_custom_monoid;
     "nullary minBound/maxBound (Phase 96)", `Quick, t_nullary_bounded;
+    "nullary Bounded Int (stdlib, Phase 93)",  `Quick, t_nullary_bounded_int;
+    "nullary Bounded Char (stdlib, Phase 93)", `Quick, t_nullary_bounded_char;
     "hello world",   `Quick, t_hello;
     "factorial",     `Quick, t_factorial;
     "adt match",     `Quick, t_adt_match;

@@ -16,10 +16,9 @@ Expect to discover language gaps as you go; record them in PLAN.md §5.
 
 **Notes on the current state (as of 2026-06-01).**
 
-- Modules 1–4 are implemented. The only deliberate gaps: `Bounded Int`/
-  `Bounded Char` (await a runtime decision on platform-dependent bounds) and
-  `String.fromInt`/`fromFloat` (would collide with `Num.fromInt`; use the
-  global `intToString`/`floatToString`).
+- Modules 1–4 are implemented, including `Bounded Int`/`Bounded Char` (Phase 93,
+  via native bound externs). The only deliberate gap: `String.fromInt`/`fromFloat`
+  (would collide with `Num.fromInt`; use the global `intToString`/`floatToString`).
 - `maximum`/`minimum`/`notElem` were made **generic over `Foldable`** in `core`
   (not List/Array-specific), per the preference for interface-driven generality.
 
@@ -58,7 +57,7 @@ file and the matching impl in `lib/eval.ml`.
 
 ---
 
-## Module 1 — `core` ✅ implemented (only `Bounded Int`/`Bounded Char` deferred)
+## Module 1 — `core` ✅ implemented
 
 The foundation every other module depends on. Implemented in `stdlib/core.mdk`
 and prepended to every program by the compiler.
@@ -200,7 +199,7 @@ method; see the interface above and `impl Filterable List` below.)
 - ✅ `impl Ord` for `Int`, `Float`, `Char`, `String`, `Option a`, `Result e a`, tuples, `List a`
 - ✅ `impl Show` for every built-in type and for `Option`, `Result`, `List`, tuples (and `Array`, in `array.mdk`)
 - ✅ `impl Num Int`, `impl Num Float`
-- ⏳ `impl Bounded Int`, `impl Bounded Char` — **deferred**: `minBound`/`maxBound` are return-type-polymorphic constants with no externs yet, and `Int`'s bounds are platform-dependent (63-bit OCaml `int`). The `Bounded` interface is in place; only these two impls await a runtime decision.
+- ✅ `impl Bounded Int`, `impl Bounded Char` (Phase 93) — backed by native bound externs (`intMinBound`/`intMaxBound` = the 63-bit OCaml `int` limits; `charMinBound`/`charMaxBound` = U+0000 / U+10FFFF). The bounds dispatch by result type via Phase 96's nullary return-position fix.
 - ✅ `impl Foldable Option`, `impl Foldable (Result e)`, `impl Foldable Array`
 - ✅ `impl Mappable Array`
 

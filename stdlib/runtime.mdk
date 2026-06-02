@@ -32,6 +32,12 @@ extern setSeed : Int -> <Rand> Unit
 extern charToStr : Char -> String
 extern intToFloat : Int -> Float
 extern floatToInt : Float -> Int
+-- Platform bounds backing `impl Bounded Int`/`Bounded Char` in core.mdk.
+-- Int bounds are the 63-bit OCaml `int` limits; Char bounds are U+0000 / U+10FFFF.
+extern intMinBound : Int
+extern intMaxBound : Int
+extern charMinBound : Char
+extern charMaxBound : Char
 -- Leaf renderers backing the `Show` impls in core.mdk / string.mdk.  These
 -- expose the same OCaml formatting `pp_value` uses, so `show` agrees with
 -- `println` on numbers.  `showStringLit`/`showCharLit` produce the *quoted,

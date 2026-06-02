@@ -4332,7 +4332,7 @@ the **multi-module** typecheck path (`typecheck_module` chain) instead of
 `check_program` — a `lib/doctest.ml` rewrite.  Tracked here as the residual ⏳
 TODO; no dedicated skill (see the `extend-stdlib` skill's doctest-harness notes).
 
-### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ⏳ TODO (UNBLOCKED — Phase 96 done)
+### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ✅ DONE
 
 Deferred from the stdlib completion: the `Bounded` interface exists but `Int`/
 `Char` have no impls, because `minBound`/`maxBound` are **return-type-polymorphic
@@ -4346,6 +4346,24 @@ bounds are platform-dependent (63-bit OCaml `int`). Scope: add `intMinBound`/
 the bound constants now resolve at known types — a local `impl Bounded Bool where
 minBound = False; maxBound = True` then `lo : Bool = minBound` / `hi : Bool =
 maxBound` evaluate correctly.  Phase 93 can now proceed.
+
+**Resolution (2026-06-02).**  With dispatch already fixed in Phase 96, this was
+purely additive — no typecheck/eval change.  Added four nullary-constant externs
+(the `pi`/`e` precedent, *not* `VPrim`): `intMinBound`/`intMaxBound` = OCaml
+`min_int`/`max_int` (63-bit platform limits), `charMinBound`/`charMaxBound` =
+U+0000 / U+10FFFF as UTF-8 (built like `charFromCode`) — in `runtime.mdk` +
+`eval.ml`.  Then `export impl Bounded Int`/`Bounded Char` in `core.mdk` simply
+forward to those externs (dedicated Char externs chosen over `charFromCode` +
+`fromOption`, so no `Option`-unwrap and no throwaway default Char).  Char literals
+were *not* an option: the lexer stores char-literal bytes verbatim and doesn't
+decode `\u{…}`, so U+0 / U+10FFFF can't be written in source.  Doctests assert
+via `charCode (… : Char)` (Int result — Show Char isn't reachable in core) and a
+relational `(minBound : Int) < (maxBound : Int)` (platform-stable).  Regressions:
+`test_run`'s "nullary Bounded Int/Char (stdlib, Phase 93)" — the *stdlib* impls
+(no local impl) dispatched by an annotated result type, via `assert_output_typed`
+(typed pipeline required for return-position dispatch).  STDLIB.md gaps closed.
+All base suites green.  Skills: **add-primitive** (externs) + **extend-stdlib**
+(impls).
 
 ### Phase 94: Backtick infix bypasses dict-routing and obligation checking ✅ DONE
 
