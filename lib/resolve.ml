@@ -478,6 +478,11 @@ let rec check_expr env scope errors e =
   | ELit _ -> ()
   | EMethodRef _ -> ()  (* marker pass runs after resolve; method already bound *)
   | EDictApp _ -> ()    (* marker pass runs after resolve; name already bound *)
+  | EVar n when String.length n > 0 && n.[0] = '@' ->
+    (* @Name impl-disambiguation hint, not a value reference. The impl name is
+       validated by typecheck (UnknownImplName); resolve only needs to not treat
+       it as an unbound variable. (Phase 86) *)
+    ()
   | EVar n ->
     if not (lookup_value env scope n) then
       emit errors (UnboundVariable n)
