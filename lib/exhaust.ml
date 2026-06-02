@@ -228,6 +228,32 @@ let check_match ~get_ctors ~get_arity ~get_ctor_type ~warnings ~col0_type
     warnings := (pp_loc match_loc ^
       "Warning: non-exhaustive match — some values may not be covered") :: !warnings
 
+(* Phase 102: coverage check for a plain multi-clause dispatch group (`f Nil =
+   ..` / `f (Cons x xs) = ..`).  Such a group never becomes an [EMatch] — each
+   clause is inferred as its own lambda and packaged as a `VMulti` at eval — so
+   [check_match] above never sees it; an uncovered case only surfaces at runtime
+   as a non-exhaustive-match error.  We run this from typecheck (where the oracle
+   is type-aware and sees prelude types, unlike the Phase 91(2) lint below) by
+   wrapping each clause's whole parameter list as one synthetic `__tuple__`
+   column — exactly the multi-parameter reduction [check_group] uses — and asking
+   whether an all-wildcard input is still useful (i.e. unmatched).
+
+   Guards are already desugared away by the time typecheck runs, so every clause
+   pattern counts as covering its shape regardless of any guard; guard
+   fall-through is Phase 91(2)'s separate concern, not this.  [arity = 0] (value
+   bindings) is skipped — there is nothing to be non-exhaustive over. *)
+let check_clauses ~get_ctors ~get_arity ~get_ctor_type ~warnings ~loc ~arity
+                  (clause_pats : pat list list) =
+  if arity > 0 then begin
+    let rows = List.map (fun pats -> [ desugar (PTuple pats) ]) clause_pats in
+    let query = [ desugar (PTuple (List.init arity (fun _ -> PWild))) ] in
+    if useful ~get_ctors ~get_arity ~get_ctor_type (Some "__tuple__") rows query
+    then
+      warnings := (pp_loc loc ^
+        "Warning: non-exhaustive clauses — some inputs are not matched")
+        :: !warnings
+  end
+
 (* ── Phase 91 (2): conservative non-exhaustive-guard detection ─────────────
    Function-clause / where-binding guards (`f n | n > 0 = ..`) desugar to nested
    `EIf` chains terminated by `__fallthrough__ ()` *before* typecheck, so they

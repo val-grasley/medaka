@@ -1056,6 +1056,7 @@ let initial_env () =
      types whose constructors aren't declared in stdlib/core.mdk. *)
   Hashtbl.replace env.type_ctors "Bool"      ["True"; "False"];
   Hashtbl.replace env.type_ctors "List"      ["Cons"; "Nil"];
+  Hashtbl.replace env.type_ctors "Unit"      ["Unit"];
   Hashtbl.replace env.type_ctors "__tuple__" ["__tuple__"];
   (* Generalize: vars are now at level 1, current_level = 0, so they get quantified *)
   Hashtbl.filter_map_inplace
@@ -1261,6 +1262,49 @@ let rec type_pat env = function
 let clause_to_expr (pats, body) =
   if pats = [] then body
   else List.fold_right (fun p acc -> ELam ([p], acc)) pats body
+
+(* The constructor oracle that [Exhaust] needs for coverage analysis, backed by
+   the typechecker's [env.type_ctors]/[env.ctors] (so it sees both user and
+   prelude types).  [tuple_arity] is the arity of the synthetic `__tuple__`
+   column — the scrutinee's tuple width for an [EMatch], or the clause-group's
+   parameter count for a plain multi-clause function (Phase 102).  Shared by the
+   [EMatch] branch and [process_letrec_group]'s multi-clause check. *)
+let exhaust_oracle env ~tuple_arity =
+  let get_ctors tname = Hashtbl.find_opt env.type_ctors tname in
+  let get_arity c =
+    if c = "__tuple__" then tuple_arity
+    else
+      match Hashtbl.find_opt env.ctors c with
+      | None -> (match c with "Cons" -> 2 | _ -> 0)
+      | Some (Forall (_, _, t)) ->
+        let rec count = function
+          | TFun (_, _, r) -> 1 + count r
+          | TVar v -> (match !v with Link t' -> count t' | _ -> 0)
+          | _ -> 0
+        in
+        count t
+  in
+  let get_ctor_type c =
+    if c = "__tuple__" then Some "__tuple__"
+    else
+      match Hashtbl.find_opt env.ctors c with
+      | None ->
+        (match c with
+         | "Cons" | "Nil"   -> Some "List"
+         | "True" | "False" -> Some "Bool"
+         | "Unit"           -> Some "Unit"
+         | _                -> None)
+      | Some (Forall (_, _, t)) ->
+        let rec result_type = function
+          | TFun (_, _, r) -> result_type r
+          | TApp (f, _) -> result_type f
+          | TCon n      -> Some n
+          | TVar v      -> (match !v with Link t' -> result_type t' | _ -> None)
+          | _           -> None
+        in
+        result_type t
+  in
+  (get_ctors, get_arity, get_ctor_type)
 
 let rec infer env = function
   | ELoc (l, e) ->
@@ -1545,43 +1589,10 @@ let rec infer env = function
         (* Tuples have no TCon head; treat them as a synthetic singleton type. *)
         (match follow tsc with TTuple _ -> Some "__tuple__" | _ -> None)
     in
-    let get_ctors tname = Hashtbl.find_opt env.type_ctors tname in
-    let get_arity c =
-      if c = "__tuple__" then
-        (match follow tsc with TTuple ts -> List.length ts | _ -> 0)
-      else
-        match Hashtbl.find_opt env.ctors c with
-        | None -> (match c with "Cons" -> 2 | _ -> 0)
-        | Some (Forall (_, _, t)) ->
-          let rec count = function
-            | TFun (_, _, r) -> 1 + count r
-            | TVar v -> (match !v with Link t' -> count t' | _ -> 0)
-            | _ -> 0
-          in
-          count t
-    in
-    (* get_ctor_type: given a constructor name, return its parent type name.
-       Used by exhaust.ml to infer the type of a column when it is unknown. *)
-    let get_ctor_type c =
-      if c = "__tuple__" then Some "__tuple__"
-      else
-        match Hashtbl.find_opt env.ctors c with
-        | None ->
-          (match c with
-           | "Cons" | "Nil"   -> Some "List"
-           | "True" | "False" -> Some "Bool"
-           | "Unit"           -> Some "Unit"
-           | _                -> None)
-        | Some (Forall (_, _, t)) ->
-          let rec result_type = function
-            | TFun (_, _, r) -> result_type r
-            | TApp (f, _) -> result_type f
-            | TCon n      -> Some n
-            | TVar v      -> (match !v with Link t' -> result_type t' | _ -> None)
-            | _           -> None
-          in
-          result_type t
-    in
+    (* The synthetic `__tuple__` column's arity is the scrutinee's tuple width
+       (0 for a non-tuple scrutinee, where it is unused). *)
+    let tuple_arity = match follow tsc with TTuple ts -> List.length ts | _ -> 0 in
+    let (get_ctors, get_arity, get_ctor_type) = exhaust_oracle env ~tuple_arity in
     Exhaust.check_match
       ~get_ctors ~get_arity ~get_ctor_type
       ~warnings:env.warnings
@@ -2476,6 +2487,28 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     (name, cs_monos, is_val, sig_opt <> None, relaxed)
   ) prepared in
   exit_level ();
+  (* Phase 102: plain multi-clause exhaustiveness.  Every clause's bodies are
+     inferred and unified above, so this is a purely read-only pass over the
+     clause patterns — it never [fail]s, so it can't leak the level bracket we
+     just exited.  Running here (rather than via [check_match]) covers every
+     entry point at once: [check_program_impl], [typecheck_module], and the REPL
+     all funnel through [process_letrec_group]. *)
+  List.iter (fun (_name, _sig, clauses) ->
+    match clauses with
+    | [] -> ()
+    | (pats0, _) :: _ ->
+      let arity = List.length pats0 in
+      if arity > 0 then begin
+        let (get_ctors, get_arity, get_ctor_type) =
+          exhaust_oracle !env_ref ~tuple_arity:arity in
+        let loc = match Exhaust.first_loc (snd (List.hd clauses)) with
+          | Some l -> Some l
+          | None   -> !current_loc in
+        Exhaust.check_clauses ~get_ctors ~get_arity ~get_ctor_type
+          ~warnings:(!env_ref).warnings ~loc ~arity
+          (List.map fst clauses)
+      end
+  ) members;
   (* Phase 83: the obligations / method usages this group's bodies generated
      (prepended after the Pass-B snapshot above; new entries are at the front). *)
   let rec take n = function

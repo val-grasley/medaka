@@ -195,15 +195,18 @@ above, it is flagged ⭐.
   restructure). Lands in `lib/prop_runner.ml` + the typed/dict-passing pipeline.
   Skill: **add-language-feature** (cross-cutting).
 
-- **Phase 102 — plain multi-clause exhaustiveness.** `Exhaust.check_match` runs
-  only on `EMatch`, so a plain multi-clause function with no guards — `f Nil = ..`
-  with no `Cons` clause — gets *no* exhaustiveness check (only a runtime
-  `Impl_no_match`). Closing it needs the type-aware oracle (run inside typecheck
-  where `env.ctors` is populated, rather than the Phase 91(2) lint's
-  data-decl-only oracle, which can't see prelude types) and may newly flag partial
-  functions across the stdlib. The Phase 91(2) guard lint (`Exhaust.
-  check_guard_exhaustiveness`) deliberately scoped this out. Skill:
-  **harden-typechecker** / **add-language-feature**.
+- ✅ **Phase 102 — plain multi-clause exhaustiveness. DONE.** A plain
+  multi-clause function (`f Nil = ..` with no `Cons` clause) never becomes an
+  `EMatch`, so `check_match` never saw it — an uncovered case surfaced only as a
+  runtime `Impl_no_match`. New `Exhaust.check_clauses` runs from the end of
+  `process_letrec_group` (covering all entry points + the REPL) with a type-aware
+  oracle (`exhaust_oracle`, backed by `env.type_ctors`/`env.ctors`, so prelude
+  types like `Option`/`List` are enumerable — unlike the Phase 91(2) lint's
+  data-decl-only oracle). Each clause's parameter list is wrapped as one synthetic
+  `__tuple__` column (the same reduction `check_group` uses). No genuine stdlib
+  partials surfaced; the one false positive was `Unit` missing from the
+  `type_ctors` builtin seed (now fixed). See PLAN-ARCHIVE.md. Skill:
+  **harden-typechecker**.
 
 - ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** Lower priority;
   each is a known limitation with a correct-enough fallback today:

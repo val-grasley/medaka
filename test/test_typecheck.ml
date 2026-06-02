@@ -1993,6 +1993,74 @@ f x = match x
   (a, b) => a + b
 |}
 
+(* ── Phase 102: plain multi-clause-function exhaustiveness ──
+   A multi-clause function never becomes an EMatch (each clause is its own
+   lambda, dispatched as a VMulti).  These are checked from
+   process_letrec_group with the type-aware oracle (so prelude types like
+   Option/List are enumerable, unlike the Phase 91(2) pre-desugar lint). *)
+
+(* List: Nil clause only, no Cons → non-exhaustive (List is a prelude type). *)
+let wm_list_missing_cons = assert_warns {|
+f [] = 0
+|}
+
+(* List: both clauses → exhaustive. *)
+let wm_list_total = assert_no_warns {|
+f []        = 0
+f (x :: _)  = x
+|}
+
+(* User ADT: missing one constructor across clauses. *)
+let wm_adt_missing = assert_warns {|
+data Color = Red | Green | Blue
+
+f Red   = 0
+f Green = 1
+|}
+
+(* User ADT: all constructors covered. *)
+let wm_adt_total = assert_no_warns {|
+data Color = Red | Green | Blue
+
+f Red   = 0
+f Green = 1
+f Blue  = 2
+|}
+
+(* Option (prelude type the data-decl-only oracle couldn't see): missing None. *)
+let wm_option_missing_none = assert_warns {|
+f (Some x) = x
+|}
+
+(* Multi-arg: Nil/Cons covered but the Int column has only literals, no
+   wildcard → some Ints unmatched. *)
+let wm_multiarg_partial = assert_warns {|
+f []        0 = 0
+f (x :: _)  1 = x
+|}
+
+(* Multi-arg with a wildcard Int column → exhaustive. *)
+let wm_multiarg_total = assert_no_warns {|
+f []        _ = 0
+f (x :: _)  _ = x
+|}
+
+(* Ordinary single-clause function with variable params → never flagged. *)
+let wm_ordinary_vars = assert_no_warns {|
+g x y = x + y
+|}
+
+(* A final catch-all wildcard clause makes any group exhaustive. *)
+let wm_catchall = assert_no_warns {|
+data Color = Red | Green | Blue
+
+f Red = 0
+f _   = 1
+|}
+
+(* Single Unit-pattern clause is exhaustive (Unit has one constructor). *)
+let wm_unit_clause = assert_no_warns "f () = 0\n"
+
 (* ── Phase 91 (2): non-exhaustive-guard detection (function-clause guards) ──
    These desugar to EIf chains before exhaust runs, so they're checked by the
    standalone pre-desugar lint, not check_match. *)
@@ -3923,6 +3991,18 @@ let () =
       test_case "nested fully exhaustive"   `Quick w_nested_exhaustive;
       test_case "nested missing branch"     `Quick w_nested_missing;
       test_case "tuple exhaustive"          `Quick w_tuple_exhaustive;
+    ];
+    "multi-clause exhaustiveness (Phase 102)", [
+      test_case "list missing cons"         `Quick wm_list_missing_cons;
+      test_case "list total"                `Quick wm_list_total;
+      test_case "ADT missing constructor"   `Quick wm_adt_missing;
+      test_case "ADT total"                 `Quick wm_adt_total;
+      test_case "Option missing None"       `Quick wm_option_missing_none;
+      test_case "multi-arg partial"         `Quick wm_multiarg_partial;
+      test_case "multi-arg total"           `Quick wm_multiarg_total;
+      test_case "ordinary var params"       `Quick wm_ordinary_vars;
+      test_case "catch-all clause"          `Quick wm_catchall;
+      test_case "unit clause"               `Quick wm_unit_clause;
     ];
     "guard exhaustiveness (Phase 91)", [
       test_case "single partial"            `Quick wg_single_partial;

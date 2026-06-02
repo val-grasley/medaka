@@ -4706,6 +4706,55 @@ Skill: **add-language-feature**.
 
 ---
 
+### Phase 102: plain multi-clause exhaustiveness ✅ DONE
+
+`Exhaust.check_match` ran only on `EMatch`.  A plain multi-clause function
+(`f Nil = ..` with no `Cons` clause) never becomes an `EMatch` — `group_fundefs`
+coalesces same-named `DFunDef`s into a clause list and `process_letrec_group`
+infers **each clause as its own lambda**, packaged as a `VMulti` at eval — so an
+uncovered case surfaced only at runtime as `Impl_no_match` ("non-exhaustive
+match"), never at compile time.  The Phase 91(2) guard lint
+(`check_guard_exhaustiveness`) deliberately scoped this out: it targets *guarded*
+fall-through and uses a **data-decl-only oracle** (`build_oracle`) that can't see
+closed prelude types (`Option`/`Result`/`Ordering`).
+
+**Resolution (2026-06-02).**  The Maranget `useful` engine already handled
+multi-parameter coverage via `check_group`'s `__tuple__` reduction (wrap a
+clause's whole parameter list as one synthetic tuple column; sub-column types
+fall out of `infer_col0_type`/`get_ctor_type` from the patterns themselves).  The
+only missing pieces were a type-aware oracle and an ungated entry point:
+
+- `lib/exhaust.ml` — new public `check_clauses ~get_ctors ~get_arity
+  ~get_ctor_type ~warnings ~loc ~arity clause_pats`: wraps each clause's params
+  as a `__tuple__` column and warns "non-exhaustive clauses — some inputs are not
+  matched" when an all-wildcard input is still useful.  No guard filtering
+  (guards are desugared away by typecheck time, so every clause pattern counts as
+  covering its shape — guard fall-through stays Phase 91(2)'s job); `arity = 0`
+  value bindings are skipped.
+- `lib/typecheck.ml` — extracted the `EMatch` branch's inline constructor oracle
+  into a shared `exhaust_oracle env ~tuple_arity` (backed by
+  `env.type_ctors`/`env.ctors`, so prelude types are enumerable), reused by both
+  `EMatch` and the new check.  The check runs from the **end of
+  `process_letrec_group`** (after `exit_level ()`, purely read-only, never
+  `fail`s — so it can't leak the level bracket), which covers
+  `check_program_impl`, `typecheck_module`, *and* the REPL at one site.
+- `lib/typecheck.ml` — seeded `Unit → ["Unit"]` into `env.type_ctors` (it sat
+  alongside `Bool`/`List` but had been overlooked).  Without it a single
+  `f () = ..` clause read as an open type and false-positived; the lone prelude
+  warning (`arbitraryString`) was exactly this, not a genuine partial.  No
+  genuine stdlib partials surfaced, so no stdlib edits were needed.
+
+A multi-clause function's warning points at its first clause body.  Known
+interaction: a guarded-and-pattern-incomplete group (`f (Just x) | g = ..`, no
+`Nothing`) draws both the Phase 91(2) "guards may not be exhaustive" and the
+Phase 102 "non-exhaustive clauses" warnings — both correct (it is partial two
+ways); accepted rather than deduped.  Ten `test_typecheck` cases under
+"multi-clause exhaustiveness (Phase 102)" pin list/ADT/Option/multi-arg
+partials-vs-totals, the ordinary-variable-params no-warn case, catch-all, and the
+Unit-clause no-warn case.  Skill: **harden-typechecker**.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
