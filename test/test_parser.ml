@@ -1014,12 +1014,23 @@ let test_use_simple () =
 
 let test_use_group () =
   match parse_one "import utils.{greet, helper}\n" with
-  | DUse (false, UseGroup (["utils"], ["greet"; "helper"])) -> ()
+  | DUse (false, UseGroup (["utils"], [("greet", false); ("helper", false)])) -> ()
   | _ -> failwith "wrong"
 
 let test_use_pub () =
   match parse_one "export import list.{map, filter}\n" with
-  | DUse (true, UseGroup (["list"], ["map"; "filter"])) -> ()
+  | DUse (true, UseGroup (["list"], [("map", false); ("filter", false)])) -> ()
+  | _ -> failwith "wrong"
+
+(* Phase 100: `T(..)` group member — type + all exported constructors *)
+let test_use_group_ctors () =
+  match parse_one "import colors.{Color(..)}\n" with
+  | DUse (false, UseGroup (["colors"], [("Color", true)])) -> ()
+  | _ -> failwith "wrong"
+
+let test_use_group_mixed () =
+  match parse_one "import m.{f, T(..), g}\n" with
+  | DUse (false, UseGroup (["m"], [("f", false); ("T", true); ("g", false)])) -> ()
   | _ -> failwith "wrong"
 
 let test_use_alias () =
@@ -1890,6 +1901,8 @@ let () =
     "import declarations", [
       test_case "simple"                   `Quick test_use_simple;
       test_case "group"                    `Quick test_use_group;
+      test_case "group ctors T(..)"         `Quick test_use_group_ctors;
+      test_case "group mixed f,T(..),g"     `Quick test_use_group_mixed;
       test_case "export import (re-export)" `Quick test_use_pub;
       test_case "alias"                    `Quick test_use_alias;
       test_case "wildcard"                 `Quick test_use_wildcard;

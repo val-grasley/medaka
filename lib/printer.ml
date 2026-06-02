@@ -510,8 +510,10 @@ let print_def_rhs body = match strip_loc body with
 let print_use_path = function
   | UseName names -> text (String.concat "." names)
   | UseGroup (names, members) ->
+    let member (n, all_ctors) =
+      if all_ctors then text n ^^ text "(..)" else text n in
     text (String.concat "." names) ^^ text ".{"
-    ^^ sep_by (text ", ") (List.map text members) ^^ text "}"
+    ^^ sep_by (text ", ") (List.map member members) ^^ text "}"
   | UseWild names ->
     text (String.concat "." names) ^^ text ".*"
   | UseAlias (names, alias) ->

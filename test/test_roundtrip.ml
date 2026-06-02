@@ -207,6 +207,8 @@ let lc_aspat = mk "f opts = [y | p@(Some y) <- opts]\n"
 (* Import/export declarations *)
 let u_simple  = mk "import utils.greet\n"
 let u_group   = mk "import utils.{greet, helper}\n"
+let u_ctors   = mk "import colors.{Color(..)}\n"
+let u_mixed   = mk "import m.{f, T(..), g}\n"
 let u_pub     = mk "export import list.{map, filter}\n"
 let u_alias   = mk "import collections.HashMap as HM\n"
 let u_wild    = mk "import utils.*\n"
@@ -325,6 +327,8 @@ let () =
     "import/export", [
       test_case "simple"           `Quick u_simple;
       test_case "group"            `Quick u_group;
+      test_case "group ctors T(..)" `Quick u_ctors;
+      test_case "group mixed"      `Quick u_mixed;
       test_case "export import"    `Quick u_pub;
       test_case "alias"            `Quick u_alias;
       test_case "wildcard"         `Quick u_wild;

@@ -4665,6 +4665,47 @@ Applicative-not-Thenable type still checks); `test_eval` gains
 
 ---
 
+### Phase 100: `import m.{T(..)}` bulk-constructor import ✅ DONE
+
+Haskell-style shorthand for "the type and all its exported constructors", so a
+`public export data T = A | B` could be imported with `import m.{T(..)}` instead
+of listing each constructor (`import m.{T, A, B}`). Previously a **parse error** —
+the `{…}` group accepted only bare names. Pure convenience sugar; explicit
+listing still works unchanged.
+
+**Resolution (2026-06-02).** `T(..)` is lowered at name-bind time in
+`resolve.ml`, so nothing downstream (typecheck/eval) sees the sugar. The change:
+
+- **Parser** (`lib/parser.mly`): a new `import_member` rule (`import_ident` →
+  `(name, false)`; `UPPER LPAREN DOTDOT RPAREN` → `(name, true)`) replaces the
+  bare `import_ident` inside the `UseGroup` production. `import_ident` itself
+  (shared by the dotted `import_qual` path) is untouched. **No new tokens** — all
+  four already exist. Parser conflict count unchanged at **3** (the new
+  productions are reachable only after `DOT_LBRACE`).
+- **AST** (`lib/ast.ml`): `UseGroup`'s member list went from `ident list` to
+  `(ident * bool) list`, the bool marking the `(..)` form.
+- **Resolve** (`lib/resolve.ml`): added `exp_type_ctors : (ident, ident list)
+  Hashtbl.t` to `module_exports` (populated for `DData DataPublic` and public
+  `DNewtype`), plus a shared `expand_member` helper. `T(..)` → `T :: ctors` when
+  the type's constructors are public; on an **abstractly-exported** type
+  (`export data T` — type public, ctors not) it reports the new
+  `NoExportedConstructors` error (decided with the user — error, not silent) and
+  recovers by importing just `T`. The helper is used by both the import path
+  (`imported_names`) and the `export import` re-export path; the single-file stub
+  and typecheck's scheme filter just take `fst` (no exports in scope).
+- **Printer** (`lib/printer.ml`): renders `(name, true)` as `name(..)`; `fmt`
+  inherits it. Eval and the loader are untouched.
+
+Note the non-exhaustive-match warning on a cross-module `match` over all of an
+imported type's constructors is **pre-existing** cross-module exhaustiveness
+behavior (identical with explicit listing), unrelated to this phase. Tests:
+`test_parser` (`group ctors T(..)`, `group mixed`), `test_roundtrip` (both forms
+round-trip), `test_loader` (`import T(..)` brings ctors into scope; abstract
+`T(..)` → `NoExportedConstructors`; `export import T(..)` re-exports type + ctors).
+Skill: **add-language-feature**.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend

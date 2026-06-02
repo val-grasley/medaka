@@ -18,6 +18,7 @@ type error =
   | MethodNotInInterface of ident * ident   (* method name, interface name *)
   | ExternWithBody       of ident           (* extern name also has a fun_def *)
   | PrivateNameAccess    of ident * string  (* name, owning module *)
+  | NoExportedConstructors of ident * string (* T(..) where T's ctors aren't exported: type, module *)
   | UnknownModule        of ident           (* use references a module that can't be found *)
   | QuestionMisplaced                       (* `?` outside `let pat = e ?` position *)
   | AsPatternMisplaced                       (* `x@..` outside a binding LHS (lambda param / do-bind / match) *)
@@ -40,6 +41,11 @@ let pp_error = function
     Printf.sprintf "extern '%s' must not have a definition body" n
   | PrivateNameAccess (n, m) ->
     Printf.sprintf "'%s' is private to module %s" n m
+  | NoExportedConstructors (n, m) ->
+    Printf.sprintf
+      "'%s' exports no constructors from module %s (it is exported abstractly); \
+       remove the `(..)` or export it with `public export`."
+      n m
   | UnknownModule n ->
     Printf.sprintf "Unknown module: %s" n
   | QuestionMisplaced ->
@@ -147,6 +153,7 @@ type module_exports = {
   exp_values          : (ident, unit) Hashtbl.t;
   exp_types           : (ident, unit) Hashtbl.t;
   exp_constructors    : (ident, unit) Hashtbl.t;
+  exp_type_ctors      : (ident, ident list) Hashtbl.t; (* public type → its exported ctors (Phase 100) *)
   exp_fields          : (ident, unit) Hashtbl.t;
   exp_field_owners    : (ident, string) Hashtbl.t;
   exp_interfaces      : (ident, unit) Hashtbl.t;
@@ -243,6 +250,21 @@ let use_path_module_id = function
   | UseWild  ns      -> String.concat "." ns
   | UseAlias (ns, _) -> String.concat "." ns
 
+(* Expand a `{…}` group member against a module's exports (Phase 100).
+   A plain member is itself; `T(..)` becomes the type plus its exported
+   constructors. `T(..)` on an abstractly-exported type (type name public but
+   constructors not) is an error; on a non-exported name it falls through to
+   the caller's privacy check. *)
+let expand_member (exp : module_exports) (report : error -> unit)
+    ((name, all_ctors) : ident * bool) : ident list =
+  if not all_ctors then [name]
+  else match Hashtbl.find_opt exp.exp_type_ctors name with
+    | Some ctors -> name :: ctors
+    | None ->
+      if Hashtbl.mem exp.exp_types name then
+        report (NoExportedConstructors (name, exp.exp_mod_id));
+      [name]
+
 (* Names introduced into scope by a use_path, given the referenced module's exports.
    Returns (values, types) lists to add. *)
 let imported_names (path : use_path) (exp : module_exports)
@@ -267,8 +289,9 @@ let imported_names (path : use_path) (exp : module_exports)
       (* use foo alone: just register alias, no individual names *)
       []
   | UseGroup (_, members) ->
-    List.iter check_pub members;
-    members
+    let names = List.concat_map (expand_member exp report) members in
+    List.iter check_pub names;
+    names
   | UseWild _ ->
     (* bring all public names *)
     let names = ref [] in
@@ -358,7 +381,7 @@ let build_env ?(known_modules : module_exports list = [])
            (* Single-file mode: stub (legacy behaviour) *)
            let names = match path with
              | UseName ns       -> [List.hd (List.rev ns)]
-             | UseGroup (_, ms) -> ms
+             | UseGroup (_, ms) -> List.map fst ms
              | UseWild _        -> []
              | UseAlias (_, a)  -> [a]
            in
@@ -747,6 +770,7 @@ let build_exports ?(known_modules : module_exports list = [])
     exp_values        = Hashtbl.create 16;
     exp_types         = Hashtbl.create 8;
     exp_constructors  = Hashtbl.create 8;
+    exp_type_ctors    = Hashtbl.create 8;
     exp_fields        = Hashtbl.create 8;
     exp_field_owners  = Hashtbl.create 8;
     exp_interfaces    = Hashtbl.create 4;
@@ -792,9 +816,12 @@ let build_exports ?(known_modules : module_exports list = [])
       Hashtbl.replace exp.exp_values n ()
     | DNewtype (true, n, _, con, _, _) ->
       Hashtbl.replace exp.exp_types n ();
-      Hashtbl.replace exp.exp_constructors con ()
+      Hashtbl.replace exp.exp_constructors con ();
+      Hashtbl.replace exp.exp_type_ctors n [con]
     | DData (DataPublic, n, _, vs, _) ->
       Hashtbl.replace exp.exp_types n ();
+      Hashtbl.replace exp.exp_type_ctors n
+        (List.map (fun v -> v.con_name) vs);
       List.iter (fun v ->
         Hashtbl.replace exp.exp_constructors v.con_name ();
         (match v.con_payload with
@@ -837,7 +864,9 @@ let build_exports ?(known_modules : module_exports list = [])
             (* use foo alone as re-export: no individual names, alias only — skip *)
             ()
           | UseGroup (_, members) ->
-            List.iter (reexport_name src_exp) members;
+            (* errors already reported during build_env; suppress here *)
+            List.iter (reexport_name src_exp)
+              (List.concat_map (expand_member src_exp (fun _ -> ())) members);
             reexport_fields src_exp
           | UseWild _ ->
             (* Re-export everything from the source module *)

@@ -408,6 +408,51 @@ let test_import_public_ctor_allowed () =
       failwith "unexpected errors for public export constructor"
   )
 
+(* Phase 100: `import a.{Color(..)}` brings the type + all ctors into scope *)
+let test_import_group_ctors_allowed () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "public export data Color = Red | Green | Blue\n" in
+    let main = write_file dir "main.mdk"
+      "import a.{Color(..)}\nfavorite : Color\nfavorite = Green\n" in
+    let modules = Loader.load_program main [dir] in
+    let (_exports, errors) = resolve_all modules in
+    if errors <> [] then
+      failwith "unexpected errors for Color(..) bulk-constructor import"
+  )
+
+(* Phase 100: `Color(..)` on an abstractly-exported type → NoExportedConstructors *)
+let test_import_group_ctors_abstract () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "export data Color = Red | Green | Blue\n" in
+    let main = write_file dir "main.mdk" "import a.{Color(..)}\nfavorite = 1\n" in
+    let modules = Loader.load_program main [dir] in
+    let (_exports, errors) = resolve_all modules in
+    let all_errs = List.concat_map snd errors in
+    let has_err = List.exists (function
+      | (Resolve.NoExportedConstructors ("Color", "a"), _) -> true
+      | _ -> false) all_errs in
+    if not has_err then
+      failwith "expected NoExportedConstructors(Color, a) for abstract Color(..)"
+  )
+
+(* Phase 100: `export import a.{Color(..)}` re-exports the type + all ctors *)
+let test_reexport_group_ctors () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "a.mdk" "public export data Color = Red | Green | Blue\n" in
+    let _ = write_file dir "b.mdk" "export import a.{Color(..)}\n" in
+    let main = write_file dir "main.mdk" "import b.{Color, Red}\nfavorite = Red\n" in
+    let modules = Loader.load_program main [dir] in
+    let (exports, errors) = resolve_all modules in
+    if errors <> [] then failwith "unexpected resolve errors";
+    let b_exp = find_exp exports "b" in
+    if not (Hashtbl.mem b_exp.Resolve.exp_types "Color") then
+      failwith "expected 'Color' in b's exports";
+    List.iter (fun c ->
+      if not (Hashtbl.mem b_exp.Resolve.exp_constructors c) then
+        failwith (Printf.sprintf "expected '%s' in b's re-exported constructors" c))
+      ["Red"; "Green"; "Blue"]
+  )
+
 (* ── Workspace / multi-root tests ───────────────── *)
 
 (* Create a nested directory structure for workspace tests *)
@@ -839,6 +884,9 @@ let () =
       test_case "public export: ctors visible"        `Quick test_public_export_ctors_visible;
       test_case "import abstract: ctor rejected"      `Quick test_import_abstract_ctor_rejected;
       test_case "import public export: ctor allowed"  `Quick test_import_public_ctor_allowed;
+      test_case "import T(..): ctors allowed"          `Quick test_import_group_ctors_allowed;
+      test_case "import T(..): abstract rejected"      `Quick test_import_group_ctors_abstract;
+      test_case "re-export T(..): ctors re-exported"   `Quick test_reexport_group_ctors;
     ];
     "multi-file typecheck", [
       test_case "impl Mappable Array in dep module" `Quick test_typecheck_impl_in_dep_module;

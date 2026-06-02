@@ -179,21 +179,6 @@ above, it is flagged ⭐.
     layering inversion; String/Char already live in the prelude for exactly this
     reason, and no such doctest exists. The import graph is the source of truth.
 
-- **Phase 100 — `import m.{T(..)}` bulk-constructor import (sugar).** Data
-  visibility is already a deliberate three levels — `data T` (private),
-  `export data T` (abstract: type name only), `public export data T` (type +
-  constructors) — and a `public export` type's constructors *can* be imported,
-  but only by listing each one (`import m.{T, A, B}`). The Haskell-style
-  `import m.{T(..)}` shorthand for "the type and all its exported constructors"
-  is currently a **parse error**: `import_ident` inside the `{…}` group
-  (`UseGroup`, `lib/parser.mly:1053`/`1061`) accepts only a bare name. Pure
-  convenience — explicit listing already covers the need — so it's low priority.
-  Lands in `lib/parser.mly` (a new `import_ident` form), `lib/ast.ml` (the
-  `use_path` group element must carry a "with constructors" marker, today a bare
-  `ident`), and `lib/resolve.ml` (expand `T(..)` to the type + its exported
-  constructors at bind time). Re-measure parser conflicts after the grammar
-  change. Skill: **add-language-feature**.
-
 - **Phase 101 — drive property generation/shrinking through the `Arbitrary`
   interface.** Phase 42's generator gaps are closed (`lib/prop_runner.ml` now
   generates `Array`, tuples, and parametric user types structurally, with

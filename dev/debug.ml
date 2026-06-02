@@ -47,7 +47,8 @@ let rec pp_decl d =
   | DUse (pub, p) ->
     let pp_use = function
       | UseName  ns -> "UseName " ^ String.concat "." ns
-      | UseGroup (ns, ms) -> Printf.sprintf "UseGroup(%s, {%s})" (String.concat "." ns) (String.concat ", " ms)
+      | UseGroup (ns, ms) -> Printf.sprintf "UseGroup(%s, {%s})" (String.concat "." ns)
+          (String.concat ", " (List.map (fun (n, all) -> if all then n ^ "(..)" else n) ms))
       | UseWild  ns -> "UseWild " ^ String.concat "." ns
       | UseAlias (ns, a) -> Printf.sprintf "UseAlias(%s as %s)" (String.concat "." ns) a
     in

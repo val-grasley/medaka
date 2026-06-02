@@ -154,7 +154,8 @@ and section =
 
 type use_path =
   | UseName  of ident list                   (* use utils.greet *)
-  | UseGroup of ident list * ident list      (* use utils.{greet, helper} *)
+  | UseGroup of ident list * (ident * bool) list
+      (* use utils.{greet, T(..)}; bool = "with all constructors" (Phase 100) *)
   | UseWild  of ident list                   (* use utils.* *)
   | UseAlias of ident list * ident           (* use utils as U *)
 

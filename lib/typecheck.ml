@@ -3908,7 +3908,7 @@ let typecheck_module
            | UseName ns ->
              if List.length ns > 1 then [List.hd (List.rev ns)]
              else [] (* alias only *)
-           | UseGroup (_, ms) -> ms
+           | UseGroup (_, ms) -> List.map fst ms
            | UseWild _ -> List.map fst te.te_schemes
            | UseAlias _ -> [] (* alias: don't auto-import names *)
          in

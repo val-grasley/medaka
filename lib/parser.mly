@@ -1058,7 +1058,7 @@ import_path:
   | import_qual                                       { UseName $1 }
   | import_qual AS UPPER                              { UseAlias ($1, $3) }
   | import_qual AS IDENT                              { UseAlias ($1, $3) }
-  | import_qual DOT_LBRACE separated_nonempty_list(COMMA, import_ident) RBRACE
+  | import_qual DOT_LBRACE separated_nonempty_list(COMMA, import_member) RBRACE
                                                       { UseGroup ($1, $3) }
   | import_qual DOT_STAR                              { UseWild $1 }
 
@@ -1069,6 +1069,12 @@ import_qual:
 import_ident:
   | IDENT  { $1 }
   | UPPER  { $1 }
+
+(* A `{…}` group member: a bare name, or `T(..)` for "T and all its
+   exported constructors" (Phase 100). The bool marks the (..) form. *)
+import_member:
+  | import_ident                 { ($1, false) }
+  | UPPER LPAREN DOTDOT RPAREN    { ($1, true) }
 
 (* ── String interpolation ────────────────────────────── *)
 
