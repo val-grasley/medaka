@@ -3974,6 +3974,75 @@ Likewise self-/mutually-recursive *unsignatured* wrappers under-infer their own
 recursive-call routing (Pass A only pre-registers from explicit signatures).
 Both are deferred, mirroring the Phase 69.x → 74 layering.
 
+### Phase 84: Monad dispatch for polymorphic do-blocks ⏳ TODO
+
+Phase 53 tags `EDo` with its resolved monad and seeds `current_monad_type`, so
+`pure`/bind dispatch correctly when the monad is *concrete* at the do-block. But
+a do-block in a function that is **polymorphic over its monad** leaves the tag
+`None`, falling back to the `detect_monad` runtime heuristic — which mis-routes
+`pure` and panics. Repro (panics at `core.mdk:402` "non-exhaustive match"):
+
+```
+f m = do
+  x <- m
+  pure x
+main = match f (Some 5)
+  Some v => println "ok"
+  None => println "none"
+```
+
+`f`'s monad is a type variable, so the tag is `None`; at the call the heuristic
+inspects the first bind's value (`Some 5` → Option) but `pure` still dispatches
+wrong. Scope: thread the monad through such call sites — e.g. dictionary-pass
+the Thenable/Applicative for the do-block's `m` (like Phase 69.x), or
+monomorphise `f` per call — so `None`-tagged do-blocks dispatch by the caller's
+type, not a value-shape guess. Touches `typecheck.ml` (EDo tagging / constraint
+threading) + `eval.ml` (`eval_do`, `detect_monad`). See the §5 limitation note.
+Skill: **add-language-feature** (cross-cutting: typecheck + eval).
+
+### Phase 85: `_` after an operator in a binding LHS is a section, not a wildcard ⏳ TODO
+
+Every binding LHS (do-bind, lambda param, list-comp/guard generator) is parsed
+as an expression and converted by `expr_to_pat` (`parser.mly`). In expression
+context `_` is the operator-section placeholder, so `(x :: _) <- m` parses as the
+section `SecLeft(x, "::")` and `expr_to_pat` rejects it ("Invalid lambda
+parameter pattern"). Pattern positions proper (function params, match arms) are
+unaffected — they use the `pat` grammar. Repro:
+
+```
+g m = do
+  (x :: _) <- m   -- fails; `(x :: rest)` works
+  pure x
+```
+
+Scope: let a binding LHS recover a wildcard after an operator — e.g. teach
+`expr_to_pat` to map a bare `_`-placeholder section back to `PWild` in
+conversion, or special-case `ESection`/`EVar "_"` in operand position. Confirm
+the section feature in value position is unaffected and re-check the parser
+conflict count. Lands in `parser.mly` (`expr_to_pat`/`expr_to_pats`). Skill:
+**add-language-feature** (grammar). Pre-existing; documented in §5.
+
+### Phase 86: `@Impl` hints reported unbound by resolve ⏳ TODO
+
+`medaka check` flags a valid impl-disambiguation hint as unbound even though the
+named impl is registered, so any program using `@Impl` hints gets false-positive
+diagnostics. The hint resolves correctly at eval time (the `@Name impl selection`
+eval tests pass); only resolve's reference check is wrong. Repro:
+
+```
+interface Combine a where
+  combine : a -> a -> a
+impl Additive of Combine Int where
+  combine x y = x + y
+r = combine @Additive 3 4   -- check: "Unbound variable: @Additive"
+```
+
+Scope: in `resolve.ml`, recognise `@`-prefixed hint occurrences (they reach
+`check_expr` as `EVar "@Name"` in application-argument position) and validate
+against registered impl names instead of the value scope — mirroring eval's
+`EApp (f, EVar hint)` handling and the Phase 32 compile-time `@Name` validation.
+Lands in `lib/resolve.ml`. Skill: none specific (resolve-local).
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)
@@ -3998,9 +4067,10 @@ These aren't blockers, but a less-careful change could trip over them:
   (FIXED in this session — VList now dispatches via Thenable and detect_monad
   recognizes VList → "List", so do-block list-monad concat-map semantics work);
   (c) higher-order functions that receive do-blocks don't thread monad context.
-  The clean fix is a type-annotated AST: after type-checking, tag `EDo` with
-  its resolved monad so `eval` doesn't need to guess. Deferred until Phase 11
-  or later forces the issue.
+  Phase 53 ✅ tags `EDo` with its resolved monad when the monad is *concrete*,
+  so `eval` no longer guesses there; the heuristic remains the fallback for
+  *polymorphic-monad* do-blocks (tag `None`), where it still mis-dispatches and
+  can panic. → Phase 84.
 - `let mut` binding reassignment (`DoAssign`) is now type-checked in do-blocks,
   but `ELet(true, ...)` in expression context only tracks `mut_vars` — there is
   no syntax for reassigning a `let mut` binding outside a do-block. The `Ref`
@@ -4044,6 +4114,9 @@ These aren't blockers, but a less-careful change could trip over them:
   LHSs all work and a do-block's last statement may start with an uppercase
   constructor (Phase 81 ✅). One inherent edge: `_` after an operator in such a
   LHS is a left section, not a wildcard (`(x :: _) <- m` — use `(x :: rest)`).
+  → Phase 85.
+- `@Impl` disambiguation hints are reported as unbound by resolve (`medaka check`
+  false-positives), though they resolve at eval time. → Phase 86.
 - Module system: `use` declarations parse but no cross-file resolution
   exists. Backend roadmap is single-file only; multi-file support is a
   separate later phase.
