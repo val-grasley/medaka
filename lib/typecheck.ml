@@ -189,10 +189,18 @@ let tyvar_counter = ref 0
 let effvar_counter = ref 0
 let current_level = ref 0
 
+(* Phase 79d: the latent effect of the function body currently being inferred.
+   `infer`'s effect-performing arms (application) widen it; entering a lambda
+   saves and reopens it, and the accumulated row becomes that lambda's arrow
+   effect.  A closed (tail=None) ambient is a *sink* that discards effects —
+   the state at the top level, where a value binding's effects are dropped. *)
+let cur_effect : effrow ref = ref { labels = []; tail = None }
+
 let reset_state () =
   tyvar_counter := 0;
   effvar_counter := 0;
-  current_level := 0
+  current_level := 0;
+  cur_effect := { labels = []; tail = None }
 
 let fresh_var () =
   incr tyvar_counter;
@@ -248,6 +256,35 @@ let lower_row_levels level r =
      | EUnbound (id, lvl) -> if lvl > level then v := EUnbound (id, level)
      | ELink _ -> ())
   | None -> ()
+
+(* Record that the current context performs the effects of row [eff], widening
+   the ambient row [cur] to include them WITHOUT closing its tail (so the next
+   performed effect can still be absorbed).  A closed ambient is a sink and
+   discards.  An open [eff] is tied to the ambient through a shared fresh tail
+   so labels resolved into it later (e.g. a polymorphic callback's effect) also
+   surface in the ambient. *)
+let perform_effect cur eff =
+  let cur_r = effrow_norm !cur in
+  match cur_r.tail with
+  | None -> ()                       (* sink: discard *)
+  | Some ct ->
+    let eff_r = effrow_norm eff in
+    cur := { labels = List.sort_uniq String.compare (cur_r.labels @ eff_r.labels);
+             tail = Some ct };
+    (match eff_r.tail with
+     | Some et when et != ct ->
+       let v3 = fresh_effvar_at (min (effvar_level ct) (effvar_level et)) in
+       ct := ELink { labels = []; tail = Some v3 };
+       et := ELink { labels = []; tail = Some v3 }
+     | _ -> ())
+
+(* Build a curried arrow `p1 -> p2 -> … -> <eff> ret` carrying the body's latent
+   effect [eff] on the LAST arrow only: partial application of a curried
+   function performs nothing, so the intermediate arrows stay pure-open. *)
+let rec arrows_with_last_effect pats eff ret = match pats with
+  | []        -> ret
+  | [pt]      -> TFun (pt, eff, ret)
+  | pt :: rest -> TFun (pt, open_row (), arrows_with_last_effect rest eff ret)
 
 (* Build an effect row from an arrow's return-position AST type.  A named tail
    variable (`<IO | e>`) is resolved through [etbl] so the same source name
@@ -1284,7 +1321,10 @@ let rec infer env = function
     let tf = infer env f in
     let tx = infer env x in
     let tr = fresh_var () in
-    unify tf (TFun (tx, open_row (), tr));
+    let eff = open_row () in
+    unify tf (TFun (tx, eff, tr));
+    (* applying f to x performs f's latent (arrow) effect in the current context *)
+    perform_effect cur_effect eff;
     tr
 
   | ELam (pats, body) ->
@@ -1292,8 +1332,14 @@ let rec infer env = function
     let pat_types  = List.map fst typed_pats in
     let bindings   = List.concat_map snd typed_pats in
     let env' = extend_vars env bindings in
+    (* The body's latent effect becomes this lambda's arrow effect; building the
+       closure itself performs nothing, so save/restore the enclosing ambient. *)
+    let saved = !cur_effect in
+    cur_effect := open_row ();
     let tb = infer env' body in
-    List.fold_right (fun pt acc -> TFun (pt, open_row (), acc)) pat_types tb
+    let body_eff = !cur_effect in
+    cur_effect := saved;
+    arrows_with_last_effect pat_types body_eff tb
 
   | ELet (mut, is_fun, pat, e1, e2) ->
     (if mut then
@@ -2143,8 +2189,12 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
             | _ -> ()
           in
           zip_unify pat_types sig_args;
+          let saved = !cur_effect in
+          cur_effect := open_row ();
           let body_t = infer (extend_vars !env_ref bindings) body in
-          List.fold_right (fun pt acc -> TFun (pt, open_row (), acc)) pat_types body_t
+          let body_eff = !cur_effect in
+          cur_effect := saved;
+          arrows_with_last_effect pat_types body_eff body_t
         | _ ->
           infer !env_ref (clause_to_expr (pats, body))
       in

@@ -861,6 +861,17 @@ let t_hof_pure_arg = assert_type
   "runWith f = f ()\nresult = runWith (x => x)\n"
   "result" "Unit"
 
+(* Phase 79d: effect polymorphism inferred through a user-defined HOF — the
+   callback's <IO> flows to the result without any annotation. *)
+let t_eff_hof_user_infer = assert_type
+  "applyTo f x = f x\ng xs = applyTo println xs\n"
+  "g" "a -> <IO> Unit"
+
+(* …and a pure callback through the same HOF keeps the result pure. *)
+let t_eff_hof_user_pure = assert_type
+  "applyTo f x = f x\ng xs = applyTo (y => y) xs\n"
+  "g" "a -> a"
+
 (* Phase 79b: the same named tail variable in two `<e>` positions of one
    signature must resolve to ONE shared effvar — that shared ref is what later
    lets unification link a HOF callback's effect to the HOF's result effect. *)
@@ -2083,9 +2094,10 @@ let t_readFile_type = assert_type
   "f : String -> <IO> (Result String String)\nf p = readFile p\n"
   "f" "String -> <IO> Result String String"
 
-(* effect propagation: function calling readFile infers IO, no error *)
+(* effect propagation (Phase 79d): an unannotated function calling readFile now
+   carries the inferred <IO> in its type, not just in the separate effects pass *)
 let t_readFile_infer = assert_type
-  "bad p = readFile p\n" "bad" "String -> Result String String"
+  "bad p = readFile p\n" "bad" "String -> <IO> Result String String"
 
 (* extern with uppercase name (Ref constructor) accepted by parser *)
 let t_extern_upper = assert_type
@@ -3365,6 +3377,8 @@ let () =
       test_case "infer HOF alias"           `Quick t_eff_infer_hof_alias;
       test_case "err: escape via inferred"  `Quick e_eff_escape_via_inferred;
       test_case "HOF pure arg ok"           `Quick t_hof_pure_arg;
+      test_case "user HOF infers IO"        `Quick t_eff_hof_user_infer;
+      test_case "user HOF stays pure"       `Quick t_eff_hof_user_pure;
       test_case "effrow shares tail var"    `Quick t_effrow_shares_tail;
       test_case "unify_row open/closed"     `Quick t_unify_row_open_closed;
       test_case "unify_row open/open link"  `Quick t_unify_row_open_open_link;
