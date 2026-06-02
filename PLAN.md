@@ -30,14 +30,92 @@ task-playbook table and load the matching skill before planning.
 
 ---
 
+## North star — self-hosting, then LLVM
+
+The long-term goal that orders everything below: **rewrite the Medaka compiler
+in Medaka, then compile it to native code via LLVM.** Chosen path (2026-06-02):
+**bootstrap on the existing tree-walking interpreter first** — get a self-hosted
+compiler running (slowly but correctly) on the interpreter, *then* build the
+LLVM backend so that compiler emits native code. This validates the language as
+a real engineering medium before we pay for the heavy memory-model / GC / codegen
+work.
+
+Most items in the Open roadmap are small course-corrections; this section is the
+destination they steer toward. Three stages, each a gate on the next.
+
+### Stage 0 — Prerequisites before self-hosting can begin
+
+The language is already expressive enough to *describe* a compiler (ADTs,
+records, exhaustive pattern matching, interfaces, modules, effects — all done).
+What's missing is the supporting surface a real multi-thousand-line program needs:
+
+- **Standard library breadth.** The compiler needs the data structures it is
+  itself built on:
+  - **`Map` / `Set`** (and likely a hash variant) — symbol tables, scopes,
+    type-variable substitutions, impl registries. *Today: missing (Phase 19
+    modules 5–6).* This is the single biggest gap.
+  - **`io`** — read source files, write artifacts, stdin/stdout, process args,
+    exit codes, structured error reporting. *Today: missing (Phase 19 module 7).*
+  - `string` finalized and reviewed (drafted; awaiting review).
+- **Language stability / completeness.** Close the sharp edges that would bite a
+  large codebase, then *freeze the surface syntax and semantics* for the duration
+  of the port:
+  - Resolve the `do`→`Thenable` question (Phase 98) — monad-heavy compiler code
+    will lean on `do`.
+  - Multi-module / return-position dispatch residuals (Phase 83/84) shouldn't
+    force arg-tag workarounds in compiler code.
+  - Guard exhaustiveness + inline guards (Phase 91) — pervasive in a compiler.
+- **Interpreter performance, "good enough" to bootstrap.** Running the compiler
+  *on* the interpreter must finish in minutes, not hours. May require interpreter
+  hot-path work (the eval loop, environment representation) — measure once the
+  stdlib is in place and a non-trivial program exists.
+- **Multi-file ergonomics at scale.** The module system, qualified access, and
+  `medaka.toml` workspaces exist; confirm they hold up across the dozens of files
+  a compiler needs. Surface gaps here become new phases.
+
+### Stage 1 — Self-host on the interpreter
+
+Port the pipeline (`lexer → parser → resolve → typecheck → exhaust → desugar →
+eval`) into Medaka, one stage at a time, checked against the OCaml reference at
+each step. **Done when** Medaka-in-Medaka compiles a real program identically to
+the OCaml compiler, and ultimately compiles *itself*. The output of this stage is
+a validated language and a compiler whose only slow part is the interpreter
+underneath it.
+
+### Stage 2 — LLVM backend (after self-host)
+
+With the language proven, build native codegen. The heavy, decision-dense work
+deliberately deferred to here:
+
+- **A frozen Core IR** as the codegen input: desugared, fully typed, effects
+  erased, **dictionaries explicit**. The existing elaboration already inserts
+  `EMethodRef`/`EDictApp` — that is the foundation; this stage commits to it as a
+  serializable lowering target.
+- **Typeclass lowering strategy:** runtime dictionary passing (already the eval
+  model) vs. monomorphization. Decide deliberately — it shapes the whole backend.
+- **Memory model & value representation:** heap allocation, closure layout,
+  tagged ADTs/records, boxing/unboxing. *Decision-dense; the real cost of going
+  native.*
+- **Garbage collection:** conservative (Boehm) to start vs. reference counting
+  vs. a precise collector. Strict + functional + closures ⇒ this is unavoidable.
+- **Runtime library:** re-implement the `extern` catalog (today OCaml in
+  `eval.ml`, incl. Unicode via `uucp`, arrays, strings, IO) against the native
+  runtime.
+- **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
+- **Bootstrap closure:** self-hosted compiler + LLVM backend compiles itself to a
+  standalone native binary — the finish line.
+
+---
+
 ## Open roadmap
 
 Each item is independently shippable; pick one per session. Grouped by area, not
-strict priority.
+strict priority. Where an item is a **Stage 0 prerequisite** for the north star
+above, it is flagged ⭐.
 
 ### Compiler / language
 
-- **Phase 98 — `do`→`Thenable` desugar.** `<-` is currently handled
+- ⭐ **Phase 98 — `do`→`Thenable` desugar.** `<-` is currently handled
   *structurally* in the typechecker (each line unifies its expression against
   `m a` for a fresh `m`); the `Thenable` interface in `core.mdk` is never
   consulted, so it is inert at the type level (eval already routes bind through
@@ -49,7 +127,7 @@ strict priority.
   direction before implementing. Lands in `lib/typecheck.ml` (+ `lib/desugar.ml`
   if wiring). Skill: **add-language-feature**.
 
-- **Phase 91 (continued) — guard gaps.** Fall-through (item 1) is done; two
+- ⭐ **Phase 91 (continued) — guard gaps.** Fall-through (item 1) is done; two
   remain:
   - **(2) Compile-time non-exhaustive-guard detection.** Today an exhausted
     guard chain is a runtime error. `exhaust.ml` does pattern matrices but not
@@ -82,7 +160,7 @@ strict priority.
     the interface) is open.
   - Skill: **add-primitive** / **add-language-feature** depending on approach.
 
-- **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** Lower priority;
+- ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** Lower priority;
   each is a known limitation with a correct-enough fallback today:
   - Runtime dict-threading *into* an inferred constrained body (currently arg-tag
     dispatch, correct for argument-dispatched wrappers). Needs a post-typecheck
@@ -118,13 +196,17 @@ non-package-manager gaps:
 Deliberately hand-written by the user; listed for completeness, not as agent
 work unless explicitly delegated (see the stdlib division-of-labor convention).
 
-- **`stdlib/string.mdk`** is drafted and passes its 45 doctests but is flagged
+- ⭐ **`stdlib/string.mdk`** is drafted and passes its 45 doctests but is flagged
   *awaiting user review* (archive Phase 75 step 3). Open decisions: the
   `length`/`isEmpty`/`count` omissions and `toUpper` vs `charToUpper` naming.
 - **Modules 5–8 unstarted:** `map`/`set` (persistent trees), `mut_array`/
   `hash_map`/`hash_set`, `io` (`readFile`/`writeFile`/`readLine`), `json`
   (type + parser + serializer). Expect each to surface new language gaps —
   record them here as new phases when they do.
+  - ⭐ **`map`/`set` and `io` are the critical-path Stage 0 prerequisites** — a
+    self-hosted compiler can't be written without symbol tables and file I/O.
+    (`mut_array`/`hash_map`/`hash_set` matter mainly for interpreter/compiler
+    *performance*; `json` is not on the self-hosting path.)
 
 ### Blocked on a package manager (out of scope until one exists)
 
