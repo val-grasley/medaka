@@ -652,10 +652,13 @@ let t_do_pure = assert_type
   "wrap x =\n  do\n    pure x\n"
   "wrap" "a -> b a"
 
-(* pure after bind: identity for any monad *)
+(* pure after bind: identity for any monad.  Named [echoM] rather than [identity]
+   so it doesn't shadow the prelude's `identity : a -> a`: under that signature
+   the body's inferred `Applicative` constraint is genuinely unsatisfiable
+   (Phase 83 now rejects it), whereas unsignatured the constraint is inferred. *)
 let t_do_pure_after_bind = assert_type
-  "identity opt =\n  do\n    x <- opt\n    pure x\n"
-  "identity" "a b -> a b"
+  "echoM opt =\n  do\n    x <- opt\n    pure x\n"
+  "echoM" "a b -> a b"
 
 (* Tuple destructuring in a DoBind *)
 let t_do_tuple_bind = assert_type
@@ -1614,6 +1617,59 @@ neq x y = not (eq x y)
 
 bad = neq Blob Blob
 |}
+
+(* ── Phase 83: constraint inference for constrained functions ──────── *)
+
+(* An unsignatured wrapper over a constrained method acquires the constraint:
+   calling it at a type with no impl now errors at the call site (it didn't
+   before — the obligation used to evaporate). *)
+let t_infer_wrapper_propagates = assert_err_at ~line:5
+  {|data Blob = Blob
+
+myEq x y = eq x y
+
+bad = myEq Blob Blob
+|}
+
+(* The inferred constraint propagates through a second unsignatured wrapper. *)
+let t_infer_wrapper_transitive = assert_err_at ~line:6
+  {|data Blob = Blob
+
+myEq x y = eq x y
+w x y = myEq x y
+
+bad = w Blob Blob
+|}
+
+(* An inferred-constrained wrapper still resolves at a type that has an impl. *)
+let t_infer_wrapper_concrete_ok = assert_type
+  {|myEq x y = eq x y
+
+check = myEq 1 2
+|}
+  "check" "Bool"
+
+(* A body that pins the constrained var to a concrete type infers no constraint
+   (the obligation is concrete and discharged by the post-HM pass, not lifted). *)
+let t_infer_concrete_no_constraint = assert_type
+  {|f x = eq x 1
+|}
+  "f" "Int -> Bool"
+
+(* A signature with an empty constraint context whose body needs one is rejected
+   (the context is a contract). *)
+let e_infer_signature_insufficient = assert_err
+  {|myEq : a -> a -> Bool
+myEq x y = eq x y
+|}
+
+(* A declared superinterface entails the body's constraint: `Ord a` covers the
+   `Eq a` that `eq` needs, so the signature is sufficient. *)
+let t_infer_superinterface_entails = assert_type
+  {|cmp : Ord a => a -> a -> Bool
+cmp x y = eq x y
+|}
+  "cmp" "a -> a -> Bool"
 
 (* ── Method-level constraint annotations ─────────── *)
 
@@ -3547,6 +3603,14 @@ let () =
       test_case "multiple constraints"         `Quick t_constraint_annot_multi;
       test_case "call site impl found"         `Quick t_constraint_annot_call_site_ok;
       test_case "err: call site no impl"       `Quick e_constraint_annot_call_no_impl;
+    ];
+    "constraint inference (Phase 83)", [
+      test_case "wrapper propagates"           `Quick t_infer_wrapper_propagates;
+      test_case "wrapper transitive"           `Quick t_infer_wrapper_transitive;
+      test_case "wrapper concrete ok"          `Quick t_infer_wrapper_concrete_ok;
+      test_case "concrete pins, no constraint" `Quick t_infer_concrete_no_constraint;
+      test_case "err: insufficient signature"  `Quick e_infer_signature_insufficient;
+      test_case "superinterface entails"       `Quick t_infer_superinterface_entails;
     ];
     "method-level constraints", [
       test_case "extra constraint resolves"    `Quick t_method_extra_constraint;

@@ -945,6 +945,17 @@ let t_dispatch_option_none = assert_val (dispatch_iface ^ {|
 r = describe (None)
 |}) "r" (VString "none")
 
+(* Phase 83: an unsignatured wrapper over the constrained method `eq` acquires
+   the `Eq` constraint by inference and runs correctly end-to-end (the inner
+   `eq` dispatches by runtime arg tag). *)
+let t_infer_wrapper_eval_true = assert_val_typed {|myEq x y = eq x y
+r = myEq 3 3
+|} "r" (VBool true)
+
+let t_infer_wrapper_eval_false = assert_val_typed {|myEq x y = eq x y
+r = myEq 3 4
+|} "r" (VBool false)
+
 let t_dispatch_list_empty = assert_val (dispatch_iface ^ {|
 r = describe ([])
 |}) "r" (VString "empty-list")
@@ -1669,6 +1680,8 @@ let () =
       test_case "option Some"       `Quick t_dispatch_option_some;
       test_case "option None"       `Quick t_dispatch_option_none;
       test_case "list empty"        `Quick t_dispatch_list_empty;
+      test_case "inferred wrapper true"  `Quick t_infer_wrapper_eval_true;
+      test_case "inferred wrapper false" `Quick t_infer_wrapper_eval_false;
     ];
     "mixed-Foldable dispatch", [
       test_case "find on List"      `Quick t_find_on_list_mixed;
