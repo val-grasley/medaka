@@ -18,7 +18,17 @@ When you emit **Medaka** code in examples/tests, use multi-arg lambda form
    lexer is indentation-sensitive (INDENT/DEDENT/NEWLINE); be careful with
    layout-significant tokens.
 2. **Parse** — `lib/parser.mly` (Menhir). Add grammar productions. Rebuild
-   surfaces shift/reduce conflicts — resolve them, don't ignore new ones.
+   surfaces shift/reduce conflicts — resolve them, don't ignore new ones. The
+   conflict count is the acceptance gate for a grammar change: measure it before
+   and after with `grep -c '^** Conflict' _build/default/lib/parser.conflicts`
+   and keep it from rising. The audit comment block at the top of `parser.mly`
+   explains each conflict, but **don't trust its stated count — re-measure**; it
+   has gone stale. Note: a pattern-or-expression *binding position* (do-block
+   `stmt`, list-comp `lc_qual` generator, `guard_qual` bind, lambda params)
+   parses its LHS as an **expression** and converts via `expr_to_pat`, not as a
+   `pat` (a `pat`-LHS reduce/reduce-conflicts with the bare-expression case).
+   Adding pattern syntax usually means extending `expr_to_pat` — and the same
+   change typically must be applied to *all* of those positions together.
 3. **AST** — `lib/ast.ml`. Add node variants; carry source locations like
    neighboring nodes (LSP and `ParseError` depend on them). A new `expr`
    constructor must get an arm in every *exhaustive* match over `expr` or the
