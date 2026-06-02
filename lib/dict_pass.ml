@@ -87,10 +87,35 @@ let rec run_decl arities d =
         Option.map (fun (pats, body) -> (dict_pats m.method_name k @ pats, body))
           m.method_default }
     ) methods }
-  | DImpl ({ methods; _ } as i) ->
+  (* Phase 83/84: an impl with `requires` constraints (e.g.
+     `impl Arbitrary (List a) requires Arbitrary a`) takes one leading dict param
+     per requires on each of its *return-position* method clauses, after any
+     method-level params, so a return-position ref in the body reads the impl's
+     element dict.  Only return-position methods qualify — typecheck stamps an
+     RDict route to `$dict_<method>_<slot>` only for those, so we add the params
+     exactly when the body references one (arg-position methods like show/eq stay
+     on arg-tag).  Params named `dict_param_name method (k_method + slot)` to
+     match the routes and the order eval applies res_impl_dicts. *)
+  | DImpl ({ methods; requires; _ } as i) ->
+    let n_impl = List.length requires in
     DImpl { i with methods = List.map (fun (n, pats, body) ->
       let k = arity_of n in
-      if k = 0 then (n, pats, body) else (n, dict_pats n k @ pats, body)
+      let impl_names = List.init n_impl (fun slot -> dict_param_name n (k + slot)) in
+      let uses_impl_dict =
+        n_impl > 0 &&
+        (let found = ref false in
+         let note e =
+           (match e with
+            | EMethodRef (r, _) ->
+              (match !r with
+               | Some { Ast.res_route = RDict d; _ } when List.mem d impl_names ->
+                 found := true
+               | _ -> ())
+            | _ -> ()); e in
+         ignore (Desugar.map_expr note body); !found) in
+      let impl_pats = if uses_impl_dict then List.map (fun nm -> PVar nm) impl_names else [] in
+      if k = 0 && not uses_impl_dict then (n, pats, body)
+      else (n, dict_pats n k @ impl_pats @ pats, body)
     ) methods }
   | DAttrib (attrs, inner) -> DAttrib (attrs, run_decl arities inner)
   | other -> other

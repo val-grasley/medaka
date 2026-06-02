@@ -804,6 +804,15 @@ type env = {
        constraint var ids as seen inside the method's default body, so
        find_enclosing_dict routes an in-body method ref (e.g. `empty`/`++` inside
        foldMap's default) to the enclosing method's `$dict_<method>_<slot>`. *)
+  impl_dict_routes : (ident, (string * (ident * int list) list) list) Hashtbl.t;
+    (* Phase 83/84: method name → per-impl `(impl_key, [(req_iface, ids)])` for
+       each impl that defines the method and carries `requires`.  `ids` are the
+       impl head's type-param ids as instantiated inside *this* impl's body, so
+       find_enclosing_dict routes an in-body return-position ref (e.g. the element
+       `arbitrary` inside `impl Arbitrary (List a) requires Arbitrary a`) to that
+       impl method's `$dict_<method>_<slot>`.  Slots are impl-local (index within
+       one impl's list); keyed per impl_key so a method defined by several impls
+       doesn't collide and a REPL re-check replaces rather than accumulates. *)
   dict_app_usages : (ident * (ident * mono list) list * Ast.res_route list option ref * Ast.loc option) list ref;
     (* Phase 69.x: (fn_name, [(constraint_iface, instantiated_args)] in slot order,
        EDictApp_routes_ref, call_site_loc).  Recorded at each constrained-function
@@ -851,6 +860,7 @@ let empty_env () = {
   inferred_constraints   = Hashtbl.create 8;
   method_constraints     = Hashtbl.create 8;
   method_dict_routes     = Hashtbl.create 8;
+  impl_dict_routes       = Hashtbl.create 8;
   constraint_obligations = ref [];
   dict_app_usages        = ref [];
   type_ctors    = Hashtbl.create 8;
@@ -2826,11 +2836,33 @@ let register_interface ?(aliases=Hashtbl.create 0) env (iface_name, type_params,
   ) methods;
   method_schemes
 
+(* Phase 83/84: ids of all still-unbound type vars in a mono (local copy; the
+   top-level mono_unbound_ids is defined later in the file). *)
+let rec mono_ids_tc m = match normalize m with
+  | TVar { contents = Unbound (id, _) } -> [id]
+  | TVar _ | TCon _ -> []
+  | TApp (a, b) | TFun (a, _, b) -> mono_ids_tc a @ mono_ids_tc b
+  | TTuple ts -> List.concat_map mono_ids_tc ts
+
+(* Phase 83/84: does an interface param appear in an *argument* position of this
+   method's type?  If so the method dispatches on a value argument — arg-tag
+   dispatch handles it (including nested containers) and it must NOT get
+   instance-dict threading.  Only return-position methods (the param solely in
+   the result, e.g. `arbitrary : Unit -> <Rand> a`) need the impl's element dict,
+   because their in-body element ref produces — rather than consumes — a value of
+   the param type and so can't be arg-tag-dispatched. *)
+let method_param_in_arg_position (Forall (_, _, mt)) (param_ids : int list) : bool =
+  let rec arg_ids t = match normalize t with
+    | TFun (a, _, b) -> mono_ids_tc a @ arg_ids b
+    | _ -> [] in
+  let aids = arg_ids mt in
+  List.exists (fun p -> List.mem p aids) param_ids
+
 (* Validate a DImpl declaration against the registered interface.
    Instantiates each method's scheme with the impl's concrete type args and
    type-checks the provided method body against the resulting expected type. *)
 let check_impl env (decl : decl) = match decl with
-  | DImpl { iface_name; type_args; methods; _ } ->
+  | DImpl { iface_name; type_args; methods; impl_name; requires; _ } ->
     let info =
       try Hashtbl.find env.interfaces iface_name
       with Not_found -> fail (UnknownInterface iface_name)
@@ -2839,7 +2871,14 @@ let check_impl env (decl : decl) = match decl with
     let n_args   = List.length type_args in
     if n_params <> n_args then
       fail (ImplArityMismatch (iface_name, n_params, n_args));
-    let concrete = List.map (from_ast_type ~aliases:env.aliases) type_args in
+    (* Share one TVar table across the head and the `requires` clause (as
+       register_impl does) so a head param (`a` in `impl Arbitrary (List a)
+       requires Arbitrary a`) is the *same* TVar in both.  The body's inner
+       return-position ref (the element `arbitrary`) unifies its discriminating
+       var against that head TVar, so registering the requires' ids here lets
+       find_enclosing_dict route it to this impl method's dict param. *)
+    let tbl = Hashtbl.create 4 in
+    let concrete = List.map (from_ast_type ~aliases:env.aliases ~tbl) type_args in
     let subs = List.combine info.iface_param_ids concrete in
     (* Verify each required method is present and has the right type *)
     List.iter (fun (mname, mscheme) ->
@@ -2860,6 +2899,35 @@ let check_impl env (decl : decl) = match decl with
          | Type_error (InfiniteType _ as e, _) ->
            fail e)
     ) info.iface_methods;
+    (* Phase 83/84: register this impl's `requires` constraints (per method it
+       defines) so return-position refs inside the bodies route to the impl's
+       `$dict_<method>_<slot>` params (added by dict_pass).  Done *after* body
+       inference and via `normalize`, so the recorded ids are the post-unification
+       survivors — the same representatives the in-body method occurrence carries
+       (unify picks which var survives; registering the pre-unification id would
+       miss).  The requires share `tbl` with the head (the head param `a` is the
+       same TVar the body unified against).  Keyed per impl_key so peer impls of
+       the same method don't collide and REPL re-checks replace, not accumulate. *)
+    let impl_inst_cs =
+      List.map (fun (riface, rargs) ->
+        let ids = List.concat_map
+          (fun a -> mono_ids_tc (from_ast_type ~aliases:env.aliases ~tbl a)) rargs in
+        (riface, ids)) requires
+    in
+    if impl_inst_cs <> [] then begin
+      let this_key = Ast.impl_key ~iface:iface_name ~type_args ~name:impl_name in
+      (* Only return-position methods need the dict; arg-position methods
+         (show/eq/compare) stay on arg-tag dispatch, which handles nesting. *)
+      List.iter (fun (n, _, _) ->
+        match List.assoc_opt n info.iface_methods with
+        | Some msc when not (method_param_in_arg_position msc info.iface_param_ids) ->
+          let prev = Option.value ~default:[]
+                       (Hashtbl.find_opt env.impl_dict_routes n) in
+          Hashtbl.replace env.impl_dict_routes n
+            ((this_key, impl_inst_cs) :: List.remove_assoc this_key prev)
+        | _ -> ()
+      ) methods
+    end;
     (* Check for extra methods that are not part of the interface *)
     List.iter (fun (n, _, _) ->
       if not (List.mem_assoc n info.iface_methods) then
@@ -3225,6 +3293,27 @@ let find_enclosing_dict env iface (ids_present : int list) : Ast.ident option =
      ref inside a default method body (e.g. `empty`/`++` in foldMap's default)
      reads `$dict_<method>_<slot>`.  Keyed by the instantiated default-body ids. *)
   if !result = None then search env.method_dict_routes;
+  (* Phase 83/84: also the enclosing *impl's* `requires`, so a return-position
+     ref inside a parametric impl body (e.g. the element `arbitrary` in
+     `impl Arbitrary (List a) requires Arbitrary a`) reads the impl method's
+     `$dict_<method>_<slot>`.  Slots are impl-local — the index within one
+     impl's constraint list — matching the params dict_pass prepends. *)
+  if !result = None then
+    Hashtbl.iter (fun mname impls ->
+      (* Impl-requires params follow the method's own method-level params, so
+         offset the impl-local slot by that count (0 for Arbitrary/Eq/Ord/Show). *)
+      let method_off = match Hashtbl.find_opt env.method_constraints mname with
+        | Some cs -> List.length cs | None -> 0 in
+      if !result = None then
+        List.iter (fun (_impl_key, constraints) ->
+          if !result = None then
+            List.iteri (fun slot (ci, cids) ->
+              if !result = None && ci = iface
+                 && List.exists (fun id -> List.mem id cids) ids_present
+              then result := Some (Ast.dict_param_name mname (method_off + slot))
+            ) constraints
+        ) impls
+    ) env.impl_dict_routes;
   !result
 
 (* After HM inference, check every recorded method call site against the impl
@@ -3239,7 +3328,7 @@ let check_method_usages env =
     | Some info -> List.length info.iface_param_ids
     | None -> 0
   in
-  List.iter (fun (_method_name, iface_name, param_vars, hint_opt, _method_dict_args, occ_ref, loc) ->
+  List.iter (fun (method_name, iface_name, param_vars, hint_opt, _method_dict_args, occ_ref, loc) ->
     let n = n_iface_params iface_name in
     (* Phase 69: stamp the resolved impl's route onto this method occurrence (if
        it carries an EMethodRef) so eval routes return-position / multi-param
@@ -3249,16 +3338,64 @@ let check_method_usages env =
       match occ_ref with
       | Some cell ->
         cell := Some { Ast.res_iface = iface_name; res_route = route;
-                       res_method_dicts = [] }
+                       res_method_dicts = []; res_impl_dicts = [] }
       | None -> ()
     in
     if n = 0 || List.length param_vars <> n then ()
     else begin
       let concrete_args = List.map (fun r -> normalize (TVar r)) param_vars in
+      (* Phase 83/84: resolve a committed impl's `requires` (substituted by the
+         call's concrete head args) to dict routes, so eval applies them as
+         leading args to the selected impl method (matching the params dict_pass
+         prepends).  The site is ground here, so each requires resolves to the
+         matching impl's RKey (mirrors pick_dispatch_impl, which is defined later
+         in the file).  `resolve_one_route` is not yet in scope at this point. *)
+      let impl_requires_routes entry =
+        match impl_head_subst entry.impl_type_mono concrete_args with
+        | None -> []
+        | Some subst ->
+          List.map (fun (req_iface, req_args) ->
+            let args = List.map (fun a -> normalize (subst_apply subst a)) req_args in
+            if args <> [] && List.for_all is_concrete args then
+              match matching_impls env req_iface args with
+              | [] -> Ast.RKey ""
+              | entries ->
+                let ms = List.filter (fun e ->
+                  List.for_all (fun e' -> e == e' ||
+                    subsumes ~general:e'.impl_type_mono ~specific:e.impl_type_mono)
+                    entries) entries in
+                (match ms with
+                 | [e] -> Ast.RKey e.impl_key
+                 | _ ->
+                   (match List.filter (fun e -> e.impl_is_default) entries with
+                    | [e] -> Ast.RKey e.impl_key
+                    | _ -> Ast.RKey ""))
+            else Ast.RKey ""
+          ) entry.impl_requires
+      in
       (* Phase 65: committing to an impl also verifies its `requires` hold. *)
+      (* Only stamp impl dicts for return-position methods — the same gate as
+         check_impl's registration and dict_pass's param insertion, so the dicts
+         eval applies match the params on the impl clause. Arg-position methods
+         (show/eq/compare) stay on arg-tag dispatch. *)
+      let method_is_return_pos =
+        match Hashtbl.find_opt env.interfaces iface_name with
+        | Some info ->
+          (match List.assoc_opt method_name info.iface_methods with
+           | Some msc -> not (method_param_in_arg_position msc info.iface_param_ids)
+           | None -> false)
+        | None -> false
+      in
       let commit entry =
         set_route (Ast.RKey entry.impl_key);
-        check_entry_requires env loc entry concrete_args
+        check_entry_requires env loc entry concrete_args;
+        (match entry.impl_requires, occ_ref with
+         | (_ :: _), Some cell when method_is_return_pos ->
+           let routes = impl_requires_routes entry in
+           (match !cell with
+            | Some r -> cell := Some { r with Ast.res_impl_dicts = routes }
+            | None -> ())
+         | _ -> ())
       in
       if not (List.for_all is_concrete concrete_args) then begin
         (* Not ground at this site.  Two ways to still route it:
@@ -3434,7 +3571,7 @@ let resolve_method_dicts env =
          (* check_method_usages left no t-route (polymorphic/non-ground site);
             still carry the method dicts so eval can supply them. *)
          cell := Some { Ast.res_iface = _iface; res_route = Ast.RKey "";
-                        res_method_dicts = routes })
+                        res_method_dicts = routes; res_impl_dicts = [] })
     | _ -> ()
   ) !(env.method_usages)
 
@@ -4059,6 +4196,7 @@ let copy_tc_env (e : env) : env = {
   inferred_constraints   = Hashtbl.copy e.inferred_constraints;
   method_constraints     = Hashtbl.copy e.method_constraints;
   method_dict_routes     = Hashtbl.copy e.method_dict_routes;
+  impl_dict_routes       = Hashtbl.copy e.impl_dict_routes;
   constraint_obligations = ref !(e.constraint_obligations);
   dict_app_usages        = ref !(e.dict_app_usages);
   type_ctors    = Hashtbl.copy e.type_ctors;

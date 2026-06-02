@@ -202,15 +202,38 @@ above, it is flagged ⭐.
 
 - ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** Lower priority;
   each is a known limitation with a correct-enough fallback today:
-  - Runtime dict-threading *into* an inferred constrained body (currently arg-tag
-    dispatch, correct for argument-dispatched wrappers). Needs a post-typecheck
-    marker re-run against the final constraint tables — a pipeline restructure.
+  - **Instance-`requires` dict-threading into return-position impl bodies — DONE
+    (2026-06-02, single-level).** An impl's `requires` dicts now thread into its
+    method bodies so a *return-position* element ref resolves via the element dict
+    (e.g. `impl Arbitrary (List a) requires Arbitrary a where arbitrary () =
+    arbitraryList arbitrary 8` now generates `List Tagged` as `[Tagged 7, …]`
+    instead of panicking `no matching impl for dispatch`). Mechanism mirrors
+    69.x-e: a per-impl `impl_dict_routes` table (impl-local slots, keyed by
+    impl_key) feeds `find_enclosing_dict`; the call site stamps a new
+    `res_impl_dicts` on the `EMethodRef`; `dict_pass` prepends the matching params
+    to the impl clause; eval applies them after `res_method_dicts`. **Gated to
+    return-position methods** (the dispatch param appears only in the result):
+    arg-position methods (`show`/`eq`/`compare`) stay on arg-tag dispatch, which
+    already handles nesting. **Remaining limitation:** *nested* parametric element
+    types (`List (List Int)`) don't fully thread — the flat impl-key dict model
+    (`VDict of string`) can't carry a recursive element dict, so the inner list's
+    own element dict is missing; single-level (`List Int`, `List Tagged`,
+    `Option Int`) works. Lands in `ast.ml`/`typecheck.ml`/`dict_pass.ml`/`eval.ml`.
+    This unblocks the common cases of **Phase 101**.
+  - Runtime dict-threading *into* an inferred (unsignatured top-level) constrained
+    body (currently arg-tag dispatch, correct for argument-dispatched wrappers).
+    Distinct from the impl-body case above. Needs a post-typecheck marker re-run
+    against the final constraint tables — a pipeline restructure.
   - Self-/mutually-recursive *unsignatured* wrappers under-infer their own
     recursive-call routing.
   - `pure` in a do-block with **no `<-`** is groundable only from surrounding
     type context.
   - `Result e` with a free `e` mis-dispatches even when signatured (a multi-param
-    dict-resolution gap).
+    dict-resolution gap). (Did not reproduce on the 2026-06-02 binary with the
+    probes tried; re-verify before working it.)
+  - True recursive/nested instance dictionaries (the `List (List Int)` case above)
+    need structured dicts rather than flat impl-key strings — the real
+    "pipeline restructure."
   - Skill: **harden-typechecker** / **add-language-feature** (cross-cutting).
 
 ### CLI surface (Phase 82, continued)

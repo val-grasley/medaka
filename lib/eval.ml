@@ -610,7 +610,7 @@ and eval env expr =
     let v = lookup env x in
     (match !r with
      | None -> v
-     | Some { Ast.res_route; res_method_dicts; _ } ->
+     | Some { Ast.res_route; res_method_dicts; res_impl_dicts; _ } ->
        (* First narrow by the t-dispatch route (return-position / multi-param). *)
        let v = match res_route with
          | RKey key -> select_impl_by_key key v
@@ -641,8 +641,17 @@ and eval env expr =
           params dict_pass prepended to the method's bodies; the body's inner refs
           (`empty`) read them via RDict.  Empty list ⇒ no-op (untyped path / a
           method with no method-level constraint), preserving arg-tag fallback. *)
+       let v =
+         List.fold_left (fun f route -> apply f (dict_of_route env route))
+           v res_method_dicts in
+       (* Phase 83/84: then the *selected impl's* `requires` dicts (e.g. the
+          `Arbitrary a` of `impl Arbitrary (List a)`), applied after the
+          method-level dicts to match dict_pass's param order.  These let a
+          return-position ref inside the impl body resolve via the element dict
+          rather than failing arg-tag dispatch.  Empty ⇒ no-op (untyped path /
+          impl with no requires). *)
        List.fold_left (fun f route -> apply f (dict_of_route env route))
-         v res_method_dicts)
+         v res_impl_dicts)
 
   (* Phase 69.x: constrained-function occurrence.  Evaluate the function value,
      then apply the resolved dictionaries (one per constraint) as leading

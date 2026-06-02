@@ -77,6 +77,16 @@ type resolved = {
      constraint, and always empty on the untyped path (no marker/typecheck), so
      eval's arg-tag fallback is preserved. *)
   res_method_dicts : res_route list;
+  (* Phase 83/84: dictionaries for the *selected impl's* `requires` constraints
+     (e.g. the `Arbitrary a` in `impl Arbitrary (List a) requires Arbitrary a`),
+     one route per constraint in impl-local slot order.  Applied by eval as
+     leading arguments *after* res_method_dicts (matching dict_pass's param
+     order: method-level params first, then impl-requires).  Unlike
+     res_method_dicts, the count is per-selected-impl, not per-method-name, so a
+     ground call site stamps exactly the impl it committed to (e.g. `arbitrary :
+     List Tagged` → `[Arbitrary Tagged]`; `arbitrary : Int` → `[]`).  Empty on
+     the untyped path. *)
+  res_impl_dicts : res_route list;
 }
 
 (* String interpolation parts *)
