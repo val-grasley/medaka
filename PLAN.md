@@ -4394,27 +4394,62 @@ two-Bool-arg method only the result annotation can dispatch — unreachable by t
 old arg-tag `EInfix` path).  All base suites green; no new `@thorough` failures.
 Skill: **add-language-feature** (marker + typecheck + eval).
 
-### Phase 95: `pure` in an imported module's do-block breaks `flatMap` super-entailment ⏳ TODO
+### Phase 95: `pure` in an imported module's do-block breaks `flatMap` super-entailment ✅ DONE
 
 Surfaced while doing Phase 88.  A do-block wrapper that uses `pure` and is defined
-in a **non-main (imported) module** fails to type-check with a spurious error
+in a **non-main (imported) module** failed to type-check with a spurious error
 blaming the prelude:
 `core.mdk: 'flatMap' uses interface Mappable on a polymorphic value but its type
 signature does not require it`.  Minimal repro: `dep.mdk` containing
 `export\nf m = do\n  x <- m\n  pure x`, imported by any `main.mdk` (even if `f`
-is never used) → error.  Triggers on `pure` specifically: a do-block *without*
-`pure` (just `x <- m; n`) or an explicit `andThen` wrapper does **not** repro,
-and the same wrapper in a single file (`check_program_impl`) or in the *main*
-module type-checks fine.  So it is specific to `typecheck_module`: the presence of
-an Applicative return-position `pure` in a module makes the prepended prelude's
-`flatMap : Thenable m => …` (whose body calls only `andThen`) acquire a phantom
-`Mappable` obligation that the Phase-83 `UnsatisfiedConstraint` check then rejects
-— likely `expand_supers`/super-entailment under-expanding the Thenable→
-Applicative→Mappable chain, or a shared inference var leaking the `pure` site's
-`Mappable` onto `flatMap` during the grouped check.  This **blocks the
-cross-module exported-wrapper case of Phase 88** (the main-module case is fixed).
-Lands in `lib/typecheck.ml` (`typecheck_module` super-entailment / constraint
-attribution); add a `test_loader` (or `test_typecheck` multi-module) regression.
+is never used) → error.
+
+**Root cause — a name-collision / scope bug, NOT super-entailment.**  The original
+"likely `expand_supers` under-expansion / shared-var leak" guess was wrong (verified
+on the binary).  `infer`'s `EVar` branch looks up the callee name in the global
+`env.method_iface` / `fun_constraints` / `inferred_constraints` hashtables **by
+bare name, ignoring local shadowing**.  The prelude defines
+`flatMap f ma = andThen ma f` — its *parameters* are named `f` and `ma`.  When an
+imported module exports a top-level binding also named `f` whose inferred
+constraints include `Mappable` (via `pure`→Applicative, then `expand_supers`'
+Applicative→Mappable), the parameter occurrence `f` in flatMap's body matched
+`inferred_constraints["f"]` and recorded a phantom `Mappable` obligation on the
+parameter's own tyvar.  That var is in flatMap's generalized `bound_ids`, so it
+landed in flatMap's `body_cs`; flatMap's declared `Thenable m =>` closure doesn't
+entail `Mappable`, so the Phase-83 `UnsatisfiedConstraint` check rejected it.
+Renaming the import to avoid flatMap's parameter names (`f`/`ma`) made the error
+vanish — and naming it `ma` moved the error to the `ma` position, confirming the
+parameter-collision mechanism.
+
+**Why multi-module-only / imported-only.**  `typecheck_module` seeds
+`env.inferred_constraints` from imported `te_inferred_constraints` *before* any
+letrec group (including the prepended prelude's `flatMap`) is processed, so the
+colliding name is already present when flatMap is checked.  In the single-file
+path (`check_program_impl`, no imports) and the *main*-module case, the wrapper's
+`inferred_constraints` entry is registered only while processing the user's own
+group, which runs **after** the prelude groups — so flatMap is checked before the
+collision exists.  This matches the observed asymmetry exactly.  (The trigger is
+the wrapper's *inferred constraint set*, not the do-block: `f x = pure x` repro'd
+too; an explicit signature on the wrapper avoided it by routing through
+`fun_constraints` whose foreign tyvar-id happened not to collide.)
+
+**Fix (`lib/typecheck.ml`).**  Make the three `EVar` constraint-table lookups
+scope-aware.  Added an env field `locals : StringSet.t`, populated only by
+*body-local* binders inside `infer` (lambda / `let` / `letrec` group / do-`let` /
+do-bind / pattern arms, plus `process_letrec_group`'s signatured-with-params clause
+binding) via `mark_locals` / `extend_locals` helpers; gated the `method_iface`,
+`fun_constraints`, and `inferred_constraints` lookups on `not (StringSet.mem x
+env.locals)`.  Locals never have legitimate entries in those tables (only
+`process_letrec_group` populates them, only for top-level groups), so the gate
+removes only spurious behavior — recursive top-level calls are unaffected (the
+top-level name is not a local binder).  This **unblocks the cross-module
+exported-wrapper case of Phase 88**: an imported `f m = do { x <- m; pure x }` now
+type-checks and dispatches `pure` by the caller's monad (`f (Some 5)` → `Some 5`,
+`f [1,2,3]` → `[1,2,3]`).
+
+Regression: `test_loader`'s "local-shadow constraint attribution (Phase 95) /
+imported poly-monad wrapper" (asserts no spurious type error + correct cross-module
+`pure` dispatch).  All base suites green; no new `@thorough` failures.
 Skill: **harden-typechecker**.
 
 ### Phase 96: Nullary return-position method dispatch is broken at known types ⏳ TODO

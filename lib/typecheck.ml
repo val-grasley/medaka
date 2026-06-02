@@ -815,6 +815,16 @@ type env = {
   aliases       : (ident, ident list * Ast.ty) Hashtbl.t;  (* type alias name → (params, rhs) *)
   warnings        : string list ref;           (* accumulated warning messages *)
   mut_vars        : StringSet.t;               (* bindings declared with let mut *)
+  locals          : StringSet.t;
+    (* Phase 95: names bound by *local* binders inside `infer` (lambda / let /
+       do-bind / pattern arms) — as opposed to top-level / imported bindings.
+       The constraint-table lookups in the EVar branch (method_iface,
+       fun_constraints, inferred_constraints) key off the bare name in global
+       hashtables that are not scope-aware; a local that shadows a top-level or
+       imported constrained name must NOT inherit its constraints.  Gate those
+       lookups on `not (StringSet.mem x locals)`.  Locals never have legitimate
+       entries in those tables (only process_letrec_group populates them, only
+       for top-level groups), so the gate removes only spurious behavior. *)
   deprecated_fns  : (ident, string) Hashtbl.t; (* name → deprecation message *)
   must_use_fns    : (ident, unit) Hashtbl.t;   (* names whose return values must be used *)
   promoted        : (ident, unit) Hashtbl.t;
@@ -848,6 +858,7 @@ let empty_env () = {
   aliases       = Hashtbl.create 4;
   warnings        = ref [];
   mut_vars        = StringSet.empty;
+  locals          = StringSet.empty;
   deprecated_fns  = Hashtbl.create 8;
   must_use_fns    = Hashtbl.create 8;
   promoted        = Hashtbl.create 8;
@@ -861,6 +872,18 @@ let extend_var env x s = { env with vars = (x, s) :: env.vars }
 
 let extend_vars env bindings =
   List.fold_left (fun e (n, s) -> extend_var e n s) env bindings
+
+(* Phase 95: mark names as locally-bound (lambda/let/do-bind/pattern binders),
+   so the EVar branch's bare-name constraint-table lookups skip them — a local
+   that shadows a top-level/imported constrained name must not inherit its
+   constraints.  Use this at *body-local* binder sites in `infer`, never for the
+   top-level driver's extend_var calls. *)
+let mark_locals env names =
+  { env with locals = List.fold_left (fun s n -> StringSet.add n s) env.locals names }
+
+(* Extend env with local bindings AND register them as locals. *)
+let extend_locals env bindings =
+  mark_locals (extend_vars env bindings) (List.map fst bindings)
 
 (* ── Built-in types & primitives ────────────────── *)
 
@@ -1274,7 +1297,10 @@ let rec infer env = function
         try Hashtbl.find env.ctors x
         with Not_found -> lookup_var env x
       in
-      match Hashtbl.find_opt env.method_iface x with
+      (* Phase 95: a locally-bound name shadowing a method/constrained-fn name
+         is an ordinary variable — skip the scope-blind global tables. *)
+      let is_local = StringSet.mem x env.locals in
+      match (if is_local then None else Hashtbl.find_opt env.method_iface x) with
       | Some iface_name ->
         current_dict_ref := None;  (* a method name is never a constrained fn *)
         let info =
@@ -1310,12 +1336,12 @@ let rec infer env = function
         let dref = !current_dict_ref in
         current_dict_ref := None;
         let (sub, mono) = instantiate_raw scheme in
-        (match Hashtbl.find_opt env.fun_constraints x with
+        (match (if is_local then None else Hashtbl.find_opt env.fun_constraints x) with
          | None ->
            (* Phase 83: an inferred-constrained callee records its obligations so
               the caller's missing-impl check fires (and propagates), but never a
               dict_app_usage — these have no dict route (see inferred_constraints). *)
-           (match Hashtbl.find_opt env.inferred_constraints x with
+           (match (if is_local then None else Hashtbl.find_opt env.inferred_constraints x) with
             | None -> ()
             | Some constraints ->
               let resolve_arg id =
@@ -1390,7 +1416,7 @@ let rec infer env = function
     let typed_pats = List.map (type_pat env) pats in
     let pat_types  = List.map fst typed_pats in
     let bindings   = List.concat_map snd typed_pats in
-    let env' = extend_vars env bindings in
+    let env' = extend_locals env bindings in
     (* The body's latent effect becomes this lambda's arrow effect; building the
        closure itself performs nothing, so save/restore the enclosing ambient. *)
     let saved = !cur_effect in
@@ -1410,12 +1436,12 @@ let rec infer env = function
           RHS can reference x; generalize after unification. *)
        enter_level ();
        let placeholder = fresh_var () in
-       let env_self = extend_var env x (monotype placeholder) in
+       let env_self = mark_locals (extend_var env x (monotype placeholder)) [x] in
        let t1 = infer env_self e1 in
        unify placeholder t1;
        exit_level ();
        let s = generalize t1 in
-       let env' = extend_var env x s in
+       let env' = mark_locals (extend_var env x s) [x] in
        let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
        infer env' e2
      | _ ->
@@ -1425,20 +1451,21 @@ let rec infer env = function
        (match pat with
         | PVar x ->
           let s = gen_restricted (is_nonexpansive e1) t1 in
-          let env' = extend_var env x s in
+          let env' = mark_locals (extend_var env x s) [x] in
           let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
           infer env' e2
         | _ ->
           (* Non-trivial pattern: no generalization (value restriction-like) *)
           let tp, bindings = type_pat env pat in
           unify tp t1;
-          infer (extend_vars env bindings) e2))
+          infer (extend_locals env bindings) e2))
 
   | ELetGroup (bindings, body) ->
     enter_level ();
     let placeholders = List.map (fun (n, _) -> (n, fresh_var ())) bindings in
-    let env' = List.fold_left
-      (fun e (n, t) -> extend_var e n (monotype t)) env placeholders in
+    let env' = mark_locals
+      (List.fold_left (fun e (n, t) -> extend_var e n (monotype t)) env placeholders)
+      (List.map fst placeholders) in
     List.iter (fun (n, clauses) ->
       let ph = List.assoc n placeholders in
       List.iter (fun clause ->
@@ -1452,7 +1479,7 @@ let rec infer env = function
       let t = List.assoc n placeholders in
       let is_val =
         List.for_all (fun (pats, rhs) -> pats <> [] || is_nonexpansive rhs) clauses in
-      extend_var e n (gen_restricted is_val t)) env bindings in
+      mark_locals (extend_var e n (gen_restricted is_val t)) [n]) env bindings in
     infer env'' body
 
   | EIf (c, t, e) ->
@@ -1486,7 +1513,7 @@ let rec infer env = function
     List.iter (fun (pat, guards, body) ->
       let tp, bindings = type_pat env pat in
       unify tp tsc;
-      let env' = extend_vars env bindings in
+      let env' = extend_locals env bindings in
       (* Thread guard qualifiers left-to-right; pattern binds extend the env
          for later qualifiers and the body. *)
       let env_body = List.fold_left (fun env_cur q ->
@@ -1496,7 +1523,7 @@ let rec infer env = function
           let te = infer env_cur e in
           let tp', binds = type_pat env_cur p in
           unify tp' te;
-          extend_vars env_cur binds
+          extend_locals env_cur binds
       ) env' guards in
       unify (infer env_body body) result
     ) arms;
@@ -1668,12 +1695,12 @@ let rec infer env = function
         exit_level ();
         let env' = match pat with
           | PVar x ->
-            let env' = extend_var env x (gen_restricted (is_nonexpansive e) t1) in
+            let env' = mark_locals (extend_var env x (gen_restricted (is_nonexpansive e) t1)) [x] in
             if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
           | _ ->
             let tp, bindings = type_pat env pat in
             unify tp t1;
-            extend_vars env bindings
+            extend_locals env bindings
         in
         type_block env' rest
       | DoAssign (x, e) :: rest ->
@@ -1715,7 +1742,7 @@ let rec infer env = function
         let tp, bindings = type_pat env pat in
         unify tp te;
         let _ = infer env alt in
-        type_block (extend_vars env bindings) rest
+        type_block (extend_locals env bindings) rest
     in
     type_block env stmts
 
@@ -1778,7 +1805,7 @@ let rec infer env = function
         let inner = unify_monadic te in
         let tp, bindings = type_pat env pat in
         unify tp inner;
-        type_stmts (extend_vars env bindings) rest
+        type_stmts (extend_locals env bindings) rest
       | DoLet (mut, pat, e) :: rest ->
         if mut then begin
           let name = (match pat with PVar x -> x | _ -> "_") in
@@ -1788,11 +1815,11 @@ let rec infer env = function
         let t1 = infer env e in
         exit_level ();
         let env' = match pat with
-          | PVar x -> extend_var env x (gen_restricted (is_nonexpansive e) t1)
+          | PVar x -> mark_locals (extend_var env x (gen_restricted (is_nonexpansive e) t1)) [x]
           | _ ->
             let tp, bindings = type_pat env pat in
             unify tp t1;
-            extend_vars env bindings
+            extend_locals env bindings
         in
         type_stmts env' rest
       | DoAssign (x, _) :: _ ->
@@ -1804,7 +1831,7 @@ let rec infer env = function
         let tp, bindings = type_pat env pat in
         unify tp te;
         let _ = infer env alt in  (* no divergence check in v1 *)
-        type_stmts (extend_vars env bindings) rest
+        type_stmts (extend_locals env bindings) rest
     in
     let result = type_stmts env stmts in
     monad_tag_ref := (match normalize m with
@@ -2369,7 +2396,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
           zip_unify pat_types sig_args;
           let saved = !cur_effect in
           cur_effect := open_row ();
-          let body_t = infer (extend_vars !env_ref bindings) body in
+          let body_t = infer (extend_locals !env_ref bindings) body in
           let body_eff = !cur_effect in
           cur_effect := saved;
           add_eff body_eff;
@@ -4086,6 +4113,7 @@ let copy_tc_env (e : env) : env = {
   aliases       = Hashtbl.copy e.aliases;
   warnings        = ref !(e.warnings);
   mut_vars        = e.mut_vars;                (* persistent set *)
+  locals          = e.locals;
   deprecated_fns  = Hashtbl.copy e.deprecated_fns;
   must_use_fns    = Hashtbl.copy e.must_use_fns;
   promoted        = Hashtbl.copy e.promoted;

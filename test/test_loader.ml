@@ -740,6 +740,67 @@ let test_eval_poly_monad_cross_module () =
         "Expected \"Some 5\\n\" from cross-module poly-monad `pure` dispatch, got %S" out)
   )
 
+(* Phase 95: the same poly-monad `pure` wrapper, but defined in an *imported*
+   (non-main) module — the cross-module exported-wrapper case Phase 88 left open.
+   It used to fail to type-check with a spurious prelude error: `flatMap f ma =
+   andThen ma f` has parameters named `f`/`ma`; the imported wrapper's name
+   collided with one of them, so the scope-blind EVar lookup wrongly attributed
+   the import's inferred `Mappable` constraint to flatMap's parameter, and the
+   Phase-83 entailment check rejected `flatMap` ("uses interface Mappable …").
+   The fix makes those lookups local-shadow-aware.  Asserts (a) no spurious type
+   error and (b) the imported wrapper dispatches `pure` by the caller's monad. *)
+let test_eval_poly_monad_imported_module () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "dep.mdk"
+      "export\nf m = do\n  x <- m\n  pure x\n" in
+    let main_path = write_file dir "main.mdk"
+      "import dep.{f}\n\n\
+       main : <IO> Unit\n\
+       main = println (show (f (Some 5)))\n" in
+    let modules = Loader.load_program main_path [dir] in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Desugar.desugar_program prog)) modules in
+    let method_names = Method_marker.interface_method_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let constrained = Method_marker.constrained_fn_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let typecheck_all ~constrained ?promoted () =
+      let marked = List.map (fun (mid, fp, prog) ->
+        (mid, fp, Method_marker.mark_program method_names constrained prog)) modules in
+      let te_acc = ref [] in
+      let promoted_out = Hashtbl.create 8 in
+      List.iter (fun (mid, _, prog) ->
+        let (te, _, _) =
+          Typecheck.typecheck_module ?promoted ~promoted_out !te_acc mid prog in
+        te_acc := te :: !te_acc) marked;
+      (marked, promoted_out)
+    in
+    (* Pass 1 used to raise the spurious flatMap/Mappable error here. *)
+    let (m1, promoted) =
+      try typecheck_all ~constrained ()
+      with Typecheck.Type_error (e, _) ->
+        failwith ("unexpected type error: " ^ Typecheck.pp_error e)
+    in
+    let final =
+      if Hashtbl.length promoted = 0 then m1
+      else begin
+        let c2 = Hashtbl.copy constrained in
+        Hashtbl.iter (fun k () -> Hashtbl.replace c2 k ()) promoted;
+        fst (typecheck_all ~constrained:c2 ~promoted ())
+      end in
+    let combined = List.concat_map (fun (_, _, p) -> p) final in
+    let combined = Dict_pass.run (Method_marker.marked_prelude @ combined) in
+    let buf = Buffer.create 32 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+      ignore (Eval.eval_program ~prelude:false combined));
+    let out = Buffer.contents buf in
+    if out <> "Some 5\n" then
+      failwith (Printf.sprintf
+        "Expected \"Some 5\\n\" from imported poly-monad `pure` wrapper, got %S" out)
+  )
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -790,6 +851,9 @@ let () =
     ];
     "two-pass elaboration (Phase 88)", [
       test_case "cross-module poly-monad pure dispatch" `Quick test_eval_poly_monad_cross_module;
+    ];
+    "local-shadow constraint attribution (Phase 95)", [
+      test_case "imported poly-monad wrapper" `Quick test_eval_poly_monad_imported_module;
     ];
     "workspace / multi-root", [
       test_case "cross-member import"    `Quick test_workspace_cross_member_import;
