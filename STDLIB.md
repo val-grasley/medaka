@@ -588,8 +588,8 @@ typechecked as if it had no declared effect, then errored on the
 
 ## Module 5 — `map` / `set` (ordered)
 
-Persistent **ordered** containers, keyed by `Ord`. `map` is implemented
-(`stdlib/map.mdk`); `set` is next.
+Persistent **ordered** containers, keyed by `Ord`. Both implemented:
+`map` (`stdlib/map.mdk`) and `set` (`stdlib/set.mdk`) — Module 5 complete.
 
 **Representation.** `Map k v` is a **weight-balanced binary search tree** (the
 Adams / Haskell `Data.Map` scheme): `data Map k v = Tip | Bin Int k v (Map k v)
@@ -642,7 +642,30 @@ will work once `set.mdk` adds the matching impl. See PLAN.md Phase 108.
   "values" — use `elems`/`keys`/`size` instead. No `filter` (would clash with
   `Filterable.filter`); use `filterWithKey`.
 
-### `set` ⏳ planned
+### `set` ✅ implemented (`stdlib/set.mdk`)
 
-Same weight-balanced tree, elements only. Decision pending: a standalone element
-tree vs. a thin wrapper over `Map a Unit`.
+A **standalone** weight-balanced element tree (`data Set a = Tip | Bin Int a (Set
+a) (Set a)`) — chosen over a `Map a Unit` wrapper to keep the module
+self-contained (a wrapper would need qualified imports to dodge map's
+identically-named `insert`/`union`/… exports) and drop the per-node `Unit`. The
+balancing mirrors map.mdk's; the property tests re-verify it (depth 15 for 1000
+ascending inserts).
+
+- **Construction:** `empty` (= `Monoid.empty`/`Tip`), `singleton`, `fromList`
+  (drops duplicates)
+- **Query:** `size` (O(1)), `member`; `isEmpty`/`length`/`elem`/`toList`/`sum`/
+  `maximum`/`any`/`all` via `Foldable Set` (folds over elements, ascending)
+- **Insertion / deletion:** `insert`, `delete`, `deleteMin`, `deleteMax`
+- **Min/max:** `minView`, `maxView`, `lookupMin`, `lookupMax`
+- **Set algebra:** `union`, `intersection`, `difference`, `isSubsetOf`
+- **Invariant checker:** `wellFormed` (backs the property tests)
+- **Instances:** `Foldable Set`, `Eq`/`Show` (via the ascending element list),
+  `Semigroup` (`++` = `union`), `Monoid` (empty = `Tip`)
+- **Literal:** `Set { 1, 2, 3 }` works (Phase 108) via `impl FromEntries (Set a)
+  a requires Ord a`.
+- **Naming:** unlike `Map` (whose standalone `toList` is shadowed by
+  `Foldable.toList`), Set *implements* `Foldable`, so `toList`/`elem`/etc. are the
+  Foldable methods and resolve cleanly from user files. No `map`/`filter`
+  standalones (would clash with `Mappable`/`Filterable` method names, and `Set`
+  is not a lawful `Mappable`); a future element-`map` needs a non-clashing name.
+- 23 doctests + 8 props.

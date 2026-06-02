@@ -19,8 +19,8 @@ a formatter, and a project-config/`medaka new` surface. Operators are wired to
 the real `Eq`/`Ord`/`Num` interfaces in `core.mdk` (Phase 52).
 
 The stdlib in Medaka covers `core`, `list`, `array`, a drafted `string`
-(STDLIB.md Modules 1–4), and `map` (Module 5, the weight-balanced ordered map);
-`set` is next. As of 2026-06-02 the user lifted the hand-write-it-myself
+(STDLIB.md Modules 1–4), and the weight-balanced ordered `map` + `set`
+(Module 5, complete). As of 2026-06-02 the user lifted the hand-write-it-myself
 constraint and delegated the remaining modules.
 
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
@@ -509,8 +509,21 @@ the per-module checklist.
       Workarounds today: `toAscList`-style rename, or qualified access. Surfaced
       while testing Phase 108; reproduces on map built via `fromList` too (not a
       108 regression).
-  - ⏳ **`stdlib/set.mdk`** — next. Same tree; decide standalone-element-tree vs.
-    `Map a Unit` wrapper.
+  - ✅ **`stdlib/set.mdk` — DONE (2026-06-02).** Chose a **standalone**
+    weight-balanced element tree (`data Set a = Tip | Bin Int a …`) over a
+    `Map a Unit` wrapper: a wrapper would force qualified imports to dodge map's
+    identically-named `insert`/`union`/… exports and carry a `Unit` payload;
+    standalone is self-contained and perf-optimal, balancing mirrored from
+    map.mdk and re-verified by props (depth 15 for 1000 ascending inserts).
+    Full API: member/insert/delete, union/intersection/difference/isSubsetOf,
+    min-max views, fromList/singleton, + `Foldable`/`Eq`/`Show`/`Semigroup`/
+    `Monoid`/`FromEntries` instances + `wellFormed`. 23 doctests + 8 props.
+    `Set { 1, 2, 3 }` literal works (Phase 108 impl). Notably **set's `toList`
+    works from user files** (it's the `Foldable` method, since Set impls
+    Foldable) — no `map`/`filter` standalones (would clash with the interface
+    method names). Module 5 (`map` + `set`) is now complete.
+    - **Compiler change:** removed `"Set"` from `resolve.ml`'s `primitive_types`
+      (mirroring the earlier `"Map"` removal), so `data Set a` is canonical.
   - ✅ **Phase 108 — wire the `Map { k => v }` / `Set { … }` literal sugar. DONE
     (2026-06-02).** Authoritative + interface-driven: a new core interface
     `FromEntries c e` (`fromEntries : List e -> c`, dispatched on the result type

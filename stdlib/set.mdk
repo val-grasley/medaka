@@ -1,0 +1,404 @@
+{- set.mdk — an immutable, ordered set of unique elements.
+
+   See STDLIB.md (Module 5) for the plan.
+
+   Design notes
+   ────────────
+   `Set a` is a *weight-balanced binary search tree* — the same Adams / Haskell
+   `Data.Set` scheme as `map.mdk`, but storing only an element per node (no
+   value). The invariants are identical:
+
+     • search:   elements in the left subtree < node element < the right
+     • balance:  neither subtree is more than `delta` (= 3) times the other
+
+   maintained by the smart constructor `balance`. The structure is *persistent*
+   (every op returns a fresh set sharing untouched subtrees), and ordering is by
+   the element's `Ord`, so most operations carry an `Ord a` constraint while the
+   pure walks (`size`, `toList`, the folds) do not.
+
+   This is a standalone tree rather than a wrapper over `Map a Unit`: it keeps
+   the module self-contained (no cross-module name clashes on `insert`/`union`/…)
+   and avoids the per-node `Unit` payload. The balancing mirrors map.mdk's,
+   which the property tests below re-verify. -}
+
+import core.{Eq, Ord, Show, Foldable, Semigroup, Monoid, Ordering, Option, FromEntries}
+
+{- The representation. `Tip` is the empty set; `Bin size elem left right` is an
+   interior node whose cached `size` is `1 + size left + size right`. -}
+public export data Set a = Tip | Bin Int a (Set a) (Set a)
+
+-- ── Internal smart constructors (mirror map.mdk) ────────────────────────
+
+bin : a -> Set a -> Set a -> Set a
+bin x l r = Bin (size l + size r + 1) x l r
+
+{- `balance` is `bin` plus a rebalancing check: when one subtree grows past
+   `delta` (= 3) times the other, a single or double rotation (`ratio` = 2
+   decides which) restores the weight invariant. -}
+balance : a -> Set a -> Set a -> Set a
+balance x l r
+  | size l + size r <= 1 = bin x l r
+  | size r > 3 * size l = rotateL x l r
+  | size l > 3 * size r = rotateR x l r
+  | otherwise = bin x l r
+
+rotateL : a -> Set a -> Set a -> Set a
+rotateL x l r =
+  match r
+    (Bin _ _ rl rr) => if size rl < 2 * size rr then singleL x l r else doubleL x l r
+    Tip => panic "Set.rotateL: empty right subtree"
+
+rotateR : a -> Set a -> Set a -> Set a
+rotateR x l r =
+  match l
+    (Bin _ _ ll lr) => if size lr < 2 * size ll then singleR x l r else doubleR x l r
+    Tip => panic "Set.rotateR: empty left subtree"
+
+singleL : a -> Set a -> Set a -> Set a
+singleL x1 t1 r =
+  match r
+    (Bin _ x2 t2 t3) => bin x2 (bin x1 t1 t2) t3
+    Tip => panic "Set.singleL: empty right subtree"
+
+singleR : a -> Set a -> Set a -> Set a
+singleR x1 l t3 =
+  match l
+    (Bin _ x2 t1 t2) => bin x2 t1 (bin x1 t2 t3)
+    Tip => panic "Set.singleR: empty left subtree"
+
+doubleL : a -> Set a -> Set a -> Set a
+doubleL x1 t1 r =
+  match r
+    (Bin _ x2 (Bin _ x3 t2 t3) t4) => bin x3 (bin x1 t1 t2) (bin x2 t3 t4)
+    _ => panic "Set.doubleL: malformed right subtree"
+
+doubleR : a -> Set a -> Set a -> Set a
+doubleR x1 l t4 =
+  match l
+    (Bin _ x2 t1 (Bin _ x3 t2 t3)) => bin x3 (bin x2 t1 t2) (bin x1 t3 t4)
+    _ => panic "Set.doubleR: malformed left subtree"
+
+-- ── Construction ────────────────────────────────────────────────────────
+
+{- The empty set is `Monoid.empty` (see `impl Monoid (Set a)` below); use `Tip`
+   internally. -}
+
+{- | A set with a single element.
+
+   > size (singleton 5)
+   1 -}
+export
+singleton : a -> Set a
+singleton x = Bin 1 x Tip Tip
+
+{- | Build a set from a list, dropping duplicates.
+
+   The `Set { x, … }` literal is sugar for `fromList` (it lowers to a
+   `FromEntries` dispatch pinned at `Set`, see the impl at the bottom):
+
+   > size (Set { 1, 2, 3, 2, 1 })
+   3
+   > toList (fromList [3, 1, 2, 3, 1])
+   [1, 2, 3] -}
+export
+fromList : Ord a => List a -> Set a
+fromList xs = fold (s x => insert x s) Tip xs
+
+-- ── Query ───────────────────────────────────────────────────────────────
+
+{- | Number of elements. O(1) — read off the root's cached size.
+
+   > size (fromList [1, 2, 3, 2])
+   3 -}
+export
+size : Set a -> Int
+size Tip = 0
+size (Bin s _ _ _) = s
+
+{- | `True` when the element is present.
+
+   > member 2 (fromList [1, 2, 3])
+   True
+   > member 9 (fromList [1, 2, 3])
+   False -}
+export
+member : Ord a => a -> Set a -> Bool
+member x Tip = False
+member x (Bin _ y l r) =
+  match compare x y
+    Lt => member x l
+    Gt => member x r
+    Eq => True
+
+-- ── Insertion / deletion ────────────────────────────────────────────────
+
+{- | Insert an element. A no-op (structurally) when already present.
+
+   > size (insert 2 (fromList [1, 2, 3]))
+   3
+   > size (insert 9 (fromList [1, 2, 3]))
+   4 -}
+export
+insert : Ord a => a -> Set a -> Set a
+insert x Tip = singleton x
+insert x (Bin s y l r) =
+  match compare x y
+    Lt => balance y (insert x l) r
+    Gt => balance y l (insert x r)
+    Eq => Bin s x l r
+
+{- | Remove an element. A no-op when absent.
+
+   > member 2 (delete 2 (fromList [1, 2, 3]))
+   False -}
+export
+delete : Ord a => a -> Set a -> Set a
+delete x Tip = Tip
+delete x (Bin _ y l r) =
+  match compare x y
+    Lt => balance y (delete x l) r
+    Gt => balance y l (delete x r)
+    Eq => glue l r
+
+{- `glue` joins two subtrees that were siblings under a now-deleted node (every
+   element on the left below every element on the right), promoting the max of
+   the larger side (or the min of the other) to keep the result balanced. -}
+glue : Set a -> Set a -> Set a
+glue Tip r = r
+glue l Tip = l
+glue l r
+  | size l > size r = glueMax l r
+  | otherwise = glueMin l r
+
+glueMax : Set a -> Set a -> Set a
+glueMax l r =
+  match maxView l
+    None => r
+    (Some (x, l')) => balance x l' r
+
+glueMin : Set a -> Set a -> Set a
+glueMin l r =
+  match minView r
+    None => l
+    (Some (x, r')) => balance x l r'
+
+-- ── Min / max ───────────────────────────────────────────────────────────
+
+{- | Split off the smallest element: `Some (elem, rest)`, or `None` when empty. -}
+export
+minView : Set a -> Option (a, Set a)
+minView Tip = None
+minView (Bin _ x l r) =
+  match minView l
+    None => Some (x, r)
+    (Some (xm, l')) => Some (xm, balance x l' r)
+
+{- | Split off the largest element: `Some (elem, rest)`, or `None`. -}
+export
+maxView : Set a -> Option (a, Set a)
+maxView Tip = None
+maxView (Bin _ x l r) =
+  match maxView r
+    None => Some (x, l)
+    (Some (xm, r')) => Some (xm, balance x l r')
+
+{- | Smallest element, or `None`.
+
+   > lookupMin (fromList [3, 1, 2])
+   Some 1 -}
+export
+lookupMin : Set a -> Option a
+lookupMin s =
+  match minView s
+    None => None
+    (Some (x, _)) => Some x
+
+{- | Largest element, or `None`.
+
+   > lookupMax (fromList [3, 1, 2])
+   Some 3 -}
+export
+lookupMax : Set a -> Option a
+lookupMax s =
+  match maxView s
+    None => None
+    (Some (x, _)) => Some x
+
+{- | Drop the smallest element (a no-op on the empty set).
+
+   > toList (deleteMin (fromList [3, 1, 2]))
+   [2, 3] -}
+export
+deleteMin : Set a -> Set a
+deleteMin s =
+  match minView s
+    None => Tip
+    (Some (_, s')) => s'
+
+{- | Drop the largest element (a no-op on the empty set).
+
+   > toList (deleteMax (fromList [3, 1, 2]))
+   [1, 2] -}
+export
+deleteMax : Set a -> Set a
+deleteMax s =
+  match maxView s
+    None => Tip
+    (Some (_, s')) => s'
+
+-- ── Folds (ascending element order) ─────────────────────────────────────
+
+foldrSet : (a -> b -> <e> b) -> b -> Set a -> <e> b
+foldrSet f z Tip = z
+foldrSet f z (Bin _ x l r) = foldrSet f (f x (foldrSet f z r)) l
+
+foldlSet : (b -> a -> <e> b) -> b -> Set a -> <e> b
+foldlSet f z Tip = z
+foldlSet f z (Bin _ x l r) = foldlSet f (f (foldlSet f z l) x) r
+
+-- ── Set algebra ─────────────────────────────────────────────────────────
+
+{- | Union — every element in either set.
+
+   > toList (union (fromList [1, 2]) (fromList [2, 3]))
+   [1, 2, 3] -}
+export
+union : Ord a => Set a -> Set a -> Set a
+union a b = foldrSet (x acc => insert x acc) b a
+
+{- | Intersection — elements in both sets.
+
+   > toList (intersection (fromList [1, 2, 3]) (fromList [2, 3, 4]))
+   [2, 3] -}
+export
+intersection : Ord a => Set a -> Set a -> Set a
+intersection a b = foldrSet (intersectStep b) Tip a
+
+intersectStep : Ord a => Set a -> a -> Set a -> Set a
+intersectStep b x acc = if member x b then insert x acc else acc
+
+{- | Difference — elements in the first set but not the second.
+
+   > toList (difference (fromList [1, 2, 3]) (fromList [2]))
+   [1, 3] -}
+export
+difference : Ord a => Set a -> Set a -> Set a
+difference a b = foldrSet (x acc => delete x acc) a b
+
+{- | `True` when every element of the first set is in the second.
+
+   > isSubsetOf (fromList [1, 2]) (fromList [1, 2, 3])
+   True
+   > isSubsetOf (fromList [1, 4]) (fromList [1, 2, 3])
+   False -}
+export
+isSubsetOf : Ord a => Set a -> Set a -> Bool
+isSubsetOf a b = foldrSet (x acc => acc && member x b) True a
+
+-- ── Typeclass instances ─────────────────────────────────────────────────
+
+{- | `Foldable Set` folds over elements in ascending order — so `toList`,
+   `length`, `elem`, `sum`, `maximum`, `any`/`all`, … all work on a set. (Unlike
+   `Map`, whose `toList` means pairs, a set's elements *are* its `toList`, so the
+   Foldable methods carry the natural meaning and there's no name clash.)
+
+   > toList (fromList [3, 1, 2, 1])
+   [1, 2, 3]
+   > length (fromList [3, 1, 2, 1])
+   3 -}
+export default impl Foldable Set where
+  fold f z s = foldlSet f z s
+  foldRight f z s = foldrSet f z s
+  toList s = foldrSet (x acc => x :: acc) [] s
+  isEmpty Tip = True
+  isEmpty _ = False
+  length s = size s
+
+{- | Structural equality: same elements (compared through the canonical
+   ascending element list, so tree *shape* doesn't matter).
+
+   > eq (fromList [1, 2, 3]) (fromList [3, 2, 1, 2])
+   True -}
+export default impl Eq (Set a) requires Eq a where
+  eq a b = if size a != size b then False else eq (toList a) (toList b)
+
+{- | Rendered as `fromList [a, …]`, the re-evaluable form (the `Set { … }`
+   literal is the *display* form — see PLAN.md Phase 111). Doctest compares
+   against a literal: `Show String` is out of this module's test context.
+
+   > show (fromList [1, 2, 3]) == "fromList [1, 2, 3]"
+   True -}
+export default impl Show (Set a) requires Show a where
+  show s = "fromList \{show (toList s)}"
+
+{- | `++` on sets is union; `append` dispatches on its first `Set` argument, so
+   the `Ord a` it needs threads in by the ordinary route. -}
+export default impl Semigroup (Set a) requires Ord a where
+  append a b = union a b
+
+{- | Backs the `Set { x, … }` literal: the compiler lowers that to
+   `fromEntries [x, …]` pinned at `Set`, dispatching here. -}
+export default impl FromEntries (Set a) a requires Ord a where
+  fromEntries es = fromList es
+
+{- | `Monoid.empty` for `Set` is the empty tree (nullary, dispatched on its
+   result type; Phase 103). `Tip` needs no dict, so it grounds cleanly.
+
+   > isEmpty (empty : Set Int)
+   True -}
+export default impl Monoid (Set a) requires Ord a where
+  empty = Tip
+
+-- ── Structural invariants (for testing / debugging) ─────────────────────
+
+{- | Check the structural invariants at every node: search-tree order
+   (left < node < right), the cached `size`, and the weight-balance bound.
+   A correct sequence of operations always leaves a set `wellFormed`. -}
+export
+wellFormed : Ord a => Set a -> Bool
+wellFormed Tip = True
+wellFormed (Bin s x l r) =
+  let sizeOk = size l + size r + 1 == s
+  let orderOk = allElems (e => lt e x) l && allElems (e => gt e x) r
+  sizeOk && balancedAt l r && orderOk && wellFormed l && wellFormed r
+
+allElems : (a -> Bool) -> Set a -> Bool
+allElems p Tip = True
+allElems p (Bin _ x l r) = p x && allElems p l && allElems p r
+
+balancedAt : Set a -> Set a -> Bool
+balancedAt l r =
+  let sl = size l
+  let sr = size r
+  if sl + sr <= 1 then True else sl <= 3 * sr && sr <= 3 * sl
+
+ascending : Ord a => List a -> Bool
+ascending [] = True
+ascending [x] = True
+ascending (x::y::rest) = lt x y && ascending (y :: rest)
+
+-- ── Properties ──────────────────────────────────────────────────────────
+
+prop "fromList builds a well-formed tree" (xs : List Int) = wellFormed (fromList xs)
+
+prop "elements come out strictly ascending (sorted, deduped)" (xs : List Int) = ascending (toList (fromList xs))
+
+prop "insert then member" (x : Int) (xs : List Int) = member x (insert x (fromList xs))
+
+prop "insert preserves well-formedness" (x : Int) (xs : List Int) = wellFormed (insert x (fromList xs))
+
+prop "delete removes the element and preserves well-formedness" (x : Int) (xs : List Int) =
+  let s = delete x (fromList xs)
+  not (member x s) && wellFormed s
+
+prop "union preserves well-formedness" (xs : List Int) (ys : List Int) = wellFormed (union (fromList xs) (fromList ys))
+
+prop "intersection elements are in both sets" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  foldrSet (e acc => acc && member e a && member e b) True (intersection a b)
+
+prop "difference elements are in the first but not the second" (xs : List Int) (ys : List Int) =
+  let a = fromList xs
+  let b = fromList ys
+  foldrSet (e acc => acc && member e a && not (member e b)) True (difference a b)
