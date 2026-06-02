@@ -199,6 +199,16 @@ zipWith f a b =
   let n = if arrayLength a < arrayLength b then arrayLength a else arrayLength b
   arrayMakeWith n (i => f (arrayGetUnsafe i a) (arrayGetUnsafe i b))
 
+{- | Split an array of pairs into two parallel arrays — the inverse of `zip`.
+
+   > let (xs, ys) = unzip (fromList [(1, 2), (3, 4)]) in (toList xs, toList ys)
+   ([1, 3], [2, 4]) -}
+export
+unzip : Array (a, b) -> (Array a, Array b)
+unzip arr =
+  let n = arrayLength arr
+  (arrayMakeWith n (i => let (x, _) = arrayGetUnsafe i arr in x), arrayMakeWith n (i => let (_, y) = arrayGetUnsafe i arr in y))
+
 {- | `Filterable Array`.  Only `filterMap` is defined; `filter` comes from
    the interface default.  `filterMap` filters via a list intermediate
    (tail-recursive, builds reversed then `arrayFromList` after a final
@@ -302,40 +312,27 @@ findIndex pred arr = findIndexGo pred arr 0 (arrayLength arr)
 findIndexGo : (a -> <e> Bool) -> Array a -> Int -> Int -> <e> Option Int
 findIndexGo pred arr i n = if i >= n then None else if pred (arrayGetUnsafe i arr) then Some i else findIndexGo pred arr (i + 1) n
 
-{- | True when the value appears in the array (by `Eq`).
+{- `elem`, `sum`, and `product` are *not* defined here either: the generic
+   `Foldable` versions in core (`elem : (Foldable t, Eq a) => …`,
+   `sum`/`product : (Foldable t, Num a) => …`) dispatch over `impl Foldable
+   Array` and fold through the same tight loop, so the array-specialised
+   copies were pure redundancy.  Doctests pinning the dispatch:
 
    > elem 2 (fromList [1, 2, 3])
-   True -}
-export
-elem : Eq a => a -> Array a -> Bool
-elem x arr = any (y => x == y) arr
+   True
+   > sum (fromList [1, 2, 3, 4])
+   10
+   > product (fromList [1, 2, 3, 4])
+   24 -}
 
-{- | Integer sum.  A polymorphic `Num a` version belongs in core once
-   `Num` dispatch is wired through `fold` cleanly. -}
-export
-sum : Array Int -> Int
-sum arr = foldGo (acc x => acc + x) arr 0 (arrayLength arr) 0
-
--- | Integer product.
-export
-product : Array Int -> Int
-product arr = foldGo (acc x => acc * x) arr 0 (arrayLength arr) 1
-
-{- | Largest element by `Ord`, or `None` when empty.
+{- `maximum`/`minimum` are *not* defined here: the generic `(Foldable t,
+   Ord a) => t a -> Option a` versions in core dispatch over `impl Foldable
+   Array`, so they already work on arrays.  Doctests pinning that:
 
    > maximum (fromList [3, 1, 2])
-   Some 3 -}
-export
-maximum : Ord a => Array a -> Option a
-maximum arr = if arrayLength arr == 0 then None else Some (foldGo max arr 0 (arrayLength arr) (arrayGetUnsafe 0 arr))
-
-{- | Smallest element by `Ord`, or `None` when empty.
-
+   Some 3
    > minimum (fromList [3, 1, 2])
    Some 1 -}
-export
-minimum : Ord a => Array a -> Option a
-minimum arr = if arrayLength arr == 0 then None else Some (foldGo min arr 0 (arrayLength arr) (arrayGetUnsafe 0 arr))
 
 -- ── Typeclass impls ─────────────────────────────────────────────────────
 
@@ -361,8 +358,20 @@ export default impl Eq (Array a) requires Eq a where
 eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
 eqGo a b i n = if i >= n then True else if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then eqGo a b (i + 1) n else False
 
-{- TODO: `impl Show (Array a) requires Show a` — `show` now resolves
-   (resolver gap closed) but the recursive `show (arrayGetUnsafe i arr)`
-   on element type `a` needs `Show a` to actually dispatch.  Blocked on
-   `impl Show Int`, `impl Show Float`, `impl Show Bool`, etc. landing
-   in core.  See STDLIB.md Module 1. -}
+-- Comma-joined element rendering for `Show (Array a)`, mirroring core's
+-- `showListItems`; recurses by index so it allocates no intermediate list.
+showArrayItems : Show a => Array a -> Int -> Int -> String
+showArrayItems arr i n
+  | i >= n = ""
+  | i == n - 1 = show (arrayGetUnsafe i arr)
+  | otherwise = "\{show (arrayGetUnsafe i arr)}, \{showArrayItems arr (i + 1) n}"
+
+{- | Bracketed, comma-separated rendering matching the interpreter's printer
+   (`[|1, 2, 3|]`), so `show` agrees with `println` on arrays.  (Doctest uses
+   `==` rather than showing the result directly: `Show String` lives in
+   `string.mdk`, out of scope in this module's isolated test context.)
+
+   > show (fromList [1, 2, 3]) == "[|1, 2, 3|]"
+   True -}
+export default impl Show (Array a) requires Show a where
+  show arr = "[|\{showArrayItems arr 0 (arrayLength arr)}|]"
