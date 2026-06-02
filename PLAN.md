@@ -4136,6 +4136,96 @@ Lands in `bin/main.ml` (multi-module path) + `lib/typecheck.ml`
 (`typecheck_module` / exports) + possibly `lib/loader.ml`; add a `test_loader`
 case. Skill: **add-language-feature**.
 
+### Gaps surfaced during the 2026-06-01 stdlib completion (Modules 1–4)
+
+All reproduced on the post-merge binary before filing (see notes). Phases 89–93.
+
+### Phase 89: Point-free constraint-polymorphic dispatched defs mis-resolve under multiple impls ⏳ TODO
+
+An **eta-reduced** definition of a `(Foldable t, …) => …` function whose body is
+a partial application of a dispatched method — e.g. `maximum = fold step None` —
+type-errors `Type mismatch: Array vs List` (or, on the path where typecheck
+doesn't catch it, eval-panics `applied non-function: <dispatch/N>`) **once a
+second `Foldable` impl is in scope at a List-typed call site**. The
+eta-*expanded* form `maximum xs = fold step None xs` works. Minimal repro: put
+`probePF = fold pfStep None` (constraint `(Foldable t, Ord a)`) in `core.mdk`,
+then `probePF [3,1,2]` from a file that `import`s `array` → errors at the
+*definition* line; the same call with no array import succeeds. Root cause is
+almost certainly that resolving the dispatch/constraint for a CAF-style binding
+commits the container type before the call-site argument type is known, and
+`default impl Foldable Array` then wins the default. This is why core/list
+eta-expand `maximum`/`minimum` rather than writing them point-free; fixing it
+would restore idiomatic point-free stdlib style and remove a sharp edge for
+users. Lands in `lib/typecheck.ml` (constraint resolution / generalization of
+nullary-but-constrained bindings) + `lib/eval.ml` (dispatch of a partially
+applied VMulti). Add `test_typecheck` + `test_eval` regressions. Skill:
+**harden-typechecker** (confirm during exploration; may spill into eval dispatch).
+
+### Phase 90: Per-use instantiation of a signed recursive HO function leaks (decorate-sort-undecorate monomorphises `sortBy`) ⏳ TODO
+
+A recursive higher-order function **with an explicit polymorphic signature** gets
+monomorphised by one downstream use, breaking its other uses. Concretely, a
+decorate–sort–undecorate `sortOn`
+(`map snd (sortBy cmpOnFst (map (x => (key x, x)) xs))`) forces the shared
+`sortBy : (a -> a -> <e> Ordering) -> List a -> <e> List a` to tuples, so an
+unrelated `sortBy (x y => compare y x) [3,1,2]` then fails
+`Type mismatch: (a, b) vs Int` — even though `sortBy` is signed polymorphic.
+Simpler shapes (a non-`sortOn` recursive signed fn used at two types) do NOT
+repro; the trigger needs the `<e>` effect var + the `Ord` constraint in the
+comparator lambda + the tuple-decoration. Workaround in `stdlib/list.mdk`:
+`sortOn key = sortBy (x y => compare (key x) (key y))` (key recomputed per
+comparison, matching `array.sortOn`); restore the once-per-element form once
+fixed. **Already spawned as a background task** with a minimal repro. Likely the
+letrec-group generalisation not isolating per-use instantiation of an
+explicitly-signed binding. Lands in `lib/typecheck.ml`; add a `test_typecheck`
+regression. Skill: **harden-typechecker**. (Possibly shares a root with Phase 89.)
+
+### Phase 91: Guard semantics — no fall-through, no compile-time exhaustiveness, no inline form ⏳ TODO
+
+Three related guard gaps, all observed writing `list.mdk`:
+1. **No fall-through to the next equation.** If a clause's guards all fail, eval
+   panics `Non-exhaustive guards` instead of trying the next pattern clause
+   (Haskell falls through). So every guarded clause must be self-exhaustive
+   (`| otherwise`), forcing the `n <= 0` case to be folded *inside* the relevant
+   pattern clause. Repro: `tk n _` ⏎ `  | n <= 0 = []` followed by `tk _ [] = …`
+   → `tk 9 [1,2]` panics. Decide intended semantics: implement Haskell-style
+   fall-through, or keep the rule but…
+2. **…detect non-exhaustive guards at compile time** (`exhaust.ml` handles
+   pattern matrices but not guard coverage) — today it's a runtime panic.
+3. **No inline guard form**: `f n _ | n <= 0 = []` is a parse error; guards must
+   be on indented continuation lines.
+Lands across `lib/eval.ml` (fall-through), `lib/exhaust.ml` (coverage warning),
+`lib/parser.mly`/`lib/lexer.mll` (inline form). This is a language-semantics
+decision first; treat as **add-language-feature** after deciding (1).
+
+### Phase 92: Doctest harness can't reach cross-module instances ⏳ TODO
+
+`medaka test <file>` builds its combined program from the **core prelude + that
+file only**, so an instance defined in a *sibling* stdlib module is invisible.
+`Show String`/`Show Char` live in `string.mdk` (not core), so a doctest in
+`core`/`list`/`array` whose result is a `String`/`Char` (or `show` of an array,
+which returns a `String`) fails `No impl of Show for String/Char` → and because
+the harness is all-or-nothing, *every* example then errors. Workaround used:
+phrase such doctests as `show (...) == "literal"` (Bool) or use `Int` data —
+correct but contorted, and it hides what the value actually renders as. Fix: have
+the doctest driver load the full stdlib (or the file's transitive sibling
+modules) so cross-module instances resolve. Lands in `lib/doctest.ml` (+ maybe
+`lib/loader.ml`); add a `test_doctest` case. No dedicated skill — see the
+`extend-stdlib` skill's doctest-harness notes.
+
+### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ⏳ TODO
+
+Deferred from the stdlib completion: the `Bounded` interface exists but `Int`/
+`Char` have no impls, because `minBound`/`maxBound` are **return-type-polymorphic
+nullary constants** (like `pure`) needing native bound values, and `Int`'s bounds
+are platform-dependent (63-bit OCaml `int`). Scope: add `intMinBound`/
+`intMaxBound` externs (`runtime.mdk` + `eval.ml`, via **add-primitive**); define
+`impl Bounded Int` and `impl Bounded Char` (Char via `charFromCode` over
+`0`..`0x10FFFF`) in `core.mdk` (via **extend-stdlib**); and **verify nullary
+return-position dispatch** actually selects the right impl for a bare `maxBound`
+at a known type (the Phase 69 marker handles return-position methods — confirm it
+covers zero-arg constants). Update STDLIB.md (currently ⏳/deferred).
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)
