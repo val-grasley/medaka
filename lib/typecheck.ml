@@ -4157,11 +4157,23 @@ let typecheck_module
        at line ~2429, not from user_prog).  Otherwise downstream modules
        re-register them via env.impls := te.te_impls @ ..., then re-add
        them via their own Prelude prepend, and check_coherence fires
-       a spurious "Multiple default impls" error. *)
+       a spurious "Multiple default impls" error.
+
+       Match each surviving impl to a public DImpl in *this* module's
+       user_prog by its full impl_key (iface + head type + name), not just
+       the iface name.  Matching by iface name alone leaked impls from
+       unrelated sibling modules: known_modules accumulates EVERY
+       previously-typechecked module (not only this module's imports), so
+       env.impls already holds e.g. map.mdk's `Semigroup (Map k v)` when
+       array.mdk is typechecked.  If array.mdk also declares any `Semigroup`
+       impl, an iface-name match re-exported the foreign `Semigroup (Map k v)`
+       too — and a consumer importing both map and array then registered that
+       impl twice, tripping the "Multiple default impls" coherence check. *)
     te_impls     = List.filter (fun ie ->
       not ie.impl_seeded
       && List.exists (fun d -> match Ast.inner_decl d with
-        | DImpl { is_pub = true; iface_name; _ } -> ie.impl_iface = iface_name
+        | DImpl { is_pub = true; iface_name; type_args; impl_name; _ } ->
+          ie.impl_key = Ast.impl_key ~iface:iface_name ~type_args ~name:impl_name
         | _ -> false) user_prog
     ) !(!env.impls);
     te_aliases   = pub_aliases;
