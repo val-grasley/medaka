@@ -202,6 +202,24 @@ let eval_suppressed ~prelude combined =
   ignore (Buffer.contents buf);
   env_result
 
+(* Phase 110: like [eval_suppressed] but evaluates each module in its own name
+   scope via [Eval.eval_modules] (which dict-passes the marked prelude + modules
+   internally), so cross-module same-named functions don't mis-dispatch.
+   Returns the root module's bindings (carrying the synth `__dt_i__` names). *)
+let eval_suppressed_modules marked_modules =
+  let buf = Buffer.create 64 in
+  Eval.output_hook := Buffer.add_string buf;
+  let env_result =
+    (try Ok (Eval.eval_modules marked_modules)
+     with
+     | Eval.Eval_error (msg, _) -> Error ("runtime error: " ^ msg)
+     | Eval.Impl_no_match       -> Error "non-exhaustive match"
+     | Failure msg              -> Error msg)
+  in
+  Eval.output_hook := print_string;
+  ignore (Buffer.contents buf);
+  env_result
+
 (* Look up each example's evaluated synth binding and compare against expected.
    [env_result] is either the shared eval environment (Ok env) or a single
    error that applies to every example (Error msg) — e.g. a whole-program
@@ -365,11 +383,7 @@ let run_file_multi filename all_examples synth_results synth_decls
       match tc_err with
       | Some msg -> Error msg
       | None ->
-        let combined =
-          List.concat_map (fun (_, _, prog) -> prog) marked_modules in
-        let combined =
-          Dict_pass.run (Method_marker.marked_prelude @ combined) in
-        eval_suppressed ~prelude:false combined
+        eval_suppressed_modules marked_modules
     in
     Some (build_details env_result synth_results all_examples)
 

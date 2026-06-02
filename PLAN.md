@@ -312,33 +312,43 @@ to name `Eq`.)*
   `default impl` in a module imported alongside another stdlib module. See
   [[project_typecheck_two_entrypoints]].
 
-- **Phase 110 — eval has no module name-isolation (deferred).** Surfaced while
-  verifying Phase 109: with the coherence error gone, `run` of the map+array
-  repro panics `applied non-function: [|1|]` at `map.mdk` `insert k v Tip =
-  singleton k v`. Eval flattens all modules into one `top_frame` and a by-name
-  `fundef_acc`, so map's `singleton k v` (2-arg) and array's `singleton x`
-  (1-arg) **merge into one `VMulti`**; the 1-arg clause matches first, returns
-  `[|k|]`, then that array is applied to `v`. It's a clause merge, not just
-  shadowing — confirmed independent of impls: a module-`b` function calling its
-  own *private* helper instead runs module-`a`'s same-named helper.
-  - **Surface:** broad — ~20 top-level names shared across list/string/array/map
-    (`get`, `take`, `drop`, `concat`, `reverse`, `zip`, `fromList`, `singleton`,
-    `sort`, …). Any program importing 2+ collection modules and touching a shared
-    name mis-dispatches. Matters for the self-hosting north star (multi-module is
-    the norm there).
-  - **Why eval-only:** typecheck *already* scopes correctly — `typecheck_module`
-    runs per module with per-module `use_schemes`, so the program type-checks;
-    eval is the lone stage that ignores module boundaries.
-  - **Recommended fix — Approach B (per-module eval frames).** Add an
-    `eval_modules` entry to `eval.ml` (leave flat `eval_program` for
-    single-file/REPL/tests, ~15 call sites untouched); evaluate modules in topo
-    order with plain `DFunDef`/`DLetGroup` in a per-module frame chained over a
-    shared global frame (methods/impls/data/ctors/prelude — globally correct,
-    one `Semigroup`) plus an import-frame wired from each module's `DUse`; run
-    `Dict_pass.run` per module. Route only the 3 multi-module run drivers
-    (`bin/main.ml` run, `diagnostics.ml`, `doctest.ml`) through it. Mirrors the
-    typecheck-per-module model. Fiddly parts: the global-vs-local decl partition
-    and import-frame wiring.
+- **Phase 110 — eval has no module name-isolation — DONE (2026-06-02).**
+  Surfaced while verifying Phase 109: with the coherence error gone, `run` of the
+  map+array repro panicked `applied non-function: [|1|]` at `map.mdk` `insert k v
+  Tip = singleton k v`. Eval flattened all modules into one `top_frame` and a
+  by-name `fundef_acc`, so map's `singleton k v` (2-arg) and array's `singleton x`
+  (1-arg) **merged into one `VMulti`**; the 1-arg clause matched first, returned
+  `[|k|]`, then that array was applied to `v`. A clause merge, not just shadowing
+  — a module-`b` function calling its own *private* helper ran module-`a`'s
+  same-named helper. Broad surface (~20 top-level names shared across
+  list/string/array/map: `get`/`take`/`drop`/`concat`/`reverse`/`zip`/`fromList`/
+  `singleton`/`sort`/…), and it matters for the self-hosting north star.
+  Eval-only: `typecheck_module` already scopes per module with per-module
+  `use_schemes`, so the program type-checks; eval was the lone stage ignoring
+  module boundaries.
+  - **Fix — Approach B (per-module eval frames).** Added `Eval.eval_modules`
+    (flat `eval_program` left for single-file/REPL/tests). Each module evaluates
+    in `[ M_local ; M_imports ; global ]`: the **global** frame holds primitives,
+    the evaluated prelude, all data ctors, and one coherent `VMulti` per interface
+    method/impl (shared `impl_acc` across modules); **M_local** holds the module's
+    own `DFunDef`/`DLetGroup` (the colliding names — isolation lives here, via a
+    per-module `fundef_acc`); **M_imports** binds each `use`d name to the
+    *exporting* module's actual cell (shared refs, so forward/thunk refs resolve).
+    Export resolution mirrors resolve's `build_exports` (a value is exported via
+    its `export`ed *signature* `DTypeSig(true)` — the `DFunDef`'s own `is_pub` is
+    false — plus `export`ed defs and `pub use` re-exports). Impl method bodies
+    close over their *defining* module's env (private helpers) yet install into
+    the global method cell. Dict-passing is kept byte-identical: one
+    `Dict_pass.run (marked_prelude @ all decls)` then sliced back by decl count
+    (Dict_pass is a 1:1 decl map). Refactor seam: `eval_program` and
+    `eval_modules` share `collect_ctors_and_dispatch` / `prealloc_cells` /
+    `eval_decl_into`, the last parameterised by `fill_local`/`fill_global`.
+    Routed only the multi-module **run** driver (`bin/main.ml` `Run`) and
+    doctest's `run_file_multi` (via `eval_suppressed_modules`); `diagnostics.ml`
+    is typecheck-only (never evals) and `medaka test` props are single-file, so
+    neither needed routing. Tests: `test_loader` "same-named fn, different arity"
+    and `test_doctest` "per-module eval isolation". See
+    [[project_eval_no_module_isolation]], [[project_module5_map]].
   - **Rejected — Approach A (qualify names in resolve).** `resolve_module` is a
     pure *checker* (returns `exports × errors`, never a rewritten AST); making it
     a transformer changes its contract + every caller, ripples mangled names

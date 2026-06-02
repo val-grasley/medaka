@@ -1480,6 +1480,170 @@ let make_ctor name arity =
     in
     build [] arity
 
+(* Head type constructor of a type expression — used both for ctor→type mapping
+   and for tagging impl bodies (VTypedImpl) by their dispatch type. *)
+let rec head_tycon = function
+  | Ast.TyCon n          -> Some n
+  | Ast.TyApp (a, _)     -> head_tycon a
+  | Ast.TyConstrained (_, t) | Ast.TyEffect (_, _, t) -> head_tycon t
+  | Ast.TyTuple _        -> Some "__tuple__"
+  | _ -> None
+
+(* ── Shared program-evaluation helpers (Phase 110) ───────────────────────────
+   These factor the bodies of the single-frame `eval_program` so the
+   per-module `eval_modules` can reuse them with a global/local frame split.
+   The seam is the pair of `fill` functions: `eval_program` passes the same
+   `fill_cell` for both; `eval_modules` routes ctor/impl/interface-default fills
+   to the shared *global* frame and DFunDef/DLetGroup fills to the current
+   module's *local* frame. *)
+
+(* Populate the process-global ctor→type / field-order tables and interface
+   dispatch positions for a program.  Callers clear the tables first. *)
+let collect_ctors_and_dispatch program =
+  List.iter (fun d -> match Ast.inner_decl d with
+    | DData (_, n, _, vs, _) ->
+      List.iter (fun v ->
+        Hashtbl.replace ctor_to_type v.con_name n;
+        (match v.con_payload with
+         | ConNamed fields ->
+           Hashtbl.replace ctor_field_order v.con_name
+             (List.map (fun f -> f.field_name) fields)
+         | ConPos _ -> ())
+      ) vs
+    | DNewtype (_, type_name, _, con_name, _, _) ->
+      Hashtbl.replace ctor_to_type con_name type_name
+    | DInterface { iface_name; type_params; methods; _ } ->
+      record_iface_dispatch iface_name type_params methods
+    | _ -> ()
+  ) program
+
+(* Pass 1: pre-allocate value cells so forward references resolve.  Data
+   constructors and interface-method/default cells go through [add_global];
+   top-level DFunDef/DLetGroup names go through [add_local]. *)
+let prealloc_cells ~add_global ~add_local program =
+  List.iter (fun decl ->
+    match Ast.inner_decl decl with
+    | DNewtype (_, _, _, con, _, _) ->
+      add_global con (make_ctor con 1)
+    | DData (_, _, _, variants, _) ->
+      List.iter (fun v ->
+        let arity = match v.con_payload with
+          | ConPos tys   -> List.length tys
+          | ConNamed fls -> List.length fls
+        in
+        add_global v.con_name (make_ctor v.con_name arity)
+      ) variants
+    | DFunDef (_, name, _, _) ->
+      add_local name VUnit
+    | DLetGroup (_, bindings) ->
+      List.iter (fun (name, _) -> add_local name VUnit) bindings
+    | DImpl { methods; _ } ->
+      List.iter (fun (name, _, _) -> add_global name VUnit) methods
+    | DInterface { methods; _ } ->
+      List.iter (fun m ->
+        match m.method_default with
+        | None -> ()
+        | Some _ -> add_global m.method_name VUnit
+      ) methods
+    | _ -> ()
+  ) program
+
+(* Pass 2: evaluate one declaration's bodies.  [env] is the eval environment
+   closures capture; [fill_local] installs DFunDef/DLetGroup values,
+   [fill_global] installs ctor/impl/interface-default values (the same function
+   for both in the single-frame case).  [impl_acc] is shared across modules so
+   each interface method coalesces to one VMulti; [fundef_acc] is per-module so
+   same-named top-level functions in different modules stay isolated.  Zero-arg
+   DFunDef names are pushed to [deferred] to force after all impls install. *)
+let eval_decl_into ~env ~fill_local ~fill_global ~impl_acc ~fundef_acc ~deferred decl =
+  match Ast.inner_decl decl with
+  | DFunDef (_, name, pats, body) ->
+    let v = if pats = [] then begin
+      deferred := name :: !deferred;
+      VThunk (lazy (wrap_match_errors (fun () -> eval env body)))
+    end else wrap_match_errors (fun () -> VClosure (env, pats, body)) in
+    let prev = try Hashtbl.find fundef_acc name with Not_found -> [] in
+    let updated = prev @ [v] in
+    Hashtbl.replace fundef_acc name updated;
+    fill_local name (match updated with [v] -> v | many -> VMulti many)
+  | DLetGroup (_, bindings) ->
+    List.iter (fun (name, clauses) ->
+      let closures = List.map (fun (pats, rhs) ->
+        if pats = [] then wrap_match_errors (fun () -> eval env rhs)
+        else VClosure (env, pats, rhs)) clauses in
+      let v = match closures with
+        | [v] -> v
+        | many -> VMulti many
+      in
+      fill_local name v
+    ) bindings
+  | DImpl { iface_name; type_args; methods; impl_name; _ } ->
+    let score = tyvars_in_args type_args in
+    if iface_name = "Arbitrary" then begin
+      let type_key = match type_args with
+        | [t] -> head_tycon t
+        | _ -> None
+      in
+      match type_key with
+      | None -> ()
+      | Some tname ->
+        (match List.find_opt (fun (n, _, _) -> n = "arbitrary") methods with
+         | Some (_, pats, body) ->
+           let v = if pats = [] then wrap_match_errors (fun () -> eval env body)
+                   else VClosure (env, pats, body) in
+           Hashtbl.replace arbitrary_registry tname (fun () -> apply v VUnit)
+         | None -> ());
+        (match List.find_opt (fun (n, _, _) -> n = "shrink") methods with
+         | Some (_, pats, body) ->
+           let v = if pats = [] then wrap_match_errors (fun () -> eval env body)
+                   else VClosure (env, pats, body) in
+           Hashtbl.replace shrink_registry tname (fun a -> apply v a)
+         | None -> ())
+    end;
+    let impl_type_tag = match type_args with
+      | t :: _ -> head_tycon t
+      | [] -> None
+    in
+    let impl_key = Ast.impl_key ~iface:iface_name ~type_args ~name:impl_name in
+    List.iter (fun (name, pats, body) ->
+      let new_v = if pats = [] then wrap_match_errors (fun () -> eval env body)
+                  else VClosure (env, pats, body) in
+      let positions =
+        List.map ((+) (leading_dict_params pats))
+          (lookup_dispatch_positions iface_name name) in
+      let typed_v = match impl_type_tag with
+        | Some t -> VTypedImpl (t, impl_key, positions, 0, new_v)
+        | None   -> new_v
+      in
+      let tagged_v = match impl_name with
+        | Some n -> VNamedImpl (n, typed_v)
+        | None   -> typed_v
+      in
+      let prev = try Hashtbl.find impl_acc name with Not_found -> [] in
+      let updated = prev @ [(score, tagged_v)] in
+      Hashtbl.replace impl_acc name updated;
+      let sorted  = List.stable_sort (fun (s1,_) (s2,_) -> compare s1 s2) updated in
+      let closures = List.map snd sorted in
+      fill_global name (match closures with [v] -> v | many -> VMulti many)
+    ) methods
+  | DInterface { type_params; methods; _ } ->
+    let score = List.length type_params in
+    List.iter (fun m ->
+      match m.method_default with
+      | None -> ()
+      | Some (pats, body) ->
+        let name = m.method_name in
+        let new_v = if pats = [] then wrap_match_errors (fun () -> eval env body)
+                    else VClosure (env, pats, body) in
+        let prev = try Hashtbl.find impl_acc name with Not_found -> [] in
+        let updated = prev @ [(score, new_v)] in
+        Hashtbl.replace impl_acc name updated;
+        let sorted  = List.stable_sort (fun (s1,_) (s2,_) -> compare s1 s2) updated in
+        let closures = List.map snd sorted in
+        fill_global name (match closures with [v] -> v | many -> VMulti many)
+    ) methods
+  | _ -> ()
+
 (* ── Evaluate a full program ─────────────────────────────────────────────── *)
 
 (* [prelude]: when true (default, legacy/untyped callers), prepend the raw
@@ -1519,60 +1683,18 @@ let eval_program ?(prelude = true) program =
   let program = if is_core || not prelude then program else Prelude.program @ program in
 
   (* Reverse mapping ctor → type used by runtime_type_tag for VMulti dispatch,
-     plus constructor field order for record-style constructors. *)
+     plus constructor field order; and interface dispatch positions so DImpl
+     decls can look up the right positions regardless of source order. *)
   Hashtbl.clear ctor_to_type;
   Hashtbl.clear ctor_field_order;
   Hashtbl.clear arbitrary_registry;
   Hashtbl.clear shrink_registry;
-  List.iter (fun d -> match Ast.inner_decl d with
-    | DData (_, n, _, vs, _) ->
-      List.iter (fun v ->
-        Hashtbl.replace ctor_to_type v.con_name n;
-        (match v.con_payload with
-         | ConNamed fields ->
-           Hashtbl.replace ctor_field_order v.con_name
-             (List.map (fun f -> f.field_name) fields)
-         | ConPos _ -> ())
-      ) vs
-    | DNewtype (_, type_name, _, con_name, _, _) ->
-      Hashtbl.replace ctor_to_type con_name type_name
-    | _ -> ()
-  ) program;
-  let rec head_tycon = function
-    | Ast.TyCon n          -> Some n
-    | Ast.TyApp (a, _)     -> head_tycon a
-    | Ast.TyConstrained (_, t) | Ast.TyEffect (_, _, t) -> head_tycon t
-    | Ast.TyTuple _        -> Some "__tuple__"
-    | _ -> None
-  in
+  Hashtbl.clear iface_dispatch;
+  collect_ctors_and_dispatch program;
 
-  (* Pass 1: collect DData constructors and DFunDef/DImpl method names *)
-  List.iter (fun decl ->
-    match Ast.inner_decl decl with
-    | DNewtype (_, _, _, con, _, _) ->
-      add_to_frame con (make_ctor con 1)
-    | DData (_, _, _, variants, _) ->
-      List.iter (fun v ->
-        let arity = match v.con_payload with
-          | ConPos tys   -> List.length tys
-          | ConNamed fls -> List.length fls
-        in
-        add_to_frame v.con_name (make_ctor v.con_name arity)
-      ) variants
-    | DFunDef (_, name, _, _) ->
-      add_to_frame name VUnit
-    | DLetGroup (_, bindings) ->
-      List.iter (fun (name, _) -> add_to_frame name VUnit) bindings
-    | DImpl { methods; _ } ->
-      List.iter (fun (name, _, _) -> add_to_frame name VUnit) methods
-    | DInterface { methods; _ } ->
-      List.iter (fun m ->
-        match m.method_default with
-        | None -> ()
-        | Some _ -> add_to_frame m.method_name VUnit
-      ) methods
-    | _ -> ()
-  ) program;
+  (* Pass 1: pre-allocate cells.  Single frame → ctors and DFunDef/DLetGroup
+     share the one [add_to_frame]. *)
+  prealloc_cells ~add_global:add_to_frame ~add_local:add_to_frame program;
 
   let env : env = [!top_frame] in
 
@@ -1582,133 +1704,16 @@ let eval_program ?(prelude = true) program =
     | None -> ()
   in
 
-  (* Pass 2: evaluate all declaration bodies in declaration order.
-     For DImpl, closures are accumulated per method name with their specificity
-     score so that a sorted VMulti is built and installed immediately — before
-     any later DFunDef body that calls the method is evaluated. *)
-  (* method name → accumulated (score, closure) list in insertion order *)
+  (* Pass 2: evaluate all declaration bodies in declaration order.  Single
+     frame → [fill_local] = [fill_global] = [fill_cell]. *)
   let impl_acc : (string, (int * value) list) Hashtbl.t = Hashtbl.create 16 in
-  (* top-level function name → accumulated clause closures, so multi-clause
-     `f pat1 = ...` / `f pat2 = ...` at the top level dispatches via VMulti
-     just like impl methods. *)
   let fundef_acc : (string, value list) Hashtbl.t = Hashtbl.create 16 in
-  (* Zero-param DFunDef names in source order; thunks are forced after all
-     DImpl methods are installed so forward impl references resolve correctly. *)
   let deferred_zero_params : string list ref = ref [] in
 
-  Hashtbl.clear iface_dispatch;
-  (* Pre-pass: record dispatch positions for every interface method, so that
-     DImpl declarations encountered later can look up the right positions
-     regardless of source order. *)
-  List.iter (fun decl ->
-    match Ast.inner_decl decl with
-    | DInterface { iface_name; type_params; methods; _ } ->
-      record_iface_dispatch iface_name type_params methods
-    | _ -> ()
-  ) program;
-  List.iter (fun decl ->
-    match Ast.inner_decl decl with
-    | DFunDef (_, name, pats, body) ->
-      let v = if pats = [] then begin
-        deferred_zero_params := name :: !deferred_zero_params;
-        VThunk (lazy (wrap_match_errors (fun () -> eval env body)))
-      end else wrap_match_errors (fun () -> VClosure (env, pats, body)) in
-      let prev = try Hashtbl.find fundef_acc name with Not_found -> [] in
-      let updated = prev @ [v] in
-      Hashtbl.replace fundef_acc name updated;
-      fill_cell name (match updated with [v] -> v | many -> VMulti many)
-    | DLetGroup (_, bindings) ->
-      (* All group names already have VUnit cells installed by Pass 1, so
-         each clause's body can reference any group name through env.
-         Mirrors the ELetGroup expression case. *)
-      List.iter (fun (name, clauses) ->
-        let closures = List.map (fun (pats, rhs) ->
-          if pats = [] then wrap_match_errors (fun () -> eval env rhs)
-          else VClosure (env, pats, rhs)) clauses in
-        let v = match closures with
-          | [v] -> v
-          | many -> VMulti many
-        in
-        fill_cell name v
-      ) bindings
-    | DImpl { iface_name; type_args; methods; impl_name; _ } ->
-      let score = tyvars_in_args type_args in
-      (* For Arbitrary impls: register `arbitrary` (and, when the impl overrides
-         it, `shrink`) so prop_runner can look up generators/shrinkers for a type
-         by name without going through VMulti dispatch. *)
-      if iface_name = "Arbitrary" then begin
-        let type_key = match type_args with
-          | [t] -> head_tycon t
-          | _ -> None
-        in
-        match type_key with
-        | None -> ()
-        | Some tname ->
-          (match List.find_opt (fun (n, _, _) -> n = "arbitrary") methods with
-           | Some (_, pats, body) ->
-             let v = if pats = [] then wrap_match_errors (fun () -> eval env body)
-                     else VClosure (env, pats, body) in
-             Hashtbl.replace arbitrary_registry tname (fun () -> apply v VUnit)
-           | None -> ());
-          (* The interface default `shrink _ = []` lives on the interface, not
-             the impl, so `methods` carries `shrink` only when overridden. *)
-          (match List.find_opt (fun (n, _, _) -> n = "shrink") methods with
-           | Some (_, pats, body) ->
-             let v = if pats = [] then wrap_match_errors (fun () -> eval env body)
-                     else VClosure (env, pats, body) in
-             Hashtbl.replace shrink_registry tname (fun a -> apply v a)
-           | None -> ())
-      end;
-      let impl_type_tag = match type_args with
-        | t :: _ -> head_tycon t
-        | [] -> None
-      in
-      let impl_key = Ast.impl_key ~iface:iface_name ~type_args ~name:impl_name in
-      List.iter (fun (name, pats, body) ->
-        (* All interface methods — including `pure` (Phase 69.x-c) — are
-           collected here so the regular VMulti dispatch path picks them up. *)
-        let new_v = if pats = [] then wrap_match_errors (fun () -> eval env body)
-                    else VClosure (env, pats, body) in
-        let positions =
-          List.map ((+) (leading_dict_params pats))
-            (lookup_dispatch_positions iface_name name) in
-        let typed_v = match impl_type_tag with
-          | Some t -> VTypedImpl (t, impl_key, positions, 0, new_v)
-          | None   -> new_v
-        in
-        let tagged_v = match impl_name with
-          | Some n -> VNamedImpl (n, typed_v)
-          | None   -> typed_v
-        in
-        let prev = try Hashtbl.find impl_acc name with Not_found -> [] in
-        let updated = prev @ [(score, tagged_v)] in
-        Hashtbl.replace impl_acc name updated;
-        (* Re-sort and install immediately so subsequent DFunDef bodies that
-           call this method see the correct VMulti binding. *)
-        let sorted  = List.stable_sort (fun (s1,_) (s2,_) -> compare s1 s2) updated in
-        let closures = List.map snd sorted in
-        fill_cell name (match closures with [v] -> v | many -> VMulti many)
-      ) methods
-    | DInterface { type_params; methods; _ } ->
-      (* Register default method bodies as fallbacks.  Score = number of type
-         params (more params = more generic) so concrete impls always win. *)
-      let score = List.length type_params in
-      List.iter (fun m ->
-        match m.method_default with
-        | None -> ()
-        | Some (pats, body) ->
-          let name = m.method_name in
-          let new_v = if pats = [] then wrap_match_errors (fun () -> eval env body)
-                      else VClosure (env, pats, body) in
-          let prev = try Hashtbl.find impl_acc name with Not_found -> [] in
-          let updated = prev @ [(score, new_v)] in
-          Hashtbl.replace impl_acc name updated;
-          let sorted  = List.stable_sort (fun (s1,_) (s2,_) -> compare s1 s2) updated in
-          let closures = List.map snd sorted in
-          fill_cell name (match closures with [v] -> v | many -> VMulti many)
-      ) methods
-    | _ -> ()
-  ) program;
+  List.iter
+    (eval_decl_into ~env ~fill_local:fill_cell ~fill_global:fill_cell
+       ~impl_acc ~fundef_acc ~deferred:deferred_zero_params)
+    program;
 
   (* Force all deferred zero-param thunks in source order now that every DImpl
      has been installed.  Transitive thunk dependencies resolve automatically
@@ -1717,6 +1722,202 @@ let eval_program ?(prelude = true) program =
     (List.rev !deferred_zero_params);
 
   List.map (fun (k, cell) -> (k, !cell)) !top_frame
+
+(* ── Evaluate a multi-module program with per-module name scoping (Phase 110) ─
+   The flat [eval_program] merges every module into one by-name frame, so two
+   modules' same-named top-level functions (e.g. map's `singleton k v` and
+   array's `singleton x`) coalesce into one VMulti and mis-dispatch.  This entry
+   point instead evaluates each module in its own frame chained over a shared
+   global frame, mirroring typecheck's per-module scoping:
+
+     module M's env = [ M_local ; M_imports ; global ]
+
+   • global    — primitives, prelude, all data constructors, and every interface
+                 method/impl (one coherent VMulti per method across all modules).
+   • M_local   — M's own top-level DFunDef/DLetGroup bindings (the names that
+                 collide across modules; isolation lives here).
+   • M_imports — names M brought in via `use`, bound to the *exporting* module's
+                 actual cells (shared refs, so forward/thunk references resolve).
+
+   [modules] is the loader/marked output in dependency-first topo order (root
+   last), each program already Method_marker-marked.  Returns the root module's
+   top-level bindings (so `main` / doctest `__dt_i__` names are found). *)
+let eval_modules (modules : (string * string * Ast.program) list)
+  : (string * value) list =
+  (* Slice a list into the first [n] and the rest. *)
+  let rec take n xs =
+    if n <= 0 then ([], xs)
+    else match xs with
+      | [] -> ([], [])
+      | x :: rest -> let (a, b) = take (n - 1) rest in (x :: a, b)
+  in
+
+  (* 1. Dict-pass the marked prelude + all module decls *jointly* (so the arity
+     table covers cross-module references exactly as the flat path did), then
+     slice the result back by decl count — Dict_pass.run is a 1:1 decl map, so
+     counts and order are preserved. *)
+  let prelude = Method_marker.marked_prelude in
+  let seg_lengths = List.map (fun (_, _, p) -> List.length p) modules in
+  let joint = prelude @ List.concat_map (fun (_, _, p) -> p) modules in
+  let dict_joint = Dict_pass.run joint in
+  let (prelude', rest0) = take (List.length prelude) dict_joint in
+  let modules' =
+    let cur = ref rest0 in
+    List.map2 (fun (mid, fp, _) len ->
+      let (seg, rest) = take len !cur in
+      cur := rest;
+      (mid, fp, seg)
+    ) modules seg_lengths
+  in
+
+  (* 2. Build the shared global frame: primitives, ctors, interface dispatch +
+     defaults, impls, and the evaluated prelude. *)
+  let global_frame : (string * value ref) list ref = ref [] in
+  let add_global name v = global_frame := (name, ref v) :: !global_frame in
+  add_global "True"  (VBool true);
+  add_global "False" (VBool false);
+  List.iter (fun (name, v) -> add_global name v) (List.rev primitives);
+
+  Hashtbl.clear ctor_to_type;
+  Hashtbl.clear ctor_field_order;
+  Hashtbl.clear arbitrary_registry;
+  Hashtbl.clear shrink_registry;
+  Hashtbl.clear iface_dispatch;
+  let all_decls = prelude' @ List.concat_map (fun (_, _, p) -> p) modules' in
+  collect_ctors_and_dispatch all_decls;
+
+  (* Pre-allocate global cells.  Prelude names are all global (its DFunDef/
+     DLetGroup too); for modules, only the *global* names (ctors, impl methods,
+     interface defaults) are allocated here — each module's local DFunDef/
+     DLetGroup cells are allocated per-module in Phase B. *)
+  let noop _ _ = () in
+  prealloc_cells ~add_global ~add_local:add_global prelude';
+  List.iter (fun (_, _, p) -> prealloc_cells ~add_global ~add_local:noop p) modules';
+
+  let fill_global name v =
+    match List.assoc_opt name !global_frame with
+    | Some cell -> cell := v
+    | None -> ()
+  in
+  (* impl_acc is SHARED across prelude + every module so each interface method
+     coalesces into one coherent VMulti.  fundef accumulators are per-context so
+     same-named top-level functions stay isolated. *)
+  let impl_acc : (string, (int * value) list) Hashtbl.t = Hashtbl.create 64 in
+
+  (* Evaluate the prelude into the global frame. *)
+  let global_env : env = [!global_frame] in
+  let prelude_fundef_acc : (string, value list) Hashtbl.t = Hashtbl.create 64 in
+  let prelude_deferred : string list ref = ref [] in
+  List.iter
+    (eval_decl_into ~env:global_env ~fill_local:fill_global ~fill_global
+       ~impl_acc ~fundef_acc:prelude_fundef_acc ~deferred:prelude_deferred)
+    prelude';
+  List.iter (fun name -> ignore (lookup global_env name))
+    (List.rev !prelude_deferred);
+
+  (* 3. Phase B: evaluate each module in topo order in its own frame. *)
+  (* mod_id → that module's public top-level (name, cell) exports. *)
+  let module_exports : (string, (string * value ref) list) Hashtbl.t =
+    Hashtbl.create 16 in
+
+  (* The value names a DUse pulls in, bound to the *exporting* module's cells.
+     Each entry is tagged with whether the use is `pub` (so it re-exports).
+     Mirrors typecheck_module's use_schemes / resolve's import resolution; names
+     that resolve to a ctor / global (not in the source's value exports) are
+     dropped here and reached through the env tail instead. *)
+  let build_imports decls : (string * value ref * bool) list =
+    let acc = ref [] in
+    List.iter (fun d -> match Ast.inner_decl d with
+      | DUse (is_pub, path) ->
+        let mod_id_ref = match path with
+          | UseName ns ->
+            if List.length ns > 1
+            then String.concat "." (List.rev (List.tl (List.rev ns)))
+            else List.hd ns
+          | UseGroup (ns, _) | UseWild ns | UseAlias (ns, _) ->
+            String.concat "." ns
+        in
+        (match Hashtbl.find_opt module_exports mod_id_ref with
+         | None -> ()
+         | Some exports ->
+           let imported = match path with
+             | UseName ns ->
+               if List.length ns > 1 then [List.hd (List.rev ns)] else []
+             | UseGroup (_, ms) -> List.map fst ms
+             | UseWild _ -> List.map fst exports
+             | UseAlias _ -> []
+           in
+           List.iter (fun n ->
+             match List.assoc_opt n exports with
+             | Some cell -> acc := (n, cell, is_pub) :: !acc
+             | None -> ()
+           ) imported)
+      | _ -> ()
+    ) decls;
+    !acc
+  in
+
+  (* This module's exported value names paired with their cells.  Resolve keys
+     a value export off the `export`ed *signature* (DTypeSig), the `export`ed
+     definition, or a `pub use` re-export — not off the DFunDef alone (whose
+     `is_pub` is false even when its signature is exported).  Interface-method /
+     extern names resolve globally, so a name with no local/imported cell is
+     simply omitted (it reaches importers through the env tail). *)
+  let collect_pub_exports decls local_frame imports : (string * value ref) list =
+    let acc = ref [] in
+    let add_name n =
+      match List.assoc_opt n local_frame with
+      | Some cell -> acc := (n, cell) :: !acc
+      | None ->
+        (match List.find_opt (fun (m, _, _) -> m = n) imports with
+         | Some (_, cell, _) -> acc := (n, cell) :: !acc
+         | None -> ())
+    in
+    List.iter (fun d -> match Ast.inner_decl d with
+      | DTypeSig (true, n, _) -> add_name n
+      | DExtern (true, n, _)  -> add_name n
+      | DFunDef (true, n, _, _) -> add_name n
+      | DLetGroup (true, bs)  -> List.iter (fun (n, _) -> add_name n) bs
+      | DUse (true, _) -> ()  (* handled via re-exported imports below *)
+      | _ -> ()
+    ) decls;
+    (* `pub use` re-exports: names imported with a public use are visible to
+       this module's importers too. *)
+    List.iter (fun (n, cell, is_pub) ->
+      if is_pub then acc := (n, cell) :: !acc) imports;
+    !acc
+  in
+
+  let last_local = ref [] in
+  List.iter (fun (mid, _fp, decls) ->
+    (* Pre-allocate this module's local DFunDef/DLetGroup cells. *)
+    let local_frame : (string * value ref) list ref = ref [] in
+    let add_local name v = local_frame := (name, ref v) :: !local_frame in
+    prealloc_cells ~add_global:noop ~add_local decls;
+
+    let imports = build_imports decls in
+    let import_frame = List.map (fun (n, cell, _) -> (n, cell)) imports in
+    let m_env : env = [ !local_frame; import_frame; !global_frame ] in
+    let fill_local name v =
+      match List.assoc_opt name !local_frame with
+      | Some cell -> cell := v
+      | None -> ()
+    in
+    let m_fundef_acc : (string, value list) Hashtbl.t = Hashtbl.create 16 in
+    let m_deferred : string list ref = ref [] in
+    List.iter
+      (eval_decl_into ~env:m_env ~fill_local ~fill_global
+         ~impl_acc ~fundef_acc:m_fundef_acc ~deferred:m_deferred)
+      decls;
+    List.iter (fun name -> ignore (lookup m_env name))
+      (List.rev !m_deferred);
+
+    Hashtbl.replace module_exports mid
+      (collect_pub_exports decls !local_frame imports);
+    last_local := List.map (fun (k, cell) -> (k, !cell)) !local_frame
+  ) modules';
+
+  !last_local
 
 (* ── REPL incremental interface ─────────────────────────────────────────── *)
 

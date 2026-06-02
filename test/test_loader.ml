@@ -727,6 +727,55 @@ let test_eval_method_dict_cross_module () =
       failwith (Printf.sprintf "Expected \"OK\\n\" from cross-module foldMap method dict, got %S" out)
   )
 
+(* Phase 110: per-module eval name-isolation.  Two modules define a top-level
+   function of the same name with different arities — `mapmod.singleton` takes 2
+   args, `arrmod.singleton` takes 1 — exactly the stdlib map/array collision.
+   `mapmod.wrap` calls its *own* 2-arg `singleton`.  Under the old flat eval the
+   two `singleton`s merged into one VMulti, the 1-arg clause matched first, and
+   `wrap 3 4` panicked `applied non-function`.  `Eval.eval_modules` evaluates
+   each module in its own frame, so `wrap` sees mapmod's `singleton` and main
+   sees arrmod's.  Mirrors bin/main.ml's `Run` driver. *)
+let test_eval_module_isolation () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "mapmod.mdk"
+      "export wrap : Int -> Int -> Int\n\
+       wrap x y = singleton x y\n\n\
+       export singleton : Int -> Int -> Int\n\
+       singleton x y = x + y\n" in
+    let _ = write_file dir "arrmod.mdk"
+      "export singleton : Int -> Int\n\
+       singleton x = x * 100\n" in
+    let main_path = write_file dir "main.mdk"
+      "import mapmod.{wrap}\n\
+       import arrmod.{singleton}\n\n\
+       main : <IO> Unit\n\
+       main =\n\
+      \  println (wrap 3 4)\n\
+      \  println (singleton 5)\n" in
+    let modules = Loader.load_program main_path [dir] in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Desugar.desugar_program prog)) modules in
+    let method_names = Method_marker.interface_method_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let constrained = Method_marker.constrained_fn_names
+      (List.map (fun (_, _, p) -> p) modules) in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Method_marker.mark_program method_names constrained prog)) modules in
+    let te_acc = ref [] in
+    List.iter (fun (mid, _, prog) ->
+      let (te, _, _) = Typecheck.typecheck_module !te_acc mid prog in
+      te_acc := te :: !te_acc) modules;
+    let buf = Buffer.create 32 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+      ignore (Eval.eval_modules modules));
+    let out = Buffer.contents buf in
+    if out <> "7\n500\n" then
+      failwith (Printf.sprintf
+        "Expected \"7\\n500\\n\" from per-module isolated singleton, got %S" out)
+  )
+
 (* Phase 88: two-pass elaboration across modules.  A polymorphic-monad do-block
    wrapper (`h m = do { x <- m; pure x }`) defined in the main module of a
    multi-module program must dispatch its return-position `pure` by the caller's
@@ -896,6 +945,9 @@ let () =
       test_case "cross-module constrained dispatch" `Quick test_eval_dict_passing_cross_module;
       test_case "cross-module super dispatch" `Quick test_eval_super_dict_cross_module;
       test_case "cross-module method-level dict (foldMap)" `Quick test_eval_method_dict_cross_module;
+    ];
+    "per-module eval isolation (Phase 110)", [
+      test_case "same-named fn, different arity" `Quick test_eval_module_isolation;
     ];
     "two-pass elaboration (Phase 88)", [
       test_case "cross-module poly-monad pure dispatch" `Quick test_eval_poly_monad_cross_module;

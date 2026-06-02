@@ -414,6 +414,43 @@ let t_nullary_shadowed_method_routes_by_annotation () =
           "expected annotated nullary method to route to the Box impl, got passed=%d failed=%d errors=%d"
           r.passed r.failed r.errors))
 
+(* Phase 110: the doctest multi-module path (run_file_multi → eval_modules) must
+   isolate same-named top-level functions per module.  `mapmod.singleton` is
+   2-arg and called by `mapmod.wrap`; `arrmod.singleton` is 1-arg.  Under the old
+   flat eval they merged and `wrap 3 4` panicked; per-module frames keep them
+   distinct so both doctests pass. *)
+let p110_mapmod = {|export
+wrap : Int -> Int -> Int
+wrap x y = singleton x y
+
+export
+singleton : Int -> Int -> Int
+singleton x y = x + y
+|}
+
+let p110_arrmod = {|export
+singleton : Int -> Int
+singleton x = x * 100
+|}
+
+let t_module_isolation_doctest () =
+  let main = {|import mapmod.{wrap}
+import arrmod.{singleton}
+-- > wrap 3 4
+-- 7
+-- > singleton 5
+-- 500
+|} in
+  with_tmp_modules
+    [("mapmod.mdk", p110_mapmod); ("arrmod.mdk", p110_arrmod); ("main.mdk", main)]
+    "main.mdk"
+    (fun path ->
+      let r = Doctest.run_file path in
+      if r.passed <> 2 || r.failed <> 0 || r.errors <> 0 then
+        failwith (Printf.sprintf
+          "expected per-module isolated doctests to pass, got passed=%d failed=%d errors=%d"
+          r.passed r.failed r.errors))
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () =
@@ -446,5 +483,6 @@ let () =
       Alcotest.test_case "cross-module instance (Phase 92)" `Quick t_cross_module_instance_resolves;
       Alcotest.test_case "cross-module tc failure honest (Phase 92)" `Quick t_cross_module_typecheck_failure_is_honest;
       Alcotest.test_case "nullary method routes by annotation (Phase 103a)" `Quick t_nullary_shadowed_method_routes_by_annotation;
+      Alcotest.test_case "per-module eval isolation (Phase 110)" `Quick t_module_isolation_doctest;
     ];
   ]

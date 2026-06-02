@@ -602,16 +602,13 @@ cd into a member or specify a file\n"; exit 1
      | `Check ->
        Printf.printf "OK — %d bindings\n" (List.length !final_schemes)
      | `Run ->
-       (* Evaluate all modules; later modules' eval envs shadow earlier ones *)
-       let combined_program = List.concat_map (fun (_, _, prog) -> prog) modules in
-       (* Phase 69.x: insert dictionary parameters on constrained functions
-          across all modules (EDictApp refs were filled by typecheck_module).
-          Phase 69.x-c: prepend the marked prelude so its `when`/`unless` get dict
-          params too, then eval without re-prepending. *)
-       let combined_program =
-         Medaka_lib.Dict_pass.run (Medaka_lib.Method_marker.marked_prelude @ combined_program) in
+       (* Phase 110: evaluate each module in its own name scope (per-module
+          frames over a shared global frame), so same-named top-level functions
+          in different modules don't merge into one VMulti and mis-dispatch.
+          eval_modules dict-passes the marked prelude + all modules internally
+          (Phase 69.x) and threads the prelude through the global frame. *)
        (try
-         let top_env = Medaka_lib.Eval.eval_program ~prelude:false combined_program in
+         let top_env = Medaka_lib.Eval.eval_modules modules in
          if not (List.mem_assoc "main" top_env) then begin
            Printf.eprintf "error: program has no 'main' binding\n"; exit 1
          end
