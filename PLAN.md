@@ -161,15 +161,6 @@ above, it is flagged ⭐.
     arms keep the indented-block / separate-clause forms). Added to `inner_fun_def`
     and `where_binding` in `lib/parser.mly`; no new parser conflicts (still 3).
 
-- **Plain multi-clause exhaustiveness.** `Exhaust.check_match` runs only on
-  `EMatch`, so a plain multi-clause function with no guards — `f Nil = ..` with no
-  `Cons` clause — gets *no* exhaustiveness check (only a runtime `Impl_no_match`).
-  Closing it needs the type-aware oracle (run inside typecheck where `env.ctors`
-  is populated, rather than the standalone lint's data-decl-only oracle, which
-  can't see prelude types) and may newly flag partial functions across the stdlib.
-  The Phase 91(2) guard lint deliberately scoped this out. Skill:
-  **harden-typechecker** / **add-language-feature**.
-
 - **Phase 92 — doctest harness reaches cross-module instances. ✅ DONE.**
   `medaka test <file>` now routes a file that imports real sibling modules
   through the multi-module (`typecheck_module`) path in `lib/doctest.ml`
@@ -218,6 +209,16 @@ above, it is flagged ⭐.
   return-position dispatch residuals (a post-typecheck marker re-run / pipeline
   restructure). Lands in `lib/prop_runner.ml` + the typed/dict-passing pipeline.
   Skill: **add-language-feature** (cross-cutting).
+
+- **Phase 102 — plain multi-clause exhaustiveness.** `Exhaust.check_match` runs
+  only on `EMatch`, so a plain multi-clause function with no guards — `f Nil = ..`
+  with no `Cons` clause — gets *no* exhaustiveness check (only a runtime
+  `Impl_no_match`). Closing it needs the type-aware oracle (run inside typecheck
+  where `env.ctors` is populated, rather than the Phase 91(2) lint's
+  data-decl-only oracle, which can't see prelude types) and may newly flag partial
+  functions across the stdlib. The Phase 91(2) guard lint (`Exhaust.
+  check_guard_exhaustiveness`) deliberately scoped this out. Skill:
+  **harden-typechecker** / **add-language-feature**.
 
 - ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** Lower priority;
   each is a known limitation with a correct-enough fallback today:
