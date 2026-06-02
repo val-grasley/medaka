@@ -286,6 +286,16 @@ let rec arrows_with_last_effect pats eff ret = match pats with
   | [pt]      -> TFun (pt, eff, ret)
   | pt :: rest -> TFun (pt, open_row (), arrows_with_last_effect rest eff ret)
 
+(* The declared concrete effect set of a signature: the labels on the first
+   `<…>` reached walking down the return side.  `String -> <IO> Unit` → ["IO"];
+   `<IO, Rand> Unit` (a value binding's effect) → ["IO"; "Rand"].  The Phase 79e
+   binding-boundary escape check compares the inferred body effects against this. *)
+let rec declared_effects : Ast.ty -> effect_set = function
+  | Ast.TyFun (_, ret) -> declared_effects ret
+  | Ast.TyEffect (effs, _, _) -> List.sort_uniq String.compare effs
+  | Ast.TyConstrained (_, t) -> declared_effects t
+  | _ -> []
+
 (* Build an effect row from an arrow's return-position AST type.  A named tail
    variable (`<IO | e>`) is resolved through [etbl] so the same source name
    shares one effvar across the whole signature — that shared effvar is what
@@ -1623,6 +1633,8 @@ let rec infer env = function
         unify tx te;
         if not (StringSet.mem x env.mut_vars) then
           fail (ImmutableAssignment x);
+        (* Reassigning a `let mut` binding is a mutation. *)
+        perform_effect cur_effect (closed_row ["Mut"]);
         type_block env rest
       | DoFieldAssign (x, field, e) :: rest ->
         if not (StringSet.mem x env.mut_vars) then
@@ -1651,6 +1663,8 @@ let rec infer env = function
         in
         let te = infer env e in
         unify field_t te;
+        (* Mutating a record field / Ref cell is a mutation. *)
+        perform_effect cur_effect (closed_row ["Mut"]);
         type_block env rest
       | DoLetElse (pat, e, alt) :: rest ->
         let te = infer env e in
@@ -2143,10 +2157,10 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     let pre_cs = expand_supers (!env_ref).interfaces pre_cs in
     if pre_cs <> [] then
       Hashtbl.replace (!env_ref).fun_constraints name pre_cs;
-    (name, cs_monos, sig_t_opt, clauses)
+    (name, cs_monos, sig_t_opt, sig_opt, clauses)
   ) members in
   (* Pass B: infer the bodies now that every member's constraints are visible. *)
-  let cs_monos_list = List.map (fun (name, cs_monos, sig_t_opt, clauses) ->
+  let cs_monos_list = List.map (fun (name, cs_monos, sig_t_opt, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
     if is_letrec then
       List.iter (fun (pats, rhs) ->
@@ -2155,6 +2169,12 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
           fail (LetRecNonFunction name)
         end
       ) clauses;
+    (* Phase 79e: accumulate the concrete effects the body performs (across all
+       clauses), for the binding-boundary escape check below. *)
+    let inferred_eff = ref [] in
+    let add_eff row =
+      inferred_eff := List.sort_uniq String.compare (!inferred_eff @ effrow_labels row)
+    in
     List.iter (fun (pats, body) ->
       let t =
         match sig_t_opt with
@@ -2194,12 +2214,33 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
           let body_t = infer (extend_vars !env_ref bindings) body in
           let body_eff = !cur_effect in
           cur_effect := saved;
+          add_eff body_eff;
           arrows_with_last_effect pat_types body_eff body_t
-        | _ ->
+        | Some _ ->
+          (* Value binding (no parameters) with a signature: infer the body in a
+             fresh ambient so its effects can be checked against the declared
+             effect, then discard (a 0-arg binding has no arrow to carry it). *)
+          let saved = !cur_effect in
+          cur_effect := open_row ();
+          let t = infer !env_ref (clause_to_expr (pats, body)) in
+          add_eff !cur_effect;
+          cur_effect := saved;
+          t
+        | None ->
           infer !env_ref (clause_to_expr (pats, body))
       in
       unify placeholder t
     ) clauses;
+    (* Phase 79e: effect-escape check at the binding boundary, replacing the
+       post-HM infer_and_check_effects pass.  An annotated binding's body must
+       not perform a concrete effect its signature doesn't declare; effect
+       *variables* (polymorphic `<e>`) carry no labels and so never escape. *)
+    (match sig_opt with
+     | Some sig_ast ->
+       let declared = declared_effects sig_ast in
+       let extras = List.filter (fun e -> not (List.mem e declared)) !inferred_eff in
+       if extras <> [] then fail (EffectEscape (name, declared, extras))
+     | None -> ());
     (* Value restriction (Phase 66): a let-rec member is always a function;
        a non-letrec zero-arg binding is gated on its RHS so e.g. `r = Ref []`
        is not over-generalized. *)
@@ -3194,186 +3235,6 @@ let check_superinterface_obligations env =
       end
   ) !(env.impls)
 
-(* ── Effect inference ────────────────────────────── *)
-
-let effect_union a b = List.sort_uniq String.compare (a @ b)
-
-(* Extract the declared effect set from an AST type signature.
-   Follows TyFun arrows right-most; the first TyEffect on the return side
-   is the function's declared effect.  `String -> <IO> Unit` → ["IO"]. *)
-let rec declared_effects : Ast.ty -> effect_set = function
-  | Ast.TyFun (_, ret) -> declared_effects ret
-  | Ast.TyEffect (effs, _, _) -> List.sort_uniq String.compare effs
-  (* A constraint wrapper around the signature is transparent for the
-     purposes of effect detection — `Ord a => Array a -> <Mut> Unit`
-     still performs <Mut>. *)
-  | Ast.TyConstrained (_, t) -> declared_effects t
-  | _ -> []
-
-(* Compute the effect set that evaluating expression `e` produces.
-   Direct calls (EApp, |>) contribute the callee's known effect set.
-   Lambda bodies propagate their effects conservatively (lambdas may be called).
-   Composition (>>, <<) includes effects of both composed functions.
-   `scheme_env` is the HM-inferred scheme list; it lets us read the effect_set
-   embedded in TFun types so that passing an effectful function as an argument
-   to a HOF propagates those effects to the call site.
-   `bound` tracks names locally bound by lambdas / let / match / do, so we
-   don't confuse a local parameter with a global function of the same name. *)
-let expr_effects
-    (eff_env    : (string, effect_set) Hashtbl.t)
-    (scheme_env : (ident * scheme) list)
-    (e : expr) : effect_set =
-  let call name = try Hashtbl.find eff_env name with Not_found -> [] in
-  let pat_names p = Resolve.pat_bindings p in
-  let add_pats ps bound =
-    List.fold_left (fun s p ->
-      List.fold_left (fun s n -> StringSet.add n s) s (pat_names p)
-    ) bound ps
-  in
-  let rec go (bound : StringSet.t) e : effect_set =
-    let sub e = go bound e in
-    (* Effects of a named function when used as a value (not yet called).
-       Skip locally-bound names — a parameter `p` is not the global `p`. *)
-    let fn_effects_of n =
-      if StringSet.mem n bound then []
-      else
-        let from_scheme = match List.assoc_opt n scheme_env with
-          | Some (Forall (_, _, t)) ->
-            (match normalize t with
-             | TFun (_, effs, _) -> effrow_labels effs
-             | _ -> [])
-          | None -> []
-        in
-        let from_eff = try Hashtbl.find eff_env n with Not_found -> [] in
-        effect_union from_scheme from_eff
-    in
-    (* Effects from calling `e` as a function — if it's a bare name we can look
-       it up directly; otherwise fall back to the expression's own effects.
-       Locally-bound names contribute nothing (their effects are unknown here). *)
-    let rec call_effs = function
-      | EVar n -> if StringSet.mem n bound then [] else call n
-      | EMethodRef (_, n) -> if StringSet.mem n bound then [] else call n
-      | EDictApp (_, n) -> if StringSet.mem n bound then [] else call n
-      | ELoc (_, e) -> call_effs e
-      | e -> sub e
-    in
-    match e with
-    | ELit _ | EVar _ | EMethodRef _ | EDictApp _ -> []
-    | EApp (f, x) ->
-      (* If the argument is a named effectful function, those effects propagate:
-         the HOF may call it, so we conservatively include them at the call site. *)
-      let x_fn_effs = match x with
-        | EVar n | ELoc (_, EVar n) -> fn_effects_of n
-        | _ -> []
-      in
-      effect_union (call_effs f) (effect_union (sub f) (effect_union (sub x) x_fn_effs))
-    | ELam (pats, body) ->
-      go (add_pats pats bound) body  (* conservative: include body effects *)
-    | ELet (_, _, pat, e1, e2) ->
-      effect_union (sub e1) (go (add_pats [pat] bound) e2)
-    | ELetGroup (bs, e2) ->
-      let bound' = List.fold_left (fun s (n, _) -> StringSet.add n s) bound bs in
-      List.fold_left (fun a (_, clauses) ->
-        List.fold_left (fun acc (pats, body) ->
-          effect_union acc (go (add_pats pats bound') body)
-        ) a clauses
-      ) (go bound' e2) bs
-    | EIf (c, t, f)       -> effect_union (sub c) (effect_union (sub t) (sub f))
-    | EBinOp ("|>", x, f) ->
-      (* x |> f  ≡  f x — calling f contributes its effects *)
-      effect_union (call_effs f) (sub x)
-    | EBinOp (">>", f, g) | EBinOp ("<<", f, g) ->
-      (* Composition — both functions may be called later; include both *)
-      effect_union (call_effs f) (call_effs g)
-    | EBinOp (_, l, r)    -> effect_union (sub l) (sub r)
-    | EUnOp (_, e)         -> sub e
-    | EMatch (sc, arms)    ->
-      List.fold_left
-        (fun acc (pat, guards, body) ->
-          let bound0 = add_pats [pat] bound in
-          let (bound', ge) = List.fold_left (fun (b, eff) q ->
-            match q with
-            | GBool g      -> (b, effect_union eff (go b g))
-            | GBind (p, e) -> (add_pats [p] b, effect_union eff (go b e)))
-            (bound0, []) guards in
-          effect_union acc (effect_union ge (go bound' body)))
-        (sub sc) arms
-    | EBlock stmts | EDo (_, stmts) ->
-      let _, effs = List.fold_left (fun (b, acc) s ->
-        let (b', e) = do_stmt_effects b s in
-        (b', effect_union acc e)
-      ) (bound, []) stmts in
-      effs
-    | EFieldAccess (e, _)      -> sub e
-    | ERecordCreate (_, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) [] fs
-    | ERecordUpdate (e, fs)    -> List.fold_left (fun a (_, v) -> effect_union a (sub v)) (sub e) fs
-    | EArrayLit es | EListLit es | ESetLit (_, es) ->
-      List.fold_left (fun a e -> effect_union a (sub e)) [] es
-    | EMapLit (_, kvs) ->
-      List.fold_left (fun a (k, v) -> effect_union a (effect_union (sub k) (sub v))) [] kvs
-    | EStringInterp parts ->
-      List.fold_left (fun a -> function
-        | InterpStr _  -> a
-        | InterpExpr e -> effect_union a (sub e)
-      ) [] parts
-    | ETuple es               -> List.fold_left (fun a e -> effect_union a (sub e)) [] es
-    | EIndex (e, i)           -> effect_union (sub e) (sub i)
-    | ERangeList (lo, hi, _)  -> effect_union (sub lo) (sub hi)
-    | ERangeArray (lo, hi, _) -> effect_union (sub lo) (sub hi)
-    | ESlice (e, lo, hi, _)   -> effect_union (sub e) (effect_union (sub lo) (sub hi))
-    | EAnnot (e, _)           -> sub e
-    | EInfix (_, l, r)        -> effect_union (sub l) (sub r)
-    | ELoc (_, e)             -> sub e
-    | EListComp _             -> fail (InternalError "EListComp reached the effects pass — desugar not run")
-    | EQuestion _             -> fail (InternalError "EQuestion reached the effects pass — desugar not run")
-    | EGuards _ | EFunction _ | ESection _ ->
-      fail (InternalError "guard/function/section reached the effects pass — desugar not run")
-
-  and do_stmt_effects (bound : StringSet.t) = function
-    | DoExpr e             -> (bound, go bound e)
-    | DoBind (pat, e)      -> (add_pats [pat] bound, go bound e)
-    | DoLet (_, pat, e)    -> (add_pats [pat] bound, go bound e)
-    | DoAssign (_, e)         -> (bound, effect_union ["Mut"] (go bound e))
-    | DoFieldAssign (_, _, e) -> (bound, effect_union ["Mut"] (go bound e))
-    | DoLetElse (pat, e, alt) -> (add_pats [pat] bound, effect_union (go bound e) (go bound alt))
-  in
-  go StringSet.empty e
-
-(* Process each function group in declaration order:
-     1. Infer its effect set (union of all clause bodies).
-     2. Store it in eff_env so later definitions see it.
-     3. Check against the declared signature; raise Type_error on violation.
-
-   Purity rule: a function with NO effect annotation must infer the empty set.
-   Annotation rule: declared effects must be a superset of inferred effects. *)
-let infer_and_check_effects ~extern_decls ~scheme_env groups =
-  let eff_env = Hashtbl.create 16 in
-  (* Seed eff_env from runtime registry entries *)
-  List.iter (fun (name, ast_ty) ->
-    let effs = declared_effects ast_ty in
-    if effs <> [] then Hashtbl.add eff_env name effs
-  ) Runtime.entries;
-  (* Also seed from user-written extern declarations in the source program *)
-  List.iter (fun (name, ast_ty) ->
-    let effs = declared_effects ast_ty in
-    if effs <> [] then Hashtbl.replace eff_env name effs
-  ) extern_decls;
-  List.iter (fun (name, sig_opt, clauses) ->
-    let inferred =
-      List.fold_left
-        (fun acc clause ->
-          effect_union acc (expr_effects eff_env scheme_env (clause_to_expr clause)))
-        [] clauses
-    in
-    Hashtbl.replace eff_env name inferred;
-    (match sig_opt with
-     | None -> ()
-     | Some sig_ty ->
-       let decl = declared_effects sig_ty in
-       let extras = List.filter (fun e -> not (List.mem e decl)) inferred in
-       if extras <> [] then fail (EffectEscape (name, decl, extras)))
-  ) groups
-
 (* Register DAttrib attribute metadata (deprecated_fns, must_use_fns) into env. *)
 let register_attrs env decls =
   let decl_name d = match d with
@@ -3528,13 +3389,8 @@ let check_program_impl (prog : program) : (ident * scheme) list * string list =
   resolve_method_dicts !env;
   check_superinterface_obligations !env;
 
-  (* Phase 5: effect inference and checking *)
-  let user_extern_decls =
-    List.filter_map (fun d -> match Ast.inner_decl d with
-      | DExtern (_, n, t) -> Some (n, t)
-      | _ -> None) prog
-  in
-  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results (flatten_groups groups);
+  (* Phase 5 (effect escape checking) now happens inline at each binding's
+     boundary in process_letrec_group; the old post-HM pass is retired. *)
 
   (* Validate the built-in registry against what the prelude loaded.
      This is a compiler-build invariant: if any expected stdlib name is
@@ -3742,10 +3598,7 @@ let typecheck_module
   resolve_dict_apps !env;
   resolve_method_dicts !env;
   check_superinterface_obligations !env;
-  let user_extern_decls =
-    List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) prog
-  in
-  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results (flatten_groups groups);
+  (* Effect escape checking is done inline at the binding boundary (Phase 79e). *)
 
   let all_schemes = results @ !iface_method_schemes @ !extern_schemes in
   let warnings = List.rev !(!env.warnings) in
@@ -3952,10 +3805,7 @@ let check_repl_decl ?(seeded=false) (env : env ref) (decls : decl list)
   resolve_dict_apps !env;
   resolve_method_dicts !env;
   check_superinterface_obligations !env;
-  let user_extern_decls =
-    List.filter_map (fun d -> match Ast.inner_decl d with DExtern (_, n, t) -> Some (n, t) | _ -> None) decls
-  in
-  infer_and_check_effects ~extern_decls:user_extern_decls ~scheme_env:results (flatten_groups groups);
+  (* Effect escape checking is done inline at the binding boundary (Phase 79e). *)
   (results @ !iface_method_schemes @ !extern_schemes,
    List.rev !(!env.warnings))
 
