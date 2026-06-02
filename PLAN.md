@@ -4332,18 +4332,58 @@ the **multi-module** typecheck path (`typecheck_module` chain) instead of
 `check_program` — a `lib/doctest.ml` rewrite.  Tracked here as the residual ⏳
 TODO; no dedicated skill (see the `extend-stdlib` skill's doctest-harness notes).
 
-### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ⏳ TODO
+### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ⏳ TODO (BLOCKED on Phase 96)
 
 Deferred from the stdlib completion: the `Bounded` interface exists but `Int`/
 `Char` have no impls, because `minBound`/`maxBound` are **return-type-polymorphic
-nullary constants** (like `pure`) needing native bound values, and `Int`'s bounds
-are platform-dependent (63-bit OCaml `int`). Scope: add `intMinBound`/
+nullary constants** (like `pure`/`empty`) needing native bound values, and `Int`'s
+bounds are platform-dependent (63-bit OCaml `int`). Scope: add `intMinBound`/
 `intMaxBound` externs (`runtime.mdk` + `eval.ml`, via **add-primitive**); define
 `impl Bounded Int` and `impl Bounded Char` (Char via `charFromCode` over
-`0`..`0x10FFFF`) in `core.mdk` (via **extend-stdlib**); and **verify nullary
-return-position dispatch** actually selects the right impl for a bare `maxBound`
-at a known type (the Phase 69 marker handles return-position methods — confirm it
-covers zero-arg constants). Update STDLIB.md (currently ⏳/deferred).
+`0`..`0x10FFFF`) in `core.mdk` (via **extend-stdlib**). Update STDLIB.md.
+
+**BLOCKED (verified 2026-06-01):** the "verify nullary return-position dispatch"
+step *fails* — nullary return-position dispatch is broadly broken (see **Phase
+96**).  `impl Bounded Tri where minBound = Lo; maxBound = Hi` then a bare
+`hi : Tri = maxBound` panics `no matching impl for dispatch`; the *existing*
+`empty` (Monoid) fails identically, even `(empty : List Int)`.  Adding the
+Bounded impls now would just ship broken constants, so Phase 93 waits on Phase 96.
+
+### Phase 96: Nullary return-position method dispatch is broken at known types ⏳ TODO
+
+Surfaced verifying Phase 93.  A **zero-argument** interface method dispatched by
+its *result* type (`empty : Monoid a => a`, `minBound`/`maxBound : Bounded a => a`)
+does not resolve even when the type is fully known — it is left as an unresolved
+`VMulti` and panics `no matching impl for dispatch` (or stack-overflows when fed
+into another method, e.g. `append empty [1,2]`).  Reproduced on every shape:
+
+```
+e : List Int
+e = empty                       -- panic: no matching impl for dispatch
+main = println (show (empty : List Int))   -- same, even with an inline annotation
+
+data Wrap = Wrap Int
+impl Semigroup Wrap where append (Wrap a) (Wrap b) = Wrap (a + b)
+impl Monoid Wrap where empty = Wrap 0
+e : Wrap
+e = empty                       -- e stays a VMulti; `unwrap e` → non-exhaustive match
+```
+
+The Phase 69 marker rewrites the bare method `EVar` to `EMethodRef`, and
+`check_method_usages` *should* stamp an `RKey impl_key` route once the result
+type is concrete (param_vars length matches `n_iface_params`, `is_concrete`) —
+yet at eval the `EMethodRef`'s route is effectively absent (the `VMulti` is never
+narrowed by `select_impl_by_key`).  Unlike `pure : a -> m a` (Phase 84), which has
+an argument and dispatches via the do-block / `RHeadKey`/dict route, these have
+**no argument and a bare-`a` result**, so the head-key and arg-tag paths never
+engage.  The fix is to make a nullary return-position method's `EMethodRef`
+route stamp + apply by its resolved result type — a focused but high-blast-radius
+change to the method-dispatch machinery (`lib/typecheck.ml` `check_method_usages`
+route resolution + `lib/eval.ml` `EMethodRef`), since it is shared by *every*
+interface method.  This also subsumes the Phase 84 residual "`pure` in a do-block
+with no `<-`".  Add `test_eval`/`test_run` regressions (`empty` at a known type;
+a custom Monoid/Bounded constant).  Skill: **harden-typechecker** (spills into
+eval dispatch — verify both paths).  Unblocks Phase 93.
 
 ### Phase 94: Backtick infix bypasses dict-routing and obligation checking ⏳ TODO
 
