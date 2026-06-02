@@ -826,6 +826,11 @@ and eval env expr =
 
   | EQuestion _ -> assert false (* eliminated by desugar_questions *)
 
+  | EAsPat _ ->
+    (* Lowered to PAs by the parser in binding positions; only reachable here via
+       the untyped eval path (which skips resolve) on a misplaced as-pattern. *)
+    raise (Eval_error ("`@` as-pattern used outside a binding position", !current_loc))
+
   | ERangeList (elo, ehi, incl) ->
     let lo = match eval env elo with
       | VInt n -> n

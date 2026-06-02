@@ -20,6 +20,7 @@ type error =
   | PrivateNameAccess    of ident * string  (* name, owning module *)
   | UnknownModule        of ident           (* use references a module that can't be found *)
   | QuestionMisplaced                       (* `?` outside `let pat = e ?` position *)
+  | AsPatternMisplaced                       (* `x@..` outside a binding LHS (lambda param / do-bind / match) *)
   | NonRecursiveValueLet of ident           (* `let x = ... x ...` (no `rec`) where x is in scope on RHS *)
 
 let current_loc : Ast.loc option ref = ref None
@@ -44,6 +45,9 @@ let pp_error = function
   | QuestionMisplaced ->
     "`?` is only allowed as the right-hand side of a `let` binding, \
      e.g. `let x = expr ?`. Use `<-` inside do-blocks."
+  | AsPatternMisplaced ->
+    "`@` as-patterns are only allowed in a binding position \
+     (a lambda parameter, a do-block bind, or a match pattern)."
   | NonRecursiveValueLet n ->
     Printf.sprintf
       "'%s' is not in scope on the right-hand side of its own binding. \
@@ -640,6 +644,11 @@ let rec check_expr env scope errors e =
     assert false (* eliminated by desugar_sugar *)
   | EQuestion e ->
     emit errors QuestionMisplaced;
+    check_expr env scope errors e
+  | EAsPat (_, e) ->
+    (* Valid as-patterns are lowered to PAs by the parser (expr_to_pat); reaching
+       here means `x@..` appeared in a non-binding expression position. *)
+    emit errors AsPatternMisplaced;
     check_expr env scope errors e
 
 let rec check_decl env errors = function

@@ -204,6 +204,22 @@ let t_as_pattern_empty = assert_val {|first_and_all xs =
 r = first_and_all ([])
 |} "r" (VTuple [VInt 0; VList []])
 
+(* Phase 81: a lambda as-pattern parameter binds both the whole and its parts.
+   Before Phase 81 `lst@(h :: _) => …` was silently misparsed as a two-arg
+   lambda, so applying it to one argument returned a closure, not a value. *)
+let t_aspat_lambda_param = assert_val
+  "r = (lst@(h :: t) => (h, t, lst)) [10, 20, 30]\n"
+  "r" (VTuple [VInt 10; VList [VInt 20; VInt 30];
+               VList [VInt 10; VInt 20; VInt 30]])
+
+(* Phase 81: an as-pattern in a do-block bind, through the List monad (which the
+   untyped eval path dispatches via Thenable). *)
+let t_aspat_do_bind = assert_val {|r =
+  do
+    pr@(a, b) <- [(1, 2), (3, 4)]
+    [a, b]
+|} "r" (VList [VInt 1; VInt 2; VInt 3; VInt 4])
+
 (* ── Records ────────────────────────────────────────────────────────────── *)
 
 let t_record = assert_val {|record Point
@@ -1491,6 +1507,8 @@ let () =
       test_case "list_head"       `Quick t_match_list_head;
       test_case "as-pattern cons" `Quick t_as_pattern_head;
       test_case "as-pattern nil"  `Quick t_as_pattern_empty;
+      test_case "as-pattern lambda param" `Quick t_aspat_lambda_param;
+      test_case "as-pattern do bind"      `Quick t_aspat_do_bind;
     ];
     "records", [
       test_case "create" `Quick t_record;

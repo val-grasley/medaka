@@ -1923,6 +1923,12 @@ let rec infer env = function
   | EQuestion _ ->
     fail (InternalError "EQuestion reached typecheck — desugar pass was not run")
 
+  | EAsPat _ ->
+    (* Valid as-patterns are lowered to PAs by the parser; a surviving EAsPat is
+       a misplaced as-pattern that resolve already rejected (so typecheck is
+       skipped for such programs). *)
+    fail (InternalError "EAsPat reached typecheck — should be lowered to PAs or rejected by resolve")
+
   | ERangeList (lo, hi, _) ->
     unify (infer env lo) t_int;
     unify (infer env hi) t_int;

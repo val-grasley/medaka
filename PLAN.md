@@ -3858,21 +3858,31 @@ chain of field accesses and rebuild/mutate the nested structure; decide
 copy-on-update vs in-place semantics consistent with the existing
 `Ref`/`let mut` model. Skill: **add-language-feature**.
 
-### Phase 81: DoBind pattern & final-statement grammar limitations ⏳ TODO
+### Phase 81: DoBind pattern & final-statement grammar limitations ✅ DONE
 
-Two documented grammar restrictions (see the `parser.mly` conflict audit) that
-bite during self-hosting:
+The two originally-listed restrictions (cons/literal DoBind LHS rejected;
+a do-block's last statement couldn't start with an uppercase constructor) were
+already resolved by a pre-Phase-81 fix that moved the do-block `stmt` LHS to the
+expression-first form (`expr_no_block LARROW …` + `expr_to_pat`), so the
+`LARROW` lookahead alone decides bind-vs-expression. Phase 81 closed it out:
 
-- **DoBind LHS can't be a cons or literal pattern** — `x::xs <- list` is
-  rejected; only simple/constructor patterns work.
-- **A do-block's last statement can't start with an uppercase constructor** —
-  `Some x` as the final statement parses as a pattern; must write `pure (...)`.
+- **Finished the expr-first conversion** for the two other pattern-or-expression
+  positions — the list-comprehension `lc_qual` generator and the `guard_qual`
+  bind — which removed the entire `pat_atom`-vs-`expr_atom` reduce/reduce family.
+  Conflict count dropped from 8 S/R + 6 R/R to **2 S/R + 1 R/R** (the three
+  intended record-literal / wildcard-lambda / Map-KV conflicts).
+- **As-patterns in expression-LHS binding positions** (do-binds, lambda params):
+  added a whitespace-sensitive `@` — adjacent `x@p` lexes as a new `AS_AT`
+  as-pattern operator, spaced `fn @Impl` stays the impl-hint `AT`, so the two
+  no longer collide. `expr_aspat` + `EAsPat` (lowered to `PAs` by `expr_to_pat`;
+  rejected by resolve elsewhere). Fixed a latent bug where `xs@rest => body` was
+  silently misparsed as a two-arg lambda.
+- Rewrote the stale `parser.mly` conflict audit; regression tests in
+  `test_parser`/`test_roundtrip`/`test_eval`.
 
-Both stem from the same `stmt: pat LARROW … | expr …` R/R conflict. Scope:
-restructure the `stmt`/`expr_atom` grammar (or add `%prec` directives) to
-disambiguate, then re-run the conflict audit (§2.4) and confirm the count
-doesn't regress. Skill: **add-language-feature** (grammar; high
-conflict-risk — audit carefully).
+Residual (documented, not a regression): `_` after an operator in a binding LHS
+parses as a left section, not a wildcard (`(x :: _) <- m` — use a named tail);
+inherent to the expression-first parse and shared by all binding LHSs.
 
 ### Phase 82: CLI surface completion ⏳ TODO
 
@@ -3965,10 +3975,11 @@ These aren't blockers, but a less-careful change could trip over them:
   named impls must exist and `@Name` selects among multiple matching impls.
   At runtime the VMulti is filtered by name; full dictionary-passing (for
   higher-order use) is deferred.
-- DoBind LHS cannot be a cons (`x::xs <- list`) or literal pattern — grammar
-  limitation documented in `parser.mly`. → Phase 81.
-- The last statement of a do-block cannot start with an uppercase identifier
-  (`Some x` etc.) — wrap in `pure (...)`. Same grammar root cause. → Phase 81.
+- A binding LHS (do-bind, lambda param, list-comp/guard generator) is parsed as
+  an expression and converted via `expr_to_pat`, so cons/literal/ctor/as-pattern
+  LHSs all work and a do-block's last statement may start with an uppercase
+  constructor (Phase 81 ✅). One inherent edge: `_` after an operator in such a
+  LHS is a left section, not a wildcard (`(x :: _) <- m` — use `(x :: rest)`).
 - Module system: `use` declarations parse but no cross-file resolution
   exists. Backend roadmap is single-file only; multi-file support is a
   separate later phase.

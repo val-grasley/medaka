@@ -145,6 +145,7 @@ and expr =
   | EGuards       of (guard_qual list * expr) list       (* function/where guard arms: `| g.. = body` *)
   | EFunction     of (pat * guard_qual list * expr) list (* `function` keyword: anonymous match on one arg *)
   | ESection      of section                             (* operator section: (op) / (op e) / (e op _) *)
+  | EAsPat        of ident * expr                        (* `x@subpat` in a binding LHS; the parser lowers it to PAs via expr_to_pat. Only survives in a non-binding position, where resolve rejects it. *)
 
 and section =
   | SecBare  of string          (* (op)     → \a b => a op b *)
@@ -418,6 +419,7 @@ let rec pp_expr = function
   | ESection (SecBare op)       -> Printf.sprintf "(%s)" op
   | ESection (SecRight (op, e)) -> Printf.sprintf "(%s %s)" op (pp_expr e)
   | ESection (SecLeft (e, op))  -> Printf.sprintf "(%s %s _)" (pp_expr e) op
+  | EAsPat (x, e)               -> Printf.sprintf "%s@%s" x (pp_expr e)
 
 and pp_do_stmt = function
   | DoBind (p, e)       -> Printf.sprintf "%s <- %s" (pp_pat p) (pp_expr e)
@@ -494,6 +496,7 @@ let rec strip_locs_expr = function
   | ESection (SecRight (op, e)) -> ESection (SecRight (op, strip_locs_expr e))
   | ESection (SecLeft (e, op))  -> ESection (SecLeft (strip_locs_expr e, op))
   | ESection (SecBare _) as e   -> e
+  | EAsPat (x, e)               -> EAsPat (x, strip_locs_expr e)
   | e                     -> e  (* ELit, EVar *)
 
 and strip_locs_do = function

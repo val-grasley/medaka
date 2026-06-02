@@ -854,6 +854,84 @@ go =
     ])) -> ()
   | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
 
+(* Phase 81: the expression-LHS DoBind recovers cons and literal patterns via
+   expr_to_pat (the two limitations Phase 81 closed out — already enabled by the
+   stmt-grammar restructuring; these lock the behaviour in). *)
+let test_do_bind_cons_lhs () =
+  match parse_one "go =\n  do\n    x :: xs <- m\n    pure x\n" with
+  | DFunDef (false, "go", [], EDo (_, [
+      DoBind (PCons (PVar "x", PVar "xs"), EVar "m");
+      DoExpr (EApp (EVar "pure", EVar "x"));
+    ])) -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
+let test_do_bind_literal_lhs () =
+  match parse_one "go =\n  do\n    42 <- m\n    pure m\n" with
+  | DFunDef (false, "go", [], EDo (_, [
+      DoBind (PLit (LInt 42), EVar "m");
+      DoExpr (EApp (EVar "pure", EVar "m"));
+    ])) -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
+(* A do-block's last statement may start with an uppercase constructor (Phase 81
+   close-out): it parses as a trailing DoExpr, not a pattern-bind awaiting `<-`. *)
+let test_do_final_ctor_stmt () =
+  match parse_one "go =\n  do\n    x <- m\n    Some x\n" with
+  | DFunDef (false, "go", [], EDo (_, [
+      DoBind (PVar "x", EVar "m");
+      DoExpr (EApp (EVar "Some", EVar "x"));
+    ])) -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
+(* Phase 81: as-patterns (`name@subpat`) in expression-LHS binding positions.
+   The lexer tokenises an `@` adjacent to an identifier as AS_AT, and
+   expr_to_pat lowers EAsPat to PAs. *)
+let test_do_bind_aspat_simple () =
+  match parse_one "go =\n  do\n    x@y <- m\n    pure x\n" with
+  | DFunDef (false, "go", [], EDo (_, [
+      DoBind (PAs ("x", PVar "y"), EVar "m");
+      DoExpr (EApp (EVar "pure", EVar "x"));
+    ])) -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
+let test_do_bind_aspat_cons () =
+  match parse_one "go =\n  do\n    all@(h :: t) <- m\n    pure all\n" with
+  | DFunDef (false, "go", [], EDo (_, [
+      DoBind (PAs ("all", PCons (PVar "h", PVar "t")), EVar "m");
+      DoExpr (EApp (EVar "pure", EVar "all"));
+    ])) -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
+let test_do_bind_aspat_tuple () =
+  match parse_one "go =\n  do\n    p@(a, b) <- m\n    pure p\n" with
+  | DFunDef (false, "go", [], EDo (_, [
+      DoBind (PAs ("p", PTuple [PVar "a"; PVar "b"]), EVar "m");
+      DoExpr (EApp (EVar "pure", EVar "p"));
+    ])) -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
+(* Lambda parameter as-pattern.  Before Phase 81 `xs@rest => xs` was silently
+   misparsed as a two-arg lambda (`xs` and a separate `@rest` param). *)
+let test_lambda_aspat_param () =
+  match parse_expr "xs@rest => xs" with
+  | ELam ([PAs ("xs", PVar "rest")], EVar "xs") -> ()
+  | e -> failwith (Printf.sprintf "wrong shape: %s" (Ast.pp_expr e))
+
+(* A `@` written with a space before it is the impl-hint prefix, not an
+   as-pattern: `f @Impl` parses as application of `f` to the `@Impl` hint. *)
+let test_spaced_at_is_hint () =
+  match parse_expr "combine @Additive" with
+  | EApp (EVar "combine", EVar "@Additive") -> ()
+  | e -> failwith (Printf.sprintf "wrong shape: %s" (Ast.pp_expr e))
+
+(* As-pattern in a list-comprehension generator (lc_qual now parses its LHS as
+   an expression and converts via expr_to_pat, like the do-block stmt rule). *)
+let test_listcomp_aspat_gen () =
+  match parse_expr "[y | p@(Some y) <- opts]" with
+  | EListComp (EVar "y",
+      [LCGen (PAs ("p", PCon ("Some", [PVar "y"])), EVar "opts")]) -> ()
+  | e -> failwith (Printf.sprintf "wrong shape: %s" (Ast.pp_expr e))
+
 (* ── Import/export declaration tests ─────────────────── *)
 
 let test_use_simple () =
@@ -1719,6 +1797,15 @@ let () =
       test_case "block body tuple literal"  `Quick test_block_body_tuple_literal;
       test_case "block body cons + ctor"    `Quick test_block_body_cons_and_ctor;
       test_case "do bind tuple + ctor LHS"  `Quick test_do_bind_tuple_and_ctor;
+      test_case "do bind cons LHS"          `Quick test_do_bind_cons_lhs;
+      test_case "do bind literal LHS"       `Quick test_do_bind_literal_lhs;
+      test_case "do final ctor stmt"        `Quick test_do_final_ctor_stmt;
+      test_case "do bind as-pat simple"     `Quick test_do_bind_aspat_simple;
+      test_case "do bind as-pat cons"       `Quick test_do_bind_aspat_cons;
+      test_case "do bind as-pat tuple"      `Quick test_do_bind_aspat_tuple;
+      test_case "lambda as-pat param"       `Quick test_lambda_aspat_param;
+      test_case "spaced @ is hint"          `Quick test_spaced_at_is_hint;
+      test_case "listcomp as-pat gen"       `Quick test_listcomp_aspat_gen;
     ];
     "import declarations", [
       test_case "simple"                   `Quick test_use_simple;

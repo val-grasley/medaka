@@ -83,6 +83,7 @@ let rec collect_expr acc = function
   | Ast.ESection (Ast.SecRight (_, e)) | Ast.ESection (Ast.SecLeft (e, _)) ->
     collect_expr acc e
   | Ast.ESection (Ast.SecBare _) -> acc
+  | Ast.EAsPat (_, e) -> collect_expr acc e
 
 and collect_do_stmt acc = function
   | Ast.DoBind (_, e) | Ast.DoExpr e | Ast.DoLet (_, _, e)

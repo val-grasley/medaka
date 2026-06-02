@@ -258,6 +258,7 @@ let rec expr_prec = function
   | EInfix _                           -> prec_infix
   | EBinOp (op, _, _)                  -> binop_prec op
   | ESection _                         -> prec_atom
+  | EAsPat _                           -> prec_app
   | ELam _ | ELet _ | ELetGroup _ | EIf _
   | EMatch _ | EBlock _ | EDo (_, _) | EAnnot _
   | EFunction _ | EGuards _            -> prec_top
@@ -357,6 +358,11 @@ and print_expr_raw = function
     text "(" ^^ text op ^^ text " " ^^ print_expr prec_top e ^^ text ")"
   | ESection (SecLeft (e, op))  ->
     text "(" ^^ print_expr prec_top e ^^ text " " ^^ text op ^^ text " _)"
+  | EAsPat (x, e) ->
+    (* Normally lowered to PAs at parse time; printed only if it survives in a
+       non-binding position.  prec_atom parenthesizes compound sub-exprs, matching
+       the as-pattern atom requirement so it re-parses. *)
+    text x ^^ text "@" ^^ print_expr prec_atom e
   | EBlock stmts ->
     (* Bare block: no `do` prefix, just an indented stmt list. *)
     indent_block (sep_by Hardline (List.map print_do_stmt stmts))

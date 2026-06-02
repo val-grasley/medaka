@@ -82,6 +82,7 @@ let rec expr_to_pat = function
   | ETuple es    -> PTuple (List.map expr_to_pat es)
   | EListLit es  -> PList  (List.map expr_to_pat es)
   | EBinOp ("::", a, b) -> PCons (expr_to_pat a, expr_to_pat b)
+  | EAsPat (x, e) -> PAs (x, expr_to_pat e)  (* `x@subpat` in a binding LHS *)
   | EApp _ as e ->
     (* Constructor application: collect head + args, head must be uppercase.
        Strip ELoc wrappers along the way — both the head and each arg come
@@ -171,6 +172,7 @@ let parse_attr name msg_opt =
 %token PIPE_RIGHT RCOMPOSE LCOMPOSE
 %token FAT_ARROW ARROW LARROW
 %token AT BANG QUESTION
+%token AS_AT  (* `@` lexed immediately after an identifier: as-pattern operator (`x@p`); distinct from the space-separated prefix-hint AT (`fn @Impl`) *)
 
 (* Punctuation *)
 %token EQUAL COLON COMMA DOT PIPE UNDERSCORE
@@ -191,206 +193,69 @@ let parse_attr name msg_opt =
 %%
 
 (* ═══════════════════════════════════════════════════════
-   Grammar conflicts — audit notes (Phase 7)
+   Grammar conflicts — audit notes
    ═══════════════════════════════════════════════════════
 
-   Menhir reports 9 S/R states (23 conflicts) and 9 R/R states (35 conflicts)
-   as of 2026-05-31 (was 8/8 at Phase 7; grew with later phases).  Every
-   conflict is documented below; the Phase 60 re-validation table at the end of
-   this block is the authoritative, current cross-check.  All default
-   resolutions are correct for the intended semantics — none require
-   restructuring.
+   `menhir --explain` emits a witness for 2 S/R + 1 R/R = 3 conflict states
+   (`lib/parser.conflicts`), all resolved by menhir's defaults and all intended.
+   This is down from 8 S/R + 6 R/R = 14 at Phase 60: Phase 81 eliminated the
+   entire pat-vs-expr conflict family (see "History" below).
 
-   ── Shift/reduce conflicts ──────────────────────────────
+   ── How binding LHSs are parsed (the key design rule) ──────
+   Every position that accepts both a pattern-bind and a bare expression —
+   the do-block `stmt`, the list-comprehension `lc_qual` generator, and the
+   `guard_qual` bind — parses its LHS as an `expr_no_block`/`expr_or` and
+   converts it to a pattern in the semantic action via `expr_to_pat` (and
+   `expr_to_pats` for lambda parameters).  A `pat`-LHS would share its
+   `[`/`(`/UPPER/lit/`::` prefix with the bare-expression production, producing
+   reduce/reduce conflicts between `pat_atom` and `expr_atom`; parsing the
+   expression first and letting the `LARROW`/`=>` lookahead alone decide
+   bind-vs-expression removes `pat_atom` from those start positions entirely.
+   Practical consequences of the expression-first parse:
+     • A constructor/cons/literal LHS works (`Some x <- m`, `h::t <- m`,
+       `42 <- m`); `expr_to_pat` recovers the pattern.
+     • A do-block's last statement may start with an uppercase constructor
+       (`Some x` parses as a trailing DoExpr).
+     • `_` after an operator inside a binding LHS is parsed as a left section,
+       not a wildcard: `(x :: _) <- m` is `(x :: _)` the section, so it fails to
+       convert.  Use a named tail (`(x :: rest) <- m`) or a match.  (Pattern
+       positions proper — function params, match arms — are unaffected; they use
+       the `pat` grammar directly.)
 
-   S/R state 108  •  lookahead: LBRACE
-     Stack: … EQUAL UPPER
-     Reduce: expr_atom → UPPER          (UPPER as a bare constructor reference)
-     Shift:  UPPER . LBRACE … RBRACE    (start of a record-creation expression)
-     Resolution: SHIFT (default).  Record creation must win.  A bare UPPER
-     followed by { is unambiguously a record literal; the atom-reduce path
-     would leave { to be the start of a record-update expression, which
-     requires { expr | … } and won't parse correctly here anyway.
+   ── As-patterns and the `@` token ─────────────────────────
+   `@` is whitespace-sensitive (see `lexer.mll`): adjacent to an identifier it
+   lexes as AS_AT (the as-pattern operator, `x@p`); separated by a space it is
+   AT (the impl-disambiguation prefix, `fn @Impl`).  AS_AT appears only in
+   `pat_as` (`IDENT AS_AT pat_cons`) and `expr_aspat` (`IDENT AS_AT
+   expr_postfix`, lowered to PAs by `expr_to_pat`), so it never collides with
+   the prefix-hint AT.  Compound as-pattern sub-patterns are parenthesised in
+   binding LHSs (`x@(a, b)`, `x@(h::t)`), matching how the formatter prints PAs.
 
-   S/R state (new, Phase 16)  •  lookahead: EQUAL
-     Stack: … UPPER LBRACE IDENT
-     Reduce: expr_atom → IDENT    (path toward kv_or_e → expr_no_block or expr_pipe FAT_ARROW …)
-     Shift:  IDENT . EQUAL expr   (start of record_field_expr)
-     Resolution: SHIFT (default).  Record field wins: `Type { field = value }`
-     uses EQUAL and is unambiguous.  If the token after IDENT were FAT_ARROW
-     instead, the shift/reduce conflict does not arise (record rule doesn't
-     apply), so map keys that start with IDENT parse correctly via the reduce
-     path.
+   ── The 3 remaining conflicts — all SHIFT/earlier-rule, all intended ──
+     | State | Kind | Lookahead   | Reduce vs Shift / competing reductions      | Intended       |
+     |-------|------|-------------|---------------------------------------------|----------------|
+     | 134   | S/R  | LBRACE      | expr_atom->UPPER / `UPPER {…}` record literal | record creation|
+     | 136   | S/R  | FAT_ARROW   | expr_atom->UNDERSCORE / `_ =>` lambda        | wildcard lambda|
+     | 588   | R/R  | RBRACE COMMA COLON | expr_annot->expr_lam / lambda inside `UPPER { k => v }` | KV (path A) |
+   Rationale:
+     • 134 — a bare `UPPER` followed by `{` is unambiguously a record literal.
+     • 136 — `_` followed by `=>` is a wildcard lambda.
+     • 588 — keeps `Map { k => v }` parsing as a key/value entry (path A: the
+       earlier `expr_annot -> expr_lam` reduction) rather than a lambda-valued
+       set element.
+   State numbers are current menhir ids and drift as the grammar evolves; the
+   resolutions do not.  Re-measure after any grammar change with
+   `grep -c '^\*\* Conflict' _build/default/lib/parser.conflicts` (expect 3).
 
-   S/R state 138  •  lookaheads: UPPER STRING RPAREN RBRACKET LPAREN
-                                  LBRACKET LBRACE INT IDENT FLOAT CONS
-                                  COMMA CHAR BOOL   (14 tokens)
-     Stack: … INDENT UPPER
-     Explanation concentrates on UPPER:
-     Reduce: expr_atom → UPPER          (first token of a DoExpr statement)
-     Shift:  UPPER . nonempty_list(pat_atom)  (constructor pattern in DoBind)
-     Resolution: SHIFT (default).  Attempting DoBind first is correct — if
-     `<-` does not follow, the parse will fail with a helpful error.  The
-     practical consequence (documented in PLAN.md §Phase 2) is that a DoExpr
-     whose first token is `UPPER` followed by an atom-like token must be
-     written with parens, e.g. `pure (Some 5)` instead of `Some 5`.
-     The other 13 tokens for this state fall under the R/R analysis below.
-
-   ── Reduce/reduce conflicts ─────────────────────────────
-
-   States 138, 141, 143, 144, 147, 235  •  lookaheads: CONS COMMA RPAREN RBRACKET
-     These states share the same root cause: inside a `do` block the parser
-     has seen a single atom (UPPER / IDENT / lit / `()` / `[]`) and now sees
-     a token that could continue either a pattern (DoBind) or an expression
-     (DoExpr).  Two reductions are possible for each atom:
-
-       expr_atom → UPPER  |  pat_atom → UPPER   (state 138)
-       expr_atom → IDENT  |  pat_atom → IDENT   (states 144, 235)
-       expr_atom → lit    |  pat_atom → lit      (state 147)
-       expr_atom → ()     |  pat_atom → ()       (state 141)
-       expr_atom → []     |  pat_atom → []       (state 143)
-
-     Resolution: REDUCE expr_atom (default: earliest rule in the file).
-     Choosing expr_atom is correct for the common case: the `stmt` rule
-     tries `pat LARROW` first (state 138 S/R above), so by the time we reach
-     one of these states the parser has already committed to reading the atom
-     as part of an expression.  The practical limitation: a DoBind whose LHS
-     is a cons pattern (`x :: xs <- list`) or a literal pattern (`42 <- xs`)
-     will fail to parse because the atom is reduced as expr_atom before the
-     `::` / `<-` is seen.  These patterns are unusual enough that the
-     restriction is acceptable; fixing it would require an `expr_to_pat`
-     pass on the entire `stmt` LHS (analogous to the lambda trick), which
-     is deferred to a future grammar pass.
-
-   Phase 23 (left sections): UNDERSCORE as expr_atom
-   Adding UNDERSCORE as expr_atom (for the left-section placeholder `_`) creates
-   new S/R and R/R states wherever UNDERSCORE was previously unambiguous as a
-   pattern wildcard.
-
-   S/R  •  lookahead: FAT_ARROW  (states near "UNDERSCORE" in repl_expr / do-block)
-     Stack: … UNDERSCORE
-     Reduce: expr_atom → UNDERSCORE    (treat _ as expression EVar "_")
-     Shift:  UNDERSCORE . FAT_ARROW    (start of lambda _ => expr)
-     Resolution: SHIFT (default).  Lambda _ => expr must still work.  When
-     _ is followed by FAT_ARROW the only sensible parse is a wildcard lambda.
-
-   S/R  •  lookaheads: UPPER UNDERSCORE … (do-block atom list, 14+ tokens)
-     Same root as existing state 138 / 176 — now UNDERSCORE is in the token set.
-     Resolution: SHIFT (default) — same reasoning as existing state 138.
-
-   R/R  •  lookaheads: RPAREN RBRACKET CONS COMMA
-     Stack: … LPAREN RPAREN  (or similar atom)
-     Same root as existing R/R states 141/143/144/147/235 — the UNDERSCORE now
-     adds analogous states where `_` is seen as either pat_atom (PWild) or
-     expr_atom (EVar "_").
-     Resolution: REDUCE pat_atom (default: earlier rule).  This is correct:
-     `_` in a do-block atom position defaults to a pattern wildcard, which is
-     the expected behaviour.  The left-section desugaring happens earlier in
-     the semantic action on LPAREN expr_no_block RPAREN, before any ambiguous
-     atom context arises.
-
-   Phase 31 (record patterns): IDENT in record_pat_field vs expr_atom
-   New R/R state (state 194)  •  lookaheads: RBRACE COMMA
-     Stack: … DO INDENT … IDENT
-     Two reductions when IDENT is followed by RBRACE or COMMA:
-       record_pat_field → IDENT   (field pun inside UPPER { … } pattern)
-       expr_atom → IDENT          (variable reference inside an expression)
-     Resolution: REDUCE expr_atom (default: earlier production).
-     This is the same class as the existing 141/143/144/147 conflicts.
-     In pattern context (match arms), the grammar unambiguously uses
-     `record_pat_fields` inside `UPPER { … }`, so the correct reduction is
-     always reached.  The conflict only manifests in do-block DoBind context,
-     where the existing grammar already limits UPPER-headed patterns to
-     require parens; the same applies to record patterns in DoBind.
-
-   State 317  •  lookaheads: RBRACE COMMA COLON   (Phase 16 — kv_or_e)
-     Stack: … UPPER LBRACE expr_pipe FAT_ARROW expr_lam
-     Context: inside `UPPER { kv_or_e, … }` after parsing `expr_pipe => expr_lam`.
-     Two reductions are possible for the trailing expr_lam:
-       expr_annot → expr_lam          (path A: complete the RHS of kv_or_e → expr_pipe FAT_ARROW expr_no_block)
-       expr_lam → expr_pipe FAT_ARROW expr_lam   (path B: treat the whole thing as a lambda, part of kv_or_e → expr_no_block)
-     Resolution: REDUCE expr_annot → expr_lam (default: earlier production).
-     Path A is correct — it produces KV("a", 1) for `Map { "a" => 1 }`.
-     Path B would produce a lambda-valued set element, which is semantically
-     wrong and would type-check as a Set of function values.
-
-   Phase 38 (`if let` / `let else`): no new conflicts
-     `IF LET` is unambiguous: `LET` is not a valid first token for `expr_or`,
-     so the parser resolves the choice at the `IF` state by lookahead.
-     `LET pat EQUAL expr_no_block ELSE` in `stmt`: after fully reducing
-     `expr_no_block`, lookahead `ELSE` deterministically shifts (DoLetElse)
-     vs. `NEWLINE`/`DEDENT` which reduces (DoLet). No additional conflicts.
-
-   Phase 40 (range literals): INT/CHAR DOTDOT/DOTDOT_EQ in pat_atom
-   2 new S/R states (states 104, 113)  •  lookaheads: DOTDOT DOTDOT_EQ
-     Stack: … LBRACKET INT   (or … LBRACKET CHAR)
-     Reduce: lit → INT (or lit → CHAR)  (path toward PLit in a do-block DoBind)
-     Shift:  INT . DOTDOT_EQ INT        (start of PRng range pattern)
-     Resolution: SHIFT (default).  Range pattern wins: 1..9 or 'a'..'z'
-     inside a pattern position correctly becomes PRng rather than a standalone
-     literal.  These states arise because the same INT/CHAR token appears both
-     in `pat_atom: lit` and `pat_atom: INT DOTDOT INT`; Menhir's default shift
-     resolution is the desired behaviour.
-
-   ═══════════════════════════════════════════════════════
-   Phase 60 — pre-self-host re-validation (2026-05-31)
-   ═══════════════════════════════════════════════════════
-
-   Re-ran `menhir --explain` against the *current* grammar and walked every
-   conflict to confirm the default resolution is the intended behaviour, so a
-   future hand-written (Pratt/PEG) parser can reproduce each decision as an
-   explicit rule.  Two notes up front:
-
-     • Recount: the dune build now reports 9 S/R states (23 conflicts) and
-       9 R/R states (35 conflicts).  Of these, `menhir --explain` emits a
-       witness derivation for 8 S/R + 6 R/R = 14 states (tabled below); for the
-       remaining 1 S/R + 3 R/R states it emits none — they are additional
-       members of the same families already covered (do-block bare-atom
-       ambiguity, range-literal-in-pattern, `_` as pat/expr) and resolve by the
-       identical rules, so the hand-written parser needs no extra cases.
-     • State numbers below are the *current* menhir state ids and differ from
-       the historical ids above (108/138/…) — the grammar evolved.  The
-       *resolutions* are unchanged.
-
-   Every decision was confirmed against observable parser output (the do-block
-   atom cases were checked with dev/debug.exe: `()`, `[]`, and bare-literal
-   stmts all parse as DoExpr expressions — the "expression" column below).
-
-   ── Shift/reduce (8 of 9 detailed) — all SHIFT (menhir default), all intended ──
-     | State | Lookahead(s)   | Reduce  vs  Shift                         | Intended (SHIFT) |
-     |-------|----------------|-------------------------------------------|------------------|
-     | 121   | LBRACE         | expr_atom->UPPER / UPPER {…} record        | record creation  |
-     | 123   | FAT_ARROW      | expr_atom->UNDERSCORE / `_ =>` lambda      | wildcard lambda  |
-     | 165   | DOTDOT(_EQ)    | lit->INT / INT..INT range pattern          | range pattern    |
-     | 178   | DOTDOT(_EQ)    | lit->CHAR / CHAR..CHAR range pattern       | range pattern    |
-     | 248   | 18 tokens      | expr_atom->UPPER / `UPPER pat…` ctor pat   | DoBind ctor pat  |
-     | 252   | FAT_ARROW,…    | expr_atom->UNDERSCORE / `_ =>` lambda      | wildcard lambda  |
-     | 254   | DOTDOT(_EQ)    | lit->INT (after MINUS) / -INT.. range pat  | range pattern    |
-     | 270   | AT             | expr_atom->IDENT / `x@pat` as-pattern      | as-pattern       |
-     Rationale: 121/123/252/270 are genuine "the longer form is the only
-     sensible parse"; 165/178/254/248 implement the documented do-block DoBind
-     limitation (an UPPER/range/ctor DoBind LHS is tried first, so a DoExpr
-     that starts that way needs parens, e.g. `pure (Some x)`).
-
-   ── Reduce/reduce (6 of 9 detailed) — menhir picks the expression production ──
-     | State | Lookahead(s)       | Competing reductions                        | Intended    |
-     |-------|--------------------|---------------------------------------------|-------------|
-     | 250   | RBRACE COMMA       | expr_atom->IDENT / record_pat_field->IDENT  | expression  |
-     | 263   | CONS COMMA …       | expr_atom->`()` / pat_atom->`()`            | expression  |
-     | 269   | CONS COMMA …       | expr_atom->`[]` / pat_atom->`[]`            | expression  |
-     | 370   | CONS COMMA …       | expr_atom->lit / pat_atom->lit              | expression  |
-     | 439   | RBRACE COMMA COLON | expr_annot->expr_lam / expr_lam->…FAT_ARROW | KV (path A) |
-     | 441   | CONS               | expr_atom->`_` / pat_atom->`_`              | expression  |
-     Rationale: 250/263/269/370/441 are the do-block "bare atom" ambiguity — in
-     stmt position the atom is taken as a DoExpr expression (confirmed
-     empirically), so a cons/literal/record-pun DoBind LHS requires parens
-     (accepted limitation; see the DoBind notes above).  439 keeps
-     `Map { k => v }` parsing as a key/value entry rather than a lambda-valued
-     set element (path A — the earlier `expr_annot -> expr_lam` reduction).
-
-   For the hand-written parser: encode each S/R row as "prefer the longer
-   form", and each R/R row as "in statement/element position an ambiguous bare
-   atom is an expression; pattern-only DoBind LHSs must be parenthesised."
+   ── History ────────────────────────────────────────────────
+   Phase 7 started at 8 S/R + 8 R/R; later phases (record literals, left
+   sections `_`, record patterns, range literals, kv_or_e, `@`-hints) grew it to
+   8 S/R + 6 R/R explained witnesses by Phase 60, the bulk being do-block /
+   guard / list-comp `pat_atom`-vs-`expr_atom` reduce/reduce conflicts.  A
+   pre-Phase-81 fix moved the do-block `stmt` LHS to the expression-first form;
+   Phase 81 finished the job by doing the same for `lc_qual` and `guard_qual`
+   (and adding the AS_AT as-pattern operator), which removed that whole family
+   and dropped the count to the 3 above.
    ═══════════════════════════════════════════════════════ *)
 
 (* ── Top level ───────────────────────────────────────── *)
@@ -497,8 +362,12 @@ guard_arm:
   | PIPE separated_nonempty_list(COMMA, guard_qual) EQUAL fun_body newlines  { ($2, $4) }
 
 guard_qual:
-  | pat LARROW expr_or  { GBind ($1, $3) }
-  | expr_or             { GBool $1 }
+  (* Bind LHS parsed as an expression and converted to a pattern in the action
+     (like the do-block `stmt` and `lc_qual` rules), so a `pat`-start bind does
+     not reduce/reduce-conflict with the bare-expression guard.  The `LARROW`
+     lookahead alone decides bind-vs-guard. *)
+  | expr_or LARROW expr_or  { GBind (expr_to_pat $1, $3) }
+  | expr_or                 { GBool $1 }
 
 fun_body:
   | expr_no_block                                                    { $1 }
@@ -576,8 +445,12 @@ pat:
   | pat_as  { $1 }
 
 pat_as:
-  | IDENT AT pat_cons  { PAs ($1, $3) }
-  | pat_cons           { $1 }
+  (* As-patterns are written with `@` adjacent to the name (`x@p`), which the
+     lexer tokenises as AS_AT.  A spaced `x @ p` lexes the `@` as the prefix-hint
+     AT and is not a valid pattern — consistent with the whitespace-sensitive `@`
+     rule, and the formatter always prints as-patterns adjacent. *)
+  | IDENT AS_AT pat_cons  { PAs ($1, $3) }
+  | pat_cons              { $1 }
 
 pat_cons:
   | pat_app CONS pat_cons   { PCons ($1, $3) }
@@ -767,8 +640,18 @@ expr_question:
   | expr_app                { $1 }
 
 expr_app:
-  | expr_app expr_postfix  { EApp ($1, $2) }
-  | expr_postfix           { $1 }
+  | expr_app expr_aspat  { EApp ($1, $2) }
+  | expr_aspat           { $1 }
+
+(* As-pattern operator (`x@subpat`).  AS_AT is emitted by the lexer only when `@`
+   directly follows an identifier (no space), so this never collides with the
+   space-separated prefix-hint `AT` (`fn @Impl`).  The RHS is an `expr_postfix`
+   atom; compound sub-patterns are parenthesised (`x@(a, b)`, `x@(h::t)`),
+   matching how the formatter prints `PAs`.  `expr_to_pat`/`expr_to_pats` lower
+   EAsPat to `PAs` at the lambda / do-bind boundary; elsewhere resolve rejects it. *)
+expr_aspat:
+  | IDENT AS_AT expr_postfix  { ELoc (of_pos $startpos $endpos, EAsPat ($1, $3)) }
+  | expr_postfix             { $1 }
 
 expr_postfix:
   | expr_postfix DOT IDENT                        { EFieldAccess ($1, $3) }
@@ -908,7 +791,11 @@ guard_opt:
 (* ── List comprehension qualifiers ──────────────────── *)
 
 lc_qual:
-  | pat LARROW expr_no_block             { LCGen ($1, $3) }
+  (* Generator LHS is parsed as an expression and converted to a pattern in the
+     action (like the do-block `stmt` rule), so a `pat`-start generator does not
+     reduce/reduce-conflict with the bare-expression guard production.  The
+     `LARROW` lookahead alone decides generator-vs-guard. *)
+  | expr_no_block LARROW expr_no_block   { LCGen (expr_to_pat $1, $3) }
   | LET pat EQUAL expr_no_block          { LCLet (false, $2, $4) }
   | LET MUT pat EQUAL expr_no_block      { LCLet (true,  $3, $5) }
   | expr_no_block                        { LCGuard $1 }

@@ -5,6 +5,13 @@ open Parser
 let indent_stack : int list ref = ref [0]
 let pending : token Queue.t = Queue.create ()
 
+(* Absolute end offset of the most recently lexed IDENT.  Used to make `@`
+   adjacency-sensitive: an `@` whose start offset equals this (i.e. it
+   immediately follows an identifier with no intervening space/comment) is the
+   as-pattern operator (`x@rest`); otherwise it is the impl-hint prefix
+   (`fn @Impl`).  -1 = no preceding identifier. *)
+let last_ident_end : int ref = ref (-1)
+
 (* Paren-grouping depth.  Incremented on `(`, `[`, `{`, `[|` and
    decremented on the matching close tokens.  While > 0, the
    indentation-driven tokens (NEWLINE, INDENT, DEDENT) are
@@ -99,6 +106,7 @@ let advance_over lexbuf s =
 let reset () =
   indent_stack := [0];
   Queue.clear pending;
+  last_ident_end := -1;
   paren_depth := 0;
   interp_depth := 0;
   interp_in_triple := false;
@@ -174,6 +182,12 @@ let keyword_or_ident s =
   | "True"      -> BOOL true
   | "False"     -> BOOL false
   | _           -> IDENT s
+
+(* Return the token, and if it is an IDENT record its end offset so a directly
+   adjacent `@` lexes as the as-pattern operator (see `last_ident_end`). *)
+let record_ident lexbuf t =
+  (match t with IDENT _ -> last_ident_end := Lexing.lexeme_end lexbuf | _ -> ());
+  t
 }
 
 let white     = [' ' '\t']
@@ -278,8 +292,8 @@ and read = parse
     }
 
   (* Identifiers — order matters: longer matches win, ties go to earlier rule *)
-  | lower alnum*           { keyword_or_ident (Lexing.lexeme lexbuf) }
-  | '_' alnum+             { keyword_or_ident (Lexing.lexeme lexbuf) }
+  | lower alnum*           { record_ident lexbuf (keyword_or_ident (Lexing.lexeme lexbuf)) }
+  | '_' alnum+             { record_ident lexbuf (keyword_or_ident (Lexing.lexeme lexbuf)) }
   | '_'                    { UNDERSCORE }
   | upper alnum*           { UPPER (Lexing.lexeme lexbuf) }
 
@@ -309,7 +323,7 @@ and read = parse
   | "<<"  { LCOMPOSE }
   | ".{"  { DOT_LBRACE }
   | ".*"  { DOT_STAR }
-  | "@"   { AT }
+  | "@"   { if Lexing.lexeme_start lexbuf = !last_ident_end then AS_AT else AT }
 
   | '+'   { PLUS }
   | '-'   { MINUS }
