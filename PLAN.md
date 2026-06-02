@@ -4159,26 +4159,57 @@ case. Skill: **add-language-feature**.
 
 All reproduced on the post-merge binary before filing (see notes). Phases 89–93.
 
-### Phase 89: Point-free constraint-polymorphic dispatched defs mis-resolve under multiple impls ⏳ TODO
+### Phase 89: Point-free constraint-polymorphic dispatched defs mis-resolve under multiple impls ✅ DONE
 
-An **eta-reduced** definition of a `(Foldable t, …) => …` function whose body is
-a partial application of a dispatched method — e.g. `maximum = fold step None` —
-type-errors `Type mismatch: Array vs List` (or, on the path where typecheck
-doesn't catch it, eval-panics `applied non-function: <dispatch/N>`) **once a
-second `Foldable` impl is in scope at a List-typed call site**. The
-eta-*expanded* form `maximum xs = fold step None xs` works. Minimal repro: put
-`probePF = fold pfStep None` (constraint `(Foldable t, Ord a)`) in `core.mdk`,
-then `probePF [3,1,2]` from a file that `import`s `array` → errors at the
-*definition* line; the same call with no array import succeeds. Root cause is
-almost certainly that resolving the dispatch/constraint for a CAF-style binding
-commits the container type before the call-site argument type is known, and
-`default impl Foldable Array` then wins the default. This is why core/list
-eta-expand `maximum`/`minimum` rather than writing them point-free; fixing it
-would restore idiomatic point-free stdlib style and remove a sharp edge for
-users. Lands in `lib/typecheck.ml` (constraint resolution / generalization of
-nullary-but-constrained bindings) + `lib/eval.ml` (dispatch of a partially
-applied VMulti). Add `test_typecheck` + `test_eval` regressions. Skill:
-**harden-typechecker** (confirm during exploration; may spill into eval dispatch).
+A **point-free** definition of a `(Foldable t, …) => …` function whose body is a
+partial application of a dispatched method — e.g. `maximum = fold step None` —
+type-errored `Type mismatch: List vs Array` (or `List vs Option`, etc.) as soon
+as it was **used at two different `Foldable` containers in one program**. The
+eta-*expanded* `maximum xs = fold step None xs` worked. The original PLAN repro
+(array import) was a red herring — the trigger is *two uses at different
+containers*, not the array import (a single use at either container always
+worked).
+
+**Root cause (narrower than first described).** Not a dispatch/CAF-ordering
+problem at all: it was the **value restriction**.  `maximum = fold step None` is
+a zero-arg binding whose RHS is an *application* (expansive), so
+`process_letrec_group` set `is_val = false` and value-restricted it to a
+*monomorphic* scheme — **even though it carried an explicit polymorphic
+signature**.  The first use pinned `t`/`a`; the second use at a different
+container then failed to unify.  Notably eval already coped: the inner `fold`
+VMulti dispatches by the runtime container value (arg tag), so it was purely a
+typechecker over-monomorphization.
+
+**Fix (`lib/typecheck.ml`, `process_letrec_group`).** Relax the value
+restriction for a *signed* binding whose declared type is a **function** (arrow):
+generalize it per its signature.  Sound because (a) a closure is immutable, so
+sharing its type vars across uses is safe, and (b) `generalize` still respects
+Rémy levels, so a *captured* monomorphic cell's var (at the base level) is never
+over-quantified.  The **arrow guard preserves the classic protection** — a
+non-function expansive binding like `r : Ref (List a); r = Ref []` keeps the
+value restriction and stays monomorphic (the polymorphic-reference hole stays
+closed).  Such a relaxed binding routes its constraints through
+`inferred_constraints`, **not** `fun_constraints` (a new `relaxed` flag): the
+marker never wrapped its body's `fold` in an `EDictApp`, so dict-routing would
+crash at eval with an unbound `$dict_<fn>_<slot>`; instead its inner methods
+dispatch by arg tag and its callers still get obligation checking — exactly the
+Phase 83 `inferred_constraints` rationale.  No `eval.ml` change was needed.
+
+**Stdlib payoff.** `maximum`/`minimum` in `core.mdk` are now written point-free
+(`maximum = fold step None where …`); the eta-expanded workaround is gone.
+Doctests for both on List **and** Array (`minimum (fromList …)`) pass.
+
+Tests: `test/test_typecheck.ml` "point-free constrained defs (Phase 89)"
+(generalizes per sig; dual-container use at List + Option; non-function binding
+stays value-restricted) and `test/test_eval.ml` "point-free constrained dispatch
+(Phase 89)" (runtime dispatch on List, Option, and both-in-one-program). All
+base suites green; no new `@thorough` failures.
+
+**Known limitation.** The relaxation is gated on the binding's type being a
+function (arrow).  A point-free constrained *non-function* constant
+(`myEmpty : Monoid a => a; myEmpty = empty`) stays monomorphic — that needs
+return-position dispatch (Phase 93's `minBound`/`pure` family), which is a
+separate mechanism.
 
 ### Phase 90: Per-use instantiation of a signed recursive HO function leaks (decorate-sort-undecorate monomorphises `sortBy`) ⏳ TODO
 

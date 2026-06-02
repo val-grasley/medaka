@@ -2395,9 +2395,32 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     (* Value restriction (Phase 66): a let-rec member is always a function;
        a non-letrec zero-arg binding is gated on its RHS so e.g. `r = Ref []`
        is not over-generalized. *)
-    let is_val = is_letrec
+    (* Phase 89: a point-free *signed* binding whose declared type is a function
+       (`maximum : (Foldable t, …) => t a -> Option a; maximum = fold step None`)
+       is expansive (its RHS is an application) yet must be generalized per its
+       signature, or one downstream use monomorphizes it and a second use at a
+       different container type-errors (`Array vs List`).  This is sound where
+       the binding's type is a function: a closure is immutable, and `generalize`
+       still respects levels, so a *captured* monomorphic cell's var (at the base
+       level) is not over-quantified.  The arrow guard is what preserves the
+       classic protection — a non-function expansive binding like `r : Ref (List
+       a); r = Ref []` keeps the value restriction and stays monomorphic. *)
+    let plain_val = is_letrec
       || List.for_all (fun (pats, rhs) -> pats <> [] || is_nonexpansive rhs) clauses in
-    (name, cs_monos, is_val, sig_opt <> None)
+    let sig_is_fun = match sig_t_opt with
+      | Some _ -> (match normalize placeholder with TFun _ -> true | _ -> false)
+      | None -> false in
+    let is_val = plain_val || sig_is_fun in
+    (* [relaxed]: generalized *only* because of the Phase 89 point-free rule.
+       Such a binding dispatches its body's methods (and its callers' obligations)
+       by runtime arg tag, not dict passing — so its constraints go in
+       inferred_constraints, not fun_constraints (see the registration below).
+       The marker never filled an EDictApp route for it (the body's `fold` etc.
+       carry no `$dict_<fn>_<slot>` param dict_pass would have to bind), so
+       routing it through fun_constraints would crash at eval with an unbound
+       `$dict_…` — exactly the inferred_constraints rationale from Phase 83. *)
+    let relaxed = sig_is_fun && not plain_val in
+    (name, cs_monos, is_val, sig_opt <> None, relaxed)
   ) prepared in
   exit_level ();
   (* Phase 83: the obligations / method usages this group's bodies generated
@@ -2408,7 +2431,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
   in
   let added_obligs  = take (List.length !obl_ref - oblig_n0) !obl_ref in
   let added_methods = take (List.length !mu_ref - mu_n0) !mu_ref in
-  List.map (fun (name, cs_monos, is_val, has_sig) ->
+  List.map (fun (name, cs_monos, is_val, has_sig, relaxed) ->
     let placeholder = List.assoc name placeholders in
     let scheme = gen_restricted is_val placeholder in
     (match scheme with
@@ -2459,9 +2482,23 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
            in
            if not entailed then fail_at loc (UnsatisfiedConstraint (name, iface))
          ) body_cs;
+         (* Phase 89: a point-free binding generalized only by the relaxed rule
+            dispatches by arg tag, not dict passing (the marker filled no EDictApp
+            route for its body's methods).  Route its declared constraints through
+            inferred_constraints — call-site obligations still fire, but
+            find_enclosing_dict / dict_pass stay out of it, so no unbound
+            `$dict_…` at eval.  Must also clear Pass A's fun_constraints
+            pre-registration. *)
+         if relaxed then begin
+           Hashtbl.remove (!env_ref).fun_constraints name;
+           if declared_closed <> [] then
+             Hashtbl.replace (!env_ref).inferred_constraints name declared_closed
+           else
+             Hashtbl.remove (!env_ref).inferred_constraints name
+         end
          (* Declared constraints drive dict passing — registered in
             fun_constraints (the marker already wrapped `=>`-signatured calls). *)
-         if declared_closed <> [] then
+         else if declared_closed <> [] then
            Hashtbl.replace (!env_ref).fun_constraints name declared_closed
          else
            (* No surviving constraints (e.g. the var was pinned by an outer

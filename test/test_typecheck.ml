@@ -3399,6 +3399,47 @@ let e_shadow_internal_prelude_fn =
 let t_prelude_method_shadow =
   assert_type "length : Int -> Int\nlength n = n + 1\n" "length" "Int -> Int"
 
+(* Phase 89: a *point-free* binding with an explicit constrained function
+   signature (`myMax = fold step None`) is expansive (its RHS is an application),
+   yet must be generalized per its signature — else one use monomorphizes it and
+   a second use at a different Foldable container type-errors (`List vs Option`).
+   Before the fix this whole program failed at `ro = myMax (Some 5)`. *)
+let t_pf_dual_container_def = assert_type
+  "myMax : (Foldable t, Ord a) => t a -> Option a\n\
+   myMax = fold step None where\n\
+  \    step None x = Some x\n\
+  \    step (Some m) x = Some (max m x)\n\
+   rl = myMax [3, 1, 2]\n\
+   ro = myMax (Some 5)\n"
+  "myMax" "a b -> Option b"
+
+let t_pf_dual_container_use_list = assert_type
+  "myMax : (Foldable t, Ord a) => t a -> Option a\n\
+   myMax = fold step None where\n\
+  \    step None x = Some x\n\
+  \    step (Some m) x = Some (max m x)\n\
+   rl = myMax [3, 1, 2]\n\
+   ro = myMax (Some 5)\n"
+  "rl" "Option Int"
+
+let t_pf_dual_container_use_option = assert_type
+  "myMax : (Foldable t, Ord a) => t a -> Option a\n\
+   myMax = fold step None where\n\
+  \    step None x = Some x\n\
+  \    step (Some m) x = Some (max m x)\n\
+   rl = myMax [3, 1, 2]\n\
+   ro = myMax (Some 5)\n"
+  "ro" "Option Int"
+
+(* Phase 89: the arrow guard preserves the classic value restriction — a
+   point-free binding whose declared type is *not* a function (`Ref (List a)`)
+   stays monomorphic, so this still rejects the polymorphic-reference hole. *)
+let e_pf_non_fun_still_restricted = assert_err
+  "r : Ref (List a)\n\
+   r = Ref []\n\
+   bad1 = set_ref r [1]\n\
+   bad2 = set_ref r [\"x\"]\n"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -3692,6 +3733,12 @@ let () =
       test_case "err: Ref not generalized (top-level)" `Quick e_value_restriction_toplevel;
       test_case "err: Ref not generalized (block)"     `Quick e_value_restriction_block;
       test_case "empty list still polymorphic"         `Quick t_empty_list_still_poly;
+    ];
+    "point-free constrained defs (Phase 89)", [
+      test_case "point-free def generalizes per sig"  `Quick t_pf_dual_container_def;
+      test_case "dual-container use: List"            `Quick t_pf_dual_container_use_list;
+      test_case "dual-container use: Option"          `Quick t_pf_dual_container_use_option;
+      test_case "err: non-fun stays value-restricted" `Quick e_pf_non_fun_still_restricted;
     ];
     "let mut / Assign", [
       test_case "assign valid (bare block)"  `Quick t_do_assign_valid;

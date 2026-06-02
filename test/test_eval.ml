@@ -1035,6 +1035,32 @@ let t_infer_wrapper_eval_false = assert_val_typed {|myEq x y = eq x y
 r = myEq 3 4
 |} "r" (VBool false)
 
+(* Phase 89: a point-free constrained def (`myMax = fold step None`) dispatches
+   correctly at runtime when used at *two* different Foldable containers in one
+   program — the typechecker now generalizes it per its signature, and the inner
+   `fold` dispatches by the runtime container value (arg tag).  Before the fix
+   the second use type-errored (`List vs Option`) so this never reached eval. *)
+let pf_max = {|myMax : (Foldable t, Ord a) => t a -> Option a
+myMax = fold step None where
+    step None x = Some x
+    step (Some m) x = Some (max m x)
+|}
+
+let t_pf_dispatch_list = assert_val_typed (pf_max ^ "r = myMax [3, 1, 2]\n")
+  "r" (VCon ("Some", [VInt 3]))
+
+let t_pf_dispatch_option = assert_val_typed (pf_max ^ "r = myMax (Some 5)\n")
+  "r" (VCon ("Some", [VInt 5]))
+
+(* Both containers in the SAME program — the dual use that used to type-error. *)
+let t_pf_dispatch_both_list = assert_val_typed
+  (pf_max ^ "rl = myMax [3, 1, 2]\nro = myMax (Some 5)\nr = rl\n")
+  "r" (VCon ("Some", [VInt 3]))
+
+let t_pf_dispatch_both_option = assert_val_typed
+  (pf_max ^ "rl = myMax [3, 1, 2]\nro = myMax (Some 5)\nr = ro\n")
+  "r" (VCon ("Some", [VInt 5]))
+
 let t_dispatch_list_empty = assert_val (dispatch_iface ^ {|
 r = describe ([])
 |}) "r" (VString "empty-list")
@@ -1772,6 +1798,12 @@ let () =
       test_case "list empty"        `Quick t_dispatch_list_empty;
       test_case "inferred wrapper true"  `Quick t_infer_wrapper_eval_true;
       test_case "inferred wrapper false" `Quick t_infer_wrapper_eval_false;
+    ];
+    "point-free constrained dispatch (Phase 89)", [
+      test_case "point-free on List"        `Quick t_pf_dispatch_list;
+      test_case "point-free on Option"      `Quick t_pf_dispatch_option;
+      test_case "dual use, read List"       `Quick t_pf_dispatch_both_list;
+      test_case "dual use, read Option"     `Quick t_pf_dispatch_both_option;
     ];
     "mixed-Foldable dispatch", [
       test_case "find on List"      `Quick t_find_on_list_mixed;
