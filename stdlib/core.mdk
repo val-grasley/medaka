@@ -538,6 +538,16 @@ export interface Filterable f requires Mappable f where
   filter : (a -> <e> Bool) -> f a -> <e> f a
   filter p = filterMap (x => if p x then Some x else None)
 
+{- | Build a container `c` from a list of entries of type `e`.  Backs the
+   container-literal sugar: the compiler lowers `Map { k => v, … }` to
+   `fromEntries [(k, v), …]` and `Set { x, … }` to `fromEntries [x, …]`,
+   pinning the result type to the named container so this dispatches to that
+   container's impl.  `c` is the dispatch (result) type; `e` is its entry type
+   — for a map `(k, v)`, for a set the element.  Impls live with each container
+   (e.g. `impl FromEntries (Map k v) (k, v)` in map.mdk). -}
+export interface FromEntries c e where
+  fromEntries : List e -> c
+
 export impl Foldable List where
   fold _ acc [] = acc
   fold f acc (x::xs) = fold f (f acc x) xs

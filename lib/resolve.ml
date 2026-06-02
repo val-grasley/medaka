@@ -666,6 +666,11 @@ let rec check_expr env scope errors e =
   | EAnnot (e, t) ->
     check_expr env scope errors e;
     check_type env errors t
+  | EHeadAnnot (e, t) ->
+    (* Phase 108: the head-pin's type names the container (Map/Set/…) — validate
+       it like any annotation, so a bogus `Banana { … }` is an Unknown type. *)
+    check_expr env scope errors e;
+    check_type env errors t
   | EInfix (op, l, r) ->
     if not (lookup_value env scope op) then
       emit errors (UnboundVariable op);

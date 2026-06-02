@@ -139,6 +139,13 @@ and expr =
   | EBlock        of do_stmt list                       (* bare sequential indented block *)
   | EDo           of string option ref * do_stmt list   (* monadic do-block *)
   | EAnnot        of expr * ty
+  | EHeadAnnot    of expr * ty
+    (* Phase 108: a *flexible* type pin — like EAnnot but WITHOUT the
+       skolemization-by-identity check, so the annotation's type variables may
+       ground (e.g. `Map _k _v` where _k/_v become Int).  Pins only the *head*
+       tycon of the expression's type.  Created by Desugar.lower_container_literals
+       to route `Map { … }` / `Set { … }` literals through the `FromEntries`
+       interface at the named output type; never produced by the parser. *)
   | EInfix        of ident * expr * expr                (* x `div` y *)
   | EStringInterp of interp_part list                  (* "text\{expr}text" *)
   | EListComp     of expr * lc_qual list               (* [e | x <- xs, guard, ...] *)
@@ -381,6 +388,7 @@ let rec pp_expr = function
   | EBlock stmts         -> Printf.sprintf "(block %s)" (String.concat "; " (List.map pp_do_stmt stmts))
   | EDo (_, stmts)       -> Printf.sprintf "(do %s)" (String.concat "; " (List.map pp_do_stmt stmts))
   | EAnnot (e, t)        -> Printf.sprintf "(%s : %s)" (pp_expr e) (pp_ty t)
+  | EHeadAnnot (e, t)    -> Printf.sprintf "(%s :~ %s)" (pp_expr e) (pp_ty t)
   | EInfix (op, l, r)    -> Printf.sprintf "(%s `%s` %s)" (pp_expr l) op (pp_expr r)
   | EStringInterp parts  ->
     let pp_part = function
@@ -474,6 +482,7 @@ let rec strip_locs_expr = function
   | EBlock stmts          -> EBlock (List.map strip_locs_do stmts)
   | EDo (_, stmts)        -> EDo (ref None, List.map strip_locs_do stmts)
   | EAnnot (e, t)         -> EAnnot (strip_locs_expr e, t)
+  | EHeadAnnot (e, t)     -> EHeadAnnot (strip_locs_expr e, t)
   | EInfix (op, l, r)    -> EInfix (op, strip_locs_expr l, strip_locs_expr r)
   | EStringInterp parts  ->
     EStringInterp (List.map (function

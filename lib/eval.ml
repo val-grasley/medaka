@@ -835,14 +835,9 @@ and eval env expr =
           | v -> pp_value v)
     ) parts in
     VString (String.concat "" strs)
-  | EMapLit (name, kvs) ->
-    (* Desugar to a constructor applied to a list of (key, value) tuples.
-       Real implementation awaits the stdlib Map module. *)
-    let pairs = List.map (fun (k, v) -> VTuple [eval env k; eval env v]) kvs in
-    VCon (name ^ ".fromList", [VList pairs])
-  | ESetLit (name, es) ->
-    (* Desugar to a constructor applied to a list of elements. *)
-    VCon (name ^ ".fromList", [VList (List.map (eval env) es)])
+  | EMapLit _ -> assert false (* eliminated by Desugar.lower_container_literals (Phase 108) *)
+  | ESetLit _ -> assert false (* eliminated by Desugar.lower_container_literals (Phase 108) *)
+  | EHeadAnnot (e, _) -> eval env e   (* transparent type pin (Phase 108) *)
   | ETuple es    -> VTuple (List.map (eval env) es)
 
   | EIndex (arr, idx) ->

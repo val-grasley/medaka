@@ -26,7 +26,7 @@
    `Ord k` constraint; the few that only walk an existing tree (`size`, `map`,
    `keys`, the folds) do not, because the tree is already in order. -}
 
-import core.{Eq, Ord, Show, Mappable, Semigroup, Monoid, Ordering, Option}
+import core.{Eq, Ord, Show, Mappable, Semigroup, Monoid, Ordering, Option, FromEntries}
 
 {- The representation.  `Tip` is the empty tree; `Bin size key value left right`
    is an interior node whose cached `size` is `1 + size left + size right`.
@@ -106,6 +106,15 @@ singleton : k -> v -> Map k v
 singleton k v = Bin 1 k v Tip Tip
 
 {- | Build a map from an association list.  Later pairs win on duplicate keys.
+
+   The `Map { k => v, … }` literal is sugar for `fromList` (it lowers to a
+   `FromEntries` dispatch pinned at `Map`, see the impl at the bottom of this
+   file):
+
+   > size (Map { 1 => 10, 2 => 20, 3 => 30 })
+   3
+   > findWithDefault 0 2 (Map { 1 => 10, 2 => 20 })
+   20
 
    > keys (fromList [(3, 0), (1, 0), (2, 0)])
    [1, 2, 3]
@@ -460,6 +469,12 @@ export default impl Show (Map k v) requires Show k, Show v where
    merge threads in by the ordinary route. -}
 export default impl Semigroup (Map k v) requires Ord k where
   append a b = union a b
+
+{- | Backs the `Map { k => v, … }` literal: the compiler lowers that to
+   `fromEntries [(k, v), …]` pinned at `Map`, dispatching here.  The `Ord k`
+   the build needs threads in by the ordinary return-position route. -}
+export default impl FromEntries (Map k v) (k, v) requires Ord k where
+  fromEntries es = fromList es
 
 {- | `Monoid.empty` for `Map` is the empty tree.  `empty` is nullary and so
    dispatches on its *result* type (Phase 103); the impl's `requires Ord k`

@@ -447,14 +447,40 @@ the per-module checklist.
     - **Compiler change:** removed `"Map"` from `resolve.ml`'s `primitive_types`
       (it was a reserved placeholder), so the stdlib `data Map` is canonical —
       mirroring `Option`/`Result`/`Ordering`.
+    - **Known issue (pre-existing, low priority):** map's exported standalone
+      `toList : Map k v -> List (k, v)` is **unreachable from a user file** that
+      imports map — a bare `toList m` there resolves to the generic
+      `Foldable.toList` method (which has no `Map` impl) and errors `No impl of
+      Foldable for Map`. Same standalone-vs-interface-method name-collision class
+      as the `empty`/`Monoid.empty` landmine (Phase 103) and won't-do Phase 78c.
+      Workarounds today: `toAscList`-style rename, or qualified access. Surfaced
+      while testing Phase 108; reproduces on map built via `fromList` too (not a
+      108 regression).
   - ⏳ **`stdlib/set.mdk`** — next. Same tree; decide standalone-element-tree vs.
     `Map a Unit` wrapper.
-  - **Phase 108 (deferred) — wire the `Map { k => v }` / `Set { … }` literal
-    sugar.** Surface syntax already parses to `EMapLit`/`ESetLit` and the names
-    `Map`/`Set` are reserved for it (resolve.ml still reserves `Set`); eval stubs
-    them as `VCon "<Name>.fromList"`. Make them desugar to a real `fromList` call
-    on the imported module (requires the module in scope at the literal site).
-    Unused anywhere today → low priority. Skill: **add-language-feature**.
+  - ✅ **Phase 108 — wire the `Map { k => v }` / `Set { … }` literal sugar. DONE
+    (2026-06-02).** Authoritative + interface-driven: a new core interface
+    `FromEntries c e` (`fromEntries : List e -> c`, dispatched on the result type
+    `c`); `impl FromEntries (Map k v) (k, v) requires Ord k` lives in map.mdk
+    (Set's awaits set.mdk). `Desugar.lower_container_literals` lowers
+    `Map { k => v, … }` → `(fromEntries [(k,v), …] :~ Name _k _v)` and `Set { … }`
+    → `(fromEntries [...] :~ Name _a)`, where `:~` is a new **`EHeadAnnot`** node —
+    EAnnot minus the skolemization-by-identity check, so it pins only the *head*
+    tycon flexibly (the element vars may ground). That pin makes `fromEntries`'s
+    return-position dispatch resolve to the named container's impl (so the name is
+    **authoritative** — `Banana { … }` is a resolve-time `Unknown type`), and the
+    impl's `Ord k` threads in via the ordinary return-position dict machinery
+    (Phase 103). Key insight that kept it cheap: lowering to a *normal* method call
+    + a tiny transparent pin node means **zero changes to the dispatch/dict core** —
+    EHeadAnnot recursion rides `Desugar.map_expr` (so marker + dict_pass get it
+    free), and eval just evaluates the inner expr. The old eval stub (`VCon
+    "<Name>.fromList"`) and the direct EMapLit/ESetLit typecheck arms are now
+    `InternalError`/`assert false` guards (the EDo/Phase-99 pattern; EMapLit/ESetLit
+    stay surface nodes for fmt round-trip). Touches ast/desugar/printer/coverage/
+    resolve/typecheck/eval + core.mdk + map.mdk. **Limitation:** extends to any
+    container with a `FromEntries` impl, but two same-shape containers in scope
+    need a type annotation to disambiguate (the name pins the *head*, not the full
+    type). Skill: **add-language-feature**.
 - **Modules 6–8 unstarted:** `mut_array`/`hash_map`/`hash_set`, `io`
   (`readFile`/`writeFile`/`readLine`), `json` (type + parser + serializer).
   Expect each to surface new language gaps — record them here as new phases.

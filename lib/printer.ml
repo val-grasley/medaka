@@ -260,7 +260,7 @@ let rec expr_prec = function
   | ESection _                         -> prec_atom
   | EAsPat _                           -> prec_app
   | ELam _ | ELet _ | ELetGroup _ | EIf _
-  | EMatch _ | EBlock _ | EDo (_, _) | EAnnot _
+  | EMatch _ | EBlock _ | EDo (_, _) | EAnnot _ | EHeadAnnot _
   | EFunction _ | EGuards _            -> prec_top
   | ELoc (_, e)                        -> expr_prec e
 
@@ -370,6 +370,10 @@ and print_expr_raw = function
     text "do" ^^ indent_block (sep_by Hardline (List.map print_do_stmt stmts))
   | EAnnot (e, t) ->
     print_expr prec_top e ^^ text " : " ^^ print_type t
+  | EHeadAnnot (e, _) ->
+    (* Compiler-internal (Phase 108): only Desugar produces it, so the
+       formatter never sees it — print the inner expr transparently. *)
+    print_expr prec_top e
   | EInfix (op, l, r) ->
     print_expr (prec_infix + 1) l
     ^^ text " `" ^^ text op ^^ text "` "

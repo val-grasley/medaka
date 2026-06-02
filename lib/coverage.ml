@@ -41,6 +41,7 @@ let rec collect_expr acc = function
   | Ast.EBinOp (_, l, r) | Ast.EInfix (_, l, r) ->
     collect_expr (collect_expr acc l) r
   | Ast.EUnOp (_, e) | Ast.EFieldAccess (e, _) | Ast.EAnnot (e, _)
+  | Ast.EHeadAnnot (e, _)
   | Ast.EQuestion e -> collect_expr acc e
   | Ast.ERecordCreate (_, fs) ->
     List.fold_left (fun a (_, e) -> collect_expr a e) acc fs

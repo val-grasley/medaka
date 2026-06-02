@@ -605,10 +605,15 @@ Verified: 1000 ascending inserts (the BST worst case) give depth 15 (≈ the
 `lib/resolve.ml` (a placeholder backing the stubbed `Map { k => v }` literal
 sugar). It is now removed from `primitive_types` so `data Map k v` in
 `stdlib/map.mdk` is the canonical definition — mirroring how `Option`/`Result`/
-`Ordering` live in `core.mdk`. **Deferred:** wiring the `Map { k => v }` /
-`Set { … }` literal sugar (parsed to `EMapLit`/`ESetLit`, eval-stubbed as
-`VCon "Map.fromList"`) to actually call the module's `fromList` — its own
-`add-language-feature` phase. The literal is unused anywhere today.
+`Ordering` live in `core.mdk`.
+
+**Literal sugar (Phase 108 ✅).** `Map { 1 => 10, 2 => 20 }` now builds a real
+map. It lowers (in `desugar`) to `fromEntries [(1,10),(2,20)]` pinned at the
+`Map` type, where `fromEntries` is a core interface `FromEntries c e` dispatched
+on the result type; `impl FromEntries (Map k v) (k, v) requires Ord k` lives in
+`map.mdk`. The name is **authoritative** (`Banana { … }` → `Unknown type`), and
+the literal requires the container's module imported (for the impl). `Set { … }`
+will work once `set.mdk` adds the matching impl. See PLAN.md Phase 108.
 
 ### `map` ✅ implemented (`stdlib/map.mdk`)
 

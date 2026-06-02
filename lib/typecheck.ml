@@ -1636,18 +1636,11 @@ let rec infer env = function
     List.iter (fun e -> unify (infer env e) elem) es;
     t_array elem
 
-  | EMapLit (_, kvs) ->
-    let kt = fresh_var () and vt = fresh_var () in
-    List.iter (fun (k, v) ->
-      unify (infer env k) kt;
-      unify (infer env v) vt
-    ) kvs;
-    t_map kt vt
+  | EMapLit _ ->
+    fail (InternalError "EMapLit survived desugar (Phase 108)")
 
-  | ESetLit (_, es) ->
-    let et = fresh_var () in
-    List.iter (fun e -> unify (infer env e) et) es;
-    t_set et
+  | ESetLit _ ->
+    fail (InternalError "ESetLit survived desugar (Phase 108)")
 
   | EStringInterp parts ->
     List.iter (function
@@ -1677,6 +1670,17 @@ let rec infer env = function
     in
     if not (all_distinct_tvars [] resolved) then
       fail (AnnotationTooGeneral ast_t);
+    te
+
+  | EHeadAnnot (e, ast_t) ->
+    (* Phase 108: like EAnnot but WITHOUT the skolemization-by-identity check —
+       the pin's type variables are *meant* to ground (the literal's element
+       types).  It fixes only the head tycon of `e`'s type to the named
+       container, which is what lets `fromEntries`'s return-position dispatch
+       resolve to that container's impl. *)
+    let te = infer env e in
+    let ta = from_ast_type ~aliases:env.aliases ~tbl:(Hashtbl.create 4) ast_t in
+    unify te ta;
     te
 
   | EInfix (op, l, r) ->

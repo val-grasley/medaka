@@ -589,6 +589,7 @@ let rec map_expr f e =
     | EBlock stmts            -> EBlock (List.map (map_do_stmt f) stmts)
     | EDo (tag, stmts)        -> EDo (tag, List.map (map_do_stmt f) stmts)
     | EAnnot (e0, t)          -> EAnnot (map_expr f e0, t)
+    | EHeadAnnot (e0, t)      -> EHeadAnnot (map_expr f e0, t)
     | EInfix (op, e1, e2)    -> EInfix (op, map_expr f e1, map_expr f e2)
     | EListComp (body, quals) ->
         EListComp (map_expr f body, List.map (map_lc_qual f) quals)
@@ -647,6 +648,35 @@ let desugar_record_puns record_names prog =
     | e -> e
   in
   List.map (map_decl rewrite) prog
+
+(* Phase 108: lower container literals to a `FromEntries` interface call pinned
+   to the named output type.
+
+     Map { k1 => v1, ... }  ⇒  (fromEntries [(k1, v1), ...] :~ Name _k _v)
+     Set { e1, ... }        ⇒  (fromEntries [e1, ...]        :~ Name _a)
+
+   `fromEntries : List e -> c` dispatches on the result type `c`, which the
+   `:~` head-pin (EHeadAnnot) fixes to the literal's named type — so the impl
+   is chosen authoritatively by the name (`Banana { … }` is a resolve-time
+   "Unknown type"), the `Ord k` the impl requires threads in via the ordinary
+   return-position dictionary machinery, and eval runs the real constructor.
+
+   Runs AFTER desugar_record_puns so record-shaped braces are already
+   ERecordCreate; genuine map/set literals are all that remain. *)
+let rewrite_container_lit =
+  let pin name args = List.fold_left (fun acc a -> TyApp (acc, a)) (TyCon name) args in
+  function
+  | EMapLit (name, kvs) ->
+      let pairs = EListLit (List.map (fun (k, v) -> ETuple [k; v]) kvs) in
+      EHeadAnnot (EApp (EVar "fromEntries", pairs),
+                  pin name [TyVar "_k"; TyVar "_v"])
+  | ESetLit (name, items) ->
+      EHeadAnnot (EApp (EVar "fromEntries", EListLit items),
+                  pin name [TyVar "_a"])
+  | e -> e
+
+let lower_container_literals prog =
+  List.map (map_decl rewrite_container_lit) prog
 
 (* ── List comprehension desugaring ──────────────────────────────────────────
    [body | x <- xs, guard, let p = e, ...]
@@ -923,7 +953,8 @@ let desugar_program (prog : program) : program =
     | DRecord (_, name, _, _, _) -> Some name
     | _ -> None) expanded in
   let after_puns = desugar_record_puns record_names expanded in
-  let after_lc   = desugar_list_comps after_puns in
+  let after_lit  = lower_container_literals after_puns in
+  let after_lc   = desugar_list_comps after_lit in
   let after_q    = desugar_questions after_lc in
   let after_do   = lower_do_blocks after_q in
   desugar_sugar after_do
@@ -938,7 +969,8 @@ let desugar_expr (e : expr) : expr =
     | e -> e
   in
   map_expr rewrite_sugar
-    (map_expr rewrite_do (map_expr rewrite_question_expr (map_expr rewrite_lc e)))
+    (map_expr rewrite_container_lit
+       (map_expr rewrite_do (map_expr rewrite_question_expr (map_expr rewrite_lc e))))
 
 let desugar_repl_item (item : repl_item) : repl_item =
   match item with
