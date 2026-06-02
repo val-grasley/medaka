@@ -368,7 +368,8 @@ let strip_shadow (n : ident) : ident =
    plus its own, and against the prelude's *and* its own constrained functions
    (so a user reference to a prelude constrained fn like `when` becomes an
    EDictApp that supplies its dictionaries).  Used by the single-file drivers. *)
-let mark_with_prelude (prog : program) : program =
+let mark_with_prelude ?(promoted : (ident, unit) Hashtbl.t option)
+    (prog : program) : program =
   let prog = shadow_rename prog in
   let methods = interface_method_names [Prelude.program; prog] in
   let constrained = constrained_fn_names [Prelude.program; prog] in
@@ -384,6 +385,14 @@ let mark_with_prelude (prog : program) : program =
       if not (Hashtbl.mem user_constrained n) then Hashtbl.remove constrained n
     ) shadowed
   end;
+  (* Phase 84: pass 2 of the two-pass elaboration unions in the names pass 1
+     found to carry *inferred* constraints (a polymorphic-monad do-block's
+     enclosing function), so a call to such a function becomes an EDictApp that
+     supplies the dictionaries dict_pass threads into its body.  The names are
+     post-shadow-rename (same as [prog] here), so they match the tree. *)
+  (match promoted with
+   | Some p -> Hashtbl.iter (fun n () -> Hashtbl.replace constrained n ()) p
+   | None -> ());
   mark_program methods constrained prog
 
 (* Mark a single repl item against a pre-built method-name set (the session's

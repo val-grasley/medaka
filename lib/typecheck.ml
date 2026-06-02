@@ -817,6 +817,15 @@ type env = {
   mut_vars        : StringSet.t;               (* bindings declared with let mut *)
   deprecated_fns  : (ident, string) Hashtbl.t; (* name → deprecation message *)
   must_use_fns    : (ident, unit) Hashtbl.t;   (* names whose return values must be used *)
+  promoted        : (ident, unit) Hashtbl.t;
+    (* Phase 84: names of unsignatured bindings whose *inferred* constraints
+       should be made dict-routable on this pass — registered in fun_constraints
+       (not inferred_constraints) so find_enclosing_dict / dict_pass thread a
+       dictionary into the body.  Empty on pass 1 (discovery) and on the
+       single-pass callers (LSP / diagnostics); populated on pass 2 of the
+       two-pass elaboration with the names pass 1 found in inferred_constraints,
+       so a polymorphic-monad do-block's `pure` routes by the caller's monad
+       instead of arg-tag "first impl wins". *)
 }
 
 let empty_env () = {
@@ -841,6 +850,7 @@ let empty_env () = {
   mut_vars        = StringSet.empty;
   deprecated_fns  = Hashtbl.create 8;
   must_use_fns    = Hashtbl.create 8;
+  promoted        = Hashtbl.create 8;
 }
 
 let lookup_var env x =
@@ -2381,10 +2391,21 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
            ) [] body_cs
          in
          let inferred = expand_supers (!env_ref).interfaces inferred in
-         if inferred <> [] then
-           Hashtbl.replace (!env_ref).inferred_constraints name inferred
-         else
-           Hashtbl.remove (!env_ref).inferred_constraints name
+         (* Phase 84: on pass 2 of the two-pass elaboration, a name pass 1 found
+            to carry inferred constraints is in [promoted].  Register such a
+            binding's inferred constraints in fun_constraints (route-bearing) so
+            find_enclosing_dict / dict_pass thread a dictionary into its body —
+            e.g. a polymorphic-monad do-block's `pure`.  Always record in
+            inferred_constraints too, so promoted_out (read from that table) and
+            cross-module export stay complete regardless of routing. *)
+         if inferred <> [] then begin
+           Hashtbl.replace (!env_ref).inferred_constraints name inferred;
+           if Hashtbl.mem (!env_ref).promoted name then
+             Hashtbl.replace (!env_ref).fun_constraints name inferred
+         end else begin
+           Hashtbl.remove (!env_ref).inferred_constraints name;
+           Hashtbl.remove (!env_ref).fun_constraints name
+         end
        end);
     env_ref := extend_var !env_ref name scheme;
     (name, scheme)
@@ -3385,11 +3406,21 @@ let program_is_core (prog : program) : bool =
     | DInterface { iface_name = "Foldable"; _ } -> true | _ -> false) prog in
   has_ordering && has_foldable
 
-let check_program_impl (prog : program) : (ident * scheme) list * string list =
+let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
+    (prog : program)
+    : (ident * scheme) list * string list * (ident, unit) Hashtbl.t =
   reset_state ();
   current_loc := None;
   current_impl_hint := None;
   let env = initial_env () in
+  (* Phase 84: seed the dict-routable-promotion set for this pass.  Pass 1 passes
+     none (discovery); pass 2 passes the names pass 1 found in inferred_constraints
+     so process_letrec_group registers their inferred constraints in
+     fun_constraints (route-bearing) instead.  env.promoted is a shared Hashtbl —
+     extend_var copies only [vars], so every derived env sees these. *)
+  (match promoted with
+   | Some p -> Hashtbl.iter (fun k () -> Hashtbl.replace env.promoted k ()) p
+   | None -> ());
 
   (* Prepend core stdlib so its data types, interfaces, and impls are in scope
      for all user code.  Prelude declarations are processed through the same
@@ -3520,8 +3551,47 @@ let check_program_impl (prog : program) : (ident * scheme) list * string list =
      The user binding sits in [results] (ahead of the prelude method's scheme in
      iface_method_schemes), so a name lookup still resolves to the user's. *)
   let unshadow (n, s) = (Method_marker.strip_shadow n, s) in
+  (* Phase 84: report which *user* bindings should be promoted to dict-routable on
+     a re-elaboration pass — those whose inferred constraints make their body's
+     return-position method dispatch (a polymorphic-monad do-block's `pure`) fail
+     under arg-tag fallback.  Three filters, each guarding a concrete hazard:
+
+     - Defined in [user_prog] (the same shadow-renamed tree this call received, so
+       keys line up).  Promoting a prelude helper would add a dict param dict_pass
+       can't match — the prelude marker (marked_prelude) never wraps its call
+       sites in EDictApp — crashing at eval with an arity mismatch.
+     - Constraint set mentions `Applicative` (the interface `pure` resolves into;
+       super-expansion also adds `Mappable`).  Argument-dispatched wrappers (e.g.
+       an inferred `Eq a` over `eq`) already dispatch correctly by arg tag, so
+       leave them untouched to keep the blast radius at the do-block case.
+     - Non-recursive.  A self-/mutually-recursive wrapper would get a dict param,
+       but its own recursive EDictApp call goes unrouted (Pass A pre-registers
+       only signatured fns), the same arity-mismatch crash.  Recursive monad
+       wrappers stay on arg-tag dispatch — deferred, but never worse than today. *)
+  let user_names = Hashtbl.create 16 in
+  List.iter (fun d -> match Ast.inner_decl d with
+    | DFunDef (_, n, _, _) -> Hashtbl.replace user_names n ()
+    | DLetGroup (_, bs)    -> List.iter (fun (n, _) -> Hashtbl.replace user_names n ()) bs
+    | _ -> ()) user_prog;
+  let recursive_names = Hashtbl.create 16 in
+  List.iter (fun d ->
+    let defined = Method_marker.decl_defined_names d in
+    if defined <> [] then begin
+      let refd = Hashtbl.create 16 in
+      Method_marker.decl_referenced_names refd d;
+      if List.exists (fun n -> Hashtbl.mem refd n) defined then
+        List.iter (fun n -> Hashtbl.replace recursive_names n ()) defined
+    end) user_prog;
+  let promoted_out = Hashtbl.create 8 in
+  Hashtbl.iter (fun k cs ->
+    if Hashtbl.mem user_names k
+       && not (Hashtbl.mem recursive_names k)
+       && List.exists (fun (iface, _) -> iface = "Applicative") cs
+    then Hashtbl.replace promoted_out k ())
+    final_env.inferred_constraints;
   (List.map unshadow (results @ !iface_method_schemes @ !extern_schemes),
-   List.rev !(final_env.warnings))
+   List.rev !(final_env.warnings),
+   promoted_out)
 
 (* Phase 78a: a user binding may shadow a prelude *plain* function.  Droppable
    ones (no internal prelude use) are removed by [prelude_for] and shadow
@@ -3532,7 +3602,15 @@ let check_program_impl (prog : program) : (ident * scheme) list * string list =
    location, so when one does and the program shadows such a name, re-blame the
    user's own definition with an actionable message.  Compatible merges (which
    type-check) are untouched — they still work as before. *)
-let check_program (prog : program) : (ident * scheme) list * string list =
+(* Phase 84: the promotion-aware entry point.  [promoted] names have their
+   inferred constraints registered in fun_constraints (dict-routable); the
+   returned third component is the set of user bindings that acquired inferred
+   constraints this pass.  The two-pass elaboration (see Method_marker /
+   the eval drivers) calls this once with no promotion to discover the set, then
+   again with that set promoted. *)
+let check_program_promoting ?(promoted : (ident, unit) Hashtbl.t option)
+    (prog : program)
+    : (ident * scheme) list * string list * (ident, unit) Hashtbl.t =
   (* Phase 78b: rename safe user bindings that shadow a prelude interface method
      to internal names, so they type-check as ordinary functions.  Done here so
      every typecheck caller is consistent — including LSP and diagnostics, which
@@ -3544,11 +3622,17 @@ let check_program (prog : program) : (ident * scheme) list * string list =
     if program_is_core prog then None
     else Method_marker.nondroppable_shadow prog in
   match shadow with
-  | None -> check_program_impl prog
+  | None -> check_program_impl ?promoted prog
   | Some (name, uloc) ->
-    (try check_program_impl prog
+    (try check_program_impl ?promoted prog
      with Type_error (_, Some l) when l.Ast.file = "core.mdk" ->
        fail_at uloc (CannotShadowPrelude name))
+
+(* Single-pass entry point, unchanged for LSP / diagnostics / non-eval callers:
+   no promotion, drops the discovery set. *)
+let check_program (prog : program) : (ident * scheme) list * string list =
+  let (schemes, warnings, _) = check_program_promoting prog in
+  (schemes, warnings)
 
 (* Multi-module type-checking entry point.
    Accepts public type exports of all previously-processed modules;
@@ -3842,6 +3926,7 @@ let copy_tc_env (e : env) : env = {
   mut_vars        = e.mut_vars;                (* persistent set *)
   deprecated_fns  = Hashtbl.copy e.deprecated_fns;
   must_use_fns    = Hashtbl.copy e.must_use_fns;
+  promoted        = Hashtbl.copy e.promoted;
 }
 
 (* Type-check one or more declarations against an existing env.
