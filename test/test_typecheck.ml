@@ -1527,6 +1527,39 @@ let assert_modules_ok mods () =
   | Error (e, _) ->
     failwith ("Expected modules to type-check, got: " ^ pp_error e)
 
+(* Like [check_modules] but returns the *last* module's warnings (third element
+   of [typecheck_module]) — used by the Phase 105 exhaustiveness tests, whose
+   false positive is a warning, not a type error. *)
+let modules_last_warns mods =
+  let rec go known acc = function
+    | [] -> Ok acc
+    | (mid, src) :: rest ->
+      (match
+         (try `Te (typecheck_module known mid (Desugar.desugar_program (parse src)))
+          with Type_error (e, loc) -> `Err (e, loc))
+       with
+       | `Err el -> Error el
+       | `Te (te, _, ws) -> go (known @ [te]) ws rest)
+  in
+  go [] [] mods
+
+let assert_modules_no_warns mods () =
+  match modules_last_warns mods with
+  | Error (e, _) ->
+    failwith ("Expected modules to type-check, got: " ^ pp_error e)
+  | Ok [] -> ()
+  | Ok ws ->
+    failwith (Printf.sprintf
+      "Expected no warnings in the importing module, got %d:\n  %s"
+      (List.length ws) (String.concat "\n  " ws))
+
+let assert_modules_warns mods () =
+  match modules_last_warns mods with
+  | Error (e, _) ->
+    failwith ("Expected warnings but got a type error: " ^ pp_error e)
+  | Ok [] -> failwith "Expected a warning in the importing module, got none"
+  | Ok _ -> ()
+
 let m_iface = ("a", "export interface Iface a where\n  m : a -> Int\n")
 let m_type  = ("b", "export data T = MkT\n")
 
@@ -2065,6 +2098,24 @@ f _   = 1
 
 (* Single Unit-pattern clause is exhaustive (Unit has one constructor). *)
 let wm_unit_clause = assert_no_warns "f () = 0\n"
+
+(* ── Phase 105: exhaustiveness over an *imported* type's constructors ──
+   The clause oracle enumerates env.type_ctors; imported ctors must seed it
+   (via te_ctors) or a total match over an imported ADT falsely warns. *)
+
+(* Total coverage of an imported ADT → no warning (the regression).  These
+   in-memory module tests skip Resolve, so imported names are available via the
+   known-modules seeding rather than an explicit `import` (as in the orphan
+   tests above). *)
+let wm_imported_total = assert_modules_no_warns
+  [ ("m", "public export data T = A | B Int\n");
+    ("u", "f A     = 0\nf (B n) = n\n") ]
+
+(* Partial coverage of the same imported ADT → still warns (negative control:
+   the oracle genuinely enumerates the type rather than giving up). *)
+let wm_imported_partial = assert_modules_warns
+  [ ("m", "public export data T = A | B Int\n");
+    ("u", "f A = 0\n") ]
 
 (* ── Phase 91 (2): non-exhaustive-guard detection (function-clause guards) ──
    These desugar to EIf chains before exhaust runs, so they're checked by the
@@ -4008,6 +4059,8 @@ let () =
       test_case "ordinary var params"       `Quick wm_ordinary_vars;
       test_case "catch-all clause"          `Quick wm_catchall;
       test_case "unit clause"               `Quick wm_unit_clause;
+      test_case "imported ADT total"        `Quick wm_imported_total;
+      test_case "imported ADT partial"      `Quick wm_imported_partial;
     ];
     "guard exhaustiveness (Phase 91)", [
       test_case "single partial"            `Quick wg_single_partial;

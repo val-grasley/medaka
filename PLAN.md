@@ -266,14 +266,9 @@ above, it is flagged ⭐.
   `lambda nonfirst wild`). See [[project_binding_lhs_expr_first]].
 
 - **Phase 105 — exhaustiveness false-positive on imported-type constructors.**
-  Phase 102's `Exhaust.check_clauses` warns `non-exhaustive clauses` for a
-  function that *fully* covers an **imported** data type's constructors
-  (`depth Tip = …; depth (Bin …) = …` over an imported `Map`), while the
-  identical match on a **locally-declared** type does not warn. The clause oracle
-  (`exhaust_oracle`, from `env.type_ctors`/`env.ctors`) isn't seeing constructors
-  brought in by `import`. Conservative (warning only, eval still runs) but noisy
-  for any module using imported ADTs. Lands in the oracle construction in
-  `lib/typecheck.ml` (feed imported `te_ctors`). Skill: **harden-typechecker**.
+  ✅ DONE (2026-06-02). See PLAN-ARCHIVE.md. The multi-module seeding loop now
+  rebuilds `env.type_ctors` for imported types from their exported `te_ctors`, so
+  a function totally covering an imported ADT no longer falsely warns.
 
 *(Two "minor ergonomics" candidates from the Module 5 work were investigated
 and dropped as non-issues, both verified 2026-06-02: (1) bulk-importing a type's

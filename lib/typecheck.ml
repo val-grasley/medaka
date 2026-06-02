@@ -3931,6 +3931,28 @@ let typecheck_module
   (* Seed env with all known module exports *)
   List.iter (fun te ->
     List.iter (fun (n, s) -> Hashtbl.replace env.ctors n s) te.te_ctors;
+    (* Phase 105: rebuild env.type_ctors for imported types so the multi-clause
+       exhaustiveness oracle (exhaust_oracle) can enumerate them.  te_ctors
+       carries every public constructor's scheme; group by each constructor's
+       result type name (a public `data` export is all-or-nothing, so this
+       reconstructs the full, in-order constructor list).  Without this, a
+       function totally covering an imported ADT falsely warns "non-exhaustive
+       clauses". *)
+    List.iter (fun (cn, Forall (_, _, t)) ->
+      let rec result_type = function
+        | TFun (_, _, r) -> result_type r
+        | TApp (f, _)    -> result_type f
+        | TCon n         -> Some n
+        | TVar v         -> (match !v with Link t' -> result_type t' | _ -> None)
+        | _              -> None
+      in
+      match result_type t with
+      | Some rt ->
+        let prev = match Hashtbl.find_opt env.type_ctors rt with
+          | Some cs -> cs | None -> [] in
+        Hashtbl.replace env.type_ctors rt (prev @ [cn])
+      | None -> ()
+    ) te.te_ctors;
     List.iter (fun (n, ri) -> Hashtbl.replace env.records n ri) te.te_records;
     List.iter (fun (n, _) ->
       List.iter (fun (fn, _) ->

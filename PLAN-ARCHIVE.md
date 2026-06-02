@@ -4755,6 +4755,50 @@ Unit-clause no-warn case.  Skill: **harden-typechecker**.
 
 ---
 
+### Phase 105: exhaustiveness false-positive on imported-type constructors ✅ DONE
+
+Phase 102's `Exhaust.check_clauses` warned `non-exhaustive clauses` for a
+function that *fully* covered an **imported** data type's constructors
+(`depth Tip = ..; depth (Bin ..) = ..` over a `Map` imported from
+`stdlib/map.mdk`), while the identical match on a **locally-declared** type did
+not.  Conservative (warning only; eval still ran) but noisy for any module
+pattern-matching an imported ADT.
+
+**Root cause.**  The clause oracle (`exhaust_oracle`) enumerates a type's
+constructors via `env.type_ctors`.  Locally-declared types populate it through
+`register_data` (`Hashtbl.replace env.type_ctors name (List.map con_name
+variants)`).  The multi-module path `typecheck_module` seeds the env from each
+known module's exports — copying imported constructor *schemes* into `env.ctors`
+— but **never populated `env.type_ctors`**.  So `get_ctors "Map"` returned
+`None`, `all_covered` in `Exhaust.useful` was never established, and the
+missing-constructor branch fired the warning.  (The single-file path is
+unaffected: it processes the prelude + user data through `register_data`, and
+`Map` is a sibling module, not the prelude.)
+
+**Resolution (2026-06-02).**  `lib/typecheck.ml` — in the known-modules seeding
+loop, after copying `te.te_ctors` into `env.ctors`, rebuild `env.type_ctors` for
+imported types by grouping each public constructor by its **result type name**
+(reusing the same `TFun/TApp/TCon/TVar-Link` result-type walk `get_ctor_type`
+uses).  No new export field is needed: a public `data` export is all-or-nothing
+(`pub_ctors` from `DData (DataPublic, ..)` carries *every* variant), so grouping
+reconstructs the full, in-order constructor list.  Local `register_data` runs
+later in the same pass with `Hashtbl.replace`, so a same-named local type still
+wins — no behavior change for local types.
+
+Tests: `test/test_typecheck.ml` — a warning-aware multi-module helper
+(`modules_last_warns` + `assert_modules_no_warns`/`assert_modules_warns`, since
+the false positive is a *warning*, not a `Type_error`) and two cases under the
+Phase 102 group: `wm_imported_total` (total coverage of an imported ADT → no
+warning — the regression) and `wm_imported_partial` (partial coverage → still
+warns — confirms the oracle genuinely enumerates the imported type rather than
+silently giving up).  Note: the in-memory module tests skip `Resolve`, so
+imported names arrive via known-modules seeding rather than an explicit
+`import`; and `public export data` (not bare `export data`, which is
+`DataAbstract` — type name only) is required to export constructors.  Skill:
+**harden-typechecker**.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
