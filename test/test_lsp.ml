@@ -325,6 +325,44 @@ let test_inlay_hint_column_after_name () =
 
 (* ── Entry ──────────────────────────────────────────────────── *)
 
+(* ── check --json: diagnostics_to_json (Phase 82) ─────────────────
+   Feed source through Diagnostics.analyze, render the LSP diagnostic
+   shape as JSON, then parse it back and assert structure (rather than
+   brittle substring matching). *)
+
+let jmem k j =
+  match j with
+  | `Assoc l ->
+    (try List.assoc k l with Not_found -> Alcotest.failf "missing key %s" k)
+  | _ -> Alcotest.failf "not a JSON object (looking for %s)" k
+
+let test_diag_json_error () =
+  let src = "main = 1 + \"x\"\n" in
+  let diags = Diagnostics.analyze ~file:"t.mdk" ~source:src in
+  let json = Yojson.Safe.from_string (Lsp_server.diagnostics_to_json ~file:"t.mdk" diags) in
+  (match jmem "file" json with
+   | `String "t.mdk" -> ()
+   | _ -> Alcotest.fail "file field mismatch");
+  match jmem "diagnostics" json with
+  | `List (d :: _) ->
+    (match jmem "severity" d with `Int 1 -> () | _ -> Alcotest.fail "expected severity 1 (Error)");
+    (match jmem "source" d with `String "medaka" -> () | _ -> Alcotest.fail "expected source medaka");
+    (match jmem "message" d with `String _ -> () | _ -> Alcotest.fail "expected string message");
+    let range = jmem "range" d in
+    let start = jmem "start" range in
+    (match jmem "line" start with `Int _ -> () | _ -> Alcotest.fail "expected int start.line");
+    (match jmem "character" start with `Int _ -> () | _ -> Alcotest.fail "expected int start.character");
+    (match jmem "end" range with `Assoc _ -> () | _ -> Alcotest.fail "expected range.end object")
+  | _ -> Alcotest.fail "expected at least one diagnostic for a type error"
+
+let test_diag_json_clean () =
+  let src = "main = println \"hi\"\n" in
+  let diags = Diagnostics.analyze ~file:"t.mdk" ~source:src in
+  let json = Yojson.Safe.from_string (Lsp_server.diagnostics_to_json ~file:"t.mdk" diags) in
+  match jmem "diagnostics" json with
+  | `List [] -> ()
+  | _ -> Alcotest.fail "expected empty diagnostics array for clean source"
+
 let () =
   let open Alcotest in
   run "LSP handlers"
@@ -357,5 +395,9 @@ let () =
     ; "inlay hints",
       [ test_case "shows unannotated only" `Quick test_inlay_hint_unannotated
       ; test_case "column after name"      `Quick test_inlay_hint_column_after_name
+      ]
+    ; "check --json",
+      [ test_case "type error → LSP diagnostic shape" `Quick test_diag_json_error
+      ; test_case "clean source → empty array"        `Quick test_diag_json_clean
       ]
     ]

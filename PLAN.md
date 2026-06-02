@@ -3874,20 +3874,32 @@ disambiguate, then re-run the conflict audit (§2.4) and confirm the count
 doesn't regress. Skill: **add-language-feature** (grammar; high
 conflict-risk — audit carefully).
 
-### Phase 82: CLI surface completion ⏳ TODO
+### Phase 82: CLI surface completion ⏳ TODO (partial)
 
 The design spec lists `new build run check test fmt lsp doc add remove update`;
 today `check / run / test / repl / lsp / fmt / new` exist. Non-stdlib,
 non-package-manager gaps:
 
-- `medaka build` — typecheck + cache without running.
-- `medaka run --release` — flag plumbing (no optimizer yet; can alias `run`).
-- `medaka check --json` — machine-readable diagnostics (reuse the LSP
-  diagnostic shape).
-- `medaka doc` — extract doc comments / signatures to a doc artifact.
+- `medaka run --release` — ✅ flag plumbing. Accepted and parsed; currently a
+  transparent alias for `run` (no optimizer yet).
+- `medaka check --json` — ✅ machine-readable diagnostics, reusing the LSP
+  diagnostic shape via `Lsp_server.diagnostics_to_json`. Routes through
+  `Diagnostics.analyze` so every diagnostic is reported (not exit-on-first).
+  Output: `{"file": …, "diagnostics": [ <LSP Diagnostic> … ]}` on stdout; exit
+  1 iff any `Error`-severity diagnostic. **Single-file only** — `analyze` does
+  not invoke the multi-file loader (see §5); multi-file `--json` is a follow-up.
+- `medaka build` — ⏳ TODO. Split out: "typecheck + cache" has no honest
+  implementation yet — there is no artifact cache or AST/typed-IR serialization
+  format in the tree. Needs its own design before it's more than an alias of
+  `check`.
+- `medaka doc` — ⏳ TODO. Split out: doc comments are not attached to AST nodes
+  (a parallel `Lexer.take_comments()` stream matched by position, like
+  `doctest.ml`), and there is no pretty-printer for a typechecker `scheme`.
+  Needs a comment→decl matcher + signature renderer + an output-format decision.
 
 (`add`/`remove`/`update` need a package manager — out of scope until one
-exists.) Skill: none specific; lands in `bin/main.ml` + `diagnostics.ml`.
+exists.) Skill: none specific; `--json`/`--release` landed in `bin/main.ml` +
+`lib/lsp_server.ml`.
 
 ### Phase 83: Constraint inference for constrained functions ⏳ TODO
 
@@ -3972,6 +3984,10 @@ These aren't blockers, but a less-careful change could trip over them:
 - Module system: `use` declarations parse but no cross-file resolution
   exists. Backend roadmap is single-file only; multi-file support is a
   separate later phase.
+- `medaka check --json` (Phase 82) runs `Diagnostics.analyze`, which is
+  single-file — it does not invoke the multi-file `Loader`. A file with `use`
+  decls is analysed as a single unit, so cross-module names may resolve-error
+  in the JSON output. Multi-file `--json` is a follow-up.
 - Standard library: nothing is implemented in Medaka yet. Once the
   interpreter runs (Phase 10–11) the existing collection types (`List`,
   `Array`, `Map`, etc.) can begin to migrate from compiler-side primitives
