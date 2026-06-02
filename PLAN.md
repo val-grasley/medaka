@@ -4332,7 +4332,7 @@ the **multi-module** typecheck path (`typecheck_module` chain) instead of
 `check_program` — a `lib/doctest.ml` rewrite.  Tracked here as the residual ⏳
 TODO; no dedicated skill (see the `extend-stdlib` skill's doctest-harness notes).
 
-### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ⏳ TODO (BLOCKED on Phase 96)
+### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ⏳ TODO (UNBLOCKED — Phase 96 done)
 
 Deferred from the stdlib completion: the `Bounded` interface exists but `Int`/
 `Char` have no impls, because `minBound`/`maxBound` are **return-type-polymorphic
@@ -4342,12 +4342,10 @@ bounds are platform-dependent (63-bit OCaml `int`). Scope: add `intMinBound`/
 `impl Bounded Int` and `impl Bounded Char` (Char via `charFromCode` over
 `0`..`0x10FFFF`) in `core.mdk` (via **extend-stdlib**). Update STDLIB.md.
 
-**BLOCKED (verified 2026-06-01):** the "verify nullary return-position dispatch"
-step *fails* — nullary return-position dispatch is broadly broken (see **Phase
-96**).  `impl Bounded Tri where minBound = Lo; maxBound = Hi` then a bare
-`hi : Tri = maxBound` panics `no matching impl for dispatch`; the *existing*
-`empty` (Monoid) fails identically, even `(empty : List Int)`.  Adding the
-Bounded impls now would just ship broken constants, so Phase 93 waits on Phase 96.
+**UNBLOCKED (2026-06-02):** Phase 96 fixed nullary return-position dispatch, so
+the bound constants now resolve at known types — a local `impl Bounded Bool where
+minBound = False; maxBound = True` then `lo : Bool = minBound` / `hi : Bool =
+maxBound` evaluate correctly.  Phase 93 can now proceed.
 
 ### Phase 94: Backtick infix bypasses dict-routing and obligation checking ✅ DONE
 
@@ -4452,7 +4450,7 @@ imported poly-monad wrapper" (asserts no spurious type error + correct cross-mod
 `pure` dispatch).  All base suites green; no new `@thorough` failures.
 Skill: **harden-typechecker**.
 
-### Phase 96: Nullary return-position method dispatch is broken at known types ⏳ TODO
+### Phase 96: Nullary return-position method dispatch is broken at known types ✅ DONE
 
 Surfaced verifying Phase 93.  A **zero-argument** interface method dispatched by
 its *result* type (`empty : Monoid a => a`, `minBound`/`maxBound : Bounded a => a`)
@@ -4487,6 +4485,25 @@ interface method.  This also subsumes the Phase 84 residual "`pure` in a do-bloc
 with no `<-`".  Add `test_eval`/`test_run` regressions (`empty` at a known type;
 a custom Monoid/Bounded constant).  Skill: **harden-typechecker** (spills into
 eval dispatch — verify both paths).  Unblocks Phase 93.
+
+**Resolution (2026-06-02): the hypothesis above was wrong — the typechecker was
+fine all along.**  Instrumenting `check_method_usages` showed it *does* stamp the
+correct route: for `e : List Int = empty`, `param_vars = [List Int]`, `is_concrete`,
+and it commits `RKey "Monoid|(List a)|"` — which exactly matches an eval candidate
+key.  The bug was purely in **eval** (`lib/eval.ml` `EMethodRef`):
+`select_impl_by_key` narrows the `VMulti` to the chosen impl but deliberately
+*keeps* its `VTypedImpl`/`VNamedImpl` dispatch wrapper ("so partial application
+still works").  For an argument-bearing method that's fine — `apply`'s
+`unwrap_tags` strips it on application.  But a **nullary** method is a value,
+never applied, so the wrapper leaked into the program: `show`/`append`
+re-dispatched on it and panicked, `unwrap` couldn't pattern-match it (`match_pat`
+doesn't see through the wrapper).  Fix: in the `EMethodRef` arm, after route
+narrowing, strip the dispatch wrapper iff its payload is a *terminal* value (not
+a `VClosure`/`VPrim`/`VMulti`/`VThunk` still awaiting application) — a ~10-line
+eval-only change.  No typecheck change was needed.  Regressions in
+`test_run.ml` (`nullary empty stdlib/custom Monoid`, `nullary minBound/maxBound`)
+and `test_eval.ml` (`nullary empty value/custom`); `foldMap` (RDict) and
+`decode`/`pure` (RHeadKey) paths unchanged.
 
 ### Phase 97: Ordinary-function backtick infix under-accounts effects ⏳ TODO
 

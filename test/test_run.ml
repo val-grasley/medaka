@@ -236,6 +236,62 @@ main =
 |}
   "P\nL\n"
 
+(* Phase 96: a *nullary* return-position interface method (`empty`, `minBound`,
+   `maxBound`) dispatched purely by its result type.  The typechecker stamps an
+   RKey route correctly, but eval must strip the chosen impl's dispatch wrapper
+   before the bare value (never applied) flows into the program — otherwise it
+   leaks a VTypedImpl and downstream show / pattern-match / append panic. *)
+let t_nullary_empty_stdlib_monoid = assert_output_typed
+  {|e : List Int
+e = empty
+
+main : <IO> Unit
+main =
+  println (show e)
+  println (show (empty : List Int))
+  println (show (append (empty : List Int) [1, 2]))
+|}
+  "[]\n[]\n[1, 2]\n"
+
+let t_nullary_empty_custom_monoid = assert_output_typed
+  {|data Wrap = Wrap Int
+
+impl Semigroup Wrap where
+  append (Wrap a) (Wrap b) = Wrap (a + b)
+impl Monoid Wrap where
+  empty = Wrap 0
+
+unwrap (Wrap n) = n
+
+e : Wrap
+e = empty
+
+main : <IO> Unit
+main =
+  if unwrap e == 0 then println "OK" else println "BAD"
+  if unwrap (append e (Wrap 5)) == 5 then println "OK" else println "BAD"
+|}
+  "OK\nOK\n"
+
+(* Both nullary Bounded methods, routed by a known result type.  (Stdlib Bounded
+   impls are Phase 93; this defines a local one to exercise the dispatch.) *)
+let t_nullary_bounded = assert_output_typed
+  {|impl Bounded Bool where
+  minBound = False
+  maxBound = True
+
+lo : Bool
+lo = minBound
+hi : Bool
+hi = maxBound
+
+main : <IO> Unit
+main =
+  println (show lo)
+  println (show hi)
+|}
+  "False\nTrue\n"
+
 (* ── Phase 69.x-c: head-concrete (RHeadKey) dispatch ─────────────────────── *)
 (* `wrap : a -> f a` discriminates on its result head `f`.  Inside `mkBox`, `f`
    is fixed to `Box` by the annotation but its arg is still free, so the site is
@@ -576,6 +632,9 @@ let () = Alcotest.run "Run"
     "foldMap method dict (concrete)",    `Quick, t_foldmap_method_dict_concrete;
     "foldMap method dict (polymorphic)", `Quick, t_foldmap_method_dict_polymorphic;
     "foldMap explicit impl offset",      `Quick, t_foldmap_explicit_impl_offset;
+    "nullary empty (stdlib Monoid)",     `Quick, t_nullary_empty_stdlib_monoid;
+    "nullary empty (custom Monoid)",     `Quick, t_nullary_empty_custom_monoid;
+    "nullary minBound/maxBound (Phase 96)", `Quick, t_nullary_bounded;
     "hello world",   `Quick, t_hello;
     "factorial",     `Quick, t_factorial;
     "adt match",     `Quick, t_adt_match;

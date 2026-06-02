@@ -882,6 +882,26 @@ x = Sum 1 ++ Sum 2
 |}
     "x" (VCon ("Sum", [VInt 3]))
 
+(* Phase 96: nullary return-position method (`empty`) at a known result type.
+   The typed pipeline stamps RKey; eval must strip the impl dispatch wrapper so
+   `e` is the bare value, not a VTypedImpl. *)
+let t_nullary_empty_value = assert_val_typed
+  {|e : List Int
+e = empty
+|}
+    "e" (VList [])
+
+let t_nullary_empty_custom = assert_val_typed
+  {|data Wrap = Wrap Int
+impl Semigroup Wrap where
+    append (Wrap a) (Wrap b) = Wrap (a + b)
+impl Monoid Wrap where
+    empty = Wrap 0
+e : Wrap
+e = empty
+|}
+    "e" (VCon ("Wrap", [VInt 0]))
+
 (* ── Numeric literal extensions ─────────────────────────────────────────── *)
 
 let t_hex_lit = assert_val "x = 0xFF\n" "x" (VInt 255)
@@ -1818,6 +1838,8 @@ let () =
       test_case "List ++ List"              `Quick t_list_semigroup;
       test_case "String ++ String"          `Quick t_string_semigroup;
       test_case "user-defined dispatch"     `Quick t_user_semigroup_dispatch;
+      test_case "nullary empty value (Phase 96)"  `Quick t_nullary_empty_value;
+      test_case "nullary empty custom (Phase 96)" `Quick t_nullary_empty_custom;
     ];
     "numeric literal extensions", [
       test_case "hex literal"         `Quick t_hex_lit;

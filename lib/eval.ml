@@ -624,6 +624,25 @@ and eval env expr =
          | RHeadKey head -> select_impl_by_head head v
          | RDict d -> (match lookup env d with VDict key -> select_impl_by_key key v | _ -> v)
        in
+       (* Phase 96: select_impl_by_key keeps the chosen impl's dispatch wrapper
+          (VTypedImpl/VNamedImpl) so a method awaiting arguments still arg-tag-
+          dispatches and `apply` strips the tag on application.  But a *nullary*
+          return-position method (`empty`, `minBound`) is a value, never applied —
+          so the wrapper would leak into the program and break downstream
+          pattern-matching / show.  Once the route has pinned a single impl, strip
+          the wrapper iff its payload is a terminal value (not a function still
+          awaiting application). *)
+       let v =
+         let rec strip = function
+           | VNamedImpl (_, inner) | VTypedImpl (_, _, _, _, inner) -> strip inner
+           | other -> other in
+         match v with
+         | VNamedImpl _ | VTypedImpl _ ->
+           (match strip v with
+            | VClosure _ | VPrim _ | VMulti _ | VThunk _ -> v  (* awaits application *)
+            | bare -> bare)                                    (* nullary value *)
+         | _ -> v
+       in
        (* Phase 69.x-e: then apply the method's own method-level-constraint dicts
           (e.g. foldMap's Monoid dict) as leading arguments, matching the leading
           params dict_pass prepended to the method's bodies; the body's inner refs
