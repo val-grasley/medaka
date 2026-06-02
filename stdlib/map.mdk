@@ -98,10 +98,8 @@ doubleR k1 v1 l t4 =
 
 -- ── Construction ────────────────────────────────────────────────────────
 
--- | The empty map.
-export
-empty : Map k v
-empty = Tip
+-- The empty map is `Monoid.empty` (see `impl Monoid (Map k v)` below); use
+-- the `Tip` constructor directly inside this module.
 
 {- | A map with a single entry.
 
@@ -463,13 +461,19 @@ export default impl Show (Map k v) requires Show k, Show v where
 {- | `++` on maps is left-biased union (the left map wins on shared keys).
 
    `append` dispatches on its first `Map` argument, so the `Ord k` it needs to
-   merge threads in by the ordinary route.  There is deliberately **no**
-   `impl Monoid (Map k v)`: `Monoid.empty` is nullary, so it would have to
-   dispatch on its *result* type, and a return-position dispatch can't supply
-   the `Ord k` that the instance requires (the Phase 83/84 flat-dictionary
-   limitation).  Use the standalone `empty` (= `Tip`) as the identity instead. -}
+   merge threads in by the ordinary route. -}
 export default impl Semigroup (Map k v) requires Ord k where
   append a b = union a b
+
+{- | `Monoid.empty` for `Map` is the empty tree.  `empty` is nullary and so
+   dispatches on its *result* type (Phase 103); the impl's `requires Ord k`
+   carries no dict here because `Tip` needs none, so a return-position `empty :
+   Map k v` grounds cleanly.
+
+   > isEmpty (empty : Map Int Int)
+   True -}
+export default impl Monoid (Map k v) requires Ord k where
+  empty = Tip
 
 -- ── Structural invariants (for testing / debugging) ─────────────────────
 

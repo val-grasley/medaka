@@ -273,6 +273,40 @@ main =
 |}
   "OK\nOK\n"
 
+(* Phase 103 facet (b): a nullary return-position method on a `requires`-bearing
+   impl whose body is a bare constructor.  typecheck stamps res_impl_dicts for it
+   (return-position + requires), but dict_pass adds no param (the body uses no
+   dict), so eval used to over-apply the dict to the terminal value and error
+   "no matching impl for dispatch".  It must now evaluate to the constructor. *)
+let t_nullary_empty_requires = assert_output_typed
+  {|interface MyOrd a where
+  myCompare : a -> a -> Int
+interface Sg a where
+  appnd : a -> a -> a
+interface Mn a requires Sg a where
+  mt : a
+
+data Tree k = Leaf | Node k
+
+impl MyOrd Int where
+  myCompare a b = 0
+impl Sg (Tree k) requires MyOrd k where
+  appnd a b = a
+impl Mn (Tree k) requires MyOrd k where
+  mt = Leaf
+
+isLeaf Leaf = True
+isLeaf (Node _) = False
+
+t : Tree Int
+t = mt
+
+main : <IO> Unit
+main =
+  if isLeaf t then println "OK" else println "BAD"
+|}
+  "OK\n"
+
 (* Both nullary Bounded methods, routed by a known result type.  (Stdlib Bounded
    impls are Phase 93; this defines a local one to exercise the dispatch.) *)
 let t_nullary_bounded = assert_output_typed
@@ -657,6 +691,7 @@ let () = Alcotest.run "Run"
     "foldMap explicit impl offset",      `Quick, t_foldmap_explicit_impl_offset;
     "nullary empty (stdlib Monoid)",     `Quick, t_nullary_empty_stdlib_monoid;
     "nullary empty (custom Monoid)",     `Quick, t_nullary_empty_custom_monoid;
+    "nullary method on requires impl (Phase 103b)",    `Quick, t_nullary_empty_requires;
     "nullary minBound/maxBound (Phase 96)", `Quick, t_nullary_bounded;
     "nullary Bounded Int (stdlib, Phase 93)",  `Quick, t_nullary_bounded_int;
     "nullary Bounded Char (stdlib, Phase 93)", `Quick, t_nullary_bounded_char;

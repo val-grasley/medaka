@@ -228,27 +228,43 @@ above, it is flagged ⭐.
 *(Phases 103–105 + 107 below were surfaced implementing Module 5 `map`,
 2026-06-02 — see the per-item repros.)*
 
-- **Phase 103 — nullary return-position method dispatch is unreliable.** Two
-  facets, both reproduced on the 2026-06-02 binary:
-  - **(a) Shipped bug — type ascription ignored.** `array`'s standalone
-    `empty : Array Int` panics `arrayLength: expected Array` under `medaka run`:
-    the bare nullary `empty` mis-dispatches to the *first* `Monoid` impl
-    (`List`'s `[]`) instead of honoring the `: Array Int` ascription. `empty :
-    List Int` only "works" by luck (List is the first impl). So `array.empty` is
-    effectively broken today wherever it's used through the typed pipeline.
-  - **(b) Constrained impl can't ground its dict.** A nullary return-position
-    method whose impl carries a `requires` (`impl Monoid (Map k v) requires Ord
-    k where empty = Tip`) can't supply the `Ord k` from result-type context — the
-    flat `VDict` can't carry it — so the call errors `no matching impl for
-    dispatch`. This is the **nullary** continuation of the Phase 83/84
-    return-position residuals (Phase 96 fixed the *unconstrained* nullary case
-    like `minBound`; this is the constrained + ascription-driven case).
-  - **Workaround in map.mdk:** no `impl Monoid (Map k v)`; use a standalone
-    `empty` (= `Tip`) and the `Tip` constructor internally. `Semigroup.append`
-    (arg-position) is fine. **Fix unblocks:** maps/sets/arrays as proper
-    `Monoid`s, and removes the `array.empty` footgun. Lands in
-    `typecheck.ml`/`method_marker.ml`/`dict_pass.ml`/`eval.ml`. Skill:
-    **harden-typechecker** (likely cross-cutting → **add-language-feature**).
+- **Phase 103 — nullary return-position method dispatch — DONE (2026-06-02).**
+  Two facets, both fixed with two small targeted edits (no structured-dict
+  redesign needed):
+  - **(a) Type ascription ignored — root cause was scheme shadowing, not the
+    ascription.** A standalone top-level binding sharing a nullary method's name
+    (array.mdk's `empty : Array a` next to `impl Monoid (Array a)`) shadowed the
+    Monoid method scheme in `env.vars`. `infer`'s `EVar` method branch then called
+    `instantiate_method` with the *shadow* scheme, so `param_vars` came back empty
+    (the shadow's bound ids ≠ the interface's `iface_param_ids`) and
+    `check_method_usages` skipped route-stamping → eval fell to the first impl
+    (List's `[]`) → `arrayLength: expected Array`. **Fix:** instantiate the
+    interface's own method scheme via `List.assoc_opt x info.iface_methods`
+    (`lib/typecheck.ml`, EVar method branch). The standalone `empty` bindings in
+    `array.mdk`/`map.mdk` are now removed (redundant + the footgun); `empty` is
+    purely `Monoid.empty`, use `[||]`/`Tip` internally.
+  - **(b) Constrained impl over-applied its dict to a nullary terminal.**
+    typecheck stamps `res_impl_dicts` for a return-position-with-`requires` method,
+    but `dict_pass`'s `uses_impl_dict` gate adds *no* param when the body
+    (`empty = Tip`) references no dict — so eval's `EMethodRef` folded the dict
+    onto the bare `VCon Tip` → `applied non-function: Tip`. **Fix:** in `eval.ml`'s
+    `EMethodRef`, only fold `res_method_dicts`/`res_impl_dicts` when the (post
+    Phase-96-strip) value still awaits application (`VClosure`/`VPrim`/`VMulti`/
+    `VThunk`/`VTypedImpl`/`VNamedImpl`); a terminal value takes none. Mirrors
+    dict_pass's gate exactly; single-level (`Tip` needs no `Ord k`).
+  - **Payoff landed:** `impl Monoid (Map k v) requires Ord k where empty = Tip`
+    re-enabled in `stdlib/map.mdk`; `Array`/`Map` are now proper `Monoid`s and the
+    `array.empty` footgun is gone. Regression tests: `test_run` (facet b,
+    `t_nullary_empty_requires`), `test_doctest` (facet a, cross-module
+    `t_nullary_shadowed_method_routes_by_annotation` — the bug only repros through
+    the loader; single-file eval returns the standalone value and masks it),
+    doctests in array/map. Skill used: **debug-pipeline** (diagnose) +
+    **add-language-feature** (cross-cutting typecheck+eval edits).
+  - **Surfaced (separate, pre-existing): dual stdlib import double-registers
+    default impls.** Importing two sibling stdlib modules together (e.g. `map` +
+    `array`) raises a spurious "Multiple default impls of `<Iface>` for `<Type>`"
+    (loader/typecheck dedup bug; confirmed pre-existing — same error on the
+    Semigroup impl without the new Monoid one). Spun off as its own task.
 
 - **Phase 104 — parser: a leading `_` (or `_name`) as the *first* lambda
   parameter mis-parses as a constructor.** `(_ x => …)` / `(_k v acc => …)`

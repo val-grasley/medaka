@@ -1361,7 +1361,19 @@ let rec infer env = function
           try Hashtbl.find env.interfaces iface_name
           with Not_found -> fail (UnknownInterface iface_name)
         in
-        let (t, param_vars, sub) = instantiate_method scheme info.iface_param_ids in
+        (* Phase 103: type the method occurrence by its *interface* scheme, whose
+           bound ids are info.iface_param_ids — not the scheme `lookup_var`
+           returned, which may be a standalone top-level binding shadowing the
+           method name (e.g. array.mdk's `empty : Array a` shadowing Monoid's
+           `empty`). Instantiating the shadow scheme against Monoid's track_ids
+           yields param_vars=[], so check_method_usages skips route-stamping and
+           dispatch silently falls to the first impl. *)
+        let method_scheme =
+          match List.assoc_opt x info.iface_methods with
+          | Some s -> s
+          | None   -> scheme  (* defensive: a method_iface name should be here *)
+        in
+        let (t, param_vars, sub) = instantiate_method method_scheme info.iface_param_ids in
         let hint = !current_impl_hint in
         current_impl_hint := None;
         let mref = !current_method_ref in

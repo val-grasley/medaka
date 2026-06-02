@@ -365,6 +365,55 @@ let t_cross_module_typecheck_failure_is_honest () =
           "expected honest typecheck-failure error, got passed=%d failed=%d errors=%d"
           r.passed r.failed r.errors))
 
+(* Phase 103 facet (a): a module that defines a nullary return-position method
+   (Monoid-like `mt`) with a List-like impl declared FIRST, plus a standalone
+   top-level binding shadowing the method name — mirroring array.mdk's
+   `empty : Array a` next to `impl Monoid (Array a)`. The standalone is defined
+   before the impls so the impl `VMulti` overwrites it at eval (as in array.mdk).
+   A consumer importing the shadow binding used to instantiate the *shadow*
+   scheme for the method occurrence, yielding param_vars=[] so route-stamping was
+   skipped and `(mt : Box)` mis-dispatched to the first impl (the List-like one),
+   producing a non-Box value. The annotation must select the `Box` impl. *)
+let shadow_module = {|export
+data Box = Box Int
+
+export interface Sg a where
+  appnd : a -> a -> a
+export interface Mn a requires Sg a where
+  mt : a
+
+export
+isBox : Box -> Bool
+isBox (Box _) = True
+
+export
+mt : Box
+mt = Box 0
+
+export impl Sg (List a) where
+  appnd x y = x ++ y
+export impl Mn (List a) where
+  mt = []
+
+export impl Sg Box where
+  appnd a b = a
+export impl Mn Box where
+  mt = Box 0
+|}
+
+let t_nullary_shadowed_method_routes_by_annotation () =
+  let main = {|import shadow.{Box, isBox, mt}
+-- > isBox (mt : Box)
+-- True
+|} in
+  with_tmp_modules [("shadow.mdk", shadow_module); ("main.mdk", main)] "main.mdk"
+    (fun path ->
+      let r = Doctest.run_file path in
+      if r.passed <> 1 || r.failed <> 0 || r.errors <> 0 then
+        failwith (Printf.sprintf
+          "expected annotated nullary method to route to the Box impl, got passed=%d failed=%d errors=%d"
+          r.passed r.failed r.errors))
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () =
@@ -396,5 +445,6 @@ let () =
       Alcotest.test_case "multiple examples"          `Quick t_multiple_examples;
       Alcotest.test_case "cross-module instance (Phase 92)" `Quick t_cross_module_instance_resolves;
       Alcotest.test_case "cross-module tc failure honest (Phase 92)" `Quick t_cross_module_typecheck_failure_is_honest;
+      Alcotest.test_case "nullary method routes by annotation (Phase 103a)" `Quick t_nullary_shadowed_method_routes_by_annotation;
     ];
   ]

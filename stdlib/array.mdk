@@ -28,10 +28,8 @@ import core.{Eq, Ord, Show, Foldable, Mappable, Filterable, Semigroup, Monoid, O
 
 -- ── Construction ────────────────────────────────────────────────────────
 
--- | The empty array.
-export
-empty : Array a
-empty = [||]
+-- The empty array is `Monoid.empty` (see `impl Monoid (Array a)` below); use
+-- the `[||]` literal directly inside this module.
 
 {- | A one-element array.
 
@@ -349,6 +347,11 @@ export default impl Foldable Array where
 export default impl Semigroup (Array a) where
   append a b = arrayMakeWith (arrayLength a + arrayLength b) (i => if i < arrayLength a then arrayGetUnsafe i a else arrayGetUnsafe (i - arrayLength a) b)
 
+{- | `Monoid.empty` for `Array` is the empty array.  `empty` is nullary, so it
+   dispatches on its annotated *result* type (Phase 103):
+
+   > length (empty : Array Int)
+   0 -}
 export default impl Monoid (Array a) where
   empty = [||]
 

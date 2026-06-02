@@ -642,22 +642,36 @@ and eval env expr =
             | bare -> bare)                                    (* nullary value *)
          | _ -> v
        in
-       (* Phase 69.x-e: then apply the method's own method-level-constraint dicts
-          (e.g. foldMap's Monoid dict) as leading arguments, matching the leading
-          params dict_pass prepended to the method's bodies; the body's inner refs
-          (`empty`) read them via RDict.  Empty list ⇒ no-op (untyped path / a
-          method with no method-level constraint), preserving arg-tag fallback. *)
-       let v =
+       (* Phase 103: only fold dicts onto a value still awaiting application. A
+          nullary return-position impl body that is a terminal value (`empty =
+          Tip`, `empty = [||]`) takes no dict params — dict_pass's `uses_impl_dict`
+          gate adds none for it — so applying the route's dicts would over-apply
+          them to a constructor/record/scalar (corruption / "applied non-function").
+          Function-shaped bodies (closures, e.g. `impl Arbitrary (List a) requires
+          Arbitrary a`) stay VClosure/VTypedImpl after the strip above and still
+          receive their dicts, preserving Phase 83/84. *)
+       let awaits_args = match v with
+         | VClosure _ | VPrim _ | VMulti _ | VThunk _
+         | VTypedImpl _ | VNamedImpl _ -> true
+         | _ -> false in
+       if not awaits_args then v
+       else
+         (* Phase 69.x-e: then apply the method's own method-level-constraint dicts
+            (e.g. foldMap's Monoid dict) as leading arguments, matching the leading
+            params dict_pass prepended to the method's bodies; the body's inner refs
+            (`empty`) read them via RDict.  Empty list ⇒ no-op (untyped path / a
+            method with no method-level constraint), preserving arg-tag fallback. *)
+         let v =
+           List.fold_left (fun f route -> apply f (dict_of_route env route))
+             v res_method_dicts in
+         (* Phase 83/84: then the *selected impl's* `requires` dicts (e.g. the
+            `Arbitrary a` of `impl Arbitrary (List a)`), applied after the
+            method-level dicts to match dict_pass's param order.  These let a
+            return-position ref inside the impl body resolve via the element dict
+            rather than failing arg-tag dispatch.  Empty ⇒ no-op (untyped path /
+            impl with no requires). *)
          List.fold_left (fun f route -> apply f (dict_of_route env route))
-           v res_method_dicts in
-       (* Phase 83/84: then the *selected impl's* `requires` dicts (e.g. the
-          `Arbitrary a` of `impl Arbitrary (List a)`), applied after the
-          method-level dicts to match dict_pass's param order.  These let a
-          return-position ref inside the impl body resolve via the element dict
-          rather than failing arg-tag dispatch.  Empty ⇒ no-op (untyped path /
-          impl with no requires). *)
-       List.fold_left (fun f route -> apply f (dict_of_route env route))
-         v res_impl_dicts)
+           v res_impl_dicts)
 
   (* Phase 69.x: constrained-function occurrence.  Evaluate the function value,
      then apply the resolved dictionaries (one per constraint) as leading
