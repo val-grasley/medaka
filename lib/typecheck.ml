@@ -225,6 +225,30 @@ let fresh_effvar () =
   incr effvar_counter;
   ref (EUnbound (!effvar_counter, !current_level))
 
+let fresh_effvar_at level =
+  incr effvar_counter;
+  ref (EUnbound (!effvar_counter, level))
+
+(* An open row with a fresh tail variable — the effect signature of an arrow
+   whose latent effect is still being inferred.  The open tail lets a
+   pure-looking inference arrow absorb effects when it unifies against an
+   effectful one, which is what preserves the effect-subsumption discipline
+   under equality unification. *)
+let open_row () = { labels = []; tail = Some (fresh_effvar ()) }
+
+let effvar_level v = match !v with EUnbound (_, l) -> l | ELink _ -> 0
+
+(* Lower row r's (normalized) tail effvar level to <= [level], so an effvar
+   captured by an outer binding can't be generalized one scope out.  Mirrors the
+   level-lowering occurs_adjust performs for type variables. *)
+let lower_row_levels level r =
+  match (effrow_norm r).tail with
+  | Some v ->
+    (match !v with
+     | EUnbound (id, lvl) -> if lvl > level then v := EUnbound (id, level)
+     | ELink _ -> ())
+  | None -> ()
+
 (* Build an effect row from an arrow's return-position AST type.  A named tail
    variable (`<IO | e>`) is resolved through [etbl] so the same source name
    shares one effvar across the whole signature — that shared effvar is what
@@ -259,10 +283,44 @@ let rec occurs_adjust id level = function
        else if level' > level then
          v := Unbound (id', level))
   | TCon _ -> ()
-  | TApp (a, b) | TFun (a, _, b) ->
-    occurs_adjust id level a; occurs_adjust id level b
+  | TApp (a, b) -> occurs_adjust id level a; occurs_adjust id level b
+  | TFun (a, r, b) ->
+    (* A type var can never appear inside an effect row (rows hold only effvars
+       and concrete labels), so there is no occurs hazard — but an effvar in the
+       row must still have its level lowered alongside the tyvar being bound. *)
+    occurs_adjust id level a; lower_row_levels level r; occurs_adjust id level b
   | TTuple ts ->
     List.iter (occurs_adjust id level) ts
+
+(* ── Effect-row unification (Phase 79c) ──────────── *)
+
+(* Unify two effect rows.  An open row (one with a tail variable) absorbs the
+   other side's labels by binding its tail; two open rows are routed through one
+   shared fresh tail so future additions to either flow to both.  This is the
+   plumbing effect inference needs.
+
+   It is deliberately PERMISSIVE: an open row whose own labels exceed a closed
+   annotation, and two differing closed rows, are left as-is rather than raising.
+   Effect-escape detection stays with the post-HM effects pass until it moves to
+   the binding boundary in Phase 79e; keeping unify_row quiet here avoids
+   double-reporting and any new errors on existing code. *)
+let unify_row r1 r2 =
+  let r1 = effrow_norm r1 and r2 = effrow_norm r2 in
+  let diff a b = List.filter (fun x -> not (List.mem x b)) a in
+  match r1.tail, r2.tail with
+  | Some v1, Some v2 when v1 == v2 -> ()
+  | Some v1, Some v2 ->
+    (* both open: route both tails through one shared fresh tail carrying the
+       union of labels (so each side ends up as <labels1 ∪ labels2 | v3>) *)
+    let v3 = fresh_effvar_at (min (effvar_level v1) (effvar_level v2)) in
+    v1 := ELink { labels = diff r2.labels r1.labels; tail = Some v3 };
+    v2 := ELink { labels = diff r1.labels r2.labels; tail = Some v3 }
+  | Some v1, None ->
+    (* r1 open, r2 closed: close r1, absorbing r2's extra labels *)
+    v1 := ELink { labels = diff r2.labels r1.labels; tail = None }
+  | None, Some v2 ->
+    v2 := ELink { labels = diff r1.labels r2.labels; tail = None }
+  | None, None -> ()
 
 (* ── Unification ────────────────────────────────── *)
 
@@ -280,8 +338,8 @@ let rec unify t1 t2 =
   | TCon n1, TCon n2 when n1 = n2 -> ()
   | TApp (a1, b1), TApp (a2, b2) ->
     unify a1 a2; unify b1 b2
-  | TFun (a1, _, b1), TFun (a2, _, b2) ->
-    unify a1 a2; unify b1 b2
+  | TFun (a1, r1, b1), TFun (a2, r2, b2) ->
+    unify a1 a2; unify_row r1 r2; unify b1 b2
   | TTuple ts1, TTuple ts2 when List.length ts1 = List.length ts2 ->
     List.iter2 unify ts1 ts2
   | _ ->
@@ -302,10 +360,45 @@ let rec free_unbound acc = function
   | TTuple ts ->
     List.fold_left free_unbound acc ts
 
-let generalize t = Forall (free_unbound [] t, [], t)
+(* Free generalizable effect variables: a row's tail effvar at a level deeper
+   than the current scope.  Collected alongside [free_unbound]'s tyvars so a
+   polymorphic HOF quantifies over its callback's effect. *)
+let rec free_effvars acc = function
+  | TVar v ->
+    (match !v with Link t -> free_effvars acc t | Unbound _ -> acc)
+  | TCon _ -> acc
+  | TApp (a, b) -> free_effvars (free_effvars acc a) b
+  | TFun (a, r, b) ->
+    let acc = free_effvars acc a in
+    let acc =
+      match (effrow_norm r).tail with
+      | Some v ->
+        (match !v with
+         | EUnbound (id, level) when level > !current_level && not (List.mem id acc) -> id :: acc
+         | _ -> acc)
+      | None -> acc
+    in
+    free_effvars acc b
+  | TTuple ts -> List.fold_left free_effvars acc ts
 
-let instantiate_raw (Forall (vars, _evars, t)) =
+let generalize t = Forall (free_unbound [] t, free_effvars [] t, t)
+
+(* Replace a row's bound tail effvar with its fresh instance from [esub] (the
+   per-instantiation substitution), so each call site of a polymorphic HOF gets
+   its own effect variable rather than sharing the scheme's. *)
+let subst_row esub r =
+  let r = effrow_norm r in
+  match r.tail with
+  | Some v ->
+    (match !v with
+     | EUnbound (id, _) ->
+       (match List.assoc_opt id esub with Some v' -> { r with tail = Some v' } | None -> r)
+     | ELink _ -> r)
+  | None -> r
+
+let instantiate_raw (Forall (vars, evars, t)) =
   let sub = List.map (fun id -> (id, fresh_var ())) vars in
+  let esub = List.map (fun id -> (id, fresh_effvar ())) evars in
   let rec walk t = match normalize t with
     | TVar v ->
       (match !v with
@@ -313,7 +406,7 @@ let instantiate_raw (Forall (vars, _evars, t)) =
        | Link _ -> fail (InternalError "instantiate: Link survived normalize"))
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
+    | TFun (a, r, b) -> TFun (walk a, subst_row esub r, walk b)
     | TTuple ts    -> TTuple (List.map walk ts)
   in
   (sub, walk t)
@@ -366,7 +459,9 @@ let rec lower_to_current t = match normalize t with
      | Unbound (id, level) ->
        if level > !current_level then v := Unbound (id, !current_level))
   | TCon _ -> ()
-  | TApp (a, b) | TFun (a, _, b) -> lower_to_current a; lower_to_current b
+  | TApp (a, b) -> lower_to_current a; lower_to_current b
+  | TFun (a, r, b) ->
+    lower_to_current a; lower_row_levels !current_level r; lower_to_current b
   | TTuple ts -> List.iter lower_to_current ts
 
 (* Generalize a value RHS; value-restrict (monomorphize, lowering free vars)
@@ -378,10 +473,11 @@ let gen_restricted is_value t =
 (* Like instantiate, but maps specific bound IDs to provided monos instead of
    always creating fresh vars.  Used by check_impl to substitute the impl's
    concrete type args for the interface's type-parameter IDs. *)
-let instantiate_with (Forall (vars, _evars, t)) (subs : (int * mono) list) =
+let instantiate_with (Forall (vars, evars, t)) (subs : (int * mono) list) =
   let sub = List.map (fun id ->
     (id, try List.assoc id subs with Not_found -> fresh_var ())
   ) vars in
+  let esub = List.map (fun id -> (id, fresh_effvar ())) evars in
   let rec walk t = match normalize t with
     | TVar v ->
       (match !v with
@@ -389,7 +485,7 @@ let instantiate_with (Forall (vars, _evars, t)) (subs : (int * mono) list) =
        | Link _ -> fail (InternalError "instantiate: Link survived normalize"))
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
+    | TFun (a, r, b) -> TFun (walk a, subst_row esub r, walk b)
     | TTuple ts    -> TTuple (List.map walk ts)
   in
   walk t
@@ -399,8 +495,9 @@ let instantiate_with (Forall (vars, _evars, t)) (subs : (int * mono) list) =
    mapping bound IDs to fresh monos. Used to track which concrete types a
    method call is dispatching on (for impl resolution) and to expand
    per-method extra constraint arguments (for constraint checking). *)
-let instantiate_method (Forall (vars, _evars, t)) track_ids =
+let instantiate_method (Forall (vars, evars, t)) track_ids =
   let sub = List.map (fun id -> (id, fresh_var ())) vars in
+  let esub = List.map (fun id -> (id, fresh_effvar ())) evars in
   let rec walk t = match normalize t with
     | TVar v ->
       (match !v with
@@ -408,7 +505,7 @@ let instantiate_method (Forall (vars, _evars, t)) track_ids =
        | Link _ -> fail (InternalError "instantiate: Link survived normalize"))
     | TCon _ as t -> t
     | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, effs, b) -> TFun (walk a, effs, walk b)
+    | TFun (a, r, b) -> TFun (walk a, subst_row esub r, walk b)
     | TTuple ts    -> TTuple (List.map walk ts)
   in
   let result = walk t in
@@ -1187,7 +1284,7 @@ let rec infer env = function
     let tf = infer env f in
     let tx = infer env x in
     let tr = fresh_var () in
-    unify tf (TFun (tx, pure_row, tr));
+    unify tf (TFun (tx, open_row (), tr));
     tr
 
   | ELam (pats, body) ->
@@ -1196,7 +1293,7 @@ let rec infer env = function
     let bindings   = List.concat_map snd typed_pats in
     let env' = extend_vars env bindings in
     let tb = infer env' body in
-    List.fold_right (fun pt acc -> TFun (pt, pure_row, acc)) pat_types tb
+    List.fold_right (fun pt acc -> TFun (pt, open_row (), acc)) pat_types tb
 
   | ELet (mut, is_fun, pat, e1, e2) ->
     (if mut then
@@ -1422,7 +1519,7 @@ let rec infer env = function
     let tl = infer env l in
     let tr = infer env r in
     let result = fresh_var () in
-    unify tf (TFun (tl, pure_row, TFun (tr, pure_row, result)));
+    unify tf (TFun (tl, open_row (), TFun (tr, open_row (), result)));
     result
 
   | EBlock stmts ->
@@ -1843,19 +1940,19 @@ and binop_type env op l r =
   | "|>" ->
     (* x |> f  :  a -> (a -> b) -> b *)
     let b = fresh_var () in
-    unify tr (TFun (tl, pure_row, b)); b
+    unify tr (TFun (tl, open_row (), b)); b
   | ">>" ->
     (* f >> g  :  (a -> b) -> (b -> c) -> (a -> c) *)
     let a = fresh_var () in
     let b = fresh_var () in
     let c = fresh_var () in
-    unify tl (TFun (a, pure_row, b)); unify tr (TFun (b, pure_row, c)); TFun (a, pure_row, c)
+    unify tl (TFun (a, open_row (), b)); unify tr (TFun (b, open_row (), c)); TFun (a, open_row (), c)
   | "<<" ->
     (* f << g  :  (b -> c) -> (a -> b) -> (a -> c) *)
     let a = fresh_var () in
     let b = fresh_var () in
     let c = fresh_var () in
-    unify tl (TFun (b, pure_row, c)); unify tr (TFun (a, pure_row, b)); TFun (a, pure_row, c)
+    unify tl (TFun (b, open_row (), c)); unify tr (TFun (a, open_row (), b)); TFun (a, open_row (), c)
   | _ ->
     fail (Other ("Unknown binop: " ^ op))
 
@@ -2047,7 +2144,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
           in
           zip_unify pat_types sig_args;
           let body_t = infer (extend_vars !env_ref bindings) body in
-          List.fold_right (fun pt acc -> TFun (pt, pure_row, acc)) pat_types body_t
+          List.fold_right (fun pt acc -> TFun (pt, open_row (), acc)) pat_types body_t
         | _ ->
           infer !env_ref (clause_to_expr (pats, body))
       in

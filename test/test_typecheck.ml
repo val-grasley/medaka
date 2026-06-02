@@ -881,6 +881,29 @@ let t_effrow_shares_tail () =
      | _ -> failwith "expected both arrows to carry open effect rows")
   | m -> failwith ("unexpected mono shape: " ^ pp_mono m)
 
+(* Phase 79c: unify_row plumbing — an open row absorbs a closed row's labels. *)
+let t_unify_row_open_closed () =
+  let r = open_row () in
+  unify_row r (closed_row ["IO"]);
+  match effrow_labels r with
+  | ["IO"] -> ()
+  | ls -> failwith ("expected [IO], got [" ^ String.concat "; " ls ^ "]")
+
+(* Two open rows share a tail: a label added through one is visible through the
+   other — the linkage effect inference relies on. *)
+let t_unify_row_open_open_link () =
+  let r1 = open_row () and r2 = open_row () in
+  unify_row r1 r2;
+  unify_row r2 (closed_row ["Mut"]);
+  match effrow_labels r1 with
+  | ["Mut"] -> ()
+  | ls -> failwith ("expected [Mut] to flow to r1, got [" ^ String.concat "; " ls ^ "]")
+
+(* Permissive in 79c: differing closed rows neither merge nor raise. *)
+let t_unify_row_closed_permissive () =
+  unify_row (closed_row ["IO"]) (closed_row ["IO"]);
+  unify_row (closed_row ["IO"]) (closed_row ["Mut"])
+
 (* ── Interfaces ─────────────────────────────────── *)
 
 (* Interface method is bound with the right polymorphic type *)
@@ -3343,6 +3366,9 @@ let () =
       test_case "err: escape via inferred"  `Quick e_eff_escape_via_inferred;
       test_case "HOF pure arg ok"           `Quick t_hof_pure_arg;
       test_case "effrow shares tail var"    `Quick t_effrow_shares_tail;
+      test_case "unify_row open/closed"     `Quick t_unify_row_open_closed;
+      test_case "unify_row open/open link"  `Quick t_unify_row_open_open_link;
+      test_case "unify_row closed permissive" `Quick t_unify_row_closed_permissive;
     ];
     "pipe and compose", [
       test_case "pipe Int"               `Quick t_pipe_int;
