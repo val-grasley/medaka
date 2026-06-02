@@ -295,6 +295,56 @@ constructors and interfaces are already separately namespaced, so `match compare
 earlier "use `_` for the equal case" comment was mistaken and has been corrected
 to name `Eq`.)*
 
+- **Phase 109 — spurious "Multiple default impls" when importing two sibling
+  stdlib modules. ✅ DONE (2026-06-02).** A consumer importing both `map` and
+  `array` (`import map.{Map, fromList, size}` + `import array.{make}`) failed
+  typecheck with `Multiple default impls of Semigroup for Map a b`. Root cause:
+  the per-module impl-export filter in `typecheck.ml` (`te_impls`) matched an
+  impl to this module's `user_prog` by **iface name only**. Two facts combine:
+  (1) `typecheck_module`'s `known_modules` accumulates *every* previously
+  typechecked module (not just this module's imports), so when `array.mdk` is
+  typechecked `env.impls` already holds map's `Semigroup (Map k v)`; (2)
+  `array.mdk` also declares `default impl Semigroup (Array a)`, so the iface-name
+  match re-exported the foreign `Semigroup (Map k v)` in array's `te_impls`. A
+  consumer importing both then registered it twice → coherence error. Fixed by
+  matching the full `impl_key` (iface + head type + name), so a module only
+  exports impls it actually declares. Not Monoid-specific — affected any
+  `default impl` in a module imported alongside another stdlib module. See
+  [[project_typecheck_two_entrypoints]].
+
+- **Phase 110 — eval has no module name-isolation (deferred).** Surfaced while
+  verifying Phase 109: with the coherence error gone, `run` of the map+array
+  repro panics `applied non-function: [|1|]` at `map.mdk` `insert k v Tip =
+  singleton k v`. Eval flattens all modules into one `top_frame` and a by-name
+  `fundef_acc`, so map's `singleton k v` (2-arg) and array's `singleton x`
+  (1-arg) **merge into one `VMulti`**; the 1-arg clause matches first, returns
+  `[|k|]`, then that array is applied to `v`. It's a clause merge, not just
+  shadowing — confirmed independent of impls: a module-`b` function calling its
+  own *private* helper instead runs module-`a`'s same-named helper.
+  - **Surface:** broad — ~20 top-level names shared across list/string/array/map
+    (`get`, `take`, `drop`, `concat`, `reverse`, `zip`, `fromList`, `singleton`,
+    `sort`, …). Any program importing 2+ collection modules and touching a shared
+    name mis-dispatches. Matters for the self-hosting north star (multi-module is
+    the norm there).
+  - **Why eval-only:** typecheck *already* scopes correctly — `typecheck_module`
+    runs per module with per-module `use_schemes`, so the program type-checks;
+    eval is the lone stage that ignores module boundaries.
+  - **Recommended fix — Approach B (per-module eval frames).** Add an
+    `eval_modules` entry to `eval.ml` (leave flat `eval_program` for
+    single-file/REPL/tests, ~15 call sites untouched); evaluate modules in topo
+    order with plain `DFunDef`/`DLetGroup` in a per-module frame chained over a
+    shared global frame (methods/impls/data/ctors/prelude — globally correct,
+    one `Semigroup`) plus an import-frame wired from each module's `DUse`; run
+    `Dict_pass.run` per module. Route only the 3 multi-module run drivers
+    (`bin/main.ml` run, `diagnostics.ml`, `doctest.ml`) through it. Mirrors the
+    typecheck-per-module model. Fiddly parts: the global-vs-local decl partition
+    and import-frame wiring.
+  - **Rejected — Approach A (qualify names in resolve).** `resolve_module` is a
+    pure *checker* (returns `exports × errors`, never a rewritten AST); making it
+    a transformer changes its contract + every caller, ripples mangled names
+    through typecheck/dict_pass/eval, and needs de-mangling for LSP
+    hover/completion/symbols. Fights the architecture.
+
 - ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** Lower priority;
   each is a known limitation with a correct-enough fallback today:
   - **Instance-`requires` dict-threading into return-position impl bodies — DONE
