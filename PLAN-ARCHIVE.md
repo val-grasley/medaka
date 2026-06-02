@@ -4344,7 +4344,7 @@ a conservative "guards may not be exhaustive" warning is the realistic target)
 and `lib/parser.mly`/`lib/lexer.mll` (inline form — re-measure parser conflicts).
 Skill: **add-language-feature**.
 
-### Phase 92: Doctest harness can't reach cross-module instances — String/Char ✅ DONE; general case ⏳ TODO
+### Phase 92: Doctest harness can't reach cross-module instances — String/Char ✅ DONE; general case ✅ DONE
 
 `medaka test <file>` builds its combined program from the **core prelude + that
 file only**, so an instance defined in a *sibling* stdlib module was invisible.
@@ -4372,8 +4372,33 @@ into one multi-clause function), corrupting dispatch.  So a genuine
 "any sibling instance reachable" fix (e.g. a `core` doctest that `show`s an
 `Array`, whose `Show Array` is in `array.mdk`) needs the doctest harness to run
 the **multi-module** typecheck path (`typecheck_module` chain) instead of
-`check_program` — a `lib/doctest.ml` rewrite.  Tracked here as the residual ⏳
-TODO; no dedicated skill (see the `extend-stdlib` skill's doctest-harness notes).
+`check_program` — a `lib/doctest.ml` rewrite.
+
+**Fix (general case).** `lib/doctest.ml`'s `run_file` now branches: a file with
+`import`/`use` declarations goes through `run_file_multi`, which mirrors the
+multi-file path of `medaka run`/`check` (`bin/main.ml`) — `Loader.load_program`
+the dependency graph, inject the synthetic `__dt_i__` bindings into the **root**
+module (the file under test), then resolve → mark → two-pass `typecheck_module`
+each module *separately* (so the `find`/`map` name-merge hazard never arises),
+then `Dict_pass.run (marked_prelude @ concat modules)` and eval.  A doctest sees
+exactly what its module imports.  Two guards keep this honest:
+- `run_file_multi` returns `None` (caller falls back to the single-file path)
+  when the loader resolved **no real sibling** — i.e. every import was the
+  implicit prelude `core`, which `is_prelude_module` filters.  This is what keeps
+  `string.mdk` (which redefines the prelude standalone `count`) green: the
+  single-file path's `prelude_for` shadow-drops the redefined name, whereas this
+  path's full `marked_prelude` would coalesce the two `count`s and fail
+  (`core.mdk:627 String vs a -> b`).
+- on a multi-module typecheck failure every example reports the type error
+  (`build_details` with an `Error` env) rather than degrading to arg-tag eval.
+
+**Non-goal (intentional).** A *reverse* dependency — a `core`/prelude doctest
+reaching a downstream module (`Show Array` in `array.mdk`) — is unsupported: the
+prelude reaching into a module that imports it is a layering inversion, and the
+import graph is the source of truth.  Regressions: `test_doctest`'s "cross-module
+instance (Phase 92)" / "cross-module tc failure honest (Phase 92)" (a temp-dir
+fixture: a root importing a sibling that exports a smart constructor + `Show`
+impl); all stdlib doctests and base suites stay green.
 
 ### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ✅ DONE
 
@@ -4946,12 +4971,6 @@ open work**, consolidated so the next session can pick from one list.
   "guards may not be exhaustive" warning in `exhaust.ml`. (3) No inline guard
   form (`f n | n <= 0 = []` on one line is a parse error). Fall-through (item 1)
   is done.
-- **Phase 92 general case.** Doctest harness type-checks single-file
-  (`check_program`), so a doctest can't reach an instance defined in a *sibling*
-  stdlib module (e.g. a `core` doctest that `show`s an `Array`, whose
-  `Show Array` lives in `array.mdk`). String/Char were special-cased into the
-  prelude; the general fix needs `doctest.ml` on the multi-module
-  (`typecheck_module`) path.
 - **Phase 42 residual generators.** No `Arbitrary` generation for `Array a` or
   tuples; parametric user types (`TyApp (TyCon custom, _)`) aren't routed through
   `arbitrary_registry`; built-in generation bypasses the Medaka-level

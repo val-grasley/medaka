@@ -14,6 +14,29 @@ let with_tmp_file contents f =
   Sys.remove path;
   result
 
+(* Phase 92: write several named modules into one fresh temp dir and run the
+   harness on [root], so the loader can find the siblings via the dir as its
+   search root (the multi-module doctest path). *)
+let with_tmp_modules (files : (string * string) list) root f =
+  let dir = Filename.temp_file "test_doctest_dir" "" in
+  Sys.remove dir;
+  Sys.mkdir dir 0o755;
+  let paths = List.map (fun (name, contents) ->
+    let p = Filename.concat dir name in
+    let oc = open_out p in
+    output_string oc contents;
+    close_out oc;
+    p
+  ) files in
+  let cleanup () =
+    List.iter (fun p -> try Sys.remove p with _ -> ()) paths;
+    (try Sys.rmdir dir with _ -> ())
+  in
+  let result =
+    (try f (Filename.concat dir root) with e -> cleanup (); raise e) in
+  cleanup ();
+  result
+
 (* ── Extraction unit tests ───────────────────────────────────────────────── *)
 
 let t_no_doctests () =
@@ -294,6 +317,54 @@ let t_prelude_self_doctest_no_duplication () =
         "expected prelude self-doctest to pass cleanly (no prelude duplication), \
          got passed=%d failed=%d errors=%d" r.passed r.failed r.errors))
 
+(* A sibling module exporting a type, a smart constructor, and a `Show` impl.
+   `widget` needs no imports of its own — the prelude (`Show`/`Semigroup
+   String`) is prepended in the multi-module typecheck. *)
+let widget_module = {|export
+data Widget = Widget Int
+
+export
+mkWidget : Int -> Widget
+mkWidget n = Widget n
+
+export
+impl Show Widget where
+  show (Widget n) = "W" ++ show n
+|}
+
+(* Phase 92: a doctest in a file that imports a *real* sibling module resolves
+   the sibling's `Show Widget` instance through the multi-module typecheck path.
+   The single-file path (file + prelude only) never loads `widget`, so the impl
+   is invisible and the example would error. *)
+let t_cross_module_instance_resolves () =
+  let main = {|import widget.{mkWidget}
+-- > show (mkWidget 5)
+-- "W5"
+|} in
+  with_tmp_modules [("widget.mdk", widget_module); ("main.mdk", main)] "main.mdk"
+    (fun path ->
+      let r = Doctest.run_file path in
+      if r.passed <> 1 || r.failed <> 0 || r.errors <> 0 then
+        failwith (Printf.sprintf
+          "expected cross-module instance doctest to pass, got passed=%d failed=%d errors=%d"
+          r.passed r.failed r.errors))
+
+(* Phase 92: in the multi-module path a whole-file typecheck failure is reported
+   honestly — the example ERRORs rather than silently degrading to arg-tag eval.
+   Here `mkWidget` expects an Int but the doctest applies it to a String. *)
+let t_cross_module_typecheck_failure_is_honest () =
+  let main = {|import widget.{mkWidget}
+-- > show (mkWidget "oops")
+-- "W?"
+|} in
+  with_tmp_modules [("widget.mdk", widget_module); ("main.mdk", main)] "main.mdk"
+    (fun path ->
+      let r = Doctest.run_file path in
+      if r.errors <> 1 || r.passed <> 0 then
+        failwith (Printf.sprintf
+          "expected honest typecheck-failure error, got passed=%d failed=%d errors=%d"
+          r.passed r.failed r.errors))
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () =
@@ -323,5 +394,7 @@ let () =
       Alcotest.test_case "parse error example"        `Quick t_parse_error_example;
       Alcotest.test_case "no doctests in file"        `Quick t_no_doctests_in_file;
       Alcotest.test_case "multiple examples"          `Quick t_multiple_examples;
+      Alcotest.test_case "cross-module instance (Phase 92)" `Quick t_cross_module_instance_resolves;
+      Alcotest.test_case "cross-module tc failure honest (Phase 92)" `Quick t_cross_module_typecheck_failure_is_honest;
     ];
   ]

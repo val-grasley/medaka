@@ -156,16 +156,38 @@ above, it is flagged ⭐.
     `lib/lexer.mll` — re-measure parser conflicts after the grammar change.
   - Skill: **add-language-feature**.
 
-- **Phase 92 (continued) — doctest harness reaches cross-module instances.**
-  `medaka test <file>` type-checks via the single-file `check_program`, so a
-  doctest can't see an instance defined in a *sibling* stdlib module (e.g. a
-  `core` doctest that `show`s an `Array`, whose `Show Array` lives in
-  `array.mdk`). String/Char were special-cased into the prelude; the general fix
-  routes `lib/doctest.ml` through the multi-module (`typecheck_module`) path.
-  Note the hazard documented in the archive: flattening `list.mdk` + `array.mdk`
-  into one module merges their deliberately-reused top-level names — the fix must
-  preserve module separation. Skill: **add-language-feature** (touches the
-  doctest harness, not just the typechecker).
+- **Phase 92 — doctest harness reaches cross-module instances. ✅ DONE.**
+  `medaka test <file>` now routes a file that imports real sibling modules
+  through the multi-module (`typecheck_module`) path in `lib/doctest.ml`
+  (`run_file_multi`), mirroring `medaka run`/`check`: load the dependency graph
+  via `Loader`, inject the synthetic `__dt_i__` doctest bindings into the root
+  module, resolve + mark + two-pass-typecheck each module separately (so
+  deliberately-reused top-level names stay unmerged), then dict-pass + eval. A
+  doctest sees what its module **imports**. A file with no imports — or whose only
+  imports were the implicit prelude `core` (which the loader filters, so no real
+  sibling loads) — keeps the single-file path, which `prelude_for`-shadow-drops
+  redefined names (this is what lets `stdlib/string.mdk`, which redefines the
+  prelude standalone `count`, still doctest cleanly).
+  - **Non-goal (intentional):** a *reverse* dependency — a `core` doctest that
+    `show`s an `Array`, whose `Show Array` lives downstream in `array.mdk` — is
+    **not** supported. The prelude reaching into a module that imports *it* is a
+    layering inversion; String/Char already live in the prelude for exactly this
+    reason, and no such doctest exists. The import graph is the source of truth.
+
+- **Phase 100 — `import m.{T(..)}` bulk-constructor import (sugar).** Data
+  visibility is already a deliberate three levels — `data T` (private),
+  `export data T` (abstract: type name only), `public export data T` (type +
+  constructors) — and a `public export` type's constructors *can* be imported,
+  but only by listing each one (`import m.{T, A, B}`). The Haskell-style
+  `import m.{T(..)}` shorthand for "the type and all its exported constructors"
+  is currently a **parse error**: `import_ident` inside the `{…}` group
+  (`UseGroup`, `lib/parser.mly:1053`/`1061`) accepts only a bare name. Pure
+  convenience — explicit listing already covers the need — so it's low priority.
+  Lands in `lib/parser.mly` (a new `import_ident` form), `lib/ast.ml` (the
+  `use_path` group element must carry a "with constructors" marker, today a bare
+  `ident`), and `lib/resolve.ml` (expand `T(..)` to the type + its exported
+  constructors at bind time). Re-measure parser conflicts after the grammar
+  change. Skill: **add-language-feature**.
 
 - **Phase 99 — drive property generation/shrinking through the `Arbitrary`
   interface.** Phase 42's generator gaps are closed (`lib/prop_runner.ml` now
