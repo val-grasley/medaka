@@ -4349,42 +4349,6 @@ step *fails* — nullary return-position dispatch is broadly broken (see **Phase
 `empty` (Monoid) fails identically, even `(empty : List Int)`.  Adding the
 Bounded impls now would just ship broken constants, so Phase 93 waits on Phase 96.
 
-### Phase 96: Nullary return-position method dispatch is broken at known types ⏳ TODO
-
-Surfaced verifying Phase 93.  A **zero-argument** interface method dispatched by
-its *result* type (`empty : Monoid a => a`, `minBound`/`maxBound : Bounded a => a`)
-does not resolve even when the type is fully known — it is left as an unresolved
-`VMulti` and panics `no matching impl for dispatch` (or stack-overflows when fed
-into another method, e.g. `append empty [1,2]`).  Reproduced on every shape:
-
-```
-e : List Int
-e = empty                       -- panic: no matching impl for dispatch
-main = println (show (empty : List Int))   -- same, even with an inline annotation
-
-data Wrap = Wrap Int
-impl Semigroup Wrap where append (Wrap a) (Wrap b) = Wrap (a + b)
-impl Monoid Wrap where empty = Wrap 0
-e : Wrap
-e = empty                       -- e stays a VMulti; `unwrap e` → non-exhaustive match
-```
-
-The Phase 69 marker rewrites the bare method `EVar` to `EMethodRef`, and
-`check_method_usages` *should* stamp an `RKey impl_key` route once the result
-type is concrete (param_vars length matches `n_iface_params`, `is_concrete`) —
-yet at eval the `EMethodRef`'s route is effectively absent (the `VMulti` is never
-narrowed by `select_impl_by_key`).  Unlike `pure : a -> m a` (Phase 84), which has
-an argument and dispatches via the do-block / `RHeadKey`/dict route, these have
-**no argument and a bare-`a` result**, so the head-key and arg-tag paths never
-engage.  The fix is to make a nullary return-position method's `EMethodRef`
-route stamp + apply by its resolved result type — a focused but high-blast-radius
-change to the method-dispatch machinery (`lib/typecheck.ml` `check_method_usages`
-route resolution + `lib/eval.ml` `EMethodRef`), since it is shared by *every*
-interface method.  This also subsumes the Phase 84 residual "`pure` in a do-block
-with no `<-`".  Add `test_eval`/`test_run` regressions (`empty` at a known type;
-a custom Monoid/Bounded constant).  Skill: **harden-typechecker** (spills into
-eval dispatch — verify both paths).  Unblocks Phase 93.
-
 ### Phase 94: Backtick infix bypasses dict-routing and obligation checking ⏳ TODO
 
 Surfaced while fixing the Phase 90 backtick-infix residual.  `a `f` b` parses to
@@ -4431,6 +4395,42 @@ cross-module exported-wrapper case of Phase 88** (the main-module case is fixed)
 Lands in `lib/typecheck.ml` (`typecheck_module` super-entailment / constraint
 attribution); add a `test_loader` (or `test_typecheck` multi-module) regression.
 Skill: **harden-typechecker**.
+
+### Phase 96: Nullary return-position method dispatch is broken at known types ⏳ TODO
+
+Surfaced verifying Phase 93.  A **zero-argument** interface method dispatched by
+its *result* type (`empty : Monoid a => a`, `minBound`/`maxBound : Bounded a => a`)
+does not resolve even when the type is fully known — it is left as an unresolved
+`VMulti` and panics `no matching impl for dispatch` (or stack-overflows when fed
+into another method, e.g. `append empty [1,2]`).  Reproduced on every shape:
+
+```
+e : List Int
+e = empty                       -- panic: no matching impl for dispatch
+main = println (show (empty : List Int))   -- same, even with an inline annotation
+
+data Wrap = Wrap Int
+impl Semigroup Wrap where append (Wrap a) (Wrap b) = Wrap (a + b)
+impl Monoid Wrap where empty = Wrap 0
+e : Wrap
+e = empty                       -- e stays a VMulti; `unwrap e` → non-exhaustive match
+```
+
+The Phase 69 marker rewrites the bare method `EVar` to `EMethodRef`, and
+`check_method_usages` *should* stamp an `RKey impl_key` route once the result
+type is concrete (param_vars length matches `n_iface_params`, `is_concrete`) —
+yet at eval the `EMethodRef`'s route is effectively absent (the `VMulti` is never
+narrowed by `select_impl_by_key`).  Unlike `pure : a -> m a` (Phase 84), which has
+an argument and dispatches via the do-block / `RHeadKey`/dict route, these have
+**no argument and a bare-`a` result**, so the head-key and arg-tag paths never
+engage.  The fix is to make a nullary return-position method's `EMethodRef`
+route stamp + apply by its resolved result type — a focused but high-blast-radius
+change to the method-dispatch machinery (`lib/typecheck.ml` `check_method_usages`
+route resolution + `lib/eval.ml` `EMethodRef`), since it is shared by *every*
+interface method.  This also subsumes the Phase 84 residual "`pure` in a do-block
+with no `<-`".  Add `test_eval`/`test_run` regressions (`empty` at a known type;
+a custom Monoid/Bounded constant).  Skill: **harden-typechecker** (spills into
+eval dispatch — verify both paths).  Unblocks Phase 93.
 
 ---
 
