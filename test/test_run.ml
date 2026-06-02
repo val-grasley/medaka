@@ -40,13 +40,10 @@ let capture_run_typed src =
   (match Resolve.resolve_program prog with
    | [] -> ()
    | (err, _) :: _ -> failwith ("resolve error: " ^ Resolve.pp_error err));
-  let prog = Method_marker.mark_with_prelude prog in
-  ignore (Typecheck.check_program prog);
-  (* Phase 69.x-c: dict-pass the marked prelude together with user code (the
-     same marked_prelude object typecheck filled refs on), then eval without
-     re-prepending. *)
-  let combined = Method_marker.prelude_for prog @ prog in
-  let combined = Dict_pass.run combined in
+  (* Phase 84: two-pass elaboration, matching the run/test drivers — promotes a
+     polymorphic-monad do-block's inferred Applicative so `pure` routes by the
+     caller's monad.  (Single-pass programs collapse to one typecheck.) *)
+  let (_marked, combined, _schemes, _warnings) = Elaborate.elaborate prog in
   let buf = Buffer.create 64 in
   output_hook := Buffer.add_string buf;
   (try ignore (eval_program ~prelude:false combined)
@@ -520,10 +517,24 @@ main =
   println (s.[6])
 |}
 
+(* Phase 84: an unsignatured polymorphic-monad do-block dispatches its
+   return-position `pure` by the caller's monad (was: arg-tag → List → panic). *)
+let t_poly_monad_do = assert_output_typed
+  {|f m = do
+  x <- m
+  pure x
+main : <IO> Unit
+main = match f (Some 5)
+  Some v => println "ok"
+  None => println "none"
+|}
+  "ok\n"
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () = Alcotest.run "Run"
   [("run", [
+    "poly-monad do-block (Phase 84)", `Quick, t_poly_monad_do;
     "return-position dispatch", `Quick, t_return_position_dispatch;
     "multi-param dispatch",     `Quick, t_multiparam_dispatch;
     "head-key dispatch",        `Quick, t_head_key_dispatch;

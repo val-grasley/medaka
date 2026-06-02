@@ -35,9 +35,10 @@ let run_typed src name =
   (match Resolve.resolve_program prog with
    | [] -> ()
    | (err, _) :: _ -> failwith ("resolve error: " ^ Resolve.pp_error err));
-  let marked = Method_marker.mark_with_prelude prog in
-  ignore (Typecheck.check_program marked);
-  let combined = Dict_pass.run (Method_marker.marked_prelude @ marked) in
+  (* Phase 84: drive through the shared two-pass elaboration so polymorphic-monad
+     do-blocks promote their inferred Applicative constraint and `pure` routes by
+     the caller's monad — the same pipeline the run/test drivers use. *)
+  let (_marked, combined, _schemes, _warnings) = Elaborate.elaborate prog in
   let env = eval_program ~prelude:false combined in
   match List.assoc_opt name env with
   | Some v -> v
@@ -377,6 +378,60 @@ let t_do_result_err = assert_val_typed {|r = do
   _ <- Err "oops"
   pure x
 |} "r" (VCon ("Err", [VString "oops"]))
+
+(* ── Phase 84: polymorphic-monad do-block (`pure` routed by the caller's monad)
+   An unsignatured wrapper whose monad is a type variable infers `Applicative m`;
+   the two-pass elaboration promotes that to a dict-routable constraint so its
+   return-position `pure` dispatches by the caller's monad instead of arg-tag
+   "first impl wins" (which used to pick List and panic at core.mdk).  The bind
+   already dispatched correctly by runtime value, so only `pure` needed the fix.
+   The wrapper `f` is shared across the cases below; each call site picks the
+   monad. ─────────────────────────────────────────────────────────────────── *)
+
+let t_poly_monad_option = assert_val_typed {|f m = do
+  x <- m
+  pure x
+r = f (Some 5)
+|} "r" (VCon ("Some", [VInt 5]))
+
+let t_poly_monad_list = assert_val_typed {|f m = do
+  x <- m
+  pure x
+r = f [7]
+|} "r" (VList [VInt 7])
+
+(* Transitive wrapper: g forwards f's dictionary via its own (RDict). *)
+let t_poly_monad_transitive = assert_val_typed {|f m = do
+  x <- m
+  pure x
+g x = f x
+r = g (Some 9)
+|} "r" (VCon ("Some", [VInt 9]))
+
+(* The same polymorphic wrapper used at two different monads in one program
+   dispatches each call by its own caller's monad. *)
+let t_poly_monad_option_and_list = assert_val_typed {|f m = do
+  x <- m
+  pure x
+ro = f (Some 1)
+rl = f [2]
+|} "ro" (VCon ("Some", [VInt 1]))
+
+(* A signatured polymorphic monad still works (unchanged by promotion: it was
+   already in fun_constraints via the `=>` path). *)
+let t_poly_monad_signatured = assert_val_typed {|f : Applicative m => m a -> m a
+f m = do
+  x <- m
+  pure x
+r = f (Some 5)
+|} "r" (VCon ("Some", [VInt 5]))
+
+(* A concrete-monad do-block is untouched: the monad grounds at the block, so
+   `pure` routes by head tycon (RHeadKey), no promotion involved. *)
+let t_poly_monad_concrete = assert_val_typed {|r = do
+  x <- Some 5
+  pure x
+|} "r" (VCon ("Some", [VInt 5]))
 
 (* ── `?` operator: desugars to andThen ──────────────────────────────────── *)
 
@@ -1590,6 +1645,14 @@ let () =
     "do Result", [
       test_case "ok"  `Quick t_do_result_ok;
       test_case "err" `Quick t_do_result_err;
+    ];
+    "do polymorphic monad (Phase 84)", [
+      test_case "Option wrapper"        `Quick t_poly_monad_option;
+      test_case "List wrapper"          `Quick t_poly_monad_list;
+      test_case "transitive wrapper"    `Quick t_poly_monad_transitive;
+      test_case "two monads, one prog"  `Quick t_poly_monad_option_and_list;
+      test_case "signatured still ok"   `Quick t_poly_monad_signatured;
+      test_case "concrete unchanged"    `Quick t_poly_monad_concrete;
     ];
     "? operator", [
       test_case "Ok unwraps"          `Quick t_question_ok;
