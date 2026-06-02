@@ -374,7 +374,7 @@ export interface Bounded a where
        map identity      == identity
        map (g `compose` f) == map g `compose` map f -}
 export interface Mappable f where
-  map : (a -> b) -> f a -> f b
+  map : (a -> <e> b) -> f a -> <e> f b
 
 export impl Mappable List where
   map _ [] = []
@@ -423,11 +423,11 @@ export default impl Applicative (Result e) where
    Haskell's `>>=` with arguments swapped to match the readable
    "value first, then action" reading order.  Drives `do`-notation. -}
 export interface Thenable m requires Applicative m where
-  andThen : m a -> (a -> m b) -> m b
+  andThen : m a -> (a -> <e> m b) -> <e> m b
 
 -- | `andThen` with arguments flipped — the Haskell/Scala `flatMap`.
 export
-flatMap : Thenable m => (a -> m b) -> m a -> m b
+flatMap : Thenable m => (a -> <e> m b) -> m a -> <e> m b
 flatMap f ma = andThen ma f
 
 -- | Collapse one layer of nesting.  Haskell calls this `join`.
@@ -470,9 +470,9 @@ export default impl Thenable (Result e) where
    when the data structure admits a faster implementation (e.g. O(1)
    `length` for arrays). -}
 export interface Foldable t where
-  fold : (b -> a -> b) -> b -> t a -> b
-  foldRight : (a -> b -> b) -> b -> t a -> b
-  foldMap : Monoid m => (a -> m) -> t a -> m
+  fold : (b -> a -> <e> b) -> b -> t a -> <e> b
+  foldRight : (a -> b -> <e> b) -> b -> t a -> <e> b
+  foldMap : Monoid m => (a -> <e> m) -> t a -> <e> m
   toList : t a -> List a
   isEmpty : t a -> Bool
   length : t a -> Int
@@ -484,8 +484,8 @@ export interface Foldable t where
    from `Mappable` because not every functor can shrink — a fixed-shape
    container has no sensible `filterMap`. -}
 export interface Filterable f requires Mappable f where
-  filterMap : (a -> Option b) -> f a -> f b
-  filter : (a -> Bool) -> f a -> f a
+  filterMap : (a -> <e> Option b) -> f a -> <e> f b
+  filter : (a -> <e> Bool) -> f a -> <e> f a
   filter p = filterMap (x => if p x then Some x else None)
 
 export impl Foldable List where
@@ -543,7 +543,7 @@ export default impl Foldable (Result e) where
    > any (x => x > 10) [1, 2, 3]
    False -}
 export
-any : Foldable t => (a -> Bool) -> t a -> Bool
+any : Foldable t => (a -> <e> Bool) -> t a -> <e> Bool
 any f = fold (acc x => acc || f x) False
 
 {- | True when every element satisfies the predicate.  Vacuously true on
@@ -554,14 +554,14 @@ any f = fold (acc x => acc || f x) False
    > all (x => x > 0) []
    True -}
 export
-all : Foldable t => (a -> Bool) -> t a -> Bool
+all : Foldable t => (a -> <e> Bool) -> t a -> <e> Bool
 all f = fold (acc x => acc && f x) True
 
 {- | First element satisfying the predicate, or `None` if none do.
    Latches the first hit via an as-pattern so subsequent elements don't
    overwrite the answer. -}
 export
-find : Foldable t => (a -> Bool) -> t a -> Option a
+find : Foldable t => (a -> <e> Bool) -> t a -> <e> Option a
 find f = fold g None where
     g (acc@(Some _)) _ = acc
     g None x
@@ -570,7 +570,7 @@ find f = fold g None where
 
 -- | Number of elements satisfying the predicate.
 export
-count : Foldable t => (a -> Bool) -> t a -> Int
+count : Foldable t => (a -> <e> Bool) -> t a -> <e> Int
 count f = fold g 0 where
     g acc x
       | f x = acc + 1
@@ -719,25 +719,25 @@ const x _ = x
 
 -- | Swap the first two arguments of a binary function.
 export
-flip : (a -> b -> c) -> b -> a -> c
+flip : (a -> b -> <e> c) -> b -> a -> <e> c
 flip f b a = f a b
 
 {- | Right-to-left function composition: `(compose g f) x == g (f x)`.
    Spelled `<<` as an operator. -}
 export
-compose : (b -> c) -> (a -> b) -> a -> c
+compose : (b -> <e> c) -> (a -> <e> b) -> a -> <e> c
 compose g f a = g (f a)
 
 {- | Left-to-right function composition: `(pipe f g) x == g (f x)`.
    Spelled `>>` as an operator. -}
 export
-pipe : (a -> b) -> (b -> c) -> a -> c
+pipe : (a -> <e> b) -> (b -> <e> c) -> a -> <e> c
 pipe f g a = g (f a)
 
 {- | Function application as a function.  Mainly useful for higher-order
    code that wants to defer "actually call this" decisions. -}
 export
-apply : (a -> b) -> a -> b
+apply : (a -> <e> b) -> a -> <e> b
 apply f a = f a
 
 -- ─── 4. Arbitrary (property-test generators) ────────────────────────────

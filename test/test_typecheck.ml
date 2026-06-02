@@ -872,6 +872,17 @@ let t_eff_hof_user_pure = assert_type
   "applyTo f x = f x\ng xs = applyTo (y => y) xs\n"
   "g" "a -> a"
 
+(* Phase 79d (stdlib annotation): the headline — effect flows through the
+   *interface method* `map`, now that core.mdk annotates it `(a -> <e> b) -> …`.
+   `map` dispatches on the (here polymorphic) Mappable container. *)
+let t_eff_map_method_io = assert_type
+  "g xs = map (x => println x) xs\n"
+  "g" "a b -> <IO> a Unit"
+
+let t_eff_map_method_pure = assert_type
+  "g xs = map (x => x) xs\n"
+  "g" "a b -> a b"
+
 (* Phase 79b: the same named tail variable in two `<e>` positions of one
    signature must resolve to ONE shared effvar — that shared ref is what later
    lets unification link a HOF callback's effect to the HOF's result effect. *)
@@ -3379,6 +3390,8 @@ let () =
       test_case "HOF pure arg ok"           `Quick t_hof_pure_arg;
       test_case "user HOF infers IO"        `Quick t_eff_hof_user_infer;
       test_case "user HOF stays pure"       `Quick t_eff_hof_user_pure;
+      test_case "map method infers IO"      `Quick t_eff_map_method_io;
+      test_case "map method stays pure"     `Quick t_eff_map_method_pure;
       test_case "effrow shares tail var"    `Quick t_effrow_shares_tail;
       test_case "unify_row open/closed"     `Quick t_unify_row_open_closed;
       test_case "unify_row open/open link"  `Quick t_unify_row_open_open_link;

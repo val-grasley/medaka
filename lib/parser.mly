@@ -552,6 +552,8 @@ ty_fun:
 
 ty_app:
   | nonempty_list(ty_atom)  { fold_ty_app $1 }
+  | LT eff_row GT ty_app
+    { let (labels, tail) = $2 in TyEffect (labels, tail, $4) }
 
 ty_atom:
   | UPPER                                   { TyCon $1 }
@@ -559,8 +561,6 @@ ty_atom:
   | LPAREN ty RPAREN                        { $2 }
   | LPAREN ty COMMA separated_nonempty_list(COMMA, ty) RPAREN
     { TyTuple ($2 :: $4) }
-  | LT eff_row GT ty_atom
-    { let (labels, tail) = $2 in TyEffect (labels, tail, $4) }
 
 (* An effect row: concrete labels (uppercase), optionally followed by a
    lowercase tail variable after `|` (`<IO | e>`), or a bare tail variable

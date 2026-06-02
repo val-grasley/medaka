@@ -87,6 +87,16 @@ let test_typesig_effvar () =
              TyFun (TyVar "a", TyVar "b"))) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
+(* Phase 79: an effect annotation wraps the WHOLE following application, not just
+   the first atom — `<IO> Result a b` is `<IO> (Result a b)`, not `(<IO> Result) a b`. *)
+let test_typesig_effect_multiatom () =
+  match parse_one "readAll : Unit -> <IO> Result String Int\n" with
+  | DTypeSig (false, "readAll",
+      TyFun (TyCon "Unit",
+             TyEffect (["IO"], None,
+                       TyApp (TyApp (TyCon "Result", TyCon "String"), TyCon "Int")))) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
 (* Phase 79: a row with labels plus a tail variable, `<IO | e>`. *)
 let test_typesig_effrow () =
   match parse_one "run : (Unit -> <IO | e> a) -> <IO | e> a\n" with
@@ -1596,6 +1606,7 @@ let () =
       test_case "effect"           `Quick test_typesig_effect;
       test_case "multi-effect"     `Quick test_typesig_multieffect;
       test_case "effect var"       `Quick test_typesig_effvar;
+      test_case "effect multi-atom" `Quick test_typesig_effect_multiatom;
       test_case "effect row"       `Quick test_typesig_effrow;
       test_case "type application" `Quick test_typesig_typeapp;
     ];
