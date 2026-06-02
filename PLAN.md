@@ -4301,20 +4301,36 @@ a conservative "guards may not be exhaustive" warning is the realistic target)
 and `lib/parser.mly`/`lib/lexer.mll` (inline form — re-measure parser conflicts).
 Skill: **add-language-feature**.
 
-### Phase 92: Doctest harness can't reach cross-module instances ⏳ TODO
+### Phase 92: Doctest harness can't reach cross-module instances — String/Char ✅ DONE; general case ⏳ TODO
 
 `medaka test <file>` builds its combined program from the **core prelude + that
-file only**, so an instance defined in a *sibling* stdlib module is invisible.
-`Show String`/`Show Char` live in `string.mdk` (not core), so a doctest in
-`core`/`list`/`array` whose result is a `String`/`Char` (or `show` of an array,
-which returns a `String`) fails `No impl of Show for String/Char` → and because
-the harness is all-or-nothing, *every* example then errors. Workaround used:
-phrase such doctests as `show (...) == "literal"` (Bool) or use `Int` data —
-correct but contorted, and it hides what the value actually renders as. Fix: have
-the doctest driver load the full stdlib (or the file's transitive sibling
-modules) so cross-module instances resolve. Lands in `lib/doctest.ml` (+ maybe
-`lib/loader.ml`); add a `test_doctest` case. No dedicated skill — see the
-`extend-stdlib` skill's doctest-harness notes.
+file only**, so an instance defined in a *sibling* stdlib module was invisible.
+`Show String`/`Show Char` lived in `string.mdk`, so any doctest (in any file)
+whose result is a `String`/`Char` failed `No impl of Show for String/Char` → and
+because the harness is all-or-nothing, *every* example then errored.
+
+**Fix (String/Char — the common case).** `Show String` and `Show Char` moved
+from `string.mdk` into the **core prelude** (`core.mdk`), alongside the other
+primitive `Show` impls (`Int`/`Float`/`Bool`/`Unit`/`List`/…).  They depend only
+on the `showStringLit`/`showCharLit` externs, so the move is dependency-clean,
+and String/Char are as fundamental as Int — they belong in the prelude.  Now a
+String/Char-result doctest resolves with no import, in stdlib files **and**
+arbitrary user files (the prelude is embedded, so it works even outside the
+stdlib dir).  `string.mdk` keeps a pointer comment.  Regressions:
+`test_doctest`'s "String/Char result resolves (Phase 92)"; all stdlib doctests
+(string 49/49, etc.) and base suites green.
+
+**Why not the general "load the full stdlib" fix.** The harness type-checks via
+`check_program` (single-file), which flattens everything into one module.
+`list.mdk` and `array.mdk` deliberately reuse top-level names (`find`, `map`,
+…) that only coexist because they live in *separate* modules — flattening them
+merges the clashing names (e.g. `group_fundefs` coalesces two unrelated `find`s
+into one multi-clause function), corrupting dispatch.  So a genuine
+"any sibling instance reachable" fix (e.g. a `core` doctest that `show`s an
+`Array`, whose `Show Array` is in `array.mdk`) needs the doctest harness to run
+the **multi-module** typecheck path (`typecheck_module` chain) instead of
+`check_program` — a `lib/doctest.ml` rewrite.  Tracked here as the residual ⏳
+TODO; no dedicated skill (see the `extend-stdlib` skill's doctest-harness notes).
 
 ### Phase 93: `Bounded Int` / `Bounded Char` impls (+ bound externs) ⏳ TODO
 

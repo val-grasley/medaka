@@ -252,6 +252,18 @@ export impl Show Bool where
 export impl Show Unit where
   show _ = "()"
 
+-- `Show String`/`Show Char` render a *quoted, escaped literal* (`show "hi"` is
+-- `"hi"`, `show 'a'` is `'a'`) via the `showStringLit`/`showCharLit` externs —
+-- round-trippable, matching Haskell, and distinct from `println`'s raw output.
+-- They live here in the prelude (not `string.mdk`) so that `show`-ing a String
+-- or Char — the most common doctest result type — resolves without importing
+-- `string`, alongside the other primitive `Show` impls (Phase 92).
+export impl Show String where
+  show s = showStringLit s
+
+export impl Show Char where
+  show c = showCharLit c
+
 -- Comma-joined element rendering for `Show (List a)`: a top-level recursive
 -- constrained helper.  Its self-call forwards the `Show a` dictionary and the
 -- impl body forwards its own `requires Show a` dict into it (Phase 74 follow-up

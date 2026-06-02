@@ -45,17 +45,11 @@
 import core.{Eq, Ord, Show, Foldable, Mappable, Option, Ordering}
 
 -- ── Rendering ─────────────────────────────────────────────────────────────
-
-{- | Render a `String` as a quoted, escaped literal — `show "hi"` is `"hi"`,
-   not `hi`.  This is round-trippable (valid Medaka source) and disambiguates
-   a string from other values, matching Haskell's `Show`.  It therefore
-   differs from `println`, which emits the raw characters. -}
-export impl Show String where
-  show s = showStringLit s
-
-{- | Render a `Char` as a quoted literal — `show 'a'` is `'a'`. -}
-export impl Show Char where
-  show c = showCharLit c
+-- `Show String` and `Show Char` now live in the core prelude (`core.mdk`)
+-- alongside the other primitive `Show` impls, so `show`-ing a String/Char
+-- resolves without importing `string` (Phase 92).  Both render a quoted,
+-- escaped, round-trippable literal — `show "hi"` is `"hi"`, `show 'a'` is `'a'`
+-- — distinct from `println`, which emits the raw characters.
 
 -- ── Char operations ─────────────────────────────────────────────────────────
 -- ASCII-exact predicates (isDigit/digitToInt/intToDigit) compute on the

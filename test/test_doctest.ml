@@ -172,6 +172,36 @@ let t_references_file_binding () =
       failwith (Printf.sprintf "expected pass using file binding, got passed=%d failed=%d"
                   r.passed r.failed))
 
+(* Phase 92: a doctest whose result is a String renders via `show`, which needs
+   `Show String`.  That impl now lives in the core prelude (moved from
+   string.mdk), so the doctest resolves without importing `string`.  Before the
+   move this errored ("No impl of Show for String" → arg-tag fallback to
+   intToString), and the all-or-nothing harness failed every example. *)
+let t_string_result_resolves () =
+  let src = {|greet name = "hi " ++ name
+-- > greet "bob"
+-- "hi bob"
+|} in
+  with_tmp_file src (fun path ->
+    let r = Doctest.run_file path in
+    if r.passed <> 1 || r.failed <> 0 || r.errors <> 0 then
+      failwith (Printf.sprintf
+        "expected String-result doctest to pass, got passed=%d failed=%d errors=%d"
+        r.passed r.failed r.errors))
+
+(* …and a Char result likewise (`Show Char` also moved to core). *)
+let t_char_result_resolves () =
+  let src = {|first c = c
+-- > first 'a'
+-- 'a'
+|} in
+  with_tmp_file src (fun path ->
+    let r = Doctest.run_file path in
+    if r.passed <> 1 || r.failed <> 0 || r.errors <> 0 then
+      failwith (Printf.sprintf
+        "expected Char-result doctest to pass, got passed=%d failed=%d errors=%d"
+        r.passed r.failed r.errors))
+
 let t_no_expected_passes () =
   let src = {|-- > 1 + 2
 x = 42
@@ -284,6 +314,8 @@ let () =
       Alcotest.test_case "all pass"                   `Quick t_all_pass;
       Alcotest.test_case "one fail"                   `Quick t_one_fail;
       Alcotest.test_case "references file binding"    `Quick t_references_file_binding;
+      Alcotest.test_case "String result resolves (Phase 92)" `Quick t_string_result_resolves;
+      Alcotest.test_case "Char result resolves (Phase 92)"   `Quick t_char_result_resolves;
       Alcotest.test_case "no expected = crash-free"   `Quick t_no_expected_passes;
       Alcotest.test_case "block comment doctest runs"  `Quick t_block_comment_run;
       Alcotest.test_case "return-position dispatch"   `Quick t_return_position_dispatch;
