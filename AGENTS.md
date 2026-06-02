@@ -203,7 +203,8 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 | Doc | What's in it |
 |-----|--------------|
 | `README.md` | Full build/test/CLI usage, editor setup, layout |
-| `language-design.md` | Language design & semantics |
+| `SYNTAX.md` | Terse cheat-sheet of every construct the **current binary** accepts (one verified example each). Reach here first for "what syntax exists / does X parse" — faster than reading `parser.mly`. Ground truth over `language-design.md` when they disagree |
+| `language-design.md` | Language design & semantics (intent/rationale — may describe unimplemented features) |
 | `PLAN.md` | Forward-looking roadmap (open phases) |
 | `PLAN-ARCHIVE.md` | Completed Phases 1–97 + per-phase implementation notes |
 | `STDLIB.md` | Stdlib module plan |
