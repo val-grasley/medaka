@@ -14,7 +14,11 @@
         "id": "medaka",
         "aliases": ["Medaka", "mdk"],
         "extensions": [".mdk"],
-        "configuration": "./language-configuration.json"
+        "configuration": "./language-configuration.json",
+        "icon": {
+          "light": "./icons/medaka-light.svg",
+          "dark": "./icons/medaka-dark.svg"
+        }
       }
     ],
     "grammars": [
