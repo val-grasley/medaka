@@ -276,8 +276,24 @@ let build_details
    shadow-drops prelude names via `prelude_for` and so avoids the
    prelude/standalone name collision (e.g. a module redefining `count`) that the
    full `marked_prelude` of this path would hit. *)
-let run_file_multi filename all_examples synth_results synth_decls
-    : run_result option =
+(* Load [filename] + its transitive deps and run them through the multi-module
+   pipeline (desugar → resolve → mark → two-pass typecheck), yielding the marked
+   modules ready for [Eval.eval_modules].  [inject fp prog] lets a caller append
+   synthetic declarations to a chosen module (doctest appends its `__dt_i__`
+   bindings to the root; the prop phase passes the default identity).
+
+   Returns [None] when ≤1 module loaded — the caller should fall back to the
+   single-file path.  On success returns [Some (marked_modules, tc_err)] where
+   [marked_modules] is in dependency-first order (root last) and [tc_err] is any
+   deferred typecheck-error message (surfaced as data, not raised, so callers
+   choose how to report it).  Raises [Failure] on load / resolve errors.
+
+   Factored out of [run_file_multi] (Phase 126) so the `medaka test` prop phase
+   can drive import-bearing files through the same path doctests use. *)
+let assemble_marked_modules
+      ?(inject = fun _fp prog -> prog)
+      (filename : string)
+    : ((string * string * Ast.program) list * string option) option =
   let project_dir =
     match Project_config.find_project_root filename with
     | Some d -> d
@@ -302,13 +318,12 @@ let run_file_multi filename all_examples synth_results synth_decls
   in
   if List.length loaded <= 1 then None
   else
-  (* Desugar every module; inject the synth doctest bindings into the root —
-     the entry whose file_path is the file under test (last in dependency
-     order). *)
+  (* Desugar every module; let the caller inject synthetic decls into a chosen
+     module (keyed by file_path — the root is the entry under test). *)
   let modules =
     List.map (fun (mid, fp, prog) ->
       let prog = Desugar.desugar_program prog in
-      let prog = if fp = filename then prog @ synth_decls else prog in
+      let prog = inject fp prog in
       (mid, fp, prog)
     ) loaded
   in
@@ -379,11 +394,21 @@ let run_file_multi filename all_examples synth_results synth_decls
           (m2, err2)
         end
     in
+    Some (marked_modules, tc_err)
+
+let run_file_multi filename all_examples synth_results synth_decls
+    : run_result option =
+  match
+    assemble_marked_modules
+      ~inject:(fun fp prog -> if fp = filename then prog @ synth_decls else prog)
+      filename
+  with
+  | None -> None
+  | Some (marked_modules, tc_err) ->
     let env_result : ((string * Eval.value) list, string) result =
       match tc_err with
       | Some msg -> Error msg
-      | None ->
-        eval_suppressed_modules marked_modules
+      | None     -> eval_suppressed_modules marked_modules
     in
     Some (build_details env_result synth_results all_examples)
 
