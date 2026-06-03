@@ -172,6 +172,8 @@ and prepended to every program by the compiler.
 - ✅ `compose : (b -> c) -> (a -> b) -> a -> c` — right-to-left function composition (`g . f`)
 - ✅ `pipe : (a -> b) -> (b -> c) -> a -> c` — left-to-right function composition
 - ✅ `apply : (a -> b) -> a -> b` — function application as a function
+- ✅ `fst : (a, b) -> a` — first component of a pair
+- ✅ `snd : (a, b) -> b` — second component of a pair
 - ✅ `not : Bool -> Bool` — logical negation
 - ✅ `and : Bool -> Bool -> Bool` — logical AND (strict; both args evaluated)
 - ✅ `or : Bool -> Bool -> Bool` — logical OR (strict)

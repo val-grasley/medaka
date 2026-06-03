@@ -267,19 +267,6 @@ that constraint and delegated the remaining modules (Modules 5–8). STDLIB.md i
 the per-module checklist. **Module 5 (`map` + `set`) is complete** — see
 PLAN-ARCHIVE.md and STDLIB.md.
 
-- **Phase 107 — `core.mdk` gaps surfaced by Module 5 (2026-06-02).**
-  - **`Foldable.isEmpty` / `length` have no default body** — only `foldMap`
-    does, yet the interface comment *and* STDLIB.md claim all three default. So
-    every `Foldable` impl (List, Array, and any new one like a tree) is forced to
-    spell out `isEmpty`/`length`. Either add the default bodies (`isEmpty t = ...`
-    via `toList`; `length = fold (acc _ => acc + 1) 0` — mind the
-    point-free-dispatched-method eval trap, eta-expand) or correct the misleading
-    comment + STDLIB.md. Lands in `stdlib/core.mdk`. Skill: **extend-stdlib**.
-  - **No `fst` / `snd` tuple accessors** in core (`fst (1,2)` → `Unbound
-    variable: fst`). Trivial to add (`fst (a, _) = a` / `snd (_, b) = b`); add to
-    `core.mdk` utilities, or decide they're intentionally omitted (pattern-match
-    instead) and document it. Skill: **extend-stdlib**.
-
 - **Phase 113 — `Ord` instances for `Map` / `Set`.** Neither has an `Ord` impl
   today, so you can't nest them (a `Map (Set a) v`, or a `Set (Set a)`) or sort a
   `List (Map …)`. Add lexicographic `Ord` on the canonical ascending list:

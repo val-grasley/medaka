@@ -4992,6 +4992,28 @@ where arbitrary () = arbitraryList arbitrary 8` now generates `List Tagged` as
 Lands in `ast.ml`/`typecheck.ml`/`dict_pass.ml`/`eval.ml`. Unblocks common cases
 of Phase 101.
 
+### Phase 107: `core.mdk` gaps surfaced by Module 5 — `Foldable` defaults + `fst`/`snd` ✅ DONE (2026-06-02)
+
+Two `stdlib/core.mdk` gaps from the Module 5 work.
+- **`Foldable.isEmpty`/`length` now default.** The interface docstring and
+  STDLIB.md long *claimed* all three of `foldMap`/`isEmpty`/`length` defaulted, but
+  only `foldMap` had a body, so every impl spelled out `isEmpty`/`length` by hand.
+  Added the two missing defaults to the interface (Haskell-consistent — its
+  `Foldable` MCD is just `foldMap`/`foldr`): `length t = fold (acc _ => acc + 1) 0 t`
+  and `isEmpty t = match toList t; [] => True; _ => False`. Both **eta-expanded** to
+  dodge the point-free-dispatched-method eval trap; `isEmpty` uses a `match` (not
+  `== []`) so it needs no `Eq a`. To prove the defaults actually dispatch (an
+  all-override interface leaves them as dead code), **thinned the `Option` and
+  `Result e` impls** to drop their now-redundant explicit `isEmpty`/`length` — they
+  inherit the defaults. Kept the genuine O(1) overrides on `List` (pattern `isEmpty`),
+  `Array` (`arrayLength`), `Set` (`size`). Verified through the loader (the dispatch
+  bug class repro's only multi-module), not just the single-file doctest path.
+- **`fst`/`snd` added** to core's utility section (`fst (a, _) = a` / `snd (_, b) = b`,
+  signatures `(a, b) -> a` / `(a, b) -> b`), with doctests.
+- Lands in `stdlib/core.mdk` + STDLIB.md doc sync. Doctests: 24/24 in core (4 new);
+  list/array/string/map/set + `test_eval`/`run`/`typecheck`/`doctest` + `@thorough`
+  all green. Skill: **extend-stdlib**.
+
 ### Investigated & dropped as non-issues (2026-06-02)
 
 Two "minor ergonomics" candidates from the Module 5 work, verified non-problems:
