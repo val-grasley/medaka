@@ -5328,6 +5328,51 @@ method-binding path (`lib/eval.ml`).
 
 ---
 
+### Phase 125: `Foldable`-derived fns over an *imported* instance panic at eval ✅ DONE (2026-06-03)
+
+`sum (fromList [1,2,3])` over an imported `array`/container `Foldable` instance
+panicked `no matching impl for dispatch` through the loader, while the same call
+was a green single-file doctest. **Filed as a return-position dict-passing bug
+(the Phase 83/84/115 line) — that hypothesis was wrong.** Typecheck + dict-pass
+produce an *identical* tree on both paths, and `sum`'s call-site routes resolve
+to `None` on both by design (`sum = fold (+) 0` is point-free/expansive/signed →
+Phase 89 `relaxed` branch, arg-tag dispatch). The divergence was purely in the
+**evaluator's module driver**. Skill: **add-language-feature** (triaged), but the
+fix landed entirely in `lib/eval.ml`.
+
+- **Root cause (`Eval.eval_modules`).** It forced the prelude's deferred thunks
+  right after the prelude phase, *before* Phase B installs the user modules'
+  impls. So `sum`'s `VThunk` evaluated `fold (+) 0` against the **prelude-only**
+  `fold` VMulti (`Foldable List/Option/Result` — no `Foldable Array` yet) and
+  `lookup` memoised that partial-applied VMulti into `sum`'s cell. Later
+  `sum (fromList […])` applied an `Array`; no candidate matched → panic. The
+  reported loc was an argument-eval `current_loc` artifact (pointing at the
+  imported constructor), which is what made it look like a mis-routed dict around
+  the argument. The flat `eval_program` forces deferred thunks only *after* every
+  `DImpl` is installed — `eval_modules` violated that invariant for the prelude.
+- **Why the pattern.** `length`/`toList` (direct methods) and `all`/`any` (clause
+  param → `VClosure` resolving `fold` at call time) worked; only point-free
+  `relaxed` wrappers (`sum`/`product`/`maximum`/`minimum`) captured the
+  prelude-only VMulti and failed — and only through the loader.
+- **Fix (`lib/eval.ml`).** Moved the prelude deferred-force from right after the
+  prelude phase to *after* the Phase B module loop, so every module's impls are
+  installed first — mirroring `eval_program`. Per-module deferred forcing stays
+  inside the loop (topo order guarantees a module's wrappers only need impls from
+  itself, earlier modules, and the prelude; the prelude is the unique case that
+  can reference *later* modules' impls).
+- **Tests.** `test/test_loader.ml` (the `Eval.eval_modules` harness —
+  `test_run.ml` is the flat path and never had the bug):
+  `test_eval_foldable_derived_imported_instance` runs `sum`/`maximum`/`product`/
+  `length` over an imported `impl Foldable Bag`. Green after, panics before.
+- **Tooling.** Added `dev/module_debug.ml` — runs the full multi-module pipeline
+  in-process, dumps the dict-passed user decls, and evals the *same* tree through
+  both `eval_modules` and `eval_program`. Diffing the two outputs is what pins a
+  loader-vs-flat divergence to the eval driver (identical trees, different
+  outputs) vs typecheck/dict_pass (trees differ). This was the missing diagnostic
+  that the investigation had to hand-roll in an OCaml toplevel.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend

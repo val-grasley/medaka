@@ -240,40 +240,13 @@ above, it is flagged ⭐.
   Disposition: keep the "bare positions stay flat" policy; `if` stays the sole
   width-aware bare RHS.
 
-- **Phase 125 — cross-module dispatch: `Foldable`-derived functions with a
-  return-position constraint fail on an *imported* instance.** Surfaced
-  kicking the tires on `mut_array.mdk` (Module 8), but **not** specific to it —
-  reproduces on every container module on `main`. Repro:
-  ```
-  import array.{fromList}
-  main = println (sum (fromList [1, 2, 3]))   -- panic: no matching impl for dispatch
-  ```
-  **Characterization** (the triage seeds):
-  - **Single-file works, loader fails.** The same `sum (fromList […])` is a green
-    doctest (single-file `check_program` path threads the dict); it only panics
-    through the multi-module loader (`run`/`eval_modules`).
-  - **Direct methods work; some derived fns work; return-position-constrained
-    derived fns fail.** `length`/`toList` (direct `Foldable` methods) and even
-    `any`/`all` (`Foldable`-only derived, `Bool` result) all succeed across the
-    loader. `sum`/`product` (`Foldable t, Num a` ⇒ `… -> a`) and presumably
-    `maximum`/`minimum` (`Ord a` ⇒ `… -> a`) fail. The common factor in the
-    failures is a **second constraint whose type var sits in return position**.
-  - **Panic site is the imported constructor, not the fold.** The runtime error
-    points at `array.mdk:63` (`fromList xs = arrayFromList xs`), i.e. a
-    dict-application the elaborator wrapped around the *argument* `fromList […]`
-    resolves to no impl — so it's a mis-**routed** dict, not a missing one.
-  This is the cross-module continuation of the Phase 83/84/115 return-position
-  dict-passing line (`res_impl_dicts` / head-key routing / `VDictHead`); the
-  single-file vs loader split says the multi-module driver (`eval_modules` +
-  whichever `typecheck_module`/`dict_pass` slice it runs) doesn't thread the
-  return-position dict the single-file path does. **Triage**: diff the dict-pass
-  output for the repro on the single-file vs multi-module path, find where the
-  return-position dict-route id is dropped/mis-keyed across the module boundary,
-  fix, and add a `test_loader`/`test_run` case (`sum`/`maximum` over an imported
-  `array`/`mut_array`). Skill: **add-language-feature** (threads resolve →
-  typecheck → dict_pass → eval, per the 83/84 note in AGENTS.md). Until fixed,
-  call the container's own folds or convert to `List` at the boundary; STDLIB.md
-  Module 8 documents the user-facing limitation.
+- **Phase 125 — `Foldable`-derived fns over an imported instance panic at eval.**
+  ✅ **DONE (2026-06-03)** — see PLAN-ARCHIVE.md. The filed return-position
+  dict-passing hypothesis was **wrong**: it was an `Eval.eval_modules` ordering
+  bug (the prelude's point-free `relaxed` wrappers like `sum = fold (+) 0` were
+  forced against the prelude-only `fold` VMulti *before* Phase B installed the
+  imported module's impls). Fix was a one-site reorder in `lib/eval.ml`, plus a
+  `test_loader` regression and a new `dev/module_debug.ml` probe.
 
 - **Phase 101 — drive property generation/shrinking through the `Arbitrary`
   interface (101b).** 101a (registry-first `arbitrary`/`shrink`, native element
