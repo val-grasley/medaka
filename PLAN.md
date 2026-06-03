@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 127). At task triage, match the work against AGENTS.md's
+number (last used: 130). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -75,13 +75,24 @@ What's missing is the supporting surface a real multi-thousand-line program need
     2026-06-02 via head-key dict-application routing); only the nested/structured
     -dict residual (#5) remains.
 - **Interpreter performance, "good enough" to bootstrap.** Running the compiler
-  *on* the interpreter must finish in minutes, not hours. May require interpreter
-  hot-path work (the eval loop, environment representation) — measure once a
-  non-trivial program exists.
+  *on* the interpreter must finish in minutes, not hours. **First measurement
+  (2026-06-03):** the bare eval loop is fine — 1,000,000 tight-loop iterations in
+  ~0.15s (~150ns/iter). The cost is in **typeclass dispatch + persistent-tree
+  allocation**: 5000 ordered-`Map` inserts + 5000 lookups take ~1.0s (~100µs/op,
+  ~600× a loop iter). So symbol-table-heavy passes (resolve, type-substitution)
+  will dominate, and the eval hot path / environment representation will likely
+  need work — but it does **not** block *starting* the port (slow-but-correct is
+  the accepted Stage-1 bargain). Re-measure on the first real Medaka-in-Medaka
+  stage.
 - **Multi-file ergonomics at scale.** The module system, qualified access, and
   `medaka.toml` workspaces exist; per-module eval isolation landed (Phase 110).
-  Confirm they hold up across the dozens of files a compiler needs. Surface gaps
-  here become new phases.
+  **Scale-probed 2026-06-03** with a synthetic 25-module project (deep chains +
+  diamonds + cross-module impls): deep linear import chains, diamond deps,
+  qualified access, and generic dispatch over imported instances all hold up. The
+  probe surfaced **one hard gap — cross-module user-defined interfaces (Phase
+  130)** — plus a verbosity papercut (per-function `export` lines; importing
+  method names for `impl` bodies). Phase 130 is the blocker; clear it before the
+  port leans on multi-module interface organization.
 
 ### Stage 1 — Self-host on the interpreter
 
@@ -124,6 +135,67 @@ strict priority. Where an item is a **Stage 0 prerequisite** for the north star
 above, it is flagged ⭐.
 
 ### Compiler / language
+
+- ⭐ **Phase 130 — cross-module user-defined interfaces (declare in one module,
+  `impl` in another). Stage-0 prerequisite.** Surfaced by the 2026-06-03
+  multi-file scale probe (a synthetic 25-module project: deep import chains +
+  diamond deps + a user interface impl'd across modules). A user `interface`
+  declared and `export`ed in module A **cannot today be `impl`'d in module B**,
+  nor can its constraint be discharged in a third module. Everything else the
+  probe exercised worked — deep linear chains (20 modules), diamond imports,
+  qualified access, and generic dispatch over *imported instances* of prelude
+  interfaces (`sum`/`maximum` over imported `Array`/`Set`/`MutArray`). This is
+  the one hard cross-module gap, and it blocks the self-hosting compiler's most
+  natural structure: an interface (`Pretty`, a visitor, `Typeable`) declared once
+  and impl'd for AST/type nodes scattered across many modules. **Two layers:**
+  1. *Resolve (method membership).* `resolve.ml`'s import loop (~line 412) adds an
+     imported interface's *name* to `env.interfaces` but never copies
+     `exp_iface_methods` into `env.iface_methods`. So `impl Sized Shape` in module
+     B checks membership against an empty method set → "Method 'sizeOf' is not
+     part of interface Sized". **Confirmed ~6-line fix** (copy the method list on
+     import); `typecheck.ml:679`'s parallel membership check likely needs the
+     same.
+  2. *Typecheck (impl discharge).* With (1) patched, the next error is "No impl of
+     Sized for Shape" when a third module calls a `Sized a =>`-constrained
+     function over a `Shape`. User-interface impls don't propagate across the
+     `te_impls` import path (`typecheck.ml:4192`) the way prelude impls do.
+     Determine whether the impl is missing from the *defining* module's exported
+     `te_impls`, or whether import only pulls impls tied to explicitly-named
+     imported entities and drops a `Sized Shape` impl (neither name imported
+     by-reference). Medaka's intent is global impl installation (per the
+     eval-module-isolation work), so this is a genuine bug, not a design choice.
+  Skill: **add-language-feature** (resolve + typecheck, cross-cutting). Regression
+  test must go in **test_loader** (drives `eval_modules`; single-file masks
+  loader-only bugs — see AGENTS.md Gotchas). *Secondary ergonomic finding from the
+  same probe* (file separately if it compounds): every cross-module function needs
+  its own standalone `export` line, and an `impl` module must also import each
+  interface **method name** it references — verbose at scale, though not a bug.
+
+- **Phase 129 — differential-testing harness (self-host validation rig). Stage-1
+  prerequisite.** Stage 1 says "port each stage, checked against the OCaml
+  reference at each step" — but **there is no mechanism for that yet**, and it
+  should exist *before* the lexer port begins. Build: (a) a fixture corpus of
+  `.mdk` programs (seed from existing `test_parser`/`test_eval`/`test_run`
+  inputs); (b) a runner that for each fixture runs the OCaml reference stage and
+  the Medaka-in-Medaka stage and **diffs structured output** — tokens (lexer), a
+  canonical AST dump (parser; the formatter round-trip + a canonical printer get
+  partway), the typed/elaborated tree, and the eval result; (c) golden files
+  checked into git so a port regression fails loudly, wired into a
+  `@thorough`-style alias. The harness grows stage-by-stage *with* the port rather
+  than being built all at once. This is the gate that makes "validated against the
+  reference" real instead of aspirational. Skill: none specific (new `test/` +
+  `dev/` driver).
+
+- **Phase 128 — freeze `stdlib/string.mdk` (review + lock the API). Stage-0
+  housekeeping.** string.mdk passes its 49 doctests but is still flagged *awaiting
+  full user review*. Settle the open decisions, then **freeze the surface** so the
+  compiler (a heavy string consumer) is ported against a stable API: (1) the
+  `length`/`isEmpty` omissions — keep relying on the global `stringLength` / `s ==
+  ""`, or introduce a `Sized`/`HasLength` interface? (2) `toUpper`/`toLower` (full
+  Unicode, String-level, owns the unqualified names) vs `charToUpper`/`charToLower`
+  (Char-level kernel externs) — confirm or rename. Decide, document the final
+  surface in STDLIB.md, mark Module 3 reviewed. Small but worth doing before the
+  port locks in. Skill: **extend-stdlib**.
 
 - **Phase 127 — unit testing library (`test` keyword + `stdlib/test.mdk`). DONE 2026-06-03.**
   Medaka has doctests (example-as-documentation) and `prop` tests (universal
