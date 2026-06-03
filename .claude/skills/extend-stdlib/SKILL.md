@@ -33,16 +33,22 @@ its ✅/⏳/🟡/⛔ statuses current as you go.
 
 ## Language sharp edges that will bite
 
-- **Guards do NOT fall through to the next equation** (panics `Non-exhaustive
-  guards`). Each guarded clause must be self-exhaustive (end with `| otherwise`).
-  Put an `n <= 0` guard *inside* the relevant pattern clause, not as a separate
-  bare-pattern clause.
-- **No inline guards:** `f n _ | n <= 0 = []` is a parse error; guards go on
-  indented lines under the clause head.
-- **Point-free defs of dispatched methods fail at eval** (`applied non-function:
-  <dispatch/N>`). Eta-expand: `maximum xs = fold step None xs`, not
-  `maximum = fold step None`.
+- **`public export` is for `data`/`record` declarations only** (it exposes
+  constructors to importers alongside the type). Plain functions/values use
+  `export`. Writing `public export\nfoo : T\nfoo = …` is a parse error at the
+  type signature line — the parser only accepts `PUBLIC EXPORT inner_data_or_record`.
 - An expr RHS can't wrap onto a second indented line (keep it one line).
+- A multi-statement lambda body (match inside a fold callback) doesn't work
+  inside parentheses — INDENT/DEDENT tokens are suppressed in balanced brackets.
+  Use a named helper function or function-style multi-clause definitions instead.
+
+**The following were bugs in early Medaka but are now fixed (Phase 91/121):**
+- Guards fall through correctly to the next clause (no longer need `| otherwise`
+  on every guarded clause — a standalone `| n <= 0 = []` clause is fine).
+- Inline guards on one line (`f n _ | n <= 0 = []`) now parse.
+- Point-free impl method bodies now work (eta-expansion was needed pre-Phase 121).
+
+Do NOT follow the old advice in stale comments/docs that says otherwise.
 
 ## Build & test loop
 

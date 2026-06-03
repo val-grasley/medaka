@@ -29,14 +29,28 @@ When you emit **Medaka** code in examples/tests, use multi-arg lambda form
    `pat` (a `pat`-LHS reduce/reduce-conflicts with the bare-expression case).
    Adding pattern syntax usually means extending `expr_to_pat` — and the same
    change typically must be applied to *all* of those positions together.
+   **Keyword-vs-module-name conflict:** if the new keyword might also appear as a
+   module ID in `import test.{…}` paths (e.g., a stdlib module named `test`),
+   the `import_ident` rule in `parser.mly` must explicitly accept the keyword
+   token alongside `IDENT`/`UPPER`, otherwise `import keyword.{…}` becomes a
+   parse error. Check whether the keyword name matches any stdlib module file.
 3. **AST** — `lib/ast.ml`. Add node variants; carry source locations like
    neighboring nodes (LSP and `ParseError` depend on them). A new `expr`
    constructor must get an arm in every *exhaustive* match over `expr` or the
    build fails: `pp_expr` (`ast.ml`), `expr_prec` **and** `print_expr_raw`
    (`printer.ml`), `collect_expr` (`coverage.ml`), and `check_expr`
    (`resolve.ml`). `strip_locs_expr` (`ast.ml`) and `map_expr` (`desugar.ml`)
-   have catch-alls, so a leaf node falls through them safely. Let the compiler's
-   non-exhaustive warnings drive you to each site.
+   have catch-alls, so a leaf node falls through them safely.
+   **New `decl` variant**: build errors catch most exhaustive-match sites, but
+   several files use an `other -> Desugar.map_decl f other` delegation arm whose
+   catch-all silently swallows new variants. To benefit from that delegation, add
+   an explicit arm to `Desugar.map_decl` that recurses into the new variant's
+   sub-expressions — then the following files need NO explicit arm: `dict_pass.ml`
+   and the three `method_marker.ml` iterator functions. The files that do NOT
+   delegate and need explicit arms regardless: `coverage.ml` (`collect_decl`),
+   `exhaust.ml` (guard recursion), `lsp_server.ml` (symbols + `decl_defines`),
+   `dev/debug.ml` (`pp_decl`), and `test/test_parser.ml` (`pp_decl`). Let the
+   compiler's non-exhaustive warnings guide you.
 4. **Resolve** — `lib/resolve.ml`. Bind every new name/reference. Add an arm
    for the new node so nothing falls through unresolved.
 5. **Typecheck** — `lib/typecheck.ml`. Infer/check types (HM + interfaces +
