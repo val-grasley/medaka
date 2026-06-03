@@ -2,7 +2,7 @@
 
 The working handoff between sessions. Read it before starting a task; update it
 when you finish one. This document holds only **forward-looking** work — the
-completed Phases (1–110, with their detailed implementation notes) live in
+completed Phases (1–115, with their detailed implementation notes) live in
 [`PLAN-ARCHIVE.md`](./PLAN-ARCHIVE.md). When a phase here is finished, move its
 write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md).
@@ -11,7 +11,7 @@ the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md).
 
 The compiler pipeline is complete end-to-end —
 `lexer → parser → desugar → resolve → method_marker → typecheck (runs exhaust)
-→ eval` — with phases through ~110 done (see PLAN-ARCHIVE.md). The language has
+→ eval` — with phases through ~115 done (see PLAN-ARCHIVE.md). The language has
 records, ADTs, interfaces (with superinterfaces, `deriving`, dictionary-passing
 for return-position/multi-param dispatch), effect rows, exhaustiveness checking,
 `do`-notation, guards (with fall-through + exhaustiveness lint), list
@@ -67,8 +67,9 @@ What's missing is the supporting surface a real multi-thousand-line program need
   - ~~`do`→`Thenable` (Phase 98)~~, ~~guard exhaustiveness + inline guards (Phase
     91)~~, ~~plain multi-clause exhaustiveness (Phase 102)~~ — **DONE**.
   - Multi-module / return-position dispatch residuals (Phase 83/84) shouldn't
-    force arg-tag workarounds in compiler code — mostly closed; nested-dict
-    residual remains.
+    force arg-tag workarounds in compiler code — mostly closed (Phase 115 closed
+    the inferred/recursive-wrapper cases); the nested-dict (#5) and free-`e`
+    `Result` (#4) residuals remain.
 - **Interpreter performance, "good enough" to bootstrap.** Running the compiler
   *on* the interpreter must finish in minutes, not hours. May require interpreter
   hot-path work (the eval loop, environment representation) — measure once a
@@ -207,21 +208,6 @@ above, it is flagged ⭐.
   pairs, not values). Lands in `lib/resolve.ml` + `lib/typecheck.ml`. Skill:
   **harden-typechecker**.
 
-- **Phase 114 — container-literal residuals (Phase 108 follow-ups, low priority).**
-  Two limitations of the `Map { … }` / `Set { … }` sugar:
-  - **Empty literals don't work** — `Map { }` / `Set { }` fail (`Type mismatch:
-    Map Int vs Map`): empty braces carry no `=>` to distinguish map-vs-set, so the
-    parser emits `ESetLit(name, [])` and the lowering pins the *unary* `name _a`,
-    the wrong arity for a binary `Map`. Low value (empty containers have
-    `empty`/`Monoid.empty`). Possible fix: `EHeadAnnot` in typecheck ignores the
-    lowering-supplied arity and applies the head tycon to its *declared* arity of
-    fresh vars (a tycon-arity lookup).
-  - **Two same-shape containers in scope need a type annotation** to disambiguate
-    — the literal's name pins the *head* tycon, not the full type, so two
-    `(k,v)`-entry container types both match `Map { … }`'s entry shape. Annotate
-    (`m : Map _ _ = …`) to choose. Inherent to head-pinning; recorded.
-  - Skill: **add-language-feature**.
-
 - ⭐ **Phase 83 / 84 (residuals, layered like 69.x→74).** The
   instance-`requires` dict-threading into return-position impl bodies (single
   level) is **DONE** (see PLAN-ARCHIVE.md). The tractable set was closed by
@@ -294,27 +280,6 @@ Originally hand-written by the user by design; as of 2026-06-02 the user lifted
 that constraint and delegated the remaining modules (Modules 5–8). STDLIB.md is
 the per-module checklist. **Module 5 (`map` + `set`) is complete** — see
 PLAN-ARCHIVE.md and STDLIB.md.
-
-- **Phase 107 — `core.mdk` gaps surfaced by Module 5 (2026-06-02).**
-  - **`Foldable.isEmpty` / `length` have no default body** — only `foldMap`
-    does, yet the interface comment *and* STDLIB.md claim all three default. So
-    every `Foldable` impl (List, Array, and any new one like a tree) is forced to
-    spell out `isEmpty`/`length`. Either add the default bodies (`isEmpty t = ...`
-    via `toList`; `length = fold (acc _ => acc + 1) 0` — mind the
-    point-free-dispatched-method eval trap, eta-expand) or correct the misleading
-    comment + STDLIB.md. Lands in `stdlib/core.mdk`. Skill: **extend-stdlib**.
-  - **No `fst` / `snd` tuple accessors** in core (`fst (1,2)` → `Unbound
-    variable: fst`). Trivial to add (`fst (a, _) = a` / `snd (_, b) = b`); add to
-    `core.mdk` utilities, or decide they're intentionally omitted (pattern-match
-    instead) and document it. Skill: **extend-stdlib**.
-
-- **Phase 113 — `Ord` instances for `Map` / `Set`.** Neither has an `Ord` impl
-  today, so you can't nest them (a `Map (Set a) v`, or a `Set (Set a)`) or sort a
-  `List (Map …)`. Add lexicographic `Ord` on the canonical ascending list:
-  `impl Ord (Map k v) requires Ord k, Ord v where compare a b = compare (toList a)
-  (toList b)` (toList = assoc pairs; for set, the element list). Cheap; both
-  already impl `Eq` the same way. Lands in `stdlib/map.mdk` + `stdlib/set.mdk`.
-  Skill: **extend-stdlib**.
 
 - ⭐ **`stdlib/string.mdk`** is drafted and passes its 49 doctests but is flagged
   *awaiting user review* (archive Phase 75 step 3). Open decisions: the

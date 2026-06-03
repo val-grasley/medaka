@@ -1699,9 +1699,51 @@ let rec infer env = function
        the pin's type variables are *meant* to ground (the literal's element
        types).  It fixes only the head tycon of `e`'s type to the named
        container, which is what lets `fromEntries`'s return-position dispatch
-       resolve to that container's impl. *)
+       resolve to that container's impl.
+
+       Phase 114: ignore the *arity* the lowering happened to supply and apply
+       the head tycon to its *declared* arity of fresh vars.  The parser can't
+       tell empty `Map { }` from `Set { }` (no `=>` marker → both lower to a
+       unary `ESetLit name []` pin), so for `Map { }` the supplied `Map _a` is
+       the wrong arity and fails to unify with `Map k v`.  Looking the arity up
+       by the head tycon makes empty literals work regardless of the lowering's
+       guess; element vars stay free and ground via inference as before. *)
     let te = infer env e in
-    let ta = from_ast_type ~aliases:env.aliases ~tbl:(Hashtbl.create 4) ast_t in
+    (* Peel TyApp down to the leftmost TyCon — the head tycon name. *)
+    let rec head_tycon = function
+      | Ast.TyApp (f, _) -> head_tycon f
+      | Ast.TyCon n      -> Some n
+      | _                -> None
+    in
+    (* Declared arity of a tycon, read off any of its constructors' result
+       type: strip the ctor-argument arrows, then count TApp nesting on the
+       head.  All ctors of a type share the same result head/arity. *)
+    let tycon_arity name =
+      match Hashtbl.find_opt env.type_ctors name with
+      | Some (cn :: _) ->
+        (match Hashtbl.find_opt env.ctors cn with
+         | Some (Forall (_, _, t)) ->
+           let rec strip_fun = function TFun (_, _, r) -> strip_fun r | t -> t in
+           let rec app_arity = function
+             | TApp (f, _)             -> 1 + app_arity f
+             | TVar { contents = Link t } -> app_arity t
+             | _                       -> 0
+           in
+           Some (app_arity (strip_fun t))
+         | None -> None)
+      | _ -> None
+    in
+    let ta =
+      match head_tycon ast_t with
+      | Some name ->
+        (match tycon_arity name with
+         | Some n ->
+           let rec build acc k =
+             if k = 0 then acc else build (TApp (acc, fresh_var ())) (k - 1) in
+           build (TCon name) n
+         | None -> from_ast_type ~aliases:env.aliases ~tbl:(Hashtbl.create 4) ast_t)
+      | None -> from_ast_type ~aliases:env.aliases ~tbl:(Hashtbl.create 4) ast_t
+    in
     unify te ta;
     te
 
