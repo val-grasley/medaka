@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 114). At task triage, match the work against AGENTS.md's
+number (last used: 115). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -222,24 +222,52 @@ above, it is flagged ⭐.
     (`m : Map _ _ = …`) to choose. Inherent to head-pinning; recorded.
   - Skill: **add-language-feature**.
 
-- ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** The
+- ⭐ **Phase 83 / 84 (residuals, layered like 69.x→74).** The
   instance-`requires` dict-threading into return-position impl bodies (single
-  level) is **DONE** (see PLAN-ARCHIVE.md). Remaining, lower priority — each a
-  known limitation with a correct-enough fallback today:
-  - Runtime dict-threading *into* an inferred (unsignatured top-level) constrained
-    body (currently arg-tag dispatch, correct for argument-dispatched wrappers).
-    Distinct from the impl-body case. Needs a post-typecheck marker re-run against
-    the final constraint tables — a pipeline restructure.
-  - Self-/mutually-recursive *unsignatured* wrappers under-infer their own
-    recursive-call routing.
+  level) is **DONE** (see PLAN-ARCHIVE.md). The tractable set was closed by
+  **Phase 115** (2026-06-02, see PLAN-ARCHIVE.md) — #1/#2 fixed, #3 decided:
+  - ~~Runtime dict-threading *into* an inferred (unsignatured top-level)
+    constrained body~~ — **DONE (Phase 115 #1).** Generalized Phase 84's
+    promotion (`promotable_from`) from the hard-coded `Applicative` to *any*
+    interface with a return-position method (`iface_has_return_position_method`),
+    so `mk n = tag n` over a user `interface Tag a where tag : Int -> a` now
+    dispatches by result type. Argument-dispatched wrappers (`Eq`/`Show`/`Ord`)
+    stay on arg tag (unchanged).
+  - ~~Self-/mutually-recursive *unsignatured* wrappers under-infer their own
+    recursive-call routing~~ — **DONE (Phase 115 #2).** Dropped the non-recursive
+    promotion guard; a promoted wrapper's own recursive `EDictApp` call (inferred
+    during Pass B before its `fun_constraints` entry exists) is deferred via
+    `env.recursive_promoted_usages` and resolved by `realize_recursive_dict_apps`
+    once `fun_constraints` is populated — recovering the discriminating var from
+    the live occurrence mono (`find_tvar_in_mono`). Covers recursive return-pos
+    wrappers, mutual recursion (single result type), and recursive poly-monad
+    builders. (Polymorphic recursion at *two different* result types remains a
+    separate pre-existing limit — fails signatured too.)
   - `pure` in a do-block with **no `<-`** is groundable only from surrounding
-    type context.
+    type context — **decided (Phase 115 #3): document-and-accept.** When the
+    result type is pinned (a def-site or use-site annotation) it dispatches
+    correctly; with no context at all (`println (do { pure 5 })`) it defaults to
+    the first Applicative impl (List) by arg tag. That is an inherent ambiguity
+    (the program names no monad), analogous to Haskell type-defaulting — not a
+    mis-dispatch. A stricter "ambiguous type" *error* is possible future work but
+    out of scope.
   - `Result e` with a free `e` mis-dispatches even when signatured (a multi-param
-    dict-resolution gap). (Did not reproduce on the 2026-06-02 binary with the
-    probes tried; re-verify before working it.)
+    dict-resolution gap). **Re-verified & reproduces (2026-06-02, this binary).**
+    Repro: `f m = do { x <- m; pure x }` called `f (Ok 5)` panics (routes to
+    List's `pure`) for **both** the unsignatured form and the signatured
+    `f : Thenable m => m a -> m a` — identically. Contrast: signatured Option
+    works, and a fully-ground `pure 5 : Result String Int` works. Root cause: at
+    `f (Ok 5)` the monad instantiates to `Result e` with `e` **free** (nothing
+    pins it), and dict-*application* routes are `RKey`/`RDict` only — they cannot
+    carry a head-key (`eval.ml:459`), so the non-ground `Result e` dict argument
+    resolves to `RKey ""` → arg-tag fallback → first impl (List). Not a one-line
+    fix (needs head-key dict routing, or defaulting/grounding the free param);
+    **still deferred**, out of the tractable-set scope. Phase 115 #1 does not fix
+    it (the call-site dict still can't ground `e`).
   - True recursive/nested instance dictionaries (the `List (List Int)` case) need
     structured dicts rather than flat impl-key strings — the real "pipeline
-    restructure"; also lifts the Phase 101b nesting limit.
+    restructure"; also lifts the Phase 101b nesting limit. **Still deferred** (the
+    big remaining residual).
   - Skill: **harden-typechecker** / **add-language-feature** (cross-cutting).
 
 ### CLI surface (Phase 82, continued)

@@ -817,6 +817,17 @@ type env = {
     (* Phase 69.x: (fn_name, [(constraint_iface, instantiated_args)] in slot order,
        EDictApp_routes_ref, call_site_loc).  Recorded at each constrained-function
        occurrence; resolve_dict_apps turns each constraint into an RKey/RDict route. *)
+  recursive_promoted_usages : (ident * mono * Ast.res_route list option ref * Ast.loc option) list ref;
+    (* Phase 115 (#2): a self-/mutually-recursive call to a *promoted* unsignatured
+       wrapper (in env.promoted), inferred during Pass B before its fun_constraints
+       entry is registered (post-inference).  The normal recorder would skip it
+       (None branch) and its EDictApp routes would stay None → eval applies no dict
+       → closure/mis-dispatch.  Defer it: store the live occurrence [mono] (whose
+       discriminating TVar refs resolve once the body unifies) and the routes ref,
+       then realize_recursive_dict_apps (run before resolve_dict_apps, once
+       fun_constraints is populated) recovers each constraint's args from [mono] via
+       find_tvar_in_mono and pushes a normal dict_app_usages entry — routing the
+       recursive call's dict to the wrapper's own `$dict_<fn>_<slot>` param. *)
   constraint_obligations : (ident * mono list * Ast.loc option) list ref;
     (* (iface_name, mono_args, call_site_loc) accumulated at call sites, verified post-HM *)
   type_ctors    : (ident, ident list) Hashtbl.t;  (* type name → ctor names in order *)
@@ -863,6 +874,7 @@ let empty_env () = {
   impl_dict_routes       = Hashtbl.create 8;
   constraint_obligations = ref [];
   dict_app_usages        = ref [];
+  recursive_promoted_usages = ref [];
   type_ctors    = Hashtbl.create 8;
   ctor_fields   = Hashtbl.create 4;
   aliases       = Hashtbl.create 4;
@@ -1420,7 +1432,17 @@ let rec infer env = function
                 if args <> [] then
                   env.constraint_obligations :=
                     (iface, args, !current_loc) :: !(env.constraint_obligations)
-              ) constraints)
+              ) constraints);
+           (* Phase 115 (#2): a recursive call to a *promoted* unsignatured wrapper,
+              inferred (Pass B) before its fun_constraints entry exists.  Its
+              EDictApp routes would stay None → eval drops the dict → closure.
+              Defer it with the live occurrence [mono]; realize_recursive_dict_apps
+              recovers the args once fun_constraints is populated post-inference. *)
+           (match dref with
+            | Some r when (not is_local) && Hashtbl.mem env.promoted x ->
+              env.recursive_promoted_usages :=
+                (x, mono, r, !current_loc) :: !(env.recursive_promoted_usages)
+            | _ -> ())
          | Some constraints ->
            (* Map a constraint's tyvar id to its type at this occurrence.  For a
               normal (generalized) callee that's the fresh instantiation var from
@@ -3565,6 +3587,23 @@ let resolve_one_route env (iface, args) =
      | Some dvar -> Ast.RDict dvar
      | None -> Ast.RKey "")
 
+(* Phase 115 (#2): turn each deferred recursive-promoted usage into a normal
+   dict_app_usages entry, now that the wrapper's fun_constraints entry has been
+   registered (post-inference).  For each constraint of the callee, recover the
+   args from the live occurrence mono (its discriminating TVar refs resolved when
+   the body unified) via find_tvar_in_mono — one entry per constraint, in slot
+   order, matching dict_pass's param order.  Run before resolve_dict_apps. *)
+let realize_recursive_dict_apps env =
+  List.iter (fun (fname, mono, routes_ref, loc) ->
+    match Hashtbl.find_opt env.fun_constraints fname with
+    | None -> ()  (* not actually routable: leave routes None (dict_pass adds no param) *)
+    | Some constraints ->
+      let per_constraint = List.map (fun (iface, var_ids) ->
+        (iface, List.filter_map (fun id -> find_tvar_in_mono mono id) var_ids))
+        constraints in
+      env.dict_app_usages := (fname, per_constraint, routes_ref, loc) :: !(env.dict_app_usages)
+  ) !(env.recursive_promoted_usages)
+
 let resolve_dict_apps env =
   List.iter (fun (_fname, per_constraint, routes_ref, _loc) ->
     routes_ref := Some (List.map (resolve_one_route env) per_constraint)
@@ -3671,34 +3710,44 @@ let program_is_core (prog : program) : bool =
     | DInterface { iface_name = "Foldable"; _ } -> true | _ -> false) prog in
   has_ordering && has_foldable
 
-(* Phase 84 / 87: given an env whose inferred_constraints are already populated
-   (post-typecheck) and the *user* declarations of this pass, return the names
-   that should be promoted to dict-routable on a re-elaboration pass.  Three
+(* Phase 84 / 87 / 115: does [iface] have at least one *return-position* method
+   — i.e. one whose interface param appears solely in the result type (`pure`,
+   `decode`, `arbitrary`), so an in-body occurrence produces rather than consumes
+   a value of that type and cannot be arg-tag-dispatched?  Such a constraint, when
+   inferred on an unsignatured wrapper, must be promoted to a dictionary or its
+   return-position ref mis-dispatches under arg-tag fallback.  Interfaces whose
+   params are all arg-position (`Eq`/`Ord`/`Show`/`Num`/`Mappable`) need no
+   promotion — arg tag already dispatches them correctly. *)
+let iface_has_return_position_method (env : env) (iface : ident) : bool =
+  match Hashtbl.find_opt env.interfaces iface with
+  | Some info ->
+    List.exists
+      (fun (_, msc) -> not (method_param_in_arg_position msc info.iface_param_ids))
+      info.iface_methods
+  | None -> false
+
+(* Phase 84 / 87 / 115: given an env whose inferred_constraints are already
+   populated (post-typecheck) and the *user* declarations of this pass, return the
+   names that should be promoted to dict-routable on a re-elaboration pass.  Two
    filters, each guarding a concrete hazard (see check_program_impl's call site):
-   defined in [user_prog] (keys line up), constraint set mentions `Applicative`
-   (the do-block `pure` case; argument-dispatched wrappers stay on arg tag), and
-   non-recursive (a recursive wrapper's own EDictApp call would go unrouted).
-   Shared by the single-file driver and the REPL (Phase 87). *)
+   defined in [user_prog] (keys line up), and constraint set mentions an interface
+   with a *return-position* method (Phase 115 generalized this from the hard-coded
+   `Applicative`: the do-block `pure` was just the prelude instance — user
+   return-position interfaces like `Tag`/`Decode` need it too; argument-dispatched
+   wrappers stay on arg tag).  The non-recursive guard was dropped in Phase 115
+   (#2): a promoted wrapper's own recursive EDictApp call is now routed via
+   env.recursive_promoted_usages / realize_recursive_dict_apps.  Shared by the
+   single-file driver, the multi-module driver, and the REPL. *)
 let promotable_from (env : env) (user_prog : program) : (ident, unit) Hashtbl.t =
   let user_names = Hashtbl.create 16 in
   List.iter (fun d -> match Ast.inner_decl d with
     | DFunDef (_, n, _, _) -> Hashtbl.replace user_names n ()
     | DLetGroup (_, bs)    -> List.iter (fun (n, _) -> Hashtbl.replace user_names n ()) bs
     | _ -> ()) user_prog;
-  let recursive_names = Hashtbl.create 16 in
-  List.iter (fun d ->
-    let defined = Method_marker.decl_defined_names d in
-    if defined <> [] then begin
-      let refd = Hashtbl.create 16 in
-      Method_marker.decl_referenced_names refd d;
-      if List.exists (fun n -> Hashtbl.mem refd n) defined then
-        List.iter (fun n -> Hashtbl.replace recursive_names n ()) defined
-    end) user_prog;
   let out = Hashtbl.create 8 in
   Hashtbl.iter (fun k cs ->
     if Hashtbl.mem user_names k
-       && not (Hashtbl.mem recursive_names k)
-       && List.exists (fun (iface, _) -> iface = "Applicative") cs
+       && List.exists (fun (iface, _) -> iface_has_return_position_method env iface) cs
     then Hashtbl.replace out k ())
     env.inferred_constraints;
   out
@@ -3818,6 +3867,7 @@ let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
   (* Phase 4.6: verify method call sites have matching impls and constraints *)
   check_method_usages !env;
   check_constraint_obligations !env;
+  realize_recursive_dict_apps !env;
   resolve_dict_apps !env;
   resolve_method_dicts !env;
   check_superinterface_obligations !env;
@@ -3848,23 +3898,26 @@ let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
      The user binding sits in [results] (ahead of the prelude method's scheme in
      iface_method_schemes), so a name lookup still resolves to the user's. *)
   let unshadow (n, s) = (Method_marker.strip_shadow n, s) in
-  (* Phase 84: report which *user* bindings should be promoted to dict-routable on
-     a re-elaboration pass — those whose inferred constraints make their body's
-     return-position method dispatch (a polymorphic-monad do-block's `pure`) fail
-     under arg-tag fallback.  Three filters, each guarding a concrete hazard:
+  (* Phase 84 / 115: report which *user* bindings should be promoted to
+     dict-routable on a re-elaboration pass — those whose inferred constraints make
+     their body's return-position method dispatch (a polymorphic-monad do-block's
+     `pure`, a `Tag`/`Decode` wrapper) fail under arg-tag fallback.  Two filters,
+     each guarding a concrete hazard:
 
      - Defined in [user_prog] (the same shadow-renamed tree this call received, so
        keys line up).  Promoting a prelude helper would add a dict param dict_pass
        can't match — the prelude marker (marked_prelude) never wraps its call
        sites in EDictApp — crashing at eval with an arity mismatch.
-     - Constraint set mentions `Applicative` (the interface `pure` resolves into;
-       super-expansion also adds `Mappable`).  Argument-dispatched wrappers (e.g.
-       an inferred `Eq a` over `eq`) already dispatch correctly by arg tag, so
-       leave them untouched to keep the blast radius at the do-block case.
-     - Non-recursive.  A self-/mutually-recursive wrapper would get a dict param,
-       but its own recursive EDictApp call goes unrouted (Pass A pre-registers
-       only signatured fns), the same arity-mismatch crash.  Recursive monad
-       wrappers stay on arg-tag dispatch — deferred, but never worse than today. *)
+     - Constraint set mentions an interface with a *return-position* method (Phase
+       115 generalized this from the hard-coded `Applicative`/`pure`).
+       Argument-dispatched wrappers (e.g. an inferred `Eq a` over `eq`) already
+       dispatch correctly by arg tag, so leave them untouched — the blast radius
+       stays at return-position dispatch.
+
+     The old non-recursive filter was dropped in Phase 115 (#2): a promoted
+     wrapper's own self-/mutually-recursive EDictApp call is routed via
+     env.recursive_promoted_usages / realize_recursive_dict_apps, so it no longer
+     goes unrouted (which used to arity-crash → it was excluded). *)
   let promoted_out = promotable_from final_env user_prog in
   (List.map unshadow (results @ !iface_method_schemes @ !extern_schemes),
    List.rev !(final_env.warnings),
@@ -4097,6 +4150,7 @@ let typecheck_module
   ) prog;
   check_method_usages !env;
   check_constraint_obligations !env;
+  realize_recursive_dict_apps !env;
   resolve_dict_apps !env;
   resolve_method_dicts !env;
   check_superinterface_obligations !env;
@@ -4249,6 +4303,7 @@ let copy_tc_env (e : env) : env = {
   impl_dict_routes       = Hashtbl.copy e.impl_dict_routes;
   constraint_obligations = ref !(e.constraint_obligations);
   dict_app_usages        = ref !(e.dict_app_usages);
+  recursive_promoted_usages = ref !(e.recursive_promoted_usages);
   type_ctors    = Hashtbl.copy e.type_ctors;
   ctor_fields   = Hashtbl.copy e.ctor_fields;
   aliases       = Hashtbl.copy e.aliases;
@@ -4345,6 +4400,7 @@ let check_repl_decl ?(seeded=false)
   ) decls;
   check_method_usages !env;
   check_constraint_obligations !env;
+  realize_recursive_dict_apps !env;
   resolve_dict_apps !env;
   resolve_method_dicts !env;
   check_superinterface_obligations !env;
@@ -4376,6 +4432,7 @@ let infer_repl_expr (env : env) (e : expr) : mono * string list =
      check_repl_decl; like there, usages accumulate in the persistent env and
      are re-checked idempotently (concrete usages re-fill to the same key). *)
   check_method_usages env;
+  realize_recursive_dict_apps env;
   resolve_dict_apps env;
   resolve_method_dicts env;
   let scheme = generalize t in

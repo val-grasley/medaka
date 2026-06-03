@@ -3347,6 +3347,66 @@ main =
   if (mk 5 : Bool) then println "T" else println "F"
 |}
 
+(* Phase 115 (#1): the same routes via the two-pass elaboration (Elaborate) for an
+   *unsignatured* wrapper — promotion makes the inferred `Tag a` dict-routable, so
+   `tag` routes RDict and call sites get concrete impl keys, exactly as the
+   signatured `t_dict_routes_helper`.  Uses the marked tree Elaborate returns
+   (dict_routes' single-pass check_program would never promote). *)
+let elaborated_routes src =
+  let (marked, _combined, _schemes, _warnings) =
+    Elaborate.elaborate (Desugar.desugar_program (parse src)) in
+  let out = ref [] in
+  let collect = function
+    | Ast.EMethodRef (r, m) as e ->
+      (match !r with
+       | Some { Ast.res_route = Ast.RDict d; _ } -> out := Printf.sprintf "%s->RDict(%s)" m d :: !out
+       | Some { Ast.res_route = Ast.RKey k; _ }  -> out := Printf.sprintf "%s->RKey(%s)" m k :: !out
+       | Some { Ast.res_route = Ast.RHeadKey h; _ } -> out := Printf.sprintf "%s->RHeadKey(%s)" m h :: !out
+       | None -> ());
+      e
+    | Ast.EDictApp (r, f) as e ->
+      (match !r with
+       | Some routes ->
+         let s = List.map (function Ast.RKey k -> "K:" ^ k | Ast.RDict d -> "D:" ^ d | Ast.RHeadKey h -> "H:" ^ h) routes in
+         out := Printf.sprintf "%s[%s]" f (String.concat "," s) :: !out
+       | None -> ());
+      e
+    | e -> e
+  in
+  List.iter (fun d -> ignore (Desugar.map_decl collect d)) marked;
+  List.sort compare !out
+
+(* The inferred-wrapper routes are a *superset* of the signatured ones (the do
+   helpers in the prelude also carry routes once marked), so assert the two key
+   facts: `tag` routes RDict to mk's own dict, and both annotated call sites of
+   `mk` resolve to concrete impl keys. *)
+let t_infer_wrapper_routes () =
+  let actual = elaborated_routes
+    {|interface Tag a where
+  tag : Int -> a
+
+impl Tag String where
+  tag n = "S"
+
+impl Tag Bool where
+  tag n = n > 0
+
+mk n = tag n
+
+main : <IO> Unit
+main =
+  println (mk 5 : String)
+  if (mk 5 : Bool) then println "T" else println "F"
+|}
+  in
+  let has s = List.mem s actual in
+  if not (has "tag->RDict($dict_mk_0)"
+          && has "mk[K:Tag|String|]"
+          && has "mk[K:Tag|Bool|]") then
+    failwith (Printf.sprintf
+      "Expected inferred wrapper to route tag->RDict($dict_mk_0) and mk call sites \
+       to concrete keys.\nGot [%s]" (String.concat "; " actual))
+
 (* Phase 69.x-e: collect each EMethodRef's *method-level* dict routes
    (res_method_dicts), so we can assert foldMap's concrete call site supplies a
    Monoid (and super Semigroup) dictionary key. *)
@@ -4274,6 +4334,7 @@ let () =
     ];
     "dictionary passing (Phase 69.x)", [
       test_case "RDict in body, RKey at sites" `Quick t_dict_routes_helper;
+      test_case "inferred wrapper RDict routes (Phase 115 #1)" `Quick t_infer_wrapper_routes;
       test_case "foldMap method-level dict keys" `Quick t_foldmap_method_dict_routes;
     ];
     "superinterface obligations (Phase 64)", [

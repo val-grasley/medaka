@@ -4948,6 +4948,71 @@ ignoring boundaries.
   checker; making it a transformer ripples mangled names through the whole
   pipeline + needs de-mangling for LSP. Fights the architecture.
 
+### Phase 115: Phase 83/84 residuals — inferred return-position promotion + recursive routing ✅ DONE (2026-06-02)
+
+Closed the *tractable* subset of the Phase 83/84 dispatch residuals (the deep
+nested/structured-dict residual #5 and the multi-param `Result e`-free-`e` gap #4
+stay deferred — see PLAN.md). Skill: **harden-typechecker** (all in
+`lib/typecheck.ml` + tests). Layered on Phase 84's two-pass `Elaborate`
+(mark → typecheck-discover → re-mark `~promoted` → re-typecheck → dict_pass).
+
+- **#1 — inferred (unsignatured) return-position constrained body.** Phase 84
+  only promoted inferred constraints to dict-routable when the set mentioned the
+  hard-coded `Applicative` (the do-block `pure` case). Generalized
+  `promotable_from` to promote any inferred constraint whose interface has a
+  *return-position* method, via new `iface_has_return_position_method` (reuses the
+  existing `method_param_in_arg_position` detector — promote iff some method's
+  interface param is **not** in argument position). So an unsignatured
+  `mk n = tag n` over `interface Tag a where tag : Int -> a` now dispatches by
+  result type, same as the signatured form. Argument-dispatched wrappers
+  (`Eq`/`Show`/`Ord`/`Num`/`Mappable` — all params arg-position) are *not*
+  promoted and stay on arg tag, so Phase 83's `t_infer_wrapper_propagates`/
+  `_transitive` (correct-rejection) tests are unaffected. Because `promotable_from`
+  is shared, the win lands on the single-file, multi-module, and REPL drivers at
+  once.
+- **#2 — self-/mutually-recursive unsignatured wrappers.** Phase 84's
+  non-recursive promotion guard existed because a promoted recursive wrapper's own
+  `EDictApp` self-call is inferred during Pass B *before* its `fun_constraints`
+  entry is registered (post-inference), so the recorder's `None` branch skipped it
+  → its routes ref stayed `None` → dict_pass added the param but eval applied no
+  dict → `<closure>`/mis-dispatch. (Pass A pre-registration — the Phase 74 fix for
+  *signatured* recursion — can't help: the discriminating tyvar doesn't exist until
+  Pass B infers the unsignatured body, and pass-1's var ids are meaningless under
+  pass 2's reset TVar counter.) **Fix:** dropped the guard and *deferred* the
+  recursive usage. New `env.recursive_promoted_usages` records `(fn, live mono,
+  routes ref, loc)` when a call to a name in `env.promoted` hits the `None`
+  branch; `realize_recursive_dict_apps` (run before `resolve_dict_apps`, once
+  `fun_constraints` is populated) recovers each constraint's args from the live
+  occurrence mono via `find_tvar_in_mono` and pushes a normal `dict_app_usages`
+  entry — routing the recursive call's dict to the wrapper's own
+  `$dict_<fn>_<slot>` param (RDict). The live mono works because its discriminating
+  TVar refs are the same cells that get unified as the body is inferred; `normalize`
+  at resolve time follows the links. Covers recursive return-position wrappers,
+  mutual recursion at a single result type, and recursive polymorphic-monad
+  builders (`build n = if … then pure [] else flatMap (rest => pure (n :: rest))
+  (build (n-1))` at both Option and List). **Pre-existing limit, unchanged:**
+  polymorphic recursion using the group at *two different* result types in one
+  program (`ping 4 : String` and `ping 5 : Bool`) fails — signatured too — a
+  group-monomorphism issue independent of dispatch.
+- **#3 — no-`<-` do-block (`do { pure x }` ≡ `pure x`): decided, document-and-accept.**
+  When the result type is pinned by surrounding context (def-site or use-site
+  annotation) it dispatches correctly; with no context (`println (do { pure 5 })`)
+  it defaults to the first Applicative impl (List) by arg tag — an inherent
+  ambiguity (the program names no monad), like Haskell type-defaulting, not a
+  mis-dispatch. No code change. A stricter "ambiguous type" *error* is possible
+  future work.
+
+**Where.** `lib/typecheck.ml`: `iface_has_return_position_method` (new),
+`promotable_from` (filter generalized, recursive guard dropped, comment),
+`env.recursive_promoted_usages` field + `empty_env`/REPL-copy init, the EVar
+`None`-branch deferred-record, `realize_recursive_dict_apps` (new, wired before
+all four `resolve_dict_apps` call sites). **Done when.** the new
+`test/test_run.ml` cases (`inferred return-pos wrapper/recursive/mutual`,
+`recursive poly-monad`, `no-bind do grounded`) and the `test/test_typecheck.ml`
+`inferred wrapper RDict routes` (via a new `elaborated_routes` helper that runs
+`Elaborate`) pass, with all of `test_typecheck/eval/run/loader/repl/diagnostics/
+doctest` + `@thorough` green.
+
 ### Module 5 stdlib: `map.mdk` + `set.mdk` (weight-balanced ordered containers) ✅ DONE (2026-06-02)
 
 The single biggest Stage-0 gap (symbol tables / scopes / substitutions). User
