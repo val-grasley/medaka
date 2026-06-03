@@ -273,13 +273,13 @@ lastIndexOfGo needle haystack from acc =
 {- | Number of non-overlapping occurrences of `needle` in `haystack` (`0` for
    the empty needle).
 
-   > count "l" "hello"
+   > countOccurrences "l" "hello"
    2
-   > count "ll" "lllll"
+   > countOccurrences "ll" "lllll"
    2 -}
 export
-count : String -> String -> Int
-count needle haystack
+countOccurrences : String -> String -> Int
+countOccurrences needle haystack
   | needle == "" = 0
   | otherwise = countGo needle (stringLength needle) haystack 0
 

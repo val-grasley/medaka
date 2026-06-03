@@ -59,9 +59,10 @@ What's missing is the supporting surface a real multi-thousand-line program need
     (Module 6) is still open, mainly for performance.
   - **`io`** — read source files, write artifacts, stdin/stdout, process args,
     exit codes, structured error reporting. ✅ **DONE** (Module 7, Phase 116).
-  - `string` finalized and reviewed (drafted; awaiting review) — **and currently
-    un-importable** (Phase 117), which is now the critical-path Stage 0 blocker:
-    a self-hosted compiler needs string utilities from another module.
+  - `string` finalized and reviewed (drafted; awaiting full review) — **now
+    importable** ✅ (Phase 117 unblocked it: renamed the colliding `count` and
+    hardened the multi-module typecheck). A self-hosted compiler can now pull
+    string utilities from another module.
 - **Language stability / completeness.** Close the sharp edges that would bite a
   large codebase, then *freeze the surface syntax and semantics* for the duration
   of the port:
@@ -211,27 +212,32 @@ the per-module checklist. **Module 5 (`map` + `set`) is complete** — see
 PLAN-ARCHIVE.md and STDLIB.md.
 
 - ⭐ **`stdlib/string.mdk`** is drafted and passes its 49 doctests but is flagged
-  *awaiting user review* (archive Phase 75 step 3). Open decisions: the
-  `length`/`isEmpty`/`count` omissions and `toUpper` vs `charToUpper` naming.
+  *awaiting full user review* (archive Phase 75 step 3). Remaining open decisions:
+  the `length`/`isEmpty` omissions and `toUpper` vs `charToUpper` naming. (The
+  `count` naming sub-decision is **resolved** — renamed to `countOccurrences` in
+  Phase 117, see below.)
 
-- ⭐ **Phase 117 — `stdlib/string.mdk` is un-importable (blocks self-hosting).**
-  Surfaced building `io` (Phase 116): *any* module that `import`s `string` (even
-  `import string.{trim}`) fails the multi-module typecheck with `core.mdk:NNN:
-  Type mismatch: String vs a -> b`. Root cause: `string.mdk` defines a standalone
-  `count : String -> String -> Int` that **redefines the prelude's `count`**
-  (`Foldable t => (a -> Bool) -> t a -> Int`); when string is imported, the two
-  same-named standalones from different modules collide and corrupt core's own
-  `count` definition during the merge. (This is why `io.mdk`'s `readLines`
-  reimplements line-splitting over the global `string*` kernel externs instead of
-  `import string.{lines}`.) `string` is a leaf today, so nothing exercised it —
-  but a self-hosted compiler will lean on string utilities heavily, so this is a
-  **critical-path Stage 0 blocker.** Likely fix: rename `string.count` (the
-  `length`/`isEmpty`/`count` naming is already an open string-review decision —
-  see above), *and/or* make the multi-module typecheck scope a module's
-  redefinition of a prelude standalone per-module (the doctest harness already
-  side-steps this with a single-file fallback; the real path doesn't). Verify a
-  fix lets `import string.{lines}` work, then simplify `io.mdk`. Skill:
-  **harden-typechecker** (+ a string-review call).
+- ✅ **Phase 117 — make `stdlib/string.mdk` importable. DONE (2026-06-02).**
+  Surfaced building `io` (Phase 116): *any* module that `import`ed `string` (even
+  `import string.{trim}`) failed the multi-module typecheck with `core.mdk:661:
+  Type mismatch: String vs a -> b`. Two compounding causes, both fixed:
+  - `string.mdk` defined a standalone `count : String -> String -> Int` that
+    **redefined the prelude's droppable `count`** (`Foldable t => (a -> Bool) ->
+    t a -> Int`). **Renamed → `countOccurrences`** (the name genuinely clashed
+    semantically and was an open string-review item).
+  - `typecheck_module` (the multi-module path) always prepended the *full*
+    `marked_prelude`, unlike `check_program_impl` which uses
+    `Method_marker.prelude_for` to drop droppable prelude standalones a module
+    redefines — so the two `count`s coalesced into one letrec group and corrupted
+    core's own definition. **Fixed** `lib/typecheck.ml` to use
+    `prelude_for user_prog` on the multi-module path too (no-op when nothing is
+    shadowed; preventive for future modules). Scoped to the droppable-standalone
+    (78a) case; interface-method (78b) parity stays out of scope (Won't-do 78c).
+  Regression tests in `test/test_typecheck.ml` (module redefining a droppable
+  prelude fn, single + imported). `io.mdk`'s `readLines` keeps its local line
+  splitter deliberately — `string.lines` retains the trailing empty line,
+  `readLines` drops it (stale "un-importable" comment refreshed). Skill:
+  **harden-typechecker**.
 
 - **Modules 6 & 8 unstarted:** `mut_array`/`hash_map`/`hash_set` (Module 6),
   `json` (Module 8: type + parser + serializer). Expect each to surface new

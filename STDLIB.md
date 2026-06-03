@@ -435,7 +435,7 @@ Already present and reused: `charToStr` (= `fromChar`), `showStringLit`,
 - ✅ `contains : String -> String -> Bool` — `contains needle haystack`
 - ✅ `indexOf : String -> String -> Option Int` — first index of `needle` in `haystack`, or `None`
 - ✅ `lastIndexOf : String -> String -> Option Int` — last index of `needle` in `haystack`
-- ✅ `count : String -> String -> Int` — number of non-overlapping occurrences
+- ✅ `countOccurrences : String -> String -> Int` — number of non-overlapping occurrences (renamed from `count` in Phase 117 to avoid shadowing the prelude `count`)
 
 ### Transformation
 
@@ -710,10 +710,10 @@ returns `Option`. No IO monad — an action runs when evaluated, so you can
   into lines (drops a trailing `\r` and the final empty line).
 - `getEnvOr : String -> String -> <IO> String` — env var or a fallback.
 
-**Known limitation:** `readLines` splits lines via the global `string*` kernel
-externs rather than `import string.{lines}`, because `stdlib/string.mdk` is
-currently **un-importable** (its `count` redefines the prelude `count` and breaks
-the multi-module typecheck — see PLAN.md). Collapse to `import string` once that
-lands. **Not yet provided:** stdin-line iteration helpers, `withFile`-style
-bracketing, `removeFile`/`rename` — add when needed.
+**Note:** `readLines` splits lines via the global `string*` kernel externs rather
+than `import string.{lines}`. `stdlib/string.mdk` is importable as of Phase 117,
+but `string.lines` keeps the final empty line a trailing newline produces while
+`readLines` drops it, so the local splitter stays. **Not yet provided:**
+stdin-line iteration helpers, `withFile`-style bracketing, `removeFile`/`rename`
+— add when needed.
 - 23 doctests + 8 props.

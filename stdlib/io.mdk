@@ -33,11 +33,11 @@ eprintln x = ePutStrLn (display x)
 -- ── Files ────────────────────────────────────────────────────────────────
 
 {- Line splitting is done here over the global `string*` kernel externs (in
-   runtime.mdk) rather than `import string.{lines}` — stdlib/string.mdk is
-   currently un-importable (its `count` redefines the prelude `count`; see
-   PLAN.md "string import"). Collapse to `import string.{lines}` once that's
-   fixed. Splits on `\n`, dropping a trailing `\r` (so CRLF files work) and the
-   final empty line a trailing newline would otherwise produce. -}
+   runtime.mdk) rather than `import string.{lines}`.  string.mdk is importable
+   as of Phase 117, but `string.lines` deliberately *keeps* the final empty line
+   a trailing newline produces, whereas readLines drops it — so this stays a
+   local helper.  Splits on `\n`, dropping a trailing `\r` (so CRLF files work)
+   and the final empty line a trailing newline would otherwise produce. -}
 stripCR : String -> String
 stripCR s =
   let n = stringLength s

@@ -1603,6 +1603,26 @@ f = show 5
 |}
   "f" "String"
 
+(* Phase 117: a module that redefines a *droppable* prelude standalone (here
+   `count`, mirroring stdlib/string.mdk) must type-check on the multi-module
+   path.  Before the fix, typecheck_module prepended the *full* marked_prelude,
+   so the module's `count` and the prelude's `count` coalesced into one letrec
+   group and corrupted core's own definition ("core.mdk: Type mismatch: String
+   vs a -> b").  prelude_for now drops the shadowed standalone, as the
+   single-file path already did. *)
+let t_module_redefines_droppable_prelude_fn = assert_modules_ok
+  [ ("strutil",
+     "export occ : String -> String -> Int\nocc n h = stringLength n\n\n\
+      count : String -> String -> Int\ncount n h = stringLength n\n") ]
+
+(* And an importer of such a module type-checks end-to-end (the original symptom:
+   any import of a count-redefining module errored at core.mdk). *)
+let t_import_module_redefining_prelude_fn = assert_modules_ok
+  [ ("strutil",
+     "export occ : String -> String -> Int\nocc n h = stringLength n\n\n\
+      count : String -> String -> Int\ncount n h = stringLength n\n");
+    ("client", "import strutil.{occ}\ny : Int\ny = occ \"ab\" \"abab\"\n") ]
+
 (* Error: method called with a type that has no impl *)
 let e_constraint_no_impl = assert_err
   {|data Blob = Blob
@@ -4061,6 +4081,8 @@ let () =
       test_case "ok: impl in iface's module"    `Quick t_orphan_local_iface_ok;
       test_case "ok: named impl exempt"         `Quick t_orphan_named_exempt;
       test_case "ok: prelude override"          `Quick t_orphan_prelude_override_ok;
+      test_case "ok: module redefines droppable prelude fn" `Quick t_module_redefines_droppable_prelude_fn;
+      test_case "ok: import module redefining prelude fn"   `Quick t_import_module_redefining_prelude_fn;
     ];
     "constraint annotation syntax (Phase 20)", [
       test_case "basic annotation"             `Quick t_constraint_annot_basic;

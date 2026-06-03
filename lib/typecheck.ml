@@ -4113,7 +4113,15 @@ let typecheck_module
      Keep a reference to the user-only decls for export filtering — otherwise
      prelude impls would leak into every module's te_impls. *)
   let user_prog = prog in
-  let prog = if program_is_core prog then prog else Method_marker.marked_prelude @ prog in
+  (* Phase 117: mirror check_program_impl's prelude_for shadow-drop on the
+     multi-module path.  A module that redefines a *droppable* prelude standalone
+     (e.g. string.mdk's `count`) would otherwise coalesce with the prelude's
+     same-named binding in one letrec group and corrupt core's own definition
+     ("core.mdk: Type mismatch").  prelude_for drops exactly those standalones and
+     returns marked_prelude unchanged (same decl objects, shared in-place
+     EMethodRef/EDictApp refs) when nothing is shadowed — a no-op for normal
+     modules. *)
+  let prog = if program_is_core prog then prog else Method_marker.prelude_for user_prog @ prog in
 
   register_attrs env prog;
 
