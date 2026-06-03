@@ -100,8 +100,6 @@ bucketHas key ((k, _)::rest)
   | key == k = True
   | otherwise = bucketHas key rest
 
--- `where go` (single list arg) sidesteps a false-positive non-exhaustiveness
--- warning that fires for 3+-arg functions matching a list (see PLAN.md Phase 119).
 bucketReplace : Eq k => k -> v -> List (k, v) -> List (k, v)
 bucketReplace _ _ [] = []
 bucketReplace key val ((k, v)::rest)
