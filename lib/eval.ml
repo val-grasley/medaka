@@ -531,14 +531,19 @@ let rec apply fn arg =
     raise (Eval_error ("applied closure with no parameters", !current_loc))
   | VPrim f -> f arg
   | VNamedImpl (n, inner) ->
-    (* A bare named-impl value reaching `apply` directly: the impl was already
-       selected by name (an explicit `@Impl` hint routed through the typed
-       EMethodRef path narrowed the VMulti to this single VNamedImpl — see
-       eval's EMethodRef RKey arm + the hint arm).  Pass the argument through to
-       the inner value, preserving the name tag across partial applications so a
-       multi-arg method (`combine @First 3 4`) keeps routing to the same impl.
-       (In the VMulti dispatch path tags are unwrapped before `apply`, so this
-       arm only fires for an already-narrowed named impl.) *)
+    (* Sibling of the VTypedImpl arm below — same shape, for a named impl.  A
+       bare VNamedImpl reaches `apply` whenever the typed pipeline has *already*
+       committed the method occurrence to one named impl (EMethodRef stamped
+       RKey → eval's RKey arm `select_impl_by_key`-narrows the VMulti to this
+       single VNamedImpl), then applies it.  Two routes reach here:
+         - explicit `@Impl` hint: `combine @First 3 4` (the hint arm passes the
+           already-narrowed VNamedImpl through via `| other -> other`);
+         - a lone named impl with no hint: `bar 3 4` where `impl Foo of Bar Int`
+           is the only candidate — never touches the hint arm at all.
+       Pass the argument through to the inner value, preserving the name tag
+       across partial applications so a multi-arg method keeps routing to the
+       same impl.  (In the VMulti dispatch path tags are unwrapped before
+       `apply`, so this arm only fires for an already-narrowed named impl.) *)
     let result = apply inner arg in
     (match result with
      | VClosure _ | VPrim _ | VMulti _ -> VNamedImpl (n, result)
@@ -546,7 +551,8 @@ let rec apply fn arg =
   | VTypedImpl (t, key, positions, seen, inner) ->
     (* Pass through to the inner value but preserve the dispatch metadata
        across partial applications so subsequent VMulti dispatch can still
-       route to the right typed candidate. *)
+       route to the right typed candidate.  (See the VNamedImpl arm above — the
+       named-impl analogue of this same tag-preserving pattern.) *)
     let result = apply inner arg in
     (match result with
      | VClosure _ | VPrim _ | VMulti _ -> VTypedImpl (t, key, positions, seen + 1, result)
