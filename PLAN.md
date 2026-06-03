@@ -142,18 +142,26 @@ above, it is flagged ⭐.
   `lib/dict_pass.ml`/`method_marker.ml`. Skill: **debug-pipeline** (diagnose) →
   the dispatch machinery.
 
-- **Phase 119 — false-positive non-exhaustiveness warning for 3+-arg functions
-  matching a list.** A multi-clause function with **≥3 parameters** where one
-  column is a `List` pattern wrongly warns `non-exhaustive clauses` even when it
-  is total. Minimal repro: `r [] _ _ = 0` / `r ((a,b)::rest) x y = …` warns;
-  the 2-arg version is clean, and single-arg is clean. Bit `hash_map.mdk`'s
-  `bucketReplace`/`reinsertBucket`. Lands in Phase 102's `Exhaust.check_clauses`
-  (`lib/exhaust.ml`/`typecheck.ml`) — the param-tuple `__tuple__` column reduction
-  likely mishandles a list column alongside wildcard columns at arity ≥3.
-  Warning only (eval is unaffected), but noisy. **Workaround (used in
-  hash_map.mdk):** match the list in a single-arg `where go` helper that closes
-  over the other args, or keep such functions to ≤2 params. Surfaced building
-  Module 6, 2026-06-02. Skill: **harden-typechecker**.
+- ✅ **Phase 119 — false-positive non-exhaustiveness warning for 3+-arg
+  functions matching a list. DONE (2026-06-03).** A multi-clause function with
+  **≥3 parameters** where a column held a `List` (more precisely: any pattern
+  containing a *nested tuple* of a different arity than the parameter count)
+  wrongly warned `non-exhaustive clauses` even when total. Root cause: `desugar`
+  lowered **both** the synthetic parameter-list/scrutinee wrapper **and** genuine
+  nested tuples to the *same* constructor name `__tuple__`, and the oracle gave
+  that one name a single arity (the parameter count). When a nested tuple's arity
+  differed, `specialize_con` desynced matrix-row vs query-vector widths →
+  spurious warning (arity 2 only "passed" by coincidence — inner `(a,b)` also
+  arity 2). **Fix:** encode the arity in the synthetic name (`__tuple2__`,
+  `__tuple3__`, …) so each tuple width is its own singleton type; arity is
+  recovered from the name (`Exhaust.tuple_arity_of_name`), dropping the
+  `~tuple_arity` oracle parameter. Touched `lib/exhaust.ml` (desugar +
+  `check_group`/`check_clauses`) and `lib/typecheck.ml` (`exhaust_oracle` + the
+  two call sites). Fixes the latent same-bug in `check_match` (tuple scrutinees)
+  too. Surfaced building Module 6, 2026-06-02. Skill: **harden-typechecker**.
+  **Follow-up available (not done — stdlib is user-owned):** `hash_map.mdk`'s
+  `bucketReplace`/`reinsertBucket` can drop their single-arg `where go`
+  workaround for direct multi-arg list matches.
 
 - **Phase 118 — `if`/`else` branches can't be multi-statement blocks.** An
   `if … then … else …` branch must be a single expression: a multi-statement

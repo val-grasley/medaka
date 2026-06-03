@@ -103,11 +103,10 @@ bucketHas key ((k, _)::rest)
 -- `where go` (single list arg) sidesteps a false-positive non-exhaustiveness
 -- warning that fires for 3+-arg functions matching a list (see PLAN.md Phase 119).
 bucketReplace : Eq k => k -> v -> List (k, v) -> List (k, v)
-bucketReplace key val bucket = go bucket where
-    go [] = []
-    go ((k, v)::rest)
-      | key == k = (key, val) :: rest
-      | otherwise = (k, v) :: go rest
+bucketReplace _   _   [] = []
+bucketReplace key val ((k, v)::rest)
+  | key == k = (key, val) :: rest
+  | otherwise = (k, v) :: bucketReplace key val rest
 
 bucketRemove : Eq k => k -> List (k, v) -> List (k, v)
 bucketRemove _ [] = []
@@ -155,11 +154,10 @@ reinsertAll oldArr i n buckets count
     reinsertAll oldArr (i + 1) n buckets count
 
 reinsertBucket : Eq k => List (k, v) -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
-reinsertBucket bucket buckets count = go bucket where
-    go [] = ()
-    go ((k, v)::rest) = 
-      putRaw k v buckets count
-      go rest
+reinsertBucket [] _ _ = ()
+reinsertBucket ((k, v)::rest) buckets count =
+  putRaw k v buckets count
+  reinsertBucket rest buckets count
 
 -- Insert into a freshly-resized table (key known absent, so just prepend).
 putRaw : k -> v -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit

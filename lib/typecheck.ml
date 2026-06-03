@@ -1070,8 +1070,9 @@ let from_ast_type_with_constraints ?(aliases=Hashtbl.create 0) ast_ty =
 (* Build the initial environment with the few built-ins the prelude can't
    declare itself.  Option / Result / Ordering and their constructors come
    from stdlib/core.mdk via the regular DData pipeline; the seeds below are
-   only for syntactic specials (Bool literals, List's [] / (::) sugar, and
-   the synthetic __tuple__ singleton). *)
+   only for syntactic specials (Bool literals, List's [] / (::) sugar; the
+   synthetic per-arity __tupleN__ singletons are recognized in the exhaust
+   oracle by name, not pre-registered). *)
 let initial_env () =
   let env = empty_env () in
   enter_level ();
@@ -1088,7 +1089,6 @@ let initial_env () =
   Hashtbl.replace env.type_ctors "Bool"      ["True"; "False"];
   Hashtbl.replace env.type_ctors "List"      ["Cons"; "Nil"];
   Hashtbl.replace env.type_ctors "Unit"      ["Unit"];
-  Hashtbl.replace env.type_ctors "__tuple__" ["__tuple__"];
   (* Generalize: vars are now at level 1, current_level = 0, so they get quantified *)
   Hashtbl.filter_map_inplace
     (fun _name s ->
@@ -1319,15 +1319,21 @@ let clause_to_expr (pats, body) =
 
 (* The constructor oracle that [Exhaust] needs for coverage analysis, backed by
    the typechecker's [env.type_ctors]/[env.ctors] (so it sees both user and
-   prelude types).  [tuple_arity] is the arity of the synthetic `__tuple__`
-   column — the scrutinee's tuple width for an [EMatch], or the clause-group's
-   parameter count for a plain multi-clause function (Phase 102).  Shared by the
-   [EMatch] branch and [process_letrec_group]'s multi-clause check. *)
-let exhaust_oracle env ~tuple_arity =
-  let get_ctors tname = Hashtbl.find_opt env.type_ctors tname in
+   prelude types).  The synthetic per-arity tuple constructors (`__tupleN__`,
+   used both for the parameter-list/scrutinee wrapper and for genuine nested
+   tuple patterns) are recognized by name via [Exhaust.tuple_arity_of_name], so
+   their arity comes from the name rather than a side channel — distinct tuple
+   widths are distinct singleton types (Phase 119).  Shared by the [EMatch]
+   branch and [process_letrec_group]'s multi-clause check. *)
+let exhaust_oracle env =
+  let get_ctors tname =
+    match Exhaust.tuple_arity_of_name tname with
+    | Some _ -> Some [tname]
+    | None   -> Hashtbl.find_opt env.type_ctors tname in
   let get_arity c =
-    if c = "__tuple__" then tuple_arity
-    else
+    match Exhaust.tuple_arity_of_name c with
+    | Some n -> n
+    | None ->
       match Hashtbl.find_opt env.ctors c with
       | None -> (match c with "Cons" -> 2 | _ -> 0)
       | Some (Forall (_, _, t)) ->
@@ -1339,8 +1345,9 @@ let exhaust_oracle env ~tuple_arity =
         count t
   in
   let get_ctor_type c =
-    if c = "__tuple__" then Some "__tuple__"
-    else
+    match Exhaust.tuple_arity_of_name c with
+    | Some _ -> Some c
+    | None ->
       match Hashtbl.find_opt env.ctors c with
       | None ->
         (match c with
@@ -1708,13 +1715,13 @@ let rec infer env = function
       match type_head tsc with
       | Some _ as t -> t
       | None ->
-        (* Tuples have no TCon head; treat them as a synthetic singleton type. *)
-        (match follow tsc with TTuple _ -> Some "__tuple__" | _ -> None)
+        (* Tuples have no TCon head; treat them as a synthetic per-arity
+           singleton type whose arity is the scrutinee's tuple width. *)
+        (match follow tsc with
+         | TTuple ts -> Some (Exhaust.tuple_ctor_name (List.length ts))
+         | _         -> None)
     in
-    (* The synthetic `__tuple__` column's arity is the scrutinee's tuple width
-       (0 for a non-tuple scrutinee, where it is unused). *)
-    let tuple_arity = match follow tsc with TTuple ts -> List.length ts | _ -> 0 in
-    let (get_ctors, get_arity, get_ctor_type) = exhaust_oracle env ~tuple_arity in
+    let (get_ctors, get_arity, get_ctor_type) = exhaust_oracle env in
     Exhaust.check_match
       ~get_ctors ~get_arity ~get_ctor_type
       ~warnings:env.warnings
@@ -2569,7 +2576,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
       let arity = List.length pats0 in
       if arity > 0 then begin
         let (get_ctors, get_arity, get_ctor_type) =
-          exhaust_oracle !env_ref ~tuple_arity:arity in
+          exhaust_oracle !env_ref in
         let loc = match Exhaust.first_loc (snd (List.hd clauses)) with
           | Some l -> Some l
           | None   -> !current_loc in
