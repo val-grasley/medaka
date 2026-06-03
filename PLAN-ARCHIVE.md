@@ -5525,6 +5525,34 @@ width-aware bare RHS.
 
 ---
 
+### Phase 124.1: `medaka fmt` — suppress futile group splits ✅ DONE (2026-06-03)
+
+A follow-up to 124, *consistent* with its "flat, may-overflow" disposition (not a
+reversal). The complaint was `json.mdk`'s `fixTrailingDotGo` guard arm rendering
+as a 4-line fragment: the `[` of `stringConcat [s, "0"]` sat at **col 101**
+(pushed there by the long unbreakable guard condition), so the layout engine broke
+the list — scattering a 2-element value across extra lines *without* bringing the
+first line within 80. The overflow lives in the prefix (the guard), which a group
+break cannot rescue.
+
+Fix is a one-line predicate in `render`'s `Group` arm (`lib/printer.ml`): **break a
+group only when breaking can rescue the line** — if `col >= width` already, keep it
+flat. A doomed line reads better as one over-long unit than fragmented. Fixed two
+`json.mdk` cases (the guard arm + a `(key, v) :: acc` tuple at the old line 384);
+**zero churn** elsewhere — every other stdlib file stayed byte-idempotent. Tests:
+`rt_futile_split_suppressed` + `id_futile_split_suppressed` in `test_fmt`;
+`test_roundtrip`/`test_run`/`test_doctest` confirm AST/semantics preserved.
+
+Considered but rejected: a refined "keep flat only if the group is *small*"
+predicate. The only thing separating json's `[s, "0"]` from a genuinely-large RHS
+list is raw group width, so any refinement collapses to a magic-number threshold.
+Accepted tradeoff: a *large* breakable RHS sitting after a >80 unbreakable prefix
+now stays on one long line — but that shape needs both a >80 guard *and* a big list
+RHS, occurs nowhere in stdlib, and is better fixed by shortening the prefix at the
+source. See [[project-formatter-doc-ir]].
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend

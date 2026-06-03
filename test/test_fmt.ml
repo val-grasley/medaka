@@ -347,6 +347,23 @@ let rt_wide_list_splits () =
 let id_wide_list = idempotent
   "xs = [1000, 2000, 3000, 4000, 5000, 6000, 7000, 8000, 9000, 10000, 11000, 12000, 13000]\n"
 
+(* A small bracketed group whose opening already sits past the width budget
+   (here pushed there by an unbreakable guard condition) must NOT split: the
+   line is doomed by the prefix, so breaking the group only fragments a tiny
+   value across extra lines without rescuing the first line.  Keep it flat. *)
+let rt_futile_split_suppressed () =
+  let src =
+    "f arr\n  | arrayLength arr > 0 && charCode (arrayGetUnsafe (arrayLength arr - 1) arr) == 46 = stringConcat [s, \"0\"]\n  | otherwise = s\n"
+  in
+  let out = format src in
+  if contains "stringConcat [\n" out then
+    failwith (Printf.sprintf "futile split was not suppressed:\n%s" out);
+  if not (contains "= stringConcat [s, \"0\"]" out) then
+    failwith (Printf.sprintf "expected the group to stay flat:\n%s" out)
+
+let id_futile_split_suppressed = idempotent
+  "f arr\n  | arrayLength arr > 0 && charCode (arrayGetUnsafe (arrayLength arr - 1) arr) == 46 = stringConcat [s, \"0\"]\n  | otherwise = s\n"
+
 (* A pipeline too wide for one line breaks with each operator leading its
    continuation line — which only reparses because of the lexer's
    leading-operator continuation rule.  (If it did not reparse, [format] would
@@ -433,6 +450,8 @@ let () =
       Alcotest.test_case "wide data splits"    `Quick rt_wide_data_splits;
       Alcotest.test_case "short list one line" `Quick rt_short_list_one_line;
       Alcotest.test_case "wide list splits"    `Quick rt_wide_list_splits;
+      Alcotest.test_case "futile split suppressed" `Quick rt_futile_split_suppressed;
+      Alcotest.test_case "futile split idempotent"  `Quick id_futile_split_suppressed;
       Alcotest.test_case "wide pipeline splits" `Quick rt_wide_pipeline_splits;
       Alcotest.test_case "if block-else canonical" `Quick fmt_if_block_else_canonical;
       Alcotest.test_case "else-less if drops else ()" `Quick fmt_if_elseless_no_else;
