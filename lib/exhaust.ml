@@ -18,9 +18,28 @@ open Ast
      PLit l         — literal (open types: Int, Float, String, Char)
 
    Synthetic constructor names:
-     "__tuple__"  — tuple patterns (always a singleton constructor)
+     "__tupleN__" — N-tuple patterns (each arity is its own singleton
+                    constructor/type, so a nested tuple of arity ≠ the
+                    enclosing wrapper's arity doesn't collide — Phase 119)
      "Cons"/"Nil" — list cons / empty-list
      "True"/"False"/"Unit" — bool/unit literals *)
+
+(* The synthetic constructor/type name for an N-tuple pattern.  The arity is
+   baked into the name so [get_arity]/[get_ctors] can recover it without a
+   side-channel — distinct tuple widths are distinct singleton types. *)
+let tuple_ctor_name n = "__tuple" ^ string_of_int n ^ "__"
+
+(* Recover the arity from a [tuple_ctor_name] result, or None if [c] isn't a
+   synthetic tuple constructor name. *)
+let tuple_arity_of_name c =
+  let pl = String.length "__tuple" and sl = 2 (* "__" *) in
+  let n = String.length c in
+  if n > pl + sl
+     && String.sub c 0 pl = "__tuple"
+     && String.sub c (n - sl) sl = "__"
+  then int_of_string_opt (String.sub c pl (n - pl - sl))
+  else None
+
 let rec desugar = function
   | PWild         -> PWild
   | PVar _        -> PWild             (* treat bound vars as wildcards *)
@@ -28,7 +47,7 @@ let rec desugar = function
   | PLit (LBool false) -> PCon ("False", [])
   | PLit  LUnit        -> PCon ("Unit",  [])
   | PLit l             -> PLit l       (* Int / Float / String / Char stay open *)
-  | PTuple ps          -> PCon ("__tuple__", List.map desugar ps)
+  | PTuple ps          -> PCon (tuple_ctor_name (List.length ps), List.map desugar ps)
   | PCon (c, args)     -> PCon (c, List.map desugar args)
   | PCons (h, t)       -> PCon ("Cons", [desugar h; desugar t])
   | PList []           -> PCon ("Nil",  [])
@@ -234,7 +253,7 @@ let check_match ~get_ctors ~get_arity ~get_ctor_type ~warnings ~col0_type
    [check_match] above never sees it; an uncovered case only surfaces at runtime
    as a non-exhaustive-match error.  We run this from typecheck (where the oracle
    is type-aware and sees prelude types, unlike the Phase 91(2) lint below) by
-   wrapping each clause's whole parameter list as one synthetic `__tuple__`
+   wrapping each clause's whole parameter list as one synthetic `__tupleN__`
    column — exactly the multi-parameter reduction [check_group] uses — and asking
    whether an all-wildcard input is still useful (i.e. unmatched).
 
@@ -247,7 +266,7 @@ let check_clauses ~get_ctors ~get_arity ~get_ctor_type ~warnings ~loc ~arity
   if arity > 0 then begin
     let rows = List.map (fun pats -> [ desugar (PTuple pats) ]) clause_pats in
     let query = [ desugar (PTuple (List.init arity (fun _ -> PWild))) ] in
-    if useful ~get_ctors ~get_arity ~get_ctor_type (Some "__tuple__") rows query
+    if useful ~get_ctors ~get_arity ~get_ctor_type (Some (tuple_ctor_name arity)) rows query
     then
       warnings := (pp_loc loc ^
         "Warning: non-exhaustive clauses — some inputs are not matched")
@@ -365,21 +384,27 @@ let check_group ~type_ctors ~ctor_arity ~ctor_type warnings clauses =
     let group_arity = match clauses with
       | (pats, _) :: _ -> List.length pats
       | []             -> 0 in
-    let get_ctors t = Hashtbl.find_opt type_ctors t in
+    let get_ctors t =
+      match tuple_arity_of_name t with
+      | Some _ -> Some [t]
+      | None   -> Hashtbl.find_opt type_ctors t in
     let get_ctor_type c =
-      if c = "__tuple__" then Some "__tuple__" else Hashtbl.find_opt ctor_type c in
+      match tuple_arity_of_name c with
+      | Some _ -> Some c
+      | None   -> Hashtbl.find_opt ctor_type c in
     let get_arity c =
-      if c = "__tuple__" then group_arity
-      else match Hashtbl.find_opt ctor_arity c with Some a -> a | None -> 0 in
+      match tuple_arity_of_name c with
+      | Some a -> a
+      | None   -> (match Hashtbl.find_opt ctor_arity c with Some a -> a | None -> 0) in
     (* Wrap each clause's parameter list as a synthetic tuple so multi-parameter
-       coverage reduces to a single __tuple__ column.  Guarded-partial clauses
+       coverage reduces to a single __tupleN__ column.  Guarded-partial clauses
        are excluded — their guard might fail at runtime. *)
     let rows =
       List.filter_map (fun c ->
         if clause_guards_total c then Some [ desugar (PTuple (fst c)) ] else None)
         clauses in
     if useful ~get_ctors ~get_arity ~get_ctor_type
-         (Some "__tuple__") rows [ desugar (PTuple (List.init group_arity (fun _ -> PWild))) ]
+         (Some (tuple_ctor_name group_arity)) rows [ desugar (PTuple (List.init group_arity (fun _ -> PWild))) ]
     then begin
       let loc =
         List.find_map (fun c ->

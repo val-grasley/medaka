@@ -2103,6 +2103,33 @@ f []        _ = 0
 f (x :: _)  _ = x
 |}
 
+(* ── Phase 119: nested tuple of arity ≠ the parameter count must not desync the
+   synthetic tuple-column reduction.  Pre-fix, the shared `__tuple__` name carried
+   the parameter arity (3) and `specialize_con` expanded the nested `(a,b)` tuple
+   to 3 columns instead of 2 → spurious non-exhaustive warning. *)
+
+(* The exact repro: 3 params, a list column whose Cons head holds a 2-tuple →
+   total, must NOT warn. *)
+let wm_multiarg3_list_total = assert_no_warns {|
+r []              _ _ = 0
+r ((a, b) :: rest) x y = a
+|}
+
+(* check_match variant: scrutinee is a 3-tuple, one arm destructures a nested
+   2-tuple.  Total over the list column → no warning. *)
+let wm_multiarg3_nested_tuple_match = assert_no_warns {|
+f xs n k =
+  match (xs, n, k)
+    ([],              _, _) => 0
+    ((a, b) :: rest,  m, j) => a
+|}
+
+(* Negative control: genuinely partial 3-arg group (no Nil clause) → still
+   warns, so the fix didn't blanket-silence multi-arg coverage. *)
+let wm_multiarg3_partial = assert_warns {|
+r ((a, b) :: rest) x y = a
+|}
+
 (* Ordinary single-clause function with variable params → never flagged. *)
 let wm_ordinary_vars = assert_no_warns {|
 g x y = x + y
@@ -4133,6 +4160,9 @@ let () =
       test_case "Option missing None"       `Quick wm_option_missing_none;
       test_case "multi-arg partial"         `Quick wm_multiarg_partial;
       test_case "multi-arg total"           `Quick wm_multiarg_total;
+      test_case "3-arg list+nested-tuple total" `Quick wm_multiarg3_list_total;
+      test_case "3-tuple match nested tuple"     `Quick wm_multiarg3_nested_tuple_match;
+      test_case "3-arg partial still warns"      `Quick wm_multiarg3_partial;
       test_case "ordinary var params"       `Quick wm_ordinary_vars;
       test_case "catch-all clause"          `Quick wm_catchall;
       test_case "unit clause"               `Quick wm_unit_clause;
