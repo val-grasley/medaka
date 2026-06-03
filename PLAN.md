@@ -175,22 +175,30 @@ above, it is flagged ⭐.
   (`stdlib/hash_map.mdk` keeps its guard-based `<Mut>` ops; the block-branch
   claim in its header comment is now superseded by Phase 122.)
 
-- **Phase 122 — else-less `if … then <block>` (statement-position `if`).**
-  Every `if` grammar rule requires `ELSE` (`parser.mly:564-588`), so
-  `if c then <block>` with no `else` is a **parse error**. This is the remaining
-  imperative-`<Mut>` ergonomics gap after Phase 118: side-effecting code that
-  conditionally runs a block and otherwise does nothing (e.g. a `maybeResize`
-  that resizes only past a load factor) must today fall back to function guards
-  (`| cond = <block>` / `| otherwise = ()`), as `stdlib/hash_map.mdk` does. Add
-  an else-less form that defaults the missing branch to the unit value `()`
-  (`ELit LUnit`, `ast.ml:17`), i.e. `if c then e` ≡ `if c then e else ()`.
-  Needs: a parser production for the no-`ELSE` form (inline *and* indented-block
-  `then` branch), and a typecheck rule that the `then` branch is `Unit` (so the
-  `if` itself types as `Unit`) — cleanest as a desugar to `EIf (c, t, ELit
-  LUnit)` so typecheck/eval need no new arm. Mind the indentation-sensitive
-  lexer and re-measure `parser.conflicts` (an else-less `if` introduces a
-  dangling-else-style ambiguity to resolve). Surfaced alongside Phase 118,
-  2026-06-03. Skill: **add-language-feature**.
+- ✅ **Phase 122 — else-less `if … then …` (statement-position `if`). DONE
+  (2026-06-03).** `if c then e` (inline *or* indented block) with no `else` now
+  parses; the missing branch defaults to `()` (`EIf (c, t, ELit LUnit)` built in
+  the parser action), so the `if` types as `Unit` and the `then` branch must be
+  `Unit` too — no new typecheck/eval arm needed (the existing `EIf` unification
+  with the unit `else` enforces it). Closes the last imperative-`<Mut>`
+  ergonomics gap after Phase 118 (`maybeResize`-style side effects no longer need
+  a `| otherwise = ()` guard, though `stdlib/hash_map.mdk` keeps its guards).
+  **The hard part was layout, not the production:** a naive else-less rule fails
+  because the `if`-rules' `newlines ELSE` lookahead makes a post-`then` NEWLINE
+  indistinguishable from a statement terminator (default-shift waits for an
+  `ELSE` that never comes — empirically breaks every realistic case). Fix: an
+  **`else`-continuation filter** in `lexer.ml` (a one-token-lookahead wrapper
+  around the raw lexer that drops any NEWLINE immediately before `ELSE`, keeping
+  DEDENTs; positions preserved by save/restore). With `newlines ELSE` gone, the
+  `if`-rules were *simplified* (dropped the `newlines` hack and two rules,
+  including Phase 118's), `else` may now start a line, and a post-`then` NEWLINE
+  unambiguously means "else-less". Conflicts 3→5: two textbook dangling-else S/R
+  (states 464/470), resolved shift = bind `else` to nearest `if`; layout DEDENT
+  disambiguates the block case (see the audit comment in `parser.mly`). `medaka
+  fmt` drops the synthetic `else ()` in statement position (provably safe — next
+  token is NEWLINE/DEDENT) and keeps it in expression position. Tests across
+  `test_parser`/`test_roundtrip`/`test_fmt`/`test_run`. Skill:
+  **add-language-feature**.
 
 - **Phase 101 — drive property generation/shrinking through the `Arbitrary`
   interface (101b).** 101a (registry-first `arbitrary`/`shrink`, native element

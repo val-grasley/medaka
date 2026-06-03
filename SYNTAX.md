@@ -194,7 +194,14 @@ match n
 ```
 if x > 0 then x else 0
 if let Some x = opt then x else 0        -- if-let (single-ctor bind)
+if x > 0 then println "pos"              -- else-less: else defaults to (); then must be Unit
+if x > 0 then                            -- else-less with an indented <Mut> block
+  doThing
+  doOther
 ```
+
+Branches may be inline or indented blocks, in any combination; `else` may begin
+a line. An else-less `if` is for side effects — its `then` branch must be `Unit`.
 
 ## let / mutation
 
@@ -387,7 +394,8 @@ Set { 1, 2, 3 }
 - An expression RHS **cannot** wrap onto a second indented line, *except* when
   the continuation line *starts* with a leading binary operator
   (`|> >> << && || ++ <>`), which continues the expression.
-- `then` / `else` cannot start a line.
+- `then` cannot start a line. (`else` *may* — it is treated as a continuation
+  of the preceding `if`.)
 
 ---
 

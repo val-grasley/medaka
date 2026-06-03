@@ -103,6 +103,17 @@ let id_if_block_then_inline_else =
 let id_if_inline_then_block_else =
   idempotent "f x =\n  if x > 0 then 1\n  else\n    let b = 2\n    b\n"
 
+(* Phase 122: else-less `if` round-trips and, in statement position, formats
+   WITHOUT a synthetic `else ()`. *)
+let id_if_elseless_inline =
+  idempotent "g x =\n  if x > 0 then f x\n  done x\n"
+let id_if_elseless_block =
+  idempotent "g x =\n  if x > 0 then\n    a x\n    b x\n  done x\n"
+let fmt_if_elseless_no_else () =
+  let out = format "g x =\n  if x > 0 then f x\n  done x\n" in
+  if contains "else" out then
+    failwith (Printf.sprintf "else-less if grew an `else` in stmt position:\n%s" out)
+
 (* Lock the canonical layout: messy input reflows to `then`/`else` on aligned
    lines with the block indented one step further. *)
 let fmt_if_block_else_canonical () =
@@ -303,6 +314,8 @@ let () =
       Alcotest.test_case "if block both"  `Quick id_if_block_both;
       Alcotest.test_case "if block then, inline else" `Quick id_if_block_then_inline_else;
       Alcotest.test_case "if inline then, block else" `Quick id_if_inline_then_block_else;
+      Alcotest.test_case "if else-less inline" `Quick id_if_elseless_inline;
+      Alcotest.test_case "if else-less block"  `Quick id_if_elseless_block;
     ];
     "comment preservation", [
       Alcotest.test_case "top of file"   `Quick cp_top;
@@ -329,5 +342,6 @@ let () =
       Alcotest.test_case "wide list splits"    `Quick rt_wide_list_splits;
       Alcotest.test_case "wide pipeline splits" `Quick rt_wide_pipeline_splits;
       Alcotest.test_case "if block-else canonical" `Quick fmt_if_block_else_canonical;
+      Alcotest.test_case "else-less if drops else ()" `Quick fmt_if_elseless_no_else;
     ];
   ]

@@ -5,6 +5,11 @@ open Parser
 let indent_stack : int list ref = ref [0]
 let pending : token Queue.t = Queue.create ()
 
+(* One-token lookahead buffer for the `else`-continuation filter (see [token]
+   at the bottom of the file).  Stores the buffered token together with its
+   source positions so they can be restored when it is finally returned. *)
+let look : (token * Lexing.position * Lexing.position) option ref = ref None
+
 (* Absolute end offset of the most recently lexed IDENT.  Used to make `@`
    adjacency-sensitive: an `@` whose start offset equals this (i.e. it
    immediately follows an identifier with no intervening space/comment) is the
@@ -106,6 +111,7 @@ let advance_over lexbuf s =
 let reset () =
   indent_stack := [0];
   Queue.clear pending;
+  look := None;
   last_ident_end := -1;
   paren_depth := 0;
   interp_depth := 0;
@@ -205,7 +211,7 @@ let hex_lit   = "0x" hex_digit (hex_digit | '_')*
 let bin_lit   = "0b" bin_digit (bin_digit | '_')*
 let oct_lit   = "0o" oct_digit (oct_digit | '_')*
 
-rule token = parse
+rule raw_token = parse
   | "" {
       if not (Queue.is_empty pending) then Queue.pop pending
       else read lexbuf
@@ -275,7 +281,7 @@ and read = parse
         end
       done;
       handle_indent !indent;
-      token lexbuf
+      raw_token lexbuf
     }
 
   | hex_lit      { INT (parse_int (strip_underscores (Lexing.lexeme lexbuf))) }
@@ -389,7 +395,7 @@ and read = parse
       in
       close_all ();
       push_pending EOF;
-      token lexbuf
+      raw_token lexbuf
     }
 
   | _ as c {
@@ -503,3 +509,42 @@ and read_block_comment buf depth line col = parse
                         read_block_comment buf depth line col lexbuf }
   | _ as c { Buffer.add_char buf c; read_block_comment buf depth line col lexbuf }
   | eof   { failwith "Unterminated block comment" }
+
+{
+(* Phase 122: `else`-continuation filter.  The indentation lexer emits a layout
+   NEWLINE before an `else` that begins a line (and a DEDENT first if the `then`
+   branch was an indented block).  That NEWLINE is indistinguishable, at LR(1),
+   from a statement-terminating NEWLINE — which is exactly what blocks an
+   else-less `if` (the parser cannot tell `if c then e <NL> else …` from
+   `if c then e <NL> nextStmt`).  We resolve it here, upstream of the grammar:
+   drop any NEWLINE token that is immediately followed by ELSE (keeping the
+   DEDENT).  With that, no grammar rule ever sees `newlines ELSE`, so a NEWLINE
+   after a `then` branch unambiguously means "else-less, reduce".
+
+   Source positions are preserved: the byte offsets ocamllex scans by are never
+   touched, only the [Lexing.position] *records*, which we save per raw token
+   and restore so menhir reads each returned token's true position. *)
+let token (lexbuf : Lexing.lexbuf) : token =
+  match !look with
+  | Some (t, sp, ep) ->
+    look := None;
+    lexbuf.Lexing.lex_start_p <- sp;
+    lexbuf.Lexing.lex_curr_p  <- ep;
+    t
+  | None ->
+    let t = raw_token lexbuf in
+    if t <> NEWLINE then t
+    else begin
+      let nl_sp = lexbuf.Lexing.lex_start_p and nl_ep = lexbuf.Lexing.lex_curr_p in
+      let next = raw_token lexbuf in
+      if next = ELSE then next            (* drop the NEWLINE; ELSE positions are current *)
+      else begin
+        (* keep the NEWLINE; buffer `next` with its positions; restore the
+           NEWLINE's positions for this return *)
+        look := Some (next, lexbuf.Lexing.lex_start_p, lexbuf.Lexing.lex_curr_p);
+        lexbuf.Lexing.lex_start_p <- nl_sp;
+        lexbuf.Lexing.lex_curr_p  <- nl_ep;
+        t
+      end
+    end
+}

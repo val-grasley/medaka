@@ -15,9 +15,9 @@
    a *custom* `Eq` that isn't structural would break it, so don't key a HashMap
    on such a type. Iteration order is unspecified (hash order).
 
-   The mutating ops sequence `<Mut>` statements with **guards + block bodies**
-   rather than `if … else …`, because an `if` branch can't be a multi-statement
-   block (see PLAN.md Phase 118). -}
+   The mutating ops sequence `<Mut>` statements with **guards + block bodies**.
+   (`if`-branch blocks and else-less `if` both parse now — Phases 118 & 122 —
+   but the guard form here is left as-is.) -}
 
 import core.{Eq, Show, Option, Mappable}
 

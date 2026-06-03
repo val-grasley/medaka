@@ -282,6 +282,30 @@ let test_expr_if_inline_then_block_else () =
     -> ()
   | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
 
+(* Phase 122: else-less `if` defaults the missing branch to `()` (ELit LUnit). *)
+let test_expr_if_elseless_inline () =
+  match parse_expr "if x > 0 then f x\n" with
+  | EIf (EBinOp (">", EVar "x", ELit (LInt 0)),
+         EApp (EVar "f", EVar "x"), ELit LUnit) -> ()
+  | e -> failwith (Printf.sprintf "wrong shape: %s" (Ast.pp_expr e))
+
+let test_expr_if_elseless_block () =
+  match parse_one "g x =\n  if x > 0 then\n    a x\n    b x\n" with
+  | DFunDef (false, "g", [PVar "x"],
+      EIf (EBinOp (">", EVar "x", ELit (LInt 0)),
+           EBlock [DoExpr (EApp (EVar "a", EVar "x"));
+                   DoExpr (EApp (EVar "b", EVar "x"))],
+           ELit LUnit)) -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
+(* else binds to the nearest `if` (shift); the outer becomes else-less. *)
+let test_expr_if_dangling_else_binds_inner () =
+  match parse_expr "if a then if b then x else y\n" with
+  | EIf (EVar "a",
+         EIf (EVar "b", EVar "x", EVar "y"),
+         ELit LUnit) -> ()
+  | e -> failwith (Printf.sprintf "wrong shape: %s" (Ast.pp_expr e))
+
 let test_expr_application () =
   match parse_expr "f x y\n" with
   | EApp (EApp (EVar "f", EVar "x"), EVar "y") -> ()
@@ -1835,6 +1859,9 @@ let () =
       test_case "let rec top-level mutual" `Quick test_decl_let_rec_top_mutual;
       test_case "if-then-else"      `Quick test_expr_if;
       test_case "if inline-then block-else" `Quick test_expr_if_inline_then_block_else;
+      test_case "if else-less inline" `Quick test_expr_if_elseless_inline;
+      test_case "if else-less block"  `Quick test_expr_if_elseless_block;
+      test_case "if dangling else binds inner" `Quick test_expr_if_dangling_else_binds_inner;
       test_case "application"       `Quick test_expr_application;
       test_case "infix backtick"    `Quick test_expr_infix_backtick;
       test_case "list literal"      `Quick test_expr_list_literal;

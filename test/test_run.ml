@@ -461,6 +461,34 @@ main =
 |}
   "pos\nneg\n"
 
+(* Phase 122: else-less `if` runs the then-branch only when the condition holds
+   and otherwise defaults to `()`, sequencing with following statements. *)
+let t_if_elseless = assert_output
+  {|g x =
+  if x > 0 then println "pos"
+  println "done"
+
+main : <IO> Unit
+main =
+  g 5
+  g (-1)
+|}
+  "pos\ndone\ndone\n"
+
+let t_if_elseless_block = assert_output
+  {|g x =
+  if x > 0 then
+    println "a"
+    println "b"
+  println "done"
+
+main : <IO> Unit
+main =
+  g 5
+  g (-1)
+|}
+  "a\nb\ndone\ndone\n"
+
 (* ── Recursion + integer arithmetic ──────────────────────────────────────── *)
 
 let t_factorial = assert_output
@@ -849,6 +877,8 @@ let () = Alcotest.run "Run"
     "nullary Bounded Int (stdlib, Phase 93)",  `Quick, t_nullary_bounded_int;
     "nullary Bounded Char (stdlib, Phase 93)", `Quick, t_nullary_bounded_char;
     "if inline-then block-else (Phase 118)", `Quick, t_if_inline_then_block_else;
+    "else-less if (Phase 122)",        `Quick, t_if_elseless;
+    "else-less if block (Phase 122)",  `Quick, t_if_elseless_block;
     "hello world",   `Quick, t_hello;
     "factorial",     `Quick, t_factorial;
     "adt match",     `Quick, t_adt_match;

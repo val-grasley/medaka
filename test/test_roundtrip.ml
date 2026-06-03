@@ -423,6 +423,12 @@ let () =
         (mk "f x =\n  if x > 0 then 1\n  else\n    let b = 2\n    b\n");
       test_case "inline if/else unchanged" `Quick
         (mk "f x = if x > 0 then 1 else 2\n");
+      (* Phase 122: else-less `if` (else defaults to `()`); in statement
+         position the formatter drops the synthetic `else ()`. *)
+      test_case "else-less inline (stmt)" `Quick
+        (mk "g x =\n  if x > 0 then f x\n  done x\n");
+      test_case "else-less block (stmt)" `Quick
+        (mk "g x =\n  if x > 0 then\n    a x\n    b x\n  done x\n");
     ];
     "range literals (Phase 40)", [
       test_case "list half-open"      `Quick (mk "r = [1..10]\n");

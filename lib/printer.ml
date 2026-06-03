@@ -503,7 +503,22 @@ and print_guard_arms arms =
 and print_do_stmt = function
   | DoBind (pat, e) ->
     print_pat pat ^^ text " <- " ^^ print_expr prec_top e
-  | DoExpr e -> print_expr_body e
+  | DoExpr e ->
+    (* Phase 122: an else-less `if` (else defaulted to `()`) is safe to print
+       WITHOUT the synthetic `else ()` in statement position — the next token is
+       a NEWLINE/DEDENT, never an `else` that the dangling-else rule could
+       reattach.  (Expression position keeps `else ()`; see the `EIf` arm.) *)
+    (match strip_loc e with
+     | EIf (c, t, els)
+       when (match strip_loc els with ELit LUnit -> true | _ -> false) ->
+       let then_part =
+         match strip_loc t with
+         | EBlock _              -> print_expr_body t   (* self-indents *)
+         | _ when is_block_body t -> indent_block (print_expr_body t)
+         | _                     -> text " " ^^ print_expr prec_top t
+       in
+       text "if " ^^ print_expr prec_top c ^^ text " then" ^^ then_part
+     | _ -> print_expr_body e)
   | DoLet (mut, pat, e) ->
     text "let " ^^ (if mut then text "mut " else Nil)
     ^^ print_pat pat ^^ text " = " ^^ print_expr prec_top e

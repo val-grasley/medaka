@@ -215,10 +215,11 @@ let parse_attr name msg_opt =
    Grammar conflicts — audit notes
    ═══════════════════════════════════════════════════════
 
-   `menhir --explain` emits a witness for 2 S/R + 1 R/R = 3 conflict states
+   `menhir --explain` emits a witness for 4 S/R + 1 R/R = 5 conflict states
    (`lib/parser.conflicts`), all resolved by menhir's defaults and all intended.
    This is down from 8 S/R + 6 R/R = 14 at Phase 60: Phase 81 eliminated the
-   entire pat-vs-expr conflict family (see "History" below).
+   entire pat-vs-expr conflict family (see "History" below).  Phase 122 added the
+   two dangling-else conflicts (states 464/470) when else-less `if` landed.
 
    ── How binding LHSs are parsed (the key design rule) ──────
    Every position that accepts both a pattern-bind and a bare expression —
@@ -250,21 +251,34 @@ let parse_attr name msg_opt =
    the prefix-hint AT.  Compound as-pattern sub-patterns are parenthesised in
    binding LHSs (`x@(a, b)`, `x@(h::t)`), matching how the formatter prints PAs.
 
-   ── The 3 remaining conflicts — all SHIFT/earlier-rule, all intended ──
+   ── The 5 remaining conflicts — all SHIFT/earlier-rule, all intended ──
      | State | Kind | Lookahead   | Reduce vs Shift / competing reductions      | Intended       |
      |-------|------|-------------|---------------------------------------------|----------------|
      | 134   | S/R  | LBRACE      | expr_atom->UPPER / `UPPER {…}` record literal | record creation|
      | 136   | S/R  | FAT_ARROW   | expr_atom->UNDERSCORE / `_ =>` lambda        | wildcard lambda|
-     | 593   | R/R  | RBRACE COMMA COLON | expr_annot->expr_lam / lambda inside `UPPER { k => v }` | KV (path A) |
+     | 464   | S/R  | ELSE        | else-less block-`if` / `else` continues it    | bind to nearest|
+     | 470   | S/R  | ELSE        | else-less inline-`if` / `else` continues it   | bind to nearest|
+     | 589   | R/R  | RBRACE COMMA COLON | expr_annot->expr_lam / lambda inside `UPPER { k => v }` | KV (path A) |
    Rationale:
      • 134 — a bare `UPPER` followed by `{` is unambiguously a record literal.
      • 136 — `_` followed by `=>` is a wildcard lambda.
-     • 593 — keeps `Map { k => v }` parsing as a key/value entry (path A: the
+     • 464/470 — the classic dangling-else (Phase 122): with an else-less `if`,
+       a nested `if a then if b then e . ELSE …` can attach the `else` to the
+       inner `if` (shift) or treat the inner as else-less and bind `else` to the
+       outer (reduce).  Shift wins → `else` binds to the nearest `if`, the
+       universal convention.  In layout code the block DEDENT closes an inner
+       else-less `if` before the `else` is seen, so indentation already picks the
+       intended `if`; the conflict only bites the same-line nested form, where
+       nearest-`if` is also what a reader expects.  (The `else`-continuation
+       lexer filter — see `lexer.mll` — removes the NEWLINE before `else`, so
+       these are pure ELSE-lookahead conflicts, NOT the NEWLINE-shift hazard a
+       naive else-less rule would create.)
+     • 589 — keeps `Map { k => v }` parsing as a key/value entry (path A: the
        earlier `expr_annot -> expr_lam` reduction) rather than a lambda-valued
        set element.
    State numbers are current menhir ids and drift as the grammar evolves; the
    resolutions do not.  Re-measure after any grammar change with
-   `grep -c '^\*\* Conflict' _build/default/lib/parser.conflicts` (expect 3).
+   `grep -c '^\*\* Conflict' _build/default/lib/parser.conflicts` (expect 5).
 
    ── History ────────────────────────────────────────────────
    Phase 7 started at 8 S/R + 8 R/R; later phases (record literals, left
@@ -561,38 +575,35 @@ expr_lam:
   | LET MUT IDENT COLON ty EQUAL expr_no_block IN expr_lam
     { ELoc (of_pos $startpos $endpos,
             ELet (true, false, PVar $3, EAnnot ($7, $5), $9)) }
+  (* if/then/else.  Phase 122: the lexer's `else`-continuation filter drops the
+     NEWLINE before any `else`, so no rule needs a `newlines ELSE` separator —
+     the four with-else shapes below cover inline/block × inline/block, and an
+     `else`-less `if` (defaulting to `()`) is unambiguous because a NEWLINE after
+     a `then` branch can now only mean "end of the if".  The two `else`-bearing
+     productions per then-shape create the standard dangling-else shift/reduce
+     conflict, resolved (correctly) toward shift — `else` binds to the nearest
+     `if`. *)
   | IF LET pat EQUAL expr_or THEN expr_lam ELSE expr_lam
     { ELoc (of_pos $startpos $endpos, EMatch ($5, [($3, [], $7); (PWild, [], $9)])) }
   | IF expr_or THEN expr_lam ELSE expr_lam
     { ELoc (of_pos $startpos $endpos, EIf ($2, $4, $6)) }
-  (* Allow NEWLINE between an inline THEN branch and ELSE so that
-     `if a then 1 \n else if b then 2 \n else 3` (the classic
-     else-if chain laid out on multiple lines) parses. *)
-  | IF expr_or THEN expr_lam newlines ELSE expr_lam
-    { ELoc (of_pos $startpos $endpos, EIf ($2, $4, $7)) }
-  (* Phase 45.7: multi-line if-then-else.  Both branches may be indented
-     blocks (one stmt or more).  The lexer emits NEWLINE after each
-     DEDENT, so a `newlines` separator appears between the THEN block's
-     closing DEDENT and ELSE. *)
-  | IF expr_or THEN INDENT nonempty_list(stmt) DEDENT newlines ELSE INDENT nonempty_list(stmt) DEDENT
+  | IF expr_or THEN INDENT nonempty_list(stmt) DEDENT ELSE INDENT nonempty_list(stmt) DEDENT
     { ELoc (of_pos $startpos $endpos,
-            EIf ($2, stmts_to_expr $5, stmts_to_expr $10)) }
-  (* Mixed: indented then, inline else *)
-  | IF expr_or THEN INDENT nonempty_list(stmt) DEDENT newlines ELSE expr_lam
+            EIf ($2, stmts_to_expr $5, stmts_to_expr $9)) }
+  | IF expr_or THEN INDENT nonempty_list(stmt) DEDENT ELSE expr_lam
     { ELoc (of_pos $startpos $endpos,
-            EIf ($2, stmts_to_expr $5, $9)) }
-  (* Mixed: inline then, indented else.  No `newlines` between expr_lam
-     and ELSE because expr_lam doesn't consume the trailing newline. *)
+            EIf ($2, stmts_to_expr $5, $8)) }
   | IF expr_or THEN expr_lam ELSE INDENT nonempty_list(stmt) DEDENT
     { ELoc (of_pos $startpos $endpos,
             EIf ($2, $4, stmts_to_expr $7)) }
-  (* Mixed: inline then, NEWLINE, indented else block.  The lexer emits a
-     NEWLINE after the inline then-expr's line, then INDENT for the else
-     block, so `newlines` separates the inline THEN branch from ELSE.
-     (Phase 118: the one block-layout cell the 45.7/45.8 rules above missed.) *)
-  | IF expr_or THEN expr_lam newlines ELSE INDENT nonempty_list(stmt) DEDENT
-    { ELoc (of_pos $startpos $endpos,
-            EIf ($2, $4, stmts_to_expr $8)) }
+  (* Phase 122: else-less `if … then …` (inline or indented-block then).  The
+     missing branch defaults to the unit value `()`, so the `if` types as Unit
+     and the `then` branch must be Unit too — natural for side-effecting <Mut>
+     code. *)
+  | IF expr_or THEN expr_lam
+    { ELoc (of_pos $startpos $endpos, EIf ($2, $4, ELit LUnit)) }
+  | IF expr_or THEN INDENT nonempty_list(stmt) DEDENT
+    { ELoc (of_pos $startpos $endpos, EIf ($2, stmts_to_expr $5, ELit LUnit)) }
   | MATCH expr_or INDENT nonempty_list(match_arm) DEDENT
     { ELoc (of_pos $startpos $endpos, EMatch ($2, $4)) }
   | FUNCTION INDENT nonempty_list(match_arm) DEDENT
