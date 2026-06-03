@@ -73,11 +73,13 @@ let pp_error = function
    stdlib/set.mdk (Module 5), so files importing those modules register them via
    the regular DData pipeline.  (The `Map { … }`/`Set { … }` literal sugar's
    typecheck helper still names `TCon "Map"`/`"Set"`; it only fires for files
-   that import the module, where the type is in scope.) *)
+   that import the module, where the type is in scope.)  `MutArray` is likewise
+   *not* listed — it is `data MutArray a` in stdlib/mut_array.mdk (the growable
+   vector), registered via the same DData pipeline when imported. *)
 let primitive_types = [
   "Int"; "Float"; "String"; "Char"; "Bool"; "Unit";
   "List"; "Ref";
-  "Array"; "MutArray";
+  "Array";
 ]
 
 (* True/False are lexer keywords, not declared in stdlib/core.mdk like the
