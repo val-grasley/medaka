@@ -5373,6 +5373,158 @@ fix landed entirely in `lib/eval.ml`.
 
 ---
 
+### Phase 117: make `stdlib/string.mdk` importable ✅ DONE (2026-06-02)
+
+Surfaced building `io` (Phase 116): *any* module that `import`ed `string` (even
+`import string.{trim}`) failed the multi-module typecheck with `core.mdk:661:
+Type mismatch: String vs a -> b`. Two compounding causes, both fixed:
+
+- `string.mdk` defined a standalone `count : String -> String -> Int` that
+  **redefined the prelude's droppable `count`** (`Foldable t => (a -> Bool) ->
+  t a -> Int`). **Renamed → `countOccurrences`** (the name genuinely clashed
+  semantically and was an open string-review item).
+- `typecheck_module` (the multi-module path) always prepended the *full*
+  `marked_prelude`, unlike `check_program_impl` which uses
+  `Method_marker.prelude_for` to drop droppable prelude standalones a module
+  redefines — so the two `count`s coalesced into one letrec group and corrupted
+  core's own definition. **Fixed** `lib/typecheck.ml` to use
+  `prelude_for user_prog` on the multi-module path too (no-op when nothing is
+  shadowed; preventive for future modules). Scoped to the droppable-standalone
+  (78a) case; interface-method (78b) parity stays out of scope (Won't-do 78c).
+
+Regression tests in `test/test_typecheck.ml` (module redefining a droppable
+prelude fn, single + imported). `io.mdk`'s `readLines` keeps its local line
+splitter deliberately — `string.lines` retains the trailing empty line,
+`readLines` drops it (stale "un-importable" comment refreshed). Skill:
+**harden-typechecker**.
+
+---
+
+### Phase 118: `if`/`else` block branches — complete the layout matrix ✅ DONE (2026-06-03)
+
+The original framing ("any block as a `then`/`else` branch is a parse error") was
+**stale** — Phase 45.7/45.8 already parsed block branches for most layouts
+(block/block, block/inline, inline-then+newline+inline-else). The one missing cell
+was **inline `then` expr + NEWLINE + indented `else` block** (`if present then
+replace` / newline / block `else`) — the exact `<Mut>` hash-table friction. Fix: a
+single `parser.mly` production in `expr_lam` (`IF expr_or THEN expr_lam newlines
+ELSE INDENT nonempty_list(stmt) DEDENT`, reusing `stmts_to_expr`); no
+AST/resolve/typecheck/eval change. Conflict count unchanged (3, freshly measured —
+the checked-in `parser.conflicts` had drifted to 14). Also fixed a **pre-existing
+formatter bug**: `printer.ml`'s `EIf` printed branches inline unconditionally, so
+*all* block-branch `if/else` (even the parseable Phase-45.7 ones) emitted
+unparseable output — `medaka fmt` now lays `then`/`else` on aligned lines with the
+block indented one step (rewrote the `EIf` arm + made `is_block_body` recurse into
+`EIf` branches). Tests in `test_parser`/`test_roundtrip`/`test_fmt`/`test_run`. The
+remaining `if` ergonomics gap — **else-less `if`** — was split out as Phase 122.
+(`stdlib/hash_map.mdk` keeps its guard-based `<Mut>` ops; the block-branch claim in
+its header comment is superseded by Phase 122.)
+
+---
+
+### Phase 119: false-positive non-exhaustiveness warning for 3+-arg functions matching a list ✅ DONE (2026-06-03)
+
+A multi-clause function with **≥3 parameters** where a column held a `List` (more
+precisely: any pattern containing a *nested tuple* of a different arity than the
+parameter count) wrongly warned `non-exhaustive clauses` even when total. Root
+cause: `desugar` lowered **both** the synthetic parameter-list/scrutinee wrapper
+**and** genuine nested tuples to the *same* constructor name `__tuple__`, and the
+oracle gave that one name a single arity (the parameter count). When a nested
+tuple's arity differed, `specialize_con` desynced matrix-row vs query-vector widths
+→ spurious warning (arity 2 only "passed" by coincidence — inner `(a,b)` also arity
+2). **Fix:** encode the arity in the synthetic name (`__tuple2__`, `__tuple3__`, …)
+so each tuple width is its own singleton type; arity is recovered from the name
+(`Exhaust.tuple_arity_of_name`), dropping the `~tuple_arity` oracle parameter.
+Touched `lib/exhaust.ml` (desugar + `check_group`/`check_clauses`) and
+`lib/typecheck.ml` (`exhaust_oracle` + the two call sites). Fixes the latent
+same-bug in `check_match` (tuple scrutinees) too. Surfaced building Module 6,
+2026-06-02. Skill: **harden-typechecker**. **Follow-up available (not done — stdlib
+is user-owned):** `hash_map.mdk`'s `bucketReplace`/`reinsertBucket` can drop their
+single-arg `where go` workaround for direct multi-arg list matches.
+
+---
+
+### Phase 122: else-less `if … then …` (statement-position `if`) ✅ DONE (2026-06-03)
+
+`if c then e` (inline *or* indented block) with no `else` now parses; the missing
+branch defaults to `()` (`EIf (c, t, ELit LUnit)` built in the parser action), so
+the `if` types as `Unit` and the `then` branch must be `Unit` too — no new
+typecheck/eval arm needed (the existing `EIf` unification with the unit `else`
+enforces it). Closes the last imperative-`<Mut>` ergonomics gap after Phase 118
+(`maybeResize`-style side effects no longer need a `| otherwise = ()` guard, though
+`stdlib/hash_map.mdk` keeps its guards). **The hard part was layout, not the
+production:** a naive else-less rule fails because the `if`-rules' `newlines ELSE`
+lookahead makes a post-`then` NEWLINE indistinguishable from a statement terminator
+(default-shift waits for an `ELSE` that never comes — empirically breaks every
+realistic case). Fix: an **`else`-continuation filter** in `lexer.ml` (a
+one-token-lookahead wrapper around the raw lexer that drops any NEWLINE immediately
+before `ELSE`, keeping DEDENTs; positions preserved by save/restore). With
+`newlines ELSE` gone, the `if`-rules were *simplified* (dropped the `newlines` hack
+and two rules, including Phase 118's), `else` may now start a line, and a post-`then`
+NEWLINE unambiguously means "else-less". Conflicts 3→5: two textbook dangling-else
+S/R (states 464/470), resolved shift = bind `else` to nearest `if`; layout DEDENT
+disambiguates the block case (see the audit comment in `parser.mly`). `medaka fmt`
+drops the synthetic `else ()` in statement position (provably safe — next token is
+NEWLINE/DEDENT) and keeps it in expression position. Tests across
+`test_parser`/`test_roundtrip`/`test_fmt`/`test_run`. Skill: **add-language-feature**.
+
+---
+
+### Phase 123: `medaka fmt` width-aware `if`-expression RHS ✅ DONE (2026-06-03)
+
+An `if` that is a def / guard-arm / match-arm RHS now *wraps* when it overflows 80
+cols instead of staying flat: the `if` drops onto its own indented line under the
+`=`/`=>` and each branch onto its own line (the block-branch layout, but triggered
+by **width** rather than by a block branch). Short ifs stay inline — it's
+width-driven, not unconditional. The `if` is the one bare-expression RHS with
+layout-legal interior break points (newline-before-`if`, after-`then`, before-`else`
+are all valid layout, as the block-branch grammar already proves), so this exploits
+exactly those without the dangling-else hazard (every RHS position is
+newline-terminated). Implementation: a `print_if_rhs` helper in `printer.ml`
+returning a single width-aware `group`, wired into the three separator callers
+(`print_def_rhs`, `print_guard_arms`, `print_match_arms`); the condition itself
+stays flat (unbreakable — a bare expression). Reflowed 10 genuinely-overflowing
+if-RHSs in `array`/`map`/`set`/`string.mdk` (83–133 cols → ≤80). Tests in
+`test_fmt`; `test_roundtrip` + doctests confirm AST/semantics preserved. Pure
+`printer.ml` change.
+
+---
+
+### Phase 124 (investigative): should *any* long bare-expression RHS wrap, not just `if`? — DECLINED (2026-06-03)
+
+Phase 123 fixed the `if` case; the question was whether a long bare **application**
+/ **operator chain** RHS should also wrap (`foo = someFn a b c d e …` past 80
+cols). Prototyped the `=`-indent group in `print_def_rhs`'s `None` branch (`group
+(nest (Line ^^ print_expr_body body))`), built it, and `fmt`'d all of `stdlib/`
+against baseline-fmt. Verdict: **the win doesn't pay for the churn, and `if` is the
+only bare RHS worth special-casing.** Findings:
+
+- **`if` was special because it can break *internally*** (layout-legal `=⏎`,
+  `then⏎`, `else⏎`). A bare application has **no** interior break point — `add4
+  1⏎  2 3` is a hard parse error (breaks are legal only inside delimiters or before
+  a leading continuation operator). So the *only* available move for an application
+  RHS is shoving the whole thing onto the next indented line; it still can't reflow.
+- **Empirically (prototype over `stdlib/`): ~11 genuine >80→≤80 wins, against real
+  churn and one active regression.** The wrap helps only when the RHS *alone* fits
+  ≤78 cols. It does **not** help the lines a reader most wants fixed —
+  `array.append`'s 145-col RHS (too long even alone) and the long `prop` headers
+  (overflow is in the *header*, not the RHS) — yet it churns them for zero benefit,
+  and it *regresses* operator-chain RHS (`spliceAt`, `centerPad`) that already broke
+  cleanly via the leading-`++` continuation rule (the outer group collapses or
+  double-indents them).
+- **The residual >80 stdlib lines are mostly unreachable by any `print_def_rhs`
+  tweak**: ~93 comment/doc/signature, ~20 `prop` headers, ~13 match/lambda arms;
+  only a slice of the code-RHS bucket is even wrappable.
+- **The impactful fixes are language/lexer changes, not formatter changes** (extend
+  the continuation rule to allow bare argument breaks — grammar risk; or `fmt`-wrap
+  over-long applications in parens to unlock delimiter breaks — noisy behavior
+  change), both outside this phase's pure-`printer.ml` scope.
+
+Disposition: keep the "bare positions stay flat" policy; `if` stays the sole
+width-aware bare RHS.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
