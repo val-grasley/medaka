@@ -501,14 +501,19 @@ the per-module checklist.
       (it was a reserved placeholder), so the stdlib `data Map` is canonical —
       mirroring `Option`/`Result`/`Ordering`.
     - **Known issue (pre-existing, low priority):** map's exported standalone
-      `toList : Map k v -> List (k, v)` is **unreachable from a user file** that
-      imports map — a bare `toList m` there resolves to the generic
-      `Foldable.toList` method (which has no `Map` impl) and errors `No impl of
-      Foldable for Map`. Same standalone-vs-interface-method name-collision class
-      as the `empty`/`Monoid.empty` landmine (Phase 103) and won't-do Phase 78c.
-      Workarounds today: `toAscList`-style rename, or qualified access. Surfaced
-      while testing Phase 108; reproduces on map built via `fromList` too (not a
-      108 regression).
+      `toList : Map k v -> List (k, v)` **and `isEmpty : Map k v -> Bool`** are
+      **unreachable from a user file** that imports map — a bare `toList m` /
+      `isEmpty m` there resolves to the generic `Foldable.toList`/`isEmpty` method
+      (which has no `Map` impl) and errors `No impl of Foldable for Map`. (Both
+      are `Foldable` method names map exports as standalones; `member`/`size`/
+      `insert`/… don't collide, and `empty` is now `Monoid.empty` not a
+      standalone.) Same standalone-vs-interface-method name-collision class as the
+      `empty`/`Monoid.empty` landmine (Phase 103) and won't-do Phase 78c.
+      `set.mdk` sidesteps it by *implementing* `Foldable`, so its `toList`/
+      `isEmpty` ARE the methods and resolve. Workarounds for map today:
+      `toAscList`-style rename, or qualified access. Surfaced while testing
+      Phase 108; reproduces on map built via `fromList` too (not a 108
+      regression).
   - ✅ **`stdlib/set.mdk` — DONE (2026-06-02).** Chose a **standalone**
     weight-balanced element tree (`data Set a = Tip | Bin Int a …`) over a
     `Map a Unit` wrapper: a wrapper would force qualified imports to dodge map's
@@ -543,10 +548,17 @@ the per-module checklist.
     "<Name>.fromList"`) and the direct EMapLit/ESetLit typecheck arms are now
     `InternalError`/`assert false` guards (the EDo/Phase-99 pattern; EMapLit/ESetLit
     stay surface nodes for fmt round-trip). Touches ast/desugar/printer/coverage/
-    resolve/typecheck/eval + core.mdk + map.mdk. **Limitation:** extends to any
-    container with a `FromEntries` impl, but two same-shape containers in scope
-    need a type annotation to disambiguate (the name pins the *head*, not the full
-    type). Skill: **add-language-feature**.
+    resolve/typecheck/eval + core.mdk + map.mdk. **Limitations:** (1) extends to
+    any container with a `FromEntries` impl, but two same-shape containers in
+    scope need a type annotation to disambiguate (the name pins the *head*, not
+    the full type). (2) **Empty literals don't work** — `Map { }` / `Set { }`
+    fail (`Type mismatch: Map Int vs Map`): empty braces carry no `=>` to mark
+    map-vs-set, so the parser emits `ESetLit(name, [])` and the lowering pins the
+    *unary* `name _a`, the wrong arity for a binary `Map`. Low value (empty
+    containers have `empty`/`Monoid.empty`), but recordable. Possible fix:
+    `EHeadAnnot` in typecheck could ignore the lowering-supplied arity and apply
+    the head tycon to its *declared* arity of fresh vars (a tycon-arity lookup).
+    Skill: **add-language-feature**.
 - **Modules 6–8 unstarted:** `mut_array`/`hash_map`/`hash_set`, `io`
   (`readFile`/`writeFile`/`readLine`), `json` (type + parser + serializer).
   Expect each to surface new language gaps — record them here as new phases.
