@@ -1884,8 +1884,13 @@ let eval_program ?(prelude = true) program =
    [modules] is the loader/marked output in dependency-first topo order (root
    last), each program already Method_marker-marked.  Returns the root module's
    top-level bindings (so `main` / doctest `__dt_i__` names are found). *)
-let eval_modules (modules : (string * string * Ast.program) list)
-  : (string * value) list =
+(* Returns both the root module's local bindings (for `main` / doctest `__dt_i__`
+   lookup) and the root's *full* flattened environment — local ∪ imports ∪ global
+   (prelude, primitives, interface dispatch).  The prop phase (Phase 126) needs
+   the full env because it evaluates each prop body *after* this returns, against
+   a single frame, so imported names and prelude operators must be present. *)
+let eval_modules_ex (modules : (string * string * Ast.program) list)
+  : (string * value) list * (string * value) list =
   (* Slice a list into the first [n] and the rest. *)
   let rec take n xs =
     if n <= 0 then ([], xs)
@@ -2035,6 +2040,9 @@ let eval_modules (modules : (string * string * Ast.program) list)
   in
 
   let last_local = ref [] in
+  (* Root module's full env, captured as *cells* (not values) so the deferred-
+     prelude force below is reflected; dereferenced after the loop. *)
+  let root_full_cells = ref [] in
   List.iter (fun (mid, _fp, decls) ->
     (* Pre-allocate this module's local DFunDef/DLetGroup cells. *)
     let local_frame : (string * value ref) list ref = ref [] in
@@ -2060,7 +2068,9 @@ let eval_modules (modules : (string * string * Ast.program) list)
 
     Hashtbl.replace module_exports mid
       (collect_pub_exports decls !local_frame imports);
-    last_local := List.map (fun (k, cell) -> (k, !cell)) !local_frame
+    last_local := List.map (fun (k, cell) -> (k, !cell)) !local_frame;
+    (* local ∪ imports ∪ global, in shadowing order (local wins on List.assoc). *)
+    root_full_cells := List.concat m_env
   ) modules';
 
   (* Phase 125: force the prelude's deferred thunks only now that *every*
@@ -2078,7 +2088,16 @@ let eval_modules (modules : (string * string * Ast.program) list)
   List.iter (fun name -> ignore (lookup global_env name))
     (List.rev !prelude_deferred);
 
-  !last_local
+  (!last_local, List.map (fun (k, cell) -> (k, !cell)) !root_full_cells)
+
+let eval_modules (modules : (string * string * Ast.program) list)
+  : (string * value) list =
+  fst (eval_modules_ex modules)
+
+(* Full flattened root-module env (local ∪ imports ∪ global) — see eval_modules_ex. *)
+let eval_modules_root_env (modules : (string * string * Ast.program) list)
+  : (string * value) list =
+  snd (eval_modules_ex modules)
 
 (* ── REPL incremental interface ─────────────────────────────────────────── *)
 

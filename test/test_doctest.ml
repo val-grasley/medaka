@@ -451,6 +451,49 @@ import arrmod.{singleton}
           "expected per-module isolated doctests to pass, got passed=%d failed=%d errors=%d"
           r.passed r.failed r.errors))
 
+(* Phase 126: the `medaka test` prop phase must reach names imported from sibling
+   modules.  Both phases share `Doctest.assemble_marked_modules`; drive it through
+   eval_modules → Prop_runner.run_all exactly as bin/main.ml's prop branch does. *)
+let p126_helper = {|export
+triple : Int -> Int
+triple x = x + x + x
+|}
+
+let run_props_multi path =
+  match Doctest.assemble_marked_modules path with
+  | None -> failwith "expected multi-module load (>1 module)"
+  | Some (_, Some msg) -> failwith ("unexpected typecheck error: " ^ msg)
+  | Some (marked_modules, None) ->
+    let eval_env = Eval.eval_modules_root_env marked_modules in
+    let root_decls =
+      match List.find_opt (fun (_, fp, _) -> fp = path) marked_modules with
+      | Some (_, _, p) -> p
+      | None -> failwith "root module not found in marked modules"
+    in
+    Prop_runner.run_all eval_env root_decls
+
+let t_prop_imports_sibling_passes () =
+  let main = {|import helper.{triple}
+prop "triple is 3x" (x : Int) = triple x == x * 3
+|} in
+  with_tmp_modules
+    [("helper.mdk", p126_helper); ("main.mdk", main)]
+    "main.mdk"
+    (fun path ->
+      if not (run_props_multi path) then
+        failwith "expected import-bearing prop to pass via the multi-module path")
+
+let t_prop_imports_sibling_falsifiable () =
+  let main = {|import helper.{triple}
+prop "triple equals identity (false)" (x : Int) = triple x == x
+|} in
+  with_tmp_modules
+    [("helper.mdk", p126_helper); ("main.mdk", main)]
+    "main.mdk"
+    (fun path ->
+      if run_props_multi path then
+        failwith "expected falsifiable import-bearing prop to fail")
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () =
@@ -484,5 +527,7 @@ let () =
       Alcotest.test_case "cross-module tc failure honest (Phase 92)" `Quick t_cross_module_typecheck_failure_is_honest;
       Alcotest.test_case "nullary method routes by annotation (Phase 103a)" `Quick t_nullary_shadowed_method_routes_by_annotation;
       Alcotest.test_case "per-module eval isolation (Phase 110)" `Quick t_module_isolation_doctest;
+      Alcotest.test_case "prop imports sibling passes (Phase 126)" `Quick t_prop_imports_sibling_passes;
+      Alcotest.test_case "prop imports sibling falsifiable (Phase 126)" `Quick t_prop_imports_sibling_falsifiable;
     ];
   ]

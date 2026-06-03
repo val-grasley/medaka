@@ -151,41 +151,83 @@ let () =
     let has_props =
       List.exists (function Medaka_lib.Ast.DProp _ -> true | _ -> false) program
     in
+    (* Single-file prop/coverage path: resolve + elaborate the target file alone.
+       Used when the file has no sibling imports, and as the ≤1-module fallback. *)
+    let run_single_file () =
+      let resolve_errs = Medaka_lib.Resolve.resolve_program program in
+      if resolve_errs <> [] then begin
+        List.iter (fun (err, loc_opt) ->
+          Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Resolve.pp_error err);
+          show_snippet source loc_opt
+        ) resolve_errs;
+        exit 1
+      end;
+      (* Phase 84: two-pass elaboration (see Elaborate).  Prop/coverage keep the
+         pre-dict-pass marked `program`; [combined] is the dict-passed eval tree. *)
+      let (program, combined, _env, warnings) =
+        (try Medaka_lib.Elaborate.elaborate program
+         with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
+           Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
+           show_snippet source loc_opt;
+           exit 1) in
+      List.iter (fun w -> Printf.eprintf "%s\n" w) warnings;
+      let ok =
+        (try
+           let eval_env = Medaka_lib.Eval.eval_program ~prelude:false combined in
+           Medaka_lib.Prop_runner.run_all eval_env program
+         with Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
+           Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
+           show_snippet source loc_opt;
+           exit 1)
+      in
+      if use_coverage then begin
+        let exec_lines = Medaka_lib.Coverage.collect_executable program in
+        Medaka_lib.Coverage.pp_report exec_lines
+      end;
+      ok
+    in
     let prop_ok =
       if (not use_coverage) && not has_props then true
-      else begin
-        let resolve_errs = Medaka_lib.Resolve.resolve_program program in
-        if resolve_errs <> [] then begin
-          List.iter (fun (err, loc_opt) ->
-            Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Resolve.pp_error err);
-            show_snippet source loc_opt
-          ) resolve_errs;
-          exit 1
-        end;
-        (* Phase 84: two-pass elaboration (see Elaborate).  Prop/coverage keep the
-           pre-dict-pass marked `program`; [combined] is the dict-passed eval tree. *)
-        let (program, combined, _env, warnings) =
-          (try Medaka_lib.Elaborate.elaborate program
-           with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
-             Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
-             show_snippet source loc_opt;
-             exit 1) in
-        List.iter (fun w -> Printf.eprintf "%s\n" w) warnings;
-        let ok =
-          (try
-             let eval_env = Medaka_lib.Eval.eval_program ~prelude:false combined in
-             Medaka_lib.Prop_runner.run_all eval_env program
-           with Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
-             Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
-             show_snippet source loc_opt;
-             exit 1)
-        in
-        if use_coverage then begin
-          let exec_lines = Medaka_lib.Coverage.collect_executable program in
-          Medaka_lib.Coverage.pp_report exec_lines
-        end;
-        ok
+      else if Medaka_lib.Doctest.has_use_decls program then begin
+        (* Phase 126: import-bearing file — route the prop phase through the same
+           multi-module loader doctests use, so props/coverage can see names
+           imported from sibling modules (the single-file path can't). *)
+        match
+          (try Medaka_lib.Doctest.assemble_marked_modules filename
+           with Failure msg -> Printf.eprintf "error: %s\n" msg; exit 1)
+        with
+        | None -> run_single_file ()           (* only prelude imports; fall back *)
+        | Some (_, Some msg) ->                 (* deferred typecheck error *)
+          Printf.eprintf "error: %s\n" msg; exit 1
+        | Some (marked_modules, None) ->
+          (* Full root env (local ∪ imports ∪ global): a prop body references
+             imported names and prelude operators, and Prop_runner evaluates it
+             against this single frame after eval returns. *)
+          let eval_env = Medaka_lib.Eval.eval_modules_root_env marked_modules in
+          (* Root module's marked (pre-dict-pass) decls — the right `program` arg
+             for run_all (props + build_tydefs) and coverage, mirroring the
+             single-file path.  Limitation: build_tydefs sees only the root's
+             DData, so a prop generator needing an imported type won't find its
+             constructors (same scope as the single-file path). *)
+          let root_decls =
+            match List.find_opt (fun (_, fp, _) -> fp = filename) marked_modules with
+            | Some (_, _, p) -> p
+            | None -> []
+          in
+          let ok =
+            (try Medaka_lib.Prop_runner.run_all eval_env root_decls
+             with Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
+               Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
+               show_snippet source loc_opt;
+               exit 1)
+          in
+          if use_coverage then begin
+            let exec_lines = Medaka_lib.Coverage.collect_executable root_decls in
+            Medaka_lib.Coverage.pp_report exec_lines
+          end;
+          ok
       end
+      else run_single_file ()
     in
     exit (if doctest_ok && prop_ok then 0 else 1)
   end;

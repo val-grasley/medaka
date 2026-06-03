@@ -5328,6 +5328,52 @@ method-binding path (`lib/eval.ml`).
 
 ---
 
+### Phase 126: `medaka test` prop phase now resolves sibling imports ✅ DONE (2026-06-03)
+
+The prop-test phase in `bin/main.ml` (`if has_sub "test"`) resolved + elaborated
+the target file **single-file** (`Resolve.resolve_program` → `Elaborate.elaborate`),
+so an import-bearing file with a `prop` failed at `Unbound variable: <name>` — the
+doctest phase already routed imports through the loader, but the prop phase never
+did. (Partially mitigated 2026-06-03: short-circuit to success when the file
+declares no `DProp` and `--coverage` is off, so a propless import-bearing file like
+`stdlib/json.mdk` passed.) Now closed: prop-bearing import files run, and
+`--coverage` works on them.
+
+- **Shared loader-assembly (`lib/doctest.ml`).** Factored the body of
+  `run_file_multi` into `assemble_marked_modules ?inject filename`: load → desugar
+  (with an `inject` hook so doctest can append its `__dt_i__` bindings to the root,
+  prop passes the default identity) → resolve → mark → two-pass typecheck. Returns
+  `None` when ≤1 module (caller falls back single-file), or
+  `Some (marked_modules, tc_err)` with the deferred typecheck error surfaced as data
+  (doctest turns it into a per-example `Error`; the prop phase hard-fails). Raises
+  `Failure` on load/resolve errors. `run_file_multi` is now a thin wrapper over it —
+  pure refactor, the Phase 110 multi-module doctest cases stayed green.
+- **Prop phase (`bin/main.ml`).** The single-file body became a local
+  `run_single_file ()` closure (reused for no-imports files and the ≤1-module
+  fallback). When `Doctest.has_use_decls program`, the phase calls
+  `assemble_marked_modules`, evals via the loader, and runs `Prop_runner.run_all` on
+  the **root module's marked (pre-dict-pass) decls** (the right `program` arg for
+  both props/`build_tydefs` and `Coverage.collect_executable`, mirroring the
+  single-file path). Known limitation, commented inline: `build_tydefs` sees only the
+  root's `DData`, so a prop *generator* needing an imported type won't find its
+  constructors — same scope as the single-file path.
+- **The eval-env subtlety that bit (`lib/eval.ml`).** `Prop_runner.check_prop`
+  evaluates each prop body *after* eval returns, against a single flat frame built
+  from the passed `eval_env`, and swallows any `Eval_error`/`Impl_no_match` as a
+  `false` (counterexample). `Eval.eval_modules` returns only the root module's
+  **local** frame — so imported names and prelude operators (`*`, `==`) were unbound
+  and *every* input "failed" (counterexample `x = 0`). Fix: added
+  `eval_modules_ex` (returns `(root_local, root_full)`) capturing the root's full env
+  as **cells** (so the deferred-prelude force is reflected), dereferenced after the
+  loop; `eval_modules` = `fst`, new `eval_modules_root_env` = `snd`. The prop phase
+  uses `eval_modules_root_env` (local ∪ imports ∪ global, local-wins shadowing).
+- **Tests.** `test/test_doctest.ml`: two `with_tmp_modules` fixtures — an
+  import-bearing root with a passing prop (`triple x == x * 3`, asserts `run_all` =
+  `true`) and a falsifiable one (`triple x == x`, asserts `false`), driven through
+  `assemble_marked_modules` → `eval_modules_root_env` → `Prop_runner.run_all`.
+  End-to-end `medaka test` / `medaka test --coverage` on a temp project verified by
+  hand; `stdlib/json.mdk` (propless) still 12/12.
+
 ### Phase 125: `Foldable`-derived fns over an *imported* instance panic at eval ✅ DONE (2026-06-03)
 
 `sum (fromList [1,2,3])` over an imported `array`/container `Foldable` instance

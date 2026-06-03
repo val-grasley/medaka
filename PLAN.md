@@ -205,28 +205,14 @@ above, it is flagged ⭐.
   one `expectAll`) driven through the multi-module path, plus an import-bearing
   variant — land in `test_run`/`test_doctest`-adjacent suites.
 
-- **Phase 126 — `medaka test` prop phase doesn't resolve sibling imports.** The
-  prop-test phase in `bin/main.ml` (the `if has_sub "test"` block) resolves and
-  elaborates the target file **single-file** (`Resolve.resolve_program` →
-  `Elaborate.elaborate`), which cannot see names imported from sibling modules.
-  So an import-bearing file fails the prop phase at `Unbound variable: <name>` —
-  the doctest phase (`Doctest.run_file`) already handles imports via the loader,
-  but the prop phase never did. **Partially mitigated 2026-06-03** when
-  `stdlib/json.mdk` (the first stdlib module to import real siblings —
-  `list`/`string`) hit this: the prop phase now short-circuits to success when
-  the file declares **no `DProp`** (and `--coverage` is off), since
-  `Prop_runner.run_all` no-ops on zero props anyway — so a propless
-  import-bearing file (doctests only) passes. **Still open:** an import-bearing
-  file that *does* declare props. The fix is to route the prop phase through the
-  multi-module loader exactly like doctests do — `Doctest.run_file` branches on
-  `has_use_decls` and uses `Loader.load_program` + `Eval.eval_modules`; the prop
-  phase should reuse that to build the multi-module `eval_env`, then call
-  `Prop_runner.run_all eval_env <user-module decls>`. Factor the loader-assembly
-  out of `doctest.ml` so both phases share it rather than duplicating. Also
-  re-enable `--coverage` on import-bearing files (same single-file limitation).
-  Add a `test_run`/`test_doctest`-adjacent case: an import-bearing fixture with a
-  `prop`. Skill: **debug-pipeline** to confirm the path, then a small driver
-  change in `bin/main.ml` (+ a shared loader helper).
+- **Phase 126 — `medaka test` prop phase now resolves sibling imports ✅ DONE
+  (2026-06-03).** The prop phase routed import-bearing files single-file and failed
+  at `Unbound variable: <name>`; it now reuses the loader exactly like doctests.
+  Factored `Doctest.assemble_marked_modules` (shared by both phases), and the prop
+  phase evals via the new `Eval.eval_modules_root_env` (the root's *full* env — the
+  plain `eval_modules` returns only root locals, so prop bodies couldn't see imports
+  or prelude operators). `--coverage` works on import-bearing files too. See
+  PLAN-ARCHIVE.md for the full writeup.
 
 - **Phase 101 — drive property generation/shrinking through the `Arbitrary`
   interface (101b).** 101a (registry-first `arbitrary`/`shrink`, native element
@@ -343,8 +329,8 @@ hash containers, `io`, `mut_array`, `json`) — see PLAN-ARCHIVE.md and STDLIB.m
   `JArray`/`JObject`, `Array`-backed) with `parse : String -> Result String Json`
   and compact `stringify`, plus `Eq`/`Show`/`Display` instances. The first stdlib
   module to import real siblings (`list`/`string`) — which surfaced Phase 126
-  (the prop phase's single-file import limitation, partially mitigated; still open
-  above). Not on the self-hosting path.
+  (the prop phase's single-file import limitation, now ✅ DONE 2026-06-03). Not on
+  the self-hosting path.
 - ✅ **Module 7 `io` — DONE (Phase 116).** Comprehensive: externs (`args`,
   `getEnv`, `fileExists`, `appendFile`, `listDir`, `ePutStr`/`ePutStrLn`,
   `readLineOpt`, `readAll`) in runtime.mdk + eval.ml, `args` wired through
