@@ -33,8 +33,9 @@
    thorough_eval
    thorough_interactions
    thorough_stdlib
-   thorough_recent)
- (modules thorough_typecheck thorough_eval thorough_interactions thorough_stdlib thorough_recent)
+   thorough_recent
+   thorough_diff)
+ (modules thorough_typecheck thorough_eval thorough_interactions thorough_stdlib thorough_recent thorough_diff)
  (libraries thorough_helpers medaka_lib alcotest unix))
 
 ; Run each suite as the `thorough` alias's action — `(run ...)` depends on
@@ -59,3 +60,9 @@
 (rule
  (alias thorough)
  (action (run ./thorough_recent.exe)))
+
+(rule
+ (alias thorough)
+ (action
+  (setenv DIFF_FIXTURES_DIR %{workspace_root}/test/diff_fixtures
+   (run ./thorough_diff.exe))))

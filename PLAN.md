@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 130). At task triage, match the work against AGENTS.md's
+number (last used: 131). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -136,6 +136,18 @@ above, it is flagged ⭐.
 
 ### Compiler / language
 
+- **Phase 131 — add token-stream section to the diff harness.** Phase 129 left
+  `=== TOKENS ===` out because no token-dump existed yet — the natural time to
+  add it is when the lexer port begins (Stage 1). When ready: (a) add
+  `Lexer.tokenize_string : string -> string list` in `lib/lexer.mll` — a loop
+  calling `Lexer.token` on a fresh `Lexing.from_string` buffer until EOF, with a
+  hand-written `token_to_string` for each `Parser` token variant; (b) prepend
+  `=== TOKENS ===` to both `dev/gen_golden.ml` and `test/thorough/thorough_diff.ml`
+  (same section-format as AST/TYPES/EVAL, same `rstrip_nl` normalization); (c)
+  re-run `gen_golden.exe` and commit the updated goldens. The diff harness then
+  validates lexer output for all 15 fixtures before the Medaka lexer is wired in.
+  Skill: none specific (extends `dev/gen_golden.ml` + `test/thorough/thorough_diff.ml`).
+
 - ⭐ **Phase 130 — cross-module user-defined interfaces ✅ DONE (2026-06-03).**
   A user `interface` declared+`export`ed in module A can now be `impl`'d for a
   type owned by module B and its constraint discharged in a third module C. The
@@ -149,20 +161,17 @@ above, it is flagged ⭐.
   it compounds): every cross-module function needs its own `export` line, and an
   `impl` module must import each interface **method name** it references.
 
-- **Phase 129 — differential-testing harness (self-host validation rig). Stage-1
-  prerequisite.** Stage 1 says "port each stage, checked against the OCaml
-  reference at each step" — but **there is no mechanism for that yet**, and it
-  should exist *before* the lexer port begins. Build: (a) a fixture corpus of
-  `.mdk` programs (seed from existing `test_parser`/`test_eval`/`test_run`
-  inputs); (b) a runner that for each fixture runs the OCaml reference stage and
-  the Medaka-in-Medaka stage and **diffs structured output** — tokens (lexer), a
-  canonical AST dump (parser; the formatter round-trip + a canonical printer get
-  partway), the typed/elaborated tree, and the eval result; (c) golden files
-  checked into git so a port regression fails loudly, wired into a
-  `@thorough`-style alias. The harness grows stage-by-stage *with* the port rather
-  than being built all at once. This is the gate that makes "validated against the
-  reference" real instead of aspirational. Skill: none specific (new `test/` +
-  `dev/` driver).
+- **Phase 129 — differential-testing harness (self-host validation rig). ✅ DONE
+  (2026-06-03).** 15 standalone `.mdk` fixtures in `test/diff_fixtures/`; each
+  gets a `<name>.golden` with three sections committed to git: `=== AST ===`
+  (canonical `Printer.program_to_string` round-trip), `=== TYPES ===` (full
+  alphabetic type env from `Typecheck.check_program`), `=== EVAL ===` (typed
+  pipeline stdout via `Elaborate.elaborate` + `eval_program ~prelude:false`).
+  Regeneration probe: `dev/gen_golden.exe`. Comparison runner:
+  `test/thorough/thorough_diff.ml` (45 alcotest cases), wired into `@thorough`
+  via `(setenv DIFF_FIXTURES_DIR %{workspace_root}/test/diff_fixtures ...)`.
+  Token-stream section deferred to Phase 131 (natural point: when the lexer port
+  begins). Medaka-stage comparison slots in alongside each port stage.
 
 - **Phase 128 — freeze `stdlib/string.mdk` (review + lock the API). DONE 2026-06-03.**
   49/49 doctests pass. Open decisions settled and documented in STDLIB.md (Module 3

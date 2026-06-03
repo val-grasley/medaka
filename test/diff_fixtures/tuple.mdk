@@ -1,0 +1,12 @@
+swap (a, b) = (b, a)
+
+addPair (a, b) = a + b
+
+main : <IO> Unit
+main =
+  let t = (3, 7)
+  println (fst t)
+  println (snd t)
+  println (addPair t)
+  let u = swap t
+  println (fst u)

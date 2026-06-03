@@ -1,0 +1,8 @@
+main : <IO> Unit
+main =
+  println 42
+  println (2 + 3)
+  println (10 - 4)
+  println (3 * 7)
+  println True
+  println False

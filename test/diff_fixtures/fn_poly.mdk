@@ -1,0 +1,10 @@
+identity x = x
+konst x _ = x
+flip f b a = f a b
+
+main : <IO> Unit
+main =
+  println (identity 42)
+  println (identity "hello")
+  println (konst 10 "ignored")
+  println (flip konst "ignored" 99)

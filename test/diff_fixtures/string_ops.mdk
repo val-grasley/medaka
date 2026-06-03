@@ -1,0 +1,13 @@
+greet name = "Hello, " ++ name ++ "!"
+
+repeat n s =
+  match n
+    0 => ""
+    n => s ++ repeat (n - 1) s
+
+main : <IO> Unit
+main =
+  println (greet "Medaka")
+  println (repeat 3 "ab")
+  let x = 42
+  println "value: \{x}"
