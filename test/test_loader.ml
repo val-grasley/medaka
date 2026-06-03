@@ -577,6 +577,70 @@ let test_typecheck_impl_list_in_dep_module () =
       failwith ("unexpected type error: " ^ Typecheck.pp_error e)
   )
 
+(* Phase 130: cross-module user-defined interfaces.  An `interface` declared and
+   exported in module A must be `impl`'able for a type owned by module B, and its
+   constraint dischargeable in a third module C.  Before the fix, resolve.ml's
+   import loop copied an imported interface's *name* but not its method set into
+   env.iface_methods, so `impl Sized Shape` in B tripped "Method 'sizeOf' is not
+   part of interface Sized".  The resolve_all assertion guards that; eval_modules
+   confirms the impl from B discharges `describe`'s constraint at the call site in
+   C, end-to-end through the loader driver. *)
+let test_eval_cross_module_user_interface () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "sized.mdk"
+      "export interface Sized a where\n\
+      \  sizeOf : a -> Int\n" in
+    let _ = write_file dir "shape.mdk"
+      "import sized.{Sized, sizeOf}\n\n\
+       public export data Shape = Circle Int | Square Int\n\n\
+       export impl Sized Shape where\n\
+      \  sizeOf s =\n\
+      \    match s\n\
+      \      Circle r => r\n\
+      \      Square w => w\n\n\
+       export describe : Sized a => a -> Int\n\
+       describe x = sizeOf x + 1\n" in
+    let main_path = write_file dir "main.mdk"
+      "import sized.{Sized}\n\
+       import shape.{Shape, Circle, Square, describe}\n\n\
+       main : <IO> Unit\n\
+       main =\n\
+      \  println (describe (Circle 5))\n\
+      \  println (describe (Square 9))\n" in
+    let modules = Loader.load_program main_path [dir] in
+    (* Resolve must not reject the cross-module impl (the Phase 130 fix). *)
+    let (_exports, errors) = resolve_all modules in
+    if errors <> [] then
+      failwith (Printf.sprintf "unexpected resolve errors: %s"
+        (String.concat "; "
+          (List.concat_map (fun (m, es) ->
+            List.map (fun (e, _) -> m ^ ": " ^ Resolve.pp_error e) es) errors)));
+    (* End-to-end through the loader eval driver. *)
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Desugar.desugar_program prog)) modules in
+    let method_names = Method_marker.interface_method_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    (* Include the prelude's constrained fns (e.g. `println`'s Display dict) so
+       their occurrences become EDictApp — mirrors bin/main.ml's run driver. *)
+    let constrained = Method_marker.constrained_fn_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Method_marker.mark_program method_names constrained prog)) modules in
+    let te_acc = ref [] in
+    List.iter (fun (mid, _, prog) ->
+      let (te, _, _) = Typecheck.typecheck_module !te_acc mid prog in
+      te_acc := te :: !te_acc) modules;
+    let buf = Buffer.create 32 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+      ignore (Eval.eval_modules modules));
+    let out = Buffer.contents buf in
+    if out <> "6\n10\n" then
+      failwith (Printf.sprintf
+        "Expected \"6\\n10\\n\" from cross-module user interface, got %S" out)
+  )
+
 (* Phase 69.x: dictionary passing across module boundaries.  A constrained
    function `mk` defined and exported in one module must, when imported and
    called at two concrete result types in another, dispatch to the right impl.
@@ -1145,6 +1209,7 @@ let () =
       test_case "impl Mappable Wrapper in dep module" `Quick test_typecheck_impl_list_in_dep_module;
     ];
     "multi-file dictionary passing (Phase 69.x)", [
+      test_case "cross-module user interface (decl A, impl B, use C)" `Quick test_eval_cross_module_user_interface;
       test_case "cross-module constrained dispatch" `Quick test_eval_dict_passing_cross_module;
       test_case "cross-module super dispatch" `Quick test_eval_super_dict_cross_module;
       test_case "cross-module method-level dict (foldMap)" `Quick test_eval_method_dict_cross_module;

@@ -420,6 +420,14 @@ let build_env ?(known_modules : module_exports list = [])
              add_field_owner env.field_owners field owner
            end
          ) exp.exp_field_owners;
+         (* Copy interface-method memberships for imported interfaces, so an
+            `impl` of an imported interface validates against the real method
+            set (Phase 130).  Without this env.iface_methods is empty for the
+            imported interface and every method trips MethodNotInInterface. *)
+         Hashtbl.iter (fun iface methods ->
+           if Hashtbl.mem env.interfaces iface then
+             Hashtbl.replace env.iface_methods iface methods
+         ) exp.exp_iface_methods;
          (* Register module alias / qualified-access name *)
          let alias = match path with
            | UseAlias (_, a)      -> Some a
