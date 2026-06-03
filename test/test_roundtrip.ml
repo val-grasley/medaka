@@ -127,6 +127,16 @@ let g_where = mk
       | otherwise = acc
 |}
 
+(* A `where` clause scoping over all guard arms (Haskell-style, on its own
+   indented line under the guards). *)
+let g_where_over_guards = mk
+{|f x
+  | x > 0 = g x
+  | otherwise = 0
+  where
+    g y = y + 1
+|}
+
 (* `function` keyword with guarded arms. *)
 let fn_guard = mk
 {|sign =
@@ -309,6 +319,7 @@ let () =
       test_case "function clause"  `Quick g_fun;
       test_case "pattern bind"     `Quick g_bind;
       test_case "in where"         `Quick g_where;
+      test_case "where over guards" `Quick g_where_over_guards;
       test_case "function keyword" `Quick fn_guard;
     ];
     "data types", [

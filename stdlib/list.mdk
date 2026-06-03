@@ -78,7 +78,8 @@ unfold gen seed =
    [3, 2, 1] -}
 export
 reverse : List a -> List a
-reverse xs = go xs [] where
+reverse xs = go xs []
+  where
     go [] acc = acc
     go (y::ys) acc = go ys (y :: acc)
 
@@ -170,7 +171,8 @@ scanRight f z (x::xs) =
    Some 2 -}
 export
 findIndex : (a -> <e> Bool) -> List a -> <e> (Option Int)
-findIndex p xs = go 0 xs where
+findIndex p xs = go 0 xs
+  where
     go _ [] = None
     go i (x::rest)
       | p x = Some i
@@ -182,7 +184,8 @@ findIndex p xs = go 0 xs where
    [1, 3] -}
 export
 findIndices : (a -> <e> Bool) -> List a -> <e> (List Int)
-findIndices p xs = go 0 xs where
+findIndices p xs = go 0 xs
+  where
     go _ [] = []
     go i (x::rest)
       | p x = i :: go (i + 1) rest
@@ -344,7 +347,8 @@ sortOn key xs =
    [1, 2, 3] -}
 export
 nubBy : (a -> a -> <e> Bool) -> List a -> <e> (List a)
-nubBy same xs = go xs [] where
+nubBy same xs = go xs []
+  where
     go [] _ = []
     go (x::rest) seen
       | any (s => same x s) seen = go rest seen
@@ -396,7 +400,8 @@ partition p (x::xs) =
    [(1, 3), (2, 2), (3, 1)] -}
 export
 tally : Eq a => List a -> List (a, Int)
-tally xs = go xs [] where
+tally xs = go xs []
+  where
     go [] acc = acc
     go (x::rest) acc = go rest (bump x acc)
     bump x [] = [(x, 1)]

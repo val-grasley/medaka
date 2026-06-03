@@ -390,6 +390,15 @@ inner_fun_def:
     { fun is_pub -> DFunDef (is_pub, $1, $2, $4) }
   | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines
     { fun is_pub -> DFunDef (is_pub, $1, $2, EGuards $4) }
+  (* Haskell-style `where` scoping over ALL guard arms: the `where` sits at the
+     same indentation as the guards (one level under the function name), so in
+     the token stream it follows the last guard arm's NEWLINE *inside* the guard
+     INDENT block — `INDENT guards WHERE INDENT bindings DEDENT NEWLINE DEDENT`.
+     Lowers to `ELetGroup (bindings, EGuards arms)` so the where group scopes the
+     whole guard set.  Lookahead (WHERE vs PIPE vs DEDENT) keeps it conflict-free. *)
+  | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) WHERE
+    INDENT nonempty_list(where_binding) DEDENT newlines DEDENT newlines
+    { fun is_pub -> DFunDef (is_pub, $1, $2, desugar_where $7 (EGuards $4)) }
   (* Phase 91 (3): inline single guard arm — `f n | n <= 0 = []` on one line.
      Lookahead after the pattern list distinguishes PIPE (this) from EQUAL
      (plain) and INDENT (block guards), so this adds no parser conflicts. *)

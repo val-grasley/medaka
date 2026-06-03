@@ -322,9 +322,12 @@ and print_expr_raw = function
       concat (List.map (fun (name, cs) ->
         concat (List.map (clause name) cs)) bindings)
     in
-    (* Indent clauses two levels (4 spaces at top level) so guarded/block
-       bodies nest consistently beneath the `where`. *)
-    print_expr prec_top body ^^ text " where" ^^ Nest (4, clauses)
+    (* `where` on its own line, indented one level under the body, with the
+       clauses indented one level further (2 + 2 = 4 spaces at top level) so
+       guarded/block bodies nest consistently beneath the `where`.  The
+       separate-line form round-trips through the `fun_body`/`match_arm`/guard
+       grammar rules, which all expect `<body> INDENT where INDENT clauses`. *)
+    print_expr prec_top body ^^ Nest (2, Hardline ^^ text "where" ^^ Nest (2, clauses))
   | EIf (c, t, e) ->
     (* When either branch is a multi-line block body, lay the `if` out with
        `then`/`else` each leading their own (indented) block — the inline form
@@ -541,6 +544,11 @@ and print_do_stmt = function
    - a simple expression stays inline after `= `. *)
 let print_def_rhs body = match strip_loc body with
   | EGuards arms -> print_guard_arms arms
+  (* A `where` clause scoping over guard arms: `ELetGroup (binds, EGuards arms)`.
+     Like a bare guard body, it prints its own `| … = …` block (no leading `=`),
+     and the `ELetGroup` case appends the separate-line `where` after the arms. *)
+  | ELetGroup (_, inner) when (match strip_loc inner with EGuards _ -> true | _ -> false) ->
+    print_expr_body body
   | EBlock _     -> text " =" ^^ print_expr_body body
   | _ ->
     text " ="

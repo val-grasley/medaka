@@ -94,11 +94,27 @@ filterMap f (x::xs)
   | None   <- f x = filterMap f xs
 ```
 
-`where` block (local defs; `where` sits at the *end of the body line*):
+`where` block (local defs). `where` may sit at the *end of the body line* or on
+its own indented line below the body (Haskell-style); both parse:
 
 ```
 f x = g x where
   g y = y * 2
+
+f x = g x
+  where
+    g y = y * 2
+```
+
+A `where` on its own line may also scope over *all* arms of a guarded function
+(place it at the same indentation as the guards):
+
+```
+classify x
+  | x > limit = "big"
+  | otherwise = "small"
+  where
+    limit = 100
 ```
 
 ## Lambdas

@@ -646,7 +646,8 @@ all f = fold (acc x => acc && f x) True
    overwrite the answer. -}
 export
 find : Foldable t => (a -> <e> Bool) -> t a -> <e> Option a
-find f = fold g None where
+find f = fold g None
+  where
     g (acc@(Some _)) _ = acc
     g None x
       | f x = Some x
@@ -655,7 +656,8 @@ find f = fold g None where
 -- | Number of elements satisfying the predicate.
 export
 count : Foldable t => (a -> <e> Bool) -> t a -> <e> Int
-count f = fold g 0 where
+count f = fold g 0
+  where
     g acc x
       | f x = acc + 1
       | otherwise = acc
@@ -691,7 +693,8 @@ notElem a xs = not (elem a xs)
    None -}
 export
 maximum : (Foldable t, Ord a) => t a -> Option a
-maximum = fold step None where
+maximum = fold step None
+  where
     step None x = Some x
     step (Some m) x = Some (max m x)
 
@@ -701,7 +704,8 @@ maximum = fold step None where
    Some 1 -}
 export
 minimum : (Foldable t, Ord a) => t a -> Option a
-minimum = fold step None where
+minimum = fold step None
+  where
     step None x = Some x
     step (Some m) x = Some (min m x)
 
@@ -893,7 +897,8 @@ export impl Arbitrary Char where
 -- | Generate a random string of 0–10 printable ASCII chars.
 export
 arbitraryString : Unit -> <Rand> String
-arbitraryString () = go (randomInt 0 10) "" where
+arbitraryString () = go (randomInt 0 10) ""
+  where
     go 0 acc = acc
     go n acc = go (n - 1) (acc ++ charToStr (randomChar ()))
 
@@ -903,7 +908,8 @@ export impl Arbitrary String where
 -- | Generate a list of up to `maxLen` elements using `gen`.
 export
 arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> (List a)
-arbitraryList gen maxLen = go (randomInt 0 maxLen) [] where
+arbitraryList gen maxLen = go (randomInt 0 maxLen) []
+  where
     go 0 acc = acc
     go n acc = go (n - 1) (gen () :: acc)
 

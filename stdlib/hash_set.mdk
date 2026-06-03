@@ -109,7 +109,8 @@ reinsertAll oldArr i n buckets count
 
 -- `where go` (single list arg) sidesteps the PLAN.md Phase 119 false positive.
 reinsertBucket : List a -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
-reinsertBucket bucket buckets count = go bucket where
+reinsertBucket bucket buckets count = go bucket
+  where
     go [] = ()
     go (x::rest) = 
       putRaw x buckets count

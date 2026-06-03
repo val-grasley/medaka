@@ -1571,6 +1571,20 @@ let test_where_on_new_line () =
       ELetGroup ([("g", [_; _])], _)) -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
+(* A `where` clause scoping over ALL guard arms of a guarded function lowers to
+   `ELetGroup (bindings, EGuards arms)` — `g` is visible to every arm. *)
+let test_where_over_guards () =
+  let src = {|f x
+  | x > 0 = g x
+  | otherwise = 0
+  where
+    g y = y + 1
+|} in
+  match parse_one src with
+  | DFunDef (_, "f", _,
+      ELetGroup ([("g", [_])], EGuards [_; _])) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
 (* ── if let / let else (Phase 38) ───────────────────── *)
 
 let test_if_let_some () =
@@ -2064,6 +2078,7 @@ let () =
       test_case "multi-clause where binding"       `Quick test_where_binding_multi_clause;
       test_case "multi-clause + guards combined"   `Quick test_where_binding_multi_clause_with_guards;
       test_case "where on its own line (Haskell-style)" `Quick test_where_on_new_line;
+      test_case "where over all guard arms"        `Quick test_where_over_guards;
     ];
     "if let / let else (Phase 38)", [
       test_case "if let Some"      `Quick test_if_let_some;
