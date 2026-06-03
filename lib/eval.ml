@@ -1569,6 +1569,14 @@ let primitives : (string * value) list =
                   name stored value, None))
           end
         | _ -> raise (Eval_error ("assert_snapshot: expected String String", None)))));
+    (* Phase 127: catch-all for test bodies that raise an OCaml-level exception.
+       Allows a dogfooded Medaka runner to survive a crashing test without losing
+       subsequent results (Eval_error / Impl_no_match become Fail values). *)
+    ("runExpectation", VPrim (fun thunk ->
+      try apply thunk VUnit
+      with
+      | Eval_error (msg, _) -> VCon ("Fail", [VString msg])
+      | Impl_no_match -> VCon ("Fail", [VString "non-exhaustive match"])));
   ]
 
 let () =
@@ -2252,7 +2260,7 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
        fill name v
      ) bindings
    | DRecord _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ | DProp _
-   | DBench _ -> ()
+   | DTest _ | DBench _ -> ()
    | DAttrib (_, d) ->
      eval_repl_decl rs d)
 

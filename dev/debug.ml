@@ -55,6 +55,7 @@ let rec pp_decl d =
     Printf.sprintf "DUse(pub=%b, %s)" pub (pp_use p)
   | DNewtype (_, n, _, con, _, _) -> Printf.sprintf "DNewtype(%s, %s)" n con
   | DProp { prop_name; _ } -> Printf.sprintf "DProp(%S, ...)" prop_name
+  | DTest { test_name; _ } -> Printf.sprintf "DTest(%S, ...)" test_name
   | DBench { bench_name; _ } -> Printf.sprintf "DBench(%S, ...)" bench_name
   | DAttrib (_, d) -> Printf.sprintf "DAttrib(..., %s)" (pp_decl d)
 

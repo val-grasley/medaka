@@ -125,7 +125,7 @@ above, it is flagged ⭐.
 
 ### Compiler / language
 
-- **Phase 127 — unit testing library (`test` keyword + `stdlib/test.mdk`).**
+- **Phase 127 — unit testing library (`test` keyword + `stdlib/test.mdk`). DONE 2026-06-03.**
   Medaka has doctests (example-as-documentation) and `prop` tests (universal
   laws) but no plain unit tests. Add a third kind for what the other two cover
   poorly: error/negative paths, non-`show`-able or multi-step results, effectful

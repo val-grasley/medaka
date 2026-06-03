@@ -387,6 +387,8 @@ let symbol_of_decl (d : Ast.decl) (loc : Ast.loc) : DocumentSymbol.t option =
   | DUse _ -> None  (* import directives clutter the outline *)
   | DProp { prop_name; _ } ->
     mk prop_name SymbolKind.Function (Some "prop")
+  | DTest { test_name; _ } ->
+    mk test_name SymbolKind.Function (Some "test")
   | DBench { bench_name; _ } ->
     mk bench_name SymbolKind.Function (Some "bench")
   | DAttrib _ -> None  (* unreachable via inner_decl *)
@@ -520,6 +522,7 @@ let decl_defines (d : Ast.decl) (name : Ast.ident) : bool =
   | DNewtype (_, n, _, c, _, _) -> n = name || c = name
   | DUse _                    -> false
   | DProp { prop_name; _ }    -> prop_name = name
+  | DTest { test_name; _ }    -> test_name = name
   | DBench { bench_name; _ }  -> bench_name = name
   | DAttrib _                 -> false
 

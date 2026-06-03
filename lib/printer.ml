@@ -805,6 +805,11 @@ let rec print_decl = function
         text (Printf.sprintf " (%s : %s)" x (Ast.pp_ty ty))) prop_params)
     ^^ print_def_rhs prop_body
 
+  | DTest { is_pub; test_name; test_body } ->
+    (if is_pub then text "export " else Nil)
+    ^^ text "test " ^^ text (Printf.sprintf "%S" test_name)
+    ^^ print_def_rhs test_body
+
   | DBench { is_pub; bench_name; bench_body } ->
     (if is_pub then text "export " else Nil)
     ^^ text "bench " ^^ text (Printf.sprintf "%S" bench_name)

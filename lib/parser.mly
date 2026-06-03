@@ -181,7 +181,7 @@ let parse_attr name msg_opt =
 
 (* Keywords *)
 %token LET REC WITH MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
-%token IMPORT EXPORT PUBLIC WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP BENCH FUNCTION
+%token IMPORT EXPORT PUBLIC WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP TEST BENCH FUNCTION
 
 (* Operators *)
 %token PLUS MINUS STAR SLASH MOD
@@ -350,6 +350,7 @@ inner_non_data_decl:
   | inner_impl_decl         { $1 }
   | inner_extern_decl       { $1 }
   | inner_prop_decl         { $1 }
+  | inner_test_decl         { $1 }
   | inner_bench_decl        { $1 }
 
 (* ── Property declarations ───────────────────────────── *)
@@ -362,6 +363,12 @@ inner_prop_decl:
     { fun is_pub ->
         DProp { is_pub; prop_name = $2;
                 prop_params = $3; prop_body = $5 } }
+
+(* ── Test declarations ──────────────────────────────── *)
+
+inner_test_decl:
+  | TEST STRING EQUAL fun_body newlines
+    { fun is_pub -> DTest { is_pub; test_name = $2; test_body = $4 } }
 
 (* ── Benchmark declarations ──────────────────────────── *)
 
@@ -1101,6 +1108,7 @@ import_qual:
 import_ident:
   | IDENT  { $1 }
   | UPPER  { $1 }
+  | TEST   { "test" }   (* allow `import test.{…}` despite TEST being a keyword *)
 
 (* A `{…}` group member: a bare name, or `T(..)` for "T and all its
    exported constructors" (Phase 100). The bool marks the (..) form. *)

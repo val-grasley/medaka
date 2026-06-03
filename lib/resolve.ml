@@ -373,6 +373,7 @@ let build_env ?(known_modules : module_exports list = [])
         (List.map (fun m -> m.method_name) methods)
     | DImpl _ -> ()
     | DProp _ -> ()
+    | DTest _ -> ()
     | DBench _ -> ()
     | DUse (_, path) ->
       let mod_id = use_path_module_id path in
@@ -729,6 +730,8 @@ let rec check_decl env errors = function
       x
     ) prop_params in
     check_expr env scope errors prop_body
+  | DTest { test_body; _ } ->
+    check_expr env [] errors test_body
   | DBench { bench_body; _ } ->
     check_expr env [] errors bench_body
   | DInterface { super; methods; _ } ->
@@ -977,8 +980,8 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
       List.iter (fun m -> add_or_skip env.values m.Ast.method_name) methods;
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.Ast.method_name) methods)
-    | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ | Ast.DNewtype _ | Ast.DProp _ | Ast.DBench _
-    | Ast.DAttrib _ -> ()
+    | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ | Ast.DNewtype _ | Ast.DProp _ | Ast.DTest _
+    | Ast.DBench _ | Ast.DAttrib _ -> ()
   ) decls;
   (match item with
    | Ast.ReplDecl ds -> List.iter (check_decl env errors) ds

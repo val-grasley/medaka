@@ -3993,7 +3993,7 @@ let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
     | _ -> ()
   ) prog;
 
-  (* Phase 4.55: type-check prop declarations *)
+  (* Phase 4.55: type-check prop/test declarations *)
   List.iter (fun d -> match Ast.inner_decl d with
     | DProp { prop_params; prop_body; _ } ->
       let local_env = List.fold_left (fun e (x, ast_ty) ->
@@ -4002,6 +4002,8 @@ let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
       ) !env prop_params in
       let body_ty = infer local_env prop_body in
       unify body_ty t_bool
+    | DTest { test_body; _ } ->
+      ignore (infer !env test_body)
     | DBench { bench_body; _ } ->
       ignore (infer !env bench_body)
     | _ -> ()
@@ -4304,6 +4306,8 @@ let typecheck_module
       ) !env prop_params in
       let body_ty = infer local_env prop_body in
       unify body_ty t_bool
+    | DTest { test_body; _ } ->
+      ignore (infer !env test_body)
     | DBench { bench_body; _ } ->
       ignore (infer !env bench_body)
     | _ -> ()
@@ -4555,6 +4559,8 @@ let check_repl_decl ?(seeded=false)
       ) !env prop_params in
       let body_ty = infer local_env prop_body in
       unify body_ty t_bool
+    | DTest { test_body; _ } ->
+      ignore (infer !env test_body)
     | DBench { bench_body; _ } ->
       ignore (infer !env bench_body)
     | _ -> ()

@@ -459,6 +459,7 @@ let check_guard_exhaustiveness (prog : program) : string list =
         | Some (_, b) -> recurse_body b
         | None -> ()) iface.methods
     | DProp p  -> recurse_body p.prop_body
+    | DTest t  -> recurse_body t.test_body
     | DBench b -> recurse_body b.bench_body
     | _ -> ()) prog;
   List.rev !warnings

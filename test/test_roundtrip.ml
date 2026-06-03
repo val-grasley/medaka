@@ -484,6 +484,11 @@ let () =
       test_case "basic arms" `Quick
         (mk "classify =\n  function\n    0 => \"zero\"\n    _ => \"nonzero\"\n");
     ];
+    "test declarations (Phase 127)", [
+      test_case "simple body"   `Quick (mk "test \"always passes\" = pass\n");
+      test_case "expr body"     `Quick (mk "test \"check add\" = expectEqual (1 + 1) 2\n");
+      test_case "export"        `Quick (mk "export test \"pub test\" = pass\n");
+    ];
     "bench declarations (Phase 48)", [
       test_case "simple literal"  `Quick (mk "bench \"identity\" = 42\n");
       test_case "expr body"       `Quick (mk "bench \"add\" = 1 + 2\n");
