@@ -824,8 +824,11 @@ tracked in the dict-passing internals notes; filed for a future phase.
 A from-scratch JSON value type, parser, and serializer — `stdlib/json.mdk`.
 Written primarily to **exercise the stdlib**: a recursive ADT, `Array`-backed
 storage, `Char`/`String` kernel handling, `Result` error threading, and the
-`Eq`/`Show`/`Display` interfaces, all in one self-contained module (depends only
-on `core` + the global `array*`/`string*`/`char*` externs).
+`Eq`/`Show`/`Display` interfaces. Built **on** the stdlib it exercises —
+`list.reverse`, `string.join`/`fromChars`/`isDigit`/`toInt`, plus the global
+`array*`/`string*`/`char*` externs (the first stdlib module to import real
+siblings). Only genuinely JSON-specific logic (`isWs`, hex/`\u`, escaping, the
+parser) is local.
 
 **Value model.** `data Json = JNull | JBool Bool | JInt Int | JFloat Float
 | JString String | JArray (Array Json) | JObject (Array (String, Json))`.

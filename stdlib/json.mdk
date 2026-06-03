@@ -22,16 +22,19 @@
    recursive descent) and `arrayFromList`s it at the close, so `parse` stays pure
    (`Result String Json`, no `<Mut>`) while the stored value is contiguous.
 
-   Self-contained on `core` + the global `array*`/`string*`/`char*` externs — no
-   `array`/`string` import. Equality is hand-rolled element-wise (so no
-   `Eq (Array a)` dependency) and is **positional** for objects (two objects with
-   the same pairs in a different order compare unequal — fine for round-tripping,
-   which preserves order).
+   Built on the stdlib it exists to exercise: `list.reverse`, `string.join`/
+   `fromChars`/`isDigit`/`toInt`, plus the global `array*`/`string*`/`char*`
+   externs. Equality is hand-rolled element-wise (so the `Json` `Eq` recurses
+   through the `Array` fields without an `Eq (Array a)` dependency) and is
+   **positional** for objects (two objects with the same pairs in a different
+   order compare unequal — fine for round-tripping, which preserves order).
 
    **Not handled (v1):** `\uXXXX` surrogate pairs (astral codepoints); strict
    leading-zero / number-grammar rejection (the number scan is lenient). -}
 
 import core.{Eq, Show, Display, Option, Result}
+import list.{reverse}
+import string.{join, fromChars, isDigit, toInt}
 
 public export data Json
   = JNull
@@ -54,29 +57,12 @@ export
 jObject : List (String, Json) -> Json
 jObject xs = JObject (arrayFromList xs)
 
--- ── Small char/list utilities (kept local to stay core-only) ─────────────
-
+-- A codepoint to a `Char` (the `\u` escape target is always valid here).
 charOfCode : Int -> Char
 charOfCode k =
   match charFromCode k
     Some c => c
     None => ' '
-
-reverseList : List a -> List a
-reverseList xs = reverseGo xs []
-
-reverseGo : List a -> List a -> List a
-reverseGo [] acc = acc
-reverseGo (x::rest) acc = reverseGo rest (x :: acc)
-
-charsToString : List Char -> String
-charsToString cs = stringFromChars (arrayFromList cs)
-
--- Join a list of strings with a separator (one allocation via stringConcat).
-joinWith : String -> List String -> String
-joinWith _ [] = ""
-joinWith _ [x] = x
-joinWith sep (x::rest) = stringConcat [x, sep, joinWith sep rest]
 
 -- ── Serialization ───────────────────────────────────────────────────────
 
@@ -165,10 +151,10 @@ stringify (JInt n) = intToString n
 stringify (JFloat f) = renderFloat f
 stringify (JString s) = escapeString s
 stringify (JArray arr) =
-  let body = joinWith "," (elemStrings arr (arrayLength arr - 1) [])
+  let body = join "," (elemStrings arr (arrayLength arr - 1) [])
   stringConcat ["[", body, "]"]
 stringify (JObject pairs) =
-  let body = joinWith "," (memberStrings pairs (arrayLength pairs - 1) [])
+  let body = join "," (memberStrings pairs (arrayLength pairs - 1) [])
   stringConcat ["{", body, "}"]
 
 -- ── Parsing (recursive descent over an Array Char + position) ────────────
@@ -180,14 +166,13 @@ bindP r f =
     Ok (v, j) => f v j
     Err e => Err e
 
+-- JSON whitespace is *exactly* space, tab, LF, CR — stricter than
+-- `string.isSpace` (which accepts other Unicode space chars), so it stays local.
 isWs : Char -> Bool
 isWs c = charCode c == 32
   || charCode c == 9
   || charCode c == 10
   || charCode c == 13
-
-isDig : Char -> Bool
-isDig c = charCode c >= 48 && charCode c <= 57
 
 skipWs : Array Char -> Int -> Int
 skipWs arr i
@@ -202,7 +187,7 @@ parseStr arr i acc
 
 parseStrChar : Array Char -> Int -> List Char -> Char -> Result String (String, Int)
 parseStrChar arr i acc c
-  | charCode c == 34 = Ok (charsToString (reverseList acc), i + 1)
+  | charCode c == 34 = Ok (fromChars (reverse acc), i + 1)
   | charCode c == 92 = parseEsc arr (i + 1) acc
   | otherwise = parseStr arr (i + 1) (c :: acc)
 
@@ -275,7 +260,7 @@ skipSign arr i
 
 skipDigits : Array Char -> Int -> Int
 skipDigits arr i
-  | i < arrayLength arr && isDig (arrayGetUnsafe i arr) = skipDigits arr (i + 1)
+  | i < arrayLength arr && isDigit (arrayGetUnsafe i arr) = skipDigits arr (i + 1)
   | otherwise = i
 
 -- (newPosition, sawFraction)
@@ -301,16 +286,6 @@ isExpChar c = c == 'e' || c == 'E'
 subString : Array Char -> Int -> Int -> String
 subString arr start end = stringFromChars (arrayMakeWith (end - start) (k => arrayGetUnsafe (start + k) arr))
 
-intAccum : Array Char -> Int -> Int -> Int -> Int
-intAccum arr i end acc
-  | i >= end = acc
-  | otherwise = intAccum arr (i + 1) end (acc * 10 + (charCode (arrayGetUnsafe i arr) - 48))
-
-parseIntTok : Array Char -> Int -> Int -> Int
-parseIntTok arr start end
-  | arrayGetUnsafe start arr == '-' = 0 - intAccum arr (start + 1) end 0
-  | otherwise = intAccum arr start end 0
-
 parseNumber : Array Char -> Int -> Result String (Json, Int)
 parseNumber arr start =
   let afterSign = skipSign arr start
@@ -323,7 +298,13 @@ finishNumber : Array Char -> Int -> Int -> Int -> Int -> Bool -> Result String (
 finishNumber arr start afterSign afterInt end isFloat
   | afterInt == afterSign = Err "invalid number: no digits"
   | isFloat = finishFloat (subString arr start end) end
-  | otherwise = Ok (JInt (parseIntTok arr start end), end)
+  | otherwise = finishInt (subString arr start end) end
+
+finishInt : String -> Int -> Result String (Json, Int)
+finishInt tok end =
+  match toInt tok
+    Some n => Ok (JInt n, end)
+    None => Err "invalid number"
 
 finishFloat : String -> Int -> Result String (Json, Int)
 finishFloat tok end =
@@ -360,7 +341,7 @@ parseArrayAt arr j
     j + 1
   )
   | otherwise = bindP (parseElems arr j []) (xs k => Ok (
-    JArray (arrayFromList (reverseList xs)),
+    JArray (arrayFromList (reverse xs)),
     k
   ))
 
@@ -384,7 +365,7 @@ parseObjectAt arr j
     j + 1
   )
   | otherwise = bindP (parseMembers arr j []) (ms k => Ok (
-    JObject (arrayFromList (reverseList ms)),
+    JObject (arrayFromList (reverse ms)),
     k
   ))
 
@@ -431,7 +412,7 @@ dispatchValue arr j c
   | c == 'f' = parseLit arr j "false" (JBool False)
   | c == 'n' = parseLit arr j "null" JNull
   | c == '-' = parseNumber arr j
-  | isDig c = parseNumber arr j
+  | isDigit c = parseNumber arr j
   | otherwise = Err (stringConcat ["unexpected character '", charToStr c, "'"])
 
 {- | Parse JSON text into a `Json`, or an error message.

@@ -138,36 +138,55 @@ let () =
          exit 1)
     in
     let program = desugar_or_die ~source program in
-    let resolve_errs = Medaka_lib.Resolve.resolve_program program in
-    if resolve_errs <> [] then begin
-      List.iter (fun (err, loc_opt) ->
-        Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Resolve.pp_error err);
-        show_snippet source loc_opt
-      ) resolve_errs;
-      exit 1
-    end;
-    (* Phase 84: two-pass elaboration (see Elaborate).  Prop/coverage keep the
-       pre-dict-pass marked `program`; [combined] is the dict-passed eval tree. *)
-    let (program, combined, _env, warnings) =
-      (try Medaka_lib.Elaborate.elaborate program
-       with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
-         Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
-         show_snippet source loc_opt;
-         exit 1) in
-    List.iter (fun w -> Printf.eprintf "%s\n" w) warnings;
-    let prop_ok =
-      (try
-         let eval_env = Medaka_lib.Eval.eval_program ~prelude:false combined in
-         Medaka_lib.Prop_runner.run_all eval_env program
-       with Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
-         Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
-         show_snippet source loc_opt;
-         exit 1)
+    (* The prop phase resolves/elaborates the file *single-file*, which cannot
+       see sibling-module imports.  Props only actually run if the file declares
+       any (`Prop_runner.run_all` short-circuits on none), so when there are no
+       prop decls — and we are not collecting coverage, which needs the
+       elaborated tree — skip the single-file pipeline entirely.  This lets an
+       import-bearing file with doctests but no props (e.g. `stdlib/json.mdk`,
+       which imports `list`/`string`) pass `medaka test` instead of failing at
+       the single-file resolve on the imported names.  (An import-bearing file
+       that *does* declare props still needs a multi-module prop path — tracked
+       as a follow-up.) *)
+    let has_props =
+      List.exists (function Medaka_lib.Ast.DProp _ -> true | _ -> false) program
     in
-    if use_coverage then begin
-      let exec_lines = Medaka_lib.Coverage.collect_executable program in
-      Medaka_lib.Coverage.pp_report exec_lines
-    end;
+    let prop_ok =
+      if (not use_coverage) && not has_props then true
+      else begin
+        let resolve_errs = Medaka_lib.Resolve.resolve_program program in
+        if resolve_errs <> [] then begin
+          List.iter (fun (err, loc_opt) ->
+            Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Resolve.pp_error err);
+            show_snippet source loc_opt
+          ) resolve_errs;
+          exit 1
+        end;
+        (* Phase 84: two-pass elaboration (see Elaborate).  Prop/coverage keep the
+           pre-dict-pass marked `program`; [combined] is the dict-passed eval tree. *)
+        let (program, combined, _env, warnings) =
+          (try Medaka_lib.Elaborate.elaborate program
+           with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
+             Printf.eprintf "%s: %s\n" (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
+             show_snippet source loc_opt;
+             exit 1) in
+        List.iter (fun w -> Printf.eprintf "%s\n" w) warnings;
+        let ok =
+          (try
+             let eval_env = Medaka_lib.Eval.eval_program ~prelude:false combined in
+             Medaka_lib.Prop_runner.run_all eval_env program
+           with Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
+             Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
+             show_snippet source loc_opt;
+             exit 1)
+        in
+        if use_coverage then begin
+          let exec_lines = Medaka_lib.Coverage.collect_executable program in
+          Medaka_lib.Coverage.pp_report exec_lines
+        end;
+        ok
+      end
+    in
     exit (if doctest_ok && prop_ok then 0 else 1)
   end;
   if has_sub "bench" then begin
