@@ -816,3 +816,47 @@ comes from an *imported* module. This is **not** specific to `mut_array`:
 `hash_*`. The single-file doctest path threads the dict correctly (so the
 `sum`/`length` doctests pass). Root cause is the cross-module dict-passing gap
 tracked in the dict-passing internals notes; filed for a future phase.
+
+---
+
+## Module 9 — `json` ✅ implemented
+
+A from-scratch JSON value type, parser, and serializer — `stdlib/json.mdk`.
+Written primarily to **exercise the stdlib**: a recursive ADT, `Array`-backed
+storage, `Char`/`String` kernel handling, `Result` error threading, and the
+`Eq`/`Show`/`Display` interfaces, all in one self-contained module (depends only
+on `core` + the global `array*`/`string*`/`char*` externs).
+
+**Value model.** `data Json = JNull | JBool Bool | JInt Int | JFloat Float
+| JString String | JArray (Array Json) | JObject (Array (String, Json))`.
+- Numbers **split** `JInt`/`JFloat` so `3` round-trips as `3` (not `3.0`); the
+  parser classifies int-vs-float by the presence of `.`/`e`.
+- Arrays and objects are **`Array`-backed**, not `List` — JSON payloads are often
+  large, and a contiguous `Array` gives O(1) indexing and compact storage where a
+  cons-list costs O(n) access + per-cell overhead. Objects are an `Array` of
+  `(key, value)` pairs (assoc-style, no `Map` dependency), so insertion order is
+  preserved and round-trips exactly; key lookup is linear.
+
+**API.**
+- ✅ `parse : String -> Result String Json` — recursive descent over an
+  `Array Char` with an explicit position, threaded through a `bindP` combinator.
+  Builds each level transiently into a `List` then `arrayFromList`s it, so `parse`
+  stays **pure** (no `<Mut>`) while the stored value is contiguous. Handles
+  strings + escapes (`\" \\ \/ \n \t \r \b \f \uXXXX`), int/float numbers with
+  exponents, nested arrays/objects, and reports a message on malformed input.
+- ✅ `stringify : Json -> String` — compact serialization. Escapes control chars,
+  and normalizes `floatToString`'s trailing-dot form (`1000.` → `1000.0`) so
+  output is always valid JSON.
+- ✅ `jArray`/`jObject` — build from a `List` (stored as `Array`).
+- ✅ Accessors: `lookup` (object key), `index` (array element, O(1)), `asString`/
+  `asInt`/`asFloat`/`asBool`/`asArray`.
+- ✅ Instances: `Eq Json` (hand-rolled element-wise, **positional** object
+  equality), `Show Json` / `Display Json` (both render compact JSON text).
+- 12 doctests; nested round-trip identity, escapes, `\u` decoding, floats, and
+  error cases validated via a `run` probe.
+
+**Not handled (v1):** `\uXXXX` surrogate pairs (astral codepoints); strict
+leading-zero / number-grammar rejection (the number scan is lenient on input —
+output is always valid); `Infinity`/`NaN` floats (not representable in JSON).
+**Possible follow-ups:** a pretty-printer (indented output); `ToJson`/`FromJson`
+encode/decode interfaces for user types (a strong interface/`deriving` tire-kick).

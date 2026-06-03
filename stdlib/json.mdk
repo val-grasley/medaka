@@ -1,0 +1,559 @@
+{- json.mdk — a JSON value type with a parser and serializer.
+
+   A from-scratch recursive-descent JSON implementation, written to exercise a
+   wide cross-section of the stdlib: a recursive ADT, `Array`-backed storage,
+   `Char`/`String` kernel handling, `Result` error threading, and the
+   `Eq`/`Show`/`Display` interfaces.
+
+   **Value model.**
+   ```
+   data Json = JNull | JBool Bool | JInt Int | JFloat Float | JString String
+             | JArray (Array Json) | JObject (Array (String, Json))
+   ```
+   Numbers split into `JInt`/`JFloat` so `3` round-trips as `3` (not `3.0`) and
+   the parser must classify int-vs-float. Arrays and objects are **`Array`-backed**
+   (not `List`): JSON payloads are often large, and a contiguous `Array` gives
+   O(1) indexing and compact, cache-friendly storage where a cons-list would cost
+   O(n) access and per-cell overhead. Objects are an `Array` of `(key, value)`
+   pairs — assoc-style (no `Map` dependency), so insertion order is preserved and
+   round-trips exactly; key lookup is linear.
+
+   **Parsing** builds each level transiently into a `List` (the natural shape for
+   recursive descent) and `arrayFromList`s it at the close, so `parse` stays pure
+   (`Result String Json`, no `<Mut>`) while the stored value is contiguous.
+
+   Self-contained on `core` + the global `array*`/`string*`/`char*` externs — no
+   `array`/`string` import. Equality is hand-rolled element-wise (so no
+   `Eq (Array a)` dependency) and is **positional** for objects (two objects with
+   the same pairs in a different order compare unequal — fine for round-tripping,
+   which preserves order).
+
+   **Not handled (v1):** `\uXXXX` surrogate pairs (astral codepoints); strict
+   leading-zero / number-grammar rejection (the number scan is lenient). -}
+
+import core.{Eq, Show, Display, Option, Result}
+
+public export data Json
+  = JNull
+  | JBool Bool
+  | JInt Int
+  | JFloat Float
+  | JString String
+  | JArray (Array Json)
+  | JObject (Array (String, Json))
+
+-- ── Construction helpers ────────────────────────────────────────────────
+
+{- | Build a `JArray` from a list (stored as a contiguous `Array`). -}
+export
+jArray : List Json -> Json
+jArray xs = JArray (arrayFromList xs)
+
+{- | Build a `JObject` from a list of key/value pairs (order preserved). -}
+export
+jObject : List (String, Json) -> Json
+jObject xs = JObject (arrayFromList xs)
+
+-- ── Small char/list utilities (kept local to stay core-only) ─────────────
+
+charOfCode : Int -> Char
+charOfCode k =
+  match charFromCode k
+    Some c => c
+    None => ' '
+
+reverseList : List a -> List a
+reverseList xs = reverseGo xs []
+
+reverseGo : List a -> List a -> List a
+reverseGo [] acc = acc
+reverseGo (x::rest) acc = reverseGo rest (x :: acc)
+
+charsToString : List Char -> String
+charsToString cs = stringFromChars (arrayFromList cs)
+
+-- Join a list of strings with a separator (one allocation via stringConcat).
+joinWith : String -> List String -> String
+joinWith _ [] = ""
+joinWith _ [x] = x
+joinWith sep (x::rest) = stringConcat [x, sep, joinWith sep rest]
+
+-- ── Serialization ───────────────────────────────────────────────────────
+
+-- `floatToString` can emit a trailing-dot form (e.g. `1000.0` → "1000.") which
+-- is not valid JSON (a number needs a digit after the point).  Append a `0` in
+-- that case so serialized floats always re-parse.
+renderFloat : Float -> String
+renderFloat f = fixTrailingDot (floatToString f)
+
+fixTrailingDot : String -> String
+fixTrailingDot s = fixTrailingDotGo s (stringToChars s)
+
+fixTrailingDotGo : String -> Array Char -> String
+fixTrailingDotGo s arr
+  | arrayLength arr > 0 && charCode (arrayGetUnsafe (arrayLength arr - 1) arr) == 46 = stringConcat [
+    s,
+    "0"
+  ]
+  | otherwise = s
+
+hexDigit : Int -> String
+hexDigit d = stringSlice d (d + 1) "0123456789abcdef"
+
+-- A control char (< 0x20) as a `\u00XX` escape.
+unicodeEscape : Int -> String
+unicodeEscape code = stringConcat [
+  "\\u00",
+  hexDigit (code / 16),
+  hexDigit (code % 16)
+]
+
+-- One source char as its JSON-escaped piece.
+escapeChar : Char -> String
+escapeChar c
+  | charCode c == 34 = "\\\""
+  | charCode c == 92 = "\\\\"
+  | charCode c == 8 = "\\b"
+  | charCode c == 9 = "\\t"
+  | charCode c == 10 = "\\n"
+  | charCode c == 12 = "\\f"
+  | charCode c == 13 = "\\r"
+  | charCode c < 32 = unicodeEscape (charCode c)
+  | otherwise = charToStr c
+
+escapeGo : Array Char -> Int -> List String -> List String
+escapeGo arr i acc
+  | i < 0 = acc
+  | otherwise = escapeGo arr (i - 1) (escapeChar (arrayGetUnsafe i arr) :: acc)
+
+-- A `String` as a quoted, escaped JSON string literal.
+escapeString : String -> String
+escapeString s =
+  let arr = stringToChars s
+  let pieces = escapeGo arr (arrayLength arr - 1) []
+  stringConcat (["\""] ++ pieces ++ ["\""])
+
+elemStrings : Array Json -> Int -> List String -> List String
+elemStrings arr i acc
+  | i < 0 = acc
+  | otherwise = elemStrings arr (i - 1) (stringify (arrayGetUnsafe i arr) :: acc)
+
+memberStrings : Array (String, Json) -> Int -> List String -> List String
+memberStrings pairs i acc
+  | i < 0 = acc
+  | otherwise = 
+    let p = arrayGetUnsafe i pairs
+    let s = stringConcat [escapeString (fst p), ":", stringify (snd p)]
+    memberStrings pairs (i - 1) (s :: acc)
+
+{- | Serialize a `Json` to compact JSON text (no insignificant whitespace).
+
+   > stringify JNull == "null"
+   True
+   > stringify (JArray (arrayFromList [JInt 1, JBool True])) == "[1,true]"
+   True
+   > stringify (jObject [("a", JInt 1), ("b", JString "hi")]) == "{\"a\":1,\"b\":\"hi\"}"
+   True
+   > stringify (JFloat 1000.0) == "1000.0"
+   True -}
+export
+stringify : Json -> String
+stringify JNull = "null"
+stringify (JBool True) = "true"
+stringify (JBool False) = "false"
+stringify (JInt n) = intToString n
+stringify (JFloat f) = renderFloat f
+stringify (JString s) = escapeString s
+stringify (JArray arr) =
+  let body = joinWith "," (elemStrings arr (arrayLength arr - 1) [])
+  stringConcat ["[", body, "]"]
+stringify (JObject pairs) =
+  let body = joinWith "," (memberStrings pairs (arrayLength pairs - 1) [])
+  stringConcat ["{", body, "}"]
+
+-- ── Parsing (recursive descent over an Array Char + position) ────────────
+
+-- Monadic bind threading the position: chain a parse step into the next.
+bindP : Result String (a, Int) -> (a -> Int -> Result String (b, Int)) -> Result String (b, Int)
+bindP r f =
+  match r
+    Ok (v, j) => f v j
+    Err e => Err e
+
+isWs : Char -> Bool
+isWs c = charCode c == 32
+  || charCode c == 9
+  || charCode c == 10
+  || charCode c == 13
+
+isDig : Char -> Bool
+isDig c = charCode c >= 48 && charCode c <= 57
+
+skipWs : Array Char -> Int -> Int
+skipWs arr i
+  | i < arrayLength arr && isWs (arrayGetUnsafe i arr) = skipWs arr (i + 1)
+  | otherwise = i
+
+-- String body (i points just past the opening quote; acc is reversed chars).
+parseStr : Array Char -> Int -> List Char -> Result String (String, Int)
+parseStr arr i acc
+  | i >= arrayLength arr = Err "unterminated string"
+  | otherwise = parseStrChar arr i acc (arrayGetUnsafe i arr)
+
+parseStrChar : Array Char -> Int -> List Char -> Char -> Result String (String, Int)
+parseStrChar arr i acc c
+  | charCode c == 34 = Ok (charsToString (reverseList acc), i + 1)
+  | charCode c == 92 = parseEsc arr (i + 1) acc
+  | otherwise = parseStr arr (i + 1) (c :: acc)
+
+parseEsc : Array Char -> Int -> List Char -> Result String (String, Int)
+parseEsc arr i acc
+  | i >= arrayLength arr = Err "unterminated escape"
+  | otherwise = parseEscChar arr i acc (arrayGetUnsafe i arr)
+
+parseEscChar : Array Char -> Int -> List Char -> Char -> Result String (String, Int)
+parseEscChar arr i acc c
+  | charCode c == 34 = parseStr arr (i + 1) (c :: acc)
+  | charCode c == 92 = parseStr arr (i + 1) (c :: acc)
+  | charCode c == 47 = parseStr arr (i + 1) (c :: acc)
+  | c == 'n' = parseStr arr (i + 1) (charOfCode 10 :: acc)
+  | c == 't' = parseStr arr (i + 1) (charOfCode 9 :: acc)
+  | c == 'r' = parseStr arr (i + 1) (charOfCode 13 :: acc)
+  | c == 'b' = parseStr arr (i + 1) (charOfCode 8 :: acc)
+  | c == 'f' = parseStr arr (i + 1) (charOfCode 12 :: acc)
+  | c == 'u' = parseUnicode arr (i + 1) acc
+  | otherwise = Err "invalid escape sequence"
+
+hexVal : Char -> Option Int
+hexVal c
+  | charCode c >= 48 && charCode c <= 57 = Some (charCode c - 48)
+  | charCode c >= 97 && charCode c <= 102 = Some (charCode c - 87)
+  | charCode c >= 65 && charCode c <= 70 = Some (charCode c - 55)
+  | otherwise = None
+
+-- Four hex digits at [i, i+4) → a codepoint (BMP only; no surrogate pairing).
+hex4 : Array Char -> Int -> Option Int
+hex4 arr i =
+  match hexVal (arrayGetUnsafe i arr)
+    None => None
+    Some h0 => hex4From arr i h0
+
+hex4From : Array Char -> Int -> Int -> Option Int
+hex4From arr i h0 =
+  match hexVal (arrayGetUnsafe (i + 1) arr)
+    None => None
+    Some h1 => hex4From2 arr i (h0 * 16 + h1)
+
+hex4From2 : Array Char -> Int -> Int -> Option Int
+hex4From2 arr i acc =
+  match hexVal (arrayGetUnsafe (i + 2) arr)
+    None => None
+    Some h2 => hex4From3 arr i (acc * 16 + h2)
+
+hex4From3 : Array Char -> Int -> Int -> Option Int
+hex4From3 arr i acc =
+  match hexVal (arrayGetUnsafe (i + 3) arr)
+    None => None
+    Some h3 => Some (acc * 16 + h3)
+
+parseUnicode : Array Char -> Int -> List Char -> Result String (String, Int)
+parseUnicode arr i acc
+  | i + 4 > arrayLength arr = Err "invalid \\u escape"
+  | otherwise = parseUnicodeAt arr i acc (hex4 arr i)
+
+parseUnicodeAt : Array Char -> Int -> List Char -> Option Int -> Result String (String, Int)
+parseUnicodeAt arr i acc code =
+  match code
+    None => Err "invalid \\u escape"
+    Some k => parseStr arr (i + 4) (charOfCode k :: acc)
+
+-- Numbers: scan the token, classify int vs float, build the value.
+skipSign : Array Char -> Int -> Int
+skipSign arr i
+  | i < arrayLength arr && arrayGetUnsafe i arr == '-' = i + 1
+  | otherwise = i
+
+skipDigits : Array Char -> Int -> Int
+skipDigits arr i
+  | i < arrayLength arr && isDig (arrayGetUnsafe i arr) = skipDigits arr (i + 1)
+  | otherwise = i
+
+-- (newPosition, sawFraction)
+skipFrac : Array Char -> Int -> (Int, Bool)
+skipFrac arr i
+  | i < arrayLength arr && arrayGetUnsafe i arr == '.' = (
+    skipDigits arr (i + 1),
+    True
+  )
+  | otherwise = (i, False)
+
+skipExp : Array Char -> Int -> (Int, Bool)
+skipExp arr i
+  | i < arrayLength arr && isExpChar (arrayGetUnsafe i arr) = (
+    skipDigits arr (skipSign arr (i + 1)),
+    True
+  )
+  | otherwise = (i, False)
+
+isExpChar : Char -> Bool
+isExpChar c = c == 'e' || c == 'E'
+
+subString : Array Char -> Int -> Int -> String
+subString arr start end = stringFromChars (arrayMakeWith (end - start) (k => arrayGetUnsafe (start + k) arr))
+
+intAccum : Array Char -> Int -> Int -> Int -> Int
+intAccum arr i end acc
+  | i >= end = acc
+  | otherwise = intAccum arr (i + 1) end (acc * 10 + (charCode (arrayGetUnsafe i arr) - 48))
+
+parseIntTok : Array Char -> Int -> Int -> Int
+parseIntTok arr start end
+  | arrayGetUnsafe start arr == '-' = 0 - intAccum arr (start + 1) end 0
+  | otherwise = intAccum arr start end 0
+
+parseNumber : Array Char -> Int -> Result String (Json, Int)
+parseNumber arr start =
+  let afterSign = skipSign arr start
+  let afterInt = skipDigits arr afterSign
+  let fracR = skipFrac arr afterInt
+  let expR = skipExp arr (fst fracR)
+  finishNumber arr start afterSign afterInt (fst expR) (snd fracR || snd expR)
+
+finishNumber : Array Char -> Int -> Int -> Int -> Int -> Bool -> Result String (Json, Int)
+finishNumber arr start afterSign afterInt end isFloat
+  | afterInt == afterSign = Err "invalid number: no digits"
+  | isFloat = finishFloat (subString arr start end) end
+  | otherwise = Ok (JInt (parseIntTok arr start end), end)
+
+finishFloat : String -> Int -> Result String (Json, Int)
+finishFloat tok end =
+  match stringToFloat tok
+    Some f => Ok (JFloat f, end)
+    None => Err "invalid number"
+
+-- Keyword literals (true/false/null).
+matchLit : Array Char -> Int -> Array Char -> Int -> Int -> Bool
+matchLit arr j litArr k m
+  | k >= m = True
+  | j + k >= arrayLength arr = False
+  | arrayGetUnsafe (j + k) arr == arrayGetUnsafe k litArr = matchLit arr j litArr (k + 1) m
+  | otherwise = False
+
+parseLit : Array Char -> Int -> String -> Json -> Result String (Json, Int)
+parseLit arr j lit val =
+  let litArr = stringToChars lit
+  parseLitGo arr j litArr (arrayLength litArr) lit val
+
+parseLitGo : Array Char -> Int -> Array Char -> Int -> String -> Json -> Result String (Json, Int)
+parseLitGo arr j litArr m lit val
+  | matchLit arr j litArr 0 m = Ok (val, j + m)
+  | otherwise = Err (stringConcat ["invalid literal, expected '", lit, "'"])
+
+-- Arrays and objects.
+parseArray : Array Char -> Int -> Result String (Json, Int)
+parseArray arr i = parseArrayAt arr (skipWs arr i)
+
+parseArrayAt : Array Char -> Int -> Result String (Json, Int)
+parseArrayAt arr j
+  | j < arrayLength arr && arrayGetUnsafe j arr == ']' = Ok (
+    JArray (arrayFromList []),
+    j + 1
+  )
+  | otherwise = bindP (parseElems arr j []) (xs k => Ok (
+    JArray (arrayFromList (reverseList xs)),
+    k
+  ))
+
+parseElems : Array Char -> Int -> List Json -> Result String (List Json, Int)
+parseElems arr i acc = bindP (parseValue arr i) (v j => parseElemsCont arr (skipWs arr j) (v :: acc))
+
+parseElemsCont : Array Char -> Int -> List Json -> Result String (List Json, Int)
+parseElemsCont arr k acc
+  | k >= arrayLength arr = Err "unterminated array"
+  | arrayGetUnsafe k arr == ',' = parseElems arr (k + 1) acc
+  | arrayGetUnsafe k arr == ']' = Ok (acc, k + 1)
+  | otherwise = Err "expected ',' or ']' in array"
+
+parseObject : Array Char -> Int -> Result String (Json, Int)
+parseObject arr i = parseObjectAt arr (skipWs arr i)
+
+parseObjectAt : Array Char -> Int -> Result String (Json, Int)
+parseObjectAt arr j
+  | j < arrayLength arr && arrayGetUnsafe j arr == '}' = Ok (
+    JObject (arrayFromList []),
+    j + 1
+  )
+  | otherwise = bindP (parseMembers arr j []) (ms k => Ok (
+    JObject (arrayFromList (reverseList ms)),
+    k
+  ))
+
+parseMembers : Array Char -> Int -> List (String, Json) -> Result String (List (String, Json), Int)
+parseMembers arr i acc = parseMemberStart arr (skipWs arr i) acc
+
+parseMemberStart : Array Char -> Int -> List (String, Json) -> Result String (List (String, Json), Int)
+parseMemberStart arr j acc
+  | j >= arrayLength arr = Err "unterminated object"
+  | arrayGetUnsafe j arr == '"' = bindP (parseStr arr (j + 1) []) (key k => parseAfterKey arr (skipWs arr k) key acc)
+  | otherwise = Err "expected string key in object"
+
+parseAfterKey : Array Char -> Int -> String -> List (String, Json) -> Result String (List (String, Json), Int)
+parseAfterKey arr k key acc
+  | k >= arrayLength arr = Err "unterminated object"
+  | arrayGetUnsafe k arr == ':' = bindP (parseValue arr (k + 1)) (v m => parseMemberCont arr (skipWs arr m) ((
+    key,
+    v
+  ) :: acc))
+  | otherwise = Err "expected ':' after object key"
+
+parseMemberCont : Array Char -> Int -> List (String, Json) -> Result String (List (String, Json), Int)
+parseMemberCont arr m acc
+  | m >= arrayLength arr = Err "unterminated object"
+  | arrayGetUnsafe m arr == ',' = parseMembers arr (m + 1) acc
+  | arrayGetUnsafe m arr == '}' = Ok (acc, m + 1)
+  | otherwise = Err "expected ',' or '}' in object"
+
+-- Value dispatch.
+parseValue : Array Char -> Int -> Result String (Json, Int)
+parseValue arr i = parseValueAt arr (skipWs arr i)
+
+parseValueAt : Array Char -> Int -> Result String (Json, Int)
+parseValueAt arr j
+  | j >= arrayLength arr = Err "unexpected end of input"
+  | otherwise = dispatchValue arr j (arrayGetUnsafe j arr)
+
+dispatchValue : Array Char -> Int -> Char -> Result String (Json, Int)
+dispatchValue arr j c
+  | c == '{' = parseObject arr (j + 1)
+  | c == '[' = parseArray arr (j + 1)
+  | c == '"' = bindP (parseStr arr (j + 1) []) (s k => Ok (JString s, k))
+  | c == 't' = parseLit arr j "true" (JBool True)
+  | c == 'f' = parseLit arr j "false" (JBool False)
+  | c == 'n' = parseLit arr j "null" JNull
+  | c == '-' = parseNumber arr j
+  | isDig c = parseNumber arr j
+  | otherwise = Err (stringConcat ["unexpected character '", charToStr c, "'"])
+
+{- | Parse JSON text into a `Json`, or an error message.
+
+   > parse "null" == Ok JNull
+   True
+   > parse "[1, 2, 3]" == Ok (jArray [JInt 1, JInt 2, JInt 3])
+   True
+   > parse "  {\"k\": true}  " == Ok (jObject [("k", JBool True)])
+   True
+   > parse "nope"
+   Err "invalid literal, expected 'null'" -}
+export
+parse : String -> Result String Json
+parse s = parseTop (stringToChars s)
+
+parseTop : Array Char -> Result String Json
+parseTop arr =
+  match parseValue arr 0
+    Err e => Err e
+    Ok (v, j) => ensureEnd arr (skipWs arr j) v
+
+ensureEnd : Array Char -> Int -> Json -> Result String Json
+ensureEnd arr j v
+  | j >= arrayLength arr = Ok v
+  | otherwise = Err "trailing characters after JSON value"
+
+-- ── Accessors ───────────────────────────────────────────────────────────
+
+{- | Value at a key in a `JObject` (linear scan), or `None`.
+
+   > lookup "b" (jObject [("a", JInt 1), ("b", JInt 2)]) == Some (JInt 2)
+   True
+   > lookup "z" (jObject [("a", JInt 1)]) == None
+   True -}
+export
+lookup : String -> Json -> Option Json
+lookup key (JObject pairs) = lookupGo key pairs 0 (arrayLength pairs)
+lookup _ _ = None
+
+lookupGo : String -> Array (String, Json) -> Int -> Int -> Option Json
+lookupGo key pairs i n
+  | i >= n = None
+  | fst (arrayGetUnsafe i pairs) == key = Some (snd (arrayGetUnsafe i pairs))
+  | otherwise = lookupGo key pairs (i + 1) n
+
+{- | Element at an index in a `JArray` (O(1)), or `None`.
+
+   > index 1 (jArray [JInt 10, JInt 20, JInt 30]) == Some (JInt 20)
+   True -}
+export
+index : Int -> Json -> Option Json
+index k (JArray arr)
+  | k >= 0 && k < arrayLength arr = Some (arrayGetUnsafe k arr)
+  | otherwise = None
+index _ _ = None
+
+{- | The `String` inside a `JString`, or `None`. -}
+export
+asString : Json -> Option String
+asString (JString s) = Some s
+asString _ = None
+
+{- | The `Int` inside a `JInt`, or `None`. -}
+export
+asInt : Json -> Option Int
+asInt (JInt n) = Some n
+asInt _ = None
+
+{- | The `Float` inside a `JFloat`, or `None`. -}
+export
+asFloat : Json -> Option Float
+asFloat (JFloat f) = Some f
+asFloat _ = None
+
+{- | The `Bool` inside a `JBool`, or `None`. -}
+export
+asBool : Json -> Option Bool
+asBool (JBool b) = Some b
+asBool _ = None
+
+{- | The backing `Array` of a `JArray`, or `None`. -}
+export
+asArray : Json -> Option (Array Json)
+asArray (JArray a) = Some a
+asArray _ = None
+
+-- ── Instances ───────────────────────────────────────────────────────────
+
+arrEqJson : Array Json -> Array Json -> Int -> Bool
+arrEqJson a b i
+  | i >= arrayLength a = True
+  | otherwise = eq (arrayGetUnsafe i a) (arrayGetUnsafe i b)
+    && arrEqJson a b (i + 1)
+
+objEqJson : Array (String, Json) -> Array (String, Json) -> Int -> Bool
+objEqJson a b i
+  | i >= arrayLength a = True
+  | otherwise = 
+    let pa = arrayGetUnsafe i a
+    let pb = arrayGetUnsafe i b
+    fst pa == fst pb && eq (snd pa) (snd pb) && objEqJson a b (i + 1)
+
+{- | Structural equality. Objects compare **positionally** (same pairs in the
+   same order), which is what `parse ∘ stringify` preserves.
+
+   > eq (parse "[1, 2]") (Ok (jArray [JInt 1, JInt 2]))
+   True -}
+export impl Eq Json where
+  eq JNull JNull = True
+  eq (JBool a) (JBool b) = a == b
+  eq (JInt a) (JInt b) = a == b
+  eq (JFloat a) (JFloat b) = a == b
+  eq (JString a) (JString b) = a == b
+  eq (JArray a) (JArray b) = arrayLength a == arrayLength b && arrEqJson a b 0
+  eq (JObject a) (JObject b) = arrayLength a == arrayLength b && objEqJson a b 0
+  eq _ _ = False
+
+{- | `show` renders compact JSON text (same as `stringify`). -}
+export impl Show Json where
+  show j = stringify j
+
+{- | `display`/`\{…}` also render compact JSON text. -}
+export impl Display Json where
+  display j = stringify j
