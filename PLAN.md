@@ -207,21 +207,6 @@ above, it is flagged ⭐.
   pairs, not values). Lands in `lib/resolve.ml` + `lib/typecheck.ml`. Skill:
   **harden-typechecker**.
 
-- **Phase 114 — container-literal residuals (Phase 108 follow-ups, low priority).**
-  Two limitations of the `Map { … }` / `Set { … }` sugar:
-  - **Empty literals don't work** — `Map { }` / `Set { }` fail (`Type mismatch:
-    Map Int vs Map`): empty braces carry no `=>` to distinguish map-vs-set, so the
-    parser emits `ESetLit(name, [])` and the lowering pins the *unary* `name _a`,
-    the wrong arity for a binary `Map`. Low value (empty containers have
-    `empty`/`Monoid.empty`). Possible fix: `EHeadAnnot` in typecheck ignores the
-    lowering-supplied arity and applies the head tycon to its *declared* arity of
-    fresh vars (a tycon-arity lookup).
-  - **Two same-shape containers in scope need a type annotation** to disambiguate
-    — the literal's name pins the *head* tycon, not the full type, so two
-    `(k,v)`-entry container types both match `Map { … }`'s entry shape. Annotate
-    (`m : Map _ _ = …`) to choose. Inherent to head-pinning; recorded.
-  - Skill: **add-language-feature**.
-
 - ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** The
   instance-`requires` dict-threading into return-position impl bodies (single
   level) is **DONE** (see PLAN-ARCHIVE.md). Remaining, lower priority — each a
