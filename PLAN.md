@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 120). At task triage, match the work against AGENTS.md's
+number (last used: 121). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -123,6 +123,23 @@ strict priority. Where an item is a **Stage 0 prerequisite** for the north star
 above, it is flagged ⭐.
 
 ### Compiler / language
+
+- **Phase 121 — point-free method bodies in `impl`s panic at eval (Phase 89
+  residual).** Phase 89 fixed point-free *standalone constrained* defs
+  (`maximum = fold step None`). The residual: a **dispatched method body** in an
+  `impl` defined point-free can panic `applied non-function: ()` at eval.
+  Verified 2026-06-02: a *partial-application* body reproduces —
+  `impl Bar Int where bar = replicate2 3` then `bar 7` panics — while a
+  *bare-name* body (`foo = identity`) now works, so it's arity-/shape-specific
+  (the dispatch applies the method's argument to a point-free body that took no
+  clause params, hitting a `()` placeholder). This is the trap behind the
+  `0dd8e14` fix (`toList = identity` in `impl Foldable List` was eta-expanded to
+  `toList xs = xs` rather than fixed). **Workaround (everywhere today):**
+  eta-expand the method body (`bar x = replicate2 3 x`). Recurring enough across
+  the stdlib to fix properly. Lands in `lib/eval.ml`'s method-dispatch /
+  `EMethodRef` application (likely the point-free-arity handling), possibly with
+  `lib/dict_pass.ml`/`method_marker.ml`. Skill: **debug-pipeline** (diagnose) →
+  the dispatch machinery.
 
 - **Phase 119 — false-positive non-exhaustiveness warning for 3+-arg functions
   matching a list.** A multi-clause function with **≥3 parameters** where one
