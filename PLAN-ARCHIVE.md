@@ -5002,6 +5002,34 @@ interface — constructors and interfaces are already separately namespaced, so
 (map.mdk's earlier "use `_` for the equal case" comment was mistaken and was
 corrected to name `Eq`).
 
+### Phase 114: empty container literals (`Map { }` / `Set { }`) ✅ DONE (2026-06-02)
+
+Empty `Map { }` / `Set { }` raised `Type mismatch: Map Int vs Map`. Root cause:
+the parser can't tell the two apart (empty braces carry no `=>` marker), so both
+lower to a unary `ESetLit name []`, and `Desugar.rewrite_container_lit` pins the
+*unary* `name _a` — the wrong arity for the binary `Map`, so it failed to unify
+with `fromEntries`'s `Map k v` result. Desugar can't fix this (it runs before
+resolve/typecheck and doesn't know each tycon's arity). Fix lands entirely in the
+`EHeadAnnot` arm of `Typecheck.infer` (`typecheck.ml`): **ignore the lowering's
+arity** and rebuild the pin as the head tycon applied to its *declared* arity of
+fresh vars. The arity is read off the type's constructor scheme — `env.type_ctors
+name → ctor → env.ctors → strip TFun arrows, count TApp nesting on the result
+head` — which works on both whole-program paths (and for *imported* types, since
+`Map`/`Set` arrive via `import` and their ctors are seeded into `env.ctors` at the
+te_ctors step). No new env field, no desugar/parser change; non-empty literals are
+unaffected (head + declared arity == what they already supplied). Element vars
+stay free and ground via inference, so an unconstrained empty literal still needs
+an annotation/context (`Map { } : Map Int Int`), exactly like `[]`. Regression
+doctests in map.mdk/set.mdk (`size (Map { } : Map Int Int)` → `0`, similarly Set).
+See [[project_typecheck_two_entrypoints]] and [[project_module5_map]].
+
+The phase's **second** sub-item — *two same-shape containers in scope need a type
+annotation to disambiguate* — was **not** fixed: it is inherent to head-pinning
+(the literal's name pins only the head tycon, not the full type), so when two
+`(k,v)`-entry container types are both in scope, `Map { … }`'s entry shape matches
+both and an annotation (`m : Map _ _ = …`) is the intended disambiguator. Recorded
+as a permanent limitation, not a bug. Skill: **add-language-feature**.
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)
