@@ -66,6 +66,13 @@ type res_route =
                               eval selects the VMulti candidate whose head tag
                               matches; emitted only for single-param interfaces
                               where the head alone disambiguates. *)
+  | RLocal                 (* Phase 112: NOT a method dispatch — at this call
+                              site the interface has no impl for the (concrete)
+                              receiver, but an explicitly-imported/local
+                              standalone function shadows the method name, so
+                              eval ignores VMulti dispatch and evaluates the
+                              bound name as the plain standalone (no narrowing,
+                              no dicts). *)
 
 type resolved = {
   res_iface : ident;

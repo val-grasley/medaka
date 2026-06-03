@@ -779,6 +779,14 @@ type env = {
   field_owners  : (ident, ident) Hashtbl.t;    (* field name → record name *)
   interfaces    : (ident, iface_info) Hashtbl.t;  (* interface name → info *)
   method_iface  : (ident, ident) Hashtbl.t;    (* method name → interface name *)
+  standalone_values : (ident, unit) Hashtbl.t;
+    (* Phase 112: names that are BOTH an explicitly-imported/local top-level
+       value AND an interface method (e.g. map's exported `toList`/`isEmpty`,
+       which collide with Foldable's methods).  When such a name is applied to a
+       concrete receiver whose type has no impl of the interface, the new
+       method-head application arm in `infer` types the call against the
+       standalone (via `lookup_var`) instead of failing `NoImplFound`.  Empty on
+       the single-file path (no imports to fall back to). *)
   impls         : impl_entry list ref;          (* all registered impls *)
   method_usages : (ident * ident * tyvar_info ref list * string option * (ident * mono list) list * Ast.resolved option ref option * Ast.loc option) list ref;  (* (method, iface, param_var_refs, impl_hint, method_dict_args, method_occurrence_ref, call_site_loc) *)
   fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
@@ -854,6 +862,7 @@ let empty_env () = {
   field_owners  = Hashtbl.create 16;
   interfaces    = Hashtbl.create 8;
   method_iface  = Hashtbl.create 16;
+  standalone_values = Hashtbl.create 8;
   impls         = ref [];
   method_usages = ref [];
   fun_constraints        = Hashtbl.create 8;
@@ -1122,6 +1131,29 @@ let rec head_tycon_mono m = match normalize m with
   | TCon n -> Some n
   | TApp (a, _) -> head_tycon_mono a
   | _ -> None
+
+(* Phase 112: does any registered impl of [iface_name] cover a receiver whose
+   head tycon is [recv_head]?  Only single-param interfaces participate (one
+   element in impl_type_mono), so the head tycon alone discriminates — the same
+   granularity eval's RHeadKey dispatch and `try_head_key` use.  Drives the
+   method-head application arm in `infer`: when this is false for a concrete
+   receiver and the method name also has a standalone binding, the call routes
+   to the standalone instead of failing `NoImplFound`. *)
+let impl_exists_for_head env iface_name recv_head =
+  List.exists (fun e ->
+    e.impl_iface = iface_name &&
+    (match e.impl_type_mono with
+     | [m] -> (match head_tycon_mono m with Some h -> h = recv_head | None -> false)
+     | _   -> false)
+  ) !(env.impls)
+
+(* Phase 112: peel ELoc wrappers to expose an interface-method occurrence in
+   function position (`toList`/`isEmpty` in `toList m`).  Returns the method
+   occurrence's resolved-ref and its name when the head is one. *)
+let rec peel_method_head = function
+  | EMethodRef (r, x) -> Some (r, x)
+  | ELoc (_, e)       -> peel_method_head e
+  | _                 -> None
 
 (* Phase 72: [field_owners] is a multimap (field name → every record that
    declares it).  Insert (field, record) only if absent so per-module prelude
@@ -1467,6 +1499,52 @@ let rec infer env = function
     let t = infer env f in
     current_impl_hint := None;
     t
+
+  (* Phase 112: an interface method applied directly to a single argument
+     (`toList m` / `isEmpty m`).  If that method's name ALSO has an explicitly-
+     imported/local standalone binding (`env.standalone_values`) and the concrete
+     receiver's type has NO impl of the interface, type the call against the
+     standalone and route eval to it (RLocal) — instead of dispatching through
+     the interface and failing `NoImplFound`.  Scoped to single-parameter
+     interfaces where the sole argument is the receiver; everything else (impl
+     exists, polymorphic receiver, hinted call, multi-arg method) falls through
+     to ordinary method dispatch, byte-identical to the generic arm below. *)
+  | EApp (f, x)
+    when (match peel_method_head f with
+          | Some (_, mname) ->
+            not (StringSet.mem mname env.locals) &&
+            Hashtbl.mem env.standalone_values mname &&
+            (match Hashtbl.find_opt env.method_iface mname with
+             | Some iface_name ->
+               (match Hashtbl.find_opt env.interfaces iface_name with
+                | Some info -> List.length info.iface_param_ids = 1
+                | None -> false)
+             | None -> false)
+          | None -> false) ->
+    let (mref, mname) = (match peel_method_head f with Some p -> p | None -> assert false) in
+    let iface_name = Hashtbl.find env.method_iface mname in
+    (* Infer the receiver first so we know whether an impl applies. *)
+    let tx = infer env x in
+    (match head_tycon_mono tx with
+     | Some recv_head when not (impl_exists_for_head env iface_name recv_head) ->
+       (* Fallback: no impl for this concrete receiver → use the standalone. *)
+       let (_, mono) = instantiate_raw (lookup_var env mname) in
+       let tr  = fresh_var () in
+       let eff = open_row () in
+       unify mono (TFun (tx, eff, tr));
+       perform_effect cur_effect eff;
+       mref := Some { Ast.res_iface = iface_name; res_route = Ast.RLocal;
+                      res_method_dicts = []; res_impl_dicts = [] };
+       tr
+     | _ ->
+       (* Impl exists, or receiver head not concrete → ordinary method dispatch.
+          Infer the method head now so it records its method_usage. *)
+       let tf  = infer env f in
+       let tr  = fresh_var () in
+       let eff = open_row () in
+       unify tf (TFun (tx, eff, tr));
+       perform_effect cur_effect eff;
+       tr)
 
   | EApp (f, x) ->
     let tf = infer env f in
@@ -4068,6 +4146,15 @@ let typecheck_module
   check_coherence env;
   check_orphans ~known_modules ~user_prog env;
 
+  (* Phase 112: a name imported as a value (use_schemes) that ALSO names an
+     interface method is a standalone-shadowing-a-method (e.g. map's `toList`/
+     `isEmpty` vs Foldable's).  Record it so the method-head application arm can
+     fall back to the standalone when the receiver type has no impl. *)
+  List.iter (fun (n, _) ->
+    if Hashtbl.mem env.method_iface n then
+      Hashtbl.replace env.standalone_values n ()
+  ) !use_schemes;
+
   let groups = group_fundefs prog in
   enter_level ();
   let placeholders = List.concat_map (fun (_, members) ->
@@ -4240,6 +4327,7 @@ let copy_tc_env (e : env) : env = {
   field_owners  = Hashtbl.copy e.field_owners;
   interfaces    = Hashtbl.copy e.interfaces;
   method_iface  = Hashtbl.copy e.method_iface;
+  standalone_values = Hashtbl.copy e.standalone_values;
   impls         = ref !(e.impls);
   method_usages = ref !(e.method_usages);
   fun_constraints        = Hashtbl.copy e.fun_constraints;

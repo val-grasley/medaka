@@ -188,25 +188,6 @@ above, it is flagged ⭐.
     `print`/`println` defs + wider `deriving (Display)`) + `lib/eval.ml` (swap the
     externs for `putStr`/`putStrLn`). Skill: **add-language-feature**.
 
-- **Phase 112 — prefer a locally-bound / explicitly-imported name over a
-  no-impl interface method.** The recurring standalone-vs-interface-method
-  collision. It bit `empty` (fixed in Phase 103), and currently makes map's
-  exported `toList` / `isEmpty` **unreachable from a user file** — a bare
-  `toList m` / `isEmpty m` resolves to the generic `Foldable.toList`/`isEmpty`,
-  which has no `Map` impl, → `No impl of Foldable for Map`. Won't-do Phase 78c
-  dropped the *export-a-bare-`length`* version (it would shadow `Foldable.length`
-  everywhere), but this is the narrower, safer lever: **when a name is both an
-  explicitly-imported/locally-bound function and an interface method, and the
-  method has no applicable impl at the use site's type, resolve to the
-  function.** Fixes the whole class (`toList`/`isEmpty`/`map`/`filter` on a type
-  that doesn't impl the interface) without removing interfaces. Coherence
-  subtleties to settle before building: an impl that exists for a *supertype* or
-  via a superclass; interaction with the orphan/coherence checks; whether "no
-  applicable impl" is decidable at resolve time vs. needs typecheck. `set.mdk`
-  sidesteps the issue by *implementing* `Foldable`; map can't (its `toList` means
-  pairs, not values). Lands in `lib/resolve.ml` + `lib/typecheck.ml`. Skill:
-  **harden-typechecker**.
-
 - **Phase 114 — container-literal residuals (Phase 108 follow-ups, low priority).**
   Two limitations of the `Map { … }` / `Set { … }` sugar:
   - **Empty literals don't work** — `Map { }` / `Set { }` fail (`Type mismatch:
@@ -313,9 +294,9 @@ PLAN-ARCHIVE.md and STDLIB.md.
   already met by interface impls, and there is no safe export path for a bare
   `length : String -> Int` (it would shadow `Foldable.length` everywhere). The
   real lever, if ever needed, is a `Sized`/`HasLength` interface — which is
-  stdlib design, not a compiler feature. (Phase 112 is the *narrower* lever —
+  stdlib design, not a compiler feature. (Phase 112 — the *narrower* lever:
   resolve to a local/imported name only when the method has no applicable impl —
-  which is on the open roadmap; 78c stays dropped.)
+  is now **DONE** (see PLAN-ARCHIVE.md); 78c stays dropped.)
 - The broader **rejected-features** list (labeled arguments, active patterns,
   computation expressions, polymorphic variants, first-class modules, row
   polymorphism, macros, lazy sequences, higher-rank polymorphism, custom

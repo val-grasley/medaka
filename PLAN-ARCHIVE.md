@@ -4948,6 +4948,64 @@ ignoring boundaries.
   checker; making it a transformer ripples mangled names through the whole
   pipeline + needs de-mangling for LSP. Fights the architecture.
 
+### Phase 112: prefer a local/imported standalone over a no-impl interface method ✅ DONE (2026-06-02)
+
+The recurring standalone-vs-interface-method collision. Map's exported `toList :
+Map k v -> List (k, v)` / `isEmpty : Map k v -> Bool` are *standalone* functions
+(Map deliberately doesn't `impl Foldable` — its `toList` means assoc-PAIRS, not
+values). But `method_marker.ml` rewrites every `EVar "toList"` → `EMethodRef`, so
+a bare `toList m` dispatched through `Foldable`, found no `Map` impl, and failed
+(`No impl of Foldable for Map`) — the standalones were unreachable by bare name.
+
+The fix had to be **type-directed**, not a post-hoc reroute: a method occurrence
+is typed by the *interface* scheme (`t a -> List a` → `List v` for a Map), which
+DIVERGES from the standalone's `List (k, v)`. Rerouting only after
+`check_method_usages` would already have committed the surrounding expression to
+`List v` (unsound). So the decision happens during inference, at the application
+site, before the receiver-typed result is committed.
+
+- **Typecheck (`lib/typecheck.ml`).** New `env.standalone_values` set =
+  `{ n | n ∈ use_schemes ∧ n ∈ method_iface }`, populated in `typecheck_module`
+  (empty on the single-file path — no imports to fall back to). A new `infer` arm
+  matches `EApp (EMethodRef, arg)` whose method name is in `standalone_values` and
+  whose interface is single-parameter: it infers the **argument first** to ground
+  the receiver, and if the receiver head is concrete and `impl_exists_for_head`
+  (a head-tycon probe over `env.impls`, the same granularity as RHeadKey dispatch)
+  finds NO impl, it types the call against the standalone (`lookup_var`, which the
+  module path resolves to the imported scheme) and stamps the `EMethodRef` ref with
+  a new `RLocal` route — recording no method usage, so `NoImplFound` never fires.
+  Everything else (impl exists, polymorphic receiver, hinted/multi-arg call) falls
+  through to ordinary method dispatch, byte-identical to before.
+- **AST/eval (`lib/ast.ml`, `lib/eval.ml`).** New `res_route` variant `RLocal`.
+  The `EMethodRef` eval arm returns the plain `lookup env x` for `RLocal` (no
+  narrowing, no dicts). **Second eval fix — `lookup_method`:** Phase 110's
+  per-module frames bind an imported standalone in the import frame *ahead* of the
+  global method VMulti, so a plain `lookup` returned the standalone even for a
+  *genuine* method call on a different type (`toList (Some 7)` / `isEmpty [..]` in
+  the same file panicked). Genuine method routes now resolve via `lookup_method`,
+  which walks frames past a non-VMulti shadow to the coalesced method VMulti
+  (falling back to the nearest binding when no VMulti exists, so every
+  non-collision case is unchanged). This latent shadowing bug was masked before
+  Phase 112 because the Map call type-errored first.
+- **Result.** `toList m`/`isEmpty m` (Map) route to the standalone with the
+  correct pair/Bool type, while `isEmpty [..]` (List) / `toList (Some ..)` (Option)
+  in the same file still dispatch as Foldable methods. A type with neither impl
+  nor standalone still errors `NoImplFound`. **Coherence:** `matching = []` is a
+  true negative (nominal impls, no supertype widening), so the fallback is sound.
+  **Out of scope (documented):** unapplied method refs, multi-arg/multi-param
+  method calls, and a single-impl (non-VMulti) method colliding with a standalone.
+- Lands in `lib/typecheck.ml` + `lib/ast.ml` + `lib/eval.ml` (cross-cutting; not
+  resolve — the `use_schemes ∩ method_iface` signal lives in typecheck). Test:
+  `test_loader` (`test_eval_standalone_vs_method`). Skill: **harden-typechecker**
+  (decision logic) with mechanical ast/eval plumbing. See
+  [[project_typecheck_two_entrypoints]], [[project_eval_no_module_isolation]],
+  [[project_module5_map]].
+- **Surfaced (separate, pre-existing):** List's `impl Foldable List` uses
+  point-free `toList = identity` (core.mdk ~556), which hits the
+  point-free-dispatched-method eval trap — `toList [1,2,3]` panics `applied
+  non-function: ()`. Eta-expanding to `toList xs = xs` fixes it; tracked as a
+  separate stdlib fix (Phase 107-adjacent), not part of Phase 112.
+
 ### Module 5 stdlib: `map.mdk` + `set.mdk` (weight-balanced ordered containers) ✅ DONE (2026-06-02)
 
 The single biggest Stage-0 gap (symbol tables / scopes / substitutions). User
@@ -4961,8 +5019,8 @@ filterWithKey) + `Mappable`/`Eq`/`Show`/`Semigroup`/`Monoid` (Monoid via Phase
 103) + `FromEntries` (Phase 108) + a `wellFormed` invariant checker. 36 doctests +
 7 props; depth 15 for 1000 ascending inserts. `Foldable` deliberately *not*
 implemented so `toList` keeps meaning assoc-pairs (one consequence — map's
-standalone `toList`/`isEmpty` are unreachable from user files — is tracked as the
-open **Phase 112**).
+standalone `toList`/`isEmpty` were unreachable from user files — was fixed in
+**Phase 112**, above).
 
 **`stdlib/set.mdk`** — a **standalone** weight-balanced element tree (`data Set a
 = Tip | Bin Int a (Set a) (Set a)`), chosen over a `Map a Unit` wrapper (which
