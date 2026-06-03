@@ -285,7 +285,7 @@ implementations here — use the dispatch path instead:
 
 - ✅ `sort : Ord a => List a -> List a` — ascending sort (stable merge sort)
 - ✅ `sortBy : (a -> a -> Ordering) -> List a -> List a` — custom comparator
-- ✅ `sortOn : Ord b => (a -> b) -> List a -> List a` — sort by a derived key (recomputed per comparison, matching `array.sortOn`; the once-per-element decorate–sort–undecorate form trips a generalisation bug that monomorphises the shared `sortBy`)
+- ✅ `sortOn : Ord b => (a -> b) -> List a -> List a` — sort by a derived key, computing the key **once per element** (decorate–sort–undecorate). (Historically used the recompute-per-comparison form to dodge a `sortBy` generalisation bug; that bug was fixed in Phase 90, so both `List.sortOn` and `array.sortOn` now decorate.)
 - ✅ `nub : Eq a => List a -> List a` — remove duplicates, keeping the first occurrence; O(N²) baseline
 - ✅ `nubBy : (a -> a -> Bool) -> List a -> List a` — `nub` with a custom equality test
 

@@ -52,7 +52,7 @@ replicate n x
    > iterate 4 (n => n * 2) 1
    [1, 2, 4, 8] -}
 export
-iterate : Int -> (a -> <e> a) -> a -> <e> List a
+iterate : Int -> (a -> <e> a) -> a -> <e> (List a)
 iterate n f x
   | n <= 0 = []
   | otherwise = x :: iterate (n - 1) f (f x)
@@ -63,7 +63,7 @@ iterate n f x
    > unfold (n => if n > 5 then None else Some (n, n + 1)) 1
    [1, 2, 3, 4, 5] -}
 export
-unfold : (b -> <e> Option (a, b)) -> b -> <e> List a
+unfold : (b -> <e> (Option (a, b))) -> b -> <e> (List a)
 unfold gen seed =
   match gen seed
     None => []
@@ -146,7 +146,7 @@ selections (x::xs) = (x, xs) :: map ((y, ys) => (y, x :: ys)) (selections xs)
    > scanLeft (acc x => acc + x) 0 [1, 2, 3]
    [0, 1, 3, 6] -}
 export
-scanLeft : (b -> a -> <e> b) -> b -> List a -> <e> List b
+scanLeft : (b -> a -> <e> b) -> b -> List a -> <e> (List b)
 scanLeft _ z [] = [z]
 scanLeft f z (x::xs) = z :: scanLeft f (f z x) xs
 
@@ -155,11 +155,11 @@ scanLeft f z (x::xs) = z :: scanLeft f (f z x) xs
    > scanRight (x acc => x + acc) 0 [1, 2, 3]
    [6, 5, 3, 0] -}
 export
-scanRight : (a -> b -> <e> b) -> b -> List a -> <e> List b
+scanRight : (a -> b -> <e> b) -> b -> List a -> <e> (List b)
 scanRight _ z [] = [z]
 scanRight f z (x::xs) =
   match scanRight f z xs
-    (q::qs) => f x q :: q :: qs
+    q::qs => f x q :: q :: qs
     [] => [f x z]
 
 -- Search
@@ -169,7 +169,7 @@ scanRight f z (x::xs) =
    > findIndex (x => x > 2) [1, 2, 3, 4]
    Some 2 -}
 export
-findIndex : (a -> <e> Bool) -> List a -> <e> Option Int
+findIndex : (a -> <e> Bool) -> List a -> <e> (Option Int)
 findIndex p xs = go 0 xs where
     go _ [] = None
     go i (x::rest)
@@ -181,7 +181,7 @@ findIndex p xs = go 0 xs where
    > findIndices (x => x > 2) [1, 3, 2, 4]
    [1, 3] -}
 export
-findIndices : (a -> <e> Bool) -> List a -> <e> List Int
+findIndices : (a -> <e> Bool) -> List a -> <e> (List Int)
 findIndices p xs = go 0 xs where
     go _ [] = []
     go i (x::rest)
@@ -225,7 +225,7 @@ drop n (xs@(_::rest))
    > takeWhile (x => x < 3) [1, 2, 3, 1]
    [1, 2] -}
 export
-takeWhile : (a -> <e> Bool) -> List a -> <e> List a
+takeWhile : (a -> <e> Bool) -> List a -> <e> (List a)
 takeWhile _ [] = []
 takeWhile p (x::xs)
   | p x = x :: takeWhile p xs
@@ -236,7 +236,7 @@ takeWhile p (x::xs)
    > dropWhile (x => x < 3) [1, 2, 3, 1]
    [3, 1] -}
 export
-dropWhile : (a -> <e> Bool) -> List a -> <e> List a
+dropWhile : (a -> <e> Bool) -> List a -> <e> (List a)
 dropWhile _ [] = []
 dropWhile p (xs@(x::rest))
   | p x = dropWhile p rest
@@ -301,7 +301,7 @@ chunks n (xs@(_::_))
    > sortBy (x y => compare y x) [3, 1, 2]
    [3, 2, 1] -}
 export
-sortBy : (a -> a -> <e> Ordering) -> List a -> <e> List a
+sortBy : (a -> a -> <e> Ordering) -> List a -> <e> (List a)
 sortBy _ [] = []
 sortBy _ [x] = [x]
 sortBy cmp xs =
@@ -309,7 +309,7 @@ sortBy cmp xs =
   merge cmp (sortBy cmp l) (sortBy cmp r)
 
 -- Merge two sorted runs, taking from the left on ties so the sort stays stable.
-merge : (a -> a -> <e> Ordering) -> List a -> List a -> <e> List a
+merge : (a -> a -> <e> Ordering) -> List a -> List a -> <e> (List a)
 merge _ [] ys = ys
 merge _ xs [] = xs
 merge cmp (xs@(x::xs')) (ys@(y::ys')) =
@@ -332,10 +332,10 @@ sort xs = sortBy compare xs
    > sortOn (x => 0 - x) [1, 3, 2]
    [3, 2, 1] -}
 export
-sortOn : Ord b => (a -> <e> b) -> List a -> <e> List a
+sortOn : Ord b => (a -> <e> b) -> List a -> <e> (List a)
 sortOn key xs =
   let decorated = map (x => (key x, x)) xs
-  map ((_, x) => x) (sortBy ((k1, _) (k2, _) => compare k1 k2) decorated)
+  map snd (sortBy ((k1, _) (k2, _) => compare k1 k2) decorated)
 
 {- | Drop duplicates by a custom equality, keeping the first occurrence.
    `O(n²)` baseline.
@@ -343,7 +343,7 @@ sortOn key xs =
    > nubBy (x y => x == y) [1, 2, 1, 3, 2]
    [1, 2, 3] -}
 export
-nubBy : (a -> a -> <e> Bool) -> List a -> <e> List a
+nubBy : (a -> a -> <e> Bool) -> List a -> <e> (List a)
 nubBy same xs = go xs [] where
     go [] _ = []
     go (x::rest) seen
@@ -365,7 +365,7 @@ nub xs = nubBy (x y => x == y) xs
    > groupBy (x y => x == y) [1, 1, 2, 3, 3, 3]
    [[1, 1], [2], [3, 3, 3]] -}
 export
-groupBy : (a -> a -> <e> Bool) -> List a -> <e> List (List a)
+groupBy : (a -> a -> <e> Bool) -> List a -> <e> (List (List a))
 groupBy _ [] = []
 groupBy same (x::xs) =
   let (grp, rest) = span (y => same x y) xs
@@ -472,7 +472,7 @@ zip3 (x::xs) (y::ys) (z::zs) = (x, y, z) :: zip3 xs ys zs
    > zipWith (x y => x * y) [1, 2, 3, 4] [10, 20]
    [10, 40] -}
 export
-zipWith : (a -> b -> <e> c) -> List a -> List b -> <e> List c
+zipWith : (a -> b -> <e> c) -> List a -> List b -> <e> (List c)
 zipWith _ [] _ = []
 zipWith _ _ [] = []
 zipWith f (x::xs) (y::ys) = f x y :: zipWith f xs ys
@@ -494,7 +494,7 @@ unzip ((x, y)::xys) = let (xs, ys) = unzip xys in (x :: xs, y :: ys)
 isSorted : Ord a => List a -> Bool
 isSorted [] = True
 isSorted [_] = True
-isSorted (x::y::rest) = lte x y && isSorted (y::rest)
+isSorted (x::y::rest) = lte x y && isSorted (y :: rest)
 
 prop "reverse is an involution" (xs : List Int) = eq (reverse (reverse xs)) xs
 
