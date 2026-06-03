@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 115). At task triage, match the work against AGENTS.md's
+number (last used: 117). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -58,9 +58,10 @@ What's missing is the supporting surface a real multi-thousand-line program need
     registries. ✅ **DONE** (Module 5, ordered/weight-balanced). A hash variant
     (Module 6) is still open, mainly for performance.
   - **`io`** — read source files, write artifacts, stdin/stdout, process args,
-    exit codes, structured error reporting. *Today: missing (Phase 19 module 7).*
-    **The remaining critical-path Stage 0 prerequisite.**
-  - `string` finalized and reviewed (drafted; awaiting review).
+    exit codes, structured error reporting. ✅ **DONE** (Module 7, Phase 116).
+  - `string` finalized and reviewed (drafted; awaiting review) — **and currently
+    un-importable** (Phase 117), which is now the critical-path Stage 0 blocker:
+    a self-hosted compiler needs string utilities from another module.
 - **Language stability / completeness.** Close the sharp edges that would bite a
   large codebase, then *freeze the surface syntax and semantics* for the duration
   of the port:
@@ -213,13 +214,36 @@ PLAN-ARCHIVE.md and STDLIB.md.
   *awaiting user review* (archive Phase 75 step 3). Open decisions: the
   `length`/`isEmpty`/`count` omissions and `toUpper` vs `charToUpper` naming.
 
-- **Modules 6–8 unstarted:** `mut_array`/`hash_map`/`hash_set`, `io`
-  (`readFile`/`writeFile`/`readLine`), `json` (type + parser + serializer).
-  Expect each to surface new language gaps — record them here as new phases.
-  - ⭐ **`io` is the remaining critical-path Stage 0 prerequisite** — a
-    self-hosted compiler needs file I/O (it has symbol tables now: `map`/`set`).
-    (`mut_array`/`hash_map`/`hash_set` matter mainly for *performance*; `json` is
-    not on the self-hosting path.)
+- ⭐ **Phase 117 — `stdlib/string.mdk` is un-importable (blocks self-hosting).**
+  Surfaced building `io` (Phase 116): *any* module that `import`s `string` (even
+  `import string.{trim}`) fails the multi-module typecheck with `core.mdk:NNN:
+  Type mismatch: String vs a -> b`. Root cause: `string.mdk` defines a standalone
+  `count : String -> String -> Int` that **redefines the prelude's `count`**
+  (`Foldable t => (a -> Bool) -> t a -> Int`); when string is imported, the two
+  same-named standalones from different modules collide and corrupt core's own
+  `count` definition during the merge. (This is why `io.mdk`'s `readLines`
+  reimplements line-splitting over the global `string*` kernel externs instead of
+  `import string.{lines}`.) `string` is a leaf today, so nothing exercised it —
+  but a self-hosted compiler will lean on string utilities heavily, so this is a
+  **critical-path Stage 0 blocker.** Likely fix: rename `string.count` (the
+  `length`/`isEmpty`/`count` naming is already an open string-review decision —
+  see above), *and/or* make the multi-module typecheck scope a module's
+  redefinition of a prelude standalone per-module (the doctest harness already
+  side-steps this with a single-file fallback; the real path doesn't). Verify a
+  fix lets `import string.{lines}` work, then simplify `io.mdk`. Skill:
+  **harden-typechecker** (+ a string-review call).
+
+- **Modules 6 & 8 unstarted:** `mut_array`/`hash_map`/`hash_set` (Module 6),
+  `json` (Module 8: type + parser + serializer). Expect each to surface new
+  language gaps — record them here as new phases.
+  - `mut_array`/`hash_map`/`hash_set` matter mainly for interpreter/compiler
+    *performance*; `json` is not on the self-hosting path.
+  - ✅ **Module 7 `io` — DONE (Phase 116).** Comprehensive: externs (`args`,
+    `getEnv`, `fileExists`, `appendFile`, `listDir`, `ePutStr`/`ePutStrLn`,
+    `readLineOpt`, `readAll`) in runtime.mdk + eval.ml, `args` wired through
+    `bin/main.ml` (`medaka run FILE a b c` → `["a","b","c"]`), plus `stdlib/io.mdk`
+    (`eprint`/`eprintln` via Display, `readLines`, `getEnvOr`). See STDLIB.md
+    Module 7. (Surfaced Phase 117, the string-import blocker, above.)
 
 ### Blocked on a package manager (out of scope until one exists)
 

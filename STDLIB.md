@@ -58,6 +58,17 @@ file and the matching impl in `lib/eval.ml`.
 - `exit : Int -> <Panic> Unit` — terminate the process with the given exit code
 - `panic : String -> a` — abort with a runtime panic carrying the message
 
+io Module 7 host primitives (see Module 7 for the ergonomic layer):
+
+- `args : Unit -> <IO> (List String)` — program args after the script name
+- `getEnv : String -> <IO> (Option String)` — environment variable, or `None`
+- `fileExists : String -> <IO> Bool`
+- `appendFile : String -> String -> <IO> (Result String Unit)` — `Ok ()` / `Err message`
+- `listDir : String -> <IO> (Result String (List String))` — directory entry names
+- `ePutStr` / `ePutStrLn : String -> <IO> Unit` — raw stderr output
+- `readLineOpt : Unit -> <IO> (Option String)` — one stdin line, `None` at EOF
+- `readAll : Unit -> <IO> String` — all of stdin
+
 `pure` and `map` are *not* externs — they are interface methods (see `core`).
 
 ---
@@ -674,4 +685,35 @@ ascending inserts).
   Foldable methods and resolve cleanly from user files. No `map`/`filter`
   standalones (would clash with `Mappable`/`Filterable` method names, and `Set`
   is not a lawful `Mappable`); a future element-`map` needs a non-clashing name.
+
+---
+
+## Module 7 — `io` ✅ implemented
+
+Files, standard streams, environment, and process I/O. The irreducible host
+primitives are `extern`s in `runtime.mdk` (so they are **global**, no import) —
+see the Module 0 catalog. `stdlib/io.mdk` adds the ergonomic layer on top.
+
+**Externs (global, in `runtime.mdk`):** `args`, `getEnv`, `fileExists`,
+`appendFile`, `listDir`, `ePutStr`/`ePutStrLn`, `readLineOpt`, `readAll` — plus
+the pre-existing `readFile`/`writeFile`/`readLine`/`exit`/`putStr`/`putStrLn`.
+Convention: file ops return `Result String _` (host message in `Err`); `getEnv`
+returns `Option`. No IO monad — an action runs when evaluated, so you can
+`match readFile path` directly. The `args` extern is the program's own args
+(`medaka run FILE a b c` → `["a", "b", "c"]`), wired in `bin/main.ml`.
+
+**`io.mdk` (Medaka ergonomics):**
+
+- `eprint` / `eprintln : Display a => a -> <IO> Unit` — stderr analogs of the
+  prelude's `print`/`println` (render via `Display`).
+- `readLines : String -> <IO> (Result String (List String))` — read a file split
+  into lines (drops a trailing `\r` and the final empty line).
+- `getEnvOr : String -> String -> <IO> String` — env var or a fallback.
+
+**Known limitation:** `readLines` splits lines via the global `string*` kernel
+externs rather than `import string.{lines}`, because `stdlib/string.mdk` is
+currently **un-importable** (its `count` redefines the prelude `count` and breaks
+the multi-module typecheck — see PLAN.md). Collapse to `import string` once that
+lands. **Not yet provided:** stdin-line iteration helpers, `withFile`-style
+bracketing, `removeFile`/`rename` — add when needed.
 - 23 doctests + 8 props.

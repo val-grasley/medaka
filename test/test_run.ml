@@ -796,8 +796,20 @@ main = match (f : Option Int)
 
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
+(* io Module 7 externs (the io.mdk helpers are exercised by run probes /
+   stdlib; these pin the global externs through the typed pipeline). *)
+let t_io_args_empty = assert_output_typed
+  "main = println (args ())\n"
+  "[]\n"
+
+let t_io_getenv_unset = assert_output_typed
+  "main = println (getEnv \"__MEDAKA_NOPE_XYZ__\")\n"
+  "None\n"
+
 let () = Alcotest.run "Run"
   [("run", [
+    "io: args empty in test context", `Quick, t_io_args_empty;
+    "io: getEnv unset is None",       `Quick, t_io_getenv_unset;
     "poly-monad do-block (Phase 84)", `Quick, t_poly_monad_do;
     "no-bind do grounded (Phase 115 #3)",           `Quick, t_no_bind_do_grounded;
     "inferred return-pos wrapper (Phase 115 #1)",   `Quick, t_infer_return_pos_wrapper;

@@ -395,6 +395,14 @@ cd into a member or specify a file\n"; exit 1
       print_usage (); exit 1
     end
   in
+  (* io Module 7: expose the program's own args to the `args` extern.
+     `medaka run FILE a b c` → the program sees ["a"; "b"; "c"]. (Only the
+     explicit `run FILE …` form carries trailing args; the bare/config forms
+     pass none.) *)
+  Medaka_lib.Eval.program_args :=
+    (if has_sub "run" && argc >= 3
+     then Array.to_list (Array.sub argv 3 (argc - 3))
+     else []);
   let project_dir =
     match Medaka_lib.Project_config.find_project_root filename with
     | Some d -> d

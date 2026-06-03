@@ -24,6 +24,18 @@ extern readFile : String -> <IO> (Result String String)
 extern writeFile : String -> String -> <IO> (Result String Unit)
 extern exit : Int -> <Panic> Unit
 extern panic : String -> a
+
+-- io Module 7.  Higher-level ergonomics (eprint/eprintln/readLines) live in
+-- stdlib/io.mdk; these are the irreducible host primitives.
+extern args : Unit -> <IO> (List String)              -- program args after the script name
+extern getEnv : String -> <IO> (Option String)        -- environment variable, or None
+extern fileExists : String -> <IO> Bool
+extern appendFile : String -> String -> <IO> (Result String Unit)
+extern listDir : String -> <IO> (Result String (List String))  -- directory entries (names)
+extern ePutStr : String -> <IO> Unit                  -- raw stderr output
+extern ePutStrLn : String -> <IO> Unit
+extern readLineOpt : Unit -> <IO> (Option String)     -- one stdin line, None at EOF
+extern readAll : Unit -> <IO> String                  -- all of stdin
 -- Internal: the terminator of a desugared guard chain (Phase 91).  Raises the
 -- same "no clause matched" signal as a failed pattern, so when a function
 -- clause's guards all fail, dispatch falls through to the next pattern clause

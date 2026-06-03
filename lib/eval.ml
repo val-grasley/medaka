@@ -60,6 +60,15 @@ exception Impl_no_match
 
 let output_hook : (string -> unit) ref = ref print_string
 
+(* stderr sink, mirroring `output_hook` for stdout — lets tests capture stderr
+   and keeps `ePutStr`/`ePutStrLn` (the `io` module) distinct from stdout. *)
+let error_hook : (string -> unit) ref = ref (fun s -> output_string stderr s; flush stderr)
+
+(* Program arguments for the `args` extern (io Module 7): the tokens passed to a
+   Medaka program after the script name (`medaka run script.mdk a b c` →
+   ["a"; "b"; "c"]). Set by bin/main.ml's run driver; empty everywhere else. *)
+let program_args : string list ref = ref []
+
 let snapshot_dir    : string ref = ref "snapshots"
 let snapshot_update : bool ref   = ref false
 
@@ -1201,6 +1210,52 @@ let primitives : (string * value) list =
       match msg with
       | VString s -> raise (Eval_error ("panic: " ^ s, !current_loc))
       | _ -> raise (Eval_error ("panic", !current_loc))));
+
+    (* ── io Module 7 externs ───────────────────────────────────────────── *)
+    (* Process args (after the script name); see Eval.program_args. *)
+    ("args", VPrim (fun _ -> VList (List.map (fun s -> VString s) !program_args)));
+    (* Environment variable lookup: Some value, or None when unset. *)
+    ("getEnv", VPrim (fun name -> match name with
+       | VString n ->
+         (match Sys.getenv_opt n with
+          | Some v -> VCon ("Some", [VString v])
+          | None   -> VCon ("None", []))
+       | _ -> raise (Eval_error ("getEnv: expected String", None))));
+    (* True when a file or directory exists at the path. *)
+    ("fileExists", VPrim (fun path -> match path with
+       | VString p -> VBool (Sys.file_exists p)
+       | _ -> raise (Eval_error ("fileExists: expected String", None))));
+    (* Append to a file (creating it if absent): Ok () or Err message. *)
+    ("appendFile", VPrim (fun path ->
+      VPrim (fun content ->
+        match path, content with
+        | VString p, VString s ->
+          (try
+             let oc = open_out_gen [Open_append; Open_creat] 0o644 p in
+             output_string oc s;
+             close_out oc;
+             VCon ("Ok", [VUnit])
+           with Sys_error msg -> VCon ("Err", [VString msg]))
+        | _ -> raise (Eval_error ("appendFile: expected String String", None)))));
+    (* Directory entries (names only, unordered): Ok [name, …] or Err message. *)
+    ("listDir", VPrim (fun path -> match path with
+       | VString p ->
+         (try VCon ("Ok", [VList (Array.to_list (Array.map (fun s -> VString s) (Sys.readdir p)))])
+          with Sys_error msg -> VCon ("Err", [VString msg]))
+       | _ -> raise (Eval_error ("listDir: expected String", None))));
+    (* stderr output (raw string), routed through error_hook. *)
+    ("ePutStr", VPrim (fun v -> match v with
+       | VString s -> !error_hook s; VUnit
+       | _ -> raise (Eval_error ("ePutStr: expected String", None))));
+    ("ePutStrLn", VPrim (fun v -> match v with
+       | VString s -> !error_hook s; !error_hook "\n"; VUnit
+       | _ -> raise (Eval_error ("ePutStrLn: expected String", None))));
+    (* Read one line from stdin: Some line, or None at end-of-input. *)
+    ("readLineOpt", VPrim (fun _ ->
+      (try VCon ("Some", [VString (input_line stdin)])
+       with End_of_file -> VCon ("None", []))));
+    (* Read all of stdin to a single string. *)
+    ("readAll", VPrim (fun _ -> VString (In_channel.input_all stdin)));
     (* Phase 91: terminator of a desugared guard chain.  Raising Impl_no_match
        (the same signal a failed pattern raises) makes a multi-clause function's
        VMulti dispatch fall through to the next pattern clause when this clause's

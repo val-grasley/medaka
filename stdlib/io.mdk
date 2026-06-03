@@ -1,0 +1,66 @@
+{- io.mdk — files, standard streams, environment, and process I/O.
+
+   See STDLIB.md (Module 7) for the plan.
+
+   The irreducible host primitives are `extern`s in stdlib/runtime.mdk, so they
+   are **global** (no import needed): `readFile`/`writeFile`/`appendFile`,
+   `readLine`/`readLineOpt`/`readAll`, `args`, `getEnv`, `fileExists`, `listDir`,
+   `exit`, `putStr`/`putStrLn` (and the prelude's `print`/`println`), and the
+   stderr pair `ePutStr`/`ePutStrLn`. This module adds the ergonomic layer on
+   top — `Display`-based stderr output, line-oriented file reading, and an
+   `Option`-smoothing environment helper.
+
+   Conventions: file ops return `Result String _` with the host error message in
+   `Err`; `getEnv` returns `Option`. There is no IO monad — an action runs when
+   it is evaluated, so you can `match readFile path` directly. -}
+
+import core.{Display, Option, Result, fromOption}
+
+-- ── Standard error (Display, mirroring the prelude's print/println) ──────
+
+{- | Write a value to stderr (no trailing newline), rendered via `Display` —
+   the stderr analog of the prelude's `print`. -}
+export
+eprint : Display a => a -> <IO> Unit
+eprint x = ePutStr (display x)
+
+{- | Write a value to stderr followed by a newline — the stderr analog of
+   `println`. Use for diagnostics and errors so they don't pollute stdout. -}
+export
+eprintln : Display a => a -> <IO> Unit
+eprintln x = ePutStrLn (display x)
+
+-- ── Files ────────────────────────────────────────────────────────────────
+
+{- Line splitting is done here over the global `string*` kernel externs (in
+   runtime.mdk) rather than `import string.{lines}` — stdlib/string.mdk is
+   currently un-importable (its `count` redefines the prelude `count`; see
+   PLAN.md "string import"). Collapse to `import string.{lines}` once that's
+   fixed. Splits on `\n`, dropping a trailing `\r` (so CRLF files work) and the
+   final empty line a trailing newline would otherwise produce. -}
+stripCR : String -> String
+stripCR s =
+  let n = stringLength s
+  if n > 0 && stringSlice (n - 1) n s == "\r" then stringSlice 0 (n - 1) s else s
+
+splitLines : String -> List String
+splitLines s =
+  match stringIndexOf "\n" s
+    None => if s == "" then [] else [stripCR s]
+    Some i => stripCR (stringSlice 0 i s) :: splitLines (stringSlice (i + 1) (stringLength s) s)
+
+{- | Read a file and split it into lines, or `Err` with the host message on a
+   read failure. The trailing newline does not produce a final empty line. -}
+export
+readLines : String -> <IO> (Result String (List String))
+readLines path =
+  match readFile path
+    Err e => Err e
+    Ok contents => Ok (splitLines contents)
+
+-- ── Environment ──────────────────────────────────────────────────────────
+
+{- | An environment variable's value, or `fallback` when it is unset. -}
+export
+getEnvOr : String -> String -> <IO> String
+getEnvOr name fallback = fromOption fallback (getEnv name)
