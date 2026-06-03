@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 132). At task triage, match the work against AGENTS.md's
+number (last used: 134). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -175,6 +175,58 @@ above, it is flagged ⭐.
   serialization caveats mapped: OCaml `%S` escapes non-ASCII as decimal byte
   escapes (`debugStringLit` agrees on ASCII), `FLOAT` uses `%g` (vs
   `floatToString`). See `selfhost/README.md`.
+
+- **Phase 134 — eval bug: an `<IO>`-returning helper called from a `match` arm
+  isn't forced (surfaced by Phase 132).** TODO — investigate + fix.
+  **Symptom:** a function whose body produces an `<IO>` action, when invoked from
+  a `match` arm, returns the action without running it — the program exits 0 with
+  **no output**; inlining the identical body runs correctly. This silently breaks
+  the obvious "factor the IO into a helper" refactor and is a real correctness
+  bug, not just an ergonomic wart.
+  **Confirmed repro (current tree):** with `selfhost/lexer.mdk` present, the
+  `emit`-helper form of the lexer entry prints nothing while the inline form
+  prints all tokens —
+  ```
+  emit path =
+    match readFile path
+      Ok src => putStr (renderToks (tokenize src))
+      Err msg => ePutStrLn msg
+  main =
+    match args ()
+      [path] => emit path           -- ← 0 bytes out, exit 0
+      _ => ePutStrLn "usage"
+  ```
+  vs. inlining the inner `match readFile …` directly under `[path] =>` (works —
+  this is what `selfhost/lex_main.mdk` does).
+  **Bisection so far (narrowing, not yet minimal):** the small/standalone analogs
+  all *work* — helper-from-match-arm with a constant `putStr`, with a recursively
+  built string, with a `match readFile` body, and even a 2-module case where the
+  helper renders a `List` of an imported ADT. The failure only reproduces with the
+  *actual* large `lexer.mdk` (`tokenize`/`renderToks`), so the trigger correlates
+  with something the minimal cases lack (recursion depth / list size / the
+  90-arm `tokenToString` / cross-module thunk-forcing order). Producing a minimal
+  repro is the first task.
+  **Where it lands / how to chase:** almost certainly the eval driver in
+  `lib/eval.ml` — how a top-level `main` (and nested calls) force `<IO>` actions,
+  i.e. whether a function-application result that *is* an IO action gets run or
+  just returned. Smells like the deferred-thunk / install-order family behind
+  Phases 96/103/121/125 (loader vs flat eval); confirm with `dev/module_debug.exe`
+  and shrink `lexer.mdk` until it stops reproducing. **Skill: debug-pipeline.**
+
+- **Phase 133 — char literals do no escape processing (surfaced by Phase 132).**
+  TODO — decide + (maybe) fix. A Medaka char literal `'…'` captures its inner
+  bytes **raw**: `'\n'` is the two bytes backslash-n (not a newline), `'\t'` is
+  backslash-t, and a single-quote or backslash char literal can't be written at
+  all (`'\''`/`'\\'` mis-lex, since the rule is `'\'' [^']+ '\''` with no escape
+  handling — `lib/lexer.mll` ~line 296; `debugCharLit` in `lib/eval.ml` documents
+  the no-escape choice as deliberate). The self-host lexer worked around it by
+  comparing via `charCode` instead of char literals, so this is **not blocking**.
+  **Open question (decide first):** is the raw-bytes behavior intentional
+  (keep, document more loudly) or a gap to close (process `\n \t \r \0 \\ \'` and
+  allow `\u{…}`, mirroring `read_string`)? If closing it: the fix is the char
+  rule in `lib/lexer.mll` plus the `CHAR` value/`debugCharLit` round-trip — a
+  surface-syntax change threading lexer→eval. **Skill: add-language-feature**
+  (small; mostly `lib/lexer.mll`). Lower priority than Phase 134.
 
 - **Phase 131 — add token-stream section to the diff harness. ✅ DONE
   (2026-06-03).** Added `Lexer.tokenize_string : string -> string list` +
