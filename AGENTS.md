@@ -59,9 +59,10 @@ Support files:
 | `bin/main.ml` | CLI: `check` / `run` / `test` (doctests + prop tests) / `repl` / `lsp` / `fmt` / `new` |
 
 `stdlib/`: `runtime.mdk` (extern primitive catalog, embedded), `core.mdk`
-(implicit prelude — `Eq`/`Ord`/`Show`/`Num`/…), `list.mdk`/`string.mdk`/`array.mdk`/`map.mdk`/`set.mdk`/`io.mdk`
+(implicit prelude — `Eq`/`Ord`/`Show`/`Num`/…), `list.mdk`/`string.mdk`/`array.mdk`/`map.mdk`/`set.mdk`/`io.mdk`/`hash_map.mdk`/`hash_set.mdk`
 (written in Medaka; `map.mdk`/`set.mdk` are weight-balanced ordered `Map`/`Set`;
-`io.mdk` is the ergonomic layer over the `runtime.mdk` IO externs).
+`hash_map.mdk`/`hash_set.mdk` are mutable hash tables; `io.mdk` is the ergonomic
+layer over the `runtime.mdk` IO externs).
 
 ## Build & test
 

@@ -1267,6 +1267,10 @@ let primitives : (string * value) list =
        with End_of_file -> VCon ("None", []))));
     (* Read all of stdin to a single string. *)
     ("readAll", VPrim (fun _ -> VString (In_channel.input_all stdin)));
+    (* Structural hash of any value (Module 6 hash containers). Non-negative
+       (OCaml's Hashtbl.hash returns [0, 2^30)). Consistent with structural
+       `eq`, so it must agree with the key type's `Eq` impl. *)
+    ("hash", VPrim (fun v -> VInt (Hashtbl.hash v)));
     (* Phase 91: terminator of a desugared guard chain.  Raising Impl_no_match
        (the same signal a failed pattern raises) makes a multi-clause function's
        VMulti dispatch fall through to the next pattern clause when this clause's

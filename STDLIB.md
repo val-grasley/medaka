@@ -48,8 +48,9 @@ file and the matching impl in `lib/eval.ml`.
   escape hatch; bypasses `Display`)
 - (`print`/`println : Display a => a -> <IO> Unit` are Medaka prelude functions
   over `putStr`/`putStrLn`, not externs — they render via `Display`, Phase 111)
-- `Ref : a -> Ref a` — wrap a value in a mutable cell
+- `Ref : a -> Ref a` — wrap a value in a mutable cell (read it back via `r.value`)
 - `set_ref : Ref a -> a -> <Mut> Unit` — overwrite the contents of a `Ref`
+- `hash : a -> Int` — structural, non-negative hash (Module 6 hash containers)
 - `pi : Float` — math constant π
 - `e : Float` — math constant e
 - `readLine : Unit -> <IO> String` — read one line from stdin
@@ -685,6 +686,63 @@ ascending inserts).
   Foldable methods and resolve cleanly from user files. No `map`/`filter`
   standalones (would clash with `Mappable`/`Filterable` method names, and `Set`
   is not a lawful `Mappable`); a future element-`map` needs a non-clashing name.
+
+---
+
+## Module 6 — `hash_map` / `hash_set` (mutable, performance)
+
+The performance counterpart to the persistent ordered Module 5: O(1)-average
+**mutable** hash containers. Updates mutate in place (`<Mut>` in the signature)
+rather than returning a fresh structure. Reach for `Map`/`Set` when you want
+persistence/ordering; reach for these for raw speed with a single owner.
+
+**Representation.** Separate chaining: each bucket is a `List` of entries, in an
+`Array` held by a `Ref` (so it can be swapped on resize), plus a `Ref Int` count.
+Doubles capacity past load factor 0.75. Hashing is the global `hash` extern
+(structural, non-negative), which **must agree with the key/element's `Eq`** — it
+holds for all structural `Eq` impls (the built-ins); a custom non-structural `Eq`
+would break it. Iteration order is unspecified.
+
+### `hash_map` ✅ implemented (`stdlib/hash_map.mdk`)
+
+- **Construction:** `new : Unit -> HashMap k v` (a *function*, so each call
+  allocates its own table), `fromList : Eq k => List (k, v) -> <Mut> HashMap k v`.
+- **Query (pure):** `size` (O(1)), `isEmpty`, `get`, `member`, `findWithDefault`.
+- **Mutation (`<Mut>`):** `insert` (overwrites), `delete`.
+- **Iteration (pure, unspecified order):** `entries` (the pairs), `toList`
+  (alias of `entries`), `keys`, `values`.
+- **Instances:** `Eq` (order-independent — same entries), `Show` (`fromList […]`
+  in hash order). *Not* `Foldable` (its `toList` means pairs, which would clash
+  with `Foldable.toList`'s element meaning — hence the internal `entries` name).
+- 8 doctests.
+
+### `hash_set` ✅ implemented (`stdlib/hash_set.mdk`)
+
+Standalone mutable element tree (mirrors `hash_map` minus values; not a wrapper
+over `HashMap a Unit`, same reasoning as `set` over `Map a Unit`).
+
+- **Construction:** `new`, `fromList`.
+- **Query (pure):** `size`, `member`; `toList`/`length`/`elem`/`any`/`sum`/… via
+  `Foldable HashSet` (a set's elements *are* its `toList`, so no clash — unlike
+  `hash_map`).
+- **Mutation (`<Mut>`):** `insert`, `delete`.
+- **Instances:** `Foldable`, `Eq` (order-independent), `Show`.
+- 7 doctests.
+
+### `mut_array` ⏳ unstarted
+
+A growable mutable array (vector) over the fixed-size `Array`. Not yet built.
+
+### Compiler notes
+
+- New `hash : a -> Int` extern (runtime.mdk + eval.ml) — structural,
+  non-negative (`Hashtbl.hash`).
+- Removed `"HashMap"`/`"HashSet"` from `resolve.ml`'s `primitive_types` (reserved
+  placeholders), mirroring the `Map`/`Set` removals.
+- Surfaced two language gaps (PLAN.md): **Phase 118** (`if`/`else` branches can't
+  be multi-statement blocks — use guards) and **Phase 119** (false-positive
+  non-exhaustiveness for 3+-arg list-matching functions — use a `where go`
+  single-list-arg helper). Both have clean workarounds used in these modules.
 
 ---
 

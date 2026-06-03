@@ -1,0 +1,257 @@
+{- hash_map.mdk — a mutable hash table (Module 6).
+
+   See STDLIB.md (Module 6) for the plan.
+
+   `HashMap k v` is a **mutable** hash table — separate chaining (each bucket a
+   `List (k, v)`) in an `Array` held by a `Ref` so it can be swapped on resize,
+   plus a `Ref Int` count. This is the *performance* counterpart to the
+   persistent ordered `Map` (map.mdk): O(1) average lookup/insert, but updates
+   mutate in place (`<Mut>` in the signature) rather than returning a fresh map.
+   Reach for `Map` when you want persistence/ordering; reach for `HashMap` when
+   you want raw speed and a single owner.
+
+   Keys hash via the global `hash` extern (structural). It must agree with the
+   key's `Eq`, which holds for every structural `Eq` impl (all the built-ins) —
+   a *custom* `Eq` that isn't structural would break it, so don't key a HashMap
+   on such a type. Iteration order is unspecified (hash order).
+
+   The mutating ops sequence `<Mut>` statements with **guards + block bodies**
+   rather than `if … else …`, because an `if` branch can't be a multi-statement
+   block (see PLAN.md Phase 118). -}
+
+import core.{Eq, Show, Option, Mappable}
+
+{- `HashMap buckets count`: `buckets.value` is the bucket array (each slot a
+   chain), `count.value` is the live entry count. Both are mutated in place. -}
+public export data HashMap k v = HashMap (Ref (Array (List (k, v)))) (Ref Int)
+
+initialCapacity : Int
+initialCapacity = 8
+
+-- Bucket index of a key at a given capacity (hash is non-negative, cap > 0).
+slotOf : k -> Int -> Int
+slotOf key cap = hash key % cap
+
+-- ── Construction ────────────────────────────────────────────────────────
+
+{- | A fresh, empty hash table. Takes `Unit` (not a nullary value) so each call
+   allocates its own table rather than sharing one mutable cell. -}
+export
+new : Unit -> HashMap k v
+new _ = HashMap (Ref (arrayMake initialCapacity [])) (Ref 0)
+
+-- ── Query (pure reads) ──────────────────────────────────────────────────
+
+{- | Number of entries. O(1).
+
+   > size (fromList [(1, 10), (2, 20), (1, 30)])
+   2 -}
+export
+size : HashMap k v -> Int
+size (HashMap _ count) = count.value
+
+{- | `True` when there are no entries.
+
+   > isEmpty (new () : HashMap Int Int)
+   True -}
+export
+isEmpty : HashMap k v -> Bool
+isEmpty m = size m == 0
+
+bucketLookup : Eq k => k -> List (k, v) -> Option v
+bucketLookup _ [] = None
+bucketLookup key ((k, v)::rest)
+  | key == k = Some v
+  | otherwise = bucketLookup key rest
+
+{- | The value at a key, or `None`.
+
+   > get 2 (fromList [(1, 10), (2, 20)])
+   Some 20
+   > get 9 (fromList [(1, 10), (2, 20)])
+   None -}
+export
+get : Eq k => k -> HashMap k v -> Option v
+get key (HashMap buckets _) =
+  let arr = buckets.value
+  bucketLookup key (arrayGetUnsafe (slotOf key (arrayLength arr)) arr)
+
+{- | `True` when the key is present.
+
+   > member 2 (fromList [(1, 10), (2, 20)])
+   True -}
+export
+member : Eq k => k -> HashMap k v -> Bool
+member key m = isSome (get key m)
+
+{- | Value at a key, or a fallback.
+
+   > findWithDefault 0 9 (fromList [(1, 10)])
+   0 -}
+export
+findWithDefault : Eq k => v -> k -> HashMap k v -> v
+findWithDefault d key m = fromOption d (get key m)
+
+-- ── Bucket helpers (for insert/delete) ──────────────────────────────────
+
+bucketHas : Eq k => k -> List (k, v) -> Bool
+bucketHas _ [] = False
+bucketHas key ((k, _)::rest)
+  | key == k = True
+  | otherwise = bucketHas key rest
+
+-- `where go` (single list arg) sidesteps a false-positive non-exhaustiveness
+-- warning that fires for 3+-arg functions matching a list (see PLAN.md Phase 119).
+bucketReplace : Eq k => k -> v -> List (k, v) -> List (k, v)
+bucketReplace key val bucket = go bucket where
+    go [] = []
+    go ((k, v)::rest)
+      | key == k = (key, val) :: rest
+      | otherwise = (k, v) :: go rest
+
+bucketRemove : Eq k => k -> List (k, v) -> List (k, v)
+bucketRemove _ [] = []
+bucketRemove key ((k, v)::rest)
+  | key == k = rest
+  | otherwise = (k, v) :: bucketRemove key rest
+
+-- ── Insertion (mutating) ────────────────────────────────────────────────
+
+{- | Insert (or overwrite) the value at a key, in place. Resizes (doubling)
+   when the load factor passes 0.75. -}
+export
+insert : Eq k => k -> v -> HashMap k v -> <Mut> Unit
+insert key val (HashMap buckets count) =
+  let arr = buckets.value
+  let idx = slotOf key (arrayLength arr)
+  insertAt key val arr idx buckets count
+
+insertAt : Eq k => k -> v -> Array (List (k, v)) -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+insertAt key val arr idx buckets count
+  | bucketHas key (arrayGetUnsafe idx arr) = arraySetUnsafe idx (bucketReplace key val (arrayGetUnsafe idx arr)) arr
+  | otherwise = 
+    arraySetUnsafe idx ((key, val) :: arrayGetUnsafe idx arr) arr
+    set_ref count (count.value + 1)
+    maybeResize buckets count
+
+maybeResize : Eq k => Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+maybeResize buckets count
+  | count.value * 4 > arrayLength buckets.value * 3 = resize buckets count
+  | otherwise = ()
+
+resize : Eq k => Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+resize buckets count =
+  let oldArr = buckets.value
+  let newArr = arrayMake (arrayLength oldArr * 2) []
+  set_ref buckets newArr
+  set_ref count 0
+  reinsertAll oldArr 0 (arrayLength oldArr) buckets count
+
+reinsertAll : Eq k => Array (List (k, v)) -> Int -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+reinsertAll oldArr i n buckets count
+  | i >= n = ()
+  | otherwise = 
+    reinsertBucket (arrayGetUnsafe i oldArr) buckets count
+    reinsertAll oldArr (i + 1) n buckets count
+
+reinsertBucket : Eq k => List (k, v) -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+reinsertBucket bucket buckets count = go bucket where
+    go [] = ()
+    go ((k, v)::rest) = 
+      putRaw k v buckets count
+      go rest
+
+-- Insert into a freshly-resized table (key known absent, so just prepend).
+putRaw : k -> v -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+putRaw key val buckets count =
+  let arr = buckets.value
+  let idx = slotOf key (arrayLength arr)
+  arraySetUnsafe idx ((key, val) :: arrayGetUnsafe idx arr) arr
+  set_ref count (count.value + 1)
+
+{- | Build a table from an association list (later pairs win on duplicates).
+
+   > size (fromList [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8)])
+   8 -}
+export
+fromList : Eq k => List (k, v) -> <Mut> (HashMap k v)
+fromList pairs =
+  let m = new ()
+  insertAll pairs m
+  m
+
+insertAll : Eq k => List (k, v) -> HashMap k v -> <Mut> Unit
+insertAll [] _ = ()
+insertAll ((k, v)::rest) m =
+  insert k v m
+  insertAll rest m
+
+-- ── Deletion (mutating) ─────────────────────────────────────────────────
+
+{- | Remove a key, in place. A no-op when absent. -}
+export
+delete : Eq k => k -> HashMap k v -> <Mut> Unit
+delete key (HashMap buckets count) =
+  let arr = buckets.value
+  let idx = slotOf key (arrayLength arr)
+  deleteAt key arr idx count
+
+deleteAt : Eq k => k -> Array (List (k, v)) -> Int -> Ref Int -> <Mut> Unit
+deleteAt key arr idx count
+  | bucketHas key (arrayGetUnsafe idx arr) = 
+    arraySetUnsafe idx (bucketRemove key (arrayGetUnsafe idx arr)) arr
+    set_ref count (count.value - 1)
+  | otherwise = ()
+
+-- ── Iteration (pure; order unspecified) ─────────────────────────────────
+
+collectBuckets : Array (List (k, v)) -> Int -> Int -> List (k, v) -> List (k, v)
+collectBuckets arr i n acc
+  | i >= n = acc
+  | otherwise = collectBuckets arr (i + 1) n (arrayGetUnsafe i arr ++ acc)
+
+{- | All key/value pairs, in unspecified (hash) order.
+
+   Named `entries`, not `toList`: `toList` is a `Foldable` method (returning
+   *elements*), and `HashMap` isn't `Foldable` — within this file the local
+   `toList` would be shadowed by the method and mistyped (`List v` vs the
+   pairs `List (k, v)`). `toList` below is a thin exported alias, never used
+   internally. -}
+export
+entries : HashMap k v -> List (k, v)
+entries (HashMap buckets _) = collectBuckets buckets.value 0 (arrayLength buckets.value) []
+
+{- | Conventional alias for `entries` (all key/value pairs). -}
+export
+toList : HashMap k v -> List (k, v)
+toList m = entries m
+
+{- | All keys, in unspecified order. -}
+export
+keys : HashMap k v -> List k
+keys m = map ((k, _) => k) (entries m)
+
+{- | All values, in unspecified order. -}
+export
+values : HashMap k v -> List v
+values m = map ((_, v) => v) (entries m)
+
+-- ── Instances ───────────────────────────────────────────────────────────
+
+allEntriesIn : (Eq k, Eq v) => List (k, v) -> HashMap k v -> Bool
+allEntriesIn [] _ = True
+allEntriesIn ((k, v)::rest) m
+  | get k m == Some v = allEntriesIn rest m
+  | otherwise = False
+
+{- | Order-independent equality: same entries, regardless of internal layout.
+
+   > eq (fromList [(1, 10), (2, 20)]) (fromList [(2, 20), (1, 10)])
+   True -}
+export default impl Eq (HashMap k v) requires Eq k, Eq v where
+  eq a b = if size a != size b then False else allEntriesIn (entries a) b
+
+{- | Rendered as `fromList [(k, v), …]` in hash order (so the exact text is
+   layout-dependent — don't rely on it for equality; use `eq`). -}
+export default impl Show (HashMap k v) requires Show k, Show v where
+  show m = "fromList \{show (entries m)}"

@@ -77,7 +77,7 @@ let pp_error = function
 let primitive_types = [
   "Int"; "Float"; "String"; "Char"; "Bool"; "Unit";
   "List"; "Ref";
-  "Array"; "MutArray"; "HashMap"; "HashSet";
+  "Array"; "MutArray";
 ]
 
 (* True/False are lexer keywords, not declared in stdlib/core.mdk like the
