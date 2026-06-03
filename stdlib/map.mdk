@@ -116,6 +116,12 @@ singleton k v = Bin 1 k v Tip Tip
    > findWithDefault 0 2 (Map { 1 => 10, 2 => 20 })
    20
 
+   The empty literal `Map { }` works too (Phase 114); annotate to fix the
+   element types the empty braces leave open:
+
+   > size (Map { } : Map Int Int)
+   0
+
    > keys (fromList [(3, 0), (1, 0), (2, 0)])
    [1, 2, 3]
    > findWithDefault 0 1 (fromList [(1, 10), (1, 20)])
@@ -453,6 +459,15 @@ export default impl Mappable (Map k) where
    True -}
 export default impl Eq (Map k v) requires Eq k, Eq v where
   eq a b = if size a != size b then False else eq (toList a) (toList b)
+
+{- | Lexicographic ordering through the canonical ascending association list,
+   so two maps order by their `(key, value)` pairs and a proper prefix sorts
+   first.  Enables nesting (`Map (Set k) v`) and sorting `List (Map …)`.
+
+   > compare (fromList [(1, 10)]) (fromList [(1, 20)])
+   Lt -}
+export default impl Ord (Map k v) requires Ord k, Ord v where
+  compare a b = compare (toList a) (toList b)
 
 {- | Rendered as `fromList [(k, v), …]`, mirroring the constructor that would
    rebuild it.  (Doctest compares against a literal: `Show String` lives in

@@ -5014,6 +5014,26 @@ Two `stdlib/core.mdk` gaps from the Module 5 work.
   list/array/string/map/set + `test_eval`/`run`/`typecheck`/`doctest` + `@thorough`
   all green. Skill: **extend-stdlib**.
 
+### Phase 113: `Ord` instances for `Map` / `Set` (+ `Show`/`Display Ordering`) ✅ DONE (2026-06-02)
+
+Neither `Map k v` nor `Set a` had an `Ord` impl, so they couldn't be nested
+(`Map (Set a) v`, `Set (Set a)`) or sorted (`List (Map …)`). Added cheap
+lexicographic `Ord` on the canonical ascending list, mirroring the existing `Eq`:
+`export default impl Ord (Map k v) requires Ord k, Ord v where compare a b =
+compare (toList a) (toList b)` (`stdlib/map.mdk`) and the element-list analogue
+`impl Ord (Set a) requires Ord a` (`stdlib/set.mdk`). Both delegate to core's
+lexicographic `Ord (List a)`; defining only `compare` suffices (the
+`lt`/`gt`/`lte`/`gte`/`min`/`max` helpers default off it). Verified `Set (Set
+Int)` now typechecks and evaluates (`member` probe → `true`).
+
+Also closed a latent gap: `Ordering` had **no** `Show` *or* `Display` impl, so
+`show`/`println`/`\{compare …}` all failed. Added `impl Show Ordering` +
+`impl Display Ordering` to `core.mdk` (`Lt`/`Eq`/`Gt`), naming the `Eq`
+constructor directly — constructors and interfaces are separately namespaced, so
+there is no clash with the `Eq` interface (see the corrected note below). The two
+Map/Set doctests render `compare … ` as `Lt` directly off the new `Show`. Skill:
+**extend-stdlib**. See [[project_module5_map]].
+
 ### Investigated & dropped as non-issues (2026-06-02)
 
 Two "minor ergonomics" candidates from the Module 5 work, verified non-problems:
@@ -5023,6 +5043,34 @@ interface — constructors and interfaces are already separately namespaced, so
 `match compare … Eq => …` resolves fine even under `Ord k =>` with `Eq` imported
 (map.mdk's earlier "use `_` for the equal case" comment was mistaken and was
 corrected to name `Eq`).
+
+### Phase 114: empty container literals (`Map { }` / `Set { }`) ✅ DONE (2026-06-02)
+
+Empty `Map { }` / `Set { }` raised `Type mismatch: Map Int vs Map`. Root cause:
+the parser can't tell the two apart (empty braces carry no `=>` marker), so both
+lower to a unary `ESetLit name []`, and `Desugar.rewrite_container_lit` pins the
+*unary* `name _a` — the wrong arity for the binary `Map`, so it failed to unify
+with `fromEntries`'s `Map k v` result. Desugar can't fix this (it runs before
+resolve/typecheck and doesn't know each tycon's arity). Fix lands entirely in the
+`EHeadAnnot` arm of `Typecheck.infer` (`typecheck.ml`): **ignore the lowering's
+arity** and rebuild the pin as the head tycon applied to its *declared* arity of
+fresh vars. The arity is read off the type's constructor scheme — `env.type_ctors
+name → ctor → env.ctors → strip TFun arrows, count TApp nesting on the result
+head` — which works on both whole-program paths (and for *imported* types, since
+`Map`/`Set` arrive via `import` and their ctors are seeded into `env.ctors` at the
+te_ctors step). No new env field, no desugar/parser change; non-empty literals are
+unaffected (head + declared arity == what they already supplied). Element vars
+stay free and ground via inference, so an unconstrained empty literal still needs
+an annotation/context (`Map { } : Map Int Int`), exactly like `[]`. Regression
+doctests in map.mdk/set.mdk (`size (Map { } : Map Int Int)` → `0`, similarly Set).
+See [[project_typecheck_two_entrypoints]] and [[project_module5_map]].
+
+The phase's **second** sub-item — *two same-shape containers in scope need a type
+annotation to disambiguate* — was **not** fixed: it is inherent to head-pinning
+(the literal's name pins only the head tycon, not the full type), so when two
+`(k,v)`-entry container types are both in scope, `Map { … }`'s entry shape matches
+both and an annotation (`m : Map _ _ = …`) is the intended disambiguator. Recorded
+as a permanent limitation, not a bug. Skill: **add-language-feature**.
 
 ---
 

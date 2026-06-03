@@ -252,6 +252,11 @@ export impl Show Bool where
 export impl Show Unit where
   show _ = "()"
 
+export impl Show Ordering where
+  show Lt = "Lt"
+  show Eq = "Eq"
+  show Gt = "Gt"
+
 -- `Show String`/`Show Char` render a *quoted, escaped literal* (`show "hi"` is
 -- `"hi"`, `show 'a'` is `'a'`) via the `showStringLit`/`showCharLit` externs —
 -- round-trippable, matching Haskell, and distinct from `println`'s raw output.
@@ -322,6 +327,11 @@ export impl Display Bool where
 
 export impl Display Unit where
   display _ = "()"
+
+export impl Display Ordering where
+  display Lt = "Lt"
+  display Eq = "Eq"
+  display Gt = "Gt"
 
 export impl Display String where
   display s = s

@@ -207,21 +207,6 @@ above, it is flagged ⭐.
   pairs, not values). Lands in `lib/resolve.ml` + `lib/typecheck.ml`. Skill:
   **harden-typechecker**.
 
-- **Phase 114 — container-literal residuals (Phase 108 follow-ups, low priority).**
-  Two limitations of the `Map { … }` / `Set { … }` sugar:
-  - **Empty literals don't work** — `Map { }` / `Set { }` fail (`Type mismatch:
-    Map Int vs Map`): empty braces carry no `=>` to distinguish map-vs-set, so the
-    parser emits `ESetLit(name, [])` and the lowering pins the *unary* `name _a`,
-    the wrong arity for a binary `Map`. Low value (empty containers have
-    `empty`/`Monoid.empty`). Possible fix: `EHeadAnnot` in typecheck ignores the
-    lowering-supplied arity and applies the head tycon to its *declared* arity of
-    fresh vars (a tycon-arity lookup).
-  - **Two same-shape containers in scope need a type annotation** to disambiguate
-    — the literal's name pins the *head* tycon, not the full type, so two
-    `(k,v)`-entry container types both match `Map { … }`'s entry shape. Annotate
-    (`m : Map _ _ = …`) to choose. Inherent to head-pinning; recorded.
-  - Skill: **add-language-feature**.
-
 - ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** The
   instance-`requires` dict-threading into return-position impl bodies (single
   level) is **DONE** (see PLAN-ARCHIVE.md). Remaining, lower priority — each a
@@ -266,14 +251,6 @@ Originally hand-written by the user by design; as of 2026-06-02 the user lifted
 that constraint and delegated the remaining modules (Modules 5–8). STDLIB.md is
 the per-module checklist. **Module 5 (`map` + `set`) is complete** — see
 PLAN-ARCHIVE.md and STDLIB.md.
-
-- **Phase 113 — `Ord` instances for `Map` / `Set`.** Neither has an `Ord` impl
-  today, so you can't nest them (a `Map (Set a) v`, or a `Set (Set a)`) or sort a
-  `List (Map …)`. Add lexicographic `Ord` on the canonical ascending list:
-  `impl Ord (Map k v) requires Ord k, Ord v where compare a b = compare (toList a)
-  (toList b)` (toList = assoc pairs; for set, the element list). Cheap; both
-  already impl `Eq` the same way. Lands in `stdlib/map.mdk` + `stdlib/set.mdk`.
-  Skill: **extend-stdlib**.
 
 - ⭐ **`stdlib/string.mdk`** is drafted and passes its 49 doctests but is flagged
   *awaiting user review* (archive Phase 75 step 3). Open decisions: the
