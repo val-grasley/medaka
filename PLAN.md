@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 121). At task triage, match the work against AGENTS.md's
+number (last used: 124). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -190,6 +190,39 @@ above, it is flagged ⭐.
   token is NEWLINE/DEDENT) and keeps it in expression position. Tests across
   `test_parser`/`test_roundtrip`/`test_fmt`/`test_run`. Skill:
   **add-language-feature**.
+
+- DONE **Phase 123 — `medaka fmt`: width-aware `if`-expression RHS (2026-06-03).**
+  An `if` that is a def / guard-arm / match-arm RHS now *wraps* when it overflows
+  80 cols instead of staying flat: the `if` drops onto its own indented line under
+  the `=`/`=>` and each branch onto its own line (the block-branch layout, but
+  triggered by **width** rather than by a block branch). Short ifs stay inline —
+  it's width-driven, not unconditional. The `if` is the one bare-expression RHS
+  with layout-legal interior break points (newline-before-`if`, after-`then`,
+  before-`else` are all valid layout, as the block-branch grammar already proves),
+  so this exploits exactly those without the dangling-else hazard (every RHS
+  position is newline-terminated). Implementation: a `print_if_rhs` helper in
+  `printer.ml` returning a single width-aware `group`, wired into the three
+  separator callers (`print_def_rhs`, `print_guard_arms`, `print_match_arms`); the
+  condition itself stays flat (unbreakable — a bare expression). Reflowed 10
+  genuinely-overflowing if-RHSs in `array`/`map`/`set`/`string.mdk` (83–133 cols
+  → ≤80). Tests in `test_fmt`; `test_roundtrip` + doctests confirm AST/semantics
+  preserved. Pure `printer.ml` change.
+
+- **Phase 124 (investigative) — `medaka fmt`: should *any* long bare-expression
+  RHS wrap, not just `if`?** Phase 123 fixed the `if` case, but the formatter
+  still leaves a long bare **application** or **operator chain** RHS to overflow
+  (`foo = someFn a b c d e …` past 80 cols stays on one line). This is the
+  documented "bare positions stay flat" policy (`printer.ml` header) — soft breaks
+  only at delimiters / leading continuation operators. The open question: is
+  indenting a too-long simple RHS onto its own line after `=` (parse-safe; it does
+  *not* break mid-application/binop) worth the formatting churn? Pros: fewer >80
+  lines, consistency with Phase 123. Cons: reflows many existing long lines across
+  stdlib + tests, and a bare application still can't break *internally*, so the win
+  is only "header on one line, whole RHS indented on the next" — modest.
+  **Investigate**: measure how many stdlib/test lines it would touch, prototype the
+  `=`-indent group in `print_def_rhs`'s `None` branch, and decide whether the churn
+  pays for itself or whether `if` (which *can* break internally) is the only RHS
+  worth special-casing. Pure `printer.ml`.
 
 - **Phase 101 — drive property generation/shrinking through the `Arbitrary`
   interface (101b).** 101a (registry-first `arbitrary`/`shrink`, native element

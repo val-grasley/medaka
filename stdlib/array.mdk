@@ -91,7 +91,11 @@ copy arr = arrayCopy arr
    None -}
 export
 get : Int -> Array a -> Option a
-get i arr = if i < 0 || i >= arrayLength arr then None else Some (arrayGetUnsafe i arr)
+get i arr =
+  if i < 0 || i >= arrayLength arr then
+    None
+  else
+    Some (arrayGetUnsafe i arr)
 
 {- | First element, or `None` when empty.
 
@@ -111,7 +115,11 @@ last arr = get (arrayLength arr - 1) arr
 
 -- Tail-recursive list build, used by the Foldable Array impl's `toList`.
 toListGo : Array a -> Int -> List a -> List a
-toListGo arr i acc = if i < 0 then acc else toListGo arr (i - 1) (arrayGetUnsafe i arr :: acc)
+toListGo arr i acc =
+  if i < 0 then
+    acc
+  else
+    toListGo arr (i - 1) (arrayGetUnsafe i arr :: acc)
 
 -- ── Pure transformation (return fresh arrays, no <Mut>) ─────────────────
 
@@ -169,7 +177,11 @@ concat arrs =
   arrayMakeWith total (i => concatLookup arrs i 0 outer)
 
 concatTotal : Array (Array a) -> Int -> Int -> Int -> Int
-concatTotal arrs i acc outer = if i >= outer then acc else concatTotal arrs (i + 1) (acc + arrayLength (arrayGetUnsafe i arrs)) outer
+concatTotal arrs i acc outer =
+  if i >= outer then
+    acc
+  else
+    concatTotal arrs (i + 1) (acc + arrayLength (arrayGetUnsafe i arrs)) outer
 
 {- | Find element `i` by walking the outer array, subtracting inner
    lengths.  O(outer) per lookup → O(outer * total) overall.  Fine for
@@ -221,7 +233,11 @@ export default impl Filterable Array where
     arrayFromList (revList (filterMapGo f arr 0 n []) [])
 
 filterMapGo : (a -> <e> Option b) -> Array a -> Int -> Int -> List b -> <e> List b
-filterMapGo f arr i n acc = if i >= n then acc else filterMapStep f arr i n acc (f (arrayGetUnsafe i arr))
+filterMapGo f arr i n acc =
+  if i >= n then
+    acc
+  else
+    filterMapStep f arr i n acc (f (arrayGetUnsafe i arr))
 
 filterMapStep : (a -> <e> Option b) -> Array a -> Int -> Int -> List b -> Option b -> <e> List b
 filterMapStep f arr i n acc (Some y) = filterMapGo f arr (i + 1) n (y :: acc)
@@ -237,7 +253,11 @@ revList (x::xs) acc = revList xs (x :: acc)
 -- | Bounds-checked write.  Panics on OOB.
 export
 set : Int -> a -> Array a -> <Mut> Unit
-set i x arr = if i < 0 || i >= arrayLength arr then panic "Array.set: index out of bounds" else arraySetUnsafe i x arr
+set i x arr =
+  if i < 0 || i >= arrayLength arr then
+    panic "Array.set: index out of bounds"
+  else
+    arraySetUnsafe i x arr
 
 -- | Exchange the elements at indices `i` and `j` in place.
 export
@@ -300,10 +320,18 @@ sortOn key arr =
    standalone names. -}
 
 foldGo : (b -> a -> <e> b) -> Array a -> Int -> Int -> b -> <e> b
-foldGo f arr i n acc = if i >= n then acc else foldGo f arr (i + 1) n (f acc (arrayGetUnsafe i arr))
+foldGo f arr i n acc =
+  if i >= n then
+    acc
+  else
+    foldGo f arr (i + 1) n (f acc (arrayGetUnsafe i arr))
 
 foldRightGo : (a -> b -> <e> b) -> Array a -> Int -> b -> <e> b
-foldRightGo f arr i acc = if i < 0 then acc else foldRightGo f arr (i - 1) (f (arrayGetUnsafe i arr) acc)
+foldRightGo f arr i acc =
+  if i < 0 then
+    acc
+  else
+    foldRightGo f arr (i - 1) (f (arrayGetUnsafe i arr) acc)
 
 -- | First element satisfying the predicate, or `None`.
 export
@@ -311,7 +339,11 @@ find : (a -> <e> Bool) -> Array a -> <e> Option a
 find pred arr = findGo pred arr 0 (arrayLength arr)
 
 findGo : (a -> <e> Bool) -> Array a -> Int -> Int -> <e> Option a
-findGo pred arr i n = if i >= n then None else if pred (arrayGetUnsafe i arr) then Some (arrayGetUnsafe i arr) else findGo pred arr (i + 1) n
+findGo pred arr i n =
+  if i >= n then
+    None
+  else
+    if pred (arrayGetUnsafe i arr) then Some (arrayGetUnsafe i arr) else findGo pred arr (i + 1) n
 
 {- | Index of the first element satisfying the predicate, or `None`.
 
@@ -322,7 +354,11 @@ findIndex : (a -> <e> Bool) -> Array a -> <e> Option Int
 findIndex pred arr = findIndexGo pred arr 0 (arrayLength arr)
 
 findIndexGo : (a -> <e> Bool) -> Array a -> Int -> Int -> <e> Option Int
-findIndexGo pred arr i n = if i >= n then None else if pred (arrayGetUnsafe i arr) then Some i else findIndexGo pred arr (i + 1) n
+findIndexGo pred arr i n =
+  if i >= n then
+    None
+  else
+    if pred (arrayGetUnsafe i arr) then Some i else findIndexGo pred arr (i + 1) n
 
 {- `elem`, `sum`, and `product` are *not* defined here either: the generic
    `Foldable` versions in core (`elem : (Foldable t, Eq a) => …`,
@@ -370,10 +406,18 @@ export default impl Monoid (Array a) where
   empty = [||]
 
 export default impl Eq (Array a) requires Eq a where
-  eq a b = if arrayLength a != arrayLength b then False else eqGo a b 0 (arrayLength a)
+  eq a b =
+    if arrayLength a != arrayLength b then
+      False
+    else
+      eqGo a b 0 (arrayLength a)
 
 eqGo : Eq a => Array a -> Array a -> Int -> Int -> Bool
-eqGo a b i n = if i >= n then True else if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then eqGo a b (i + 1) n else False
+eqGo a b i n =
+  if i >= n then
+    True
+  else
+    if eq (arrayGetUnsafe i a) (arrayGetUnsafe i b) then eqGo a b (i + 1) n else False
 
 -- Comma-joined element rendering for `Show (Array a)`, mirroring core's
 -- `showListItems`; recurses by index so it allocates no intermediate list.

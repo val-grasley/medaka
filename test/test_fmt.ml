@@ -146,6 +146,46 @@ let fmt_if_block_else_canonical () =
   if out <> expected then
     failwith (Printf.sprintf "if/block-else not canonical:\n%s" out)
 
+(* Phase 123: an `if` RHS that overflows the line wraps to the block-branch
+   layout (`if` on its own indented line under `=`, each branch on its own
+   line) instead of staying flat and overflowing. *)
+let fmt_if_rhs_wraps_when_wide () =
+  let src =
+    "f buckets count = if count.value * 4 > arrayLength buckets.value * 3 then resizeUp buckets else resizeDown buckets count\n" in
+  let out = format src in
+  let expected =
+    "f buckets count =\n\
+    \  if count.value * 4 > arrayLength buckets.value * 3 then\n\
+    \    resizeUp buckets\n\
+    \  else\n\
+    \    resizeDown buckets count\n" in
+  if out <> expected then
+    failwith (Printf.sprintf "wide if-RHS did not wrap to block layout:\n%s" out);
+  (* every line must fit 80 cols (the condition line is the irreducible max) *)
+  List.iter (fun l ->
+    if String.length l > 80 then
+      failwith (Printf.sprintf "wrapped if-RHS still has a >80 line: %S" l))
+    (String.split_on_char '\n' out)
+
+(* A short `if` RHS stays inline — wrapping is width-driven, not unconditional. *)
+let fmt_if_rhs_stays_inline_when_short () =
+  let out = format "f c = if c > 0 then a c else b c\n" in
+  if out <> "f c = if c > 0 then a c else b c\n" then
+    failwith (Printf.sprintf "short if-RHS should stay inline:\n%s" out)
+
+let id_if_rhs_wide_full =
+  idempotent
+    "f buckets count =\n\
+    \  if count.value * 4 > arrayLength buckets.value * 3 then\n\
+    \    resizeUp buckets\n\
+    \  else\n\
+    \    resizeDown buckets count\n"
+let id_if_rhs_wide_elseless =
+  idempotent
+    "maybeResize buckets count =\n\
+    \  if count.value * 4 > arrayLength buckets.value * 3 then\n\
+    \    resize buckets count\n"
+
 (* Surface sugar must survive formatting rather than being printed as its
    desugared core form. *)
 let id_guards   = idempotent
@@ -399,5 +439,9 @@ let () =
       Alcotest.test_case "else-less if def-RHS drops else ()" `Quick fmt_if_elseless_def_rhs;
       Alcotest.test_case "else-less if def-RHS idempotent" `Quick id_if_elseless_def_rhs;
       Alcotest.test_case "else-less if def-RHS block idempotent" `Quick id_if_elseless_def_rhs_block;
+      Alcotest.test_case "wide if-RHS wraps to block layout" `Quick fmt_if_rhs_wraps_when_wide;
+      Alcotest.test_case "short if-RHS stays inline" `Quick fmt_if_rhs_stays_inline_when_short;
+      Alcotest.test_case "wide if-RHS full idempotent" `Quick id_if_rhs_wide_full;
+      Alcotest.test_case "wide if-RHS else-less idempotent" `Quick id_if_rhs_wide_elseless;
     ];
   ]

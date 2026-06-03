@@ -58,14 +58,22 @@ balance k v l r
 rotateL : k -> v -> Map k v -> Map k v -> Map k v
 rotateL k v l r =
   match r
-    Bin _ _ _ rl rr => if size rl < 2 * size rr then singleL k v l r else doubleL k v l r
+    Bin _ _ _ rl rr =>
+      if size rl < 2 * size rr then
+        singleL k v l r
+      else
+        doubleL k v l r
     Tip => panic "Map.rotateL: empty right subtree"
 
 -- Left subtree too heavy: mirror of rotateL.
 rotateR : k -> v -> Map k v -> Map k v -> Map k v
 rotateR k v l r =
   match l
-    Bin _ _ _ ll lr => if size lr < 2 * size ll then singleR k v l r else doubleR k v l r
+    Bin _ _ _ ll lr =>
+      if size lr < 2 * size ll then
+        singleR k v l r
+      else
+        doubleR k v l r
     Tip => panic "Map.rotateR: empty left subtree"
 
 singleL : k -> v -> Map k v -> Map k v -> Map k v

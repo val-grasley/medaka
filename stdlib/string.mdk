@@ -186,7 +186,11 @@ parseDigits a n i acc seen
   | otherwise = parseDigitStep a n i acc seen (arrayGetUnsafe i a)
 
 parseDigitStep : Array Char -> Int -> Int -> Int -> Bool -> Char -> Option Int
-parseDigitStep a n i acc seen c = if isDigit c then parseDigits a n (i + 1) (acc * 10 + (charCode c - 48)) True else None
+parseDigitStep a n i acc seen c =
+  if isDigit c then
+    parseDigits a n (i + 1) (acc * 10 + (charCode c - 48)) True
+  else
+    None
 
 finishInt : Bool -> Int -> Option Int
 finishInt seen acc = if seen then Some acc else None
@@ -437,7 +441,11 @@ spliceAt i oldLen new s = stringSlice 0 i s
    "heLLo" -}
 export
 replaceAll : String -> String -> String -> String
-replaceAll old new s = if old == "" then s else replaceAllGo (stringLength old) old new s
+replaceAll old new s =
+  if old == "" then
+    s
+  else
+    replaceAllGo (stringLength old) old new s
 
 replaceAllGo : Int -> String -> String -> String -> String
 replaceAllGo oldLen old new s =
@@ -507,7 +515,11 @@ lines : String -> List String
 lines s = map stripCR (split nl s)
 
 stripCR : String -> String
-stripCR line = if endsWith "\r" line then stringSlice 0 (stringLength line - 1) line else line
+stripCR line =
+  if endsWith "\r" line then
+    stringSlice 0 (stringLength line - 1) line
+  else
+    line
 
 {- | Split on runs of whitespace, dropping empty fields.  Each word is a
    `stringSlice` of the original — no per-char rebuild.
@@ -522,7 +534,11 @@ words s =
   wordsFrom a n s (firstNonSpace a 0 n)
 
 wordsFrom : Array Char -> Int -> String -> Int -> List String
-wordsFrom a n s start = if start >= n then [] else wordsEmit a n s start (firstSpace a start n)
+wordsFrom a n s start =
+  if start >= n then
+    []
+  else
+    wordsEmit a n s start (firstSpace a start n)
 
 wordsEmit : Array Char -> Int -> String -> Int -> Int -> List String
 wordsEmit a n s start e = stringSlice start e s :: wordsFrom a n s (firstNonSpace a e n)
@@ -558,7 +574,11 @@ unwords parts = join " " parts
    "...ab" -}
 export
 padLeft : Int -> Char -> String -> String
-padLeft n c s = if stringLength s >= n then s else stringConcat (replic (n - stringLength s) (charToStr c)) ++ s
+padLeft n c s =
+  if stringLength s >= n then
+    s
+  else
+    stringConcat (replic (n - stringLength s) (charToStr c)) ++ s
 
 {- | Right-pad with `c` up to total length `n`.
 
@@ -566,7 +586,11 @@ padLeft n c s = if stringLength s >= n then s else stringConcat (replic (n - str
    "ab..." -}
 export
 padRight : Int -> Char -> String -> String
-padRight n c s = if stringLength s >= n then s else s ++ stringConcat (replic (n - stringLength s) (charToStr c))
+padRight n c s =
+  if stringLength s >= n then
+    s
+  else
+    s ++ stringConcat (replic (n - stringLength s) (charToStr c))
 
 {- | Center the string in width `n`, padding with `c`; any odd extra goes on
    the right.
@@ -575,7 +599,11 @@ padRight n c s = if stringLength s >= n then s else s ++ stringConcat (replic (n
    ".ab.." -}
 export
 center : Int -> Char -> String -> String
-center n c s = if stringLength s >= n then s else centerPad (half (n - stringLength s)) (n - stringLength s - half (n - stringLength s)) c s
+center n c s =
+  if stringLength s >= n then
+    s
+  else
+    centerPad (half (n - stringLength s)) (n - stringLength s - half (n - stringLength s)) c s
 
 centerPad : Int -> Int -> Char -> String -> String
 centerPad l r c s = stringConcat (replic l (charToStr c))
