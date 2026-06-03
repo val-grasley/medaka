@@ -17,13 +17,14 @@ renderToks [] = ""
 renderToks [t] = tokenToString t
 renderToks (t :: rest) = tokenToString t ++ "\n" ++ renderToks rest
 
--- Read <path>, tokenize, and print the canonical token stream.  Factored into a
--- helper called from `main`'s match arm — the obvious refactor.  This helper is
--- deliberately named `emit`, the same name as lexer.mdk's (private, `Num`-
--- constrained) 8-arg `emit`: it exercises the Phase 134 fix end-to-end (the old
--- joint dict-pass would have prepended spurious dict params to this unconstrained
--- `emit`, so `emit path` returned an un-run partial closure — clean exit, no
--- output).
+-- Read <path>, tokenize, and print the canonical token stream.  Factored into an
+-- `emit` helper called from `main`'s match arm — the obvious refactor, unblocked
+-- by Phase 134.  Before that fix an `<IO>` helper called from a `match` arm could
+-- silently produce no output (it returned an un-run partial closure) when its
+-- name collided with a *constrained* same-named function in another module, via
+-- the loader's joint dict-pass.  That dict-pass bug is guarded by `test_loader`;
+-- lexer.mdk's `emit` now carries a concrete signature, so it no longer collides
+-- here.
 emit path =
   match readFile path
     Ok src => putStr (renderToks (tokenize src))

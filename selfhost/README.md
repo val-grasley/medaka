@@ -88,12 +88,13 @@ the stage is done when all pass.
 **Phase 134 (fixed).** Porting the lexer surfaced a real bug: an `<IO>`-returning
 **helper** called from a `match` arm produced no output (clean exit) while the
 same logic **inlined** ran correctly. Root cause was *not* the eval driver but
-cross-module dict-passing: `lexer.mdk`'s private, `Num`-constrained 8-arg `emit`
-made `Eval.eval_modules` (which dict-passed the whole program *jointly*, keying
-dict-arity by bare name) prepend spurious dict parameters to any same-named
-function in another module. `lex_main.mdk`'s unconstrained `emit` helper then got
-under-applied, returning a partial closure that was never run. Fixed by scoping
-each module's dict-arity table to the references that can resolve to its own
-definitions (own decls + transitive importers). `lex_main.mdk` now uses the
-helper form — and shares the name `emit` with the lexer on purpose, so the diff
-harness exercises the fix continuously.
+cross-module dict-passing: a private, then-`Num`-constrained 8-arg `emit` in
+`lexer.mdk` made `Eval.eval_modules` (which dict-passed the whole program
+*jointly*, keying dict-arity by bare name) prepend spurious dict parameters to any
+same-named function in another module. `lex_main.mdk`'s unconstrained `emit`
+helper then got under-applied, returning a partial closure that was never run.
+Fixed by scoping each module's dict-arity table to the references that can resolve
+to its own definitions (own decls + transitive importers); the regression is
+guarded by `test_loader` (which supplies a genuinely-constrained same-named
+sibling). `lex_main.mdk` now uses the clean helper form. (The lexer's `emit` has
+since gained a concrete `Int` signature, so it no longer collides on its own.)
