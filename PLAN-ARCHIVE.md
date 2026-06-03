@@ -5115,6 +5115,56 @@ all four `resolve_dict_apps` call sites). **Done when.** the new
 `Elaborate`) pass, with all of `test_typecheck/eval/run/loader/repl/diagnostics/
 doctest` + `@thorough` green.
 
+### Phase 83/84 residual #4: head-key dict-application routing (free-`e` `Result`) ✅ DONE (2026-06-02)
+
+Closed the multi-param free-param residual #4 (only the nested/structured-dict
+residual #5 now remains of Phase 83/84). Skill: **add-language-feature**
+(cross-cutting: `typecheck.ml` + `eval.ml`).
+
+**The bug.** A polymorphic-monad wrapper applied to a `Result` value mis-dispatched:
+```
+f m = do { x <- m; pure x }
+println (f (Ok 5))     -- printed [5] (List's pure!), should be Ok 5
+```
+Identical failure for the signatured `f : Thenable m => m a -> m a`. At `f (Ok 5)`
+the constraint `Thenable m` instantiates with `m = Result e`, `e` **free** (nothing
+pins it). The dict *argument* the call must pass to `f` is therefore head-concrete
+(`Result`) but args-free. The dict-application route resolver (`resolve_one_route`)
+only emitted `RKey`/`RDict` — never a head-key — so the non-ground dict collapsed to
+the sentinel `RKey ""` → `VDict ""` → inside `f`'s body `pure x` reads it
+(`select_impl_by_key ""`), finds nothing, falls back to arg-tag dispatch → first
+Applicative impl (List). The *method-occurrence* path (`check_method_usages`)
+already had a `try_head_key` escape hatch (`RHeadKey`, Phase 69.x-c) for exactly
+this `Result e` shape — but the dict-application path never got it.
+
+**The fix (4 sites).**
+- `lib/typecheck.ml`: factored the inline `try_head_key` head-match logic into a
+  shared top-level `head_key_route env iface args : string option` (single-param
+  interface; `head_tycon_mono`; `mono_matches` over `env.impls`; non-seeded-wins;
+  `Some head` iff ≥1 impl head matches — eval enforces uniqueness). The method path
+  now calls it (no behavior change). Added it to `resolve_one_route`'s non-ground
+  `else` branch, **after** `find_enclosing_dict` (an enclosing constraint var is
+  more precise and forwards the caller's real dict) and before the `RKey ""`
+  sentinel: `Some h -> RHeadKey h`.
+- `lib/eval.ml`: new runtime value `VDictHead of string` (a head-only dict, carries
+  just the discriminating head tycon). `dict_of_route (RHeadKey h) -> VDictHead h`
+  (was `VDict ""`); the `RDict d` forwarding case also forwards a `VDictHead`
+  transitively. The `EMethodRef` `RDict` read narrows by head when the param holds a
+  head dict: `VDictHead h -> select_impl_by_head h v` (the same narrowing the proven
+  `RHeadKey` method case uses). Added a `pp_value` arm.
+- `lib/dict_pass.ml`: unchanged — it counts route-list length for arity; `RHeadKey`
+  is just another route entry.
+
+**Why safe.** Strictly additive at runtime: the only behavioral change is that a
+head-concrete args-free dict argument that previously collapsed to first-impl now
+routes by head tag. Non-unique heads and bare-TVar heads (e.g. residual #3's
+`do { pure 5 }` with no context) are unchanged — still the arg-tag/List default.
+Reuses `select_impl_by_head`/`head_tycon_mono`, proven on the method path.
+
+**Done when.** New `test/test_eval.ml` cases `t_poly_monad_result_unsig`/`_sig`
+(`f (Ok 5)` → `Ok 5`) pass; List/Option dispatch and the no-context `[5]` default
+verified unchanged; `test_eval/run/typecheck/doctest` + `@thorough` all green.
+
 ### Module 5 stdlib: `map.mdk` + `set.mdk` (weight-balanced ordered containers) ✅ DONE (2026-06-02)
 
 The single biggest Stage-0 gap (symbol tables / scopes / substitutions). User

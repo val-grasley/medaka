@@ -69,8 +69,9 @@ What's missing is the supporting surface a real multi-thousand-line program need
     91)~~, ~~plain multi-clause exhaustiveness (Phase 102)~~ — **DONE**.
   - Multi-module / return-position dispatch residuals (Phase 83/84) shouldn't
     force arg-tag workarounds in compiler code — mostly closed (Phase 115 closed
-    the inferred/recursive-wrapper cases); the nested-dict (#5) and free-`e`
-    `Result` (#4) residuals remain.
+    the inferred/recursive-wrapper cases; the free-`e` `Result` case #4 closed
+    2026-06-02 via head-key dict-application routing); only the nested/structured
+    -dict residual (#5) remains.
 - **Interpreter performance, "good enough" to bootstrap.** Running the compiler
   *on* the interpreter must finish in minutes, not hours. May require interpreter
   hot-path work (the eval loop, environment representation) — measure once a
@@ -140,7 +141,9 @@ above, it is flagged ⭐.
 - ⭐ **Phase 83 / 84 (residuals, layered like 69.x→74).** The
   instance-`requires` dict-threading into return-position impl bodies (single
   level) is **DONE** (see PLAN-ARCHIVE.md). The tractable set was closed by
-  **Phase 115** (2026-06-02, see PLAN-ARCHIVE.md) — #1/#2 fixed, #3 decided:
+  **Phase 115** (2026-06-02, see PLAN-ARCHIVE.md) — #1/#2 fixed, #3 decided; **#4
+  (free-`e` `Result`) closed 2026-06-02** by head-key dict-application routing
+  (see PLAN-ARCHIVE.md). Only #5 (nested/structured dicts) remains:
   - ~~Runtime dict-threading *into* an inferred (unsignatured top-level)
     constrained body~~ — **DONE (Phase 115 #1).** Generalized Phase 84's
     promotion (`promotable_from`) from the hard-coded `Applicative` to *any*
@@ -166,19 +169,17 @@ above, it is flagged ⭐.
     (the program names no monad), analogous to Haskell type-defaulting — not a
     mis-dispatch. A stricter "ambiguous type" *error* is possible future work but
     out of scope.
-  - `Result e` with a free `e` mis-dispatches even when signatured (a multi-param
-    dict-resolution gap). **Re-verified & reproduces (2026-06-02, this binary).**
-    Repro: `f m = do { x <- m; pure x }` called `f (Ok 5)` panics (routes to
-    List's `pure`) for **both** the unsignatured form and the signatured
-    `f : Thenable m => m a -> m a` — identically. Contrast: signatured Option
-    works, and a fully-ground `pure 5 : Result String Int` works. Root cause: at
-    `f (Ok 5)` the monad instantiates to `Result e` with `e` **free** (nothing
-    pins it), and dict-*application* routes are `RKey`/`RDict` only — they cannot
-    carry a head-key (`eval.ml:459`), so the non-ground `Result e` dict argument
-    resolves to `RKey ""` → arg-tag fallback → first impl (List). Not a one-line
-    fix (needs head-key dict routing, or defaulting/grounding the free param);
-    **still deferred**, out of the tractable-set scope. Phase 115 #1 does not fix
-    it (the call-site dict still can't ground `e`).
+  - ~~`Result e` with a free `e` mis-dispatches even when signatured~~ — **DONE
+    (#4, 2026-06-02).** Was: `f m = do { x <- m; pure x }` called `f (Ok 5)`
+    routed to List's `pure` (`[5]`) for both the unsignatured and signatured
+    forms, because dict-*application* routes (`resolve_one_route`) emitted only
+    `RKey`/`RDict` — never a head-key — so the non-ground `Result e` dict
+    collapsed to `RKey ""` → arg-tag → first impl. Fix: extended the head-key
+    escape hatch the *method-occurrence* path already had (`RHeadKey` via
+    `head_key_route`, now a shared helper) to the dict-application path, plus a
+    head-bearing runtime dict value `VDictHead` that narrows by head tag
+    (`select_impl_by_head`) when the body reads it. `f (Ok 5)` → `Ok 5`;
+    List/Option dispatch and #3's no-context default (`[5]`) unchanged.
   - True recursive/nested instance dictionaries (the `List (List Int)` case) need
     structured dicts rather than flat impl-key strings — the real "pipeline
     restructure"; also lifts the Phase 101b nesting limit. **Still deferred** (the

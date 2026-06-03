@@ -486,6 +486,25 @@ ro = f (Some 1)
 rl = f [2]
 |} "ro" (VCon ("Some", [VInt 1]))
 
+(* Phase 83/84 (#4): a polymorphic-monad wrapper applied to a `Result` value.
+   The monad instantiates to `Result e` with `e` free (nothing pins it), so the
+   dict argument is head-concrete but args-free.  Pre-fix this collapsed to the
+   first Applicative impl (List → `[5]`); head-key dict-application routing
+   (RHeadKey → VDictHead, narrowed by head tag) now dispatches to Result's `pure`.
+   Both the unsignatured and the signatured forms must yield `Ok 5`. *)
+let t_poly_monad_result_unsig = assert_val_typed {|f m = do
+  x <- m
+  pure x
+r = f (Ok 5)
+|} "r" (VCon ("Ok", [VInt 5]))
+
+let t_poly_monad_result_sig = assert_val_typed {|f : Thenable m => m a -> m a
+f m = do
+  x <- m
+  pure x
+r = f (Ok 5)
+|} "r" (VCon ("Ok", [VInt 5]))
+
 (* A signatured polymorphic monad still works. Phase 98: a do-block with `<-`
    requires `Thenable m` (not merely `Applicative m`) — `<-` is `andThen` — so
    the honest signature names `Thenable`; the constraint reaches the body via
@@ -1866,6 +1885,8 @@ let () =
       test_case "List wrapper"          `Quick t_poly_monad_list;
       test_case "transitive wrapper"    `Quick t_poly_monad_transitive;
       test_case "two monads, one prog"  `Quick t_poly_monad_option_and_list;
+      test_case "Result free-e (#4)"    `Quick t_poly_monad_result_unsig;
+      test_case "Result free-e sig (#4)" `Quick t_poly_monad_result_sig;
       test_case "signatured still ok"   `Quick t_poly_monad_signatured;
       test_case "concrete unchanged"    `Quick t_poly_monad_concrete;
       test_case "custom Thenable (P98)" `Quick t_do_custom_thenable;
