@@ -327,7 +327,7 @@ and read = parse
   | "|>"  { PIPE_RIGHT }
   | ">>"  { RCOMPOSE }
   | "<<"  { LCOMPOSE }
-  | ".{"  { DOT_LBRACE }
+  | ".{"  { incr paren_depth; DOT_LBRACE }
   | ".*"  { DOT_STAR }
   | "@"   { if Lexing.lexeme_start lexbuf = !last_ident_end then AS_AT else AT }
 

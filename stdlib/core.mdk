@@ -377,10 +377,12 @@ export impl Display (a, b, c, d, e) requires Display a, Display b, Display c, Di
    Medaka functions over the string-only `putStr`/`putStrLn` externs, which moves
    the `Display` constraint into Medaka where dict-passing works (an extern can't
    receive a dictionary). -}
-export println : Display a => a -> <IO> Unit
+export
+println : Display a => a -> <IO> Unit
 println x = putStrLn (display x)
 
-export print : Display a => a -> <IO> Unit
+export
+print : Display a => a -> <IO> Unit
 print x = putStr (display x)
 
 {- | Numeric arithmetic.  Backs `+`, `-`, `*`, `/` for user-defined numeric
@@ -719,7 +721,7 @@ export impl Filterable List where
   filterMap _ [] = []
   filterMap f (x::xs) =
     match f x
-      (Some y) => y :: filterMap f xs
+      Some y => y :: filterMap f xs
       None => filterMap f xs
 
 -- ─── Bool helpers ───────────────────────────────────────────────────────
@@ -907,7 +909,7 @@ export impl Arbitrary String where
 
 -- | Generate a list of up to `maxLen` elements using `gen`.
 export
-arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> (List a)
+arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> List a
 arbitraryList gen maxLen = go (randomInt 0 maxLen) []
   where
     go 0 acc = acc

@@ -268,7 +268,7 @@ lastIndexOfGo : String -> String -> Int -> Option Int -> Option Int
 lastIndexOfGo needle haystack from acc =
   match indexOf needle (stringSlice from (stringLength haystack) haystack)
     None => acc
-    (Some i) => lastIndexOfGo needle haystack (from + i + 1) (Some (from + i))
+    Some i => lastIndexOfGo needle haystack (from + i + 1) (Some (from + i))
 
 {- | Number of non-overlapping occurrences of `needle` in `haystack` (`0` for
    the empty needle).
@@ -287,7 +287,7 @@ countGo : String -> Int -> String -> Int -> Int
 countGo needle nlen haystack acc =
   match indexOf needle haystack
     None => acc
-    (Some i) => countGo needle nlen (stringSlice (i + nlen) (stringLength haystack) haystack) (acc + 1)
+    Some i => countGo needle nlen (stringSlice (i + nlen) (stringLength haystack) haystack) (acc + 1)
 
 -- ── Transformation ──────────────────────────────────────────────────────────
 
@@ -424,7 +424,7 @@ replaceFirst : String -> String -> String -> String
 replaceFirst old new s =
   match indexOf old s
     None => s
-    (Some i) => spliceAt i (stringLength old) new s
+    Some i => spliceAt i (stringLength old) new s
 
 spliceAt : Int -> Int -> String -> String -> String
 spliceAt i oldLen new s = stringSlice 0 i s
@@ -443,7 +443,7 @@ replaceAllGo : Int -> String -> String -> String -> String
 replaceAllGo oldLen old new s =
   match indexOf old s
     None => s
-    (Some i) => stringSlice 0 i s
+    Some i => stringSlice 0 i s
       ++ new
       ++ replaceAllGo oldLen old new (stringSlice (i + oldLen) (stringLength s) s)
 
@@ -496,7 +496,7 @@ splitGo : Int -> String -> String -> List String
 splitGo sepLen sep s =
   match indexOf sep s
     None => [s]
-    (Some i) => stringSlice 0 i s :: splitGo sepLen sep (stringSlice (i + sepLen) (stringLength s) s)
+    Some i => stringSlice 0 i s :: splitGo sepLen sep (stringSlice (i + sepLen) (stringLength s) s)
 
 {- | Split into lines on `\n`, also stripping a trailing `\r` (so `\r\n` works).
 

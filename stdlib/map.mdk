@@ -58,38 +58,38 @@ balance k v l r
 rotateL : k -> v -> Map k v -> Map k v -> Map k v
 rotateL k v l r =
   match r
-    (Bin _ _ _ rl rr) => if size rl < 2 * size rr then singleL k v l r else doubleL k v l r
+    Bin _ _ _ rl rr => if size rl < 2 * size rr then singleL k v l r else doubleL k v l r
     Tip => panic "Map.rotateL: empty right subtree"
 
 -- Left subtree too heavy: mirror of rotateL.
 rotateR : k -> v -> Map k v -> Map k v -> Map k v
 rotateR k v l r =
   match l
-    (Bin _ _ _ ll lr) => if size lr < 2 * size ll then singleR k v l r else doubleR k v l r
+    Bin _ _ _ ll lr => if size lr < 2 * size ll then singleR k v l r else doubleR k v l r
     Tip => panic "Map.rotateR: empty left subtree"
 
 singleL : k -> v -> Map k v -> Map k v -> Map k v
 singleL k1 v1 t1 r =
   match r
-    (Bin _ k2 v2 t2 t3) => bin k2 v2 (bin k1 v1 t1 t2) t3
+    Bin _ k2 v2 t2 t3 => bin k2 v2 (bin k1 v1 t1 t2) t3
     Tip => panic "Map.singleL: empty right subtree"
 
 singleR : k -> v -> Map k v -> Map k v -> Map k v
 singleR k1 v1 l t3 =
   match l
-    (Bin _ k2 v2 t1 t2) => bin k2 v2 t1 (bin k1 v1 t2 t3)
+    Bin _ k2 v2 t1 t2 => bin k2 v2 t1 (bin k1 v1 t2 t3)
     Tip => panic "Map.singleR: empty left subtree"
 
 doubleL : k -> v -> Map k v -> Map k v -> Map k v
 doubleL k1 v1 t1 r =
   match r
-    (Bin _ k2 v2 (Bin _ k3 v3 t2 t3) t4) => bin k3 v3 (bin k1 v1 t1 t2) (bin k2 v2 t3 t4)
+    Bin _ k2 v2 (Bin _ k3 v3 t2 t3) t4 => bin k3 v3 (bin k1 v1 t1 t2) (bin k2 v2 t3 t4)
     _ => panic "Map.doubleL: malformed right subtree"
 
 doubleR : k -> v -> Map k v -> Map k v -> Map k v
 doubleR k1 v1 l t4 =
   match l
-    (Bin _ k2 v2 t1 (Bin _ k3 v3 t2 t3)) => bin k3 v3 (bin k2 v2 t1 t2) (bin k1 v1 t3 t4)
+    Bin _ k2 v2 t1 (Bin _ k3 v3 t2 t3) => bin k3 v3 (bin k2 v2 t1 t2) (bin k1 v1 t3 t4)
     _ => panic "Map.doubleR: malformed left subtree"
 
 -- ── Construction ────────────────────────────────────────────────────────
@@ -191,7 +191,7 @@ findWithDefault : Ord k => v -> k -> Map k v -> v
 findWithDefault d k m =
   match lookup k m
     None => d
-    (Some v) => v
+    Some v => v
 
 -- ── Insertion ───────────────────────────────────────────────────────────
 
@@ -268,13 +268,13 @@ glueMax : Map k v -> Map k v -> Map k v
 glueMax l r =
   match maxView l
     None => r
-    (Some (k, v, l')) => balance k v l' r
+    Some (k, v, l') => balance k v l' r
 
 glueMin : Map k v -> Map k v -> Map k v
 glueMin l r =
   match minView r
     None => l
-    (Some (k, v, r')) => balance k v l r'
+    Some (k, v, r') => balance k v l r'
 
 -- ── Min / max ───────────────────────────────────────────────────────────
 
@@ -286,7 +286,7 @@ minView Tip = None
 minView (Bin _ k v l r) =
   match minView l
     None => Some (k, v, r)
-    (Some (km, vm, l')) => Some (km, vm, balance k v l' r)
+    Some (km, vm, l') => Some (km, vm, balance k v l' r)
 
 {- | Split off the largest entry: `Some (key, value, rest)`, or `None`. -}
 export
@@ -295,7 +295,7 @@ maxView Tip = None
 maxView (Bin _ k v l r) =
   match maxView r
     None => Some (k, v, l)
-    (Some (km, vm, r')) => Some (km, vm, balance k v l r')
+    Some (km, vm, r') => Some (km, vm, balance k v l r')
 
 {- | Smallest key/value, or `None`.
 
@@ -306,7 +306,7 @@ lookupMin : Map k v -> Option (k, v)
 lookupMin m =
   match minView m
     None => None
-    (Some (k, v, _)) => Some (k, v)
+    Some (k, v, _) => Some (k, v)
 
 {- | Largest key/value, or `None`.
 
@@ -317,7 +317,7 @@ lookupMax : Map k v -> Option (k, v)
 lookupMax m =
   match maxView m
     None => None
-    (Some (k, v, _)) => Some (k, v)
+    Some (k, v, _) => Some (k, v)
 
 {- | Drop the smallest entry (a no-op on the empty map).
 
@@ -328,7 +328,7 @@ deleteMin : Map k v -> Map k v
 deleteMin m =
   match minView m
     None => Tip
-    (Some (_, _, m')) => m'
+    Some (_, _, m') => m'
 
 {- | Drop the largest entry (a no-op on the empty map).
 
@@ -339,7 +339,7 @@ deleteMax : Map k v -> Map k v
 deleteMax m =
   match maxView m
     None => Tip
-    (Some (_, _, m')) => m'
+    Some (_, _, m') => m'
 
 -- ── Folds and traversal (in ascending key order) ────────────────────────
 
@@ -385,7 +385,7 @@ elems m = foldrWithKey (k v acc => v :: acc) [] m
    > elems (mapWithKey (k v => k + v) (fromList [(1, 10), (2, 20)]))
    [11, 22] -}
 export
-mapWithKey : (k -> v -> <e> w) -> Map k v -> <e> (Map k w)
+mapWithKey : (k -> v -> <e> w) -> Map k v -> <e> Map k w
 mapWithKey f Tip = Tip
 mapWithKey f (Bin s k v l r) = Bin s k (f k v) (mapWithKey f l) (mapWithKey f r)
 
@@ -394,10 +394,10 @@ mapWithKey f (Bin s k v l r) = Bin s k (f k v) (mapWithKey f l) (mapWithKey f r)
    > keys (filterWithKey (k v => v > 15) (fromList [(1, 10), (2, 20), (3, 30)]))
    [2, 3] -}
 export
-filterWithKey : Ord k => (k -> v -> <e> Bool) -> Map k v -> <e> (Map k v)
+filterWithKey : Ord k => (k -> v -> <e> Bool) -> Map k v -> <e> Map k v
 filterWithKey p m = foldrWithKey (filterStep p) Tip m
 
-filterStep : Ord k => (k -> v -> <e> Bool) -> k -> v -> Map k v -> <e> (Map k v)
+filterStep : Ord k => (k -> v -> <e> Bool) -> k -> v -> Map k v -> <e> Map k v
 filterStep p k v acc = if p k v then insert k v acc else acc
 
 -- ── Combining ───────────────────────────────────────────────────────────
@@ -440,7 +440,7 @@ intersectStep : Ord k => (v -> w -> x) -> Map k w -> k -> v -> Map k x -> Map k 
 intersectStep f b k v acc =
   match lookup k b
     None => acc
-    (Some w) => insert k (f v w) acc
+    Some w => insert k (f v w) acc
 
 -- ── Typeclass instances ─────────────────────────────────────────────────
 

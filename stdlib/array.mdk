@@ -205,7 +205,10 @@ export
 unzip : Array (a, b) -> (Array a, Array b)
 unzip arr =
   let n = arrayLength arr
-  (arrayMakeWith n (i => fst (arrayGetUnsafe i arr)), arrayMakeWith n (i => snd (arrayGetUnsafe i arr)))
+  (
+    arrayMakeWith n (i => fst (arrayGetUnsafe i arr)),
+    arrayMakeWith n (i => snd (arrayGetUnsafe i arr))
+  )
 
 {- | `Filterable Array`.  Only `filterMap` is defined; `filter` comes from
    the interface default.  `filterMap` filters via a list intermediate
@@ -281,7 +284,10 @@ sort arr = arraySortBy compare arr
 export
 sortOn : Ord b => (a -> <e> b) -> Array a -> <e> Array a
 sortOn key arr =
-  let decorated = arrayMakeWith (arrayLength arr) (i => (key (arrayGetUnsafe i arr), arrayGetUnsafe i arr))
+  let decorated = arrayMakeWith (arrayLength arr) (i => (
+    key (arrayGetUnsafe i arr),
+    arrayGetUnsafe i arr
+  ))
   let sorted = arraySortBy ((k1, _) (k2, _) => compare k1 k2) decorated
   arrayMakeWith (arrayLength sorted) (i => snd (arrayGetUnsafe i sorted))
 

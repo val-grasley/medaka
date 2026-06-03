@@ -223,6 +223,31 @@ let u_pub     = mk "export import list.{map, filter}\n"
 let u_alias   = mk "import collections.HashMap as HM\n"
 let u_wild    = mk "import utils.*\n"
 
+(* Regression: a braced import `import m.{...}` must leave the lexer's
+   paren-depth balanced.  Its `.{` lexes to DOT_LBRACE and its `}` to RBRACE
+   (which decrements paren_depth), so if `.{` failed to increment, paren_depth
+   would go negative and a *later* multi-line bracketed group would have its
+   layout NEWLINE tokens leak in, failing to parse.  See lexer.mll `.{` rule.
+   Repro distilled from `medaka fmt stdlib/array.mdk` (unzip). *)
+let u_then_multiline_tuple = mk
+{|import core.{Eq, Ord}
+
+unzip arr =
+  (
+    fst arr,
+    snd arr
+  )
+|}
+let u_then_multiline_list = mk
+{|import core.{Eq}
+
+xs =
+  [
+    aaa,
+    bbb
+  ]
+|}
+
 (* Multiple declarations *)
 let multi = mk
 {|x : Int
@@ -343,6 +368,8 @@ let () =
       test_case "export import"    `Quick u_pub;
       test_case "alias"            `Quick u_alias;
       test_case "wildcard"         `Quick u_wild;
+      test_case "braced import then multiline tuple" `Quick u_then_multiline_tuple;
+      test_case "braced import then multiline list"  `Quick u_then_multiline_list;
       test_case "export data abstract"  `Quick (mk "export data Color = Red | Green | Blue\n");
       test_case "public export data"    `Quick (mk "public export data Color = Red | Green | Blue\n");
       test_case "private data"          `Quick (mk "data Color = Red | Green | Blue\n");

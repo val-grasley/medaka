@@ -64,6 +64,20 @@ let cp_eof_trailing =
   preserves ["-- after last decl"]
     "x = 1\n\n-- after last decl\n"
 
+(* A comment trailing a declaration stays on that declaration's line rather
+   than being reflowed onto its own line before the next decl. *)
+let cp_trailing () =
+  let out = format "x = 1  -- the answer\ny = 2\n" in
+  let on_code_line =
+    List.exists
+      (fun line -> contains "x = 1" line && contains "-- the answer" line)
+      (String.split_on_char '\n' out)
+  in
+  if not on_code_line then
+    failwith (Printf.sprintf "Trailing comment was not kept inline:\n%s" out)
+
+let id_trailing = idempotent "x = 1  -- the answer\ny = 2\n"
+
 let cp_block =
   preserves ["{- block -}"]
     "{- block -}\nx = 1\n"
@@ -202,6 +216,28 @@ let id_type_app = idempotent "g : Result e a -> Int\ng x = 0\n"
 let id_effect_var = idempotent "applyTo : (a -> <e> b) -> a -> b\napplyTo f x = f x\n"
 let id_effect_row = idempotent "run : (Unit -> <IO | e> a) -> <IO | e> a\nrun f = f ()\n"
 
+(* An effect-annotated return type prints its application bare — `<e> Array c`,
+   never the superfluous `<e> (Array c)` — because `<e>` binds tighter than the
+   surrounding `->` and the application is already unambiguous. *)
+let rt_no_paren_effect_app () =
+  let out = format "f : Int -> <e> Array c\nf x = x\n" in
+  if contains "(Array" out then
+    failwith (Printf.sprintf "Effect-annotated type app parenthesized:\n%s" out)
+let id_effect_app = idempotent "f : Int -> <e> Array c\nf x = x\n"
+(* …but a *function* type after the effect still needs parens: bare
+   `<e> a -> b` would re-parse as `(<e> a) -> b`. *)
+let id_effect_fun = idempotent "f : Int -> <e> (a -> b)\nf x = x\n"
+
+(* A constructor pattern at the head of a match arm stands alone, so it prints
+   bare — `Some i =>`, never `(Some i) =>`.  (Nested ctor args and function-clause
+   heads still parenthesize; see rt_no_double_paren_con / id_con_pattern_arg.) *)
+let rt_no_paren_match_arm_con () =
+  let out = format "g x =\n  match x\n    Some i => i\n    None => 0\n" in
+  if contains "(Some" out then
+    failwith (Printf.sprintf "Match-arm head ctor pattern parenthesized:\n%s" out)
+let id_match_arm_con =
+  idempotent "g x =\n  match x\n    Some i => i\n    None => 0\n"
+
 (* A short `data` declaration stays on one line rather than splitting to the
    one-variant-per-line form. *)
 let rt_short_data_one_line () =
@@ -302,6 +338,9 @@ let () =
       Alcotest.test_case "type app"       `Quick id_type_app;
       Alcotest.test_case "effect var"     `Quick id_effect_var;
       Alcotest.test_case "effect row"     `Quick id_effect_row;
+      Alcotest.test_case "effect app no parens" `Quick id_effect_app;
+      Alcotest.test_case "effect fun keeps parens" `Quick id_effect_fun;
+      Alcotest.test_case "match-arm ctor no parens" `Quick id_match_arm_con;
       Alcotest.test_case "short data"     `Quick id_short_data;
       Alcotest.test_case "short data deriving" `Quick id_short_data_deriving;
       Alcotest.test_case "wide data"      `Quick id_wide_data;
@@ -322,6 +361,8 @@ let () =
       Alcotest.test_case "between decls" `Quick cp_between;
       Alcotest.test_case "multiple"      `Quick cp_multiple;
       Alcotest.test_case "eof trailing"  `Quick cp_eof_trailing;
+      Alcotest.test_case "trailing inline" `Quick cp_trailing;
+      Alcotest.test_case "trailing idempotent" `Quick id_trailing;
       Alcotest.test_case "block"         `Quick cp_block;
       Alcotest.test_case "block multiline" `Quick cp_block_multiline;
     ];
@@ -336,6 +377,8 @@ let () =
       Alcotest.test_case "impl_loc reflow"    `Quick rt_impl_loc_reflow;
       Alcotest.test_case "no double paren con" `Quick rt_no_double_paren_con;
       Alcotest.test_case "no paren type app"  `Quick rt_no_paren_type_app;
+      Alcotest.test_case "no paren effect app" `Quick rt_no_paren_effect_app;
+      Alcotest.test_case "no paren match-arm con" `Quick rt_no_paren_match_arm_con;
       Alcotest.test_case "short data one line" `Quick rt_short_data_one_line;
       Alcotest.test_case "wide data splits"    `Quick rt_wide_data_splits;
       Alcotest.test_case "short list one line" `Quick rt_short_list_one_line;

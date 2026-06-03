@@ -143,7 +143,11 @@ let rec print_type t = match t with
       | [], Some v -> text v
       | _,  Some v -> sep_by (text ", ") (List.map text es) ^^ text " | " ^^ text v
     in
-    text "<" ^^ inside ^^ text "> " ^^ print_type_atom t
+    (* The annotated type binds tighter than `->` but looser than nothing:
+       `<e> Array c` is unambiguous and needs no parens, whereas `<e> a -> b`
+       would re-parse as `(<e> a) -> b`.  `print_type_app_lhs` is exactly that
+       precedence — bare for a TyApp/atom, parenthesized for a TyFun. *)
+    text "<" ^^ inside ^^ text "> " ^^ print_type_app_lhs t
   | TyConstrained (cs, t) ->
     let pp_c (iface, args) =
       text iface ^^ concat (List.map (fun a -> text " " ^^ print_type_atom a) args)
@@ -205,6 +209,17 @@ and print_pat_atom pat = match pat with
   | PVar _ | PWild | PLit _ | PCon _ | PTuple _ | PList _ | PRec _ | PRng _ ->
     print_pat pat
   | _ -> text "(" ^^ print_pat pat ^^ text ")"
+
+(* Top-of-a-match-arm pattern.  Here a constructor application stands alone with
+   no adjacent token to absorb its args, so `Some i =>` is unambiguous and the
+   parens print_pat would add are superfluous.  (Contrast a *function-clause*
+   head `unwrap (Some x) =`, where bare `unwrap Some x` reads as three params, or
+   a nested sub-pattern, where print_pat_atom must still parenthesize.)  Only the
+   outer PCon is unwrapped; nested args still route through print_pat_atom. *)
+and print_pat_arm pat = match pat with
+  | PCon (c, (_ :: _ as pats)) ->
+    text c ^^ concat (List.map (fun p -> text " " ^^ print_pat_atom p) pats)
+  | _ -> print_pat pat
 
 (* ── Expressions ─────────────────────────────────── *)
 
@@ -476,7 +491,7 @@ and print_chain op e =
    `pat [if guards] => body` arms. *)
 and print_match_arms arms =
   let arm (pat, guards, body) =
-    print_pat pat
+    print_pat_arm pat
     ^^ (match guards with
         | [] -> Nil
         | _ ->
@@ -795,10 +810,29 @@ let format_program ?(width = default_width) decls decl_locs (comments : Lexer.co
       in
       loop ()
     in
+    (* A comment sitting on a declaration's final source line is a *trailing*
+       comment (`x = 1  -- note`): a line comment runs to EOL, so nothing else
+       shares that line.  Pull such comments out of the pending stream so they
+       render inline after the decl rather than being flushed onto their own
+       line before the next one.  Single-line only — a multi-line block comment
+       stays standalone.  Order-preserving, so an *interior* comment on an
+       earlier line of a multi-line decl is left untouched. *)
+    let take_trailing (loc : Ast.loc) =
+      let is_trailing (c : Lexer.comment) =
+        c.c_line = loc.end_line && not (String.contains c.c_text '\n')
+      in
+      let trailing = List.filter is_trailing !cs in
+      cs := List.filter (fun c -> not (is_trailing c)) !cs;
+      trailing
+    in
     List.iter2 (fun decl (loc : Ast.loc) ->
       flush_before loc.line;
       blank_line_if_needed loc.line;
       Buffer.add_string buf (render width (print_decl decl));
+      List.iter (fun (c : Lexer.comment) ->
+        Buffer.add_string buf "  ";
+        Buffer.add_string buf c.c_text
+      ) (take_trailing loc);
       Buffer.add_char buf '\n';
       cursor := loc.end_line;
       started := true

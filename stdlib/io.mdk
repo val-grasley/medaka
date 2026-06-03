@@ -52,7 +52,7 @@ splitLines s =
 {- | Read a file and split it into lines, or `Err` with the host message on a
    read failure. The trailing newline does not produce a final empty line. -}
 export
-readLines : String -> <IO> (Result String (List String))
+readLines : String -> <IO> Result String (List String)
 readLines path =
   match readFile path
     Err e => Err e

@@ -45,37 +45,37 @@ balance x l r
 rotateL : a -> Set a -> Set a -> Set a
 rotateL x l r =
   match r
-    (Bin _ _ rl rr) => if size rl < 2 * size rr then singleL x l r else doubleL x l r
+    Bin _ _ rl rr => if size rl < 2 * size rr then singleL x l r else doubleL x l r
     Tip => panic "Set.rotateL: empty right subtree"
 
 rotateR : a -> Set a -> Set a -> Set a
 rotateR x l r =
   match l
-    (Bin _ _ ll lr) => if size lr < 2 * size ll then singleR x l r else doubleR x l r
+    Bin _ _ ll lr => if size lr < 2 * size ll then singleR x l r else doubleR x l r
     Tip => panic "Set.rotateR: empty left subtree"
 
 singleL : a -> Set a -> Set a -> Set a
 singleL x1 t1 r =
   match r
-    (Bin _ x2 t2 t3) => bin x2 (bin x1 t1 t2) t3
+    Bin _ x2 t2 t3 => bin x2 (bin x1 t1 t2) t3
     Tip => panic "Set.singleL: empty right subtree"
 
 singleR : a -> Set a -> Set a -> Set a
 singleR x1 l t3 =
   match l
-    (Bin _ x2 t1 t2) => bin x2 t1 (bin x1 t2 t3)
+    Bin _ x2 t1 t2 => bin x2 t1 (bin x1 t2 t3)
     Tip => panic "Set.singleR: empty left subtree"
 
 doubleL : a -> Set a -> Set a -> Set a
 doubleL x1 t1 r =
   match r
-    (Bin _ x2 (Bin _ x3 t2 t3) t4) => bin x3 (bin x1 t1 t2) (bin x2 t3 t4)
+    Bin _ x2 (Bin _ x3 t2 t3) t4 => bin x3 (bin x1 t1 t2) (bin x2 t3 t4)
     _ => panic "Set.doubleL: malformed right subtree"
 
 doubleR : a -> Set a -> Set a -> Set a
 doubleR x1 l t4 =
   match l
-    (Bin _ x2 t1 (Bin _ x3 t2 t3)) => bin x3 (bin x2 t1 t2) (bin x1 t3 t4)
+    Bin _ x2 t1 (Bin _ x3 t2 t3) => bin x3 (bin x2 t1 t2) (bin x1 t3 t4)
     _ => panic "Set.doubleR: malformed left subtree"
 
 -- ── Construction ────────────────────────────────────────────────────────
@@ -180,13 +180,13 @@ glueMax : Set a -> Set a -> Set a
 glueMax l r =
   match maxView l
     None => r
-    (Some (x, l')) => balance x l' r
+    Some (x, l') => balance x l' r
 
 glueMin : Set a -> Set a -> Set a
 glueMin l r =
   match minView r
     None => l
-    (Some (x, r')) => balance x l r'
+    Some (x, r') => balance x l r'
 
 -- ── Min / max ───────────────────────────────────────────────────────────
 
@@ -197,7 +197,7 @@ minView Tip = None
 minView (Bin _ x l r) =
   match minView l
     None => Some (x, r)
-    (Some (xm, l')) => Some (xm, balance x l' r)
+    Some (xm, l') => Some (xm, balance x l' r)
 
 {- | Split off the largest element: `Some (elem, rest)`, or `None`. -}
 export
@@ -206,7 +206,7 @@ maxView Tip = None
 maxView (Bin _ x l r) =
   match maxView r
     None => Some (x, l)
-    (Some (xm, r')) => Some (xm, balance x l r')
+    Some (xm, r') => Some (xm, balance x l r')
 
 {- | Smallest element, or `None`.
 
@@ -217,7 +217,7 @@ lookupMin : Set a -> Option a
 lookupMin s =
   match minView s
     None => None
-    (Some (x, _)) => Some x
+    Some (x, _) => Some x
 
 {- | Largest element, or `None`.
 
@@ -228,7 +228,7 @@ lookupMax : Set a -> Option a
 lookupMax s =
   match maxView s
     None => None
-    (Some (x, _)) => Some x
+    Some (x, _) => Some x
 
 {- | Drop the smallest element (a no-op on the empty set).
 
@@ -239,7 +239,7 @@ deleteMin : Set a -> Set a
 deleteMin s =
   match minView s
     None => Tip
-    (Some (_, s')) => s'
+    Some (_, s') => s'
 
 {- | Drop the largest element (a no-op on the empty set).
 
@@ -250,7 +250,7 @@ deleteMax : Set a -> Set a
 deleteMax s =
   match maxView s
     None => Tip
-    (Some (_, s')) => s'
+    Some (_, s') => s'
 
 -- ── Folds (ascending element order) ─────────────────────────────────────
 
