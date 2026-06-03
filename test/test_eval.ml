@@ -1116,6 +1116,23 @@ r = (a, b, c)
 |} in
   assert_val_typed src "r" (VTuple [VInt 3; VInt 4; VInt 7])
 
+(* Regression (typed path, NO hint): a single *named* impl with no `@Impl`
+   selector hits the same crash as the hinted case but via a different route —
+   it never touches the `@`-hint arm.  The typechecker commits the method
+   occurrence to the lone impl (RKey), eval narrows the VMulti to the bare
+   VNamedImpl, and `apply` must consume it.  Pre-fix this panicked with
+   `applied non-function: <impl:Foo>`, proving the `apply` VNamedImpl arm — not
+   any hint-arm change — is the actual fix. *)
+let t_named_single_no_hint_typed =
+  let src = {|
+interface Bar a where
+    bar : a -> a -> a
+impl Foo of Bar Int where
+    bar x y = x + y
+r = bar 3 4
+|} in
+  assert_val_typed src "r" (VInt 7)
+
 (* @Name hint used standalone evaluates to VUnit (matches typechecker's Unit inference) *)
 let t_at_name_standalone =
   assert_val "r = @Foo\n" "r" VUnit
@@ -1957,6 +1974,7 @@ let () =
       test_case "@Additive selects + (typed)"       `Quick t_named_additive_typed;
       test_case "@Multiplicative selects * (typed)" `Quick t_named_multiplicative_typed;
       test_case "three named impls (typed)" `Quick t_named_three_typed;
+      test_case "single named impl, no hint (typed)" `Quick t_named_single_no_hint_typed;
       test_case "@Name standalone = Unit"   `Quick t_at_name_standalone;
       test_case "@Unknown raises error"     `Quick t_named_unknown;
     ];
