@@ -806,16 +806,20 @@ empty vector needs no default value of `a`.
 - 11 doctests. **Skipped:** `Mappable` (use `mapInPlace`, or `toList`→`map`);
   growth/shrink heuristics beyond doubling.
 
-**Cross-module dispatch limitation (pre-existing, language-level).** Direct
-`Foldable` method calls on an imported instance work across the loader
-(`length v`, `toList v`, `push`/`pop`/…), but a **generic `Foldable`-derived
-function that threads a dictionary internally** — `sum`, `product`, `maximum`,
-`minimum` — panics `no matching impl for dispatch` when its argument's instance
-comes from an *imported* module. This is **not** specific to `mut_array`:
-`sum (array.fromList [1,2,3])` fails identically on `main`, as do `map`/`set`/
-`hash_*`. The single-file doctest path threads the dict correctly (so the
-`sum`/`length` doctests pass). Root cause is the cross-module dict-passing gap
-tracked in the dict-passing internals notes; filed for a future phase.
+**Cross-module dispatch — RESOLVED (verified 2026-06-03).** This note formerly
+claimed a "pre-existing, language-level" limitation: that a **generic
+`Foldable`-derived function threading a dictionary internally** — `sum`,
+`product`, `maximum`, `minimum` — panicked `no matching impl for dispatch` when
+its argument's instance came from an *imported* module (while direct method
+calls like `length v`/`toList v` worked). **That is no longer true** —
+empirically `sum`/`maximum`/`minimum`/`product` over imported `array`,
+`mut_array`, `set`, and `hash_set` instances all dispatch correctly on `main`.
+The cross-module dict-passing gap was closed by the eval-driver ordering work in
+**Phases 125–126** (`eval_modules`/`eval_modules_root_env` thread the full
+local∪imports∪global env, so the generic helper's internal dict resolves against
+the imported impl). Kept here as a corrected record because the stale claim
+would otherwise mislead self-hosting design (cross-module generic dispatch is
+exactly what a multi-file compiler does constantly).
 
 ---
 
