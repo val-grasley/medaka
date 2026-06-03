@@ -1,0 +1,138 @@
+-- test.mdk — unit testing library.
+-- Import what you need: `import test.{expectEqual, expectTrue, …}`
+-- Run with: `medaka test your_file.mdk`
+-- See STDLIB.md for the division-of-labour between doctests / props / tests.
+
+{- | The result of a single test expectation. -}
+public export data Expectation = Pass | Fail String deriving (Debug)
+
+{- | Catch an OCaml-level Eval_error or Impl_no_match raised by the thunk,
+   turning it into a `Fail` rather than aborting the test suite.  This is a
+   narrow escape hatch — not a general try/catch — implemented as a primitive
+   so a crashed test never silences the tests that follow it. -}
+extern runExpectation : (Unit -> Expectation) -> Expectation
+
+-- ── Primitive assertions ─────────────────────────────────────────────────
+
+{- | Always passes.
+
+   > pass
+   Pass -}
+export
+pass : Expectation
+pass = Pass
+
+{- | Fails with the given message.
+
+   > fail "not ready"
+   Fail "not ready" -}
+export
+fail : String -> Expectation
+fail msg = Fail msg
+
+{- | Passes when the `Bool` is `True`.
+
+   > expectTrue True
+   Pass
+   > expectTrue False
+   Fail "expected True but got False" -}
+export
+expectTrue : Bool -> Expectation
+expectTrue True = Pass
+expectTrue False = Fail "expected True but got False"
+
+{- | Passes when the `Bool` is `False`.
+
+   > expectFalse False
+   Pass
+   > expectFalse True
+   Fail "expected False but got True" -}
+export
+expectFalse : Bool -> Expectation
+expectFalse False = Pass
+expectFalse True = Fail "expected False but got True"
+
+{- | Passes when the two values are equal.
+
+   > expectEqual 42 42
+   Pass
+   > expectEqual 1 2
+   Fail "expected 1 but got 2" -}
+export
+expectEqual : (Eq a, Debug a) => a -> a -> Expectation
+expectEqual expected actual =
+  if eq expected actual then Pass
+  else Fail ("expected " ++ debug expected ++ " but got " ++ debug actual)
+
+{- | Passes when the two values are not equal.
+
+   > expectNotEqual 1 2
+   Pass
+   > expectNotEqual 1 1
+   Fail "expected values to differ but both were 1" -}
+export
+expectNotEqual : (Eq a, Debug a) => a -> a -> Expectation
+expectNotEqual expected actual =
+  if neq expected actual then Pass
+  else Fail ("expected values to differ but both were " ++ debug actual)
+
+{- | Passes when `actual < expected`.
+
+   > expectLessThan 10 3
+   Pass
+   > expectLessThan 10 15
+   Fail "expected 15 < 10" -}
+export
+expectLessThan : (Ord a, Debug a) => a -> a -> Expectation
+expectLessThan expected actual =
+  if lt actual expected then Pass
+  else Fail ("expected " ++ debug actual ++ " < " ++ debug expected)
+
+{- | Passes when `actual > expected`.
+
+   > expectGreaterThan 0 5
+   Pass
+   > expectGreaterThan 10 3
+   Fail "expected 3 > 10" -}
+export
+expectGreaterThan : (Ord a, Debug a) => a -> a -> Expectation
+expectGreaterThan expected actual =
+  if gt actual expected then Pass
+  else Fail ("expected " ++ debug actual ++ " > " ++ debug expected)
+
+-- Helper for expectAll: accumulate the first Fail, or stay Pass.
+expectAllStep : Expectation -> Expectation -> Expectation
+expectAllStep (Fail msg) _ = Fail msg
+expectAllStep Pass e = e
+
+{- | Combine a list of expectations: passes only when all of them pass.
+   The first `Fail` is returned immediately.
+
+   > expectAll [Pass, Pass, Pass]
+   Pass
+   > expectAll [Pass, Fail "oops", Pass]
+   Fail "oops" -}
+export
+expectAll : List Expectation -> Expectation
+expectAll es = fold expectAllStep Pass es
+
+-- ── Test runner ──────────────────────────────────────────────────────────
+
+goTests : List (String, Unit -> Expectation) -> Int -> Int -> <IO> Bool
+goTests [] passed failed =
+  println ("\n" ++ intToString passed ++ " passed, " ++ intToString failed ++ " failed")
+  eq failed 0
+goTests ((name, thunk) :: rest) passed failed =
+  match runExpectation thunk
+    Pass =>
+      println ("  ok   " ++ name)
+      goTests rest (passed + 1) failed
+    Fail msg =>
+      println ("  FAIL " ++ name ++ ": " ++ msg)
+      goTests rest passed (failed + 1)
+
+{- | Run a list of `(name, thunk)` test pairs.  Prints each result and a
+   final summary; returns `True` when all tests pass. -}
+export
+runTests : List (String, Unit -> Expectation) -> <IO> Bool
+runTests tests = goTests tests 0 0

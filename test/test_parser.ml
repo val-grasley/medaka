@@ -39,6 +39,7 @@ let rec pp_decl d =
   | DTypeAlias (_, n, _, _) -> Printf.sprintf "DTypeAlias(%s, ...)" n
   | DNewtype (_, n, _, con, _, _) -> Printf.sprintf "DNewtype(%s, %s, ...)" n con
   | DProp { prop_name; _ } -> Printf.sprintf "DProp(%S, ...)" prop_name
+  | DTest { test_name; _ } -> Printf.sprintf "DTest(%S, ...)" test_name
   | DBench { bench_name; _ } -> Printf.sprintf "DBench(%S, ...)" bench_name
   | DAttrib (_, d) -> Printf.sprintf "DAttrib(..., %s)" (pp_decl d)
 
@@ -1710,6 +1711,32 @@ let test_prop_list_param () =
             prop_params = [("xs", TyApp (TyCon "List", TyCon "Int"))]; _ } -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
+(* ── test declarations (Phase 127) ────────────────────── *)
+
+let test_test_basic () =
+  match parse_one {|test "one plus one" = expectEqual (1 + 1) 2
+|} with
+  | DTest { test_name = "one plus one"; is_pub = false; _ } -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_test_export () =
+  match parse_one {|export test "exported test" = pass
+|} with
+  | DTest { test_name = "exported test"; is_pub = true; _ } -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_test_body () =
+  match parse_one {|test "body check" = expectTrue True
+|} with
+  | DTest { test_name = "body check"; test_body = EApp _; _ } -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
+let test_import_test_module () =
+  match parse_one {|import test.{expectEqual}
+|} with
+  | DUse (false, UseGroup (["test"], [("expectEqual", false)])) -> ()
+  | d -> failwith ("wrong: " ^ pp_decl d)
+
 (* ── bench declarations (Phase 48) ─────────────────────── *)
 
 let test_bench_basic () =
@@ -2100,6 +2127,12 @@ let () =
       test_case "single param"  `Quick test_prop_single_param;
       test_case "multi param"   `Quick test_prop_multi_param;
       test_case "list param"    `Quick test_prop_list_param;
+    ];
+    "test declarations (Phase 127)", [
+      test_case "basic body"    `Quick test_test_basic;
+      test_case "export"        `Quick test_test_export;
+      test_case "body expr"     `Quick test_test_body;
+      test_case "import test module" `Quick test_import_test_module;
     ];
     "bench declarations (Phase 48)", [
       test_case "basic literal"  `Quick test_bench_basic;

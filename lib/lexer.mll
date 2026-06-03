@@ -183,6 +183,7 @@ let keyword_or_ident s =
   | "type"      -> TYPE
   | "newtype"   -> NEWTYPE
   | "prop"      -> PROP
+  | "test"      -> TEST
   | "bench"     -> BENCH
   | "function"  -> FUNCTION
   | "True"      -> BOOL true

@@ -229,7 +229,61 @@ let () =
       end
       else run_single_file ()
     in
-    exit (if doctest_ok && prop_ok then 0 else 1)
+    (* Run unit tests (Phase 127) *)
+    let has_tests =
+      List.exists (function Medaka_lib.Ast.DTest _ -> true | _ -> false) program
+    in
+    let test_ok =
+      if not has_tests then true
+      else begin
+        (* Build __tests__ = [("n1", () => body1), …] and __test_run__ = runTests __tests__ *)
+        let test_decls = List.filter_map (fun d ->
+          match Medaka_lib.Ast.inner_decl d with
+          | Medaka_lib.Ast.DTest { test_name; test_body; _ } -> Some (test_name, test_body)
+          | _ -> None
+        ) program in
+        let synth_tests =
+          Medaka_lib.Ast.DFunDef (false, "__tests__", [],
+            Medaka_lib.Ast.EListLit (
+              List.map (fun (test_name, test_body) ->
+                Medaka_lib.Ast.ETuple [
+                  Medaka_lib.Ast.ELit (Medaka_lib.Ast.LString test_name);
+                  Medaka_lib.Ast.ELam ([Medaka_lib.Ast.PWild], test_body)
+                ]
+              ) test_decls
+            )
+          )
+        in
+        let synth_run =
+          Medaka_lib.Ast.DFunDef (false, "__test_run__", [],
+            Medaka_lib.Ast.EApp (Medaka_lib.Ast.EVar "runTests", Medaka_lib.Ast.EVar "__tests__"))
+        in
+        let inject fp prog =
+          if fp = filename then prog @ [synth_tests; synth_run] else prog
+        in
+        match
+          (try Medaka_lib.Doctest.assemble_marked_modules ~inject filename
+           with Failure msg -> Printf.eprintf "error: %s\n" msg; exit 1)
+        with
+        | None ->
+          Printf.eprintf "error: unit tests require 'import test.{runTests, …}' (no sibling module found)\n";
+          false
+        | Some (_, Some msg) ->
+          Printf.eprintf "error: %s\n" msg; false
+        | Some (marked_modules, None) ->
+          let eval_env = Medaka_lib.Eval.eval_modules_root_env marked_modules in
+          let base_frame = List.map (fun (k, v) -> (k, ref v)) eval_env in
+          let env = [base_frame] in
+          (try
+            match Medaka_lib.Eval.eval env (Medaka_lib.Ast.EVar "__test_run__") with
+            | Medaka_lib.Eval.VBool b -> b
+            | _ -> Printf.eprintf "error: runTests did not return Bool\n"; false
+           with Medaka_lib.Eval.Eval_error (msg, loc_opt) ->
+             Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
+             show_snippet source loc_opt; false)
+      end
+    in
+    exit (if doctest_ok && prop_ok && test_ok then 0 else 1)
   end;
   if has_sub "bench" then begin
     let filename =

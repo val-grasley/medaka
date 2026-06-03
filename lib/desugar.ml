@@ -635,6 +635,7 @@ let rec map_decl f = function
       DImpl { impl with methods =
         List.map (fun (n, ps, e) -> (n, ps, map_expr f e)) impl.methods }
   | DProp p -> DProp { p with prop_body = map_expr f p.prop_body }
+  | DTest t -> DTest { t with test_body = map_expr f t.test_body }
   | DAttrib (attrs, d) -> DAttrib (attrs, map_decl f d)
   | d -> d
 

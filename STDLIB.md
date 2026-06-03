@@ -863,3 +863,31 @@ leading-zero / number-grammar rejection (the number scan is lenient on input —
 output is always valid); `Infinity`/`NaN` floats (not representable in JSON).
 **Possible follow-ups:** a pretty-printer (indented output); `ToJson`/`FromJson`
 encode/decode interfaces for user types (a strong interface/`deriving` tire-kick).
+
+## Module 10 — `test` ✅ implemented (Phase 127)
+
+`stdlib/test.mdk` — the unit testing library.  Medaka has three complementary
+kinds of tests; each covers different ground:
+
+| Kind | Syntax | Best for |
+|------|--------|----------|
+| **Doctests** | `-- > expr` / `-- result` in comments | Observable pure outputs; inline documentation |
+| **Props** | `prop "name" (x : T) = bool_expr` | Universal laws; algebraic invariants; generative testing |
+| **Tests** | `test "name" = expectation_expr` | Error / negative paths; non-`Debug`-able results; multi-step or effectful checks; maintainer-only assertions |
+
+To use: `import test.{runTests, expectEqual, expectTrue, …}` in your file,
+write `test "…" = …` declarations, then `medaka test your_file.mdk`.
+
+**Exports:** `Expectation` (ADT: `Pass | Fail String`), `pass`, `fail`,
+`expectEqual`, `expectNotEqual`, `expectTrue`, `expectFalse`,
+`expectLessThan`, `expectGreaterThan`, `expectAll`, `runTests`.
+
+**`runExpectation`** (extern, not re-exported) catches OCaml-level
+`Eval_error`/`Impl_no_match` so one crashing test body never silences
+the tests that follow — the crash becomes `Fail "message"`.
+
+- 16 doctests (one per assertion function).
+- **v2 follow-up (deferred):** conditional auto-import — inject the test
+  vocabulary only into files that contain a `test` decl (frictionless, no
+  explicit import needed).  Blocked on the `marked_prelude`-coalescing risk
+  that is the codebase's most repeated bug source; build it on a tested v1.

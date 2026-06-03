@@ -249,6 +249,11 @@ type decl =
       prop_params : (ident * ty) list;
       prop_body   : expr;
     }
+  | DTest of {
+      is_pub    : bool;
+      test_name : string;
+      test_body : expr;
+    }
   | DBench of {
       is_pub     : bool;
       bench_name : string;
@@ -551,6 +556,7 @@ let rec strip_locs_decl = function
             impl_loc = None;  (* source position; not part of structural identity *)
             methods = List.map (fun (n, ps, e) -> (n, ps, strip_locs_expr e)) d.methods }
   | DProp d -> DProp { d with prop_body = strip_locs_expr d.prop_body }
+  | DTest d -> DTest { d with test_body = strip_locs_expr d.test_body }
   | DBench d -> DBench { d with bench_body = strip_locs_expr d.bench_body }
   | DAttrib (attrs, d) -> DAttrib (attrs, strip_locs_decl d)
   | d -> d

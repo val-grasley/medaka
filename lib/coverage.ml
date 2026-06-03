@@ -102,6 +102,7 @@ let rec collect_decl acc = function
       | Some (_, body) -> collect_expr a body
     ) acc methods
   | Ast.DProp { prop_body; _ } -> collect_expr acc prop_body
+  | Ast.DTest { test_body; _ } -> collect_expr acc test_body
   | Ast.DBench { bench_body; _ } -> collect_expr acc bench_body
   | Ast.DAttrib (_, d) -> collect_decl acc d
   | _ -> acc

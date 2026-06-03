@@ -1015,6 +1015,89 @@ let test_eval_foldable_derived_imported_instance () =
          imported instance, got %S" out)
   )
 
+(* Phase 127: unit test discovery pass.  Writes a minimal test.mdk and a
+   root file with `test` declarations to a temp dir, then drives the same
+   pipeline used by `medaka test` (assemble_marked_modules + inject) and
+   verifies the test runner output. *)
+let test_unit_test_discovery () =
+  with_tmp_dir (fun dir ->
+    (* Minimal test.mdk: just the ADT + runExpectation + pass/fail + runTests *)
+    let _ = write_file dir "test.mdk"
+      "public export data Expectation = Pass | Fail String\n\
+       extern runExpectation : (Unit -> Expectation) -> Expectation\n\
+       export pass : Expectation\n\
+       pass = Pass\n\
+       export fail : String -> Expectation\n\
+       fail msg = Fail msg\n\
+       export expectEqual : (Eq a, Debug a) => a -> a -> Expectation\n\
+       expectEqual expected actual =\n\
+      \  if eq expected actual then Pass\n\
+      \  else Fail (\"expected \" ++ debug expected ++ \" but got \" ++ debug actual)\n\
+       goTests : List (String, Unit -> Expectation) -> Int -> Int -> <IO> Bool\n\
+       goTests [] passed failed =\n\
+      \  println (\"\\n\" ++ intToString passed ++ \" passed, \" ++ intToString failed ++ \" failed\")\n\
+      \  eq failed 0\n\
+       goTests ((name, thunk) :: rest) passed failed =\n\
+      \  match runExpectation thunk\n\
+      \    Pass =>\n\
+      \      println (\"  ok   \" ++ name)\n\
+      \      goTests rest (passed + 1) failed\n\
+      \    Fail msg =>\n\
+      \      println (\"  FAIL \" ++ name ++ \": \" ++ msg)\n\
+      \      goTests rest passed (failed + 1)\n\
+       export runTests : List (String, Unit -> Expectation) -> <IO> Bool\n\
+       runTests tests = goTests tests 0 0\n" in
+    let main_path = write_file dir "main.mdk"
+      "import test.{Expectation, runTests, expectEqual, pass, fail}\n\n\
+       test \"one plus one\" = expectEqual (1 + 1) 2\n\
+       test \"always pass\" = pass\n\
+       test \"always fail\" = fail \"nope\"\n\
+       main : <IO> Unit\n\
+       main = println \"hi\"\n" in
+    (* Drive the unit test pipeline *)
+    let program =
+      let src = let ic = open_in main_path in
+        let n = in_channel_length ic in
+        let s = Bytes.create n in
+        really_input ic s 0 n; close_in ic; Bytes.to_string s in
+      let lb = Lexing.from_string src in
+      lb.Lexing.lex_curr_p <- { lb.Lexing.lex_curr_p with Lexing.pos_fname = main_path };
+      Lexer.reset ();
+      Parser.program Lexer.token lb in
+    let program = Desugar.desugar_program program in
+    (* Collect test decls and synthesize __tests__ / __test_run__ *)
+    let test_decls = List.filter_map (fun d ->
+      match Ast.inner_decl d with
+      | Ast.DTest { test_name; test_body; _ } -> Some (test_name, test_body)
+      | _ -> None) program in
+    let synth_tests = Ast.DFunDef (false, "__tests__", [],
+      Ast.EListLit (List.map (fun (name, body) ->
+        Ast.ETuple [Ast.ELit (Ast.LString name); Ast.ELam ([Ast.PWild], body)]
+      ) test_decls)) in
+    let synth_run = Ast.DFunDef (false, "__test_run__", [],
+      Ast.EApp (Ast.EVar "runTests", Ast.EVar "__tests__")) in
+    let inject fp prog =
+      if fp = main_path then prog @ [synth_tests; synth_run] else prog in
+    let marked =
+      match Doctest.assemble_marked_modules ~inject main_path with
+      | None -> failwith "expected multi-module result"
+      | Some (_, Some msg) -> failwith ("typecheck error: " ^ msg)
+      | Some (ms, None) -> ms in
+    (* Output hook must be set *before* eval_modules_root_env: zero-param
+       bindings (including __test_run__) are forced eagerly inside eval_modules. *)
+    let buf = Buffer.create 64 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    let eval_env =
+      Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+        Eval.eval_modules_root_env marked) in
+    ignore eval_env;
+    let out = Buffer.contents buf in
+    let expected = "hi\n  ok   one plus one\n  ok   always pass\n  FAIL always fail: nope\n\n2 passed, 1 failed\n" in
+    if out <> expected then
+      failwith (Printf.sprintf "unit test runner output mismatch:\nexpected: %S\ngot:      %S" expected out)
+  )
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -1080,6 +1163,9 @@ let () =
     ];
     "Foldable-derived over imported instance (Phase 125)", [
       test_case "sum/maximum/product over imported Foldable" `Quick test_eval_foldable_derived_imported_instance;
+    ];
+    "unit test discovery pass (Phase 127)", [
+      test_case "discovery, synthesis, and runner output" `Quick test_unit_test_discovery;
     ];
     "workspace / multi-root", [
       test_case "cross-member import"    `Quick test_workspace_cross_member_import;
