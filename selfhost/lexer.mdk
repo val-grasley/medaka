@@ -1,19 +1,22 @@
 -- Self-hosted Medaka lexer — Stage 1 port of `lib/lexer.mll`.
 --
--- STATUS: tokenizer ported — int/float/string/char literals, hex/bin/oct ints,
--- idents/keywords, operators/punctuation, line + `{- … -}` (nestable) block
--- comments, string interpolation (`\{expr}` → INTERP_OPEN/MID/END), the `@`/
--- `AS_AT` adjacency rule, and a faithful port of lib/lexer.mll's
+-- STATUS: tokenizer ported — int/float/string/char literals (with char escapes
+-- `\n \t \r \0 \\ \'` + `\u{…}`, mirroring Phase 133's `read_char`), hex/bin/oct
+-- ints, idents/keywords, operators/punctuation, line + `{- … -}` (nestable)
+-- block comments, string interpolation (`\{expr}` → INTERP_OPEN/MID/END), the
+-- `@`/`AS_AT` adjacency rule, and a faithful port of lib/lexer.mll's
 -- INDENT/DEDENT/NEWLINE layout algorithm + else-continuation filter +
 -- leading-operator continuation.  Validated two ways: **all 15/15 curated
 -- fixtures** (test/diff_selfhost_lexer.sh) AND **all 13/13 real .mdk files —
 -- every stdlib module plus this lexer lexing itself** (test/diff_selfhost_lex_-
--- files.sh), each byte-for-byte against the OCaml reference (modulo FLOAT text:
--- OCaml `%g` vs `floatToString` render `1.0` as `1` vs `1.` — same TFloat value).
+-- files.sh), each byte-for-byte against the OCaml reference.
 --
--- Deferred (no real file or fixture exercises them): triple-quoted strings (and
--- their `strip_indent` dedent) and nested interpolation (`\{` inside `\{…}`).
--- `Token`/`tokenToString` mirror `token_to_string` byte-for-byte.
+-- Known serialization-only differences (the token *value* matches; only its
+-- debug text differs because Medaka and OCaml format differently): FLOAT text
+-- (`floatToString` vs OCaml `%g` — `1.0` → `1.` vs `1`) and control bytes in
+-- STRING/CHAR (`debugStringLit` vs `%S` — a NUL renders `\0` vs `\000`). Neither
+-- appears in any real file. Deferred (likewise unused): triple-quoted strings
+-- (+ `strip_indent`) and nested interpolation (`\{` inside `\{…}`).
 
 public export data Token
   = TInt Int
@@ -447,15 +450,46 @@ scanInterpEsc src len p depth acc e
   | e == '0' = scanInterpCont src len (p + 2) depth (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
   | otherwise = scanInterpCont src len (p + 2) depth (acc ++ charToStr e)
 
--- char literals (raw inner bytes, no escape processing — matches the runtime)
-scanChar src len pos depth id =
-  let e = charClose src len (pos + 1)
-  RTok (TChar (substr src (pos + 1) e)) :: scan src len (e + 1) depth id
+-- char literals — escapes processed into the value, mirroring lib/lexer.mll's
+-- `read_char` (Phase 133): `\n \t \r \0 \\ \'` and `\u{…}`, else raw chars up to
+-- the closing quote.  `pos` is at the opening `'`; content starts at `pos + 1`.
+scanChar src len pos depth id = readChar src len (pos + 1) depth id
+
+readChar src len p depth id
+  | isBackslash (at src p) && p + 2 < len && at src (p + 1) == 'u' && at src (p + 2) == '{' =
+      readCharUnicode src len p depth id
+  | isBackslash (at src p) && p + 2 < len = escChar src len p depth id (at src (p + 1))
+  | otherwise = rawChar src len p depth id
+
+-- `\<e>'` escape forms: three source chars (`\`, e, `'`), so advance by 3.
+escChar src len p depth id e
+  | e == 'n' = RTok (TChar "\n") :: scan src len (p + 3) depth id
+  | e == 't' = RTok (TChar "\t") :: scan src len (p + 3) depth id
+  | e == 'r' = RTok (TChar "\r") :: scan src len (p + 3) depth id
+  | isApos e = RTok (TChar "'") :: scan src len (p + 3) depth id
+  | isBackslash e = RTok (TChar "\\") :: scan src len (p + 3) depth id
+  | e == '0' = RTok (TChar (charToStr (fromOption ' ' (charFromCode 0)))) :: scan src len (p + 3) depth id
+  | otherwise = RTok (TChar (charToStr e)) :: scan src len (p + 3) depth id
+
+-- `[^'\\]+ '` — raw chars up to the closing quote.
+rawChar src len p depth id =
+  let e = charClose src len p
+  RTok (TChar (substr src p e)) :: scan src len (e + 1) depth id
 
 charClose src len p
   | p >= len = p
   | isApos (at src p) = p
   | otherwise = charClose src len (p + 1)
+
+-- `\u{HEX}'` : the hex codepoint, then `}` then closing `'`.
+readCharUnicode src len p depth id =
+  let he = uHexEnd src len (p + 3)
+  let cp = parseRadix src (p + 3) he 16 0
+  RTok (TChar (charToStr (fromOption ' ' (charFromCode cp)))) :: scan src len (he + 2) depth id
+
+uHexEnd src len p
+  | p < len && isHexDigit (at src p) = uHexEnd src len (p + 1)
+  | otherwise = p
 
 -- operators + punctuation
 emit src len pos depth id tok length ddelta =

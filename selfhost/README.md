@@ -32,7 +32,8 @@ the stage is done when all pass.
 
 - ✅ Scaffold + harness wiring (token ADT, canonical serializer, runnable entry,
   diff loop).
-- ✅ Tokenizer ported: int/float/string/char + hex/bin/oct literals,
+- ✅ Tokenizer ported: int/float/string/char literals (with char escapes
+  `\n \t \r \0 \\ \'` + `\u{…}`, mirroring Phase 133) + hex/bin/oct literals,
   idents/keywords, operators/punctuation, line + nestable `{- … -}` block
   comments, **string interpolation**, the `@`/`AS_AT` adjacency rule, and the
   INDENT/DEDENT/NEWLINE layout algorithm (plus else-continuation filter and
@@ -43,7 +44,9 @@ the stage is done when all pass.
     — `sh test/diff_selfhost_lex_files.sh`, which diffs against
     `dev/lextok.exe` (the OCaml reference dumper). FLOAT literal *text* is
     normalized away (OCaml `%g` vs `floatToString`: `1.0` → `1` vs `1.`; the
-    TFloat value is identical).
+    TFloat value is identical). One more serialization-only nuance, not hit by
+    any real file: control bytes in STRING/CHAR render `\0` (`debugStringLit`)
+    vs `\000` (`%S`) — same value, different debug escaping.
 - ⏳ Deferred (no real file or fixture uses them): triple-quoted strings (with
   their `strip_indent` dedent) and nested interpolation.
 

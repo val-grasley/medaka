@@ -166,8 +166,13 @@ above, it is flagged ⭐.
   the lexer lexing itself) — 13/13 match byte-for-byte** (FLOAT text normalized:
   OCaml `%g` vs `floatToString`, same TFloat value). **Still deferred** (no real
   file or fixture uses them): triple-quoted strings (+ `strip_indent`) and nested
-  interpolation. **Next:** the parser stage, which forces the **stdlib-access**
-  decision (multi-root loader or vendored `Map`/`List`/`string`).
+  interpolation. **Incorporated Phase 133** (char-literal escapes): `scanChar`
+  now processes `\n \t \r \0 \\ \'` + `\u{…}` (mirroring the new `read_char`), so
+  the lexer still self-lexes 13/13 after that landed — surfaced one more
+  serialization-only nuance (a NUL char renders `\0` via `debugStringLit` vs
+  `\000` via `%S`; unused in real files). **Next:** the parser stage, which forces
+  the **stdlib-access** decision (multi-root loader or vendored
+  `Map`/`List`/`string`).
   **Two self-host-surfaced compiler quirks to file/fix:** (1) char literals do no
   escape processing, so newline/tab/quote/backslash must be matched by `charCode`
   (worked around in `lexer.mdk`); (2) an `<IO>`-returning *helper* called from a
