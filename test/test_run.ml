@@ -696,11 +696,114 @@ main = match f (Some 5)
 |}
   "ok\n"
 
+(* Phase 115 (#1): an *unsignatured* return-position wrapper (`mk n = tag n`,
+   inferred `Tag a => Int -> a`) dispatches by the result type at each call site —
+   not just the signatured form.  Phase 84's promotion only fired for `Applicative`;
+   Phase 115 generalized it to any interface with a return-position method. *)
+let t_infer_return_pos_wrapper = assert_output_typed
+  {|interface Tag a where
+  tag : Int -> a
+
+impl Tag String where
+  tag n = "S"
+
+impl Tag Bool where
+  tag n = n > 0
+
+mk n = tag n
+
+main : <IO> Unit
+main =
+  println (mk 5 : String)
+  if (mk 5 : Bool) then println "T" else println "F"
+|}
+  "S\nT\n"
+
+(* Phase 115 (#2): a *recursive* unsignatured return-position wrapper routes its
+   own recursive call's dictionary (was: arg-tag → first impl → mis-dispatch /
+   closure).  Matches the signatured form's behavior. *)
+let t_infer_return_pos_recursive = assert_output_typed
+  {|interface Tag a where
+  tag : Int -> a
+
+impl Tag String where
+  tag n = "S"
+
+impl Tag Bool where
+  tag n = n > 0
+
+mk n = if n <= 0 then tag 0 else mk (n - 1)
+
+main : <IO> Unit
+main =
+  println (mk 3 : String)
+  if (mk 3 : Bool) then println "T" else println "F"
+|}
+  "S\nF\n"
+
+(* Phase 115 (#2): mutually-recursive unsignatured return-position wrappers route
+   their cross-recursive dictionaries (single result type per program — polymorphic
+   recursion at *two* types is a separate pre-existing limit, fails signatured too). *)
+let t_infer_return_pos_mutual = assert_output_typed
+  {|interface Tag a where
+  tag : Int -> a
+
+impl Tag String where
+  tag n = "S"
+
+impl Tag Bool where
+  tag n = n > 0
+
+ping n = if n <= 0 then tag 0 else pong (n - 1)
+pong n = if n <= 0 then tag 1 else ping (n - 1)
+
+main : <IO> Unit
+main =
+  if (ping 5 : Bool) then println "T" else println "F"
+|}
+  "T\n"
+
+(* Phase 115 (#2): a *recursive* polymorphic-monad wrapper dispatches its
+   return-position `pure` through its own recursive call — at two monads in one
+   program (Phase 84 deferred the recursive case). *)
+let t_poly_monad_recursive = assert_output_typed
+  {|build n =
+  if n <= 0 then pure [] else flatMap (rest => pure (n :: rest)) (build (n - 1))
+
+main : <IO> Unit
+main =
+  println (build 3 : List (List Int))
+  match (build 2 : Option (List Int))
+    Some xs => println xs
+    None => println "none"
+|}
+  "[[3, 2, 1]]\n[2, 1]\n"
+
+(* Phase 115 (#3): a no-`<-` do-block (`do { pure x }`, ≡ `pure x`) is groundable
+   only from surrounding context — when the result type is pinned (here by a
+   use-site annotation) it dispatches correctly.  With no context it defaults to
+   the first Applicative impl (List) by arg tag — an inherent ambiguity (the
+   program names no monad), documented & accepted, not exercised here. *)
+let t_no_bind_do_grounded = assert_output_typed
+  {|f = do
+  pure 5
+main : <IO> Unit
+main = match (f : Option Int)
+  Some v => println "some"
+  None => println "none"
+|}
+  "some\n"
+
 (* ── Suite ───────────────────────────────────────────────────────────────── *)
 
 let () = Alcotest.run "Run"
   [("run", [
     "poly-monad do-block (Phase 84)", `Quick, t_poly_monad_do;
+    "no-bind do grounded (Phase 115 #3)",           `Quick, t_no_bind_do_grounded;
+    "inferred return-pos wrapper (Phase 115 #1)",   `Quick, t_infer_return_pos_wrapper;
+    "inferred return-pos recursive (Phase 115 #2)", `Quick, t_infer_return_pos_recursive;
+    "inferred return-pos mutual (Phase 115 #2)",    `Quick, t_infer_return_pos_mutual;
+    "recursive poly-monad (Phase 115 #2)",          `Quick, t_poly_monad_recursive;
     "return-position dispatch", `Quick, t_return_position_dispatch;
     "multi-param dispatch",     `Quick, t_multiparam_dispatch;
     "head-key dispatch",        `Quick, t_head_key_dispatch;

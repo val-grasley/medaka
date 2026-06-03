@@ -99,7 +99,13 @@ singleton x = Bin 1 x Tip Tip
    > size (Set { 1, 2, 3, 2, 1 })
    3
    > toList (fromList [3, 1, 2, 3, 1])
-   [1, 2, 3] -}
+   [1, 2, 3]
+
+   The empty literal `Set { }` works too (Phase 114); annotate to fix the
+   element type the empty braces leave open:
+
+   > size (Set { } : Set Int)
+   0 -}
 export
 fromList : Ord a => List a -> Set a
 fromList xs = fold (s x => insert x s) Tip xs
@@ -321,6 +327,14 @@ export default impl Foldable Set where
    True -}
 export default impl Eq (Set a) requires Eq a where
   eq a b = if size a != size b then False else eq (toList a) (toList b)
+
+{- | Lexicographic ordering through the canonical ascending element list, so a
+   proper prefix sorts first.  Enables nesting (`Set (Set a)`, `Map (Set a) v`).
+
+   > compare (fromList [1, 2]) (fromList [1, 3])
+   Lt -}
+export default impl Ord (Set a) requires Ord a where
+  compare a b = compare (toList a) (toList b)
 
 {- | Rendered as `fromList [a, …]`, the re-evaluable form (the `Set { … }`
    literal is the *display* form — see PLAN.md Phase 111). Doctest compares

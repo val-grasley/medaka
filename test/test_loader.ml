@@ -776,6 +776,69 @@ let test_eval_module_isolation () =
         "Expected \"7\\n500\\n\" from per-module isolated singleton, got %S" out)
   )
 
+(* Phase 112: a name that is BOTH an explicitly-imported standalone function and
+   an interface method.  `box.mdk` exports standalone `toList`/`isEmpty` over a
+   2-param `Box k v` that does NOT impl Foldable; `toList`'s return type `List
+   (k, v)` DIVERGES from Foldable's `t a -> List a`.  In the main module the
+   bare `toList b`/`isEmpty b` must resolve to the standalone (no Foldable impl
+   for Box) WITH the correct pair-returning type, while `isEmpty [..]` / `toList
+   (Some ..)` in the SAME module still dispatch as the genuine Foldable methods
+   (List/Option DO impl Foldable).  The fix: a type-directed application arm in
+   typecheck routes to the standalone (RLocal) only when the concrete receiver
+   has no impl, and eval's `lookup_method` reaches the global method VMulti past
+   the import-frame standalone shadow for the genuine-method calls. *)
+let test_eval_standalone_vs_method () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "box.mdk"
+      "public export data Box k v = Box k v\n\n\
+       export toList : Box k v -> List (k, v)\n\
+       toList (Box k v) = [(k, v)]\n\n\
+       export isEmpty : Box k v -> Bool\n\
+       isEmpty _ = False\n" in
+    let main_path = write_file dir "main.mdk"
+      "import box.{Box, toList, isEmpty}\n\n\
+       b : Box Int Int\n\
+       b = Box 1 2\n\n\
+       pairs : List (Int, Int)\n\
+       pairs = toList b\n\n\
+       be : Bool\n\
+       be = isEmpty b\n\n\
+       oe : Bool\n\
+       oe = isEmpty [1, 2, 3]\n\n\
+       ol : List Int\n\
+       ol = toList (Some 7)\n\n\
+       main : <IO> Unit\n\
+       main =\n\
+      \  inspect pairs\n\
+      \  inspect be\n\
+      \  inspect oe\n\
+      \  inspect ol\n" in
+    let modules = Loader.load_program main_path [dir] in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Desugar.desugar_program prog)) modules in
+    let method_names = Method_marker.interface_method_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let constrained = Method_marker.constrained_fn_names
+      (List.map (fun (_, _, p) -> p) modules) in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Method_marker.mark_program method_names constrained prog)) modules in
+    let te_acc = ref [] in
+    List.iter (fun (mid, _, prog) ->
+      let (te, _, _) = Typecheck.typecheck_module !te_acc mid prog in
+      te_acc := te :: !te_acc) modules;
+    let buf = Buffer.create 32 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+      ignore (Eval.eval_modules modules));
+    let out = Buffer.contents buf in
+    (* pairs via the standalone (divergent pair type), then the two standalone /
+       method isEmpty results, then the Option Foldable.toList method. *)
+    if out <> "[(1, 2)]\nfalse\nfalse\n[7]\n" then
+      failwith (Printf.sprintf
+        "Expected standalone+method coexistence output, got %S" out)
+  )
+
 (* Phase 88: two-pass elaboration across modules.  A polymorphic-monad do-block
    wrapper (`h m = do { x <- m; pure x }`) defined in the main module of a
    multi-module program must dispatch its return-position `pure` by the caller's
@@ -948,6 +1011,9 @@ let () =
     ];
     "per-module eval isolation (Phase 110)", [
       test_case "same-named fn, different arity" `Quick test_eval_module_isolation;
+    ];
+    "standalone vs no-impl method (Phase 112)", [
+      test_case "imported toList/isEmpty shadow Foldable per receiver" `Quick test_eval_standalone_vs_method;
     ];
     "two-pass elaboration (Phase 88)", [
       test_case "cross-module poly-monad pure dispatch" `Quick test_eval_poly_monad_cross_module;

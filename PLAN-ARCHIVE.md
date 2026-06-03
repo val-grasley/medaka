@@ -4991,6 +4991,130 @@ human-facing output on the **`Display`** interface (unquoted, already backs
   [[project_typecheck_unify_dict_coupling]], [[project_eval_no_module_isolation]],
   [[project_display_interpolation]].
 
+### Phase 112: prefer a local/imported standalone over a no-impl interface method ✅ DONE (2026-06-02)
+
+The recurring standalone-vs-interface-method collision. Map's exported `toList :
+Map k v -> List (k, v)` / `isEmpty : Map k v -> Bool` are *standalone* functions
+(Map deliberately doesn't `impl Foldable` — its `toList` means assoc-PAIRS, not
+values). But `method_marker.ml` rewrites every `EVar "toList"` → `EMethodRef`, so
+a bare `toList m` dispatched through `Foldable`, found no `Map` impl, and failed
+(`No impl of Foldable for Map`) — the standalones were unreachable by bare name.
+
+The fix had to be **type-directed**, not a post-hoc reroute: a method occurrence
+is typed by the *interface* scheme (`t a -> List a` → `List v` for a Map), which
+DIVERGES from the standalone's `List (k, v)`. Rerouting only after
+`check_method_usages` would already have committed the surrounding expression to
+`List v` (unsound). So the decision happens during inference, at the application
+site, before the receiver-typed result is committed.
+
+- **Typecheck (`lib/typecheck.ml`).** New `env.standalone_values` set =
+  `{ n | n ∈ use_schemes ∧ n ∈ method_iface }`, populated in `typecheck_module`
+  (empty on the single-file path — no imports to fall back to). A new `infer` arm
+  matches `EApp (EMethodRef, arg)` whose method name is in `standalone_values` and
+  whose interface is single-parameter: it infers the **argument first** to ground
+  the receiver, and if the receiver head is concrete and `impl_exists_for_head`
+  (a head-tycon probe over `env.impls`, the same granularity as RHeadKey dispatch)
+  finds NO impl, it types the call against the standalone (`lookup_var`, which the
+  module path resolves to the imported scheme) and stamps the `EMethodRef` ref with
+  a new `RLocal` route — recording no method usage, so `NoImplFound` never fires.
+  Everything else (impl exists, polymorphic receiver, hinted/multi-arg call) falls
+  through to ordinary method dispatch, byte-identical to before.
+- **AST/eval (`lib/ast.ml`, `lib/eval.ml`).** New `res_route` variant `RLocal`.
+  The `EMethodRef` eval arm returns the plain `lookup env x` for `RLocal` (no
+  narrowing, no dicts). **Second eval fix — `lookup_method`:** Phase 110's
+  per-module frames bind an imported standalone in the import frame *ahead* of the
+  global method VMulti, so a plain `lookup` returned the standalone even for a
+  *genuine* method call on a different type (`toList (Some 7)` / `isEmpty [..]` in
+  the same file panicked). Genuine method routes now resolve via `lookup_method`,
+  which walks frames past a non-VMulti shadow to the coalesced method VMulti
+  (falling back to the nearest binding when no VMulti exists, so every
+  non-collision case is unchanged). This latent shadowing bug was masked before
+  Phase 112 because the Map call type-errored first.
+- **Result.** `toList m`/`isEmpty m` (Map) route to the standalone with the
+  correct pair/Bool type, while `isEmpty [..]` (List) / `toList (Some ..)` (Option)
+  in the same file still dispatch as Foldable methods. A type with neither impl
+  nor standalone still errors `NoImplFound`. **Coherence:** `matching = []` is a
+  true negative (nominal impls, no supertype widening), so the fallback is sound.
+  **Out of scope (documented):** unapplied method refs, multi-arg/multi-param
+  method calls, and a single-impl (non-VMulti) method colliding with a standalone.
+- Lands in `lib/typecheck.ml` + `lib/ast.ml` + `lib/eval.ml` (cross-cutting; not
+  resolve — the `use_schemes ∩ method_iface` signal lives in typecheck). Test:
+  `test_loader` (`test_eval_standalone_vs_method`). Skill: **harden-typechecker**
+  (decision logic) with mechanical ast/eval plumbing. See
+  [[project_typecheck_two_entrypoints]], [[project_eval_no_module_isolation]],
+  [[project_module5_map]].
+- **Surfaced (separate, pre-existing):** List's `impl Foldable List` used
+  point-free `toList = identity` (core.mdk), which hit the
+  point-free-dispatched-method eval trap — `toList [1,2,3]` panicked `applied
+  non-function: ()`. Fixed independently on main by eta-expanding to `toList xs =
+  xs` (commit "Fix point-free dispatched toList in Foldable List"), so it merges
+  cleanly with Phase 112.
+
+### Phase 115: Phase 83/84 residuals — inferred return-position promotion + recursive routing ✅ DONE (2026-06-02)
+
+Closed the *tractable* subset of the Phase 83/84 dispatch residuals (the deep
+nested/structured-dict residual #5 and the multi-param `Result e`-free-`e` gap #4
+stay deferred — see PLAN.md). Skill: **harden-typechecker** (all in
+`lib/typecheck.ml` + tests). Layered on Phase 84's two-pass `Elaborate`
+(mark → typecheck-discover → re-mark `~promoted` → re-typecheck → dict_pass).
+
+- **#1 — inferred (unsignatured) return-position constrained body.** Phase 84
+  only promoted inferred constraints to dict-routable when the set mentioned the
+  hard-coded `Applicative` (the do-block `pure` case). Generalized
+  `promotable_from` to promote any inferred constraint whose interface has a
+  *return-position* method, via new `iface_has_return_position_method` (reuses the
+  existing `method_param_in_arg_position` detector — promote iff some method's
+  interface param is **not** in argument position). So an unsignatured
+  `mk n = tag n` over `interface Tag a where tag : Int -> a` now dispatches by
+  result type, same as the signatured form. Argument-dispatched wrappers
+  (`Eq`/`Show`/`Ord`/`Num`/`Mappable` — all params arg-position) are *not*
+  promoted and stay on arg tag, so Phase 83's `t_infer_wrapper_propagates`/
+  `_transitive` (correct-rejection) tests are unaffected. Because `promotable_from`
+  is shared, the win lands on the single-file, multi-module, and REPL drivers at
+  once.
+- **#2 — self-/mutually-recursive unsignatured wrappers.** Phase 84's
+  non-recursive promotion guard existed because a promoted recursive wrapper's own
+  `EDictApp` self-call is inferred during Pass B *before* its `fun_constraints`
+  entry is registered (post-inference), so the recorder's `None` branch skipped it
+  → its routes ref stayed `None` → dict_pass added the param but eval applied no
+  dict → `<closure>`/mis-dispatch. (Pass A pre-registration — the Phase 74 fix for
+  *signatured* recursion — can't help: the discriminating tyvar doesn't exist until
+  Pass B infers the unsignatured body, and pass-1's var ids are meaningless under
+  pass 2's reset TVar counter.) **Fix:** dropped the guard and *deferred* the
+  recursive usage. New `env.recursive_promoted_usages` records `(fn, live mono,
+  routes ref, loc)` when a call to a name in `env.promoted` hits the `None`
+  branch; `realize_recursive_dict_apps` (run before `resolve_dict_apps`, once
+  `fun_constraints` is populated) recovers each constraint's args from the live
+  occurrence mono via `find_tvar_in_mono` and pushes a normal `dict_app_usages`
+  entry — routing the recursive call's dict to the wrapper's own
+  `$dict_<fn>_<slot>` param (RDict). The live mono works because its discriminating
+  TVar refs are the same cells that get unified as the body is inferred; `normalize`
+  at resolve time follows the links. Covers recursive return-position wrappers,
+  mutual recursion at a single result type, and recursive polymorphic-monad
+  builders (`build n = if … then pure [] else flatMap (rest => pure (n :: rest))
+  (build (n-1))` at both Option and List). **Pre-existing limit, unchanged:**
+  polymorphic recursion using the group at *two different* result types in one
+  program (`ping 4 : String` and `ping 5 : Bool`) fails — signatured too — a
+  group-monomorphism issue independent of dispatch.
+- **#3 — no-`<-` do-block (`do { pure x }` ≡ `pure x`): decided, document-and-accept.**
+  When the result type is pinned by surrounding context (def-site or use-site
+  annotation) it dispatches correctly; with no context (`println (do { pure 5 })`)
+  it defaults to the first Applicative impl (List) by arg tag — an inherent
+  ambiguity (the program names no monad), like Haskell type-defaulting, not a
+  mis-dispatch. No code change. A stricter "ambiguous type" *error* is possible
+  future work.
+
+**Where.** `lib/typecheck.ml`: `iface_has_return_position_method` (new),
+`promotable_from` (filter generalized, recursive guard dropped, comment),
+`env.recursive_promoted_usages` field + `empty_env`/REPL-copy init, the EVar
+`None`-branch deferred-record, `realize_recursive_dict_apps` (new, wired before
+all four `resolve_dict_apps` call sites). **Done when.** the new
+`test/test_run.ml` cases (`inferred return-pos wrapper/recursive/mutual`,
+`recursive poly-monad`, `no-bind do grounded`) and the `test/test_typecheck.ml`
+`inferred wrapper RDict routes` (via a new `elaborated_routes` helper that runs
+`Elaborate`) pass, with all of `test_typecheck/eval/run/loader/repl/diagnostics/
+doctest` + `@thorough` green.
+
 ### Module 5 stdlib: `map.mdk` + `set.mdk` (weight-balanced ordered containers) ✅ DONE (2026-06-02)
 
 The single biggest Stage-0 gap (symbol tables / scopes / substitutions). User
@@ -5004,8 +5128,8 @@ filterWithKey) + `Mappable`/`Eq`/`Show`/`Semigroup`/`Monoid` (Monoid via Phase
 103) + `FromEntries` (Phase 108) + a `wellFormed` invariant checker. 36 doctests +
 7 props; depth 15 for 1000 ascending inserts. `Foldable` deliberately *not*
 implemented so `toList` keeps meaning assoc-pairs (one consequence — map's
-standalone `toList`/`isEmpty` are unreachable from user files — is tracked as the
-open **Phase 112**).
+standalone `toList`/`isEmpty` were unreachable from user files — was fixed in
+**Phase 112**, above).
 
 **`stdlib/set.mdk`** — a **standalone** weight-balanced element tree (`data Set a
 = Tip | Bin Int a (Set a) (Set a)`), chosen over a `Map a Unit` wrapper (which
@@ -5035,6 +5159,48 @@ where arbitrary () = arbitraryList arbitrary 8` now generates `List Tagged` as
 Lands in `ast.ml`/`typecheck.ml`/`dict_pass.ml`/`eval.ml`. Unblocks common cases
 of Phase 101.
 
+### Phase 107: `core.mdk` gaps surfaced by Module 5 — `Foldable` defaults + `fst`/`snd` ✅ DONE (2026-06-02)
+
+Two `stdlib/core.mdk` gaps from the Module 5 work.
+- **`Foldable.isEmpty`/`length` now default.** The interface docstring and
+  STDLIB.md long *claimed* all three of `foldMap`/`isEmpty`/`length` defaulted, but
+  only `foldMap` had a body, so every impl spelled out `isEmpty`/`length` by hand.
+  Added the two missing defaults to the interface (Haskell-consistent — its
+  `Foldable` MCD is just `foldMap`/`foldr`): `length t = fold (acc _ => acc + 1) 0 t`
+  and `isEmpty t = match toList t; [] => True; _ => False`. Both **eta-expanded** to
+  dodge the point-free-dispatched-method eval trap; `isEmpty` uses a `match` (not
+  `== []`) so it needs no `Eq a`. To prove the defaults actually dispatch (an
+  all-override interface leaves them as dead code), **thinned the `Option` and
+  `Result e` impls** to drop their now-redundant explicit `isEmpty`/`length` — they
+  inherit the defaults. Kept the genuine O(1) overrides on `List` (pattern `isEmpty`),
+  `Array` (`arrayLength`), `Set` (`size`). Verified through the loader (the dispatch
+  bug class repro's only multi-module), not just the single-file doctest path.
+- **`fst`/`snd` added** to core's utility section (`fst (a, _) = a` / `snd (_, b) = b`,
+  signatures `(a, b) -> a` / `(a, b) -> b`), with doctests.
+- Lands in `stdlib/core.mdk` + STDLIB.md doc sync. Doctests: 24/24 in core (4 new);
+  list/array/string/map/set + `test_eval`/`run`/`typecheck`/`doctest` + `@thorough`
+  all green. Skill: **extend-stdlib**.
+
+### Phase 113: `Ord` instances for `Map` / `Set` (+ `Show`/`Display Ordering`) ✅ DONE (2026-06-02)
+
+Neither `Map k v` nor `Set a` had an `Ord` impl, so they couldn't be nested
+(`Map (Set a) v`, `Set (Set a)`) or sorted (`List (Map …)`). Added cheap
+lexicographic `Ord` on the canonical ascending list, mirroring the existing `Eq`:
+`export default impl Ord (Map k v) requires Ord k, Ord v where compare a b =
+compare (toList a) (toList b)` (`stdlib/map.mdk`) and the element-list analogue
+`impl Ord (Set a) requires Ord a` (`stdlib/set.mdk`). Both delegate to core's
+lexicographic `Ord (List a)`; defining only `compare` suffices (the
+`lt`/`gt`/`lte`/`gte`/`min`/`max` helpers default off it). Verified `Set (Set
+Int)` now typechecks and evaluates (`member` probe → `true`).
+
+Also closed a latent gap: `Ordering` had **no** `Show` *or* `Display` impl, so
+`show`/`println`/`\{compare …}` all failed. Added `impl Show Ordering` +
+`impl Display Ordering` to `core.mdk` (`Lt`/`Eq`/`Gt`), naming the `Eq`
+constructor directly — constructors and interfaces are separately namespaced, so
+there is no clash with the `Eq` interface (see the corrected note below). The two
+Map/Set doctests render `compare … ` as `Lt` directly off the new `Show`. Skill:
+**extend-stdlib**. See [[project_module5_map]].
+
 ### Investigated & dropped as non-issues (2026-06-02)
 
 Two "minor ergonomics" candidates from the Module 5 work, verified non-problems:
@@ -5044,6 +5210,34 @@ interface — constructors and interfaces are already separately namespaced, so
 `match compare … Eq => …` resolves fine even under `Ord k =>` with `Eq` imported
 (map.mdk's earlier "use `_` for the equal case" comment was mistaken and was
 corrected to name `Eq`).
+
+### Phase 114: empty container literals (`Map { }` / `Set { }`) ✅ DONE (2026-06-02)
+
+Empty `Map { }` / `Set { }` raised `Type mismatch: Map Int vs Map`. Root cause:
+the parser can't tell the two apart (empty braces carry no `=>` marker), so both
+lower to a unary `ESetLit name []`, and `Desugar.rewrite_container_lit` pins the
+*unary* `name _a` — the wrong arity for the binary `Map`, so it failed to unify
+with `fromEntries`'s `Map k v` result. Desugar can't fix this (it runs before
+resolve/typecheck and doesn't know each tycon's arity). Fix lands entirely in the
+`EHeadAnnot` arm of `Typecheck.infer` (`typecheck.ml`): **ignore the lowering's
+arity** and rebuild the pin as the head tycon applied to its *declared* arity of
+fresh vars. The arity is read off the type's constructor scheme — `env.type_ctors
+name → ctor → env.ctors → strip TFun arrows, count TApp nesting on the result
+head` — which works on both whole-program paths (and for *imported* types, since
+`Map`/`Set` arrive via `import` and their ctors are seeded into `env.ctors` at the
+te_ctors step). No new env field, no desugar/parser change; non-empty literals are
+unaffected (head + declared arity == what they already supplied). Element vars
+stay free and ground via inference, so an unconstrained empty literal still needs
+an annotation/context (`Map { } : Map Int Int`), exactly like `[]`. Regression
+doctests in map.mdk/set.mdk (`size (Map { } : Map Int Int)` → `0`, similarly Set).
+See [[project_typecheck_two_entrypoints]] and [[project_module5_map]].
+
+The phase's **second** sub-item — *two same-shape containers in scope need a type
+annotation to disambiguate* — was **not** fixed: it is inherent to head-pinning
+(the literal's name pins only the head tycon, not the full type), so when two
+`(k,v)`-entry container types are both in scope, `Map { … }`'s entry shape matches
+both and an annotation (`m : Map _ _ = …`) is the intended disambiguator. Recorded
+as a permanent limitation, not a bug. Skill: **add-language-feature**.
 
 ---
 

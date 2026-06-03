@@ -2,7 +2,7 @@
 
 The working handoff between sessions. Read it before starting a task; update it
 when you finish one. This document holds only **forward-looking** work — the
-completed Phases (1–110, with their detailed implementation notes) live in
+completed Phases (1–115, with their detailed implementation notes) live in
 [`PLAN-ARCHIVE.md`](./PLAN-ARCHIVE.md). When a phase here is finished, move its
 write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md).
@@ -11,7 +11,7 @@ the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md).
 
 The compiler pipeline is complete end-to-end —
 `lexer → parser → desugar → resolve → method_marker → typecheck (runs exhaust)
-→ eval` — with phases through ~110 done (see PLAN-ARCHIVE.md). The language has
+→ eval` — with phases through ~115 done (see PLAN-ARCHIVE.md). The language has
 records, ADTs, interfaces (with superinterfaces, `deriving`, dictionary-passing
 for return-position/multi-param dispatch), effect rows, exhaustiveness checking,
 `do`-notation, guards (with fall-through + exhaustiveness lint), list
@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 114). At task triage, match the work against AGENTS.md's
+number (last used: 115). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -67,8 +67,9 @@ What's missing is the supporting surface a real multi-thousand-line program need
   - ~~`do`→`Thenable` (Phase 98)~~, ~~guard exhaustiveness + inline guards (Phase
     91)~~, ~~plain multi-clause exhaustiveness (Phase 102)~~ — **DONE**.
   - Multi-module / return-position dispatch residuals (Phase 83/84) shouldn't
-    force arg-tag workarounds in compiler code — mostly closed; nested-dict
-    residual remains.
+    force arg-tag workarounds in compiler code — mostly closed (Phase 115 closed
+    the inferred/recursive-wrapper cases); the nested-dict (#5) and free-`e`
+    `Result` (#4) residuals remain.
 - **Interpreter performance, "good enough" to bootstrap.** Running the compiler
   *on* the interpreter must finish in minutes, not hours. May require interpreter
   hot-path work (the eval loop, environment representation) — measure once a
@@ -135,58 +136,52 @@ above, it is flagged ⭐.
   WIP on branch `claude/suspicious-sammet-21d73e` (commit `860ba12`). Skill:
   **add-language-feature** (cross-cutting).
 
-- **Phase 112 — prefer a locally-bound / explicitly-imported name over a
-  no-impl interface method.** The recurring standalone-vs-interface-method
-  collision. It bit `empty` (fixed in Phase 103), and currently makes map's
-  exported `toList` / `isEmpty` **unreachable from a user file** — a bare
-  `toList m` / `isEmpty m` resolves to the generic `Foldable.toList`/`isEmpty`,
-  which has no `Map` impl, → `No impl of Foldable for Map`. Won't-do Phase 78c
-  dropped the *export-a-bare-`length`* version (it would shadow `Foldable.length`
-  everywhere), but this is the narrower, safer lever: **when a name is both an
-  explicitly-imported/locally-bound function and an interface method, and the
-  method has no applicable impl at the use site's type, resolve to the
-  function.** Fixes the whole class (`toList`/`isEmpty`/`map`/`filter` on a type
-  that doesn't impl the interface) without removing interfaces. Coherence
-  subtleties to settle before building: an impl that exists for a *supertype* or
-  via a superclass; interaction with the orphan/coherence checks; whether "no
-  applicable impl" is decidable at resolve time vs. needs typecheck. `set.mdk`
-  sidesteps the issue by *implementing* `Foldable`; map can't (its `toList` means
-  pairs, not values). Lands in `lib/resolve.ml` + `lib/typecheck.ml`. Skill:
-  **harden-typechecker**.
-
-- **Phase 114 — container-literal residuals (Phase 108 follow-ups, low priority).**
-  Two limitations of the `Map { … }` / `Set { … }` sugar:
-  - **Empty literals don't work** — `Map { }` / `Set { }` fail (`Type mismatch:
-    Map Int vs Map`): empty braces carry no `=>` to distinguish map-vs-set, so the
-    parser emits `ESetLit(name, [])` and the lowering pins the *unary* `name _a`,
-    the wrong arity for a binary `Map`. Low value (empty containers have
-    `empty`/`Monoid.empty`). Possible fix: `EHeadAnnot` in typecheck ignores the
-    lowering-supplied arity and applies the head tycon to its *declared* arity of
-    fresh vars (a tycon-arity lookup).
-  - **Two same-shape containers in scope need a type annotation** to disambiguate
-    — the literal's name pins the *head* tycon, not the full type, so two
-    `(k,v)`-entry container types both match `Map { … }`'s entry shape. Annotate
-    (`m : Map _ _ = …`) to choose. Inherent to head-pinning; recorded.
-  - Skill: **add-language-feature**.
-
-- ⭐ **Phase 83 / 84 (residuals, deferred — layered like 69.x→74).** The
+- ⭐ **Phase 83 / 84 (residuals, layered like 69.x→74).** The
   instance-`requires` dict-threading into return-position impl bodies (single
-  level) is **DONE** (see PLAN-ARCHIVE.md). Remaining, lower priority — each a
-  known limitation with a correct-enough fallback today:
-  - Runtime dict-threading *into* an inferred (unsignatured top-level) constrained
-    body (currently arg-tag dispatch, correct for argument-dispatched wrappers).
-    Distinct from the impl-body case. Needs a post-typecheck marker re-run against
-    the final constraint tables — a pipeline restructure.
-  - Self-/mutually-recursive *unsignatured* wrappers under-infer their own
-    recursive-call routing.
+  level) is **DONE** (see PLAN-ARCHIVE.md). The tractable set was closed by
+  **Phase 115** (2026-06-02, see PLAN-ARCHIVE.md) — #1/#2 fixed, #3 decided:
+  - ~~Runtime dict-threading *into* an inferred (unsignatured top-level)
+    constrained body~~ — **DONE (Phase 115 #1).** Generalized Phase 84's
+    promotion (`promotable_from`) from the hard-coded `Applicative` to *any*
+    interface with a return-position method (`iface_has_return_position_method`),
+    so `mk n = tag n` over a user `interface Tag a where tag : Int -> a` now
+    dispatches by result type. Argument-dispatched wrappers (`Eq`/`Show`/`Ord`)
+    stay on arg tag (unchanged).
+  - ~~Self-/mutually-recursive *unsignatured* wrappers under-infer their own
+    recursive-call routing~~ — **DONE (Phase 115 #2).** Dropped the non-recursive
+    promotion guard; a promoted wrapper's own recursive `EDictApp` call (inferred
+    during Pass B before its `fun_constraints` entry exists) is deferred via
+    `env.recursive_promoted_usages` and resolved by `realize_recursive_dict_apps`
+    once `fun_constraints` is populated — recovering the discriminating var from
+    the live occurrence mono (`find_tvar_in_mono`). Covers recursive return-pos
+    wrappers, mutual recursion (single result type), and recursive poly-monad
+    builders. (Polymorphic recursion at *two different* result types remains a
+    separate pre-existing limit — fails signatured too.)
   - `pure` in a do-block with **no `<-`** is groundable only from surrounding
-    type context.
+    type context — **decided (Phase 115 #3): document-and-accept.** When the
+    result type is pinned (a def-site or use-site annotation) it dispatches
+    correctly; with no context at all (`println (do { pure 5 })`) it defaults to
+    the first Applicative impl (List) by arg tag. That is an inherent ambiguity
+    (the program names no monad), analogous to Haskell type-defaulting — not a
+    mis-dispatch. A stricter "ambiguous type" *error* is possible future work but
+    out of scope.
   - `Result e` with a free `e` mis-dispatches even when signatured (a multi-param
-    dict-resolution gap). (Did not reproduce on the 2026-06-02 binary with the
-    probes tried; re-verify before working it.)
+    dict-resolution gap). **Re-verified & reproduces (2026-06-02, this binary).**
+    Repro: `f m = do { x <- m; pure x }` called `f (Ok 5)` panics (routes to
+    List's `pure`) for **both** the unsignatured form and the signatured
+    `f : Thenable m => m a -> m a` — identically. Contrast: signatured Option
+    works, and a fully-ground `pure 5 : Result String Int` works. Root cause: at
+    `f (Ok 5)` the monad instantiates to `Result e` with `e` **free** (nothing
+    pins it), and dict-*application* routes are `RKey`/`RDict` only — they cannot
+    carry a head-key (`eval.ml:459`), so the non-ground `Result e` dict argument
+    resolves to `RKey ""` → arg-tag fallback → first impl (List). Not a one-line
+    fix (needs head-key dict routing, or defaulting/grounding the free param);
+    **still deferred**, out of the tractable-set scope. Phase 115 #1 does not fix
+    it (the call-site dict still can't ground `e`).
   - True recursive/nested instance dictionaries (the `List (List Int)` case) need
     structured dicts rather than flat impl-key strings — the real "pipeline
-    restructure"; also lifts the Phase 101b nesting limit.
+    restructure"; also lifts the Phase 101b nesting limit. **Still deferred** (the
+    big remaining residual).
   - Skill: **harden-typechecker** / **add-language-feature** (cross-cutting).
 
 ### CLI surface (Phase 82, continued)
@@ -214,27 +209,6 @@ that constraint and delegated the remaining modules (Modules 5–8). STDLIB.md i
 the per-module checklist. **Module 5 (`map` + `set`) is complete** — see
 PLAN-ARCHIVE.md and STDLIB.md.
 
-- **Phase 107 — `core.mdk` gaps surfaced by Module 5 (2026-06-02).**
-  - **`Foldable.isEmpty` / `length` have no default body** — only `foldMap`
-    does, yet the interface comment *and* STDLIB.md claim all three default. So
-    every `Foldable` impl (List, Array, and any new one like a tree) is forced to
-    spell out `isEmpty`/`length`. Either add the default bodies (`isEmpty t = ...`
-    via `toList`; `length = fold (acc _ => acc + 1) 0` — mind the
-    point-free-dispatched-method eval trap, eta-expand) or correct the misleading
-    comment + STDLIB.md. Lands in `stdlib/core.mdk`. Skill: **extend-stdlib**.
-  - **No `fst` / `snd` tuple accessors** in core (`fst (1,2)` → `Unbound
-    variable: fst`). Trivial to add (`fst (a, _) = a` / `snd (_, b) = b`); add to
-    `core.mdk` utilities, or decide they're intentionally omitted (pattern-match
-    instead) and document it. Skill: **extend-stdlib**.
-
-- **Phase 113 — `Ord` instances for `Map` / `Set`.** Neither has an `Ord` impl
-  today, so you can't nest them (a `Map (Set a) v`, or a `Set (Set a)`) or sort a
-  `List (Map …)`. Add lexicographic `Ord` on the canonical ascending list:
-  `impl Ord (Map k v) requires Ord k, Ord v where compare a b = compare (toList a)
-  (toList b)` (toList = assoc pairs; for set, the element list). Cheap; both
-  already impl `Eq` the same way. Lands in `stdlib/map.mdk` + `stdlib/set.mdk`.
-  Skill: **extend-stdlib**.
-
 - ⭐ **`stdlib/string.mdk`** is drafted and passes its 49 doctests but is flagged
   *awaiting user review* (archive Phase 75 step 3). Open decisions: the
   `length`/`isEmpty`/`count` omissions and `toUpper` vs `charToUpper` naming.
@@ -260,9 +234,9 @@ PLAN-ARCHIVE.md and STDLIB.md.
   already met by interface impls, and there is no safe export path for a bare
   `length : String -> Int` (it would shadow `Foldable.length` everywhere). The
   real lever, if ever needed, is a `Sized`/`HasLength` interface — which is
-  stdlib design, not a compiler feature. (Phase 112 is the *narrower* lever —
+  stdlib design, not a compiler feature. (Phase 112 — the *narrower* lever:
   resolve to a local/imported name only when the method has no applicable impl —
-  which is on the open roadmap; 78c stays dropped.)
+  is now **DONE** (see PLAN-ARCHIVE.md); 78c stays dropped.)
 - The broader **rejected-features** list (labeled arguments, active patterns,
   computation expressions, polymorphic variants, first-class modules, row
   polymorphism, macros, lazy sequences, higher-rank polymorphism, custom

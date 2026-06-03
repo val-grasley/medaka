@@ -80,6 +80,28 @@ let lookup env name =
        | None -> search rest)
   in search env
 
+(* Phase 112: resolve a method occurrence to the coalesced method binding,
+   looking PAST a nearer same-named non-method shadow.  This matters only when a
+   name is both an interface method and an explicitly-imported standalone (e.g.
+   map's `toList`/`isEmpty` vs Foldable's): `eval_modules` binds the import in a
+   frame ahead of the global method VMulti, so a plain `lookup` would return the
+   standalone even for a genuine method call.  Walk frames, returning the first
+   VMulti (the dispatcher); if no frame binds the name to a VMulti, fall back to
+   the nearest binding (normal lookup) — preserving every non-collision case,
+   where the nearest binding already IS the method. *)
+let lookup_method env name =
+  let rec search = function
+    | [] -> lookup env name
+    | frame :: rest ->
+      (match List.assoc_opt name frame with
+       | Some cell ->
+         let v = (match !cell with
+           | VThunk t -> let v = Lazy.force t in cell := v; v
+           | v -> v) in
+         (match v with VMulti _ -> v | _ -> search rest)
+       | None -> search rest)
+  in search env
+
 let extend env binds =
   (List.map (fun (k, v) -> (k, ref v)) binds) :: env
 
@@ -462,6 +484,7 @@ let dict_of_route env = function
   | Ast.RKey key -> VDict key
   | Ast.RDict d  -> (match lookup env d with VDict _ as vd -> vd | _ -> VDict "")
   | Ast.RHeadKey _ -> VDict ""
+  | Ast.RLocal -> VDict ""  (* Phase 112: RLocal never appears in a dict route *)
 
 (* Convert Impl_no_match → Eval_error at the boundary of user-visible code.
    Used at every eval site that is NOT inside a VMulti dispatch chain. *)
@@ -613,15 +636,24 @@ and eval env expr =
      When unstamped (genuinely polymorphic site with no enclosing constraint) or
      the key isn't found, fall back to the whole VMulti and arg-tag dispatch. *)
   | EMethodRef (r, x) ->
-    let v = lookup env x in
     (match !r with
-     | None -> v
+     | None -> lookup env x
+     (* Phase 112: the typechecker found no impl of this interface for the
+        concrete receiver but the name has an explicitly-imported/local
+        standalone — a plain `lookup` (which the import frame shadows ahead of
+        any global method VMulti) IS that standalone.  Return it unnarrowed,
+        with no dict folding. *)
+     | Some { Ast.res_route = RLocal; _ } -> lookup env x
      | Some { Ast.res_route; res_method_dicts; res_impl_dicts; _ } ->
+       (* A genuine method dispatch: resolve the method VMulti past any nearer
+          same-named standalone shadow (Phase 112), then narrow by the route. *)
+       let v = lookup_method env x in
        (* First narrow by the t-dispatch route (return-position / multi-param). *)
        let v = match res_route with
          | RKey key -> select_impl_by_key key v
          | RHeadKey head -> select_impl_by_head head v
          | RDict d -> (match lookup env d with VDict key -> select_impl_by_key key v | _ -> v)
+         | RLocal -> v  (* unreachable: handled by the RLocal arm above *)
        in
        (* Phase 96: select_impl_by_key keeps the chosen impl's dispatch wrapper
           (VTypedImpl/VNamedImpl) so a method awaiting arguments still arg-tag-
