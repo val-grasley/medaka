@@ -482,6 +482,34 @@ and print_expr_body e = match e with
     text "if " ^^ print_expr prec_top c ^^ text " then" ^^ then_part
   | _ -> print_expr prec_top e
 
+(* Phase 123: width-aware rendering of an `if` *RHS body* (def / guard-arm /
+   match-arm), the one bare position with layout-legal interior break points
+   (`=⏎`, `then⏎`, `else⏎`).  Flat `if c then t [else e]` when it fits the line;
+   otherwise the `if` drops onto its own indented line under the separator and
+   each branch onto its own line — i.e. the block-branch layout, but triggered
+   by *width* rather than by a block branch.  Returns None for non-`if` bodies
+   (which keep the existing flat, may-overflow behaviour — the general
+   long-RHS-wrapping question is filed separately) and for an `if` with a block
+   branch (the forced-block path in `print_def_rhs` already handles those).  The
+   leading `Line` lets the caller's separator break: the caller emits `text " ="`
+   / `text " =>"` and then this group, so the `Line` is the space when flat and
+   the newline before `if` when broken.  Safe here because every RHS position is
+   newline-terminated — no following `else` can reattach across the break. *)
+and print_if_rhs e = match strip_loc e with
+  | EIf (c, t, els) ->
+    let simple b = not (is_block_body (strip_loc b)) in
+    let is_unit = match strip_loc els with ELit LUnit -> true | _ -> false in
+    if simple t && (is_unit || simple els) then
+      let body =
+        text "if " ^^ print_expr prec_top c ^^ text " then"
+        ^^ nest (Line ^^ print_expr prec_top t)
+        ^^ (if is_unit then Nil
+            else Line ^^ text "else" ^^ nest (Line ^^ print_expr prec_top els))
+      in
+      Some (group (nest (Line ^^ body)))
+    else None
+  | _ -> None
+
 (* Flatten the same-operator left-associative spine into one group so the chain
    breaks all-or-nothing, leading each continuation line with the operator
    (`head\n  |> a\n  |> b`). *)
@@ -512,7 +540,9 @@ and print_match_arms arms =
               | GBool g       -> print_expr prec_top g
               | GBind (gp, g) -> print_pat gp ^^ text " <- " ^^ print_expr prec_top g
             ) guards))
-    ^^ text " => " ^^ print_expr_body body
+    ^^ (match print_if_rhs body with
+        | Some g -> text " =>" ^^ g
+        | None   -> text " => " ^^ print_expr_body body)
   in
   indent_block (sep_by Hardline (List.map arm arms))
 
@@ -526,7 +556,9 @@ and print_guard_arms arms =
         | GBool g       -> print_expr prec_top g
         | GBind (gp, g) -> print_pat gp ^^ text " <- " ^^ print_expr prec_top g
       ) guards)
-    ^^ text " = " ^^ print_expr_body body
+    ^^ (match print_if_rhs body with
+        | Some g -> text " =" ^^ g
+        | None   -> text " = " ^^ print_expr_body body)
   in
   indent_block (sep_by Hardline (List.map arm arms))
 
@@ -578,9 +610,12 @@ let print_def_rhs body = match strip_loc body with
     print_expr_body body
   | EBlock _     -> text " =" ^^ print_expr_body body
   | _ ->
-    text " ="
-    ^^ (if is_block_body body then indent_block (print_expr_body body)
-        else text " " ^^ print_expr_body body)
+    (match print_if_rhs body with
+     | Some g -> text " =" ^^ g
+     | None ->
+       text " ="
+       ^^ (if is_block_body body then indent_block (print_expr_body body)
+           else text " " ^^ print_expr_body body))
 
 let print_use_path = function
   | UseName names -> text (String.concat "." names)
