@@ -271,6 +271,17 @@ let test_expr_if () =
   | EIf (EBinOp (">", EVar "x", ELit (LInt 0)), EVar "x", ELit (LInt 0)) -> ()
   | _ -> failwith "wrong"
 
+(* Phase 118: inline `then` branch followed by an indented `else` block — the
+   one block-layout cell the Phase 45.7/45.8 if-rules missed. *)
+let test_expr_if_inline_then_block_else () =
+  match parse_one "f x =\n  if x > 0 then 1\n  else\n    let b = 2\n    b\n" with
+  | DFunDef (false, "f", [PVar "x"],
+      EIf (EBinOp (">", EVar "x", ELit (LInt 0)),
+           ELit (LInt 1),
+           EBlock [DoLet (false, PVar "b", ELit (LInt 2)); DoExpr (EVar "b")]))
+    -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
 let test_expr_application () =
   match parse_expr "f x y\n" with
   | EApp (EApp (EVar "f", EVar "x"), EVar "y") -> ()
@@ -1823,6 +1834,7 @@ let () =
       test_case "let rec top-level"        `Quick test_decl_let_rec_top;
       test_case "let rec top-level mutual" `Quick test_decl_let_rec_top_mutual;
       test_case "if-then-else"      `Quick test_expr_if;
+      test_case "if inline-then block-else" `Quick test_expr_if_inline_then_block_else;
       test_case "application"       `Quick test_expr_application;
       test_case "infix backtick"    `Quick test_expr_infix_backtick;
       test_case "list literal"      `Quick test_expr_list_literal;

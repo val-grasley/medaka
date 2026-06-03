@@ -266,6 +266,17 @@ let rec expr_prec = function
 
 let rec strip_loc = function ELoc (_, e) -> strip_loc e | e -> e
 
+(* A body whose printed form spans multiple (indented) lines — used to decide
+   block vs inline layout for `=` RHSs and `if`/`else` branches. *)
+let rec is_block_body = function
+  | EMatch _ | EBlock _ | EDo _ | EGuards _ | EFunction _ -> true
+  (* An `if` whose branch is a block is itself multi-line, so a `= <if>` RHS
+     must put it on its own indented line (else the `else` Hardline breaks to
+     the wrong column). *)
+  | EIf (_, t, e)    -> is_block_body t || is_block_body e
+  | ELoc (_, e)      -> is_block_body e
+  | _ -> false
+
 let rec print_expr min_prec e =
   let ep = expr_prec e in
   let d = print_expr_raw e in
@@ -315,9 +326,24 @@ and print_expr_raw = function
        bodies nest consistently beneath the `where`. *)
     print_expr prec_top body ^^ text " where" ^^ Nest (4, clauses)
   | EIf (c, t, e) ->
-    text "if " ^^ print_expr prec_top c
-    ^^ text " then " ^^ print_expr prec_top t
-    ^^ text " else " ^^ print_expr prec_top e
+    (* When either branch is a multi-line block body, lay the `if` out with
+       `then`/`else` each leading their own (indented) block — the inline form
+       would emit an unparseable trailing block.  Mirrors `print_def_rhs`. *)
+    if is_block_body t || is_block_body e then
+      (* `EBlock` already self-indents (its `print_expr_raw` wraps an
+         `indent_block`), so it must not be wrapped a second time — mirrors the
+         `EBlock` special-case in `print_def_rhs`. *)
+      let branch kw b = match strip_loc b with
+        | EBlock _               -> text kw ^^ print_expr_body b
+        | b' when is_block_body b' -> text kw ^^ indent_block (print_expr_body b)
+        | _                      -> text kw ^^ text " " ^^ print_expr prec_top b
+      in
+      text "if " ^^ print_expr prec_top c ^^ text " "
+      ^^ branch "then" t ^^ Hardline ^^ branch "else" e
+    else
+      text "if " ^^ print_expr prec_top c
+      ^^ text " then " ^^ print_expr prec_top t
+      ^^ text " else " ^^ print_expr prec_top e
   | EBinOp (op, l, r) ->
     let prec = binop_prec op in
     let ra = is_right_assoc op in
@@ -490,11 +516,6 @@ and print_do_stmt = function
     ^^ text " else " ^^ print_expr prec_top alt
 
 (* ── Declarations ────────────────────────────────── *)
-
-let rec is_block_body = function
-  | EMatch _ | EBlock _ | EDo _ | EGuards _ | EFunction _ -> true
-  | ELoc (_, e)      -> is_block_body e
-  | _ -> false
 
 (* The RHS of a `<header> = <body>` definition (function clause, impl method,
    prop/bench), with the `=` spaced correctly for the body shape:

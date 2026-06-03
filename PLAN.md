@@ -155,19 +155,42 @@ above, it is flagged ⭐.
   over the other args, or keep such functions to ≤2 params. Surfaced building
   Module 6, 2026-06-02. Skill: **harden-typechecker**.
 
-- **Phase 118 — `if`/`else` branches can't be multi-statement blocks.** An
-  `if … then … else …` branch must be a single expression: a multi-statement
-  indented block as a `then`/`else` branch is a **parse error** (the
-  `else`-leads-an-indented-block layout, related to the known "`then`/`else`
-  can't start a line" rule). Bites imperative `<Mut>` code — e.g. a hash-table
-  `insert` that needs `if present then replace else (set; bump count; maybe
-  resize)`. **Workaround (works today):** use function **guards** with block
-  bodies — `f … | cond = <expr> | otherwise = <block>` parses and sequences a
-  multi-statement `<Mut>` block fine (this is what `stdlib/hash_map.mdk` uses).
-  So it's an ergonomics gap, not a blocker. Fix is a lexer/layout +
-  `parser.mly` change to allow an indented block after `then`/`else` (mind the
-  indentation-sensitive lexer and re-measure `parser.conflicts`). Surfaced
-  building Module 6 (hash containers), 2026-06-02. Skill: **add-language-feature**.
+- ✅ **Phase 118 — `if`/`else` block branches: complete the layout matrix. DONE
+  (2026-06-03).** The original framing ("any block as a `then`/`else` branch is a
+  parse error") was **stale** — Phase 45.7/45.8 already parsed block branches for
+  most layouts (block/block, block/inline, inline-then+newline+inline-else). The
+  one missing cell was **inline `then` expr + NEWLINE + indented `else` block**
+  (`if present then replace` / newline / block `else`) — the exact `<Mut>`
+  hash-table friction. Fix: a single `parser.mly` production in `expr_lam`
+  (`IF expr_or THEN expr_lam newlines ELSE INDENT nonempty_list(stmt) DEDENT`,
+  reusing `stmts_to_expr`); no AST/resolve/typecheck/eval change. Conflict count
+  unchanged (3, freshly measured — the checked-in `parser.conflicts` had drifted
+  to 14). Also fixed a **pre-existing formatter bug**: `printer.ml`'s `EIf`
+  printed branches inline unconditionally, so *all* block-branch `if/else` (even
+  the parseable Phase-45.7 ones) emitted unparseable output — `medaka fmt` now
+  lays `then`/`else` on aligned lines with the block indented one step (rewrote
+  the `EIf` arm + made `is_block_body` recurse into `EIf` branches). Tests in
+  `test_parser`/`test_roundtrip`/`test_fmt`/`test_run`. The remaining `if`
+  ergonomics gap — **else-less `if`** — is split out as Phase 122 below.
+  (`stdlib/hash_map.mdk` keeps its guard-based `<Mut>` ops; the block-branch
+  claim in its header comment is now superseded by Phase 122.)
+
+- **Phase 122 — else-less `if … then <block>` (statement-position `if`).**
+  Every `if` grammar rule requires `ELSE` (`parser.mly:564-588`), so
+  `if c then <block>` with no `else` is a **parse error**. This is the remaining
+  imperative-`<Mut>` ergonomics gap after Phase 118: side-effecting code that
+  conditionally runs a block and otherwise does nothing (e.g. a `maybeResize`
+  that resizes only past a load factor) must today fall back to function guards
+  (`| cond = <block>` / `| otherwise = ()`), as `stdlib/hash_map.mdk` does. Add
+  an else-less form that defaults the missing branch to the unit value `()`
+  (`ELit LUnit`, `ast.ml:17`), i.e. `if c then e` ≡ `if c then e else ()`.
+  Needs: a parser production for the no-`ELSE` form (inline *and* indented-block
+  `then` branch), and a typecheck rule that the `then` branch is `Unit` (so the
+  `if` itself types as `Unit`) — cleanest as a desugar to `EIf (c, t, ELit
+  LUnit)` so typecheck/eval need no new arm. Mind the indentation-sensitive
+  lexer and re-measure `parser.conflicts` (an else-less `if` introduces a
+  dangling-else-style ambiguity to resolve). Surfaced alongside Phase 118,
+  2026-06-03. Skill: **add-language-feature**.
 
 - **Phase 101 — drive property generation/shrinking through the `Arbitrary`
   interface (101b).** 101a (registry-first `arbitrary`/`shrink`, native element
@@ -293,9 +316,10 @@ PLAN-ARCHIVE.md and STDLIB.md.
   `resolve.ml` `primitive_types`. HashSet impls `Foldable` (elements = `toList`);
   HashMap uses `entries` internally (its `toList` = pairs would clash with
   `Foldable.toList`). 8 + 7 doctests, stress-verified (100 inserts → multiple
-  resizes, delete, dedupe). Surfaced **Phase 118** (`if`/`else` block branches)
-  and **Phase 119** (false-positive non-exhaustiveness for 3+-arg list matches);
-  both above, both with clean workarounds. **`mut_array`** (growable vector over
+  resizes, delete, dedupe). Surfaced **Phase 118** (`if`/`else` block branches,
+  now ✅ DONE), **Phase 122** (else-less `if`, the remaining `<Mut>` ergonomics
+  gap), and **Phase 119** (false-positive non-exhaustiveness for 3+-arg list
+  matches); all above, the open ones with clean workarounds. **`mut_array`** (growable vector over
   `Array`) is still unstarted — mainly an interpreter/compiler perf nicety.
 - **Module 8 — `json` unstarted:** `Json` type + parser + serializer. Not on the
   self-hosting path.

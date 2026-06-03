@@ -414,6 +414,16 @@ let () =
       test_case "let else in do-block" `Quick
         (mk "f opt =\n  do\n    let Some x = opt else pure 0\n    pure x\n");
     ];
+    "if/else block branches (Phase 45.7 / 118)", [
+      test_case "block then, block else" `Quick
+        (mk "f x =\n  if x > 0 then\n    let a = 1\n    a\n  else\n    let b = 2\n    b\n");
+      test_case "block then, inline else" `Quick
+        (mk "f x =\n  if x > 0 then\n    let a = 1\n    a\n  else 2\n");
+      test_case "inline then, block else" `Quick
+        (mk "f x =\n  if x > 0 then 1\n  else\n    let b = 2\n    b\n");
+      test_case "inline if/else unchanged" `Quick
+        (mk "f x = if x > 0 then 1 else 2\n");
+    ];
     "range literals (Phase 40)", [
       test_case "list half-open"      `Quick (mk "r = [1..10]\n");
       test_case "list inclusive"      `Quick (mk "r = [1..=10]\n");

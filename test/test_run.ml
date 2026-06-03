@@ -445,6 +445,22 @@ main = println "Hello, world!"
 |}
   "Hello, world!\n"
 
+(* Phase 118: inline `then` branch with a multi-statement indented `else`
+   block evaluates correctly on both branches. *)
+let t_if_inline_then_block_else = assert_output
+  {|classify x =
+  if x > 0 then "pos"
+  else
+    let neg = "neg"
+    neg
+
+main : <IO> Unit
+main =
+  println (classify 5)
+  println (classify (-3))
+|}
+  "pos\nneg\n"
+
 (* ── Recursion + integer arithmetic ──────────────────────────────────────── *)
 
 let t_factorial = assert_output
@@ -832,6 +848,7 @@ let () = Alcotest.run "Run"
     "nullary minBound/maxBound (Phase 96)", `Quick, t_nullary_bounded;
     "nullary Bounded Int (stdlib, Phase 93)",  `Quick, t_nullary_bounded_int;
     "nullary Bounded Char (stdlib, Phase 93)", `Quick, t_nullary_bounded_char;
+    "if inline-then block-else (Phase 118)", `Quick, t_if_inline_then_block_else;
     "hello world",   `Quick, t_hello;
     "factorial",     `Quick, t_factorial;
     "adt match",     `Quick, t_adt_match;

@@ -586,6 +586,13 @@ expr_lam:
   | IF expr_or THEN expr_lam ELSE INDENT nonempty_list(stmt) DEDENT
     { ELoc (of_pos $startpos $endpos,
             EIf ($2, $4, stmts_to_expr $7)) }
+  (* Mixed: inline then, NEWLINE, indented else block.  The lexer emits a
+     NEWLINE after the inline then-expr's line, then INDENT for the else
+     block, so `newlines` separates the inline THEN branch from ELSE.
+     (Phase 118: the one block-layout cell the 45.7/45.8 rules above missed.) *)
+  | IF expr_or THEN expr_lam newlines ELSE INDENT nonempty_list(stmt) DEDENT
+    { ELoc (of_pos $startpos $endpos,
+            EIf ($2, $4, stmts_to_expr $8)) }
   | MATCH expr_or INDENT nonempty_list(match_arm) DEDENT
     { ELoc (of_pos $startpos $endpos, EMatch ($2, $4)) }
   | FUNCTION INDENT nonempty_list(match_arm) DEDENT

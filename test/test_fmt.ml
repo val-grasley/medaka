@@ -93,6 +93,24 @@ let rt_multi_param_lambda () =
   if not (contains "x y =>" out) then
     failwith (Printf.sprintf "Expected 'x y =>' in formatted output, got:\n%s" out)
 
+(* Phase 118 / 45.7: `if`/`else` branches that are multi-statement blocks must
+   format to a stable, parseable layout (the inline form would emit an
+   unparseable trailing block). *)
+let id_if_block_both =
+  idempotent "f x =\n  if x > 0 then\n    let a = 1\n    a\n  else\n    let b = 2\n    b\n"
+let id_if_block_then_inline_else =
+  idempotent "f x =\n  if x > 0 then\n    let a = 1\n    a\n  else 2\n"
+let id_if_inline_then_block_else =
+  idempotent "f x =\n  if x > 0 then 1\n  else\n    let b = 2\n    b\n"
+
+(* Lock the canonical layout: messy input reflows to `then`/`else` on aligned
+   lines with the block indented one step further. *)
+let fmt_if_block_else_canonical () =
+  let out = format "f x =\n  if x>0 then 1\n  else\n    let b = 2\n    b\n" in
+  let expected = "f x =\n  if x > 0 then 1\n  else\n    let b = 2\n    b\n" in
+  if out <> expected then
+    failwith (Printf.sprintf "if/block-else not canonical:\n%s" out)
+
 (* Surface sugar must survive formatting rather than being printed as its
    desugared core form. *)
 let id_guards   = idempotent
@@ -282,6 +300,9 @@ let () =
       Alcotest.test_case "short pipeline" `Quick id_short_pipeline;
       Alcotest.test_case "wide pipeline"  `Quick id_wide_pipeline;
       Alcotest.test_case "wide logical"   `Quick id_wide_logical;
+      Alcotest.test_case "if block both"  `Quick id_if_block_both;
+      Alcotest.test_case "if block then, inline else" `Quick id_if_block_then_inline_else;
+      Alcotest.test_case "if inline then, block else" `Quick id_if_inline_then_block_else;
     ];
     "comment preservation", [
       Alcotest.test_case "top of file"   `Quick cp_top;
@@ -307,5 +328,6 @@ let () =
       Alcotest.test_case "short list one line" `Quick rt_short_list_one_line;
       Alcotest.test_case "wide list splits"    `Quick rt_wide_list_splits;
       Alcotest.test_case "wide pipeline splits" `Quick rt_wide_pipeline_splits;
+      Alcotest.test_case "if block-else canonical" `Quick fmt_if_block_else_canonical;
     ];
   ]
