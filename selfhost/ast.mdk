@@ -1,0 +1,64 @@
+-- Self-hosted Medaka AST — mirror of lib/ast.ml's surface (pre-desugar) nodes,
+-- the target the self-host parser builds.  Post-parse-only nodes (EMethodRef,
+-- EDictApp, EHeadAnnot) are intentionally omitted — the parser never produces
+-- them.  Constructor names match lib/ast.ml so the structural dump
+-- (selfhost/sexp.mdk ↔ dev/astdump.ml) stays in lockstep.
+--
+-- Coverage grows with the parser port.  This is the core node set; more expr,
+-- pat, ty, and decl variants are added per slice.
+
+public export data Lit
+  = LInt Int
+  | LFloat Float
+  | LString String
+  | LChar String
+  | LBool Bool
+  | LUnit
+
+public export data Ty
+  = TyCon String
+  | TyVar String
+  | TyApp Ty Ty
+  | TyFun Ty Ty
+  | TyTuple (List Ty)
+
+public export data Pat
+  = PVar String
+  | PWild
+  | PLit Lit
+  | PCon String (List Pat)
+  | PCons Pat Pat
+  | PTuple (List Pat)
+  | PList (List Pat)
+  | PAs String Pat
+
+public export data Guard
+  = GBool Expr
+  | GBind Pat Expr
+
+-- match arm: pattern, guard qualifiers, body
+public export data Arm
+  = Arm Pat (List Guard) Expr
+
+public export data Expr
+  = ELit Lit
+  | EVar String
+  | EApp Expr Expr
+  | ELam (List Pat) Expr
+  | ELet Bool Bool Pat Expr Expr
+  | EMatch Expr (List Arm)
+  | EIf Expr Expr Expr
+  | EBinOp String Expr Expr
+  | EUnOp String Expr
+  | EInfix String Expr Expr
+  | EFieldAccess Expr String
+  | ETuple (List Expr)
+  | EListLit (List Expr)
+  | EArrayLit (List Expr)
+  | EIndex Expr Expr
+  | EAnnot Expr Ty
+
+public export data Decl
+  = DTypeSig Bool String Ty
+  | DExtern Bool String Ty
+  | DFunDef Bool String (List Pat) Expr

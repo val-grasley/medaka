@@ -1,0 +1,140 @@
+-- Structural S-expression dump of the self-host AST, mirroring dev/astdump.ml
+-- byte-for-byte so the self-hosted parser can be diffed against the OCaml
+-- reference.  Tags are the lib/ast.ml constructor names.  Coverage grows with
+-- the AST/parser; new variants get a matching case here.
+--
+-- NB: uses explicit list recursion rather than `map` to avoid the Phase 134
+-- eval quirk (an <IO>/dispatch-heavy `map` not being forced in some contexts).
+
+import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), Expr(..), Decl(..)}
+
+-- shared minimal string escaping — must match dev/astdump.ml's esc_str
+escStr s =
+  let cs = stringToChars s
+  "\"" ++ escFrom cs 0 (arrayLength cs) ++ "\""
+
+escFrom cs i n
+  | i >= n = ""
+  | otherwise = escOne (arrayGetUnsafe i cs) ++ escFrom cs (i + 1) n
+
+escOne c
+  | c == '\\' = "\\\\"
+  | c == '"' = "\\\""
+  | c == '\n' = "\\n"
+  | c == '\t' = "\\t"
+  | c == '\r' = "\\r"
+  | otherwise = charToStr c
+
+boolStr b = if b then "true" else "false"
+
+joinSp xs =
+  match xs
+    [] => ""
+    [x] => x
+    y :: rest => y ++ " " ++ joinSp rest
+
+joinNl xs =
+  match xs
+    [] => ""
+    [x] => x
+    y :: rest => y ++ "\n" ++ joinNl rest
+
+node tag parts = "(" ++ joinSp (tag :: parts) ++ ")"
+
+slist xs = "(" ++ joinSp xs ++ ")"
+
+litSexp l =
+  match l
+    LInt n => node "LInt" [intToString n]
+    LFloat f => node "LFloat" [floatToString f]
+    LString s => node "LString" [escStr s]
+    LChar s => node "LChar" [escStr s]
+    LBool b => node "LBool" [boolStr b]
+    LUnit => "LUnit"
+
+patSexp p =
+  match p
+    PVar x => node "PVar" [escStr x]
+    PWild => "PWild"
+    PLit l => node "PLit" [litSexp l]
+    PCon c ps => node "PCon" (escStr c :: patSexps ps)
+    PCons a b => node "PCons" [patSexp a, patSexp b]
+    PTuple ps => node "PTuple" (patSexps ps)
+    PList ps => node "PList" (patSexps ps)
+    PAs x q => node "PAs" [escStr x, patSexp q]
+
+patSexps ps =
+  match ps
+    [] => []
+    p :: rest => patSexp p :: patSexps rest
+
+tySexp t =
+  match t
+    TyCon c => node "TyCon" [escStr c]
+    TyVar v => node "TyVar" [escStr v]
+    TyApp a b => node "TyApp" [tySexp a, tySexp b]
+    TyFun a b => node "TyFun" [tySexp a, tySexp b]
+    TyTuple ts => node "TyTuple" (tySexps ts)
+
+tySexps ts =
+  match ts
+    [] => []
+    t :: rest => tySexp t :: tySexps rest
+
+guardSexp g =
+  match g
+    GBool e => node "GBool" [exprSexp e]
+    GBind p e => node "GBind" [patSexp p, exprSexp e]
+
+guardSexps gs =
+  match gs
+    [] => []
+    g :: rest => guardSexp g :: guardSexps rest
+
+armSexp a =
+  match a
+    Arm p gs body => node "arm" [patSexp p, slist (guardSexps gs), exprSexp body]
+
+armSexps arms =
+  match arms
+    [] => []
+    a :: rest => armSexp a :: armSexps rest
+
+exprSexp e =
+  match e
+    ELit l => node "ELit" [litSexp l]
+    EVar x => node "EVar" [escStr x]
+    EApp f x => node "EApp" [exprSexp f, exprSexp x]
+    ELam ps b => node "ELam" [slist (patSexps ps), exprSexp b]
+    ELet m _isf p e1 e2 => node "ELet" [boolStr m, patSexp p, exprSexp e1, exprSexp e2]
+    EMatch s arms => node "EMatch" (exprSexp s :: armSexps arms)
+    EIf c t el => node "EIf" [exprSexp c, exprSexp t, exprSexp el]
+    EBinOp op a b => node "EBinOp" [escStr op, exprSexp a, exprSexp b]
+    EUnOp op a => node "EUnOp" [escStr op, exprSexp a]
+    EInfix op a b => node "EInfix" [escStr op, exprSexp a, exprSexp b]
+    EFieldAccess e2 f => node "EFieldAccess" [exprSexp e2, escStr f]
+    ETuple es => node "ETuple" (exprSexps es)
+    EListLit es => node "EListLit" (exprSexps es)
+    EArrayLit es => node "EArrayLit" (exprSexps es)
+    EIndex a i => node "EIndex" [exprSexp a, exprSexp i]
+    EAnnot e2 t => node "EAnnot" [exprSexp e2, tySexp t]
+
+exprSexps es =
+  match es
+    [] => []
+    e :: rest => exprSexp e :: exprSexps rest
+
+declSexp d =
+  match d
+    DTypeSig p n t => node "DTypeSig" [boolStr p, escStr n, tySexp t]
+    DExtern p n t => node "DExtern" [boolStr p, escStr n, tySexp t]
+    DFunDef p n ps b => node "DFunDef" [boolStr p, escStr n, slist (patSexps ps), exprSexp b]
+
+declSexps ds =
+  match ds
+    [] => []
+    d :: rest => declSexp d :: declSexps rest
+
+export
+programToSexp : List Decl -> String
+programToSexp prog = joinNl (declSexps prog)

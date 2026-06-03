@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 134). At task triage, match the work against AGENTS.md's
+number (last used: 135). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -106,12 +106,16 @@ the OCaml compiler, and ultimately compiles *itself*. The output of this stage i
 a validated language and a compiler whose only slow part is the interpreter
 underneath it.
 
-**Started 2026-06-03 (Phase 132).** The self-host tree lives in `selfhost/`
-(see `selfhost/README.md`), and the validation loop is wired: `sh
-test/diff_selfhost_lexer.sh` runs the Medaka lexer on the interpreter over
-`test/diff_fixtures/` and diffs its token stream against the OCaml-emitted golden
-`=== TOKENS ===` sections. Scaffold + harness are in place; the lexer's
-`tokenize` is still a stub — porting it is the active slice.
+**Started 2026-06-03.** The self-host tree lives in `selfhost/` (see
+`selfhost/README.md`), each stage validated against the OCaml reference via a
+differential harness on the interpreter.
+- **Lexer — done (Phase 132).** Matches the reference byte-for-byte on all 15
+  curated fixtures *and* all 13 real `.mdk` files (every stdlib module + the lexer
+  lexing itself). `sh test/diff_selfhost_lexer.sh` / `…_lex_files.sh`.
+- **Parser — in progress (Phase 135).** Recursive-descent over the lexer's
+  tokens, validated by a structural S-expr dump (`dev/astdump.ml` ↔
+  `selfhost/sexp.mdk`, `sh test/diff_selfhost_parse.sh`). Scaffold + dump format
+  validated; the recursive-descent logic is the active slice.
 
 ### Stage 2 — LLVM backend (after self-host)
 
@@ -145,6 +149,36 @@ strict priority. Where an item is a **Stage 0 prerequisite** for the north star
 above, it is flagged ⭐.
 
 ### Compiler / language
+
+- ⭐ **Phase 135 — self-host Stage 1: port the parser to Medaka. IN PROGRESS
+  (started 2026-06-03); scaffold done.** Second pipeline stage. The Menhir LR
+  grammar (`lib/parser.mly`, 1146 lines) becomes a **hand-written
+  recursive-descent** parser over `List Token` from the (validated) lexer — no
+  parser generator in Medaka. Tractable because precedence is a **stratified
+  ladder, not `%left/%right`** (`expr_annot → expr_lam → expr_pipe → … →
+  expr_add → expr_mul → expr_unary → expr_app → expr_atom`, ~18 levels), one
+  recursive function per level. Target AST = **pre-desugar** (the parser emits
+  surface sugar `EGuards`/`EDo`/`EStringInterp`/`EListComp`/`ESection`/`EQuestion`;
+  desugar lowers them later). Stays **prelude-only** (`List`/`Array`/string
+  externs + local AST type) — `Map`/stdlib isn't needed until *resolve*, so the
+  stdlib-access decision (multi-root loader, which already exists, vs vendoring)
+  is deferred again.
+  **Validation = structural S-expression dump** (decided): no AST dumper existed
+  (unlike the lexer's `token_to_string`), so added `dev/astdump.ml`
+  (`Ast`-`to_sexp`, location-stripped, one decl per line; tags = `ast.ml`
+  constructor names) + a Medaka mirror `selfhost/sexp.mdk`, diffed by
+  `test/diff_selfhost_parse.sh`. Chose this over porting the 912-line
+  `printer.ml` (less code, no whitespace/paren fragility). FLOAT text normalized
+  away, like the lexer.
+  **Done so far (scaffold, validation-first like Phase 132):** `selfhost/ast.mdk`
+  (core node type — grows per slice), the dual dumpers (format **validated
+  byte-for-byte** via the positive control), `parse_main.mdk` (dumps a hand-built
+  control AST until the parser exists), and the harness. **Next slices:**
+  expressions (the ladder + atoms) → patterns → declarations → types, each
+  growing `ast.mdk` + `sexp.mdk` coverage and validated on fixtures, then hardened
+  on real `.mdk` source (the lexer's 13/13 analog). **Chief risk:** layout-driven
+  blocks (the parser consumes INDENT/DEDENT/NEWLINE to structure
+  `let`/`match`/`do`/`where`/decl boundaries). See `selfhost/README.md`.
 
 - ⭐ **Phase 132 — self-host Stage 1: port the lexer to Medaka. IN PROGRESS
   (started 2026-06-03); lexer fixture-complete.** First stage of the self-hosting

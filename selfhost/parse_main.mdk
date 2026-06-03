@@ -1,0 +1,18 @@
+-- Entry point for the self-hosted parser, driving it as a runnable program so
+-- the differential harness can shell out to it.
+--
+-- STATUS: scaffold.  There is no parser yet — this dumps a hand-built control
+-- AST (equivalent to `inc : Int -> Int` / `inc x = x + 1`) so the structural
+-- dump format (selfhost/sexp.mdk) can be validated against dev/astdump.exe
+-- before any recursive-descent logic exists.  When the parser lands, this reads
+-- a file, lexes (import lexer), parses, and dumps the result.
+
+import ast.{Lit(..), Ty(..), Pat(..), Expr(..), Decl(..)}
+import sexp.{programToSexp}
+
+controlProgram =
+  [ DTypeSig False "inc" (TyFun (TyCon "Int") (TyCon "Int"))
+  , DFunDef False "inc" [PVar "x"] (EBinOp "+" (EVar "x") (ELit (LInt 1)))
+  ]
+
+main = putStr (programToSexp controlProgram)

@@ -13,7 +13,13 @@ first; native codegen is Stage 2.
 |------|------|
 | `lexer.mdk` | Port of `lib/lexer.mll`. `Token` ADT + `tokenToString` (mirror the OCaml `token_to_string` byte-for-byte) + `tokenize`. Prelude + global externs only — no stdlib import, so `selfhost/` is the sole project root. |
 | `lex_main.mdk` | Runnable entry: `medaka run selfhost/lex_main.mdk <src.mdk>` reads the file, tokenizes, prints one token per line in the canonical reference form. |
+| `ast.mdk` | The self-host AST — a Medaka mirror of `lib/ast.ml`'s surface (pre-desugar) nodes; the target the parser builds. Constructor names match `ast.ml`. |
+| `sexp.mdk` | `programToSexp` — a canonical structural S-expression dump of the AST, mirroring `dev/astdump.ml` byte-for-byte; the parser's validation format (the `tokenToString` analog). |
+| `parse_main.mdk` | Runnable entry for the parser (scaffold: dumps a hand-built control AST until the parser exists). |
 | `medaka.toml` | Project config (import root). |
+
+The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
+dumper) and `astdump.exe` (canonical AST S-expression dumper).
 
 ## Validation
 
@@ -49,6 +55,19 @@ the stage is done when all pass.
     vs `\000` (`%S`) — same value, different debug escaping.
 - ⏳ Deferred (no real file or fixture uses them): triple-quoted strings (with
   their `strip_indent` dedent) and nested interpolation.
+
+### Parser (Stage 1, in progress)
+
+- ✅ Scaffold: the `ast.mdk` core node type, the `sexp.mdk` structural dumper
+  (validated byte-for-byte against `dev/astdump.exe` via `sh
+  test/diff_selfhost_parse.sh`'s positive control), `parse_main.mdk`, and the
+  OCaml reference dumper. Validation is in place *before* any parse logic, same
+  as the lexer.
+- ⏳ Next: the recursive-descent parser itself, over `List Token` from the
+  lexer. The precedence ladder (`expr_annot → … → expr_app → expr_atom`, ~18
+  levels) maps one function per level. Coverage (AST nodes + `sexp` cases) grows
+  per slice: expressions → patterns → declarations → types. Stays prelude-only
+  (`List`/`Array`/string externs) — `Map`/stdlib isn't needed until resolve.
 
 ## Known eval quirk (self-host-surfaced)
 
