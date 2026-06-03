@@ -77,10 +77,7 @@ fixTrailingDot s = fixTrailingDotGo s (stringToChars s)
 
 fixTrailingDotGo : String -> Array Char -> String
 fixTrailingDotGo s arr
-  | arrayLength arr > 0 && charCode (arrayGetUnsafe (arrayLength arr - 1) arr) == 46 = stringConcat [
-    s,
-    "0"
-  ]
+  | arrayLength arr > 0 && charCode (arrayGetUnsafe (arrayLength arr - 1) arr) == 46 = stringConcat [s, "0"]
   | otherwise = s
 
 hexDigit : Int -> String
@@ -381,10 +378,7 @@ parseMemberStart arr j acc
 parseAfterKey : Array Char -> Int -> String -> List (String, Json) -> Result String (List (String, Json), Int)
 parseAfterKey arr k key acc
   | k >= arrayLength arr = Err "unterminated object"
-  | arrayGetUnsafe k arr == ':' = bindP (parseValue arr (k + 1)) (v m => parseMemberCont arr (skipWs arr m) ((
-    key,
-    v
-  ) :: acc))
+  | arrayGetUnsafe k arr == ':' = bindP (parseValue arr (k + 1)) (v m => parseMemberCont arr (skipWs arr m) ((key, v) :: acc))
   | otherwise = Err "expected ':' after object key"
 
 parseMemberCont : Array Char -> Int -> List (String, Json) -> Result String (List (String, Json), Int)

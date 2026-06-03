@@ -106,7 +106,16 @@ let render width doc =
     | (i, _, Hardline)     :: z -> newline i; go i z
     | (i, _, Group d)      :: z ->
       let flat = (i, Flat, d) :: z in
-      if fits (width - col) flat then go col flat
+      (* Break a group only when breaking can actually rescue the line.  If the
+         current column already meets/exceeds the budget the line is doomed
+         regardless (the overflow sits in unbreakable text *before* this group —
+         a long guard condition, say), so breaking only fragments the group's
+         contents across extra lines without bringing the first line within
+         width.  Keep it flat: a single over-long line reads better than a
+         scattered one, and matches the "flat, may-overflow" policy Phase 124
+         settled on.  (A genuinely huge group after a >width prefix — rare, none
+         in stdlib — stays flat too; shorten the prefix at the source instead.) *)
+      if col >= width || fits (width - col) flat then go col flat
       else go col ((i, Break, d) :: z)
   in
   go 0 [ (0, Break, doc) ];
