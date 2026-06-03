@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 126). At task triage, match the work against AGENTS.md's
+number (last used: 127). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -124,6 +124,86 @@ strict priority. Where an item is a **Stage 0 prerequisite** for the north star
 above, it is flagged ⭐.
 
 ### Compiler / language
+
+- **Phase 127 — unit testing library (`test` keyword + `stdlib/test.mdk`).**
+  Medaka has doctests (example-as-documentation) and `prop` tests (universal
+  laws) but no plain unit tests. Add a third kind for what the other two cover
+  poorly: error/negative paths, non-`show`-able or multi-step results, effectful
+  checks, and maintainer-only checks that shouldn't clutter docstrings. **Design
+  settled 2026-06-03** (brainstorm); division of labor goes in STDLIB.md so the
+  three don't compete.
+
+  **Surface syntax** — a new `test` declaration keyword, symmetric with `prop`,
+  whose body evaluates to an `Expectation`:
+  ```
+  test "reverse is an involution" =
+    expectEqual (reverse (reverse [1, 2, 3])) [1, 2, 3]
+  ```
+
+  **Architecture: dogfooded Medaka runner, host does discovery only.**
+  - *Host (discovery, no type inference):* scan `DTest` decls — exactly like
+    `DProp` — and synthesize an injected registry value, wrapping each body in a
+    thunk so nothing runs at collection time:
+    `__tests__ : List (String, Unit -> Expectation) = [ ("name", () => <body>), … ]`.
+    Then evaluate a call to the library's `runTests __tests__` and read the
+    returned `VBool` for the exit code. New **third pass** in `bin/main.ml`
+    (`if has_sub "test"`) after doctests + props, `&&`-ed into the result.
+  - *`stdlib/test.mdk` (pure Medaka — the dogfooded part):* `public export data
+    Expectation = Pass | Fail String` plus the assertion vocabulary —
+    `expectEqual`/`expectNotEqual : (Eq a, Show a) => a -> a -> Expectation`,
+    `expectTrue`/`expectFalse : Bool -> Expectation`,
+    `expectLessThan`/`expectGreaterThan : (Ord a, Show a) => …`, `pass`, `fail :
+    String -> Expectation`, `expectAll : List Expectation -> Expectation` (first
+    `Fail` wins) — and `runTests : List (String, Unit -> Expectation) -> <IO>
+    Bool`, which loops, forces each thunk, formats results (match
+    `lib/test_cmd.ml`'s style), and returns all-passed. **v1 is minimal: one
+    `Expectation` per test, `expectAll` for conjunction, NO `describe`/nesting**
+    (group via `"List/reverse/…"` names).
+
+  **The one new extern (`add-primitive`): `runExpectation`.** A pure-Medaka
+  `runTests` cannot survive a crashing test — a partial match / `head []` is an
+  OCaml-level `Eval_error`, and the language has no `try`/`catch`, so one crash
+  takes down the whole run and loses every later test (doctests/props dodge this
+  only because their loops live in OCaml). So a dogfooded runner *requires* a
+  single narrow escape hatch — NOT a general `try`/`catch` (that would contradict
+  the "errors are `Result` data, not exceptions" stance), but one purpose-built
+  primitive:
+  `runExpectation : (Unit -> <e> Expectation) -> <IO> Expectation`,
+  implemented in `eval.ml` as `try force-thunk with Eval_error | Impl_no_match ->
+  Fail <msg>`. `runTests` maps it over the registry and never sees a raw panic.
+
+  **Resolution caveat (the real risk).** `test.mdk` is NOT in the prelude (see
+  below), so test files `import test.{…}` and the host's injected `runTests
+  __tests__` references an *imported* module. Route the discovery pass through
+  the **proven multi-module loader path** Phase 92 built for import-bearing
+  doctests (`Doctest.run_file` branches on `has_use_decls` → `Loader.load_program`
+  + `Eval.eval_modules`) — reuse the same shared loader-assembly helper Phase 126
+  wants factored out, rather than a new single-file path that would hit the
+  loader-vs-flat eval landmines (Phases 96/103/121/125).
+
+  **Why not the prelude (settled, not open).** Full prelude inclusion is
+  *inadvisable*: it pollutes *every* program (incl. non-test code) with generic
+  names — `Pass`/`Fail`/`fail`/`pass`/`Expectation` — and taxes every compile
+  with test machinery + the `runExpectation` `<IO>` extern. `prop` needs no
+  import only because it uses pure prelude vocab (`eq`/`&&`); `test` needs a real
+  library, which shouldn't be global. v1 uses an explicit `import test.{…}`
+  (conventional — Elm `import Expect`, HUnit/Hspec all import).
+
+  **Followup (v2, deliberately deferred — do NOT bundle into v1):**
+  *conditional auto-import.* Since the discovery pass already detects `test`
+  decls, it can inject the test vocabulary **only into files that contain a
+  `test` decl** — frictionless like a keyword, with zero pollution of non-test
+  files. Deferred because it is a *second conditional-prelude* path, and
+  `marked_prelude` coalescing + loader-vs-flat ordering is this codebase's most
+  repeated bug source — build it on a working, tested v1, not speculatively.
+
+  **Build shape:** `add-language-feature` (the `test` keyword: lexer.mll →
+  parser.mly → ast.ml `DTest` → resolve.ml → `bin/main.ml` discovery) +
+  `add-primitive` (`runExpectation` in runtime.mdk + eval.ml) + `extend-stdlib`
+  (`stdlib/test.mdk`, STDLIB.md division-of-labor paragraph, gen/embed.ml if
+  embedded). Tests: a fixture file with `test` decls (incl. one crashing test and
+  one `expectAll`) driven through the multi-module path, plus an import-bearing
+  variant — land in `test_run`/`test_doctest`-adjacent suites.
 
 - **Phase 126 — `medaka test` prop phase doesn't resolve sibling imports.** The
   prop-test phase in `bin/main.ml` (the `if has_sub "test"` block) resolves and
