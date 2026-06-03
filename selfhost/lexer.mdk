@@ -1,17 +1,19 @@
 -- Self-hosted Medaka lexer — Stage 1 port of `lib/lexer.mll`.
 --
--- STATUS: tokenizer ported — literals (int/float/string/char), idents/keywords,
--- operators/punctuation, line comments, string interpolation (`\{expr}` →
--- INTERP_OPEN/MID/END), and a faithful port of lib/lexer.mll's
+-- STATUS: tokenizer ported — int/float/string/char literals, hex/bin/oct ints,
+-- idents/keywords, operators/punctuation, line + `{- … -}` (nestable) block
+-- comments, string interpolation (`\{expr}` → INTERP_OPEN/MID/END), the `@`/
+-- `AS_AT` adjacency rule, and a faithful port of lib/lexer.mll's
 -- INDENT/DEDENT/NEWLINE layout algorithm + else-continuation filter +
--- leading-operator continuation.  **All 15/15 fixtures in test/diff_fixtures/
--- match the OCaml reference byte-for-byte** (via test/diff_selfhost_lexer.sh).
+-- leading-operator continuation.  Validated two ways: **all 15/15 curated
+-- fixtures** (test/diff_selfhost_lexer.sh) AND **all 13/13 real .mdk files —
+-- every stdlib module plus this lexer lexing itself** (test/diff_selfhost_lex_-
+-- files.sh), each byte-for-byte against the OCaml reference (modulo FLOAT text:
+-- OCaml `%g` vs `floatToString` render `1.0` as `1` vs `1.` — same TFloat value).
 --
--- Not yet ported (no fixture exercises them; needed for full lib/lexer.mll
--- equivalence before the lexer can tokenize real compiler source): hex/bin/oct
--- int literals, triple-quoted strings, `{- … -}` block comments, the `@`/`AS_AT`
--- adjacency rule, and nested interpolation (`\{` reset). `Token`/`tokenToString`
--- mirror `token_to_string` byte-for-byte.
+-- Deferred (no real file or fixture exercises them): triple-quoted strings (and
+-- their `strip_indent` dedent) and nested interpolation (`\{` inside `\{…}`).
+-- `Token`/`tokenToString` mirror `token_to_string` byte-for-byte.
 
 public export data Token
   = TInt Int
@@ -304,6 +306,8 @@ scanAt src len pos depth id c
   | isNL c || isCR c = handleNewline src len pos depth id
   | c == '-' && pos + 1 < len && at src (pos + 1) == '-' =
       scan src len (skipLineComment src len pos) depth id
+  | c == '{' && pos + 1 < len && at src (pos + 1) == '-' =
+      scan src len (skipBlockComment src len (pos + 2) 1) depth id
   | isDigit c = scanNumber src len pos depth id
   | isQuote c = scanStr src len (pos + 1) depth id ""
   | isApos c = scanChar src len pos depth id
@@ -316,6 +320,15 @@ skipLineComment src len p
   | p >= len = p
   | isNL (at src p) = p
   | otherwise = skipLineComment src len (p + 1)
+
+-- nestable `{- … -}` block comments; `p` is just past the opening `{-`, `d` the
+-- open-comment nesting depth. Returns the position just past the matching `-}`.
+skipBlockComment src len p d
+  | d <= 0 = p
+  | p >= len = p
+  | at src p == '{' && p + 1 < len && at src (p + 1) == '-' = skipBlockComment src len (p + 2) (d + 1)
+  | at src p == '-' && p + 1 < len && at src (p + 1) == '}' = skipBlockComment src len (p + 2) (d - 1)
+  | otherwise = skipBlockComment src len (p + 1) d
 
 -- identifiers / keywords / underscore
 identEnd src len p
@@ -348,7 +361,47 @@ digitsEnd src len p
   | p < len && (isDigit (at src p) || at src p == '_') = digitsEnd src len (p + 1)
   | otherwise = p
 
-scanNumber src len pos depth id = numFinish src len pos (digitsEnd src len pos) depth id
+isHexDigit c = isDigit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+
+-- `0x…` / `0b…` / `0o…` radix literals (require ≥1 valid digit after the prefix).
+isRadixPrefix src len pos =
+  at src pos == '0' && pos + 2 < len && radixKind (at src (pos + 1))
+    && isRadixDigit (at src (pos + 1)) (at src (pos + 2))
+
+radixKind k = k == 'x' || k == 'b' || k == 'o'
+
+radixBase k
+  | k == 'x' = 16
+  | k == 'b' = 2
+  | otherwise = 8
+
+isRadixDigit k c
+  | k == 'x' = isHexDigit c
+  | k == 'b' = c == '0' || c == '1'
+  | otherwise = c >= '0' && c <= '7'
+
+digitVal c
+  | isDigit c = charCode c - 48
+  | c >= 'a' && c <= 'f' = charCode c - 87
+  | otherwise = charCode c - 55
+
+radixEnd src len p k
+  | p < len && (isRadixDigit k (at src p) || at src p == '_') = radixEnd src len (p + 1) k
+  | otherwise = p
+
+parseRadix src p endp base acc
+  | p >= endp = acc
+  | at src p == '_' = parseRadix src (p + 1) endp base acc
+  | otherwise = parseRadix src (p + 1) endp base (acc * base + digitVal (at src p))
+
+scanRadix src len pos depth id =
+  let k = at src (pos + 1)
+  let e = radixEnd src len (pos + 2) k
+  RTok (TInt (parseRadix src (pos + 2) e (radixBase k) 0)) :: scan src len e depth id
+
+scanNumber src len pos depth id
+  | isRadixPrefix src len pos = scanRadix src len pos depth id
+  | otherwise = numFinish src len pos (digitsEnd src len pos) depth id
 
 isFloatAt src len e1 =
   e1 < len && at src e1 == '.' && e1 + 1 < len && isDigit (at src (e1 + 1))
@@ -456,8 +509,24 @@ singleOp src len pos depth id c
   | c == '!' = emit src len pos depth id TBang 1 0
   | c == '?' = emit src len pos depth id TQuestion 1 0
   | c == '%' = emit src len pos depth id TMod 1 0
-  | c == '@' = emit src len pos depth id TAt 1 0
+  | c == '@' = emit src len pos depth id (atToken src pos) 1 0
   | otherwise = scan src len (pos + 1) depth id
+
+-- `@` is the as-pattern operator (AS_AT) when it immediately follows an
+-- identifier (no intervening space), else the impl-hint prefix (AT).  Mirrors
+-- lib/lexer.mll's `last_ident_end` adjacency test: only a lowercase/underscore
+-- identifier counts (an UPPER ctor or a number does not).
+atToken src pos
+  | pos <= 0 = TAt
+  | isAlnum (at src (pos - 1)) && identStartLower src (identRunStart src (pos - 1)) = TAsAt
+  | otherwise = TAt
+
+identRunStart src p
+  | p <= 0 = 0
+  | isAlnum (at src (p - 1)) = identRunStart src (p - 1)
+  | otherwise = p
+
+identStartLower src p = isLower (at src p) || at src p == '_'
 
 -- `{` and `}` route through interp depth when inside a `\{ … }` interpolation.
 openBrace src len pos depth id

@@ -32,15 +32,20 @@ the stage is done when all pass.
 
 - ✅ Scaffold + harness wiring (token ADT, canonical serializer, runnable entry,
   diff loop).
-- ✅ Tokenizer ported: literals, idents/keywords, operators/punctuation, line
-  comments, **string interpolation**, and the INDENT/DEDENT/NEWLINE layout
-  algorithm (plus the else-continuation filter and leading-operator
-  continuation). **All 15/15 fixtures match the OCaml reference byte-for-byte.**
-- ⏳ Not yet ported (no fixture exercises them; needed for full equivalence
-  before the lexer can tokenize real compiler source): hex/bin/oct int literals,
-  triple-quoted strings, `{- … -}` block comments, the `@`/`AS_AT` adjacency
-  rule, nested interpolation. Next validation step: diff the Medaka lexer against
-  the OCaml lexer on real `.mdk` source (e.g. stdlib files) to surface these.
+- ✅ Tokenizer ported: int/float/string/char + hex/bin/oct literals,
+  idents/keywords, operators/punctuation, line + nestable `{- … -}` block
+  comments, **string interpolation**, the `@`/`AS_AT` adjacency rule, and the
+  INDENT/DEDENT/NEWLINE layout algorithm (plus else-continuation filter and
+  leading-operator continuation).
+- ✅ **Validated two ways**, both byte-for-byte against the OCaml reference:
+  - **15/15 curated fixtures** — `sh test/diff_selfhost_lexer.sh`.
+  - **13/13 real `.mdk` files** (every stdlib module + this lexer lexing itself)
+    — `sh test/diff_selfhost_lex_files.sh`, which diffs against
+    `dev/lextok.exe` (the OCaml reference dumper). FLOAT literal *text* is
+    normalized away (OCaml `%g` vs `floatToString`: `1.0` → `1` vs `1.`; the
+    TFloat value is identical).
+- ⏳ Deferred (no real file or fixture uses them): triple-quoted strings (with
+  their `strip_indent` dedent) and nested interpolation.
 
 ## Known eval quirk (self-host-surfaced)
 
