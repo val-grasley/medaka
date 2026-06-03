@@ -775,3 +775,44 @@ but `string.lines` keeps the final empty line a trailing newline produces while
 stdin-line iteration helpers, `withFile`-style bracketing, `removeFile`/`rename`
 — add when needed.
 - 23 doctests + 8 props.
+
+---
+
+## Module 8 — `mut_array` ✅ implemented
+
+A **growable mutable array** (dynamic array / vector) — `stdlib/mut_array.mdk`.
+The counterpart to the fixed-size `Array` (Module 4): `MutArray a` is backed by
+an `Array a` with spare capacity, so `push` is **amortized O(1)** (the backing
+doubles when full, the same resize trick as the Module 6 hash tables).
+
+**Representation.** `data MutArray a = MutArray (Ref (Array a)) (Ref Int)` —
+`backing.value` is the capacity-sized store, `len.value` the live count
+(`0 <= len <= capacity`). Slots `[len, capacity)` are scratch (never read). The
+type is declared in the module and registered via the normal `DData` pipeline,
+so it is **not** in `resolve.ml`'s `primitive_types` (mirrors `Map`/`Set`).
+
+**No dummy fill needed.** `new ()` starts at capacity 0 and allocates on the
+first `push`, using the pushed element as the grow-fill — so constructing an
+empty vector needs no default value of `a`.
+
+- ✅ Construction: `new : Unit -> MutArray a`, `fromList`, `fromArray` (copies)
+- ✅ Observation (pure): `capacity`, `get` (bounds-checked `Option`), `first`,
+  `last`; `length`/`isEmpty`/`toList` via `Foldable`
+- ✅ Conversion: `toArray` (snapshot of the live range into a fresh `Array`)
+- ✅ Mutation (`<Mut>`): `push` (amortized O(1), doubling), `pop` (returns
+  `Option`), `set` (panics OOB), `swap`, `clear` (keeps capacity), `mapInPlace`
+- ✅ Instances: `Foldable MutArray` (index-based folds, never allocates a list),
+  `Eq` (element-wise over the live range), `Show` (`fromList [..]`)
+- 11 doctests. **Skipped:** `Mappable` (use `mapInPlace`, or `toList`→`map`);
+  growth/shrink heuristics beyond doubling.
+
+**Cross-module dispatch limitation (pre-existing, language-level).** Direct
+`Foldable` method calls on an imported instance work across the loader
+(`length v`, `toList v`, `push`/`pop`/…), but a **generic `Foldable`-derived
+function that threads a dictionary internally** — `sum`, `product`, `maximum`,
+`minimum` — panics `no matching impl for dispatch` when its argument's instance
+comes from an *imported* module. This is **not** specific to `mut_array`:
+`sum (array.fromList [1,2,3])` fails identically on `main`, as do `map`/`set`/
+`hash_*`. The single-file doctest path threads the dict correctly (so the
+`sum`/`length` doctests pass). Root cause is the cross-module dict-passing gap
+tracked in the dict-passing internals notes; filed for a future phase.

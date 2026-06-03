@@ -1,0 +1,224 @@
+{- mut_array.mdk — a growable mutable array (dynamic array / vector).
+
+   `Array a` (Module 4) is **fixed-size**: O(1) random access, but no `push`/
+   `pop`.  `MutArray a` is the growable counterpart — a vector backed by an
+   `Array a` with spare capacity, so `push` is amortized O(1) (the backing
+   doubles when full, like the hash tables in Module 6).  Reach for `Array` when
+   the length is known up front; reach for `MutArray` when you accumulate.
+
+   Representation: `MutArray backing len` where `backing.value` is the backing
+   array (its `arrayLength` is the *capacity*) and `len.value` is the number of
+   live elements (`0 <= len <= capacity`).  Both are `Ref`s, mutated in place
+   (`<Mut>`).  Slots `[len, capacity)` are scratch — never read; they hold
+   whatever value last filled them (the most recent `push`'s element on a grow).
+
+   Iteration / instances only ever touch the live range `[0, len)`, so the
+   scratch tail is invisible.  `empty`/`new` start at capacity 0 and allocate on
+   first `push`, using the pushed element as the fill — so no dummy/default
+   value is needed to construct one. -}
+
+import core.{Eq, Show, Foldable, Option}
+
+{- `MutArray backing len`: `backing.value` is the capacity-sized store,
+   `len.value` the live count; both mutated in place. -}
+public export data MutArray a = MutArray (Ref (Array a)) (Ref Int)
+
+-- Live element count (internal; the public name is `Foldable.length`).
+count : MutArray a -> Int
+count (MutArray _ len) = len.value
+
+-- ── Construction ────────────────────────────────────────────────────────
+
+{- | A fresh, empty vector (capacity 0; grows on first `push`).  Takes `Unit`,
+   not a nullary value, so each call allocates its own cells. -}
+export
+new : Unit -> MutArray a
+new _ = MutArray (Ref [||]) (Ref 0)
+
+{- | Build a vector from a list, preserving order.  Capacity equals the length
+   (the next `push` triggers a grow).
+
+   > length (fromList [1, 2, 3])
+   3 -}
+export
+fromList : List a -> MutArray a
+fromList xs =
+  let arr = arrayFromList xs
+  MutArray (Ref arr) (Ref (arrayLength arr))
+
+{- | Wrap a *copy* of an array as a vector (so later mutation does not disturb
+   the caller's array). -}
+export
+fromArray : Array a -> MutArray a
+fromArray arr =
+  let c = arrayCopy arr
+  MutArray (Ref c) (Ref (arrayLength c))
+
+-- ── Observation (pure reads) ────────────────────────────────────────────
+
+{- | Capacity of the backing store (`>= length`).  Grows by doubling.
+
+   > capacity (fromList [1, 2, 3])
+   3 -}
+export
+capacity : MutArray a -> Int
+capacity (MutArray backing _) = arrayLength backing.value
+
+{- | Element at an index, or `None` when out of the live range `[0, length)`.
+
+   > get 1 (fromList [10, 20, 30])
+   Some 20
+   > get 5 (fromList [10, 20, 30])
+   None -}
+export
+get : Int -> MutArray a -> Option a
+get i (MutArray backing len)
+  | i >= 0 && i < len.value = Some (arrayGetUnsafe i backing.value)
+  | otherwise = None
+
+{- | First element, or `None` when empty.
+
+   > first (fromList [10, 20, 30])
+   Some 10 -}
+export
+first : MutArray a -> Option a
+first ma = get 0 ma
+
+{- | Last element, or `None` when empty.
+
+   > last (fromList [10, 20, 30])
+   Some 30 -}
+export
+last : MutArray a -> Option a
+last ma = get (count ma - 1) ma
+
+-- ── Conversion ──────────────────────────────────────────────────────────
+
+elemsGo : Array a -> Int -> List a -> List a
+elemsGo arr i acc
+  | i < 0 = acc
+  | otherwise = elemsGo arr (i - 1) (arrayGetUnsafe i arr :: acc)
+
+-- The live elements as a list, in order (used by `Foldable.toList`).
+elems : MutArray a -> List a
+elems (MutArray backing len) = elemsGo backing.value (len.value - 1) []
+
+{- | Snapshot the live range into a fresh fixed-size `Array a`.  (Shown here via
+   the `arrayLength` kernel primitive — `Array`'s own `Foldable`/`Show` live in
+   `array.mdk`, which this module does not import.)
+
+   > arrayLength (toArray (fromList [1, 2, 3]))
+   3 -}
+export
+toArray : MutArray a -> Array a
+toArray (MutArray backing len) =
+  let arr = backing.value
+  arrayMakeWith len.value (i => arrayGetUnsafe i arr)
+
+-- ── Mutation (effectful — modify in place) ──────────────────────────────
+
+{- | Append an element, growing (doubling) the backing store when it is full.
+   Amortized O(1). -}
+export
+push : a -> MutArray a -> <Mut> Unit
+push x (MutArray backing len)
+  | len.value < arrayLength backing.value = 
+    arraySetUnsafe len.value x backing.value
+    set_ref len (len.value + 1)
+  | otherwise = 
+    let oldArr = backing.value
+    let oldLen = len.value
+    let newCap = if oldLen == 0 then 1 else oldLen * 2
+    let newArr = arrayMake newCap x
+    arrayBlit oldArr 0 newArr 0 oldLen
+    set_ref backing newArr
+    set_ref len (oldLen + 1)
+
+{- | Remove and return the last element, or `None` when empty.  Keeps capacity
+   (no shrink). -}
+export
+pop : MutArray a -> <Mut> Option a
+pop (MutArray backing len)
+  | len.value == 0 = None
+  | otherwise = 
+    let i = len.value - 1
+    let x = arrayGetUnsafe i backing.value
+    set_ref len i
+    Some x
+
+{- | Overwrite the element at an index.  Panics when out of the live range
+   `[0, length)` (use `push` to extend). -}
+export
+set : Int -> a -> MutArray a -> <Mut> Unit
+set i x (MutArray backing len)
+  | i >= 0 && i < len.value = arraySetUnsafe i x backing.value
+  | otherwise = panic "MutArray.set: index out of bounds"
+
+{- | Exchange the elements at two indices.  Caller ensures both are in range. -}
+export
+swap : Int -> Int -> MutArray a -> <Mut> Unit
+swap i j (MutArray backing _) =
+  let arr = backing.value
+  let xi = arrayGetUnsafe i arr
+  let xj = arrayGetUnsafe j arr
+  arraySetUnsafe i xj arr
+  arraySetUnsafe j xi arr
+
+{- | Drop all elements (length 0), retaining the allocated capacity. -}
+export
+clear : MutArray a -> <Mut> Unit
+clear (MutArray _ len) = set_ref len 0
+
+mapInPlaceGo : (a -> a) -> Array a -> Int -> Int -> <Mut> Unit
+mapInPlaceGo f arr i n
+  | i >= n = ()
+  | otherwise = 
+    arraySetUnsafe i (f (arrayGetUnsafe i arr)) arr
+    mapInPlaceGo f arr (i + 1) n
+
+{- | Apply `f` to every live element in place. -}
+export
+mapInPlace : (a -> a) -> MutArray a -> <Mut> Unit
+mapInPlace f (MutArray backing len) = mapInPlaceGo f backing.value 0 len.value
+
+-- ── Folds (index-based; never allocate a list) ──────────────────────────
+
+foldGo : (b -> a -> <e> b) -> b -> Array a -> Int -> Int -> <e> b
+foldGo f z arr i n
+  | i >= n = z
+  | otherwise = foldGo f (f z (arrayGetUnsafe i arr)) arr (i + 1) n
+
+foldRightGo : (a -> b -> <e> b) -> b -> Array a -> Int -> <e> b
+foldRightGo f z arr i
+  | i < 0 = z
+  | otherwise = foldRightGo f (f (arrayGetUnsafe i arr) z) arr (i - 1)
+
+-- ── Instances ───────────────────────────────────────────────────────────
+
+{- | Folds over the live range (in order), so `toList`/`length`/`sum`/`elem`/
+   `any`/… all work on a `MutArray`.
+
+   > sum (fromList [1, 2, 3, 4])
+   10
+   > length (fromList [9, 8, 7])
+   3 -}
+export default impl Foldable MutArray where
+  fold f z (MutArray backing len) = foldGo f z backing.value 0 len.value
+  foldRight f z (MutArray backing len) = foldRightGo f z backing.value (len.value - 1)
+  toList ma = elems ma
+  isEmpty (MutArray _ len) = len.value == 0
+  length (MutArray _ len) = len.value
+
+{- | Element-wise equality over the live ranges (capacity is irrelevant).
+
+   > eq (fromList [1, 2, 3]) (fromList [1, 2, 3])
+   True -}
+export default impl Eq (MutArray a) requires Eq a where
+  eq a b = if count a != count b then False else eq (elems a) (elems b)
+
+{- | Rendered as `fromList [a, …]` over the live range.
+
+   > show (fromList [1, 2, 3]) == "fromList [1, 2, 3]"
+   True -}
+export default impl Show (MutArray a) requires Show a where
+  show ma = "fromList \{show (elems ma)}"
