@@ -958,6 +958,63 @@ let test_eval_poly_monad_imported_module () =
         "Expected \"Some 5\\n\" from imported poly-monad `pure` wrapper, got %S" out)
   )
 
+(* Phase 125: a point-free prelude `Foldable`-derived wrapper with a
+   return-position constraint (`sum = fold (+) 0` : `(Foldable t, Num a) => t a
+   -> a`; likewise `maximum`/`product`/`minimum`) applied to a value of an
+   *imported* `Foldable` instance.  `eval_modules` used to force the prelude's
+   deferred thunks right after the prelude phase, *before* Phase B installs the
+   imported module's `impl Foldable Bag`, so `sum`'s thunk memoised `fold (+) 0`
+   against the prelude-only `fold` VMulti and `sum (fromL [...])` later
+   dispatched to no impl ("no matching impl for dispatch").  Direct methods
+   (`length`) and clause-param wrappers worked; only these point-free relaxed
+   wrappers failed, and only through the loader (single-file `eval_program`
+   forces after all impls install).  The fix forces the prelude's deferred
+   thunks after the Phase B module loop.  Must run through `Eval.eval_modules`
+   (the flat `eval_program` path never had the bug). *)
+let test_eval_foldable_derived_imported_instance () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "cont.mdk"
+      "public export data Bag a = Bag (List a)\n\n\
+       export impl Foldable Bag where\n\
+      \  fold f z (Bag xs) = fold f z xs\n\
+      \  foldRight f z (Bag xs) = foldRight f z xs\n\
+      \  toList (Bag xs) = xs\n\n\
+       export fromL : List a -> Bag a\n\
+       fromL xs = Bag xs\n" in
+    let main_path = write_file dir "main.mdk"
+      "import cont.{Bag, fromL}\n\n\
+       main : <IO> Unit\n\
+       main =\n\
+      \  println (show (sum (fromL [1, 2, 3])))\n\
+      \  println (show (maximum (fromL [3, 1, 2])))\n\
+      \  println (show (product (fromL [2, 3, 4])))\n\
+      \  println (show (length (fromL [1, 2, 3])))\n" in
+    let modules = Loader.load_program main_path [dir] in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Desugar.desugar_program prog)) modules in
+    let method_names = Method_marker.interface_method_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let constrained = Method_marker.constrained_fn_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Method_marker.mark_program method_names constrained prog)) modules in
+    let te_acc = ref [] in
+    List.iter (fun (mid, _, prog) ->
+      let (te, _, _) = Typecheck.typecheck_module !te_acc mid prog in
+      te_acc := te :: !te_acc) modules;
+    let buf = Buffer.create 32 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+      ignore (Eval.eval_modules modules));
+    let out = Buffer.contents buf in
+    (* sum, maximum (Ord/Option return), product, then the direct `length`. *)
+    if out <> "6\nSome 3\n24\n3\n" then
+      failwith (Printf.sprintf
+        "Expected \"6\\nSome 3\\n24\\n3\\n\" from Foldable-derived fns over an \
+         imported instance, got %S" out)
+  )
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -1020,6 +1077,9 @@ let () =
     ];
     "local-shadow constraint attribution (Phase 95)", [
       test_case "imported poly-monad wrapper" `Quick test_eval_poly_monad_imported_module;
+    ];
+    "Foldable-derived over imported instance (Phase 125)", [
+      test_case "sum/maximum/product over imported Foldable" `Quick test_eval_foldable_derived_imported_instance;
     ];
     "workspace / multi-root", [
       test_case "cross-member import"    `Quick test_workspace_cross_member_import;

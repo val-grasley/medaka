@@ -103,6 +103,17 @@ Dev probes (build to `_build/default/dev/`):
 ```sh
 ./_build/default/dev/debug.exe      # parse-and-print probe
 ./_build/default/dev/tc_debug.exe   # typecheck probe
+./_build/default/dev/module_debug.exe [entry.mdk [root ...]]
+                                    # multi-module probe: runs the full loader→
+                                    # mark→typecheck_module→eval_modules pipeline,
+                                    # dumps the dict-passed user decls, and evals
+                                    # the SAME tree through both eval_modules (the
+                                    # loader path) and eval_program (the flat
+                                    # single-file path) — diff the two to localize
+                                    # a loader-vs-flat divergence to typecheck/
+                                    # dict_pass (trees differ) vs the eval driver
+                                    # (trees identical, outputs differ). No arg ⇒
+                                    # runs the Phase-125 repro from a temp dir.
 ```
 
 ## Gotchas
@@ -156,6 +167,20 @@ Dev probes (build to `_build/default/dev/`):
   eval tests) prepends the *raw* prelude and falls back to arg-tag "first impl
   wins" for return-position methods: `pure` needs types to dispatch, so route it
   through the typed pipeline (see `run_typed` in `test/test_eval.ml`).
+- **A dispatch bug that reproduces through the loader but is a green single-file
+  doctest is almost always the EVAL DRIVER, not typecheck/dict-passing** — even
+  when a PLAN entry says otherwise. This exact shape has recurred at Phases 96,
+  103, 121, and 125, and the filed root cause has *repeatedly* blamed
+  dict-passing and been wrong. Why the split exists: single-file `eval_program`
+  merges everything into one by-name frame and forces deferred thunks only after
+  every impl is installed; the loader's `eval_modules` uses per-module frames and
+  a separate prelude/Phase-B install order, so **binding-order and
+  impl-install-order** bugs surface *only* there. Diagnose with
+  `dev/module_debug.exe`: it evals the *same* typechecked + dict-passed tree
+  through both drivers — identical tree but only `eval_modules` panics ⇒ it's the
+  eval driver (load **debug-pipeline**, fix in `lib/eval.ml`), not a routing bug.
+  Corollary: because single-file masks these, the regression test must go in
+  `test_loader` (drives `eval_modules`), never `test_run`/doctest.
 - Development is organized by numbered **Phases**. Open/forward work is in
   `PLAN.md`; the completed Phases 1–97 (with implementation notes) are in
   `PLAN-ARCHIVE.md`. Commit messages and code comments reference phase numbers.
@@ -181,7 +206,12 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 - **extend-stdlib** — implement/extend a *pure-Medaka* stdlib function, impl,
   doctest, or prop in `stdlib/{core,list,string,array}.mdk` (per STDLIB.md). Not
   for externs — that's add-primitive. Normally user-reserved; load when asked.
-- **debug-pipeline** — diagnose a parse/typecheck/eval failure.
+- **debug-pipeline** — diagnose a parse/typecheck/eval failure. **Reach here
+  first for a dispatch bug that reproduces through the loader but works
+  single-file** (Phases 96/103/121/125): that shape is an `eval.ml` ordering bug,
+  *not* the dict-passing machinery a PLAN entry may name (the entry's skill label
+  encodes the *filed* root cause, which for these is repeatedly wrong — confirm
+  with `dev/module_debug.exe` before loading add-language-feature). See Gotchas.
 - **add-lsp-capability** — add/extend an LSP feature.
 - **harden-typechecker** — typechecker-*internal* correctness/diagnostics work
   (much of the Phase 62–72 arc): add a `type_error`, tighten constraint/

@@ -1954,8 +1954,12 @@ let eval_modules (modules : (string * string * Ast.program) list)
     (eval_decl_into ~env:global_env ~fill_local:fill_global ~fill_global
        ~impl_acc ~fundef_acc:prelude_fundef_acc ~deferred:prelude_deferred)
     prelude';
-  List.iter (fun name -> ignore (lookup global_env name))
-    (List.rev !prelude_deferred);
+  (* NB: the prelude's deferred thunks are forced *after* Phase B (below), not
+     here — see the Phase 125 note at the force site.  A point-free prelude
+     wrapper like `sum = fold (+) 0` (Phase 89 `relaxed`, arg-tag-dispatched)
+     forced here would memoise the prelude-only `fold` VMulti before the user
+     modules' impls (e.g. `impl Foldable Array`) are installed, so `sum` over an
+     imported container would later find no matching impl. *)
 
   (* 3. Phase B: evaluate each module in topo order in its own frame. *)
   (* mod_id → that module's public top-level (name, cell) exports. *)
@@ -2058,6 +2062,21 @@ let eval_modules (modules : (string * string * Ast.program) list)
       (collect_pub_exports decls !local_frame imports);
     last_local := List.map (fun (k, cell) -> (k, !cell)) !local_frame
   ) modules';
+
+  (* Phase 125: force the prelude's deferred thunks only now that *every*
+     module's impls have been installed into the shared `impl_acc` / global
+     interface-method cells — mirroring the flat `eval_program`, which forces
+     deferred thunks only after all DImpls are in place.  Forcing earlier
+     (right after the prelude phase) memoised a point-free `relaxed` wrapper
+     such as `sum = fold (+) 0` against the prelude-only `fold` VMulti, so
+     `sum (fromList [...])` over an imported `Foldable Array` later dispatched
+     to no impl.  Per-module deferred thunks were already forced inside the
+     loop above: topo order guarantees a module's wrappers only need impls from
+     itself, earlier modules, and the prelude — all installed by then.  Only the
+     prelude is special, because it can reference impls defined in *later*
+     modules. *)
+  List.iter (fun name -> ignore (lookup global_env name))
+    (List.rev !prelude_deferred);
 
   !last_local
 
