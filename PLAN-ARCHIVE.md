@@ -4799,6 +4799,211 @@ imported names arrive via known-modules seeding rather than an explicit
 
 ---
 
+### Phase 99: lower `do` to `andThen`/`pure` (make it true sugar) ✅ DONE (2026-06-02)
+
+`Desugar.lower_do_blocks` (`lib/desugar.ml`) rewrites `EDo` into nested
+`andThen`/`pure` calls (mirroring the list-comp lowering: bare `ELam [pat]` for
+irrefutable binds, a 2-arm `EMatch` ending in `__fallthrough__` for refutable
+ones). It runs **after `desugar_questions`, before `method_marker` + typecheck**
+(also threaded into `desugar_expr` for the REPL), so the emitted bare
+`andThen`/`pure` EVars get marked to `EMethodRef`/`EDictApp` and bind dispatch
+flows through the normal dictionary elaboration. `eval.ml`'s `eval_do` + the
+`monadic_ctors` hashtable are deleted; the `EDo` typecheck arm is now an
+`InternalError` guard. The `Thenable` obligation rides the lowered `andThen`'s
+constraint, so Phase 98's win is preserved structurally (a `<-` over a
+non-`Thenable` type is still a compile-time error; a `pure`-only block pulls no
+Thenable obligation). Behavior changes (intended): a non-final `DoExpr` now
+sequences monadically (`None; …` short-circuits); a single-statement `do x` is
+just `x`. Do-block well-formedness (no `let mut`/assign/field-assign; no bad
+terminator) moved to a pre-lowering scan raising `Desugar.Do_error`, caught at
+the driver/test `Type_error` sites. Imperative IO/`let mut` sequences use a bare
+indented block (`EBlock`). Skill: **add-language-feature**.
+
+### Phase 101a: drive `arbitrary`/`shrink` through the registry ✅ DONE (2026-06-02)
+
+(Phase 101 overall — synthesized typed generators, 101b — remains open in
+PLAN.md, deferred.) `lib/eval.ml` gained a `shrink_registry` (mirror of
+`arbitrary_registry`, populated from an `impl Arbitrary T` that *overrides*
+`shrink`); `lib/prop_runner.ml`'s `gen_for_type`/`shrink_value` consult the
+registries first (generation gated to nullary head) with native fallback, so a
+hand-written/`deriving` `arbitrary`/`shrink` actually wins — **including
+container elements**, because native `gen_for_type` recurses and each element
+routes through `arbitrary_registry` (`List Tagged` → `[Tagged 7,…]`, all nesting
+handled). Also fixed a pre-existing bug: native generation only matched
+single-arg `Result`; two-arg `Result e a` now generates (`Ok a` / `Err e`)
+instead of crashing.
+
+### Phase 103: nullary return-position method dispatch ✅ DONE (2026-06-02)
+
+Two facets, both fixed with small targeted edits (no structured-dict redesign):
+- **(a) Type ascription ignored — root cause was scheme shadowing.** A standalone
+  top-level binding sharing a nullary method's name (array.mdk's `empty : Array
+  a` next to `impl Monoid (Array a)`) shadowed the Monoid method scheme in
+  `env.vars`. `infer`'s `EVar` method branch then called `instantiate_method`
+  with the *shadow* scheme, so `param_vars` came back empty (the shadow's bound
+  ids ≠ the interface's `iface_param_ids`) and `check_method_usages` skipped
+  route-stamping → eval fell to the first impl (List's `[]`) → `arrayLength:
+  expected Array`. **Fix:** instantiate the interface's own method scheme via
+  `List.assoc_opt x info.iface_methods` (`lib/typecheck.ml`, EVar method branch).
+  The standalone `empty` bindings in `array.mdk`/`map.mdk` were removed (redundant
+  + the footgun); `empty` is purely `Monoid.empty`, use `[||]`/`Tip` internally.
+- **(b) Constrained impl over-applied its dict to a nullary terminal.** typecheck
+  stamps `res_impl_dicts` for a return-position-with-`requires` method, but
+  `dict_pass`'s `uses_impl_dict` gate adds *no* param when the body (`empty =
+  Tip`) references no dict — so eval's `EMethodRef` folded the dict onto the bare
+  `VCon Tip` → `applied non-function: Tip`. **Fix:** in `eval.ml`'s `EMethodRef`,
+  only fold `res_method_dicts`/`res_impl_dicts` when the (post-Phase-96-strip)
+  value still awaits application; a terminal value takes none. Mirrors dict_pass's
+  gate; single-level (`Tip` needs no `Ord k`).
+- **Payoff:** `impl Monoid (Map k v) requires Ord k where empty = Tip` re-enabled
+  in `stdlib/map.mdk`; `Array`/`Map` are now proper `Monoid`s and the
+  `array.empty` footgun is gone. Regression tests: `test_run` (facet b,
+  `t_nullary_empty_requires`), `test_doctest` (facet a, cross-module — the bug
+  only repros through the loader; single-file eval masks it), doctests in
+  array/map. Skills: **debug-pipeline** + **add-language-feature**.
+
+### Phase 104: leading `_` (or `_name`) as the first lambda param mis-parses ✅ DONE (2026-06-02)
+
+`(_ x => …)` / `(_k v acc => …)` failed with `Unknown constructor: _`; a `_` in
+any *non-first* position was fine. Root cause was **not** a grammar conflict but
+a buggy constructor-head test in the expr-first binding-LHS lowering
+(`expr_to_pat`/`expr_to_pats` in `lib/parser.mly`): both used
+`Char.uppercase_ascii c.[0] = c.[0]`, which is `true` for `_` (and digits) since
+underscore has no case — so a leading-`_` application head was lowered to
+`PCon ("_", …)`. Fixed by factoring `is_ctor_name s` (an explicit `'A'..'Z'`
+range check, matching the already-correct third site) and using it at all three
+constructor-head checks. No grammar rule changed → `parser.conflicts` unchanged
+at 3. Regression tests in `test/test_parser.ml`. See
+[[project_binding_lhs_expr_first]].
+
+### Phase 108: Map/Set literal sugar (authoritative, interface-driven) ✅ DONE (2026-06-02)
+
+`Map { 1 => 10 }` / `Set { 1, 2, 3 }` build real containers. A core interface
+`FromEntries c e` (`fromEntries : List e -> c`, dispatched on the result type
+`c`); `impl FromEntries (Map k v) (k, v) requires Ord k` in map.mdk and
+`(Set a) a requires Ord a` in set.mdk. `Desugar.lower_container_literals` lowers
+`Map { k => v, … }` → `(fromEntries [(k,v), …] :~ Name _k _v)` and `Set { … }` →
+`(fromEntries [...] :~ Name _a)`, where `:~` is a new **`EHeadAnnot`** node —
+EAnnot minus the skolemization-by-identity check, so it pins only the *head*
+tycon flexibly (the element vars may ground). That pin makes `fromEntries`'s
+return-position dispatch resolve to the named container's impl (so the name is
+**authoritative** — `Banana { … }` is a resolve-time `Unknown type`), and the
+impl's `Ord k` threads via the ordinary return-position dict machinery (Phase
+103). Key insight that kept it cheap: lowering to a *normal* method call + a tiny
+transparent pin node means **zero changes to the dispatch/dict core** —
+EHeadAnnot recursion rides `Desugar.map_expr` (so marker + dict_pass get it
+free), and eval just evaluates the inner expr. The old eval stub (`VCon
+"<Name>.fromList"`) and the direct EMapLit/ESetLit typecheck arms are now
+`InternalError`/`assert false` guards (EDo/Phase-99 pattern; EMapLit/ESetLit stay
+surface nodes for fmt round-trip). Touches ast/desugar/printer/coverage/resolve/
+typecheck/eval + core.mdk + map.mdk + set.mdk. **Compiler:** also removed
+`"Map"`/`"Set"` from `resolve.ml`'s `primitive_types` (they were reserved
+placeholders) so the stdlib `data Map`/`data Set` are canonical. Open
+limitations (empty literals; two-same-shape disambiguation) spun out to **Phase
+114**. Skill: **add-language-feature**.
+
+### Phase 109: spurious "Multiple default impls" when importing two sibling stdlib modules ✅ DONE (2026-06-02)
+
+A consumer importing both `map` and `array` failed typecheck with `Multiple
+default impls of Semigroup for Map a b`. Root cause: the per-module impl-export
+filter in `typecheck.ml` (`te_impls`) matched an impl to this module's
+`user_prog` by **iface name only**. (1) `typecheck_module`'s `known_modules`
+accumulates *every* previously typechecked module, so when `array.mdk` is
+typechecked `env.impls` already holds map's `Semigroup (Map k v)`; (2)
+`array.mdk` also declares `default impl Semigroup (Array a)`, so the iface-name
+match re-exported the foreign `Semigroup (Map k v)` in array's `te_impls`. A
+consumer importing both then registered it twice → coherence error. Fixed by
+matching the full `impl_key` (iface + head type + name), so a module only exports
+impls it actually declares. (This is the "dual stdlib import" issue Phase 103
+surfaced.) See [[project_typecheck_two_entrypoints]].
+
+### Phase 110: per-module eval name-isolation (`Eval.eval_modules`) ✅ DONE (2026-06-02)
+
+Surfaced while verifying Phase 109: `run` of the map+array repro panicked
+`applied non-function: [|1|]` at map.mdk's `insert k v Tip = singleton k v`. Eval
+flattened all modules into one `top_frame` + by-name `fundef_acc`, so map's
+`singleton k v` (2-arg) and array's `singleton x` (1-arg) **merged into one
+`VMulti`**; the 1-arg clause matched first, returned `[|k|]`, then that array was
+applied to `v`. A clause merge, not just shadowing — a module-`b` function
+calling its own private helper ran module-`a`'s same-named helper. Broad surface
+(~20 names shared across list/string/array/map). Eval-only: `typecheck_module`
+already scopes per module, so the program type-checks; eval was the lone stage
+ignoring boundaries.
+- **Fix — Approach B (per-module eval frames).** Added `Eval.eval_modules` (flat
+  `eval_program` left for single-file/REPL/tests). Each module evaluates in
+  `[ M_local ; M_imports ; global ]`: **global** holds primitives, the evaluated
+  prelude, all ctors, and one coherent `VMulti` per method/impl (shared
+  `impl_acc`); **M_local** holds the module's own `DFunDef`/`DLetGroup` (isolation
+  lives here, per-module `fundef_acc`); **M_imports** binds each `use`d name to
+  the *exporting* module's actual cell (shared refs). Export resolution mirrors
+  resolve's `build_exports` (export via the `export`ed signature `DTypeSig(true)`,
+  not the `DFunDef`'s own `is_pub`). Impl bodies close over their defining
+  module's env yet install into the global method cell. Dict-passing kept
+  byte-identical (one `Dict_pass.run (marked_prelude @ all decls)` sliced by decl
+  count). Routed only the multi-module **run** driver and doctest's
+  `run_file_multi`; diagnostics is typecheck-only, `medaka test` props are
+  single-file. Tests: `test_loader`, `test_doctest`. See
+  [[project_eval_no_module_isolation]], [[project_module5_map]].
+- **Rejected — Approach A (qualify names in resolve):** `resolve_module` is a pure
+  checker; making it a transformer ripples mangled names through the whole
+  pipeline + needs de-mangling for LSP. Fights the architecture.
+
+### Module 5 stdlib: `map.mdk` + `set.mdk` (weight-balanced ordered containers) ✅ DONE (2026-06-02)
+
+The single biggest Stage-0 gap (symbol tables / scopes / substitutions). User
+lifted the hand-write-stdlib constraint and delegated these.
+
+**`stdlib/map.mdk`** — weight-balanced BST (Adams / `Data.Map`, `data Map k v =
+Tip | Bin Int k v (Map k v) (Map k v)`, `delta = 3`/`ratio = 2`, cached sizes).
+Full API (insert/insertWith/adjust/delete/lookup/member/union/unionWith/
+difference/intersectionWith/min-max views/folds-with-key/keys/elems/
+filterWithKey) + `Mappable`/`Eq`/`Show`/`Semigroup`/`Monoid` (Monoid via Phase
+103) + `FromEntries` (Phase 108) + a `wellFormed` invariant checker. 36 doctests +
+7 props; depth 15 for 1000 ascending inserts. `Foldable` deliberately *not*
+implemented so `toList` keeps meaning assoc-pairs (one consequence — map's
+standalone `toList`/`isEmpty` are unreachable from user files — is tracked as the
+open **Phase 112**).
+
+**`stdlib/set.mdk`** — a **standalone** weight-balanced element tree (`data Set a
+= Tip | Bin Int a (Set a) (Set a)`), chosen over a `Map a Unit` wrapper (which
+would force qualified imports to dodge map's identically-named exports and carry
+a `Unit` payload). API: member/insert/delete, union/intersection/difference/
+isSubsetOf, min-max views, fromList/singleton + `Foldable`/`Eq`/`Show`/
+`Semigroup`/`Monoid`/`FromEntries` + `wellFormed`. 23 doctests + 8 props; depth
+15 for 1000 ascending inserts. Unlike Map, Set *implements* `Foldable` (a set's
+elements ARE its `toList`), so `toList`/`elem`/`length` resolve cleanly from user
+files. Both: removed the name from `resolve.ml`'s `primitive_types`. Skill:
+**extend-stdlib**. See [[project_module5_map]].
+
+### Phase 83/84 (sub-part): instance-`requires` dict-threading into return-position impl bodies ✅ DONE (2026-06-02, single-level)
+
+(The broader Phase 83/84 residuals remain open in PLAN.md.) An impl's `requires`
+dicts now thread into its method bodies so a *return-position* element ref
+resolves via the element dict (e.g. `impl Arbitrary (List a) requires Arbitrary a
+where arbitrary () = arbitraryList arbitrary 8` now generates `List Tagged` as
+`[Tagged 7, …]` instead of panicking). Mechanism mirrors 69.x-e: a per-impl
+`impl_dict_routes` table (impl-local slots, keyed by impl_key) feeds
+`find_enclosing_dict`; the call site stamps `res_impl_dicts` on the `EMethodRef`;
+`dict_pass` prepends the matching params; eval applies them after
+`res_method_dicts`. **Gated to return-position methods** (arg-position
+`show`/`eq`/`compare` stay on arg-tag, which already handles nesting).
+**Remaining limitation (still open):** *nested* parametric element types
+(`List (List Int)`) need structured dicts rather than the flat `VDict of string`.
+Lands in `ast.ml`/`typecheck.ml`/`dict_pass.ml`/`eval.ml`. Unblocks common cases
+of Phase 101.
+
+### Investigated & dropped as non-issues (2026-06-02)
+
+Two "minor ergonomics" candidates from the Module 5 work, verified non-problems:
+(1) bulk-importing a type's constructors — `import map.{Map(..)}` already works
+(Phase 100). (2) The `Ordering` constructor `Eq` does **not** clash with the `Eq`
+interface — constructors and interfaces are already separately namespaced, so
+`match compare … Eq => …` resolves fine even under `Ord k =>` with `Eq` imported
+(map.mdk's earlier "use `_` for the equal case" comment was mistaken and was
+corrected to name `Eq`).
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend
