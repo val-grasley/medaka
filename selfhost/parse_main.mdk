@@ -10,6 +10,7 @@
 import ast.{Lit(..), Ty(..), Pat(..), Expr(..), Decl(..)}
 import sexp.{programToSexp}
 
+controlProgram : List Decl
 controlProgram =
   [ DTypeSig False "inc" (TyFun (TyCon "Int") (TyCon "Int"))
   , DFunDef False "inc" [PVar "x"] (EBinOp "+" (EVar "x") (ELit (LInt 1)))

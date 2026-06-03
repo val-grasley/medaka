@@ -11,12 +11,11 @@
 import lexer.{Token, tokenize, tokenToString}
 
 -- Render the token stream, one per line, no trailing newline (matches the
--- golden TOKENS section).  Direct recursion rather than `map`/`join`.
-renderToks toks =
-  match toks
-    [] => ""
-    [t] => tokenToString t
-    t :: rest => tokenToString t ++ "\n" ++ renderToks rest
+-- golden TOKENS section).
+renderToks : List Token -> String
+renderToks [] = ""
+renderToks [t] = tokenToString t
+renderToks (t :: rest) = tokenToString t ++ "\n" ++ renderToks rest
 
 -- NB: the body is fully inlined into `main` rather than factored into an
 -- `emit path = …` helper.  An `<IO>`-returning helper called from a match arm

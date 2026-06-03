@@ -7,6 +7,20 @@ See the **North star → Stage 1** section of [`../PLAN.md`](../PLAN.md).
 Runs **on the existing tree-walking interpreter** (`medaka run …`) — correctness
 first; native codegen is Stage 2.
 
+## House style
+
+Idiomatic Medaka, not transliterated OCaml — the self-host port is also how we
+*dogfood* the language, so we lean into its idioms rather than minimizing the
+diff with `lib/`:
+- **Multi-clause functions** with pattern-matching heads (incl. literal heads
+  like `keywordOrIdent "let" = TLet`), not `match` on the sole argument. Reserve
+  `match` for case analysis on a *computed/local* value.
+- **Type signatures on every top-level function.**
+- Higher-order functions (`map`, etc.) where they read clearly; treat
+  idiom-friction (e.g. the Phase 134 `map` quirk) as a bug to fix, not avoid.
+- Structural parallelism with the OCaml reference is kept **only** in the core
+  scan/parse algorithms, where it buys byte-for-byte validation.
+
 ## Layout
 
 | File | Role |

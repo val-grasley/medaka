@@ -1,22 +1,19 @@
 -- Self-hosted Medaka lexer — Stage 1 port of `lib/lexer.mll`.
 --
 -- STATUS: tokenizer ported — int/float/string/char literals (with char escapes
--- `\n \t \r \0 \\ \'` + `\u{…}`, mirroring Phase 133's `read_char`), hex/bin/oct
--- ints, idents/keywords, operators/punctuation, line + `{- … -}` (nestable)
--- block comments, string interpolation (`\{expr}` → INTERP_OPEN/MID/END), the
--- `@`/`AS_AT` adjacency rule, and a faithful port of lib/lexer.mll's
+-- `\n \t \r \0 \\ \'` + `\u{…}`, mirroring Phase 133) + hex/bin/oct ints,
+-- idents/keywords, operators/punctuation, line + `{- … -}` (nestable) block
+-- comments, string interpolation (`\{expr}` → INTERP_OPEN/MID/END), the `@`/
+-- `AS_AT` adjacency rule, and a faithful port of lib/lexer.mll's
 -- INDENT/DEDENT/NEWLINE layout algorithm + else-continuation filter +
--- leading-operator continuation.  Validated two ways: **all 15/15 curated
--- fixtures** (test/diff_selfhost_lexer.sh) AND **all 13/13 real .mdk files —
--- every stdlib module plus this lexer lexing itself** (test/diff_selfhost_lex_-
--- files.sh), each byte-for-byte against the OCaml reference.
+-- leading-operator continuation.  Validated byte-for-byte against the OCaml
+-- reference: 15/15 curated fixtures + all 13 real .mdk files (stdlib + this
+-- lexer lexing itself).
 --
--- Known serialization-only differences (the token *value* matches; only its
--- debug text differs because Medaka and OCaml format differently): FLOAT text
--- (`floatToString` vs OCaml `%g` — `1.0` → `1.` vs `1`) and control bytes in
--- STRING/CHAR (`debugStringLit` vs `%S` — a NUL renders `\0` vs `\000`). Neither
--- appears in any real file. Deferred (likewise unused): triple-quoted strings
--- (+ `strip_indent`) and nested interpolation (`\{` inside `\{…}`).
+-- Known serialization-only differences (token value matches; only debug text
+-- differs): FLOAT (`floatToString` vs `%g`) and control bytes in STRING/CHAR
+-- (`debugStringLit` vs `%S`).  Deferred (unused everywhere): triple-quoted
+-- strings (+ `strip_indent`) and nested interpolation.
 
 public export data Token
   = TInt Int
@@ -111,102 +108,100 @@ public export data Token
   | TEof
 
 -- Mirrors `lib/lexer.mll` `token_to_string`.  String-bearing tokens use
--- `debugStringLit` (the `%S`-style quoted/escaped form); ints use `intToString`;
--- bools render lowercase `true`/`false` (OCaml `%b`).
+-- `debugStringLit` (the `%S`-style quoted/escaped form); ints use `intToString`.
 export
 tokenToString : Token -> String
-tokenToString t =
-  match t
-    TInt n => "INT " ++ intToString n
-    TFloat f => "FLOAT " ++ floatToString f
-    TString s => "STRING " ++ debugStringLit s
-    TChar s => "CHAR " ++ debugStringLit s
-    TBool b => "BOOL " ++ (if b then "true" else "false")
-    TInterpOpen s => "INTERP_OPEN " ++ debugStringLit s
-    TInterpMid s => "INTERP_MID " ++ debugStringLit s
-    TInterpEnd s => "INTERP_END " ++ debugStringLit s
-    TIdent s => "IDENT " ++ debugStringLit s
-    TUpper s => "UPPER " ++ debugStringLit s
-    TBacktickIdent s => "BACKTICK_IDENT " ++ debugStringLit s
-    TLet => "LET"
-    TRec => "REC"
-    TWith => "WITH"
-    TMut => "MUT"
-    TIn => "IN"
-    TIf => "IF"
-    TThen => "THEN"
-    TElse => "ELSE"
-    TMatch => "MATCH"
-    TData => "DATA"
-    TRecord => "RECORD"
-    TInterface => "INTERFACE"
-    TDefault => "DEFAULT"
-    TImpl => "IMPL"
-    TImport => "IMPORT"
-    TExport => "EXPORT"
-    TPublic => "PUBLIC"
-    TWhere => "WHERE"
-    TOf => "OF"
-    TRequires => "REQUIRES"
-    TDo => "DO"
-    TAs => "AS"
-    TExtern => "EXTERN"
-    TDeriving => "DERIVING"
-    TType => "TYPE"
-    TNewtype => "NEWTYPE"
-    TProp => "PROP"
-    TTest => "TEST"
-    TBench => "BENCH"
-    TFunction => "FUNCTION"
-    TPlus => "PLUS"
-    TMinus => "MINUS"
-    TStar => "STAR"
-    TSlash => "SLASH"
-    TMod => "MOD"
-    TEqEq => "EQ_EQ"
-    TNeq => "NEQ"
-    TLt => "LT"
-    TGt => "GT"
-    TLeq => "LEQ"
-    TGeq => "GEQ"
-    TAnd => "AND"
-    TOr => "OR"
-    TCons => "CONS"
-    TPlusPlus => "PLUSPLUS"
-    TStrAppend => "STRAPPEND"
-    TPipeRight => "PIPE_RIGHT"
-    TRCompose => "RCOMPOSE"
-    TLCompose => "LCOMPOSE"
-    TFatArrow => "FAT_ARROW"
-    TArrow => "ARROW"
-    TLArrow => "LARROW"
-    TAt => "AT"
-    TBang => "BANG"
-    TQuestion => "QUESTION"
-    TAsAt => "AS_AT"
-    TEqual => "EQUAL"
-    TColon => "COLON"
-    TComma => "COMMA"
-    TDot => "DOT"
-    TPipe => "PIPE"
-    TUnderscore => "UNDERSCORE"
-    TLParen => "LPAREN"
-    TRParen => "RPAREN"
-    TLBracket => "LBRACKET"
-    TRBracket => "RBRACKET"
-    TLBrace => "LBRACE"
-    TRBrace => "RBRACE"
-    TLArray => "LARRAY"
-    TRArray => "RARRAY"
-    TDotLBrace => "DOT_LBRACE"
-    TDotStar => "DOT_STAR"
-    TEllipsis => "ELLIPSIS"
-    TDotDot => "DOTDOT"
-    TDotDotEq => "DOTDOT_EQ"
-    TNewline => "NEWLINE"
-    TIndent => "INDENT"
-    TDedent => "DEDENT"
-    TEof => "EOF"
+tokenToString (TInt n) = "INT " ++ intToString n
+tokenToString (TFloat f) = "FLOAT " ++ floatToString f
+tokenToString (TString s) = "STRING " ++ debugStringLit s
+tokenToString (TChar s) = "CHAR " ++ debugStringLit s
+tokenToString (TBool True) = "BOOL true"
+tokenToString (TBool False) = "BOOL false"
+tokenToString (TInterpOpen s) = "INTERP_OPEN " ++ debugStringLit s
+tokenToString (TInterpMid s) = "INTERP_MID " ++ debugStringLit s
+tokenToString (TInterpEnd s) = "INTERP_END " ++ debugStringLit s
+tokenToString (TIdent s) = "IDENT " ++ debugStringLit s
+tokenToString (TUpper s) = "UPPER " ++ debugStringLit s
+tokenToString (TBacktickIdent s) = "BACKTICK_IDENT " ++ debugStringLit s
+tokenToString TLet = "LET"
+tokenToString TRec = "REC"
+tokenToString TWith = "WITH"
+tokenToString TMut = "MUT"
+tokenToString TIn = "IN"
+tokenToString TIf = "IF"
+tokenToString TThen = "THEN"
+tokenToString TElse = "ELSE"
+tokenToString TMatch = "MATCH"
+tokenToString TData = "DATA"
+tokenToString TRecord = "RECORD"
+tokenToString TInterface = "INTERFACE"
+tokenToString TDefault = "DEFAULT"
+tokenToString TImpl = "IMPL"
+tokenToString TImport = "IMPORT"
+tokenToString TExport = "EXPORT"
+tokenToString TPublic = "PUBLIC"
+tokenToString TWhere = "WHERE"
+tokenToString TOf = "OF"
+tokenToString TRequires = "REQUIRES"
+tokenToString TDo = "DO"
+tokenToString TAs = "AS"
+tokenToString TExtern = "EXTERN"
+tokenToString TDeriving = "DERIVING"
+tokenToString TType = "TYPE"
+tokenToString TNewtype = "NEWTYPE"
+tokenToString TProp = "PROP"
+tokenToString TTest = "TEST"
+tokenToString TBench = "BENCH"
+tokenToString TFunction = "FUNCTION"
+tokenToString TPlus = "PLUS"
+tokenToString TMinus = "MINUS"
+tokenToString TStar = "STAR"
+tokenToString TSlash = "SLASH"
+tokenToString TMod = "MOD"
+tokenToString TEqEq = "EQ_EQ"
+tokenToString TNeq = "NEQ"
+tokenToString TLt = "LT"
+tokenToString TGt = "GT"
+tokenToString TLeq = "LEQ"
+tokenToString TGeq = "GEQ"
+tokenToString TAnd = "AND"
+tokenToString TOr = "OR"
+tokenToString TCons = "CONS"
+tokenToString TPlusPlus = "PLUSPLUS"
+tokenToString TStrAppend = "STRAPPEND"
+tokenToString TPipeRight = "PIPE_RIGHT"
+tokenToString TRCompose = "RCOMPOSE"
+tokenToString TLCompose = "LCOMPOSE"
+tokenToString TFatArrow = "FAT_ARROW"
+tokenToString TArrow = "ARROW"
+tokenToString TLArrow = "LARROW"
+tokenToString TAt = "AT"
+tokenToString TBang = "BANG"
+tokenToString TQuestion = "QUESTION"
+tokenToString TAsAt = "AS_AT"
+tokenToString TEqual = "EQUAL"
+tokenToString TColon = "COLON"
+tokenToString TComma = "COMMA"
+tokenToString TDot = "DOT"
+tokenToString TPipe = "PIPE"
+tokenToString TUnderscore = "UNDERSCORE"
+tokenToString TLParen = "LPAREN"
+tokenToString TRParen = "RPAREN"
+tokenToString TLBracket = "LBRACKET"
+tokenToString TRBracket = "RBRACKET"
+tokenToString TLBrace = "LBRACE"
+tokenToString TRBrace = "RBRACE"
+tokenToString TLArray = "LARRAY"
+tokenToString TRArray = "RARRAY"
+tokenToString TDotLBrace = "DOT_LBRACE"
+tokenToString TDotStar = "DOT_STAR"
+tokenToString TEllipsis = "ELLIPSIS"
+tokenToString TDotDot = "DOTDOT"
+tokenToString TDotDotEq = "DOTDOT_EQ"
+tokenToString TNewline = "NEWLINE"
+tokenToString TIndent = "INDENT"
+tokenToString TDedent = "DEDENT"
+tokenToString TEof = "EOF"
 
 -- ── Raw scanner output ──────────────────────────────────────────────────
 -- The scanner produces real tokens interleaved with `RNewline col` markers
@@ -218,39 +213,74 @@ data RawTok
   | RNewline Int
 
 -- ── Character classification (ASCII, matching lib/lexer.mll's char classes) ──
+isSp : Char -> Bool
 isSp c = c == ' '
+
+isTab : Char -> Bool
 isTab c = c == '\t'
+
+isNL : Char -> Bool
 isNL c = c == '\n'
+
+isCR : Char -> Bool
 isCR c = c == '\r'
+
+isQuote : Char -> Bool
 isQuote c = c == '"'
+
+isApos : Char -> Bool
 isApos c = c == '\''
+
+isBackslash : Char -> Bool
 isBackslash c = c == '\\'
+
+isBacktick : Char -> Bool
 isBacktick c = c == '`'
+
+isSpace : Char -> Bool
 isSpace c = isSp c || isTab c
+
+isDigit : Char -> Bool
 isDigit c = c >= '0' && c <= '9'
+
+isLower : Char -> Bool
 isLower c = c >= 'a' && c <= 'z'
+
+isUpper : Char -> Bool
 isUpper c = c >= 'A' && c <= 'Z'
+
+isAlnum : Char -> Bool
 isAlnum c = isLower c || isUpper c || isDigit c || c == '_' || isApos c
 
+isHexDigit : Char -> Bool
+isHexDigit c = isDigit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
+
 -- ── Low-level source access ─────────────────────────────────────────────
+at : Array Char -> Int -> Char
 at src i = arrayGetUnsafe i src
 
+is2 : Array Char -> Int -> Int -> Char -> Char -> Bool
 is2 src len pos a b =
   pos + 1 < len && at src pos == a && at src (pos + 1) == b
 
+is3 : Array Char -> Int -> Int -> Char -> Char -> Char -> Bool
 is3 src len pos a b c =
   pos + 2 < len && at src pos == a && at src (pos + 1) == b && at src (pos + 2) == c
 
+substr : Array Char -> Int -> Int -> String
 substr src start endp =
   stringFromChars (arrayMakeWith (endp - start) (i => at src (start + i)))
 
+collectNoUs : Array Char -> Int -> Int -> List Char
 collectNoUs src p endp
   | p >= endp = []
   | at src p == '_' = collectNoUs src (p + 1) endp
   | otherwise = at src p :: collectNoUs src (p + 1) endp
 
+substrNoUs : Array Char -> Int -> Int -> String
 substrNoUs src start endp = stringFromChars (arrayFromList (collectNoUs src start endp))
 
+parseIntFrom : Array Char -> Int -> Int -> Int -> Int
 parseIntFrom src p endp acc
   | p >= endp = acc
   | at src p == '_' = parseIntFrom src (p + 1) endp acc
@@ -259,49 +289,51 @@ parseIntFrom src p endp acc
 -- ── Keyword table ───────────────────────────────────────────────────────
 -- True/False are NOT here: they start uppercase, so the OCaml lexer emits them
 -- as UPPER (keyword_or_ident only fires for lowercase/underscore lexemes).
-keywordOrIdent s
-  | s == "let" = TLet
-  | s == "rec" = TRec
-  | s == "with" = TWith
-  | s == "mut" = TMut
-  | s == "in" = TIn
-  | s == "if" = TIf
-  | s == "then" = TThen
-  | s == "else" = TElse
-  | s == "match" = TMatch
-  | s == "data" = TData
-  | s == "record" = TRecord
-  | s == "interface" = TInterface
-  | s == "default" = TDefault
-  | s == "impl" = TImpl
-  | s == "import" = TImport
-  | s == "export" = TExport
-  | s == "public" = TPublic
-  | s == "where" = TWhere
-  | s == "of" = TOf
-  | s == "do" = TDo
-  | s == "as" = TAs
-  | s == "extern" = TExtern
-  | s == "requires" = TRequires
-  | s == "deriving" = TDeriving
-  | s == "type" = TType
-  | s == "newtype" = TNewtype
-  | s == "prop" = TProp
-  | s == "test" = TTest
-  | s == "bench" = TBench
-  | s == "function" = TFunction
-  | otherwise = TIdent s
+keywordOrIdent : String -> Token
+keywordOrIdent "let" = TLet
+keywordOrIdent "rec" = TRec
+keywordOrIdent "with" = TWith
+keywordOrIdent "mut" = TMut
+keywordOrIdent "in" = TIn
+keywordOrIdent "if" = TIf
+keywordOrIdent "then" = TThen
+keywordOrIdent "else" = TElse
+keywordOrIdent "match" = TMatch
+keywordOrIdent "data" = TData
+keywordOrIdent "record" = TRecord
+keywordOrIdent "interface" = TInterface
+keywordOrIdent "default" = TDefault
+keywordOrIdent "impl" = TImpl
+keywordOrIdent "import" = TImport
+keywordOrIdent "export" = TExport
+keywordOrIdent "public" = TPublic
+keywordOrIdent "where" = TWhere
+keywordOrIdent "of" = TOf
+keywordOrIdent "do" = TDo
+keywordOrIdent "as" = TAs
+keywordOrIdent "extern" = TExtern
+keywordOrIdent "requires" = TRequires
+keywordOrIdent "deriving" = TDeriving
+keywordOrIdent "type" = TType
+keywordOrIdent "newtype" = TNewtype
+keywordOrIdent "prop" = TProp
+keywordOrIdent "test" = TTest
+keywordOrIdent "bench" = TBench
+keywordOrIdent "function" = TFunction
+keywordOrIdent s = TIdent s
 
 -- ── Scanner ─────────────────────────────────────────────────────────────
--- scan : src len pos parenDepth interpDepth -> List RawTok
--- `id` (interp depth) is 0 outside string interpolation; inside a `\{ … }`
--- interpolation it is the brace nesting (1 = the interpolation's own braces),
--- so a `}` that brings it back to 0 resumes string scanning rather than closing
--- a paren group. Mirrors lib/lexer.mll's `interp_depth`.
+-- scan src len pos parenDepth interpDepth.  `id` (interp depth) is 0 outside
+-- string interpolation; inside a `\{ … }` it is the brace nesting (1 = the
+-- interpolation's own braces), so a `}` that brings it back to 0 resumes string
+-- scanning rather than closing a paren group.  Mirrors lib/lexer.mll's
+-- `interp_depth`.
+scan : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scan src len pos depth id
   | pos >= len = []
   | otherwise = scanAt src len pos depth id (at src pos)
 
+scanAt : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 scanAt src len pos depth id c
   | isSpace c = scan src len (pos + 1) depth id
   | isNL c || isCR c = handleNewline src len pos depth id
@@ -317,6 +349,7 @@ scanAt src len pos depth id c
   | isBacktick c = scanBacktick src len pos depth id
   | otherwise = scanOp src len pos depth id c
 
+skipLineComment : Array Char -> Int -> Int -> Int
 skipLineComment src len p
   | p >= len = p
   | isNL (at src p) = p
@@ -324,6 +357,7 @@ skipLineComment src len p
 
 -- nestable `{- … -}` block comments; `p` is just past the opening `{-`, `d` the
 -- open-comment nesting depth. Returns the position just past the matching `-}`.
+skipBlockComment : Array Char -> Int -> Int -> Int -> Int
 skipBlockComment src len p d
   | d <= 0 = p
   | p >= len = p
@@ -332,96 +366,113 @@ skipBlockComment src len p d
   | otherwise = skipBlockComment src len (p + 1) d
 
 -- identifiers / keywords / underscore
+identEnd : Array Char -> Int -> Int -> Int
 identEnd src len p
   | p < len && isAlnum (at src p) = identEnd src len (p + 1)
   | otherwise = p
 
+scanLower : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanLower src len pos depth id =
   let e = identEnd src len (pos + 1)
   RTok (identToken src pos e) :: scan src len e depth id
 
+identToken : Array Char -> Int -> Int -> Token
 identToken src pos e
   | at src pos == '_' && e - pos == 1 = TUnderscore
   | otherwise = keywordOrIdent (substr src pos e)
 
+scanUpper : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanUpper src len pos depth id =
   let e = identEnd src len (pos + 1)
   RTok (TUpper (substr src pos e)) :: scan src len e depth id
 
+scanBacktick : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanBacktick src len pos depth id =
   let e = btClose src len (pos + 1)
   RTok (TBacktickIdent (substr src (pos + 1) e)) :: scan src len (e + 1) depth id
 
+btClose : Array Char -> Int -> Int -> Int
 btClose src len p
   | p >= len = p
   | isBacktick (at src p) = p
   | otherwise = btClose src len (p + 1)
 
 -- numbers (int / float; underscores allowed)
+digitsEnd : Array Char -> Int -> Int -> Int
 digitsEnd src len p
   | p < len && (isDigit (at src p) || at src p == '_') = digitsEnd src len (p + 1)
   | otherwise = p
 
-isHexDigit c = isDigit c || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F')
-
 -- `0x…` / `0b…` / `0o…` radix literals (require ≥1 valid digit after the prefix).
+isRadixPrefix : Array Char -> Int -> Int -> Bool
 isRadixPrefix src len pos =
   at src pos == '0' && pos + 2 < len && radixKind (at src (pos + 1))
     && isRadixDigit (at src (pos + 1)) (at src (pos + 2))
 
+radixKind : Char -> Bool
 radixKind k = k == 'x' || k == 'b' || k == 'o'
 
-radixBase k
-  | k == 'x' = 16
-  | k == 'b' = 2
-  | otherwise = 8
+radixBase : Char -> Int
+radixBase 'x' = 16
+radixBase 'b' = 2
+radixBase _ = 8
 
-isRadixDigit k c
-  | k == 'x' = isHexDigit c
-  | k == 'b' = c == '0' || c == '1'
-  | otherwise = c >= '0' && c <= '7'
+isRadixDigit : Char -> Char -> Bool
+isRadixDigit 'x' c = isHexDigit c
+isRadixDigit 'b' c = c == '0' || c == '1'
+isRadixDigit _ c = c >= '0' && c <= '7'
 
+digitVal : Char -> Int
 digitVal c
   | isDigit c = charCode c - 48
   | c >= 'a' && c <= 'f' = charCode c - 87
   | otherwise = charCode c - 55
 
+radixEnd : Array Char -> Int -> Int -> Char -> Int
 radixEnd src len p k
   | p < len && (isRadixDigit k (at src p) || at src p == '_') = radixEnd src len (p + 1) k
   | otherwise = p
 
+parseRadix : Array Char -> Int -> Int -> Int -> Int -> Int
 parseRadix src p endp base acc
   | p >= endp = acc
   | at src p == '_' = parseRadix src (p + 1) endp base acc
   | otherwise = parseRadix src (p + 1) endp base (acc * base + digitVal (at src p))
 
+scanRadix : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanRadix src len pos depth id =
   let k = at src (pos + 1)
   let e = radixEnd src len (pos + 2) k
   RTok (TInt (parseRadix src (pos + 2) e (radixBase k) 0)) :: scan src len e depth id
 
+scanNumber : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanNumber src len pos depth id
   | isRadixPrefix src len pos = scanRadix src len pos depth id
   | otherwise = numFinish src len pos (digitsEnd src len pos) depth id
 
+isFloatAt : Array Char -> Int -> Int -> Bool
 isFloatAt src len e1 =
   e1 < len && at src e1 == '.' && e1 + 1 < len && isDigit (at src (e1 + 1))
 
+numFinish : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 numFinish src len pos e1 depth id
   | isFloatAt src len e1 = floatTok src len pos e1 depth id
   | otherwise = RTok (TInt (parseIntFrom src pos e1 0)) :: scan src len e1 depth id
 
+floatTok : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 floatTok src len pos e1 depth id =
   let e2 = digitsEnd src len (e1 + 1)
   RTok (TFloat (fromOption 0.0 (stringToFloat (substrNoUs src pos e2)))) :: scan src len e2 depth id
 
 -- strings (escapes processed into the content; `\{` opens an interpolation)
+scanStr : Array Char -> Int -> Int -> Int -> Int -> String -> List RawTok
 scanStr src len p depth id acc
   | p >= len = RTok (TString acc) :: scan src len p depth id
   | isQuote (at src p) = RTok (TString acc) :: scan src len (p + 1) depth id
   | isBackslash (at src p) && p + 1 < len = scanStrEsc src len p depth id acc (at src (p + 1))
   | otherwise = scanStr src len (p + 1) depth id (acc ++ charToStr (at src p))
 
+scanStrEsc : Array Char -> Int -> Int -> Int -> Int -> String -> Char -> List RawTok
 scanStrEsc src len p depth id acc e
   | e == '{' = RTok (TInterpOpen acc) :: scan src len (p + 2) depth 1
   | e == 'n' = scanStr src len (p + 2) depth id (acc ++ "\n")
@@ -433,6 +484,7 @@ scanStrEsc src len p depth id acc e
   | otherwise = scanStr src len (p + 2) depth id (acc ++ charToStr e)
 
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
+scanInterpCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
 scanInterpCont src len p depth acc
   | p >= len = RTok (TInterpEnd acc) :: scan src len p depth 0
   | isQuote (at src p) = RTok (TInterpEnd acc) :: scan src len (p + 1) depth 0
@@ -441,6 +493,7 @@ scanInterpCont src len p depth acc
   | isBackslash (at src p) && p + 1 < len = scanInterpEsc src len p depth acc (at src (p + 1))
   | otherwise = scanInterpCont src len (p + 1) depth (acc ++ charToStr (at src p))
 
+scanInterpEsc : Array Char -> Int -> Int -> Int -> String -> Char -> List RawTok
 scanInterpEsc src len p depth acc e
   | e == 'n' = scanInterpCont src len (p + 2) depth (acc ++ "\n")
   | e == 't' = scanInterpCont src len (p + 2) depth (acc ++ "\t")
@@ -453,8 +506,10 @@ scanInterpEsc src len p depth acc e
 -- char literals — escapes processed into the value, mirroring lib/lexer.mll's
 -- `read_char` (Phase 133): `\n \t \r \0 \\ \'` and `\u{…}`, else raw chars up to
 -- the closing quote.  `pos` is at the opening `'`; content starts at `pos + 1`.
+scanChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanChar src len pos depth id = readChar src len (pos + 1) depth id
 
+readChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 readChar src len p depth id
   | isBackslash (at src p) && p + 2 < len && at src (p + 1) == 'u' && at src (p + 2) == '{' =
       readCharUnicode src len p depth id
@@ -462,6 +517,7 @@ readChar src len p depth id
   | otherwise = rawChar src len p depth id
 
 -- `\<e>'` escape forms: three source chars (`\`, e, `'`), so advance by 3.
+escChar : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 escChar src len p depth id e
   | e == 'n' = RTok (TChar "\n") :: scan src len (p + 3) depth id
   | e == 't' = RTok (TChar "\t") :: scan src len (p + 3) depth id
@@ -472,29 +528,35 @@ escChar src len p depth id e
   | otherwise = RTok (TChar (charToStr e)) :: scan src len (p + 3) depth id
 
 -- `[^'\\]+ '` — raw chars up to the closing quote.
+rawChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 rawChar src len p depth id =
   let e = charClose src len p
   RTok (TChar (substr src p e)) :: scan src len (e + 1) depth id
 
+charClose : Array Char -> Int -> Int -> Int
 charClose src len p
   | p >= len = p
   | isApos (at src p) = p
   | otherwise = charClose src len (p + 1)
 
 -- `\u{HEX}'` : the hex codepoint, then `}` then closing `'`.
+readCharUnicode : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 readCharUnicode src len p depth id =
   let he = uHexEnd src len (p + 3)
   let cp = parseRadix src (p + 3) he 16 0
   RTok (TChar (charToStr (fromOption ' ' (charFromCode cp)))) :: scan src len (he + 2) depth id
 
+uHexEnd : Array Char -> Int -> Int -> Int
 uHexEnd src len p
   | p < len && isHexDigit (at src p) = uHexEnd src len (p + 1)
   | otherwise = p
 
 -- operators + punctuation
+emit : Array Char -> Int -> Int -> Int -> Int -> Token -> Int -> Int -> List RawTok
 emit src len pos depth id tok length ddelta =
   RTok tok :: scan src len (pos + length) (depth + ddelta) id
 
+scanOp : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 scanOp src len pos depth id c
   | is3 src len pos '.' '.' '.' = emit src len pos depth id TEllipsis 3 0
   | is3 src len pos '.' '.' '=' = emit src len pos depth id TDotDotEq 3 0
@@ -520,62 +582,69 @@ scanOp src len pos depth id c
   | is2 src len pos '.' '.' = emit src len pos depth id TDotDot 2 0
   | otherwise = singleOp src len pos depth id c
 
-singleOp src len pos depth id c
-  | c == '+' = emit src len pos depth id TPlus 1 0
-  | c == '-' = emit src len pos depth id TMinus 1 0
-  | c == '*' = emit src len pos depth id TStar 1 0
-  | c == '/' = emit src len pos depth id TSlash 1 0
-  | c == '<' = emit src len pos depth id TLt 1 0
-  | c == '>' = emit src len pos depth id TGt 1 0
-  | c == '=' = emit src len pos depth id TEqual 1 0
-  | c == ':' = emit src len pos depth id TColon 1 0
-  | c == ',' = emit src len pos depth id TComma 1 0
-  | c == '.' = emit src len pos depth id TDot 1 0
-  | c == '|' = emit src len pos depth id TPipe 1 0
-  | c == '(' = emit src len pos depth id TLParen 1 1
-  | c == ')' = emit src len pos depth id TRParen 1 (0 - 1)
-  | c == '[' = emit src len pos depth id TLBracket 1 1
-  | c == ']' = emit src len pos depth id TRBracket 1 (0 - 1)
-  | c == '{' = openBrace src len pos depth id
-  | c == '}' = closeBrace src len pos depth id
-  | c == '!' = emit src len pos depth id TBang 1 0
-  | c == '?' = emit src len pos depth id TQuestion 1 0
-  | c == '%' = emit src len pos depth id TMod 1 0
-  | c == '@' = emit src len pos depth id (atToken src pos) 1 0
-  | otherwise = scan src len (pos + 1) depth id
+singleOp : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
+singleOp src len pos depth id '+' = emit src len pos depth id TPlus 1 0
+singleOp src len pos depth id '-' = emit src len pos depth id TMinus 1 0
+singleOp src len pos depth id '*' = emit src len pos depth id TStar 1 0
+singleOp src len pos depth id '/' = emit src len pos depth id TSlash 1 0
+singleOp src len pos depth id '<' = emit src len pos depth id TLt 1 0
+singleOp src len pos depth id '>' = emit src len pos depth id TGt 1 0
+singleOp src len pos depth id '=' = emit src len pos depth id TEqual 1 0
+singleOp src len pos depth id ':' = emit src len pos depth id TColon 1 0
+singleOp src len pos depth id ',' = emit src len pos depth id TComma 1 0
+singleOp src len pos depth id '.' = emit src len pos depth id TDot 1 0
+singleOp src len pos depth id '|' = emit src len pos depth id TPipe 1 0
+singleOp src len pos depth id '(' = emit src len pos depth id TLParen 1 1
+singleOp src len pos depth id ')' = emit src len pos depth id TRParen 1 (0 - 1)
+singleOp src len pos depth id '[' = emit src len pos depth id TLBracket 1 1
+singleOp src len pos depth id ']' = emit src len pos depth id TRBracket 1 (0 - 1)
+singleOp src len pos depth id '{' = openBrace src len pos depth id
+singleOp src len pos depth id '}' = closeBrace src len pos depth id
+singleOp src len pos depth id '!' = emit src len pos depth id TBang 1 0
+singleOp src len pos depth id '?' = emit src len pos depth id TQuestion 1 0
+singleOp src len pos depth id '%' = emit src len pos depth id TMod 1 0
+singleOp src len pos depth id '@' = emit src len pos depth id (atToken src pos) 1 0
+singleOp src len pos depth id _ = scan src len (pos + 1) depth id
 
 -- `@` is the as-pattern operator (AS_AT) when it immediately follows an
 -- identifier (no intervening space), else the impl-hint prefix (AT).  Mirrors
 -- lib/lexer.mll's `last_ident_end` adjacency test: only a lowercase/underscore
 -- identifier counts (an UPPER ctor or a number does not).
+atToken : Array Char -> Int -> Token
 atToken src pos
   | pos <= 0 = TAt
   | isAlnum (at src (pos - 1)) && identStartLower src (identRunStart src (pos - 1)) = TAsAt
   | otherwise = TAt
 
+identRunStart : Array Char -> Int -> Int
 identRunStart src p
   | p <= 0 = 0
   | isAlnum (at src (p - 1)) = identRunStart src (p - 1)
   | otherwise = p
 
+identStartLower : Array Char -> Int -> Bool
 identStartLower src p = isLower (at src p) || at src p == '_'
 
 -- `{` and `}` route through interp depth when inside a `\{ … }` interpolation.
+openBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 openBrace src len pos depth id
   | id > 0 = RTok TLBrace :: scan src len (pos + 1) depth (id + 1)
   | otherwise = RTok TLBrace :: scan src len (pos + 1) (depth + 1) id
 
+closeBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 closeBrace src len pos depth id
   | id > 1 = RTok TRBrace :: scan src len (pos + 1) depth (id - 1)
   | id == 1 = scanInterpCont src len (pos + 1) depth ""
   | otherwise = RTok TRBrace :: scan src len (pos + 1) (depth - 1) id
 
 -- newline + indentation handling
+handleNewline : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 handleNewline src len pos depth id =
-  match consumeNl src len pos 0
-    (indent, np) => afterNl src len np depth id indent
+  let (indent, np) = consumeNl src len pos 0
+  afterNl src len np depth id indent
 
 -- consume one or more (newline white*) runs; returns (indentOfLastLine, newPos)
+consumeNl : Array Char -> Int -> Int -> Int -> (Int, Int)
 consumeNl src len p indent
   | p >= len = (indent, p)
   | isCR (at src p) && p + 1 < len && isNL (at src (p + 1)) = consumeNl src len (p + 2) 0
@@ -585,17 +654,20 @@ consumeNl src len p indent
   | isTab (at src p) = consumeNl src len (p + 1) ((indent / 8 + 1) * 8)
   | otherwise = (indent, p)
 
+afterNl : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 afterNl src len np depth id indent
   | depth > 0 = scan src len np depth id
   | isContinuation src len np = emit src len np depth id (continuationTok src len np) 2 0
   | otherwise = RNewline indent :: scan src len np depth id
 
 -- leading-operator line continuation (|> >> << && || ++ <>)
+isContinuation : Array Char -> Int -> Int -> Bool
 isContinuation src len np =
   is2 src len np '|' '>' || is2 src len np '>' '>' || is2 src len np '<' '<'
     || is2 src len np '&' '&' || is2 src len np '|' '|' || is2 src len np '+' '+'
     || is2 src len np '<' '>'
 
+continuationTok : Array Char -> Int -> Int -> Token
 continuationTok src len np
   | is2 src len np '|' '>' = TPipeRight
   | is2 src len np '>' '>' = TRCompose
@@ -607,46 +679,41 @@ continuationTok src len np
 
 -- ── Layout pass: RawTok stream -> Token stream ──────────────────────────
 -- Mirrors lib/lexer.mll `handle_indent` + the EOF unwind.
-layout raws stack =
-  match raws
-    [] => closeAll stack
-    RTok t :: rest => t :: layout rest stack
-    RNewline col :: rest => applyIndent col stack rest
+layout : List RawTok -> List Int -> List Token
+layout [] stack = closeAll stack
+layout (RTok t :: rest) stack = t :: layout rest stack
+layout (RNewline col :: rest) stack = applyIndent col stack rest
 
-applyIndent col stack rest =
-  match stack
-    top :: _ => applyIndentTop col top stack rest
-    [] => TNewline :: layout rest stack
+applyIndent : Int -> List Int -> List RawTok -> List Token
+applyIndent col [] rest = TNewline :: layout rest []
+applyIndent col (top :: tl) rest = applyIndentTop col top (top :: tl) rest
 
+applyIndentTop : Int -> Int -> List Int -> List RawTok -> List Token
 applyIndentTop col top stack rest
   | col > top = TIndent :: layout rest (col :: stack)
   | col == top = TNewline :: layout rest stack
   | otherwise = TNewline :: popDedents col stack rest
 
-popDedents col stack rest =
-  match stack
-    top :: tl => popDedentsTop col top tl stack rest
-    [] => layout rest stack
-
-popDedentsTop col top tl stack rest
+popDedents : Int -> List Int -> List RawTok -> List Token
+popDedents col [] rest = layout rest []
+popDedents col (top :: tl) rest
   | top > col = TDedent :: TNewline :: popDedents col tl rest
-  | otherwise = layout rest stack
+  | otherwise = layout rest (top :: tl)
 
 -- end of input: NEWLINE, then DEDENT/NEWLINE pairs back to base, then EOF
+closeAll : List Int -> List Token
 closeAll stack = TNewline :: closeDedents stack
 
-closeDedents stack =
-  match stack
-    [] => [TEof]
-    [_] => [TEof]
-    _ :: tl => TDedent :: TNewline :: closeDedents tl
+closeDedents : List Int -> List Token
+closeDedents [] = [TEof]
+closeDedents [_] = [TEof]
+closeDedents (_ :: tl) = TDedent :: TNewline :: closeDedents tl
 
 -- Phase 122 else-continuation filter: drop a NEWLINE immediately before ELSE.
-elseFilter toks =
-  match toks
-    TNewline :: TElse :: rest => TElse :: elseFilter rest
-    t :: rest => t :: elseFilter rest
-    [] => []
+elseFilter : List Token -> List Token
+elseFilter (TNewline :: TElse :: rest) = TElse :: elseFilter rest
+elseFilter (t :: rest) = t :: elseFilter rest
+elseFilter [] = []
 
 export
 tokenize : String -> List Token
