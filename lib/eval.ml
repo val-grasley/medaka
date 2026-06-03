@@ -50,6 +50,12 @@ type value =
          VMulti by that key via select_impl_by_key.  An empty key means
          "unresolved" — narrowing finds nothing and dispatch falls back to
          arg-tag, as it did before 69.x. *)
+  | VDictHead of string
+      (* Phase 83/84 (#4): a head-key dictionary — carries only the discriminating
+         *head tycon* (e.g. "Result"), for a head-concrete but args-free dispatch
+         type like `Result e` where nothing pins `e`.  Built from a RHeadKey
+         dict-application route; read via RDict, it narrows the method VMulti by
+         head tag (select_impl_by_head) rather than by full impl key. *)
 
 and env = (string * value ref) list list
 
@@ -143,6 +149,7 @@ let rec pp_value = function
   | VNamedImpl (n, _) -> Printf.sprintf "<impl:%s>" n
   | VTypedImpl (t, _, _, _, inner) -> Printf.sprintf "<impl@%s:%s>" t (pp_value inner)
   | VDict key -> Printf.sprintf "<dict:%s>" key
+  | VDictHead h -> Printf.sprintf "<dict-head:%s>" h
 
 and pp_value_atom v = match v with
   | VCon (_, _ :: _) | VTuple _ -> "(" ^ pp_value v ^ ")"
@@ -485,14 +492,15 @@ let select_impl_by_head head = function
      | _ -> v)
   | v -> v
 
-(* Phase 69.x: build the runtime dictionary (a VDict carrying an impl key) for a
-   dict route.  RKey is a literal key; RDict forwards an enclosing dict param;
-   RHeadKey never appears in dict-application routes (resolve_dict_apps /
-   resolve_method_dicts emit only RKey/RDict) — empty key falls back to arg-tag. *)
+(* Phase 69.x: build the runtime dictionary for a dict route.  RKey is a literal
+   impl key (VDict); RDict forwards an enclosing dict param (key or head);
+   RHeadKey (Phase 83/84 #4) carries a head-concrete args-free dispatch type as a
+   VDictHead — eval narrows by head tag when the body reads it. *)
 let dict_of_route env = function
   | Ast.RKey key -> VDict key
-  | Ast.RDict d  -> (match lookup env d with VDict _ as vd -> vd | _ -> VDict "")
-  | Ast.RHeadKey _ -> VDict ""
+  | Ast.RDict d  ->
+    (match lookup env d with (VDict _ | VDictHead _) as vd -> vd | _ -> VDict "")
+  | Ast.RHeadKey h -> VDictHead h
   | Ast.RLocal -> VDict ""  (* Phase 112: RLocal never appears in a dict route *)
 
 (* Convert Impl_no_match → Eval_error at the boundary of user-visible code.
@@ -680,7 +688,10 @@ and eval env expr =
        let v = match res_route with
          | RKey key -> select_impl_by_key key v
          | RHeadKey head -> select_impl_by_head head v
-         | RDict d -> (match lookup env d with VDict key -> select_impl_by_key key v | _ -> v)
+         | RDict d -> (match lookup env d with
+                       | VDict key   -> select_impl_by_key key v
+                       | VDictHead h -> select_impl_by_head h v
+                       | _ -> v)
          | RLocal -> v  (* unreachable: handled by the RLocal arm above *)
        in
        (* Phase 96: select_impl_by_key keeps the chosen impl's dispatch wrapper

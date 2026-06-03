@@ -3477,6 +3477,38 @@ let find_enclosing_dict env iface (ids_present : int list) : Ast.ident option =
 (* After HM inference, check every recorded method call site against the impl
    registry.  Skips usages where types are still polymorphic or where the method
    scheme doesn't mention all interface params (uncommon). *)
+
+(* Phase 83/84 (#4): route a constraint whose single dispatch arg is
+   *head-concrete* but args-free (`Result e` — head `Result`, `e` unbound) by its
+   head tycon.  Only for a single-param interface, where the head alone picks the
+   impl; returns the head tag iff at least one (non-seeded, if any) impl head
+   matches — eval's select_impl_by_head enforces uniqueness or falls back to
+   arg-tag.  Shared by the method-occurrence path (try_head_key) and the
+   dict-application path (resolve_one_route). *)
+let head_key_route env iface_name args : string option =
+  let n = match Hashtbl.find_opt env.interfaces iface_name with
+    | Some info -> List.length info.iface_param_ids
+    | None -> 0 in
+  if n <> 1 then None else
+  match args with
+  | [arg] ->
+    (match head_tycon_mono arg with
+     | None -> None  (* head is a bare TVar — not head-concrete *)
+     | Some h ->
+       let matching = List.filter (fun e ->
+         e.impl_iface = iface_name &&
+         List.length e.impl_type_mono = 1 &&
+         List.for_all2
+           (fun p c -> mono_matches ~pattern:p ~concrete:c)
+           e.impl_type_mono [arg]
+       ) !(env.impls) in
+       let matching =
+         if List.exists (fun e -> not e.impl_seeded) matching
+         then List.filter (fun e -> not e.impl_seeded) matching
+         else matching in
+       if matching <> [] then Some h else None)
+  | _ -> None
+
 let check_method_usages env =
   (* An interface recorded in a usage but absent from env.interfaces would be an
      internal inconsistency; degrade to 0 (which skips this usage's check below)
@@ -3563,30 +3595,7 @@ let check_method_usages env =
              RHeadKey and let eval narrow by head tag.
            - Phase 69.x-a/b: the discriminating var is the enclosing constrained
              function's type variable — route to its runtime dictionary. *)
-        let try_head_key () =
-          if n <> 1 then None else
-          match concrete_args with
-          | [arg] ->
-            (match head_tycon_mono arg with
-             | None -> None  (* head is a bare TVar — not head-concrete *)
-             | Some h ->
-               (* mono_matches tolerates the arg's free TVars only where the impl
-                  head is a wildcard, so a nonempty matching set means the head
-                  matched.  Phase-45.9 user-over-seeded mirrors the ground path. *)
-               let matching = List.filter (fun e ->
-                 e.impl_iface = iface_name &&
-                 List.length e.impl_type_mono = 1 &&
-                 List.for_all2
-                   (fun p c -> mono_matches ~pattern:p ~concrete:c)
-                   e.impl_type_mono [arg]
-               ) !(env.impls) in
-               let matching =
-                 if List.exists (fun e -> not e.impl_seeded) matching
-                 then List.filter (fun e -> not e.impl_seeded) matching
-                 else matching in
-               if matching <> [] then Some h else None)
-          | _ -> None
-        in
+        let try_head_key () = head_key_route env iface_name concrete_args in
         match occ_ref with
         | Some _ ->
           (match try_head_key () with
@@ -3705,7 +3714,14 @@ let resolve_one_route env (iface, args) =
     let ids = List.concat_map mono_unbound_ids args in
     (match find_enclosing_dict env iface ids with
      | Some dvar -> Ast.RDict dvar
-     | None -> Ast.RKey "")
+     | None ->
+       (* Phase 83/84 (#4): no enclosing dict, but a head-concrete args-free
+          dispatch type (`Result e`) can still route by its head tycon — eval
+          carries it as a VDictHead and narrows by head tag.  Otherwise the
+          sentinel empty key (arg-tag fallback, never worse than pre-69.x). *)
+       (match head_key_route env iface args with
+        | Some h -> Ast.RHeadKey h
+        | None -> Ast.RKey ""))
 
 (* Phase 115 (#2): turn each deferred recursive-promoted usage into a normal
    dict_app_usages entry, now that the wrapper's fun_constraints entry has been
