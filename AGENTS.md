@@ -59,11 +59,12 @@ Support files:
 | `bin/main.ml` | CLI: `check` / `run` / `test` (doctests + prop tests) / `repl` / `lsp` / `fmt` / `new` |
 
 `stdlib/`: `runtime.mdk` (extern primitive catalog, embedded), `core.mdk`
-(implicit prelude — `Eq`/`Ord`/`Show`/`Num`/…), `list.mdk`/`string.mdk`/`array.mdk`/`map.mdk`/`set.mdk`/`io.mdk`/`hash_map.mdk`/`hash_set.mdk`/`mut_array.mdk`
+(implicit prelude — `Eq`/`Ord`/`Show`/`Num`/…), `list.mdk`/`string.mdk`/`array.mdk`/`map.mdk`/`set.mdk`/`io.mdk`/`hash_map.mdk`/`hash_set.mdk`/`mut_array.mdk`/`json.mdk`
 (written in Medaka; `map.mdk`/`set.mdk` are weight-balanced ordered `Map`/`Set`;
 `hash_map.mdk`/`hash_set.mdk` are mutable hash tables; `mut_array.mdk` is a
-growable mutable vector (amortized-O(1) `push` over a doubling `Array`); `io.mdk`
-is the ergonomic layer over the `runtime.mdk` IO externs).
+growable mutable vector (amortized-O(1) `push` over a doubling `Array`); `json.mdk`
+is a recursive-descent JSON parser/serializer with an `Array`-backed `Json` ADT;
+`io.mdk` is the ergonomic layer over the `runtime.mdk` IO externs).
 
 ## Build & test
 
