@@ -266,34 +266,34 @@ r = f 5
    5. Ref semantics
    ===================================================================== *)
 
+(* Mutation lives in a bare sequential block — `let mut` is not allowed inside
+   `do` (reserved for monadic composition, Phase 55.5/99). *)
 let t_ref_basic =
   assert_val
-    {|r = do
-  _ <- Some ()
+    {|r =
   let mut x = Ref 0
   set_ref x 42
-  pure x.value
+  x.value
 |}
-    "r" (VCon ("Some", [VInt 42]))
+    "r" (VInt 42)
 
 let t_ref_increment_loop =
   assert_val
-    {|r = do
-  _ <- Some ()
+    {|r =
   let mut x = Ref 0
   set_ref x (x.value + 1)
   set_ref x (x.value + 1)
   set_ref x (x.value + 1)
-  pure x.value
+  x.value
 |}
-    "r" (VCon ("Some", [VInt 3]))
+    "r" (VInt 3)
 
 (* =====================================================================
    6. Do-block monads
    ===================================================================== *)
 
 let t_do_option_some_some =
-  assert_val
+  assert_val_typed
     {|r = do
   x <- Some 5
   y <- Some 7
@@ -302,7 +302,7 @@ let t_do_option_some_some =
     "r" (VCon ("Some", [VInt 12]))
 
 let t_do_option_first_none =
-  assert_val
+  assert_val_typed
     {|r = do
   x <- None
   y <- Some 7
@@ -311,7 +311,7 @@ let t_do_option_first_none =
     "r" (VCon ("None", []))
 
 let t_do_option_middle_none =
-  assert_val
+  assert_val_typed
     {|r = do
   x <- Some 1
   _ <- None
@@ -320,7 +320,7 @@ let t_do_option_middle_none =
     "r" (VCon ("None", []))
 
 let t_do_result_ok_chain =
-  assert_val
+  assert_val_typed
     {|r = do
   x <- Ok 10
   y <- Ok 5
@@ -330,7 +330,7 @@ let t_do_result_ok_chain =
     "r" (VCon ("Ok", [VInt 4]))
 
 let t_do_result_err_first =
-  assert_val
+  assert_val_typed
     {|r = do
   x <- Err "fail"
   pure x
@@ -338,7 +338,7 @@ let t_do_result_err_first =
     "r" (VCon ("Err", [VString "fail"]))
 
 let t_do_result_err_short_circuit =
-  assert_val
+  assert_val_typed
     {|r = do
   x <- Ok 1
   _ <- Err "stop"
@@ -673,7 +673,7 @@ let t_unit_in_tuple =
    ===================================================================== *)
 
 let t_question_ok_chain =
-  assert_val
+  assert_val_typed
     {|r =
   let x = Ok 10 ?
   let y = Ok 5 ?
@@ -795,23 +795,31 @@ r = match Only
    26. Collection literals — Map / Set / HashMap
    ===================================================================== *)
 
-(* Map literal currently evaluates to a VCon wrapping a VList of pairs:
-   `Map.fromList [(k, v), ...]` is the runtime shape (per Phase 16).
-   The actual collection runtime types (Map, Set, HashMap) are not yet
-   defined as stdlib types — pin via pp_value. *)
-let t_map_literal_pp () =
-  let v = run {|r = Map { 1 => "one", 2 => "two" }
-|} "r" in
-  let s = pp_value v in
-  if s <> "Map.fromList [(1, one), (2, two)]" then
-    failwith (Printf.sprintf "Got pp_value: %s" s)
+(* Map / Set are real ordered-container modules now (stdlib/map.mdk etc.), so a
+   literal lowers to a `fromEntries [...]` call dispatched on the annotated
+   result type — it can no longer be *evaluated* in this single-file harness
+   (which can't `import map`/`set`).  Its runtime behavior is covered by the
+   modules' own doctests; here we pin the *desugaring* (the literal lowers to a
+   `fromEntries` application).  Parse/round-trip of the syntax itself live in
+   test_parser.ml / test_roundtrip.ml. *)
+let contains s sub =
+  let ls = String.length s and lb = String.length sub in
+  let rec loop i = i + lb <= ls && (String.sub s i lb = sub || loop (i + 1)) in
+  lb = 0 || loop 0
 
-let t_set_literal_pp () =
-  let v = run {|r = Set { 1, 2, 3 }
-|} "r" in
-  let s = pp_value v in
-  if s <> "Set.fromList [1, 2, 3]" then
-    failwith (Printf.sprintf "Got pp_value: %s" s)
+let t_map_literal_lowers () =
+  let prog = Medaka_lib.Desugar.desugar_program (parse {|r =Map { 1 => "one", 2 => "two" }
+|}) in
+  let s = Medaka_lib.Printer.program_to_string prog in
+  if not (contains s "fromEntries") then
+    failwith (Printf.sprintf "Map literal did not lower to fromEntries:\n%s" s)
+
+let t_set_literal_lowers () =
+  let prog = Medaka_lib.Desugar.desugar_program (parse {|r =Set { 1, 2, 3 }
+|}) in
+  let s = Medaka_lib.Printer.program_to_string prog in
+  if not (contains s "fromEntries") then
+    failwith (Printf.sprintf "Set literal did not lower to fromEntries:\n%s" s)
 
 (* =====================================================================
    27. Unicode in strings and chars
@@ -1490,8 +1498,8 @@ let () =
         [ test_case "data Singleton"        `Quick t_single_ctor_data
         ] );
       ( "collection literals",
-        [ test_case "Map literal pp"        `Quick t_map_literal_pp
-        ; test_case "Set literal pp"        `Quick t_set_literal_pp
+        [ test_case "Map literal lowers"    `Quick t_map_literal_lowers
+        ; test_case "Set literal lowers"    `Quick t_set_literal_lowers
         ] );
       ( "unicode",
         [ test_case "héllo (UTF-8)"          `Quick t_unicode_string

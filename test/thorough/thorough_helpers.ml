@@ -125,10 +125,46 @@ let run src name =
          (String.concat ", " (List.map fst env))
          src)
 
+(* Typed eval (Phase 69.x-c): return-position methods (`pure`, `when`,
+   `unless`, derived/dispatched Show, …) need the impl the typechecker chose,
+   stamped on their EMethodRef.  The untyped `run` above falls back to arg-tag
+   "first impl wins" and so mis-dispatches `pure` (wraps in List, not the
+   caller's monad).  This runner mirrors the real run-mode pipeline
+   (mark → typecheck → dict-pass the marked prelude with user code → eval
+   without re-prepending the raw prelude), exactly as test_eval.ml's run_typed. *)
+let run_typed src name =
+  let prog = Desugar.desugar_program (parse src) in
+  (match Resolve.resolve_program prog with
+   | [] -> ()
+   | (err, _) :: _ -> failwith ("resolve error: " ^ Resolve.pp_error err));
+  let (_marked, combined, _schemes, _warnings) = Elaborate.elaborate prog in
+  let env = eval_program ~prelude:false combined in
+  match List.assoc_opt name env with
+  | Some v -> v
+  | None ->
+    failwith
+      (Printf.sprintf "Name '%s' not in env.\nEnv: %s\nSource:\n%s" name
+         (String.concat ", " (List.map fst env))
+         src)
+
 (* assert_val: check that name evaluates to expected *)
 let assert_val src name expected () =
   let actual =
     try run src name
+    with Eval_error (msg, _) ->
+      failwith
+        (Printf.sprintf "Expected %s = %s, got runtime error:\n  %s\n\nSource:\n%s"
+           name (pp_value expected) msg src)
+  in
+  if actual <> expected then
+    failwith
+      (Printf.sprintf "Expected %s = %s\nGot: %s\n\nSource:\n%s" name
+         (pp_value expected) (pp_value actual) src)
+
+(* Like assert_val but through the typed pipeline (return-position dispatch). *)
+let assert_val_typed src name expected () =
+  let actual =
+    try run_typed src name
     with Eval_error (msg, _) ->
       failwith
         (Printf.sprintf "Expected %s = %s, got runtime error:\n  %s\n\nSource:\n%s"
@@ -184,7 +220,10 @@ let assert_stdout src expected () =
          expected actual src)
 
 (* Round-trip helper: parse -> typecheck -> eval -> assert.
-   Useful when you want a single source through the entire pipeline. *)
+   Useful when you want a single source through the entire pipeline.  Evaluation
+   uses the untyped `run` (arg-tag dispatch), which is correct for arg-position
+   methods and named (`@Impl`) dispatch.  Tests that need *return-position*
+   dispatch (`pure`, `when`, …) use assert_val_typed instead. *)
 let assert_typed_val src name ty expected () =
   assert_type src name ty ();
   assert_val src name expected ()

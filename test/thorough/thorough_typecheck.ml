@@ -408,7 +408,7 @@ f =
 (* Transitive Mut: annotated-pure caller of a DoAssign function → EffectEscape. *)
 let e_mut_escape_pure_caller =
   assert_err
-    {|mutHelper x = do
+    {|mutHelper x =
   let mut y = x
   y = y + 1
   pure y
@@ -423,7 +423,7 @@ let e_mut_field_assign_escape =
     {|record Box
   val : Int
 
-mutBox b newVal = do
+mutBox b newVal =
   let mut b2 = b
   b2.val = newVal
   pure b2
@@ -441,7 +441,7 @@ let e_mut_multi_field_escape =
 record Outer
   b : Inner
 
-mutNested o newVal = do
+mutNested o newVal =
   let mut o2 = o
   o2.b.c = newVal
   pure o2
@@ -945,13 +945,13 @@ hasNeg xs = match xs
    20. String / interpolation typing
    ===================================================================== *)
 
-(* Interpolation holes must already be strings — no auto-Show happens.
-   `\{1 + 1}` errors with "Type mismatch: Int vs String".  This is a
-   documented behavior, not a bug.  If/when implicit Show dispatch lands,
-   this test will need to flip to assert_type. *)
-let e_interp_int_hole =
-  assert_err {|x = "value: \{1 + 1}"
-|}
+(* Interpolation holes auto-dispatch through `Display` (a `\{e}` lowers to
+   `display e`), so an Int hole type-checks — `display` has an Int impl and the
+   whole literal is a String.  (Earlier this errored "Int vs String"; implicit
+   Display dispatch has since landed, so the test asserts the hole is accepted.) *)
+let t_interp_int_hole =
+  assert_type {|x = "value: \{1 + 1}"
+|} "x" "String"
 
 let t_interp_string_hole =
   assert_type {|n = "Alice"
@@ -1123,7 +1123,7 @@ let () =
         ; test_case "mutual: partition"    `Quick t_rec_mutual_list
         ] );
       ( "interpolation typing",
-        [ test_case "err: int hole no show" `Quick e_interp_int_hole
+        [ test_case "int hole via Display"  `Quick t_interp_int_hole
         ; test_case "string hole"           `Quick t_interp_string_hole
         ; test_case "err: no Show"          `Quick e_interp_no_show
         ] );

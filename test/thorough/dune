@@ -1,7 +1,8 @@
 ; The "thorough" test suite — exhaustive edge-case coverage for the type
-; checker, evaluator, and feature interactions.  Excluded from the default
-; `dune test` target because these are `(executables ...)` rather than
-; `(tests ...)`.  Run explicitly via:
+; checker, evaluator, and feature interactions.  Kept OUT of the default
+; `dune test` / `runtest` target (which can hang) by using a dedicated
+; `thorough` alias rather than `(tests ...)`.  Run — and it really RUNS them,
+; not just builds them — via:
 ;
 ;   PATH=/Users/val/.opam/5.4.1/bin:$PATH dune build @thorough
 ;
@@ -9,11 +10,17 @@
 ;
 ;   ./_build/default/test/thorough/thorough_typecheck.exe --compact
 ;
+; IMPORTANT: the `@thorough` alias is wired to *execute* each suite (the
+; `(rule (alias thorough) (action (run ...)))` stanzas below), so a failing
+; test fails the build.  An earlier version only listed the `.exe`s as alias
+; deps, which merely BUILT them — the suites passed-by-building and drifted
+; out of sync with the language for a long time.  Don't regress that: a new
+; suite must get BOTH a `(names ...)` entry AND its own `(rule (alias
+; thorough) ...)` runner below.
+;
 ; Each `thorough_*.ml` file is its own executable so suites can run
 ; independently.  All share the `Thorough_helpers` library for assertion
 ; helpers (assert_type, assert_err, assert_val, …).
-;
-; Add new files to BOTH (names ...) and the `thorough` alias deps.
 
 (library
  (name thorough_helpers)
@@ -30,11 +37,25 @@
  (modules thorough_typecheck thorough_eval thorough_interactions thorough_stdlib thorough_recent)
  (libraries thorough_helpers medaka_lib alcotest unix))
 
-(alias
- (name thorough)
- (deps
-   thorough_typecheck.exe
-   thorough_eval.exe
-   thorough_interactions.exe
-   thorough_stdlib.exe
-   thorough_recent.exe))
+; Run each suite as the `thorough` alias's action — `(run ...)` depends on
+; building the .exe, so `dune build @thorough` builds *and* executes them and a
+; failing assertion (non-zero exit) fails the build.
+(rule
+ (alias thorough)
+ (action (run ./thorough_typecheck.exe)))
+
+(rule
+ (alias thorough)
+ (action (run ./thorough_eval.exe)))
+
+(rule
+ (alias thorough)
+ (action (run ./thorough_interactions.exe)))
+
+(rule
+ (alias thorough)
+ (action (run ./thorough_stdlib.exe)))
+
+(rule
+ (alias thorough)
+ (action (run ./thorough_recent.exe)))

@@ -86,7 +86,14 @@ Suites: `test_parser` `test_roundtrip` `test_resolve` `test_typecheck`
 `test_project_config` `test_new_cmd` `test_doctest` `test_snapshot`
 `test_coverage` `test_lsp`.
 
-Exhaustive edge-case suites: `dune build @thorough`.
+Exhaustive edge-case suites: `dune build @thorough` — this **runs** them (the
+`thorough` alias's rules execute each `thorough_*.exe`, so a failing assertion
+fails the build and `dune` exits non-zero). It is *not* in `dune test`/`runtest`
+(deliberately, to avoid the hang above). A new suite needs both a `(names …)`
+entry and its own `(rule (alias thorough) (action (run …)))` runner in
+`test/thorough/dune`. Caching is by content: edit a suite or `lib/` and the run
+re-fires; otherwise it's cached. (Historically this alias only *built* the exes
+without running them, so the suites silently drifted — don't regress that.)
 
 Dev probes (build to `_build/default/dev/`):
 

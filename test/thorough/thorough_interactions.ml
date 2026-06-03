@@ -32,18 +32,24 @@ open Thorough_helpers
    where show x = "I"`) is in scope. *)
 
 (* Custom Show Int + derived Show Point: each dispatches correctly. *)
+(* A custom Show impl dispatches by type and flows into a record's derived
+   Show.  Uses a user newtype (`Tag`) rather than `impl Show Int`: the prelude
+   now provides a builtin `Show Int` (Phase 92) that a user `impl Show Int`
+   can't shadow at eval time, so overriding a builtin no longer demonstrates the
+   by-type dispatch this test is about. *)
 let t_record_show_with_int_show =
-  assert_val
-    {|impl Show Int where
-  show x = "I"
+  assert_val_typed
+    {|newtype Tag = Tag Int
+impl Show Tag where
+  show t = "I"
 record Point
-  x : Int
-  y : Int
+  x : Tag
+  y : Tag
 deriving (Show)
-p = Point { x = 3, y = 4 }
-intShow = show 5
+p = Point { x = Tag 3, y = Tag 4 }
+tagShow = show (Tag 5)
 recShow = show p
-r = (intShow, recShow)
+r = (tagShow, recShow)
 |}
     "r" (VTuple [VString "I"; VString "Point { x = I, y = I }"])
 
@@ -112,7 +118,7 @@ r = isHeavy (Box { weight = 15 })
 
 let t_newtype_deriving_num =
   assert_typed_val
-    {|newtype Dollars = Dollars Int deriving (Num)
+    {|newtype Dollars = Dollars Int deriving (Eq, Num)
 total : Dollars
 total = add (Dollars 5) (Dollars 10)
 unwrap (Dollars n) = n
@@ -136,12 +142,12 @@ r = describe (Mass 42)
    ===================================================================== *)
 
 (* Three-way ADT with named-field + positional constructors.  The
-   multi-line block form puts each `| Ctor` on its own line with no
-   leading `=`. *)
+   multi-line block form puts the first constructor on a `= Ctor` line and
+   each subsequent one on its own `| Ctor` line. *)
 let t_adt_mixed_ctors =
   assert_typed_val
     {|data Shape
-  | Circle Int
+  = Circle Int
   | Rect { width : Int, height : Int }
   | Triangle Int Int Int
 area s = match s
@@ -155,7 +161,7 @@ r = area (Rect { width = 4, height = 5 })
 let t_adt_mixed_circle =
   assert_val
     {|data Shape
-  | Circle Int
+  = Circle Int
   | Rect { width : Int, height : Int }
   | Triangle Int Int Int
 area s = match s
@@ -191,7 +197,7 @@ r = area (Rect { width = 3, height = 7, color = "red" })
    ===================================================================== *)
 
 let t_do_build_record =
-  assert_val
+  assert_val_typed
     {|record P
   a : Int
   b : Int
@@ -203,7 +209,7 @@ r = do
     "r" (VCon ("Some", [VRecord ("P", [("a", VInt 5); ("b", VInt 7)])]))
 
 let t_do_record_field_in_pat =
-  assert_val
+  assert_val_typed
     {|record P
   v : Int
 r = do
@@ -297,35 +303,34 @@ r = (a, b, c)
    9. Typecheck/eval skew — found via this very test suite
    ===================================================================== *)
 
-(* The string-interpolation `\{Int}` case: typecheck rejects, eval
-   accepts.  See thorough_typecheck.ml::e_interp_int_hole and
-   thorough_eval.ml::t_string_interp_int. *)
+(* The string-interpolation `\{Int}` case used to be a tc/eval skew (typecheck
+   rejected, eval accepted).  Implicit Display dispatch has since landed (`\{e}`
+   lowers to `display e`), so typecheck and eval now agree: the Int hole is
+   accepted and the literal is a String.  See thorough_typecheck.ml::
+   t_interp_int_hole. *)
 let tc_eval_skew_interp_int_hole_tc =
-  (* The TYPECHECKER rejects this program. *)
-  assert_err {|x = "v=\{1 + 1}"
-|}
-
-(* If the typechecker is fixed to allow this via implicit Show, this
-   test will fail and we'll know to update the documented skew. *)
+  assert_type {|x = "v=\{1 + 1}"
+|} "x" "String"
 
 (* =====================================================================
    10. Interpolation ⊗ records / show
    ===================================================================== *)
 
 (* show on a record (deriving Show) used inside an interpolation hole.
-   The hole expects String, and `show p` returns String — should work. *)
-(* With Phase 45.6 fixed, `show p` on a record dispatches correctly
-   when other Show impls are in scope.  This test combines a custom
-   Show Int impl, deriving (Show) on the record, and interpolation. *)
+   The hole expects String, and `show p` returns String — should work.
+   Combines a custom Show impl (on a user newtype `Tag`, since the prelude's
+   builtin `Show Int` can't be shadowed at eval time), deriving (Show) on the
+   record, and interpolation. *)
 let t_interp_with_show_record =
   assert_typed_val
-    {|impl Show Int where
-  show x = "I"
+    {|newtype Tag = Tag Int
+impl Show Tag where
+  show t = "I"
 record P
-  x : Int
-  y : Int
+  x : Tag
+  y : Tag
 deriving (Show)
-p = P { x = 1, y = 2 }
+p = P { x = Tag 1, y = Tag 2 }
 r = "point: \{show p}"
 |}
     "r" "String"
@@ -352,11 +357,12 @@ main = do
 |}
     "pos\n"
 
-(* let mut + DoAssign + IO *)
+(* let mut + assign + IO in a bare sequential block (`let mut` is not allowed
+   inside `do`, which is reserved for monadic composition — Phase 55.5/99). *)
 let t_do_let_mut_assign =
   assert_stdout
     {|main : <IO> Unit
-main = do
+main =
   let mut x = 0
   x = x + 10
   x = x + 5
@@ -564,7 +570,7 @@ r = fold (a => b => a + b) 0 (Wrap [10, 20, 30])
    ===================================================================== *)
 
 let t_nested_do =
-  assert_val
+  assert_val_typed
     {|r = do
   x <- Some 5
   inner <- do
@@ -651,7 +657,7 @@ r = both [1, 2, 3]
 let t_nested_adt_expr =
   assert_typed_val
     {|data Expr
-  | Lit Int
+  = Lit Int
   | Add Expr Expr
   | Mul Expr Expr
 evalExpr e = match e
@@ -742,8 +748,8 @@ let () =
       ( "@Name across three impls",
         [ test_case "First/Last/Sum"        `Quick t_named_dispatch_among_three
         ] );
-      ( "tc/eval skew",
-        [ test_case "interp int hole: tc rejects" `Quick tc_eval_skew_interp_int_hole_tc
+      ( "tc/eval agree",
+        [ test_case "interp int hole accepted" `Quick tc_eval_skew_interp_int_hole_tc
         ] );
       ( "interp + show",
         [ test_case "record via show"       `Quick t_interp_with_show_record

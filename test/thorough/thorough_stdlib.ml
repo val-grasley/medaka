@@ -287,13 +287,15 @@ let t_ap_option_right_none =
     "r = ap (Some (x => x + 1)) None\n"
     "r" (VCon ("None", []))
 
-(* pure outside of a do-block: monad context unknown, returns value. *)
+(* pure with no monad context: the Applicative constraint is unconstrained, so
+   the typechecker defaults it to List — `pure 5` is `[5]`. *)
 let t_pure_no_context =
-  assert_val "r = pure 5\n" "r" (VInt 5)
+  assert_val_typed "r = pure 5\n" "r" (VList [VInt 5])
 
-(* pure inside do-block dispatches to the right monad. *)
+(* pure inside do-block dispatches to the right monad (return-position dispatch,
+   so it needs the typed pipeline). *)
 let t_pure_in_option_do =
-  assert_val
+  assert_val_typed
     {|r = do
   x <- Some 1
   pure (x + 10)
@@ -377,7 +379,7 @@ r = empty
    ===================================================================== *)
 
 let t_when_true =
-  assert_val
+  assert_val_typed
     {|r = do
   _ <- Some ()
   when True (pure ())
@@ -386,7 +388,7 @@ let t_when_true =
     "r" (VCon ("Some", [VInt 42]))
 
 let t_when_false =
-  assert_val
+  assert_val_typed
     {|r = do
   _ <- Some ()
   when False (pure ())
@@ -395,7 +397,7 @@ let t_when_false =
     "r" (VCon ("Some", [VInt 99]))
 
 let t_unless_true =
-  assert_val
+  assert_val_typed
     {|r = do
   _ <- Some ()
   unless True (pure ())
@@ -404,7 +406,7 @@ let t_unless_true =
     "r" (VCon ("Some", [VInt 1]))
 
 let t_unless_false =
-  assert_val
+  assert_val_typed
     {|r = do
   _ <- Some ()
   unless False (pure ())
