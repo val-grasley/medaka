@@ -128,6 +128,16 @@ let fmt_if_elseless_no_else () =
   if contains "else" out then
     failwith (Printf.sprintf "else-less if grew an `else` in stmt position:\n%s" out)
 
+(* A `=` def/guard RHS is newline-terminated too, so an else-less `if` there
+   also drops the synthetic `else ()` (it no longer only works in stmt position). *)
+let fmt_if_elseless_def_rhs () =
+  let out = format "bump c = if c > 0 then f c\n" in
+  if contains "else" out then
+    failwith (Printf.sprintf "else-less if grew an `else` in def-RHS position:\n%s" out)
+let id_if_elseless_def_rhs = idempotent "bump c = if c > 0 then f c\n"
+let id_if_elseless_def_rhs_block =
+  idempotent "bump c =\n  if c > 0 then\n    a c\n    b c\n"
+
 (* Lock the canonical layout: messy input reflows to `then`/`else` on aligned
    lines with the block indented one step further. *)
 let fmt_if_block_else_canonical () =
@@ -386,5 +396,8 @@ let () =
       Alcotest.test_case "wide pipeline splits" `Quick rt_wide_pipeline_splits;
       Alcotest.test_case "if block-else canonical" `Quick fmt_if_block_else_canonical;
       Alcotest.test_case "else-less if drops else ()" `Quick fmt_if_elseless_no_else;
+      Alcotest.test_case "else-less if def-RHS drops else ()" `Quick fmt_if_elseless_def_rhs;
+      Alcotest.test_case "else-less if def-RHS idempotent" `Quick id_if_elseless_def_rhs;
+      Alcotest.test_case "else-less if def-RHS block idempotent" `Quick id_if_elseless_def_rhs_block;
     ];
   ]
