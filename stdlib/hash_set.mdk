@@ -146,11 +146,10 @@ delete x (HashSet buckets count) =
   deleteAt x arr idx count
 
 deleteAt : Eq a => a -> Array (List a) -> Int -> Ref Int -> <Mut> Unit
-deleteAt x arr idx count
-  | bucketHas x (arrayGetUnsafe idx arr) = 
+deleteAt x arr idx count =
+  if bucketHas x (arrayGetUnsafe idx arr) then
     arraySetUnsafe idx (bucketRemove x (arrayGetUnsafe idx arr)) arr
     set_ref count (count.value - 1)
-  | otherwise = ()
 
 -- ── Iteration / folds ───────────────────────────────────────────────────
 
