@@ -208,21 +208,37 @@ above, it is flagged ⭐.
   → ≤80). Tests in `test_fmt`; `test_roundtrip` + doctests confirm AST/semantics
   preserved. Pure `printer.ml` change.
 
-- **Phase 124 (investigative) — `medaka fmt`: should *any* long bare-expression
-  RHS wrap, not just `if`?** Phase 123 fixed the `if` case, but the formatter
-  still leaves a long bare **application** or **operator chain** RHS to overflow
-  (`foo = someFn a b c d e …` past 80 cols stays on one line). This is the
-  documented "bare positions stay flat" policy (`printer.ml` header) — soft breaks
-  only at delimiters / leading continuation operators. The open question: is
-  indenting a too-long simple RHS onto its own line after `=` (parse-safe; it does
-  *not* break mid-application/binop) worth the formatting churn? Pros: fewer >80
-  lines, consistency with Phase 123. Cons: reflows many existing long lines across
-  stdlib + tests, and a bare application still can't break *internally*, so the win
-  is only "header on one line, whole RHS indented on the next" — modest.
-  **Investigate**: measure how many stdlib/test lines it would touch, prototype the
-  `=`-indent group in `print_def_rhs`'s `None` branch, and decide whether the churn
-  pays for itself or whether `if` (which *can* break internally) is the only RHS
-  worth special-casing. Pure `printer.ml`.
+- DECLINED **Phase 124 (investigative) — `medaka fmt`: should *any* long
+  bare-expression RHS wrap, not just `if`? (investigated 2026-06-03 — not worth
+  it).** Phase 123 fixed the `if` case; the question was whether a long bare
+  **application** / **operator chain** RHS should also wrap (`foo = someFn a b c
+  d e …` past 80 cols). Prototyped the `=`-indent group in `print_def_rhs`'s
+  `None` branch (`group (nest (Line ^^ print_expr_body body))`), built it, and
+  `fmt`'d all of `stdlib/` against baseline-fmt. Verdict: **the win doesn't pay
+  for the churn, and `if` is the only bare RHS worth special-casing.** Findings:
+  - **`if` was special because it can break *internally*** (layout-legal `=⏎`,
+    `then⏎`, `else⏎`). A bare application has **no** interior break point — `add4
+    1⏎  2 3` is a hard parse error (breaks are legal only inside delimiters or
+    before a leading continuation operator). So the *only* available move for an
+    application RHS is shoving the whole thing onto the next indented line; it
+    still can't reflow.
+  - **Empirically (prototype over `stdlib/`): ~11 genuine >80→≤80 wins, against
+    real churn and one active regression.** The wrap helps only when the RHS
+    *alone* fits ≤78 cols. It does **not** help the lines a reader most wants
+    fixed — `array.append`'s 145-col RHS (too long even alone) and the long
+    `prop` headers (overflow is in the *header*, not the RHS) — yet it churns
+    them for zero benefit, and it *regresses* operator-chain RHS (`spliceAt`,
+    `centerPad`) that already broke cleanly via the leading-`++` continuation
+    rule (the outer group collapses or double-indents them).
+  - **The residual >80 stdlib lines are mostly unreachable by any
+    `print_def_rhs` tweak**: ~93 comment/doc/signature, ~20 `prop` headers, ~13
+    match/lambda arms; only a slice of the code-RHS bucket is even wrappable.
+  - **The impactful fixes are language/lexer changes, not formatter changes**
+    (extend the continuation rule to allow bare argument breaks — grammar risk;
+    or `fmt`-wrap over-long applications in parens to unlock delimiter breaks —
+    noisy behavior change), both outside this phase's pure-`printer.ml` scope.
+  Disposition: keep the "bare positions stay flat" policy; `if` stays the sole
+  width-aware bare RHS.
 
 - **Phase 125 — cross-module dispatch: `Foldable`-derived functions with a
   return-position constraint fail on an *imported* instance.** Surfaced
