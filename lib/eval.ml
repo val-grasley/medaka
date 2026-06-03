@@ -171,6 +171,15 @@ let escape_string_lit s =
     | c      -> Buffer.add_char b c) s;
   Buffer.contents b
 
+let escape_char_lit c = match c with
+  | "'"    -> "\\'"
+  | "\\"   -> "\\\\"
+  | "\n"   -> "\\n"
+  | "\t"   -> "\\t"
+  | "\r"   -> "\\r"
+  | "\000" -> "\\0"
+  | s      -> s
+
 (* ── UTF-8 codepoint helpers for the String/Char kernel (Phase 75) ───────────
    String is a sequence of Unicode scalar values, UTF-8 backed; Char is one
    codepoint, stored as its UTF-8 bytes (the VChar representation).  These walk
@@ -1320,10 +1329,8 @@ let primitives : (string * value) list =
       | VString s -> VString ("\"" ^ escape_string_lit s ^ "\"")
       | _ -> raise (Eval_error ("debugStringLit: expected String", None))));
     ("debugCharLit", VPrim (fun v ->
-      (* Medaka char literals do no escape processing (`'<bytes>'`), so the
-         round-trippable form is just the bytes wrapped in single quotes. *)
       match v with
-      | VChar c -> VString ("'" ^ c ^ "'")
+      | VChar c -> VString ("'" ^ escape_char_lit c ^ "'")
       | _ -> raise (Eval_error ("debugCharLit: expected Char", None))));
     ("arrayLength", VPrim (fun v ->
       match v with

@@ -213,16 +213,14 @@ data RawTok
   | RNewline Int
 
 -- ── Character classification (ASCII, matching lib/lexer.mll's char classes) ──
--- NB: Medaka char literals are raw bytes with NO escape processing, so newline,
--- tab, CR, '"', '\'' and '\\' must be tested by codepoint, not by char literal.
 isSp c = c == ' '
-isTab c = charCode c == 9
-isNL c = charCode c == 10
-isCR c = charCode c == 13
-isQuote c = charCode c == 34
-isApos c = charCode c == 39
-isBackslash c = charCode c == 92
-isBacktick c = charCode c == 96
+isTab c = c == '\t'
+isNL c = c == '\n'
+isCR c = c == '\r'
+isQuote c = c == '"'
+isApos c = c == '\''
+isBackslash c = c == '\\'
+isBacktick c = c == '`'
 isSpace c = isSp c || isTab c
 isDigit c = c >= '0' && c <= '9'
 isLower c = c >= 'a' && c <= 'z'

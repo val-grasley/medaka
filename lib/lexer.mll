@@ -293,10 +293,7 @@ and read = parse
 
   | "\"\"\""     { string_raw_leading_nl := false; read_triple_string (Buffer.create 64) lexbuf }
   | '"'          { string_raw_leading_nl := false; read_string (Buffer.create 64) lexbuf }
-  | '\'' [^ '\'']+ '\'' {
-      let lxm = Lexing.lexeme lexbuf in
-      CHAR (String.sub lxm 1 (String.length lxm - 2))
-    }
+  | '\''  { read_char lexbuf }
 
   (* Identifiers — order matters: longer matches win, ties go to earlier rule *)
   | lower alnum*           { record_ident lexbuf (keyword_or_ident (Lexing.lexeme lexbuf)) }
@@ -453,6 +450,25 @@ and read_triple_string buf = parse
     { Buffer.add_string buf (Lexing.lexeme lexbuf);
       read_triple_string buf lexbuf }
   | eof       { failwith "Unterminated triple-quoted string" }
+
+and read_char = parse
+  | '\\' '\'' '\''  { CHAR "'" }
+  | '\\' '\\' '\''  { CHAR "\\" }
+  | '\\' 'n'  '\''  { CHAR "\n" }
+  | '\\' 't'  '\''  { CHAR "\t" }
+  | '\\' 'r'  '\''  { CHAR "\r" }
+  | '\\' '0'  '\''  { CHAR "\000" }
+  | '\\' 'u' '{' (['0'-'9' 'a'-'f' 'A'-'F']+ as hex) '}' '\''
+      { let cp = int_of_string ("0x" ^ hex) in
+        let b = Buffer.create 4 in
+        Buffer.add_utf_8_uchar b (Uchar.of_int cp);
+        CHAR (Buffer.contents b) }
+  | [^ '\'' '\\']+ '\''
+      { let lx = Lexing.lexeme lexbuf in
+        CHAR (String.sub lx 0 (String.length lx - 1)) }
+  | '\''  { failwith "Empty char literal ''" }
+  | eof   { failwith "Unterminated char literal" }
+  | _     { failwith "Malformed char literal" }
 
 and read_interp_continue buf = parse
   | '"'       { INTERP_END (Buffer.contents buf) }

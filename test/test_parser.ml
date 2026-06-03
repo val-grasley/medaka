@@ -527,6 +527,48 @@ let test_char_ascii () =
   | ELit (LChar "a") -> ()
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
+let test_char_escape_newline () =
+  match parse_expr "'\\n'\n" with
+  | ELit (LChar "\n") -> ()
+  | ELit (LChar s) -> failwith (Printf.sprintf "wrong char: %S" s)
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_char_escape_tab () =
+  match parse_expr "'\\t'\n" with
+  | ELit (LChar "\t") -> ()
+  | ELit (LChar s) -> failwith (Printf.sprintf "wrong char: %S" s)
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_char_escape_cr () =
+  match parse_expr "'\\r'\n" with
+  | ELit (LChar "\r") -> ()
+  | ELit (LChar s) -> failwith (Printf.sprintf "wrong char: %S" s)
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_char_escape_null () =
+  match parse_expr "'\\0'\n" with
+  | ELit (LChar "\000") -> ()
+  | ELit (LChar s) -> failwith (Printf.sprintf "wrong char: %S" s)
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_char_escape_backslash () =
+  match parse_expr "'\\\\'\n" with
+  | ELit (LChar "\\") -> ()
+  | ELit (LChar s) -> failwith (Printf.sprintf "wrong char: %S" s)
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_char_escape_apostrophe () =
+  match parse_expr "'\\''\n" with
+  | ELit (LChar "'") -> ()
+  | ELit (LChar s) -> failwith (Printf.sprintf "wrong char: %S" s)
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
+let test_char_escape_unicode () =
+  match parse_expr "'\\u{41}'\n" with
+  | ELit (LChar "A") -> ()
+  | ELit (LChar s) -> failwith (Printf.sprintf "wrong char: %S" s)
+  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+
 let test_string_escape_r () =
   match parse_expr "\"hello\\rworld\"\n" with
   | ELit (LString s) when String.contains s '\r' -> ()
@@ -1944,6 +1986,13 @@ let () =
     "char and string upgrades", [
       test_case "char multibyte"         `Quick test_char_multibyte;
       test_case "char ascii"             `Quick test_char_ascii;
+      test_case "char escape \\n"        `Quick test_char_escape_newline;
+      test_case "char escape \\t"        `Quick test_char_escape_tab;
+      test_case "char escape \\r"        `Quick test_char_escape_cr;
+      test_case "char escape \\0"        `Quick test_char_escape_null;
+      test_case "char escape \\\\"      `Quick test_char_escape_backslash;
+      test_case "char escape \\'"        `Quick test_char_escape_apostrophe;
+      test_case "char escape \\u{41}"    `Quick test_char_escape_unicode;
       test_case "string escape \\r"      `Quick test_string_escape_r;
       test_case "string escape \\0"      `Quick test_string_escape_zero;
       test_case "string escape \\u{}"    `Quick test_string_escape_unicode;

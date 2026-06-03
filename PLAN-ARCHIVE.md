@@ -5685,6 +5685,36 @@ lexer's trickiest logic and the main thing the port must reproduce.
 **Verified**: `dune build @thorough --root .` green (runs `thorough_diff.exe`);
 `tokenize_string` compiles with no non-exhaustive warning.
 
+### Phase 133: char literal escape processing ✅ DONE (2026-06-03)
+
+Medaka char literals previously captured their inner bytes **raw** — `'\n'` was
+two bytes (backslash + n), not a newline, and `'\''`/`'\\'` couldn't be written
+at all (the rule `'\'' [^']+ '\''` has no escape handling). The self-host lexer
+worked around this by comparing via `charCode` instead of char literals.
+
+**Decision**: fix it — string literals already support a full escape suite, so
+char literals being inconsistent is a genuine gap, not intentional design.
+
+**Changes**:
+- `lib/lexer.mll`: replaced the inline single-regex char rule with a `read_char`
+  auxiliary (same pattern as `read_string`/`read_triple_string`). The auxiliary
+  handles `\' \\ \n \t \r \0` and `\u{…}` (hex Unicode); a catch-all
+  `[^ '\'' '\\']+ '\''` arm preserves existing behaviour for plain and multi-byte
+  UTF-8 chars (`'a'`, `'é'`, `'中'`).
+- `lib/printer.ml`: added `escape_char_lit` helper; `LChar` case now uses it so
+  the AST→source round-trip produces valid source (`'\n'` not a raw newline
+  embedded in quotes).
+- `lib/eval.ml`: added `escape_char_lit` (same logic); `debugCharLit` updated to
+  use it and the stale "no escape processing" comment removed.
+- `selfhost/lexer.mdk`: replaced `charCode`-comparison workarounds for
+  `\t`/`\n`/`\r`/`'`/`\` with direct char literals (`'\t'`, `'\n'`, etc.); stale
+  comment removed.
+- `test/test_parser.ml`: 7 new cases in "char and string upgrades" suite covering
+  `\n`, `\t`, `\r`, `\0`, `\\`, `\'`, and `\u{41}`.
+
+**Verified**: `test_parser`, `test_eval`, `test_typecheck`, `test_run`,
+`test_roundtrip` all green; 21 thorough non-diff cases pass.
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)

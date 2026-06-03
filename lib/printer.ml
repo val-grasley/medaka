@@ -123,6 +123,15 @@ let render width doc =
 
 (* ── Literals ────────────────────────────────────── *)
 
+let escape_char_lit c = match c with
+  | "'"    -> "\\'"
+  | "\\"   -> "\\\\"
+  | "\n"   -> "\\n"
+  | "\t"   -> "\\t"
+  | "\r"   -> "\\r"
+  | "\000" -> "\\0"
+  | s      -> s
+
 let print_lit = function
   | LInt n    -> text (string_of_int n)
   | LFloat f  ->
@@ -130,7 +139,7 @@ let print_lit = function
     (* Force a decimal point so the lexer reads it as FLOAT, not INT *)
     text (if String.contains s '.' || String.contains s 'e' then s else s ^ ".0")
   | LString s -> text (Printf.sprintf "%S" s)
-  | LChar c   -> text (Printf.sprintf "'%s'" c)
+  | LChar c   -> text (Printf.sprintf "'%s'" (escape_char_lit c))
   | LBool b   -> text (if b then "True" else "False")
   | LUnit     -> text "()"
 

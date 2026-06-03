@@ -213,20 +213,14 @@ above, it is flagged ⭐.
   Phases 96/103/121/125 (loader vs flat eval); confirm with `dev/module_debug.exe`
   and shrink `lexer.mdk` until it stops reproducing. **Skill: debug-pipeline.**
 
-- **Phase 133 — char literals do no escape processing (surfaced by Phase 132).**
-  TODO — decide + (maybe) fix. A Medaka char literal `'…'` captures its inner
-  bytes **raw**: `'\n'` is the two bytes backslash-n (not a newline), `'\t'` is
-  backslash-t, and a single-quote or backslash char literal can't be written at
-  all (`'\''`/`'\\'` mis-lex, since the rule is `'\'' [^']+ '\''` with no escape
-  handling — `lib/lexer.mll` ~line 296; `debugCharLit` in `lib/eval.ml` documents
-  the no-escape choice as deliberate). The self-host lexer worked around it by
-  comparing via `charCode` instead of char literals, so this is **not blocking**.
-  **Open question (decide first):** is the raw-bytes behavior intentional
-  (keep, document more loudly) or a gap to close (process `\n \t \r \0 \\ \'` and
-  allow `\u{…}`, mirroring `read_string`)? If closing it: the fix is the char
-  rule in `lib/lexer.mll` plus the `CHAR` value/`debugCharLit` round-trip — a
-  surface-syntax change threading lexer→eval. **Skill: add-language-feature**
-  (small; mostly `lib/lexer.mll`). Lower priority than Phase 134.
+- **Phase 133 — char literal escape processing. ✅ DONE (2026-06-03).**
+  Char literals now process the same escape suite as string literals: `\n \t \r \0 \\ \'`
+  and `\u{…}`. The fix replaced the single-regex rule in `lib/lexer.mll` with a
+  `read_char` auxiliary (matching the `read_string` / `read_triple_string` pattern);
+  `lib/printer.ml` gained `escape_char_lit` so `LChar` round-trips correctly;
+  `debugCharLit` in `lib/eval.ml` likewise escapes special chars. The `selfhost/lexer.mdk`
+  workaround (comparing via `charCode` for `\t`/`\n`/`\'`/`\\`) was replaced with
+  direct char literals. 7 new parser test cases cover every new escape form.
 
 - **Phase 131 — add token-stream section to the diff harness. ✅ DONE
   (2026-06-03).** Added `Lexer.tokenize_string : string -> string list` +
