@@ -5599,6 +5599,61 @@ source. See [[project-formatter-doc-ir]].
 
 ---
 
+### Phase 130: cross-module user-defined interfaces ✅ DONE (2026-06-03)
+
+Surfaced by the 2026-06-03 25-module scale probe. A user `interface` declared and
+`export`ed in module A could not be `impl`'d in module B, and the PLAN entry
+predicted *two* layers of breakage (resolve membership + typecheck impl
+discharge). Investigation showed it was **one layer only**.
+
+**Root cause (resolve, the whole bug).** Resolve runs before typecheck. The `DUse`
+import loop in `lib/resolve.ml` (~line 412) added an imported interface's *name*
+to `env.interfaces` but never copied `exp.exp_iface_methods` into
+`env.iface_methods`. So `impl Sized Shape` in B ran the membership check in
+`check_decl`'s `DImpl` arm (`env.iface_methods` lookup → `Not_found` → `[]`) and
+rejected every method: **"Method 'sizeOf' is not part of interface Sized"**. The
+export side was already correct — `build_exports` populates `exp_iface_methods`,
+and both re-export paths (named, wildcard) already copy it; only the *direct
+import* omitted it.
+
+**Fix** (~6 lines, the single change). After the `field_owners` copy block in the
+import loop, mirror it for interface methods:
+```ocaml
+Hashtbl.iter (fun iface methods ->
+  if Hashtbl.mem env.interfaces iface then
+    Hashtbl.replace env.iface_methods iface methods
+) exp.exp_iface_methods;
+```
+
+**Layer 2 needed no change** (confirmed empirically, not assumed). The PLAN
+predicted a "No impl of Sized for Shape" discharge failure in a third module C.
+It does not occur: (a) the typecheck-level membership check (`typecheck.ml`
+`ExtraMethod`) reads `info.iface_methods` from `env.interfaces`, which
+`typecheck_module` already seeds from imported `te_interfaces`; (b) a module's
+`export impl`s are exported via `te_impls` keyed by full `impl_key` and merged by
+importers (`env.impls := te.te_impls @ !(env.impls)`); (c) the orphan check
+(`check_orphans`) only fires when *both* iface and type are non-local, so an impl
+in B for B's own `Shape` is not an orphan. A 4-module distributed test (interface
+in A, generic `Sized a =>` fn in D, type+impl in B, use in C) ran correctly with
+only the resolve fix.
+
+**Verified necessary**: reverting just the resolve change reproduces the
+membership error; restoring it makes the 3- and 4-module programs run.
+
+**Where**: `lib/resolve.ml` (the import-loop copy). **Test**:
+`test_eval_cross_module_user_interface` in `test/test_loader.ml` — interface in A,
+`public export data` + `impl` in B, use in C; asserts no resolve errors (guards
+the fix) and `6\n10\n` via `Eval.eval_modules` (end-to-end through the loader
+driver). All base suites + `@thorough` green.
+
+**Note** (wrinkle, not a bug): exporting a data type's constructors requires
+`public export data` — plain `export data` exports the type abstractly. **Still
+open** (secondary ergonomic finding from the probe, file separately if it
+compounds): every cross-module function needs its own `export` line, and an
+`impl` module must import each interface **method name** it references.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend

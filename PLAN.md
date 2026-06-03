@@ -136,40 +136,18 @@ above, it is flagged ⭐.
 
 ### Compiler / language
 
-- ⭐ **Phase 130 — cross-module user-defined interfaces (declare in one module,
-  `impl` in another). Stage-0 prerequisite.** Surfaced by the 2026-06-03
-  multi-file scale probe (a synthetic 25-module project: deep import chains +
-  diamond deps + a user interface impl'd across modules). A user `interface`
-  declared and `export`ed in module A **cannot today be `impl`'d in module B**,
-  nor can its constraint be discharged in a third module. Everything else the
-  probe exercised worked — deep linear chains (20 modules), diamond imports,
-  qualified access, and generic dispatch over *imported instances* of prelude
-  interfaces (`sum`/`maximum` over imported `Array`/`Set`/`MutArray`). This is
-  the one hard cross-module gap, and it blocks the self-hosting compiler's most
-  natural structure: an interface (`Pretty`, a visitor, `Typeable`) declared once
-  and impl'd for AST/type nodes scattered across many modules. **Two layers:**
-  1. *Resolve (method membership).* `resolve.ml`'s import loop (~line 412) adds an
-     imported interface's *name* to `env.interfaces` but never copies
-     `exp_iface_methods` into `env.iface_methods`. So `impl Sized Shape` in module
-     B checks membership against an empty method set → "Method 'sizeOf' is not
-     part of interface Sized". **Confirmed ~6-line fix** (copy the method list on
-     import); `typecheck.ml:679`'s parallel membership check likely needs the
-     same.
-  2. *Typecheck (impl discharge).* With (1) patched, the next error is "No impl of
-     Sized for Shape" when a third module calls a `Sized a =>`-constrained
-     function over a `Shape`. User-interface impls don't propagate across the
-     `te_impls` import path (`typecheck.ml:4192`) the way prelude impls do.
-     Determine whether the impl is missing from the *defining* module's exported
-     `te_impls`, or whether import only pulls impls tied to explicitly-named
-     imported entities and drops a `Sized Shape` impl (neither name imported
-     by-reference). Medaka's intent is global impl installation (per the
-     eval-module-isolation work), so this is a genuine bug, not a design choice.
-  Skill: **add-language-feature** (resolve + typecheck, cross-cutting). Regression
-  test must go in **test_loader** (drives `eval_modules`; single-file masks
-  loader-only bugs — see AGENTS.md Gotchas). *Secondary ergonomic finding from the
-  same probe* (file separately if it compounds): every cross-module function needs
-  its own standalone `export` line, and an `impl` module must also import each
-  interface **method name** it references — verbose at scale, though not a bug.
+- ⭐ **Phase 130 — cross-module user-defined interfaces ✅ DONE (2026-06-03).**
+  A user `interface` declared+`export`ed in module A can now be `impl`'d for a
+  type owned by module B and its constraint discharged in a third module C. The
+  whole gap was a single resolve omission: the `DUse` import loop in `resolve.ml`
+  copied an imported interface's *name* into `env.interfaces` but not its method
+  set into `env.iface_methods`, so any `impl` of it tripped "Method 'X' is not
+  part of interface Y". Layer 2 (impl discharge) needed **no** change — `te_impls`
+  already propagates a module's `export impl`s by full `impl_key`, and the orphan
+  check only fires when both iface and type are non-local. See PLAN-ARCHIVE.md for
+  the full writeup. *Secondary ergonomic finding still open* (file separately if
+  it compounds): every cross-module function needs its own `export` line, and an
+  `impl` module must import each interface **method name** it references.
 
 - **Phase 129 — differential-testing harness (self-host validation rig). Stage-1
   prerequisite.** Stage 1 says "port each stage, checked against the OCaml
