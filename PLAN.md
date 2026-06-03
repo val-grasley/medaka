@@ -280,14 +280,6 @@ PLAN-ARCHIVE.md and STDLIB.md.
     `core.mdk` utilities, or decide they're intentionally omitted (pattern-match
     instead) and document it. Skill: **extend-stdlib**.
 
-- **Phase 113 — `Ord` instances for `Map` / `Set`.** Neither has an `Ord` impl
-  today, so you can't nest them (a `Map (Set a) v`, or a `Set (Set a)`) or sort a
-  `List (Map …)`. Add lexicographic `Ord` on the canonical ascending list:
-  `impl Ord (Map k v) requires Ord k, Ord v where compare a b = compare (toList a)
-  (toList b)` (toList = assoc pairs; for set, the element list). Cheap; both
-  already impl `Eq` the same way. Lands in `stdlib/map.mdk` + `stdlib/set.mdk`.
-  Skill: **extend-stdlib**.
-
 - ⭐ **`stdlib/string.mdk`** is drafted and passes its 49 doctests but is flagged
   *awaiting user review* (archive Phase 75 step 3). Open decisions: the
   `length`/`isEmpty`/`count` omissions and `toUpper` vs `charToUpper` naming.

@@ -454,6 +454,15 @@ export default impl Mappable (Map k) where
 export default impl Eq (Map k v) requires Eq k, Eq v where
   eq a b = if size a != size b then False else eq (toList a) (toList b)
 
+{- | Lexicographic ordering through the canonical ascending association list,
+   so two maps order by their `(key, value)` pairs and a proper prefix sorts
+   first.  Enables nesting (`Map (Set k) v`) and sorting `List (Map …)`.
+
+   > compare (fromList [(1, 10)]) (fromList [(1, 20)])
+   Lt -}
+export default impl Ord (Map k v) requires Ord k, Ord v where
+  compare a b = compare (toList a) (toList b)
+
 {- | Rendered as `fromList [(k, v), …]`, mirroring the constructor that would
    rebuild it.  (Doctest compares against a literal: `Show String` lives in
    string.mdk, out of this module's isolated test context.)

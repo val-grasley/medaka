@@ -4992,6 +4992,26 @@ where arbitrary () = arbitraryList arbitrary 8` now generates `List Tagged` as
 Lands in `ast.ml`/`typecheck.ml`/`dict_pass.ml`/`eval.ml`. Unblocks common cases
 of Phase 101.
 
+### Phase 113: `Ord` instances for `Map` / `Set` (+ `Show`/`Display Ordering`) ✅ DONE (2026-06-02)
+
+Neither `Map k v` nor `Set a` had an `Ord` impl, so they couldn't be nested
+(`Map (Set a) v`, `Set (Set a)`) or sorted (`List (Map …)`). Added cheap
+lexicographic `Ord` on the canonical ascending list, mirroring the existing `Eq`:
+`export default impl Ord (Map k v) requires Ord k, Ord v where compare a b =
+compare (toList a) (toList b)` (`stdlib/map.mdk`) and the element-list analogue
+`impl Ord (Set a) requires Ord a` (`stdlib/set.mdk`). Both delegate to core's
+lexicographic `Ord (List a)`; defining only `compare` suffices (the
+`lt`/`gt`/`lte`/`gte`/`min`/`max` helpers default off it). Verified `Set (Set
+Int)` now typechecks and evaluates (`member` probe → `true`).
+
+Also closed a latent gap: `Ordering` had **no** `Show` *or* `Display` impl, so
+`show`/`println`/`\{compare …}` all failed. Added `impl Show Ordering` +
+`impl Display Ordering` to `core.mdk` (`Lt`/`Eq`/`Gt`), naming the `Eq`
+constructor directly — constructors and interfaces are separately namespaced, so
+there is no clash with the `Eq` interface (see the corrected note below). The two
+Map/Set doctests render `compare … ` as `Lt` directly off the new `Show`. Skill:
+**extend-stdlib**. See [[project_module5_map]].
+
 ### Investigated & dropped as non-issues (2026-06-02)
 
 Two "minor ergonomics" candidates from the Module 5 work, verified non-problems:
