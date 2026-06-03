@@ -468,6 +468,18 @@ and print_expr_body e = match e with
   | EMatch _ | EBlock _ | EDo _ -> print_expr_raw e
   | ELoc (_, e')     -> print_expr_body e'
   | EBinOp (op, _, _) when is_continuation_op op -> print_chain op e
+  (* Phase 122: an else-less `if` (else defaulted to `()`) prints WITHOUT the
+     synthetic `else ()`. Every `print_expr_body` position is safe: a def /
+     guard-arm / match-arm RHS is newline-terminated, and an `if` block-branch is
+     DEDENT-protected — in neither can a following `else` reattach. (The *inline*
+     `if`-branch path uses `print_expr`, not this, so it keeps `else ()`.) *)
+  | EIf (c, t, els) when (match strip_loc els with ELit LUnit -> true | _ -> false) ->
+    let then_part = match strip_loc t with
+      | EBlock _               -> print_expr_body t            (* self-indents *)
+      | t' when is_block_body t' -> indent_block (print_expr_body t)
+      | _                      -> text " " ^^ print_expr prec_top t
+    in
+    text "if " ^^ print_expr prec_top c ^^ text " then" ^^ then_part
   | _ -> print_expr prec_top e
 
 (* Flatten the same-operator left-associative spine into one group so the chain
