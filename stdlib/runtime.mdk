@@ -17,6 +17,9 @@ extern putStrLn : String -> <IO> Unit
 extern inspect : a -> <IO> Unit
 extern Ref : a -> Ref a
 extern set_ref : Ref a -> a -> <Mut> Unit
+-- Structural hash to a non-negative Int (Module 6 hash containers).  Must agree
+-- with the key type's `Eq` (it hashes the runtime value structurally).
+extern hash : a -> Int
 extern pi : Float
 extern e : Float
 extern readLine : Unit -> <IO> String

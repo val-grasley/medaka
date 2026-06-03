@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 117). At task triage, match the work against AGENTS.md's
+number (last used: 120). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -55,8 +55,9 @@ What's missing is the supporting surface a real multi-thousand-line program need
 - **Standard library breadth.** The compiler needs the data structures it is
   itself built on:
   - **`Map` / `Set`** — symbol tables, scopes, type-variable substitutions, impl
-    registries. ✅ **DONE** (Module 5, ordered/weight-balanced). A hash variant
-    (Module 6) is still open, mainly for performance.
+    registries. ✅ **DONE** (Module 5, ordered/weight-balanced; plus the mutable
+    `HashMap`/`HashSet` performance variant, Module 6 / Phase 120). Only
+    `mut_array` (a growable vector) remains in Module 6.
   - **`io`** — read source files, write artifacts, stdin/stdout, process args,
     exit codes, structured error reporting. ✅ **DONE** (Module 7, Phase 116).
   - `string` finalized and reviewed (drafted; awaiting full review) — **now
@@ -122,6 +123,33 @@ strict priority. Where an item is a **Stage 0 prerequisite** for the north star
 above, it is flagged ⭐.
 
 ### Compiler / language
+
+- **Phase 119 — false-positive non-exhaustiveness warning for 3+-arg functions
+  matching a list.** A multi-clause function with **≥3 parameters** where one
+  column is a `List` pattern wrongly warns `non-exhaustive clauses` even when it
+  is total. Minimal repro: `r [] _ _ = 0` / `r ((a,b)::rest) x y = …` warns;
+  the 2-arg version is clean, and single-arg is clean. Bit `hash_map.mdk`'s
+  `bucketReplace`/`reinsertBucket`. Lands in Phase 102's `Exhaust.check_clauses`
+  (`lib/exhaust.ml`/`typecheck.ml`) — the param-tuple `__tuple__` column reduction
+  likely mishandles a list column alongside wildcard columns at arity ≥3.
+  Warning only (eval is unaffected), but noisy. **Workaround (used in
+  hash_map.mdk):** match the list in a single-arg `where go` helper that closes
+  over the other args, or keep such functions to ≤2 params. Surfaced building
+  Module 6, 2026-06-02. Skill: **harden-typechecker**.
+
+- **Phase 118 — `if`/`else` branches can't be multi-statement blocks.** An
+  `if … then … else …` branch must be a single expression: a multi-statement
+  indented block as a `then`/`else` branch is a **parse error** (the
+  `else`-leads-an-indented-block layout, related to the known "`then`/`else`
+  can't start a line" rule). Bites imperative `<Mut>` code — e.g. a hash-table
+  `insert` that needs `if present then replace else (set; bump count; maybe
+  resize)`. **Workaround (works today):** use function **guards** with block
+  bodies — `f … | cond = <expr> | otherwise = <block>` parses and sequences a
+  multi-statement `<Mut>` block fine (this is what `stdlib/hash_map.mdk` uses).
+  So it's an ergonomics gap, not a blocker. Fix is a lexer/layout +
+  `parser.mly` change to allow an indented block after `then`/`else` (mind the
+  indentation-sensitive lexer and re-measure `parser.conflicts`). Surfaced
+  building Module 6 (hash containers), 2026-06-02. Skill: **add-language-feature**.
 
 - **Phase 101 — drive property generation/shrinking through the `Arbitrary`
   interface (101b).** 101a (registry-first `arbitrary`/`shrink`, native element
@@ -239,11 +267,20 @@ PLAN-ARCHIVE.md and STDLIB.md.
   `readLines` drops it (stale "un-importable" comment refreshed). Skill:
   **harden-typechecker**.
 
-- **Modules 6 & 8 unstarted:** `mut_array`/`hash_map`/`hash_set` (Module 6),
-  `json` (Module 8: type + parser + serializer). Expect each to surface new
-  language gaps — record them here as new phases.
-  - `mut_array`/`hash_map`/`hash_set` matter mainly for interpreter/compiler
-    *performance*; `json` is not on the self-hosting path.
+- **Module 6 — hash containers ✅ DONE (Phase 120); `mut_array` remains.**
+  `stdlib/hash_map.mdk` + `stdlib/hash_set.mdk` — **mutable** hash tables
+  (separate chaining in a `Ref`-held `Array`, resize past load factor 0.75),
+  the O(1)-average performance counterpart to the ordered Module 5. New `hash`
+  extern (structural, non-negative); removed `"HashMap"`/`"HashSet"` from
+  `resolve.ml` `primitive_types`. HashSet impls `Foldable` (elements = `toList`);
+  HashMap uses `entries` internally (its `toList` = pairs would clash with
+  `Foldable.toList`). 8 + 7 doctests, stress-verified (100 inserts → multiple
+  resizes, delete, dedupe). Surfaced **Phase 118** (`if`/`else` block branches)
+  and **Phase 119** (false-positive non-exhaustiveness for 3+-arg list matches);
+  both above, both with clean workarounds. **`mut_array`** (growable vector over
+  `Array`) is still unstarted — mainly an interpreter/compiler perf nicety.
+- **Module 8 — `json` unstarted:** `Json` type + parser + serializer. Not on the
+  self-hosting path.
   - ✅ **Module 7 `io` — DONE (Phase 116).** Comprehensive: externs (`args`,
     `getEnv`, `fileExists`, `appendFile`, `listDir`, `ePutStr`/`ePutStrLn`,
     `readLineOpt`, `readAll`) in runtime.mdk + eval.ml, `args` wired through
