@@ -43,6 +43,9 @@ let read_file path =
 
 (* ── section generator ────────────────────────────────────────────────── *)
 
+let gen_tokens src =
+  rstrip_nl (String.concat "\n" (Lexer.tokenize_string src))
+
 let gen_ast src =
   let decls = parse src in
   rstrip_nl (Printer.program_to_string decls)
@@ -136,9 +139,10 @@ let make_fixture_tests fixture_dir mdk_name =
   in
 
   ( base,
-    [ make_test "AST"   gen_ast
-    ; make_test "TYPES" gen_types
-    ; make_test "EVAL"  gen_eval
+    [ make_test "TOKENS" gen_tokens
+    ; make_test "AST"    gen_ast
+    ; make_test "TYPES"  gen_types
+    ; make_test "EVAL"   gen_eval
     ] )
 
 let () =

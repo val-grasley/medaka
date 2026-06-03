@@ -548,4 +548,64 @@ let token (lexbuf : Lexing.lexbuf) : token =
         t
       end
     end
+
+(* ── Phase 131: token-stream dump for the differential-testing harness ───
+   Renders each [Parser.token] to a stable string and produces the full token
+   stream for a source string.  The match is intentionally exhaustive (no
+   wildcard) so adding a grammar token surfaces a non-exhaustive-match warning
+   here. *)
+let token_to_string : token -> string = function
+  (* Literals *)
+  | INT n            -> Printf.sprintf "INT %d" n
+  | FLOAT f          -> Printf.sprintf "FLOAT %g" f
+  | STRING s         -> Printf.sprintf "STRING %S" s
+  | CHAR s           -> Printf.sprintf "CHAR %S" s
+  | BOOL b           -> Printf.sprintf "BOOL %b" b
+  (* String interpolation *)
+  | INTERP_OPEN s    -> Printf.sprintf "INTERP_OPEN %S" s
+  | INTERP_MID s     -> Printf.sprintf "INTERP_MID %S" s
+  | INTERP_END s     -> Printf.sprintf "INTERP_END %S" s
+  (* Identifiers *)
+  | IDENT s          -> Printf.sprintf "IDENT %S" s
+  | UPPER s          -> Printf.sprintf "UPPER %S" s
+  | BACKTICK_IDENT s -> Printf.sprintf "BACKTICK_IDENT %S" s
+  (* Keywords *)
+  | LET -> "LET" | REC -> "REC" | WITH -> "WITH" | MUT -> "MUT" | IN -> "IN"
+  | IF -> "IF" | THEN -> "THEN" | ELSE -> "ELSE" | MATCH -> "MATCH"
+  | DATA -> "DATA" | RECORD -> "RECORD" | INTERFACE -> "INTERFACE"
+  | DEFAULT -> "DEFAULT" | IMPL -> "IMPL" | IMPORT -> "IMPORT"
+  | EXPORT -> "EXPORT" | PUBLIC -> "PUBLIC" | WHERE -> "WHERE" | OF -> "OF"
+  | REQUIRES -> "REQUIRES" | DO -> "DO" | AS -> "AS" | EXTERN -> "EXTERN"
+  | DERIVING -> "DERIVING" | TYPE -> "TYPE" | NEWTYPE -> "NEWTYPE"
+  | PROP -> "PROP" | TEST -> "TEST" | BENCH -> "BENCH" | FUNCTION -> "FUNCTION"
+  (* Operators *)
+  | PLUS -> "PLUS" | MINUS -> "MINUS" | STAR -> "STAR" | SLASH -> "SLASH"
+  | MOD -> "MOD" | EQ_EQ -> "EQ_EQ" | NEQ -> "NEQ" | LT -> "LT" | GT -> "GT"
+  | LEQ -> "LEQ" | GEQ -> "GEQ" | AND -> "AND" | OR -> "OR" | CONS -> "CONS"
+  | PLUSPLUS -> "PLUSPLUS" | STRAPPEND -> "STRAPPEND"
+  | PIPE_RIGHT -> "PIPE_RIGHT" | RCOMPOSE -> "RCOMPOSE" | LCOMPOSE -> "LCOMPOSE"
+  | FAT_ARROW -> "FAT_ARROW" | ARROW -> "ARROW" | LARROW -> "LARROW"
+  | AT -> "AT" | BANG -> "BANG" | QUESTION -> "QUESTION" | AS_AT -> "AS_AT"
+  (* Punctuation *)
+  | EQUAL -> "EQUAL" | COLON -> "COLON" | COMMA -> "COMMA" | DOT -> "DOT"
+  | PIPE -> "PIPE" | UNDERSCORE -> "UNDERSCORE" | LPAREN -> "LPAREN"
+  | RPAREN -> "RPAREN" | LBRACKET -> "LBRACKET" | RBRACKET -> "RBRACKET"
+  | LBRACE -> "LBRACE" | RBRACE -> "RBRACE" | LARRAY -> "LARRAY"
+  | RARRAY -> "RARRAY" | DOT_LBRACE -> "DOT_LBRACE" | DOT_STAR -> "DOT_STAR"
+  | ELLIPSIS -> "ELLIPSIS" | DOTDOT -> "DOTDOT" | DOTDOT_EQ -> "DOTDOT_EQ"
+  (* Indentation + EOF *)
+  | NEWLINE -> "NEWLINE" | INDENT -> "INDENT" | DEDENT -> "DEDENT"
+  | EOF -> "EOF"
+
+let tokenize_string (src : string) : string list =
+  reset ();
+  let lb = Lexing.from_string src in
+  let acc = ref [] in
+  let rec loop () =
+    let t = token lb in
+    acc := token_to_string t :: !acc;
+    if t <> EOF then loop ()
+  in
+  loop ();
+  List.rev !acc
 }

@@ -136,17 +136,19 @@ above, it is flagged ⭐.
 
 ### Compiler / language
 
-- **Phase 131 — add token-stream section to the diff harness.** Phase 129 left
-  `=== TOKENS ===` out because no token-dump existed yet — the natural time to
-  add it is when the lexer port begins (Stage 1). When ready: (a) add
-  `Lexer.tokenize_string : string -> string list` in `lib/lexer.mll` — a loop
-  calling `Lexer.token` on a fresh `Lexing.from_string` buffer until EOF, with a
-  hand-written `token_to_string` for each `Parser` token variant; (b) prepend
-  `=== TOKENS ===` to both `dev/gen_golden.ml` and `test/thorough/thorough_diff.ml`
-  (same section-format as AST/TYPES/EVAL, same `rstrip_nl` normalization); (c)
-  re-run `gen_golden.exe` and commit the updated goldens. The diff harness then
-  validates lexer output for all 15 fixtures before the Medaka lexer is wired in.
-  Skill: none specific (extends `dev/gen_golden.ml` + `test/thorough/thorough_diff.ml`).
+- **Phase 131 — add token-stream section to the diff harness. ✅ DONE
+  (2026-06-03).** Added `Lexer.tokenize_string : string -> string list` +
+  exhaustive `token_to_string` in `lib/lexer.mll` (no wildcard arm, so a new
+  grammar token surfaces a non-exhaustive-match warning here). Prepended a
+  `=== TOKENS ===` section (one token per line, same `rstrip_nl` normalization)
+  to both `dev/gen_golden.ml` and `test/thorough/thorough_diff.ml`, regenerated
+  all 15 goldens (purely additive), and the harness now runs 60 cases (15 ×
+  {TOKENS, AST, TYPES, EVAL}, up from 45). `split_sections` is order-independent
+  so it needed no change. The diff harness now validates lexer output for all 15
+  fixtures before the Medaka lexer is wired in (Stage 1). Token format: payload
+  tokens render kind + value (`INT 42`, `STRING "hi"`, `IDENT "foo"`), everything
+  else (keywords/operators/punctuation/`NEWLINE`/`INDENT`/`DEDENT`/`EOF`) as the
+  bare variant name.
 
 - ⭐ **Phase 130 — cross-module user-defined interfaces ✅ DONE (2026-06-03).**
   A user `interface` declared+`export`ed in module A can now be `impl`'d for a

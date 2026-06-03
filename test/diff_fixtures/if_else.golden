@@ -1,3 +1,87 @@
+=== TOKENS ===
+IDENT "classify"
+IDENT "n"
+EQUAL
+INDENT
+IF
+IDENT "n"
+LT
+INT 0
+THEN
+STRING "negative"
+ELSE
+IF
+IDENT "n"
+GT
+INT 0
+THEN
+STRING "positive"
+ELSE
+STRING "zero"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "abs"
+IDENT "n"
+EQUAL
+INDENT
+IF
+IDENT "n"
+LT
+INT 0
+THEN
+INT 0
+MINUS
+IDENT "n"
+ELSE
+IDENT "n"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+IDENT "println"
+LPAREN
+IDENT "classify"
+LPAREN
+MINUS
+INT 5
+RPAREN
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "classify"
+INT 0
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "classify"
+INT 3
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "abs"
+LPAREN
+MINUS
+INT 7
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
 === AST ===
 classify n = if n < 0 then "negative" else if n > 0 then "positive" else "zero"
 abs n = if n < 0 then 0 - n else n

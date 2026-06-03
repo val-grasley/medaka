@@ -5654,6 +5654,39 @@ compounds): every cross-module function needs its own `export` line, and an
 
 ---
 
+### Phase 131: token-stream section in the diff harness ✅ DONE (2026-06-03)
+
+Phase 129 built the differential-testing harness (`test/diff_fixtures/`, 15
+fixtures × {`AST`, `TYPES`, `EVAL`}) but deliberately omitted a `=== TOKENS ===`
+section — no token-dump existed, and the natural time to add one is when the
+lexer port (Stage 1 of self-host) begins. Phase 131 adds it so the harness
+validates the OCaml lexer's token stream before the Medaka lexer is wired in.
+
+**Change** (purely additive, no existing pipeline behavior touched):
+- `lib/lexer.mll` trailer: `token_to_string : token -> string` (exhaustive match
+  over every `Parser.token`, **no wildcard arm** — a new grammar token then
+  triggers a non-exhaustive-match warning here) + `tokenize_string : string ->
+  string list` (calls `reset ()`, loops the public `token` entry — which already
+  applies the NEWLINE/`else` lookahead filter, so the stream matches what menhir
+  consumes — on a fresh `Lexing.from_string` buffer until `EOF`, inclusive).
+- `dev/gen_golden.ml` + `test/thorough/thorough_diff.ml`: prepend a
+  `=== TOKENS ===` section (one token per line, same `rstrip_nl` normalization as
+  the other sections). The golden parser `split_sections` is order-independent
+  and keys by header name, so it needed no change.
+- Regenerated all 15 goldens (additive only — a leading `=== TOKENS ===` block
+  per file). Harness now runs **60** cases (was 45).
+
+**Token format**: payload tokens render kind + value (`INT 42`, `FLOAT 3.14`,
+`STRING "hi"`, `IDENT "foo"`, `UPPER "Foo"`, `BACKTICK_IDENT "div"`); all
+keywords/operators/punctuation + `NEWLINE`/`INDENT`/`DEDENT`/`EOF` render as the
+bare variant name. Indentation tokens are included on purpose — they are the
+lexer's trickiest logic and the main thing the port must reproduce.
+
+**Verified**: `dune build @thorough --root .` green (runs `thorough_diff.exe`);
+`tokenize_string` compiles with no non-exhaustive warning.
+
+---
+
 ## 4. Smaller cleanups (good warm-up tasks)
 
 See Phase 8.6 above for the consolidated housekeeping list. After the backend

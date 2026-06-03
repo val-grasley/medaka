@@ -45,6 +45,9 @@ let generate_golden src_file =
   let golden_file = Filename.remove_extension src_file ^ ".golden" in
   let src = read_file src_file in
 
+  (* ── Tokens section: raw lexer token stream (one per line) ───────────── *)
+  let tokens_str = String.concat "\n" (Lexer.tokenize_string src) in
+
   (* ── AST section: parse only → canonical round-trip printer ─────────── *)
   let ast_str =
     let decls = parse src in
@@ -81,8 +84,9 @@ let generate_golden src_file =
   in
 
   let oc = open_out golden_file in
-  Printf.fprintf oc "=== AST ===\n%s\n=== TYPES ===\n%s\n=== EVAL ===\n%s\n"
-    ast_str types_str (rstrip_nl eval_str);
+  Printf.fprintf oc
+    "=== TOKENS ===\n%s\n=== AST ===\n%s\n=== TYPES ===\n%s\n=== EVAL ===\n%s\n"
+    tokens_str ast_str types_str (rstrip_nl eval_str);
   close_out oc;
   Printf.printf "  wrote %s\n%!" (Filename.basename golden_file)
 
