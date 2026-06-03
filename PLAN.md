@@ -89,10 +89,13 @@ What's missing is the supporting surface a real multi-thousand-line program need
   **Scale-probed 2026-06-03** with a synthetic 25-module project (deep chains +
   diamonds + cross-module impls): deep linear import chains, diamond deps,
   qualified access, and generic dispatch over imported instances all hold up. The
-  probe surfaced **one hard gap — cross-module user-defined interfaces (Phase
-  130)** — plus a verbosity papercut (per-function `export` lines; importing
-  method names for `impl` bodies). Phase 130 is the blocker; clear it before the
-  port leans on multi-module interface organization.
+  probe surfaced one hard gap — cross-module user-defined interfaces — **now
+  closed (Phase 130 ✅)**: an interface declared in one module can be `impl`'d for
+  a type in another and its constraint discharged (directly *and* through a
+  generic constrained function) in a third, provided the `impl` is `export`ed. The
+  only residue is a verbosity papercut (per-function `export` lines; importing
+  method names for `impl` bodies) — ergonomic, not a blocker. Multi-file
+  ergonomics now hold up for the self-host port.
 
 ### Stage 1 — Self-host on the interpreter
 
