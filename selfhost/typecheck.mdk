@@ -11,7 +11,7 @@
 -- the prelude), effect rows, records, interfaces/impls + constraint solving,
 -- and explicit type signatures.
 
-import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), Decl(..)}
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
 public export data Mono
@@ -482,7 +482,42 @@ infer env (EInfix op l r) = inferInfix env op l r
 infer env (ERecordCreate name fields) = inferRecordCreate env name fields
 infer env (EFieldAccess e fname) = inferFieldAccess env e fname
 infer env (ERecordUpdate base fields) = inferRecordUpdate env base fields
+infer env (EBlock stmts) = inferBlock env stmts
 infer _ _ = panic "typecheck: unsupported expression (slice 1)"
+
+-- bare sequential block: value of the last statement; earlier statements typed
+-- for effect; let/assign extend the env
+inferBlock : Env -> List DoStmt -> <Mut> Mono
+inferBlock _ [] = TCon "Unit"
+inferBlock env [s] = inferLastStmt env s
+inferBlock env (s :: rest) = inferBlock (inferStmt env s) rest
+
+inferLastStmt : Env -> DoStmt -> <Mut> Mono
+inferLastStmt env (DoExpr e) = infer env e
+inferLastStmt env s =
+  let _ = inferStmt env s
+  TCon "Unit"
+
+inferStmt : Env -> DoStmt -> <Mut> Env
+inferStmt env (DoExpr e) =
+  let _ = infer env e
+  env
+inferStmt env (DoLet _ pat e) = blockLet env pat e
+inferStmt env (DoLetElse pat e _) = blockLet env pat e
+inferStmt env (DoAssign x e) = extendVar env x (monoScheme (infer env e))
+inferStmt _ _ = panic "typecheck: unsupported block statement"
+
+blockLet : Env -> Pat -> Expr -> <Mut> Env
+blockLet env (PVar x) e =
+  let _ = enterLevel ()
+  let t = infer env e
+  let _ = exitLevel ()
+  extendVar env x (generalize t)
+blockLet env pat e =
+  let t = infer env e
+  let pr = inferPat env pat
+  let _ = unify (fst pr) t
+  extendVars env (snd pr)
 
 inferRecordCreate : Env -> String -> List FieldAssign -> <Mut> Mono
 inferRecordCreate env name fields = match lookupRecordByName name
@@ -861,11 +896,17 @@ unifyClauses env v ((pats, body) :: rest) =
 
 export
 checkProgram : List Decl -> <Mut> List (String, Scheme)
-checkProgram prog =
+checkProgram prog = checkProgramSeeded [] prog
+
+-- [seed] are extern schemes from runtime.mdk: in scope for lookup (so core.mdk's
+-- use of putStrLn/etc. resolves) but NOT part of the output (mirrors the
+-- reference seeding Runtime.entries into initial_env, which aren't returned).
+checkProgramSeeded : List (String, Scheme) -> List Decl -> <Mut> List (String, Scheme)
+checkProgramSeeded seed prog =
   let _ = resetState ()
   let dataEnv = registerAllData initialEnv prog
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
-  let env1 = extendVars dataEnv globalS
+  let env1 = extendVars (extendVars dataEnv seed) globalS
   let defs = funDefs prog
   let sigs = sigsOf prog
   globalS ++ processTopGroups env1 sigs defs (groupNames defs [])
@@ -897,6 +938,58 @@ sigsOf [] = []
 sigsOf ((DTypeSig _ n ty) :: rest) = (n, ty) :: sigsOf rest
 sigsOf (_ :: rest) = sigsOf rest
 
+-- all free variable references in an expr (for the dependency graph); over-
+-- approximate (includes bound vars), filtered to top-level group names by caller
+allEVars : Expr -> List String
+allEVars (EVar x) = [x]
+allEVars (ELit _) = []
+allEVars (EApp f x) = allEVars f ++ allEVars x
+allEVars (ELam _ b) = allEVars b
+allEVars (ELet _ _ _ e1 e2) = allEVars e1 ++ allEVars e2
+allEVars (ELetGroup binds body) = concatMapL letBindEVars binds ++ allEVars body
+allEVars (EMatch e arms) = allEVars e ++ concatMapL armEVars arms
+allEVars (EIf c t e) = allEVars c ++ allEVars t ++ allEVars e
+allEVars (EBinOp _ l r) = allEVars l ++ allEVars r
+allEVars (EUnOp _ e) = allEVars e
+allEVars (EInfix op l r) = op :: allEVars l ++ allEVars r
+allEVars (EFieldAccess e _) = allEVars e
+allEVars (ETuple es) = concatMapL allEVars es
+allEVars (EListLit es) = concatMapL allEVars es
+allEVars (EArrayLit es) = concatMapL allEVars es
+allEVars (ERangeList a b _) = allEVars a ++ allEVars b
+allEVars (ERangeArray a b _) = allEVars a ++ allEVars b
+allEVars (ESlice e a b _) = allEVars e ++ allEVars a ++ allEVars b
+allEVars (EIndex e i) = allEVars e ++ allEVars i
+allEVars (EAnnot e _) = allEVars e
+allEVars (EBlock stmts) = concatMapL doStmtEVars stmts
+allEVars (ERecordCreate _ fs) = concatMapL fieldAssignEVars fs
+allEVars (ERecordUpdate e fs) = allEVars e ++ concatMapL fieldAssignEVars fs
+allEVars _ = []
+
+letBindEVars : LetBind -> List String
+letBindEVars (LetBind _ clauses) = concatMapL funClauseEVars clauses
+
+funClauseEVars : FunClause -> List String
+funClauseEVars (FunClause _ body) = allEVars body
+
+armEVars : Arm -> List String
+armEVars (Arm _ guards body) = concatMapL guardEVars guards ++ allEVars body
+
+guardEVars : Guard -> List String
+guardEVars (GBool e) = allEVars e
+guardEVars (GBind _ e) = allEVars e
+
+doStmtEVars : DoStmt -> List String
+doStmtEVars (DoExpr e) = allEVars e
+doStmtEVars (DoLet _ _ e) = allEVars e
+doStmtEVars (DoBind _ e) = allEVars e
+doStmtEVars (DoAssign _ e) = allEVars e
+doStmtEVars (DoFieldAssign _ _ e) = allEVars e
+doStmtEVars (DoLetElse _ e alt) = allEVars e ++ allEVars alt
+
+fieldAssignEVars : FieldAssign -> List String
+fieldAssignEVars (FieldAssign _ e) = allEVars e
+
 -- builtin constructors available without the prelude (mirrors initial_env)
 initialEnv : Env
 initialEnv = Env [] [("True", monoScheme (TCon "Bool")), ("False", monoScheme (TCon "Bool"))]
@@ -905,42 +998,184 @@ registerAllData : Env -> List Decl -> <Mut> Env
 registerAllData env [] = env
 registerAllData env (d :: rest) = registerAllData (registerData env d) rest
 
+-- ── dependency-ordered, SCC-merged letrec processing ──────────────────────
+-- The prelude has forward references and mutual recursion throughout, so groups
+-- must be type-checked in dependency order (a callee generalized before its
+-- callers instantiate it polymorphically) with mutually-recursive cycles merged
+-- into one letrec group (generalized together).  Mirrors the reference's
+-- order_groups_by_deps + process_letrec_group (Phase 136).
+
 processTopGroups : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
-processTopGroups _ _ _ [] = []
-processTopGroups env sigs defs (name :: rest) =
-  let sr = processTopGroup env sigs defs name
-  (name, snd sr) :: processTopGroups (fst sr) sigs defs rest
+processTopGroups env sigs defs names =
+  let graph = depGraph names defs
+  let reachMap = map (n => (n, reachFrom graph n)) names
+  let ordered = topoSCCs (sccsOf names reachMap) graph
+  processSCCs env sigs defs ordered
 
--- returns (env extended with the binding's scheme, its scheme).  A signed group
--- reports its declared scheme and checks the body against it; an unsignatured
--- group infers + generalizes.
-processTopGroup : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> String -> <Mut> (Env, Scheme)
-processTopGroup env sigs defs name = match lookupAssocS name sigs
-  Some ty => processSignedGroup env defs name ty
-  None => processInferredGroup env defs name
+-- dependency graph: each top-level name → the other top-level names its bodies
+-- reference (a conservative over-approximation via all free EVars is fine — only
+-- names that are themselves groups matter)
+depGraph : List String -> List (String, (List Pat, Expr)) -> List (String, List String)
+depGraph names defs = map (n => (n, depsOf n names defs)) names
 
-processSignedGroup : Env -> List (String, (List Pat, Expr)) -> String -> Ty -> <Mut> (Env, Scheme)
-processSignedGroup env defs name ty =
-  let sch = sigToScheme ty
-  let env2 = extendVar env name sch
+depsOf : String -> List String -> List (String, (List Pat, Expr)) -> List String
+depsOf name names defs =
+  filterNonSelf name (keepGroupNames names (dedupS (groupRefs (clausesFor name defs))))
+
+groupRefs : List (List Pat, Expr) -> List String
+groupRefs clauses = concatMapL clauseRefs clauses
+
+clauseRefs : (List Pat, Expr) -> List String
+clauseRefs (_, body) = allEVars body
+
+keepGroupNames : List String -> List String -> List String
+keepGroupNames names refs = filterList (r => containsName r names) refs
+
+filterNonSelf : String -> List String -> List String
+filterNonSelf name xs = filterList (x => x != name) xs
+
+filterList : (a -> Bool) -> List a -> List a
+filterList _ [] = []
+filterList p (x :: xs)
+  | p x = x :: filterList p xs
+  | otherwise = filterList p xs
+
+depsOfNode : List (String, List String) -> String -> List String
+depsOfNode graph n = fromOption [] (lookupAssocSL n graph)
+
+lookupAssocSL : String -> List (String, List String) -> Option (List String)
+lookupAssocSL _ [] = None
+lookupAssocSL k ((k2, v) :: rest)
+  | k == k2 = Some v
+  | otherwise = lookupAssocSL k rest
+
+-- transitive reachability from a node
+reachFrom : List (String, List String) -> String -> List String
+reachFrom graph start = reachGo graph (depsOfNode graph start) []
+
+reachGo : List (String, List String) -> List String -> List String -> List String
+reachGo _ [] visited = visited
+reachGo graph (n :: queue) visited
+  | containsName n visited = reachGo graph queue visited
+  | otherwise = reachGo graph (depsOfNode graph n ++ queue) (n :: visited)
+
+-- partition names into strongly-connected components (mutual reachability)
+sccsOf : List String -> List (String, List String) -> List (List String)
+sccsOf names reachMap = sccsGo names names reachMap []
+
+sccsGo : List String -> List String -> List (String, List String) -> List String -> List (List String)
+sccsGo [] _ _ _ = []
+sccsGo (n :: rest) allNames reachMap done
+  | containsName n done = sccsGo rest allNames reachMap done
+  | otherwise = membersOfSCC n allNames reachMap :: sccsGo rest allNames reachMap (membersOfSCC n allNames reachMap ++ done)
+
+membersOfSCC : String -> List String -> List (String, List String) -> List String
+membersOfSCC n allNames reachMap = filterList (m => sameSCC n m reachMap) allNames
+
+sameSCC : String -> String -> List (String, List String) -> Bool
+sameSCC u v reachMap
+  | u == v = True
+  | otherwise = reaches u v reachMap && reaches v u reachMap
+
+reaches : String -> String -> List (String, List String) -> Bool
+reaches u v reachMap = containsName v (fromOption [] (lookupAssocSL u reachMap))
+
+-- topologically order SCCs so dependencies are processed first
+topoSCCs : List (List String) -> List (String, List String) -> List (List String)
+topoSCCs sccs graph = topoGo sccs graph []
+
+topoGo : List (List String) -> List (String, List String) -> List String -> List (List String)
+topoGo [] _ _ = []
+topoGo sccs graph emitted = match firstReady sccs graph emitted
+  None => sccs
+  Some r => r :: topoGo (removeSCC r sccs) graph (r ++ emitted)
+
+firstReady : List (List String) -> List (String, List String) -> List String -> Option (List String)
+firstReady [] _ _ = None
+firstReady (scc :: rest) graph emitted
+  | sccReady scc graph emitted = Some scc
+  | otherwise = firstReady rest graph emitted
+
+sccReady : List String -> List (String, List String) -> List String -> Bool
+sccReady scc graph emitted = allL (extDepsReady scc emitted graph) scc
+
+extDepsReady : List String -> List String -> List (String, List String) -> String -> Bool
+extDepsReady scc emitted graph member =
+  allL (d => containsName d scc || containsName d emitted) (depsOfNode graph member)
+
+allL : (a -> Bool) -> List a -> Bool
+allL _ [] = True
+allL p (x :: xs) = p x && allL p xs
+
+removeSCC : List String -> List (List String) -> List (List String)
+removeSCC _ [] = []
+removeSCC target (scc :: rest)
+  | sccEq target scc = rest
+  | otherwise = scc :: removeSCC target rest
+
+sccEq : List String -> List String -> Bool
+sccEq a b = lengthL a == lengthL b && allL (x => containsName x b) a
+
+-- process each SCC as a letrec group in topological order
+processSCCs : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (List String) -> <Mut> List (String, Scheme)
+processSCCs _ _ _ [] = []
+processSCCs env sigs defs (scc :: rest) =
+  let er = processSCC env sigs defs scc
+  snd er ++ processSCCs (fst er) sigs defs rest
+
+processSCC : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> (Env, List (String, Scheme))
+processSCC env sigs defs members =
   let _ = enterLevel ()
-  let _ = unify (instantiate sch) (inferClauses env2 (clausesFor name defs))
+  let placeholders = map (m => (m, freshVar ())) members
+  let env2 = extendVars env (map placeholderBinding placeholders)
+  let _ = preunifySigs sigs placeholders
+  let _ = inferMembers env2 sigs defs placeholders
   let _ = exitLevel ()
-  (extendVar env name sch, sch)
+  let schemes = sccSchemes sigs placeholders
+  (extendVars env schemes, schemes)
 
-processInferredGroup : Env -> List (String, (List Pat, Expr)) -> String -> <Mut> (Env, Scheme)
-processInferredGroup env defs name =
-  let _ = enterLevel ()
-  let v = freshVar ()
-  let env2 = extendVar env name (monoScheme v)
-  let _ = unify v (inferClauses env2 (clausesFor name defs))
-  let _ = exitLevel ()
-  let scheme = generalize v
-  (extendVar env name scheme, scheme)
+placeholderBinding : (String, Mono) -> (String, Scheme)
+placeholderBinding (m, v) = (m, monoScheme v)
+
+-- Pass A: a signed member's placeholder is unified with an instantiation of its
+-- signature, so mutual-recursive callers see the declared (possibly polymorphic)
+-- type while the bodies are checked
+preunifySigs : List (String, Ty) -> List (String, Mono) -> <Mut> Unit
+preunifySigs _ [] = ()
+preunifySigs sigs ((m, v) :: rest) =
+  let _ = preunifySig sigs m v
+  preunifySigs sigs rest
+
+preunifySig : List (String, Ty) -> String -> Mono -> <Mut> Unit
+preunifySig sigs m v = match lookupAssocS m sigs
+  Some ty => unify v (instantiate (sigToScheme ty))
+  None => ()
+
+-- Pass B: infer each member's clauses, unifying with its placeholder
+inferMembers : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
+inferMembers _ _ _ [] = ()
+inferMembers env sigs defs ((m, v) :: rest) =
+  let _ = unify v (inferClauses env (clausesFor m defs))
+  inferMembers env sigs defs rest
+
+-- generalize each member's (sig-and-body-unified) placeholder.  A signature was
+-- already unified into the placeholder by preunifySigs, so generalizing the
+-- result respects it AND any further specialization the body forces (e.g.
+-- sum : t a -> a with body `fold (+) 0` reports a Int -> Int, not the raw sig).
+sccSchemes : List (String, Ty) -> List (String, Mono) -> <Mut> List (String, Scheme)
+sccSchemes _ [] = []
+sccSchemes sigs ((m, v) :: rest) = (m, generalize v) :: sccSchemes sigs rest
 
 export
 checkToLines : List Decl -> <Mut> String
 checkToLines prog = joinNl (schemeLines (checkProgram prog))
+
+-- like checkToLines but seeds runtime.mdk's externs (for typechecking core.mdk,
+-- which references putStrLn / etc. declared in runtime.mdk)
+export
+checkToLinesWithRuntime : List Decl -> List Decl -> <Mut> String
+checkToLinesWithRuntime runtimeDecls prog =
+  joinNl (schemeLines (checkProgramSeeded (externSchemes runtimeDecls) prog))
 
 schemeLines : List (String, Scheme) -> <Mut> List String
 schemeLines [] = []

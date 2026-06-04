@@ -43,7 +43,7 @@ diff with `lib/`:
 | `eval_main.mdk` | Runnable entry: `medaka run selfhost/eval_main.mdk <src.mdk>` parses + desugars a self-contained (prelude-free) file, evaluates it, prints `pp_value` of `main` (diffs against `dev/eval_probe.exe`). |
 | `eval_prelude_main.mdk` | Like `eval_main` but prepends one or more parsed prelude files: `medaka run selfhost/eval_prelude_main.mdk <prelude.mdk>... <src.mdk>` — `core.mdk` for interface methods, `+ list.mdk` for the List combinators / comprehensions (diffs against `dev/eval_probe.exe --prelude` / `--prepend`). |
 | `typecheck.mdk` | HM core (**slice 1**). `Mono`/`Scheme` + union-find `unify`, level-based `generalize`/`instantiate`, `pp_mono`, and `infer`/`inferPat`. `checkToLines : List Decl -> <Mut> String`. |
-| `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). Prelude-free / self-contained fixtures only. |
+| `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk [runtime.mdk] <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). With a runtime.mdk arg its externs are seeded into scope, so `core.mdk` (+ a user program) type-checks against the `=== TYPES ===` goldens. |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -221,7 +221,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
 | 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
 | 5 | 🚧 **eval** | ~2350 | hard (plumbing) | `program → values` | `dev/eval_probe.exe` (slice 1: engine core); later `=== EVAL ===` |
-| 6 | 🚧 **typecheck** | ~4650 | **very hard** | `program → schemes` | `dev/tc_probe.exe` (slice 1: HM core); later `=== TYPES ===` |
+| 6 | ✅ **typecheck** | ~4650 | **very hard** | `program → schemes` | `dev/tc_probe.exe` + **all 16 `=== TYPES ===` goldens** |
 
 1. ✅ **Desugar — DONE.** `selfhost/desugar.mdk` + `desugar_main.mdk`: the
    bottom-up `mapExpr`/`mapDecl` engine plus the passes `merge_iface_defaults →
@@ -386,12 +386,26 @@ Stage-0 prerequisites in `../PLAN.md`).
      literals, vars, application, lambdas, let (let-poly), let-groups, if,
      tuples, lists, annotations, ADT constructors (`DData` → ctor schemes), and
      match. 3/3 fixtures match (combinators, ADTs+patterns+recursion, let-poly).
-   - **Deferred to later slices:** operators (`EBinOp`/`EInfix` route through
-     `Num`/`Eq` from the prelude), **effect rows** (`TFun` currently has no effect
-     component; pure programs render bare, so this is invisible until effects
-     appear), records, explicit type signatures, interfaces/impls + constraint
-     solving, and the whole dict-passing / coherence layer — culminating in the
-     full-prelude slice that matches the `=== TYPES ===` goldens.
+   - **Slices 2–8 (DONE):** operators (by shape), type signatures, interface
+     method schemes, records, effect-row annotation labels, externs, and finally
+     **dependency-ordered SCC-merged letrec processing** — the prelude has
+     forward references and mutual recursion throughout, so groups are
+     type-checked in topological order (a callee generalized before its callers
+     instantiate it) with cycles merged into one letrec group. With runtime.mdk's
+     externs seeded into scope (not output, mirroring `initial_env`'s
+     `Runtime.entries`), the self-hosted typechecker infers the **entire
+     `core.mdk` prelude** (84/84 schemes) and matches **all 16 `=== TYPES ===`
+     goldens** (full prelude + user program) byte-for-byte. The key correctness
+     point: a signed binding reports its sig *unified with its body* generalized
+     (so `sum : (Foldable t, Num a) => t a -> a` with body `fold (+) 0` reports
+     the specialized `a Int -> Int`), not the raw sig.
+   - **Not needed for `=== TYPES ===` (constraints aren't rendered):** the
+     constraint-solving / coherence / dict-passing machinery. It IS needed for a
+     complete self-hosted *elaboration* (mark → typecheck → dict_pass → eval), but
+     the type-scheme output the goldens check is constraint-free.
+   - **Genuine remaining limits** (don't surface in the goldens): inferred effect
+     *propagation* (an unsigned function calling an effectful extern), and the
+     "signature too general" error.
 
 **Ordering rationale.** Easy-first builds momentum and reuses the existing
 harness while Medaka fluency matures, leaving the type checker for last. Note the
