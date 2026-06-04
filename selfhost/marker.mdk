@@ -111,11 +111,11 @@ subName renames x
 -- A prelude *constrained* plain function (e.g. `count : Foldable t => …`) that
 -- a user file shadows with its own (unconstrained) definition must NOT mark the
 -- user's references as EDictApp.  Mirror of mark_with_prelude's adjustment:
--- remove from the constrained set any prelude plain-fn name the user shadows and
--- does not itself re-declare constrained.  (Simplified: the reference further
--- restricts to *droppable* prelude fns — those no other prelude decl references;
--- the corpus's shadowed names — count, find — are all droppable, so the
--- droppable check is added only if a file needs it.)
+-- remove from the constrained set any *droppable* prelude plain-fn name the user
+-- shadows and does not itself re-declare constrained.  "Droppable" = not
+-- referenced by any other prelude decl: count/find (mut_array/array) are
+-- droppable and get removed; clamp (used in a core prop) is NOT, so guards.mdk's
+-- shadow doesn't remove it and its `clamp` references stay marked.
 preludePlainFnNames : List Decl -> List String
 preludePlainFnNames prelude = keepNotIn (interfaceMethodNames prelude) (allFunDefNames prelude)
 
@@ -131,6 +131,122 @@ keepNotIn pool (x :: xs)
   | contains x pool = keepNotIn pool xs
   | otherwise = x :: keepNotIn pool xs
 
+-- A prelude plain fn is *droppable* only if no OTHER prelude decl references it
+-- (dropping one the prelude uses internally — e.g. `clamp`, used in a core prop —
+-- would silently rebind those uses).  droppable = plain fns − externally-referenced.
+droppablePreludeFns : List Decl -> List String
+droppablePreludeFns prelude = keepNotIn (externalRefs prelude) (preludePlainFnNames prelude)
+
+externalRefs : List Decl -> List String
+externalRefs prelude = concatMapList declExternalRefs prelude
+
+declExternalRefs : Decl -> List String
+declExternalRefs d = keepNotIn (declDefines d) (declRefs d)
+
+declDefines : Decl -> List String
+declDefines (DFunDef _ n _ _) = [n]
+declDefines (DImpl _ _ _ _ _ _ methods) = map implMethodNameOf methods
+declDefines (DInterface _ _ _ _ _ methods) = map ifaceMethodName methods
+declDefines _ = []
+
+implMethodNameOf : ImplMethod -> String
+implMethodNameOf (ImplMethod n _ _) = n
+
+declRefs : Decl -> List String
+declRefs d = concatMapList collectVars (declBodies d)
+
+declBodies : Decl -> List Expr
+declBodies (DFunDef _ _ _ body) = [body]
+declBodies (DImpl _ _ _ _ _ _ methods) = map implMethodBody methods
+declBodies (DInterface _ _ _ _ _ methods) = concatMapList ifaceMethodBodies methods
+declBodies (DProp _ _ _ body) = [body]
+declBodies (DTest _ _ body) = [body]
+declBodies (DBench _ _ body) = [body]
+declBodies _ = []
+
+implMethodBody : ImplMethod -> Expr
+implMethodBody (ImplMethod _ _ body) = body
+
+ifaceMethodBodies : IfaceMethod -> List Expr
+ifaceMethodBodies (IfaceMethod _ _ (Some (MethodDefault _ body))) = [body]
+ifaceMethodBodies (IfaceMethod _ _ None) = []
+
+concatMapList : (a -> List b) -> List a -> List b
+concatMapList _ [] = []
+concatMapList f (x :: xs) = f x ++ concatMapList f xs
+
+-- all referenced names (EVar/EMethodRef/EDictApp) in an expr tree
+collectVars : Expr -> List String
+collectVars (EVar x) = [x]
+collectVars (EMethodRef x) = [x]
+collectVars (EDictApp x) = [x]
+collectVars (EApp a b) = collectVars a ++ collectVars b
+collectVars (ELam _ b) = collectVars b
+collectVars (ELet _ _ _ e1 e2) = collectVars e1 ++ collectVars e2
+collectVars (ELetGroup bs e2) = concatMapList letBindVars bs ++ collectVars e2
+collectVars (EMatch e0 arms) = collectVars e0 ++ concatMapList armVars arms
+collectVars (EIf c t el) = collectVars c ++ collectVars t ++ collectVars el
+collectVars (EBinOp _ a b) = collectVars a ++ collectVars b
+collectVars (EUnOp _ a) = collectVars a
+collectVars (EInfix _ a b) = collectVars a ++ collectVars b
+collectVars (EFieldAccess e0 _) = collectVars e0
+collectVars (ERecordCreate _ fs) = concatMapList fieldAssignVars fs
+collectVars (ERecordUpdate e0 fs) = collectVars e0 ++ concatMapList fieldAssignVars fs
+collectVars (EArrayLit es) = concatMapList collectVars es
+collectVars (EListLit es) = concatMapList collectVars es
+collectVars (ETuple es) = concatMapList collectVars es
+collectVars (EIndex e0 i) = collectVars e0 ++ collectVars i
+collectVars (ERangeList lo hi _) = collectVars lo ++ collectVars hi
+collectVars (ERangeArray lo hi _) = collectVars lo ++ collectVars hi
+collectVars (ESlice e0 lo hi _) = collectVars e0 ++ collectVars lo ++ collectVars hi
+collectVars (EBlock stmts) = concatMapList doStmtVars stmts
+collectVars (EDo stmts) = concatMapList doStmtVars stmts
+collectVars (EAnnot e0 _) = collectVars e0
+collectVars (EListComp body quals) = collectVars body ++ concatMapList lcQualVars quals
+collectVars (EQuestion e0) = collectVars e0
+collectVars (EStringInterp parts) = concatMapList interpVars parts
+collectVars (EGuards arms) = concatMapList guardArmVars arms
+collectVars (EFunction arms) = concatMapList armVars arms
+collectVars (ESection (SecRight _ e0)) = collectVars e0
+collectVars (ESection (SecLeft e0 _)) = collectVars e0
+collectVars _ = []
+
+letBindVars : LetBind -> List String
+letBindVars (LetBind _ clauses) = concatMapList funClauseVars clauses
+
+funClauseVars : FunClause -> List String
+funClauseVars (FunClause _ body) = collectVars body
+
+armVars : Arm -> List String
+armVars (Arm _ gs body) = concatMapList guardVars gs ++ collectVars body
+
+guardVars : Guard -> List String
+guardVars (GBool e) = collectVars e
+guardVars (GBind _ e) = collectVars e
+
+guardArmVars : GuardArm -> List String
+guardArmVars (GuardArm gs body) = concatMapList guardVars gs ++ collectVars body
+
+fieldAssignVars : FieldAssign -> List String
+fieldAssignVars (FieldAssign _ e) = collectVars e
+
+doStmtVars : DoStmt -> List String
+doStmtVars (DoExpr e) = collectVars e
+doStmtVars (DoBind _ e) = collectVars e
+doStmtVars (DoLet _ _ e) = collectVars e
+doStmtVars (DoAssign _ e) = collectVars e
+doStmtVars (DoFieldAssign _ _ e) = collectVars e
+doStmtVars (DoLetElse _ e alt) = collectVars e ++ collectVars alt
+
+lcQualVars : LcQual -> List String
+lcQualVars (LCGen _ e) = collectVars e
+lcQualVars (LCGuard e) = collectVars e
+lcQualVars (LCLet _ _ e) = collectVars e
+
+interpVars : InterpPart -> List String
+interpVars (InterpStr _) = []
+interpVars (InterpExpr e) = collectVars e
+
 -- ── Top-level entry ───────────────────────────────────────────────────────
 -- `preludeProg` is the desugared prelude (core.mdk); `prog` the desugared
 -- target.  shadow_rename (78b) first, then mark against the union of prelude +
@@ -141,7 +257,7 @@ markWithPrelude preludeProg prog =
   let preludeMethods = interfaceMethodNames preludeProg
   let prog2 = shadowRename preludeMethods prog
   let methods = preludeMethods ++ interfaceMethodNames prog2
-  let shadowed = keepIn (preludePlainFnNames preludeProg) (userValueNames prog2)
+  let shadowed = keepIn (droppablePreludeFns preludeProg) (userValueNames prog2)
   let userConstrained = constrainedFnNames prog2
   let toRemove = keepNotIn userConstrained shadowed
   let constrained = keepNotIn toRemove (constrainedFnNames preludeProg ++ userConstrained)
