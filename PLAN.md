@@ -127,7 +127,7 @@ differential harness on the interpreter.
   `do`/`Thenable`/a custom `Parser` monad, same AST output, 10/10 corpus.
   Gotcha for combinators under strict eval: recursive parsers must recurse via a
   `do`-continuation, not by passing themselves as a strict arg (recursive-value
-  init cycle). **Slices 4–6 done:** multi-statement blocks (`EBlock`/`EDo`), effect types (`<IO> …`), and `data`/`record` declarations — **9/15 real `test/diff_fixtures/` files now parse identically to the reference**. Remaining need string interp, function guards, and record literal/update exprs.
+  init cycle). **Slices 4–7 done:** multi-statement blocks, effect types, `data`/`record` decls, and string interpolation — **11/15 real `test/diff_fixtures/` files now parse identically to the reference**. Remaining 4 need function guards, unary minus, expression annotations, and record literal/update exprs.
 
 ### Stage 2 — LLVM backend (after self-host)
 

@@ -3,7 +3,7 @@
 -- reference.  Tags are the lib/ast.ml constructor names.  Coverage grows with
 -- the AST/parser; new variants get a matching clause here.
 
-import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), DoStmt(..), Expr(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), Expr(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 
 -- shared minimal string escaping — must match dev/astdump.ml's esc_str
 escStr : String -> String
@@ -101,6 +101,11 @@ exprSexp (EIndex a i) = node "EIndex" [exprSexp a, exprSexp i]
 exprSexp (EAnnot e t) = node "EAnnot" [exprSexp e, tySexp t]
 exprSexp (EBlock stmts) = node "EBlock" (map doStmtSexp stmts)
 exprSexp (EDo stmts) = node "EDo" (map doStmtSexp stmts)
+exprSexp (EStringInterp parts) = node "EStringInterp" (map interpPartSexp parts)
+
+interpPartSexp : InterpPart -> String
+interpPartSexp (InterpStr s) = node "InterpStr" [escStr s]
+interpPartSexp (InterpExpr e) = node "InterpExpr" [exprSexp e]
 
 doStmtSexp : DoStmt -> String
 doStmtSexp (DoExpr e) = node "DoExpr" [exprSexp e]

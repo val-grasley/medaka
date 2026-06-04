@@ -48,6 +48,11 @@ public export data DoStmt
   | DoLet Bool Pat Expr
   | DoAssign String Expr
 
+-- parts of an interpolated string `"…\{expr}…"`
+public export data InterpPart
+  = InterpStr String
+  | InterpExpr Expr
+
 public export data Expr
   = ELit Lit
   | EVar String
@@ -67,6 +72,7 @@ public export data Expr
   | EAnnot Expr Ty
   | EBlock (List DoStmt)
   | EDo (List DoStmt)
+  | EStringInterp (List InterpPart)
 
 -- data/record declarations
 public export data DataVis = VisPrivate | VisAbstract | VisPublic

@@ -15,7 +15,7 @@
 -- `DFunDef`/`DTypeSig`.  Multi-statement indented blocks, the remaining decl
 -- forms, and the rest of the operator ladder come in later slices.
 
-import ast.{Lit(..), Ty(..), Pat(..), Arm(..), DoStmt(..), Expr(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), Arm(..), DoStmt(..), InterpPart(..), Expr(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 import lexer.{Token(..), tokenize}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -287,7 +287,46 @@ atomFor TIf = parseIf
 atomFor TLet = parseLet
 atomFor TMatch = parseMatch
 atomFor TDo = parseDo
+atomFor (TInterpOpen _) = parseInterp
 atomFor _ = failP "expected atom"
+
+-- interpolated string: INTERP_OPEN <expr> (INTERP_MID <expr>)* INTERP_END,
+-- assembled into alternating InterpStr / InterpExpr parts
+parseInterp : Parser Expr
+parseInterp =
+  do
+    s0 <- interpOpenStr
+    rest <- interpRest
+    pure (EStringInterp (InterpStr s0 :: rest))
+
+interpOpenStr : Parser String
+interpOpenStr =
+  do
+    t <- peekP
+    interpOpenFor t
+
+interpOpenFor : Token -> Parser String
+interpOpenFor (TInterpOpen s) = emit s
+interpOpenFor _ = failP "expected interpolation open"
+
+interpRest : Parser (List InterpPart)
+interpRest =
+  do
+    e <- parseExpr
+    t <- peekP
+    interpRestFor e t
+
+interpRestFor : Expr -> Token -> Parser (List InterpPart)
+interpRestFor e (TInterpMid s) =
+  do
+    advance
+    rest <- interpRest
+    pure (InterpExpr e :: InterpStr s :: rest)
+interpRestFor e (TInterpEnd s) =
+  do
+    advance
+    pure [InterpExpr e, InterpStr s]
+interpRestFor e _ = failP "expected interpolation mid/end"
 
 tupleOrSingle : List Expr -> Expr
 tupleOrSingle [e] = e

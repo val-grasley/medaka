@@ -99,14 +99,14 @@ the stage is done when all pass.
 - ✅ **Slice 5**: effect types (`<IO> Unit`, `<IO, Mut> a`, `<IO | e> a`, the bare
   tail `<e> a`).
 - ✅ **Slice 6**: `data`/`record` declarations — inline + block forms,
-  visibility prefixes (`export`/`public export`), positional and named-field
-  (`{ x : Int }`) constructor payloads, and `deriving (…)`. **9/15 real
-  `test/diff_fixtures/` files now parse identically to the reference.**
-- ⏳ Remaining real fixtures need: string interpolation (`adt_maybe`,
-  `string_ops`), function guards (`guards`), record literal/update expressions
-  (`record`), and a couple of constructs in `if_else`/`list`. End goal: parse all
-  of `test/diff_fixtures/` + the stdlib, like the lexer's 13/13. Stays
-  prelude-only.
+  visibility prefixes, positional and named-field payloads, `deriving (…)`.
+- ✅ **Slice 7**: string interpolation (`"…\{expr}…"` → `EStringInterp` of
+  alternating `InterpStr`/`InterpExpr` parts). **11/15 real `test/diff_fixtures/`
+  files now parse identically to the reference.**
+- ⏳ Remaining 4 real fixtures need: function guards (`guards`), unary minus
+  (`if_else`), expression type annotations + `_` lambda params (`list`), and
+  record literal/update expressions (`record`). End goal: all of
+  `test/diff_fixtures/` + the stdlib, like the lexer's 13/13. Stays prelude-only.
 
   *(Parser combinators were spiked and parked — blocked on Phase 136; see PLAN.)*
 
