@@ -104,12 +104,55 @@ mapImplMethod f (ImplMethod n ps e) = ImplMethod n ps (mapExpr f e)
 mapProg : (Expr -> Expr) -> List Decl -> List Decl
 mapProg f prog = map (mapDecl f) prog
 
--- ── The pass pipeline ─────────────────────────────────────────────────────
--- Ported incrementally; identity for now (exercises the traversal engine and
--- matches the 31 corpus files desugar leaves unchanged).
-idRewrite : Expr -> Expr
-idRewrite e = e
+-- ── Pass: desugar_sugar (guards / function / sections / interpolation) ────
+-- Mirror of lib/desugar.ml's rewrite_sugar, applied bottom-up by mapProg.
+rewriteSugar : Expr -> Expr
+rewriteSugar (EGuards arms) = guardsToCore arms
+rewriteSugar (EFunction arms) = ELam [PVar "__fn_arg"] (EMatch (EVar "__fn_arg") arms)
+rewriteSugar (ESection s) = sectionToCore s
+rewriteSugar (EStringInterp parts) = interpToCore parts
+rewriteSugar e = e
 
+-- guard arms → nested if/match, terminated by `__fallthrough__ ()` (fold_right)
+guardsToCore : List GuardArm -> Expr
+guardsToCore [] = fallthrough
+guardsToCore ((GuardArm quals body) :: rest) = armChain quals body (guardsToCore rest)
+
+fallthrough : Expr
+fallthrough = EApp (EVar "__fallthrough__") (ELit LUnit)
+
+armChain : List Guard -> Expr -> Expr -> Expr
+armChain [] body _ = body
+armChain ((GBool e) :: qs) body els = EIf e (armChain qs body els) els
+armChain ((GBind p e) :: qs) body els = EMatch e [Arm p [] (armChain qs body els), Arm PWild [] els]
+
+-- operator sections → lambdas
+sectionToCore : Section -> Expr
+sectionToCore (SecBare op) = ELam [PVar "_a", PVar "_b"] (EBinOp op (EVar "_a") (EVar "_b"))
+sectionToCore (SecRight op e) = ELam [PVar "_s"] (EBinOp op (EVar "_s") e)
+sectionToCore (SecLeft e op) = ELam [PVar "_s"] (EBinOp op e (EVar "_s"))
+
+-- `"a\{e}b"` → `"a" ++ display e ++ "b"` (left-associated `++`)
+interpToCore : List InterpPart -> Expr
+interpToCore parts = concatStrings (map interpPartToExpr parts)
+
+interpPartToExpr : InterpPart -> Expr
+interpPartToExpr (InterpStr s) = ELit (LString s)
+interpPartToExpr (InterpExpr e) = EApp (EVar "display") e
+
+concatStrings : List Expr -> Expr
+concatStrings [] = ELit (LString "")
+concatStrings [x] = x
+concatStrings (first :: rest) = concatLeft first rest
+
+concatLeft : Expr -> List Expr -> Expr
+concatLeft acc [] = acc
+concatLeft acc (e :: rest) = concatLeft (EBinOp "++" acc e) rest
+
+-- ── The pass pipeline ─────────────────────────────────────────────────────
+-- Ported incrementally.  So far: desugar_sugar (the final reference pass).
+-- Coming: deriving expansion, record puns, container literals, list comps, `?`,
+-- and do-blocks — each runs before desugar_sugar in the reference order.
 export
 desugar : List Decl -> List Decl
-desugar prog = mapProg idRewrite prog
+desugar prog = mapProg rewriteSugar prog
