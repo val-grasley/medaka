@@ -128,6 +128,24 @@ differential harness on the interpreter.
   Gotcha for combinators under strict eval: recursive parsers must recurse via a
   `do`-continuation, not by passing themselves as a strict arg (recursive-value
   init cycle). **Slices 4–7 done:** multi-statement blocks, effect types, `data`/`record` decls, and string interpolation — **11/15 real `test/diff_fixtures/` files now parse identically to the reference**. Remaining 4 need function guards, unary minus, expression annotations, and record literal/update exprs.
+  **Slices 8–13 + Stage 1 done** (full slice log in `selfhost/README.md`):
+  validated byte-for-byte on all 13 stdlib files, 23/23 curated
+  `test/parse_fixtures/`, the 15 real `test/diff_fixtures/`, and the 6-file
+  self-source.
+
+  **Known parser gaps — deferred surface constructs.** No stdlib or `selfhost/`
+  file exercises these, so the port never needed them; toy coverage of the
+  *supported* rares lives in `test/parse_fixtures/rare_constructs.mdk`. The
+  self-hosted parser has **no AST node / production** yet for: list
+  comprehensions (`EListComp`), the `function` keyword (`EFunction`), the `?`
+  try-operator (`EQuestion`), array slices `e.[lo..hi]` (`ESlice`), and array
+  ranges `[|lo..hi|]` (`ERangeArray`). `let mut` assignment is partial — the
+  `DoAssign` ctor exists in `selfhost/ast.mdk` but the block parser doesn't build
+  it. Two more — let-else (`DoLetElse`) and range patterns `lo..=hi` (`PRng`) —
+  also lack a `dev/astdump.ml` serialization (they render as `TODO`), so they
+  can't be differentially tested on *either* side until the reference dumper is
+  extended first. Closing these is required before the self-hosted parser can
+  claim full surface-grammar coverage.
 
 ### Stage 2 — LLVM backend (after self-host)
 
