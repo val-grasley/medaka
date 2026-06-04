@@ -71,8 +71,9 @@ the stage is done when all pass.
 
 - ✅ Scaffold + harness wiring (token ADT, canonical serializer, runnable entry,
   diff loop).
-- ✅ Tokenizer ported: int/float/string/char literals (with char escapes
-  `\n \t \r \0 \\ \'` + `\u{…}`, mirroring Phase 133) + hex/bin/oct literals,
+- ✅ Tokenizer ported: int/float/string/char literals (with escapes
+  `\n \t \r \0 \\ \"`, char-only `\'`, and the `\u{…}` unicode escape in **both**
+  string and char literals — every escape rule of `lib/lexer.mll`) + hex/bin/oct literals,
   idents/keywords, operators/punctuation, line + nestable `{- … -}` block
   comments, **string interpolation**, the `@`/`AS_AT` adjacency rule, and the
   INDENT/DEDENT/NEWLINE layout algorithm (plus else-continuation filter and
@@ -84,18 +85,22 @@ the stage is done when all pass.
   depth so the closing `}` resumes the triple continuation (vs the single-string
   one). Covered by `test/diff_fixtures/triple_str.mdk`.
 - ✅ **Validated two ways**, both byte-for-byte against the OCaml reference:
-  - **16/16 curated fixtures** — `sh test/diff_selfhost_lexer.sh`.
-  - **13/13 real `.mdk` files** (every stdlib module + this lexer lexing itself)
+  - **17/17 curated fixtures** — `sh test/diff_selfhost_lexer.sh`.
+  - **All real `.mdk` files** (every stdlib module + this lexer lexing itself)
     — `sh test/diff_selfhost_lex_files.sh`, which diffs against
     `dev/lextok.exe` (the OCaml reference dumper). FLOAT literal *text* is
     normalized away (OCaml `%g` vs `floatToString`: `1.0` → `1` vs `1.`; the
-    TFloat value is identical). One more serialization-only nuance, not hit by
-    any real file: control bytes in STRING/CHAR render `\0` (`debugStringLit`)
-    vs `\000` (`%S`) — same value, different debug escaping.
-- ✅ Lexer surface complete. The only unhandled construct is *nested* string
-  interpolation (a `"…"` string literal inside a `\{…}` expression) — but the
-  OCaml reference rejects it too ("Unterminated string literal"), so it isn't
-  valid Medaka and there's nothing to mirror.
+    TFloat value is identical). One more serialization-only nuance: non-ASCII /
+    control bytes in STRING/CHAR render raw (`debugStringLit`) vs `\NNN`-escaped
+    (`%S`) — same value, different debug escaping.
+- ✅ **Lexer fully in line with the OCaml counterpart** (`lib/lexer.mll`): every
+  pattern the reference lexer accepts, the self-hosted lexer accepts, producing
+  the identical token *values*. The only divergences are the two
+  serialization-only debug-rendering nuances above (FLOAT text, non-ASCII byte
+  escaping) — the token values match. The one construct neither lexer handles is
+  *nested* string interpolation (a `"…"` string literal inside a `\{…}`
+  expression), which the OCaml reference rejects too ("Unterminated string
+  literal"), so it isn't valid Medaka and there's nothing to mirror.
 
 ### Parser (Stage 1, in progress)
 

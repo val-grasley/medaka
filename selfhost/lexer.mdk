@@ -1,7 +1,9 @@
 -- Self-hosted Medaka lexer — Stage 1 port of `lib/lexer.mll`.
 --
--- STATUS: tokenizer ported — int/float/string/char literals (with char escapes
--- `\n \t \r \0 \\ \'` + `\u{…}`, mirroring Phase 133) + hex/bin/oct ints,
+-- STATUS: tokenizer ported — int/float/string/char literals (with escapes
+-- `\n \t \r \0 \\ \"`, char-only `\'`, and the `\u{…}` unicode escape in *both*
+-- string and char literals — mirroring lib/lexer.mll's read_string /
+-- read_triple_string / read_interp_continue / read_char) + hex/bin/oct ints,
 -- idents/keywords, operators/punctuation, line + `{- … -}` (nestable) block
 -- comments, string interpolation (`\{expr}` → INTERP_OPEN/MID/END), triple-
 -- quoted strings (`""" … """` with `stripIndent` dedent + their own
@@ -488,6 +490,7 @@ scanStrEsc src len p depth id acc e
   | isBackslash e = scanStr src len (p + 2) depth id (acc ++ "\\")
   | e == 'r' = scanStr src len (p + 2) depth id (acc ++ "\r")
   | e == '0' = scanStr src len (p + 2) depth id (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
+  | isUnicodeEsc src len p e = scanStr src len (uniEscEnd src len p) depth id (acc ++ uniEscStr src len p)
   | otherwise = scanStr src len (p + 2) depth id (acc ++ charToStr e)
 
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
@@ -507,6 +510,7 @@ scanInterpEsc src len p depth acc e
   | isBackslash e = scanInterpCont src len (p + 2) depth (acc ++ "\\")
   | e == 'r' = scanInterpCont src len (p + 2) depth (acc ++ "\r")
   | e == '0' = scanInterpCont src len (p + 2) depth (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
+  | isUnicodeEsc src len p e = scanInterpCont src len (uniEscEnd src len p) depth (acc ++ uniEscStr src len p)
   | otherwise = scanInterpCont src len (p + 2) depth (acc ++ charToStr e)
 
 -- ── Triple-quoted strings (`""" … """`) ─────────────────────────────────
@@ -549,6 +553,7 @@ scanTripleEsc src len p depth id leadingNl acc e
   | isBackslash e = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\\")
   | e == 'r' = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\r")
   | e == '0' = scanTriple src len (p + 2) depth id leadingNl (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
+  | isUnicodeEsc src len p e = scanTriple src len (uniEscEnd src len p) depth id leadingNl (acc ++ uniEscStr src len p)
   | otherwise = scanTriple src len (p + 2) depth id leadingNl (acc ++ charToStr e)
 
 -- string part after an interpolation opened from a triple string closes
@@ -572,6 +577,7 @@ scanInterpTripleEsc src len p depth acc e
   | isBackslash e = scanInterpTripleCont src len (p + 2) depth (acc ++ "\\")
   | e == 'r' = scanInterpTripleCont src len (p + 2) depth (acc ++ "\r")
   | e == '0' = scanInterpTripleCont src len (p + 2) depth (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
+  | isUnicodeEsc src len p e = scanInterpTripleCont src len (uniEscEnd src len p) depth (acc ++ uniEscStr src len p)
   | otherwise = scanInterpTripleCont src len (p + 2) depth (acc ++ charToStr e)
 
 -- Strip the common leading indentation from a multiline string that opens with
@@ -689,6 +695,23 @@ uHexEnd : Array Char -> Int -> Int -> Int
 uHexEnd src len p
   | p < len && isHexDigit (at src p) = uHexEnd src len (p + 1)
   | otherwise = p
+
+-- ── `\u{HEX}` unicode escapes inside *strings* (mirrors lib/lexer.mll's
+-- `'\\' 'u' '{' hex '}'` rule in read_string / read_triple_string /
+-- read_interp_continue / read_interp_triple_continue).  `p` is at the backslash;
+-- the codepoint is the hex run after `\u{`, terminated by `}`.  Unlike the char
+-- form there is no trailing closing quote, so the resume position is just past
+-- the `}` (he + 1).  `isUnicodeEsc` is the guard the escape handlers test before
+-- decoding: the char after the backslash is `u` and is followed by `{`.
+isUnicodeEsc : Array Char -> Int -> Int -> Char -> Bool
+isUnicodeEsc src len p e = e == 'u' && p + 2 < len && at src (p + 2) == '{'
+
+uniEscStr : Array Char -> Int -> Int -> String
+uniEscStr src len p =
+  charToStr (fromOption ' ' (charFromCode (parseRadix src (p + 3) (uHexEnd src len (p + 3)) 16 0)))
+
+uniEscEnd : Array Char -> Int -> Int -> Int
+uniEscEnd src len p = uHexEnd src len (p + 3) + 1
 
 -- operators + punctuation
 emit : Array Char -> Int -> Int -> Int -> Int -> Token -> Int -> Int -> List RawTok
