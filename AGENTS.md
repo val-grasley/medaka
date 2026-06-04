@@ -198,6 +198,32 @@ Dev probes (build to `_build/default/dev/`):
   `PLAN.md`; the completed Phases 1–97 (with implementation notes) are in
   `PLAN-ARCHIVE.md`. Commit messages and code comments reference phase numbers.
 
+## Dogfooding the language
+
+The stdlib and `selfhost/` are written *in* Medaka, so prefer its idioms. A
+handful of constructs parse and work but are **under-used** — when you touch
+nearby code, consider them, but **only where they genuinely improve
+readability**. Don't force-fit: most candidate sites aren't improvements, and a
+rewrite that doesn't typecheck or that changes semantics is worse than the
+original. **Verify the rewrite on the binary** (`medaka test <file>`) — a
+plausible-looking change here is often wrong (e.g. `function` only applies when
+the body matches the *bare last param*, not `match (g param)`; a comprehension
+desugars over `List`, so `map` over an `Option`/`Array` won't convert).
+
+- **Operator sections** — `(==)`, `(+ 1)`, `(2 * _)` (left needs explicit `_`)
+  instead of `(x y => x == y)` / `(x => x + 1)` lambdas.
+- **List comprehensions** — `[f x | x <- xs, p x]` *only* when there's a guard
+  or a destructuring lambda to remove; a plain `map f xs` already beats
+  `[f x | x <- xs]`.
+- **`function` keyword** — point-free match, only when the body is
+  `match <lastParam>` on the bare final argument.
+- Pipe `|>` / compose `>> <<`, inclusive ranges `[lo..=hi]`, record update
+  `{ r | f = v }`, `let mut`, unary `!`, backtick infix `` `f` ``.
+
+`SYNTAX.md` is the ground-truth list of what parses; `test/parse_fixtures/rare_constructs.mdk`
+has minimal examples. The self-hosted parser doesn't cover all of these yet —
+see PLAN.md "Known parser gaps" before assuming `selfhost/` can parse one.
+
 ## Writing tests
 
 alcotest-based. Tests are self-diagnosing: embed the source under test in the
