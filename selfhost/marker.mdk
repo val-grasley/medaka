@@ -21,8 +21,9 @@ import desugar.{mapProg, mapExpr, mapDecl}
 -- Interface method names declared across the decls (DInterface methods).
 interfaceMethodNames : List Decl -> List String
 interfaceMethodNames [] = []
-interfaceMethodNames ((DInterface _ _ _ _ _ methods) :: rest) = map ifaceMethodName methods ++ interfaceMethodNames rest
-interfaceMethodNames (_ :: rest) = interfaceMethodNames rest
+interfaceMethodNames ((DInterface _ _ _ _ _ methods)::rest) = map ifaceMethodName methods
+  ++ interfaceMethodNames rest
+interfaceMethodNames (_::rest) = interfaceMethodNames rest
 
 ifaceMethodName : IfaceMethod -> String
 ifaceMethodName (IfaceMethod n _ _) = n
@@ -30,8 +31,9 @@ ifaceMethodName (IfaceMethod n _ _) = n
 -- Names of functions whose declared signature carries a constraint (`Foo a =>`).
 constrainedFnNames : List Decl -> List String
 constrainedFnNames [] = []
-constrainedFnNames ((DTypeSig _ name ty) :: rest) = constrainedAdd name ty (constrainedFnNames rest)
-constrainedFnNames (_ :: rest) = constrainedFnNames rest
+constrainedFnNames ((DTypeSig _ name ty)::rest) =
+  constrainedAdd name ty (constrainedFnNames rest)
+constrainedFnNames (_::rest) = constrainedFnNames rest
 
 constrainedAdd : String -> Ty -> List String -> List String
 constrainedAdd name (TyConstrained _ _) acc = name :: acc
@@ -39,13 +41,14 @@ constrainedAdd _ _ acc = acc
 
 contains : String -> List String -> Bool
 contains _ [] = False
-contains x (y :: ys) = x == y || contains x ys
+contains x (y::ys) = x == y || contains x ys
 
 -- ── The marking rewrite ───────────────────────────────────────────────────
 -- Method names take precedence over constrained-function names.
 markNode : List String -> List String -> Expr -> Expr
 markNode methods constrained (EVar x) = markVar methods constrained x
-markNode methods constrained (EInfix op l r) = markInfix methods constrained op l r
+markNode methods constrained (EInfix op l r) =
+  markInfix methods constrained op l r
 markNode _ _ e = e
 
 markVar : List String -> List String -> String -> Expr
@@ -61,7 +64,8 @@ markInfix methods constrained op l r
   | otherwise = EInfix op l r
 
 markProgram : List String -> List String -> List Decl -> List Decl
-markProgram methods constrained prog = mapProg (markNode methods constrained) prog
+markProgram methods constrained prog =
+  mapProg (markNode methods constrained) prog
 
 -- ── Phase 78b: shadow_rename ──────────────────────────────────────────────
 -- A user top-level function whose name collides with a prelude interface method
@@ -71,19 +75,20 @@ markProgram methods constrained prog = mapProg (markNode methods constrained) pr
 -- rebound elsewhere; no corpus file uses a method name as a local binder, so
 -- that exclusion is added only if a file needs it.)
 shadowRename : List String -> List Decl -> List Decl
-shadowRename preludeMethods prog = applyRenames (shadowRenames preludeMethods prog) prog
+shadowRename preludeMethods prog =
+  applyRenames (shadowRenames preludeMethods prog) prog
 
 shadowRenames : List String -> List Decl -> List String
 shadowRenames preludeMethods prog = keepIn preludeMethods (userValueNames prog)
 
 userValueNames : List Decl -> List String
 userValueNames [] = []
-userValueNames ((DFunDef _ n _ _) :: rest) = n :: userValueNames rest
-userValueNames (_ :: rest) = userValueNames rest
+userValueNames ((DFunDef _ n _ _)::rest) = n :: userValueNames rest
+userValueNames (_::rest) = userValueNames rest
 
 keepIn : List String -> List String -> List String
 keepIn _ [] = []
-keepIn pool (x :: xs)
+keepIn pool (x::xs)
   | contains x pool = x :: keepIn pool xs
   | otherwise = keepIn pool xs
 
@@ -92,7 +97,8 @@ applyRenames [] prog = prog
 applyRenames renames prog = map (renameDecl renames) prog
 
 renameDecl : List String -> Decl -> Decl
-renameDecl renames (DFunDef pub n ps body) = DFunDef pub (subName renames n) ps (mapExpr (renameVar renames) body)
+renameDecl renames (DFunDef pub n ps body) =
+  DFunDef pub (subName renames n) ps (mapExpr (renameVar renames) body)
 renameDecl renames (DTypeSig pub n t) = DTypeSig pub (subName renames n) t
 renameDecl renames d = mapDecl (renameVar renames) d
 
@@ -117,17 +123,18 @@ subName renames x
 -- droppable and get removed; clamp (used in a core prop) is NOT, so guards.mdk's
 -- shadow doesn't remove it and its `clamp` references stay marked.
 preludePlainFnNames : List Decl -> List String
-preludePlainFnNames prelude = keepNotIn (interfaceMethodNames prelude) (allFunDefNames prelude)
+preludePlainFnNames prelude =
+  keepNotIn (interfaceMethodNames prelude) (allFunDefNames prelude)
 
 allFunDefNames : List Decl -> List String
 allFunDefNames [] = []
-allFunDefNames ((DFunDef _ n _ _) :: rest) = n :: allFunDefNames rest
-allFunDefNames (_ :: rest) = allFunDefNames rest
+allFunDefNames ((DFunDef _ n _ _)::rest) = n :: allFunDefNames rest
+allFunDefNames (_::rest) = allFunDefNames rest
 
 -- keep the names in the second list that are NOT in the first
 keepNotIn : List String -> List String -> List String
 keepNotIn _ [] = []
-keepNotIn pool (x :: xs)
+keepNotIn pool (x::xs)
   | contains x pool = keepNotIn pool xs
   | otherwise = x :: keepNotIn pool xs
 
@@ -135,7 +142,8 @@ keepNotIn pool (x :: xs)
 -- (dropping one the prelude uses internally — e.g. `clamp`, used in a core prop —
 -- would silently rebind those uses).  droppable = plain fns − externally-referenced.
 droppablePreludeFns : List Decl -> List String
-droppablePreludeFns prelude = keepNotIn (externalRefs prelude) (preludePlainFnNames prelude)
+droppablePreludeFns prelude =
+  keepNotIn (externalRefs prelude) (preludePlainFnNames prelude)
 
 externalRefs : List Decl -> List String
 externalRefs prelude = concatMapList declExternalRefs prelude
@@ -158,7 +166,8 @@ declRefs d = concatMapList collectVars (declBodies d)
 declBodies : Decl -> List Expr
 declBodies (DFunDef _ _ _ body) = [body]
 declBodies (DImpl _ _ _ _ _ _ methods) = map implMethodBody methods
-declBodies (DInterface _ _ _ _ _ methods) = concatMapList ifaceMethodBodies methods
+declBodies (DInterface _ _ _ _ _ methods) =
+  concatMapList ifaceMethodBodies methods
 declBodies (DProp _ _ _ body) = [body]
 declBodies (DTest _ _ body) = [body]
 declBodies (DBench _ _ body) = [body]
@@ -173,7 +182,7 @@ ifaceMethodBodies (IfaceMethod _ _ None) = []
 
 concatMapList : (a -> List b) -> List a -> List b
 concatMapList _ [] = []
-concatMapList f (x :: xs) = f x ++ concatMapList f xs
+concatMapList f (x::xs) = f x ++ concatMapList f xs
 
 -- all referenced names (EVar/EMethodRef/EDictApp) in an expr tree
 collectVars : Expr -> List String
@@ -191,18 +200,22 @@ collectVars (EUnOp _ a) = collectVars a
 collectVars (EInfix _ a b) = collectVars a ++ collectVars b
 collectVars (EFieldAccess e0 _) = collectVars e0
 collectVars (ERecordCreate _ fs) = concatMapList fieldAssignVars fs
-collectVars (ERecordUpdate e0 fs) = collectVars e0 ++ concatMapList fieldAssignVars fs
+collectVars (ERecordUpdate e0 fs) = collectVars e0
+  ++ concatMapList fieldAssignVars fs
 collectVars (EArrayLit es) = concatMapList collectVars es
 collectVars (EListLit es) = concatMapList collectVars es
 collectVars (ETuple es) = concatMapList collectVars es
 collectVars (EIndex e0 i) = collectVars e0 ++ collectVars i
 collectVars (ERangeList lo hi _) = collectVars lo ++ collectVars hi
 collectVars (ERangeArray lo hi _) = collectVars lo ++ collectVars hi
-collectVars (ESlice e0 lo hi _) = collectVars e0 ++ collectVars lo ++ collectVars hi
+collectVars (ESlice e0 lo hi _) = collectVars e0
+  ++ collectVars lo
+  ++ collectVars hi
 collectVars (EBlock stmts) = concatMapList doStmtVars stmts
 collectVars (EDo stmts) = concatMapList doStmtVars stmts
 collectVars (EAnnot e0 _) = collectVars e0
-collectVars (EListComp body quals) = collectVars body ++ concatMapList lcQualVars quals
+collectVars (EListComp body quals) = collectVars body
+  ++ concatMapList lcQualVars quals
 collectVars (EQuestion e0) = collectVars e0
 collectVars (EStringInterp parts) = concatMapList interpVars parts
 collectVars (EGuards arms) = concatMapList guardArmVars arms
