@@ -1,0 +1,17 @@
+-- record create / field access / update / pattern match
+record Point
+  x : Int
+  y : Int
+record Box
+  label : String
+  pt : Point
+distSq p = p.x * p.x + p.y * p.y
+moveRight p = { p | x = p.x + 1 }
+swap p = match p
+  Point { x, y } => Point { x = y, y = x }
+labelOf b = b.label
+main =
+  let p = Point { x = 3, y = 4 }
+  let q = moveRight p
+  let b = Box { label = "origin", pt = Point { x = 0, y = 0 } }
+  (p, distSq p, q, distSq q, swap p, labelOf b, b.pt.y)

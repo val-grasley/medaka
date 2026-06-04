@@ -1,0 +1,20 @@
+-- explicit Refs (Ref / set_ref / .value) + block-local rebinding (<-)
+countUp n =
+  let r = Ref 0
+  let _ = bump r n
+  r.value
+bump r 0 = r.value
+bump r k =
+  let _ = set_ref r (r.value + 1)
+  bump r (k - 1)
+sumTo n =
+  let mut acc = 0
+  let mut i = 1
+  loop acc i n
+loop acc i n
+  | i > n = acc
+  | otherwise = loop (acc + i) (i + 1) n
+main =
+  let r = Ref 41
+  let _ = set_ref r (r.value + 1)
+  (r.value, r, countUp 5, sumTo 10)

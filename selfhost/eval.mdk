@@ -11,7 +11,7 @@
 -- Validated by rendering pp_value of a program's `main` binding and diffing
 -- against dev/eval_probe.exe (Eval.eval_program ~prelude:false → Eval.pp_value).
 
-import ast.{Lit(..), Pat(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Variant(..), Decl(..)}
 
 -- ── values & environment (mutually recursive) ─────────────────────────────
 public export data Value
@@ -26,6 +26,7 @@ public export data Value
   | VArray (Array Value)
   | VCon String (List Value)
   | VRecord String (List (String, Value))
+  | VRef (Ref Value)
   | VClosure Env (List Pat) Expr
   | VPrim (Value -> <Mut> Value)
   | VMulti (List Value)
@@ -50,6 +51,7 @@ ppValue (VArray vs) = "[|" ++ joinComma (map ppValue (arrayToListG vs)) ++ "|]"
 ppValue (VCon name []) = name
 ppValue (VCon name vs) = name ++ " " ++ joinSp (map ppValueAtom vs)
 ppValue (VRecord name fields) = name ++ " { " ++ joinComma (map ppField fields) ++ " }"
+ppValue (VRef cell) = "Ref(" ++ ppValue cell.value ++ ")"
 ppValue (VClosure _ _ _) = "<closure>"
 ppValue (VPrim _) = "<prim>"
 ppValue (VMulti vs) = "<dispatch/" ++ intToString (lengthList vs) ++ ">"
@@ -172,6 +174,7 @@ valueEq (VList a) (VList b) = valueListEq a b
 valueEq (VArray a) (VArray b) = valueListEq (arrayToListG a) (arrayToListG b)
 valueEq (VCon n1 a1) (VCon n2 a2) = n1 == n2 && valueListEq a1 a2
 valueEq (VRecord n1 f1) (VRecord n2 f2) = n1 == n2 && fieldListEq f1 f2
+valueEq (VRef a) (VRef b) = valueEq a.value b.value
 valueEq _ _ = False
 
 valueListEq : List Value -> List Value -> Bool
@@ -205,6 +208,7 @@ valueTag (VList _) = 7
 valueTag (VArray _) = 8
 valueTag (VCon _ _) = 9
 valueTag (VRecord _ _) = 10
+valueTag (VRef _) = 11
 valueTag _ = 99
 
 valueCompare : Value -> Value -> Ordering
@@ -262,7 +266,30 @@ matchPat (PList pats) (VList vals)
   | lengthList pats == lengthList vals = matchPats pats vals
   | otherwise = None
 matchPat (PAs x p) v = matchAs x p v
+matchPat (PRec _ fields _) (VRecord _ recFields) = matchRecFields fields recFields
 matchPat _ _ = None
+
+matchRecFields : List RecPatField -> List (String, Value) -> Option (List (String, Value))
+matchRecFields [] _ = Some []
+matchRecFields (RecPatField fname mp :: rest) recFields = match assocLookupV fname recFields
+  None => None
+  Some v => matchRecField fname mp v rest recFields
+
+matchRecField : String -> Option Pat -> Value -> List RecPatField -> List (String, Value) -> Option (List (String, Value))
+matchRecField fname None v rest recFields = match matchRecFields rest recFields
+  None => None
+  Some bs => Some ((fname, v) :: bs)
+matchRecField _ (Some q) v rest recFields = match matchPat q v
+  None => None
+  Some b => match matchRecFields rest recFields
+    None => None
+    Some bs => Some (b ++ bs)
+
+assocLookupV : String -> List (String, Value) -> Option Value
+assocLookupV _ [] = None
+assocLookupV k ((k2, v) :: rest)
+  | k == k2 = Some v
+  | otherwise = assocLookupV k rest
 
 matchCons : Pat -> Pat -> Value -> List Value -> Option (List (String, Value))
 matchCons h t x xs = match matchPat h x
@@ -351,6 +378,10 @@ eval env (EUnOp op e) = evalUnop op (eval env e)
 eval env (ETuple es) = VTuple (map (eval env) es)
 eval env (EListLit es) = VList (map (eval env) es)
 eval env (EArrayLit es) = VArray (arrayFromList (map (eval env) es))
+eval env (ERecordCreate name fields) = VRecord name (map (evalFieldAssign env) fields)
+eval env (ERecordUpdate base fields) = evalRecordUpdate (eval env base) (map (evalFieldAssign env) fields)
+eval env (EFieldAccess e "value") = evalValueField (eval env e)
+eval env (EFieldAccess e field) = evalField (eval env e) field
 eval env (EAnnot e _) = eval env e
 eval env (EBlock stmts) = evalBlock env stmts
 eval env (EIndex arr idx) = evalIndex (eval env arr) (eval env idx)
@@ -385,6 +416,32 @@ rangeListMk ns = VList (map VInt ns)
 rangeArrayMk : List Int -> Value
 rangeArrayMk ns = VArray (arrayFromList (map VInt ns))
 
+evalFieldAssign : Env -> FieldAssign -> <Mut> (String, Value)
+evalFieldAssign env (FieldAssign k e) = (k, eval env e)
+
+evalRecordUpdate : Value -> List (String, Value) -> Value
+evalRecordUpdate (VRecord name existing) updates = VRecord name (map (mergeField updates) existing)
+evalRecordUpdate _ _ = panic "record update on non-record"
+
+mergeField : List (String, Value) -> (String, Value) -> (String, Value)
+mergeField updates (k, v) = match assocLookupV k updates
+  Some v2 => (k, v2)
+  None => (k, v)
+
+evalValueField : Value -> Value
+evalValueField (VRef cell) = cell.value
+evalValueField (VRecord _ fields) = fieldOr fields "value"
+evalValueField _ = panic "field access on non-record/ref"
+
+evalField : Value -> String -> Value
+evalField (VRecord _ fields) field = fieldOr fields field
+evalField _ _ = panic "field access on non-record"
+
+fieldOr : List (String, Value) -> String -> Value
+fieldOr fields field = match assocLookupV field fields
+  Some v => v
+  None => panic ("unknown field: " ++ field)
+
 -- bare sequential block: value of the last statement is the block's result
 evalBlock : Env -> List DoStmt -> <Mut> Value
 evalBlock _ [] = VUnit
@@ -395,7 +452,11 @@ evalBlock env (DoExpr e :: rest) =
   evalBlock env rest
 evalBlock env (DoLet _ pat e :: rest) = blockLet env pat e rest
 evalBlock env (DoLetElse pat e alt :: rest) = blockLetElse env pat e alt rest
-evalBlock _ (_ :: _) = panic "eval: unsupported block statement (slice 1)"
+evalBlock env [DoAssign _ e] =
+  let _ = eval env e
+  VUnit
+evalBlock env (DoAssign x e :: rest) = evalBlock (extendEnv env [(x, eval env e)]) rest
+evalBlock _ (_ :: _) = panic "eval: unsupported block statement"
 
 blockLetLast : Env -> Pat -> Expr -> <Mut> Value
 blockLetLast env pat e = match matchPat pat (eval env e)
@@ -613,6 +674,21 @@ prim2 f = VPrim (a => VPrim (b => f a b))
 prim3 : (Value -> Value -> Value -> Value) -> Value
 prim3 f = VPrim (a => VPrim (b => VPrim (c => f a b c)))
 
+prim2M : (Value -> Value -> <Mut> Value) -> Value
+prim2M f = VPrim (a => VPrim (b => f a b))
+
+pRef : Value -> Value
+pRef v = VRef (Ref v)
+
+pSetRef : Value -> Value -> <Mut> Value
+pSetRef (VRef cell) v = doSetRef cell v
+pSetRef _ _ = panic "set_ref: not a Ref"
+
+doSetRef : Ref Value -> Value -> <Mut> Value
+doSetRef cell v =
+  let _ = set_ref cell v
+  VUnit
+
 unString : Value -> String
 unString (VString s) = s
 unString _ = panic "expected a String"
@@ -658,6 +734,8 @@ externBindings =
   , ("arrayFromList", prim1 pArrayFromList)
   , ("arrayGetUnsafe", prim2 pArrayGetUnsafe)
   , ("arrayMake", prim2 pArrayMake)
+  , ("Ref", prim1 pRef)
+  , ("set_ref", prim2M pSetRef)
   ]
 
 pIntToString : Value -> Value

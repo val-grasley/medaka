@@ -322,10 +322,17 @@ Stage-0 prerequisites in `../PLAN.md`).
      nest `VPrim`s. Covers the int/string/char/array kernel (IO/Rand/Panic
      externs are out of scope — the oracle compares a computed value, not
      effects). 9/9 fixtures match.
-   - **Deferred to later slices:** records / refs / string-interp; and typeclass
-     **method dispatch** (`VTypedImpl`/`VNamedImpl` tag filtering,
-     `EMethodRef`/`EDictApp`, the dict-passing layer). Those unlock running real
-     (prelude-using) programs against the `=== EVAL ===` goldens.
+   - **Slice 3 (DONE):** records and refs — `record`-declared values as
+     `VRecord` (create / `.field` access / `{ r | f = v }` update / `Point { x,
+     y }` patterns; no constructor-field-order map needed since `record` types
+     aren't in `ctor_field_order`), `VRef` + `Ref`/`set_ref` externs + `.value`
+     read, and block-local rebinding (`let mut` / `x <- e` via `DoAssign`).
+     11/11 fixtures match. (Named-field *data variant* constructors — the VCon
+     `ctor_field_order` path + `EVariantUpdate` — stay deferred.)
+   - **Deferred to the final slice:** string-interp (desugars to `display`, so it
+     needs dispatch) and typeclass **method dispatch** (`VTypedImpl`/`VNamedImpl`
+     tag filtering, `EMethodRef`/`EDictApp`, the dict-passing layer). That unlocks
+     running real (prelude-using) programs against the `=== EVAL ===` goldens.
    It can be developed against the **reference's** typed + dict-passed AST, so it
    does **not** require typecheck to be ported first; `dict_pass` is the small
    prerequisite for the method-dispatch slices.
