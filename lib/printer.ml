@@ -662,7 +662,9 @@ and print_do_stmt = function
    - guard arms print their own `| … = …` block, so there is no leading `=`;
    - a bare block puts `=` at the end of the header line and self-indents the
      body on the next (a trailing `" = "` here would leave a dangling space);
-   - other multi-line bodies (match/do/function) need the outer indent_block;
+   - keyword-led block bodies (match/do/function) sit inline after `= `, their
+     own layout indenting the arms/statements one step;
+   - an `if` with a block branch drops onto its own indented line (indent_block);
    - a simple expression stays inline after `= `. *)
 let print_def_rhs body = match strip_loc body with
   | EGuards arms -> print_guard_arms arms
@@ -676,9 +678,16 @@ let print_def_rhs body = match strip_loc body with
     (match print_if_rhs body with
      | Some g -> text " =" ^^ g
      | None ->
-       text " ="
-       ^^ (if is_block_body body then indent_block (print_expr_body body)
-           else text " " ^^ print_expr_body body))
+       (match strip_loc body with
+        (* Keyword-led block bodies sit inline on the `=` line (`= match x`,
+           `= do`, `= function`); their own layout indents the arms/statements
+           one step.  An `if` is excluded — a `= <if>` with a block branch must
+           drop onto its own indented line or the `else` Hardline breaks to the
+           wrong column (see the EIf arm). *)
+        | EMatch _ | EDo _ | EFunction _ -> text " = " ^^ print_expr_body body
+        | _ when is_block_body body ->
+          text " =" ^^ indent_block (print_expr_body body)
+        | _ -> text " = " ^^ print_expr_body body))
 
 let print_use_path = function
   | UseName names -> text (String.concat "." names)

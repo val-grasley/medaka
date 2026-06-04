@@ -131,14 +131,13 @@ goTests [] passed failed =
   println
     ("\n" ++ intToString passed ++ " passed, " ++ intToString failed ++ " failed")
   eq failed 0
-goTests ((name, thunk)::rest) passed failed =
-  match runExpectation thunk
-    Pass =>
-      println ("  ok   " ++ name)
-      goTests rest (passed + 1) failed
-    Fail msg =>
-      println ("  FAIL " ++ name ++ ": " ++ msg)
-      goTests rest passed (failed + 1)
+goTests ((name, thunk)::rest) passed failed = match runExpectation thunk
+  Pass =>
+    println ("  ok   " ++ name)
+    goTests rest (passed + 1) failed
+  Fail msg =>
+    println ("  FAIL " ++ name ++ ": " ++ msg)
+    goTests rest passed (failed + 1)
 
 {- | Run a list of `(name, thunk)` test pairs.  Prints each result and a
    final summary; returns `True` when all tests pass. -}

@@ -56,49 +56,43 @@ balance k v l r
 -- Right subtree too heavy: single left rotation, or double if its left
 -- grandchild outweighs its right.
 rotateL : k -> v -> Map k v -> Map k v -> Map k v
-rotateL k v l r =
-  match r
-    Bin _ _ _ rl rr =>
-      if size rl < 2 * size rr then
-        singleL k v l r
-      else
-        doubleL k v l r
-    Tip => panic "Map.rotateL: empty right subtree"
+rotateL k v l r = match r
+  Bin _ _ _ rl rr =>
+    if size rl < 2 * size rr then
+      singleL k v l r
+    else
+      doubleL k v l r
+  Tip => panic "Map.rotateL: empty right subtree"
 
 -- Left subtree too heavy: mirror of rotateL.
 rotateR : k -> v -> Map k v -> Map k v -> Map k v
-rotateR k v l r =
-  match l
-    Bin _ _ _ ll lr =>
-      if size lr < 2 * size ll then
-        singleR k v l r
-      else
-        doubleR k v l r
-    Tip => panic "Map.rotateR: empty left subtree"
+rotateR k v l r = match l
+  Bin _ _ _ ll lr =>
+    if size lr < 2 * size ll then
+      singleR k v l r
+    else
+      doubleR k v l r
+  Tip => panic "Map.rotateR: empty left subtree"
 
 singleL : k -> v -> Map k v -> Map k v -> Map k v
-singleL k1 v1 t1 r =
-  match r
-    Bin _ k2 v2 t2 t3 => bin k2 v2 (bin k1 v1 t1 t2) t3
-    Tip => panic "Map.singleL: empty right subtree"
+singleL k1 v1 t1 r = match r
+  Bin _ k2 v2 t2 t3 => bin k2 v2 (bin k1 v1 t1 t2) t3
+  Tip => panic "Map.singleL: empty right subtree"
 
 singleR : k -> v -> Map k v -> Map k v -> Map k v
-singleR k1 v1 l t3 =
-  match l
-    Bin _ k2 v2 t1 t2 => bin k2 v2 t1 (bin k1 v1 t2 t3)
-    Tip => panic "Map.singleR: empty left subtree"
+singleR k1 v1 l t3 = match l
+  Bin _ k2 v2 t1 t2 => bin k2 v2 t1 (bin k1 v1 t2 t3)
+  Tip => panic "Map.singleR: empty left subtree"
 
 doubleL : k -> v -> Map k v -> Map k v -> Map k v
-doubleL k1 v1 t1 r =
-  match r
-    Bin _ k2 v2 (Bin _ k3 v3 t2 t3) t4 => bin k3 v3 (bin k1 v1 t1 t2) (bin k2 v2 t3 t4)
-    _ => panic "Map.doubleL: malformed right subtree"
+doubleL k1 v1 t1 r = match r
+  Bin _ k2 v2 (Bin _ k3 v3 t2 t3) t4 => bin k3 v3 (bin k1 v1 t1 t2) (bin k2 v2 t3 t4)
+  _ => panic "Map.doubleL: malformed right subtree"
 
 doubleR : k -> v -> Map k v -> Map k v -> Map k v
-doubleR k1 v1 l t4 =
-  match l
-    Bin _ k2 v2 t1 (Bin _ k3 v3 t2 t3) => bin k3 v3 (bin k2 v2 t1 t2) (bin k1 v1 t3 t4)
-    _ => panic "Map.doubleR: malformed left subtree"
+doubleR k1 v1 l t4 = match l
+  Bin _ k2 v2 t1 (Bin _ k3 v3 t2 t3) => bin k3 v3 (bin k2 v2 t1 t2) (bin k1 v1 t3 t4)
+  _ => panic "Map.doubleR: malformed left subtree"
 
 -- ── Construction ────────────────────────────────────────────────────────
 
@@ -167,11 +161,10 @@ isEmpty _ = False
 export
 lookup : Ord k => k -> Map k v -> Option v
 lookup k Tip = None
-lookup k (Bin _ k2 v l r) =
-  match compare k k2
-    Lt => lookup k l
-    Gt => lookup k r
-    Eq => Some v
+lookup k (Bin _ k2 v l r) = match compare k k2
+  Lt => lookup k l
+  Gt => lookup k r
+  Eq => Some v
 
 {- | `True` when the key is present.
 
@@ -182,11 +175,10 @@ lookup k (Bin _ k2 v l r) =
 export
 member : Ord k => k -> Map k v -> Bool
 member k Tip = False
-member k (Bin _ k2 _ l r) =
-  match compare k k2
-    Lt => member k l
-    Gt => member k r
-    Eq => True
+member k (Bin _ k2 _ l r) = match compare k k2
+  Lt => member k l
+  Gt => member k r
+  Eq => True
 
 {- | Value at a key, or a fallback when the key is absent.
 
@@ -196,10 +188,9 @@ member k (Bin _ k2 _ l r) =
    0 -}
 export
 findWithDefault : Ord k => v -> k -> Map k v -> v
-findWithDefault d k m =
-  match lookup k m
-    None => d
-    Some v => v
+findWithDefault d k m = match lookup k m
+  None => d
+  Some v => v
 
 -- ── Insertion ───────────────────────────────────────────────────────────
 
@@ -210,11 +201,10 @@ findWithDefault d k m =
 export
 insert : Ord k => k -> v -> Map k v -> Map k v
 insert k v Tip = singleton k v
-insert k v (Bin s k2 v2 l r) =
-  match compare k k2
-    Lt => balance k2 v2 (insert k v l) r
-    Gt => balance k2 v2 l (insert k v r)
-    Eq => Bin s k v l r
+insert k v (Bin s k2 v2 l r) = match compare k k2
+  Lt => balance k2 v2 (insert k v l) r
+  Gt => balance k2 v2 l (insert k v r)
+  Eq => Bin s k v l r
 
 {- | Insert with a combining function.  On a collision the new value is
    `f newValue oldValue`; on a fresh key the value is stored as-is.
@@ -224,11 +214,10 @@ insert k v (Bin s k2 v2 l r) =
 export
 insertWith : Ord k => (v -> v -> v) -> k -> v -> Map k v -> Map k v
 insertWith f k v Tip = singleton k v
-insertWith f k v (Bin s k2 v2 l r) =
-  match compare k k2
-    Lt => balance k2 v2 (insertWith f k v l) r
-    Gt => balance k2 v2 l (insertWith f k v r)
-    Eq => Bin s k2 (f v v2) l r
+insertWith f k v (Bin s k2 v2 l r) = match compare k k2
+  Lt => balance k2 v2 (insertWith f k v l) r
+  Gt => balance k2 v2 l (insertWith f k v r)
+  Eq => Bin s k2 (f v v2) l r
 
 {- | Apply a function to the value at a key, if present.  A no-op when the key
    is absent.  The tree shape is unchanged, so no rebalancing is needed.
@@ -238,11 +227,10 @@ insertWith f k v (Bin s k2 v2 l r) =
 export
 adjust : Ord k => (v -> v) -> k -> Map k v -> Map k v
 adjust f k Tip = Tip
-adjust f k (Bin s k2 v2 l r) =
-  match compare k k2
-    Lt => Bin s k2 v2 (adjust f k l) r
-    Gt => Bin s k2 v2 l (adjust f k r)
-    Eq => Bin s k2 (f v2) l r
+adjust f k (Bin s k2 v2 l r) = match compare k k2
+  Lt => Bin s k2 v2 (adjust f k l) r
+  Gt => Bin s k2 v2 l (adjust f k r)
+  Eq => Bin s k2 (f v2) l r
 
 -- ── Deletion ────────────────────────────────────────────────────────────
 
@@ -255,11 +243,10 @@ adjust f k (Bin s k2 v2 l r) =
 export
 delete : Ord k => k -> Map k v -> Map k v
 delete k Tip = Tip
-delete k (Bin _ k2 v2 l r) =
-  match compare k k2
-    Lt => balance k2 v2 (delete k l) r
-    Gt => balance k2 v2 l (delete k r)
-    Eq => glue l r
+delete k (Bin _ k2 v2 l r) = match compare k k2
+  Lt => balance k2 v2 (delete k l) r
+  Gt => balance k2 v2 l (delete k r)
+  Eq => glue l r
 
 {- `glue` joins two subtrees that were siblings under a now-deleted node, so
    every key on the left is below every key on the right.  It promotes the max
@@ -273,16 +260,14 @@ glue l r
   | otherwise = glueMin l r
 
 glueMax : Map k v -> Map k v -> Map k v
-glueMax l r =
-  match maxView l
-    None => r
-    Some (k, v, l') => balance k v l' r
+glueMax l r = match maxView l
+  None => r
+  Some (k, v, l') => balance k v l' r
 
 glueMin : Map k v -> Map k v -> Map k v
-glueMin l r =
-  match minView r
-    None => l
-    Some (k, v, r') => balance k v l r'
+glueMin l r = match minView r
+  None => l
+  Some (k, v, r') => balance k v l r'
 
 -- ── Min / max ───────────────────────────────────────────────────────────
 
@@ -291,19 +276,17 @@ glueMin l r =
 export
 minView : Map k v -> Option (k, v, Map k v)
 minView Tip = None
-minView (Bin _ k v l r) =
-  match minView l
-    None => Some (k, v, r)
-    Some (km, vm, l') => Some (km, vm, balance k v l' r)
+minView (Bin _ k v l r) = match minView l
+  None => Some (k, v, r)
+  Some (km, vm, l') => Some (km, vm, balance k v l' r)
 
 {- | Split off the largest entry: `Some (key, value, rest)`, or `None`. -}
 export
 maxView : Map k v -> Option (k, v, Map k v)
 maxView Tip = None
-maxView (Bin _ k v l r) =
-  match maxView r
-    None => Some (k, v, l)
-    Some (km, vm, r') => Some (km, vm, balance k v l r')
+maxView (Bin _ k v l r) = match maxView r
+  None => Some (k, v, l)
+  Some (km, vm, r') => Some (km, vm, balance k v l r')
 
 {- | Smallest key/value, or `None`.
 
@@ -311,10 +294,9 @@ maxView (Bin _ k v l r) =
    Some (1, 0) -}
 export
 lookupMin : Map k v -> Option (k, v)
-lookupMin m =
-  match minView m
-    None => None
-    Some (k, v, _) => Some (k, v)
+lookupMin m = match minView m
+  None => None
+  Some (k, v, _) => Some (k, v)
 
 {- | Largest key/value, or `None`.
 
@@ -322,10 +304,9 @@ lookupMin m =
    Some (3, 0) -}
 export
 lookupMax : Map k v -> Option (k, v)
-lookupMax m =
-  match maxView m
-    None => None
-    Some (k, v, _) => Some (k, v)
+lookupMax m = match maxView m
+  None => None
+  Some (k, v, _) => Some (k, v)
 
 {- | Drop the smallest entry (a no-op on the empty map).
 
@@ -333,10 +314,9 @@ lookupMax m =
    [2, 3] -}
 export
 deleteMin : Map k v -> Map k v
-deleteMin m =
-  match minView m
-    None => Tip
-    Some (_, _, m') => m'
+deleteMin m = match minView m
+  None => Tip
+  Some (_, _, m') => m'
 
 {- | Drop the largest entry (a no-op on the empty map).
 
@@ -344,10 +324,9 @@ deleteMin m =
    [1, 2] -}
 export
 deleteMax : Map k v -> Map k v
-deleteMax m =
-  match maxView m
-    None => Tip
-    Some (_, _, m') => m'
+deleteMax m = match maxView m
+  None => Tip
+  Some (_, _, m') => m'
 
 -- ── Folds and traversal (in ascending key order) ────────────────────────
 
@@ -445,10 +424,9 @@ intersectionWith : Ord k => (v -> w -> x) -> Map k v -> Map k w -> Map k x
 intersectionWith f a b = foldrWithKey (intersectStep f b) Tip a
 
 intersectStep : Ord k => (v -> w -> x) -> Map k w -> k -> v -> Map k x -> Map k x
-intersectStep f b k v acc =
-  match lookup k b
-    None => acc
-    Some w => insert k (f v w) acc
+intersectStep f b k v acc = match lookup k b
+  None => acc
+  Some w => insert k (f v w) acc
 
 -- ── Typeclass instances ─────────────────────────────────────────────────
 
@@ -501,10 +479,9 @@ displayMapEntries ((k, v)::rest) = "\{k} => \{v}, \{displayMapEntries rest}"
    > display (empty : Map Int Int) == "Map {}"
    True -}
 export default impl Display (Map k v) requires Display k, Display v where
-  display m =
-    match toList m
-      [] => "Map {}"
-      es => "Map { \{displayMapEntries es} }"
+  display m = match toList m
+    [] => "Map {}"
+    es => "Map { \{displayMapEntries es} }"
 
 {- | `++` on maps is left-biased union (the left map wins on shared keys).
 

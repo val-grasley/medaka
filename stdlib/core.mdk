@@ -725,10 +725,9 @@ minimum = fold step None
    [3, 4] -}
 export impl Filterable List where
   filterMap _ [] = []
-  filterMap f (x::xs) =
-    match f x
-      Some y => y :: filterMap f xs
-      None => filterMap f xs
+  filterMap f (x::xs) = match f x
+    Some y => y :: filterMap f xs
+    None => filterMap f xs
 
 -- ─── Bool helpers ───────────────────────────────────────────────────────
 
@@ -977,11 +976,10 @@ export impl Generic Unit where
 
 prop "neq is the negation of eq" (x : Int) (y : Int) = neq x y == not (eq x y)
 
-prop "compare agrees with lt/gt/eq" (x : Int) (y : Int) =
-  match compare x y
-    Lt => lt x y && not (gt x y) && neq x y
-    Gt => gt x y && not (lt x y) && neq x y
-    Eq => eq x y && not (lt x y) && not (gt x y)
+prop "compare agrees with lt/gt/eq" (x : Int) (y : Int) = match compare x y
+  Lt => lt x y && not (gt x y) && neq x y
+  Gt => gt x y && not (lt x y) && neq x y
+  Eq => eq x y && not (lt x y) && not (gt x y)
 
 prop "clamp keeps values inside the interval" (x : Int) =
   let c = clamp 0 100 x
@@ -1001,7 +999,6 @@ prop "toResult/fromResult round-trip on Some" (x : Int) = eq
   (fromResult (toResult "missing" (Some x)))
   (Some x)
 
-prop "Ord (List a) is reflexive" (xs : List Int) =
-  match compare xs xs
-    Eq => True
-    _ => False
+prop "Ord (List a) is reflexive" (xs : List Int) = match compare xs xs
+  Eq => True
+  _ => False

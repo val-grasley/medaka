@@ -202,6 +202,23 @@ let fmt_guard_block_no_trailing_ws =
   no_trailing_ws "guard-arm block body"
     "g n\n  | n > 0 =\n    log n\n    step n\n  | otherwise =\n    halt\n"
 
+(* A keyword-led block body (do / match / function) sits inline on the `=` line,
+   with its arms/statements indented one step — not dropped onto its own line. *)
+let fmt_do_inline () =
+  let out = format "foo =\n  do\n    a\n    b\n" in
+  if out <> "foo = do\n  a\n  b\n" then
+    failwith (Printf.sprintf "do body did not inline on the `=` line:\n%s" out)
+let fmt_match_inline () =
+  let out = format "foo x =\n  match x\n    0 => \"z\"\n    _ => \"o\"\n" in
+  if out <> "foo x = match x\n  0 => \"z\"\n  _ => \"o\"\n" then
+    failwith (Printf.sprintf "match body did not inline on the `=` line:\n%s" out)
+let fmt_function_inline () =
+  let out = format "foo =\n  function\n    0 => \"z\"\n    _ => \"o\"\n" in
+  if out <> "foo = function\n  0 => \"z\"\n  _ => \"o\"\n" then
+    failwith (Printf.sprintf "function body did not inline on the `=` line:\n%s" out)
+let id_do_inline = idempotent "foo = do\n  a\n  b\n"
+let id_match_inline = idempotent "foo x = match x\n  0 => \"z\"\n  _ => \"o\"\n"
+
 (* ── Phase 137: application-spine wrapping ─────────── *)
 
 (* A too-wide application in a `=` body breaks its argument spine onto
@@ -532,6 +549,11 @@ let () =
       Alcotest.test_case "else-less if def-RHS block idempotent" `Quick id_if_elseless_def_rhs_block;
       Alcotest.test_case "wide if-RHS wraps to block layout" `Quick fmt_if_rhs_wraps_when_wide;
       Alcotest.test_case "short if-RHS stays inline" `Quick fmt_if_rhs_stays_inline_when_short;
+      Alcotest.test_case "do body inline" `Quick fmt_do_inline;
+      Alcotest.test_case "match body inline" `Quick fmt_match_inline;
+      Alcotest.test_case "function body inline" `Quick fmt_function_inline;
+      Alcotest.test_case "do inline idempotent" `Quick id_do_inline;
+      Alcotest.test_case "match inline idempotent" `Quick id_match_inline;
       Alcotest.test_case "match-arm block no trailing ws" `Quick fmt_match_arm_block_no_trailing_ws;
       Alcotest.test_case "guard-arm block no trailing ws" `Quick fmt_guard_block_no_trailing_ws;
       Alcotest.test_case "wide application wraps spine" `Quick fmt_app_wraps_when_wide;
