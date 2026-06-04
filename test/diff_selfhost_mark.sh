@@ -43,7 +43,7 @@ for f in $files; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
   expected="$("$REF" --mark "$f" 2>/dev/null | norm)"
-  actual="$("$MAIN" run "$MARKMAIN" "$f" 2>/dev/null | norm)"
+  actual="$("$MAIN" run "$MARKMAIN" "$ROOT/stdlib/core.mdk" "$f" 2>/dev/null | norm)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

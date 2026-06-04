@@ -111,6 +111,10 @@ public export data Expr
   | EGuards (List GuardArm)
   | ERecordCreate String (List FieldAssign)
   | ERecordUpdate Expr (List FieldAssign)
+  -- Method_marker output (the parser never produces these; the typecheck-filled
+  -- ref the reference carries is irrelevant pre-typecheck, so just the name).
+  | EMethodRef String
+  | EDictApp String
 
 -- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
 public export data UseMember = UseMember String Bool

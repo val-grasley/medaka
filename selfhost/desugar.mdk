@@ -131,6 +131,8 @@ mapIfaceMethod f (IfaceMethod n ty (Some (MethodDefault ps e))) = IfaceMethod
 mapImplMethod : (Expr -> Expr) -> ImplMethod -> ImplMethod
 mapImplMethod f (ImplMethod n ps e) = ImplMethod n ps (mapExpr f e)
 
+-- exported: the method_marker stage reuses this bottom-up traversal engine
+export
 mapProg : (Expr -> Expr) -> List Decl -> List Decl
 mapProg f prog = map (mapDecl f) prog
 

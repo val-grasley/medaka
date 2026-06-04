@@ -159,6 +159,8 @@ exprSexp (ERecordCreate n fs) = node
 exprSexp (ERecordUpdate e fs) = node
   "ERecordUpdate"
   [exprSexp e, slist (map fieldAssignSexp fs)]
+exprSexp (EMethodRef name) = node "EMethodRef" [escStr name]
+exprSexp (EDictApp name) = node "EDictApp" [escStr name]
 
 interpPartSexp : InterpPart -> String
 interpPartSexp (InterpStr s) = node "InterpStr" [escStr s]

@@ -1,0 +1,74 @@
+-- Self-hosted method_marker stage — Stage 1 port of `lib/method_marker.ml`.
+-- Runs after desugar, before typecheck.  Rewrites every interface-method
+-- occurrence `EVar m` to `EMethodRef m`, and every user constrained-function
+-- occurrence `EVar f` (signature carries `=>`) to `EDictApp f` (the typecheck-
+-- filled ref the reference carries is irrelevant pre-typecheck, so the
+-- self-host nodes hold just the name).  Backtick infix `a \`f\` b` (EInfix) with
+-- a marked operator lowers to the prefix application of the marked reference.
+--
+-- Both name sets are unioned over the prelude (core.mdk, passed in) and the
+-- target program, mirroring the reference's `[Prelude.program; prog]`.  The
+-- bottom-up traversal engine is reused from desugar (mapProg).
+--
+-- Validated byte-for-byte against `dev/astdump.exe --mark` (test/diff_selfhost_mark.sh).
+-- NOTE: the prelude-shadowing logic (Phase 78a/78b) is not yet ported — it is
+-- added incrementally for the corpus files that shadow prelude names.
+
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import desugar.{mapProg}
+
+-- ── Name-set collection ───────────────────────────────────────────────────
+-- Interface method names declared across the decls (DInterface methods).
+interfaceMethodNames : List Decl -> List String
+interfaceMethodNames [] = []
+interfaceMethodNames ((DInterface _ _ _ _ _ methods) :: rest) = map ifaceMethodName methods ++ interfaceMethodNames rest
+interfaceMethodNames (_ :: rest) = interfaceMethodNames rest
+
+ifaceMethodName : IfaceMethod -> String
+ifaceMethodName (IfaceMethod n _ _) = n
+
+-- Names of functions whose declared signature carries a constraint (`Foo a =>`).
+constrainedFnNames : List Decl -> List String
+constrainedFnNames [] = []
+constrainedFnNames ((DTypeSig _ name ty) :: rest) = constrainedAdd name ty (constrainedFnNames rest)
+constrainedFnNames (_ :: rest) = constrainedFnNames rest
+
+constrainedAdd : String -> Ty -> List String -> List String
+constrainedAdd name (TyConstrained _ _) acc = name :: acc
+constrainedAdd _ _ acc = acc
+
+contains : String -> List String -> Bool
+contains _ [] = False
+contains x (y :: ys) = x == y || contains x ys
+
+-- ── The marking rewrite ───────────────────────────────────────────────────
+-- Method names take precedence over constrained-function names.
+markNode : List String -> List String -> Expr -> Expr
+markNode methods constrained (EVar x) = markVar methods constrained x
+markNode methods constrained (EInfix op l r) = markInfix methods constrained op l r
+markNode _ _ e = e
+
+markVar : List String -> List String -> String -> Expr
+markVar methods constrained x
+  | contains x methods = EMethodRef x
+  | contains x constrained = EDictApp x
+  | otherwise = EVar x
+
+markInfix : List String -> List String -> String -> Expr -> Expr -> Expr
+markInfix methods constrained op l r
+  | contains op methods = EApp (EApp (EMethodRef op) l) r
+  | contains op constrained = EApp (EApp (EDictApp op) l) r
+  | otherwise = EInfix op l r
+
+markProgram : List String -> List String -> List Decl -> List Decl
+markProgram methods constrained prog = mapProg (markNode methods constrained) prog
+
+-- ── Top-level entry ───────────────────────────────────────────────────────
+-- `preludeProg` is the desugared prelude (core.mdk); `prog` the desugared
+-- target.  Both name sets union the two, as in the reference.
+export
+markWithPrelude : List Decl -> List Decl -> List Decl
+markWithPrelude preludeProg prog =
+  let methods = interfaceMethodNames preludeProg ++ interfaceMethodNames prog
+  let constrained = constrainedFnNames preludeProg ++ constrainedFnNames prog
+  markProgram methods constrained prog

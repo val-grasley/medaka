@@ -1,0 +1,26 @@
+-- Entry point for the self-hosted method_marker stage:
+--
+--   medaka run selfhost/mark_main.mdk <prelude.mdk> <source.mdk>
+--
+-- reads the prelude (stdlib/core.mdk) and the target, parses + desugars both,
+-- marks the target's interface-method / constrained-fn occurrences, and prints
+-- the canonical structural S-expression — diffs against `astdump --mark`
+-- (test/diff_selfhost_mark.sh).  The prelude is passed explicitly because the
+-- self-host has no embedded prelude (the reference uses `Prelude.program`).
+
+import parser.{parse}
+import desugar.{desugar}
+import marker.{markWithPrelude}
+import sexp.{programToSexp}
+
+main = match args ()
+  [preludePath, targetPath] => markFiles preludePath targetPath
+  _ => ePutStrLn "usage: medaka run selfhost/mark_main.mdk <prelude.mdk> <file.mdk>"
+
+markFiles preludePath targetPath = match readFile preludePath
+  Ok preludeSrc => markWith preludeSrc targetPath
+  Err msg => ePutStrLn msg
+
+markWith preludeSrc targetPath = match readFile targetPath
+  Ok targetSrc => putStr (programToSexp (markWithPrelude (desugar (parse preludeSrc)) (desugar (parse targetSrc))))
+  Err msg => ePutStrLn msg
