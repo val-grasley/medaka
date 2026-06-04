@@ -3,20 +3,23 @@
 -- STATUS: tokenizer ported — int/float/string/char literals (with char escapes
 -- `\n \t \r \0 \\ \'` + `\u{…}`, mirroring Phase 133) + hex/bin/oct ints,
 -- idents/keywords, operators/punctuation, line + `{- … -}` (nestable) block
--- comments, string interpolation (`\{expr}` → INTERP_OPEN/MID/END), the `@`/
--- `AS_AT` adjacency rule, and a faithful port of lib/lexer.mll's
--- INDENT/DEDENT/NEWLINE layout algorithm + else-continuation filter +
--- leading-operator continuation + Phase 137 expression-RHS continuation lines
--- (a would-be INDENT that just continues an application is suppressed; resolved
--- in the layout pass from the previous significant token + a match/record-opener
--- flag + the deeper line's first token).  Validated byte-for-byte against the
--- OCaml reference: 15/15 curated fixtures + all 13 real .mdk files (stdlib + this
--- lexer lexing itself).
+-- comments, string interpolation (`\{expr}` → INTERP_OPEN/MID/END), triple-
+-- quoted strings (`""" … """` with `stripIndent` dedent + their own
+-- interpolation, marked by a negative interp depth), the `@`/`AS_AT` adjacency
+-- rule, and a faithful port of lib/lexer.mll's INDENT/DEDENT/NEWLINE layout
+-- algorithm + else-continuation filter + leading-operator continuation + Phase
+-- 137 expression-RHS continuation lines (a would-be INDENT that just continues
+-- an application is suppressed; resolved in the layout pass from the previous
+-- significant token + a match/record-opener flag + the deeper line's first
+-- token).  Validated byte-for-byte against the OCaml reference: 16/16 curated
+-- fixtures + all 13 real .mdk files (stdlib + this lexer lexing itself).
 --
 -- Known serialization-only differences (token value matches; only debug text
 -- differs): FLOAT (`floatToString` vs `%g`) and control bytes in STRING/CHAR
--- (`debugStringLit` vs `%S`).  Deferred (unused everywhere): triple-quoted
--- strings (+ `strip_indent`) and nested interpolation.
+-- (`debugStringLit` vs `%S`).  The only unhandled surface is *nested* string
+-- interpolation (a `"…"` string inside a `\{…}` expression) — but the OCaml
+-- reference rejects that too ("Unterminated string literal"), so it isn't valid
+-- Medaka; there is nothing to mirror.
 
 public export data Token
   = TInt Int
@@ -342,6 +345,7 @@ scanAt src len pos depth id c
   | c == '-' && pos + 1 < len && at src (pos + 1) == '-' = scan src len (skipLineComment src len pos) depth id
   | c == '{' && pos + 1 < len && at src (pos + 1) == '-' = scan src len (skipBlockComment src len (pos + 2) 1) depth id
   | isDigit c = scanNumber src len pos depth id
+  | isQuote c && isTripleAt src len pos = scanTriple src len (pos + 3) depth id False ""
   | isQuote c = scanStr src len (pos + 1) depth id ""
   | isApos c = scanChar src len pos depth id
   | isLower c || c == '_' = scanLower src len pos depth id
@@ -505,6 +509,140 @@ scanInterpEsc src len p depth acc e
   | e == '0' = scanInterpCont src len (p + 2) depth (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
   | otherwise = scanInterpCont src len (p + 2) depth (acc ++ charToStr e)
 
+-- ── Triple-quoted strings (`""" … """`) ─────────────────────────────────
+-- Mirrors lib/lexer.mll `read_triple_string`: only `"""` closes (single/double
+-- quotes are literal), raw newlines are kept, and `\{` opens an interpolation.
+-- `leadingNl` tracks whether the content opened with a *raw* source newline; if
+-- so the closing applies `stripIndent` (the dedent), matching `strip_indent`.
+-- An interpolation opened from a triple string is marked by a NEGATIVE interp
+-- depth (`id = -1`), so the closing `}` resumes the triple continuation.
+-- are positions pos, pos+1, pos+2 all `"` (a `"""` delimiter at pos)?
+isTripleAt : Array Char -> Int -> Int -> Bool
+isTripleAt src len pos = pos + 2 < len
+  && isQuote (at src pos)
+  && isQuote (at src (pos + 1))
+  && isQuote (at src (pos + 2))
+
+firstNl : Bool -> String -> Bool
+firstNl leadingNl acc = acc == "" || leadingNl
+
+maybeStrip : Bool -> String -> String
+maybeStrip True acc = stripIndent acc
+maybeStrip False acc = acc
+
+scanTriple : Array Char -> Int -> Int -> Int -> Int -> Bool -> String -> List RawTok
+scanTriple src len p depth id leadingNl acc
+  | p >= len = RTok (TString (maybeStrip leadingNl acc)) :: scan src len p depth id
+  | isTripleAt src len p = RTok (TString (maybeStrip leadingNl acc)) :: scan src len (p + 3) depth id
+  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpOpen acc) :: scan src len (p + 2) depth (0 - 1)
+  | isBackslash (at src p) && p + 1 < len = scanTripleEsc src len p depth id leadingNl acc (at src (p + 1))
+  | isNL (at src p) = scanTriple src len (p + 1) depth id (firstNl leadingNl acc) (acc ++ "\n")
+  | isQuote (at src p) && p + 1 < len && isQuote (at src (p + 1)) = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\"\"")
+  | isQuote (at src p) = scanTriple src len (p + 1) depth id leadingNl (acc ++ "\"")
+  | otherwise = scanTriple src len (p + 1) depth id leadingNl (acc ++ charToStr (at src p))
+
+scanTripleEsc : Array Char -> Int -> Int -> Int -> Int -> Bool -> String -> Char -> List RawTok
+scanTripleEsc src len p depth id leadingNl acc e
+  | e == 'n' = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\n")
+  | e == 't' = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\t")
+  | isQuote e = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\"")
+  | isBackslash e = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\\")
+  | e == 'r' = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\r")
+  | e == '0' = scanTriple src len (p + 2) depth id leadingNl (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
+  | otherwise = scanTriple src len (p + 2) depth id leadingNl (acc ++ charToStr e)
+
+-- string part after an interpolation opened from a triple string closes
+-- (`"""`→INTERP_END with stripIndent, `\{`→INTERP_MID re-marking id = -1)
+scanInterpTripleCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
+scanInterpTripleCont src len p depth acc
+  | p >= len = RTok (TInterpEnd (stripIndent acc)) :: scan src len p depth 0
+  | isTripleAt src len p = RTok (TInterpEnd (stripIndent acc)) :: scan src len (p + 3) depth 0
+  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpMid acc) :: scan src len (p + 2) depth (0 - 1)
+  | isBackslash (at src p) && p + 1 < len = scanInterpTripleEsc src len p depth acc (at src (p + 1))
+  | isNL (at src p) = scanInterpTripleCont src len (p + 1) depth (acc ++ "\n")
+  | isQuote (at src p) && p + 1 < len && isQuote (at src (p + 1)) = scanInterpTripleCont src len (p + 2) depth (acc ++ "\"\"")
+  | isQuote (at src p) = scanInterpTripleCont src len (p + 1) depth (acc ++ "\"")
+  | otherwise = scanInterpTripleCont src len (p + 1) depth (acc ++ charToStr (at src p))
+
+scanInterpTripleEsc : Array Char -> Int -> Int -> Int -> String -> Char -> List RawTok
+scanInterpTripleEsc src len p depth acc e
+  | e == 'n' = scanInterpTripleCont src len (p + 2) depth (acc ++ "\n")
+  | e == 't' = scanInterpTripleCont src len (p + 2) depth (acc ++ "\t")
+  | isQuote e = scanInterpTripleCont src len (p + 2) depth (acc ++ "\"")
+  | isBackslash e = scanInterpTripleCont src len (p + 2) depth (acc ++ "\\")
+  | e == 'r' = scanInterpTripleCont src len (p + 2) depth (acc ++ "\r")
+  | e == '0' = scanInterpTripleCont src len (p + 2) depth (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
+  | otherwise = scanInterpTripleCont src len (p + 2) depth (acc ++ charToStr e)
+
+-- Strip the common leading indentation from a multiline string that opens with
+-- '\n' (mirrors lib/lexer.mll `strip_indent`); blank lines are ignored when
+-- computing the minimum indent.  No-op unless the content starts with '\n'.
+stripIndent : String -> String
+stripIndent s =
+  let cs = stringToChars s
+  stripIndentCs s cs (arrayLength cs)
+
+stripIndentCs : String -> Array Char -> Int -> String
+stripIndentCs s cs n
+  | n == 0 = s
+  | at cs 0 != '\n' = s
+  | otherwise =
+      let lines = splitLines cs 1 n ""
+      let minInd = normalizeMin (minIndentGo lines indentSentinel)
+      joinNlStr (stripLines minInd lines)
+
+-- split chars [start, n) on '\n' into line strings (acc = current line)
+splitLines : Array Char -> Int -> Int -> String -> List String
+splitLines cs p n acc
+  | p >= n = [acc]
+  | at cs p == '\n' = acc :: splitLines cs (p + 1) n ""
+  | otherwise = splitLines cs (p + 1) n (acc ++ charToStr (at cs p))
+
+-- a blank/all-spaces line yields this sentinel (analogue of OCaml's max_int)
+indentSentinel : Int
+indentSentinel = 1000000000
+
+indentOf : String -> Int
+indentOf line =
+  let cs = stringToChars line
+  indentOfGo cs (arrayLength cs) 0
+
+indentOfGo : Array Char -> Int -> Int -> Int
+indentOfGo cs n i
+  | i >= n = indentSentinel
+  | at cs i == ' ' = indentOfGo cs n (i + 1)
+  | otherwise = i
+
+minInt : Int -> Int -> Int
+minInt a b = if a < b then a else b
+
+minIndentGo : List String -> Int -> Int
+minIndentGo [] acc = acc
+minIndentGo (l::rest) acc = minIndentGo rest (minInt acc (indentOf l))
+
+normalizeMin : Int -> Int
+normalizeMin m = if m == indentSentinel then 0 else m
+
+stripLines : Int -> List String -> List String
+stripLines _ [] = []
+stripLines k (l::rest) = stripLine k l :: stripLines k rest
+
+stripLine : Int -> String -> String
+stripLine k line =
+  let cs = stringToChars line
+  let n = arrayLength cs
+  dropCharsToStr cs (minInt k n) n
+
+dropCharsToStr : Array Char -> Int -> Int -> String
+dropCharsToStr cs k n
+  | k >= n = ""
+  | otherwise = charToStr (at cs k) ++ dropCharsToStr cs (k + 1) n
+
+joinNlStr : List String -> String
+joinNlStr [] = ""
+joinNlStr [x] = x
+joinNlStr (y::rest) = y ++ "\n" ++ joinNlStr rest
+
 -- char literals — escapes processed into the value, mirroring lib/lexer.mll's
 -- `read_char` (Phase 133): `\n \t \r \0 \\ \'` and `\u{…}`, else raw chars up to
 -- the closing quote.  `pos` is at the opening `'`; content starts at `pos + 1`.
@@ -641,15 +779,21 @@ identStartLower : Array Char -> Int -> Bool
 identStartLower src p = isLower (at src p) || at src p == '_'
 
 -- `{` and `}` route through interp depth when inside a `\{ … }` interpolation.
+-- `id` encodes that depth: positive = inside a single-quoted-string interp,
+-- negative = inside a triple-quoted-string interp (magnitude = brace nesting),
+-- 0 = ordinary braces (tracked by `depth`).
 openBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 openBrace src len pos depth id
   | id > 0 = RTok TLBrace :: scan src len (pos + 1) depth (id + 1)
+  | id < 0 = RTok TLBrace :: scan src len (pos + 1) depth (id - 1)
   | otherwise = RTok TLBrace :: scan src len (pos + 1) (depth + 1) id
 
 closeBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 closeBrace src len pos depth id
   | id > 1 = RTok TRBrace :: scan src len (pos + 1) depth (id - 1)
   | id == 1 = scanInterpCont src len (pos + 1) depth ""
+  | id == 0 - 1 = scanInterpTripleCont src len (pos + 1) depth ""
+  | id < 0 = RTok TRBrace :: scan src len (pos + 1) depth (id + 1)
   | otherwise = RTok TRBrace :: scan src len (pos + 1) (depth - 1) id
 
 -- newline + indentation handling

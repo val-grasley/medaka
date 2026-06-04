@@ -59,8 +59,14 @@ the stage is done when all pass.
   comments, **string interpolation**, the `@`/`AS_AT` adjacency rule, and the
   INDENT/DEDENT/NEWLINE layout algorithm (plus else-continuation filter and
   leading-operator continuation).
+- ✅ **Triple-quoted strings** (`""" … """`): only `"""` closes (single/double
+  quotes stay literal), raw newlines are kept, `\{…}` interpolates, and the
+  content dedents via `stripIndent` when it opens with a raw newline. An
+  interpolation opened from a triple string is tracked by a *negative* interp
+  depth so the closing `}` resumes the triple continuation (vs the single-string
+  one). Covered by `test/diff_fixtures/triple_str.mdk`.
 - ✅ **Validated two ways**, both byte-for-byte against the OCaml reference:
-  - **15/15 curated fixtures** — `sh test/diff_selfhost_lexer.sh`.
+  - **16/16 curated fixtures** — `sh test/diff_selfhost_lexer.sh`.
   - **13/13 real `.mdk` files** (every stdlib module + this lexer lexing itself)
     — `sh test/diff_selfhost_lex_files.sh`, which diffs against
     `dev/lextok.exe` (the OCaml reference dumper). FLOAT literal *text* is
@@ -68,8 +74,10 @@ the stage is done when all pass.
     TFloat value is identical). One more serialization-only nuance, not hit by
     any real file: control bytes in STRING/CHAR render `\0` (`debugStringLit`)
     vs `\000` (`%S`) — same value, different debug escaping.
-- ⏳ Deferred (no real file or fixture uses them): triple-quoted strings (with
-  their `strip_indent` dedent) and nested interpolation.
+- ✅ Lexer surface complete. The only unhandled construct is *nested* string
+  interpolation (a `"…"` string literal inside a `\{…}` expression) — but the
+  OCaml reference rejects it too ("Unterminated string literal"), so it isn't
+  valid Medaka and there's nothing to mirror.
 
 ### Parser (Stage 1, in progress)
 

@@ -1,0 +1,153 @@
+=== TOKENS ===
+NEWLINE
+NEWLINE
+NEWLINE
+IDENT "inline"
+EQUAL
+STRING "one \"quoted\" line"
+NEWLINE
+IDENT "block"
+EQUAL
+STRING "first\n  indented\nlast\n"
+NEWLINE
+IDENT "interp"
+IDENT "name"
+EQUAL
+INTERP_OPEN "\n  Hello, "
+IDENT "name"
+INTERP_END "!\n  Bye.\n  "
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+IDENT "println"
+IDENT "inline"
+NEWLINE
+IDENT "println"
+IDENT "block"
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "interp"
+STRING "Medaka"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
+=== AST ===
+inline = "one \"quoted\" line"
+block = "first\n  indented\nlast\n"
+interp name = "\n  Hello, \{name}!\n  Bye.\n  "
+main : <IO> Unit
+main =
+  println inline
+  println block
+  println (interp "Medaka")
+=== TYPES ===
+abs : a -> a
+add : a -> a -> a
+all : (a -> Bool) -> b a -> Bool
+and : Bool -> Bool -> Bool
+andThen : a b -> (b -> a c) -> a c
+any : (a -> Bool) -> b a -> Bool
+ap : a (b -> c) -> a b -> a c
+append : a -> a -> a
+apply : (a -> b) -> a -> b
+arbitrary : Unit -> <Rand> a
+arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> List a
+arbitraryString : Unit -> <Rand> String
+block : String
+clamp : a -> a -> a -> a
+compare : a -> a -> Ordering
+compose : (a -> b) -> (c -> a) -> c -> b
+const : a -> b -> a
+count : (a -> Bool) -> b a -> Int
+debug : a -> String
+debugListItems : List a -> String
+display : a -> String
+displayListItems : List a -> String
+div : a -> a -> a
+elem : a -> b a -> Bool
+empty : a
+eq : a -> a -> Bool
+filter : (a -> Bool) -> b a -> b a
+filterMap : (a -> Option b) -> c a -> c b
+find : (a -> Bool) -> b a -> Option a
+flat : a (a b) -> a b
+flatMap : (a -> b c) -> b a -> b c
+flip : (a -> b -> c) -> b -> a -> c
+fold : (a -> b -> a) -> a -> c b -> a
+foldMap : (a -> b) -> c a -> b
+foldRight : (a -> b -> b) -> b -> c a -> b
+fromEntries : List a -> b
+fromInt : Int -> a
+fromOption : a -> Option a -> a
+fromResult : Result a b -> Option b
+fromResultOr : a -> Result b a -> a
+from_rep : Rep -> a
+fst : (a, b) -> a
+gt : a -> a -> Bool
+gte : a -> a -> Bool
+identity : a -> a
+inline : String
+interp : a -> String
+isEmpty : a b -> Bool
+isErr : Result a b -> Bool
+isNone : Option a -> Bool
+isOk : Result a b -> Bool
+isSome : Option a -> Bool
+length : a b -> Int
+lt : a -> a -> Bool
+lte : a -> a -> Bool
+main : Unit
+map : (a -> b) -> c a -> c b
+mapErr : (a -> b) -> Result a c -> Result b c
+max : a -> a -> a
+maxBound : a
+maximum : a b -> Option b
+min : a -> a -> a
+minBound : a
+minimum : a b -> Option b
+mul : a -> a -> a
+negate : a -> a
+neq : a -> a -> Bool
+not : Bool -> Bool
+notElem : a -> b a -> Bool
+or : Bool -> Bool -> Bool
+otherwise : Bool
+pipe : (a -> b) -> (b -> c) -> a -> c
+print : a -> <IO> Unit
+println : a -> <IO> Unit
+product : a Int -> Int
+pure : a -> b a
+shrink : a -> List a
+signum : a -> a
+snd : (a, b) -> b
+sub : a -> a -> a
+sum : a Int -> Int
+thenCmp : Ordering -> Ordering -> Ordering
+toList : a b -> List b
+toResult : a -> Option b -> Result a b
+to_rep : a -> Rep
+unless : Bool -> a Unit -> a Unit
+when : Bool -> a Unit -> a Unit
+xor : Bool -> Bool -> Bool
+=== EVAL ===
+one "quoted" line
+first
+  indented
+last
+
+
+  Hello, Medaka!
+  Bye.
+  

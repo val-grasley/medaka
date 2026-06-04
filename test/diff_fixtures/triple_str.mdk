@@ -1,0 +1,22 @@
+-- Triple-quoted strings: `"""…"""` keeps single/double quotes literal and
+-- dedents (strip_indent) when the content opens with a raw newline; `\{…}`
+-- interpolates just like a normal string.
+
+inline = """one "quoted" line"""
+
+block = """
+  first
+    indented
+  last
+  """
+
+interp name = """
+  Hello, \{name}!
+  Bye.
+  """
+
+main : <IO> Unit
+main =
+  println inline
+  println block
+  println (interp "Medaka")

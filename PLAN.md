@@ -150,10 +150,14 @@ differential harness on the interpreter.
   else the arm's `=>` is swallowed as a lambda.
 
   Record patterns (`PRec`, `C { f = p, … }` / `C { .. }`) are now closed too —
-  the parser's surface-grammar coverage is complete. The only surface left
-  unhandled is **lexer-side**: nested string interpolation and triple-quoted
-  strings (also deferred in the lexer port). Neither is used by any
-  stdlib/`selfhost/` file.
+  the parser's surface-grammar coverage is complete. **Triple-quoted strings**
+  (`""" … """` with `stripIndent` dedent + their own interpolation, marked by a
+  negative interp depth) are now ported too (`test/diff_fixtures/triple_str.mdk`,
+  lexer harness 16/16). The lexer + parser surface is **complete**: the only
+  remaining unhandled construct is *nested* string interpolation (a `"…"` string
+  inside a `\{…}` expression), which the OCaml reference rejects too
+  ("Unterminated string literal") — so it isn't valid Medaka and there's nothing
+  to mirror.
 
 ### Stage 2 — LLVM backend (after self-host)
 
