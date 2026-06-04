@@ -3,16 +3,18 @@
 -- barely use them. Validated byte-for-byte against the OCaml reference by
 -- test/diff_selfhost_parse.sh.
 --
--- Covered here: left operator section, comparison operator section, unary
--- logical not, and list comprehensions (generator + guard + multi-generator
--- + `let` qualifier). (Other rares already live in the corpus: inclusive/
--- exclusive ranges + array literals in where_ranges, bare/right +/* sections
--- in sections_litpats, record update in records, backtick infix in interfaces.)
+-- Covered here: operator sections, unary not, list comprehensions, the
+-- `function` keyword (incl. an `if` arm guard), the `?` try-operator, array
+-- ranges `[|lo..hi|]`, array slices/index `e.[lo..hi]` / `e.[i]`, range
+-- patterns (int + char), `let mut` + assignment, field assignment, let-else,
+-- and a do-block function-let. (Other rares already live in the corpus:
+-- inclusive/exclusive list ranges + array literals in where_ranges, bare/right
+-- +/* sections in sections_litpats, record update in records, backtick infix
+-- in interfaces.)
 --
--- Deliberately ABSENT — not yet handled by selfhost/parser.mdk, so they would
--- break the differential harness: the `function` keyword, the `?` try-operator,
--- array slices `e.[lo..hi]`, array ranges `[|lo..hi|]`, `let mut` assignment,
--- let-else, and range patterns `lo..=hi`.
+-- Deliberately ABSENT — no AST node in selfhost yet (would break the harness):
+-- nested string interpolation and triple-quoted strings (lexer-side), and the
+-- `PRec` record pattern.
 
 leftSection = (2 * _)
 
@@ -25,3 +27,47 @@ keys m = [k | (k, _) <- entries m]
 evens xs = [x | x <- xs, x % 2 == 0]
 
 triples = [(x, y, z) | x <- xs, let s = x + 1, y <- ys, x < y]
+
+classify = function
+  0 => "zero"
+  n if n < 0 => "neg"
+  n => "pos"
+
+tryParse x =
+  let y = (parse x) ?
+  y
+
+arrRange = [|1..5|]
+
+arrRangeIncl = [|0..=9|]
+
+sliceIt xs = xs.[1..3]
+
+sliceInclIt xs = xs.[1..=3]
+
+indexIt xs = xs.[0]
+
+grade n = match n
+  0..59 => "F"
+  60..=100 => "P"
+
+vowelKind c = match c
+  'a'..'z' => "lower"
+  _ => "other"
+
+counter =
+  let mut a = 0
+  a = a + 1
+  a
+
+setField r =
+  r.x = 1
+  r.pos.y = 2
+
+withFallback m =
+  let (Some v) = m else fallback
+  v
+
+doFunLet =
+  let twice = n => n + n
+  twice 21

@@ -36,6 +36,7 @@ public export data Pat
   | PTuple (List Pat)
   | PList (List Pat)
   | PAs String Pat
+  | PRng Lit Lit Bool
 
 public export data Guard = GBool Expr | GBind Pat Expr
 
@@ -48,6 +49,8 @@ public export data DoStmt
   | DoBind Pat Expr
   | DoLet Bool Pat Expr
   | DoAssign String Expr
+  | DoFieldAssign String (List String) Expr
+  | DoLetElse Pat Expr Expr
 
 -- parts of an interpolated string `"…\{expr}…"`
 public export data InterpPart = InterpStr String | InterpExpr Expr
@@ -90,8 +93,12 @@ public export data Expr
   | EListComp Expr (List LcQual)
   | EArrayLit (List Expr)
   | ERangeList Expr Expr Bool
+  | ERangeArray Expr Expr Bool
+  | ESlice Expr Expr Expr Bool
   | ELetGroup (List LetBind) Expr
   | ESection Section
+  | EQuestion Expr
+  | EFunction (List Arm)
   | EIndex Expr Expr
   | EAnnot Expr Ty
   | EBlock (List DoStmt)

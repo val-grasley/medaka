@@ -61,7 +61,7 @@ let rec sexp_pat = function
   | PList ps      -> node "PList" (List.map sexp_pat ps)
   | PAs (x, p)    -> node "PAs" [esc_str x; sexp_pat p]
   | PRec _        -> todo "PRec"
-  | PRng _        -> todo "PRng"
+  | PRng (lo, hi, incl) -> node "PRng" [sexp_lit lo; sexp_lit hi; string_of_bool incl]
 
 let rec sexp_expr e =
   match e with
@@ -88,6 +88,10 @@ let rec sexp_expr e =
   | ESection (SecRight (op, e))-> node "ESection" [node "SecRight" [esc_str op; sexp_expr e]]
   | ESection (SecLeft (e, op)) -> node "ESection" [node "SecLeft" [sexp_expr e; esc_str op]]
   | EIndex (a, i)      -> node "EIndex" [sexp_expr a; sexp_expr i]
+  | EQuestion e        -> node "EQuestion" [sexp_expr e]
+  | ERangeArray (lo, hi, incl) -> node "ERangeArray" [sexp_expr lo; sexp_expr hi; string_of_bool incl]
+  | ESlice (e, lo, hi, incl)   -> node "ESlice" [sexp_expr e; sexp_expr lo; sexp_expr hi; string_of_bool incl]
+  | EFunction arms     -> node "EFunction" (List.map sexp_arm arms)
   | EAnnot (e, t)      -> node "EAnnot" [sexp_expr e; sexp_ty t]
   | EBlock stmts       -> node "EBlock" (List.map sexp_dostmt stmts)
   | EDo (_, stmts)     -> node "EDo" (List.map sexp_dostmt stmts)
@@ -120,8 +124,8 @@ and sexp_dostmt = function
   | DoBind (p, e)   -> node "DoBind" [sexp_pat p; sexp_expr e]
   | DoLet (m, p, e) -> node "DoLet" [string_of_bool m; sexp_pat p; sexp_expr e]
   | DoAssign (x, e) -> node "DoAssign" [esc_str x; sexp_expr e]
-  | DoFieldAssign _ -> todo "DoFieldAssign"
-  | DoLetElse _     -> todo "DoLetElse"
+  | DoFieldAssign (x, fs, e) -> node "DoFieldAssign" [esc_str x; slist (List.map esc_str fs); sexp_expr e]
+  | DoLetElse (p, e, alt)    -> node "DoLetElse" [sexp_pat p; sexp_expr e; sexp_expr alt]
 
 and sexp_arm (p, guards, body) =
   node "arm" [sexp_pat p; slist (List.map sexp_guard guards); sexp_expr body]

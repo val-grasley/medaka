@@ -128,8 +128,15 @@ the stage is done when all pass.
 - ✅ **List comprehensions** (`EListComp`, generator/guard/`let` qualifiers),
   added after the fact so `hash_map.mdk`'s `keys`/`values` dogfood
   `[k | (k, _) <- entries m]`. Required extending `dev/astdump.ml` first (it had
-  rendered `EListComp` as `TODO`). Remaining deferred surface gaps are tracked in
-  `../PLAN.md`.
+  rendered `EListComp` as `TODO`).
+- ✅ **Remaining surface-grammar gaps closed** — `function` (`EFunction`), `?`
+  (`EQuestion`), array slice/index `e.[lo..hi]`/`e.[i]` (`ESlice`/`EIndex`),
+  array range `[|lo..hi|]` (`ERangeArray`), `let mut` + assignment
+  (`DoAssign`/`DoFieldAssign`), let-else (`DoLetElse`), do-block function-let,
+  range patterns (`PRng`, int + char), and `if` match-arm guards. Most needed a
+  `dev/astdump.ml` extension first (they were `TODO`). Toy coverage lives in
+  `test/parse_fixtures/rare_constructs.mdk`. The only still-uncovered surface is
+  nested interpolation / triple-quoted strings (lexer-side) and `PRec`.
 
   *(Parser combinators were spiked and parked — blocked on Phase 136; see PLAN.)*
 

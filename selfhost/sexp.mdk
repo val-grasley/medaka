@@ -62,6 +62,7 @@ patSexp (PCons a b) = node "PCons" [patSexp a, patSexp b]
 patSexp (PTuple ps) = node "PTuple" (map patSexp ps)
 patSexp (PList ps) = node "PList" (map patSexp ps)
 patSexp (PAs x q) = node "PAs" [escStr x, patSexp q]
+patSexp (PRng lo hi incl) = node "PRng" [litSexp lo, litSexp hi, boolStr incl]
 
 tySexp : Ty -> String
 tySexp (TyCon c) = node "TyCon" [escStr c]
@@ -117,10 +118,18 @@ exprSexp (EArrayLit es) = node "EArrayLit" (map exprSexp es)
 exprSexp (ERangeList lo hi incl) = node
   "ERangeList"
   [exprSexp lo, exprSexp hi, boolStr incl]
+exprSexp (ERangeArray lo hi incl) = node
+  "ERangeArray"
+  [exprSexp lo, exprSexp hi, boolStr incl]
+exprSexp (ESlice e lo hi incl) = node
+  "ESlice"
+  [exprSexp e, exprSexp lo, exprSexp hi, boolStr incl]
 exprSexp (ELetGroup binds body) = node
   "ELetGroup"
   [slist (map letBindSexp binds), exprSexp body]
 exprSexp (ESection s) = node "ESection" [sectionSexp s]
+exprSexp (EQuestion e) = node "EQuestion" [exprSexp e]
+exprSexp (EFunction arms) = node "EFunction" (map armSexp arms)
 exprSexp (EIndex a i) = node "EIndex" [exprSexp a, exprSexp i]
 
 lcQualSexp : LcQual -> String
@@ -171,6 +180,12 @@ doStmtSexp (DoExpr e) = node "DoExpr" [exprSexp e]
 doStmtSexp (DoBind p e) = node "DoBind" [patSexp p, exprSexp e]
 doStmtSexp (DoLet m p e) = node "DoLet" [boolStr m, patSexp p, exprSexp e]
 doStmtSexp (DoAssign x e) = node "DoAssign" [escStr x, exprSexp e]
+doStmtSexp (DoFieldAssign x fs e) = node
+  "DoFieldAssign"
+  [escStr x, slist (map escStr fs), exprSexp e]
+doStmtSexp (DoLetElse p e alt) = node
+  "DoLetElse"
+  [patSexp p, exprSexp e, exprSexp alt]
 
 visSexp : DataVis -> String
 visSexp VisPrivate = "Private"

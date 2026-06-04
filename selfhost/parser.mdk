@@ -334,7 +334,24 @@ unaryFor _ = parseInfix
 
 -- backtick infix operators: ``a `div` b`` → EInfix (left-associative)
 parseInfix : Parser Expr
-parseInfix = chainl1 parseApp backtickOp
+parseInfix = chainl1 parseQuestion backtickOp
+
+-- postfix `?` try-operator (looser than application): `e ?` → EQuestion e
+parseQuestion : Parser Expr
+parseQuestion = do
+  e <- parseApp
+  questionTail e
+
+questionTail : Expr -> Parser Expr
+questionTail e = do
+  t <- peekP
+  questionFor e t
+
+questionFor : Expr -> Token -> Parser Expr
+questionFor e TQuestion = do
+  advance
+  questionTail (EQuestion e)
+questionFor e _ = pure e
 
 backtickOp : Parser (Expr -> Expr -> Expr)
 backtickOp = do
@@ -366,13 +383,42 @@ parsePostfix = do
   postfixTail e
 
 postfixTail : Expr -> Parser Expr
-postfixTail e = orElse (fieldTail e) (pure e)
+postfixTail e = orElse (dotTail e) (pure e)
 
-fieldTail : Expr -> Parser Expr
-fieldTail e = do
+-- after a `.`: a field access `.field`, an index `.[i]`, or a slice `.[lo..hi]`
+dotTail : Expr -> Parser Expr
+dotTail e = do
   expectTok TDot
+  t <- peekP
+  dotFor e t
+
+dotFor : Expr -> Token -> Parser Expr
+dotFor e TLBracket = indexOrSlice e
+dotFor e _ = do
   f <- identNameP
   postfixTail (EFieldAccess e f)
+
+indexOrSlice : Expr -> Parser Expr
+indexOrSlice e = do
+  expectTok TLBracket
+  lo <- parseExpr
+  t <- peekP
+  indexOrSliceRest e lo t
+
+indexOrSliceRest : Expr -> Expr -> Token -> Parser Expr
+indexOrSliceRest e lo TDotDot = sliceHi e lo False
+indexOrSliceRest e lo TDotDotEq = sliceHi e lo True
+indexOrSliceRest e lo TRBracket = do
+  advance
+  postfixTail (EIndex e lo)
+indexOrSliceRest _ _ _ = failP "expected .. ..= or ] in index/slice"
+
+sliceHi : Expr -> Expr -> Bool -> Parser Expr
+sliceHi e lo incl = do
+  advance
+  hi <- parseExpr
+  expectTok TRBracket
+  postfixTail (ESlice e lo hi incl)
 
 parseAtom : Parser Expr
 parseAtom = do
@@ -394,6 +440,7 @@ atomFor TLBrace = parseRecordUpdate
 atomFor TIf = parseIf
 atomFor TLet = parseLet
 atomFor TMatch = parseMatch
+atomFor TFunction = parseFunction
 atomFor TDo = parseDo
 atomFor (TInterpOpen _) = parseInterp
 atomFor _ = failP "expected atom"
@@ -641,9 +688,30 @@ parseArray = do
 arrayFor : Token -> Parser Expr
 arrayFor TRArray = emit (EArrayLit [])
 arrayFor _ = do
-  es <- sepBy1 parseExpr (expectTok TComma)
+  first <- parseExpr
+  t <- peekP
+  arrayRest first t
+
+-- after the first element: `..`/`..=` array range, `,` more elements, or `|]`
+arrayRest : Expr -> Token -> Parser Expr
+arrayRest first TDotDot = arrayRangeAfter first False
+arrayRest first TDotDotEq = arrayRangeAfter first True
+arrayRest first TComma = do
+  advance
+  rest <- sepBy1 parseExpr (expectTok TComma)
   expectTok TRArray
-  pure (EArrayLit es)
+  pure (EArrayLit (first :: rest))
+arrayRest first TRArray = do
+  advance
+  pure (EArrayLit [first])
+arrayRest _ _ = failP "expected , .. ..= or |]"
+
+arrayRangeAfter : Expr -> Bool -> Parser Expr
+arrayRangeAfter lo incl = do
+  advance
+  hi <- parseExpr
+  expectTok TRArray
+  pure (ERangeArray lo hi incl)
 
 parseIf : Parser Expr
 parseIf = do
@@ -693,6 +761,15 @@ parseMatch = do
   expectTok TDedent
   pure (EMatch scrut arms)
 
+-- `function INDENT arms DEDENT` — an anonymous match on one argument
+parseFunction : Parser Expr
+parseFunction = do
+  expectTok TFunction
+  expectTok TIndent
+  arms <- parseArms
+  expectTok TDedent
+  pure (EFunction arms)
+
 parseArms : Parser (List Arm)
 parseArms = do
   skipNewlines
@@ -711,9 +788,22 @@ armsCons = do
 parseArm : Parser Arm
 parseArm = do
   pat <- parsePat
+  guards <- armGuardOpt
   expectTok TFatArrow
   body <- orElse branchBlock parseExpr
-  pure (Arm pat [] body)
+  pure (Arm pat guards body)
+
+-- optional match-arm guard: `if g, g…` (NB: uses `if`, not `|`)
+armGuardOpt : Parser (List Guard)
+armGuardOpt = do
+  t <- peekP
+  armGuardFor t
+
+armGuardFor : Token -> Parser (List Guard)
+armGuardFor TIf = do
+  advance
+  sepBy1 parseGuard (expectTok TComma)
+armGuardFor _ = pure []
 
 -- ── Patterns ────────────────────────────────────────────────────────────
 -- top level (pat_as): an as-pattern `x@p`, else a cons-pattern.  AS_AT is the
@@ -759,14 +849,56 @@ parsePatAtom = do
 patAtomFor : Token -> Parser Pat
 patAtomFor (TIdent x) = emit (PVar x)
 patAtomFor TUnderscore = emit PWild
-patAtomFor (TInt n) = emit (PLit (LInt n))
+patAtomFor (TInt n) = intPatRest (LInt n)
 patAtomFor (TFloat f) = emit (PLit (LFloat f))
 patAtomFor (TString s) = emit (PLit (LString s))
-patAtomFor (TChar s) = emit (PLit (LChar s))
+patAtomFor (TChar s) = charPatRest (LChar s)
 patAtomFor (TUpper c) = emit (PCon c [])
 patAtomFor TLParen = parsePatParen
 patAtomFor TLBracket = parsePatList
 patAtomFor _ = failP "expected pattern"
+
+-- an int literal pattern, or a range pattern `lo..hi` / `lo..=hi`
+intPatRest : Lit -> Parser Pat
+intPatRest lo = do
+  advance
+  t <- peekP
+  rngPatRest lo intBound t
+
+charPatRest : Lit -> Parser Pat
+charPatRest lo = do
+  advance
+  t <- peekP
+  rngPatRest lo charBound t
+
+rngPatRest : Lit -> Parser Lit -> Token -> Parser Pat
+rngPatRest lo bound TDotDot = do
+  advance
+  hi <- bound
+  pure (PRng lo hi False)
+rngPatRest lo bound TDotDotEq = do
+  advance
+  hi <- bound
+  pure (PRng lo hi True)
+rngPatRest lo _ _ = pure (PLit lo)
+
+intBound : Parser Lit
+intBound = do
+  t <- peekP
+  intBoundFor t
+
+intBoundFor : Token -> Parser Lit
+intBoundFor (TInt n) = emit (LInt n)
+intBoundFor _ = failP "expected int range bound"
+
+charBound : Parser Lit
+charBound = do
+  t <- peekP
+  charBoundFor t
+
+charBoundFor : Token -> Parser Lit
+charBoundFor (TChar s) = emit (LChar s)
+charBoundFor _ = failP "expected char range bound"
 
 tuplePatOrSingle : List Pat -> Pat
 tuplePatOrSingle [p] = p
@@ -1394,16 +1526,19 @@ parseGuardArm = do
   body <- parseBody
   pure (GuardArm guards body)
 
+-- A guard qualifier parses at the `expr_or` level (mirrors the reference
+-- `guard_qual`): NOT full `parseExpr`, so a trailing `=>` in a match-arm guard
+-- isn't swallowed as a lambda, and `<-`/`,` stay as the bind/separator tokens.
 parseGuard : Parser Guard
 parseGuard = do
-  e <- parseExpr
+  e <- parseOr
   t <- peekP
   guardFor e t
 
 guardFor : Expr -> Token -> Parser Guard
 guardFor e TLArrow = do
   advance
-  rhs <- parseExpr
+  rhs <- parseOr
   pure (GBind (exprToPat e) rhs)
 guardFor e _ = pure (GBool e)
 
@@ -1664,24 +1799,66 @@ stmtFor : Token -> Parser DoStmt
 stmtFor TLet = parseLetStmt
 stmtFor _ = parseExprStmt
 
--- `let pat = e1` is a DoLet; `let pat = e1 in e2` is a (let-in expression) DoExpr
+-- a `let` statement: `let mut p = e`, function-let `let f a… = e`, plain
+-- `let p = e`, let-in (→ DoExpr), or let-else `let p = e else alt`
 parseLetStmt : Parser DoStmt
 parseLetStmt = do
   expectTok TLet
-  pat <- parsePatAtom
+  t <- peekP
+  letKind t
+
+letKind : Token -> Parser DoStmt
+letKind TMut = do
+  advance
+  pat <- parsePat
+  expectTok TEqual
+  e1 <- parseExpr
+  pure (DoLet True pat e1)
+letKind (TIdent name) = letIdent name
+letKind _ = letPat
+
+-- IDENT-led: function-let `let f a… = e` (params present) or `let x = e [in/else]`
+letIdent : String -> Parser DoStmt
+letIdent name = do
+  advance
+  pats <- many parsePatAtom
+  expectTok TEqual
+  e1 <- parseExpr
+  letIdentRest name pats e1
+
+letIdentRest : String -> List Pat -> Expr -> Parser DoStmt
+letIdentRest name [] e1 = do
+  t <- peekP
+  letTailFor (PVar name) e1 t
+letIdentRest name pats e1 = pure (DoLet False (PVar name) (curryLam pats e1))
+
+-- non-IDENT-led pattern: `let (a, b) = e`, `let Some v = e else alt`, …
+letPat : Parser DoStmt
+letPat = do
+  pat <- parsePat
   expectTok TEqual
   e1 <- parseExpr
   t <- peekP
-  letStmtFor pat e1 t
+  letTailFor pat e1 t
 
-letStmtFor : Pat -> Expr -> Token -> Parser DoStmt
-letStmtFor pat e1 TIn = do
+letTailFor : Pat -> Expr -> Token -> Parser DoStmt
+letTailFor pat e1 TIn = do
   advance
   e2 <- parseExpr
   pure (DoExpr (ELet False False pat e1 e2))
-letStmtFor pat e1 _ = pure (DoLet False pat e1)
+letTailFor pat e1 TElse = do
+  advance
+  alt <- parseExpr
+  pure (DoLetElse pat e1 alt)
+letTailFor pat e1 _ = pure (DoLet False pat e1)
 
--- `pat <- e` is a DoBind (LHS parsed as an expr, reinterpreted); else DoExpr
+-- mirror the reference `curry_lam`: one single-arg ELam per param
+curryLam : List Pat -> Expr -> Expr
+curryLam [] body = body
+curryLam (p :: ps) body = ELam [p] (curryLam ps body)
+
+-- `pat <- e` is a DoBind (LHS parsed as an expr, reinterpreted); `lhs = e` is
+-- an assignment (DoAssign / DoFieldAssign); else a bare DoExpr
 parseExprStmt : Parser DoStmt
 parseExprStmt = do
   e <- parseExpr
@@ -1693,7 +1870,28 @@ exprStmtFor e TLArrow = do
   advance
   rhs <- parseExpr
   pure (DoBind (exprToPat e) rhs)
+exprStmtFor e TEqual = do
+  advance
+  rhs <- parseExpr
+  assignFromLhs e rhs
 exprStmtFor e _ = pure (DoExpr e)
+
+-- a `lhs = rhs` statement: bare var → DoAssign, field path → DoFieldAssign
+assignFromLhs : Expr -> Expr -> Parser DoStmt
+assignFromLhs lhs rhs = match flattenFieldPath lhs
+  Some (x, []) => pure (DoAssign x rhs)
+  Some (x, fs) => pure (DoFieldAssign x fs rhs)
+  None => failP "invalid assignment target in do-block"
+
+-- `a` → Some (a, []); `a.b.c` → Some (a, [b, c]); anything else → None
+flattenFieldPath : Expr -> Option (String, List String)
+flattenFieldPath (EVar x) = Some (x, [])
+flattenFieldPath (EFieldAccess inner f) = fieldPathExtend (flattenFieldPath inner) f
+flattenFieldPath _ = None
+
+fieldPathExtend : Option (String, List String) -> String -> Option (String, List String)
+fieldPathExtend (Some (x, fs)) f = Some (x, fs ++ [f])
+fieldPathExtend None _ = None
 
 -- skip layout noise (NEWLINE/INDENT/DEDENT) between top-level decls; recurse
 -- through a do-continuation (see skipNewlines) to avoid a recursive-value cycle
