@@ -6,8 +6,11 @@
 -- comments, string interpolation (`\{expr}` → INTERP_OPEN/MID/END), the `@`/
 -- `AS_AT` adjacency rule, and a faithful port of lib/lexer.mll's
 -- INDENT/DEDENT/NEWLINE layout algorithm + else-continuation filter +
--- leading-operator continuation.  Validated byte-for-byte against the OCaml
--- reference: 15/15 curated fixtures + all 13 real .mdk files (stdlib + this
+-- leading-operator continuation + Phase 137 expression-RHS continuation lines
+-- (a would-be INDENT that just continues an application is suppressed; resolved
+-- in the layout pass from the previous significant token + a match/record-opener
+-- flag + the deeper line's first token).  Validated byte-for-byte against the
+-- OCaml reference: 15/15 curated fixtures + all 13 real .mdk files (stdlib + this
 -- lexer lexing itself).
 --
 -- Known serialization-only differences (token value matches; only debug text
@@ -679,27 +682,89 @@ continuationTok src len np
   | otherwise = TStrAppend
 
 -- ── Layout pass: RawTok stream -> Token stream ──────────────────────────
--- Mirrors lib/lexer.mll `handle_indent` + the EOF unwind.
-layout : List RawTok -> List Int -> List Token
-layout [] stack = closeAll stack
-layout (RTok t :: rest) stack = t :: layout rest stack
-layout (RNewline col :: rest) stack = applyIndent col stack rest
+-- Mirrors lib/lexer.mll `handle_indent` + the Phase 137 continuation-line
+-- resolution + the EOF unwind.  Threads `prev` (the previous significant token)
+-- and `opener` (whether a `match`/`record` header appeared on the line being
+-- ended), so a would-be INDENT can be suppressed into an application
+-- continuation when the deeper line just continues the current expression.
+layout : List RawTok -> List Int -> Option Token -> Bool -> List Token
+layout [] stack prev opener = closeAll stack
+layout (RTok t :: rest) stack prev opener = t :: layout rest stack (Some t) (opener || isOpener t)
+layout (RNewline col :: rest) stack prev opener = applyNl col rest stack prev opener
 
-applyIndent : Int -> List Int -> List RawTok -> List Token
-applyIndent col [] rest = TNewline :: layout rest []
-applyIndent col (top :: tl) rest = applyIndentTop col top (top :: tl) rest
+isOpener : Token -> Bool
+isOpener TMatch = True
+isOpener TRecord = True
+isOpener _ = False
 
-applyIndentTop : Int -> Int -> List Int -> List RawTok -> List Token
-applyIndentTop col top stack rest
-  | col > top = TIndent :: layout rest (col :: stack)
-  | col == top = TNewline :: layout rest stack
+-- a token that can syntactically END an expression (atom-ender whitelist)
+canEndExpr : Token -> Bool
+canEndExpr (TIdent _) = True
+canEndExpr (TUpper _) = True
+canEndExpr (TInt _) = True
+canEndExpr (TFloat _) = True
+canEndExpr (TString _) = True
+canEndExpr (TChar _) = True
+canEndExpr (TBool _) = True
+canEndExpr (TInterpEnd _) = True
+canEndExpr TRParen = True
+canEndExpr TRBracket = True
+canEndExpr TRBrace = True
+canEndExpr TRArray = True
+canEndExpr TUnderscore = True
+canEndExpr TQuestion = True
+canEndExpr _ = False
+
+prevCanEnd : Option Token -> Bool
+prevCanEnd (Some t) = canEndExpr t
+prevCanEnd None = False
+
+-- a token that can START an application-argument atom
+canStartAtom : Token -> Bool
+canStartAtom (TInt _) = True
+canStartAtom (TFloat _) = True
+canStartAtom (TString _) = True
+canStartAtom (TChar _) = True
+canStartAtom (TBool _) = True
+canStartAtom (TIdent _) = True
+canStartAtom (TUpper _) = True
+canStartAtom TUnderscore = True
+canStartAtom TLParen = True
+canStartAtom TLBracket = True
+canStartAtom TLArray = True
+canStartAtom TLBrace = True
+canStartAtom TAt = True
+canStartAtom (TInterpOpen _) = True
+canStartAtom _ = False
+
+applyNl : Int -> List RawTok -> List Int -> Option Token -> Bool -> List Token
+applyNl col rest [] prev opener = TNewline :: layout rest [] None False
+applyNl col rest (top :: tl) prev opener = applyNlTop col top (top :: tl) rest prev opener
+
+applyNlTop : Int -> Int -> List Int -> List RawTok -> Option Token -> Bool -> List Token
+applyNlTop col top stack rest prev opener
+  | col > top = wouldIndent col stack rest prev opener
+  | col == top = TNewline :: layout rest stack None False
   | otherwise = TNewline :: popDedents col stack rest
 
+-- col > top: a block opener pushes INDENT; otherwise it's a candidate
+-- continuation, decided by the deeper line's first token (Phase 137)
+wouldIndent : Int -> List Int -> List RawTok -> Option Token -> Bool -> List Token
+wouldIndent col stack rest prev opener
+  | opener || not (prevCanEnd prev) = TIndent :: layout rest (col :: stack) None False
+  | otherwise = resolveCont col stack rest prev opener
+
+resolveCont : Int -> List Int -> List RawTok -> Option Token -> Bool -> List Token
+resolveCont col stack (RTok t :: more) prev opener
+  | canStartAtom t = layout (RTok t :: more) stack prev opener
+  | otherwise = TIndent :: layout (RTok t :: more) (col :: stack) None False
+resolveCont col stack rest prev opener = layout rest stack None False
+
 popDedents : Int -> List Int -> List RawTok -> List Token
-popDedents col [] rest = layout rest []
+popDedents col [] rest = layout rest [] None False
 popDedents col (top :: tl) rest
   | top > col = TDedent :: TNewline :: popDedents col tl rest
-  | otherwise = layout rest (top :: tl)
+  | otherwise = layout rest (top :: tl) None False
 
 -- end of input: NEWLINE, then DEDENT/NEWLINE pairs back to base, then EOF
 closeAll : List Int -> List Token
@@ -721,4 +786,4 @@ tokenize : String -> List Token
 tokenize s =
   let src = stringToChars s
   let len = arrayLength src
-  elseFilter (layout (scan src len 0 0 0) [0])
+  elseFilter (layout (scan src len 0 0 0) [0] None False)
