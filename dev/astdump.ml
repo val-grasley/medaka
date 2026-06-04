@@ -124,7 +124,10 @@ and sexp_ty = function
   | TyEffect (labels, tail, t) ->
       let tl = (match tail with Some s -> node "Some" [esc_str s] | None -> "None") in
       node "TyEffect" [slist (List.map esc_str labels); tl; sexp_ty t]
-  | TyConstrained _ -> todo "TyConstrained"
+  | TyConstrained (cs, t) ->
+      node "TyConstrained" [slist (List.map sexp_constraint cs); sexp_ty t]
+
+and sexp_constraint (iface, args) = node "cstr" (esc_str iface :: List.map sexp_ty args)
 
 let sexp_vis = function
   | DataPrivate  -> "Private"
@@ -141,6 +144,14 @@ let sexp_payload = function
 let sexp_variant { con_name; con_payload } =
   node "variant" [esc_str con_name; sexp_payload con_payload]
 
+let sexp_member (n, b) = node "mem" [esc_str n; string_of_bool b]
+
+let sexp_use_path = function
+  | UseName ids          -> node "UseName" [slist (List.map esc_str ids)]
+  | UseGroup (ids, ms)   -> node "UseGroup" [slist (List.map esc_str ids); slist (List.map sexp_member ms)]
+  | UseWild ids          -> node "UseWild" [slist (List.map esc_str ids)]
+  | UseAlias (ids, a)    -> node "UseAlias" [slist (List.map esc_str ids); esc_str a]
+
 let sexp_decl = function
   | DTypeSig (p, n, t)      -> node "DTypeSig" [string_of_bool p; esc_str n; sexp_ty t]
   | DExtern (p, n, t)       -> node "DExtern" [string_of_bool p; esc_str n; sexp_ty t]
@@ -152,6 +163,7 @@ let sexp_decl = function
   | DRecord (vis, n, ps, fields, derives) ->
       node "DRecord" [sexp_vis vis; esc_str n; slist (List.map esc_str ps);
                       slist (List.map sexp_field fields); slist (List.map esc_str derives)]
+  | DUse (p, path)          -> node "DUse" [string_of_bool p; sexp_use_path path]
   | _                       -> todo "decl"
 
 let () =

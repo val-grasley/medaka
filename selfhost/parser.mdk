@@ -15,7 +15,7 @@
 -- `DFunDef`/`DTypeSig`.  Multi-statement indented blocks, the remaining decl
 -- forms, and the rest of the operator ladder come in later slices.
 
-import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), Expr(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), Expr(..), UseMember(..), UsePath(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 import lexer.{Token(..), tokenize}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -558,8 +558,34 @@ patListFor _ =
     pure (PList ps)
 
 -- ── Types ───────────────────────────────────────────────────────────────
+-- a full type is a function/effect type, optionally prefixed by a constraint
+-- list: `C a => ty`.  The constraint LHS is itself parsed as a ty_fun and
+-- reinterpreted (TyApp(TyCon I, a) → one constraint; TyTuple → many).
 parseTy : Parser Ty
 parseTy =
+  do
+    lhs <- parseTyFun
+    orElse (constraintTail lhs) (pure lhs)
+
+constraintTail : Ty -> Parser Ty
+constraintTail lhs =
+  do
+    expectTok TFatArrow
+    rhs <- parseTy
+    pure (TyConstrained (extractConstraints lhs) rhs)
+
+extractConstraints : Ty -> List Constraint
+extractConstraints (TyApp (TyCon iface) arg) = [Constraint iface [arg]]
+extractConstraints (TyCon iface) = [Constraint iface []]
+extractConstraints (TyTuple cs) = concatMapC cs
+extractConstraints _ = []
+
+concatMapC : List Ty -> List Constraint
+concatMapC [] = []
+concatMapC (t :: rest) = extractConstraints t ++ concatMapC rest
+
+parseTyFun : Parser Ty
+parseTyFun =
   do
     t <- peekP
     tyFor t
@@ -676,42 +702,209 @@ parseDecl =
     t <- peekP
     declDispatch t
 
+-- top-level dispatch.  `export`/`public export` are prefixes: `export` sets
+-- is_pub on a non-data decl (or DataAbstract on data/record); `public export`
+-- yields DataPublic.  `import`/`export import` → DUse; `extern` → DExtern.
 declDispatch : Token -> Parser Decl
-declDispatch TData = parseTypeDecl
-declDispatch TRecord = parseTypeDecl
-declDispatch TExport = parseTypeDecl
-declDispatch TPublic = parseTypeDecl
-declDispatch _ = parseFunOrSig
+declDispatch TImport = parseImport False
+declDispatch TExport = afterExport
+declDispatch TPublic = afterPublic
+declDispatch TData = parseData VisPrivate
+declDispatch TRecord = parseRecord VisPrivate
+declDispatch TExtern = parseExtern False
+declDispatch _ = parseFunOrSig False
 
-parseFunOrSig : Parser Decl
-parseFunOrSig =
+afterExport : Parser Decl
+afterExport =
+  do
+    expectTok TExport
+    skipNewlines
+    t <- peekP
+    afterExportFor t
+
+afterExportFor : Token -> Parser Decl
+afterExportFor TImport = parseImport True
+afterExportFor TData = parseData VisAbstract
+afterExportFor TRecord = parseRecord VisAbstract
+afterExportFor TExtern = parseExtern True
+afterExportFor _ = parseFunOrSig True
+
+afterPublic : Parser Decl
+afterPublic =
+  do
+    expectTok TPublic
+    skipNewlines
+    expectTok TExport
+    skipNewlines
+    t <- peekP
+    afterPublicFor t
+
+afterPublicFor : Token -> Parser Decl
+afterPublicFor TData = parseData VisPublic
+afterPublicFor TRecord = parseRecord VisPublic
+afterPublicFor _ = failP "expected data or record after public export"
+
+parseFunOrSig : Bool -> Parser Decl
+parseFunOrSig pub =
   do
     name <- identNameP
     params <- many parsePatAtom
     t <- peekP
-    declRestFor name params t
+    declRestFor pub name params t
 
-declRestFor : String -> List Pat -> Token -> Parser Decl
-declRestFor name _params TColon =
+declRestFor : Bool -> String -> List Pat -> Token -> Parser Decl
+declRestFor pub name _params TColon =
   do
     advance
     ty <- parseTy
     skipNewlines
-    pure (DTypeSig False name ty)
-declRestFor name params TEqual =
+    pure (DTypeSig pub name ty)
+declRestFor pub name params TEqual =
   do
     advance
     body <- parseBody
     skipNewlines
-    pure (DFunDef False name params body)
-declRestFor name params TIndent =
+    pure (DFunDef pub name params body)
+declRestFor pub name params TIndent =
   do
     advance
     arms <- parseGuardArms
     expectTok TDedent
     skipNewlines
-    pure (DFunDef False name params (EGuards arms))
-declRestFor _ _ _ = failP "expected : or ="
+    pure (DFunDef pub name params (EGuards arms))
+declRestFor pub name params TPipe =
+  do
+    arm <- parseGuardArm
+    skipNewlines
+    pure (DFunDef pub name params (EGuards [arm]))
+declRestFor _ _ _ _ = failP "expected : or ="
+
+-- ── extern + import declarations ─────────────────────────────────────────
+parseExtern : Bool -> Parser Decl
+parseExtern pub =
+  do
+    expectTok TExtern
+    name <- externName
+    expectTok TColon
+    ty <- parseTy
+    skipNewlines
+    pure (DExtern pub name ty)
+
+externName : Parser String
+externName =
+  do
+    t <- peekP
+    externNameFor t
+
+externNameFor : Token -> Parser String
+externNameFor (TIdent x) = emit x
+externNameFor (TUpper x) = emit x
+externNameFor _ = failP "expected extern name"
+
+parseImport : Bool -> Parser Decl
+parseImport pub =
+  do
+    expectTok TImport
+    quals <- importQuals
+    path <- importPathFor quals
+    skipNewlines
+    pure (DUse pub path)
+
+importQuals : Parser (List String)
+importQuals =
+  do
+    first <- importIdent
+    rest <- importQualRest
+    pure (first :: rest)
+
+importQualRest : Parser (List String)
+importQualRest =
+  do
+    t <- peekP
+    importQualRestFor t
+
+importQualRestFor : Token -> Parser (List String)
+importQualRestFor TDot =
+  do
+    advance
+    x <- importIdent
+    rest <- importQualRest
+    pure (x :: rest)
+importQualRestFor _ = pure []
+
+importIdent : Parser String
+importIdent =
+  do
+    t <- peekP
+    importIdentFor t
+
+importIdentFor : Token -> Parser String
+importIdentFor (TIdent x) = emit x
+importIdentFor _ = failP "expected import path component"
+
+importPathFor : List String -> Parser UsePath
+importPathFor quals =
+  do
+    t <- peekP
+    importPathForT quals t
+
+importPathForT : List String -> Token -> Parser UsePath
+importPathForT quals TDotLBrace =
+  do
+    advance
+    ms <- sepBy1 importMember (expectTok TComma)
+    expectTok TRBrace
+    pure (UseGroup quals ms)
+importPathForT quals TDotStar =
+  do
+    advance
+    pure (UseWild quals)
+importPathForT quals TAs =
+  do
+    advance
+    a <- aliasName
+    pure (UseAlias quals a)
+importPathForT quals _ = pure (UseName quals)
+
+importMember : Parser UseMember
+importMember =
+  do
+    t <- peekP
+    importMemberFor t
+
+importMemberFor : Token -> Parser UseMember
+importMemberFor (TIdent x) = emit (UseMember x False)
+importMemberFor (TUpper x) =
+  do
+    advance
+    withAllOrNot x
+importMemberFor _ = failP "expected import member"
+
+withAllOrNot : String -> Parser UseMember
+withAllOrNot x =
+  do
+    t <- peekP
+    withAllFor x t
+
+withAllFor : String -> Token -> Parser UseMember
+withAllFor x TLParen =
+  do
+    advance
+    expectTok TDotDot
+    expectTok TRParen
+    pure (UseMember x True)
+withAllFor x _ = pure (UseMember x False)
+
+aliasName : Parser String
+aliasName =
+  do
+    t <- peekP
+    aliasNameFor t
+
+aliasNameFor : Token -> Parser String
+aliasNameFor (TUpper x) = emit x
+aliasNameFor (TIdent x) = emit x
+aliasNameFor _ = failP "expected alias name"
 
 -- function guards: an INDENT block of `| guard, … = body` arms
 parseGuardArms : Parser (List GuardArm)
@@ -756,37 +949,6 @@ guardFor e TLArrow =
 guardFor e _ = pure (GBool e)
 
 -- ── data / record declarations ──────────────────────────────────────────
-parseTypeDecl : Parser Decl
-parseTypeDecl =
-  do
-    vis <- parseVis
-    t <- peekP
-    typeDeclFor vis t
-
-typeDeclFor : DataVis -> Token -> Parser Decl
-typeDeclFor vis TData = parseData vis
-typeDeclFor vis TRecord = parseRecord vis
-typeDeclFor _ _ = failP "expected data or record"
-
--- visibility prefix: (nothing)=Private, `export`=Abstract, `public export`=Public
-parseVis : Parser DataVis
-parseVis =
-  do
-    t <- peekP
-    parseVisFor t
-
-parseVisFor : Token -> Parser DataVis
-parseVisFor TPublic =
-  do
-    advance
-    expectTok TExport
-    pure VisPublic
-parseVisFor TExport =
-  do
-    advance
-    pure VisAbstract
-parseVisFor _ = pure VisPrivate
-
 lowerNameP : Parser String
 lowerNameP =
   do

@@ -22,6 +22,10 @@ public export data Ty
   | TyFun Ty Ty
   | TyTuple (List Ty)
   | TyEffect (List String) (Option String) Ty
+  | TyConstrained (List Constraint) Ty
+
+-- an interface constraint `Iface arg…` on the LHS of a `=>` in a type
+public export data Constraint = Constraint String (List Ty)
 
 public export data Pat
   = PVar String
@@ -83,6 +87,14 @@ public export data Expr
   | ERecordCreate String (List FieldAssign)
   | ERecordUpdate Expr (List FieldAssign)
 
+-- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
+public export data UseMember = UseMember String Bool
+public export data UsePath
+  = UseName (List String)
+  | UseGroup (List String) (List UseMember)
+  | UseWild (List String)
+  | UseAlias (List String) String
+
 -- data/record declarations
 public export data DataVis = VisPrivate | VisAbstract | VisPublic
 public export data Field = Field String Ty
@@ -95,3 +107,4 @@ public export data Decl
   | DFunDef Bool String (List Pat) Expr
   | DData DataVis String (List String) (List Variant) (List String)
   | DRecord DataVis String (List String) (List Field) (List String)
+  | DUse Bool UsePath
