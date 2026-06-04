@@ -30,6 +30,9 @@ public export data Value
   | VClosure Env (List Pat) Expr
   | VPrim (Value -> <Mut> Value)
   | VMulti (List Value)
+  -- a deferred top-level nullary binding; forced + memoised on first lookup, so
+  -- point-free defs can reference impls/values installed later (any order)
+  | VThunk (Unit -> <Mut> Value)
   -- an impl method tagged for typeclass dispatch: head type, impl key, the arg
   -- positions that discriminate, args applied so far, and the underlying value
   | VTypedImpl String String (List Int) Int Value
@@ -59,6 +62,7 @@ ppValue (VClosure _ _ _) = "<closure>"
 ppValue (VPrim _) = "<prim>"
 ppValue (VMulti vs) = "<dispatch/" ++ intToString (lengthList vs) ++ ">"
 ppValue (VTypedImpl t _ _ _ inner) = "<impl@" ++ t ++ ":" ++ ppValue inner ++ ">"
+ppValue (VThunk _) = "<thunk>"
 
 ppField : (String, Value) -> String
 ppField (k, v) = k ++ " = " ++ ppValue v
@@ -235,14 +239,30 @@ contains _ [] = False
 contains x (y :: ys) = x == y || contains x ys
 
 -- ── environment ───────────────────────────────────────────────────────────
-lookupEnv : Env -> String -> Value
+lookupEnv : Env -> String -> <Mut> Value
 lookupEnv (Env frames) name = lookupFrames frames name
 
-lookupFrames : List (List (String, Ref Value)) -> String -> Value
+lookupFrames : List (List (String, Ref Value)) -> String -> <Mut> Value
 lookupFrames [] name = panic ("unbound variable: " ++ name)
 lookupFrames (frame :: rest) name = match lookupFrameCell frame name
-  Some cell => cell.value
+  Some cell => forceCell cell
   None => lookupFrames rest name
+
+-- read a cell, forcing + memoising a deferred thunk on first access
+forceCell : Ref Value -> <Mut> Value
+forceCell cell = match cell.value
+  VThunk f => forceMemo cell f
+  v => v
+
+forceMemo : Ref Value -> (Unit -> <Mut> Value) -> <Mut> Value
+forceMemo cell f =
+  let v = f ()
+  let _ = set_ref cell v
+  v
+
+force : Value -> <Mut> Value
+force (VThunk f) = f ()
+force v = v
 
 lookupFrameCell : List (String, Ref Value) -> String -> Option (Ref Value)
 lookupFrameCell [] _ = None
@@ -654,6 +674,14 @@ groupValue : Env -> List (List Pat, Expr) -> <Mut> Value
 groupValue env [(pats, body)] = if isNullary pats then eval env body else VClosure env pats body
 groupValue env clauses = VMulti (map (clauseClosure env) clauses)
 
+-- top-level variant: a nullary binding becomes a deferred VThunk (forced on
+-- first lookup) so point-free defs can reference values/impls installed later
+topGroupValue : Env -> List (List Pat, Expr) -> Value
+topGroupValue env [(pats, body)]
+  | isNullary pats = VThunk (_ => eval env body)
+  | otherwise = VClosure env pats body
+topGroupValue env clauses = VMulti (map (clauseClosure env) clauses)
+
 clauseClosure : Env -> (List Pat, Expr) -> Value
 clauseClosure env (pats, body) = VClosure env pats body
 
@@ -787,7 +815,7 @@ buildIfaceDispatch : List Decl -> List ((String, String), List Int)
 buildIfaceDispatch prog = concatMapL ifaceDispatchEntries prog
 
 ifaceDispatchEntries : Decl -> List ((String, String), List Int)
-ifaceDispatchEntries (DInterface _ _ ifaceName typeParams _ methods) =
+ifaceDispatchEntries (DInterface { name = ifaceName, typarams = typeParams, methods, ... }) =
   map (ifaceMethodEntry ifaceName typeParams) methods
 ifaceDispatchEntries _ = []
 
@@ -801,15 +829,24 @@ lookupPositions iface mname (((i, m), p) :: rest)
   | iface == i && mname == m = p
   | otherwise = lookupPositions iface mname rest
 
-implMethodValue : Env -> List Pat -> Expr -> Value
-implMethodValue _ [] _ = panic "nullary impl/default method (deferred to dispatch slice B)"
-implMethodValue env pats body = VClosure env pats body
+-- A point-free (no-param) impl/default body: if the method is return-position
+-- (no discriminating arg) defer it as a VThunk; otherwise eta-expand so the
+-- discriminating argument still reaches the body (mirrors lib/eval.ml Phase 121).
+implMethodValue : Env -> List Int -> List Pat -> Expr -> Value
+implMethodValue env positions [] body
+  | nullList positions = VThunk (_ => eval env body)
+  | otherwise = VClosure env [PVar "$eta"] (EApp body (EVar "$eta"))
+implMethodValue env _ pats body = VClosure env pats body
+
+nullList : List a -> Bool
+nullList [] = True
+nullList _ = False
 
 -- one (methodName, (specificity-score, taggedValue)) per impl method / default
 declImplEntries : Env -> List ((String, String), List Int) -> Decl -> List (String, (Int, Value))
-declImplEntries env disp (DImpl _ _ ifaceName typeArgs _ _ methods) =
+declImplEntries env disp (DImpl { iface = ifaceName, tys = typeArgs, methods, ... }) =
   map (implMethodEntry env disp ifaceName typeArgs) methods
-declImplEntries env _ (DInterface _ _ _ typeParams _ methods) =
+declImplEntries env _ (DInterface { typarams = typeParams, methods, ... }) =
   concatMapL (defaultEntry env typeParams) methods
 declImplEntries _ _ _ = []
 
@@ -817,7 +854,7 @@ implMethodEntry : Env -> List ((String, String), List Int) -> String -> List Ty 
 implMethodEntry env disp ifaceName typeArgs (ImplMethod mname pats body) =
   let tag = fromOption "__none__" (headTyconHead typeArgs)
   let positions = lookupPositions ifaceName mname disp
-  let inner = implMethodValue env pats body
+  let inner = implMethodValue env positions pats body
   (mname, (tyvarsInArgs typeArgs, VTypedImpl tag ifaceName positions 0 inner))
 
 headTyconHead : List Ty -> Option String
@@ -828,7 +865,7 @@ headTyconHead (t :: _) = headTycon t
 defaultEntry : Env -> List String -> IfaceMethod -> List (String, (Int, Value))
 defaultEntry _ _ (IfaceMethod _ _ None) = []
 defaultEntry env typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) =
-  [(mname, (lengthList typeParams, implMethodValue env pats body))]
+  [(mname, (lengthList typeParams, implMethodValue env [] pats body))]
 
 -- coalesce all candidates for each method name into one VMulti, most-specific
 -- (fewest type vars) first
@@ -871,8 +908,8 @@ implMethodNames : List Decl -> List String
 implMethodNames prog = nub (concatMapL implDeclNames prog)
 
 implDeclNames : Decl -> List String
-implDeclNames (DImpl _ _ _ _ _ _ methods) = map implMethodName methods
-implDeclNames (DInterface _ _ _ _ _ methods) = concatMapL defaultName methods
+implDeclNames (DImpl { methods, ... }) = map implMethodName methods
+implDeclNames (DInterface { methods, ... }) = concatMapL defaultName methods
 implDeclNames _ = []
 
 implMethodName : ImplMethod -> String
@@ -987,7 +1024,37 @@ externBindings =
   , ("arrayMake", prim2 pArrayMake)
   , ("Ref", prim1 pRef)
   , ("set_ref", prim2M pSetRef)
+  , ("debugStringLit", prim1 pDebugStringLit)
+  , ("debugCharLit", prim1 pDebugCharLit)
+  , ("stringToFloat", prim1 pStringToFloat)
+  , ("charIsAlpha", prim1 (charPred charIsAlpha))
+  , ("charIsSpace", prim1 (charPred charIsSpace))
+  , ("charIsUpper", prim1 (charPred charIsUpper))
+  , ("charIsLower", prim1 (charPred charIsLower))
+  , ("charIsPunct", prim1 (charPred charIsPunct))
+  , ("intMinBound", VInt intMinBound)
+  , ("intMaxBound", VInt intMaxBound)
+  , ("charMinBound", VChar (charToStr charMinBound))
+  , ("charMaxBound", VChar (charToStr charMaxBound))
+  , ("pi", VFloat pi)
+  , ("e", VFloat e)
   ]
+
+pDebugStringLit : Value -> Value
+pDebugStringLit (VString s) = VString (debugStringLit s)
+pDebugStringLit _ = panic "debugStringLit: not a String"
+
+pDebugCharLit : Value -> Value
+pDebugCharLit (VChar s) = VString (debugCharLit (unChar (VChar s)))
+pDebugCharLit _ = panic "debugCharLit: not a Char"
+
+pStringToFloat : Value -> Value
+pStringToFloat (VString s) = optionToValue (mapOption VFloat (stringToFloat s))
+pStringToFloat _ = panic "stringToFloat: not a String"
+
+charPred : (Char -> Bool) -> Value -> Value
+charPred f (VChar s) = VBool (f (unChar (VChar s)))
+charPred _ _ = panic "char predicate: not a Char"
 
 pIntToString : Value -> Value
 pIntToString (VInt n) = VString (intToString n)
@@ -1092,7 +1159,7 @@ installConsts cells ((n, v) :: rest) =
 installGroups : Env -> List (String, Ref Value) -> List (String, List (List Pat, Expr)) -> <Mut> Unit
 installGroups _ _ [] = ()
 installGroups env cells ((n, clauses) :: rest) =
-  let _ = set_ref (findCell cells n) (groupValue env clauses)
+  let _ = set_ref (findCell cells n) (topGroupValue env clauses)
   installGroups env cells rest
 
 lookupBinding : String -> List (String, Value) -> Option Value
@@ -1104,5 +1171,5 @@ lookupBinding name ((n, v) :: rest)
 export
 evalMain : List Decl -> <Mut> String
 evalMain prog = match lookupBinding "main" (evalProgram prog)
-  Some v => ppValue v
+  Some v => ppValue (force v)
   None => panic "eval: no `main` binding"

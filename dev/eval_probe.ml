@@ -26,20 +26,27 @@ let parse src =
 let last_assoc name bindings =
   List.fold_left (fun acc (n, v) -> if n = name then Some v else acc) None bindings
 
+let read_file file =
+  let ic = open_in file in
+  let n = in_channel_length ic in
+  let s = really_input_string ic n in
+  close_in ic; s
+
 let () =
-  let file = Sys.argv.(1) in
-  let src =
-    let ic = open_in file in
-    let n = in_channel_length ic in
-    let s = really_input_string ic n in
-    close_in ic; s
+  (* `eval_probe [--prelude] <file.mdk>`.  With --prelude, evaluate against the
+     real (embedded) prelude via ~prelude:true — for fixtures that use prelude
+     interface methods.  Without, ~prelude:false isolates the engine and we
+     inject `otherwise` so prelude-free guards parse. *)
+  let with_prelude = Array.length Sys.argv > 2 && Sys.argv.(1) = "--prelude" in
+  let file = Sys.argv.(Array.length Sys.argv - 1) in
+  let prog0 = Desugar.desugar_program (parse (read_file file)) in
+  let bindings =
+    if with_prelude then Eval.eval_program ~prelude:true prog0
+    else
+      let otherwise_decl =
+        Ast.DFunDef (false, "otherwise", [], Ast.ELit (Ast.LBool true)) in
+      Eval.eval_program ~prelude:false (otherwise_decl :: prog0)
   in
-  (* `otherwise = True` is the one prelude binding ubiquitous in guards; inject
-     it so prelude-free fixtures can use it (the self-host seeds the same). *)
-  let otherwise_decl =
-    Ast.DFunDef (false, "otherwise", [], Ast.ELit (Ast.LBool true)) in
-  let prog = otherwise_decl :: Desugar.desugar_program (parse src) in
-  let bindings = Eval.eval_program ~prelude:false prog in
   match last_assoc "main" bindings with
   | Some v -> print_string (Eval.pp_value v); print_newline ()
   | None -> prerr_endline "eval_probe: no `main` binding"; exit 1

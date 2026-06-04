@@ -40,7 +40,8 @@ diff with `lib/`:
 | `exhaust.mdk` | Port of `lib/exhaust.ml`'s `check_guard_exhaustiveness` (guard coverage over the raw AST; Maranget `useful` matrix). No prelude — the ctor oracle is built from the file's own data decls + builtins. `exhaustToLines : List Decl -> String`. |
 | `exhaust_main.mdk` | Runnable entry: `medaka run selfhost/exhaust_main.mdk <src.mdk>` prints one guard warning per line (diffs against `diagdump --exhaust`, the harness sorts). Parses **without** desugaring (guards must still be `EGuards`). |
 | `eval.mdk` | Tree-walk interpreter (Stage-1 capstone, **slice 1**). `Value`/`Env` ADTs + `pp_value` (byte-for-byte with `lib/eval.ml`) + the engine: `eval`/`apply`/`match_pat`/binops over `(name, Ref value)` env frames. `evalMain : List Decl -> <Mut> String`. |
-| `eval_main.mdk` | Runnable entry: `medaka run selfhost/eval_main.mdk <src.mdk>` parses + desugars a self-contained file, evaluates it, prints `pp_value` of `main` (diffs against `dev/eval_probe.exe`). |
+| `eval_main.mdk` | Runnable entry: `medaka run selfhost/eval_main.mdk <src.mdk>` parses + desugars a self-contained (prelude-free) file, evaluates it, prints `pp_value` of `main` (diffs against `dev/eval_probe.exe`). |
+| `eval_prelude_main.mdk` | Like `eval_main` but prepends a parsed `core.mdk`: `medaka run selfhost/eval_prelude_main.mdk <core.mdk> <src.mdk>` — runs prelude-using programs (diffs against `dev/eval_probe.exe --prelude`). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -343,14 +344,26 @@ Stage-0 prerequisites in `../PLAN.md`).
      self-contained interface/impl fixtures via the existing `prelude:false`
      oracle — 14/14 fixtures match (multi-method interfaces, recursive ADTs,
      default + override).
-   - **Slice 4b (TODO) — prelude loading.** Prepend the raw desugared `core.mdk`
-     (by path, like the marker/resolve stages) and install its impls, so the eval
-     can run real prelude-using programs and validate against the `=== EVAL ===`
-     goldens. Needs: `VThunk` deferral of nullary bindings (the prelude has
-     point-free defs whose eager eval must wait for all impls), nullary /
-     return-position impl methods (`empty`/`pure` — currently a deferred panic),
-     and string-interp (`\{e}` → `display e`). Return-position dispatch that needs
-     types stays a known untyped-path limitation.
+   - **Slice 4b (DONE) — prelude loading.** `selfhost/eval_prelude_main.mdk`
+     prepends the parsed+desugared `core.mdk` (by path, like the marker/resolve
+     stages) and evaluates the whole thing, so the eval runs **real
+     prelude-using programs**: `Eq`/`Ord`/`Debug`/`Display`/`Num` methods and
+     `deriving` all dispatch through `core.mdk`'s impls. Validated against
+     `eval_probe --prelude` (`eval_program ~prelude:true`, the embedded prelude)
+     — `test/eval_prelude_fixtures/` (3 fixtures: `debug`/`display` over builtin
+     + nested types, `Eq`/`Ord` builtin + derived, numeric/combinators).
+     Mechanisms added: **`VThunk`** lazy deferral of nullary top-level bindings
+     (forced + memoised on first lookup, so point-free prelude defs can reference
+     anything installed later, any order); point-free impl methods either deferred
+     (`VThunk`, return-position) or **eta-expanded** (`\$eta => body $eta`,
+     arg-dispatched, Phase-121 style); and the rest of the pure extern kernel
+     (`debugStringLit`/`debugCharLit`, char predicates, bounds, `stringToFloat`).
+   - **Still out of scope (untyped-path limits):** **return-position dispatch**
+     that needs types — `empty`/`pure`/`minBound` with no discriminating arg stay
+     a `VMulti`/error, exactly as the reference's untyped path does; matching the
+     typed `=== EVAL ===` goldens for *those* programs would need the elaborated
+     (typed + dict-passed) AST. Also still deferred: IO externs (`putStr` etc.) —
+     the oracle compares a computed `main` value, not stdout.
    It can be developed against the **reference's** typed + dict-passed AST, so it
    does **not** require typecheck to be ported first; `dict_pass` is the small
    prerequisite for the method-dispatch slices.

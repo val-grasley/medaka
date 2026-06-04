@@ -1,0 +1,14 @@
+-- Num / numeric prelude methods + combinators dispatched through core.mdk
+sq x = x * x
+main =
+  ( negate 5
+  , abs (0 - 7)
+  , clamp 0 10 15
+  , clamp 0 10 (negate 3)
+  , min (max 2 5) 4
+  , (flip (-)) 3 10
+  , (identity >> sq) 6
+  , const 9 "ignored"
+  , (3 < 5, 5 <= 5, 7 >= 9)
+  , debug (compare [1, 2] [1, 3])
+  )

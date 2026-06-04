@@ -1,0 +1,25 @@
+-- Prelude-loading entry point for the self-hosted eval stage (slice 4b):
+--
+--   medaka run selfhost/eval_prelude_main.mdk <core.mdk> <source.mdk>
+--
+-- parses + desugars the prelude (core.mdk) and the target, prepends the prelude
+-- decls, evaluates the whole thing, and prints pp_value of `main`.  Diffs against
+-- `dev/eval_probe.exe --prelude` (Eval.eval_program ~prelude:true → pp_value).
+-- The prelude has no embedded copy in the self-host, so its path is passed in
+-- (like the marker/resolve stages).
+
+import parser.{parse}
+import desugar.{desugar}
+import eval.{evalMain}
+
+main = match args ()
+  [preludePath, targetPath] => withFiles preludePath targetPath
+  _ => ePutStrLn "usage: medaka run selfhost/eval_prelude_main.mdk <core.mdk> <file.mdk>"
+
+withFiles preludePath targetPath = match readFile preludePath
+  Ok preludeSrc => withTarget preludeSrc targetPath
+  Err msg => ePutStrLn msg
+
+withTarget preludeSrc targetPath = match readFile targetPath
+  Ok targetSrc => putStrLn (evalMain (desugar (parse preludeSrc) ++ desugar (parse targetSrc)))
+  Err msg => ePutStrLn msg
