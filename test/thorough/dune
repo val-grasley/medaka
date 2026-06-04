@@ -61,8 +61,18 @@
  (alias thorough)
  (action (run ./thorough_recent.exe)))
 
+; Resolve the fixtures dir robustly so the suite works under
+; `dune build @thorough --root .` inside a `.claude/worktrees/<name>` worktree.
+; `%{workspace_root}` expands to a path relative to the rule's build dir
+; (`_build/default/test/thorough`), so a bare `%{workspace_root}/...` becomes
+; `../../test/diff_fixtures` — which does not exist in the build tree and fails
+; with Sys_error.  `(source_tree ...)` copies the fixtures into the build dir,
+; so that same relative path now resolves to the build-tree copy.
 (rule
  (alias thorough)
+ (deps
+  (source_tree %{workspace_root}/test/diff_fixtures)
+  ./thorough_diff.exe)
  (action
   (setenv DIFF_FIXTURES_DIR %{workspace_root}/test/diff_fixtures
    (run ./thorough_diff.exe))))

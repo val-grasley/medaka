@@ -75,10 +75,9 @@ NEWLINE
 EOF
 === AST ===
 greet name = "Hello, " ++ name ++ "!"
-repeat n s =
-  match n
-    0 => ""
-    n => s ++ repeat (n - 1) s
+repeat n s = match n
+  0 => ""
+  n => s ++ repeat (n - 1) s
 main : <IO> Unit
 main =
   println (greet "Medaka")

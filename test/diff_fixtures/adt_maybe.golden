@@ -91,14 +91,12 @@ NEWLINE
 NEWLINE
 EOF
 === AST ===
-safeDiv n d =
-  match d
-    0 => None
-    _ => Some (n / d)
-showResult r =
-  match r
-    None => "error"
-    Some x => "ok: \{x}"
+safeDiv n d = match d
+  0 => None
+  _ => Some (n / d)
+showResult r = match r
+  None => "error"
+  Some x => "ok: \{x}"
 main : <IO> Unit
 main =
   println (showResult (safeDiv 10 2))
