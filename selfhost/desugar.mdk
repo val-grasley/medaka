@@ -14,6 +14,7 @@ import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..)
 -- ── Bottom-up traversal engine (mirror of map_expr / map_decl) ────────────
 -- `mapExpr f e` rewrites every subexpression of `e` with `f`, post-order: the
 -- children are rewritten first, then `f` is applied to the rebuilt node.
+export
 mapExpr : (Expr -> Expr) -> Expr -> Expr
 mapExpr f e = f (mapKids f e)
 
@@ -99,6 +100,7 @@ mapInterp : (Expr -> Expr) -> InterpPart -> InterpPart
 mapInterp _ (InterpStr s) = InterpStr s
 mapInterp f (InterpExpr e) = InterpExpr (mapExpr f e)
 
+export
 mapDecl : (Expr -> Expr) -> Decl -> Decl
 mapDecl f (DFunDef pub n ps e) = DFunDef pub n ps (mapExpr f e)
 mapDecl f (DInterface pub def n tps sups methods) = DInterface

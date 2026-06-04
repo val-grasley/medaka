@@ -15,7 +15,7 @@
 -- added incrementally for the corpus files that shadow prelude names.
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
-import desugar.{mapProg}
+import desugar.{mapProg, mapExpr, mapDecl}
 
 -- ── Name-set collection ───────────────────────────────────────────────────
 -- Interface method names declared across the decls (DInterface methods).
@@ -63,12 +63,59 @@ markInfix methods constrained op l r
 markProgram : List String -> List String -> List Decl -> List Decl
 markProgram methods constrained prog = mapProg (markNode methods constrained) prog
 
+-- ── Phase 78b: shadow_rename ──────────────────────────────────────────────
+-- A user top-level function whose name collides with a prelude interface method
+-- (e.g. map.mdk's standalone `isEmpty` vs `Foldable.isEmpty`) is renamed to
+-- `name#shadow` at its definition + reference sites, so its uses aren't marked
+-- as the interface method.  (The reference also excludes names that are locally
+-- rebound elsewhere; no corpus file uses a method name as a local binder, so
+-- that exclusion is added only if a file needs it.)
+shadowRename : List String -> List Decl -> List Decl
+shadowRename preludeMethods prog = applyRenames (shadowRenames preludeMethods prog) prog
+
+shadowRenames : List String -> List Decl -> List String
+shadowRenames preludeMethods prog = keepIn preludeMethods (userValueNames prog)
+
+userValueNames : List Decl -> List String
+userValueNames [] = []
+userValueNames ((DFunDef _ n _ _) :: rest) = n :: userValueNames rest
+userValueNames (_ :: rest) = userValueNames rest
+
+keepIn : List String -> List String -> List String
+keepIn _ [] = []
+keepIn pool (x :: xs)
+  | contains x pool = x :: keepIn pool xs
+  | otherwise = keepIn pool xs
+
+applyRenames : List String -> List Decl -> List Decl
+applyRenames [] prog = prog
+applyRenames renames prog = map (renameDecl renames) prog
+
+renameDecl : List String -> Decl -> Decl
+renameDecl renames (DFunDef pub n ps body) = DFunDef pub (subName renames n) ps (mapExpr (renameVar renames) body)
+renameDecl renames (DTypeSig pub n t) = DTypeSig pub (subName renames n) t
+renameDecl renames d = mapDecl (renameVar renames) d
+
+renameVar : List String -> Expr -> Expr
+renameVar renames (EVar x) = EVar (subName renames x)
+renameVar renames (EMethodRef x) = EMethodRef (subName renames x)
+renameVar renames (EDictApp x) = EDictApp (subName renames x)
+renameVar _ e = e
+
+subName : List String -> String -> String
+subName renames x
+  | contains x renames = x ++ "#shadow"
+  | otherwise = x
+
 -- ── Top-level entry ───────────────────────────────────────────────────────
 -- `preludeProg` is the desugared prelude (core.mdk); `prog` the desugared
--- target.  Both name sets union the two, as in the reference.
+-- target.  shadow_rename first, then mark against the union of prelude + (now
+-- renamed) target names, as in the reference's mark_with_prelude.
 export
 markWithPrelude : List Decl -> List Decl -> List Decl
 markWithPrelude preludeProg prog =
-  let methods = interfaceMethodNames preludeProg ++ interfaceMethodNames prog
-  let constrained = constrainedFnNames preludeProg ++ constrainedFnNames prog
-  markProgram methods constrained prog
+  let preludeMethods = interfaceMethodNames preludeProg
+  let prog2 = shadowRename preludeMethods prog
+  let methods = preludeMethods ++ interfaceMethodNames prog2
+  let constrained = constrainedFnNames preludeProg ++ constrainedFnNames prog2
+  markProgram methods constrained prog2
