@@ -3,7 +3,7 @@
 -- reference.  Tags are the lib/ast.ml constructor names.  Coverage grows with
 -- the AST/parser; new variants get a matching clause here.
 
-import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), DoStmt(..), Expr(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), DoStmt(..), Expr(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 
 -- shared minimal string escaping — must match dev/astdump.ml's esc_str
 escStr : String -> String
@@ -108,10 +108,27 @@ doStmtSexp (DoBind p e) = node "DoBind" [patSexp p, exprSexp e]
 doStmtSexp (DoLet m p e) = node "DoLet" [boolStr m, patSexp p, exprSexp e]
 doStmtSexp (DoAssign x e) = node "DoAssign" [escStr x, exprSexp e]
 
+visSexp : DataVis -> String
+visSexp VisPrivate = "Private"
+visSexp VisAbstract = "Abstract"
+visSexp VisPublic = "Public"
+
+fieldSexp : Field -> String
+fieldSexp (Field n t) = node "field" [escStr n, tySexp t]
+
+payloadSexp : ConPayload -> String
+payloadSexp (ConPos tys) = node "ConPos" (map tySexp tys)
+payloadSexp (ConNamed fs) = node "ConNamed" (map fieldSexp fs)
+
+variantSexp : Variant -> String
+variantSexp (Variant n pl) = node "variant" [escStr n, payloadSexp pl]
+
 declSexp : Decl -> String
 declSexp (DTypeSig p n t) = node "DTypeSig" [boolStr p, escStr n, tySexp t]
 declSexp (DExtern p n t) = node "DExtern" [boolStr p, escStr n, tySexp t]
 declSexp (DFunDef p n ps b) = node "DFunDef" [boolStr p, escStr n, slist (map patSexp ps), exprSexp b]
+declSexp (DData vis n ps vs ds) = node "DData" [visSexp vis, escStr n, slist (map escStr ps), slist (map variantSexp vs), slist (map escStr ds)]
+declSexp (DRecord vis n ps fs ds) = node "DRecord" [visSexp vis, escStr n, slist (map escStr ps), slist (map fieldSexp fs), slist (map escStr ds)]
 
 export
 programToSexp : List Decl -> String

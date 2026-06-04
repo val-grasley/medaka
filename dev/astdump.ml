@@ -113,11 +113,32 @@ and sexp_ty = function
       node "TyEffect" [slist (List.map esc_str labels); tl; sexp_ty t]
   | TyConstrained _ -> todo "TyConstrained"
 
+let sexp_vis = function
+  | DataPrivate  -> "Private"
+  | DataAbstract -> "Abstract"
+  | DataPublic   -> "Public"
+
+let sexp_field { field_name; field_type } =
+  node "field" [esc_str field_name; sexp_ty field_type]
+
+let sexp_payload = function
+  | ConPos tys      -> node "ConPos" (List.map sexp_ty tys)
+  | ConNamed fields -> node "ConNamed" (List.map sexp_field fields)
+
+let sexp_variant { con_name; con_payload } =
+  node "variant" [esc_str con_name; sexp_payload con_payload]
+
 let sexp_decl = function
   | DTypeSig (p, n, t)      -> node "DTypeSig" [string_of_bool p; esc_str n; sexp_ty t]
   | DExtern (p, n, t)       -> node "DExtern" [string_of_bool p; esc_str n; sexp_ty t]
   | DFunDef (p, n, ps, b)   ->
       node "DFunDef" [string_of_bool p; esc_str n; slist (List.map sexp_pat ps); sexp_expr b]
+  | DData (vis, n, ps, variants, derives) ->
+      node "DData" [sexp_vis vis; esc_str n; slist (List.map esc_str ps);
+                    slist (List.map sexp_variant variants); slist (List.map esc_str derives)]
+  | DRecord (vis, n, ps, fields, derives) ->
+      node "DRecord" [sexp_vis vis; esc_str n; slist (List.map esc_str ps);
+                      slist (List.map sexp_field fields); slist (List.map esc_str derives)]
   | _                       -> todo "decl"
 
 let () =

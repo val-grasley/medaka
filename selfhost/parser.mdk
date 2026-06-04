@@ -15,7 +15,7 @@
 -- `DFunDef`/`DTypeSig`.  Multi-statement indented blocks, the remaining decl
 -- forms, and the rest of the operator ladder come in later slices.
 
-import ast.{Lit(..), Ty(..), Pat(..), Arm(..), DoStmt(..), Expr(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), Arm(..), DoStmt(..), Expr(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 import lexer.{Token(..), tokenize}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -566,6 +566,19 @@ parseTyParen =
 parseDecl : Parser Decl
 parseDecl =
   do
+    t <- peekP
+    declDispatch t
+
+declDispatch : Token -> Parser Decl
+declDispatch TData = parseTypeDecl
+declDispatch TRecord = parseTypeDecl
+declDispatch TExport = parseTypeDecl
+declDispatch TPublic = parseTypeDecl
+declDispatch _ = parseFunOrSig
+
+parseFunOrSig : Parser Decl
+parseFunOrSig =
+  do
     name <- identNameP
     params <- many parsePatAtom
     t <- peekP
@@ -585,6 +598,193 @@ declRestFor name params TEqual =
     skipNewlines
     pure (DFunDef False name params body)
 declRestFor _ _ _ = failP "expected : or ="
+
+-- ── data / record declarations ──────────────────────────────────────────
+parseTypeDecl : Parser Decl
+parseTypeDecl =
+  do
+    vis <- parseVis
+    t <- peekP
+    typeDeclFor vis t
+
+typeDeclFor : DataVis -> Token -> Parser Decl
+typeDeclFor vis TData = parseData vis
+typeDeclFor vis TRecord = parseRecord vis
+typeDeclFor _ _ = failP "expected data or record"
+
+-- visibility prefix: (nothing)=Private, `export`=Abstract, `public export`=Public
+parseVis : Parser DataVis
+parseVis =
+  do
+    t <- peekP
+    parseVisFor t
+
+parseVisFor : Token -> Parser DataVis
+parseVisFor TPublic =
+  do
+    advance
+    expectTok TExport
+    pure VisPublic
+parseVisFor TExport =
+  do
+    advance
+    pure VisAbstract
+parseVisFor _ = pure VisPrivate
+
+lowerNameP : Parser String
+lowerNameP =
+  do
+    t <- peekP
+    lowerNameFor t
+
+lowerNameFor : Token -> Parser String
+lowerNameFor (TIdent x) = emit x
+lowerNameFor _ = failP "expected type parameter"
+
+parseData : DataVis -> Parser Decl
+parseData vis =
+  do
+    expectTok TData
+    name <- upperNameP
+    params <- many lowerNameP
+    variants <- dataBody
+    derives <- derivingClause
+    skipNewlines
+    pure (DData vis name params variants derives)
+
+-- inline (`= …`) or block (`INDENT = … DEDENT`) variant list
+dataBody : Parser (List Variant)
+dataBody =
+  do
+    t <- peekP
+    dataBodyFor t
+
+dataBodyFor : Token -> Parser (List Variant)
+dataBodyFor TEqual =
+  do
+    advance
+    dataVariants
+dataBodyFor TIndent =
+  do
+    advance
+    expectTok TEqual
+    vs <- dataVariants
+    expectTok TDedent
+    pure vs
+dataBodyFor _ = pure []
+
+dataVariants : Parser (List Variant)
+dataVariants =
+  do
+    v <- parseVariant
+    rest <- variantsRest
+    pure (v :: rest)
+
+variantsRest : Parser (List Variant)
+variantsRest =
+  do
+    skipNewlines
+    t <- peekP
+    variantsRestFor t
+
+variantsRestFor : Token -> Parser (List Variant)
+variantsRestFor TPipe =
+  do
+    advance
+    v <- parseVariant
+    rest <- variantsRest
+    pure (v :: rest)
+variantsRestFor _ = pure []
+
+parseVariant : Parser Variant
+parseVariant =
+  do
+    name <- upperNameP
+    payload <- parsePayload
+    pure (Variant name payload)
+
+parsePayload : Parser ConPayload
+parsePayload =
+  do
+    t <- peekP
+    payloadFor t
+
+payloadFor : Token -> Parser ConPayload
+payloadFor TLBrace = parseNamedPayload
+payloadFor _ =
+  do
+    tys <- many parseTyAtom
+    pure (ConPos tys)
+
+parseNamedPayload : Parser ConPayload
+parseNamedPayload =
+  do
+    expectTok TLBrace
+    fields <- sepBy1 parseField (expectTok TComma)
+    expectTok TRBrace
+    pure (ConNamed fields)
+
+parseField : Parser Field
+parseField =
+  do
+    name <- identNameP
+    expectTok TColon
+    t <- parseTy
+    pure (Field name t)
+
+-- `deriving (Name, …)`, after the variant/field block; optional
+derivingClause : Parser (List String)
+derivingClause =
+  do
+    skipNewlines
+    t <- peekP
+    derivingFor t
+
+derivingFor : Token -> Parser (List String)
+derivingFor TDeriving =
+  do
+    advance
+    expectTok TLParen
+    names <- sepBy1 upperNameP (expectTok TComma)
+    expectTok TRParen
+    pure names
+derivingFor _ = pure []
+
+parseRecord : DataVis -> Parser Decl
+parseRecord vis =
+  do
+    expectTok TRecord
+    name <- upperNameP
+    params <- many lowerNameP
+    expectTok TIndent
+    fields <- recordFields
+    expectTok TDedent
+    derives <- derivingClause
+    skipNewlines
+    pure (DRecord vis name params fields derives)
+
+recordFields : Parser (List Field)
+recordFields =
+  do
+    skipNewlines
+    f <- parseField
+    rest <- recordFieldsRest
+    pure (f :: rest)
+
+recordFieldsRest : Parser (List Field)
+recordFieldsRest =
+  do
+    skipNewlines
+    t <- peekP
+    recordFieldsRestFor t
+
+recordFieldsRestFor : Token -> Parser (List Field)
+recordFieldsRestFor (TIdent _) =
+  do
+    f <- parseField
+    rest <- recordFieldsRest
+    pure (f :: rest)
+recordFieldsRestFor _ = pure []
 
 -- a decl body is an inline expr, or an INDENT block of statements: a single
 -- expression statement unwraps to that expr; anything else becomes an EBlock
