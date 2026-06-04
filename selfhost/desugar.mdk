@@ -356,6 +356,54 @@ genericRcon cname vars = EApp (EApp (EVar "RCon") (ELit (LString cname))) (EList
 toRep : String -> Expr
 toRep x = EApp (EVar "to_rep") (EVar x)
 
+-- ── Pass: merge_iface_defaults (coalesce split interface-method entries) ──
+-- The parser splits an interface method with both a signature line (`f : T`,
+-- default None) and a default-clause line (`f p = body`, type TyVar "_", Some)
+-- into two entries; merge them by name into one (first-seen position, the real
+-- type, the present default).  Mirror of lib/desugar.ml's merge_iface_methods.
+mergeIfaceDefaults : List Decl -> List Decl
+mergeIfaceDefaults prog = map mergeIfaceDecl prog
+
+mergeIfaceDecl : Decl -> Decl
+mergeIfaceDecl (DInterface pub def name tps sups methods) = DInterface pub def name tps sups (mergeIfaceMethods methods)
+mergeIfaceDecl d = d
+
+mergeIfaceMethods : List IfaceMethod -> List IfaceMethod
+mergeIfaceMethods methods = foldlMethods [] methods
+
+foldlMethods : List IfaceMethod -> List IfaceMethod -> List IfaceMethod
+foldlMethods acc [] = acc
+foldlMethods acc (m :: rest) = foldlMethods (insertMethod acc m) rest
+
+insertMethod : List IfaceMethod -> IfaceMethod -> List IfaceMethod
+insertMethod acc m
+  | containsMethod (methodName m) acc = mergeInto acc m
+  | otherwise = acc ++ [m]
+
+mergeInto : List IfaceMethod -> IfaceMethod -> List IfaceMethod
+mergeInto [] m = [m]
+mergeInto (x :: xs) m
+  | methodName x == methodName m = mergeTwo x m :: xs
+  | otherwise = x :: mergeInto xs m
+
+mergeTwo : IfaceMethod -> IfaceMethod -> IfaceMethod
+mergeTwo (IfaceMethod n prevTy prevDef) (IfaceMethod _ mTy mDef) = IfaceMethod n (mergedType prevTy mTy) (mergedDefault prevDef mDef)
+
+mergedType : Ty -> Ty -> Ty
+mergedType (TyVar "_") mTy = mTy
+mergedType prevTy _ = prevTy
+
+mergedDefault : Option MethodDefault -> Option MethodDefault -> Option MethodDefault
+mergedDefault (Some d) _ = Some d
+mergedDefault None mDef = mDef
+
+containsMethod : String -> List IfaceMethod -> Bool
+containsMethod _ [] = False
+containsMethod name (x :: xs) = methodName x == name || containsMethod name xs
+
+methodName : IfaceMethod -> String
+methodName (IfaceMethod n _ _) = n
+
 concatMapDecl : (Decl -> List Decl) -> List Decl -> List Decl
 concatMapDecl f prog = concatLists (map f prog)
 
@@ -370,4 +418,4 @@ concatLists (xs :: rest) = xs ++ concatLists rest
 -- literals; and `?` (desugar_questions) which the real corpus never exercises.
 export
 desugar : List Decl -> List Decl
-desugar prog = mapProg rewriteSugar (mapProg rewriteDo (mapProg rewriteListComp (concatMapDecl expandDecl prog)))
+desugar prog = mapProg rewriteSugar (mapProg rewriteDo (mapProg rewriteListComp (concatMapDecl expandDecl (mergeIfaceDefaults prog))))
