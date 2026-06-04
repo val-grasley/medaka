@@ -15,7 +15,7 @@
 -- `DFunDef`/`DTypeSig`.  Multi-statement indented blocks, the remaining decl
 -- forms, and the rest of the operator ladder come in later slices.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 import lexer.{Token(..), tokenize}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -189,8 +189,15 @@ annotTail e =
 parseLam : Parser Expr
 parseLam =
   do
-    e <- parseOr
+    e <- parsePipe
     orElse (lamTail e) (pure e)
+
+-- `|>` pipe (loosest operator), then `>>`/`<<` composition, then `||`…
+parsePipe : Parser Expr
+parsePipe = chainl1 parseCompose (binOp TPipeRight "|>")
+
+parseCompose : Parser Expr
+parseCompose = chainl1 parseOr (choice [binOp TRCompose ">>", binOp TLCompose "<<"])
 
 lamTail : Expr -> Parser Expr
 lamTail e =
@@ -308,7 +315,7 @@ consTail x =
     pure (EBinOp "::" x y)
 
 parseAppend : Parser Expr
-parseAppend = chainl1 parseAdd (binOp TPlusPlus "++")
+parseAppend = chainl1 parseAdd (choice [binOp TPlusPlus "++", binOp TStrAppend "<>"])
 
 parseAdd : Parser Expr
 parseAdd = chainl1 parseMul (choice [binOp TPlus "+", binOp TMinus "-"])
@@ -329,7 +336,32 @@ unaryFor TMinus =
     advance
     e <- parseUnary
     pure (EUnOp "-" e)
-unaryFor _ = parseApp
+unaryFor TBang =
+  do
+    advance
+    e <- parseUnary
+    pure (EUnOp "!" e)
+unaryFor _ = parseInfix
+
+-- backtick infix operators: ``a `div` b`` → EInfix (left-associative)
+parseInfix : Parser Expr
+parseInfix = chainl1 parseApp backtickOp
+
+backtickOp : Parser (Expr -> Expr -> Expr)
+backtickOp =
+  do
+    name <- backtickName
+    pure (l r => EInfix name l r)
+
+backtickName : Parser String
+backtickName =
+  do
+    t <- peekP
+    backtickNameFor t
+
+backtickNameFor : Token -> Parser String
+backtickNameFor (TBacktickIdent s) = emit s
+backtickNameFor _ = failP "expected backtick operator"
 
 parseApp : Parser Expr
 parseApp =
@@ -541,9 +573,18 @@ parseIf =
     cond <- parseExpr
     expectTok TThen
     thenE <- parseBranch
-    expectTok TElse
-    elseE <- parseBranch
+    elseE <- elseBranch
     pure (EIf cond thenE elseE)
+
+-- `else` is optional; an else-less `if` defaults the else branch to unit
+elseBranch : Parser Expr
+elseBranch = orElse elsePresent (pure (ELit LUnit))
+
+elsePresent : Parser Expr
+elsePresent =
+  do
+    expectTok TElse
+    parseBranch
 
 -- a then/else branch is either an inline expr or an indented statement block
 parseBranch : Parser Expr
@@ -844,7 +885,24 @@ declDispatch TExtern = parseExtern False
 declDispatch TProp = parseProp False
 declDispatch TTest = parseTest False
 declDispatch TBench = parseBench False
+declDispatch TInterface = parseInterface False False
+declDispatch TImpl = parseImpl False False
+declDispatch TDefault = afterDefault False
 declDispatch _ = parseFunOrSig False
+
+-- `default` prefixes an interface/impl (marks it as the default impl)
+afterDefault : Bool -> Parser Decl
+afterDefault pub =
+  do
+    expectTok TDefault
+    skipNewlines
+    t <- peekP
+    afterDefaultFor pub t
+
+afterDefaultFor : Bool -> Token -> Parser Decl
+afterDefaultFor pub TInterface = parseInterface pub True
+afterDefaultFor pub TImpl = parseImpl pub True
+afterDefaultFor _ _ = failP "expected interface or impl after default"
 
 afterExport : Parser Decl
 afterExport =
@@ -862,6 +920,9 @@ afterExportFor TExtern = parseExtern True
 afterExportFor TProp = parseProp True
 afterExportFor TTest = parseTest True
 afterExportFor TBench = parseBench True
+afterExportFor TInterface = parseInterface True False
+afterExportFor TImpl = parseImpl True False
+afterExportFor TDefault = afterDefault True
 afterExportFor _ = parseFunOrSig True
 
 afterPublic : Parser Decl
@@ -1093,6 +1154,226 @@ parseBench pub =
     skipNewlines
     pure (DBench pub name body)
 
+-- ── interface declarations ───────────────────────────────────────────────
+parseInterface : Bool -> Bool -> Parser Decl
+parseInterface pub isDefault =
+  do
+    expectTok TInterface
+    name <- upperNameP
+    typarams <- many lowerNameP
+    supers <- ifaceSuper
+    methods <- ifaceBody
+    pure (DInterface pub isDefault name typarams supers methods)
+
+-- optional `requires Iface a, …` superclass list
+ifaceSuper : Parser (List Super)
+ifaceSuper =
+  do
+    t <- peekP
+    ifaceSuperFor t
+
+ifaceSuperFor : Token -> Parser (List Super)
+ifaceSuperFor TRequires =
+  do
+    advance
+    sepBy1 ifaceSuperEntry (expectTok TComma)
+ifaceSuperFor _ = pure []
+
+ifaceSuperEntry : Parser Super
+ifaceSuperEntry =
+  do
+    name <- upperNameP
+    params <- many lowerNameP
+    pure (Super name params)
+
+-- `where INDENT members DEDENT` body, or a marker interface (optional where)
+ifaceBody : Parser (List IfaceMethod)
+ifaceBody =
+  do
+    t <- peekP
+    ifaceBodyFor t
+
+ifaceBodyFor : Token -> Parser (List IfaceMethod)
+ifaceBodyFor TWhere =
+  do
+    advance
+    t <- peekP
+    ifaceWhereBody t
+ifaceBodyFor _ =
+  do
+    skipNewlines
+    pure []
+
+ifaceWhereBody : Token -> Parser (List IfaceMethod)
+ifaceWhereBody TIndent =
+  do
+    advance
+    ms <- ifaceMembers
+    expectTok TDedent
+    skipNewlines
+    pure ms
+ifaceWhereBody _ =
+  do
+    skipNewlines
+    pure []
+
+ifaceMembers : Parser (List IfaceMethod)
+ifaceMembers =
+  do
+    skipNewlines
+    ifaceMembersLoop
+
+ifaceMembersLoop : Parser (List IfaceMethod)
+ifaceMembersLoop = orElse ifaceMembersCons (pure [])
+
+ifaceMembersCons : Parser (List IfaceMethod)
+ifaceMembersCons =
+  do
+    m <- ifaceMember
+    skipNewlines
+    rest <- ifaceMembersLoop
+    pure (m :: rest)
+
+-- a method signature `name : ty`, or a default method `name pats = body`
+ifaceMember : Parser IfaceMethod
+ifaceMember =
+  do
+    name <- identNameP
+    pats <- many parsePatAtom
+    t <- peekP
+    ifaceMemberRest name pats t
+
+ifaceMemberRest : String -> List Pat -> Token -> Parser IfaceMethod
+ifaceMemberRest name _ TColon =
+  do
+    advance
+    ty <- parseTy
+    pure (IfaceMethod name ty None)
+ifaceMemberRest name pats TEqual =
+  do
+    advance
+    body <- parseBody
+    pure (IfaceMethod name (TyVar "_") (Some (MethodDefault pats body)))
+ifaceMemberRest _ _ _ = failP "expected : or = in interface member"
+
+-- ── impl declarations ────────────────────────────────────────────────────
+parseImpl : Bool -> Bool -> Parser Decl
+parseImpl pub isDefault =
+  do
+    expectTok TImpl
+    t <- peekP
+    implHead pub isDefault t
+
+-- `impl Iface tyargs…` (unnamed), `impl name of Iface tyargs…` (named, lower),
+-- or `impl Name of Iface tyargs…` (named, upper)
+implHead : Bool -> Bool -> Token -> Parser Decl
+implHead pub isDefault (TIdent nm) =
+  do
+    advance
+    expectTok TOf
+    iface <- upperNameP
+    implRest pub isDefault iface (Some nm)
+implHead pub isDefault (TUpper u) =
+  do
+    advance
+    t <- peekP
+    implAfterUpper pub isDefault u t
+implHead _ _ _ = failP "expected impl head"
+
+implAfterUpper : Bool -> Bool -> String -> Token -> Parser Decl
+implAfterUpper pub isDefault u TOf =
+  do
+    advance
+    iface <- upperNameP
+    implRest pub isDefault iface (Some u)
+implAfterUpper pub isDefault u _ = implRest pub isDefault u None
+
+implRest : Bool -> Bool -> String -> Option String -> Parser Decl
+implRest pub isDefault iface name =
+  do
+    tyargs <- many parseTyAtom
+    reqs <- implRequires
+    methods <- implBody
+    pure (DImpl pub isDefault iface tyargs name reqs methods)
+
+-- optional `requires Iface tyargs…, …`
+implRequires : Parser (List Require)
+implRequires =
+  do
+    t <- peekP
+    implRequiresFor t
+
+implRequiresFor : Token -> Parser (List Require)
+implRequiresFor TRequires =
+  do
+    advance
+    sepBy1 implRequireEntry (expectTok TComma)
+implRequiresFor _ = pure []
+
+implRequireEntry : Parser Require
+implRequireEntry =
+  do
+    iface <- upperNameP
+    tys <- many parseTyAtom
+    pure (Require iface tys)
+
+implBody : Parser (List ImplMethod)
+implBody =
+  do
+    t <- peekP
+    implBodyFor t
+
+implBodyFor : Token -> Parser (List ImplMethod)
+implBodyFor TWhere =
+  do
+    advance
+    t <- peekP
+    implWhereBody t
+implBodyFor _ =
+  do
+    skipNewlines
+    pure []
+
+implWhereBody : Token -> Parser (List ImplMethod)
+implWhereBody TIndent =
+  do
+    advance
+    ms <- implMethods
+    expectTok TDedent
+    skipNewlines
+    pure ms
+implWhereBody _ =
+  do
+    skipNewlines
+    pure []
+
+implMethods : Parser (List ImplMethod)
+implMethods =
+  do
+    skipNewlines
+    implMethodsLoop
+
+implMethodsLoop : Parser (List ImplMethod)
+implMethodsLoop = orElse implMethodsCons (pure [])
+
+implMethodsCons : Parser (List ImplMethod)
+implMethodsCons =
+  do
+    m <- implMethod
+    skipNewlines
+    rest <- implMethodsLoop
+    pure (m :: rest)
+
+-- impl methods are `name pats = body` (multi-clause = repeated entries)
+implMethod : Parser ImplMethod
+implMethod =
+  do
+    name <- identNameP
+    pats <- many parsePatAtom
+    expectTok TEqual
+    body <- parseBody
+    pure (ImplMethod name pats body)
+
 -- function guards: an INDENT block of `| guard, … = body` arms
 parseGuardArms : Parser (List GuardArm)
 parseGuardArms =
@@ -1117,7 +1398,7 @@ parseGuardArm =
     expectTok TPipe
     guards <- sepBy1 parseGuard (expectTok TComma)
     expectTok TEqual
-    body <- parseExpr
+    body <- parseBody
     pure (GuardArm guards body)
 
 parseGuard : Parser Guard

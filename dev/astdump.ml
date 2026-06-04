@@ -158,6 +158,20 @@ let sexp_use_path = function
   | UseWild ids          -> node "UseWild" [slist (List.map esc_str ids)]
   | UseAlias (ids, a)    -> node "UseAlias" [slist (List.map esc_str ids); esc_str a]
 
+let sexp_opt_str = function Some s -> node "Some" [esc_str s] | None -> "None"
+
+let sexp_method_default = function
+  | Some (pats, body) -> node "mdef" [slist (List.map sexp_pat pats); sexp_expr body]
+  | None              -> "None"
+
+let sexp_iface_method { method_name; method_type; method_default } =
+  node "imethod" [esc_str method_name; sexp_ty method_type; sexp_method_default method_default]
+
+let sexp_super (iface, params) = node "super" [esc_str iface; slist (List.map esc_str params)]
+let sexp_require (iface, tys) = node "req" [esc_str iface; slist (List.map sexp_ty tys)]
+let sexp_impl_method (name, pats, body) =
+  node "im" [esc_str name; slist (List.map sexp_pat pats); sexp_expr body]
+
 let sexp_decl = function
   | DTypeSig (p, n, t)      -> node "DTypeSig" [string_of_bool p; esc_str n; sexp_ty t]
   | DExtern (p, n, t)       -> node "DExtern" [string_of_bool p; esc_str n; sexp_ty t]
@@ -178,6 +192,14 @@ let sexp_decl = function
       node "DTest" [string_of_bool is_pub; esc_str test_name; sexp_expr test_body]
   | DBench { is_pub; bench_name; bench_body } ->
       node "DBench" [string_of_bool is_pub; esc_str bench_name; sexp_expr bench_body]
+  | DInterface { is_pub; is_default; iface_name; type_params; super; methods } ->
+      node "DInterface" [string_of_bool is_pub; string_of_bool is_default; esc_str iface_name;
+        slist (List.map esc_str type_params); slist (List.map sexp_super super);
+        slist (List.map sexp_iface_method methods)]
+  | DImpl { is_pub; is_default; iface_name; type_args; impl_name; requires; methods; _ } ->
+      node "DImpl" [string_of_bool is_pub; string_of_bool is_default; esc_str iface_name;
+        slist (List.map sexp_ty type_args); sexp_opt_str impl_name;
+        slist (List.map sexp_require requires); slist (List.map sexp_impl_method methods)]
   | _                       -> todo "decl"
 
 let () =

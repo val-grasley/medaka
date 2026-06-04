@@ -106,6 +106,13 @@ public export data UsePath
 -- a property-test parameter `(name : ty)`
 public export data PropParam = PropParam String Ty
 
+-- interface / impl pieces
+public export data MethodDefault = MethodDefault (List Pat) Expr
+public export data IfaceMethod = IfaceMethod String Ty (Option MethodDefault)
+public export data Super = Super String (List String)
+public export data Require = Require String (List Ty)
+public export data ImplMethod = ImplMethod String (List Pat) Expr
+
 -- data/record declarations
 public export data DataVis = VisPrivate | VisAbstract | VisPublic
 public export data Field = Field String Ty
@@ -122,3 +129,5 @@ public export data Decl
   | DProp Bool String (List PropParam) Expr
   | DTest Bool String Expr
   | DBench Bool String Expr
+  | DInterface Bool Bool String (List String) (List Super) (List IfaceMethod)
+  | DImpl Bool Bool String (List Ty) (Option String) (List Require) (List ImplMethod)

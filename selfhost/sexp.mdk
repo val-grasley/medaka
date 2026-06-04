@@ -3,7 +3,7 @@
 -- reference.  Tags are the lib/ast.ml constructor names.  Coverage grows with
 -- the AST/parser; new variants get a matching clause here.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 
 -- shared minimal string escaping — must match dev/astdump.ml's esc_str
 escStr : String -> String
@@ -162,6 +162,25 @@ declSexp (DBench pub name body) = node "DBench" [boolStr pub, escStr name, exprS
 
 propParamSexp : PropParam -> String
 propParamSexp (PropParam n t) = node "pp" [escStr n, tySexp t]
+
+declSexp (DInterface pub isDef name typarams supers methods) = node "DInterface" [boolStr pub, boolStr isDef, escStr name, slist (map escStr typarams), slist (map superSexp supers), slist (map ifaceMethodSexp methods)]
+declSexp (DImpl pub isDef iface tyargs name reqs methods) = node "DImpl" [boolStr pub, boolStr isDef, escStr iface, slist (map tySexp tyargs), optStrSexp name, slist (map requireSexp reqs), slist (map implMethodSexp methods)]
+
+methodDefaultSexp : Option MethodDefault -> String
+methodDefaultSexp None = "None"
+methodDefaultSexp (Some (MethodDefault pats body)) = node "mdef" [slist (map patSexp pats), exprSexp body]
+
+ifaceMethodSexp : IfaceMethod -> String
+ifaceMethodSexp (IfaceMethod name ty def) = node "imethod" [escStr name, tySexp ty, methodDefaultSexp def]
+
+superSexp : Super -> String
+superSexp (Super iface params) = node "super" [escStr iface, slist (map escStr params)]
+
+requireSexp : Require -> String
+requireSexp (Require iface tys) = node "req" [escStr iface, slist (map tySexp tys)]
+
+implMethodSexp : ImplMethod -> String
+implMethodSexp (ImplMethod name pats body) = node "im" [escStr name, slist (map patSexp pats), exprSexp body]
 
 useMemberSexp : UseMember -> String
 useMemberSexp (UseMember n withAll) = node "mem" [escStr n, boolStr withAll]
