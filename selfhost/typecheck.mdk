@@ -268,7 +268,41 @@ joinWith _ [] = ""
 joinWith _ [x] = x
 joinWith sep (x :: rest) = x ++ sep ++ joinWith sep rest
 
--- ── AST type → mono (for ADT field types / annotations) ───────────────────
+-- ── AST type → mono (for ADT field types / annotations / signatures) ──────
+-- free type-variable NAMES in the type map to fresh tyvars (a signature's `a`
+-- is a variable, not a TCon)
+tyVarNames : Ty -> List String
+tyVarNames (TyVar n) = [n]
+tyVarNames (TyCon _) = []
+tyVarNames (TyApp a b) = tyVarNames a ++ tyVarNames b
+tyVarNames (TyFun a b) = tyVarNames a ++ tyVarNames b
+tyVarNames (TyTuple ts) = concatMapL tyVarNames ts
+tyVarNames (TyEffect _ _ t) = tyVarNames t
+tyVarNames (TyConstrained _ t) = tyVarNames t
+
+dedupS : List String -> List String
+dedupS xs = dedupSGo xs []
+
+dedupSGo : List String -> List String -> List String
+dedupSGo [] _ = []
+dedupSGo (x :: xs) seen
+  | containsName x seen = dedupSGo xs seen
+  | otherwise = x :: dedupSGo xs (x :: seen)
+
+-- an annotation / signature mono with free tyvars realized as fresh vars
+astTypeFresh : Ty -> <Mut> Mono
+astTypeFresh ty = fromAstType (freshTvMap (dedupS (tyVarNames ty))) ty
+
+freshTvMap : List String -> <Mut> List (String, Mono)
+freshTvMap [] = []
+freshTvMap (n :: rest) = (n, freshVar ()) :: freshTvMap rest
+
+-- a signature → a scheme quantifying its free tyvars
+sigToScheme : Ty -> <Mut> Scheme
+sigToScheme ty =
+  let tvs = freshTvMap (dedupS (tyVarNames ty))
+  Forall (map monoTyvarId (map snd tvs)) (fromAstType tvs ty)
+
 -- tvs maps a declared type-parameter name to its tyvar
 fromAstType : List (String, Mono) -> Ty -> Mono
 fromAstType tvs (TyCon n) = TCon n
@@ -542,7 +576,7 @@ inferListLit env es =
 inferAnnot : Env -> Expr -> Ty -> <Mut> Mono
 inferAnnot env e ty =
   let t = infer env e
-  let annot = fromAstType [] ty
+  let annot = astTypeFresh ty
   let _ = unify t annot
   annot
 
@@ -680,7 +714,13 @@ checkProgram prog =
   let _ = resetState ()
   let dataEnv = registerAllData initialEnv prog
   let defs = funDefs prog
-  processTopGroups dataEnv defs (groupNames defs [])
+  let sigs = sigsOf prog
+  processTopGroups dataEnv sigs defs (groupNames defs [])
+
+sigsOf : List Decl -> List (String, Ty)
+sigsOf [] = []
+sigsOf ((DTypeSig _ n ty) :: rest) = (n, ty) :: sigsOf rest
+sigsOf (_ :: rest) = sigsOf rest
 
 -- builtin constructors available without the prelude (mirrors initial_env)
 initialEnv : Env
@@ -690,15 +730,31 @@ registerAllData : Env -> List Decl -> <Mut> Env
 registerAllData env [] = env
 registerAllData env (d :: rest) = registerAllData (registerData env d) rest
 
-processTopGroups : Env -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
-processTopGroups _ _ [] = []
-processTopGroups env defs (name :: rest) =
-  let sr = processTopGroup env defs name
-  (name, snd sr) :: processTopGroups (fst sr) defs rest
+processTopGroups : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
+processTopGroups _ _ _ [] = []
+processTopGroups env sigs defs (name :: rest) =
+  let sr = processTopGroup env sigs defs name
+  (name, snd sr) :: processTopGroups (fst sr) sigs defs rest
 
--- returns (env extended with the generalized binding, its scheme)
-processTopGroup : Env -> List (String, (List Pat, Expr)) -> String -> <Mut> (Env, Scheme)
-processTopGroup env defs name =
+-- returns (env extended with the binding's scheme, its scheme).  A signed group
+-- reports its declared scheme and checks the body against it; an unsignatured
+-- group infers + generalizes.
+processTopGroup : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> String -> <Mut> (Env, Scheme)
+processTopGroup env sigs defs name = match lookupAssocS name sigs
+  Some ty => processSignedGroup env defs name ty
+  None => processInferredGroup env defs name
+
+processSignedGroup : Env -> List (String, (List Pat, Expr)) -> String -> Ty -> <Mut> (Env, Scheme)
+processSignedGroup env defs name ty =
+  let sch = sigToScheme ty
+  let env2 = extendVar env name sch
+  let _ = enterLevel ()
+  let _ = unify (instantiate sch) (inferClauses env2 (clausesFor name defs))
+  let _ = exitLevel ()
+  (extendVar env name sch, sch)
+
+processInferredGroup : Env -> List (String, (List Pat, Expr)) -> String -> <Mut> (Env, Scheme)
+processInferredGroup env defs name =
   let _ = enterLevel ()
   let v = freshVar ()
   let env2 = extendVar env name (monoScheme v)
