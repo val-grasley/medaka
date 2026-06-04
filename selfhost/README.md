@@ -312,11 +312,20 @@ Stage-0 prerequisites in `../PLAN.md`).
      and recursion. The env is `(name, Ref value)` frames back-patched via
      `set_ref` (so the cluster carries `<Mut>`; `VPrim` holds a `Value -> <Mut>
      Value`). 7/7 fixtures match.
-   - **Deferred to later slices:** records / refs / arrays / string-interp /
-     ranges / index / slice; externs (`VPrim` primitives — the whole stdlib
-     kernel); and typeclass **method dispatch** (`VTypedImpl`/`VNamedImpl` tag
-     filtering, `EMethodRef`/`EDictApp`, the dict-passing layer). Those unlock
-     running real (prelude-using) programs against the `=== EVAL ===` goldens.
+   - **Slice 2 (DONE):** arrays (`VArray`, `EArrayLit`), indexing (`a.[i]`),
+     slicing (`a.[lo..hi]`), and ranges (`[lo..hi]` / `[|lo..=hi|]`), plus the
+     **extern kernel** — each primitive a `VPrim` wrapping the reference's own
+     native extern with the Value-boundary marshalling `lib/eval.ml`'s
+     `primitives` table does (e.g. `stringToChars` wraps native chars into
+     one-codepoint `VChar`s; `charFromCode`/`stringIndexOf` return `Some`/`None`
+     `VCon`s; `stringCompare` returns `Lt`/`Eq`/`Gt`). Curried multi-arg externs
+     nest `VPrim`s. Covers the int/string/char/array kernel (IO/Rand/Panic
+     externs are out of scope — the oracle compares a computed value, not
+     effects). 9/9 fixtures match.
+   - **Deferred to later slices:** records / refs / string-interp; and typeclass
+     **method dispatch** (`VTypedImpl`/`VNamedImpl` tag filtering,
+     `EMethodRef`/`EDictApp`, the dict-passing layer). Those unlock running real
+     (prelude-using) programs against the `=== EVAL ===` goldens.
    It can be developed against the **reference's** typed + dict-passed AST, so it
    does **not** require typecheck to be ported first; `dict_pass` is the small
    prerequisite for the method-dispatch slices.

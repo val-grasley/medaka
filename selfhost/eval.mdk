@@ -23,6 +23,7 @@ public export data Value
   | VUnit
   | VTuple (List Value)
   | VList (List Value)
+  | VArray (Array Value)
   | VCon String (List Value)
   | VRecord String (List (String, Value))
   | VClosure Env (List Pat) Expr
@@ -45,6 +46,7 @@ ppValue (VBool False) = "false"
 ppValue VUnit = "()"
 ppValue (VTuple vs) = "(" ++ joinComma (map ppValue vs) ++ ")"
 ppValue (VList vs) = "[" ++ joinComma (map ppValue vs) ++ "]"
+ppValue (VArray vs) = "[|" ++ joinComma (map ppValue (arrayToListG vs)) ++ "|]"
 ppValue (VCon name []) = name
 ppValue (VCon name vs) = name ++ " " ++ joinSp (map ppValueAtom vs)
 ppValue (VRecord name fields) = name ++ " { " ++ joinComma (map ppField fields) ++ " }"
@@ -92,6 +94,35 @@ reverseGo : List a -> List a -> List a
 reverseGo [] acc = acc
 reverseGo (x :: xs) acc = reverseGo xs (x :: acc)
 
+arrayToListG : Array a -> List a
+arrayToListG arr = arrayToListGo arr 0 (arrayLength arr)
+
+arrayToListGo : Array a -> Int -> Int -> List a
+arrayToListGo arr i n
+  | i >= n = []
+  | otherwise = arrayGetUnsafe i arr :: arrayToListGo arr (i + 1) n
+
+intSeq : Int -> Int -> List Int
+intSeq lo end
+  | lo >= end = []
+  | otherwise = lo :: intSeq (lo + 1) end
+
+listNthV : List Value -> Int -> Value
+listNthV [] _ = panic "index out of bounds"
+listNthV (x :: xs) i
+  | i <= 0 = x
+  | otherwise = listNthV xs (i - 1)
+
+listSliceV : List Value -> Int -> Int -> List Value
+listSliceV xs lo hi = listSliceGo xs 0 lo hi
+
+listSliceGo : List Value -> Int -> Int -> Int -> List Value
+listSliceGo [] _ _ _ = []
+listSliceGo (x :: xs) i lo hi
+  | i >= hi = []
+  | i >= lo = x :: listSliceGo xs (i + 1) lo hi
+  | otherwise = listSliceGo xs (i + 1) lo hi
+
 startsWithAt : String -> Bool
 startsWithAt s =
   let cs = stringToChars s
@@ -138,6 +169,7 @@ valueEq (VBool a) (VBool b) = boolEq a b
 valueEq VUnit VUnit = True
 valueEq (VTuple a) (VTuple b) = valueListEq a b
 valueEq (VList a) (VList b) = valueListEq a b
+valueEq (VArray a) (VArray b) = valueListEq (arrayToListG a) (arrayToListG b)
 valueEq (VCon n1 a1) (VCon n2 a2) = n1 == n2 && valueListEq a1 a2
 valueEq (VRecord n1 f1) (VRecord n2 f2) = n1 == n2 && fieldListEq f1 f2
 valueEq _ _ = False
@@ -170,6 +202,7 @@ valueTag (VBool _) = 4
 valueTag VUnit = 5
 valueTag (VTuple _) = 6
 valueTag (VList _) = 7
+valueTag (VArray _) = 8
 valueTag (VCon _ _) = 9
 valueTag (VRecord _ _) = 10
 valueTag _ = 99
@@ -182,6 +215,7 @@ valueCompare (VChar a) (VChar b) = stringCompare a b
 valueCompare (VBool a) (VBool b) = compare (boolToInt a) (boolToInt b)
 valueCompare VUnit VUnit = Eq
 valueCompare (VList a) (VList b) = compareValueLists a b
+valueCompare (VArray a) (VArray b) = compareValueLists (arrayToListG a) (arrayToListG b)
 valueCompare (VTuple a) (VTuple b) = compareValueLists a b
 valueCompare (VCon n1 a1) (VCon n2 a2) = match compare n1 n2
   Eq => compareValueLists a1 a2
@@ -316,9 +350,40 @@ eval env (EBinOp op l r) = evalBinop env op l r
 eval env (EUnOp op e) = evalUnop op (eval env e)
 eval env (ETuple es) = VTuple (map (eval env) es)
 eval env (EListLit es) = VList (map (eval env) es)
+eval env (EArrayLit es) = VArray (arrayFromList (map (eval env) es))
 eval env (EAnnot e _) = eval env e
 eval env (EBlock stmts) = evalBlock env stmts
-eval _ _ = panic "eval: unsupported node (slice 1)"
+eval env (EIndex arr idx) = evalIndex (eval env arr) (eval env idx)
+eval env (ESlice arr lo hi incl) = evalSlice (eval env arr) (eval env lo) (eval env hi) incl
+eval env (ERangeList lo hi incl) = evalRange (eval env lo) (eval env hi) incl rangeListMk
+eval env (ERangeArray lo hi incl) = evalRange (eval env lo) (eval env hi) incl rangeArrayMk
+eval _ _ = panic "eval: unsupported node (slice 2)"
+
+evalIndex : Value -> Value -> Value
+evalIndex (VArray a) (VInt i) =
+  if i < 0 || i >= arrayLength a then panic "array index out of bounds" else arrayGetUnsafe i a
+evalIndex (VList vs) (VInt i) = listNthV vs i
+evalIndex _ _ = panic "index: bad operands"
+
+evalSlice : Value -> Value -> Value -> Bool -> Value
+evalSlice (VArray a) (VInt lo) (VInt hi) incl = sliceArray a lo (if incl then hi + 1 else hi)
+evalSlice (VList vs) (VInt lo) (VInt hi) incl = VList (listSliceV vs lo (if incl then hi + 1 else hi))
+evalSlice _ _ _ _ = panic "slice: bad operands"
+
+sliceArray : Array Value -> Int -> Int -> Value
+sliceArray a lo hiX
+  | lo < 0 || hiX > arrayLength a || hiX - lo < 0 = panic "slice out of bounds"
+  | otherwise = VArray (arrayMakeWith (hiX - lo) (i => arrayGetUnsafe (lo + i) a))
+
+evalRange : Value -> Value -> Bool -> (List Int -> Value) -> Value
+evalRange (VInt lo) (VInt hi) incl mk = mk (intSeq lo (if incl then hi + 1 else hi))
+evalRange _ _ _ _ = panic "range bound must be Int"
+
+rangeListMk : List Int -> Value
+rangeListMk ns = VList (map VInt ns)
+
+rangeArrayMk : List Int -> Value
+rangeArrayMk ns = VArray (arrayFromList (map VInt ns))
 
 -- bare sequential block: value of the last statement is the block's result
 evalBlock : Env -> List DoStmt -> <Mut> Value
@@ -516,10 +581,11 @@ evalProgram prog =
   let ctors = collectCtors prog
   let defs = funDefs prog
   let groups = map (mkGroup defs) (funGroupNames defs [])
-  let allNames = map fst boolSeeds ++ map fst ctors ++ map fst groups
+  let allNames = map fst boolSeeds ++ map fst ctors ++ map fst groups ++ map fst externBindings
   let cells = map (n => (n, Ref VUnit)) allNames
   let env = Env [cells]
   let _ = installConsts cells boolSeeds
+  let _ = installConsts cells externBindings
   let _ = installConsts cells ctors
   let _ = installGroups env cells groups
   map cellResult cells
@@ -531,6 +597,159 @@ cellResult (n, cell) = (n, cell.value)
 -- the eval_probe oracle injects the same so prelude-free fixtures can use it)
 boolSeeds : List (String, Value)
 boolSeeds = [("True", VBool True), ("False", VBool False), ("otherwise", VBool True)]
+
+-- ── extern primitives (the stdlib kernel) ─────────────────────────────────
+-- eval.mdk runs on the OCaml reference, so each primitive wraps the reference's
+-- own native extern, doing the Value-boundary marshalling that lib/eval.ml's
+-- `primitives` table does (e.g. VChar holds a one-codepoint String).  Curried
+-- multi-arg externs nest VPrims.  IO/Rand/Panic externs are out of scope — the
+-- eval oracle compares a computed `main` value, not effects.
+prim1 : (Value -> Value) -> Value
+prim1 f = VPrim f
+
+prim2 : (Value -> Value -> Value) -> Value
+prim2 f = VPrim (a => VPrim (b => f a b))
+
+prim3 : (Value -> Value -> Value -> Value) -> Value
+prim3 f = VPrim (a => VPrim (b => VPrim (c => f a b c)))
+
+unString : Value -> String
+unString (VString s) = s
+unString _ = panic "expected a String"
+
+unChar : Value -> Char
+unChar (VChar s) = arrayGetUnsafe 0 (stringToChars s)
+unChar _ = panic "expected a Char"
+
+mapOption : (a -> b) -> Option a -> Option b
+mapOption _ None = None
+mapOption f (Some x) = Some (f x)
+
+orderingToValue : Ordering -> Value
+orderingToValue Lt = VCon "Lt" []
+orderingToValue Eq = VCon "Eq" []
+orderingToValue Gt = VCon "Gt" []
+
+optionToValue : Option Value -> Value
+optionToValue None = VCon "None" []
+optionToValue (Some v) = VCon "Some" [v]
+
+externBindings : List (String, Value)
+externBindings =
+  [ ("intToString", prim1 pIntToString)
+  , ("intToFloat", prim1 pIntToFloat)
+  , ("floatToInt", prim1 pFloatToInt)
+  , ("floatToString", prim1 pFloatToString)
+  , ("charToStr", prim1 pCharToStr)
+  , ("charCode", prim1 pCharCode)
+  , ("charFromCode", prim1 pCharFromCode)
+  , ("charToUpper", prim1 pCharToUpper)
+  , ("charToLower", prim1 pCharToLower)
+  , ("stringLength", prim1 pStringLength)
+  , ("stringConcat", prim1 pStringConcat)
+  , ("stringToChars", prim1 pStringToChars)
+  , ("stringFromChars", prim1 pStringFromChars)
+  , ("stringToUpper", prim1 pStringToUpper)
+  , ("stringToLower", prim1 pStringToLower)
+  , ("stringCompare", prim2 pStringCompare)
+  , ("stringIndexOf", prim2 pStringIndexOf)
+  , ("stringSlice", prim3 pStringSlice)
+  , ("arrayLength", prim1 pArrayLength)
+  , ("arrayFromList", prim1 pArrayFromList)
+  , ("arrayGetUnsafe", prim2 pArrayGetUnsafe)
+  , ("arrayMake", prim2 pArrayMake)
+  ]
+
+pIntToString : Value -> Value
+pIntToString (VInt n) = VString (intToString n)
+pIntToString _ = panic "intToString: not an Int"
+
+pIntToFloat : Value -> Value
+pIntToFloat (VInt n) = VFloat (intToFloat n)
+pIntToFloat _ = panic "intToFloat: not an Int"
+
+pFloatToInt : Value -> Value
+pFloatToInt (VFloat f) = VInt (floatToInt f)
+pFloatToInt _ = panic "floatToInt: not a Float"
+
+pFloatToString : Value -> Value
+pFloatToString (VFloat f) = VString (floatToString f)
+pFloatToString _ = panic "floatToString: not a Float"
+
+pCharToStr : Value -> Value
+pCharToStr (VChar s) = VString s
+pCharToStr _ = panic "charToStr: not a Char"
+
+pCharCode : Value -> Value
+pCharCode (VChar s) = VInt (charCode (arrayGetUnsafe 0 (stringToChars s)))
+pCharCode _ = panic "charCode: not a Char"
+
+pCharFromCode : Value -> Value
+pCharFromCode (VInt n) = optionToValue (mapOption charToVChar (charFromCode n))
+pCharFromCode _ = panic "charFromCode: not an Int"
+
+charToVChar : Char -> Value
+charToVChar c = VChar (charToStr c)
+
+pCharToUpper : Value -> Value
+pCharToUpper (VChar s) = VChar (charToStr (charToUpper (unChar (VChar s))))
+pCharToUpper _ = panic "charToUpper: not a Char"
+
+pCharToLower : Value -> Value
+pCharToLower (VChar s) = VChar (charToStr (charToLower (unChar (VChar s))))
+pCharToLower _ = panic "charToLower: not a Char"
+
+pStringLength : Value -> Value
+pStringLength (VString s) = VInt (stringLength s)
+pStringLength _ = panic "stringLength: not a String"
+
+pStringConcat : Value -> Value
+pStringConcat (VList vs) = VString (stringConcat (map unString vs))
+pStringConcat _ = panic "stringConcat: not a List"
+
+pStringToChars : Value -> Value
+pStringToChars (VString s) = VArray (arrayFromList (map charToVChar (arrayToListG (stringToChars s))))
+pStringToChars _ = panic "stringToChars: not a String"
+
+pStringFromChars : Value -> Value
+pStringFromChars (VArray vs) = VString (stringFromChars (arrayFromList (map unChar (arrayToListG vs))))
+pStringFromChars _ = panic "stringFromChars: not an Array"
+
+pStringToUpper : Value -> Value
+pStringToUpper (VString s) = VString (stringToUpper s)
+pStringToUpper _ = panic "stringToUpper: not a String"
+
+pStringToLower : Value -> Value
+pStringToLower (VString s) = VString (stringToLower s)
+pStringToLower _ = panic "stringToLower: not a String"
+
+pStringCompare : Value -> Value -> Value
+pStringCompare (VString a) (VString b) = orderingToValue (stringCompare a b)
+pStringCompare _ _ = panic "stringCompare: not Strings"
+
+pStringIndexOf : Value -> Value -> Value
+pStringIndexOf (VString needle) (VString hay) = optionToValue (mapOption VInt (stringIndexOf needle hay))
+pStringIndexOf _ _ = panic "stringIndexOf: not Strings"
+
+pStringSlice : Value -> Value -> Value -> Value
+pStringSlice (VInt lo) (VInt hi) (VString s) = VString (stringSlice lo hi s)
+pStringSlice _ _ _ = panic "stringSlice: bad operands"
+
+pArrayLength : Value -> Value
+pArrayLength (VArray a) = VInt (arrayLength a)
+pArrayLength _ = panic "arrayLength: not an Array"
+
+pArrayFromList : Value -> Value
+pArrayFromList (VList vs) = VArray (arrayFromList vs)
+pArrayFromList _ = panic "arrayFromList: not a List"
+
+pArrayGetUnsafe : Value -> Value -> Value
+pArrayGetUnsafe (VInt i) (VArray a) = arrayGetUnsafe i a
+pArrayGetUnsafe _ _ = panic "arrayGetUnsafe: bad operands"
+
+pArrayMake : Value -> Value -> Value
+pArrayMake (VInt n) v = VArray (arrayMake n v)
+pArrayMake _ _ = panic "arrayMake: bad operands"
 
 mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
 mkGroup defs name = (name, clausesForName name defs)
