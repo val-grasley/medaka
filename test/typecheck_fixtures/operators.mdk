@@ -1,0 +1,21 @@
+-- operators infer by shape (arithmetic a->a->a, comparison a->a->Bool, etc.)
+add x y = x + y
+poly a b c = a + b * c - 1
+negI x = 0 - x
+negP x = -x
+eqp x y = x == y
+ltp a b = a < b
+clampish a lo hi = if a < lo then lo else if a > hi then hi else a
+andb a b = a && b
+orb a b = a || b
+notb x = !x
+appx x y = x ++ y
+consx x ys = x :: ys
+pipeIt x g = x |> g
+fwd g h = g >> h
+bwd g h = g << h
+backtick f a b = a `f` b
+data L a = Nil | Cons a (L a)
+total xs = match xs
+  Nil => 0
+  Cons h t => h + total t

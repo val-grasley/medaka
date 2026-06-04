@@ -393,7 +393,101 @@ infer env (EMatch scrut arms) = inferMatch env (infer env scrut) arms
 infer env (ETuple es) = TTuple (inferEach env es)
 infer env (EListLit es) = inferListLit env es
 infer env (EAnnot e ty) = inferAnnot env e ty
+infer env (EBinOp op l r) = inferBinopE env op l r
+infer env (EUnOp op e) = inferUnop op (infer env e)
+infer env (EInfix op l r) = inferInfix env op l r
 infer _ _ = panic "typecheck: unsupported expression (slice 1)"
+
+-- operators infer by SHAPE (the typeclass constraint they carry — Num/Eq/… — is
+-- tracked at the value level but never rendered in a scheme, so it's irrelevant
+-- to the === TYPES === output; numeric literals are Int, not polymorphic)
+inferBinopE : Env -> String -> Expr -> Expr -> <Mut> Mono
+inferBinopE env op l r =
+  let lt = infer env l
+  let rt = infer env r
+  inferBinop op lt rt
+
+inferBinop : String -> Mono -> Mono -> <Mut> Mono
+inferBinop "+" lt rt = arithOp lt rt
+inferBinop "-" lt rt = arithOp lt rt
+inferBinop "*" lt rt = arithOp lt rt
+inferBinop "/" lt rt = arithOp lt rt
+inferBinop "%" lt rt = arithOp lt rt
+inferBinop "++" lt rt = arithOp lt rt
+inferBinop "==" lt rt = compareOp lt rt
+inferBinop "!=" lt rt = compareOp lt rt
+inferBinop "<" lt rt = compareOp lt rt
+inferBinop ">" lt rt = compareOp lt rt
+inferBinop "<=" lt rt = compareOp lt rt
+inferBinop ">=" lt rt = compareOp lt rt
+inferBinop "&&" lt rt = boolOp lt rt
+inferBinop "||" lt rt = boolOp lt rt
+inferBinop "::" lt rt = consOp lt rt
+inferBinop "|>" lt rt = pipeOp lt rt
+inferBinop ">>" lt rt = composeOp lt rt False
+inferBinop "<<" lt rt = composeOp lt rt True
+inferBinop op _ _ = panic ("typecheck: unsupported operator " ++ op)
+
+arithOp : Mono -> Mono -> <Mut> Mono
+arithOp lt rt =
+  let _ = unify lt rt
+  lt
+
+compareOp : Mono -> Mono -> <Mut> Mono
+compareOp lt rt =
+  let _ = unify lt rt
+  TCon "Bool"
+
+boolOp : Mono -> Mono -> <Mut> Mono
+boolOp lt rt =
+  let _ = unify lt (TCon "Bool")
+  let _ = unify rt (TCon "Bool")
+  TCon "Bool"
+
+consOp : Mono -> Mono -> <Mut> Mono
+consOp lt rt =
+  let listTy = TApp (TCon "List") lt
+  let _ = unify rt listTy
+  listTy
+
+pipeOp : Mono -> Mono -> <Mut> Mono
+pipeOp lt rt =
+  let res = freshVar ()
+  let _ = unify rt (TFun lt res)
+  res
+
+-- g >> h : (a->b) -> (b->c) -> (a->c)  [flipped=False]
+-- g << h : (a->b) -> (c->a) -> (c->b)  [flipped=True]
+composeOp : Mono -> Mono -> Bool -> <Mut> Mono
+composeOp gt ht False =
+  let a = freshVar ()
+  let b = freshVar ()
+  let c = freshVar ()
+  let _ = unify gt (TFun a b)
+  let _ = unify ht (TFun b c)
+  TFun a c
+composeOp gt ht True =
+  let a = freshVar ()
+  let b = freshVar ()
+  let c = freshVar ()
+  let _ = unify gt (TFun a b)
+  let _ = unify ht (TFun c a)
+  TFun c b
+
+inferUnop : String -> Mono -> <Mut> Mono
+inferUnop "-" t = t
+inferUnop "!" t =
+  let _ = unify t (TCon "Bool")
+  TCon "Bool"
+inferUnop op _ = panic ("typecheck: unsupported unary op " ++ op)
+
+-- backtick infix `x `f` y` is just f applied to x then y
+inferInfix : Env -> String -> Expr -> Expr -> <Mut> Mono
+inferInfix env op l r =
+  let ft = inferVar env op
+  let lt = infer env l
+  let rt = infer env r
+  inferApp (inferApp ft lt) rt
 
 inferVar : Env -> String -> <Mut> Mono
 inferVar env x = match lookupVar env x
