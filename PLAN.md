@@ -165,7 +165,13 @@ differential harness on the interpreter.
   reference (astdump for AST stages; the existing `=== TYPES ===` / `=== EVAL ===`
   golden sections for typecheck/eval) — lives in **`selfhost/README.md` →
   Roadmap**. Suggested order is easy-first (desugar → resolve → method_marker →
-  exhaust → eval) with the type checker last.
+  exhaust → eval) with the type checker last. The Roadmap also has a
+  **Performance** subsection: two backend-independent wins to bake in *now*
+  because they're cheap up front and expensive to retrofit — a variable-slot
+  (lexical-addressing) hook emitted by resolve/Core IR to replace the
+  assoc-list env scan, and a stdlib string builder to kill the O(n²) `++`
+  string-building in the lexer/formatter — plus larger levers (bytecode VM,
+  decision-tree match compilation) recorded as post-profiling work.
 
 ### Stage 2 — LLVM backend (after self-host)
 

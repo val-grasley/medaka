@@ -204,7 +204,12 @@ Stage-0 prerequisites in `../PLAN.md`).
 2. **Resolve** — name binding, scope, and visibility checks; output is a
    diagnostic list plus a name environment (hashtables, not directly dumpable).
    Dense mutable-env plumbing; multi-module import/alias resolution is the hard
-   part. Reuses `loader` concepts.
+   part. Reuses `loader` concepts. **Perf hook (do now):** while resolve is
+   already walking every binding, give each variable reference a resolved
+   `(frame, slot)` address and carry it on the node, even if the first
+   interpreter ignores it — see *Performance* below. Designing this in is nearly
+   free; retrofitting lexical addressing onto a finished assoc-list interpreter
+   is not.
 3. **Method_marker** — rewrites interface-method / constrained-fn `EVar`s to
    `EMethodRef`/`EDictApp` (refs left unfilled for typecheck). AST→AST, dumpable.
    The prelude-shadowing name-set logic is the bulk.
@@ -237,6 +242,48 @@ interpreter (eval), all running on the existing OCaml interpreter and validated
 stage-by-stage against the reference — at which point the self-hosted compiler
 can process its own source (the bootstrap). Stage 2 (the LLVM backend) follows;
 see **North star → Stage 2** in `../PLAN.md`.
+
+### Performance — what to bake into these phases (so we don't forget)
+
+LLVM (Stage 2) raises the ceiling, but the current tree-walker has large,
+backend-independent wins available *first*. Most of these should wait until the
+pipeline exists and can be profiled — **measure before optimizing**: the
+self-hosted compiler is itself the best benchmark (a big, realistic, hot
+workload we control), so the prerequisite is cheap observability (per-phase
+timing + an allocation counter) to attribute where the time actually goes,
+rather than guessing. With that caveat, two items are cheap *now* and expensive
+to retrofit, so design them into the initial phases:
+
+- **Lexical addressing — reserve the variable-slot hook in resolve + the Core
+  IR (do during stage 2 / IR design).** Today `eval`'s environment is
+  `(string * value ref) list list`, so every `EVar` is a linear scan with string
+  compares — likely the single hottest cost in the interpreter. The fix is to
+  resolve each variable to a `(frame, slot)` index and use array frames for O(1)
+  lookup. The first interpreter need not *use* the slot, but resolve should
+  *emit* it; adding the field later means re-touching every binding site.
+- **A real string builder in the stdlib (do early — we pay for it daily).** The
+  lexer, `sexp.mdk`, and the formatter all build strings via left-fold
+  `acc ++ charToStr c`. If `++` is copy-based (almost certainly — verify), that's
+  O(n²). A mutable byte/char buffer with amortized-O(1) `append` + a single
+  `freeze` to `String` (the `mut_array` pattern) fixes it. Backend-independent,
+  and the self-host's own lexer/formatter are the immediate beneficiaries.
+
+Recorded for later, **not** initial-phase work (revisit once the front-end is
+profilable):
+
+- **Bytecode VM as a "Stage 1.5"** between the tree-walker and LLVM — removes
+  per-node AST re-dispatch, gets lexical addressing for free, and its Core IR is
+  largely the IR LLVM wants (so it's an on-ramp, not throwaway).
+- **Decision-tree pattern-match compilation** (drive it from the same Maranget
+  analysis used for exhaustiveness) — tests each scrutinee field once instead of
+  re-checking per clause; the parser/lexer are match-heavy, so this helps the
+  self-host directly.
+- **Static typeclass dispatch** — confirm `EMethodRef` routes resolved at
+  elaboration aren't re-searched at runtime in `VMulti`; full monomorphization is
+  an LLVM-era concern.
+- **Stdlib hygiene** — prefer `Array`/`mut_array` over `List` in hot paths, keep
+  common ops tail-recursive, and cache the elaborated+evaluated prelude so the
+  many small runs (doctests, test suite) don't re-install it each time.
 
 ## Self-host-surfaced compiler fix
 
