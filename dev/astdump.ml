@@ -81,6 +81,8 @@ let rec sexp_expr e =
   | ETuple es          -> node "ETuple" (List.map sexp_expr es)
   | EListLit es        -> node "EListLit" (List.map sexp_expr es)
   | EArrayLit es       -> node "EArrayLit" (List.map sexp_expr es)
+  | ERangeList (lo, hi, incl) -> node "ERangeList" [sexp_expr lo; sexp_expr hi; string_of_bool incl]
+  | ELetGroup (binds, body) -> node "ELetGroup" [slist (List.map sexp_letbind binds); sexp_expr body]
   | EIndex (a, i)      -> node "EIndex" [sexp_expr a; sexp_expr i]
   | EAnnot (e, t)      -> node "EAnnot" [sexp_expr e; sexp_ty t]
   | EBlock stmts       -> node "EBlock" (List.map sexp_dostmt stmts)
@@ -97,6 +99,10 @@ and sexp_interp = function
 
 and sexp_garm (guards, body) =
   node "garm" [slist (List.map sexp_guard guards); sexp_expr body]
+
+and sexp_letbind (name, clauses) = node "lgb" (esc_str name :: List.map sexp_clause clauses)
+
+and sexp_clause (pats, body) = node "clause" [slist (List.map sexp_pat pats); sexp_expr body]
 
 and sexp_fassign (n, e) = node "fa" [esc_str n; sexp_expr e]
 

@@ -15,7 +15,7 @@
 -- `DFunDef`/`DTypeSig`.  Multi-statement indented blocks, the remaining decl
 -- forms, and the rest of the operator ladder come in later slices.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), Expr(..), UseMember(..), UsePath(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 import lexer.{Token(..), tokenize}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -199,18 +199,81 @@ lamTail e =
     body <- parseExpr
     pure (ELam (exprToParams e) body)
 
+-- convert a lambda LHS expression to a parameter-pattern list (mirrors the
+-- reference `expr_to_pats`): an EApp spine with a lowercase head is a multi-arg
+-- lambda (one pattern per spine element); an uppercase head is a single
+-- constructor pattern; anything else is a single pattern.
 exprToParams : Expr -> List Pat
-exprToParams e = exprToParamsOnto e []
+exprToParams (EApp f x) = appToParams (EApp f x)
+exprToParams e = [exprToPat e]
 
-exprToParamsOnto : Expr -> List Pat -> List Pat
-exprToParamsOnto (EApp f x) acc = exprToParamsOnto f (exprToPat x :: acc)
-exprToParamsOnto e acc = exprToPat e :: acc
+appToParams : Expr -> List Pat
+appToParams app = paramsForHead (spineHead app) app
+
+paramsForHead : Expr -> Expr -> List Pat
+paramsForHead (EVar c) app = paramsForCtor c app
+paramsForHead _ app = map exprToPat (spineList app)
+
+paramsForCtor : String -> Expr -> List Pat
+paramsForCtor c app
+  | isCtorName c = [exprToPat app]
+  | otherwise = map exprToPat (spineList app)
+
+-- head of an EApp spine
+spineHead : Expr -> Expr
+spineHead (EApp f _) = spineHead f
+spineHead e = e
+
+-- flatten an EApp spine into [head, arg1, arg2, …]
+spineList : Expr -> List Expr
+spineList e = spineOnto e []
+
+spineOnto : Expr -> List Expr -> List Expr
+spineOnto (EApp f x) acc = spineOnto f (x :: acc)
+spineOnto e acc = e :: acc
 
 exprToPat : Expr -> Pat
 exprToPat (EVar "_") = PWild
-exprToPat (EVar x) = PVar x
+exprToPat (EVar x) = ctorOrVar x
 exprToPat (ELit l) = PLit l
+exprToPat (ETuple es) = PTuple (map exprToPat es)
+exprToPat (EListLit es) = PList (map exprToPat es)
+exprToPat (EBinOp "::" a b) = PCons (exprToPat a) (exprToPat b)
+exprToPat (EApp f x) = appToPat (EApp f x)
 exprToPat _ = PWild
+
+ctorOrVar : String -> Pat
+ctorOrVar x
+  | isCtorName x = PCon x []
+  | otherwise = PVar x
+
+-- constructor-application pattern: the spine head must be uppercase
+appToPat : Expr -> Pat
+appToPat app = appToPatH (spineHead app) (spineList app)
+
+appToPatH : Expr -> List Expr -> Pat
+appToPatH (EVar c) spine = appToPatCtor c spine
+appToPatH _ _ = PWild
+
+appToPatCtor : String -> List Expr -> Pat
+appToPatCtor c spine
+  | isCtorName c = PCon c (map exprToPat (dropFirst spine))
+  | otherwise = PWild
+
+dropFirst : List a -> List a
+dropFirst [] = []
+dropFirst (_ :: xs) = xs
+
+isCtorName : String -> Bool
+isCtorName s = isCtorChars (stringToChars s)
+
+isCtorChars : Array Char -> Bool
+isCtorChars cs
+  | arrayLength cs == 0 = False
+  | otherwise = isUpperC (arrayGetUnsafe 0 cs)
+
+isUpperC : Char -> Bool
+isUpperC c = c >= 'A' && c <= 'Z'
 
 binOp : Token -> String -> Parser (Expr -> Expr -> Expr)
 binOp tk op =
@@ -311,6 +374,7 @@ atomFor (TUpper x) = parseUpperAtom x
 atomFor TUnderscore = emit (EVar "_")
 atomFor TLParen = parseParen
 atomFor TLBracket = parseListE
+atomFor TLArray = parseArray
 atomFor TLBrace = parseRecordUpdate
 atomFor TIf = parseIf
 atomFor TLet = parseLet
@@ -426,9 +490,49 @@ listFor : Token -> Parser Expr
 listFor TRBracket = emit (EListLit [])
 listFor _ =
   do
-    es <- sepBy1 parseExpr (expectTok TComma)
+    first <- parseExpr
+    t <- peekP
+    listRest first t
+
+-- after the first element: `..`/`..=` range, `,` more elements, or `]` close
+listRest : Expr -> Token -> Parser Expr
+listRest first TDotDot = rangeAfter first False
+listRest first TDotDotEq = rangeAfter first True
+listRest first TComma =
+  do
+    advance
+    rest <- sepBy1 parseExpr (expectTok TComma)
     expectTok TRBracket
-    pure (EListLit es)
+    pure (EListLit (first :: rest))
+listRest first TRBracket =
+  do
+    advance
+    pure (EListLit [first])
+listRest _ _ = failP "expected , .. ..= or ]"
+
+rangeAfter : Expr -> Bool -> Parser Expr
+rangeAfter lo incl =
+  do
+    advance
+    hi <- parseExpr
+    expectTok TRBracket
+    pure (ERangeList lo hi incl)
+
+-- array literal `[| e, … |]`
+parseArray : Parser Expr
+parseArray =
+  do
+    expectTok TLArray
+    t <- peekP
+    arrayFor t
+
+arrayFor : Token -> Parser Expr
+arrayFor TRArray = emit (EArrayLit [])
+arrayFor _ =
+  do
+    es <- sepBy1 parseExpr (expectTok TComma)
+    expectTok TRArray
+    pure (EArrayLit es)
 
 parseIf : Parser Expr
 parseIf =
@@ -488,8 +592,21 @@ parseArm =
     pure (Arm pat [] body)
 
 -- ── Patterns ────────────────────────────────────────────────────────────
+-- top level (pat_as): an as-pattern `x@p`, else a cons-pattern.  AS_AT is the
+-- lexer's `@`-adjacent-to-ident token; if it doesn't follow, orElse backtracks.
 parsePat : Parser Pat
-parsePat =
+parsePat = orElse parseAsPat parsePatCons
+
+parseAsPat : Parser Pat
+parseAsPat =
+  do
+    x <- identNameP
+    expectTok TAsAt
+    sub <- parsePatCons
+    pure (PAs x sub)
+
+parsePatCons : Parser Pat
+parsePatCons =
   do
     p <- parsePatApp
     orElse (patConsTail p) (pure p)
@@ -498,7 +615,7 @@ patConsTail : Pat -> Parser Pat
 patConsTail p =
   do
     expectTok TCons
-    q <- parsePat
+    q <- parsePatCons
     pure (PCons p q)
 
 parsePatApp : Parser Pat
@@ -1107,7 +1224,85 @@ recordFieldsRestFor _ = pure []
 -- a decl body is an inline expr, or an INDENT block of statements: a single
 -- expression statement unwraps to that expr; anything else becomes an EBlock
 parseBody : Parser Expr
-parseBody = orElse indentedBody parseExpr
+parseBody = orElse indentedBody parseBodyExpr
+
+-- an inline body expr, optionally followed by a Haskell-style `where` block:
+-- `<expr> INDENT where INDENT bindings DEDENT NEWLINE DEDENT` → ELetGroup
+parseBodyExpr : Parser Expr
+parseBodyExpr =
+  do
+    e <- parseExpr
+    orElse (whereTail e) (pure e)
+
+whereTail : Expr -> Parser Expr
+whereTail e =
+  do
+    expectTok TIndent
+    expectTok TWhere
+    expectTok TIndent
+    binds <- parseWhereBindings
+    expectTok TDedent
+    skipNewlines
+    expectTok TDedent
+    pure (ELetGroup (coalesceClauses binds) e)
+
+parseWhereBindings : Parser (List (String, List Pat, Expr))
+parseWhereBindings =
+  do
+    skipNewlines
+    whereBindingsLoop
+
+whereBindingsLoop : Parser (List (String, List Pat, Expr))
+whereBindingsLoop = orElse whereBindingsCons (pure [])
+
+whereBindingsCons : Parser (List (String, List Pat, Expr))
+whereBindingsCons =
+  do
+    b <- parseWhereBinding
+    skipNewlines
+    rest <- whereBindingsLoop
+    pure (b :: rest)
+
+parseWhereBinding : Parser (String, List Pat, Expr)
+parseWhereBinding =
+  do
+    name <- identNameP
+    pats <- many parsePatAtom
+    t <- peekP
+    whereBindRest name pats t
+
+whereBindRest : String -> List Pat -> Token -> Parser (String, List Pat, Expr)
+whereBindRest name pats TEqual =
+  do
+    advance
+    body <- parseExpr
+    pure (name, pats, body)
+whereBindRest name pats TIndent =
+  do
+    advance
+    arms <- parseGuardArms
+    expectTok TDedent
+    pure (name, pats, EGuards arms)
+whereBindRest name pats TPipe =
+  do
+    arm <- parseGuardArm
+    pure (name, pats, EGuards [arm])
+whereBindRest _ _ _ = failP "expected where binding body"
+
+-- group CONSECUTIVE same-name bindings into one LetBind (mirrors the reference
+-- `coalesce_clauses`), so `go … = …` over several lines becomes one entry
+coalesceClauses : List (String, List Pat, Expr) -> List LetBind
+coalesceClauses [] = []
+coalesceClauses ((name, ps, b) :: rest) = coalesceGo name [FunClause ps b] rest
+
+coalesceGo : String -> List FunClause -> List (String, List Pat, Expr) -> List LetBind
+coalesceGo name acc [] = [LetBind name (rev acc)]
+coalesceGo name acc ((n, ps, b) :: rest) = coalesceStep name acc n ps b rest
+
+coalesceStep : String -> List FunClause -> String -> List Pat -> Expr -> List (String, List Pat, Expr) -> List LetBind
+coalesceStep name acc n ps b rest
+  | n == name = coalesceGo name (FunClause ps b :: acc) rest
+  | otherwise = LetBind name (rev acc) :: coalesceGo n [FunClause ps b] rest
 
 indentedBody : Parser Expr
 indentedBody =

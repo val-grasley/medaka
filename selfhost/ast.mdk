@@ -63,6 +63,12 @@ public export data GuardArm = GuardArm (List Guard) Expr
 -- a record field assignment: `field = expr`
 public export data FieldAssign = FieldAssign String Expr
 
+-- one clause of a `where`/let-group binding: parameter patterns + body
+public export data FunClause = FunClause (List Pat) Expr
+
+-- a `where`/let-group binding: a name with one or more (coalesced) clauses
+public export data LetBind = LetBind String (List FunClause)
+
 public export data Expr
   = ELit Lit
   | EVar String
@@ -78,6 +84,8 @@ public export data Expr
   | ETuple (List Expr)
   | EListLit (List Expr)
   | EArrayLit (List Expr)
+  | ERangeList Expr Expr Bool
+  | ELetGroup (List LetBind) Expr
   | EIndex Expr Expr
   | EAnnot Expr Ty
   | EBlock (List DoStmt)
