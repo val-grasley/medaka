@@ -3986,6 +3986,7 @@ let promotable_from (env : env) (user_prog : program) : (ident, unit) Hashtbl.t 
   out
 
 let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
+    ?(prepend_prelude = true)
     (prog : program)
     : (ident * scheme) list * string list * (ident, unit) Hashtbl.t =
   reset_state ();
@@ -4009,7 +4010,7 @@ let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
   let user_prog = prog in
   (* Phase 78a: prepend the prelude with any plain function [user_prog] shadows
      dropped, so the user's definition isn't coalesced with the prelude's. *)
-  let prog = if program_is_core prog then prog else Method_marker.prelude_for user_prog @ prog in
+  let prog = if program_is_core prog || not prepend_prelude then prog else Method_marker.prelude_for user_prog @ prog in
 
   register_attrs env prog;
 
@@ -4049,6 +4050,10 @@ let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
      (same semantics as the old seed_builtin_impls fallback mechanism). *)
   if program_is_core user_prog then
     List.iter (fun d -> register_impl env (Ast.inner_decl d)) prog
+  else if not prepend_prelude then
+    (* engine-only: the prelude's interfaces aren't registered, so don't seed its
+       impls either; the self-contained program supplies its own *)
+    List.iter (fun d -> register_impl ~seeded:false env (Ast.inner_decl d)) user_prog
   else begin
     List.iter (fun d -> register_impl ~seeded:true  env (Ast.inner_decl d)) Method_marker.marked_prelude;
     List.iter (fun d -> register_impl ~seeded:false env (Ast.inner_decl d)) user_prog
@@ -4112,19 +4117,22 @@ let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
 
   (* Validate the built-in registry against what the prelude loaded.
      This is a compiler-build invariant: if any expected stdlib name is
-     absent the stdlib was edited in a breaking way. *)
-  List.iter (fun (role : Builtins.iface_role) ->
-    if not (Hashtbl.mem (!env).interfaces role.iface) then
-      failwith (Printf.sprintf
-        "Builtins registry error: interface '%s' (role '%s') not found after \
-         loading core.mdk" role.iface role.role)
-  ) Builtins.ifaces;
-  List.iter (fun (role : Builtins.ctor_role) ->
-    if not (Hashtbl.mem (!env).ctors role.ctor) then
-      failwith (Printf.sprintf
-        "Builtins registry error: constructor '%s' (role '%s') not found after \
-         loading core.mdk" role.ctor role.role)
-  ) Builtins.ctors;
+     absent the stdlib was edited in a breaking way.  (Skipped in the engine-only
+     path, which deliberately runs without the prelude.) *)
+  if prepend_prelude then begin
+    List.iter (fun (role : Builtins.iface_role) ->
+      if not (Hashtbl.mem (!env).interfaces role.iface) then
+        failwith (Printf.sprintf
+          "Builtins registry error: interface '%s' (role '%s') not found after \
+           loading core.mdk" role.iface role.role)
+    ) Builtins.ifaces;
+    List.iter (fun (role : Builtins.ctor_role) ->
+      if not (Hashtbl.mem (!env).ctors role.ctor) then
+        failwith (Printf.sprintf
+          "Builtins registry error: constructor '%s' (role '%s') not found after \
+           loading core.mdk" role.ctor role.role)
+    ) Builtins.ctors
+  end;
 
   (* Include interface methods and extern schemes in the returned env *)
   let final_env = !env in
@@ -4197,6 +4205,14 @@ let check_program_promoting ?(promoted : (ident, unit) Hashtbl.t option)
    no promotion, drops the discovery set. *)
 let check_program (prog : program) : (ident * scheme) list * string list =
   let (schemes, warnings, _) = check_program_promoting prog in
+  (schemes, warnings)
+
+(* Engine-only entry point for the self-hosted typecheck port: type-check a
+   self-contained program WITHOUT prepending the prelude.  Mirrors eval's
+   ~prelude:false — the fixtures define everything they use, so the inferred
+   schemes are validated against the self-hosted typechecker in isolation. *)
+let check_program_no_prelude (prog : program) : (ident * scheme) list * string list =
+  let (schemes, warnings, _) = check_program_impl ~prepend_prelude:false prog in
   (schemes, warnings)
 
 (* Multi-module type-checking entry point.
