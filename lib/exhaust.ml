@@ -40,25 +40,45 @@ let tuple_arity_of_name c =
   then int_of_string_opt (String.sub c pl (n - pl - sl))
   else None
 
-let rec desugar = function
+(* [get_ctor_fields] maps a named-field constructor to its declared field names,
+   in declaration order (or None when the constructor is unknown to the oracle).
+   It lets us lower a named-field-variant pattern `Con { f = p, ... }` to the
+   same constructor-tagged [PCon (Con, args)] shape as a positional pattern, so
+   the Maranget matrix discriminates on the constructor instead of treating the
+   whole row as a wildcard. *)
+let rec desugar ~get_ctor_fields = function
   | PWild         -> PWild
   | PVar _        -> PWild             (* treat bound vars as wildcards *)
   | PLit (LBool true)  -> PCon ("True",  [])
   | PLit (LBool false) -> PCon ("False", [])
   | PLit  LUnit        -> PCon ("Unit",  [])
   | PLit l             -> PLit l       (* Int / Float / String / Char stay open *)
-  | PTuple ps          -> PCon (tuple_ctor_name (List.length ps), List.map desugar ps)
-  | PCon (c, args)     -> PCon (c, List.map desugar args)
-  | PCons (h, t)       -> PCon ("Cons", [desugar h; desugar t])
+  | PTuple ps          -> PCon (tuple_ctor_name (List.length ps),
+                                List.map (desugar ~get_ctor_fields) ps)
+  | PCon (c, args)     -> PCon (c, List.map (desugar ~get_ctor_fields) args)
+  | PCons (h, t)       -> PCon ("Cons", [desugar ~get_ctor_fields h;
+                                         desugar ~get_ctor_fields t])
   | PList []           -> PCon ("Nil",  [])
-  | PList (h :: rest)  -> PCon ("Cons", [desugar h; desugar (PList rest)])
-  | PAs (_, p)         -> desugar p
-  | PRec (_, _, true)  -> PWild
-    (* `{ ... }` — matches any record; treat as wildcard for exhaustiveness *)
-  | PRec (name, _, false) ->
-    PLit (LString ("__partial_rec_" ^ name ^ "__"))
-    (* Partial match without rest — open "literal" so non-exhaustiveness
-       warnings still fire when no catch-all arm follows *)
+  | PList (h :: rest)  -> PCon ("Cons", [desugar ~get_ctor_fields h;
+                                         desugar ~get_ctor_fields (PList rest)])
+  | PAs (_, p)         -> desugar ~get_ctor_fields p
+  | PRec (name, fields, _rest) ->
+    (* `Con { f = p, ... }` covers only the [Con] constructor — NOT the whole
+       type — so it must be a constructor-tagged row, exactly like the positional
+       `PCon (Con, ..)`.  Place each bound field's sub-pattern in its declared
+       position; unmentioned fields (whether elided by `...` or just omitted)
+       become wildcards.  If the constructor's field layout is unknown, fall back
+       to a bare wildcard. *)
+    (match get_ctor_fields name with
+     | Some field_order ->
+       let args = List.map (fun fn ->
+         match List.assoc_opt fn fields with
+         | Some (Some p) -> desugar ~get_ctor_fields p
+         | Some None     -> PWild    (* field pun — binds, irrefutable *)
+         | None          -> PWild)   (* field not mentioned in this pattern *)
+         field_order in
+       PCon (name, args)
+     | None -> PWild)
   | PRng _ -> PWild
     (* Range patterns cover an open set of values — treated as wildcard so a
        sole range arm satisfies exhaustiveness for its type.  Precise interval
@@ -220,11 +240,12 @@ let pp_loc = function
   | None   -> ""
   | Some l -> Printf.sprintf "%s:%d:%d: " l.file l.line l.col
 
-let check_match ~get_ctors ~get_arity ~get_ctor_type ~warnings ~col0_type
-                ~match_loc arms =
+let check_match ~get_ctors ~get_arity ~get_ctor_type ~get_ctor_fields ~warnings
+                ~col0_type ~match_loc arms =
   let u = useful ~get_ctors ~get_arity ~get_ctor_type in
   (* Work with desugared patterns. *)
-  let arms_ds = List.map (fun (p, has_guard) -> (desugar p, has_guard)) arms in
+  let arms_ds =
+    List.map (fun (p, has_guard) -> (desugar ~get_ctor_fields p, has_guard)) arms in
 
   (* ── Redundancy pass ── *)
   (* Build the "definite" matrix incrementally from non-guarded arms seen so far. *)
@@ -261,11 +282,12 @@ let check_match ~get_ctors ~get_arity ~get_ctor_type ~warnings ~col0_type
    pattern counts as covering its shape regardless of any guard; guard
    fall-through is Phase 91(2)'s separate concern, not this.  [arity = 0] (value
    bindings) is skipped — there is nothing to be non-exhaustive over. *)
-let check_clauses ~get_ctors ~get_arity ~get_ctor_type ~warnings ~loc ~arity
-                  (clause_pats : pat list list) =
+let check_clauses ~get_ctors ~get_arity ~get_ctor_type ~get_ctor_fields ~warnings
+                  ~loc ~arity (clause_pats : pat list list) =
   if arity > 0 then begin
-    let rows = List.map (fun pats -> [ desugar (PTuple pats) ]) clause_pats in
-    let query = [ desugar (PTuple (List.init arity (fun _ -> PWild))) ] in
+    let rows =
+      List.map (fun pats -> [ desugar ~get_ctor_fields (PTuple pats) ]) clause_pats in
+    let query = [ desugar ~get_ctor_fields (PTuple (List.init arity (fun _ -> PWild))) ] in
     if useful ~get_ctors ~get_arity ~get_ctor_type (Some (tuple_ctor_name arity)) rows query
     then
       warnings := (pp_loc loc ^
@@ -346,6 +368,8 @@ let build_oracle (prog : program) =
   let type_ctors = Hashtbl.create 32 in
   let ctor_arity = Hashtbl.create 64 in
   let ctor_type  = Hashtbl.create 64 in
+  (* named-field constructor → declared field names, in order *)
+  let ctor_fields = Hashtbl.create 32 in
   Hashtbl.replace type_ctors "Bool" ["True"; "False"];
   Hashtbl.replace type_ctors "List" ["Cons"; "Nil"];
   Hashtbl.replace type_ctors "Unit" ["Unit"];
@@ -360,12 +384,16 @@ let build_oracle (prog : program) =
       List.iter (fun v ->
         let arity = match v.con_payload with
           | ConPos tys  -> List.length tys
-          | ConNamed fs -> List.length fs in
+          | ConNamed fs ->
+            Hashtbl.replace ctor_fields v.con_name
+              (List.map (fun f -> f.field_name) fs);
+            List.length fs in
         Hashtbl.replace ctor_arity v.con_name arity;
         Hashtbl.replace ctor_type v.con_name tyname) variants
     | DRecord (_, tyname, _, fields, _) ->
       Hashtbl.replace type_ctors tyname [tyname];
       Hashtbl.replace ctor_arity tyname (List.length fields);
+      Hashtbl.replace ctor_fields tyname (List.map (fun f -> f.field_name) fields);
       Hashtbl.replace ctor_type tyname tyname
     | DNewtype (_, tyname, _, conname, _, _) ->
       Hashtbl.replace type_ctors tyname [conname];
@@ -374,12 +402,12 @@ let build_oracle (prog : program) =
     | _ -> ()
   in
   List.iter scan prog;
-  (type_ctors, ctor_arity, ctor_type)
+  (type_ctors, ctor_arity, ctor_type, ctor_fields)
 
 (* Check one group of clauses sharing a name (multi-clause dispatch unit).  Warn
    once if some clause's guards may fall through AND the non-falling-through
    clauses' patterns don't already cover every input. *)
-let check_group ~type_ctors ~ctor_arity ~ctor_type warnings clauses =
+let check_group ~type_ctors ~ctor_arity ~ctor_type ~ctor_fields warnings clauses =
   if List.exists clause_is_guarded_partial clauses then begin
     let group_arity = match clauses with
       | (pats, _) :: _ -> List.length pats
@@ -396,15 +424,18 @@ let check_group ~type_ctors ~ctor_arity ~ctor_type warnings clauses =
       match tuple_arity_of_name c with
       | Some a -> a
       | None   -> (match Hashtbl.find_opt ctor_arity c with Some a -> a | None -> 0) in
+    let get_ctor_fields c = Hashtbl.find_opt ctor_fields c in
     (* Wrap each clause's parameter list as a synthetic tuple so multi-parameter
        coverage reduces to a single __tupleN__ column.  Guarded-partial clauses
        are excluded — their guard might fail at runtime. *)
     let rows =
       List.filter_map (fun c ->
-        if clause_guards_total c then Some [ desugar (PTuple (fst c)) ] else None)
+        if clause_guards_total c then Some [ desugar ~get_ctor_fields (PTuple (fst c)) ]
+        else None)
         clauses in
     if useful ~get_ctors ~get_arity ~get_ctor_type
-         (Some (tuple_ctor_name group_arity)) rows [ desugar (PTuple (List.init group_arity (fun _ -> PWild))) ]
+         (Some (tuple_ctor_name group_arity)) rows
+         [ desugar ~get_ctor_fields (PTuple (List.init group_arity (fun _ -> PWild))) ]
     then begin
       let loc =
         List.find_map (fun c ->
@@ -426,8 +457,8 @@ let group_by_name (items : (ident * (pat list * expr)) list) : (pat list * expr)
 
 let check_guard_exhaustiveness (prog : program) : string list =
   let warnings = ref [] in
-  let (type_ctors, ctor_arity, ctor_type) = build_oracle prog in
-  let check = check_group ~type_ctors ~ctor_arity ~ctor_type warnings in
+  let (type_ctors, ctor_arity, ctor_type, ctor_fields) = build_oracle prog in
+  let check = check_group ~type_ctors ~ctor_arity ~ctor_type ~ctor_fields warnings in
   (* Nested where/let groups (ELetGroup) reached anywhere inside an expression. *)
   let visit_expr e =
     (match e with
