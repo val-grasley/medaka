@@ -16,6 +16,7 @@
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 import desugar.{mapProg, mapExpr, mapDecl}
+import util.{contains, concatMapList}
 
 -- ── Name-set collection ───────────────────────────────────────────────────
 -- Interface method names declared across the decls (DInterface methods).
@@ -38,10 +39,6 @@ constrainedFnNames (_::rest) = constrainedFnNames rest
 constrainedAdd : String -> Ty -> List String -> List String
 constrainedAdd name (TyConstrained _ _) acc = name :: acc
 constrainedAdd _ _ acc = acc
-
-contains : String -> List String -> Bool
-contains _ [] = False
-contains x (y::ys) = x == y || contains x ys
 
 -- ── The marking rewrite ───────────────────────────────────────────────────
 -- Method names take precedence over constrained-function names.
@@ -178,10 +175,6 @@ implMethodBody (ImplMethod _ _ body) = body
 ifaceMethodBodies : IfaceMethod -> List Expr
 ifaceMethodBodies (IfaceMethod _ _ (Some (MethodDefault _ body))) = [body]
 ifaceMethodBodies (IfaceMethod _ _ None) = []
-
-concatMapList : (a -> List b) -> List a -> List b
-concatMapList _ [] = []
-concatMapList f (x::xs) = f x ++ concatMapList f xs
 
 -- all referenced names (EVar/EMethodRef/EDictApp) in an expr tree
 collectVars : Expr -> List String

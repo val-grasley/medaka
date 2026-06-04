@@ -1,0 +1,71 @@
+-- Shared internal helpers for the self-hosted compiler stages.  selfhost
+-- deliberately avoids the standard library, so the small list/string utilities
+-- every stage needs live here once instead of being re-implemented per file.
+-- (typecheck.mdk is still being ported and keeps its own local copies for now.)
+
+export
+contains : String -> List String -> Bool
+contains _ [] = False
+contains x (y::ys) = x == y || contains x ys
+
+export
+concatMapList : (a -> List b) -> List a -> List b
+concatMapList _ [] = []
+concatMapList f (x::xs) = f x ++ concatMapList f xs
+
+export
+listLen : List a -> Int
+listLen [] = 0
+listLen (_::xs) = 1 + listLen xs
+
+export
+reverseL : List a -> List a
+reverseL xs = reverseGo xs []
+
+reverseGo : List a -> List a -> List a
+reverseGo [] acc = acc
+reverseGo (x::xs) acc = reverseGo xs (x :: acc)
+
+export
+anyList : (a -> Bool) -> List a -> Bool
+anyList _ [] = False
+anyList p (x::xs) = p x || anyList p xs
+
+export
+allList : (a -> Bool) -> List a -> Bool
+allList _ [] = True
+allList p (x::xs) = p x && allList p xs
+
+-- first value bound to a String key in an association list
+export
+lookupAssoc : String -> List (String, b) -> Option b
+lookupAssoc _ [] = None
+lookupAssoc k ((k2, v)::rest)
+  | k == k2 = Some v
+  | otherwise = lookupAssoc k rest
+
+export
+joinNl : List String -> String
+joinNl [] = ""
+joinNl [x] = x
+joinNl (x::rest) = x ++ "\n" ++ joinNl rest
+
+-- minimal string escaping for the structural / diagnostic dumps (matches
+-- dev/astdump.ml's esc_str and dev/diagdump.ml): backslash, quote, \n \t \r.
+export
+escStr : String -> String
+escStr s = "\"" ++ escFrom (stringToChars s) 0 ++ "\""
+
+escFrom : Array Char -> Int -> String
+escFrom cs i
+  | i >= arrayLength cs = ""
+  | otherwise = escOne (arrayGetUnsafe i cs) ++ escFrom cs (i + 1)
+
+escOne : Char -> String
+escOne c
+  | c == '\\' = "\\\\"
+  | c == '"' = "\\\""
+  | c == '\n' = "\\n"
+  | c == '\t' = "\\t"
+  | c == '\r' = "\\r"
+  | otherwise = charToStr c

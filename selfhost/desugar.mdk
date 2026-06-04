@@ -10,6 +10,7 @@
 -- post-order (children first, then the node).
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import util.{listLen}
 
 -- ── Bottom-up traversal engine (mirror of map_expr / map_decl) ────────────
 -- `mapExpr f e` rewrites every subexpression of `e` with `f`, post-order: the
@@ -331,10 +332,6 @@ conArity : Variant -> Int
 conArity (Variant _ (ConPos tys)) = listLen tys
 conArity (Variant _ (ConNamed fs)) = listLen fs
 
-listLen : List a -> Int
-listLen [] = 0
-listLen (_::xs) = 1 + listLen xs
-
 -- positional binder names: genVars "__a" 2 = ["__a0", "__a1"]
 genVars : String -> Int -> List String
 genVars prefix n = genVarsGo prefix 0 n
@@ -365,8 +362,8 @@ deriveShowData iface callName name variants = DImpl {
 }
 
 showArm : String -> Variant -> Arm
-showArm callName (Variant cname payload) =
-  let vars = genVars "__a" (conArity (Variant cname payload))
+showArm callName (v@(Variant cname _)) =
+  let vars = genVars "__a" (conArity v)
   Arm (conPatVars cname vars) [] (showBody callName cname vars)
 
 showBody : String -> String -> List String -> Expr
@@ -409,8 +406,8 @@ eqArms variants
   | otherwise = map eqSameConArm variants
 
 eqSameConArm : Variant -> Arm
-eqSameConArm (Variant cname payload) =
-  let n = conArity (Variant cname payload)
+eqSameConArm (v@(Variant cname _)) =
+  let n = conArity v
   Arm
     (PTuple [
       conPatVars cname (genVars "__a" n),
@@ -453,8 +450,8 @@ deriveGenericData name variants = DImpl {
 }
 
 genericArm : Variant -> Arm
-genericArm (Variant cname payload) =
-  let vars = genVars "__a" (conArity (Variant cname payload))
+genericArm (v@(Variant cname _)) =
+  let vars = genVars "__a" (conArity v)
   Arm (conPatVars cname vars) [] (genericRcon cname vars)
 
 genericRcon : String -> List String -> Expr

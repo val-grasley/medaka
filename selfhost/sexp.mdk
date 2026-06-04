@@ -4,26 +4,7 @@
 -- the AST/parser; new variants get a matching clause here.
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
-
--- shared minimal string escaping — must match dev/astdump.ml's esc_str
-escStr : String -> String
-escStr s =
-  let cs = stringToChars s
-  "\"" ++ escFrom cs 0 (arrayLength cs) ++ "\""
-
-escFrom : Array Char -> Int -> Int -> String
-escFrom cs i n
-  | i >= n = ""
-  | otherwise = escOne (arrayGetUnsafe i cs) ++ escFrom cs (i + 1) n
-
-escOne : Char -> String
-escOne c
-  | c == '\\' = "\\\\"
-  | c == '"' = "\\\""
-  | c == '\n' = "\\n"
-  | c == '\t' = "\\t"
-  | c == '\r' = "\\r"
-  | otherwise = charToStr c
+import util.{escStr, joinNl}
 
 boolStr : Bool -> String
 boolStr True = "true"
@@ -33,11 +14,6 @@ joinSp : List String -> String
 joinSp [] = ""
 joinSp [x] = x
 joinSp (y::rest) = y ++ " " ++ joinSp rest
-
-joinNl : List String -> String
-joinNl [] = ""
-joinNl [x] = x
-joinNl (y::rest) = y ++ "\n" ++ joinNl rest
 
 node : String -> List String -> String
 node tag parts = "(" ++ joinSp (tag :: parts) ++ ")"
@@ -127,16 +103,6 @@ exprSexp (ESection s) = node "ESection" [sectionSexp s]
 exprSexp (EQuestion e) = node "EQuestion" [exprSexp e]
 exprSexp (EFunction arms) = node "EFunction" (map armSexp arms)
 exprSexp (EIndex a i) = node "EIndex" [exprSexp a, exprSexp i]
-
-lcQualSexp : LcQual -> String
-lcQualSexp (LCGen p e) = node "LCGen" [patSexp p, exprSexp e]
-lcQualSexp (LCGuard e) = node "LCGuard" [exprSexp e]
-lcQualSexp (LCLet m p e) = node "LCLet" [boolStr m, patSexp p, exprSexp e]
-
-sectionSexp : Section -> String
-sectionSexp (SecBare op) = node "SecBare" [escStr op]
-sectionSexp (SecRight op e) = node "SecRight" [escStr op, exprSexp e]
-sectionSexp (SecLeft e op) = node "SecLeft" [exprSexp e, escStr op]
 exprSexp (EAnnot e t) = node "EAnnot" [exprSexp e, tySexp t]
 exprSexp (EBlock stmts) = node "EBlock" (map doStmtSexp stmts)
 exprSexp (EDo stmts) = node "EDo" (map doStmtSexp stmts)
@@ -150,6 +116,16 @@ exprSexp (EVariantUpdate c e fs) =
   node "EVariantUpdate" [escStr c, exprSexp e, slist (map fieldAssignSexp fs)]
 exprSexp (EMethodRef name) = node "EMethodRef" [escStr name]
 exprSexp (EDictApp name) = node "EDictApp" [escStr name]
+
+lcQualSexp : LcQual -> String
+lcQualSexp (LCGen p e) = node "LCGen" [patSexp p, exprSexp e]
+lcQualSexp (LCGuard e) = node "LCGuard" [exprSexp e]
+lcQualSexp (LCLet m p e) = node "LCLet" [boolStr m, patSexp p, exprSexp e]
+
+sectionSexp : Section -> String
+sectionSexp (SecBare op) = node "SecBare" [escStr op]
+sectionSexp (SecRight op e) = node "SecRight" [escStr op, exprSexp e]
+sectionSexp (SecLeft e op) = node "SecLeft" [exprSexp e, escStr op]
 
 interpPartSexp : InterpPart -> String
 interpPartSexp (InterpStr s) = node "InterpStr" [escStr s]

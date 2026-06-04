@@ -17,6 +17,7 @@
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 import lexer.{Token(..), tokenize}
+import util.{reverseL}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
 public export data PR a = POk a Int | PErr String Int
@@ -111,12 +112,12 @@ many p = Parser (toks pos => manyGo p toks pos [])
 manyGo : Parser a -> Array Token -> Int -> List a -> PR (List a)
 manyGo p toks pos acc = match runP p toks pos
   POk x pos2 => manyStep p toks pos pos2 acc x
-  PErr _ _ => POk (rev acc) pos
+  PErr _ _ => POk (reverseL acc) pos
 
 manyStep : Parser a -> Array Token -> Int -> Int -> List a -> a -> PR (List a)
 manyStep p toks pos pos2 acc x
   | pos2 > pos = manyGo p toks pos2 (x :: acc)
-  | otherwise = POk (rev (x :: acc)) pos2
+  | otherwise = POk (reverseL (x :: acc)) pos2
 
 sepThen : Parser b -> Parser a -> Parser a
 sepThen sep p = do
@@ -424,27 +425,25 @@ sliceHi e lo incl = do
 parseAtom : Parser Expr
 parseAtom = do
   t <- peekP
-  atomFor t
-
-atomFor : Token -> Parser Expr
-atomFor (TInt n) = emit (ELit (LInt n))
-atomFor (TFloat f) = emit (ELit (LFloat f))
-atomFor (TString s) = emit (ELit (LString s))
-atomFor (TChar s) = emit (ELit (LChar s))
-atomFor (TIdent x) = emit (EVar x)
-atomFor (TUpper x) = parseUpperAtom x
-atomFor TUnderscore = emit (EVar "_")
-atomFor TLParen = parseParen
-atomFor TLBracket = parseListE
-atomFor TLArray = parseArray
-atomFor TLBrace = parseRecordUpdate
-atomFor TIf = parseIf
-atomFor TLet = parseLet
-atomFor TMatch = parseMatch
-atomFor TFunction = parseFunction
-atomFor TDo = parseDo
-atomFor (TInterpOpen _) = parseInterp
-atomFor _ = failP "expected atom"
+  match t
+    TInt n => emit (ELit (LInt n))
+    TFloat f => emit (ELit (LFloat f))
+    TString s => emit (ELit (LString s))
+    TChar s => emit (ELit (LChar s))
+    TIdent x => emit (EVar x)
+    TUpper x => parseUpperAtom x
+    TUnderscore => emit (EVar "_")
+    TLParen => parseParen
+    TLBracket => parseListE
+    TLArray => parseArray
+    TLBrace => parseRecordUpdate
+    TIf => parseIf
+    TLet => parseLet
+    TMatch => parseMatch
+    TFunction => parseFunction
+    TDo => parseDo
+    TInterpOpen _ => parseInterp
+    _ => failP "expected atom"
 
 -- a constructor (`Upper`) atom, or a record literal `Upper { field = e, … }`
 parseUpperAtom : String -> Parser Expr
@@ -918,22 +917,20 @@ recordPatFieldRest name _ = pure (RecPatField name None)
 parsePatAtom : Parser Pat
 parsePatAtom = do
   t <- peekP
-  patAtomFor t
-
-patAtomFor : Token -> Parser Pat
-patAtomFor (TIdent x) = emit (PVar x)
-patAtomFor TUnderscore = emit PWild
-patAtomFor (TInt n) = intPatRest (LInt n)
-patAtomFor (TFloat f) = emit (PLit (LFloat f))
-patAtomFor (TString s) = emit (PLit (LString s))
-patAtomFor (TChar s) = charPatRest (LChar s)
-patAtomFor (TUpper c) = do
-  advance
-  t <- peekP
-  upperAtomRest c t
-patAtomFor TLParen = parsePatParen
-patAtomFor TLBracket = parsePatList
-patAtomFor _ = failP "expected pattern"
+  match t
+    TIdent x => emit (PVar x)
+    TUnderscore => emit PWild
+    TInt n => intPatRest (LInt n)
+    TFloat f => emit (PLit (LFloat f))
+    TString s => emit (PLit (LString s))
+    TChar s => charPatRest (LChar s)
+    TUpper c => do
+      advance
+      t2 <- peekP
+      upperAtomRest c t2
+    TLParen => parsePatParen
+    TLBracket => parsePatList
+    _ => failP "expected pattern"
 
 -- atom-level uppercase: a record pattern `C { … }` or a bare nullary ctor `C`
 -- (an *applied* ctor `C p…` needs parens at atom level, like the OCaml grammar).
@@ -1132,13 +1129,11 @@ tyApplyAll head (a::rest) = tyApplyAll (TyApp head a) rest
 parseTyAtom : Parser Ty
 parseTyAtom = do
   t <- peekP
-  tyAtomFor t
-
-tyAtomFor : Token -> Parser Ty
-tyAtomFor (TUpper c) = emit (TyCon c)
-tyAtomFor (TIdent v) = emit (TyVar v)
-tyAtomFor TLParen = parseTyParen
-tyAtomFor _ = failP "expected type atom"
+  match t
+    TUpper c => emit (TyCon c)
+    TIdent v => emit (TyVar v)
+    TLParen => parseTyParen
+    _ => failP "expected type atom"
 
 tyTupleOrSingle : List Ty -> Ty
 tyTupleOrSingle [t] = t
@@ -1152,28 +1147,26 @@ parseTyParen = do
   pure (tyTupleOrSingle ts)
 
 -- ── Declarations + program ──────────────────────────────────────────────
-parseDecl : Parser Decl
-parseDecl = do
-  t <- peekP
-  declDispatch t
-
 -- top-level dispatch.  `export`/`public export` are prefixes: `export` sets
 -- is_pub on a non-data decl (or DataAbstract on data/record); `public export`
 -- yields DataPublic.  `import`/`export import` → DUse; `extern` → DExtern.
-declDispatch : Token -> Parser Decl
-declDispatch TImport = parseImport False
-declDispatch TExport = afterExport
-declDispatch TPublic = afterPublic
-declDispatch TData = parseData VisPrivate
-declDispatch TRecord = parseRecord VisPrivate
-declDispatch TExtern = parseExtern False
-declDispatch TProp = parseProp False
-declDispatch TTest = parseTest False
-declDispatch TBench = parseBench False
-declDispatch TInterface = parseInterface False False
-declDispatch TImpl = parseImpl False False
-declDispatch TDefault = afterDefault False
-declDispatch _ = parseFunOrSig False
+parseDecl : Parser Decl
+parseDecl = do
+  t <- peekP
+  match t
+    TImport => parseImport False
+    TExport => afterExport
+    TPublic => afterPublic
+    TData => parseData VisPrivate
+    TRecord => parseRecord VisPrivate
+    TExtern => parseExtern False
+    TProp => parseProp False
+    TTest => parseTest False
+    TBench => parseBench False
+    TInterface => parseInterface False False
+    TImpl => parseImpl False False
+    TDefault => afterDefault False
+    _ => parseFunOrSig False
 
 -- `default` prefixes an interface/impl (marks it as the default impl)
 afterDefault : Bool -> Parser Decl
@@ -1193,20 +1186,18 @@ afterExport = do
   expectTok TExport
   skipNewlines
   t <- peekP
-  afterExportFor t
-
-afterExportFor : Token -> Parser Decl
-afterExportFor TImport = parseImport True
-afterExportFor TData = parseData VisAbstract
-afterExportFor TRecord = parseRecord VisAbstract
-afterExportFor TExtern = parseExtern True
-afterExportFor TProp = parseProp True
-afterExportFor TTest = parseTest True
-afterExportFor TBench = parseBench True
-afterExportFor TInterface = parseInterface True False
-afterExportFor TImpl = parseImpl True False
-afterExportFor TDefault = afterDefault True
-afterExportFor _ = parseFunOrSig True
+  match t
+    TImport => parseImport True
+    TData => parseData VisAbstract
+    TRecord => parseRecord VisAbstract
+    TExtern => parseExtern True
+    TProp => parseProp True
+    TTest => parseTest True
+    TBench => parseBench True
+    TInterface => parseInterface True False
+    TImpl => parseImpl True False
+    TDefault => afterDefault True
+    _ => parseFunOrSig True
 
 afterPublic : Parser Decl
 afterPublic = do
@@ -1227,30 +1218,28 @@ parseFunOrSig pub = do
   name <- identNameP
   params <- many parseParamPat
   t <- peekP
-  declRestFor pub name params t
-
-declRestFor : Bool -> String -> List Pat -> Token -> Parser Decl
-declRestFor pub name _params TColon = do
-  advance
-  ty <- parseTy
-  skipNewlines
-  pure (DTypeSig pub name ty)
-declRestFor pub name params TEqual = do
-  advance
-  body <- parseBody
-  skipNewlines
-  pure (DFunDef pub name params body)
-declRestFor pub name params TIndent = do
-  advance
-  arms <- parseGuardArms
-  expectTok TDedent
-  skipNewlines
-  pure (DFunDef pub name params (EGuards arms))
-declRestFor pub name params TPipe = do
-  arm <- parseGuardArm
-  skipNewlines
-  pure (DFunDef pub name params (EGuards [arm]))
-declRestFor _ _ _ _ = failP "expected : or ="
+  match t
+    TColon => do
+      advance
+      ty <- parseTy
+      skipNewlines
+      pure (DTypeSig pub name ty)
+    TEqual => do
+      advance
+      body <- parseBody
+      skipNewlines
+      pure (DFunDef pub name params body)
+    TIndent => do
+      advance
+      arms <- parseGuardArms
+      expectTok TDedent
+      skipNewlines
+      pure (DFunDef pub name params (EGuards arms))
+    TPipe => do
+      arm <- parseGuardArm
+      skipNewlines
+      pure (DFunDef pub name params (EGuards [arm]))
+    _ => failP "expected : or ="
 
 -- ── extern + import declarations ─────────────────────────────────────────
 parseExtern : Bool -> Parser Decl
@@ -1861,13 +1850,15 @@ coalesceClauses [] = []
 coalesceClauses ((name, ps, b)::rest) = coalesceGo name [FunClause ps b] rest
 
 coalesceGo : String -> List FunClause -> List (String, List Pat, Expr) -> List LetBind
-coalesceGo name acc [] = [LetBind name (rev acc)]
+coalesceGo name acc [] = [LetBind name (reverseL acc)]
 coalesceGo name acc ((n, ps, b)::rest) = coalesceStep name acc n ps b rest
 
 coalesceStep : String -> List FunClause -> String -> List Pat -> Expr -> List (String, List Pat, Expr) -> List LetBind
 coalesceStep name acc n ps b rest
   | n == name = coalesceGo name (FunClause ps b :: acc) rest
-  | otherwise = LetBind name (rev acc) :: coalesceGo n [FunClause ps b] rest
+  | otherwise = LetBind name (reverseL acc) :: coalesceGo n [
+    FunClause ps b
+  ] rest
 
 indentedBody : Parser Expr
 indentedBody = do
@@ -2045,11 +2036,3 @@ resultDecls (PErr _ _) = []
 export
 parse : String -> List Decl
 parse src = resultDecls (runP parseProgram (arrayFromList (tokenize src)) 0)
-
--- ── misc ────────────────────────────────────────────────────────────────
-rev : List a -> List a
-rev xs = revOnto xs []
-
-revOnto : List a -> List a -> List a
-revOnto [] acc = acc
-revOnto (x::xs) acc = revOnto xs (x :: acc)

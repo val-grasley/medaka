@@ -14,6 +14,7 @@ main = match args ()
   [targetPath] => withTarget targetPath
   _ => ePutStrLn "usage: medaka run selfhost/eval_main.mdk <file.mdk>"
 
+withTarget : String -> <IO, Mut> Unit
 withTarget targetPath = match readFile targetPath
   Ok targetSrc => putStrLn (evalMain (desugar (parse targetSrc)))
   Err msg => ePutStrLn msg
