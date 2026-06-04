@@ -42,6 +42,8 @@ diff with `lib/`:
 | `eval.mdk` | Tree-walk interpreter (Stage-1 capstone, **slice 1**). `Value`/`Env` ADTs + `pp_value` (byte-for-byte with `lib/eval.ml`) + the engine: `eval`/`apply`/`match_pat`/binops over `(name, Ref value)` env frames. `evalMain : List Decl -> <Mut> String`. |
 | `eval_main.mdk` | Runnable entry: `medaka run selfhost/eval_main.mdk <src.mdk>` parses + desugars a self-contained (prelude-free) file, evaluates it, prints `pp_value` of `main` (diffs against `dev/eval_probe.exe`). |
 | `eval_prelude_main.mdk` | Like `eval_main` but prepends one or more parsed prelude files: `medaka run selfhost/eval_prelude_main.mdk <prelude.mdk>... <src.mdk>` — `core.mdk` for interface methods, `+ list.mdk` for the List combinators / comprehensions (diffs against `dev/eval_probe.exe --prelude` / `--prepend`). |
+| `typecheck.mdk` | HM core (**slice 1**). `Mono`/`Scheme` + union-find `unify`, level-based `generalize`/`instantiate`, `pp_mono`, and `infer`/`inferPat`. `checkToLines : List Decl -> <Mut> String`. |
+| `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). Prelude-free / self-contained fixtures only. |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -219,7 +221,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
 | 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
 | 5 | 🚧 **eval** | ~2350 | hard (plumbing) | `program → values` | `dev/eval_probe.exe` (slice 1: engine core); later `=== EVAL ===` |
-| 6 | **typecheck** | ~4650 | **very hard** | `program → schemes` | diff vs `=== TYPES ===` |
+| 6 | 🚧 **typecheck** | ~4650 | **very hard** | `program → schemes` | `dev/tc_probe.exe` (slice 1: HM core); later `=== TYPES ===` |
 
 1. ✅ **Desugar — DONE.** `selfhost/desugar.mdk` + `desugar_main.mdk`: the
    bottom-up `mapExpr`/`mapDecl` engine plus the passes `merge_iface_defaults →
@@ -367,12 +369,29 @@ Stage-0 prerequisites in `../PLAN.md`).
    It can be developed against the **reference's** typed + dict-passed AST, so it
    does **not** require typecheck to be ported first; `dict_pass` is the small
    prerequisite for the method-dispatch slices.
-6. **Typecheck** — the complexity engine, deliberately last: Hindley–Milner
-   unification (union-find over mutable cells, occurs-check), interface/impl
-   coherence + overlap rules, and the Phase-69/69.x method-routing &
-   dictionary-passing elaboration, plus two-pass promotion. Port incrementally
-   (literals → lambdas → let-polymorphism → ADTs → interfaces → dict-passing),
-   watching the `=== TYPES ===` match grow from a fixture subset outward.
+6. 🚧 **Typecheck — IN PROGRESS (slice 1 of N).** The complexity engine,
+   deliberately last: Hindley–Milner unification (union-find over mutable cells,
+   occurs-check), interface/impl coherence, and the Phase-69/69.x dictionary-
+   passing elaboration. **Validation bridge:** like eval, the engine is exercised
+   WITHOUT the prelude — `check_program_no_prelude` (a `~prepend_prelude` flag
+   gating the prelude prepend / impl seeding / registry check) is the oracle via
+   `dev/tc_probe.exe`, and `test/typecheck_fixtures/` are self-contained. Because
+   the `=== TYPES ===` rendering is `pp_scheme = pp_mono` (constraints dropped),
+   the engine slice needs only the HM core, not the dict-passing layer.
+   - **Slice 1 (DONE):** `selfhost/typecheck.mdk` + `typecheck_main.mdk` — the HM
+     core: `Mono` (`Ref`-based union-find tyvars) / `Scheme = Forall ids mono`,
+     level-based `generalize`/`instantiate`, `unify` (occurs-check + level
+     adjust), `pp_mono` (matching the reference renderer — `a,b,c…` by
+     appearance, `TApp`/`TFun` precedence parens), and `infer`/`inferPat` for
+     literals, vars, application, lambdas, let (let-poly), let-groups, if,
+     tuples, lists, annotations, ADT constructors (`DData` → ctor schemes), and
+     match. 3/3 fixtures match (combinators, ADTs+patterns+recursion, let-poly).
+   - **Deferred to later slices:** operators (`EBinOp`/`EInfix` route through
+     `Num`/`Eq` from the prelude), **effect rows** (`TFun` currently has no effect
+     component; pure programs render bare, so this is invisible until effects
+     appear), records, explicit type signatures, interfaces/impls + constraint
+     solving, and the whole dict-passing / coherence layer — culminating in the
+     full-prelude slice that matches the `=== TYPES ===` goldens.
 
 **Ordering rationale.** Easy-first builds momentum and reuses the existing
 harness while Medaka fluency matures, leaving the type checker for last. Note the

@@ -1,0 +1,14 @@
+-- let-polymorphism, if, lists, tuples, list/cons patterns
+idLet = let f = (x => x) in (f, f)
+nums = [1, 2, 3]
+strs = ["a", "b"]
+mixed = ("hi", True, [1])
+pick b x y = if b then x else y
+nil = []
+cons2 x y = [x, y]
+firstOr d xs = match xs
+  (h :: _) => h
+  [] => d
+len xs = match xs
+  [] => 0
+  (_ :: t) => len t

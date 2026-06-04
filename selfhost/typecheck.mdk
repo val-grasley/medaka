@@ -1,0 +1,627 @@
+-- Self-hosted typecheck stage — port of lib/typecheck.ml's HM core.  SLICE 1:
+-- the Hindley-Milner engine — monotypes with Ref-based union-find tyvars,
+-- level-based generalization, unification (occurs-check + level adjust),
+-- instantiation, and inference for literals, variables, application, lambdas,
+-- let (let-polymorphism), if, tuples, lists, annotations, ADT constructors, and
+-- match/pattern inference. Validated WITHOUT the prelude (engine only) against
+-- dev/tc_probe.exe — so it needs only the HM core, not the typeclass /
+-- dict-passing layer (the === TYPES === rendering drops constraints).
+--
+-- Deferred to later slices: operators (EBinOp/EInfix route through Num/Eq from
+-- the prelude), effect rows, records, interfaces/impls + constraint solving,
+-- and explicit type signatures.
+
+import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), Decl(..)}
+
+-- ── monotypes & schemes ───────────────────────────────────────────────────
+public export data Mono
+  = TVar (Ref Tyvar)
+  | TCon String
+  | TApp Mono Mono
+  | TFun Mono Mono          -- arg -> result (effect rows deferred to a later slice)
+  | TTuple (List Mono)
+
+public export data Tyvar = Unbound Int Int | Link Mono   -- Unbound id level | Link
+
+-- forall <quantified tyvar ids>. mono
+public export data Scheme = Forall (List Int) Mono
+
+-- ── global inference state ────────────────────────────────────────────────
+tyvarCounter : Ref Int
+tyvarCounter = Ref 0
+
+currentLevel : Ref Int
+currentLevel = Ref 0
+
+newTyvarId : Unit -> <Mut> Int
+newTyvarId _ =
+  let n = tyvarCounter.value
+  let _ = set_ref tyvarCounter (n + 1)
+  n
+
+freshVar : Unit -> <Mut> Mono
+freshVar _ = TVar (Ref (Unbound (newTyvarId ()) currentLevel.value))
+
+enterLevel : Unit -> <Mut> Unit
+enterLevel _ = set_ref currentLevel (currentLevel.value + 1)
+
+exitLevel : Unit -> <Mut> Unit
+exitLevel _ = set_ref currentLevel (currentLevel.value - 1)
+
+resetState : Unit -> <Mut> Unit
+resetState _ =
+  let _ = set_ref tyvarCounter 0
+  set_ref currentLevel 0
+
+-- ── small helpers ─────────────────────────────────────────────────────────
+lengthL : List a -> Int
+lengthL [] = 0
+lengthL (_ :: xs) = 1 + lengthL xs
+
+lookupAssocS : String -> List (String, b) -> Option b
+lookupAssocS _ [] = None
+lookupAssocS k ((k2, v) :: rest)
+  | k == k2 = Some v
+  | otherwise = lookupAssocS k rest
+
+lookupAssocI : Int -> List (Int, b) -> Option b
+lookupAssocI _ [] = None
+lookupAssocI k ((k2, v) :: rest)
+  | k == k2 = Some v
+  | otherwise = lookupAssocI k rest
+
+containsI : Int -> List Int -> Bool
+containsI _ [] = False
+containsI x (y :: ys) = x == y || containsI x ys
+
+concatMapL : (a -> List b) -> List a -> List b
+concatMapL _ [] = []
+concatMapL f (x :: xs) = f x ++ concatMapL f xs
+
+zipL : List a -> List b -> List (a, b)
+zipL [] _ = []
+zipL _ [] = []
+zipL (x :: xs) (y :: ys) = (x, y) :: zipL xs ys
+
+-- ── union-find core ───────────────────────────────────────────────────────
+normalize : Mono -> Mono
+normalize (TVar cell) = match cell.value
+  Link t => normalize t
+  Unbound _ _ => TVar cell
+normalize t = t
+
+tyvarId : Ref Tyvar -> Int
+tyvarId cell = match cell.value
+  Unbound id _ => id
+  Link _ => 0 - 1
+
+tyvarLevel : Ref Tyvar -> Int
+tyvarLevel cell = match cell.value
+  Unbound _ lvl => lvl
+  Link _ => 0
+
+-- occurs-check + lower the levels of vars in [t] to <= [level] (Phase: Rémy levels)
+occursAdjust : Int -> Int -> Mono -> <Mut> Unit
+occursAdjust id level t = match normalize t
+  TVar cell => occursAdjustVar id level cell
+  TCon _ => ()
+  TApp a b =>
+    let _ = occursAdjust id level a
+    occursAdjust id level b
+  TFun a b =>
+    let _ = occursAdjust id level a
+    occursAdjust id level b
+  TTuple ts => occursAdjustList id level ts
+
+occursAdjustVar : Int -> Int -> Ref Tyvar -> <Mut> Unit
+occursAdjustVar id level cell = match cell.value
+  Unbound id2 lvl2 => occursAdjustUnbound id level cell id2 lvl2
+  Link t => occursAdjust id level t
+
+occursAdjustUnbound : Int -> Int -> Ref Tyvar -> Int -> Int -> <Mut> Unit
+occursAdjustUnbound id level cell id2 lvl2
+  | id2 == id = panic "occurs check: infinite type"
+  | lvl2 > level = set_ref cell (Unbound id2 level)
+  | otherwise = ()
+
+occursAdjustList : Int -> Int -> List Mono -> <Mut> Unit
+occursAdjustList _ _ [] = ()
+occursAdjustList id level (t :: ts) =
+  let _ = occursAdjust id level t
+  occursAdjustList id level ts
+
+unify : Mono -> Mono -> <Mut> Unit
+unify a b = unifyN (normalize a) (normalize b)
+
+unifyN : Mono -> Mono -> <Mut> Unit
+unifyN (TVar c1) (TVar c2) = unifyVars c1 c2
+unifyN (TVar c) t = bindVar c t
+unifyN t (TVar c) = bindVar c t
+unifyN (TCon a) (TCon b) = if a == b then () else typeMismatch (TCon a) (TCon b)
+unifyN (TApp a1 b1) (TApp a2 b2) =
+  let _ = unify a1 a2
+  unify b1 b2
+unifyN (TFun a1 b1) (TFun a2 b2) =
+  let _ = unify a1 a2
+  unify b1 b2
+unifyN (TTuple ts1) (TTuple ts2) = unifyList ts1 ts2
+unifyN a b = typeMismatch a b
+
+unifyVars : Ref Tyvar -> Ref Tyvar -> <Mut> Unit
+unifyVars c1 c2 = if tyvarId c1 == tyvarId c2 then () else bindVar c1 (TVar c2)
+
+bindVar : Ref Tyvar -> Mono -> <Mut> Unit
+bindVar cell t =
+  let _ = occursAdjust (tyvarId cell) (tyvarLevel cell) t
+  set_ref cell (Link t)
+
+unifyList : List Mono -> List Mono -> <Mut> Unit
+unifyList [] [] = ()
+unifyList (x :: xs) (y :: ys) =
+  let _ = unify x y
+  unifyList xs ys
+unifyList _ _ = panic "unify: tuple arity mismatch"
+
+typeMismatch : Mono -> Mono -> <Mut> Unit
+typeMismatch a b = panic ("type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+
+-- ── generalization & instantiation ────────────────────────────────────────
+generalize : Mono -> <Mut> Scheme
+generalize t = Forall (dedupI (freeGenVars currentLevel.value t)) t
+
+freeGenVars : Int -> Mono -> List Int
+freeGenVars lvl t = match normalize t
+  TVar cell => if tyvarLevel cell > lvl then [tyvarId cell] else []
+  TCon _ => []
+  TApp a b => freeGenVars lvl a ++ freeGenVars lvl b
+  TFun a b => freeGenVars lvl a ++ freeGenVars lvl b
+  TTuple ts => concatMapL (freeGenVars lvl) ts
+
+dedupI : List Int -> List Int
+dedupI xs = dedupIGo xs []
+
+dedupIGo : List Int -> List Int -> List Int
+dedupIGo [] _ = []
+dedupIGo (x :: xs) seen
+  | containsI x seen = dedupIGo xs seen
+  | otherwise = x :: dedupIGo xs (x :: seen)
+
+instantiate : Scheme -> <Mut> Mono
+instantiate (Forall ids t) = substMono (freshSubst ids) t
+
+freshSubst : List Int -> <Mut> List (Int, Mono)
+freshSubst [] = []
+freshSubst (id :: rest) = (id, freshVar ()) :: freshSubst rest
+
+substMono : List (Int, Mono) -> Mono -> Mono
+substMono subst t = match normalize t
+  TVar cell => fromOption (TVar cell) (lookupAssocI (tyvarId cell) subst)
+  TCon n => TCon n
+  TApp a b => TApp (substMono subst a) (substMono subst b)
+  TFun a b => TFun (substMono subst a) (substMono subst b)
+  TTuple ts => TTuple (map (substMono subst) ts)
+
+-- ── rendering (mirrors lib/typecheck.ml pp_mono byte-for-byte) ─────────────
+export
+ppScheme : Scheme -> <Mut> String
+ppScheme (Forall _ t) = ppMono t
+
+ppMono : Mono -> <Mut> String
+ppMono t =
+  let ctx = Ref []
+  let cnt = Ref 0
+  ppGo ctx cnt 0 t
+
+letters : String
+letters = "abcdefghijklmnopqrstuvwxyz"
+
+nameOf : Ref (List (Int, String)) -> Ref Int -> Int -> <Mut> String
+nameOf ctx cnt id = match lookupAssocI id ctx.value
+  Some s => s
+  None => assignName ctx cnt id
+
+assignName : Ref (List (Int, String)) -> Ref Int -> Int -> <Mut> String
+assignName ctx cnt id =
+  let n = cnt.value
+  let _ = set_ref cnt (n + 1)
+  let s = if n < 26 then stringSlice n (n + 1) letters else "t" ++ intToString n
+  let _ = set_ref ctx ((id, s) :: ctx.value)
+  s
+
+ppGo : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> <Mut> String
+ppGo ctx cnt prec t = match normalize t
+  TVar cell => ppVar ctx cnt cell
+  TCon n => n
+  TApp a b => ppApp ctx cnt prec a b
+  TFun a b => ppFun ctx cnt prec a b
+  TTuple ts => "(" ++ joinWith ", " (ppEach ctx cnt 0 ts) ++ ")"
+
+ppVar : Ref (List (Int, String)) -> Ref Int -> Ref Tyvar -> <Mut> String
+ppVar ctx cnt cell = match cell.value
+  Unbound id _ => nameOf ctx cnt id
+  Link _ => "_"
+
+ppApp : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> Mono -> <Mut> String
+ppApp ctx cnt prec a b =
+  let sa = ppGo ctx cnt 2 a
+  let sb = ppGo ctx cnt 3 b
+  wrapIf (prec > 2) (sa ++ " " ++ sb)
+
+ppFun : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> Mono -> <Mut> String
+ppFun ctx cnt prec a b =
+  let sa = ppGo ctx cnt 2 a
+  let sb = ppGo ctx cnt 1 b
+  wrapIf (prec > 1) (sa ++ " -> " ++ sb)
+
+ppEach : Ref (List (Int, String)) -> Ref Int -> Int -> List Mono -> <Mut> List String
+ppEach _ _ _ [] = []
+ppEach ctx cnt prec (t :: ts) =
+  let s = ppGo ctx cnt prec t
+  s :: ppEach ctx cnt prec ts
+
+wrapIf : Bool -> String -> String
+wrapIf True s = "(" ++ s ++ ")"
+wrapIf False s = s
+
+joinWith : String -> List String -> String
+joinWith _ [] = ""
+joinWith _ [x] = x
+joinWith sep (x :: rest) = x ++ sep ++ joinWith sep rest
+
+-- ── AST type → mono (for ADT field types / annotations) ───────────────────
+-- tvs maps a declared type-parameter name to its tyvar
+fromAstType : List (String, Mono) -> Ty -> Mono
+fromAstType tvs (TyCon n) = TCon n
+fromAstType tvs (TyVar n) = fromOption (TCon n) (lookupAssocS n tvs)
+fromAstType tvs (TyApp a b) = TApp (fromAstType tvs a) (fromAstType tvs b)
+fromAstType tvs (TyFun a b) = TFun (fromAstType tvs a) (fromAstType tvs b)
+fromAstType tvs (TyTuple ts) = TTuple (map (fromAstType tvs) ts)
+fromAstType tvs (TyEffect _ _ t) = fromAstType tvs t
+fromAstType tvs (TyConstrained _ t) = fromAstType tvs t
+
+-- ── environment ───────────────────────────────────────────────────────────
+public export data Env = Env (List (String, Scheme)) (List (String, Scheme))   -- vars, ctors
+
+lookupVar : Env -> String -> Option Scheme
+lookupVar (Env vs cs) n = match lookupAssocS n vs
+  Some s => Some s
+  None => lookupAssocS n cs
+
+lookupCtor : Env -> String -> Option Scheme
+lookupCtor (Env _ cs) n = lookupAssocS n cs
+
+extendVar : Env -> String -> Scheme -> Env
+extendVar (Env vs cs) n s = Env ((n, s) :: vs) cs
+
+extendVars : Env -> List (String, Scheme) -> Env
+extendVars env [] = env
+extendVars env ((n, s) :: rest) = extendVars (extendVar env n s) rest
+
+addCtor : Env -> String -> Scheme -> Env
+addCtor (Env vs cs) n s = Env vs ((n, s) :: cs)
+
+monoScheme : Mono -> Scheme
+monoScheme t = Forall [] t
+
+-- ── pattern inference: returns the pattern's type + the bindings it adds ───
+inferPat : Env -> Pat -> <Mut> (Mono, List (String, Scheme))
+inferPat _ (PVar x) =
+  let v = freshVar ()
+  (v, [(x, monoScheme v)])
+inferPat _ PWild = (freshVar (), [])
+inferPat _ (PLit l) = (litType l, [])
+inferPat env (PCon name pats) = inferPatCon env name pats
+inferPat env (PTuple pats) = inferPatTuple env pats
+inferPat env (PCons h t) = inferPatCons env h t
+inferPat env (PList pats) = inferPatList env pats
+inferPat env (PAs x p) = inferPatAs env x p
+inferPat _ _ = panic "typecheck: unsupported pattern (slice 1)"
+
+litType : Lit -> Mono
+litType (LInt _) = TCon "Int"
+litType (LFloat _) = TCon "Float"
+litType (LString _) = TCon "String"
+litType (LChar _) = TCon "Char"
+litType (LBool _) = TCon "Bool"
+litType LUnit = TCon "Unit"
+
+inferPatCon : Env -> String -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatCon env name pats = match lookupCtor env name
+  None => panic ("unknown constructor: " ++ name)
+  Some scheme => inferPatConWith env scheme pats
+
+inferPatConWith : Env -> Scheme -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatConWith env scheme pats =
+  let ctorType = instantiate scheme
+  let pr = inferPats env pats
+  let resultVar = freshVar ()
+  let _ = unify ctorType (foldrFun (fst pr) resultVar)
+  (resultVar, snd pr)
+
+inferPats : Env -> List Pat -> <Mut> (List Mono, List (String, Scheme))
+inferPats _ [] = ([], [])
+inferPats env (p :: ps) =
+  let pr = inferPat env p
+  let rest = inferPats env ps
+  (fst pr :: fst rest, snd pr ++ snd rest)
+
+foldrFun : List Mono -> Mono -> Mono
+foldrFun [] result = result
+foldrFun (a :: rest) result = TFun a (foldrFun rest result)
+
+inferPatTuple : Env -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatTuple env pats =
+  let pr = inferPats env pats
+  (TTuple (fst pr), snd pr)
+
+inferPatCons : Env -> Pat -> Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatCons env h t =
+  let hr = inferPat env h
+  let tr = inferPat env t
+  let listTy = TApp (TCon "List") (fst hr)
+  let _ = unify (fst tr) listTy
+  (listTy, snd hr ++ snd tr)
+
+inferPatList : Env -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatList env pats =
+  let elem = freshVar ()
+  let pr = inferPats env pats
+  let _ = unifyAll elem (fst pr)
+  (TApp (TCon "List") elem, snd pr)
+
+inferPatAs : Env -> String -> Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatAs env x p =
+  let pr = inferPat env p
+  (fst pr, (x, monoScheme (fst pr)) :: snd pr)
+
+unifyAll : Mono -> List Mono -> <Mut> Unit
+unifyAll _ [] = ()
+unifyAll t (x :: xs) =
+  let _ = unify t x
+  unifyAll t xs
+
+-- ── expression inference ──────────────────────────────────────────────────
+infer : Env -> Expr -> <Mut> Mono
+infer _ (ELit l) = litType l
+infer env (EVar x) = inferVar env x
+infer env (EApp f x) = inferApp (infer env f) (infer env x)
+infer env (ELam pats body) = inferLam env pats body
+infer env (ELet _ _ pat e1 e2) = inferLet env pat e1 e2
+infer env (ELetGroup binds body) = inferLetGroup env binds body
+infer env (EIf c t e) = inferIf env c t e
+infer env (EMatch scrut arms) = inferMatch env (infer env scrut) arms
+infer env (ETuple es) = TTuple (inferEach env es)
+infer env (EListLit es) = inferListLit env es
+infer env (EAnnot e ty) = inferAnnot env e ty
+infer _ _ = panic "typecheck: unsupported expression (slice 1)"
+
+inferVar : Env -> String -> <Mut> Mono
+inferVar env x = match lookupVar env x
+  Some s => instantiate s
+  None => panic ("unbound variable: " ++ x)
+
+inferApp : Mono -> Mono -> <Mut> Mono
+inferApp ft xt =
+  let r = freshVar ()
+  let _ = unify ft (TFun xt r)
+  r
+
+inferLam : Env -> List Pat -> Expr -> <Mut> Mono
+inferLam env pats body =
+  let pr = inferPats env pats
+  let bodyTy = infer (extendVars env (snd pr)) body
+  foldrFun (fst pr) bodyTy
+
+inferLet : Env -> Pat -> Expr -> Expr -> <Mut> Mono
+inferLet env pat e1 e2 =
+  let _ = enterLevel ()
+  let t1 = infer env e1
+  let _ = exitLevel ()
+  inferLetBody env pat t1 e2
+
+inferLetBody : Env -> Pat -> Mono -> Expr -> <Mut> Mono
+inferLetBody env (PVar x) t1 e2 = infer (extendVar env x (generalize t1)) e2
+inferLetBody env pat t1 e2 =
+  let pr = inferPat env pat
+  let _ = unify (fst pr) t1
+  infer (extendVars env (snd pr)) e2
+
+inferIf : Env -> Expr -> Expr -> Expr -> <Mut> Mono
+inferIf env c t e =
+  let _ = unify (infer env c) (TCon "Bool")
+  let tt = infer env t
+  let _ = unify tt (infer env e)
+  tt
+
+inferEach : Env -> List Expr -> <Mut> List Mono
+inferEach _ [] = []
+inferEach env (e :: es) =
+  let t = infer env e
+  t :: inferEach env es
+
+inferListLit : Env -> List Expr -> <Mut> Mono
+inferListLit env es =
+  let elem = freshVar ()
+  let _ = unifyAll elem (inferEach env es)
+  TApp (TCon "List") elem
+
+inferAnnot : Env -> Expr -> Ty -> <Mut> Mono
+inferAnnot env e ty =
+  let t = infer env e
+  let annot = fromAstType [] ty
+  let _ = unify t annot
+  annot
+
+inferMatch : Env -> Mono -> List Arm -> <Mut> Mono
+inferMatch env scrutTy arms =
+  let result = freshVar ()
+  let _ = inferArms env scrutTy result arms
+  result
+
+inferArms : Env -> Mono -> Mono -> List Arm -> <Mut> Unit
+inferArms _ _ _ [] = ()
+inferArms env scrutTy result (Arm pat _ body :: rest) =
+  let _ = inferArm env scrutTy result pat body
+  inferArms env scrutTy result rest
+
+inferArm : Env -> Mono -> Mono -> Pat -> Expr -> <Mut> Unit
+inferArm env scrutTy result pat body =
+  let pr = inferPat env pat
+  let _ = unify (fst pr) scrutTy
+  unify result (infer (extendVars env (snd pr)) body)
+
+inferLetGroup : Env -> List LetBind -> Expr -> <Mut> Mono
+inferLetGroup env binds body =
+  let env2 = processLetGroup env binds
+  infer env2 body
+
+-- ── data declarations → constructor schemes ───────────────────────────────
+registerData : Env -> Decl -> <Mut> Env
+registerData env (DData _ name params variants _) = registerVariants env name params variants
+registerData env _ = env
+
+registerVariants : Env -> String -> List String -> List Variant -> <Mut> Env
+registerVariants env name params variants =
+  let paramVars = freshVars (lengthL params)
+  let tvs = zipL params paramVars
+  let paramIds = map monoTyvarId paramVars
+  let result = applyParams (TCon name) paramVars
+  addVariants env tvs paramIds result variants
+
+freshVars : Int -> <Mut> List Mono
+freshVars n
+  | n <= 0 = []
+  | otherwise = freshVar () :: freshVars (n - 1)
+
+monoTyvarId : Mono -> Int
+monoTyvarId (TVar cell) = tyvarId cell
+monoTyvarId _ = 0 - 1
+
+applyParams : Mono -> List Mono -> Mono
+applyParams head [] = head
+applyParams head (p :: ps) = applyParams (TApp head p) ps
+
+addVariants : Env -> List (String, Mono) -> List Int -> Mono -> List Variant -> Env
+addVariants env _ _ _ [] = env
+addVariants env tvs paramIds result (Variant cname payload :: rest) =
+  let ctorType = foldrFun (payloadTypes tvs payload) result
+  let env2 = addCtor env cname (Forall paramIds ctorType)
+  addVariants env2 tvs paramIds result rest
+
+payloadTypes : List (String, Mono) -> ConPayload -> List Mono
+payloadTypes tvs (ConPos tys) = map (fromAstType tvs) tys
+payloadTypes tvs (ConNamed fields) = map (fieldType tvs) fields
+
+fieldType : List (String, Mono) -> Field -> Mono
+fieldType tvs (Field _ ty) = fromAstType tvs ty
+
+-- ── top-level driver ──────────────────────────────────────────────────────
+funClausePair : FunClause -> (List Pat, Expr)
+funClausePair (FunClause pats body) = (pats, body)
+
+funDefs : List Decl -> List (String, (List Pat, Expr))
+funDefs [] = []
+funDefs ((DFunDef _ n pats body) :: rest) = (n, (pats, body)) :: funDefs rest
+funDefs (_ :: rest) = funDefs rest
+
+groupNames : List (String, (List Pat, Expr)) -> List String -> List String
+groupNames [] _ = []
+groupNames ((n, _) :: rest) seen
+  | containsName n seen = groupNames rest seen
+  | otherwise = n :: groupNames rest (n :: seen)
+
+containsName : String -> List String -> Bool
+containsName _ [] = False
+containsName x (y :: ys) = x == y || containsName x ys
+
+clausesFor : String -> List (String, (List Pat, Expr)) -> List (List Pat, Expr)
+clausesFor _ [] = []
+clausesFor name ((n, c) :: rest)
+  | n == name = c :: clausesFor name rest
+  | otherwise = clausesFor name rest
+
+-- process a let-group (where clauses): bind names, infer, generalize
+processLetGroup : Env -> List LetBind -> <Mut> Env
+processLetGroup env binds =
+  let _ = enterLevel ()
+  let placeholders = map letBindPlaceholder binds
+  let env2 = extendVars env placeholders
+  let _ = inferLetBinds env2 (zipL binds placeholders)
+  let _ = exitLevel ()
+  generalizeGroup env (zipL binds placeholders)
+
+letBindPlaceholder : LetBind -> <Mut> (String, Scheme)
+letBindPlaceholder (LetBind name _) = (name, monoScheme (freshVar ()))
+
+inferLetBinds : Env -> List (LetBind, (String, Scheme)) -> <Mut> Unit
+inferLetBinds _ [] = ()
+inferLetBinds env ((LetBind _ clauses, (_, sch)) :: rest) =
+  let _ = unify (schemeMono sch) (inferClauses env (map funClausePair clauses))
+  inferLetBinds env rest
+
+schemeMono : Scheme -> Mono
+schemeMono (Forall _ t) = t
+
+generalizeGroup : Env -> List (LetBind, (String, Scheme)) -> <Mut> Env
+generalizeGroup env [] = env
+generalizeGroup env ((LetBind name _, (_, sch)) :: rest) =
+  generalizeGroup (extendVar env name (generalize (schemeMono sch))) rest
+
+-- infer a clause group (multi-clause function), unifying all clauses to one type
+inferClauses : Env -> List (List Pat, Expr) -> <Mut> Mono
+inferClauses env clauses =
+  let v = freshVar ()
+  let _ = unifyClauses env v clauses
+  v
+
+unifyClauses : Env -> Mono -> List (List Pat, Expr) -> <Mut> Unit
+unifyClauses _ _ [] = ()
+unifyClauses env v ((pats, body) :: rest) =
+  let _ = unify v (inferLam env pats body)
+  unifyClauses env v rest
+
+export
+checkProgram : List Decl -> <Mut> List (String, Scheme)
+checkProgram prog =
+  let _ = resetState ()
+  let dataEnv = registerAllData initialEnv prog
+  let defs = funDefs prog
+  processTopGroups dataEnv defs (groupNames defs [])
+
+-- builtin constructors available without the prelude (mirrors initial_env)
+initialEnv : Env
+initialEnv = Env [] [("True", monoScheme (TCon "Bool")), ("False", monoScheme (TCon "Bool"))]
+
+registerAllData : Env -> List Decl -> <Mut> Env
+registerAllData env [] = env
+registerAllData env (d :: rest) = registerAllData (registerData env d) rest
+
+processTopGroups : Env -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
+processTopGroups _ _ [] = []
+processTopGroups env defs (name :: rest) =
+  let sr = processTopGroup env defs name
+  (name, snd sr) :: processTopGroups (fst sr) defs rest
+
+-- returns (env extended with the generalized binding, its scheme)
+processTopGroup : Env -> List (String, (List Pat, Expr)) -> String -> <Mut> (Env, Scheme)
+processTopGroup env defs name =
+  let _ = enterLevel ()
+  let v = freshVar ()
+  let env2 = extendVar env name (monoScheme v)
+  let _ = unify v (inferClauses env2 (clausesFor name defs))
+  let _ = exitLevel ()
+  let scheme = generalize v
+  (extendVar env name scheme, scheme)
+
+export
+checkToLines : List Decl -> <Mut> String
+checkToLines prog = joinNl (schemeLines (checkProgram prog))
+
+schemeLines : List (String, Scheme) -> <Mut> List String
+schemeLines [] = []
+schemeLines ((n, s) :: rest) = (n ++ " : " ++ ppScheme s) :: schemeLines rest
+
+joinNl : List String -> String
+joinNl [] = ""
+joinNl [x] = x
+joinNl (x :: rest) = x ++ "\n" ++ joinNl rest

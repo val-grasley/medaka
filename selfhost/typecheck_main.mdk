@@ -1,0 +1,19 @@
+-- Entry point for the self-hosted typecheck stage (SLICE 1, engine only):
+--
+--   medaka run selfhost/typecheck_main.mdk <source.mdk>
+--
+-- parses + desugars a self-contained (prelude-free) file, runs HM inference, and
+-- prints each top-level binding's inferred scheme as `name : scheme` (one per
+-- line) — diffs against `dev/tc_probe.exe` (the harness sorts).
+
+import parser.{parse}
+import desugar.{desugar}
+import typecheck.{checkToLines}
+
+main = match args ()
+  [targetPath] => withTarget targetPath
+  _ => ePutStrLn "usage: medaka run selfhost/typecheck_main.mdk <file.mdk>"
+
+withTarget targetPath = match readFile targetPath
+  Ok src => putStr (checkToLines (desugar (parse src)))
+  Err msg => ePutStrLn msg

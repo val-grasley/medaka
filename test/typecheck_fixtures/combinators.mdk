@@ -1,0 +1,12 @@
+-- polymorphic combinators: pure HM inference, no prelude
+id x = x
+const x y = x
+apply f x = f x
+compose f g x = f (g x)
+flip f x y = f y x
+pair x y = (x, y)
+fst3 (a, b) = a
+snd3 (a, b) = b
+swapT (a, b) = (b, a)
+twice f x = f (f x)
+on f g x y = f (g x) (g y)
