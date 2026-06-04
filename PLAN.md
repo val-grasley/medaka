@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 136). At task triage, match the work against AGENTS.md's
+number (last used: 138). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -162,6 +162,48 @@ strict priority. Where an item is a **Stage 0 prerequisite** for the north star
 above, it is flagged ⭐.
 
 ### Compiler / language
+
+- **Phase 138 — clear error for a recursive *value* forced during its own
+  definition (replace the `CamlinternalLazy.Undefined` leak). TODO.** A non-
+  function binding that references itself such that the reference is *forced*
+  while the binding is still being computed crashes the interpreter with a raw
+  OCaml `Fatal error: exception CamlinternalLazy.Undefined` instead of a Medaka
+  diagnostic. Typechecks fine; it's an **eval-time** crash. **Minimal repro:**
+  ```
+  ident x = x
+  loop = ident loop      -- forces `loop` (a strict arg) while defining it
+  main = println loop    -- → Fatal error: exception CamlinternalLazy.Undefined
+  ```
+  Surfaced by the Phase 135 combinator parser, where recursive parser *values*
+  (`skipNewlines = orElse (sepThen … skipNewlines) …`) hit exactly this — the fix
+  there was to recurse through a `do`-continuation (lazy) instead of a strict
+  self-argument. A clearer error would name the binding and explain the rule,
+  e.g. *"recursive value 'loop' is forced while it is being defined; a
+  non-function recursive binding must defer its self-reference (through a
+  lambda/continuation)."* Fix lands in `lib/eval.ml`'s top-level/letrec value
+  thunk-forcing path (catch the self-force, raise a proper `Eval_error`). Skill:
+  **debug-pipeline** (locate the force path) → eval diagnostic. Found via the
+  self-host port — exactly the rough edge it exists to surface.
+
+- **Phase 137 — allow an expression RHS to wrap onto a continuation line
+  (`.mdk` layout ergonomics). TODO.** A function/value body expression must fit
+  on one line: you can't break a long application's argument onto a following
+  indented line. The lexer's leading-operator continuation only rescues a fixed
+  set of infix operators (`|> >> << && || ++ <>`) at the *start* of a line, not a
+  general continuation of an unfinished expression. **Repro:**
+  ```
+  parseCmp = chainl1 parseCons
+    (choice [...])      -- Parse error: the `(choice …)` continuation line
+  ```
+  (worked around in the combinator parser by pulling the arg into a one-line
+  helper). A multi-thousand-line self-hosted compiler will hit this constantly.
+  Fix is a lexer/layout change in `lib/lexer.mll` — treat a more-indented line
+  following an expression that can't have ended (open application, trailing
+  operator/`(`/`,`) as a continuation rather than a new statement. **Delicate**
+  (layout-significant; re-measure `parser.conflicts` and the whitespace round-trip
+  after). Skill: **add-language-feature** (lexer/layout). Already noted as a known
+  limitation in the layout-continuation memory; this elevates it to a roadmap
+  item now that it bites the self-host code repeatedly.
 
 - **Phase 136 — typechecker: generalize mutually-recursive binding groups. DONE
   (2026-06-03).** A single self-recursive polymorphic function generalized fine,
