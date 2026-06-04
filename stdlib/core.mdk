@@ -199,13 +199,19 @@ export impl Ord (a, b) requires Ord a, Ord b where
   compare (a1, b1) (a2, b2) = thenCmp (compare a1 a2) (compare b1 b2)
 
 export impl Ord (a, b, c) requires Ord a, Ord b, Ord c where
-  compare (a1, b1, c1) (a2, b2, c2) = thenCmp (compare a1 a2) (thenCmp (compare b1 b2) (compare c1 c2))
+  compare (a1, b1, c1) (a2, b2, c2) = thenCmp
+    (compare a1 a2)
+    (thenCmp (compare b1 b2) (compare c1 c2))
 
 export impl Ord (a, b, c, d) requires Ord a, Ord b, Ord c, Ord d where
-  compare (a1, b1, c1, d1) (a2, b2, c2, d2) = thenCmp (compare a1 a2) (thenCmp (compare b1 b2) (thenCmp (compare c1 c2) (compare d1 d2)))
+  compare (a1, b1, c1, d1) (a2, b2, c2, d2) = thenCmp
+    (compare a1 a2)
+    (thenCmp (compare b1 b2) (thenCmp (compare c1 c2) (compare d1 d2)))
 
 export impl Ord (a, b, c, d, e) requires Ord a, Ord b, Ord c, Ord d, Ord e where
-  compare (a1, b1, c1, d1, e1) (a2, b2, c2, d2, e2) = thenCmp (compare a1 a2) (thenCmp (compare b1 b2) (thenCmp (compare c1 c2) (thenCmp (compare d1 d2) (compare e1 e2))))
+  compare (a1, b1, c1, d1, e1) (a2, b2, c2, d2, e2) = thenCmp
+    (compare a1 a2)
+    (thenCmp (compare b1 b2) (thenCmp (compare c1 c2) (thenCmp (compare d1 d2) (compare e1 e2))))
 
 {- | Lexicographic ordering: compare element-wise, and a proper prefix sorts
    before any list that extends it (`[1] < [1, 2]`, `[] < [0]`). -}
@@ -981,7 +987,9 @@ prop "clamp keeps values inside the interval" (x : Int) =
   let c = clamp 0 100 x
   c >= 0 && c <= 100
 
-prop "filter . filter p == filter p" (xs : List Int) = eq (filter (x => x > 0) (filter (x => x > 0) xs)) (filter (x => x > 0) xs)
+prop "filter . filter p == filter p" (xs : List Int) = eq
+  (filter (x => x > 0) (filter (x => x > 0) xs))
+  (filter (x => x > 0) xs)
 
 prop "length matches a counting fold" (xs : List Int) = length xs == fold (acc _ => acc + 1) 0 xs
 
@@ -989,7 +997,9 @@ prop "any/all duality" (xs : List Int) = any (x => x > 0) xs == not (all (x => x
 
 prop "fromOption d (Some x) == x" (x : Int) (d : Int) = fromOption d (Some x) == x
 
-prop "toResult/fromResult round-trip on Some" (x : Int) = eq (fromResult (toResult "missing" (Some x))) (Some x)
+prop "toResult/fromResult round-trip on Some" (x : Int) = eq
+  (fromResult (toResult "missing" (Some x)))
+  (Some x)
 
 prop "Ord (List a) is reflexive" (xs : List Int) =
   match compare xs xs

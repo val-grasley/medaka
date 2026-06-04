@@ -61,8 +61,10 @@ expectFalse True = Fail "expected False but got True"
 export
 expectEqual : (Eq a, Debug a) => a -> a -> Expectation
 expectEqual expected actual =
-  if eq expected actual then Pass
-  else Fail ("expected " ++ debug expected ++ " but got " ++ debug actual)
+  if eq expected actual then
+    Pass
+  else
+    Fail ("expected " ++ debug expected ++ " but got " ++ debug actual)
 
 {- | Passes when the two values are not equal.
 
@@ -73,8 +75,10 @@ expectEqual expected actual =
 export
 expectNotEqual : (Eq a, Debug a) => a -> a -> Expectation
 expectNotEqual expected actual =
-  if neq expected actual then Pass
-  else Fail ("expected values to differ but both were " ++ debug actual)
+  if neq expected actual then
+    Pass
+  else
+    Fail ("expected values to differ but both were " ++ debug actual)
 
 {- | Passes when `actual < expected`.
 
@@ -85,8 +89,10 @@ expectNotEqual expected actual =
 export
 expectLessThan : (Ord a, Debug a) => a -> a -> Expectation
 expectLessThan expected actual =
-  if lt actual expected then Pass
-  else Fail ("expected " ++ debug actual ++ " < " ++ debug expected)
+  if lt actual expected then
+    Pass
+  else
+    Fail ("expected " ++ debug actual ++ " < " ++ debug expected)
 
 {- | Passes when `actual > expected`.
 
@@ -97,8 +103,10 @@ expectLessThan expected actual =
 export
 expectGreaterThan : (Ord a, Debug a) => a -> a -> Expectation
 expectGreaterThan expected actual =
-  if gt actual expected then Pass
-  else Fail ("expected " ++ debug actual ++ " > " ++ debug expected)
+  if gt actual expected then
+    Pass
+  else
+    Fail ("expected " ++ debug actual ++ " > " ++ debug expected)
 
 -- Helper for expectAll: accumulate the first Fail, or stay Pass.
 expectAllStep : Expectation -> Expectation -> Expectation
@@ -120,9 +128,10 @@ expectAll es = fold expectAllStep Pass es
 
 goTests : List (String, Unit -> Expectation) -> Int -> Int -> <IO> Bool
 goTests [] passed failed =
-  println ("\n" ++ intToString passed ++ " passed, " ++ intToString failed ++ " failed")
+  println
+    ("\n" ++ intToString passed ++ " passed, " ++ intToString failed ++ " failed")
   eq failed 0
-goTests ((name, thunk) :: rest) passed failed =
+goTests ((name, thunk)::rest) passed failed =
   match runExpectation thunk
     Pass =>
       println ("  ok   " ++ name)

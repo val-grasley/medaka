@@ -567,9 +567,11 @@ ascending (x::y::rest) = lt x y && ascending (y :: rest)
 
 -- ── Properties ──────────────────────────────────────────────────────────
 
-prop "fromList builds a well-formed tree" (xs : List (Int, Int)) = wellFormed (fromList xs)
+prop "fromList builds a well-formed tree" (xs : List (Int, Int)) = wellFormed
+  (fromList xs)
 
-prop "keys come out strictly ascending" (xs : List (Int, Int)) = ascending (keys (fromList xs))
+prop "keys come out strictly ascending" (xs : List (Int, Int)) = ascending
+  (keys (fromList xs))
 
 prop "insert then lookup returns the inserted value" (k : Int) (v : Int) (xs : List (Int, Int)) = eq (lookup k (insert k v (fromList xs))) (Some v)
 

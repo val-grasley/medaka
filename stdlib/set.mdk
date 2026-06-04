@@ -420,19 +420,24 @@ ascending (x::y::rest) = lt x y && ascending (y :: rest)
 
 -- ── Properties ──────────────────────────────────────────────────────────
 
-prop "fromList builds a well-formed tree" (xs : List Int) = wellFormed (fromList xs)
+prop "fromList builds a well-formed tree" (xs : List Int) = wellFormed
+  (fromList xs)
 
 prop "elements come out strictly ascending (sorted, deduped)" (xs : List Int) = ascending (toList (fromList xs))
 
-prop "insert then member" (x : Int) (xs : List Int) = member x (insert x (fromList xs))
+prop "insert then member" (x : Int) (xs : List Int) = member
+  x
+  (insert x (fromList xs))
 
-prop "insert preserves well-formedness" (x : Int) (xs : List Int) = wellFormed (insert x (fromList xs))
+prop "insert preserves well-formedness" (x : Int) (xs : List Int) = wellFormed
+  (insert x (fromList xs))
 
 prop "delete removes the element and preserves well-formedness" (x : Int) (xs : List Int) =
   let s = delete x (fromList xs)
   not (member x s) && wellFormed s
 
-prop "union preserves well-formedness" (xs : List Int) (ys : List Int) = wellFormed (union (fromList xs) (fromList ys))
+prop "union preserves well-formedness" (xs : List Int) (ys : List Int) = wellFormed
+  (union (fromList xs) (fromList ys))
 
 prop "intersection elements are in both sets" (xs : List Int) (ys : List Int) =
   let a = fromList xs
@@ -442,4 +447,7 @@ prop "intersection elements are in both sets" (xs : List Int) (ys : List Int) =
 prop "difference elements are in the first but not the second" (xs : List Int) (ys : List Int) =
   let a = fromList xs
   let b = fromList ys
-  foldrSet (e acc => acc && member e a && not (member e b)) True (difference a b)
+  foldrSet
+    (e acc => acc && member e a && not (member e b))
+    True
+    (difference a b)

@@ -122,10 +122,10 @@ toArray (MutArray backing len) =
 export
 push : a -> MutArray a -> <Mut> Unit
 push x (MutArray backing len)
-  | len.value < arrayLength backing.value = 
+  | len.value < arrayLength backing.value =
     arraySetUnsafe len.value x backing.value
     set_ref len (len.value + 1)
-  | otherwise = 
+  | otherwise =
     let oldArr = backing.value
     let oldLen = len.value
     let newCap = if oldLen == 0 then 1 else oldLen * 2
@@ -140,7 +140,7 @@ export
 pop : MutArray a -> <Mut> Option a
 pop (MutArray backing len)
   | len.value == 0 = None
-  | otherwise = 
+  | otherwise =
     let i = len.value - 1
     let x = arrayGetUnsafe i backing.value
     set_ref len i
@@ -172,7 +172,7 @@ clear (MutArray _ len) = set_ref len 0
 mapInPlaceGo : (a -> a) -> Array a -> Int -> Int -> <Mut> Unit
 mapInPlaceGo f arr i n
   | i >= n = ()
-  | otherwise = 
+  | otherwise =
     arraySetUnsafe i (f (arrayGetUnsafe i arr)) arr
     mapInPlaceGo f arr (i + 1) n
 
@@ -204,7 +204,11 @@ foldRightGo f z arr i
    3 -}
 export default impl Foldable MutArray where
   fold f z (MutArray backing len) = foldGo f z backing.value 0 len.value
-  foldRight f z (MutArray backing len) = foldRightGo f z backing.value (len.value - 1)
+  foldRight f z (MutArray backing len) = foldRightGo
+    f
+    z
+    backing.value
+    (len.value - 1)
   toList ma = elems ma
   isEmpty (MutArray _ len) = len.value == 0
   length (MutArray _ len) = len.value

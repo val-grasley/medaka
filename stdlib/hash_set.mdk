@@ -82,7 +82,7 @@ insert x (HashSet buckets count) =
 insertAt : Eq a => a -> Array (List a) -> Int -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
 insertAt x arr idx buckets count
   | bucketHas x (arrayGetUnsafe idx arr) = ()
-  | otherwise = 
+  | otherwise =
     arraySetUnsafe idx (x :: arrayGetUnsafe idx arr) arr
     set_ref count (count.value + 1)
     maybeResize buckets count
@@ -103,7 +103,7 @@ resize buckets count =
 reinsertAll : Array (List a) -> Int -> Int -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
 reinsertAll oldArr i n buckets count
   | i >= n = ()
-  | otherwise = 
+  | otherwise =
     reinsertBucket (arrayGetUnsafe i oldArr) buckets count
     reinsertAll oldArr (i + 1) n buckets count
 
@@ -159,7 +159,11 @@ collectElems arr i n acc
   | otherwise = collectElems arr (i + 1) n (arrayGetUnsafe i arr ++ acc)
 
 elemList : HashSet a -> List a
-elemList (HashSet buckets _) = collectElems buckets.value 0 (arrayLength buckets.value) []
+elemList (HashSet buckets _) = collectElems
+  buckets.value
+  0
+  (arrayLength buckets.value)
+  []
 
 foldrElems : (a -> b -> <e> b) -> b -> List a -> <e> b
 foldrElems _ z [] = z

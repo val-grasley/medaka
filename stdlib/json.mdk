@@ -86,11 +86,8 @@ hexDigit d = stringSlice d (d + 1) "0123456789abcdef"
 
 -- A control char (< 0x20) as a `\u00XX` escape.
 unicodeEscape : Int -> String
-unicodeEscape code = stringConcat [
-  "\\u00",
-  hexDigit (code / 16),
-  hexDigit (code % 16)
-]
+unicodeEscape code = stringConcat
+  ["\\u00", hexDigit (code / 16), hexDigit (code % 16)]
 
 -- One source char as its JSON-escaped piece.
 escapeChar : Char -> String
@@ -125,7 +122,7 @@ elemStrings arr i acc
 memberStrings : Array (String, Json) -> Int -> List String -> List String
 memberStrings pairs i acc
   | i < 0 = acc
-  | otherwise = 
+  | otherwise =
     let p = arrayGetUnsafe i pairs
     let s = stringConcat [escapeString (fst p), ":", stringify (snd p)]
     memberStrings pairs (i - 1) (s :: acc)
@@ -275,7 +272,8 @@ isExpChar : Char -> Bool
 isExpChar c = c == 'e' || c == 'E'
 
 subString : Array Char -> Int -> Int -> String
-subString arr start end = stringFromChars (arrayMakeWith (end - start) (k => arrayGetUnsafe (start + k) arr))
+subString arr start end = stringFromChars
+  (arrayMakeWith (end - start) (k => arrayGetUnsafe (start + k) arr))
 
 parseNumber : Array Char -> Int -> Result String (Json, Int)
 parseNumber arr start =
@@ -336,9 +334,10 @@ parseArrayAt arr j
     Ok (JArray (arrayFromList (reverse xs)), k)
 
 parseElems : Array Char -> Int -> List Json -> Result String (List Json, Int)
-parseElems arr i acc = do
-  (v, j) <- parseValue arr i
-  parseElemsCont arr (skipWs arr j) (v :: acc)
+parseElems arr i acc =
+  do
+    (v, j) <- parseValue arr i
+    parseElemsCont arr (skipWs arr j) (v :: acc)
 
 parseElemsCont : Array Char -> Int -> List Json -> Result String (List Json, Int)
 parseElemsCont arr k acc
@@ -424,9 +423,10 @@ parse : String -> Result String Json
 parse s = parseTop (stringToChars s)
 
 parseTop : Array Char -> Result String Json
-parseTop arr = do
-  (v, j) <- parseValue arr 0
-  ensureEnd arr (skipWs arr j) v
+parseTop arr =
+  do
+    (v, j) <- parseValue arr 0
+    ensureEnd arr (skipWs arr j) v
 
 ensureEnd : Array Char -> Int -> Json -> Result String Json
 ensureEnd arr j v
@@ -504,7 +504,7 @@ arrEqJson a b i
 objEqJson : Array (String, Json) -> Array (String, Json) -> Int -> Bool
 objEqJson a b i
   | i >= arrayLength a = True
-  | otherwise = 
+  | otherwise =
     let pa = arrayGetUnsafe i a
     let pb = arrayGetUnsafe i b
     fst pa == fst pb && eq (snd pa) (snd pb) && objEqJson a b (i + 1)

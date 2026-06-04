@@ -130,7 +130,7 @@ insert key val (HashMap buckets count) =
 insertAt : Eq k => k -> v -> Array (List (k, v)) -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
 insertAt key val arr idx buckets count
   | bucketHas key (arrayGetUnsafe idx arr) = arraySetUnsafe idx (bucketReplace key val (arrayGetUnsafe idx arr)) arr
-  | otherwise = 
+  | otherwise =
     arraySetUnsafe idx ((key, val) :: arrayGetUnsafe idx arr) arr
     set_ref count (count.value + 1)
     maybeResize buckets count
@@ -151,7 +151,7 @@ resize buckets count =
 reinsertAll : Eq k => Array (List (k, v)) -> Int -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
 reinsertAll oldArr i n buckets count
   | i >= n = ()
-  | otherwise = 
+  | otherwise =
     reinsertBucket (arrayGetUnsafe i oldArr) buckets count
     reinsertAll oldArr (i + 1) n buckets count
 
@@ -218,7 +218,11 @@ collectBuckets arr i n acc
    internally. -}
 export
 entries : HashMap k v -> List (k, v)
-entries (HashMap buckets _) = collectBuckets buckets.value 0 (arrayLength buckets.value) []
+entries (HashMap buckets _) = collectBuckets
+  buckets.value
+  0
+  (arrayLength buckets.value)
+  []
 
 {- | Conventional alias for `entries` (all key/value pairs). -}
 export
