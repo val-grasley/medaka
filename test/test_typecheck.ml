@@ -2080,6 +2080,50 @@ f x = match x
   (a, b) => a + b
 |}
 
+(* Named-field-variant pattern with a rest (`Con { f, ... }`) only covers the
+   `Con` constructor — NOT the whole type — so a following `_` catch-all that
+   reaches the other constructor is reachable, NOT redundant.  Regression: the
+   exhaust desugar used to lower `PRec(_, _, true)` to a bare wildcard, which
+   made the record arm look like it covered everything. *)
+let w_rec_rest_then_wild = assert_no_warns {|
+data Decl = DImpl { pub : Bool, tys : List String } | DOther Int
+f d = match d
+  DImpl { tys, ... } => 1
+  _ => 2
+|}
+
+(* Same, without a rest: the record arm still only covers its constructor. *)
+let w_rec_norest_then_wild = assert_no_warns {|
+data Decl = DImpl { pub : Bool } | DOther Int
+f d = match d
+  DImpl { pub } => 1
+  _ => 2
+|}
+
+(* Genuinely redundant: a second record arm for the same constructor is already
+   covered by the first (both match every DImpl). *)
+let w_rec_redundant = assert_warns {|
+data Decl = DImpl { pub : Bool, tys : List String } | DOther Int
+f d = match d
+  DImpl { tys, ... } => 1
+  DImpl { pub, ... } => 9
+  _ => 2
+|}
+
+(* Non-exhaustive: a sole record arm leaves the other constructor uncovered. *)
+let w_rec_non_exhaustive = assert_warns {|
+data Decl = DImpl { pub : Bool } | DOther Int
+f d = match d
+  DImpl { pub } => 1
+|}
+
+(* Single-constructor record, matched in full — exhaustive, no warning. *)
+let w_rec_single_ctor_total = assert_no_warns {|
+data Person = Person { name : String, age : Int }
+f p = match p
+  Person { age, ... } => age
+|}
+
 (* ── Phase 102: plain multi-clause-function exhaustiveness ──
    A multi-clause function never becomes an EMatch (each clause is its own
    lambda, dispatched as a VMulti).  These are checked from
@@ -4183,6 +4227,11 @@ let () =
       test_case "nested fully exhaustive"   `Quick w_nested_exhaustive;
       test_case "nested missing branch"     `Quick w_nested_missing;
       test_case "tuple exhaustive"          `Quick w_tuple_exhaustive;
+      test_case "rec rest then wild"        `Quick w_rec_rest_then_wild;
+      test_case "rec no-rest then wild"     `Quick w_rec_norest_then_wild;
+      test_case "rec redundant arm"         `Quick w_rec_redundant;
+      test_case "rec non-exhaustive"        `Quick w_rec_non_exhaustive;
+      test_case "rec single-ctor total"     `Quick w_rec_single_ctor_total;
     ];
     "multi-clause exhaustiveness (Phase 102)", [
       test_case "list missing cons"         `Quick wm_list_missing_cons;

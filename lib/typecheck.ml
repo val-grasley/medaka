@@ -1376,7 +1376,12 @@ let exhaust_oracle env =
         in
         result_type t
   in
-  (get_ctors, get_arity, get_ctor_type)
+  let get_ctor_fields c =
+    match Hashtbl.find_opt env.ctor_fields c with
+    | Some fields -> Some (List.map fst fields)
+    | None        -> None
+  in
+  (get_ctors, get_arity, get_ctor_type, get_ctor_fields)
 
 let rec infer env = function
   | ELoc (l, e) ->
@@ -1732,9 +1737,9 @@ let rec infer env = function
          | TTuple ts -> Some (Exhaust.tuple_ctor_name (List.length ts))
          | _         -> None)
     in
-    let (get_ctors, get_arity, get_ctor_type) = exhaust_oracle env in
+    let (get_ctors, get_arity, get_ctor_type, get_ctor_fields) = exhaust_oracle env in
     Exhaust.check_match
-      ~get_ctors ~get_arity ~get_ctor_type
+      ~get_ctors ~get_arity ~get_ctor_type ~get_ctor_fields
       ~warnings:env.warnings
       ~col0_type
       ~match_loc:!current_loc
@@ -2606,12 +2611,12 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     | (pats0, _) :: _ ->
       let arity = List.length pats0 in
       if arity > 0 then begin
-        let (get_ctors, get_arity, get_ctor_type) =
+        let (get_ctors, get_arity, get_ctor_type, get_ctor_fields) =
           exhaust_oracle !env_ref in
         let loc = match Exhaust.first_loc (snd (List.hd clauses)) with
           | Some l -> Some l
           | None   -> !current_loc in
-        Exhaust.check_clauses ~get_ctors ~get_arity ~get_ctor_type
+        Exhaust.check_clauses ~get_ctors ~get_arity ~get_ctor_type ~get_ctor_fields
           ~warnings:(!env_ref).warnings ~loc ~arity
           (List.map fst clauses)
       end
