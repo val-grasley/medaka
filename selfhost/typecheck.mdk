@@ -864,11 +864,17 @@ checkProgram : List Decl -> <Mut> List (String, Scheme)
 checkProgram prog =
   let _ = resetState ()
   let dataEnv = registerAllData initialEnv prog
-  let ifaceSchemes = ifaceMethodSchemes prog
-  let env1 = extendVars dataEnv ifaceSchemes
+  let globalS = ifaceMethodSchemes prog ++ externSchemes prog
+  let env1 = extendVars dataEnv globalS
   let defs = funDefs prog
   let sigs = sigsOf prog
-  ifaceSchemes ++ processTopGroups env1 sigs defs (groupNames defs [])
+  globalS ++ processTopGroups env1 sigs defs (groupNames defs [])
+
+-- extern declarations become top-level schemes (like interface methods)
+externSchemes : List Decl -> <Mut> List (String, Scheme)
+externSchemes [] = []
+externSchemes ((DExtern _ n ty) :: rest) = (n, sigToScheme ty) :: externSchemes rest
+externSchemes (_ :: rest) = externSchemes rest
 
 -- interface method schemes: each method's declared type, free tyvars (incl. the
 -- interface param) quantified — the bare scheme the === TYPES === output shows
