@@ -96,6 +96,11 @@ let rec sexp_expr e =
   | ERangeArray (lo, hi, incl) -> node "ERangeArray" [sexp_expr lo; sexp_expr hi; string_of_bool incl]
   | ESlice (e, lo, hi, incl)   -> node "ESlice" [sexp_expr e; sexp_expr lo; sexp_expr hi; string_of_bool incl]
   | EFunction arms     -> node "EFunction" (List.map sexp_arm arms)
+  (* Method_marker output (refs unfilled until typecheck): the discriminating
+     content is just the marked name + which marker it is. *)
+  | EMethodRef (_, x)  -> node "EMethodRef" [esc_str x]
+  | EDictApp (_, x)    -> node "EDictApp" [esc_str x]
+  | EHeadAnnot (e, t)  -> node "EHeadAnnot" [sexp_expr e; sexp_ty t]
   | EAnnot (e, t)      -> node "EAnnot" [sexp_expr e; sexp_ty t]
   | EBlock stmts       -> node "EBlock" (List.map sexp_dostmt stmts)
   | EDo (_, stmts)     -> node "EDo" (List.map sexp_dostmt stmts)
@@ -219,9 +224,24 @@ let sexp_decl = function
         slist (List.map sexp_require requires); slist (List.map sexp_impl_method methods)]
   | _                       -> todo "decl"
 
+(* Stage selector: dump the AST at a chosen pipeline point so the self-hosted
+   stage can be diffed against the reference (parse-only by default; --desugar
+   after Desugar; --mark after Desugar+Method_marker). *)
+type stage = Parse | Desugar | Mark
+
 let () =
-  if Array.length Sys.argv < 2 then (prerr_endline "usage: astdump <file>"; exit 2);
-  let src = read_file Sys.argv.(1) in
+  let stage = ref Parse and file = ref None in
+  Array.iteri (fun i a ->
+    if i = 0 then ()
+    else match a with
+      | "--desugar" -> stage := Desugar
+      | "--mark"    -> stage := Mark
+      | "--parse"   -> stage := Parse
+      | _           -> file := Some a) Sys.argv;
+  let path = match !file with
+    | Some p -> p
+    | None -> prerr_endline "usage: astdump [--parse|--desugar|--mark] <file>"; exit 2 in
+  let src = read_file path in
   Lexer.reset ();
   let lb = Lexing.from_string src in
   let prog =
@@ -230,6 +250,11 @@ let () =
       let p = lb.Lexing.lex_curr_p in
       failwith (Printf.sprintf "parse error %d:%d" p.Lexing.pos_lnum
         (p.Lexing.pos_cnum - p.Lexing.pos_bol))
+  in
+  let prog = match !stage with
+    | Parse   -> prog
+    | Desugar -> Desugar.desugar_program prog
+    | Mark    -> Method_marker.mark_with_prelude (Desugar.desugar_program prog)
   in
   let prog = List.map Ast.strip_locs_decl prog in
   print_string (String.concat "\n" (List.map sexp_decl prog))
