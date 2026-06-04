@@ -1,0 +1,13 @@
+-- interface with a default method, overridden by one impl
+interface Greet a where
+  hello : a -> String
+  loud : a -> String
+  loud x = hello x ++ "!"
+data En = En
+data Fr = Fr
+impl Greet En where
+  hello _ = "hi"
+impl Greet Fr where
+  hello _ = "salut"
+  loud _ = "SALUT!!"
+main = (hello En, loud En, hello Fr, loud Fr)

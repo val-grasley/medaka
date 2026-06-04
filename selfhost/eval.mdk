@@ -11,7 +11,7 @@
 -- Validated by rendering pp_value of a program's `main` binding and diffing
 -- against dev/eval_probe.exe (Eval.eval_program ~prelude:false → Eval.pp_value).
 
-import ast.{Lit(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Variant(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), Decl(..)}
 
 -- ── values & environment (mutually recursive) ─────────────────────────────
 public export data Value
@@ -30,6 +30,9 @@ public export data Value
   | VClosure Env (List Pat) Expr
   | VPrim (Value -> <Mut> Value)
   | VMulti (List Value)
+  -- an impl method tagged for typeclass dispatch: head type, impl key, the arg
+  -- positions that discriminate, args applied so far, and the underlying value
+  | VTypedImpl String String (List Int) Int Value
 
 -- an environment is a stack of frames; each frame maps names to mutable cells
 -- (so letrec / mutual recursion can back-patch a closure's own binding)
@@ -55,6 +58,7 @@ ppValue (VRef cell) = "Ref(" ++ ppValue cell.value ++ ")"
 ppValue (VClosure _ _ _) = "<closure>"
 ppValue (VPrim _) = "<prim>"
 ppValue (VMulti vs) = "<dispatch/" ++ intToString (lengthList vs) ++ ">"
+ppValue (VTypedImpl t _ _ _ inner) = "<impl@" ++ t ++ ":" ++ ppValue inner ++ ">"
 
 ppField : (String, Value) -> String
 ppField (k, v) = k ++ " = " ++ ppValue v
@@ -129,6 +133,106 @@ startsWithAt : String -> Bool
 startsWithAt s =
   let cs = stringToChars s
   arrayLength cs > 0 && arrayGetUnsafe 0 cs == '@'
+
+containsInt : Int -> List Int -> Bool
+containsInt _ [] = False
+containsInt x (y :: ys) = x == y || containsInt x ys
+
+anyList : (a -> Bool) -> List a -> Bool
+anyList _ [] = False
+anyList p (x :: xs) = p x || anyList p xs
+
+assocLookupS : String -> List (String, String) -> Option String
+assocLookupS _ [] = None
+assocLookupS k ((k2, v) :: rest)
+  | k == k2 = Some v
+  | otherwise = assocLookupS k rest
+
+-- ── typeclass dispatch: ctor→type table + runtime tag ─────────────────────
+-- A process-global ctor→type map (mirrors lib/eval.ml's ctor_to_type Hashtbl);
+-- evalProgram seeds it before any dispatch.  Reading it stays pure (ref read).
+ctorToTypeRef : Ref (List (String, String))
+ctorToTypeRef = Ref []
+
+buildCtorToType : List Decl -> List (String, String)
+buildCtorToType prog = concatMapL ctorTypeEntries prog
+
+ctorTypeEntries : Decl -> List (String, String)
+ctorTypeEntries (DData _ tyname _ variants _) = map (v => (variantName v, tyname)) variants
+ctorTypeEntries _ = []
+
+variantName : Variant -> String
+variantName (Variant n _) = n
+
+-- runtime "head type" tag for a value, for filtering VMulti candidates
+runtimeTypeTag : Value -> Option String
+runtimeTypeTag (VInt _) = Some "Int"
+runtimeTypeTag (VFloat _) = Some "Float"
+runtimeTypeTag (VString _) = Some "String"
+runtimeTypeTag (VChar _) = Some "Char"
+runtimeTypeTag (VBool _) = Some "Bool"
+runtimeTypeTag VUnit = Some "Unit"
+runtimeTypeTag (VList _) = Some "List"
+runtimeTypeTag (VArray _) = Some "Array"
+runtimeTypeTag (VTuple _) = Some "__tuple__"
+runtimeTypeTag (VCon cname _) = assocLookupS cname ctorToTypeRef.value
+runtimeTypeTag (VRecord name _) = Some name
+runtimeTypeTag (VTypedImpl t _ _ _ _) = Some t
+runtimeTypeTag _ = None
+
+-- ── type-structure analysis (specificity + dispatch positions) ────────────
+countTyvars : Ty -> Int
+countTyvars (TyVar _) = 1
+countTyvars (TyCon _) = 0
+countTyvars (TyApp a b) = countTyvars a + countTyvars b
+countTyvars (TyFun a b) = countTyvars a + countTyvars b
+countTyvars (TyTuple ts) = sumInts (map countTyvars ts)
+countTyvars (TyEffect _ _ t) = countTyvars t
+countTyvars (TyConstrained _ t) = countTyvars t
+
+sumInts : List Int -> Int
+sumInts [] = 0
+sumInts (x :: xs) = x + sumInts xs
+
+tyvarsInArgs : List Ty -> Int
+tyvarsInArgs ts = sumInts (map countTyvars ts)
+
+headTycon : Ty -> Option String
+headTycon (TyCon n) = Some n
+headTycon (TyApp a _) = headTycon a
+headTycon (TyConstrained _ t) = headTycon t
+headTycon (TyEffect _ _ t) = headTycon t
+headTycon (TyTuple _) = Some "__tuple__"
+headTycon _ = None
+
+-- arg positions of a method type that mention an interface type parameter
+dispatchPositionsOf : Ty -> List String -> List Int
+dispatchPositionsOf mty params = filterMentions 0 (argsOfTy mty) params
+
+argsOfTy : Ty -> List Ty
+argsOfTy (TyConstrained _ t) = argsOfTy t
+argsOfTy (TyEffect _ _ t) = argsOfTy t
+argsOfTy (TyFun a b) = a :: argsOfTy b
+argsOfTy _ = []
+
+filterMentions : Int -> List Ty -> List String -> List Int
+filterMentions _ [] _ = []
+filterMentions i (t :: ts) params
+  | tyMentions t params = i :: filterMentions (i + 1) ts params
+  | otherwise = filterMentions (i + 1) ts params
+
+tyMentions : Ty -> List String -> Bool
+tyMentions (TyVar n) params = contains n params
+tyMentions (TyCon _) _ = False
+tyMentions (TyApp a b) params = tyMentions a params || tyMentions b params
+tyMentions (TyFun a b) params = tyMentions a params || tyMentions b params
+tyMentions (TyTuple ts) params = anyList (t => tyMentions t params) ts
+tyMentions (TyEffect _ _ t) params = tyMentions t params
+tyMentions (TyConstrained _ t) params = tyMentions t params
+
+contains : String -> List String -> Bool
+contains _ [] = False
+contains x (y :: ys) = x == y || contains x ys
 
 -- ── environment ───────────────────────────────────────────────────────────
 lookupEnv : Env -> String -> Value
@@ -330,8 +434,48 @@ apply f x = match applyOpt f x
 applyOpt : Value -> Value -> <Mut> (Option Value)
 applyOpt (VClosure env pats body) arg = applyClosure env pats body arg
 applyOpt (VPrim f) arg = Some (f arg)
-applyOpt (VMulti vs) arg = collectPartials [] vs arg
+applyOpt (VTypedImpl t key pos seen inner) arg = applyTyped t key pos seen inner arg
+applyOpt (VMulti vs) arg = collectPartials [] (filterByTag vs arg) arg
 applyOpt other _ = panic ("applied non-function: " ++ ppValue other)
+
+-- pass the arg to the impl's inner value, preserving the dispatch tag across
+-- partial applications (so later args still route to the same impl)
+applyTyped : String -> String -> List Int -> Int -> Value -> Value -> <Mut> (Option Value)
+applyTyped t key pos seen inner arg = match applyOpt inner arg
+  None => None
+  Some r => Some (reTag t key pos (seen + 1) r)
+
+reTag : String -> String -> List Int -> Int -> Value -> Value
+reTag t key pos seen r
+  | isPartial r = VTypedImpl t key pos seen r
+  | otherwise = r
+
+-- filter VMulti candidates by the arg's runtime tag, but only those candidates
+-- that are at a dispatching slot; if every tagged candidate is filtered out,
+-- keep the original set (mirrors lib/eval.ml's should_filter logic)
+filterByTag : List Value -> Value -> List Value
+filterByTag vs arg
+  | not (anyList isDispatching vs) = vs
+  | otherwise = filterByTagT vs (runtimeTypeTag arg)
+
+filterByTagT : List Value -> Option String -> List Value
+filterByTagT vs None = vs
+filterByTagT vs (Some tag) = keepOrAll vs (filter (keepCand tag) vs)
+
+keepOrAll : List Value -> List Value -> List Value
+keepOrAll original [] = original
+keepOrAll _ kept = kept
+
+keepCand : String -> Value -> Bool
+keepCand tag v = not (isDispatching v) || matchesTag tag v
+
+isDispatching : Value -> Bool
+isDispatching (VTypedImpl _ _ pos seen _) = containsInt seen pos
+isDispatching _ = False
+
+matchesTag : String -> Value -> Bool
+matchesTag tag (VTypedImpl t _ _ _ _) = t == tag
+matchesTag _ _ = True
 
 applyClosure : Env -> List Pat -> Expr -> Value -> <Mut> (Option Value)
 applyClosure _ [] _ _ = panic "applied closure with no parameters"
@@ -355,6 +499,7 @@ isPartial : Value -> Bool
 isPartial (VClosure _ _ _) = True
 isPartial (VPrim _) = True
 isPartial (VMulti _) = True
+isPartial (VTypedImpl _ _ _ _ _) = True
 isPartial _ = False
 
 -- ── the evaluator ─────────────────────────────────────────────────────────
@@ -637,17 +782,123 @@ clausesForName name ((n, c) :: rest)
   | n == name = c :: clausesForName name rest
   | otherwise = clausesForName name rest
 
+-- ── typeclass impl / interface-default installation ───────────────────────
+buildIfaceDispatch : List Decl -> List ((String, String), List Int)
+buildIfaceDispatch prog = concatMapL ifaceDispatchEntries prog
+
+ifaceDispatchEntries : Decl -> List ((String, String), List Int)
+ifaceDispatchEntries (DInterface _ _ ifaceName typeParams _ methods) =
+  map (ifaceMethodEntry ifaceName typeParams) methods
+ifaceDispatchEntries _ = []
+
+ifaceMethodEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
+ifaceMethodEntry ifaceName typeParams (IfaceMethod mname mty _) =
+  ((ifaceName, mname), dispatchPositionsOf mty typeParams)
+
+lookupPositions : String -> String -> List ((String, String), List Int) -> List Int
+lookupPositions _ _ [] = [0]
+lookupPositions iface mname (((i, m), p) :: rest)
+  | iface == i && mname == m = p
+  | otherwise = lookupPositions iface mname rest
+
+implMethodValue : Env -> List Pat -> Expr -> Value
+implMethodValue _ [] _ = panic "nullary impl/default method (deferred to dispatch slice B)"
+implMethodValue env pats body = VClosure env pats body
+
+-- one (methodName, (specificity-score, taggedValue)) per impl method / default
+declImplEntries : Env -> List ((String, String), List Int) -> Decl -> List (String, (Int, Value))
+declImplEntries env disp (DImpl _ _ ifaceName typeArgs _ _ methods) =
+  map (implMethodEntry env disp ifaceName typeArgs) methods
+declImplEntries env _ (DInterface _ _ _ typeParams _ methods) =
+  concatMapL (defaultEntry env typeParams) methods
+declImplEntries _ _ _ = []
+
+implMethodEntry : Env -> List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> (String, (Int, Value))
+implMethodEntry env disp ifaceName typeArgs (ImplMethod mname pats body) =
+  let tag = fromOption "__none__" (headTyconHead typeArgs)
+  let positions = lookupPositions ifaceName mname disp
+  let inner = implMethodValue env pats body
+  (mname, (tyvarsInArgs typeArgs, VTypedImpl tag ifaceName positions 0 inner))
+
+headTyconHead : List Ty -> Option String
+headTyconHead [] = None
+headTyconHead (t :: _) = headTycon t
+
+-- interface defaults install untagged (a VClosure) so they act as a fallback
+defaultEntry : Env -> List String -> IfaceMethod -> List (String, (Int, Value))
+defaultEntry _ _ (IfaceMethod _ _ None) = []
+defaultEntry env typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) =
+  [(mname, (lengthList typeParams, implMethodValue env pats body))]
+
+-- coalesce all candidates for each method name into one VMulti, most-specific
+-- (fewest type vars) first
+coalesceImpls : List (String, (Int, Value)) -> List (String, Value)
+coalesceImpls scored = map (n => (n, coalesceOne n scored)) (nub (map fst scored))
+
+coalesceOne : String -> List (String, (Int, Value)) -> Value
+coalesceOne name scored = oneOrMulti (map snd (sortByScore (selectByName name scored)))
+
+oneOrMulti : List Value -> Value
+oneOrMulti [v] = v
+oneOrMulti many = VMulti many
+
+selectByName : String -> List (String, (Int, Value)) -> List (Int, Value)
+selectByName name scored = map snd (filter (e => fst e == name) scored)
+
+sortByScore : List (Int, Value) -> List (Int, Value)
+sortByScore xs = sortGo xs []
+
+sortGo : List (Int, Value) -> List (Int, Value) -> List (Int, Value)
+sortGo [] acc = acc
+sortGo (x :: xs) acc = sortGo xs (insertScore x acc)
+
+insertScore : (Int, Value) -> List (Int, Value) -> List (Int, Value)
+insertScore x [] = [x]
+insertScore x (y :: ys)
+  | fst y <= fst x = y :: insertScore x ys
+  | otherwise = x :: y :: ys
+
+nub : List String -> List String
+nub xs = nubGo xs []
+
+nubGo : List String -> List String -> List String
+nubGo [] _ = []
+nubGo (x :: xs) seen
+  | contains x seen = nubGo xs seen
+  | otherwise = x :: nubGo xs (x :: seen)
+
+implMethodNames : List Decl -> List String
+implMethodNames prog = nub (concatMapL implDeclNames prog)
+
+implDeclNames : Decl -> List String
+implDeclNames (DImpl _ _ _ _ _ _ methods) = map implMethodName methods
+implDeclNames (DInterface _ _ _ _ _ methods) = concatMapL defaultName methods
+implDeclNames _ = []
+
+implMethodName : ImplMethod -> String
+implMethodName (ImplMethod n _ _) = n
+
+defaultName : IfaceMethod -> List String
+defaultName (IfaceMethod n _ (Some _)) = [n]
+defaultName (IfaceMethod _ _ None) = []
+
 evalProgram : List Decl -> <Mut> List (String, Value)
 evalProgram prog =
+  let _ = set_ref ctorToTypeRef (buildCtorToType prog)
   let ctors = collectCtors prog
   let defs = funDefs prog
   let groups = map (mkGroup defs) (funGroupNames defs [])
-  let allNames = map fst boolSeeds ++ map fst ctors ++ map fst groups ++ map fst externBindings
+  let disp = buildIfaceDispatch prog
+  let allNames = map fst boolSeeds ++ map fst externBindings ++ map fst ctors ++ map fst groups ++ implMethodNames prog
   let cells = map (n => (n, Ref VUnit)) allNames
   let env = Env [cells]
   let _ = installConsts cells boolSeeds
   let _ = installConsts cells externBindings
   let _ = installConsts cells ctors
+  -- impls (lazy VClosures) before groups, so a nullary binding's eager body can
+  -- already see the dispatch tables (mirrors the reference forcing zero-arg
+  -- thunks only after all impls install)
+  let _ = installConsts cells (coalesceImpls (concatMapL (declImplEntries env disp) prog))
   let _ = installGroups env cells groups
   map cellResult cells
 

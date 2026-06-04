@@ -329,10 +329,28 @@ Stage-0 prerequisites in `../PLAN.md`).
      read, and block-local rebinding (`let mut` / `x <- e` via `DoAssign`).
      11/11 fixtures match. (Named-field *data variant* constructors — the VCon
      `ctor_field_order` path + `EVariantUpdate` — stay deferred.)
-   - **Deferred to the final slice:** string-interp (desugars to `display`, so it
-     needs dispatch) and typeclass **method dispatch** (`VTypedImpl`/`VNamedImpl`
-     tag filtering, `EMethodRef`/`EDictApp`, the dict-passing layer). That unlocks
-     running real (prelude-using) programs against the `=== EVAL ===` goldens.
+   - **Slice 4a (DONE) — typeclass method dispatch (user-defined).** `VTypedImpl`
+     (head-type tag, dispatch positions, args-seen) + a process-global ctor→type
+     table (a top-level `Ref`, mirroring `lib/eval.ml`'s `ctor_to_type` Hashtbl)
+     feeding `runtimeTypeTag`. `DInterface`/`DImpl` install: each impl method is
+     tagged `VTypedImpl` and same-named methods coalesce into one `VMulti`, sorted
+     most-specific-first by free-type-var count; interface **defaults** install
+     untagged as a fallback. `apply` gained the `VMulti` arg-tag filter (only
+     candidates at a dispatching slot are filtered; if all are filtered out the
+     original set is kept) and a tag-preserving `VTypedImpl` arm. Dispatch
+     positions come from `dispatchPositionsOf` walking each method's declared
+     type for args mentioning the interface type param. Validated on
+     self-contained interface/impl fixtures via the existing `prelude:false`
+     oracle — 14/14 fixtures match (multi-method interfaces, recursive ADTs,
+     default + override).
+   - **Slice 4b (TODO) — prelude loading.** Prepend the raw desugared `core.mdk`
+     (by path, like the marker/resolve stages) and install its impls, so the eval
+     can run real prelude-using programs and validate against the `=== EVAL ===`
+     goldens. Needs: `VThunk` deferral of nullary bindings (the prelude has
+     point-free defs whose eager eval must wait for all impls), nullary /
+     return-position impl methods (`empty`/`pure` — currently a deferred panic),
+     and string-interp (`\{e}` → `display e`). Return-position dispatch that needs
+     types stays a known untyped-path limitation.
    It can be developed against the **reference's** typed + dict-passed AST, so it
    does **not** require typecheck to be ported first; `dict_pass` is the small
    prerequisite for the method-dispatch slices.
