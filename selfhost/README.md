@@ -81,15 +81,18 @@ the stage is done when all pass.
   patterns, the type grammar, and top-level `DFunDef`/`DTypeSig`.
 - ✅ **Slice 2**: the rest of the operator ladder (`||`, `&&`, comparisons,
   `::` right-assoc, `++`), `=>` lambdas, single-line `if`/`then`/`else`, and
-  postfix field access (`.field`) — via a generic `chainLeft`/`chainRight` (HOF +
-  `Option`). All validated on `test/parse_fixtures/` (`sh
-  test/diff_selfhost_parse.sh`).
-- ⏳ Next slices: `let`/`match`/`do`, pipe/compose/unary/sections/interpolation/
-  comprehensions, full patterns, the remaining decl forms
-  (`data`/`record`/`interface`/`impl`/`import`/…), and **indented-block bodies**
-  (the `INDENT`/`DEDENT` layout handling — the chief remaining risk; slices 1–2
-  only do single-line bodies). End goal: parse the real `test/diff_fixtures/`
-  files + stdlib, like the lexer's 13/13. Stays prelude-only.
+  postfix field access (`.field`) — via a generic `chainLeft`/`chainRight`.
+- ✅ **Slice 3**: single-line `let … in`, **`match`** with indented arms (the
+  first `INDENT`/`DEDENT` layout handling), the full pattern hierarchy
+  (constructor application, `::`, tuple, list patterns), and a single-expression
+  indented decl body. Plus progress guards so the parser **always terminates**
+  (never loops on input it doesn't yet handle). Validated on
+  `test/parse_fixtures/`.
+- ⏳ Next slices: multi-statement indented blocks (`EBlock`/`do` — the rest of the
+  layout work), pipe/compose/unary/sections/interpolation/comprehensions, guards,
+  and the remaining decl forms (`data`/`record`/`interface`/`impl`/`import`/…).
+  End goal: parse the real `test/diff_fixtures/` files + stdlib, like the lexer's
+  13/13. Stays prelude-only.
 
   *(Parser combinators were spiked and parked — blocked on Phase 136; see PLAN.)*
 

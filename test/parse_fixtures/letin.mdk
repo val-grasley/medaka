@@ -1,0 +1,2 @@
+double a = let s = a + 1 in s * 2
+swap p = let x = p.a in let y = p.b in (y, x)

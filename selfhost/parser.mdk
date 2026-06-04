@@ -11,7 +11,7 @@
 -- tuple).  The expression ladder, patterns, decl forms, and types all grow in
 -- later slices; coverage is tracked against the reference dump.
 
-import ast.{Lit(..), Ty(..), Pat(..), Expr(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), Arm(..), Expr(..), Decl(..)}
 import lexer.{Token(..), tokenize}
 
 -- ── Token cursor ────────────────────────────────────────────────────────
@@ -212,6 +212,8 @@ atomFrom toks pos (TUpper x) = (EVar x, pos + 1)
 atomFrom toks pos TLParen = parseParen toks (pos + 1)
 atomFrom toks pos TLBracket = parseList toks (pos + 1)
 atomFrom toks pos TIf = parseIf toks (pos + 1)
+atomFrom toks pos TLet = parseLet toks (pos + 1)
+atomFrom toks pos TMatch = parseMatch toks (pos + 1)
 atomFrom toks pos _ = (EVar "?atom", pos + 1)
 
 -- `if cond then t else e` (branches are full expressions)
@@ -241,6 +243,86 @@ ifElseBody : Array Token -> Int -> Expr -> Expr -> (Expr, Int)
 ifElseBody toks pos cond thenE =
   let (elseE, pos1) = parseExpr toks pos
   (EIf cond thenE elseE, pos1)
+
+-- `let pat = e1 in e2` (single-line)
+parseLet : Array Token -> Int -> (Expr, Int)
+parseLet toks pos =
+  let (pat, pos1) = parsePatAtom toks pos
+  letEq toks pos1 pat
+
+letEq : Array Token -> Int -> Pat -> (Expr, Int)
+letEq toks pos pat =
+  match peek toks pos
+    TEqual => letRHS toks (pos + 1) pat
+    _ => (EVar "?let-eq", pos)
+
+letRHS : Array Token -> Int -> Pat -> (Expr, Int)
+letRHS toks pos pat =
+  let (e1, pos1) = parseExpr toks pos
+  letIn toks pos1 pat e1
+
+letIn : Array Token -> Int -> Pat -> Expr -> (Expr, Int)
+letIn toks pos pat e1 =
+  match peek toks pos
+    TIn => letBody toks (pos + 1) pat e1
+    _ => (EVar "?let-in", pos)
+
+letBody : Array Token -> Int -> Pat -> Expr -> (Expr, Int)
+letBody toks pos pat e1 =
+  let (e2, pos1) = parseExpr toks pos
+  (ELet False False pat e1 e2, pos1)
+
+-- `match scrut` then an INDENT block of `pat => body` arms (NEWLINE-separated)
+parseMatch : Array Token -> Int -> (Expr, Int)
+parseMatch toks pos =
+  let (scrut, pos1) = parseExpr toks pos
+  matchArms toks pos1 scrut
+
+matchArms : Array Token -> Int -> Expr -> (Expr, Int)
+matchArms toks pos scrut =
+  match peek toks pos
+    TIndent => armBlock toks (pos + 1) scrut
+    _ => (EMatch scrut [], pos)
+
+armBlock : Array Token -> Int -> Expr -> (Expr, Int)
+armBlock toks pos scrut =
+  let (arms, pos1) = parseArms toks pos []
+  (EMatch scrut arms, pos1)
+
+parseArms : Array Token -> Int -> List Arm -> (List Arm, Int)
+parseArms toks pos acc =
+  match peek toks pos
+    TDedent => (rev acc, pos + 1)
+    TNewline => parseArms toks (pos + 1) acc
+    TEof => (rev acc, pos)
+    _ => armCons toks pos acc
+
+armCons : Array Token -> Int -> List Arm -> (List Arm, Int)
+armCons toks pos acc =
+  let (arm, pos1) = parseArm toks pos
+  armConsGuard toks pos pos1 arm acc
+
+-- progress guard: an arm that doesn't advance must not stall the block loop
+armConsGuard : Array Token -> Int -> Int -> Arm -> List Arm -> (List Arm, Int)
+armConsGuard toks pos pos1 arm acc
+  | pos1 > pos = parseArms toks pos1 (arm :: acc)
+  | otherwise = parseArms toks (pos + 1) (arm :: acc)
+
+parseArm : Array Token -> Int -> (Arm, Int)
+parseArm toks pos =
+  let (pat, pos1) = parsePat toks pos
+  armBody toks pos1 pat
+
+armBody : Array Token -> Int -> Pat -> (Arm, Int)
+armBody toks pos pat =
+  match peek toks pos
+    TFatArrow => armRHS toks (pos + 1) pat
+    _ => (Arm pat [] (EVar "?arm"), pos)
+
+armRHS : Array Token -> Int -> Pat -> (Arm, Int)
+armRHS toks pos pat =
+  let (body, pos1) = parseExpr toks pos
+  (Arm pat [] body, pos1)
 
 -- `( … )` — unit, a parenthesized expr, or a tuple
 parseParen : Array Token -> Int -> (Expr, Int)
@@ -282,16 +364,105 @@ listRest toks pos acc =
     TComma => listElems toks (pos + 1) acc
     _ => (EListLit (rev acc), pos + 1)
 
--- ── Patterns (param patterns; grows per slice) ──────────────────────────
-parsePat : Array Token -> Int -> (Pat, Int)
-parsePat toks pos = patFrom toks pos (peek toks pos)
+-- ── Patterns ────────────────────────────────────────────────────────────
+-- Param patterns are atomic (`parsePatAtom`); match-arm patterns are full
+-- (`parsePat`: constructor application + cons + tuple/list).
 
-patFrom : Array Token -> Int -> Token -> (Pat, Int)
-patFrom toks pos (TIdent x) = (PVar x, pos + 1)
-patFrom toks pos TUnderscore = (PWild, pos + 1)
-patFrom toks pos (TInt n) = (PLit (LInt n), pos + 1)
-patFrom toks pos (TUpper c) = (PCon c [], pos + 1)
-patFrom toks pos _ = (PVar "?pat", pos + 1)
+parsePat : Array Token -> Int -> (Pat, Int)
+parsePat toks pos =
+  let (p, pos1) = parsePatApp toks pos
+  patConsRest toks pos1 p
+
+patConsRest : Array Token -> Int -> Pat -> (Pat, Int)
+patConsRest toks pos p =
+  match peek toks pos
+    TCons => patConsStep toks (pos + 1) p
+    _ => (p, pos)
+
+patConsStep : Array Token -> Int -> Pat -> (Pat, Int)
+patConsStep toks pos left =
+  let (right, pos1) = parsePat toks pos
+  (PCons left right, pos1)
+
+-- constructor application: `Upper atom*`, else a single atom
+parsePatApp : Array Token -> Int -> (Pat, Int)
+parsePatApp toks pos =
+  match peek toks pos
+    TUpper c => patConArgs toks (pos + 1) c
+    _ => parsePatAtom toks pos
+
+patConArgs : Array Token -> Int -> String -> (Pat, Int)
+patConArgs toks pos c =
+  let (args, pos1) = manyPatAtom toks pos []
+  (PCon c args, pos1)
+
+manyPatAtom : Array Token -> Int -> List Pat -> (List Pat, Int)
+manyPatAtom toks pos acc
+  | startsPatAtom (peek toks pos) = patAtomStep toks pos acc
+  | otherwise = (rev acc, pos)
+
+patAtomStep : Array Token -> Int -> List Pat -> (List Pat, Int)
+patAtomStep toks pos acc =
+  let (p, pos1) = parsePatAtom toks pos
+  manyPatAtom toks pos1 (p :: acc)
+
+startsPatAtom : Token -> Bool
+startsPatAtom (TIdent _) = True
+startsPatAtom TUnderscore = True
+startsPatAtom (TInt _) = True
+startsPatAtom (TUpper _) = True
+startsPatAtom TLParen = True
+startsPatAtom TLBracket = True
+startsPatAtom _ = False
+
+parsePatAtom : Array Token -> Int -> (Pat, Int)
+parsePatAtom toks pos = patAtomFrom toks pos (peek toks pos)
+
+patAtomFrom : Array Token -> Int -> Token -> (Pat, Int)
+patAtomFrom toks pos (TIdent x) = (PVar x, pos + 1)
+patAtomFrom toks pos TUnderscore = (PWild, pos + 1)
+patAtomFrom toks pos (TInt n) = (PLit (LInt n), pos + 1)
+patAtomFrom toks pos (TUpper c) = (PCon c [], pos + 1)
+patAtomFrom toks pos TLParen = parsePatParen toks (pos + 1)
+patAtomFrom toks pos TLBracket = parsePatList toks (pos + 1)
+patAtomFrom toks pos _ = (PWild, pos + 1)
+
+parsePatParen : Array Token -> Int -> (Pat, Int)
+parsePatParen toks pos =
+  let (p, pos1) = parsePat toks pos
+  patParenRest toks pos1 [p]
+
+patParenRest : Array Token -> Int -> List Pat -> (Pat, Int)
+patParenRest toks pos acc =
+  match peek toks pos
+    TComma => patParenMore toks (pos + 1) acc
+    _ => closePatParen (pos + 1) acc
+
+patParenMore : Array Token -> Int -> List Pat -> (Pat, Int)
+patParenMore toks pos acc =
+  let (p, pos1) = parsePat toks pos
+  patParenRest toks pos1 (p :: acc)
+
+closePatParen : Int -> List Pat -> (Pat, Int)
+closePatParen pos [p] = (p, pos)
+closePatParen pos acc = (PTuple (rev acc), pos)
+
+parsePatList : Array Token -> Int -> (Pat, Int)
+parsePatList toks pos =
+  match peek toks pos
+    TRBracket => (PList [], pos + 1)
+    _ => patListElems toks pos []
+
+patListElems : Array Token -> Int -> List Pat -> (Pat, Int)
+patListElems toks pos acc =
+  let (p, pos1) = parsePat toks pos
+  patListRest toks pos1 (p :: acc)
+
+patListRest : Array Token -> Int -> List Pat -> (Pat, Int)
+patListRest toks pos acc =
+  match peek toks pos
+    TComma => patListElems toks (pos + 1) acc
+    _ => (PList (rev acc), pos + 1)
 
 -- ── Types ───────────────────────────────────────────────────────────────
 parseTy : Array Token -> Int -> (Ty, Int)
@@ -372,16 +543,16 @@ parseDeclNamed toks pos name =
   let (pats, pos1) = parseParams toks pos []
   declBody toks pos1 name pats
 
+-- params are atomic patterns; the loop ends at the first non-pattern token
+-- (`=`/`:`/NEWLINE/EOF/…), which also keeps it from running past end-of-input
 parseParams : Array Token -> Int -> List Pat -> (List Pat, Int)
-parseParams toks pos acc =
-  match peek toks pos
-    TColon => (rev acc, pos)
-    TEqual => (rev acc, pos)
-    _ => paramMore toks pos acc
+parseParams toks pos acc
+  | startsPatAtom (peek toks pos) = paramMore toks pos acc
+  | otherwise = (rev acc, pos)
 
 paramMore : Array Token -> Int -> List Pat -> (List Pat, Int)
 paramMore toks pos acc =
-  let (p, pos1) = parsePat toks pos
+  let (p, pos1) = parsePatAtom toks pos
   parseParams toks pos1 (p :: acc)
 
 declBody : Array Token -> Int -> String -> List Pat -> (Decl, Int)
@@ -398,8 +569,36 @@ typeSig toks pos name =
 
 funBody : Array Token -> Int -> String -> List Pat -> (Decl, Int)
 funBody toks pos name pats =
-  let (body, pos1) = parseExpr toks pos
+  let (body, pos1) = parseBody toks pos
   (DFunDef False name pats body, skipNewline toks pos1)
+
+-- a decl body is either an inline expr or a single expr inside an INDENT block
+-- (multi-statement indented blocks → EBlock are a later slice)
+parseBody : Array Token -> Int -> (Expr, Int)
+parseBody toks pos =
+  match peek toks pos
+    TIndent => indentedBody toks (pos + 1)
+    _ => parseExpr toks pos
+
+indentedBody : Array Token -> Int -> (Expr, Int)
+indentedBody toks pos =
+  let (e, pos1) = parseExpr toks pos
+  (e, closeBlock toks pos1)
+
+closeBlock : Array Token -> Int -> Int
+closeBlock toks pos = consumeDedent toks (skipNewlines toks pos)
+
+consumeDedent : Array Token -> Int -> Int
+consumeDedent toks pos =
+  match peek toks pos
+    TDedent => pos + 1
+    _ => pos
+
+skipNewlines : Array Token -> Int -> Int
+skipNewlines toks pos =
+  match peek toks pos
+    TNewline => skipNewlines toks (pos + 1)
+    _ => pos
 
 skipNewline : Array Token -> Int -> Int
 skipNewline toks pos =
@@ -420,7 +619,13 @@ declsAt toks pos _ = declCons toks pos
 declCons : Array Token -> Int -> List Decl
 declCons toks pos =
   let (d, pos1) = parseDecl toks pos
-  d :: parseDecls toks pos1
+  declConsGuard toks pos pos1 d
+
+-- progress guard: a decl form not yet handled must not stall the loop
+declConsGuard : Array Token -> Int -> Int -> Decl -> List Decl
+declConsGuard toks pos pos1 d
+  | pos1 > pos = d :: parseDecls toks pos1
+  | otherwise = d :: parseDecls toks (pos + 1)
 
 export
 parse : String -> List Decl

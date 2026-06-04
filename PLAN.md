@@ -119,8 +119,11 @@ differential harness on the interpreter.
   atoms (literals/vars/ctors/parens/tuples/lists), simple param patterns, the
   type grammar, and top-level `DFunDef`/`DTypeSig`. **Slice 2 done:** full operator
   ladder (`||`/`&&`/cmp/`::`/`++`), `=>` lambdas, single-line `if`, postfix field
-  access — 8/8 fixtures match. Combinators spiked + parked (Phase 136). Next:
-  `let`/`match`/`do`, full patterns + decl forms, indented-block bodies.
+  access. **Slice 3 done:** `let … in`, `match` with indented arms (first
+  INDENT/DEDENT handling), full pattern hierarchy, single-expr indented decl
+  bodies, + progress guards so the parser always terminates — 10/10 fixtures.
+  Combinators spiked + parked (Phase 136). Next: multi-statement blocks
+  (`EBlock`/`do`), remaining operators + decl forms.
 
 ### Stage 2 — LLVM backend (after self-host)
 
