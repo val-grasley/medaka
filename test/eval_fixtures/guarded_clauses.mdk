@@ -1,0 +1,25 @@
+-- multi-clause functions whose guards fall through to the next clause
+-- (desugars to __fallthrough__) — incl. pattern-bind guards and recursion
+data Opt = N | J Int
+sign n
+  | n > 0 = 1
+  | n < 0 = 0 - 1
+sign _ = 0
+firstPos (x :: rest)
+  | x > 0 = x
+  | otherwise = firstPos rest
+firstPos [] = 0 - 1
+unwrapOr o d | J v <- o = v
+unwrapOr _ d = d
+collatzLen n = go n 0
+  where
+    go 1 acc = acc
+    go m acc
+      | m % 2 == 0 = go (m / 2) (acc + 1)
+      | otherwise = go (3 * m + 1) (acc + 1)
+main =
+  ( sign 5, sign (0 - 3), sign 0
+  , firstPos [0 - 2, 0 - 1, 3, 4], firstPos [0 - 5]
+  , unwrapOr (J 7) 0, unwrapOr N 99
+  , collatzLen 6, collatzLen 27
+  )

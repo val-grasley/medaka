@@ -33,6 +33,10 @@ public export data Value
   -- a deferred top-level nullary binding; forced + memoised on first lookup, so
   -- point-free defs can reference impls/values installed later (any order)
   | VThunk (Unit -> <Mut> Value)
+  -- sentinel for `__fallthrough__ ()`: a guard chain fell through, so the
+  -- enclosing clause "did not match" and dispatch should try the next one
+  -- (stands in for the reference's Impl_no_match exception)
+  | VFallthrough
   -- an impl method tagged for typeclass dispatch: head type, impl key, the arg
   -- positions that discriminate, args applied so far, and the underlying value
   | VTypedImpl String String (List Int) Int Value
@@ -63,6 +67,7 @@ ppValue (VPrim _) = "<prim>"
 ppValue (VMulti vs) = "<dispatch/" ++ intToString (lengthList vs) ++ ">"
 ppValue (VTypedImpl t _ _ _ inner) = "<impl@" ++ t ++ ":" ++ ppValue inner ++ ">"
 ppValue (VThunk _) = "<thunk>"
+ppValue VFallthrough = "<fallthrough>"
 
 ppField : (String, Value) -> String
 ppField (k, v) = k ++ " = " ++ ppValue v
@@ -513,10 +518,15 @@ applyClosure : Env -> List Pat -> Expr -> Value -> <Mut> (Option Value)
 applyClosure _ [] _ _ = panic "applied closure with no parameters"
 applyClosure env [p] body arg = match matchPat p arg
   None => None
-  Some binds => Some (eval (extendEnv env binds) body)
+  Some binds => fallthroughToNone (eval (extendEnv env binds) body)
 applyClosure env (p :: ps) body arg = match matchPat p arg
   None => None
   Some binds => Some (VClosure (extendEnv env binds) ps body)
+
+-- a guard chain that fell through (VFallthrough) means this clause didn't match
+fallthroughToNone : Value -> Option Value
+fallthroughToNone VFallthrough = None
+fallthroughToNone v = Some v
 
 collectPartials : List Value -> List Value -> Value -> <Mut> (Option Value)
 collectPartials acc [] _ = match acc
@@ -1059,6 +1069,7 @@ externBindings =
   , ("charMaxBound", VChar (charToStr charMaxBound))
   , ("pi", VFloat pi)
   , ("e", VFloat e)
+  , ("__fallthrough__", VPrim (_ => VFallthrough))
   ]
 
 pDebugStringLit : Value -> Value

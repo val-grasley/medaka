@@ -1,0 +1,23 @@
+-- small end-to-end programs exercising prelude dispatch (Ord/Eq/Debug) +
+-- recursion + ADTs through core.mdk
+qs [] = []
+qs (p :: rest) = qs (lessThan p rest) ++ [p] ++ qs (atLeast p rest)
+lessThan _ [] = []
+lessThan p (x :: xs) = if x < p then x :: lessThan p xs else lessThan p xs
+atLeast _ [] = []
+atLeast p (x :: xs) = if x >= p then x :: atLeast p xs else atLeast p xs
+
+data Exp = Lit Int | Add Exp Exp | Mul Exp Exp deriving (Debug, Eq)
+ev (Lit n) = n
+ev (Add a b) = ev a + ev b
+ev (Mul a b) = ev a * ev b
+
+prog = Add (Lit 2) (Mul (Lit 3) (Lit 4))
+main =
+  ( qs [3, 1, 4, 1, 5, 9, 2, 6]
+  , qs ["pear", "apple", "fig", "date"]
+  , ev prog
+  , debug prog
+  , prog == prog
+  , prog == Lit 0
+  )
