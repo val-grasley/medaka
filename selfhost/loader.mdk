@@ -1,0 +1,135 @@
+-- Port of lib/loader.ml: parse a root .mdk file's transitive imports and return
+-- them in dependency-first (topological) order.
+--
+-- Simplifications vs the reference (sufficient for the flat, single-root selfhost
+-- tree; noted so they're not mistaken for completeness):
+--   * Module IDs are flat — no subdirectory `/`↔`.` rewriting (selfhost has no
+--     nested module paths).  fileOfModuleId / moduleIdOfPath assume this.
+--   * No LSP buffer-override `read`, no multi-root AmbiguousModule check.
+--   * Cycles ARE detected (an in-progress stack) and reported as an Err.
+
+import ast.{Decl, DUse, UsePath, UseName, UseGroup, UseWild, UseAlias}
+import parser.{parse}
+
+-- ── small list helpers (no stdlib import — selfhost is single-root) ──
+
+memStr : String -> List String -> Bool
+memStr _ [] = False
+memStr x (y :: ys) = x == y || memStr x ys
+
+lenL : List a -> Int
+lenL [] = 0
+lenL (_ :: xs) = 1 + lenL xs
+
+initL : List a -> List a
+initL [] = []
+initL [_] = []
+initL (x :: xs) = x :: initL xs
+
+lastOr : a -> List a -> a
+lastOr d [] = d
+lastOr _ [x] = x
+lastOr d (_ :: xs) = lastOr d xs
+
+joinDot : List String -> String
+joinDot [] = ""
+joinDot [x] = x
+joinDot (x :: xs) = stringConcat [x, ".", joinDot xs]
+
+-- ── path / module-id utilities ──
+
+startsWith : String -> String -> Bool
+startsWith pre s =
+  let n = stringLength pre
+  n <= stringLength s && stringSlice 0 n s == pre
+
+endsWith : String -> String -> Bool
+endsWith suf s =
+  let n = stringLength s
+  let k = stringLength suf
+  k <= n && stringSlice (n - k) n s == suf
+
+dropPrefix : Int -> String -> String
+dropPrefix k s = stringSlice k (stringLength s) s
+
+stripSuffixStr : String -> String -> String
+stripSuffixStr suf s =
+  if endsWith suf s then stringSlice 0 (stringLength s - stringLength suf) s else s
+
+-- the file path a module ID maps to under a single root (no existence check)
+fileOfModuleId : String -> String -> String
+fileOfModuleId root modId = stringConcat [root, "/", modId, ".mdk"]
+
+-- the module ID a file path carries: strip the first matching root prefix, then
+-- the `.mdk` suffix (flat — no `/`→`.` since selfhost has no nested modules)
+relUnderRoots : List String -> String -> String
+relUnderRoots [] path = path
+relUnderRoots (r :: rs) path =
+  let pre = stringConcat [r, "/"]
+  if startsWith pre path then dropPrefix (stringLength pre) path
+  else relUnderRoots rs path
+
+moduleIdOfPath : List String -> String -> String
+moduleIdOfPath roots path = stripSuffixStr ".mdk" (relUnderRoots roots path)
+
+-- ── dependency extraction (mirrors loader.ml's direct_imports) ──
+
+-- "core" is the implicit prelude — its names are already in scope, so an
+-- `import core.{…}` is a no-op the loader must skip (else it duplicates).
+importModId : UsePath -> String
+importModId (UseName ns) =
+  if lenL ns > 1 then joinDot (initL ns) else lastOr "" ns
+importModId (UseGroup ns _) = joinDot ns
+importModId (UseWild ns) = joinDot ns
+importModId (UseAlias ns _) = joinDot ns
+
+directImports : List Decl -> List String
+directImports [] = []
+directImports (DUse _ path :: rest) =
+  let m = importModId path
+  if m == "core" then directImports rest else m :: directImports rest
+directImports (_ :: rest) = directImports rest
+
+-- ── file resolution + parsing ──
+
+findModuleFile : List String -> String -> <IO> Option String
+findModuleFile [] _ = None
+findModuleFile (r :: rs) modId =
+  let path = fileOfModuleId r modId
+  if fileExists path then Some path else findModuleFile rs modId
+
+readModuleProg : List String -> String -> <IO> Result String (List Decl)
+readModuleProg roots modId = match findModuleFile roots modId
+  None => Err (stringConcat ["unknown module: ", modId])
+  Some path => match readFile path
+    Err e => Err e
+    Ok src => Ok (parse src)
+
+-- ── DFS topological sort (dependency-first; leaves before roots) ──
+--
+-- threads (visited, acc): visited = modules fully processed (Done); the stack
+-- carries in-progress modules so a back-edge into one is reported as a cycle.
+-- acc accumulates each module AFTER its dependencies → dependency-first order.
+
+visitMod : List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
+visitMod roots stack visited acc modId =
+  if memStr modId visited then Ok (visited, acc)
+  else if memStr modId stack then Err (stringConcat ["cyclic dependency: ", modId])
+  else match readModuleProg roots modId
+    Err e => Err e
+    Ok prog => match visitMods roots (modId :: stack) visited acc (directImports prog)
+      Err e => Err e
+      Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, prog)])
+
+visitMods : List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
+visitMods _ _ visited acc [] = Ok (visited, acc)
+visitMods roots stack visited acc (d :: ds) = match visitMod roots stack visited acc d
+  Err e => Err e
+  Ok (v2, a2) => visitMods roots stack v2 a2 ds
+
+-- Load a root file + all transitive deps, dependency-first.  roots resolves
+-- module IDs to file paths (selfhost: a single project dir).
+export loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
+loadProgram entry roots = match visitMod roots [] [] [] (moduleIdOfPath roots entry)
+  Err e => Err e
+  Ok (_, acc) => Ok acc

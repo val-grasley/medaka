@@ -1,0 +1,36 @@
+-- Runnable probe for the self-hosted loader:
+--
+--   medaka run selfhost/loader_main.mdk <entry.mdk> [root ...]
+--
+-- prints the loaded module IDs one per line, in dependency-first order — diff
+-- against the order the reference Loader.load_program produces for the same entry.
+
+import ast.{Decl}
+import loader.{loadProgram}
+
+main = match args ()
+  [] => ePutStrLn "usage: medaka run selfhost/loader_main.mdk <entry.mdk> [root ...]"
+  (entry :: roots) => run entry (rootsOrDefault entry roots)
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+-- directory of a path: everything up to the last '/', else "." (flat fallback)
+dirOf : String -> String
+dirOf path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo path 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+run : String -> List String -> <IO> Unit
+run entry roots = match loadProgram entry roots
+  Err e => ePutStrLn e
+  Ok mods => putStr (linesOf mods)
+
+linesOf : List (String, List Decl) -> String
+linesOf [] = ""
+linesOf ((mid, _) :: rest) = stringConcat [mid, "\n", linesOf rest]
