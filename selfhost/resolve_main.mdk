@@ -1,0 +1,29 @@
+-- Entry point for the self-hosted resolve stage:
+--
+--   medaka run selfhost/resolve_main.mdk <runtime.mdk> <core.mdk> <source.mdk>
+--
+-- seeds the name environment from runtime.mdk (externs) + core.mdk (prelude),
+-- parses + desugars the target, resolves it, and prints one S-expression per
+-- diagnostic — diffs against `dev/diagdump.exe --resolve` (the harness sorts).
+-- runtime.mdk and core.mdk are passed explicitly (the self-host has no embedded
+-- prelude); the harness supplies both paths.
+
+import parser.{parse}
+import desugar.{desugar}
+import resolve.{resolveToLines}
+
+main = match args ()
+  [runtimePath, preludePath, targetPath] => withRuntime runtimePath preludePath targetPath
+  _ => ePutStrLn "usage: medaka run selfhost/resolve_main.mdk <runtime.mdk> <core.mdk> <file.mdk>"
+
+withRuntime runtimePath preludePath targetPath = match readFile runtimePath
+  Ok runtimeSrc => withPrelude runtimeSrc preludePath targetPath
+  Err msg => ePutStrLn msg
+
+withPrelude runtimeSrc preludePath targetPath = match readFile preludePath
+  Ok preludeSrc => withTarget runtimeSrc preludeSrc targetPath
+  Err msg => ePutStrLn msg
+
+withTarget runtimeSrc preludeSrc targetPath = match readFile targetPath
+  Ok targetSrc => putStr (resolveToLines (parse runtimeSrc) (parse preludeSrc) (desugar (parse targetSrc)))
+  Err msg => ePutStrLn msg

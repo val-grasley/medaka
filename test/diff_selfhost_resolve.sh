@@ -36,7 +36,7 @@ for f in "$FIXDIR"/*.mdk; do
   ok=1
   [ "$ref" = "$golden" ] || { ok=0; reason="reference drifted from golden"; }
   if [ "$ok" -eq 1 ] && [ "$have_self" -eq 1 ]; then
-    self="$("$MAIN" run "$SELFMAIN" "$f" 2>/dev/null | LC_ALL=C sort)"
+    self="$("$MAIN" run "$SELFMAIN" "$ROOT/stdlib/runtime.mdk" "$ROOT/stdlib/core.mdk" "$f" 2>/dev/null | LC_ALL=C sort)"
     [ "$self" = "$golden" ] || { ok=0; reason="selfhost differs from reference"; }
   fi
   if [ "$ok" -eq 1 ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"

@@ -1,0 +1,597 @@
+-- Self-hosted resolve stage — Stage 2 port of `lib/resolve.ml` (single-file
+-- path: `resolve_program`).  Runs after desugar.  Collects every binding name
+-- into a name environment (seeded with primitives + runtime externs + the
+-- prelude) and walks the decls reporting references that aren't in scope:
+-- unbound variables, unknown constructors / types / effects / interfaces,
+-- methods not in their interface, duplicate definitions, and extern-with-body.
+--
+-- Pure-functional: each check returns a `List ResError` rather than mutating a
+-- ref; locations are dropped (the self-host AST has none), so the dump is the
+-- sorted error structure — matching `dev/diagdump.exe --resolve`
+-- (test/diff_selfhost_resolve.sh).  The multi-module path (imports validated
+-- against real exports, privacy, aliases) is the reference's resolve_module and
+-- is NOT needed here: single-file mode stubs imports into scope.
+
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+
+-- ── Errors (mirror lib/resolve.ml's `error`) ──────────────────────────────
+public export data ResError
+  = UnboundVariable String
+  | UnknownConstructor String
+  | UnknownType String
+  | UnknownEffect String
+  | UnknownField String
+  | FieldNotInRecord String String
+  | DuplicateDefinition String String
+  | UnknownInterface String
+  | MethodNotInInterface String String
+  | ExternWithBody String
+
+-- ── The name environment ──────────────────────────────────────────────────
+-- Name-category sets, as plain lists (the self-host is prelude-only, so no
+-- hash_map; membership is a linear `contains`).
+public export data Env = Env
+  (List String)              -- values
+  (List String)              -- types
+  (List String)              -- constructors
+  (List String)              -- fields
+  (List (String, String))    -- field owners (field, owner)
+  (List String)              -- interfaces
+  (List (String, List String)) -- iface methods (iface, methods)
+  (List String)              -- imported
+
+envValues : Env -> List String
+envValues (Env v _ _ _ _ _ _ _) = v
+
+envTypes : Env -> List String
+envTypes (Env _ t _ _ _ _ _ _) = t
+
+envCtors : Env -> List String
+envCtors (Env _ _ c _ _ _ _ _) = c
+
+envFields : Env -> List String
+envFields (Env _ _ _ f _ _ _ _) = f
+
+envFieldOwners : Env -> List (String, String)
+envFieldOwners (Env _ _ _ _ fo _ _ _) = fo
+
+envInterfaces : Env -> List String
+envInterfaces (Env _ _ _ _ _ i _ _) = i
+
+envIfaceMethods : Env -> List (String, List String)
+envIfaceMethods (Env _ _ _ _ _ _ im _) = im
+
+envImported : Env -> List String
+envImported (Env _ _ _ _ _ _ _ imp) = imp
+
+-- ── List helpers ──────────────────────────────────────────────────────────
+contains : String -> List String -> Bool
+contains _ [] = False
+contains x (y :: ys) = x == y || contains x ys
+
+concatMapList : (a -> List b) -> List a -> List b
+concatMapList _ [] = []
+concatMapList f (x :: xs) = f x ++ concatMapList f xs
+
+-- the owners registered for a field name in the field-owner multimap
+ownersOf : String -> List (String, String) -> List String
+ownersOf _ [] = []
+ownersOf field ((f, owner) :: rest)
+  | f == field = owner :: ownersOf field rest
+  | otherwise = ownersOf field rest
+
+-- ── pat_bindings ──────────────────────────────────────────────────────────
+patBindings : Pat -> List String
+patBindings (PVar x) = [x]
+patBindings PWild = []
+patBindings (PLit _) = []
+patBindings (PCon _ ps) = concatMapList patBindings ps
+patBindings (PCons a b) = patBindings a ++ patBindings b
+patBindings (PTuple ps) = concatMapList patBindings ps
+patBindings (PList ps) = concatMapList patBindings ps
+patBindings (PAs x p) = x :: patBindings p
+patBindings (PRng _ _ _) = []
+patBindings (PRec _ fields _) = concatMapList recFieldBindings fields
+
+recFieldBindings : RecPatField -> List String
+recFieldBindings (RecPatField fname None) = [fname]
+recFieldBindings (RecPatField _ (Some p)) = patBindings p
+
+patsBindings : List Pat -> List String
+patsBindings ps = concatMapList patBindings ps
+
+-- ── check_type ────────────────────────────────────────────────────────────
+checkType : Env -> Ty -> List ResError
+checkType env (TyCon n) = if contains n (envTypes env) || contains n (envImported env) then [] else [UnknownType n]
+checkType _ (TyVar _) = []
+checkType env (TyApp a b) = checkType env a ++ checkType env b
+checkType env (TyFun a b) = checkType env a ++ checkType env b
+checkType env (TyTuple ts) = concatMapList (checkType env) ts
+checkType env (TyEffect labels _ t) = concatMapList checkEffect labels ++ checkType env t
+checkType env (TyConstrained cs t) = concatMapList (checkConstraint env) cs ++ checkType env t
+
+builtInEffects : List String
+builtInEffects = ["IO", "Mut", "Async", "Panic", "Rand", "Time"]
+
+checkEffect : String -> List ResError
+checkEffect e = if contains e builtInEffects then [] else [UnknownEffect e]
+
+checkConstraint : Env -> Constraint -> List ResError
+checkConstraint env (Constraint iface args) =
+  (if contains iface (envInterfaces env) then [] else [UnknownInterface iface])
+    ++ concatMapList (checkType env) args
+
+-- ── check_pat ─────────────────────────────────────────────────────────────
+checkPat : Env -> Pat -> List ResError
+checkPat env (PCon c ps) =
+  (if contains c (envCtors env) || contains c (envImported env) then [] else [UnknownConstructor c])
+    ++ concatMapList (checkPat env) ps
+checkPat env (PCons a b) = checkPat env a ++ checkPat env b
+checkPat env (PTuple ps) = concatMapList (checkPat env) ps
+checkPat env (PList ps) = concatMapList (checkPat env) ps
+checkPat env (PAs _ p) = checkPat env p
+checkPat env (PRec name fields _) = checkRecPat env name fields
+checkPat _ _ = []
+
+checkRecPat : Env -> String -> List RecPatField -> List ResError
+checkRecPat env name fields =
+  recPatHead env name ++ concatMapList (checkRecField env name) fields
+
+recPatHead : Env -> String -> List ResError
+recPatHead env name =
+  if contains name (envTypes env) || contains name (envCtors env) then [] else [UnknownType name]
+
+checkRecField : Env -> String -> RecPatField -> List ResError
+checkRecField env owner (RecPatField fname popt) =
+  fieldCheck env owner fname ++ recFieldSub env popt
+
+fieldCheck : Env -> String -> String -> List ResError
+fieldCheck env owner fname =
+  let owners = ownersOf fname (envFieldOwners env)
+  fieldVerdict owner fname owners
+
+fieldVerdict : String -> String -> List String -> List ResError
+fieldVerdict owner fname []      = [UnknownField fname]
+fieldVerdict owner fname owners  = if contains owner owners then [] else [FieldNotInRecord fname owner]
+
+recFieldSub : Env -> Option Pat -> List ResError
+recFieldSub _ None = []
+recFieldSub env (Some p) = checkPat env p
+
+-- ── check_expr (scope = locally-bound names) ──────────────────────────────
+checkExpr : Env -> List String -> Expr -> List ResError
+checkExpr _ _ (ELit _) = []
+checkExpr _ _ (EMethodRef _) = []
+checkExpr _ _ (EDictApp _) = []
+checkExpr env scope (EVar n) = checkVar env scope n
+checkExpr env scope (EApp f x) = checkExpr env scope f ++ checkExpr env scope x
+checkExpr env scope (ELam pats body) =
+  concatMapList (checkPat env) pats ++ checkExpr env (patsBindings pats ++ scope) body
+checkExpr env scope (ELet _ isRec pat e1 e2) = checkLet env scope isRec pat e1 e2
+checkExpr env scope (ELetGroup binds body) = checkLetGroup env scope binds body
+checkExpr env scope (EMatch e0 arms) = checkExpr env scope e0 ++ concatMapList (checkArm env scope) arms
+checkExpr env scope (EIf c t el) = checkExpr env scope c ++ checkExpr env scope t ++ checkExpr env scope el
+checkExpr env scope (EBinOp _ a b) = checkExpr env scope a ++ checkExpr env scope b
+checkExpr env scope (EUnOp _ a) = checkExpr env scope a
+checkExpr env scope (EInfix op a b) = checkVar env scope op ++ checkExpr env scope a ++ checkExpr env scope b
+checkExpr env scope (EFieldAccess e0 _) = checkExpr env scope e0
+checkExpr env scope (ETuple es) = concatMapList (checkExpr env scope) es
+checkExpr env scope (EListLit es) = concatMapList (checkExpr env scope) es
+checkExpr env scope (EArrayLit es) = concatMapList (checkExpr env scope) es
+checkExpr env scope (EListComp body quals) = checkListComp env scope body quals
+checkExpr env scope (ERangeList lo hi _) = checkExpr env scope lo ++ checkExpr env scope hi
+checkExpr env scope (ERangeArray lo hi _) = checkExpr env scope lo ++ checkExpr env scope hi
+checkExpr env scope (ESlice e0 lo hi _) = checkExpr env scope e0 ++ checkExpr env scope lo ++ checkExpr env scope hi
+checkExpr env scope (EIndex e0 i) = checkExpr env scope e0 ++ checkExpr env scope i
+checkExpr env scope (EAnnot e0 t) = checkExpr env scope e0 ++ checkType env t
+checkExpr env scope (EBlock stmts) = checkStmts env scope stmts
+checkExpr env scope (EDo stmts) = checkStmts env scope stmts
+checkExpr env scope (EStringInterp parts) = concatMapList (checkInterp env scope) parts
+checkExpr env scope (EGuards arms) = concatMapList (checkGuardArm env scope) arms
+checkExpr env scope (EFunction arms) = concatMapList (checkArm env scope) arms
+checkExpr env scope (ERecordCreate _ fs) = concatMapList (checkFieldAssign env scope) fs
+checkExpr env scope (ERecordUpdate e0 fs) = checkExpr env scope e0 ++ concatMapList (checkFieldAssign env scope) fs
+checkExpr env scope (EQuestion e0) = checkExpr env scope e0
+checkExpr env scope (ESection s) = checkSection env scope s
+
+-- an `@Name` impl hint is not a value reference (resolve must not flag it)
+checkVar : Env -> List String -> String -> List ResError
+checkVar env scope n
+  | isHint n = []
+  | lookupValue env scope n = []
+  | otherwise = [UnboundVariable n]
+
+isHint : String -> Bool
+isHint n = startsWithAt (stringToChars n)
+
+startsWithAt : Array Char -> Bool
+startsWithAt cs = arrayLength cs > 0 && arrayGetUnsafe 0 cs == '@'
+
+lookupValue : Env -> List String -> String -> Bool
+lookupValue env scope n =
+  contains n scope || contains n (envValues env) || contains n (envCtors env) || contains n (envImported env)
+
+checkLet : Env -> List String -> Bool -> Pat -> Expr -> Expr -> List ResError
+checkLet env scope True (PVar f) e1 e2 =
+  checkExpr env (f :: scope) e1 ++ checkExpr env (f :: scope) e2
+checkLet env scope _ pat e1 e2 =
+  checkPat env pat ++ checkExpr env scope e1 ++ checkExpr env (patBindings pat ++ scope) e2
+
+-- where-group: all group names are in scope for every clause body + the result
+checkLetGroup : Env -> List String -> List LetBind -> Expr -> List ResError
+checkLetGroup env scope binds body =
+  let scope2 = map letBindName binds ++ scope
+  concatMapList (checkLetBind env scope2) binds ++ checkExpr env scope2 body
+
+letBindName : LetBind -> String
+letBindName (LetBind n _) = n
+
+checkLetBind : Env -> List String -> LetBind -> List ResError
+checkLetBind env scope (LetBind _ clauses) = concatMapList (checkFunClause env scope) clauses
+
+checkFunClause : Env -> List String -> FunClause -> List ResError
+checkFunClause env scope (FunClause pats body) =
+  concatMapList (checkPat env) pats ++ checkExpr env (patsBindings pats ++ scope) body
+
+checkArm : Env -> List String -> Arm -> List ResError
+checkArm env scope (Arm pat gs body) =
+  let scope2 = patBindings pat ++ scope
+  checkPat env pat ++ concatMapList (checkGuard env scope2) gs ++ checkExpr env scope2 body
+
+checkGuardArm : Env -> List String -> GuardArm -> List ResError
+checkGuardArm env scope (GuardArm gs body) =
+  concatMapList (checkGuard env scope) gs ++ checkExpr env scope body
+
+checkGuard : Env -> List String -> Guard -> List ResError
+checkGuard env scope (GBool e) = checkExpr env scope e
+checkGuard env scope (GBind _ e) = checkExpr env scope e
+
+checkStmts : Env -> List String -> List DoStmt -> List ResError
+checkStmts _ _ [] = []
+checkStmts env scope (s :: rest) =
+  let (errs, scope2) = checkStmt env scope s
+  errs ++ checkStmts env scope2 rest
+
+checkStmt : Env -> List String -> DoStmt -> (List ResError, List String)
+checkStmt env scope (DoExpr e) = (checkExpr env scope e, scope)
+checkStmt env scope (DoBind p e) = (checkPat env p ++ checkExpr env scope e, patBindings p ++ scope)
+checkStmt env scope (DoLet _ p e) = (checkPat env p ++ checkExpr env scope e, patBindings p ++ scope)
+checkStmt env scope (DoAssign _ e) = (checkExpr env scope e, scope)
+checkStmt env scope (DoFieldAssign _ _ e) = (checkExpr env scope e, scope)
+checkStmt env scope (DoLetElse p e alt) = (checkPat env p ++ checkExpr env scope e ++ checkExpr env scope alt, patBindings p ++ scope)
+
+checkInterp : Env -> List String -> InterpPart -> List ResError
+checkInterp _ _ (InterpStr _) = []
+checkInterp env scope (InterpExpr e) = checkExpr env scope e
+
+checkFieldAssign : Env -> List String -> FieldAssign -> List ResError
+checkFieldAssign env scope (FieldAssign _ e) = checkExpr env scope e
+
+checkSection : Env -> List String -> Section -> List ResError
+checkSection _ _ (SecBare _) = []
+checkSection env scope (SecRight _ e) = checkExpr env scope e
+checkSection env scope (SecLeft e _) = checkExpr env scope e
+
+checkListComp : Env -> List String -> Expr -> List LcQual -> List ResError
+checkListComp env scope body quals =
+  let (qErrs, scope2) = checkQuals env scope quals
+  qErrs ++ checkExpr env scope2 body
+
+checkQuals : Env -> List String -> List LcQual -> (List ResError, List String)
+checkQuals _ scope [] = ([], scope)
+checkQuals env scope (q :: rest) =
+  let (errs, scope2) = checkQual env scope q
+  let (restErrs, scope3) = checkQuals env scope2 rest
+  (errs ++ restErrs, scope3)
+
+checkQual : Env -> List String -> LcQual -> (List ResError, List String)
+checkQual env scope (LCGen p e) = (checkPat env p ++ checkExpr env scope e, patBindings p ++ scope)
+checkQual env scope (LCGuard e) = (checkExpr env scope e, scope)
+checkQual env scope (LCLet _ p e) = (checkPat env p ++ checkExpr env scope e, patBindings p ++ scope)
+
+-- ── check_decl ────────────────────────────────────────────────────────────
+checkDecl : Env -> Decl -> List ResError
+checkDecl env (DFunDef _ _ pats body) =
+  concatMapList (checkPat env) pats ++ checkExpr env (patsBindings pats) body
+checkDecl env (DTypeSig _ _ t) = checkType env t
+checkDecl env (DExtern _ _ t) = checkType env t
+checkDecl env (DData _ _ _ vs _) = concatMapList (checkVariant env) vs
+checkDecl env (DRecord _ _ _ fs _) = concatMapList (checkFieldType env) fs
+checkDecl env (DProp _ _ params body) = checkProp env params body
+checkDecl env (DTest _ _ body) = checkExpr env [] body
+checkDecl env (DBench _ _ body) = checkExpr env [] body
+checkDecl env (DInterface _ _ _ _ supers methods) = checkInterfaceDecl env supers methods
+checkDecl env (DImpl _ _ iface tyargs _ reqs methods) = checkImplDecl env iface tyargs reqs methods
+checkDecl _ _ = []
+
+checkVariant : Env -> Variant -> List ResError
+checkVariant env (Variant _ (ConPos tys)) = concatMapList (checkType env) tys
+checkVariant env (Variant _ (ConNamed fs)) = concatMapList (checkFieldType env) fs
+
+checkFieldType : Env -> Field -> List ResError
+checkFieldType env (Field _ t) = checkType env t
+
+checkProp : Env -> List PropParam -> Expr -> List ResError
+checkProp env params body =
+  concatMapList (checkPropParamTy env) params ++ checkExpr env (map propParamName params) body
+
+checkPropParamTy : Env -> PropParam -> List ResError
+checkPropParamTy env (PropParam _ t) = checkType env t
+
+propParamName : PropParam -> String
+propParamName (PropParam x _) = x
+
+checkInterfaceDecl : Env -> List Super -> List IfaceMethod -> List ResError
+checkInterfaceDecl env supers methods =
+  concatMapList (checkSuper env) supers ++ concatMapList (checkIfaceMethod env) methods
+
+checkSuper : Env -> Super -> List ResError
+checkSuper env (Super iface _) = if contains iface (envInterfaces env) then [] else [UnknownInterface iface]
+
+checkIfaceMethod : Env -> IfaceMethod -> List ResError
+checkIfaceMethod env (IfaceMethod _ t None) = checkType env t
+checkIfaceMethod env (IfaceMethod _ t (Some (MethodDefault pats body))) =
+  checkType env t ++ concatMapList (checkPat env) pats ++ checkExpr env (patsBindings pats) body
+
+checkImplDecl : Env -> String -> List Ty -> List Require -> List ImplMethod -> List ResError
+checkImplDecl env iface tyargs reqs methods =
+  concatMapList (checkType env) tyargs
+    ++ concatMapList (checkRequire env) reqs
+    ++ concatMapList (checkImplMethod env) methods
+    ++ checkImplIface env iface methods
+
+checkRequire : Env -> Require -> List ResError
+checkRequire env (Require iface tys) =
+  (if contains iface (envInterfaces env) then [] else [UnknownInterface iface]) ++ concatMapList (checkType env) tys
+
+checkImplMethod : Env -> ImplMethod -> List ResError
+checkImplMethod env (ImplMethod _ pats body) =
+  concatMapList (checkPat env) pats ++ checkExpr env (patsBindings pats) body
+
+checkImplIface : Env -> String -> List ImplMethod -> List ResError
+checkImplIface env iface methods
+  | not (contains iface (envInterfaces env)) = [UnknownInterface iface]
+  | otherwise = concatMapList (checkMethodMember iface (ifaceMethodsOf iface (envIfaceMethods env))) methods
+
+ifaceMethodsOf : String -> List (String, List String) -> List String
+ifaceMethodsOf _ [] = []
+ifaceMethodsOf iface ((i, ms) :: rest)
+  | i == iface = ms
+  | otherwise = ifaceMethodsOf iface rest
+
+checkMethodMember : String -> List String -> ImplMethod -> List ResError
+checkMethodMember iface known (ImplMethod mname _ _) =
+  if contains mname known then [] else [MethodNotInInterface mname iface]
+
+-- ── Primitives (hardcoded, mirror lib/resolve.ml) ────────────────────────
+primitiveTypes : List String
+primitiveTypes = ["Int", "Float", "String", "Char", "Bool", "Unit", "List", "Ref", "Array"]
+
+primitiveConstructors : List String
+primitiveConstructors = ["True", "False"]
+
+-- ── Name extractors (over runtime / prelude / user decls) ─────────────────
+externNames : List Decl -> List String
+externNames [] = []
+externNames ((DExtern _ n _) :: rest) = n :: externNames rest
+externNames (_ :: rest) = externNames rest
+
+dataRecordNames : List Decl -> List String
+dataRecordNames [] = []
+dataRecordNames ((DData _ n _ _ _) :: rest) = n :: dataRecordNames rest
+dataRecordNames ((DRecord _ n _ _ _) :: rest) = n :: dataRecordNames rest
+dataRecordNames (_ :: rest) = dataRecordNames rest
+
+ctorNames : List Decl -> List String
+ctorNames [] = []
+ctorNames ((DData _ _ _ vs _) :: rest) = map variantName vs ++ ctorNames rest
+ctorNames (_ :: rest) = ctorNames rest
+
+variantName : Variant -> String
+variantName (Variant n _) = n
+
+ifaceMethodNm : IfaceMethod -> String
+ifaceMethodNm (IfaceMethod n _ _) = n
+
+implMethodNm : ImplMethod -> String
+implMethodNm (ImplMethod n _ _) = n
+
+interfaceList : List Decl -> List (String, List String)
+interfaceList [] = []
+interfaceList ((DInterface _ _ n _ _ methods) :: rest) = (n, map ifaceMethodNm methods) :: interfaceList rest
+interfaceList (_ :: rest) = interfaceList rest
+
+-- prelude value names (DFunDef/DTypeSig + DImpl & DInterface method names)
+preludeValueNames : List Decl -> List String
+preludeValueNames [] = []
+preludeValueNames ((DFunDef _ n _ _) :: rest) = n :: preludeValueNames rest
+preludeValueNames ((DTypeSig _ n _) :: rest) = n :: preludeValueNames rest
+preludeValueNames ((DImpl _ _ _ _ _ _ methods) :: rest) = map implMethodNm methods ++ preludeValueNames rest
+preludeValueNames ((DInterface _ _ _ _ _ methods) :: rest) = map ifaceMethodNm methods ++ preludeValueNames rest
+preludeValueNames (_ :: rest) = preludeValueNames rest
+
+-- user value names (DFunDef/DTypeSig/DExtern + DInterface methods; NOT DImpl)
+userValueNames : List Decl -> List String
+userValueNames [] = []
+userValueNames ((DFunDef _ n _ _) :: rest) = n :: userValueNames rest
+userValueNames ((DTypeSig _ n _) :: rest) = n :: userValueNames rest
+userValueNames ((DExtern _ n _) :: rest) = n :: userValueNames rest
+userValueNames ((DInterface _ _ _ _ _ methods) :: rest) = map ifaceMethodNm methods ++ userValueNames rest
+userValueNames (_ :: rest) = userValueNames rest
+
+fieldOwnersOf : List Decl -> List (String, String)
+fieldOwnersOf [] = []
+fieldOwnersOf ((DRecord _ n _ fs _) :: rest) = map (recordFieldOwner n) fs ++ fieldOwnersOf rest
+fieldOwnersOf ((DData _ _ _ vs _) :: rest) = concatMapList variantFieldOwners vs ++ fieldOwnersOf rest
+fieldOwnersOf (_ :: rest) = fieldOwnersOf rest
+
+recordFieldOwner : String -> Field -> (String, String)
+recordFieldOwner owner (Field fname _) = (fname, owner)
+
+variantFieldOwners : Variant -> List (String, String)
+variantFieldOwners (Variant cname (ConNamed fs)) = map (recordFieldOwner cname) fs
+variantFieldOwners (Variant _ (ConPos _)) = []
+
+-- single-file import stub: names brought into scope (core import = no-op)
+importedNames : List Decl -> List String
+importedNames [] = []
+importedNames ((DUse _ path) :: rest) = useImportNames path ++ importedNames rest
+importedNames (_ :: rest) = importedNames rest
+
+useImportNames : UsePath -> List String
+useImportNames path = if useModId path == "core" then [] else useStubNames path
+
+useStubNames : UsePath -> List String
+useStubNames (UseName ns) = [lastOf ns]
+useStubNames (UseGroup _ ms) = map memberName ms
+useStubNames (UseWild _) = []
+useStubNames (UseAlias _ a) = [a]
+
+memberName : UseMember -> String
+memberName (UseMember n _) = n
+
+useModId : UsePath -> String
+useModId (UseName ns) = if listLen ns > 1 then joinDot (initList ns) else firstOr "" ns
+useModId (UseGroup ns _) = joinDot ns
+useModId (UseWild ns) = joinDot ns
+useModId (UseAlias ns _) = joinDot ns
+
+joinDot : List String -> String
+joinDot [] = ""
+joinDot [x] = x
+joinDot (x :: rest) = x ++ "." ++ joinDot rest
+
+initList : List a -> List a
+initList [] = []
+initList [_] = []
+initList (x :: rest) = x :: initList rest
+
+lastOf : List String -> String
+lastOf [] = ""
+lastOf [x] = x
+lastOf (_ :: rest) = lastOf rest
+
+firstOr : String -> List String -> String
+firstOr d [] = d
+firstOr _ (x :: _) = x
+
+listLen : List a -> Int
+listLen [] = 0
+listLen (_ :: xs) = 1 + listLen xs
+
+programIsCore : List Decl -> Bool
+programIsCore prog = hasOrdering prog && hasFoldable prog
+
+hasOrdering : List Decl -> Bool
+hasOrdering [] = False
+hasOrdering ((DData _ "Ordering" _ _ _) :: _) = True
+hasOrdering (_ :: rest) = hasOrdering rest
+
+hasFoldable : List Decl -> Bool
+hasFoldable [] = False
+hasFoldable ((DInterface _ _ "Foldable" _ _ _) :: _) = True
+hasFoldable (_ :: rest) = hasFoldable rest
+
+-- ── build_env ─────────────────────────────────────────────────────────────
+buildEnv : List Decl -> List Decl -> List Decl -> Env
+buildEnv runtimeDecls preludeDecls prog =
+  let seed = not (programIsCore prog)
+  let pTypes = whenL seed (dataRecordNames preludeDecls)
+  let pCtors = whenL seed (ctorNames preludeDecls)
+  let pIfaces = whenL seed (interfaceList preludeDecls)
+  let pValues = whenL seed (preludeValueNames preludeDecls)
+  let pFieldOwners = whenL seed (fieldOwnersOf preludeDecls)
+  let uIfaces = interfaceList prog
+  let imported = importedNames prog
+  Env
+    (externNames runtimeDecls ++ pValues ++ userValueNames prog ++ imported)
+    (primitiveTypes ++ pTypes ++ dataRecordNames prog ++ imported)
+    (primitiveConstructors ++ pCtors ++ ctorNames prog)
+    (map fst pFieldOwners ++ map fst (fieldOwnersOf prog))
+    (pFieldOwners ++ fieldOwnersOf prog)
+    (map fst pIfaces ++ map fst uIfaces)
+    (pIfaces ++ uIfaces)
+    imported
+
+whenL : Bool -> List a -> List a
+whenL True xs = xs
+whenL False _ = []
+
+-- ── build-time errors: ExternWithBody + DuplicateDefinition ──────────────
+buildErrors : List Decl -> List Decl -> List ResError
+buildErrors preludeDecls prog =
+  externWithBodyErrors (externNames prog) prog ++ duplicateErrors preludeDecls prog
+
+externWithBodyErrors : List String -> List Decl -> List ResError
+externWithBodyErrors _ [] = []
+externWithBodyErrors externs ((DFunDef _ n _ _) :: rest) =
+  (if contains n externs then [ExternWithBody n] else []) ++ externWithBodyErrors externs rest
+externWithBodyErrors externs (_ :: rest) = externWithBodyErrors externs rest
+
+duplicateErrors : List Decl -> List Decl -> List ResError
+duplicateErrors preludeDecls prog =
+  let seed = not (programIsCore prog)
+  let typeSeed = primitiveTypes ++ whenL seed (dataRecordNames preludeDecls)
+  let ctorSeed = primitiveConstructors ++ whenL seed (ctorNames preludeDecls)
+  let ifaceSeed = whenL seed (map fst (interfaceList preludeDecls))
+  map (dupErr "type") (findDups typeSeed (dataRecordNames prog))
+    ++ map (dupErr "constructor") (findDups ctorSeed (ctorNames prog))
+    ++ map (dupErr "interface") (findDups ifaceSeed (map fst (interfaceList prog)))
+
+dupErr : String -> String -> ResError
+dupErr kind n = DuplicateDefinition kind n
+
+-- names that are already present when declared (order-sensitive, like add_unique)
+findDups : List String -> List String -> List String
+findDups _ [] = []
+findDups seen (n :: rest)
+  | contains n seen = n :: findDups seen rest
+  | otherwise = findDups (n :: seen) rest
+
+-- ── Serialization (matches dev/diagdump.ml's sexp_error) ─────────────────
+escStr : String -> String
+escStr s = "\"" ++ escFrom (stringToChars s) 0 ++ "\""
+
+escFrom : Array Char -> Int -> String
+escFrom cs i
+  | i >= arrayLength cs = ""
+  | otherwise = escOne (arrayGetUnsafe i cs) ++ escFrom cs (i + 1)
+
+escOne : Char -> String
+escOne c
+  | c == '\\' = "\\\\"
+  | c == '"' = "\\\""
+  | c == '\n' = "\\n"
+  | c == '\t' = "\\t"
+  | c == '\r' = "\\r"
+  | otherwise = charToStr c
+
+resErrorSexp : ResError -> String
+resErrorSexp (UnboundVariable n) = "(UnboundVariable " ++ escStr n ++ ")"
+resErrorSexp (UnknownConstructor n) = "(UnknownConstructor " ++ escStr n ++ ")"
+resErrorSexp (UnknownType n) = "(UnknownType " ++ escStr n ++ ")"
+resErrorSexp (UnknownEffect n) = "(UnknownEffect " ++ escStr n ++ ")"
+resErrorSexp (UnknownField n) = "(UnknownField " ++ escStr n ++ ")"
+resErrorSexp (FieldNotInRecord f r) = "(FieldNotInRecord " ++ escStr f ++ " " ++ escStr r ++ ")"
+resErrorSexp (DuplicateDefinition k n) = "(DuplicateDefinition " ++ escStr k ++ " " ++ escStr n ++ ")"
+resErrorSexp (UnknownInterface n) = "(UnknownInterface " ++ escStr n ++ ")"
+resErrorSexp (MethodNotInInterface m i) = "(MethodNotInInterface " ++ escStr m ++ " " ++ escStr i ++ ")"
+resErrorSexp (ExternWithBody n) = "(ExternWithBody " ++ escStr n ++ ")"
+
+joinNl : List String -> String
+joinNl [] = ""
+joinNl [x] = x
+joinNl (x :: rest) = x ++ "\n" ++ joinNl rest
+
+-- ── resolve_program ───────────────────────────────────────────────────────
+-- runtimeDecls = runtime.mdk externs; preludeDecls = core.mdk; prog = target.
+resolveProgram : List Decl -> List Decl -> List Decl -> List ResError
+resolveProgram runtimeDecls preludeDecls prog =
+  let env = buildEnv runtimeDecls preludeDecls prog
+  buildErrors preludeDecls prog ++ concatMapList (checkDecl env) prog
+
+-- one S-expression per line (the harness sorts); matches diagdump output set
+export
+resolveToLines : List Decl -> List Decl -> List Decl -> String
+resolveToLines runtimeDecls preludeDecls prog =
+  joinNl (map resErrorSexp (resolveProgram runtimeDecls preludeDecls prog))
