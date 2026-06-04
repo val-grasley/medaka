@@ -450,4 +450,10 @@ concatLists (xs :: rest) = xs ++ concatLists rest
 -- literals; and `?` (desugar_questions) which the real corpus never exercises.
 export
 desugar : List Decl -> List Decl
-desugar prog = mapProg rewriteSugar (mapProg rewriteDo (mapProg rewriteQuestion (mapProg rewriteListComp (concatMapDecl expandDecl (mergeIfaceDefaults prog)))))
+desugar prog =
+  mergeIfaceDefaults prog
+  |> concatMapDecl expandDecl
+  |> mapProg rewriteListComp
+  |> mapProg rewriteQuestion
+  |> mapProg rewriteDo
+  |> mapProg rewriteSugar
