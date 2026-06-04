@@ -32,20 +32,30 @@ let read_file file =
   let s = really_input_string ic n in
   close_in ic; s
 
+let parse_desugar file = Desugar.desugar_program (parse (read_file file))
+
 let () =
-  (* `eval_probe [--prelude] <file.mdk>`.  With --prelude, evaluate against the
-     real (embedded) prelude via ~prelude:true — for fixtures that use prelude
-     interface methods.  Without, ~prelude:false isolates the engine and we
-     inject `otherwise` so prelude-free guards parse. *)
-  let with_prelude = Array.length Sys.argv > 2 && Sys.argv.(1) = "--prelude" in
-  let file = Sys.argv.(Array.length Sys.argv - 1) in
-  let prog0 = Desugar.desugar_program (parse (read_file file)) in
+  (* Three modes (last arg is always the target .mdk):
+       eval_probe <file>                     engine only (~prelude:false), inject `otherwise`
+       eval_probe --prelude <file>           against the embedded core prelude (~prelude:true)
+       eval_probe --prepend <f1>..<fn> <file> parse+desugar f1..fn, prepend, eval ~prelude:false
+     The --prepend form lets the oracle match the self-host loading core.mdk +
+     list.mdk + … (parsed fresh) rather than the embedded core. *)
+  let argv = Sys.argv in
+  let n = Array.length argv in
+  let target = argv.(n - 1) in
   let bindings =
-    if with_prelude then Eval.eval_program ~prelude:true prog0
-    else
+    match (if n > 1 then argv.(1) else "") with
+    | "--prelude" -> Eval.eval_program ~prelude:true (parse_desugar target)
+    | "--prepend" ->
+      let prepend =
+        Array.to_list (Array.sub argv 2 (n - 3))
+        |> List.concat_map parse_desugar in
+      Eval.eval_program ~prelude:false (prepend @ parse_desugar target)
+    | _ ->
       let otherwise_decl =
         Ast.DFunDef (false, "otherwise", [], Ast.ELit (Ast.LBool true)) in
-      Eval.eval_program ~prelude:false (otherwise_decl :: prog0)
+      Eval.eval_program ~prelude:false (otherwise_decl :: parse_desugar target)
   in
   match last_assoc "main" bindings with
   | Some v -> print_string (Eval.pp_value v); print_newline ()

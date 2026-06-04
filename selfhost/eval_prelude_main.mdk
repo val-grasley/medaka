@@ -1,25 +1,43 @@
 -- Prelude-loading entry point for the self-hosted eval stage (slice 4b):
 --
---   medaka run selfhost/eval_prelude_main.mdk <core.mdk> <source.mdk>
+--   medaka run selfhost/eval_prelude_main.mdk <prelude.mdk>... <source.mdk>
 --
--- parses + desugars the prelude (core.mdk) and the target, prepends the prelude
--- decls, evaluates the whole thing, and prints pp_value of `main`.  Diffs against
--- `dev/eval_probe.exe --prelude` (Eval.eval_program ~prelude:true → pp_value).
--- The prelude has no embedded copy in the self-host, so its path is passed in
--- (like the marker/resolve stages).
+-- parses + desugars each prelude file (core.mdk, and optionally list.mdk, …) and
+-- the target, prepends all the prelude decls (in order), evaluates the whole
+-- thing, and prints pp_value of `main`.  Diffs against `dev/eval_probe.exe
+-- --prepend <prelude.mdk>... <source.mdk>`.  The prelude has no embedded copy in
+-- the self-host, so its paths are passed in (like the marker/resolve stages).
 
+import ast.{Decl}
 import parser.{parse}
 import desugar.{desugar}
 import eval.{evalMain}
 
-main = match args ()
-  [preludePath, targetPath] => withFiles preludePath targetPath
-  _ => ePutStrLn "usage: medaka run selfhost/eval_prelude_main.mdk <core.mdk> <file.mdk>"
+main = match splitLast (args ())
+  Some (preludePaths, targetPath) => withPreludes preludePaths targetPath
+  None => ePutStrLn "usage: medaka run selfhost/eval_prelude_main.mdk <prelude.mdk>... <file.mdk>"
 
-withFiles preludePath targetPath = match readFile preludePath
-  Ok preludeSrc => withTarget preludeSrc targetPath
+-- split a non-empty list into (init, last)
+splitLast : List a -> Option (List a, a)
+splitLast [] = None
+splitLast [x] = Some ([], x)
+splitLast (x :: rest) = match splitLast rest
+  Some (init, lst) => Some (x :: init, lst)
+  None => None
+
+withPreludes preludePaths targetPath = match readAllDecls preludePaths
+  Ok preludeDecls => withTarget preludeDecls targetPath
   Err msg => ePutStrLn msg
 
-withTarget preludeSrc targetPath = match readFile targetPath
-  Ok targetSrc => putStrLn (evalMain (desugar (parse preludeSrc) ++ desugar (parse targetSrc)))
+withTarget preludeDecls targetPath = match readFile targetPath
+  Ok targetSrc => putStrLn (evalMain (preludeDecls ++ desugar (parse targetSrc)))
   Err msg => ePutStrLn msg
+
+-- parse + desugar each prelude file in order, concatenating their decls
+readAllDecls : List String -> <IO> (Result String (List Decl))
+readAllDecls [] = Ok []
+readAllDecls (p :: rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)

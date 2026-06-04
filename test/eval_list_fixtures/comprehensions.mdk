@@ -1,0 +1,5 @@
+-- list comprehensions (desugar over list.mdk map/filter/concatMap)
+pairs = [(x, y) | x <- [1, 2, 3], y <- [10, 20], x + y > 21]
+squares = [x * x | x <- [1..6], x % 2 == 1]
+diag = [c | (i, c) <- zip [0, 1, 2] ["a", "b", "c"], i > 0]
+main = (squares, pairs, diag, [x | x <- [1..10], x > 7])
