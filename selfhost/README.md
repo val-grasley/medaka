@@ -221,18 +221,40 @@ Stage-0 prerequisites in `../PLAN.md`).
    (unused by the corpus; the self-host AST lacks the `ESetLit`/`EMapLit` nodes
    they target): record-pun desugaring, container-literal lowering, Ord/Arbitrary
    deriving, and record deriving.
+   > **Prelude-access prerequisite (NEW — decided next).** Both resolve and
+   > method_marker need the *prelude*'s names (resolve seeds prelude
+   > value/type/ctor/interface names so a file using `map`/`eq` resolves clean;
+   > `--mark` marks prelude-method references — e.g. list.mdk gets 22 EMethodRef
+   > for `eq`/`map`/`compare`/…). Desugar didn't need this (purely syntactic on
+   > the file). The reference reads them from the embedded `Prelude.program`
+   > (= `stdlib/core.mdk`). **Recommended approach** (no new build step, mirrors
+   > how the multi-module loader already takes sibling files): have
+   > `resolve_main.mdk`/`mark_main.mdk` take the prelude path as an extra arg
+   > (`… stdlib/core.mdk <file>`), parse+desugar it, and extract the name sets —
+   > the selfhost parser+desugar already match the reference on core.mdk, so the
+   > extracted names will match `Prelude.program`'s. The harnesses pass the path.
+   > (Alternative: a build-time generated `prelude_names.mdk`, in the spirit of
+   > `gen/embed.ml`. Left as a design choice.)
 2. **Resolve** — name binding, scope, and visibility checks; output is a
    diagnostic list plus a name environment (hashtables, not directly dumpable).
-   Dense mutable-env plumbing; multi-module import/alias resolution is the hard
-   part. Reuses `loader` concepts. **Perf hook (do now):** while resolve is
-   already walking every binding, give each variable reference a resolved
-   `(frame, slot)` address and carry it on the node, even if the first
-   interpreter ignores it — see *Performance* below. Designing this in is nearly
-   free; retrofitting lexical addressing onto a finished assoc-list interpreter
-   is not.
+   **Infra ready:** `dev/diagdump.exe --resolve` + `test/resolve_fixtures/` (9
+   single-file error cases) + `test/diff_selfhost_resolve.sh`. Validated two ways
+   — the negative fixtures (same errors as the reference) and the valid corpus
+   (no false positives). Dense mutable-env plumbing; multi-module import/alias
+   resolution is the hard part (and the deferred multi-module error fixtures —
+   PrivateNameAccess / NoExportedConstructors / UnknownModule — need the loader
+   path). **Perf hook (do now):** while resolve is already walking every binding,
+   give each variable reference a resolved `(frame, slot)` address and carry it on
+   the node, even if the first interpreter ignores it — see *Performance* below.
+   Designing this in is nearly free; retrofitting lexical addressing onto a
+   finished assoc-list interpreter is not.
 3. **Method_marker** — rewrites interface-method / constrained-fn `EVar`s to
-   `EMethodRef`/`EDictApp` (refs left unfilled for typecheck). AST→AST, dumpable.
-   The prelude-shadowing name-set logic is the bulk.
+   `EMethodRef`/`EDictApp` (refs left unfilled for typecheck). AST→AST, dumpable
+   (`--mark` mode + `test/diff_selfhost_mark.sh` ready). First add `EMethodRef
+   String` / `EDictApp String` to `selfhost/ast.mdk` + `sexp.mdk` (the parser
+   never produces them, so a `_`-catch-all in the parser's pattern functions
+   keeps building). The prelude-shadowing name-set logic (Phase 78a/84) is the
+   bulk, and it needs the prelude prerequisite above.
 4. **Exhaust** — Maranget pattern-matrix for non-exhaustive `match`/guard
    warnings. The algorithm is language-agnostic; the work is a faithful port of
    the matrix operations. Independently testable, so it can slot in any time.
