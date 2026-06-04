@@ -186,6 +186,62 @@ let id_if_rhs_wide_elseless =
     \  if count.value * 4 > arrayLength buckets.value * 3 then\n\
     \    resize buckets count\n"
 
+(* ── Phase 137: application-spine wrapping ─────────── *)
+
+(* A too-wide application in a `=` body breaks its argument spine onto
+   continuation lines (head on the `=` line, each arg indented one step), which
+   the lexer's open-application continuation rescues.  The wrapped form must
+   reparse identically — proven by the exact expected output plus idempotency. *)
+let fmt_app_wraps_when_wide () =
+  let src =
+    "result = combineResults firstComputation secondComputation thirdComputation fourthOne\n" in
+  let out = format src in
+  let expected =
+    "result = combineResults\n\
+    \  firstComputation\n\
+    \  secondComputation\n\
+    \  thirdComputation\n\
+    \  fourthOne\n" in
+  if out <> expected then
+    failwith (Printf.sprintf "wide application did not wrap its spine:\n%s" out)
+
+let id_app_wrap_wide =
+  idempotent
+    "result = combineResults\n\
+    \  firstComputation\n\
+    \  secondComputation\n\
+    \  thirdComputation\n\
+    \  fourthOne\n"
+
+(* Wrapping is width-driven: a short application stays on one line. *)
+let fmt_app_stays_inline_when_short () =
+  let out = format "r = combine a b c\n" in
+  if out <> "r = combine a b c\n" then
+    failwith (Printf.sprintf "short application should stay inline:\n%s" out)
+
+(* Guard-arm bodies do NOT wrap their application spine — the over-width there is
+   the `| condition =` prefix, so the call stays flat (may overflow). *)
+let fmt_app_guard_no_wrap () =
+  let out = format
+    "classify n\n\
+    \  | n > someThreshold = computeResult firstArgument secondArgument thirdArgument n\n\
+    \  | otherwise = 0\n" in
+  if contains "computeResult\n" out then
+    failwith (Printf.sprintf "guard-arm body should not wrap its spine:\n%s" out);
+  if not (contains
+            "= computeResult firstArgument secondArgument thirdArgument n\n" out) then
+    failwith (Printf.sprintf "guard-arm call should stay flat:\n%s" out)
+
+(* Match-arm bodies likewise stay flat (over-width is the `pattern =>` prefix). *)
+let fmt_app_match_no_wrap () =
+  let out = format
+    "describe x =\n\
+    \  match x\n\
+    \    Tag => buildDescription firstPiece secondPiece thirdPiece fourthPiece fifthPiece\n\
+    \    _ => other\n" in
+  if contains "buildDescription\n" out then
+    failwith (Printf.sprintf "match-arm body should not wrap its spine:\n%s" out)
+
 (* Surface sugar must survive formatting rather than being printed as its
    desugared core form. *)
 let id_guards   = idempotent
@@ -460,6 +516,11 @@ let () =
       Alcotest.test_case "else-less if def-RHS block idempotent" `Quick id_if_elseless_def_rhs_block;
       Alcotest.test_case "wide if-RHS wraps to block layout" `Quick fmt_if_rhs_wraps_when_wide;
       Alcotest.test_case "short if-RHS stays inline" `Quick fmt_if_rhs_stays_inline_when_short;
+      Alcotest.test_case "wide application wraps spine" `Quick fmt_app_wraps_when_wide;
+      Alcotest.test_case "wide application idempotent" `Quick id_app_wrap_wide;
+      Alcotest.test_case "short application stays inline" `Quick fmt_app_stays_inline_when_short;
+      Alcotest.test_case "guard-arm body does not wrap" `Quick fmt_app_guard_no_wrap;
+      Alcotest.test_case "match-arm body does not wrap" `Quick fmt_app_match_no_wrap;
       Alcotest.test_case "wide if-RHS full idempotent" `Quick id_if_rhs_wide_full;
       Alcotest.test_case "wide if-RHS else-less idempotent" `Quick id_if_rhs_wide_elseless;
     ];

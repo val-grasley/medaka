@@ -482,10 +482,19 @@ and print_expr_raw = function
    breaks parse), but the formatter only *introduces* a break in tail position.
    A chain buried in an `if` condition or an argument stays flat — breaking it
    there would orphan the `then …`/remaining tokens onto the operator's line. *)
-and print_expr_body e = match e with
+and print_expr_body ?(wrap_app = true) e = match e with
   | EMatch _ | EBlock _ | EDo _ -> print_expr_raw e
-  | ELoc (_, e')     -> print_expr_body e'
+  | ELoc (_, e')     -> print_expr_body ~wrap_app e'
   | EBinOp (op, _, _) when is_continuation_op op -> print_chain op e
+  (* Phase 137: a too-wide application breaks its argument spine onto
+     continuation lines (`f\n  a\n  b`), which the lexer's open-application
+     continuation rescues.  Only in tail position, mirroring `print_chain`: an
+     application buried in an argument, `if` condition, or `match` scrutinee
+     prints flat (those positions go through `print_expr`, not this).  Suppressed
+     in guard-arm bodies (`wrap_app = false`): there the over-width comes from the
+     `| condition =` prefix, which breaking the call cannot fix — it only strands
+     the (usually short) arguments one-per-line. *)
+  | EApp _ when wrap_app -> print_app_spine e
   (* Phase 122: an else-less `if` (else defaulted to `()`) prints WITHOUT the
      synthetic `else ()`. Every `print_expr_body` position is safe: a def /
      guard-arm / match-arm RHS is newline-terminated, and an `if` block-branch is
@@ -545,6 +554,25 @@ and print_chain op e =
   in
   group (Nest (2, print_expr prec head ^^ tail))
 
+(* Flatten the left-associative application spine into one group so a too-wide
+   call breaks all-or-nothing, each argument leading its own indented line
+   (`head\n  arg1\n  arg2`).  Precedences match the flat `EApp` arm exactly
+   (head at `prec_app`, args at `prec_postfix`), so the flat rendering is
+   byte-identical to the inline form — only an over-width call breaks. *)
+and print_app_spine e =
+  let rec collect acc e = match strip_loc e with
+    | EApp (f, x) -> collect (x :: acc) f
+    | head        -> (head, acc)
+  in
+  let (head, args) = collect [] e in
+  match args with
+  | [] -> print_expr prec_top e   (* not an application — defensive, unreachable *)
+  | _ ->
+    let tail =
+      concat (List.map (fun a -> Line ^^ print_expr prec_postfix a) args)
+    in
+    group (Nest (2, print_expr prec_app head ^^ tail))
+
 (* Shared by EMatch and the `function` keyword: an indented block of
    `pat [if guards] => body` arms. *)
 and print_match_arms arms =
@@ -560,7 +588,10 @@ and print_match_arms arms =
             ) guards))
     ^^ (match print_if_rhs body with
         | Some g -> text " =>" ^^ g
-        | None   -> text " => " ^^ print_expr_body body)
+        (* Phase 137: like guard arms, a match-arm body does not wrap its
+           application spine — over-width here is usually the `pattern =>` prefix,
+           so breaking the call only strands short args one-per-line. *)
+        | None   -> text " => " ^^ print_expr_body ~wrap_app:false body)
   in
   indent_block (sep_by Hardline (List.map arm arms))
 
@@ -576,7 +607,9 @@ and print_guard_arms arms =
       ) guards)
     ^^ (match print_if_rhs body with
         | Some g -> text " =" ^^ g
-        | None   -> text " = " ^^ print_expr_body body)
+        (* Phase 137: no application-spine wrapping in guard bodies — see
+           `print_expr_body`. *)
+        | None   -> text " = " ^^ print_expr_body ~wrap_app:false body)
   in
   indent_block (sep_by Hardline (List.map arm arms))
 
