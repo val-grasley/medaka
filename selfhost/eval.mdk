@@ -1050,6 +1050,31 @@ prim3 f = VPrim (a => VPrim (b => VPrim (c => f a b c)))
 prim2M : (Value -> Value -> <Mut> Value) -> Value
 prim2M f = VPrim (a => VPrim (b => f a b))
 
+prim1M : (Value -> <Mut> Value) -> Value
+prim1M f = VPrim f
+
+-- captured stdout: putStr/putStrLn append here instead of doing real IO, so the
+-- output buffer can be diffed against the === EVAL === goldens (no <IO> effect;
+-- appending is just <Mut>).  ePutStr/ePutStrLn (stderr) are discarded.
+outputRef : Ref String
+outputRef = Ref ""
+
+appendOutput : String -> <Mut> Value
+appendOutput s =
+  let _ = set_ref outputRef (outputRef.value ++ s)
+  VUnit
+
+pPutStr : Value -> <Mut> Value
+pPutStr (VString s) = appendOutput s
+pPutStr _ = panic "putStr: not a String"
+
+pPutStrLn : Value -> <Mut> Value
+pPutStrLn (VString s) = appendOutput (s ++ "\n")
+pPutStrLn _ = panic "putStrLn: not a String"
+
+pDiscard : Value -> <Mut> Value
+pDiscard _ = VUnit
+
 pRef : Value -> Value
 pRef v = VRef (Ref v)
 
@@ -1109,6 +1134,10 @@ externBindings = [
   ("arrayMake", prim2 pArrayMake),
   ("Ref", prim1 pRef),
   ("set_ref", prim2M pSetRef),
+  ("putStr", prim1M pPutStr),
+  ("putStrLn", prim1M pPutStrLn),
+  ("ePutStr", prim1M pDiscard),
+  ("ePutStrLn", prim1M pDiscard),
   ("debugStringLit", prim1 pDebugStringLit),
   ("debugCharLit", prim1 pDebugCharLit),
   ("stringToFloat", prim1 pStringToFloat),
@@ -1262,3 +1291,39 @@ evalMain : List Decl -> <Mut> String
 evalMain prog = match lookupBinding "main" (evalProgram prog)
   Some v => ppValue (force v)
   None => panic "eval: no `main` binding"
+
+-- Run the program for its OUTPUT (forcing `main`, whose IO side-effects append
+-- to outputRef) and return the captured stdout — diffs against === EVAL ===.
+export
+evalOutput : List Decl -> <Mut> String
+evalOutput prog =
+  let _ = set_ref outputRef ""
+  let binds = evalProgram prog
+  let _ = runMainForEffect binds
+  outputRef.value
+
+-- Like evalOutput, but drops any prelude function the user program redefines
+-- (mirrors the reference's prelude_for shadow-drop) so a user `sum` doesn't
+-- coalesce with the prelude's point-free `sum` into a mixed-arity VMulti.
+export
+evalOutputWith : List Decl -> List Decl -> <Mut> String
+evalOutputWith preludeDecls userDecls =
+  evalOutput (dropShadowed (funNamesOf userDecls) preludeDecls ++ userDecls)
+
+funNamesOf : List Decl -> List String
+funNamesOf decls = map fst (funDefs decls)
+
+dropShadowed : List String -> List Decl -> List Decl
+dropShadowed _ [] = []
+dropShadowed names (d :: rest)
+  | shadowedFun names d = dropShadowed names rest
+  | otherwise = d :: dropShadowed names rest
+
+shadowedFun : List String -> Decl -> Bool
+shadowedFun names (DFunDef _ n _ _) = containsName n names
+shadowedFun _ _ = False
+
+runMainForEffect : List (String, Value) -> <Mut> Value
+runMainForEffect binds = match lookupBinding "main" binds
+  Some v => force v
+  None => VUnit
