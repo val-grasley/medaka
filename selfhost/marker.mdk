@@ -107,15 +107,42 @@ subName renames x
   | contains x renames = x ++ "#shadow"
   | otherwise = x
 
+-- ── Phase 78a: prelude plain-function shadow → drop from constrained set ──
+-- A prelude *constrained* plain function (e.g. `count : Foldable t => …`) that
+-- a user file shadows with its own (unconstrained) definition must NOT mark the
+-- user's references as EDictApp.  Mirror of mark_with_prelude's adjustment:
+-- remove from the constrained set any prelude plain-fn name the user shadows and
+-- does not itself re-declare constrained.  (Simplified: the reference further
+-- restricts to *droppable* prelude fns — those no other prelude decl references;
+-- the corpus's shadowed names — count, find — are all droppable, so the
+-- droppable check is added only if a file needs it.)
+preludePlainFnNames : List Decl -> List String
+preludePlainFnNames prelude = keepNotIn (interfaceMethodNames prelude) (allFunDefNames prelude)
+
+allFunDefNames : List Decl -> List String
+allFunDefNames [] = []
+allFunDefNames ((DFunDef _ n _ _) :: rest) = n :: allFunDefNames rest
+allFunDefNames (_ :: rest) = allFunDefNames rest
+
+-- keep the names in the second list that are NOT in the first
+keepNotIn : List String -> List String -> List String
+keepNotIn _ [] = []
+keepNotIn pool (x :: xs)
+  | contains x pool = keepNotIn pool xs
+  | otherwise = x :: keepNotIn pool xs
+
 -- ── Top-level entry ───────────────────────────────────────────────────────
 -- `preludeProg` is the desugared prelude (core.mdk); `prog` the desugared
--- target.  shadow_rename first, then mark against the union of prelude + (now
--- renamed) target names, as in the reference's mark_with_prelude.
+-- target.  shadow_rename (78b) first, then mark against the union of prelude +
+-- (renamed) target names, with the 78a constrained-set adjustment.
 export
 markWithPrelude : List Decl -> List Decl -> List Decl
 markWithPrelude preludeProg prog =
   let preludeMethods = interfaceMethodNames preludeProg
   let prog2 = shadowRename preludeMethods prog
   let methods = preludeMethods ++ interfaceMethodNames prog2
-  let constrained = constrainedFnNames preludeProg ++ constrainedFnNames prog2
+  let shadowed = keepIn (preludePlainFnNames preludeProg) (userValueNames prog2)
+  let userConstrained = constrainedFnNames prog2
+  let toRemove = keepNotIn userConstrained shadowed
+  let constrained = keepNotIn toRemove (constrainedFnNames preludeProg ++ userConstrained)
   markProgram methods constrained prog2
