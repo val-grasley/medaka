@@ -153,6 +153,26 @@ main =
 |}
   "S\nT\n"
 
+(* Phase 136: a `=>`-signed mutually-recursive pair threads its constraint dict
+   through both members (pingEq forwards its Eq dict into pongEq and back), and
+   the merged group is reused at two element types.  Guards the dict-passing
+   interaction the merge could have broken — a stale dict-route var id would
+   surface here as an unbound `$dict_…` at eval, not as a type error. *)
+let t_mutual_rec_dict = assert_output_typed
+  {|pingEq : Eq a => a -> Int -> Bool
+pongEq : Eq a => a -> Int -> Bool
+pingEq x 0 = True
+pingEq x n = pongEq x (n - 1)
+pongEq x 0 = x == x
+pongEq x n = pingEq x (n - 1)
+
+main : <IO> Unit
+main =
+  println (pingEq (3 : Int) 4)
+  println (pingEq "hi" 2)
+|}
+  "True\nTrue\n"
+
 (* Phase 69.x-e: method-level constraint dict (foldMap's `Monoid m`) routed at a
    *concrete* call site.  foldMap's default body resolves `empty` to the chosen
    Monoid impl via a dictionary (not arg-tag), so the user `Sum` monoid folds. *)
@@ -912,6 +932,7 @@ let () = Alcotest.run "Run"
     "println Display vs inspect (Phase 111)", `Quick, t_println_display_vs_inspect;
     "dict polymorphic helper",  `Quick, t_dict_polymorphic_helper;
     "dict transitive",          `Quick, t_dict_transitive;
+    "mutual rec dict (Phase 136)",        `Quick, t_mutual_rec_dict;
     "foldMap method dict (concrete)",    `Quick, t_foldmap_method_dict_concrete;
     "foldMap method dict (polymorphic)", `Quick, t_foldmap_method_dict_polymorphic;
     "foldMap explicit impl offset",      `Quick, t_foldmap_explicit_impl_offset;

@@ -153,28 +153,41 @@ above, it is flagged ⭐.
 
 ### Compiler / language
 
-- **Phase 136 — typechecker: generalize mutually-recursive binding groups. TODO
-  (harden-typechecker).** A single self-recursive polymorphic function *is*
-  generalized and usable at multiple types, but a **mutual-recursion group is
-  not** — it monomorphizes to its first use. Standard HM generalizes a recursive
-  group after inferring it; Medaka does this for singletons but not multi-binding
-  groups. **Minimal repro:**
+- **Phase 136 — typechecker: generalize mutually-recursive binding groups. DONE
+  (2026-06-03).** A single self-recursive polymorphic function generalized fine,
+  but a **mutual-recursion group monomorphized to its first use**. **Minimal
+  repro (now passes):**
   ```
   isEv : Int -> a -> List a        isOd : Int -> a -> List a
   isEv 0 x = []                    isOd 0 x = []
   isEv n x = isOd (n - 1) x        isOd n x = x :: isEv (n - 1) x
-  -- ua = isEv 3 (5:Int) ; ub = isEv 3 "a"  →  "Type mismatch: Int vs String"
+  -- isEv 3 (5:Int) and isEv 3 "a" together  →  used to be "Int vs String"
   ```
-  (the single-recursive `rep n x = x :: rep (n-1) x` works at both types). **Found
-  via the Phase 135 parser-combinator spike:** the core monad (`do`/`Thenable`/
-  `pure`/`andThen` over a user-defined `Parser`) works fine, but idiomatic
-  combinators (`many`↔`some`, `chainl1`↔`chainl1Rest`↔`chainl1More`) are mutually
-  recursive and reused at many types, so they all collapse — which is why the
-  self-host parser stays **direct recursive-descent** for now. Fix lands in
-  `typecheck.ml`'s letrec-group handling (generalize *all* members of a recursive
-  group after inference, not just singletons); mind level/rank bracketing and the
-  dict-passing interaction (Phase 73/83/84). Unblocks idiomatic parser combinators
-  and any mutually-recursive polymorphic helper. Skill: **harden-typechecker**.
+  **Root cause was NOT the generalization loop the TODO guessed** (that loop is
+  correct, and the `let rec … with` / `DLetGroup` multi-member path always worked).
+  It was **group *formation*:** `order_groups_by_deps` ran Tarjan SCC only to
+  *reorder*, then **flattened a cyclic SCC back into separate singleton groups**.
+  So mutual recursion was checked as sequential singleton `process_letrec_group`
+  calls sharing a monomorphic top-level placeholder — member 1 generalized, then
+  member 2's inference *re-linked* member 1's quantified var, leaving member 1's
+  recorded `bound_ids` referencing a now-`Link`ed var → `instantiate` treated it
+  as free/monomorphic → pinned by first use.
+  **Fix (one site):** `order_groups_by_deps` now **merges** a multi-member SCC into
+  one group, so all bodies are inferred before any member generalizes (the
+  non-destructive final loop then builds every scheme against settled var ids).
+  **Dict-passing fallout (the warned Phase 73/83/84 interaction, fixed here):**
+  merging makes mutual-rec siblings share one constraint var id, which broke
+  `find_enclosing_dict` — it picks the enclosing function by id-match and returned
+  a *sibling's* `$dict_<fn>_<slot>` (unbound at eval) for pass-through constrained
+  mutual recursion (`isEvenLen`/`isOddLen`) and promoted return-pos pairs
+  (`ping`/`pong`). Fixed by threading an `enclosing`-function hint (a `current_fn`
+  ref set per member in Pass B, captured into `dict_app_usages` /
+  `recursive_promoted_usages` / `method_usages`) into `find_enclosing_dict`, which
+  now prefers the enclosing member's own dict. Unblocks idiomatic parser
+  combinators (`many`↔`some`, `chainl1`↔…) and any mutually-recursive polymorphic
+  helper. Tests: `test_typecheck` "mutual poly {signed,unsigned,2nd}", `test_run`
+  "mutual rec dict (Phase 136)" + the pre-existing `t_rec_mutual_constraint` /
+  `t_infer_return_pos_mutual` now exercise the merged path.
 
 - ⭐ **Phase 135 — self-host Stage 1: port the parser to Medaka. IN PROGRESS
   (started 2026-06-03); scaffold done.** Second pipeline stage. The Menhir LR

@@ -181,6 +181,14 @@ let current_method_ref : Ast.resolved option ref option ref = ref None
    resolve_dict_apps can fill it with one route per constraint).  Mirrors
    current_method_ref. *)
 let current_dict_ref : Ast.res_route list option ref option ref = ref None
+(* Phase 136: the top-level function whose body is currently being inferred, set
+   by process_letrec_group around each member's body inference.  A constrained
+   self-/mutual-recursive call captures it (into dict_app_usages /
+   recursive_promoted_usages) so resolve_dict_apps can tell find_enclosing_dict
+   *which* member encloses the occurrence: a merged mutual-recursion group's
+   members share one constraint var id, so id-matching alone can't distinguish
+   them and would forward a sibling's `$dict_<fn>_<slot>` param. *)
+let current_fn : Ast.ident option ref = ref None
 
 let fail e = raise (Type_error (e, !current_loc))
 
@@ -788,7 +796,7 @@ type env = {
        standalone (via `lookup_var`) instead of failing `NoImplFound`.  Empty on
        the single-file path (no imports to fall back to). *)
   impls         : impl_entry list ref;          (* all registered impls *)
-  method_usages : (ident * ident * tyvar_info ref list * string option * (ident * mono list) list * Ast.resolved option ref option * Ast.loc option) list ref;  (* (method, iface, param_var_refs, impl_hint, method_dict_args, method_occurrence_ref, call_site_loc) *)
+  method_usages : (ident * ident * tyvar_info ref list * string option * (ident * mono list) list * Ast.resolved option ref option * Ast.loc option * ident option) list ref;  (* (method, iface, param_var_refs, impl_hint, method_dict_args, method_occurrence_ref, call_site_loc, enclosing_fn) — enclosing_fn (Phase 136) picks the right dict among merged mutual-recursion siblings sharing a constraint var id *)
   fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
     (* fn_name → [(iface_name, [bound_var_ids_in_scheme])] *)
   inferred_constraints : (ident, (ident * int list) list) Hashtbl.t;
@@ -821,11 +829,14 @@ type env = {
        impl method's `$dict_<method>_<slot>`.  Slots are impl-local (index within
        one impl's list); keyed per impl_key so a method defined by several impls
        doesn't collide and a REPL re-check replaces rather than accumulates. *)
-  dict_app_usages : (ident * (ident * mono list) list * Ast.res_route list option ref * Ast.loc option) list ref;
+  dict_app_usages : (ident * (ident * mono list) list * Ast.res_route list option ref * Ast.loc option * ident option) list ref;
     (* Phase 69.x: (fn_name, [(constraint_iface, instantiated_args)] in slot order,
-       EDictApp_routes_ref, call_site_loc).  Recorded at each constrained-function
-       occurrence; resolve_dict_apps turns each constraint into an RKey/RDict route. *)
-  recursive_promoted_usages : (ident * mono * Ast.res_route list option ref * Ast.loc option) list ref;
+       EDictApp_routes_ref, call_site_loc, enclosing_fn).  Recorded at each
+       constrained-function occurrence; resolve_dict_apps turns each constraint
+       into an RKey/RDict route.  enclosing_fn (Phase 136) is the top-level member
+       whose body holds the occurrence — used to pick the right enclosing dict
+       when merged mutual-recursion siblings share a constraint var id. *)
+  recursive_promoted_usages : (ident * mono * Ast.res_route list option ref * Ast.loc option * ident option) list ref;
     (* Phase 115 (#2): a self-/mutually-recursive call to a *promoted* unsignatured
        wrapper (in env.promoted), inferred during Pass B before its fun_constraints
        entry is registered (post-inference).  The normal recorder would skip it
@@ -1440,7 +1451,7 @@ let rec infer env = function
             List.map (fun (iface, var_ids) ->
               (iface, List.filter_map (fun id -> List.assoc_opt id sub) var_ids)) cs
         in
-        env.method_usages := (x, iface_name, param_vars, hint, method_dict_args, mref, !current_loc) :: !(env.method_usages);
+        env.method_usages := (x, iface_name, param_vars, hint, method_dict_args, mref, !current_loc, !current_fn) :: !(env.method_usages);
         (* Emit obligations for any extra method-level constraints
            (e.g. the `Monoid m` in `foldMap : Monoid m => (a -> m) -> t a -> m`). *)
         List.iter (fun (iface, args) ->
@@ -1480,7 +1491,7 @@ let rec infer env = function
            (match dref with
             | Some r when (not is_local) && Hashtbl.mem env.promoted x ->
               env.recursive_promoted_usages :=
-                (x, mono, r, !current_loc) :: !(env.recursive_promoted_usages)
+                (x, mono, r, !current_loc, !current_fn) :: !(env.recursive_promoted_usages)
             | _ -> ())
          | Some constraints ->
            (* Map a constraint's tyvar id to its type at this occurrence.  For a
@@ -1512,7 +1523,7 @@ let rec infer env = function
                 (iface, List.filter_map resolve_arg var_ids))
                 constraints in
               env.dict_app_usages :=
-                (x, per_constraint, r, !current_loc) :: !(env.dict_app_usages)));
+                (x, per_constraint, r, !current_loc, !current_fn) :: !(env.dict_app_usages)));
         mono
     end
 
@@ -1673,7 +1684,7 @@ let rec infer env = function
     let r = match a with TVar r -> r | _ -> fail (InternalError "fresh_var did not yield a TVar") in
     unify te a;
     env.method_usages :=
-      ("negate", "Num", [r], None, [], None, !current_loc) :: !(env.method_usages);
+      ("negate", "Num", [r], None, [], None, !current_loc, !current_fn) :: !(env.method_usages);
     a
   | EUnOp ("!", e) ->
     unify (infer env e) t_bool; t_bool
@@ -2151,7 +2162,7 @@ and binop_type env op l r =
     let a = fresh_var () in
     let r = match a with TVar r -> r | _ -> fail (InternalError "fresh_var did not yield a TVar") in
     unify tl a; unify tr a;
-    env.method_usages := (method_name, iface_name, [r], None, [], None, !current_loc) :: !(env.method_usages);
+    env.method_usages := (method_name, iface_name, [r], None, [], None, !current_loc, !current_fn) :: !(env.method_usages);
     a
   in
   let iface_and_method_of op =
@@ -2292,7 +2303,22 @@ let order_groups_by_deps groups =
     done;
     (* !out holds SCCs in reverse pop order; pop order is dependencies-first. *)
     let sccs = List.rev !out in
-    List.concat_map (fun scc -> List.map (fun i -> arr.(i)) scc) sccs
+    (* A multi-member SCC is genuine mutual recursion: merge its groups into one
+       so process_letrec_group infers every body and generalizes every member
+       within a single level bracket.  Flattening them into sequential singletons
+       (the old [concat_map]) re-links a quantified var of the first-processed
+       member while inferring the second, demoting the first member's scheme to
+       monomorphic — Phase 136 (this is exactly the §2.9 hazard above, which the
+       callee-first reorder fixes for plain forward references but not for a true
+       cycle).  A singleton SCC (incl. plain self-recursion) is returned
+       unchanged.  [is_letrec] is the OR of the merged groups' flags: a
+       DFunDef-only cycle stays [false], so value restriction and the
+       LetRecNonFunction guard behave exactly as in the old singleton path. *)
+    List.map (fun scc ->
+      match List.map (fun i -> arr.(i)) scc with
+      | [g] -> g
+      | gs  -> (List.exists fst gs, List.concat_map snd gs)
+    ) sccs
   end
 
 (* Group fn defs by name, preserving first-appearance order in source.
@@ -2453,6 +2479,10 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
   let mu_n0 = List.length !mu_ref in
   let cs_monos_list = List.map (fun (name, cs_monos, sig_t_opt, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
+    (* Phase 136: mark this member as the enclosing function so a constrained
+       self-/mutual-recursive call in its body captures it (find_enclosing_dict
+       disambiguates merged siblings sharing one constraint var id by it). *)
+    current_fn := Some name;
     if is_letrec then
       List.iter (fun (pats, rhs) ->
         if pats = [] && not (is_syntactic_lambda rhs) then begin
@@ -2560,6 +2590,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
        routing it through fun_constraints would crash at eval with an unbound
        `$dict_…` — exactly the inferred_constraints rationale from Phase 83. *)
     let relaxed = sig_is_fun && not plain_val in
+    current_fn := None;
     (name, cs_monos, is_val, sig_opt <> None, relaxed)
   ) prepared in
   exit_level ();
@@ -2611,7 +2642,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
            let ids = List.filter_map extract_id mono_args in
            if ids = [] then None else Some (iface, ids, loc)
          ) added_obligs
-         @ List.filter_map (fun (_m, iface_name, param_vars, _h, _mda, _mr, loc) ->
+         @ List.filter_map (fun (_m, iface_name, param_vars, _h, _mda, _mr, loc, _enc) ->
              let ids = List.filter_map (fun r -> extract_id (TVar r)) param_vars in
              if ids = [] then None else Some (iface_name, ids, loc)
            ) added_methods
@@ -3440,20 +3471,32 @@ let rec mono_unbound_ids m =
    variables.  Search fun_constraints for an entry of interface [iface] whose
    bound ids include one of [ids_present]; return the synthetic dict-param name
    to read at runtime (dict_pass binds it on that function).  tyvar ids are
-   globally unique, so at most one (function, slot) matches. *)
-let find_enclosing_dict env iface (ids_present : int list) : Ast.ident option =
+   globally unique, so at most one (function, slot) matches — *except* across a
+   merged mutual-recursion group, whose members share one constraint var id
+   (Phase 136).  There the [enclosing] hint (the member whose body holds this
+   occurrence, captured at record time) disambiguates: prefer its own dict param,
+   falling back to the global scan only when the enclosing function has no
+   matching constraint (the dict comes from an enclosing method/impl instead). *)
+let find_enclosing_dict ?enclosing env iface (ids_present : int list) : Ast.ident option =
   let result = ref None in
+  let match_in fname constraints =
+    List.iteri (fun slot (ci, cids) ->
+      if !result = None && ci = iface
+         && List.exists (fun id -> List.mem id cids) ids_present
+      then result := Some (Ast.dict_param_name fname slot)
+    ) constraints
+  in
   let search table =
     Hashtbl.iter (fun fname constraints ->
-      if !result = None then
-        List.iteri (fun slot (ci, cids) ->
-          if !result = None && ci = iface
-             && List.exists (fun id -> List.mem id cids) ids_present
-          then result := Some (Ast.dict_param_name fname slot)
-        ) constraints
-    ) table
+      if !result = None then match_in fname constraints) table
   in
-  search env.fun_constraints;
+  (match enclosing with
+   | Some f ->
+     (match Hashtbl.find_opt env.fun_constraints f with
+      | Some cs -> match_in f cs
+      | None -> ())
+   | None -> ());
+  if !result = None then search env.fun_constraints;
   (* Phase 69.x-e: also the enclosing *method's* own constraints, so an in-body
      ref inside a default method body (e.g. `empty`/`++` in foldMap's default)
      reads `$dict_<method>_<slot>`.  Keyed by the instantiated default-body ids. *)
@@ -3525,7 +3568,7 @@ let check_method_usages env =
     | Some info -> List.length info.iface_param_ids
     | None -> 0
   in
-  List.iter (fun (method_name, iface_name, param_vars, hint_opt, _method_dict_args, occ_ref, loc) ->
+  List.iter (fun (method_name, iface_name, param_vars, hint_opt, _method_dict_args, occ_ref, loc, enclosing) ->
     let n = n_iface_params iface_name in
     (* Phase 69: stamp the resolved impl's route onto this method occurrence (if
        it carries an EMethodRef) so eval routes return-position / multi-param
@@ -3609,7 +3652,7 @@ let check_method_usages env =
            | Some h -> set_route (Ast.RHeadKey h)
            | None ->
              let ids = List.concat_map mono_unbound_ids concrete_args in
-             (match find_enclosing_dict env iface_name ids with
+             (match find_enclosing_dict ?enclosing env iface_name ids with
               | Some dvar -> set_route (Ast.RDict dvar)
               | None -> ()))
         | None -> ()
@@ -3711,7 +3754,7 @@ let pick_dispatch_impl env iface concrete : impl_entry option =
 (* Resolve one constraint occurrence (iface + instantiated args) to its dict
    route — shared by constrained-function occurrences (resolve_dict_apps) and
    method-level-constraint occurrences (resolve_method_dicts, Phase 69.x-e). *)
-let resolve_one_route env (iface, args) =
+let resolve_one_route ?enclosing env (iface, args) =
   let args = List.map normalize args in
   if args <> [] && List.for_all is_concrete args then
     (match pick_dispatch_impl env iface args with
@@ -3719,7 +3762,7 @@ let resolve_one_route env (iface, args) =
      | None -> Ast.RKey "")
   else
     let ids = List.concat_map mono_unbound_ids args in
-    (match find_enclosing_dict env iface ids with
+    (match find_enclosing_dict ?enclosing env iface ids with
      | Some dvar -> Ast.RDict dvar
      | None ->
        (* Phase 83/84 (#4): no enclosing dict, but a head-concrete args-free
@@ -3737,19 +3780,19 @@ let resolve_one_route env (iface, args) =
    the body unified) via find_tvar_in_mono — one entry per constraint, in slot
    order, matching dict_pass's param order.  Run before resolve_dict_apps. *)
 let realize_recursive_dict_apps env =
-  List.iter (fun (fname, mono, routes_ref, loc) ->
+  List.iter (fun (fname, mono, routes_ref, loc, enclosing) ->
     match Hashtbl.find_opt env.fun_constraints fname with
     | None -> ()  (* not actually routable: leave routes None (dict_pass adds no param) *)
     | Some constraints ->
       let per_constraint = List.map (fun (iface, var_ids) ->
         (iface, List.filter_map (fun id -> find_tvar_in_mono mono id) var_ids))
         constraints in
-      env.dict_app_usages := (fname, per_constraint, routes_ref, loc) :: !(env.dict_app_usages)
+      env.dict_app_usages := (fname, per_constraint, routes_ref, loc, enclosing) :: !(env.dict_app_usages)
   ) !(env.recursive_promoted_usages)
 
 let resolve_dict_apps env =
-  List.iter (fun (_fname, per_constraint, routes_ref, _loc) ->
-    routes_ref := Some (List.map (resolve_one_route env) per_constraint)
+  List.iter (fun (_fname, per_constraint, routes_ref, _loc, enclosing) ->
+    routes_ref := Some (List.map (resolve_one_route ?enclosing env) per_constraint)
   ) !(env.dict_app_usages)
 
 (* Phase 69.x-e: fill res_method_dicts on each method occurrence whose interface
@@ -3759,10 +3802,10 @@ let resolve_dict_apps env =
    default/impl bodies — given matching `$dict_<method>_<slot>` params by
    dict_pass — read them.  Runs after check_method_usages has stamped res_route. *)
 let resolve_method_dicts env =
-  List.iter (fun (_m, _iface, _pv, _hint, method_dict_args, occ_ref, _loc) ->
+  List.iter (fun (_m, _iface, _pv, _hint, method_dict_args, occ_ref, _loc, enclosing) ->
     match occ_ref, method_dict_args with
     | Some cell, (_ :: _) ->
-      let routes = List.map (resolve_one_route env) method_dict_args in
+      let routes = List.map (resolve_one_route ?enclosing env) method_dict_args in
       (match !cell with
        | Some r -> cell := Some { r with Ast.res_method_dicts = routes }
        | None ->

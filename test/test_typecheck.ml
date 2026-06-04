@@ -238,6 +238,35 @@ let t_mutual_rec = assert_type
 isOdd n = if n == 0 then False else isEven (n - 1)
 |} "isEven" "Int -> Bool"
 
+(* Phase 136: a top-level mutual-recursion group must generalize *every* member,
+   not just the second-processed one.  These DFunDef cycles used to monomorphize
+   the first-processed member to its first use ("Type mismatch: Int vs String");
+   the fix merges a cyclic SCC into one group so process_letrec_group infers all
+   bodies before generalizing any (matching the working `let rec … with` path). *)
+let t_mutual_poly_signed = assert_type
+  {|isEv : Int -> a -> List a
+isOd : Int -> a -> List a
+isEv 0 x = []
+isOd 0 x = []
+isEv n x = isOd (n - 1) x
+isOd n x = x :: isEv (n - 1) x
+|} "isEv" "Int -> a -> List a"
+
+let t_mutual_poly_unsigned = assert_type
+  {|isEv 0 x = []
+isOd 0 x = []
+isEv n x = isOd (n - 1) x
+isOd n x = x :: isEv (n - 1) x
+|} "isEv" "Int -> a -> List a"
+
+(* The second member generalizes too (guards against a regression there). *)
+let t_mutual_poly_second = assert_type
+  {|isEv 0 x = []
+isOd 0 x = []
+isEv n x = isOd (n - 1) x
+isOd n x = x :: isEv (n - 1) x
+|} "isOd" "Int -> a -> List a"
+
 (* ── ADTs and pattern matching ──────────────────── *)
 
 let t_option_default = assert_type
@@ -3923,6 +3952,9 @@ let () =
     "recursion", [
       test_case "factorial"           `Quick t_factorial;
       test_case "mutual"              `Quick t_mutual_rec;
+      test_case "mutual poly signed"   `Quick t_mutual_poly_signed;
+      test_case "mutual poly unsigned" `Quick t_mutual_poly_unsigned;
+      test_case "mutual poly 2nd"      `Quick t_mutual_poly_second;
       test_case "let rec fact"        `Quick t_letrec_fact;
       test_case "let rec mutual"      `Quick t_letrec_mutual;
       test_case "err: let rec non-fn"      `Quick e_letrec_nonfn_arith;
