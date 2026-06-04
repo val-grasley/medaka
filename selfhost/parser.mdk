@@ -15,7 +15,7 @@
 -- `DFunDef`/`DTypeSig`.  Multi-statement indented blocks, the remaining decl
 -- forms, and the rest of the operator ladder come in later slices.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 import lexer.{Token(..), tokenize}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -540,10 +540,22 @@ parseIf =
     expectTok TIf
     cond <- parseExpr
     expectTok TThen
-    thenE <- parseExpr
+    thenE <- parseBranch
     expectTok TElse
-    elseE <- parseExpr
+    elseE <- parseBranch
     pure (EIf cond thenE elseE)
+
+-- a then/else branch is either an inline expr or an indented statement block
+parseBranch : Parser Expr
+parseBranch = orElse branchBlock parseExpr
+
+branchBlock : Parser Expr
+branchBlock =
+  do
+    expectTok TIndent
+    stmts <- parseStmts
+    expectTok TDedent
+    pure (blockOrExpr stmts)
 
 parseLet : Parser Expr
 parseLet =
@@ -588,7 +600,7 @@ parseArm =
   do
     pat <- parsePat
     expectTok TFatArrow
-    body <- parseExpr
+    body <- orElse branchBlock parseExpr
     pure (Arm pat [] body)
 
 -- ── Patterns ────────────────────────────────────────────────────────────
@@ -829,6 +841,9 @@ declDispatch TPublic = afterPublic
 declDispatch TData = parseData VisPrivate
 declDispatch TRecord = parseRecord VisPrivate
 declDispatch TExtern = parseExtern False
+declDispatch TProp = parseProp False
+declDispatch TTest = parseTest False
+declDispatch TBench = parseBench False
 declDispatch _ = parseFunOrSig False
 
 afterExport : Parser Decl
@@ -844,6 +859,9 @@ afterExportFor TImport = parseImport True
 afterExportFor TData = parseData VisAbstract
 afterExportFor TRecord = parseRecord VisAbstract
 afterExportFor TExtern = parseExtern True
+afterExportFor TProp = parseProp True
+afterExportFor TTest = parseTest True
+afterExportFor TBench = parseBench True
 afterExportFor _ = parseFunOrSig True
 
 afterPublic : Parser Decl
@@ -1022,6 +1040,58 @@ aliasNameFor : Token -> Parser String
 aliasNameFor (TUpper x) = emit x
 aliasNameFor (TIdent x) = emit x
 aliasNameFor _ = failP "expected alias name"
+
+-- ── prop / test / bench declarations ─────────────────────────────────────
+stringLitP : Parser String
+stringLitP =
+  do
+    t <- peekP
+    stringLitFor t
+
+stringLitFor : Token -> Parser String
+stringLitFor (TString s) = emit s
+stringLitFor _ = failP "expected string literal"
+
+parseProp : Bool -> Parser Decl
+parseProp pub =
+  do
+    expectTok TProp
+    name <- stringLitP
+    params <- many propParam
+    expectTok TEqual
+    body <- parseBody
+    skipNewlines
+    pure (DProp pub name params body)
+
+propParam : Parser PropParam
+propParam =
+  do
+    expectTok TLParen
+    name <- identNameP
+    expectTok TColon
+    ty <- parseTy
+    expectTok TRParen
+    pure (PropParam name ty)
+
+parseTest : Bool -> Parser Decl
+parseTest pub =
+  do
+    expectTok TTest
+    name <- stringLitP
+    expectTok TEqual
+    body <- parseBody
+    skipNewlines
+    pure (DTest pub name body)
+
+parseBench : Bool -> Parser Decl
+parseBench pub =
+  do
+    expectTok TBench
+    name <- stringLitP
+    expectTok TEqual
+    body <- parseBody
+    skipNewlines
+    pure (DBench pub name body)
 
 -- function guards: an INDENT block of `| guard, … = body` arms
 parseGuardArms : Parser (List GuardArm)

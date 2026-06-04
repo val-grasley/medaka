@@ -3,7 +3,7 @@
 -- reference.  Tags are the lib/ast.ml constructor names.  Coverage grows with
 -- the AST/parser; new variants get a matching clause here.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
 
 -- shared minimal string escaping — must match dev/astdump.ml's esc_str
 escStr : String -> String
@@ -156,6 +156,12 @@ declSexp (DFunDef p n ps b) = node "DFunDef" [boolStr p, escStr n, slist (map pa
 declSexp (DData vis n ps vs ds) = node "DData" [visSexp vis, escStr n, slist (map escStr ps), slist (map variantSexp vs), slist (map escStr ds)]
 declSexp (DRecord vis n ps fs ds) = node "DRecord" [visSexp vis, escStr n, slist (map escStr ps), slist (map fieldSexp fs), slist (map escStr ds)]
 declSexp (DUse pub path) = node "DUse" [boolStr pub, usePathSexp path]
+declSexp (DProp pub name params body) = node "DProp" [boolStr pub, escStr name, slist (map propParamSexp params), exprSexp body]
+declSexp (DTest pub name body) = node "DTest" [boolStr pub, escStr name, exprSexp body]
+declSexp (DBench pub name body) = node "DBench" [boolStr pub, escStr name, exprSexp body]
+
+propParamSexp : PropParam -> String
+propParamSexp (PropParam n t) = node "pp" [escStr n, tySexp t]
 
 useMemberSexp : UseMember -> String
 useMemberSexp (UseMember n withAll) = node "mem" [escStr n, boolStr withAll]

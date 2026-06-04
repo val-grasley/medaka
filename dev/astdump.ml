@@ -170,6 +170,14 @@ let sexp_decl = function
       node "DRecord" [sexp_vis vis; esc_str n; slist (List.map esc_str ps);
                       slist (List.map sexp_field fields); slist (List.map esc_str derives)]
   | DUse (p, path)          -> node "DUse" [string_of_bool p; sexp_use_path path]
+  | DProp { is_pub; prop_name; prop_params; prop_body } ->
+      node "DProp" [string_of_bool is_pub; esc_str prop_name;
+                    slist (List.map (fun (n, t) -> node "pp" [esc_str n; sexp_ty t]) prop_params);
+                    sexp_expr prop_body]
+  | DTest { is_pub; test_name; test_body } ->
+      node "DTest" [string_of_bool is_pub; esc_str test_name; sexp_expr test_body]
+  | DBench { is_pub; bench_name; bench_body } ->
+      node "DBench" [string_of_bool is_pub; esc_str bench_name; sexp_expr bench_body]
   | _                       -> todo "decl"
 
 let () =

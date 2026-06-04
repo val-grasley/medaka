@@ -103,6 +103,9 @@ public export data UsePath
   | UseWild (List String)
   | UseAlias (List String) String
 
+-- a property-test parameter `(name : ty)`
+public export data PropParam = PropParam String Ty
+
 -- data/record declarations
 public export data DataVis = VisPrivate | VisAbstract | VisPublic
 public export data Field = Field String Ty
@@ -116,3 +119,6 @@ public export data Decl
   | DData DataVis String (List String) (List Variant) (List String)
   | DRecord DataVis String (List String) (List Field) (List String)
   | DUse Bool UsePath
+  | DProp Bool String (List PropParam) Expr
+  | DTest Bool String Expr
+  | DBench Bool String Expr
