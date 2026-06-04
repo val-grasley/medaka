@@ -189,8 +189,8 @@ checkExpr env scope (EDo stmts) = checkStmts env scope stmts
 checkExpr env scope (EStringInterp parts) = concatMapList (checkInterp env scope) parts
 checkExpr env scope (EGuards arms) = concatMapList (checkGuardArm env scope) arms
 checkExpr env scope (EFunction arms) = concatMapList (checkArm env scope) arms
-checkExpr env scope (ERecordCreate _ fs) = concatMapList (checkFieldAssign env scope) fs
-checkExpr env scope (ERecordUpdate e0 fs) = checkExpr env scope e0 ++ concatMapList (checkFieldAssign env scope) fs
+checkExpr env scope (ERecordCreate name fs) = checkRecordCreate env scope name fs
+checkExpr env scope (ERecordUpdate e0 fs) = checkRecordUpdate env scope e0 fs
 checkExpr env scope (EQuestion e0) = checkExpr env scope e0
 checkExpr env scope (ESection s) = checkSection env scope s
 
@@ -266,6 +266,38 @@ checkInterp env scope (InterpExpr e) = checkExpr env scope e
 
 checkFieldAssign : Env -> List String -> FieldAssign -> List ResError
 checkFieldAssign env scope (FieldAssign _ e) = checkExpr env scope e
+
+-- record create `C { f = v, … }`: head must be a record type / named ctor; if so,
+-- each field must belong to it; then check the value exprs
+checkRecordCreate : Env -> List String -> String -> List FieldAssign -> List ResError
+checkRecordCreate env scope name fs =
+  recCreateHead env name fs ++ concatMapList (checkFieldAssign env scope) fs
+
+recCreateHead : Env -> String -> List FieldAssign -> List ResError
+recCreateHead env name fs
+  | contains name (envTypes env) || contains name (envImported env) || contains name (envCtors env) =
+      concatMapList (recCreateField env name) fs
+  | otherwise = [UnknownType name]
+
+recCreateField : Env -> String -> FieldAssign -> List ResError
+recCreateField env owner (FieldAssign fname _) = fieldVerdict owner fname (ownersOf fname (envFieldOwners env))
+
+-- record update `{ e | f = v, … }`: the receiver's type isn't pinned, so only
+-- flag a field unknown to *every* record (no FieldNotInRecord here)
+checkRecordUpdate : Env -> List String -> Expr -> List FieldAssign -> List ResError
+checkRecordUpdate env scope e0 fs =
+  checkExpr env scope e0 ++ concatMapList (recUpdateField env scope) fs
+
+recUpdateField : Env -> List String -> FieldAssign -> List ResError
+recUpdateField env scope (FieldAssign fname v) =
+  checkExpr env scope v ++ fieldKnownErr env fname
+
+fieldKnownErr : Env -> String -> List ResError
+fieldKnownErr env fname = recUpdateVerdict fname (ownersOf fname (envFieldOwners env))
+
+recUpdateVerdict : String -> List String -> List ResError
+recUpdateVerdict fname [] = [UnknownField fname]
+recUpdateVerdict _ _ = []
 
 checkSection : Env -> List String -> Section -> List ResError
 checkSection _ _ (SecBare _) = []
