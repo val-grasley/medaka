@@ -85,8 +85,8 @@ hexDigit d = stringSlice d (d + 1) "0123456789abcdef"
 
 -- A control char (< 0x20) as a `\u00XX` escape.
 unicodeEscape : Int -> String
-unicodeEscape code = stringConcat
-  ["\\u00", hexDigit (code / 16), hexDigit (code % 16)]
+unicodeEscape code =
+  stringConcat ["\\u00", hexDigit (code / 16), hexDigit (code % 16)]
 
 -- One source char as its JSON-escaped piece.
 escapeChar : Char -> String
@@ -266,8 +266,9 @@ isExpChar : Char -> Bool
 isExpChar c = c == 'e' || c == 'E'
 
 subString : Array Char -> Int -> Int -> String
-subString arr start end = stringFromChars
-  (arrayMakeWith (end - start) (k => arrayGetUnsafe (start + k) arr))
+subString arr start end =
+  stringFromChars
+    (arrayMakeWith (end - start) (k => arrayGetUnsafe (start + k) arr))
 
 parseNumber : Array Char -> Int -> Result String (Json, Int)
 parseNumber arr start =

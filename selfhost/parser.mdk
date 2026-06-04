@@ -181,9 +181,8 @@ parsePipe : Parser Expr
 parsePipe = chainl1 parseCompose (binOp TPipeRight "|>")
 
 parseCompose : Parser Expr
-parseCompose = chainl1
-  parseOr
-  (choice [binOp TRCompose ">>", binOp TLCompose "<<"])
+parseCompose =
+  chainl1 parseOr (choice [binOp TRCompose ">>", binOp TLCompose "<<"])
 
 lamTail : Expr -> Parser Expr
 lamTail e = do
@@ -282,15 +281,16 @@ parseCmp : Parser Expr
 parseCmp = chainl1 parseCons cmpOp
 
 cmpOp : Parser (Expr -> Expr -> Expr)
-cmpOp = choice
-  [
-    binOp TEqEq "==",
-    binOp TNeq "!=",
-    binOp TLt "<",
-    binOp TGt ">",
-    binOp TLeq "<=",
-    binOp TGeq ">="
-  ]
+cmpOp =
+  choice
+    [
+      binOp TEqEq "==",
+      binOp TNeq "!=",
+      binOp TLt "<",
+      binOp TGt ">",
+      binOp TLeq "<=",
+      binOp TGeq ">="
+    ]
 
 -- `::` is right-associative
 parseCons : Parser Expr
@@ -311,9 +311,10 @@ parseAdd : Parser Expr
 parseAdd = chainl1 parseMul (choice [binOp TPlus "+", binOp TMinus "-"])
 
 parseMul : Parser Expr
-parseMul = chainl1
-  parseUnary
-  (choice [binOp TStar "*", binOp TSlash "/", binOp TMod "%"])
+parseMul =
+  chainl1
+    parseUnary
+    (choice [binOp TStar "*", binOp TSlash "/", binOp TMod "%"])
 
 -- unary minus, tighter than `*` (a leading `-` in operand position)
 parseUnary : Parser Expr
@@ -1911,7 +1912,7 @@ letTailFor pat e1 _ = pure (DoLet False pat e1)
 -- mirror the reference `curry_lam`: one single-arg ELam per param
 curryLam : List Pat -> Expr -> Expr
 curryLam [] body = body
-curryLam (p :: ps) body = ELam [p] (curryLam ps body)
+curryLam (p::ps) body = ELam [p] (curryLam ps body)
 
 -- `pat <- e` is a DoBind (LHS parsed as an expr, reinterpreted); `lhs = e` is
 -- an assignment (DoAssign / DoFieldAssign); else a bare DoExpr
@@ -1942,7 +1943,8 @@ assignFromLhs lhs rhs = match flattenFieldPath lhs
 -- `a` → Some (a, []); `a.b.c` → Some (a, [b, c]); anything else → None
 flattenFieldPath : Expr -> Option (String, List String)
 flattenFieldPath (EVar x) = Some (x, [])
-flattenFieldPath (EFieldAccess inner f) = fieldPathExtend (flattenFieldPath inner) f
+flattenFieldPath (EFieldAccess inner f) =
+  fieldPathExtend (flattenFieldPath inner) f
 flattenFieldPath _ = None
 
 fieldPathExtend : Option (String, List String) -> String -> Option (String, List String)

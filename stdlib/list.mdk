@@ -131,9 +131,8 @@ subsequences (x::xs) = flatMap (sub => [sub, x :: sub]) (subsequences xs)
 export
 permutations : List a -> List (List a)
 permutations [] = [[]]
-permutations xs = flatMap
-  ((h, rest) => map (p => h :: p) (permutations rest))
-  (selections xs)
+permutations xs =
+  flatMap ((h, rest) => map (p => h :: p) (permutations rest)) (selections xs)
 
 -- Each element paired with the list of the others, original order preserved.
 selections : List a -> List (a, List a)
@@ -502,9 +501,8 @@ isSorted (x::y::rest) = lte x y && isSorted (y :: rest)
 
 prop "reverse is an involution" (xs : List Int) = eq (reverse (reverse xs)) xs
 
-prop "take n ++ drop n recovers the list" (n : Int) (xs : List Int) = eq
-  (take n xs ++ drop n xs)
-  xs
+prop "take n ++ drop n recovers the list" (n : Int) (xs : List Int) =
+  eq (take n xs ++ drop n xs) xs
 
 prop "splitAt agrees with take/drop" (n : Int) (xs : List Int) =
   let (a, b) = splitAt n xs
@@ -524,6 +522,5 @@ prop "partition splits by the predicate" (xs : List Int) =
 
 prop "nub removes all duplicates" (xs : List Int) = eq (nub (nub xs)) (nub xs)
 
-prop "concat of group recovers the list" (xs : List Int) = eq
-  (flat (group xs))
-  xs
+prop "concat of group recovers the list" (xs : List Int) =
+  eq (flat (group xs)) xs

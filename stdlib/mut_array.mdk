@@ -204,11 +204,8 @@ foldRightGo f z arr i
    3 -}
 export default impl Foldable MutArray where
   fold f z (MutArray backing len) = foldGo f z backing.value 0 len.value
-  foldRight f z (MutArray backing len) = foldRightGo
-    f
-    z
-    backing.value
-    (len.value - 1)
+  foldRight f z (MutArray backing len) =
+    foldRightGo f z backing.value (len.value - 1)
   toList ma = elems ma
   isEmpty (MutArray _ len) = len.value == 0
   length (MutArray _ len) = len.value

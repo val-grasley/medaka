@@ -395,9 +395,10 @@ export default impl Foldable Array where
   length arr = arrayLength arr
 
 export default impl Semigroup (Array a) where
-  append a b = arrayMakeWith
-    (arrayLength a + arrayLength b)
-    (i => if i < arrayLength a then arrayGetUnsafe i a else arrayGetUnsafe (i - arrayLength a) b)
+  append a b =
+    arrayMakeWith
+      (arrayLength a + arrayLength b)
+      (i => if i < arrayLength a then arrayGetUnsafe i a else arrayGetUnsafe (i - arrayLength a) b)
 
 {- | `Monoid.empty` for `Array` is the empty array.  `empty` is nullary, so it
    dispatches on its annotated *result* type (Phase 103):

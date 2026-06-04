@@ -272,8 +272,8 @@ is3 src len pos a b c = pos + 2 < len
   && at src (pos + 2) == c
 
 substr : Array Char -> Int -> Int -> String
-substr src start endp = stringFromChars
-  (arrayMakeWith (endp - start) (i => at src (start + i)))
+substr src start endp =
+  stringFromChars (arrayMakeWith (endp - start) (i => at src (start + i)))
 
 collectNoUs : Array Char -> Int -> Int -> List Char
 collectNoUs src p endp
@@ -282,8 +282,8 @@ collectNoUs src p endp
   | otherwise = at src p :: collectNoUs src (p + 1) endp
 
 substrNoUs : Array Char -> Int -> Int -> String
-substrNoUs src start endp = stringFromChars
-  (arrayFromList (collectNoUs src start endp))
+substrNoUs src start endp =
+  stringFromChars (arrayFromList (collectNoUs src start endp))
 
 parseIntFrom : Array Char -> Int -> Int -> Int -> Int
 parseIntFrom src p endp acc
@@ -587,9 +587,9 @@ stripIndentCs s cs n
   | n == 0 = s
   | at cs 0 != '\n' = s
   | otherwise =
-      let lines = splitLines cs 1 n ""
-      let minInd = normalizeMin (minIndentGo lines indentSentinel)
-      joinNlStr (stripLines minInd lines)
+    let lines = splitLines cs 1 n ""
+    let minInd = normalizeMin (minIndentGo lines indentSentinel)
+    joinNlStr (stripLines minInd lines)
 
 -- split chars [start, n) on '\n' into line strings (acc = current line)
 splitLines : Array Char -> Int -> Int -> String -> List String
@@ -734,29 +734,15 @@ singleOp src len pos depth id '|' = emit src len pos depth id TPipe 1 0
 singleOp src len pos depth id '(' = emit src len pos depth id TLParen 1 1
 singleOp src len pos depth id ')' = emit src len pos depth id TRParen 1 (0 - 1)
 singleOp src len pos depth id '[' = emit src len pos depth id TLBracket 1 1
-singleOp src len pos depth id ']' = emit
-  src
-  len
-  pos
-  depth
-  id
-  TRBracket
-  1
-  (0 - 1)
+singleOp src len pos depth id ']' =
+  emit src len pos depth id TRBracket 1 (0 - 1)
 singleOp src len pos depth id '{' = openBrace src len pos depth id
 singleOp src len pos depth id '}' = closeBrace src len pos depth id
 singleOp src len pos depth id '!' = emit src len pos depth id TBang 1 0
 singleOp src len pos depth id '?' = emit src len pos depth id TQuestion 1 0
 singleOp src len pos depth id '%' = emit src len pos depth id TMod 1 0
-singleOp src len pos depth id '@' = emit
-  src
-  len
-  pos
-  depth
-  id
-  (atToken src pos)
-  1
-  0
+singleOp src len pos depth id '@' =
+  emit src len pos depth id (atToken src pos) 1 0
 singleOp src len pos depth id _ = scan src len (pos + 1) depth id
 
 -- `@` is the as-pattern operator (AS_AT) when it immediately follows an
@@ -846,12 +832,8 @@ continuationTok src len np
 layout : List RawTok -> List Int -> Option Token -> Bool -> List Token
 layout [] stack prev opener = closeAll stack
 layout ((RTok t)::rest) stack prev opener = t :: layout rest stack (Some t) (opener || isOpener t)
-layout ((RNewline col)::rest) stack prev opener = applyNl
-  col
-  rest
-  stack
-  prev
-  opener
+layout ((RNewline col)::rest) stack prev opener =
+  applyNl col rest stack prev opener
 
 isOpener : Token -> Bool
 isOpener TMatch = True
@@ -900,13 +882,8 @@ canStartAtom _ = False
 
 applyNl : Int -> List RawTok -> List Int -> Option Token -> Bool -> List Token
 applyNl col rest [] prev opener = TNewline :: layout rest [] None False
-applyNl col rest (top::tl) prev opener = applyNlTop
-  col
-  top
-  (top :: tl)
-  rest
-  prev
-  opener
+applyNl col rest (top::tl) prev opener =
+  applyNlTop col top (top :: tl) rest prev opener
 
 applyNlTop : Int -> Int -> List Int -> List RawTok -> Option Token -> Bool -> List Token
 applyNlTop col top stack rest prev opener

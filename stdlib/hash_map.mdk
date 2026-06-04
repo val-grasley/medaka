@@ -218,11 +218,8 @@ collectBuckets arr i n acc
    internally. -}
 export
 entries : HashMap k v -> List (k, v)
-entries (HashMap buckets _) = collectBuckets
-  buckets.value
-  0
-  (arrayLength buckets.value)
-  []
+entries (HashMap buckets _) =
+  collectBuckets buckets.value 0 (arrayLength buckets.value) []
 
 {- | Conventional alias for `entries` (all key/value pairs). -}
 export
