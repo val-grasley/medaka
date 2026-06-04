@@ -25,6 +25,51 @@ let last_ident_end : int ref = ref (-1)
    regardless of how the line is broken. *)
 let paren_depth : int ref = ref 0
 
+(* ── Phase 137: expression-RHS continuation lines ──────────────────────────
+   A more-indented line may continue an unfinished application instead of
+   starting a new statement:
+
+     parseCmp = chainl1 parseCons
+       (choice [...])            -- continues `chainl1 parseCons`
+
+   The lexer normally emits an INDENT for such a line, which the grammar only
+   accepts where a *block* is expected, so the line was a parse error.  We now
+   suppress that INDENT (leaving the indent stack at the statement's base
+   column, exactly like the leading-operator rule) when it is a continuation
+   rather than a block.
+
+   [prev_significant] is the last non-layout token emitted.  An INDENT opens a
+   block iff (a) it follows the `match`/`record` header — the only two openers
+   whose INDENT is preceded by an expression atom (handled by the one-shot
+   flags below), or (b) the previous token cannot end an expression (`=`,
+   `then`, `=>`, `where`, `do`, … — these introduce every other block).  When
+   neither holds the INDENT is a candidate continuation; the final decision
+   needs the deeper line's first token, so it is deferred via [pending_indent]
+   and resolved in [token] (see [resolve_pending]). *)
+let prev_significant : token option ref = ref None
+let match_pending    : bool ref = ref false
+let record_pending   : bool ref = ref false
+let pending_indent   : int option ref = ref None
+
+(* Whether [t] can syntactically *end* an expression (an atom-ender).  A
+   whitelist: a token absent here defaults to "blocks continuation", the safe
+   direction (a new token will not silently start rescuing layouts). *)
+let can_end_expr = function
+  | IDENT _ | UPPER _ | INT _ | FLOAT _ | STRING _ | CHAR _ | BOOL _
+  | INTERP_END _ | RPAREN | RBRACKET | RBRACE | RARRAY | UNDERSCORE
+  | QUESTION -> true
+  | _ -> false
+
+(* Whether [t] can *start* an application-argument atom (the first token of
+   `expr_aspat` in parser.mly).  A deeper line beginning with one of these
+   continues the previous application; anything else (`|` guards, `where`,
+   `data`'s `=`, a leading operator, …) is left to open its own block. *)
+let can_start_atom = function
+  | INT _ | FLOAT _ | STRING _ | CHAR _ | BOOL _
+  | IDENT _ | UPPER _ | UNDERSCORE
+  | LPAREN | LBRACKET | LARRAY | LBRACE | AT | INTERP_OPEN _ -> true
+  | _ -> false
+
 (* String interpolation state *)
 let interp_depth     : int ref  = ref 0
 let interp_buf       : Buffer.t = Buffer.create 64
@@ -70,11 +115,27 @@ let handle_indent col =
   (* When inside `(...)`/`[...]`/`{...}`, ignore indentation changes
      — the grouping characters carry the structure, not whitespace. *)
   if !paren_depth > 0 then ()
-  else
+  else begin
+    (* The match/record header (if any) is now complete; snapshot and clear the
+       one-shots so the *next* indent decides afresh. *)
+    let was_block_opener = !match_pending || !record_pending in
+    match_pending := false;
+    record_pending := false;
     let current = List.hd !indent_stack in
     if col > current then begin
-      indent_stack := col :: !indent_stack;
-      push_pending INDENT
+      let opens_block =
+        was_block_opener
+        || not (match !prev_significant with
+                | Some t -> can_end_expr t
+                | None -> false)
+      in
+      if opens_block then begin
+        indent_stack := col :: !indent_stack;
+        push_pending INDENT
+      end else
+        (* Candidate continuation: resolved in [token] once the deeper line's
+           first token is known.  The indent stack is left untouched. *)
+        pending_indent := Some col
     end else if col < current then begin
       (* Emit NEWLINE for end-of-previous-stmt, then NEWLINE+DEDENT pairs
          so every enclosing block sees a terminator before its DEDENT. *)
@@ -91,6 +152,7 @@ let handle_indent col =
       pop ()
     end else
       push_pending NEWLINE
+  end
 
 (* After matching a multi-line lexeme [s] whose match ends at the current
    position, fix up pos_lnum/pos_bol so column reporting on the lexeme's final
@@ -114,6 +176,10 @@ let reset () =
   look := None;
   last_ident_end := -1;
   paren_depth := 0;
+  prev_significant := None;
+  match_pending := false;
+  record_pending := false;
+  pending_indent := None;
   interp_depth := 0;
   interp_in_triple := false;
   Buffer.clear interp_buf;
@@ -541,29 +607,67 @@ and read_block_comment buf depth line col = parse
    Source positions are preserved: the byte offsets ocamllex scans by are never
    touched, only the [Lexing.position] *records*, which we save per raw token
    and restore so menhir reads each returned token's true position. *)
-let token (lexbuf : Lexing.lexbuf) : token =
+(* Record the last non-layout token the parser actually received, and arm the
+   one-shot flags on a `match`/`record` header (Phase 137). *)
+let note (t : token) : token =
+  (match t with
+   | NEWLINE | INDENT | DEDENT -> ()
+   | MATCH  -> match_pending := true;  prev_significant := Some t
+   | RECORD -> record_pending := true; prev_significant := Some t
+   | _      -> prev_significant := Some t);
+  t
+
+let rec token (lexbuf : Lexing.lexbuf) : token =
   match !look with
   | Some (t, sp, ep) ->
     look := None;
     lexbuf.Lexing.lex_start_p <- sp;
     lexbuf.Lexing.lex_curr_p  <- ep;
-    t
+    note t
   | None ->
     let t = raw_token lexbuf in
-    if t <> NEWLINE then t
+    (match !pending_indent with
+     | Some col -> resolve_pending col t lexbuf
+     | None     -> filter_newline t lexbuf)
+
+(* Resolve a deferred would-be INDENT (Phase 137) now that [t] — the deeper
+   line's first token — is known.  An atom-starter continues the previous
+   expression (swallow the indent); a layout boundary (NEWLINE/EOF: the deeper
+   run was trailing whitespace) drops it; anything else really does open a
+   block (guards, block-`where`, `data`'s `=`, a leading operator, …) so the
+   INDENT is committed and [t] replayed. *)
+and resolve_pending col t lexbuf =
+  pending_indent := None;
+  if can_start_atom t then
+    note t
+  else if t = NEWLINE || t = EOF then
+    filter_newline t lexbuf
+  else begin
+    let sp = lexbuf.Lexing.lex_start_p and ep = lexbuf.Lexing.lex_curr_p in
+    indent_stack := col :: !indent_stack;
+    look := Some (t, sp, ep);
+    (* zero-width INDENT positioned just before [t] *)
+    lexbuf.Lexing.lex_curr_p <- sp;
+    INDENT
+  end
+
+(* Phase 122 `else`-continuation filter: drop a layout NEWLINE immediately
+   before ELSE (keeping any DEDENT), so the grammar never sees `newlines ELSE`. *)
+and filter_newline t lexbuf =
+  if t <> NEWLINE then note t
+  else begin
+    let nl_sp = lexbuf.Lexing.lex_start_p and nl_ep = lexbuf.Lexing.lex_curr_p in
+    let next = raw_token lexbuf in
+    if next = ELSE then note next       (* drop the NEWLINE; ELSE positions are current *)
     else begin
-      let nl_sp = lexbuf.Lexing.lex_start_p and nl_ep = lexbuf.Lexing.lex_curr_p in
-      let next = raw_token lexbuf in
-      if next = ELSE then next            (* drop the NEWLINE; ELSE positions are current *)
-      else begin
-        (* keep the NEWLINE; buffer `next` with its positions; restore the
-           NEWLINE's positions for this return *)
-        look := Some (next, lexbuf.Lexing.lex_start_p, lexbuf.Lexing.lex_curr_p);
-        lexbuf.Lexing.lex_start_p <- nl_sp;
-        lexbuf.Lexing.lex_curr_p  <- nl_ep;
-        t
-      end
+      (* keep the NEWLINE; buffer `next` with its positions; restore the
+         NEWLINE's positions for this return *)
+      look := Some (next, lexbuf.Lexing.lex_start_p, lexbuf.Lexing.lex_curr_p);
+      lexbuf.Lexing.lex_start_p <- nl_sp;
+      lexbuf.Lexing.lex_curr_p  <- nl_ep;
+      t
     end
+  end
 
 (* ── Phase 131: token-stream dump for the differential-testing harness ───
    Renders each [Parser.token] to a stable string and produces the full token

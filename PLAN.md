@@ -186,24 +186,31 @@ above, it is flagged ⭐.
   self-host port — exactly the rough edge it exists to surface.
 
 - **Phase 137 — allow an expression RHS to wrap onto a continuation line
-  (`.mdk` layout ergonomics). TODO.** A function/value body expression must fit
-  on one line: you can't break a long application's argument onto a following
-  indented line. The lexer's leading-operator continuation only rescues a fixed
-  set of infix operators (`|> >> << && || ++ <>`) at the *start* of a line, not a
-  general continuation of an unfinished expression. **Repro:**
+  (`.mdk` layout ergonomics). DONE (2026-06-03).** A long application can now
+  break an argument onto a more-indented following line:
   ```
   parseCmp = chainl1 parseCons
-    (choice [...])      -- Parse error: the `(choice …)` continuation line
+    (choice [...])      -- now continues `chainl1 parseCons`
   ```
-  (worked around in the combinator parser by pulling the arg into a one-line
-  helper). A multi-thousand-line self-hosted compiler will hit this constantly.
-  Fix is a lexer/layout change in `lib/lexer.mll` — treat a more-indented line
-  following an expression that can't have ended (open application, trailing
-  operator/`(`/`,`) as a continuation rather than a new statement. **Delicate**
-  (layout-significant; re-measure `parser.conflicts` and the whitespace round-trip
-  after). Skill: **add-language-feature** (lexer/layout). Already noted as a known
-  limitation in the layout-continuation memory; this elevates it to a roadmap
-  item now that it bites the self-host code repeatedly.
+  **Lexer-only change** (`lib/lexer.mll`); `parser.mly` untouched, so
+  `parser.conflicts` is unchanged. The continuation is purely *subtractive* (it
+  removes an INDENT a one-line form never had), so every continued form parses to
+  the **identical AST** as its one-liner. Mechanism: when a would-be INDENT
+  (`col > current`, `paren_depth = 0`) is *not* a block, suppress it (leave the
+  indent stack at the statement's base column, like the leading-operator rule).
+  An INDENT opens a block iff (a) it follows a `match`/`record` header — the only
+  two openers whose INDENT is preceded by an expression atom, tracked by one-shot
+  `match_pending`/`record_pending` flags — or (b) the previous token *can't end an
+  expression* (`=`/`then`/`=>`/`where`/`do`/… introduce every other block). The
+  remaining candidates are deferred (`pending_indent`) and resolved in `token`
+  once the deeper line's first token is known: an **atom-starter** continues the
+  application; a `|`/`where`/`data`'s `=`/leading-operator *commits* the INDENT and
+  replays the token (so guards, block-`where`, and block `data` keep working
+  without their own flag). `prev_significant`/`can_end_expr`/`can_start_atom` carry
+  the gates. Tests: `test_parser` group "expression-RHS continuation (Phase 137)"
+  (10 cases — positive wraps + block-not-collapsed/guard/where/match/record/data
+  regressions). Found via the self-host parser port (Phase 135), which worked
+  around it by pulling args into one-line helpers.
 
 - **Phase 136 — typechecker: generalize mutually-recursive binding groups. DONE
   (2026-06-03).** A single self-recursive polymorphic function generalized fine,
