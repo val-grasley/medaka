@@ -11,7 +11,7 @@
 -- the prelude), effect rows, records, interfaces/impls + constraint solving,
 -- and explicit type signatures.
 
-import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), Decl(..)}
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
 public export data Mono
@@ -48,9 +48,18 @@ enterLevel _ = set_ref currentLevel (currentLevel.value + 1)
 exitLevel : Unit -> <Mut> Unit
 exitLevel _ = set_ref currentLevel (currentLevel.value - 1)
 
+-- record metadata: name → (quantified param ids, result mono, field types).  A
+-- global Ref (like the reference's record table) so field access / create /
+-- update / patterns can look records up without threading an env field.
+public export data RecordInfo = RecordInfo (List Int) Mono (List (String, Mono))
+
+recordsRef : Ref (List (String, RecordInfo))
+recordsRef = Ref []
+
 resetState : Unit -> <Mut> Unit
 resetState _ =
   let _ = set_ref tyvarCounter 0
+  let _ = set_ref recordsRef []
   set_ref currentLevel 0
 
 -- ── small helpers ─────────────────────────────────────────────────────────
@@ -349,7 +358,35 @@ inferPat env (PTuple pats) = inferPatTuple env pats
 inferPat env (PCons h t) = inferPatCons env h t
 inferPat env (PList pats) = inferPatList env pats
 inferPat env (PAs x p) = inferPatAs env x p
+inferPat env (PRec name fields _) = inferPatRec env name fields
 inferPat _ _ = panic "typecheck: unsupported pattern (slice 1)"
+
+inferPatRec : Env -> String -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
+inferPatRec env name fields = match lookupRecordByName name
+  None => panic ("unknown record: " ++ name)
+  Some ri => inferPatRecWith env ri fields
+
+inferPatRecWith : Env -> RecordInfo -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
+inferPatRecWith env ri fields =
+  let ir = instantiateRecord ri
+  (fst ir, inferRecPatFields env (snd ir) fields)
+
+inferRecPatFields : Env -> List (String, Mono) -> List RecPatField -> <Mut> List (String, Scheme)
+inferRecPatFields _ _ [] = []
+inferRecPatFields env fieldTypes (RecPatField fname mp :: rest) =
+  inferRecPatField env fieldTypes fname mp ++ inferRecPatFields env fieldTypes rest
+
+inferRecPatField : Env -> List (String, Mono) -> String -> Option Pat -> <Mut> List (String, Scheme)
+inferRecPatField env fieldTypes fname mp = match lookupAssocS fname fieldTypes
+  None => panic ("unknown field: " ++ fname)
+  Some ft => inferRecPatFieldWith env ft fname mp
+
+inferRecPatFieldWith : Env -> Mono -> String -> Option Pat -> <Mut> List (String, Scheme)
+inferRecPatFieldWith _ ft fname None = [(fname, monoScheme ft)]
+inferRecPatFieldWith env ft _ (Some p) =
+  let pr = inferPat env p
+  let _ = unify (fst pr) ft
+  snd pr
 
 litType : Lit -> Mono
 litType (LInt _) = TCon "Int"
@@ -430,7 +467,66 @@ infer env (EAnnot e ty) = inferAnnot env e ty
 infer env (EBinOp op l r) = inferBinopE env op l r
 infer env (EUnOp op e) = inferUnop op (infer env e)
 infer env (EInfix op l r) = inferInfix env op l r
+infer env (ERecordCreate name fields) = inferRecordCreate env name fields
+infer env (EFieldAccess e fname) = inferFieldAccess env e fname
+infer env (ERecordUpdate base fields) = inferRecordUpdate env base fields
 infer _ _ = panic "typecheck: unsupported expression (slice 1)"
+
+inferRecordCreate : Env -> String -> List FieldAssign -> <Mut> Mono
+inferRecordCreate env name fields = match lookupRecordByName name
+  None => panic ("unknown record: " ++ name)
+  Some ri => inferRecordCreateWith env ri fields
+
+inferRecordCreateWith : Env -> RecordInfo -> List FieldAssign -> <Mut> Mono
+inferRecordCreateWith env ri fields =
+  let ir = instantiateRecord ri
+  let _ = unifyFieldAssigns env (snd ir) fields
+  fst ir
+
+unifyFieldAssigns : Env -> List (String, Mono) -> List FieldAssign -> <Mut> Unit
+unifyFieldAssigns _ _ [] = ()
+unifyFieldAssigns env fieldTypes (FieldAssign fn val :: rest) =
+  let _ = unifyFieldAssign env fieldTypes fn val
+  unifyFieldAssigns env fieldTypes rest
+
+unifyFieldAssign : Env -> List (String, Mono) -> String -> Expr -> <Mut> Unit
+unifyFieldAssign env fieldTypes fn val = match lookupAssocS fn fieldTypes
+  None => panic ("unknown field: " ++ fn)
+  Some ft => unify (infer env val) ft
+
+inferFieldAccess : Env -> Expr -> String -> <Mut> Mono
+inferFieldAccess env e fname = match lookupRecordByField fname
+  None => panic ("unknown field: " ++ fname)
+  Some ri => inferFieldAccessWith env e ri fname
+
+inferFieldAccessWith : Env -> Expr -> RecordInfo -> String -> <Mut> Mono
+inferFieldAccessWith env e ri fname =
+  let ir = instantiateRecord ri
+  let _ = unify (infer env e) (fst ir)
+  match lookupAssocS fname (snd ir)
+    Some ft => ft
+    None => panic ("no field: " ++ fname)
+
+inferRecordUpdate : Env -> Expr -> List FieldAssign -> <Mut> Mono
+inferRecordUpdate env base fields = match firstFieldName fields
+  None => panic "empty record update"
+  Some fn => inferRecordUpdateField env base fields fn
+
+firstFieldName : List FieldAssign -> Option String
+firstFieldName [] = None
+firstFieldName (FieldAssign fn _ :: _) = Some fn
+
+inferRecordUpdateField : Env -> Expr -> List FieldAssign -> String -> <Mut> Mono
+inferRecordUpdateField env base fields fn = match lookupRecordByField fn
+  None => panic ("unknown field: " ++ fn)
+  Some ri => inferRecordUpdateWith env base fields ri
+
+inferRecordUpdateWith : Env -> Expr -> List FieldAssign -> RecordInfo -> <Mut> Mono
+inferRecordUpdateWith env base fields ri =
+  let ir = instantiateRecord ri
+  let _ = unify (infer env base) (fst ir)
+  let _ = unifyFieldAssigns env (snd ir) fields
+  fst ir
 
 -- operators infer by SHAPE (the typeclass constraint they carry — Num/Eq/… — is
 -- tracked at the value level but never rendered in a scheme, so it's irrelevant
@@ -606,7 +702,50 @@ inferLetGroup env binds body =
 -- ── data declarations → constructor schemes ───────────────────────────────
 registerData : Env -> Decl -> <Mut> Env
 registerData env (DData _ name params variants _) = registerVariants env name params variants
+registerData env (DRecord _ name params fields _) =
+  let _ = registerRecordInfo name params fields
+  env
 registerData env _ = env
+
+-- ── record metadata registration & instantiation ──────────────────────────
+registerRecordInfo : String -> List String -> List Field -> <Mut> Unit
+registerRecordInfo name params fields =
+  let paramVars = freshVars (lengthL params)
+  let tvs = zipL params paramVars
+  let result = applyParams (TCon name) paramVars
+  let fieldMonos = map (recFieldMono tvs) fields
+  set_ref recordsRef ((name, RecordInfo (map monoTyvarId paramVars) result fieldMonos) :: recordsRef.value)
+
+recFieldMono : List (String, Mono) -> Field -> (String, Mono)
+recFieldMono tvs (Field fn ty) = (fn, fromAstType tvs ty)
+
+lookupRecordByName : String -> Option RecordInfo
+lookupRecordByName name = lookupAssocS name recordsRef.value
+
+lookupRecordByField : String -> Option RecordInfo
+lookupRecordByField fname = lookupRecordByFieldGo fname recordsRef.value
+
+lookupRecordByFieldGo : String -> List (String, RecordInfo) -> Option RecordInfo
+lookupRecordByFieldGo _ [] = None
+lookupRecordByFieldGo fname ((_, ri) :: rest)
+  | recordHasField fname ri = Some ri
+  | otherwise = lookupRecordByFieldGo fname rest
+
+recordHasField : String -> RecordInfo -> Bool
+recordHasField fname (RecordInfo _ _ fields) = isSome (lookupAssocS fname fields)
+
+isSome : Option a -> Bool
+isSome (Some _) = True
+isSome None = False
+
+-- instantiate a record's quantified params with fresh vars
+instantiateRecord : RecordInfo -> <Mut> (Mono, List (String, Mono))
+instantiateRecord (RecordInfo paramIds result fields) =
+  let subst = freshSubst paramIds
+  (substMono subst result, map (substField subst) fields)
+
+substField : List (Int, Mono) -> (String, Mono) -> (String, Mono)
+substField subst (fn, fm) = (fn, substMono subst fm)
 
 registerVariants : Env -> String -> List String -> List Variant -> <Mut> Env
 registerVariants env name params variants =

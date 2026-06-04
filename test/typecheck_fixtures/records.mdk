@@ -1,0 +1,24 @@
+-- records: create, field access (incl. nested), update, patterns; parametric
+record P
+  x : Int
+  y : Int
+record Box a
+  val : a
+  tag : String
+record Line
+  a : P
+  b : P
+mkP a b = P { x = a, y = b }
+getX p = p.x
+sumP p = p.x + p.y
+moveX p = { p | x = p.x + 1, y = 0 }
+dist p = match p
+  P { x, y } => x + y
+wrap v = Box { val = v, tag = "t" }
+unwrap b = b.val
+retag b s = { b | tag = s }
+getV b = match b
+  Box { val } => val
+swapBoxes b1 b2 = (b1.val, b2.val)
+endY l = l.b.y
+mkLine p q = Line { a = p, b = q }
