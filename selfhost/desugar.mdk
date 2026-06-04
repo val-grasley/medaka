@@ -215,11 +215,159 @@ lcLam pat acc
   | isRefutable pat = ELam [PVar "__lc_x"] (EMatch (EVar "__lc_x") [Arm pat [] acc, Arm PWild [] (EListLit [])])
   | otherwise = ELam [pat] acc
 
+-- ── Pass: expand_decl (`deriving` → generated impls) ──────────────────────
+-- Mirror of lib/desugar.ml's expand_decl + the Eq/Debug/Display/Generic
+-- derivers.  A `data` with derives becomes the decl (derives cleared) followed
+-- by one generated impl per derived interface.  Generated bodies are core (no
+-- sugar), so they pass through the later passes unchanged.  Generated names are
+-- positional (`__a%d`/`__b%d`) — deterministic, matching the reference.
+-- (Record derives and Ord/Arbitrary are not exercised by the corpus → deferred.)
+expandDecl : Decl -> List Decl
+expandDecl (DData vis name params variants derives) =
+  (DData vis name params variants []) :: deriveImpls (deriveForData name params variants) derives
+expandDecl (DRecord vis name params fields derives) =
+  (DRecord vis name params fields []) :: deriveImpls (deriveForRecord name params fields) derives
+expandDecl d = [d]
+
+deriveImpls : (String -> Option Decl) -> List String -> List Decl
+deriveImpls _ [] = []
+deriveImpls f (d :: ds) = match f d
+  Some gen => gen :: deriveImpls f ds
+  None => deriveImpls f ds
+
+deriveForData : String -> List String -> List Variant -> String -> Option Decl
+deriveForData name params variants "Eq" = Some (applyDeriveParams name params (deriveEqData name variants))
+deriveForData name params variants "Debug" = Some (applyDeriveParams name params (deriveShowData "Debug" "debug" name variants))
+deriveForData name params variants "Display" = Some (applyDeriveParams name params (deriveShowData "Display" "display" name variants))
+deriveForData name params variants "Generic" = Some (applyDeriveParams name params (deriveGenericData name variants))
+deriveForData _ _ _ _ = None
+
+deriveForRecord : String -> List String -> List Field -> String -> Option Decl
+deriveForRecord _ _ _ _ = None
+
+-- rewrite a generated impl's head/constraints for the type's params:
+-- `data Box a deriving Eq` → `impl Eq (Box a) requires Eq a`
+applyDeriveParams : String -> List String -> Decl -> Decl
+applyDeriveParams name params (DImpl pub def iface _ nm _ methods) = DImpl pub def iface [appliedHead name params] nm (paramRequires iface params) methods
+applyDeriveParams _ _ d = d
+
+appliedHead : String -> List String -> Ty
+appliedHead name params = appliedHeadGo (TyCon name) params
+
+appliedHeadGo : Ty -> List String -> Ty
+appliedHeadGo acc [] = acc
+appliedHeadGo acc (p :: ps) = appliedHeadGo (TyApp acc (TyVar p)) ps
+
+paramRequires : String -> List String -> List Require
+paramRequires iface params = map (paramReq iface) params
+
+paramReq : String -> String -> Require
+paramReq iface p = Require iface [TyVar p]
+
+conArity : Variant -> Int
+conArity (Variant _ (ConPos tys)) = listLen tys
+conArity (Variant _ (ConNamed fs)) = listLen fs
+
+listLen : List a -> Int
+listLen [] = 0
+listLen (_ :: xs) = 1 + listLen xs
+
+-- positional binder names: genVars "__a" 2 = ["__a0", "__a1"]
+genVars : String -> Int -> List String
+genVars prefix n = genVarsGo prefix 0 n
+
+genVarsGo : String -> Int -> Int -> List String
+genVarsGo prefix i n
+  | i >= n = []
+  | otherwise = (prefix ++ intToString i) :: genVarsGo prefix (i + 1) n
+
+conPatVars : String -> List String -> Pat
+conPatVars cname vars = PCon cname (map PVar vars)
+
+-- Debug and Display share the rendering ("Con " ++ <call> a0 ++ " " ++ …);
+-- only the interface + method-call name differ.
+deriveShowData : String -> String -> String -> List Variant -> Decl
+deriveShowData iface callName name variants =
+  DImpl True False iface [TyCon name] None [] [ImplMethod callName [PVar "__x"] (EMatch (EVar "__x") (map (showArm callName) variants))]
+
+showArm : String -> Variant -> Arm
+showArm callName (Variant cname payload) =
+  let vars = genVars "__a" (conArity (Variant cname payload))
+  Arm (conPatVars cname vars) [] (showBody callName cname vars)
+
+showBody : String -> String -> List String -> Expr
+showBody _ cname [] = ELit (LString cname)
+showBody callName cname (v :: vs) = concatStrings (ELit (LString (cname ++ " ")) :: showFieldParts callName 0 (v :: vs))
+
+showFieldParts : String -> Int -> List String -> List Expr
+showFieldParts _ _ [] = []
+showFieldParts callName i (v :: vs) = showFieldPart callName i v ++ showFieldParts callName (i + 1) vs
+
+showFieldPart : String -> Int -> String -> List Expr
+showFieldPart callName 0 v = [EApp (EVar callName) (EVar v)]
+showFieldPart callName _ v = [ELit (LString " "), EApp (EVar callName) (EVar v)]
+
+-- Eq: same-constructor arms compare fields pairwise; a cross-constructor
+-- wildcard arm (only with ≥2 variants) returns False.
+deriveEqData : String -> List Variant -> Decl
+deriveEqData name variants =
+  DImpl True False "Eq" [TyCon name] None [] [ImplMethod "eq" [PVar "__x", PVar "__y"] (EMatch (ETuple [EVar "__x", EVar "__y"]) (eqArms variants))]
+
+eqArms : List Variant -> List Arm
+eqArms variants
+  | listLen variants > 1 = map eqSameConArm variants ++ [Arm (PTuple [PWild, PWild]) [] (EVar "False")]
+  | otherwise = map eqSameConArm variants
+
+eqSameConArm : Variant -> Arm
+eqSameConArm (Variant cname payload) =
+  let n = conArity (Variant cname payload)
+  Arm (PTuple [conPatVars cname (genVars "__a" n), conPatVars cname (genVars "__b" n)]) [] (eqBody n (genVars "__a" n) (genVars "__b" n))
+
+eqBody : Int -> List String -> List String -> Expr
+eqBody 0 _ _ = EVar "True"
+eqBody _ avars bvars = andAll (zipEqCalls avars bvars)
+
+zipEqCalls : List String -> List String -> List Expr
+zipEqCalls [] _ = []
+zipEqCalls _ [] = []
+zipEqCalls (a :: arest) (b :: brest) = EApp (EApp (EVar "eq") (EVar a)) (EVar b) :: zipEqCalls arest brest
+
+andAll : List Expr -> Expr
+andAll [] = EVar "True"
+andAll (first :: rest) = andLeft first rest
+
+andLeft : Expr -> List Expr -> Expr
+andLeft acc [] = acc
+andLeft acc (e :: rest) = andLeft (EBinOp "&&" acc e) rest
+
+-- Generic: one arm per constructor → RCon name [to_rep a0, …]
+deriveGenericData : String -> List Variant -> Decl
+deriveGenericData name variants =
+  DImpl True False "Generic" [TyCon name] None [] [ImplMethod "to_rep" [PVar "__x"] (EMatch (EVar "__x") (map genericArm variants))]
+
+genericArm : Variant -> Arm
+genericArm (Variant cname payload) =
+  let vars = genVars "__a" (conArity (Variant cname payload))
+  Arm (conPatVars cname vars) [] (genericRcon cname vars)
+
+genericRcon : String -> List String -> Expr
+genericRcon cname vars = EApp (EApp (EVar "RCon") (ELit (LString cname))) (EListLit (map toRep vars))
+
+toRep : String -> Expr
+toRep x = EApp (EVar "to_rep") (EVar x)
+
+concatMapDecl : (Decl -> List Decl) -> List Decl -> List Decl
+concatMapDecl f prog = concatLists (map f prog)
+
+concatLists : List (List a) -> List a
+concatLists [] = []
+concatLists (xs :: rest) = xs ++ concatLists rest
+
 -- ── The pass pipeline ─────────────────────────────────────────────────────
 -- Ported incrementally, in the reference order (later passes run last).  So
--- far: desugar_list_comps → lower_do_blocks → desugar_sugar.  Coming (earlier):
--- deriving expansion, record puns, container literals; and `?` (desugar_questions,
--- between list comps and do-blocks) which the real corpus never exercises.
+-- far: expand_decl → desugar_list_comps → lower_do_blocks → desugar_sugar.
+-- Coming (earlier/between): merge_iface_defaults, record puns, container
+-- literals; and `?` (desugar_questions) which the real corpus never exercises.
 export
 desugar : List Decl -> List Decl
-desugar prog = mapProg rewriteSugar (mapProg rewriteDo (mapProg rewriteListComp prog))
+desugar prog = mapProg rewriteSugar (mapProg rewriteDo (mapProg rewriteListComp (concatMapDecl expandDecl prog)))
