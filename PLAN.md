@@ -159,6 +159,14 @@ differential harness on the interpreter.
   ("Unterminated string literal") — so it isn't valid Medaka and there's nothing
   to mirror.
 
+  **Next: the remaining pipeline stages** (`desugar → resolve → method_marker →
+  typecheck/exhaust → eval`). A high-level, stage-by-stage port plan — ordering,
+  per-stage difficulty, and how each stays differentially testable against the
+  reference (astdump for AST stages; the existing `=== TYPES ===` / `=== EVAL ===`
+  golden sections for typecheck/eval) — lives in **`selfhost/README.md` →
+  Roadmap**. Suggested order is easy-first (desugar → resolve → method_marker →
+  exhaust → eval) with the type checker last.
+
 ### Stage 2 — LLVM backend (after self-host)
 
 With the language proven, build native codegen. The heavy, decision-dense work

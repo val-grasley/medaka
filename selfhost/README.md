@@ -150,6 +150,94 @@ the stage is done when all pass.
 
   *(Parser combinators were spiked and parked — blocked on Phase 136; see PLAN.)*
 
+## Roadmap — remaining Stage 1 stages
+
+Lexer and parser are done. The rest of the reference pipeline
+(`desugar → resolve → method_marker → typecheck (runs exhaust) → eval`) is still
+OCaml-only. This section sketches how to port it.
+
+### The methodology carries over
+
+Every remaining stage is **differentially testable against the OCaml reference**,
+the same way the lexer/parser were — and most of the oracle infrastructure
+already exists:
+
+- **AST→AST stages** (desugar, method_marker) keep the same `program` type, so
+  they dump as S-expressions through the existing `dev/astdump.exe` ↔
+  `selfhost/sexp.mdk` machinery. The diff is just `source → both pipelines →
+  compare dumps`, and the **entire corpus** (stdlib + `test/diff_fixtures/` +
+  `selfhost/`'s own source) becomes the test set for free. First task for each:
+  add a dump mode to `astdump` (e.g. run `Desugar.desugar_program` before the
+  `strip_locs` dump) and mirror any new/changed node in `ast.mdk`/`sexp.mdk`.
+- **typecheck** emits type *schemes* — already serialized as the `=== TYPES ===`
+  section of every `test/diff_fixtures/*.golden` (see `dev/gen_golden.ml`). The
+  diff is inferred-scheme-per-binding.
+- **eval** produces runtime values (closures/refs — not serializable), but its
+  **stdout** is already captured as the `=== EVAL ===` golden section. The diff
+  is program output: run it, compare what it printed.
+- **resolve / exhaust** emit *diagnostics* (error / warning strings) — trivially
+  diffable, but they need **negative fixtures** (programs with deliberate unbound
+  vars, privacy violations, non-exhaustive matches); today's corpus is all valid
+  programs, so this is net-new test material.
+
+Each new IR shape gets the same `ast.mdk ↔ sexp.mdk ↔ dev/astdump.ml` lockstep
+treatment used throughout the parser port. Mutable-state-heavy designs re-express
+with `Ref` + the `hash_map`/`map` stdlib (which is exactly why those were flagged
+Stage-0 prerequisites in `../PLAN.md`).
+
+### Stages, in suggested order (easy-first; hardest last)
+
+| # | Stage | ~LOC | Difficulty | In → Out | Validate via |
+|---|-------|------|-----------|----------|--------------|
+| 1 | **desugar** | ~980 | low–med | `program → program` | astdump (`--desugar`) over whole corpus |
+| 2 | **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diff error list; needs negative fixtures |
+| 3 | **method_marker** | ~420 | low | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump (render marker nodes) |
+| 4 | **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diff warning list; needs (non-)exhaustive fixtures |
+| 5 | **eval** | ~2350 | hard (plumbing) | `program → values` | diff stdout vs `=== EVAL ===` |
+| 6 | **typecheck** | ~4650 | **very hard** | `program → schemes` | diff vs `=== TYPES ===` |
+
+1. **Desugar** — the natural next step. Pure surface→core rewrites (list
+   comprehensions → folds, `do` → `andThen`/`pure`, string interp → concat,
+   sections, guards, record puns). Same AST in/out, so it reuses the parser's
+   *entire* validation harness. Gotcha: the 8 passes run in a fixed order, and
+   the `do`-block lowering is the one fiddly bit.
+2. **Resolve** — name binding, scope, and visibility checks; output is a
+   diagnostic list plus a name environment (hashtables, not directly dumpable).
+   Dense mutable-env plumbing; multi-module import/alias resolution is the hard
+   part. Reuses `loader` concepts.
+3. **Method_marker** — rewrites interface-method / constrained-fn `EVar`s to
+   `EMethodRef`/`EDictApp` (refs left unfilled for typecheck). AST→AST, dumpable.
+   The prelude-shadowing name-set logic is the bulk.
+4. **Exhaust** — Maranget pattern-matrix for non-exhaustive `match`/guard
+   warnings. The algorithm is language-agnostic; the work is a faithful port of
+   the matrix operations. Independently testable, so it can slot in any time.
+5. **Eval** — the **Stage-1 capstone**: a tree-walk interpreter that makes the
+   self-hosted compiler *executable on itself*. Plumbing-heavy (per-frame env
+   refs, `VMulti` typeclass dispatch, lazy-thunk forcing, dict-passing
+   semantics) but not algorithmically deep. Prerequisite sub-task: port the small
+   `dict_pass`. It can be developed against the **reference's** typed +
+   dict-passed AST, so it does **not** require typecheck to be ported first.
+6. **Typecheck** — the complexity engine, deliberately last: Hindley–Milner
+   unification (union-find over mutable cells, occurs-check), interface/impl
+   coherence + overlap rules, and the Phase-69/69.x method-routing &
+   dictionary-passing elaboration, plus two-pass promotion. Port incrementally
+   (literals → lambdas → let-polymorphism → ADTs → interfaces → dict-passing),
+   watching the `=== TYPES ===` match grow from a fixture subset outward.
+
+**Ordering rationale.** Easy-first builds momentum and reuses the existing
+harness while Medaka fluency matures, leaving the type checker for last. Note the
+dependency wrinkle: a *complete* self-hosted pipeline also needs `dict_pass`
+(small), and the reference's `Elaborate` two-pass orchestration (mark →
+typecheck → re-mark → re-typecheck → dict_pass) must be mirrored once both ends
+exist.
+
+**End state of Stage 1.** A Medaka-written front-end
+(lex → parse → desugar → resolve → mark → typecheck → exhaust) plus the
+interpreter (eval), all running on the existing OCaml interpreter and validated
+stage-by-stage against the reference — at which point the self-hosted compiler
+can process its own source (the bootstrap). Stage 2 (the LLVM backend) follows;
+see **North star → Stage 2** in `../PLAN.md`.
+
 ## Self-host-surfaced compiler fix
 
 **Phase 134 (fixed).** Porting the lexer surfaced a real bug: an `<IO>`-returning
