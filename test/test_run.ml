@@ -578,6 +578,46 @@ main : <IO> Unit
 main = println (f 99)
 |}
 
+(* ── Phase 138: recursive value forced during its own definition ──────────── *)
+
+(* A non-function self-recursive binding whose reference is *forced* while it is
+   still being computed (`loop = ident loop` — `ident`'s strict argument
+   re-looks-up `loop`) used to leak a raw OCaml `CamlinternalLazy.Undefined`
+   fatal error.  It must now surface a proper Medaka `Eval_error` naming the
+   binding and explaining the rule. *)
+let str_contains haystack needle =
+  let hl = String.length haystack and nl = String.length needle in
+  let rec go i = i + nl <= hl && (String.sub haystack i nl = needle || go (i + 1)) in
+  go 0
+
+let recursive_value_force_src =
+  {|ident x = x
+loop = ident loop
+main = println loop
+|}
+
+let t_recursive_value_force_err () =
+  let src = recursive_value_force_src in
+  match (try Some (capture_run src) with
+         | Eval_error _ -> None
+         | _ -> Some "<raw OCaml exception leaked>") with
+  | None -> ()
+  | Some out ->
+    failwith (Printf.sprintf
+      "Expected a Medaka Eval_error but got:\n%s\n\nSource:\n%s" out src)
+
+(* Tighter: the diagnostic names the offending binding and the rule. *)
+let t_recursive_value_force_msg () =
+  let src = recursive_value_force_src in
+  match (try ignore (capture_run src); None
+         with Eval_error (msg, _) -> Some msg) with
+  | Some msg
+    when str_contains msg "loop"
+      && str_contains msg "forced while it is being defined" -> ()
+  | Some msg ->
+    failwith (Printf.sprintf "Eval_error message missing expected text: %s" msg)
+  | None -> failwith "Expected a runtime error but evaluation succeeded"
+
 (* ── Phase 91: guard fall-through end-to-end ──────────────────────────────── *)
 
 (* A guarded first clause whose guard fails falls through to a later pattern
@@ -951,6 +991,8 @@ let () = Alcotest.run "Run"
     "multi print",   `Quick, t_multi_print;
     "let mut",       `Quick, t_let_mut;
     "runtime error", `Quick, t_runtime_err;
+    "recursive value force error (Phase 138)", `Quick, t_recursive_value_force_err;
+    "recursive value force message (Phase 138)", `Quick, t_recursive_value_force_msg;
     "guard fall-through (Phase 91)", `Quick, t_guard_fallthrough;
     "guard exhausted error (Phase 91)", `Quick, t_guard_exhausted_err;
     "string kernel",      `Quick, t_string_kernel;

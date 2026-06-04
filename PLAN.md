@@ -164,26 +164,31 @@ above, it is flagged ⭐.
 ### Compiler / language
 
 - **Phase 138 — clear error for a recursive *value* forced during its own
-  definition (replace the `CamlinternalLazy.Undefined` leak). TODO.** A non-
-  function binding that references itself such that the reference is *forced*
-  while the binding is still being computed crashes the interpreter with a raw
-  OCaml `Fatal error: exception CamlinternalLazy.Undefined` instead of a Medaka
-  diagnostic. Typechecks fine; it's an **eval-time** crash. **Minimal repro:**
+  definition (replace the `CamlinternalLazy.Undefined` leak). DONE
+  (2026-06-03).** A non-function binding that references itself such that the
+  reference is *forced* while the binding is still being computed crashed the
+  interpreter with a raw OCaml `Fatal error: exception
+  CamlinternalLazy.Undefined` instead of a Medaka diagnostic. Typechecks fine;
+  it's an **eval-time** crash. **Minimal repro (now a clean error):**
   ```
   ident x = x
   loop = ident loop      -- forces `loop` (a strict arg) while defining it
-  main = println loop    -- → Fatal error: exception CamlinternalLazy.Undefined
+  main = println loop    -- → panic: recursive value 'loop' is forced while …
   ```
   Surfaced by the Phase 135 combinator parser, where recursive parser *values*
   (`skipNewlines = orElse (sepThen … skipNewlines) …`) hit exactly this — the fix
   there was to recurse through a `do`-continuation (lazy) instead of a strict
-  self-argument. A clearer error would name the binding and explain the rule,
-  e.g. *"recursive value 'loop' is forced while it is being defined; a
-  non-function recursive binding must defer its self-reference (through a
-  lambda/continuation)."* Fix lands in `lib/eval.ml`'s top-level/letrec value
-  thunk-forcing path (catch the self-force, raise a proper `Eval_error`). Skill:
-  **debug-pipeline** (locate the force path) → eval diagnostic. Found via the
-  self-host port — exactly the rough edge it exists to surface.
+  self-argument. **Fix:** a `force_thunk name t` helper in `lib/eval.ml` wraps
+  `Lazy.force` and converts `CamlinternalLazy.Undefined` into a named
+  `Eval_error` ("recursive value 'NAME' is forced while it is being defined; a
+  non-function recursive binding must defer its self-reference (through a lambda
+  or continuation)"). The two thunk-force sites that know the binding name —
+  `lookup` and `lookup_method` — route through it; the deferred-force loop and
+  multi-module driver force via `lookup`, so they inherit the catch. `loc` is
+  `None` (the force site has no convenient source loc, matching the existing
+  "unbound identifier" error). Regression tests in `test_run` (raw-crash-vs-
+  Eval_error + message-content). Found via the self-host port — exactly the rough
+  edge it exists to surface.
 
 - **Phase 137 — allow an expression RHS to wrap onto a continuation line
   (`.mdk` layout ergonomics). TODO.** A function/value body expression must fit

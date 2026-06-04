@@ -80,6 +80,20 @@ let snapshot_update : bool ref   = ref false
 
 (* ── Env helpers ─────────────────────────────────────────────────────────── *)
 
+(* Force a zero-param binding's deferred thunk (Phase 138).  If the binding
+   references itself such that the reference is forced *while it is still being
+   computed* (e.g. `loop = ident loop`, where `ident`'s strict argument re-looks
+   up `loop`), OCaml's `Lazy.force` re-enters the in-progress thunk and raises
+   `CamlinternalLazy.Undefined`.  Catch it and surface a proper Medaka
+   diagnostic naming the binding instead of leaking a raw OCaml fatal error. *)
+let force_thunk name t =
+  try Lazy.force t
+  with CamlinternalLazy.Undefined ->
+    raise (Eval_error (Printf.sprintf
+      "recursive value '%s' is forced while it is being defined; a \
+       non-function recursive binding must defer its self-reference \
+       (through a lambda or continuation)" name, None))
+
 let lookup env name =
   let rec search = function
     | [] -> raise (Eval_error ("unbound identifier: " ^ name, None))
@@ -88,7 +102,7 @@ let lookup env name =
        | Some cell ->
          (match !cell with
           | VThunk t ->
-            let v = Lazy.force t in
+            let v = force_thunk name t in
             cell := v;
             v
           | v -> v)
@@ -111,7 +125,7 @@ let lookup_method env name =
       (match List.assoc_opt name frame with
        | Some cell ->
          let v = (match !cell with
-           | VThunk t -> let v = Lazy.force t in cell := v; v
+           | VThunk t -> let v = force_thunk name t in cell := v; v
            | v -> v) in
          (match v with VMulti _ -> v | _ -> search rest)
        | None -> search rest)
