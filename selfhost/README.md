@@ -120,7 +120,7 @@ the stage is done when all pass.
     patterns.
 - ✅ **Stage 1 parser complete.** Validated byte-for-byte against the OCaml
   reference (`dev/astdump.exe`) on **all 13/13 real stdlib `.mdk` files**, the
-  **15/15 real `test/diff_fixtures/`**, **22/22 curated `test/parse_fixtures/`**,
+  **15/15 real `test/diff_fixtures/`**, **23/23 curated `test/parse_fixtures/`**,
   and — the milestone — **its own entire 6-file source** (`selfhost/*.mdk`,
   including `lexer.mdk` and `parser.mdk` parsing themselves). The reference
   dumper `dev/astdump.ml` was extended in lockstep so no decl/expr renders as a
