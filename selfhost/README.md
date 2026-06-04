@@ -37,6 +37,8 @@ diff with `lib/`:
 | `mark_main.mdk` | Runnable entry: `medaka run selfhost/mark_main.mdk <prelude.mdk> <src.mdk>` parses + desugars both, marks the target, prints the S-expression (diffs against `astdump --mark`). |
 | `resolve.mdk` | Port of `lib/resolve.ml` (single-file path). Name-binding / scope / unknown-name checks over a list-based env seeded from runtime + prelude; `resolveProgram : List Decl -> List Decl -> List Decl -> List ResError`. |
 | `resolve_main.mdk` | Runnable entry: `medaka run selfhost/resolve_main.mdk <runtime.mdk> <core.mdk> <src.mdk>` prints one diagnostic per line (diffs against `diagdump --resolve`, the harness sorts). |
+| `exhaust.mdk` | Port of `lib/exhaust.ml`'s `check_guard_exhaustiveness` (guard coverage over the raw AST; Maranget `useful` matrix). No prelude — the ctor oracle is built from the file's own data decls + builtins. `exhaustToLines : List Decl -> String`. |
+| `exhaust_main.mdk` | Runnable entry: `medaka run selfhost/exhaust_main.mdk <src.mdk>` prints one guard warning per line (diffs against `diagdump --exhaust`, the harness sorts). Parses **without** desugaring (guards must still be `EGuards`). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -160,9 +162,11 @@ the stage is done when all pass.
 
 ## Roadmap — remaining Stage 1 stages
 
-Lexer, parser, **desugar**, **method_marker**, and **resolve** (single-file
-path) are done. The rest of the reference pipeline (`typecheck (runs exhaust) →
-eval`) is still OCaml-only. This section sketches how to port it.
+Lexer, parser, **desugar**, **method_marker**, **resolve** (single-file path),
+and **exhaust** (guard-coverage pass) are done. What remains is the **typecheck**
+and **eval** capstones (typecheck also drives the type-aware `check_match`
+exhaustiveness, distinct from the guard pass ported here). This section sketches
+how to port them.
 
 **Validation infrastructure for every remaining stage is already built** (the
 "de-risk first" pass):
@@ -210,7 +214,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 | 1 | ✅ **desugar** | ~980 | low–med | `program → program` | astdump `--desugar`, **60/60 corpus** |
 | 2 | ✅ **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve`, **full corpus + 9 fixtures** |
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
-| 4 | **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust` (fixtures + harness ready) |
+| 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
 | 5 | **eval** | ~2350 | hard (plumbing) | `program → values` | diff stdout vs `=== EVAL ===` |
 | 6 | **typecheck** | ~4650 | **very hard** | `program → schemes` | diff vs `=== TYPES ===` |
 
@@ -272,9 +276,22 @@ Stage-0 prerequisites in `../PLAN.md`).
    `astdump --mark` byte-for-byte on the whole corpus, incl. the marker marking
    its own source. Simplification still standing: `shadow_rename` skips the
    "name is also a local binder" exclusion (no corpus file triggers it).
-4. **Exhaust** — Maranget pattern-matrix for non-exhaustive `match`/guard
-   warnings. The algorithm is language-agnostic; the work is a faithful port of
-   the matrix operations. Independently testable, so it can slot in any time.
+4. ✅ **Exhaust — DONE (guard-coverage pass).** `selfhost/exhaust.mdk` +
+   `exhaust_main.mdk`: the standalone `check_guard_exhaustiveness` (Phase 91(2))
+   over the **raw pre-desugar AST** (function/where guards still `EGuards`).
+   Warns once per same-name clause group whose guards may fall through *unless*
+   the non-falling-through clauses' patterns already cover every input — decided
+   by a faithful port of the Maranget `useful` pattern-matrix recursion
+   (`specialize`/`default`/`head_ctors`/`useful`), with multi-param coverage
+   reduced to one synthetic `__tupleN__` column. The constructor oracle is built
+   from the file's own data decls + the syntactic builtins (Bool/List/Unit), so
+   **no prelude is needed**. Groups gathered from top-level `DFunDef` clauses,
+   `where`/let-group (`ELetGroup`) clauses reached anywhere in a body, impl
+   methods, and interface defaults. Matches `diagdump --exhaust` byte-for-byte on
+   the full corpus + all 5 `test/exhaust_fixtures/` cases (incl. the
+   `useful`-machinery "excused by catch-all" control and the multi-warning case).
+   The type-aware `check_match` exhaustiveness is **not** here — it lives inside
+   typecheck (it needs the scrutinee type), so it ports with that stage.
 5. **Eval** — the **Stage-1 capstone**: a tree-walk interpreter that makes the
    self-hosted compiler *executable on itself*. Plumbing-heavy (per-frame env
    refs, `VMulti` typeclass dispatch, lazy-thunk forcing, dict-passing
