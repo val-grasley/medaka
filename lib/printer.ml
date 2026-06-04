@@ -588,10 +588,17 @@ and print_match_arms arms =
             ) guards))
     ^^ (match print_if_rhs body with
         | Some g -> text " =>" ^^ g
-        (* Phase 137: like guard arms, a match-arm body does not wrap its
+        (* A bare-block body self-indents (its print starts with a Hardline), so
+           it takes `=>` with no trailing space — otherwise the space is stranded
+           at the end of the `=>` line.  Mirrors the `EBlock` case in
+           `print_def_rhs`.
+           Phase 137: like guard arms, a match-arm body does not wrap its
            application spine — over-width here is usually the `pattern =>` prefix,
            so breaking the call only strands short args one-per-line. *)
-        | None   -> text " => " ^^ print_expr_body ~wrap_app:false body)
+        | None ->
+          (match strip_loc body with
+           | EBlock _ -> text " =>" ^^ print_expr_body ~wrap_app:false body
+           | _        -> text " => " ^^ print_expr_body ~wrap_app:false body))
   in
   indent_block (sep_by Hardline (List.map arm arms))
 
@@ -607,9 +614,14 @@ and print_guard_arms arms =
       ) guards)
     ^^ (match print_if_rhs body with
         | Some g -> text " =" ^^ g
-        (* Phase 137: no application-spine wrapping in guard bodies — see
+        (* A bare-block body self-indents — `=` with no trailing space (see the
+           match-arm case above).
+           Phase 137: no application-spine wrapping in guard bodies — see
            `print_expr_body`. *)
-        | None   -> text " = " ^^ print_expr_body ~wrap_app:false body)
+        | None ->
+          (match strip_loc body with
+           | EBlock _ -> text " =" ^^ print_expr_body ~wrap_app:false body
+           | _        -> text " = " ^^ print_expr_body ~wrap_app:false body))
   in
   indent_block (sep_by Hardline (List.map arm arms))
 

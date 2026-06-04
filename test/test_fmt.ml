@@ -186,6 +186,22 @@ let id_if_rhs_wide_elseless =
     \  if count.value * 4 > arrayLength buckets.value * 3 then\n\
     \    resize buckets count\n"
 
+(* A bare-block body (multi-statement) after `=>`/`=` must not leave a trailing
+   space on the arm/clause line — the block self-indents onto the next line. *)
+let no_trailing_ws label src () =
+  let out = format src in
+  List.iter (fun l ->
+    if String.length l > 0 && l.[String.length l - 1] = ' ' then
+      failwith (Printf.sprintf "%s: trailing whitespace in:\n%s" label out))
+    (String.split_on_char '\n' out)
+
+let fmt_match_arm_block_no_trailing_ws =
+  no_trailing_ws "match-arm block body"
+    "f x =\n  match x\n    Some y =>\n      log y\n      use y\n    None =>\n      stop\n"
+let fmt_guard_block_no_trailing_ws =
+  no_trailing_ws "guard-arm block body"
+    "g n\n  | n > 0 =\n    log n\n    step n\n  | otherwise =\n    halt\n"
+
 (* ── Phase 137: application-spine wrapping ─────────── *)
 
 (* A too-wide application in a `=` body breaks its argument spine onto
@@ -516,6 +532,8 @@ let () =
       Alcotest.test_case "else-less if def-RHS block idempotent" `Quick id_if_elseless_def_rhs_block;
       Alcotest.test_case "wide if-RHS wraps to block layout" `Quick fmt_if_rhs_wraps_when_wide;
       Alcotest.test_case "short if-RHS stays inline" `Quick fmt_if_rhs_stays_inline_when_short;
+      Alcotest.test_case "match-arm block no trailing ws" `Quick fmt_match_arm_block_no_trailing_ws;
+      Alcotest.test_case "guard-arm block no trailing ws" `Quick fmt_guard_block_no_trailing_ws;
       Alcotest.test_case "wide application wraps spine" `Quick fmt_app_wraps_when_wide;
       Alcotest.test_case "wide application idempotent" `Quick id_app_wrap_wide;
       Alcotest.test_case "short application stays inline" `Quick fmt_app_stays_inline_when_short;
