@@ -29,18 +29,32 @@ mapKids f (EUnOp op a) = EUnOp op (mapExpr f a)
 mapKids f (EInfix op a b) = EInfix op (mapExpr f a) (mapExpr f b)
 mapKids f (EFieldAccess e0 n) = EFieldAccess (mapExpr f e0) n
 mapKids f (ERecordCreate n fs) = ERecordCreate n (map (mapFieldAssign f) fs)
-mapKids f (ERecordUpdate e0 fs) = ERecordUpdate (mapExpr f e0) (map (mapFieldAssign f) fs)
+mapKids f (ERecordUpdate e0 fs) = ERecordUpdate
+  (mapExpr f e0)
+  (map (mapFieldAssign f) fs)
 mapKids f (EArrayLit es) = EArrayLit (map (mapExpr f) es)
 mapKids f (EListLit es) = EListLit (map (mapExpr f) es)
 mapKids f (ETuple es) = ETuple (map (mapExpr f) es)
 mapKids f (EIndex e0 i) = EIndex (mapExpr f e0) (mapExpr f i)
-mapKids f (ERangeList lo hi incl) = ERangeList (mapExpr f lo) (mapExpr f hi) incl
-mapKids f (ERangeArray lo hi incl) = ERangeArray (mapExpr f lo) (mapExpr f hi) incl
-mapKids f (ESlice e0 lo hi incl) = ESlice (mapExpr f e0) (mapExpr f lo) (mapExpr f hi) incl
+mapKids f (ERangeList lo hi incl) = ERangeList
+  (mapExpr f lo)
+  (mapExpr f hi)
+  incl
+mapKids f (ERangeArray lo hi incl) = ERangeArray
+  (mapExpr f lo)
+  (mapExpr f hi)
+  incl
+mapKids f (ESlice e0 lo hi incl) = ESlice
+  (mapExpr f e0)
+  (mapExpr f lo)
+  (mapExpr f hi)
+  incl
 mapKids f (EBlock stmts) = EBlock (map (mapDoStmt f) stmts)
 mapKids f (EDo stmts) = EDo (map (mapDoStmt f) stmts)
 mapKids f (EAnnot e0 t) = EAnnot (mapExpr f e0) t
-mapKids f (EListComp body quals) = EListComp (mapExpr f body) (map (mapLcQual f) quals)
+mapKids f (EListComp body quals) = EListComp
+  (mapExpr f body)
+  (map (mapLcQual f) quals)
 mapKids f (EQuestion e0) = EQuestion (mapExpr f e0)
 mapKids f (EStringInterp parts) = EStringInterp (map (mapInterp f) parts)
 mapKids f (EGuards arms) = EGuards (map (mapGuardArm f) arms)
@@ -87,8 +101,21 @@ mapInterp f (InterpExpr e) = InterpExpr (mapExpr f e)
 
 mapDecl : (Expr -> Expr) -> Decl -> Decl
 mapDecl f (DFunDef pub n ps e) = DFunDef pub n ps (mapExpr f e)
-mapDecl f (DInterface pub def n tps sups methods) = DInterface pub def n tps sups (map (mapIfaceMethod f) methods)
-mapDecl f (DImpl pub def iface tys name reqs methods) = DImpl pub def iface tys name reqs (map (mapImplMethod f) methods)
+mapDecl f (DInterface pub def n tps sups methods) = DInterface
+  pub
+  def
+  n
+  tps
+  sups
+  (map (mapIfaceMethod f) methods)
+mapDecl f (DImpl pub def iface tys name reqs methods) = DImpl
+  pub
+  def
+  iface
+  tys
+  name
+  reqs
+  (map (mapImplMethod f) methods)
 mapDecl f (DProp pub name params body) = DProp pub name params (mapExpr f body)
 mapDecl f (DTest pub name body) = DTest pub name (mapExpr f body)
 mapDecl f (DBench pub name body) = DBench pub name (mapExpr f body)
@@ -96,7 +123,10 @@ mapDecl _ d = d
 
 mapIfaceMethod : (Expr -> Expr) -> IfaceMethod -> IfaceMethod
 mapIfaceMethod _ (IfaceMethod n ty None) = IfaceMethod n ty None
-mapIfaceMethod f (IfaceMethod n ty (Some (MethodDefault ps e))) = IfaceMethod n ty (Some (MethodDefault ps (mapExpr f e)))
+mapIfaceMethod f (IfaceMethod n ty (Some (MethodDefault ps e))) = IfaceMethod
+  n
+  ty
+  (Some (MethodDefault ps (mapExpr f e)))
 
 mapImplMethod : (Expr -> Expr) -> ImplMethod -> ImplMethod
 mapImplMethod f (ImplMethod n ps e) = ImplMethod n ps (mapExpr f e)
@@ -108,7 +138,9 @@ mapProg f prog = map (mapDecl f) prog
 -- Mirror of lib/desugar.ml's rewrite_sugar, applied bottom-up by mapProg.
 rewriteSugar : Expr -> Expr
 rewriteSugar (EGuards arms) = guardsToCore arms
-rewriteSugar (EFunction arms) = ELam [PVar "__fn_arg"] (EMatch (EVar "__fn_arg") arms)
+rewriteSugar (EFunction arms) = ELam
+  [PVar "__fn_arg"]
+  (EMatch (EVar "__fn_arg") arms)
 rewriteSugar (ESection s) = sectionToCore s
 rewriteSugar (EStringInterp parts) = interpToCore parts
 rewriteSugar e = e
@@ -116,19 +148,26 @@ rewriteSugar e = e
 -- guard arms → nested if/match, terminated by `__fallthrough__ ()` (fold_right)
 guardsToCore : List GuardArm -> Expr
 guardsToCore [] = fallthrough
-guardsToCore ((GuardArm quals body) :: rest) = armChain quals body (guardsToCore rest)
+guardsToCore ((GuardArm quals body)::rest) = armChain
+  quals
+  body
+  (guardsToCore rest)
 
 fallthrough : Expr
 fallthrough = EApp (EVar "__fallthrough__") (ELit LUnit)
 
 armChain : List Guard -> Expr -> Expr -> Expr
 armChain [] body _ = body
-armChain ((GBool e) :: qs) body els = EIf e (armChain qs body els) els
-armChain ((GBind p e) :: qs) body els = EMatch e [Arm p [] (armChain qs body els), Arm PWild [] els]
+armChain ((GBool e)::qs) body els = EIf e (armChain qs body els) els
+armChain ((GBind p e)::qs) body els = EMatch
+  e
+  [Arm p [] (armChain qs body els), Arm PWild [] els]
 
 -- operator sections → lambdas
 sectionToCore : Section -> Expr
-sectionToCore (SecBare op) = ELam [PVar "_a", PVar "_b"] (EBinOp op (EVar "_a") (EVar "_b"))
+sectionToCore (SecBare op) = ELam
+  [PVar "_a", PVar "_b"]
+  (EBinOp op (EVar "_a") (EVar "_b"))
 sectionToCore (SecRight op e) = ELam [PVar "_s"] (EBinOp op (EVar "_s") e)
 sectionToCore (SecLeft e op) = ELam [PVar "_s"] (EBinOp op e (EVar "_s"))
 
@@ -143,11 +182,11 @@ interpPartToExpr (InterpExpr e) = EApp (EVar "display") e
 concatStrings : List Expr -> Expr
 concatStrings [] = ELit (LString "")
 concatStrings [x] = x
-concatStrings (first :: rest) = concatLeft first rest
+concatStrings (first::rest) = concatLeft first rest
 
 concatLeft : Expr -> List Expr -> Expr
 concatLeft acc [] = acc
-concatLeft acc (e :: rest) = concatLeft (EBinOp "++" acc e) rest
+concatLeft acc (e::rest) = concatLeft (EBinOp "++" acc e) rest
 
 -- ── Pass: desugar_questions (`let p = e ? in rest` → andThen) ────────────
 -- Mirror of lib/desugar.ml's rewrite_question_expr.  A `let`-bound `?` lowers to
@@ -160,7 +199,9 @@ rewriteQuestion (EBlock stmts) = blockQuestion stmts
 rewriteQuestion e = e
 
 questionLet : Bool -> Bool -> Pat -> Expr -> Expr -> Expr
-questionLet m isFun pat (EQuestion inner) e2 = EApp (EApp (EVar "andThen") inner) (ELam [pat] e2)
+questionLet m isFun pat (EQuestion inner) e2 = EApp
+  (EApp (EVar "andThen") inner)
+  (ELam [pat] e2)
 questionLet m isFun pat e1 e2 = ELet m isFun pat e1 e2
 
 rewriteQStmt : DoStmt -> DoStmt
@@ -178,8 +219,8 @@ blockQuestion stmts
 
 anyQuestionStmt : List DoStmt -> Bool
 anyQuestionStmt [] = False
-anyQuestionStmt ((DoLet _ _ (EQuestion _)) :: _) = True
-anyQuestionStmt (_ :: rest) = anyQuestionStmt rest
+anyQuestionStmt ((DoLet _ _ (EQuestion _))::_) = True
+anyQuestionStmt (_::rest) = anyQuestionStmt rest
 
 -- ── Pass: lower_do_blocks (do-notation → andThen/pure chains) ─────────────
 -- Mirror of lib/desugar.ml's rewrite_do/lower_do.  Only EDo is lowered; bare
@@ -193,18 +234,28 @@ rewriteDo e = e
 
 lowerDo : List DoStmt -> Expr
 lowerDo [(DoExpr e)] = e
-lowerDo [(DoBind pat e)] = EApp (EApp (EVar "andThen") e) (doCont pat (EApp (EVar "pure") (ELit LUnit)))
-lowerDo ((DoExpr e) :: rest) = EApp (EApp (EVar "andThen") e) (ELam [PWild] (lowerDo rest))
-lowerDo ((DoBind pat e) :: rest) = EApp (EApp (EVar "andThen") e) (doCont pat (lowerDo rest))
-lowerDo ((DoLet _ pat e) :: rest) = ELet False False pat e (lowerDo rest)
-lowerDo ((DoLetElse pat e alt) :: rest) = EMatch e [Arm pat [] (lowerDo rest), Arm PWild [] alt]
+lowerDo [(DoBind pat e)] = EApp
+  (EApp (EVar "andThen") e)
+  (doCont pat (EApp (EVar "pure") (ELit LUnit)))
+lowerDo ((DoExpr e)::rest) = EApp
+  (EApp (EVar "andThen") e)
+  (ELam [PWild] (lowerDo rest))
+lowerDo ((DoBind pat e)::rest) = EApp
+  (EApp (EVar "andThen") e)
+  (doCont pat (lowerDo rest))
+lowerDo ((DoLet _ pat e)::rest) = ELet False False pat e (lowerDo rest)
+lowerDo ((DoLetElse pat e alt)::rest) = EMatch
+  e
+  [Arm pat [] (lowerDo rest), Arm PWild [] alt]
 lowerDo _ = fallthrough
 
 -- bind continuation: a bare lambda for an irrefutable pattern, else a 1-arg
 -- lambda + 2-arm match whose wildcard arm fails (do_bind_fail = fallthrough)
 doCont : Pat -> Expr -> Expr
 doCont pat body
-  | isRefutable pat = ELam [PVar "__do_x"] (EMatch (EVar "__do_x") [Arm pat [] body, Arm PWild [] fallthrough])
+  | isRefutable pat = ELam [
+    PVar "__do_x"
+  ] (EMatch (EVar "__do_x") [Arm pat [] body, Arm PWild [] fallthrough])
   | otherwise = ELam [pat] body
 
 isRefutable : Pat -> Bool
@@ -221,7 +272,7 @@ isRefutable (PAs _ p) = isRefutable p
 
 anyRefutable : List Pat -> Bool
 anyRefutable [] = False
-anyRefutable (p :: ps) = isRefutable p || anyRefutable ps
+anyRefutable (p::ps) = isRefutable p || anyRefutable ps
 
 -- ── Pass: desugar_list_comps (`[e | quals]` → andThen/EIf/ELet over quals) ─
 -- Mirror of lib/desugar.ml's desugar_list_comp (fold_right over the qualifiers
@@ -235,7 +286,7 @@ desugarListComp body quals = foldRightLc quals (EListLit [body])
 
 foldRightLc : List LcQual -> Expr -> Expr
 foldRightLc [] acc = acc
-foldRightLc (q :: rest) acc = lcStep q (foldRightLc rest acc)
+foldRightLc (q::rest) acc = lcStep q (foldRightLc rest acc)
 
 lcStep : LcQual -> Expr -> Expr
 lcStep (LCGen pat xs) acc = EApp (EApp (EVar "andThen") xs) (lcLam pat acc)
@@ -244,7 +295,9 @@ lcStep (LCLet m pat e) acc = ELet m False pat e acc
 
 lcLam : Pat -> Expr -> Expr
 lcLam pat acc
-  | isRefutable pat = ELam [PVar "__lc_x"] (EMatch (EVar "__lc_x") [Arm pat [] acc, Arm PWild [] (EListLit [])])
+  | isRefutable pat = ELam [
+    PVar "__lc_x"
+  ] (EMatch (EVar "__lc_x") [Arm pat [] acc, Arm PWild [] (EListLit [])])
   | otherwise = ELam [pat] acc
 
 -- ── Pass: expand_decl (`deriving` → generated impls) ──────────────────────
@@ -255,23 +308,25 @@ lcLam pat acc
 -- positional (`__a%d`/`__b%d`) — deterministic, matching the reference.
 -- (Record derives and Ord/Arbitrary are not exercised by the corpus → deferred.)
 expandDecl : Decl -> List Decl
-expandDecl (DData vis name params variants derives) =
-  (DData vis name params variants []) :: deriveImpls (deriveForData name params variants) derives
-expandDecl (DRecord vis name params fields derives) =
-  (DRecord vis name params fields []) :: deriveImpls (deriveForRecord name params fields) derives
+expandDecl (DData vis name params variants derives) = DData vis name params variants [] :: deriveImpls (deriveForData name params variants) derives
+expandDecl (DRecord vis name params fields derives) = DRecord vis name params fields [] :: deriveImpls (deriveForRecord name params fields) derives
 expandDecl d = [d]
 
 deriveImpls : (String -> Option Decl) -> List String -> List Decl
 deriveImpls _ [] = []
-deriveImpls f (d :: ds) = match f d
+deriveImpls f (d::ds) = match f d
   Some gen => gen :: deriveImpls f ds
   None => deriveImpls f ds
 
 deriveForData : String -> List String -> List Variant -> String -> Option Decl
-deriveForData name params variants "Eq" = Some (applyDeriveParams name params (deriveEqData name variants))
-deriveForData name params variants "Debug" = Some (applyDeriveParams name params (deriveShowData "Debug" "debug" name variants))
-deriveForData name params variants "Display" = Some (applyDeriveParams name params (deriveShowData "Display" "display" name variants))
-deriveForData name params variants "Generic" = Some (applyDeriveParams name params (deriveGenericData name variants))
+deriveForData name params variants "Eq" = Some
+  (applyDeriveParams name params (deriveEqData name variants))
+deriveForData name params variants "Debug" = Some
+  (applyDeriveParams name params (deriveShowData "Debug" "debug" name variants))
+deriveForData name params variants "Display" = Some
+  (applyDeriveParams name params (deriveShowData "Display" "display" name variants))
+deriveForData name params variants "Generic" = Some
+  (applyDeriveParams name params (deriveGenericData name variants))
 deriveForData _ _ _ _ = None
 
 deriveForRecord : String -> List String -> List Field -> String -> Option Decl
@@ -280,7 +335,14 @@ deriveForRecord _ _ _ _ = None
 -- rewrite a generated impl's head/constraints for the type's params:
 -- `data Box a deriving Eq` → `impl Eq (Box a) requires Eq a`
 applyDeriveParams : String -> List String -> Decl -> Decl
-applyDeriveParams name params (DImpl pub def iface _ nm _ methods) = DImpl pub def iface [appliedHead name params] nm (paramRequires iface params) methods
+applyDeriveParams name params (DImpl pub def iface _ nm _ methods) = DImpl
+  pub
+  def
+  iface
+  [appliedHead name params]
+  nm
+  (paramRequires iface params)
+  methods
 applyDeriveParams _ _ d = d
 
 appliedHead : String -> List String -> Ty
@@ -288,7 +350,7 @@ appliedHead name params = appliedHeadGo (TyCon name) params
 
 appliedHeadGo : Ty -> List String -> Ty
 appliedHeadGo acc [] = acc
-appliedHeadGo acc (p :: ps) = appliedHeadGo (TyApp acc (TyVar p)) ps
+appliedHeadGo acc (p::ps) = appliedHeadGo (TyApp acc (TyVar p)) ps
 
 paramRequires : String -> List String -> List Require
 paramRequires iface params = map (paramReq iface) params
@@ -302,7 +364,7 @@ conArity (Variant _ (ConNamed fs)) = listLen fs
 
 listLen : List a -> Int
 listLen [] = 0
-listLen (_ :: xs) = 1 + listLen xs
+listLen (_::xs) = 1 + listLen xs
 
 -- positional binder names: genVars "__a" 2 = ["__a0", "__a1"]
 genVars : String -> Int -> List String
@@ -311,7 +373,7 @@ genVars prefix n = genVarsGo prefix 0 n
 genVarsGo : String -> Int -> Int -> List String
 genVarsGo prefix i n
   | i >= n = []
-  | otherwise = (prefix ++ intToString i) :: genVarsGo prefix (i + 1) n
+  | otherwise = prefix ++ intToString i :: genVarsGo prefix (i + 1) n
 
 conPatVars : String -> List String -> Pat
 conPatVars cname vars = PCon cname (map PVar vars)
@@ -319,8 +381,18 @@ conPatVars cname vars = PCon cname (map PVar vars)
 -- Debug and Display share the rendering ("Con " ++ <call> a0 ++ " " ++ …);
 -- only the interface + method-call name differ.
 deriveShowData : String -> String -> String -> List Variant -> Decl
-deriveShowData iface callName name variants =
-  DImpl True False iface [TyCon name] None [] [ImplMethod callName [PVar "__x"] (EMatch (EVar "__x") (map (showArm callName) variants))]
+deriveShowData iface callName name variants = DImpl
+  True
+  False
+  iface
+  [TyCon name]
+  None
+  []
+  [
+    ImplMethod callName [
+      PVar "__x"
+    ] (EMatch (EVar "__x") (map (showArm callName) variants))
+  ]
 
 showArm : String -> Variant -> Arm
 showArm callName (Variant cname payload) =
@@ -329,11 +401,13 @@ showArm callName (Variant cname payload) =
 
 showBody : String -> String -> List String -> Expr
 showBody _ cname [] = ELit (LString cname)
-showBody callName cname (v :: vs) = concatStrings (ELit (LString (cname ++ " ")) :: showFieldParts callName 0 (v :: vs))
+showBody callName cname (v::vs) = concatStrings
+  (ELit (LString (cname ++ " ")) :: showFieldParts callName 0 (v :: vs))
 
 showFieldParts : String -> Int -> List String -> List Expr
 showFieldParts _ _ [] = []
-showFieldParts callName i (v :: vs) = showFieldPart callName i v ++ showFieldParts callName (i + 1) vs
+showFieldParts callName i (v::vs) = showFieldPart callName i v
+  ++ showFieldParts callName (i + 1) vs
 
 showFieldPart : String -> Int -> String -> List Expr
 showFieldPart callName 0 v = [EApp (EVar callName) (EVar v)]
@@ -342,18 +416,36 @@ showFieldPart callName _ v = [ELit (LString " "), EApp (EVar callName) (EVar v)]
 -- Eq: same-constructor arms compare fields pairwise; a cross-constructor
 -- wildcard arm (only with ≥2 variants) returns False.
 deriveEqData : String -> List Variant -> Decl
-deriveEqData name variants =
-  DImpl True False "Eq" [TyCon name] None [] [ImplMethod "eq" [PVar "__x", PVar "__y"] (EMatch (ETuple [EVar "__x", EVar "__y"]) (eqArms variants))]
+deriveEqData name variants = DImpl
+  True
+  False
+  "Eq"
+  [TyCon name]
+  None
+  []
+  [
+    ImplMethod "eq" [
+      PVar "__x",
+      PVar "__y"
+    ] (EMatch (ETuple [EVar "__x", EVar "__y"]) (eqArms variants))
+  ]
 
 eqArms : List Variant -> List Arm
 eqArms variants
-  | listLen variants > 1 = map eqSameConArm variants ++ [Arm (PTuple [PWild, PWild]) [] (EVar "False")]
+  | listLen variants > 1 = map eqSameConArm variants
+    ++ [Arm (PTuple [PWild, PWild]) [] (EVar "False")]
   | otherwise = map eqSameConArm variants
 
 eqSameConArm : Variant -> Arm
 eqSameConArm (Variant cname payload) =
   let n = conArity (Variant cname payload)
-  Arm (PTuple [conPatVars cname (genVars "__a" n), conPatVars cname (genVars "__b" n)]) [] (eqBody n (genVars "__a" n) (genVars "__b" n))
+  Arm
+    (PTuple [
+      conPatVars cname (genVars "__a" n),
+      conPatVars cname (genVars "__b" n)
+    ])
+    []
+    (eqBody n (genVars "__a" n) (genVars "__b" n))
 
 eqBody : Int -> List String -> List String -> Expr
 eqBody 0 _ _ = EVar "True"
@@ -362,20 +454,30 @@ eqBody _ avars bvars = andAll (zipEqCalls avars bvars)
 zipEqCalls : List String -> List String -> List Expr
 zipEqCalls [] _ = []
 zipEqCalls _ [] = []
-zipEqCalls (a :: arest) (b :: brest) = EApp (EApp (EVar "eq") (EVar a)) (EVar b) :: zipEqCalls arest brest
+zipEqCalls (a::arest) (b::brest) = EApp (EApp (EVar "eq") (EVar a)) (EVar b) :: zipEqCalls arest brest
 
 andAll : List Expr -> Expr
 andAll [] = EVar "True"
-andAll (first :: rest) = andLeft first rest
+andAll (first::rest) = andLeft first rest
 
 andLeft : Expr -> List Expr -> Expr
 andLeft acc [] = acc
-andLeft acc (e :: rest) = andLeft (EBinOp "&&" acc e) rest
+andLeft acc (e::rest) = andLeft (EBinOp "&&" acc e) rest
 
 -- Generic: one arm per constructor → RCon name [to_rep a0, …]
 deriveGenericData : String -> List Variant -> Decl
-deriveGenericData name variants =
-  DImpl True False "Generic" [TyCon name] None [] [ImplMethod "to_rep" [PVar "__x"] (EMatch (EVar "__x") (map genericArm variants))]
+deriveGenericData name variants = DImpl
+  True
+  False
+  "Generic"
+  [TyCon name]
+  None
+  []
+  [
+    ImplMethod "to_rep" [
+      PVar "__x"
+    ] (EMatch (EVar "__x") (map genericArm variants))
+  ]
 
 genericArm : Variant -> Arm
 genericArm (Variant cname payload) =
@@ -383,7 +485,9 @@ genericArm (Variant cname payload) =
   Arm (conPatVars cname vars) [] (genericRcon cname vars)
 
 genericRcon : String -> List String -> Expr
-genericRcon cname vars = EApp (EApp (EVar "RCon") (ELit (LString cname))) (EListLit (map toRep vars))
+genericRcon cname vars = EApp
+  (EApp (EVar "RCon") (ELit (LString cname)))
+  (EListLit (map toRep vars))
 
 toRep : String -> Expr
 toRep x = EApp (EVar "to_rep") (EVar x)
@@ -397,7 +501,13 @@ mergeIfaceDefaults : List Decl -> List Decl
 mergeIfaceDefaults prog = map mergeIfaceDecl prog
 
 mergeIfaceDecl : Decl -> Decl
-mergeIfaceDecl (DInterface pub def name tps sups methods) = DInterface pub def name tps sups (mergeIfaceMethods methods)
+mergeIfaceDecl (DInterface pub def name tps sups methods) = DInterface
+  pub
+  def
+  name
+  tps
+  sups
+  (mergeIfaceMethods methods)
 mergeIfaceDecl d = d
 
 mergeIfaceMethods : List IfaceMethod -> List IfaceMethod
@@ -405,7 +515,7 @@ mergeIfaceMethods methods = foldlMethods [] methods
 
 foldlMethods : List IfaceMethod -> List IfaceMethod -> List IfaceMethod
 foldlMethods acc [] = acc
-foldlMethods acc (m :: rest) = foldlMethods (insertMethod acc m) rest
+foldlMethods acc (m::rest) = foldlMethods (insertMethod acc m) rest
 
 insertMethod : List IfaceMethod -> IfaceMethod -> List IfaceMethod
 insertMethod acc m
@@ -414,12 +524,15 @@ insertMethod acc m
 
 mergeInto : List IfaceMethod -> IfaceMethod -> List IfaceMethod
 mergeInto [] m = [m]
-mergeInto (x :: xs) m
+mergeInto (x::xs) m
   | methodName x == methodName m = mergeTwo x m :: xs
   | otherwise = x :: mergeInto xs m
 
 mergeTwo : IfaceMethod -> IfaceMethod -> IfaceMethod
-mergeTwo (IfaceMethod n prevTy prevDef) (IfaceMethod _ mTy mDef) = IfaceMethod n (mergedType prevTy mTy) (mergedDefault prevDef mDef)
+mergeTwo (IfaceMethod n prevTy prevDef) (IfaceMethod _ mTy mDef) = IfaceMethod
+  n
+  (mergedType prevTy mTy)
+  (mergedDefault prevDef mDef)
 
 mergedType : Ty -> Ty -> Ty
 mergedType (TyVar "_") mTy = mTy
@@ -431,7 +544,7 @@ mergedDefault None mDef = mDef
 
 containsMethod : String -> List IfaceMethod -> Bool
 containsMethod _ [] = False
-containsMethod name (x :: xs) = methodName x == name || containsMethod name xs
+containsMethod name (x::xs) = methodName x == name || containsMethod name xs
 
 methodName : IfaceMethod -> String
 methodName (IfaceMethod n _ _) = n
@@ -441,7 +554,7 @@ concatMapDecl f prog = concatLists (map f prog)
 
 concatLists : List (List a) -> List a
 concatLists [] = []
-concatLists (xs :: rest) = xs ++ concatLists rest
+concatLists (xs::rest) = xs ++ concatLists rest
 
 -- ── The pass pipeline ─────────────────────────────────────────────────────
 -- Ported incrementally, in the reference order (later passes run last).  So
@@ -450,8 +563,7 @@ concatLists (xs :: rest) = xs ++ concatLists rest
 -- literals; and `?` (desugar_questions) which the real corpus never exercises.
 export
 desugar : List Decl -> List Decl
-desugar prog =
-  mergeIfaceDefaults prog
+desugar prog = mergeIfaceDefaults prog
   |> concatMapDecl expandDecl
   |> mapProg rewriteListComp
   |> mapProg rewriteQuestion
