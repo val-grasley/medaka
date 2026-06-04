@@ -60,10 +60,9 @@ jObject xs = JObject (arrayFromList xs)
 
 -- A codepoint to a `Char` (the `\u` escape target is always valid here).
 charOfCode : Int -> Char
-charOfCode k =
-  match charFromCode k
-    Some c => c
-    None => ' '
+charOfCode k = match charFromCode k
+  Some c => c
+  None => ' '
 
 -- ── Serialization ───────────────────────────────────────────────────────
 
@@ -206,28 +205,24 @@ hexVal c
 
 -- Four hex digits at [i, i+4) → a codepoint (BMP only; no surrogate pairing).
 hex4 : Array Char -> Int -> Option Int
-hex4 arr i =
-  match hexVal (arrayGetUnsafe i arr)
-    None => None
-    Some h0 => hex4From arr i h0
+hex4 arr i = match hexVal (arrayGetUnsafe i arr)
+  None => None
+  Some h0 => hex4From arr i h0
 
 hex4From : Array Char -> Int -> Int -> Option Int
-hex4From arr i h0 =
-  match hexVal (arrayGetUnsafe (i + 1) arr)
-    None => None
-    Some h1 => hex4From2 arr i (h0 * 16 + h1)
+hex4From arr i h0 = match hexVal (arrayGetUnsafe (i + 1) arr)
+  None => None
+  Some h1 => hex4From2 arr i (h0 * 16 + h1)
 
 hex4From2 : Array Char -> Int -> Int -> Option Int
-hex4From2 arr i acc =
-  match hexVal (arrayGetUnsafe (i + 2) arr)
-    None => None
-    Some h2 => hex4From3 arr i (acc * 16 + h2)
+hex4From2 arr i acc = match hexVal (arrayGetUnsafe (i + 2) arr)
+  None => None
+  Some h2 => hex4From3 arr i (acc * 16 + h2)
 
 hex4From3 : Array Char -> Int -> Int -> Option Int
-hex4From3 arr i acc =
-  match hexVal (arrayGetUnsafe (i + 3) arr)
-    None => None
-    Some h3 => Some (acc * 16 + h3)
+hex4From3 arr i acc = match hexVal (arrayGetUnsafe (i + 3) arr)
+  None => None
+  Some h3 => Some (acc * 16 + h3)
 
 parseUnicode : Array Char -> Int -> List Char -> Result String (String, Int)
 parseUnicode arr i acc
@@ -235,10 +230,9 @@ parseUnicode arr i acc
   | otherwise = parseUnicodeAt arr i acc (hex4 arr i)
 
 parseUnicodeAt : Array Char -> Int -> List Char -> Option Int -> Result String (String, Int)
-parseUnicodeAt arr i acc code =
-  match code
-    None => Err "invalid \\u escape"
-    Some k => parseStr arr (i + 4) (charOfCode k :: acc)
+parseUnicodeAt arr i acc code = match code
+  None => Err "invalid \\u escape"
+  Some k => parseStr arr (i + 4) (charOfCode k :: acc)
 
 -- Numbers: scan the token, classify int vs float, build the value.
 skipSign : Array Char -> Int -> Int
@@ -290,16 +284,14 @@ finishNumber arr start afterSign afterInt end isFloat
   | otherwise = finishInt (subString arr start end) end
 
 finishInt : String -> Int -> Result String (Json, Int)
-finishInt tok end =
-  match toInt tok
-    Some n => Ok (JInt n, end)
-    None => Err "invalid number"
+finishInt tok end = match toInt tok
+  Some n => Ok (JInt n, end)
+  None => Err "invalid number"
 
 finishFloat : String -> Int -> Result String (Json, Int)
-finishFloat tok end =
-  match stringToFloat tok
-    Some f => Ok (JFloat f, end)
-    None => Err "invalid number"
+finishFloat tok end = match stringToFloat tok
+  Some f => Ok (JFloat f, end)
+  None => Err "invalid number"
 
 -- Keyword literals (true/false/null).
 matchLit : Array Char -> Int -> Array Char -> Int -> Int -> Bool
@@ -334,10 +326,9 @@ parseArrayAt arr j
     Ok (JArray (arrayFromList (reverse xs)), k)
 
 parseElems : Array Char -> Int -> List Json -> Result String (List Json, Int)
-parseElems arr i acc =
-  do
-    (v, j) <- parseValue arr i
-    parseElemsCont arr (skipWs arr j) (v :: acc)
+parseElems arr i acc = do
+  (v, j) <- parseValue arr i
+  parseElemsCont arr (skipWs arr j) (v :: acc)
 
 parseElemsCont : Array Char -> Int -> List Json -> Result String (List Json, Int)
 parseElemsCont arr k acc
@@ -423,10 +414,9 @@ parse : String -> Result String Json
 parse s = parseTop (stringToChars s)
 
 parseTop : Array Char -> Result String Json
-parseTop arr =
-  do
-    (v, j) <- parseValue arr 0
-    ensureEnd arr (skipWs arr j) v
+parseTop arr = do
+  (v, j) <- parseValue arr 0
+  ensureEnd arr (skipWs arr j) v
 
 ensureEnd : Array Char -> Int -> Json -> Result String Json
 ensureEnd arr j v

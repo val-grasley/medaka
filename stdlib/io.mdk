@@ -44,19 +44,17 @@ stripCR s =
   if n > 0 && stringSlice (n - 1) n s == "\r" then stringSlice 0 (n - 1) s else s
 
 splitLines : String -> List String
-splitLines s =
-  match stringIndexOf "\n" s
-    None => if s == "" then [] else [stripCR s]
-    Some i => stripCR (stringSlice 0 i s) :: splitLines (stringSlice (i + 1) (stringLength s) s)
+splitLines s = match stringIndexOf "\n" s
+  None => if s == "" then [] else [stripCR s]
+  Some i => stripCR (stringSlice 0 i s) :: splitLines (stringSlice (i + 1) (stringLength s) s)
 
 {- | Read a file and split it into lines, or `Err` with the host message on a
    read failure. The trailing newline does not produce a final empty line. -}
 export
 readLines : String -> <IO> Result String (List String)
-readLines path =
-  match readFile path
-    Err e => Err e
-    Ok contents => Ok (splitLines contents)
+readLines path = match readFile path
+  Err e => Err e
+  Ok contents => Ok (splitLines contents)
 
 -- ── Environment ──────────────────────────────────────────────────────────
 

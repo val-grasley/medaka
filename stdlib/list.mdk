@@ -64,10 +64,9 @@ iterate n f x
    [1, 2, 3, 4, 5] -}
 export
 unfold : (b -> <e> Option (a, b)) -> b -> <e> List a
-unfold gen seed =
-  match gen seed
-    None => []
-    Some (x, next) => x :: unfold gen next
+unfold gen seed = match gen seed
+  None => []
+  Some (x, next) => x :: unfold gen next
 
 -- Transformation
 
@@ -160,10 +159,9 @@ scanLeft f z (x::xs) = z :: scanLeft f (f z x) xs
 export
 scanRight : (a -> b -> <e> b) -> b -> List a -> <e> List b
 scanRight _ z [] = [z]
-scanRight f z (x::xs) =
-  match scanRight f z xs
-    q::qs => f x q :: q :: qs
-    [] => [f x z]
+scanRight f z (x::xs) = match scanRight f z xs
+  q::qs => f x q :: q :: qs
+  [] => [f x z]
 
 -- Search
 
@@ -317,10 +315,9 @@ sortBy cmp xs =
 merge : (a -> a -> <e> Ordering) -> List a -> List a -> <e> List a
 merge _ [] ys = ys
 merge _ xs [] = xs
-merge cmp (xs@(x::xs')) (ys@(y::ys')) =
-  match cmp x y
-    Gt => y :: merge cmp xs ys'
-    _ => x :: merge cmp xs' ys
+merge cmp (xs@(x::xs')) (ys@(y::ys')) = match cmp x y
+  Gt => y :: merge cmp xs ys'
+  _ => x :: merge cmp xs' ys
 
 {- | Ascending stable sort by the `Ord` instance.
 
