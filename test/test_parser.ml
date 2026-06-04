@@ -753,6 +753,21 @@ f xs =
       ])) -> ()
   | _ -> failwith "wrong"
 
+(* An `@` as-pattern in function-definition *parameter* position (`f d@(C x) = …`).
+   Previously a parse error — only match arms / lambda params accepted `@`; the
+   param level was `pat_atom`, which omits the as-pattern.  The `@` RHS is an
+   atom (parenthesised for a compound sub-pattern). *)
+let test_as_pattern_param () =
+  match parse_one "f d@(C x) = d\n" with
+  | DFunDef (false, "f", [PAs ("d", PCon ("C", [PVar "x"]))], EVar "d") -> ()
+  | _ -> failwith "wrong"
+
+(* @-param works alongside ordinary params (multi-arg, 2nd is an as-pattern). *)
+let test_as_pattern_param_multi () =
+  match parse_one "g a b@(C n) = a\n" with
+  | DFunDef (false, "g", [PVar "a"; PAs ("b", PCon ("C", [PVar "n"]))], EVar "a") -> ()
+  | _ -> failwith "wrong"
+
 (* ── Top-level function guard tests ─────────────────── *)
 
 (* Guards are kept as an EGuards node by the parser; desugar.ml lowers them
@@ -2085,6 +2100,8 @@ let () =
     "as-patterns", [
       test_case "cons as-pattern"   `Quick test_as_pattern_cons;
       test_case "var as-pattern"    `Quick test_as_pattern_var;
+      test_case "param as-pattern"  `Quick test_as_pattern_param;
+      test_case "param as-pattern (multi-arg)" `Quick test_as_pattern_param_multi;
     ];
     "top-level function guards", [
       test_case "single guard"   `Quick test_guard_single;

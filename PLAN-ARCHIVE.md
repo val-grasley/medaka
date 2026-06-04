@@ -5825,6 +5825,33 @@ named-field variant defined in one module, then constructed, pattern-matched, an
 pipeline (must be a loader test — the gap was only on `typecheck_module`, invisible
 single-file).
 
+### Phase 141: `@` as-patterns in function-clause parameter position ✅ DONE (2026-06-04)
+
+`@` as-patterns (`x@subpat`) worked in match arms (`pat_as`) and lambda params
+(`expr_aspat` → `expr_to_pat`), but a function-definition clause `f d@(C x) = …`
+was a parse error: clause params are `list(pat_atom)`, and the as-pattern lives one
+level up at `pat_as`, so `pat_atom` omits it. (Note `as` is *not* pattern syntax —
+`@` is Medaka's as-pattern; the lexer emits `AS_AT` only for a no-space `@` after an
+ident.)
+
+Parser-only fix — the `PAs` node already flows through resolve/typecheck/eval
+(match arms produce it). Added a `param_pat` nonterminal (`pat_atom | IDENT AS_AT
+pat_atom`) and swapped the function-parameter `list(pat_atom)` / `LET IDENT
+nonempty_list(pat_atom)` sites to it (~13 rules; the constructor-arg `UPPER
+nonempty_list(pat_atom)` left alone). Kept as its own nonterminal — not folded into
+`pat_atom` — so it never feeds `pat`/`pat_as` and can't reintroduce the AS_AT
+ambiguity. **Parser conflicts unchanged at 5.** The `@` RHS is an atom (compound
+sub-pattern parenthesised, `d@(a :: b)`), matching how function args already need
+parens for applied constructors. Tests: `test_parser` "param as-pattern" (+ multi-arg).
+
+This is the lib (OCaml) compiler. **The self-hosted parser (`selfhost/parser.mdk`,
+Phase 135) does NOT yet parse clause-position `@`**, so selfhost source can't use it
+— the selfhost rebuild sites (`mapDecl`/`applyDeriveParams`/`mergeIfaceDecl`) stay on
+the `match d { … }` form until the self-host parser gains `param_pat` (a follow-on for
+the parser port). Same class of constraint as not running `medaka fmt` on selfhost
+files: selfhost source is bounded by what `parser.mdk` parses, not by what the
+language accepts.
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)

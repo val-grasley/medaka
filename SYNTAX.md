@@ -73,6 +73,7 @@ run      : (Unit -> <IO | e> a) -> <IO | e> a  -- open tail row
 double x = x + x                  -- simple
 factorial 0 = 1                   -- pattern-matching head; multiple clauses stack
 factorial n = n * factorial (n - 1)
+setX v p@(Pt { x, y }) = Pt { p | x = v }  -- `@` as-pattern param (binds whole + fields)
 ```
 
 Implicitly self-recursive and mutually recursive at top level — no keyword.

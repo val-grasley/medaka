@@ -393,9 +393,9 @@ inner_type_sig:
 (* ── Function definitions ────────────────────────────── *)
 
 inner_fun_def:
-  | IDENT list(pat_atom) EQUAL fun_body newlines
+  | IDENT list(param_pat) EQUAL fun_body newlines
     { fun is_pub -> DFunDef (is_pub, $1, $2, $4) }
-  | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines
+  | IDENT list(param_pat) INDENT nonempty_list(guard_arm) DEDENT newlines
     { fun is_pub -> DFunDef (is_pub, $1, $2, EGuards $4) }
   (* Haskell-style `where` scoping over ALL guard arms: the `where` sits at the
      same indentation as the guards (one level under the function name), so in
@@ -403,13 +403,13 @@ inner_fun_def:
      INDENT block — `INDENT guards WHERE INDENT bindings DEDENT NEWLINE DEDENT`.
      Lowers to `ELetGroup (bindings, EGuards arms)` so the where group scopes the
      whole guard set.  Lookahead (WHERE vs PIPE vs DEDENT) keeps it conflict-free. *)
-  | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) WHERE
+  | IDENT list(param_pat) INDENT nonempty_list(guard_arm) WHERE
     INDENT nonempty_list(where_binding) DEDENT newlines DEDENT newlines
     { fun is_pub -> DFunDef (is_pub, $1, $2, desugar_where $7 (EGuards $4)) }
   (* Phase 91 (3): inline single guard arm — `f n | n <= 0 = []` on one line.
      Lookahead after the pattern list distinguishes PIPE (this) from EQUAL
      (plain) and INDENT (block guards), so this adds no parser conflicts. *)
-  | IDENT list(pat_atom) PIPE separated_nonempty_list(COMMA, guard_qual) EQUAL fun_body newlines
+  | IDENT list(param_pat) PIPE separated_nonempty_list(COMMA, guard_qual) EQUAL fun_body newlines
     { fun is_pub -> DFunDef (is_pub, $1, $2, EGuards [($4, $6)]) }
 
 guard_arm:
@@ -433,12 +433,12 @@ fun_body:
   | INDENT nonempty_list(stmt) DEDENT                                { stmts_to_expr $2 }
 
 where_binding:
-  | IDENT list(pat_atom) EQUAL fun_body newlines
+  | IDENT list(param_pat) EQUAL fun_body newlines
     { ($1, $2, $4) }
-  | IDENT list(pat_atom) INDENT nonempty_list(guard_arm) DEDENT newlines
+  | IDENT list(param_pat) INDENT nonempty_list(guard_arm) DEDENT newlines
     { ($1, $2, EGuards $4) }
   (* Phase 91 (3): inline single guard arm in a where-binding. *)
-  | IDENT list(pat_atom) PIPE separated_nonempty_list(COMMA, guard_qual) EQUAL fun_body newlines
+  | IDENT list(param_pat) PIPE separated_nonempty_list(COMMA, guard_qual) EQUAL fun_body newlines
     { ($1, $2, EGuards [($4, $6)]) }
 
 (* ── `let rec ... with ...` (Phase 57) ────────────────────
@@ -447,7 +447,7 @@ where_binding:
    clauses without consuming a newline, so the inline form fits on one
    or more visually contiguous lines bracketed by LET REC ... IN. *)
 let_rec_inline_clause:
-  | IDENT list(pat_atom) EQUAL expr_no_block      { ($1, $2, $4) }
+  | IDENT list(param_pat) EQUAL expr_no_block      { ($1, $2, $4) }
 
 let_rec_inline_clauses:
   | let_rec_inline_clause                                          { [$1] }
@@ -460,7 +460,7 @@ inner_let_rec_decl:
     { fun is_pub -> DLetGroup (is_pub, coalesce_clauses $3) }
 
 let_rec_decl_clause:
-  | IDENT list(pat_atom) EQUAL fun_body newlines  { ($1, $2, $4) }
+  | IDENT list(param_pat) EQUAL fun_body newlines  { ($1, $2, $4) }
 
 let_rec_decl_clauses:
   | let_rec_decl_clause                                            { [$1] }
@@ -563,6 +563,18 @@ pat_atom:
   | LBRACKET RBRACKET                                      { PList [] }
   | LBRACKET separated_nonempty_list(COMMA, pat) RBRACKET  { PList $2 }
 
+(* Function-definition parameter: a `pat_atom` plus the `@` as-pattern
+   (`x@atom`).  The bare `pat_atom` level omits `@` — it lives at `pat_as`,
+   above the space-separated param level — so without this a clause like
+   `f d@(C x) = …` is a parse error even though match arms accept `d@(C x)`.
+   Kept as its own nonterminal (not folded into `pat_atom`) so it never feeds
+   `pat`/`pat_as` and so cannot reintroduce the `pat_as` AS_AT ambiguity.  The
+   `@` RHS is an atom: a compound sub-pattern is parenthesised (`d@(a :: b)`),
+   matching how function args already require parens for applied constructors. *)
+param_pat:
+  | pat_atom              { $1 }
+  | IDENT AS_AT pat_atom  { PAs ($1, $3) }
+
 (* ── Expressions ─────────────────────────────────────── *)
 
 expr_no_block:
@@ -579,7 +591,7 @@ expr_lam:
     { ELoc (of_pos $startpos $endpos, ELet (true,  false, $3, $5, $7)) }
   | LET pat EQUAL expr_no_block IN expr_lam
     { ELoc (of_pos $startpos $endpos, ELet (false, false, $2, $4, $6)) }
-  | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block IN expr_lam
+  | LET IDENT nonempty_list(param_pat) EQUAL expr_no_block IN expr_lam
     { ELoc (of_pos $startpos $endpos, ELet (false, true, PVar $2, curry_lam $3 $5, $7)) }
   | LET REC let_rec_inline_clauses IN expr_lam
     { ELoc (of_pos $startpos $endpos, ELetGroup (coalesce_clauses $3, $5)) }
@@ -881,7 +893,7 @@ stmt:
   | LET MUT pat EQUAL expr_no_block newlines  { DoLet (true,  $3, $5) }
   | LET pat EQUAL expr_no_block ELSE expr_no_block newlines { DoLetElse ($2, $4, $6) }
   | LET pat EQUAL expr_no_block newlines      { DoLet (false, $2, $4) }
-  | LET IDENT nonempty_list(pat_atom) EQUAL expr_no_block newlines
+  | LET IDENT nonempty_list(param_pat) EQUAL expr_no_block newlines
     { DoLet (false, PVar $2, curry_lam $3 $5) }
   | expr_no_block EQUAL expr_no_block newlines {
       match flatten_field_path (strip_locs_expr $1) with
@@ -1008,7 +1020,7 @@ iface_super_entry:
 iface_member:
   | IDENT COLON ty newlines
     { { method_name = $1; method_type = $3; method_default = None } }
-  | IDENT list(pat_atom) EQUAL fun_body newlines
+  | IDENT list(param_pat) EQUAL fun_body newlines
     { { method_name = $1; method_type = TyVar "_"; method_default = Some ($2, $4) } }
 
 (* ── Impl declarations ───────────────────────────────── *)
@@ -1100,7 +1112,7 @@ impl_requires_entry:
   | UPPER nonempty_list(ty_atom)  { ($1, $2) }
 
 impl_method:
-  | IDENT list(pat_atom) EQUAL fun_body newlines  { ($1, $2, $4) }
+  | IDENT list(param_pat) EQUAL fun_body newlines  { ($1, $2, $4) }
 
 (* ── Import declarations ─────────────────────────────── *)
 
