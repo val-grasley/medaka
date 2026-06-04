@@ -18,7 +18,7 @@ public export data Mono
   = TVar (Ref Tyvar)
   | TCon String
   | TApp Mono Mono
-  | TFun Mono Mono          -- arg -> result (effect rows deferred to a later slice)
+  | TFun Mono (List String) Mono   -- arg -> <effect labels> result
   | TTuple (List Mono)
 
 public export data Tyvar = Unbound Int Int | Link Mono   -- Unbound id level | Link
@@ -117,7 +117,7 @@ occursAdjust id level t = match normalize t
   TApp a b =>
     let _ = occursAdjust id level a
     occursAdjust id level b
-  TFun a b =>
+  TFun a _ b =>
     let _ = occursAdjust id level a
     occursAdjust id level b
   TTuple ts => occursAdjustList id level ts
@@ -150,7 +150,7 @@ unifyN (TCon a) (TCon b) = if a == b then () else typeMismatch (TCon a) (TCon b)
 unifyN (TApp a1 b1) (TApp a2 b2) =
   let _ = unify a1 a2
   unify b1 b2
-unifyN (TFun a1 b1) (TFun a2 b2) =
+unifyN (TFun a1 _ b1) (TFun a2 _ b2) =
   let _ = unify a1 a2
   unify b1 b2
 unifyN (TTuple ts1) (TTuple ts2) = unifyList ts1 ts2
@@ -183,7 +183,7 @@ freeGenVars lvl t = match normalize t
   TVar cell => if tyvarLevel cell > lvl then [tyvarId cell] else []
   TCon _ => []
   TApp a b => freeGenVars lvl a ++ freeGenVars lvl b
-  TFun a b => freeGenVars lvl a ++ freeGenVars lvl b
+  TFun a _ b => freeGenVars lvl a ++ freeGenVars lvl b
   TTuple ts => concatMapL (freeGenVars lvl) ts
 
 dedupI : List Int -> List Int
@@ -207,7 +207,7 @@ substMono subst t = match normalize t
   TVar cell => fromOption (TVar cell) (lookupAssocI (tyvarId cell) subst)
   TCon n => TCon n
   TApp a b => TApp (substMono subst a) (substMono subst b)
-  TFun a b => TFun (substMono subst a) (substMono subst b)
+  TFun a eff b => TFun (substMono subst a) eff (substMono subst b)
   TTuple ts => TTuple (map (substMono subst) ts)
 
 -- ── rendering (mirrors lib/typecheck.ml pp_mono byte-for-byte) ─────────────
@@ -242,7 +242,7 @@ ppGo ctx cnt prec t = match normalize t
   TVar cell => ppVar ctx cnt cell
   TCon n => n
   TApp a b => ppApp ctx cnt prec a b
-  TFun a b => ppFun ctx cnt prec a b
+  TFun a eff b => ppFun ctx cnt prec a eff b
   TTuple ts => "(" ++ joinWith ", " (ppEach ctx cnt 0 ts) ++ ")"
 
 ppVar : Ref (List (Int, String)) -> Ref Int -> Ref Tyvar -> <Mut> String
@@ -256,11 +256,23 @@ ppApp ctx cnt prec a b =
   let sb = ppGo ctx cnt 3 b
   wrapIf (prec > 2) (sa ++ " " ++ sb)
 
-ppFun : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> Mono -> <Mut> String
-ppFun ctx cnt prec a b =
+ppFun : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> List String -> Mono -> <Mut> String
+ppFun ctx cnt prec a eff b =
   let sa = ppGo ctx cnt 2 a
   let sb = ppGo ctx cnt 1 b
-  wrapIf (prec > 1) (sa ++ " -> " ++ sb)
+  wrapIf (prec > 1) (sa ++ " -> " ++ effStr eff ++ sb)
+
+effStr : List String -> String
+effStr [] = ""
+effStr labels = "<" ++ joinWith ", " labels ++ "> "
+
+effLabelsOf : Ty -> List String
+effLabelsOf (TyEffect labels _ _) = labels
+effLabelsOf _ = []
+
+stripEff : Ty -> Ty
+stripEff (TyEffect _ _ t) = t
+stripEff t = t
 
 ppEach : Ref (List (Int, String)) -> Ref Int -> Int -> List Mono -> <Mut> List String
 ppEach _ _ _ [] = []
@@ -317,7 +329,7 @@ fromAstType : List (String, Mono) -> Ty -> Mono
 fromAstType tvs (TyCon n) = TCon n
 fromAstType tvs (TyVar n) = fromOption (TCon n) (lookupAssocS n tvs)
 fromAstType tvs (TyApp a b) = TApp (fromAstType tvs a) (fromAstType tvs b)
-fromAstType tvs (TyFun a b) = TFun (fromAstType tvs a) (fromAstType tvs b)
+fromAstType tvs (TyFun a b) = TFun (fromAstType tvs a) (effLabelsOf b) (fromAstType tvs (stripEff b))
 fromAstType tvs (TyTuple ts) = TTuple (map (fromAstType tvs) ts)
 fromAstType tvs (TyEffect _ _ t) = fromAstType tvs t
 fromAstType tvs (TyConstrained _ t) = fromAstType tvs t
@@ -418,7 +430,7 @@ inferPats env (p :: ps) =
 
 foldrFun : List Mono -> Mono -> Mono
 foldrFun [] result = result
-foldrFun (a :: rest) result = TFun a (foldrFun rest result)
+foldrFun (a :: rest) result = TFun a [] (foldrFun rest result)
 
 inferPatTuple : Env -> List Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatTuple env pats =
@@ -583,7 +595,7 @@ consOp lt rt =
 pipeOp : Mono -> Mono -> <Mut> Mono
 pipeOp lt rt =
   let res = freshVar ()
-  let _ = unify rt (TFun lt res)
+  let _ = unify rt (TFun lt [] res)
   res
 
 -- g >> h : (a->b) -> (b->c) -> (a->c)  [flipped=False]
@@ -593,16 +605,16 @@ composeOp gt ht False =
   let a = freshVar ()
   let b = freshVar ()
   let c = freshVar ()
-  let _ = unify gt (TFun a b)
-  let _ = unify ht (TFun b c)
-  TFun a c
+  let _ = unify gt (TFun a [] b)
+  let _ = unify ht (TFun b [] c)
+  TFun a [] c
 composeOp gt ht True =
   let a = freshVar ()
   let b = freshVar ()
   let c = freshVar ()
-  let _ = unify gt (TFun a b)
-  let _ = unify ht (TFun c a)
-  TFun c b
+  let _ = unify gt (TFun a [] b)
+  let _ = unify ht (TFun c [] a)
+  TFun c [] b
 
 inferUnop : String -> Mono -> <Mut> Mono
 inferUnop "-" t = t
@@ -627,7 +639,7 @@ inferVar env x = match lookupVar env x
 inferApp : Mono -> Mono -> <Mut> Mono
 inferApp ft xt =
   let r = freshVar ()
-  let _ = unify ft (TFun xt r)
+  let _ = unify ft (TFun xt [] r)
   r
 
 inferLam : Env -> List Pat -> Expr -> <Mut> Mono
