@@ -31,10 +31,14 @@ diff with `lib/`:
 | `sexp.mdk` | `programToSexp` — a canonical structural S-expression dump of the AST, mirroring `dev/astdump.ml` byte-for-byte; the parser's validation format (the `tokenToString` analog). |
 | `parser.mdk` | Port of `lib/parser.mly`. A **monadic combinator** parser over `List Token` — a `Parser` monad (`Mappable`/`Applicative`/`Thenable`) with `do`-notation + `many`/`sepBy1`/`choice`/`chainl1`; `parse : String -> List Decl`. Precedence is the stratified ladder, one function per level. |
 | `parse_main.mdk` | Runnable entry: `medaka run selfhost/parse_main.mdk <src.mdk>` reads the file, parses, and prints the structural S-expression. |
+| `desugar.mdk` | Port of `lib/desugar.ml`. Lowers surface sugar to core: the bottom-up `mapExpr`/`mapDecl` engine + the passes `merge_iface_defaults → expand_decl (deriving) → list-comps → questions → do-blocks → sugar`; `desugar : List Decl -> List Decl`. |
+| `desugar_main.mdk` | Runnable entry: parse + desugar a file, print the structural S-expression (diffs against `astdump --desugar`). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
-dumper) and `astdump.exe` (canonical AST S-expression dumper).
+dumper), `astdump.exe` (AST S-expression dumper, with `--parse`/`--desugar`/
+`--mark` stage modes), and `diagdump.exe` (`--resolve`/`--exhaust` diagnostics
+dumper).
 
 ## Validation
 
@@ -152,9 +156,19 @@ the stage is done when all pass.
 
 ## Roadmap — remaining Stage 1 stages
 
-Lexer and parser are done. The rest of the reference pipeline
-(`desugar → resolve → method_marker → typecheck (runs exhaust) → eval`) is still
-OCaml-only. This section sketches how to port it.
+Lexer, parser, and **desugar** are done. The rest of the reference pipeline
+(`resolve → method_marker → typecheck (runs exhaust) → eval`) is still OCaml-only.
+This section sketches how to port it.
+
+**Validation infrastructure for every remaining stage is already built** (the
+"de-risk first" pass):
+- `dev/astdump.exe` takes `--desugar` / `--mark` to dump the AST after those
+  stages (the `--parse` default is unchanged). `test/diff_selfhost_{desugar,mark}.sh`
+  diff the self-host stage against it.
+- `dev/diagdump.exe --resolve|--exhaust` dumps each stage's diagnostics in a
+  canonical, sorted, location-stripped form. `test/resolve_fixtures/` (9) and
+  `test/exhaust_fixtures/` (5, incl. negative controls) are the net-new negative
+  corpus + committed goldens; `test/diff_selfhost_{resolve,exhaust}.sh` run them.
 
 ### The methodology carries over
 
@@ -189,18 +203,24 @@ Stage-0 prerequisites in `../PLAN.md`).
 
 | # | Stage | ~LOC | Difficulty | In → Out | Validate via |
 |---|-------|------|-----------|----------|--------------|
-| 1 | **desugar** | ~980 | low–med | `program → program` | astdump (`--desugar`) over whole corpus |
-| 2 | **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diff error list; needs negative fixtures |
-| 3 | **method_marker** | ~420 | low | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump (render marker nodes) |
-| 4 | **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diff warning list; needs (non-)exhaustive fixtures |
+| 1 | ✅ **desugar** | ~980 | low–med | `program → program` | astdump `--desugar`, **60/60 corpus** |
+| 2 | **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve` (fixtures + harness ready) |
+| 3 | **method_marker** | ~420 | low | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark` (harness ready) |
+| 4 | **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust` (fixtures + harness ready) |
 | 5 | **eval** | ~2350 | hard (plumbing) | `program → values` | diff stdout vs `=== EVAL ===` |
 | 6 | **typecheck** | ~4650 | **very hard** | `program → schemes` | diff vs `=== TYPES ===` |
 
-1. **Desugar** — the natural next step. Pure surface→core rewrites (list
-   comprehensions → folds, `do` → `andThen`/`pure`, string interp → concat,
-   sections, guards, record puns). Same AST in/out, so it reuses the parser's
-   *entire* validation harness. Gotcha: the 8 passes run in a fixed order, and
-   the `do`-block lowering is the one fiddly bit.
+1. ✅ **Desugar — DONE.** `selfhost/desugar.mdk` + `desugar_main.mdk`: the
+   bottom-up `mapExpr`/`mapDecl` engine plus the passes `merge_iface_defaults →
+   expand_decl (Eq/Debug/Display/Generic deriving) → desugar_list_comps →
+   desugar_questions → lower_do_blocks → desugar_sugar`. Matches
+   `astdump --desugar` byte-for-byte on all 60 corpus files (incl. desugaring
+   its own source). Key wins that made it tractable: desugar is deterministic
+   with no stateful gensym (positional `__a%d` / fixed `__x`,`__fallthrough__`
+   names), and its output uses only nodes `sexp.mdk` already renders. Deferred
+   (unused by the corpus; the self-host AST lacks the `ESetLit`/`EMapLit` nodes
+   they target): record-pun desugaring, container-literal lowering, Ord/Arbitrary
+   deriving, and record deriving.
 2. **Resolve** — name binding, scope, and visibility checks; output is a
    diagnostic list plus a name environment (hashtables, not directly dumpable).
    Dense mutable-env plumbing; multi-module import/alias resolution is the hard
