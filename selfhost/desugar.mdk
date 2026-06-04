@@ -149,10 +149,52 @@ concatLeft : Expr -> List Expr -> Expr
 concatLeft acc [] = acc
 concatLeft acc (e :: rest) = concatLeft (EBinOp "++" acc e) rest
 
+-- ── Pass: lower_do_blocks (do-notation → andThen/pure chains) ─────────────
+-- Mirror of lib/desugar.ml's rewrite_do/lower_do.  Only EDo is lowered; bare
+-- EBlock survives (the reference leaves it for eval).  The do_tag the reference
+-- EDo carries is ignored by lowering, so the self-host EDo (no tag) suffices.
+-- check_do_wellformed (which rejects DoAssign/DoFieldAssign/empty in a do-block)
+-- is validation-only and skipped — those never appear in a well-formed EDo.
+rewriteDo : Expr -> Expr
+rewriteDo (EDo stmts) = lowerDo stmts
+rewriteDo e = e
+
+lowerDo : List DoStmt -> Expr
+lowerDo [(DoExpr e)] = e
+lowerDo [(DoBind pat e)] = EApp (EApp (EVar "andThen") e) (doCont pat (EApp (EVar "pure") (ELit LUnit)))
+lowerDo ((DoExpr e) :: rest) = EApp (EApp (EVar "andThen") e) (ELam [PWild] (lowerDo rest))
+lowerDo ((DoBind pat e) :: rest) = EApp (EApp (EVar "andThen") e) (doCont pat (lowerDo rest))
+lowerDo ((DoLet _ pat e) :: rest) = ELet False False pat e (lowerDo rest)
+lowerDo ((DoLetElse pat e alt) :: rest) = EMatch e [Arm pat [] (lowerDo rest), Arm PWild [] alt]
+lowerDo _ = fallthrough
+
+-- bind continuation: a bare lambda for an irrefutable pattern, else a 1-arg
+-- lambda + 2-arm match whose wildcard arm fails (do_bind_fail = fallthrough)
+doCont : Pat -> Expr -> Expr
+doCont pat body
+  | isRefutable pat = ELam [PVar "__do_x"] (EMatch (EVar "__do_x") [Arm pat [] body, Arm PWild [] fallthrough])
+  | otherwise = ELam [pat] body
+
+isRefutable : Pat -> Bool
+isRefutable (PVar _) = False
+isRefutable PWild = False
+isRefutable (PLit _) = True
+isRefutable (PCon _ _) = True
+isRefutable (PCons _ _) = True
+isRefutable (PList _) = True
+isRefutable (PRng _ _ _) = True
+isRefutable (PRec _ _ _) = True
+isRefutable (PTuple ps) = anyRefutable ps
+isRefutable (PAs _ p) = isRefutable p
+
+anyRefutable : List Pat -> Bool
+anyRefutable [] = False
+anyRefutable (p :: ps) = isRefutable p || anyRefutable ps
+
 -- ── The pass pipeline ─────────────────────────────────────────────────────
--- Ported incrementally.  So far: desugar_sugar (the final reference pass).
--- Coming: deriving expansion, record puns, container literals, list comps, `?`,
--- and do-blocks — each runs before desugar_sugar in the reference order.
+-- Ported incrementally, in the reference order (later passes run last).  So
+-- far: lower_do_blocks then desugar_sugar.  Coming (they run earlier): deriving
+-- expansion, record puns, container literals, list comprehensions, `?`.
 export
 desugar : List Decl -> List Decl
-desugar prog = mapProg rewriteSugar prog
+desugar prog = mapProg rewriteSugar (mapProg rewriteDo prog)
