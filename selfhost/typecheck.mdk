@@ -335,31 +335,31 @@ fromAstType tvs (TyEffect _ _ t) = fromAstType tvs t
 fromAstType tvs (TyConstrained _ t) = fromAstType tvs t
 
 -- ── environment ───────────────────────────────────────────────────────────
-public export data Env = Env (List (String, Scheme)) (List (String, Scheme))   -- vars, ctors
+public export data TcEnv = TcEnv (List (String, Scheme)) (List (String, Scheme))   -- vars, ctors
 
-lookupVar : Env -> String -> Option Scheme
-lookupVar (Env vs cs) n = match lookupAssocS n vs
+lookupVar : TcEnv -> String -> Option Scheme
+lookupVar (TcEnv vs cs) n = match lookupAssocS n vs
   Some s => Some s
   None => lookupAssocS n cs
 
-lookupCtor : Env -> String -> Option Scheme
-lookupCtor (Env _ cs) n = lookupAssocS n cs
+lookupCtor : TcEnv -> String -> Option Scheme
+lookupCtor (TcEnv _ cs) n = lookupAssocS n cs
 
-extendVar : Env -> String -> Scheme -> Env
-extendVar (Env vs cs) n s = Env ((n, s) :: vs) cs
+extendVar : TcEnv -> String -> Scheme -> TcEnv
+extendVar (TcEnv vs cs) n s = TcEnv ((n, s) :: vs) cs
 
-extendVars : Env -> List (String, Scheme) -> Env
+extendVars : TcEnv -> List (String, Scheme) -> TcEnv
 extendVars env [] = env
 extendVars env ((n, s) :: rest) = extendVars (extendVar env n s) rest
 
-addCtor : Env -> String -> Scheme -> Env
-addCtor (Env vs cs) n s = Env vs ((n, s) :: cs)
+addCtor : TcEnv -> String -> Scheme -> TcEnv
+addCtor (TcEnv vs cs) n s = TcEnv vs ((n, s) :: cs)
 
 monoScheme : Mono -> Scheme
 monoScheme t = Forall [] t
 
 -- ── pattern inference: returns the pattern's type + the bindings it adds ───
-inferPat : Env -> Pat -> <Mut> (Mono, List (String, Scheme))
+inferPat : TcEnv -> Pat -> <Mut> (Mono, List (String, Scheme))
 inferPat _ (PVar x) =
   let v = freshVar ()
   (v, [(x, monoScheme v)])
@@ -373,27 +373,27 @@ inferPat env (PAs x p) = inferPatAs env x p
 inferPat env (PRec name fields _) = inferPatRec env name fields
 inferPat _ _ = panic "typecheck: unsupported pattern (slice 1)"
 
-inferPatRec : Env -> String -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
+inferPatRec : TcEnv -> String -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
 inferPatRec env name fields = match lookupRecordByName name
   None => panic ("unknown record: " ++ name)
   Some ri => inferPatRecWith env ri fields
 
-inferPatRecWith : Env -> RecordInfo -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
+inferPatRecWith : TcEnv -> RecordInfo -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
 inferPatRecWith env ri fields =
   let ir = instantiateRecord ri
   (fst ir, inferRecPatFields env (snd ir) fields)
 
-inferRecPatFields : Env -> List (String, Mono) -> List RecPatField -> <Mut> List (String, Scheme)
+inferRecPatFields : TcEnv -> List (String, Mono) -> List RecPatField -> <Mut> List (String, Scheme)
 inferRecPatFields _ _ [] = []
 inferRecPatFields env fieldTypes (RecPatField fname mp :: rest) =
   inferRecPatField env fieldTypes fname mp ++ inferRecPatFields env fieldTypes rest
 
-inferRecPatField : Env -> List (String, Mono) -> String -> Option Pat -> <Mut> List (String, Scheme)
+inferRecPatField : TcEnv -> List (String, Mono) -> String -> Option Pat -> <Mut> List (String, Scheme)
 inferRecPatField env fieldTypes fname mp = match lookupAssocS fname fieldTypes
   None => panic ("unknown field: " ++ fname)
   Some ft => inferRecPatFieldWith env ft fname mp
 
-inferRecPatFieldWith : Env -> Mono -> String -> Option Pat -> <Mut> List (String, Scheme)
+inferRecPatFieldWith : TcEnv -> Mono -> String -> Option Pat -> <Mut> List (String, Scheme)
 inferRecPatFieldWith _ ft fname None = [(fname, monoScheme ft)]
 inferRecPatFieldWith env ft _ (Some p) =
   let pr = inferPat env p
@@ -408,12 +408,12 @@ litType (LChar _) = TCon "Char"
 litType (LBool _) = TCon "Bool"
 litType LUnit = TCon "Unit"
 
-inferPatCon : Env -> String -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatCon : TcEnv -> String -> List Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatCon env name pats = match lookupCtor env name
   None => panic ("unknown constructor: " ++ name)
   Some scheme => inferPatConWith env scheme pats
 
-inferPatConWith : Env -> Scheme -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatConWith : TcEnv -> Scheme -> List Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatConWith env scheme pats =
   let ctorType = instantiate scheme
   let pr = inferPats env pats
@@ -421,7 +421,7 @@ inferPatConWith env scheme pats =
   let _ = unify ctorType (foldrFun (fst pr) resultVar)
   (resultVar, snd pr)
 
-inferPats : Env -> List Pat -> <Mut> (List Mono, List (String, Scheme))
+inferPats : TcEnv -> List Pat -> <Mut> (List Mono, List (String, Scheme))
 inferPats _ [] = ([], [])
 inferPats env (p :: ps) =
   let pr = inferPat env p
@@ -432,12 +432,12 @@ foldrFun : List Mono -> Mono -> Mono
 foldrFun [] result = result
 foldrFun (a :: rest) result = TFun a [] (foldrFun rest result)
 
-inferPatTuple : Env -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatTuple : TcEnv -> List Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatTuple env pats =
   let pr = inferPats env pats
   (TTuple (fst pr), snd pr)
 
-inferPatCons : Env -> Pat -> Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatCons : TcEnv -> Pat -> Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatCons env h t =
   let hr = inferPat env h
   let tr = inferPat env t
@@ -445,14 +445,14 @@ inferPatCons env h t =
   let _ = unify (fst tr) listTy
   (listTy, snd hr ++ snd tr)
 
-inferPatList : Env -> List Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatList : TcEnv -> List Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatList env pats =
   let elem = freshVar ()
   let pr = inferPats env pats
   let _ = unifyAll elem (fst pr)
   (TApp (TCon "List") elem, snd pr)
 
-inferPatAs : Env -> String -> Pat -> <Mut> (Mono, List (String, Scheme))
+inferPatAs : TcEnv -> String -> Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatAs env x p =
   let pr = inferPat env p
   (fst pr, (x, monoScheme (fst pr)) :: snd pr)
@@ -464,7 +464,7 @@ unifyAll t (x :: xs) =
   unifyAll t xs
 
 -- ── expression inference ──────────────────────────────────────────────────
-infer : Env -> Expr -> <Mut> Mono
+infer : TcEnv -> Expr -> <Mut> Mono
 infer _ (ELit l) = litType l
 infer env (EVar x) = inferVar env x
 infer env (EApp f x) = inferApp (infer env f) (infer env x)
@@ -487,18 +487,18 @@ infer _ _ = panic "typecheck: unsupported expression (slice 1)"
 
 -- bare sequential block: value of the last statement; earlier statements typed
 -- for effect; let/assign extend the env
-inferBlock : Env -> List DoStmt -> <Mut> Mono
+inferBlock : TcEnv -> List DoStmt -> <Mut> Mono
 inferBlock _ [] = TCon "Unit"
 inferBlock env [s] = inferLastStmt env s
 inferBlock env (s :: rest) = inferBlock (inferStmt env s) rest
 
-inferLastStmt : Env -> DoStmt -> <Mut> Mono
+inferLastStmt : TcEnv -> DoStmt -> <Mut> Mono
 inferLastStmt env (DoExpr e) = infer env e
 inferLastStmt env s =
   let _ = inferStmt env s
   TCon "Unit"
 
-inferStmt : Env -> DoStmt -> <Mut> Env
+inferStmt : TcEnv -> DoStmt -> <Mut> TcEnv
 inferStmt env (DoExpr e) =
   let _ = infer env e
   env
@@ -507,7 +507,7 @@ inferStmt env (DoLetElse pat e _) = blockLet env pat e
 inferStmt env (DoAssign x e) = extendVar env x (monoScheme (infer env e))
 inferStmt _ _ = panic "typecheck: unsupported block statement"
 
-blockLet : Env -> Pat -> Expr -> <Mut> Env
+blockLet : TcEnv -> Pat -> Expr -> <Mut> TcEnv
 blockLet env (PVar x) e =
   let _ = enterLevel ()
   let t = infer env e
@@ -519,34 +519,34 @@ blockLet env pat e =
   let _ = unify (fst pr) t
   extendVars env (snd pr)
 
-inferRecordCreate : Env -> String -> List FieldAssign -> <Mut> Mono
+inferRecordCreate : TcEnv -> String -> List FieldAssign -> <Mut> Mono
 inferRecordCreate env name fields = match lookupRecordByName name
   None => panic ("unknown record: " ++ name)
   Some ri => inferRecordCreateWith env ri fields
 
-inferRecordCreateWith : Env -> RecordInfo -> List FieldAssign -> <Mut> Mono
+inferRecordCreateWith : TcEnv -> RecordInfo -> List FieldAssign -> <Mut> Mono
 inferRecordCreateWith env ri fields =
   let ir = instantiateRecord ri
   let _ = unifyFieldAssigns env (snd ir) fields
   fst ir
 
-unifyFieldAssigns : Env -> List (String, Mono) -> List FieldAssign -> <Mut> Unit
+unifyFieldAssigns : TcEnv -> List (String, Mono) -> List FieldAssign -> <Mut> Unit
 unifyFieldAssigns _ _ [] = ()
 unifyFieldAssigns env fieldTypes (FieldAssign fn val :: rest) =
   let _ = unifyFieldAssign env fieldTypes fn val
   unifyFieldAssigns env fieldTypes rest
 
-unifyFieldAssign : Env -> List (String, Mono) -> String -> Expr -> <Mut> Unit
+unifyFieldAssign : TcEnv -> List (String, Mono) -> String -> Expr -> <Mut> Unit
 unifyFieldAssign env fieldTypes fn val = match lookupAssocS fn fieldTypes
   None => panic ("unknown field: " ++ fn)
   Some ft => unify (infer env val) ft
 
-inferFieldAccess : Env -> Expr -> String -> <Mut> Mono
+inferFieldAccess : TcEnv -> Expr -> String -> <Mut> Mono
 inferFieldAccess env e fname = match lookupRecordByField fname
   None => panic ("unknown field: " ++ fname)
   Some ri => inferFieldAccessWith env e ri fname
 
-inferFieldAccessWith : Env -> Expr -> RecordInfo -> String -> <Mut> Mono
+inferFieldAccessWith : TcEnv -> Expr -> RecordInfo -> String -> <Mut> Mono
 inferFieldAccessWith env e ri fname =
   let ir = instantiateRecord ri
   let _ = unify (infer env e) (fst ir)
@@ -554,7 +554,7 @@ inferFieldAccessWith env e ri fname =
     Some ft => ft
     None => panic ("no field: " ++ fname)
 
-inferRecordUpdate : Env -> Expr -> List FieldAssign -> <Mut> Mono
+inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> <Mut> Mono
 inferRecordUpdate env base fields = match firstFieldName fields
   None => panic "empty record update"
   Some fn => inferRecordUpdateField env base fields fn
@@ -563,12 +563,12 @@ firstFieldName : List FieldAssign -> Option String
 firstFieldName [] = None
 firstFieldName (FieldAssign fn _ :: _) = Some fn
 
-inferRecordUpdateField : Env -> Expr -> List FieldAssign -> String -> <Mut> Mono
+inferRecordUpdateField : TcEnv -> Expr -> List FieldAssign -> String -> <Mut> Mono
 inferRecordUpdateField env base fields fn = match lookupRecordByField fn
   None => panic ("unknown field: " ++ fn)
   Some ri => inferRecordUpdateWith env base fields ri
 
-inferRecordUpdateWith : Env -> Expr -> List FieldAssign -> RecordInfo -> <Mut> Mono
+inferRecordUpdateWith : TcEnv -> Expr -> List FieldAssign -> RecordInfo -> <Mut> Mono
 inferRecordUpdateWith env base fields ri =
   let ir = instantiateRecord ri
   let _ = unify (infer env base) (fst ir)
@@ -578,7 +578,7 @@ inferRecordUpdateWith env base fields ri =
 -- operators infer by SHAPE (the typeclass constraint they carry — Num/Eq/… — is
 -- tracked at the value level but never rendered in a scheme, so it's irrelevant
 -- to the === TYPES === output; numeric literals are Int, not polymorphic)
-inferBinopE : Env -> String -> Expr -> Expr -> <Mut> Mono
+inferBinopE : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
 inferBinopE env op l r =
   let lt = infer env l
   let rt = infer env r
@@ -659,14 +659,14 @@ inferUnop "!" t =
 inferUnop op _ = panic ("typecheck: unsupported unary op " ++ op)
 
 -- backtick infix `x `f` y` is just f applied to x then y
-inferInfix : Env -> String -> Expr -> Expr -> <Mut> Mono
+inferInfix : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
 inferInfix env op l r =
   let ft = inferVar env op
   let lt = infer env l
   let rt = infer env r
   inferApp (inferApp ft lt) rt
 
-inferVar : Env -> String -> <Mut> Mono
+inferVar : TcEnv -> String -> <Mut> Mono
 inferVar env x = match lookupVar env x
   Some s => instantiate s
   None => panic ("unbound variable: " ++ x)
@@ -677,77 +677,77 @@ inferApp ft xt =
   let _ = unify ft (TFun xt [] r)
   r
 
-inferLam : Env -> List Pat -> Expr -> <Mut> Mono
+inferLam : TcEnv -> List Pat -> Expr -> <Mut> Mono
 inferLam env pats body =
   let pr = inferPats env pats
   let bodyTy = infer (extendVars env (snd pr)) body
   foldrFun (fst pr) bodyTy
 
-inferLet : Env -> Pat -> Expr -> Expr -> <Mut> Mono
+inferLet : TcEnv -> Pat -> Expr -> Expr -> <Mut> Mono
 inferLet env pat e1 e2 =
   let _ = enterLevel ()
   let t1 = infer env e1
   let _ = exitLevel ()
   inferLetBody env pat t1 e2
 
-inferLetBody : Env -> Pat -> Mono -> Expr -> <Mut> Mono
+inferLetBody : TcEnv -> Pat -> Mono -> Expr -> <Mut> Mono
 inferLetBody env (PVar x) t1 e2 = infer (extendVar env x (generalize t1)) e2
 inferLetBody env pat t1 e2 =
   let pr = inferPat env pat
   let _ = unify (fst pr) t1
   infer (extendVars env (snd pr)) e2
 
-inferIf : Env -> Expr -> Expr -> Expr -> <Mut> Mono
+inferIf : TcEnv -> Expr -> Expr -> Expr -> <Mut> Mono
 inferIf env c t e =
   let _ = unify (infer env c) (TCon "Bool")
   let tt = infer env t
   let _ = unify tt (infer env e)
   tt
 
-inferEach : Env -> List Expr -> <Mut> List Mono
+inferEach : TcEnv -> List Expr -> <Mut> List Mono
 inferEach _ [] = []
 inferEach env (e :: es) =
   let t = infer env e
   t :: inferEach env es
 
-inferListLit : Env -> List Expr -> <Mut> Mono
+inferListLit : TcEnv -> List Expr -> <Mut> Mono
 inferListLit env es =
   let elem = freshVar ()
   let _ = unifyAll elem (inferEach env es)
   TApp (TCon "List") elem
 
-inferAnnot : Env -> Expr -> Ty -> <Mut> Mono
+inferAnnot : TcEnv -> Expr -> Ty -> <Mut> Mono
 inferAnnot env e ty =
   let t = infer env e
   let annot = astTypeFresh ty
   let _ = unify t annot
   annot
 
-inferMatch : Env -> Mono -> List Arm -> <Mut> Mono
+inferMatch : TcEnv -> Mono -> List Arm -> <Mut> Mono
 inferMatch env scrutTy arms =
   let result = freshVar ()
   let _ = inferArms env scrutTy result arms
   result
 
-inferArms : Env -> Mono -> Mono -> List Arm -> <Mut> Unit
+inferArms : TcEnv -> Mono -> Mono -> List Arm -> <Mut> Unit
 inferArms _ _ _ [] = ()
 inferArms env scrutTy result (Arm pat _ body :: rest) =
   let _ = inferArm env scrutTy result pat body
   inferArms env scrutTy result rest
 
-inferArm : Env -> Mono -> Mono -> Pat -> Expr -> <Mut> Unit
+inferArm : TcEnv -> Mono -> Mono -> Pat -> Expr -> <Mut> Unit
 inferArm env scrutTy result pat body =
   let pr = inferPat env pat
   let _ = unify (fst pr) scrutTy
   unify result (infer (extendVars env (snd pr)) body)
 
-inferLetGroup : Env -> List LetBind -> Expr -> <Mut> Mono
+inferLetGroup : TcEnv -> List LetBind -> Expr -> <Mut> Mono
 inferLetGroup env binds body =
   let env2 = processLetGroup env binds
   infer env2 body
 
 -- ── data declarations → constructor schemes ───────────────────────────────
-registerData : Env -> Decl -> <Mut> Env
+registerData : TcEnv -> Decl -> <Mut> TcEnv
 registerData env (DData _ name params variants _) = registerVariants env name params variants
 registerData env (DRecord _ name params fields _) =
   let _ = registerRecordInfo name params fields
@@ -794,7 +794,7 @@ instantiateRecord (RecordInfo paramIds result fields) =
 substField : List (Int, Mono) -> (String, Mono) -> (String, Mono)
 substField subst (fn, fm) = (fn, substMono subst fm)
 
-registerVariants : Env -> String -> List String -> List Variant -> <Mut> Env
+registerVariants : TcEnv -> String -> List String -> List Variant -> <Mut> TcEnv
 registerVariants env name params variants =
   let paramVars = freshVars (lengthL params)
   let tvs = zipL params paramVars
@@ -815,7 +815,7 @@ applyParams : Mono -> List Mono -> Mono
 applyParams head [] = head
 applyParams head (p :: ps) = applyParams (TApp head p) ps
 
-addVariants : Env -> List (String, Mono) -> List Int -> Mono -> List Variant -> Env
+addVariants : TcEnv -> List (String, Mono) -> List Int -> Mono -> List Variant -> TcEnv
 addVariants env _ _ _ [] = env
 addVariants env tvs paramIds result (Variant cname payload :: rest) =
   let ctorType = foldrFun (payloadTypes tvs payload) result
@@ -855,7 +855,7 @@ clausesFor name ((n, c) :: rest)
   | otherwise = clausesFor name rest
 
 -- process a let-group (where clauses): bind names, infer, generalize
-processLetGroup : Env -> List LetBind -> <Mut> Env
+processLetGroup : TcEnv -> List LetBind -> <Mut> TcEnv
 processLetGroup env binds =
   let _ = enterLevel ()
   let placeholders = map letBindPlaceholder binds
@@ -867,7 +867,7 @@ processLetGroup env binds =
 letBindPlaceholder : LetBind -> <Mut> (String, Scheme)
 letBindPlaceholder (LetBind name _) = (name, monoScheme (freshVar ()))
 
-inferLetBinds : Env -> List (LetBind, (String, Scheme)) -> <Mut> Unit
+inferLetBinds : TcEnv -> List (LetBind, (String, Scheme)) -> <Mut> Unit
 inferLetBinds _ [] = ()
 inferLetBinds env ((LetBind _ clauses, (_, sch)) :: rest) =
   let _ = unify (schemeMono sch) (inferClauses env (map funClausePair clauses))
@@ -876,19 +876,19 @@ inferLetBinds env ((LetBind _ clauses, (_, sch)) :: rest) =
 schemeMono : Scheme -> Mono
 schemeMono (Forall _ t) = t
 
-generalizeGroup : Env -> List (LetBind, (String, Scheme)) -> <Mut> Env
+generalizeGroup : TcEnv -> List (LetBind, (String, Scheme)) -> <Mut> TcEnv
 generalizeGroup env [] = env
 generalizeGroup env ((LetBind name _, (_, sch)) :: rest) =
   generalizeGroup (extendVar env name (generalize (schemeMono sch))) rest
 
 -- infer a clause group (multi-clause function), unifying all clauses to one type
-inferClauses : Env -> List (List Pat, Expr) -> <Mut> Mono
+inferClauses : TcEnv -> List (List Pat, Expr) -> <Mut> Mono
 inferClauses env clauses =
   let v = freshVar ()
   let _ = unifyClauses env v clauses
   v
 
-unifyClauses : Env -> Mono -> List (List Pat, Expr) -> <Mut> Unit
+unifyClauses : TcEnv -> Mono -> List (List Pat, Expr) -> <Mut> Unit
 unifyClauses _ _ [] = ()
 unifyClauses env v ((pats, body) :: rest) =
   let _ = unify v (inferLam env pats body)
@@ -991,10 +991,10 @@ fieldAssignEVars : FieldAssign -> List String
 fieldAssignEVars (FieldAssign _ e) = allEVars e
 
 -- builtin constructors available without the prelude (mirrors initial_env)
-initialEnv : Env
-initialEnv = Env [] [("True", monoScheme (TCon "Bool")), ("False", monoScheme (TCon "Bool"))]
+initialEnv : TcEnv
+initialEnv = TcEnv [] [("True", monoScheme (TCon "Bool")), ("False", monoScheme (TCon "Bool"))]
 
-registerAllData : Env -> List Decl -> <Mut> Env
+registerAllData : TcEnv -> List Decl -> <Mut> TcEnv
 registerAllData env [] = env
 registerAllData env (d :: rest) = registerAllData (registerData env d) rest
 
@@ -1005,7 +1005,7 @@ registerAllData env (d :: rest) = registerAllData (registerData env d) rest
 -- into one letrec group (generalized together).  Mirrors the reference's
 -- order_groups_by_deps + process_letrec_group (Phase 136).
 
-processTopGroups : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
+processTopGroups : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
 processTopGroups env sigs defs names =
   let graph = depGraph names defs
   let reachMap = map (n => (n, reachFrom graph n)) names
@@ -1117,13 +1117,13 @@ sccEq : List String -> List String -> Bool
 sccEq a b = lengthL a == lengthL b && allL (x => containsName x b) a
 
 -- process each SCC as a letrec group in topological order
-processSCCs : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (List String) -> <Mut> List (String, Scheme)
+processSCCs : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (List String) -> <Mut> List (String, Scheme)
 processSCCs _ _ _ [] = []
 processSCCs env sigs defs (scc :: rest) =
   let er = processSCC env sigs defs scc
   snd er ++ processSCCs (fst er) sigs defs rest
 
-processSCC : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> (Env, List (String, Scheme))
+processSCC : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
 processSCC env sigs defs members =
   let _ = enterLevel ()
   let placeholders = map (m => (m, freshVar ())) members
@@ -1152,7 +1152,7 @@ preunifySig sigs m v = match lookupAssocS m sigs
   None => ()
 
 -- Pass B: infer each member's clauses, unifying with its placeholder
-inferMembers : Env -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
+inferMembers : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
 inferMembers _ _ _ [] = ()
 inferMembers env sigs defs ((m, v) :: rest) =
   let _ = unify v (inferClauses env (clausesFor m defs))
