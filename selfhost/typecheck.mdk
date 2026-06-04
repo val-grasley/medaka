@@ -11,7 +11,7 @@
 -- the prelude), effect rows, records, interfaces/impls + constraint solving,
 -- and explicit type signatures.
 
-import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), Decl(..)}
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
 public export data Mono
@@ -713,9 +713,27 @@ checkProgram : List Decl -> <Mut> List (String, Scheme)
 checkProgram prog =
   let _ = resetState ()
   let dataEnv = registerAllData initialEnv prog
+  let ifaceSchemes = ifaceMethodSchemes prog
+  let env1 = extendVars dataEnv ifaceSchemes
   let defs = funDefs prog
   let sigs = sigsOf prog
-  processTopGroups dataEnv sigs defs (groupNames defs [])
+  ifaceSchemes ++ processTopGroups env1 sigs defs (groupNames defs [])
+
+-- interface method schemes: each method's declared type, free tyvars (incl. the
+-- interface param) quantified — the bare scheme the === TYPES === output shows
+-- (the typeclass constraint itself is never rendered).  Impl bodies add no
+-- top-level bindings, so DImpl needs no output here.
+ifaceMethodSchemes : List Decl -> <Mut> List (String, Scheme)
+ifaceMethodSchemes [] = []
+ifaceMethodSchemes (d :: rest) = declIfaceMethods d ++ ifaceMethodSchemes rest
+
+declIfaceMethods : Decl -> <Mut> List (String, Scheme)
+declIfaceMethods (DInterface { methods, ... }) = methodSchemes methods
+declIfaceMethods _ = []
+
+methodSchemes : List IfaceMethod -> <Mut> List (String, Scheme)
+methodSchemes [] = []
+methodSchemes (IfaceMethod mname mty _ :: rest) = (mname, sigToScheme mty) :: methodSchemes rest
 
 sigsOf : List Decl -> List (String, Ty)
 sigsOf [] = []
