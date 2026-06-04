@@ -1,0 +1,10 @@
+-- A constrained function calling ANOTHER constrained function at its own
+-- constraint variable: `quad`'s Monoid dictionary is forwarded (RDict at the call
+-- site) into the `doubleEmpty` calls, rather than rebuilt — the nested case.
+doubleEmpty : Monoid a => a -> a
+doubleEmpty x = append (append x empty) empty
+
+quad : Monoid a => a -> a
+quad x = doubleEmpty (doubleEmpty x)
+
+main = putStrLn (quad "Q")

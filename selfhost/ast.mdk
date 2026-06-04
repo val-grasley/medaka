@@ -27,6 +27,12 @@ public export data Ty
 -- an interface constraint `Iface arg…` on the LHS of a `=>` in a type
 public export data Constraint = Constraint String (List Ty)
 
+-- a resolved typeclass-dispatch route (filled by the typed-pipeline typechecker).
+-- RNone = unresolved / no dispatch (eval keeps the VMulti for arg-tag fallback);
+-- RKey = a concrete impl head tag; RDict = read the named dict parameter at
+-- runtime (the enclosing constrained function's constraint).
+public export data Route = RNone | RKey String | RDict String
+
 public export data Pat
   = PVar String
   | PWild
@@ -117,10 +123,16 @@ public export data Expr
   | EMethodRef String
   | EDictApp String
   -- Return-position method occurrence (pure/empty/…) rewritten by the self-hosted
-  -- typecheck's pre-pass: method name + a mutable tag the typechecker resolves to
-  -- the concrete impl's head type (RKey), which eval narrows the VMulti by.  Only
-  -- appears in the typed eval pipeline, never in parser/desugar/mark output.
-  | EMethodAt String (Ref String)
+  -- typecheck's pre-pass: method name + a mutable route the typechecker resolves.
+  -- RKey = the concrete impl's head type (eval narrows the VMulti by it); RDict =
+  -- the enclosing constrained function's dict parameter (read at runtime, then
+  -- narrow).  Only appears in the typed eval pipeline, never in parse/mark output.
+  | EMethodAt String (Ref Route)
+  -- Constrained-function occurrence (`f` where `f : C a => …`) rewritten by the
+  -- same pre-pass: the function name + one route per `=>` constraint, filled by
+  -- the typechecker.  Eval applies the matching dictionaries as leading args,
+  -- lining up with the dict params dict_pass prepended to f's definition.
+  | EDictAt String (Ref (List Route))
 
 -- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
 public export data UseMember = UseMember String Bool

@@ -11,7 +11,7 @@
 -- Validated by rendering pp_value of a program's `main` binding and diffing
 -- against dev/eval_probe.exe (Eval.eval_program ~prelude:false → Eval.pp_value).
 
-import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Variant(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), Route(..), ConPayload(..), Variant(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), Decl(..)}
 import util.{contains, concatMapList, listLen, reverseL, anyList, lookupAssoc}
 
 -- ── values & environment (mutually recursive) ─────────────────────────────
@@ -41,6 +41,10 @@ public export data Value
   -- an impl method tagged for typeclass dispatch: head type, impl key, the arg
   -- positions that discriminate, args applied so far, and the underlying value
   | VTypedImpl String String (List Int) Int Value
+  -- a runtime dictionary: the impl head tag a constrained function was called at,
+  -- passed as a leading argument (EDictAt builds it, dict_pass binds it as a
+  -- parameter); an in-body EMethodAt routed RDict reads it to narrow its method.
+  | VDict String
 
 -- an environment is a stack of frames; each frame maps names to mutable cells
 -- (so letrec / mutual recursion can back-patch a closure's own binding)
@@ -75,6 +79,7 @@ ppValue (VTypedImpl t _ _ _ inner) = "<impl@"
   ++ ppValue inner
   ++ ">"
 ppValue (VThunk _) = "<thunk>"
+ppValue (VDict key) = "<dict:" ++ key ++ ">"
 ppValue VFallthrough = "<fallthrough>"
 
 ppField : (String, Value) -> String
@@ -527,6 +532,31 @@ awaitsArgs (VMulti _) = True
 awaitsArgs (VTypedImpl _ _ _ _ _) = True
 awaitsArgs _ = False
 
+-- the concrete head tag an EMethodAt route narrows by: RKey is literal; RDict
+-- forwards the enclosing function's dict parameter (a VDict key); RNone leaves
+-- the VMulti for arg-tag fallback ("").
+routeTag : Env -> Route -> <Mut> String
+routeTag _ RNone = ""
+routeTag _ (RKey key) = key
+routeTag env (RDict d) = match lookupEnv env d
+  VDict key => key
+  _ => ""
+
+-- a constrained-function occurrence: apply one runtime dictionary per resolved
+-- route as a leading argument (matching the dict params dict_pass prepended).
+applyDicts : Env -> Value -> List Route -> <Mut> Value
+applyDicts _ v [] = v
+applyDicts env v (r :: rest) = applyDicts env (apply v (dictOfRoute env r)) rest
+
+-- build the runtime dictionary for one route: RKey is a literal VDict; RDict
+-- forwards the enclosing function's dictionary parameter; RNone is a no-op dict.
+dictOfRoute : Env -> Route -> <Mut> Value
+dictOfRoute _ (RKey key) = VDict key
+dictOfRoute env (RDict d) = match lookupEnv env d
+  VDict key => VDict key
+  _ => VDict ""
+dictOfRoute _ RNone = VDict ""
+
 oneOrMultiV : List Value -> List Value -> Value
 oneOrMultiV [v] _ = v
 oneOrMultiV [] original = VMulti original
@@ -585,8 +615,10 @@ eval _ (ELit (LChar c)) = VChar c
 eval _ (ELit (LBool b)) = VBool b
 eval _ (ELit LUnit) = VUnit
 eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
-eval env (EMethodAt name tagRef) =
-  narrowMethod (lookupEnv env name) tagRef.value
+eval env (EMethodAt name routeRef) =
+  narrowMethod (lookupEnv env name) (routeTag env routeRef.value)
+eval env (EDictAt name routesRef) =
+  applyDicts env (lookupEnv env name) routesRef.value
 eval env (EApp f x) = apply (eval env f) (eval env x)
 eval env (ELam pats body) = VClosure env pats body
 eval env (ELet _ True (PVar f) e1 e2) = evalRecLet env f e1 e2
