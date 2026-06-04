@@ -42,6 +42,8 @@ diff with `lib/`:
 | `eval.mdk` | Tree-walk interpreter (Stage-1 capstone, **slice 1**). `Value`/`Env` ADTs + `pp_value` (byte-for-byte with `lib/eval.ml`) + the engine: `eval`/`apply`/`match_pat`/binops over `(name, Ref value)` env frames. `evalMain : List Decl -> <Mut> String`. |
 | `eval_main.mdk` | Runnable entry: `medaka run selfhost/eval_main.mdk <src.mdk>` parses + desugars a self-contained (prelude-free) file, evaluates it, prints `pp_value` of `main` (diffs against `dev/eval_probe.exe`). |
 | `eval_prelude_main.mdk` | Like `eval_main` but prepends one or more parsed prelude files: `medaka run selfhost/eval_prelude_main.mdk <prelude.mdk>... <src.mdk>` — `core.mdk` for interface methods, `+ list.mdk` for the List combinators / comprehensions (diffs against `dev/eval_probe.exe --prelude` / `--prepend`). |
+| `eval_run_main.mdk` | **True execution**: `medaka run selfhost/eval_run_main.mdk <prelude.mdk>... <src.mdk>` runs the program for its **stdout** (putStr/putStrLn captured to a buffer), prelude-shadow-dropping the user's redefinitions. Diffs against the `=== EVAL ===` goldens (`test/diff_selfhost_eval_run.sh`). |
+| `eval_typed_main.mdk` | **Typed execution** (return-position dispatch): `medaka run selfhost/eval_typed_main.mdk <runtime.mdk> <prelude.mdk>... <src.mdk>` threads desugar → `typecheck.elaborate` (stamps `EMethodAt` tags) → eval on one shared tree, so `pure`/`empty`/do-blocks dispatch by concrete return type. Diffs against `medaka run` (`test/diff_selfhost_eval_typed.sh`). |
 | `typecheck.mdk` | HM core (**slice 1**). `Mono`/`Scheme` + union-find `unify`, level-based `generalize`/`instantiate`, `pp_mono`, and `infer`/`inferPat`. `checkToLines : List Decl -> <Mut> String`. |
 | `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk [runtime.mdk] <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). With a runtime.mdk arg its externs are seeded into scope, so `core.mdk` (+ a user program) type-checks against the `=== TYPES ===` goldens. |
 | `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 9 resolve diagnostics (broken). |
@@ -221,7 +223,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 | 2 | ✅ **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve`, **full corpus + 9 fixtures** |
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
 | 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
-| 5 | 🚧 **eval** | ~2350 | hard (plumbing) | `program → values` | `dev/eval_probe.exe` (slice 1: engine core); later `=== EVAL ===` |
+| 5 | ✅ **eval** | ~2350 | hard (plumbing) | `program → values / stdout` | `dev/eval_probe.exe` + **all 16 `=== EVAL ===` goldens** (untyped *and* typed paths) |
 | 6 | ✅ **typecheck** | ~4650 | **very hard** | `program → schemes` | `dev/tc_probe.exe` + **all 16 `=== TYPES ===` goldens** |
 
 1. ✅ **Desugar — DONE.** `selfhost/desugar.mdk` + `desugar_main.mdk`: the
@@ -421,6 +423,74 @@ interpreter (eval), all running on the existing OCaml interpreter and validated
 stage-by-stage against the reference — at which point the self-hosted compiler
 can process its own source (the bootstrap). Stage 2 (the LLVM backend) follows;
 see **North star → Stage 2** in `../PLAN.md`.
+
+---
+
+## Where we are now (all eight stages done) + what's next
+
+All eight stages have validated self-hosted ports matching the OCaml reference
+byte-for-byte, plus two integration milestones beyond per-stage validation:
+
+- **Composed front-end** — `selfhost/check.mdk` wires parse → desugar → resolve →
+  exhaust → typecheck into one program (`test/diff_selfhost_check.sh`: reproduces
+  all 16 `=== TYPES ===` goldens *and* the 9 resolve diagnostics).
+- **True execution** — `selfhost/eval_run_main.mdk` runs programs for their stdout
+  (output captured to a buffer), matching all 16 `=== EVAL ===` goldens
+  (`test/diff_selfhost_eval_run.sh`).
+- **Typed eval path (return-position dispatch / RKey)** —
+  `selfhost/eval_typed_main.mdk` threads desugar → `typecheck.elaborate` → eval on
+  one shared tree, so `pure`/`empty`/do-blocks in a user monad dispatch by their
+  concrete return type (`test/diff_selfhost_eval_typed.sh`, oracle = `medaka run`).
+  This is the *only* part of dictionary-passing the compiler needs — see below.
+
+### Next: the bootstrap (#3) — "the compiler processes its own source"
+
+The decisive self-hosting milestone. The `box_do` fixture already proves the
+exact pattern the parser uses (a user monad with `pure` + do-blocks dispatching
+by return type via RKey), so the remaining work is *not* more dispatch machinery
+— it's the integration to run the self-hosted compiler on the `selfhost/*.mdk`
+sources themselves. Concretely, in rough order:
+
+1. **Multi-module support.** The compiler is many modules with `import`s;
+   typecheck/eval currently take a single flat program. Need the loader /
+   module-scoping the reference has (`typecheck_module` + the loader's per-module
+   frames). The diagnostic stages (desugar/mark/resolve/exhaust) already self-
+   process via their corpora, but the typed pipeline does not yet.
+2. **Cross-module name clashes.** Same-named *exported* data types collide because
+   the loader installs constructors globally — we already hit this once
+   (`resolve.Env` vs `typecheck.Env` → renamed to `TcEnv`; `applied non-function:
+   Env [...]`). The selfhost modules will surface more; rename or scope them.
+3. **`infer` / eval gaps the real modules expose.** The diff-fixtures are small;
+   `list.mdk` already forced adding `EArrayLit`/range/index/slice `infer` arms.
+   Running the full selfhost source will surface more unhandled `Expr`/`Pat`
+   forms (e.g. Array indexing on a non-`List` container — `inferIndex` currently
+   assumes `List`), `EStringInterp` residue, etc. Add them as they appear.
+4. **Validation target.** Run a selfhost stage's output (e.g. the self-hosted
+   parser parsing a `.mdk`) through the self-hosted pipeline and diff against the
+   reference doing the same — the "it parses/checks/runs itself" diff.
+
+### Deliberately NOT needed (scoped out by the scout)
+
+The compiler uses **only RKey** return-position dispatch (every site is at a
+concrete type — the `Parser` monad, no polymorphic-monad code, no `=>`
+constraints in the selfhost source). So the full dictionary-passing system —
+`RDict`, dict params, `EDictApp`, `VDict`, the `dict_pass` param-insertion
+transform, the two-pass `Elaborate` — is **not** required for the bootstrap. It
+*would* be needed for (a) running arbitrary user programs that *do* use
+polymorphic-monad code, and (b) the LLVM backend (Stage 2), which consumes the
+fully-elaborated AST. Treat it as an LLVM-era / generality task, not a
+self-hosting one.
+
+### Known limits carried forward (don't block the bootstrap)
+
+- **Inferred effect propagation** — an unsigned function calling an effectful
+  extern doesn't pick up its effect (the typecheck effect rows are
+  annotation-only; full open-row inference is unported). Invisible in the
+  `=== TYPES ===` goldens.
+- **"Signature too general"** is not reported as an error (signed bindings report
+  sig-unified-with-body, generalized).
+- **Performance** — the interpreter is slow (each run re-parses core/list); the
+  lexical-addressing + hash-set perf hooks under *Performance* below are the fix.
 
 ### Performance — what to bake into these phases (so we don't forget)
 
