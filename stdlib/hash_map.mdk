@@ -229,15 +229,21 @@ export
 toList : HashMap k v -> List (k, v)
 toList m = entries m
 
-{- | All keys, in unspecified order. -}
+{- | All keys, in unspecified order.
+
+   > keys (fromList [(5, 50)])
+   [5] -}
 export
 keys : HashMap k v -> List k
-keys m = map ((k, _) => k) (entries m)
+keys m = [k | (k, _) <- entries m]
 
-{- | All values, in unspecified order. -}
+{- | All values, in unspecified order.
+
+   > values (fromList [(5, 50)])
+   [50] -}
 export
 values : HashMap k v -> List v
-values m = map ((_, v) => v) (entries m)
+values m = [v | (_, v) <- entries m]
 
 -- ── Instances ───────────────────────────────────────────────────────────
 
