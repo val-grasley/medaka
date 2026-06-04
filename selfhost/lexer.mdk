@@ -106,6 +106,7 @@ public export data Token
   | TIndent
   | TDedent
   | TEof
+deriving (Eq)
 
 -- Mirrors `lib/lexer.mll` `token_to_string`.  String-bearing tokens use
 -- `debugStringLit` (the `%S`-style quoted/escaped form); ints use `intToString`.

@@ -29,7 +29,7 @@ diff with `lib/`:
 | `lex_main.mdk` | Runnable entry: `medaka run selfhost/lex_main.mdk <src.mdk>` reads the file, tokenizes, prints one token per line in the canonical reference form. |
 | `ast.mdk` | The self-host AST — a Medaka mirror of `lib/ast.ml`'s surface (pre-desugar) nodes; the target the parser builds. Constructor names match `ast.ml`. |
 | `sexp.mdk` | `programToSexp` — a canonical structural S-expression dump of the AST, mirroring `dev/astdump.ml` byte-for-byte; the parser's validation format (the `tokenToString` analog). |
-| `parser.mdk` | Port of `lib/parser.mly`. Hand-written recursive descent over `List Token`; `parse : String -> List Decl`. Precedence is the stratified ladder from the grammar, one function per level. |
+| `parser.mdk` | Port of `lib/parser.mly`. A **monadic combinator** parser over `List Token` — a `Parser` monad (`Mappable`/`Applicative`/`Thenable`) with `do`-notation + `many`/`sepBy1`/`choice`/`chainl1`; `parse : String -> List Decl`. Precedence is the stratified ladder, one function per level. |
 | `parse_main.mdk` | Runnable entry: `medaka run selfhost/parse_main.mdk <src.mdk>` reads the file, parses, and prints the structural S-expression. |
 | `medaka.toml` | Project config (import root). |
 
@@ -85,9 +85,15 @@ the stage is done when all pass.
 - ✅ **Slice 3**: single-line `let … in`, **`match`** with indented arms (the
   first `INDENT`/`DEDENT` layout handling), the full pattern hierarchy
   (constructor application, `::`, tuple, list patterns), and a single-expression
-  indented decl body. Plus progress guards so the parser **always terminates**
-  (never loops on input it doesn't yet handle). Validated on
-  `test/parse_fixtures/`.
+  indented decl body. Validated on `test/parse_fixtures/`.
+- ✅ **Rewritten as a monadic combinator parser** (after Phase 136 unblocked
+  recursive polymorphic combinators and a perf comparison showed it's perf-neutral
+  vs direct recursive descent). Same grammar/AST output (10/10 corpus still
+  matches), but dogfoods `do`/`Thenable`/a custom `Parser` monad. The progress
+  guard now lives in a primitive `many` (stops on failure *or* no-progress, so it
+  can't loop). Recursive parsers must recurse through a `do`-continuation, never
+  by passing themselves as a strict argument (that forces a recursive value mid-
+  definition → `CamlinternalLazy.Undefined` under strict eval).
 - ⏳ Next slices: multi-statement indented blocks (`EBlock`/`do` — the rest of the
   layout work), pipe/compose/unary/sections/interpolation/comprehensions, guards,
   and the remaining decl forms (`data`/`record`/`interface`/`impl`/`import`/…).

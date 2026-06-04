@@ -121,9 +121,14 @@ differential harness on the interpreter.
   ladder (`||`/`&&`/cmp/`::`/`++`), `=>` lambdas, single-line `if`, postfix field
   access. **Slice 3 done:** `let … in`, `match` with indented arms (first
   INDENT/DEDENT handling), full pattern hierarchy, single-expr indented decl
-  bodies, + progress guards so the parser always terminates — 10/10 fixtures.
-  Combinators spiked + parked (Phase 136). Next: multi-statement blocks
-  (`EBlock`/`do`), remaining operators + decl forms.
+  bodies — 10/10 fixtures. **Now rewritten as a monadic combinator parser**
+  (Phase 136 unblocked recursive polymorphic combinators; a perf comparison
+  showed it's perf-neutral vs direct-RD on the interpreter) — dogfoods
+  `do`/`Thenable`/a custom `Parser` monad, same AST output, 10/10 corpus.
+  Gotcha for combinators under strict eval: recursive parsers must recurse via a
+  `do`-continuation, not by passing themselves as a strict arg (recursive-value
+  init cycle). Next: multi-statement blocks (`EBlock`/`do`), remaining operators
+  + decl forms.
 
 ### Stage 2 — LLVM backend (after self-host)
 
