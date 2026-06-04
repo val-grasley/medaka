@@ -111,6 +111,7 @@ public export data Expr
   | EGuards (List GuardArm)
   | ERecordCreate String (List FieldAssign)
   | ERecordUpdate Expr (List FieldAssign)
+  | EVariantUpdate String Expr (List FieldAssign)
   -- Method_marker output (the parser never produces these; the typecheck-filled
   -- ref the reference carries is irrelevant pre-typecheck, so just the name).
   | EMethodRef String
@@ -150,5 +151,5 @@ public export data Decl
   | DProp Bool String (List PropParam) Expr
   | DTest Bool String Expr
   | DBench Bool String Expr
-  | DInterface Bool Bool String (List String) (List Super) (List IfaceMethod)
-  | DImpl Bool Bool String (List Ty) (Option String) (List Require) (List ImplMethod)
+  | DInterface { pub : Bool, def : Bool, name : String, typarams : List String, supers : List Super, methods : List IfaceMethod }
+  | DImpl { pub : Bool, def : Bool, iface : String, tys : List Ty, name : Option String, reqs : List Require, methods : List ImplMethod }

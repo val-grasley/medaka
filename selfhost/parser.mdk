@@ -454,12 +454,29 @@ parseUpperAtom x = do
   upperTail x t
 
 upperTail : String -> Token -> Parser Expr
-upperTail x TLBrace = recordCreate x
+upperTail x TLBrace = upperBrace x
 upperTail x _ = pure (EVar x)
 
-recordCreate : String -> Parser Expr
-recordCreate x = do
+-- After `Con {`: a constructor-tagged variant update `Con { e | f = v, … }`
+-- (a `|` follows the leading expr) or a named-field record create
+-- `Con { f = v, … }`.  `orElse` backtracks, so try the update form first — its
+-- leading `parseExpr` stops at the `=` of the first field-assign (no `|` there)
+-- and fails fast, falling back to the create form.
+upperBrace : String -> Parser Expr
+upperBrace x = do
   expectTok TLBrace
+  orElse (variantUpdateTail x) (recordCreateTail x)
+
+variantUpdateTail : String -> Parser Expr
+variantUpdateTail x = do
+  e <- parseExpr
+  expectTok TPipe
+  fields <- sepBy1 fieldAssign (expectTok TComma)
+  expectTok TRBrace
+  pure (EVariantUpdate x e fields)
+
+recordCreateTail : String -> Parser Expr
+recordCreateTail x = do
   fields <- sepBy1 fieldAssign (expectTok TComma)
   expectTok TRBrace
   pure (ERecordCreate x fields)
@@ -1377,7 +1394,15 @@ parseInterface pub isDefault = do
   typarams <- many lowerNameP
   supers <- ifaceSuper
   methods <- ifaceBody
-  pure (DInterface pub isDefault name typarams supers methods)
+  pure
+    DInterface {
+      pub = pub,
+      def = isDefault,
+      name = name,
+      typarams = typarams,
+      supers = supers,
+      methods = methods
+    }
 
 -- optional `requires Iface a, …` superclass list
 ifaceSuper : Parser (List Super)
@@ -1490,7 +1515,16 @@ implRest pub isDefault iface name = do
   tyargs <- many parseTyAtom
   reqs <- implRequires
   methods <- implBody
-  pure (DImpl pub isDefault iface tyargs name reqs methods)
+  pure
+    DImpl {
+      pub = pub,
+      def = isDefault,
+      iface = iface,
+      tys = tyargs,
+      name = name,
+      reqs = reqs,
+      methods = methods
+    }
 
 -- optional `requires Iface tyargs…, …`
 implRequires : Parser (List Require)

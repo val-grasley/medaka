@@ -191,6 +191,7 @@ checkExpr env scope (EGuards arms) = concatMapList (checkGuardArm env scope) arm
 checkExpr env scope (EFunction arms) = concatMapList (checkArm env scope) arms
 checkExpr env scope (ERecordCreate name fs) = checkRecordCreate env scope name fs
 checkExpr env scope (ERecordUpdate e0 fs) = checkRecordUpdate env scope e0 fs
+checkExpr env scope (EVariantUpdate con e0 fs) = checkExpr env scope e0 ++ checkRecordCreate env scope con fs
 checkExpr env scope (EQuestion e0) = checkExpr env scope e0
 checkExpr env scope (ESection s) = checkSection env scope s
 
@@ -332,8 +333,8 @@ checkDecl env (DRecord _ _ _ fs _) = concatMapList (checkFieldType env) fs
 checkDecl env (DProp _ _ params body) = checkProp env params body
 checkDecl env (DTest _ _ body) = checkExpr env [] body
 checkDecl env (DBench _ _ body) = checkExpr env [] body
-checkDecl env (DInterface _ _ _ _ supers methods) = checkInterfaceDecl env supers methods
-checkDecl env (DImpl _ _ iface tyargs _ reqs methods) = checkImplDecl env iface tyargs reqs methods
+checkDecl env (DInterface { supers, methods, ... }) = checkInterfaceDecl env supers methods
+checkDecl env (DImpl { iface, tys, reqs, methods, ... }) = checkImplDecl env iface tys reqs methods
 checkDecl _ _ = []
 
 checkVariant : Env -> Variant -> List ResError
@@ -430,7 +431,7 @@ implMethodNm (ImplMethod n _ _) = n
 
 interfaceList : List Decl -> List (String, List String)
 interfaceList [] = []
-interfaceList ((DInterface _ _ n _ _ methods) :: rest) = (n, map ifaceMethodNm methods) :: interfaceList rest
+interfaceList ((DInterface { name = n, methods, ... }) :: rest) = (n, map ifaceMethodNm methods) :: interfaceList rest
 interfaceList (_ :: rest) = interfaceList rest
 
 -- prelude value names (DFunDef/DTypeSig + DImpl & DInterface method names)
@@ -438,8 +439,8 @@ preludeValueNames : List Decl -> List String
 preludeValueNames [] = []
 preludeValueNames ((DFunDef _ n _ _) :: rest) = n :: preludeValueNames rest
 preludeValueNames ((DTypeSig _ n _) :: rest) = n :: preludeValueNames rest
-preludeValueNames ((DImpl _ _ _ _ _ _ methods) :: rest) = map implMethodNm methods ++ preludeValueNames rest
-preludeValueNames ((DInterface _ _ _ _ _ methods) :: rest) = map ifaceMethodNm methods ++ preludeValueNames rest
+preludeValueNames ((DImpl { methods, ... }) :: rest) = map implMethodNm methods ++ preludeValueNames rest
+preludeValueNames ((DInterface { methods, ... }) :: rest) = map ifaceMethodNm methods ++ preludeValueNames rest
 preludeValueNames (_ :: rest) = preludeValueNames rest
 
 -- user value names (DFunDef/DTypeSig/DExtern + DInterface methods; NOT DImpl)
@@ -448,7 +449,7 @@ userValueNames [] = []
 userValueNames ((DFunDef _ n _ _) :: rest) = n :: userValueNames rest
 userValueNames ((DTypeSig _ n _) :: rest) = n :: userValueNames rest
 userValueNames ((DExtern _ n _) :: rest) = n :: userValueNames rest
-userValueNames ((DInterface _ _ _ _ _ methods) :: rest) = map ifaceMethodNm methods ++ userValueNames rest
+userValueNames ((DInterface { methods, ... }) :: rest) = map ifaceMethodNm methods ++ userValueNames rest
 userValueNames (_ :: rest) = userValueNames rest
 
 fieldOwnersOf : List Decl -> List (String, String)
@@ -521,7 +522,7 @@ hasOrdering (_ :: rest) = hasOrdering rest
 
 hasFoldable : List Decl -> Bool
 hasFoldable [] = False
-hasFoldable ((DInterface _ _ "Foldable" _ _ _) :: _) = True
+hasFoldable ((DInterface { name = "Foldable", ... }) :: _) = True
 hasFoldable (_ :: rest) = hasFoldable rest
 
 -- ── build_env ─────────────────────────────────────────────────────────────

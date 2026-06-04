@@ -32,6 +32,8 @@ mapKids f (EFieldAccess e0 n) = EFieldAccess (mapExpr f e0) n
 mapKids f (ERecordCreate n fs) = ERecordCreate n (map (mapFieldAssign f) fs)
 mapKids f (ERecordUpdate e0 fs) =
   ERecordUpdate (mapExpr f e0) (map (mapFieldAssign f) fs)
+mapKids f (EVariantUpdate c e0 fs) =
+  EVariantUpdate c (mapExpr f e0) (map (mapFieldAssign f) fs)
 mapKids f (EArrayLit es) = EArrayLit (map (mapExpr f) es)
 mapKids f (EListLit es) = EListLit (map (mapExpr f) es)
 mapKids f (ETuple es) = ETuple (map (mapExpr f) es)
@@ -93,15 +95,14 @@ mapInterp f (InterpExpr e) = InterpExpr (mapExpr f e)
 
 export
 mapDecl : (Expr -> Expr) -> Decl -> Decl
-mapDecl f (DFunDef pub n ps e) = DFunDef pub n ps (mapExpr f e)
-mapDecl f (DInterface pub def n tps sups methods) =
-  DInterface pub def n tps sups (map (mapIfaceMethod f) methods)
-mapDecl f (DImpl pub def iface tys name reqs methods) =
-  DImpl pub def iface tys name reqs (map (mapImplMethod f) methods)
-mapDecl f (DProp pub name params body) = DProp pub name params (mapExpr f body)
-mapDecl f (DTest pub name body) = DTest pub name (mapExpr f body)
-mapDecl f (DBench pub name body) = DBench pub name (mapExpr f body)
-mapDecl _ d = d
+mapDecl f d = match d
+  DFunDef pub n ps e => DFunDef pub n ps (mapExpr f e)
+  DInterface { methods, ... } => DInterface { d | methods = map (mapIfaceMethod f) methods }
+  DImpl { methods, ... } => DImpl { d | methods = map (mapImplMethod f) methods }
+  DProp pub name params body => DProp pub name params (mapExpr f body)
+  DTest pub name body => DTest pub name (mapExpr f body)
+  DBench pub name body => DBench pub name (mapExpr f body)
+  _ => d
 
 mapIfaceMethod : (Expr -> Expr) -> IfaceMethod -> IfaceMethod
 mapIfaceMethod _ (IfaceMethod n ty None) = IfaceMethod n ty None
@@ -309,16 +310,11 @@ deriveForRecord _ _ _ _ = None
 -- rewrite a generated impl's head/constraints for the type's params:
 -- `data Box a deriving Eq` → `impl Eq (Box a) requires Eq a`
 applyDeriveParams : String -> List String -> Decl -> Decl
-applyDeriveParams name params (DImpl pub def iface _ nm _ methods) =
-  DImpl
-    pub
-    def
-    iface
-    [appliedHead name params]
-    nm
-    (paramRequires iface params)
-    methods
-applyDeriveParams _ _ d = d
+applyDeriveParams name params d = match d
+  DImpl { iface, ... } => DImpl { d | tys = [
+    appliedHead name params
+  ], reqs = paramRequires iface params }
+  _ => d
 
 appliedHead : String -> List String -> Ty
 appliedHead name params = appliedHeadGo (TyCon name) params
@@ -356,19 +352,19 @@ conPatVars cname vars = PCon cname (map PVar vars)
 -- Debug and Display share the rendering ("Con " ++ <call> a0 ++ " " ++ …);
 -- only the interface + method-call name differ.
 deriveShowData : String -> String -> String -> List Variant -> Decl
-deriveShowData iface callName name variants =
-  DImpl
-    True
-    False
-    iface
-    [TyCon name]
-    None
-    []
-    [
-      ImplMethod callName [
-        PVar "__x"
-      ] (EMatch (EVar "__x") (map (showArm callName) variants))
-    ]
+deriveShowData iface callName name variants = DImpl {
+  pub = True,
+  def = False,
+  iface = iface,
+  tys = [TyCon name],
+  name = None,
+  reqs = [],
+  methods = [
+    ImplMethod callName [
+      PVar "__x"
+    ] (EMatch (EVar "__x") (map (showArm callName) variants))
+  ]
+}
 
 showArm : String -> Variant -> Arm
 showArm callName (Variant cname payload) =
@@ -393,20 +389,20 @@ showFieldPart callName _ v = [ELit (LString " "), EApp (EVar callName) (EVar v)]
 -- Eq: same-constructor arms compare fields pairwise; a cross-constructor
 -- wildcard arm (only with ≥2 variants) returns False.
 deriveEqData : String -> List Variant -> Decl
-deriveEqData name variants =
-  DImpl
-    True
-    False
-    "Eq"
-    [TyCon name]
-    None
-    []
-    [
-      ImplMethod "eq" [
-        PVar "__x",
-        PVar "__y"
-      ] (EMatch (ETuple [EVar "__x", EVar "__y"]) (eqArms variants))
-    ]
+deriveEqData name variants = DImpl {
+  pub = True,
+  def = False,
+  iface = "Eq",
+  tys = [TyCon name],
+  name = None,
+  reqs = [],
+  methods = [
+    ImplMethod "eq" [
+      PVar "__x",
+      PVar "__y"
+    ] (EMatch (ETuple [EVar "__x", EVar "__y"]) (eqArms variants))
+  ]
+}
 
 eqArms : List Variant -> List Arm
 eqArms variants
@@ -444,19 +440,19 @@ andLeft acc (e::rest) = andLeft (EBinOp "&&" acc e) rest
 
 -- Generic: one arm per constructor → RCon name [to_rep a0, …]
 deriveGenericData : String -> List Variant -> Decl
-deriveGenericData name variants =
-  DImpl
-    True
-    False
-    "Generic"
-    [TyCon name]
-    None
-    []
-    [
-      ImplMethod "to_rep" [
-        PVar "__x"
-      ] (EMatch (EVar "__x") (map genericArm variants))
-    ]
+deriveGenericData name variants = DImpl {
+  pub = True,
+  def = False,
+  iface = "Generic",
+  tys = [TyCon name],
+  name = None,
+  reqs = [],
+  methods = [
+    ImplMethod "to_rep" [
+      PVar "__x"
+    ] (EMatch (EVar "__x") (map genericArm variants))
+  ]
+}
 
 genericArm : Variant -> Arm
 genericArm (Variant cname payload) =
@@ -479,9 +475,9 @@ mergeIfaceDefaults : List Decl -> List Decl
 mergeIfaceDefaults prog = map mergeIfaceDecl prog
 
 mergeIfaceDecl : Decl -> Decl
-mergeIfaceDecl (DInterface pub def name tps sups methods) =
-  DInterface pub def name tps sups (mergeIfaceMethods methods)
-mergeIfaceDecl d = d
+mergeIfaceDecl d = match d
+  DInterface { methods, ... } => DInterface { d | methods = mergeIfaceMethods methods }
+  _ => d
 
 mergeIfaceMethods : List IfaceMethod -> List IfaceMethod
 mergeIfaceMethods methods = foldlMethods [] methods

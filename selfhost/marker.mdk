@@ -21,7 +21,7 @@ import desugar.{mapProg, mapExpr, mapDecl}
 -- Interface method names declared across the decls (DInterface methods).
 interfaceMethodNames : List Decl -> List String
 interfaceMethodNames [] = []
-interfaceMethodNames ((DInterface _ _ _ _ _ methods)::rest) = map ifaceMethodName methods
+interfaceMethodNames ((DInterface { methods, ... })::rest) = map ifaceMethodName methods
   ++ interfaceMethodNames rest
 interfaceMethodNames (_::rest) = interfaceMethodNames rest
 
@@ -153,8 +153,8 @@ declExternalRefs d = keepNotIn (declDefines d) (declRefs d)
 
 declDefines : Decl -> List String
 declDefines (DFunDef _ n _ _) = [n]
-declDefines (DImpl _ _ _ _ _ _ methods) = map implMethodNameOf methods
-declDefines (DInterface _ _ _ _ _ methods) = map ifaceMethodName methods
+declDefines (DImpl { methods, ... }) = map implMethodNameOf methods
+declDefines (DInterface { methods, ... }) = map ifaceMethodName methods
 declDefines _ = []
 
 implMethodNameOf : ImplMethod -> String
@@ -165,8 +165,8 @@ declRefs d = concatMapList collectVars (declBodies d)
 
 declBodies : Decl -> List Expr
 declBodies (DFunDef _ _ _ body) = [body]
-declBodies (DImpl _ _ _ _ _ _ methods) = map implMethodBody methods
-declBodies (DInterface _ _ _ _ _ methods) =
+declBodies (DImpl { methods, ... }) = map implMethodBody methods
+declBodies (DInterface { methods, ... }) =
   concatMapList ifaceMethodBodies methods
 declBodies (DProp _ _ _ body) = [body]
 declBodies (DTest _ _ body) = [body]
@@ -201,6 +201,8 @@ collectVars (EInfix _ a b) = collectVars a ++ collectVars b
 collectVars (EFieldAccess e0 _) = collectVars e0
 collectVars (ERecordCreate _ fs) = concatMapList fieldAssignVars fs
 collectVars (ERecordUpdate e0 fs) = collectVars e0
+  ++ concatMapList fieldAssignVars fs
+collectVars (EVariantUpdate _ e0 fs) = collectVars e0
   ++ concatMapList fieldAssignVars fs
 collectVars (EArrayLit es) = concatMapList collectVars es
 collectVars (EListLit es) = concatMapList collectVars es

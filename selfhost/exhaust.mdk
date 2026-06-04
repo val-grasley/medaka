@@ -375,6 +375,7 @@ collectLetBinds (EInfix _ a b) = collectLetBinds a ++ collectLetBinds b
 collectLetBinds (EFieldAccess e0 _) = collectLetBinds e0
 collectLetBinds (ERecordCreate _ fs) = concatMapList fieldAssignBinds fs
 collectLetBinds (ERecordUpdate e0 fs) = collectLetBinds e0 ++ concatMapList fieldAssignBinds fs
+collectLetBinds (EVariantUpdate _ e0 fs) = collectLetBinds e0 ++ concatMapList fieldAssignBinds fs
 collectLetBinds (EArrayLit es) = concatMapList collectLetBinds es
 collectLetBinds (EListLit es) = concatMapList collectLetBinds es
 collectLetBinds (ETuple es) = concatMapList collectLetBinds es
@@ -444,10 +445,10 @@ topFunDefClauses (_ :: rest) = topFunDefClauses rest
 
 declBodyWarnings : Oracle -> Decl -> List String
 declBodyWarnings oracle (DFunDef _ _ _ body) = letGroupWarnings oracle body
-declBodyWarnings oracle (DImpl _ _ _ _ _ _ methods) =
+declBodyWarnings oracle (DImpl { methods, ... }) =
   concatMapList (checkGroup oracle) (groupByName (implClauses methods))
     ++ concatMapList (implMethodBodyWarnings oracle) methods
-declBodyWarnings oracle (DInterface _ _ _ _ _ methods) = concatMapList (ifaceMethodWarnings oracle) methods
+declBodyWarnings oracle (DInterface { methods, ... }) = concatMapList (ifaceMethodWarnings oracle) methods
 declBodyWarnings oracle (DProp _ _ _ body) = letGroupWarnings oracle body
 declBodyWarnings oracle (DTest _ _ body) = letGroupWarnings oracle body
 declBodyWarnings oracle (DBench _ _ body) = letGroupWarnings oracle body

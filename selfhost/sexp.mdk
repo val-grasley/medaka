@@ -146,6 +146,8 @@ exprSexp (ERecordCreate n fs) =
   node "ERecordCreate" [escStr n, slist (map fieldAssignSexp fs)]
 exprSexp (ERecordUpdate e fs) =
   node "ERecordUpdate" [exprSexp e, slist (map fieldAssignSexp fs)]
+exprSexp (EVariantUpdate c e fs) =
+  node "EVariantUpdate" [escStr c, exprSexp e, slist (map fieldAssignSexp fs)]
 exprSexp (EMethodRef name) = node "EMethodRef" [escStr name]
 exprSexp (EDictApp name) = node "EDictApp" [escStr name]
 
@@ -231,25 +233,25 @@ declSexp (DBench pub name body) =
 propParamSexp : PropParam -> String
 propParamSexp (PropParam n t) = node "pp" [escStr n, tySexp t]
 
-declSexp (DInterface pub isDef name typarams supers methods) =
+declSexp (DInterface { pub, def, name, typarams, supers, methods }) =
   node
     "DInterface"
     [
       boolStr pub,
-      boolStr isDef,
+      boolStr def,
       escStr name,
       slist (map escStr typarams),
       slist (map superSexp supers),
       slist (map ifaceMethodSexp methods)
     ]
-declSexp (DImpl pub isDef iface tyargs name reqs methods) =
+declSexp (DImpl { pub, def, iface, tys, name, reqs, methods }) =
   node
     "DImpl"
     [
       boolStr pub,
-      boolStr isDef,
+      boolStr def,
       escStr iface,
-      slist (map tySexp tyargs),
+      slist (map tySexp tys),
       optStrSexp name,
       slist (map requireSexp reqs),
       slist (map implMethodSexp methods)
