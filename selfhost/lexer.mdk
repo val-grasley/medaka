@@ -75,7 +75,6 @@ public export data Token
   | TOr
   | TCons
   | TPlusPlus
-  | TStrAppend
   | TPipeRight
   | TRCompose
   | TLCompose
@@ -172,7 +171,6 @@ tokenToString TAnd = "AND"
 tokenToString TOr = "OR"
 tokenToString TCons = "CONS"
 tokenToString TPlusPlus = "PLUSPLUS"
-tokenToString TStrAppend = "STRAPPEND"
 tokenToString TPipeRight = "PIPE_RIGHT"
 tokenToString TRCompose = "RCOMPOSE"
 tokenToString TLCompose = "LCOMPOSE"
@@ -571,7 +569,6 @@ scanOp src len pos depth id c
   | is2 src len pos '<' '-' = emit src len pos depth id TLArrow 2 0
   | is2 src len pos ':' ':' = emit src len pos depth id TCons 2 0
   | is2 src len pos '+' '+' = emit src len pos depth id TPlusPlus 2 0
-  | is2 src len pos '<' '>' = emit src len pos depth id TStrAppend 2 0
   | is2 src len pos '=' '=' = emit src len pos depth id TEqEq 2 0
   | is2 src len pos '!' '=' = emit src len pos depth id TNeq 2 0
   | is2 src len pos '<' '=' = emit src len pos depth id TLeq 2 0
@@ -664,12 +661,11 @@ afterNl src len np depth id indent
   | isContinuation src len np = emit src len np depth id (continuationTok src len np) 2 0
   | otherwise = RNewline indent :: scan src len np depth id
 
--- leading-operator line continuation (|> >> << && || ++ <>)
+-- leading-operator line continuation (|> >> << && || ++)
 isContinuation : Array Char -> Int -> Int -> Bool
 isContinuation src len np =
   is2 src len np '|' '>' || is2 src len np '>' '>' || is2 src len np '<' '<'
     || is2 src len np '&' '&' || is2 src len np '|' '|' || is2 src len np '+' '+'
-    || is2 src len np '<' '>'
 
 continuationTok : Array Char -> Int -> Int -> Token
 continuationTok src len np
@@ -678,8 +674,7 @@ continuationTok src len np
   | is2 src len np '<' '<' = TLCompose
   | is2 src len np '&' '&' = TAnd
   | is2 src len np '|' '|' = TOr
-  | is2 src len np '+' '+' = TPlusPlus
-  | otherwise = TStrAppend
+  | otherwise = TPlusPlus
 
 -- ── Layout pass: RawTok stream -> Token stream ──────────────────────────
 -- Mirrors lib/lexer.mll `handle_indent` + the Phase 137 continuation-line

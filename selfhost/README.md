@@ -116,7 +116,7 @@ the stage is done when all pass.
   - block-form `if`/`match` bodies, else-less `if`, `prop`/`test`/`bench` decls;
   - `interface`/`impl` (`DInterface`/`DImpl`: supers, defaults, named impls,
     `requires`, multi-clause methods), the full operator ladder (`|>` `>>` `<<`
-    `<>` `!` + backtick infix), operator sections (`ESection`), unit/literal
+    `!` + backtick infix), operator sections (`ESection`), unit/literal
     patterns.
 - ✅ **Stage 1 parser complete.** Validated byte-for-byte against the OCaml
   reference (`dev/astdump.exe`) on **all 13/13 real stdlib `.mdk` files**, the

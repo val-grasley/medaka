@@ -315,7 +315,7 @@ consTail x =
     pure (EBinOp "::" x y)
 
 parseAppend : Parser Expr
-parseAppend = chainl1 parseAdd (choice [binOp TPlusPlus "++", binOp TStrAppend "<>"])
+parseAppend = chainl1 parseAdd (binOp TPlusPlus "++")
 
 parseAdd : Parser Expr
 parseAdd = chainl1 parseMul (choice [binOp TPlus "+", binOp TMinus "-"])
@@ -574,7 +574,6 @@ sectionOpStr TAnd = Some "&&"
 sectionOpStr TOr = Some "||"
 sectionOpStr TCons = Some "::"
 sectionOpStr TPlusPlus = Some "++"
-sectionOpStr TStrAppend = Some "<>"
 sectionOpStr TPipeRight = Some "|>"
 sectionOpStr TRCompose = Some ">>"
 sectionOpStr TLCompose = Some "<<"
