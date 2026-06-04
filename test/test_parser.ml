@@ -1272,6 +1272,56 @@ let test_cont_comment_not_rescued () =
   | `Error  -> ()
   | `Parsed -> failwith "expected comment-between-operand-and-operator to error"
 
+(* ── Phase 137: expression-RHS continuation ──────────────
+   A more-indented line that continues an unfinished application is folded into
+   the same expression, so it parses to the same AST as the one-line form. *)
+
+let parses_ok src () = ignore (parse src)
+
+let differ a b () =
+  if parse a = parse b then
+    failwith (Printf.sprintf
+                "expected distinct ASTs but they matched.\na:\n%s\nb:\n%s" a b)
+
+let test_cont_app_arg =
+  (* the motivating shape: an extra argument on a deeper line *)
+  same_ast
+    "p = g a b\n"
+    "p = g a\n  b\n"
+
+let test_cont_app_paren =
+  (* a parenthesised argument continuation (Phase 135's combinator-parser case) *)
+  same_ast
+    "p = chainl1 q (choice r)\n"
+    "p = chainl1 q\n  (choice r)\n"
+
+let test_cont_app_multiline =
+  (* several continuation lines fold into one application *)
+  same_ast
+    "p = f a b c\n"
+    "p = f a\n  b\n  c\n"
+
+let test_cont_app_in_block =
+  (* continuation works inside an indented body too *)
+  same_ast
+    "main =\n  println (f a b)\n"
+    "main =\n  println (f a\n    b)\n"
+
+(* Regressions: an INDENT that genuinely opens a block must NOT be swallowed. *)
+
+let test_cont_block_body_not_collapsed =
+  (* a multi-statement body stays two statements, never `f x g` *)
+  differ
+    "main =\n  f x\n  g\n"
+    "main = f x g\n"
+
+let test_cont_guards_kept () = parses_ok "f x\n  | x > 0 = 1\n  | _ = 2\n" ()
+let test_cont_where_kept () = parses_ok "f x = a\n  where\n    a = x + 1\n" ()
+let test_cont_match_kept () =
+  parses_ok "f n =\n  match n\n    0 => 1\n    _ => 2\n" ()
+let test_cont_record_kept () = parses_ok "record Point a\n  x : a\n  y : a\n" ()
+let test_cont_data_kept () = parses_ok "data Color\n  = Red\n  | Green\n" ()
+
 let test_multi_decl () =
   let src = "x : Int\nx = 42\n" in
   match parse src with
@@ -2084,6 +2134,18 @@ let () =
       test_case "dedented continuation"  `Quick test_cont_dedented;
       test_case "blank line before op"   `Quick test_cont_blank_line;
       test_case "comment not rescued"    `Quick test_cont_comment_not_rescued;
+    ];
+    "expression-RHS continuation (Phase 137)", [
+      test_case "arg on deeper line"        `Quick test_cont_app_arg;
+      test_case "parenthesised arg"         `Quick test_cont_app_paren;
+      test_case "multi-line application"    `Quick test_cont_app_multiline;
+      test_case "continuation inside block" `Quick test_cont_app_in_block;
+      test_case "block body not collapsed"  `Quick test_cont_block_body_not_collapsed;
+      test_case "guard block kept"          `Quick test_cont_guards_kept;
+      test_case "where block kept"          `Quick test_cont_where_kept;
+      test_case "match arms kept"           `Quick test_cont_match_kept;
+      test_case "record block kept"         `Quick test_cont_record_kept;
+      test_case "data block kept"           `Quick test_cont_data_kept;
     ];
     "multiple declarations", [
       test_case "sig + def"       `Quick test_multi_decl;
