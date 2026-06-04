@@ -10,10 +10,8 @@
 import parser.{parse}
 import sexp.{programToSexp}
 
-main =
-  match args ()
-    [path] =>
-      match readFile path
-        Ok src => putStr (programToSexp (parse src))
-        Err msg => ePutStrLn msg
-    _ => ePutStrLn "usage: medaka run selfhost/parse_main.mdk <file>"
+main = match args ()
+  [path] => match readFile path
+    Ok src => putStr (programToSexp (parse src))
+    Err msg => ePutStrLn msg
+  _ => ePutStrLn "usage: medaka run selfhost/parse_main.mdk <file>"

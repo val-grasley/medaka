@@ -32,12 +32,12 @@ boolStr False = "false"
 joinSp : List String -> String
 joinSp [] = ""
 joinSp [x] = x
-joinSp (y :: rest) = y ++ " " ++ joinSp rest
+joinSp (y::rest) = y ++ " " ++ joinSp rest
 
 joinNl : List String -> String
 joinNl [] = ""
 joinNl [x] = x
-joinNl (y :: rest) = y ++ "\n" ++ joinNl rest
+joinNl (y::rest) = y ++ "\n" ++ joinNl rest
 
 node : String -> List String -> String
 node tag parts = "(" ++ joinSp (tag :: parts) ++ ")"
@@ -69,11 +69,17 @@ tySexp (TyVar v) = node "TyVar" [escStr v]
 tySexp (TyApp a b) = node "TyApp" [tySexp a, tySexp b]
 tySexp (TyFun a b) = node "TyFun" [tySexp a, tySexp b]
 tySexp (TyTuple ts) = node "TyTuple" (map tySexp ts)
-tySexp (TyEffect labels tail t) = node "TyEffect" [slist (map escStr labels), optStrSexp tail, tySexp t]
-tySexp (TyConstrained cs t) = node "TyConstrained" [slist (map constraintSexp cs), tySexp t]
+tySexp (TyEffect labels tail t) = node
+  "TyEffect"
+  [slist (map escStr labels), optStrSexp tail, tySexp t]
+tySexp (TyConstrained cs t) = node
+  "TyConstrained"
+  [slist (map constraintSexp cs), tySexp t]
 
 constraintSexp : Constraint -> String
-constraintSexp (Constraint iface args) = node "cstr" (escStr iface :: map tySexp args)
+constraintSexp (Constraint iface args) = node
+  "cstr"
+  (escStr iface :: map tySexp args)
 
 optStrSexp : Option String -> String
 optStrSexp (Some s) = node "Some" [escStr s]
@@ -84,14 +90,18 @@ guardSexp (GBool e) = node "GBool" [exprSexp e]
 guardSexp (GBind p e) = node "GBind" [patSexp p, exprSexp e]
 
 armSexp : Arm -> String
-armSexp (Arm p gs body) = node "arm" [patSexp p, slist (map guardSexp gs), exprSexp body]
+armSexp (Arm p gs body) = node
+  "arm"
+  [patSexp p, slist (map guardSexp gs), exprSexp body]
 
 exprSexp : Expr -> String
 exprSexp (ELit l) = node "ELit" [litSexp l]
 exprSexp (EVar x) = node "EVar" [escStr x]
 exprSexp (EApp f x) = node "EApp" [exprSexp f, exprSexp x]
 exprSexp (ELam ps b) = node "ELam" [slist (map patSexp ps), exprSexp b]
-exprSexp (ELet m _isf p e1 e2) = node "ELet" [boolStr m, patSexp p, exprSexp e1, exprSexp e2]
+exprSexp (ELet m _isf p e1 e2) = node
+  "ELet"
+  [boolStr m, patSexp p, exprSexp e1, exprSexp e2]
 exprSexp (EMatch s arms) = node "EMatch" (exprSexp s :: map armSexp arms)
 exprSexp (EIf c t el) = node "EIf" [exprSexp c, exprSexp t, exprSexp el]
 exprSexp (EBinOp op a b) = node "EBinOp" [escStr op, exprSexp a, exprSexp b]
@@ -100,10 +110,16 @@ exprSexp (EInfix op a b) = node "EInfix" [escStr op, exprSexp a, exprSexp b]
 exprSexp (EFieldAccess e f) = node "EFieldAccess" [exprSexp e, escStr f]
 exprSexp (ETuple es) = node "ETuple" (map exprSexp es)
 exprSexp (EListLit es) = node "EListLit" (map exprSexp es)
-exprSexp (EListComp body quals) = node "EListComp" [exprSexp body, slist (map lcQualSexp quals)]
+exprSexp (EListComp body quals) = node
+  "EListComp"
+  [exprSexp body, slist (map lcQualSexp quals)]
 exprSexp (EArrayLit es) = node "EArrayLit" (map exprSexp es)
-exprSexp (ERangeList lo hi incl) = node "ERangeList" [exprSexp lo, exprSexp hi, boolStr incl]
-exprSexp (ELetGroup binds body) = node "ELetGroup" [slist (map letBindSexp binds), exprSexp body]
+exprSexp (ERangeList lo hi incl) = node
+  "ERangeList"
+  [exprSexp lo, exprSexp hi, boolStr incl]
+exprSexp (ELetGroup binds body) = node
+  "ELetGroup"
+  [slist (map letBindSexp binds), exprSexp body]
 exprSexp (ESection s) = node "ESection" [sectionSexp s]
 exprSexp (EIndex a i) = node "EIndex" [exprSexp a, exprSexp i]
 
@@ -121,24 +137,34 @@ exprSexp (EBlock stmts) = node "EBlock" (map doStmtSexp stmts)
 exprSexp (EDo stmts) = node "EDo" (map doStmtSexp stmts)
 exprSexp (EStringInterp parts) = node "EStringInterp" (map interpPartSexp parts)
 exprSexp (EGuards arms) = node "EGuards" (map guardArmSexp arms)
-exprSexp (ERecordCreate n fs) = node "ERecordCreate" [escStr n, slist (map fieldAssignSexp fs)]
-exprSexp (ERecordUpdate e fs) = node "ERecordUpdate" [exprSexp e, slist (map fieldAssignSexp fs)]
+exprSexp (ERecordCreate n fs) = node
+  "ERecordCreate"
+  [escStr n, slist (map fieldAssignSexp fs)]
+exprSexp (ERecordUpdate e fs) = node
+  "ERecordUpdate"
+  [exprSexp e, slist (map fieldAssignSexp fs)]
 
 interpPartSexp : InterpPart -> String
 interpPartSexp (InterpStr s) = node "InterpStr" [escStr s]
 interpPartSexp (InterpExpr e) = node "InterpExpr" [exprSexp e]
 
 guardArmSexp : GuardArm -> String
-guardArmSexp (GuardArm gs body) = node "garm" [slist (map guardSexp gs), exprSexp body]
+guardArmSexp (GuardArm gs body) = node
+  "garm"
+  [slist (map guardSexp gs), exprSexp body]
 
 fieldAssignSexp : FieldAssign -> String
 fieldAssignSexp (FieldAssign n e) = node "fa" [escStr n, exprSexp e]
 
 letBindSexp : LetBind -> String
-letBindSexp (LetBind name clauses) = node "lgb" (escStr name :: map funClauseSexp clauses)
+letBindSexp (LetBind name clauses) = node
+  "lgb"
+  (escStr name :: map funClauseSexp clauses)
 
 funClauseSexp : FunClause -> String
-funClauseSexp (FunClause pats body) = node "clause" [slist (map patSexp pats), exprSexp body]
+funClauseSexp (FunClause pats body) = node
+  "clause"
+  [slist (map patSexp pats), exprSexp body]
 
 doStmtSexp : DoStmt -> String
 doStmtSexp (DoExpr e) = node "DoExpr" [exprSexp e]
@@ -164,44 +190,101 @@ variantSexp (Variant n pl) = node "variant" [escStr n, payloadSexp pl]
 declSexp : Decl -> String
 declSexp (DTypeSig p n t) = node "DTypeSig" [boolStr p, escStr n, tySexp t]
 declSexp (DExtern p n t) = node "DExtern" [boolStr p, escStr n, tySexp t]
-declSexp (DFunDef p n ps b) = node "DFunDef" [boolStr p, escStr n, slist (map patSexp ps), exprSexp b]
-declSexp (DData vis n ps vs ds) = node "DData" [visSexp vis, escStr n, slist (map escStr ps), slist (map variantSexp vs), slist (map escStr ds)]
-declSexp (DRecord vis n ps fs ds) = node "DRecord" [visSexp vis, escStr n, slist (map escStr ps), slist (map fieldSexp fs), slist (map escStr ds)]
+declSexp (DFunDef p n ps b) = node
+  "DFunDef"
+  [boolStr p, escStr n, slist (map patSexp ps), exprSexp b]
+declSexp (DData vis n ps vs ds) = node
+  "DData"
+  [
+    visSexp vis,
+    escStr n,
+    slist (map escStr ps),
+    slist (map variantSexp vs),
+    slist (map escStr ds)
+  ]
+declSexp (DRecord vis n ps fs ds) = node
+  "DRecord"
+  [
+    visSexp vis,
+    escStr n,
+    slist (map escStr ps),
+    slist (map fieldSexp fs),
+    slist (map escStr ds)
+  ]
 declSexp (DUse pub path) = node "DUse" [boolStr pub, usePathSexp path]
-declSexp (DProp pub name params body) = node "DProp" [boolStr pub, escStr name, slist (map propParamSexp params), exprSexp body]
-declSexp (DTest pub name body) = node "DTest" [boolStr pub, escStr name, exprSexp body]
-declSexp (DBench pub name body) = node "DBench" [boolStr pub, escStr name, exprSexp body]
+declSexp (DProp pub name params body) = node
+  "DProp"
+  [boolStr pub, escStr name, slist (map propParamSexp params), exprSexp body]
+declSexp (DTest pub name body) = node
+  "DTest"
+  [boolStr pub, escStr name, exprSexp body]
+declSexp (DBench pub name body) = node
+  "DBench"
+  [boolStr pub, escStr name, exprSexp body]
 
 propParamSexp : PropParam -> String
 propParamSexp (PropParam n t) = node "pp" [escStr n, tySexp t]
 
-declSexp (DInterface pub isDef name typarams supers methods) = node "DInterface" [boolStr pub, boolStr isDef, escStr name, slist (map escStr typarams), slist (map superSexp supers), slist (map ifaceMethodSexp methods)]
-declSexp (DImpl pub isDef iface tyargs name reqs methods) = node "DImpl" [boolStr pub, boolStr isDef, escStr iface, slist (map tySexp tyargs), optStrSexp name, slist (map requireSexp reqs), slist (map implMethodSexp methods)]
+declSexp (DInterface pub isDef name typarams supers methods) = node
+  "DInterface"
+  [
+    boolStr pub,
+    boolStr isDef,
+    escStr name,
+    slist (map escStr typarams),
+    slist (map superSexp supers),
+    slist (map ifaceMethodSexp methods)
+  ]
+declSexp (DImpl pub isDef iface tyargs name reqs methods) = node
+  "DImpl"
+  [
+    boolStr pub,
+    boolStr isDef,
+    escStr iface,
+    slist (map tySexp tyargs),
+    optStrSexp name,
+    slist (map requireSexp reqs),
+    slist (map implMethodSexp methods)
+  ]
 
 methodDefaultSexp : Option MethodDefault -> String
 methodDefaultSexp None = "None"
-methodDefaultSexp (Some (MethodDefault pats body)) = node "mdef" [slist (map patSexp pats), exprSexp body]
+methodDefaultSexp (Some (MethodDefault pats body)) = node
+  "mdef"
+  [slist (map patSexp pats), exprSexp body]
 
 ifaceMethodSexp : IfaceMethod -> String
-ifaceMethodSexp (IfaceMethod name ty def) = node "imethod" [escStr name, tySexp ty, methodDefaultSexp def]
+ifaceMethodSexp (IfaceMethod name ty def) = node
+  "imethod"
+  [escStr name, tySexp ty, methodDefaultSexp def]
 
 superSexp : Super -> String
-superSexp (Super iface params) = node "super" [escStr iface, slist (map escStr params)]
+superSexp (Super iface params) = node
+  "super"
+  [escStr iface, slist (map escStr params)]
 
 requireSexp : Require -> String
-requireSexp (Require iface tys) = node "req" [escStr iface, slist (map tySexp tys)]
+requireSexp (Require iface tys) = node
+  "req"
+  [escStr iface, slist (map tySexp tys)]
 
 implMethodSexp : ImplMethod -> String
-implMethodSexp (ImplMethod name pats body) = node "im" [escStr name, slist (map patSexp pats), exprSexp body]
+implMethodSexp (ImplMethod name pats body) = node
+  "im"
+  [escStr name, slist (map patSexp pats), exprSexp body]
 
 useMemberSexp : UseMember -> String
 useMemberSexp (UseMember n withAll) = node "mem" [escStr n, boolStr withAll]
 
 usePathSexp : UsePath -> String
 usePathSexp (UseName ids) = node "UseName" [slist (map escStr ids)]
-usePathSexp (UseGroup ids ms) = node "UseGroup" [slist (map escStr ids), slist (map useMemberSexp ms)]
+usePathSexp (UseGroup ids ms) = node
+  "UseGroup"
+  [slist (map escStr ids), slist (map useMemberSexp ms)]
 usePathSexp (UseWild ids) = node "UseWild" [slist (map escStr ids)]
-usePathSexp (UseAlias ids a) = node "UseAlias" [slist (map escStr ids), escStr a]
+usePathSexp (UseAlias ids a) = node
+  "UseAlias"
+  [slist (map escStr ids), escStr a]
 
 export
 programToSexp : List Decl -> String

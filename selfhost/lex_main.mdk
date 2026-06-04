@@ -15,7 +15,7 @@ import lexer.{Token, tokenize, tokenToString}
 renderToks : List Token -> String
 renderToks [] = ""
 renderToks [t] = tokenToString t
-renderToks (t :: rest) = tokenToString t ++ "\n" ++ renderToks rest
+renderToks (t::rest) = tokenToString t ++ "\n" ++ renderToks rest
 
 -- Read <path>, tokenize, and print the canonical token stream.  Factored into an
 -- `emit` helper called from `main`'s match arm — the obvious refactor, unblocked
@@ -25,12 +25,10 @@ renderToks (t :: rest) = tokenToString t ++ "\n" ++ renderToks rest
 -- the loader's joint dict-pass.  That dict-pass bug is guarded by `test_loader`;
 -- lexer.mdk's `emit` now carries a concrete signature, so it no longer collides
 -- here.
-emit path =
-  match readFile path
-    Ok src => putStr (renderToks (tokenize src))
-    Err msg => ePutStrLn msg
+emit path = match readFile path
+  Ok src => putStr (renderToks (tokenize src))
+  Err msg => ePutStrLn msg
 
-main =
-  match args ()
-    [path] => emit path
-    _ => ePutStrLn "usage: medaka run selfhost/lex_main.mdk <file>"
+main = match args ()
+  [path] => emit path
+  _ => ePutStrLn "usage: medaka run selfhost/lex_main.mdk <file>"

@@ -33,20 +33,18 @@ impl Mappable Parser where
   map f pa = Parser (toks pos => mapPR f (runP pa toks pos))
 
 apPR : Parser (a -> b) -> Parser a -> Array Token -> Int -> PR b
-apPR pf pa toks pos =
-  match runP pf toks pos
-    POk f pos1 => mapPR f (runP pa toks pos1)
-    PErr e pos1 => PErr e pos1
+apPR pf pa toks pos = match runP pf toks pos
+  POk f pos1 => mapPR f (runP pa toks pos1)
+  PErr e pos1 => PErr e pos1
 
 impl Applicative Parser where
   pure x = Parser (toks pos => POk x pos)
   ap pf pa = Parser (toks pos => apPR pf pa toks pos)
 
 bindPR : Parser a -> (a -> Parser b) -> Array Token -> Int -> PR b
-bindPR pa k toks pos =
-  match runP pa toks pos
-    POk a pos1 => runP (k a) toks pos1
-    PErr e pos1 => PErr e pos1
+bindPR pa k toks pos = match runP pa toks pos
+  POk a pos1 => runP (k a) toks pos1
+  PErr e pos1 => PErr e pos1
 
 impl Thenable Parser where
   andThen pa k = Parser (toks pos => bindPR pa k toks pos)
@@ -72,25 +70,22 @@ advanceR t pos = POk t (pos + 1)
 
 -- consume one token, yield the given value
 emit : a -> Parser a
-emit x =
-  do
-    advance
-    pure x
+emit x = do
+  advance
+  pure x
 
 expectTok : Token -> Parser Unit
-expectTok t =
-  do
-    x <- peekP
-    expectGo t x
+expectTok t = do
+  x <- peekP
+  expectGo t x
 
 expectGo : Token -> Token -> Parser Unit
 expectGo t x = if x == t then emit () else failP "unexpected token"
 
 identNameP : Parser String
-identNameP =
-  do
-    t <- peekP
-    identNameFor t
+identNameP = do
+  t <- peekP
+  identNameFor t
 
 identNameFor : Token -> Parser String
 identNameFor (TIdent x) = emit x
@@ -101,24 +96,22 @@ orElse : Parser a -> Parser a -> Parser a
 orElse pa pb = Parser (toks pos => orElseR pa pb toks pos)
 
 orElseR : Parser a -> Parser a -> Array Token -> Int -> PR a
-orElseR pa pb toks pos =
-  match runP pa toks pos
-    POk x q => POk x q
-    PErr _ _ => runP pb toks pos
+orElseR pa pb toks pos = match runP pa toks pos
+  POk x q => POk x q
+  PErr _ _ => runP pb toks pos
 
 choice : List (Parser a) -> Parser a
 choice [] = failP "no alternative"
-choice (p :: ps) = orElse p (choice ps)
+choice (p::ps) = orElse p (choice ps)
 
 -- zero or more; primitive + progress-guarded so it can never loop
 many : Parser a -> Parser (List a)
 many p = Parser (toks pos => manyGo p toks pos [])
 
 manyGo : Parser a -> Array Token -> Int -> List a -> PR (List a)
-manyGo p toks pos acc =
-  match runP p toks pos
-    POk x pos2 => manyStep p toks pos pos2 acc x
-    PErr _ _ => POk (rev acc) pos
+manyGo p toks pos acc = match runP p toks pos
+  POk x pos2 => manyStep p toks pos pos2 acc x
+  PErr _ _ => POk (rev acc) pos
 
 manyStep : Parser a -> Array Token -> Int -> Int -> List a -> a -> PR (List a)
 manyStep p toks pos pos2 acc x
@@ -126,85 +119,77 @@ manyStep p toks pos pos2 acc x
   | otherwise = POk (rev (x :: acc)) pos2
 
 sepThen : Parser b -> Parser a -> Parser a
-sepThen sep p =
-  do
-    sep
-    p
+sepThen sep p = do
+  sep
+  p
 
 sepBy1 : Parser a -> Parser b -> Parser (List a)
-sepBy1 p sep =
-  do
-    x <- p
-    xs <- many (sepThen sep p)
-    pure (x :: xs)
+sepBy1 p sep = do
+  x <- p
+  xs <- many (sepThen sep p)
+  pure (x :: xs)
 
 chainl1 : Parser a -> Parser (a -> a -> a) -> Parser a
-chainl1 p op =
-  do
-    x <- p
-    chainl1Rest p op x
+chainl1 p op = do
+  x <- p
+  chainl1Rest p op x
 
 chainl1Rest : Parser a -> Parser (a -> a -> a) -> a -> Parser a
 chainl1Rest p op x = orElse (chainl1More p op x) (pure x)
 
 chainl1More : Parser a -> Parser (a -> a -> a) -> a -> Parser a
-chainl1More p op x =
-  do
-    f <- op
-    y <- p
-    chainl1Rest p op (f x y)
+chainl1More p op x = do
+  f <- op
+  y <- p
+  chainl1Rest p op (f x y)
 
 -- NB: recurse through a do-continuation (lazy), not by passing `skipNewlines`
 -- as a strict argument — the latter forces the value while it's being defined
 -- (a recursive-value init cycle → CamlinternalLazy.Undefined under strict eval).
 skipNewlines : Parser Unit
-skipNewlines =
-  do
-    t <- peekP
-    skipNlFor t
+skipNewlines = do
+  t <- peekP
+  skipNlFor t
 
 skipNlFor : Token -> Parser Unit
-skipNlFor TNewline =
-  do
-    advance
-    skipNewlines
+skipNlFor TNewline = do
+  advance
+  skipNewlines
 skipNlFor _ = pure ()
 
 -- ── Expressions ─────────────────────────────────────────────────────────
 -- ladder: lam → or → and → cmp → cons → append → add → mul → app → postfix → atom
 parseExpr : Parser Expr
-parseExpr =
-  do
-    e <- parseLam
-    orElse (annotTail e) (pure e)
+parseExpr = do
+  e <- parseLam
+  orElse (annotTail e) (pure e)
 
 -- expression type annotation `e : ty` (loosest level)
 annotTail : Expr -> Parser Expr
-annotTail e =
-  do
-    expectTok TColon
-    t <- parseTy
-    pure (EAnnot e t)
+annotTail e = do
+  expectTok TColon
+  t <- parseTy
+  pure (EAnnot e t)
 
 parseLam : Parser Expr
-parseLam =
-  do
-    e <- parsePipe
-    orElse (lamTail e) (pure e)
+parseLam = do
+  e <- parsePipe
+  orElse (lamTail e) (pure e)
 
 -- `|>` pipe (loosest operator), then `>>`/`<<` composition, then `||`…
 parsePipe : Parser Expr
 parsePipe = chainl1 parseCompose (binOp TPipeRight "|>")
 
 parseCompose : Parser Expr
-parseCompose = chainl1 parseOr (choice [binOp TRCompose ">>", binOp TLCompose "<<"])
+parseCompose = chainl1
+  parseOr
+  (choice [binOp TRCompose ">>", binOp TLCompose "<<"])
 
 lamTail : Expr -> Parser Expr
-lamTail e =
-  do
-    expectTok TFatArrow
-    body <- parseExpr
-    pure (ELam (exprToParams e) body)
+lamTail e = do
+  expectTok TFatArrow
+  body <- parseExpr
+  pure (ELam (exprToParams e) body)
 
 -- convert a lambda LHS expression to a parameter-pattern list (mirrors the
 -- reference `expr_to_pats`): an EApp spine with a lowercase head is a multi-arg
@@ -269,7 +254,7 @@ appToPatCtor c spine
 
 dropFirst : List a -> List a
 dropFirst [] = []
-dropFirst (_ :: xs) = xs
+dropFirst (_::xs) = xs
 
 isCtorName : String -> Bool
 isCtorName s = isCtorChars (stringToChars s)
@@ -283,10 +268,9 @@ isUpperC : Char -> Bool
 isUpperC c = c >= 'A' && c <= 'Z'
 
 binOp : Token -> String -> Parser (Expr -> Expr -> Expr)
-binOp tk op =
-  do
-    expectTok tk
-    pure (l r => EBinOp op l r)
+binOp tk op = do
+  expectTok tk
+  pure (l r => EBinOp op l r)
 
 parseOr : Parser Expr
 parseOr = chainl1 parseAnd (binOp TOr "||")
@@ -298,21 +282,27 @@ parseCmp : Parser Expr
 parseCmp = chainl1 parseCons cmpOp
 
 cmpOp : Parser (Expr -> Expr -> Expr)
-cmpOp = choice [binOp TEqEq "==", binOp TNeq "!=", binOp TLt "<", binOp TGt ">", binOp TLeq "<=", binOp TGeq ">="]
+cmpOp = choice
+  [
+    binOp TEqEq "==",
+    binOp TNeq "!=",
+    binOp TLt "<",
+    binOp TGt ">",
+    binOp TLeq "<=",
+    binOp TGeq ">="
+  ]
 
 -- `::` is right-associative
 parseCons : Parser Expr
-parseCons =
-  do
-    x <- parseAppend
-    orElse (consTail x) (pure x)
+parseCons = do
+  x <- parseAppend
+  orElse (consTail x) (pure x)
 
 consTail : Expr -> Parser Expr
-consTail x =
-  do
-    expectTok TCons
-    y <- parseCons
-    pure (EBinOp "::" x y)
+consTail x = do
+  expectTok TCons
+  y <- parseCons
+  pure (EBinOp "::" x y)
 
 parseAppend : Parser Expr
 parseAppend = chainl1 parseAdd (binOp TPlusPlus "++")
@@ -321,26 +311,25 @@ parseAdd : Parser Expr
 parseAdd = chainl1 parseMul (choice [binOp TPlus "+", binOp TMinus "-"])
 
 parseMul : Parser Expr
-parseMul = chainl1 parseUnary (choice [binOp TStar "*", binOp TSlash "/", binOp TMod "%"])
+parseMul = chainl1
+  parseUnary
+  (choice [binOp TStar "*", binOp TSlash "/", binOp TMod "%"])
 
 -- unary minus, tighter than `*` (a leading `-` in operand position)
 parseUnary : Parser Expr
-parseUnary =
-  do
-    t <- peekP
-    unaryFor t
+parseUnary = do
+  t <- peekP
+  unaryFor t
 
 unaryFor : Token -> Parser Expr
-unaryFor TMinus =
-  do
-    advance
-    e <- parseUnary
-    pure (EUnOp "-" e)
-unaryFor TBang =
-  do
-    advance
-    e <- parseUnary
-    pure (EUnOp "!" e)
+unaryFor TMinus = do
+  advance
+  e <- parseUnary
+  pure (EUnOp "-" e)
+unaryFor TBang = do
+  advance
+  e <- parseUnary
+  pure (EUnOp "!" e)
 unaryFor _ = parseInfix
 
 -- backtick infix operators: ``a `div` b`` → EInfix (left-associative)
@@ -348,53 +337,47 @@ parseInfix : Parser Expr
 parseInfix = chainl1 parseApp backtickOp
 
 backtickOp : Parser (Expr -> Expr -> Expr)
-backtickOp =
-  do
-    name <- backtickName
-    pure (l r => EInfix name l r)
+backtickOp = do
+  name <- backtickName
+  pure (l r => EInfix name l r)
 
 backtickName : Parser String
-backtickName =
-  do
-    t <- peekP
-    backtickNameFor t
+backtickName = do
+  t <- peekP
+  backtickNameFor t
 
 backtickNameFor : Token -> Parser String
 backtickNameFor (TBacktickIdent s) = emit s
 backtickNameFor _ = failP "expected backtick operator"
 
 parseApp : Parser Expr
-parseApp =
-  do
-    head <- parsePostfix
-    args <- many parsePostfix
-    pure (applyAll head args)
+parseApp = do
+  head <- parsePostfix
+  args <- many parsePostfix
+  pure (applyAll head args)
 
 applyAll : Expr -> List Expr -> Expr
 applyAll head [] = head
-applyAll head (a :: rest) = applyAll (EApp head a) rest
+applyAll head (a::rest) = applyAll (EApp head a) rest
 
 parsePostfix : Parser Expr
-parsePostfix =
-  do
-    e <- parseAtom
-    postfixTail e
+parsePostfix = do
+  e <- parseAtom
+  postfixTail e
 
 postfixTail : Expr -> Parser Expr
 postfixTail e = orElse (fieldTail e) (pure e)
 
 fieldTail : Expr -> Parser Expr
-fieldTail e =
-  do
-    expectTok TDot
-    f <- identNameP
-    postfixTail (EFieldAccess e f)
+fieldTail e = do
+  expectTok TDot
+  f <- identNameP
+  postfixTail (EFieldAccess e f)
 
 parseAtom : Parser Expr
-parseAtom =
-  do
-    t <- peekP
-    atomFor t
+parseAtom = do
+  t <- peekP
+  atomFor t
 
 atomFor : Token -> Parser Expr
 atomFor (TInt n) = emit (ELit (LInt n))
@@ -417,79 +400,70 @@ atomFor _ = failP "expected atom"
 
 -- a constructor (`Upper`) atom, or a record literal `Upper { field = e, … }`
 parseUpperAtom : String -> Parser Expr
-parseUpperAtom x =
-  do
-    advance
-    t <- peekP
-    upperTail x t
+parseUpperAtom x = do
+  advance
+  t <- peekP
+  upperTail x t
 
 upperTail : String -> Token -> Parser Expr
 upperTail x TLBrace = recordCreate x
 upperTail x _ = pure (EVar x)
 
 recordCreate : String -> Parser Expr
-recordCreate x =
-  do
-    expectTok TLBrace
-    fields <- sepBy1 fieldAssign (expectTok TComma)
-    expectTok TRBrace
-    pure (ERecordCreate x fields)
+recordCreate x = do
+  expectTok TLBrace
+  fields <- sepBy1 fieldAssign (expectTok TComma)
+  expectTok TRBrace
+  pure (ERecordCreate x fields)
 
 -- record update `{ e | field = e, … }`
 parseRecordUpdate : Parser Expr
-parseRecordUpdate =
-  do
-    expectTok TLBrace
-    e <- parseExpr
-    expectTok TPipe
-    fields <- sepBy1 fieldAssign (expectTok TComma)
-    expectTok TRBrace
-    pure (ERecordUpdate e fields)
+parseRecordUpdate = do
+  expectTok TLBrace
+  e <- parseExpr
+  expectTok TPipe
+  fields <- sepBy1 fieldAssign (expectTok TComma)
+  expectTok TRBrace
+  pure (ERecordUpdate e fields)
 
 fieldAssign : Parser FieldAssign
-fieldAssign =
-  do
-    name <- identNameP
-    expectTok TEqual
-    e <- parseExpr
-    pure (FieldAssign name e)
+fieldAssign = do
+  name <- identNameP
+  expectTok TEqual
+  e <- parseExpr
+  pure (FieldAssign name e)
 
 -- interpolated string: INTERP_OPEN <expr> (INTERP_MID <expr>)* INTERP_END,
 -- assembled into alternating InterpStr / InterpExpr parts
 parseInterp : Parser Expr
-parseInterp =
-  do
-    s0 <- interpOpenStr
-    rest <- interpRest
-    pure (EStringInterp (InterpStr s0 :: rest))
+parseInterp = do
+  s0 <- interpOpenStr
+  rest <- interpRest
+  pure (EStringInterp (InterpStr s0 :: rest))
 
 interpOpenStr : Parser String
-interpOpenStr =
-  do
-    t <- peekP
-    interpOpenFor t
+interpOpenStr = do
+  t <- peekP
+  interpOpenFor t
 
 interpOpenFor : Token -> Parser String
 interpOpenFor (TInterpOpen s) = emit s
 interpOpenFor _ = failP "expected interpolation open"
 
 interpRest : Parser (List InterpPart)
-interpRest =
-  do
-    e <- parseExpr
-    t <- peekP
-    interpRestFor e t
+interpRest = do
+  e <- parseExpr
+  t <- peekP
+  interpRestFor e t
 
 interpRestFor : Expr -> Token -> Parser (List InterpPart)
-interpRestFor e (TInterpMid s) =
-  do
-    advance
-    rest <- interpRest
-    pure (InterpExpr e :: InterpStr s :: rest)
-interpRestFor e (TInterpEnd s) =
-  do
-    advance
-    pure [InterpExpr e, InterpStr s]
+interpRestFor e (TInterpMid s) = do
+  advance
+  rest <- interpRest
+  pure (InterpExpr e :: InterpStr s :: rest)
+interpRestFor e (TInterpEnd s) = do
+  advance
+  pure [InterpExpr e, InterpStr s]
 interpRestFor e _ = failP "expected interpolation mid/end"
 
 tupleOrSingle : List Expr -> Expr
@@ -497,11 +471,10 @@ tupleOrSingle [e] = e
 tupleOrSingle es = ETuple es
 
 parseParen : Parser Expr
-parseParen =
-  do
-    expectTok TLParen
-    t <- peekP
-    parenFor t
+parseParen = do
+  expectTok TLParen
+  t <- peekP
+  parenFor t
 
 -- inside parens: `()` unit, an operator section `(op)`/`(op e)`/`(e op _)`,
 -- a tuple, or a plain parenthesised expression
@@ -511,44 +484,38 @@ parenFor TMinus = orElse bareMinusSection parseParenExpr
 parenFor t = parenSectionOr t
 
 parenSectionOr : Token -> Parser Expr
-parenSectionOr t =
-  match sectionOpStr t
-    Some op => parseSectionOp op
-    None => parseParenExpr
+parenSectionOr t = match sectionOpStr t
+  Some op => parseSectionOp op
+  None => parseParenExpr
 
 -- `(-)` is a bare section; `(-e)` is a parenthesised unary minus (orElse falls
 -- through). MINUS is excluded from the SecRight form, matching the grammar.
 bareMinusSection : Parser Expr
-bareMinusSection =
-  do
-    expectTok TMinus
-    expectTok TRParen
-    pure (ESection (SecBare "-"))
+bareMinusSection = do
+  expectTok TMinus
+  expectTok TRParen
+  pure (ESection (SecBare "-"))
 
 parseSectionOp : String -> Parser Expr
-parseSectionOp op =
-  do
-    advance
-    t <- peekP
-    sectionTail op t
+parseSectionOp op = do
+  advance
+  t <- peekP
+  sectionTail op t
 
 sectionTail : String -> Token -> Parser Expr
-sectionTail op TRParen =
-  do
-    advance
-    pure (ESection (SecBare op))
-sectionTail op _ =
-  do
-    e <- parseExpr
-    expectTok TRParen
-    pure (ESection (SecRight op e))
+sectionTail op TRParen = do
+  advance
+  pure (ESection (SecBare op))
+sectionTail op _ = do
+  e <- parseExpr
+  expectTok TRParen
+  pure (ESection (SecRight op e))
 
 parseParenExpr : Parser Expr
-parseParenExpr =
-  do
-    es <- sepBy1 parseExpr (expectTok TComma)
-    expectTok TRParen
-    pure (parenResult es)
+parseParenExpr = do
+  es <- sepBy1 parseExpr (expectTok TComma)
+  expectTok TRParen
+  pure (parenResult es)
 
 parenResult : List Expr -> Expr
 parenResult [e] = leftSectionOrExpr e
@@ -580,195 +547,173 @@ sectionOpStr TLCompose = Some "<<"
 sectionOpStr _ = None
 
 parseListE : Parser Expr
-parseListE =
-  do
-    expectTok TLBracket
-    t <- peekP
-    listFor t
+parseListE = do
+  expectTok TLBracket
+  t <- peekP
+  listFor t
 
 listFor : Token -> Parser Expr
 listFor TRBracket = emit (EListLit [])
-listFor _ =
-  do
-    first <- parseExpr
-    t <- peekP
-    listRest first t
+listFor _ = do
+  first <- parseExpr
+  t <- peekP
+  listRest first t
 
 -- after the first element: `..`/`..=` range, `,` more elements, or `]` close
 listRest : Expr -> Token -> Parser Expr
 listRest first TDotDot = rangeAfter first False
 listRest first TDotDotEq = rangeAfter first True
 listRest first TPipe = listCompAfter first
-listRest first TComma =
-  do
-    advance
-    rest <- sepBy1 parseExpr (expectTok TComma)
-    expectTok TRBracket
-    pure (EListLit (first :: rest))
-listRest first TRBracket =
-  do
-    advance
-    pure (EListLit [first])
+listRest first TComma = do
+  advance
+  rest <- sepBy1 parseExpr (expectTok TComma)
+  expectTok TRBracket
+  pure (EListLit (first :: rest))
+listRest first TRBracket = do
+  advance
+  pure (EListLit [first])
 listRest _ _ = failP "expected , .. ..= | or ]"
 
 rangeAfter : Expr -> Bool -> Parser Expr
-rangeAfter lo incl =
-  do
-    advance
-    hi <- parseExpr
-    expectTok TRBracket
-    pure (ERangeList lo hi incl)
+rangeAfter lo incl = do
+  advance
+  hi <- parseExpr
+  expectTok TRBracket
+  pure (ERangeList lo hi incl)
 
 -- list comprehension `[ body | qual, … ]` after the body and `|`
 listCompAfter : Expr -> Parser Expr
-listCompAfter body =
-  do
-    advance
-    quals <- sepBy1 lcQual (expectTok TComma)
-    expectTok TRBracket
-    pure (EListComp body quals)
+listCompAfter body = do
+  advance
+  quals <- sepBy1 lcQual (expectTok TComma)
+  expectTok TRBracket
+  pure (EListComp body quals)
 
 lcQual : Parser LcQual
-lcQual =
-  do
-    t <- peekP
-    lcQualFor t
+lcQual = do
+  t <- peekP
+  lcQualFor t
 
 lcQualFor : Token -> Parser LcQual
 lcQualFor TLet = lcLet
 lcQualFor _ = lcGenOrGuard
 
 lcLet : Parser LcQual
-lcLet =
-  do
-    expectTok TLet
-    t <- peekP
-    lcLetMut t
+lcLet = do
+  expectTok TLet
+  t <- peekP
+  lcLetMut t
 
 lcLetMut : Token -> Parser LcQual
-lcLetMut TMut =
-  do
-    advance
-    p <- parsePat
-    expectTok TEqual
-    e <- parseExpr
-    pure (LCLet True p e)
-lcLetMut _ =
-  do
-    p <- parsePat
-    expectTok TEqual
-    e <- parseExpr
-    pure (LCLet False p e)
+lcLetMut TMut = do
+  advance
+  p <- parsePat
+  expectTok TEqual
+  e <- parseExpr
+  pure (LCLet True p e)
+lcLetMut _ = do
+  p <- parsePat
+  expectTok TEqual
+  e <- parseExpr
+  pure (LCLet False p e)
 
 -- a generator `pat <- e` (LHS parsed as an expr, reinterpreted) or a guard
 lcGenOrGuard : Parser LcQual
-lcGenOrGuard =
-  do
-    e <- parseExpr
-    t <- peekP
-    lcGenOrGuardFor e t
+lcGenOrGuard = do
+  e <- parseExpr
+  t <- peekP
+  lcGenOrGuardFor e t
 
 lcGenOrGuardFor : Expr -> Token -> Parser LcQual
-lcGenOrGuardFor e TLArrow =
-  do
-    advance
-    rhs <- parseExpr
-    pure (LCGen (exprToPat e) rhs)
+lcGenOrGuardFor e TLArrow = do
+  advance
+  rhs <- parseExpr
+  pure (LCGen (exprToPat e) rhs)
 lcGenOrGuardFor e _ = pure (LCGuard e)
 
 -- array literal `[| e, … |]`
 parseArray : Parser Expr
-parseArray =
-  do
-    expectTok TLArray
-    t <- peekP
-    arrayFor t
+parseArray = do
+  expectTok TLArray
+  t <- peekP
+  arrayFor t
 
 arrayFor : Token -> Parser Expr
 arrayFor TRArray = emit (EArrayLit [])
-arrayFor _ =
-  do
-    es <- sepBy1 parseExpr (expectTok TComma)
-    expectTok TRArray
-    pure (EArrayLit es)
+arrayFor _ = do
+  es <- sepBy1 parseExpr (expectTok TComma)
+  expectTok TRArray
+  pure (EArrayLit es)
 
 parseIf : Parser Expr
-parseIf =
-  do
-    expectTok TIf
-    cond <- parseExpr
-    expectTok TThen
-    thenE <- parseBranch
-    elseE <- elseBranch
-    pure (EIf cond thenE elseE)
+parseIf = do
+  expectTok TIf
+  cond <- parseExpr
+  expectTok TThen
+  thenE <- parseBranch
+  elseE <- elseBranch
+  pure (EIf cond thenE elseE)
 
 -- `else` is optional; an else-less `if` defaults the else branch to unit
 elseBranch : Parser Expr
 elseBranch = orElse elsePresent (pure (ELit LUnit))
 
 elsePresent : Parser Expr
-elsePresent =
-  do
-    expectTok TElse
-    parseBranch
+elsePresent = do
+  expectTok TElse
+  parseBranch
 
 -- a then/else branch is either an inline expr or an indented statement block
 parseBranch : Parser Expr
 parseBranch = orElse branchBlock parseExpr
 
 branchBlock : Parser Expr
-branchBlock =
-  do
-    expectTok TIndent
-    stmts <- parseStmts
-    expectTok TDedent
-    pure (blockOrExpr stmts)
+branchBlock = do
+  expectTok TIndent
+  stmts <- parseStmts
+  expectTok TDedent
+  pure (blockOrExpr stmts)
 
 parseLet : Parser Expr
-parseLet =
-  do
-    expectTok TLet
-    pat <- parsePatAtom
-    expectTok TEqual
-    e1 <- parseExpr
-    expectTok TIn
-    e2 <- parseExpr
-    pure (ELet False False pat e1 e2)
+parseLet = do
+  expectTok TLet
+  pat <- parsePatAtom
+  expectTok TEqual
+  e1 <- parseExpr
+  expectTok TIn
+  e2 <- parseExpr
+  pure (ELet False False pat e1 e2)
 
 parseMatch : Parser Expr
-parseMatch =
-  do
-    expectTok TMatch
-    scrut <- parseExpr
-    expectTok TIndent
-    arms <- parseArms
-    expectTok TDedent
-    pure (EMatch scrut arms)
+parseMatch = do
+  expectTok TMatch
+  scrut <- parseExpr
+  expectTok TIndent
+  arms <- parseArms
+  expectTok TDedent
+  pure (EMatch scrut arms)
 
 parseArms : Parser (List Arm)
-parseArms =
-  do
-    skipNewlines
-    armsLoop
+parseArms = do
+  skipNewlines
+  armsLoop
 
 armsLoop : Parser (List Arm)
 armsLoop = orElse armsCons (pure [])
 
 armsCons : Parser (List Arm)
-armsCons =
-  do
-    a <- parseArm
-    skipNewlines
-    rest <- armsLoop
-    pure (a :: rest)
+armsCons = do
+  a <- parseArm
+  skipNewlines
+  rest <- armsLoop
+  pure (a :: rest)
 
 parseArm : Parser Arm
-parseArm =
-  do
-    pat <- parsePat
-    expectTok TFatArrow
-    body <- orElse branchBlock parseExpr
-    pure (Arm pat [] body)
+parseArm = do
+  pat <- parsePat
+  expectTok TFatArrow
+  body <- orElse branchBlock parseExpr
+  pure (Arm pat [] body)
 
 -- ── Patterns ────────────────────────────────────────────────────────────
 -- top level (pat_as): an as-pattern `x@p`, else a cons-pattern.  AS_AT is the
@@ -777,45 +722,39 @@ parsePat : Parser Pat
 parsePat = orElse parseAsPat parsePatCons
 
 parseAsPat : Parser Pat
-parseAsPat =
-  do
-    x <- identNameP
-    expectTok TAsAt
-    sub <- parsePatCons
-    pure (PAs x sub)
+parseAsPat = do
+  x <- identNameP
+  expectTok TAsAt
+  sub <- parsePatCons
+  pure (PAs x sub)
 
 parsePatCons : Parser Pat
-parsePatCons =
-  do
-    p <- parsePatApp
-    orElse (patConsTail p) (pure p)
+parsePatCons = do
+  p <- parsePatApp
+  orElse (patConsTail p) (pure p)
 
 patConsTail : Pat -> Parser Pat
-patConsTail p =
-  do
-    expectTok TCons
-    q <- parsePatCons
-    pure (PCons p q)
+patConsTail p = do
+  expectTok TCons
+  q <- parsePatCons
+  pure (PCons p q)
 
 parsePatApp : Parser Pat
-parsePatApp =
-  do
-    t <- peekP
-    patAppFor t
+parsePatApp = do
+  t <- peekP
+  patAppFor t
 
 patAppFor : Token -> Parser Pat
-patAppFor (TUpper c) =
-  do
-    advance
-    args <- many parsePatAtom
-    pure (PCon c args)
+patAppFor (TUpper c) = do
+  advance
+  args <- many parsePatAtom
+  pure (PCon c args)
 patAppFor _ = parsePatAtom
 
 parsePatAtom : Parser Pat
-parsePatAtom =
-  do
-    t <- peekP
-    patAtomFor t
+parsePatAtom = do
+  t <- peekP
+  patAtomFor t
 
 patAtomFor : Token -> Parser Pat
 patAtomFor (TIdent x) = emit (PVar x)
@@ -834,51 +773,45 @@ tuplePatOrSingle [p] = p
 tuplePatOrSingle ps = PTuple ps
 
 parsePatParen : Parser Pat
-parsePatParen =
-  do
-    expectTok TLParen
-    t <- peekP
-    patParenFor t
+parsePatParen = do
+  expectTok TLParen
+  t <- peekP
+  patParenFor t
 
 patParenFor : Token -> Parser Pat
 patParenFor TRParen = emit (PLit LUnit)
-patParenFor _ =
-  do
-    ps <- sepBy1 parsePat (expectTok TComma)
-    expectTok TRParen
-    pure (tuplePatOrSingle ps)
+patParenFor _ = do
+  ps <- sepBy1 parsePat (expectTok TComma)
+  expectTok TRParen
+  pure (tuplePatOrSingle ps)
 
 parsePatList : Parser Pat
-parsePatList =
-  do
-    expectTok TLBracket
-    t <- peekP
-    patListFor t
+parsePatList = do
+  expectTok TLBracket
+  t <- peekP
+  patListFor t
 
 patListFor : Token -> Parser Pat
 patListFor TRBracket = emit (PList [])
-patListFor _ =
-  do
-    ps <- sepBy1 parsePat (expectTok TComma)
-    expectTok TRBracket
-    pure (PList ps)
+patListFor _ = do
+  ps <- sepBy1 parsePat (expectTok TComma)
+  expectTok TRBracket
+  pure (PList ps)
 
 -- ── Types ───────────────────────────────────────────────────────────────
 -- a full type is a function/effect type, optionally prefixed by a constraint
 -- list: `C a => ty`.  The constraint LHS is itself parsed as a ty_fun and
 -- reinterpreted (TyApp(TyCon I, a) → one constraint; TyTuple → many).
 parseTy : Parser Ty
-parseTy =
-  do
-    lhs <- parseTyFun
-    orElse (constraintTail lhs) (pure lhs)
+parseTy = do
+  lhs <- parseTyFun
+  orElse (constraintTail lhs) (pure lhs)
 
 constraintTail : Ty -> Parser Ty
-constraintTail lhs =
-  do
-    expectTok TFatArrow
-    rhs <- parseTy
-    pure (TyConstrained (extractConstraints lhs) rhs)
+constraintTail lhs = do
+  expectTok TFatArrow
+  rhs <- parseTy
+  pure (TyConstrained (extractConstraints lhs) rhs)
 
 extractConstraints : Ty -> List Constraint
 extractConstraints (TyApp (TyCon iface) arg) = [Constraint iface [arg]]
@@ -888,100 +821,88 @@ extractConstraints _ = []
 
 concatMapC : List Ty -> List Constraint
 concatMapC [] = []
-concatMapC (t :: rest) = extractConstraints t ++ concatMapC rest
+concatMapC (t::rest) = extractConstraints t ++ concatMapC rest
 
 parseTyFun : Parser Ty
-parseTyFun =
-  do
-    t <- peekP
-    tyFor t
+parseTyFun = do
+  t <- peekP
+  tyFor t
 
 tyFor : Token -> Parser Ty
 tyFor TLt = parseEffectTy
-tyFor _ =
-  do
-    left <- parseTyApp
-    orElse (tyArrowTail left) (pure left)
+tyFor _ = do
+  left <- parseTyApp
+  orElse (tyArrowTail left) (pure left)
 
 -- `< labels? (| tail)? > ty` — an effect-annotated type.  A bare lowercase ident
 -- inside the angles is the tail var (no labels), e.g. `<e> a`.
 parseEffectTy : Parser Ty
-parseEffectTy =
-  do
-    expectTok TLt
-    body <- effectBody
-    expectTok TGt
-    inner <- parseTy
-    pure (mkEffect body inner)
+parseEffectTy = do
+  expectTok TLt
+  body <- effectBody
+  expectTok TGt
+  inner <- parseTy
+  pure (mkEffect body inner)
 
 mkEffect : (List String, Option String) -> Ty -> Ty
 mkEffect (labels, tail) inner = TyEffect labels tail inner
 
 effectBody : Parser (List String, Option String)
-effectBody =
-  do
-    t <- peekP
-    effectBodyFor t
+effectBody = do
+  t <- peekP
+  effectBodyFor t
 
 effectBodyFor : Token -> Parser (List String, Option String)
-effectBodyFor (TUpper _) =
-  do
-    labels <- sepBy1 upperNameP (expectTok TComma)
-    tail <- pipeTail
-    pure (labels, tail)
-effectBodyFor (TIdent _) =
-  do
-    v <- identNameP
-    pure ([], Some v)
+effectBodyFor (TUpper _) = do
+  labels <- sepBy1 upperNameP (expectTok TComma)
+  tail <- pipeTail
+  pure (labels, tail)
+effectBodyFor (TIdent _) = do
+  v <- identNameP
+  pure ([], Some v)
 effectBodyFor _ = pure ([], None)
 
 pipeTail : Parser (Option String)
-pipeTail =
-  do
-    t <- peekP
-    pipeTailFor t
+pipeTail = do
+  t <- peekP
+  pipeTailFor t
 
 pipeTailFor : Token -> Parser (Option String)
-pipeTailFor TPipe =
-  do
-    advance
-    v <- identNameP
-    pure (Some v)
+pipeTailFor TPipe = do
+  advance
+  v <- identNameP
+  pure (Some v)
 pipeTailFor _ = pure None
 
 upperNameP : Parser String
-upperNameP =
-  do
-    t <- peekP
-    upperNameFor t
+upperNameP = do
+  t <- peekP
+  upperNameFor t
 
 upperNameFor : Token -> Parser String
 upperNameFor (TUpper c) = emit c
 upperNameFor _ = failP "expected effect label"
 
 tyArrowTail : Ty -> Parser Ty
-tyArrowTail left =
-  do
-    expectTok TArrow
-    right <- parseTy
-    pure (TyFun left right)
+tyArrowTail left = do
+  expectTok TArrow
+  right <- parseTy
+  pure (TyFun left right)
 
 parseTyApp : Parser Ty
-parseTyApp =
-  do
-    head <- parseTyAtom
-    args <- many parseTyAtom
-    pure (tyApplyAll head args)
+parseTyApp = do
+  head <- parseTyAtom
+  args <- many parseTyAtom
+  pure (tyApplyAll head args)
 
 tyApplyAll : Ty -> List Ty -> Ty
 tyApplyAll head [] = head
-tyApplyAll head (a :: rest) = tyApplyAll (TyApp head a) rest
+tyApplyAll head (a::rest) = tyApplyAll (TyApp head a) rest
 
 parseTyAtom : Parser Ty
-parseTyAtom =
-  do
-    t <- peekP
-    tyAtomFor t
+parseTyAtom = do
+  t <- peekP
+  tyAtomFor t
 
 tyAtomFor : Token -> Parser Ty
 tyAtomFor (TUpper c) = emit (TyCon c)
@@ -994,19 +915,17 @@ tyTupleOrSingle [t] = t
 tyTupleOrSingle ts = TyTuple ts
 
 parseTyParen : Parser Ty
-parseTyParen =
-  do
-    expectTok TLParen
-    ts <- sepBy1 parseTy (expectTok TComma)
-    expectTok TRParen
-    pure (tyTupleOrSingle ts)
+parseTyParen = do
+  expectTok TLParen
+  ts <- sepBy1 parseTy (expectTok TComma)
+  expectTok TRParen
+  pure (tyTupleOrSingle ts)
 
 -- ── Declarations + program ──────────────────────────────────────────────
 parseDecl : Parser Decl
-parseDecl =
-  do
-    t <- peekP
-    declDispatch t
+parseDecl = do
+  t <- peekP
+  declDispatch t
 
 -- top-level dispatch.  `export`/`public export` are prefixes: `export` sets
 -- is_pub on a non-data decl (or DataAbstract on data/record); `public export`
@@ -1028,12 +947,11 @@ declDispatch _ = parseFunOrSig False
 
 -- `default` prefixes an interface/impl (marks it as the default impl)
 afterDefault : Bool -> Parser Decl
-afterDefault pub =
-  do
-    expectTok TDefault
-    skipNewlines
-    t <- peekP
-    afterDefaultFor pub t
+afterDefault pub = do
+  expectTok TDefault
+  skipNewlines
+  t <- peekP
+  afterDefaultFor pub t
 
 afterDefaultFor : Bool -> Token -> Parser Decl
 afterDefaultFor pub TInterface = parseInterface pub True
@@ -1041,12 +959,11 @@ afterDefaultFor pub TImpl = parseImpl pub True
 afterDefaultFor _ _ = failP "expected interface or impl after default"
 
 afterExport : Parser Decl
-afterExport =
-  do
-    expectTok TExport
-    skipNewlines
-    t <- peekP
-    afterExportFor t
+afterExport = do
+  expectTok TExport
+  skipNewlines
+  t <- peekP
+  afterExportFor t
 
 afterExportFor : Token -> Parser Decl
 afterExportFor TImport = parseImport True
@@ -1062,14 +979,13 @@ afterExportFor TDefault = afterDefault True
 afterExportFor _ = parseFunOrSig True
 
 afterPublic : Parser Decl
-afterPublic =
-  do
-    expectTok TPublic
-    skipNewlines
-    expectTok TExport
-    skipNewlines
-    t <- peekP
-    afterPublicFor t
+afterPublic = do
+  expectTok TPublic
+  skipNewlines
+  expectTok TExport
+  skipNewlines
+  t <- peekP
+  afterPublicFor t
 
 afterPublicFor : Token -> Parser Decl
 afterPublicFor TData = parseData VisPublic
@@ -1077,56 +993,49 @@ afterPublicFor TRecord = parseRecord VisPublic
 afterPublicFor _ = failP "expected data or record after public export"
 
 parseFunOrSig : Bool -> Parser Decl
-parseFunOrSig pub =
-  do
-    name <- identNameP
-    params <- many parsePatAtom
-    t <- peekP
-    declRestFor pub name params t
+parseFunOrSig pub = do
+  name <- identNameP
+  params <- many parsePatAtom
+  t <- peekP
+  declRestFor pub name params t
 
 declRestFor : Bool -> String -> List Pat -> Token -> Parser Decl
-declRestFor pub name _params TColon =
-  do
-    advance
-    ty <- parseTy
-    skipNewlines
-    pure (DTypeSig pub name ty)
-declRestFor pub name params TEqual =
-  do
-    advance
-    body <- parseBody
-    skipNewlines
-    pure (DFunDef pub name params body)
-declRestFor pub name params TIndent =
-  do
-    advance
-    arms <- parseGuardArms
-    expectTok TDedent
-    skipNewlines
-    pure (DFunDef pub name params (EGuards arms))
-declRestFor pub name params TPipe =
-  do
-    arm <- parseGuardArm
-    skipNewlines
-    pure (DFunDef pub name params (EGuards [arm]))
+declRestFor pub name _params TColon = do
+  advance
+  ty <- parseTy
+  skipNewlines
+  pure (DTypeSig pub name ty)
+declRestFor pub name params TEqual = do
+  advance
+  body <- parseBody
+  skipNewlines
+  pure (DFunDef pub name params body)
+declRestFor pub name params TIndent = do
+  advance
+  arms <- parseGuardArms
+  expectTok TDedent
+  skipNewlines
+  pure (DFunDef pub name params (EGuards arms))
+declRestFor pub name params TPipe = do
+  arm <- parseGuardArm
+  skipNewlines
+  pure (DFunDef pub name params (EGuards [arm]))
 declRestFor _ _ _ _ = failP "expected : or ="
 
 -- ── extern + import declarations ─────────────────────────────────────────
 parseExtern : Bool -> Parser Decl
-parseExtern pub =
-  do
-    expectTok TExtern
-    name <- externName
-    expectTok TColon
-    ty <- parseTy
-    skipNewlines
-    pure (DExtern pub name ty)
+parseExtern pub = do
+  expectTok TExtern
+  name <- externName
+  expectTok TColon
+  ty <- parseTy
+  skipNewlines
+  pure (DExtern pub name ty)
 
 externName : Parser String
-externName =
-  do
-    t <- peekP
-    externNameFor t
+externName = do
+  t <- peekP
+  externNameFor t
 
 externNameFor : Token -> Parser String
 externNameFor (TIdent x) = emit x
@@ -1134,104 +1043,90 @@ externNameFor (TUpper x) = emit x
 externNameFor _ = failP "expected extern name"
 
 parseImport : Bool -> Parser Decl
-parseImport pub =
-  do
-    expectTok TImport
-    quals <- importQuals
-    path <- importPathFor quals
-    skipNewlines
-    pure (DUse pub path)
+parseImport pub = do
+  expectTok TImport
+  quals <- importQuals
+  path <- importPathFor quals
+  skipNewlines
+  pure (DUse pub path)
 
 importQuals : Parser (List String)
-importQuals =
-  do
-    first <- importIdent
-    rest <- importQualRest
-    pure (first :: rest)
+importQuals = do
+  first <- importIdent
+  rest <- importQualRest
+  pure (first :: rest)
 
 importQualRest : Parser (List String)
-importQualRest =
-  do
-    t <- peekP
-    importQualRestFor t
+importQualRest = do
+  t <- peekP
+  importQualRestFor t
 
 importQualRestFor : Token -> Parser (List String)
-importQualRestFor TDot =
-  do
-    advance
-    x <- importIdent
-    rest <- importQualRest
-    pure (x :: rest)
+importQualRestFor TDot = do
+  advance
+  x <- importIdent
+  rest <- importQualRest
+  pure (x :: rest)
 importQualRestFor _ = pure []
 
 importIdent : Parser String
-importIdent =
-  do
-    t <- peekP
-    importIdentFor t
+importIdent = do
+  t <- peekP
+  importIdentFor t
 
 importIdentFor : Token -> Parser String
 importIdentFor (TIdent x) = emit x
 importIdentFor _ = failP "expected import path component"
 
 importPathFor : List String -> Parser UsePath
-importPathFor quals =
-  do
-    t <- peekP
-    importPathForT quals t
+importPathFor quals = do
+  t <- peekP
+  importPathForT quals t
 
 importPathForT : List String -> Token -> Parser UsePath
-importPathForT quals TDotLBrace =
-  do
-    advance
-    ms <- sepBy1 importMember (expectTok TComma)
-    expectTok TRBrace
-    pure (UseGroup quals ms)
-importPathForT quals TDotStar =
-  do
-    advance
-    pure (UseWild quals)
-importPathForT quals TAs =
-  do
-    advance
-    a <- aliasName
-    pure (UseAlias quals a)
+importPathForT quals TDotLBrace = do
+  advance
+  ms <- sepBy1 importMember (expectTok TComma)
+  expectTok TRBrace
+  pure (UseGroup quals ms)
+importPathForT quals TDotStar = do
+  advance
+  pure (UseWild quals)
+importPathForT quals TAs = do
+  advance
+  a <- aliasName
+  pure (UseAlias quals a)
 importPathForT quals _ = pure (UseName quals)
 
 importMember : Parser UseMember
-importMember =
-  do
-    t <- peekP
-    importMemberFor t
+importMember = do
+  t <- peekP
+  importMemberFor t
 
 importMemberFor : Token -> Parser UseMember
 importMemberFor (TIdent x) = emit (UseMember x False)
-importMemberFor (TUpper x) =
-  do
-    advance
-    withAllOrNot x
+importMemberFor (TUpper x) = do
+  advance
+  withAllOrNot x
 importMemberFor _ = failP "expected import member"
 
 withAllOrNot : String -> Parser UseMember
-withAllOrNot x =
-  do
-    t <- peekP
-    withAllFor x t
+withAllOrNot x = do
+  t <- peekP
+  withAllFor x t
 
 withAllFor : String -> Token -> Parser UseMember
-withAllFor x TLParen =
-  do
-    advance
-    expectTok TDotDot
-    expectTok TRParen
-    pure (UseMember x True)
+withAllFor x TLParen = do
+  advance
+  expectTok TDotDot
+  expectTok TRParen
+  pure (UseMember x True)
 withAllFor x _ = pure (UseMember x False)
 
 aliasName : Parser String
-aliasName =
-  do
-    t <- peekP
-    aliasNameFor t
+aliasName = do
+  t <- peekP
+  aliasNameFor t
 
 aliasNameFor : Token -> Parser String
 aliasNameFor (TUpper x) = emit x
@@ -1240,472 +1135,413 @@ aliasNameFor _ = failP "expected alias name"
 
 -- ── prop / test / bench declarations ─────────────────────────────────────
 stringLitP : Parser String
-stringLitP =
-  do
-    t <- peekP
-    stringLitFor t
+stringLitP = do
+  t <- peekP
+  stringLitFor t
 
 stringLitFor : Token -> Parser String
 stringLitFor (TString s) = emit s
 stringLitFor _ = failP "expected string literal"
 
 parseProp : Bool -> Parser Decl
-parseProp pub =
-  do
-    expectTok TProp
-    name <- stringLitP
-    params <- many propParam
-    expectTok TEqual
-    body <- parseBody
-    skipNewlines
-    pure (DProp pub name params body)
+parseProp pub = do
+  expectTok TProp
+  name <- stringLitP
+  params <- many propParam
+  expectTok TEqual
+  body <- parseBody
+  skipNewlines
+  pure (DProp pub name params body)
 
 propParam : Parser PropParam
-propParam =
-  do
-    expectTok TLParen
-    name <- identNameP
-    expectTok TColon
-    ty <- parseTy
-    expectTok TRParen
-    pure (PropParam name ty)
+propParam = do
+  expectTok TLParen
+  name <- identNameP
+  expectTok TColon
+  ty <- parseTy
+  expectTok TRParen
+  pure (PropParam name ty)
 
 parseTest : Bool -> Parser Decl
-parseTest pub =
-  do
-    expectTok TTest
-    name <- stringLitP
-    expectTok TEqual
-    body <- parseBody
-    skipNewlines
-    pure (DTest pub name body)
+parseTest pub = do
+  expectTok TTest
+  name <- stringLitP
+  expectTok TEqual
+  body <- parseBody
+  skipNewlines
+  pure (DTest pub name body)
 
 parseBench : Bool -> Parser Decl
-parseBench pub =
-  do
-    expectTok TBench
-    name <- stringLitP
-    expectTok TEqual
-    body <- parseBody
-    skipNewlines
-    pure (DBench pub name body)
+parseBench pub = do
+  expectTok TBench
+  name <- stringLitP
+  expectTok TEqual
+  body <- parseBody
+  skipNewlines
+  pure (DBench pub name body)
 
 -- ── interface declarations ───────────────────────────────────────────────
 parseInterface : Bool -> Bool -> Parser Decl
-parseInterface pub isDefault =
-  do
-    expectTok TInterface
-    name <- upperNameP
-    typarams <- many lowerNameP
-    supers <- ifaceSuper
-    methods <- ifaceBody
-    pure (DInterface pub isDefault name typarams supers methods)
+parseInterface pub isDefault = do
+  expectTok TInterface
+  name <- upperNameP
+  typarams <- many lowerNameP
+  supers <- ifaceSuper
+  methods <- ifaceBody
+  pure (DInterface pub isDefault name typarams supers methods)
 
 -- optional `requires Iface a, …` superclass list
 ifaceSuper : Parser (List Super)
-ifaceSuper =
-  do
-    t <- peekP
-    ifaceSuperFor t
+ifaceSuper = do
+  t <- peekP
+  ifaceSuperFor t
 
 ifaceSuperFor : Token -> Parser (List Super)
-ifaceSuperFor TRequires =
-  do
-    advance
-    sepBy1 ifaceSuperEntry (expectTok TComma)
+ifaceSuperFor TRequires = do
+  advance
+  sepBy1 ifaceSuperEntry (expectTok TComma)
 ifaceSuperFor _ = pure []
 
 ifaceSuperEntry : Parser Super
-ifaceSuperEntry =
-  do
-    name <- upperNameP
-    params <- many lowerNameP
-    pure (Super name params)
+ifaceSuperEntry = do
+  name <- upperNameP
+  params <- many lowerNameP
+  pure (Super name params)
 
 -- `where INDENT members DEDENT` body, or a marker interface (optional where)
 ifaceBody : Parser (List IfaceMethod)
-ifaceBody =
-  do
-    t <- peekP
-    ifaceBodyFor t
+ifaceBody = do
+  t <- peekP
+  ifaceBodyFor t
 
 ifaceBodyFor : Token -> Parser (List IfaceMethod)
-ifaceBodyFor TWhere =
-  do
-    advance
-    t <- peekP
-    ifaceWhereBody t
-ifaceBodyFor _ =
-  do
-    skipNewlines
-    pure []
+ifaceBodyFor TWhere = do
+  advance
+  t <- peekP
+  ifaceWhereBody t
+ifaceBodyFor _ = do
+  skipNewlines
+  pure []
 
 ifaceWhereBody : Token -> Parser (List IfaceMethod)
-ifaceWhereBody TIndent =
-  do
-    advance
-    ms <- ifaceMembers
-    expectTok TDedent
-    skipNewlines
-    pure ms
-ifaceWhereBody _ =
-  do
-    skipNewlines
-    pure []
+ifaceWhereBody TIndent = do
+  advance
+  ms <- ifaceMembers
+  expectTok TDedent
+  skipNewlines
+  pure ms
+ifaceWhereBody _ = do
+  skipNewlines
+  pure []
 
 ifaceMembers : Parser (List IfaceMethod)
-ifaceMembers =
-  do
-    skipNewlines
-    ifaceMembersLoop
+ifaceMembers = do
+  skipNewlines
+  ifaceMembersLoop
 
 ifaceMembersLoop : Parser (List IfaceMethod)
 ifaceMembersLoop = orElse ifaceMembersCons (pure [])
 
 ifaceMembersCons : Parser (List IfaceMethod)
-ifaceMembersCons =
-  do
-    m <- ifaceMember
-    skipNewlines
-    rest <- ifaceMembersLoop
-    pure (m :: rest)
+ifaceMembersCons = do
+  m <- ifaceMember
+  skipNewlines
+  rest <- ifaceMembersLoop
+  pure (m :: rest)
 
 -- a method signature `name : ty`, or a default method `name pats = body`
 ifaceMember : Parser IfaceMethod
-ifaceMember =
-  do
-    name <- identNameP
-    pats <- many parsePatAtom
-    t <- peekP
-    ifaceMemberRest name pats t
+ifaceMember = do
+  name <- identNameP
+  pats <- many parsePatAtom
+  t <- peekP
+  ifaceMemberRest name pats t
 
 ifaceMemberRest : String -> List Pat -> Token -> Parser IfaceMethod
-ifaceMemberRest name _ TColon =
-  do
-    advance
-    ty <- parseTy
-    pure (IfaceMethod name ty None)
-ifaceMemberRest name pats TEqual =
-  do
-    advance
-    body <- parseBody
-    pure (IfaceMethod name (TyVar "_") (Some (MethodDefault pats body)))
+ifaceMemberRest name _ TColon = do
+  advance
+  ty <- parseTy
+  pure (IfaceMethod name ty None)
+ifaceMemberRest name pats TEqual = do
+  advance
+  body <- parseBody
+  pure (IfaceMethod name (TyVar "_") (Some (MethodDefault pats body)))
 ifaceMemberRest _ _ _ = failP "expected : or = in interface member"
 
 -- ── impl declarations ────────────────────────────────────────────────────
 parseImpl : Bool -> Bool -> Parser Decl
-parseImpl pub isDefault =
-  do
-    expectTok TImpl
-    t <- peekP
-    implHead pub isDefault t
+parseImpl pub isDefault = do
+  expectTok TImpl
+  t <- peekP
+  implHead pub isDefault t
 
 -- `impl Iface tyargs…` (unnamed), `impl name of Iface tyargs…` (named, lower),
 -- or `impl Name of Iface tyargs…` (named, upper)
 implHead : Bool -> Bool -> Token -> Parser Decl
-implHead pub isDefault (TIdent nm) =
-  do
-    advance
-    expectTok TOf
-    iface <- upperNameP
-    implRest pub isDefault iface (Some nm)
-implHead pub isDefault (TUpper u) =
-  do
-    advance
-    t <- peekP
-    implAfterUpper pub isDefault u t
+implHead pub isDefault (TIdent nm) = do
+  advance
+  expectTok TOf
+  iface <- upperNameP
+  implRest pub isDefault iface (Some nm)
+implHead pub isDefault (TUpper u) = do
+  advance
+  t <- peekP
+  implAfterUpper pub isDefault u t
 implHead _ _ _ = failP "expected impl head"
 
 implAfterUpper : Bool -> Bool -> String -> Token -> Parser Decl
-implAfterUpper pub isDefault u TOf =
-  do
-    advance
-    iface <- upperNameP
-    implRest pub isDefault iface (Some u)
+implAfterUpper pub isDefault u TOf = do
+  advance
+  iface <- upperNameP
+  implRest pub isDefault iface (Some u)
 implAfterUpper pub isDefault u _ = implRest pub isDefault u None
 
 implRest : Bool -> Bool -> String -> Option String -> Parser Decl
-implRest pub isDefault iface name =
-  do
-    tyargs <- many parseTyAtom
-    reqs <- implRequires
-    methods <- implBody
-    pure (DImpl pub isDefault iface tyargs name reqs methods)
+implRest pub isDefault iface name = do
+  tyargs <- many parseTyAtom
+  reqs <- implRequires
+  methods <- implBody
+  pure (DImpl pub isDefault iface tyargs name reqs methods)
 
 -- optional `requires Iface tyargs…, …`
 implRequires : Parser (List Require)
-implRequires =
-  do
-    t <- peekP
-    implRequiresFor t
+implRequires = do
+  t <- peekP
+  implRequiresFor t
 
 implRequiresFor : Token -> Parser (List Require)
-implRequiresFor TRequires =
-  do
-    advance
-    sepBy1 implRequireEntry (expectTok TComma)
+implRequiresFor TRequires = do
+  advance
+  sepBy1 implRequireEntry (expectTok TComma)
 implRequiresFor _ = pure []
 
 implRequireEntry : Parser Require
-implRequireEntry =
-  do
-    iface <- upperNameP
-    tys <- many parseTyAtom
-    pure (Require iface tys)
+implRequireEntry = do
+  iface <- upperNameP
+  tys <- many parseTyAtom
+  pure (Require iface tys)
 
 implBody : Parser (List ImplMethod)
-implBody =
-  do
-    t <- peekP
-    implBodyFor t
+implBody = do
+  t <- peekP
+  implBodyFor t
 
 implBodyFor : Token -> Parser (List ImplMethod)
-implBodyFor TWhere =
-  do
-    advance
-    t <- peekP
-    implWhereBody t
-implBodyFor _ =
-  do
-    skipNewlines
-    pure []
+implBodyFor TWhere = do
+  advance
+  t <- peekP
+  implWhereBody t
+implBodyFor _ = do
+  skipNewlines
+  pure []
 
 implWhereBody : Token -> Parser (List ImplMethod)
-implWhereBody TIndent =
-  do
-    advance
-    ms <- implMethods
-    expectTok TDedent
-    skipNewlines
-    pure ms
-implWhereBody _ =
-  do
-    skipNewlines
-    pure []
+implWhereBody TIndent = do
+  advance
+  ms <- implMethods
+  expectTok TDedent
+  skipNewlines
+  pure ms
+implWhereBody _ = do
+  skipNewlines
+  pure []
 
 implMethods : Parser (List ImplMethod)
-implMethods =
-  do
-    skipNewlines
-    implMethodsLoop
+implMethods = do
+  skipNewlines
+  implMethodsLoop
 
 implMethodsLoop : Parser (List ImplMethod)
 implMethodsLoop = orElse implMethodsCons (pure [])
 
 implMethodsCons : Parser (List ImplMethod)
-implMethodsCons =
-  do
-    m <- implMethod
-    skipNewlines
-    rest <- implMethodsLoop
-    pure (m :: rest)
+implMethodsCons = do
+  m <- implMethod
+  skipNewlines
+  rest <- implMethodsLoop
+  pure (m :: rest)
 
 -- impl methods are `name pats = body` (multi-clause = repeated entries)
 implMethod : Parser ImplMethod
-implMethod =
-  do
-    name <- identNameP
-    pats <- many parsePatAtom
-    expectTok TEqual
-    body <- parseBody
-    pure (ImplMethod name pats body)
+implMethod = do
+  name <- identNameP
+  pats <- many parsePatAtom
+  expectTok TEqual
+  body <- parseBody
+  pure (ImplMethod name pats body)
 
 -- function guards: an INDENT block of `| guard, … = body` arms
 parseGuardArms : Parser (List GuardArm)
-parseGuardArms =
-  do
-    skipNewlines
-    guardArmsLoop
+parseGuardArms = do
+  skipNewlines
+  guardArmsLoop
 
 guardArmsLoop : Parser (List GuardArm)
 guardArmsLoop = orElse guardArmsCons (pure [])
 
 guardArmsCons : Parser (List GuardArm)
-guardArmsCons =
-  do
-    a <- parseGuardArm
-    skipNewlines
-    rest <- guardArmsLoop
-    pure (a :: rest)
+guardArmsCons = do
+  a <- parseGuardArm
+  skipNewlines
+  rest <- guardArmsLoop
+  pure (a :: rest)
 
 parseGuardArm : Parser GuardArm
-parseGuardArm =
-  do
-    expectTok TPipe
-    guards <- sepBy1 parseGuard (expectTok TComma)
-    expectTok TEqual
-    body <- parseBody
-    pure (GuardArm guards body)
+parseGuardArm = do
+  expectTok TPipe
+  guards <- sepBy1 parseGuard (expectTok TComma)
+  expectTok TEqual
+  body <- parseBody
+  pure (GuardArm guards body)
 
 parseGuard : Parser Guard
-parseGuard =
-  do
-    e <- parseExpr
-    t <- peekP
-    guardFor e t
+parseGuard = do
+  e <- parseExpr
+  t <- peekP
+  guardFor e t
 
 guardFor : Expr -> Token -> Parser Guard
-guardFor e TLArrow =
-  do
-    advance
-    rhs <- parseExpr
-    pure (GBind (exprToPat e) rhs)
+guardFor e TLArrow = do
+  advance
+  rhs <- parseExpr
+  pure (GBind (exprToPat e) rhs)
 guardFor e _ = pure (GBool e)
 
 -- ── data / record declarations ──────────────────────────────────────────
 lowerNameP : Parser String
-lowerNameP =
-  do
-    t <- peekP
-    lowerNameFor t
+lowerNameP = do
+  t <- peekP
+  lowerNameFor t
 
 lowerNameFor : Token -> Parser String
 lowerNameFor (TIdent x) = emit x
 lowerNameFor _ = failP "expected type parameter"
 
 parseData : DataVis -> Parser Decl
-parseData vis =
-  do
-    expectTok TData
-    name <- upperNameP
-    params <- many lowerNameP
-    variants <- dataBody
-    derives <- derivingClause
-    skipNewlines
-    pure (DData vis name params variants derives)
+parseData vis = do
+  expectTok TData
+  name <- upperNameP
+  params <- many lowerNameP
+  variants <- dataBody
+  derives <- derivingClause
+  skipNewlines
+  pure (DData vis name params variants derives)
 
 -- inline (`= …`) or block (`INDENT = … DEDENT`) variant list
 dataBody : Parser (List Variant)
-dataBody =
-  do
-    t <- peekP
-    dataBodyFor t
+dataBody = do
+  t <- peekP
+  dataBodyFor t
 
 dataBodyFor : Token -> Parser (List Variant)
-dataBodyFor TEqual =
-  do
-    advance
-    dataVariants
-dataBodyFor TIndent =
-  do
-    advance
-    expectTok TEqual
-    vs <- dataVariants
-    expectTok TDedent
-    pure vs
+dataBodyFor TEqual = do
+  advance
+  dataVariants
+dataBodyFor TIndent = do
+  advance
+  expectTok TEqual
+  vs <- dataVariants
+  expectTok TDedent
+  pure vs
 dataBodyFor _ = pure []
 
 dataVariants : Parser (List Variant)
-dataVariants =
-  do
-    v <- parseVariant
-    rest <- variantsRest
-    pure (v :: rest)
+dataVariants = do
+  v <- parseVariant
+  rest <- variantsRest
+  pure (v :: rest)
 
 variantsRest : Parser (List Variant)
-variantsRest =
-  do
-    skipNewlines
-    t <- peekP
-    variantsRestFor t
+variantsRest = do
+  skipNewlines
+  t <- peekP
+  variantsRestFor t
 
 variantsRestFor : Token -> Parser (List Variant)
-variantsRestFor TPipe =
-  do
-    advance
-    v <- parseVariant
-    rest <- variantsRest
-    pure (v :: rest)
+variantsRestFor TPipe = do
+  advance
+  v <- parseVariant
+  rest <- variantsRest
+  pure (v :: rest)
 variantsRestFor _ = pure []
 
 parseVariant : Parser Variant
-parseVariant =
-  do
-    name <- upperNameP
-    payload <- parsePayload
-    pure (Variant name payload)
+parseVariant = do
+  name <- upperNameP
+  payload <- parsePayload
+  pure (Variant name payload)
 
 parsePayload : Parser ConPayload
-parsePayload =
-  do
-    t <- peekP
-    payloadFor t
+parsePayload = do
+  t <- peekP
+  payloadFor t
 
 payloadFor : Token -> Parser ConPayload
 payloadFor TLBrace = parseNamedPayload
-payloadFor _ =
-  do
-    tys <- many parseTyAtom
-    pure (ConPos tys)
+payloadFor _ = do
+  tys <- many parseTyAtom
+  pure (ConPos tys)
 
 parseNamedPayload : Parser ConPayload
-parseNamedPayload =
-  do
-    expectTok TLBrace
-    fields <- sepBy1 parseField (expectTok TComma)
-    expectTok TRBrace
-    pure (ConNamed fields)
+parseNamedPayload = do
+  expectTok TLBrace
+  fields <- sepBy1 parseField (expectTok TComma)
+  expectTok TRBrace
+  pure (ConNamed fields)
 
 parseField : Parser Field
-parseField =
-  do
-    name <- identNameP
-    expectTok TColon
-    t <- parseTy
-    pure (Field name t)
+parseField = do
+  name <- identNameP
+  expectTok TColon
+  t <- parseTy
+  pure (Field name t)
 
 -- `deriving (Name, …)`, after the variant/field block; optional
 derivingClause : Parser (List String)
-derivingClause =
-  do
-    skipNewlines
-    t <- peekP
-    derivingFor t
+derivingClause = do
+  skipNewlines
+  t <- peekP
+  derivingFor t
 
 derivingFor : Token -> Parser (List String)
-derivingFor TDeriving =
-  do
-    advance
-    expectTok TLParen
-    names <- sepBy1 upperNameP (expectTok TComma)
-    expectTok TRParen
-    pure names
+derivingFor TDeriving = do
+  advance
+  expectTok TLParen
+  names <- sepBy1 upperNameP (expectTok TComma)
+  expectTok TRParen
+  pure names
 derivingFor _ = pure []
 
 parseRecord : DataVis -> Parser Decl
-parseRecord vis =
-  do
-    expectTok TRecord
-    name <- upperNameP
-    params <- many lowerNameP
-    expectTok TIndent
-    fields <- recordFields
-    expectTok TDedent
-    derives <- derivingClause
-    skipNewlines
-    pure (DRecord vis name params fields derives)
+parseRecord vis = do
+  expectTok TRecord
+  name <- upperNameP
+  params <- many lowerNameP
+  expectTok TIndent
+  fields <- recordFields
+  expectTok TDedent
+  derives <- derivingClause
+  skipNewlines
+  pure (DRecord vis name params fields derives)
 
 recordFields : Parser (List Field)
-recordFields =
-  do
-    skipNewlines
-    f <- parseField
-    rest <- recordFieldsRest
-    pure (f :: rest)
+recordFields = do
+  skipNewlines
+  f <- parseField
+  rest <- recordFieldsRest
+  pure (f :: rest)
 
 recordFieldsRest : Parser (List Field)
-recordFieldsRest =
-  do
-    skipNewlines
-    t <- peekP
-    recordFieldsRestFor t
+recordFieldsRest = do
+  skipNewlines
+  t <- peekP
+  recordFieldsRestFor t
 
 recordFieldsRestFor : Token -> Parser (List Field)
-recordFieldsRestFor (TIdent _) =
-  do
-    f <- parseField
-    rest <- recordFieldsRest
-    pure (f :: rest)
+recordFieldsRestFor (TIdent _) = do
+  f <- parseField
+  rest <- recordFieldsRest
+  pure (f :: rest)
 recordFieldsRestFor _ = pure []
 
 -- a decl body is an inline expr, or an INDENT block of statements: a single
@@ -1716,75 +1552,67 @@ parseBody = orElse indentedBody parseBodyExpr
 -- an inline body expr, optionally followed by a Haskell-style `where` block:
 -- `<expr> INDENT where INDENT bindings DEDENT NEWLINE DEDENT` → ELetGroup
 parseBodyExpr : Parser Expr
-parseBodyExpr =
-  do
-    e <- parseExpr
-    orElse (whereTail e) (pure e)
+parseBodyExpr = do
+  e <- parseExpr
+  orElse (whereTail e) (pure e)
 
 whereTail : Expr -> Parser Expr
-whereTail e =
-  do
-    expectTok TIndent
-    expectTok TWhere
-    expectTok TIndent
-    binds <- parseWhereBindings
-    expectTok TDedent
-    skipNewlines
-    expectTok TDedent
-    pure (ELetGroup (coalesceClauses binds) e)
+whereTail e = do
+  expectTok TIndent
+  expectTok TWhere
+  expectTok TIndent
+  binds <- parseWhereBindings
+  expectTok TDedent
+  skipNewlines
+  expectTok TDedent
+  pure (ELetGroup (coalesceClauses binds) e)
 
 parseWhereBindings : Parser (List (String, List Pat, Expr))
-parseWhereBindings =
-  do
-    skipNewlines
-    whereBindingsLoop
+parseWhereBindings = do
+  skipNewlines
+  whereBindingsLoop
 
 whereBindingsLoop : Parser (List (String, List Pat, Expr))
 whereBindingsLoop = orElse whereBindingsCons (pure [])
 
 whereBindingsCons : Parser (List (String, List Pat, Expr))
-whereBindingsCons =
-  do
-    b <- parseWhereBinding
-    skipNewlines
-    rest <- whereBindingsLoop
-    pure (b :: rest)
+whereBindingsCons = do
+  b <- parseWhereBinding
+  skipNewlines
+  rest <- whereBindingsLoop
+  pure (b :: rest)
 
 parseWhereBinding : Parser (String, List Pat, Expr)
-parseWhereBinding =
-  do
-    name <- identNameP
-    pats <- many parsePatAtom
-    t <- peekP
-    whereBindRest name pats t
+parseWhereBinding = do
+  name <- identNameP
+  pats <- many parsePatAtom
+  t <- peekP
+  whereBindRest name pats t
 
 whereBindRest : String -> List Pat -> Token -> Parser (String, List Pat, Expr)
-whereBindRest name pats TEqual =
-  do
-    advance
-    body <- parseExpr
-    pure (name, pats, body)
-whereBindRest name pats TIndent =
-  do
-    advance
-    arms <- parseGuardArms
-    expectTok TDedent
-    pure (name, pats, EGuards arms)
-whereBindRest name pats TPipe =
-  do
-    arm <- parseGuardArm
-    pure (name, pats, EGuards [arm])
+whereBindRest name pats TEqual = do
+  advance
+  body <- parseExpr
+  pure (name, pats, body)
+whereBindRest name pats TIndent = do
+  advance
+  arms <- parseGuardArms
+  expectTok TDedent
+  pure (name, pats, EGuards arms)
+whereBindRest name pats TPipe = do
+  arm <- parseGuardArm
+  pure (name, pats, EGuards [arm])
 whereBindRest _ _ _ = failP "expected where binding body"
 
 -- group CONSECUTIVE same-name bindings into one LetBind (mirrors the reference
 -- `coalesce_clauses`), so `go … = …` over several lines becomes one entry
 coalesceClauses : List (String, List Pat, Expr) -> List LetBind
 coalesceClauses [] = []
-coalesceClauses ((name, ps, b) :: rest) = coalesceGo name [FunClause ps b] rest
+coalesceClauses ((name, ps, b)::rest) = coalesceGo name [FunClause ps b] rest
 
 coalesceGo : String -> List FunClause -> List (String, List Pat, Expr) -> List LetBind
 coalesceGo name acc [] = [LetBind name (rev acc)]
-coalesceGo name acc ((n, ps, b) :: rest) = coalesceStep name acc n ps b rest
+coalesceGo name acc ((n, ps, b)::rest) = coalesceStep name acc n ps b rest
 
 coalesceStep : String -> List FunClause -> String -> List Pat -> Expr -> List (String, List Pat, Expr) -> List LetBind
 coalesceStep name acc n ps b rest
@@ -1792,50 +1620,45 @@ coalesceStep name acc n ps b rest
   | otherwise = LetBind name (rev acc) :: coalesceGo n [FunClause ps b] rest
 
 indentedBody : Parser Expr
-indentedBody =
-  do
-    expectTok TIndent
-    stmts <- parseStmts
-    expectTok TDedent
-    pure (blockOrExpr stmts)
+indentedBody = do
+  expectTok TIndent
+  stmts <- parseStmts
+  expectTok TDedent
+  pure (blockOrExpr stmts)
 
 blockOrExpr : List DoStmt -> Expr
-blockOrExpr [DoExpr e] = e
+blockOrExpr [(DoExpr e)] = e
 blockOrExpr stmts = EBlock stmts
 
 -- `do <INDENT stmt block DEDENT>` → a monadic do-block
 parseDo : Parser Expr
-parseDo =
-  do
-    expectTok TDo
-    expectTok TIndent
-    stmts <- parseStmts
-    expectTok TDedent
-    pure (EDo stmts)
+parseDo = do
+  expectTok TDo
+  expectTok TIndent
+  stmts <- parseStmts
+  expectTok TDedent
+  pure (EDo stmts)
 
 -- statements, NEWLINE-separated, until the block's DEDENT
 parseStmts : Parser (List DoStmt)
-parseStmts =
-  do
-    skipNewlines
-    stmtsLoop
+parseStmts = do
+  skipNewlines
+  stmtsLoop
 
 stmtsLoop : Parser (List DoStmt)
 stmtsLoop = orElse stmtsCons (pure [])
 
 stmtsCons : Parser (List DoStmt)
-stmtsCons =
-  do
-    s <- parseStmt
-    skipNewlines
-    rest <- stmtsLoop
-    pure (s :: rest)
+stmtsCons = do
+  s <- parseStmt
+  skipNewlines
+  rest <- stmtsLoop
+  pure (s :: rest)
 
 parseStmt : Parser DoStmt
-parseStmt =
-  do
-    t <- peekP
-    stmtFor t
+parseStmt = do
+  t <- peekP
+  stmtFor t
 
 stmtFor : Token -> Parser DoStmt
 stmtFor TLet = parseLetStmt
@@ -1843,46 +1666,41 @@ stmtFor _ = parseExprStmt
 
 -- `let pat = e1` is a DoLet; `let pat = e1 in e2` is a (let-in expression) DoExpr
 parseLetStmt : Parser DoStmt
-parseLetStmt =
-  do
-    expectTok TLet
-    pat <- parsePatAtom
-    expectTok TEqual
-    e1 <- parseExpr
-    t <- peekP
-    letStmtFor pat e1 t
+parseLetStmt = do
+  expectTok TLet
+  pat <- parsePatAtom
+  expectTok TEqual
+  e1 <- parseExpr
+  t <- peekP
+  letStmtFor pat e1 t
 
 letStmtFor : Pat -> Expr -> Token -> Parser DoStmt
-letStmtFor pat e1 TIn =
-  do
-    advance
-    e2 <- parseExpr
-    pure (DoExpr (ELet False False pat e1 e2))
+letStmtFor pat e1 TIn = do
+  advance
+  e2 <- parseExpr
+  pure (DoExpr (ELet False False pat e1 e2))
 letStmtFor pat e1 _ = pure (DoLet False pat e1)
 
 -- `pat <- e` is a DoBind (LHS parsed as an expr, reinterpreted); else DoExpr
 parseExprStmt : Parser DoStmt
-parseExprStmt =
-  do
-    e <- parseExpr
-    t <- peekP
-    exprStmtFor e t
+parseExprStmt = do
+  e <- parseExpr
+  t <- peekP
+  exprStmtFor e t
 
 exprStmtFor : Expr -> Token -> Parser DoStmt
-exprStmtFor e TLArrow =
-  do
-    advance
-    rhs <- parseExpr
-    pure (DoBind (exprToPat e) rhs)
+exprStmtFor e TLArrow = do
+  advance
+  rhs <- parseExpr
+  pure (DoBind (exprToPat e) rhs)
 exprStmtFor e _ = pure (DoExpr e)
 
 -- skip layout noise (NEWLINE/INDENT/DEDENT) between top-level decls; recurse
 -- through a do-continuation (see skipNewlines) to avoid a recursive-value cycle
 skipNoise : Parser Unit
-skipNoise =
-  do
-    t <- peekP
-    skipNoiseFor t
+skipNoise = do
+  t <- peekP
+  skipNoiseFor t
 
 skipNoiseFor : Token -> Parser Unit
 skipNoiseFor TNewline = afterNoise
@@ -1891,23 +1709,20 @@ skipNoiseFor TDedent = afterNoise
 skipNoiseFor _ = pure ()
 
 afterNoise : Parser Unit
-afterNoise =
-  do
-    advance
-    skipNoise
+afterNoise = do
+  advance
+  skipNoise
 
 declThenNoise : Parser Decl
-declThenNoise =
-  do
-    d <- parseDecl
-    skipNoise
-    pure d
+declThenNoise = do
+  d <- parseDecl
+  skipNoise
+  pure d
 
 parseProgram : Parser (List Decl)
-parseProgram =
-  do
-    skipNoise
-    many declThenNoise
+parseProgram = do
+  skipNoise
+  many declThenNoise
 
 resultDecls : PR (List Decl) -> List Decl
 resultDecls (POk ds _) = ds
@@ -1923,4 +1738,4 @@ rev xs = revOnto xs []
 
 revOnto : List a -> List a -> List a
 revOnto [] acc = acc
-revOnto (x :: xs) acc = revOnto xs (x :: acc)
+revOnto (x::xs) acc = revOnto xs (x :: acc)

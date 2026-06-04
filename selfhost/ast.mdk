@@ -37,13 +37,10 @@ public export data Pat
   | PList (List Pat)
   | PAs String Pat
 
-public export data Guard
-  = GBool Expr
-  | GBind Pat Expr
+public export data Guard = GBool Expr | GBind Pat Expr
 
 -- match arm: pattern, guard qualifiers, body
-public export data Arm
-  = Arm Pat (List Guard) Expr
+public export data Arm = Arm Pat (List Guard) Expr
 
 -- statements in a bare block (EBlock) or monadic do-block (EDo)
 public export data DoStmt
@@ -53,9 +50,7 @@ public export data DoStmt
   | DoAssign String Expr
 
 -- parts of an interpolated string `"…\{expr}…"`
-public export data InterpPart
-  = InterpStr String
-  | InterpExpr Expr
+public export data InterpPart = InterpStr String | InterpExpr Expr
 
 -- a function/where guard arm: `| guards = body`
 public export data GuardArm = GuardArm (List Guard) Expr
@@ -64,10 +59,7 @@ public export data GuardArm = GuardArm (List Guard) Expr
 public export data FieldAssign = FieldAssign String Expr
 
 -- a list-comprehension qualifier: generator `p <- e`, boolean guard, or `let`
-public export data LcQual
-  = LCGen Pat Expr
-  | LCGuard Expr
-  | LCLet Bool Pat Expr
+public export data LcQual = LCGen Pat Expr | LCGuard Expr | LCLet Bool Pat Expr
 
 -- an operator section: `(op)` / `(op e)` / `(e op _)`
 public export data Section
