@@ -142,7 +142,7 @@ x == y   x != y   x < y   x > y   x <= y   x >= y
 x && y   x || y   !True                       -- boolean / not
 1 :: [2, 3]                                    -- cons
 [1,2] ++ [3,4]                                 -- append (Semigroup): works on lists...
-"ab" ++ "cd"                                   -- ...and strings too (`<>` parses but is unimplemented — use ++)
+"ab" ++ "cd"                                   -- ...and strings too
 5 |> double                                    -- pipe (apply value through fn)
 double >> inc                                  -- left-to-right composition
 f << g                                         -- right-to-left composition
@@ -409,7 +409,7 @@ Set { 1, 2, 3 }
 - **Indentation-sensitive** (INDENT/DEDENT/NEWLINE). No braces for blocks.
 - An expression RHS **cannot** wrap onto a second indented line, *except* when
   the continuation line *starts* with a leading binary operator
-  (`|> >> << && || ++ <>`), which continues the expression.
+  (`|> >> << && || ++`), which continues the expression.
 - `then` cannot start a line. (`else` *may* — it is treated as a continuation
   of the preceding `if`.)
 

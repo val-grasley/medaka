@@ -265,7 +265,7 @@ let binop_prec = function
   | "&&"          -> prec_and
   | "==" | "!=" | "<" | ">" | "<=" | ">=" -> prec_cmp
   | "::"          -> prec_cons
-  | "++" | "<>"   -> prec_append
+  | "++"          -> prec_append
   | "+" | "-"     -> prec_add
   | "*" | "/"     -> prec_mul
   | _             -> prec_infix
@@ -276,7 +276,7 @@ let is_right_assoc = function "::" -> true | _ -> false
    with the lexer's leading-operator continuation rule.  A broken chain leads
    each line with its operator (`xs\n  |> f\n  |> g`), which the lexer rescues. *)
 let is_continuation_op = function
-  | "|>" | ">>" | "<<" | "&&" | "||" | "++" | "<>" -> true
+  | "|>" | ">>" | "<<" | "&&" | "||" | "++" -> true
   | _ -> false
 
 let rec expr_prec = function

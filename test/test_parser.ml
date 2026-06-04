@@ -462,9 +462,14 @@ let test_expr_bare_section_cons () =
   | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
 
 let test_expr_bare_section_append () =
-  match parse_expr "(<>)\n" with
-  | ESection (SecBare "<>") -> ()
-  | e -> failwith (Printf.sprintf "wrong: %s" (Ast.pp_expr e))
+  (* `<>` was removed (an orphan operator with no typecheck/eval semantics — an
+     aborted Semigroup operator; `++` is the real Semigroup.append).  It no
+     longer lexes as a single token, so `(<>)` is now a parse error. *)
+  match
+    (try ignore (parse_expr "(<>)\n"); `Parsed with Failure _ -> `Error)
+  with
+  | `Error  -> ()
+  | `Parsed -> failwith "expected (<>) to be a parse error after <> removal"
 
 let test_expr_unary_minus_paren () =
   (* (-e) still parses as unary negation, not a section *)
@@ -1245,8 +1250,8 @@ let test_cont_logical =
 
 let test_cont_all_ops =
   same_ast
-    "f a b = a |> b >> b << b && b || b ++ b <> b\n"
-    "f a b =\n  a\n  |> b\n  >> b\n  << b\n  && b\n  || b\n  ++ b\n  <> b\n"
+    "f a b = a |> b >> b << b && b || b ++ b\n"
+    "f a b =\n  a\n  |> b\n  >> b\n  << b\n  && b\n  || b\n  ++ b\n"
 
 let test_cont_dedented =
   (* the continuation line may sit at any indent — even left of the enclosing
@@ -2021,7 +2026,7 @@ let () =
       test_case "bare section (-)"      `Quick test_expr_bare_section_minus;
       test_case "bare section (==)"     `Quick test_expr_bare_section_eq;
       test_case "bare section (::)"     `Quick test_expr_bare_section_cons;
-      test_case "bare section (<>)"     `Quick test_expr_bare_section_append;
+      test_case "(<>) removed (parse error)" `Quick test_expr_bare_section_append;
       test_case "(-5) unary negation"   `Quick test_expr_unary_minus_paren;
       test_case "list as arg"       `Quick test_expr_list_arg;
       test_case "modulo"            `Quick test_expr_modulo;

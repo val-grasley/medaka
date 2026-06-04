@@ -187,7 +187,7 @@ let parse_attr name msg_opt =
 %token PLUS MINUS STAR SLASH MOD
 %token EQ_EQ NEQ LT GT LEQ GEQ
 %token AND OR
-%token CONS PLUSPLUS STRAPPEND
+%token CONS PLUSPLUS
 %token PIPE_RIGHT RCOMPOSE LCOMPOSE
 %token FAT_ARROW ARROW LARROW
 %token AT BANG QUESTION
@@ -668,7 +668,6 @@ expr_cons:
 
 expr_append:
   | expr_append PLUSPLUS   expr_add  { EBinOp ("++", $1, $3) }
-  | expr_append STRAPPEND  expr_add  { EBinOp ("<>", $1, $3) }
   | expr_add                         { $1 }
 
 expr_add:
@@ -733,7 +732,7 @@ section_op:
   | EQ_EQ      { "==" }  | NEQ        { "!=" }
   | LT         { "<" }   | GT         { ">" }   | LEQ        { "<=" }  | GEQ { ">=" }
   | AND        { "&&" }  | OR         { "||" }
-  | CONS       { "::" }  | PLUSPLUS   { "++" }  | STRAPPEND  { "<>" }
+  | CONS       { "::" }  | PLUSPLUS   { "++" }
   | PIPE_RIGHT { "|>" }  | RCOMPOSE   { ">>" }  | LCOMPOSE   { "<<" }
 
 (* Bare operator sections (op) — like section_op but also allows MINUS.

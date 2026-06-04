@@ -197,7 +197,7 @@ findIndices p xs = go 0 xs
    Some 2 -}
 export
 elemIndex : Eq a => a -> List a -> Option Int
-elemIndex x xs = findIndex (y => y == x) xs
+elemIndex x xs = findIndex (== x) xs
 
 -- Sublists
 
@@ -359,7 +359,7 @@ nubBy same xs = go xs []
    [1, 2, 3] -}
 export
 nub : Eq a => List a -> List a
-nub xs = nubBy (x y => x == y) xs
+nub xs = nubBy (==) xs
 
 -- Grouping
 
@@ -380,7 +380,7 @@ groupBy same (x::xs) =
    [[1, 1], [2], [3, 3]] -}
 export
 group : Eq a => List a -> List (List a)
-group xs = groupBy (x y => x == y) xs
+group xs = groupBy (==) xs
 
 {- | `(filter p xs, filter (not . p) xs)`, in a single pass.
 

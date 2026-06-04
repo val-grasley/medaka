@@ -296,7 +296,7 @@ and read = parse
       read_block_comment buf 1 line col lexbuf;
       read lexbuf
     }
-  | (newline white*)+ (("|>" | ">>" | "<<" | "&&" | "||" | "++" | "<>") as op) {
+  | (newline white*)+ (("|>" | ">>" | "<<" | "&&" | "||" | "++") as op) {
       (* Leading-operator line continuation: a line break immediately before one
          of these infix operators is *not* a statement boundary — the operator
          continues the previous expression.  We emit the operator token directly
@@ -319,7 +319,6 @@ and read = parse
        | "&&" -> AND
        | "||" -> OR
        | "++" -> PLUSPLUS
-       | "<>" -> STRAPPEND
        | _    -> assert false)
     }
   | (newline white*)+ {
@@ -381,7 +380,6 @@ and read = parse
   | "<-"  { LARROW }
   | "::"  { CONS }
   | "++"  { PLUSPLUS }
-  | "<>"  { STRAPPEND }
   | "=="  { EQ_EQ }
   | "!="  { NEQ }
   | "<="  { LEQ }
@@ -702,7 +700,7 @@ let token_to_string : token -> string = function
   | PLUS -> "PLUS" | MINUS -> "MINUS" | STAR -> "STAR" | SLASH -> "SLASH"
   | MOD -> "MOD" | EQ_EQ -> "EQ_EQ" | NEQ -> "NEQ" | LT -> "LT" | GT -> "GT"
   | LEQ -> "LEQ" | GEQ -> "GEQ" | AND -> "AND" | OR -> "OR" | CONS -> "CONS"
-  | PLUSPLUS -> "PLUSPLUS" | STRAPPEND -> "STRAPPEND"
+  | PLUSPLUS -> "PLUSPLUS"
   | PIPE_RIGHT -> "PIPE_RIGHT" | RCOMPOSE -> "RCOMPOSE" | LCOMPOSE -> "LCOMPOSE"
   | FAT_ARROW -> "FAT_ARROW" | ARROW -> "ARROW" | LARROW -> "LARROW"
   | AT -> "AT" | BANG -> "BANG" | QUESTION -> "QUESTION" | AS_AT -> "AS_AT"
