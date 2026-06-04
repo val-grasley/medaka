@@ -74,7 +74,7 @@ advanceR t pos = POk t (pos + 1)
 emit : a -> Parser a
 emit x =
   do
-    _ <- advance
+    advance
     pure x
 
 expectTok : Token -> Parser Unit
@@ -128,7 +128,7 @@ manyStep p toks pos pos2 acc x
 sepThen : Parser b -> Parser a -> Parser a
 sepThen sep p =
   do
-    _ <- sep
+    sep
     p
 
 sepBy1 : Parser a -> Parser b -> Parser (List a)
@@ -166,7 +166,7 @@ skipNewlines =
 skipNlFor : Token -> Parser Unit
 skipNlFor TNewline =
   do
-    _ <- advance
+    advance
     skipNewlines
 skipNlFor _ = pure ()
 
@@ -184,7 +184,7 @@ parseLam =
 lamTail : Expr -> Parser Expr
 lamTail e =
   do
-    _ <- expectTok TFatArrow
+    expectTok TFatArrow
     body <- parseExpr
     pure (ELam (exprToParams e) body)
 
@@ -203,7 +203,7 @@ exprToPat _ = PWild
 binOp : Token -> String -> Parser (Expr -> Expr -> Expr)
 binOp tk op =
   do
-    _ <- expectTok tk
+    expectTok tk
     pure (l r => EBinOp op l r)
 
 parseOr : Parser Expr
@@ -228,7 +228,7 @@ parseCons =
 consTail : Expr -> Parser Expr
 consTail x =
   do
-    _ <- expectTok TCons
+    expectTok TCons
     y <- parseCons
     pure (EBinOp "::" x y)
 
@@ -264,7 +264,7 @@ postfixTail e = orElse (fieldTail e) (pure e)
 fieldTail : Expr -> Parser Expr
 fieldTail e =
   do
-    _ <- expectTok TDot
+    expectTok TDot
     f <- identNameP
     postfixTail (EFieldAccess e f)
 
@@ -295,7 +295,7 @@ tupleOrSingle es = ETuple es
 parseParen : Parser Expr
 parseParen =
   do
-    _ <- expectTok TLParen
+    expectTok TLParen
     t <- peekP
     parenFor t
 
@@ -304,13 +304,13 @@ parenFor TRParen = emit (ELit LUnit)
 parenFor _ =
   do
     es <- sepBy1 parseExpr (expectTok TComma)
-    _ <- expectTok TRParen
+    expectTok TRParen
     pure (tupleOrSingle es)
 
 parseListE : Parser Expr
 parseListE =
   do
-    _ <- expectTok TLBracket
+    expectTok TLBracket
     t <- peekP
     listFor t
 
@@ -319,45 +319,45 @@ listFor TRBracket = emit (EListLit [])
 listFor _ =
   do
     es <- sepBy1 parseExpr (expectTok TComma)
-    _ <- expectTok TRBracket
+    expectTok TRBracket
     pure (EListLit es)
 
 parseIf : Parser Expr
 parseIf =
   do
-    _ <- expectTok TIf
+    expectTok TIf
     cond <- parseExpr
-    _ <- expectTok TThen
+    expectTok TThen
     thenE <- parseExpr
-    _ <- expectTok TElse
+    expectTok TElse
     elseE <- parseExpr
     pure (EIf cond thenE elseE)
 
 parseLet : Parser Expr
 parseLet =
   do
-    _ <- expectTok TLet
+    expectTok TLet
     pat <- parsePatAtom
-    _ <- expectTok TEqual
+    expectTok TEqual
     e1 <- parseExpr
-    _ <- expectTok TIn
+    expectTok TIn
     e2 <- parseExpr
     pure (ELet False False pat e1 e2)
 
 parseMatch : Parser Expr
 parseMatch =
   do
-    _ <- expectTok TMatch
+    expectTok TMatch
     scrut <- parseExpr
-    _ <- expectTok TIndent
+    expectTok TIndent
     arms <- parseArms
-    _ <- expectTok TDedent
+    expectTok TDedent
     pure (EMatch scrut arms)
 
 parseArms : Parser (List Arm)
 parseArms =
   do
-    _ <- skipNewlines
+    skipNewlines
     armsLoop
 
 armsLoop : Parser (List Arm)
@@ -367,7 +367,7 @@ armsCons : Parser (List Arm)
 armsCons =
   do
     a <- parseArm
-    _ <- skipNewlines
+    skipNewlines
     rest <- armsLoop
     pure (a :: rest)
 
@@ -375,7 +375,7 @@ parseArm : Parser Arm
 parseArm =
   do
     pat <- parsePat
-    _ <- expectTok TFatArrow
+    expectTok TFatArrow
     body <- parseExpr
     pure (Arm pat [] body)
 
@@ -389,7 +389,7 @@ parsePat =
 patConsTail : Pat -> Parser Pat
 patConsTail p =
   do
-    _ <- expectTok TCons
+    expectTok TCons
     q <- parsePat
     pure (PCons p q)
 
@@ -402,7 +402,7 @@ parsePatApp =
 patAppFor : Token -> Parser Pat
 patAppFor (TUpper c) =
   do
-    _ <- advance
+    advance
     args <- many parsePatAtom
     pure (PCon c args)
 patAppFor _ = parsePatAtom
@@ -429,15 +429,15 @@ tuplePatOrSingle ps = PTuple ps
 parsePatParen : Parser Pat
 parsePatParen =
   do
-    _ <- expectTok TLParen
+    expectTok TLParen
     ps <- sepBy1 parsePat (expectTok TComma)
-    _ <- expectTok TRParen
+    expectTok TRParen
     pure (tuplePatOrSingle ps)
 
 parsePatList : Parser Pat
 parsePatList =
   do
-    _ <- expectTok TLBracket
+    expectTok TLBracket
     t <- peekP
     patListFor t
 
@@ -446,7 +446,7 @@ patListFor TRBracket = emit (PList [])
 patListFor _ =
   do
     ps <- sepBy1 parsePat (expectTok TComma)
-    _ <- expectTok TRBracket
+    expectTok TRBracket
     pure (PList ps)
 
 -- ── Types ───────────────────────────────────────────────────────────────
@@ -459,7 +459,7 @@ parseTy =
 tyArrowTail : Ty -> Parser Ty
 tyArrowTail left =
   do
-    _ <- expectTok TArrow
+    expectTok TArrow
     right <- parseTy
     pure (TyFun left right)
 
@@ -493,9 +493,9 @@ tyTupleOrSingle ts = TyTuple ts
 parseTyParen : Parser Ty
 parseTyParen =
   do
-    _ <- expectTok TLParen
+    expectTok TLParen
     ts <- sepBy1 parseTy (expectTok TComma)
-    _ <- expectTok TRParen
+    expectTok TRParen
     pure (tyTupleOrSingle ts)
 
 -- ── Declarations + program ──────────────────────────────────────────────
@@ -510,15 +510,15 @@ parseDecl =
 declRestFor : String -> List Pat -> Token -> Parser Decl
 declRestFor name _params TColon =
   do
-    _ <- advance
+    advance
     ty <- parseTy
-    _ <- skipNewlines
+    skipNewlines
     pure (DTypeSig False name ty)
 declRestFor name params TEqual =
   do
-    _ <- advance
+    advance
     body <- parseBody
-    _ <- skipNewlines
+    skipNewlines
     pure (DFunDef False name params body)
 declRestFor _ _ _ = failP "expected : or ="
 
@@ -529,10 +529,10 @@ parseBody = orElse indentedBody parseExpr
 indentedBody : Parser Expr
 indentedBody =
   do
-    _ <- expectTok TIndent
+    expectTok TIndent
     e <- parseExpr
-    _ <- skipNewlines
-    _ <- optionalDedent
+    skipNewlines
+    optionalDedent
     pure e
 
 optionalDedent : Parser Unit
@@ -555,20 +555,20 @@ skipNoiseFor _ = pure ()
 afterNoise : Parser Unit
 afterNoise =
   do
-    _ <- advance
+    advance
     skipNoise
 
 declThenNoise : Parser Decl
 declThenNoise =
   do
     d <- parseDecl
-    _ <- skipNoise
+    skipNoise
     pure d
 
 parseProgram : Parser (List Decl)
 parseProgram =
   do
-    _ <- skipNoise
+    skipNoise
     many declThenNoise
 
 resultDecls : PR (List Decl) -> List Decl
