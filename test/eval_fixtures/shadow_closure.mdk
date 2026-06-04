@@ -1,0 +1,11 @@
+-- lexical scoping, shadowing, closures capturing locals, nested lambdas
+makeAdder n = (m => n + m)
+twice f = (x => f (f x))
+counter start =
+  let step = (n => n + 1)
+  step (step start)
+shadowTest x =
+  let x = x + 100
+  let y = (x => x * 2)
+  (x, y 5)
+main = (makeAdder 10 5, twice (makeAdder 3) 0, counter 40, shadowTest 1)

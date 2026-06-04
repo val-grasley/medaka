@@ -1,0 +1,10 @@
+-- mutual recursion + let-group, multi-clause boolean dispatch
+isEven 0 = True
+isEven n = isOdd (n - 1)
+isOdd 0 = False
+isOdd n = isEven (n - 1)
+collatz n
+  | n == 1 = 0
+  | isEven n = 1 + collatz (n / 2)
+  | otherwise = 1 + collatz (3 * n + 1)
+main = (isEven 10, isOdd 7, collatz 6, collatz 27)

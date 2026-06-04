@@ -1,0 +1,560 @@
+-- Self-hosted eval stage — Stage-1 capstone, port of lib/eval.ml's tree-walking
+-- interpreter.  SLICE 1: the engine core — literals, variables, application,
+-- lambdas, let / letrec / let-groups, match (with guards), if, binary/unary
+-- operators, tuples, lists, ADTs (constructors + pattern matching), and
+-- recursion.  Deferred to later slices: records/refs/arrays/string-interp/
+-- ranges/index/slice, externs (VPrim primitives), and typeclass method dispatch
+-- (VMulti tag-filtering / VTypedImpl / EMethodRef / EDictApp).
+--
+-- The interpreter runs on the OCaml reference (so this code may use the full
+-- prelude); only the FIXTURES it evaluates must be self-contained / prelude-free.
+-- Validated by rendering pp_value of a program's `main` binding and diffing
+-- against dev/eval_probe.exe (Eval.eval_program ~prelude:false → Eval.pp_value).
+
+import ast.{Lit(..), Pat(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Variant(..), Decl(..)}
+
+-- ── values & environment (mutually recursive) ─────────────────────────────
+public export data Value
+  = VInt Int
+  | VFloat Float
+  | VString String
+  | VChar String
+  | VBool Bool
+  | VUnit
+  | VTuple (List Value)
+  | VList (List Value)
+  | VCon String (List Value)
+  | VRecord String (List (String, Value))
+  | VClosure Env (List Pat) Expr
+  | VPrim (Value -> <Mut> Value)
+  | VMulti (List Value)
+
+-- an environment is a stack of frames; each frame maps names to mutable cells
+-- (so letrec / mutual recursion can back-patch a closure's own binding)
+public export data Env = Env (List (List (String, Ref Value)))
+
+-- ── value rendering (mirrors lib/eval.ml pp_value byte-for-byte) ───────────
+export
+ppValue : Value -> String
+ppValue (VInt n) = intToString n
+ppValue (VFloat f) = floatToString f
+ppValue (VString s) = s
+ppValue (VChar c) = c
+ppValue (VBool True) = "true"
+ppValue (VBool False) = "false"
+ppValue VUnit = "()"
+ppValue (VTuple vs) = "(" ++ joinComma (map ppValue vs) ++ ")"
+ppValue (VList vs) = "[" ++ joinComma (map ppValue vs) ++ "]"
+ppValue (VCon name []) = name
+ppValue (VCon name vs) = name ++ " " ++ joinSp (map ppValueAtom vs)
+ppValue (VRecord name fields) = name ++ " { " ++ joinComma (map ppField fields) ++ " }"
+ppValue (VClosure _ _ _) = "<closure>"
+ppValue (VPrim _) = "<prim>"
+ppValue (VMulti vs) = "<dispatch/" ++ intToString (lengthList vs) ++ ">"
+
+ppField : (String, Value) -> String
+ppField (k, v) = k ++ " = " ++ ppValue v
+
+-- parenthesize compound atoms (VCon with args / tuples) when nested
+ppValueAtom : Value -> String
+ppValueAtom (VCon name (x :: xs)) = "(" ++ ppValue (VCon name (x :: xs)) ++ ")"
+ppValueAtom (VTuple vs) = "(" ++ ppValue (VTuple vs) ++ ")"
+ppValueAtom v = ppValue v
+
+joinComma : List String -> String
+joinComma xs = joinWith ", " xs
+
+joinSp : List String -> String
+joinSp xs = joinWith " " xs
+
+joinWith : String -> List String -> String
+joinWith _ [] = ""
+joinWith _ [x] = x
+joinWith sep (x :: rest) = x ++ sep ++ joinWith sep rest
+
+lengthList : List a -> Int
+lengthList [] = 0
+lengthList (_ :: xs) = 1 + lengthList xs
+
+-- ── small helpers ─────────────────────────────────────────────────────────
+containsName : String -> List String -> Bool
+containsName _ [] = False
+containsName x (y :: ys) = x == y || containsName x ys
+
+concatMapL : (a -> List b) -> List a -> List b
+concatMapL _ [] = []
+concatMapL f (x :: xs) = f x ++ concatMapL f xs
+
+reverseL : List a -> List a
+reverseL xs = reverseGo xs []
+
+reverseGo : List a -> List a -> List a
+reverseGo [] acc = acc
+reverseGo (x :: xs) acc = reverseGo xs (x :: acc)
+
+startsWithAt : String -> Bool
+startsWithAt s =
+  let cs = stringToChars s
+  arrayLength cs > 0 && arrayGetUnsafe 0 cs == '@'
+
+-- ── environment ───────────────────────────────────────────────────────────
+lookupEnv : Env -> String -> Value
+lookupEnv (Env frames) name = lookupFrames frames name
+
+lookupFrames : List (List (String, Ref Value)) -> String -> Value
+lookupFrames [] name = panic ("unbound variable: " ++ name)
+lookupFrames (frame :: rest) name = match lookupFrameCell frame name
+  Some cell => cell.value
+  None => lookupFrames rest name
+
+lookupFrameCell : List (String, Ref Value) -> String -> Option (Ref Value)
+lookupFrameCell [] _ = None
+lookupFrameCell ((n, cell) :: rest) name
+  | n == name = Some cell
+  | otherwise = lookupFrameCell rest name
+
+extendEnv : Env -> List (String, Value) -> Env
+extendEnv (Env frames) binds = Env (map cellOf binds :: frames)
+
+cellOf : (String, Value) -> (String, Ref Value)
+cellOf (n, v) = (n, Ref v)
+
+pushFrame : Env -> List (String, Ref Value) -> Env
+pushFrame (Env frames) frame = Env (frame :: frames)
+
+findCell : List (String, Ref Value) -> String -> Ref Value
+findCell [] name = panic ("findCell: missing " ++ name)
+findCell ((n, cell) :: rest) name
+  | n == name = cell
+  | otherwise = findCell rest name
+
+-- ── structural equality & ordering (mirror OCaml = / compare on `value`) ───
+valueEq : Value -> Value -> Bool
+valueEq (VInt a) (VInt b) = a == b
+valueEq (VFloat a) (VFloat b) = a == b
+valueEq (VString a) (VString b) = a == b
+valueEq (VChar a) (VChar b) = a == b
+valueEq (VBool a) (VBool b) = boolEq a b
+valueEq VUnit VUnit = True
+valueEq (VTuple a) (VTuple b) = valueListEq a b
+valueEq (VList a) (VList b) = valueListEq a b
+valueEq (VCon n1 a1) (VCon n2 a2) = n1 == n2 && valueListEq a1 a2
+valueEq (VRecord n1 f1) (VRecord n2 f2) = n1 == n2 && fieldListEq f1 f2
+valueEq _ _ = False
+
+valueListEq : List Value -> List Value -> Bool
+valueListEq [] [] = True
+valueListEq (x :: xs) (y :: ys) = valueEq x y && valueListEq xs ys
+valueListEq _ _ = False
+
+fieldListEq : List (String, Value) -> List (String, Value) -> Bool
+fieldListEq [] [] = True
+fieldListEq ((k1, v1) :: r1) ((k2, v2) :: r2) = k1 == k2 && valueEq v1 v2 && fieldListEq r1 r2
+fieldListEq _ _ = False
+
+boolEq : Bool -> Bool -> Bool
+boolEq True True = True
+boolEq False False = True
+boolEq _ _ = False
+
+boolToInt : Bool -> Int
+boolToInt False = 0
+boolToInt True = 1
+
+valueTag : Value -> Int
+valueTag (VInt _) = 0
+valueTag (VFloat _) = 1
+valueTag (VString _) = 2
+valueTag (VChar _) = 3
+valueTag (VBool _) = 4
+valueTag VUnit = 5
+valueTag (VTuple _) = 6
+valueTag (VList _) = 7
+valueTag (VCon _ _) = 9
+valueTag (VRecord _ _) = 10
+valueTag _ = 99
+
+valueCompare : Value -> Value -> Ordering
+valueCompare (VInt a) (VInt b) = compare a b
+valueCompare (VFloat a) (VFloat b) = compare a b
+valueCompare (VString a) (VString b) = compare a b
+valueCompare (VChar a) (VChar b) = stringCompare a b
+valueCompare (VBool a) (VBool b) = compare (boolToInt a) (boolToInt b)
+valueCompare VUnit VUnit = Eq
+valueCompare (VList a) (VList b) = compareValueLists a b
+valueCompare (VTuple a) (VTuple b) = compareValueLists a b
+valueCompare (VCon n1 a1) (VCon n2 a2) = match compare n1 n2
+  Eq => compareValueLists a1 a2
+  o => o
+valueCompare a b = compare (valueTag a) (valueTag b)
+
+compareValueLists : List Value -> List Value -> Ordering
+compareValueLists [] [] = Eq
+compareValueLists [] (_ :: _) = Lt
+compareValueLists (_ :: _) [] = Gt
+compareValueLists (x :: xs) (y :: ys) = match valueCompare x y
+  Eq => compareValueLists xs ys
+  o => o
+
+ordLt : Ordering -> Bool
+ordLt Lt = True
+ordLt _ = False
+
+ordGt : Ordering -> Bool
+ordGt Gt = True
+ordGt _ = False
+
+-- ── pattern matching ──────────────────────────────────────────────────────
+matchPat : Pat -> Value -> Option (List (String, Value))
+matchPat (PVar x) v = Some [(x, v)]
+matchPat PWild _ = Some []
+matchPat (PLit (LInt n)) (VInt m) = if n == m then Some [] else None
+matchPat (PLit (LFloat f)) (VFloat g) = if f == g then Some [] else None
+matchPat (PLit (LString s)) (VString t) = if s == t then Some [] else None
+matchPat (PLit (LChar c)) (VChar d) = if c == d then Some [] else None
+matchPat (PLit (LBool b)) (VBool c) = if boolEq b c then Some [] else None
+matchPat (PLit LUnit) VUnit = Some []
+matchPat (PCon "True" []) (VBool True) = Some []
+matchPat (PCon "False" []) (VBool False) = Some []
+matchPat (PCon name pats) (VCon name2 vals)
+  | name == name2 && lengthList pats == lengthList vals = matchPats pats vals
+  | otherwise = None
+matchPat (PCons h t) (VList (x :: xs)) = matchCons h t x xs
+matchPat (PCons _ _) (VList []) = None
+matchPat (PTuple pats) (VTuple vals)
+  | lengthList pats == lengthList vals = matchPats pats vals
+  | otherwise = None
+matchPat (PList pats) (VList vals)
+  | lengthList pats == lengthList vals = matchPats pats vals
+  | otherwise = None
+matchPat (PAs x p) v = matchAs x p v
+matchPat _ _ = None
+
+matchCons : Pat -> Pat -> Value -> List Value -> Option (List (String, Value))
+matchCons h t x xs = match matchPat h x
+  None => None
+  Some b1 => match matchPat t (VList xs)
+    None => None
+    Some b2 => Some (b1 ++ b2)
+
+matchAs : String -> Pat -> Value -> Option (List (String, Value))
+matchAs x p v = match matchPat p v
+  None => None
+  Some binds => Some ((x, v) :: binds)
+
+matchPats : List Pat -> List Value -> Option (List (String, Value))
+matchPats [] [] = Some []
+matchPats (p :: ps) (v :: vs) = match matchPat p v
+  None => None
+  Some b => match matchPats ps vs
+    None => None
+    Some bs => Some (b ++ bs)
+matchPats _ _ = None
+
+-- ── constructor builders ──────────────────────────────────────────────────
+makeCtor : String -> Int -> Value
+makeCtor name arity = makeCtorGo name arity []
+
+makeCtorGo : String -> Int -> List Value -> Value
+makeCtorGo name arity acc
+  | arity <= 0 = VCon name (reverseL acc)
+  | otherwise = VPrim (v => makeCtorGo name (arity - 1) (v :: acc))
+
+-- ── application ───────────────────────────────────────────────────────────
+apply : Value -> Value -> <Mut> Value
+apply f x = match applyOpt f x
+  Some v => v
+  None => panic "no matching clause in application"
+
+applyOpt : Value -> Value -> <Mut> (Option Value)
+applyOpt (VClosure env pats body) arg = applyClosure env pats body arg
+applyOpt (VPrim f) arg = Some (f arg)
+applyOpt (VMulti vs) arg = collectPartials [] vs arg
+applyOpt other _ = panic ("applied non-function: " ++ ppValue other)
+
+applyClosure : Env -> List Pat -> Expr -> Value -> <Mut> (Option Value)
+applyClosure _ [] _ _ = panic "applied closure with no parameters"
+applyClosure env [p] body arg = match matchPat p arg
+  None => None
+  Some binds => Some (eval (extendEnv env binds) body)
+applyClosure env (p :: ps) body arg = match matchPat p arg
+  None => None
+  Some binds => Some (VClosure (extendEnv env binds) ps body)
+
+collectPartials : List Value -> List Value -> Value -> <Mut> (Option Value)
+collectPartials acc [] _ = match acc
+  [] => panic "no matching impl for dispatch"
+  [v] => Some v
+  many => Some (VMulti (reverseL many))
+collectPartials acc (v :: rest) arg = match applyOpt v arg
+  None => collectPartials acc rest arg
+  Some r => if isPartial r then collectPartials (r :: acc) rest arg else Some r
+
+isPartial : Value -> Bool
+isPartial (VClosure _ _ _) = True
+isPartial (VPrim _) = True
+isPartial (VMulti _) = True
+isPartial _ = False
+
+-- ── the evaluator ─────────────────────────────────────────────────────────
+eval : Env -> Expr -> <Mut> Value
+eval _ (ELit (LInt n)) = VInt n
+eval _ (ELit (LFloat f)) = VFloat f
+eval _ (ELit (LString s)) = VString s
+eval _ (ELit (LChar c)) = VChar c
+eval _ (ELit (LBool b)) = VBool b
+eval _ (ELit LUnit) = VUnit
+eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
+eval env (EApp f x) = apply (eval env f) (eval env x)
+eval env (ELam pats body) = VClosure env pats body
+eval env (ELet _ True (PVar f) e1 e2) = evalRecLet env f e1 e2
+eval env (ELet _ _ pat e1 e2) = evalLet env pat e1 e2
+eval env (ELetGroup binds body) = evalLetGroup env binds body
+eval env (EMatch scrut arms) = evalMatch env (eval env scrut) arms
+eval env (EIf c t e) = evalIf env (eval env c) t e
+eval env (EBinOp op l r) = evalBinop env op l r
+eval env (EUnOp op e) = evalUnop op (eval env e)
+eval env (ETuple es) = VTuple (map (eval env) es)
+eval env (EListLit es) = VList (map (eval env) es)
+eval env (EAnnot e _) = eval env e
+eval env (EBlock stmts) = evalBlock env stmts
+eval _ _ = panic "eval: unsupported node (slice 1)"
+
+-- bare sequential block: value of the last statement is the block's result
+evalBlock : Env -> List DoStmt -> <Mut> Value
+evalBlock _ [] = VUnit
+evalBlock env [DoExpr e] = eval env e
+evalBlock env [DoLet _ pat e] = blockLetLast env pat e
+evalBlock env (DoExpr e :: rest) =
+  let _ = eval env e
+  evalBlock env rest
+evalBlock env (DoLet _ pat e :: rest) = blockLet env pat e rest
+evalBlock env (DoLetElse pat e alt :: rest) = blockLetElse env pat e alt rest
+evalBlock _ (_ :: _) = panic "eval: unsupported block statement (slice 1)"
+
+blockLetLast : Env -> Pat -> Expr -> <Mut> Value
+blockLetLast env pat e = match matchPat pat (eval env e)
+  None => panic "let pattern match failure in block"
+  Some _ => VUnit
+
+blockLet : Env -> Pat -> Expr -> List DoStmt -> <Mut> Value
+blockLet env pat e rest = match matchPat pat (eval env e)
+  None => panic "let pattern match failure in block"
+  Some binds => evalBlock (extendEnv env binds) rest
+
+blockLetElse : Env -> Pat -> Expr -> Expr -> List DoStmt -> <Mut> Value
+blockLetElse env pat e alt rest = match matchPat pat (eval env e)
+  None => eval env alt
+  Some binds => evalBlock (extendEnv env binds) rest
+
+evalRecLet : Env -> String -> Expr -> Expr -> <Mut> Value
+evalRecLet env f e1 e2 =
+  let cell = Ref VUnit
+  let recEnv = pushFrame env [(f, cell)]
+  let v = eval recEnv e1
+  let _ = set_ref cell v
+  eval recEnv e2
+
+evalLet : Env -> Pat -> Expr -> Expr -> <Mut> Value
+evalLet env pat e1 e2 = match matchPat pat (eval env e1)
+  None => panic "let pattern match failure"
+  Some binds => eval (extendEnv env binds) e2
+
+evalLetGroup : Env -> List LetBind -> Expr -> <Mut> Value
+evalLetGroup env binds body =
+  let cells = map letBindCell binds
+  let env2 = pushFrame env cells
+  let _ = installGroup env2 cells binds
+  eval env2 body
+
+letBindCell : LetBind -> (String, Ref Value)
+letBindCell (LetBind name _) = (name, Ref VUnit)
+
+installGroup : Env -> List (String, Ref Value) -> List LetBind -> <Mut> Unit
+installGroup _ _ [] = ()
+installGroup env cells (LetBind name clauses :: rest) =
+  let _ = set_ref (findCell cells name) (groupValue env (map funClauseToClause clauses))
+  installGroup env cells rest
+
+funClauseToClause : FunClause -> (List Pat, Expr)
+funClauseToClause (FunClause pats body) = (pats, body)
+
+groupValue : Env -> List (List Pat, Expr) -> <Mut> Value
+groupValue env [(pats, body)] = if isNullary pats then eval env body else VClosure env pats body
+groupValue env clauses = VMulti (map (clauseClosure env) clauses)
+
+clauseClosure : Env -> (List Pat, Expr) -> Value
+clauseClosure env (pats, body) = VClosure env pats body
+
+isNullary : List Pat -> Bool
+isNullary [] = True
+isNullary _ = False
+
+evalMatch : Env -> Value -> List Arm -> <Mut> Value
+evalMatch _ _ [] = panic "no matching clause in match"
+evalMatch env sv (Arm pat guards body :: rest) = match matchPat pat sv
+  None => evalMatch env sv rest
+  Some binds => match runGuards (extendEnv env binds) guards
+    Some env2 => eval env2 body
+    None => evalMatch env sv rest
+
+runGuards : Env -> List Guard -> <Mut> (Option Env)
+runGuards env [] = Some env
+runGuards env (GBool g :: qs) = match eval env g
+  VBool True => runGuards env qs
+  VCon "True" [] => runGuards env qs
+  _ => None
+runGuards env (GBind p e :: qs) = match matchPat p (eval env e)
+  Some b => runGuards (extendEnv env b) qs
+  None => None
+
+evalIf : Env -> Value -> Expr -> Expr -> <Mut> Value
+evalIf env (VBool True) t _ = eval env t
+evalIf env (VCon "True" []) t _ = eval env t
+evalIf env (VBool False) _ e = eval env e
+evalIf env (VCon "False" []) _ e = eval env e
+evalIf _ _ _ _ = panic "if condition is not a Bool"
+
+evalUnop : String -> Value -> Value
+evalUnop "-" (VInt n) = VInt (0 - n)
+evalUnop "-" (VFloat f) = VFloat (0.0 - f)
+evalUnop "!" (VBool b) = VBool (not b)
+evalUnop "not" (VBool b) = VBool (not b)
+evalUnop op _ = panic ("unknown/invalid unary op: " ++ op)
+
+evalBinop : Env -> String -> Expr -> Expr -> <Mut> Value
+evalBinop env "|>" l r = apply (eval env r) (eval env l)
+evalBinop env ">>" l r = composeFwd (eval env l) (eval env r)
+evalBinop env "<<" l r = composeBwd (eval env l) (eval env r)
+evalBinop env "&&" l r = evalAnd env (eval env l) r
+evalBinop env "||" l r = evalOr env (eval env l) r
+evalBinop env "::" l r = consVal (eval env l) (eval env r)
+evalBinop env "++" l r = appendVal (eval env l) (eval env r)
+evalBinop env op l r = evalArith op (eval env l) (eval env r)
+
+composeFwd : Value -> Value -> Value
+composeFwd fv gv = VPrim (x => apply gv (apply fv x))
+
+composeBwd : Value -> Value -> Value
+composeBwd fv gv = VPrim (x => apply fv (apply gv x))
+
+evalAnd : Env -> Value -> Expr -> <Mut> Value
+evalAnd _ (VBool False) _ = VBool False
+evalAnd _ (VCon "False" []) _ = VBool False
+evalAnd env (VBool True) r = eval env r
+evalAnd env (VCon "True" []) r = eval env r
+evalAnd _ _ _ = panic "'&&' on non-Bool"
+
+evalOr : Env -> Value -> Expr -> <Mut> Value
+evalOr _ (VBool True) _ = VBool True
+evalOr _ (VCon "True" []) _ = VBool True
+evalOr env (VBool False) r = eval env r
+evalOr env (VCon "False" []) r = eval env r
+evalOr _ _ _ = panic "'||' on non-Bool"
+
+consVal : Value -> Value -> Value
+consVal hv (VList xs) = VList (hv :: xs)
+consVal _ _ = panic "cons (::) rhs is not a list"
+
+appendVal : Value -> Value -> Value
+appendVal (VList a) (VList b) = VList (a ++ b)
+appendVal (VString a) (VString b) = VString (a ++ b)
+appendVal _ _ = panic "'++' requires List or String"
+
+evalArith : String -> Value -> Value -> Value
+evalArith "+" (VInt a) (VInt b) = VInt (a + b)
+evalArith "-" (VInt a) (VInt b) = VInt (a - b)
+evalArith "*" (VInt a) (VInt b) = VInt (a * b)
+evalArith "/" (VInt a) (VInt b) = if b == 0 then panic "division by zero" else VInt (a / b)
+evalArith "%" (VInt a) (VInt b) = if b == 0 then panic "modulo by zero" else VInt (a % b)
+evalArith "+" (VFloat a) (VFloat b) = VFloat (a + b)
+evalArith "-" (VFloat a) (VFloat b) = VFloat (a - b)
+evalArith "*" (VFloat a) (VFloat b) = VFloat (a * b)
+evalArith "/" (VFloat a) (VFloat b) = VFloat (a / b)
+evalArith "==" a b = VBool (valueEq a b)
+evalArith "!=" a b = VBool (not (valueEq a b))
+evalArith "<" a b = VBool (ordLt (valueCompare a b))
+evalArith ">" a b = VBool (ordGt (valueCompare a b))
+evalArith "<=" a b = VBool (not (ordGt (valueCompare a b)))
+evalArith ">=" a b = VBool (not (ordLt (valueCompare a b)))
+evalArith op _ _ = panic ("unknown op '" ++ op ++ "'")
+
+-- ── program driver ────────────────────────────────────────────────────────
+collectCtors : List Decl -> List (String, Value)
+collectCtors prog = concatMapL ctorsOfDecl prog
+
+ctorsOfDecl : Decl -> List (String, Value)
+ctorsOfDecl (DData _ _ _ variants _) = map ctorEntry variants
+ctorsOfDecl _ = []
+
+ctorEntry : Variant -> (String, Value)
+ctorEntry (Variant n payload) = (n, makeCtor n (payloadArity payload))
+
+payloadArity : ConPayload -> Int
+payloadArity (ConPos tys) = lengthList tys
+payloadArity (ConNamed fs) = lengthList fs
+
+funDefs : List Decl -> List (String, (List Pat, Expr))
+funDefs [] = []
+funDefs ((DFunDef _ n pats body) :: rest) = (n, (pats, body)) :: funDefs rest
+funDefs (_ :: rest) = funDefs rest
+
+funGroupNames : List (String, (List Pat, Expr)) -> List String -> List String
+funGroupNames [] _ = []
+funGroupNames ((n, _) :: rest) seen
+  | containsName n seen = funGroupNames rest seen
+  | otherwise = n :: funGroupNames rest (n :: seen)
+
+clausesForName : String -> List (String, (List Pat, Expr)) -> List (List Pat, Expr)
+clausesForName _ [] = []
+clausesForName name ((n, c) :: rest)
+  | n == name = c :: clausesForName name rest
+  | otherwise = clausesForName name rest
+
+evalProgram : List Decl -> <Mut> List (String, Value)
+evalProgram prog =
+  let ctors = collectCtors prog
+  let defs = funDefs prog
+  let groups = map (mkGroup defs) (funGroupNames defs [])
+  let allNames = map fst boolSeeds ++ map fst ctors ++ map fst groups
+  let cells = map (n => (n, Ref VUnit)) allNames
+  let env = Env [cells]
+  let _ = installConsts cells boolSeeds
+  let _ = installConsts cells ctors
+  let _ = installGroups env cells groups
+  map cellResult cells
+
+cellResult : (String, Ref Value) -> (String, Value)
+cellResult (n, cell) = (n, cell.value)
+
+-- True/False plus `otherwise` (a trivial prelude binding ubiquitous in guards;
+-- the eval_probe oracle injects the same so prelude-free fixtures can use it)
+boolSeeds : List (String, Value)
+boolSeeds = [("True", VBool True), ("False", VBool False), ("otherwise", VBool True)]
+
+mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
+mkGroup defs name = (name, clausesForName name defs)
+
+installConsts : List (String, Ref Value) -> List (String, Value) -> <Mut> Unit
+installConsts _ [] = ()
+installConsts cells ((n, v) :: rest) =
+  let _ = set_ref (findCell cells n) v
+  installConsts cells rest
+
+installGroups : Env -> List (String, Ref Value) -> List (String, List (List Pat, Expr)) -> <Mut> Unit
+installGroups _ _ [] = ()
+installGroups env cells ((n, clauses) :: rest) =
+  let _ = set_ref (findCell cells n) (groupValue env clauses)
+  installGroups env cells rest
+
+lookupBinding : String -> List (String, Value) -> Option Value
+lookupBinding _ [] = None
+lookupBinding name ((n, v) :: rest)
+  | n == name = Some v
+  | otherwise = lookupBinding name rest
+
+export
+evalMain : List Decl -> <Mut> String
+evalMain prog = match lookupBinding "main" (evalProgram prog)
+  Some v => ppValue v
+  None => panic "eval: no `main` binding"

@@ -39,6 +39,8 @@ diff with `lib/`:
 | `resolve_main.mdk` | Runnable entry: `medaka run selfhost/resolve_main.mdk <runtime.mdk> <core.mdk> <src.mdk>` prints one diagnostic per line (diffs against `diagdump --resolve`, the harness sorts). |
 | `exhaust.mdk` | Port of `lib/exhaust.ml`'s `check_guard_exhaustiveness` (guard coverage over the raw AST; Maranget `useful` matrix). No prelude — the ctor oracle is built from the file's own data decls + builtins. `exhaustToLines : List Decl -> String`. |
 | `exhaust_main.mdk` | Runnable entry: `medaka run selfhost/exhaust_main.mdk <src.mdk>` prints one guard warning per line (diffs against `diagdump --exhaust`, the harness sorts). Parses **without** desugaring (guards must still be `EGuards`). |
+| `eval.mdk` | Tree-walk interpreter (Stage-1 capstone, **slice 1**). `Value`/`Env` ADTs + `pp_value` (byte-for-byte with `lib/eval.ml`) + the engine: `eval`/`apply`/`match_pat`/binops over `(name, Ref value)` env frames. `evalMain : List Decl -> <Mut> String`. |
+| `eval_main.mdk` | Runnable entry: `medaka run selfhost/eval_main.mdk <src.mdk>` parses + desugars a self-contained file, evaluates it, prints `pp_value` of `main` (diffs against `dev/eval_probe.exe`). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -215,7 +217,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 | 2 | ✅ **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve`, **full corpus + 9 fixtures** |
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
 | 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
-| 5 | **eval** | ~2350 | hard (plumbing) | `program → values` | diff stdout vs `=== EVAL ===` |
+| 5 | 🚧 **eval** | ~2350 | hard (plumbing) | `program → values` | `dev/eval_probe.exe` (slice 1: engine core); later `=== EVAL ===` |
 | 6 | **typecheck** | ~4650 | **very hard** | `program → schemes` | diff vs `=== TYPES ===` |
 
 1. ✅ **Desugar — DONE.** `selfhost/desugar.mdk` + `desugar_main.mdk`: the
@@ -292,12 +294,32 @@ Stage-0 prerequisites in `../PLAN.md`).
    `useful`-machinery "excused by catch-all" control and the multi-warning case).
    The type-aware `check_match` exhaustiveness is **not** here — it lives inside
    typecheck (it needs the scrutinee type), so it ports with that stage.
-5. **Eval** — the **Stage-1 capstone**: a tree-walk interpreter that makes the
+5. 🚧 **Eval — IN PROGRESS (slice 1 of N).** The **Stage-1 capstone**: a
+   tree-walk interpreter (`selfhost/eval.mdk` + `eval_main.mdk`) that makes the
    self-hosted compiler *executable on itself*. Plumbing-heavy (per-frame env
-   refs, `VMulti` typeclass dispatch, lazy-thunk forcing, dict-passing
-   semantics) but not algorithmically deep. Prerequisite sub-task: port the small
-   `dict_pass`. It can be developed against the **reference's** typed +
-   dict-passed AST, so it does **not** require typecheck to be ported first.
+   refs, `VMulti` typeclass dispatch, dict-passing semantics) but not
+   algorithmically deep. **Validation bridge:** rather than wait for typecheck,
+   the engine is exercised on the UNTYPED path — `dev/eval_probe.exe`
+   (`Eval.eval_program ~prelude:false` → `Eval.pp_value`) is the oracle, and
+   fixtures in `test/eval_fixtures/` are self-contained / prelude-free, each
+   aggregating its results into one `main` value rendered by `pp_value`
+   byte-for-byte on both sides (`test/diff_selfhost_eval.sh`).
+   - **Slice 1 (DONE):** the engine core — literals, vars, application, lambdas/
+     closures, let / letrec / let-groups, bare blocks, `match` (+ guards), `if`,
+     binary/unary operators (incl. structural `==`/`<` mirroring OCaml's
+     `=`/`compare` on `value`), tuples, lists, ADTs (constructor builders +
+     pattern matching), multi-clause dispatch (`VMulti`, first-pattern-match),
+     and recursion. The env is `(name, Ref value)` frames back-patched via
+     `set_ref` (so the cluster carries `<Mut>`; `VPrim` holds a `Value -> <Mut>
+     Value`). 7/7 fixtures match.
+   - **Deferred to later slices:** records / refs / arrays / string-interp /
+     ranges / index / slice; externs (`VPrim` primitives — the whole stdlib
+     kernel); and typeclass **method dispatch** (`VTypedImpl`/`VNamedImpl` tag
+     filtering, `EMethodRef`/`EDictApp`, the dict-passing layer). Those unlock
+     running real (prelude-using) programs against the `=== EVAL ===` goldens.
+   It can be developed against the **reference's** typed + dict-passed AST, so it
+   does **not** require typecheck to be ported first; `dict_pass` is the small
+   prerequisite for the method-dispatch slices.
 6. **Typecheck** — the complexity engine, deliberately last: Hindley–Milner
    unification (union-find over mutable cells, occurs-check), interface/impl
    coherence + overlap rules, and the Phase-69/69.x method-routing &
