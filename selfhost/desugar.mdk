@@ -191,10 +191,35 @@ anyRefutable : List Pat -> Bool
 anyRefutable [] = False
 anyRefutable (p :: ps) = isRefutable p || anyRefutable ps
 
+-- ── Pass: desugar_list_comps (`[e | quals]` → andThen/EIf/ELet over quals) ─
+-- Mirror of lib/desugar.ml's desugar_list_comp (fold_right over the qualifiers
+-- with initial accumulator `[body]`).
+rewriteListComp : Expr -> Expr
+rewriteListComp (EListComp body quals) = desugarListComp body quals
+rewriteListComp e = e
+
+desugarListComp : Expr -> List LcQual -> Expr
+desugarListComp body quals = foldRightLc quals (EListLit [body])
+
+foldRightLc : List LcQual -> Expr -> Expr
+foldRightLc [] acc = acc
+foldRightLc (q :: rest) acc = lcStep q (foldRightLc rest acc)
+
+lcStep : LcQual -> Expr -> Expr
+lcStep (LCGen pat xs) acc = EApp (EApp (EVar "andThen") xs) (lcLam pat acc)
+lcStep (LCGuard cond) acc = EIf cond acc (EListLit [])
+lcStep (LCLet m pat e) acc = ELet m False pat e acc
+
+lcLam : Pat -> Expr -> Expr
+lcLam pat acc
+  | isRefutable pat = ELam [PVar "__lc_x"] (EMatch (EVar "__lc_x") [Arm pat [] acc, Arm PWild [] (EListLit [])])
+  | otherwise = ELam [pat] acc
+
 -- ── The pass pipeline ─────────────────────────────────────────────────────
 -- Ported incrementally, in the reference order (later passes run last).  So
--- far: lower_do_blocks then desugar_sugar.  Coming (they run earlier): deriving
--- expansion, record puns, container literals, list comprehensions, `?`.
+-- far: desugar_list_comps → lower_do_blocks → desugar_sugar.  Coming (earlier):
+-- deriving expansion, record puns, container literals; and `?` (desugar_questions,
+-- between list comps and do-blocks) which the real corpus never exercises.
 export
 desugar : List Decl -> List Decl
-desugar prog = mapProg rewriteSugar (mapProg rewriteDo prog)
+desugar prog = mapProg rewriteSugar (mapProg rewriteDo (mapProg rewriteListComp prog))
