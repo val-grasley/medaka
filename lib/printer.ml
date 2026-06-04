@@ -282,7 +282,7 @@ let is_continuation_op = function
 let rec expr_prec = function
   | ELit _ | EVar _ | EMethodRef _ | EDictApp _ | ETuple _ | EArrayLit _ | EListLit _ | EListComp _
   | EMapLit _ | ESetLit _ | EStringInterp _
-  | ERecordCreate _ | ERecordUpdate _
+  | ERecordCreate _ | ERecordUpdate _ | EVariantUpdate _
   | ERangeList _ | ERangeArray _ | ESlice _ -> prec_atom
   | EFieldAccess _ | EIndex _
   | EQuestion _                        -> prec_postfix
@@ -395,6 +395,10 @@ and print_expr_raw = function
   | ERecordUpdate (e, fs) ->
     let field (k, v) = text k ^^ text " = " ^^ print_expr prec_top v in
     text "{ " ^^ print_expr prec_top e ^^ text " | "
+    ^^ sep_by (text ", ") (List.map field fs) ^^ text " }"
+  | EVariantUpdate (c, e, fs) ->
+    let field (k, v) = text k ^^ text " = " ^^ print_expr prec_top v in
+    text c ^^ text " { " ^^ print_expr prec_top e ^^ text " | "
     ^^ sep_by (text ", ") (List.map field fs) ^^ text " }"
   | EArrayLit es ->
     delimited "[|" "|]" (List.map (print_expr prec_top) es)

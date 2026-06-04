@@ -47,6 +47,8 @@ let rec collect_expr acc = function
     List.fold_left (fun a (_, e) -> collect_expr a e) acc fs
   | Ast.ERecordUpdate (e, fs) ->
     List.fold_left (fun a (_, e') -> collect_expr a e') (collect_expr acc e) fs
+  | Ast.EVariantUpdate (_, e, fs) ->
+    List.fold_left (fun a (_, e') -> collect_expr a e') (collect_expr acc e) fs
   | Ast.EArrayLit es | Ast.EListLit es | Ast.ETuple es | Ast.ESetLit (_, es) ->
     List.fold_left collect_expr acc es
   | Ast.EMapLit (_, kvs) ->

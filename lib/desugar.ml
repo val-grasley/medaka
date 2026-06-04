@@ -577,6 +577,7 @@ let rec map_expr f e =
     | EFieldAccess (e0, n)    -> EFieldAccess (map_expr f e0, n)
     | ERecordCreate (n, flds) -> ERecordCreate (n, List.map (fun (k,v) -> (k, map_expr f v)) flds)
     | ERecordUpdate (e0, flds)-> ERecordUpdate (map_expr f e0, List.map (fun (k,v) -> (k, map_expr f v)) flds)
+    | EVariantUpdate (c, e0, flds) -> EVariantUpdate (c, map_expr f e0, List.map (fun (k,v) -> (k, map_expr f v)) flds)
     | EArrayLit es            -> EArrayLit (List.map (map_expr f) es)
     | EListLit es             -> EListLit (List.map (map_expr f) es)
     | ETuple es               -> ETuple (List.map (map_expr f) es)

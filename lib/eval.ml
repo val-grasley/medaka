@@ -919,6 +919,25 @@ and eval env expr =
        VRecord (name, merged)
      | _ -> raise (Eval_error ("record update on non-record", !current_loc)))
 
+  | EVariantUpdate (con, base, fields) ->
+    (match eval env base with
+     | VCon (con', vals) when con' = con ->
+       let updates = List.map (fun (k, e) -> (k, eval env e)) fields in
+       (match Hashtbl.find_opt ctor_field_order con with
+        | Some order ->
+          let new_vals = List.map2 (fun fn v ->
+            match List.assoc_opt fn updates with
+            | Some v' -> v'
+            | None    -> v) order vals
+          in
+          VCon (con, new_vals)
+        | None ->
+          raise (Eval_error (con ^ " is not a named-field constructor", !current_loc)))
+     | VCon (con', _) ->
+       raise (Eval_error
+         (Printf.sprintf "variant update expected %s, got %s" con con', !current_loc))
+     | _ -> raise (Eval_error ("variant update on non-variant value", !current_loc)))
+
   | EArrayLit es -> VArray (Array.of_list (List.map (eval env) es))
   | EListLit es  -> VList (List.map (eval env) es)
   | EStringInterp parts ->

@@ -606,6 +606,40 @@ record Person
 bad = { (Point { x = 0, y = 0 }) | name = "Alice" }
 |}
 
+(* ── Constructor-tagged variant update: `Con { e | f = v }` ── *)
+
+(* The update has the constructor's owning type; only the overridden fields are
+   checked, the base is pinned to that type. *)
+let t_variant_update = assert_type
+  {|data D = C { a : Int, b : Int } | Other Int
+f : D -> D
+f d = C { d | b = 99 }
+|} "f" "D -> D"
+
+(* A field not on the constructor is rejected. *)
+let e_variant_update_unknown_field = assert_err
+  {|data D = C { a : Int, b : Int } | Other Int
+f d = C { d | nope = 1 }
+|}
+
+(* The base must have the constructor's owning type. *)
+let e_variant_update_wrong_base = assert_err
+  {|data D = C { a : Int, b : Int } | Other Int
+bad = C { 5 | b = 1 }
+|}
+
+(* An override of the wrong field type is rejected. *)
+let e_variant_update_field_type = assert_err
+  {|data D = C { a : Int, b : Int } | Other Int
+f d = C { d | b = "not an int" }
+|}
+
+(* A positional constructor (no named fields) cannot be variant-updated. *)
+let e_variant_update_positional_ctor = assert_err
+  {|data D = C Int Int | Other Int
+f d = C { d | a = 1 }
+|}
+
 (* ── Phase 73: signature-driven parameter typing (bidirectional checking) ── *)
 
 (* Headline: a top-level signature alone disambiguates a shared field — the
@@ -4010,6 +4044,11 @@ let () =
       test_case "shared field update"       `Quick t_rec_shared_field_update;
       test_case "err: shared field ambiguous" `Quick e_rec_shared_field_ambiguous;
       test_case "err: cross-record update"  `Quick e_rec_cross_record_update;
+      test_case "variant update"             `Quick t_variant_update;
+      test_case "err: variant update unknown field"  `Quick e_variant_update_unknown_field;
+      test_case "err: variant update wrong base"      `Quick e_variant_update_wrong_base;
+      test_case "err: variant update field type"      `Quick e_variant_update_field_type;
+      test_case "err: variant update positional ctor" `Quick e_variant_update_positional_ctor;
       test_case "sig disambiguates shared field (Int)"   `Quick t_sig_shared_field_int;
       test_case "sig disambiguates shared field (Float)" `Quick t_sig_shared_field_float;
       test_case "sig drives slice container type"        `Quick t_sig_slice_list;

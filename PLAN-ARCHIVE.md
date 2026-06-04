@@ -5760,6 +5760,47 @@ char literals being inconsistent is a genuine gap, not intentional design.
 **Verified**: `test_parser`, `test_eval`, `test_typecheck`, `test_run`,
 `test_roundtrip` all green; 21 thorough non-diff cases pass.
 
+### Phase 139: constructor-tagged variant update — `Con { e | field = v }` ✅ DONE (2026-06-04)
+
+Named-field data variants (`data Decl = DImpl { pub : Bool, ... } | ...`) are light
+sugar over *positional* constructors — there is no backing record value, so the
+record functional-update `{ r | f = v }` could not touch them (verified: `DImpl r`
+fails "expects 2 args, got 1"; `r.field` on a variant is "Unknown record type").
+Rebuilding a variant changing a few fields therefore meant re-listing every field
+positionally. This adds **`Con { e | field = v, ... }`**: a new `EVariantUpdate`
+expression that copies the named-field variant `e` (which must be a `Con` at runtime)
+overriding the listed fields.
+
+**Design**: the constructor tag is explicit, so the result type is unambiguously
+`Con`'s owning type — no flow-narrowing of a sum-typed receiver (Medaka's HM checker
+has no occurrence typing). The bare untagged `{ d | f = v }` form would need that and
+is deliberately *not* supported. The runtime check that `e` is actually a `Con` is the
+only (bounded) partiality, with a clear `Eval_error`.
+
+**Changes** — a new transparent-ish expr node mirroring `ERecordUpdate` at every site
+that names it: `lib/ast.ml` (constructor + `pp_expr` + `strip_locs_expr`),
+`lib/parser.mly` (`UPPER LBRACE expr_no_block PIPE … RBRACE` — **parser conflicts
+unchanged at 5**, the `PIPE` lookahead distinguishes it from the `UPPER LBRACE …`
+record-create rule), `lib/resolve.ml` (ctor + field-ownership checks, mirroring
+`ERecordCreate`), `lib/typecheck.ml` (instantiate the named-field ctor's field types +
+result type like the `ERecordCreate` ctor branch, pin the base to that result type,
+type only the provided overrides; non-named-field ctor → error), `lib/eval.ml`
+(rebuild `VCon` by position via `ctor_field_order`, runtime-error on tag mismatch),
+`lib/printer.ml`, `lib/desugar.ml` (`map_expr`), `lib/coverage.ml`, `dev/astdump.ml`.
+
+**Verified**: `test_parser` (3 cases), `test_typecheck` (1 positive + 4 negative),
+`test_eval` (update + wrong-ctor runtime error), `test_roundtrip`, `test_run`, and
+`@thorough` all green; selfhost diff harnesses byte-identical (the `astdump` arm is
+additive). `SYNTAX.md` updated.
+
+**Deferred (not blocking, but limit ergonomics for the motivating selfhost `DImpl`
+rebuild)**: (1) as-patterns in *parameter* position fail to parse even for positional
+ctors (`f (C x as d) = …`), and (2) field access on a variant value (`d.field`) is
+unsupported — so destructuring-and-keeping-the-whole-value in one pattern isn't yet
+possible; you keep the value in a plain binding and update it. Adopting this in the
+selfhost AST (named-field variants for `DImpl`/`DInterface` + extending the
+self-hosted parser/`sexp.mdk`) is a separate follow-on.
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)

@@ -406,6 +406,22 @@ let test_expr_record_update_mixed () =
             [("city", ELit (LString "Boston"))])) ]) -> ()
   | _ -> failwith "wrong"
 
+let test_expr_variant_update () =
+  match parse_expr "DImpl { d | tys = [x] }\n" with
+  | EVariantUpdate ("DImpl", EVar "d", [("tys", EListLit [EVar "x"])]) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_variant_update_multi () =
+  match parse_expr "DImpl { d | tys = [x], methods = 0 }\n" with
+  | EVariantUpdate ("DImpl", EVar "d",
+      [("tys", EListLit [EVar "x"]); ("methods", ELit (LInt 0))]) -> ()
+  | _ -> failwith "wrong"
+
+let test_expr_variant_update_pun () =
+  match parse_expr "DImpl { d | tys }\n" with
+  | EVariantUpdate ("DImpl", EVar "d", [("tys", EVar "tys")]) -> ()
+  | _ -> failwith "wrong"
+
 let test_expr_type_annot () =
   match parse_expr "x : Int\n" with
   | EAnnot (EVar "x", TyCon "Int") -> ()
@@ -2016,6 +2032,9 @@ let () =
       test_case "record update nested"       `Quick test_expr_record_update_nested;
       test_case "record update nested deep"  `Quick test_expr_record_update_nested_deep;
       test_case "record update nested mixed" `Quick test_expr_record_update_mixed;
+      test_case "variant update"             `Quick test_expr_variant_update;
+      test_case "variant update multi"       `Quick test_expr_variant_update_multi;
+      test_case "variant update pun"         `Quick test_expr_variant_update_pun;
       test_case "type annotation"   `Quick test_expr_type_annot;
       test_case "array index"       `Quick test_expr_index;
       test_case "operator section"       `Quick test_expr_section;

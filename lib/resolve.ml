@@ -622,6 +622,21 @@ let rec check_expr env scope errors e =
       if not (field_known env.field_owners fname) then
         emit errors (UnknownField fname)
     ) fs
+  | EVariantUpdate (con, e, fs) ->
+    check_expr env scope errors e;
+    (* The tag must be a named-field constructor, and every overridden field must
+       belong to it.  Mirror the ERecordCreate ownership checks (the type checker
+       pins the base to the constructor's owning type). *)
+    if not (Hashtbl.mem env.constructors con) then
+      emit errors (UnknownType con)
+    else
+      List.iter (fun (fname, _) ->
+        if not (field_known env.field_owners fname) then
+          emit errors (UnknownField fname)
+        else if not (field_belongs env.field_owners fname con) then
+          emit errors (FieldNotInRecord (fname, con))
+      ) fs;
+    List.iter (fun (_, v) -> check_expr env scope errors v) fs
   | EArrayLit es | EListLit es | ETuple es ->
     List.iter (check_expr env scope errors) es
   | EMapLit (_, kvs) ->

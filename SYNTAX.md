@@ -273,6 +273,9 @@ data Event                                          -- named-field variant (bloc
   | Scroll Int
 
 data Bool = True | False deriving (Debug)          -- deriving
+
+Pt { p | y = 9 }                                    -- variant functional update
+                                                    -- (copy p, override y; p must be a Pt)
 ```
 
 ## Records

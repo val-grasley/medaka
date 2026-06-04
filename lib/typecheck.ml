@@ -2085,6 +2085,44 @@ let rec infer env = function
              | r :: _ -> resolve_in r)))
     end
 
+  | EVariantUpdate (con, e, updated) ->
+    (* `Con { e | f = v }` — copy the named-field variant `e` (which must be a
+       `Con`) overriding the given fields.  Mirror the ERecordCreate named-field
+       branch to instantiate the field types + the constructor's result type, then
+       pin the base to that result type.  Unlike create, only the *provided* fields
+       are typed — the rest are carried over from `e`. *)
+    (match Hashtbl.find_opt env.ctor_fields con with
+     | None ->
+       fail (Other (Printf.sprintf
+         "%s is not a named-field constructor, so `%s { ... | ... }` update is not allowed" con con))
+     | Some field_monos ->
+       let field_types = List.map (fun (fn, mono) ->
+         let tv = fresh_var () in
+         unify tv mono;
+         (fn, tv)
+       ) field_monos in
+       let scheme =
+         try Hashtbl.find env.ctors con
+         with Not_found -> fail (UnknownCtor con)
+       in
+       let ctor_t = instantiate scheme in
+       let result_t = ref ctor_t in
+       List.iter (fun (_, ftype) ->
+         let ret = fresh_var () in
+         unify !result_t (TFun (ftype, pure_row, ret));
+         result_t := ret
+       ) field_types;
+       let result_t = !result_t in
+       unify (infer env e) result_t;
+       List.iter (fun (fname, vexpr) ->
+         let ftype =
+           try List.assoc fname field_types
+           with Not_found -> fail (UnknownField (fname, con))
+         in
+         unify (infer env vexpr) ftype
+       ) updated;
+       result_t)
+
   | EIndex (arr, idx) ->
     let ta = infer env arr in
     unify (infer env idx) t_int;

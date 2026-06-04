@@ -292,6 +292,20 @@ p2 = { p | x = 10 }
 r = p2.x
 |} "r" (VInt 10)
 
+(* Constructor-tagged variant update: copy the named-field variant, overriding
+   the given fields, keeping the rest.  Field order in VCon is the declared order
+   [a; b], so the result proves a was kept (1) and b changed (99). *)
+let t_variant_update = assert_val {|data D = C { a : Int, b : Int } | Other Int
+base = C { a = 1, b = 2 }
+upd = C { base | b = 99 }
+|} "upd" (VCon ("C", [VInt 1; VInt 99]))
+
+(* Updating the wrong variant (base is `Other`, not `C`) is a runtime error. *)
+let t_variant_update_wrong_ctor = assert_runtime_err {|data D = C { a : Int, b : Int } | Other Int
+base = Other 5
+upd = C { base | b = 99 }
+|} "upd"
+
 let t_record_update_nested = assert_val {|record Address
   city : String
 record Person
@@ -1844,6 +1858,8 @@ let () =
       test_case "update nested"           `Quick t_record_update_nested;
       test_case "update nested deep"      `Quick t_record_update_nested_deep;
       test_case "update nested unchanged" `Quick t_record_update_nested_unchanged;
+      test_case "variant update"          `Quick t_variant_update;
+      test_case "variant update wrong ctor" `Quick t_variant_update_wrong_ctor;
     ];
     "tuples", [
       test_case "create" `Quick t_tuple;

@@ -811,6 +811,10 @@ expr_atom:
     { let base = $2 in
       let fields = List.map (fun (path, v) -> desugar_dotted_field base path v) $4 in
       ELoc (of_pos $startpos $endpos, ERecordUpdate (base, fields)) }
+  | UPPER LBRACE expr_no_block PIPE separated_nonempty_list(COMMA, record_field_expr) RBRACE
+    { let base = $3 in
+      let fields = List.map (fun (path, v) -> desugar_dotted_field base path v) $5 in
+      ELoc (of_pos $startpos $endpos, EVariantUpdate ($1, base, fields)) }
   | AT UPPER
     { ELoc (of_pos $startpos $endpos, EVar ("@" ^ $2)) }
   | AT IDENT

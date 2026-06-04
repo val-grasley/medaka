@@ -137,6 +137,7 @@ and expr =
   | EFieldAccess  of expr * ident                       (* e.field *)
   | ERecordCreate of ident * (ident * expr) list        (* Person { name = "Alice" } *)
   | ERecordUpdate of expr * (ident * expr) list         (* { p | age = 31 } *)
+  | EVariantUpdate of ident * expr * (ident * expr) list (* DImpl { d | tys = ts } *)
   | EArrayLit     of expr list                          (* [|1, 2, 3|] *)
   | EListLit      of expr list                          (* [1, 2, 3] *)
   | EMapLit       of ident * (expr * expr) list         (* Map { k => v, ... } *)
@@ -389,6 +390,9 @@ let rec pp_expr = function
   | ERecordUpdate (e, fs) ->
     let pp_f (k, v) = Printf.sprintf "%s = %s" k (pp_expr v) in
     Printf.sprintf "{ %s | %s }" (pp_expr e) (String.concat ", " (List.map pp_f fs))
+  | EVariantUpdate (c, e, fs) ->
+    let pp_f (k, v) = Printf.sprintf "%s = %s" k (pp_expr v) in
+    Printf.sprintf "%s { %s | %s }" c (pp_expr e) (String.concat ", " (List.map pp_f fs))
   | EArrayLit es         -> Printf.sprintf "[|%s|]" (String.concat ", " (List.map pp_expr es))
   | EListLit es          -> Printf.sprintf "[%s]" (String.concat ", " (List.map pp_expr es))
   | EMapLit (n, kvs)     ->
@@ -485,6 +489,7 @@ let rec strip_locs_expr = function
   | EFieldAccess (e, f)   -> EFieldAccess (strip_locs_expr e, f)
   | ERecordCreate (n, fs) -> ERecordCreate (n, List.map (fun (k, v) -> (k, strip_locs_expr v)) fs)
   | ERecordUpdate (e, fs) -> ERecordUpdate (strip_locs_expr e, List.map (fun (k, v) -> (k, strip_locs_expr v)) fs)
+  | EVariantUpdate (c, e, fs) -> EVariantUpdate (c, strip_locs_expr e, List.map (fun (k, v) -> (k, strip_locs_expr v)) fs)
   | EArrayLit es          -> EArrayLit (List.map strip_locs_expr es)
   | EListLit es           -> EListLit (List.map strip_locs_expr es)
   | EMapLit (n, kvs)      -> EMapLit (n, List.map (fun (k, v) -> (strip_locs_expr k, strip_locs_expr v)) kvs)

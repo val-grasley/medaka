@@ -108,6 +108,7 @@ let rec sexp_expr e =
   | EGuards arms       -> node "EGuards" (List.map sexp_garm arms)
   | ERecordCreate (n, fs) -> node "ERecordCreate" [esc_str n; slist (List.map sexp_fassign fs)]
   | ERecordUpdate (e, fs) -> node "ERecordUpdate" [sexp_expr e; slist (List.map sexp_fassign fs)]
+  | EVariantUpdate (c, e, fs) -> node "EVariantUpdate" [esc_str c; sexp_expr e; slist (List.map sexp_fassign fs)]
   | _                  -> todo "expr"
 
 and sexp_interp = function
