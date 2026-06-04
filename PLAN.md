@@ -28,7 +28,7 @@ constraint and delegated the remaining modules.
 **Conventions.** Work is still organized by numbered **Phases**; commit messages
 and code comments reference them. Phases that were left *partial* keep their
 original number (e.g. Phase 82, 101); genuinely new work gets the next free
-number (last used: 135). At task triage, match the work against AGENTS.md's
+number (last used: 136). At task triage, match the work against AGENTS.md's
 task-playbook table and load the matching skill before planning.
 
 ---
@@ -152,6 +152,29 @@ strict priority. Where an item is a **Stage 0 prerequisite** for the north star
 above, it is flagged ⭐.
 
 ### Compiler / language
+
+- **Phase 136 — typechecker: generalize mutually-recursive binding groups. TODO
+  (harden-typechecker).** A single self-recursive polymorphic function *is*
+  generalized and usable at multiple types, but a **mutual-recursion group is
+  not** — it monomorphizes to its first use. Standard HM generalizes a recursive
+  group after inferring it; Medaka does this for singletons but not multi-binding
+  groups. **Minimal repro:**
+  ```
+  isEv : Int -> a -> List a        isOd : Int -> a -> List a
+  isEv 0 x = []                    isOd 0 x = []
+  isEv n x = isOd (n - 1) x        isOd n x = x :: isEv (n - 1) x
+  -- ua = isEv 3 (5:Int) ; ub = isEv 3 "a"  →  "Type mismatch: Int vs String"
+  ```
+  (the single-recursive `rep n x = x :: rep (n-1) x` works at both types). **Found
+  via the Phase 135 parser-combinator spike:** the core monad (`do`/`Thenable`/
+  `pure`/`andThen` over a user-defined `Parser`) works fine, but idiomatic
+  combinators (`many`↔`some`, `chainl1`↔`chainl1Rest`↔`chainl1More`) are mutually
+  recursive and reused at many types, so they all collapse — which is why the
+  self-host parser stays **direct recursive-descent** for now. Fix lands in
+  `typecheck.ml`'s letrec-group handling (generalize *all* members of a recursive
+  group after inference, not just singletons); mind level/rank bracketing and the
+  dict-passing interaction (Phase 73/83/84). Unblocks idiomatic parser combinators
+  and any mutually-recursive polymorphic helper. Skill: **harden-typechecker**.
 
 - ⭐ **Phase 135 — self-host Stage 1: port the parser to Medaka. IN PROGRESS
   (started 2026-06-03); scaffold done.** Second pipeline stage. The Menhir LR
