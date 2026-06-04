@@ -15,7 +15,7 @@
 -- `DFunDef`/`DTypeSig`.  Multi-statement indented blocks, the remaining decl
 -- forms, and the rest of the operator ladder come in later slices.
 
-import ast.{Lit(..), Ty(..), Pat(..), Arm(..), Expr(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), Arm(..), DoStmt(..), Expr(..), Decl(..)}
 import lexer.{Token(..), tokenize}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -286,6 +286,7 @@ atomFor TLBracket = parseListE
 atomFor TIf = parseIf
 atomFor TLet = parseLet
 atomFor TMatch = parseMatch
+atomFor TDo = parseDo
 atomFor _ = failP "expected atom"
 
 tupleOrSingle : List Expr -> Expr
@@ -522,7 +523,8 @@ declRestFor name params TEqual =
     pure (DFunDef False name params body)
 declRestFor _ _ _ = failP "expected : or ="
 
--- a decl body is an inline expr or a single expr inside an INDENT block
+-- a decl body is an inline expr, or an INDENT block of statements: a single
+-- expression statement unwraps to that expr; anything else becomes an EBlock
 parseBody : Parser Expr
 parseBody = orElse indentedBody parseExpr
 
@@ -530,13 +532,86 @@ indentedBody : Parser Expr
 indentedBody =
   do
     expectTok TIndent
-    e <- parseExpr
-    skipNewlines
-    optionalDedent
-    pure e
+    stmts <- parseStmts
+    expectTok TDedent
+    pure (blockOrExpr stmts)
 
-optionalDedent : Parser Unit
-optionalDedent = orElse (expectTok TDedent) (pure ())
+blockOrExpr : List DoStmt -> Expr
+blockOrExpr [DoExpr e] = e
+blockOrExpr stmts = EBlock stmts
+
+-- `do <INDENT stmt block DEDENT>` → a monadic do-block
+parseDo : Parser Expr
+parseDo =
+  do
+    expectTok TDo
+    expectTok TIndent
+    stmts <- parseStmts
+    expectTok TDedent
+    pure (EDo stmts)
+
+-- statements, NEWLINE-separated, until the block's DEDENT
+parseStmts : Parser (List DoStmt)
+parseStmts =
+  do
+    skipNewlines
+    stmtsLoop
+
+stmtsLoop : Parser (List DoStmt)
+stmtsLoop = orElse stmtsCons (pure [])
+
+stmtsCons : Parser (List DoStmt)
+stmtsCons =
+  do
+    s <- parseStmt
+    skipNewlines
+    rest <- stmtsLoop
+    pure (s :: rest)
+
+parseStmt : Parser DoStmt
+parseStmt =
+  do
+    t <- peekP
+    stmtFor t
+
+stmtFor : Token -> Parser DoStmt
+stmtFor TLet = parseLetStmt
+stmtFor _ = parseExprStmt
+
+-- `let pat = e1` is a DoLet; `let pat = e1 in e2` is a (let-in expression) DoExpr
+parseLetStmt : Parser DoStmt
+parseLetStmt =
+  do
+    expectTok TLet
+    pat <- parsePatAtom
+    expectTok TEqual
+    e1 <- parseExpr
+    t <- peekP
+    letStmtFor pat e1 t
+
+letStmtFor : Pat -> Expr -> Token -> Parser DoStmt
+letStmtFor pat e1 TIn =
+  do
+    advance
+    e2 <- parseExpr
+    pure (DoExpr (ELet False False pat e1 e2))
+letStmtFor pat e1 _ = pure (DoLet False pat e1)
+
+-- `pat <- e` is a DoBind (LHS parsed as an expr, reinterpreted); else DoExpr
+parseExprStmt : Parser DoStmt
+parseExprStmt =
+  do
+    e <- parseExpr
+    t <- peekP
+    exprStmtFor e t
+
+exprStmtFor : Expr -> Token -> Parser DoStmt
+exprStmtFor e TLArrow =
+  do
+    advance
+    rhs <- parseExpr
+    pure (DoBind (exprToPat e) rhs)
+exprStmtFor e _ = pure (DoExpr e)
 
 -- skip layout noise (NEWLINE/INDENT/DEDENT) between top-level decls; recurse
 -- through a do-continuation (see skipNewlines) to avoid a recursive-value cycle

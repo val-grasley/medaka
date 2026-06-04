@@ -83,7 +83,17 @@ let rec sexp_expr e =
   | EArrayLit es       -> node "EArrayLit" (List.map sexp_expr es)
   | EIndex (a, i)      -> node "EIndex" [sexp_expr a; sexp_expr i]
   | EAnnot (e, t)      -> node "EAnnot" [sexp_expr e; sexp_ty t]
+  | EBlock stmts       -> node "EBlock" (List.map sexp_dostmt stmts)
+  | EDo (_, stmts)     -> node "EDo" (List.map sexp_dostmt stmts)
   | _                  -> todo "expr"
+
+and sexp_dostmt = function
+  | DoExpr e        -> node "DoExpr" [sexp_expr e]
+  | DoBind (p, e)   -> node "DoBind" [sexp_pat p; sexp_expr e]
+  | DoLet (m, p, e) -> node "DoLet" [string_of_bool m; sexp_pat p; sexp_expr e]
+  | DoAssign (x, e) -> node "DoAssign" [esc_str x; sexp_expr e]
+  | DoFieldAssign _ -> todo "DoFieldAssign"
+  | DoLetElse _     -> todo "DoLetElse"
 
 and sexp_arm (p, guards, body) =
   node "arm" [sexp_pat p; slist (List.map sexp_guard guards); sexp_expr body]

@@ -40,6 +40,13 @@ public export data Guard
 public export data Arm
   = Arm Pat (List Guard) Expr
 
+-- statements in a bare block (EBlock) or monadic do-block (EDo)
+public export data DoStmt
+  = DoExpr Expr
+  | DoBind Pat Expr
+  | DoLet Bool Pat Expr
+  | DoAssign String Expr
+
 public export data Expr
   = ELit Lit
   | EVar String
@@ -57,6 +64,8 @@ public export data Expr
   | EArrayLit (List Expr)
   | EIndex Expr Expr
   | EAnnot Expr Ty
+  | EBlock (List DoStmt)
+  | EDo (List DoStmt)
 
 public export data Decl
   = DTypeSig Bool String Ty

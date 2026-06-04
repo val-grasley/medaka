@@ -94,11 +94,13 @@ the stage is done when all pass.
   can't loop). Recursive parsers must recurse through a `do`-continuation, never
   by passing themselves as a strict argument (that forces a recursive value mid-
   definition → `CamlinternalLazy.Undefined` under strict eval).
-- ⏳ Next slices: multi-statement indented blocks (`EBlock`/`do` — the rest of the
-  layout work), pipe/compose/unary/sections/interpolation/comprehensions, guards,
-  and the remaining decl forms (`data`/`record`/`interface`/`impl`/`import`/…).
-  End goal: parse the real `test/diff_fixtures/` files + stdlib, like the lexer's
-  13/13. Stays prelude-only.
+- ✅ **Slice 4**: multi-statement indented blocks — bare blocks (`EBlock`) and
+  `do`-blocks (`EDo`) with `DoExpr`/`DoBind`/`DoLet` statements. A single
+  expression statement unwraps to that expr; anything else is an `EBlock`.
+- ⏳ Next slices: effect types (`<IO> …`), string interpolation, guards,
+  pipe/compose/unary/sections/comprehensions, and the remaining decl forms
+  (`data`/`record`/`interface`/`impl`/`import`/…). End goal: parse the real
+  `test/diff_fixtures/` files + stdlib, like the lexer's 13/13. Stays prelude-only.
 
   *(Parser combinators were spiked and parked — blocked on Phase 136; see PLAN.)*
 

@@ -3,7 +3,7 @@
 -- reference.  Tags are the lib/ast.ml constructor names.  Coverage grows with
 -- the AST/parser; new variants get a matching clause here.
 
-import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), Expr(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), Guard(..), Arm(..), DoStmt(..), Expr(..), Decl(..)}
 
 -- shared minimal string escaping — must match dev/astdump.ml's esc_str
 escStr : String -> String
@@ -94,6 +94,14 @@ exprSexp (EListLit es) = node "EListLit" (map exprSexp es)
 exprSexp (EArrayLit es) = node "EArrayLit" (map exprSexp es)
 exprSexp (EIndex a i) = node "EIndex" [exprSexp a, exprSexp i]
 exprSexp (EAnnot e t) = node "EAnnot" [exprSexp e, tySexp t]
+exprSexp (EBlock stmts) = node "EBlock" (map doStmtSexp stmts)
+exprSexp (EDo stmts) = node "EDo" (map doStmtSexp stmts)
+
+doStmtSexp : DoStmt -> String
+doStmtSexp (DoExpr e) = node "DoExpr" [exprSexp e]
+doStmtSexp (DoBind p e) = node "DoBind" [patSexp p, exprSexp e]
+doStmtSexp (DoLet m p e) = node "DoLet" [boolStr m, patSexp p, exprSexp e]
+doStmtSexp (DoAssign x e) = node "DoAssign" [escStr x, exprSexp e]
 
 declSexp : Decl -> String
 declSexp (DTypeSig p n t) = node "DTypeSig" [boolStr p, escStr n, tySexp t]
