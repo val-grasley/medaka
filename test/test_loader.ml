@@ -641,6 +641,58 @@ let test_eval_cross_module_user_interface () =
         "Expected \"6\\n10\\n\" from cross-module user interface, got %S" out)
   )
 
+(* A named-field data variant defined in one module must be constructible,
+   pattern-matchable, AND variant-updatable (`C { d | f = v }`) from another.
+   The constructor's field metadata (ctor_fields) is exported via te_ctor_fields
+   and re-registered on import — without that, the importer errors "Unknown
+   record type: C".  This must be a loader test: the gap is only on the
+   multi-module typecheck path (typecheck_module), not single-file. *)
+let test_eval_cross_module_named_field_variant () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "types.mdk"
+      "public export data D = C { x : Int, y : Int } | Other Int deriving (Debug)\n" in
+    let main_path = write_file dir "main.mdk"
+      "import types.{D(..)}\n\n\
+       mk : D\n\
+       mk = C { x = 1, y = 2 }\n\n\
+       upd : D -> D\n\
+       upd d =\n\
+      \  match d\n\
+      \    C { x, ... } => C { d | x = x + 10 }\n\
+      \    _ => d\n\n\
+       main : <IO> Unit\n\
+       main = println (debug (upd mk))\n" in
+    let modules = Loader.load_program main_path [dir] in
+    let (_exports, errors) = resolve_all modules in
+    if errors <> [] then
+      failwith (Printf.sprintf "unexpected resolve errors: %s"
+        (String.concat "; "
+          (List.concat_map (fun (m, es) ->
+            List.map (fun (e, _) -> m ^ ": " ^ Resolve.pp_error e) es) errors)));
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Desugar.desugar_program prog)) modules in
+    let method_names = Method_marker.interface_method_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let constrained = Method_marker.constrained_fn_names
+      (Prelude.program :: List.map (fun (_, _, p) -> p) modules) in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Method_marker.mark_program method_names constrained prog)) modules in
+    let te_acc = ref [] in
+    List.iter (fun (mid, _, prog) ->
+      let (te, _, _) = Typecheck.typecheck_module !te_acc mid prog in
+      te_acc := te :: !te_acc) modules;
+    let buf = Buffer.create 32 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+      ignore (Eval.eval_modules modules));
+    let out = Buffer.contents buf in
+    (* x kept-then-bumped to 11, y unchanged at 2 *)
+    if out <> "C 11 2\n" then
+      failwith (Printf.sprintf
+        "Expected \"C 11 2\\n\" from cross-module named-field variant update, got %S" out)
+  )
+
 (* Phase 69.x: dictionary passing across module boundaries.  A constrained
    function `mk` defined and exported in one module must, when imported and
    called at two concrete result types in another, dispatch to the right impl.
@@ -1265,6 +1317,7 @@ let () =
     ];
     "multi-file dictionary passing (Phase 69.x)", [
       test_case "cross-module user interface (decl A, impl B, use C)" `Quick test_eval_cross_module_user_interface;
+      test_case "cross-module named-field variant construct/match/update" `Quick test_eval_cross_module_named_field_variant;
       test_case "cross-module constrained dispatch" `Quick test_eval_dict_passing_cross_module;
       test_case "cross-module super dispatch" `Quick test_eval_super_dict_cross_module;
       test_case "cross-module method-level dict (foldMap)" `Quick test_eval_method_dict_cross_module;

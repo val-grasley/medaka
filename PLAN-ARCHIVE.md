@@ -5801,6 +5801,30 @@ possible; you keep the value in a plain binding and update it. Adopting this in 
 selfhost AST (named-field variants for `DImpl`/`DInterface` + extending the
 self-hosted parser/`sexp.mdk`) is a separate follow-on.
 
+### Phase 140: cross-module named-field variant constructors ✅ DONE (2026-06-04)
+
+A named-field data variant (`data D = C { x : Int } | …`) worked within a file but
+its field metadata wasn't exported, so an importing module's `C { x = v }` /
+`C { x, … }` / `C { e | x = v }` failed with "Unknown record type: C" (positional
+`C 1 2` worked — only the field-name→position mapping was missing). RECORDS already
+crossed modules; named-field *variant* constructors didn't. Surfaced while adopting
+named-field variants in the selfhost AST (the importers of `ast.mdk`).
+
+The gap was entirely in `typecheck.ml`'s multi-module exports — `resolve.ml` already
+exports/imports variant field-owners, and `eval.ml`'s `collect_ctors_and_dispatch`
+runs on the joint program (so `ctor_field_order` was already populated). Fix: add
+`te_ctor_fields : (ident * (ident * mono) list) list` to `module_type_exports`
+(parallel to `te_records`), build it from public `DData` decls' `ConNamed`
+constructors via `env.ctor_fields`, and on import repopulate `env.ctor_fields` +
+`field_owners` — mirroring the record merge a few lines above. 4 edits, one
+`module_type_exports` construction site.
+
+Test: `test_loader` "cross-module named-field variant construct/match/update" — a
+named-field variant defined in one module, then constructed, pattern-matched, and
+`C { d | f = v }`-updated in another, asserting eval output through the full loader
+pipeline (must be a loader test — the gap was only on `typecheck_module`, invisible
+single-file).
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)

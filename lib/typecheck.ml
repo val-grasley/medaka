@@ -98,6 +98,10 @@ type module_type_exports = {
   te_schemes   : (ident * scheme) list;   (* public value+method schemes *)
   te_records   : (ident * record_info) list;
   te_ctors     : (ident * scheme) list;   (* public constructor schemes *)
+  te_ctor_fields : (ident * (ident * mono) list) list;
+    (* Named-field data-variant constructors' ordered (field, type) lists, so an
+       importer can construct / pattern-match / variant-update `C { f = v }`
+       (env.ctor_fields).  Parallel to te_records for record types. *)
   te_interfaces : (ident * iface_info) list;
   te_impls     : impl_entry list;
   te_aliases   : (ident * (ident list * Ast.ty)) list;  (* public type alias expansions *)
@@ -4267,6 +4271,13 @@ let typecheck_module
         add_field_owner env.field_owners fn n
       ) (try (Hashtbl.find env.records n).rec_fields with Not_found -> [])
     ) te.te_records;
+    (* Imported named-field variant constructors: register their field lists
+       (so `C { f = v }` / `C { f, … }` / `C { e | f = v }` resolve) and field
+       ownership, mirroring the record merge just above. *)
+    List.iter (fun (cn, flds) ->
+      Hashtbl.replace env.ctor_fields cn flds;
+      List.iter (fun (fn, _) -> add_field_owner env.field_owners fn cn) flds
+    ) te.te_ctor_fields;
     List.iter (fun (n, ii) ->
       Hashtbl.replace env.interfaces n ii;
       (* Register imported interface methods so call sites in this module are
@@ -4451,6 +4462,21 @@ let typecheck_module
        | None -> None)
     | _ -> None
   ) prog in
+  (* Named-field variant constructors of public data types: export their ordered
+     (field, type) lists so importers can build/match/update `C { f = v }`. *)
+  let pub_ctor_fields = List.filter_map (fun d ->
+    match Ast.inner_decl d with
+    | DData (DataPublic, _, _, vs, _) ->
+      Some (List.filter_map (fun v ->
+        match v.Ast.con_payload with
+        | Ast.ConNamed _ ->
+          (match Hashtbl.find_opt (!env).ctor_fields v.Ast.con_name with
+           | Some flds -> Some (v.Ast.con_name, flds)
+           | None -> None)
+        | Ast.ConPos _ -> None
+      ) vs)
+    | _ -> None
+  ) prog |> List.concat in
   let pub_interfaces = List.filter_map (fun d ->
     match Ast.inner_decl d with
     | DInterface { is_pub = true; iface_name; _ } ->
@@ -4472,6 +4498,7 @@ let typecheck_module
     te_schemes   = pub_schemes @ pub_iface_schemes;
     te_records   = pub_records;
     te_ctors     = pub_ctors;
+    te_ctor_fields = pub_ctor_fields;
     te_interfaces = pub_interfaces;
     (* Filter out prelude-seeded impls (those registered via Prelude.program
        at line ~2429, not from user_prog).  Otherwise downstream modules
