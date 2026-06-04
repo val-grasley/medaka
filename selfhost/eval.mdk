@@ -498,13 +498,34 @@ isDispatching _ = False
 -- VTypedImpl tag matches the type the typechecker resolved (no runtime arg).  An
 -- empty tag (unresolved / polymorphic — doesn't occur in the compiler) leaves the
 -- VMulti for arg-tag fallback.
-narrowMethod : Value -> String -> Value
+narrowMethod : Value -> String -> <Mut> Value
 narrowMethod (VMulti vs) "" = VMulti vs
-narrowMethod (VMulti vs) tag = pickByTag vs tag
+narrowMethod (VMulti vs) tag = stripResolved (pickByTag vs tag)
 narrowMethod v _ = v
 
 pickByTag : List Value -> String -> Value
 pickByTag vs tag = oneOrMultiV (filterList (hasTag tag) vs) vs
+
+-- Once a route has pinned a single impl, strip the dispatch wrapper iff its body
+-- is a terminal value (a nullary return-position method like `empty`/`minBound`
+-- that is never applied — its wrapper must not leak into the program).  A body
+-- still awaiting application (a closure / partial impl, e.g. `pure`) keeps the
+-- wrapper so `apply` strips the tag on application.  Mirrors lib/eval.ml Phase 96.
+stripResolved : Value -> <Mut> Value
+stripResolved (VTypedImpl t k p s inner) = stripBody (VTypedImpl t k p s inner) inner
+stripResolved v = v
+
+stripBody : Value -> Value -> <Mut> Value
+stripBody wrapper (VThunk f) = stripBody wrapper (f ())
+stripBody wrapper (VTypedImpl _ _ _ _ inner) = stripBody wrapper inner
+stripBody wrapper v = if awaitsArgs v then wrapper else v
+
+awaitsArgs : Value -> Bool
+awaitsArgs (VClosure _ _ _) = True
+awaitsArgs (VPrim _) = True
+awaitsArgs (VMulti _) = True
+awaitsArgs (VTypedImpl _ _ _ _ _) = True
+awaitsArgs _ = False
 
 oneOrMultiV : List Value -> List Value -> Value
 oneOrMultiV [v] _ = v
