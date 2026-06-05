@@ -237,3 +237,18 @@ assoc_opt FList scans + Hashtbl find_opt/key_index/hash on globals) ≈ ~28% +
   parser across closures. A true single-pass (one process emitting all 12) needs
   either check.mdk to export a name (so a synthetic entry can pull it in → 1 run)
   or a multi-root loader. Could push ~8.8s → ~5.5s.
+
+### 2026-06-04 — single-pass batch check_modules (1 process)
+- cmd: `sh test/diff_selfhost_check_modules_batch.sh`
+- Collapsed the 5-entry batch to ONE process: synthetic `all_modules_entry.mdk`
+  imports one name from every selfhost module → loadProgram unions all 12 into a
+  single closure → one check_all_main run emits all 12 sections; every shared
+  module typechecked exactly once. Needed a 1-line `export runCheck` on check.mdk
+  (inert — schemes emitted regardless of visibility) so the synthetic entry can
+  pull check into the closure.
+- before: 8.80s (5-entry batch) / 15.60s (orig)   after: **5.37s**  (1.64× / 2.9×)
+- correctness: 12 ok, 0 failing byte-identical; mark+desugar 93 matched, 0 diff;
+  original harness still 12 ok.
+- committed: a34326b
+- **check_modules journey: 1515s → 300.5s (Tarjan) → 17.07s (env-Hashtbl) →
+  15.60s (compare_lengths) → 5.37s (single-pass batch). ~282× from origin.**
