@@ -111,6 +111,11 @@ public export data Expr
   | EFunction (List Arm)
   | EIndex Expr Expr
   | EAnnot Expr Ty
+  -- Head-pinned type annotation (`e :~ T`).  The parser never produces this, but
+  -- desugar's container-literal lowering does: `Map { … }`/`Set { … }` become
+  -- `(fromEntries [...] :~ Name …)`, pinning the result type so `fromEntries`
+  -- dispatches by the literal's named type (mirror of lib/ast.ml's EHeadAnnot).
+  | EHeadAnnot Expr Ty
   | EBlock (List DoStmt)
   | EDo (List DoStmt)
   | EStringInterp (List InterpPart)

@@ -1,0 +1,6 @@
+# Holds .mdk fixtures the self-hosted PARSER accepts but a downstream self-host
+# stage (resolve/typecheck/eval) cannot yet process — read only by
+# diff_selfhost_parse.sh, kept out of the shared test/parse_fixtures/ corpus that
+# diff_selfhost_{desugar,mark}.sh also consume.  Currently empty: the former
+# tenant (decls_extra.mdk) graduated to parse_fixtures/ once desugar+mark learned
+# its Phase-B nodes.  See selfhost/README.md ("Phase-B nodes").

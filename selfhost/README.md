@@ -209,22 +209,39 @@ the stage is done when all pass.
   surface both parsers still reject is nested interpolation / (untested)
   triple-quote edge cases — genuinely lexer-side, not a parser gap.
 
-  **⚠️ Remaining work — the new AST nodes are parser-only.** The six Phase-B
+  **✅ Desugar + method_marker now port the Phase-B nodes.** The seven Phase-B
   nodes above (`DTypeAlias`, `DNewtype`, `DLetGroup`, `DAttrib`, `EMapLit`,
-  `ESetLit`, and `EAsPat`) are produced by `parser.mdk` and serialized by
-  `sexp.mdk`, but the **downstream self-host stages don't handle them yet** —
-  `desugar.mdk`/`marker.mdk`/`resolve.mdk`/`typecheck.mdk`/`eval.mdk` have no
-  clauses for them (non-exhaustive matches that are simply never hit on today's
-  inputs). Porting each node through those stages (mirroring how `lib/desugar.ml`
-  lowers `EMapLit`/`ESetLit`/`DNewtype`/etc.) is follow-on work, tracked per
-  stage in the roadmap below. **Consequence for fixtures:** Phase-B parser
-  fixtures live in a dedicated `test/parse_only_fixtures/` dir (read only by
-  `diff_selfhost_parse.sh`), NOT in the shared `test/parse_fixtures/` corpus —
-  the latter is also consumed by `diff_selfhost_{desugar,mark}.sh`, which would
-  break on a node their stage can't process. Phase-A fixtures (built only from
-  already-handled AST nodes) live in `test/parse_fixtures/hardening.mdk` as
-  usual. When a downstream stage learns to handle one of the Phase-B nodes, its
-  fixtures can graduate from `parse_only_fixtures/` into the shared corpus.
+  `ESetLit`, `EAsPat`) are now handled by `selfhost/desugar.mdk` and (by reusing
+  the same `mapProg` engine) `selfhost/marker.mdk`, byte-for-byte with the OCaml
+  reference (`astdump --desugar`/`--mark`):
+  - `DTypeAlias`/`DLetGroup` pass through unchanged (the reference's `map_decl`
+    leaves them untraversed too — its catch-all — so a method ref inside a
+    top-level `let rec … with` body is left un-marked on *both* sides);
+  - `DNewtype` deriving expands to generated `impl`s via a synthetic
+    single-variant data deriver (`deriveForNewtype` → Eq/Ord/Debug/Display;
+    `deriveOrdData`/`lexCompareExprs` added; Num/Generic newtype derivers stay
+    deferred — unused by the corpus);
+  - `DAttrib` recurses through `expandDecl`/`mapDecl` (attribute stays on the
+    head decl, generated impls trail it bare);
+  - `EMapLit`/`ESetLit` lower to `(fromEntries [...] :~ Name …)` via
+    `lowerContainerLiterals` (after `desugarRecordPuns` rewrites `Name { a, b }`
+    record-pun braces to `ERecordCreate`); this required adding the **`EHeadAnnot`**
+    node to `ast.mdk`/`sexp.mdk` (the lowering's `:~` head-pin target);
+  - `EAsPat` needs no desugar clause — the parser's `exprToPat` already lowers
+    `xs@rest =>` to `PAs`, so it never reaches a desugar/mark dump (same as the
+    reference, whose `astdump.ml` has no `EAsPat` case).
+
+  Accordingly the lone Phase-B fixture (`decls_extra.mdk`) has **graduated** from
+  `test/parse_only_fixtures/` into the shared `test/parse_fixtures/` corpus, now
+  consumed clean by `diff_selfhost_{parse,desugar,mark}.sh` (25/95/95). Phase-A
+  fixtures (built only from already-handled AST nodes) live in
+  `test/parse_fixtures/hardening.mdk` as usual.
+
+  **⚠️ Still parser-only downstream of mark:** `resolve.mdk`/`typecheck.mdk`/
+  `eval.mdk` have no clauses for these nodes yet (non-exhaustive matches never hit
+  on today's inputs) — porting them through those stages is separate follow-on
+  work. (`test/parse_only_fixtures/` is now empty but retained for future
+  parse-only constructs blocked on a later stage.)
 
 ## Roadmap — remaining Stage 1 stages
 
@@ -277,7 +294,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 
 | # | Stage | ~LOC | Difficulty | In → Out | Validate via |
 |---|-------|------|-----------|----------|--------------|
-| 1 | ✅ **desugar** | ~980 | low–med | `program → program` | astdump `--desugar`, **60/60 corpus** |
+| 1 | ✅ **desugar** | ~980 | low–med | `program → program` | astdump `--desugar`, **95/95 corpus** |
 | 2 | ✅ **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve`, **full corpus + 9 fixtures** |
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
 | 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
@@ -286,15 +303,19 @@ Stage-0 prerequisites in `../PLAN.md`).
 
 1. ✅ **Desugar — DONE.** `selfhost/desugar.mdk` + `desugar_main.mdk`: the
    bottom-up `mapExpr`/`mapDecl` engine plus the passes `merge_iface_defaults →
-   expand_decl (Eq/Debug/Display/Generic deriving) → desugar_list_comps →
-   desugar_questions → lower_do_blocks → desugar_sugar`. Matches
-   `astdump --desugar` byte-for-byte on all 60 corpus files (incl. desugaring
-   its own source). Key wins that made it tractable: desugar is deterministic
-   with no stateful gensym (positional `__a%d` / fixed `__x`,`__fallthrough__`
-   names), and its output uses only nodes `sexp.mdk` already renders. Deferred
-   (unused by the corpus; the self-host AST lacks the `ESetLit`/`EMapLit` nodes
-   they target): record-pun desugaring, container-literal lowering, Ord/Arbitrary
-   deriving, and record deriving.
+   expand_decl (Eq/Debug/Display/Ord/Generic deriving) → desugar_record_puns →
+   lower_container_literals → desugar_list_comps → desugar_questions →
+   lower_do_blocks → desugar_sugar`. Matches `astdump --desugar` byte-for-byte on
+   the full corpus (95 files, incl. desugaring its own source). Key wins that made
+   it tractable: desugar is deterministic with no stateful gensym (positional
+   `__a%d` / fixed `__x`,`__fallthrough__` names), and its output uses only nodes
+   `sexp.mdk` already renders. **Phase-B nodes now ported** (see the parser
+   section): `DNewtype` deriving (synthetic single-variant data deriver),
+   `DAttrib` recursion, record-pun desugaring, container-literal lowering
+   (`EMapLit`/`ESetLit` → `fromEntries … :~`, the lowering target `EHeadAnnot`
+   added to `ast.mdk`/`sexp.mdk`), and `Ord` deriving (`deriveOrdData`). Still
+   deferred (unused by the corpus): record derives, `Arbitrary`, and newtype
+   `Num`/`Generic`.
    > **Prelude-access prerequisite (NEW — decided next).** Both resolve and
    > method_marker need the *prelude*'s names (resolve seeds prelude
    > value/type/ctor/interface names so a file using `map`/`eq` resolves clean;
