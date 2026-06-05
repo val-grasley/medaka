@@ -5852,6 +5852,50 @@ the parser port). Same class of constraint as not running `medaka fmt` on selfho
 files: selfhost source is bounded by what `parser.mdk` parses, not by what the
 language accepts.
 
+### Phase 142: `fmt` list-literal explosion mid-expression ✅ DONE (2026-06-05)
+
+When a guarded clause's RHS was slightly over 80 cols and ended with a short list
+literal argument, `medaka fmt` exploded the list onto three lines mid-expression:
+
+```
+  | otherwise = LetBind name (reverseL acc) :: coalesceGo n [
+    FunClause ps b
+  ] rest
+```
+
+The `] rest` tail is especially ugly — strictly worse than either a one-line
+may-overflow or a top-level operator break.
+
+**Root cause.** The `delimited` helper (lists `[…]`, arrays `[|…|]`, tuples `(…)`)
+wrapped its content in a plain `Group`. The render engine decides to break a `Group`
+when `fits(width - col) [group ++ trailing_items]` fails. At col 61 with ` rest`
+following `[FunClause ps b]`, the combined 22 chars exceeded the 19-char remaining
+budget — so the list broke. The list itself is only 16 chars flat (fits easily on a
+fresh line), but the renderer had no way to distinguish "the group is short, trailing
+tokens cause the overflow" from "the group is genuinely too wide."
+
+**Fix.** Introduced a `FlatGroup of doc` variant in the Doc IR (`lib/printer.ml`).
+`FlatGroup` adds one extra keep-flat condition on top of `Group`'s logic:
+
+```
+fits (width - i) [(i, Flat, d)]
+```
+
+"Does the group's own content fit on a fresh line at the current indent?" If yes,
+keep it flat regardless of what follows — the may-overflow cost is just the trailing
+tokens, not the group itself. Changed `delimited` to use `flat_group`. Regular
+`Group` (pipeline chains via `print_chain`, app-spine via `print_app_spine`) is
+unaffected — those still break normally, which is what `rt_wide_pipeline_splits`
+requires. Genuinely wide container literals (flat content > `width - i`) still break.
+
+The `coalesceStep` clause in `selfhost/parser.mdk` now formats as one 83-char line
+with `[FunClause ps b]` flat — consistent with Phase 124's "flat, may-overflow"
+policy for groups whose content fits at their indent level.
+
+**Tests.** `test/test_fmt.ml`: `fmt_guard_list_arg_no_explode` (asserts `[\n` absent,
+`[FunClause ps b]` present) + `id_guard_list_arg_no_explode` (idempotency). 87 fmt +
+139 roundtrip + 250 parser + 462 typecheck + 256 eval tests pass; `@thorough` clean.
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)

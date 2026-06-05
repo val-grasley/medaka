@@ -287,32 +287,6 @@ above, it is flagged ⭐.
   addresser correctly emitted `AGlobal` for the block-`let` self-reference,
   matching eval).
 
-- **Phase 142 — `fmt` explodes a list-literal argument when a guard RHS
-  overflows, instead of breaking the operator chain. TODO.** When a guarded
-  clause's RHS exceeds the width limit and ends in an application whose argument
-  is a short list literal, the formatter wraps the *list literal* onto its own
-  lines mid-expression rather than breaking the top-level operator chain (or
-  leaving the line long). Repro (`selfhost/parser.mdk`'s `coalesceStep`, after
-  the `rev`→`reverseL` rename pushed the line 1 char over 80):
-  ```
-  coalesceStep name acc n ps b rest
-    | n == name = coalesceGo name (FunClause ps b :: acc) rest
-    | otherwise = LetBind name (reverseL acc) :: coalesceGo n [
-      FunClause ps b
-    ] rest
-  ```
-  The `[FunClause ps b]` argument gets blown across three lines in the middle of
-  a `::` chain — strictly worse than either keeping the RHS on one (slightly
-  long) line or breaking at the top-level `::` (leading-op continuation, the form
-  the formatter already prefers elsewhere). **Where it lives:** the Doc IR
-  width-splitting in `lib/printer.ml` / `lib/fmt.ml` (cf. the "chains break only
-  in tail position" rule — here the splitter is descending into a bracketed
-  argument before exhausting the tail-position operator break). **Desired:**
-  prefer the operator-chain break over exploding a nested container-literal
-  argument; or don't explode a list literal whose elements fit. Surfaced by the
-  self-host style cleanup; the offending clause is left in guard form deliberately
-  so this stays reproducible.
-
 - **Phase 138 — clear error for a recursive *value* forced during its own
   definition (replace the `CamlinternalLazy.Undefined` leak). DONE
   (2026-06-03).** A non-function binding that references itself such that the

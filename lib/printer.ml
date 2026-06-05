@@ -26,10 +26,18 @@ type doc =
   | Hardline          (* always newline + indent *)
   | Nest of int * doc (* add n columns to the indent of contained breaks *)
   | Group of doc      (* flat if it fits the remaining width, else broken *)
+  (* Like Group, but also stays flat when the group's own content fits on a
+     fresh line at the current indent — regardless of trailing tokens.  Used
+     for container literals ([…], (…), [|…|]) so a short list/tuple/array
+     argument never explodes mid-expression just because trailing tokens push
+     past the width budget.  A genuinely wide literal (doesn't fit on a fresh
+     line) still breaks normally. *)
+  | FlatGroup of doc
 
 let ( ^^ ) a b = Cat (a, b)
 let text s = Text s
 let group d = Group d
+let flat_group d = FlatGroup d
 let nest d = Nest (2, d)               (* one 2-space indent step *)
 
 let rec sep_by sep = function
@@ -45,14 +53,16 @@ let concat ds = List.fold_left ( ^^ ) Nil ds
 let indent_block d = Nest (2, Hardline ^^ d)
 
 (* A comma-separated sequence inside `open`/`close` delimiters with no inner
-   padding (lists, arrays, tuples): `[a, b]` flat, one-per-line when broken. *)
+   padding (lists, arrays, tuples): `[a, b]` flat, one-per-line when broken.
+   Uses FlatGroup so a short literal does not explode mid-expression when only
+   trailing tokens push past the width budget. *)
 let delimited open_ close_ items =
   match items with
   | [] -> text open_ ^^ text close_
   | _ ->
-    group (text open_
-           ^^ nest (Softline ^^ sep_by (text "," ^^ Line) items)
-           ^^ Softline ^^ text close_)
+    flat_group (text open_
+                ^^ nest (Softline ^^ sep_by (text "," ^^ Line) items)
+                ^^ Softline ^^ text close_)
 
 (* A brace-delimited sequence with inner padding (record literals): `{ a, b }`
    flat, one-per-line when broken. *)
@@ -87,7 +97,8 @@ let render width doc =
       | (_, Break, Softline) :: _ -> true
       | (_, Break, Hardline) :: _ -> true
       | (_, Flat, Hardline)  :: _ -> false   (* a hardline forces the group to break *)
-      | (i, _, Group d)    :: z -> fits w ((i, Flat, d) :: z)
+      | (i, _, Group d)     :: z -> fits w ((i, Flat, d) :: z)
+      | (i, _, FlatGroup d) :: z -> fits w ((i, Flat, d) :: z)
   in
   let newline i =
     Buffer.add_char buf '\n';
@@ -116,6 +127,20 @@ let render width doc =
          settled on.  (A genuinely huge group after a >width prefix — rare, none
          in stdlib — stays flat too; shorten the prefix at the source instead.) *)
       if col >= width || fits (width - col) flat then go col flat
+      else go col ((i, Break, d) :: z)
+    | (i, _, FlatGroup d) :: z ->
+      let flat = (i, Flat, d) :: z in
+      (* FlatGroup extends the Phase-124 condition: also keep flat when the
+         group's own content fits on a fresh line at the current indent level,
+         even if trailing tokens push the total past the width budget.  This
+         prevents short container literals from exploding mid-expression —
+         e.g. `[FunClause ps b]` as an argument in a `::` chain that is
+         slightly over 80 cols.  A genuinely wide literal (whose flat content
+         alone exceeds width - i) still breaks normally. *)
+      if col >= width
+         || fits (width - col) flat
+         || fits (width - i) [(i, Flat, d)]
+      then go col flat
       else go col ((i, Break, d) :: z)
   in
   go 0 [ (0, Break, doc) ];
