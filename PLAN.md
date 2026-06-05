@@ -262,6 +262,37 @@ above, it is flagged ⭐.
   re-measure `parser.conflicts` since `::` continuation may interact with list
   patterns. Surfaced by the lexical-addressing emit session (STAGE2 §2.0).
 
+- **Phase 145 — an explicit selective `import M.{name}` does not shadow a
+  prelude binding of the same name. TODO.** A *local* top-level definition that
+  collides with a prelude name shadows it correctly, but an explicit selective
+  import of the same name does not — the call site still resolves to (and is
+  typechecked against) the prelude binding. Repro (two files in one dir):
+  ```
+  -- helper.mdk
+  export
+  apply : Int -> Int -> Int
+  apply x y = x + y
+  -- main.mdk
+  import helper.{apply}
+  main = println (apply 3 4)
+  -- → Type mismatch: a -> b vs Int
+  --   (the prelude `apply : (a -> <e> b) -> a -> <e> b` is used at the call site,
+  --    not helper's `apply : Int -> Int -> Int` — `3` is not a function)
+  ```
+  The control cases confirm the scope: a local `apply x y = …` defined directly in
+  `main.mdk` *does* shadow the prelude (prints `7`), and a non-colliding imported
+  name resolves fine — so the bug is specific to **imported names vs. the
+  auto-injected prelude**. **Where it lives:** name-binding precedence in
+  `lib/resolve.ml` (and `selfhost/resolve.mdk` for parity) — the implicit prelude
+  frame is being consulted before, or coalesced ahead of, an explicit selective
+  import. **Decision needed (design):** either (a) give an explicit `import
+  M.{name}` precedence over the prelude (the conventional rule — explicit beats
+  implicit), or (b) declare the prelude deliberately un-shadowable-by-import and
+  document the alias convention. **Workaround in use:** `selfhost/eval.mdk` exports
+  `applyValue = apply` so `selfhost/core_ir_eval.mdk` can import value-application
+  unambiguously. Surfaced by the STAGE2 §2.1 Core IR session (the Core-IR evaluator
+  importing `eval.{apply}` collided with the prelude's `apply`).
+
 - **Phase 143 — block-`let` is non-recursive while expression `let … in …` is
   recursive: same surface form, opposite recursion. TODO.** The identical syntax
   `let f x = … f …` recurses at expression position (parser emits `ELet _ True`,

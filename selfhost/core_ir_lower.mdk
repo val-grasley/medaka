@@ -1,0 +1,157 @@
+-- elaborated-AST → Core IR lowering (STAGE2-DESIGN §2.1).  Consumes the SAME
+-- desugared (and, on the typed path, marked + route-stamped) AST the tree-walker
+-- consumes, and produces `core_ir.mdk`'s backend-neutral IR.
+--
+-- The lowering is where the surface→primitive collapse happens (see core_ir.mdk
+-- header): `&&`/`||` become short-circuiting `CIf`, `|>` becomes `CApp`, the
+-- composition operators become explicit `CLam`s, type annotations are erased,
+-- and the typechecker's mutable dispatch `Ref Route` cells are *read out* into
+-- immutable `CMethod`/`CDict` nodes.  Everything else is a structural one-to-one
+-- map (the IR deliberately stays close to the core AST so the equivalence gate
+-- is a clean diff, not a rewrite).
+
+import ast.{Lit(..), Pat(..), Expr(..), Arm(..), Guard(..), DoStmt(..), FieldAssign(..), LetBind(..), FunClause(..), Addr(..), Decl(..), Variant(..), ConPayload(..)}
+import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CProgram(..)}
+import eval.{buildCtorToType}
+import util.{contains}
+
+-- a synthetic binder for the lowered composition operators; constructed
+-- directly (never parsed) so the unusual name is harmless.
+composeVar : String
+composeVar = "$cf"
+
+-- ── expressions ────────────────────────────────────────────────────────────
+export
+lower : Expr -> CExpr
+lower (ELit l) = CLit l
+lower (EVar x) = CVar x AGlobal
+lower (EVarAt x addr) = CVar x addr
+lower (EApp f x) = CApp (lower f) (lower x)
+lower (ELam pats body) = CLam pats (lower body)
+lower (ELet _ recFlag pat e1 e2) = CLet recFlag pat (lower e1) (lower e2)
+lower (ELetGroup binds body) = CLetGroup (map lowerBind binds) (lower body)
+lower (EMatch scrut arms) = CMatch (lower scrut) (map lowerArm arms)
+lower (EIf c t e) = CIf (lower c) (lower t) (lower e)
+lower (EBinOp op l r) = lowerBinop op l r
+lower (EInfix op l r) = CApp (CApp (CVar op AGlobal) (lower l)) (lower r)
+lower (EUnOp op e) = CUnOp op (lower e)
+lower (ETuple es) = CTuple (map lower es)
+lower (EListLit es) = CList (map lower es)
+lower (EArrayLit es) = CArray (map lower es)
+lower (ERangeList lo hi incl) = CRangeList (lower lo) (lower hi) incl
+lower (ERangeArray lo hi incl) = CRangeArray (lower lo) (lower hi) incl
+lower (EIndex a i) = CIndex (lower a) (lower i)
+lower (ESlice a lo hi incl) = CSlice (lower a) (lower lo) (lower hi) incl
+lower (EFieldAccess e f) = CFieldAccess (lower e) f
+lower (ERecordCreate name fields) = CRecord name (map lowerField fields)
+lower (ERecordUpdate base fields) = CRecordUpdate (lower base) (map lowerField fields)
+lower (EBlock stmts) = CBlock (map lowerStmt stmts)
+lower (EAnnot e _) = lower e
+lower (EHeadAnnot e _) = lower e
+-- dispatch: read the typechecker-filled route out of the mutable cell, making it
+-- structural + immutable in the IR (slice 5; present so the lowering is total).
+lower (EMethodAt name routeRef) = CMethod name routeRef.value
+lower (EDictAt name routesRef) = CDict name routesRef.value
+lower other = panic ("core_ir lower: unsupported node " ++ nodeTag other)
+
+-- surface binops that are really sugar are lowered to primitive control flow /
+-- application here; only the genuinely-primitive ops survive as CBinPrim.
+lowerBinop : String -> Expr -> Expr -> CExpr
+lowerBinop "&&" l r = CIf (lower l) (lower r) (CLit (LBool False))
+lowerBinop "||" l r = CIf (lower l) (CLit (LBool True)) (lower r)
+lowerBinop "|>" l r = CApp (lower r) (lower l)
+lowerBinop ">>" l r = composeLam (lower l) (lower r)
+lowerBinop "<<" l r = composeLam (lower r) (lower l)
+lowerBinop op l r = CBinPrim op (lower l) (lower r)
+
+-- (f >> g) ≡ \x -> g (f x).  composeLam first second ≡ \x -> second (first x).
+composeLam : CExpr -> CExpr -> CExpr
+composeLam first second =
+  CLam [PVar composeVar] (CApp second (CApp first (CVar composeVar AGlobal)))
+
+lowerArm : Arm -> CArm
+lowerArm (Arm pat guards body) = CArm pat (map lowerGuard guards) (lower body)
+
+lowerGuard : Guard -> CGuard
+lowerGuard (GBool e) = CGBool (lower e)
+lowerGuard (GBind p e) = CGBind p (lower e)
+
+lowerField : FieldAssign -> CField
+lowerField (FieldAssign k e) = CField k (lower e)
+
+lowerBind : LetBind -> CBind
+lowerBind (LetBind name clauses) = CBind name (map lowerClause clauses)
+
+lowerClause : FunClause -> CClause
+lowerClause (FunClause pats body) = CClause pats (lower body)
+
+lowerStmt : DoStmt -> CStmt
+lowerStmt (DoExpr e) = CSExpr (lower e)
+lowerStmt (DoLet b pat e) = CSLet b pat (lower e)
+lowerStmt (DoLetElse pat e alt) = CSLetElse pat (lower e) (lower alt)
+lowerStmt (DoAssign x e) = CSAssign x (lower e)
+lowerStmt _ = panic "core_ir lower: unsupported block statement"
+
+-- ── programs ───────────────────────────────────────────────────────────────
+-- Coalesce top-level multi-clause `DFunDef`s into one CBind per name (preserving
+-- first-appearance order, exactly as eval.mdk's funGroupNames), gather the ctor
+-- arity + ctor→type tables.  Interfaces/impls are slice-5 (no dispatch yet).
+export
+lowerProgram : List Decl -> CProgram
+lowerProgram prog =
+  let clauses = funClausesOf prog
+  let names = groupNames clauses []
+  let groups = map (n => CBind n (clausesFor n clauses)) names
+  CProgram groups (ctorArities prog) (buildCtorToType prog)
+
+funClausesOf : List Decl -> List (String, CClause)
+funClausesOf [] = []
+funClausesOf ((DFunDef _ n pats body)::rest) =
+  (n, CClause pats (lower body)) :: funClausesOf rest
+funClausesOf (_::rest) = funClausesOf rest
+
+groupNames : List (String, CClause) -> List String -> List String
+groupNames [] _ = []
+groupNames ((n, _)::rest) seen
+  | contains n seen = groupNames rest seen
+  | otherwise = n :: groupNames rest (n :: seen)
+
+clausesFor : String -> List (String, CClause) -> List CClause
+clausesFor _ [] = []
+clausesFor name ((n, c)::rest)
+  | n == name = c :: clausesFor name rest
+  | otherwise = clausesFor name rest
+
+ctorArities : List Decl -> List (String, Int)
+ctorArities [] = []
+ctorArities ((DData _ _ _ variants _)::rest) =
+  map variantArity variants ++ ctorArities rest
+ctorArities (_::rest) = ctorArities rest
+
+variantArity : Variant -> (String, Int)
+variantArity (Variant n payload) = (n, payloadArityL payload)
+
+payloadArityL : ConPayload -> Int
+payloadArityL (ConPos tys) = lengthL tys
+payloadArityL (ConNamed fs) = lengthL fs
+
+lengthL : List a -> Int
+lengthL [] = 0
+lengthL (_::xs) = 1 + lengthL xs
+
+-- a readable tag for the unsupported-node panic
+nodeTag : Expr -> String
+nodeTag (EQuestion _) = "EQuestion"
+nodeTag (ESection _) = "ESection"
+nodeTag (EFunction _) = "EFunction"
+nodeTag (EGuards _) = "EGuards"
+nodeTag (EDo _) = "EDo"
+nodeTag (EStringInterp _) = "EStringInterp"
+nodeTag (EListComp _ _) = "EListComp"
+nodeTag (EVariantUpdate _ _ _) = "EVariantUpdate"
+nodeTag (EMapLit _ _) = "EMapLit"
+nodeTag (ESetLit _ _) = "ESetLit"
+nodeTag (EAsPat _ _) = "EAsPat"
+nodeTag (EMethodRef _) = "EMethodRef"
+nodeTag (EDictApp _) = "EDictApp"
+nodeTag _ = "?"

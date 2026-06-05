@@ -1,0 +1,206 @@
+-- Core IR evaluator — STAGE2-DESIGN §2.1's "trivial Core-IR tree-walker" that
+-- closes the net-new-IR oracle gap by EQUIVALENCE: it evaluates the lowered Core
+-- IR and its stdout/pp_value is diffed against the AST tree-walker (eval.mdk /
+-- dev/eval_probe) over the whole fixture corpus.  Core IR is correct iff
+-- evaluating it matches evaluating the AST.
+--
+-- It deliberately REUSES eval.mdk's runtime — the host `Value`, environment,
+-- `apply`/dispatch/fall-through machinery, pattern matcher, arithmetic, externs
+-- and `pp_value` — exactly the "reuse the host Value/GC/externs" the design
+-- prescribes (Axis 2/§2.2).  A Core IR closure is a `VClosureF` (the host-fn
+-- closure added to eval.mdk), so multi-clause functions and guard fall-through
+-- run through the SAME `VMulti` + `VFallthrough` path the AST interpreter uses.
+--
+-- SLICE 1 (this file): the engine core — literals, lexically-addressed variables
+-- (resolved by name for now; the slot-indexing consume-half is 2.0's parked
+-- rework), application, lambdas, let / letrec / let-groups, match (with guards),
+-- if, primitive binops (arith / compare / `::` / `++`), unary ops, tuples,
+-- lists, ADT constructors + pattern matching, single- and multi-clause recursion.
+-- Deferred to later slices (panic with a clear tag): records / refs / arrays /
+-- ranges / index / slice / blocks (slice 3) and typeclass dispatch (slice 5).
+
+import ast.{Lit(..), Pat(..), Addr(..)}
+import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CBind(..), CClause(..), CProgram(..)}
+import eval.{
+  Value(..), EvalEnv(..), lookupEnv, extendEnv, pushFrame, findCell, applyValue,
+  matchPat, force, startsWithAt, evalArith, evalUnop, consVal, appendVal,
+  makeCtor, boolSeeds, externBindings, ctorToTypeRef, installConsts, cellResult,
+  lookupBinding, isNullary, ppValue
+}
+
+-- ── the evaluator ─────────────────────────────────────────────────────────
+export
+ceval : EvalEnv -> CExpr -> <Mut> Value
+ceval _ (CLit l) = litValue l
+ceval env (CVar x _) = if startsWithAt x then VUnit else lookupEnv env x
+ceval env (CApp f x) = applyValue (ceval env f) (ceval env x)
+ceval env (CLam pats body) = VClosureF env pats (e => ceval e body)
+ceval env (CLet True (PVar f) e1 e2) = cevalRecLet env f e1 e2
+ceval env (CLet _ pat e1 e2) = cevalLet env pat e1 e2
+ceval env (CLetGroup binds body) = cevalLetGroup env binds body
+ceval env (CMatch scrut arms) = cevalMatch env (ceval env scrut) arms
+ceval env (CIf c t e) = cevalIf env (ceval env c) t e
+ceval env (CBinPrim op l r) = cevalBinPrim op (ceval env l) (ceval env r)
+ceval env (CUnOp op e) = evalUnop op (ceval env e)
+ceval env (CTuple es) = VTuple (map (ceval env) es)
+ceval env (CList es) = VList (map (ceval env) es)
+ceval env (CBlock stmts) = cevalBlock env stmts
+ceval _ _ = panic "core_ir ceval: unsupported node (slice 1 — records/arrays/dispatch deferred)"
+
+litValue : Lit -> Value
+litValue (LInt n) = VInt n
+litValue (LFloat f) = VFloat f
+litValue (LString s) = VString s
+litValue (LChar c) = VChar c
+litValue (LBool b) = VBool b
+litValue LUnit = VUnit
+
+cevalBinPrim : String -> Value -> Value -> Value
+cevalBinPrim "::" l r = consVal l r
+cevalBinPrim "++" l r = appendVal l r
+cevalBinPrim op l r = evalArith op l r
+
+cevalIf : EvalEnv -> Value -> CExpr -> CExpr -> <Mut> Value
+cevalIf env (VBool True) t _ = ceval env t
+cevalIf env (VCon "True" []) t _ = ceval env t
+cevalIf env (VBool False) _ e = ceval env e
+cevalIf env (VCon "False" []) _ e = ceval env e
+cevalIf _ _ _ _ = panic "if condition is not a Bool"
+
+cevalMatch : EvalEnv -> Value -> List CArm -> <Mut> Value
+cevalMatch _ _ [] = panic "no matching clause in match"
+cevalMatch env sv ((CArm pat guards body)::rest) = match matchPat pat sv
+  None => cevalMatch env sv rest
+  Some binds => match cevalGuards (extendEnv env binds) guards
+    Some env2 => ceval env2 body
+    None => cevalMatch env sv rest
+
+cevalGuards : EvalEnv -> List CGuard -> <Mut> Option EvalEnv
+cevalGuards env [] = Some env
+cevalGuards env ((CGBool g)::qs) = match ceval env g
+  VBool True => cevalGuards env qs
+  VCon "True" [] => cevalGuards env qs
+  _ => None
+cevalGuards env ((CGBind p e)::qs) = match matchPat p (ceval env e)
+  Some b => cevalGuards (extendEnv env b) qs
+  None => None
+
+cevalRecLet : EvalEnv -> String -> CExpr -> CExpr -> <Mut> Value
+cevalRecLet env f e1 e2 =
+  let cell = Ref VUnit
+  let recEnv = pushFrame env [(f, cell)]
+  let v = ceval recEnv e1
+  let _ = set_ref cell v
+  ceval recEnv e2
+
+cevalLet : EvalEnv -> Pat -> CExpr -> CExpr -> <Mut> Value
+cevalLet env pat e1 e2 = match matchPat pat (ceval env e1)
+  None => panic "let pattern match failure"
+  Some binds => ceval (extendEnv env binds) e2
+
+-- ── bare sequential blocks (function-body `let` sequences, imperative IO) ───
+-- Mirrors eval.mdk's evalBlock: a block ending in a `let` yields VUnit; ending
+-- in an expr yields that expr.  (Mutable-cell `let mut` / Ref rebinding via
+-- DoAssign is carried for slice 3; slice-1 fixtures use only let + expr.)
+cevalBlock : EvalEnv -> List CStmt -> <Mut> Value
+cevalBlock _ [] = VUnit
+cevalBlock env [(CSExpr e)] = ceval env e
+cevalBlock env [(CSLet _ pat e)] = cBlockLetLast env pat e
+cevalBlock env ((CSExpr e)::rest) =
+  let _ = ceval env e
+  cevalBlock env rest
+cevalBlock env ((CSLet _ pat e)::rest) = cBlockLet env pat e rest
+cevalBlock env ((CSLetElse pat e alt)::rest) = cBlockLetElse env pat e alt rest
+cevalBlock env [(CSAssign _ e)] =
+  let _ = ceval env e
+  VUnit
+cevalBlock env ((CSAssign x e)::rest) =
+  cevalBlock (extendEnv env [(x, ceval env e)]) rest
+
+cBlockLetLast : EvalEnv -> Pat -> CExpr -> <Mut> Value
+cBlockLetLast env pat e = match matchPat pat (ceval env e)
+  None => panic "let pattern match failure in block"
+  Some _ => VUnit
+
+cBlockLet : EvalEnv -> Pat -> CExpr -> List CStmt -> <Mut> Value
+cBlockLet env pat e rest = match matchPat pat (ceval env e)
+  None => panic "let pattern match failure in block"
+  Some binds => cevalBlock (extendEnv env binds) rest
+
+cBlockLetElse : EvalEnv -> Pat -> CExpr -> CExpr -> List CStmt -> <Mut> Value
+cBlockLetElse env pat e alt rest = match matchPat pat (ceval env e)
+  None => ceval env alt
+  Some binds => cevalBlock (extendEnv env binds) rest
+
+-- ── let-groups (where / mutually-recursive coalesced bindings) ─────────────
+cevalLetGroup : EvalEnv -> List CBind -> CExpr -> <Mut> Value
+cevalLetGroup env binds body =
+  let cells = map cBindCell binds
+  let env2 = pushFrame env cells
+  let _ = cInstallGroup env2 cells binds
+  ceval env2 body
+
+cBindCell : CBind -> (String, Ref Value)
+cBindCell (CBind name _) = (name, Ref VUnit)
+
+cInstallGroup : EvalEnv -> List (String, Ref Value) -> List CBind -> <Mut> Unit
+cInstallGroup _ _ [] = ()
+cInstallGroup env cells ((CBind name clauses)::rest) =
+  let _ = set_ref (findCell cells name) (cGroupValue env clauses)
+  cInstallGroup env cells rest
+
+-- let-group binding value: a nullary single clause is eager (recursive let);
+-- multi-clause coalesces into a VMulti dispatched by arg pattern + fall-through.
+cGroupValue : EvalEnv -> List CClause -> <Mut> Value
+cGroupValue env [(CClause pats body)] =
+  if isNullary pats then ceval env body else cClauseClosure env (CClause pats body)
+cGroupValue env clauses = VMulti (map (cClauseClosure env) clauses)
+
+cClauseClosure : EvalEnv -> CClause -> Value
+cClauseClosure env (CClause pats body) = VClosureF env pats (e => ceval e body)
+
+-- ── program driver ─────────────────────────────────────────────────────────
+-- Mirror of eval.mdk's evalProgram, but installs Core IR groups.  A nullary
+-- top-level binding becomes a deferred VThunk (forced on first lookup) so
+-- point-free defs can reference values installed later, in any order.
+export
+cevalProgram : CProgram -> <Mut> List (String, Value)
+cevalProgram (CProgram groups ctorArs ctorToType) =
+  let _ = set_ref ctorToTypeRef ctorToType
+  let ctors = map ctorBinding ctorArs
+  let allNames = map fst boolSeeds
+    ++ map fst externBindings
+    ++ map fst ctors
+    ++ map cBindName groups
+  let cells = map (n => (n, Ref VUnit)) allNames
+  let env = EvalEnv [cells]
+  let _ = installConsts cells boolSeeds
+  let _ = installConsts cells externBindings
+  let _ = installConsts cells ctors
+  let _ = cInstallTopGroups env cells groups
+  map cellResult cells
+
+ctorBinding : (String, Int) -> (String, Value)
+ctorBinding (name, arity) = (name, makeCtor name arity)
+
+cBindName : CBind -> String
+cBindName (CBind n _) = n
+
+cInstallTopGroups : EvalEnv -> List (String, Ref Value) -> List CBind -> <Mut> Unit
+cInstallTopGroups _ _ [] = ()
+cInstallTopGroups env cells ((CBind n clauses)::rest) =
+  let _ = set_ref (findCell cells n) (cTopGroupValue env clauses)
+  cInstallTopGroups env cells rest
+
+cTopGroupValue : EvalEnv -> List CClause -> Value
+cTopGroupValue env [(CClause pats body)]
+  | isNullary pats = VThunk (_ => ceval env body)
+  | otherwise = VClosureF env pats (e => ceval e body)
+cTopGroupValue env clauses = VMulti (map (cClauseClosure env) clauses)
+
+-- ── entry point (pure-value path, diffed via pp_value of `main`) ───────────
+export
+cevalMain : CProgram -> <Mut> String
+cevalMain prog = match lookupBinding "main" (cevalProgram prog)
+  Some v => ppValue (force v)
+  None => panic "core_ir eval: no `main` binding"

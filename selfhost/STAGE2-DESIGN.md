@@ -361,6 +361,42 @@ reference. The reference is the tree-walker (`eval_modules` / `eval_probe` and t
   evaluates the lowered IR; diff its stdout against the AST tree-walker over the
   whole corpus. Core IR is correct iff evaluating it matches evaluating the AST —
   the same "AST→AST validated by re-running" shape desugar/mark used.
+  - **SLICE 1 DONE (2026-06-05).** New files: `core_ir.mdk` (the IR type),
+    `core_ir_lower.mdk` (`lower`/`lowerProgram` — elaborated AST → Core IR),
+    `core_ir_eval.mdk` (the direct Core-IR tree-walker `ceval`/`cevalProgram`),
+    `core_ir_main.mdk` (driver: parse → desugar → `annotateProgram` → lower →
+    eval). Gate: `test/diff_selfhost_core_ir.sh` diffs `pp_value` against
+    `dev/eval_probe.exe` (the AST tree-walker) over the 9 prelude-free engine
+    fixtures in `test/eval_fixtures/` the slice covers — **9/9 byte-identical**.
+    Engine core covered: literals, lexically-addressed vars, application,
+    lambdas, let/letrec/let-groups, match (+guards, fall-through), if, primitive
+    binops, unary ops, tuples, lists, ADTs, blocks, externs, single-/multi-clause
+    recursion. The Core-IR evaluator REUSES eval.mdk's host runtime (`Value`,
+    env, `apply`/dispatch/fall-through, `matchPat`, externs, `pp_value`) — the
+    only eval.mdk change is one additive `Value` variant `VClosureF EvalEnv
+    (List Pat) (EvalEnv -> <Mut> Value)` (the host-fn closure the IR evaluator
+    builds, so multi-clause/guard fall-through run the SAME `VMulti`+
+    `VFallthrough` path) plus the helper `export`s it imports; all existing eval
+    harnesses stay byte-identical. Axis-1 discipline honoured: the IR lives above
+    any ISA, and the surface→primitive collapse is real — `&&`/`||`→`CIf`,
+    `|>`→`CApp`, `>>`/`<<`→`CLam`, type annotations erased, the typechecker's
+    mutable `Ref Route` dispatch cells *read out* into immutable `CMethod`/`CDict`.
+    Lexical addressing is wired: `annotateProgram` (2.0's EMIT half) rewrites
+    every `EVar`→`EVarAt`, so each `CVar` carries a real `Addr` (empirically
+    confirmed — panicking the plain-`EVar` lowering arm still passes 9/9). The
+    slot-indexing *consume* half is still 2.0's parked rework, so `ceval` resolves
+    by name; the addresses ride along unconsumed, exactly as `EVarAt` does in the
+    tree-walker.
+  - **SLICE 1 REMAINING / next slices.** Decision-tree match *compilation* is not
+    yet done — `CMatch` carries ordered arms (semantically identical, so the gate
+    holds); compiling them to a decision tree (from `exhaust.mdk`) is a
+    behaviour-preserving refinement within 2.1. Deferred fixtures (panic with a
+    clear slice tag today): records/refs/arrays/ranges/index/slice/`let mut`
+    (slice 3 nodes are in the IR type + lowering already, just not in `ceval`),
+    and typeclass dispatch (`CMethod`/`CDict` lowering is done; installing impls
+    into the Core-IR driver is slice 5). Broaden the gate to the full
+    `eval_fixtures` set (and `eval_list`/`eval_prelude`/`eval_typed`/`eval_modules`
+    corpora) as those land.
 
 **2.2 — Bytecode compiler + VM, slice by slice.** Compile Core IR → bytecode; the
 VM interprets it reusing the host `Value` ([`eval.mdk:18`](eval.mdk:18)),
