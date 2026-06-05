@@ -275,3 +275,22 @@ assoc_opt FList scans + Hashtbl find_opt/key_index/hash on globals) ≈ ~28% +
   the same section() pattern but are tiny — quadratic there is negligible, skip.
   The mark PROCESS residual (6.66s) is match_pat/env-lookup interpretation = the
   parked slot-indexed-env structural lever.
+
+### 2026-06-04 — batch desugar harness (backlog #1, RE-OPENED)
+- cmd: `sh test/diff_selfhost_desugar_batch.sh`  (vs original `..._desugar.sh`)
+- Backlog #1 originally concluded "batching won't help desugar — per-file parse
+  of big selfhost files dominates." That was measured pre-env-Hashtbl (parser.mdk
+  desugar was 13.43s then). AFTER the env-Hashtbl win (parser 0.74s), per-file is
+  cheap and the ~92× per-process module-load overhead dominates → batching DOES
+  help now. (Lesson: a measured finding can expire when an upstream win changes
+  the calculus — re-test backlog items after big wins.)
+- selfhost/desugar_batch.mdk (load parser/desugar/sexp once, loop files,
+  `===SELFHOST-DESUGAR===` sections) + batch harness with single-pass awk split.
+- before: 9.43s   after: **6.11s**  (1.54×)
+- decomposed: batch desugar process 5.20s (real interpretation), astdump oracle
+  loop 0.34s, ~0.57s shell. Fixed per-proc overhead was ~0.04s/proc (×92 ≈ 3.3s
+  saved), not the 0.10s I'd estimated (that included the tiny file's own work).
+- correctness: 94 matched, 0 differing; mark_batch 94 matched (new .mdk parses).
+- committed: 0521899
+- Residual 5.20s = per-file desugar interpretation (parser/typecheck/eval bodies)
+  = the parked slot-indexed-env structural lever.
