@@ -9,8 +9,8 @@
 -- traversal engine (mirror of `map_expr`/`map_decl`): a rewrite `f` is applied
 -- post-order (children first, then the node).
 
-import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
-import util.{listLen}
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Attr, Decl(..)}
+import util.{listLen, contains, allList, concatMapList}
 
 -- ── Bottom-up traversal engine (mirror of map_expr / map_decl) ────────────
 -- `mapExpr f e` rewrites every subexpression of `e` with `f`, post-order: the
@@ -56,7 +56,13 @@ mapKids f (EGuards arms) = EGuards (map (mapGuardArm f) arms)
 mapKids f (EFunction arms) = EFunction (map (mapArm f) arms)
 mapKids f (ESection (SecRight op e0)) = ESection (SecRight op (mapExpr f e0))
 mapKids f (ESection (SecLeft e0 op)) = ESection (SecLeft (mapExpr f e0) op)
+mapKids f (EMapLit n kvs) = EMapLit n (map (mapKv f) kvs)
+mapKids f (ESetLit n es) = ESetLit n (map (mapExpr f) es)
+mapKids f (EHeadAnnot e0 t) = EHeadAnnot (mapExpr f e0) t
 mapKids _ e = e
+
+mapKv : (Expr -> Expr) -> (Expr, Expr) -> (Expr, Expr)
+mapKv f (k, v) = (mapExpr f k, mapExpr f v)
 
 mapArm : (Expr -> Expr) -> Arm -> Arm
 mapArm f (Arm p gs b) = Arm p (map (mapGuard f) gs) (mapExpr f b)
@@ -102,6 +108,7 @@ mapDecl f (d@DImpl { methods, ... }) = DImpl { d | methods = map (mapImplMethod 
 mapDecl f (DProp pub name params body) = DProp pub name params (mapExpr f body)
 mapDecl f (DTest pub name body) = DTest pub name (mapExpr f body)
 mapDecl f (DBench pub name body) = DBench pub name (mapExpr f body)
+mapDecl f (DAttrib attrs d) = DAttrib attrs (mapDecl f d)
 mapDecl _ d = d
 
 mapIfaceMethod : (Expr -> Expr) -> IfaceMethod -> IfaceMethod
@@ -274,16 +281,26 @@ lcLam pat acc
   | otherwise = ELam [pat] acc
 
 -- ── Pass: expand_decl (`deriving` → generated impls) ──────────────────────
--- Mirror of lib/desugar.ml's expand_decl + the Eq/Debug/Display/Generic
--- derivers.  A `data` with derives becomes the decl (derives cleared) followed
--- by one generated impl per derived interface.  Generated bodies are core (no
--- sugar), so they pass through the later passes unchanged.  Generated names are
+-- Mirror of lib/desugar.ml's expand_decl + the Eq/Debug/Display/Ord/Generic
+-- derivers.  A `data`/`newtype` with derives becomes the decl (derives cleared)
+-- followed by one generated impl per derived interface; a `newtype` derives via
+-- a synthetic single-variant data deriver.  Generated bodies are core (no sugar),
+-- so they pass through the later passes unchanged.  Generated names are
 -- positional (`__a%d`/`__b%d`) — deterministic, matching the reference.
--- (Record derives and Ord/Arbitrary are not exercised by the corpus → deferred.)
+-- (Record derives, Arbitrary, and newtype Num/Generic are not exercised by the
+-- corpus → deferred.)
 expandDecl : Decl -> List Decl
 expandDecl (DData vis name params variants derives) = DData vis name params variants [] :: deriveImpls (deriveForData name params variants) derives
 expandDecl (DRecord vis name params fields derives) = DRecord vis name params fields [] :: deriveImpls (deriveForRecord name params fields) derives
+expandDecl (DNewtype vis name params con fty derives) = DNewtype vis name params con fty [] :: deriveImpls (deriveForNewtype name params con fty) derives
+expandDecl (DAttrib attrs d) = attribHead attrs (expandDecl d)
 expandDecl d = [d]
+
+-- DAttrib wraps a single decl; expanding the inner decl may yield generated
+-- impls — keep the attribute on the head, leave the impls bare (lib/desugar.ml).
+attribHead : List Attr -> List Decl -> List Decl
+attribHead _ [] = []
+attribHead attrs (first::rest) = DAttrib attrs first :: rest
 
 deriveImpls : (String -> Option Decl) -> List String -> List Decl
 deriveImpls _ [] = []
@@ -306,6 +323,23 @@ deriveForData _ _ _ _ = None
 
 deriveForRecord : String -> List String -> List Field -> String -> Option Decl
 deriveForRecord _ _ _ _ = None
+
+-- A newtype is structurally a single-constructor, single-field data type, so the
+-- data derivers produce the right tagged rendering via a synthetic variant.
+-- (Num/Generic use specialized derivers in lib/desugar.ml — not exercised by the
+-- corpus, so deferred; the corpus only derives Eq/Ord/Debug/Display.)
+deriveForNewtype : String -> List String -> String -> Ty -> String -> Option Decl
+deriveForNewtype name params con fty iface =
+  let synthetic = [Variant con (ConPos [fty])]
+  match iface
+    "Eq" => Some (applyDeriveParams name params (deriveEqData name synthetic))
+    "Ord" => Some (applyDeriveParams name params (deriveOrdData name synthetic))
+    "Debug" =>
+      Some (applyDeriveParams name params (deriveShowData "Debug" "debug" name synthetic))
+    "Display" =>
+      Some
+        (applyDeriveParams name params (deriveShowData "Display" "display" name synthetic))
+    _ => None
 
 -- rewrite a generated impl's head/constraints for the type's params:
 -- `data Box a deriving Eq` → `impl Eq (Box a) requires Eq a`
@@ -433,6 +467,74 @@ andLeft : Expr -> List Expr -> Expr
 andLeft acc [] = acc
 andLeft acc (e::rest) = andLeft (EBinOp "&&" acc e) rest
 
+-- Ord: one arm per (i, vi)×(j, vj) constructor pair.  Different constructors
+-- compare by declaration order (Lt/Gt); same constructor compares fields
+-- lexicographically.  Mirror of lib/desugar.ml's derive_ord_data.
+deriveOrdData : String -> List Variant -> Decl
+deriveOrdData name variants = DImpl {
+  pub = True,
+  def = False,
+  iface = "Ord",
+  tys = [TyCon name],
+  name = None,
+  reqs = [],
+  methods = [
+    ImplMethod "compare" [
+      PVar "__x",
+      PVar "__y"
+    ] (EMatch (ETuple [EVar "__x", EVar "__y"]) (ordArms variants))
+  ]
+}
+
+ordArms : List Variant -> List Arm
+ordArms variants =
+  let indexed = indexFrom 0 variants
+  concatMapList (ordRow indexed) indexed
+
+indexFrom : Int -> List a -> List (Int, a)
+indexFrom _ [] = []
+indexFrom i (x::xs) = (i, x) :: indexFrom (i + 1) xs
+
+ordRow : List (Int, Variant) -> (Int, Variant) -> List Arm
+ordRow indexed (i, vi) = map (ordCell i vi) indexed
+
+ordCell : Int -> Variant -> (Int, Variant) -> Arm
+ordCell i vi (j, vj) =
+  let avars = genVars "__a" (conArity vi)
+  let bvars = genVars "__b" (conArity vj)
+  Arm
+    (PTuple [
+      conPatVars (variantName vi) avars,
+      conPatVars (variantName vj) bvars
+    ])
+    []
+    (ordBody i j avars bvars)
+
+ordBody : Int -> Int -> List String -> List String -> Expr
+ordBody i j avars bvars
+  | i < j = EVar "Lt"
+  | i > j = EVar "Gt"
+  | otherwise = lexCompareExprs (zipExprPairs avars bvars)
+
+variantName : Variant -> String
+variantName (Variant n _) = n
+
+zipExprPairs : List String -> List String -> List (Expr, Expr)
+zipExprPairs [] _ = []
+zipExprPairs _ [] = []
+zipExprPairs (a::arest) (b::brest) = (EVar a, EVar b) :: zipExprPairs arest brest
+
+-- Lexicographic chain: `compare a b` per pair, short-circuiting on the first
+-- non-Eq result.  Mirror of lib/desugar.ml's lex_compare_exprs.
+lexCompareExprs : List (Expr, Expr) -> Expr
+lexCompareExprs [] = EVar "Eq"
+lexCompareExprs [(ea, eb)] = EApp (EApp (EVar "compare") ea) eb
+lexCompareExprs ((ea, eb)::rest) =
+  EMatch (EApp (EApp (EVar "compare") ea) eb) [
+    Arm (PCon "Eq" []) [] (lexCompareExprs rest),
+    Arm (PVar "__c") [] (EVar "__c")
+  ]
+
 -- Generic: one arm per constructor → RCon name [to_rep a0, …]
 deriveGenericData : String -> List Variant -> Decl
 deriveGenericData name variants = DImpl {
@@ -517,15 +619,70 @@ concatLists : List (List a) -> List a
 concatLists [] = []
 concatLists (xs::rest) = xs ++ concatLists rest
 
+-- ── Pass: desugar_record_puns ────────────────────────────────────────────
+-- `Name { a, b }` (all bare vars, no `=`) parses as ESetLit; when Name is a
+-- record type this is pun sugar for `Name { a = a, b = b }` → ERecordCreate.
+-- Runs before container-literal lowering so genuine Map/Set literals remain.
+-- Mirror of lib/desugar.ml's desugar_record_puns.
+desugarRecordPuns : List Decl -> List Decl
+desugarRecordPuns prog = mapProg (rewriteRecordPun (collectRecordNames prog)) prog
+
+collectRecordNames : List Decl -> List String
+collectRecordNames [] = []
+collectRecordNames (DRecord _ name _ _ _ :: rest) = name :: collectRecordNames rest
+collectRecordNames (_ :: rest) = collectRecordNames rest
+
+rewriteRecordPun : List String -> Expr -> Expr
+rewriteRecordPun recordNames (ESetLit name items)
+  | contains name recordNames && listLen items > 0 && allList isVarExpr items =
+      ERecordCreate name (map punField items)
+rewriteRecordPun _ e = e
+
+isVarExpr : Expr -> Bool
+isVarExpr (EVar _) = True
+isVarExpr _ = False
+
+punField : Expr -> FieldAssign
+punField (EVar n) = FieldAssign n (EVar n)
+punField _ = FieldAssign "" (EVar "")
+
+-- ── Pass: lower_container_literals ────────────────────────────────────────
+--   Map { k1 => v1, … }  ⇒  (fromEntries [(k1, v1), …] :~ Name _k _v)
+--   Set { e1, … }        ⇒  (fromEntries [e1, …]       :~ Name _a)
+-- The `:~` head-pin (EHeadAnnot) fixes the result type so `fromEntries`
+-- dispatches by the literal's named type.  Mirror of lib/desugar.ml's
+-- lower_container_literals (runs after record puns).
+lowerContainerLiterals : List Decl -> List Decl
+lowerContainerLiterals prog = mapProg rewriteContainerLit prog
+
+rewriteContainerLit : Expr -> Expr
+rewriteContainerLit (EMapLit name kvs) =
+  EHeadAnnot (EApp (EVar "fromEntries") (EListLit (map kvToTuple kvs)))
+             (pinType name [TyVar "_k", TyVar "_v"])
+rewriteContainerLit (ESetLit name items) =
+  EHeadAnnot (EApp (EVar "fromEntries") (EListLit items)) (pinType name [TyVar "_a"])
+rewriteContainerLit e = e
+
+kvToTuple : (Expr, Expr) -> Expr
+kvToTuple (k, v) = ETuple [k, v]
+
+pinType : String -> List Ty -> Ty
+pinType name args = pinTypeGo (TyCon name) args
+
+pinTypeGo : Ty -> List Ty -> Ty
+pinTypeGo acc [] = acc
+pinTypeGo acc (t::ts) = pinTypeGo (TyApp acc t) ts
+
 -- ── The pass pipeline ─────────────────────────────────────────────────────
--- Ported incrementally, in the reference order (later passes run last).  So
--- far: expand_decl → desugar_list_comps → lower_do_blocks → desugar_sugar.
--- Coming (earlier/between): merge_iface_defaults, record puns, container
--- literals; and `?` (desugar_questions) which the real corpus never exercises.
+-- Ported in the reference order (later passes run last): merge_iface_defaults →
+-- expand_decl → desugar_record_puns → lower_container_literals →
+-- desugar_list_comps → desugar_questions → lower_do_blocks → desugar_sugar.
 export
 desugar : List Decl -> List Decl
 desugar prog = mergeIfaceDefaults prog
   |> concatMapDecl expandDecl
+  |> desugarRecordPuns
+  |> lowerContainerLiterals
   |> mapProg rewriteListComp
   |> mapProg rewriteQuestion
   |> mapProg rewriteDo

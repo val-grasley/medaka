@@ -159,6 +159,23 @@ differential harness on the interpreter.
   ("Unterminated string literal") — so it isn't valid Medaka and there's nothing
   to mirror.
 
+- **Self-processing closure — done.** The decisive "the compiler processes its
+  own source" milestone (`selfhost/README.md` §"The bootstrap (#3)"), validated by
+  `sh test/diff_selfhost_selfproc.sh` in two legs over `all_modules_entry.mdk`:
+  (A) the self-hosted multi-module **front-end** typechecks all 12 selfhost
+  modules of its own source and matches the OCaml reference
+  (`dev/tc_module_probe.exe`) byte-for-byte; (B) the self-hosted **eval engine**
+  (`eval.mdk`'s untyped `evalModules`) executes a real selfhost stage module (the
+  lexer) identically to the `eval_modules` oracle. Leg B needed one minimal
+  additive fix: `arrayMakeWith` was missing from the self-hosted eval's primitive
+  table (`selfhost/eval.mdk`). **Filed limitation (separate step):** Leg B stops at
+  the lexer — the parser/typecheck stages use return-position `Parser`-monad
+  dispatch (`pure`/`andThen`) the **untyped** `eval_modules` path can't resolve
+  (panics `no matching clause in application`). Running those stages through the
+  self-hosted eval needs the *typed* self-hosted eval path (marker + RKey/dict
+  routing; today only the partial `eval_dict` slice exists) — a larger bootstrap
+  step, deliberately not attempted here.
+
   **Next: the remaining pipeline stages** (`desugar → resolve → method_marker →
   typecheck/exhaust → eval`). A high-level, stage-by-stage port plan — ordering,
   per-stage difficulty, and how each stays differentially testable against the

@@ -104,6 +104,7 @@ exprSexp (EQuestion e) = node "EQuestion" [exprSexp e]
 exprSexp (EFunction arms) = node "EFunction" (map armSexp arms)
 exprSexp (EIndex a i) = node "EIndex" [exprSexp a, exprSexp i]
 exprSexp (EAnnot e t) = node "EAnnot" [exprSexp e, tySexp t]
+exprSexp (EHeadAnnot e t) = node "EHeadAnnot" [exprSexp e, tySexp t]
 exprSexp (EBlock stmts) = node "EBlock" (map doStmtSexp stmts)
 exprSexp (EDo stmts) = node "EDo" (map doStmtSexp stmts)
 exprSexp (EStringInterp parts) = node "EStringInterp" (map interpPartSexp parts)

@@ -65,6 +65,7 @@ diagnostics dumper, plus `--resolve-modules <mod...>` for the multi-module
 ```sh
 dune build --root .                       # build the reference binary
 sh test/diff_selfhost_lexer.sh            # diff the Medaka lexer vs OCaml goldens
+sh test/diff_selfhost_selfproc.sh         # the bootstrap (#3) self-processing gate (~6s)
 ```
 
 The harness runs the Medaka lexer over every fixture in `test/diff_fixtures/`
@@ -211,22 +212,39 @@ the stage is done when all pass.
   surface both parsers still reject is nested interpolation / (untested)
   triple-quote edge cases — genuinely lexer-side, not a parser gap.
 
-  **⚠️ Remaining work — the new AST nodes are parser-only.** The six Phase-B
+  **✅ Desugar + method_marker now port the Phase-B nodes.** The seven Phase-B
   nodes above (`DTypeAlias`, `DNewtype`, `DLetGroup`, `DAttrib`, `EMapLit`,
-  `ESetLit`, and `EAsPat`) are produced by `parser.mdk` and serialized by
-  `sexp.mdk`, but the **downstream self-host stages don't handle them yet** —
-  `desugar.mdk`/`marker.mdk`/`resolve.mdk`/`typecheck.mdk`/`eval.mdk` have no
-  clauses for them (non-exhaustive matches that are simply never hit on today's
-  inputs). Porting each node through those stages (mirroring how `lib/desugar.ml`
-  lowers `EMapLit`/`ESetLit`/`DNewtype`/etc.) is follow-on work, tracked per
-  stage in the roadmap below. **Consequence for fixtures:** Phase-B parser
-  fixtures live in a dedicated `test/parse_only_fixtures/` dir (read only by
-  `diff_selfhost_parse.sh`), NOT in the shared `test/parse_fixtures/` corpus —
-  the latter is also consumed by `diff_selfhost_{desugar,mark}.sh`, which would
-  break on a node their stage can't process. Phase-A fixtures (built only from
-  already-handled AST nodes) live in `test/parse_fixtures/hardening.mdk` as
-  usual. When a downstream stage learns to handle one of the Phase-B nodes, its
-  fixtures can graduate from `parse_only_fixtures/` into the shared corpus.
+  `ESetLit`, `EAsPat`) are now handled by `selfhost/desugar.mdk` and (by reusing
+  the same `mapProg` engine) `selfhost/marker.mdk`, byte-for-byte with the OCaml
+  reference (`astdump --desugar`/`--mark`):
+  - `DTypeAlias`/`DLetGroup` pass through unchanged (the reference's `map_decl`
+    leaves them untraversed too — its catch-all — so a method ref inside a
+    top-level `let rec … with` body is left un-marked on *both* sides);
+  - `DNewtype` deriving expands to generated `impl`s via a synthetic
+    single-variant data deriver (`deriveForNewtype` → Eq/Ord/Debug/Display;
+    `deriveOrdData`/`lexCompareExprs` added; Num/Generic newtype derivers stay
+    deferred — unused by the corpus);
+  - `DAttrib` recurses through `expandDecl`/`mapDecl` (attribute stays on the
+    head decl, generated impls trail it bare);
+  - `EMapLit`/`ESetLit` lower to `(fromEntries [...] :~ Name …)` via
+    `lowerContainerLiterals` (after `desugarRecordPuns` rewrites `Name { a, b }`
+    record-pun braces to `ERecordCreate`); this required adding the **`EHeadAnnot`**
+    node to `ast.mdk`/`sexp.mdk` (the lowering's `:~` head-pin target);
+  - `EAsPat` needs no desugar clause — the parser's `exprToPat` already lowers
+    `xs@rest =>` to `PAs`, so it never reaches a desugar/mark dump (same as the
+    reference, whose `astdump.ml` has no `EAsPat` case).
+
+  Accordingly the lone Phase-B fixture (`decls_extra.mdk`) has **graduated** from
+  `test/parse_only_fixtures/` into the shared `test/parse_fixtures/` corpus, now
+  consumed clean by `diff_selfhost_{parse,desugar,mark}.sh` (25/95/95). Phase-A
+  fixtures (built only from already-handled AST nodes) live in
+  `test/parse_fixtures/hardening.mdk` as usual.
+
+  **⚠️ Still parser-only downstream of mark:** `resolve.mdk`/`typecheck.mdk`/
+  `eval.mdk` have no clauses for these nodes yet (non-exhaustive matches never hit
+  on today's inputs) — porting them through those stages is separate follow-on
+  work. (`test/parse_only_fixtures/` is now empty but retained for future
+  parse-only constructs blocked on a later stage.)
 
 ## Roadmap — remaining Stage 1 stages
 
@@ -279,7 +297,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 
 | # | Stage | ~LOC | Difficulty | In → Out | Validate via |
 |---|-------|------|-----------|----------|--------------|
-| 1 | ✅ **desugar** | ~980 | low–med | `program → program` | astdump `--desugar`, **60/60 corpus** |
+| 1 | ✅ **desugar** | ~980 | low–med | `program → program` | astdump `--desugar`, **95/95 corpus** |
 | 2 | ✅ **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve`, **full corpus + 9 fixtures** |
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
 | 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
@@ -288,15 +306,19 @@ Stage-0 prerequisites in `../PLAN.md`).
 
 1. ✅ **Desugar — DONE.** `selfhost/desugar.mdk` + `desugar_main.mdk`: the
    bottom-up `mapExpr`/`mapDecl` engine plus the passes `merge_iface_defaults →
-   expand_decl (Eq/Debug/Display/Generic deriving) → desugar_list_comps →
-   desugar_questions → lower_do_blocks → desugar_sugar`. Matches
-   `astdump --desugar` byte-for-byte on all 60 corpus files (incl. desugaring
-   its own source). Key wins that made it tractable: desugar is deterministic
-   with no stateful gensym (positional `__a%d` / fixed `__x`,`__fallthrough__`
-   names), and its output uses only nodes `sexp.mdk` already renders. Deferred
-   (unused by the corpus; the self-host AST lacks the `ESetLit`/`EMapLit` nodes
-   they target): record-pun desugaring, container-literal lowering, Ord/Arbitrary
-   deriving, and record deriving.
+   expand_decl (Eq/Debug/Display/Ord/Generic deriving) → desugar_record_puns →
+   lower_container_literals → desugar_list_comps → desugar_questions →
+   lower_do_blocks → desugar_sugar`. Matches `astdump --desugar` byte-for-byte on
+   the full corpus (95 files, incl. desugaring its own source). Key wins that made
+   it tractable: desugar is deterministic with no stateful gensym (positional
+   `__a%d` / fixed `__x`,`__fallthrough__` names), and its output uses only nodes
+   `sexp.mdk` already renders. **Phase-B nodes now ported** (see the parser
+   section): `DNewtype` deriving (synthetic single-variant data deriver),
+   `DAttrib` recursion, record-pun desugaring, container-literal lowering
+   (`EMapLit`/`ESetLit` → `fromEntries … :~`, the lowering target `EHeadAnnot`
+   added to `ast.mdk`/`sexp.mdk`), and `Ord` deriving (`deriveOrdData`). Still
+   deferred (unused by the corpus): record derives, `Arbitrary`, and newtype
+   `Num`/`Generic`.
    > **Prelude-access prerequisite (NEW — decided next).** Both resolve and
    > method_marker need the *prelude*'s names (resolve seeds prelude
    > value/type/ctor/interface names so a file using `map`/`eq` resolves clean;
@@ -596,9 +618,41 @@ top-level fn), not by porting effect inference.
    `EvalEnv` (resolve.mdk keeps its `record Env`), so a future driver co-loading
    **both** resolve and eval (the full pipeline incl. eval — not the front-end,
    which omits eval) no longer collides on the globally-installed constructor.
-3. **Self-processing target.** Run a selfhost stage's output through the
-   self-hosted pipeline and diff against the reference — the "it checks/runs
-   itself" closure.
+3. ✅ **Self-processing target — DONE.** The "it checks/runs itself" closure,
+   validated by **`test/diff_selfhost_selfproc.sh`** (the consolidated milestone
+   harness) in two legs, using `all_modules_entry.mdk` as the aggregate entry:
+
+   - **Leg A — front-end "checks itself" (the decisive closure).** ONE run of
+     `check_all_main.mdk` over `all_modules_entry.mdk` feeds the **whole** selfhost
+     source through the self-hosted multi-module front-end (loader → desugar →
+     `checkModules`); every module's inferred schemes are diffed against the OCaml
+     reference (`dev/tc_module_probe.exe`, real Loader + threaded
+     `typecheck_module`). The self-hosted front-end is itself **executed by the
+     OCaml `eval_modules` oracle** (`medaka run check_all_main.mdk …`), so a pass
+     means: *self-hosted front-end (run on eval_modules) == OCaml-native front-end,
+     for all 12 modules of its own source.* (This is the union-closure form of
+     `diff_selfhost_check_modules_batch.sh`, promoted to the milestone gate.)
+   - **Leg B — eval engine "runs itself."** A real selfhost **stage module** (the
+     lexer) is executed through the **self-hosted** eval path (`eval.mdk`'s
+     `evalModules`, the untyped per-module-frame tree-walker) over an embedded
+     Medaka snippet (`selfhost/selfproc_lex_probe.mdk`), and its token stream is
+     diffed against the `eval_modules` oracle (`medaka run <probe>`). Byte-identical
+     output proves the self-hosted evaluator correctly **executes** a real selfhost
+     stage. This required one minimal additive fix to the self-hosted eval's
+     primitive table — `arrayMakeWith` (a higher-order extern: it applies the
+     builder `Value` back through `apply`, hence `<Mut>`) was missing, so any
+     self-hosted eval of the lexer (`lexer.mdk:278`) or `eval.mdk`'s own slice path
+     (`eval.mdk:681`) previously panicked `unbound variable: arrayMakeWith`.
+
+   **Scope boundary (filed, not a bug to fix here):** Leg B stops at the lexer
+   because the **parser/typecheck stages use a `Parser` monad** with
+   return-position dispatch (`pure x = Parser …`, `andThen`). The self-hosted
+   `eval_modules` path is **untyped** (no marker/dict-pass), so it cannot resolve
+   return-position `pure`/`andThen` — running those stages through the self-hosted
+   eval panics `no matching clause in application`. Executing the parser/typechecker
+   on the self-hosted eval therefore needs the **typed** self-hosted eval path
+   (marker + RKey/dict routing — today only the partial `eval_dict` slice exists);
+   that's a separate, larger bootstrap step, not part of this milestone.
 
 ### Dictionary passing (generality layer — beyond the bootstrap)
 
@@ -616,8 +670,10 @@ which already type-checks the goldens). It handles a `=>`-constrained function
 whose body uses a return-position method (`empty`, …) at the constraint
 variable's type — the case arg-tag dispatch genuinely cannot resolve — including
 multi-type call sites, nested constrained calls (dict forwarding / RDict at the
-call site), and multiple constraints per function. Validated against `medaka run`
-by `test/diff_selfhost_eval_dict.sh` (4 fixtures in `test/eval_dict_fixtures/`).
+call site), multiple constraints per function, and **self/mutually-recursive
+constrained functions** (the recursive call forwards the enclosing fn's own dict).
+Validated against `medaka run` by `test/diff_selfhost_eval_dict.sh` (6 fixtures in
+`test/eval_dict_fixtures/`).
 
 Mechanism (mirrors the reference's marker → typecheck → dict_pass):
 - `ast.mdk` — a `Route` ADT (`RNone`/`RKey`/`RDict`) plus `EMethodAt`/`EDictAt`
@@ -631,7 +687,18 @@ Mechanism (mirrors the reference's marker → typecheck → dict_pass):
   applications; after inference it routes in-body methods (RDict when the
   discriminating type is the enclosing fn's constraint variable, else RKey) and
   call sites (RKey at a concrete type, RDict forwarding a nested constraint), then
-  `dict_pass` prepends one `$dict_<fn>_<slot>` parameter per constraint.
+  `dict_pass` prepends one `$dict_<fn>_<slot>` parameter per constraint. A
+  **self/mutually-recursive** call hits the callee mid-inference (its
+  `funConstraintsRef` entry doesn't exist yet), so it's deferred as a `RecDictApp`
+  (callee, enclosing fn, live occurrence mono); `realizeRecDictApps` (run after
+  inference, before `resolveDictApps`) recovers each constraint var from the mono
+  by id (`findTvarInMono`, mirroring the reference's `find_tvar_in_mono`) and
+  routes it to the **enclosing** fn's own `$dict_<encl>_<slot>` — the dict already
+  in scope. The enclosing hint matters for mutual recursion: merged-group siblings
+  share one constraint-var id, so the global `activeDictVars` map would pick an
+  arbitrary sibling's dict param; routing through the enclosing fn's own
+  constraint slots picks the one actually bound in its body (cf. reference Phase
+  136's `enclosing` disambiguation).
 - `eval.mdk` — `VDict` (carrying the impl head tag), `EDictAt` applies one dict
   per route as a leading argument, `EMethodAt` routed RDict reads the dict
   parameter to narrow its method.
@@ -642,12 +709,10 @@ each method's VMulti is already interface-specific, so reading any same-tyvar
 dict narrows correctly.
 
 **Still out of scope** (the reference's harder cases — see PLAN.md Phase
-83/84/115): dict-passing the *prelude*'s constrained functions, self/mutually-
-recursive constrained functions (the recursive call's routes need the fn's own
-constraints, registered only after its group infers), inferred (unsignatured)
-constraints and the two-pass `Elaborate` promotion, method-level-constraint dicts
-(`foldMap`'s Monoid), instance-`requires` dicts, and nested/structured (non-flat)
-dictionaries.
+83/84/115): dict-passing the *prelude*'s constrained functions, inferred
+(unsignatured) constraints and the two-pass `Elaborate` promotion,
+method-level-constraint dicts (`foldMap`'s Monoid), instance-`requires` dicts, and
+nested/structured (non-flat) dictionaries.
 
 ### Known limits carried forward (don't block the bootstrap)
 

@@ -82,6 +82,25 @@ funConstraintsRef = Ref []
 pendingDictApps : Ref (List (Ref (List Route), List Mono))
 pendingDictApps = Ref []
 
+-- self/mutually-recursive constrained-fn call sites.  At such a site the callee's
+-- own constraints are not yet registered (its letrec group is still inferring),
+-- so funConstraintsRef can't map its routes inline.  Defer them: RecDictApp holds
+-- (routes ref to fill, callee name, the ENCLOSING fn's name, the live occurrence
+-- mono).  realizeRecDictApps fills the routes after inference, forwarding the
+-- enclosing fn's OWN dict parameter (RDict) for each constraint — the dict already
+-- in scope in its body — rather than rebuilding one (which it cannot, the type is
+-- still the constraint variable).  Mirrors the reference's recursive_promoted_usages
+-- / realize_recursive_dict_apps (Phase 115/136).
+public export data RecDictApp = RecDictApp (Ref (List Route)) String String Mono
+
+pendingRecDictApps : Ref (List RecDictApp)
+pendingRecDictApps = Ref []
+
+-- the top-level fn whose body is currently being inferred ("" = none); captured
+-- into a deferred RecDictApp so its recursive calls forward the right dict param.
+currentFn : Ref String
+currentFn = Ref ""
+
 resetState : Unit -> <Mut> Unit
 resetState _ =
   let _ = set_ref tyvarCounter 0
@@ -90,6 +109,8 @@ resetState _ =
   let _ = set_ref activeDictVars []
   let _ = set_ref funConstraintsRef []
   let _ = set_ref pendingDictApps []
+  let _ = set_ref pendingRecDictApps []
+  let _ = set_ref currentFn ""
   set_ref currentLevel 0
 
 -- ── small helpers ─────────────────────────────────────────────────────────
@@ -646,12 +667,29 @@ recordSite tagRef methodType =
 inferDictAt : TcEnv -> String -> Ref (List Route) -> <Mut> Mono
 inferDictAt env name routesRef = match lookupVar env name
   None => panic ("unbound constrained fn: " ++ name)
-  Some scheme =>
-    let inst = instantiateTracked scheme
-    let ids = fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
-    let monos = constraintMonosOf ids (snd inst)
-    let _ = set_ref pendingDictApps ((routesRef, monos) :: pendingDictApps.value)
-    fst inst
+  Some scheme => inferDictAtFound name routesRef (instantiateTracked scheme)
+
+-- The callee's constraints are registered (funConstraintsRef has it) ⇒ a normal
+-- call: map each constraint id through the instantiation subst to this call's
+-- monos.  Absent ⇒ a self/mutually-recursive call (the callee is still inferring
+-- in the same group); defer it for realizeRecDictApps to forward the enclosing
+-- fn's dict.
+inferDictAtFound : String -> Ref (List Route) -> (Mono, List (Int, Mono)) -> <Mut> Mono
+inferDictAtFound name routesRef inst
+  | hasKeySL2 name funConstraintsRef.value =
+      let ids = fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
+      let monos = constraintMonosOf ids (snd inst)
+      let _ = set_ref pendingDictApps ((routesRef, monos) :: pendingDictApps.value)
+      fst inst
+  | otherwise =
+      let _ = set_ref pendingRecDictApps (RecDictApp routesRef name currentFn.value (fst inst) :: pendingRecDictApps.value)
+      fst inst
+
+hasKeySL2 : String -> List (String, List Int) -> Bool
+hasKeySL2 _ [] = False
+hasKeySL2 k ((k2, _) :: rest)
+  | k == k2 = True
+  | otherwise = hasKeySL2 k rest
 
 -- instantiate a scheme, returning both the mono and the (quantified id → fresh
 -- var) substitution, so a caller can recover specific quantified variables
@@ -1149,6 +1187,7 @@ elaborateDict runtimeDecls dictNames prog =
   let prog2 = prePassDict (returnPosMethodNames prog) dictNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
   let _ = resolveSites pendingSites.value
+  let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps pendingDictApps.value
   dictPass dictNames prog2
 
@@ -1257,6 +1296,78 @@ routeOfMono m = match activeDictVarOf m
   None => match headTyconMono m
     Some tag => RKey tag
     None => RNone
+
+-- ── recursive dict-app realization (self/mutual recursion) ──────────────────
+-- A deferred recursive call records one route per the CALLEE's constraint slot
+-- (matching the dict params dict_pass prepends to its def), each forwarding the
+-- ENCLOSING fn's own dict param.  Run after inference, when funConstraintsRef is
+-- fully populated.
+realizeRecDictApps : List RecDictApp -> <Mut> Unit
+realizeRecDictApps [] = ()
+realizeRecDictApps (RecDictApp routesRef callee encl mono :: rest) =
+  let ids = fromOption [] (lookupAssocSL2 callee funConstraintsRef.value)
+  let _ = set_ref routesRef (recRoutes encl mono ids)
+  realizeRecDictApps rest
+
+recRoutes : String -> Mono -> List Int -> <Mut> List Route
+recRoutes _ _ [] = []
+recRoutes encl mono (id :: rest) = recRoute encl mono id :: recRoutes encl mono rest
+
+-- For one of the callee's constraint ids, recover the live occurrence type from
+-- [mono] (the var the body unified it to).  Concrete head → RKey; still a
+-- constraint variable that is one of [encl]'s own → forward [encl]'s dict param
+-- (RDict, the slot it sits at); otherwise fall back to the global routing.
+recRoute : String -> Mono -> Int -> <Mut> Route
+recRoute encl mono id = match findTvarInMono mono id
+  None => RNone
+  Some m => resolveRecMono encl m
+
+resolveRecMono : String -> Mono -> <Mut> Route
+resolveRecMono encl m = match headTyconMono m
+  Some tag => RKey tag
+  None => match enclSlot encl m
+    Some slot => RDict (dictParamName encl slot)
+    None => routeOfMono m
+
+-- the dict-param slot at which [m]'s tyvar sits among the enclosing fn's
+-- constraint ids (its position in funConstraintsRef[encl] = the kept slot)
+enclSlot : String -> Mono -> Option Int
+enclSlot encl m = match normalize m
+  TVar cell => indexOfId (tyvarId cell) (fromOption [] (lookupAssocSL2 encl funConstraintsRef.value))
+  _ => None
+
+indexOfId : Int -> List Int -> Option Int
+indexOfId target ids = indexOfIdGo 0 target ids
+
+indexOfIdGo : Int -> Int -> List Int -> Option Int
+indexOfIdGo _ _ [] = None
+indexOfIdGo i target (x :: xs)
+  | x == target = Some i
+  | otherwise = indexOfIdGo (i + 1) target xs
+
+-- the tyvar in [t] whose id is [id], if any (mirrors the reference's
+-- find_tvar_in_mono): recovers the enclosing constraint var the body unified into
+-- the recursive call's type
+findTvarInMono : Mono -> Int -> Option Mono
+findTvarInMono t id = findTvarN (normalize t) id
+
+findTvarN : Mono -> Int -> Option Mono
+findTvarN (TVar cell) id = if tyvarId cell == id then Some (TVar cell) else None
+findTvarN (TCon _) _ = None
+findTvarN (TApp a b) id = firstTvar a b id
+findTvarN (TFun a _ b) id = firstTvar a b id
+findTvarN (TTuple ts) id = findTvarList ts id
+
+firstTvar : Mono -> Mono -> Int -> Option Mono
+firstTvar a b id = match findTvarInMono a id
+  Some m => Some m
+  None => findTvarInMono b id
+
+findTvarList : List Mono -> Int -> Option Mono
+findTvarList [] _ = None
+findTvarList (t :: rest) id = match findTvarInMono t id
+  Some m => Some m
+  None => findTvarList rest id
 
 -- ── dict_pass: prepend dict parameters to constrained function definitions ──
 -- For each top-level def of a name in [dictNames], prepend one `$dict_<fn>_<slot>`
@@ -1639,7 +1750,9 @@ registerMemberSlots m kept (mono :: rest) = match normalize mono
 inferMembers : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
 inferMembers _ _ _ [] = ()
 inferMembers env sigs defs ((m, v) :: rest) =
+  let _ = set_ref currentFn m
   let _ = unify v (inferClauses env (clausesFor m defs))
+  let _ = set_ref currentFn ""
   inferMembers env sigs defs rest
 
 -- generalize each member's (sig-and-body-unified) placeholder.  A signature was

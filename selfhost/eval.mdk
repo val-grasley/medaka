@@ -1176,6 +1176,7 @@ externBindings = [
   ("arrayFromList", prim1 pArrayFromList),
   ("arrayGetUnsafe", prim2 pArrayGetUnsafe),
   ("arrayMake", prim2 pArrayMake),
+  ("arrayMakeWith", prim2M pArrayMakeWith),
   ("Ref", prim1 pRef),
   ("set_ref", prim2M pSetRef),
   ("putStr", prim1M pPutStr),
@@ -1308,6 +1309,16 @@ pArrayGetUnsafe _ _ = panic "arrayGetUnsafe: bad operands"
 pArrayMake : Value -> Value -> Value
 pArrayMake (VInt n) v = VArray (arrayMake n v)
 pArrayMake _ _ = panic "arrayMake: bad operands"
+
+-- arrayMakeWith : Int -> (Int -> a) -> Array a — higher-order, so it applies the
+-- builder Value back through `apply` (hence <Mut>); builds a list then converts,
+-- avoiding passing an effectful builder to the pure native arrayMakeWith extern.
+pArrayMakeWith : Value -> Value -> <Mut> Value
+pArrayMakeWith (VInt n) f = VArray (arrayFromList (buildWith f 0 n))
+pArrayMakeWith _ _ = panic "arrayMakeWith: bad operands"
+
+buildWith : Value -> Int -> Int -> <Mut> List Value
+buildWith f i n = if i >= n then [] else apply f (VInt i) :: buildWith f (i + 1) n
 
 mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
 mkGroup defs name = (name, clausesForName name defs)
