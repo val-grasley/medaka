@@ -1,0 +1,36 @@
+-- Self-processing EVAL probe for the bootstrap milestone harness
+-- (test/diff_selfhost_selfproc.sh, the "runs itself" leg).
+--
+-- It exercises a REAL self-hosted stage module — the lexer (selfhost/lexer.mdk)
+-- — by tokenizing an embedded Medaka snippet and rendering the canonical token
+-- stream (the same `tokenToString` form lex_main.mdk emits).  The harness runs
+-- this probe TWO ways and diffs:
+--   * the reference eval_modules oracle:  medaka run selfhost/selfproc_lex_probe.mdk
+--     (OCaml Loader -> typecheck -> eval_modules drives the probe + its imports)
+--   * the self-hosted eval path:          medaka run selfhost/eval_modules_main.mdk
+--     stdlib/core.mdk selfhost/selfproc_lex_probe.mdk selfhost
+-- Byte-identical output proves the self-hosted eval (eval.mdk's evalModules,
+-- untyped tree-walker over per-module frames) correctly EXECUTES a real selfhost
+-- stage module.
+--
+-- Scope note: the lexer uses no return-position dispatch, so the UNTYPED
+-- self-hosted eval handles it.  The parser/typecheck stages DO use a Parser
+-- monad (`pure`/`andThen` return-position dispatch), which the untyped
+-- eval_modules path cannot resolve — running those stages through the
+-- self-hosted eval is tracked as a separate bootstrap step (see PLAN.md).
+
+import lexer.{Token, tokenize, tokenToString}
+
+renderToks : List Token -> String
+renderToks [] = ""
+renderToks [t] = tokenToString t
+renderToks (t::rest) = tokenToString t ++ "\n" ++ renderToks rest
+
+-- A representative Medaka snippet covering the common lexical constructs:
+-- data decls, signatures, lambdas, lists, operators, char/string/int literals,
+-- if/then/else, and match.  Kept as a literal so the probe needs no file IO
+-- (the self-hosted eval is a pure evaluator with no readFile/args primitive).
+src : String
+src = "data Color = Red | Green | Blue\n\nlabel : Color -> String\nlabel c = match c\n  Red => \"red\"\n  Green => \"green\"\n  Blue => \"blue\"\n\nbump : Int -> Int\nbump n = if n > 0 then n + 1 else 0\n\nmain = map (x => bump x) [1, 2, 3]\n"
+
+main = putStr (renderToks (tokenize src))

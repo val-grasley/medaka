@@ -63,6 +63,7 @@ dumper).
 ```sh
 dune build --root .                       # build the reference binary
 sh test/diff_selfhost_lexer.sh            # diff the Medaka lexer vs OCaml goldens
+sh test/diff_selfhost_selfproc.sh         # the bootstrap (#3) self-processing gate (~6s)
 ```
 
 The harness runs the Medaka lexer over every fixture in `test/diff_fixtures/`
@@ -575,9 +576,41 @@ top-level fn), not by porting effect inference.
    `EvalEnv` (resolve.mdk keeps its `record Env`), so a future driver co-loading
    **both** resolve and eval (the full pipeline incl. eval — not the front-end,
    which omits eval) no longer collides on the globally-installed constructor.
-3. **Self-processing target.** Run a selfhost stage's output through the
-   self-hosted pipeline and diff against the reference — the "it checks/runs
-   itself" closure.
+3. ✅ **Self-processing target — DONE.** The "it checks/runs itself" closure,
+   validated by **`test/diff_selfhost_selfproc.sh`** (the consolidated milestone
+   harness) in two legs, using `all_modules_entry.mdk` as the aggregate entry:
+
+   - **Leg A — front-end "checks itself" (the decisive closure).** ONE run of
+     `check_all_main.mdk` over `all_modules_entry.mdk` feeds the **whole** selfhost
+     source through the self-hosted multi-module front-end (loader → desugar →
+     `checkModules`); every module's inferred schemes are diffed against the OCaml
+     reference (`dev/tc_module_probe.exe`, real Loader + threaded
+     `typecheck_module`). The self-hosted front-end is itself **executed by the
+     OCaml `eval_modules` oracle** (`medaka run check_all_main.mdk …`), so a pass
+     means: *self-hosted front-end (run on eval_modules) == OCaml-native front-end,
+     for all 12 modules of its own source.* (This is the union-closure form of
+     `diff_selfhost_check_modules_batch.sh`, promoted to the milestone gate.)
+   - **Leg B — eval engine "runs itself."** A real selfhost **stage module** (the
+     lexer) is executed through the **self-hosted** eval path (`eval.mdk`'s
+     `evalModules`, the untyped per-module-frame tree-walker) over an embedded
+     Medaka snippet (`selfhost/selfproc_lex_probe.mdk`), and its token stream is
+     diffed against the `eval_modules` oracle (`medaka run <probe>`). Byte-identical
+     output proves the self-hosted evaluator correctly **executes** a real selfhost
+     stage. This required one minimal additive fix to the self-hosted eval's
+     primitive table — `arrayMakeWith` (a higher-order extern: it applies the
+     builder `Value` back through `apply`, hence `<Mut>`) was missing, so any
+     self-hosted eval of the lexer (`lexer.mdk:278`) or `eval.mdk`'s own slice path
+     (`eval.mdk:681`) previously panicked `unbound variable: arrayMakeWith`.
+
+   **Scope boundary (filed, not a bug to fix here):** Leg B stops at the lexer
+   because the **parser/typecheck stages use a `Parser` monad** with
+   return-position dispatch (`pure x = Parser …`, `andThen`). The self-hosted
+   `eval_modules` path is **untyped** (no marker/dict-pass), so it cannot resolve
+   return-position `pure`/`andThen` — running those stages through the self-hosted
+   eval panics `no matching clause in application`. Executing the parser/typechecker
+   on the self-hosted eval therefore needs the **typed** self-hosted eval path
+   (marker + RKey/dict routing — today only the partial `eval_dict` slice exists);
+   that's a separate, larger bootstrap step, not part of this milestone.
 
 ### Dictionary passing (generality layer — beyond the bootstrap)
 
