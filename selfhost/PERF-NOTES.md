@@ -307,3 +307,18 @@ assoc_opt FList scans + Hashtbl find_opt/key_index/hash on globals) ≈ ~28% +
   (~3.3%, every with-change run below every baseline run). hash kept Hashtbl.hash.
 - correctness: all suites green; mark/desugar/check_modules batches byte-identical.
 - committed: 10e99eb
+
+### 2026-06-04 — mark scaling LINEAR + Coverage.record_hit guard (~2%)
+- **Mark scaling test (mark_batch single file, per-line):** util→lexer→eval→
+  typecheck→parser per-line 0.00051→0.00043→0.00040→0.00030. DECREASING ⇒
+  resolve+marker also linear, **no O(n²)**. Entire self-hosted pipeline (parse,
+  mark/resolve) is algorithmically linear — Tarjan was the only superlinear bug.
+  All residual cost is linear interpretation = the parked slot-indexed-env lever.
+- **Profile (mark process):** eval_1426 ~90% (env-lookup+match+apply inlined);
+  collect_partials (VMulti dispatch) ~2% — inherent, risky, skip.
+- **Win — guard Coverage.record_hit at the ELoc arm.** ELoc fires on ~every node
+  and called the cross-module record_hit (2 field reads + call) unconditionally
+  though it no-ops when coverage is off. `if !Coverage.enabled then ...` skips it.
+  A/B (check_modules_batch min-of-5): 5.28s → **5.17s** (~2%, clusters disjoint).
+- correctness: test_coverage green (records when enabled); batches byte-identical.
+- committed: 6b6072c
