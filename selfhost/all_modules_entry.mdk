@@ -11,6 +11,7 @@ import parser.{parse}
 import sexp.{programToSexp}
 import desugar.{desugar}
 import marker.{markWithPrelude}
+import annotate.{annotateProgram}
 import resolve.{resolveToLines}
 import exhaust.{exhaustToLines}
 import loader.{loadProgram}

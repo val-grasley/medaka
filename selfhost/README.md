@@ -38,6 +38,7 @@ diff with `lib/`:
 | `resolve.mdk` | Port of `lib/resolve.ml` (single-file path). Name-binding / scope / unknown-name checks over a list-based env seeded from runtime + prelude; `resolveProgram : List Decl -> List Decl -> List Decl -> List ResError`. |
 | `resolve_main.mdk` | Runnable entry: `medaka run selfhost/resolve_main.mdk <runtime.mdk> <core.mdk> <src.mdk>` prints one diagnostic per line (diffs against `diagdump --resolve`, the harness sorts). |
 | `resolve_modules_main.mdk` | Multi-module runnable entry: `medaka run selfhost/resolve_modules_main.mdk <runtime.mdk> <core.mdk> <mod1.mdk> [mod2.mdk …]` threads `resolveModule` over the files in order (caller supplies dependency-first order), validating imports against accumulated exports; prints all modules' diagnostics (diffs against `diagdump --resolve-modules`, the harness sorts). |
+| `annotate.mdk` | The STAGE2 §2.0 lexical-addressing EMIT pass (`annotateProgram : List Decl -> List Decl`, `EVar n` → `EVarAt n (ALocal frame slot)`), in a lean ast+util-only module. The Core IR drivers run it so each `CVar` is born lexically addressed; eval has a DORMANT `EVarAt` consume arm but the AST eval pipeline does **not** run it (measured no tree-walker win — see *Performance*). |
 | `exhaust.mdk` | Port of `lib/exhaust.ml`'s `check_guard_exhaustiveness` (guard coverage over the raw AST; Maranget `useful` matrix). No prelude — the ctor oracle is built from the file's own data decls + builtins. `exhaustToLines : List Decl -> String`. |
 | `exhaust_main.mdk` | Runnable entry: `medaka run selfhost/exhaust_main.mdk <src.mdk>` prints one guard warning per line (diffs against `diagdump --exhaust`, the harness sorts). Parses **without** desugaring (guards must still be `EGuards`). |
 | `eval.mdk` | Tree-walk interpreter (Stage-1 capstone, **slice 1**). `Value`/`EvalEnv` ADTs + `pp_value` (byte-for-byte with `lib/eval.ml`) + the engine: `eval`/`apply`/`match_pat`/binops over `(name, Ref value)` env frames; single-file `evalMain`/`evalOutput` and the multi-module `evalModules`/`evalModulesOutput`. Also carries one Stage-2 affordance: a `VClosureF` `Value` variant (a closure whose body is an opaque host fn, not an AST `Expr`) so the Core IR evaluator can reuse this runtime's `apply`/dispatch without `eval.mdk` depending on `core_ir.mdk`. |
@@ -50,7 +51,7 @@ diff with `lib/`:
 | `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk [runtime.mdk] <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). With a runtime.mdk arg its externs are seeded into scope, so `core.mdk` (+ a user program) type-checks against the `=== TYPES ===` goldens. |
 | `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 14 resolve diagnostics (broken). |
 | `loader.mdk` | Port of `lib/loader.ml`: `loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))` — DFS topo-sort of a root file's transitive `import`s (dependency-first; cycle detection). Flat single-root simplification. `loader_main.mdk` prints the module order. |
-| `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 12 selfhost modules). |
+| `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 13 selfhost modules incl. `annotate`). |
 | `eval_modules_main.mdk` | **Multi-module execution** (the loader-driven eval path): `medaka run selfhost/eval_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, evaluates them in per-module frames over the shared prelude (`eval.evalModules`), forces the entry's `main`, prints captured stdout. Diffs against `medaka run <entry>` (`test/diff_selfhost_eval_modules.sh`). |
 | `eval_typed_modules_main.mdk` | **Typed multi-module execution** (the composition of `eval_typed_main` + `eval_modules_main`): `medaka run selfhost/eval_typed_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, then `typecheck.elaborateModules` threads the marker + route-stamping through the loader's module graph (per-module-frame typecheck in dependency order, `EMethodAt` routes stamped per module) before `eval.evalModules` runs the elaborated trees — so a stage that uses return-position dispatch (the `Parser` monad's `pure`/`andThen`) routes by RKey. The Leg-C/D bootstrap driver (runs the parser *and* the typechecker stage on the self-hosted eval); diffs against `medaka run <entry>` (`test/diff_selfhost_selfproc.sh`). |
 | `core_ir.mdk` | **Stage 2 §2.1 Core IR** (slices 1/3/5) — the backend-neutral, serializable IR lowered from the elaborated AST: `CExpr`/`CArm`/`CGuard`/`CStmt`/`CBind`/`CImplEntry`/`CImplBody`/`CProgram`. Lives *above* any ISA (the on-ramp discipline): dispatch is the structural immutable `CMethod`/`CDict` (Routes read out of the AST's `Ref Route` cells), variables carry a lexical `Addr`, and typeclass impls/defaults are lowered (Ty-free) into `CImplEntry` for the driver to install. See `STAGE2-DESIGN.md` §2.1. |
@@ -597,7 +598,7 @@ The decisive self-hosting milestone: run the self-hosted compiler on the
 #### ✅ Multi-module typecheck front-end — DONE
 
 The self-hosted front-end (loader → desugar → multi-module typecheck) now
-typechecks **all 12 of its own modules** and matches the OCaml reference
+typechecks **all 13 of its own modules** (incl. the §2.0 `annotate`) and matches the OCaml reference
 byte-for-byte. Validated by `test/diff_selfhost_check_modules.sh` against
 `dev/tc_module_probe.exe` (the reference doing the same: real `Loader` +
 `typecheck_module`).
@@ -675,7 +676,7 @@ top-level fn), not by porting effect inference.
      `typecheck_module`). The self-hosted front-end is itself **executed by the
      OCaml `eval_modules` oracle** (`medaka run check_all_main.mdk …`), so a pass
      means: *self-hosted front-end (run on eval_modules) == OCaml-native front-end,
-     for all 12 modules of its own source.* (This is the union-closure form of
+     for all 13 modules of its own source.* (This is the union-closure form of
      `diff_selfhost_check_modules_batch.sh`, promoted to the milestone gate.)
    - **Leg B — eval engine "runs itself."** A real selfhost **stage module** (the
      lexer) is executed through the **self-hosted** eval path (`eval.mdk`'s
@@ -937,6 +938,9 @@ to retrofit, so design them into the initial phases:
   intentionally **unwired** (not called by `resolveProgram`/`resolveModule`), so
   every harness stays byte-identical; the node never reaches a dump (no `sexp.mdk`
   / `astdump.ml` clause needed). See the NEXT item for the consumer follow-up.
+  *(Update 2026-06-05: `annotateProgram` has since been relocated out of
+  `resolve.mdk` into a lean `annotate.mdk`, and the CONSUME half built + measured —
+  no tree-walker win, kept dormant. See the "CONSUME half DONE" bullet below.)*
 - **String-building O(n²) — DONE (2026-06-05) for the hot path; see
   `PERF-NOTES.md`.** Verified `++` is copy-based (OCaml `^`, alloc+blit both
   operands) so a fold over n pieces is O(n²): the self-hosted lex of a file scales
@@ -953,21 +957,32 @@ to retrofit, so design them into the initial phases:
   flat and were reverted; the lexer's per-char literal scanners are O(L²) but the
   longest real literal is 98 chars, so left alone. Remaining string-build costs are
   now below the interpreter floor.
-- **NEXT (the real ceiling): lexical addressing / slot-indexed env — CONSUME the
-  emitted slot.** With the string-build quadratic gone, the dominant interpreter
-  cost is the by-name env lookup (instrumented: ~28% of eval, 49.7M string-compares
-  marking `parser.mdk`). The **emit half is done** (see the variable-slot bullet
-  above — `resolve.annotateProgram` now produces `EVarAt n (ALocal frame slot)`).
-  The remaining **supervised** half: (1) add an `EVarAt` arm in `eval.mdk` that
-  indexes array frames in O(1), preserving VThunk forcing + the Phase-112
-  `lookup_method` shadow-bypass (a bare name that is both a local and a no-impl
-  interface method — the emitted local address does NOT encode this, so eval must
-  still consult that path); plain `EVar` keeps the by-name scan, so the change is
-  purely additive. (2) Wire `annotateProgram` into the typed eval pipeline (it is
-  not currently called). (3) Switch the frame representation to arrays for the
-  indexed lookup to actually pay off. The address model is empirically verified
-  against eval's current frames; the regression test must drive `eval_modules`
-  (loader path), per the loader-vs-flat split. See `PERF-NOTES.md` final summary.
+- **Lexical addressing / slot-indexed env — CONSUME half DONE, measured NO WIN
+  under the tree-walker, kept DORMANT (2026-06-05).** The emitted slot was the
+  parked "single most promising un-attempted lead" (by-name env lookup ~28% of
+  eval, 49.7M string-compares marking `parser.mdk`). The full consume half was
+  built and measured; **it does not help this interpreter.** What landed:
+  - the §2.0 EMIT pass moved out of `resolve.mdk` into a lean `annotate.mdk`
+    (ast+util only; Core IR drivers import it from there);
+  - an `EVarAt` consume arm in `eval.mdk` (`lookupAtAddr`: AGlobal ⇒ by-name
+    `lookupEnv` — the self-host analog of the lookup_method shadow-bypass; ALocal
+    ⇒ name-checked (frame,slot) index). **Byte-identical across the entire
+    eval+core_ir+selfproc corpus in all configs; the slot/name assertion never
+    fired (the emit/consume frame model is provably exact).**
+
+  But the measurement (synthetic eval-heavy probe, 60k-iter hot loop, min-of-3):
+  **baseline by-name 50.31s, list-indexed ~neutral (52.0s, within noise), array
+  frames a clear +14% regression (57.5s).** Reason: in a tree-walker the lookup
+  logic is itself interpreted Medaka, so the "O(1) index" is not a native op — it
+  costs about what the by-name string-compares cost, and `arrayFromList` on every
+  frame push (per call/let/match) outweighs the slot-index saving. **Lexical
+  addressing is a bytecode-VM / native-codegen win, not a tree-walker win** — which
+  is why the Core IR carries the addresses (`CVar String Addr`) for that consumer.
+  So array frames + the eval-pipeline wiring were reverted (frames stay
+  `List (List ..)`, drivers don't call `annotateProgram`, AST eval stays by-name);
+  the `EVarAt` arm + `annotate.mdk` are kept as **dormant, validated** scaffolding
+  (activate by running `annotateProgram` in `evalProgram`/`evalModules`). Full
+  numbers + rationale in `PERF-NOTES.md` (2026-06-05 entry).
 
 Recorded for later, **not** initial-phase work (revisit once the front-end is
 profilable):

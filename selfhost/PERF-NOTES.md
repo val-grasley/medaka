@@ -602,3 +602,60 @@ Entry: `selfhost/all_modules_entry.mdk`, 14 modules, 4609 decls post-desugar.
 cost. Since load is self-hosted lex+parse, any improvement to the self-hosted
 lexer or parser interpretation speed (e.g. the slot-indexed env rework) would
 directly reduce it. See the prior parked lead in this file.
+
+### 2026-06-05 — slot-indexed env CONSUME half: measured NO WIN under the tree-walker (kept dormant)
+The parked "single most promising un-attempted lead" (slot-indexed / lexical-
+addressing env) was implemented end-to-end in the **self-hosted** eval and
+measured. **Verdict: it does not help this tree-walker — list-indexed is neutral,
+array frames clearly regress.** Kept as DORMANT, validated Stage-2 scaffolding
+(not wired into the eval pipeline); the win is deferred to a bytecode VM.
+
+- **What was built (all byte-identical across the whole eval+core_ir+selfproc
+  corpus; the `EVarAt` slot/name assertion never fired, so the emit/consume frame
+  model is provably exact):**
+  - `selfhost/annotate.mdk` — the §2.0 EMIT pass (`annotateProgram`, `EVar`→`EVarAt
+    n (ALocal frame slot)`) relocated out of `resolve.mdk` into a lean ast+util-only
+    module (so eval drivers need not pull all of resolve into their load closure);
+    Core IR drivers now import it from here.
+  - `eval.mdk` — an `EVarAt` consume arm + `lookupAtAddr`/`frameAtDepth`/`addrCell`
+    (AGlobal ⇒ by-name `lookupEnv`, the self-host analog of the lookup_method
+    shadow-bypass; ALocal ⇒ index (frame,slot), name-checked).
+- **MEASURE (synthetic eval-lookup probe — a local-var-heavy hot loop run through
+  the self-hosted eval via `eval_main`, 60k iters, min-of-3, the only way to
+  isolate eval-lookup since the real selfhost workloads are load/elaborate-bound
+  and eval is <6% of them):**
+
+  | config | min-of-3 | vs baseline |
+  |---|--:|--:|
+  | baseline (by-name, `List (List ..)` frames) | **50.31s** | — |
+  | list-indexed (EVarAt arm, list frames, annotation wired) | 52.02s | within noise (~neutral, baseline runs were high-variance 50.3–55.0) |
+  | array-indexed (`List (Array ..)` frames, O(1) slot) | 57.47s | **+14% (clear regression, tight runs)** |
+
+- **WHY no win (the key insight — sharpens the OCaml-side floor finding above):**
+  in a tree-walker the lookup logic is **itself interpreted Medaka**, so the
+  "O(1) index" is not a native op — `lookupAtAddr→frameAtDepth→addrCell` plus the
+  `Addr` destructure cost roughly what the by-name string-compares cost (list:
+  neutral), and `arrayFromList` on **every** `extendEnv`/`pushFrame` (per call /
+  let / match) far outweighs O(1) slot indexing on small frames (array: −14%).
+  Lexical addressing pays only when the consumer compiles the index to a native
+  array access (bytecode VM / LLVM) — which is exactly why the **Core IR already
+  carries the addresses** (`CVar String Addr`) for that future consumer.
+- **Decision (per the "revert if it doesn't measurably help" rule):** reverted the
+  array-frame rep and the eval-pipeline wiring; eval frames stay `List (List ..)`
+  and the drivers do **not** run `annotateProgram` (AST eval stays by-name, zero
+  added cost). KEPT the `EVarAt` arm + `annotate.mdk` as dormant, validated
+  scaffolding — activate by running `annotateProgram` in `evalProgram`/`evalModules`
+  (and a VM consumer would index natively). `resolve.mdk` lost its now-relocated
+  260-line annotate block.
+- correctness: eval 16 / eval_modules 4 / eval_run 18 / eval_prelude 5 / eval_typed
+  2 / eval_dict 11 / core_ir 16+5+2+2 / selfproc 16 / mark_batch 110 / desugar 110 /
+  resolve 14+7 / check_modules 13 — all byte-identical, in every config measured.
+- **corpus cost of the new module:** `annotate.mdk` is added to the self-host
+  typecheck corpus (now 13 modules — `check_modules` + selfproc Leg A diff it
+  byte-for-byte vs the reference; it's a compiler module, not a slow fixture). The
+  three big batch harnesses moved up ~1s each (min-of-3): mark_batch 6.06→7.43s,
+  desugar_batch 5.58→6.72s, check_modules_batch 5.03→5.87s — the cost of one extra
+  ~330-line module being parsed/marked/typechecked (partly offset elsewhere by the
+  260-line block leaving `resolve.mdk`; some of the delta is also session-load
+  variance). Still single-digit-seconds, within the fast-path budget.
+- committed: kept annotate.mdk + dormant eval EVarAt arm; reverted arrays + wiring.

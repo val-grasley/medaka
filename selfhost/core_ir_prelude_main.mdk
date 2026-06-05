@@ -15,7 +15,7 @@
 import ast.{Decl}
 import parser.{parse}
 import desugar.{desugar}
-import resolve.{annotateProgram}
+import annotate.{annotateProgram}
 import core_ir_lower.{lowerProgram}
 import core_ir_eval.{cevalMain}
 

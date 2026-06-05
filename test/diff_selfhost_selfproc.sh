@@ -56,7 +56,7 @@ pass=0; fail=0
 
 # ── LEG A: front-end self-processing (typecheck closure) ───────────────────
 echo "== LEG A: self-hosted front-end typechecks its own source =="
-MODULES="ast lexer parser sexp desugar marker resolve exhaust loader typecheck eval check"
+MODULES="ast lexer parser sexp desugar marker annotate resolve exhaust loader typecheck eval check"
 
 # One full-closure run emits every module's schemes (sections marked
 # `## MODULE <mid>`).  all_modules_entry imports one name from each module so the

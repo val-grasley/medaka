@@ -11,7 +11,7 @@
 -- Validated by rendering pp_value of a program's `main` binding and diffing
 -- against dev/eval_probe.exe (Eval.eval_program ~prelude:false → Eval.pp_value).
 
-import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), Route(..), ConPayload(..), Variant(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), UsePath(..), UseMember(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Addr(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), Route(..), ConPayload(..), Variant(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), UsePath(..), UseMember(..), Decl(..)}
 import util.{contains, concatMapList, listLen, reverseL, anyList, lookupAssoc}
 
 -- ── values & environment (mutually recursive) ─────────────────────────────
@@ -269,6 +269,33 @@ lookupFrameCell [] _ = None
 lookupFrameCell ((n, cell)::rest) name
   | n == name = Some cell
   | otherwise = lookupFrameCell rest name
+
+-- ── lexical-address lookup (consumes annotate.mdk's EVarAt; DORMANT, §2.0) ──
+-- AGlobal falls back to the by-name scan — identical semantics: it reaches a
+-- top-level / prelude / global-method cell past any local frame (the self-host
+-- analog of the OCaml lookup_method shadow-bypass).  ALocal indexes (frame,
+-- slot) directly; the name check guards against any emit/consume frame-model
+-- divergence with a loud panic (never silent corruption).  Frames stay a
+-- `List (List ..)`: switching to array frames for true O(1) slot indexing was
+-- measured a clear regression under the tree-walker (per-frame `arrayFromList`
+-- cost > the by-name scan it saves), so the rep is unchanged — see PERF-NOTES.
+lookupAtAddr : EvalEnv -> String -> Addr -> <Mut> Value
+lookupAtAddr env name AGlobal = lookupEnv env name
+lookupAtAddr (EvalEnv frames) name (ALocal depth slot) =
+  forceCell (addrCell (frameAtDepth frames depth name) slot name)
+
+frameAtDepth : List (List (String, Ref Value)) -> Int -> String -> List (String, Ref Value)
+frameAtDepth [] _ name = panic ("EVarAt: frame depth out of range for " ++ name)
+frameAtDepth (frame::rest) depth name
+  | depth <= 0 = frame
+  | otherwise = frameAtDepth rest (depth - 1) name
+
+addrCell : List (String, Ref Value) -> Int -> String -> Ref Value
+addrCell [] _ name = panic ("EVarAt: slot out of range for " ++ name)
+addrCell ((n, cell)::rest) slot name
+  | slot > 0 = addrCell rest (slot - 1) name
+  | n == name = cell
+  | otherwise = panic ("EVarAt: slot/name mismatch — want " ++ name ++ ", found " ++ n)
 
 export
 extendEnv : EvalEnv -> List (String, Value) -> EvalEnv
@@ -662,6 +689,17 @@ eval _ (ELit (LChar c)) = VChar c
 eval _ (ELit (LBool b)) = VBool b
 eval _ (ELit LUnit) = VUnit
 eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
+-- DORMANT consume arm for the §2.0 lexical-addressing EMIT half: handles an
+-- `EVarAt` node (produced by annotate.mdk's annotateProgram) by slot-indexing
+-- the frame the address names.  It is NOT wired into the eval pipeline — the
+-- drivers do not run annotateProgram, so the AST tree-walker never sees an
+-- `EVarAt` (plain `EVar` by-name lookup is used).  Kept as validated Stage-2
+-- scaffolding: measured neutral/regressive under THIS tree-walker (the indexed
+-- lookup is itself interpreted Medaka, so it doesn't beat the by-name scan it
+-- replaces — see PERF-NOTES.md), but the addresses become a real native index
+-- in a bytecode VM, where consuming them pays off.  Activate by running
+-- annotateProgram in evalProgram/evalModules.
+eval env (EVarAt x addr) = if startsWithAt x then VUnit else lookupAtAddr env x addr
 eval env (EMethodAt name routeRef) =
   narrowMethod (lookupEnv env name) (routeTag env routeRef.value)
 eval env (EDictAt name routesRef) =
