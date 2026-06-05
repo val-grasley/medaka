@@ -1,5 +1,15 @@
 open Ast
 
+(* String-keyed hashtable for environment frames.  Using Hashtbl.Make(String)
+   with String.equal keeps key comparison on the direct specialized path instead
+   of the polymorphic caml_equal → compare_val → memcmp the default Hashtbl uses
+   (which showed up in env-lookup profiles). *)
+module FrameTbl = Hashtbl.Make (struct
+  type t = string
+  let equal = String.equal
+  let hash = Hashtbl.hash
+end)
+
 (* ── Value type ──────────────────────────────────────────────────────────── *)
 
 type value =
@@ -66,7 +76,7 @@ and frame =
      O(1) instead of a linear string-compare scan — that scan was ~87% of
      interpreter time on the self-hosted compiler (sample-profiled 2026-06-04). *)
   | FList  of (string * value ref) list
-  | FTable of (string, value ref) Hashtbl.t
+  | FTable of value ref FrameTbl.t
 
 exception Eval_error of string * loc option
 (* Raised instead of Eval_error when a pattern/match fails during dispatch so
@@ -106,20 +116,20 @@ let force_thunk name t =
 (* Build a Hashtbl frame from an assoc list, preserving List.assoc_opt's
    first-occurrence-wins semantics (keep the first binding seen for each key, so
    `find_opt` matches what `List.assoc_opt` returned over the same list). *)
-let table_of_assoc (l : (string * value ref) list) : (string, value ref) Hashtbl.t =
-  let h = Hashtbl.create (max 16 (List.length l)) in
-  List.iter (fun (k, c) -> if not (Hashtbl.mem h k) then Hashtbl.add h k c) l;
+let table_of_assoc (l : (string * value ref) list) : value ref FrameTbl.t =
+  let h = FrameTbl.create (max 16 (List.length l)) in
+  List.iter (fun (k, c) -> if not (FrameTbl.mem h k) then FrameTbl.add h k c) l;
   h
 
 let frame_find name = function
   | FList l  -> List.assoc_opt name l
-  | FTable h -> Hashtbl.find_opt h name
+  | FTable h -> FrameTbl.find_opt h name
 
 (* Flatten a frame back to an assoc list (order within a frame is irrelevant —
    keys are unique per frame).  Used where a whole env is concatenated. *)
 let frame_assoc = function
   | FList l  -> l
-  | FTable h -> Hashtbl.fold (fun k c acc -> (k, c) :: acc) h []
+  | FTable h -> FrameTbl.fold (fun k c acc -> (k, c) :: acc) h []
 
 let lookup env name =
   let rec search = function
