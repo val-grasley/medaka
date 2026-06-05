@@ -3,10 +3,16 @@
 # (lex → parse → selfhost/sexp.mdk structural dump) vs the OCaml reference
 # dev/astdump.exe (parse → strip_locs → canonical S-expression).
 #
-# Runs over test/parse_fixtures/ — small .mdk programs scoped to what the parser
-# currently handles (the corpus grows as the recursive-descent port grows; the
-# stage is done when it covers the real test/diff_fixtures/ files).  FLOAT literal
-# text is normalized away (OCaml %g vs floatToString), like the lexer harness.
+# Runs over test/parse_fixtures/ + test/parse_only_fixtures/ — small .mdk programs
+# scoped to what the parser currently handles (the corpus grows as the
+# recursive-descent port grows; the stage is done when it covers the real
+# test/diff_fixtures/ files).  FLOAT literal text is normalized away (OCaml %g vs
+# floatToString), like the lexer harness.
+#
+# parse_only_fixtures/ holds constructs the parser accepts but the *downstream*
+# self-host stages (desugar/mark/…) don't handle yet — type aliases, newtypes,
+# Map/Set literals, attributes, top-level let-groups — so they must NOT go in the
+# shared parse_fixtures/ corpus that diff_selfhost_{desugar,mark}.sh also read.
 #
 # Usage:  sh test/diff_selfhost_parse.sh [file.mdk ...]
 # Exit:   0 if every file's AST dump matches, else 1.
@@ -25,7 +31,7 @@ norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT"/test/parse_fixtures/*.mdk
+  files="$ROOT/test/parse_fixtures/*.mdk $ROOT/test/parse_only_fixtures/*.mdk"
 fi
 
 pass=0

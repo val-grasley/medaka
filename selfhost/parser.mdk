@@ -15,7 +15,7 @@
 -- `DFunDef`/`DTypeSig`.  Multi-statement indented blocks, the remaining decl
 -- forms, and the rest of the operator ladder come in later slices.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..), Attr(..)}
 import lexer.{Token(..), tokenize}
 import util.{reverseL}
 
@@ -231,6 +231,11 @@ exprToPat (ELit l) = PLit l
 exprToPat (ETuple es) = PTuple (map exprToPat es)
 exprToPat (EListLit es) = PList (map exprToPat es)
 exprToPat (EBinOp "::" a b) = PCons (exprToPat a) (exprToPat b)
+-- `(x :: _)` in a binding LHS: the `_` was eaten by the left-section rewrite
+-- (parenResult/leftSectionOrExpr); recover it as a cons pattern (mirrors the
+-- reference `expr_to_pat`'s `SecLeft (a, "::")` case).
+exprToPat (ESection (SecLeft a "::")) = PCons (exprToPat a) PWild
+exprToPat (EAsPat x sub) = PAs x (exprToPat sub)
 exprToPat (EApp f x) = appToPat (EApp f x)
 exprToPat _ = PWild
 
@@ -371,9 +376,22 @@ backtickNameFor _ = failP "expected backtick operator"
 
 parseApp : Parser Expr
 parseApp = do
-  head <- parsePostfix
-  args <- many parsePostfix
+  head <- parseAspat
+  args <- many parseAspat
   pure (applyAll head args)
+
+-- the as-pattern operator level (`expr_aspat`): `IDENT AS_AT postfix` → EAsPat
+-- (a binding-LHS as-pattern, e.g. a lambda param `xs@rest =>`); else a postfix.
+-- AS_AT is only emitted by the lexer when `@` directly follows an identifier.
+parseAspat : Parser Expr
+parseAspat = orElse parseAspatAt parsePostfix
+
+parseAspatAt : Parser Expr
+parseAspatAt = do
+  x <- identNameP
+  expectTok TAsAt
+  sub <- parsePostfix
+  pure (EAsPat x sub)
 
 applyAll : Expr -> List Expr -> Expr
 applyAll head [] = head
@@ -443,7 +461,26 @@ parseAtom = do
     TFunction => parseFunction
     TDo => parseDo
     TInterpOpen _ => parseInterp
+    TAt => parseAtHint
     _ => failP "expected atom"
+
+-- impl-disambiguation prefix hint `@Impl` / `@impl` (space-separated `@`, lexed
+-- as TAt).  Mirrors lib/parser.mly `AT UPPER | AT IDENT → EVar ("@" ^ name)`.
+parseAtHint : Parser Expr
+parseAtHint = do
+  expectTok TAt
+  name <- atHintName
+  pure (EVar ("@" ++ name))
+
+atHintName : Parser String
+atHintName = do
+  t <- peekP
+  atHintNameFor t
+
+atHintNameFor : Token -> Parser String
+atHintNameFor (TUpper x) = emit x
+atHintNameFor (TIdent x) = emit x
+atHintNameFor _ = failP "expected name after @"
 
 -- a constructor (`Upper`) atom, or a record literal `Upper { field = e, … }`
 parseUpperAtom : String -> Parser Expr
@@ -457,45 +494,142 @@ upperTail x TLBrace = upperBrace x
 upperTail x _ = pure (EVar x)
 
 -- After `Con {`: a constructor-tagged variant update `Con { e | f = v, … }`
--- (a `|` follows the leading expr) or a named-field record create
--- `Con { f = v, … }`.  `orElse` backtracks, so try the update form first — its
--- leading `parseExpr` stops at the `=` of the first field-assign (no `|` there)
--- and fails fast, falling back to the create form.
+-- (a `|` follows the leading expr), or the unified `Con { kv_or_e, … }` form,
+-- which classifies (mirroring lib/parser.mly) into a record create (`f = v`
+-- fields + puns), a map literal (`k => v` entries), or a set literal (bare
+-- elements).  `orElse` backtracks, so try the update form first — its leading
+-- `parseExpr` fails fast at the first `=`/`=>`/`,`/`}` (no `|`).
 upperBrace : String -> Parser Expr
 upperBrace x = do
   expectTok TLBrace
-  orElse (variantUpdateTail x) (recordCreateTail x)
+  orElse (variantUpdateTail x) (braceItems x)
 
 variantUpdateTail : String -> Parser Expr
 variantUpdateTail x = do
   e <- parseExpr
   expectTok TPipe
-  fields <- sepBy1 fieldAssign (expectTok TComma)
+  fields <- sepBy1 recordFieldExpr (expectTok TComma)
   expectTok TRBrace
-  pure (EVariantUpdate x e fields)
+  pure (EVariantUpdate x e (map (desugarDottedField e) fields))
 
-recordCreateTail : String -> Parser Expr
-recordCreateTail x = do
-  fields <- sepBy1 fieldAssign (expectTok TComma)
+-- a kv_or_e item: a record field `f = v`, a map entry `k => v`, or a bare
+-- element/pun.  The classification of the whole brace picks the node kind.
+data KvItem = KvField String Expr | KvKV Expr Expr | KvElem Expr
+
+braceItems : String -> Parser Expr
+braceItems x = do
+  t <- peekP
+  braceItemsFor x t
+
+braceItemsFor : String -> Token -> Parser Expr
+braceItemsFor x TRBrace = do
+  advance
+  pure (classifyBrace x [])
+braceItemsFor x _ = do
+  items <- sepBy1 parseKvOrE (expectTok TComma)
   expectTok TRBrace
-  pure (ERecordCreate x fields)
+  pure (classifyBrace x items)
 
--- record update `{ e | field = e, … }`
+-- `IDENT = expr` → field; `key => expr` → map entry; else a bare element.  The
+-- key is parsed at the pipe level (like the reference `expr_pipe`) so a `=>`
+-- ends the key rather than starting a lambda.
+parseKvOrE : Parser KvItem
+parseKvOrE = orElse parseKvField parseKvKVorElem
+
+parseKvField : Parser KvItem
+parseKvField = do
+  name <- identNameP
+  expectTok TEqual
+  e <- parseExpr
+  pure (KvField name e)
+
+parseKvKVorElem : Parser KvItem
+parseKvKVorElem = do
+  e <- parsePipe
+  t <- peekP
+  kvKVorElemFor e t
+
+kvKVorElemFor : Expr -> Token -> Parser KvItem
+kvKVorElemFor e TFatArrow = do
+  advance
+  v <- parseExpr
+  pure (KvKV e v)
+kvKVorElemFor e _ = pure (KvElem e)
+
+-- classify: any field → record create (Elem puns to `n = n`); else any map
+-- entry → map literal; else → set literal.  (Mirrors lib/parser.mly's
+-- `UPPER LBRACE … RBRACE` action; mixed-kind braces are user errors.)
+classifyBrace : String -> List KvItem -> Expr
+classifyBrace name items
+  | anyField items = ERecordCreate name (map kvToField items)
+  | anyKV items = EMapLit name (kvPairs items)
+  | otherwise = ESetLit name (kvElems items)
+
+anyField : List KvItem -> Bool
+anyField [] = False
+anyField ((KvField _ _)::_) = True
+anyField (_::rest) = anyField rest
+
+anyKV : List KvItem -> Bool
+anyKV [] = False
+anyKV ((KvKV _ _)::_) = True
+anyKV (_::rest) = anyKV rest
+
+kvToField : KvItem -> FieldAssign
+kvToField (KvField n e) = FieldAssign n e
+kvToField (KvElem (EVar n)) = FieldAssign n (EVar n)
+kvToField _ = FieldAssign "_" (ELit LUnit)
+
+kvPairs : List KvItem -> List (Expr, Expr)
+kvPairs [] = []
+kvPairs ((KvKV k v)::rest) = (k, v) :: kvPairs rest
+kvPairs (_::rest) = kvPairs rest
+
+kvElems : List KvItem -> List Expr
+kvElems [] = []
+kvElems ((KvElem e)::rest) = e :: kvElems rest
+kvElems (_::rest) = kvElems rest
+
+-- record update `{ e | field = e, … }`, including nested dotted-path fields
+-- `{ p | a.b.c = v }` desugared to nested ERecordUpdates.
 parseRecordUpdate : Parser Expr
 parseRecordUpdate = do
   expectTok TLBrace
   e <- parseExpr
   expectTok TPipe
-  fields <- sepBy1 fieldAssign (expectTok TComma)
+  fields <- sepBy1 recordFieldExpr (expectTok TComma)
   expectTok TRBrace
-  pure (ERecordUpdate e fields)
+  pure (ERecordUpdate e (map (desugarDottedField e) fields))
 
-fieldAssign : Parser FieldAssign
-fieldAssign = do
-  name <- identNameP
-  expectTok TEqual
+-- a record-update field `path = expr` (dotted path) or a pun `name`
+-- (mirrors lib/parser.mly `record_field_expr`).
+recordFieldExpr : Parser (List String, Expr)
+recordFieldExpr = do
+  path <- sepBy1 identNameP (expectTok TDot)
+  t <- peekP
+  recordFieldExprRest path t
+
+recordFieldExprRest : List String -> Token -> Parser (List String, Expr)
+recordFieldExprRest path TEqual = do
+  advance
   e <- parseExpr
-  pure (FieldAssign name e)
+  pure (path, e)
+recordFieldExprRest [x] _ = pure ([x], EVar x)
+recordFieldExprRest _ _ = failP "expected = in record-update field"
+
+-- desugar a dotted-path update field against the update base:
+-- `{ base | a.b.c = v }` → ("a", { base.a | b = { base.a.b | c = v } })
+-- (mirrors lib/parser.mly `desugar_dotted_field`).
+desugarDottedField : Expr -> (List String, Expr) -> FieldAssign
+desugarDottedField base (path, value) = match path
+  [field] => FieldAssign field value
+  (field :: rest) => FieldAssign field (dottedGo (EFieldAccess base field) rest value)
+  [] => FieldAssign "_" value
+
+dottedGo : Expr -> List String -> Expr -> Expr
+dottedGo cur [f] value = ERecordUpdate cur [FieldAssign f value]
+dottedGo cur (f::fs) value = ERecordUpdate cur [FieldAssign f (dottedGo (EFieldAccess cur f) fs value)]
+dottedGo cur [] value = value
 
 -- interpolated string: INTERP_OPEN <expr> (INTERP_MID <expr>)* INTERP_END,
 -- assembled into alternating InterpStr / InterpExpr parts
@@ -733,6 +867,29 @@ arrayRangeAfter lo incl = do
 parseIf : Parser Expr
 parseIf = do
   expectTok TIf
+  t <- peekP
+  ifKind t
+
+ifKind : Token -> Parser Expr
+ifKind TLet = ifLet
+ifKind _ = ifPlain
+
+-- `if let pat = e then t else f` desugars (at parse) to a two-arm match, exactly
+-- like lib/parser.mly: `match e { pat => t; _ => f }`.  Always has an else.
+ifLet : Parser Expr
+ifLet = do
+  expectTok TLet
+  pat <- parsePat
+  expectTok TEqual
+  scrut <- parseExpr
+  expectTok TThen
+  thenE <- parseExpr
+  expectTok TElse
+  elseE <- parseExpr
+  pure (EMatch scrut [Arm pat [] thenE, Arm PWild [] elseE])
+
+ifPlain : Parser Expr
+ifPlain = do
   cond <- parseExpr
   expectTok TThen
   thenE <- parseBranch
@@ -759,15 +916,116 @@ branchBlock = do
   expectTok TDedent
   pure (blockOrExpr stmts)
 
+-- expression-level `let`: `let [mut] pat = e in e2`, function-let
+-- `let f a… = e in e2`, annotated `let [mut] x : ty = e in e2`, and
+-- mutually-recursive `let rec f = … with g = … in e2` (→ ELetGroup).  Mirrors
+-- the `expr_lam` LET productions in lib/parser.mly.
 parseLet : Parser Expr
 parseLet = do
   expectTok TLet
-  pat <- parsePatAtom
+  t <- peekP
+  letExprKind t
+
+letExprKind : Token -> Parser Expr
+letExprKind TMut = letMutExpr
+letExprKind TRec = letRecExpr
+letExprKind (TIdent name) = letIdentExpr name
+letExprKind _ = letPatExpr
+
+-- `let mut IDENT [: ty] = e in e2` or `let mut pat = e in e2`
+letMutExpr : Parser Expr
+letMutExpr = do
+  expectTok TMut
+  t <- peekP
+  letMutKind t
+
+letMutKind : Token -> Parser Expr
+letMutKind (TIdent name) = do
+  advance
+  t <- peekP
+  letMutIdentRest name t
+letMutKind _ = do
+  pat <- parsePat
+  expectTok TEqual
+  e1 <- parseExpr
+  expectTok TIn
+  e2 <- parseExpr
+  pure (ELet True False pat e1 e2)
+
+letMutIdentRest : String -> Token -> Parser Expr
+letMutIdentRest name TColon = do
+  advance
+  ty <- parseTy
+  expectTok TEqual
+  e1 <- parseExpr
+  expectTok TIn
+  e2 <- parseExpr
+  pure (ELet True False (PVar name) (EAnnot e1 ty) e2)
+letMutIdentRest name _ = do
+  expectTok TEqual
+  e1 <- parseExpr
+  expectTok TIn
+  e2 <- parseExpr
+  pure (ELet True False (PVar name) e1 e2)
+
+-- IDENT-led: function-let `let f a… = e` (params present), annotated
+-- `let x : ty = e`, or plain `let x = e`, each followed by `in e2`
+letIdentExpr : String -> Parser Expr
+letIdentExpr name = do
+  advance
+  params <- many parseParamPat
+  t <- peekP
+  letIdentExprRest name params t
+
+letIdentExprRest : String -> List Pat -> Token -> Parser Expr
+letIdentExprRest name [] TColon = do
+  advance
+  ty <- parseTy
+  expectTok TEqual
+  e1 <- parseExpr
+  expectTok TIn
+  e2 <- parseExpr
+  pure (ELet False False (PVar name) (EAnnot e1 ty) e2)
+letIdentExprRest name [] TEqual = do
+  advance
+  e1 <- parseExpr
+  expectTok TIn
+  e2 <- parseExpr
+  pure (ELet False False (PVar name) e1 e2)
+letIdentExprRest name params TEqual = do
+  advance
+  e1 <- parseExpr
+  expectTok TIn
+  e2 <- parseExpr
+  pure (ELet False True (PVar name) (curryLam params e1) e2)
+letIdentExprRest _ _ _ = failP "expected : or = in let"
+
+-- non-IDENT pattern: `let (a, b) = e in e2`, `let Some x = e in e2`, …
+letPatExpr : Parser Expr
+letPatExpr = do
+  pat <- parsePat
   expectTok TEqual
   e1 <- parseExpr
   expectTok TIn
   e2 <- parseExpr
   pure (ELet False False pat e1 e2)
+
+-- `let rec f a… = e with g a… = e … in e2` → ELetGroup (Phase 57 inline form)
+letRecExpr : Parser Expr
+letRecExpr = do
+  expectTok TRec
+  clauses <- sepBy1 letRecInlineClause (expectTok TWith)
+  expectTok TIn
+  e2 <- parseExpr
+  pure (ELetGroup (coalesceClauses clauses) e2)
+
+letRecInlineClause : Parser (String, List Pat, Expr)
+letRecInlineClause = do
+  name <- identNameP
+  pats <- many parseParamPat
+  expectTok TEqual
+  body <- parseExpr
+  pure (name, pats, body)
 
 parseMatch : Parser Expr
 parseMatch = do
@@ -807,7 +1065,7 @@ parseArm = do
   pat <- parsePat
   guards <- armGuardOpt
   expectTok TFatArrow
-  body <- orElse branchBlock parseExpr
+  body <- orElse branchBlock parseBodyExpr
   pure (Arm pat guards body)
 
 -- optional match-arm guard: `if g, g…` (NB: uses `if`, not `|`)
@@ -1166,6 +1424,10 @@ parseDecl = do
     TInterface => parseInterface False False
     TImpl => parseImpl False False
     TDefault => afterDefault False
+    TType => parseTypeAlias False
+    TNewtype => parseNewtype False
+    TLet => parseLetGroupDecl False
+    TAt => parseAttrib
     _ => parseFunOrSig False
 
 -- `default` prefixes an interface/impl (marks it as the default impl)
@@ -1197,6 +1459,9 @@ afterExport = do
     TInterface => parseInterface True False
     TImpl => parseImpl True False
     TDefault => afterDefault True
+    TType => parseTypeAlias True
+    TNewtype => parseNewtype True
+    TLet => parseLetGroupDecl True
     _ => parseFunOrSig True
 
 afterPublic : Parser Decl
@@ -1232,9 +1497,10 @@ parseFunOrSig pub = do
     TIndent => do
       advance
       arms <- parseGuardArms
+      body <- guardArmsWhereOpt arms
       expectTok TDedent
       skipNewlines
-      pure (DFunDef pub name params (EGuards arms))
+      pure (DFunDef pub name params body)
     TPipe => do
       arm <- parseGuardArm
       skipNewlines
@@ -1250,6 +1516,89 @@ parseExtern pub = do
   ty <- parseTy
   skipNewlines
   pure (DExtern pub name ty)
+
+-- ── type alias / newtype / top-level let-group / attributes ──────────────
+-- `type Name a… = ty`
+parseTypeAlias : Bool -> Parser Decl
+parseTypeAlias pub = do
+  expectTok TType
+  name <- upperNameP
+  params <- many lowerNameP
+  expectTok TEqual
+  ty <- parseTy
+  skipNewlines
+  pure (DTypeAlias pub name params ty)
+
+-- `newtype Name a… = Con ty [deriving (…)]`
+parseNewtype : Bool -> Parser Decl
+parseNewtype pub = do
+  expectTok TNewtype
+  name <- upperNameP
+  params <- many lowerNameP
+  expectTok TEqual
+  con <- upperNameP
+  fty <- parseTy
+  derives <- derivingClause
+  skipNewlines
+  pure (DNewtype pub name params con fty derives)
+
+-- top-level `let rec f a… = body with g a… = body …` → DLetGroup.  Each clause
+-- is terminated by newlines; WITH (at the LET REC indentation) begins the next.
+parseLetGroupDecl : Bool -> Parser Decl
+parseLetGroupDecl pub = do
+  expectTok TLet
+  expectTok TRec
+  clauses <- letRecDeclClauses
+  pure (DLetGroup pub (coalesceClauses clauses))
+
+letRecDeclClauses : Parser (List (String, List Pat, Expr))
+letRecDeclClauses = do
+  c <- letRecDeclClause
+  skipNewlines
+  rest <- letRecDeclClausesRest
+  pure (c :: rest)
+
+letRecDeclClausesRest : Parser (List (String, List Pat, Expr))
+letRecDeclClausesRest = do
+  t <- peekP
+  letRecDeclClausesRestFor t
+
+letRecDeclClausesRestFor : Token -> Parser (List (String, List Pat, Expr))
+letRecDeclClausesRestFor TWith = do
+  advance
+  letRecDeclClauses
+letRecDeclClausesRestFor _ = pure []
+
+letRecDeclClause : Parser (String, List Pat, Expr)
+letRecDeclClause = do
+  name <- identNameP
+  pats <- many parseParamPat
+  expectTok TEqual
+  body <- parseBody
+  pure (name, pats, body)
+
+-- declaration attribute `@deprecated "msg"` / `@inline` / `@must_use` wrapping
+-- the following decl (mirrors lib/parser.mly `AT IDENT [STRING] newlines decl`).
+parseAttrib : Parser Decl
+parseAttrib = do
+  expectTok TAt
+  name <- identNameP
+  t <- peekP
+  attr <- attrArg name t
+  skipNewlines
+  inner <- parseDecl
+  pure (DAttrib [attr] inner)
+
+attrArg : String -> Token -> Parser Attr
+attrArg name (TString msg) = do
+  advance
+  pure (mkAttr name (Some msg))
+attrArg name _ = pure (mkAttr name None)
+
+mkAttr : String -> Option String -> Attr
+mkAttr "deprecated" (Some msg) = AttrDeprecated msg
+mkAttr "must_use" _ = AttrMustUse
+mkAttr _ _ = AttrInline
 
 externName : Parser String
 externName = do
@@ -1293,8 +1642,12 @@ importIdent = do
   t <- peekP
   importIdentFor t
 
+-- a path component: a lowercase module name, an Uppercase name (e.g.
+-- `collections.HashMap`), or `test` (a keyword still legal as a path component).
 importIdentFor : Token -> Parser String
 importIdentFor (TIdent x) = emit x
+importIdentFor (TUpper x) = emit x
+importIdentFor TTest = emit "test"
 importIdentFor _ = failP "expected import path component"
 
 importPathFor : List String -> Parser UsePath
@@ -1606,6 +1959,24 @@ implMethod = do
   body <- parseBody
   pure (ImplMethod name pats body)
 
+-- a Haskell-style `where` scoping over ALL guard arms (it sits at the guards'
+-- indentation, inside their INDENT block): `guards WHERE INDENT bindings DEDENT
+-- newlines` → ELetGroup wrapping the EGuards.  Mirrors lib/parser.mly line 406.
+guardArmsWhereOpt : List GuardArm -> Parser Expr
+guardArmsWhereOpt arms = do
+  t <- peekP
+  guardArmsWhereFor arms t
+
+guardArmsWhereFor : List GuardArm -> Token -> Parser Expr
+guardArmsWhereFor arms TWhere = do
+  advance
+  expectTok TIndent
+  binds <- parseWhereBindings
+  expectTok TDedent
+  skipNewlines
+  pure (ELetGroup (coalesceClauses binds) (EGuards arms))
+guardArmsWhereFor arms _ = pure (EGuards arms)
+
 -- function guards: an INDENT block of `| guard, … = body` arms
 parseGuardArms : Parser (List GuardArm)
 parseGuardArms = do
@@ -1793,7 +2164,17 @@ parseBody = orElse indentedBody parseBodyExpr
 parseBodyExpr : Parser Expr
 parseBodyExpr = do
   e <- parseExpr
-  orElse (whereTail e) (pure e)
+  orElse (whereEol e) (orElse (whereTail e) (pure e))
+
+-- end-of-line `where` (the `where` sits on the body line):
+-- `<expr> WHERE INDENT bindings DEDENT` → ELetGroup
+whereEol : Expr -> Parser Expr
+whereEol e = do
+  expectTok TWhere
+  expectTok TIndent
+  binds <- parseWhereBindings
+  expectTok TDedent
+  pure (ELetGroup (coalesceClauses binds) e)
 
 whereTail : Expr -> Parser Expr
 whereTail e = do

@@ -162,11 +162,58 @@ the stage is done when all pass.
   range patterns (`PRng`, int + char), `if` match-arm guards, and record
   patterns (`PRec`, `C { f = p, … }` / `C { .. }`). Most needed a
   `dev/astdump.ml` extension first (they were `TODO`). Toy coverage lives in
-  `test/parse_fixtures/rare_constructs.mdk`. **Parser surface-grammar coverage is
-  now complete** — the only remaining unhandled surface is lexer-side (nested
-  interpolation / triple-quoted strings).
+  `test/parse_fixtures/rare_constructs.mdk`.
 
   *(Parser combinators were spiked and parked — blocked on Phase 136; see PLAN.)*
+
+- ✅ **Hardening pass (2026-06-04): every SYNTAX.md construct swept through the
+  diff harness; all real `parser.mdk` gaps vs the OCaml parser closed.** The
+  earlier "coverage complete" claim was optimistic — a systematic sweep found 16
+  constructs the OCaml parser accepts that the port rejected or mis-parsed. Now
+  added:
+  - expression-level `let` forms: `let mut … in`, `let rec … [with …] in`
+    (→ `ELetGroup`), annotated `let x : T = e in …` (and `let mut x : T`);
+  - as-pattern lambda params `xs@rest =>` (new `EAsPat` node, lowered by
+    `exprToPat`; incl. the `(x::_)` `SecLeft "::"`-recovery case from the
+    reference `expr_to_pat`);
+  - `if let P = e then … else …` (parse-time → two-arm `EMatch`);
+  - impl hints `e @Name` (`AT IDENT`/`AT UPPER` → `EVar "@Name"` atom);
+  - import aliases `import a.B as C`, Uppercase path components, `import test.…`;
+  - end-of-line `where`, `where` over all guard arms, match-arm `where` (both
+    placements — the arm body now reuses `parseBodyExpr`);
+  - nested record update `{ p | a.b.c = v }` (`desugarDottedField`);
+  - **type aliases** (`DTypeAlias`), **newtypes** (`DNewtype`, + `deriving`),
+    **top-level `let rec … with`** (`DLetGroup`), **attributes**
+    (`@inline`/`@deprecated`/`@must_use` → `DAttrib`), and the unified
+    `Con { … }` form → record-create / **`Map` literal** (`EMapLit`) /
+    **`Set` literal** (`ESetLit`) / field puns.
+  - Lexer: `\u{…}` escapes in **strings** and interpolations (was char-only, so
+    `"\u{48}"` had lexed as `u{48}`).
+
+  The six TODO-blocked nodes (`DTypeAlias`/`DNewtype`/`DLetGroup`/`DAttrib`/
+  `EMapLit`/`ESetLit`) needed matching serializers added to **both**
+  `dev/astdump.ml` AND `selfhost/sexp.mdk`, plus the AST nodes in `ast.mdk`.
+  Validated: **52 real source files** (stdlib + the self-host compiler parsing
+  itself) + the `parse_fixtures` corpus byte-match the OCaml reference. The only
+  surface both parsers still reject is nested interpolation / (untested)
+  triple-quote edge cases — genuinely lexer-side, not a parser gap.
+
+  **⚠️ Remaining work — the new AST nodes are parser-only.** The six Phase-B
+  nodes above (`DTypeAlias`, `DNewtype`, `DLetGroup`, `DAttrib`, `EMapLit`,
+  `ESetLit`, and `EAsPat`) are produced by `parser.mdk` and serialized by
+  `sexp.mdk`, but the **downstream self-host stages don't handle them yet** —
+  `desugar.mdk`/`marker.mdk`/`resolve.mdk`/`typecheck.mdk`/`eval.mdk` have no
+  clauses for them (non-exhaustive matches that are simply never hit on today's
+  inputs). Porting each node through those stages (mirroring how `lib/desugar.ml`
+  lowers `EMapLit`/`ESetLit`/`DNewtype`/etc.) is follow-on work, tracked per
+  stage in the roadmap below. **Consequence for fixtures:** Phase-B parser
+  fixtures live in a dedicated `test/parse_only_fixtures/` dir (read only by
+  `diff_selfhost_parse.sh`), NOT in the shared `test/parse_fixtures/` corpus —
+  the latter is also consumed by `diff_selfhost_{desugar,mark}.sh`, which would
+  break on a node their stage can't process. Phase-A fixtures (built only from
+  already-handled AST nodes) live in `test/parse_fixtures/hardening.mdk` as
+  usual. When a downstream stage learns to handle one of the Phase-B nodes, its
+  fixtures can graduate from `parse_only_fixtures/` into the shared corpus.
 
 ## Roadmap — remaining Stage 1 stages
 

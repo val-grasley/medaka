@@ -109,6 +109,8 @@ let rec sexp_expr e =
   | ERecordCreate (n, fs) -> node "ERecordCreate" [esc_str n; slist (List.map sexp_fassign fs)]
   | ERecordUpdate (e, fs) -> node "ERecordUpdate" [sexp_expr e; slist (List.map sexp_fassign fs)]
   | EVariantUpdate (c, e, fs) -> node "EVariantUpdate" [esc_str c; sexp_expr e; slist (List.map sexp_fassign fs)]
+  | EMapLit (n, kvs)   -> node "EMapLit" [esc_str n; slist (List.map (fun (k, v) -> node "kv" [sexp_expr k; sexp_expr v]) kvs)]
+  | ESetLit (n, es)    -> node "ESetLit" [esc_str n; slist (List.map sexp_expr es)]
   | _                  -> todo "expr"
 
 and sexp_interp = function
@@ -195,7 +197,12 @@ let sexp_require (iface, tys) = node "req" [esc_str iface; slist (List.map sexp_
 let sexp_impl_method (name, pats, body) =
   node "im" [esc_str name; slist (List.map sexp_pat pats); sexp_expr body]
 
-let sexp_decl = function
+let sexp_attr = function
+  | AttrDeprecated s -> node "AttrDeprecated" [esc_str s]
+  | AttrInline       -> "AttrInline"
+  | AttrMustUse      -> "AttrMustUse"
+
+let rec sexp_decl = function
   | DTypeSig (p, n, t)      -> node "DTypeSig" [string_of_bool p; esc_str n; sexp_ty t]
   | DExtern (p, n, t)       -> node "DExtern" [string_of_bool p; esc_str n; sexp_ty t]
   | DFunDef (p, n, ps, b)   ->
@@ -207,6 +214,15 @@ let sexp_decl = function
       node "DRecord" [sexp_vis vis; esc_str n; slist (List.map esc_str ps);
                       slist (List.map sexp_field fields); slist (List.map esc_str derives)]
   | DUse (p, path)          -> node "DUse" [string_of_bool p; sexp_use_path path]
+  | DTypeAlias (p, n, ps, t) ->
+      node "DTypeAlias" [string_of_bool p; esc_str n; slist (List.map esc_str ps); sexp_ty t]
+  | DNewtype (p, n, ps, con, fty, derives) ->
+      node "DNewtype" [string_of_bool p; esc_str n; slist (List.map esc_str ps);
+                       esc_str con; sexp_ty fty; slist (List.map esc_str derives)]
+  | DLetGroup (p, binds) ->
+      node "DLetGroup" [string_of_bool p; slist (List.map sexp_letbind binds)]
+  | DAttrib (attrs, d) ->
+      node "DAttrib" [slist (List.map sexp_attr attrs); sexp_decl d]
   | DProp { is_pub; prop_name; prop_params; prop_body } ->
       node "DProp" [string_of_bool is_pub; esc_str prop_name;
                     slist (List.map (fun (n, t) -> node "pp" [esc_str n; sexp_ty t]) prop_params);
@@ -223,7 +239,6 @@ let sexp_decl = function
       node "DImpl" [string_of_bool is_pub; string_of_bool is_default; esc_str iface_name;
         slist (List.map sexp_ty type_args); sexp_opt_str impl_name;
         slist (List.map sexp_require requires); slist (List.map sexp_impl_method methods)]
-  | _                       -> todo "decl"
 
 (* Stage selector: dump the AST at a chosen pipeline point so the self-hosted
    stage can be diffed against the reference (parse-only by default; --desugar

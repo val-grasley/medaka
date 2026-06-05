@@ -3,7 +3,7 @@
 -- reference.  Tags are the lib/ast.ml constructor names.  Coverage grows with
 -- the AST/parser; new variants get a matching clause here.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..), Attr(..)}
 import util.{escStr, joinNl}
 
 boolStr : Bool -> String
@@ -114,6 +114,8 @@ exprSexp (ERecordUpdate e fs) =
   node "ERecordUpdate" [exprSexp e, slist (map fieldAssignSexp fs)]
 exprSexp (EVariantUpdate c e fs) =
   node "EVariantUpdate" [escStr c, exprSexp e, slist (map fieldAssignSexp fs)]
+exprSexp (EMapLit n kvs) = node "EMapLit" [escStr n, slist (map kvSexp kvs)]
+exprSexp (ESetLit n es) = node "ESetLit" [escStr n, slist (map exprSexp es)]
 exprSexp (EMethodRef name) = node "EMethodRef" [escStr name]
 exprSexp (EDictApp name) = node "EDictApp" [escStr name]
 
@@ -137,6 +139,9 @@ guardArmSexp (GuardArm gs body) =
 
 fieldAssignSexp : FieldAssign -> String
 fieldAssignSexp (FieldAssign n e) = node "fa" [escStr n, exprSexp e]
+
+kvSexp : (Expr, Expr) -> String
+kvSexp (k, v) = node "kv" [exprSexp k, exprSexp v]
 
 letBindSexp : LetBind -> String
 letBindSexp (LetBind name clauses) =
@@ -205,6 +210,21 @@ declSexp (DTest pub name body) =
   node "DTest" [boolStr pub, escStr name, exprSexp body]
 declSexp (DBench pub name body) =
   node "DBench" [boolStr pub, escStr name, exprSexp body]
+declSexp (DTypeAlias p n ps t) =
+  node "DTypeAlias" [boolStr p, escStr n, slist (map escStr ps), tySexp t]
+declSexp (DNewtype p n ps con fty ds) =
+  node
+    "DNewtype"
+    [boolStr p, escStr n, slist (map escStr ps), escStr con, tySexp fty, slist (map escStr ds)]
+declSexp (DLetGroup p binds) =
+  node "DLetGroup" [boolStr p, slist (map letBindSexp binds)]
+declSexp (DAttrib attrs d) =
+  node "DAttrib" [slist (map attrSexp attrs), declSexp d]
+
+attrSexp : Attr -> String
+attrSexp (AttrDeprecated s) = node "AttrDeprecated" [escStr s]
+attrSexp AttrInline = "AttrInline"
+attrSexp AttrMustUse = "AttrMustUse"
 
 propParamSexp : PropParam -> String
 propParamSexp (PropParam n t) = node "pp" [escStr n, tySexp t]

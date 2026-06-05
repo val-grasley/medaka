@@ -112,6 +112,12 @@ public export data Expr
   | ERecordCreate String (List FieldAssign)
   | ERecordUpdate Expr (List FieldAssign)
   | EVariantUpdate String Expr (List FieldAssign)
+  | EMapLit String (List (Expr, Expr))
+  | ESetLit String (List Expr)
+  -- `x@subpat` in a binding LHS (lambda/do-bind param): the parser emits EAsPat,
+  -- which exprToPat lowers to PAs.  Elsewhere resolve would reject it, so it
+  -- never survives into a typed program (the reference's `EAsPat`).
+  | EAsPat String Expr
   -- Method_marker output (the parser never produces these; the typecheck-filled
   -- ref the reference carries is irrelevant pre-typecheck, so just the name).
   | EMethodRef String
@@ -146,6 +152,9 @@ public export data Field = Field String Ty
 public export data ConPayload = ConPos (List Ty) | ConNamed (List Field)
 public export data Variant = Variant String ConPayload
 
+-- declaration attributes: `@deprecated "msg"`, `@inline`, `@must_use`
+public export data Attr = AttrDeprecated String | AttrInline | AttrMustUse
+
 public export data Decl
   = DTypeSig Bool String Ty
   | DExtern Bool String Ty
@@ -158,3 +167,11 @@ public export data Decl
   | DBench Bool String Expr
   | DInterface { pub : Bool, def : Bool, name : String, typarams : List String, supers : List Super, methods : List IfaceMethod }
   | DImpl { pub : Bool, def : Bool, iface : String, tys : List Ty, name : Option String, reqs : List Require, methods : List ImplMethod }
+  -- pub? name typarams rhs
+  | DTypeAlias Bool String (List String) Ty
+  -- pub? tyname typarams conname fieldty derives
+  | DNewtype Bool String (List String) String Ty (List String)
+  -- top-level `let rec … with …` mutually-recursive group
+  | DLetGroup Bool (List LetBind)
+  -- `@attr…` annotations wrapping the next decl
+  | DAttrib (List Attr) Decl

@@ -1,0 +1,32 @@
+-- Constructs the self-hosted parser was hardened to accept (matching the OCaml
+-- parser): expression-level let forms, if-let, impl hints, as-pattern lambda
+-- params, the two `where` placements, and nested record update.
+
+annotatedLet x = let y : Int = x + 1 in y * 2
+mutLet x = let mut acc = x in acc
+recLet n = let rec go = k => go k in go n
+recWithLet n = let rec ping = k => pong k with pong = k => ping k in ping n
+
+ifLet opt = if let Some x = opt then x else 0
+
+hint a b = combine @Additive a b
+hintLower a = run @fast a
+
+asParam = xs@rest => rest
+consAsParam = ps@(x :: _) => x
+
+whereEol x = g x where
+  g y = y * 2
+
+whereOwnLine x = g x
+  where
+    g y = y + 1
+
+guardWhere x
+  | x > limit = "big"
+  | otherwise = "small"
+  where
+    limit = 100
+
+nestedUpdate p = { p | address.city = "Boston" }
+deepUpdate p = { p | a.b.c = 9 }
