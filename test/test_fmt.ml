@@ -536,6 +536,32 @@ let id_short_pipeline = idempotent "f x = x |> g |> h\n"
 let id_wide_logical = idempotent
   "ok a b c d e =\n  a && b && c && d && e && a && b && c && d && e && a && b && c && d && e\n"
 
+(* ── Phase 142: short list literal in over-width expression ── *)
+
+(* A short list literal used as an argument in a guard-arm body that is
+   slightly over 80 cols must NOT be exploded across multiple lines.  The list
+   fits on a fresh line at the current indent, so it stays flat — the
+   resulting line may mildly overflow 80 cols, consistent with the Phase-124
+   "flat, may-overflow" policy for groups whose content fits at their indent.
+   (The alternative — three-line `[\n  elem\n] rest` — is strictly worse.) *)
+let fmt_guard_list_arg_no_explode () =
+  let src =
+    "coalesceStep name acc n ps b rest\n\
+    \  | n == name = coalesceGo name (FunClause ps b :: acc) rest\n\
+    \  | otherwise = LetBind name (reverseL acc) :: coalesceGo n [FunClause ps b] rest\n"
+  in
+  let out = format src in
+  if contains "[\n" out then
+    failwith (Printf.sprintf "List literal was exploded in guard-arm body:\n%s" out);
+  if not (contains "[FunClause ps b]" out) then
+    failwith (Printf.sprintf "List literal was not kept flat:\n%s" out)
+
+let id_guard_list_arg_no_explode =
+  idempotent
+    "coalesceStep name acc n ps b rest\n\
+    \  | n == name = coalesceGo name (FunClause ps b :: acc) rest\n\
+    \  | otherwise = LetBind name (reverseL acc) :: coalesceGo n [FunClause ps b] rest\n"
+
 (* ── Entry point ─────────────────────────────────── *)
 
 let () =
@@ -568,6 +594,7 @@ let () =
       Alcotest.test_case "short pipeline" `Quick id_short_pipeline;
       Alcotest.test_case "wide pipeline"  `Quick id_wide_pipeline;
       Alcotest.test_case "wide logical"   `Quick id_wide_logical;
+      Alcotest.test_case "guard list arg no explode" `Quick id_guard_list_arg_no_explode;
       Alcotest.test_case "if block both"  `Quick id_if_block_both;
       Alcotest.test_case "if block then, inline else" `Quick id_if_block_then_inline_else;
       Alcotest.test_case "if inline then, block else" `Quick id_if_inline_then_block_else;
@@ -628,6 +655,7 @@ let () =
       Alcotest.test_case "short application stays inline" `Quick fmt_app_stays_inline_when_short;
       Alcotest.test_case "guard-arm body does not wrap" `Quick fmt_app_guard_no_wrap;
       Alcotest.test_case "match-arm body does not wrap" `Quick fmt_app_match_no_wrap;
+      Alcotest.test_case "guard list arg not exploded"  `Quick fmt_guard_list_arg_no_explode;
       Alcotest.test_case "wide if-RHS full idempotent" `Quick id_if_rhs_wide_full;
       Alcotest.test_case "wide if-RHS else-less idempotent" `Quick id_if_rhs_wide_elseless;
     ];
