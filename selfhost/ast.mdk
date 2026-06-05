@@ -27,6 +27,12 @@ public export data Ty
 -- an interface constraint `Iface arg…` on the LHS of a `=>` in a type
 public export data Constraint = Constraint String (List Ty)
 
+-- a resolved typeclass-dispatch route (filled by the typed-pipeline typechecker).
+-- RNone = unresolved / no dispatch (eval keeps the VMulti for arg-tag fallback);
+-- RKey = a concrete impl head tag; RDict = read the named dict parameter at
+-- runtime (the enclosing constrained function's constraint).
+public export data Route = RNone | RKey String | RDict String
+
 public export data Pat
   = PVar String
   | PWild
@@ -112,15 +118,27 @@ public export data Expr
   | ERecordCreate String (List FieldAssign)
   | ERecordUpdate Expr (List FieldAssign)
   | EVariantUpdate String Expr (List FieldAssign)
+  | EMapLit String (List (Expr, Expr))
+  | ESetLit String (List Expr)
+  -- `x@subpat` in a binding LHS (lambda/do-bind param): the parser emits EAsPat,
+  -- which exprToPat lowers to PAs.  Elsewhere resolve would reject it, so it
+  -- never survives into a typed program (the reference's `EAsPat`).
+  | EAsPat String Expr
   -- Method_marker output (the parser never produces these; the typecheck-filled
   -- ref the reference carries is irrelevant pre-typecheck, so just the name).
   | EMethodRef String
   | EDictApp String
   -- Return-position method occurrence (pure/empty/…) rewritten by the self-hosted
-  -- typecheck's pre-pass: method name + a mutable tag the typechecker resolves to
-  -- the concrete impl's head type (RKey), which eval narrows the VMulti by.  Only
-  -- appears in the typed eval pipeline, never in parser/desugar/mark output.
-  | EMethodAt String (Ref String)
+  -- typecheck's pre-pass: method name + a mutable route the typechecker resolves.
+  -- RKey = the concrete impl's head type (eval narrows the VMulti by it); RDict =
+  -- the enclosing constrained function's dict parameter (read at runtime, then
+  -- narrow).  Only appears in the typed eval pipeline, never in parse/mark output.
+  | EMethodAt String (Ref Route)
+  -- Constrained-function occurrence (`f` where `f : C a => …`) rewritten by the
+  -- same pre-pass: the function name + one route per `=>` constraint, filled by
+  -- the typechecker.  Eval applies the matching dictionaries as leading args,
+  -- lining up with the dict params dict_pass prepended to f's definition.
+  | EDictAt String (Ref (List Route))
 
 -- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
 public export data UseMember = UseMember String Bool
@@ -146,6 +164,9 @@ public export data Field = Field String Ty
 public export data ConPayload = ConPos (List Ty) | ConNamed (List Field)
 public export data Variant = Variant String ConPayload
 
+-- declaration attributes: `@deprecated "msg"`, `@inline`, `@must_use`
+public export data Attr = AttrDeprecated String | AttrInline | AttrMustUse
+
 public export data Decl
   = DTypeSig Bool String Ty
   | DExtern Bool String Ty
@@ -158,3 +179,11 @@ public export data Decl
   | DBench Bool String Expr
   | DInterface { pub : Bool, def : Bool, name : String, typarams : List String, supers : List Super, methods : List IfaceMethod }
   | DImpl { pub : Bool, def : Bool, iface : String, tys : List Ty, name : Option String, reqs : List Require, methods : List ImplMethod }
+  -- pub? name typarams rhs
+  | DTypeAlias Bool String (List String) Ty
+  -- pub? tyname typarams conname fieldty derives
+  | DNewtype Bool String (List String) String Ty (List String)
+  -- top-level `let rec … with …` mutually-recursive group
+  | DLetGroup Bool (List LetBind)
+  -- `@attr…` annotations wrapping the next decl
+  | DAttrib (List Attr) Decl

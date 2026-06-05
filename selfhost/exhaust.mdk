@@ -12,38 +12,13 @@
 -- typecheck, so it is out of scope here.
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import util.{contains, concatMapList, allList, anyList, listLen, lookupAssoc, joinNl}
 
 -- ── small helpers ─────────────────────────────────────────────────────────
-contains : String -> List String -> Bool
-contains _ [] = False
-contains x (y::ys) = x == y || contains x ys
-
-concatMapList : (a -> List b) -> List a -> List b
-concatMapList _ [] = []
-concatMapList f (x::xs) = f x ++ concatMapList f xs
-
-allList : (a -> Bool) -> List a -> Bool
-allList _ [] = True
-allList p (x::xs) = p x && allList p xs
-
-anyList : (a -> Bool) -> List a -> Bool
-anyList _ [] = False
-anyList p (x::xs) = p x || anyList p xs
-
-listLen : List a -> Int
-listLen [] = 0
-listLen (_::xs) = 1 + listLen xs
-
 replicateWild : Int -> List Pat
 replicateWild n
   | n <= 0 = []
   | otherwise = PWild :: replicateWild (n - 1)
-
-lookupAssoc : String -> List (String, b) -> Option b
-lookupAssoc _ [] = None
-lookupAssoc k ((k2, v)::rest)
-  | k == k2 = Some v
-  | otherwise = lookupAssoc k rest
 
 litEq : Lit -> Lit -> Bool
 litEq (LInt a) (LInt b) = a == b
@@ -100,15 +75,17 @@ digitVal c = charCode c - charCode '0'
 -- ── the constructor oracle ────────────────────────────────────────────────
 -- type → its constructors; ctor → arity; ctor → its type.  User data first so
 -- it overrides the builtins (mirrors Hashtbl.replace's last-wins for find).
-data Oracle
-  = Oracle (List (String, List String)) (List (String, Int)) (List (String, String))
+record Oracle
+  typeCtors : List (String, List String)
+  ctorArity : List (String, Int)
+  ctorType : List (String, String)
 
 buildOracle : List Decl -> Oracle
-buildOracle prog =
-  Oracle
-    (concatMapList dataTypeCtors prog ++ builtinTypeCtors)
-    (concatMapList dataArity prog ++ builtinArity)
-    (concatMapList dataCtorType prog ++ builtinCtorType)
+buildOracle prog = Oracle {
+  typeCtors = concatMapList dataTypeCtors prog ++ builtinTypeCtors,
+  ctorArity = concatMapList dataArity prog ++ builtinArity,
+  ctorType = concatMapList dataCtorType prog ++ builtinCtorType
+}
 
 builtinTypeCtors : List (String, List String)
 builtinTypeCtors = [
@@ -158,19 +135,19 @@ variantCtorType : String -> Variant -> (String, String)
 variantCtorType tyname (Variant n _) = (n, tyname)
 
 oGetCtors : Oracle -> String -> Option (List String)
-oGetCtors (Oracle tc _ _) t = match tupleArityOfName t
+oGetCtors oracle t = match tupleArityOfName t
   Some _ => Some [t]
-  None => lookupAssoc t tc
+  None => lookupAssoc t oracle.typeCtors
 
 oGetCtorType : Oracle -> String -> Option String
-oGetCtorType (Oracle _ _ ct) c = match tupleArityOfName c
+oGetCtorType oracle c = match tupleArityOfName c
   Some _ => Some c
-  None => lookupAssoc c ct
+  None => lookupAssoc c oracle.ctorType
 
 oGetArity : Oracle -> String -> Int
-oGetArity (Oracle _ ca _) c = match tupleArityOfName c
+oGetArity oracle c = match tupleArityOfName c
   Some a => a
-  None => fromOption 0 (lookupAssoc c ca)
+  None => fromOption 0 (lookupAssoc c oracle.ctorArity)
 
 -- ── pattern → canonical matrix pattern ────────────────────────────────────
 desugarPat : Pat -> Pat
@@ -520,11 +497,6 @@ ifaceMethodWarnings oracle (IfaceMethod _ _ (Some (MethodDefault _ body))) =
   letGroupWarnings oracle body
 
 -- one warning per line (the harness sorts)
-joinNl : List String -> String
-joinNl [] = ""
-joinNl [x] = x
-joinNl (x::rest) = x ++ "\n" ++ joinNl rest
-
 export
 exhaustToLines : List Decl -> String
 exhaustToLines prog = joinNl (checkGuardExhaustiveness prog)

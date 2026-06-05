@@ -11,7 +11,8 @@
 -- Validated by rendering pp_value of a program's `main` binding and diffing
 -- against dev/eval_probe.exe (Eval.eval_program ~prelude:false → Eval.pp_value).
 
-import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), ConPayload(..), Variant(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), Route(..), ConPayload(..), Variant(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), Decl(..)}
+import util.{contains, concatMapList, listLen, reverseL, anyList, lookupAssoc}
 
 -- ── values & environment (mutually recursive) ─────────────────────────────
 public export data Value
@@ -40,6 +41,10 @@ public export data Value
   -- an impl method tagged for typeclass dispatch: head type, impl key, the arg
   -- positions that discriminate, args applied so far, and the underlying value
   | VTypedImpl String String (List Int) Int Value
+  -- a runtime dictionary: the impl head tag a constrained function was called at,
+  -- passed as a leading argument (EDictAt builds it, dict_pass binds it as a
+  -- parameter); an in-body EMethodAt routed RDict reads it to narrow its method.
+  | VDict String
 
 -- an environment is a stack of frames; each frame maps names to mutable cells
 -- (so letrec / mutual recursion can back-patch a closure's own binding)
@@ -67,13 +72,14 @@ ppValue (VRecord name fields) = name
 ppValue (VRef cell) = "Ref(" ++ ppValue cell.value ++ ")"
 ppValue (VClosure _ _ _) = "<closure>"
 ppValue (VPrim _) = "<prim>"
-ppValue (VMulti vs) = "<dispatch/" ++ intToString (lengthList vs) ++ ">"
+ppValue (VMulti vs) = "<dispatch/" ++ intToString (listLen vs) ++ ">"
 ppValue (VTypedImpl t _ _ _ inner) = "<impl@"
   ++ t
   ++ ":"
   ++ ppValue inner
   ++ ">"
 ppValue (VThunk _) = "<thunk>"
+ppValue (VDict key) = "<dict:" ++ key ++ ">"
 ppValue VFallthrough = "<fallthrough>"
 
 ppField : (String, Value) -> String
@@ -96,26 +102,7 @@ joinWith _ [] = ""
 joinWith _ [x] = x
 joinWith sep (x::rest) = x ++ sep ++ joinWith sep rest
 
-lengthList : List a -> Int
-lengthList [] = 0
-lengthList (_::xs) = 1 + lengthList xs
-
 -- ── small helpers ─────────────────────────────────────────────────────────
-containsName : String -> List String -> Bool
-containsName _ [] = False
-containsName x (y::ys) = x == y || containsName x ys
-
-concatMapL : (a -> List b) -> List a -> List b
-concatMapL _ [] = []
-concatMapL f (x::xs) = f x ++ concatMapL f xs
-
-reverseL : List a -> List a
-reverseL xs = reverseGo xs []
-
-reverseGo : List a -> List a -> List a
-reverseGo [] acc = acc
-reverseGo (x::xs) acc = reverseGo xs (x :: acc)
-
 arrayToListG : Array a -> List a
 arrayToListG arr = arrayToListGo arr 0 (arrayLength arr)
 
@@ -154,16 +141,6 @@ containsInt : Int -> List Int -> Bool
 containsInt _ [] = False
 containsInt x (y::ys) = x == y || containsInt x ys
 
-anyList : (a -> Bool) -> List a -> Bool
-anyList _ [] = False
-anyList p (x::xs) = p x || anyList p xs
-
-assocLookupS : String -> List (String, String) -> Option String
-assocLookupS _ [] = None
-assocLookupS k ((k2, v)::rest)
-  | k == k2 = Some v
-  | otherwise = assocLookupS k rest
-
 -- ── typeclass dispatch: ctor→type table + runtime tag ─────────────────────
 -- A process-global ctor→type map (mirrors lib/eval.ml's ctor_to_type Hashtbl);
 -- evalProgram seeds it before any dispatch.  Reading it stays pure (ref read).
@@ -171,7 +148,7 @@ ctorToTypeRef : Ref (List (String, String))
 ctorToTypeRef = Ref []
 
 buildCtorToType : List Decl -> List (String, String)
-buildCtorToType prog = concatMapL ctorTypeEntries prog
+buildCtorToType prog = concatMapList ctorTypeEntries prog
 
 ctorTypeEntries : Decl -> List (String, String)
 ctorTypeEntries (DData _ tyname _ variants _) =
@@ -192,7 +169,7 @@ runtimeTypeTag VUnit = Some "Unit"
 runtimeTypeTag (VList _) = Some "List"
 runtimeTypeTag (VArray _) = Some "Array"
 runtimeTypeTag (VTuple _) = Some "__tuple__"
-runtimeTypeTag (VCon cname _) = assocLookupS cname ctorToTypeRef.value
+runtimeTypeTag (VCon cname _) = lookupAssoc cname ctorToTypeRef.value
 runtimeTypeTag (VRecord name _) = Some name
 runtimeTypeTag (VTypedImpl t _ _ _ _) = Some t
 runtimeTypeTag _ = None
@@ -246,10 +223,6 @@ tyMentions (TyFun a b) params = tyMentions a params || tyMentions b params
 tyMentions (TyTuple ts) params = anyList (t => tyMentions t params) ts
 tyMentions (TyEffect _ _ t) params = tyMentions t params
 tyMentions (TyConstrained _ t) params = tyMentions t params
-
-contains : String -> List String -> Bool
-contains _ [] = False
-contains x (y::ys) = x == y || contains x ys
 
 -- ── environment ───────────────────────────────────────────────────────────
 lookupEnv : Env -> String -> <Mut> Value
@@ -395,15 +368,15 @@ matchPat (PLit LUnit) VUnit = Some []
 matchPat (PCon "True" []) (VBool True) = Some []
 matchPat (PCon "False" []) (VBool False) = Some []
 matchPat (PCon name pats) (VCon name2 vals)
-  | name == name2 && lengthList pats == lengthList vals = matchPats pats vals
+  | name == name2 && listLen pats == listLen vals = matchPats pats vals
   | otherwise = None
 matchPat (PCons h t) (VList (x::xs)) = matchCons h t x xs
 matchPat (PCons _ _) (VList []) = None
 matchPat (PTuple pats) (VTuple vals)
-  | lengthList pats == lengthList vals = matchPats pats vals
+  | listLen pats == listLen vals = matchPats pats vals
   | otherwise = None
 matchPat (PList pats) (VList vals)
-  | lengthList pats == lengthList vals = matchPats pats vals
+  | listLen pats == listLen vals = matchPats pats vals
   | otherwise = None
 matchPat (PAs x p) v = matchAs x p v
 matchPat (PRec _ fields _) (VRecord _ recFields) =
@@ -433,7 +406,7 @@ charUpper c hi False = ordLt (stringCompare c hi)
 
 matchRecFields : List RecPatField -> List (String, Value) -> Option (List (String, Value))
 matchRecFields [] _ = Some []
-matchRecFields ((RecPatField fname mp)::rest) recFields = match assocLookupV fname recFields
+matchRecFields ((RecPatField fname mp)::rest) recFields = match lookupAssoc fname recFields
   None => None
   Some v => matchRecField fname mp v rest recFields
 
@@ -446,12 +419,6 @@ matchRecField _ (Some q) v rest recFields = match matchPat q v
   Some b => match matchRecFields rest recFields
     None => None
     Some bs => Some (b ++ bs)
-
-assocLookupV : String -> List (String, Value) -> Option Value
-assocLookupV _ [] = None
-assocLookupV k ((k2, v)::rest)
-  | k == k2 = Some v
-  | otherwise = assocLookupV k rest
 
 matchCons : Pat -> Pat -> Value -> List Value -> Option (List (String, Value))
 matchCons h t x xs = match matchPat h x
@@ -536,13 +503,59 @@ isDispatching _ = False
 -- VTypedImpl tag matches the type the typechecker resolved (no runtime arg).  An
 -- empty tag (unresolved / polymorphic — doesn't occur in the compiler) leaves the
 -- VMulti for arg-tag fallback.
-narrowMethod : Value -> String -> Value
+narrowMethod : Value -> String -> <Mut> Value
 narrowMethod (VMulti vs) "" = VMulti vs
-narrowMethod (VMulti vs) tag = pickByTag vs tag
+narrowMethod (VMulti vs) tag = stripResolved (pickByTag vs tag)
 narrowMethod v _ = v
 
 pickByTag : List Value -> String -> Value
 pickByTag vs tag = oneOrMultiV (filterList (hasTag tag) vs) vs
+
+-- Once a route has pinned a single impl, strip the dispatch wrapper iff its body
+-- is a terminal value (a nullary return-position method like `empty`/`minBound`
+-- that is never applied — its wrapper must not leak into the program).  A body
+-- still awaiting application (a closure / partial impl, e.g. `pure`) keeps the
+-- wrapper so `apply` strips the tag on application.  Mirrors lib/eval.ml Phase 96.
+stripResolved : Value -> <Mut> Value
+stripResolved (VTypedImpl t k p s inner) = stripBody (VTypedImpl t k p s inner) inner
+stripResolved v = v
+
+stripBody : Value -> Value -> <Mut> Value
+stripBody wrapper (VThunk f) = stripBody wrapper (f ())
+stripBody wrapper (VTypedImpl _ _ _ _ inner) = stripBody wrapper inner
+stripBody wrapper v = if awaitsArgs v then wrapper else v
+
+awaitsArgs : Value -> Bool
+awaitsArgs (VClosure _ _ _) = True
+awaitsArgs (VPrim _) = True
+awaitsArgs (VMulti _) = True
+awaitsArgs (VTypedImpl _ _ _ _ _) = True
+awaitsArgs _ = False
+
+-- the concrete head tag an EMethodAt route narrows by: RKey is literal; RDict
+-- forwards the enclosing function's dict parameter (a VDict key); RNone leaves
+-- the VMulti for arg-tag fallback ("").
+routeTag : Env -> Route -> <Mut> String
+routeTag _ RNone = ""
+routeTag _ (RKey key) = key
+routeTag env (RDict d) = match lookupEnv env d
+  VDict key => key
+  _ => ""
+
+-- a constrained-function occurrence: apply one runtime dictionary per resolved
+-- route as a leading argument (matching the dict params dict_pass prepended).
+applyDicts : Env -> Value -> List Route -> <Mut> Value
+applyDicts _ v [] = v
+applyDicts env v (r :: rest) = applyDicts env (apply v (dictOfRoute env r)) rest
+
+-- build the runtime dictionary for one route: RKey is a literal VDict; RDict
+-- forwards the enclosing function's dictionary parameter; RNone is a no-op dict.
+dictOfRoute : Env -> Route -> <Mut> Value
+dictOfRoute _ (RKey key) = VDict key
+dictOfRoute env (RDict d) = match lookupEnv env d
+  VDict key => VDict key
+  _ => VDict ""
+dictOfRoute _ RNone = VDict ""
 
 oneOrMultiV : List Value -> List Value -> Value
 oneOrMultiV [v] _ = v
@@ -555,7 +568,7 @@ hasTag _ _ = False
 
 filterList : (a -> Bool) -> List a -> List a
 filterList _ [] = []
-filterList p (x :: xs)
+filterList p (x::xs)
   | p x = x :: filterList p xs
   | otherwise = filterList p xs
 
@@ -602,7 +615,10 @@ eval _ (ELit (LChar c)) = VChar c
 eval _ (ELit (LBool b)) = VBool b
 eval _ (ELit LUnit) = VUnit
 eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
-eval env (EMethodAt name tagRef) = narrowMethod (lookupEnv env name) tagRef.value
+eval env (EMethodAt name routeRef) =
+  narrowMethod (lookupEnv env name) (routeTag env routeRef.value)
+eval env (EDictAt name routesRef) =
+  applyDicts env (lookupEnv env name) routesRef.value
 eval env (EApp f x) = apply (eval env f) (eval env x)
 eval env (ELam pats body) = VClosure env pats body
 eval env (ELet _ True (PVar f) e1 e2) = evalRecLet env f e1 e2
@@ -684,7 +700,7 @@ evalRecordUpdate (VRecord name existing) updates =
 evalRecordUpdate _ _ = panic "record update on non-record"
 
 mergeField : List (String, Value) -> (String, Value) -> (String, Value)
-mergeField updates (k, v) = match assocLookupV k updates
+mergeField updates (k, v) = match lookupAssoc k updates
   Some v2 => (k, v2)
   None => (k, v)
 
@@ -698,7 +714,7 @@ evalField (VRecord _ fields) field = fieldOr fields field
 evalField _ _ = panic "field access on non-record"
 
 fieldOr : List (String, Value) -> String -> Value
-fieldOr fields field = match assocLookupV field fields
+fieldOr fields field = match lookupAssoc field fields
   Some v => v
   None => panic ("unknown field: " ++ field)
 
@@ -888,7 +904,7 @@ evalArith op _ _ = panic ("unknown op '" ++ op ++ "'")
 
 -- ── program driver ────────────────────────────────────────────────────────
 collectCtors : List Decl -> List (String, Value)
-collectCtors prog = concatMapL ctorsOfDecl prog
+collectCtors prog = concatMapList ctorsOfDecl prog
 
 ctorsOfDecl : Decl -> List (String, Value)
 ctorsOfDecl (DData _ _ _ variants _) = map ctorEntry variants
@@ -898,8 +914,8 @@ ctorEntry : Variant -> (String, Value)
 ctorEntry (Variant n payload) = (n, makeCtor n (payloadArity payload))
 
 payloadArity : ConPayload -> Int
-payloadArity (ConPos tys) = lengthList tys
-payloadArity (ConNamed fs) = lengthList fs
+payloadArity (ConPos tys) = listLen tys
+payloadArity (ConNamed fs) = listLen fs
 
 funDefs : List Decl -> List (String, (List Pat, Expr))
 funDefs [] = []
@@ -909,7 +925,7 @@ funDefs (_::rest) = funDefs rest
 funGroupNames : List (String, (List Pat, Expr)) -> List String -> List String
 funGroupNames [] _ = []
 funGroupNames ((n, _)::rest) seen
-  | containsName n seen = funGroupNames rest seen
+  | contains n seen = funGroupNames rest seen
   | otherwise = n :: funGroupNames rest (n :: seen)
 
 clausesForName : String -> List (String, (List Pat, Expr)) -> List (List Pat, Expr)
@@ -920,7 +936,7 @@ clausesForName name ((n, c)::rest)
 
 -- ── typeclass impl / interface-default installation ───────────────────────
 buildIfaceDispatch : List Decl -> List ((String, String), List Int)
-buildIfaceDispatch prog = concatMapL ifaceDispatchEntries prog
+buildIfaceDispatch prog = concatMapList ifaceDispatchEntries prog
 
 ifaceDispatchEntries : Decl -> List ((String, String), List Int)
 ifaceDispatchEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } = map (ifaceMethodEntry ifaceName typeParams) methods
@@ -955,7 +971,7 @@ nullList _ = False
 declImplEntries : Env -> List ((String, String), List Int) -> Decl -> List (String, (Int, Value))
 declImplEntries env disp DImpl { iface = ifaceName, tys = typeArgs, methods, ... } = map (implMethodEntry env disp ifaceName typeArgs) methods
 declImplEntries env _ DInterface { typarams = typeParams, methods, ... } =
-  concatMapL (defaultEntry env typeParams) methods
+  concatMapList (defaultEntry env typeParams) methods
 declImplEntries _ _ _ = []
 
 implMethodEntry : Env -> List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> (String, (Int, Value))
@@ -972,7 +988,7 @@ headTyconHead (t::_) = headTycon t
 -- interface defaults install untagged (a VClosure) so they act as a fallback
 defaultEntry : Env -> List String -> IfaceMethod -> List (String, (Int, Value))
 defaultEntry _ _ (IfaceMethod _ _ None) = []
-defaultEntry env typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) = [(mname, (lengthList typeParams, implMethodValue env [] pats body))]
+defaultEntry env typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) = [(mname, (listLen typeParams, implMethodValue env [] pats body))]
 
 -- coalesce all candidates for each method name into one VMulti, most-specific
 -- (fewest type vars) first
@@ -1014,11 +1030,11 @@ nubGo (x::xs) seen
   | otherwise = x :: nubGo xs (x :: seen)
 
 implMethodNames : List Decl -> List String
-implMethodNames prog = nub (concatMapL implDeclNames prog)
+implMethodNames prog = nub (concatMapList implDeclNames prog)
 
 implDeclNames : Decl -> List String
 implDeclNames DImpl { methods, ... } = map implMethodName methods
-implDeclNames DInterface { methods, ... } = concatMapL defaultName methods
+implDeclNames DInterface { methods, ... } = concatMapList defaultName methods
 implDeclNames _ = []
 
 implMethodName : ImplMethod -> String
@@ -1041,7 +1057,7 @@ evalProgram prog =
   let _ = installConsts cells boolSeeds
   let _ = installConsts cells externBindings
   let _ = installConsts cells ctors
-  let _ = installConsts cells (coalesceImpls (concatMapL (declImplEntries env disp) prog))
+  let _ = installConsts cells (coalesceImpls (concatMapList (declImplEntries env disp) prog))
   let _ = installGroups env cells groups
   map cellResult cells
 -- impls (lazy VClosures) before groups, so a nullary binding's eager body can
@@ -1348,12 +1364,12 @@ dropShadowedExp names decls = dropShadowed names decls
 
 dropShadowed : List String -> List Decl -> List Decl
 dropShadowed _ [] = []
-dropShadowed names (d :: rest)
+dropShadowed names (d::rest)
   | shadowedFun names d = dropShadowed names rest
   | otherwise = d :: dropShadowed names rest
 
 shadowedFun : List String -> Decl -> Bool
-shadowedFun names (DFunDef _ n _ _) = containsName n names
+shadowedFun names (DFunDef _ n _ _) = contains n names
 shadowedFun _ _ = False
 
 runMainForEffect : List (String, Value) -> <Mut> Value

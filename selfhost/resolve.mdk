@@ -13,6 +13,7 @@
 -- is NOT needed here: single-file mode stubs imports into scope.
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import util.{contains, concatMapList, listLen, escStr, joinNl}
 
 -- ── Errors (mirror lib/resolve.ml's `error`) ──────────────────────────────
 public export data ResError
@@ -30,48 +31,16 @@ public export data ResError
 -- ── The name environment ──────────────────────────────────────────────────
 -- Name-category sets, as plain lists (the self-host is prelude-only, so no
 -- hash_map; membership is a linear `contains`).
-public export data Env
-  = Env (List String) (List String) (List String) (List String) (List (String, String)) (List String) (List (String, List String)) (List String)  -- imported
--- values
--- types
--- constructors
--- fields
--- field owners (field, owner)
--- interfaces
--- iface methods (iface, methods)
-
-envValues : Env -> List String
-envValues (Env v _ _ _ _ _ _ _) = v
-
-envTypes : Env -> List String
-envTypes (Env _ t _ _ _ _ _ _) = t
-
-envCtors : Env -> List String
-envCtors (Env _ _ c _ _ _ _ _) = c
-
-envFields : Env -> List String
-envFields (Env _ _ _ f _ _ _ _) = f
-
-envFieldOwners : Env -> List (String, String)
-envFieldOwners (Env _ _ _ _ fo _ _ _) = fo
-
-envInterfaces : Env -> List String
-envInterfaces (Env _ _ _ _ _ i _ _) = i
-
-envIfaceMethods : Env -> List (String, List String)
-envIfaceMethods (Env _ _ _ _ _ _ im _) = im
-
-envImported : Env -> List String
-envImported (Env _ _ _ _ _ _ _ imp) = imp
-
--- ── List helpers ──────────────────────────────────────────────────────────
-contains : String -> List String -> Bool
-contains _ [] = False
-contains x (y::ys) = x == y || contains x ys
-
-concatMapList : (a -> List b) -> List a -> List b
-concatMapList _ [] = []
-concatMapList f (x::xs) = f x ++ concatMapList f xs
+-- `fieldOwners` is (field, owner) pairs; `ifaceMethods` is (iface, methods).
+public export record Env
+  values : List String
+  types : List String
+  ctors : List String
+  fields : List String
+  fieldOwners : List (String, String)
+  interfaces : List String
+  ifaceMethods : List (String, List String)
+  imported : List String
 
 -- the owners registered for a field name in the field-owner multimap
 ownersOf : String -> List (String, String) -> List String
@@ -103,7 +72,7 @@ patsBindings ps = concatMapList patBindings ps
 -- ── check_type ────────────────────────────────────────────────────────────
 checkType : Env -> Ty -> List ResError
 checkType env (TyCon n) =
-  if contains n (envTypes env) || contains n (envImported env) then
+  if contains n env.types || contains n env.imported then
     []
   else
     [UnknownType n]
@@ -123,12 +92,12 @@ checkEffect : String -> List ResError
 checkEffect e = if contains e builtInEffects then [] else [UnknownEffect e]
 
 checkConstraint : Env -> Constraint -> List ResError
-checkConstraint env (Constraint iface args) = (if contains iface (envInterfaces env) then [] else [UnknownInterface iface])
+checkConstraint env (Constraint iface args) = (if contains iface env.interfaces then [] else [UnknownInterface iface])
   ++ concatMapList (checkType env) args
 
 -- ── check_pat ─────────────────────────────────────────────────────────────
 checkPat : Env -> Pat -> List ResError
-checkPat env (PCon c ps) = (if contains c (envCtors env) || contains c (envImported env) then [] else [UnknownConstructor c])
+checkPat env (PCon c ps) = (if contains c env.ctors || contains c env.imported then [] else [UnknownConstructor c])
   ++ concatMapList (checkPat env) ps
 checkPat env (PCons a b) = checkPat env a ++ checkPat env b
 checkPat env (PTuple ps) = concatMapList (checkPat env) ps
@@ -143,7 +112,7 @@ checkRecPat env name fields = recPatHead env name
 
 recPatHead : Env -> String -> List ResError
 recPatHead env name =
-  if contains name (envTypes env) || contains name (envCtors env) then
+  if contains name env.types || contains name env.ctors then
     []
   else
     [UnknownType name]
@@ -154,7 +123,7 @@ checkRecField env owner (RecPatField fname popt) = fieldCheck env owner fname
 
 fieldCheck : Env -> String -> String -> List ResError
 fieldCheck env owner fname =
-  let owners = ownersOf fname (envFieldOwners env)
+  let owners = ownersOf fname env.fieldOwners
   fieldVerdict owner fname owners
 
 fieldVerdict : String -> String -> List String -> List ResError
@@ -237,9 +206,9 @@ startsWithAt cs = arrayLength cs > 0 && arrayGetUnsafe 0 cs == '@'
 
 lookupValue : Env -> List String -> String -> Bool
 lookupValue env scope n = contains n scope
-  || contains n (envValues env)
-  || contains n (envCtors env)
-  || contains n (envImported env)
+  || contains n env.values
+  || contains n env.ctors
+  || contains n env.imported
 
 checkLet : Env -> List String -> Bool -> Pat -> Expr -> Expr -> List ResError
 checkLet env scope True (PVar f) e1 e2 = checkExpr env (f :: scope) e1
@@ -318,12 +287,12 @@ checkRecordCreate env scope name fs = recCreateHead env name fs
 
 recCreateHead : Env -> String -> List FieldAssign -> List ResError
 recCreateHead env name fs
-  | contains name (envTypes env) || contains name (envImported env) || contains name (envCtors env) = concatMapList (recCreateField env name) fs
+  | contains name env.types || contains name env.imported || contains name env.ctors = concatMapList (recCreateField env name) fs
   | otherwise = [UnknownType name]
 
 recCreateField : Env -> String -> FieldAssign -> List ResError
 recCreateField env owner (FieldAssign fname _) =
-  fieldVerdict owner fname (ownersOf fname (envFieldOwners env))
+  fieldVerdict owner fname (ownersOf fname env.fieldOwners)
 
 -- record update `{ e | f = v, … }`: the receiver's type isn't pinned, so only
 -- flag a field unknown to *every* record (no FieldNotInRecord here)
@@ -337,7 +306,7 @@ recUpdateField env scope (FieldAssign fname v) = checkExpr env scope v
 
 fieldKnownErr : Env -> String -> List ResError
 fieldKnownErr env fname =
-  recUpdateVerdict fname (ownersOf fname (envFieldOwners env))
+  recUpdateVerdict fname (ownersOf fname env.fieldOwners)
 
 recUpdateVerdict : String -> List String -> List ResError
 recUpdateVerdict fname [] = [UnknownField fname]
@@ -412,7 +381,7 @@ checkInterfaceDecl env supers methods = concatMapList (checkSuper env) supers
 
 checkSuper : Env -> Super -> List ResError
 checkSuper env (Super iface _) =
-  if contains iface (envInterfaces env) then
+  if contains iface env.interfaces then
     []
   else
     [UnknownInterface iface]
@@ -430,7 +399,7 @@ checkImplDecl env iface tyargs reqs methods = concatMapList (checkType env) tyar
   ++ checkImplIface env iface methods
 
 checkRequire : Env -> Require -> List ResError
-checkRequire env (Require iface tys) = (if contains iface (envInterfaces env) then [] else [UnknownInterface iface])
+checkRequire env (Require iface tys) = (if contains iface env.interfaces then [] else [UnknownInterface iface])
   ++ concatMapList (checkType env) tys
 
 checkImplMethod : Env -> ImplMethod -> List ResError
@@ -439,8 +408,8 @@ checkImplMethod env (ImplMethod _ pats body) = concatMapList (checkPat env) pats
 
 checkImplIface : Env -> String -> List ImplMethod -> List ResError
 checkImplIface env iface methods
-  | not (contains iface (envInterfaces env)) = [UnknownInterface iface]
-  | otherwise = concatMapList (checkMethodMember iface (ifaceMethodsOf iface (envIfaceMethods env))) methods
+  | not (contains iface env.interfaces) = [UnknownInterface iface]
+  | otherwise = concatMapList (checkMethodMember iface (ifaceMethodsOf iface env.ifaceMethods)) methods
 
 ifaceMethodsOf : String -> List (String, List String) -> List String
 ifaceMethodsOf _ [] = []
@@ -590,10 +559,6 @@ firstOr : String -> List String -> String
 firstOr d [] = d
 firstOr _ (x::_) = x
 
-listLen : List a -> Int
-listLen [] = 0
-listLen (_::xs) = 1 + listLen xs
-
 programIsCore : List Decl -> Bool
 programIsCore prog = hasOrdering prog && hasFoldable prog
 
@@ -618,15 +583,16 @@ buildEnv runtimeDecls preludeDecls prog =
   let pFieldOwners = whenL seed (fieldOwnersOf preludeDecls)
   let uIfaces = interfaceList prog
   let imported = importedNames prog
-  Env
-    (externNames runtimeDecls ++ pValues ++ userValueNames prog ++ imported)
-    (primitiveTypes ++ pTypes ++ dataRecordNames prog ++ imported)
-    (primitiveConstructors ++ pCtors ++ ctorNames prog)
-    (map fst pFieldOwners ++ map fst (fieldOwnersOf prog))
-    (pFieldOwners ++ fieldOwnersOf prog)
-    (map fst pIfaces ++ map fst uIfaces)
-    (pIfaces ++ uIfaces)
-    imported
+  Env {
+    values = externNames runtimeDecls ++ pValues ++ userValueNames prog ++ imported,
+    types = primitiveTypes ++ pTypes ++ dataRecordNames prog ++ imported,
+    ctors = primitiveConstructors ++ pCtors ++ ctorNames prog,
+    fields = map fst pFieldOwners ++ map fst (fieldOwnersOf prog),
+    fieldOwners = pFieldOwners ++ fieldOwnersOf prog,
+    interfaces = map fst pIfaces ++ map fst uIfaces,
+    ifaceMethods = pIfaces ++ uIfaces,
+    imported = imported
+  }
 
 whenL : Bool -> List a -> List a
 whenL True xs = xs
@@ -664,23 +630,6 @@ findDups seen (n::rest)
   | otherwise = findDups (n :: seen) rest
 
 -- ── Serialization (matches dev/diagdump.ml's sexp_error) ─────────────────
-escStr : String -> String
-escStr s = "\"" ++ escFrom (stringToChars s) 0 ++ "\""
-
-escFrom : Array Char -> Int -> String
-escFrom cs i
-  | i >= arrayLength cs = ""
-  | otherwise = escOne (arrayGetUnsafe i cs) ++ escFrom cs (i + 1)
-
-escOne : Char -> String
-escOne c
-  | c == '\\' = "\\\\"
-  | c == '"' = "\\\""
-  | c == '\n' = "\\n"
-  | c == '\t' = "\\t"
-  | c == '\r' = "\\r"
-  | otherwise = charToStr c
-
 resErrorSexp : ResError -> String
 resErrorSexp (UnboundVariable n) = "(UnboundVariable " ++ escStr n ++ ")"
 resErrorSexp (UnknownConstructor n) = "(UnknownConstructor " ++ escStr n ++ ")"
@@ -704,11 +653,6 @@ resErrorSexp (MethodNotInInterface m i) = "(MethodNotInInterface "
   ++ escStr i
   ++ ")"
 resErrorSexp (ExternWithBody n) = "(ExternWithBody " ++ escStr n ++ ")"
-
-joinNl : List String -> String
-joinNl [] = ""
-joinNl [x] = x
-joinNl (x::rest) = x ++ "\n" ++ joinNl rest
 
 -- ── resolve_program ───────────────────────────────────────────────────────
 -- runtimeDecls = runtime.mdk externs; preludeDecls = core.mdk; prog = target.

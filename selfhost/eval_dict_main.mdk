@@ -1,0 +1,57 @@
+-- DICT-PASSING execution path: like the typed path, but also dictionary-passes
+-- the *user* program's `=>`-constrained functions, so a return-position method
+-- used at a constraint variable's type inside a constrained function (e.g.
+-- `empty` inside `f : Monoid a => a -> a`) resolves through the dict parameter
+-- the caller supplies — which plain arg-tag / RKey dispatch cannot do.
+--
+--   medaka run selfhost/eval_dict_main.mdk <runtime.mdk> <prelude.mdk>... <source.mdk>
+--
+-- The shared tree is: desugar → elaborateDict (RKey rewrite + EDictAt rewrite of
+-- the user's constrained fns, typecheck stamps every route, then dict_pass
+-- prepends the matching leading dict params) → eval.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import typecheck.{elaborateDict, constrainedSigNames}
+import eval.{evalOutput, funNamesOf, dropShadowedExp}
+
+main = match args ()
+  (runtimePath :: rest) => withRuntime runtimePath rest
+  _ => ePutStrLn "usage: medaka run selfhost/eval_dict_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+withRuntime runtimePath rest = match splitLast rest
+  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  None => ePutStrLn "usage: <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+splitLast : List a -> Option (List a, a)
+splitLast [] = None
+splitLast [x] = Some ([], x)
+splitLast (x :: rest) = match splitLast rest
+  Some (init, lst) => Some (x :: init, lst)
+  None => None
+
+withFiles runtimePath preludePaths targetPath = match readFile runtimePath
+  Ok rsrc => withPreludes rsrc preludePaths targetPath
+  Err msg => ePutStrLn msg
+
+withPreludes rsrc preludePaths targetPath = match readAllDecls preludePaths
+  Ok preludeDecls => withTarget rsrc preludeDecls targetPath
+  Err msg => ePutStrLn msg
+
+withTarget rsrc preludeDecls targetPath = match readFile targetPath
+  Ok tsrc => putStr (runDict (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc)))
+  Err msg => ePutStrLn msg
+
+runDict : List Decl -> List Decl -> List Decl -> <Mut> String
+runDict runtimeDecls preludeDecls userDecls =
+  let combined = dropShadowedExp (funNamesOf userDecls) preludeDecls ++ userDecls
+  evalOutput (elaborateDict runtimeDecls (constrainedSigNames userDecls) combined)
+
+readAllDecls : List String -> <IO> Result String (List Decl)
+readAllDecls [] = Ok []
+readAllDecls (p :: rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)

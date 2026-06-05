@@ -17,10 +17,12 @@ main = match args ()
   [preludePath, targetPath] => markFiles preludePath targetPath
   _ => ePutStrLn "usage: medaka run selfhost/mark_main.mdk <prelude.mdk> <file.mdk>"
 
+markFiles : String -> String -> <IO> Unit
 markFiles preludePath targetPath = match readFile preludePath
   Ok preludeSrc => markWith preludeSrc targetPath
   Err msg => ePutStrLn msg
 
+markWith : String -> String -> <IO> Unit
 markWith preludeSrc targetPath = match readFile targetPath
   Ok targetSrc => putStr (programToSexp (markWithPrelude (desugar (parse preludeSrc)) (desugar (parse targetSrc))))
   Err msg => ePutStrLn msg

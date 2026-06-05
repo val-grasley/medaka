@@ -25,6 +25,7 @@ renderToks (t::rest) = tokenToString t ++ "\n" ++ renderToks rest
 -- the loader's joint dict-pass.  That dict-pass bug is guarded by `test_loader`;
 -- lexer.mdk's `emit` now carries a concrete signature, so it no longer collides
 -- here.
+emit : String -> <IO> Unit
 emit path = match readFile path
   Ok src => putStr (renderToks (tokenize src))
   Err msg => ePutStrLn msg

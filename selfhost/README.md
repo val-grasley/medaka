@@ -44,6 +44,7 @@ diff with `lib/`:
 | `eval_prelude_main.mdk` | Like `eval_main` but prepends one or more parsed prelude files: `medaka run selfhost/eval_prelude_main.mdk <prelude.mdk>... <src.mdk>` — `core.mdk` for interface methods, `+ list.mdk` for the List combinators / comprehensions (diffs against `dev/eval_probe.exe --prelude` / `--prepend`). |
 | `eval_run_main.mdk` | **True execution**: `medaka run selfhost/eval_run_main.mdk <prelude.mdk>... <src.mdk>` runs the program for its **stdout** (putStr/putStrLn captured to a buffer), prelude-shadow-dropping the user's redefinitions. Diffs against the `=== EVAL ===` goldens (`test/diff_selfhost_eval_run.sh`). |
 | `eval_typed_main.mdk` | **Typed execution** (return-position dispatch): `medaka run selfhost/eval_typed_main.mdk <runtime.mdk> <prelude.mdk>... <src.mdk>` threads desugar → `typecheck.elaborate` (stamps `EMethodAt` tags) → eval on one shared tree, so `pure`/`empty`/do-blocks dispatch by concrete return type. Diffs against `medaka run` (`test/diff_selfhost_eval_typed.sh`). |
+| `eval_dict_main.mdk` | **Dict-passing execution**: like the typed path but also dictionary-passes the *user* program's `=>`-constrained functions (`typecheck.elaborateDict`), so a return-position method used at a constraint variable's type (e.g. `empty` inside `f : Monoid a => a -> a`) resolves through the dict parameter the caller supplies — which arg-tag / RKey dispatch cannot do. Diffs against `medaka run` (`test/diff_selfhost_eval_dict.sh`). |
 | `typecheck.mdk` | HM core (**slice 1**). `Mono`/`Scheme` + union-find `unify`, level-based `generalize`/`instantiate`, `pp_mono`, and `infer`/`inferPat`. `checkToLines : List Decl -> <Mut> String`. |
 | `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk [runtime.mdk] <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). With a runtime.mdk arg its externs are seeded into scope, so `core.mdk` (+ a user program) type-checks against the `=== TYPES ===` goldens. |
 | `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 9 resolve diagnostics (broken). |
@@ -73,8 +74,9 @@ the stage is done when all pass.
 
 - ✅ Scaffold + harness wiring (token ADT, canonical serializer, runnable entry,
   diff loop).
-- ✅ Tokenizer ported: int/float/string/char literals (with char escapes
-  `\n \t \r \0 \\ \'` + `\u{…}`, mirroring Phase 133) + hex/bin/oct literals,
+- ✅ Tokenizer ported: int/float/string/char literals (with escapes
+  `\n \t \r \0 \\ \"`, char-only `\'`, and the `\u{…}` unicode escape in **both**
+  string and char literals — every escape rule of `lib/lexer.mll`) + hex/bin/oct literals,
   idents/keywords, operators/punctuation, line + nestable `{- … -}` block
   comments, **string interpolation**, the `@`/`AS_AT` adjacency rule, and the
   INDENT/DEDENT/NEWLINE layout algorithm (plus else-continuation filter and
@@ -86,18 +88,22 @@ the stage is done when all pass.
   depth so the closing `}` resumes the triple continuation (vs the single-string
   one). Covered by `test/diff_fixtures/triple_str.mdk`.
 - ✅ **Validated two ways**, both byte-for-byte against the OCaml reference:
-  - **16/16 curated fixtures** — `sh test/diff_selfhost_lexer.sh`.
-  - **13/13 real `.mdk` files** (every stdlib module + this lexer lexing itself)
+  - **17/17 curated fixtures** — `sh test/diff_selfhost_lexer.sh`.
+  - **All real `.mdk` files** (every stdlib module + this lexer lexing itself)
     — `sh test/diff_selfhost_lex_files.sh`, which diffs against
     `dev/lextok.exe` (the OCaml reference dumper). FLOAT literal *text* is
     normalized away (OCaml `%g` vs `floatToString`: `1.0` → `1` vs `1.`; the
-    TFloat value is identical). One more serialization-only nuance, not hit by
-    any real file: control bytes in STRING/CHAR render `\0` (`debugStringLit`)
-    vs `\000` (`%S`) — same value, different debug escaping.
-- ✅ Lexer surface complete. The only unhandled construct is *nested* string
-  interpolation (a `"…"` string literal inside a `\{…}` expression) — but the
-  OCaml reference rejects it too ("Unterminated string literal"), so it isn't
-  valid Medaka and there's nothing to mirror.
+    TFloat value is identical). One more serialization-only nuance: non-ASCII /
+    control bytes in STRING/CHAR render raw (`debugStringLit`) vs `\NNN`-escaped
+    (`%S`) — same value, different debug escaping.
+- ✅ **Lexer fully in line with the OCaml counterpart** (`lib/lexer.mll`): every
+  pattern the reference lexer accepts, the self-hosted lexer accepts, producing
+  the identical token *values*. The only divergences are the two
+  serialization-only debug-rendering nuances above (FLOAT text, non-ASCII byte
+  escaping) — the token values match. The one construct neither lexer handles is
+  *nested* string interpolation (a `"…"` string literal inside a `\{…}`
+  expression), which the OCaml reference rejects too ("Unterminated string
+  literal"), so it isn't valid Medaka and there's nothing to mirror.
 
 ### Parser (Stage 1, in progress)
 
@@ -164,11 +170,60 @@ the stage is done when all pass.
   range patterns (`PRng`, int + char), `if` match-arm guards, and record
   patterns (`PRec`, `C { f = p, … }` / `C { .. }`). Most needed a
   `dev/astdump.ml` extension first (they were `TODO`). Toy coverage lives in
-  `test/parse_fixtures/rare_constructs.mdk`. **Parser surface-grammar coverage is
-  now complete** — the only remaining unhandled surface is lexer-side (nested
-  interpolation / triple-quoted strings).
+  `test/parse_fixtures/rare_constructs.mdk`.
 
   *(Parser combinators were spiked and parked — blocked on Phase 136; see PLAN.)*
+
+- ✅ **Hardening pass (2026-06-04): every SYNTAX.md construct swept through the
+  diff harness; all real `parser.mdk` gaps vs the OCaml parser closed.** The
+  earlier "coverage complete" claim was optimistic — a systematic sweep found 16
+  constructs the OCaml parser accepts that the port rejected or mis-parsed. Now
+  added:
+  - expression-level `let` forms: `let mut … in`, `let rec … [with …] in`
+    (→ `ELetGroup`), annotated `let x : T = e in …` (and `let mut x : T`);
+  - as-pattern lambda params `xs@rest =>` (new `EAsPat` node, lowered by
+    `exprToPat`; incl. the `(x::_)` `SecLeft "::"`-recovery case from the
+    reference `expr_to_pat`);
+  - `if let P = e then … else …` (parse-time → two-arm `EMatch`);
+  - impl hints `e @Name` (`AT IDENT`/`AT UPPER` → `EVar "@Name"` atom);
+  - import aliases `import a.B as C`, Uppercase path components, `import test.…`;
+  - end-of-line `where`, `where` over all guard arms, match-arm `where` (both
+    placements — the arm body now reuses `parseBodyExpr`);
+  - nested record update `{ p | a.b.c = v }` (`desugarDottedField`);
+  - **type aliases** (`DTypeAlias`), **newtypes** (`DNewtype`, + `deriving`),
+    **top-level `let rec … with`** (`DLetGroup`), **attributes**
+    (`@inline`/`@deprecated`/`@must_use` → `DAttrib`), and the unified
+    `Con { … }` form → record-create / **`Map` literal** (`EMapLit`) /
+    **`Set` literal** (`ESetLit`) / field puns.
+
+  (The sweep also surfaced a lexer gap — `\u{…}` escapes in *strings* lexed as
+  `u{…}` — independently fixed on main by `22ca755`, so the parser sees the
+  decoded codepoint.)
+
+  The six TODO-blocked nodes (`DTypeAlias`/`DNewtype`/`DLetGroup`/`DAttrib`/
+  `EMapLit`/`ESetLit`) needed matching serializers added to **both**
+  `dev/astdump.ml` AND `selfhost/sexp.mdk`, plus the AST nodes in `ast.mdk`.
+  Validated: **52 real source files** (stdlib + the self-host compiler parsing
+  itself) + the `parse_fixtures` corpus byte-match the OCaml reference. The only
+  surface both parsers still reject is nested interpolation / (untested)
+  triple-quote edge cases — genuinely lexer-side, not a parser gap.
+
+  **⚠️ Remaining work — the new AST nodes are parser-only.** The six Phase-B
+  nodes above (`DTypeAlias`, `DNewtype`, `DLetGroup`, `DAttrib`, `EMapLit`,
+  `ESetLit`, and `EAsPat`) are produced by `parser.mdk` and serialized by
+  `sexp.mdk`, but the **downstream self-host stages don't handle them yet** —
+  `desugar.mdk`/`marker.mdk`/`resolve.mdk`/`typecheck.mdk`/`eval.mdk` have no
+  clauses for them (non-exhaustive matches that are simply never hit on today's
+  inputs). Porting each node through those stages (mirroring how `lib/desugar.ml`
+  lowers `EMapLit`/`ESetLit`/`DNewtype`/etc.) is follow-on work, tracked per
+  stage in the roadmap below. **Consequence for fixtures:** Phase-B parser
+  fixtures live in a dedicated `test/parse_only_fixtures/` dir (read only by
+  `diff_selfhost_parse.sh`), NOT in the shared `test/parse_fixtures/` corpus —
+  the latter is also consumed by `diff_selfhost_{desugar,mark}.sh`, which would
+  break on a node their stage can't process. Phase-A fixtures (built only from
+  already-handled AST nodes) live in `test/parse_fixtures/hardening.mdk` as
+  usual. When a downstream stage learns to handle one of the Phase-B nodes, its
+  fixtures can graduate from `parse_only_fixtures/` into the shared corpus.
 
 ## Roadmap — remaining Stage 1 stages
 
@@ -505,17 +560,54 @@ top-level fn), not by porting effect inference.
    self-hosted pipeline and diff against the reference — the "it checks/runs
    itself" closure.
 
-### Deliberately NOT needed (scoped out by the scout)
+### Dictionary passing (generality layer — beyond the bootstrap)
 
-The compiler uses **only RKey** return-position dispatch (every site is at a
-concrete type — the `Parser` monad, no polymorphic-monad code, no `=>`
-constraints in the selfhost source). So the full dictionary-passing system —
-`RDict`, dict params, `EDictApp`, `VDict`, the `dict_pass` param-insertion
-transform, the two-pass `Elaborate` — is **not** required for the bootstrap. It
-*would* be needed for (a) running arbitrary user programs that *do* use
-polymorphic-monad code, and (b) the LLVM backend (Stage 2), which consumes the
-fully-elaborated AST. Treat it as an LLVM-era / generality task, not a
-self-hosting one.
+The compiler's own source uses **only RKey** return-position dispatch (every site
+is at a concrete type — the `Parser` monad, no polymorphic-monad code, no `=>`
+constraints in the selfhost source), so the full dictionary-passing system is
+**not** required for the bootstrap. It *is* needed for (a) running arbitrary user
+programs that use `=>`-constrained polymorphic code, and (b) the LLVM backend
+(Stage 2), which consumes the fully-elaborated AST.
+
+**A first dict-passing slice now exists** (`eval_dict_main.mdk` +
+`typecheck.elaborateDict` + `eval.mdk`'s `VDict`/`EDictAt`/RDict), scoped to the
+*user* program's constrained functions (the prelude keeps arg-tag/RKey dispatch,
+which already type-checks the goldens). It handles a `=>`-constrained function
+whose body uses a return-position method (`empty`, …) at the constraint
+variable's type — the case arg-tag dispatch genuinely cannot resolve — including
+multi-type call sites, nested constrained calls (dict forwarding / RDict at the
+call site), and multiple constraints per function. Validated against `medaka run`
+by `test/diff_selfhost_eval_dict.sh` (4 fixtures in `test/eval_dict_fixtures/`).
+
+Mechanism (mirrors the reference's marker → typecheck → dict_pass):
+- `ast.mdk` — a `Route` ADT (`RNone`/`RKey`/`RDict`) plus `EMethodAt`/`EDictAt`
+  carrying route refs the typechecker fills (typed-pipeline-only nodes, like the
+  existing RKey `EMethodAt`; never in parse/desugar/mark output, so the
+  sexp/astdump lockstep is untouched).
+- `typecheck.mdk` — `elaborateDict` rewrites each constrained-fn occurrence to
+  `EDictAt`; during inference it collects each fn's constraint tyvars (registered
+  **after** body inference, by their *surviving* normalized id — pre-unify ids
+  miss the survivor a method occurrence normalizes to) and records call-site dict
+  applications; after inference it routes in-body methods (RDict when the
+  discriminating type is the enclosing fn's constraint variable, else RKey) and
+  call sites (RKey at a concrete type, RDict forwarding a nested constraint), then
+  `dict_pass` prepends one `$dict_<fn>_<slot>` parameter per constraint.
+- `eval.mdk` — `VDict` (carrying the impl head tag), `EDictAt` applies one dict
+  per route as a leading argument, `EMethodAt` routed RDict reads the dict
+  parameter to narrow its method.
+
+Because the runtime dict is a flat type-tag (not iface-keyed), it's correct even
+for several constraints on one tyvar: all such dicts carry the same type tag, and
+each method's VMulti is already interface-specific, so reading any same-tyvar
+dict narrows correctly.
+
+**Still out of scope** (the reference's harder cases — see PLAN.md Phase
+83/84/115): dict-passing the *prelude*'s constrained functions, self/mutually-
+recursive constrained functions (the recursive call's routes need the fn's own
+constraints, registered only after its group infers), inferred (unsignatured)
+constraints and the two-pass `Elaborate` promotion, method-level-constraint dicts
+(`foldMap`'s Monoid), instance-`requires` dicts, and nested/structured (non-flat)
+dictionaries.
 
 ### Known limits carried forward (don't block the bootstrap)
 

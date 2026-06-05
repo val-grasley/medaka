@@ -15,6 +15,7 @@ main = match args ()
   [targetPath] => withTarget targetPath
   _ => ePutStrLn "usage: medaka run selfhost/exhaust_main.mdk <file.mdk>"
 
+withTarget : String -> <IO> Unit
 withTarget targetPath = match readFile targetPath
   Ok targetSrc => putStr (exhaustToLines (parse targetSrc))
   Err msg => ePutStrLn msg

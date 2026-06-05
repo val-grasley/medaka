@@ -11,7 +11,7 @@
 -- the prelude), effect rows, records, interfaces/impls + constraint solving,
 -- and explicit type signatures.
 
-import ast.{Lit(..), Ty(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), DataVis(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), DataVis(..), Decl(..)}
 import desugar.{mapProg}
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
@@ -57,17 +57,39 @@ public export data RecordInfo = RecordInfo (List Int) Mono (List (String, Mono))
 recordsRef : Ref (List (String, RecordInfo))
 recordsRef = Ref []
 
--- return-position method sites discovered during inference: (the EMethodAt tag
+-- return-position method sites discovered during inference: (the EMethodAt route
 -- ref to fill, the method's result mono).  After the whole program is inferred,
--- each result mono's head tycon is the concrete impl tag the site dispatches to.
-pendingSites : Ref (List (Ref String, Mono))
+-- each result mono's head tycon is the concrete impl tag the site dispatches to
+-- (RKey) — or, when it is a constrained function's constraint variable, that
+-- function's dict parameter (RDict).
+pendingSites : Ref (List (Ref Route, Mono))
 pendingSites = Ref []
+
+-- dict-passing state (the typed pipeline's `=>`-constraint layer):
+--   activeDictVars   : constraint tyvar id → the dict parameter name a method
+--                      occurrence at that variable's type reads (RDict).
+--   funConstraintsRef: constrained fn name → its constraints' quantified tyvar
+--                      ids (one per `=>` constraint, in slot order) — a call site
+--                      maps each to its fresh instantiation var to pick a route.
+--   pendingDictApps  : a constrained-fn occurrence's routes ref + the instantiated
+--                      constraint monos, resolved to RKey/RDict after inference.
+activeDictVars : Ref (List (Int, String))
+activeDictVars = Ref []
+
+funConstraintsRef : Ref (List (String, List Int))
+funConstraintsRef = Ref []
+
+pendingDictApps : Ref (List (Ref (List Route), List Mono))
+pendingDictApps = Ref []
 
 resetState : Unit -> <Mut> Unit
 resetState _ =
   let _ = set_ref tyvarCounter 0
   let _ = set_ref recordsRef []
   let _ = set_ref pendingSites []
+  let _ = set_ref activeDictVars []
+  let _ = set_ref funConstraintsRef []
+  let _ = set_ref pendingDictApps []
   set_ref currentLevel 0
 
 -- ── small helpers ─────────────────────────────────────────────────────────
@@ -493,6 +515,7 @@ infer env (ERecordUpdate base fields) = inferRecordUpdate env base fields
 infer env (EVariantUpdate cname base fields) = inferVariantUpdate env cname base fields
 infer env (EBlock stmts) = inferBlock env stmts
 infer env (EMethodAt name tagRef) = inferMethodAt env name tagRef
+infer env (EDictAt name routesRef) = inferDictAt env name routesRef
 infer env (EArrayLit es) = inferArrayLit env es
 infer env (ERangeList lo hi _) = inferIntRange env lo hi (TCon "List")
 infer env (ERangeArray lo hi _) = inferIntRange env lo hi (TCon "Array")
@@ -531,16 +554,51 @@ inferSlice env arr lo hi =
   infer env arr
 
 -- a return-position method occurrence: type it like the method, but record the
--- (tagRef, result mono) so resolveSites can later stamp the concrete impl tag
-inferMethodAt : TcEnv -> String -> Ref String -> <Mut> Mono
+-- (routeRef, result mono) so resolveSites can later stamp the route (RKey concrete
+-- impl tag, or RDict the enclosing constrained fn's dict param)
+inferMethodAt : TcEnv -> String -> Ref Route -> <Mut> Mono
 inferMethodAt env name tagRef = match lookupVar env name
   None => panic ("unbound method: " ++ name)
   Some s => recordSite tagRef (instantiate s)
 
-recordSite : Ref String -> Mono -> <Mut> Mono
+recordSite : Ref Route -> Mono -> <Mut> Mono
 recordSite tagRef methodType =
   let _ = set_ref pendingSites ((tagRef, stripArrows methodType) :: pendingSites.value)
   methodType
+
+-- a constrained-function occurrence (`f` where `f : C a => …`): instantiate f's
+-- scheme (the call's type), and record the routes ref + the instantiated
+-- constraint monos so resolveDictApps can pick a dict route once the call's args
+-- pin those monos.  funConstraintsRef[f] gives f's constraint tyvar ids, mapped
+-- through the instantiation subst to this call's fresh vars.
+inferDictAt : TcEnv -> String -> Ref (List Route) -> <Mut> Mono
+inferDictAt env name routesRef = match lookupVar env name
+  None => panic ("unbound constrained fn: " ++ name)
+  Some scheme =>
+    let inst = instantiateTracked scheme
+    let ids = fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
+    let monos = constraintMonosOf ids (snd inst)
+    let _ = set_ref pendingDictApps ((routesRef, monos) :: pendingDictApps.value)
+    fst inst
+
+-- instantiate a scheme, returning both the mono and the (quantified id → fresh
+-- var) substitution, so a caller can recover specific quantified variables
+instantiateTracked : Scheme -> <Mut> (Mono, List (Int, Mono))
+instantiateTracked (Forall ids t) =
+  let subst = freshSubst ids
+  (substMono subst t, subst)
+
+constraintMonosOf : List Int -> List (Int, Mono) -> List Mono
+constraintMonosOf [] _ = []
+constraintMonosOf (id :: rest) subst = match lookupAssocI id subst
+  Some m => m :: constraintMonosOf rest subst
+  None => constraintMonosOf rest subst
+
+lookupAssocSL2 : String -> List (String, List Int) -> Option (List Int)
+lookupAssocSL2 _ [] = None
+lookupAssocSL2 k ((k2, v) :: rest)
+  | k == k2 = Some v
+  | otherwise = lookupAssocSL2 k rest
 
 -- the type a method ultimately returns (strip its argument arrows); the impl is
 -- chosen by this type's head tycon (pure : a -> f a → f a; empty : f a → f a)
@@ -1000,16 +1058,43 @@ unifyClauses env v ((pats, body) :: rest) =
   unifyClauses env v rest
 
 -- ── elaboration: resolve return-position method dispatch (RKey) ────────────
--- Rewrite each return-position method occurrence to EMethodAt (with a fresh tag
--- ref), type-check (recording the sites), then stamp each site's tag from its
+-- Rewrite each return-position method occurrence to EMethodAt (with a fresh route
+-- ref), type-check (recording the sites), then stamp each site's route from its
 -- now-resolved result type.  Returns the SAME tree (refs filled) for eval.
 export
 elaborate : List Decl -> List Decl -> <Mut> List Decl
-elaborate runtimeDecls prog =
-  let prog2 = prePass (returnPosMethodNames prog) prog
+elaborate runtimeDecls prog = elaborateDict runtimeDecls [] prog
+
+-- Dict-passing elaboration (the `=>`-constraint layer).  [dictNames] are the
+-- top-level constrained functions to dict-pass (the *user* program's — the
+-- prelude keeps arg-tag / RKey dispatch, which already type-checks the goldens).
+-- In addition to the RKey rewrite, each occurrence of a name in [dictNames]
+-- becomes an EDictAt (its routes filled per constraint after inference), and the
+-- returned tree has matching leading dict parameters on those functions' defs.
+export
+elaborateDict : List Decl -> List String -> List Decl -> <Mut> List Decl
+elaborateDict runtimeDecls dictNames prog =
+  let prog2 = prePassDict (returnPosMethodNames prog) dictNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
   let _ = resolveSites pendingSites.value
-  prog2
+  let _ = resolveDictApps pendingDictApps.value
+  dictPass dictNames prog2
+
+-- the user program's top-level functions carrying a `=>` constraint in their
+-- signature — the set elaborateDict dict-passes
+export
+constrainedSigNames : List Decl -> List String
+constrainedSigNames prog = concatMapL constrainedSigName prog
+
+constrainedSigName : Decl -> List String
+constrainedSigName (DTypeSig _ n ty)
+  | isConstrainedTy ty = [n]
+  | otherwise = []
+constrainedSigName _ = []
+
+isConstrainedTy : Ty -> Bool
+isConstrainedTy (TyConstrained _ _) = True
+isConstrainedTy _ = False
 
 -- methods whose interface type param appears ONLY in the result (no argument
 -- mentions it) — pure/empty/minBound/maxBound/fromInt/… — are return-position
@@ -1043,25 +1128,91 @@ anyMember : List String -> List String -> Bool
 anyMember [] _ = False
 anyMember (x :: xs) ys = containsName x ys || anyMember xs ys
 
-prePass : List String -> List Decl -> List Decl
-prePass names prog = mapProg (rewriteRP names) prog
+-- rewrite each return-position method occurrence to EMethodAt, and each
+-- constrained-fn occurrence (a name in [dictNames]) to EDictAt — both carry a
+-- fresh ref the typechecker fills.  The two name sets are disjoint (interface
+-- methods vs top-level functions).
+prePassDict : List String -> List String -> List Decl -> List Decl
+prePassDict rpNames dictNames prog = mapProg (rewriteRPDict rpNames dictNames) prog
 
-rewriteRP : List String -> Expr -> Expr
-rewriteRP names (EVar n)
-  | containsName n names = EMethodAt n (Ref "")
+rewriteRPDict : List String -> List String -> Expr -> Expr
+rewriteRPDict rpNames dictNames (EVar n)
+  | containsName n rpNames = EMethodAt n (Ref RNone)
+  | containsName n dictNames = EDictAt n (Ref [])
   | otherwise = EVar n
-rewriteRP _ e = e
+rewriteRPDict _ _ e = e
 
-resolveSites : List (Ref String, Mono) -> <Mut> Unit
+resolveSites : List (Ref Route, Mono) -> <Mut> Unit
 resolveSites [] = ()
 resolveSites ((tagRef, resultMono) :: rest) =
   let _ = resolveSite tagRef resultMono
   resolveSites rest
 
-resolveSite : Ref String -> Mono -> <Mut> Unit
-resolveSite tagRef resultMono = match headTyconMono resultMono
-  Some tag => set_ref tagRef tag
-  None => ()
+-- a method occurrence's route: if its discriminating type is a constrained
+-- function's constraint variable, read that function's dict param (RDict);
+-- otherwise the concrete impl head tag (RKey); an unresolved polymorphic type
+-- stays RNone (arg-tag fallback).
+resolveSite : Ref Route -> Mono -> <Mut> Unit
+resolveSite tagRef resultMono = match activeDictVarOf resultMono
+  Some dname => set_ref tagRef (RDict dname)
+  None => match headTyconMono resultMono
+    Some tag => set_ref tagRef (RKey tag)
+    None => ()
+
+-- if [m] normalizes to a registered constraint variable, the dict parameter name
+-- a method at that type reads
+activeDictVarOf : Mono -> Option String
+activeDictVarOf m = match normalize m
+  TVar cell => lookupAssocI (tyvarId cell) activeDictVars.value
+  _ => None
+
+-- fill each constrained-fn call site's routes: one route per constraint mono.  A
+-- mono pinned to a concrete head → RKey; still a constraint variable (a nested
+-- constrained call) → RDict; otherwise RNone.
+resolveDictApps : List (Ref (List Route), List Mono) -> <Mut> Unit
+resolveDictApps [] = ()
+resolveDictApps ((routesRef, monos) :: rest) =
+  let _ = set_ref routesRef (routesOfMonos monos)
+  resolveDictApps rest
+
+routesOfMonos : List Mono -> <Mut> List Route
+routesOfMonos [] = []
+routesOfMonos (m :: rest) = routeOfMono m :: routesOfMonos rest
+
+routeOfMono : Mono -> <Mut> Route
+routeOfMono m = match activeDictVarOf m
+  Some dname => RDict dname
+  None => match headTyconMono m
+    Some tag => RKey tag
+    None => RNone
+
+-- ── dict_pass: prepend dict parameters to constrained function definitions ──
+-- For each top-level def of a name in [dictNames], prepend one `$dict_<fn>_<slot>`
+-- parameter per constraint (arity from funConstraintsRef, populated during
+-- inference), matching the dicts EDictAt applies at call sites.  Multi-clause
+-- functions are several DFunDef decls; each clause gets the same leading params.
+dictPass : List String -> List Decl -> List Decl
+dictPass names prog = map (dictPassDecl names) prog
+
+dictPassDecl : List String -> Decl -> Decl
+dictPassDecl names (DFunDef pub n pats body)
+  | containsName n names = DFunDef pub n (dictParams n (dictArityOf n) ++ pats) body
+  | otherwise = DFunDef pub n pats body
+dictPassDecl _ d = d
+
+dictArityOf : String -> Int
+dictArityOf n = lengthL (fromOption [] (lookupAssocSL2 n funConstraintsRef.value))
+
+dictParams : String -> Int -> List Pat
+dictParams n k = dictParamsGo n 0 k
+
+dictParamsGo : String -> Int -> Int -> List Pat
+dictParamsGo n slot k
+  | slot >= k = []
+  | otherwise = PVar (dictParamName n slot) :: dictParamsGo n (slot + 1) k
+
+dictParamName : String -> Int -> String
+dictParamName fn slot = "$dict_" ++ fn ++ "_" ++ intToString slot
 
 -- head type constructor, normalizing at each level (the head may be a TVar
 -- linked to a concrete type after unification — normalize follows only the top
@@ -1121,6 +1272,7 @@ sigsOf (_ :: rest) = sigsOf rest
 allEVars : Expr -> List String
 allEVars (EVar x) = [x]
 allEVars (EMethodAt n _) = [n]
+allEVars (EDictAt n _) = [n]
 allEVars (ELit _) = []
 allEVars (EApp f x) = allEVars f ++ allEVars x
 allEVars (ELam _ b) = allEVars b
@@ -1308,8 +1460,9 @@ processSCC env sigs defs members =
   let _ = enterLevel ()
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
-  let _ = preunifySigs sigs placeholders
+  let regs = preunifySigs sigs placeholders
   let _ = inferMembers env2 sigs defs placeholders
+  let _ = registerConstraintRegs regs
   let _ = exitLevel ()
   let schemes = sccSchemes sigs placeholders
   (extendVars env schemes, schemes)
@@ -1320,16 +1473,78 @@ placeholderBinding (m, v) = (m, monoScheme v)
 -- Pass A: a signed member's placeholder is unified with an instantiation of its
 -- signature, so mutual-recursive callers see the declared (possibly polymorphic)
 -- type while the bodies are checked
-preunifySigs : List (String, Ty) -> List (String, Mono) -> <Mut> Unit
-preunifySigs _ [] = ()
-preunifySigs sigs ((m, v) :: rest) =
-  let _ = preunifySig sigs m v
-  preunifySigs sigs rest
+preunifySigs : List (String, Ty) -> List (String, Mono) -> <Mut> List (String, List Mono)
+preunifySigs _ [] = []
+preunifySigs sigs ((m, v) :: rest) = preunifySig sigs m v ++ preunifySigs sigs rest
 
-preunifySig : List (String, Ty) -> String -> Mono -> <Mut> Unit
+-- Unify a member's placeholder with a fresh instantiation of its signature, and
+-- (for a `=>`-constrained sig) return its constraint variables' monos in slot
+-- order.  The actual id registration is deferred to after body inference, because
+-- unification picks which of two unified vars survives — registering a pre-unify
+-- id would miss the survivor (the in-body method occurrence normalizes to it).
+preunifySig : List (String, Ty) -> String -> Mono -> <Mut> List (String, List Mono)
 preunifySig sigs m v = match lookupAssocS m sigs
-  Some ty => unify v (instantiate (sigToScheme ty))
-  None => ()
+  Some ty =>
+    let inst = instantiateSigTracked ty
+    let _ = unify v (fst inst)
+    [(m, constraintVarMonos (sigConstraints ty) (snd inst))]
+  None => []
+
+-- like astTypeFresh but also returns the tyvar-name → fresh-var map
+instantiateSigTracked : Ty -> <Mut> (Mono, List (String, Mono))
+instantiateSigTracked ty =
+  let tvs = freshTvMap (dedupS (tyVarNames ty))
+  (fromAstType tvs ty, tvs)
+
+-- the (iface, tyvarName) pairs of a signature's `=>` constraints (each constraint
+-- argument that is a single type variable; multi-param/structured args skipped)
+sigConstraints : Ty -> List (String, String)
+sigConstraints (TyConstrained cs _) = concatMapL constraintTyVars cs
+sigConstraints _ = []
+
+constraintTyVars : Constraint -> List (String, String)
+constraintTyVars (Constraint iface tys) = map (n => (iface, n)) (tyVarArgNames tys)
+
+tyVarArgNames : List Ty -> List String
+tyVarArgNames [] = []
+tyVarArgNames (TyVar n :: rest) = n :: tyVarArgNames rest
+tyVarArgNames (_ :: rest) = tyVarArgNames rest
+
+-- the constraint variables' monos in slot order (the fresh instantiation vars for
+-- each constraint's tyvar)
+constraintVarMonos : List (String, String) -> List (String, Mono) -> List Mono
+constraintVarMonos [] _ = []
+constraintVarMonos ((_, name) :: rest) tvMap = match lookupAssocS name tvMap
+  Some mono => mono :: constraintVarMonos rest tvMap
+  None => constraintVarMonos rest tvMap
+
+-- After body inference, register each member's constraint variables by their
+-- *surviving* (normalized) tyvar id: in activeDictVars (id → dict param name, for
+-- in-body RDict routing) and per-fn in funConstraintsRef (for call-site dict
+-- application).  Done per group so a callee's constraints are known before its
+-- (later-group) callers infer.
+registerConstraintRegs : List (String, List Mono) -> <Mut> Unit
+registerConstraintRegs [] = ()
+registerConstraintRegs ((m, monos) :: rest) =
+  let _ = registerMember m monos
+  registerConstraintRegs rest
+
+registerMember : String -> List Mono -> <Mut> Unit
+registerMember m monos =
+  let ids = registerMemberSlots m 0 monos
+  set_ref funConstraintsRef ((m, ids) :: funConstraintsRef.value)
+
+-- [kept] is the next dict-param slot; a constraint variable forced concrete by the
+-- body takes no dict and doesn't advance the slot (so param names stay 0..k-1,
+-- matching dict_pass).
+registerMemberSlots : String -> Int -> List Mono -> <Mut> List Int
+registerMemberSlots _ _ [] = []
+registerMemberSlots m kept (mono :: rest) = match normalize mono
+  TVar cell =>
+    let id = tyvarId cell
+    let _ = set_ref activeDictVars ((id, dictParamName m kept) :: activeDictVars.value)
+    id :: registerMemberSlots m (kept + 1) rest
+  _ => registerMemberSlots m kept rest
 
 -- Pass B: infer each member's clauses, unifying with its placeholder
 inferMembers : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
