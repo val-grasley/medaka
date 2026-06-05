@@ -162,3 +162,25 @@ harness. All min-of-2/3, all correctness-clean (matched/ok, 0 differing/failing)
 Whole fast-path suite is now a few minutes (was ~11 min batched / ~44 min orig).
 **check_modules is once again the single biggest harness (17s)** — it's the next
 profiling target. (No code change this unit; verified measurement.)
+
+### 2026-06-04 — match_pat List.compare_lengths (target #3 interpreter, depth)
+- cmd: `sh test/diff_selfhost_check_modules.sh` ; entry `main.exe run check_modules_main.mdk runtime.mdk core.mdk selfhost/parser.mdk selfhost`
+- **Re-profiled the check_modules parser entry AFTER the env-Hashtbl win.** Hotspot
+  moved: ~52% still in List.assoc_opt but now via `search_644` (env `lookup`)
+  scanning small per-call FList frames MANY times — NOT big frames. ~17% in
+  `match_pat → List.length_aux` (PCon/PTuple/PList arms doing two full length
+  traversals per match). Remainder spread: Hashtbl hashing (50+42), caml_modify, GC.
+- **Attempt A — adaptive FList/FTable frames (threshold 6, then 2): REVERTED.**
+  No help at 6 (2.36s vs 2.35s); threshold 2 was *worse* (2.42s — Hashtbl build
+  overhead on many tiny per-call frames). **Confirms the FList scans are small
+  frames hit often, so the lever is lookup COUNT/constant, not frame size.** The
+  env-Hashtbl commit already covers the big frames; per-call frames belong as FList.
+- **Attempt B — match_pat `List.compare_lengths` instead of `length = length`: WIN.**
+  Walks both lists once in lockstep, early-stops; semantically identical.
+- before: 17.07s (full) / 2.29s (entry)   after: **15.60s / 1.99s**  (**~9% / ~13%**)
+- correctness: test_eval/run/loader/repl/doctest green; mark+desugar byte-identical; check_modules 12 ok.
+- committed: 1d0d8fe
+- **Next lever (measured, not yet attempted):** env `lookup` still ~half the time,
+  scanning small FList frames repeatedly + Hashtbl string-hashing on globals. The
+  per-lookup constant is the cost. Candidate: speed the EVar hot arm itself, or
+  cut lookup count, or intern names→ints to kill string hashing/compare. Harder.
