@@ -1,0 +1,11 @@
+export interface Describe a where
+  describe : a -> String
+
+public export data Dog = Dog
+public export data Cat = Cat
+
+export impl Describe Dog where
+  describe Dog = "woof"
+
+export impl Describe Cat where
+  describe Cat = "meow"

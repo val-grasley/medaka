@@ -1,0 +1,4 @@
+public export data Color = Red | Green | Blue deriving (Eq, Debug)
+
+export isRed : Color -> Bool
+isRed c = c == Red

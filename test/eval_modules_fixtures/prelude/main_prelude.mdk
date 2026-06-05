@@ -1,0 +1,4 @@
+import nums.{Color(..), isRed}
+
+-- cross-module use of core prelude impls: derived Eq + Debug on an imported type
+main = putStrLn (debug (isRed Red) ++ " " ++ debug (Green == Green) ++ " " ++ debug (Red == Blue))

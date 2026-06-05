@@ -1,0 +1,5 @@
+import alpha.{alphaVal}
+import beta.{betaVal}
+
+-- alphaVal 5 = 105, betaVal 5 = 10; a private-helper merge bug would print "105 105"
+main = putStrLn (intToString (alphaVal 5) ++ " " ++ intToString (betaVal 5))

@@ -39,7 +39,7 @@ diff with `lib/`:
 | `resolve_main.mdk` | Runnable entry: `medaka run selfhost/resolve_main.mdk <runtime.mdk> <core.mdk> <src.mdk>` prints one diagnostic per line (diffs against `diagdump --resolve`, the harness sorts). |
 | `exhaust.mdk` | Port of `lib/exhaust.ml`'s `check_guard_exhaustiveness` (guard coverage over the raw AST; Maranget `useful` matrix). No prelude — the ctor oracle is built from the file's own data decls + builtins. `exhaustToLines : List Decl -> String`. |
 | `exhaust_main.mdk` | Runnable entry: `medaka run selfhost/exhaust_main.mdk <src.mdk>` prints one guard warning per line (diffs against `diagdump --exhaust`, the harness sorts). Parses **without** desugaring (guards must still be `EGuards`). |
-| `eval.mdk` | Tree-walk interpreter (Stage-1 capstone, **slice 1**). `Value`/`Env` ADTs + `pp_value` (byte-for-byte with `lib/eval.ml`) + the engine: `eval`/`apply`/`match_pat`/binops over `(name, Ref value)` env frames. `evalMain : List Decl -> <Mut> String`. |
+| `eval.mdk` | Tree-walk interpreter (Stage-1 capstone, **slice 1**). `Value`/`EvalEnv` ADTs + `pp_value` (byte-for-byte with `lib/eval.ml`) + the engine: `eval`/`apply`/`match_pat`/binops over `(name, Ref value)` env frames; single-file `evalMain`/`evalOutput` and the multi-module `evalModules`/`evalModulesOutput`. |
 | `eval_main.mdk` | Runnable entry: `medaka run selfhost/eval_main.mdk <src.mdk>` parses + desugars a self-contained (prelude-free) file, evaluates it, prints `pp_value` of `main` (diffs against `dev/eval_probe.exe`). |
 | `eval_prelude_main.mdk` | Like `eval_main` but prepends one or more parsed prelude files: `medaka run selfhost/eval_prelude_main.mdk <prelude.mdk>... <src.mdk>` — `core.mdk` for interface methods, `+ list.mdk` for the List combinators / comprehensions (diffs against `dev/eval_probe.exe --prelude` / `--prepend`). |
 | `eval_run_main.mdk` | **True execution**: `medaka run selfhost/eval_run_main.mdk <prelude.mdk>... <src.mdk>` runs the program for its **stdout** (putStr/putStrLn captured to a buffer), prelude-shadow-dropping the user's redefinitions. Diffs against the `=== EVAL ===` goldens (`test/diff_selfhost_eval_run.sh`). |
@@ -50,6 +50,7 @@ diff with `lib/`:
 | `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 9 resolve diagnostics (broken). |
 | `loader.mdk` | Port of `lib/loader.ml`: `loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))` — DFS topo-sort of a root file's transitive `import`s (dependency-first; cycle detection). Flat single-root simplification. `loader_main.mdk` prints the module order. |
 | `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 12 selfhost modules). |
+| `eval_modules_main.mdk` | **Multi-module execution** (the loader-driven eval path): `medaka run selfhost/eval_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, evaluates them in per-module frames over the shared prelude (`eval.evalModules`), forces the entry's `main`, prints captured stdout. Diffs against `medaka run <entry>` (`test/diff_selfhost_eval_modules.sh`). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -548,14 +549,32 @@ top-level fn), not by porting effect inference.
 
 #### Remaining for the full bootstrap
 
-1. **Multi-module EVAL path.** The front-end is typecheck-only; *running* the
-   self-hosted compiler on its own source additionally needs `eval_modules`
-   (per-module frames the reference has). Eval already works single-flat-program
-   (`eval_run`/`eval_typed`); this is the per-module-scoping port for eval.
-2. **The `Env` constructor clash.** `data Env` is exported by *both* `resolve.mdk`
-   and `eval.mdk`; constructors install globally, so a driver co-loading **both**
-   (the full pipeline incl. eval — not the front-end, which omits eval) collides.
-   Rename one (e.g. eval's `Env` → `EvalEnv`). The front-end sidesteps it.
+1. ✅ **Multi-module EVAL path — DONE.** `eval.evalModules` (+ the runnable
+   `eval_modules_main.mdk`) is the loader-driven analog of `evalOutput`: a port
+   of `lib/eval.ml`'s `eval_modules`. The prelude (core) installs **globally**
+   (all names global); each loaded module's top-level funDefs are **local**, so
+   same-named functions across modules stay isolated (Phase 110), while ctors and
+   impl methods coalesce **globally** into one coherent `VMulti` per interface
+   method. Modules arrive dependency-first (loader order); a module's `import`s
+   resolve to the exporting module's cells. The reference's explicit
+   deferred-thunk install ordering (Phase 125) is unnecessary here — `VThunk`
+   laziness defers every nullary binding to its first lookup, by which point all
+   modules' impls are installed. **UNTYPED path** (no typecheck / dict-pass /
+   marker), like `evalOutput` — correct for the RKey-only bootstrap source and
+   any program without return-position dispatch or `=>`-constrained polymorphism.
+   Validated by `test/diff_selfhost_eval_modules.sh` (4 fixtures in
+   `test/eval_modules_fixtures/`: cross-module function+ADT, private-helper
+   isolation, cross-module interface/impl coalescing, derived `Eq`/`Debug` over
+   an imported type), oracle = `medaka run <entry>` (the reference Loader →
+   typecheck → `eval_modules`), the same oracle `eval_typed_main` uses.
+   Simplification vs the reference: a module exposes **all** its local funDef
+   cells as exports (not just `pub` ones) — correct for programs that already
+   passed resolve, since a private name is never referenced cross-module — plus
+   the cells re-exported by a `pub import`.
+2. ✅ **The `Env` constructor clash — DONE.** Eval's `data Env` was renamed to
+   `EvalEnv` (resolve.mdk keeps its `record Env`), so a future driver co-loading
+   **both** resolve and eval (the full pipeline incl. eval — not the front-end,
+   which omits eval) no longer collides on the globally-installed constructor.
 3. **Self-processing target.** Run a selfhost stage's output through the
    self-hosted pipeline and diff against the reference — the "it checks/runs
    itself" closure.

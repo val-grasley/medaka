@@ -1,0 +1,3 @@
+import geo.{area, shapeArea, Shape(..)}
+
+main = putStrLn (intToString (area 3 4 + shapeArea (Rect 2 5) + shapeArea (Square 3)))

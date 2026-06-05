@@ -1,0 +1,44 @@
+-- Multi-module execution through the self-hosted eval (the loader-driven eval
+-- path — the bootstrap's "run the compiler's own module graph"):
+--
+--   medaka run selfhost/eval_modules_main.mdk <core.mdk> <entry.mdk> [root ...]
+--
+-- loads <entry.mdk> + its transitive imports (dependency-first), desugars each,
+-- evaluates them all in per-module frames over the shared prelude (core), forces
+-- the entry module's `main` for its IO side-effects, and prints the captured
+-- stdout — the multi-module analog of eval_run_main.  Diffs against `medaka run
+-- <entry.mdk>` (which drives the reference Loader → eval_modules), the same
+-- oracle eval_typed_main uses.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import loader.{loadProgram}
+import eval.{evalModulesOutput}
+
+main = match args ()
+  (coreP :: entry :: roots) => run coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run selfhost/eval_modules_main.mdk <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+dirOf : String -> String
+dirOf path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo path 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> List String -> <IO, Mut> Unit
+run coreP entry roots = match readFile coreP
+  Err e => ePutStrLn e
+  Ok csrc => match loadProgram entry roots
+    Err e => ePutStrLn e
+    Ok mods => putStr (evalModulesOutput (desugar (parse csrc)) (map desugarPair mods))

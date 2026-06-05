@@ -1,0 +1,10 @@
+import animals.{Describe(..), describe, Dog(..), Cat(..)}
+
+-- impl in the ENTRY module must coalesce with animals' impls into one global
+-- `describe` VMulti (arg-tag dispatch picks the right one per type)
+public export data Cow = Cow
+
+export impl Describe Cow where
+  describe Cow = "moo"
+
+main = putStrLn (describe Dog ++ " " ++ describe Cat ++ " " ++ describe Cow)

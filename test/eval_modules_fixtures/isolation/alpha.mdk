@@ -1,0 +1,6 @@
+-- private helper, same name as beta's but different behavior
+helper : Int -> Int
+helper x = x + 100
+
+export alphaVal : Int -> Int
+alphaVal x = helper x

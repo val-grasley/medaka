@@ -1,0 +1,8 @@
+export area : Int -> Int -> Int
+area w h = w * h
+
+public export data Shape = Rect Int Int | Square Int
+
+export shapeArea : Shape -> Int
+shapeArea (Rect w h) = w * h
+shapeArea (Square s) = s * s
