@@ -419,3 +419,14 @@ assoc_opt FList scans + Hashtbl find_opt/key_index/hash on globals) ≈ ~28% +
 - `-unsafe` (drop bounds checks) is the only remaining build knob; NOT pursued —
   build-wide safety removal on an interpreter is too risky unattended for an
   unquantified gain. Noted for supervised consideration.
+
+### 2026-06-04 — ctor-table String-specialization: flat, REVERTED
+- Desugar profile showed a 2nd hashtbl find_opt (find_opt_1154, ~30 samples)
+  distinct from the env FrameTbl (1400). Converted eval's string-keyed
+  ctor_to_type + ctor_field_order to the String-specialized FrameTbl (same proven
+  pattern as the env win). A/B (min-of-5): check_modules_batch 5.08→5.04
+  (~0.8%, noise), desugar_batch 5.71→5.72 (flat). Unlike the env table, these
+  aren't hot enough for the specialized-equality to matter. **REVERTED.** (iface_
+  dispatch is tuple-keyed; registries are prop-only — none worth converting.)
+- The desugar/mark residual is match_pat dispatch + eval_1426 + env walk — the
+  interpretation floor. No further contained interpreter win found.
