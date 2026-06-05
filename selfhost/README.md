@@ -193,8 +193,10 @@ the stage is done when all pass.
     (`@inline`/`@deprecated`/`@must_use` → `DAttrib`), and the unified
     `Con { … }` form → record-create / **`Map` literal** (`EMapLit`) /
     **`Set` literal** (`ESetLit`) / field puns.
-  - Lexer: `\u{…}` escapes in **strings** and interpolations (was char-only, so
-    `"\u{48}"` had lexed as `u{48}`).
+
+  (The sweep also surfaced a lexer gap — `\u{…}` escapes in *strings* lexed as
+  `u{…}` — independently fixed on main by `22ca755`, so the parser sees the
+  decoded codepoint.)
 
   The six TODO-blocked nodes (`DTypeAlias`/`DNewtype`/`DLetGroup`/`DAttrib`/
   `EMapLit`/`ESetLit`) needed matching serializers added to **both**
