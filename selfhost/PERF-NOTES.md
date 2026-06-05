@@ -184,3 +184,30 @@ profiling target. (No code change this unit; verified measurement.)
   scanning small FList frames repeatedly + Hashtbl string-hashing on globals. The
   per-lookup constant is the cost. Candidate: speed the EVar hot arm itself, or
   cut lookup count, or intern names→ints to kill string hashing/compare. Harder.
+
+### 2026-06-04 — env-lookup residual: 3 attempts, NEEDS DEEPER REWORK (move on)
+Re-profiled the check_modules parser entry after compare_lengths. `match_pat`
+length cost gone (~7 samples). Residual top is env `lookup` (search_644 +
+assoc_opt FList scans + Hashtbl find_opt/key_index/hash on globals) ≈ ~28% +
+`caml_alloc_small` ~21. Three attempts to cut it, all REVERTED (verify-or-revert):
+- **A. adaptive FList/FTable frames** (threshold 6, 2): flat / worse. Small frames.
+- **B. skip empty `extend`** (PWild/literal binds): flat (2.02 vs 1.99s) — empty
+  binds too rare on this path; the match guard offsets any gain.
+- **C. spine-collect + coalesce a saturated call's n param-frames into 1**
+  (order-safe, arity m≥n guard, no VClosure type change): **REGRESSED** 1.99→2.20s
+  (entry), 15.60→16.92s (full). The collect_spine/compare_lengths/rev_append
+  machinery runs on EVERY EApp — most parser applications are single-arg (curried
+  combinators), so the per-application overhead dwarfs the multi-arg frame-walk
+  savings. Coalescing only pays if you can detect arity *without* per-call spine
+  work — i.e. resolve-time arity annotation.
+- **Conclusion:** the residual is the per-variable-reference cost of a by-name
+  environment. Cutting it needs a STRUCTURAL change — slot-indexed / De Bruijn
+  env: a resolve pass annotates each EVar with (depth, index) so lookup is array
+  indexing, no string hash/compare and no frame walk. That threads resolve.ml →
+  ast.ml → eval.ml and is too big/risky for an unattended single unit. Filed as
+  the single most promising un-attempted lead (see top summary at STOP_AT).
+- **Redirect:** next units target ALGORITHMIC wins in the self-hosted compiler
+  (.mdk), like the Tarjan win — PERF-NOTES backlog #2 candidates (registerAllData
+  O(modules×data) re-registration; cross-entry re-typecheck) live in typecheck.mdk
+  and don't touch the interpreter.
+- committed: no code change (all attempts reverted); log only.
