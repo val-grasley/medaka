@@ -101,6 +101,32 @@ pendingRecDictApps = Ref []
 currentFn : Ref String
 currentFn = Ref ""
 
+-- INFERRED (unsignatured) `=>`-constraint promotion (the reference's two-pass
+-- Elaborate / Phase 83/84/115).  An unsignatured fn whose body uses a
+-- return-position method — or calls a constrained fn — at one of its OWN
+-- generalized tyvars carries a constraint only AFTER inference.  We discover this
+-- by recording, per occurrence, the enclosing fn (currentFn) and the live mono,
+-- then (post-generalization) intersecting with the fn's quantified ids.
+--   methodSiteFns : (enclosing fn, a return-position method site's result mono)
+--   dictAppFns    : (enclosing fn, a constrained-fn call's instantiated constraint
+--                   monos) — propagates a constraint to an unsignatured CALLER
+--   promotedRef   : fns discovered THIS pass to carry an inferred constraint; read
+--                   by elaborateDict to grow the dict-passed set on the next pass
+--   dictEligibleRef: the USER fn names eligible for promotion (the prelude's
+--                   constrained fns stay arg-tag/RKey — out of scope).  Set by
+--                   elaborateDict; NOT cleared by resetState (constant per run).
+methodSiteFns : Ref (List (String, Mono))
+methodSiteFns = Ref []
+
+dictAppFns : Ref (List (String, List Mono))
+dictAppFns = Ref []
+
+promotedRef : Ref (List String)
+promotedRef = Ref []
+
+dictEligibleRef : Ref (List String)
+dictEligibleRef = Ref []
+
 resetState : Unit -> <Mut> Unit
 resetState _ =
   let _ = set_ref tyvarCounter 0
@@ -111,6 +137,9 @@ resetState _ =
   let _ = set_ref pendingDictApps []
   let _ = set_ref pendingRecDictApps []
   let _ = set_ref currentFn ""
+  let _ = set_ref methodSiteFns []
+  let _ = set_ref dictAppFns []
+  let _ = set_ref promotedRef []
   set_ref currentLevel 0
 
 -- ── small helpers ─────────────────────────────────────────────────────────
@@ -656,7 +685,9 @@ inferMethodAt env name tagRef = match lookupVar env name
 
 recordSite : Ref Route -> Mono -> <Mut> Mono
 recordSite tagRef methodType =
-  let _ = set_ref pendingSites ((tagRef, stripArrows methodType) :: pendingSites.value)
+  let stripped = stripArrows methodType
+  let _ = set_ref pendingSites ((tagRef, stripped) :: pendingSites.value)
+  let _ = set_ref methodSiteFns ((currentFn.value, stripped) :: methodSiteFns.value)
   methodType
 
 -- a constrained-function occurrence (`f` where `f : C a => …`): instantiate f's
@@ -680,6 +711,7 @@ inferDictAtFound name routesRef inst
       let ids = fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
       let monos = constraintMonosOf ids (snd inst)
       let _ = set_ref pendingDictApps ((routesRef, monos) :: pendingDictApps.value)
+      let _ = set_ref dictAppFns ((currentFn.value, monos) :: dictAppFns.value)
       fst inst
   | otherwise =
       let _ = set_ref pendingRecDictApps (RecDictApp routesRef name currentFn.value (fst inst) :: pendingRecDictApps.value)
@@ -1173,23 +1205,54 @@ unifyClauses env v ((pats, body) :: rest) =
 -- now-resolved result type.  Returns the SAME tree (refs filled) for eval.
 export
 elaborate : List Decl -> List Decl -> <Mut> List Decl
-elaborate runtimeDecls prog = elaborateDict runtimeDecls [] prog
+elaborate runtimeDecls prog = elaborateDict runtimeDecls [] [] prog
 
 -- Dict-passing elaboration (the `=>`-constraint layer).  [dictNames] are the
--- top-level constrained functions to dict-pass (the *user* program's — the
+-- *signatured* constrained functions to dict-pass (the user program's — the
 -- prelude keeps arg-tag / RKey dispatch, which already type-checks the goldens).
--- In addition to the RKey rewrite, each occurrence of a name in [dictNames]
--- becomes an EDictAt (its routes filled per constraint after inference), and the
--- returned tree has matching leading dict parameters on those functions' defs.
+-- [eligibleNames] are the user fn names that may additionally be PROMOTED when an
+-- INFERRED (unsignatured) constraint is discovered (see registerInferredConstraints).
+--
+-- Two-pass / fixpoint orchestration (mirrors the reference's mark → typecheck →
+-- re-mark → typecheck → dict_pass): a mark+typecheck pass discovers each eligible
+-- unsignatured fn's inferred constraints (promotedRef); we grow the dict-passed
+-- set and re-run until it stabilizes (one layer of a call chain promotes per
+-- pass), then mark + typecheck + route + dict_pass the final set.  In the RKey
+-- rewrite, each occurrence of a name in the final set becomes an EDictAt (routes
+-- filled after inference) and its def gets matching leading dict params.
 export
-elaborateDict : List Decl -> List String -> List Decl -> <Mut> List Decl
-elaborateDict runtimeDecls dictNames prog =
-  let prog2 = prePassDict (returnPosMethodNames prog) dictNames prog
+elaborateDict : List Decl -> List String -> List String -> List Decl -> <Mut> List Decl
+elaborateDict runtimeDecls dictNames eligibleNames prog =
+  let _ = set_ref dictEligibleRef eligibleNames
+  let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
+  let prog2 = prePassDict (returnPosMethodNames prog) allNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
   let _ = resolveSites pendingSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps pendingDictApps.value
-  dictPass dictNames prog2
+  dictPass allNames prog2
+
+-- With no eligible names (the RKey-only / typed path), there is nothing to
+-- promote — skip discovery entirely so that path stays a single typecheck pass.
+discoverAll : List Decl -> List Decl -> List String -> List String -> <Mut> List String
+discoverAll _ _ dictNames [] = dictNames
+discoverAll runtimeDecls prog dictNames _ = discoverPromoted runtimeDecls prog dictNames
+
+-- Grow the dict-passed set to a fixpoint.  Each pass marks occurrences of the
+-- current set as EDictAt and typechecks; registerInferredConstraints populates
+-- promotedRef (reset each pass by checkProgramSeeded) with eligible unsignatured
+-- fns that picked up a constraint — including a CALLER that inherited one through
+-- a now-marked constrained call.  Stop when no new name appears.
+discoverPromoted : List Decl -> List Decl -> List String -> <Mut> List String
+discoverPromoted runtimeDecls prog current =
+  let prog1 = prePassDict (returnPosMethodNames prog) current prog
+  let _ = checkProgramSeeded (externSchemes runtimeDecls) prog1
+  discoverNext runtimeDecls prog current (dedupS (current ++ promotedRef.value))
+
+discoverNext : List Decl -> List Decl -> List String -> List String -> <Mut> List String
+discoverNext runtimeDecls prog current next
+  | lengthL next == lengthL current = current
+  | otherwise = discoverPromoted runtimeDecls prog next
 
 -- the user program's top-level functions carrying a `=>` constraint in their
 -- signature — the set elaborateDict dict-passes
@@ -1665,6 +1728,7 @@ processSCC env sigs defs members =
   let _ = registerConstraintRegs regs
   let _ = exitLevel ()
   let schemes = sccSchemes sigs placeholders
+  let _ = registerInferredConstraints sigs schemes
   (extendVars env schemes, schemes)
 
 placeholderBinding : (String, Mono) -> (String, Scheme)
@@ -1762,6 +1826,74 @@ inferMembers env sigs defs ((m, v) :: rest) =
 sccSchemes : List (String, Ty) -> List (String, Mono) -> <Mut> List (String, Scheme)
 sccSchemes _ [] = []
 sccSchemes sigs ((m, v) :: rest) = (m, generalize v) :: sccSchemes sigs rest
+
+-- ── inferred-constraint promotion (unsignatured `=>` — the two-pass layer) ──
+-- After a group is generalized, an UNSIGNATURED eligible member that uses a
+-- return-position method (methodSiteFns) — or calls a constrained fn (dictAppFns)
+-- — at one of its OWN quantified tyvars carries an INFERRED constraint.  Register
+-- it exactly as a signatured one (funConstraintsRef + activeDictVars, keyed by the
+-- *surviving* normalized id) so its body's method routes RDict and dict_pass
+-- prepends a dict param; and record it in promotedRef so elaborateDict marks its
+-- occurrences EDictAt on the next pass.  Signatured members are skipped (their
+-- constraints came from preunifySigs); prelude fns are skipped (not eligible).
+registerInferredConstraints : List (String, Ty) -> List (String, Scheme) -> <Mut> Unit
+registerInferredConstraints _ [] = ()
+registerInferredConstraints sigs ((m, sch) :: rest) =
+  let _ = maybeInferConstraint sigs m sch
+  registerInferredConstraints sigs rest
+
+maybeInferConstraint : List (String, Ty) -> String -> Scheme -> <Mut> Unit
+maybeInferConstraint sigs m sch
+  | not (containsName m dictEligibleRef.value) = ()
+  | hasSig sigs m = ()
+  | otherwise = registerInferredFor m (inferredConstraintIds m (schemeIds sch))
+
+hasSig : List (String, Ty) -> String -> Bool
+hasSig sigs m = match lookupAssocS m sigs
+  Some _ => True
+  None => False
+
+schemeIds : Scheme -> List Int
+schemeIds (Forall ids _) = ids
+
+-- the member's own quantified tyvar ids that a body method site / propagated
+-- constrained-call sits at (deduped, slot order = discovery order)
+inferredConstraintIds : String -> List Int -> List Int
+inferredConstraintIds m boundIds =
+  dedupI (constraintIdsFromSites m boundIds methodSiteFns.value
+          ++ constraintIdsFromApps m boundIds dictAppFns.value)
+
+constraintIdsFromSites : String -> List Int -> List (String, Mono) -> List Int
+constraintIdsFromSites _ _ [] = []
+constraintIdsFromSites m boundIds ((fn, mono) :: rest)
+  | fn == m = boundTvarId boundIds mono ++ constraintIdsFromSites m boundIds rest
+  | otherwise = constraintIdsFromSites m boundIds rest
+
+constraintIdsFromApps : String -> List Int -> List (String, List Mono) -> List Int
+constraintIdsFromApps _ _ [] = []
+constraintIdsFromApps m boundIds ((fn, monos) :: rest)
+  | fn == m = concatMapL (boundTvarId boundIds) monos ++ constraintIdsFromApps m boundIds rest
+  | otherwise = constraintIdsFromApps m boundIds rest
+
+-- [mono] normalizing to a tyvar this scheme generalized → that (constraint var)
+-- id; a pinned-concrete or foreign var → none
+boundTvarId : List Int -> Mono -> List Int
+boundTvarId boundIds mono = match normalize mono
+  TVar cell => if containsI (tyvarId cell) boundIds then [tyvarId cell] else []
+  _ => []
+
+registerInferredFor : String -> List Int -> <Mut> Unit
+registerInferredFor _ [] = ()
+registerInferredFor m ids =
+  let _ = set_ref funConstraintsRef ((m, ids) :: funConstraintsRef.value)
+  let _ = registerActiveDictVars m 0 ids
+  set_ref promotedRef (m :: promotedRef.value)
+
+registerActiveDictVars : String -> Int -> List Int -> <Mut> Unit
+registerActiveDictVars _ _ [] = ()
+registerActiveDictVars m slot (id :: rest) =
+  let _ = set_ref activeDictVars ((id, dictParamName m slot) :: activeDictVars.value)
+  registerActiveDictVars m (slot + 1) rest
 
 export
 checkToLines : List Decl -> <Mut> String

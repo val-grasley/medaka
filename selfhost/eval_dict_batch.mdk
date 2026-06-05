@@ -31,5 +31,6 @@ emitAll runtimeDecls preludeDecls (path :: rest) = match readFile path
 
 runDict : List Decl -> List Decl -> List Decl -> <Mut> String
 runDict runtimeDecls preludeDecls userDecls =
-  let combined = dropShadowedExp (funNamesOf userDecls) preludeDecls ++ userDecls
-  evalOutput (elaborateDict runtimeDecls (constrainedSigNames userDecls) combined)
+  let userNames = funNamesOf userDecls
+  let combined = dropShadowedExp userNames preludeDecls ++ userDecls
+  evalOutput (elaborateDict runtimeDecls (constrainedSigNames userDecls) userNames combined)

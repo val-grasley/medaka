@@ -695,9 +695,13 @@ which already type-checks the goldens). It handles a `=>`-constrained function
 whose body uses a return-position method (`empty`, …) at the constraint
 variable's type — the case arg-tag dispatch genuinely cannot resolve — including
 multi-type call sites, nested constrained calls (dict forwarding / RDict at the
-call site), multiple constraints per function, and **self/mutually-recursive
-constrained functions** (the recursive call forwards the enclosing fn's own dict).
-Validated against `medaka run` by `test/diff_selfhost_eval_dict.sh` (6 fixtures in
+call site), multiple constraints per function, **self/mutually-recursive
+constrained functions** (the recursive call forwards the enclosing fn's own dict),
+and **INFERRED (unsignatured) constraints** — a function with no `=>` signature
+whose body uses a return-position method (or *calls* a constrained fn) at one of
+its own tyvars is promoted automatically, including a constraint that propagates
+through a call **chain** to an unsignatured caller.
+Validated against `medaka run` by `test/diff_selfhost_eval_dict.sh` (8 fixtures in
 `test/eval_dict_fixtures/`).
 
 Mechanism (mirrors the reference's marker → typecheck → dict_pass):
@@ -724,9 +728,26 @@ Mechanism (mirrors the reference's marker → typecheck → dict_pass):
   arbitrary sibling's dict param; routing through the enclosing fn's own
   constraint slots picks the one actually bound in its body (cf. reference Phase
   136's `enclosing` disambiguation).
+- `typecheck.mdk` (inferred constraints — the **two-pass** layer, mirroring the
+  reference's mark → typecheck → re-mark → typecheck → dict_pass) — a signature is
+  not required to discover a constraint. During inference each return-position
+  method site records its enclosing fn + result mono (`methodSiteFns`) and each
+  constrained-fn call records its enclosing fn + constraint monos (`dictAppFns`);
+  after a letrec group generalizes, `registerInferredConstraints` intersects those
+  monos with the member's own quantified ids — an eligible *unsignatured* member
+  whose method/call site sits at one of its quantified tyvars is **promoted**
+  (registered in `funConstraintsRef`/`activeDictVars` by the surviving normalized
+  id, exactly like a signatured one, and recorded in `promotedRef`).
+  `elaborateDict` runs this as a fixpoint (`discoverPromoted`): each mark+typecheck
+  pass grows the dict-passed set, so a constraint propagating through a call chain
+  promotes one caller per pass until it stabilizes; the final pass routes and
+  `dict_pass`es the full set. Promotion is gated to the user program's fn names
+  (`dictEligibleRef`) — the prelude's constrained fns stay arg-tag/RKey, and the
+  RKey-only typed path (`eligibleNames = []`) skips discovery, staying single-pass.
 - `eval.mdk` — `VDict` (carrying the impl head tag), `EDictAt` applies one dict
   per route as a leading argument, `EMethodAt` routed RDict reads the dict
-  parameter to narrow its method.
+  parameter to narrow its method. (Unchanged — promoted fns reuse the same
+  RDict/RKey routing as signatured ones.)
 
 Because the runtime dict is a flat type-tag (not iface-keyed), it's correct even
 for several constraints on one tyvar: all such dicts carry the same type tag, and
@@ -734,8 +755,7 @@ each method's VMulti is already interface-specific, so reading any same-tyvar
 dict narrows correctly.
 
 **Still out of scope** (the reference's harder cases — see PLAN.md Phase
-83/84/115): dict-passing the *prelude*'s constrained functions, inferred
-(unsignatured) constraints and the two-pass `Elaborate` promotion,
+83/84/115): dict-passing the *prelude*'s constrained functions,
 method-level-constraint dicts (`foldMap`'s Monoid), instance-`requires` dicts, and
 nested/structured (non-flat) dictionaries.
 
