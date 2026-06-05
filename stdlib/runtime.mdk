@@ -39,6 +39,7 @@ extern ePutStr : String -> <IO> Unit  -- raw stderr output
 extern ePutStrLn : String -> <IO> Unit
 extern readLineOpt : Unit -> <IO> Option String  -- one stdin line, None at EOF
 extern readAll : Unit -> <IO> String  -- all of stdin
+extern wallTimeSec : Unit -> <IO> Float  -- wall-clock time in seconds (gettimeofday)
 -- Internal: the terminator of a desugared guard chain (Phase 91).  Raises the
 -- same "no clause matched" signal as a failed pattern, so when a function
 -- clause's guards all fail, dispatch falls through to the next pattern clause

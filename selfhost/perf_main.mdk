@@ -1,0 +1,92 @@
+-- Instrumented multi-module eval driver: times each pipeline stage and emits a
+-- per-phase breakdown to stderr when MEDAKA_PERF=1.  With MEDAKA_PERF unset the
+-- stdout output is byte-identical to eval_typed_modules_main.mdk.
+--
+--   MEDAKA_PERF=1 medaka run selfhost/perf_main.mdk \
+--       stdlib/runtime.mdk stdlib/core.mdk <entry.mdk> [root ...]
+--
+-- Stages timed (all self-hosted, run through the OCaml tree-walker):
+--   parse       desugar(parse(rsrc)) + desugar(parse(csrc))  — runtime + core
+--   load        loadProgram: read + lex + parse all transitive imports
+--   desugar     desugar every loaded module
+--   elaborate   elaborateModules: marker pass + per-module typecheck
+--   eval        evalModulesOutput: tree-walk eval over all modules
+--
+-- Op counts (derived from already-computed results, no extra work):
+--   load:    number of modules in the transitive closure
+--   desugar: total declaration count across all modules (post-desugar)
+--   eval:    same total decl count (as a "work-units" proxy)
+--
+-- Baseline benchmark (full selfhost closure):
+--   MEDAKA_PERF=1 medaka run selfhost/perf_main.mdk \
+--       stdlib/runtime.mdk stdlib/core.mdk selfhost/all_modules_entry.mdk selfhost
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import loader.{loadProgram}
+import typecheck.{elaborateModules}
+import eval.{evalModulesOutput}
+import timer.{perfEnabled, now, emitPhase, emitTotal, totalDecls}
+import util.{listLen}
+
+main = match args ()
+  (runtimeP :: coreP :: entry :: roots) => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run selfhost/perf_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+dirOf : String -> String
+dirOf path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo path 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+-- top-level: read both source files, then hand off to runStaged
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => runStaged (perfEnabled ()) rsrc csrc entry roots
+
+-- time each self-hosted pipeline stage; emit to stderr when on = True
+runStaged : Bool -> String -> String -> String -> List String -> <IO, Mut> Unit
+runStaged on rsrc csrc entry roots =
+  let tTotal = now ()
+
+  let tP0 = now ()
+  let rDecls = desugar (parse rsrc)
+  let cDecls = desugar (parse csrc)
+  let tP1 = now ()
+  let _ = emitPhase on "parse" (tP1 - tP0) "runtime+core"
+
+  let tL0 = now ()
+  match loadProgram entry roots
+    Err e => ePutStrLn e
+    Ok rawMods =>
+      let tL1 = now ()
+      let _ = emitPhase on "load" (tL1 - tL0) (intToString (listLen rawMods) ++ " modules")
+      let tD0 = now ()
+      let mods = map desugarPair rawMods
+      let nDecls = totalDecls mods
+      let tD1 = now ()
+      let _ = emitPhase on "desugar" (tD1 - tD0) (intToString nDecls ++ " decls")
+      let tE0 = now ()
+      let elab = elaborateModules rDecls cDecls mods
+      let tE1 = now ()
+      let _ = emitPhase on "elaborate" (tE1 - tE0) (intToString nDecls ++ " decls")
+      let tV0 = now ()
+      let out = evalModulesOutput (fst elab) (snd elab)
+      let tV1 = now ()
+      let _ = emitPhase on "eval" (tV1 - tV0) (intToString nDecls ++ " decls")
+      let _ = emitTotal on (tV1 - tTotal)
+      putStr out

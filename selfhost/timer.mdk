@@ -1,0 +1,54 @@
+-- Per-stage wall-clock timing helpers for the self-hosted pipeline.
+-- Guarded by the MEDAKA_PERF environment variable: when unset, emitPhase and
+-- emitTotal are no-ops, so drivers that import this module produce byte-identical
+-- stdout to their un-instrumented counterparts.
+--
+-- Typical usage in a perf driver:
+--   let on  = perfEnabled ()
+--   let t0  = now ()
+--   let res = ...stage work...
+--   let t1  = now ()
+--   let _   = emitPhase on "stage" (t1 - t0) "N decls"
+--   ...
+--   let _   = emitTotal on (tEnd - tStart)
+--
+-- All timing output goes to stderr so stdout is not disturbed.
+
+-- True when MEDAKA_PERF is set to any value in the environment.
+export
+perfEnabled : Unit -> <IO> Bool
+perfEnabled () = match getEnv "MEDAKA_PERF"
+  Some _ => True
+  None   => False
+
+-- Current wall-clock time in seconds (gettimeofday).
+export
+now : Unit -> <IO> Float
+now () = wallTimeSec ()
+
+-- Emit one timed phase to stderr.  Label, elapsed time (seconds), and an ops
+-- string (free-form: "N decls", "runtime+core", etc).  No-op when on = False.
+-- Format: [perf] <label>\t<elapsed>s\t<ops>
+export
+emitPhase : Bool -> String -> Float -> String -> <IO> Unit
+emitPhase False _ _ _ = ()
+emitPhase True label elapsed ops =
+  ePutStrLn ("[perf] " ++ label ++ "\t" ++ floatToString elapsed ++ "s\t" ++ ops)
+
+-- Emit the total pipeline time to stderr.  No-op when on = False.
+export
+emitTotal : Bool -> Float -> <IO> Unit
+emitTotal False _ = ()
+emitTotal True elapsed =
+  ePutStrLn ("[perf] total\t" ++ floatToString elapsed ++ "s")
+
+-- Count total declarations across a list of (moduleId, decls) pairs.
+-- Used by drivers as a cheap proxy for "work units" without modifying stages.
+export
+totalDecls : List (String, List a) -> Int
+totalDecls [] = 0
+totalDecls ((_, ds) :: rest) = countList ds + totalDecls rest
+
+countList : List a -> Int
+countList [] = 0
+countList (_ :: xs) = 1 + countList xs

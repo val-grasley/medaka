@@ -512,3 +512,82 @@ for all 3 = the slot-indexed-env rework (supervised — see interim summary).
   `joinWith` (line ~103) is the same right-recursive quadratic, used by `ppValue`
   value rendering — only bites if a rendered value has a very long list/tuple;
   fixture results are small, so flat. Same one-line fix available if it ever shows.
+
+### 2026-06-05 — standing per-phase instrumentation (perf_main.mdk + timer.mdk)
+
+**Added reusable per-stage timing infrastructure** so future sessions don't need
+ad-hoc env-lookup counters or sample-profiling to localise cost.
+
+**What was added:**
+- `stdlib/runtime.mdk`: `extern wallTimeSec : Unit -> <IO> Float` — wall-clock
+  time in seconds (OCaml `Unix.gettimeofday`); impl in `lib/eval.ml`.
+- `selfhost/timer.mdk`: helpers (`perfEnabled`, `now`, `emitPhase`, `emitTotal`,
+  `totalDecls`) guarded by `MEDAKA_PERF` env var. All output goes to stderr; with
+  the flag unset the module is a pure no-op.
+- `selfhost/perf_main.mdk`: instrumented eval driver (mirrors
+  `eval_typed_modules_main.mdk`) that brackets each pipeline stage with `now()`.
+  Stages timed: **parse** (runtime+core lex+parse+desugar), **load**
+  (`loadProgram`: read+lex+parse all transitive imports), **desugar** (all
+  modules), **elaborate** (`elaborateModules`: marker + per-module typecheck),
+  **eval** (`evalModulesOutput`). Op counts derived from already-computed results
+  (module count, total decl count) — no extra work.
+
+**Correctness:** `MEDAKA_PERF` unset → stdout byte-identical to
+`eval_typed_modules_main.mdk` (verified by diff). mark_batch 101 matched 0
+differing (includes timer.mdk + perf_main.mdk); check_modules_batch 12 ok;
+selfproc 14 ok; desugar_batch 101 matched; eval_run_batch 17 ok.
+
+## How to read the output
+
+```
+MEDAKA_PERF=1 medaka run selfhost/perf_main.mdk \
+    stdlib/runtime.mdk stdlib/core.mdk selfhost/all_modules_entry.mdk selfhost
+```
+
+Each line on stderr:
+```
+[perf] <stage>   <elapsed>s   <ops>
+```
+- **stage** — pipeline phase name
+- **elapsed** — wall-clock seconds for that phase (self-hosted code running
+  through the OCaml tree-walker — this is interpreter time, not native time)
+- **ops** — work-unit proxy: "N modules" for load, "N decls" for desugar/
+  elaborate/eval, "runtime+core" for parse.  Useful for normalizing per-file
+  or per-declaration cost across different entry points.
+
+The total includes file I/O for reading runtime.mdk and core.mdk (a few ms,
+negligible).  The `load` phase includes self-hosted lex+parse for all transitive
+imports; it dominates because the self-hosted lexer/parser interpret through the
+full OCaml eval — same interpreter overhead as every other stage but applied to
+the larger pre-desugar source rather than the post-desugar AST.
+
+## Baseline (min-of-3, full selfhost closure via all_modules_entry.mdk)
+
+Entry: `selfhost/all_modules_entry.mdk`, 14 modules, 4609 decls post-desugar.
+
+| Stage      | min-of-3 | ops             |
+|---|--:|--|
+| parse      | 0.228s   | runtime+core    |
+| load       | 3.093s   | 14 modules      |
+| desugar    | 0.221s   | 4609 decls      |
+| elaborate  | 1.846s   | 4609 decls      |
+| eval       | 0.326s   | 4609 decls      |
+| **total**  | **5.71s**|                 |
+
+**Takeaways:**
+- `load` (3.09s, 54%) and `elaborate` (1.85s, 32%) are the two dominant stages.
+- `load` dominates because it runs the self-hosted lex+parse pipeline for 14
+  modules through the OCaml tree-walker; the self-hosted parser alone is the
+  hottest single function (see prior profiling: ~54% of check_modules samples).
+- `elaborate` is per-module typecheck (HM inference + Tarjan SCC + constraint
+  solving); already 282× faster than origin after the Tarjan + env-Hashtbl wins.
+- `desugar` (0.221s) and `eval` (0.326s) are minor — the AST shrinks after
+  desugaring and eval has minimal dispatch overhead for this particular program
+  (no main side-effects).
+- `parse` (0.228s) is just runtime.mdk + core.mdk lex+parse (2 files, ~600 lines
+  total) — fast and not a target.
+
+**Next lever (confirmed by this data):** the `load` phase is the largest remaining
+cost. Since load is self-hosted lex+parse, any improvement to the self-hosted
+lexer or parser interpretation speed (e.g. the slot-indexed env rework) would
+directly reduce it. See the prior parked lead in this file.

@@ -1351,6 +1351,9 @@ let primitives : (string * value) list =
        with End_of_file -> VCon ("None", []))));
     (* Read all of stdin to a single string. *)
     ("readAll", VPrim (fun _ -> VString (In_channel.input_all stdin)));
+    (* Wall-clock time in seconds (gettimeofday; monotonic-ish).  Used by the
+       self-hosted perf driver to bracket each pipeline stage. *)
+    ("wallTimeSec", VPrim (fun _ -> VFloat (Unix.gettimeofday ())));
     (* Structural hash of any value (Module 6 hash containers). Non-negative
        (OCaml's Hashtbl.hash returns [0, 2^30)). Consistent with structural
        `eq`, so it must agree with the key type's `Eq` impl. *)
