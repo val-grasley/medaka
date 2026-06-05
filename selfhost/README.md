@@ -47,6 +47,8 @@ diff with `lib/`:
 | `typecheck.mdk` | HM core (**slice 1**). `Mono`/`Scheme` + union-find `unify`, level-based `generalize`/`instantiate`, `pp_mono`, and `infer`/`inferPat`. `checkToLines : List Decl -> <Mut> String`. |
 | `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk [runtime.mdk] <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). With a runtime.mdk arg its externs are seeded into scope, so `core.mdk` (+ a user program) type-checks against the `=== TYPES ===` goldens. |
 | `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 9 resolve diagnostics (broken). |
+| `loader.mdk` | Port of `lib/loader.ml`: `loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))` — DFS topo-sort of a root file's transitive `import`s (dependency-first; cycle detection). Flat single-root simplification. `loader_main.mdk` prints the module order. |
+| `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 12 selfhost modules). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -443,31 +445,65 @@ byte-for-byte, plus two integration milestones beyond per-stage validation:
   concrete return type (`test/diff_selfhost_eval_typed.sh`, oracle = `medaka run`).
   This is the *only* part of dictionary-passing the compiler needs — see below.
 
-### Next: the bootstrap (#3) — "the compiler processes its own source"
+### The bootstrap (#3) — "the compiler processes its own source"
 
-The decisive self-hosting milestone. The `box_do` fixture already proves the
-exact pattern the parser uses (a user monad with `pure` + do-blocks dispatching
-by return type via RKey), so the remaining work is *not* more dispatch machinery
-— it's the integration to run the self-hosted compiler on the `selfhost/*.mdk`
-sources themselves. Concretely, in rough order:
+The decisive self-hosting milestone: run the self-hosted compiler on the
+`selfhost/*.mdk` sources themselves.
 
-1. **Multi-module support.** The compiler is many modules with `import`s;
-   typecheck/eval currently take a single flat program. Need the loader /
-   module-scoping the reference has (`typecheck_module` + the loader's per-module
-   frames). The diagnostic stages (desugar/mark/resolve/exhaust) already self-
-   process via their corpora, but the typed pipeline does not yet.
-2. **Cross-module name clashes.** Same-named *exported* data types collide because
-   the loader installs constructors globally — we already hit this once
-   (`resolve.Env` vs `typecheck.Env` → renamed to `TcEnv`; `applied non-function:
-   Env [...]`). The selfhost modules will surface more; rename or scope them.
-3. **`infer` / eval gaps the real modules expose.** The diff-fixtures are small;
-   `list.mdk` already forced adding `EArrayLit`/range/index/slice `infer` arms.
-   Running the full selfhost source will surface more unhandled `Expr`/`Pat`
-   forms (e.g. Array indexing on a non-`List` container — `inferIndex` currently
-   assumes `List`), `EStringInterp` residue, etc. Add them as they appear.
-4. **Validation target.** Run a selfhost stage's output (e.g. the self-hosted
-   parser parsing a `.mdk`) through the self-hosted pipeline and diff against the
-   reference doing the same — the "it parses/checks/runs itself" diff.
+#### ✅ Multi-module typecheck front-end — DONE
+
+The self-hosted front-end (loader → desugar → multi-module typecheck) now
+typechecks **all 12 of its own modules** and matches the OCaml reference
+byte-for-byte. Validated by `test/diff_selfhost_check_modules.sh` against
+`dev/tc_module_probe.exe` (the reference doing the same: real `Loader` +
+`typecheck_module`).
+
+- **`selfhost/loader.mdk`** — port of `lib/loader.ml`: DFS topo-sort over a
+  module's transitive `import`s (cycle detection via an in-progress stack),
+  parsing each via the self-hosted parser. Simplified for the flat single-root
+  selfhost tree (no subdir `/`↔`.` rewriting, no LSP buffer, no multi-root
+  ambiguity). `loader_main.mdk` prints the order (matches the reference DFS).
+- **`typecheck.checkModules`** (+ `check_modules_main.mdk`) — threads per-module
+  exports in dependency order. The prelude (core) is checked once and all its
+  schemes + data decls seed every module; each module then contributes only its
+  **public** value schemes (private helpers stay module-local — the
+  per-module-frame property without a frame, so same-named helpers across modules
+  never collide) plus its public data decls (re-registered so imported ctors +
+  named-field-variant record info resolve). **No `eval_modules` needed** — the
+  front-end is typecheck-only.
+- **`dev/tc_module_probe.exe`** — the reference oracle: loader + threaded
+  `typecheck_module`, dumping the entry module's own schemes (the multi-module
+  analog of `tc_probe`).
+
+Three genuine **self-hosted-typecheck fixes** the real modules exposed (none hit
+by any single-file golden, so latent until now):
+1. `registerVariants` now registers record info for **named-field data variants**
+   (`C { f : T }`, e.g. ast's `DInterface`) — keyed by the constructor, result
+   type the data type — so `C { f, … }` patterns/literals resolve.
+2. `infer` + `allEVars` gained an **`EVariantUpdate`** arm (`C { base | f = v }`,
+   e.g. desugar's `DInterface { d | methods = … }`) — a core node desugar leaves.
+3. **`cell.value`** (Ref projection) types by unifying the receiver with `Ref a`
+   (so it works even when the receiver is still an unsolved tyvar — the
+   self-hosted typecheck infers fn params as fresh vars, not pinned to the sig).
+
+The one effect-annotation gap (`check.mdk`'s unsigned IO wrappers inferred `Unit`
+vs the reference's `<IO, Mut> Unit` — the inferred-effect-propagation limit below)
+was closed by **signing those wrappers** (per the house style: a sig on every
+top-level fn), not by porting effect inference.
+
+#### Remaining for the full bootstrap
+
+1. **Multi-module EVAL path.** The front-end is typecheck-only; *running* the
+   self-hosted compiler on its own source additionally needs `eval_modules`
+   (per-module frames the reference has). Eval already works single-flat-program
+   (`eval_run`/`eval_typed`); this is the per-module-scoping port for eval.
+2. **The `Env` constructor clash.** `data Env` is exported by *both* `resolve.mdk`
+   and `eval.mdk`; constructors install globally, so a driver co-loading **both**
+   (the full pipeline incl. eval — not the front-end, which omits eval) collides.
+   Rename one (e.g. eval's `Env` → `EvalEnv`). The front-end sidesteps it.
+3. **Self-processing target.** Run a selfhost stage's output through the
+   self-hosted pipeline and diff against the reference — the "it checks/runs
+   itself" closure.
 
 ### Deliberately NOT needed (scoped out by the scout)
 
