@@ -36,14 +36,16 @@ MAIN="$ROOT/_build/default/bin/main.exe"
 PROBE="$ROOT/_build/default/dev/tc_module_probe.exe"
 CHECK_ALL="$ROOT/selfhost/check_all_main.mdk"
 EVAL_MODS="$ROOT/selfhost/eval_modules_main.mdk"
+EVAL_TYPED_MODS="$ROOT/selfhost/eval_typed_modules_main.mdk"
 ENTRY="$ROOT/selfhost/all_modules_entry.mdk"
 LEXPROBE="$ROOT/selfhost/selfproc_lex_probe.mdk"
+PARSEPROBE="$ROOT/selfhost/selfproc_parse_probe.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 SHDIR="$ROOT/selfhost"
 [ -x "$MAIN" ]  || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
 [ -x "$PROBE" ] || { echo "build first: dune build --root . (missing $PROBE)"; exit 2; }
-for f in "$CHECK_ALL" "$EVAL_MODS" "$ENTRY" "$LEXPROBE"; do
+for f in "$CHECK_ALL" "$EVAL_MODS" "$EVAL_TYPED_MODS" "$ENTRY" "$LEXPROBE" "$PARSEPROBE"; do
   [ -f "$f" ] || { echo "missing $f"; exit 2; }
 done
 
@@ -87,6 +89,28 @@ else
   fail=$((fail+1)); printf 'FAIL %-10s (eval output differs / empty)\n' "lex_probe"
   printf '  ref:  %s\n' "$(printf '%s' "$ref_b"  | tr '\n' ' ')"
   printf '  self: %s\n' "$(printf '%s' "$self_b" | tr '\n' ' ')"
+fi
+
+# ── LEG C: TYPED eval runs a stage that needs return-position dispatch ─────
+# The parser (selfhost/parser.mdk) is built on a `Parser` monad whose
+# `pure`/`andThen` are return-position method dispatch — which the UNTYPED
+# eval_modules path (Leg B) cannot resolve (it panics "no matching clause").
+# The TYPED multi-module path threads the marker + typecheck.elaborate route-
+# stamping through the loader's module graph (eval_typed_modules_main.mdk ->
+# typecheck.elaborateModules), so the self-hosted eval narrows each method site
+# by its RKey route.  Running parser.mdk over an embedded snippet and matching
+# the eval_modules oracle proves the typed self-hosted eval EXECUTES a real
+# Parser-monad stage of the compiler's own source.
+echo
+echo "== LEG C: TYPED self-hosted eval executes a Parser-monad stage (parser) =="
+ref_c="$("$MAIN" run "$PARSEPROBE" 2>/dev/null)"
+self_c="$("$MAIN" run "$EVAL_TYPED_MODS" "$RUNTIME" "$CORE" "$PARSEPROBE" "$SHDIR" 2>/dev/null)"
+if [ "$ref_c" = "$self_c" ] && [ -n "$ref_c" ]; then
+  pass=$((pass+1)); printf 'ok   %-10s (typed self-hosted eval == eval_modules oracle)\n' "parse_probe"
+else
+  fail=$((fail+1)); printf 'FAIL %-10s (typed eval output differs / empty)\n' "parse_probe"
+  printf '  ref:  %s\n' "$(printf '%s' "$ref_c"  | tr '\n' ' ')"
+  printf '  self: %s\n' "$(printf '%s' "$self_c" | tr '\n' ' ')"
 fi
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"

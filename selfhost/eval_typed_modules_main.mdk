@@ -1,0 +1,59 @@
+-- TYPED multi-module execution through the self-hosted eval — the composition of
+-- the single-module typed path (eval_typed_main.mdk) and the untyped multi-module
+-- path (eval_modules_main.mdk).  This is the bootstrap's "run a stage that needs
+-- return-position dispatch through the self-hosted eval" step:
+--
+--   medaka run selfhost/eval_typed_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--
+-- loads <entry.mdk> + its transitive imports (dependency-first), desugars each,
+-- then `elaborateModules` threads the marker + typecheck route-stamping through
+-- the loader's module graph (per-module-frame typecheck seeded in dependency
+-- order, EMethodAt routes stamped per module).  The elaborated trees are then run
+-- through evalModules (per-module frames over the shared prelude) — eval narrows
+-- each return-position method occurrence (`pure`/`andThen` — the Parser monad) by
+-- its stamped RKey route instead of the untyped arg-tag fallback.  Forces the
+-- entry module's `main` for IO side-effects and prints the captured stdout.
+--
+-- Diffs against `medaka run <entry.mdk>` (the OCaml Loader → typecheck (+marker)
+-- → eval_modules oracle), the same oracle eval_typed_main / eval_modules_main use.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import loader.{loadProgram}
+import typecheck.{elaborateModules}
+import eval.{evalModulesOutput}
+
+main = match args ()
+  (runtimeP :: coreP :: entry :: roots) => run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run selfhost/eval_typed_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+dirOf : String -> String
+dirOf path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo path 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match loadProgram entry roots
+      Err e => ePutStrLn e
+      Ok mods => runElab (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+
+runElab : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runElab runtimeDecls coreDecls modules =
+  let elaborated = elaborateModules runtimeDecls coreDecls modules
+  putStr (evalModulesOutput (fst elaborated) (snd elaborated))

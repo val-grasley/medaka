@@ -52,6 +52,7 @@ diff with `lib/`:
 | `loader.mdk` | Port of `lib/loader.ml`: `loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))` — DFS topo-sort of a root file's transitive `import`s (dependency-first; cycle detection). Flat single-root simplification. `loader_main.mdk` prints the module order. |
 | `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 12 selfhost modules). |
 | `eval_modules_main.mdk` | **Multi-module execution** (the loader-driven eval path): `medaka run selfhost/eval_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, evaluates them in per-module frames over the shared prelude (`eval.evalModules`), forces the entry's `main`, prints captured stdout. Diffs against `medaka run <entry>` (`test/diff_selfhost_eval_modules.sh`). |
+| `eval_typed_modules_main.mdk` | **Typed multi-module execution** (the composition of `eval_typed_main` + `eval_modules_main`): `medaka run selfhost/eval_typed_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, then `typecheck.elaborateModules` threads the marker + route-stamping through the loader's module graph (per-module-frame typecheck in dependency order, `EMethodAt` routes stamped per module) before `eval.evalModules` runs the elaborated trees — so a stage that uses return-position dispatch (the `Parser` monad's `pure`/`andThen`) routes by RKey. The Leg-C bootstrap driver; diffs against `medaka run <entry>` (`test/diff_selfhost_selfproc.sh`). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -644,15 +645,34 @@ top-level fn), not by porting effect inference.
      self-hosted eval of the lexer (`lexer.mdk:278`) or `eval.mdk`'s own slice path
      (`eval.mdk:681`) previously panicked `unbound variable: arrayMakeWith`.
 
-   **Scope boundary (filed, not a bug to fix here):** Leg B stops at the lexer
-   because the **parser/typecheck stages use a `Parser` monad** with
-   return-position dispatch (`pure x = Parser …`, `andThen`). The self-hosted
-   `eval_modules` path is **untyped** (no marker/dict-pass), so it cannot resolve
-   return-position `pure`/`andThen` — running those stages through the self-hosted
-   eval panics `no matching clause in application`. Executing the parser/typechecker
-   on the self-hosted eval therefore needs the **typed** self-hosted eval path
-   (marker + RKey/dict routing — today only the partial `eval_dict` slice exists);
-   that's a separate, larger bootstrap step, not part of this milestone.
+   - **Leg C — TYPED eval engine runs a `Parser`-monad stage.** The same
+     self-execution as Leg B, but for a stage whose dispatch the untyped path
+     *cannot* resolve: the **parser** (`parser.mdk`) is built on a `Parser` monad
+     whose `pure`/`andThen` are **return-position** method dispatch. Running
+     `parser.mdk` over an embedded snippet (`selfhost/selfproc_parse_probe.mdk`)
+     through `eval_modules` (Leg B's untyped path) panics `no matching clause in
+     application`; through the **typed** multi-module path
+     (`eval_typed_modules_main.mdk` → `typecheck.elaborateModules`) it matches the
+     `eval_modules` oracle byte-for-byte. `elaborateModules` is the composition of
+     the single-module typed path (`eval_typed_main.mdk` → `typecheck.elaborate`,
+     which stamps `EMethodAt` route tags) and the untyped multi-module path
+     (`eval_modules_main.mdk` → `eval.evalModules`): it prePasses the prelude +
+     every loaded module (rewriting return-position method occurrences to
+     `EMethodAt` over the whole program's RP-method set), typechecks each module in
+     dependency order (seeded like `checkModules`), and stamps each module's route
+     refs from its now-resolved result types — so `evalModules` narrows
+     `pure`/`andThen` by RKey instead of the untyped arg-tag fallback. RKey-only
+     (the bootstrap source has no `=>`-constrained user polymorphism, so no
+     dict-passing). This is the typed self-hosted eval path the scope note below
+     called a "separate, larger bootstrap step" — now built.
+
+   **Scope note (resolved by Leg C):** Leg B alone stops at the lexer because the
+   **parser/typecheck stages use a `Parser` monad** with return-position dispatch
+   (`pure x = Parser …`, `andThen`), which the **untyped** `eval_modules` path
+   cannot resolve. Leg C threads the marker + `typecheck.elaborate` route-stamping
+   through the loader's module graph (`elaborateModules`), executing a real
+   `Parser`-monad stage on the self-hosted eval. (The typechecker stage — also
+   monadic — is the natural next extension of the same typed path.)
 
 ### Dictionary passing (generality layer — beyond the bootstrap)
 
