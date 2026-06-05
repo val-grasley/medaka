@@ -6,7 +6,7 @@
 import ast.{Decl}
 import parser.{parse}
 import desugar.{desugar}
-import typecheck.{elaborateDict, constrainedSigNames}
+import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames}
 import eval.{evalOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
@@ -32,5 +32,7 @@ emitAll runtimeDecls preludeDecls (path :: rest) = match readFile path
 runDict : List Decl -> List Decl -> List Decl -> <Mut> String
 runDict runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls
-  let combined = dropShadowedExp userNames preludeDecls ++ userDecls
-  evalOutput (elaborateDict runtimeDecls (constrainedSigNames userDecls) userNames combined)
+  let livePrelude = dropShadowedExp userNames preludeDecls
+  let combined = livePrelude ++ userDecls
+  let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames userDecls
+  evalOutput (elaborateDict runtimeDecls dictNames userNames combined)

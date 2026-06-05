@@ -13,7 +13,7 @@
 import ast.{Decl}
 import parser.{parse}
 import desugar.{desugar}
-import typecheck.{elaborateDict, constrainedSigNames}
+import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames}
 import eval.{evalOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
@@ -46,8 +46,13 @@ withTarget rsrc preludeDecls targetPath = match readFile targetPath
 runDict : List Decl -> List Decl -> List Decl -> <Mut> String
 runDict runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls
-  let combined = dropShadowedExp userNames preludeDecls ++ userDecls
-  evalOutput (elaborateDict runtimeDecls (constrainedSigNames userDecls) userNames combined)
+  let livePrelude = dropShadowedExp userNames preludeDecls
+  let combined = livePrelude ++ userDecls
+  -- The user's own constrained sigs (already covered by the slice) PLUS the
+  -- prelude's constrained fns that use a return-position method (when/unless →
+  -- pure) — the latter can't be resolved by arg-tag at a constraint var's type.
+  let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames userDecls
+  evalOutput (elaborateDict runtimeDecls dictNames userNames combined)
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []

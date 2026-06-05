@@ -45,7 +45,7 @@ diff with `lib/`:
 | `eval_prelude_main.mdk` | Like `eval_main` but prepends one or more parsed prelude files: `medaka run selfhost/eval_prelude_main.mdk <prelude.mdk>... <src.mdk>` — `core.mdk` for interface methods, `+ list.mdk` for the List combinators / comprehensions (diffs against `dev/eval_probe.exe --prelude` / `--prepend`). |
 | `eval_run_main.mdk` | **True execution**: `medaka run selfhost/eval_run_main.mdk <prelude.mdk>... <src.mdk>` runs the program for its **stdout** (putStr/putStrLn captured to a buffer), prelude-shadow-dropping the user's redefinitions. Diffs against the `=== EVAL ===` goldens (`test/diff_selfhost_eval_run.sh`). |
 | `eval_typed_main.mdk` | **Typed execution** (return-position dispatch): `medaka run selfhost/eval_typed_main.mdk <runtime.mdk> <prelude.mdk>... <src.mdk>` threads desugar → `typecheck.elaborate` (stamps `EMethodAt` tags) → eval on one shared tree, so `pure`/`empty`/do-blocks dispatch by concrete return type. Diffs against `medaka run` (`test/diff_selfhost_eval_typed.sh`). |
-| `eval_dict_main.mdk` | **Dict-passing execution**: like the typed path but also dictionary-passes the *user* program's `=>`-constrained functions (`typecheck.elaborateDict`), so a return-position method used at a constraint variable's type (e.g. `empty` inside `f : Monoid a => a -> a`) resolves through the dict parameter the caller supplies — which arg-tag / RKey dispatch cannot do. Diffs against `medaka run` (`test/diff_selfhost_eval_dict.sh`). |
+| `eval_dict_main.mdk` | **Dict-passing execution**: like the typed path but also dictionary-passes `=>`-constrained functions (`typecheck.elaborateDict`) — both the *user* program's and the *prelude*'s own (`when`/`unless`, via `preludeReturnPosDictNames`) — so a return-position method used at a constraint variable's type (e.g. `empty` inside `f : Monoid a => a -> a`, or `pure ()` inside `when`) resolves through the dict parameter the caller supplies, which arg-tag / RKey dispatch cannot do. Diffs against `medaka run` (`test/diff_selfhost_eval_dict.sh`). |
 | `typecheck.mdk` | HM core (**slice 1**). `Mono`/`Scheme` + union-find `unify`, level-based `generalize`/`instantiate`, `pp_mono`, and `infer`/`inferPat`. `checkToLines : List Decl -> <Mut> String`. |
 | `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk [runtime.mdk] <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). With a runtime.mdk arg its externs are seeded into scope, so `core.mdk` (+ a user program) type-checks against the `=== TYPES ===` goldens. |
 | `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 14 resolve diagnostics (broken). |
@@ -728,10 +728,10 @@ constraints in the selfhost source), so the full dictionary-passing system is
 programs that use `=>`-constrained polymorphic code, and (b) the LLVM backend
 (Stage 2), which consumes the fully-elaborated AST.
 
-**A first dict-passing slice now exists** (`eval_dict_main.mdk` +
-`typecheck.elaborateDict` + `eval.mdk`'s `VDict`/`EDictAt`/RDict), scoped to the
-*user* program's constrained functions (the prelude keeps arg-tag/RKey dispatch,
-which already type-checks the goldens). It handles a `=>`-constrained function
+**A dict-passing slice now exists** (`eval_dict_main.mdk` +
+`typecheck.elaborateDict` + `eval.mdk`'s `VDict`/`EDictAt`/RDict), covering the
+*user* program's constrained functions **and the prelude's own**
+(`when`/`unless` — see the prelude paragraph below). It handles a `=>`-constrained function
 whose body uses a return-position method (`empty`, …) at the constraint
 variable's type — the case arg-tag dispatch genuinely cannot resolve — including
 multi-type call sites, nested constrained calls (dict forwarding / RDict at the
@@ -741,7 +741,7 @@ and **INFERRED (unsignatured) constraints** — a function with no `=>` signatur
 whose body uses a return-position method (or *calls* a constrained fn) at one of
 its own tyvars is promoted automatically, including a constraint that propagates
 through a call **chain** to an unsignatured caller.
-Validated against `medaka run` by `test/diff_selfhost_eval_dict.sh` (8 fixtures in
+Validated against `medaka run` by `test/diff_selfhost_eval_dict.sh` (11 fixtures in
 `test/eval_dict_fixtures/`).
 
 Mechanism (mirrors the reference's marker → typecheck → dict_pass):
@@ -788,6 +788,21 @@ Mechanism (mirrors the reference's marker → typecheck → dict_pass):
   per route as a leading argument, `EMethodAt` routed RDict reads the dict
   parameter to narrow its method. (Unchanged — promoted fns reuse the same
   RDict/RKey routing as signatured ones.)
+- `typecheck.mdk` (prelude constrained fns) — `preludeReturnPosDictNames` selects
+  the prelude's *own* `=>`-constrained fns that need dict-passing: those whose body
+  references a **return-position method** (only `when`/`unless`, both `… pure ()`).
+  Every other constrained prelude fn (`sum`/`any`/`elem`/`clamp`/…) uses only
+  arg-position methods, which arg-tag already resolves, so they stay on RKey — and
+  the goldens keep type-checking, since the golden paths (`elaborate` =
+  `elaborateDict … [] []`) dict-pass nothing; only `eval_dict_*` carries a non-empty
+  `dictNames`. This also required teaching `activeDictVarOf` to find the constraint
+  var in a `TApp` **head**: `pure : a -> m a` is higher-kinded, so its result mono
+  `m Unit` carries the dict var in the application head, not at top level — the
+  old bare-`TVar` match returned `None` → arg-tag fallback (the bug; this gap hit
+  *user* higher-kinded constrained fns too). A concrete head (a `TCon` after
+  unification) still falls through to RKey, unchanged. No `eval.mdk`/`ast.mdk` edits
+  were needed — the existing RDict/RKey routing already forwarded once the route
+  was resolved.
 
 Because the runtime dict is a flat type-tag (not iface-keyed), it's correct even
 for several constraints on one tyvar: all such dicts carry the same type tag, and
@@ -795,9 +810,10 @@ each method's VMulti is already interface-specific, so reading any same-tyvar
 dict narrows correctly.
 
 **Still out of scope** (the reference's harder cases — see PLAN.md Phase
-83/84/115): dict-passing the *prelude*'s constrained functions,
-method-level-constraint dicts (`foldMap`'s Monoid), instance-`requires` dicts, and
-nested/structured (non-flat) dictionaries.
+83/84/115): method-level-constraint dicts (`foldMap`'s Monoid), instance-`requires`
+dicts, and nested/structured (non-flat) dictionaries. Next step for the LLVM
+backend (Stage 2 §2.3): these three are the remaining dict-passing residuals the
+elaborated AST still leaves on arg-tag/RKey.
 
 ### Known limits carried forward (don't block the bootstrap)
 

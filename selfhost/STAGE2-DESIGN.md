@@ -239,8 +239,10 @@ every site is at a concrete type (the `Parser` monad, no `=>` constraints,
   The full `=>`-dictionary-passing system is **not required to compile the
   compiler.** A bytecode VM needs exactly what `eval_modules` does today.
 - **Arbitrary-program completeness (either backend):** the front-end gaps PLAN /
-  README flag as still open feed *whatever* consumes the elaborated AST —
-  prelude dict-passing, inferred (unsignatured) constraints, method-level-constraint
+  README flag as still open feed *whatever* consumes the elaborated AST.
+  Inferred (unsignatured) constraints and **prelude dict-passing** (`when`/`unless`'s
+  `pure`, incl. the higher-kinded constraint var) are now **DONE** (`README.md`
+  "Dictionary passing"); the remaining residuals are method-level-constraint
   dicts (`foldMap`'s Monoid), instance-`requires` dicts, and
   **nested/structured (non-flat) dictionaries** (`README.md:711-716`). The current
   runtime dict is a flat `VDict String` ([`eval.mdk:47`](eval.mdk:47)) — single

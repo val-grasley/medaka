@@ -1270,6 +1270,29 @@ isConstrainedTy : Ty -> Bool
 isConstrainedTy (TyConstrained _ _) = True
 isConstrainedTy _ = False
 
+-- The PRELUDE's own `=>`-constrained fns that must ALSO be dict-passed: those
+-- whose body uses a return-position method (`when`/`unless` use `pure`), so
+-- arg-tag dispatch can't resolve it at a constraint variable's type.  Every OTHER
+-- constrained prelude fn (sum/any/elem/clamp/…) uses only arg-position methods —
+-- arg-tag already resolves those, and the goldens type-check with them on RKey, so
+-- they stay OUT.  [allDecls] supplies the interface set for returnPosMethodNames;
+-- bodies come from [preludeDecls] (the shadow-dropped prelude).
+export
+preludeReturnPosDictNames : List Decl -> List Decl -> List String
+preludeReturnPosDictNames preludeDecls allDecls =
+  let rpNames = returnPosMethodNames allDecls
+  filterList (n => anyMember (declBodyVars n preludeDecls) rpNames) (constrainedSigNames preludeDecls)
+
+-- the EVars referenced anywhere in [n]'s definition body (multi-clause: union)
+declBodyVars : String -> List Decl -> List String
+declBodyVars n decls = concatMapL (declBodyVarsOf n) decls
+
+declBodyVarsOf : String -> Decl -> List String
+declBodyVarsOf n (DFunDef _ m _ body)
+  | n == m = allEVars body
+  | otherwise = []
+declBodyVarsOf _ _ = []
+
 -- methods whose interface type param appears ONLY in the result (no argument
 -- mentions it) — pure/empty/minBound/maxBound/fromInt/… — are return-position
 returnPosMethodNames : List Decl -> List String
@@ -1334,10 +1357,15 @@ resolveSite tagRef resultMono = match activeDictVarOf resultMono
     None => ()
 
 -- if [m] normalizes to a registered constraint variable, the dict parameter name
--- a method at that type reads
+-- a method at that type reads.  A return-position method at a HIGHER-KINDED
+-- constraint var (`pure : a -> m a`, so the result mono is `m Unit` = TApp (TVar
+-- m) Unit) carries the dict var in the application HEAD, not at top level — recurse
+-- through TApp to find it.  (A concrete head, e.g. `Option Unit` after unification,
+-- is a TCon and falls through to None → RKey, unchanged.)
 activeDictVarOf : Mono -> Option String
 activeDictVarOf m = match normalize m
   TVar cell => lookupAssocI (tyvarId cell) activeDictVars.value
+  TApp a _ => activeDictVarOf a
   _ => None
 
 -- fill each constrained-fn call site's routes: one route per constraint mono.  A
