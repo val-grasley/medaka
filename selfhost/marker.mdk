@@ -258,14 +258,34 @@ interpVars (InterpExpr e) = collectVars e
 -- `preludeProg` is the desugared prelude (core.mdk); `prog` the desugared
 -- target.  shadow_rename (78b) first, then mark against the union of prelude +
 -- (renamed) target names, with the 78a constrained-set adjustment.
+-- Mark `prog` given the prelude-derived name sets already computed.  Splitting
+-- this out lets a batch caller compute the prelude sets ONCE (via markerFor) and
+-- reuse them across many target files instead of rescanning the prelude per file.
+markWith : List String -> List String -> List String -> List Decl -> List Decl
+markWith preludeMethods preludeDroppable preludeConstrained prog =
+  let prog2 = shadowRename preludeMethods prog
+  let methods = preludeMethods ++ interfaceMethodNames prog2
+  let shadowed = keepIn preludeDroppable (userValueNames prog2)
+  let userConstrained = constrainedFnNames prog2
+  let toRemove = keepNotIn userConstrained shadowed
+  let constrained = keepNotIn toRemove (preludeConstrained ++ userConstrained)
+  markProgram methods constrained prog2
+
 export
 markWithPrelude : List Decl -> List Decl -> List Decl
 markWithPrelude preludeProg prog =
+  markWith (interfaceMethodNames preludeProg) (droppablePreludeFns preludeProg)
+    (constrainedFnNames preludeProg) prog
+
+-- Curried marker: scans the (fixed) prelude ONCE and returns a closure that
+-- marks each target file.  A batch harness that marks many files against one
+-- prelude should `let mark = markerFor preludeProg` once and call `mark` per
+-- file — the prelude scans (interfaceMethodNames/droppablePreludeFns/
+-- constrainedFnNames) then happen once instead of per file.
+export
+markerFor : List Decl -> List Decl -> List Decl
+markerFor preludeProg =
   let preludeMethods = interfaceMethodNames preludeProg
-  let prog2 = shadowRename preludeMethods prog
-  let methods = preludeMethods ++ interfaceMethodNames prog2
-  let shadowed = keepIn (droppablePreludeFns preludeProg) (userValueNames prog2)
-  let userConstrained = constrainedFnNames prog2
-  let toRemove = keepNotIn userConstrained shadowed
-  let constrained = keepNotIn toRemove (constrainedFnNames preludeProg ++ userConstrained)
-  markProgram methods constrained prog2
+  let preludeDroppable = droppablePreludeFns preludeProg
+  let preludeConstrained = constrainedFnNames preludeProg
+  (prog => markWith preludeMethods preludeDroppable preludeConstrained prog)

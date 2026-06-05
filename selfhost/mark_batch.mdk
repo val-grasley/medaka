@@ -11,7 +11,7 @@
 import ast.{Decl}
 import parser.{parse}
 import desugar.{desugar}
-import marker.{markWithPrelude}
+import marker.{markerFor}
 import sexp.{programToSexp}
 
 main = match args ()
@@ -23,7 +23,7 @@ markFiles preludePath targets = match readFile preludePath
   Err msg => ePutStrLn msg
   Ok preludeSrc => match readAllSources targets
     Err msg => ePutStrLn msg
-    Ok srcs => putStr (renderAll (desugar (parse preludeSrc)) srcs)
+    Ok srcs => putStr (renderAll (markerFor (desugar (parse preludeSrc))) srcs)
 
 readAllSources : List String -> <IO> Result String (List (String, String))
 readAllSources [] = Ok []
@@ -33,9 +33,9 @@ readAllSources (p :: rest) = match readFile p
     Err msg => Err msg
     Ok more => Ok ((p, src) :: more)
 
-renderAll : List Decl -> List (String, String) -> String
-renderAll preludeP [] = ""
-renderAll preludeP ((path, src) :: rest) =
+renderAll : (List Decl -> List Decl) -> List (String, String) -> String
+renderAll mark [] = ""
+renderAll mark ((path, src) :: rest) =
   "===SELFHOST-FIX=== " ++ path ++ "\n"
-    ++ programToSexp (markWithPrelude preludeP (desugar (parse src)))
-    ++ "\n" ++ renderAll preludeP rest
+    ++ programToSexp (mark (desugar (parse src)))
+    ++ "\n" ++ renderAll mark rest
