@@ -29,6 +29,13 @@ public export data Value
   | VRecord String (List (String, Value))
   | VRef (Ref Value)
   | VClosure EvalEnv (List Pat) Expr
+  -- like VClosure, but the body is an opaque host function over the fully-
+  -- extended env rather than an AST `Expr` — the closure form the Core IR
+  -- evaluator (core_ir_eval.mdk) builds, so it can reuse this runtime's apply /
+  -- dispatch / fall-through machinery without eval.mdk depending on core_ir.mdk.
+  -- A multi-param VClosureF threads param binds through `env` exactly as
+  -- VClosure does (partial application keeps the same body fn, growing env).
+  | VClosureF EvalEnv (List Pat) (EvalEnv -> <Mut> Value)
   | VPrim (Value -> <Mut> Value)
   | VMulti (List Value)
   -- a deferred top-level nullary binding; forced + memoised on first lookup, so
@@ -71,6 +78,7 @@ ppValue (VRecord name fields) = name
   ++ " }"
 ppValue (VRef cell) = "Ref(" ++ ppValue cell.value ++ ")"
 ppValue (VClosure _ _ _) = "<closure>"
+ppValue (VClosureF _ _ _) = "<closure>"
 ppValue (VPrim _) = "<prim>"
 ppValue (VMulti vs) = "<dispatch/" ++ intToString (listLen vs) ++ ">"
 ppValue (VTypedImpl t _ _ _ inner) = "<impl@"
@@ -132,6 +140,7 @@ listSliceGo (x::xs) i lo hi
   | i >= lo = x :: listSliceGo xs (i + 1) lo hi
   | otherwise = listSliceGo xs (i + 1) lo hi
 
+export
 startsWithAt : String -> Bool
 startsWithAt s =
   let cs = stringToChars s
@@ -144,9 +153,11 @@ containsInt x (y::ys) = x == y || containsInt x ys
 -- ── typeclass dispatch: ctor→type table + runtime tag ─────────────────────
 -- A process-global ctor→type map (mirrors lib/eval.ml's ctor_to_type Hashtbl);
 -- evalProgram seeds it before any dispatch.  Reading it stays pure (ref read).
+export
 ctorToTypeRef : Ref (List (String, String))
 ctorToTypeRef = Ref []
 
+export
 buildCtorToType : List Decl -> List (String, String)
 buildCtorToType prog = concatMapList ctorTypeEntries prog
 
@@ -225,6 +236,7 @@ tyMentions (TyEffect _ _ t) params = tyMentions t params
 tyMentions (TyConstrained _ t) params = tyMentions t params
 
 -- ── environment ───────────────────────────────────────────────────────────
+export
 lookupEnv : EvalEnv -> String -> <Mut> Value
 lookupEnv (EvalEnv frames) name = lookupFrames frames name
 
@@ -246,6 +258,7 @@ forceMemo cell f =
   let _ = set_ref cell v
   v
 
+export
 force : Value -> <Mut> Value
 force (VThunk f) = f ()
 force v = v
@@ -256,15 +269,18 @@ lookupFrameCell ((n, cell)::rest) name
   | n == name = Some cell
   | otherwise = lookupFrameCell rest name
 
+export
 extendEnv : EvalEnv -> List (String, Value) -> EvalEnv
 extendEnv (EvalEnv frames) binds = EvalEnv (map cellOf binds :: frames)
 
 cellOf : (String, Value) -> (String, Ref Value)
 cellOf (n, v) = (n, Ref v)
 
+export
 pushFrame : EvalEnv -> List (String, Ref Value) -> EvalEnv
 pushFrame (EvalEnv frames) frame = EvalEnv (frame :: frames)
 
+export
 findCell : List (String, Ref Value) -> String -> Ref Value
 findCell [] name = panic ("findCell: missing " ++ name)
 findCell ((n, cell)::rest) name
@@ -356,6 +372,7 @@ ordGt Gt = True
 ordGt _ = False
 
 -- ── pattern matching ──────────────────────────────────────────────────────
+export
 matchPat : Pat -> Value -> Option (List (String, Value))
 matchPat (PVar x) v = Some [(x, v)]
 matchPat PWild _ = Some []
@@ -442,6 +459,7 @@ matchPats (p::ps) (v::vs) = match matchPat p v
 matchPats _ _ = None
 
 -- ── constructor builders ──────────────────────────────────────────────────
+export
 makeCtor : String -> Int -> Value
 makeCtor name arity = makeCtorGo name arity []
 
@@ -451,6 +469,15 @@ makeCtorGo name arity acc
   | otherwise = VPrim (v => makeCtorGo name (arity - 1) (v :: acc))
 
 -- ── application ───────────────────────────────────────────────────────────
+-- non-colliding alias of `apply` for importers: the prelude (core.mdk) also
+-- binds `apply` (function application), so `import eval.{apply}` is ambiguous at
+-- a call site; `applyValue` lets core_ir_eval.mdk reuse this runtime's value
+-- application unambiguously.
+export
+applyValue : Value -> Value -> <Mut> Value
+applyValue f x = apply f x
+
+export
 apply : Value -> Value -> <Mut> Value
 apply f x = match applyOpt f x
   Some v => v
@@ -458,6 +485,7 @@ apply f x = match applyOpt f x
 
 applyOpt : Value -> Value -> <Mut> Option Value
 applyOpt (VClosure env pats body) arg = applyClosure env pats body arg
+applyOpt (VClosureF env pats f) arg = applyClosureF env pats f arg
 applyOpt (VPrim f) arg = Some (f arg)
 applyOpt (VTypedImpl t key pos seen inner) arg =
   applyTyped t key pos seen inner arg
@@ -527,6 +555,7 @@ stripBody wrapper v = if awaitsArgs v then wrapper else v
 
 awaitsArgs : Value -> Bool
 awaitsArgs (VClosure _ _ _) = True
+awaitsArgs (VClosureF _ _ _) = True
 awaitsArgs (VPrim _) = True
 awaitsArgs (VMulti _) = True
 awaitsArgs (VTypedImpl _ _ _ _ _) = True
@@ -585,6 +614,19 @@ applyClosure env (p::ps) body arg = match matchPat p arg
   None => None
   Some binds => Some (VClosure (extendEnv env binds) ps body)
 
+-- VClosureF analog of applyClosure: the body is a host fn run on the fully-
+-- extended env once the last param binds; partial application keeps the same
+-- body fn and grows env (mirrors VClosure exactly).
+export
+applyClosureF : EvalEnv -> List Pat -> (EvalEnv -> <Mut> Value) -> Value -> <Mut> Option Value
+applyClosureF _ [] _ _ = panic "applied closure with no parameters"
+applyClosureF env [p] f arg = match matchPat p arg
+  None => None
+  Some binds => fallthroughToNone (f (extendEnv env binds))
+applyClosureF env (p::ps) f arg = match matchPat p arg
+  None => None
+  Some binds => Some (VClosureF (extendEnv env binds) ps f)
+
 -- a guard chain that fell through (VFallthrough) means this clause didn't match
 fallthroughToNone : Value -> Option Value
 fallthroughToNone VFallthrough = None
@@ -601,6 +643,7 @@ collectPartials acc (v::rest) arg = match applyOpt v arg
 
 isPartial : Value -> Bool
 isPartial (VClosure _ _ _) = True
+isPartial (VClosureF _ _ _) = True
 isPartial (VPrim _) = True
 isPartial (VMulti _) = True
 isPartial (VTypedImpl _ _ _ _ _) = True
@@ -801,6 +844,7 @@ topGroupValue env clauses = VMulti (map (clauseClosure env) clauses)
 clauseClosure : EvalEnv -> (List Pat, Expr) -> Value
 clauseClosure env (pats, body) = VClosure env pats body
 
+export
 isNullary : List Pat -> Bool
 isNullary [] = True
 isNullary _ = False
@@ -830,6 +874,7 @@ evalIf env (VBool False) _ e = eval env e
 evalIf env (VCon "False" []) _ e = eval env e
 evalIf _ _ _ _ = panic "if condition is not a Bool"
 
+export
 evalUnop : String -> Value -> Value
 evalUnop "-" (VInt n) = VInt (0 - n)
 evalUnop "-" (VFloat f) = VFloat (0.0 - f)
@@ -867,15 +912,18 @@ evalOr env (VBool False) r = eval env r
 evalOr env (VCon "False" []) r = eval env r
 evalOr _ _ _ = panic "'||' on non-Bool"
 
+export
 consVal : Value -> Value -> Value
 consVal hv (VList xs) = VList (hv :: xs)
 consVal _ _ = panic "cons (::) rhs is not a list"
 
+export
 appendVal : Value -> Value -> Value
 appendVal (VList a) (VList b) = VList (a ++ b)
 appendVal (VString a) (VString b) = VString (a ++ b)
 appendVal _ _ = panic "'++' requires List or String"
 
+export
 evalArith : String -> Value -> Value -> Value
 evalArith "+" (VInt a) (VInt b) = VInt (a + b)
 evalArith "-" (VInt a) (VInt b) = VInt (a - b)
@@ -913,6 +961,7 @@ ctorsOfDecl _ = []
 ctorEntry : Variant -> (String, Value)
 ctorEntry (Variant n payload) = (n, makeCtor n (payloadArity payload))
 
+export
 payloadArity : ConPayload -> Int
 payloadArity (ConPos tys) = listLen tys
 payloadArity (ConNamed fs) = listLen fs
@@ -1064,11 +1113,13 @@ evalProgram prog =
 -- already see the dispatch tables (mirrors the reference forcing zero-arg
 -- thunks only after all impls install)
 
+export
 cellResult : (String, Ref Value) -> (String, Value)
 cellResult (n, cell) = (n, cell.value)
 
 -- True/False plus `otherwise` (a trivial prelude binding ubiquitous in guards;
 -- the eval_probe oracle injects the same so prelude-free fixtures can use it)
+export
 boolSeeds : List (String, Value)
 boolSeeds = [
   ("True", VBool True),
@@ -1152,6 +1203,7 @@ optionToValue : Option Value -> Value
 optionToValue None = VCon "None" []
 optionToValue (Some v) = VCon "Some" [v]
 
+export
 externBindings : List (String, Value)
 externBindings = [
   ("intToString", prim1 pIntToString),
@@ -1323,6 +1375,7 @@ buildWith f i n = if i >= n then [] else apply f (VInt i) :: buildWith f (i + 1)
 mkGroup : List (String, (List Pat, Expr)) -> String -> (String, List (List Pat, Expr))
 mkGroup defs name = (name, clausesForName name defs)
 
+export
 installConsts : List (String, Ref Value) -> List (String, Value) -> <Mut> Unit
 installConsts _ [] = ()
 installConsts cells ((n, v)::rest) =
@@ -1335,6 +1388,7 @@ installGroups env cells ((n, clauses)::rest) =
   let _ = set_ref (findCell cells n) (topGroupValue env clauses)
   installGroups env cells rest
 
+export
 lookupBinding : String -> List (String, Value) -> Option Value
 lookupBinding _ [] = None
 lookupBinding name ((n, v)::rest)

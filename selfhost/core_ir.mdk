@@ -1,0 +1,102 @@
+-- Core IR — STAGE2-DESIGN §2.1.  A serializable, backend-neutral intermediate
+-- representation lowered from the elaborated (desugared + typed + dict-routed)
+-- AST.  The Stage-2 design's load-bearing discipline (Axis 1, Condition 1) is
+-- that this IR lives ABOVE any ISA: bytecode/LLVM are *lowerings* of it, never
+-- the IR itself, so the lexical-addressing, decision-tree-match and dict-routing
+-- work transfers to whichever backend consumes it.
+--
+-- What makes this a Core IR rather than a copy of `ast.mdk`'s `Expr`:
+--   • DESUGARED — only the core node set survives (sugar already lowered by
+--     desugar.mdk: sections, comprehensions, do/blocks, guards→if/fallthrough).
+--   • PRIMITIVE — surface operators that are really sugar are lowered away here:
+--     `&&`/`||`→`CIf` (short-circuit preserved), `|>`→`CApp`, `>>`/`<<`→`CLam`.
+--     Only the genuinely-primitive binops survive as `CBinPrim` (arith, compare,
+--     `::`, `++`).
+--   • LEXICALLY ADDRESSED — every variable carries its resolved `Addr` (the
+--     `(frame,slot)` from STAGE2-DESIGN §2.0).  Slice-1 carries it structurally;
+--     the slot-indexing consume-half (eval over array frames) is 2.0's parked
+--     supervised rework, so today's `ceval` still resolves by name — exactly the
+--     status of the `EVarAt` EMIT half in `ast.mdk`.
+--   • DICTS EXPLICIT — typeclass dispatch is the structural `CMethod`/`CDict`
+--     carrying the typechecker's resolved `Route`s (immutable here — the AST's
+--     `Ref Route` mutable cell is read out at lowering time).  These are the
+--     "dictionaries already explicit" the design names as the foundation both
+--     backends share.  (Emitted/evaluated from slice 5 on; present now so the IR
+--     type is complete.)
+--
+-- Validation (the net-new-IR oracle problem, §2.1): there is no OCaml reference
+-- for Core IR.  It is validated by EQUIVALENCE — lower the elaborated AST to Core
+-- IR, evaluate the IR (core_ir_eval.mdk), and diff stdout/pp_value against the
+-- AST tree-walker over the whole fixture corpus.  Core IR is correct iff
+-- evaluating it matches evaluating the AST.
+
+import ast.{Lit, Pat, Addr, Route}
+
+-- ── expressions ────────────────────────────────────────────────────────────
+public export data CExpr
+  = CLit Lit
+  -- a variable, carrying its resolved lexical address (slice-1: by-name lookup,
+  -- address unconsumed — see header).  `AGlobal` = top-level / extern / ctor.
+  | CVar String Addr
+  | CApp CExpr CExpr
+  | CLam (List Pat) CExpr
+  -- rec? pat = rhs in body
+  | CLet Bool Pat CExpr CExpr
+  -- a `where` / let-group: mutually-recursive coalesced bindings, then a body
+  | CLetGroup (List CBind) CExpr
+  | CMatch CExpr (List CArm)
+  | CIf CExpr CExpr CExpr
+  -- a primitive binary operator that survives lowering: arithmetic (`+`…),
+  -- comparison (`==`,`<`…), `::`, `++`.  (`&&`/`||`/`|>`/`>>`/`<<` are lowered
+  -- to CIf/CApp/CLam and never appear here.)
+  | CBinPrim String CExpr CExpr
+  | CUnOp String CExpr
+  | CTuple (List CExpr)
+  | CList (List CExpr)
+  -- record create / field access / update (slice 3)
+  | CRecord String (List CField)
+  | CFieldAccess CExpr String
+  | CRecordUpdate CExpr (List CField)
+  -- array / range / index / slice (slice 3)
+  | CArray (List CExpr)
+  | CRangeList CExpr CExpr Bool
+  | CRangeArray CExpr CExpr Bool
+  | CIndex CExpr CExpr
+  | CSlice CExpr CExpr CExpr Bool
+  -- a bare sequential block (desugar's EBlock — imperative IO / let-sequencing)
+  | CBlock (List CStmt)
+  -- typeclass dispatch, dicts explicit (slice 5; Route read out of the AST's
+  -- mutable cell at lowering time so the IR is immutable):
+  --   CMethod = a return-position method occurrence narrowed by its RKey/RDict.
+  --   CDict   = a constrained-function occurrence, one Route per `=>` constraint.
+  | CMethod String Route
+  | CDict String (List Route)
+
+-- a record field assignment `field = expr`
+public export data CField = CField String CExpr
+
+-- a match arm: pattern, guard qualifiers (fall through to next arm), body
+public export data CArm = CArm Pat (List CGuard) CExpr
+
+public export data CGuard = CGBool CExpr | CGBind Pat CExpr
+
+-- one block statement (mirrors ast.DoStmt, post-desugar core subset)
+public export data CStmt
+  = CSExpr CExpr
+  | CSLet Bool Pat CExpr
+  | CSLetElse Pat CExpr CExpr
+  | CSAssign String CExpr
+
+-- a let-group / top-level function binding: a name with one or more coalesced
+-- clauses (multi-clause dispatch + guard fall-through stay structural — the
+-- decision-tree compilation of these into a single match is a later 2.1 step).
+public export data CBind = CBind String (List CClause)
+public export data CClause = CClause (List Pat) CExpr
+
+-- ── programs ───────────────────────────────────────────────────────────────
+-- A lowered program: top-level function groups (coalesced multi-clause), the
+-- constructor table (name → arity, for building VCon makers), and the
+-- ctor→type map eval needs for runtime type tags.  Interfaces/impls join from
+-- slice 5 (dispatch); slice 1 carries none.
+public export data CProgram
+  = CProgram (List CBind) (List (String, Int)) (List (String, String))
