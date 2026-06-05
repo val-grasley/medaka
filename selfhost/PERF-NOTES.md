@@ -458,3 +458,57 @@ path, ~107× vs the original suite).
 The 3 leaders (mark/desugar/check_modules) are interpretation-bound (the env-walk
 floor); the rest are fixed-prelude-setup-bound (<1.1s, irreducible). Next lever
 for all 3 = the slot-indexed-env rework (supervised — see interim summary).
+
+### 2026-06-05 — string-building O(n²): renderToks/joinNl/joinSp via stringConcat
+- **Hypothesis (README §Performance):** the lexer/sexp/formatter build strings via
+  left/right-fold `acc ++ piece`; `++` is OCaml `^` (eval.ml `VString (a ^ b)`),
+  which allocs a fresh String and blits both operands — so a fold over n pieces is
+  O(n²). VERIFIED, with an important refinement on *where* it actually bites.
+- **MEASURE — synthetic lex scaling** (`lex_main` over core.mdk repeated 1/2/4/8×,
+  min-of-3): **0.14 / 0.32 / 0.84 / 2.34s**. Doubling factors 2.3/2.6/3.0× (>2×) ⇒
+  super-linear. Fit T(n)=a·n+b·n²: at 8× the quadratic term is ~63% of runtime.
+- **PROFILE (sample, 8× lex):** `eval_binop_1427` (the `++`/`^` arm) 1276+510 samples
+  + `caml_alloc_string` 1200 + `caml_blit_string` 173 — string concat dominates at
+  scale. Confirms the cost is `^` alloc+blit, not interpretation, on this path.
+- **Root loop:** `lex_main.renderToks` did `tokenToString t ++ "\n" ++ renderToks rest`
+  — right-recursive, re-copying the whole growing output tail once per token (~80k
+  tokens at 8×). Same shape in `util.joinNl`, `sexp.joinSp`, `util.escStr/escFrom`.
+- **Fix (no new primitive / no mutable buffer needed):** the existing native
+  `stringConcat : List String -> String` (eval.ml = `String.concat ""`) is a single
+  O(total) pass. Added `util.joinWith sep xs = stringConcat (intersperseStr sep xs)`
+  (cons pieces O(1) each, freeze once) and routed `joinNl`/`joinSp` through it;
+  `renderToks = joinNl (map tokenToString toks)`; `escFrom` collects a `List String`
+  then `stringConcat`. This *is* the "amortized-append + single-freeze" pattern, but
+  functional (list) rather than a vendored mut_array StringBuilder — under the
+  tree-walker the native `String.concat` freeze beats any Medaka-level per-char push,
+  and a mutable buffer would need vendoring into selfhost + threading mutation through
+  pure recursion for no asymptotic gain. (Considered & rejected on those grounds.)
+- before: lex 8× **2.34s** / core.mdk 0.14s   after: **1.01s / 0.11s** (**2.3× / ~21%**);
+  scaling now clean-linear (0.11/0.22/0.45/1.01 ⇒ 2.0/2.0/2.2× per doubling).
+- correctness: lexer harness 17/17 ok, lex_files 13/13 matched, mark_batch &
+  desugar_batch 96/96 matched (byte-identical), check_modules_batch 12 ok,
+  OCaml `check` of util/lex_main OK. Output byte-identical everywhere.
+- committed: this commit (string-building O(n²) → stringConcat)
+- **KEY REFINEMENT — the win is in joins over MANY elements, not large strings.**
+  A/B on the things that *look* like the same bug but measured **FLAT (reverted /
+  left as-is):**
+  - `mark_batch`/`desugar_batch` overall: interleaved A/B old-vs-new sexp `joinSp`
+    = 6.90→6.88 / 6.22→6.22s (noise). The sexp dump is tree-shaped — each node
+    joins a *short* child list; total cost is parse+mark interpretation (the env
+    floor), not string concat. joinSp/escStr kept anyway (byte-identical, strictly
+    lower asymptotic complexity, share the joinWith helper) but they buy nothing here.
+  - `desugar_batch.renderAll` (joins ~96 per-file outputs right-recursively):
+    A/B 6.26→6.28s, FLAT — **REVERTED.** Even though the combined output is large,
+    96 iterations = 96 allocations; native `^` blits the large suffixes at memcpy
+    speed (~ms). The lex win came from ~80k iterations (alloc churn + GC), not byte
+    volume. **Lesson: fix joins whose LIST IS LONG (alloc count), not joins of a
+    few large strings.**
+  - `lexer.mdk` `scanStr`/`scanTriple`/`scanInterpCont` (`acc ++ charToStr c` per
+    char) ARE O(L²) per string literal (synthetic 20k/40k-char literal = 0.09/0.25s,
+    2.8× super-linear) — but the **longest literal in the whole stdlib+selfhost
+    corpus is 98 chars** (≈9.6k char-copies, negligible). Left untouched: fixing 3
+    escape-handling guard functions adds correctness risk for zero real-world gain.
+- **Latent (not exercised at scale, left as-is):** `eval.mdk`'s module-local
+  `joinWith` (line ~103) is the same right-recursive quadratic, used by `ppValue`
+  value rendering — only bites if a rendered value has a very long list/tuple;
+  fixture results are small, so flat. Same one-line fix available if it ever shows.

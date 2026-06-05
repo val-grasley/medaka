@@ -4,16 +4,16 @@
 -- the AST/parser; new variants get a matching clause here.
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..), Attr(..)}
-import util.{escStr, joinNl}
+import util.{escStr, joinNl, joinWith}
 
 boolStr : Bool -> String
 boolStr True = "true"
 boolStr False = "false"
 
+-- O(total) join via `stringConcat` (see util.joinWith) — was a right-recursive
+-- `y ++ " " ++ joinSp rest`, quadratic in the serialized output size.
 joinSp : List String -> String
-joinSp [] = ""
-joinSp [x] = x
-joinSp (y::rest) = y ++ " " ++ joinSp rest
+joinSp xs = joinWith " " xs
 
 node : String -> List String -> String
 node tag parts = "(" ++ joinSp (tag :: parts) ++ ")"
