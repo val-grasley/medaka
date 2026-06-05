@@ -115,3 +115,28 @@ Note: `_batch` harnesses are *separate* files kept alongside the originals.
 - finding: <one line>
 - committed: <sha or "reverted: didn't verify / no win">
 -->
+
+### 2026-06-04 — env frames: assoc-list → Hashtbl (target #1 desugar + target #3 interpreter)
+- cmd (full): `sh test/diff_selfhost_desugar.sh` ; (single): `main.exe run selfhost/desugar_main.mdk selfhost/parser.mdk`
+- **Target #1 finding (desugar batchability):** fixed per-process overhead is only
+  ~0.10s (smallest 2-line fixture, min-of-3); the largest file (parser.mdk, 2419
+  lines) was 13.43s. So desugar's ~97s is NOT process startup — a `desugar_batch`
+  would save ~8s at most. The cost is per-file interpretation. **Batching ruled out;
+  it's an interpreter problem.** → pivoted to profiling the interpreter (#3).
+- **Profile (sample, desugar parser.mdk):** ~87% of samples in
+  `Stdlib.List.assoc_opt → caml_compare → compare_val → memcmp`. The OCaml eval
+  env was `(string*value ref) list list`; every var lookup linearly scanned each
+  frame with string compares. The bottom global/prelude frame holds 600-1000+
+  bindings → every global-name reference paid a long scan. (Distinct from the
+  self-hosted TcEnv already fixed with SMap — this is the OCaml interpreter's env.)
+- **Fix:** frame = variant `FList` (assoc, tiny per-call frames) | `FTable`
+  (Hashtbl, the big global/module frames). Key set is frozen after prealloc so a
+  Hashtbl snapshot shares cell refs safely; `table_of_assoc` keeps assoc_opt
+  first-wins. Touched lib/eval.ml (+ prop_runner/bench_runner/bin-main env builds).
+- before: 13.43s (parser.mdk) / ~97s (full)   after: **0.78s / 9.67s**  (**17.2× / ~10×**)
+- correctness: desugar + mark harnesses byte-identical (91 matched, 0 differing);
+  test_eval/run/loader/repl/doctest/snapshot/coverage/typecheck/resolve/parser/diagnostics all exit 0.
+- committed: f06727c
+- **NOTE: this is a global interpreter win — re-baseline EVERY other harness next**
+  (check_modules 300s, mark 109s, eval_run, typecheck_golden, etc. all run through
+  `medaka run` → eval_modules → same hot lookup). Expect broad speedups.
