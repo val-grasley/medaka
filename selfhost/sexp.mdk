@@ -117,6 +117,7 @@ exprSexp (EVariantUpdate c e fs) =
   node "EVariantUpdate" [escStr c, exprSexp e, slist (map fieldAssignSexp fs)]
 exprSexp (EMapLit n kvs) = node "EMapLit" [escStr n, slist (map kvSexp kvs)]
 exprSexp (ESetLit n es) = node "ESetLit" [escStr n, slist (map exprSexp es)]
+exprSexp (EAsPat x e) = node "EAsPat" [escStr x, exprSexp e]
 exprSexp (EMethodRef name) = node "EMethodRef" [escStr name]
 exprSexp (EDictApp name) = node "EDictApp" [escStr name]
 

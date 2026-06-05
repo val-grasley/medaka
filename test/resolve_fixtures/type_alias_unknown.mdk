@@ -1,0 +1,2 @@
+-- DTypeAlias: the RHS references an unknown type; resolve should report it.
+type Alias = UnknownT

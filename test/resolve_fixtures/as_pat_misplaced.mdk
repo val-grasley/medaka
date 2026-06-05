@@ -1,0 +1,3 @@
+-- AsPatternMisplaced: `x@expr` in a non-binding expression position.
+-- The parser emits EAsPat; resolve rejects it as misplaced.
+main = x@True

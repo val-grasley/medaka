@@ -9,8 +9,7 @@
    %S -- so the two hosts agree.  Floats are rendered loosely and normalized away
    by the diff script (host %g vs floatToString), same as the lexer FLOAT.
 
-   Coverage grows with the parser port; nodes not yet covered render as a TODO
-   placeholder on both sides. *)
+   All Expr constructors are now explicitly matched (exhaustive). *)
 
 open Medaka_lib
 open Ast
@@ -48,8 +47,6 @@ let sexp_lit = function
   | LChar s   -> node "LChar" [esc_str s]
   | LBool b   -> node "LBool" [string_of_bool b]
   | LUnit     -> "LUnit"
-
-let todo tag = node "TODO" [tag]
 
 let rec sexp_pat = function
   | PVar x        -> node "PVar" [esc_str x]
@@ -111,7 +108,7 @@ let rec sexp_expr e =
   | EVariantUpdate (c, e, fs) -> node "EVariantUpdate" [esc_str c; sexp_expr e; slist (List.map sexp_fassign fs)]
   | EMapLit (n, kvs)   -> node "EMapLit" [esc_str n; slist (List.map (fun (k, v) -> node "kv" [sexp_expr k; sexp_expr v]) kvs)]
   | ESetLit (n, es)    -> node "ESetLit" [esc_str n; slist (List.map sexp_expr es)]
-  | _                  -> todo "expr"
+  | EAsPat (x, e)      -> node "EAsPat" [esc_str x; sexp_expr e]
 
 and sexp_interp = function
   | InterpStr s  -> node "InterpStr" [esc_str s]

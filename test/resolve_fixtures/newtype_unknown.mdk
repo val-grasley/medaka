@@ -1,0 +1,2 @@
+-- DNewtype: the field type references an unknown type; resolve should report it.
+newtype Wrapper = Wrapper UnknownT

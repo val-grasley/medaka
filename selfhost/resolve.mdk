@@ -34,8 +34,7 @@ public export data ResError
   -- misplaced surface constructs that survive desugar
   | QuestionMisplaced                      -- `?` outside a `let` RHS
   | NonRecursiveValueLet String            -- `let x = … x …` (no `rec`) referencing itself
-  -- (AsPatternMisplaced is intentionally absent: `EAsPat` is a parser-only node
-  -- not yet threaded through desugar/sexp, so it can't be reproduced self-hosted.)
+  | AsPatternMisplaced                      -- `x@..` outside a binding LHS
 
 -- ── The name environment ──────────────────────────────────────────────────
 -- Name-category sets, as plain lists (the self-host is prelude-only, so no
@@ -198,6 +197,7 @@ checkExpr env scope (ERecordUpdate e0 fs) = checkRecordUpdate env scope e0 fs
 checkExpr env scope (EVariantUpdate con e0 fs) = checkExpr env scope e0
   ++ checkRecordCreate env scope con fs
 checkExpr env scope (EQuestion e0) = QuestionMisplaced :: checkExpr env scope e0
+checkExpr env scope (EAsPat _ e0) = AsPatternMisplaced :: checkExpr env scope e0
 checkExpr env scope (ESection s) = checkSection env scope s
 
 -- an `@Name` impl hint is not a value reference (resolve must not flag it)
@@ -374,6 +374,9 @@ checkDecl env DInterface { supers, methods, ... } =
   checkInterfaceDecl env supers methods
 checkDecl env DImpl { iface, tys, reqs, methods, ... } =
   checkImplDecl env iface tys reqs methods
+checkDecl env (DTypeAlias _ _ _ rhs) = checkType env rhs
+checkDecl env (DNewtype _ _ _ _ fty _) = checkType env fty
+checkDecl env (DAttrib _ inner) = checkDecl env inner
 checkDecl _ _ = []
 
 checkVariant : Env -> Variant -> List ResError
@@ -470,11 +473,16 @@ dataRecordNames : List Decl -> List String
 dataRecordNames [] = []
 dataRecordNames ((DData _ n _ _ _)::rest) = n :: dataRecordNames rest
 dataRecordNames ((DRecord _ n _ _ _)::rest) = n :: dataRecordNames rest
+dataRecordNames ((DTypeAlias _ n _ _)::rest) = n :: dataRecordNames rest
+dataRecordNames ((DNewtype _ n _ _ _ _)::rest) = n :: dataRecordNames rest
+dataRecordNames ((DAttrib _ d)::rest) = dataRecordNames (d :: rest)
 dataRecordNames (_::rest) = dataRecordNames rest
 
 ctorNames : List Decl -> List String
 ctorNames [] = []
 ctorNames ((DData _ _ _ vs _)::rest) = map variantName vs ++ ctorNames rest
+ctorNames ((DNewtype _ _ _ con _ _)::rest) = con :: ctorNames rest
+ctorNames ((DAttrib _ d)::rest) = ctorNames (d :: rest)
 ctorNames (_::rest) = ctorNames rest
 
 variantName : Variant -> String
@@ -685,6 +693,7 @@ resErrorSexp (NoExportedConstructors n m) = "(NoExportedConstructors "
 resErrorSexp (UnknownModule n) = "(UnknownModule " ++ escStr n ++ ")"
 resErrorSexp QuestionMisplaced = "QuestionMisplaced"
 resErrorSexp (NonRecursiveValueLet n) = "(NonRecursiveValueLet " ++ escStr n ++ ")"
+resErrorSexp AsPatternMisplaced = "AsPatternMisplaced"
 
 -- ── resolve_program ───────────────────────────────────────────────────────
 -- runtimeDecls = runtime.mdk externs; preludeDecls = core.mdk; prog = target.

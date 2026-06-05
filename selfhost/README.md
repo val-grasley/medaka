@@ -48,7 +48,7 @@ diff with `lib/`:
 | `eval_dict_main.mdk` | **Dict-passing execution**: like the typed path but also dictionary-passes the *user* program's `=>`-constrained functions (`typecheck.elaborateDict`), so a return-position method used at a constraint variable's type (e.g. `empty` inside `f : Monoid a => a -> a`) resolves through the dict parameter the caller supplies — which arg-tag / RKey dispatch cannot do. Diffs against `medaka run` (`test/diff_selfhost_eval_dict.sh`). |
 | `typecheck.mdk` | HM core (**slice 1**). `Mono`/`Scheme` + union-find `unify`, level-based `generalize`/`instantiate`, `pp_mono`, and `infer`/`inferPat`. `checkToLines : List Decl -> <Mut> String`. |
 | `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk [runtime.mdk] <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). With a runtime.mdk arg its externs are seeded into scope, so `core.mdk` (+ a user program) type-checks against the `=== TYPES ===` goldens. |
-| `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 9 resolve diagnostics (broken). |
+| `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 14 resolve diagnostics (broken). |
 | `loader.mdk` | Port of `lib/loader.ml`: `loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))` — DFS topo-sort of a root file's transitive `import`s (dependency-first; cycle detection). Flat single-root simplification. `loader_main.mdk` prints the module order. |
 | `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 12 selfhost modules). |
 | `eval_modules_main.mdk` | **Multi-module execution** (the loader-driven eval path): `medaka run selfhost/eval_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, evaluates them in per-module frames over the shared prelude (`eval.evalModules`), forces the entry's `main`, prints captured stdout. Diffs against `medaka run <entry>` (`test/diff_selfhost_eval_modules.sh`). |
@@ -241,11 +241,17 @@ the stage is done when all pass.
   fixtures (built only from already-handled AST nodes) live in
   `test/parse_fixtures/hardening.mdk` as usual.
 
-  **⚠️ Still parser-only downstream of mark:** `resolve.mdk`/`typecheck.mdk`/
-  `eval.mdk` have no clauses for these nodes yet (non-exhaustive matches never hit
-  on today's inputs) — porting them through those stages is separate follow-on
-  work. (`test/parse_only_fixtures/` is now empty but retained for future
-  parse-only constructs blocked on a later stage.)
+  **✅ Phase-B nodes ported through resolve:** `resolve.mdk` now has explicit
+  `checkDecl` arms for all three survivors (`DTypeAlias` validates the RHS type,
+  `DNewtype` validates the field type, `DAttrib` recurses into the inner decl);
+  `dataRecordNames`/`ctorNames` register their type/constructor names in the env;
+  `checkExpr` handles `EAsPat` → `AsPatternMisplaced`. `EMapLit`/`ESetLit` are
+  eliminated by desugar so need no resolve clause. Three new
+  `test/resolve_fixtures/` cases validate against the OCaml reference:
+  `type_alias_unknown`, `newtype_unknown`, `as_pat_misplaced`. `sexp.mdk` now
+  serializes `EAsPat` and `astdump.ml` matches it (catch-all removed — all `Expr`
+  constructors are now explicitly handled). (`test/parse_only_fixtures/` is now
+  empty but retained for future parse-only constructs blocked on a later stage.)
 
 ## Roadmap — remaining Stage 1 stages
 
@@ -261,7 +267,7 @@ how to port them.
   stages (the `--parse` default is unchanged). `test/diff_selfhost_{desugar,mark}.sh`
   diff the self-host stage against it.
 - `dev/diagdump.exe --resolve|--exhaust` dumps each stage's diagnostics in a
-  canonical, sorted, location-stripped form. `test/resolve_fixtures/` (9) and
+  canonical, sorted, location-stripped form. `test/resolve_fixtures/` (14) and
   `test/exhaust_fixtures/` (5, incl. negative controls) are the net-new negative
   corpus + committed goldens; `test/diff_selfhost_{resolve,exhaust}.sh` run them.
 
@@ -299,7 +305,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 | # | Stage | ~LOC | Difficulty | In → Out | Validate via |
 |---|-------|------|-----------|----------|--------------|
 | 1 | ✅ **desugar** | ~980 | low–med | `program → program` | astdump `--desugar`, **95/95 corpus** |
-| 2 | ✅ **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve`, **full corpus + 9 fixtures** |
+| 2 | ✅ **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve`, **full corpus + 14 fixtures** |
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
 | 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
 | 5 | ✅ **eval** | ~2350 | hard (plumbing) | `program → values / stdout` | `dev/eval_probe.exe` + **all 16 `=== EVAL ===` goldens** (untyped *and* typed paths) |
@@ -344,7 +350,7 @@ Stage-0 prerequisites in `../PLAN.md`).
    through lambdas/lets/match/do/comprehensions/where-groups; `build_env` collects
    user names + import stubs and detects DuplicateDefinition (order-sensitive,
    seeded) and ExternWithBody. Matches `diagdump --resolve` byte-for-byte on the
-   whole corpus *and* the 11 `test/resolve_fixtures/` negative cases — validated
+   whole corpus *and* the 14 `test/resolve_fixtures/` negative cases — validated
    both ways (right errors on broken files, no false positives on valid ones).
    ✅ **Multi-module path — DONE.** The reference's `resolve_module` is ported
    (`resolve.mdk`'s `ModuleExports` / `buildExports` / `buildEnvMM` /
@@ -363,13 +369,12 @@ Stage-0 prerequisites in `../PLAN.md`).
    reachable where the Loader would fail on the missing file first) on 6
    `test/resolve_module_fixtures/` cases **plus the entire selfhost module graph**
    (no false positives, both directions agree).
-   The two single-file misplacement errors are also ported — **QuestionMisplaced**
-   (`?` outside a `let` RHS) and **NonRecursiveValueLet** (`let x = … x …` without
-   `rec`, re-targeting the UnboundVariable), each with a `test/resolve_fixtures/`
-   case. **Still deferred: AsPatternMisplaced** — its `EAsPat` node is a
-   parser-only Phase-B node not yet threaded through `desugar.mdk`/`sexp.mdk`
-   (astdump renders it `(TODO expr)`; `sexp.mdk` has no clause), so it can't be
-   reproduced self-hosted until that follow-on work lands.
+   The three single-file misplacement errors are ported — **QuestionMisplaced**
+   (`?` outside a `let` RHS), **NonRecursiveValueLet** (`let x = … x …` without
+   `rec`, re-targeting the UnboundVariable), and **AsPatternMisplaced** (`x@..`
+   in a non-binding expression position, via `EAsPat`), each with a
+   `test/resolve_fixtures/` case. `sexp.mdk` and `astdump.ml` now both serialize
+   `EAsPat` as `(EAsPat ...)` (the `astdump.ml` catch-all is fully removed).
    **Perf hook (still open):** give each variable reference a resolved
    `(frame, slot)` address — see *Performance* below.
 3. ✅ **Method_marker — DONE.** `selfhost/marker.mdk` + `mark_main.mdk`:
