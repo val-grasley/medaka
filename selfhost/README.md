@@ -810,6 +810,72 @@ nested/structured (non-flat) dictionaries.
 - **Performance** — the interpreter is slow (each run re-parses core/list); the
   lexical-addressing + hash-set perf hooks under *Performance* below are the fix.
 
+### Error-path divergences — the self-hosted compiler does not reproduce the reference's *rejection* behavior (verified 2026-06-05)
+
+Every diff harness feeds **well-formed input** (or input whose only fault is a
+*semantic* one the resolve / exhaust diagnostic pass is designed to catch). On
+those, the ports match byte-for-byte: value-level `eval`, scheme-level
+`typecheck`, and the resolve / exhaust *diagnostic lists* were all re-verified on
+fresh novel inputs and agree. **But the reference's behavior on malformed /
+ill-typed / crashing input is not ported** — the self-hosted stages either
+`panic` (with different message text) or silently accept/truncate, where the
+OCaml reference raises a structured error. This whole family is invisible to the
+oracles (they compare only successful output) and is **not** a blocker for the
+bootstrap (the selfhost source is all well-formed), but it is a real gap in
+fidelity. Concretely, by stage:
+
+- **Lexer — illegal characters are silently skipped.** `lib/lexer.mll` raises
+  `Failure "Unexpected character: X"` on a byte it can't start a token with (e.g.
+  `#`, a `0x01` control byte); the self-hosted lexer **drops the byte and
+  continues**, so `y = #` lexes to `IDENT "y" EQUAL NEWLINE …` with no error. The
+  *token values for legal input* still match (that's what `diff_selfhost_lexer`
+  checks) — only the rejection path differs.
+- **Parser — no parse-error reporting and no EOF / full-consumption check.**
+  `parse = resultDecls (runP parseProgram …)` where `parseProgram = many
+  declThenNoise` (parser.mdk:2408) stops at the first decl it can't parse and
+  returns the prefix, **silently discarding every remaining token**; a leading
+  failure yields `[]` (`resultDecls (PErr _ _) = []`, parser.mdk:2414). So the
+  self-hosted parser accepts a **strict superset** of the reference grammar by
+  truncation:
+  - `f = 1 +` → parses `f = 1`, drops the dangling `+` (OCaml: `parse error 2:0`);
+  - `f = 1 \n g = )` → parses only `f = 1`, drops the malformed `g` decl
+    (OCaml: `parse error 2:5`);
+  - trailing garbage after a complete decl is ignored entirely (OCaml: errors).
+
+  This also has a **downstream effect on the diagnostic stages**: because the
+  self-hosted parser accepts more, resolve/exhaust can emit diagnostics for input
+  the reference never resolves (it parse-errors first). E.g. `f x = g x ? 0`
+  (`?` outside a `let` RHS) is `parse error 1:13` in OCaml, but the self-hosted
+  parser builds `EQuestion (EApp …)` (dropping the `0`) and resolve then reports
+  `QuestionMisplaced` + `(UnboundVariable "g")`. The resolve/exhaust *logic* is
+  faithful given the same AST — the divergence is inherited from the parser's
+  broader acceptance.
+- **Typecheck — `panic`s on a type error instead of accumulating a diagnostic.**
+  A unification failure calls `panic ("type mismatch: " ++ …)` (typecheck.mdk:255
+  `typeMismatch`; :252 `unifyList` for tuple-arity mismatch), aborting the run
+  with no scheme output. The reference instead accumulates and prints
+  `TYPE ERROR: Type mismatch: Int vs String` and continues (the project-wide
+  "errors accumulate, don't raise" design). So `f x = x + 1; g = f "hello"`
+  prints a `TYPE ERROR:` line on the reference and panics on the self-hosted side.
+  (The type-aware `check_match` exhaustiveness — distinct from the ported guard
+  pass — likewise lives only in the reference's typecheck; see the typecheck slice
+  notes above. The "signature too general" omission is already listed above.)
+- **Eval — runtime failures `panic` with divergent messages.** The reference
+  raises `Eval_error msg`; the self-hosted eval `panic`s, and the message text
+  differs even when the fault is the same: non-exhaustive match → reference
+  `"non-exhaustive match"` vs self `"no matching clause in application"`; division
+  by zero → reference `Eval_error("division by zero")` vs a self `panic`. The eval
+  oracles compare a computed `main` value (or captured stdout), never the
+  error channel, so this is unobserved by `diff_selfhost_eval*`.
+
+**Shared-limitation non-gaps (ruled out, recorded so they aren't re-investigated):**
+float exponent notation (`1.0e10`, `1.5e-8`) is *not* a selfhost gap — **neither**
+lexer supports it; both tokenize `1.0e10` as `FLOAT 1` `IDENT "e10"` (the FLOAT
+text `1` vs `1.` is the already-documented `%g` normalization). Multi-line
+`let … \n in …` (with `in` starting a new line) is rejected by both — OCaml with
+a parse error, the self-hosted side by parser truncation (per the parser gap
+above), so it surfaces as an error-path divergence, not a capability gap.
+
 ### Performance — what to bake into these phases (so we don't forget)
 
 LLVM (Stage 2) raises the ceiling, but the current tree-walker has large,
