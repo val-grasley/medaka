@@ -1001,6 +1001,7 @@ evalArith ">=" a b = VBool (not (ordLt (valueCompare a b)))
 evalArith op _ _ = panic ("unknown op '" ++ op ++ "'")
 
 -- ── program driver ────────────────────────────────────────────────────────
+export
 collectCtors : List Decl -> List (String, Value)
 collectCtors prog = concatMapList ctorsOfDecl prog
 
@@ -1133,6 +1134,7 @@ nubGo (x::xs) seen
   | contains x seen = nubGo xs seen
   | otherwise = x :: nubGo xs (x :: seen)
 
+export
 implMethodNames : List Decl -> List String
 implMethodNames prog = nub (concatMapList implDeclNames prog)
 
@@ -1577,6 +1579,7 @@ groupsOf decls =
 -- value names a DUse binds, resolved to the exporting module's exported cells
 -- (mirrors lib/eval.ml build_imports); names resolving to a ctor/global are
 -- omitted (reached via the global frame instead).
+export
 importFrameOf : List (String, List (String, Ref Value)) -> List Decl -> List (String, Ref Value)
 importFrameOf exportsMap decls = concatMapList (useImports exportsMap) decls
 
@@ -1587,6 +1590,7 @@ useImports exportsMap (DUse _ path) = match lookupAssoc (useModuleId path) expor
 useImports _ _ = []
 
 -- cells re-exported by a `pub import`
+export
 pubReexports : List (String, List (String, Ref Value)) -> List Decl -> List (String, Ref Value)
 pubReexports exportsMap decls = concatMapList (reexport exportsMap) decls
 
