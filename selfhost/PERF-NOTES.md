@@ -294,3 +294,16 @@ assoc_opt FList scans + Hashtbl find_opt/key_index/hash on globals) ≈ ~28% +
 - committed: 0521899
 - Residual 5.20s = per-file desugar interpretation (parser/typecheck/eval bodies)
   = the parked slot-indexed-env structural lever.
+
+### 2026-06-04 — parser is LINEAR (algorithmic O(n²) ruled out) + String-Hashtbl win
+- **Parser scaling test (self-hosted parse, per-line cost):** 956 lines 0.46s
+  (0.00044/ln) → 1527 0.63s (0.00039) → 1759 0.67s (0.00036) → 2419 0.73s
+  (0.00029). Per-line cost DECREASES with size ⇒ linear/sub-linear, **no O(n²)**.
+  The "self-hosted parser hottest" cost is linear interpretation, not an
+  algorithmic bug — no Tarjan-style win available there. (Hypothesis ruled out.)
+- **Win — Hashtbl.Make(String) for env FTable.** Polymorphic Hashtbl compared
+  string keys via generic caml_equal→compare_val→memcmp; String.equal is direct.
+  Rigorous back-to-back A/B (check_modules_batch min-of-5): 5.43s → **5.25s**
+  (~3.3%, every with-change run below every baseline run). hash kept Hashtbl.hash.
+- correctness: all suites green; mark/desugar/check_modules batches byte-identical.
+- committed: 10e99eb
