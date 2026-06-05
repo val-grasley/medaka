@@ -161,20 +161,32 @@ differential harness on the interpreter.
 
 - **Self-processing closure — done.** The decisive "the compiler processes its
   own source" milestone (`selfhost/README.md` §"The bootstrap (#3)"), validated by
-  `sh test/diff_selfhost_selfproc.sh` in two legs over `all_modules_entry.mdk`:
+  `sh test/diff_selfhost_selfproc.sh` in three legs over `all_modules_entry.mdk`:
   (A) the self-hosted multi-module **front-end** typechecks all 12 selfhost
   modules of its own source and matches the OCaml reference
   (`dev/tc_module_probe.exe`) byte-for-byte; (B) the self-hosted **eval engine**
   (`eval.mdk`'s untyped `evalModules`) executes a real selfhost stage module (the
-  lexer) identically to the `eval_modules` oracle. Leg B needed one minimal
-  additive fix: `arrayMakeWith` was missing from the self-hosted eval's primitive
-  table (`selfhost/eval.mdk`). **Filed limitation (separate step):** Leg B stops at
-  the lexer — the parser/typecheck stages use return-position `Parser`-monad
-  dispatch (`pure`/`andThen`) the **untyped** `eval_modules` path can't resolve
-  (panics `no matching clause in application`). Running those stages through the
-  self-hosted eval needs the *typed* self-hosted eval path (marker + RKey/dict
-  routing; today only the partial `eval_dict` slice exists) — a larger bootstrap
-  step, deliberately not attempted here.
+  lexer) identically to the `eval_modules` oracle; (C) the **typed** self-hosted
+  eval engine executes a `Parser`-monad stage (the parser) identically to the
+  oracle. Leg B needed one minimal additive fix: `arrayMakeWith` was missing from
+  the self-hosted eval's primitive table (`selfhost/eval.mdk`).
+- **Typed multi-module self-hosted eval — done (Leg C).** The "filed limitation"
+  below is now closed. The parser/typecheck stages use return-position
+  `Parser`-monad dispatch (`pure`/`andThen`) the **untyped** `eval_modules` path
+  can't resolve (panics `no matching clause in application`). The fix is the
+  composition of the existing single-module typed path (`eval_typed_main.mdk` →
+  `typecheck.elaborate`, which stamps `EMethodAt` route tags) and the untyped
+  multi-module path (`eval_modules_main.mdk` → `eval.evalModules`):
+  `typecheck.elaborateModules` prePasses the prelude + every loaded module
+  (rewriting return-position method occurrences to `EMethodAt`), typechecks each
+  module in dependency order (seeded like `checkModules`), and stamps each
+  module's route refs from its resolved result types; the driver
+  `eval_typed_modules_main.mdk` then runs the elaborated trees through
+  `evalModules`, which narrows `pure`/`andThen` by RKey. RKey-only (no
+  `=>`-constrained user polymorphism in the selfhost source, so no dict-passing).
+  Validated by Leg C of `test/diff_selfhost_selfproc.sh` over
+  `selfhost/selfproc_parse_probe.mdk`. **Next extension:** the typechecker stage
+  (also monadic) through the same typed path.
 
   **Next: the remaining pipeline stages** (`desugar → resolve → method_marker →
   typecheck/exhaust → eval`). A high-level, stage-by-stage port plan — ordering,

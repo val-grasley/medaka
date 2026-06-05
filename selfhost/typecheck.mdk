@@ -1862,6 +1862,50 @@ allModuleLines : List (String, List (String, Scheme)) -> <Mut> List String
 allModuleLines [] = []
 allModuleLines ((mid, ss) :: rest) = ("## MODULE " ++ mid) :: (schemeLines ss ++ allModuleLines rest)
 
+-- ── TYPED multi-module elaboration (bootstrap eval front-end) ──────────────
+-- The multi-module analog of `elaborate`: the composition of `checkModules`
+-- (per-module-frame typecheck, dependency-first) and the EMethodAt route-
+-- stamping `elaborate` does single-module.  prePasses the prelude + every module
+-- (rewriting return-position method occurrences to EMethodAt over the WHOLE
+-- program's RP method set), typechecks each module in dependency order (seeded
+-- like checkModules), and STAMPS each module's route refs from its now-resolved
+-- result types.  Returns the SAME trees (refs filled) so evalModules can route
+-- return-position dispatch (`pure`/`andThen` — the Parser monad) by RKey instead
+-- of the untyped arg-tag fallback.  RKey-only (dictNames = []): the bootstrap
+-- source uses no `=>`-constrained user polymorphism, so no EDictAt / dict params
+-- and no pendingDictApps / pendingRecDictApps to resolve.
+export
+elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
+elaborateModules runtimeDecls coreDecls modules =
+  let rpNames = returnPosMethodNames (coreDecls ++ concatMapL snd modules)
+  let core2 = prePassDict rpNames [] coreDecls
+  let modules2 = map (prePassModulePair rpNames) modules
+  let runtimeSeed = externSchemes runtimeDecls
+  let coreSchemes = elabModuleStamp runtimeSeed [] core2
+  let _ = elabModulesGo (runtimeSeed ++ coreSchemes) (publicDataDecls core2) modules2
+  (core2, modules2)
+
+prePassModulePair : List String -> (String, List Decl) -> (String, List Decl)
+prePassModulePair rpNames (mid, prog) = (mid, prePassDict rpNames [] prog)
+
+-- typecheck one module (seeded like checkModuleFull) AND immediately stamp the
+-- EMethodAt route refs it just recorded.  checkModuleFull's resetState clears
+-- pendingSites before inference, so on return pendingSites holds exactly THIS
+-- module's sites; the tyvar cells are still bound (the next module's resetState
+-- hasn't run yet), so resolveSites reads each site's resolved result type.
+elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+elabModuleStamp seedVars accData prog =
+  let schemes = checkModuleFull seedVars accData prog
+  let _ = resolveSites pendingSites.value
+  schemes
+
+elabModulesGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> Unit
+elabModulesGo _ _ [] = ()
+elabModulesGo accV accData ((mid, prog) :: rest) =
+  let schemes = elabModuleStamp accV accData prog
+  let pubV = pickSchemes (publicValNames prog) schemes
+  elabModulesGo (accV ++ pubV) (accData ++ publicDataDecls prog) rest
+
 schemeLines : List (String, Scheme) -> <Mut> List String
 schemeLines [] = []
 schemeLines ((n, s) :: rest) = (n ++ " : " ++ ppScheme s) :: schemeLines rest
