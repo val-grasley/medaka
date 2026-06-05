@@ -33,7 +33,7 @@ SHDIR="$ROOT/selfhost"
 [ -x "$PROBE" ] || { echo "build first: dune build --root . (missing $PROBE)"; exit 2; }
 [ -f "$SELF" ]  || { echo "missing $SELF"; exit 2; }
 
-TARGETS="ast lexer parser sexp desugar marker resolve exhaust loader typecheck eval check"
+TARGETS="ast lexer parser sexp desugar marker annotate resolve exhaust loader typecheck eval check"
 ENTRIES="all_modules_entry"
 
 TMP="$(mktemp -d)"

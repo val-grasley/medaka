@@ -21,7 +21,7 @@ SHDIR="$ROOT/selfhost"
 [ -x "$MAIN" ]  || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
 [ -x "$PROBE" ] || { echo "build first: dune build --root . (missing $PROBE)"; exit 2; }
 
-MODULES="ast lexer parser sexp desugar marker resolve exhaust loader typecheck eval check"
+MODULES="ast lexer parser sexp desugar marker annotate resolve exhaust loader typecheck eval check"
 pass=0; fail=0
 for m in $MODULES; do
   [ -f "$SHDIR/$m.mdk" ] || continue
