@@ -42,6 +42,9 @@ withTarget rsrc csrc targetPath = match readFile targetPath
   Ok tsrc => putStr (runCheck rsrc csrc tsrc)
   Err msg => ePutStrLn msg
 
+-- exported so the batch typecheck harness's synthetic entry can pull this
+-- module into a single union closure (does not change its inferred schemes).
+export
 runCheck : String -> String -> String -> <Mut> String
 runCheck rsrc csrc tsrc =
   let raw = parse tsrc

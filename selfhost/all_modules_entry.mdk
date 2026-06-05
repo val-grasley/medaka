@@ -1,0 +1,22 @@
+-- Synthetic entry for the batch typecheck harness
+-- (test/diff_selfhost_check_modules_batch.sh).  It imports one name from every
+-- selfhost module so that `loadProgram` pulls them ALL into a single union
+-- closure — then one check_all_main.mdk run emits every module's schemes in one
+-- process instead of several.  The imports exist only to force the closure; the
+-- module's own (empty-ish) schemes are ignored by the harness.
+
+import ast.{Decl}
+import lexer.{tokenize}
+import parser.{parse}
+import sexp.{programToSexp}
+import desugar.{desugar}
+import marker.{markWithPrelude}
+import resolve.{resolveToLines}
+import exhaust.{exhaustToLines}
+import loader.{loadProgram}
+import typecheck.{ppScheme}
+import eval.{ppValue}
+import check.{runCheck}
+
+batchEntryDummy : Int
+batchEntryDummy = 0

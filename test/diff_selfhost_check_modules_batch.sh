@@ -13,11 +13,12 @@
 # target module's section — taken from the first run that produced it — against
 # its per-module OCaml oracle (dev/tc_module_probe.exe).
 #
-# Covering set: `check` reaches ast/lexer/parser/desugar/resolve/exhaust/
-# typecheck/check; eval, loader, sexp, marker each pull in the remaining four
-# (check.mdk exports nothing, so it can't be folded into a synthetic entry).
-# 5 processes instead of 12; the shared deep modules are typechecked far fewer
-# times.  Same oracle, same per-module byte-for-byte comparison as the original.
+# Covering set: a single synthetic entry (selfhost/all_modules_entry.mdk) imports
+# one name from every selfhost module, so loadProgram pulls them ALL into one
+# union closure — ONE process emits all 12 modules' schemes (check.mdk exports
+# `runCheck` so it can be pulled in too).  1 process instead of 12; every shared
+# module is typechecked exactly once.  Same oracle, same per-module
+# byte-for-byte comparison as the original.
 #
 # Usage:  sh test/diff_selfhost_check_modules_batch.sh
 set -u
@@ -33,7 +34,7 @@ SHDIR="$ROOT/selfhost"
 [ -f "$SELF" ]  || { echo "missing $SELF"; exit 2; }
 
 TARGETS="ast lexer parser sexp desugar marker resolve exhaust loader typecheck eval check"
-ENTRIES="check eval loader sexp marker"
+ENTRIES="all_modules_entry"
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
