@@ -194,6 +194,12 @@ differential harness on the interpreter.
 
 ### Stage 2 — LLVM backend (after self-host)
 
+> **Backend-architecture decision (bytecode VM first vs. straight to LLVM):** see
+> [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md). Recommends a Core IR
+> + bytecode VM as a "Stage 1.5" on-ramp (conditionally), on differential-testing
+> grounds — the bytecode VM is gated against the existing tree-walker oracle per
+> slice, where LLVM-first is not. The staged plan there feeds the work items below.
+
 With the language proven, build native codegen. The heavy, decision-dense work
 deliberately deferred to here:
 
