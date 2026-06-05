@@ -24,13 +24,25 @@ list=""
 for f in $files; do [ -f "$f" ] && list="$list $f"; done
 
 ALL="$("$MAIN" run "$BATCH" "$CORE" $list 2>/dev/null)"
-section() { awk -v p="$1" '$0=="===SELFHOST-FIX=== "p {f=1;next} /^===SELFHOST-FIX=== /{f=0} f'; }
+
+# Split the combined output into one file per section in a SINGLE awk pass
+# (keyed by a path->filename transform both sides compute), instead of
+# re-scanning the whole output once per corpus file — the latter is quadratic in
+# corpus size (was ~2.9s of the harness; the marker line is `===SELFHOST-FIX===
+# <fullpath>`).
+SECDIR="$(mktemp -d)"
+trap 'rm -rf "$SECDIR"' EXIT
+printf '%s' "$ALL" | awk -v dir="$SECDIR" '
+  /^===SELFHOST-FIX=== /{ p=$2; gsub(/[\/.]/,"_",p); out=dir "/" p; next }
+  out { print > out }
+'
 
 pass=0; fail=0
 for f in $list; do
   name="$(basename "$f")"
   expected="$("$REF" --mark "$f" 2>/dev/null | norm)"
-  actual="$(printf '%s' "$ALL" | section "$f" | norm)"
+  key="$(printf '%s' "$f" | tr '/.' '__')"
+  if [ -f "$SECDIR/$key" ]; then actual="$(norm < "$SECDIR/$key")"; else actual=""; fi
   if [ "$expected" = "$actual" ]; then pass=$((pass + 1)); printf 'ok   %s\n' "$name"
   else fail=$((fail + 1)); printf 'FAIL %s\n' "$name"; fi
 done
