@@ -107,7 +107,7 @@ Note: `_batch` harnesses are *separate* files kept alongside the originals.
 
 ## Results log (append-only)
 
-### ⭐ INTERIM SUMMARY (2026-06-04 ~23:24, updated each iteration; finalized at STOP_AT)
+### ⭐ FINAL SUMMARY (overnight session ended 2026-06-05 ~06:10, user woke early)
 **Verified wins committed this session (each its own commit, min-of-3, correctness-gated):**
 1. `f06727c` **env frames assoc-list → Hashtbl** — THE big one. Var lookup was a
    linear string-compare scan; ~87% of interp time. Desugar 97→9.7s; **check_modules
