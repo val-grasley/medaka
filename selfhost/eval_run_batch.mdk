@@ -1,0 +1,30 @@
+-- Batched variant of eval_run_main.mdk — PROTOTYPE for prelude caching.
+--   medaka run selfhost/eval_run_batch.mdk <core.mdk> <list.mdk> <file.mdk>...
+-- Parses + desugars core.mdk + list.mdk ONCE, runs each target program for its
+-- captured stdout.  Each target is evaluated + printed strictly before the next
+-- (IO loop) — see eval_prelude_batch.mdk for why (global ctorToTypeRef).
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import eval.{evalOutputWith}
+
+main = match args ()
+  (corePath :: listPath :: targets) => withPreludes corePath listPath targets
+  _ => ePutStrLn "usage: medaka run selfhost/eval_run_batch.mdk <core.mdk> <list.mdk> <file.mdk>..."
+
+withPreludes corePath listPath targets = match readFile corePath
+  Err msg => ePutStrLn msg
+  Ok csrc => match readFile listPath
+    Err msg => ePutStrLn msg
+    Ok lsrc => emitAll (desugar (parse csrc) ++ desugar (parse lsrc)) targets
+
+emitAll : List Decl -> List String -> <IO, Mut> Unit
+emitAll preludeDecls [] = putStr ""
+emitAll preludeDecls (path :: rest) = match readFile path
+  Err msg =>
+    let _ = ePutStrLn msg
+    emitAll preludeDecls rest
+  Ok src =>
+    let _ = putStr ("===SELFHOST-FIX=== " ++ path ++ "\n" ++ evalOutputWith preludeDecls (desugar (parse src)) ++ "\n")
+    emitAll preludeDecls rest

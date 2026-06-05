@@ -1,0 +1,35 @@
+-- Batched variant of eval_dict_main.mdk — prelude caching.
+--   medaka run selfhost/eval_dict_batch.mdk <runtime.mdk> <core.mdk> <file.mdk>...
+-- Parses + desugars runtime.mdk + core.mdk ONCE, dict-elaborates + evals each
+-- target.  Strict per-target IO loop (see eval_prelude_batch.mdk for why).
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import typecheck.{elaborateDict, constrainedSigNames}
+import eval.{evalOutput, funNamesOf, dropShadowedExp}
+
+main = match args ()
+  (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets
+  _ => ePutStrLn "usage: medaka run selfhost/eval_dict_batch.mdk <runtime.mdk> <core.mdk> <file.mdk>..."
+
+withFiles runtimePath corePath targets = match readFile runtimePath
+  Err msg => ePutStrLn msg
+  Ok rsrc => match readFile corePath
+    Err msg => ePutStrLn msg
+    Ok csrc => emitAll (desugar (parse rsrc)) (desugar (parse csrc)) targets
+
+emitAll : List Decl -> List Decl -> List String -> <IO, Mut> Unit
+emitAll runtimeDecls preludeDecls [] = putStr ""
+emitAll runtimeDecls preludeDecls (path :: rest) = match readFile path
+  Err msg =>
+    let _ = ePutStrLn msg
+    emitAll runtimeDecls preludeDecls rest
+  Ok src =>
+    let _ = putStr ("===SELFHOST-FIX=== " ++ path ++ "\n" ++ runDict runtimeDecls preludeDecls (desugar (parse src)) ++ "\n")
+    emitAll runtimeDecls preludeDecls rest
+
+runDict : List Decl -> List Decl -> List Decl -> <Mut> String
+runDict runtimeDecls preludeDecls userDecls =
+  let combined = dropShadowedExp (funNamesOf userDecls) preludeDecls ++ userDecls
+  evalOutput (elaborateDict runtimeDecls (constrainedSigNames userDecls) combined)

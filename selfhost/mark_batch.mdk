@@ -1,0 +1,41 @@
+-- Batched variant of mark_main.mdk — PROTOTYPE for prelude caching.
+--
+--   medaka run selfhost/mark_batch.mdk <prelude.mdk> <file.mdk>...
+--
+-- Parses + desugars the prelude ONCE, then marks each target against it,
+-- emitting one delimited section per target:
+--   ===SELFHOST-FIX=== <path>
+--   <sexp dump>
+-- so the harness can split one process's output back per fixture.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import marker.{markWithPrelude}
+import sexp.{programToSexp}
+
+main = match args ()
+  (preludePath :: targets) => markFiles preludePath targets
+  _ => ePutStrLn "usage: medaka run selfhost/mark_batch.mdk <prelude.mdk> <file.mdk>..."
+
+markFiles : String -> List String -> <IO> Unit
+markFiles preludePath targets = match readFile preludePath
+  Err msg => ePutStrLn msg
+  Ok preludeSrc => match readAllSources targets
+    Err msg => ePutStrLn msg
+    Ok srcs => putStr (renderAll (desugar (parse preludeSrc)) srcs)
+
+readAllSources : List String -> <IO> Result String (List (String, String))
+readAllSources [] = Ok []
+readAllSources (p :: rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllSources rest
+    Err msg => Err msg
+    Ok more => Ok ((p, src) :: more)
+
+renderAll : List Decl -> List (String, String) -> String
+renderAll preludeP [] = ""
+renderAll preludeP ((path, src) :: rest) =
+  "===SELFHOST-FIX=== " ++ path ++ "\n"
+    ++ programToSexp (markWithPrelude preludeP (desugar (parse src)))
+    ++ "\n" ++ renderAll preludeP rest
