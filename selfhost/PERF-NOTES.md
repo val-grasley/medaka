@@ -322,3 +322,19 @@ assoc_opt FList scans + Hashtbl find_opt/key_index/hash on globals) ≈ ~28% +
   A/B (check_modules_batch min-of-5): 5.28s → **5.17s** (~2%, clusters disjoint).
 - correctness: test_coverage green (records when enabled); batches byte-identical.
 - committed: 6b6072c
+
+### 2026-06-04 — regression sweep (8 wins insured) + mark_batch prelude-scan hoist
+- **Regression sweep:** all 16 OCaml suites green + `dune build @thorough` 68
+  tests OK. The 8 committed eval.ml/harness wins introduce no regression.
+- **Harness re-survey (single run):** mark_batch 7.38, desugar_batch 5.84,
+  check_modules_batch 5.23, then check_batch 1.10 / parse 1.14 / lex_files 1.05 /
+  eval_run_batch 0.90 / rest <0.9. Top 3 are interpretation-bound (the floor).
+- **Win — hoist prelude scan out of mark_batch's per-file loop.** markWithPrelude
+  rescanned the fixed ~1000-line prelude (interfaceMethodNames/droppablePreludeFns/
+  constrainedFnNames) on every call; mark_batch called it ~92×. Added marker.markerFor
+  (scan prelude once → closure); mark_batch maps it. before 7.61s after **6.36s**
+  (~1.2×). 94 matched 0 differing; check_modules 12 ok; desugar 94 matched.
+- committed: 275b4ff
+- **Frame-merge lever RULED OUT:** merging per-module [local;import;global] FTables
+  into one (to cut 3 hashes→1 for prelude/ctor lookups) would break Phase-112
+  lookup_method's shadow-bypass (which needs the separate frames). Don't.
