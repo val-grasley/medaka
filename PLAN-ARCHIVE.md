@@ -1,8 +1,8 @@
-# Medaka — Plan Archive (Phases 1–97)
+# Medaka — Plan Archive (Phases 1–144)
 
-> **ARCHIVED 2026-06-02.** This is the historical roadmap covering Phases 1–97,
-> retired once nearly everything in it was DONE. It is kept **for reference
-> only** — the per-phase implementation notes ("What was added", "Where",
+> **ARCHIVED 2026-06-02; updated through 2026-06-05.** This is the historical
+> roadmap covering completed Phases 1–144. It is kept **for reference only** —
+> the per-phase implementation notes ("What was added", "Where",
 > file/line pointers) are useful when investigating how a feature was built.
 > **Do not add new work here.** The forward-looking roadmap lives in
 > [`PLAN.md`](./PLAN.md). Section numbers cited elsewhere in the codebase
