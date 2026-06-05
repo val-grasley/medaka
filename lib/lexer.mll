@@ -296,7 +296,7 @@ and read = parse
       read_block_comment buf 1 line col lexbuf;
       read lexbuf
     }
-  | (newline white*)+ (("|>" | ">>" | "<<" | "&&" | "||" | "++") as op) {
+  | (newline white*)+ (("|>" | ">>" | "<<" | "&&" | "||" | "++" | "::") as op) {
       (* Leading-operator line continuation: a line break immediately before one
          of these infix operators is *not* a statement boundary — the operator
          continues the previous expression.  We emit the operator token directly
@@ -307,6 +307,8 @@ and read = parse
          declaration or statement, so any program that parsed before still parses
          identically — we only rescue layouts that were previously parse errors.
          `|` is deliberately excluded (it opens guard arms / data variants).
+         `::` (cons) is included: it is right-associative and value-only, so a
+         line led by `::` always continues the preceding expression.
 
          A comment physically between the operand and the operator defeats this
          (the newline run stops at the comment); that case was already a parse
@@ -319,6 +321,7 @@ and read = parse
        | "&&" -> AND
        | "||" -> OR
        | "++" -> PLUSPLUS
+       | "::" -> CONS
        | _    -> assert false)
     }
   | (newline white*)+ {

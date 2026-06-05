@@ -5852,6 +5852,32 @@ the parser port). Same class of constraint as not running `medaka fmt` on selfho
 files: selfhost source is bounded by what `parser.mdk` parses, not by what the
 language accepts.
 
+### Phase 144: `::` (cons) leading-operator line continuation ✅ DONE (2026-06-05)
+
+A line-wrapped `::` chain (e.g. a long cons-chain RHS spanning multiple lines)
+was a parse error because the lexer's leading-operator continuation gate did not
+include `::`.  The repro was hit while writing `selfhost/resolve.mdk`'s
+`annotateStmts`:
+
+```
+annotate fr (DoLetElse p e alt :: rest) =
+  DoLetElse p (ann fr e) (ann fr alt)
+    :: annotate (binds p :: fr) rest      -- was: parse error at the `::` line
+```
+
+**Fix:** added `"::"` to the alternation in `lib/lexer.mll`'s leading-operator
+continuation regex and its match arm (`CONS`), mirrored into `selfhost/lexer.mdk`
+(`isContinuation` / `continuationTok`).  The continuation is purely subtractive
+(suppresses a would-be `INDENT`/`NEWLINE` without changing the token stream),
+so the wrapped form parses to the identical AST as the one-liner.
+`parser.conflicts` unchanged (4 shift/reduce + 1 reduce/reduce).
+
+Tests: `test_parser` "cons (::) across lines" (same AST as one-liner) +
+"cons pattern still ok" (regression for `f (x :: xs) = x`).  New differential
+fixture `test/diff_fixtures/cons_cont.mdk` passes all four golden sections
+(TOKENS / AST / TYPES / EVAL).  `diff_selfhost_lexer.sh` 18/18,
+`diff_selfhost_parse.sh` 25/25, `diff_selfhost_lex_files.sh` 13/13.
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)

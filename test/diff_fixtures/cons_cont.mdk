@@ -1,0 +1,4 @@
+wrap x y = x
+  :: y
+
+main = println (wrap 1 [2, 3])

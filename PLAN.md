@@ -243,25 +243,6 @@ above, it is flagged ⭐.
 
 ### Compiler / language
 
-- **Phase 144 — leading-operator continuation doesn't cover `::` (and other
-  infix operators outside the whitelist). TODO.** Phase 137 lets an expression
-  RHS wrap onto a more-indented line, and a *leading-operator* line continues for
-  the whitelisted set (exactly `|>`/`>>`/`<<`/`&&`/`||`/`++`, `lib/lexer.mll`),
-  but a line led by `::` is not rescued — it parses as a new statement. Repro (hit while writing
-  `selfhost/resolve.mdk`'s `annotateStmts`; worked around with a `let`):
-  ```
-  annotate fr (DoLetElse p e alt :: rest) =
-    DoLetElse p (ann fr e) (ann fr alt)
-      :: annotate (binds p :: fr) rest      -- parse error at the `::` line
-  ```
-  **Where it lives:** the leading-operator continuation rule in `lib/lexer.mll`
-  (the same gate Phase 137 extended) — `::` (cons) and other value-level infix
-  operators aren't in the continued-operator set, so the deeper line commits a
-  statement boundary instead of continuing the RHS. **Desired:** treat `::` (at
-  least) like the other leading operators so an over-long cons-chain RHS can wrap;
-  re-measure `parser.conflicts` since `::` continuation may interact with list
-  patterns. Surfaced by the lexical-addressing emit session (STAGE2 §2.0).
-
 - **Phase 143 — block-`let` is non-recursive while expression `let … in …` is
   recursive: same surface form, opposite recursion. TODO.** The identical syntax
   `let f x = … f …` recurses at expression position (parser emits `ELet _ True`,

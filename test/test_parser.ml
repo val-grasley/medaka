@@ -1284,6 +1284,19 @@ let test_cont_all_ops =
     "f a b = a |> b >> b << b && b || b ++ b\n"
     "f a b =\n  a\n  |> b\n  >> b\n  << b\n  && b\n  || b\n  ++ b\n"
 
+(* :: (cons) continuation — Phase 144 *)
+let test_cont_cons =
+  same_ast
+    "f x = 1 :: 2 :: x\n"
+    "f x =\n  1\n  :: 2\n  :: x\n"
+
+(* A list pattern in a clause head still parses correctly — the continuation
+   rule must not swallow a `::` that is a pattern separator. *)
+let test_cons_pattern_still_parses () =
+  match parse_one "f (x :: xs) = x\n" with
+  | DFunDef (false, "f", [PCons (PVar "x", PVar "xs")], EVar "x") -> ()
+  | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
+
 let test_cont_dedented =
   (* the continuation line may sit at any indent — even left of the enclosing
      block — without triggering a premature dedent *)
@@ -2175,6 +2188,8 @@ let () =
       test_case "dedented continuation"  `Quick test_cont_dedented;
       test_case "blank line before op"   `Quick test_cont_blank_line;
       test_case "comment not rescued"    `Quick test_cont_comment_not_rescued;
+      test_case "cons (::) across lines" `Quick test_cont_cons;
+      test_case "cons pattern still ok"  `Quick test_cons_pattern_still_parses;
     ];
     "expression-RHS continuation (Phase 137)", [
       test_case "arg on deeper line"        `Quick test_cont_app_arg;

@@ -828,7 +828,7 @@ afterNl src len np depth id indent
   | isContinuation src len np = emit src len np depth id (continuationTok src len np) 2 0
   | otherwise = RNewline indent :: scan src len np depth id
 
--- leading-operator line continuation (|> >> << && || ++)
+-- leading-operator line continuation (|> >> << && || ++ ::)
 isContinuation : Array Char -> Int -> Int -> Bool
 isContinuation src len np = is2 src len np '|' '>'
   || is2 src len np '>' '>'
@@ -836,6 +836,7 @@ isContinuation src len np = is2 src len np '|' '>'
   || is2 src len np '&' '&'
   || is2 src len np '|' '|'
   || is2 src len np '+' '+'
+  || is2 src len np ':' ':'
 
 continuationTok : Array Char -> Int -> Int -> Token
 continuationTok src len np
@@ -844,7 +845,8 @@ continuationTok src len np
   | is2 src len np '<' '<' = TLCompose
   | is2 src len np '&' '&' = TAnd
   | is2 src len np '|' '|' = TOr
-  | otherwise = TPlusPlus
+  | is2 src len np '+' '+' = TPlusPlus
+  | otherwise = TCons
 
 -- ── Layout pass: RawTok stream -> Token stream ──────────────────────────
 -- Mirrors lib/lexer.mll `handle_indent` + the Phase 137 continuation-line
