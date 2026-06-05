@@ -766,7 +766,7 @@ singleOp src len pos depth id '?' = emit src len pos depth id TQuestion 1 0
 singleOp src len pos depth id '%' = emit src len pos depth id TMod 1 0
 singleOp src len pos depth id '@' =
   emit src len pos depth id (atToken src pos) 1 0
-singleOp src len pos depth id _ = scan src len (pos + 1) depth id
+singleOp src len pos depth id c = panic ("Unexpected character: " ++ charToStr c)
 
 -- `@` is the as-pattern operator (AS_AT) when it immediately follows an
 -- identifier (no intervening space), else the impl-hint prefix (AT).  Mirrors

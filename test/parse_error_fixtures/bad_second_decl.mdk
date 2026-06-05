@@ -1,0 +1,4 @@
+-- Parse error: first decl parses OK; second decl has a bad body.
+-- OCaml reference: parse error 2:5
+f = 1
+g = )

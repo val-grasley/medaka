@@ -1,0 +1,3 @@
+-- Lexer error: `#` is not a valid start byte in Medaka.
+-- OCaml reference: Unexpected character: #
+y = #

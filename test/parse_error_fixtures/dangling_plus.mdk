@@ -1,0 +1,3 @@
+-- Parse error: dangling operator with no right-hand operand.
+-- OCaml reference: parse error 2:0 (cursor lands after the `+` at EOF)
+f = 1 +

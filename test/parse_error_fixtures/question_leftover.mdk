@@ -1,0 +1,3 @@
+-- Parse error: `?` postfix leaves the trailing integer unconsumed.
+-- OCaml reference: parse error 1:13 (at the `?` character)
+f x = g x ? 0

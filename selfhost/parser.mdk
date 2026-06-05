@@ -2409,10 +2409,16 @@ parseProgram = do
   skipNoise
   many declThenNoise
 
-resultDecls : PR (List Decl) -> List Decl
-resultDecls (POk ds _) = ds
-resultDecls (PErr _ _) = []
+-- Check that the parse consumed all tokens (no trailing garbage), panic on error.
+-- Mirrors lib/loader.ml: raises Failure "Parse error" on Parser.Error or Failure.
+resultDecls : Array Token -> PR (List Decl) -> List Decl
+resultDecls _ (PErr _ _) = panic "parse error"
+resultDecls toks (POk ds pos)
+  | peekTok toks pos == TEof = ds
+  | otherwise = panic "parse error"
 
 export
 parse : String -> List Decl
-parse src = resultDecls (runP parseProgram (arrayFromList (tokenize src)) 0)
+parse src =
+  let toks = arrayFromList (tokenize src)
+  resultDecls toks (runP parseProgram toks 0)
