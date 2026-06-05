@@ -93,10 +93,32 @@ public export data CStmt
 public export data CBind = CBind String (List CClause)
 public export data CClause = CClause (List Pat) CExpr
 
+-- ── typeclass impls (slice 5) ───────────────────────────────────────────────
+-- A lowered typeclass method binding — one impl-method clause or one interface
+-- default.  The dispatch decision (concrete type-head tag, dispatch positions,
+-- specificity score) is computed at lowering time from the AST's iface + impl
+-- decls — exactly as eval.mdk's `declImplEntries`/`implMethodEntry` do — so the
+-- IR stays Ty-free; only the method body is lowered to `CExpr`.  core_ir_eval
+-- turns each entry into a tagged `VTypedImpl` (impl methods) or an untagged
+-- fallback (defaults), then coalesces same-named candidates into the one `VMulti`
+-- the arg-tag dispatcher (`applyValue`) consumes — identical to the AST walker.
+-- One entry PER CLAUSE (multi-clause impl methods coalesce into a VMulti whose
+-- clauses fall through, mirroring the AST path).
+-- CImplEntry: method name, specificity score, body.
+-- CImplBody:
+--   CImplTagged = a tagged impl method (concrete type-head tag, iface, dispatch
+--     positions, the clause's patterns, its lowered body).
+--   CImplDefault = an untagged interface default (patterns + lowered body — the
+--     fallback).
+public export data CImplEntry = CImplEntry String Int CImplBody
+public export data CImplBody
+  = CImplTagged String String (List Int) (List Pat) CExpr
+  | CImplDefault (List Pat) CExpr
+
 -- ── programs ───────────────────────────────────────────────────────────────
 -- A lowered program: top-level function groups (coalesced multi-clause), the
--- constructor table (name → arity, for building VCon makers), and the
--- ctor→type map eval needs for runtime type tags.  Interfaces/impls join from
--- slice 5 (dispatch); slice 1 carries none.
+-- constructor table (name → arity, for building VCon makers), the ctor→type map
+-- eval needs for runtime type tags, and (slice 5) the lowered typeclass
+-- impl/default entries.  Slice-1 programs carry an empty impl list.
 public export data CProgram
-  = CProgram (List CBind) (List (String, Int)) (List (String, String))
+  = CProgram (List CBind) (List (String, Int)) (List (String, String)) (List CImplEntry)

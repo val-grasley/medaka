@@ -389,16 +389,27 @@ reference. The reference is the tree-walker (`eval_modules` / `eval_probe` and t
     slot-indexing *consume* half is still 2.0's parked rework, so `ceval` resolves
     by name; the addresses ride along unconsumed, exactly as `EVarAt` does in the
     tree-walker.
-  - **SLICE 1 REMAINING / next slices.** Decision-tree match *compilation* is not
-    yet done — `CMatch` carries ordered arms (semantically identical, so the gate
-    holds); compiling them to a decision tree (from `exhaust.mdk`) is a
-    behaviour-preserving refinement within 2.1. Deferred fixtures (panic with a
-    clear slice tag today): records/refs/arrays/ranges/index/slice/`let mut`
-    (slice 3 nodes are in the IR type + lowering already, just not in `ceval`),
-    and typeclass dispatch (`CMethod`/`CDict` lowering is done; installing impls
-    into the Core-IR driver is slice 5). Broaden the gate to the full
-    `eval_fixtures` set (and `eval_list`/`eval_prelude`/`eval_typed`/`eval_modules`
-    corpora) as those land.
+  - **SLICES 3 & 5 DONE (2026-06-05).** Slice 3 (records / refs / arrays /
+    ranges / index / slice / blocks) and slice 5 (typeclass dispatch) are in
+    `ceval`. Slice 3's `ceval` arms reuse `eval.mdk`'s value-level helpers
+    (`evalIndex`/`evalSlice`/`evalRange`/`evalRecordUpdate`/`evalField`/…) verbatim
+    — they only thread `ceval` over sub-expressions and hand the Values to the
+    shared host runtime. Slice 5 lowers each impl-method clause + interface
+    default into a Ty-free `CImplEntry` (tag / dispatch positions / specificity
+    score reused from `eval.mdk`'s `declImplEntries`), and `cevalProgram` installs
+    them as the same arg-tag-dispatched `VMulti`s the AST walker builds (via the
+    reused `coalesceImpls`); the `CMethod`/`CDict` arms narrow return-position
+    routes on the typed path. The gate now spans four corpora — engine (16),
+    prelude (5), list (2), typed (2: the only one driving `CMethod` / RKey
+    return-position dispatch) — all byte-identical to the AST tree-walker via the
+    new `core_ir_prelude_main.mdk` / `core_ir_typed_main.mdk` drivers and
+    `test/diff_selfhost_core_ir{,_prelude,_list,_typed}.sh`. Reuse discipline: the
+    only `eval.mdk` change across slices 1/3/5 is the additive `VClosureF` variant
+    + new `export`s; no runtime forked. **Remaining within 2.1:** decision-tree
+    match *compilation* (today `CMatch` carries ordered arms — semantically
+    identical, gate holds; compiling to a decision tree from `exhaust.mdk` is a
+    behaviour-preserving refinement); and the `eval_modules`/`eval_run` corpora,
+    which need a per-module-frame Core-IR driver.
 
 **2.2 — Bytecode compiler + VM, slice by slice.** Compile Core IR → bytecode; the
 VM interprets it reusing the host `Value` ([`eval.mdk:18`](eval.mdk:18)),

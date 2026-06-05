@@ -53,10 +53,12 @@ diff with `lib/`:
 | `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 12 selfhost modules). |
 | `eval_modules_main.mdk` | **Multi-module execution** (the loader-driven eval path): `medaka run selfhost/eval_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, evaluates them in per-module frames over the shared prelude (`eval.evalModules`), forces the entry's `main`, prints captured stdout. Diffs against `medaka run <entry>` (`test/diff_selfhost_eval_modules.sh`). |
 | `eval_typed_modules_main.mdk` | **Typed multi-module execution** (the composition of `eval_typed_main` + `eval_modules_main`): `medaka run selfhost/eval_typed_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, then `typecheck.elaborateModules` threads the marker + route-stamping through the loader's module graph (per-module-frame typecheck in dependency order, `EMethodAt` routes stamped per module) before `eval.evalModules` runs the elaborated trees — so a stage that uses return-position dispatch (the `Parser` monad's `pure`/`andThen`) routes by RKey. The Leg-C bootstrap driver; diffs against `medaka run <entry>` (`test/diff_selfhost_selfproc.sh`). |
-| `core_ir.mdk` | **Stage 2 §2.1 Core IR** (slice 1) — the backend-neutral, serializable IR lowered from the elaborated AST: `CExpr`/`CArm`/`CGuard`/`CStmt`/`CBind`/`CProgram`. Lives *above* any ISA (the on-ramp discipline): dispatch is the structural immutable `CMethod`/`CDict` (Routes read out of the AST's `Ref Route` cells), variables carry a lexical `Addr`. See `STAGE2-DESIGN.md` §2.1. |
-| `core_ir_lower.mdk` | `lower : Expr -> CExpr` / `lowerProgram : List Decl -> CProgram` — the elaborated-AST → Core IR pass. The surface→primitive collapse happens here: `&&`/`||`→`CIf`, `|>`→`CApp`, `>>`/`<<`→`CLam`, type annotations erased, multi-clause groups coalesced. |
-| `core_ir_eval.mdk` | The direct Core-IR tree-walker `ceval`/`cevalProgram`/`cevalMain` — the §2.1 equivalence oracle. REUSES `eval.mdk`'s host runtime (`Value`, env, `apply`/dispatch/fall-through, `matchPat`, externs, `pp_value`) via the one added `VClosureF` variant, so multi-clause + guard fall-through run the same `VMulti`+`VFallthrough` path the AST interpreter uses. |
-| `core_ir_main.mdk` | Runnable entry: `medaka run selfhost/core_ir_main.mdk <src.mdk>` parses → desugars → `annotateProgram` (so each `CVar` is born lexically addressed) → lowers → evaluates the Core IR, prints `pp_value` of `main`. Diffs against `dev/eval_probe.exe` — the SAME oracle `eval_main` uses, i.e. the §2.1 *equivalence* gate (`test/diff_selfhost_core_ir.sh`, 9/9 slice-1 fixtures). |
+| `core_ir.mdk` | **Stage 2 §2.1 Core IR** (slices 1/3/5) — the backend-neutral, serializable IR lowered from the elaborated AST: `CExpr`/`CArm`/`CGuard`/`CStmt`/`CBind`/`CImplEntry`/`CImplBody`/`CProgram`. Lives *above* any ISA (the on-ramp discipline): dispatch is the structural immutable `CMethod`/`CDict` (Routes read out of the AST's `Ref Route` cells), variables carry a lexical `Addr`, and typeclass impls/defaults are lowered (Ty-free) into `CImplEntry` for the driver to install. See `STAGE2-DESIGN.md` §2.1. |
+| `core_ir_lower.mdk` | `lower : Expr -> CExpr` / `lowerProgram : List Decl -> CProgram` — the elaborated-AST → Core IR pass. The surface→primitive collapse happens here: `&&`/`||`→`CIf`, `|>`→`CApp`, `>>`/`<<`→`CLam`, type annotations erased, multi-clause groups coalesced. `lowerImpls` lowers each impl-method clause + interface default into a `CImplEntry` (tag / dispatch positions / specificity score reused verbatim from `eval.mdk`'s `declImplEntries`). |
+| `core_ir_eval.mdk` | The direct Core-IR tree-walker `ceval`/`cevalProgram`/`cevalMain`/`cevalOutput` — the §2.1 equivalence oracle. REUSES `eval.mdk`'s host runtime (`Value`, env, `apply`/dispatch/fall-through, `matchPat`, externs, `pp_value`, the slice-3 value helpers, and the impl-coalesce machinery) via the one added `VClosureF` variant, so multi-clause + guard fall-through and arg-tag dispatch run the same `VMulti`+`VFallthrough`+`VTypedImpl` path the AST interpreter uses. Slice 3 = records/refs/arrays/ranges/index/slice/blocks; slice 5 = installing impls as arg-tag `VMulti`s + the `CMethod`/`CDict` return-position arms. |
+| `core_ir_main.mdk` | Runnable entry: `medaka run selfhost/core_ir_main.mdk <src.mdk>` parses → desugars → `annotateProgram` (so each `CVar` is born lexically addressed) → lowers → evaluates the Core IR, prints `pp_value` of `main`. Diffs against `dev/eval_probe.exe` — the SAME oracle `eval_main` uses, i.e. the §2.1 *equivalence* gate (`test/diff_selfhost_core_ir.sh`, the full 16 prelude-free engine fixtures). |
+| `core_ir_prelude_main.mdk` | Prelude-loaded Core IR entry (analog of `eval_prelude_main`): `medaka run selfhost/core_ir_prelude_main.mdk <prelude.mdk>... <src.mdk>` prepends the parsed prelude, annotates + lowers + evaluates, prints `pp_value` of `main`. Drives slice 5's impl install over real stdlib dispatch (Eq/Ord/Debug/Display/Num + deriving). Gates: `test/diff_selfhost_core_ir_prelude.sh` (core.mdk, 5) + `test/diff_selfhost_core_ir_list.sh` (core.mdk + list.mdk, 2). |
+| `core_ir_typed_main.mdk` | Typed Core IR entry (analog of `eval_typed_main`): `medaka run selfhost/core_ir_typed_main.mdk <runtime.mdk> <prelude.mdk>... <src.mdk>` desugars → `typecheck.elaborate` (stamps EMethodAt/EDictAt routes) → lowers (routes read out into `CMethod`/`CDict`) → `cevalOutput`. The ONLY corpus that drives the `CMethod` arm — return-position dispatch (RKey), e.g. a user Applicative's `pure`. Diffs stdout against the reference typed path `medaka run <file>` (`test/diff_selfhost_core_ir_typed.sh`, 2). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -71,7 +73,10 @@ diagnostics dumper, plus `--resolve-modules <mod...>` for the multi-module
 dune build --root .                       # build the reference binary
 sh test/diff_selfhost_lexer.sh            # diff the Medaka lexer vs OCaml goldens
 sh test/diff_selfhost_selfproc.sh         # the bootstrap (#3) self-processing gate (~6s)
-sh test/diff_selfhost_core_ir.sh          # Stage 2 §2.1 Core IR equivalence gate (~0.7s)
+sh test/diff_selfhost_core_ir.sh          # Stage 2 §2.1 Core IR equivalence gate — engine corpus (16)
+sh test/diff_selfhost_core_ir_prelude.sh  #   …with core.mdk prelude dispatch (5)
+sh test/diff_selfhost_core_ir_list.sh     #   …with core.mdk + list.mdk (2)
+sh test/diff_selfhost_core_ir_typed.sh    #   …typed return-position dispatch / CMethod (2)
 ```
 
 The harness runs the Medaka lexer over every fixture in `test/diff_fixtures/`
@@ -537,20 +542,32 @@ can process its own source (the bootstrap). Stage 2 (a Core IR + bytecode VM,
 then the LLVM backend) follows; see `STAGE2-DESIGN.md` for the architecture
 decision and the staged plan, and **North star → Stage 2** in `../PLAN.md`.
 
-**Stage 2 §2.1 — Core IR, slice 1, started (2026-06-05).** The serializable,
+**Stage 2 §2.1 — Core IR, slices 1/3/5 (2026-06-05).** The serializable,
 backend-neutral Core IR (`core_ir.mdk`) + the elaborated-AST → Core IR lowering
 (`core_ir_lower.mdk`) + a direct Core-IR evaluator (`core_ir_eval.mdk`) are in,
 validated by EQUIVALENCE (§2.1's net-new-IR oracle): evaluating the lowered IR
-matches evaluating the AST. `test/diff_selfhost_core_ir.sh` diffs `pp_value`
-against the AST tree-walker (`dev/eval_probe.exe`) over the 9 prelude-free
-engine fixtures the slice covers — 9/9 byte-identical. **Next steps:**
-decision-tree match *compilation* (today `CMatch` is ordered arms — semantically
-equal, gate holds); slice 3 nodes in `ceval` (records / refs / arrays / ranges /
-index / slice — already in the IR type + lowering); slice 5 (install
-interfaces/impls into the Core-IR driver — `CMethod`/`CDict` lowering is done);
-then broaden the gate to the full `eval_fixtures` set and the other eval corpora.
-The slot-*indexing* consume half of lexical addressing (STAGE2 §2.0) is still its
-own parked supervised rework — the Core IR already carries the addresses.
+matches evaluating the AST. Coverage now spans four corpora, all byte-identical
+to the AST tree-walker:
+- **engine** (`diff_selfhost_core_ir.sh`, 16) — slice 1 core + slice 3
+  (records / refs / arrays / ranges / index / slice / blocks) + slice 5
+  (arg-position typeclass dispatch via installed `VMulti`s);
+- **prelude** (`diff_selfhost_core_ir_prelude.sh`, 5) — real core.mdk dispatch
+  (Eq/Ord/Debug/Display/Num + deriving) through the slice-5 impl install;
+- **list** (`diff_selfhost_core_ir_list.sh`, 2) — + list.mdk combinators /
+  comprehensions;
+- **typed** (`diff_selfhost_core_ir_typed.sh`, 2) — the `CMethod` arm:
+  return-position dispatch (RKey), e.g. a user Applicative's `pure`, lowered from
+  the typechecker's stamped `EMethodAt` routes.
+
+The slice-3 value work (build / deref / index / range) and the slice-5 impl
+machinery (`declImplEntries`/`coalesceImpls`/`narrowMethod`/`applyDicts`) are
+REUSED verbatim from `eval.mdk` — the Core-IR arms only thread `ceval` and hand
+Values to the shared host runtime, keeping one runtime (Axis-2 discipline).
+**Remaining:** decision-tree match *compilation* (today `CMatch` is ordered arms
+— semantically equal, gate holds); broaden to the `eval_modules` / `eval_run`
+corpora (need a per-module-frame Core-IR driver). The slot-*indexing* consume
+half of lexical addressing (STAGE2 §2.0) is still its own parked supervised
+rework — the Core IR already carries the addresses.
 
 ---
 

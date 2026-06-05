@@ -199,6 +199,7 @@ sumInts : List Int -> Int
 sumInts [] = 0
 sumInts (x::xs) = x + sumInts xs
 
+export
 tyvarsInArgs : List Ty -> Int
 tyvarsInArgs ts = sumInts (map countTyvars ts)
 
@@ -531,6 +532,7 @@ isDispatching _ = False
 -- VTypedImpl tag matches the type the typechecker resolved (no runtime arg).  An
 -- empty tag (unresolved / polymorphic — doesn't occur in the compiler) leaves the
 -- VMulti for arg-tag fallback.
+export
 narrowMethod : Value -> String -> <Mut> Value
 narrowMethod (VMulti vs) "" = VMulti vs
 narrowMethod (VMulti vs) tag = stripResolved (pickByTag vs tag)
@@ -564,6 +566,7 @@ awaitsArgs _ = False
 -- the concrete head tag an EMethodAt route narrows by: RKey is literal; RDict
 -- forwards the enclosing function's dict parameter (a VDict key); RNone leaves
 -- the VMulti for arg-tag fallback ("").
+export
 routeTag : EvalEnv -> Route -> <Mut> String
 routeTag _ RNone = ""
 routeTag _ (RKey key) = key
@@ -573,6 +576,7 @@ routeTag env (RDict d) = match lookupEnv env d
 
 -- a constrained-function occurrence: apply one runtime dictionary per resolved
 -- route as a leading argument (matching the dict params dict_pass prepended).
+export
 applyDicts : EvalEnv -> Value -> List Route -> <Mut> Value
 applyDicts _ v [] = v
 applyDicts env v (r :: rest) = applyDicts env (apply v (dictOfRoute env r)) rest
@@ -693,6 +697,7 @@ eval env (ERangeArray lo hi incl) =
   evalRange (eval env lo) (eval env hi) incl rangeArrayMk
 eval _ _ = panic "eval: unsupported node (slice 2)"
 
+export
 evalIndex : Value -> Value -> Value
 evalIndex (VArray a) (VInt i) =
   if i < 0 || i >= arrayLength a then
@@ -709,6 +714,7 @@ stringIndexCp s i
   | i < 0 || i >= stringLength s = panic "string index out of bounds"
   | otherwise = VChar (charToStr (arrayGetUnsafe i (stringToChars s)))
 
+export
 evalSlice : Value -> Value -> Value -> Bool -> Value
 evalSlice (VArray a) (VInt lo) (VInt hi) incl =
   sliceArray a lo (if incl then hi + 1 else hi)
@@ -723,20 +729,24 @@ sliceArray a lo hiX
   | lo < 0 || hiX > arrayLength a || hiX - lo < 0 = panic "slice out of bounds"
   | otherwise = VArray (arrayMakeWith (hiX - lo) (i => arrayGetUnsafe (lo + i) a))
 
+export
 evalRange : Value -> Value -> Bool -> (List Int -> Value) -> Value
 evalRange (VInt lo) (VInt hi) incl mk =
   mk (intSeq lo (if incl then hi + 1 else hi))
 evalRange _ _ _ _ = panic "range bound must be Int"
 
+export
 rangeListMk : List Int -> Value
 rangeListMk ns = VList (map VInt ns)
 
+export
 rangeArrayMk : List Int -> Value
 rangeArrayMk ns = VArray (arrayFromList (map VInt ns))
 
 evalFieldAssign : EvalEnv -> FieldAssign -> <Mut> (String, Value)
 evalFieldAssign env (FieldAssign k e) = (k, eval env e)
 
+export
 evalRecordUpdate : Value -> List (String, Value) -> Value
 evalRecordUpdate (VRecord name existing) updates =
   VRecord name (map (mergeField updates) existing)
@@ -747,11 +757,13 @@ mergeField updates (k, v) = match lookupAssoc k updates
   Some v2 => (k, v2)
   None => (k, v)
 
+export
 evalValueField : Value -> Value
 evalValueField (VRef cell) = cell.value
 evalValueField (VRecord _ fields) = fieldOr fields "value"
 evalValueField _ = panic "field access on non-record/ref"
 
+export
 evalField : Value -> String -> Value
 evalField (VRecord _ fields) field = fieldOr fields field
 evalField _ _ = panic "field access on non-record"
@@ -984,6 +996,7 @@ clausesForName name ((n, c)::rest)
   | otherwise = clausesForName name rest
 
 -- ── typeclass impl / interface-default installation ───────────────────────
+export
 buildIfaceDispatch : List Decl -> List ((String, String), List Int)
 buildIfaceDispatch prog = concatMapList ifaceDispatchEntries prog
 
@@ -997,6 +1010,7 @@ ifaceMethodEntry ifaceName typeParams (IfaceMethod mname mty _) = (
   dispatchPositionsOf mty typeParams
 )
 
+export
 lookupPositions : String -> String -> List ((String, String), List Int) -> List Int
 lookupPositions _ _ [] = [0]
 lookupPositions iface mname (((i, m), p)::rest)
@@ -1030,6 +1044,7 @@ implMethodEntry env disp ifaceName typeArgs (ImplMethod mname pats body) =
   let inner = implMethodValue env positions pats body
   (mname, (tyvarsInArgs typeArgs, VTypedImpl tag ifaceName positions 0 inner))
 
+export
 headTyconHead : List Ty -> Option String
 headTyconHead [] = None
 headTyconHead (t::_) = headTycon t
@@ -1041,6 +1056,7 @@ defaultEntry env typeParams (IfaceMethod mname _ (Some (MethodDefault pats body)
 
 -- coalesce all candidates for each method name into one VMulti, most-specific
 -- (fewest type vars) first
+export
 coalesceImpls : List (String, (Int, Value)) -> List (String, Value)
 coalesceImpls scored =
   map (n => (n, coalesceOne n scored)) (nub (map fst scored))
@@ -1069,6 +1085,7 @@ insertScore x (y::ys)
   | fst y <= fst x = y :: insertScore x ys
   | otherwise = x :: y :: ys
 
+export
 nub : List String -> List String
 nub xs = nubGo xs []
 
@@ -1151,6 +1168,7 @@ prim1M f = VPrim f
 -- captured stdout: putStr/putStrLn append here instead of doing real IO, so the
 -- output buffer can be diffed against the === EVAL === goldens (no <IO> effect;
 -- appending is just <Mut>).  ePutStr/ePutStrLn (stderr) are discarded.
+export
 outputRef : Ref String
 outputRef = Ref ""
 

@@ -10,10 +10,10 @@
 -- map (the IR deliberately stays close to the core AST so the equivalence gate
 -- is a clean diff, not a rewrite).
 
-import ast.{Lit(..), Pat(..), Expr(..), Arm(..), Guard(..), DoStmt(..), FieldAssign(..), LetBind(..), FunClause(..), Addr(..), Decl(..), Variant(..), ConPayload(..)}
-import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CProgram(..)}
-import eval.{buildCtorToType}
-import util.{contains}
+import ast.{Lit(..), Pat(..), Expr(..), Arm(..), Guard(..), DoStmt(..), FieldAssign(..), LetBind(..), FunClause(..), Addr(..), Decl(..), Variant(..), ConPayload(..), Ty(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..)}
+import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..)}
+import eval.{buildCtorToType, buildIfaceDispatch, lookupPositions, tyvarsInArgs, headTyconHead}
+import util.{contains, concatMapList, listLen}
 
 -- a synthetic binder for the lowered composition operators; constructed
 -- directly (never parsed) so the unusual name is harmless.
@@ -102,7 +102,36 @@ lowerProgram prog =
   let clauses = funClausesOf prog
   let names = groupNames clauses []
   let groups = map (n => CBind n (clausesFor n clauses)) names
-  CProgram groups (ctorArities prog) (buildCtorToType prog)
+  CProgram groups (ctorArities prog) (buildCtorToType prog) (lowerImpls prog)
+
+-- ── typeclass impls / interface defaults (slice 5) ─────────────────────────
+-- Mirror eval.mdk's `declImplEntries` exactly: build the iface dispatch-position
+-- table once, then emit one CImplEntry per impl-method clause (tagged by the
+-- impl's concrete type head) and per interface default (untagged fallback).  The
+-- method BODY is lowered to CExpr; the tag / positions / score are pure AST
+-- computations reused from eval.mdk so the Core IR stays Ty-free.
+lowerImpls : List Decl -> List CImplEntry
+lowerImpls prog =
+  let disp = buildIfaceDispatch prog
+  concatMapList (lowerDeclImpl disp) prog
+
+lowerDeclImpl : List ((String, String), List Int) -> Decl -> List CImplEntry
+lowerDeclImpl disp DImpl { iface = ifaceName, tys = typeArgs, methods, ... } =
+  map (lowerImplMethod disp ifaceName typeArgs) methods
+lowerDeclImpl _ DInterface { typarams = typeParams, methods, ... } =
+  concatMapList (lowerDefault typeParams) methods
+lowerDeclImpl _ _ = []
+
+lowerImplMethod : List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> CImplEntry
+lowerImplMethod disp ifaceName typeArgs (ImplMethod mname pats body) =
+  let tag = fromOption "__none__" (headTyconHead typeArgs)
+  let positions = lookupPositions ifaceName mname disp
+  CImplEntry mname (tyvarsInArgs typeArgs) (CImplTagged tag ifaceName positions pats (lower body))
+
+lowerDefault : List String -> IfaceMethod -> List CImplEntry
+lowerDefault _ (IfaceMethod _ _ None) = []
+lowerDefault typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) =
+  [CImplEntry mname (listLen typeParams) (CImplDefault pats (lower body))]
 
 funClausesOf : List Decl -> List (String, CClause)
 funClausesOf [] = []

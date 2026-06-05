@@ -1,0 +1,52 @@
+-- Prelude-loading entry point for the Core IR equivalence gate (STAGE2-DESIGN
+-- §2.1) — the Core-IR analog of selfhost/eval_prelude_main.mdk:
+--
+--   medaka run selfhost/core_ir_prelude_main.mdk <prelude.mdk>... <source.mdk>
+--
+-- parses + desugars each prelude file (core.mdk, optionally list.mdk, …) and the
+-- target, PREPENDS the prelude decls, runs §2.0's annotateProgram (EVar→EVarAt),
+-- LOWERS the whole thing to Core IR (core_ir_lower.mdk), evaluates the Core IR
+-- (core_ir_eval.mdk), and prints pp_value of `main`.  Diffs byte-for-byte
+-- against `dev/eval_probe.exe --prelude <source>` (the embedded core.mdk) — the
+-- SAME oracle selfhost/eval_prelude_main.mdk uses.  This exercises real prelude
+-- dispatch (Eq/Ord/Debug/Display/Num impls + deriving) through the Core IR's
+-- installed arg-tag VMultis, the slice-5 install path over genuine stdlib code.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import resolve.{annotateProgram}
+import core_ir_lower.{lowerProgram}
+import core_ir_eval.{cevalMain}
+
+main = match splitLast (args ())
+  Some (preludePaths, targetPath) => withPreludes preludePaths targetPath
+  None => ePutStrLn "usage: medaka run selfhost/core_ir_prelude_main.mdk <prelude.mdk>... <file.mdk>"
+
+-- split a non-empty list into (init, last)
+splitLast : List a -> Option (List a, a)
+splitLast [] = None
+splitLast [x] = Some ([], x)
+splitLast (x::rest) = match splitLast rest
+  Some (init, lst) => Some (x :: init, lst)
+  None => None
+
+withPreludes : List String -> String -> <IO, Mut> Unit
+withPreludes preludePaths targetPath = match readAllDecls preludePaths
+  Ok preludeDecls => withTarget preludeDecls targetPath
+  Err msg => ePutStrLn msg
+
+withTarget : List Decl -> String -> <IO, Mut> Unit
+withTarget preludeDecls targetPath = match readFile targetPath
+  Ok targetSrc =>
+    putStrLn (cevalMain (lowerProgram (annotateProgram (preludeDecls ++ desugar (parse targetSrc)))))
+  Err msg => ePutStrLn msg
+
+-- parse + desugar each prelude file in order, concatenating their decls
+readAllDecls : List String -> <IO> Result String (List Decl)
+readAllDecls [] = Ok []
+readAllDecls (p::rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)
