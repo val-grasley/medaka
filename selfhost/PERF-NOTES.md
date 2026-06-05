@@ -353,3 +353,22 @@ assoc_opt FList scans + Hashtbl find_opt/key_index/hash on globals) ≈ ~28% +
   the interpreter's by-name env lookup (~28% of eval), which needs a structural
   (slot-indexed / inline-cache) change — constrained by Phase-112 lookup_method
   needing separate frames. Instrumenting lookup next to decide if it's worth it.
+
+### 2026-06-04 — env-lookup instrumentation: the floor, quantified
+- Instrumented `lookup` (temp, reverted) over marking parser.mdk:
+  **19.9M lookups, 55.9M frames walked (avg depth 2.80), 74% hit an FList (local/
+  per-call) frame, 26% hit an FTable (global), 49.7M FList string-compares
+  (~2.5/lookup).** The self-hosted parser is LOCAL-variable-heavy: most lookups
+  resolve in the per-call frame chain via a multi-frame walk + string compare.
+- **Conclusion:** the residual ~28% env-lookup cost is the by-name environment
+  itself — a structural floor, NOT a micro-opt target. The 74% local hits need
+  the frame walk to find the right binding; only a slot-indexed / De-Bruijn env
+  (resolve assigns each EVar a (depth,index); eval indexes directly, no walk/
+  string-compare) removes it. Estimated ~7-15% overall (could be more).
+- **Why parked for supervised work, not unattended:** threads resolve.ml (compute
+  lexical slots) + ast.ml (EVar carries slot) + eval.ml (indexable env), and must
+  preserve VThunk forcing, the FTable globals, AND Phase-112 lookup_method's
+  shadow-bypass (which deliberately walks frames for a VMulti past a nearer
+  shadow). A subtle resolution regression here is exactly the kind that's hard to
+  debug non-interactively; verify-or-revert protects committed state but a clean
+  landing needs a supervised session. **This is THE top un-attempted lead.**
