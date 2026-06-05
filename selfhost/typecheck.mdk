@@ -1734,6 +1734,21 @@ checkModulesEntryLines : List Decl -> List Decl -> List (String, List Decl) -> <
 checkModulesEntryLines runtimeDecls coreDecls modules =
   joinNl (schemeLines (entryOwnSchemes (checkModules runtimeDecls coreDecls modules)))
 
+-- Emit EVERY module's bindings in one pass, each section preceded by a
+-- `## MODULE <mid>` marker line.  A single full-closure run can then cover many
+-- modules at once (the batch harness splits on the marker and diffs each
+-- section vs its per-module oracle).  Scheme of a module depends only on its
+-- dependency-closure (which precedes it in topo order), so a module's section
+-- is identical whether checked alone or inside a larger union closure.
+export
+checkModulesAllLines : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
+checkModulesAllLines runtimeDecls coreDecls modules =
+  joinNl (allModuleLines (checkModules runtimeDecls coreDecls modules))
+
+allModuleLines : List (String, List (String, Scheme)) -> <Mut> List String
+allModuleLines [] = []
+allModuleLines ((mid, ss) :: rest) = ("## MODULE " ++ mid) :: (schemeLines ss ++ allModuleLines rest)
+
 schemeLines : List (String, Scheme) -> <Mut> List String
 schemeLines [] = []
 schemeLines ((n, s) :: rest) = (n ++ " : " ++ ppScheme s) :: schemeLines rest
