@@ -1,0 +1,2 @@
+import helper.{apply}
+main = println (apply 3 4)

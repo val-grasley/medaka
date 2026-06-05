@@ -259,6 +259,21 @@ let prelude_for (prog : program) : program =
     | _ -> true
   ) marked_prelude
 
+(* Like [prelude_for] but also drops droppable prelude plain functions whose
+   names are in [import_names] (explicit imports from known modules).
+   Phase 145: an explicit `import M.{name}` shadows the same-named prelude
+   binding, just as a local definition would. *)
+let prelude_for_with_imports (user_prog : program) (import_names : ident list) : program =
+  let drop = shadowed_prelude_fns user_prog in
+  List.iter (fun n ->
+    if Hashtbl.mem droppable_prelude_fns n then Hashtbl.replace drop n ()
+  ) import_names;
+  if Hashtbl.length drop = 0 then marked_prelude
+  else List.filter (fun d -> match inner_decl d with
+    | DFunDef (_, n, _, _) | DTypeSig (_, n, _) -> not (Hashtbl.mem drop n)
+    | _ -> true
+  ) marked_prelude
+
 (* ── Phase 78b: prelude interface-method shadowing ─────────────────────────
    A user module may define a top-level function whose name collides with a
    prelude *interface method* (`length`/`isEmpty`/`toList`, `map`, `filter`).

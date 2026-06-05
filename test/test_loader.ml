@@ -1269,6 +1269,46 @@ let test_unit_test_discovery () =
       failwith (Printf.sprintf "unit test runner output mismatch:\nexpected: %S\ngot:      %S" expected out)
   )
 
+(* Phase 145: an explicit `import M.{name}` must shadow a same-named prelude
+   plain function.  The prelude exports `apply : (a-><e>b) -> a -> <e> b`; the
+   helper module exports `apply : Int -> Int -> Int`.  Importing the helper's
+   apply should make `apply 3 4` type-check and evaluate to 7. *)
+let test_import_shadows_prelude () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "helper.mdk"
+      "export\n\
+       apply : Int -> Int -> Int\n\
+       apply x y = x + y\n" in
+    let main_path = write_file dir "main.mdk"
+      "import helper.{apply}\n\
+       main = println (apply 3 4)\n" in
+    let modules = Loader.load_program main_path [dir] in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Desugar.desugar_program prog)) modules in
+    let all_progs = Prelude.program :: List.map (fun (_, _, p) -> p) modules in
+    let method_names = Method_marker.interface_method_names all_progs in
+    let constrained = Method_marker.constrained_fn_names all_progs in
+    let modules = List.map (fun (mid, fp, prog) ->
+      (mid, fp, Method_marker.mark_program method_names constrained prog)) modules in
+    let te_acc = ref [] in
+    (try
+      List.iter (fun (mid, _, prog) ->
+        let (te, _, _) = Typecheck.typecheck_module !te_acc mid prog in
+        te_acc := te :: !te_acc) modules
+    with e ->
+      failwith (Printf.sprintf
+        "typecheck failed (prelude apply shadowing regressed): %s"
+        (Printexc.to_string e)));
+    let buf = Buffer.create 8 in
+    let saved = !Eval.output_hook in
+    Eval.output_hook := Buffer.add_string buf;
+    Fun.protect ~finally:(fun () -> Eval.output_hook := saved) (fun () ->
+      ignore (Eval.eval_modules modules));
+    let out = Buffer.contents buf in
+    if out <> "7\n" then
+      failwith (Printf.sprintf
+        "Expected \"7\\n\" from apply 3 4 with imported apply, got %S" out))
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -1340,6 +1380,9 @@ let () =
     ];
     "unit test discovery pass (Phase 127)", [
       test_case "discovery, synthesis, and runner output" `Quick test_unit_test_discovery;
+    ];
+    "import shadows prelude (Phase 145)", [
+      test_case "selective import overrides prelude plain fn" `Quick test_import_shadows_prelude;
     ];
     "workspace / multi-root", [
       test_case "cross-member import"    `Quick test_workspace_cross_member_import;

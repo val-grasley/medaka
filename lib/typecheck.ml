@@ -4244,6 +4244,34 @@ let typecheck_module
      Keep a reference to the user-only decls for export filtering — otherwise
      prelude impls would leak into every module's te_impls. *)
   let user_prog = prog in
+  (* Phase 145: collect names explicitly imported from *known* modules so that
+     same-named droppable prelude plain functions can be omitted.  Explicit import
+     beats the implicit prelude binding (like a local definition does in 78a).
+     Must be computed before prelude_for_with_imports below so we can pass the
+     names in.  The prelude itself has no DUse decls, so iterating user_prog is
+     equivalent to iterating the full prog here. *)
+  let use_import_names =
+    if program_is_core prog then [] else
+    List.concat_map (function
+      | DUse (_, path) ->
+        let mod_id_ref = match path with
+          | UseName ns -> if List.length ns > 1
+              then String.concat "." (List.rev (List.tl (List.rev ns)))
+              else List.hd ns
+          | UseGroup (ns, _) | UseWild ns | UseAlias (ns, _) ->
+              String.concat "." ns
+        in
+        (match List.find_opt (fun te -> te.te_mod_id = mod_id_ref) known_modules with
+         | None -> []
+         | Some te ->
+           (match path with
+            | UseName ns when List.length ns > 1 -> [List.hd (List.rev ns)]
+            | UseGroup (_, ms) -> List.map fst ms
+            | UseWild _ -> List.map fst te.te_schemes
+            | _ -> []))
+      | _ -> []
+    ) prog
+  in
   (* Phase 117: mirror check_program_impl's prelude_for shadow-drop on the
      multi-module path.  A module that redefines a *droppable* prelude standalone
      (e.g. string.mdk's `count`) would otherwise coalesce with the prelude's
@@ -4251,8 +4279,10 @@ let typecheck_module
      ("core.mdk: Type mismatch").  prelude_for drops exactly those standalones and
      returns marked_prelude unchanged (same decl objects, shared in-place
      EMethodRef/EDictApp refs) when nothing is shadowed — a no-op for normal
-     modules. *)
-  let prog = if program_is_core prog then prog else Method_marker.prelude_for user_prog @ prog in
+     modules.  Phase 145: also drops droppable prelude fns shadowed by an
+     explicit selective import (use_import_names). *)
+  let prog = if program_is_core prog then prog
+    else Method_marker.prelude_for_with_imports user_prog use_import_names @ prog in
 
   register_attrs env prog;
 
