@@ -1,4 +1,8 @@
 -- mutual recursion + let-group, multi-clause boolean dispatch
+-- NB: isEven/isOdd are O(n) (unary decrement), and the SELF-HOSTED eval runs
+-- them under double-interpretation, so collatz arguments are kept to small
+-- trajectories (6 peaks at 16, 7 at 52) — a big one like 27 (peaks at 9232)
+-- makes the self-hosted run take ~75s while testing nothing extra.
 isEven 0 = True
 isEven n = isOdd (n - 1)
 isOdd 0 = False
@@ -7,4 +11,4 @@ collatz n
   | n == 1 = 0
   | isEven n = 1 + collatz (n / 2)
   | otherwise = 1 + collatz (3 * n + 1)
-main = (isEven 10, isOdd 7, collatz 6, collatz 27)
+main = (isEven 10, isOdd 7, collatz 6, collatz 7)
