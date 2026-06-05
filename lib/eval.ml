@@ -704,7 +704,12 @@ and eval env expr =
   match expr with
   | ELoc (loc, e) ->
     current_loc := Some loc;
-    Coverage.record_hit loc.file loc.line;
+    (* Guard at the call site: record_hit is a cross-module call (not inlined
+       without flambda) taking two field reads, but no-ops unless coverage is on.
+       This arm fires on essentially every expression node, so skipping the call
+       when coverage is off — the case for every diff/run harness — is a real
+       per-node saving. *)
+    if !Coverage.enabled then Coverage.record_hit loc.file loc.line;
     eval env e
 
   | ELit (LInt n)    -> VInt n
