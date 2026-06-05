@@ -40,12 +40,13 @@ EVAL_TYPED_MODS="$ROOT/selfhost/eval_typed_modules_main.mdk"
 ENTRY="$ROOT/selfhost/all_modules_entry.mdk"
 LEXPROBE="$ROOT/selfhost/selfproc_lex_probe.mdk"
 PARSEPROBE="$ROOT/selfhost/selfproc_parse_probe.mdk"
+TCPROBE="$ROOT/selfhost/selfproc_tc_probe.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 SHDIR="$ROOT/selfhost"
 [ -x "$MAIN" ]  || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
 [ -x "$PROBE" ] || { echo "build first: dune build --root . (missing $PROBE)"; exit 2; }
-for f in "$CHECK_ALL" "$EVAL_MODS" "$EVAL_TYPED_MODS" "$ENTRY" "$LEXPROBE" "$PARSEPROBE"; do
+for f in "$CHECK_ALL" "$EVAL_MODS" "$EVAL_TYPED_MODS" "$ENTRY" "$LEXPROBE" "$PARSEPROBE" "$TCPROBE"; do
   [ -f "$f" ] || { echo "missing $f"; exit 2; }
 done
 
@@ -111,6 +112,30 @@ else
   fail=$((fail+1)); printf 'FAIL %-10s (typed eval output differs / empty)\n' "parse_probe"
   printf '  ref:  %s\n' "$(printf '%s' "$ref_c"  | tr '\n' ' ')"
   printf '  self: %s\n' "$(printf '%s' "$self_c" | tr '\n' ' ')"
+fi
+
+# ── LEG D: TYPED eval runs the TYPECHECKER stage (typecheck.mdk) ───────────
+# The typechecker (selfhost/typecheck.mdk) is the deepest stage to execute on
+# the self-hosted eval: it drives Ref-based union-find mutation (the `<Mut>`
+# effect) over a larger primitive surface than the parser, and — like the
+# parser — threads return-position dispatch through its monadic surface, so the
+# UNTYPED eval_modules path (Leg B) cannot run it.  The TYPED multi-module path
+# (eval_typed_modules_main.mdk -> typecheck.elaborateModules) route-stamps it,
+# then evalModules runs it on the self-hosted eval's <Mut> kernel.  Running
+# checkToLines over an embedded snippet and matching the eval_modules oracle
+# proves the typed self-hosted eval EXECUTES the typechecker stage of the
+# compiler's own source — at which point EVERY monadic selfhost stage runs on
+# the self-hosted eval.
+echo
+echo "== LEG D: TYPED self-hosted eval executes the TYPECHECKER stage (typecheck) =="
+ref_d="$("$MAIN" run "$TCPROBE" 2>/dev/null)"
+self_d="$("$MAIN" run "$EVAL_TYPED_MODS" "$RUNTIME" "$CORE" "$TCPROBE" "$SHDIR" 2>/dev/null)"
+if [ "$ref_d" = "$self_d" ] && [ -n "$ref_d" ]; then
+  pass=$((pass+1)); printf 'ok   %-10s (typed self-hosted eval == eval_modules oracle)\n' "tc_probe"
+else
+  fail=$((fail+1)); printf 'FAIL %-10s (typed eval output differs / empty)\n' "tc_probe"
+  printf '  ref:  %s\n' "$(printf '%s' "$ref_d"  | tr '\n' ' ')"
+  printf '  self: %s\n' "$(printf '%s' "$self_d" | tr '\n' ' ')"
 fi
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"

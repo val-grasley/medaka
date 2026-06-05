@@ -52,7 +52,7 @@ diff with `lib/`:
 | `loader.mdk` | Port of `lib/loader.ml`: `loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))` — DFS topo-sort of a root file's transitive `import`s (dependency-first; cycle detection). Flat single-root simplification. `loader_main.mdk` prints the module order. |
 | `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 12 selfhost modules). |
 | `eval_modules_main.mdk` | **Multi-module execution** (the loader-driven eval path): `medaka run selfhost/eval_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, evaluates them in per-module frames over the shared prelude (`eval.evalModules`), forces the entry's `main`, prints captured stdout. Diffs against `medaka run <entry>` (`test/diff_selfhost_eval_modules.sh`). |
-| `eval_typed_modules_main.mdk` | **Typed multi-module execution** (the composition of `eval_typed_main` + `eval_modules_main`): `medaka run selfhost/eval_typed_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, then `typecheck.elaborateModules` threads the marker + route-stamping through the loader's module graph (per-module-frame typecheck in dependency order, `EMethodAt` routes stamped per module) before `eval.evalModules` runs the elaborated trees — so a stage that uses return-position dispatch (the `Parser` monad's `pure`/`andThen`) routes by RKey. The Leg-C bootstrap driver; diffs against `medaka run <entry>` (`test/diff_selfhost_selfproc.sh`). |
+| `eval_typed_modules_main.mdk` | **Typed multi-module execution** (the composition of `eval_typed_main` + `eval_modules_main`): `medaka run selfhost/eval_typed_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, then `typecheck.elaborateModules` threads the marker + route-stamping through the loader's module graph (per-module-frame typecheck in dependency order, `EMethodAt` routes stamped per module) before `eval.evalModules` runs the elaborated trees — so a stage that uses return-position dispatch (the `Parser` monad's `pure`/`andThen`) routes by RKey. The Leg-C/D bootstrap driver (runs the parser *and* the typechecker stage on the self-hosted eval); diffs against `medaka run <entry>` (`test/diff_selfhost_selfproc.sh`). |
 | `core_ir.mdk` | **Stage 2 §2.1 Core IR** (slice 1) — the backend-neutral, serializable IR lowered from the elaborated AST: `CExpr`/`CArm`/`CGuard`/`CStmt`/`CBind`/`CProgram`. Lives *above* any ISA (the on-ramp discipline): dispatch is the structural immutable `CMethod`/`CDict` (Routes read out of the AST's `Ref Route` cells), variables carry a lexical `Addr`. See `STAGE2-DESIGN.md` §2.1. |
 | `core_ir_lower.mdk` | `lower : Expr -> CExpr` / `lowerProgram : List Decl -> CProgram` — the elaborated-AST → Core IR pass. The surface→primitive collapse happens here: `&&`/`||`→`CIf`, `|>`→`CApp`, `>>`/`<<`→`CLam`, type annotations erased, multi-clause groups coalesced. |
 | `core_ir_eval.mdk` | The direct Core-IR tree-walker `ceval`/`cevalProgram`/`cevalMain` — the §2.1 equivalence oracle. REUSES `eval.mdk`'s host runtime (`Value`, env, `apply`/dispatch/fall-through, `matchPat`, externs, `pp_value`) via the one added `VClosureF` variant, so multi-clause + guard fall-through run the same `VMulti`+`VFallthrough` path the AST interpreter uses. |
@@ -70,7 +70,7 @@ diagnostics dumper, plus `--resolve-modules <mod...>` for the multi-module
 ```sh
 dune build --root .                       # build the reference binary
 sh test/diff_selfhost_lexer.sh            # diff the Medaka lexer vs OCaml goldens
-sh test/diff_selfhost_selfproc.sh         # the bootstrap (#3) self-processing gate (~6s)
+sh test/diff_selfhost_selfproc.sh         # the bootstrap (#3) self-processing gate (4 legs, ~18s)
 sh test/diff_selfhost_core_ir.sh          # Stage 2 §2.1 Core IR equivalence gate (~0.7s)
 ```
 
@@ -692,32 +692,35 @@ top-level fn), not by porting effect inference.
      dict-passing). This is the typed self-hosted eval path the scope note below
      called a "separate, larger bootstrap step" — now built.
 
-   - 🚧 **Leg D — TYPED eval engine runs the TYPECHECKER stage (NEXT — not yet
-     done).** The natural extension of Leg C along the same typed multi-module
-     path: execute the **typechecker** (`typecheck.mdk`) on the self-hosted eval,
-     the way Leg C executes the parser. Like the parser it is monadic
-     (return-position dispatch), so it routes through `eval_typed_modules_main.mdk`
-     → `elaborateModules`, not the untyped `eval_modules`. **Validation** mirrors
-     Leg C: run `typecheck.mdk` over an embedded snippet (a new
-     `selfhost/selfproc_tc_probe.mdk`) through the typed path and diff against the
-     `eval_modules` oracle (`medaka run <probe>`) byte-for-byte, added as a fourth
-     leg of `test/diff_selfhost_selfproc.sh`. **Bigger lift than Leg C:** the
-     typechecker uses `Ref`-based union-find mutation and a far larger surface than
-     the parser, so the work is likely in the extern / `<Mut>` kernel the
-     self-hosted eval must support and the RKey route set it exercises — not new
-     dispatch machinery (the typed path already resolves return-position dispatch).
-     RKey-only (no `=>`-constrained user polymorphism in the selfhost source). When
-     Leg D passes, **every monadic selfhost stage has run on the self-hosted
-     eval** — the front-end fully executes itself.
+   - ✅ **Leg D — TYPED eval engine runs the TYPECHECKER stage.** The natural
+     extension of Leg C along the same typed multi-module path: the **typechecker**
+     (`typecheck.mdk`) executes on the self-hosted eval, the way Leg C executes the
+     parser. Like the parser it is monadic (return-position dispatch), so it routes
+     through `eval_typed_modules_main.mdk` → `elaborateModules`, not the untyped
+     `eval_modules` (which panics `no matching clause in application`). Validation
+     mirrors Leg C: `selfhost/selfproc_tc_probe.mdk` runs `checkToLines` over an
+     embedded **self-contained** snippet (record + data decls, ctor schemes,
+     record create/update/access, a signature, multi-clause match, tuple/ctor
+     patterns, if, lambdas, let-polymorphism, recursion) and renders the inferred
+     `name : scheme` lines; the typed path matches the `eval_modules` oracle
+     (`medaka run <probe>`) byte-for-byte, added as the fourth leg of
+     `test/diff_selfhost_selfproc.sh`. **The anticipated "bigger lift" didn't
+     materialize:** the typechecker's `Ref`-based union-find mutation (`<Mut>`),
+     the tyvar-id counter, and level enter/exit all run on the self-hosted eval's
+     **existing** extern kernel — no new primitives were needed (eval.mdk's
+     `Ref`/`setRef`/`.value` slice-3 kernel + the `VThunk`/RKey typed path already
+     covered it). RKey-only (no `=>`-constrained user polymorphism in the selfhost
+     source). With Leg D green, **every monadic selfhost stage has run on the
+     self-hosted eval** — the front-end fully executes itself.
 
    **Scope note (resolved by Leg C):** Leg B alone stops at the lexer because the
    **parser/typecheck stages use a `Parser` monad** with return-position dispatch
    (`pure x = Parser …`, `andThen`), which the **untyped** `eval_modules` path
    cannot resolve. Leg C threads the marker + `typecheck.elaborate` route-stamping
    through the loader's module graph (`elaborateModules`), executing a real
-   `Parser`-monad stage on the self-hosted eval. (The typechecker stage — also
-   monadic — is the natural next extension of the same typed path; tracked as
-   **Leg D** above.)
+   `Parser`-monad stage on the self-hosted eval. **Leg D** extends the same typed
+   path to the typechecker stage (also monadic), so all four legs together run
+   every monadic selfhost stage on the self-hosted eval.
 
 ### Dictionary passing (generality layer — beyond the bootstrap)
 
