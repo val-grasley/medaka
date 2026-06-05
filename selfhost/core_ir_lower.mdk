@@ -99,10 +99,17 @@ lowerStmt _ = panic "core_ir lower: unsupported block statement"
 export
 lowerProgram : List Decl -> CProgram
 lowerProgram prog =
+  CProgram (lowerGroups prog) (ctorArities prog) (buildCtorToType prog) (lowerImpls prog)
+
+-- the top-level function-group half of lowerProgram, exposed for the multi-module
+-- driver (core_ir_eval.cevalModules), which lowers each module's groups separately
+-- (per-module local frames) rather than as one flat program.
+export
+lowerGroups : List Decl -> List CBind
+lowerGroups prog =
   let clauses = funClausesOf prog
   let names = groupNames clauses []
-  let groups = map (n => CBind n (clausesFor n clauses)) names
-  CProgram groups (ctorArities prog) (buildCtorToType prog) (lowerImpls prog)
+  map (n => CBind n (clausesFor n clauses)) names
 
 -- ── typeclass impls / interface defaults (slice 5) ─────────────────────────
 -- Mirror eval.mdk's `declImplEntries` exactly: build the iface dispatch-position
@@ -111,9 +118,15 @@ lowerProgram prog =
 -- method BODY is lowered to CExpr; the tag / positions / score are pure AST
 -- computations reused from eval.mdk so the Core IR stays Ty-free.
 lowerImpls : List Decl -> List CImplEntry
-lowerImpls prog =
-  let disp = buildIfaceDispatch prog
-  concatMapList (lowerDeclImpl disp) prog
+lowerImpls prog = lowerImplsWith (buildIfaceDispatch prog) prog
+
+-- lowerImpls against a PRE-BUILT dispatch table — the multi-module driver builds
+-- one `disp` from all modules' decls jointly (an impl in module B for an interface
+-- in the prelude needs the prelude's dispatch positions), then lowers each
+-- module's impls against it.
+export
+lowerImplsWith : List ((String, String), List Int) -> List Decl -> List CImplEntry
+lowerImplsWith disp prog = concatMapList (lowerDeclImpl disp) prog
 
 lowerDeclImpl : List ((String, String), List Int) -> Decl -> List CImplEntry
 lowerDeclImpl disp DImpl { iface = ifaceName, tys = typeArgs, methods, ... } =

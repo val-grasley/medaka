@@ -1,0 +1,56 @@
+-- True-execution (stdout) entry point for the Core IR (STAGE2-DESIGN §2.1) — the
+-- Core-IR analog of selfhost/eval_run_main.mdk:
+--
+--   medaka run selfhost/core_ir_run_main.mdk <prelude.mdk>... <source.mdk>
+--
+-- prepends the prelude file(s) (core.mdk [list.mdk …]), annotates + LOWERS the
+-- whole program to Core IR, evaluates it for its OUTPUT (putStr/putStrLn captured
+-- into eval.mdk's output buffer), and prints the captured stdout — diffs against
+-- the === EVAL === goldens (test/diff_fixtures/*.golden), the SAME goldens
+-- eval_run_main.mdk matches.  This is the "true execution" path (vs
+-- core_ir_main / core_ir_prelude_main, which render pp_value of `main`): the
+-- program actually performs its IO, through the Core IR.
+--
+-- Like eval_run_main it prelude-shadow-drops any prelude function the user
+-- program redefines (dropShadowedExp), so a user `sum` doesn't coalesce with the
+-- prelude's point-free `sum` into a mixed-arity VMulti.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import annotate.{annotateProgram}
+import core_ir_lower.{lowerProgram}
+import core_ir_eval.{cevalOutput}
+import eval.{dropShadowedExp, funNamesOf}
+
+main = match splitLast (args ())
+  Some (preludePaths, targetPath) => withPreludes preludePaths targetPath
+  None => ePutStrLn "usage: medaka run selfhost/core_ir_run_main.mdk <prelude.mdk>... <file.mdk>"
+
+splitLast : List a -> Option (List a, a)
+splitLast [] = None
+splitLast [x] = Some ([], x)
+splitLast (x :: rest) = match splitLast rest
+  Some (init, lst) => Some (x :: init, lst)
+  None => None
+
+withPreludes : List String -> String -> <IO, Mut> Unit
+withPreludes preludePaths targetPath = match readAllDecls preludePaths
+  Ok preludeDecls => withTarget preludeDecls targetPath
+  Err msg => ePutStrLn msg
+
+withTarget : List Decl -> String -> <IO, Mut> Unit
+withTarget preludeDecls targetPath = match readFile targetPath
+  Ok targetSrc =>
+    let user = desugar (parse targetSrc)
+    putStr (cevalOutput (lowerProgram (annotateProgram (dropShadowedExp (funNamesOf user) preludeDecls ++ user))))
+  Err msg => ePutStrLn msg
+
+-- parse + desugar each prelude file in order, concatenating their decls
+readAllDecls : List String -> <IO> Result String (List Decl)
+readAllDecls [] = Ok []
+readAllDecls (p :: rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)

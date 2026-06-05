@@ -25,15 +25,19 @@
 -- values eval.mdk installs); `CMethod`/`CDict` arms consume the elaborated routes
 -- on the typed lowering path.
 
-import ast.{Lit(..), Pat(..), Addr(..), Route(..)}
+import ast.{Lit(..), Pat(..), Addr(..), Route(..), Decl}
 import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..)}
+import core_ir_lower.{lowerGroups, lowerImplsWith}
+import util.{concatMapList}
 import eval.{
   Value(..), EvalEnv(..), lookupEnv, extendEnv, pushFrame, findCell, applyValue,
   matchPat, force, startsWithAt, evalArith, evalUnop, consVal, appendVal,
   makeCtor, boolSeeds, externBindings, ctorToTypeRef, installConsts, cellResult,
   lookupBinding, isNullary, ppValue, outputRef,
   evalIndex, evalSlice, evalRange, rangeListMk, rangeArrayMk, evalRecordUpdate,
-  evalValueField, evalField, narrowMethod, routeTag, applyDicts, coalesceImpls, nub
+  evalValueField, evalField, narrowMethod, routeTag, applyDicts, coalesceImpls, nub,
+  buildCtorToType, collectCtors, buildIfaceDispatch, implMethodNames,
+  importFrameOf, pubReexports
 }
 
 -- ── the evaluator ─────────────────────────────────────────────────────────
@@ -297,3 +301,89 @@ cRunMainForEffect : List (String, Value) -> <Mut> Value
 cRunMainForEffect binds = match lookupBinding "main" binds
   Some v => force v
   None => VUnit
+
+-- ── multi-module evaluation (per-module Core-IR frames over a shared global) ──
+-- The Core-IR analog of eval.mdk's evalModules — the loader-driven path that runs
+-- the compiler's own module graph through the Core IR.  Structure mirrors the AST
+-- evalModules EXACTLY: the prelude (core) installs GLOBALLY (all its names
+-- global); each loaded module's top-level groups are LOCAL, so same-named
+-- functions across modules stay isolated (Phase 110); ctors and impl methods
+-- coalesce GLOBALLY into one coherent VMulti per interface method.  Modules arrive
+-- dependency-first (loader order); a module's `import`s resolve to the exporting
+-- module's cells.  VThunk laziness defers every nullary binding to its first
+-- lookup, so the reference's explicit deferred-thunk ordering is unnecessary here.
+--
+-- The only Core-IR-specific work vs evalModules is the LOWERING: each module's
+-- groups lower to `CBind`s (installed via cInstallTopGroups's ceval-closures) and
+-- its impls lower to `CImplEntry`s against the JOINT dispatch table built from
+-- ALL decls (an impl in one module for a prelude interface needs the prelude's
+-- dispatch positions).  The value-agnostic import-frame machinery (importFrameOf /
+-- pubReexports — they thread only cells + DUse paths, never Values) is reused
+-- verbatim from eval.mdk.  UNTYPED path, like cevalProgram / evalModules.
+data CModInfo = CModInfo String (List Decl) (List CBind) (List CImplEntry) (List (String, Ref Value)) EvalEnv
+
+export
+cevalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
+cevalModules preludeDecls modules =
+  let moduleDecls = concatMapList snd modules
+  let allDecls = preludeDecls ++ moduleDecls
+  let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
+  let disp = buildIfaceDispatch allDecls
+  let ctors = collectCtors allDecls
+  let preludeGroups = lowerGroups preludeDecls
+  let preludeImpls = lowerImplsWith disp preludeDecls
+  let globalNames = map fst boolSeeds ++ map fst externBindings ++ map fst ctors ++ implMethodNames allDecls ++ map cBindName preludeGroups
+  let globalCells = map (n => (n, Ref VUnit)) globalNames
+  let globalEnv = EvalEnv [globalCells]
+  let mods = cBuildModInfos disp globalCells [] modules
+  let implEntries = map (cImplEntryValue globalEnv) preludeImpls ++ concatMapList cModImplValues mods
+  let _ = installConsts globalCells boolSeeds
+  let _ = installConsts globalCells externBindings
+  let _ = installConsts globalCells ctors
+  let _ = installConsts globalCells (coalesceImpls implEntries)
+  let _ = cInstallTopGroups globalEnv globalCells preludeGroups
+  let _ = cInstallModGroups mods
+  cRootLocals mods
+
+-- pass 1: lower + allocate each module's local cells and build its env (imports
+-- resolved against already-processed modules, since loader order is
+-- dependency-first).  Mirror of eval.mdk's buildModInfos, lowering groups/impls.
+cBuildModInfos : List ((String, String), List Int) -> List (String, Ref Value) -> List (String, List (String, Ref Value)) -> List (String, List Decl) -> List CModInfo
+cBuildModInfos _ _ _ [] = []
+cBuildModInfos disp globalCells exportsMap ((mid, decls)::rest) =
+  let cbinds = lowerGroups decls
+  let cimpls = lowerImplsWith disp decls
+  let localCells = map (n => (n, Ref VUnit)) (map cBindName cbinds)
+  let imports = importFrameOf exportsMap decls
+  let menv = EvalEnv [localCells, imports, globalCells]
+  let exports = localCells ++ pubReexports exportsMap decls
+  CModInfo mid decls cbinds cimpls localCells menv :: cBuildModInfos disp globalCells ((mid, exports)::exportsMap) rest
+
+-- a module's impl methods / interface defaults close over ITS env but coalesce
+-- into the shared global VMulti (mirror of eval.mdk's modImplEntries)
+cModImplValues : CModInfo -> <Mut> List (String, (Int, Value))
+cModImplValues (CModInfo _ _ _ cimpls _ menv) = map (cImplEntryValue menv) cimpls
+
+-- pass 2: install each module's groups into its own cells (its env)
+cInstallModGroups : List CModInfo -> <Mut> Unit
+cInstallModGroups [] = ()
+cInstallModGroups ((CModInfo _ _ cbinds _ cells menv)::rest) =
+  let _ = cInstallTopGroups menv cells cbinds
+  cInstallModGroups rest
+
+-- the root module is last in dependency order; its locals hold `main`
+cRootLocals : List CModInfo -> <Mut> List (String, Value)
+cRootLocals [] = []
+cRootLocals [CModInfo _ _ _ _ cells _] = map cellResult cells
+cRootLocals (_::rest) = cRootLocals rest
+
+-- Run a multi-module Core-IR program for its OUTPUT (the loader-driven analog of
+-- cevalOutput): evaluate every module in dependency order, force the root module's
+-- `main` for its IO side-effects, return the captured stdout.
+export
+cevalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
+cevalModulesOutput preludeDecls modules =
+  let _ = set_ref outputRef ""
+  let binds = cevalModules preludeDecls modules
+  let _ = cRunMainForEffect binds
+  outputRef.value
