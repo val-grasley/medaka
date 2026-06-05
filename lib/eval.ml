@@ -334,7 +334,7 @@ let rec match_pat pat value =
   | PCon ("True",  []), VBool true  -> Some []
   | PCon ("False", []), VBool false -> Some []
   | PCon (name, pats), VCon (name', vals)
-    when name = name' && List.length pats = List.length vals ->
+    when name = name' && List.compare_lengths pats vals = 0 ->
     match_pats pats vals
   | PCons (h, t), VList (x :: xs) ->
     (match match_pat h x with
@@ -344,9 +344,9 @@ let rec match_pat pat value =
         | None -> None
         | Some b2 -> Some (b1 @ b2)))
   | PCons _, VList [] -> None
-  | PTuple pats, VTuple vals when List.length pats = List.length vals ->
+  | PTuple pats, VTuple vals when List.compare_lengths pats vals = 0 ->
     match_pats pats vals
-  | PList pats, VList vals when List.length pats = List.length vals ->
+  | PList pats, VList vals when List.compare_lengths pats vals = 0 ->
     match_pats pats vals
   | PList [], VList [] -> Some []
   | PAs (x, p), v ->
