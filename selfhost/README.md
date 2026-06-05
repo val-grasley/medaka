@@ -743,12 +743,28 @@ to retrofit, so design them into the initial phases:
   resolve each variable to a `(frame, slot)` index and use array frames for O(1)
   lookup. The first interpreter need not *use* the slot, but resolve should
   *emit* it; adding the field later means re-touching every binding site.
-- **A real string builder in the stdlib (do early — we pay for it daily).** The
-  lexer, `sexp.mdk`, and the formatter all build strings via left-fold
-  `acc ++ charToStr c`. If `++` is copy-based (almost certainly — verify), that's
-  O(n²). A mutable byte/char buffer with amortized-O(1) `append` + a single
-  `freeze` to `String` (the `mut_array` pattern) fixes it. Backend-independent,
-  and the self-host's own lexer/formatter are the immediate beneficiaries.
+- **String-building O(n²) — DONE (2026-06-05) for the hot path; see
+  `PERF-NOTES.md`.** Verified `++` is copy-based (OCaml `^`, alloc+blit both
+  operands) so a fold over n pieces is O(n²): the self-hosted lex of a file scales
+  super-linearly (8× input → 2.34s, ~63% quadratic at that size). The fix did
+  **not** need a mutable buffer — the existing native `stringConcat : List String
+  -> String` (one `String.concat` pass) already gives "amortized-O(1) append +
+  single freeze" when fed a cons-built list. Added `util.joinWith`/`intersperseStr`
+  and routed `joinNl`/`joinSp`/`renderToks`/`escFrom` through it (lex 8× **2.34→1.01s,
+  2.3×**; scaling now linear; byte-identical). Under the tree-walker a vendored
+  `mut_array` StringBuilder would be *slower* (Medaka-level per-char push vs native
+  concat) and force mutation through pure recursion — rejected on measurement.
+  **Key finding: the win is in joins over MANY elements (alloc/GC count), not joins
+  of a few large strings** — `renderAll`-style joins of ~96 file outputs measured
+  flat and were reverted; the lexer's per-char literal scanners are O(L²) but the
+  longest real literal is 98 chars, so left alone. Remaining string-build costs are
+  now below the interpreter floor.
+- **NEXT (the real ceiling): lexical addressing / slot-indexed env.** With the
+  string-build quadratic gone, the dominant interpreter cost is the by-name env
+  lookup (instrumented: ~28% of eval, 49.7M string-compares marking `parser.mdk`).
+  This is the variable-slot hook described above; it threads resolve.ml + ast.ml +
+  eval.ml and must preserve VThunk forcing + Phase-112 `lookup_method` shadow-bypass,
+  so it is parked for a **supervised** session (see `PERF-NOTES.md` final summary).
 
 Recorded for later, **not** initial-phase work (revisit once the front-end is
 profilable):

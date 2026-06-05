@@ -44,22 +44,38 @@ lookupAssoc k ((k2, v)::rest)
   | k == k2 = Some v
   | otherwise = lookupAssoc k rest
 
+-- Join string pieces with a separator in O(total length): cons the pieces and
+-- separators into a list (O(1) per piece) then `stringConcat` once (a single
+-- native pass).  This replaces the old right-recursive `x ++ sep ++ join rest`,
+-- which re-copied the growing tail at every step — O(n^2) in the output size
+-- (each `++` allocates a fresh String and blits both operands).  See
+-- selfhost/PERF-NOTES.md (2026-06-05 string-building).
+export
+joinWith : String -> List String -> String
+joinWith sep xs = stringConcat (intersperseStr sep xs)
+
+intersperseStr : String -> List String -> List String
+intersperseStr _ [] = []
+intersperseStr _ [x] = [x]
+intersperseStr sep (x::rest) = x :: sep :: intersperseStr sep rest
+
 export
 joinNl : List String -> String
-joinNl [] = ""
-joinNl [x] = x
-joinNl (x::rest) = x ++ "\n" ++ joinNl rest
+joinNl xs = joinWith "\n" xs
 
 -- minimal string escaping for the structural / diagnostic dumps (matches
 -- dev/astdump.ml's esc_str and dev/diagdump.ml): backslash, quote, \n \t \r.
 export
 escStr : String -> String
-escStr s = "\"" ++ escFrom (stringToChars s) 0 ++ "\""
+escStr s = "\"" ++ stringConcat (escFrom (stringToChars s) 0) ++ "\""
 
-escFrom : Array Char -> Int -> String
+-- Collect the per-character escapes into a list and let `stringConcat` join
+-- them in one pass, rather than the old per-char `escOne c ++ escFrom …` that
+-- re-copied the growing tail (O(n^2) in the escaped length).
+escFrom : Array Char -> Int -> List String
 escFrom cs i
-  | i >= arrayLength cs = ""
-  | otherwise = escOne (arrayGetUnsafe i cs) ++ escFrom cs (i + 1)
+  | i >= arrayLength cs = []
+  | otherwise = escOne (arrayGetUnsafe i cs) :: escFrom cs (i + 1)
 
 escOne : Char -> String
 escOne c

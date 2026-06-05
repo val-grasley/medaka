@@ -9,13 +9,14 @@
 -- as the sole project root.
 
 import lexer.{Token, tokenize, tokenToString}
+import util.{joinNl}
 
 -- Render the token stream, one per line, no trailing newline (matches the
--- golden TOKENS section).
+-- golden TOKENS section).  `joinNl` joins in O(total) via `stringConcat`; the
+-- old right-recursive `tokenToString t ++ "\n" ++ renderToks rest` re-copied
+-- the growing tail at every token — O(n^2) in the output (see PERF-NOTES.md).
 renderToks : List Token -> String
-renderToks [] = ""
-renderToks [t] = tokenToString t
-renderToks (t::rest) = tokenToString t ++ "\n" ++ renderToks rest
+renderToks toks = joinNl (map tokenToString toks)
 
 -- Read <path>, tokenize, and print the canonical token stream.  Factored into an
 -- `emit` helper called from `main`'s match arm — the obvious refactor, unblocked

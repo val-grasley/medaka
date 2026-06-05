@@ -186,9 +186,11 @@ differential harness on the interpreter.
   **Performance** subsection: two backend-independent wins to bake in *now*
   because they're cheap up front and expensive to retrofit — a variable-slot
   (lexical-addressing) hook emitted by resolve/Core IR to replace the
-  assoc-list env scan, and a stdlib string builder to kill the O(n²) `++`
-  string-building in the lexer/formatter — plus larger levers (bytecode VM,
-  decision-tree match compilation) recorded as post-profiling work.
+  assoc-list env scan (still open — the top un-attempted lever), and a stdlib
+  string builder to kill the O(n²) `++` string-building in the lexer/formatter
+  (DONE 2026-06-05 — fixed with native `stringConcat` over cons-built lists, no
+  mutable buffer needed; see `selfhost/PERF-NOTES.md`) — plus larger levers
+  (bytecode VM, decision-tree match compilation) recorded as post-profiling work.
 
 ### Stage 2 — LLVM backend (after self-host)
 
