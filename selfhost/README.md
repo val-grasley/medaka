@@ -782,12 +782,23 @@ rather than guessing. With that caveat, two items are cheap *now* and expensive
 to retrofit, so design them into the initial phases:
 
 - **Lexical addressing — reserve the variable-slot hook in resolve + the Core
-  IR (do during stage 2 / IR design).** Today `eval`'s environment is
+  IR. EMIT HALF DONE (2026-06-05).** Today `eval`'s environment is
   `(string * value ref) list list`, so every `EVar` is a linear scan with string
   compares — likely the single hottest cost in the interpreter. The fix is to
   resolve each variable to a `(frame, slot)` index and use array frames for O(1)
   lookup. The first interpreter need not *use* the slot, but resolve should
-  *emit* it; adding the field later means re-touching every binding site.
+  *emit* it. The de-risked **emit half landed**: `ast.mdk` gained `data Addr =
+  ALocal Int Int | AGlobal` and a new `EVarAt String Addr` node (a *separate*
+  node, NOT a field on `EVar` — that would touch all 125 `EVar` sites across 9
+  files incl. eval/parser; `EVarAt` confines the change to `ast.mdk` + `resolve.
+  mdk`), and `resolve.mdk`'s exported `annotateProgram` rewrites `EVar n` →
+  `EVarAt n addr`, computing the `(frame, slot)` from a framed scope that mirrors
+  `eval`'s `EvalEnv` exactly (per-param currying = one frame/param innermost-last;
+  empty `_`/`None` frames count toward depth; `GBind` guards push a frame;
+  `ELetGroup` = one shared frame; block-`let`/`DoLet` non-recursive). It is
+  intentionally **unwired** (not called by `resolveProgram`/`resolveModule`), so
+  every harness stays byte-identical; the node never reaches a dump (no `sexp.mdk`
+  / `astdump.ml` clause needed). See the NEXT item for the consumer follow-up.
 - **String-building O(n²) — DONE (2026-06-05) for the hot path; see
   `PERF-NOTES.md`.** Verified `++` is copy-based (OCaml `^`, alloc+blit both
   operands) so a fold over n pieces is O(n²): the self-hosted lex of a file scales
@@ -804,12 +815,21 @@ to retrofit, so design them into the initial phases:
   flat and were reverted; the lexer's per-char literal scanners are O(L²) but the
   longest real literal is 98 chars, so left alone. Remaining string-build costs are
   now below the interpreter floor.
-- **NEXT (the real ceiling): lexical addressing / slot-indexed env.** With the
-  string-build quadratic gone, the dominant interpreter cost is the by-name env
-  lookup (instrumented: ~28% of eval, 49.7M string-compares marking `parser.mdk`).
-  This is the variable-slot hook described above; it threads resolve.ml + ast.ml +
-  eval.ml and must preserve VThunk forcing + Phase-112 `lookup_method` shadow-bypass,
-  so it is parked for a **supervised** session (see `PERF-NOTES.md` final summary).
+- **NEXT (the real ceiling): lexical addressing / slot-indexed env — CONSUME the
+  emitted slot.** With the string-build quadratic gone, the dominant interpreter
+  cost is the by-name env lookup (instrumented: ~28% of eval, 49.7M string-compares
+  marking `parser.mdk`). The **emit half is done** (see the variable-slot bullet
+  above — `resolve.annotateProgram` now produces `EVarAt n (ALocal frame slot)`).
+  The remaining **supervised** half: (1) add an `EVarAt` arm in `eval.mdk` that
+  indexes array frames in O(1), preserving VThunk forcing + the Phase-112
+  `lookup_method` shadow-bypass (a bare name that is both a local and a no-impl
+  interface method — the emitted local address does NOT encode this, so eval must
+  still consult that path); plain `EVar` keeps the by-name scan, so the change is
+  purely additive. (2) Wire `annotateProgram` into the typed eval pipeline (it is
+  not currently called). (3) Switch the frame representation to arrays for the
+  indexed lookup to actually pay off. The address model is empirically verified
+  against eval's current frames; the regression test must drive `eval_modules`
+  (loader path), per the loader-vs-flat split. See `PERF-NOTES.md` final summary.
 
 Recorded for later, **not** initial-phase work (revisit once the front-end is
 profilable):

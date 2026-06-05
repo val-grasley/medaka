@@ -33,6 +33,16 @@ public export data Constraint = Constraint String (List Ty)
 -- runtime (the enclosing constrained function's constraint).
 public export data Route = RNone | RKey String | RDict String
 
+-- a resolved lexical address for a variable reference (STAGE2-DESIGN §2.0, the
+-- de-risked first half: resolve EMITS the slot; eval does NOT yet consume it —
+-- the tree-walker keeps its by-name frame scan).  ALocal frame slot mirrors the
+-- runtime env shape `EvalEnv (List (List (String, Ref Value)))` exactly: `frame`
+-- is how many frames down the stack the binder sits (0 = innermost), `slot` is
+-- its index within that frame (the order matchPat binds names).  AGlobal = not
+-- lexically bound (top-level / prelude / extern) — eval resolves it by name, so
+-- the slot would not help; the address still records that resolve looked.
+public export data Addr = ALocal Int Int | AGlobal
+
 public export data Pat
   = PVar String
   | PWild
@@ -133,6 +143,14 @@ public export data Expr
   -- ref the reference carries is irrelevant pre-typecheck, so just the name).
   | EMethodRef String
   | EDictApp String
+  -- A variable reference annotated with its resolved lexical address (STAGE2-
+  -- DESIGN §2.0).  The parser never produces this — it emits plain `EVar`; the
+  -- self-hosted resolve's `annotateProgram` pass rewrites `EVar n` → `EVarAt n
+  -- addr`, carrying the (frame, slot) the eventual slot-indexing eval will read.
+  -- The name is kept for the AGlobal by-name fallback and method/shadow lookup.
+  -- Unconsumed today (no eval arm, no sexp/astdump clause), so every dump stays
+  -- byte-identical: this node only ever lives in resolve's annotated output.
+  | EVarAt String Addr
   -- Return-position method occurrence (pure/empty/…) rewritten by the self-hosted
   -- typecheck's pre-pass: method name + a mutable route the typechecker resolves.
   -- RKey = the concrete impl's head type (eval narrows the VMulti by it); RDict =

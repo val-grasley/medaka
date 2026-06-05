@@ -243,6 +243,50 @@ above, it is flagged ⭐.
 
 ### Compiler / language
 
+- **Phase 144 — leading-operator continuation doesn't cover `::` (and other
+  infix operators outside the whitelist). TODO.** Phase 137 lets an expression
+  RHS wrap onto a more-indented line, and a *leading-operator* line continues for
+  the whitelisted set (exactly `|>`/`>>`/`<<`/`&&`/`||`/`++`, `lib/lexer.mll`),
+  but a line led by `::` is not rescued — it parses as a new statement. Repro (hit while writing
+  `selfhost/resolve.mdk`'s `annotateStmts`; worked around with a `let`):
+  ```
+  annotate fr (DoLetElse p e alt :: rest) =
+    DoLetElse p (ann fr e) (ann fr alt)
+      :: annotate (binds p :: fr) rest      -- parse error at the `::` line
+  ```
+  **Where it lives:** the leading-operator continuation rule in `lib/lexer.mll`
+  (the same gate Phase 137 extended) — `::` (cons) and other value-level infix
+  operators aren't in the continued-operator set, so the deeper line commits a
+  statement boundary instead of continuing the RHS. **Desired:** treat `::` (at
+  least) like the other leading operators so an over-long cons-chain RHS can wrap;
+  re-measure `parser.conflicts` since `::` continuation may interact with list
+  patterns. Surfaced by the lexical-addressing emit session (STAGE2 §2.0).
+
+- **Phase 143 — block-`let` is non-recursive while expression `let … in …` is
+  recursive: same surface form, opposite recursion. TODO.** The identical syntax
+  `let f x = … f …` recurses at expression position (parser emits `ELet _ True`,
+  auto-recursive) but, inside a bare block, desugars to a non-recursive `DoLet`,
+  so the self-reference is reported as **`Unbound variable: f`** — a confusing
+  error naming the very binding just written. Repro:
+  ```
+  countdown p =
+    let go n = if n == 0 then p else go (n - 1)   -- → Unbound variable: go
+    go 3
+  -- but the one-liner works:
+  countdown p = let go n = if n == 0 then p else go (n - 1) in go 3   -- 42
+  ```
+  **Where it lives:** desugar of block `DoLet` (`lib/desugar.ml`) vs the
+  expression-`let` parse rule that sets `isRec` for the param form
+  (`parser.mly`); `lib/eval.ml`'s `blockLet` evaluates the RHS before extending
+  the frame, so a block-`let` closure never captures its own name. **Decision
+  needed (design):** either (a) make a block-`let` with parameters recursive to
+  match expression-`let` and the top-level form, or (b) keep it non-recursive but
+  replace the bare `Unbound variable` with a targeted hint ("`f` is not in scope
+  in its own block-`let` RHS; use `let f x = … in …` or a `where`-group for a
+  recursive helper"). Surfaced by the lexical-addressing emit session (the
+  addresser correctly emitted `AGlobal` for the block-`let` self-reference,
+  matching eval).
+
 - **Phase 142 — `fmt` explodes a list-literal argument when a guard RHS
   overflows, instead of breaking the operator chain. TODO.** When a guarded
   clause's RHS exceeds the width limit and ends in an application whose argument

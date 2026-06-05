@@ -330,9 +330,21 @@ reference. The reference is the tree-walker (`eval_modules` / `eval_probe` and t
 - Add the cheap observability `PERF-NOTES.md` already asks for: per-phase timing +
   an allocation counter, to attribute cost rather than guess.
 - Land the parked `(frame,slot)` rework: `resolve.mdk` emits a lexical address on
-  each `EVar` (new optional field in `ast.mdk`), `eval.mdk` indexes array frames.
-  Must preserve `VThunk` forcing ([`eval.mdk:238`](eval.mdk:238)), the `FTable`
-  globals, and Phase-112 `lookup_method`'s deliberate shadow-bypass.
+  each `EVar`, `eval.mdk` indexes array frames. Must preserve `VThunk` forcing
+  ([`eval.mdk:238`](eval.mdk:238)), the `FTable` globals, and Phase-112
+  `lookup_method`'s deliberate shadow-bypass.
+  - **EMIT half DONE (2026-06-05).** `ast.mdk` gained `data Addr = ALocal Int Int
+    | AGlobal` and a new node `EVarAt String Addr` (a *separate* node rather than
+    the "new optional field on `EVar`" first sketched here — a field changes all
+    125 `EVar` sites across 9 files incl. eval/parser; the separate node confines
+    the change to `ast.mdk` + `resolve.mdk`). `resolve.annotateProgram` (exported,
+    intentionally **unwired**) rewrites `EVar n` → `EVarAt n addr` with a framed
+    scope mirroring `EvalEnv` exactly. Every existing golden is byte-identical (the
+    pass is uncalled; the node reaches no dump). The address model is empirically
+    verified against eval's current frames.
+  - **CONSUME half — the supervised rework that remains.** Add an `EVarAt` arm to
+    `eval.mdk` (array-frame indexing) preserving VThunk + the shadow-bypass; wire
+    `annotateProgram` into the typed eval pipeline; switch frames to arrays.
 - **Gate:** every `=== EVAL ===` golden byte-identical on the tree-walker (output
   unchanged — this is a representation change only). **Measure** the predicted
   ~28%/49.7M-compare win. This is the supervised rework `PERF-NOTES.md` flags; it

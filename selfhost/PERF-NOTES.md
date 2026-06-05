@@ -143,6 +143,17 @@ must preserve VThunk forcing, FTable globals, and Phase-112 lookup_method's
 deliberate shadow-bypass; a subtle index/resolution mismatch is silent corruption
 that needs interactive debugging — unsafe to land unattended.
 
+> **UPDATE 2026-06-05 — EMIT half landed (de-risked, byte-identical).** The "huge
+> blast radius" on ast.ml is sidestepped: instead of a field on `EVar`, the
+> self-host AST gained a *separate* node `EVarAt String Addr` (`Addr = ALocal Int
+> Int | AGlobal`), so the change is confined to `selfhost/ast.mdk` +
+> `resolve.mdk`. `resolve.annotateProgram` (exported, **unwired**) now emits the
+> `(frame,slot)` per reference, with a framed scope mirroring `EvalEnv` exactly
+> (empirically verified). The SUPERVISED part is now narrowly the CONSUME side:
+> an `EVarAt` eval arm (array-frame indexing) that preserves VThunk + the
+> shadow-bypass, wiring the pass into the pipeline, and the array-frame rep. The
+> silent-corruption risk is now isolated to that consumer change.
+
 
 <!-- Template — copy per measurement:
 ### YYYY-MM-DD — <target>
