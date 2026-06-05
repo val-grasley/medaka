@@ -140,3 +140,25 @@ Note: `_batch` harnesses are *separate* files kept alongside the originals.
 - **NOTE: this is a global interpreter win — re-baseline EVERY other harness next**
   (check_modules 300s, mark 109s, eval_run, typecheck_golden, etc. all run through
   `medaka run` → eval_modules → same hot lookup). Expect broad speedups.
+
+### 2026-06-04 — RE-BASELINE after env-Hashtbl win (global propagation confirmed)
+The env frame Hashtbl change (commit f06727c) propagated to EVERY `medaka run`
+harness. All min-of-2/3, all correctness-clean (matched/ok, 0 differing/failing):
+
+| Harness | prev best | NOW | speedup |
+|---|--:|--:|--|
+| **check_modules** | 300.5 | **17.07** | **17.6×** |
+| mark_batch | 109 | 11.07 | ~10× |
+| eval_run_batch | 17.5 | 1.03 | ~17× |
+| typecheck_golden_batch | 28 | 0.91 | ~31× |
+| check_batch | 28.7 | 1.13 | ~25× |
+| resolve_batch | 5.1 | 0.37 | ~14× |
+| eval_dict_batch | ~37 | 0.50 | ~74× |
+| eval_list_batch | ~37 | 0.54 | — |
+| eval_prelude_batch | ~37 | 0.43 | — |
+| eval_typed_batch | ~37 | 0.41 | — |
+| desugar (full) | 97 | 9.67 | ~10× |
+
+Whole fast-path suite is now a few minutes (was ~11 min batched / ~44 min orig).
+**check_modules is once again the single biggest harness (17s)** — it's the next
+profiling target. (No code change this unit; verified measurement.)
