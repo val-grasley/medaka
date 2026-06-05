@@ -671,13 +671,32 @@ top-level fn), not by porting effect inference.
      dict-passing). This is the typed self-hosted eval path the scope note below
      called a "separate, larger bootstrap step" — now built.
 
+   - 🚧 **Leg D — TYPED eval engine runs the TYPECHECKER stage (NEXT — not yet
+     done).** The natural extension of Leg C along the same typed multi-module
+     path: execute the **typechecker** (`typecheck.mdk`) on the self-hosted eval,
+     the way Leg C executes the parser. Like the parser it is monadic
+     (return-position dispatch), so it routes through `eval_typed_modules_main.mdk`
+     → `elaborateModules`, not the untyped `eval_modules`. **Validation** mirrors
+     Leg C: run `typecheck.mdk` over an embedded snippet (a new
+     `selfhost/selfproc_tc_probe.mdk`) through the typed path and diff against the
+     `eval_modules` oracle (`medaka run <probe>`) byte-for-byte, added as a fourth
+     leg of `test/diff_selfhost_selfproc.sh`. **Bigger lift than Leg C:** the
+     typechecker uses `Ref`-based union-find mutation and a far larger surface than
+     the parser, so the work is likely in the extern / `<Mut>` kernel the
+     self-hosted eval must support and the RKey route set it exercises — not new
+     dispatch machinery (the typed path already resolves return-position dispatch).
+     RKey-only (no `=>`-constrained user polymorphism in the selfhost source). When
+     Leg D passes, **every monadic selfhost stage has run on the self-hosted
+     eval** — the front-end fully executes itself.
+
    **Scope note (resolved by Leg C):** Leg B alone stops at the lexer because the
    **parser/typecheck stages use a `Parser` monad** with return-position dispatch
    (`pure x = Parser …`, `andThen`), which the **untyped** `eval_modules` path
    cannot resolve. Leg C threads the marker + `typecheck.elaborate` route-stamping
    through the loader's module graph (`elaborateModules`), executing a real
    `Parser`-monad stage on the self-hosted eval. (The typechecker stage — also
-   monadic — is the natural next extension of the same typed path.)
+   monadic — is the natural next extension of the same typed path; tracked as
+   **Leg D** above.)
 
 ### Dictionary passing (generality layer — beyond the bootstrap)
 
