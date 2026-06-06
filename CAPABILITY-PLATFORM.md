@@ -362,9 +362,12 @@ run) or reject with reason + chain. That is the entire demo "platform."
 | Piece | Status |
 |---|---|
 | Effect soundness/propagation (makes the rejection trustworthy) | ✅ done (Phase 79/146) |
-| User-definable fine-grained labels (`effect Fetch/Cache/Log`) | 🔨 the one real language piece — PLAN near-term item 5 |
-| The harness | 🔨 small, demo-only, new |
+| User-definable fine-grained labels (`effect Fetch/Cache/Log`) | ✅ done (Phase 146 gap-2) |
+| The harness (`medaka check-policy`) | ✅ done — `demo/` + `bin/main.ml` |
 | LLVM / WasmGC / real edge host / parameterized effects / full platform | ❌ not needed |
+
+The demo is **complete and runnable** (`demo/plugin_good.mdk`, `demo/plugin_malicious.mdk`,
+`medaka check-policy --policy Cache,Log <plugin.mdk>`).
 
 So the demo ≈ **the next roadmap item (gap-2 labels) + a thin harness, on the
 existing interpreter.**

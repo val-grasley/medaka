@@ -26,7 +26,7 @@ Frontend and interpreter complete; standard library underway; codegen not yet st
 - **Evaluator** — `lib/eval.ml` (tree-walking interpreter with VMulti-based
   typeclass dispatch)
 - **REPL** — `lib/repl.ml` (incremental parse/typecheck/eval with persistent env)
-- **CLI** — `bin/main.ml` — `check`, `run`, `repl`, `lsp`, `fmt`, `doc`, and `new` subcommands
+- **CLI** — `bin/main.ml` — `check`, `run`, `repl`, `lsp`, `fmt`, `doc`, `new`, and `check-policy` subcommands
 - **Doc generator** — `lib/doc.ml` (comment→decl matcher, signature renderer, Markdown output)
 - **Formatter** — `lib/fmt.ml` (comment-preserving pretty printer with `--check` / `--write` / `--stdout`)
 - **Project config** — `lib/project_config.ml` (minimal `medaka.toml` reader; shared project-root walk-up between CLI and LSP)
