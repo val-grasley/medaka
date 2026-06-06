@@ -1726,7 +1726,7 @@ guardSites (GBind _ e) = collectMethodSites e
 
 doStmtSites : DoStmt -> List (Ref Route)
 doStmtSites (DoExpr e) = collectMethodSites e
-doStmtSites (DoLet _ _ e) = collectMethodSites e
+doStmtSites (DoLet _ _ _ e) = collectMethodSites e
 doStmtSites (DoBind _ e) = collectMethodSites e
 doStmtSites (DoAssign _ e) = collectMethodSites e
 doStmtSites (DoFieldAssign _ _ e) = collectMethodSites e

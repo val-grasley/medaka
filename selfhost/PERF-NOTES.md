@@ -659,3 +659,88 @@ array frames clearly regress.** Kept as DORMANT, validated Stage-2 scaffolding
   260-line block leaving `resolve.mdk`; some of the delta is also session-load
   variance). Still single-digit-seconds, within the fast-path budget.
 - committed: kept annotate.mdk + dormant eval EVarAt arm; reverted arrays + wiring.
+
+### 2026-06-05 — single-file per-stage profiler (profile_main.mdk + profile_selfhost.sh)
+
+**Added single-file per-stage timing harness** to complement `perf_main.mdk`
+(which times the full multi-module loader path, bundling mark+typecheck into
+a single `elaborate` phase).  The new harness breaks the single-file pipeline
+into individually-timed stages so the cost of each is visible:
+- `selfhost/profile_main.mdk`: times parse-prelude (runtime+core setup),
+  **parse** (lex+parse), **desugar**, **resolve**, **mark**, **typecheck**
+  separately for a single target file.  `MEDAKA_PERF` guard: unset → silent exit.
+- `test/profile_selfhost.sh [N]`: runs the driver N times (default 3) over
+  `selfhost/lexer.mdk` (self-contained; all stages accurate) and
+  `selfhost/parser.mdk` (parse/desugar/resolve/mark accurate; typecheck fails —
+  see below), takes per-stage minimums with awk, and prints a table.
+
+**Bug fixed (pre-existing, surfaced by loading typecheck.mdk in the driver):**
+`doStmtSites (DoLet _ _ e)` in `typecheck.mdk` had 3 wildcards for a
+4-arg `DoLet Bool Bool Pat Expr` constructor.  Phase 143 added the first `Bool`
+field but this arm wasn't updated.  Fixed → `(DoLet _ _ _ e)`.  The bug was
+latent (the corpus has no bare-block `DoLet` in an `elaborate` path that reaches
+`doStmtSites`); all 16 harnesses still pass byte-identical after the fix.
+
+**How to run:**
+```
+sh test/profile_selfhost.sh 3           # min-of-3 over lexer.mdk + parser.mdk
+MEDAKA_PERF=1 medaka run selfhost/profile_main.mdk \
+    stdlib/runtime.mdk stdlib/core.mdk selfhost/lexer.mdk
+```
+
+**Note on parser.mdk typecheck:** `parser.mdk` imports `ast` and `lexer`, which
+are not in scope in single-file mode.  The typecheck stage panics with
+`unbound variable: TEof` before emitting its `[perf]` line.  The
+parse/desugar/resolve/mark rows are still accurate; typecheck is omitted.
+Use `perf_main.mdk` with the full multi-module loader for an accurate
+end-to-end typecheck measurement.
+
+**Correctness:** all 16 diff harnesses byte-identical after the DoLet fix:
+check_modules_batch 13 ok; selfproc 16 ok; eval_typed 3 ok; eval_dict 13 ok;
+mark_batch / desugar_batch unchanged.
+
+## Baseline (min-of-3, single-file path via profile_selfhost.sh 3)
+
+### selfhost/lexer.mdk — 958 lines, 406 post-desugar decls, no imports (all stages accurate)
+
+| Stage         | min-of-3 | ops          |
+|---|--:|--|
+| parse-prelude | 0.233s   | runtime+core |
+| parse         | 0.368s   | 405 decls    |
+| desugar       | 0.037s   | 406 decls    |
+| resolve       | 0.149s   | 406 decls    |
+| mark          | 0.053s   | 406 decls    |
+| typecheck     | 0.172s   | 406 decls    |
+| **total**     | **1.018s** |            |
+
+### selfhost/parser.mdk — 2424 lines, 883 post-desugar decls, has imports (parse/desugar/resolve/mark only)
+
+| Stage         | min-of-3 | ops          |
+|---|--:|--|
+| parse-prelude | 0.228s   | runtime+core |
+| parse         | 0.584s   | 883 decls    |
+| desugar       | 0.039s   | 883 decls    |
+| resolve       | 0.427s   | 883 decls    |
+| mark          | 0.064s   | 883 decls    |
+| typecheck     | *(panic — unresolved imports)* | |
+
+**Takeaways:**
+- For `lexer.mdk`, **parse dominates** (0.368s = 36% of total), more than
+  resolve + mark + typecheck combined (0.374s).  The self-hosted lex+parse runs
+  through the OCaml tree-walker — same interpreter overhead as every other stage
+  but over the un-lowered pre-desugar source.
+- **desugar and mark are cheap** (~0.037s and ~0.053s) relative to
+  parse/resolve/typecheck.  They are not bottlenecks.
+- **resolve (0.149s) and typecheck (0.172s)** have similar cost for lexer.mdk
+  (a 406-decl, no-import file); their ratio will shift for larger programs where
+  typecheck's HM inference compounds.
+- For `parser.mdk`, **resolve scales up more steeply** (0.427s vs 0.149s for a
+  ~2× decl count) while desugar and mark remain flat — the O(decls²) candidate
+  in resolve is worth investigating if it grows further.
+- **§2.2 VM capstone comparison:** when the VM is complete, rerun
+  `sh test/profile_selfhost.sh 3` and compare the per-stage minimums above.
+  The parse/desugar stages use the self-hosted OCaml tree-walker (unchanged by
+  the VM); only the `elaborate` and `eval` stages in `perf_main.mdk` will
+  shrink when the VM replaces tree-walking.  Use `perf_main.mdk` for the
+  multi-module VM-vs-tree-walker comparison; this table is the AST tree-walker
+  baseline for the single-file stages.
