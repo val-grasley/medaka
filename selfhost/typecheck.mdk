@@ -2714,9 +2714,46 @@ inferMembers : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> 
 inferMembers _ _ _ [] = ()
 inferMembers env sigs defs ((m, v) :: rest) =
   let _ = set_ref currentFn m
-  let _ = unify v (inferClauses env (clausesFor m defs))
+  let effs = inferMemberClauses env v (clausesFor m defs)
   let _ = set_ref currentFn ""
+  let _ = checkEffectEscape sigs m effs
   inferMembers env sigs defs rest
+
+-- infer each clause, unifying it to the member placeholder [v] and collecting the
+-- concrete effect labels the bodies perform (Phase 79e binding-boundary check)
+inferMemberClauses : TcEnv -> Mono -> List (List Pat, Expr) -> <Mut> List String
+inferMemberClauses _ _ [] = []
+inferMemberClauses env v (cl :: rest) =
+  let ce = inferClauseEff env cl
+  let _ = unify v (fst ce)
+  sortUniqS (snd ce ++ inferMemberClauses env v rest)
+
+-- infer one clause, returning its arrow type AND the concrete effect labels its
+-- body performs (captured under a fresh open ambient, then the ambient restored —
+-- building a closure performs nothing).  Mirrors inferLam but exposes the effect.
+inferClauseEff : TcEnv -> (List Pat, Expr) -> <Mut> (Mono, List String)
+inferClauseEff env (pats, body) =
+  let pr = inferPats env pats
+  let saved = curEffect.value
+  let _ = set_ref curEffect (openRow ())
+  let bodyTy = infer (extendVars env (snd pr)) body
+  let bodyEff = curEffect.value
+  let _ = set_ref curEffect saved
+  (arrowsWithLastEffect (fst pr) bodyEff bodyTy, effrowLabels bodyEff)
+
+-- a signatured binding's body must not perform a concrete effect its signature
+-- doesn't declare; effect *variables* (polymorphic `<e>`) carry no labels and so
+-- never escape (Phase 79e)
+checkEffectEscape : List (String, Ty) -> String -> List String -> <Mut> Unit
+checkEffectEscape sigs m effs = match lookupAssocS m sigs
+  None => ()
+  Some ty => match diffS effs (declaredEffects ty)
+    [] => ()
+    extras => set_ref typeErrors (effectEscapeMsg m (declaredEffects ty) extras :: typeErrors.value)
+
+effectEscapeMsg : String -> List String -> List String -> String
+effectEscapeMsg name declared extras =
+  "Function '" ++ name ++ "' declared with <" ++ joinWith ", " declared ++ "> but also performs <" ++ joinWith ", " extras ++ ">"
 
 -- generalize each member's (sig-and-body-unified) placeholder.  A signature was
 -- already unified into the placeholder by preunifySigs, so generalizing the
