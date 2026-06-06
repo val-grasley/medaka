@@ -171,7 +171,7 @@ deliberately deferred to here:
   runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
   is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
-  - ✅ **Toolchain de-risking spike DONE (slices 1–4)** — *ahead of the strict
+  - ✅ **Toolchain de-risking spike DONE (slices 1–5a)** — *ahead of the strict
     VM-first ordering by design* (front-loads the riskiest lift; runs parallel to
     the bytecode VM, uses only the tree-walker oracle). Proves the decided toolchain
     (EMIT textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings)

@@ -614,9 +614,10 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   out, and the real backend must **carry arity in the cell** (or per-arity apply
   trampolines). (f) captureless named-fn-as-value is eta-wrapped per use; a real
   backend could intern one static closure per top-level fn once arities are carried.
-  Still **not** the real backend: records / arrays / dispatch / GC, the built-in
-  list & tuple match heads, guarded/range/record arms, recursive (`CLet True`)
-  closures, and Ref capture remain out of scope and panic.
+  Still **not** the real backend (at slice 4): arrays / dispatch / GC, the built-in
+  list match heads, guarded/range/record-arm patterns, recursive (`CLet True`)
+  closures, tuples, records, and Ref remain out of scope and panic. (Records,
+  tuples, and Ref added in slice 5a — §2.4a below.)
 
 **2.4a — Slice 5a (RECORDS, TUPLES, MUTABLE REFS).** The three remaining Core-IR
   structural forms added, all lowering via the existing `emitCtorAlloc`/`storeFields`/
