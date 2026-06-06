@@ -45,6 +45,16 @@ public export data CExpr
   -- a `where` / let-group: mutually-recursive coalesced bindings, then a body
   | CLetGroup (List CBind) CExpr
   | CMatch CExpr (List CArm)
+  -- a `match` compiled to a DECISION TREE (the §2.1 decision-tree match
+  -- compilation, driven by the same Maranget pattern-matrix analysis as
+  -- exhaust.mdk): the scrutinee, the original arms (indexed by the tree's
+  -- leaves — re-matched to recover bindings + run guards + bodies), and the
+  -- compiled tree.  Lowering emits this in place of `CMatch` for every match
+  -- whose arm patterns are tree-able; matches that use record/range patterns
+  -- fall back to the ordered-arm `CMatch` above.  Semantically equal — the tree
+  -- only changes HOW the arm is selected (each scrutinee field's head tested
+  -- once across all arms, instead of re-tested per clause).
+  | CDecision CExpr (List CArm) CTree
   | CIf CExpr CExpr CExpr
   -- a primitive binary operator that survives lowering: arithmetic (`+`…),
   -- comparison (`==`,`<`…), `::`, `++`.  (`&&`/`||`/`|>`/`>>`/`<<` are lowered
@@ -79,6 +89,49 @@ public export data CField = CField String CExpr
 public export data CArm = CArm Pat (List CGuard) CExpr
 
 public export data CGuard = CGBool CExpr | CGBind Pat CExpr
+
+-- ── decision tree (§2.1 decision-tree match compilation) ───────────────────
+-- A `CMatch`'s ordered arms re-test the scrutinee's fields once per clause; the
+-- decision tree tests each field's head exactly once and routes to the matching
+-- arm.  Driven by the SAME Maranget pattern matrix (specialize / default /
+-- head-ctors) the exhaust stage uses — only the OUTPUT differs (a tree, not a
+-- usefulness verdict).  Leaves carry an arm INDEX rather than inlined bindings:
+-- the evaluator re-matches that one arm's pattern against the scrutinee to
+-- recover its variable bindings (a single per-arm walk, vs the per-clause
+-- re-walk the ordered arms do), so the tree itself only drives DISCRIMINATION
+-- and needs no occurrence/binding bookkeeping.  Guard fall-through is preserved
+-- by CTGuard: a failed guard resumes the ordered semantics over the matrix rows
+-- below the guarded clause (its `fail` subtree, compiled at the same column
+-- context, so it reads the same live sub-values).
+public export data CTree
+  -- no arm matches → runtime error (mirrors falling off the ordered arms)
+  = CTFail
+  -- arm i matched unconditionally → re-match it for bindings, eval its body
+  | CTLeaf Int
+  -- arm i matched but is guarded → eval its guards; on guard failure → CTree
+  | CTGuard Int CTree
+  -- test the focus value's head: first matching branch wins (heads are
+  -- disjoint), else the default subtree
+  | CTSwitch (List CTBranch) CTree
+  -- the focus column is all-wildcard (nothing to test) → discard it, continue
+  | CTDrop CTree
+
+-- one switch branch: the head to test the focus value against, and the subtree
+-- taken when it matches (the head's fields become the new leading columns).
+public export data CTBranch = CTBranch CHead CTree
+
+-- a constructor / literal "head" a switch tests a runtime Value against.  It
+-- carries just enough to (a) statically partition the pattern matrix and (b)
+-- dynamically test + decompose the Value via eval.mdk's `matchPat` — so the
+-- evaluator needs NO new value-decomposition code (lists are VList, tuples are
+-- VTuple, bools VBool, unit VUnit — `matchPat` already knows each).
+public export data CHead
+  = HCon String Int  -- a named constructor (incl. True/False), with its arity
+  | HTuple Int       -- a tuple of the given arity
+  | HCons            -- list cons (arity 2: head element, tail list)
+  | HNil             -- empty list
+  | HUnit            -- the unit value
+  | HLit Lit         -- a literal (Int/Float/String/Char), arity 0
 
 -- one block statement (mirrors ast.DoStmt, post-desugar core subset)
 public export data CStmt
