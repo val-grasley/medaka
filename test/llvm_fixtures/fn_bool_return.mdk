@@ -1,0 +1,7 @@
+-- Bool RETURN across a function boundary (slice 2b): `isPos` returns the result
+-- of a comparison (a Bool word).  The call site recovers `isPos`'s return type as
+-- Bool from the signature table, so `main`'s result is printed via mdk_print_bool
+-- (true/false), not as an Int — the boundary type, not the operand type, drives
+-- the print routine.
+isPos n = n > 0
+main = isPos 5
