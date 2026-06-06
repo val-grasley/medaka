@@ -129,6 +129,122 @@ enterLevel _ = set_ref currentLevel (currentLevel.value + 1)
 exitLevel : Unit -> <Mut> Unit
 exitLevel _ = set_ref currentLevel (currentLevel.value - 1)
 
+-- ── effect propagation (Phase 79) ─────────────────────────────────────────
+-- the latent effect of the function body currently being inferred: application
+-- arms widen it; entering a lambda saves+reopens it, and the accumulated row
+-- becomes the lambda's arrow effect.  A closed (tail=None) ambient is a SINK that
+-- discards effects — the top-level state where a value binding's effects drop.
+curEffect : Ref EffRow
+curEffect = Ref (EffRow [] None)
+
+-- the unbound-tail id of an effvar cell (-1 once linked); unique like tyvar ids,
+-- so id-equality stands in for the reference's physical `==` on effvars
+effvarId : Ref Effvar -> Int
+effvarId cell = match cell.value
+  EUnbound id _ => id
+  ELink _ => 0 - 1
+
+-- string set difference: elements of a not present in b
+diffS : List String -> List String -> List String
+diffS [] _ = []
+diffS (x :: xs) ys
+  | containsName x ys = diffS xs ys
+  | otherwise = x :: diffS xs ys
+
+-- record that the current context performs row [eff]'s effects, widening ambient
+-- [cur] WITHOUT closing its tail (so the next performed effect can still be
+-- absorbed).  A closed ambient is a sink and discards.  An open [eff] is tied to
+-- the ambient through a shared fresh tail.
+performEffect : Ref EffRow -> EffRow -> <Mut> Unit
+performEffect cur eff = match effrowNorm cur.value
+  EffRow _ None => ()
+  EffRow curLabels (Some ct) => match effrowNorm eff
+    EffRow effLabels effTail =>
+      let _ = set_ref cur (EffRow (sortUniqS (curLabels ++ effLabels)) (Some ct))
+      match effTail
+        Some et => if effvarId et == effvarId ct then () else performLink ct et
+        None => ()
+
+performLink : Ref Effvar -> Ref Effvar -> <Mut> Unit
+performLink ct et =
+  let v3 = freshEffvarAt (minI (effvarLevel ct) (effvarLevel et))
+  let _ = set_ref ct (ELink (EffRow [] (Some v3)))
+  set_ref et (ELink (EffRow [] (Some v3)))
+
+-- unify two effect rows.  PERMISSIVE (Phase 79): an open row absorbs the other
+-- side's labels by binding its tail; two open rows route through one shared fresh
+-- tail.  Differing closed rows / an open row whose labels exceed a closed bound
+-- are left as-is (the laundering subset check lands in Phase 146, Stage D).
+unifyRow : EffRow -> EffRow -> <Mut> Unit
+unifyRow r1 r2 = unifyRowN (effrowNorm r1) (effrowNorm r2)
+
+unifyRowN : EffRow -> EffRow -> <Mut> Unit
+unifyRowN (EffRow l1 (Some v1)) (EffRow l2 (Some v2))
+  | effvarId v1 == effvarId v2 = ()
+  | otherwise =
+      let v3 = freshEffvarAt (minI (effvarLevel v1) (effvarLevel v2))
+      let _ = set_ref v1 (ELink (EffRow (diffS l2 l1) (Some v3)))
+      set_ref v2 (ELink (EffRow (diffS l1 l2) (Some v3)))
+unifyRowN (EffRow l1 (Some v1)) (EffRow l2 None) =
+  set_ref v1 (ELink (EffRow (diffS l2 l1) None))
+unifyRowN (EffRow l1 None) (EffRow l2 (Some v2)) =
+  set_ref v2 (ELink (EffRow (diffS l1 l2) None))
+unifyRowN (EffRow _ None) (EffRow _ None) = ()
+
+-- replace a row's bound tail effvar with its fresh instance from [esub], so each
+-- call site of a polymorphic HOF gets its own effect variable
+substRow : List (Int, Ref Effvar) -> EffRow -> EffRow
+substRow esub r = match effrowNorm r
+  EffRow labels (Some v) => match v.value
+    EUnbound id _ => match lookupAssocI id esub
+      Some v2 => EffRow labels (Some v2)
+      None => EffRow labels (Some v)
+    ELink _ => EffRow labels (Some v)
+  EffRow labels None => EffRow labels None
+
+-- lower a row's tail effvar level to <= [level] alongside the tyvar being bound
+lowerRowLevels : Int -> EffRow -> <Mut> Unit
+lowerRowLevels level r = match effrowNorm r
+  EffRow _ (Some v) => match v.value
+    EUnbound id lvl => if lvl > level then set_ref v (EUnbound id level) else ()
+    ELink _ => ()
+  EffRow _ None => ()
+
+-- build a curried arrow carrying the body's latent effect [eff] on the LAST arrow
+-- only; intermediate arrows stay pure-open (partial application performs nothing)
+arrowsWithLastEffect : List Mono -> EffRow -> Mono -> <Mut> Mono
+arrowsWithLastEffect [] _ ret = ret
+arrowsWithLastEffect [pt] eff ret = TFun pt eff ret
+arrowsWithLastEffect (pt :: rest) eff ret =
+  TFun pt (openRow ()) (arrowsWithLastEffect rest eff ret)
+
+-- free generalizable effect variables: a row tail effvar deeper than the current
+-- scope (deduped by the caller, mirroring freeGenVars)
+freeEffvars : Mono -> List Int
+freeEffvars t = match normalize t
+  TVar cell => match cell.value
+    Link t2 => freeEffvars t2
+    Unbound _ _ => []
+  TCon _ => []
+  TApp a b => freeEffvars a ++ freeEffvars b
+  TFun a r b => freeEffvars a ++ rowFreeEffvars r ++ freeEffvars b
+  TTuple ts => concatMapL freeEffvars ts
+
+rowFreeEffvars : EffRow -> List Int
+rowFreeEffvars r = match effrowNorm r
+  EffRow _ (Some v) => match v.value
+    EUnbound id lvl => if lvl > currentLevel.value then [id] else []
+    ELink _ => []
+  EffRow _ None => []
+
+-- the declared concrete effect set of a signature: labels on the first `<…>`
+-- reached walking down the return side (Phase 79e escape check)
+declaredEffects : Ty -> List String
+declaredEffects (TyFun _ ret) = declaredEffects ret
+declaredEffects (TyEffect effs _ _) = sortUniqS effs
+declaredEffects (TyConstrained _ t) = declaredEffects t
+declaredEffects _ = []
+
 -- record metadata: name → (quantified param ids, result mono, field types).  A
 -- global Ref (like the reference's record table) so field access / create /
 -- update / patterns can look records up without threading an env field.
@@ -263,6 +379,8 @@ matchOracle = Ref (buildOracle [])
 resetState : Unit -> <Mut> Unit
 resetState _ =
   let _ = set_ref tyvarCounter 0
+  let _ = set_ref effvarCounter 0
+  let _ = set_ref curEffect (EffRow [] None)
   let _ = set_ref recordsRef []
   let _ = set_ref pendingSites []
   let _ = set_ref activeDictVars []
@@ -334,8 +452,9 @@ occursAdjust id level t = match normalize t
   TApp a b =>
     let _ = occursAdjust id level a
     occursAdjust id level b
-  TFun a _ b =>
+  TFun a r b =>
     let _ = occursAdjust id level a
+    let _ = lowerRowLevels level r
     occursAdjust id level b
   TTuple ts => occursAdjustList id level ts
 
@@ -369,8 +488,9 @@ unifyN (TCon a) (TCon b) = if a == b then () else typeMismatch (TCon a) (TCon b)
 unifyN (TApp a1 b1) (TApp a2 b2) =
   let _ = unify a1 a2
   unify b1 b2
-unifyN (TFun a1 _ b1) (TFun a2 _ b2) =
+unifyN (TFun a1 r1 b1) (TFun a2 r2 b2) =
   let _ = unify a1 a2
+  let _ = unifyRow r1 r2
   unify b1 b2
 unifyN (TTuple ts1) (TTuple ts2)
   | lengthL ts1 == lengthL ts2 = unifyList ts1 ts2
@@ -399,7 +519,7 @@ typeMismatch a b =
 
 -- ── generalization & instantiation ────────────────────────────────────────
 generalize : Mono -> <Mut> Scheme
-generalize t = Forall (dedupI (freeGenVars currentLevel.value t)) [] t
+generalize t = Forall (dedupI (freeGenVars currentLevel.value t)) (dedupI (freeEffvars t)) t
 
 freeGenVars : Int -> Mono -> List Int
 freeGenVars lvl t = match normalize t
@@ -419,19 +539,23 @@ dedupIGo (x :: xs) seen
   | otherwise = x :: dedupIGo xs (x :: seen)
 
 instantiate : Scheme -> <Mut> Mono
-instantiate (Forall ids _ t) = substMono (freshSubst ids) t
+instantiate (Forall ids evars t) = substMono (freshSubst ids) (freshEffSubst evars) t
 
 freshSubst : List Int -> <Mut> List (Int, Mono)
 freshSubst [] = []
 freshSubst (id :: rest) = (id, freshVar ()) :: freshSubst rest
 
-substMono : List (Int, Mono) -> Mono -> Mono
-substMono subst t = match normalize t
+freshEffSubst : List Int -> <Mut> List (Int, Ref Effvar)
+freshEffSubst [] = []
+freshEffSubst (id :: rest) = (id, freshEffvar ()) :: freshEffSubst rest
+
+substMono : List (Int, Mono) -> List (Int, Ref Effvar) -> Mono -> Mono
+substMono subst esub t = match normalize t
   TVar cell => fromOption (TVar cell) (lookupAssocI (tyvarId cell) subst)
   TCon n => TCon n
-  TApp a b => TApp (substMono subst a) (substMono subst b)
-  TFun a eff b => TFun (substMono subst a) eff (substMono subst b)
-  TTuple ts => TTuple (map (substMono subst) ts)
+  TApp a b => TApp (substMono subst esub a) (substMono subst esub b)
+  TFun a eff b => TFun (substMono subst esub a) (substRow esub eff) (substMono subst esub b)
+  TTuple ts => TTuple (map (substMono subst esub) ts)
 
 -- ── rendering (mirrors lib/typecheck.ml pp_mono byte-for-byte) ─────────────
 export
@@ -535,7 +659,9 @@ dedupSGo (x :: xs) seen
 
 -- an annotation / signature mono with free tyvars realized as fresh vars
 astTypeFresh : Ty -> <Mut> Mono
-astTypeFresh ty = fromAstType (freshTvMap (dedupS (tyVarNames ty))) ty
+astTypeFresh ty =
+  let etbl = freshEffMap (dedupS (effTailNames ty))
+  fromAstTypeE etbl (freshTvMap (dedupS (tyVarNames ty))) ty
 
 freshTvMap : List String -> <Mut> List (String, Mono)
 freshTvMap [] = []
@@ -552,17 +678,54 @@ sigToScheme ty = fst (sigToSchemeTvs ty)
 sigToSchemeTvs : Ty -> <Mut> (Scheme, List (String, Mono))
 sigToSchemeTvs ty =
   let tvs = freshTvMap (dedupS (tyVarNames ty))
-  (Forall (map monoTyvarId (map snd tvs)) [] (fromAstType tvs ty), tvs)
+  let etbl = freshEffMap (dedupS (effTailNames ty))
+  (Forall (map monoTyvarId (map snd tvs)) (map effvarIdOf etbl) (fromAstTypeE etbl tvs ty), tvs)
 
 -- tvs maps a declared type-parameter name to its tyvar
+-- named effect-tail variables in a signature (`<IO | e>` → ["e"]); the same
+-- source name must share one effvar across the whole signature, linking a HOF's
+-- callback effect to its result effect
+effTailNames : Ty -> List String
+effTailNames (TyVar _) = []
+effTailNames (TyCon _) = []
+effTailNames (TyApp a b) = effTailNames a ++ effTailNames b
+effTailNames (TyFun a b) = effTailNames a ++ effTailNames b
+effTailNames (TyTuple ts) = concatMapL effTailNames ts
+effTailNames (TyEffect _ tail t) = tailNameList tail ++ effTailNames t
+effTailNames (TyConstrained _ t) = effTailNames t
+
+tailNameList : Option String -> List String
+tailNameList None = []
+tailNameList (Some n) = [n]
+
+freshEffMap : List String -> <Mut> List (String, Ref Effvar)
+freshEffMap [] = []
+freshEffMap (n :: rest) = (n, freshEffvar ()) :: freshEffMap rest
+
+effvarIdOf : (String, Ref Effvar) -> Int
+effvarIdOf (_, cell) = effvarId cell
+
+-- build a row from an arrow's return-position AST type; a named tail resolves
+-- through [etbl] for sharing, an absent/anonymous one is closed
+astEffrowE : List (String, Ref Effvar) -> Ty -> EffRow
+astEffrowE etbl (TyEffect labels tail _) = EffRow (sortUniqS labels) (tailCell etbl tail)
+astEffrowE _ _ = pureRow
+
+tailCell : List (String, Ref Effvar) -> Option String -> Option (Ref Effvar)
+tailCell _ None = None
+tailCell etbl (Some n) = lookupAssocS n etbl
+
 fromAstType : List (String, Mono) -> Ty -> Mono
-fromAstType tvs (TyCon n) = TCon n
-fromAstType tvs (TyVar n) = fromOption (TCon n) (lookupAssocS n tvs)
-fromAstType tvs (TyApp a b) = TApp (fromAstType tvs a) (fromAstType tvs b)
-fromAstType tvs (TyFun a b) = TFun (fromAstType tvs a) (closedRow (effLabelsOf b)) (fromAstType tvs (stripEff b))
-fromAstType tvs (TyTuple ts) = TTuple (map (fromAstType tvs) ts)
-fromAstType tvs (TyEffect _ _ t) = fromAstType tvs t
-fromAstType tvs (TyConstrained _ t) = fromAstType tvs t
+fromAstType tvs ty = fromAstTypeE [] tvs ty
+
+fromAstTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Ty -> Mono
+fromAstTypeE etbl tvs (TyCon n) = TCon n
+fromAstTypeE etbl tvs (TyVar n) = fromOption (TCon n) (lookupAssocS n tvs)
+fromAstTypeE etbl tvs (TyApp a b) = TApp (fromAstTypeE etbl tvs a) (fromAstTypeE etbl tvs b)
+fromAstTypeE etbl tvs (TyFun a b) = TFun (fromAstTypeE etbl tvs a) (astEffrowE etbl b) (fromAstTypeE etbl tvs (stripEff b))
+fromAstTypeE etbl tvs (TyTuple ts) = TTuple (map (fromAstTypeE etbl tvs) ts)
+fromAstTypeE etbl tvs (TyEffect _ _ t) = fromAstTypeE etbl tvs t
+fromAstTypeE etbl tvs (TyConstrained _ t) = fromAstTypeE etbl tvs t
 
 -- ── environment ───────────────────────────────────────────────────────────
 -- SMap: persistent String-keyed weight-balanced tree.  The type environment is
@@ -889,9 +1052,9 @@ hasKeySL2 k ((k2, _) :: rest)
 -- instantiate a scheme, returning both the mono and the (quantified id → fresh
 -- var) substitution, so a caller can recover specific quantified variables
 instantiateTracked : Scheme -> <Mut> (Mono, List (Int, Mono))
-instantiateTracked (Forall ids _ t) =
+instantiateTracked (Forall ids evars t) =
   let subst = freshSubst ids
-  (substMono subst t, subst)
+  (substMono subst (freshEffSubst evars) t, subst)
 
 constraintMonosOf : List Int -> List (Int, Mono) -> List Mono
 constraintMonosOf [] _ = []
@@ -1091,7 +1254,9 @@ consOp lt rt =
 pipeOp : Mono -> Mono -> <Mut> Mono
 pipeOp lt rt =
   let res = freshVar ()
-  let _ = unify rt (TFun lt pureRow res)
+  let eff = openRow ()
+  let _ = unify rt (TFun lt eff res)
+  let _ = performEffect curEffect eff
   res
 
 -- g >> h : (a->b) -> (b->c) -> (a->c)  [flipped=False]
@@ -1101,16 +1266,16 @@ composeOp gt ht False =
   let a = freshVar ()
   let b = freshVar ()
   let c = freshVar ()
-  let _ = unify gt (TFun a pureRow b)
-  let _ = unify ht (TFun b pureRow c)
-  TFun a pureRow c
+  let _ = unify gt (TFun a (openRow ()) b)
+  let _ = unify ht (TFun b (openRow ()) c)
+  TFun a (openRow ()) c
 composeOp gt ht True =
   let a = freshVar ()
   let b = freshVar ()
   let c = freshVar ()
-  let _ = unify gt (TFun a pureRow b)
-  let _ = unify ht (TFun c pureRow a)
-  TFun c pureRow b
+  let _ = unify gt (TFun a (openRow ()) b)
+  let _ = unify ht (TFun c (openRow ()) a)
+  TFun c (openRow ()) b
 
 inferUnop : String -> Mono -> <Mut> Mono
 inferUnop "-" t = t
@@ -1135,14 +1300,20 @@ inferVar env x = match lookupVar env x
 inferApp : Mono -> Mono -> <Mut> Mono
 inferApp ft xt =
   let r = freshVar ()
-  let _ = unify ft (TFun xt pureRow r)
+  let eff = openRow ()
+  let _ = unify ft (TFun xt eff r)
+  let _ = performEffect curEffect eff
   r
 
 inferLam : TcEnv -> List Pat -> Expr -> <Mut> Mono
 inferLam env pats body =
   let pr = inferPats env pats
+  let saved = curEffect.value
+  let _ = set_ref curEffect (openRow ())
   let bodyTy = infer (extendVars env (snd pr)) body
-  foldrFun (fst pr) bodyTy
+  let bodyEff = curEffect.value
+  let _ = set_ref curEffect saved
+  arrowsWithLastEffect (fst pr) bodyEff bodyTy
 
 inferLet : TcEnv -> Pat -> Expr -> Expr -> <Mut> Mono
 inferLet env pat e1 e2 =
@@ -1291,10 +1462,10 @@ isSome None = False
 instantiateRecord : RecordInfo -> <Mut> (Mono, List (String, Mono))
 instantiateRecord (RecordInfo paramIds result fields) =
   let subst = freshSubst paramIds
-  (substMono subst result, map (substField subst) fields)
+  (substMono subst [] result, map (substField subst) fields)
 
 substField : List (Int, Mono) -> (String, Mono) -> (String, Mono)
-substField subst (fn, fm) = (fn, substMono subst fm)
+substField subst (fn, fm) = (fn, substMono subst [] fm)
 
 registerVariants : TcEnv -> String -> List String -> List Variant -> <Mut> TcEnv
 registerVariants env name params variants =
@@ -2485,7 +2656,8 @@ preunifySig sigs m v = match lookupAssocS m sigs
 instantiateSigTracked : Ty -> <Mut> (Mono, List (String, Mono))
 instantiateSigTracked ty =
   let tvs = freshTvMap (dedupS (tyVarNames ty))
-  (fromAstType tvs ty, tvs)
+  let etbl = freshEffMap (dedupS (effTailNames ty))
+  (fromAstTypeE etbl tvs ty, tvs)
 
 -- the (iface, tyvarName) pairs of a signature's `=>` constraints (each constraint
 -- argument that is a single type variable; multi-param/structured args skipped)
