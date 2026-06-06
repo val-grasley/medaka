@@ -44,12 +44,15 @@
 --
 -- REUSE DISCIPLINE (Axis 2 / §2.2): the VM reuses eval.mdk's runtime verbatim —
 -- Value, env, applyValue/dispatch/fall-through, matchPat, narrowMethod/routeTag/
--- applyDicts, coalesceImpls, externs, pp_value, and all slice-3 value helpers.
--- Zero eval.mdk changes — every name used here was already exported.
--- Slice 6 (multi-module per-module frames) remains deferred.
+-- applyDicts, coalesceImpls, externs, pp_value, all slice-3 value helpers, and
+-- the import-frame machinery (importFrameOf/pubReexports).  Zero eval.mdk or
+-- core_ir_eval.mdk changes — every reused name was already exported.
+-- Slice 6 (multi-module per-module frames — bcEvalModules/bcEvalModulesOutput)
+-- is implemented at the bottom of this file.
 
-import ast.{Lit(..), Pat(..), Addr(..), Route(..)}
+import ast.{Lit(..), Pat(..), Addr(..), Route(..), Decl}
 import core_ir.{CExpr(..), CStmt(..), CProgram(..), CBind(..), CClause(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..), CField(..), CImplEntry(..), CImplBody(..)}
+import core_ir_lower.{lowerGroups, lowerImplsWith}
 import util.{listLen, concatMapList}
 import eval.{
   Value(..), EvalEnv(..),
@@ -59,7 +62,9 @@ import eval.{
   lookupBinding, isNullary, force, ppValue, ctorToTypeRef,
   evalIndex, evalSlice, evalRange, rangeListMk, rangeArrayMk,
   evalRecordUpdate, evalValueField, evalField,
-  narrowMethod, routeTag, applyDicts, coalesceImpls, nub
+  narrowMethod, routeTag, applyDicts, coalesceImpls, nub,
+  buildCtorToType, collectCtors, buildIfaceDispatch, implMethodNames,
+  importFrameOf, pubReexports, outputRef
 }
 
 -- ── compiled arm/guard types (slice 2) ────────────────────────────────────
@@ -674,3 +679,81 @@ bcImplMethodValue env _ pats body =
 -- ── readable tag for unhandled CExpr nodes ─────────────────────────────────
 cNodeTag : CExpr -> String
 cNodeTag _ = "unknown CExpr node"
+
+-- ── slice 6: multi-module per-module frames ────────────────────────────────
+-- Mirror of cevalModules in core_ir_eval.mdk — the loader-driven bytecode VM
+-- path.  Structure matches cevalModules EXACTLY (prelude installs globally,
+-- each module's lowered CBind groups install into its own local frame, ctors +
+-- impls coalesce globally) with one swap: `bcInstallGroups` (bytecode VM, uses
+-- bcGroupValue) in place of `cInstallTopGroups` (ceval, uses cTopGroupValue).
+-- Zero eval.mdk / core_ir_eval.mdk changes — all helpers already exported.
+
+data BcModInfo = BcModInfo String (List Decl) (List CBind) (List CImplEntry) (List (String, Ref Value)) EvalEnv
+
+export
+bcEvalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
+bcEvalModules preludeDecls modules =
+  let moduleDecls = concatMapList snd modules
+  let allDecls = preludeDecls ++ moduleDecls
+  let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
+  let disp = buildIfaceDispatch allDecls
+  let ctors = collectCtors allDecls
+  let preludeGroups = lowerGroups preludeDecls
+  let preludeImpls = lowerImplsWith disp preludeDecls
+  let globalNames = map fst boolSeeds ++ map fst externBindings ++ map fst ctors ++ implMethodNames allDecls ++ map bcBindName preludeGroups
+  let globalCells = map (n => (n, Ref VUnit)) globalNames
+  let globalEnv = EvalEnv [globalCells]
+  let mods = bcBuildModInfos disp globalCells [] modules
+  let implEntries = map (bcImplEntryValue globalEnv) preludeImpls ++ concatMapList bcModImplValues mods
+  let _ = installConsts globalCells boolSeeds
+  let _ = installConsts globalCells externBindings
+  let _ = installConsts globalCells ctors
+  let _ = installConsts globalCells (coalesceImpls implEntries)
+  let _ = bcInstallGroups globalEnv globalCells preludeGroups
+  let _ = bcInstallModGroups mods
+  bcRootLocals mods
+
+-- pass 1: lower + allocate each module's local cells and build its env (imports
+-- resolved against already-processed modules, since loader order is
+-- dependency-first).  Mirror of cBuildModInfos in core_ir_eval.mdk.
+bcBuildModInfos : List ((String, String), List Int) -> List (String, Ref Value) -> List (String, List (String, Ref Value)) -> List (String, List Decl) -> List BcModInfo
+bcBuildModInfos _ _ _ [] = []
+bcBuildModInfos disp globalCells exportsMap ((mid, decls)::rest) =
+  let cbinds = lowerGroups decls
+  let cimpls = lowerImplsWith disp decls
+  let localCells = map (n => (n, Ref VUnit)) (map bcBindName cbinds)
+  let imports = importFrameOf exportsMap decls
+  let menv = EvalEnv [localCells, imports, globalCells]
+  let exports = localCells ++ pubReexports exportsMap decls
+  BcModInfo mid decls cbinds cimpls localCells menv :: bcBuildModInfos disp globalCells ((mid, exports)::exportsMap) rest
+
+-- a module's impl methods / interface defaults close over ITS env but coalesce
+-- into the shared global VMulti (mirror of cModImplValues in core_ir_eval.mdk)
+bcModImplValues : BcModInfo -> <Mut> List (String, (Int, Value))
+bcModImplValues (BcModInfo _ _ _ cimpls _ menv) = map (bcImplEntryValue menv) cimpls
+
+-- pass 2: install each module's groups into its own cells (its env)
+bcInstallModGroups : List BcModInfo -> <Mut> Unit
+bcInstallModGroups [] = ()
+bcInstallModGroups ((BcModInfo _ _ cbinds _ cells menv)::rest) =
+  let _ = bcInstallGroups menv cells cbinds
+  bcInstallModGroups rest
+
+-- the root module is last in dependency order; its locals hold `main`
+bcRootLocals : List BcModInfo -> <Mut> List (String, Value)
+bcRootLocals [] = []
+bcRootLocals [BcModInfo _ _ _ _ cells _] = map cellResult cells
+bcRootLocals (_::rest) = bcRootLocals rest
+
+bcRunMainForEffect : List (String, Value) -> <Mut> Value
+bcRunMainForEffect binds = match lookupBinding "main" binds
+  Some v => force v
+  None => VUnit
+
+export
+bcEvalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
+bcEvalModulesOutput preludeDecls modules =
+  let _ = set_ref outputRef ""
+  let binds = bcEvalModules preludeDecls modules
+  let _ = bcRunMainForEffect binds
+  outputRef.value

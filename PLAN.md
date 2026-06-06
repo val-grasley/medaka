@@ -165,6 +165,13 @@ deliberately deferred to here:
     Scope: arithmetic / comparisons / `let` / `if` / value bindings / print only —
     **not** the real backend (no closures/ADTs/records/dispatch/GC; out-of-scope
     nodes panic). See [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4.
+- ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `selfhost/core_ir.mdk`,
+  `core_ir_lower.mdk`, `core_ir_eval.mdk` (+ sexp/round-trip gates). 47/47
+  fixtures byte-identical across 6 corpora. See `selfhost/README.md`.
+- ✅ **§2.2 — Bytecode VM (all 6 slices) DONE (2026-06-05).** `selfhost/bytecode.mdk`
+  (compiler + stack VM) + single-file driver + multi-module driver. 22/22 fixtures
+  (18 single-file slices 1–5 + 4 multi-module slice 6). Zero `eval.mdk` changes —
+  full Axis-2 reuse. See `selfhost/README.md`.
 - **Bootstrap closure:** self-hosted compiler + LLVM backend compiles itself to a
   standalone native binary — the finish line.
 
