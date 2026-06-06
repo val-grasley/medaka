@@ -1361,6 +1361,10 @@ let primitives : (string * value) list =
     (* Wall-clock time in seconds (gettimeofday; monotonic-ish).  Used by the
        self-hosted perf driver to bracket each pipeline stage. *)
     ("wallTimeSec", VPrim (fun _ -> VFloat (Unix.gettimeofday ())));
+    (* Total GC-allocated bytes since process start (Gc.allocated_bytes).
+       Used by the self-hosted perf driver as an allocation-count proxy;
+       monotonically increasing, so deltas give per-phase allocation. *)
+    ("allocBytes", VPrim (fun _ -> VFloat (Gc.allocated_bytes ())));
     (* Structural hash of any value (Module 6 hash containers). Non-negative
        (OCaml's Hashtbl.hash returns [0, 2^30)). Consistent with structural
        `eq`, so it must agree with the key type's `Eq` impl. *)

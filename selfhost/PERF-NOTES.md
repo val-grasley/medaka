@@ -744,3 +744,89 @@ mark_batch / desugar_batch unchanged.
   shrink when the VM replaces tree-walking.  Use `perf_main.mdk` for the
   multi-module VM-vs-tree-walker comparison; this table is the AST tree-walker
   baseline for the single-file stages.
+
+---
+
+### 2026-06-05 — multi-module per-stage timing + allocation counter
+
+**Added:**
+- `extern allocBytes : Unit -> <IO> Float` (stdlib/runtime.mdk + lib/eval.ml) —
+  total GC-allocated bytes since process start, backed by `Gc.allocated_bytes ()`.
+  Monotonically increasing; deltas give per-phase allocation pressure (counts
+  OCaml values created through the tree-walker, including GC-reclaimed temporaries).
+- `selfhost/timer.mdk`: `allocSnap`, `emitPhaseA`, `emitTotalA` — new variants
+  of the timing helpers that include an allocation-delta column (bytes → MB).
+- `selfhost/typecheck.mdk`: `markModules` exported — the mark sub-phase of
+  `elaborateModules` (compute rpNames + prePassDict over the full module graph);
+  allows profiling drivers to bracket mark vs typecheck separately.
+- `selfhost/profile_modules_main.mdk` (NEW) — multi-module per-stage profiler:
+  times parse, load, desugar, mark, typecheck (no eval) over `all_modules_entry.mdk`.
+  Breaks out the `elaborate` lump that `perf_main.mdk` reports as one phase.
+- `test/profile_selfhost.sh` updated: adds `profile_modules` section, handles
+  4-field output format (stage / time / allocMB / ops).
+- `selfhost/profile_main.mdk` updated: uses `emitPhaseA`/`emitTotalA` — alloc
+  column now appears in the single-file table too.
+
+**Correctness:** check_modules_batch 13 ok; selfproc 16 ok; eval_dict 16 ok;
+mark_batch/desugar_batch 121 matched; eval_modules 4 ok.  perf_main.mdk still
+works with the old 3-field `emitPhase` format (unchanged).
+
+## Baseline (min-of-3, 2026-06-05, via profile_selfhost.sh 3)
+
+Alloc column = `Gc.allocated_bytes()` delta per phase (total bytes allocated by
+the OCaml process during that phase, including short-lived intermediates reclaimed
+by GC — NOT peak live memory).  Useful for comparing allocation pressure between
+stages and tracking regressions.
+
+### selfhost/lexer.mdk — 958 lines, 406 post-desugar decls, no imports
+
+| Stage         | min-of-3 | alloc     | ops          |
+|---|--:|--:|--|
+| parse-prelude | 0.225s   | 1025.7MB  | runtime+core |
+| parse         | 0.352s   | 1588.3MB  | 405 decls    |
+| desugar       | 0.037s   | 374.9MB   | 406 decls    |
+| resolve       | 0.140s   | 835.4MB   | 406 decls    |
+| mark          | 0.051s   | 341.4MB   | 406 decls    |
+| typecheck     | 0.168s   | 883.4MB   | 406 decls    |
+| **total**     | **0.973s** | **5049.3MB** |          |
+
+### selfhost/parser.mdk — 2424 lines, 883 post-desugar decls (parse/desugar/resolve/mark only)
+
+| Stage         | min-of-3 | alloc     | ops          |
+|---|--:|--:|--|
+| parse-prelude | 0.224s   | 1025.7MB  | runtime+core |
+| parse         | 0.578s   | 2582.0MB  | 883 decls    |
+| desugar       | 0.038s   | 371.2MB   | 883 decls    |
+| resolve       | 0.422s   | 2239.6MB  | 883 decls    |
+| mark          | 0.063s   | 403.1MB   | 883 decls    |
+| typecheck     | *(panic — unresolved imports)* | | |
+
+### selfhost/all_modules_entry.mdk — 15 modules, 5017 post-desugar decls (multi-module, no eval)
+
+| Stage      | min-of-3 | alloc      | ops          |
+|---|--:|--:|--|
+| parse      | 0.230s   | 1025.7MB   | runtime+core |
+| load       | 3.463s   | 14903.7MB  | 15 modules   |
+| desugar    | 0.239s   | 2380.5MB   | 5017 decls   |
+| mark       | 0.083s   | 633.9MB    | 5017 decls   |
+| typecheck  | 2.026s   | 10410.0MB  | 5017 decls   |
+| **total**  | **6.046s** | **29353.8MB** |          |
+
+**Takeaways from the multi-module breakdown:**
+- **`load` (3.46s = 57.3%) dominates** — confirmed by `perf_main.mdk` baseline.
+  This is self-hosted lex+parse for 15 modules through the OCaml tree-walker;
+  load allocates 14.9 GB of short-lived values (~4.4 GB/s).
+- **`typecheck` (2.03s = 33.5%)** is the second largest phase.  The `elaborate`
+  lump in `perf_main.mdk` (2.13s) ≈ mark (0.083s) + typecheck (2.026s) + small
+  route-stamping overhead — confirming mark is not a bottleneck.
+- **`mark` (0.083s = 1.4%)** is negligible.  It's a pure prePassDict rewrite
+  with no inference — cheap even for 5017 decls.
+- **`desugar` (0.239s = 4.0%)** is also minor.
+- **Allocation rate:** load is the highest-pressure phase (14.9 GB for 3.46s
+  ≈ 4.3 GB/s); typecheck is second (10.4 GB for 2.03s ≈ 5.1 GB/s — more
+  allocation-dense per second due to HM unification creating many type cells).
+- **§2.2 VM capstone:** when the VM is complete, rerun `sh test/profile_selfhost.sh 3`.
+  The `load` phase uses the self-hosted OCaml tree-walker lexer+parser (not changed
+  by the VM); the `typecheck` phase should shrink when the VM replaces eval.
+  Compare the `typecheck` row above against the VM-driven baseline to measure the
+  VM speedup directly.
