@@ -581,10 +581,28 @@ globally, each module's lowered `CBind` groups install into its own local frame
 (`CModInfo`), ctors + impls coalesce globally, and the value-agnostic import-frame
 machinery (`importFrameOf`/`pubReexports`) is reused verbatim; the only Core-IR
 delta is the per-module LOWERING (`lowerGroups` + `lowerImplsWith` against the
-joint dispatch table). **Remaining:** decision-tree match *compilation* (today
-`CMatch` is ordered arms — semantically equal, gate holds). The slot-*indexing*
-consume half of lexical addressing (STAGE2 §2.0) is still its own parked
-supervised rework — the Core IR already carries the addresses.
+joint dispatch table).
+
+**Decision-tree match compilation — DONE.** `lower (EMatch …)` now compiles a
+match's ordered arms into a `CDecision scrut arms tree` (a decision tree over
+`CTree`/`CTBranch`/`CHead`), driven by the same Maranget pattern matrix
+(`specialize`/`default`/head-ctors) the exhaust stage uses — only the *output*
+differs (a tree, not a usefulness verdict). The tree tests each scrutinee
+field's head once across all arms instead of re-testing per clause; leaves carry
+an arm INDEX and the evaluator re-matches that one arm's pattern to recover its
+bindings (a single per-arm walk), so the tree itself needs no occurrence/binding
+bookkeeping. Guard fall-through is preserved by `CTGuard i fail`: a failed guard
+resumes the ordered semantics over the matrix rows below the guarded clause,
+compiled at the same column context so it reads the same live sub-values. The
+evaluator (`cevalDecision`/`cevalTree`/`headExtract`) reuses `eval.mdk`'s
+`matchPat` for BOTH the head test and field extraction, so list/tuple/bool/unit
+value shapes need no new value code. Matches whose arms use record/range
+patterns fall back to the ordered-arm `CMatch` (correctness first); on the
+engine corpus 14/16 fixtures route through the tree, 2 (`records`/
+`string_ranges_infix`) take the fall-back. All six Core-IR equivalence harnesses
+stay byte-identical. **Remaining:** the slot-*indexing* consume half of lexical
+addressing (STAGE2 §2.0) is still its own parked supervised rework — the Core IR
+already carries the addresses.
 
 ---
 

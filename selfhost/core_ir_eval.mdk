@@ -26,7 +26,7 @@
 -- on the typed lowering path.
 
 import ast.{Lit(..), Pat(..), Addr(..), Route(..), Decl}
-import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..)}
+import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..), CTree(..), CTBranch(..), CHead(..)}
 import core_ir_lower.{lowerGroups, lowerImplsWith}
 import util.{concatMapList}
 import eval.{
@@ -51,6 +51,7 @@ ceval env (CLet True (PVar f) e1 e2) = cevalRecLet env f e1 e2
 ceval env (CLet _ pat e1 e2) = cevalLet env pat e1 e2
 ceval env (CLetGroup binds body) = cevalLetGroup env binds body
 ceval env (CMatch scrut arms) = cevalMatch env (ceval env scrut) arms
+ceval env (CDecision scrut arms tree) = cevalDecision env (ceval env scrut) arms tree
 ceval env (CIf c t e) = cevalIf env (ceval env c) t e
 ceval env (CBinPrim op l r) = cevalBinPrim op (ceval env l) (ceval env r)
 ceval env (CUnOp op e) = evalUnop op (ceval env e)
@@ -127,6 +128,105 @@ cevalGuards env ((CGBool g)::qs) = match ceval env g
 cevalGuards env ((CGBind p e)::qs) = match matchPat p (ceval env e)
   Some b => cevalGuards (extendEnv env b) qs
   None => None
+
+-- ── decision-tree match evaluation (§2.1) ──────────────────────────────────
+-- Walk the compiled CTree against the scrutinee value, testing each field's
+-- head once and routing to the selected arm — the same result cevalMatch's
+-- ordered arms compute, with the per-clause re-tests collapsed into one tree.
+-- `root` is the whole scrutinee (kept for the leaf re-match that recovers
+-- bindings + runs guards); `occs` is the live column values (the matrix
+-- columns), starting as just [root] and expanding into a constructor's fields
+-- as the tree descends — kept in lockstep with the lowering's specialization.
+cevalDecision : EvalEnv -> Value -> List CArm -> CTree -> <Mut> Value
+cevalDecision env root arms tree = cevalTree env root arms [root] tree
+
+cevalTree : EvalEnv -> Value -> List CArm -> List Value -> CTree -> <Mut> Value
+cevalTree _ _ _ _ CTFail = panic "no matching clause in match"
+cevalTree env root arms _ (CTLeaf i) = cevalArm env root arms i
+cevalTree env root arms occs (CTGuard i fail) = cevalGuardedArm env root arms occs i fail
+cevalTree env root arms occs (CTDrop sub) = cevalTree env root arms (cOccsTail occs) sub
+cevalTree env root arms occs (CTSwitch branches dft) =
+  cevalSwitch env root arms occs branches dft
+
+cOccsTail : List Value -> List Value
+cOccsTail [] = []
+cOccsTail (_::xs) = xs
+
+-- a terminal leaf: re-match the selected arm's ORIGINAL pattern against the
+-- whole scrutinee (guaranteed to match — the tree path implies it) to recover
+-- its variable bindings, then evaluate its body.
+cevalArm : EvalEnv -> Value -> List CArm -> Int -> <Mut> Value
+cevalArm env root arms i = match nthArm arms i
+  Some (CArm pat _ body) => cevalArmBody env root pat body
+  None => panic "core_ir decision tree: arm index out of range"
+
+cevalArmBody : EvalEnv -> Value -> Pat -> CExpr -> <Mut> Value
+cevalArmBody env root pat body = match matchPat pat root
+  Some binds => ceval (extendEnv env binds) body
+  None => panic "core_ir decision tree: leaf pattern did not match scrutinee"
+
+-- a guarded leaf: re-match for bindings, run the guards; on success eval the
+-- body, on failure resume the ordered semantics via the `fail` subtree (at the
+-- current column context, so its switches read the same live sub-values).
+cevalGuardedArm : EvalEnv -> Value -> List CArm -> List Value -> Int -> CTree -> <Mut> Value
+cevalGuardedArm env root arms occs i fail = match nthArm arms i
+  Some (CArm pat guards body) => cevalGuardedBody env root arms occs pat guards body fail
+  None => panic "core_ir decision tree: guarded arm index out of range"
+
+cevalGuardedBody : EvalEnv -> Value -> List CArm -> List Value -> Pat -> List CGuard -> CExpr -> CTree -> <Mut> Value
+cevalGuardedBody env root arms occs pat guards body fail = match matchPat pat root
+  None => panic "core_ir decision tree: guarded pattern did not match scrutinee"
+  Some binds => match cevalGuards (extendEnv env binds) guards
+    Some env2 => ceval env2 body
+    None => cevalTree env root arms occs fail
+
+-- a switch: the head occurrence (column 0) is `occs`'s head; try each branch's
+-- head against it (constructors/literals are disjoint, so the first match is
+-- THE match), descending into the matched head's fields ++ the remaining
+-- columns; if none match, the default branch drops the head column.
+cevalSwitch : EvalEnv -> Value -> List CArm -> List Value -> List CTBranch -> CTree -> <Mut> Value
+cevalSwitch env root arms occs branches dft = match occs
+  [] => cevalTree env root arms [] dft
+  (v::rest) => cevalSwitchOn env root arms v rest branches dft
+
+cevalSwitchOn : EvalEnv -> Value -> List CArm -> Value -> List Value -> List CTBranch -> CTree -> <Mut> Value
+cevalSwitchOn env root arms _ rest [] dft = cevalTree env root arms rest dft
+cevalSwitchOn env root arms v rest ((CTBranch head sub)::more) dft =
+  match headExtract head v
+    Some subs => cevalTree env root arms (subs ++ rest) sub
+    None => cevalSwitchOn env root arms v rest more dft
+
+-- test a head against a value, returning its decomposed sub-values when it
+-- matches.  Reuses matchPat (with fresh binders) for BOTH the test and the
+-- field extraction, so list/tuple/bool/unit value shapes need no special code.
+headExtract : CHead -> Value -> Option (List Value)
+headExtract (HCon c a) v = extractWith (PCon c (cBinders a)) v
+headExtract (HTuple n) v = extractWith (PTuple (cBinders n)) v
+headExtract HCons v = extractWith (PCons (PVar "$d0") (PVar "$d1")) v
+headExtract HNil v = extractWith (PList []) v
+headExtract HUnit v = extractWith (PLit LUnit) v
+headExtract (HLit l) v = extractWith (PLit l) v
+
+extractWith : Pat -> Value -> Option (List Value)
+extractWith p v = match matchPat p v
+  Some binds => Some (map snd binds)
+  None => None
+
+-- `a` fresh binder patterns ($d0, $d1, …); matchPats binds them left-to-right,
+-- so `map snd` recovers the constructor's fields in order.  The names are
+-- discarded, so collisions are harmless.
+cBinders : Int -> List Pat
+cBinders n = cBindersGo 0 n
+
+cBindersGo : Int -> Int -> List Pat
+cBindersGo i n
+  | i >= n = []
+  | otherwise = PVar ("$d" ++ intToString i) :: cBindersGo (i + 1) n
+
+nthArm : List CArm -> Int -> Option CArm
+nthArm (a::_) 0 = Some a
+nthArm (_::rest) n = nthArm rest (n - 1)
+nthArm [] _ = None
 
 cevalRecLet : EvalEnv -> String -> CExpr -> CExpr -> <Mut> Value
 cevalRecLet env f e1 e2 =

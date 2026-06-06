@@ -11,9 +11,9 @@
 -- is a clean diff, not a rewrite).
 
 import ast.{Lit(..), Pat(..), Expr(..), Arm(..), Guard(..), DoStmt(..), FieldAssign(..), LetBind(..), FunClause(..), Addr(..), Decl(..), Variant(..), ConPayload(..), Ty(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..)}
-import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..)}
+import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..), CTree(..), CTBranch(..), CHead(..)}
 import eval.{buildCtorToType, buildIfaceDispatch, lookupPositions, tyvarsInArgs, headTyconHead}
-import util.{contains, concatMapList, listLen}
+import util.{contains, concatMapList, listLen, allList, anyList}
 
 -- a synthetic binder for the lowered composition operators; constructed
 -- directly (never parsed) so the unusual name is harmless.
@@ -30,7 +30,7 @@ lower (EApp f x) = CApp (lower f) (lower x)
 lower (ELam pats body) = CLam pats (lower body)
 lower (ELet _ recFlag pat e1 e2) = CLet recFlag pat (lower e1) (lower e2)
 lower (ELetGroup binds body) = CLetGroup (map lowerBind binds) (lower body)
-lower (EMatch scrut arms) = CMatch (lower scrut) (map lowerArm arms)
+lower (EMatch scrut arms) = lowerMatch (lower scrut) arms
 lower (EIf c t e) = CIf (lower c) (lower t) (lower e)
 lower (EBinOp op l r) = lowerBinop op l r
 lower (EInfix op l r) = CApp (CApp (CVar op AGlobal) (lower l)) (lower r)
@@ -75,6 +75,230 @@ lowerArm (Arm pat guards body) = CArm pat (map lowerGuard guards) (lower body)
 lowerGuard : Guard -> CGuard
 lowerGuard (GBool e) = CGBool (lower e)
 lowerGuard (GBind p e) = CGBind p (lower e)
+
+-- ── decision-tree match compilation (§2.1) ─────────────────────────────────
+-- Compile a `match`'s ordered arms into a CDecision (decision tree) when every
+-- arm pattern is tree-able; otherwise emit the ordered-arm CMatch unchanged.
+-- The fall-back keeps the proven ordered path for record/range patterns the
+-- tree compiler doesn't model — correctness first, the tree captures the win on
+-- the constructor/list/tuple/literal matches that dominate the lexer + parser.
+lowerMatch : CExpr -> List Arm -> CExpr
+lowerMatch cscrut arms
+  | allList armTreeable arms = CDecision cscrut (map lowerArm arms) (compileArms arms)
+  | otherwise = CMatch cscrut (map lowerArm arms)
+
+armTreeable : Arm -> Bool
+armTreeable (Arm pat _ _) = treeablePat pat
+
+-- a pattern is tree-able if it is built only from constructors / lists / tuples
+-- / literals / vars / wildcards / as-patterns.  Record + range patterns route
+-- the whole match to the ordered fall-back (the leaf re-match still handles an
+-- as-binding, so PAs is tree-able iff its inner pattern is).
+treeablePat : Pat -> Bool
+treeablePat PWild = True
+treeablePat (PVar _) = True
+treeablePat (PLit _) = True
+treeablePat (PCon _ args) = allList treeablePat args
+treeablePat (PCons h t) = treeablePat h && treeablePat t
+treeablePat (PList ps) = allList treeablePat ps
+treeablePat (PTuple ps) = allList treeablePat ps
+treeablePat (PAs _ p) = treeablePat p
+treeablePat (PRng _ _ _) = False
+treeablePat (PRec _ _ _) = False
+
+compileArms : List Arm -> CTree
+compileArms arms = compileTree (map armHasGuard arms) (initialRows arms 0)
+
+armHasGuard : Arm -> Bool
+armHasGuard (Arm _ gs _) = not (nullL gs)
+
+-- one matrix row per arm: its (canonicalised) pattern as a single column, paired
+-- with the arm's index (the leaves carry it back to the original CArm).
+initialRows : List Arm -> Int -> List (List Pat, Int)
+initialRows [] _ = []
+initialRows ((Arm pat _ _)::rest) i = ([canonPat pat], i) :: initialRows rest (i + 1)
+
+-- ── the Maranget recursion, emitting a tree (mirrors exhaust.mdk's matrix ops,
+-- re-implemented here over index-carrying rows since exhaust's are stage-local).
+-- Always discriminates the leftmost column; a row's index rides along through
+-- specialization so the leaf knows which arm it selected.
+compileTree : List Bool -> List (List Pat, Int) -> CTree
+compileTree _ [] = CTFail
+compileTree guards (row::rest) = compileRows guards row rest (row::rest)
+
+compileRows : List Bool -> (List Pat, Int) -> List (List Pat, Int) -> List (List Pat, Int) -> CTree
+compileRows guards (pats, i) rest rows
+  | allWild pats = leafOrGuard guards i rest
+  | anyList rowHasCon rows = buildConSwitch guards rows
+  | anyList rowHasLit rows = buildLitSwitch guards rows
+  | otherwise = CTDrop (compileTree guards (map dropHead rows))
+
+-- the first (highest-priority still-viable) row matches everything reaching
+-- here: a guarded clause becomes a CTGuard whose failure resumes at `rest`; an
+-- unguarded one terminates (later rows are unreachable, exactly as ordered).
+leafOrGuard : List Bool -> Int -> List (List Pat, Int) -> CTree
+leafOrGuard guards i rest
+  | nthBool guards i = CTGuard i (compileTree guards rest)
+  | otherwise = CTLeaf i
+
+buildConSwitch : List Bool -> List (List Pat, Int) -> CTree
+buildConSwitch guards rows =
+  CTSwitch (map (conBranch guards rows) (distinctConHeads rows))
+    (compileTree guards (defaultMatrix rows))
+
+conBranch : List Bool -> List (List Pat, Int) -> (String, Int) -> CTBranch
+conBranch guards rows (c, a) =
+  CTBranch (decodeHead c a) (compileTree guards (specializeCon c a rows))
+
+buildLitSwitch : List Bool -> List (List Pat, Int) -> CTree
+buildLitSwitch guards rows =
+  CTSwitch (map (litBranch guards rows) (distinctLits rows))
+    (compileTree guards (defaultMatrix rows))
+
+litBranch : List Bool -> List (List Pat, Int) -> Lit -> CTBranch
+litBranch guards rows l = CTBranch (HLit l) (compileTree guards (specializeLit l rows))
+
+-- map a canonical constructor name + arity to the runtime head the evaluator
+-- tests with (the synthetic list/tuple/unit names canonPat introduced map back
+-- to their real Value shapes; everything else is a plain named constructor).
+decodeHead : String -> Int -> CHead
+decodeHead "Cons" _ = HCons
+decodeHead "Nil" _ = HNil
+decodeHead "Unit" _ = HUnit
+decodeHead "__tuple__" a = HTuple a
+decodeHead c a = HCon c a
+
+-- ── canonical patterns for the matrix (mirror exhaust.mdk's desugarPat) ─────
+-- Var → wildcard; lists → Cons/Nil chains; tuples → a synthetic constructor;
+-- Bool/Unit literals → nullary constructors — so specialization is uniform.
+-- Only tree-able patterns reach here (PRng/PRec are gated out upstream).
+tupleName : String
+tupleName = "__tuple__"
+
+canonPat : Pat -> Pat
+canonPat (PVar _) = PWild
+canonPat PWild = PWild
+canonPat (PLit (LBool True)) = PCon "True" []
+canonPat (PLit (LBool False)) = PCon "False" []
+canonPat (PLit LUnit) = PCon "Unit" []
+canonPat (PLit l) = PLit l
+canonPat (PTuple ps) = PCon tupleName (map canonPat ps)
+canonPat (PCon c args) = PCon c (map canonPat args)
+canonPat (PCons h t) = PCon "Cons" [canonPat h, canonPat t]
+canonPat (PList []) = PCon "Nil" []
+canonPat (PList (h::r)) = PCon "Cons" [canonPat h, canonPat (PList r)]
+canonPat (PAs _ p) = canonPat p
+canonPat (PRng _ _ _) = PWild
+canonPat (PRec _ _ _) = PWild
+
+-- ── matrix predicates / column analysis ────────────────────────────────────
+allWild : List Pat -> Bool
+allWild ps = allList isWildPat ps
+
+isWildPat : Pat -> Bool
+isWildPat PWild = True
+isWildPat _ = False
+
+rowHasCon : (List Pat, Int) -> Bool
+rowHasCon ((PCon _ _)::_, _) = True
+rowHasCon _ = False
+
+rowHasLit : (List Pat, Int) -> Bool
+rowHasLit ((PLit _)::_, _) = True
+rowHasLit _ = False
+
+dropHead : (List Pat, Int) -> (List Pat, Int)
+dropHead (_::ps, i) = (ps, i)
+dropHead ([], i) = ([], i)
+
+-- distinct head constructors present in column 0, first-seen order, each with
+-- its arity (uniform per name in a well-typed column).
+distinctConHeads : List (List Pat, Int) -> List (String, Int)
+distinctConHeads rows = dedupHeads (colHeads rows) []
+
+colHeads : List (List Pat, Int) -> List (String, Int)
+colHeads [] = []
+colHeads ((PCon c args::_, _)::rest) = (c, listLen args) :: colHeads rest
+colHeads (_::rest) = colHeads rest
+
+dedupHeads : List (String, Int) -> List String -> List (String, Int)
+dedupHeads [] _ = []
+dedupHeads ((c, a)::rest) seen
+  | contains c seen = dedupHeads rest seen
+  | otherwise = (c, a) :: dedupHeads rest (c :: seen)
+
+distinctLits : List (List Pat, Int) -> List Lit
+distinctLits rows = dedupLits (colLits rows) []
+
+colLits : List (List Pat, Int) -> List Lit
+colLits [] = []
+colLits ((PLit l::_, _)::rest) = l :: colLits rest
+colLits (_::rest) = colLits rest
+
+dedupLits : List Lit -> List Lit -> List Lit
+dedupLits [] _ = []
+dedupLits (l::rest) seen
+  | anyList (litEq l) seen = dedupLits rest seen
+  | otherwise = l :: dedupLits rest (l :: seen)
+
+-- ── matrix specialization / default (over index-carrying rows) ─────────────
+filterMapRows : ((List Pat, Int) -> Option (List Pat, Int)) -> List (List Pat, Int) -> List (List Pat, Int)
+filterMapRows _ [] = []
+filterMapRows f (r::rest) = match f r
+  Some r2 => r2 :: filterMapRows f rest
+  None => filterMapRows f rest
+
+-- specialize on constructor c (arity): a matching head expands to its fields
+-- ++ the rest; a wildcard head spreads `arity` wildcards; anything else drops.
+specializeCon : String -> Int -> List (List Pat, Int) -> List (List Pat, Int)
+specializeCon c arity rows = filterMapRows (specConRow c arity) rows
+
+specConRow : String -> Int -> (List Pat, Int) -> Option (List Pat, Int)
+specConRow c _ (PCon c2 args::rest, i) = if c2 == c then Some (args ++ rest, i) else None
+specConRow _ arity (PWild::rest, i) = Some (replicateWild arity ++ rest, i)
+specConRow _ _ _ = None
+
+-- specialize on a literal: a matching/​wildcard head drops (arity 0), else drop.
+specializeLit : Lit -> List (List Pat, Int) -> List (List Pat, Int)
+specializeLit l rows = filterMapRows (specLitRow l) rows
+
+specLitRow : Lit -> (List Pat, Int) -> Option (List Pat, Int)
+specLitRow l (PLit l2::rest, i) = if litEq l2 l then Some (rest, i) else None
+specLitRow _ (PWild::rest, i) = Some (rest, i)
+specLitRow _ _ = None
+
+-- the default matrix: rows whose head is a wildcard (head dropped); used for the
+-- switch's default branch and (when column 0 is all wildcards) CTDrop.
+defaultMatrix : List (List Pat, Int) -> List (List Pat, Int)
+defaultMatrix rows = filterMapRows defRow rows
+
+defRow : (List Pat, Int) -> Option (List Pat, Int)
+defRow (PWild::rest, i) = Some (rest, i)
+defRow _ = None
+
+-- ── small local helpers ────────────────────────────────────────────────────
+replicateWild : Int -> List Pat
+replicateWild n
+  | n <= 0 = []
+  | otherwise = PWild :: replicateWild (n - 1)
+
+litEq : Lit -> Lit -> Bool
+litEq (LInt a) (LInt b) = a == b
+litEq (LFloat a) (LFloat b) = a == b
+litEq (LString a) (LString b) = a == b
+litEq (LChar a) (LChar b) = a == b
+litEq (LBool a) (LBool b) = a == b
+litEq LUnit LUnit = True
+litEq _ _ = False
+
+nthBool : List Bool -> Int -> Bool
+nthBool (b::_) 0 = b
+nthBool (_::rest) n = nthBool rest (n - 1)
+nthBool [] _ = False
+
+nullL : List a -> Bool
+nullL [] = True
+nullL _ = False
 
 lowerField : FieldAssign -> CField
 lowerField (FieldAssign k e) = CField k (lower e)
