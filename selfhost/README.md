@@ -63,8 +63,8 @@ diff with `lib/`:
 | `core_ir_typed_main.mdk` | Typed Core IR entry (analog of `eval_typed_main`): `medaka run selfhost/core_ir_typed_main.mdk <runtime.mdk> <prelude.mdk>... <src.mdk>` desugars → `typecheck.elaborate` (stamps EMethodAt/EDictAt routes) → lowers (routes read out into `CMethod`/`CDict`) → `cevalOutput`. The ONLY corpus that drives the `CMethod` arm — return-position dispatch (RKey), e.g. a user Applicative's `pure`. Diffs stdout against the reference typed path `medaka run <file>` (`test/diff_selfhost_core_ir_typed.sh`, 2). |
 | `core_ir_run_main.mdk` | True-execution (stdout) Core IR entry (analog of `eval_run_main`): `medaka run selfhost/core_ir_run_main.mdk <prelude.mdk>... <src.mdk>` prepends the prelude (prelude-shadow-dropping the user's redefinitions, like `eval_run_main`), annotates + lowers, and evaluates the Core IR for its OUTPUT (`cevalOutput`). Diffs the captured stdout against the `=== EVAL ===` goldens (`test/diff_selfhost_core_ir_run.sh`, 18) — the SAME goldens `eval_run_main` matches. |
 | `core_ir_modules_main.mdk` | Multi-module Core IR entry (the loader-driven Core-IR path — analog of `eval_modules_main`): `medaka run selfhost/core_ir_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, desugars + annotates each, LOWERS them per-module to Core IR and evaluates them in per-module frames over the shared prelude (`core_ir_eval.cevalModules`), printing the root module's `main` stdout. Diffs against `medaka run <entry>` (`test/diff_selfhost_core_ir_modules.sh`, 4) — the SAME oracle `eval_modules_main` uses. |
-| `bytecode.mdk` | **Stage 2 §2.2 bytecode compiler + stack VM** (slice 1) — the first lowering of the Core IR *below* an ISA. `compile : CExpr -> List Instr` emits a flat, position-independent instruction stream (relative jumps) for the slice-1 engine primitives (literal constants, lexically-addressed variables, application, primitive binops/unops, tuples, lists, `if`, let-sequencing blocks); `runChunk` is a stack machine threading `(ip, value-stack, env)` over the `Instr` `Array`. REUSES `eval.mdk`'s host runtime verbatim — `Value`, env, `applyValue`/dispatch/fall-through, `matchPat`, the arithmetic kernel, externs, `pp_value`. A compiled function installs as a `VClosureF` whose host-fn body is `\e -> runChunk e chunk`, so CLOSURE CREATION, MULTI-CLAUSE DISPATCH and PATTERN-PARAM BINDING are delegated to the host `applyValue` (the same Axis-2 reuse `core_ir_eval.mdk` uses); the VM only ever compiles + runs EXPRESSION bodies. Match → decision-tree opcodes, native closures, letrec, records/refs/arrays, and typeclass dispatch are slices 2–6 (the compiler panics on the unsupported node, naming the slice). **Zero `eval.mdk` changes** — every reused name was already exported. |
-| `eval_bytecode_main.mdk` | Runnable entry for the bytecode VM (analog of `core_ir_main.mdk`): `medaka run selfhost/eval_bytecode_main.mdk <src.mdk>` parses → desugars → `annotateProgram` → lowers to Core IR → COMPILES to bytecode → runs the stack VM → prints `pp_value` of `main`. Diffs against `dev/eval_probe.exe` — the SAME oracle `eval_main`/`core_ir_main` use (`test/diff_selfhost_eval_bytecode.sh`). |
+| `bytecode.mdk` | **Stage 2 §2.2 bytecode compiler + stack VM** (slices 1–3) — the first lowering of the Core IR *below* an ISA. `compile : CExpr -> List Instr` emits a flat, position-independent instruction stream (relative jumps); `runChunk` is a stack machine threading `(ip, value-stack, env)` over the `Instr` `Array`. REUSES `eval.mdk`'s host runtime verbatim — `Value`, env, `applyValue`/dispatch/fall-through, `matchPat`, the arithmetic + record + range + index helpers, externs, `pp_value`. Slice 1 = literals, lexically-addressed variables, application, primitive binops/unops, tuples, lists, `if`, let-sequencing blocks. Slice 2 = `IMatchArms` (ordered-arm `CMatch` dispatch) + `IMatchDecision` (decision-tree `CDecision` dispatch, mirroring `cevalDecision`'s tree walk with compiled arm body chunks) + `IBindFail` (CSLetElse pattern-bind-or-else). Slice 3 = `IMakeArray`, `IMakeRecord`, `IField`/`IFieldValue`, `IRecordUpdate`, `IRangeList`/`IRangeArray`, `IIndex`, `ISlice`, plus `CSAssign` in blocks. Closure creation, multi-clause dispatch and pattern-param binding stay delegated to the host `applyValue` (same Axis-2 reuse as `core_ir_eval.mdk`). Native closures, letrec, let-groups, and typeclass dispatch remain slices 4–5. **Zero `eval.mdk` changes** — every reused name was already exported. |
+| `eval_bytecode_main.mdk` | Runnable entry for the bytecode VM (analog of `core_ir_main.mdk`): `medaka run selfhost/eval_bytecode_main.mdk <src.mdk>` parses → desugars → `annotateProgram` → lowers to Core IR → COMPILES to bytecode → runs the stack VM → prints `pp_value` of `main`. Diffs against `dev/eval_probe.exe` — the SAME oracle `eval_main`/`core_ir_main` use (`test/diff_selfhost_eval_bytecode.sh`, 11 fixtures across slices 1–3). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
@@ -91,7 +91,7 @@ sh test/diff_selfhost_core_ir_list.sh         #   …with core.mdk + list.mdk (2
 sh test/diff_selfhost_core_ir_typed.sh        #   …typed return-position dispatch / CMethod (2)
 sh test/diff_selfhost_core_ir_run.sh          #   …true-execution stdout / === EVAL === goldens (18)
 sh test/diff_selfhost_core_ir_modules.sh      #   …loader-driven per-module frames (4)
-sh test/diff_selfhost_eval_bytecode.sh        # Stage 2 §2.2 bytecode VM slice 1 — engine subset (4 ok, 12 deferred, ~0.5s)
+sh test/diff_selfhost_eval_bytecode.sh        # Stage 2 §2.2 bytecode VM slices 1–3 — match+records+arrays (11 ok, 7 deferred, ~1s)
 ```
 
 The harness runs the Medaka lexer over every fixture in `test/diff_fixtures/`
@@ -671,17 +671,39 @@ on-ramp condition (Axis 1) holds — the throwaway part (the ISA + VM loop) sits
 cleanly below the reused Core IR. **Zero `eval.mdk` changes**: every reused name
 was already exported (the §2.1 `VClosureF` affordance suffices for the VM too).
 
-The slice-1/deferred split keys off which Core-IR EXPRESSION nodes a fixture's
-bodies use; the compiler panics on an unsupported node (naming the slice), so a
-deferred fixture cannot silently mis-run. **Next slices (§2.2):** 2 — `match` via
-compiled decision-tree opcodes (the `CDecision` tree is already built by §2.1's
-lowering; the VM needs `SWITCH`/`TEST_TAG` leaves instead of delegating to a
-host `match`); 3 — ADTs/records/refs; 4 — native closures + letrec + `VThunk`
-laziness (replacing the host `VClosureF` delegation with bytecode-native frames —
-the point at which the slot-*indexing* consume half of §2.0 lexical addressing
-pays off); 5 — typeclass dispatch from the elaborated `RKey`/`RDict` routes; 6 —
-multi-module per-module frames. The capstone is the VM running the self-host
-compiler (RKey-only suffices) and reproducing `eval_modules` output.
+**Stage 2 §2.2 — SLICES 2 and 3 (2026-06-05).** Extended `bytecode.mdk` to cover
+`match` via compiled decision trees (slice 2) and ADTs/records/refs (slice 3).
+
+Slice 2 adds three instructions: `IMatchArms (List BcArm)` for ordered-arm `CMatch`
+dispatch (used when arms contain PRng/PRec patterns or non-tree-able heads); 
+`IMatchDecision (List BcArm) CTree` for decision-tree `CDecision` dispatch; and
+`IBindFail Pat Int` for `CSLetElse` pattern-bind-or-else. The `BcGuard`/`BcArm`
+types compile each arm's body and guards to `Chunk` values at install time; the
+step functions call `runBcMatchArms` / `runBcDecision` (mirroring `cevalMatch` /
+`cevalDecision` from `core_ir_eval.mdk`) which walk arms/trees and run compiled body
+chunks via `runChunk`. `headExtract` + `cBinders` reuse `matchPat` for value
+decomposition so no new value-decomposition code is needed. CTGuard fall-through for
+PRng/PRec arms is preserved exactly — `bcGuardedBody` resumes the fail subtree when
+`matchPat` returns `None`, identical to `cevalGuardedBody`.
+
+Slice 3 adds `IMakeArray`, `IMakeRecord`, `IField`/`IFieldValue`, `IRecordUpdate`,
+`IRangeList`/`IRangeArray`, `IIndex`, `ISlice` — plus `CSAssign` (compiled as
+`IBind (PVar x)`, an env rebind) in `compileStmts`. The value-level work
+(`evalRecordUpdate`, `evalField`, `evalValueField`, `evalRange`, `evalIndex`,
+`evalSlice`) is reused verbatim from `eval.mdk`; the step functions only route
+opcodes to those helpers.
+
+**Gate: 11 ok, 0 failing, 7 deferred** (slice 4: closures/letrec/where; slice 5:
+typeclass dispatch). Two new fixtures added to `test/eval_fixtures/` — `range_pat_tree`
+(range patterns through CTGuard decision-tree leaves) and `rec_pat_tree` (record
+patterns, requires both slice 2 + slice 3). Total ~1s. **Zero `eval.mdk` changes**.
+
+**Next slices (§2.2):** 4 — native closures + letrec + `VThunk` laziness (replacing
+the host `VClosureF` delegation with bytecode-native frames — the point at which the
+slot-*indexing* consume half of §2.0 lexical addressing pays off); 5 — typeclass
+dispatch from the elaborated `RKey`/`RDict` routes; 6 — multi-module per-module
+frames. The capstone is the VM running the self-host compiler (RKey-only suffices)
+and reproducing `eval_modules` output.
 
 ---
 

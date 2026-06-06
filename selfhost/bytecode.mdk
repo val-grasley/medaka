@@ -1,51 +1,62 @@
--- Bytecode compiler + stack VM — STAGE2-DESIGN §2.2, SLICE 1.
+-- Bytecode compiler + stack VM — STAGE2-DESIGN §2.2, SLICES 1–3.
 --
--- The first lowering of the Core IR (core_ir.mdk) BELOW an ISA: where
--- core_ir_eval.mdk tree-walks the IR, this compiles each Core-IR expression to a
--- flat instruction stream (a `Chunk`) and a small stack machine interprets it.
--- This is the throwaway-but-on-ramp layer the design names (Axis 1): the ISA +
--- the VM loop are the part LLVM discards; the Core IR above it (lexical
--- addressing, decision-tree matches, dict routing) is what transfers.
+-- SLICE 1 (arithmetic + variables + application): literal constants, lexically-
+-- addressed variables, function application, primitive binary/unary operators,
+-- tuples, lists, `if`, and bare let-sequencing blocks.
 --
--- SLICE 1 covers the engine primitives the design lists first — "arithmetic +
--- variables (slot-indexed) + application" — plus the trivial non-pattern,
--- non-closure nodes needed to form a runnable whole program: literal constants,
--- variables (the Core IR already carries a lexical `Addr` on each `CVar`; it
--- rides along in `ILoadVar`, resolved by NAME for now exactly as `ceval` /
--- `EVarAt` do — the slot-indexing consume-half is STAGE2 §2.0's parked rework),
--- function application, primitive binary/unary operators, tuples, lists, `if`,
--- and bare let-sequencing blocks.
+-- SLICE 2 (match via compiled decision trees): adds `IMatchArms` (ordered-arm
+-- `CMatch` dispatch) and `IMatchDecision` (decision-tree `CDecision` dispatch),
+-- plus `IBindFail` for CSLetElse pattern-bind-or-else.  Both forms compile each
+-- arm's body + guards to Chunk values at install time; the step functions use
+-- runBcMatchArms / runBcDecision (mirroring cevalMatch / cevalDecision from
+-- core_ir_eval) with the host runtime's matchPat for pattern re-matching so no
+-- new value-decomposition code is needed.  CTGuard fall-through is preserved
+-- exactly — the tree node emits a fail-subtree, and a None from matchPat on a
+-- PRng/PRec arm resumes via that subtree, just as cevalGuardedBody does.
 --
--- REUSE DISCIPLINE (Axis 2 / §2.2 "reuse the host Value/GC/externs"): the VM
--- reuses eval.mdk's host runtime verbatim — the `Value` type, the environment,
--- `applyValue`/dispatch/fall-through, `matchPat`, the arithmetic kernel, the
--- externs and `pp_value`.  A compiled function is installed as a `VClosureF`
--- whose host-fn body is `\e -> runChunk e chunk`, so CLOSURE CREATION, MULTI-
--- CLAUSE DISPATCH and PATTERN-PARAM BINDING are handled by the SAME host
--- `applyValue` the tree-walker uses (mirroring core_ir_eval's VClosureF reuse).
--- The VM itself only ever compiles + runs EXPRESSION bodies.  Compiling those
--- later-slice constructs (match → decision-tree opcodes, native closures,
--- letrec, typeclass dispatch) to their OWN opcodes is slices 2–6; until then the
--- compiler panics on them, so a fixture that needs one is cleanly deferred by the
--- gate rather than silently mis-run.
+-- SLICE 3 (ADTs / records / refs): arrays, records (create / field access /
+-- update), range lists + arrays, index, slice, and the two block-statement
+-- forms that slice 1 deferred (CSAssign / CSLetElse).  The value-level work
+-- (evalRecordUpdate / evalValueField / evalField / evalIndex / evalSlice /
+-- evalRange) is reused verbatim from eval.mdk — the step functions only route
+-- opcodes and call those helpers.
+--
+-- REUSE DISCIPLINE (Axis 2 / §2.2): the VM still reuses eval.mdk's runtime
+-- verbatim — Value, env, applyValue/dispatch/fall-through, matchPat, externs,
+-- pp_value, and all slice-3 value helpers.  Zero eval.mdk changes — every name
+-- used here was already exported.  Closures, letrec, let-groups, and typeclass
+-- dispatch remain slices 4–5 (the compiler panics on them, naming the slice).
 
 import ast.{Lit(..), Pat(..), Addr(..)}
-import core_ir.{CExpr(..), CStmt(..), CProgram(..), CBind(..), CClause(..)}
+import core_ir.{CExpr(..), CStmt(..), CProgram(..), CBind(..), CClause(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..), CField(..)}
 import util.{listLen, concatMapList}
 import eval.{
   Value(..), EvalEnv(..),
   lookupEnv, extendEnv, applyValue, matchPat, startsWithAt,
   evalArith, evalUnop, consVal, appendVal,
   boolSeeds, externBindings, makeCtor, installConsts, cellResult,
-  lookupBinding, isNullary, force, ppValue, ctorToTypeRef
+  lookupBinding, isNullary, force, ppValue, ctorToTypeRef,
+  evalIndex, evalSlice, evalRange, rangeListMk, rangeArrayMk,
+  evalRecordUpdate, evalValueField, evalField
 }
 
--- ── the instruction set (the slice-1 ISA) ──────────────────────────────────
--- A deliberately tiny stack ISA.  Jumps are RELATIVE to their own position (so a
--- compiled sub-expression is position-independent and concatenates freely); the
--- value stack carries intermediate Values; `IBind` extends the env register for
--- the rest of the enclosing block.
+-- ── compiled arm/guard types (slice 2) ────────────────────────────────────
+-- Each CArm's body and guard expressions are compiled to Chunk values at
+-- install time so each execution runs the prebuilt bytecode, not a compiler
+-- call.  BcGBool evaluates a guard expression chunk and tests the Bool result;
+-- BcGBind tries to match a pattern against a guard expression chunk's value.
+-- These mirror CGuard (CGBool/CGBind) exactly.
+public export data BcGuard
+  = BcGBool Chunk
+  | BcGBind Pat Chunk
+
+-- BcArm: the arm's original pattern (used for re-matching + binding recovery
+-- at the leaf), its compiled guards, and its compiled body.
+public export data BcArm = BcArm Pat (List BcGuard) Chunk
+
+-- ── the instruction set (slices 1–3 ISA) ──────────────────────────────────
 public export data Instr
+  -- slice 1 ─────────────────────────────────────────────────────────────────
   = IPushLit Lit          -- push a literal value
   | ILoadVar String Addr  -- push the value a name is bound to (addr carried, unconsumed)
   | ICall                 -- pop arg, pop fn → push (applyValue fn arg)
@@ -57,12 +68,31 @@ public export data Instr
   | IJumpFalse Int        -- pop cond; if false ip := ip + offset, else ip := ip + 1
   | IBind Pat             -- pop v, match it against the pattern, extend the env
   | IPop                  -- discard the top of stack
+  -- slice 2: match ──────────────────────────────────────────────────────────
+  -- IMatchArms: pop scrutinee, try each BcArm in order (cevalMatch semantics).
+  | IMatchArms (List BcArm)
+  -- IMatchDecision: pop scrutinee, walk the decision tree (cevalDecision semantics).
+  | IMatchDecision (List BcArm) CTree
+  -- IBindFail: pop v, match pat; SUCCESS→ip+1 + extend env, FAIL→ip+offset.
+  -- Used for CSLetElse: on fail, control jumps to the else branch; on success
+  -- the rest of the block continues with the new bindings in env.
+  | IBindFail Pat Int
+  -- slice 3: arrays, records, fields, ranges, index/slice ───────────────────
+  | IMakeArray Int                  -- pop n → push VArray (in source order)
+  | IMakeRecord String (List String) -- pop n field vals + record name → VRecord
+  | IField String                   -- pop v → push (evalField v fieldName)
+  | IFieldValue                     -- pop v → push (evalValueField v) — .value deref
+  | IRecordUpdate (List String)     -- pop n field vals + base → evalRecordUpdate
+  | IRangeList Bool                 -- pop hi, pop lo → evalRange lo hi incl rangeListMk
+  | IRangeArray Bool                -- pop hi, pop lo → evalRange lo hi incl rangeArrayMk
+  | IIndex                          -- pop i, pop container → evalIndex container i
+  | ISlice Bool                     -- pop hi, pop lo, pop container → evalSlice
 
 -- a compiled chunk: the instruction stream as an array, so the VM fetches by an
 -- O(1) instruction-pointer index (the "bytecode" the VM interprets).
 public export data Chunk = Chunk (Array Instr)
 
--- ── the compiler: Core IR expression → instruction stream ───────────────────
+-- ── the compiler: Core IR expression → instruction stream ─────────────────
 export
 compile : CExpr -> List Instr
 compile (CLit l) = [IPushLit l]
@@ -74,13 +104,44 @@ compile (CTuple es) = concatMapList compile es ++ [IMakeTuple (listLen es)]
 compile (CList es) = concatMapList compile es ++ [IMakeList (listLen es)]
 compile (CIf c t e) = compileIf (compile c) (compile t) (compile e)
 compile (CBlock stmts) = compileStmts stmts
+-- ── slice 2: match ─────────────────────────────────────────────────────────
+-- CMatch: ordered-arm dispatch (PRng/PRec arms or non-tree-able patterns).
+-- CDecision: decision-tree dispatch (tree-able patterns, compiled by lowerMatch).
+compile (CMatch scrut arms) = compile scrut ++ [IMatchArms (map compileBcArm arms)]
+compile (CDecision scrut arms tree) =
+  compile scrut ++ [IMatchDecision (map compileBcArm arms) tree]
+-- ── slice 3: arrays, records, fields, ranges, index/slice ─────────────────
+compile (CArray es) = concatMapList compile es ++ [IMakeArray (listLen es)]
+compile (CRecord name fields) =
+  concatMapList compileCField fields ++ [IMakeRecord name (map cFieldName fields)]
+compile (CFieldAccess e "value") = compile e ++ [IFieldValue]
+compile (CFieldAccess e field) = compile e ++ [IField field]
+compile (CRecordUpdate base fields) =
+  compile base ++ concatMapList compileCField fields ++ [IRecordUpdate (map cFieldName fields)]
+compile (CRangeList lo hi incl) = compile lo ++ compile hi ++ [IRangeList incl]
+compile (CRangeArray lo hi incl) = compile lo ++ compile hi ++ [IRangeArray incl]
+compile (CIndex a i) = compile a ++ compile i ++ [IIndex]
+compile (CSlice a lo hi incl) = compile a ++ compile lo ++ compile hi ++ [ISlice incl]
 compile other =
   panic ("bytecode compile: unsupported node (deferred to a later slice) — " ++ cNodeTag other)
 
+-- ── slice 2 compile helpers ────────────────────────────────────────────────
+compileBcArm : CArm -> BcArm
+compileBcArm (CArm pat guards body) = BcArm pat (map compileBcGuard guards) (compileChunk body)
+
+compileBcGuard : CGuard -> BcGuard
+compileBcGuard (CGBool e) = BcGBool (compileChunk e)
+compileBcGuard (CGBind p e) = BcGBind p (compileChunk e)
+
+-- ── slice 3 compile helpers ────────────────────────────────────────────────
+compileCField : CField -> List Instr
+compileCField (CField _ e) = compile e
+
+cFieldName : CField -> String
+cFieldName (CField k _) = k
+
 -- a conditional, with relative jumps over the then/else segments.  Layout:
 --   cond | IJumpFalse(t+2) | then(t) | IJump(e+1) | else(e)
--- cond-false lands on the else segment's first instr; the true branch's trailing
--- IJump skips the else.  Offsets are length-derived, no global address table.
 compileIf : List Instr -> List Instr -> List Instr -> List Instr
 compileIf cc tc ec =
   cc
@@ -91,26 +152,41 @@ compileIf cc tc ec =
 
 -- a bare sequential block (function-body `let` sequence).  Each non-final
 -- statement leaves nothing on the stack (a let binds + extends the env; an expr
--- is popped); the final statement yields the block's value.  A block ending in a
--- let yields VUnit, mirroring eval.mdk's evalBlock.  CSAssign / CSLetElse are
--- slice-3 (refs / let-else) — deferred via the catch-all.
+-- is popped); the final statement yields the block's value.
+-- CSAssign: rebinds a name (same as CSLet for bytecode — IBind (PVar x)).
+-- CSLetElse: pattern-bind-or-else (slice 2).  On success the bindings extend
+-- env and the rest of the block runs; on failure the else branch runs and its
+-- result becomes the block result (the rest is skipped).
 compileStmts : List CStmt -> List Instr
 compileStmts [] = [IPushLit LUnit]
 compileStmts [(CSExpr e)] = compile e
 compileStmts [(CSLet _ p e)] = compile e ++ [IBind p, IPushLit LUnit]
 compileStmts ((CSExpr e)::rest) = compile e ++ [IPop] ++ compileStmts rest
 compileStmts ((CSLet _ p e)::rest) = compile e ++ [IBind p] ++ compileStmts rest
+compileStmts ((CSAssign x e)::rest) = compile e ++ [IBind (PVar x)] ++ compileStmts rest
+compileStmts ((CSLetElse pat e alt)::rest) = compileLetElse pat e alt rest
 compileStmts (_::_) =
   panic "bytecode compile: unsupported block statement (deferred to a later slice)"
+
+-- CSLetElse layout:
+--   [compile e] [IBindFail pat (rs+2)] [restCode(rs)] [IJump(alt+1)] [altCode(alt)]
+-- SUCCESS (match): extend env, ip+1 → rest, then IJump past alt.
+-- FAIL (no match): ip + rs+2 → start of altCode (skips rest + IJump).
+compileLetElse : Pat -> CExpr -> CExpr -> List CStmt -> List Instr
+compileLetElse pat e alt rest =
+  let altCode = compile alt
+  let restCode = compileStmts rest
+  compile e
+    ++ [IBindFail pat (listLen restCode + 2)]
+    ++ restCode
+    ++ [IJump (listLen altCode + 1)]
+    ++ altCode
 
 export
 compileChunk : CExpr -> Chunk
 compileChunk e = Chunk (arrayFromList (compile e))
 
 -- ── the stack VM ────────────────────────────────────────────────────────────
--- Interpret a chunk against an env, threading an instruction pointer, a value
--- stack and the env register (extended by block `let`s).  Reuses eval.mdk's host
--- runtime for every Value-level operation — this loop only routes opcodes.
 export
 runChunk : EvalEnv -> Chunk -> <Mut> Value
 runChunk env (Chunk code) = runLoop code 0 [] env
@@ -120,13 +196,12 @@ runLoop code ip stack env
   | ip >= arrayLength code = vmResult stack
   | otherwise = step code ip stack env (arrayGetUnsafe ip code)
 
--- the chunk's result is the value left on top of the stack when the ip runs off
--- the end (every well-formed expression chunk pushes exactly one net value).
 vmResult : List Value -> Value
 vmResult (v::_) = v
 vmResult [] = panic "bytecode VM: empty stack at chunk end"
 
 step : Array Instr -> Int -> List Value -> EvalEnv -> Instr -> <Mut> Value
+-- ── slice 1 ─────────────────────────────────────────────────────────────────
 step code ip stack env (IPushLit l) = runLoop code (ip + 1) (litValue l :: stack) env
 step code ip stack env (ILoadVar x _) = runLoop code (ip + 1) (loadVar env x :: stack) env
 step code ip stack env ICall = match stack
@@ -138,8 +213,8 @@ step code ip stack env (IPrim2 op) = match stack
 step code ip stack env (IPrim1 op) = match stack
   (e :: rest) => runLoop code (ip + 1) (evalUnop op e :: rest) env
   _ => panic "bytecode VM: IPrim1 stack underflow"
-step code ip stack env (IMakeTuple n) = stepMake code ip stack env n VTuple
-step code ip stack env (IMakeList n) = stepMake code ip stack env n VList
+step code ip stack env (IMakeTuple n) = stepMakeN code ip stack env n VTuple
+step code ip stack env (IMakeList n) = stepMakeN code ip stack env n VList
 step code ip stack env (IJump k) = runLoop code (ip + k) stack env
 step code ip stack env (IJumpFalse k) = match stack
   (c :: rest) =>
@@ -151,21 +226,52 @@ step code ip stack env (IBind p) = match stack
 step code ip stack env IPop = match stack
   (_ :: rest) => runLoop code (ip + 1) rest env
   _ => panic "bytecode VM: IPop stack underflow"
+-- ── slice 2: match ──────────────────────────────────────────────────────────
+step code ip stack env (IMatchArms arms) = match stack
+  (sv :: rest) => runLoop code (ip + 1) (runBcMatchArms env sv arms :: rest) env
+  _ => panic "bytecode VM: IMatchArms stack underflow"
+step code ip stack env (IMatchDecision arms tree) = match stack
+  (sv :: rest) => runLoop code (ip + 1) (runBcDecision env sv arms tree :: rest) env
+  _ => panic "bytecode VM: IMatchDecision stack underflow"
+step code ip stack env (IBindFail pat offset) = match stack
+  (v :: rest) => match matchPat pat v
+    Some binds => runLoop code (ip + 1) rest (extendEnv env binds)
+    None => runLoop code (ip + offset) rest env
+  _ => panic "bytecode VM: IBindFail stack underflow"
+-- ── slice 3: arrays ──────────────────────────────────────────────────────────
+step code ip stack env (IMakeArray n) = stepMakeN code ip stack env n bcMakeArray
+-- ── slice 3: records ─────────────────────────────────────────────────────────
+step code ip stack env (IMakeRecord name fieldNames) =
+  let (fieldVals, rest) = popN (listLen fieldNames) stack
+  runLoop code (ip + 1) (VRecord name (zipPairs fieldNames fieldVals) :: rest) env
+step code ip stack env (IField field) = match stack
+  (v :: rest) => runLoop code (ip + 1) (evalField v field :: rest) env
+  _ => panic "bytecode VM: IField stack underflow"
+step code ip stack env IFieldValue = match stack
+  (v :: rest) => runLoop code (ip + 1) (evalValueField v :: rest) env
+  _ => panic "bytecode VM: IFieldValue stack underflow"
+step code ip stack env (IRecordUpdate fieldNames) = match popN (listLen fieldNames) stack
+  (fieldVals, base :: rest) =>
+    runLoop code (ip + 1) (evalRecordUpdate base (zipPairs fieldNames fieldVals) :: rest) env
+  _ => panic "bytecode VM: IRecordUpdate stack underflow"
+-- ── slice 3: ranges ──────────────────────────────────────────────────────────
+step code ip stack env (IRangeList incl) = match popN 2 stack
+  ([lo, hi], rest) => runLoop code (ip + 1) (evalRange lo hi incl rangeListMk :: rest) env
+  _ => panic "bytecode VM: IRangeList stack underflow"
+step code ip stack env (IRangeArray incl) = match popN 2 stack
+  ([lo, hi], rest) => runLoop code (ip + 1) (evalRange lo hi incl rangeArrayMk :: rest) env
+  _ => panic "bytecode VM: IRangeArray stack underflow"
+-- ── slice 3: index / slice ───────────────────────────────────────────────────
+step code ip stack env IIndex = match popN 2 stack
+  ([container, idx], rest) => runLoop code (ip + 1) (evalIndex container idx :: rest) env
+  _ => panic "bytecode VM: IIndex stack underflow"
+step code ip stack env (ISlice incl) = match popN 3 stack
+  ([container, lo, hi], rest) =>
+    runLoop code (ip + 1) (evalSlice container lo hi incl :: rest) env
+  _ => panic "bytecode VM: ISlice stack underflow"
 
-stepMake : Array Instr -> Int -> List Value -> EvalEnv -> Int -> (List Value -> Value) -> <Mut> Value
-stepMake code ip stack env n mk = match popN n stack
-  (items, rest) => runLoop code (ip + 1) (mk items :: rest) env
-
-stepBind : Array Instr -> Int -> List Value -> EvalEnv -> Pat -> Value -> <Mut> Value
-stepBind code ip rest env p v = match matchPat p v
-  Some binds => runLoop code (ip + 1) rest (extendEnv env binds)
-  None => panic "bytecode VM: let pattern match failure in block"
-
-loadVar : EvalEnv -> String -> <Mut> Value
-loadVar env x = if startsWithAt x then VUnit else lookupEnv env x
-
--- pop n values; consing the popped tops back yields them in SOURCE order (the
--- last-pushed is on top, so the fold un-reverses the push order).
+-- pop n items from stack, returning them in SOURCE order (the fold-back un-
+-- reverses the push order so item[0] was pushed first).
 popN : Int -> List Value -> (List Value, List Value)
 popN n stack = popNGo n stack []
 
@@ -173,6 +279,21 @@ popNGo : Int -> List Value -> List Value -> (List Value, List Value)
 popNGo 0 stack acc = (acc, stack)
 popNGo k (v :: rest) acc = popNGo (k - 1) rest (v :: acc)
 popNGo _ [] acc = (acc, [])
+
+stepMakeN : Array Instr -> Int -> List Value -> EvalEnv -> Int -> (List Value -> Value) -> <Mut> Value
+stepMakeN code ip stack env n mk = match popN n stack
+  (items, rest) => runLoop code (ip + 1) (mk items :: rest) env
+
+stepBind : Array Instr -> Int -> List Value -> EvalEnv -> Pat -> Value -> <Mut> Value
+stepBind code ip rest env p v = match matchPat p v
+  Some binds => runLoop code (ip + 1) rest (extendEnv env binds)
+  None => panic "bytecode VM: let pattern match failure in block"
+
+bcMakeArray : List Value -> Value
+bcMakeArray vs = VArray (arrayFromList vs)
+
+loadVar : EvalEnv -> String -> <Mut> Value
+loadVar env x = if startsWithAt x then VUnit else lookupEnv env x
 
 isTruthy : Value -> Bool
 isTruthy (VBool True) = True
@@ -194,14 +315,135 @@ litValue (LChar c) = VChar c
 litValue (LBool b) = VBool b
 litValue LUnit = VUnit
 
+zipPairs : List a -> List b -> List (a, b)
+zipPairs [] _ = []
+zipPairs _ [] = []
+zipPairs (a::xs) (b::ys) = (a, b) :: zipPairs xs ys
+
+-- ── slice 2: ordered-arm match dispatch ────────────────────────────────────
+-- Mirrors cevalMatch from core_ir_eval.mdk exactly, but runs compiled BcArm
+-- body chunks (via runChunk) instead of calling ceval on CExpr bodies.
+runBcMatchArms : EvalEnv -> Value -> List BcArm -> <Mut> Value
+runBcMatchArms _ _ [] = panic "no matching clause in match"
+runBcMatchArms env sv ((BcArm pat guards body)::rest) = match matchPat pat sv
+  None => runBcMatchArms env sv rest
+  Some binds => match runBcGuards (extendEnv env binds) guards
+    Some env2 => runChunk env2 body
+    None => runBcMatchArms env sv rest
+
+-- Mirrors cevalGuards: evaluates each compiled guard in sequence; a CGBool
+-- failure or CGBind pattern failure returns None (arm falls through to next).
+runBcGuards : EvalEnv -> List BcGuard -> <Mut> Option EvalEnv
+runBcGuards env [] = Some env
+runBcGuards env ((BcGBool chunk)::rest) = match runChunk env chunk
+  VBool True => runBcGuards env rest
+  VCon "True" [] => runBcGuards env rest
+  _ => None
+runBcGuards env ((BcGBind p chunk)::rest) = match matchPat p (runChunk env chunk)
+  Some binds => runBcGuards (extendEnv env binds) rest
+  None => None
+
+-- ── slice 2: decision-tree match dispatch ──────────────────────────────────
+-- Mirrors cevalDecision/cevalTree from core_ir_eval.mdk.  The root scrutinee
+-- is kept for leaf re-matching (to recover variable bindings); `occs` tracks
+-- the live column values as the tree descends into constructor fields.
+runBcDecision : EvalEnv -> Value -> List BcArm -> CTree -> <Mut> Value
+runBcDecision env root arms tree = bcWalkTree env root arms [root] tree
+
+bcWalkTree : EvalEnv -> Value -> List BcArm -> List Value -> CTree -> <Mut> Value
+bcWalkTree _ _ _ _ CTFail = panic "no matching clause in match"
+bcWalkTree env root arms _ (CTLeaf i) = bcRunArm env root arms i
+bcWalkTree env root arms occs (CTGuard i fail) = bcRunGuardedArm env root arms occs i fail
+bcWalkTree env root arms occs (CTDrop sub) = bcWalkTree env root arms (bcOccsTail occs) sub
+bcWalkTree env root arms occs (CTSwitch branches dft) =
+  bcSwitch env root arms occs branches dft
+
+bcOccsTail : List Value -> List Value
+bcOccsTail [] = []
+bcOccsTail (_::xs) = xs
+
+-- a terminal leaf: re-match the arm's ORIGINAL pattern against the full
+-- scrutinee to recover variable bindings, then run the compiled body chunk.
+bcRunArm : EvalEnv -> Value -> List BcArm -> Int -> <Mut> Value
+bcRunArm env root arms i = match bcNthArm arms i
+  Some (BcArm pat _ body) => bcArmBody env root pat body
+  None => panic "bytecode decision tree: arm index out of range"
+
+bcArmBody : EvalEnv -> Value -> Pat -> Chunk -> <Mut> Value
+bcArmBody env root pat body = match matchPat pat root
+  Some binds => runChunk (extendEnv env binds) body
+  None => panic "bytecode decision tree: leaf pattern did not match scrutinee"
+
+-- a guarded leaf: re-match for bindings, run guards; on guard success run the
+-- body, on guard failure (or PRng/PRec matchPat None) resume via the fail tree.
+bcRunGuardedArm : EvalEnv -> Value -> List BcArm -> List Value -> Int -> CTree -> <Mut> Value
+bcRunGuardedArm env root arms occs i fail = match bcNthArm arms i
+  Some (BcArm pat guards body) => bcGuardedBody env root arms occs pat guards body fail
+  None => panic "bytecode decision tree: guarded arm index out of range"
+
+-- PRng/PRec arms may return None from matchPat (the tree routed to them but the
+-- scrutinee is out of range / missing a field); in that case fall through via
+-- the fail subtree, exactly as cevalGuardedBody does.
+bcGuardedBody : EvalEnv -> Value -> List BcArm -> List Value -> Pat -> List BcGuard -> Chunk -> CTree -> <Mut> Value
+bcGuardedBody env root arms occs pat guards body fail = match matchPat pat root
+  None => bcWalkTree env root arms occs fail
+  Some binds => match runBcGuards (extendEnv env binds) guards
+    Some env2 => runChunk env2 body
+    None => bcWalkTree env root arms occs fail
+
+-- a switch: test the head occurrence (top of `occs`) against each branch head;
+-- on the first match, prepend that head's sub-fields to the remaining columns
+-- and descend; if none match, descend into the default (dropping the head).
+bcSwitch : EvalEnv -> Value -> List BcArm -> List Value -> List CTBranch -> CTree -> <Mut> Value
+bcSwitch env root arms occs branches dft = match occs
+  [] => bcWalkTree env root arms [] dft
+  (v::rest) => bcSwitchOn env root arms v rest branches dft
+
+bcSwitchOn : EvalEnv -> Value -> List BcArm -> Value -> List Value -> List CTBranch -> CTree -> <Mut> Value
+bcSwitchOn env root arms _ rest [] dft = bcWalkTree env root arms rest dft
+bcSwitchOn env root arms v rest ((CTBranch head sub)::more) dft =
+  match headExtract head v
+    Some subs => bcWalkTree env root arms (subs ++ rest) sub
+    None => bcSwitchOn env root arms v rest more dft
+
+-- test a value against a CHead, returning the head's decomposed sub-fields on
+-- match (empty for leaves).  Delegates to matchPat with fresh binders so no
+-- new value-decomposition code is needed — the same technique cevalDecision uses.
+headExtract : CHead -> Value -> Option (List Value)
+headExtract (HCon c a) v = extractWith (PCon c (cBinders a)) v
+headExtract (HTuple n) v = extractWith (PTuple (cBinders n)) v
+headExtract HCons v = extractWith (PCons (PVar "$d0") (PVar "$d1")) v
+headExtract HNil v = extractWith (PList []) v
+headExtract HUnit v = extractWith (PLit LUnit) v
+headExtract (HLit l) v = extractWith (PLit l) v
+
+extractWith : Pat -> Value -> Option (List Value)
+extractWith p v = match matchPat p v
+  Some binds => Some (map snd binds)
+  None => None
+
+-- n fresh binder patterns ($d0 … $d_{n-1}); matchPat binds them left-to-right
+-- so `map snd` recovers constructor fields in source order.
+cBinders : Int -> List Pat
+cBinders n = cBindersGo 0 n
+
+cBindersGo : Int -> Int -> List Pat
+cBindersGo i n
+  | i >= n = []
+  | otherwise = PVar ("$d" ++ intToString i) :: cBindersGo (i + 1) n
+
+bcNthArm : List BcArm -> Int -> Option BcArm
+bcNthArm (a::_) 0 = Some a
+bcNthArm (_::rest) n = bcNthArm rest (n - 1)
+bcNthArm [] _ = None
+
 -- ── program driver ──────────────────────────────────────────────────────────
 -- Mirror of core_ir_eval.cevalProgram, but each top-level binding's clause
 -- bodies are COMPILED to chunks and installed as VClosureF/VThunk values whose
--- host-fn body runs the chunk on the VM.  The host runtime then provides closure
+-- host-fn body runs the chunk on the VM.  The host runtime provides closure
 -- creation, multi-clause VMulti dispatch and pattern-param binding (via
--- applyValue) — the slice-1 VM only runs the compiled expression bodies.  Slice-1
--- programs carry no typeclass impls (dispatch is slice 5), so the impl list is
--- ignored; a fixture that needs an impl method is left unbound and deferred.
+-- applyValue).  Typeclass impls are slice 5 and ignored here; a fixture needing
+-- one is left unbound and deferred.
 export
 bcEvalMain : CProgram -> <Mut> String
 bcEvalMain prog = match lookupBinding "main" (bcEvalProgram prog)
@@ -236,15 +478,13 @@ bcInstallGroups env cells ((CBind n clauses)::rest) =
   let _ = set_ref (findCellByName cells n) (bcGroupValue env clauses)
   bcInstallGroups env cells rest
 
--- find a cell by name (local copy so this module needn't import eval.findCell).
 findCellByName : List (String, Ref Value) -> String -> Ref Value
 findCellByName ((k, cell)::rest) name = if k == name then cell else findCellByName rest name
 findCellByName [] name = panic ("bytecode eval: unbound cell " ++ name)
 
--- a nullary top-level binding defers to a VThunk (forced on first lookup, so
--- point-free defs can reference values installed later, any order); a single
--- parameterised clause is a VClosureF; multiple clauses coalesce into the host
--- VMulti the arg-tag dispatcher consumes — identical to core_ir_eval/eval.
+-- a nullary top-level binding defers to a VThunk (forced on first lookup);
+-- a single parameterised clause is a VClosureF; multiple clauses coalesce into
+-- a host VMulti — identical to core_ir_eval's cTopGroupValue.
 bcGroupValue : EvalEnv -> List CClause -> Value
 bcGroupValue env [(CClause pats body)]
   | isNullary pats = bcThunk env body
@@ -266,21 +506,11 @@ bcClosure env pats body =
   let ch = compileChunk body
   VClosureF env pats (e => runChunk e ch)
 
--- a readable tag for the unsupported-node panic (the deferred slice-2+ nodes).
+-- ── readable tag for the still-deferred nodes (slice 4 / 5 panics) ─────────
 cNodeTag : CExpr -> String
 cNodeTag (CLam _ _) = "CLam (closure — slice 4)"
 cNodeTag (CLet _ _ _ _) = "CLet (let/letrec — slice 4)"
 cNodeTag (CLetGroup _ _) = "CLetGroup (where/letrec — slice 4)"
-cNodeTag (CMatch _ _) = "CMatch (match — slice 2)"
-cNodeTag (CDecision _ _ _) = "CDecision (decision-tree match — slice 2)"
-cNodeTag (CRecord _ _) = "CRecord (records — slice 3)"
-cNodeTag (CFieldAccess _ _) = "CFieldAccess (records/refs — slice 3)"
-cNodeTag (CRecordUpdate _ _) = "CRecordUpdate (records — slice 3)"
-cNodeTag (CArray _) = "CArray (arrays — slice 3)"
-cNodeTag (CRangeList _ _ _) = "CRangeList (ranges — slice 3)"
-cNodeTag (CRangeArray _ _ _) = "CRangeArray (ranges — slice 3)"
-cNodeTag (CIndex _ _) = "CIndex (index — slice 3)"
-cNodeTag (CSlice _ _ _ _) = "CSlice (slice — slice 3)"
 cNodeTag (CMethod _ _) = "CMethod (typeclass dispatch — slice 5)"
 cNodeTag (CDict _ _) = "CDict (dict-passing — slice 5)"
 cNodeTag _ = "?"
