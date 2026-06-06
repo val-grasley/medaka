@@ -1,0 +1,2 @@
+myId : a -> b
+myId x = x

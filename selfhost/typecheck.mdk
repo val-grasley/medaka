@@ -2375,8 +2375,9 @@ processSCC env sigs defs members =
   let _ = enterLevel ()
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
-  let regs = preunifySigs sigs placeholders
+  let (regs, sigTvMaps) = preunifySigsEx sigs placeholders
   let _ = inferMembers env2 sigs defs placeholders
+  let _ = checkSigsTooGeneral sigTvMaps
   let _ = registerConstraintRegs regs
   let _ = exitLevel ()
   let schemes = sccSchemes sigs placeholders
@@ -2392,6 +2393,22 @@ placeholderBinding (m, v) = (m, monoScheme v)
 preunifySigs : List (String, Ty) -> List (String, Mono) -> <Mut> List (String, List Mono)
 preunifySigs _ [] = []
 preunifySigs sigs ((m, v) :: rest) = preunifySig sigs m v ++ preunifySigs sigs rest
+
+-- Extended Pass A: same as preunifySigs but also returns the tyvar maps (for
+-- the signature-too-general check after body inference).  Returns a pair:
+-- (constraintRegs, sigTvMaps) where sigTvMaps is [(name, sig_ast, tvs)] for
+-- each signed member.
+preunifySigsEx : List (String, Ty) -> List (String, Mono) -> <Mut> (List (String, List Mono), List (String, Ty, List (String, Mono)))
+preunifySigsEx _ [] = ([], [])
+preunifySigsEx sigs ((m, v) :: rest) =
+  let (restRegs, restTvs) = preunifySigsEx sigs rest
+  match lookupAssocS m sigs
+    Some ty =>
+      let inst = instantiateSigTracked ty
+      let _ = unify v (fst inst)
+      let regs = [(m, constraintVarMonos (sigConstraints ty) (snd inst))]
+      (regs ++ restRegs, (m, ty, snd inst) :: restTvs)
+    None => (restRegs, restTvs)
 
 -- Unify a member's placeholder with a fresh instantiation of its signature, and
 -- (for a `=>`-constrained sig) return its constraint variables' monos in slot
@@ -2478,6 +2495,78 @@ inferMembers env sigs defs ((m, v) :: rest) =
 sccSchemes : List (String, Ty) -> List (String, Mono) -> <Mut> List (String, Scheme)
 sccSchemes _ [] = []
 sccSchemes sigs ((m, v) :: rest) = (m, generalize v) :: sccSchemes sigs rest
+
+-- ── signature-too-general check ──────────────────────────────────────────────
+-- After body inference, the declared signature's type variables must map to
+-- DISTINCT TVar refs.  If two declared tyvars (e.g. `a` and `b` in `a -> b`)
+-- collapse to the SAME TVar after unification (body forces them equal), the
+-- declared signature claims more polymorphism than the body allows.
+-- We only reject the "two tvars become one" case (not concrete grounding), so
+-- `sum = fold (+) 0` (which grounds one tyvar to Int) passes.
+checkSigsTooGeneral : List (String, Ty, List (String, Mono)) -> <Mut> Unit
+checkSigsTooGeneral [] = ()
+checkSigsTooGeneral ((m, ty, tvs) :: rest) =
+  let _ = checkSigTooGeneral m ty tvs
+  checkSigsTooGeneral rest
+
+checkSigTooGeneral : String -> Ty -> List (String, Mono) -> <Mut> Unit
+checkSigTooGeneral name ty tvs =
+  let tvarIds = sigTvarIds (map snd tvs)
+  if hasDupI tvarIds then
+    set_ref typeErrors (sigTooGeneralMsg name ty :: typeErrors.value)
+  else ()
+
+-- collect the TVar ids of those entries in tvs that normalize to a TVar
+-- (concrete-grounded entries are skipped — only same-TVar collapses are an error)
+sigTvarIds : List Mono -> List Int
+sigTvarIds [] = []
+sigTvarIds (m :: rest) = match normalize m
+  TVar cell => tyvarId cell :: sigTvarIds rest
+  _ => sigTvarIds rest
+
+-- true if the list has any duplicate Int
+hasDupI : List Int -> Bool
+hasDupI [] = False
+hasDupI (x :: xs) = containsI x xs || hasDupI xs
+
+sigTooGeneralMsg : String -> Ty -> String
+sigTooGeneralMsg name ty =
+  "Declared signature of '" ++ name ++ "' is more general than its body — '" ++ ppTy ty ++ "' claims type variables that are the same type after inference"
+
+-- pretty-print an AST type (mirrors lib/ast.ml's pp_ty byte-for-byte)
+ppTy : Ty -> String
+ppTy (TyCon n) = n
+ppTy (TyVar n) = n
+ppTy (TyApp a b) = ppTy a ++ " " ++ ppTyAtom b
+ppTy (TyFun a b) = ppTyFunArg a ++ " -> " ++ ppTy b
+ppTy (TyTuple ts) = "(" ++ intercalateS ", " (map ppTy ts) ++ ")"
+ppTy (TyEffect _ _ t) = ppTy t
+ppTy (TyConstrained cs t) = ppConstraints cs ++ " => " ++ ppTy t
+
+-- single constraint: no outer parens; multiple: wrap in parens (mirrors OCaml)
+ppConstraints : List Constraint -> String
+ppConstraints [c] = ppConstraint c
+ppConstraints cs = "(" ++ intercalateS ", " (map ppConstraint cs) ++ ")"
+
+-- argument of `->`: wrap TyFun (prec>=1) but not TyApp (prec<2)
+ppTyFunArg : Ty -> String
+ppTyFunArg (TyFun a b) = "(" ++ ppTy (TyFun a b) ++ ")"
+ppTyFunArg t = ppTy t
+
+-- argument of application: wrap TyFun (prec>=1) and TyApp (prec>=2)
+ppTyAtom : Ty -> String
+ppTyAtom (TyFun a b) = "(" ++ ppTy (TyFun a b) ++ ")"
+ppTyAtom (TyApp a b) = "(" ++ ppTy (TyApp a b) ++ ")"
+ppTyAtom t = ppTy t
+
+ppConstraint : Constraint -> String
+ppConstraint (Constraint iface []) = iface
+ppConstraint (Constraint iface tys) = iface ++ " " ++ intercalateS " " (map ppTyAtom tys)
+
+intercalateS : String -> List String -> String
+intercalateS _ [] = ""
+intercalateS _ [x] = x
+intercalateS sep (x :: xs) = x ++ sep ++ intercalateS sep xs
 
 -- ── inferred-constraint promotion (unsignatured `=>` — the two-pass layer) ──
 -- After a group is generalized, an UNSIGNATURED eligible member that uses a

@@ -3947,6 +3947,28 @@ bad = (intId : a -> a)
 let e_annot_too_general_collapse = assert_err_msg "more polymorphic"
   "bad = ((x => x) : a -> b)\n"
 
+(* ── Signature too general ───────────────────────────────────────────────── *)
+
+(* Error: `id : a -> b` — `a` and `b` collapse to the same TVar after inference *)
+let e_sig_too_general_id = assert_err_msg "more general"
+  "myId : a -> b\nmyId x = x\n"
+
+(* Error: third tyvar collapses — `a -> a -> b` has `b` collapse to `a` *)
+let e_sig_too_general_extra_var = assert_err_msg "more general"
+  "myConst2 : a -> a -> b\nmyConst2 x _ = x\n"
+
+(* Control: `const : a -> b -> a` is genuinely polymorphic — must NOT error *)
+let t_sig_const_ok = assert_type
+  "myConst : a -> b -> a\nmyConst x _ = x\n" "myConst" "a -> b -> a"
+
+(* Control: `id : a -> a` is exactly as polymorphic as the body — must NOT error *)
+let t_sig_id_ok = assert_type
+  "myId : a -> a\nmyId x = x\n" "myId" "a -> a"
+
+(* Control: unsignatured binding infers polymorphically — must NOT error *)
+let t_sig_none_ok = assert_type
+  "myId x = x\n" "myId" "a -> a"
+
 (* ── Robustness (Phase 71) ────────────────────────── *)
 
 (* A node that should have been removed by desugar (here a list comprehension)
@@ -4607,6 +4629,13 @@ let () =
       test_case "annot concrete ok"                    `Quick t_annot_concrete_ok;
       test_case "err: annot too general (concrete)"    `Quick e_annot_too_general_concrete;
       test_case "err: annot too general (collapse)"    `Quick e_annot_too_general_collapse;
+    ];
+    "signature too general", [
+      test_case "err: sig too general (a->b)"          `Quick e_sig_too_general_id;
+      test_case "err: sig too general (extra tyvar)"   `Quick e_sig_too_general_extra_var;
+      test_case "ok: const sig is genuinely poly"      `Quick t_sig_const_ok;
+      test_case "ok: id sig exactly matches body"      `Quick t_sig_id_ok;
+      test_case "ok: no sig infers polymorphically"    `Quick t_sig_none_ok;
     ];
     "robustness (Phase 71)", [
       test_case "non-desugared node -> InternalError"  `Quick t_internal_error_not_assert;
