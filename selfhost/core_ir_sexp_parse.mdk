@@ -211,8 +211,9 @@ toAddr other = panic ("core_ir_sexp_parse: bad Addr: " ++ sexprToStr other)
 
 toRoute : SExp -> Route
 toRoute (SAtom "RNone") = RNone
-toRoute (SList (SAtom "RKey" :: [k])) = RKey (toStr k)
+toRoute (SList (SAtom "RKey" :: [k])) = RKey (toStr k) []
 toRoute (SList (SAtom "RDict" :: [d])) = RDict (toStr d)
+toRoute (SList (SAtom "RDictFwd" :: [d])) = RDictFwd (toStr d)
 toRoute other = panic ("core_ir_sexp_parse: bad Route: " ++ sexprToStr other)
 
 toCField : SExp -> CField

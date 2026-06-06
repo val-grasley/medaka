@@ -363,6 +363,23 @@ let test_diag_json_clean () =
   | `List [] -> ()
   | _ -> Alcotest.fail "expected empty diagnostics array for clean source"
 
+(* all_diagnostics_to_json: the multi-file envelope `medaka check --json` emits
+   for a file with imports. Top-level "files" array, one per module, each entry
+   the same {file, diagnostics} shape as the single-file renderer. *)
+let test_all_diag_json () =
+  let a_diags = Diagnostics.analyze ~file:"a.mdk" ~source:"main = 1 + \"x\"\n" in
+  let results = [ ("a.mdk", a_diags); ("b.mdk", []) ] in
+  let json = Yojson.Safe.from_string (Lsp_server.all_diagnostics_to_json results) in
+  match jmem "files" json with
+  | `List [ fa; fb ] ->
+    (match jmem "file" fa with `String "a.mdk" -> () | _ -> Alcotest.fail "files[0].file");
+    (match jmem "diagnostics" fa with
+     | `List (_ :: _) -> () | _ -> Alcotest.fail "expected a.mdk to carry diagnostics");
+    (match jmem "file" fb with `String "b.mdk" -> () | _ -> Alcotest.fail "files[1].file");
+    (match jmem "diagnostics" fb with
+     | `List [] -> () | _ -> Alcotest.fail "expected b.mdk diagnostics empty")
+  | _ -> Alcotest.fail "expected a two-element files array"
+
 let () =
   let open Alcotest in
   run "LSP handlers"
@@ -399,5 +416,6 @@ let () =
     ; "check --json",
       [ test_case "type error → LSP diagnostic shape" `Quick test_diag_json_error
       ; test_case "clean source → empty array"        `Quick test_diag_json_clean
+      ; test_case "multi-file → files array"          `Quick test_all_diag_json
       ]
     ]

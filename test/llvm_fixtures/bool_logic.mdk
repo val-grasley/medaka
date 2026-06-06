@@ -1,0 +1,5 @@
+-- boolean operators: && / || lower to short-circuiting CIf, unary ! to xor,
+-- comparisons yield Bool words.  Result is a Bool -> mdk_print_bool.
+a = 5
+b = 9
+main = (a < b) && !(a == b) || (a > b)

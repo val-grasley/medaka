@@ -1037,6 +1037,70 @@ let e_eff_escape_via_inferred = assert_err
 let e_eff_escape_backtick = assert_err
   "emit a b = print a\nf : Int -> Int -> Unit\nf x y = x `emit` y\n"
 
+(* Phase 146 soundness: effect laundering through a pure arrow annotation/slot
+   must be rejected — otherwise a capability manifest is forgeable.  Three
+   shapes, all caught by the open/closed subset rule in unify_row. *)
+
+(* (A) effectful lambda bound to a pure arrow signature → EffectLeak *)
+let e_eff_leak_annotated_value = assert_err
+  "f : Unit -> Unit\nf = (u => print \"io\")\n"
+
+(* (B) effectful lambda passed to a pure-callback parameter → EffectLeak *)
+let e_eff_leak_callback_param = assert_err
+  "callPure : (Unit -> Unit) -> Unit\ncallPure g = g ()\n\
+   bad = callPure (u => print \"io\")\n"
+
+(* (data field) effectful closure stored in a pure-arrow data field → EffectLeak *)
+let e_eff_leak_data_field = assert_err
+  "data Box = Box (Unit -> Unit)\nmkBox = Box (u => print \"io\")\n"
+
+(* Positive control: a PURE value used where an effectful arrow is allowed is
+   fine (subsumption — declaring more authority than you use is safe). *)
+let t_eff_pure_into_effectful_ok = assert_type
+  "runCb : (Unit -> <IO> Unit) -> <IO> Unit\nrunCb g = g ()\n\
+   pureCb u = ()\nmain : <IO> Unit\nmain = runCb pureCb\n"
+  "main" "Unit"
+
+(* Phase 146 (re-open on instantiation): closed-closed point-free laundering.
+   A concrete effectful value (closed `<IO>` row from an instantiated scheme)
+   aliased to a pure signature / ctor field / list element used to launder via
+   the permissive None,None unify_row arm.  Re-opening the value's covariant
+   rows on instantiation turns each meeting into the Some/None subset check. *)
+
+(* point-free alias of an IO extern to a pure signature → EffectLeak *)
+let e_eff_leak_pointfree_alias = assert_err
+  "ioFn : String -> Unit\nioFn = putStrLn\n"
+
+(* point-free effectful value into a pure-arrow ctor field → EffectLeak *)
+let e_eff_leak_pointfree_ctor = assert_err
+  "data Box = Box (String -> Unit)\nmkBox = Box putStrLn\n"
+
+(* point-free effectful value into a pure-arrow list-element annotation → EffectLeak *)
+let e_eff_leak_pointfree_list = assert_err
+  "fns : List (String -> Unit)\nfns = [putStrLn]\n"
+
+(* Subsumption preserved under re-opening: a PURE function passed into an
+   effect-allowing (contravariant) ctor field is fine (pure ⊆ <Mut>).  This is
+   the VPrim shape that the variance-aware re-open must NOT reject. *)
+let t_eff_subsume_pure_into_effectful_field = assert_type
+  "data Prim = Prim (Int -> <Mut> Int)\nwrap : (Int -> Int) -> Prim\nwrap f = Prim f\n"
+  "wrap" "(Int -> Int) -> Prim"
+
+(* Over-annotation via a point-free pure value: declaring <IO> you don't use. *)
+let t_eff_over_annotation_pointfree = assert_type
+  "inc x = x + 1\nincIO : Int -> <IO> Int\nincIO = inc\n"
+  "incIO" "Int -> <IO> Int"
+
+(* Unit-level: an OPEN row that already carries a label (an inference arrow
+   `<IO | _>`) unified against a closed bound that lacks it must raise — the
+   escape the laundering fix adds. *)
+let e_unify_row_escape () =
+  let r = { labels = ["IO"]; tail = Some (fresh_effvar ()) } in
+  (try
+     unify_row r (closed_row []);
+     failwith "expected EffectLeak when closing <IO|_> against <>"
+   with Type_error (EffectLeak _, _) -> ())
+
 (* Parity baseline: the prefix form of the same program already errors. *)
 let e_eff_escape_prefix_parity = assert_err
   "emit a b = print a\nf : Int -> Int -> Unit\nf x y = emit x y\n"
@@ -3342,7 +3406,7 @@ let resolved_keys src =
   let collect = function
     | Ast.EMethodRef (r, _) as e ->
       (match !r with
-       | Some { Ast.res_route = Ast.RKey k; _ } -> keys := k :: !keys
+       | Some { Ast.res_route = Ast.RKey (k, _); _ } -> keys := k :: !keys
        | Some { Ast.res_route = Ast.RHeadKey _; _ }
        | Some { Ast.res_route = Ast.RDict _; _ }
        | Some { Ast.res_route = Ast.RLocal; _ } | None -> ());
@@ -3473,7 +3537,7 @@ let dict_routes src =
     | Ast.EMethodRef (r, m) as e ->
       (match !r with
        | Some { Ast.res_route = Ast.RDict d; _ } -> out := Printf.sprintf "%s->RDict(%s)" m d :: !out
-       | Some { Ast.res_route = Ast.RKey k; _ }  -> out := Printf.sprintf "%s->RKey(%s)" m k :: !out
+       | Some { Ast.res_route = Ast.RKey (k, _); _ }  -> out := Printf.sprintf "%s->RKey(%s)" m k :: !out
        | Some { Ast.res_route = Ast.RHeadKey h; _ } -> out := Printf.sprintf "%s->RHeadKey(%s)" m h :: !out
        | Some { Ast.res_route = Ast.RLocal; _ } -> out := Printf.sprintf "%s->RLocal" m :: !out
        | None -> ());
@@ -3481,7 +3545,7 @@ let dict_routes src =
     | Ast.EDictApp (r, f) as e ->
       (match !r with
        | Some routes ->
-         let s = List.map (function Ast.RKey k -> "K:" ^ k | Ast.RDict d -> "D:" ^ d | Ast.RHeadKey h -> "H:" ^ h | Ast.RLocal -> "L") routes in
+         let s = List.map (function Ast.RKey (k, _) -> "K:" ^ k | Ast.RDict d -> "D:" ^ d | Ast.RHeadKey h -> "H:" ^ h | Ast.RLocal -> "L") routes in
          out := Printf.sprintf "%s[%s]" f (String.concat "," s) :: !out
        | None -> ());
       e
@@ -3532,7 +3596,7 @@ let elaborated_routes src =
     | Ast.EMethodRef (r, m) as e ->
       (match !r with
        | Some { Ast.res_route = Ast.RDict d; _ } -> out := Printf.sprintf "%s->RDict(%s)" m d :: !out
-       | Some { Ast.res_route = Ast.RKey k; _ }  -> out := Printf.sprintf "%s->RKey(%s)" m k :: !out
+       | Some { Ast.res_route = Ast.RKey (k, _); _ }  -> out := Printf.sprintf "%s->RKey(%s)" m k :: !out
        | Some { Ast.res_route = Ast.RHeadKey h; _ } -> out := Printf.sprintf "%s->RHeadKey(%s)" m h :: !out
        | Some { Ast.res_route = Ast.RLocal; _ } -> out := Printf.sprintf "%s->RLocal" m :: !out
        | None -> ());
@@ -3540,7 +3604,7 @@ let elaborated_routes src =
     | Ast.EDictApp (r, f) as e ->
       (match !r with
        | Some routes ->
-         let s = List.map (function Ast.RKey k -> "K:" ^ k | Ast.RDict d -> "D:" ^ d | Ast.RHeadKey h -> "H:" ^ h | Ast.RLocal -> "L") routes in
+         let s = List.map (function Ast.RKey (k, _) -> "K:" ^ k | Ast.RDict d -> "D:" ^ d | Ast.RHeadKey h -> "H:" ^ h | Ast.RLocal -> "L") routes in
          out := Printf.sprintf "%s[%s]" f (String.concat "," s) :: !out
        | None -> ());
       e
@@ -3592,7 +3656,7 @@ let method_dict_routes_of src =
       (match !r with
        | Some { Ast.res_method_dicts = (_ :: _ as ds); _ } ->
          let s = List.map (function
-           | Ast.RKey k -> "K:" ^ k | Ast.RDict d -> "D:" ^ d | Ast.RHeadKey h -> "H:" ^ h
+           | Ast.RKey (k, _) -> "K:" ^ k | Ast.RDict d -> "D:" ^ d | Ast.RHeadKey h -> "H:" ^ h
            | Ast.RLocal -> "L") ds in
          out := Printf.sprintf "%s{%s}" m (String.concat "," s) :: !out
        | _ -> ());
@@ -3913,6 +3977,28 @@ bad = (intId : a -> a)
 let e_annot_too_general_collapse = assert_err_msg "more polymorphic"
   "bad = ((x => x) : a -> b)\n"
 
+(* ── Signature too general ───────────────────────────────────────────────── *)
+
+(* Error: `id : a -> b` — `a` and `b` collapse to the same TVar after inference *)
+let e_sig_too_general_id = assert_err_msg "more general"
+  "myId : a -> b\nmyId x = x\n"
+
+(* Error: third tyvar collapses — `a -> a -> b` has `b` collapse to `a` *)
+let e_sig_too_general_extra_var = assert_err_msg "more general"
+  "myConst2 : a -> a -> b\nmyConst2 x _ = x\n"
+
+(* Control: `const : a -> b -> a` is genuinely polymorphic — must NOT error *)
+let t_sig_const_ok = assert_type
+  "myConst : a -> b -> a\nmyConst x _ = x\n" "myConst" "a -> b -> a"
+
+(* Control: `id : a -> a` is exactly as polymorphic as the body — must NOT error *)
+let t_sig_id_ok = assert_type
+  "myId : a -> a\nmyId x = x\n" "myId" "a -> a"
+
+(* Control: unsignatured binding infers polymorphically — must NOT error *)
+let t_sig_none_ok = assert_type
+  "myId x = x\n" "myId" "a -> a"
+
 (* ── Robustness (Phase 71) ────────────────────────── *)
 
 (* A node that should have been removed by desugar (here a list comprehension)
@@ -4146,6 +4232,16 @@ let () =
       test_case "unify_row open/closed"     `Quick t_unify_row_open_closed;
       test_case "unify_row open/open link"  `Quick t_unify_row_open_open_link;
       test_case "unify_row closed permissive" `Quick t_unify_row_closed_permissive;
+      test_case "err: leak via annotated value" `Quick e_eff_leak_annotated_value;
+      test_case "err: leak via callback param"  `Quick e_eff_leak_callback_param;
+      test_case "err: leak via data field"      `Quick e_eff_leak_data_field;
+      test_case "pure into effectful ok"        `Quick t_eff_pure_into_effectful_ok;
+      test_case "err: leak pointfree alias"      `Quick e_eff_leak_pointfree_alias;
+      test_case "err: leak pointfree ctor field" `Quick e_eff_leak_pointfree_ctor;
+      test_case "err: leak pointfree list elem"  `Quick e_eff_leak_pointfree_list;
+      test_case "subsume pure into eff field"    `Quick t_eff_subsume_pure_into_effectful_field;
+      test_case "over-annotation pointfree"      `Quick t_eff_over_annotation_pointfree;
+      test_case "unify_row escape raises"        `Quick e_unify_row_escape;
     ];
     "pipe and compose", [
       test_case "pipe Int"               `Quick t_pipe_int;
@@ -4568,6 +4664,13 @@ let () =
       test_case "annot concrete ok"                    `Quick t_annot_concrete_ok;
       test_case "err: annot too general (concrete)"    `Quick e_annot_too_general_concrete;
       test_case "err: annot too general (collapse)"    `Quick e_annot_too_general_collapse;
+    ];
+    "signature too general", [
+      test_case "err: sig too general (a->b)"          `Quick e_sig_too_general_id;
+      test_case "err: sig too general (extra tyvar)"   `Quick e_sig_too_general_extra_var;
+      test_case "ok: const sig is genuinely poly"      `Quick t_sig_const_ok;
+      test_case "ok: id sig exactly matches body"      `Quick t_sig_id_ok;
+      test_case "ok: no sig infers polymorphically"    `Quick t_sig_none_ok;
     ];
     "robustness (Phase 71)", [
       test_case "non-desugared node -> InternalError"  `Quick t_internal_error_not_assert;

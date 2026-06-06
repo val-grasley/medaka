@@ -249,10 +249,12 @@ every site is at a concrete type (the `Parser` monad, no `=>` constraints,
   level only. LLVM's "dictionaries explicit" Core IR forces the structured-dict
   question; a VM can defer it (keep the flat tag) and still run everything the
   bootstrap needs.
-- **Effect propagation** is annotation-only (inferred effects don't propagate;
-  `README.md:719-722`). Both backends *erase* effects at runtime, so this blocks
-  neither's execution — but a "frozen Core IR" (`PLAN.md:200`) should still define
-  how effect-polymorphic code is *represented* even when erased.
+- **Effect propagation** is fully ported (Phase 146 selfhost mirror, 2026-06-06):
+  the self-hosted typechecker now does open-row inference, propagation, escape, and
+  laundering checks — no longer annotation-only. Both backends *erase* effects at
+  runtime, so this blocks neither's execution — but a "frozen Core IR"
+  (`PLAN.md:200`) should still define how effect-polymorphic code is *represented*
+  even when erased.
 
 **Verdict:** neutral between the options on *what must close* — both need the same
 gaps closed for arbitrary programs, neither needs them for the RKey-only
@@ -425,17 +427,17 @@ reference. The reference is the tree-walker (`eval_modules` / `eval_probe` and t
 **2.2 — Bytecode compiler + VM, slice by slice.** Compile Core IR → bytecode; the
 VM interprets it reusing the host `Value` ([`eval.mdk:18`](eval.mdk:18)),
 externs, and GC. Slices mirror `eval.mdk`'s own progression:
-1. arithmetic + variables (slot-indexed) + application;
-2. `match` via compiled decision trees;
-3. ADTs / records / refs;
-4. closures + letrec + `VThunk` laziness (replicate force-on-first-lookup memo
-   exactly — a mismatch is a localizable diff);
-5. typeclass dispatch from the elaborated routes (`RKey` narrow, `RDict`
-   forward — port the `narrowMethod`/`applyDicts` logic to opcodes);
-6. multi-module (`eval_modules` per-module-frame semantics).
+1. ✅ **DONE (2026-06-05)** arithmetic + variables (slot-indexed) + application;
+2. ✅ **DONE (2026-06-05)** `match` via compiled decision trees;
+3. ✅ **DONE (2026-06-05)** ADTs / records / refs;
+4. ✅ **DONE (2026-06-05)** closures + letrec + `VThunk` laziness (replicate
+   force-on-first-lookup memo exactly — a mismatch is a localizable diff);
+5. ✅ **DONE (2026-06-05)** typeclass dispatch from the elaborated routes (`RKey`
+   narrow, `RDict` forward — port the `narrowMethod`/`applyDicts` logic to opcodes);
+6. multi-module (`eval_modules` per-module-frame semantics). **← next**
 - **Gate per slice:** `eval_bytecode_main.mdk` output byte-identical to the
   tree-walker over the existing fixtures — the exact `diff_selfhost_eval*.sh`
-  harness shape, no new oracle.
+  harness shape, no new oracle. **Current: 18/18, 0 deferred (~1.5s).**
 - **Capstone:** the VM runs the self-host compiler (RKey-only is sufficient,
   `README.md:660`) and reproduces `check_modules` / `eval_modules` output. Measure
   VM vs tree-walker; expect the interpretation-structural win (no AST re-dispatch +
@@ -464,6 +466,87 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   cannot have.
 - **Bootstrap closure (the finish line, `PLAN.md:216`):** the self-hosted compiler
   + LLVM backend compiles itself to a standalone native binary.
+- **DE-RISKING SPIKE DONE (2026-06-05) — ahead of the strict VM-first ordering, by
+  design** (front-loads the riskiest lift; runs fully parallel to the §2.2 VM work,
+  uses only the tree-walker oracle). Proves the decided toolchain (EMIT textual LLVM
+  IR + shell out to `clang`, no llc/opt, no C++/Rust bindings) end-to-end on the
+  *simplest subset only* — the slice-1 equivalent: integer/float arithmetic,
+  comparisons, unary `-`/`!`, `let`, `if`, top-level value bindings, a type-directed
+  print. **No** closures/functions/ADTs/records/dispatch/GC (out-of-scope nodes
+  *panic* rather than mis-lower). New files: `llvm_emit.mdk` (Core IR → textual LLVM
+  IR, a sibling consumer of the same Core IR `core_ir_eval`/the bytecode VM consume
+  — Axis-1 discipline in miniature), `llvm_emit_main.mdk` (driver: parse → desugar →
+  `annotateProgram` → `lowerProgram` → emit, sharing the entire front-end + lowering
+  with `core_ir_main.mdk`), `../runtime/medaka_rt.c` (a malloc-and-leak `mdk_alloc`
+  + `mdk_print_int/bool/float`; GC deferred — `brew install bdw-gc` is the later
+  step). Gate: `test/diff_selfhost_llvm.sh` (emit → `clang <ll> medaka_rt.c` → run →
+  diff vs `dev/eval_probe.exe`) over 8 prelude-free scalar fixtures in
+  `test/llvm_fixtures/` — **8/8 byte-identical**, including OCaml's trailing-dot
+  float rendering (`14.`), `true`/`false`, negatives, and truncating `sdiv`/`srem`.
+  Value rep is a **PROVISIONAL** uniform 64-bit tagged word (low-bit-1 immediate
+  `Int`, boxed `Float`) — *deliberately* exercising the rep so it surfaces the real
+  decision; the tag/box arithmetic lives in the emitted IR (visibly), and the rep is
+  revisable in one place (`llvm_emit.mdk` + `medaka_rt.c`). The ratified-by-a-human
+  proposal (tagged word vs NaN-box vs boxed-everything, + the `musttail` calling
+  convention) it fed is [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md) §8.
+- **SPIKE SLICE 2 DONE (2026-06-05) — top-level functions + direct calls.** Extends
+  the spike from scalars to top-level functions and saturated direct calls, still
+  against the same tree-walker oracle. Each `name p… = …` lowers to
+  `define i64 @mdk_<name>(i64 %arg0, …)`; a `CApp` spine with a known-function head
+  lowers to `call i64 @mdk_<name>(…)`. **The `musttail` calling convention is now
+  exercised, not just proposed:** a function body is emitted in tail position, so a
+  *self-recursive* tail call lowers to `musttail call` immediately followed by `ret`
+  (self-recursion guarantees the caller/callee prototypes match, which `musttail`
+  requires). Empirically TCO-correct under `clang -O0` — a 5,000,000-deep
+  tail-recursive `sumTo` returns the right total with no stack growth, where an
+  ordinary `call` overflows. **Decisions surfaced (not silently taken):** (1)
+  function boundaries are **Int-only** — params/returns are i64 Int words; a
+  Bool/Float-typed parameter or result is out of scope (the same static-type-only
+  limitation slice 1 already exposes for the print routine, now at the call ABI).
+  (2) cross-function tail calls (mutual recursion) stay an ordinary `call` —
+  guaranteed-TCO across *distinct* prototypes needs prototype-match checking, a
+  later increment. (3) function-body references to top-level *value* bindings
+  (globals) are out of scope — fixtures pass globals as call arguments instead.
+  Value rep is **unchanged** (no rep edit — the calling convention rides on the
+  existing uniform i64 word). Gate now spans **13/13** fixtures (the original 8 +
+  5 function fixtures: `fn_factorial` non-tail self-recursion, `fn_tailsum`/`fn_gcd`
+  musttail self-recursion, `fn_mutual` cross-function tail calls, `fn_compose`
+  nested non-recursive calls + a value-binding argument). Still **not** the real
+  backend: higher-order values / closures / ADTs / records / dispatch / GC remain
+  out of scope and panic.
+- **SPIKE SLICE 2b DONE (2026-06-06) — Bool/Float function boundaries.** Closes the
+  Int-only function-boundary limitation slice 2 documented. Core IR is type-erased,
+  so a **two-pass signature inference** recovers each function's parameter and
+  return type before its body is emitted (`inferSigs` → `typeOf` + `paramUseTy` in
+  `llvm_emit.mdk`): a parameter's type comes from its **first typed use** — an
+  `if`-condition or `!` operand ⇒ `Bool`, an arithmetic/comparison operand shares
+  its **sibling**'s type (so `x * 2.0` ⇒ `x : Float`, `n == 0` ⇒ `n : Int`), and an
+  argument passed to a known function takes that function's parameter type; the
+  return type then follows structurally. `typeOf` is the pure, non-emitting twin of
+  the type-recovery `emitExpr` already does inline. Two passes settle a
+  caller→callee→sibling chain and mutual recursion (the subset has no deeper
+  type-flow). With the signature table, a call site reports the **callee's** return
+  type (so a Bool-returning function prints `true`/`false`, not as an Int) and a
+  function binds each parameter at its inferred type (so a Float parameter
+  unboxes/reboxes). **Value rep is UNCHANGED — no rep edit.** Every value is the
+  same uniform i64 word at the ABI regardless of type (Int immediate, Bool
+  immediate `0`/`1`, Float boxed-pointer-as-i64), so there is **no `define`/`call`
+  prototype change and `musttail`'s prototype-match invariant is untouched** — the
+  recovered type drives only int-vs-float instruction selection in the body and the
+  print routine for a result, not the calling convention. Gate now spans **17/17**
+  fixtures (the prior 13 + 4 boundary fixtures: `fn_float_param` Float param +
+  Float return, `fn_bool_return` Bool return → `print_bool`, `fn_bool_param` Bool
+  param used as an `if` condition, `fn_float_chain` Float param propagating across a
+  two-hop call chain). Decisions surfaced (not silently taken): (1) param types are
+  **inferred structurally from use**, not threaded from the typechecker — the spike
+  re-derives what the erased Core IR dropped, the same structural-recovery posture
+  slice 1 used for the print routine; (2) because Bool and Int share the immediate
+  encoding, an *Int*-returning function whose body is a comparison would still be
+  typed `Bool` here — harmless for the spike (the rep can't yet tell them apart, a
+  limitation slice 1 already documents), but a real backend with a distinguishing
+  rep must carry the type, not re-infer it. Still **not** the real backend:
+  higher-order values / closures / ADTs / records / dispatch / GC remain out of
+  scope and panic.
 
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /

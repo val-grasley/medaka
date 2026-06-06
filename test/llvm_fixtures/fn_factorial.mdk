@@ -1,0 +1,4 @@
+-- non-tail self-recursion: the recursive call sits inside a multiply, so it is
+-- NOT in tail position and lowers to an ordinary `call` (+ the surrounding mul).
+fact n = if n <= 1 then 1 else n * fact (n - 1)
+main = fact 6

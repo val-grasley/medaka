@@ -1,0 +1,4 @@
+-- float arithmetic: every operand is BOXED via @mdk_alloc and the ops unbox /
+-- rebox (the spike's provisional rep makes floats heap cells).  Result is a
+-- Float -> mdk_print_float, which must reproduce OCaml string_of_float exactly.
+main = (1.0 / 4.0) + (3.0 / 2.0)

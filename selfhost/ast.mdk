@@ -29,9 +29,13 @@ public export data Constraint = Constraint String (List Ty)
 
 -- a resolved typeclass-dispatch route (filled by the typed-pipeline typechecker).
 -- RNone = unresolved / no dispatch (eval keeps the VMulti for arg-tag fallback);
--- RKey = a concrete impl head tag; RDict = read the named dict parameter at
--- runtime (the enclosing constrained function's constraint).
-public export data Route = RNone | RKey String | RDict String
+-- RKey = a concrete impl head tag plus its own requires routes recursively (Phase
+--   83/84 #5: the nested element-dict routes so dict_of_route builds a structured
+--   VDict carrying every element dict the impl body needs);
+-- RDict = read the named dict parameter at runtime (enclosing constraint);
+-- RDictFwd = like RDict but for return-position sites: also forward the structured
+--   dict's own requires into the selected impl body (Phase 83/84 #5).
+public export data Route = RNone | RKey String (List Route) | RDict String | RDictFwd String
 
 -- a resolved lexical address for a variable reference (STAGE2-DESIGN §2.0, the
 -- de-risked first half: resolve EMITS the slot; eval does NOT yet consume it —

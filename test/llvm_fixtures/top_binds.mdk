@@ -1,0 +1,6 @@
+-- top-level value bindings that reference earlier ones (emitted in source order
+-- into @main; CVar lookups resolve against the binding environment).
+base = 100
+step = 7
+scaled = base * step
+main = scaled - base + step * step

@@ -1,0 +1,3 @@
+-- integer arithmetic: precedence + all five primitive ops, negatives via
+-- subtraction, truncating div/mod (sdiv/srem must match OCaml `/`/`mod`).
+main = 2 + 3 * 4 - (10 / 3) + (17 % 5) + (0 - 7) / 2

@@ -9,7 +9,7 @@ contains _ [] = False
 contains x (y::ys) = x == y || contains x ys
 
 export
-concatMapList : (a -> List b) -> List a -> List b
+concatMapList : (a -> <e> List b) -> List a -> <e> List b
 concatMapList _ [] = []
 concatMapList f (x::xs) = f x ++ concatMapList f xs
 

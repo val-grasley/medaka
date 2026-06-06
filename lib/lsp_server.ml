@@ -124,6 +124,21 @@ let diagnostics_to_json ~(file : string) (diags : Diagnostics.diagnostic list) :
   let obj = `Assoc [ ("file", `String file); ("diagnostics", `List arr) ] in
   Yojson.Safe.to_string obj
 
+(* Render a whole multi-file `analyze_project` result as JSON, for `medaka check
+   --json` on a file with imports.  Each element is the same per-file object
+   `diagnostics_to_json` emits, collected under a top-level "files" array so the
+   output is a single parseable document regardless of how many modules the
+   import graph spans. *)
+let all_diagnostics_to_json
+    (results : (string * Diagnostics.diagnostic list) list) : string =
+  let files =
+    List.map (fun (file, diags) ->
+      let arr = List.map (fun d -> Diagnostic.yojson_of_t (lsp_diag_of d)) diags in
+      `Assoc [ ("file", `String file); ("diagnostics", `List arr) ])
+      results
+  in
+  Yojson.Safe.to_string (`Assoc [ ("files", `List files) ])
+
 let publish_for_uri (uri : DocumentUri.t) (diags : Diagnostics.diagnostic list) =
   let params = PublishDiagnosticsParams.create
     ~diagnostics:(List.map lsp_diag_of diags) ~uri ()

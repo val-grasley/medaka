@@ -327,6 +327,37 @@ main =
 |}
   "OK\n"
 
+(* Phase 83/84 #5: structured/recursive instance dictionaries.  A recursive
+   `requires` instance (`impl Default (List a) requires Default a where def =
+   [def]`) used at a *nested* type needs a structured runtime dict that carries
+   the element dict at every level — the flat `VDict of string` could only encode
+   one impl key, so `def : List (List Int)` panicked "no matching impl".  Each
+   level's `def` reads its dict's key (List impl) and forwards the dict's own
+   `requires` (the inner element dict) into the body, unfolding until the base
+   `Default Int`.  Single-level (`[0]`) is the prior working baseline; two- and
+   three-level, plus a mixed Option/List nesting, exercise the recursion. *)
+let t_nested_instance_dicts = assert_output_typed
+  {|interface Default a where
+  def : a
+
+impl Default Int where
+  def = 0
+
+impl Default (List a) requires Default a where
+  def = [def]
+
+impl Default (Option a) requires Default a where
+  def = Some def
+
+main : <IO> Unit
+main =
+  println (def : List Int)
+  println (def : List (List Int))
+  println (def : List (List (List Int)))
+  println (def : Option (List (Option Int)))
+|}
+  "[0]\n[[0]]\n[[[0]]]\nSome [Some 0]\n"
+
 (* Both nullary Bounded methods, routed by a known result type.  (Stdlib Bounded
    impls are Phase 93; this defines a local one to exercise the dispatch.) *)
 let t_nullary_bounded = assert_output_typed
@@ -979,6 +1010,7 @@ let () = Alcotest.run "Run"
     "nullary empty (stdlib Monoid)",     `Quick, t_nullary_empty_stdlib_monoid;
     "nullary empty (custom Monoid)",     `Quick, t_nullary_empty_custom_monoid;
     "nullary method on requires impl (Phase 103b)",    `Quick, t_nullary_empty_requires;
+    "nested instance dicts (Phase 83/84 #5)",          `Quick, t_nested_instance_dicts;
     "nullary minBound/maxBound (Phase 96)", `Quick, t_nullary_bounded;
     "nullary Bounded Int (stdlib, Phase 93)",  `Quick, t_nullary_bounded_int;
     "nullary Bounded Char (stdlib, Phase 93)", `Quick, t_nullary_bounded_char;

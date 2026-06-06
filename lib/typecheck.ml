@@ -136,6 +136,7 @@ type type_error =
   | AmbiguousField of ident * ident list   (* field, candidate records — type unknown *)
   | MissingField   of ident * ident       (* field, record *)
   | EffectEscape   of ident * effect_set * effect_set  (* fn, declared, undeclared extras *)
+  | EffectLeak     of effect_set * effect_set  (* closed bound labels, escaping extras *)
   | UnknownInterface   of ident               (* impl references unknown interface *)
   | ExtraMethod        of ident * ident       (* iface_name, method not in interface *)
   | MissingMethod      of ident * ident       (* iface_name, missing required method *)
@@ -165,6 +166,7 @@ type type_error =
   | RecursiveTypeAlias  of ident                   (* type alias that expands to itself *)
   | TypeAliasArity      of ident * int * int        (* alias, expected params, got args *)
   | AnnotationTooGeneral of Ast.ty                  (* annotation claims more polymorphism than expr has *)
+  | SignatureTooGeneral  of ident * Ast.ty          (* declared signature is more general than the body allows *)
   | LetRecNonFunction   of ident                   (* `let rec x = ...` where RHS isn't a lambda *)
   | InternalError       of string                   (* a broken compiler invariant, surfaced as a diagnostic *)
   | CannotShadowPrelude of ident                    (* Phase 78a: redefining a prelude fn the stdlib uses internally *)
@@ -382,9 +384,17 @@ let unify_row r1 r2 =
     v1 := ELink { labels = diff r2.labels r1.labels; tail = Some v3 };
     v2 := ELink { labels = diff r1.labels r2.labels; tail = Some v3 }
   | Some v1, None ->
-    (* r1 open, r2 closed: close r1, absorbing r2's extra labels *)
+    (* r1 open (an inference-synthesized arrow, i.e. a concrete value's latent
+       effect), r2 closed (a user-declared bound).  SOUNDNESS (Phase 146): the
+       open value's own labels must not exceed the closed bound, else they
+       escape — e.g. an <IO> closure stored in / annotated as a pure arrow.
+       The closed side's extra labels flow into the open sink as before. *)
+    let escaping = diff r1.labels r2.labels in
+    if escaping <> [] then fail (EffectLeak (r2.labels, escaping));
     v1 := ELink { labels = diff r2.labels r1.labels; tail = None }
   | None, Some v2 ->
+    let escaping = diff r2.labels r1.labels in
+    if escaping <> [] then fail (EffectLeak (r1.labels, escaping));
     v2 := ELink { labels = diff r1.labels r2.labels; tail = None }
   | None, None -> ()
 
@@ -465,17 +475,41 @@ let subst_row esub r =
 let instantiate_raw (Forall (vars, evars, t)) =
   let sub = List.map (fun id -> (id, fresh_var ())) vars in
   let esub = List.map (fun id -> (id, fresh_effvar ())) evars in
-  let rec walk t = match normalize t with
+  (* Phase 146: re-open a CLOSED row that carries concrete labels when an
+     effectful scheme is instantiated — but ONLY at a covariant (positive)
+     position, i.e. an arrow that the value itself produces.  A scheme's `<IO>`
+     arrow means "performs IO"; at an occurrence that arrow behaves like any
+     inference-synthesized arrow — its labels must flow into / be bounded by the
+     using context, exactly the open-row subsumption discipline unify_row already
+     enforces.  Leaving it closed lets a concrete effectful value
+     (`putStrLn : String -> <IO> Unit`) unify None/None against a pure closed
+     bound (an annotation, a ctor field, a list element) and silently drop its
+     labels — the laundering hole.  Re-opening turns every such meeting into the
+     Some/None subset check, which rejects the escape.
+
+     Variance matters: only the value's OWN (covariant) arrows are re-opened.
+     A row in CONTRAVARIANT position — a constructor field / function parameter
+     the scheme *accepts*, e.g. `VPrim (Value -> <Mut> Value)` — must stay
+     closed, or a legitimately pure argument passed into that effect-allowing
+     slot (safe subsumption: pure ⊆ <Mut>) would be wrongly rejected.  Pure
+     (label-less) rows are never re-opened: they have nothing to leak. *)
+  let reopen pos r =
+    let r = subst_row esub r in
+    match pos, r.tail, r.labels with
+    | true, None, (_ :: _) -> { r with tail = Some (fresh_effvar ()) }
+    | _ -> r
+  in
+  let rec walk pos t = match normalize t with
     | TVar v ->
       (match !v with
        | Unbound (id, _) -> (try List.assoc id sub with Not_found -> TVar v)
        | Link _ -> fail (InternalError "instantiate: Link survived normalize"))
     | TCon _ as t -> t
-    | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, r, b) -> TFun (walk a, subst_row esub r, walk b)
-    | TTuple ts    -> TTuple (List.map walk ts)
+    | TApp (a, b)  -> TApp (walk pos a, walk pos b)
+    | TFun (a, r, b) -> TFun (walk (not pos) a, reopen pos r, walk pos b)
+    | TTuple ts    -> TTuple (List.map (walk pos) ts)
   in
-  (sub, walk t)
+  (sub, walk true t)
 
 let instantiate s = snd (instantiate_raw s)
 
@@ -685,6 +719,9 @@ let pp_error = function
   | EffectEscape (name, declared, extras) ->
     Printf.sprintf "Function '%s' declared with <%s> but also performs <%s>"
       name (String.concat ", " declared) (String.concat ", " extras)
+  | EffectLeak (bound, extras) ->
+    Printf.sprintf "Effectful value used where <%s> is allowed, but it performs <%s>"
+      (String.concat ", " bound) (String.concat ", " extras)
   | UnknownInterface n ->
     Printf.sprintf "Unknown interface: %s" n
   | ExtraMethod (iface, m) ->
@@ -768,6 +805,10 @@ let pp_error = function
     Printf.sprintf
       "Type annotation '%s' is more polymorphic than the expression — a type variable in the annotation is actually a specific type (or two annotation variables are the same type)"
       (Ast.pp_ty t)
+  | SignatureTooGeneral (name, sig_ast) ->
+    Printf.sprintf
+      "Declared signature of '%s' is more general than its body — '%s' claims type variables that are the same type after inference"
+      name (Ast.pp_ty sig_ast)
   | LetRecNonFunction n ->
     Printf.sprintf
       "'%s' is bound by 'let rec' but its right-hand side is not a function. Recursive value bindings must have a lambda right-hand side; cyclic data structures are not supported."
@@ -1079,8 +1120,8 @@ let from_ast_type_with_constraints ?(aliases=Hashtbl.create 0) ast_ty =
   | Ast.TyConstrained (cs, inner) ->
     let mono = go inner in
     let constraints = List.map (fun (iface, args) -> (iface, List.map go args)) cs in
-    (constraints, mono)
-  | other -> ([], go other)
+    (constraints, mono, tbl)
+  | other -> ([], go other, tbl)
 
 (* Build the initial environment with the few built-ins the prelude can't
    declare itself.  Option / Result / Ordering and their constructors come
@@ -1583,7 +1624,8 @@ let rec infer env = function
        unify mono (TFun (tx, eff, tr));
        perform_effect cur_effect eff;
        mref := Some { Ast.res_iface = iface_name; res_route = Ast.RLocal;
-                      res_method_dicts = []; res_impl_dicts = [] };
+                      res_method_dicts = []; res_impl_dicts = [];
+                      res_fwd_requires = false };
        tr
      | _ ->
        (* Impl exists, or receiver head not concrete → ordinary method dispatch.
@@ -2503,14 +2545,14 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
      the real generalized constraint set is known. *)
   let prepared = List.map (fun (name, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
-    let (cs_monos, sig_t_opt) =
+    let (cs_monos, sig_t_opt, tbl_opt) =
       match sig_opt with
-      | None -> ([], None)
+      | None -> ([], None, None)
       | Some sig_ast ->
-        let (cs, sig_t) = from_ast_type_with_constraints
+        let (cs, sig_t, tbl) = from_ast_type_with_constraints
                             ~aliases:(!env_ref).aliases sig_ast in
         unify placeholder sig_t;
-        (cs, Some sig_t)
+        (cs, Some sig_t, Some tbl)
     in
     (* Mirror the post-inference registration below, minus its bound-ids filter
        (nothing is generalized yet): a top-level member generalizes all its arg
@@ -2524,7 +2566,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     let pre_cs = expand_supers (!env_ref).interfaces pre_cs in
     if pre_cs <> [] then
       Hashtbl.replace (!env_ref).fun_constraints name pre_cs;
-    (name, cs_monos, sig_t_opt, sig_opt, clauses)
+    (name, cs_monos, sig_t_opt, tbl_opt, sig_opt, clauses)
   ) members in
   (* Pass B: infer the bodies now that every member's constraints are visible. *)
   (* Phase 83: snapshot the obligation *and* method-usage accumulators so the
@@ -2540,7 +2582,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
   let oblig_n0 = List.length !obl_ref in
   let mu_ref = (!env_ref).method_usages in
   let mu_n0 = List.length !mu_ref in
-  let cs_monos_list = List.map (fun (name, cs_monos, sig_t_opt, sig_opt, clauses) ->
+  let cs_monos_list = List.map (fun (name, cs_monos, sig_t_opt, tbl_opt, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
     (* Phase 136: mark this member as the enclosing function so a constrained
        self-/mutual-recursive call in its body captures it (find_enclosing_dict
@@ -2625,6 +2667,28 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
        let extras = List.filter (fun e -> not (List.mem e declared)) !inferred_eff in
        if extras <> [] then fail (EffectEscape (name, declared, extras))
      | None -> ());
+    (* Signature-too-general check: after body inference, each declared type variable
+       must still be a distinct, unbound TVar.  If two variables unified with each
+       other (e.g. `id : a -> b` with body `\x => x` collapses `b` to `a`), the
+       declared signature is more polymorphic than the body allows and must be
+       rejected.  We only reject the two-variables-become-one case (not the case
+       where a variable grounds to a concrete type, which the existing typechecker
+       handles via generalization). *)
+    (match tbl_opt, sig_opt with
+     | Some tbl, Some sig_ast ->
+       let resolved = Hashtbl.fold (fun _ v acc -> normalize v :: acc) tbl [] in
+       (* Collect TVar refs only; concrete types are not the "too general" case *)
+       let tvar_refs = List.filter_map (function
+         | TVar r -> Some r
+         | _ -> None) resolved in
+       let rec has_duplicate seen = function
+         | [] -> false
+         | r :: rest ->
+           if List.memq r seen then true else has_duplicate (r :: seen) rest
+       in
+       if has_duplicate [] tvar_refs then
+         fail (SignatureTooGeneral (name, sig_ast))
+     | _ -> ());
     (* Value restriction (Phase 66): a let-rec member is always a function;
        a non-letrec zero-arg binding is gated on its RHS so e.g. `r = Ref []`
        is not over-generalized. *)
@@ -3520,6 +3584,48 @@ let rec check_entry_requires env loc entry concrete_args =
         | e' :: _ -> check_entry_requires env loc e' req_concrete
     ) entry.impl_requires
 
+(* Phase 83/84 #5: build the *recursive* dict routes for an impl's `requires`,
+   selected for ground `concrete_args`.  The routing twin of check_entry_requires:
+   where that one only *verifies* the nested requirements hold, this yields the
+   routes eval needs to build the runtime dictionaries.  Each requires constraint
+   resolves to `RKey (chosen_impl_key, <that impl's own requires routes>)`,
+   recursively — so a structured runtime dict (`VDict (key, [...])`) carries the
+   nested element dicts of a recursive instance: `def : List (List Int)` →
+   `RKey (ListKey, [RKey (ListKey, [RKey (IntKey, [])])])`.  A non-ground or
+   unresolvable requirement yields the sentinel `RKey ("", [])` (eval's empty-key
+   arg-tag fallback).  Terminates for the same reason as check_entry_requires:
+   each step structurally shrinks the requirement type.  Impl selection mirrors
+   pick_dispatch_impl (unique → unique-most-specific → unique-default → none). *)
+let rec impl_requires_routes_rec env entry (concrete_args : mono list)
+    : Ast.res_route list =
+  match impl_head_subst entry.impl_type_mono concrete_args with
+  | None -> []
+  | Some subst ->
+    List.map (fun (req_iface, req_args) ->
+      let args = List.map (fun a -> normalize (subst_apply subst a)) req_args in
+      if args = [] || not (List.for_all is_concrete args) then Ast.RKey ("", [])
+      else match matching_impls env req_iface args with
+        | [] -> Ast.RKey ("", [])
+        | entries ->
+          let chosen = match entries with
+            | [e] -> Some e
+            | _ ->
+              let ms = List.filter (fun e ->
+                List.for_all (fun e' -> e == e' ||
+                  subsumes ~general:e'.impl_type_mono ~specific:e.impl_type_mono)
+                  entries) entries in
+              (match ms with
+               | [e] -> Some e
+               | _ ->
+                 (match List.filter (fun e -> e.impl_is_default) entries with
+                  | [e] -> Some e
+                  | _ -> None))
+          in
+          (match chosen with
+           | Some e -> Ast.RKey (e.impl_key, impl_requires_routes_rec env e args)
+           | None -> Ast.RKey ("", []))
+    ) entry.impl_requires
+
 (* Phase 69.x: extract the ids of all still-unbound type variables in a mono. *)
 let rec mono_unbound_ids m =
   match normalize m with
@@ -3637,45 +3743,17 @@ let check_method_usages env =
        it carries an EMethodRef) so eval routes return-position / multi-param
        dispatch to the impl the checker actually picked.  res_method_dicts is
        filled later by resolve_method_dicts (needs pick_dispatch_impl). *)
-    let set_route route =
+    let set_route ?(fwd = false) route =
       match occ_ref with
       | Some cell ->
         cell := Some { Ast.res_iface = iface_name; res_route = route;
-                       res_method_dicts = []; res_impl_dicts = [] }
+                       res_method_dicts = []; res_impl_dicts = [];
+                       res_fwd_requires = fwd }
       | None -> ()
     in
     if n = 0 || List.length param_vars <> n then ()
     else begin
       let concrete_args = List.map (fun r -> normalize (TVar r)) param_vars in
-      (* Phase 83/84: resolve a committed impl's `requires` (substituted by the
-         call's concrete head args) to dict routes, so eval applies them as
-         leading args to the selected impl method (matching the params dict_pass
-         prepends).  The site is ground here, so each requires resolves to the
-         matching impl's RKey (mirrors pick_dispatch_impl, which is defined later
-         in the file).  `resolve_one_route` is not yet in scope at this point. *)
-      let impl_requires_routes entry =
-        match impl_head_subst entry.impl_type_mono concrete_args with
-        | None -> []
-        | Some subst ->
-          List.map (fun (req_iface, req_args) ->
-            let args = List.map (fun a -> normalize (subst_apply subst a)) req_args in
-            if args <> [] && List.for_all is_concrete args then
-              match matching_impls env req_iface args with
-              | [] -> Ast.RKey ""
-              | entries ->
-                let ms = List.filter (fun e ->
-                  List.for_all (fun e' -> e == e' ||
-                    subsumes ~general:e'.impl_type_mono ~specific:e.impl_type_mono)
-                    entries) entries in
-                (match ms with
-                 | [e] -> Ast.RKey e.impl_key
-                 | _ ->
-                   (match List.filter (fun e -> e.impl_is_default) entries with
-                    | [e] -> Ast.RKey e.impl_key
-                    | _ -> Ast.RKey ""))
-            else Ast.RKey ""
-          ) entry.impl_requires
-      in
       (* Phase 65: committing to an impl also verifies its `requires` hold. *)
       (* Only stamp impl dicts for return-position methods — the same gate as
          check_impl's registration and dict_pass's param insertion, so the dicts
@@ -3690,11 +3768,11 @@ let check_method_usages env =
         | None -> false
       in
       let commit entry =
-        set_route (Ast.RKey entry.impl_key);
+        set_route (Ast.RKey (entry.impl_key, []));
         check_entry_requires env loc entry concrete_args;
         (match entry.impl_requires, occ_ref with
          | (_ :: _), Some cell when method_is_return_pos ->
-           let routes = impl_requires_routes entry in
+           let routes = impl_requires_routes_rec env entry concrete_args in
            (match !cell with
             | Some r -> cell := Some { r with Ast.res_impl_dicts = routes }
             | None -> ())
@@ -3716,7 +3794,11 @@ let check_method_usages env =
            | None ->
              let ids = List.concat_map mono_unbound_ids concrete_args in
              (match find_enclosing_dict ?enclosing env iface_name ids with
-              | Some dvar -> set_route (Ast.RDict dvar)
+              (* Phase 83/84 #5: a return-position ref forwarded onto an enclosing
+                 dict param splices that runtime dict's own `requires` into the
+                 selected impl's body (the nested element dicts); arg-position
+                 refs stay on plain key-narrow + arg-tag (fwd:false). *)
+              | Some dvar -> set_route ~fwd:method_is_return_pos (Ast.RDict dvar)
               | None -> ()))
         | None -> ()
       end
@@ -3821,8 +3903,12 @@ let resolve_one_route ?enclosing env (iface, args) =
   let args = List.map normalize args in
   if args <> [] && List.for_all is_concrete args then
     (match pick_dispatch_impl env iface args with
-     | Some e -> Ast.RKey e.impl_key
-     | None -> Ast.RKey "")
+     (* Phase 83/84 #5: carry the impl's own `requires` routes recursively, so a
+        constrained fn applied at a nested type (`f : Default a => a` used at
+        `List (List Int)`) gets a structured dict the forwarded element refs can
+        unfold — not just the flat head impl key. *)
+     | Some e -> Ast.RKey (e.impl_key, impl_requires_routes_rec env e args)
+     | None -> Ast.RKey ("", []))
   else
     let ids = List.concat_map mono_unbound_ids args in
     (match find_enclosing_dict ?enclosing env iface ids with
@@ -3834,7 +3920,7 @@ let resolve_one_route ?enclosing env (iface, args) =
           sentinel empty key (arg-tag fallback, never worse than pre-69.x). *)
        (match head_key_route env iface args with
         | Some h -> Ast.RHeadKey h
-        | None -> Ast.RKey ""))
+        | None -> Ast.RKey ("", [])))
 
 (* Phase 115 (#2): turn each deferred recursive-promoted usage into a normal
    dict_app_usages entry, now that the wrapper's fun_constraints entry has been
@@ -3874,8 +3960,9 @@ let resolve_method_dicts env =
        | None ->
          (* check_method_usages left no t-route (polymorphic/non-ground site);
             still carry the method dicts so eval can supply them. *)
-         cell := Some { Ast.res_iface = _iface; res_route = Ast.RKey "";
-                        res_method_dicts = routes; res_impl_dicts = [] })
+         cell := Some { Ast.res_iface = _iface; res_route = Ast.RKey ("", []);
+                        res_method_dicts = routes; res_impl_dicts = [];
+                        res_fwd_requires = false })
     | _ -> ()
   ) !(env.method_usages)
 

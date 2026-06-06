@@ -1,7 +1,13 @@
 # Capability-safe effects — Medaka's headline direction
 
-Status: **direction / design proposal** (no code yet; tracked as Phase 146 in
-[`PLAN.md`](./PLAN.md)). Companion to [`language-design.md`](./language-design.md)
+Status: **partially implemented** (Phase 146 in [`PLAN.md`](./PLAN.md)). Effect
+*propagation/inference* already shipped (Phase 79/79e); the laundering-soundness
+holes that made the manifest forgeable are closed for the open/closed AND
+closed-closed point-free cases (the latter via variance-aware covariant re-open),
+and the **selfhost mirror is done** (2026-06-06: full effect subsystem ported into
+`selfhost/typecheck.mdk`, byte-identical harnesses). Remaining: user-definable
+effect labels (gap 2) and manifest emission. See **§5a (current state)** for the
+precise done/remaining split. Companion to [`language-design.md`](./language-design.md)
 (effect rows as they exist today) and [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
 (effects are erased before codegen). The **platform/runtime architecture** that
 consumes this feature (verification pipeline, plugin SDK model, worked plugin
@@ -124,22 +130,90 @@ than the monad world Medaka's effects already replaced.
 
 ## 5. What changes vs. today — a completion, not a pivot
 
-Medaka's current effects (impurity markers, fixed labels, **annotation-only, no
-propagation**) are a good start but not yet a *security* property. Two gaps must
-close — neither toward handlers:
+Medaka's current effects are further along than this section originally claimed
+(it predated Phase 79). Two gaps were named; their status is now split:
 
 1. **Soundness via propagation/inference.** A claim like `<no Fetch>` must be
-   *guaranteed* transitively. Today an unsigned helper that performs an effect
-   doesn't surface it — fatal for a security boundary. Fix: **effect inference with
-   effect variables** so higher-order code composes, e.g.
-   `map : (a -> <e> b) -> List a -> <e> List b`. This is the meatiest piece.
+   *guaranteed* transitively. **Propagation shipped in Phase 79/79e**: effect
+   rows carry tail variables, inference computes them, higher-order code composes
+   (`map : (a -> <e> b) -> List a -> <e> List b` works on the real stdlib), and a
+   binding-boundary check rejects an unsigned helper's effect escaping a pure
+   signature. What was *still unsound* until this phase was **effect
+   laundering**: an effectful closure stored in / annotated as a pure arrow
+   (data field, value signature, callback parameter, typeclass-method impl body)
+   silently dropped its labels, because `unify_row` was deliberately permissive.
+   Those open/closed-row cases are **now closed** (see §5a). One narrower hole
+   remains (closed-closed point-free aliasing) needing directional subsumption.
 2. **Granularity + extensibility.** One coarse `<IO>` is useless as a capability;
    the point is fine-grained, **user/platform-definable** labels (`<KV>`,
-   `<Fetch>`, `<Log>`, `<Clock>`). Fix: an effect-label declaration form + a row of
-   such labels.
+   `<Fetch>`, `<Log>`, `<Clock>`). **Still open.** Today the vocabulary is a
+   fixed list (`IO, Mut, Async, Panic, Rand, Time`) hardcoded in `resolve.ml`
+   (`built_in_effects`), validated with `UnknownEffect`. Fix: an effect-label
+   declaration form (`effect KV`) + resolve registration. `DExtern` is already a
+   top-level decl, so a platform can declare `<KV>` host imports once labels are
+   user-definable.
 
 Both are continuous with the original "show impurity in the type" intent — making it
 *honest and fine-grained*, not a new paradigm.
+
+## 5a. Current state (done / remaining)
+
+**Done (Phase 79/79e):** effect rows + tail vars; effect inference; open/closed
+rows; `perform_effect`; transitive escape through unsigned helpers; higher-order
+`<e>` propagation through real stdlib; `EffectEscape` at binding boundaries.
+
+**Done (Phase 146, 2026-06-05):** laundering soundness for open/closed-row
+unification. `unify_row` now enforces that an OPEN row's labels are ⊆ the CLOSED
+bound's labels (closed extras still flow into the open sink — legit calls
+unchanged). New `EffectLeak` error. Closes: effectful lambda → pure value
+signature; → pure-callback parameter; → pure-arrow data field; → typeclass-method
+impl whose interface row is pure. **Zero regressions** across all unit suites,
+`@thorough`, and the selfhost typecheck/check/selfproc harnesses (no legitimate
+code relied on the laundering). Regression tests in `test_typecheck.ml`
+(`effects` group).
+
+**Done (Phase 146, 2026-06-06):** closed-closed point-free laundering, via
+**variance-aware re-opening on instantiation**. A concrete effectful value whose
+row is *closed* (`putStrLn : String -> <IO> Unit`, an instantiated scheme) could
+unify `None,None` against a closed pure bound (a value signature, a ctor field, a
+list element) and silently drop its labels — symmetric `unify_row` can't tell
+safe pure→effectful subsumption from unsafe effectful→pure escape. Fix:
+`instantiate_raw` re-opens a closed-with-labels row to `<labels | ρ>` **only at
+covariant (positive) positions** (the value's own arrows), so the existing
+open/closed subset check fires. Contravariant rows (a ctor field / parameter the
+scheme *accepts*, e.g. `VPrim (Value -> <Mut> Value)`) stay closed, preserving
+safe subsumption (a pure argument into a `<Mut>`-allowing slot is fine).
+Measurement surfaced exactly **one** genuine latent unsoundness in the selfhost
+source — `concatMapList`'s pure callback signature hid a `<Mut>` effect — fixed
+by making it effect-polymorphic (`(a -> <e> List b) -> List a -> <e> List b`).
+Zero spurious regressions across all unit suites, `@thorough`, and the selfhost
+harnesses (typecheck/check/check_modules/golden/selfproc/eval_run/eval_modules/
+eval_dict). Tests: `test_typecheck.ml` `effects` group (`e_eff_leak_pointfree_*`,
+`t_eff_subsume_pure_into_effectful_field`, `t_eff_over_annotation_pointfree`).
+
+**Done (Phase 146 selfhost mirror, 2026-06-06):** the full effect-tracking
+subsystem is now ported into `selfhost/typecheck.mdk`. The earlier "remaining" note
+("the `unify_row` subset rule and the instantiation re-opening are not yet
+mirrored") understated it: selfhost had **no effect rows at all** (effects were a
+bare `List String` on `TFun`, discarded by unify; no effvars, no ambient state).
+The port reproduces Phase 79 (propagation) + 79e (escape) + 146 (laundering) across
+four committed stages (representation → propagation → escape → laundering). New
+fixtures `effect_leak`/`effect_escape` (reject) and `effect_subsume` (accept),
+verified against `dev/tc_probe.exe` first. Every `diff_selfhost_*` typecheck/error/
+golden/check/check_modules/selfproc/eval harness is byte-identical; `@thorough`
+green. The self-hosted typechecker now rejects laundering identically to the
+reference. (Expected proportionate cost: ~+20% per-decl typecheck overhead from
+per-arrow effvar allocation — see `selfhost/PERF-NOTES.md`.)
+
+**Remaining:**
+- **Gap 2 labels** — the `effect Foo` declaration form (above).
+- **Manifest emission** — unbuilt (waits on the edge runtime, §9).
+
+Note: contravariant "laundering" is not a soundness hole — effects are performed
+by *calling* effectful functions, so a value only exposes the effects it will
+itself perform at covariant positions; effects at contravariant (argument)
+positions are attributed to whoever supplies the argument and checked there.
+Covariant-only re-opening is therefore sufficient.
 
 **The PureScript cautionary tale (decisive for the design).** PureScript shipped
 exactly fine-grained row-effect tracking (`Eff (random :: RANDOM, console ::
@@ -293,11 +367,18 @@ core) first; this is **Phase 146b**.
 
 ## 9. Next steps
 
-1. **Research** (prerequisite, see PLAN.md): WasmGC status + who targets it and how;
+Propagation/inference (§5 gap 1) shipped in Phase 79/79e; laundering soundness
+(open/closed rows + closed-closed point-free via instantiation re-opening)
+shipped this phase (§5a) — gap 1 is now sound, and the **selfhost mirror is done**
+(full subsystem ported, 2026-06-06, §5a). The remaining sequence:
+
+1. **Fine-grained labels** (gap 2): the `effect Foo` declaration form + resolve
+   registration, so the manifest vocabulary is user/platform-definable.
+2. **Research** (for the manifest layer): WasmGC status + who targets it and how;
    WASI Preview 2 / component-model capability model; Cloudflare/Fastly/Fermyon
    isolation models; object-capability & effects-as-security literature; Roc's
    platform model; MoonBit + Grain (closest competitors — has either touched
    capability/effect safety?).
-2. **Design note**: concrete surface syntax + a worked plugin example + the manifest
-   format, pressure-tested against 2–3 realistic plugin shapes.
-3. **Phase 146 implementation** (staged per §6) once the design note is ratified.
+3. **Design note + manifest format**: concrete surface syntax + a worked plugin
+   example + the manifest format, pressure-tested against 2–3 realistic plugin
+   shapes, then the manifest emission/consumption when the edge runtime is built.

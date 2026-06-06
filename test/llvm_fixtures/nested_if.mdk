@@ -1,0 +1,4 @@
+-- nested if/else (sign function inlined) over a negative value; exercises the
+-- alloca-slot if-lowering nested inside another, and a negative Int result.
+n = 0 - 5
+main = if n > 0 then 1 else if n < 0 then 0 - 1 else 0

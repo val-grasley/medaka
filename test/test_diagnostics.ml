@@ -133,6 +133,35 @@ let t_project_clean () =
         "Expected clean, got:\n%s" (pp_results results))
   )
 
+(* Regression for `medaka check --json` on a file with `import`s (Phase 82
+   follow-up): the single-file `analyze` path spuriously reports the imported
+   name as unbound, while `analyze_project` — which the CLI's --json path now
+   routes through — resolves the import and reports nothing.  Captures the exact
+   bug the CLI rewrite fixed. *)
+let t_check_json_imports_resolve () =
+  with_tmp_dir (fun dir ->
+    let _dep = write_file dir "dep.mdk" "export double x = x * 2\n" in
+    let main_src =
+      "import dep.{double}\nmain : <IO> Unit\nmain = print (double 3)\n" in
+    let main = write_file dir "main.mdk" main_src in
+    (* Precondition: the old single-file path spuriously errors on the import
+       (use the unshadowed Diagnostics.analyze). *)
+    let single = Diagnostics.analyze ~file:main ~source:main_src in
+    if not (List.exists (fun d -> is_error d && msg_contains "double" d) single)
+    then
+      failwith (Printf.sprintf
+        "precondition: expected single-file analyze to spuriously error on the \
+         import, got: [%s]"
+        (String.concat "; " (List.map pp_diagnostic single)));
+    (* Fix: the multi-file path the CLI now uses resolves the import cleanly. *)
+    let results =
+      analyze_project ~root_file:main ~project_dir:dir ~read:no_override () in
+    let dm = diags_for results main in
+    if List.exists is_error dm then
+      failwith (Printf.sprintf
+        "expected clean multi-file analysis of an import-bearing file, got:\n%s"
+        (pp_results results)))
+
 (* Error in dep file is bucketed under the dep path, not the root. *)
 let t_project_error_in_dep () =
   with_tmp_dir (fun dir ->
@@ -460,6 +489,7 @@ let () =
     ];
     "multi-file", [
       test_case "clean project"       `Quick t_project_clean;
+      test_case "imports resolve (check --json)" `Quick t_check_json_imports_resolve;
       test_case "error in dep"        `Quick t_project_error_in_dep;
       test_case "unknown module"      `Quick t_project_unknown_module;
       test_case "cyclic dependency"   `Quick t_project_cycle;

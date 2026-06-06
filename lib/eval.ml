@@ -52,20 +52,25 @@ type value =
             other arg slots (like fold's accumulator) pass through untouched.
             An empty `dispatch_positions` (e.g. `pure : a -> f a`) means no
             positional dispatch is possible from arguments alone. *)
-  | VDict   of string
-      (* Phase 69.x: a runtime dictionary — just the canonical impl key of the
-         constraint it satisfies.  Passed as a leading argument to constrained
-         functions (EDictApp builds it, dict_pass binds it as a parameter); an
-         EMethodRef stamped `RDict d` reads `d`'s VDict and narrows its method
-         VMulti by that key via select_impl_by_key.  An empty key means
-         "unresolved" — narrowing finds nothing and dispatch falls back to
+  | VDict   of string * value list
+      (* Phase 69.x: a runtime dictionary — the canonical impl key of the
+         constraint it satisfies, plus (Phase 83/84 #5) the *structured* element
+         dicts for that impl's own `requires`, one per constraint in slot order
+         (each itself a VDict / VDictHead).  Passed as a leading argument to
+         constrained functions (EDictApp builds it, dict_pass binds it as a
+         parameter); an EMethodRef stamped `RDict d` reads `d`'s VDict, narrows
+         its method VMulti by the key via select_impl_by_key, then forwards the
+         carried `requires` dicts into the selected impl's body — so a recursive
+         instance (`def : List (List Int)`) unfolds level by level.  An empty key
+         means "unresolved" — narrowing finds nothing and dispatch falls back to
          arg-tag, as it did before 69.x. *)
-  | VDictHead of string
-      (* Phase 83/84 (#4): a head-key dictionary — carries only the discriminating
-         *head tycon* (e.g. "Result"), for a head-concrete but args-free dispatch
-         type like `Result e` where nothing pins `e`.  Built from a RHeadKey
-         dict-application route; read via RDict, it narrows the method VMulti by
-         head tag (select_impl_by_head) rather than by full impl key. *)
+  | VDictHead of string * value list
+      (* Phase 83/84 (#4): a head-key dictionary — carries the discriminating
+         *head tycon* (e.g. "Result") plus, for uniformity with VDict, its
+         impl's `requires` dicts (`[]` in the head-concrete free-args case it was
+         introduced for).  Built from a RHeadKey dict-application route; read via
+         RDict, it narrows the method VMulti by head tag (select_impl_by_head)
+         rather than by full impl key. *)
 
 and env = frame list
 and frame =
@@ -199,8 +204,8 @@ let rec pp_value = function
   | VThunk t   -> pp_value (Lazy.force t)
   | VNamedImpl (n, _) -> Printf.sprintf "<impl:%s>" n
   | VTypedImpl (t, _, _, _, inner) -> Printf.sprintf "<impl@%s:%s>" t (pp_value inner)
-  | VDict key -> Printf.sprintf "<dict:%s>" key
-  | VDictHead h -> Printf.sprintf "<dict-head:%s>" h
+  | VDict (key, _) -> Printf.sprintf "<dict:%s>" key
+  | VDictHead (h, _) -> Printf.sprintf "<dict-head:%s>" h
 
 and pp_value_atom v = match v with
   | VCon (_, _ :: _) | VTuple _ -> "(" ^ pp_value v ^ ")"
@@ -556,12 +561,16 @@ let select_impl_by_head head = function
    impl key (VDict); RDict forwards an enclosing dict param (key or head);
    RHeadKey (Phase 83/84 #4) carries a head-concrete args-free dispatch type as a
    VDictHead — eval narrows by head tag when the body reads it. *)
-let dict_of_route env = function
-  | Ast.RKey key -> VDict key
+let rec dict_of_route env = function
+  | Ast.RKey (key, reqs) ->
+    (* Phase 83/84 #5: build the structured dict — the impl key plus its own
+       `requires` dicts, recursively, so a nested instance dict carries every
+       element dict its body will need. *)
+    VDict (key, List.map (dict_of_route env) reqs)
   | Ast.RDict d  ->
-    (match lookup env d with (VDict _ | VDictHead _) as vd -> vd | _ -> VDict "")
-  | Ast.RHeadKey h -> VDictHead h
-  | Ast.RLocal -> VDict ""  (* Phase 112: RLocal never appears in a dict route *)
+    (match lookup env d with (VDict _ | VDictHead _) as vd -> vd | _ -> VDict ("", []))
+  | Ast.RHeadKey h -> VDictHead (h, [])
+  | Ast.RLocal -> VDict ("", [])  (* Phase 112: RLocal never appears in a dict route *)
 
 (* Convert Impl_no_match → Eval_error at the boundary of user-visible code.
    Used at every eval site that is NOT inside a VMulti dispatch chain. *)
@@ -745,19 +754,30 @@ and eval env expr =
         any global method VMulti) IS that standalone.  Return it unnarrowed,
         with no dict folding. *)
      | Some { Ast.res_route = RLocal; _ } -> lookup env x
-     | Some { Ast.res_route; res_method_dicts; res_impl_dicts; _ } ->
+     | Some { Ast.res_route; res_method_dicts; res_impl_dicts; res_fwd_requires; _ } ->
        (* A genuine method dispatch: resolve the method VMulti past any nearer
           same-named standalone shadow (Phase 112), then narrow by the route. *)
        let v = lookup_method env x in
-       (* First narrow by the t-dispatch route (return-position / multi-param). *)
-       let v = match res_route with
-         | RKey key -> select_impl_by_key key v
-         | RHeadKey head -> select_impl_by_head head v
+       (* First narrow by the t-dispatch route (return-position / multi-param).
+          A RDict route also *forwards* the dict value's own `requires` dicts
+          (Phase 83/84 #5): the structured dict the caller passed carries the
+          element dicts for the selected impl's body, so the inner return-position
+          ref inside a recursive instance resolves level by level.  RKey routes
+          carry their requires statically in res_impl_dicts instead, so
+          forwarded_requires is empty for them. *)
+       let v, forwarded_requires = match res_route with
+         | RKey (key, _) -> select_impl_by_key key v, []
+         | RHeadKey head -> select_impl_by_head head v, []
          | RDict d -> (match lookup env d with
-                       | VDict key   -> select_impl_by_key key v
-                       | VDictHead h -> select_impl_by_head h v
-                       | _ -> v)
-         | RLocal -> v  (* unreachable: handled by the RLocal arm above *)
+                       (* res_fwd_requires gates the splice to return-position
+                          sites: an arg-position method dispatches by arg-tag and
+                          would be corrupted by extra leading dict args. *)
+                       | VDict (key, reqs)  ->
+                         select_impl_by_key key v, (if res_fwd_requires then reqs else [])
+                       | VDictHead (h, reqs) ->
+                         select_impl_by_head h v, (if res_fwd_requires then reqs else [])
+                       | _ -> v, [])
+         | RLocal -> v, []  (* unreachable: handled by the RLocal arm above *)
        in
        (* Phase 96: select_impl_by_key keeps the chosen impl's dispatch wrapper
           (VTypedImpl/VNamedImpl) so a method awaiting arguments still arg-tag-
@@ -806,8 +826,15 @@ and eval env expr =
             return-position ref inside the impl body resolve via the element dict
             rather than failing arg-tag dispatch.  Empty ⇒ no-op (untyped path /
             impl with no requires). *)
-         List.fold_left (fun f route -> apply f (dict_of_route env route))
-           v res_impl_dicts)
+         let v =
+           List.fold_left (fun f route -> apply f (dict_of_route env route))
+             v res_impl_dicts in
+         (* Phase 83/84 #5: finally, the impl-`requires` dicts forwarded from a
+            RDict route's structured dict value — already-built VDicts (the
+            element dicts for a recursive instance), applied like res_impl_dicts.
+            Exactly one of res_impl_dicts / forwarded_requires is non-empty: the
+            former at a ground RKey site, the latter at a forwarded RDict site. *)
+         List.fold_left apply v forwarded_requires)
 
   (* Phase 69.x: constrained-function occurrence.  Evaluate the function value,
      then apply the resolved dictionaries (one per constraint) as leading
@@ -1361,6 +1388,10 @@ let primitives : (string * value) list =
     (* Wall-clock time in seconds (gettimeofday; monotonic-ish).  Used by the
        self-hosted perf driver to bracket each pipeline stage. *)
     ("wallTimeSec", VPrim (fun _ -> VFloat (Unix.gettimeofday ())));
+    (* Total GC-allocated bytes since process start (Gc.allocated_bytes).
+       Used by the self-hosted perf driver as an allocation-count proxy;
+       monotonically increasing, so deltas give per-phase allocation. *)
+    ("allocBytes", VPrim (fun _ -> VFloat (Gc.allocated_bytes ())));
     (* Structural hash of any value (Module 6 hash containers). Non-negative
        (OCaml's Hashtbl.hash returns [0, 2^30)). Consistent with structural
        `eq`, so it must agree with the key type's `Eq` impl. *)

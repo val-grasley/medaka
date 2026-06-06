@@ -1,0 +1,3 @@
+-- a float result that is integral-valued: OCaml renders 14.0 as "14." (trailing
+-- dot), which the runtime's "%.12g" + append-"." path must match.
+main = (3.0 + 4.5) * 2.0 - 1.0

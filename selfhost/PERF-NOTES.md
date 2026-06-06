@@ -660,6 +660,31 @@ array frames clearly regress.** Kept as DORMANT, validated Stage-2 scaffolding
   variance). Still single-digit-seconds, within the fast-path budget.
 - committed: kept annotate.mdk + dormant eval EVarAt arm; reverted arrays + wiring.
 
+#### 2026-06-05 (follow-up) — independent re-confirmation on the true-execution path
+Re-verified the above from a clean state, on a *different* workload than the
+synthetic `eval_main` probe: wired `annotateProgram` into the single-file
+true-execution driver (`eval_run_main.mdk`, via `evalOutput (annotateProgram
+combined)`) and ran a compute-heavy `fib 25` through the self-hosted eval.
+
+- **Correctness re-validated:** all **18/18 `=== EVAL ===` goldens byte-identical**
+  with the CONSUME path active; the `EVarAt` slot/name self-assert never fired —
+  so `annotate`'s EMIT addressing is provably exact against eval's *runtime* frame
+  model on the single-file path (the prerequisite the bytecode VM / LLVM consumers
+  depend on).
+- **Perf re-measured (`fib 25`, `/usr/bin/time -p`, 2 runs each):** consume-active
+  **12.30 / 12.38s** vs by-name baseline **12.02 / 12.05s** → **~2.5% slower**.
+  A second, independent confirmation of "no tree-walker win" (list-indexed lands
+  neutral-to-slightly-negative, matching the synthetic probe). Same root cause:
+  the address resolution is itself interpreted, and `AGlobal` references still scan
+  by name. **Reverted the driver wiring; the arm stays dormant.**
+- **Standing conclusion (do not re-attempt on the tree-walker):** the lexical-
+  addressing *consume* lever is a confirmed non-win for the AST interpreter — twice
+  measured, structurally explained. The win is already captured where it belongs:
+  the §2.2 bytecode VM lowers the same `annotateProgram` output to O(1) compiled
+  slot loads, and §2.4 LLVM will too. EMIT (annotate) + the dormant CONSUME arm are
+  validated, ready scaffolding for those compiled consumers — not a tree-walker
+  optimization.
+
 ### 2026-06-05 — single-file per-stage profiler (profile_main.mdk + profile_selfhost.sh)
 
 **Added single-file per-stage timing harness** to complement `perf_main.mdk`
@@ -744,3 +769,197 @@ mark_batch / desugar_batch unchanged.
   shrink when the VM replaces tree-walking.  Use `perf_main.mdk` for the
   multi-module VM-vs-tree-walker comparison; this table is the AST tree-walker
   baseline for the single-file stages.
+
+---
+
+### 2026-06-05 — multi-module per-stage timing + allocation counter
+
+**Added:**
+- `extern allocBytes : Unit -> <IO> Float` (stdlib/runtime.mdk + lib/eval.ml) —
+  total GC-allocated bytes since process start, backed by `Gc.allocated_bytes ()`.
+  Monotonically increasing; deltas give per-phase allocation pressure (counts
+  OCaml values created through the tree-walker, including GC-reclaimed temporaries).
+- `selfhost/timer.mdk`: `allocSnap`, `emitPhaseA`, `emitTotalA` — new variants
+  of the timing helpers that include an allocation-delta column (bytes → MB).
+- `selfhost/typecheck.mdk`: `markModules` exported — the mark sub-phase of
+  `elaborateModules` (compute rpNames + prePassDict over the full module graph);
+  allows profiling drivers to bracket mark vs typecheck separately.
+- `selfhost/profile_modules_main.mdk` (NEW) — multi-module per-stage profiler:
+  times parse, load, desugar, mark, typecheck (no eval) over `all_modules_entry.mdk`.
+  Breaks out the `elaborate` lump that `perf_main.mdk` reports as one phase.
+- `test/profile_selfhost.sh` updated: adds `profile_modules` section, handles
+  4-field output format (stage / time / allocMB / ops).
+- `selfhost/profile_main.mdk` updated: uses `emitPhaseA`/`emitTotalA` — alloc
+  column now appears in the single-file table too.
+
+**Correctness:** check_modules_batch 13 ok; selfproc 16 ok; eval_dict 16 ok;
+mark_batch/desugar_batch 121 matched; eval_modules 4 ok.  perf_main.mdk still
+works with the old 3-field `emitPhase` format (unchanged).
+
+## Baseline (min-of-3, 2026-06-05, via profile_selfhost.sh 3)
+
+Alloc column = `Gc.allocated_bytes()` delta per phase (total bytes allocated by
+the OCaml process during that phase, including short-lived intermediates reclaimed
+by GC — NOT peak live memory).  Useful for comparing allocation pressure between
+stages and tracking regressions.
+
+### selfhost/lexer.mdk — 958 lines, 406 post-desugar decls, no imports
+
+| Stage         | min-of-3 | alloc     | ops          |
+|---|--:|--:|--|
+| parse-prelude | 0.225s   | 1025.7MB  | runtime+core |
+| parse         | 0.352s   | 1588.3MB  | 405 decls    |
+| desugar       | 0.037s   | 374.9MB   | 406 decls    |
+| resolve       | 0.140s   | 835.4MB   | 406 decls    |
+| mark          | 0.051s   | 341.4MB   | 406 decls    |
+| typecheck     | 0.168s   | 883.4MB   | 406 decls    |
+| **total**     | **0.973s** | **5049.3MB** |          |
+
+### selfhost/parser.mdk — 2424 lines, 883 post-desugar decls (parse/desugar/resolve/mark only)
+
+| Stage         | min-of-3 | alloc     | ops          |
+|---|--:|--:|--|
+| parse-prelude | 0.224s   | 1025.7MB  | runtime+core |
+| parse         | 0.578s   | 2582.0MB  | 883 decls    |
+| desugar       | 0.038s   | 371.2MB   | 883 decls    |
+| resolve       | 0.422s   | 2239.6MB  | 883 decls    |
+| mark          | 0.063s   | 403.1MB   | 883 decls    |
+| typecheck     | *(panic — unresolved imports)* | | |
+
+### selfhost/all_modules_entry.mdk — 15 modules, 5017 post-desugar decls (multi-module, no eval)
+
+| Stage      | min-of-3 | alloc      | ops          |
+|---|--:|--:|--|
+| parse      | 0.230s   | 1025.7MB   | runtime+core |
+| load       | 3.463s   | 14903.7MB  | 15 modules   |
+| desugar    | 0.239s   | 2380.5MB   | 5017 decls   |
+| mark       | 0.083s   | 633.9MB    | 5017 decls   |
+| typecheck  | 2.026s   | 10410.0MB  | 5017 decls   |
+| **total**  | **6.046s** | **29353.8MB** |          |
+
+**Takeaways from the multi-module breakdown:**
+- **`load` (3.46s = 57.3%) dominates** — confirmed by `perf_main.mdk` baseline.
+  This is self-hosted lex+parse for 15 modules through the OCaml tree-walker;
+  load allocates 14.9 GB of short-lived values (~4.4 GB/s).
+- **`typecheck` (2.03s = 33.5%)** is the second largest phase.  The `elaborate`
+  lump in `perf_main.mdk` (2.13s) ≈ mark (0.083s) + typecheck (2.026s) + small
+  route-stamping overhead — confirming mark is not a bottleneck.
+- **`mark` (0.083s = 1.4%)** is negligible.  It's a pure prePassDict rewrite
+  with no inference — cheap even for 5017 decls.
+- **`desugar` (0.239s = 4.0%)** is also minor.
+- **Allocation rate:** load is the highest-pressure phase (14.9 GB for 3.46s
+  ≈ 4.3 GB/s); typecheck is second (10.4 GB for 2.03s ≈ 5.1 GB/s — more
+  allocation-dense per second due to HM unification creating many type cells).
+- **§2.2 VM capstone:** see the "VM vs Core IR tree-walker" section below for the
+  full comparison.  Short answer: the VM is slower here — the `load` overhead (load
+  uses the self-hosted OCaml tree-walker lexer+parser, not the VM) completely masks
+  any eval difference at the multi-module granularity.
+
+## 2026-06-06 — Phase 146 effect-tracking port (expected typecheck regression)
+
+Ported the full effect-tracking subsystem (Phase 79 propagation + 79e escape +
+146 laundering) into `selfhost/typecheck.mdk`. This adds genuine per-arrow work to
+the typecheck phase — `openRow ()` allocates a fresh effvar `Ref` on every
+inference-synthesized arrow (each `EApp`/`ELam`-intermediate/pipe/compose), plus
+`performEffect`/`unifyRow` per application. Faithfully mirrors OCaml's
+`open_row`/`fresh_effvar` design; the cost is inherent to sound effect inference,
+not avoidable without diverging from the reference.
+
+Measured (min-of-3, `sh test/profile_selfhost.sh 3`, same machine as the
+2026-06-05 baseline above):
+
+| metric                       | 2026-06-05 | 2026-06-06 |    Δ |
+|---|--:|--:|--:|
+| lexer.mdk typecheck          |   0.168s   |   0.200s   | +19% |
+| all_modules typecheck        |   2.026s   |   2.501s   | +23% |
+| all_modules typecheck / decl | 0.404 ms   | 0.486 ms   | **+20%** |
+| all_modules total            |   6.046s   |   6.748s   | +12% |
+
+(Decl count rose 5017→5146; per-decl normalization isolates the true effect-inference
+overhead at +20%.) `substMonoP`/`reopenRow` (Stage D instantiation re-open) add
+near-zero: the reopen fires only on rare closed-with-labels covariant rows; pure
+schemes hit the cheap `_ r => r` arm. Heaviest single `check_modules` entry
+(`typecheck.mdk` closure) min-of-3 = **2.83s**. The Tarjan SCC 5× win is intact —
+check_modules remains far under its 1515s pre-optimization regime. Judged an
+acceptable, proportionate cost for the gap-1 soundness feature; no perf-work
+attempted to claw it back (would be premature pre-VM, and the dominant `load` phase
+is the real lever). Correctness gate: every `diff_selfhost_*` harness byte-identical;
+`@thorough` 72 green.
+
+---
+
+## §2.2 VM capstone: VM vs Core IR tree-walker (2026-06-06)
+
+**New driver:** `selfhost/vm_perf_main.mdk` — lowers a source file once to
+`CProgram`, then runs both evaluators in the same process and times each via
+`timer.mdk`; `MEDAKA_PERF` unset ⇒ byte-identical to `core_ir_main.mdk`.
+
+**Method:** `MEDAKA_PERF=1 medaka run selfhost/vm_perf_main.mdk <file>`, min-of-3
+invocations per fixture.  The `lower` column is the shared front-end
+(parse → desugar → annotateProgram → lowerProgram); `ceval` is `cevalMain` (§2.1
+Core IR tree-walker); `bceval` is `bcEvalMain` (§2.2 bytecode compiler + stack VM).
+
+### Single-file engine fixtures (intra-process, min-of-3, 2026-06-06)
+
+| fixture | lower | ceval | bceval | ratio (bc/ceval) |
+|---------|------:|------:|-------:|:---:|
+| fib 22 (17 711 calls) | 0.0022s | 1.904s | 6.116s | **3.21×** |
+| guarded\_clauses (collatzLen 27 — 111 steps) | 0.0065s | 0.0065s | 0.0319s | **4.88×** |
+| letrec\_mutual (mutual isEven/isOdd + collatz) | 0.0054s | 0.0132s | 0.0311s | **2.36×** |
+| refs\_mut (Ref + set\_ref + countUp/sumTo) | 0.0087s | 0.0018s | 0.0050s | **2.78×** |
+| records (record construction/update/access) | 0.0086s | 0.00077s | 0.00129s | 1.68× |
+| adt\_nested (ADT + match) | 0.0077s | 0.00133s | 0.00193s | 1.44× |
+| arrays\_ranges (array/range/slice ops) | 0.0078s | 0.00100s | 0.00168s | 1.68× |
+| hof\_compose (HOF/closures/pipe/sections) | 0.0078s | 0.00138s | 0.00329s | 2.38× |
+| list\_ops (cons/append/eq/ordering) | 0.0091s | 0.00111s | 0.00232s | 2.09× |
+| dispatch\_basic (interface, arg-position) | 0.0068s | 0.00102s | 0.00179s | 1.75× |
+| dispatch\_multi (multi-method interface) | 0.0020s | 0.00202s | 0.00310s | 1.52× |
+| dispatch\_default (default method override) | 0.0007s | 0.00074s | 0.00082s | 1.11× |
+| shadow\_closure (lexical capture/shadow) | 0.0007s | 0.00070s | 0.00114s | 1.63× |
+| string\_kernel (string externs) | 0.0008s | 0.00079s | 0.00131s | 1.64× |
+| patterns\_misc (literal/as/curried patterns) | 0.0121s | 0.00299s | 0.00625s | 2.09× |
+
+### Multi-module fixtures (process-level user time, min-of-3, 2026-06-06)
+
+| fixture | core\_ir\_modules (ceval) | eval\_bytecode\_modules (bceval) | ratio |
+|---------|-------------------------:|--------------------------------:|:---:|
+| basic | 0.29s | 0.29s | 1.00× |
+| iface | 0.29s | 0.29s | 1.00× |
+| isolation | 0.29s | 0.30s | 1.03× |
+| prelude | 0.30s | 0.30s | 1.00× |
+
+### Interpretation
+
+**The §2.2 bytecode VM is 1.5–4.9× slower than the §2.1 Core IR tree-walker**
+on pure-compute workloads under double interpretation (the self-hosted compiler
+itself runs through the OCaml tree-walker, so the VM instruction dispatch runs
+*interpreted*).  Structural fixtures (records, ADTs, arrays) show 1.4–1.7× overhead;
+recursive kernels (fib, collatz) show 2.4–4.9× because each recursive call adds VM
+instruction-loop overhead on top of the already-interpreted `VClosureF` dispatch.
+`refs_mut` (2.78×) and closures (1.6–2.4×) are in the middle — heap allocation and
+env-frame construction dominate their cost equally in both paths, but the VM adds
+bytecode-step overhead on top.
+
+**Multi-module: no observable difference.** The 0.29–0.30s process time for all
+four multi-module fixtures is load-dominated (loading the self-hosted driver itself
+costs ~0.29s regardless of which evaluator is called); the actual eval step for
+these small fixtures (a handful of decls each) is unmeasurable at process-level
+granularity.
+
+**Why not a win here?** Lexical addressing (`annotateProgram` → `CVar` with `Addr`)
+was designed so the VM does O(1) slot-indexed loads instead of by-name env scans.
+However, the VM's instruction dispatch loop is itself *interpreted Medaka* running
+through the OCaml tree-walker, so each `runChunk` step costs an OCaml-level
+`eval`/`apply` call — the same overhead the tree-walker pays per AST node, PLUS the
+additional stack-machine bookkeeping (ip increment, `Array` index, value-stack
+push/pop).  The theoretical win from O(1) slot loads is swamped by the constant
+factor of double interpretation.  The VM speedup will materialize when the OCaml
+tree-walker is replaced by a native backend that can JIT or AOT the bytecode
+interpreter loop — at that point the slot-indexed `CVar` addresses become genuine
+O(1) loads in native code.
+
+**Takeaway for the LLVM Stage (§2.4):** the bytecode VM is a correctness and IR
+exercise, not a performance target in itself.  The Core IR (§2.1) remains the
+faster choice for the self-hosted pipeline under the OCaml tree-walker.  When §2.4
+emits real LLVM IR for the VM instruction loop (or lowers Core IR directly), the
+performance picture reverses.

@@ -24,13 +24,22 @@ public export data Mono
   = TVar (Ref Tyvar)
   | TCon String
   | TApp Mono Mono
-  | TFun Mono (List String) Mono   -- arg -> <effect labels> result
+  | TFun Mono EffRow Mono   -- arg -> <effect row> result
   | TTuple (List Mono)
 
 public export data Tyvar = Unbound Int Int | Link Mono   -- Unbound id level | Link
 
--- forall <quantified tyvar ids>. mono
-public export data Scheme = Forall (List Int) Mono
+-- An effect row (Phase 79/146): a set of concrete effect labels plus an optional
+-- tail variable.
+--   tail = None    ⇒ closed row, exactly [labels].
+--   tail = Some v  ⇒ open row <labels | v>: v can absorb further effects.
+-- Inference-synthesized arrows use open rows so effect-subsumption survives
+-- equality unification; user annotations are closed unless they name a tail.
+public export data EffRow = EffRow (List String) (Option (Ref Effvar))
+public export data Effvar = EUnbound Int Int | ELink EffRow   -- EUnbound id level | link
+
+-- forall <quantified tyvar ids> <quantified effvar ids>. mono
+public export data Scheme = Forall (List Int) (List Int) Mono
 
 -- ── global inference state ────────────────────────────────────────────────
 tyvarCounter : Ref Int
@@ -48,11 +57,207 @@ newTyvarId _ =
 freshVar : Unit -> <Mut> Mono
 freshVar _ = TVar (Ref (Unbound (newTyvarId ()) currentLevel.value))
 
+-- ── effect variables + rows (Phase 79/146) ────────────────────────────────
+effvarCounter : Ref Int
+effvarCounter = Ref 0
+
+newEffvarId : Unit -> <Mut> Int
+newEffvarId _ =
+  let n = effvarCounter.value
+  let _ = set_ref effvarCounter (n + 1)
+  n
+
+-- the empty closed row — a pure arrow
+pureRow : EffRow
+pureRow = EffRow [] None
+
+-- a closed row over the given concrete labels
+closedRow : List String -> EffRow
+closedRow labels = EffRow (sortUniqS labels) None
+
+freshEffvar : Unit -> <Mut> (Ref Effvar)
+freshEffvar _ = Ref (EUnbound (newEffvarId ()) currentLevel.value)
+
+freshEffvarAt : Int -> <Mut> (Ref Effvar)
+freshEffvarAt lvl = Ref (EUnbound (newEffvarId ()) lvl)
+
+-- an open row with a fresh tail variable
+openRow : Unit -> <Mut> EffRow
+openRow _ = EffRow [] (Some (freshEffvar ()))
+
+-- follow ELink tails (merging labels) to a canonical row whose tail, if present,
+-- is an unbound effvar
+effrowNorm : EffRow -> EffRow
+effrowNorm (EffRow labels tail) = match tail
+  Some cell => match cell.value
+    ELink r2 =>
+      let nr = effrowNorm r2
+      match nr
+        EffRow ls2 t2 => EffRow (sortUniqS (labels ++ ls2)) t2
+    EUnbound _ _ => EffRow labels tail
+  None => EffRow labels tail
+
+-- the concrete labels currently known for a row (ignores the open tail)
+effrowLabels : EffRow -> List String
+effrowLabels r = match effrowNorm r
+  EffRow labels _ => labels
+
+effvarLevel : Ref Effvar -> Int
+effvarLevel cell = match cell.value
+  EUnbound _ l => l
+  ELink _ => 0
+
+-- sorted + deduplicated string set (canonical effect-label order, matching the
+-- OCaml `List.sort_uniq String.compare` so multi-label rows render identically)
+sortUniqS : List String -> List String
+sortUniqS xs = sortUniqSGo xs []
+
+sortUniqSGo : List String -> List String -> List String
+sortUniqSGo [] acc = acc
+sortUniqSGo (x :: xs) acc = sortUniqSGo xs (sortInsertS x acc)
+
+sortInsertS : String -> List String -> List String
+sortInsertS x [] = [x]
+sortInsertS x (y :: ys) = match stringCompare x y
+  Lt => x :: y :: ys
+  Eq => y :: ys
+  Gt => y :: sortInsertS x ys
+
 enterLevel : Unit -> <Mut> Unit
 enterLevel _ = set_ref currentLevel (currentLevel.value + 1)
 
 exitLevel : Unit -> <Mut> Unit
 exitLevel _ = set_ref currentLevel (currentLevel.value - 1)
+
+-- ── effect propagation (Phase 79) ─────────────────────────────────────────
+-- the latent effect of the function body currently being inferred: application
+-- arms widen it; entering a lambda saves+reopens it, and the accumulated row
+-- becomes the lambda's arrow effect.  A closed (tail=None) ambient is a SINK that
+-- discards effects — the top-level state where a value binding's effects drop.
+curEffect : Ref EffRow
+curEffect = Ref (EffRow [] None)
+
+-- the unbound-tail id of an effvar cell (-1 once linked); unique like tyvar ids,
+-- so id-equality stands in for the reference's physical `==` on effvars
+effvarId : Ref Effvar -> Int
+effvarId cell = match cell.value
+  EUnbound id _ => id
+  ELink _ => 0 - 1
+
+-- string set difference: elements of a not present in b
+diffS : List String -> List String -> List String
+diffS [] _ = []
+diffS (x :: xs) ys
+  | containsName x ys = diffS xs ys
+  | otherwise = x :: diffS xs ys
+
+-- record that the current context performs row [eff]'s effects, widening ambient
+-- [cur] WITHOUT closing its tail (so the next performed effect can still be
+-- absorbed).  A closed ambient is a sink and discards.  An open [eff] is tied to
+-- the ambient through a shared fresh tail.
+performEffect : Ref EffRow -> EffRow -> <Mut> Unit
+performEffect cur eff = match effrowNorm cur.value
+  EffRow _ None => ()
+  EffRow curLabels (Some ct) => match effrowNorm eff
+    EffRow effLabels effTail =>
+      let _ = set_ref cur (EffRow (sortUniqS (curLabels ++ effLabels)) (Some ct))
+      match effTail
+        Some et => if effvarId et == effvarId ct then () else performLink ct et
+        None => ()
+
+performLink : Ref Effvar -> Ref Effvar -> <Mut> Unit
+performLink ct et =
+  let v3 = freshEffvarAt (minI (effvarLevel ct) (effvarLevel et))
+  let _ = set_ref ct (ELink (EffRow [] (Some v3)))
+  set_ref et (ELink (EffRow [] (Some v3)))
+
+-- unify two effect rows.  PERMISSIVE (Phase 79): an open row absorbs the other
+-- side's labels by binding its tail; two open rows route through one shared fresh
+-- tail.  Differing closed rows / an open row whose labels exceed a closed bound
+-- are left as-is (the laundering subset check lands in Phase 146, Stage D).
+unifyRow : EffRow -> EffRow -> <Mut> Unit
+unifyRow r1 r2 = unifyRowN (effrowNorm r1) (effrowNorm r2)
+
+unifyRowN : EffRow -> EffRow -> <Mut> Unit
+unifyRowN (EffRow l1 (Some v1)) (EffRow l2 (Some v2))
+  | effvarId v1 == effvarId v2 = ()
+  | otherwise =
+      let v3 = freshEffvarAt (minI (effvarLevel v1) (effvarLevel v2))
+      let _ = set_ref v1 (ELink (EffRow (diffS l2 l1) (Some v3)))
+      set_ref v2 (ELink (EffRow (diffS l1 l2) (Some v3)))
+unifyRowN (EffRow l1 (Some v1)) (EffRow l2 None) =
+  let _ = effectLeakCheck (diffS l1 l2) l2
+  set_ref v1 (ELink (EffRow (diffS l2 l1) None))
+unifyRowN (EffRow l1 None) (EffRow l2 (Some v2)) =
+  let _ = effectLeakCheck (diffS l2 l1) l1
+  set_ref v2 (ELink (EffRow (diffS l1 l2) None))
+unifyRowN (EffRow _ None) (EffRow _ None) = ()
+
+-- SOUNDNESS (Phase 146): an open row (an inference-synthesized arrow, i.e. a
+-- concrete value's latent effect) meeting a closed bound — its own labels must
+-- not exceed the bound, else they escape.  [escaping] = open labels \ bound.
+effectLeakCheck : List String -> List String -> <Mut> Unit
+effectLeakCheck escaping bound = match escaping
+  [] => ()
+  _ => set_ref typeErrors (effectLeakMsg bound escaping :: typeErrors.value)
+
+effectLeakMsg : List String -> List String -> String
+effectLeakMsg bound extras =
+  "Effectful value used where <" ++ joinWith ", " bound ++ "> is allowed, but it performs <" ++ joinWith ", " extras ++ ">"
+
+-- replace a row's bound tail effvar with its fresh instance from [esub], so each
+-- call site of a polymorphic HOF gets its own effect variable
+substRow : List (Int, Ref Effvar) -> EffRow -> EffRow
+substRow esub r = match effrowNorm r
+  EffRow labels (Some v) => match v.value
+    EUnbound id _ => match lookupAssocI id esub
+      Some v2 => EffRow labels (Some v2)
+      None => EffRow labels (Some v)
+    ELink _ => EffRow labels (Some v)
+  EffRow labels None => EffRow labels None
+
+-- lower a row's tail effvar level to <= [level] alongside the tyvar being bound
+lowerRowLevels : Int -> EffRow -> <Mut> Unit
+lowerRowLevels level r = match effrowNorm r
+  EffRow _ (Some v) => match v.value
+    EUnbound id lvl => if lvl > level then set_ref v (EUnbound id level) else ()
+    ELink _ => ()
+  EffRow _ None => ()
+
+-- build a curried arrow carrying the body's latent effect [eff] on the LAST arrow
+-- only; intermediate arrows stay pure-open (partial application performs nothing)
+arrowsWithLastEffect : List Mono -> EffRow -> Mono -> <Mut> Mono
+arrowsWithLastEffect [] _ ret = ret
+arrowsWithLastEffect [pt] eff ret = TFun pt eff ret
+arrowsWithLastEffect (pt :: rest) eff ret =
+  TFun pt (openRow ()) (arrowsWithLastEffect rest eff ret)
+
+-- free generalizable effect variables: a row tail effvar deeper than the current
+-- scope (deduped by the caller, mirroring freeGenVars)
+freeEffvars : Mono -> List Int
+freeEffvars t = match normalize t
+  TVar cell => match cell.value
+    Link t2 => freeEffvars t2
+    Unbound _ _ => []
+  TCon _ => []
+  TApp a b => freeEffvars a ++ freeEffvars b
+  TFun a r b => freeEffvars a ++ rowFreeEffvars r ++ freeEffvars b
+  TTuple ts => concatMapL freeEffvars ts
+
+rowFreeEffvars : EffRow -> List Int
+rowFreeEffvars r = match effrowNorm r
+  EffRow _ (Some v) => match v.value
+    EUnbound id lvl => if lvl > currentLevel.value then [id] else []
+    ELink _ => []
+  EffRow _ None => []
+
+-- the declared concrete effect set of a signature: labels on the first `<…>`
+-- reached walking down the return side (Phase 79e escape check)
+declaredEffects : Ty -> List String
+declaredEffects (TyFun _ ret) = declaredEffects ret
+declaredEffects (TyEffect effs _ _) = sortUniqS effs
+declaredEffects (TyConstrained _ t) = declaredEffects t
+declaredEffects _ = []
 
 -- record metadata: name → (quantified param ids, result mono, field types).  A
 -- global Ref (like the reference's record table) so field access / create /
@@ -188,6 +393,8 @@ matchOracle = Ref (buildOracle [])
 resetState : Unit -> <Mut> Unit
 resetState _ =
   let _ = set_ref tyvarCounter 0
+  let _ = set_ref effvarCounter 0
+  let _ = set_ref curEffect (EffRow [] None)
   let _ = set_ref recordsRef []
   let _ = set_ref pendingSites []
   let _ = set_ref activeDictVars []
@@ -259,8 +466,9 @@ occursAdjust id level t = match normalize t
   TApp a b =>
     let _ = occursAdjust id level a
     occursAdjust id level b
-  TFun a _ b =>
+  TFun a r b =>
     let _ = occursAdjust id level a
+    let _ = lowerRowLevels level r
     occursAdjust id level b
   TTuple ts => occursAdjustList id level ts
 
@@ -294,8 +502,9 @@ unifyN (TCon a) (TCon b) = if a == b then () else typeMismatch (TCon a) (TCon b)
 unifyN (TApp a1 b1) (TApp a2 b2) =
   let _ = unify a1 a2
   unify b1 b2
-unifyN (TFun a1 _ b1) (TFun a2 _ b2) =
+unifyN (TFun a1 r1 b1) (TFun a2 r2 b2) =
   let _ = unify a1 a2
+  let _ = unifyRow r1 r2
   unify b1 b2
 unifyN (TTuple ts1) (TTuple ts2)
   | lengthL ts1 == lengthL ts2 = unifyList ts1 ts2
@@ -324,7 +533,7 @@ typeMismatch a b =
 
 -- ── generalization & instantiation ────────────────────────────────────────
 generalize : Mono -> <Mut> Scheme
-generalize t = Forall (dedupI (freeGenVars currentLevel.value t)) t
+generalize t = Forall (dedupI (freeGenVars currentLevel.value t)) (dedupI (freeEffvars t)) t
 
 freeGenVars : Int -> Mono -> List Int
 freeGenVars lvl t = match normalize t
@@ -344,24 +553,53 @@ dedupIGo (x :: xs) seen
   | otherwise = x :: dedupIGo xs (x :: seen)
 
 instantiate : Scheme -> <Mut> Mono
-instantiate (Forall ids t) = substMono (freshSubst ids) t
+instantiate (Forall ids evars t) = substMonoP True (freshSubst ids) (freshEffSubst evars) t
 
 freshSubst : List Int -> <Mut> List (Int, Mono)
 freshSubst [] = []
 freshSubst (id :: rest) = (id, freshVar ()) :: freshSubst rest
 
-substMono : List (Int, Mono) -> Mono -> Mono
-substMono subst t = match normalize t
+freshEffSubst : List Int -> <Mut> List (Int, Ref Effvar)
+freshEffSubst [] = []
+freshEffSubst (id :: rest) = (id, freshEffvar ()) :: freshEffSubst rest
+
+substMono : List (Int, Mono) -> List (Int, Ref Effvar) -> Mono -> Mono
+substMono subst esub t = match normalize t
   TVar cell => fromOption (TVar cell) (lookupAssocI (tyvarId cell) subst)
   TCon n => TCon n
-  TApp a b => TApp (substMono subst a) (substMono subst b)
-  TFun a eff b => TFun (substMono subst a) eff (substMono subst b)
-  TTuple ts => TTuple (map (substMono subst) ts)
+  TApp a b => TApp (substMono subst esub a) (substMono subst esub b)
+  TFun a eff b => TFun (substMono subst esub a) (substRow esub eff) (substMono subst esub b)
+  TTuple ts => TTuple (map (substMono subst esub) ts)
+
+-- Phase 146 variance-aware re-open: when instantiating a generalized scheme,
+-- re-open a CLOSED row carrying concrete labels (`EffRow labels None`) at a
+-- COVARIANT (positive) position — an arrow the value itself produces.  This turns
+-- a concrete effectful value (`putStrLn : String -> <IO> Unit`) meeting a pure
+-- closed bound into the open-row subset check, rejecting the laundering escape.
+-- Contravariant rows (a parameter / ctor field the scheme accepts) stay closed so
+-- a legitimately pure argument in an effect-allowing slot still subsumes.  Pure
+-- (label-less) rows are never re-opened — nothing to leak.
+reopenRow : Bool -> EffRow -> <Mut> EffRow
+reopenRow pos r = reopenRowN pos (effrowNorm r)
+
+reopenRowN : Bool -> EffRow -> <Mut> EffRow
+reopenRowN True (EffRow (l :: ls) None) = EffRow (l :: ls) (Some (freshEffvar ()))
+reopenRowN _ r = r
+
+-- positional twin of substMono used by scheme instantiation: flips variance on
+-- the arrow domain and re-opens covariant closed-with-labels rows (start pos=True)
+substMonoP : Bool -> List (Int, Mono) -> List (Int, Ref Effvar) -> Mono -> <Mut> Mono
+substMonoP pos subst esub t = match normalize t
+  TVar cell => fromOption (TVar cell) (lookupAssocI (tyvarId cell) subst)
+  TCon n => TCon n
+  TApp a b => TApp (substMonoP pos subst esub a) (substMonoP pos subst esub b)
+  TFun a eff b => TFun (substMonoP (not pos) subst esub a) (reopenRow pos (substRow esub eff)) (substMonoP pos subst esub b)
+  TTuple ts => TTuple (map (substMonoP pos subst esub) ts)
 
 -- ── rendering (mirrors lib/typecheck.ml pp_mono byte-for-byte) ─────────────
 export
 ppScheme : Scheme -> <Mut> String
-ppScheme (Forall _ t) = ppMono t
+ppScheme (Forall _ _ t) = ppMono t
 
 ppMono : Mono -> <Mut> String
 ppMono t =
@@ -404,11 +642,11 @@ ppApp ctx cnt prec a b =
   let sb = ppGo ctx cnt 3 b
   wrapIf (prec > 2) (sa ++ " " ++ sb)
 
-ppFun : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> List String -> Mono -> <Mut> String
+ppFun : Ref (List (Int, String)) -> Ref Int -> Int -> Mono -> EffRow -> Mono -> <Mut> String
 ppFun ctx cnt prec a eff b =
   let sa = ppGo ctx cnt 2 a
   let sb = ppGo ctx cnt 1 b
-  wrapIf (prec > 1) (sa ++ " -> " ++ effStr eff ++ sb)
+  wrapIf (prec > 1) (sa ++ " -> " ++ effStr (effrowLabels eff) ++ sb)
 
 effStr : List String -> String
 effStr [] = ""
@@ -460,7 +698,9 @@ dedupSGo (x :: xs) seen
 
 -- an annotation / signature mono with free tyvars realized as fresh vars
 astTypeFresh : Ty -> <Mut> Mono
-astTypeFresh ty = fromAstType (freshTvMap (dedupS (tyVarNames ty))) ty
+astTypeFresh ty =
+  let etbl = freshEffMap (dedupS (effTailNames ty))
+  fromAstTypeE etbl (freshTvMap (dedupS (tyVarNames ty))) ty
 
 freshTvMap : List String -> <Mut> List (String, Mono)
 freshTvMap [] = []
@@ -477,17 +717,54 @@ sigToScheme ty = fst (sigToSchemeTvs ty)
 sigToSchemeTvs : Ty -> <Mut> (Scheme, List (String, Mono))
 sigToSchemeTvs ty =
   let tvs = freshTvMap (dedupS (tyVarNames ty))
-  (Forall (map monoTyvarId (map snd tvs)) (fromAstType tvs ty), tvs)
+  let etbl = freshEffMap (dedupS (effTailNames ty))
+  (Forall (map monoTyvarId (map snd tvs)) (map effvarIdOf etbl) (fromAstTypeE etbl tvs ty), tvs)
 
 -- tvs maps a declared type-parameter name to its tyvar
+-- named effect-tail variables in a signature (`<IO | e>` → ["e"]); the same
+-- source name must share one effvar across the whole signature, linking a HOF's
+-- callback effect to its result effect
+effTailNames : Ty -> List String
+effTailNames (TyVar _) = []
+effTailNames (TyCon _) = []
+effTailNames (TyApp a b) = effTailNames a ++ effTailNames b
+effTailNames (TyFun a b) = effTailNames a ++ effTailNames b
+effTailNames (TyTuple ts) = concatMapL effTailNames ts
+effTailNames (TyEffect _ tail t) = tailNameList tail ++ effTailNames t
+effTailNames (TyConstrained _ t) = effTailNames t
+
+tailNameList : Option String -> List String
+tailNameList None = []
+tailNameList (Some n) = [n]
+
+freshEffMap : List String -> <Mut> List (String, Ref Effvar)
+freshEffMap [] = []
+freshEffMap (n :: rest) = (n, freshEffvar ()) :: freshEffMap rest
+
+effvarIdOf : (String, Ref Effvar) -> Int
+effvarIdOf (_, cell) = effvarId cell
+
+-- build a row from an arrow's return-position AST type; a named tail resolves
+-- through [etbl] for sharing, an absent/anonymous one is closed
+astEffrowE : List (String, Ref Effvar) -> Ty -> EffRow
+astEffrowE etbl (TyEffect labels tail _) = EffRow (sortUniqS labels) (tailCell etbl tail)
+astEffrowE _ _ = pureRow
+
+tailCell : List (String, Ref Effvar) -> Option String -> Option (Ref Effvar)
+tailCell _ None = None
+tailCell etbl (Some n) = lookupAssocS n etbl
+
 fromAstType : List (String, Mono) -> Ty -> Mono
-fromAstType tvs (TyCon n) = TCon n
-fromAstType tvs (TyVar n) = fromOption (TCon n) (lookupAssocS n tvs)
-fromAstType tvs (TyApp a b) = TApp (fromAstType tvs a) (fromAstType tvs b)
-fromAstType tvs (TyFun a b) = TFun (fromAstType tvs a) (effLabelsOf b) (fromAstType tvs (stripEff b))
-fromAstType tvs (TyTuple ts) = TTuple (map (fromAstType tvs) ts)
-fromAstType tvs (TyEffect _ _ t) = fromAstType tvs t
-fromAstType tvs (TyConstrained _ t) = fromAstType tvs t
+fromAstType tvs ty = fromAstTypeE [] tvs ty
+
+fromAstTypeE : List (String, Ref Effvar) -> List (String, Mono) -> Ty -> Mono
+fromAstTypeE etbl tvs (TyCon n) = TCon n
+fromAstTypeE etbl tvs (TyVar n) = fromOption (TCon n) (lookupAssocS n tvs)
+fromAstTypeE etbl tvs (TyApp a b) = TApp (fromAstTypeE etbl tvs a) (fromAstTypeE etbl tvs b)
+fromAstTypeE etbl tvs (TyFun a b) = TFun (fromAstTypeE etbl tvs a) (astEffrowE etbl b) (fromAstTypeE etbl tvs (stripEff b))
+fromAstTypeE etbl tvs (TyTuple ts) = TTuple (map (fromAstTypeE etbl tvs) ts)
+fromAstTypeE etbl tvs (TyEffect _ _ t) = fromAstTypeE etbl tvs t
+fromAstTypeE etbl tvs (TyConstrained _ t) = fromAstTypeE etbl tvs t
 
 -- ── environment ───────────────────────────────────────────────────────────
 -- SMap: persistent String-keyed weight-balanced tree.  The type environment is
@@ -583,7 +860,7 @@ addCtor : TcEnv -> String -> Scheme -> TcEnv
 addCtor (TcEnv vs cs) n s = TcEnv vs (smInsert n s cs)
 
 monoScheme : Mono -> Scheme
-monoScheme t = Forall [] t
+monoScheme t = Forall [] [] t
 
 -- ── pattern inference: returns the pattern's type + the bindings it adds ───
 inferPat : TcEnv -> Pat -> <Mut> (Mono, List (String, Scheme))
@@ -657,7 +934,7 @@ inferPats env (p :: ps) =
 
 foldrFun : List Mono -> Mono -> Mono
 foldrFun [] result = result
-foldrFun (a :: rest) result = TFun a [] (foldrFun rest result)
+foldrFun (a :: rest) result = TFun a pureRow (foldrFun rest result)
 
 inferPatTuple : TcEnv -> List Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatTuple env pats =
@@ -814,9 +1091,9 @@ hasKeySL2 k ((k2, _) :: rest)
 -- instantiate a scheme, returning both the mono and the (quantified id → fresh
 -- var) substitution, so a caller can recover specific quantified variables
 instantiateTracked : Scheme -> <Mut> (Mono, List (Int, Mono))
-instantiateTracked (Forall ids t) =
+instantiateTracked (Forall ids evars t) =
   let subst = freshSubst ids
-  (substMono subst t, subst)
+  (substMonoP True subst (freshEffSubst evars) t, subst)
 
 constraintMonosOf : List Int -> List (Int, Mono) -> List Mono
 constraintMonosOf [] _ = []
@@ -1016,7 +1293,9 @@ consOp lt rt =
 pipeOp : Mono -> Mono -> <Mut> Mono
 pipeOp lt rt =
   let res = freshVar ()
-  let _ = unify rt (TFun lt [] res)
+  let eff = openRow ()
+  let _ = unify rt (TFun lt eff res)
+  let _ = performEffect curEffect eff
   res
 
 -- g >> h : (a->b) -> (b->c) -> (a->c)  [flipped=False]
@@ -1026,16 +1305,16 @@ composeOp gt ht False =
   let a = freshVar ()
   let b = freshVar ()
   let c = freshVar ()
-  let _ = unify gt (TFun a [] b)
-  let _ = unify ht (TFun b [] c)
-  TFun a [] c
+  let _ = unify gt (TFun a (openRow ()) b)
+  let _ = unify ht (TFun b (openRow ()) c)
+  TFun a (openRow ()) c
 composeOp gt ht True =
   let a = freshVar ()
   let b = freshVar ()
   let c = freshVar ()
-  let _ = unify gt (TFun a [] b)
-  let _ = unify ht (TFun c [] a)
-  TFun c [] b
+  let _ = unify gt (TFun a (openRow ()) b)
+  let _ = unify ht (TFun c (openRow ()) a)
+  TFun c (openRow ()) b
 
 inferUnop : String -> Mono -> <Mut> Mono
 inferUnop "-" t = t
@@ -1060,14 +1339,20 @@ inferVar env x = match lookupVar env x
 inferApp : Mono -> Mono -> <Mut> Mono
 inferApp ft xt =
   let r = freshVar ()
-  let _ = unify ft (TFun xt [] r)
+  let eff = openRow ()
+  let _ = unify ft (TFun xt eff r)
+  let _ = performEffect curEffect eff
   r
 
 inferLam : TcEnv -> List Pat -> Expr -> <Mut> Mono
 inferLam env pats body =
   let pr = inferPats env pats
+  let saved = curEffect.value
+  let _ = set_ref curEffect (openRow ())
   let bodyTy = infer (extendVars env (snd pr)) body
-  foldrFun (fst pr) bodyTy
+  let bodyEff = curEffect.value
+  let _ = set_ref curEffect saved
+  arrowsWithLastEffect (fst pr) bodyEff bodyTy
 
 inferLet : TcEnv -> Pat -> Expr -> Expr -> <Mut> Mono
 inferLet env pat e1 e2 =
@@ -1216,10 +1501,10 @@ isSome None = False
 instantiateRecord : RecordInfo -> <Mut> (Mono, List (String, Mono))
 instantiateRecord (RecordInfo paramIds result fields) =
   let subst = freshSubst paramIds
-  (substMono subst result, map (substField subst) fields)
+  (substMono subst [] result, map (substField subst) fields)
 
 substField : List (Int, Mono) -> (String, Mono) -> (String, Mono)
-substField subst (fn, fm) = (fn, substMono subst fm)
+substField subst (fn, fm) = (fn, substMono subst [] fm)
 
 registerVariants : TcEnv -> String -> List String -> List Variant -> <Mut> TcEnv
 registerVariants env name params variants =
@@ -1258,7 +1543,7 @@ addVariants : TcEnv -> List (String, Mono) -> List Int -> Mono -> List Variant -
 addVariants env _ _ _ [] = env
 addVariants env tvs paramIds result (Variant cname payload :: rest) =
   let ctorType = foldrFun (payloadTypes tvs payload) result
-  let env2 = addCtor env cname (Forall paramIds ctorType)
+  let env2 = addCtor env cname (Forall paramIds [] ctorType)
   addVariants env2 tvs paramIds result rest
 
 payloadTypes : List (String, Mono) -> ConPayload -> List Mono
@@ -1313,7 +1598,7 @@ inferLetBinds env ((LetBind _ clauses, (_, sch)) :: rest) =
   inferLetBinds env rest
 
 schemeMono : Scheme -> Mono
-schemeMono (Forall _ t) = t
+schemeMono (Forall _ _ t) = t
 
 generalizeGroup : TcEnv -> List (LetBind, (String, Scheme)) -> <Mut> TcEnv
 generalizeGroup env [] = env
@@ -1362,7 +1647,7 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
   let prog2 = prePassDict (returnPosMethodNames prog ++ methodConstraintNames prog) allNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
-  let _ = resolveSites (buildImplTable prog2) pendingSites.value
+  let _ = resolveSites (buildImplTable prog2) (returnPosMethodNames prog2) pendingSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps pendingDictApps.value
   let _ = resolveMethodDicts pendingMethodDicts.value
@@ -1518,11 +1803,11 @@ isEmptyL : List a -> Bool
 isEmptyL [] = True
 isEmptyL _ = False
 
-resolveSites : List ImplEntry -> List (String, Ref Route, Ref (List Route), Mono) -> <Mut> Unit
-resolveSites _ [] = ()
-resolveSites implTable ((name, tagRef, implRef, resultMono) :: rest) =
-  let _ = resolveSite implTable name tagRef implRef resultMono
-  resolveSites implTable rest
+resolveSites : List ImplEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono) -> <Mut> Unit
+resolveSites _ _ [] = ()
+resolveSites implTable rpNames ((name, tagRef, implRef, resultMono) :: rest) =
+  let _ = resolveSite implTable rpNames name tagRef implRef resultMono
+  resolveSites implTable rpNames rest
 
 -- a method occurrence's route: if its discriminating type is a constrained
 -- function's constraint variable, read that function's dict param (RDict);
@@ -1530,12 +1815,19 @@ resolveSites implTable ((name, tagRef, implRef, resultMono) :: rest) =
 -- stays RNone (arg-tag fallback).  When the route resolves to a concrete head
 -- that names a parametric impl WITH a `requires`, also fill the impl-dicts ref so
 -- eval threads the element dict(s) into the impl body (Phase 83/84 single-level).
-resolveSite : List ImplEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Unit
-resolveSite implTable name tagRef implRef resultMono = match activeDictVarOf resultMono
-  Some dname => set_ref tagRef (RDict dname)
+-- Phase 83/84 #5: stamp the route for one pending method site.  At a concrete
+-- result type (ground RKey case) the element dict routes are computed recursively
+-- by implDictRoutesFor.  At a polymorphic result type (RDict case) the route is
+-- RDictFwd for return-position methods — eval will extract and forward the
+-- enclosing VDict's nested requires at runtime.  Arg-position methods (display/==)
+-- stay RDict; their VMulti dispatch is by arg-tag, not by the forwarded reqs.
+resolveSite : List ImplEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Unit
+resolveSite implTable rpNames name tagRef implRef resultMono = match activeDictVarOf resultMono
+  Some dname =>
+    set_ref tagRef (if containsName name rpNames then RDictFwd dname else RDict dname)
   None => match headTyconMono resultMono
     Some tag =>
-      let _ = set_ref tagRef (RKey tag)
+      let _ = set_ref tagRef (RKey tag [])
       set_ref implRef (implDictRoutesFor implTable name tag resultMono)
     None => ()
 
@@ -1586,15 +1878,21 @@ headTyconTy _ = None
 
 -- the impl-dict routes for a method site that resolved to head tag [tag]: find the
 -- parametric impl defining [name] at that head, match its head pattern against the
--- concrete result mono to recover the element subst, then one RKey route per
--- requires (the element dict eval threads into the impl body).
+-- concrete result mono to recover the element subst, then one recursive RKey route
+-- per requires (the structured element dict eval threads into the impl body,
+-- Phase 83/84 #5).  The full implTable is threaded through so recursive instances
+-- (List (List Int)) can re-match the same "List" entry.
 implDictRoutesFor : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
-implDictRoutesFor [] _ _ _ = []
-implDictRoutesFor (ImplEntry tag2 methodNames headTy reqs :: rest) name tag resultMono
+implDictRoutesFor implTable name tag resultMono =
+  implDictRoutesIn implTable implTable name tag resultMono
+
+implDictRoutesIn : List ImplEntry -> List ImplEntry -> String -> String -> Mono -> <Mut> List Route
+implDictRoutesIn _ [] _ _ _ = []
+implDictRoutesIn fullTable (ImplEntry tag2 methodNames headTy reqs :: rest) name tag resultMono
   | tag2 == tag && containsName name methodNames = match matchTyMono headTy resultMono
-      Some subst => implReqRoutes subst reqs
-      None => implDictRoutesFor rest name tag resultMono
-  | otherwise = implDictRoutesFor rest name tag resultMono
+      Some subst => implReqRoutes fullTable subst reqs
+      None => implDictRoutesIn fullTable rest name tag resultMono
+  | otherwise = implDictRoutesIn fullTable rest name tag resultMono
 
 -- match an impl-head type PATTERN against a concrete mono, binding the impl's
 -- type-variable names to monos (single-level: the pattern's args are bare vars).
@@ -1613,16 +1911,39 @@ combineSubst (Some xs) (Some ys) = Some (xs ++ ys)
 combineSubst _ _ = None
 
 -- one route per requires: substitute the recovered element subst into the
--- requires' dispatch arg, take its head tycon (the dict tag eval narrows by).
-implReqRoutes : List (String, Mono) -> List Require -> <Mut> List Route
-implReqRoutes _ [] = []
-implReqRoutes subst (Require _ rargs :: rest) = reqRoute subst rargs :: implReqRoutes subst rest
+-- requires' dispatch arg, take its head tycon (the dict tag eval narrows by),
+-- and recursively compute that impl's own requires routes (Phase 83/84 #5).
+implReqRoutes : List ImplEntry -> List (String, Mono) -> List Require -> <Mut> List Route
+implReqRoutes _ _ [] = []
+implReqRoutes implTable subst (Require _ rargs :: rest) =
+  reqRoute implTable subst rargs :: implReqRoutes implTable subst rest
 
-reqRoute : List (String, Mono) -> List Ty -> <Mut> Route
-reqRoute _ [] = RNone
-reqRoute subst (arg :: _) = match headTyconMono (fromAstType subst arg)
-  Some tag => RKey tag
-  None => RNone
+reqRoute : List ImplEntry -> List (String, Mono) -> List Ty -> <Mut> Route
+reqRoute _ _ [] = RNone
+reqRoute implTable subst (arg :: _) =
+  let m = fromAstType subst arg
+  match headTyconMono m
+    Some tag => RKey tag (implRequiresRoutesRec implTable tag m)
+    None => RNone
+
+-- Phase 83/84 #5: given the concrete mono [m] whose head tycon is [tag], find the
+-- matching parametric impl in [implTable] and compute its requires routes
+-- recursively — so RKey(tag, [RKey(subTag, [...])]) encodes the full element-dict
+-- nesting.  Terminates because each step structurally shrinks the requirement type.
+implRequiresRoutesRec : List ImplEntry -> String -> Mono -> <Mut> List Route
+implRequiresRoutesRec implTable tag m = match findImplEntry implTable tag m
+  Some (ImplEntry _ _ headTy reqs) => match matchTyMono headTy m
+    Some subst => implReqRoutes implTable subst reqs
+    None => []
+  None => []
+
+-- find the first ImplEntry in [implTable] whose head tycon is [tag] (there is at
+-- most one parametric impl per head tycon in well-formed programs).
+findImplEntry : List ImplEntry -> String -> Mono -> Option ImplEntry
+findImplEntry [] _ _ = None
+findImplEntry (ImplEntry tag2 ms hty reqs :: rest) tag m
+  | tag2 == tag = Some (ImplEntry tag2 ms hty reqs)
+  | otherwise = findImplEntry rest tag m
 
 -- fill each constrained-fn call site's routes: one route per constraint mono.  A
 -- mono pinned to a concrete head → RKey; still a constraint variable (a nested
@@ -1641,7 +1962,7 @@ routeOfMono : Mono -> <Mut> Route
 routeOfMono m = match activeDictVarOf m
   Some dname => RDict dname
   None => match headTyconMono m
-    Some tag => RKey tag
+    Some tag => RKey tag []
     None => RNone
 
 -- Phase 69.x-e: fill each method occurrence's method-dicts ref — one route per
@@ -1682,7 +2003,7 @@ recRoute encl mono id = match findTvarInMono mono id
 
 resolveRecMono : String -> Mono -> <Mut> Route
 resolveRecMono encl m = match headTyconMono m
-  Some tag => RKey tag
+  Some tag => RKey tag []
   None => match enclSlot encl m
     Some slot => RDict (dictParamName encl slot)
     None => routeOfMono m
@@ -1792,6 +2113,7 @@ bodyRDictNames e = concatMapL siteRDictName (collectMethodSites e)
 siteRDictName : Ref Route -> List String
 siteRDictName r = match r.value
   RDict d => [d]
+  RDictFwd d => [d]
   _ => []
 
 -- every EMethodAt route ref reachable in [e] (a pure structural walk; reading a
@@ -2338,8 +2660,9 @@ processSCC env sigs defs members =
   let _ = enterLevel ()
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
-  let regs = preunifySigs sigs placeholders
+  let (regs, sigTvMaps) = preunifySigsEx sigs placeholders
   let _ = inferMembers env2 sigs defs placeholders
+  let _ = checkSigsTooGeneral sigTvMaps
   let _ = registerConstraintRegs regs
   let _ = exitLevel ()
   let schemes = sccSchemes sigs placeholders
@@ -2355,6 +2678,22 @@ placeholderBinding (m, v) = (m, monoScheme v)
 preunifySigs : List (String, Ty) -> List (String, Mono) -> <Mut> List (String, List Mono)
 preunifySigs _ [] = []
 preunifySigs sigs ((m, v) :: rest) = preunifySig sigs m v ++ preunifySigs sigs rest
+
+-- Extended Pass A: same as preunifySigs but also returns the tyvar maps (for
+-- the signature-too-general check after body inference).  Returns a pair:
+-- (constraintRegs, sigTvMaps) where sigTvMaps is [(name, sig_ast, tvs)] for
+-- each signed member.
+preunifySigsEx : List (String, Ty) -> List (String, Mono) -> <Mut> (List (String, List Mono), List (String, Ty, List (String, Mono)))
+preunifySigsEx _ [] = ([], [])
+preunifySigsEx sigs ((m, v) :: rest) =
+  let (restRegs, restTvs) = preunifySigsEx sigs rest
+  match lookupAssocS m sigs
+    Some ty =>
+      let inst = instantiateSigTracked ty
+      let _ = unify v (fst inst)
+      let regs = [(m, constraintVarMonos (sigConstraints ty) (snd inst))]
+      (regs ++ restRegs, (m, ty, snd inst) :: restTvs)
+    None => (restRegs, restTvs)
 
 -- Unify a member's placeholder with a fresh instantiation of its signature, and
 -- (for a `=>`-constrained sig) return its constraint variables' monos in slot
@@ -2373,7 +2712,8 @@ preunifySig sigs m v = match lookupAssocS m sigs
 instantiateSigTracked : Ty -> <Mut> (Mono, List (String, Mono))
 instantiateSigTracked ty =
   let tvs = freshTvMap (dedupS (tyVarNames ty))
-  (fromAstType tvs ty, tvs)
+  let etbl = freshEffMap (dedupS (effTailNames ty))
+  (fromAstTypeE etbl tvs ty, tvs)
 
 -- the (iface, tyvarName) pairs of a signature's `=>` constraints (each constraint
 -- argument that is a single type variable; multi-param/structured args skipped)
@@ -2430,9 +2770,46 @@ inferMembers : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> 
 inferMembers _ _ _ [] = ()
 inferMembers env sigs defs ((m, v) :: rest) =
   let _ = set_ref currentFn m
-  let _ = unify v (inferClauses env (clausesFor m defs))
+  let effs = inferMemberClauses env v (clausesFor m defs)
   let _ = set_ref currentFn ""
+  let _ = checkEffectEscape sigs m effs
   inferMembers env sigs defs rest
+
+-- infer each clause, unifying it to the member placeholder [v] and collecting the
+-- concrete effect labels the bodies perform (Phase 79e binding-boundary check)
+inferMemberClauses : TcEnv -> Mono -> List (List Pat, Expr) -> <Mut> List String
+inferMemberClauses _ _ [] = []
+inferMemberClauses env v (cl :: rest) =
+  let ce = inferClauseEff env cl
+  let _ = unify v (fst ce)
+  sortUniqS (snd ce ++ inferMemberClauses env v rest)
+
+-- infer one clause, returning its arrow type AND the concrete effect labels its
+-- body performs (captured under a fresh open ambient, then the ambient restored —
+-- building a closure performs nothing).  Mirrors inferLam but exposes the effect.
+inferClauseEff : TcEnv -> (List Pat, Expr) -> <Mut> (Mono, List String)
+inferClauseEff env (pats, body) =
+  let pr = inferPats env pats
+  let saved = curEffect.value
+  let _ = set_ref curEffect (openRow ())
+  let bodyTy = infer (extendVars env (snd pr)) body
+  let bodyEff = curEffect.value
+  let _ = set_ref curEffect saved
+  (arrowsWithLastEffect (fst pr) bodyEff bodyTy, effrowLabels bodyEff)
+
+-- a signatured binding's body must not perform a concrete effect its signature
+-- doesn't declare; effect *variables* (polymorphic `<e>`) carry no labels and so
+-- never escape (Phase 79e)
+checkEffectEscape : List (String, Ty) -> String -> List String -> <Mut> Unit
+checkEffectEscape sigs m effs = match lookupAssocS m sigs
+  None => ()
+  Some ty => match diffS effs (declaredEffects ty)
+    [] => ()
+    extras => set_ref typeErrors (effectEscapeMsg m (declaredEffects ty) extras :: typeErrors.value)
+
+effectEscapeMsg : String -> List String -> List String -> String
+effectEscapeMsg name declared extras =
+  "Function '" ++ name ++ "' declared with <" ++ joinWith ", " declared ++ "> but also performs <" ++ joinWith ", " extras ++ ">"
 
 -- generalize each member's (sig-and-body-unified) placeholder.  A signature was
 -- already unified into the placeholder by preunifySigs, so generalizing the
@@ -2441,6 +2818,78 @@ inferMembers env sigs defs ((m, v) :: rest) =
 sccSchemes : List (String, Ty) -> List (String, Mono) -> <Mut> List (String, Scheme)
 sccSchemes _ [] = []
 sccSchemes sigs ((m, v) :: rest) = (m, generalize v) :: sccSchemes sigs rest
+
+-- ── signature-too-general check ──────────────────────────────────────────────
+-- After body inference, the declared signature's type variables must map to
+-- DISTINCT TVar refs.  If two declared tyvars (e.g. `a` and `b` in `a -> b`)
+-- collapse to the SAME TVar after unification (body forces them equal), the
+-- declared signature claims more polymorphism than the body allows.
+-- We only reject the "two tvars become one" case (not concrete grounding), so
+-- `sum = fold (+) 0` (which grounds one tyvar to Int) passes.
+checkSigsTooGeneral : List (String, Ty, List (String, Mono)) -> <Mut> Unit
+checkSigsTooGeneral [] = ()
+checkSigsTooGeneral ((m, ty, tvs) :: rest) =
+  let _ = checkSigTooGeneral m ty tvs
+  checkSigsTooGeneral rest
+
+checkSigTooGeneral : String -> Ty -> List (String, Mono) -> <Mut> Unit
+checkSigTooGeneral name ty tvs =
+  let tvarIds = sigTvarIds (map snd tvs)
+  if hasDupI tvarIds then
+    set_ref typeErrors (sigTooGeneralMsg name ty :: typeErrors.value)
+  else ()
+
+-- collect the TVar ids of those entries in tvs that normalize to a TVar
+-- (concrete-grounded entries are skipped — only same-TVar collapses are an error)
+sigTvarIds : List Mono -> List Int
+sigTvarIds [] = []
+sigTvarIds (m :: rest) = match normalize m
+  TVar cell => tyvarId cell :: sigTvarIds rest
+  _ => sigTvarIds rest
+
+-- true if the list has any duplicate Int
+hasDupI : List Int -> Bool
+hasDupI [] = False
+hasDupI (x :: xs) = containsI x xs || hasDupI xs
+
+sigTooGeneralMsg : String -> Ty -> String
+sigTooGeneralMsg name ty =
+  "Declared signature of '" ++ name ++ "' is more general than its body — '" ++ ppTy ty ++ "' claims type variables that are the same type after inference"
+
+-- pretty-print an AST type (mirrors lib/ast.ml's pp_ty byte-for-byte)
+ppTy : Ty -> String
+ppTy (TyCon n) = n
+ppTy (TyVar n) = n
+ppTy (TyApp a b) = ppTy a ++ " " ++ ppTyAtom b
+ppTy (TyFun a b) = ppTyFunArg a ++ " -> " ++ ppTy b
+ppTy (TyTuple ts) = "(" ++ intercalateS ", " (map ppTy ts) ++ ")"
+ppTy (TyEffect _ _ t) = ppTy t
+ppTy (TyConstrained cs t) = ppConstraints cs ++ " => " ++ ppTy t
+
+-- single constraint: no outer parens; multiple: wrap in parens (mirrors OCaml)
+ppConstraints : List Constraint -> String
+ppConstraints [c] = ppConstraint c
+ppConstraints cs = "(" ++ intercalateS ", " (map ppConstraint cs) ++ ")"
+
+-- argument of `->`: wrap TyFun (prec>=1) but not TyApp (prec<2)
+ppTyFunArg : Ty -> String
+ppTyFunArg (TyFun a b) = "(" ++ ppTy (TyFun a b) ++ ")"
+ppTyFunArg t = ppTy t
+
+-- argument of application: wrap TyFun (prec>=1) and TyApp (prec>=2)
+ppTyAtom : Ty -> String
+ppTyAtom (TyFun a b) = "(" ++ ppTy (TyFun a b) ++ ")"
+ppTyAtom (TyApp a b) = "(" ++ ppTy (TyApp a b) ++ ")"
+ppTyAtom t = ppTy t
+
+ppConstraint : Constraint -> String
+ppConstraint (Constraint iface []) = iface
+ppConstraint (Constraint iface tys) = iface ++ " " ++ intercalateS " " (map ppTyAtom tys)
+
+intercalateS : String -> List String -> String
+intercalateS _ [] = ""
+intercalateS _ [x] = x
+intercalateS sep (x :: xs) = x ++ sep ++ intercalateS sep xs
 
 -- ── inferred-constraint promotion (unsignatured `=>` — the two-pass layer) ──
 -- After a group is generalized, an UNSIGNATURED eligible member that uses a
@@ -2469,7 +2918,7 @@ hasSig sigs m = match lookupAssocS m sigs
   None => False
 
 schemeIds : Scheme -> List Int
-schemeIds (Forall ids _) = ids
+schemeIds (Forall ids _ _) = ids
 
 -- the member's own quantified tyvar ids that a body method site / propagated
 -- constrained-call sits at (deduped, slot order = discovery order)
@@ -2667,6 +3116,17 @@ elaborateModules runtimeDecls coreDecls modules =
 prePassModulePair : List String -> (String, List Decl) -> (String, List Decl)
 prePassModulePair rpNames (mid, prog) = (mid, prePassDict rpNames [] prog)
 
+-- The mark sub-phase of elaborateModules (RKey-only): compute rpNames over the
+-- full module graph and prePassDict each module.  Exported so profiling drivers
+-- can bracket the mark phase vs the typecheck phase separately.
+export
+markModules : List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
+markModules coreDecls modules =
+  let rpNames = returnPosMethodNames (coreDecls ++ concatMapL snd modules)
+  let core2 = prePassDict rpNames [] coreDecls
+  let modules2 = map (prePassModulePair rpNames) modules
+  (core2, modules2)
+
 -- typecheck one module (seeded like checkModuleFull) AND immediately stamp the
 -- EMethodAt route refs it just recorded.  checkModuleFull's resetState clears
 -- pendingSites before inference, so on return pendingSites holds exactly THIS
@@ -2675,7 +3135,7 @@ prePassModulePair rpNames (mid, prog) = (mid, prePassDict rpNames [] prog)
 elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 elabModuleStamp seedVars accData prog =
   let schemes = checkModuleFull seedVars accData prog
-  let _ = resolveSites [] pendingSites.value
+  let _ = resolveSites [] [] pendingSites.value
   schemes
 
 elabModulesGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> Unit

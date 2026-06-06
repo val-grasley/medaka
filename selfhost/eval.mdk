@@ -51,7 +51,11 @@ public export data Value
   -- a runtime dictionary: the impl head tag a constrained function was called at,
   -- passed as a leading argument (EDictAt builds it, dict_pass binds it as a
   -- parameter); an in-body EMethodAt routed RDict reads it to narrow its method.
-  | VDict String
+  -- Phase 83/84 #5: the value list carries this impl's own requires dicts (each
+  -- itself a VDict), so a recursive instance (def : List (List Int)) unfolds
+  -- level by level — the inner return-position `def` reads its element dict from
+  -- the forwarded requires rather than failing arg-tag dispatch.
+  | VDict String (List Value)
 
 -- an environment is a stack of frames; each frame maps names to mutable cells
 -- (so letrec / mutual recursion can back-patch a closure's own binding)
@@ -87,7 +91,7 @@ ppValue (VTypedImpl t _ _ _ inner) = "<impl@"
   ++ ppValue inner
   ++ ">"
 ppValue (VThunk _) = "<thunk>"
-ppValue (VDict key) = "<dict:" ++ key ++ ">"
+ppValue (VDict key _) = "<dict:" ++ key ++ ">"
 ppValue VFallthrough = "<fallthrough>"
 
 ppField : (String, Value) -> String
@@ -598,15 +602,18 @@ awaitsArgs (VMulti _) = True
 awaitsArgs (VTypedImpl _ _ _ _ _) = True
 awaitsArgs _ = False
 
--- the concrete head tag an EMethodAt route narrows by: RKey is literal; RDict
--- forwards the enclosing function's dict parameter (a VDict key); RNone leaves
--- the VMulti for arg-tag fallback ("").
+-- the concrete head tag an EMethodAt route narrows by: RKey is literal; RDict/
+-- RDictFwd forward the enclosing function's dict parameter; RNone leaves the
+-- VMulti for arg-tag fallback ("").
 export
 routeTag : EvalEnv -> Route -> <Mut> String
 routeTag _ RNone = ""
-routeTag _ (RKey key) = key
+routeTag _ (RKey key _) = key
 routeTag env (RDict d) = match lookupEnv env d
-  VDict key => key
+  VDict key _ => key
+  _ => ""
+routeTag env (RDictFwd d) = match lookupEnv env d
+  VDict key _ => key
   _ => ""
 
 -- a constrained-function occurrence: apply one runtime dictionary per resolved
@@ -616,14 +623,37 @@ applyDicts : EvalEnv -> Value -> List Route -> <Mut> Value
 applyDicts _ v [] = v
 applyDicts env v (r :: rest) = applyDicts env (apply v (dictOfRoute env r)) rest
 
--- build the runtime dictionary for one route: RKey is a literal VDict; RDict
--- forwards the enclosing function's dictionary parameter; RNone is a no-op dict.
+-- apply an already-built list of VDict values directly (used to forward an impl's
+-- own requires into its body at a return-position RDictFwd site, Phase 83/84 #5).
+applyValues : Value -> List Value -> <Mut> Value
+applyValues v [] = v
+applyValues v (x :: rest) = applyValues (apply v x) rest
+
+-- build the runtime dictionary for one route: RKey builds a structured VDict
+-- carrying the impl's own requires dicts recursively (Phase 83/84 #5); RDict/
+-- RDictFwd forward the enclosing dict param in full; RNone is a no-op dict.
 dictOfRoute : EvalEnv -> Route -> <Mut> Value
-dictOfRoute _ (RKey key) = VDict key
+dictOfRoute env (RKey key reqs) = VDict key (map (dictOfRoute env) reqs)
 dictOfRoute env (RDict d) = match lookupEnv env d
-  VDict key => VDict key
-  _ => VDict ""
-dictOfRoute _ RNone = VDict ""
+  VDict key reqs => VDict key reqs
+  _ => VDict "" []
+dictOfRoute env (RDictFwd d) = match lookupEnv env d
+  VDict key reqs => VDict key reqs
+  _ => VDict "" []
+dictOfRoute _ RNone = VDict "" []
+
+-- narrow a method VMulti by a route, returning the narrowed value and any
+-- forwarded requires (non-empty only for RDictFwd return-position sites where the
+-- enclosing dict carries nested element dicts for the selected impl, Phase 83/84 #5).
+methodAtNarrow : EvalEnv -> Value -> Route -> <Mut> (Value, List Value)
+methodAtNarrow _ v RNone = (v, [])
+methodAtNarrow _ v (RKey key _) = (narrowMethod v key, [])
+methodAtNarrow env v (RDict d) = match lookupEnv env d
+  VDict key _ => (narrowMethod v key, [])
+  _ => (v, [])
+methodAtNarrow env v (RDictFwd d) = match lookupEnv env d
+  VDict key reqs => (narrowMethod v key, reqs)
+  _ => (v, [])
 
 oneOrMultiV : List Value -> List Value -> Value
 oneOrMultiV [v] _ = v
@@ -709,7 +739,10 @@ eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
 -- annotateProgram in evalProgram/evalModules.
 eval env (EVarAt x addr) = if startsWithAt x then VUnit else lookupAtAddr env x addr
 eval env (EMethodAt name routeRef implRef methodRef) =
-  applyDicts env (applyDicts env (narrowMethod (lookupEnv env name) (routeTag env routeRef.value)) methodRef.value) implRef.value
+  let (narrowed, fwdReqs) = methodAtNarrow env (lookupEnv env name) routeRef.value
+  let v1 = applyDicts env narrowed methodRef.value
+  let v2 = applyDicts env v1 implRef.value
+  applyValues v2 fwdReqs
 eval env (EDictAt name routesRef) =
   applyDicts env (lookupEnv env name) routesRef.value
 eval env (EApp f x) = apply (eval env f) (eval env x)

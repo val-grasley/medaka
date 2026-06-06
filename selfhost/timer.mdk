@@ -52,3 +52,27 @@ totalDecls ((_, ds) :: rest) = countList ds + totalDecls rest
 countList : List a -> Int
 countList [] = 0
 countList (_ :: xs) = 1 + countList xs
+
+-- GC-backed allocation snapshot: total bytes allocated since process start.
+-- Use paired snapshots to measure per-stage byte allocations.
+-- Backed by Gc.allocated_bytes (monotonically increasing float).
+export
+allocSnap : Unit -> <IO> Float
+allocSnap () = allocBytes ()
+
+-- Extended phase emit that includes an allocation-delta column (bytes → MB).
+-- Format: [perf] <label>\t<elapsed>s\t<allocMB>MB\t<ops>
+export
+emitPhaseA : Bool -> String -> Float -> Float -> String -> <IO> Unit
+emitPhaseA False _ _ _ _ = ()
+emitPhaseA True label elapsed allocDelta ops =
+  ePutStrLn ("[perf] " ++ label ++ "\t" ++ floatToString elapsed ++ "s\t"
+    ++ floatToString (allocDelta / 1048576.0) ++ "MB\t" ++ ops)
+
+-- Extended total emit with allocation (four-field format to match emitPhaseA).
+export
+emitTotalA : Bool -> Float -> Float -> <IO> Unit
+emitTotalA False _ _ = ()
+emitTotalA True elapsed allocTotal =
+  ePutStrLn ("[perf] total\t" ++ floatToString elapsed ++ "s\t"
+    ++ floatToString (allocTotal / 1048576.0) ++ "MB\t")

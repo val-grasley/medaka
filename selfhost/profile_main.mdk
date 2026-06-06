@@ -26,7 +26,7 @@ import desugar.{desugar}
 import resolve.{resolveToLines}
 import marker.{markWithPrelude}
 import typecheck.{checkToLinesWithRuntime}
-import timer.{perfEnabled, now, emitPhase, emitTotal}
+import timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap}
 import util.{listLen}
 
 main = match args ()
@@ -46,50 +46,58 @@ run runtimePath corePath targetPath = match readFile runtimePath
 -- Follows check.mdk's single-file path:
 --   parse-prelude  → parse target → desugar → resolve(raw prelude)
 --   → mark(desugared core) → typecheck(desugared runtime+core)
+-- Each line includes an allocation-delta column (Gc.allocated_bytes proxy, in MB).
 runStaged : Bool -> String -> String -> String -> <IO, Mut> Unit
 runStaged on rsrc csrc tsrc =
   let tTotal = now ()
+  let aTotal = allocSnap ()
 
   -- parse-prelude: parse + desugar runtime.mdk and core.mdk.
   -- rRaw/cRaw (raw) go to resolve; rDecls/cDecls (desugared) go to mark+typecheck.
   let tPP0 = now ()
+  let aPP0 = allocSnap ()
   let rRaw   = parse rsrc
   let cRaw   = parse csrc
   let rDecls = desugar rRaw
   let cDecls = desugar cRaw
   let tPP1 = now ()
-  let _ = emitPhase on "parse-prelude" (tPP1 - tPP0) "runtime+core"
+  let _ = emitPhaseA on "parse-prelude" (tPP1 - tPP0) (allocSnap () - aPP0) "runtime+core"
 
   -- parse: lex + parse the target file (tokenize is called inside `parse`)
   let tP0 = now ()
+  let aP0 = allocSnap ()
   let raw = parse tsrc
   let tP1 = now ()
-  let _ = emitPhase on "parse" (tP1 - tP0) (intToString (listLen raw) ++ " decls")
+  let _ = emitPhaseA on "parse" (tP1 - tP0) (allocSnap () - aP0) (intToString (listLen raw) ++ " decls")
 
   -- desugar: lower surface sugar in the target AST
   let tD0 = now ()
+  let aD0 = allocSnap ()
   let desugared = desugar raw
   let tD1 = now ()
   let nDecls = listLen desugared
   let declsOp = intToString nDecls ++ " decls"
-  let _ = emitPhase on "desugar" (tD1 - tD0) declsOp
+  let _ = emitPhaseA on "desugar" (tD1 - tD0) (allocSnap () - aD0) declsOp
 
   -- resolve: name resolution (mirrors check.mdk: raw prelude, desugared target)
   let tR0 = now ()
+  let aR0 = allocSnap ()
   let _ = resolveToLines rRaw cRaw desugared
   let tR1 = now ()
-  let _ = emitPhase on "resolve" (tR1 - tR0) declsOp
+  let _ = emitPhaseA on "resolve" (tR1 - tR0) (allocSnap () - aR0) declsOp
 
   -- mark: method-reference marking (desugared core as the prelude)
   let tM0 = now ()
+  let aM0 = allocSnap ()
   let _ = markWithPrelude cDecls desugared
   let tM1 = now ()
-  let _ = emitPhase on "mark" (tM1 - tM0) declsOp
+  let _ = emitPhaseA on "mark" (tM1 - tM0) (allocSnap () - aM0) declsOp
 
   -- typecheck: HM inference over desugared runtime + core ++ target
   let tT0 = now ()
+  let aT0 = allocSnap ()
   let _ = checkToLinesWithRuntime rDecls (cDecls ++ desugared)
   let tT1 = now ()
-  let _ = emitPhase on "typecheck" (tT1 - tT0) declsOp
+  let _ = emitPhaseA on "typecheck" (tT1 - tT0) (allocSnap () - aT0) declsOp
 
-  emitTotal on (tT1 - tTotal)
+  emitTotalA on (tT1 - tTotal) (allocSnap () - aTotal)

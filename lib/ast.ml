@@ -44,11 +44,18 @@ type pat =
    filled in (in place) into an EMethodRef's ref.  The route tells eval how to
    pick the impl out of the method's VMulti binding:
 
-   - [RKey key]: the discriminating type is *concrete* at this site (Phase 69).
-     `key` is the canonical impl key — `iface | pp_ty(type_args) | name` — that
-     eval matches against the key it tags each VMulti candidate with, so
-     return-position / multi-param dispatch routes to the impl the checker
-     picked.
+   - [RKey (key, reqs)]: the discriminating type is *concrete* at this site
+     (Phase 69).  `key` is the canonical impl key — `iface | pp_ty(type_args) |
+     name` — that eval matches against the key it tags each VMulti candidate
+     with, so return-position / multi-param dispatch routes to the impl the
+     checker picked.  `reqs` (Phase 83/84 #5) are the routes for *that impl's
+     own* `requires` constraints, recursively — so a structured runtime dict
+     (`VDict (key, [...])`) can carry the nested element dicts for a recursive
+     instance (`def : List (List Int)` → the `List` impl key plus a route for
+     its inner `Default (List Int)` requirement, itself the `List` key plus a
+     route for `Default Int`).  Empty `[]` for a t-dispatch route (where the
+     requires come from `res_impl_dicts` instead) and for an impl with no
+     `requires`.
    - [RDict dvar]: the discriminating type is the *enclosing function's*
      constrained type variable (Phase 69.x dictionary passing).  `dvar` is the
      name of the synthetic dictionary parameter that `dict_pass` inserts on that
@@ -58,7 +65,11 @@ type pat =
    `None` until both passes run; an unfilled ref means eval falls back to
    arg-tag dispatch (genuinely unconstrained-but-runtime-polymorphic code). *)
 type res_route =
-  | RKey     of string     (* concrete: select_impl_by_key this literal key *)
+  | RKey     of string * res_route list
+                           (* concrete: select_impl_by_key the literal key; the
+                              route list carries the selected impl's own
+                              `requires` routes recursively (Phase 83/84 #5,
+                              structured dicts), empty for a plain t-route *)
   | RDict    of ident      (* polymorphic: read this synthetic dict-param var *)
   | RHeadKey of string     (* head-concrete (Phase 69.x-c): the discriminating
                               param's head tycon is fixed but its args are free
@@ -94,6 +105,15 @@ type resolved = {
      List Tagged` → `[Arbitrary Tagged]`; `arbitrary : Int` → `[]`).  Empty on
      the untyped path. *)
   res_impl_dicts : res_route list;
+  (* Phase 83/84 #5: at a *forwarded* (RDict) return-position site — the inner
+     `def`/`empty` ref inside a parametric impl body, whose discriminating type is
+     a tyvar so the impl (and thus its requires) isn't known statically — eval
+     must splice in the *runtime* dict's own `requires` (the structured element
+     dicts the caller passed) as the selected impl's requires.  True only for
+     return-position RDict sites; false everywhere else (arg-position methods
+     dispatch by arg-tag and would be corrupted by extra leading dict args, and
+     ground RKey sites carry their requires statically in res_impl_dicts). *)
+  res_fwd_requires : bool;
 }
 
 (* String interpolation parts *)

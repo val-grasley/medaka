@@ -1,0 +1,8 @@
+-- Phase 79e binding-boundary escape: a nullary value performs <IO> (no arrow for
+-- unify to catch it) but is declared pure.  The escape check compares the body's
+-- inferred effects against the declared signature and rejects the excess.
+emit : String -> <IO> Unit
+emit s = emit s
+
+go : Unit
+go = emit "x"

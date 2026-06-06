@@ -1,4 +1,4 @@
--- Bytecode compiler + stack VM — STAGE2-DESIGN §2.2, SLICES 1–3.
+-- Bytecode compiler + stack VM — STAGE2-DESIGN §2.2, SLICES 1–5.
 --
 -- SLICE 1 (arithmetic + variables + application): literal constants, lexically-
 -- addressed variables, function application, primitive binary/unary operators,
@@ -21,23 +21,50 @@
 -- evalRange) is reused verbatim from eval.mdk — the step functions only route
 -- opcodes and call those helpers.
 --
--- REUSE DISCIPLINE (Axis 2 / §2.2): the VM still reuses eval.mdk's runtime
--- verbatim — Value, env, applyValue/dispatch/fall-through, matchPat, externs,
--- pp_value, and all slice-3 value helpers.  Zero eval.mdk changes — every name
--- used here was already exported.  Closures, letrec, let-groups, and typeclass
--- dispatch remain slices 4–5 (the compiler panics on them, naming the slice).
+-- SLICE 4 (closures / letrec / where-blocks): IMakeClosure (push a VClosureF
+-- closing over the current env, used for CLam), ILetBound (non-recursive let-in
+-- expression: evaluate rhs, bind to pattern, evaluate body in extended env),
+-- ILetRec (recursive let: create a cell, push a frame, evaluate rhs — which can
+-- reference the cell — back-patch the cell, evaluate body), and ILetGroup
+-- (where-block / local let-group: allocate cells for each binding, push a frame,
+-- install group values — VClosureF for parameterised, eager runChunk for nullary,
+-- VMulti for multi-clause — then run the body).  Replicates core_ir_eval's
+-- cevalLetGroup semantics exactly.  VThunk laziness stays at the TOP-LEVEL only
+-- (bcGroupValue / bcThunk); local let-groups mirror cevalLetGroup's cGroupValue,
+-- which evaluates nullary bindings eagerly.
+--
+-- SLICE 5 (typeclass dispatch from elaborated routes): IMethod (CMethod — return-
+-- position dispatch via RKey/RDict, mirrors core_ir_eval's `narrowMethod` arm) and
+-- IDict (CDict — constrained-function dict application, mirrors `applyDicts` arm).
+-- bcEvalProgram now installs typeclass impls as arg-tag VMultis BEFORE top-level
+-- groups, mirroring cevalProgram's install order.  bcImplBodyValue / bcImplMethodValue
+-- compile impl bodies to Chunks at install time (one compile per method clause, not
+-- per call), matching the VThunk / VClosureF / eta-expand patterns cImplMethodValue
+-- uses (Phase 121 point-free dispatch preserved).
+--
+-- REUSE DISCIPLINE (Axis 2 / §2.2): the VM reuses eval.mdk's runtime verbatim —
+-- Value, env, applyValue/dispatch/fall-through, matchPat, narrowMethod/routeTag/
+-- applyDicts, coalesceImpls, externs, pp_value, all slice-3 value helpers, and
+-- the import-frame machinery (importFrameOf/pubReexports).  Zero eval.mdk or
+-- core_ir_eval.mdk changes — every reused name was already exported.
+-- Slice 6 (multi-module per-module frames — bcEvalModules/bcEvalModulesOutput)
+-- is implemented at the bottom of this file.
 
-import ast.{Lit(..), Pat(..), Addr(..)}
-import core_ir.{CExpr(..), CStmt(..), CProgram(..), CBind(..), CClause(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..), CField(..)}
+import ast.{Lit(..), Pat(..), Addr(..), Route(..), Decl}
+import core_ir.{CExpr(..), CStmt(..), CProgram(..), CBind(..), CClause(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..), CField(..), CImplEntry(..), CImplBody(..)}
+import core_ir_lower.{lowerGroups, lowerImplsWith}
 import util.{listLen, concatMapList}
 import eval.{
   Value(..), EvalEnv(..),
-  lookupEnv, extendEnv, applyValue, matchPat, startsWithAt,
+  lookupEnv, extendEnv, pushFrame, applyValue, matchPat, startsWithAt,
   evalArith, evalUnop, consVal, appendVal,
   boolSeeds, externBindings, makeCtor, installConsts, cellResult,
   lookupBinding, isNullary, force, ppValue, ctorToTypeRef,
   evalIndex, evalSlice, evalRange, rangeListMk, rangeArrayMk,
-  evalRecordUpdate, evalValueField, evalField
+  evalRecordUpdate, evalValueField, evalField,
+  narrowMethod, routeTag, applyDicts, coalesceImpls, nub,
+  buildCtorToType, collectCtors, buildIfaceDispatch, implMethodNames,
+  importFrameOf, pubReexports, outputRef
 }
 
 -- ── compiled arm/guard types (slice 2) ────────────────────────────────────
@@ -54,7 +81,15 @@ public export data BcGuard
 -- at the leaf), its compiled guards, and its compiled body.
 public export data BcArm = BcArm Pat (List BcGuard) Chunk
 
--- ── the instruction set (slices 1–3 ISA) ──────────────────────────────────
+-- ── let-group compiled binding types (slice 4) ────────────────────────────
+-- BcLetClause: one clause of a local let-group binding, pre-compiled to a Chunk
+-- (matching CClause's structure but with the body pre-compiled).
+-- BcLetBind: one named binding in a local where-block / let-group (analogous to
+-- CBind but with pre-compiled bodies).  Used by ILetGroup.
+public export data BcLetClause = BcLetClause (List Pat) Chunk
+public export data BcLetBind = BcLetBind String (List BcLetClause)
+
+-- ── the instruction set (slices 1–5 ISA) ──────────────────────────────────
 public export data Instr
   -- slice 1 ─────────────────────────────────────────────────────────────────
   = IPushLit Lit          -- push a literal value
@@ -87,6 +122,30 @@ public export data Instr
   | IRangeArray Bool                -- pop hi, pop lo → evalRange lo hi incl rangeArrayMk
   | IIndex                          -- pop i, pop container → evalIndex container i
   | ISlice Bool                     -- pop hi, pop lo, pop container → evalSlice
+  -- slice 4: closures / letrec / where-blocks ────────────────────────────────
+  -- IMakeClosure: push a VClosureF closing over the current env.  The body is
+  -- pre-compiled to a Chunk; each application runs the prebuilt bytecode.
+  | IMakeClosure (List Pat) Chunk
+  -- ILetBound: non-recursive let-in expression.  Runs the rhs chunk in the
+  -- current env, binds the result to pat, runs the body chunk in the extended
+  -- env, pushes the result.  Original env is unmodified for subsequent instrs.
+  | ILetBound Pat Chunk Chunk
+  -- ILetRec: recursive let — creates a cell, pushes a frame containing the name,
+  -- evaluates the rhs chunk (which can reference the name via the new frame),
+  -- back-patches the cell, evaluates the body chunk, pushes the result.
+  | ILetRec String Chunk Chunk
+  -- ILetGroup: where-block / local let-group.  Allocates Ref cells for each
+  -- binding, pushes a frame, installs group values (closures for parameterised
+  -- clauses, eager runChunk for nullary single-clause, VMulti for multi-clause),
+  -- evaluates the body chunk in the group env, pushes the result.
+  | ILetGroup (List BcLetBind) Chunk
+  -- slice 5: typeclass dispatch from elaborated routes ──────────────────────
+  -- IMethod: return-position dispatch (CMethod).  Looks up the name, narrows
+  -- the VMulti to the impl whose tag matches the route's resolved key.
+  | IMethod String Route
+  -- IDict: constrained-fn dict application (CDict).  Looks up the name, applies
+  -- one VDict argument per route as a leading parameter.
+  | IDict String (List Route)
 
 -- a compiled chunk: the instruction stream as an array, so the VM fetches by an
 -- O(1) instruction-pointer index (the "bytecode" the VM interprets).
@@ -122,8 +181,22 @@ compile (CRangeList lo hi incl) = compile lo ++ compile hi ++ [IRangeList incl]
 compile (CRangeArray lo hi incl) = compile lo ++ compile hi ++ [IRangeArray incl]
 compile (CIndex a i) = compile a ++ compile i ++ [IIndex]
 compile (CSlice a lo hi incl) = compile a ++ compile lo ++ compile hi ++ [ISlice incl]
+-- ── slice 4: closures / letrec / where-blocks ─────────────────────────────
+-- CLam: push a VClosureF capturing the current env.  The body is compiled once
+-- here; every application runs the prebuilt chunk, not a re-compilation.
+compile (CLam pats body) = [IMakeClosure pats (compileChunk body)]
+-- CLet rec (always PVar): create a back-patched cell so the rhs can reference
+-- the binding (e.g. a recursive lambda), then evaluate the body.
+compile (CLet True (PVar f) e1 e2) = [ILetRec f (compileChunk e1) (compileChunk e2)]
+-- CLet non-rec (or unusual rec form): evaluate rhs, bind to pattern, body.
+compile (CLet _ pat e1 e2) = [ILetBound pat (compileChunk e1) (compileChunk e2)]
+-- CLetGroup: where-block / local mutually-recursive group.
+compile (CLetGroup binds body) = [ILetGroup (map compileBcLetBind binds) (compileChunk body)]
+-- ── slice 5: typeclass dispatch ────────────────────────────────────────────
+compile (CMethod name route) = [IMethod name route]
+compile (CDict name routes) = [IDict name routes]
 compile other =
-  panic ("bytecode compile: unsupported node (deferred to a later slice) — " ++ cNodeTag other)
+  panic ("bytecode compile: unhandled CExpr node — " ++ cNodeTag other)
 
 -- ── slice 2 compile helpers ────────────────────────────────────────────────
 compileBcArm : CArm -> BcArm
@@ -139,6 +212,13 @@ compileCField (CField _ e) = compile e
 
 cFieldName : CField -> String
 cFieldName (CField k _) = k
+
+-- ── slice 4 compile helpers ────────────────────────────────────────────────
+compileBcLetBind : CBind -> BcLetBind
+compileBcLetBind (CBind n clauses) = BcLetBind n (map compileBcLetClause clauses)
+
+compileBcLetClause : CClause -> BcLetClause
+compileBcLetClause (CClause pats body) = BcLetClause pats (compileChunk body)
 
 -- a conditional, with relative jumps over the then/else segments.  Layout:
 --   cond | IJumpFalse(t+2) | then(t) | IJump(e+1) | else(e)
@@ -269,6 +349,31 @@ step code ip stack env (ISlice incl) = match popN 3 stack
   ([container, lo, hi], rest) =>
     runLoop code (ip + 1) (evalSlice container lo hi incl :: rest) env
   _ => panic "bytecode VM: ISlice stack underflow"
+-- ── slice 4: closures / letrec / where-blocks ─────────────────────────────
+step code ip stack env (IMakeClosure pats ch) =
+  runLoop code (ip + 1) (VClosureF env pats (e => runChunk e ch) :: stack) env
+step code ip stack env (ILetBound pat rhsCh bodyCh) =
+  let rhs = runChunk env rhsCh
+  match matchPat pat rhs
+    None => panic "bytecode VM: ILetBound pattern match failure"
+    Some binds =>
+      runLoop code (ip + 1) (runChunk (extendEnv env binds) bodyCh :: stack) env
+step code ip stack env (ILetRec f rhsCh bodyCh) =
+  let cell = Ref VUnit
+  let recEnv = pushFrame env [(f, cell)]
+  let v = runChunk recEnv rhsCh
+  let _ = set_ref cell v
+  runLoop code (ip + 1) (runChunk recEnv bodyCh :: stack) env
+step code ip stack env (ILetGroup binds bodyCh) =
+  let cells = map bcLetBindCell binds
+  let grpEnv = pushFrame env cells
+  let _ = bcInstallLetBinds grpEnv cells binds
+  runLoop code (ip + 1) (runChunk grpEnv bodyCh :: stack) env
+-- ── slice 5: typeclass dispatch from elaborated routes ──────────────────────
+step code ip stack env (IMethod name route) =
+  runLoop code (ip + 1) (narrowMethod (lookupEnv env name) (routeTag env route) :: stack) env
+step code ip stack env (IDict name routes) =
+  runLoop code (ip + 1) (applyDicts env (lookupEnv env name) routes :: stack) env
 
 -- pop n items from stack, returning them in SOURCE order (the fold-back un-
 -- reverses the push order so item[0] was pushed first).
@@ -437,6 +542,31 @@ bcNthArm (a::_) 0 = Some a
 bcNthArm (_::rest) n = bcNthArm rest (n - 1)
 bcNthArm [] _ = None
 
+-- ── slice 4: let-group step helpers ────────────────────────────────────────
+-- Allocates one fresh ref cell for a named let-group binding (installed later
+-- by bcInstallLetBinds).  Mirrors cevalLetGroup's cell allocation pattern.
+bcLetBindCell : BcLetBind -> (String, Ref Value)
+bcLetBindCell (BcLetBind name _) = (name, Ref VUnit)
+
+-- Produces the Value for one named let-group binding from its compiled clauses.
+-- Mirrors cGroupValue (core_ir_eval): nullary single-clause → eager runChunk,
+-- parameterised single-clause → VClosureF, multi-clause → VMulti.
+bcLetGroupValue : EvalEnv -> List BcLetClause -> <Mut> Value
+bcLetGroupValue env [(BcLetClause [] ch)] = runChunk env ch
+bcLetGroupValue env [(BcLetClause pats ch)] = VClosureF env pats (e => runChunk e ch)
+bcLetGroupValue env clauses = VMulti (map (bcLetClauseClosure env) clauses)
+
+bcLetClauseClosure : EvalEnv -> BcLetClause -> Value
+bcLetClauseClosure env (BcLetClause pats ch) = VClosureF env pats (e => runChunk e ch)
+
+-- Installs each binding's value into its ref cell in the group env.  Must run
+-- AFTER pushFrame so the group env is already visible to each closure body.
+bcInstallLetBinds : EvalEnv -> List (String, Ref Value) -> List BcLetBind -> <Mut> Unit
+bcInstallLetBinds _ _ [] = ()
+bcInstallLetBinds env cells ((BcLetBind name clauses)::rest) =
+  let _ = set_ref (findCellByName cells name) (bcLetGroupValue env clauses)
+  bcInstallLetBinds env cells rest
+
 -- ── program driver ──────────────────────────────────────────────────────────
 -- Mirror of core_ir_eval.cevalProgram, but each top-level binding's clause
 -- bodies are COMPILED to chunks and installed as VClosureF/VThunk values whose
@@ -451,18 +581,20 @@ bcEvalMain prog = match lookupBinding "main" (bcEvalProgram prog)
   None => panic "bytecode eval: no `main` binding"
 
 bcEvalProgram : CProgram -> <Mut> List (String, Value)
-bcEvalProgram (CProgram groups ctorArs ctorToType _impls) =
+bcEvalProgram (CProgram groups ctorArs ctorToType implEntries) =
   let _ = set_ref ctorToTypeRef ctorToType
   let ctors = map bcCtorBinding ctorArs
   let allNames = map fst boolSeeds
     ++ map fst externBindings
     ++ map fst ctors
     ++ map bcBindName groups
+    ++ bcImplMethodNames implEntries
   let cells = map (n => (n, Ref VUnit)) allNames
   let env = EvalEnv [cells]
   let _ = installConsts cells boolSeeds
   let _ = installConsts cells externBindings
   let _ = installConsts cells ctors
+  let _ = installConsts cells (coalesceImpls (map (bcImplEntryValue env) implEntries))
   let _ = bcInstallGroups env cells groups
   map cellResult cells
 
@@ -506,11 +638,133 @@ bcClosure env pats body =
   let ch = compileChunk body
   VClosureF env pats (e => runChunk e ch)
 
--- ── readable tag for the still-deferred nodes (slice 4 / 5 panics) ─────────
+-- ── slice 5: typeclass impl install helpers ─────────────────────────────────
+-- Mirrors core_ir_eval's cImplMethodValue / cevalProgram impl-install path.
+-- All impl bodies are compiled to Chunks at install time (once per method
+-- clause, not per call).
+
+bcImplMethodNames : List CImplEntry -> List String
+bcImplMethodNames entries = nub (map bcImplEntryName entries)
+
+bcImplEntryName : CImplEntry -> String
+bcImplEntryName (CImplEntry n _ _) = n
+
+bcImplEntryValue : EvalEnv -> CImplEntry -> (String, (Int, Value))
+bcImplEntryValue env (CImplEntry name score body) = (name, (score, bcImplBodyValue env body))
+
+bcImplBodyValue : EvalEnv -> CImplBody -> Value
+bcImplBodyValue env (CImplTagged tag iface positions pats body) =
+  VTypedImpl tag iface positions 0 (bcImplMethodValue env positions pats body)
+bcImplBodyValue env (CImplDefault pats body) = bcImplMethodValue env [] pats body
+
+bcNullList : List a -> Bool
+bcNullList [] = True
+bcNullList _ = False
+
+-- Return-position nullary: VThunk (lazy, like bcThunk).
+-- Dispatch-position nullary: eta-expand so the dispatch engine has a fn to apply.
+-- Parameterised: VClosureF with pre-compiled body chunk.
+bcImplMethodValue : EvalEnv -> List Int -> List Pat -> CExpr -> Value
+bcImplMethodValue env positions [] body
+  | bcNullList positions =
+    let ch = compileChunk body
+    VThunk (_ => runChunk env ch)
+  | otherwise =
+    let ch = compileChunk (CApp body (CVar "$eta" AGlobal))
+    VClosureF env [PVar "$eta"] (e => runChunk e ch)
+bcImplMethodValue env _ pats body =
+  let ch = compileChunk body
+  VClosureF env pats (e => runChunk e ch)
+
+-- ── readable tag for unhandled CExpr nodes ─────────────────────────────────
 cNodeTag : CExpr -> String
-cNodeTag (CLam _ _) = "CLam (closure — slice 4)"
-cNodeTag (CLet _ _ _ _) = "CLet (let/letrec — slice 4)"
-cNodeTag (CLetGroup _ _) = "CLetGroup (where/letrec — slice 4)"
-cNodeTag (CMethod _ _) = "CMethod (typeclass dispatch — slice 5)"
-cNodeTag (CDict _ _) = "CDict (dict-passing — slice 5)"
-cNodeTag _ = "?"
+cNodeTag _ = "unknown CExpr node"
+
+-- ── slice 6: multi-module per-module frames ────────────────────────────────
+-- Mirror of cevalModules in core_ir_eval.mdk — the loader-driven bytecode VM
+-- path.  Structure matches cevalModules EXACTLY (prelude installs globally,
+-- each module's lowered CBind groups install into its own local frame, ctors +
+-- impls coalesce globally) with one swap: `bcInstallGroups` (bytecode VM, uses
+-- bcGroupValue) in place of `cInstallTopGroups` (ceval, uses cTopGroupValue).
+-- Zero eval.mdk / core_ir_eval.mdk changes — all helpers already exported.
+
+data BcModInfo = BcModInfo String (List Decl) (List CBind) (List CImplEntry) (List (String, Ref Value)) EvalEnv
+
+export
+bcEvalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
+bcEvalModules preludeDecls modules =
+  let moduleDecls = concatMapList snd modules
+  let allDecls = preludeDecls ++ moduleDecls
+  let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
+  let disp = buildIfaceDispatch allDecls
+  let ctors = collectCtors allDecls
+  let preludeGroups = lowerGroups preludeDecls
+  let preludeImpls = lowerImplsWith disp preludeDecls
+  let globalNames = map fst boolSeeds ++ map fst externBindings ++ map fst ctors ++ implMethodNames allDecls ++ map bcBindName preludeGroups
+  let globalCells = map (n => (n, Ref VUnit)) globalNames
+  let globalEnv = EvalEnv [globalCells]
+  let mods = bcBuildModInfos disp globalCells [] modules
+  let implEntries = map (bcImplEntryValue globalEnv) preludeImpls ++ concatMapList bcModImplValues mods
+  let _ = installConsts globalCells boolSeeds
+  let _ = installConsts globalCells externBindings
+  let _ = installConsts globalCells ctors
+  let _ = installConsts globalCells (coalesceImpls implEntries)
+  let _ = bcInstallGroups globalEnv globalCells preludeGroups
+  let _ = bcInstallModGroups mods
+  bcRootLocals mods
+
+-- pass 1: lower + allocate each module's local cells and build its env (imports
+-- resolved against already-processed modules, since loader order is
+-- dependency-first).  Mirror of cBuildModInfos in core_ir_eval.mdk.
+bcBuildModInfos : List ((String, String), List Int) -> List (String, Ref Value) -> List (String, List (String, Ref Value)) -> List (String, List Decl) -> List BcModInfo
+bcBuildModInfos _ _ _ [] = []
+bcBuildModInfos disp globalCells exportsMap ((mid, decls)::rest) =
+  let cbinds = lowerGroups decls
+  let cimpls = lowerImplsWith disp decls
+  let localCells = map (n => (n, Ref VUnit)) (map bcBindName cbinds)
+  let imports = importFrameOf exportsMap decls
+  let menv = EvalEnv [localCells, imports, globalCells]
+  let exports = localCells ++ pubReexports exportsMap decls
+  BcModInfo mid decls cbinds cimpls localCells menv :: bcBuildModInfos disp globalCells ((mid, exports)::exportsMap) rest
+
+-- a module's impl methods / interface defaults close over ITS env but coalesce
+-- into the shared global VMulti (mirror of cModImplValues in core_ir_eval.mdk)
+bcModImplValues : BcModInfo -> <Mut> List (String, (Int, Value))
+bcModImplValues (BcModInfo _ _ _ cimpls _ menv) = map (bcImplEntryValue menv) cimpls
+
+-- pass 2: install each module's groups into its own cells (its env)
+bcInstallModGroups : List BcModInfo -> <Mut> Unit
+bcInstallModGroups [] = ()
+bcInstallModGroups ((BcModInfo _ _ cbinds _ cells menv)::rest) =
+  let _ = bcInstallGroups menv cells cbinds
+  bcInstallModGroups rest
+
+-- the root module is last in dependency order; its locals hold `main`
+bcRootLocals : List BcModInfo -> <Mut> List (String, Value)
+bcRootLocals [] = []
+bcRootLocals [BcModInfo _ _ _ _ cells _] = map cellResult cells
+bcRootLocals (_::rest) = bcRootLocals rest
+
+bcRunMainForEffect : List (String, Value) -> <Mut> Value
+bcRunMainForEffect binds = match lookupBinding "main" binds
+  Some v => force v
+  None => VUnit
+
+-- True-execution (stdout) path for a compiled CProgram: evaluate the program,
+-- force `main` for its IO side-effects, return the captured output.  Mirrors
+-- cevalOutput from core_ir_eval.mdk but drives the bytecode VM instead.
+export
+bcEvalOutput : CProgram -> <Mut> String
+bcEvalOutput prog =
+  let _ = set_ref outputRef ""
+  let binds = bcEvalProgram prog
+  let _ = bcRunMainForEffect binds
+  outputRef.value
+
+export
+bcEvalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
+bcEvalModulesOutput preludeDecls modules =
+  let _ = set_ref outputRef ""
+  let binds = bcEvalModules preludeDecls modules
+  let _ = bcRunMainForEffect binds
+  outputRef.value

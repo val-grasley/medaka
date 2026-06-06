@@ -24,8 +24,9 @@ addrSexp AGlobal = "AGlobal"
 export
 routeSexp : Route -> String
 routeSexp RNone = "RNone"
-routeSexp (RKey k) = node "RKey" [escStr k]
+routeSexp (RKey k _) = node "RKey" [escStr k]
 routeSexp (RDict d) = node "RDict" [escStr d]
+routeSexp (RDictFwd d) = node "RDictFwd" [escStr d]
 
 -- ── CExpr ─────────────────────────────────────────────────────────────────────
 

@@ -1,0 +1,7 @@
+-- let-bindings, comparison, and if/else (single-line; the tagged-int condition
+-- is untagged and tested != 0).
+main =
+  let x = 10
+  let y = 4
+  let big = if x > y then x - y else y - x
+  big * 2 + (if x == 10 then 1 else 0)

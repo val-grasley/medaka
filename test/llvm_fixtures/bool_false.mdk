@@ -1,0 +1,2 @@
+-- a Bool result that comes out false (exercises >= and && short-circuit).
+main = (3 >= 4) && (1 == 1)
