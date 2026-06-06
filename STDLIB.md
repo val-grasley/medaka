@@ -927,7 +927,7 @@ must list.
 |------|-------------|---------------|-------------|
 | **P — Pure** | (none) | Referentially transparent; no host interaction; byte-identical on every target | Every target |
 | **M — Local mutation** | `<Mut>` | Heap-local in-place mutation; no host interaction, no observable side effect outside the process | Every target (Wasm supports local heap mutation) |
-| **H — Host capability** | `<IO>`, `<Rand>`, `<Panic>`, `<Time>`, user-defined | Requires the host to provide and grant the capability; gated by the capability manifest | Only where the manifest grants it |
+| **H — Host capability** | `<IO>`, `<Rand>`, `<Exit>`, `<Time>`, user-defined | Requires the host to provide and grant the capability; gated by the capability manifest | Only where the manifest grants it |
 
 Tiers P and M together are the **capability-free core**: a module that stays
 within P+M can be loaded on any target without any manifest grant.  The
@@ -995,7 +995,7 @@ structures needs no manifest entries at all.
 | `readFile`, `writeFile`, `appendFile`, `fileExists`, `listDir` | `<IO>` | `<Fs>` | Filesystem |
 | `args` | `<IO>` | `<Args>` | Process argument vector |
 | `getEnv` | `<IO>` | `<Env>` | Environment variables |
-| `exit` | `<Panic>` | `<Panic>` | (already fine-grained) |
+| `exit` | `<Panic>` | **`<Exit>`** | Process termination — a genuine withholdable capability; distinct from `panic` (see Design resolution below) |
 | `randomInt`, `randomBool`, `randomFloat`, `randomChar`, `setSeed` | `<Rand>` | `<Rand>` | (already fine-grained) |
 | `wallTimeSec` | `<IO>` | **`<Time>`** | Wall-clock read is a distinct capability; the `<Time>` built-in label exists for this |
 | `allocBytes` | `<IO>` | `<Perf>` or keep `<IO>` | GC profiling escape hatch; very low priority |
@@ -1006,28 +1006,44 @@ structures needs no manifest entries at all.
 |--------|-------|-------|
 | `assert_snapshot` | `<IO>` | Used only by the snapshot test harness |
 
-### Design gap — `panic : String -> a`
+### Design resolution — `panic` vs `exit` (2026-06-06)
 
-`panic` currently carries **no effect label** despite being an unconditional
-abort.  This differs from `exit : Int -> <Panic> Unit` because `panic` has
-return type `a` (never returns), allowing it to unify at any position without
-a `<Panic>` context.  Adding `<Panic>` would require every expression context
-that uses `panic` (bounds checks, exhaustiveness sentinels, stdlib internals)
-to carry `<Panic>` in its row.
+`panic` and `exit` were both labelled `<Panic>`, but they are different kinds
+of thing, and conflating them is the source of the confusion:
 
-**Two resolution paths before manifest emission:**
+| | `panic : String -> a` | `exit : Int -> <…> Unit` |
+|---|---|---|
+| Kind | **trap / abort** (partiality) | **process termination** (process control) |
+| Catchable in-runtime | yes — `runExpectation` catches `Eval_error`/`Impl_no_match` | no — terminates the process |
+| Can the host withhold it? | **no** — the host can only choose what happens *on* abort, not make abort not-happen | **yes** — a plugin that can kill the host process is a real sandbox-escape concern |
+| Belongs in the manifest? | no | yes |
 
-1. Tag `panic` as `String -> <Panic> a` and update affected call sites. Most
-   internal uses are in functions that already perform `<IO>` or `<Mut>`, so
-   the ripple is narrower than it looks.
-2. Treat `<Panic>` as always-subsumed in the manifest (every module can panic;
-   hardware faults can too) and exclude it from capability gating — granting
-   it implicitly.  This preserves `panic`'s current untagged form.
+The test that defines tier H is "something the platform must explicitly
+grant." `exit` passes it; `panic` does not.
 
-Path 2 is simpler and consistent with how panic is treated in WASI (always
-available; untrappable from the host).  Path 1 is the principled capability
-answer if panic isolation is ever a requirement (e.g. "pure sandbox that
-cannot abort the host process").  **Decision needed before manifest emission.**
+**Resolution:**
+
+1. **`panic` stays untagged** (`String -> a`). Partiality is not a host
+   capability — it is a property of nearly every partial function (non-exhaustive
+   matches, bounds checks, exhaustiveness sentinels, dispatch-failure paths).
+   Threading `<Panic>` through all of them would make it the most common label
+   in the codebase and **dilute the signal of the labels that actually gate**
+   (`<Fs>`, `<Stdout>`, `<Rand>`), while breaking the clean "tier P is
+   effect-free" story (`list`/`string`/`map`/`set` are full of partial ops).
+   This is the standard call (Haskell `error :: String -> a`, ML `failwith`).
+   Treat `panic` as always-subsumed and exclude it from capability gating —
+   consistent with WASI trap semantics (always available, untrappable from the
+   host).
+
+2. **`exit` gets its own gated label** — rename `<Panic>` → `<Exit>` (process
+   control). This is genuinely withholdable: a logging plugin granted
+   `{Stdout}` must **not** be able to `exit` the host, which only works if
+   `exit` carries a distinct, gated label.
+
+3. **A "cannot abort" / totality guarantee**, if ever required (e.g. a pure
+   sandbox that must not abort the host), is a *separate optional totality
+   analysis* — not an effect-row capability. Bolting partiality onto the
+   capability row makes both worse; that payoff is rare and can wait.
 
 ### Target profiles
 
@@ -1036,7 +1052,7 @@ cannot abort the host process").  **Decision needed before manifest emission.**
 | Pure sandbox | P only | none — all computation, no I/O or mutation |
 | General compute | P + M | none — data structures + algorithms freely |
 | Edge / plugin | P + M + selected H | per-deployment manifest: e.g. `{Stdout, Fetch}` for a logging transform; `{Stdout, KV}` for a cache-layer plugin |
-| General-purpose native | P + M + all H | all built-in labels; user programs use IO/Rand/Panic freely |
+| General-purpose native | P + M + all H | all built-in labels; user programs use IO/Rand/Exit freely |
 
 ### Label refinement roadmap
 
@@ -1050,8 +1066,9 @@ before codegen).  The remaining steps, in priority order:
    `<Stdout>`, `<Stderr>`, `<Stdin>`, `<Fs>`, `<Args>`, `<Env>`.  Required
    for useful fine-grained edge manifests (a logging plugin needs `<Stdout>`
    but must not get `<Fs>`).  Coordinate with test fixture updates.
-3. **`panic` design gap** — pick path 1 or 2 above; apply before manifest
-   emission.
+3. **`panic`/`exit` split** — `panic` stays untagged (excluded from gating);
+   `exit` relabelled `<Panic>` → `<Exit>` as a real gated capability. See
+   "Design resolution" above. Apply before manifest emission.
 4. **Cross-module effect label export** — `pub effect Fetch` declared in a
    platform SDK module must be visible across the loader boundary (deferred in
    Phase 146 gap 2 §3a).  Needed for multi-module platform SDKs.
