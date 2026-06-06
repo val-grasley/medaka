@@ -1,0 +1,4 @@
+-- Non-exhaustive match over a list: the cons case is uncovered.
+firstOr : List Int -> Int
+firstOr xs = match xs
+  [] => 0

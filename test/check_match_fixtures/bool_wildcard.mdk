@@ -1,0 +1,5 @@
+-- Exhaustive control: a wildcard arm covers the rest, so NO warning.
+toInt : Bool -> Int
+toInt b = match b
+  True => 1
+  _ => 0

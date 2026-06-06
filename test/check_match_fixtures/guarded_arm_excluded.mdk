@@ -1,0 +1,9 @@
+-- A guarded arm is excluded from the exhaustiveness matrix (its guard may fail
+-- at runtime), so even though `Blue` appears textually, it is uncovered.
+data Color = Red | Green | Blue
+
+f : Color -> Int
+f c = match c
+  Red => 1
+  Green => 2
+  Blue if True => 3

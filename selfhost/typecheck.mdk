@@ -13,6 +13,11 @@
 
 import ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), DataVis(..), Decl(..)}
 import desugar.{mapProg}
+-- The type-aware non-exhaustive-`match` check (`check_match` in lib/exhaust.ml)
+-- reuses the Maranget matrix machinery already ported in exhaust.mdk — the only
+-- difference from the guard-coverage pass is the ctor oracle (here it comes from
+-- the typechecked program's data decls + the inferred scrutinee type).
+import exhaust.{Oracle, buildOracle, useful, desugarPat, tupleCtorName}
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
 public export data Mono
@@ -137,6 +142,20 @@ typeErrors = Ref []
 
 occursCheckFailed : Ref Bool
 occursCheckFailed = Ref False
+
+-- ── non-exhaustive-match warning accumulator (the type-aware `check_match`) ──
+-- `inferMatch` pushes a warning here for every `match` whose non-guarded arms
+-- don't cover the scrutinee's type.  `matchOracle` is the ctor oracle the matrix
+-- recursion consults; the `checkMatchToLines` driver sets it from the program's
+-- data decls (so it sees the same user + builtin ctors check_match does) before
+-- inference runs.  Neither is touched by `resetState` — the driver seeds them and
+-- reads `matchWarnings` after the typecheck pass; runs that ignore match warnings
+-- (the schemes/selfproc paths) simply never read it.
+matchWarnings : Ref (List String)
+matchWarnings = Ref []
+
+matchOracle : Ref Oracle
+matchOracle = Ref (buildOracle [])
 
 resetState : Unit -> <Mut> Unit
 resetState _ =
@@ -1033,7 +1052,42 @@ inferMatch : TcEnv -> Mono -> List Arm -> <Mut> Mono
 inferMatch env scrutTy arms =
   let result = freshVar ()
   let _ = inferArms env scrutTy result arms
+  -- Type-aware exhaustiveness (`check_match`): run AFTER the arms have unified
+  -- the scrutinee type, so `scrutTy` is fully resolved when we read its head.
+  let _ = checkMatchExhaustive scrutTy arms
   result
+
+-- The non-exhaustive-`match` warning, byte-for-byte with lib/exhaust.ml's
+-- `check_match` (note the em-dash).  The redundancy pass is not ported — only
+-- the exhaustiveness warning, which is what the --check-match oracle dumps.
+nonExhaustiveMatchWarning : String
+nonExhaustiveMatchWarning = "Warning: non-exhaustive match — some values may not be covered"
+
+-- Warn if an all-wildcard query is still useful against the matrix of the
+-- non-guarded arms — i.e. some scrutinee value escapes every arm.  Guarded arms
+-- are excluded (their guard may fail at runtime), matching the reference.
+checkMatchExhaustive : Mono -> List Arm -> <Mut> Unit
+checkMatchExhaustive scrutTy arms =
+  let rows = nonGuardedRows arms
+  if useful matchOracle.value (matchCol0Type scrutTy) rows [PWild] then
+    set_ref matchWarnings (nonExhaustiveMatchWarning :: matchWarnings.value)
+  else ()
+
+-- one single-column matrix row per non-guarded arm (its desugared pattern)
+nonGuardedRows : List Arm -> List (List Pat)
+nonGuardedRows [] = []
+nonGuardedRows (Arm pat [] _ :: rest) = [desugarPat pat] :: nonGuardedRows rest
+nonGuardedRows (Arm _ _ _ :: rest) = nonGuardedRows rest
+
+-- the head type name of the scrutinee, for the matrix's column-0 oracle: a
+-- TCon/TApp head gives the type name; a tuple has no TCon head, so it maps to a
+-- synthetic per-arity tuple type (mirrors the reference's col0_type).
+matchCol0Type : Mono -> Option String
+matchCol0Type ty = match headTyconMono ty
+  Some n => Some n
+  None => match normalize ty
+    TTuple ts => Some (tupleCtorName (lengthL ts))
+    _ => None
 
 inferArms : TcEnv -> Mono -> Mono -> List Arm -> <Mut> Unit
 inferArms _ _ _ [] = ()
@@ -1967,6 +2021,21 @@ checkToLinesWithRuntime runtimeDecls prog =
   match errs
     [] => joinNl (schemeLines schemes)
     _ => joinNl (typeErrorLines errs)
+
+-- ── type-aware non-exhaustive-match check (the `check_match` driver) ────────
+-- Run the full typecheck pass over [prog] (runtime externs seeded, NO prelude —
+-- mirrors the reference's check_program_no_prelude oracle) and return one
+-- `Warning: non-exhaustive match …` line per `match` that isn't exhaustive.
+-- The oracle is built from the program's own data decls + the syntactic builtins
+-- (same set check_match's env-backed oracle has in the no-prelude path).  Diffs
+-- against `dev/diagdump.exe --check-match` (the harness sorts).
+export
+checkMatchToLines : List Decl -> List Decl -> <Mut> String
+checkMatchToLines runtimeDecls prog =
+  let _ = set_ref matchWarnings []
+  let _ = set_ref matchOracle (buildOracle prog)
+  let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
+  joinNl (revLL matchWarnings.value)
 
 -- ── multi-module typecheck (bootstrap front-end) ───────────────────────────
 -- Threads per-module exports in dependency order.  The prelude (core) is checked
