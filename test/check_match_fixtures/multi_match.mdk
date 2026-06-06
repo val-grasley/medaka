@@ -1,0 +1,11 @@
+-- Two distinct non-exhaustive matches in one file → two warnings (the harness
+-- sorts; both lines are identical).
+data Color = Red | Green | Blue
+
+f : Color -> Int
+f c = match c
+  Red => 1
+
+g : Bool -> Int
+g b = match b
+  False => 0

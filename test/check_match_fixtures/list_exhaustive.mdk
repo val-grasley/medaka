@@ -1,0 +1,5 @@
+-- Exhaustive control: both `[]` and cons are covered, so NO warning.
+firstOr : List Int -> Int
+firstOr xs = match xs
+  [] => 0
+  y :: _ => y

@@ -2,12 +2,17 @@
    pipeline stage's DIAGNOSTICS, so the self-hosted stage can be diffed against
    the OCaml reference (the resolve/exhaust analogue of astdump).
 
-   Usage: diagdump (--resolve | --exhaust) <file.mdk>
+   Usage: diagdump (--resolve | --exhaust | --check-match) <file.mdk>
           diagdump --resolve-modules <mod1.mdk> [mod2.mdk ...]
      --resolve : parse → Desugar → Resolve.resolve_program, dump the error list
                  as S-expressions (constructor + args; locations dropped).
      --exhaust : parse → Exhaust.check_guard_exhaustiveness (on the RAW,
                  pre-desugar AST), dump the warning strings verbatim.
+     --check-match : parse → Desugar → Typecheck.check_program_no_prelude (the
+                 type-aware path; runtime externs seeded, NO prelude), dump ONLY
+                 the non-exhaustive-MATCH warnings (Exhaust.check_match, fired
+                 per EMatch from typecheck) — guard / clause / redundancy
+                 warnings are filtered out.  Location prefix stripped.
      --resolve-modules : the MULTI-MODULE resolve path (Resolve.resolve_module).
                  Takes an ordered list of files (caller supplies dependency-first
                  order, like the loader would), threads resolve_module over them
@@ -70,7 +75,28 @@ let sexp_error : Resolve.error -> string = function
   | Resolve.AsPatternMisplaced       -> "AsPatternMisplaced"
   | Resolve.NonRecursiveValueLet n   -> node "NonRecursiveValueLet" [esc_str n]
 
-type mode = Resolve_m | Exhaust_m | ResolveModules_m
+type mode = Resolve_m | Exhaust_m | CheckMatch_m | ResolveModules_m
+
+(* Strip the "file:line:col: " location prefix from a warning.  Every warning is
+   "<loc>Warning: <msg>", so keep from the first "Warning:" (matches the
+   --exhaust path; the self-hosted AST drops locations). *)
+let strip_warning_loc s =
+  let needle = "Warning:" in
+  let n = String.length s and m = String.length needle in
+  let rec find i =
+    if i + m > n then s
+    else if String.sub s i m = needle then String.sub s i (n - i)
+    else find (i + 1)
+  in find 0
+
+(* substring containment test (no stdlib String.is_substring in this OCaml). *)
+let contains_sub hay needle =
+  let n = String.length hay and m = String.length needle in
+  let rec find i =
+    if i + m > n then false
+    else if String.sub hay i m = needle then true
+    else find (i + 1)
+  in find 0
 
 (* parse a file into a (pre-desugar) program, failing loudly on a parse error *)
 let parse_file path =
@@ -92,12 +118,13 @@ let () =
     else match a with
       | "--resolve"         -> mode := Some Resolve_m
       | "--exhaust"         -> mode := Some Exhaust_m
+      | "--check-match"     -> mode := Some CheckMatch_m
       | "--resolve-modules" -> mode := Some ResolveModules_m
       | _                   -> files := a :: !files) Sys.argv;
   let files = List.rev !files in
   let mode = match !mode with
     | Some m -> m
-    | None -> prerr_endline "usage: diagdump (--resolve | --exhaust | --resolve-modules) <file...>"; exit 2 in
+    | None -> prerr_endline "usage: diagdump (--resolve | --exhaust | --check-match | --resolve-modules) <file...>"; exit 2 in
   (* The multi-module path consumes ALL files (in order); the single-file paths
      use the first (last-given) one. *)
   if mode = ResolveModules_m then begin
@@ -113,27 +140,27 @@ let () =
   end else begin
   let path = match files with
     | p :: _ -> p
-    | [] -> prerr_endline "usage: diagdump (--resolve | --exhaust) <file>"; exit 2 in
+    | [] -> prerr_endline "usage: diagdump (--resolve | --exhaust | --check-match) <file>"; exit 2 in
   let prog = parse_file path in
   let lines = match mode with
     | ResolveModules_m -> assert false  (* handled above *)
     | Resolve_m ->
         let prog = Desugar.desugar_program prog in
         List.map (fun (e, _loc) -> sexp_error e) (Resolve.resolve_program prog)
+    | CheckMatch_m ->
+        (* The type-aware non-exhaustive-MATCH check (Exhaust.check_match, fired
+           per EMatch from typecheck).  Run the no-prelude typecheck oracle and
+           keep ONLY the non-exhaustive-match warnings — guard / clause /
+           redundancy warnings are filtered out so this isolates check_match. *)
+        let prog = Desugar.desugar_program prog in
+        let (_schemes, warnings) = Typecheck.check_program_no_prelude prog in
+        List.filter_map (fun w ->
+          if contains_sub w "non-exhaustive match"
+          then Some (strip_warning_loc w) else None) warnings
     | Exhaust_m ->
         (* Strip the "file:line:col: " prefix (the self-hosted AST drops
-           locations, so it can only match the message text). Every warning is
-           "<loc>Warning: <msg>", so keep from the first "Warning:". *)
-        let strip s =
-          let needle = "Warning:" in
-          let n = String.length s and m = String.length needle in
-          let rec find i =
-            if i + m > n then s
-            else if String.sub s i m = needle then String.sub s i (n - i)
-            else find (i + 1)
-          in find 0
-        in
-        List.map strip (Exhaust.check_guard_exhaustiveness prog)
+           locations, so it can only match the message text). *)
+        List.map strip_warning_loc (Exhaust.check_guard_exhaustiveness prog)
   in
   print_string (String.concat "\n" (List.sort compare lines))
   end

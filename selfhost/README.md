@@ -49,6 +49,7 @@ diff with `lib/`:
 | `eval_dict_main.mdk` | **Dict-passing execution**: like the typed path but also dictionary-passes `=>`-constrained functions (`typecheck.elaborateDict`) — both the *user* program's and the *prelude*'s own (`when`/`unless`, via `preludeReturnPosDictNames`) — so a return-position method used at a constraint variable's type (e.g. `empty` inside `f : Monoid a => a -> a`, or `pure ()` inside `when`) resolves through the dict parameter the caller supplies, which arg-tag / RKey dispatch cannot do. Diffs against `medaka run` (`test/diff_selfhost_eval_dict.sh`). |
 | `typecheck.mdk` | HM core (**slice 1**). `Mono`/`Scheme` + union-find `unify`, level-based `generalize`/`instantiate`, `pp_mono`, and `infer`/`inferPat`. `checkToLines : List Decl -> <Mut> String`. |
 | `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk [runtime.mdk] <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). With a runtime.mdk arg its externs are seeded into scope, so `core.mdk` (+ a user program) type-checks against the `=== TYPES ===` goldens. |
+| `check_match_main.mdk` | Runnable entry for the **type-aware match-exhaustiveness** check (`check_match`, fired per `EMatch` from inside `typecheck`): `medaka run selfhost/check_match_main.mdk <runtime.mdk> <src.mdk>` parses + desugars + type-checks the target (runtime externs seeded, **no prelude** — mirrors `check_program_no_prelude`) and prints one `Warning: non-exhaustive match …` line per `match` whose non-guarded arms don't cover the scrutinee's type. Diffs against `dev/diagdump.exe --check-match` (the harness sorts). The check itself (`typecheck.checkMatchToLines` + `inferMatch`) **reuses** `exhaust.mdk`'s exported `Oracle`/`buildOracle`/`useful`/`desugarPat`/`tupleCtorName`. |
 | `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 14 resolve diagnostics (broken). |
 | `loader.mdk` | Port of `lib/loader.ml`: `loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))` — DFS topo-sort of a root file's transitive `import`s (dependency-first; cycle detection). Flat single-root simplification. `loader_main.mdk` prints the module order. |
 | `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 13 selfhost modules incl. `annotate`). |
@@ -62,13 +63,17 @@ diff with `lib/`:
 | `core_ir_typed_main.mdk` | Typed Core IR entry (analog of `eval_typed_main`): `medaka run selfhost/core_ir_typed_main.mdk <runtime.mdk> <prelude.mdk>... <src.mdk>` desugars → `typecheck.elaborate` (stamps EMethodAt/EDictAt routes) → lowers (routes read out into `CMethod`/`CDict`) → `cevalOutput`. The ONLY corpus that drives the `CMethod` arm — return-position dispatch (RKey), e.g. a user Applicative's `pure`. Diffs stdout against the reference typed path `medaka run <file>` (`test/diff_selfhost_core_ir_typed.sh`, 2). |
 | `core_ir_run_main.mdk` | True-execution (stdout) Core IR entry (analog of `eval_run_main`): `medaka run selfhost/core_ir_run_main.mdk <prelude.mdk>... <src.mdk>` prepends the prelude (prelude-shadow-dropping the user's redefinitions, like `eval_run_main`), annotates + lowers, and evaluates the Core IR for its OUTPUT (`cevalOutput`). Diffs the captured stdout against the `=== EVAL ===` goldens (`test/diff_selfhost_core_ir_run.sh`, 18) — the SAME goldens `eval_run_main` matches. |
 | `core_ir_modules_main.mdk` | Multi-module Core IR entry (the loader-driven Core-IR path — analog of `eval_modules_main`): `medaka run selfhost/core_ir_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, desugars + annotates each, LOWERS them per-module to Core IR and evaluates them in per-module frames over the shared prelude (`core_ir_eval.cevalModules`), printing the root module's `main` stdout. Diffs against `medaka run <entry>` (`test/diff_selfhost_core_ir_modules.sh`, 4) — the SAME oracle `eval_modules_main` uses. |
+| `bytecode.mdk` | **Stage 2 §2.2 bytecode compiler + stack VM** (slice 1) — the first lowering of the Core IR *below* an ISA. `compile : CExpr -> List Instr` emits a flat, position-independent instruction stream (relative jumps) for the slice-1 engine primitives (literal constants, lexically-addressed variables, application, primitive binops/unops, tuples, lists, `if`, let-sequencing blocks); `runChunk` is a stack machine threading `(ip, value-stack, env)` over the `Instr` `Array`. REUSES `eval.mdk`'s host runtime verbatim — `Value`, env, `applyValue`/dispatch/fall-through, `matchPat`, the arithmetic kernel, externs, `pp_value`. A compiled function installs as a `VClosureF` whose host-fn body is `\e -> runChunk e chunk`, so CLOSURE CREATION, MULTI-CLAUSE DISPATCH and PATTERN-PARAM BINDING are delegated to the host `applyValue` (the same Axis-2 reuse `core_ir_eval.mdk` uses); the VM only ever compiles + runs EXPRESSION bodies. Match → decision-tree opcodes, native closures, letrec, records/refs/arrays, and typeclass dispatch are slices 2–6 (the compiler panics on the unsupported node, naming the slice). **Zero `eval.mdk` changes** — every reused name was already exported. |
+| `eval_bytecode_main.mdk` | Runnable entry for the bytecode VM (analog of `core_ir_main.mdk`): `medaka run selfhost/eval_bytecode_main.mdk <src.mdk>` parses → desugars → `annotateProgram` → lowers to Core IR → COMPILES to bytecode → runs the stack VM → prints `pp_value` of `main`. Diffs against `dev/eval_probe.exe` — the SAME oracle `eval_main`/`core_ir_main` use (`test/diff_selfhost_eval_bytecode.sh`). |
 | `medaka.toml` | Project config (import root). |
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
 dumper), `astdump.exe` (AST S-expression dumper, with `--parse`/`--desugar`/
-`--mark` stage modes), and `diagdump.exe` (`--resolve`/`--exhaust` single-file
-diagnostics dumper, plus `--resolve-modules <mod...>` for the multi-module
-`resolve_module` path over an ordered file list).
+`--mark` stage modes), and `diagdump.exe` (`--resolve`/`--exhaust`/`--check-match`
+single-file diagnostics dumper, plus `--resolve-modules <mod...>` for the
+multi-module `resolve_module` path over an ordered file list).  `--check-match`
+runs the type-aware path (parse → desugar → `check_program_no_prelude`) and dumps
+only the non-exhaustive-match warnings.
 
 ## Validation
 
@@ -76,6 +81,7 @@ diagnostics dumper, plus `--resolve-modules <mod...>` for the multi-module
 dune build --root .                           # build the reference binary
 sh test/diff_selfhost_lexer.sh                # diff the Medaka lexer vs OCaml goldens
 sh test/diff_selfhost_parse_errors.sh         # parser/lexer rejection path (~0.4s)
+sh test/diff_selfhost_check_match.sh          # type-aware non-exhaustive-match warnings vs diagdump --check-match (11 fixtures)
 sh test/diff_selfhost_eval_errors.sh          # eval runtime-error messages vs reference (~1s)
 sh test/diff_selfhost_typecheck_errors.sh     # typecheck TYPE ERROR accumulation (3 fixtures × 2 drivers, ~1s)
 sh test/diff_selfhost_selfproc.sh             # the bootstrap (#3) self-processing gate (4 legs, ~18s)
@@ -85,6 +91,7 @@ sh test/diff_selfhost_core_ir_list.sh         #   …with core.mdk + list.mdk (2
 sh test/diff_selfhost_core_ir_typed.sh        #   …typed return-position dispatch / CMethod (2)
 sh test/diff_selfhost_core_ir_run.sh          #   …true-execution stdout / === EVAL === goldens (18)
 sh test/diff_selfhost_core_ir_modules.sh      #   …loader-driven per-module frames (4)
+sh test/diff_selfhost_eval_bytecode.sh        # Stage 2 §2.2 bytecode VM slice 1 — engine subset (4 ok, 12 deferred, ~0.5s)
 ```
 
 The harness runs the Medaka lexer over every fixture in `test/diff_fixtures/`
@@ -274,17 +281,16 @@ the stage is done when all pass.
 ## Roadmap — remaining Stage 1 stages
 
 Lexer, parser, **desugar**, **method_marker**, **resolve** (single-file path),
-and **exhaust** (guard-coverage pass) are done. What remains is the **typecheck**
-and **eval** capstones (typecheck also drives the type-aware `check_match`
-exhaustiveness, distinct from the guard pass ported here). This section sketches
-how to port them.
+and **exhaust** (both the guard-coverage pass *and*, inside typecheck, the
+type-aware `check_match` match-exhaustiveness) are done, as are the **typecheck**
+and **eval** capstones. This section sketches how each was ported.
 
 **Validation infrastructure for every remaining stage is already built** (the
 "de-risk first" pass):
 - `dev/astdump.exe` takes `--desugar` / `--mark` to dump the AST after those
   stages (the `--parse` default is unchanged). `test/diff_selfhost_{desugar,mark}.sh`
   diff the self-host stage against it.
-- `dev/diagdump.exe --resolve|--exhaust` dumps each stage's diagnostics in a
+- `dev/diagdump.exe --resolve|--exhaust|--check-match` dumps each stage's diagnostics in a
   canonical, sorted, location-stripped form. `test/resolve_fixtures/` (14) and
   `test/exhaust_fixtures/` (5, incl. negative controls) are the net-new negative
   corpus + committed goldens; `test/diff_selfhost_{resolve,exhaust}.sh` run them.
@@ -325,7 +331,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 | 1 | ✅ **desugar** | ~980 | low–med | `program → program` | astdump `--desugar`, **95/95 corpus** |
 | 2 | ✅ **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve`, **full corpus + 14 fixtures** |
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
-| 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
+| 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures**; type-aware `check_match` via diagdump `--check-match`, **11 fixtures** |
 | 5 | ✅ **eval** | ~2350 | hard (plumbing) | `program → values / stdout` | `dev/eval_probe.exe` + **all 16 `=== EVAL ===` goldens** (untyped *and* typed paths) |
 | 6 | ✅ **typecheck** | ~4650 | **very hard** | `program → schemes` | `dev/tc_probe.exe` + **all 16 `=== TYPES ===` goldens** |
 
@@ -423,8 +429,11 @@ Stage-0 prerequisites in `../PLAN.md`).
    methods, and interface defaults. Matches `diagdump --exhaust` byte-for-byte on
    the full corpus + all 5 `test/exhaust_fixtures/` cases (incl. the
    `useful`-machinery "excused by catch-all" control and the multi-warning case).
-   The type-aware `check_match` exhaustiveness is **not** here — it lives inside
-   typecheck (it needs the scrutinee type), so it ports with that stage.
+   The type-aware `check_match` exhaustiveness lives inside typecheck (it needs
+   the scrutinee type) and is now **also ported** — see the typecheck stage below
+   and `check_match_main.mdk`; it **reuses** this file's exported `Oracle` /
+   `buildOracle` / `useful` / `desugarPat` / `tupleCtorName` matrix machinery, the
+   only difference being the type-aware ctor oracle and scrutinee column type.
 5. 🚧 **Eval — IN PROGRESS (slice 1 of N).** The **Stage-1 capstone**: a
    tree-walk interpreter (`selfhost/eval.mdk` + `eval_main.mdk`) that makes the
    self-hosted compiler *executable on itself*. Plumbing-heavy (per-frame env
@@ -542,6 +551,22 @@ Stage-0 prerequisites in `../PLAN.md`).
      `test/diff_selfhost_typecheck_errors.sh` (3 fixtures × 2 drivers:
      `typecheck_main` + `check.mdk`; int-vs-string mismatch, tuple-arity
      mismatch, occurs-check).
+   - **Type-aware match exhaustiveness (`check_match`) — DONE 2026-06-05:**
+     `inferMatch` runs the exhaustiveness check after each `match`'s arms have
+     unified the scrutinee type, pushing `Warning: non-exhaustive match — some
+     values may not be covered` to a `matchWarnings : Ref (List String)`
+     accumulator when an all-wildcard query is still `useful` against the matrix
+     of the **non-guarded** arms.  It **reuses** `exhaust.mdk`'s exported matrix
+     machinery (`Oracle`/`buildOracle`/`useful`/`desugarPat`/`tupleCtorName`);
+     the only difference from the guard pass is the column-0 oracle — here the
+     ctor set comes from the program's data decls + the inferred scrutinee type's
+     head (a tuple maps to a synthetic `__tupleN__` type), set in `matchOracle`
+     by the `checkMatchToLines` driver.  The redundancy pass is **not** ported
+     (the `--check-match` oracle dumps only the non-exhaustive-match warnings).
+     Validated by `test/diff_selfhost_check_match.sh` (11 fixtures: non-exhaustive
+     user ADT / Bool / list / tuple / nested-ctor / Int-literal / guarded-arm /
+     multi-match, plus exhaustive + wildcard controls) against the net-new
+     `dev/diagdump.exe --check-match` oracle.
    - **Genuine remaining limits** (don't surface in the goldens): inferred effect
      *propagation* (an unsigned function calling an effectful extern), and the
      "signature too general" error.
@@ -596,26 +621,67 @@ machinery (`importFrameOf`/`pubReexports`) is reused verbatim; the only Core-IR
 delta is the per-module LOWERING (`lowerGroups` + `lowerImplsWith` against the
 joint dispatch table).
 
-**Decision-tree match compilation — DONE.** `lower (EMatch …)` now compiles a
-match's ordered arms into a `CDecision scrut arms tree` (a decision tree over
-`CTree`/`CTBranch`/`CHead`), driven by the same Maranget pattern matrix
-(`specialize`/`default`/head-ctors) the exhaust stage uses — only the *output*
-differs (a tree, not a usefulness verdict). The tree tests each scrutinee
-field's head once across all arms instead of re-testing per clause; leaves carry
-an arm INDEX and the evaluator re-matches that one arm's pattern to recover its
-bindings (a single per-arm walk), so the tree itself needs no occurrence/binding
-bookkeeping. Guard fall-through is preserved by `CTGuard i fail`: a failed guard
-resumes the ordered semantics over the matrix rows below the guarded clause,
-compiled at the same column context so it reads the same live sub-values. The
-evaluator (`cevalDecision`/`cevalTree`/`headExtract`) reuses `eval.mdk`'s
-`matchPat` for BOTH the head test and field extraction, so list/tuple/bool/unit
-value shapes need no new value code. Matches whose arms use record/range
-patterns fall back to the ordered-arm `CMatch` (correctness first); on the
-engine corpus 14/16 fixtures route through the tree, 2 (`records`/
-`string_ranges_infix`) take the fall-back. All six Core-IR equivalence harnesses
-stay byte-identical. **Remaining:** the slot-*indexing* consume half of lexical
-addressing (STAGE2 §2.0) is still its own parked supervised rework — the Core IR
-already carries the addresses.
+**Decision-tree match compilation — DONE (all patterns).** `lower (EMatch …)`
+compiles a match's ordered arms into a `CDecision scrut arms tree` (a decision
+tree over `CTree`/`CTBranch`/`CHead`), driven by the same Maranget pattern
+matrix (`specialize`/`default`/head-ctors) the exhaust stage uses — only the
+*output* differs (a tree, not a usefulness verdict). The tree tests each
+scrutinee field's head once across all arms instead of re-testing per clause;
+leaves carry an arm INDEX and the evaluator re-matches that one arm's pattern to
+recover its bindings (a single per-arm walk), so the tree itself needs no
+occurrence/binding bookkeeping. Guard fall-through is preserved by `CTGuard i
+fail`: a failed guard resumes the ordered semantics over the matrix rows below
+the guarded clause, compiled at the same column context so it reads the same
+live sub-values. The evaluator (`cevalDecision`/`cevalTree`/`headExtract`)
+reuses `eval.mdk`'s `matchPat` for BOTH the head test and field extraction, so
+no new value-shape code is needed for any pattern form. **PRec and PRng** are
+now also tree-compiled: both canonicalize to `PWild` in the Maranget matrix (the
+same treatment as `exhaust.mdk`'s `desugarPat`), arms containing them are marked
+as `CTGuard` leaves (via `patNeedsGuard`), and a `matchPat → None` at a guarded
+leaf falls through to the `fail` subtree rather than panicking — preserving the
+ordered semantics for patterns that may not match (range bounds, specific field
+values). All 18 engine-corpus fixtures (including `records` and
+`string_ranges_infix`) now route through the tree; all six Core-IR equivalence
+harnesses stay byte-identical. **Remaining:** the slot-*indexing* consume half
+of lexical addressing (STAGE2 §2.0) is still its own parked supervised rework —
+the Core IR already carries the addresses.
+
+**Stage 2 §2.2 — bytecode compiler + stack VM, SLICE 1 (2026-06-05).** The first
+lowering of the Core IR *below* an ISA (`bytecode.mdk` + `eval_bytecode_main.mdk`
++ `test/diff_selfhost_eval_bytecode.sh`). `compile : CExpr -> List Instr` emits a
+flat, position-independent instruction stream (relative jumps, so a compiled
+sub-expression concatenates freely) for the slice-1 engine primitives the design
+lists first — "arithmetic + variables (slot-indexed) + application" — plus the
+trivial non-pattern/non-closure nodes needed to form a runnable whole program
+(literal constants, primitive binops/unops, tuples, lists, `if`, let-sequencing
+blocks). `runChunk` is a stack machine threading `(ip, value-stack, env)` over the
+`Instr` `Array` (O(1) ip-indexed fetch). It is validated by EQUIVALENCE against
+the AST tree-walker, the SAME oracle (`dev/eval_probe.exe`) and harness *shape*
+the §2.1 gates use — **4 slice-1 fixtures byte-identical, 12 deferred** to the
+slices that will cover them (~0.5s, no new fixtures — reuses the engine corpus).
+
+Reuse discipline (Axis 2 / §2.2 "reuse the host Value/GC/externs") is honoured
+strictly: the VM reuses `eval.mdk`'s runtime verbatim — `Value`, env,
+`applyValue`/dispatch/fall-through, `matchPat`, the arithmetic kernel, externs,
+`pp_value`. A compiled function installs as a `VClosureF` whose host-fn body is
+`\e -> runChunk e chunk`, so CLOSURE CREATION, MULTI-CLAUSE DISPATCH and
+PATTERN-PARAM BINDING are delegated to the host `applyValue` (exactly as
+`core_ir_eval.mdk` does); the VM only ever compiles + runs EXPRESSION bodies. The
+on-ramp condition (Axis 1) holds — the throwaway part (the ISA + VM loop) sits
+cleanly below the reused Core IR. **Zero `eval.mdk` changes**: every reused name
+was already exported (the §2.1 `VClosureF` affordance suffices for the VM too).
+
+The slice-1/deferred split keys off which Core-IR EXPRESSION nodes a fixture's
+bodies use; the compiler panics on an unsupported node (naming the slice), so a
+deferred fixture cannot silently mis-run. **Next slices (§2.2):** 2 — `match` via
+compiled decision-tree opcodes (the `CDecision` tree is already built by §2.1's
+lowering; the VM needs `SWITCH`/`TEST_TAG` leaves instead of delegating to a
+host `match`); 3 — ADTs/records/refs; 4 — native closures + letrec + `VThunk`
+laziness (replacing the host `VClosureF` delegation with bytecode-native frames —
+the point at which the slot-*indexing* consume half of §2.0 lexical addressing
+pays off); 5 — typeclass dispatch from the elaborated `RKey`/`RDict` routes; 6 —
+multi-module per-module frames. The capstone is the VM running the self-host
+compiler (RKey-only suffices) and reproducing `eval_modules` output.
 
 ---
 
@@ -635,6 +701,16 @@ byte-for-byte, plus two integration milestones beyond per-stage validation:
   one shared tree, so `pure`/`empty`/do-blocks in a user monad dispatch by their
   concrete return type (`test/diff_selfhost_eval_typed.sh`, oracle = `medaka run`).
   This is the *only* part of dictionary-passing the compiler needs — see below.
+- **Type-aware match exhaustiveness (`check_match`)** — the last Stage-1 stage
+  piece, ported inside `typecheck` (`inferMatch` → `checkMatchToLines`, reusing
+  `exhaust.mdk`'s matrix machinery), validated by `test/diff_selfhost_check_match.sh`
+  against the net-new `dev/diagdump.exe --check-match` oracle (11 fixtures).
+
+**What's next.** Every Stage-1 stage and sub-pass now has a validated self-hosted
+port; the remaining genuine gaps are the deferred typechecker niceties (inferred
+effect *propagation*, the "signature too general" error) and the broader Stage-2
+backend work (Core IR slices + bytecode VM, then LLVM) tracked in `../PLAN.md` and
+`STAGE2-DESIGN.md`.
 
 ### The bootstrap (#3) — "the compiler processes its own source"
 
@@ -999,9 +1075,10 @@ gap in fidelity. Concretely, by stage:
   the reference's single-exception behavior.  Validated by
   `test/diff_selfhost_typecheck_errors.sh` (int-vs-string, tuple-arity,
   occurs-check; each via both `typecheck_main.mdk` and `check.mdk`).
-  Still not accumulated: the type-aware `check_match` exhaustiveness pass (lives
-  inside the reference typechecker, needs the scrutinee type) and the "signature
-  too general" error — both remain deferred.
+  The type-aware `check_match` exhaustiveness pass (lives inside the reference
+  typechecker, needs the scrutinee type) is now **also ported** — it accumulates
+  into a separate `matchWarnings` ref, surfaced by `checkMatchToLines` (see the
+  typecheck stage notes above). Still deferred: the "signature too general" error.
 - ✅ **Eval — runtime-error messages now match the reference (fixed 2026-06-05).**
   Every `panic` message in `selfhost/eval.mdk` was cross-walked against
   `lib/eval.ml`'s `Eval_error` call sites and the diverging ones were corrected:

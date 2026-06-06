@@ -93,9 +93,11 @@ armTreeable : Arm -> Bool
 armTreeable (Arm pat _ _) = treeablePat pat
 
 -- a pattern is tree-able if it is built only from constructors / lists / tuples
--- / literals / vars / wildcards / as-patterns.  Record + range patterns route
--- the whole match to the ordered fall-back (the leaf re-match still handles an
--- as-binding, so PAs is tree-able iff its inner pattern is).
+-- / literals / vars / wildcards / as-patterns / record / range patterns.
+-- PRng and PRec canonicalize to PWild in the matrix (see canonPat); arms
+-- containing them are marked as "needs guard" (patNeedsGuard) so the tree
+-- emits CTGuard leaves that fall through on matchPat failure, preserving the
+-- ordered semantics exactly.
 treeablePat : Pat -> Bool
 treeablePat PWild = True
 treeablePat (PVar _) = True
@@ -105,14 +107,28 @@ treeablePat (PCons h t) = treeablePat h && treeablePat t
 treeablePat (PList ps) = allList treeablePat ps
 treeablePat (PTuple ps) = allList treeablePat ps
 treeablePat (PAs _ p) = treeablePat p
-treeablePat (PRng _ _ _) = False
-treeablePat (PRec _ _ _) = False
+treeablePat (PRng _ _ _) = True
+treeablePat (PRec _ _ _) = True
 
 compileArms : List Arm -> CTree
 compileArms arms = compileTree (map armHasGuard arms) (initialRows arms 0)
 
+-- an arm whose pattern (recursively) contains PRng or PRec may not match the
+-- scrutinee at the leaf even though the matrix treated it as a wildcard — the
+-- tree leaf must therefore be a CTGuard (fall-through on matchPat failure) rather
+-- than a CTLeaf (which assumes the pattern is guaranteed to match the scrutinee).
 armHasGuard : Arm -> Bool
-armHasGuard (Arm _ gs _) = not (nullL gs)
+armHasGuard (Arm pat gs _) = not (nullL gs) || patNeedsGuard pat
+
+patNeedsGuard : Pat -> Bool
+patNeedsGuard (PRng _ _ _) = True
+patNeedsGuard (PRec _ _ _) = True
+patNeedsGuard (PCon _ args) = anyList patNeedsGuard args
+patNeedsGuard (PCons h t) = patNeedsGuard h || patNeedsGuard t
+patNeedsGuard (PList ps) = anyList patNeedsGuard ps
+patNeedsGuard (PTuple ps) = anyList patNeedsGuard ps
+patNeedsGuard (PAs _ p) = patNeedsGuard p
+patNeedsGuard _ = False
 
 -- one matrix row per arm: its (canonicalised) pattern as a single column, paired
 -- with the arm's index (the leaves carry it back to the original CArm).

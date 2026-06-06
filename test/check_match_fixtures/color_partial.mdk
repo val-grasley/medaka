@@ -1,0 +1,7 @@
+-- Non-exhaustive match over a user ADT: the `Blue` constructor is uncovered.
+data Color = Red | Green | Blue
+
+name : Color -> Int
+name c = match c
+  Red => 1
+  Green => 2

@@ -1,0 +1,4 @@
+-- Non-exhaustive match over Bool: the `False` case is uncovered.
+toInt : Bool -> Int
+toInt b = match b
+  True => 1

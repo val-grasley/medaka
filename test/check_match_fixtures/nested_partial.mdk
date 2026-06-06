@@ -1,0 +1,9 @@
+-- Non-exhaustive match with a NESTED constructor pattern: `Box (Some _)` and
+-- `Box None` are the only well-typed scrutinees, but the inner `Some` arm only
+-- covers `Some`, leaving `Box None` uncovered.
+data Opt = Some Int | None_
+data Box = Box Opt
+
+unwrap : Box -> Int
+unwrap b = match b
+  Box (Some n) => n

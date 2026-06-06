@@ -1,0 +1,8 @@
+-- Exhaustive control: every constructor is covered, so NO warning.
+data Color = Red | Green | Blue
+
+name : Color -> Int
+name c = match c
+  Red => 1
+  Green => 2
+  Blue => 3

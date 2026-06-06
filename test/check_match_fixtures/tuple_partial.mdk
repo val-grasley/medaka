@@ -1,0 +1,5 @@
+-- Non-exhaustive match over a tuple: only `(True, True)` of the four Bool×Bool
+-- combinations is covered.
+both : Bool -> Bool -> Int
+both a b = match (a, b)
+  (True, True) => 1
