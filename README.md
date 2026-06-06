@@ -26,7 +26,8 @@ Frontend and interpreter complete; standard library underway; codegen not yet st
 - **Evaluator** — `lib/eval.ml` (tree-walking interpreter with VMulti-based
   typeclass dispatch)
 - **REPL** — `lib/repl.ml` (incremental parse/typecheck/eval with persistent env)
-- **CLI** — `bin/main.ml` — `check`, `run`, `repl`, `lsp`, `fmt`, and `new` subcommands
+- **CLI** — `bin/main.ml` — `check`, `run`, `repl`, `lsp`, `fmt`, `doc`, and `new` subcommands
+- **Doc generator** — `lib/doc.ml` (comment→decl matcher, signature renderer, Markdown output)
 - **Formatter** — `lib/fmt.ml` (comment-preserving pretty printer with `--check` / `--write` / `--stdout`)
 - **Project config** — `lib/project_config.ml` (minimal `medaka.toml` reader; shared project-root walk-up between CLI and LSP)
 - **Diagnostics** — `lib/diagnostics.ml` (accumulating error pipeline)
@@ -34,7 +35,7 @@ Frontend and interpreter complete; standard library underway; codegen not yet st
   formatting, document symbols, hover, go-to-definition, document
   highlight, completion, inlay hints)
 - **Test suite** — parser, roundtrip, resolve, typecheck, eval, run,
-  repl, loader, diagnostics, fmt, project_config, and new_cmd suites
+  repl, loader, diagnostics, fmt, project_config, new_cmd, and doc suites
 
 The standard library is being developed in Medaka itself on top of the
 `extern` primitives — see [STDLIB.md](./STDLIB.md). Codegen has not started.
@@ -119,6 +120,16 @@ are resolved relative to the root.
 The formatter parses, re-prints, and verifies the output reparses to
 the same AST. Line comments (`--`) and block comments (`{- … -}`,
 nesting) are preserved at their original positions.
+
+**Generate Markdown documentation:**
+```sh
+./_build/default/bin/main.exe doc path/to/file.mdk
+```
+
+Outputs one `## name` section per public declaration with the
+inferred type signature and any `--` doc comments immediately above
+the declaration. Run inside a project (`medaka.toml`) and the file
+argument may be omitted.
 
 ```
 medaka repl  (:quit to exit, :reset to clear session)
@@ -294,11 +305,12 @@ lib/
   lsp_server.ml   LSP server: stdio JSON-RPC, diagnostics + formatting,
                   document symbols, hover, definition, highlight,
                   completion, inlay hints
+  doc.ml          `medaka doc` — doc-comment→Markdown extractor
   fmt.ml          `medaka fmt` — comment-preserving formatter
   new_cmd.ml      `medaka new` — project scaffolder
   project_config.ml  `medaka.toml` reader + project-root walk-up
 bin/
-  main.ml         CLI entry point (check / run / repl / lsp / fmt / new)
+  main.ml         CLI entry point (check / run / repl / lsp / fmt / doc / new)
   repl.ml         Interactive REPL loop shim
 gen/
   embed.ml        Build-time helper: embeds runtime.mdk/core.mdk as an OCaml string
@@ -321,6 +333,7 @@ test/
   test_fmt.ml         Formatter: idempotency, round-trip, comment preservation
   test_project_config.ml  `medaka.toml` parsing + project-root walk-up
   test_new_cmd.ml     `medaka new` scaffolding
+  test_doc.ml         `medaka doc` — comment matching, entry extraction, Markdown output
   test_lsp.ml         LSP request handlers (formatting, hover, definition,
                       highlight, completion, inlay hints, …)
   thorough/           Exhaustive edge-case suites: typecheck, eval,

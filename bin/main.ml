@@ -46,6 +46,7 @@ Usage:
   medaka check [--json] <file.mdk>    Type-check without running.
   medaka test [file.mdk]    Run doctests + prop tests.
   medaka bench [file.mdk]   Run bench declarations.
+  medaka doc [file.mdk]     Generate Markdown documentation.
   medaka fmt [paths...]     Format .mdk files in place (or --check).
   medaka new <name>         Scaffold a new project directory.
   medaka lsp                Run the language server over stdio.
@@ -343,6 +344,62 @@ let () =
        Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg;
        show_snippet source loc_opt;
        exit 1);
+    exit 0
+  end;
+  if has_sub "doc" then begin
+    let filename =
+      if argc >= 3 then argv.(2)
+      else begin
+        let cwd = Sys.getcwd () in
+        let probe = Filename.concat cwd "_probe_.mdk" in
+        match Medaka_lib.Project_config.find_project_root probe with
+        | None ->
+          Printf.eprintf "error: no file given and no medaka.toml found\n"; exit 1
+        | Some root ->
+          (match Medaka_lib.Project_config.load_from_dir root with
+           | None ->
+             Printf.eprintf "error: no entry in medaka.toml\n"; exit 1
+           | Some cfg ->
+             (match cfg.Medaka_lib.Project_config.entry with
+              | Some e -> Filename.concat root e
+              | None ->
+                Printf.eprintf "error: workspace root has no [package] entry\n"; exit 1))
+      end
+    in
+    let source = read_file filename in
+    let lexbuf = Lexing.from_string source in
+    lexbuf.Lexing.lex_curr_p <- { lexbuf.Lexing.lex_curr_p with Lexing.pos_fname = filename };
+    Medaka_lib.Lexer.reset ();
+    let program =
+      (try Medaka_lib.Parser.program Medaka_lib.Lexer.token lexbuf
+       with
+       | Failure msg -> Printf.eprintf "Error: %s\n" msg; exit 1
+       | Medaka_lib.Parser.Error ->
+         let pos = lexbuf.Lexing.lex_curr_p in
+         Printf.eprintf "%s:%d:%d: Parse error\n"
+           pos.Lexing.pos_fname pos.Lexing.pos_lnum
+           (pos.Lexing.pos_cnum - pos.Lexing.pos_bol);
+         exit 1)
+    in
+    (* Capture comment and decl-position side channels before any reset. *)
+    let comments = Medaka_lib.Lexer.take_comments () in
+    let positions = Medaka_lib.Parser_state.take_decl_positions () in
+    (* Get inferred schemes via the single-file typecheck path.  On type errors
+       we still produce docs — just without inferred types for failing names. *)
+    let schemes =
+      let desugared = desugar_or_die ~source program in
+      match (try
+               let marked = Medaka_lib.Method_marker.mark_with_prelude desugared in
+               let (sc, _) = Medaka_lib.Typecheck.check_program marked in
+               Some sc
+             with _ -> None)
+      with
+      | Some sc -> sc
+      | None    -> []
+    in
+    let module_name = Filename.basename (Filename.remove_extension filename) in
+    let entries = Medaka_lib.Doc.extract_entries program positions schemes comments in
+    print_string (Medaka_lib.Doc.render_markdown module_name entries);
     exit 0
   end;
   (* Resolve a zero-arg `run`/`check` against `medaka.toml` in the cwd

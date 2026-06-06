@@ -6497,9 +6497,13 @@ open work**, consolidated so the next session can pick from one list.
 **CLI (Phase 82):**
 - **`medaka build`** — no artifact cache / typed-IR serialization exists; needs
   its own design before it is more than an alias of `check`.
-- **`medaka doc`** — doc comments aren't attached to AST nodes, and there's no
-  signature renderer for a typechecker `scheme`. Needs comment→decl matcher +
-  renderer + output-format decision.
+- **`medaka doc`** ✅ — done 2026-06-05.  `lib/doc.ml`: comment→decl matcher
+  (parallel `Lexer.take_comments()` stream matched by position; backward-scan
+  finds the maximal consecutive block above each decl), signature renderer
+  (`Typecheck.pp_scheme` for values; AST renderers for data/record/interface/
+  alias/newtype/impl), Markdown output.  Deduplicates DTypeSig+DFunDef pairs and
+  multi-clause functions to one entry.  Single-file typecheck path; multi-module
+  follow-up remains open.  `test/test_doc.ml` (19 cases).
 - **`medaka check --json` multi-file** — currently single-file (`analyze` doesn't
   invoke the `Loader`); cross-module names can resolve-error in JSON output.
 

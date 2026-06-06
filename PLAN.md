@@ -281,10 +281,11 @@ non-package-manager gaps:
   artifact cache also needs a cache-key strategy (content hash of source +
   transitive imports) and an on-disk layout. Until that design exists it would
   only be an alias of `check`.
-- **`medaka doc`** — needs (a) a comment→decl matcher (doc comments aren't
-  attached to AST nodes — a parallel `Lexer.take_comments()` stream matched by
-  position, like `doctest.ml` does), (b) a signature renderer for a typechecker
-  `scheme`, and (c) an output-format decision.
+- **`medaka doc`** ✅ — done: `lib/doc.ml` + `test/test_doc.ml`.  Comment→decl
+  matcher (parallel `Lexer.take_comments()` stream matched by position),
+  signature renderer via `Typecheck.pp_scheme` for values / AST renderers for
+  types, Markdown output (one `## name` section per public decl).  Single-file
+  typecheck path; multi-module follow-up tracked separately.
 - **`medaka check --json` multi-file** — currently single-file (`Diagnostics.
   analyze` doesn't invoke the `Loader`), so a file with `import`s can
   resolve-error in the JSON output. Multi-file `--json` is the follow-up.
