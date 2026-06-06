@@ -425,17 +425,17 @@ reference. The reference is the tree-walker (`eval_modules` / `eval_probe` and t
 **2.2 — Bytecode compiler + VM, slice by slice.** Compile Core IR → bytecode; the
 VM interprets it reusing the host `Value` ([`eval.mdk:18`](eval.mdk:18)),
 externs, and GC. Slices mirror `eval.mdk`'s own progression:
-1. arithmetic + variables (slot-indexed) + application;
-2. `match` via compiled decision trees;
-3. ADTs / records / refs;
-4. closures + letrec + `VThunk` laziness (replicate force-on-first-lookup memo
-   exactly — a mismatch is a localizable diff);
-5. typeclass dispatch from the elaborated routes (`RKey` narrow, `RDict`
-   forward — port the `narrowMethod`/`applyDicts` logic to opcodes);
-6. multi-module (`eval_modules` per-module-frame semantics).
+1. ✅ **DONE (2026-06-05)** arithmetic + variables (slot-indexed) + application;
+2. ✅ **DONE (2026-06-05)** `match` via compiled decision trees;
+3. ✅ **DONE (2026-06-05)** ADTs / records / refs;
+4. ✅ **DONE (2026-06-05)** closures + letrec + `VThunk` laziness (replicate
+   force-on-first-lookup memo exactly — a mismatch is a localizable diff);
+5. ✅ **DONE (2026-06-05)** typeclass dispatch from the elaborated routes (`RKey`
+   narrow, `RDict` forward — port the `narrowMethod`/`applyDicts` logic to opcodes);
+6. multi-module (`eval_modules` per-module-frame semantics). **← next**
 - **Gate per slice:** `eval_bytecode_main.mdk` output byte-identical to the
   tree-walker over the existing fixtures — the exact `diff_selfhost_eval*.sh`
-  harness shape, no new oracle.
+  harness shape, no new oracle. **Current: 18/18, 0 deferred (~1.5s).**
 - **Capstone:** the VM runs the self-host compiler (RKey-only is sufficient,
   `README.md:660`) and reproduces `check_modules` / `eval_modules` output. Measure
   VM vs tree-walker; expect the interpretation-structural win (no AST re-dispatch +

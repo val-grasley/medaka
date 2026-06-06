@@ -1,5 +1,5 @@
 #!/bin/sh
-# Equivalence gate for the bytecode VM (STAGE2-DESIGN §2.2, SLICES 1–3).
+# Equivalence gate for the bytecode VM (STAGE2-DESIGN §2.2, SLICES 1–5).
 #
 # Same shape + same oracle as diff_selfhost_core_ir.sh: there is no bespoke
 # reference for the bytecode path — it is validated by EQUIVALENCE against the AST
@@ -26,9 +26,17 @@
 # Value-level work (evalRecordUpdate / evalField / evalRange / evalIndex / …)
 # reused verbatim from eval.mdk — step functions only route opcodes.
 #
-# DEFERRED — closures (lambda/sections/compose/letrec/where) and typeclass dispatch
-# are slices 4–5; a fixture needing one is listed in DEFERRED below with the slice
-# that will cover it.  The compiler panics on unsupported nodes so no silent mis-run.
+# SLICE 4 — closures / letrec / where-blocks: IMakeClosure (CLam → VClosureF),
+# ILetBound (non-rec let-in), ILetRec (recursive let with cell back-patch),
+# ILetGroup (where-block / mutual-rec local group — eager nullary, VClosureF for
+# parameterised, VMulti for multi-clause, mirroring cevalLetGroup/cGroupValue).
+#
+# SLICE 5 — typeclass dispatch from elaborated routes: IMethod (CMethod — return-
+# position dispatch via RKey/RDict, using narrowMethod/routeTag), IDict (CDict —
+# constrained-fn dict application via applyDicts).  bcEvalProgram now installs
+# typeclass impls (coalesceImpls → VMulti) before user groups.
+#
+# SLICE 6 (multi-module per-module frames) remains deferred.
 #
 # Usage:  sh test/diff_selfhost_eval_bytecode.sh
 # Exit:   0 if every active fixture matches the tree-walker.
@@ -55,17 +63,16 @@ SLICE3="arrays_ranges records refs_mut"
 # slices 2+3 combined — fixtures that require both match and records/arrays/index
 SLICE23="string_ranges_infix rec_pat_tree"
 
-ACTIVE="$SLICE1 $SLICE2 $SLICE3 $SLICE23"
+# slice 4 — closures, letrec, where-blocks (IMakeClosure/ILetBound/ILetRec/ILetGroup)
+SLICE4="hof_compose shadow_closure guards_where guarded_clauses"
 
-# still deferred — closures + letrec/where (slice 4) and typeclass dispatch (slice 5)
-DEFERRED="\
-dispatch_basic:slice5-typeclass-dispatch \
-dispatch_default:slice5-typeclass-dispatch \
-dispatch_multi:slice5-typeclass-dispatch \
-guarded_clauses:slice4-where(letgroup)+pattern-bind-guards \
-guards_where:slice4-where(letgroup) \
-hof_compose:slice4-closures(lambda/sections/compose) \
-shadow_closure:slice4-closures+let-in"
+# slice 5 — typeclass dispatch (IMethod/IDict + impl install)
+SLICE5="dispatch_basic dispatch_default dispatch_multi"
+
+ACTIVE="$SLICE1 $SLICE2 $SLICE3 $SLICE23 $SLICE4 $SLICE5"
+
+# slice 6 (multi-module per-module frames) still deferred
+DEFERRED=""
 
 pass=0; fail=0
 for name in $ACTIVE; do
@@ -77,11 +84,5 @@ for name in $ACTIVE; do
   else fail=$((fail+1)); printf 'FAIL %s\n  ref : %s\n  self: %s\n' "$name" "$ref" "$self"; fi
 done
 
-printf '\n-- deferred to later slices --\n'
-for entry in $DEFERRED; do
-  printf 'defer %s\n' "$entry"
-done
-
-printf '\n%d ok, %d failing (slices 1–3); %d deferred\n' \
-  "$pass" "$fail" "$(printf '%s\n' $DEFERRED | wc -w | tr -d ' ')"
+printf '\n%d ok, %d failing (slices 1–5); 0 deferred\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
