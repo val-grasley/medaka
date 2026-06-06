@@ -177,6 +177,7 @@ type module_env = {
   field_owners   : (ident, string) Hashtbl.t;  (* field name → record type name *)
   interfaces     : (ident, unit) Hashtbl.t;
   iface_methods  : (ident, ident list) Hashtbl.t;  (* iface name → method names *)
+  effects        : (ident, unit) Hashtbl.t;  (* known effect labels: builtins ∪ user `effect Foo` (Phase 146) *)
   imported       : (ident, unit) Hashtbl.t;
   (* Alias map: for `use foo as F` or qualified `use foo`, F/foo → module_exports *)
   module_aliases : (ident, module_exports) Hashtbl.t;
@@ -191,12 +192,14 @@ let create_env ?(with_prelude=true) () =
     field_owners   = Hashtbl.create 16;
     interfaces     = Hashtbl.create 8;
     iface_methods  = Hashtbl.create 8;
+    effects        = Hashtbl.create 8;
     imported       = Hashtbl.create 8;
     module_aliases = Hashtbl.create 4;
   } in
   List.iter (fun n -> Hashtbl.replace env.types n ()) primitive_types;
   List.iter (fun n -> Hashtbl.replace env.constructors n ()) primitive_constructors;
   List.iter (fun n -> Hashtbl.replace env.values n ()) primitive_values;
+  List.iter (fun n -> Hashtbl.replace env.effects n ()) built_in_effects;
   if with_prelude then begin
     (* Seed names from the core stdlib prelude *)
     List.iter (fun n -> Hashtbl.replace env.types n ()) prelude_types;
@@ -372,6 +375,10 @@ let build_env ?(known_modules : module_exports list = [])
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.method_name) methods)
     | DImpl _ -> ()
+    | DEffect (_, name) ->
+      (* Register the user/platform effect label so `<name>` resolves in rows.
+         No DuplicateDefinition: redeclaring a builtin or repeating is harmless. *)
+      Hashtbl.replace env.effects name ()
     | DProp _ -> ()
     | DTest _ -> ()
     | DBench _ -> ()
@@ -497,7 +504,7 @@ let rec check_type env errors t =
     (* labels are validated against the known effects; the optional tail is a
        lowercase effect *variable* (Phase 79) and needs no such check. *)
     List.iter (fun e ->
-      if not (List.mem e built_in_effects) then
+      if not (Hashtbl.mem env.effects e) then
         emit errors (UnknownEffect e)
     ) es;
     check_type env errors t
@@ -748,6 +755,7 @@ let rec check_decl env errors = function
   | DRecord (_, _, _, fs, _) ->
     List.iter (fun f -> check_type env errors f.field_type) fs
   | DUse _ -> ()
+  | DEffect _ -> ()  (* label registered in build_env; nothing to resolve *)
   | DProp { prop_params; prop_body; _ } ->
     let scope = List.map (fun (x, ty) ->
       check_type env errors ty;
@@ -1004,6 +1012,7 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
       List.iter (fun m -> add_or_skip env.values m.Ast.method_name) methods;
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.Ast.method_name) methods)
+    | Ast.DEffect (_, name) -> Hashtbl.replace env.effects name ()
     | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ | Ast.DNewtype _ | Ast.DProp _ | Ast.DTest _
     | Ast.DBench _ | Ast.DAttrib _ -> ()
   ) decls;

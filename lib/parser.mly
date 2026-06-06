@@ -181,7 +181,7 @@ let parse_attr name msg_opt =
 
 (* Keywords *)
 %token LET REC WITH MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
-%token IMPORT EXPORT PUBLIC WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP TEST BENCH FUNCTION
+%token IMPORT EXPORT PUBLIC WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP TEST BENCH FUNCTION EFFECT
 
 (* Operators *)
 %token PLUS MINUS STAR SLASH MOD
@@ -352,6 +352,15 @@ inner_non_data_decl:
   | inner_prop_decl         { $1 }
   | inner_test_decl         { $1 }
   | inner_bench_decl        { $1 }
+  | inner_effect_decl       { $1 }
+
+(* ── Effect-label declarations (Phase 146 gap 2) ─────── *)
+
+(* `effect Foo` declares a user/platform effect label usable in rows (`<Foo>`).
+   Bare label only; the parameterized form (`effect Fetch (Str)`) is Phase 146b. *)
+inner_effect_decl:
+  | EFFECT UPPER newlines
+    { fun is_pub -> DEffect (is_pub, $2) }
 
 (* ── Property declarations ───────────────────────────── *)
 

@@ -1091,6 +1091,27 @@ let t_eff_over_annotation_pointfree = assert_type
   "inc x = x + 1\nincIO : Int -> <IO> Int\nincIO = inc\n"
   "incIO" "Int -> <IO> Int"
 
+(* Phase 146 gap 2: user-declared effect labels behave like builtins in the
+   row-unify/subsumption path (typecheck doesn't validate the label vocabulary —
+   that's resolve's job; here `effect Foo` is a typecheck no-op). *)
+
+(* A user-labelled extern's effect propagates to its (matching-bound) caller. *)
+let t_eff_user_label_accept = assert_type
+  "effect KV\nextern kvGet : String -> <KV> String\n\
+   get : String -> <KV> String\nget k = kvGet k\n"
+  "get" "String -> <KV> String"
+
+(* Subsumption ACCEPT: a <KV> body fits under a <KV, Log> bound. *)
+let t_eff_user_label_subsume = assert_type
+  "effect KV\neffect Log\nextern kvGet : String -> <KV> String\n\
+   handler : String -> <KV, Log> String\nhandler k = kvGet k\n"
+  "handler" "String -> <KV, Log> String"
+
+(* Subsumption REJECT: a <Fetch> body escapes a <KV>-only bound → EffectLeak. *)
+let e_eff_user_label_escape = assert_err
+  "effect KV\neffect Fetch\nextern fetch : String -> <Fetch> String\n\
+   handler : String -> <KV> String\nhandler k = fetch k\n"
+
 (* Unit-level: an OPEN row that already carries a label (an inference arrow
    `<IO | _>`) unified against a closed bound that lacks it must raise — the
    escape the laundering fix adds. *)
@@ -4241,6 +4262,9 @@ let () =
       test_case "err: leak pointfree list elem"  `Quick e_eff_leak_pointfree_list;
       test_case "subsume pure into eff field"    `Quick t_eff_subsume_pure_into_effectful_field;
       test_case "over-annotation pointfree"      `Quick t_eff_over_annotation_pointfree;
+      test_case "user label accept"              `Quick t_eff_user_label_accept;
+      test_case "user label subsume accept"      `Quick t_eff_user_label_subsume;
+      test_case "err: user label escape"         `Quick e_eff_user_label_escape;
       test_case "unify_row escape raises"        `Quick e_unify_row_escape;
     ];
     "pipe and compose", [

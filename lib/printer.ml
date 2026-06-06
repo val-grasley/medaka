@@ -898,6 +898,9 @@ let rec print_decl = function
   | DUse (pub, path) ->
     (if pub then text "export " else Nil) ^^ text "import " ^^ print_use_path path
 
+  | DEffect (pub, name) ->
+    (if pub then text "export " else Nil) ^^ text "effect " ^^ text name
+
   | DProp { is_pub; prop_name; prop_params; prop_body } ->
     (if is_pub then text "export " else Nil)
     ^^ text "prop " ^^ text (Printf.sprintf "%S" prop_name)

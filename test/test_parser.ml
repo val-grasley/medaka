@@ -41,6 +41,7 @@ let rec pp_decl d =
   | DProp { prop_name; _ } -> Printf.sprintf "DProp(%S, ...)" prop_name
   | DTest { test_name; _ } -> Printf.sprintf "DTest(%S, ...)" test_name
   | DBench { bench_name; _ } -> Printf.sprintf "DBench(%S, ...)" bench_name
+  | DEffect (_, n) -> Printf.sprintf "DEffect(%s)" n
   | DAttrib (_, d) -> Printf.sprintf "DAttrib(..., %s)" (pp_decl d)
 
 let parse_one src =
@@ -1159,6 +1160,17 @@ let test_use_pub () =
   | DUse (true, UseGroup (["list"], [("map", false); ("filter", false)])) -> ()
   | _ -> failwith "wrong"
 
+(* Phase 146 gap 2: `effect Foo` / `export effect Foo` declarations *)
+let test_effect_decl () =
+  match parse_one "effect KV\n" with
+  | DEffect (false, "KV") -> ()
+  | _ -> failwith "wrong"
+
+let test_effect_decl_export () =
+  match parse_one "export effect Fetch\n" with
+  | DEffect (true, "Fetch") -> ()
+  | _ -> failwith "wrong"
+
 (* Phase 100: `T(..)` group member — type + all exported constructors *)
 let test_use_group_ctors () =
   match parse_one "import colors.{Color(..)}\n" with
@@ -2163,6 +2175,8 @@ let () =
       test_case "group ctors T(..)"         `Quick test_use_group_ctors;
       test_case "group mixed f,T(..),g"     `Quick test_use_group_mixed;
       test_case "export import (re-export)" `Quick test_use_pub;
+      test_case "effect decl"               `Quick test_effect_decl;
+      test_case "export effect decl"        `Quick test_effect_decl_export;
       test_case "alias"                    `Quick test_use_alias;
       test_case "wildcard"                 `Quick test_use_wildcard;
       test_case "export standalone type sig" `Quick test_export_standalone_type_sig;

@@ -264,6 +264,9 @@ type decl =
   | DTypeAlias of bool * ident * ident list * ty  (* pub? name params rhs *)
   | DNewtype   of bool * ident * ident list * ident * ty * ident list  (* pub? tyname typarams conname fty derives *)
   | DUse of bool * use_path  (* pub? use path *)
+  | DEffect of bool * ident  (* pub? `effect Foo` — declares a user/platform
+                                effect label (Phase 146 gap 2).  Bare label only;
+                                the parameterized form is Phase 146b. *)
   | DProp of {
       is_pub      : bool;
       prop_name   : string;

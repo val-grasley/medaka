@@ -57,6 +57,7 @@ let rec pp_decl d =
   | DProp { prop_name; _ } -> Printf.sprintf "DProp(%S, ...)" prop_name
   | DTest { test_name; _ } -> Printf.sprintf "DTest(%S, ...)" test_name
   | DBench { bench_name; _ } -> Printf.sprintf "DBench(%S, ...)" bench_name
+  | DEffect (_, n) -> Printf.sprintf "DEffect(%s)" n
   | DAttrib (_, d) -> Printf.sprintf "DAttrib(..., %s)" (pp_decl d)
 
 let show label src =

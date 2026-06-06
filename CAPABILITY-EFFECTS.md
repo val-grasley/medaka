@@ -5,9 +5,10 @@ Status: **partially implemented** (Phase 146 in [`PLAN.md`](./PLAN.md)). Effect
 holes that made the manifest forgeable are closed for the open/closed AND
 closed-closed point-free cases (the latter via variance-aware covariant re-open),
 and the **selfhost mirror is done** (2026-06-06: full effect subsystem ported into
-`selfhost/typecheck.mdk`, byte-identical harnesses). Remaining: user-definable
-effect labels (gap 2) and manifest emission. See **§5a (current state)** for the
-precise done/remaining split. Companion to [`language-design.md`](./language-design.md)
+`selfhost/typecheck.mdk`, byte-identical harnesses). User-definable effect labels
+(gap 2: the `effect Foo` declaration form) shipped 2026-06-06 (reference + selfhost
+mirror). Remaining: manifest emission (and cross-module label export). See **§5a
+(current state)** for the precise done/remaining split. Companion to [`language-design.md`](./language-design.md)
 (effect rows as they exist today) and [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
 (effects are erased before codegen). The **platform/runtime architecture** that
 consumes this feature (verification pipeline, plugin SDK model, worked plugin
@@ -117,6 +118,41 @@ Three audiences, three experiences:
 No `handle`, no `resume`, no continuations, no category theory. Arguably *simpler*
 than the monad world Medaka's effects already replaced.
 
+### 3a. Effect-label declaration syntax (pinned, Phase 146 gap 2)
+
+The atomic (no-parameter) declaration form is now implemented:
+
+```
+effect KV          -- declares the bare effect label KV, usable as <KV> in rows
+effect Fetch
+export effect Log   -- (parses; cross-module import of the label is future work)
+```
+
+**Surface syntax — the minimal thing that composes with the existing row grammar.**
+A top-level `effect Foo` declaration, where `Foo` is an uppercase name (same lexical
+class as type/constructor names, since labels appear in type position). It is a
+top-level `decl` (`DEffect of bool * ident`, the bool mirroring every other decl's
+`export` prefix) — so it admits `export effect Foo` for free and slots into the
+`inner_non_data_decl` rule with **zero new parser conflicts**. The declared label
+joins the built-in vocabulary (`IO, Mut, Async, Panic, Rand, Time`); using an
+*undeclared* label in a row stays a resolve-time `UnknownEffect`. A row mentioning
+the label (`<KV>`, `<KV, Log>`, `<KV | e>`) needs no new syntax — it is the existing
+row grammar over a now-larger label set.
+
+**Where the effect comes from.** A bare `effect KV` only *names* a capability; a
+program performs it by calling something whose type carries `<KV>`. The platform
+declares those host imports as ordinary externs — `extern kvGet : String -> <KV>
+String` — which is exactly the "the handler is the host" model (§2): the label is
+the manifest entry, the extern is the granted host function.
+
+**Deliberately deferred:** the **parameterized** form (`effect Fetch (Str)`,
+`<Fetch "idp.example.com">`) is Phase 146b (§6a); **cross-module** export/import of a
+declared label (registering a `pub` `effect` across the loader's module boundary) is
+not yet wired — labels register within their compilation unit. For the single-module
+"wow" demo and the test fixtures this is sufficient; multi-module platforms revisit
+it alongside manifest emission.
+
+
 ## 4. Non-goals
 
 - **No algebraic-effect handlers / resumptions / delimited continuations.** Ever,
@@ -146,12 +182,13 @@ Medaka's current effects are further along than this section originally claimed
    remains (closed-closed point-free aliasing) needing directional subsumption.
 2. **Granularity + extensibility.** One coarse `<IO>` is useless as a capability;
    the point is fine-grained, **user/platform-definable** labels (`<KV>`,
-   `<Fetch>`, `<Log>`, `<Clock>`). **Still open.** Today the vocabulary is a
-   fixed list (`IO, Mut, Async, Panic, Rand, Time`) hardcoded in `resolve.ml`
-   (`built_in_effects`), validated with `UnknownEffect`. Fix: an effect-label
-   declaration form (`effect KV`) + resolve registration. `DExtern` is already a
-   top-level decl, so a platform can declare `<KV>` host imports once labels are
-   user-definable.
+   `<Fetch>`, `<Log>`, `<Clock>`). **Shipped (Phase 146 gap 2, 2026-06-06).** The
+   `effect Foo` declaration form registers labels into the resolver vocabulary
+   (builtins `IO, Mut, Async, Panic, Rand, Time` ∪ user-declared); an undeclared
+   label in a row is still an `UnknownEffect`. `DExtern` is already a top-level
+   decl, so a platform declares `<KV>` host imports as ordinary externs. Syntax +
+   rationale in §3a; done/remaining in §5a. (Cross-module label export and the
+   parameterized form §6a remain.)
 
 Both are continuous with the original "show impurity in the type" intent — making it
 *honest and fine-grained*, not a new paradigm.
@@ -206,8 +243,26 @@ reference. (Expected proportionate cost: ~+20% per-decl typecheck overhead from
 per-arrow effvar allocation — see `selfhost/PERF-NOTES.md`.)
 
 **Remaining:**
-- **Gap 2 labels** — the `effect Foo` declaration form (above).
 - **Manifest emission** — unbuilt (waits on the edge runtime, §9).
+- **Cross-module effect labels** — a `pub` `effect` declared in one module is not yet
+  visible across the loader boundary (gap 2 registers labels within a compilation
+  unit; see §3a).
+
+**Done (Phase 146 gap 2, 2026-06-06):** user/platform-definable effect labels. A
+top-level `effect Foo` declaration (`DEffect of bool * ident`; `export effect Foo`
+parses) registers `Foo` into the resolver's effect vocabulary, replacing the
+hardcoded `built_in_effects` membership check with *builtins ∪ user-declared*; an
+undeclared label in a row stays a resolve-time `UnknownEffect`. Threaded
+lexer→parser→AST→resolve with **zero new parser conflicts** and no typecheck change
+(the row-unify/subsumption path is label-agnostic — it already treats any label
+uniformly, so user labels get Phase 146 laundering soundness for free). Labels are
+erased before codegen with the rest of the row. Surface-syntax rationale in §3a.
+Fixtures: `test_parser` (decl + export decl), `test_resolve`
+(`v_effect_decl`/`v_effect_decl_export` accept, `e_unknown_effect` reject),
+`test_typecheck` `effects` group (`t_eff_user_label_accept`,
+`t_eff_user_label_subsume` accept, `e_eff_user_label_escape` reject). The
+`=== TYPES ===`/`=== AST ===` diff golden stayed byte-identical (no existing program
+uses an `effect` decl). Selfhost mirror: see below.
 
 Note: contravariant "laundering" is not a soundness hole — effects are performed
 by *calling* effectful functions, so a value only exposes the effects it will
@@ -353,7 +408,9 @@ core) first; this is **Phase 146b**.
   tracking for ergonomics, host-as-grantor at the boundary — looks best, but the
   attenuation story (a function *removing* a capability before calling another)
   needs design.
-- **Effect-label declaration syntax** (`effect KV`?) and module/visibility rules.
+- **Effect-label declaration syntax** — **pinned & shipped**: top-level `effect Foo`
+  (`export effect Foo` to mark it public). See §3a. Module/visibility rules across the
+  loader boundary remain (labels currently register within their compilation unit).
 - **Parameterized effects** — now designed; see **§6a** (the pinned-domain /
   scoped-KV layer, Phase 146b). Two sub-questions deferred there: precision through
   wrappers (singleton-typed args) and param-aware row unification × typeclass/dict.
@@ -372,8 +429,10 @@ Propagation/inference (§5 gap 1) shipped in Phase 79/79e; laundering soundness
 shipped this phase (§5a) — gap 1 is now sound, and the **selfhost mirror is done**
 (full subsystem ported, 2026-06-06, §5a). The remaining sequence:
 
-1. **Fine-grained labels** (gap 2): the `effect Foo` declaration form + resolve
-   registration, so the manifest vocabulary is user/platform-definable.
+1. **Fine-grained labels** (gap 2): **shipped 2026-06-06** — the `effect Foo`
+   declaration form + resolve registration (reference + selfhost mirror), so the
+   manifest vocabulary is user/platform-definable. §3a / §5a. (Cross-module label
+   export still open.)
 2. **Research** (for the manifest layer): WasmGC status + who targets it and how;
    WASI Preview 2 / component-model capability model; Cloudflare/Fastly/Fermyon
    isolation models; object-capability & effects-as-security literature; Roc's

@@ -1422,6 +1422,7 @@ parseDecl = do
     TProp => parseProp False
     TTest => parseTest False
     TBench => parseBench False
+    TEffect => parseEffect False
     TInterface => parseInterface False False
     TImpl => parseImpl False False
     TDefault => afterDefault False
@@ -1457,6 +1458,7 @@ afterExport = do
     TProp => parseProp True
     TTest => parseTest True
     TBench => parseBench True
+    TEffect => parseEffect True
     TInterface => parseInterface True False
     TImpl => parseImpl True False
     TDefault => afterDefault True
@@ -1752,6 +1754,14 @@ parseBench pub = do
   body <- parseBody
   skipNewlines
   pure (DBench pub name body)
+
+-- `effect Foo` declares a user/platform effect label (Phase 146 gap 2).
+parseEffect : Bool -> Parser Decl
+parseEffect pub = do
+  expectTok TEffect
+  name <- upperNameP
+  skipNewlines
+  pure (DEffect pub name)
 
 -- ── interface declarations ───────────────────────────────────────────────
 parseInterface : Bool -> Bool -> Parser Decl

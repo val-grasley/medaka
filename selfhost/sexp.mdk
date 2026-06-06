@@ -210,6 +210,7 @@ declSexp (DRecord vis n ps fs ds) =
       slist (map escStr ds)
     ]
 declSexp (DUse pub path) = node "DUse" [boolStr pub, usePathSexp path]
+declSexp (DEffect pub n) = node "DEffect" [boolStr pub, escStr n]
 declSexp (DProp pub name params body) =
   node
     "DProp"
