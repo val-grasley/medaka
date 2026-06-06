@@ -127,6 +127,17 @@ promotedRef = Ref []
 dictEligibleRef : Ref (List String)
 dictEligibleRef = Ref []
 
+-- ── type-error accumulator ─────────────────────────────────────────────────
+-- Unification failures record diagnostics here instead of panicking, so
+-- ill-typed programs emit matching `TYPE ERROR: …` lines.  occursCheckFailed
+-- is a per-bindVar flag: occursAdjustUnbound sets it so bindVar can skip the
+-- actual link (preventing a cyclic union-find entry).
+typeErrors : Ref (List String)
+typeErrors = Ref []
+
+occursCheckFailed : Ref Bool
+occursCheckFailed = Ref False
+
 resetState : Unit -> <Mut> Unit
 resetState _ =
   let _ = set_ref tyvarCounter 0
@@ -140,6 +151,8 @@ resetState _ =
   let _ = set_ref methodSiteFns []
   let _ = set_ref dictAppFns []
   let _ = set_ref promotedRef []
+  let _ = set_ref typeErrors []
+  let _ = set_ref occursCheckFailed False
   set_ref currentLevel 0
 
 -- ── small helpers ─────────────────────────────────────────────────────────
@@ -209,7 +222,9 @@ occursAdjustVar id level cell = match cell.value
 
 occursAdjustUnbound : Int -> Int -> Ref Tyvar -> Int -> Int -> <Mut> Unit
 occursAdjustUnbound id level cell id2 lvl2
-  | id2 == id = panic "occurs check: infinite type"
+  | id2 == id =
+      let _ = set_ref occursCheckFailed True
+      set_ref typeErrors ("Cannot construct infinite type involving " ++ ppMono (TVar cell) :: typeErrors.value)
   | lvl2 > level = set_ref cell (Unbound id2 level)
   | otherwise = ()
 
@@ -233,7 +248,9 @@ unifyN (TApp a1 b1) (TApp a2 b2) =
 unifyN (TFun a1 _ b1) (TFun a2 _ b2) =
   let _ = unify a1 a2
   unify b1 b2
-unifyN (TTuple ts1) (TTuple ts2) = unifyList ts1 ts2
+unifyN (TTuple ts1) (TTuple ts2)
+  | lengthL ts1 == lengthL ts2 = unifyList ts1 ts2
+  | otherwise = typeMismatch (TTuple ts1) (TTuple ts2)
 unifyN a b = typeMismatch a b
 
 unifyVars : Ref Tyvar -> Ref Tyvar -> <Mut> Unit
@@ -241,8 +258,9 @@ unifyVars c1 c2 = if tyvarId c1 == tyvarId c2 then () else bindVar c1 (TVar c2)
 
 bindVar : Ref Tyvar -> Mono -> <Mut> Unit
 bindVar cell t =
+  let _ = set_ref occursCheckFailed False
   let _ = occursAdjust (tyvarId cell) (tyvarLevel cell) t
-  set_ref cell (Link t)
+  if occursCheckFailed.value then () else set_ref cell (Link t)
 
 unifyList : List Mono -> List Mono -> <Mut> Unit
 unifyList [] [] = ()
@@ -252,7 +270,8 @@ unifyList (x :: xs) (y :: ys) =
 unifyList _ _ = panic "unify: tuple arity mismatch"
 
 typeMismatch : Mono -> Mono -> <Mut> Unit
-typeMismatch a b = panic ("type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+typeMismatch a b =
+  set_ref typeErrors ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b :: typeErrors.value)
 
 -- ── generalization & instantiation ────────────────────────────────────────
 generalize : Mono -> <Mut> Scheme
@@ -1923,16 +1942,31 @@ registerActiveDictVars m slot (id :: rest) =
   let _ = set_ref activeDictVars ((id, dictParamName m slot) :: activeDictVars.value)
   registerActiveDictVars m (slot + 1) rest
 
+-- Render accumulated type errors as `TYPE ERROR: <msg>` lines (in order of
+-- occurrence — typeErrors accumulates newest-first, so reverse).
+typeErrorLines : List String -> List String
+typeErrorLines [] = []
+typeErrorLines (e :: rest) = ("TYPE ERROR: " ++ e) :: typeErrorLines rest
+
 export
 checkToLines : List Decl -> <Mut> String
-checkToLines prog = joinNl (schemeLines (checkProgram prog))
+checkToLines prog =
+  let schemes = checkProgram prog
+  let errs = revLL typeErrors.value
+  match errs
+    [] => joinNl (schemeLines schemes)
+    _ => joinNl (typeErrorLines errs)
 
 -- like checkToLines but seeds runtime.mdk's externs (for typechecking core.mdk,
 -- which references putStrLn / etc. declared in runtime.mdk)
 export
 checkToLinesWithRuntime : List Decl -> List Decl -> <Mut> String
 checkToLinesWithRuntime runtimeDecls prog =
-  joinNl (schemeLines (checkProgramSeeded (externSchemes runtimeDecls) prog))
+  let schemes = checkProgramSeeded (externSchemes runtimeDecls) prog
+  let errs = revLL typeErrors.value
+  match errs
+    [] => joinNl (schemeLines schemes)
+    _ => joinNl (typeErrorLines errs)
 
 -- ── multi-module typecheck (bootstrap front-end) ───────────────────────────
 -- Threads per-module exports in dependency order.  The prelude (core) is checked

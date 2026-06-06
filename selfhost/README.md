@@ -73,16 +73,17 @@ diagnostics dumper, plus `--resolve-modules <mod...>` for the multi-module
 ## Validation
 
 ```sh
-dune build --root .                       # build the reference binary
-sh test/diff_selfhost_lexer.sh            # diff the Medaka lexer vs OCaml goldens
-sh test/diff_selfhost_parse_errors.sh     # parser/lexer rejection path (~0.4s)
-sh test/diff_selfhost_selfproc.sh         # the bootstrap (#3) self-processing gate (4 legs, ~18s)
-sh test/diff_selfhost_core_ir.sh          # Stage 2 §2.1 Core IR equivalence gate — engine corpus (16)
-sh test/diff_selfhost_core_ir_prelude.sh  #   …with core.mdk prelude dispatch (5)
-sh test/diff_selfhost_core_ir_list.sh     #   …with core.mdk + list.mdk (2)
-sh test/diff_selfhost_core_ir_typed.sh    #   …typed return-position dispatch / CMethod (2)
-sh test/diff_selfhost_core_ir_run.sh      #   …true-execution stdout / === EVAL === goldens (18)
-sh test/diff_selfhost_core_ir_modules.sh  #   …loader-driven per-module frames (4)
+dune build --root .                           # build the reference binary
+sh test/diff_selfhost_lexer.sh                # diff the Medaka lexer vs OCaml goldens
+sh test/diff_selfhost_parse_errors.sh         # parser/lexer rejection path (~0.4s)
+sh test/diff_selfhost_typecheck_errors.sh     # typecheck TYPE ERROR accumulation (3 fixtures × 2 drivers, ~1s)
+sh test/diff_selfhost_selfproc.sh             # the bootstrap (#3) self-processing gate (4 legs, ~18s)
+sh test/diff_selfhost_core_ir.sh              # Stage 2 §2.1 Core IR equivalence gate — engine corpus (16)
+sh test/diff_selfhost_core_ir_prelude.sh      #   …with core.mdk prelude dispatch (5)
+sh test/diff_selfhost_core_ir_list.sh         #   …with core.mdk + list.mdk (2)
+sh test/diff_selfhost_core_ir_typed.sh        #   …typed return-position dispatch / CMethod (2)
+sh test/diff_selfhost_core_ir_run.sh          #   …true-execution stdout / === EVAL === goldens (18)
+sh test/diff_selfhost_core_ir_modules.sh      #   …loader-driven per-module frames (4)
 ```
 
 The harness runs the Medaka lexer over every fixture in `test/diff_fixtures/`
@@ -529,6 +530,17 @@ Stage-0 prerequisites in `../PLAN.md`).
      constraint-solving / coherence / dict-passing machinery. It IS needed for a
      complete self-hosted *elaboration* (mark → typecheck → dict_pass → eval), but
      the type-scheme output the goldens check is constraint-free.
+   - **Error accumulation (DONE 2026-06-05):** `typeMismatch` and the
+     occurs-check now push `"Type mismatch: …"` / `"Cannot construct infinite
+     type involving …"` to a `typeErrors : Ref (List String)` accumulator instead
+     of panicking.  `bindVar` guards the union-find link behind a
+     `occursCheckFailed` flag so no cyclic cell is written.  `checkToLines` /
+     `checkToLinesWithRuntime` emit `TYPE ERROR: <msg>` lines when errors exist
+     (matching `tc_probe.exe`'s format) and suppress the scheme output, matching
+     the reference's single-exception behavior.  Validated by
+     `test/diff_selfhost_typecheck_errors.sh` (3 fixtures × 2 drivers:
+     `typecheck_main` + `check.mdk`; int-vs-string mismatch, tuple-arity
+     mismatch, occurs-check).
    - **Genuine remaining limits** (don't surface in the goldens): inferred effect
      *propagation* (an unsigned function calling an effectful extern), and the
      "signature too general" error.
@@ -898,16 +910,19 @@ gap in fidelity. Concretely, by stage:
   parser (e.g. `f x = g x ? 0` — `?` is postfix, `0` is a leftover token,
   caught by the EOF check). The resolve/exhaust diagnostic stages can no longer
   receive input that the reference would have rejected before resolving.
-- **Typecheck — `panic`s on a type error instead of accumulating a diagnostic.**
-  A unification failure calls `panic ("type mismatch: " ++ …)` (typecheck.mdk:255
-  `typeMismatch`; :252 `unifyList` for tuple-arity mismatch), aborting the run
-  with no scheme output. The reference instead accumulates and prints
-  `TYPE ERROR: Type mismatch: Int vs String` and continues (the project-wide
-  "errors accumulate, don't raise" design). So `f x = x + 1; g = f "hello"`
-  prints a `TYPE ERROR:` line on the reference and panics on the self-hosted side.
-  (The type-aware `check_match` exhaustiveness — distinct from the ported guard
-  pass — likewise lives only in the reference's typecheck; see the typecheck slice
-  notes above. The "signature too general" omission is already listed above.)
+- ✅ **Typecheck — type-error accumulation added (fixed 2026-06-05).**
+  `typeMismatch` now pushes a `"Type mismatch: …"` string to a module-level
+  `typeErrors` accumulator and returns rather than panicking; the occurs-check
+  likewise pushes `"Cannot construct infinite type involving …"` and sets a
+  `occursCheckFailed` flag so `bindVar` skips the cyclic link.  `checkToLines` /
+  `checkToLinesWithRuntime` emit `TYPE ERROR: <msg>` lines (matching
+  `tc_probe.exe`) when errors are present and suppress scheme output — matching
+  the reference's single-exception behavior.  Validated by
+  `test/diff_selfhost_typecheck_errors.sh` (int-vs-string, tuple-arity,
+  occurs-check; each via both `typecheck_main.mdk` and `check.mdk`).
+  Still not accumulated: the type-aware `check_match` exhaustiveness pass (lives
+  inside the reference typechecker, needs the scrutinee type) and the "signature
+  too general" error — both remain deferred.
 - **Eval — runtime failures `panic` with divergent messages.** The reference
   raises `Eval_error msg`; the self-hosted eval `panic`s, and the message text
   differs even when the fault is the same: non-exhaustive match → reference
