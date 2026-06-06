@@ -1,0 +1,5 @@
+-- slice 5a: tuple construction and destructuring via let (CLet PTuple).
+main =
+  let t = (10, 20, 30)
+  let (a, _, _) = t
+  a

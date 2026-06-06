@@ -178,7 +178,7 @@ deliberately deferred to here:
     end-to-end: `selfhost/llvm_emit.mdk` (Core IR → textual LLVM IR) +
     `selfhost/llvm_emit_main.mdk` + `runtime/medaka_rt.c` (a malloc-and-leak stub;
     GC deferred), gated by `test/diff_selfhost_llvm.sh` (emit → clang → link → run →
-    diff vs `dev/eval_probe.exe`, **27/27 byte-identical**). Slice 1 = scalars
+    diff vs `dev/eval_probe.exe`, **31/31 byte-identical**). Slice 1 = scalars
     (arithmetic / comparisons / `let` / `if` / value bindings / type-directed
     print). Slice 2 = top-level functions + saturated direct calls; self-recursive
     tail calls lower to `musttail call`+`ret` (the calling-convention proof,
@@ -201,10 +201,16 @@ deliberately deferred to here:
     / returned closure / immediately-applied lambda) lowers to an INDIRECT call
     (load code_ptr, `call` it passing the closure word as the leading arg, §8.5),
     and a named top-level fn used as a value is eta-wrapped into a captureless
-    static closure forwarding to `@mdk_<name>` (5 new fixtures). **Not** the real
-    backend (no records/arrays/dispatch/GC; built-in list & tuple match heads,
-    guarded/range/record arms, partial application / over-application of closures,
-    recursive closures, and Ref capture all still panic).
+    static closure forwarding to `@mdk_<name>` (5 new fixtures). Slice 5a
+    (2026-06-06) = **records, tuples, mutable refs**: Records lower to boxed cells
+    like ADT constructors (`emitCtorAlloc`/`storeFields`/`loadField` verbatim);
+    field access uses a per-name order table built by scanning `CRecord` nodes.
+    Tuples use the same cell shape with `header = hashName "$tuple"`; `let (a,b) = t`
+    (`CLet PTuple` / `CBlock CSLet PTuple`) binds by `loadField`. Mutable refs
+    inline: `Ref x` → 1-field alloc; `set_ref r x` → store at offset 8; `r.value`
+    → `loadField 0` (4 new fixtures). **Not** the real backend (no arrays/dispatch/GC;
+    list match heads, tuple switch heads, guarded/range/record arms, partial
+    application, recursive closures, and Ref capture all still panic).
     See [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4.
     - **Spike-surfaced rep notes (NOT acted on — the spike's job is to surface
       them; native-rep decisions belong to the real backend).** (a) **Nullary
@@ -233,6 +239,20 @@ deliberately deferred to here:
       lifted forwarder + a 2-word cell) so every call is uniformly indirect; a real
       backend could instead intern one static closure per top-level fn (no per-use
       alloc) once arities are carried.
+      (g) **Records are positional by declaration order** — name-keyed access at
+      runtime would need a name→offset map; the spike sidesteps this by reading the
+      declaration (from scanned `CRecord` nodes) at emit time. The real backend needs
+      to either carry this table in the IR or resolve it during lowering.
+      (h) **Tuple header = hashName "$tuple"** — headerless tuples would save one word
+      but break the uniform cell discipline used for tag-testing in constructor
+      switches. Multi-arm tuple matches (`CTSwitch HTuple`) would need a header to
+      distinguish from ADTs; headerless tuples would require a separate representation
+      path.
+      (i) **Ref cells use `@mdk_alloc` (malloc-and-leak)** — this is the **first
+      mutation site** in the spike. The real GC runtime must add a **write barrier**
+      on the `set_ref` store path (`store i64 … ptr …` at offset 8); without one a
+      moving/generational GC would not track the pointer write and would corrupt the
+      heap.
 - ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `selfhost/core_ir.mdk`,
   `core_ir_lower.mdk`, `core_ir_eval.mdk` (+ sexp/round-trip gates). 47/47
   fixtures byte-identical across 6 corpora. See `selfhost/README.md`.
