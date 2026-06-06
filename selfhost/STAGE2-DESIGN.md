@@ -441,7 +441,11 @@ tree-walker oracle — the cheap setting, before any native runtime exists.
 lexical addressing (2.0), decision-tree matches, and routing (2.1) are reused; the
 ISA + VM loop retire. Build the native runtime slice by slice per `PLAN.md:206-214`
 (memory model, closure layout, tagged ADTs/records, GC — Boehm to start, extern
-catalog re-implementation, calling convention, FFI).
+catalog re-implementation, calling convention, FFI). The per-extern disposition
+for all 71 primitives (intrinsic / leaf-native / unicode / IO / GC-control /
+rewrite-in-Medaka / convert-to-typeclass) — and the argument that the extern ABI
+should be proven at the §2.2 VM stage, against the tree-walker oracle, *before*
+LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
 - **Gate:** native stdout diffed against the tree-walker (EVAL goldens) **and**
   against the bytecode VM — the VM is now a *second oracle* and a single-steppable
   reference that localizes whether a native failure is front-end/IR (shared,

@@ -146,7 +146,8 @@ deliberately deferred to here:
 - **Garbage collection:** conservative (Boehm) to start vs. reference counting
   vs. a precise collector.
 - **Runtime library:** re-implement the `extern` catalog against the native
-  runtime.
+  runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
+  is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
 - **Bootstrap closure:** self-hosted compiler + LLVM backend compiles itself to a
   standalone native binary — the finish line.
