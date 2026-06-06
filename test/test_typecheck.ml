@@ -1037,6 +1037,40 @@ let e_eff_escape_via_inferred = assert_err
 let e_eff_escape_backtick = assert_err
   "emit a b = print a\nf : Int -> Int -> Unit\nf x y = x `emit` y\n"
 
+(* Phase 146 soundness: effect laundering through a pure arrow annotation/slot
+   must be rejected — otherwise a capability manifest is forgeable.  Three
+   shapes, all caught by the open/closed subset rule in unify_row. *)
+
+(* (A) effectful lambda bound to a pure arrow signature → EffectLeak *)
+let e_eff_leak_annotated_value = assert_err
+  "f : Unit -> Unit\nf = (u => print \"io\")\n"
+
+(* (B) effectful lambda passed to a pure-callback parameter → EffectLeak *)
+let e_eff_leak_callback_param = assert_err
+  "callPure : (Unit -> Unit) -> Unit\ncallPure g = g ()\n\
+   bad = callPure (u => print \"io\")\n"
+
+(* (data field) effectful closure stored in a pure-arrow data field → EffectLeak *)
+let e_eff_leak_data_field = assert_err
+  "data Box = Box (Unit -> Unit)\nmkBox = Box (u => print \"io\")\n"
+
+(* Positive control: a PURE value used where an effectful arrow is allowed is
+   fine (subsumption — declaring more authority than you use is safe). *)
+let t_eff_pure_into_effectful_ok = assert_type
+  "runCb : (Unit -> <IO> Unit) -> <IO> Unit\nrunCb g = g ()\n\
+   pureCb u = ()\nmain : <IO> Unit\nmain = runCb pureCb\n"
+  "main" "Unit"
+
+(* Unit-level: an OPEN row that already carries a label (an inference arrow
+   `<IO | _>`) unified against a closed bound that lacks it must raise — the
+   escape the laundering fix adds. *)
+let e_unify_row_escape () =
+  let r = { labels = ["IO"]; tail = Some (fresh_effvar ()) } in
+  (try
+     unify_row r (closed_row []);
+     failwith "expected EffectLeak when closing <IO|_> against <>"
+   with Type_error (EffectLeak _, _) -> ())
+
 (* Parity baseline: the prefix form of the same program already errors. *)
 let e_eff_escape_prefix_parity = assert_err
   "emit a b = print a\nf : Int -> Int -> Unit\nf x y = emit x y\n"
@@ -4146,6 +4180,11 @@ let () =
       test_case "unify_row open/closed"     `Quick t_unify_row_open_closed;
       test_case "unify_row open/open link"  `Quick t_unify_row_open_open_link;
       test_case "unify_row closed permissive" `Quick t_unify_row_closed_permissive;
+      test_case "err: leak via annotated value" `Quick e_eff_leak_annotated_value;
+      test_case "err: leak via callback param"  `Quick e_eff_leak_callback_param;
+      test_case "err: leak via data field"      `Quick e_eff_leak_data_field;
+      test_case "pure into effectful ok"        `Quick t_eff_pure_into_effectful_ok;
+      test_case "unify_row escape raises"        `Quick e_unify_row_escape;
     ];
     "pipe and compose", [
       test_case "pipe Int"               `Quick t_pipe_int;

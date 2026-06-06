@@ -1,7 +1,12 @@
 # Capability-safe effects — Medaka's headline direction
 
-Status: **direction / design proposal** (no code yet; tracked as Phase 146 in
-[`PLAN.md`](./PLAN.md)). Companion to [`language-design.md`](./language-design.md)
+Status: **partially implemented** (Phase 146 in [`PLAN.md`](./PLAN.md)). Effect
+*propagation/inference* already shipped (Phase 79/79e); the laundering-soundness
+holes that made the manifest forgeable were closed for the open/closed-row cases
+(2026-06-05, this phase). Remaining: directional subsumption for the
+closed-closed alias case, user-definable effect labels (gap 2), the selfhost
+mirror, and manifest emission. See **§5a (current state)** for the precise
+done/remaining split. Companion to [`language-design.md`](./language-design.md)
 (effect rows as they exist today) and [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
 (effects are erased before codegen).
 
@@ -122,22 +127,61 @@ than the monad world Medaka's effects already replaced.
 
 ## 5. What changes vs. today — a completion, not a pivot
 
-Medaka's current effects (impurity markers, fixed labels, **annotation-only, no
-propagation**) are a good start but not yet a *security* property. Two gaps must
-close — neither toward handlers:
+Medaka's current effects are further along than this section originally claimed
+(it predated Phase 79). Two gaps were named; their status is now split:
 
 1. **Soundness via propagation/inference.** A claim like `<no Fetch>` must be
-   *guaranteed* transitively. Today an unsigned helper that performs an effect
-   doesn't surface it — fatal for a security boundary. Fix: **effect inference with
-   effect variables** so higher-order code composes, e.g.
-   `map : (a -> <e> b) -> List a -> <e> List b`. This is the meatiest piece.
+   *guaranteed* transitively. **Propagation shipped in Phase 79/79e**: effect
+   rows carry tail variables, inference computes them, higher-order code composes
+   (`map : (a -> <e> b) -> List a -> <e> List b` works on the real stdlib), and a
+   binding-boundary check rejects an unsigned helper's effect escaping a pure
+   signature. What was *still unsound* until this phase was **effect
+   laundering**: an effectful closure stored in / annotated as a pure arrow
+   (data field, value signature, callback parameter, typeclass-method impl body)
+   silently dropped its labels, because `unify_row` was deliberately permissive.
+   Those open/closed-row cases are **now closed** (see §5a). One narrower hole
+   remains (closed-closed point-free aliasing) needing directional subsumption.
 2. **Granularity + extensibility.** One coarse `<IO>` is useless as a capability;
    the point is fine-grained, **user/platform-definable** labels (`<KV>`,
-   `<Fetch>`, `<Log>`, `<Clock>`). Fix: an effect-label declaration form + a row of
-   such labels.
+   `<Fetch>`, `<Log>`, `<Clock>`). **Still open.** Today the vocabulary is a
+   fixed list (`IO, Mut, Async, Panic, Rand, Time`) hardcoded in `resolve.ml`
+   (`built_in_effects`), validated with `UnknownEffect`. Fix: an effect-label
+   declaration form (`effect KV`) + resolve registration. `DExtern` is already a
+   top-level decl, so a platform can declare `<KV>` host imports once labels are
+   user-definable.
 
 Both are continuous with the original "show impurity in the type" intent — making it
 *honest and fine-grained*, not a new paradigm.
+
+## 5a. Current state (done / remaining)
+
+**Done (Phase 79/79e):** effect rows + tail vars; effect inference; open/closed
+rows; `perform_effect`; transitive escape through unsigned helpers; higher-order
+`<e>` propagation through real stdlib; `EffectEscape` at binding boundaries.
+
+**Done (Phase 146, 2026-06-05):** laundering soundness for open/closed-row
+unification. `unify_row` now enforces that an OPEN row's labels are ⊆ the CLOSED
+bound's labels (closed extras still flow into the open sink — legit calls
+unchanged). New `EffectLeak` error. Closes: effectful lambda → pure value
+signature; → pure-callback parameter; → pure-arrow data field; → typeclass-method
+impl whose interface row is pure. **Zero regressions** across all unit suites,
+`@thorough`, and the selfhost typecheck/check/selfproc harnesses (no legitimate
+code relied on the laundering). Regression tests in `test_typecheck.ml`
+(`effects` group).
+
+**Remaining:**
+- **Directional subsumption** — the closed-closed alias case (`f : String -> Unit
+  = putStrLn`) still launders: both rows are closed, and symmetric unification
+  can't tell safe pure→effectful subsumption from unsafe effectful→pure escape.
+  Needs an expected-vs-actual `subsume_row` at annotation/binding sites (where
+  direction is known), not in symmetric `unify_row`. `unify_row`'s `None,None`
+  arm is left permissive on purpose until then (see `t_unify_row_closed_permissive`).
+- **Gap 2 labels** — the `effect Foo` declaration form (above).
+- **Selfhost mirror** — `selfhost/typecheck.mdk` mirrors `lib/typecheck.ml`; the
+  `unify_row` change is not yet mirrored. Harnesses pass today only because no
+  fixture launders; parity requires the mirror + an `eval_typed`/`typecheck`
+  fixture that launders.
+- **Manifest emission** — unbuilt (waits on the edge runtime, §9).
 
 **The PureScript cautionary tale (decisive for the design).** PureScript shipped
 exactly fine-grained row-effect tracking (`Eff (random :: RANDOM, console ::
@@ -212,11 +256,20 @@ gradual-verification principle Medaka applies elsewhere.
 
 ## 9. Next steps
 
-1. **Research** (prerequisite, see PLAN.md): WasmGC status + who targets it and how;
+Propagation/inference (§5 gap 1) shipped in Phase 79/79e; laundering soundness
+for open/closed rows shipped this phase (§5a). The remaining sequence:
+
+1. **Directional subsumption** — close the closed-closed alias hole (§5a) with an
+   expected-vs-actual `subsume_row` at annotation/binding sites. Completes the
+   soundness story; prerequisite for an *honest* manifest.
+2. **Selfhost mirror** of the `unify_row`/`subsume_row` changes (parity).
+3. **Fine-grained labels** (gap 2): the `effect Foo` declaration form + resolve
+   registration, so the manifest vocabulary is user/platform-definable.
+4. **Research** (for the manifest layer): WasmGC status + who targets it and how;
    WASI Preview 2 / component-model capability model; Cloudflare/Fastly/Fermyon
    isolation models; object-capability & effects-as-security literature; Roc's
    platform model; MoonBit + Grain (closest competitors — has either touched
    capability/effect safety?).
-2. **Design note**: concrete surface syntax + a worked plugin example + the manifest
-   format, pressure-tested against 2–3 realistic plugin shapes.
-3. **Phase 146 implementation** (staged per §6) once the design note is ratified.
+5. **Design note + manifest format**: concrete surface syntax + a worked plugin
+   example + the manifest format, pressure-tested against 2–3 realistic plugin
+   shapes, then the manifest emission/consumption when the edge runtime is built.
