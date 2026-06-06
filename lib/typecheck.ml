@@ -166,6 +166,7 @@ type type_error =
   | RecursiveTypeAlias  of ident                   (* type alias that expands to itself *)
   | TypeAliasArity      of ident * int * int        (* alias, expected params, got args *)
   | AnnotationTooGeneral of Ast.ty                  (* annotation claims more polymorphism than expr has *)
+  | SignatureTooGeneral  of ident * Ast.ty          (* declared signature is more general than the body allows *)
   | LetRecNonFunction   of ident                   (* `let rec x = ...` where RHS isn't a lambda *)
   | InternalError       of string                   (* a broken compiler invariant, surfaced as a diagnostic *)
   | CannotShadowPrelude of ident                    (* Phase 78a: redefining a prelude fn the stdlib uses internally *)
@@ -804,6 +805,10 @@ let pp_error = function
     Printf.sprintf
       "Type annotation '%s' is more polymorphic than the expression — a type variable in the annotation is actually a specific type (or two annotation variables are the same type)"
       (Ast.pp_ty t)
+  | SignatureTooGeneral (name, sig_ast) ->
+    Printf.sprintf
+      "Declared signature of '%s' is more general than its body — '%s' claims type variables that are the same type after inference"
+      name (Ast.pp_ty sig_ast)
   | LetRecNonFunction n ->
     Printf.sprintf
       "'%s' is bound by 'let rec' but its right-hand side is not a function. Recursive value bindings must have a lambda right-hand side; cyclic data structures are not supported."
@@ -1115,8 +1120,8 @@ let from_ast_type_with_constraints ?(aliases=Hashtbl.create 0) ast_ty =
   | Ast.TyConstrained (cs, inner) ->
     let mono = go inner in
     let constraints = List.map (fun (iface, args) -> (iface, List.map go args)) cs in
-    (constraints, mono)
-  | other -> ([], go other)
+    (constraints, mono, tbl)
+  | other -> ([], go other, tbl)
 
 (* Build the initial environment with the few built-ins the prelude can't
    declare itself.  Option / Result / Ordering and their constructors come
@@ -2540,14 +2545,14 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
      the real generalized constraint set is known. *)
   let prepared = List.map (fun (name, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
-    let (cs_monos, sig_t_opt) =
+    let (cs_monos, sig_t_opt, tbl_opt) =
       match sig_opt with
-      | None -> ([], None)
+      | None -> ([], None, None)
       | Some sig_ast ->
-        let (cs, sig_t) = from_ast_type_with_constraints
+        let (cs, sig_t, tbl) = from_ast_type_with_constraints
                             ~aliases:(!env_ref).aliases sig_ast in
         unify placeholder sig_t;
-        (cs, Some sig_t)
+        (cs, Some sig_t, Some tbl)
     in
     (* Mirror the post-inference registration below, minus its bound-ids filter
        (nothing is generalized yet): a top-level member generalizes all its arg
@@ -2561,7 +2566,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     let pre_cs = expand_supers (!env_ref).interfaces pre_cs in
     if pre_cs <> [] then
       Hashtbl.replace (!env_ref).fun_constraints name pre_cs;
-    (name, cs_monos, sig_t_opt, sig_opt, clauses)
+    (name, cs_monos, sig_t_opt, tbl_opt, sig_opt, clauses)
   ) members in
   (* Pass B: infer the bodies now that every member's constraints are visible. *)
   (* Phase 83: snapshot the obligation *and* method-usage accumulators so the
@@ -2577,7 +2582,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
   let oblig_n0 = List.length !obl_ref in
   let mu_ref = (!env_ref).method_usages in
   let mu_n0 = List.length !mu_ref in
-  let cs_monos_list = List.map (fun (name, cs_monos, sig_t_opt, sig_opt, clauses) ->
+  let cs_monos_list = List.map (fun (name, cs_monos, sig_t_opt, tbl_opt, sig_opt, clauses) ->
     let placeholder = List.assoc name placeholders in
     (* Phase 136: mark this member as the enclosing function so a constrained
        self-/mutual-recursive call in its body captures it (find_enclosing_dict
@@ -2662,6 +2667,28 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
        let extras = List.filter (fun e -> not (List.mem e declared)) !inferred_eff in
        if extras <> [] then fail (EffectEscape (name, declared, extras))
      | None -> ());
+    (* Signature-too-general check: after body inference, each declared type variable
+       must still be a distinct, unbound TVar.  If two variables unified with each
+       other (e.g. `id : a -> b` with body `\x => x` collapses `b` to `a`), the
+       declared signature is more polymorphic than the body allows and must be
+       rejected.  We only reject the two-variables-become-one case (not the case
+       where a variable grounds to a concrete type, which the existing typechecker
+       handles via generalization). *)
+    (match tbl_opt, sig_opt with
+     | Some tbl, Some sig_ast ->
+       let resolved = Hashtbl.fold (fun _ v acc -> normalize v :: acc) tbl [] in
+       (* Collect TVar refs only; concrete types are not the "too general" case *)
+       let tvar_refs = List.filter_map (function
+         | TVar r -> Some r
+         | _ -> None) resolved in
+       let rec has_duplicate seen = function
+         | [] -> false
+         | r :: rest ->
+           if List.memq r seen then true else has_duplicate (r :: seen) rest
+       in
+       if has_duplicate [] tvar_refs then
+         fail (SignatureTooGeneral (name, sig_ast))
+     | _ -> ());
     (* Value restriction (Phase 66): a let-rec member is always a function;
        a non-letrec zero-arg binding is gated on its RHS so e.g. `r = Ref []`
        is not over-generalized. *)
