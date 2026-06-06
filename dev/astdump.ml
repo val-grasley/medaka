@@ -211,6 +211,7 @@ let rec sexp_decl = function
       node "DRecord" [sexp_vis vis; esc_str n; slist (List.map esc_str ps);
                       slist (List.map sexp_field fields); slist (List.map esc_str derives)]
   | DUse (p, path)          -> node "DUse" [string_of_bool p; sexp_use_path path]
+  | DEffect (p, n)          -> node "DEffect" [string_of_bool p; esc_str n]
   | DTypeAlias (p, n, ps, t) ->
       node "DTypeAlias" [string_of_bool p; esc_str n; slist (List.map esc_str ps); sexp_ty t]
   | DNewtype (p, n, ps, con, fty, derives) ->

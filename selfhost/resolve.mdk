@@ -48,6 +48,7 @@ public export record Env
   fieldOwners : List (String, String)
   interfaces : List String
   ifaceMethods : List (String, List String)
+  effects : List String
   imported : List String
 
 -- the owners registered for a field name in the field-owner multimap
@@ -88,7 +89,7 @@ checkType _ (TyVar _) = []
 checkType env (TyApp a b) = checkType env a ++ checkType env b
 checkType env (TyFun a b) = checkType env a ++ checkType env b
 checkType env (TyTuple ts) = concatMapList (checkType env) ts
-checkType env (TyEffect labels _ t) = concatMapList checkEffect labels
+checkType env (TyEffect labels _ t) = concatMapList (checkEffect env) labels
   ++ checkType env t
 checkType env (TyConstrained cs t) = concatMapList (checkConstraint env) cs
   ++ checkType env t
@@ -96,8 +97,8 @@ checkType env (TyConstrained cs t) = concatMapList (checkConstraint env) cs
 builtInEffects : List String
 builtInEffects = ["IO", "Mut", "Async", "Panic", "Rand", "Time"]
 
-checkEffect : String -> List ResError
-checkEffect e = if contains e builtInEffects then [] else [UnknownEffect e]
+checkEffect : Env -> String -> List ResError
+checkEffect env e = if contains e builtInEffects || contains e env.effects then [] else [UnknownEffect e]
 
 checkConstraint : Env -> Constraint -> List ResError
 checkConstraint env (Constraint iface args) = (if contains iface env.interfaces then [] else [UnknownInterface iface])
@@ -482,6 +483,13 @@ dataRecordNames ((DNewtype _ n _ _ _ _)::rest) = n :: dataRecordNames rest
 dataRecordNames ((DAttrib _ d)::rest) = dataRecordNames (d :: rest)
 dataRecordNames (_::rest) = dataRecordNames rest
 
+-- user/platform effect labels declared with `effect Foo` (Phase 146 gap 2)
+effectNames : List Decl -> List String
+effectNames [] = []
+effectNames ((DEffect _ n)::rest) = n :: effectNames rest
+effectNames ((DAttrib _ d)::rest) = effectNames (d :: rest)
+effectNames (_::rest) = effectNames rest
+
 ctorNames : List Decl -> List String
 ctorNames [] = []
 ctorNames ((DData _ _ _ vs _)::rest) = map variantName vs ++ ctorNames rest
@@ -622,6 +630,7 @@ buildEnv runtimeDecls preludeDecls prog =
     fieldOwners = pFieldOwners ++ fieldOwnersOf prog,
     interfaces = map fst pIfaces ++ map fst uIfaces,
     ifaceMethods = pIfaces ++ uIfaces,
+    effects = effectNames prog,
     imported = imported
   }
 
@@ -948,6 +957,7 @@ buildEnvMM runtimeDecls preludeDecls known prog =
     fieldOwners = pFieldOwners ++ fieldOwnersOf prog ++ adds.iaFieldOwners,
     interfaces = baseIfaces,
     ifaceMethods = pIfaces ++ uIfaces ++ impIfaceMethods,
+    effects = effectNames prog,
     imported = adds.iaImported
   }
   (env, adds.iaErrors)

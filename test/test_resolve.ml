@@ -117,6 +117,9 @@ let e_unbound        = assert_err (unbound "y") "f x = y\n"
 let e_unbound_top    = assert_err (unbound "undefined") "f = undefined\n"
 let e_unknown_type   = assert_err (unknown_type "Foo") "f : Foo -> Int\nf x = x\n"
 let e_unknown_effect = assert_err (unknown_effect "Banana") "f : Int -> <Banana> Int\nf x = x\n"
+(* Phase 146 gap 2: a user `effect Foo` decl registers the label so `<Foo>` resolves. *)
+let v_effect_decl = assert_ok "effect Banana\nf : Int -> <Banana> Int\nf x = x\n"
+let v_effect_decl_export = assert_ok "export effect KV\nf : Int -> <KV> Int\nf x = x\n"
 
 let e_duplicate_data =
   assert_err (duplicate "Foo") "data Foo = A\ndata Foo = B\n"
@@ -399,6 +402,8 @@ let () =
       test_case "shared field pattern" `Quick v_shared_field_pattern;
       test_case "cross-record update resolves" `Quick v_cross_record_update_resolves;
       test_case "effect type"       `Quick v_effect;
+      test_case "effect decl registers label" `Quick v_effect_decl;
+      test_case "export effect decl"          `Quick v_effect_decl_export;
       test_case "type vars OK"      `Quick v_typevars;
       test_case "shadowing OK"      `Quick v_shadowing;
       test_case "multi-clause fn"   `Quick v_multi_clause;

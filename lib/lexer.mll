@@ -251,6 +251,7 @@ let keyword_or_ident s =
   | "prop"      -> PROP
   | "test"      -> TEST
   | "bench"     -> BENCH
+  | "effect"    -> EFFECT
   | "function"  -> FUNCTION
   | "True"      -> BOOL true
   | "False"     -> BOOL false
@@ -699,6 +700,7 @@ let token_to_string : token -> string = function
   | REQUIRES -> "REQUIRES" | DO -> "DO" | AS -> "AS" | EXTERN -> "EXTERN"
   | DERIVING -> "DERIVING" | TYPE -> "TYPE" | NEWTYPE -> "NEWTYPE"
   | PROP -> "PROP" | TEST -> "TEST" | BENCH -> "BENCH" | FUNCTION -> "FUNCTION"
+  | EFFECT -> "EFFECT"
   (* Operators *)
   | PLUS -> "PLUS" | MINUS -> "MINUS" | STAR -> "STAR" | SLASH -> "SLASH"
   | MOD -> "MOD" | EQ_EQ -> "EQ_EQ" | NEQ -> "NEQ" | LT -> "LT" | GT -> "GT"

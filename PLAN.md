@@ -253,14 +253,21 @@ item 5 (fine-grained labels) is the first *remaining* coding step.
    laundering soundness all shipped — in the reference *and* the selfhost mirror (see
    the Phase 146 entry above + CAPABILITY-EFFECTS.md §5a). This was the prerequisite
    for any capability guarantee; gap-1 is closed. No remaining work here.
-5. **User-definable fine-grained effect labels (gap 2 — the first REMAINING coding
-   step).** Replace the hardcoded `built_in_effects` (`IO`/`Mut`/`Async`/`Panic`/
-   `Rand`/`Time` in `resolve.ml`) with an `effect Foo` declaration form so labels are
-   user/platform-definable (`<KV>`/`<Fetch>`/`<Log>`); subsumption over label sets.
-   Depends on item 2 (design note pins the syntax). Lands across
-   lexer/parser/resolve/typecheck (+ selfhost mirror). Skill: **add-language-feature**.
+5. **User-definable fine-grained effect labels (gap 2). ✅ DONE 2026-06-06.**
+   Replaced the hardcoded `built_in_effects` membership check in `resolve.ml` with
+   *builtins (`IO`/`Mut`/`Async`/`Panic`/`Rand`/`Time`) ∪ user-declared* via a new
+   top-level `effect Foo` (`export effect Foo`) declaration form (`DEffect of bool *
+   ident`); an undeclared label in a row stays `UnknownEffect`. Threaded
+   lexer→parser→AST→resolve with **zero new parser conflicts**; typecheck needed no
+   change (the row-unify/subsumption path is label-agnostic, so user labels inherit
+   Phase 146 laundering soundness). Selfhost mirror complete (lexer/parser/ast/
+   sexp/resolve `.mdk`), all `diff_selfhost_*` byte-identical. Fixtures: unit
+   (test_parser/resolve/typecheck) + differential (diff_fixtures/effect_label,
+   parse_fixtures/effect_decl, resolve_fixtures/unknown_effect). Syntax + rationale:
+   CAPABILITY-EFFECTS.md §3a/§5a. **Remaining for the wedge:** cross-module label
+   export + manifest emission. Skill: **add-language-feature**.
 
-**Concrete near-term target:** item 5 (labels) + a ~150–250-line harness, on the
+**Concrete near-term target:** gap 2 (labels, ✅) + a ~150–250-line harness, on the
 existing interpreter, produces the **minimal "wow" demo** (an AI-generated plugin
 auto-rejected for a call-graph-deep exfiltration attempt) — the first shareable
 artifact, decoupled from the backend. Full sketch: CAPABILITY-PLATFORM.md §7c.
@@ -350,11 +357,16 @@ Downstream (already captured, NOT near-term): **Phase 146b** parameterized effec
     check/check_modules/selfproc/eval harnesses byte-identical; `@thorough` green.
     The self-hosted typechecker now rejects effect laundering identically to the
     reference — gap-1 selfhost parity closed.
-  - **Gap 2 (fine-grained labels) — TODO.** Replace the hardcoded
-    `built_in_effects` (`IO, Mut, Async, Panic, Rand, Time`) in `resolve.ml` with an
-    `effect Foo` declaration form so labels are user/platform-definable
-    (`<KV>`/`<Fetch>`/`<Log>`). `DExtern` is already a top-level decl, so a platform
-    can declare `<KV>` host imports once labels are user-definable.
+  - **Gap 2 (fine-grained labels) — ✅ DONE 2026-06-06.** Replaced the hardcoded
+    `built_in_effects` (`IO, Mut, Async, Panic, Rand, Time`) membership check in
+    `resolve.ml` with *builtins ∪ user-declared* via a top-level `effect Foo`
+    (`export effect Foo`) declaration form (`DEffect of bool * ident`); undeclared
+    labels stay `UnknownEffect`. Lexer→parser→AST→resolve, zero new parser
+    conflicts; typecheck unchanged (row-unify is label-agnostic → user labels get
+    Phase 146 laundering soundness free). `DExtern` is a top-level decl, so a
+    platform declares `<KV>` host imports as ordinary externs. Selfhost mirror
+    complete; all `diff_selfhost_*` byte-identical, `@thorough` green. Details:
+    CAPABILITY-EFFECTS.md §3a/§5a. Cross-module label export deferred.
   - **Manifest emission — TODO** (waits on the edge runtime; research pass per
     CAPABILITY-EFFECTS §9).
   - **Phase 146b (parameterized effects) — TODO.** Pinned domains `<Fetch "x.com">`

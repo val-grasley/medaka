@@ -220,6 +220,8 @@ public export data Decl
   | DData DataVis String (List String) (List Variant) (List String)
   | DRecord DataVis String (List String) (List Field) (List String)
   | DUse Bool UsePath
+  -- pub? `effect Foo` — user/platform effect-label declaration (Phase 146 gap 2)
+  | DEffect Bool String
   | DProp Bool String (List PropParam) Expr
   | DTest Bool String Expr
   | DBench Bool String Expr

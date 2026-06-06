@@ -2423,7 +2423,7 @@ let rec eval_repl_decl (rs : repl_state) (decl : decl) : unit =
        fill name v
      ) bindings
    | DRecord _ | DTypeSig _ | DExtern _ | DUse _ | DTypeAlias _ | DProp _
-   | DTest _ | DBench _ -> ()
+   | DTest _ | DBench _ | DEffect _ -> ()
    | DAttrib (_, d) ->
      eval_repl_decl rs d)
 

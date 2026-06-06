@@ -64,6 +64,7 @@ public export data Token
   | TProp
   | TTest
   | TBench
+  | TEffect
   | TFunction
   | TPlus
   | TMinus
@@ -160,6 +161,7 @@ tokenToString TNewtype = "NEWTYPE"
 tokenToString TProp = "PROP"
 tokenToString TTest = "TEST"
 tokenToString TBench = "BENCH"
+tokenToString TEffect = "EFFECT"
 tokenToString TFunction = "FUNCTION"
 tokenToString TPlus = "PLUS"
 tokenToString TMinus = "MINUS"
@@ -326,6 +328,7 @@ keywordOrIdent "newtype" = TNewtype
 keywordOrIdent "prop" = TProp
 keywordOrIdent "test" = TTest
 keywordOrIdent "bench" = TBench
+keywordOrIdent "effect" = TEffect
 keywordOrIdent "function" = TFunction
 keywordOrIdent s = TIdent s
 

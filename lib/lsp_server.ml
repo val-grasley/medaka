@@ -406,6 +406,8 @@ let symbol_of_decl (d : Ast.decl) (loc : Ast.loc) : DocumentSymbol.t option =
     mk test_name SymbolKind.Function (Some "test")
   | DBench { bench_name; _ } ->
     mk bench_name SymbolKind.Function (Some "bench")
+  | DEffect (_, name) ->
+    mk name SymbolKind.Event (Some "effect")
   | DAttrib _ -> None  (* unreachable via inner_decl *)
 
 let handle_document_symbol (p : DocumentSymbolParams.t)
@@ -539,6 +541,7 @@ let decl_defines (d : Ast.decl) (name : Ast.ident) : bool =
   | DProp { prop_name; _ }    -> prop_name = name
   | DTest { test_name; _ }    -> test_name = name
   | DBench { bench_name; _ }  -> bench_name = name
+  | DEffect (_, n)            -> n = name
   | DAttrib _                 -> false
 
 (* Return the location of the first decl that defines [name], if any. *)

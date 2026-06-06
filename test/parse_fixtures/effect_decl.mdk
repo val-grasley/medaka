@@ -1,0 +1,5 @@
+effect KV
+export effect Fetch
+
+get : String -> <KV> String
+get k = k
