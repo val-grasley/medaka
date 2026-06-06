@@ -544,7 +544,7 @@ The uniform-word rep makes the convention fall out cleanly:
   closure rep below is now proven on the spike: a `CLam` lambda-lifts to a top-level
   `define`, the closure cell `{ header, code_ptr, captured… }` allocates via the
   same `mdk_alloc` path, and a higher-order call loads `code_ptr` and passes the
-  closure word as the leading arg. 27/27 gate. Rep decisions surfaced (deferred —
+  closure word as the leading arg. 31/31 gate (slices 1–5a). Rep decisions surfaced (deferred —
   PLAN.md spike-rep notes (d)–(f)): the one-word **header is never inspected** and
   could be dropped; **saturated calls only** (arity must move into the cell for
   partial/over-application); named-fn-as-value is **eta-wrapped per use** (could be
