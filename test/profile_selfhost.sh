@@ -1,50 +1,50 @@
 #!/bin/sh
-# Per-stage performance profiling for the self-hosted pipeline (single-file path).
-# Runs selfhost/profile_main.mdk over representative target files, collecting N
-# timed runs and reporting per-stage minimums as a table.
+# Per-stage performance profiling for the self-hosted pipeline.
+# Runs single-file (profile_main.mdk) and multi-module (profile_modules_main.mdk)
+# profilers over representative targets, collecting N timed runs and reporting
+# per-stage minimums as tables.
 #
 # Usage:  sh test/profile_selfhost.sh [N]
 #
 # N defaults to 3 (min-of-3 is the standard baseline per PERF-NOTES.md).
 # Results go to stdout; progress/debug goes to stderr.
 #
-# Files profiled:
+# Single-file targets:
 #   selfhost/lexer.mdk     — self-contained (no imports); all stages accurate
 #   selfhost/parser.mdk    — large file with imports; parse+desugar accurate
 #
-# Output format (one table per file):
-#   === <file> (min-of-N) ===
-#   stage             min        ops
-#   -----             ---        ---
-#   parse-prelude   0.228s   runtime+core
-#   parse           0.089s   958 decls
-#   ...
+# Multi-module target:
+#   selfhost/all_modules_entry.mdk — full 15-module selfhost closure;
+#       reports parse, load, desugar, mark, typecheck per-stage (no eval)
 #
-# Complements perf_main.mdk (which times the multi-module loader path, bundling
-# mark+typecheck into a single 'elaborate' phase).
+# Output columns: stage, min elapsed, alloc-delta (MB, Gc.allocated_bytes proxy),
+# ops (work-unit description).
+#
+# Format (one table per target):
+#   === <file> (min-of-N) ===
+#   stage             min       alloc      ops
+#   -----             ---       -----      ---
+#   parse-prelude   0.228s   1025.7MB   runtime+core
+#   parse           0.368s   1588.3MB   405 decls
+#   ...
 set -u
 N=${1:-3}
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAIN="$ROOT/_build/default/bin/main.exe"
-DRIVER="$ROOT/selfhost/profile_main.mdk"
+SINGLE_DRIVER="$ROOT/selfhost/profile_main.mdk"
+MODULES_DRIVER="$ROOT/selfhost/profile_modules_main.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 
 [ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)" >&2; exit 2; }
-[ -f "$DRIVER" ] || { echo "missing $DRIVER" >&2; exit 2; }
+[ -f "$SINGLE_DRIVER" ] || { echo "missing $SINGLE_DRIVER" >&2; exit 2; }
+[ -f "$MODULES_DRIVER" ] || { echo "missing $MODULES_DRIVER" >&2; exit 2; }
 
-profile_file() {
-  target="$1"
-  echo "=== $target (min-of-$N) ==="
-  tmpfile="$(mktemp)"
-  i=1
-  while [ "$i" -le "$N" ]; do
-    MEDAKA_PERF=1 "$MAIN" run "$DRIVER" "$RUNTIME" "$CORE" "$target" 2>>"$tmpfile" >/dev/null
-    i=$((i + 1))
-  done
-  # Compute per-stage minimums across all N runs.
-  # [perf] line format: "[perf] STAGE\tTIMEs\tops"
-  # (emitTotal omits the ops field — handled by the n>=3 guard below)
+# Parse min-of-N [perf] output from tmpfile and print a table.
+# Handles both 3-field format (label, time, ops) and 4-field format (label, time, alloc, ops).
+# The total line may have no ops field.
+print_min_table() {
+  tmpfile="$1"
   awk '
     /^\[perf\] / {
       n = split($0, parts, "\t")
@@ -52,9 +52,20 @@ profile_file() {
       sub(/^\[perf\] /, "", label)
       t = parts[2]
       sub(/s$/, "", t)
-      ops = (n >= 3) ? parts[3] : ""
+      if (n >= 4) {
+        alloc = parts[3]
+        sub(/MB$/, "", alloc)
+        ops = parts[4]
+      } else if (n == 3) {
+        alloc = ""
+        ops = parts[3]
+      } else {
+        alloc = ""
+        ops = ""
+      }
       if (!(label in min_t) || t + 0 < min_t[label] + 0) {
         min_t[label] = t
+        alloc_l[label] = alloc
         ops_l[label] = ops
       }
       if (!(label in seen)) {
@@ -63,18 +74,47 @@ profile_file() {
       }
     }
     END {
-      fmt = "%-16s  %8s  %s\n"
-      printf fmt, "stage", "min", "ops"
-      printf fmt, "-----", "---", "---"
+      fmt = "%-16s  %8s  %9s  %s\n"
+      printf fmt, "stage", "min", "alloc", "ops"
+      printf fmt, "-----", "---", "-----", "---"
       for (i = 1; i <= cnt; i++) {
         l = order[i]
-        printf "%-16s  %7ss  %s\n", l, min_t[l], ops_l[l]
+        a = (alloc_l[l] != "") ? alloc_l[l] "MB" : "-"
+        printf "%-16s  %7ss  %8s  %s\n", l, min_t[l], a, ops_l[l]
       }
     }
   ' "$tmpfile"
+}
+
+profile_single() {
+  target="$1"
+  echo "=== $target (min-of-$N, single-file) ==="
+  tmpfile="$(mktemp)"
+  i=1
+  while [ "$i" -le "$N" ]; do
+    MEDAKA_PERF=1 "$MAIN" run "$SINGLE_DRIVER" "$RUNTIME" "$CORE" "$target" 2>>"$tmpfile" >/dev/null
+    i=$((i + 1))
+  done
+  print_min_table "$tmpfile"
   rm -f "$tmpfile"
   printf '\n'
 }
 
-profile_file "$ROOT/selfhost/lexer.mdk"
-profile_file "$ROOT/selfhost/parser.mdk"
+profile_modules() {
+  entry="$1"
+  root="$2"
+  echo "=== $entry (min-of-$N, multi-module) ==="
+  tmpfile="$(mktemp)"
+  i=1
+  while [ "$i" -le "$N" ]; do
+    MEDAKA_PERF=1 "$MAIN" run "$MODULES_DRIVER" "$RUNTIME" "$CORE" "$entry" "$root" 2>>"$tmpfile" >/dev/null
+    i=$((i + 1))
+  done
+  print_min_table "$tmpfile"
+  rm -f "$tmpfile"
+  printf '\n'
+}
+
+profile_single "$ROOT/selfhost/lexer.mdk"
+profile_single "$ROOT/selfhost/parser.mdk"
+profile_modules "$ROOT/selfhost/all_modules_entry.mdk" "$ROOT/selfhost"

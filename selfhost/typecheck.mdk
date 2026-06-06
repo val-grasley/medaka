@@ -2667,6 +2667,17 @@ elaborateModules runtimeDecls coreDecls modules =
 prePassModulePair : List String -> (String, List Decl) -> (String, List Decl)
 prePassModulePair rpNames (mid, prog) = (mid, prePassDict rpNames [] prog)
 
+-- The mark sub-phase of elaborateModules (RKey-only): compute rpNames over the
+-- full module graph and prePassDict each module.  Exported so profiling drivers
+-- can bracket the mark phase vs the typecheck phase separately.
+export
+markModules : List Decl -> List (String, List Decl) -> (List Decl, List (String, List Decl))
+markModules coreDecls modules =
+  let rpNames = returnPosMethodNames (coreDecls ++ concatMapL snd modules)
+  let core2 = prePassDict rpNames [] coreDecls
+  let modules2 = map (prePassModulePair rpNames) modules
+  (core2, modules2)
+
 -- typecheck one module (seeded like checkModuleFull) AND immediately stamp the
 -- EMethodAt route refs it just recorded.  checkModuleFull's resetState clears
 -- pendingSites before inference, so on return pendingSites holds exactly THIS
