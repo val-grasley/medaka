@@ -1,0 +1,6 @@
+-- Float parameter THROUGH a chain of calls (slice 2b): `g` calls `f`, and the
+-- Float param type must propagate caller→callee (the two-pass fixpoint) so both
+-- boundaries lower as float, and the final result is a Float.
+f x = x + 1.0
+g y = f y * 2.0
+main = g 4.0

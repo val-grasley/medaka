@@ -1,0 +1,6 @@
+-- Bool PARAMETER across a function boundary (slice 2b): `p` is inferred Bool from
+-- its use as an `if` condition, and `choose` returns an Int.  The argument
+-- (itself a Bool from a comparison) is passed as a uniform i64 word; the callee
+-- treats it as a Bool when branching.
+choose p = if p then 10 else 20
+main = choose (3 < 7)

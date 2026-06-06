@@ -850,11 +850,10 @@ stages and tracking regressions.
 - **Allocation rate:** load is the highest-pressure phase (14.9 GB for 3.46s
   ≈ 4.3 GB/s); typecheck is second (10.4 GB for 2.03s ≈ 5.1 GB/s — more
   allocation-dense per second due to HM unification creating many type cells).
-- **§2.2 VM capstone:** when the VM is complete, rerun `sh test/profile_selfhost.sh 3`.
-  The `load` phase uses the self-hosted OCaml tree-walker lexer+parser (not changed
-  by the VM); the `typecheck` phase should shrink when the VM replaces eval.
-  Compare the `typecheck` row above against the VM-driven baseline to measure the
-  VM speedup directly.
+- **§2.2 VM capstone:** see the "VM vs Core IR tree-walker" section below for the
+  full comparison.  Short answer: the VM is slower here — the `load` overhead (load
+  uses the self-hosted OCaml tree-walker lexer+parser, not the VM) completely masks
+  any eval difference at the multi-module granularity.
 
 ## 2026-06-06 — Phase 146 effect-tracking port (expected typecheck regression)
 
@@ -886,3 +885,81 @@ acceptable, proportionate cost for the gap-1 soundness feature; no perf-work
 attempted to claw it back (would be premature pre-VM, and the dominant `load` phase
 is the real lever). Correctness gate: every `diff_selfhost_*` harness byte-identical;
 `@thorough` 72 green.
+
+---
+
+## §2.2 VM capstone: VM vs Core IR tree-walker (2026-06-06)
+
+**New driver:** `selfhost/vm_perf_main.mdk` — lowers a source file once to
+`CProgram`, then runs both evaluators in the same process and times each via
+`timer.mdk`; `MEDAKA_PERF` unset ⇒ byte-identical to `core_ir_main.mdk`.
+
+**Method:** `MEDAKA_PERF=1 medaka run selfhost/vm_perf_main.mdk <file>`, min-of-3
+invocations per fixture.  The `lower` column is the shared front-end
+(parse → desugar → annotateProgram → lowerProgram); `ceval` is `cevalMain` (§2.1
+Core IR tree-walker); `bceval` is `bcEvalMain` (§2.2 bytecode compiler + stack VM).
+
+### Single-file engine fixtures (intra-process, min-of-3, 2026-06-06)
+
+| fixture | lower | ceval | bceval | ratio (bc/ceval) |
+|---------|------:|------:|-------:|:---:|
+| fib 22 (17 711 calls) | 0.0022s | 1.904s | 6.116s | **3.21×** |
+| guarded\_clauses (collatzLen 27 — 111 steps) | 0.0065s | 0.0065s | 0.0319s | **4.88×** |
+| letrec\_mutual (mutual isEven/isOdd + collatz) | 0.0054s | 0.0132s | 0.0311s | **2.36×** |
+| refs\_mut (Ref + set\_ref + countUp/sumTo) | 0.0087s | 0.0018s | 0.0050s | **2.78×** |
+| records (record construction/update/access) | 0.0086s | 0.00077s | 0.00129s | 1.68× |
+| adt\_nested (ADT + match) | 0.0077s | 0.00133s | 0.00193s | 1.44× |
+| arrays\_ranges (array/range/slice ops) | 0.0078s | 0.00100s | 0.00168s | 1.68× |
+| hof\_compose (HOF/closures/pipe/sections) | 0.0078s | 0.00138s | 0.00329s | 2.38× |
+| list\_ops (cons/append/eq/ordering) | 0.0091s | 0.00111s | 0.00232s | 2.09× |
+| dispatch\_basic (interface, arg-position) | 0.0068s | 0.00102s | 0.00179s | 1.75× |
+| dispatch\_multi (multi-method interface) | 0.0020s | 0.00202s | 0.00310s | 1.52× |
+| dispatch\_default (default method override) | 0.0007s | 0.00074s | 0.00082s | 1.11× |
+| shadow\_closure (lexical capture/shadow) | 0.0007s | 0.00070s | 0.00114s | 1.63× |
+| string\_kernel (string externs) | 0.0008s | 0.00079s | 0.00131s | 1.64× |
+| patterns\_misc (literal/as/curried patterns) | 0.0121s | 0.00299s | 0.00625s | 2.09× |
+
+### Multi-module fixtures (process-level user time, min-of-3, 2026-06-06)
+
+| fixture | core\_ir\_modules (ceval) | eval\_bytecode\_modules (bceval) | ratio |
+|---------|-------------------------:|--------------------------------:|:---:|
+| basic | 0.29s | 0.29s | 1.00× |
+| iface | 0.29s | 0.29s | 1.00× |
+| isolation | 0.29s | 0.30s | 1.03× |
+| prelude | 0.30s | 0.30s | 1.00× |
+
+### Interpretation
+
+**The §2.2 bytecode VM is 1.5–4.9× slower than the §2.1 Core IR tree-walker**
+on pure-compute workloads under double interpretation (the self-hosted compiler
+itself runs through the OCaml tree-walker, so the VM instruction dispatch runs
+*interpreted*).  Structural fixtures (records, ADTs, arrays) show 1.4–1.7× overhead;
+recursive kernels (fib, collatz) show 2.4–4.9× because each recursive call adds VM
+instruction-loop overhead on top of the already-interpreted `VClosureF` dispatch.
+`refs_mut` (2.78×) and closures (1.6–2.4×) are in the middle — heap allocation and
+env-frame construction dominate their cost equally in both paths, but the VM adds
+bytecode-step overhead on top.
+
+**Multi-module: no observable difference.** The 0.29–0.30s process time for all
+four multi-module fixtures is load-dominated (loading the self-hosted driver itself
+costs ~0.29s regardless of which evaluator is called); the actual eval step for
+these small fixtures (a handful of decls each) is unmeasurable at process-level
+granularity.
+
+**Why not a win here?** Lexical addressing (`annotateProgram` → `CVar` with `Addr`)
+was designed so the VM does O(1) slot-indexed loads instead of by-name env scans.
+However, the VM's instruction dispatch loop is itself *interpreted Medaka* running
+through the OCaml tree-walker, so each `runChunk` step costs an OCaml-level
+`eval`/`apply` call — the same overhead the tree-walker pays per AST node, PLUS the
+additional stack-machine bookkeeping (ip increment, `Array` index, value-stack
+push/pop).  The theoretical win from O(1) slot loads is swamped by the constant
+factor of double interpretation.  The VM speedup will materialize when the OCaml
+tree-walker is replaced by a native backend that can JIT or AOT the bytecode
+interpreter loop — at that point the slot-indexed `CVar` addresses become genuine
+O(1) loads in native code.
+
+**Takeaway for the LLVM Stage (§2.4):** the bytecode VM is a correctness and IR
+exercise, not a performance target in itself.  The Core IR (§2.1) remains the
+faster choice for the self-hosted pipeline under the OCaml tree-walker.  When §2.4
+emits real LLVM IR for the VM instruction loop (or lowers Core IR directly), the
+performance picture reverses.

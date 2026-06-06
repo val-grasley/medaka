@@ -750,6 +750,17 @@ bcRunMainForEffect binds = match lookupBinding "main" binds
   Some v => force v
   None => VUnit
 
+-- True-execution (stdout) path for a compiled CProgram: evaluate the program,
+-- force `main` for its IO side-effects, return the captured output.  Mirrors
+-- cevalOutput from core_ir_eval.mdk but drives the bytecode VM instead.
+export
+bcEvalOutput : CProgram -> <Mut> String
+bcEvalOutput prog =
+  let _ = set_ref outputRef ""
+  let binds = bcEvalProgram prog
+  let _ = bcRunMainForEffect binds
+  outputRef.value
+
 export
 bcEvalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
 bcEvalModulesOutput preludeDecls modules =

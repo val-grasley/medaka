@@ -514,6 +514,39 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   nested non-recursive calls + a value-binding argument). Still **not** the real
   backend: higher-order values / closures / ADTs / records / dispatch / GC remain
   out of scope and panic.
+- **SPIKE SLICE 2b DONE (2026-06-06) — Bool/Float function boundaries.** Closes the
+  Int-only function-boundary limitation slice 2 documented. Core IR is type-erased,
+  so a **two-pass signature inference** recovers each function's parameter and
+  return type before its body is emitted (`inferSigs` → `typeOf` + `paramUseTy` in
+  `llvm_emit.mdk`): a parameter's type comes from its **first typed use** — an
+  `if`-condition or `!` operand ⇒ `Bool`, an arithmetic/comparison operand shares
+  its **sibling**'s type (so `x * 2.0` ⇒ `x : Float`, `n == 0` ⇒ `n : Int`), and an
+  argument passed to a known function takes that function's parameter type; the
+  return type then follows structurally. `typeOf` is the pure, non-emitting twin of
+  the type-recovery `emitExpr` already does inline. Two passes settle a
+  caller→callee→sibling chain and mutual recursion (the subset has no deeper
+  type-flow). With the signature table, a call site reports the **callee's** return
+  type (so a Bool-returning function prints `true`/`false`, not as an Int) and a
+  function binds each parameter at its inferred type (so a Float parameter
+  unboxes/reboxes). **Value rep is UNCHANGED — no rep edit.** Every value is the
+  same uniform i64 word at the ABI regardless of type (Int immediate, Bool
+  immediate `0`/`1`, Float boxed-pointer-as-i64), so there is **no `define`/`call`
+  prototype change and `musttail`'s prototype-match invariant is untouched** — the
+  recovered type drives only int-vs-float instruction selection in the body and the
+  print routine for a result, not the calling convention. Gate now spans **17/17**
+  fixtures (the prior 13 + 4 boundary fixtures: `fn_float_param` Float param +
+  Float return, `fn_bool_return` Bool return → `print_bool`, `fn_bool_param` Bool
+  param used as an `if` condition, `fn_float_chain` Float param propagating across a
+  two-hop call chain). Decisions surfaced (not silently taken): (1) param types are
+  **inferred structurally from use**, not threaded from the typechecker — the spike
+  re-derives what the erased Core IR dropped, the same structural-recovery posture
+  slice 1 used for the print routine; (2) because Bool and Int share the immediate
+  encoding, an *Int*-returning function whose body is a comparison would still be
+  typed `Bool` here — harmless for the spike (the rep can't yet tell them apart, a
+  limitation slice 1 already documents), but a real backend with a distinguishing
+  rep must carry the type, not re-infer it. Still **not** the real backend:
+  higher-order values / closures / ADTs / records / dispatch / GC remain out of
+  scope and panic.
 
 ---
 

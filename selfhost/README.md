@@ -70,8 +70,10 @@ diff with `lib/`:
 | `bytecode.mdk` | **Stage 2 §2.2 bytecode compiler + stack VM** (slices 1–6) — the first lowering of the Core IR *below* an ISA. `compile : CExpr -> List Instr` emits a flat, position-independent instruction stream (relative jumps); `runChunk` is a stack machine threading `(ip, value-stack, env)` over the `Instr` `Array`. REUSES `eval.mdk`'s host runtime verbatim — `Value`, env, `applyValue`/dispatch/fall-through, `matchPat`, the arithmetic + record + range + index helpers, externs, `pp_value`. Slice 1 = literals, lexically-addressed variables, application, primitive binops/unops, tuples, lists, `if`, let-sequencing blocks. Slice 2 = `IMatchArms` (ordered-arm `CMatch` dispatch) + `IMatchDecision` (decision-tree `CDecision` dispatch, mirroring `cevalDecision`'s tree walk with compiled arm body chunks) + `IBindFail` (CSLetElse pattern-bind-or-else). Slice 3 = `IMakeArray`, `IMakeRecord`, `IField`/`IFieldValue`, `IRecordUpdate`, `IRangeList`/`IRangeArray`, `IIndex`, `ISlice`, plus `CSAssign` in blocks. Slice 4 = `IMakeClosure` (CLam → VClosureF), `ILetBound` (non-rec let-in), `ILetRec` (recursive let with cell back-patch), `ILetGroup` (where-block / local mutual-rec group — eager nullary, VClosureF for parameterised, VMulti for multi-clause, mirroring `cevalLetGroup`/`cGroupValue`). Slice 5 = `IMethod` (CMethod — return-position dispatch via `narrowMethod`/`routeTag`) + `IDict` (CDict — dict application via `applyDicts`); `bcEvalProgram` installs typeclass impls via `coalesceImpls` before user groups. Slice 6 = `bcEvalModules`/`bcEvalModulesOutput` — multi-module per-module frames mirroring `cevalModules` (prelude installs globally; each module's lowered CBind groups install into its own local frame via `bcInstallGroups`; ctors + impls coalesce globally; `importFrameOf`/`pubReexports` reused verbatim). **Zero `eval.mdk` changes** — every reused name was already exported. |
 | `eval_bytecode_main.mdk` | Runnable entry for the bytecode VM (analog of `core_ir_main.mdk`): `medaka run selfhost/eval_bytecode_main.mdk <src.mdk>` parses → desugars → `annotateProgram` → lowers to Core IR → COMPILES to bytecode → runs the stack VM → prints `pp_value` of `main`. Diffs against `dev/eval_probe.exe` — the SAME oracle `eval_main`/`core_ir_main` use (`test/diff_selfhost_eval_bytecode.sh`, 18 fixtures across slices 1–5, ~1.5s). |
 | `eval_bytecode_modules_main.mdk` | Multi-module bytecode VM entry (analog of `core_ir_modules_main.mdk`): `medaka run selfhost/eval_bytecode_modules_main.mdk <core.mdk> <entry.mdk> [root ...]` loads entry + imports, desugars + annotates each, LOWERS per-module to Core IR and evaluates in per-module bytecode frames over the shared prelude (`bytecode.bcEvalModulesOutput`), printing the root module's `main` stdout. Diffs against `medaka run <entry>` (`test/diff_selfhost_eval_bytecode_modules.sh`, 4 fixtures, the SAME oracle `eval_modules_main`/`core_ir_modules_main` use). |
-| `llvm_emit.mdk` | **Stage 2 §2.4 LLVM de-risking SPIKE** (slices 1–2; not the real backend) — `emitProgram : CProgram -> String` lowers the Core IR to *textual* LLVM IR. Slice 1 = the scalar subset (integer/float arithmetic, comparisons, unary `-`/`!`, `let`, `if`, top-level value bindings, type-directed print). Slice 2 = top-level **Int functions** (`name p… = …` → `define i64 @mdk_<name>`) + saturated direct **calls** (`CApp`), with self-recursive tail calls lowered to `musttail call`+`ret` (the calling-convention proof — TCO-correct under `clang -O0`; Int-only function boundaries, cross-function `musttail` deferred). A sibling consumer of the same Core IR `core_ir_eval`/`bytecode` consume — Axis-1 discipline in miniature. Value rep is a **PROVISIONAL** uniform 64-bit tagged word (low-bit-1 immediate `Int`/`Bool`/`Char`, boxed `Float` via `@mdk_alloc`); the tag/box arithmetic is emitted *into the IR* (deliberately visible) so the rep is revisable in one place. Out-of-scope nodes (closures/ADTs/records/dispatch/GC) panic rather than mis-lower. The rep + calling-convention proposal it fed is `RUNTIME-DESIGN.md` §8. |
-| `llvm_emit_main.mdk` | Runnable entry for the LLVM spike (analog of `core_ir_main.mdk`): `medaka run selfhost/llvm_emit_main.mdk <src.mdk>` parses → desugars → `annotateProgram` → lowers to Core IR → emits a textual LLVM module to stdout (sharing the entire front-end + lowering with `core_ir_main.mdk`, swapping only the final consumer). `test/diff_selfhost_llvm.sh` compiles the emitted `.ll` + `../runtime/medaka_rt.c` with `clang`, runs the binary, and diffs its stdout against `dev/eval_probe.exe` — the SAME oracle, the usual equivalence-gate shape (13 prelude-free fixtures in `test/llvm_fixtures/`: 8 scalar + 5 function/recursion). |
+| `eval_bytecode_typed_main.mdk` | TYPED bytecode-VM entry (analog of `core_ir_typed_main.mdk`): `medaka run selfhost/eval_bytecode_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>` desugar → elaborate (typechecker stamps EMethodAt/EDictAt routes) → lowerProgram → compile + run through the bytecode VM for stdout, exercising `IMethod`/`IDict` (slice 5) with real elaborated routes. Diffs byte-for-byte against `medaka run <file>` (`test/diff_selfhost_eval_bytecode_typed.sh`, 3 typed fixtures). |
+| `eval_bytecode_run_main.mdk` | True-execution (stdout) bytecode-VM entry (analog of `core_ir_run_main.mdk`): `medaka run selfhost/eval_bytecode_run_main.mdk <prelude.mdk>... <file.mdk>` shadow-drops redefine prelude fns, annotates + lowers to Core IR, compiles to bytecode, runs the VM for IO output. Diffs against `=== EVAL ===` goldens (`test/diff_selfhost_eval_bytecode_run.sh`, 18 fixtures, the SAME goldens `eval_run_main`/`core_ir_run_main` use). |
+| `llvm_emit.mdk` | **Stage 2 §2.4 LLVM de-risking SPIKE** (slices 1–2b; not the real backend) — `emitProgram : CProgram -> String` lowers the Core IR to *textual* LLVM IR. Slice 1 = the scalar subset (integer/float arithmetic, comparisons, unary `-`/`!`, `let`, `if`, top-level value bindings, type-directed print). Slice 2 = top-level functions (`name p… = …` → `define i64 @mdk_<name>`) + saturated direct **calls** (`CApp`), with self-recursive tail calls lowered to `musttail call`+`ret` (the calling-convention proof — TCO-correct under `clang -O0`; cross-function `musttail` deferred). Slice 2b = **Bool/Float function boundaries**: a two-pass signature inference (`inferSigs`/`typeOf`/`paramUseTy`) recovers each function's param + return type from the type-erased Core IR (param type from its first typed use — `if`/`!` ⇒ Bool, an arith/compare operand shares its sibling, an argument takes the callee's param type — return type structural), so a Bool-returning function prints `true`/`false` and a Float param unboxes/reboxes. The ABI is unchanged (every value is a uniform i64 word — Int/Bool immediate, Float boxed-pointer-as-i64), so no `define`/`call`/`musttail` prototype change; the type only selects int-vs-float instructions + the print routine. A sibling consumer of the same Core IR `core_ir_eval`/`bytecode` consume — Axis-1 discipline in miniature. Value rep is a **PROVISIONAL** uniform 64-bit tagged word (low-bit-1 immediate `Int`/`Bool`/`Char`, boxed `Float` via `@mdk_alloc`); the tag/box arithmetic is emitted *into the IR* (deliberately visible) so the rep is revisable in one place. Out-of-scope nodes (closures/ADTs/records/dispatch/GC) panic rather than mis-lower. The rep + calling-convention proposal it fed is `RUNTIME-DESIGN.md` §8. |
+| `llvm_emit_main.mdk` | Runnable entry for the LLVM spike (analog of `core_ir_main.mdk`): `medaka run selfhost/llvm_emit_main.mdk <src.mdk>` parses → desugars → `annotateProgram` → lowers to Core IR → emits a textual LLVM module to stdout (sharing the entire front-end + lowering with `core_ir_main.mdk`, swapping only the final consumer). `test/diff_selfhost_llvm.sh` compiles the emitted `.ll` + `../runtime/medaka_rt.c` with `clang`, runs the binary, and diffs its stdout against `dev/eval_probe.exe` — the SAME oracle, the usual equivalence-gate shape (17 prelude-free fixtures in `test/llvm_fixtures/`: 8 scalar + 5 function/recursion + 4 Bool/Float boundary). |
 | `timer.mdk` | Per-stage wall-clock timing helpers (`perfEnabled`, `now`, `emitPhase`, `emitTotal`, `totalDecls`, `allocSnap`, `emitPhaseA`, `emitTotalA`) guarded by the `MEDAKA_PERF` env var. All output goes to stderr; unset ⇒ pure no-op so any driver that imports this stays byte-identical to its un-instrumented counterpart. `emitPhaseA`/`emitTotalA` are extended variants that include an allocation-delta column (`Gc.allocated_bytes` proxy, bytes→MB). Used by `perf_main.mdk`, `profile_main.mdk`, and `profile_modules_main.mdk`. |
 | `perf_main.mdk` | **Multi-module pipeline profiler**: `MEDAKA_PERF=1 medaka run selfhost/perf_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` times the full typed multi-module path — **parse** (runtime+core lex+parse+desugar), **load** (`loadProgram`: all transitive imports), **desugar** (all modules), **elaborate** (`elaborateModules`: marker + per-module typecheck), **eval** (`evalModulesOutput`) — and prints `[perf] stage\tNs\tops` lines to stderr. The §2.2 VM capstone reuses this driver for VM-vs-tree-walker comparison. See `PERF-NOTES.md` for the recorded baseline (15 modules, ~6.0s total). |
 | `profile_main.mdk` | **Single-file per-stage profiler**: `MEDAKA_PERF=1 medaka run selfhost/profile_main.mdk <runtime.mdk> <core.mdk> <target.mdk>` separately times **parse-prelude** (runtime+core setup), **parse** (lex+parse), **desugar**, **resolve**, **mark**, **typecheck** for one target file — breaking apart the `elaborate` composite that `perf_main.mdk` reports as a single phase. Each phase also reports an allocation-delta column (`Gc.allocated_bytes` proxy, MB). `MEDAKA_PERF` unset ⇒ silent exit (no useful stdout — measurement tool only). Use `test/profile_selfhost.sh [N]` to run min-of-N over representative files and print a table. See `PERF-NOTES.md` for the recorded baseline (`lexer.mdk`: ~0.97s total; parse dominates at 36%). |
@@ -106,7 +108,9 @@ sh test/diff_selfhost_core_ir_sexp.sh         #   …serializer snapshot gate / 
 sh test/diff_selfhost_core_ir_roundtrip.sh    #   …round-trip: lower→sexp→parse→eval == oracle (18, proves lossless)
 sh test/diff_selfhost_eval_bytecode.sh        # Stage 2 §2.2 bytecode VM slices 1–5 — closures+dispatch (18 ok, ~1.5s)
 sh test/diff_selfhost_eval_bytecode_modules.sh #   …slice 6 — multi-module per-module frames (4 ok)
-sh test/diff_selfhost_llvm.sh                 # Stage 2 §2.4 LLVM spike — emit→clang→link→run→diff, scalar + function slices (13/13; needs clang)
+sh test/diff_selfhost_eval_bytecode_typed.sh  #   …typed path: elaborate→lower→VM vs `medaka run` oracle (3 ok)
+sh test/diff_selfhost_eval_bytecode_run.sh    #   …true-execution stdout: shadow-drop→annotate→lower→VM vs EVAL goldens (18 ok)
+sh test/diff_selfhost_llvm.sh                 # Stage 2 §2.4 LLVM spike — emit→clang→link→run→diff, scalar + function slices + Bool/Float boundaries (17/17; needs clang)
 
 # Per-stage wall-clock profiling (measurement only; output goes to stderr):
 MEDAKA_PERF=1 medaka run selfhost/perf_main.mdk \
@@ -587,10 +591,11 @@ Stage-0 prerequisites in `../PLAN.md`).
      user ADT / Bool / list / tuple / nested-ctor / Int-literal / guarded-arm /
      multi-match, plus exhaustive + wildcard controls) against the net-new
      `dev/diagdump.exe --check-match` oracle.
-   - **Genuine remaining limits** (don't surface in the goldens): the
-     "signature too general" error. (Inferred effect *propagation* was a limit
-     here until the Phase 146 selfhost mirror — it is now ported; see *Known
-     limits carried forward* below.)
+   - **Genuine remaining limits** (don't surface in the goldens): none in this
+     bucket. (Inferred effect *propagation* was a limit here until the Phase 146
+     selfhost mirror — now ported; see *Known limits carried forward* below. The
+     "signature too general" error is also ported now — `checkSigsTooGeneral` in
+     `processSCC`.)
 
 **Ordering rationale.** Easy-first builds momentum and reuses the existing
 harness while Medaka fluency matures, leaving the type checker for last. Note the
@@ -797,10 +802,10 @@ byte-for-byte, plus two integration milestones beyond per-stage validation:
   against the net-new `dev/diagdump.exe --check-match` oracle (11 fixtures).
 
 **What's next.** Every Stage-1 stage and sub-pass now has a validated self-hosted
-port; the remaining genuine gap is the deferred typechecker nicety (the "signature
-too general" error) and the broader Stage-2 backend work (Core IR slices + bytecode
-VM, then LLVM) tracked in `../PLAN.md` and `STAGE2-DESIGN.md`. (Inferred effect
-*propagation* was a gap here until the Phase 146 selfhost mirror — now ported.)
+port; the remaining genuine work is the broader Stage-2 backend (Core IR slices +
+bytecode VM, then LLVM) tracked in `../PLAN.md` and `STAGE2-DESIGN.md`. (Inferred
+effect *propagation* was a gap here until the Phase 146 selfhost mirror — now
+ported; the "signature too general" error is also ported now.)
 
 ### The bootstrap (#3) — "the compiler processes its own source"
 
@@ -1209,8 +1214,9 @@ constructor-arity error while typechecking `typecheck.mdk`, which broke the *ent
   typechecker rejects effect laundering byte-identically to the reference (fixtures
   `effect_leak`/`effect_escape`/`effect_subsume`). Invisible in the `=== TYPES ===`
   goldens (empty tails render pure), validated by the typecheck/error harnesses.
-- **"Signature too general"** is not reported as an error (signed bindings report
-  sig-unified-with-body, generalized).
+- **"Signature too general"** is now reported (`checkSigsTooGeneral` in
+  `processSCC` — rejects a declared sig whose distinct tyvars collapse to one
+  after body inference, byte-identical to the OCaml `SignatureTooGeneral` error).
 - **Performance** — the interpreter is slow (each run re-parses core/list); the
   lexical-addressing + hash-set perf hooks under *Performance* below are the fix.
 
@@ -1262,7 +1268,8 @@ gap in fidelity. Concretely, by stage:
   The type-aware `check_match` exhaustiveness pass (lives inside the reference
   typechecker, needs the scrutinee type) is now **also ported** — it accumulates
   into a separate `matchWarnings` ref, surfaced by `checkMatchToLines` (see the
-  typecheck stage notes above). Still deferred: the "signature too general" error.
+  typecheck stage notes above). The "signature too general" error is now ported
+  too (`checkSigsTooGeneral` in `processSCC`).
 - ✅ **Eval — runtime-error messages now match the reference (fixed 2026-06-05).**
   Every `panic` message in `selfhost/eval.mdk` was cross-walked against
   `lib/eval.ml`'s `Eval_error` call sites and the diverging ones were corrected:
