@@ -1,0 +1,5 @@
+-- mutual recursion: ping/pong tail-call EACH OTHER. Cross-function tail calls
+-- lower to ordinary `call` (+ ret), not musttail, but the result is identical.
+ping n = if n == 0 then 7 else pong (n - 1)
+pong n = if n == 0 then 9 else ping (n - 1)
+main = ping 5

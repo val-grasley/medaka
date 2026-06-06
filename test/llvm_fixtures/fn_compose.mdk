@@ -1,0 +1,6 @@
+-- non-recursive functions, nested saturated calls, and a top-level value binding
+-- (`base`, computed in @main) passed as a function argument.
+base = 40
+double x = x * 2
+inc x = x + 1
+main = double (inc base) - base

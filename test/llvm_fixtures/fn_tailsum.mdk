@@ -1,0 +1,4 @@
+-- tail self-recursion: the recursive call is the whole else-arm, so it lowers to
+-- `musttail call` + `ret` (the calling-convention proof). Two accumulator args.
+sumTo acc n = if n == 0 then acc else sumTo (acc + n) (n - 1)
+main = sumTo 0 100

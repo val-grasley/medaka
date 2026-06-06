@@ -1,20 +1,29 @@
--- Core IR -> textual LLVM IR — Stage 2.4 DE-RISKING SPIKE (slice 1 only).
+-- Core IR -> textual LLVM IR — Stage 2.4 DE-RISKING SPIKE (slices 1–2).
 --
 -- This is NOT the real LLVM backend (STAGE2-DESIGN.md §2.4 schedules that AFTER
 -- the bytecode VM).  It is a cheap end-to-end proof that the decided toolchain —
 -- EMIT textual LLVM IR + shell out to clang (no llc/opt, no C++ bindings) —
--- works, and a probe to SURFACE the value-representation decision before the real
--- backend commits to it.  It consumes the SAME Core IR (core_ir.mdk) the
--- tree-walker-validated lowering produces, and its emitted binary's stdout is
--- diffed byte-for-byte against the tree-walker oracle (test/diff_selfhost_llvm.sh)
--- over a handful of prelude-free scalar fixtures — the usual equivalence-gate
--- shape, exactly as core_ir_main.mdk gates the lowering itself.
+-- works, and a probe to SURFACE the value-representation + calling-convention
+-- decisions before the real backend commits to them.  It consumes the SAME Core
+-- IR (core_ir.mdk) the tree-walker-validated lowering produces, and its emitted
+-- binary's stdout is diffed byte-for-byte against the tree-walker oracle
+-- (test/diff_selfhost_llvm.sh) over prelude-free fixtures — the usual
+-- equivalence-gate shape, exactly as core_ir_main.mdk gates the lowering itself.
 --
--- SCOPE DISCIPLINE (matches runtime/medaka_rt.c): integer/float arithmetic,
--- comparisons, unary -/!, let, if, top-level value bindings, and a type-directed
--- print of `main`.  NO closures / functions / ADTs / records / dispatch / GC.
--- An unsupported Core IR node panics with its tag (the spike refuses to emit
--- wrong code rather than silently mis-lowering).
+-- SCOPE DISCIPLINE (matches runtime/medaka_rt.c):
+--   • slice 1 — integer/float arithmetic, comparisons, unary -/!, let, if,
+--     top-level value bindings, and a type-directed print of `main`.
+--   • slice 2 — top-level FUNCTIONS (`name p… = …` → `define i64 @mdk_<name>`)
+--     and saturated direct CALLS (`CApp` spine with a known-function head).
+--     Self-recursive tail calls lower to `musttail call` + `ret` (the
+--     calling-convention proof: self-recursion ⇒ caller/callee prototypes match,
+--     which musttail requires; empirically TCO-correct under clang -O0).
+--     Function BOUNDARIES are Int-only (params + return are i64 Int words); a
+--     Bool/Float-typed parameter or result is out of scope.  Cross-function tail
+--     calls stay ordinary `call` (correct, but not guaranteed-TCO).
+-- Still OUT of scope: higher-order values / closures / ADTs / records / dispatch
+-- / GC.  An unsupported Core IR node panics with its tag (the spike refuses to
+-- emit wrong code rather than silently mis-lowering).
 --
 -- VALUE REPRESENTATION (PROVISIONAL — revisable; see RUNTIME-DESIGN.md "Value
 -- representation & calling convention").  A value is a uniform 64-bit word:
@@ -36,9 +45,12 @@ import util.{reverseL, joinNl}
 -- recoverable structurally as we emit).
 data LTy = LTInt | LTFloat | LTBool
 
--- emitter state: a fresh-name counter and the output lines, accumulated in
--- REVERSE (prepend is O(1)); reverseL'd once at the end restores program order.
-data Emit = Emit (Ref Int) (Ref (List String))
+-- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
+-- — prepend is O(1); reverseL'd once at the end restores program order), and the
+-- set of known top-level FUNCTION names (slice 2), so a `CApp` head can be
+-- distinguished as a direct call to `@mdk_<name>` vs an unsupported higher-order
+-- application.  The function set is populated once, up front, in emitProgram.
+data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String))
 
 -- an emit-time environment: source name -> (its LLVM operand, its static type).
 -- A "register" is any LLVM operand text: a `%tN`, or an immediate like `5` for a
@@ -46,7 +58,7 @@ data Emit = Emit (Ref Int) (Ref (List String))
 
 -- ── emitter plumbing ────────────────────────────────────────────────────────
 freshId : Emit -> <Mut> Int
-freshId (Emit c _) =
+freshId (Emit c _ _) =
   let n = c.value
   let _ = set_ref c (n + 1)
   n
@@ -55,7 +67,19 @@ freshReg : Emit -> <Mut> String
 freshReg e = "%t" ++ intToString (freshId e)
 
 emit : Emit -> String -> <Mut> Unit
-emit (Emit _ buf) line = set_ref buf (line :: buf.value)
+emit (Emit _ buf _) line = set_ref buf (line :: buf.value)
+
+-- the known-function table (set once in emitProgram); membership decides whether
+-- a `CApp` head names a callable top-level function.
+fnNames : Emit -> <Mut> List String
+fnNames (Emit _ _ fns) = fns.value
+
+isKnownFn : Emit -> String -> <Mut> Bool
+isKnownFn e name = containsStr name (fnNames e)
+
+containsStr : String -> List String -> Bool
+containsStr _ [] = False
+containsStr x (y::ys) = if x == y then True else containsStr x ys
 
 -- ── tag / box helpers (the value-representation, made concrete) ──────────────
 -- untag an immediate int word -> raw i64 (arithmetic shift, preserves sign).
@@ -108,6 +132,7 @@ emitExpr e env (CIf c t f) = emitIf e env c t f
 emitExpr e env (CLet recF pat e1 e2) = emitLet e env recF pat e1 e2
 emitExpr e env (CLetGroup binds body) = emitLetGroup e env binds body
 emitExpr e env (CBlock stmts) = emitBlock e env stmts
+emitExpr e env (CApp f a) = emitApp e env (CApp f a)
 emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag other ++ " (slice 1 is scalars only)")
 
 emitLit : Emit -> Lit -> <Mut> (String, LTy)
@@ -248,6 +273,145 @@ emitBlock e env ((CSLet _ (PVar x) ex)::rest) =
 emitBlock _ _ [] = panic "llvm spike: empty block"
 emitBlock _ _ _ = panic "llvm spike: unsupported block statement in slice 1"
 
+-- ── function application (slice 2) ──────────────────────────────────────────
+-- Only SATURATED direct calls to named top-level functions are supported: the
+-- head of the (curried) application spine must be a `CVar` naming a known
+-- function.  Every argument is passed as a uniform i64 word (the value rep), and
+-- the result is taken to be an Int word (slice 2 functions are Int -> … -> Int;
+-- non-Int function boundaries are out of scope — see the module header).  No
+-- higher-order values or closures (a non-`CVar` / unknown head panics).
+flattenApp : CExpr -> List CExpr -> (CExpr, List CExpr)
+flattenApp (CApp f a) acc = flattenApp f (a :: acc)
+flattenApp hd acc = (hd, acc)
+
+emitApp : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> (String, LTy)
+emitApp e env app =
+  let (hd, args) = flattenApp app []
+  match hd
+    CVar fname _ =>
+      if isKnownFn e fname && hasArgs args then
+        let argOps = emitArgs e env args
+        let r = freshReg e
+        let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
+        (r, LTInt)
+      else
+        panic ("llvm spike: '" ++ fname ++ "' is not a saturated call to a known top-level function (slice 2: no higher-order values / closures)")
+    _ => panic "llvm spike: only direct calls to named top-level functions are supported in slice 2"
+
+hasArgs : List CExpr -> Bool
+hasArgs [] = False
+hasArgs _ = True
+
+-- emit each argument expression (left-to-right); collect the i64 operand words.
+emitArgs : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> List String
+emitArgs _ _ [] = []
+emitArgs e env (a::rest) =
+  let (v, _) = emitExpr e env a
+  v :: emitArgs e env rest
+
+-- render an operand list as a comma-separated i64 argument list.
+argDecls : List String -> String
+argDecls [] = ""
+argDecls [x] = "i64 " ++ x
+argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
+
+-- ── top-level function definitions (slice 2) ────────────────────────────────
+-- Each non-`main` top-level binding with parameters becomes an LLVM function
+-- `@mdk_<name>(i64 %arg0, …) -> i64`.  Parameters bind to %argN (typed Int).  The
+-- body is emitted in TAIL position so a self-recursive tail call lowers to
+-- `musttail call` immediately followed by `ret` (the calling-convention proof:
+-- self-recursion guarantees the caller/callee prototypes match, which musttail
+-- requires).  Cross-function tail calls lower to an ordinary `call` (still
+-- correct; guaranteed-TCO across distinct prototypes is a later increment).
+emitFns : Emit -> List CBind -> <Mut> Unit
+emitFns _ [] = ()
+emitFns e (b::rest) =
+  let _ = emitFn e b
+  emitFns e rest
+
+emitFn : Emit -> CBind -> <Mut> Unit
+emitFn e (CBind name [CClause pats body]) =
+  let env = paramEnv pats 0
+  let _ = emit e ("define i64 @mdk_" ++ name ++ "(" ++ paramDecls pats 0 ++ ") {")
+  let _ = emit e "entry:"
+  let _ = emitFnBody e env name body
+  let _ = emit e "}"
+  emit e ""
+emitFn _ (CBind name _) =
+  panic ("llvm spike: function '" ++ name ++ "' is multi-clause (slice 2: single variable-pattern clause only)")
+
+paramDecls : List Pat -> Int -> String
+paramDecls [] _ = ""
+paramDecls [PVar _] i = "i64 %arg" ++ intToString i
+paramDecls ((PVar _)::rest) i = "i64 %arg" ++ intToString i ++ ", " ++ paramDecls rest (i + 1)
+paramDecls _ _ = panic "llvm spike: function parameters must be plain variables in slice 2"
+
+paramEnv : List Pat -> Int -> List (String, (String, LTy))
+paramEnv [] _ = []
+paramEnv ((PVar x)::rest) i = (x, ("%arg" ++ intToString i, LTInt)) :: paramEnv rest (i + 1)
+paramEnv _ _ = panic "llvm spike: function parameters must be plain variables in slice 2"
+
+-- emit a function body in TAIL position: every control path ends in a `ret`.
+-- An `if` recurses into both arms (each arm is itself in tail position and rets);
+-- a tail call to a known function emits `[musttail] call` + `ret`; anything else
+-- is computed as a value and returned.
+emitFnBody : Emit -> List (String, (String, LTy)) -> String -> CExpr -> <Mut> Unit
+emitFnBody e env self (CIf c t f) =
+  let (cv, _) = emitExpr e env c
+  let ci = untagInt e cv
+  let cb = freshReg e
+  let _ = emit e ("  " ++ cb ++ " = icmp ne i64 " ++ ci ++ ", 0")
+  let n = intToString (freshId e)
+  let thenL = "then" ++ n
+  let elseL = "else" ++ n
+  let _ = emit e ("  br i1 " ++ cb ++ ", label %" ++ thenL ++ ", label %" ++ elseL)
+  let _ = emit e (thenL ++ ":")
+  let _ = emitFnBody e env self t
+  let _ = emit e (elseL ++ ":")
+  emitFnBody e env self f
+emitFnBody e env self other =
+  let (hd, args) = flattenApp other []
+  match hd
+    CVar fname _ =>
+      if isKnownFn e fname && hasArgs args then
+        let argOps = emitArgs e env args
+        let r = freshReg e
+        let kw = if fname == self then "musttail call" else "call"
+        let _ = emit e ("  " ++ r ++ " = " ++ kw ++ " i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
+        emit e ("  ret i64 " ++ r)
+      else emitValueRet e env other
+    _ => emitValueRet e env other
+
+emitValueRet : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> Unit
+emitValueRet e env ex =
+  let (v, _) = emitExpr e env ex
+  emit e ("  ret i64 " ++ v)
+
+-- ── classifying top-level bindings ──────────────────────────────────────────
+-- a function binding = non-`main`, first clause has at least one parameter.
+isFnBind : CBind -> Bool
+isFnBind (CBind "main" _) = False
+isFnBind (CBind _ ((CClause (_::_) _)::_)) = True
+isFnBind _ = False
+
+bindName : CBind -> String
+bindName (CBind name _) = name
+
+collectFns : List CBind -> List String
+collectFns [] = []
+collectFns (b::rest) =
+  if isFnBind b then bindName b :: collectFns rest else collectFns rest
+
+fnBinds : List CBind -> List CBind
+fnBinds [] = []
+fnBinds (b::rest) = if isFnBind b then b :: fnBinds rest else fnBinds rest
+
+-- the nullary value bindings (non-`main`, no parameters), in source order.
+valBinds : List CBind -> List CBind
+valBinds [] = []
+valBinds ((CBind "main" cs)::rest) = valBinds rest
+valBinds (b::rest) = if isFnBind b then valBinds rest else b :: valBinds rest
+
 -- ── operator -> LLVM mnemonic tables ────────────────────────────────────────
 intOp : String -> String
 intOp "+" = "add"
@@ -287,24 +451,25 @@ isCmpOp : String -> Bool
 isCmpOp op = op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">="
 
 -- ── program ─────────────────────────────────────────────────────────────────
--- Emit a whole CProgram as a textual LLVM module: the runtime declares, then a
--- single `@main` that computes the top-level value bindings (in source order),
--- then `main`'s body, then a type-directed print.  Slice 1 has no functions, so
--- every non-`main` binding must be a nullary value (`name = expr`).
+-- Emit a whole CProgram as a textual LLVM module: the runtime declares, then one
+-- LLVM function per top-level `name p… = …` binding (slice 2), then a single
+-- `@main` that computes the top-level nullary value bindings (in source order),
+-- then `main`'s body, then a type-directed print.
 export
 emitProgram : CProgram -> <Mut> String
 emitProgram (CProgram groups _ _ _) =
-  let e = Emit (Ref 0) (Ref [])
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups))
   let _ = emitPreamble e
+  let _ = emitFns e (fnBinds groups)
   let _ = emit e "define i32 @main() {"
   let _ = emit e "entry:"
-  let env = emitTopBinds e [] (nonMain groups)
+  let env = emitTopBinds e [] (valBinds groups)
   let (mv, mty) = emitExpr e env (mainBody groups)
   let _ = emitPrint e mv mty
   let _ = emit e "  ret i32 0"
   let _ = emit e "}"
   match e
-    Emit _ buf => joinNl (reverseL buf.value)
+    Emit _ buf _ => joinNl (reverseL buf.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =
@@ -341,12 +506,6 @@ mainBody [] = panic "llvm spike: no `main` binding"
 mainBody ((CBind "main" [CClause [] body])::_) = body
 mainBody ((CBind "main" _)::_) = panic "llvm spike: `main` must be a nullary value (main = ...)"
 mainBody (_::rest) = mainBody rest
-
--- all top-level bindings except `main`, in source order.
-nonMain : List CBind -> List CBind
-nonMain [] = []
-nonMain ((CBind "main" _)::rest) = nonMain rest
-nonMain (b::rest) = b :: nonMain rest
 
 -- a readable tag for the unsupported-node panic (only the nodes a slice-1
 -- fixture could hit if it strayed out of scope).

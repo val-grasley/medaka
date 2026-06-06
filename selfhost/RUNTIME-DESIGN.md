@@ -451,6 +451,20 @@ The uniform-word rep makes the convention fall out cleanly:
   uniform word pays off: it is precisely what makes universal `musttail` legal. Use
   `tailcc` to also get TCO on calls LLVM can't mark `musttail` (e.g. through a
   function-pointer/closure where the convention still matches).
+- **Empirically validated (2026-06-05) — spike slice 2.** The de-risking spike
+  (`llvm_emit.mdk`, STAGE2-DESIGN.md §2.4) now emits real functions + calls, and
+  `musttail` is confirmed end-to-end on `clang -O0` for arm64: a self-recursive
+  tail call lowers to `%r = musttail call i64 @mdk_f(…)` immediately followed by
+  `ret i64 %r`, and a 5,000,000-deep tail-recursive `sumTo` returns the correct
+  total with no stack growth (a plain `call` overflows). The spike uses the **C
+  convention (`ccc`) for the i64-in/i64-out functions**, not `tailcc`, and
+  `musttail` is still accepted and TCO-correct there — so the signature-match
+  argument above holds under the default cc, and the `tailcc` upgrade (line above)
+  is an optimization for the non-`musttail`-able cases rather than a prerequisite.
+  Scope caveat: only **self-recursive** tail calls are emitted as `musttail` so far
+  (self-recursion trivially satisfies the prototype-match rule); cross-function
+  `musttail` (mutual recursion) needs an explicit prototype-match check and is the
+  next increment.
 - **Closures.** A closure value is a boxed cell `{ header, code_ptr, captured… }`;
   calling loads `code_ptr` and passes the closure (env) pointer as a leading
   argument. (Out of scope for the spike — flagged here as the next rep decision the

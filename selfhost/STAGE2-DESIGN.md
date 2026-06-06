@@ -487,6 +487,31 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   revisable in one place (`llvm_emit.mdk` + `medaka_rt.c`). The ratified-by-a-human
   proposal (tagged word vs NaN-box vs boxed-everything, + the `musttail` calling
   convention) it fed is [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md) §8.
+- **SPIKE SLICE 2 DONE (2026-06-05) — top-level functions + direct calls.** Extends
+  the spike from scalars to top-level functions and saturated direct calls, still
+  against the same tree-walker oracle. Each `name p… = …` lowers to
+  `define i64 @mdk_<name>(i64 %arg0, …)`; a `CApp` spine with a known-function head
+  lowers to `call i64 @mdk_<name>(…)`. **The `musttail` calling convention is now
+  exercised, not just proposed:** a function body is emitted in tail position, so a
+  *self-recursive* tail call lowers to `musttail call` immediately followed by `ret`
+  (self-recursion guarantees the caller/callee prototypes match, which `musttail`
+  requires). Empirically TCO-correct under `clang -O0` — a 5,000,000-deep
+  tail-recursive `sumTo` returns the right total with no stack growth, where an
+  ordinary `call` overflows. **Decisions surfaced (not silently taken):** (1)
+  function boundaries are **Int-only** — params/returns are i64 Int words; a
+  Bool/Float-typed parameter or result is out of scope (the same static-type-only
+  limitation slice 1 already exposes for the print routine, now at the call ABI).
+  (2) cross-function tail calls (mutual recursion) stay an ordinary `call` —
+  guaranteed-TCO across *distinct* prototypes needs prototype-match checking, a
+  later increment. (3) function-body references to top-level *value* bindings
+  (globals) are out of scope — fixtures pass globals as call arguments instead.
+  Value rep is **unchanged** (no rep edit — the calling convention rides on the
+  existing uniform i64 word). Gate now spans **13/13** fixtures (the original 8 +
+  5 function fixtures: `fn_factorial` non-tail self-recursion, `fn_tailsum`/`fn_gcd`
+  musttail self-recursion, `fn_mutual` cross-function tail calls, `fn_compose`
+  nested non-recursive calls + a value-binding argument). Still **not** the real
+  backend: higher-order values / closures / ADTs / records / dispatch / GC remain
+  out of scope and panic.
 
 ---
 

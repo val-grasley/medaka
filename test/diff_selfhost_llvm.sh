@@ -5,15 +5,17 @@
 # out to clang (no llc/opt, no C++ bindings) — against the tree-walker oracle, the
 # same equivalence-gate shape selfhost/eval_main.mdk and core_ir_main.mdk use.
 #
-# For each prelude-free SCALAR fixture in test/llvm_fixtures/:
+# For each prelude-free fixture in test/llvm_fixtures/:
 #   1. ref  = dev/eval_probe.exe <fixture>            (the AST tree-walker oracle)
 #   2. emit = medaka run llvm_emit_main.mdk <fixture> (Core IR -> textual LLVM IR)
 #   3. clang <emit>.ll runtime/medaka_rt.c -o bin     (compile + link the stub)
 #   4. self = ./bin                                   (run the native binary)
 #   diff ref vs self byte-for-byte.
 #
-# Scope: slice 1 only — integer/float arithmetic, comparisons, let, if, top-level
-# value bindings, type-directed print.  No closures/ADTs/records/dispatch/GC.
+# Scope: slices 1–2 — slice 1 (integer/float arithmetic, comparisons, let, if,
+# top-level value bindings, type-directed print) + slice 2 (top-level Int
+# functions and saturated direct calls; self-recursive tail calls via musttail).
+# No closures/ADTs/records/dispatch/GC.
 #
 # Usage:  sh test/diff_selfhost_llvm.sh
 # Exit:   0 if every fixture's native stdout matches the tree-walker; 2 if the

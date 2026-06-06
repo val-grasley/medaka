@@ -1,0 +1,4 @@
+-- Euclid's gcd: a two-argument tail-recursive self call (musttail), with `%` and
+-- a swap of argument positions in the recursive call.
+gcd a b = if b == 0 then a else gcd b (a % b)
+main = gcd 1071 462
