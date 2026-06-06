@@ -268,8 +268,12 @@ item 5 (fine-grained labels) is the first *remaining* coding step.
    export + manifest emission. Skill: **add-language-feature**.
 
 **Concrete near-term target:** gap 2 (labels, ✅) + a ~150–250-line harness, on the
-existing interpreter, produces the **minimal "wow" demo** (an AI-generated plugin
-auto-rejected for a call-graph-deep exfiltration attempt) — the first shareable
+existing interpreter, produces the **minimal "wow" demo** ✅ — `demo/plugin_good.mdk`
+and `demo/plugin_malicious.mdk` + `medaka check-policy` CLI subcommand. The malicious
+plugin buries `fetch` four calls deep; the harness typechecks the plugin, reads
+`transform`'s inferred effect row, checks it against the policy set, and either accepts
+(running it on a sample request) or rejects it with the full call chain:
+`transform → tagVisit → recordMetric → sendBeacon → fetch`. First shareable
 artifact, decoupled from the backend. Full sketch: CAPABILITY-PLATFORM.md §7c.
 
 Downstream (already captured, NOT near-term): **Phase 146b** parameterized effects

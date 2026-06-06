@@ -50,6 +50,8 @@ Usage:
   medaka fmt [paths...]     Format .mdk files in place (or --check).
   medaka new <name>         Scaffold a new project directory.
   medaka lsp                Run the language server over stdio.
+  medaka check-policy <file.mdk> [--allow L1,L2,...] [--fn name]
+                            Verify a plugin's effect row against a policy.
   medaka help               Show this message.
 
 Run inside a project (medaka.toml) and the file argument may be
@@ -401,6 +403,258 @@ let () =
     let entries = Medaka_lib.Doc.extract_entries program positions schemes comments in
     print_string (Medaka_lib.Doc.render_markdown module_name entries);
     exit 0
+  end;
+  (* ── check-policy subcommand ─────────────────────────────────────────────
+     medaka check-policy <file.mdk> [--allow L1,L2,...] [--fn name]
+
+     Type-checks a plugin file, reads the named function's inferred effect row,
+     checks it is a subset of the policy, and either accepts (+ runs on a sample
+     input) or rejects with the call chain that introduces the forbidden effect.
+     Implements the §7c "minimal wow demo" from CAPABILITY-PLATFORM.md. *)
+  if has_sub "check-policy" then begin
+    let rest = Array.to_list (Array.sub argv 2 (argc - 2)) in
+    let file      = ref None in
+    let allow_str = ref "Cache,Log" in
+    let check_fn  = ref "transform" in
+    let rec parse_args = function
+      | []                   -> ()
+      | "--allow" :: v :: tl -> allow_str := v; parse_args tl
+      | "--fn"    :: v :: tl -> check_fn  := v; parse_args tl
+      | f          :: tl     -> file := Some f; parse_args tl
+    in
+    parse_args rest;
+    let filename = match !file with
+      | Some f -> f
+      | None ->
+        Printf.eprintf
+          "usage: medaka check-policy <file.mdk> [--allow L1,L2,...] [--fn name]\n";
+        exit 1
+    in
+    let policy =
+      List.filter (fun s -> s <> "")
+        (String.split_on_char ',' !allow_str)
+    in
+
+    (* ── 1. Parse + desugar ───────────────────────────────────────────── *)
+    let source = read_file filename in
+    let lexbuf = Lexing.from_string source in
+    lexbuf.Lexing.lex_curr_p <-
+      { lexbuf.Lexing.lex_curr_p with Lexing.pos_fname = filename };
+    Medaka_lib.Lexer.reset ();
+    let program =
+      try Medaka_lib.Parser.program Medaka_lib.Lexer.token lexbuf
+      with
+      | Failure msg ->
+        Printf.eprintf "parse error: %s\n" msg; exit 1
+      | Medaka_lib.Parser.Error ->
+        let pos = lexbuf.Lexing.lex_curr_p in
+        Printf.eprintf "%s:%d:%d: parse error\n"
+          pos.Lexing.pos_fname pos.Lexing.pos_lnum
+          (pos.Lexing.pos_cnum - pos.Lexing.pos_bol);
+        exit 1
+    in
+    let program = desugar_or_die ~source program in
+
+    (* ── 2. Build call graph from the desugared AST ───────────────────── *)
+    let module SS = Set.Make(String) in
+    (* Collect all EVar names referenced in an expression (conservative —
+       includes non-call uses, but safe for the chain-tracing heuristic). *)
+    let rec collect_evars e =
+      let open Medaka_lib.Ast in
+      match e with
+      | EVar n                     -> SS.singleton n
+      | EApp (f, x)                -> SS.union (collect_evars f) (collect_evars x)
+      | ELam (_, body)             -> collect_evars body
+      | ELet (_, _, _, v, body)    -> SS.union (collect_evars v) (collect_evars body)
+      | ELetGroup (groups, body)   ->
+        let g = List.fold_left (fun acc (_, clauses) ->
+          List.fold_left (fun a (_, b) -> SS.union a (collect_evars b)) acc clauses
+        ) SS.empty groups in
+        SS.union g (collect_evars body)
+      | EMatch (e, arms)           ->
+        List.fold_left (fun acc (_, gs, body) ->
+          let gacc = List.fold_left (fun a gq ->
+            match gq with
+            | GBool ge        -> SS.union a (collect_evars ge)
+            | GBind (_, ge)   -> SS.union a (collect_evars ge)
+          ) acc gs in
+          SS.union gacc (collect_evars body)
+        ) (collect_evars e) arms
+      | EIf (c, t, f)              ->
+        SS.union (collect_evars c) (SS.union (collect_evars t) (collect_evars f))
+      | EBinOp (_, a, b)           -> SS.union (collect_evars a) (collect_evars b)
+      | EUnOp (_, e)               -> collect_evars e
+      | EAnnot (e, _)
+      | EHeadAnnot (e, _)
+      | EFieldAccess (e, _)        -> collect_evars e
+      | ERecordCreate (_, flds)    ->
+        List.fold_left (fun a (_, v) -> SS.union a (collect_evars v)) SS.empty flds
+      | ERecordUpdate (e, flds)    ->
+        List.fold_left (fun a (_, v) -> SS.union a (collect_evars v))
+          (collect_evars e) flds
+      | ETuple es | EListLit es | EArrayLit es ->
+        List.fold_left (fun a e -> SS.union a (collect_evars e)) SS.empty es
+      | EBlock stmts               ->
+        List.fold_left (fun acc stmt ->
+          let open Medaka_lib.Ast in
+          match stmt with
+          | DoExpr e            -> SS.union acc (collect_evars e)
+          | DoBind (_, e)       -> SS.union acc (collect_evars e)
+          | DoLet (_, _, _, e)  -> SS.union acc (collect_evars e)
+          | DoAssign (_, e)     -> SS.union acc (collect_evars e)
+          | DoFieldAssign (_, _, e) -> SS.union acc (collect_evars e)
+          | DoLetElse (_, e1, e2)   ->
+            SS.union acc (SS.union (collect_evars e1) (collect_evars e2))
+        ) SS.empty stmts
+      | EInfix (_, a, b)           -> SS.union (collect_evars a) (collect_evars b)
+      | EIndex (a, b)              -> SS.union (collect_evars a) (collect_evars b)
+      | EMethodRef (_, n)
+      | EDictApp (_, n)            -> SS.singleton n
+      | ELoc (_, e)                -> collect_evars e
+      | _                          -> SS.empty
+    in
+    (* fn_name → set of EVar names used in its body *)
+    let fn_bodies : (string * SS.t) list ref = ref [] in
+    let top_names : SS.t ref = ref SS.empty in
+    List.iter (fun decl ->
+      match Medaka_lib.Ast.inner_decl decl with
+      | Medaka_lib.Ast.DFunDef (_, name, _, body) ->
+        top_names := SS.add name !top_names;
+        fn_bodies := (name, collect_evars body) :: !fn_bodies
+      | Medaka_lib.Ast.DExtern (_, name, _) ->
+        top_names := SS.add name !top_names
+      | _ -> ()
+    ) program;
+    (* Restrict each callset to top-level names only *)
+    let call_graph : (string * SS.t) list =
+      List.map (fun (n, refs) -> (n, SS.inter refs !top_names)) !fn_bodies
+    in
+
+    (* ── 3. Resolve + typecheck ───────────────────────────────────────── *)
+    let resolve_errs = Medaka_lib.Resolve.resolve_program program in
+    if resolve_errs <> [] then begin
+      List.iter (fun (err, loc_opt) ->
+        Printf.eprintf "%s: %s\n"
+          (pp_loc loc_opt) (Medaka_lib.Resolve.pp_error err);
+        show_snippet source loc_opt
+      ) resolve_errs;
+      exit 1
+    end;
+    let (schemes, warnings) =
+      try Medaka_lib.Typecheck.check_program program
+      with Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
+        Printf.eprintf "%s: %s\n"
+          (pp_loc loc_opt) (Medaka_lib.Typecheck.pp_error e);
+        show_snippet source loc_opt;
+        exit 1
+    in
+    List.iter (fun w -> Printf.eprintf "%s\n" w) warnings;
+
+    (* ── 4. Extract effect labels from a scheme ───────────────────────── *)
+    let rec mono_effects mono =
+      match Medaka_lib.Typecheck.normalize mono with
+      | Medaka_lib.Typecheck.TFun (_, row, result) ->
+        let labels = Medaka_lib.Typecheck.effrow_labels row in
+        List.sort_uniq String.compare (labels @ mono_effects result)
+      | Medaka_lib.Typecheck.TApp (a, b) ->
+        List.sort_uniq String.compare (mono_effects a @ mono_effects b)
+      | _ -> []
+    in
+    let scheme_effects (Medaka_lib.Typecheck.Forall (_, _, mono)) =
+      mono_effects mono
+    in
+    let fn_effects : (string * string list) list =
+      List.filter_map (fun (name, scheme) ->
+        match scheme_effects scheme with
+        | [] -> None
+        | effs -> Some (name, effs)
+      ) schemes
+    in
+    let fn_has_effect name label =
+      match List.assoc_opt name fn_effects with
+      | None -> false
+      | Some effs -> List.mem label effs
+    in
+
+    (* ── 5. Policy check ─────────────────────────────────────────────── *)
+    let transform_effects =
+      Option.value ~default:[] (List.assoc_opt !check_fn fn_effects)
+    in
+    let forbidden =
+      List.filter (fun l -> not (List.mem l policy)) transform_effects
+    in
+
+    (* ── 6. Call-chain reconstruction ────────────────────────────────── *)
+    let get_callees fn =
+      match List.assoc_opt fn call_graph with
+      | None -> SS.empty
+      | Some s -> s
+    in
+    let find_chain start forbidden_label =
+      let rec trace fn visited =
+        let callee =
+          SS.find_first_opt (fun c -> fn_has_effect c forbidden_label)
+            (get_callees fn)
+        in
+        match callee with
+        | None -> [fn]
+        | Some c ->
+          if SS.mem c visited then [fn; c]
+          else fn :: trace c (SS.add c visited)
+      in
+      trace start (SS.singleton start)
+    in
+
+    let labels_str ls = String.concat ", " ls in
+
+    (* ── 7. Accept or reject ─────────────────────────────────────────── *)
+    if forbidden = [] then begin
+      let eff_str = if transform_effects = [] then "pure"
+                    else "<" ^ labels_str transform_effects ^ ">" in
+      Printf.printf "✅ accepted — %s requires only %s\n" !check_fn eff_str;
+      (* Run the plugin on a sample request with stub platform implementations *)
+      let open Medaka_lib.Eval in
+      let log_buf : string list ref = ref [] in
+      extra_prims := [
+        ("cacheGet", VPrim (fun _ -> VString ""));
+        ("cacheSet", VPrim (fun _ -> VPrim (fun _ -> VUnit)));
+        ("logEvent", VPrim (fun v ->
+          (match v with
+           | VString s -> log_buf := s :: !log_buf
+           | _ -> ());
+          VUnit));
+      ];
+      (try
+        let (_marked, combined, _env, _warns) = Medaka_lib.Elaborate.elaborate program in
+        let top_env = eval_program ~prelude:false combined in
+        extra_prims := [];
+        let sample = "X-Forwarded-For: 192.168.1.1" in
+        (match List.assoc_opt !check_fn top_env with
+         | None ->
+           Printf.printf "   (no '%s' binding in output)\n" !check_fn
+         | Some fn_val ->
+           let result = Medaka_lib.Eval.apply fn_val (VString sample) in
+           List.iter (fun msg ->
+             Printf.printf "   [LOG] %s\n" msg
+           ) (List.rev !log_buf);
+           Printf.printf "   transform %S = %s\n" sample (pp_value result))
+       with
+       | Eval_error (msg, loc_opt) ->
+         extra_prims := [];
+         Printf.eprintf "%s: panic: %s\n" (pp_loc loc_opt) msg
+       | Medaka_lib.Typecheck.Type_error (e, loc_opt) ->
+         extra_prims := [];
+         Printf.eprintf "%s: %s\n" (pp_loc loc_opt)
+           (Medaka_lib.Typecheck.pp_error e));
+      exit 0
+    end else begin
+      let first_forbidden = List.hd forbidden in
+      let chain = find_chain !check_fn first_forbidden in
+      Printf.printf "❌ rejected — %s requires <%s> — not permitted by policy {%s}\n"
+        !check_fn (labels_str transform_effects) (labels_str policy);
+      Printf.printf "   reached via: %s\n" (String.concat " → " chain);
+      exit 1
+    end
   end;
   (* Resolve a zero-arg `run`/`check` against `medaka.toml` in the cwd
      (walking up).  Returns the entry file path, or None if no config

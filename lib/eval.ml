@@ -99,6 +99,11 @@ let error_hook : (string -> unit) ref = ref (fun s -> output_string stderr s; fl
    ["a"; "b"; "c"]). Set by bin/main.ml's run driver; empty everywhere else. *)
 let program_args : string list ref = ref []
 
+(* Extra name→value bindings injected before eval_program runs — used by the
+   check-policy demo harness to stub platform-supplied externs (cacheGet etc.)
+   without modifying the primitives table.  Reset to [] after each use. *)
+let extra_prims : (string * value) list ref = ref []
+
 let snapshot_dir    : string ref = ref "snapshots"
 let snapshot_update : bool ref   = ref false
 
@@ -1940,6 +1945,7 @@ let eval_program ?(prelude = true) program =
 
   (* Seed with primitives *)
   List.iter (fun (name, v) -> add_to_frame name v) (List.rev primitives);
+  List.iter (fun (name, v) -> add_to_frame name v) !extra_prims;
 
   (* Prepend stdlib/core.mdk so its data types, interfaces, and impl bodies
      are bound for the user program.  Mirrors what Typecheck.check_program

@@ -1,0 +1,21 @@
+-- A well-behaved edge plugin.
+-- Policy: may use <Cache, Log> — nothing else.
+
+effect Cache
+effect Log
+
+-- Host-supplied capabilities (platform implements these)
+extern cacheGet : String -> <Cache> String
+extern cacheSet : String -> String -> <Cache> Unit
+extern logEvent : String -> <Log> Unit
+
+-- Rewrite a request header
+rewriteHeader req = req ++ " [processed-v2]"
+
+-- Plugin entry point: cache-aware header transform
+transform req =
+  let _ = logEvent req
+  let cached = cacheGet req
+  let result = if cached == "" then rewriteHeader req else cached
+  let _ = cacheSet req result
+  result
