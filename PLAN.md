@@ -221,7 +221,18 @@ strict priority.
     table head↔requires; `dictPassDecl` `DImpl` arm; eval folds via `applyDicts`)
     — see the "Instance-`requires` dict-passing" block in `selfhost/README.md` for
     the per-file detail. Fixtures `test/eval_dict_fixtures/instance_requires_*.mdk`.
-    Only #5 (two-level/nested) now remains, gated on the structured-dict
+  - **Method-level-constraint dicts (Phase 69.x-e) in the self-host — DONE
+    (2026-06-05).** A method whose own signature carries a `=>` over a non-interface
+    tyvar (`foldMap : Monoid m => …`): the caller-supplied `Monoid m` dict is now
+    threaded into the method's default body so its return-position `empty` resolves
+    correctly. `foldMap dup [1,2,3]` → `[1,1,2,2,3,3]` matches `medaka run`. 4-step
+    port (EMethodAt 3rd method-dicts ref; `methodConstraintsRef` + `inferDefaultBodies`
+    gated by `implInferEnabled`; `dictPassDecl` `DInterface` arm; eval folds method
+    dicts before impl dicts) — see the "Method-level-constraint dict-passing" block in
+    `selfhost/README.md`. Fixtures `test/eval_dict_fixtures/method_constraint_*.mdk`.
+    Out of scope: multi-impl *overrides* of such a method (dict param shifts the
+    container-dispatch position; no prelude impl overrides `foldMap`).
+  - Only #5 (two-level/nested) now remains, gated on the structured-dict
     restructure above (no `medaka run` oracle yet).
 
 ### CLI surface (Phase 82, continued)

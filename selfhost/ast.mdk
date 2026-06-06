@@ -164,7 +164,18 @@ public export data Expr
   -- element dict reaches a return-position ref inside the impl body (`def` in
   -- `def = [def]`).  Empty for every ordinary site (no requires) — eval's fold is a
   -- no-op then.  Single-level only (`def : List Int`); nested dicts are residual #5.
-  | EMethodAt String (Ref Route) (Ref (List Route))
+  --
+  -- The THIRD ref carries the method's OWN method-level-constraint dicts (the
+  -- reference's res_method_dicts): a method whose signature has a `=>` constraint
+  -- over a tyvar that is NOT the interface param (the canonical case is
+  -- `foldMap : Monoid m => (a -> m) -> t a -> m`, where `Monoid m` constrains the
+  -- result monoid `m`, independent of the container `t`).  At a call site the
+  -- constraint's concrete type → one RKey route; eval folds them onto the method
+  -- value as leading args BEFORE the impl-requires dicts, matching the params
+  -- dict_pass prepends to the method's default body / impl clauses, so a
+  -- return-position ref inside that body (`empty` in foldMap's default) reads the
+  -- caller-supplied dict.  Empty for every ordinary site — eval's fold is a no-op.
+  | EMethodAt String (Ref Route) (Ref (List Route)) (Ref (List Route))
   -- Constrained-function occurrence (`f` where `f : C a => …`) rewritten by the
   -- same pre-pass: the function name + one route per `=>` constraint, filled by
   -- the typechecker.  Eval applies the matching dictionaries as leading args,

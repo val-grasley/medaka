@@ -966,11 +966,11 @@ resolved it (mirrors `lib/eval.ml`'s strip, which fires for *any* `VTypedImpl`
 after routing). Regression: `test/eval_typed_fixtures/single_impl_return_pos.mdk`.
 
 **Still out of scope** (the reference's harder cases — see PLAN.md Phase
-83/84/115): method-level-constraint dicts (`foldMap`'s Monoid) and
-nested/structured (non-flat / two-level) dictionaries. (Single-level
-instance-`requires` dicts are now DONE — see the block below.) Next step for the
-LLVM backend (Stage 2 §2.3): these two are the remaining dict-passing residuals the
-elaborated AST still leaves on arg-tag/RKey.
+83/84/115): nested/structured (non-flat / two-level) dictionaries. (Single-level
+instance-`requires` dicts AND method-level-constraint dicts — `foldMap`'s Monoid —
+are now DONE; see the two blocks below.) Next step for the LLVM backend (Stage 2
+§2.3): the nested/structured residual is the last dict-passing case the elaborated
+AST still leaves on arg-tag/RKey.
 
 **Instance-`requires` dict-passing (Phase 83/84 single-level) — DONE (2026-06-05).**
 The self-host now resolves `def : List Int` → `[0]` for
@@ -1018,6 +1018,66 @@ dict/typed/golden/selfproc gates stay green. **Known limit:** `activeDictVars` i
 flat id→name map, so an impl with *two* return-position methods both reading the
 element dict would collide on the shared tyvar id — fine for the single-method
 interfaces in scope (`Default`/`Monoid`/`Monad`).
+
+**Method-level-constraint dict-passing (Phase 69.x-e) — DONE (2026-06-05).**
+An interface method may carry its OWN `=>` constraint over a tyvar that is NOT the
+interface param — the canonical case is `foldMap : Monoid m => (a -> <e> m) -> t a
+-> <e> m` in `stdlib/core.mdk`, where `Monoid m` constrains the result monoid `m`,
+independent of the container `t`. The default body `foldMap f = fold (acc x => acc
+++ f x) empty` uses the return-position `empty` at type `m`, which has no
+discriminating argument, so plain arg-tag dispatch picks the *first* Monoid impl
+(wrong). The self-host now threads the caller-supplied `Monoid m` dict into the
+method body exactly as the reference does (`lib/dict_pass.ml` DInterface arm,
+`res_method_dicts`; `lib/typecheck.ml` `resolve_method_dicts` / the default-body
+loop ~3034-3072; `lib/eval.ml` ~795-802). `foldMap dup [1,2,3]` → `[1,1,2,2,3,3]`
+and `foldMap lbl [1,2,3]` → the String-monoid concatenation both match `medaka
+run`. The implemented pieces, mirroring the reference:
+1. **`ast.mdk`** — `EMethodAt` gained a THIRD `Ref (List Route)` for the method's
+   own method-level dicts (distinct from the second ref's impl-`requires` dicts).
+   Threaded through `eval.mdk` (`applyDicts … methodRef.value` BEFORE the impl-dicts
+   fold, matching dict_pass's param order), `typecheck.mdk`'s `infer`/`inferMethodAt`/
+   `recordSite`/`collectMethodSites`/`allEVars`, plus `annotate.mdk` and
+   `core_ir_lower.mdk` (drops it). (`EMethodAt` is typed-pipeline-only — no
+   `sexp.mdk`/`astdump` clause, so the serializer lockstep is untouched.)
+2. **`typecheck.mdk`** — `methodConstraintsRef` records each method's method-level
+   constraint var ids, captured while BUILDING the env method schemes
+   (`ifaceMethodSchemes`/`methodSchemes` via the new `sigToSchemeTvs`) so the ids are
+   the SAME quantified ids a call-site instantiation maps through its subst. A method
+   carrying such a constraint is rewritten to `EMethodAt` (via `methodConstraintNames`
+   added to `prePassDict`'s set, alongside the return-position names) even when it is
+   NOT return-position. `checkProgramSeeded` now also runs `inferDefaultBodies` (gated
+   behind `implInferEnabled`, like the impl-body inference): it infers each interface
+   default body carrying a method-level constraint, registering the constraint var's
+   *surviving* (post-unification) id in `activeDictVars` keyed to `$dict_<method>_<slot>`
+   so the in-body `empty` routes RDict. At the call site, `recordMethodDicts` maps each
+   constraint id through the occurrence's subst; `resolveMethodDicts` routes each
+   (RKey at a concrete monoid, RDict forwarding a constrained caller's dict).
+3. **`dict_pass`** (in `typecheck.mdk`) — a new `DInterface` arm
+   (`ifaceDictPassMethod`) prepends one `$dict_<method>_<slot>` param per method-level
+   constraint to the method's DEFAULT body. Mirror of `lib/dict_pass.ml:82-89`.
+4. **`eval.mdk`** — the `EMethodAt` arm folds the method-dicts ref onto the narrowed
+   method value as leading args, BEFORE the impl-`requires` dicts (matching dict_pass's
+   `dict_pats method k @ impl_pats` order). Empty ref ⇒ no-op (every ordinary site),
+   so all prior eval paths are byte-identical.
+Validated by `test/eval_dict_fixtures/method_constraint_foldmap_list.mdk`,
+`…_foldmap_string.mdk`, and `…_user_iface.mdk` (a user `Crushable` interface
+mirroring `foldMap`); all dict/typed/golden/selfproc gates stay green. The t-route
+(`tagRef`, computed from the result mono) is left as-is for these methods — for
+`foldMap` it lands on the *result* monoid's head tag, which is harmless because no
+impl is tagged for a method-level method (`narrowMethod` falls back to the VMulti and
+arg-tag picks the container's `fold` inside the default body). **Known limits:**
+(1) only the DEFAULT-body path is covered — a *multi*-impl override of a method-level-
+constrained method is out of scope (prepending the dict param shifts the
+container-dispatch position; in the prelude no impl overrides `foldMap`, so this never
+arises); (2) one slot per constraint, single dispatch var (single-param interfaces
+like `Monoid`); (3) super-expansion is skipped (`foldMap`'s `++` is arg-position, so
+it needs no dict — only `empty` does).
+
+**Pre-existing bug fixed along the way.** `doStmtSites (DoLet _ _ e)` matched 3 of
+`DoLet`'s 4 fields (it gained a `Bool` is-fun-def flag); the reference flagged the
+constructor-arity error while typechecking `typecheck.mdk`, which broke the *entire*
+`diff_selfhost_eval_dict` harness (every fixture's self-output was empty). Fixed to
+`DoLet _ _ _ e`.
 
 ### Known limits carried forward (don't block the bootstrap)
 
