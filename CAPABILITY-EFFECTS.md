@@ -2,11 +2,12 @@
 
 Status: **partially implemented** (Phase 146 in [`PLAN.md`](./PLAN.md)). Effect
 *propagation/inference* already shipped (Phase 79/79e); the laundering-soundness
-holes that made the manifest forgeable were closed for the open/closed-row cases
-(2026-06-05, this phase). Remaining: directional subsumption for the
-closed-closed alias case, user-definable effect labels (gap 2), the selfhost
-mirror, and manifest emission. See **§5a (current state)** for the precise
-done/remaining split. Companion to [`language-design.md`](./language-design.md)
+holes that made the manifest forgeable are closed for the open/closed AND
+closed-closed point-free cases (the latter via variance-aware covariant re-open),
+and the **selfhost mirror is done** (2026-06-06: full effect subsystem ported into
+`selfhost/typecheck.mdk`, byte-identical harnesses). Remaining: user-definable
+effect labels (gap 2) and manifest emission. See **§5a (current state)** for the
+precise done/remaining split. Companion to [`language-design.md`](./language-design.md)
 (effect rows as they exist today) and [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
 (effects are erased before codegen).
 
@@ -189,10 +190,16 @@ eval_dict). Tests: `test_typecheck.ml` `effects` group (`e_eff_leak_pointfree_*`
 `t_eff_subsume_pure_into_effectful_field`, `t_eff_over_annotation_pointfree`).
 
 **Remaining:**
-- **Selfhost mirror** — `selfhost/typecheck.mdk` mirrors `lib/typecheck.ml`; the
-  `unify_row` subset rule and the instantiation re-opening are not yet mirrored.
-  Harnesses pass today only because no fixture launders; parity requires the
-  mirror + an `eval_typed`/`typecheck` fixture that launders.
+- **Selfhost mirror — DONE (2026-06-06).** The earlier note ("the `unify_row`
+  subset rule and the instantiation re-opening are not yet mirrored") understated
+  it: `selfhost/typecheck.mdk` had no effect rows at all. The full effect-tracking
+  subsystem (Phase 79 propagation + 79e escape + 146 laundering) was ported in four
+  committed stages (representation → propagation → escape → laundering). New
+  fixtures `effect_leak`/`effect_escape` (reject) and `effect_subsume` (accept),
+  verified against `dev/tc_probe.exe` first. Every `diff_selfhost_*` typecheck/
+  error/golden/check/check_modules/selfproc/eval harness is byte-identical;
+  `@thorough` green. The self-hosted typechecker now rejects laundering identically
+  to the reference.
 - **Gap 2 labels** — the `effect Foo` declaration form (above).
 - **Manifest emission** — unbuilt (waits on the edge runtime, §9).
 

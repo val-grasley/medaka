@@ -264,10 +264,22 @@ strict priority.
     NOT a hole: effects are performed by *calling* effectful functions, so a value
     only exposes effects it itself performs (covariant); contravariant effects are
     the supplier's, checked at the supply site.
-  - **Selfhost mirror — TODO.** Mirror BOTH the `unify_row` subset rule and the
-    `instantiate_raw` covariant re-opening into `selfhost/typecheck.mdk` + a
-    laundering fixture (parity; harnesses pass today only because no fixture
-    launders).
+  - **Selfhost mirror — DONE (2026-06-06).** The original framing ("mirror the two
+    small rules") was **wrong**: `selfhost/typecheck.mdk` had no effect rows at all
+    (effects were a bare `List String` on `TFun`, `unifyN` discarded them, `Scheme`
+    had no effect variables, no ambient-effect state). The real work was a **full
+    port of the effect-tracking subsystem** — Phase 79 (propagation), 79e (escape),
+    and 146 (laundering) — done across four committed stages: A (representation:
+    `EffRow`/`Effvar` mutual decls, `Scheme = Forall tyvars effvars`), B (ambient
+    `curEffect`, `performEffect`/`openRow`/`unifyRow`/`substRow`/`freeEffvars`,
+    named-tail sharing for `<e>`-poly sigs), C (binding-boundary escape in
+    `inferMembers`/`checkEffectEscape`), D (the `unifyRow` subset rule +
+    variance-aware `substMonoP`/`reopenRow` covariant re-open). Three new fixtures
+    (`effect_leak`/`effect_escape` reject, `effect_subsume` accepts) verified
+    against `dev/tc_probe.exe` first. All `diff_selfhost_*` typecheck/error/golden/
+    check/check_modules/selfproc/eval harnesses byte-identical; `@thorough` green.
+    The self-hosted typechecker now rejects effect laundering identically to the
+    reference — gap-1 selfhost parity closed.
   - **Gap 2 (fine-grained labels) — TODO.** Replace the hardcoded
     `built_in_effects` (`IO, Mut, Async, Panic, Rand, Time`) in `resolve.ml` with an
     `effect Foo` declaration form so labels are user/platform-definable
