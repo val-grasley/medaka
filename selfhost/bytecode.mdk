@@ -1,0 +1,286 @@
+-- Bytecode compiler + stack VM — STAGE2-DESIGN §2.2, SLICE 1.
+--
+-- The first lowering of the Core IR (core_ir.mdk) BELOW an ISA: where
+-- core_ir_eval.mdk tree-walks the IR, this compiles each Core-IR expression to a
+-- flat instruction stream (a `Chunk`) and a small stack machine interprets it.
+-- This is the throwaway-but-on-ramp layer the design names (Axis 1): the ISA +
+-- the VM loop are the part LLVM discards; the Core IR above it (lexical
+-- addressing, decision-tree matches, dict routing) is what transfers.
+--
+-- SLICE 1 covers the engine primitives the design lists first — "arithmetic +
+-- variables (slot-indexed) + application" — plus the trivial non-pattern,
+-- non-closure nodes needed to form a runnable whole program: literal constants,
+-- variables (the Core IR already carries a lexical `Addr` on each `CVar`; it
+-- rides along in `ILoadVar`, resolved by NAME for now exactly as `ceval` /
+-- `EVarAt` do — the slot-indexing consume-half is STAGE2 §2.0's parked rework),
+-- function application, primitive binary/unary operators, tuples, lists, `if`,
+-- and bare let-sequencing blocks.
+--
+-- REUSE DISCIPLINE (Axis 2 / §2.2 "reuse the host Value/GC/externs"): the VM
+-- reuses eval.mdk's host runtime verbatim — the `Value` type, the environment,
+-- `applyValue`/dispatch/fall-through, `matchPat`, the arithmetic kernel, the
+-- externs and `pp_value`.  A compiled function is installed as a `VClosureF`
+-- whose host-fn body is `\e -> runChunk e chunk`, so CLOSURE CREATION, MULTI-
+-- CLAUSE DISPATCH and PATTERN-PARAM BINDING are handled by the SAME host
+-- `applyValue` the tree-walker uses (mirroring core_ir_eval's VClosureF reuse).
+-- The VM itself only ever compiles + runs EXPRESSION bodies.  Compiling those
+-- later-slice constructs (match → decision-tree opcodes, native closures,
+-- letrec, typeclass dispatch) to their OWN opcodes is slices 2–6; until then the
+-- compiler panics on them, so a fixture that needs one is cleanly deferred by the
+-- gate rather than silently mis-run.
+
+import ast.{Lit(..), Pat(..), Addr(..)}
+import core_ir.{CExpr(..), CStmt(..), CProgram(..), CBind(..), CClause(..)}
+import util.{listLen, concatMapList}
+import eval.{
+  Value(..), EvalEnv(..),
+  lookupEnv, extendEnv, applyValue, matchPat, startsWithAt,
+  evalArith, evalUnop, consVal, appendVal,
+  boolSeeds, externBindings, makeCtor, installConsts, cellResult,
+  lookupBinding, isNullary, force, ppValue, ctorToTypeRef
+}
+
+-- ── the instruction set (the slice-1 ISA) ──────────────────────────────────
+-- A deliberately tiny stack ISA.  Jumps are RELATIVE to their own position (so a
+-- compiled sub-expression is position-independent and concatenates freely); the
+-- value stack carries intermediate Values; `IBind` extends the env register for
+-- the rest of the enclosing block.
+public export data Instr
+  = IPushLit Lit          -- push a literal value
+  | ILoadVar String Addr  -- push the value a name is bound to (addr carried, unconsumed)
+  | ICall                 -- pop arg, pop fn → push (applyValue fn arg)
+  | IPrim2 String         -- pop r, pop l → push (binary primitive op l r)
+  | IPrim1 String         -- pop e → push (unary op e)
+  | IMakeTuple Int        -- pop n → push VTuple (in source order)
+  | IMakeList Int         -- pop n → push VList (in source order)
+  | IJump Int             -- ip := ip + offset
+  | IJumpFalse Int        -- pop cond; if false ip := ip + offset, else ip := ip + 1
+  | IBind Pat             -- pop v, match it against the pattern, extend the env
+  | IPop                  -- discard the top of stack
+
+-- a compiled chunk: the instruction stream as an array, so the VM fetches by an
+-- O(1) instruction-pointer index (the "bytecode" the VM interprets).
+public export data Chunk = Chunk (Array Instr)
+
+-- ── the compiler: Core IR expression → instruction stream ───────────────────
+export
+compile : CExpr -> List Instr
+compile (CLit l) = [IPushLit l]
+compile (CVar x addr) = [ILoadVar x addr]
+compile (CApp f x) = compile f ++ compile x ++ [ICall]
+compile (CBinPrim op l r) = compile l ++ compile r ++ [IPrim2 op]
+compile (CUnOp op e) = compile e ++ [IPrim1 op]
+compile (CTuple es) = concatMapList compile es ++ [IMakeTuple (listLen es)]
+compile (CList es) = concatMapList compile es ++ [IMakeList (listLen es)]
+compile (CIf c t e) = compileIf (compile c) (compile t) (compile e)
+compile (CBlock stmts) = compileStmts stmts
+compile other =
+  panic ("bytecode compile: unsupported node (deferred to a later slice) — " ++ cNodeTag other)
+
+-- a conditional, with relative jumps over the then/else segments.  Layout:
+--   cond | IJumpFalse(t+2) | then(t) | IJump(e+1) | else(e)
+-- cond-false lands on the else segment's first instr; the true branch's trailing
+-- IJump skips the else.  Offsets are length-derived, no global address table.
+compileIf : List Instr -> List Instr -> List Instr -> List Instr
+compileIf cc tc ec =
+  cc
+    ++ [IJumpFalse (listLen tc + 2)]
+    ++ tc
+    ++ [IJump (listLen ec + 1)]
+    ++ ec
+
+-- a bare sequential block (function-body `let` sequence).  Each non-final
+-- statement leaves nothing on the stack (a let binds + extends the env; an expr
+-- is popped); the final statement yields the block's value.  A block ending in a
+-- let yields VUnit, mirroring eval.mdk's evalBlock.  CSAssign / CSLetElse are
+-- slice-3 (refs / let-else) — deferred via the catch-all.
+compileStmts : List CStmt -> List Instr
+compileStmts [] = [IPushLit LUnit]
+compileStmts [(CSExpr e)] = compile e
+compileStmts [(CSLet _ p e)] = compile e ++ [IBind p, IPushLit LUnit]
+compileStmts ((CSExpr e)::rest) = compile e ++ [IPop] ++ compileStmts rest
+compileStmts ((CSLet _ p e)::rest) = compile e ++ [IBind p] ++ compileStmts rest
+compileStmts (_::_) =
+  panic "bytecode compile: unsupported block statement (deferred to a later slice)"
+
+export
+compileChunk : CExpr -> Chunk
+compileChunk e = Chunk (arrayFromList (compile e))
+
+-- ── the stack VM ────────────────────────────────────────────────────────────
+-- Interpret a chunk against an env, threading an instruction pointer, a value
+-- stack and the env register (extended by block `let`s).  Reuses eval.mdk's host
+-- runtime for every Value-level operation — this loop only routes opcodes.
+export
+runChunk : EvalEnv -> Chunk -> <Mut> Value
+runChunk env (Chunk code) = runLoop code 0 [] env
+
+runLoop : Array Instr -> Int -> List Value -> EvalEnv -> <Mut> Value
+runLoop code ip stack env
+  | ip >= arrayLength code = vmResult stack
+  | otherwise = step code ip stack env (arrayGetUnsafe ip code)
+
+-- the chunk's result is the value left on top of the stack when the ip runs off
+-- the end (every well-formed expression chunk pushes exactly one net value).
+vmResult : List Value -> Value
+vmResult (v::_) = v
+vmResult [] = panic "bytecode VM: empty stack at chunk end"
+
+step : Array Instr -> Int -> List Value -> EvalEnv -> Instr -> <Mut> Value
+step code ip stack env (IPushLit l) = runLoop code (ip + 1) (litValue l :: stack) env
+step code ip stack env (ILoadVar x _) = runLoop code (ip + 1) (loadVar env x :: stack) env
+step code ip stack env ICall = match stack
+  (arg :: fn :: rest) => runLoop code (ip + 1) (applyValue fn arg :: rest) env
+  _ => panic "bytecode VM: ICall stack underflow"
+step code ip stack env (IPrim2 op) = match stack
+  (r :: l :: rest) => runLoop code (ip + 1) (binPrim op l r :: rest) env
+  _ => panic "bytecode VM: IPrim2 stack underflow"
+step code ip stack env (IPrim1 op) = match stack
+  (e :: rest) => runLoop code (ip + 1) (evalUnop op e :: rest) env
+  _ => panic "bytecode VM: IPrim1 stack underflow"
+step code ip stack env (IMakeTuple n) = stepMake code ip stack env n VTuple
+step code ip stack env (IMakeList n) = stepMake code ip stack env n VList
+step code ip stack env (IJump k) = runLoop code (ip + k) stack env
+step code ip stack env (IJumpFalse k) = match stack
+  (c :: rest) =>
+    if isTruthy c then runLoop code (ip + 1) rest env else runLoop code (ip + k) rest env
+  _ => panic "bytecode VM: IJumpFalse stack underflow"
+step code ip stack env (IBind p) = match stack
+  (v :: rest) => stepBind code ip rest env p v
+  _ => panic "bytecode VM: IBind stack underflow"
+step code ip stack env IPop = match stack
+  (_ :: rest) => runLoop code (ip + 1) rest env
+  _ => panic "bytecode VM: IPop stack underflow"
+
+stepMake : Array Instr -> Int -> List Value -> EvalEnv -> Int -> (List Value -> Value) -> <Mut> Value
+stepMake code ip stack env n mk = match popN n stack
+  (items, rest) => runLoop code (ip + 1) (mk items :: rest) env
+
+stepBind : Array Instr -> Int -> List Value -> EvalEnv -> Pat -> Value -> <Mut> Value
+stepBind code ip rest env p v = match matchPat p v
+  Some binds => runLoop code (ip + 1) rest (extendEnv env binds)
+  None => panic "bytecode VM: let pattern match failure in block"
+
+loadVar : EvalEnv -> String -> <Mut> Value
+loadVar env x = if startsWithAt x then VUnit else lookupEnv env x
+
+-- pop n values; consing the popped tops back yields them in SOURCE order (the
+-- last-pushed is on top, so the fold un-reverses the push order).
+popN : Int -> List Value -> (List Value, List Value)
+popN n stack = popNGo n stack []
+
+popNGo : Int -> List Value -> List Value -> (List Value, List Value)
+popNGo 0 stack acc = (acc, stack)
+popNGo k (v :: rest) acc = popNGo (k - 1) rest (v :: acc)
+popNGo _ [] acc = (acc, [])
+
+isTruthy : Value -> Bool
+isTruthy (VBool True) = True
+isTruthy (VCon "True" []) = True
+isTruthy (VBool False) = False
+isTruthy (VCon "False" []) = False
+isTruthy _ = panic "bytecode VM: if condition is not a Bool"
+
+binPrim : String -> Value -> Value -> Value
+binPrim "::" l r = consVal l r
+binPrim "++" l r = appendVal l r
+binPrim op l r = evalArith op l r
+
+litValue : Lit -> Value
+litValue (LInt n) = VInt n
+litValue (LFloat f) = VFloat f
+litValue (LString s) = VString s
+litValue (LChar c) = VChar c
+litValue (LBool b) = VBool b
+litValue LUnit = VUnit
+
+-- ── program driver ──────────────────────────────────────────────────────────
+-- Mirror of core_ir_eval.cevalProgram, but each top-level binding's clause
+-- bodies are COMPILED to chunks and installed as VClosureF/VThunk values whose
+-- host-fn body runs the chunk on the VM.  The host runtime then provides closure
+-- creation, multi-clause VMulti dispatch and pattern-param binding (via
+-- applyValue) — the slice-1 VM only runs the compiled expression bodies.  Slice-1
+-- programs carry no typeclass impls (dispatch is slice 5), so the impl list is
+-- ignored; a fixture that needs an impl method is left unbound and deferred.
+export
+bcEvalMain : CProgram -> <Mut> String
+bcEvalMain prog = match lookupBinding "main" (bcEvalProgram prog)
+  Some v => ppValue (force v)
+  None => panic "bytecode eval: no `main` binding"
+
+bcEvalProgram : CProgram -> <Mut> List (String, Value)
+bcEvalProgram (CProgram groups ctorArs ctorToType _impls) =
+  let _ = set_ref ctorToTypeRef ctorToType
+  let ctors = map bcCtorBinding ctorArs
+  let allNames = map fst boolSeeds
+    ++ map fst externBindings
+    ++ map fst ctors
+    ++ map bcBindName groups
+  let cells = map (n => (n, Ref VUnit)) allNames
+  let env = EvalEnv [cells]
+  let _ = installConsts cells boolSeeds
+  let _ = installConsts cells externBindings
+  let _ = installConsts cells ctors
+  let _ = bcInstallGroups env cells groups
+  map cellResult cells
+
+bcCtorBinding : (String, Int) -> (String, Value)
+bcCtorBinding (name, arity) = (name, makeCtor name arity)
+
+bcBindName : CBind -> String
+bcBindName (CBind n _) = n
+
+bcInstallGroups : EvalEnv -> List (String, Ref Value) -> List CBind -> <Mut> Unit
+bcInstallGroups _ _ [] = ()
+bcInstallGroups env cells ((CBind n clauses)::rest) =
+  let _ = set_ref (findCellByName cells n) (bcGroupValue env clauses)
+  bcInstallGroups env cells rest
+
+-- find a cell by name (local copy so this module needn't import eval.findCell).
+findCellByName : List (String, Ref Value) -> String -> Ref Value
+findCellByName ((k, cell)::rest) name = if k == name then cell else findCellByName rest name
+findCellByName [] name = panic ("bytecode eval: unbound cell " ++ name)
+
+-- a nullary top-level binding defers to a VThunk (forced on first lookup, so
+-- point-free defs can reference values installed later, any order); a single
+-- parameterised clause is a VClosureF; multiple clauses coalesce into the host
+-- VMulti the arg-tag dispatcher consumes — identical to core_ir_eval/eval.
+bcGroupValue : EvalEnv -> List CClause -> Value
+bcGroupValue env [(CClause pats body)]
+  | isNullary pats = bcThunk env body
+  | otherwise = bcClosure env pats body
+bcGroupValue env clauses = VMulti (map (bcClauseClosure env) clauses)
+
+bcClauseClosure : EvalEnv -> CClause -> Value
+bcClauseClosure env (CClause pats body) = bcClosure env pats body
+
+-- compile the body ONCE at install time and capture the chunk in the closure /
+-- thunk, so each application runs the prebuilt bytecode rather than recompiling.
+bcThunk : EvalEnv -> CExpr -> Value
+bcThunk env body =
+  let ch = compileChunk body
+  VThunk (_ => runChunk env ch)
+
+bcClosure : EvalEnv -> List Pat -> CExpr -> Value
+bcClosure env pats body =
+  let ch = compileChunk body
+  VClosureF env pats (e => runChunk e ch)
+
+-- a readable tag for the unsupported-node panic (the deferred slice-2+ nodes).
+cNodeTag : CExpr -> String
+cNodeTag (CLam _ _) = "CLam (closure — slice 4)"
+cNodeTag (CLet _ _ _ _) = "CLet (let/letrec — slice 4)"
+cNodeTag (CLetGroup _ _) = "CLetGroup (where/letrec — slice 4)"
+cNodeTag (CMatch _ _) = "CMatch (match — slice 2)"
+cNodeTag (CDecision _ _ _) = "CDecision (decision-tree match — slice 2)"
+cNodeTag (CRecord _ _) = "CRecord (records — slice 3)"
+cNodeTag (CFieldAccess _ _) = "CFieldAccess (records/refs — slice 3)"
+cNodeTag (CRecordUpdate _ _) = "CRecordUpdate (records — slice 3)"
+cNodeTag (CArray _) = "CArray (arrays — slice 3)"
+cNodeTag (CRangeList _ _ _) = "CRangeList (ranges — slice 3)"
+cNodeTag (CRangeArray _ _ _) = "CRangeArray (ranges — slice 3)"
+cNodeTag (CIndex _ _) = "CIndex (index — slice 3)"
+cNodeTag (CSlice _ _ _ _) = "CSlice (slice — slice 3)"
+cNodeTag (CMethod _ _) = "CMethod (typeclass dispatch — slice 5)"
+cNodeTag (CDict _ _) = "CDict (dict-passing — slice 5)"
+cNodeTag _ = "?"
