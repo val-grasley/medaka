@@ -210,30 +210,47 @@ strict priority.
 
 ### Compiler / language
 
-- ⭐ **Phase 146 — Capability-safe effects (the headline wedge).** Make Medaka's
-  existing effect rows **sound + fine-grained** so a function's type becomes a
-  compiler-verified **capability manifest** — "the program tells you (and the host
-  that runs it) exactly what it can do." Target use case: WebAssembly edge / plugin
-  / sandboxed compute, where untrusted, increasingly AI-generated modules need their
-  authority bounded at compile time. **Effect *tracking*, NOT algebraic-effect
-  *handlers*** (no `perform`/`handle`/`resume`/continuations — the host is the
-  handler; continuations are also Wasm-hostile). Two gaps to close vs. today
-  (annotation-only, coarse, no propagation): (1) **soundness via effect inference
-  with effect variables** (`map : (a -> <e> b) -> List a -> <e> List b`), (2)
-  **user/platform-definable fine-grained labels** (`<KV>`/`<Fetch>`/`<Log>`).
-  Opt-in at boundaries, inferred-and-invisible in everyday code (the PureScript
-  `Eff`-removal lesson). Effects stay **erased at runtime** (zero cost; manifest is
-  metadata). Bounded typechecker work (row unification + inference + label decls),
-  not a research project; the delicate part is threading effect rows through HM +
-  typeclass + dict-passing. Full design, scope, sequencing, and open questions in
-  [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md). **Prereq: research pass**
-  (WasmGC status, WASI/component-model capabilities, edge-host isolation models,
-  ocap/effects-as-security, MoonBit/Grain/Roc-platform comparanda) → design note
-  with concrete syntax + a worked plugin example → staged implementation. **Note:**
-  this deliberately revisits the *row-polymorphism* rejection in PLAN-ARCHIVE §8,
-  but narrowed to *effect* rows only (a scoped effect-label grammar, not general
-  extensible records). Skill: cross-cutting → **add-language-feature** (threads
-  resolve/typecheck/eval; not harden-typechecker despite the typechecker weight).
+- ⭐ **Phase 146 — Capability-safe effects (the headline wedge). IN PROGRESS.**
+  Make Medaka's existing effect rows **sound + fine-grained** so a function's type
+  becomes a compiler-verified **capability manifest** — "the program tells you (and
+  the host that runs it) exactly what it can do." Target use case: WebAssembly edge
+  / plugin / sandboxed compute, where untrusted, increasingly AI-generated modules
+  need their authority bounded at compile time. **Effect *tracking*, NOT
+  algebraic-effect *handlers*** (no `perform`/`handle`/`resume`/continuations — the
+  host is the handler; continuations are also Wasm-hostile). Effects stay **erased
+  at runtime** (zero cost; manifest is metadata). Full design and per-piece status
+  in [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) (§5a). Skill: cross-cutting
+  → **add-language-feature** (threads resolve/typecheck/eval; not harden-typechecker
+  despite the typechecker weight). **Note:** deliberately revisits the
+  *row-polymorphism* rejection in PLAN-ARCHIVE §8, narrowed to *effect* rows only (a
+  scoped effect-label grammar, not general extensible records).
+  - **Gap 1 (soundness) — propagation DONE (Phase 79/79e); laundering soundness
+    DONE for open/closed rows (2026-06-05).** The doc's "annotation-only, no
+    propagation" framing was stale: inference with effect variables, higher-order
+    `<e>` composition (`map : (a -> <e> b) -> List a -> <e> List b` on real stdlib),
+    and binding-boundary escape checks already shipped. What was still unsound was
+    **effect laundering** — an effectful closure stored in / annotated as a pure
+    arrow (data field, value signature, callback param, typeclass-method impl)
+    silently dropped its labels because `unify_row` was permissive. Fixed by
+    enforcing OPEN-row labels ⊆ CLOSED-bound labels in `unify_row` (closed extras
+    still flow into the open sink → legit calls unchanged); new `EffectLeak` error.
+    Zero regressions across all unit suites, `@thorough`, and selfhost
+    typecheck/check/selfproc. Tests in `test_typecheck.ml` `effects` group.
+  - **Gap 1 remaining — directional subsumption.** Closed-closed point-free
+    aliasing (`f : String -> Unit = putStrLn`) still launders: symmetric
+    unification can't distinguish safe pure→effectful subsumption from unsafe
+    effectful→pure escape. Needs an expected-vs-actual `subsume_row` at
+    annotation/binding sites; `unify_row` `None,None` is left permissive until then.
+  - **Selfhost mirror — TODO.** Mirror the `unify_row` change into
+    `selfhost/typecheck.mdk` + a laundering fixture (parity; harnesses pass today
+    only because no fixture launders).
+  - **Gap 2 (fine-grained labels) — TODO.** Replace the hardcoded
+    `built_in_effects` (`IO, Mut, Async, Panic, Rand, Time`) in `resolve.ml` with an
+    `effect Foo` declaration form so labels are user/platform-definable
+    (`<KV>`/`<Fetch>`/`<Log>`). `DExtern` is already a top-level decl, so a platform
+    can declare `<KV>` host imports once labels are user-definable.
+  - **Manifest emission — TODO** (waits on the edge runtime; research pass per
+    CAPABILITY-EFFECTS §9).
 
 - ~~**Phase 145**~~ **DONE.** See PLAN-ARCHIVE.md.
 

@@ -136,6 +136,7 @@ type type_error =
   | AmbiguousField of ident * ident list   (* field, candidate records — type unknown *)
   | MissingField   of ident * ident       (* field, record *)
   | EffectEscape   of ident * effect_set * effect_set  (* fn, declared, undeclared extras *)
+  | EffectLeak     of effect_set * effect_set  (* closed bound labels, escaping extras *)
   | UnknownInterface   of ident               (* impl references unknown interface *)
   | ExtraMethod        of ident * ident       (* iface_name, method not in interface *)
   | MissingMethod      of ident * ident       (* iface_name, missing required method *)
@@ -382,9 +383,17 @@ let unify_row r1 r2 =
     v1 := ELink { labels = diff r2.labels r1.labels; tail = Some v3 };
     v2 := ELink { labels = diff r1.labels r2.labels; tail = Some v3 }
   | Some v1, None ->
-    (* r1 open, r2 closed: close r1, absorbing r2's extra labels *)
+    (* r1 open (an inference-synthesized arrow, i.e. a concrete value's latent
+       effect), r2 closed (a user-declared bound).  SOUNDNESS (Phase 146): the
+       open value's own labels must not exceed the closed bound, else they
+       escape — e.g. an <IO> closure stored in / annotated as a pure arrow.
+       The closed side's extra labels flow into the open sink as before. *)
+    let escaping = diff r1.labels r2.labels in
+    if escaping <> [] then fail (EffectLeak (r2.labels, escaping));
     v1 := ELink { labels = diff r2.labels r1.labels; tail = None }
   | None, Some v2 ->
+    let escaping = diff r2.labels r1.labels in
+    if escaping <> [] then fail (EffectLeak (r1.labels, escaping));
     v2 := ELink { labels = diff r1.labels r2.labels; tail = None }
   | None, None -> ()
 
@@ -685,6 +694,9 @@ let pp_error = function
   | EffectEscape (name, declared, extras) ->
     Printf.sprintf "Function '%s' declared with <%s> but also performs <%s>"
       name (String.concat ", " declared) (String.concat ", " extras)
+  | EffectLeak (bound, extras) ->
+    Printf.sprintf "Effectful value used where <%s> is allowed, but it performs <%s>"
+      (String.concat ", " bound) (String.concat ", " extras)
   | UnknownInterface n ->
     Printf.sprintf "Unknown interface: %s" n
   | ExtraMethod (iface, m) ->
