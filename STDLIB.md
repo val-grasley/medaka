@@ -8,6 +8,17 @@ Work interactively via the REPL (`:load stdlib/core.mdk`, `:reload` after edits)
 Expect to discover language gaps as you go; record them in PLAN.md's open
 roadmap.
 
+> **Forward direction — capability stratification (decided 2026-06-06).** For the
+> multi-target future (general-purpose LLVM-native + WASM-edge; see
+> [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §6a and
+> [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md)), the stdlib will be
+> **stratified** into a **pure core** (data structures, algorithms — capability-free,
+> byte-identical on every target) vs. **capability modules** (file IO, net, KV, time,
+> RNG — effect-labeled, present only where the target grants the capability).
+> Capability-bearing functions get effect labels and live in capability modules,
+> never the pure core. New stdlib work should respect this split now — retrofitting
+> it later is expensive. Phase 146 wires the effect labels.
+
 **Status legend**
 
 - ✅ implemented in the indicated file

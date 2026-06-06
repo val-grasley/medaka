@@ -465,6 +465,42 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
 - **Bootstrap closure (the finish line, `PLAN.md:216`):** the self-hosted compiler
   + LLVM backend compiles itself to a standalone native binary.
 
+**2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
+capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /
+[`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)) ships on WebAssembly, so
+WasmGC is a *planned* sibling backend, not someday-maybe — reached by a **direct
+WasmGC emitter** (LLVM targets only linear-memory Wasm, not WasmGC). The discipline
+is a **soft pivot**, decided 2026-06-06: LLVM stays the *first* backend (serves the
+bootstrap, the general-purpose target, and the cleaner tree-walker-oracle story),
+but **WASM's constraints are design inputs to the shared layers NOW** so both
+backends implement *identical* semantics — avoiding "one language that is secretly
+two":
+- **Value representation to the WasmGC intersection** — boxed/nominal, no
+  pointer-tagging/NaN-boxing, `i31ref` small ints, `Int` 64-bit logically; LLVM
+  matches it, tagging is an LLVM-only opt behind identical semantics
+  (`RUNTIME-DESIGN.md` §7.1).
+- **Capability/runtime surface parameterized** so native FFI (C ABI) vs. WASM host
+  imports/WIT bind *below* identical semantics; native-only powers (threads, raw FS)
+  are capabilities the edge target omits, surfaced in types (`RUNTIME-DESIGN.md`
+  §6a).
+- **Guaranteed tail calls assumed uniformly** (verified below).
+- **Threading not baked into core semantics** — WASM edge is single-threaded
+  per-instance; offer concurrency (if ever) as a native-only capability, not a core
+  assumption.
+
+**Tail-call + WasmGC viability — VERIFIED 2026-06-06.** WebAssembly 3.0 (W3C
+standard, Sept 2025) standardizes both tail calls and WasmGC. Tail calls
+(`return_call`/`_indirect`/`_ref`) are Baseline across browser engines since
+2024-12-11 and on-by-default in **Wasmtime ≥ 22.0** (Cranelift; x86-64/aarch64/
+riscv64); WasmGC is complete in **Wasmtime ≥ 27.0** and Baseline in browsers. So
+both wedge backends — **V8** (→ Cloudflare Workers, tracks Chrome stable weekly) and
+**Wasmtime** (→ Fastly Compute) — support guaranteed TCO matching LLVM `musttail`,
+and WasmGC is viable. **Caveat:** confirm the *deployed* engine version per provider
+at integration time, and note a since-patched Wasmtime advisory re: tail-calls +
+host stack traces. Sources: web.dev (WasmGC/tail-call Baseline, 2024-12-11);
+v8.dev/blog/wasm-tail-call; Wasmtime 22.0 & 27.0 release notes (bytecodealliance);
+webassembly.org Wasm 3.0 (2025-09-17).
+
 ---
 
 ### One-paragraph summary

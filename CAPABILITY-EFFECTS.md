@@ -3,7 +3,9 @@
 Status: **direction / design proposal** (no code yet; tracked as Phase 146 in
 [`PLAN.md`](./PLAN.md)). Companion to [`language-design.md`](./language-design.md)
 (effect rows as they exist today) and [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
-(effects are erased before codegen).
+(effects are erased before codegen). The **platform/runtime architecture** that
+consumes this feature (verification pipeline, plugin SDK model, worked plugin
+examples) is in [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md).
 
 One-line thesis:
 
@@ -174,6 +176,85 @@ gradual-verification principle Medaka applies elsewhere.
   when the edge runtime that consumes them is built. Sequences cleanly against
   Stage 2: effects erase before codegen regardless.
 
+## 6a. Parameterized effects (the pinned-domain / scoped-KV layer — Phase 146b)
+
+Staged **after** the atomic-effect core (§6): a follow-on layer letting an effect
+label carry a parameter — `<Fetch "idp.example.com">`, `<KV "ab:store42:abtest">` —
+so a capability is bounded by *resource*, not just *kind*. The platform's strongest
+guarantees (pinned network domains, namespaced storage; see
+[`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §7a/§7b/§7) require this.
+
+**Core decision: parameters are type-level literals from small built-in sorts — NOT
+arbitrary values** (that would be dependent types). Sorts: `Str`, `Nat`, and
+**finite sets** of these with a top `⊤` ("unconstrained"). A parameter denotes an
+**upper bound on authority**; each sort is a lattice (for `Str`: finite sets ordered
+by ⊆, `⊤` = any; join = ∪ saturating to `⊤`; `≤` = ⊆). Decidable; no SMT.
+
+**Surface syntax** (a conservative extension of today's rows — a plain label is the
+no-parameter case):
+```
+effect Fetch (Str)        -- declare a parameterized capability
+effect KV    (Str)
+verify : Token   -> <Fetch "idp.example.com"> AuthResult
+abTest : Context -> <KV "ab:store42:abtest"> Context
+h      : Request -> <Fetch {"a.com","b.com"}, Log> Response
+p      : Request -> <Fetch _> Response          -- `_` = ⊤ (any)
+```
+
+**Semantics, four pieces:**
+1. **Rows & atoms.** A row is `head → parameter` (+ optional tail var); at most one
+   atom per head; same-head atoms merge by **joining** parameters.
+2. **Sub-effecting `r₁ ≤ r₂`** (the platform admission check): every head in `r₁` is
+   in `r₂` with `P₁ ≤_sort P₂`. So `<Fetch "a"> ≤ <Fetch {"a","b"}> ≤ <Fetch _>`,
+   and crucially `<Fetch _> ⊄ <Fetch "a">`. Per-install policy intersection = per-head
+   **meet**.
+3. **Inference + literal-lifting (the one dependent-ish rule).** A function's row is
+   the **join** of its sub-expressions' rows. Parameters are *created* only at a
+   parameterized primitive, by lifting a **literal** argument: `fetch L` (L literal)
+   ⇒ `Fetch {domainOf L}`; `fetch e` (non-literal) ⇒ `Fetch ⊤`. **Soundness
+   invariant:** the inferred row is always an *over-approximation* of real authority
+   (non-literal ⇒ `⊤` = max). A parameterized effect may be imprecise (too
+   permissive) but never unsound — the correct failure direction for a security
+   manifest.
+4. **Polymorphism.** Effect-parameter variables, solved by row unification (same-head
+   params combine by join, not equality), let forwarders thread a parameter:
+   `withRetry : (a -> <Fetch d | e> b) -> a -> <Fetch d | e> b`.
+
+**Free security payoff.** The `⊤`-fallback means a plugin pinned to
+`<Fetch "idp.example.com">` *cannot fetch a runtime-computed URL* — it lifts to
+`Fetch ⊤ ⊄ {"idp.example.com"}` → rejected. "No exfiltration to an attacker-chosen
+destination" is not a separate check; it is literal-lifting doing its job. The only
+way to satisfy a pinned bound is to use an allowed literal.
+
+**Erasure + manifest.** Parameters are compile-time only (erased with the rest of
+the row; zero runtime cost), but the *verified* parameters are emitted to the
+capability manifest the platform reads to configure proxies (`Fetch {"idp…"}` →
+domain-pinned proxy; `Fetch ⊤` → unconstrained network, granted-coarse or rejected
+per policy).
+
+**Cost / staging.** A layer on top of atomic effects (param terms + per-sort
+finite-set lattices + literal-lifting + param-aware join/unification); polynomial as
+long as sorts stay finite-set lattices. Do atomic capability effects (Phase 146
+core) first; this is **Phase 146b**.
+
+**Future extensions (noted, not v1):**
+- *Structured parameters* (e.g. `*.example.com` wildcard domains) — needs a real
+  partial order (prefix/suffix matching) instead of a finite-set lattice.
+- *The `domainOf` literal→parameter projection: hard-coded per primitive vs.
+  user-specifiable.* Start hard-coded; user-specifiable (a platform declares the
+  projection) needs a small compile-time evaluator.
+
+**Open — worthy of investigation before implementing (deferred, do not drill yet):**
+- *Precision through wrappers via singleton-typed arguments.* A runtime URL passed
+  through a wrapper collapses to `Fetch ⊤`; recovering precision needs
+  singleton/refinement typing on *values* (`u : String[="idp.example.com"]`) — a real
+  escalation beyond effect-only parameters. Not needed for the literal-at-call-site
+  plugin pattern; investigate only if wrapper precision proves necessary.
+- *Param-aware row unification × the typeclass/dict machinery.* Effect rows already
+  thread through HM + typeclass methods + dict-passing (§6, "the delicate core");
+  adding parameterized atoms to that unification is the part most likely to bite in
+  implementation. Needs a focused design pass before coding.
+
 ## 7. Relationship to existing decisions
 
 - **STAGE2-DESIGN.md** — effects already erased before codegen; this is compatible
@@ -199,9 +280,9 @@ gradual-verification principle Medaka applies elsewhere.
   attenuation story (a function *removing* a capability before calling another)
   needs design.
 - **Effect-label declaration syntax** (`effect KV`?) and module/visibility rules.
-- **Parameterized effects** — `<Fetch "api.example.com">` (capability *with*
-  constraints) vs. plain `<Fetch>`. Big expressiveness gain, real complexity cost;
-  probably a later layer.
+- **Parameterized effects** — now designed; see **§6a** (the pinned-domain /
+  scoped-KV layer, Phase 146b). Two sub-questions deferred there: precision through
+  wrappers (singleton-typed args) and param-aware row unification × typeclass/dict.
 - **Manifest emission/consumption** — concrete format the Wasm host reads, and how
   it maps to WASI / the component model's own capability story (don't reinvent what
   the component model already expresses).

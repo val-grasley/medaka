@@ -257,17 +257,67 @@ reflection**.
   cannot cross the C-ABI/GC boundary; that intuition does not transfer (this is
   exactly why the sorts are `→MEDAKA`).
 
+## 6a. Targets, capability interfaces & stdlib stratification (decided 2026-06-06)
+
+Medaka ships as **one language, one core, identical semantics**, parameterized by a
+**target = (available capability set) × (backend)**. NOT full Roc-style platforms;
+NOT separate forked language variants. The ratified middle path:
+
+- **Capability-interface model.** The runtime surface is a *parameter*, expressed as
+  effect-labeled extern declarations bound per target — not a stdlib hardcoded into
+  the compiler. The same effect-labeled extern (`fetch`, `readFile`) binds to a C
+  function on native and a host import on WASM: same signature/semantics, different
+  glue. (This is the platform abstraction of [`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)
+  viewed from the supply side — a platform *provides* capabilities; an effect row
+  *declares* which are consumed.)
+- **Stdlib stratification — a discipline to adopt NOW.** Split the library into:
+  - a **pure core** (data structures, algorithms — capability-free), byte-identical
+    on every target; and
+  - **capability modules** (file IO, net, KV, time, RNG, …), effect-labeled, present
+    only where the target provides the capability.
+  Capability-bearing functions must be effect-labeled and live in capability
+  modules, never the pure core. Retrofitting this is expensive — design it into the
+  first stdlib reorganization. (See `../STDLIB.md`.)
+- **Targets are configurations, not forks.** "General-purpose Medaka" = all
+  capabilities + LLVM-native. "WASM-edge Medaka" = the host-granted subset + WasmGC.
+  Same frontend, type system, Core IR, and pure core.
+- **Effects make multi-target HONEST.** A program using `<File>` simply won't
+  typecheck/link against a target that doesn't provide `<File>` — a clear *static*
+  error, never silent runtime divergence. This is the guarantee against "one language
+  that is secretly two."
+- **Capabilities are the mechanism for EVERY native-vs-WASM "what can it do"
+  difference** — threads, raw filesystem, real sockets become capabilities the native
+  target provides and the edge target doesn't, surfaced in types. No forks, no
+  `#ifdef`.
+- **Guardrail for the general-purpose ambition:** general-purpose = a *superset of
+  capabilities over identical semantics*, never different semantics. The moment
+  "native" means values *behave* differently (not just "more capabilities
+  available"), the language has split. The value-representation discipline (§7.1)
+  enforces this.
+
 ## 7. Open decisions to lock before building the runtime
 
-1. **Uniform value representation** (tagged word / NaN-box / boxed) — gates every
-   `LEAF` row and the two `(rep)` rows. (§2a)
+1. **Uniform value representation — MUST be WasmGC-compatible (decided 2026-06-06).**
+   Design to the **WasmGC intersection**: boxed, nominally-typed struct/array values;
+   **NO pointer-tagging or NaN-boxing** (WasmGC references are opaque — you cannot
+   steal low bits). Use WasmGC **`i31ref`** for unboxed small ints, but keep `Int`
+   **64-bit logically everywhere** (i31 is only 31 bits, so larger ints box — boxing
+   is an invisible *per-backend optimization*, never a semantic fact). **LLVM
+   implements this same model;** pointer-tagging stays an LLVM-only optimization
+   *behind identical semantics*, added later only if profiling demands. Do **not**
+   design the value rep around LLVM tagging and then try to port it to WasmGC — that
+   is the "secretly two languages" trap. Gates every `LEAF` row and the two `(rep)`
+   rows. (§2a; rationale in `STAGE2-DESIGN.md` §2.4.)
 2. **String representation** — UTF-8 + cached codepoint count vs. other; gates
    `stringLength`/`charCode` intrinsic-vs-leaf and all string `LEAF`/`UNICODE`
    helpers. (§4)
 3. **GC**: Boehm-first is decided; confirm the `gc_alloc`/object-header contract
    and whether `set_ref` needs a barrier now or later. (§2b)
 4. **Closure ABI & calling convention** — needed for `→MEDAKA` sorts to call their
-   comparator, and for the unwind model behind `panic`. (§2b)
+   comparator, and for the unwind model behind `panic`. (§2b) **Guaranteed tail
+   calls are available on both backends** (LLVM `musttail`; WasmGC `return_call`,
+   Wasm 3.0 — verified 2026-06-06, see `STAGE2-DESIGN.md` §2.4), so design the
+   calling convention assuming uniform guaranteed TCO.
 5. **Where the ABI is first proven**: at the **bytecode VM (§2.2)**, against the
    tree-walker oracle — not at LLVM. (§2 sequencing note)
 
