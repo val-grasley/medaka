@@ -906,3 +906,156 @@ the tests that follow — the crash becomes `Fail "message"`.
   vocabulary only into files that contain a `test` decl (frictionless, no
   explicit import needed).  Blocked on the `marked_prelude`-coalescing risk
   that is the codebase's most repeated bug source; build it on a tested v1.
+
+---
+
+## Capability stratification audit (Phase 146, 2026-06-06)
+
+*Companion to [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §3a and
+[`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md). Output of the Phase 146
+item 3 "design-only" audit.*
+
+The stdlib is partitioned into three tiers based on whether a function
+requires a **host capability** (something the platform must explicitly grant).
+This determines which functions are available on a capability-gated target
+(edge Wasm, pure sandbox, plugin module) and what the capability manifest
+must list.
+
+### Tiers
+
+| Tier | Effect label | What it means | Available on |
+|------|-------------|---------------|-------------|
+| **P — Pure** | (none) | Referentially transparent; no host interaction; byte-identical on every target | Every target |
+| **M — Local mutation** | `<Mut>` | Heap-local in-place mutation; no host interaction, no observable side effect outside the process | Every target (Wasm supports local heap mutation) |
+| **H — Host capability** | `<IO>`, `<Rand>`, `<Panic>`, `<Time>`, user-defined | Requires the host to provide and grant the capability; gated by the capability manifest | Only where the manifest grants it |
+
+Tiers P and M together are the **capability-free core**: a module that stays
+within P+M can be loaded on any target without any manifest grant.  The
+distinction between P and M is an *observability* property (is mutation
+visible to a caller?), not a *security* property — `<Mut>` is not a host
+capability and cannot be withheld.
+
+### Module stratification
+
+| Module | File | Tier | Notes |
+|--------|------|------|-------|
+| 0 runtime (extern catalog) | `runtime.mdk` | mixed — see §Extern audit | |
+| 1 core | `core.mdk` | P + H carve-outs | Mostly P; `print`/`println` → `<IO>`; `Arbitrary`/`arbitraryString`/`arbitraryList` → `<Rand>` |
+| 2 list | `list.mdk` | P | Fully pure |
+| 3 string | `string.mdk` | P | Fully pure (Unicode DB is bundled, not a syscall) |
+| 4 array | `array.mdk` | P + M | In-place ops (`sort!`, `fill`, `blit`) are `<Mut>`; allocation and reads are P |
+| 5 map | `map.mdk` | P | Persistent weight-balanced tree; no mutation |
+| 5 set | `set.mdk` | P | Persistent weight-balanced tree; no mutation |
+| 6 hash_map | `hash_map.mdk` | M | `insert`/`delete`/`fromList` are `<Mut>`; all queries pure |
+| 6 hash_set | `hash_set.mdk` | M | Same as hash_map |
+| 7 io | `io.mdk` | H (`<IO>`) | Entirely host-capability; not available without the `<IO>` grant |
+| 8 mut_array | `mut_array.mdk` | M | `push`/`pop`/`set`/`swap`/`clear`/`mapInPlace` are `<Mut>`; capacity/length queries pure |
+| 9 json | `json.mdk` | P | `parse`/`stringify` are fully pure; transiently allocates arrays but `<Mut>` does not escape |
+| 10 test | `test.mdk` | P + H | `Expectation` ADT + assertion helpers are P; `runTests` → `<IO>` (prints results to stdout) |
+
+**P+M kernel:** modules 1–9 (excluding io) cover the full capability-free
+surface. A plugin restricted to pure computation plus mutable local data
+structures needs no manifest entries at all.
+
+### Extern audit
+
+#### Tier P — pure, no effect label
+
+| Group | Externs |
+|-------|---------|
+| Constants | `pi`, `e`, `intMinBound`, `intMaxBound`, `charMinBound`, `charMaxBound` |
+| Allocation (pure) | `Ref` (wraps a value; mutation is `set_ref`), `arrayMake`, `arrayMakeWith`, `arrayCopy`, `arrayFromList` |
+| Array read | `arrayLength`, `arrayGetUnsafe` |
+| Array pure wrappers | `arraySortBy` — allocates + locally mutates + returns a fresh array; `<Mut>` does not escape |
+| Numeric / char conversions | `charToStr`, `intToFloat`, `floatToInt`, `intToString`, `floatToString`, `charCode`, `charFromCode` |
+| Debug rendering | `debugStringLit`, `debugCharLit` |
+| String kernel | `stringToChars`, `stringFromChars`, `stringLength`, `stringSlice`, `stringConcat`, `stringIndexOf`, `stringCompare`, `stringToFloat` |
+| Unicode classification | `charIsAlpha`, `charIsSpace`, `charIsUpper`, `charIsLower`, `charIsPunct` |
+| Unicode case folding | `charToUpper`, `charToLower`, `stringToUpper`, `stringToLower` |
+| Hash | `hash` — structural, deterministic; must agree with the type's `Eq` |
+| Internal | `__fallthrough__` — signals pattern fall-through; not a user capability |
+
+#### Tier M — local mutation (`<Mut>`)
+
+| Extern | Notes |
+|--------|-------|
+| `set_ref` | Overwrites a `Ref`; heap-local |
+| `arraySetUnsafe` | In-place write; bounds unchecked (stdlib-internal use) |
+| `arrayBlit` | Copy range between arrays in-place |
+| `arrayFill` | Fill array range in-place |
+| `arraySortInPlaceBy` | In-place sort |
+
+#### Tier H — host capabilities
+
+| Extern | Current label | Fine-grained label (proposed) | Notes |
+|--------|--------------|-------------------------------|-------|
+| `putStr`, `putStrLn`, `inspect` | `<IO>` | `<Stdout>` | Standard output |
+| `ePutStr`, `ePutStrLn` | `<IO>` | `<Stderr>` | Standard error |
+| `readLine`, `readLineOpt`, `readAll` | `<IO>` | `<Stdin>` | Standard input |
+| `readFile`, `writeFile`, `appendFile`, `fileExists`, `listDir` | `<IO>` | `<Fs>` | Filesystem |
+| `args` | `<IO>` | `<Args>` | Process argument vector |
+| `getEnv` | `<IO>` | `<Env>` | Environment variables |
+| `exit` | `<Panic>` | `<Panic>` | (already fine-grained) |
+| `randomInt`, `randomBool`, `randomFloat`, `randomChar`, `setSeed` | `<Rand>` | `<Rand>` | (already fine-grained) |
+| `wallTimeSec` | `<IO>` | **`<Time>`** | Wall-clock read is a distinct capability; the `<Time>` built-in label exists for this |
+| `allocBytes` | `<IO>` | `<Perf>` or keep `<IO>` | GC profiling escape hatch; very low priority |
+
+#### Tooling-only (not for user code or edge modules)
+
+| Extern | Label | Notes |
+|--------|-------|-------|
+| `assert_snapshot` | `<IO>` | Used only by the snapshot test harness |
+
+### Design gap — `panic : String -> a`
+
+`panic` currently carries **no effect label** despite being an unconditional
+abort.  This differs from `exit : Int -> <Panic> Unit` because `panic` has
+return type `a` (never returns), allowing it to unify at any position without
+a `<Panic>` context.  Adding `<Panic>` would require every expression context
+that uses `panic` (bounds checks, exhaustiveness sentinels, stdlib internals)
+to carry `<Panic>` in its row.
+
+**Two resolution paths before manifest emission:**
+
+1. Tag `panic` as `String -> <Panic> a` and update affected call sites. Most
+   internal uses are in functions that already perform `<IO>` or `<Mut>`, so
+   the ripple is narrower than it looks.
+2. Treat `<Panic>` as always-subsumed in the manifest (every module can panic;
+   hardware faults can too) and exclude it from capability gating — granting
+   it implicitly.  This preserves `panic`'s current untagged form.
+
+Path 2 is simpler and consistent with how panic is treated in WASI (always
+available; untrappable from the host).  Path 1 is the principled capability
+answer if panic isolation is ever a requirement (e.g. "pure sandbox that
+cannot abort the host process").  **Decision needed before manifest emission.**
+
+### Target profiles
+
+| Profile | Tiers available | Practical capability grants |
+|---------|----------------|----------------------------|
+| Pure sandbox | P only | none — all computation, no I/O or mutation |
+| General compute | P + M | none — data structures + algorithms freely |
+| Edge / plugin | P + M + selected H | per-deployment manifest: e.g. `{Stdout, Fetch}` for a logging transform; `{Stdout, KV}` for a cache-layer plugin |
+| General-purpose native | P + M + all H | all built-in labels; user programs use IO/Rand/Panic freely |
+
+### Label refinement roadmap
+
+The infrastructure for fine-grained labels is in place (Phase 146 gap 2:
+`effect Foo` declarations, user-definable labels, all labels are erased
+before codegen).  The remaining steps, in priority order:
+
+1. **`wallTimeSec` → `<Time>`** — one-line change in `runtime.mdk`; the
+   `<Time>` built-in label already exists.  Do before manifest emission.
+2. **`<IO>` split** — rename the relevant externs and io.mdk wrappers to
+   `<Stdout>`, `<Stderr>`, `<Stdin>`, `<Fs>`, `<Args>`, `<Env>`.  Required
+   for useful fine-grained edge manifests (a logging plugin needs `<Stdout>`
+   but must not get `<Fs>`).  Coordinate with test fixture updates.
+3. **`panic` design gap** — pick path 1 or 2 above; apply before manifest
+   emission.
+4. **Cross-module effect label export** — `pub effect Fetch` declared in a
+   platform SDK module must be visible across the loader boundary (deferred in
+   Phase 146 gap 2 §3a).  Needed for multi-module platform SDKs.
+5. **Manifest emission** — the final Phase 146 remaining item (CAPABILITY-EFFECTS.md
+   §5a): once labels are refined and cross-module export works, the compiler
+   emits a `[package.capabilities]` table from a verified entry point's effect
+   row.

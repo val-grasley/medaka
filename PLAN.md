@@ -243,10 +243,10 @@ item 5 (fine-grained labels) is the first *remaining* coding step.
    capability-manifest format a host reads, and 2–3 worked plugin interfaces (reuse
    the discount-calc / auth-middleware / pipeline examples in CAPABILITY-PLATFORM.md)
    pressure-tested on paper. Skill: **add-language-feature** (planning).
-3. **Stdlib capability audit (design-only; parallel).** Catalog which extern/stdlib
-   functions are capability-bearing vs. pure; design the pure-core/capability-module
-   split and the effect label each capability fn carries. Output: the stratification
-   plan in STDLIB.md. Skill: **extend-stdlib**.
+3. ✅ **Stdlib capability audit — DONE 2026-06-06.** Cataloged all extern/stdlib
+   functions by capability tier (P/M/H); designed the pure-core/capability-module
+   split; documented effect labels, the `<IO>`-split roadmap, and the `panic`
+   design gap. Output: `STDLIB.md` §"Capability stratification audit". Skill: **extend-stdlib**.
 4. ✅ **Sound effect tracking — DONE (Phase 79/79e/146; selfhost mirror 2026-06-06).**
    Effect propagation/inference, higher-order `<e>` composition
    (`map : (a -> <e> b) -> List a -> <e> List b`), binding-boundary escape, and
