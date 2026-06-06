@@ -1,0 +1,8 @@
+-- slice 4: a function returning a lambda that CAPTURES its parameter (`n`), then
+-- calling the returned closure.  Exercises free-variable capture from a function
+-- parameter (the closure cell stores `n`'s word), a function body whose tail value
+-- IS a closure, and a saturated indirect call to the captured-closure result.
+adder n = m => n + m
+main =
+  let add10 = adder 10
+  add10 5

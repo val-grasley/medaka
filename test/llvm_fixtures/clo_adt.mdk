@@ -1,0 +1,16 @@
+-- slice 4 (integration): a closure mapped over a user list ADT, then summed to a
+-- scalar.  Combines slice-3 ADT alloc + decision-tree match (Node/Empty, reused
+-- from adt_list_fold) with a slice-4 closure passed as a higher-order argument and
+-- applied indirectly inside `mapL`.  `main` reduces to a scalar so the type-directed
+-- print stays in scope.
+data IntList = Node Int IntList | Empty
+
+mapL f lst = match lst
+  Node x xs => Node (f x) (mapL f xs)
+  Empty => Empty
+
+sum lst = match lst
+  Node x xs => x + sum xs
+  Empty => 0
+
+main = sum (mapL (x => x * 10) (Node 1 (Node 2 (Node 3 Empty))))

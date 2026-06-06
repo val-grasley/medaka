@@ -1,0 +1,6 @@
+-- slice 4: pass a lambda to a higher-order function that calls it INDIRECTLY.
+-- `applyTo`'s body `f x` has a head (`f`) that is a parameter, not a known
+-- top-level function — so it lowers to an indirect call (load code_ptr from the
+-- closure cell, pass the closure word as the leading argument).
+applyTo f x = f x
+main = applyTo (y => y * 2) 21

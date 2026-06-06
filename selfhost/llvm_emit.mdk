@@ -1,4 +1,4 @@
--- Core IR -> textual LLVM IR — Stage 2.4 DE-RISKING SPIKE (slices 1–3).
+-- Core IR -> textual LLVM IR — Stage 2.4 DE-RISKING SPIKE (slices 1–4).
 --
 -- This is NOT the real LLVM backend (STAGE2-DESIGN.md §2.4 schedules that AFTER
 -- the bytecode VM).  It is a cheap end-to-end proof that the decided toolchain —
@@ -42,11 +42,24 @@
 --     variables (getelementptr loads), evaluates the body into an alloca result
 --     slot, and branches to the decision's end block.  Mirrors core_ir_eval's
 --     cevalDecision/cevalTree/cevalSwitch one-to-one, value-walk → block-emit.
--- Still OUT of scope: higher-order values / closures / records / arrays / ranges
--- / typeclass dispatch / GC; built-in list & tuple heads (HCons/HNil/HTuple/
--- HUnit) and non-Int literal heads in matches; guarded / range / record arms
--- (CTGuard).  An unsupported Core IR node panics with its tag (the spike refuses
--- to emit wrong code rather than silently mis-lowering).
+--   • slice 4 — CLOSURES + HIGHER-ORDER FUNCTIONS.  A `CLam` is lambda-lifted to a
+--     top-level `define @mdk_lamN(i64 %clos, i64 %arg…)` and, at its site, a BOXED
+--     closure cell {header, code_ptr, captured…} is allocated (the slice-3 ctor
+--     alloc, reused verbatim with "fields" = [code_ptr, capture…]).  The CAPTURED
+--     set is freeVars(body) − params, intersected with the live emit env.  An
+--     application whose head is NOT a known fn/ctor (a closure-valued param /
+--     let-binding / returned closure / immediately-applied lambda) lowers to an
+--     INDIRECT call: load code_ptr, `call` it passing the closure word as the
+--     leading argument (RUNTIME-DESIGN.md §8.5).  A named top-level fn used as a
+--     VALUE is eta-wrapped into a captureless static closure forwarding to
+--     `@mdk_<name>`.  SATURATED calls only — the type-erased Core IR can't see a
+--     closure's arity at the call site; partial / over-application are OUT (the
+--     real backend will carry arity in the cell).
+-- Still OUT of scope: records / arrays / ranges / typeclass dispatch / GC; built-in
+-- list & tuple heads (HCons/HNil/HTuple/HUnit) and non-Int literal heads in
+-- matches; guarded / range / record arms (CTGuard); recursive (CLet True) closures
+-- and capture of Ref/mutable bindings.  An unsupported Core IR node panics with its
+-- tag (the spike refuses to emit wrong code rather than silently mis-lowering).
 --
 -- VALUE REPRESENTATION (PROVISIONAL — revisable; see RUNTIME-DESIGN.md "Value
 -- representation & calling convention").  A value is a uniform 64-bit word:
@@ -62,6 +75,11 @@
 --            [ i64 tag | field0 | field1 … ], one 8-byte word each; tag = the
 --            constructor name hashed to i64.  The same boxed-pointer discipline as
 --            Float, extended to n fields.
+--   • Closure — BOXED (slice 4): word is a pointer to a heap cell
+--            [ i64 header | i64 code_ptr | capt0 | capt1 … ] (RUNTIME-DESIGN.md
+--            §8.5).  The same cell shape as an ADT (header + fields), so it reuses
+--            the slice-3 alloc; calling loads code_ptr and passes the cell pointer
+--            as the leading argument.
 
 import ast.{Lit(..), Pat(..), Addr(..)}
 import core_ir.{CExpr(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..)}
@@ -73,7 +91,11 @@ import util.{reverseL, joinNl, lookupAssoc}
 -- boxed heap-cell pointer word; it never reaches an arithmetic/print site in the
 -- supported subset (constructor values flow only as scrutinees and call args,
 -- which are LTy-agnostic uniform i64 words), so it carries no payload type.
-data LTy = LTInt | LTFloat | LTBool | LTCon
+-- `LTClosure` (slice 4) is a first-class function value — a boxed closure cell
+-- pointer word, like `LTCon`.  It flows only as a call argument and as the head of
+-- an indirect call (both LTy-agnostic uniform i64 words); it never reaches an
+-- arithmetic or print site in the supported subset, so it carries no payload type.
+data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
 -- — prepend is O(1); reverseL'd once at the end restores program order), the
@@ -86,8 +108,14 @@ data LTy = LTInt | LTFloat | LTBool | LTCon
 -- once, up front, in emitProgram.  The fifth ref is the CONSTRUCTOR table
 -- (slice 3 — `name -> arity`, read out of `CProgram`): it tells a `CVar`/`CApp`
 -- head apart as an ADT constructor (→ heap-cell allocation) vs a function call /
--- local variable, and supplies the arity for the alloc + field stores.
-data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int)))
+-- local variable, and supplies the arity for the alloc + field stores.  The SIXTH
+-- ref (slice 4) is a SEPARATE output buffer for LIFTED LAMBDA definitions: a CLam
+-- is lambda-lifted to its own top-level `define` (LLVM has no nested functions),
+-- but it is DISCOVERED mid-body while the main buffer holds the enclosing
+-- function — so its `define` is emitted into this side buffer (via a save/restore
+-- swap of the main buffer) and concatenated after `@main` at module end (LLVM
+-- define order is irrelevant).
+data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int))) (Ref (List String))
 
 -- a function's inferred signature: its parameter types (in order) and its return
 -- type.  At the LLVM ABI every value is a uniform i64 word regardless (Int
@@ -102,7 +130,7 @@ data FnSig = FnSig (List LTy) LTy
 
 -- ── emitter plumbing ────────────────────────────────────────────────────────
 freshId : Emit -> <Mut> Int
-freshId (Emit c _ _ _ _) =
+freshId (Emit c _ _ _ _ _) =
   let n = c.value
   let _ = set_ref c (n + 1)
   n
@@ -111,12 +139,21 @@ freshReg : Emit -> <Mut> String
 freshReg e = "%t" ++ intToString (freshId e)
 
 emit : Emit -> String -> <Mut> Unit
-emit (Emit _ buf _ _ _) line = set_ref buf (line :: buf.value)
+emit (Emit _ buf _ _ _ _) line = set_ref buf (line :: buf.value)
+
+-- the main output buffer ref (slice 4: needed for the save/restore swap that
+-- redirects emission of a lifted lambda's `define` into the side buffer).
+bufRef : Emit -> Ref (List String)
+bufRef (Emit _ buf _ _ _ _) = buf
+
+-- the side buffer holding lifted-lambda `define`s, in FORWARD order (slice 4).
+lamsRef : Emit -> Ref (List String)
+lamsRef (Emit _ _ _ _ _ lams) = lams
 
 -- the known-function table (set once in emitProgram); membership decides whether
 -- a `CApp` head names a callable top-level function.
 fnNames : Emit -> <Mut> List String
-fnNames (Emit _ _ fns _ _) = fns.value
+fnNames (Emit _ _ fns _ _ _) = fns.value
 
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = containsStr name (fnNames e)
@@ -124,7 +161,7 @@ isKnownFn e name = containsStr name (fnNames e)
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
-fnRetTy (Emit _ _ _ sigs _) name = match lookupAssoc name sigs.value
+fnRetTy (Emit _ _ _ sigs _ _) name = match lookupAssoc name sigs.value
   Some (FnSig _ rty) => rty
   None => LTInt
 
@@ -132,7 +169,7 @@ fnRetTy (Emit _ _ _ sigs _) name = match lookupAssoc name sigs.value
 -- the constructor arity table (set once in emitProgram); membership decides
 -- whether a `CVar`/`CApp` head names an ADT constructor (→ heap allocation).
 ctorTable : Emit -> <Mut> List (String, Int)
-ctorTable (Emit _ _ _ _ ct) = ct.value
+ctorTable (Emit _ _ _ _ ct _) = ct.value
 
 isCtor : Emit -> String -> <Mut> Bool
 isCtor e name = match lookupAssoc name (ctorTable e)
@@ -195,14 +232,19 @@ emitExpr e env (CLet recF pat e1 e2) = emitLet e env recF pat e1 e2
 emitExpr e env (CLetGroup binds body) = emitLetGroup e env binds body
 emitExpr e env (CBlock stmts) = emitBlock e env stmts
 emitExpr e env (CApp f a) = emitApp e env (CApp f a)
+emitExpr e env (CLam pats body) = emitLam e env pats body
 emitExpr e env (CDecision scrut arms tree) = emitDecision e env scrut arms tree
 emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag other ++ " (slice 1/3 subset only)")
 
 -- a variable occurrence: a bare constructor name (slice 3) is a NULLARY ADT value
--- → allocate its heap cell; anything else is a let/param-bound local operand.
+-- → allocate its heap cell; a bare KNOWN top-level FUNCTION name used as a VALUE
+-- (slice 4 — not the head of a saturated call) must become a closure, so eta-wrap
+-- it into a captureless static closure forwarding to `@mdk_<name>`; anything else
+-- is a let/param-bound local operand.
 emitVar : Emit -> List (String, (String, LTy)) -> String -> <Mut> (String, LTy)
 emitVar e env x =
   if isCtor e x then emitCtorAlloc e x []
+  else if isKnownFn e x then emitEtaClosure e x
   else lookupVar env x
 
 emitLit : Emit -> Lit -> <Mut> (String, LTy)
@@ -343,14 +385,18 @@ emitBlock e env ((CSLet _ (PVar x) ex)::rest) =
 emitBlock _ _ [] = panic "llvm spike: empty block"
 emitBlock _ _ _ = panic "llvm spike: unsupported block statement in slice 1"
 
--- ── function application (slice 2) ──────────────────────────────────────────
--- Only SATURATED direct calls to named top-level functions are supported: the
--- head of the (curried) application spine must be a `CVar` naming a known
--- function.  Every argument is passed as a uniform i64 word (the value rep), and
--- the result's static type is the callee's INFERRED return type (slice 2b — read
--- from the signature table via `fnRetTy`; defaults to Int if the head is somehow
--- untyped).  No higher-order values or closures (a non-`CVar` / unknown head
--- panics).
+-- ── function application (slices 2 + 4) ─────────────────────────────────────
+-- Three call shapes, by the application spine's head:
+--   • a known top-level FUNCTION (slice 2) — saturated direct `call @mdk_<name>`.
+--   • a CONSTRUCTOR (slice 3) — heap-cell allocation.
+--   • ANYTHING ELSE (slice 4) — a closure-valued head (a parameter, a let-bound
+--     lambda, an immediately-applied `CLam`, or a returned closure): emit the head
+--     to a closure word, load its code_ptr, and INDIRECT-call it passing the
+--     closure word as the leading argument.  SATURATED only — the Core IR is
+--     type-erased, so the call site cannot see the closure's arity; the spike
+--     relies on controlled fixtures applying a closure with exactly its arity in
+--     one spine.  Partial application (under-application → a residual closure) and
+--     over-application are OUT (the real backend will carry arity in the cell).
 flattenApp : CExpr -> List CExpr -> (CExpr, List CExpr)
 flattenApp (CApp f a) acc = flattenApp f (a :: acc)
 flattenApp hd acc = (hd, acc)
@@ -368,9 +414,23 @@ emitApp e env app =
         let r = freshReg e
         let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
         (r, fnRetTy e fname)
-      else
-        panic ("llvm spike: '" ++ fname ++ "' is not a saturated call to a known top-level function (slice 2: no higher-order values / closures)")
-    _ => panic "llvm spike: only direct calls to named top-level functions are supported in slice 2"
+      else emitIndirect e env hd args
+    _ => emitIndirect e env hd args
+
+-- a saturated INDIRECT call (slice 4): emit the head to a closure word, load its
+-- code_ptr (cell field 0), and `call` the loaded pointer with the closure word as
+-- the leading argument.  The result type is unknown to the type-erased call site;
+-- default Int (every supported fixture's indirect call returns a scalar Int).
+emitIndirect : Emit -> List (String, (String, LTy)) -> CExpr -> List CExpr -> <Mut> (String, LTy)
+emitIndirect e env hd args =
+  let (cw, _) = emitExpr e env hd
+  let argOps = emitArgs e env args
+  let cp = loadField e cw 0
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 " ++ fp ++ "(" ++ argDecls (cw :: argOps) ++ ")")
+  (r, LTInt)
 
 hasArgs : List CExpr -> Bool
 hasArgs [] = False
@@ -388,6 +448,223 @@ argDecls : List String -> String
 argDecls [] = ""
 argDecls [x] = "i64 " ++ x
 argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
+
+-- ── closures + higher-order functions (slice 4) ─────────────────────────────
+-- VALUE REPRESENTATION (RUNTIME-DESIGN.md §8.5 "Closures"): a closure value is a
+-- BOXED heap cell, the same boxed-pointer discipline as ADTs (slice 3) and Floats
+-- (slice 1).  Cell layout (8-byte words):
+--   [ 0: i64 header ] [ 8: i64 code_ptr ] [ 16: capt0 ] [ 24: capt1 ] …
+-- DECISION (filed in PLAN.md as a spike-rep note): the cell carries a one-word
+-- HEADER (a fixed closure tag) before `code_ptr`, mirroring §8.5's `{ header,
+-- code_ptr, captured… }` and the slice-3 ADT header — NOT code_ptr-at-offset-0.
+-- This lets the closure cell reuse `emitCtorAlloc`/`storeFields`/`loadField`
+-- VERBATIM: it is allocated exactly like a constructor whose "fields" are
+-- `[code_ptr, capt0, capt1, …]`, so `code_ptr` is field 0 and capture i is field
+-- i+1.  The CALLING CONVENTION (§8.5): load `code_ptr`, then call passing the
+-- closure pointer as a LEADING argument (`@mdk_lamN(i64 %clos, i64 %arg0, …)`).
+--
+-- Each CLam is LAMBDA-LIFTED to a top-level `define @mdk_lamN` (LLVM has no nested
+-- functions).  Its CAPTURED set is freeVars(body) − params, intersected with the
+-- emit-time env (free names NOT in the env are top-level globals — known fns /
+-- ctors — which need no capture).  At the CLam site we allocate the cell storing
+-- `[&@mdk_lamN, capturedWords…]`; in the lifted body we bind params from `%argK`
+-- and re-load captures from `%clos`.  Lifted-lambda params/captures default to Int
+-- (the type-erased subset; every slice-4 fixture's lambda is Int-typed) — a
+-- documented scope limit, like the saturated-only call rule above.
+
+-- the fixed closure-cell header tag (distinct from any constructor's hashed name
+-- only by intent — closures never flow into a constructor `match`, so the tag is
+-- never compared; it just fills the §8.5 header word).
+closureHeaderName : String
+closureHeaderName = "$closure"
+
+-- allocate a closure cell {header, code_ptr, captured…}: reuse the slice-3 ctor
+-- alloc with "fields" = [code_ptr, capture…].  `code_ptr` is a constant-expression
+-- operand (`ptrtoint (ptr @mdk_lamN to i64)`); `emitCtorAlloc` stores it like any
+-- field word.  Result is the cell pointer word, typed LTClosure.
+emitClosureAlloc : Emit -> String -> List String -> <Mut> (String, LTy)
+emitClosureAlloc e lamName captureWords =
+  let codePtr = "ptrtoint (ptr @" ++ lamName ++ " to i64)"
+  let (w, _) = emitCtorAlloc e closureHeaderName (codePtr :: captureWords)
+  (w, LTClosure)
+
+-- emit a CLam: compute its captured set, lift its body to a top-level define, and
+-- allocate the closure cell capturing the live operand words.
+emitLam : Emit -> List (String, (String, LTy)) -> List Pat -> CExpr -> <Mut> (String, LTy)
+emitLam e env pats body =
+  let lamName = "mdk_lam" ++ intToString (freshId e)
+  let pnames = patVarNames pats
+  let captured = keepInEnv env (dedupS (freeVars pnames body))
+  let captureWords = capWords env captured
+  let _ = emitLamDefine e lamName pats captured body
+  emitClosureAlloc e lamName captureWords
+
+-- eta-wrap a NAMED top-level function used as a value into a captureless static
+-- closure whose lifted body forwards every argument to `@mdk_<fname>`.  The arity
+-- is the function's inferred parameter count (signature table).
+emitEtaClosure : Emit -> String -> <Mut> (String, LTy)
+emitEtaClosure e fname =
+  let arity = fnArity e fname
+  let lamName = "mdk_eta_" ++ fname ++ "_" ++ intToString (freshId e)
+  let _ = emitEtaDefine e lamName fname arity
+  emitClosureAlloc e lamName []
+
+-- the inferred arity of a known top-level function (its signature's param count).
+fnArity : Emit -> String -> <Mut> Int
+fnArity (Emit _ _ _ sigs _ _) fname = match lookupAssoc fname sigs.value
+  Some (FnSig ptys _) => lengthS ptys
+  None => 0
+
+-- emit a lifted lambda's top-level `define` into the SIDE buffer (LLVM forbids a
+-- nested define).  Swap the main buffer out, emit the define with `emit` (so it
+-- lands in a private buffer), then move those lines (forward order) into the lams
+-- buffer and restore the main buffer.  Captures bind by loading `%clos` fields
+-- 1.., params bind to `%argK`; the body is emitted in TAIL position (it `ret`s).
+emitLamDefine : Emit -> String -> List Pat -> List String -> CExpr -> <Mut> Unit
+emitLamDefine e lamName pats captured body =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ closureParamDecls pats ++ ") {")
+  let _ = emit e "entry:"
+  let cenv = loadCaptures e captured 0
+  let penv = paramEnv pats (allInt pats) 0
+  let _ = emitFnBody e (cenv ++ penv) lamName body
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  set_ref (bufRef e) saved
+
+-- emit the captureless eta-forwarder `@mdk_etaN(i64 %clos, %arg…) { ret = call
+-- @mdk_fname(%arg…); ret }` into the side buffer (same swap discipline).
+emitEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
+emitEtaDefine e lamName fname arity =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
+  let _ = emit e "entry:"
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls (argNames arity 0) ++ ")")
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  set_ref (bufRef e) saved
+
+-- the lifted lambda's parameter list: a leading `%clos`, then the source params.
+closureParamDecls : List Pat -> String
+closureParamDecls [] = "i64 %clos"
+closureParamDecls pats = "i64 %clos, " ++ paramDecls pats 0
+
+-- the eta-forwarder's parameter list: `%clos` then `arity` `%argK`s.
+etaParamDecls : Int -> String
+etaParamDecls n = "i64 %clos" ++ etaArgDecls n 0
+
+etaArgDecls : Int -> Int -> String
+etaArgDecls n i = if i >= n then "" else ", i64 %arg" ++ intToString i ++ etaArgDecls n (i + 1)
+
+-- the `%argK` operand names 0..n-1 (the eta-forwarder's call arguments).
+argNames : Int -> Int -> List String
+argNames n i = if i >= n then [] else ("%arg" ++ intToString i) :: argNames n (i + 1)
+
+-- bind each captured variable by loading `%clos` field i+1 (field 0 is code_ptr).
+loadCaptures : Emit -> List String -> Int -> <Mut> List (String, (String, LTy))
+loadCaptures _ [] _ = []
+loadCaptures e (c::rest) i =
+  let r = loadField e "%clos" (i + 1)
+  (c, (r, LTInt)) :: loadCaptures e rest (i + 1)
+
+-- the live operand words for a captured-name list (looked up in the emit env).
+capWords : List (String, (String, LTy)) -> List String -> List String
+capWords _ [] = []
+capWords env (c::rest) =
+  let (op, _) = lookupVar env c
+  op :: capWords env rest
+
+-- keep only the names present as keys in the emit env (the capturable locals);
+-- drop free names that resolve to top-level globals (known fns / ctors).
+keepInEnv : List (String, (String, LTy)) -> List String -> List String
+keepInEnv _ [] = []
+keepInEnv env (k::rest) =
+  if envHasKey env k then k :: keepInEnv env rest else keepInEnv env rest
+
+envHasKey : List (String, (String, LTy)) -> String -> Bool
+envHasKey [] _ = False
+envHasKey ((n, _)::rest) k = if n == k then True else envHasKey rest k
+
+dedupS : List String -> List String
+dedupS [] = []
+dedupS (x::xs) = if containsStr x xs then dedupS xs else x :: dedupS xs
+
+-- the free variables of a Core IR expression given a set of already-bound names.
+-- Returns names (with duplicates; the caller dedups).  Covers the slice-1/3/4
+-- node subset; any other node contributes nothing (out-of-scope nodes panic at
+-- emit time, so they never reach a lifted lambda body here).
+freeVars : List String -> CExpr -> List String
+freeVars _ (CLit _) = []
+freeVars b (CVar x _) = if containsStr x b then [] else [x]
+freeVars b (CApp f a) = freeVars b f ++ freeVars b a
+freeVars b (CLam ps body) = freeVars (patVarNames ps ++ b) body
+freeVars b (CLet recF pat e1 e2) =
+  let b2 = patVars pat ++ b
+  let fe1 = if recF then freeVars b2 e1 else freeVars b e1
+  fe1 ++ freeVars b2 e2
+freeVars b (CLetGroup binds body) =
+  let b2 = bindNames binds ++ b
+  freeVarsBinds b2 binds ++ freeVars b2 body
+freeVars b (CBlock stmts) = freeVarsStmts b stmts
+freeVars b (CIf c t f) = freeVars b c ++ freeVars b t ++ freeVars b f
+freeVars b (CBinPrim _ l r) = freeVars b l ++ freeVars b r
+freeVars b (CUnOp _ x) = freeVars b x
+freeVars b (CMatch scrut arms) = freeVars b scrut ++ freeVarsArms b arms
+freeVars b (CDecision scrut arms _) = freeVars b scrut ++ freeVarsArms b arms
+freeVars b (CTuple es) = freeVarsList b es
+freeVars b (CList es) = freeVarsList b es
+freeVars _ _ = []
+
+freeVarsList : List String -> List CExpr -> List String
+freeVarsList _ [] = []
+freeVarsList b (e::rest) = freeVars b e ++ freeVarsList b rest
+
+freeVarsArms : List String -> List CArm -> List String
+freeVarsArms _ [] = []
+freeVarsArms b ((CArm pat _ body)::rest) =
+  freeVars (patVars pat ++ b) body ++ freeVarsArms b rest
+
+freeVarsStmts : List String -> List CStmt -> List String
+freeVarsStmts _ [] = []
+freeVarsStmts b ((CSExpr ex)::rest) = freeVars b ex ++ freeVarsStmts b rest
+freeVarsStmts b ((CSLet _ pat ex)::rest) =
+  freeVars b ex ++ freeVarsStmts (patVars pat ++ b) rest
+freeVarsStmts b (_::rest) = freeVarsStmts b rest
+
+freeVarsBinds : List String -> List CBind -> List String
+freeVarsBinds _ [] = []
+freeVarsBinds b ((CBind _ [CClause [] rhs])::rest) =
+  freeVars b rhs ++ freeVarsBinds b rest
+freeVarsBinds b (_::rest) = freeVarsBinds b rest
+
+bindNames : List CBind -> List String
+bindNames [] = []
+bindNames (b::rest) = bindName b :: bindNames rest
+
+-- the variables a pattern binds.
+patVars : Pat -> List String
+patVars (PVar x) = [x]
+patVars (PCon _ args) = patVarsList args
+patVars (PCons h t) = patVars h ++ patVars t
+patVars (PTuple ps) = patVarsList ps
+patVars (PList ps) = patVarsList ps
+patVars (PAs x p) = x :: patVars p
+patVars _ = []
+
+patVarsList : List Pat -> List String
+patVarsList [] = []
+patVarsList (p::rest) = patVars p ++ patVarsList rest
+
+patVarNames : List Pat -> List String
+patVarNames ps = patVarsList ps
 
 -- ── ADT constructors + pattern matching (slice 3) ───────────────────────────
 -- VALUE REPRESENTATION (RUNTIME-DESIGN.md §8.4 "Option A", extended from the
@@ -648,7 +925,7 @@ emitFn _ (CBind name _) =
   panic ("llvm spike: function '" ++ name ++ "' is multi-clause (slice 2: single variable-pattern clause only)")
 
 sigTable : Emit -> <Mut> List (String, FnSig)
-sigTable (Emit _ _ _ sigs _) = sigs.value
+sigTable (Emit _ _ _ sigs _ _) = sigs.value
 
 -- default param types when no signature was inferred (every param Int).
 allInt : List Pat -> List LTy
@@ -938,7 +1215,7 @@ isCmpOp op = op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" ||
 export
 emitProgram : CProgram -> <Mut> String
 emitProgram (CProgram groups ctorArs _ _) =
-  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs)
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref [])
   let _ = emitPreamble e
   let _ = emitFns e (fnBinds groups)
   let _ = emit e "define i32 @main() {"
@@ -948,8 +1225,11 @@ emitProgram (CProgram groups ctorArs _ _) =
   let _ = emitPrint e mv mty
   let _ = emit e "  ret i32 0"
   let _ = emit e "}"
+  -- the module body (preamble, top-level fn defines, @main) in forward order,
+  -- then the lifted-lambda defines (slice 4; already forward).  LLVM define order
+  -- is irrelevant, so appending the side buffer at the end is sound.
   match e
-    Emit _ buf _ _ _ => joinNl (reverseL buf.value)
+    Emit _ buf _ _ _ lams => joinNl (reverseL buf.value ++ lams.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =
@@ -981,6 +1261,8 @@ emitPrint e v LTFloat =
   emit e ("  call void @mdk_print_float(double " ++ d ++ ")")
 emitPrint _ _ LTCon =
   panic "llvm spike: cannot print an ADT value (slice 3: `main` must reduce to a scalar Int/Bool/Float)"
+emitPrint _ _ LTClosure =
+  panic "llvm spike: cannot print a closure value (slice 4: `main` must reduce to a scalar Int/Bool/Float)"
 
 -- the body of the `main` binding (must be a nullary clause).
 mainBody : List CBind -> CExpr

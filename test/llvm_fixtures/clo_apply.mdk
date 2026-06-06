@@ -1,0 +1,7 @@
+-- slice 4: a let-bound lambda with NO captured variables, applied to a scalar.
+-- Exercises CLam lowering (lambda lifting to a top-level @mdk_lamN + a captureless
+-- closure cell), a let-binding holding a closure word, and a SATURATED indirect
+-- call whose head is a local (let-bound) closure rather than a known top-level fn.
+main =
+  let f = x => x + 1
+  f 41

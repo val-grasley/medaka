@@ -171,14 +171,14 @@ deliberately deferred to here:
   runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
   is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
-  - ✅ **Toolchain de-risking spike DONE (slices 1–3)** — *ahead of the strict
+  - ✅ **Toolchain de-risking spike DONE (slices 1–4)** — *ahead of the strict
     VM-first ordering by design* (front-loads the riskiest lift; runs parallel to
     the bytecode VM, uses only the tree-walker oracle). Proves the decided toolchain
     (EMIT textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings)
     end-to-end: `selfhost/llvm_emit.mdk` (Core IR → textual LLVM IR) +
     `selfhost/llvm_emit_main.mdk` + `runtime/medaka_rt.c` (a malloc-and-leak stub;
     GC deferred), gated by `test/diff_selfhost_llvm.sh` (emit → clang → link → run →
-    diff vs `dev/eval_probe.exe`, **22/22 byte-identical**). Slice 1 = scalars
+    diff vs `dev/eval_probe.exe`, **27/27 byte-identical**). Slice 1 = scalars
     (arithmetic / comparisons / `let` / `if` / value bindings / type-directed
     print). Slice 2 = top-level functions + saturated direct calls; self-recursive
     tail calls lower to `musttail call`+`ret` (the calling-convention proof,
@@ -193,8 +193,18 @@ deliberately deferred to here:
     Float-box path extended to N fields); a `match` lowered to a `CDecision` tree
     becomes an LLVM CFG (tag-test/`br` switch → field-projection → arm body into an
     `alloca` result slot), mirroring `core_ir_eval`'s `cevalDecision` one-to-one
-    (5 new fixtures). **Not** the real backend (no closures/records/arrays/dispatch/
-    GC; built-in list & tuple match heads and guarded/range/record arms still panic).
+    (5 new fixtures). Slice 4 (2026-06-06) = **closures + higher-order functions**:
+    each `CLam` is lambda-lifted to a top-level `define @mdk_lamN(i64 %clos,
+    i64 %arg…)` and, at its site, a boxed closure cell `{header, code_ptr,
+    captured…}` is allocated (the slice-3 ctor alloc reused verbatim, "fields" =
+    `[code_ptr, capture…]`); a closure-valued application head (param / let-binding
+    / returned closure / immediately-applied lambda) lowers to an INDIRECT call
+    (load code_ptr, `call` it passing the closure word as the leading arg, §8.5),
+    and a named top-level fn used as a value is eta-wrapped into a captureless
+    static closure forwarding to `@mdk_<name>` (5 new fixtures). **Not** the real
+    backend (no records/arrays/dispatch/GC; built-in list & tuple match heads,
+    guarded/range/record arms, partial application / over-application of closures,
+    recursive closures, and Ref capture all still panic).
     See [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4.
     - **Spike-surfaced rep notes (NOT acted on — the spike's job is to surface
       them; native-rep decisions belong to the real backend).** (a) **Nullary
@@ -208,7 +218,21 @@ deliberately deferred to here:
       i64 words, byte-offset GEP, low-bit Int tag) is the **native** physical rep and
       is intentionally NOT WasmGC-portable — §8.6 reconciles this (no single physical
       rep; the **Core IR** is the shared portable layer, a WasmGC sibling emitter
-      uses `i31ref` + structs).
+      uses `i31ref` + structs). (d) **Closure cell carries a one-word HEADER before
+      code_ptr** (`{header, code_ptr, captured…}`, code_ptr at offset 8) rather than
+      code_ptr-at-offset-0 — chosen to reuse the slice-3 ADT alloc/field I/O verbatim
+      and to match §8.5; the real backend may drop the header for closures (it is
+      never inspected — closures never enter a constructor `match`) to save a word.
+      (e) **Saturated-only calling**: the type-erased Core IR can't see a closure's
+      arity at the call site, so the spike emits a flat indirect call passing the
+      whole spine and relies on controlled fixtures; partial application
+      (under-application → residual closure) and over-application are unsupported.
+      The real backend must **carry arity in the closure cell** and branch
+      under/exact/over at the call site (or generate per-arity apply trampolines).
+      (f) **Captureless named-fn-as-value is eta-wrapped** into a static closure (a
+      lifted forwarder + a 2-word cell) so every call is uniformly indirect; a real
+      backend could instead intern one static closure per top-level fn (no per-use
+      alloc) once arities are carried.
 - ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `selfhost/core_ir.mdk`,
   `core_ir_lower.mdk`, `core_ir_eval.mdk` (+ sexp/round-trip gates). 47/47
   fixtures byte-identical across 6 corpora. See `selfhost/README.md`.

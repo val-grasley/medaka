@@ -540,10 +540,25 @@ The uniform-word rep makes the convention fall out cleanly:
   to LLVM/WasmGC `br_table` cleanly and avoids collisions. The emitted encoding is
   the native physical rep (§8.6); a WasmGC sibling would use `i31ref` + typed structs
   over the host GC, sharing only the Core IR, not the bits.
+- **Empirically validated (2026-06-06) — spike slice 4 (closures + HOFs).** The
+  closure rep below is now proven on the spike: a `CLam` lambda-lifts to a top-level
+  `define`, the closure cell `{ header, code_ptr, captured… }` allocates via the
+  same `mdk_alloc` path, and a higher-order call loads `code_ptr` and passes the
+  closure word as the leading arg. 27/27 gate. Rep decisions surfaced (deferred —
+  PLAN.md spike-rep notes (d)–(f)): the one-word **header is never inspected** and
+  could be dropped; **saturated calls only** (arity must move into the cell for
+  partial/over-application); named-fn-as-value is **eta-wrapped per use** (could be
+  interned once arities are carried).
 - **Closures.** A closure value is a boxed cell `{ header, code_ptr, captured… }`;
   calling loads `code_ptr` and passes the closure (env) pointer as a leading
-  argument. (Out of scope for the spike — flagged here as the next rep decision the
-  *bytecode VM* should pin down per §2 sequencing, before LLVM.)
+  argument. (LLVM spike slice 4, 2026-06-06: proven end-to-end — `CLam`
+  lambda-lifted to a top-level `define @mdk_lamN(i64 %clos, i64 %arg…)`, cell
+  allocated via the same `mdk_alloc` path as ADTs with "fields" =
+  `[code_ptr, capture…]`, indirect call passes the closure word as the leading arg.
+  **Saturated calls only** — the type-erased Core IR can't see arity at the call
+  site, so partial/over-application are deferred: the real backend must carry arity
+  in the cell. The spike's one-word header is never inspected and could be dropped.
+  See PLAN.md spike-rep notes (d)–(f).)
 - **`panic`/`exit`.** `noreturn` (§4). The unwind model (abort vs. catchable
   unwind) is deferred with the convention, as §4 already notes.
 
@@ -551,7 +566,7 @@ The uniform-word rep makes the convention fall out cleanly:
 be exercised at the **bytecode VM (§2.2)** against the tree-walker oracle before the
 real LLVM backend — the VM forces the same value-representation and C-ABI-extern
 commitments in the cheaper, single-steppable setting. This spike is the *earliest*
-such exercise (LLVM-side; scalars + functions + ADTs/match so far); the VM will
+such exercise (LLVM-side; scalars + functions + ADTs/match + closures/HOFs so far); the VM will
 broaden it to the full value set (records, arrays, closures, thunks, dispatch) with
 the same oracle.
 

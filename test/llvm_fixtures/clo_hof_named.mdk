@@ -1,0 +1,7 @@
+-- slice 4: pass a NAMED top-level function as a VALUE to a higher-order function.
+-- `double` is a known top-level fn; used unapplied it must become a closure too —
+-- an eta/static closure (captureless) whose lifted body forwards to @mdk_double —
+-- so the indirect call inside `applyTo` works uniformly.
+double x = x * 2
+applyTo f x = f x
+main = applyTo double 21

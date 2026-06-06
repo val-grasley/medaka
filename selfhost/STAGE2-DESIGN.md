@@ -583,9 +583,40 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   list/tuple/unit heads in `core_ir_lower.decodeHead` and is mis-decomposed at match
   time — `check` accepts it, the AST walker runs it, but the **Core IR path**
   (`ceval` + both backends) crashes; the fixtures sidestep it with `Node`/`Empty`.
-  Still **not** the real backend: closures / records / arrays / dispatch / GC, the
-  built-in list & tuple match heads, and guarded/range/record arms remain out of
-  scope and panic.
+
+- **Slice 4 — closures + higher-order functions (2026-06-06).** Each `CLam` is
+  **lambda-lifted** to a top-level `define i64 @mdk_lamN(i64 %clos, i64 %arg…)`; at
+  its site a **boxed closure cell** `{header, code_ptr, captured…}` is allocated
+  (the slice-3 ctor alloc reused **verbatim** with "fields" = `[code_ptr,
+  capture…]`, so code_ptr is field 0 and capture i is field i+1). The CAPTURED set
+  is `freeVars(body) − params` intersected with the live emit env (free names not in
+  the env are top-level globals — known fns / ctors — needing no capture). An
+  application whose head is **not** a known fn/ctor (a closure-valued param,
+  let-binding, returned closure, or immediately-applied lambda) lowers to an
+  **indirect call**: load code_ptr from the cell, `call` the loaded pointer passing
+  the closure word as the **leading argument** (RUNTIME-DESIGN.md §8.5). A named
+  top-level fn used as a **value** is **eta-wrapped** into a captureless static
+  closure whose lifted body forwards to `@mdk_<name>`, so every call is uniformly
+  indirect (`applyTo double 21` works). The lifted defines accumulate in a side
+  buffer (LLVM forbids nested defines) and are appended after `@main` (define order
+  is irrelevant). `musttail` self-tail-calls (slice 2) survive unchanged. Gate now
+  spans **27/27** fixtures (the prior 22 + 5 closure/HOF: `clo_apply` let-bound
+  no-capture lambda, `clo_capture` a fn returning a param-capturing closure,
+  `clo_hof` a lambda passed to a HOF and called indirectly, `clo_hof_named` a named
+  fn eta-wrapped as a value, `clo_adt` a closure mapped over a user list ADT then
+  summed). **Decisions surfaced (not silently taken; PLAN.md spike-rep notes):**
+  (d) the closure cell carries a **one-word header before code_ptr** (matching §8.5
+  and reusing the slice-3 ADT cell shape), not code_ptr-at-offset-0 — the real
+  backend may drop the never-inspected header. (e) **saturated calls only** — the
+  type-erased Core IR can't see a closure's arity at the call site, so the spike
+  emits a flat indirect call over the whole spine and relies on controlled fixtures;
+  partial application (under-application → residual closure) and over-application are
+  out, and the real backend must **carry arity in the cell** (or per-arity apply
+  trampolines). (f) captureless named-fn-as-value is eta-wrapped per use; a real
+  backend could intern one static closure per top-level fn once arities are carried.
+  Still **not** the real backend: records / arrays / dispatch / GC, the built-in
+  list & tuple match heads, guarded/range/record arms, recursive (`CLet True`)
+  closures, and Ref capture remain out of scope and panic.
 
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /
