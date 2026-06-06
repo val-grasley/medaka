@@ -708,8 +708,8 @@ eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
 -- in a bytecode VM, where consuming them pays off.  Activate by running
 -- annotateProgram in evalProgram/evalModules.
 eval env (EVarAt x addr) = if startsWithAt x then VUnit else lookupAtAddr env x addr
-eval env (EMethodAt name routeRef) =
-  narrowMethod (lookupEnv env name) (routeTag env routeRef.value)
+eval env (EMethodAt name routeRef implRef) =
+  applyDicts env (narrowMethod (lookupEnv env name) (routeTag env routeRef.value)) implRef.value
 eval env (EDictAt name routesRef) =
   applyDicts env (lookupEnv env name) routesRef.value
 eval env (EApp f x) = apply (eval env f) (eval env x)

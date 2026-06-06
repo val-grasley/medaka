@@ -11,7 +11,7 @@
 -- the prelude), effect rows, records, interfaces/impls + constraint solving,
 -- and explicit type signatures.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), DataVis(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), Require(..), ImplMethod(..), DataVis(..), Decl(..)}
 import desugar.{mapProg}
 -- The type-aware non-exhaustive-`match` check (`check_match` in lib/exhaust.ml)
 -- reuses the Maranget matrix machinery already ported in exhaust.mdk — the only
@@ -62,12 +62,14 @@ public export data RecordInfo = RecordInfo (List Int) Mono (List (String, Mono))
 recordsRef : Ref (List (String, RecordInfo))
 recordsRef = Ref []
 
--- return-position method sites discovered during inference: (the EMethodAt route
--- ref to fill, the method's result mono).  After the whole program is inferred,
--- each result mono's head tycon is the concrete impl tag the site dispatches to
--- (RKey) — or, when it is a constrained function's constraint variable, that
--- function's dict parameter (RDict).
-pendingSites : Ref (List (Ref Route, Mono))
+-- return-position method sites discovered during inference: (method name, the
+-- EMethodAt route ref to fill, the EMethodAt impl-dicts ref to fill, the method's
+-- result mono).  After the whole program is inferred, each result mono's head
+-- tycon is the concrete impl tag the site dispatches to (RKey) — or, when it is a
+-- constrained function's constraint variable, that function's dict parameter
+-- (RDict).  The impl-dicts ref is filled (single-module elaborate path only) when
+-- the route is a parametric impl with a `requires` — one route per requires.
+pendingSites : Ref (List (String, Ref Route, Ref (List Route), Mono))
 pendingSites = Ref []
 
 -- dict-passing state (the typed pipeline's `=>`-constraint layer):
@@ -131,6 +133,15 @@ promotedRef = Ref []
 
 dictEligibleRef : Ref (List String)
 dictEligibleRef = Ref []
+
+-- Whether checkProgramSeeded ALSO infers each parametric impl's return-position
+-- method bodies (instance-`requires` dict-passing, Phase 83/84 single-level).  ON
+-- only for the elaborate / dict path (elaborateDict sets it); OFF for the
+-- `=== TYPES ===` golden path (checkProgram) and the multi-module path
+-- (elaborateModules) so their scheme output stays byte-identical.  Deliberately
+-- NOT reset by resetState — the entrypoint that owns the path sets it.
+implInferEnabled : Ref Bool
+implInferEnabled = Ref False
 
 -- ── type-error accumulator ─────────────────────────────────────────────────
 -- Unification failures record diagnostics here instead of panicking, so
@@ -674,7 +685,7 @@ infer env (EFieldAccess e fname) = inferFieldAccess env e fname
 infer env (ERecordUpdate base fields) = inferRecordUpdate env base fields
 infer env (EVariantUpdate cname base fields) = inferVariantUpdate env cname base fields
 infer env (EBlock stmts) = inferBlock env stmts
-infer env (EMethodAt name tagRef) = inferMethodAt env name tagRef
+infer env (EMethodAt name tagRef implRef) = inferMethodAt env name tagRef implRef
 infer env (EDictAt name routesRef) = inferDictAt env name routesRef
 infer env (EArrayLit es) = inferArrayLit env es
 infer env (ERangeList lo hi _) = inferIntRange env lo hi (TCon "List")
@@ -716,15 +727,15 @@ inferSlice env arr lo hi =
 -- a return-position method occurrence: type it like the method, but record the
 -- (routeRef, result mono) so resolveSites can later stamp the route (RKey concrete
 -- impl tag, or RDict the enclosing constrained fn's dict param)
-inferMethodAt : TcEnv -> String -> Ref Route -> <Mut> Mono
-inferMethodAt env name tagRef = match lookupVar env name
+inferMethodAt : TcEnv -> String -> Ref Route -> Ref (List Route) -> <Mut> Mono
+inferMethodAt env name tagRef implRef = match lookupVar env name
   None => panic ("unbound method: " ++ name)
-  Some s => recordSite tagRef (instantiate s)
+  Some s => recordSite name tagRef implRef (instantiate s)
 
-recordSite : Ref Route -> Mono -> <Mut> Mono
-recordSite tagRef methodType =
+recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Mono
+recordSite name tagRef implRef methodType =
   let stripped = stripArrows methodType
-  let _ = set_ref pendingSites ((tagRef, stripped) :: pendingSites.value)
+  let _ = set_ref pendingSites ((name, tagRef, implRef, stripped) :: pendingSites.value)
   let _ = set_ref methodSiteFns ((currentFn.value, stripped) :: methodSiteFns.value)
   methodType
 
@@ -1297,10 +1308,11 @@ export
 elaborateDict : List Decl -> List String -> List String -> List Decl -> <Mut> List Decl
 elaborateDict runtimeDecls dictNames eligibleNames prog =
   let _ = set_ref dictEligibleRef eligibleNames
+  let _ = set_ref implInferEnabled True
   let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
   let prog2 = prePassDict (returnPosMethodNames prog) allNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
-  let _ = resolveSites pendingSites.value
+  let _ = resolveSites (buildImplTable prog2) pendingSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps pendingDictApps.value
   dictPass allNames prog2
@@ -1407,26 +1419,30 @@ prePassDict rpNames dictNames prog = mapProg (rewriteRPDict rpNames dictNames) p
 
 rewriteRPDict : List String -> List String -> Expr -> Expr
 rewriteRPDict rpNames dictNames (EVar n)
-  | containsName n rpNames = EMethodAt n (Ref RNone)
+  | containsName n rpNames = EMethodAt n (Ref RNone) (Ref [])
   | containsName n dictNames = EDictAt n (Ref [])
   | otherwise = EVar n
 rewriteRPDict _ _ e = e
 
-resolveSites : List (Ref Route, Mono) -> <Mut> Unit
-resolveSites [] = ()
-resolveSites ((tagRef, resultMono) :: rest) =
-  let _ = resolveSite tagRef resultMono
-  resolveSites rest
+resolveSites : List ImplEntry -> List (String, Ref Route, Ref (List Route), Mono) -> <Mut> Unit
+resolveSites _ [] = ()
+resolveSites implTable ((name, tagRef, implRef, resultMono) :: rest) =
+  let _ = resolveSite implTable name tagRef implRef resultMono
+  resolveSites implTable rest
 
 -- a method occurrence's route: if its discriminating type is a constrained
 -- function's constraint variable, read that function's dict param (RDict);
 -- otherwise the concrete impl head tag (RKey); an unresolved polymorphic type
--- stays RNone (arg-tag fallback).
-resolveSite : Ref Route -> Mono -> <Mut> Unit
-resolveSite tagRef resultMono = match activeDictVarOf resultMono
+-- stays RNone (arg-tag fallback).  When the route resolves to a concrete head
+-- that names a parametric impl WITH a `requires`, also fill the impl-dicts ref so
+-- eval threads the element dict(s) into the impl body (Phase 83/84 single-level).
+resolveSite : List ImplEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Unit
+resolveSite implTable name tagRef implRef resultMono = match activeDictVarOf resultMono
   Some dname => set_ref tagRef (RDict dname)
   None => match headTyconMono resultMono
-    Some tag => set_ref tagRef (RKey tag)
+    Some tag =>
+      let _ = set_ref tagRef (RKey tag)
+      set_ref implRef (implDictRoutesFor implTable name tag resultMono)
     None => ()
 
 -- if [m] normalizes to a registered constraint variable, the dict parameter name
@@ -1440,6 +1456,79 @@ activeDictVarOf m = match normalize m
   TVar cell => lookupAssocI (tyvarId cell) activeDictVars.value
   TApp a _ => activeDictVarOf a
   _ => None
+
+-- ── instance-`requires` impl-dict routing (Phase 83/84 single-level) ────────
+-- One parametric impl that carries a `requires`: its head tag (the tycon eval
+-- narrows by), the methods it defines (to disambiguate which impl a method site
+-- picked), the head type pattern (matched against the call's concrete result mono
+-- to recover the element type), and its requires constraints.
+public export data ImplEntry = ImplEntry String (List String) Ty (List Require)
+
+-- build the table from the program's impls-with-requires (others need no dicts)
+buildImplTable : List Decl -> List ImplEntry
+buildImplTable prog = concatMapL implEntryOf prog
+
+implEntryOf : Decl -> List ImplEntry
+implEntryOf (DAttrib _ d) = implEntryOf d
+implEntryOf (DImpl { tys, reqs, methods, ... }) = match reqs
+  [] => []
+  _ => implEntryFromTys tys reqs methods
+implEntryOf _ = []
+
+implEntryFromTys : List Ty -> List Require -> List ImplMethod -> List ImplEntry
+implEntryFromTys [] _ _ = []
+implEntryFromTys (headTy :: _) reqs methods = match headTyconTy headTy
+  Some tag => [ImplEntry tag (map implMethodNameTc methods) headTy reqs]
+  None => []
+
+implMethodNameTc : ImplMethod -> String
+implMethodNameTc (ImplMethod n _ _) = n
+
+-- the head type constructor of an (unelaborated) AST type
+headTyconTy : Ty -> Option String
+headTyconTy (TyCon n) = Some n
+headTyconTy (TyApp a _) = headTyconTy a
+headTyconTy _ = None
+
+-- the impl-dict routes for a method site that resolved to head tag [tag]: find the
+-- parametric impl defining [name] at that head, match its head pattern against the
+-- concrete result mono to recover the element subst, then one RKey route per
+-- requires (the element dict eval threads into the impl body).
+implDictRoutesFor : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
+implDictRoutesFor [] _ _ _ = []
+implDictRoutesFor (ImplEntry tag2 methodNames headTy reqs :: rest) name tag resultMono
+  | tag2 == tag && containsName name methodNames = match matchTyMono headTy resultMono
+      Some subst => implReqRoutes subst reqs
+      None => implDictRoutesFor rest name tag resultMono
+  | otherwise = implDictRoutesFor rest name tag resultMono
+
+-- match an impl-head type PATTERN against a concrete mono, binding the impl's
+-- type-variable names to monos (single-level: the pattern's args are bare vars).
+matchTyMono : Ty -> Mono -> Option (List (String, Mono))
+matchTyMono (TyVar n) m = Some [(n, m)]
+matchTyMono (TyCon n) m = match normalize m
+  TCon n2 => if n == n2 then Some [] else None
+  _ => None
+matchTyMono (TyApp a b) m = match normalize m
+  TApp ma mb => combineSubst (matchTyMono a ma) (matchTyMono b mb)
+  _ => None
+matchTyMono _ _ = None
+
+combineSubst : Option (List (String, Mono)) -> Option (List (String, Mono)) -> Option (List (String, Mono))
+combineSubst (Some xs) (Some ys) = Some (xs ++ ys)
+combineSubst _ _ = None
+
+-- one route per requires: substitute the recovered element subst into the
+-- requires' dispatch arg, take its head tycon (the dict tag eval narrows by).
+implReqRoutes : List (String, Mono) -> List Require -> <Mut> List Route
+implReqRoutes _ [] = []
+implReqRoutes subst (Require _ rargs :: rest) = reqRoute subst rargs :: implReqRoutes subst rest
+
+reqRoute : List (String, Mono) -> List Ty -> <Mut> Route
+reqRoute _ [] = RNone
+reqRoute subst (arg :: _) = match headTyconMono (fromAstType subst arg)
+  Some tag => RKey tag
+  None => RNone
 
 -- fill each constrained-fn call site's routes: one route per constraint mono.  A
 -- mono pinned to a concrete head → RKey; still a constraint variable (a nested
@@ -1539,13 +1628,101 @@ findTvarList (t :: rest) id = match findTvarInMono t id
 -- inference), matching the dicts EDictAt applies at call sites.  Multi-clause
 -- functions are several DFunDef decls; each clause gets the same leading params.
 dictPass : List String -> List Decl -> List Decl
-dictPass names prog = map (dictPassDecl names) prog
+dictPass names prog = map (dictPassDecl names (returnPosMethodNames prog)) prog
 
-dictPassDecl : List String -> Decl -> Decl
-dictPassDecl names (DFunDef pub n pats body)
+dictPassDecl : List String -> List String -> Decl -> Decl
+dictPassDecl names _ (DFunDef pub n pats body)
   | containsName n names = DFunDef pub n (dictParams n (dictArityOf n) ++ pats) body
   | otherwise = DFunDef pub n pats body
-dictPassDecl _ d = d
+-- Phase 83/84 single-level: a parametric impl with `requires` gets one leading
+-- `$dict_<method>_<slot>` param on each return-position method whose body actually
+-- reads an impl dict (so a nullary terminal body like `def = 0` takes none) — the
+-- routes resolveSite filled on the call-site EMethodAt's impl-dicts ref line up
+-- with these params, applied by eval after narrowMethod.
+dictPassDecl _ rpNames (d@DImpl { reqs, methods, ... }) = match reqs
+  [] => d
+  _ => DImpl { d | methods = map (implDictPassMethod (lengthL reqs) rpNames) methods }
+dictPassDecl _ _ d = d
+
+implDictPassMethod : Int -> List String -> ImplMethod -> ImplMethod
+implDictPassMethod nReq rpNames (ImplMethod n pats body)
+  | containsName n rpNames && usesImplDict n nReq body = ImplMethod n (dictParams n nReq ++ pats) body
+  | otherwise = ImplMethod n pats body
+
+-- does [body] reference an in-body return-position method already routed RDict to
+-- one of THIS method's would-be impl-dict params? (the gate that distinguishes a
+-- body that consumes the element dict from a terminal one that doesn't)
+usesImplDict : String -> Int -> Expr -> Bool
+usesImplDict mname nReq body = anyMember (bodyRDictNames body) (implDictNames mname nReq)
+
+implDictNames : String -> Int -> List String
+implDictNames mname nReq = implDictNamesGo mname 0 nReq
+
+implDictNamesGo : String -> Int -> Int -> List String
+implDictNamesGo mname slot k
+  | slot >= k = []
+  | otherwise = dictParamName mname slot :: implDictNamesGo mname (slot + 1) k
+
+-- the dict-param names every EMethodAt in [e] routes RDict to (post-resolveSites)
+bodyRDictNames : Expr -> List String
+bodyRDictNames e = concatMapL siteRDictName (collectMethodSites e)
+
+siteRDictName : Ref Route -> List String
+siteRDictName r = match r.value
+  RDict d => [d]
+  _ => []
+
+-- every EMethodAt route ref reachable in [e] (a pure structural walk; reading a
+-- ref's `.value` is done later by siteRDictName, not here)
+collectMethodSites : Expr -> List (Ref Route)
+collectMethodSites (EMethodAt _ r _) = [r]
+collectMethodSites (EApp f x) = collectMethodSites f ++ collectMethodSites x
+collectMethodSites (ELam _ b) = collectMethodSites b
+collectMethodSites (ELet _ _ _ e1 e2) = collectMethodSites e1 ++ collectMethodSites e2
+collectMethodSites (ELetGroup binds body) = concatMapL letBindSites binds ++ collectMethodSites body
+collectMethodSites (EMatch e arms) = collectMethodSites e ++ concatMapL armSites arms
+collectMethodSites (EIf c t e) = collectMethodSites c ++ collectMethodSites t ++ collectMethodSites e
+collectMethodSites (EBinOp _ l r) = collectMethodSites l ++ collectMethodSites r
+collectMethodSites (EUnOp _ e) = collectMethodSites e
+collectMethodSites (EInfix _ l r) = collectMethodSites l ++ collectMethodSites r
+collectMethodSites (EFieldAccess e _) = collectMethodSites e
+collectMethodSites (ETuple es) = concatMapL collectMethodSites es
+collectMethodSites (EListLit es) = concatMapL collectMethodSites es
+collectMethodSites (EArrayLit es) = concatMapL collectMethodSites es
+collectMethodSites (ERangeList a b _) = collectMethodSites a ++ collectMethodSites b
+collectMethodSites (ERangeArray a b _) = collectMethodSites a ++ collectMethodSites b
+collectMethodSites (ESlice e a b _) = collectMethodSites e ++ collectMethodSites a ++ collectMethodSites b
+collectMethodSites (EIndex e i) = collectMethodSites e ++ collectMethodSites i
+collectMethodSites (EAnnot e _) = collectMethodSites e
+collectMethodSites (EBlock stmts) = concatMapL doStmtSites stmts
+collectMethodSites (ERecordCreate _ fs) = concatMapL fieldAssignSites fs
+collectMethodSites (ERecordUpdate e fs) = collectMethodSites e ++ concatMapL fieldAssignSites fs
+collectMethodSites (EVariantUpdate _ e fs) = collectMethodSites e ++ concatMapL fieldAssignSites fs
+collectMethodSites _ = []
+
+letBindSites : LetBind -> List (Ref Route)
+letBindSites (LetBind _ clauses) = concatMapL funClauseSites clauses
+
+funClauseSites : FunClause -> List (Ref Route)
+funClauseSites (FunClause _ body) = collectMethodSites body
+
+armSites : Arm -> List (Ref Route)
+armSites (Arm _ guards body) = concatMapL guardSites guards ++ collectMethodSites body
+
+guardSites : Guard -> List (Ref Route)
+guardSites (GBool e) = collectMethodSites e
+guardSites (GBind _ e) = collectMethodSites e
+
+doStmtSites : DoStmt -> List (Ref Route)
+doStmtSites (DoExpr e) = collectMethodSites e
+doStmtSites (DoLet _ _ e) = collectMethodSites e
+doStmtSites (DoBind _ e) = collectMethodSites e
+doStmtSites (DoAssign _ e) = collectMethodSites e
+doStmtSites (DoFieldAssign _ _ e) = collectMethodSites e
+doStmtSites (DoLetElse _ e alt) = collectMethodSites e ++ collectMethodSites alt
+
+fieldAssignSites : FieldAssign -> List (Ref Route)
+fieldAssignSites (FieldAssign _ e) = collectMethodSites e
 
 dictArityOf : String -> Int
 dictArityOf n = lengthL (fromOption [] (lookupAssocSL2 n funConstraintsRef.value))
@@ -1572,7 +1749,9 @@ headTyconMono t = match normalize t
 
 export
 checkProgram : List Decl -> <Mut> List (String, Scheme)
-checkProgram prog = checkProgramSeeded [] prog
+checkProgram prog =
+  let _ = set_ref implInferEnabled False
+  checkProgramSeeded [] prog
 
 -- [seed] are extern schemes from runtime.mdk: in scope for lookup (so core.mdk's
 -- use of putStrLn/etc. resolves) but NOT part of the output (mirrors the
@@ -1585,7 +1764,129 @@ checkProgramSeeded seed prog =
   let env1 = extendVars (extendVars dataEnv seed) globalS
   let defs = funDefs prog
   let sigs = sigsOf prog
-  globalS ++ processTopGroups env1 sigs defs (groupNames defs [])
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs [])
+  -- Phase 83/84 single-level: AFTER top-level inference (so the scheme output is
+  -- unchanged), and ONLY on the elaborate/dict path, infer each parametric impl's
+  -- return-position method bodies, registering the requires' element dict so the
+  -- inner ref routes RDict and the call site routes RKey + impl dicts.
+  let _ = inferImplBodiesIfEnabled (extendVars env1 topSchemes) prog
+  globalS ++ topSchemes
+
+-- gate: impl-body inference runs only when the elaborate/dict path turned it on
+inferImplBodiesIfEnabled : TcEnv -> List Decl -> <Mut> Unit
+inferImplBodiesIfEnabled env prog
+  | implInferEnabled.value = inferImplBodies env prog (returnPosMethodNames prog) prog
+  | otherwise = ()
+
+-- infer each impl-with-`requires`' return-position method bodies; the interface
+-- declarations live in [allProg] (method types + typarams).
+inferImplBodies : TcEnv -> List Decl -> List String -> List Decl -> <Mut> Unit
+inferImplBodies _ _ _ [] = ()
+inferImplBodies env allProg rpNames (d :: rest) =
+  let _ = inferOneImpl env allProg rpNames d
+  inferImplBodies env allProg rpNames rest
+
+inferOneImpl : TcEnv -> List Decl -> List String -> Decl -> <Mut> Unit
+inferOneImpl env allProg rpNames (DAttrib _ d) = inferOneImpl env allProg rpNames d
+inferOneImpl env allProg rpNames (DImpl { iface, tys, reqs, methods, ... }) = match reqs
+  [] => ()
+  _ => inferRequiresImpl env allProg rpNames iface tys reqs methods
+inferOneImpl _ _ _ _ = ()
+
+-- one impl `impl Iface (List a) requires Iface a where …`: build ONE tyvar map
+-- shared between the head (`List a`) and the requires (`Iface a`) so the body's
+-- inner method ref unifies its discriminating var to the head's `a`; infer each
+-- method body against the method type instantiated at the head; THEN register the
+-- requires' post-unification ids in activeDictVars keyed to `$dict_<method>_<slot>`.
+inferRequiresImpl : TcEnv -> List Decl -> List String -> String -> List Ty -> List Require -> List ImplMethod -> <Mut> Unit
+inferRequiresImpl env allProg rpNames iface tys reqs methods =
+  let implTvMap = freshTvMap (dedupS (concatMapL tyVarNames tys))
+  let headMonos = map (fromAstType implTvMap) tys
+  let _ = inferImplMethods env allProg iface implTvMap headMonos methods
+  registerImplRequires implTvMap rpNames reqs methods
+
+inferImplMethods : TcEnv -> List Decl -> String -> List (String, Mono) -> List Mono -> List ImplMethod -> <Mut> Unit
+inferImplMethods _ _ _ _ _ [] = ()
+inferImplMethods env allProg iface implTvMap headMonos (m :: rest) =
+  let _ = inferImplMethod env allProg iface implTvMap headMonos m
+  inferImplMethods env allProg iface implTvMap headMonos rest
+
+inferImplMethod : TcEnv -> List Decl -> String -> List (String, Mono) -> List Mono -> ImplMethod -> <Mut> Unit
+inferImplMethod env allProg iface implTvMap headMonos (ImplMethod mname pats body) = match ifaceMethodTy allProg iface mname
+  None => ()
+  Some (ifaceParams, mty) =>
+    let _ = set_ref currentFn ""
+    let expected = expectedMethodType ifaceParams headMonos mty
+    let actual = inferClauses env [(pats, body)]
+    unify expected actual
+
+-- the method type's interface-param substitution: each interface typaram maps to
+-- the corresponding impl head mono (so `def : a` becomes `def : List a_impl`); any
+-- other tyvar in the method type gets a fresh var.
+expectedMethodType : List String -> List Mono -> Ty -> <Mut> Mono
+expectedMethodType ifaceParams headMonos mty =
+  let baseMap = zipL ifaceParams headMonos
+  let extras = removeAllS ifaceParams (dedupS (tyVarNames mty))
+  fromAstType (baseMap ++ freshTvMap extras) mty
+
+removeAllS : List String -> List String -> List String
+removeAllS _ [] = []
+removeAllS drop (x :: xs)
+  | containsName x drop = removeAllS drop xs
+  | otherwise = x :: removeAllS drop xs
+
+-- the (interface typarams, declared method type) of method [mname] in interface
+-- [iface], searched across [allProg]'s interface decls
+ifaceMethodTy : List Decl -> String -> String -> Option (List String, Ty)
+ifaceMethodTy [] _ _ = None
+ifaceMethodTy (DAttrib _ d :: rest) iface mname = match ifaceMethodTy [d] iface mname
+  Some r => Some r
+  None => ifaceMethodTy rest iface mname
+ifaceMethodTy (DInterface { name, typarams, methods, ... } :: rest) iface mname
+  | name == iface = match methodTyOf mname methods
+      Some ty => Some (typarams, ty)
+      None => ifaceMethodTy rest iface mname
+  | otherwise = ifaceMethodTy rest iface mname
+ifaceMethodTy (_ :: rest) iface mname = ifaceMethodTy rest iface mname
+
+methodTyOf : String -> List IfaceMethod -> Option Ty
+methodTyOf _ [] = None
+methodTyOf mname (IfaceMethod n ty _ :: rest)
+  | n == mname = Some ty
+  | otherwise = methodTyOf mname rest
+
+-- AFTER body inference: for each return-position method of the impl, register the
+-- requires' surviving (normalized) tyvar ids → its `$dict_<method>_<slot>` param,
+-- so the inner ref's pendingSite (also normalizing to that id) routes RDict.
+registerImplRequires : List (String, Mono) -> List String -> List Require -> List ImplMethod -> <Mut> Unit
+registerImplRequires _ _ _ [] = ()
+registerImplRequires implTvMap rpNames reqs (ImplMethod mname _ _ :: rest)
+  | containsName mname rpNames =
+      let _ = registerReqSlots mname implTvMap 0 reqs
+      registerImplRequires implTvMap rpNames reqs rest
+  | otherwise = registerImplRequires implTvMap rpNames reqs rest
+
+registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> <Mut> Unit
+registerReqSlots _ _ _ [] = ()
+registerReqSlots mname implTvMap slot (Require _ rargs :: rest) =
+  let ids = concatMapL (a => monoTyvarIds (fromAstType implTvMap a)) rargs
+  let _ = registerEachActive ids (dictParamName mname slot)
+  registerReqSlots mname implTvMap (slot + 1) rest
+
+registerEachActive : List Int -> String -> <Mut> Unit
+registerEachActive [] _ = ()
+registerEachActive (id :: rest) dname =
+  let _ = set_ref activeDictVars ((id, dname) :: activeDictVars.value)
+  registerEachActive rest dname
+
+-- the tyvar ids in a (normalized) mono — single var for a bare constraint arg
+monoTyvarIds : Mono -> List Int
+monoTyvarIds m = match normalize m
+  TVar cell => [tyvarId cell]
+  TApp a b => monoTyvarIds a ++ monoTyvarIds b
+  TFun a _ b => monoTyvarIds a ++ monoTyvarIds b
+  TTuple ts => concatMapL monoTyvarIds ts
+  _ => []
 
 -- extern declarations become top-level schemes (like interface methods)
 externSchemes : List Decl -> <Mut> List (String, Scheme)
@@ -1618,7 +1919,7 @@ sigsOf (_ :: rest) = sigsOf rest
 -- approximate (includes bound vars), filtered to top-level group names by caller
 allEVars : Expr -> List String
 allEVars (EVar x) = [x]
-allEVars (EMethodAt n _) = [n]
+allEVars (EMethodAt n _ _) = [n]
 allEVars (EDictAt n _) = [n]
 allEVars (ELit _) = []
 allEVars (EApp f x) = allEVars f ++ allEVars x
@@ -2016,6 +2317,7 @@ checkToLines prog =
 export
 checkToLinesWithRuntime : List Decl -> List Decl -> <Mut> String
 checkToLinesWithRuntime runtimeDecls prog =
+  let _ = set_ref implInferEnabled False
   let schemes = checkProgramSeeded (externSchemes runtimeDecls) prog
   let errs = revLL typeErrors.value
   match errs
@@ -2140,6 +2442,7 @@ allModuleLines ((mid, ss) :: rest) = ("## MODULE " ++ mid) :: (schemeLines ss ++
 export
 elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
 elaborateModules runtimeDecls coreDecls modules =
+  let _ = set_ref implInferEnabled False
   let rpNames = returnPosMethodNames (coreDecls ++ concatMapL snd modules)
   let core2 = prePassDict rpNames [] coreDecls
   let modules2 = map (prePassModulePair rpNames) modules
@@ -2159,7 +2462,7 @@ prePassModulePair rpNames (mid, prog) = (mid, prePassDict rpNames [] prog)
 elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 elabModuleStamp seedVars accData prog =
   let schemes = checkModuleFull seedVars accData prog
-  let _ = resolveSites pendingSites.value
+  let _ = resolveSites [] pendingSites.value
   schemes
 
 elabModulesGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> Unit

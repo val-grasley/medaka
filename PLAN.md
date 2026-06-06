@@ -235,10 +235,15 @@ strict priority.
     self-host typed/dict paths (a bare-`VTypedImpl` wrapper-strip bug in
     `selfhost/eval.mdk narrowMethod`; fixture
     `test/eval_typed_fixtures/single_impl_return_pos.mdk`). Layer 2 — single-level
-    instance-`requires` in the self-host — DEFERRED with a ready design in
-    `selfhost/README.md` (the self-host typecheck has no impl-body inference and
-    no impl registry, so it's a ~150-250 LOC build; deferred to the LLVM stage
-    that actually forces it).
+    instance-`requires` in the self-host — **DONE (2026-06-05).** `def : List Int`
+    → `[0]`, `def : List String` → `["empty"]`, `def : Option Int` → `Some 0` all
+    match `medaka run` on the self-host dict path. 4-step port (EMethodAt 2nd
+    impl-dicts ref; gated `implInferEnabled` impl-body inference sharing one tyvar
+    table head↔requires; `dictPassDecl` `DImpl` arm; eval folds via `applyDicts`)
+    — see the "Instance-`requires` dict-passing" block in `selfhost/README.md` for
+    the per-file detail. Fixtures `test/eval_dict_fixtures/instance_requires_*.mdk`.
+    Only #5 (two-level/nested) now remains, gated on the structured-dict
+    restructure above (no `medaka run` oracle yet).
 
 ### CLI surface (Phase 82, continued)
 

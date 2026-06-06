@@ -156,7 +156,15 @@ public export data Expr
   -- RKey = the concrete impl's head type (eval narrows the VMulti by it); RDict =
   -- the enclosing constrained function's dict parameter (read at runtime, then
   -- narrow).  Only appears in the typed eval pipeline, never in parse/mark output.
-  | EMethodAt String (Ref Route)
+  --
+  -- The second ref carries the SELECTED impl's `requires` dicts (the reference's
+  -- res_impl_dicts): when the route resolves to a parametric impl with a `requires`
+  -- (e.g. `impl Default (List a) requires Default a`), each constraint becomes one
+  -- route, eval folds them onto the narrowed impl value as leading args so the
+  -- element dict reaches a return-position ref inside the impl body (`def` in
+  -- `def = [def]`).  Empty for every ordinary site (no requires) — eval's fold is a
+  -- no-op then.  Single-level only (`def : List Int`); nested dicts are residual #5.
+  | EMethodAt String (Ref Route) (Ref (List Route))
   -- Constrained-function occurrence (`f` where `f : C a => …`) rewritten by the
   -- same pre-pass: the function name + one route per `=>` constraint, filled by
   -- the typechecker.  Eval applies the matching dictionaries as leading args,

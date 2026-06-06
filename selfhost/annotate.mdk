@@ -88,7 +88,7 @@ annotateExpr : List (List String) -> Expr -> Expr
 annotateExpr _ (ELit l) = ELit l
 annotateExpr _ (EMethodRef m) = EMethodRef m
 annotateExpr _ (EDictApp d) = EDictApp d
-annotateExpr _ (EMethodAt name r) = EMethodAt name r
+annotateExpr _ (EMethodAt name r ir) = EMethodAt name r ir
 annotateExpr _ (EDictAt name r) = EDictAt name r
 annotateExpr _ (EVarAt n a) = EVarAt n a
 annotateExpr fr (EVar n)
