@@ -1,0 +1,8 @@
+-- Phase 146 laundering: a concrete effectful value bound point-free to a pure
+-- signature.  instantiate re-opens emit's <IO> arrow (covariant), unifyRow's
+-- subset rule then rejects it: <IO> escapes the declared pure (<>) bound.
+emit : String -> <IO> Unit
+emit s = emit s
+
+launder : String -> Unit
+launder = emit

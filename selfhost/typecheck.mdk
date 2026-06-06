@@ -186,10 +186,24 @@ unifyRowN (EffRow l1 (Some v1)) (EffRow l2 (Some v2))
       let _ = set_ref v1 (ELink (EffRow (diffS l2 l1) (Some v3)))
       set_ref v2 (ELink (EffRow (diffS l1 l2) (Some v3)))
 unifyRowN (EffRow l1 (Some v1)) (EffRow l2 None) =
+  let _ = effectLeakCheck (diffS l1 l2) l2
   set_ref v1 (ELink (EffRow (diffS l2 l1) None))
 unifyRowN (EffRow l1 None) (EffRow l2 (Some v2)) =
+  let _ = effectLeakCheck (diffS l2 l1) l1
   set_ref v2 (ELink (EffRow (diffS l1 l2) None))
 unifyRowN (EffRow _ None) (EffRow _ None) = ()
+
+-- SOUNDNESS (Phase 146): an open row (an inference-synthesized arrow, i.e. a
+-- concrete value's latent effect) meeting a closed bound — its own labels must
+-- not exceed the bound, else they escape.  [escaping] = open labels \ bound.
+effectLeakCheck : List String -> List String -> <Mut> Unit
+effectLeakCheck escaping bound = match escaping
+  [] => ()
+  _ => set_ref typeErrors (effectLeakMsg bound escaping :: typeErrors.value)
+
+effectLeakMsg : List String -> List String -> String
+effectLeakMsg bound extras =
+  "Effectful value used where <" ++ joinWith ", " bound ++ "> is allowed, but it performs <" ++ joinWith ", " extras ++ ">"
 
 -- replace a row's bound tail effvar with its fresh instance from [esub], so each
 -- call site of a polymorphic HOF gets its own effect variable
@@ -539,7 +553,7 @@ dedupIGo (x :: xs) seen
   | otherwise = x :: dedupIGo xs (x :: seen)
 
 instantiate : Scheme -> <Mut> Mono
-instantiate (Forall ids evars t) = substMono (freshSubst ids) (freshEffSubst evars) t
+instantiate (Forall ids evars t) = substMonoP True (freshSubst ids) (freshEffSubst evars) t
 
 freshSubst : List Int -> <Mut> List (Int, Mono)
 freshSubst [] = []
@@ -556,6 +570,31 @@ substMono subst esub t = match normalize t
   TApp a b => TApp (substMono subst esub a) (substMono subst esub b)
   TFun a eff b => TFun (substMono subst esub a) (substRow esub eff) (substMono subst esub b)
   TTuple ts => TTuple (map (substMono subst esub) ts)
+
+-- Phase 146 variance-aware re-open: when instantiating a generalized scheme,
+-- re-open a CLOSED row carrying concrete labels (`EffRow labels None`) at a
+-- COVARIANT (positive) position — an arrow the value itself produces.  This turns
+-- a concrete effectful value (`putStrLn : String -> <IO> Unit`) meeting a pure
+-- closed bound into the open-row subset check, rejecting the laundering escape.
+-- Contravariant rows (a parameter / ctor field the scheme accepts) stay closed so
+-- a legitimately pure argument in an effect-allowing slot still subsumes.  Pure
+-- (label-less) rows are never re-opened — nothing to leak.
+reopenRow : Bool -> EffRow -> <Mut> EffRow
+reopenRow pos r = reopenRowN pos (effrowNorm r)
+
+reopenRowN : Bool -> EffRow -> <Mut> EffRow
+reopenRowN True (EffRow (l :: ls) None) = EffRow (l :: ls) (Some (freshEffvar ()))
+reopenRowN _ r = r
+
+-- positional twin of substMono used by scheme instantiation: flips variance on
+-- the arrow domain and re-opens covariant closed-with-labels rows (start pos=True)
+substMonoP : Bool -> List (Int, Mono) -> List (Int, Ref Effvar) -> Mono -> <Mut> Mono
+substMonoP pos subst esub t = match normalize t
+  TVar cell => fromOption (TVar cell) (lookupAssocI (tyvarId cell) subst)
+  TCon n => TCon n
+  TApp a b => TApp (substMonoP pos subst esub a) (substMonoP pos subst esub b)
+  TFun a eff b => TFun (substMonoP (not pos) subst esub a) (reopenRow pos (substRow esub eff)) (substMonoP pos subst esub b)
+  TTuple ts => TTuple (map (substMonoP pos subst esub) ts)
 
 -- ── rendering (mirrors lib/typecheck.ml pp_mono byte-for-byte) ─────────────
 export
@@ -1054,7 +1093,7 @@ hasKeySL2 k ((k2, _) :: rest)
 instantiateTracked : Scheme -> <Mut> (Mono, List (Int, Mono))
 instantiateTracked (Forall ids evars t) =
   let subst = freshSubst ids
-  (substMono subst (freshEffSubst evars) t, subst)
+  (substMonoP True subst (freshEffSubst evars) t, subst)
 
 constraintMonosOf : List Int -> List (Int, Mono) -> List Mono
 constraintMonosOf [] _ = []
