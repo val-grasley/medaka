@@ -76,6 +76,7 @@ diagnostics dumper, plus `--resolve-modules <mod...>` for the multi-module
 dune build --root .                       # build the reference binary
 sh test/diff_selfhost_lexer.sh            # diff the Medaka lexer vs OCaml goldens
 sh test/diff_selfhost_parse_errors.sh     # parser/lexer rejection path (~0.4s)
+sh test/diff_selfhost_eval_errors.sh      # eval runtime-error messages vs reference (~1s)
 sh test/diff_selfhost_selfproc.sh         # the bootstrap (#3) self-processing gate (4 legs, ~18s)
 sh test/diff_selfhost_core_ir.sh          # Stage 2 §2.1 Core IR equivalence gate — engine corpus (16)
 sh test/diff_selfhost_core_ir_prelude.sh  #   …with core.mdk prelude dispatch (5)
@@ -908,13 +909,19 @@ gap in fidelity. Concretely, by stage:
   (The type-aware `check_match` exhaustiveness — distinct from the ported guard
   pass — likewise lives only in the reference's typecheck; see the typecheck slice
   notes above. The "signature too general" omission is already listed above.)
-- **Eval — runtime failures `panic` with divergent messages.** The reference
-  raises `Eval_error msg`; the self-hosted eval `panic`s, and the message text
-  differs even when the fault is the same: non-exhaustive match → reference
-  `"non-exhaustive match"` vs self `"no matching clause in application"`; division
-  by zero → reference `Eval_error("division by zero")` vs a self `panic`. The eval
-  oracles compare a computed `main` value (or captured stdout), never the
-  error channel, so this is unobserved by `diff_selfhost_eval*`.
+- ✅ **Eval — runtime-error messages now match the reference (fixed 2026-06-05).**
+  Every `panic` message in `selfhost/eval.mdk` was cross-walked against
+  `lib/eval.ml`'s `Eval_error` call sites and the diverging ones were corrected:
+  `"no matching clause in application/match"` → `"non-exhaustive match"`;
+  `"unbound variable: X"` → `"unbound identifier: X"`;
+  `"'++' requires List or String"` → the full Semigroup message;
+  unary-op catch-alls split into per-operator messages matching the reference;
+  index/slice OOB messages now include the index value / coordinate range;
+  `"index: bad operands"` → `"index is not an Int"` / `"index on non-array/list/string"`;
+  etc. — 15 sites fixed, 15 sites confirmed already matching. Validated by
+  `test/diff_selfhost_eval_errors.sh` (8 runtime-reachable negative fixtures in
+  `test/eval_error_fixtures/`; three-stage check: oracle stability → selfhost
+  exits non-zero → selfhost message matches golden).
 
 **Shared-limitation non-gaps (ruled out, recorded so they aren't re-investigated):**
 float exponent notation (`1.0e10`, `1.5e-8`) is *not* a selfhost gap — **neither**
