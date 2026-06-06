@@ -279,7 +279,7 @@ let test_expr_if_inline_then_block_else () =
   | DFunDef (false, "f", [PVar "x"],
       EIf (EBinOp (">", EVar "x", ELit (LInt 0)),
            ELit (LInt 1),
-           EBlock [DoLet (false, PVar "b", ELit (LInt 2)); DoExpr (EVar "b")]))
+           EBlock [DoLet (false, false, PVar "b", ELit (LInt 2)); DoExpr (EVar "b")]))
     -> ()
   | d -> failwith (Printf.sprintf "wrong shape: %s" (pp_decl d))
 

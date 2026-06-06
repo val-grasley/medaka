@@ -317,7 +317,7 @@ let local_bound_names (prog : program) : (ident, unit) Hashtbl.t =
     | EGuards arms        -> List.iter (fun (gs, _) -> guard_pats gs) arms
     | EBlock stmts | EDo (_, stmts) ->
       List.iter (function
-        | DoBind (p, _) | DoLet (_, p, _) | DoLetElse (p, _, _) -> add_pat p
+        | DoBind (p, _) | DoLet (_, _, p, _) | DoLetElse (p, _, _) -> add_pat p
         | _ -> ()) stmts
     | EListComp (_, quals) ->
       List.iter (function LCGen (p, _) | LCLet (_, p, _) -> add_pat p | LCGuard _ -> ()) quals

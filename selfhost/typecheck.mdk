@@ -814,10 +814,21 @@ inferStmt : TcEnv -> DoStmt -> <Mut> TcEnv
 inferStmt env (DoExpr e) =
   let _ = infer env e
   env
-inferStmt env (DoLet _ pat e) = blockLet env pat e
+inferStmt env (DoLet _ True (PVar x) e) = blockRecLet env x e
+inferStmt env (DoLet _ _ pat e) = blockLet env pat e
 inferStmt env (DoLetElse pat e _) = blockLet env pat e
 inferStmt env (DoAssign x e) = extendVar env x (monoScheme (infer env e))
 inferStmt _ _ = panic "typecheck: unsupported block statement"
+
+blockRecLet : TcEnv -> String -> Expr -> <Mut> TcEnv
+blockRecLet env x e =
+  let _ = enterLevel ()
+  let placeholder = freshVar ()
+  let envSelf = extendVar env x (monoScheme placeholder)
+  let t1 = infer envSelf e
+  let _ = unify placeholder t1
+  let _ = exitLevel ()
+  extendVar env x (generalize t1)
 
 blockLet : TcEnv -> Pat -> Expr -> <Mut> TcEnv
 blockLet env (PVar x) e =
@@ -1961,7 +1972,7 @@ guardEVars (GBind _ e) = allEVars e
 
 doStmtEVars : DoStmt -> List String
 doStmtEVars (DoExpr e) = allEVars e
-doStmtEVars (DoLet _ _ e) = allEVars e
+doStmtEVars (DoLet _ _ _ e) = allEVars e
 doStmtEVars (DoBind _ e) = allEVars e
 doStmtEVars (DoAssign _ e) = allEVars e
 doStmtEVars (DoFieldAssign _ _ e) = allEVars e

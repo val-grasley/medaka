@@ -196,8 +196,8 @@ annotateStmts : List (List String) -> List DoStmt -> List DoStmt
 annotateStmts _ [] = []
 annotateStmts fr ((DoExpr e)::rest) =
   DoExpr (annotateExpr fr e) :: annotateStmts fr rest
-annotateStmts fr ((DoLet m p e)::rest) =
-  DoLet m p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
+annotateStmts fr ((DoLet m r p e)::rest) =
+  DoLet m r p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
 annotateStmts fr ((DoBind p e)::rest) =
   DoBind p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
 annotateStmts fr ((DoLetElse p e alt)::rest) =

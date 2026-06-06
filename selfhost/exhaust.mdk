@@ -448,7 +448,7 @@ fieldAssignBinds (FieldAssign _ e) = collectLetBinds e
 doStmtBinds : DoStmt -> List LetBind
 doStmtBinds (DoExpr e) = collectLetBinds e
 doStmtBinds (DoBind _ e) = collectLetBinds e
-doStmtBinds (DoLet _ _ e) = collectLetBinds e
+doStmtBinds (DoLet _ _ _ e) = collectLetBinds e
 doStmtBinds (DoAssign _ e) = collectLetBinds e
 doStmtBinds (DoFieldAssign _ _ e) = collectLetBinds e
 doStmtBinds (DoLetElse _ e alt) = collectLetBinds e ++ collectLetBinds alt

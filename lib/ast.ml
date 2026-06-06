@@ -118,7 +118,7 @@ and guard_qual =
 and do_stmt =
   | DoBind   of pat * expr          (* x <- e *)
   | DoExpr   of expr                (* e *)
-  | DoLet    of bool * pat * expr   (* let [mut] p = e *)
+  | DoLet    of bool * bool * pat * expr   (* let [mut] [is_fun_def] p = e *)
   | DoAssign      of ident * expr              (* x = e  (only valid when x was let mut) *)
   | DoFieldAssign of ident * ident list * expr (* x.f1.f2…fn = e (mutable record or Ref) *)
   | DoLetElse     of pat * expr * expr         (* let pat = e else diverge *)
@@ -459,7 +459,7 @@ let rec pp_expr = function
 and pp_do_stmt = function
   | DoBind (p, e)       -> Printf.sprintf "%s <- %s" (pp_pat p) (pp_expr e)
   | DoExpr e            -> pp_expr e
-  | DoLet (mut, p, e)   ->
+  | DoLet (mut, _, p, e)   ->
     Printf.sprintf "let %s%s = %s" (if mut then "mut " else "") (pp_pat p) (pp_expr e)
   | DoAssign (x, e)          -> Printf.sprintf "%s = %s" x (pp_expr e)
   | DoFieldAssign (x, fs, e) -> Printf.sprintf "%s.%s = %s" x (String.concat "." fs) (pp_expr e)
@@ -539,7 +539,7 @@ let rec strip_locs_expr = function
 and strip_locs_do = function
   | DoBind (p, e)     -> DoBind (p, strip_locs_expr e)
   | DoExpr e          -> DoExpr (strip_locs_expr e)
-  | DoLet (m, p, e)  -> DoLet (m, p, strip_locs_expr e)
+  | DoLet (m, r, p, e)  -> DoLet (m, r, p, strip_locs_expr e)
   | DoAssign (x, e)         -> DoAssign (x, strip_locs_expr e)
   | DoFieldAssign (x, fs, e) -> DoFieldAssign (x, fs, strip_locs_expr e)
   | DoLetElse (p, e, alt)   -> DoLetElse (p, strip_locs_expr e, strip_locs_expr alt)

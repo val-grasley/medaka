@@ -329,7 +329,7 @@ lowerClause (FunClause pats body) = CClause pats (lower body)
 
 lowerStmt : DoStmt -> CStmt
 lowerStmt (DoExpr e) = CSExpr (lower e)
-lowerStmt (DoLet b pat e) = CSLet b pat (lower e)
+lowerStmt (DoLet b _ pat e) = CSLet b pat (lower e)
 lowerStmt (DoLetElse pat e alt) = CSLetElse pat (lower e) (lower alt)
 lowerStmt (DoAssign x e) = CSAssign x (lower e)
 lowerStmt _ = panic "core_ir lower: unsupported block statement"

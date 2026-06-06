@@ -673,7 +673,7 @@ and print_do_stmt = function
        in
        text "if " ^^ print_expr prec_top c ^^ text " then" ^^ then_part
      | _ -> print_expr_body e)
-  | DoLet (mut, pat, e) ->
+  | DoLet (mut, _, pat, e) ->
     text "let " ^^ (if mut then text "mut " else Nil)
     ^^ print_pat pat ^^ text " = " ^^ print_expr prec_top e
   | DoAssign (x, e) ->

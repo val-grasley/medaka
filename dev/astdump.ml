@@ -131,7 +131,7 @@ and sexp_fassign (n, e) = node "fa" [esc_str n; sexp_expr e]
 and sexp_dostmt = function
   | DoExpr e        -> node "DoExpr" [sexp_expr e]
   | DoBind (p, e)   -> node "DoBind" [sexp_pat p; sexp_expr e]
-  | DoLet (m, p, e) -> node "DoLet" [string_of_bool m; sexp_pat p; sexp_expr e]
+  | DoLet (m, r, p, e) -> node "DoLet" [string_of_bool m; string_of_bool r; sexp_pat p; sexp_expr e]
   | DoAssign (x, e) -> node "DoAssign" [esc_str x; sexp_expr e]
   | DoFieldAssign (x, fs, e) -> node "DoFieldAssign" [esc_str x; slist (List.map esc_str fs); sexp_expr e]
   | DoLetElse (p, e, alt)    -> node "DoLetElse" [sexp_pat p; sexp_expr e; sexp_expr alt]

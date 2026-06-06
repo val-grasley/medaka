@@ -598,6 +598,13 @@ let t_ref = assert_val {|r =
   count.value
 |} "r" (VInt 42)
 
+(* Phase 143: block-let with parameters is self-recursive. *)
+let t_block_let_recursive = assert_val {|countdown n =
+  let go i = if i == 0 then n else go (i - 1)
+  go 3
+result = countdown 42
+|} "result" (VInt 42)
+
 (* ── Runtime errors ─────────────────────────────────────────────────────── *)
 
 (* ── Phase 17: Float arithmetic and modulo ──────────────────────────── *)
@@ -1917,6 +1924,9 @@ let () =
     ];
     "ref mutation", [
       test_case "ref_set_read" `Quick t_ref;
+    ];
+    "block-let", [
+      test_case "recursive fn" `Quick t_block_let_recursive;
     ];
     "runtime errors", [
       test_case "div_by_zero" `Quick t_div_by_zero;

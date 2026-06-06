@@ -156,7 +156,7 @@ funClauseSexp (FunClause pats body) =
 doStmtSexp : DoStmt -> String
 doStmtSexp (DoExpr e) = node "DoExpr" [exprSexp e]
 doStmtSexp (DoBind p e) = node "DoBind" [patSexp p, exprSexp e]
-doStmtSexp (DoLet m p e) = node "DoLet" [boolStr m, patSexp p, exprSexp e]
+doStmtSexp (DoLet m r p e) = node "DoLet" [boolStr m, boolStr r, patSexp p, exprSexp e]
 doStmtSexp (DoAssign x e) = node "DoAssign" [escStr x, exprSexp e]
 doStmtSexp (DoFieldAssign x fs e) =
   node "DoFieldAssign" [escStr x, slist (map escStr fs), exprSexp e]

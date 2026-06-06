@@ -890,11 +890,11 @@ stmt:
      statement start entirely, killing the conflict.  Mirrors the assignment
      production below, which already converts its expression LHS by hand. *)
   | expr_no_block LARROW expr_no_block newlines { DoBind (expr_to_pat $1, $3) }
-  | LET MUT pat EQUAL expr_no_block newlines  { DoLet (true,  $3, $5) }
+  | LET MUT pat EQUAL expr_no_block newlines  { DoLet (true,  false, $3, $5) }
   | LET pat EQUAL expr_no_block ELSE expr_no_block newlines { DoLetElse ($2, $4, $6) }
-  | LET pat EQUAL expr_no_block newlines      { DoLet (false, $2, $4) }
+  | LET pat EQUAL expr_no_block newlines      { DoLet (false, false, $2, $4) }
   | LET IDENT nonempty_list(param_pat) EQUAL expr_no_block newlines
-    { DoLet (false, PVar $2, curry_lam $3 $5) }
+    { DoLet (false, true, PVar $2, curry_lam $3 $5) }
   | expr_no_block EQUAL expr_no_block newlines {
       match flatten_field_path (strip_locs_expr $1) with
       | Some (x, []) -> DoAssign (x, $3)

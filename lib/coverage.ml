@@ -89,7 +89,7 @@ let rec collect_expr acc = function
   | Ast.EAsPat (_, e) -> collect_expr acc e
 
 and collect_do_stmt acc = function
-  | Ast.DoBind (_, e) | Ast.DoExpr e | Ast.DoLet (_, _, e)
+  | Ast.DoBind (_, e) | Ast.DoExpr e | Ast.DoLet (_, _, _, e)
   | Ast.DoAssign (_, e) | Ast.DoFieldAssign (_, _, e) -> collect_expr acc e
   | Ast.DoLetElse (_, e, alt) -> collect_expr (collect_expr acc e) alt
 

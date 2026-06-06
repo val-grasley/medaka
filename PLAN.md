@@ -176,29 +176,7 @@ strict priority.
 
 - ~~**Phase 145**~~ **DONE.** See PLAN-ARCHIVE.md.
 
-- **Phase 143 — block-`let` is non-recursive while expression `let … in …` is
-  recursive: same surface form, opposite recursion. TODO (needs a design
-  decision).** The identical syntax `let f x = … f …` recurses at expression
-  position (parser emits `ELet _ True`, auto-recursive) but, inside a bare block,
-  desugars to a non-recursive `DoLet`, so the self-reference is reported as
-  **`Unbound variable: f`** — a confusing error naming the very binding just
-  written. Repro:
-  ```
-  countdown p =
-    let go n = if n == 0 then p else go (n - 1)   -- → Unbound variable: go
-    go 3
-  -- but the one-liner works:
-  countdown p = let go n = if n == 0 then p else go (n - 1) in go 3   -- 42
-  ```
-  **Where it lives:** desugar of block `DoLet` (`lib/desugar.ml`) vs the
-  expression-`let` parse rule that sets `isRec` for the param form
-  (`parser.mly`); `lib/eval.ml`'s `blockLet` evaluates the RHS before extending
-  the frame, so a block-`let` closure never captures its own name. **Decision
-  needed (design):** either (a) make a block-`let` with parameters recursive to
-  match expression-`let` and the top-level form, or (b) keep it non-recursive but
-  replace the bare `Unbound variable` with a targeted hint. Surfaced by the
-  lexical-addressing emit session (the addresser correctly emitted `AGlobal` for
-  the block-`let` self-reference, matching eval).
+- ~~**Phase 143**~~ **DONE.** See PLAN-ARCHIVE.md.
 
 - **Phase 101 — drive property generation/shrinking through the `Arbitrary`
   interface (101b). DEFERRED, reassess later.** 101a (registry-first

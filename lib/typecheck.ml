@@ -1901,20 +1901,36 @@ let rec infer env = function
                            :: !(env.warnings)
          | _ -> ());
         type_block env rest
-      | DoLet (mut, pat, e) :: rest ->
-        enter_level ();
-        let t1 = infer env e in
-        exit_level ();
-        let env' = match pat with
-          | PVar x ->
-            let env' = mark_locals (extend_var env x (gen_restricted (is_nonexpansive e) t1)) [x] in
-            if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
-          | _ ->
-            let tp, bindings = type_pat env pat in
-            unify tp t1;
-            extend_locals env bindings
-        in
-        type_block env' rest
+      | DoLet (mut, is_fun, pat, e) :: rest ->
+        (match is_fun, pat with
+         | true, PVar x ->
+           (* Function-definition form `let f params = body`: self-recursive like
+              expression-let.  Pre-bind x with a placeholder so the RHS can call
+              itself; generalize after inference. *)
+           enter_level ();
+           let placeholder = fresh_var () in
+           let env_self = mark_locals (extend_var env x (monotype placeholder)) [x] in
+           let t1 = infer env_self e in
+           unify placeholder t1;
+           exit_level ();
+           let s = generalize t1 in
+           let env' = mark_locals (extend_var env x s) [x] in
+           let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
+           type_block env' rest
+         | _ ->
+           enter_level ();
+           let t1 = infer env e in
+           exit_level ();
+           let env' = match pat with
+             | PVar x ->
+               let env' = mark_locals (extend_var env x (gen_restricted (is_nonexpansive e) t1)) [x] in
+               if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
+             | _ ->
+               let tp, bindings = type_pat env pat in
+               unify tp t1;
+               extend_locals env bindings
+           in
+           type_block env' rest)
       | DoAssign (x, e) :: rest ->
         let tx = instantiate (lookup_var env x) in
         let te = infer env e in

@@ -6131,6 +6131,50 @@ verifies `apply 3 4 = 7`). `test/resolve_module_fixtures/import_shadows_prelude/
 added to the resolve-modules diff harness (valid program, empty expected errors).
 `diff_selfhost_resolve_modules.sh`: 8/8 ok. All test suites clean.
 
+### Phase 143: block-`let` with parameters is self-recursive ✅ DONE (2026-06-05)
+
+**Design decision:** option (a) — make block-`let` with parameters (i.e. `let f x = …`)
+recursive, matching expression-`let` and top-level function definitions. Value bindings
+(`let x = expr`) remain non-recursive.
+
+**Root cause:** `DoLet` in `ast.ml` lacked an `is_fun` flag. The parser's
+`LET IDENT params EQUAL body` block-stmt production (line 896-897 of `parser.mly`) always
+created `DoLet (false, PVar name, lambda)` with no way to distinguish it from a value
+binding. Typecheck's `type_block` and eval's `eval_block` therefore always treated block-lets
+as non-recursive — the RHS was inferred/evaluated without the binding name in scope.
+
+**Fix:** Added `is_fun : bool` as a second field to `DoLet` (now `DoLet of bool * bool * pat * expr`).
+The parser sets `is_fun = true` only for the `LET IDENT nonempty_list(param_pat) EQUAL`
+production. Value bindings and `let mut` bindings remain `is_fun = false`.
+
+- **`lib/ast.ml`:** `DoLet of bool * bool * pat * expr` (is_mut, is_fun, pat, expr). Updated
+  `pp_do_stmt` and `strip_locs_do`.
+- **`lib/parser.mly`:** `DoLet (false, true, PVar $2, curry_lam $3 $5)` for function form;
+  `DoLet (false, false, …)` for all other block-let forms.
+- **`lib/resolve.ml`:** When `is_fun = true`, the name is added to `rhs_scope` before
+  checking `e`, so self-references in the body don't report `UnboundVariable`.
+- **`lib/typecheck.ml`:** `type_block` now dispatches on `is_fun`: the `(true, PVar x)` case
+  pre-binds `x` with a fresh monomorphic placeholder (mirroring `ELet (_, true, PVar x, …)`),
+  infers the RHS with `x` in scope, unifies, then generalizes. Non-fun / non-PVar cases unchanged.
+- **`lib/desugar.ml`:** `lower_do` now passes `is_fun` through: `DoLet (_, is_fun, pat, e) →
+  ELet (false, is_fun, pat, e, …)`, so EDo-lowered function-defs also become recursive.
+- **`lib/eval.ml`:** `eval_block` dispatches on `(_, true, PVar f, e)` before the general
+  case, using the same ref-cell pattern as `ELet (_, true, PVar f, …)`.
+- **All other consumers** (`printer.ml`, `method_marker.ml`, `coverage.ml`, `dev/astdump.ml`):
+  wildcard on the new field.
+
+**Selfhost parity:** `selfhost/ast.mdk` `DoLet Bool Bool Pat Expr`. Parser (`letIdentRest`)
+sets `True` for function form. `desugar.mdk` `lowerDo` threads `isFun`. `eval.mdk`
+`evalBlock` dispatches on `DoLet _ True (PVar f)` via new `blockRecLet` helper.
+`typecheck.mdk` `inferStmt` dispatches on `DoLet _ True (PVar x)` via new `blockRecLet`.
+`resolve.mdk` widens `rhs_scope` for `DoLet _ True`. All other consumers updated with
+wildcard on the new field.
+
+**Tests.** `test_typecheck.ml`: `t_block_let_recursive` (type is `a -> a`, not error).
+`test_eval.ml`: `t_block_let_recursive` (result = 42 for countdown repro).
+All selfhost harnesses (`diff_selfhost_eval_dict`, `diff_selfhost_selfproc`) and
+`@thorough` clean.
+
 ---
 
 ## 4. Smaller cleanups (good warm-up tasks)

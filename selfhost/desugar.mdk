@@ -91,7 +91,7 @@ mapLcQual f (LCLet m p e) = LCLet m p (mapExpr f e)
 mapDoStmt : (Expr -> Expr) -> DoStmt -> DoStmt
 mapDoStmt f (DoExpr e) = DoExpr (mapExpr f e)
 mapDoStmt f (DoBind p e) = DoBind p (mapExpr f e)
-mapDoStmt f (DoLet m p e) = DoLet m p (mapExpr f e)
+mapDoStmt f (DoLet m r p e) = DoLet m r p (mapExpr f e)
 mapDoStmt f (DoAssign x e) = DoAssign x (mapExpr f e)
 mapDoStmt f (DoFieldAssign x fs e) = DoFieldAssign x fs (mapExpr f e)
 mapDoStmt f (DoLetElse p e alt) = DoLetElse p (mapExpr f e) (mapExpr f alt)
@@ -189,12 +189,12 @@ questionLet m isFun pat (EQuestion inner) e2 =
 questionLet m isFun pat e1 e2 = ELet m isFun pat e1 e2
 
 rewriteQStmt : DoStmt -> DoStmt
-rewriteQStmt (DoLet m pat e) = questionStmt m pat e
+rewriteQStmt (DoLet m r pat e) = questionStmt m r pat e
 rewriteQStmt s = s
 
-questionStmt : Bool -> Pat -> Expr -> DoStmt
-questionStmt m pat (EQuestion inner) = DoBind pat inner
-questionStmt m pat e = DoLet m pat e
+questionStmt : Bool -> Bool -> Pat -> Expr -> DoStmt
+questionStmt m r pat (EQuestion inner) = DoBind pat inner
+questionStmt m r pat e = DoLet m r pat e
 
 blockQuestion : List DoStmt -> Expr
 blockQuestion stmts
@@ -203,7 +203,7 @@ blockQuestion stmts
 
 anyQuestionStmt : List DoStmt -> Bool
 anyQuestionStmt [] = False
-anyQuestionStmt ((DoLet _ _ (EQuestion _))::_) = True
+anyQuestionStmt ((DoLet _ _ _ (EQuestion _))::_) = True
 anyQuestionStmt (_::rest) = anyQuestionStmt rest
 
 -- ── Pass: lower_do_blocks (do-notation → andThen/pure chains) ─────────────
@@ -224,7 +224,7 @@ lowerDo ((DoExpr e)::rest) =
   EApp (EApp (EVar "andThen") e) (ELam [PWild] (lowerDo rest))
 lowerDo ((DoBind pat e)::rest) =
   EApp (EApp (EVar "andThen") e) (doCont pat (lowerDo rest))
-lowerDo ((DoLet _ pat e)::rest) = ELet False False pat e (lowerDo rest)
+lowerDo ((DoLet _ isFun pat e)::rest) = ELet False isFun pat e (lowerDo rest)
 lowerDo ((DoLetElse pat e alt)::rest) =
   EMatch e [Arm pat [] (lowerDo rest), Arm PWild [] alt]
 lowerDo _ = fallthrough

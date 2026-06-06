@@ -669,9 +669,10 @@ let rec check_expr env scope errors e =
         | DoExpr e ->
           check_expr env scope errors e;
           scope
-        | DoLet (_, pat, e) ->
+        | DoLet (_, is_fun, pat, e) ->
           check_pat env errors pat;
-          check_expr env scope errors e;
+          let rhs_scope = if is_fun then pat_bindings pat @ scope else scope in
+          check_expr env rhs_scope errors e;
           pat_bindings pat @ scope
         | DoAssign (x, e) ->
           if not (lookup_value env scope x) then

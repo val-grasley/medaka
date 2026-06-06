@@ -834,11 +834,12 @@ fieldOr fields field = match lookupAssoc field fields
 evalBlock : EvalEnv -> List DoStmt -> <Mut> Value
 evalBlock _ [] = VUnit
 evalBlock env [(DoExpr e)] = eval env e
-evalBlock env [(DoLet _ pat e)] = blockLetLast env pat e
+evalBlock env [(DoLet _ _ pat e)] = blockLetLast env pat e
 evalBlock env ((DoExpr e)::rest) =
   let _ = eval env e
   evalBlock env rest
-evalBlock env ((DoLet _ pat e)::rest) = blockLet env pat e rest
+evalBlock env ((DoLet _ True (PVar f) e)::rest) = blockRecLet env f e rest
+evalBlock env ((DoLet _ _ pat e)::rest) = blockLet env pat e rest
 evalBlock env ((DoLetElse pat e alt)::rest) = blockLetElse env pat e alt rest
 evalBlock env [(DoAssign _ e)] =
   let _ = eval env e
@@ -851,6 +852,14 @@ blockLetLast : EvalEnv -> Pat -> Expr -> <Mut> Value
 blockLetLast env pat e = match matchPat pat (eval env e)
   None => panic "let pattern match failure in block"
   Some _ => VUnit
+
+blockRecLet : EvalEnv -> String -> Expr -> List DoStmt -> <Mut> Value
+blockRecLet env f e rest =
+  let cell = Ref VUnit
+  let recEnv = pushFrame env [(f, cell)]
+  let v = eval recEnv e
+  let _ = set_ref cell v
+  evalBlock recEnv rest
 
 blockLet : EvalEnv -> Pat -> Expr -> List DoStmt -> <Mut> Value
 blockLet env pat e rest = match matchPat pat (eval env e)

@@ -1192,7 +1192,7 @@ and eval_block env stmts =
   match stmts with
   | [] -> VUnit
   | [DoExpr e] -> wrap_match_errors (fun () -> eval env e)
-  | [DoLet (_, pat, e)] ->
+  | [DoLet (_, _, pat, e)] ->
     let v = wrap_match_errors (fun () -> eval env e) in
     (match match_pat pat v with
      | None -> raise (Eval_error ("let pattern match failure in block", !current_loc))
@@ -1212,7 +1212,14 @@ and eval_block env stmts =
   | (DoExpr e) :: rest ->
     let _ = wrap_match_errors (fun () -> eval env e) in
     eval_block env rest
-  | (DoLet (_, pat, e)) :: rest ->
+  | (DoLet (_, true, PVar f, e)) :: rest ->
+    (* Function-definition form: self-recursive, mirroring ELet (_, true, ...) *)
+    let cell = ref VUnit in
+    let rec_env = FList [(f, cell)] :: env in
+    let v = wrap_match_errors (fun () -> eval rec_env e) in
+    cell := v;
+    eval_block rec_env rest
+  | (DoLet (_, _, pat, e)) :: rest ->
     let v = wrap_match_errors (fun () -> eval env e) in
     (match match_pat pat v with
      | None -> raise (Eval_error ("let pattern match failure in block", !current_loc))

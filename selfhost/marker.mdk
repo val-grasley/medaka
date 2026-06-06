@@ -240,7 +240,7 @@ fieldAssignVars (FieldAssign _ e) = collectVars e
 doStmtVars : DoStmt -> List String
 doStmtVars (DoExpr e) = collectVars e
 doStmtVars (DoBind _ e) = collectVars e
-doStmtVars (DoLet _ _ e) = collectVars e
+doStmtVars (DoLet _ _ _ e) = collectVars e
 doStmtVars (DoAssign _ e) = collectVars e
 doStmtVars (DoFieldAssign _ _ e) = collectVars e
 doStmtVars (DoLetElse _ e alt) = collectVars e ++ collectVars alt

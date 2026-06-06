@@ -280,8 +280,12 @@ checkStmt env scope (DoBind p e) = (
   checkPat env p ++ checkExpr env scope e,
   patBindings p ++ scope
 )
-checkStmt env scope (DoLet _ p e) = (
+checkStmt env scope (DoLet _ False p e) = (
   checkPat env p ++ checkExpr env scope e,
+  patBindings p ++ scope
+)
+checkStmt env scope (DoLet _ True p e) = (
+  checkPat env p ++ checkExpr env (patBindings p ++ scope) e,
   patBindings p ++ scope
 )
 checkStmt env scope (DoAssign _ e) = (checkExpr env scope e, scope)

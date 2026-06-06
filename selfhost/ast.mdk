@@ -67,7 +67,7 @@ public export data Arm = Arm Pat (List Guard) Expr
 public export data DoStmt
   = DoExpr Expr
   | DoBind Pat Expr
-  | DoLet Bool Pat Expr
+  | DoLet Bool Bool Pat Expr
   | DoAssign String Expr
   | DoFieldAssign String (List String) Expr
   | DoLetElse Pat Expr Expr

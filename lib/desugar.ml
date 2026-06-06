@@ -619,7 +619,7 @@ and map_lc_qual f = function
 and map_do_stmt f = function
   | DoBind (p, e)   -> DoBind (p, map_expr f e)
   | DoExpr e        -> DoExpr (map_expr f e)
-  | DoLet (m, p, e) -> DoLet (m, p, map_expr f e)
+  | DoLet (m, r, p, e) -> DoLet (m, r, p, map_expr f e)
   | DoAssign (x, e)         -> DoAssign (x, map_expr f e)
   | DoFieldAssign (x, flds, e) -> DoFieldAssign (x, flds, map_expr f e)
   | DoLetElse (p, e, alt)   -> DoLetElse (p, map_expr f e, map_expr f alt)
@@ -747,7 +747,7 @@ let rec do_expr_loc = function
   | _           -> None
 
 let do_stmt_loc = function
-  | DoBind (_, e) | DoExpr e | DoLet (_, _, e)
+  | DoBind (_, e) | DoExpr e | DoLet (_, _, _, e)
   | DoAssign (_, e) | DoFieldAssign (_, _, e) | DoLetElse (_, e, _) -> do_expr_loc e
 
 (* Reject the statement forms a `do` block may not contain — they belong in a
@@ -767,7 +767,7 @@ let check_do_wellformed stmts =
        | _ -> ())
     | s :: rest ->
       (match s with
-       | DoLet (true, pat, _) ->
+       | DoLet (true, _, pat, _) ->
          let x = (match pat with PVar x -> x | _ -> "_") in
          bad (Printf.sprintf "'let mut %s' is not allowed inside a `do` block; do blocks are for monadic composition. Use a bare sequential block instead." x) s
        | DoAssign (x, _) ->
@@ -799,8 +799,8 @@ let rec lower_do = function
       EApp (EApp (EVar "andThen", e), ELam ([PWild], lower_do rest))
   | DoBind (pat, e) :: rest ->
       EApp (EApp (EVar "andThen", e), do_cont pat (lower_do rest))
-  | DoLet (_, pat, e) :: rest ->
-      ELet (false, false, pat, e, lower_do rest)
+  | DoLet (_, is_fun, pat, e) :: rest ->
+      ELet (false, is_fun, pat, e, lower_do rest)
   | DoLetElse (pat, e, alt) :: rest ->
       EMatch (e, [(pat, [], lower_do rest); (PWild, [], alt)])
   | (DoAssign _ | DoFieldAssign _) :: _ | [] ->
@@ -832,7 +832,7 @@ let rewrite_question_expr = function
      | _ -> ELet (mut, is_fun, pat, e1, e2))
   | EDo (tag, stmts) ->
     let rewrite_stmt = function
-      | DoLet (_, pat, e) as s ->
+      | DoLet (_, _, pat, e) as s ->
         (match strip_loc e with
          | EQuestion inner -> DoBind (pat, inner)
          | _ -> s)
@@ -846,18 +846,18 @@ let rewrite_question_expr = function
        handles `pure` correctly inside (routed by its EMethodRef). *)
     let has_question =
       List.exists (function
-        | DoLet (_, _, e) ->
+        | DoLet (_, _, _, e) ->
           (match strip_loc e with EQuestion _ -> true | _ -> false)
         | _ -> false
       ) stmts
     in
     if has_question then
       let rewrite_stmt = function
-        | DoLet (_, pat, e) as s ->
+        | DoLet (_, _, pat, e) as s ->
           (match strip_loc e with
            | EQuestion inner -> DoBind (pat, inner)
            | _ -> s)
-        | s -> s
+      | s -> s
       in
       EDo (ref None, List.map rewrite_stmt stmts)
     else

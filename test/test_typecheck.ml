@@ -889,6 +889,22 @@ let t_indented_body_poly_let = assert_type
 |}
   "f" "a -> (a, Int)"
 
+(* Phase 143: block-let with parameters is self-recursive. *)
+let t_block_let_recursive = assert_type
+  {|countdown n =
+  let go i = if i == 0 then n else go (i - 1)
+  go 3
+|}
+  "countdown" "a -> a"
+
+(* Phase 143: block-let value binding (no params) is still non-recursive. *)
+let t_block_let_nonrec_value = assert_type
+  {|f x =
+  let a = x + 1
+  a
+|}
+  "f" "Int -> Int"
+
 (* `do { println; println }` is NOT valid under the EBlock/EDo split.  `do`
    is now monad-only: every DoExpr must unify with `m a`.  `println` returns
    Unit, not `m a`, so this is rejected.  Effectful sequencing should use a
@@ -4148,6 +4164,8 @@ let () =
       test_case "indented body: 1 let"    `Quick t_indented_body_single_let;
       test_case "indented toplevel lets"  `Quick t_indented_toplevel_lets;
       test_case "indented body: poly let" `Quick t_indented_body_poly_let;
+      test_case "block-let recursive fn"  `Quick t_block_let_recursive;
+      test_case "block-let value nonrec"  `Quick t_block_let_nonrec_value;
       test_case "do seq, no bind (now errors)"  `Quick e_do_seq_no_bind_now_fails;
       test_case "indented effectful seq"  `Quick t_indented_body_effectful_seq;
       test_case "bind + pure"            `Quick t_do_bind_pure;

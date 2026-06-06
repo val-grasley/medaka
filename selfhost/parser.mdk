@@ -2299,7 +2299,7 @@ letKind TMut = do
   pat <- parsePat
   expectTok TEqual
   e1 <- parseExpr
-  pure (DoLet True pat e1)
+  pure (DoLet True False pat e1)
 letKind (TIdent name) = letIdent name
 letKind _ = letPat
 
@@ -2316,7 +2316,7 @@ letIdentRest : String -> List Pat -> Expr -> Parser DoStmt
 letIdentRest name [] e1 = do
   t <- peekP
   letTailFor (PVar name) e1 t
-letIdentRest name pats e1 = pure (DoLet False (PVar name) (curryLam pats e1))
+letIdentRest name pats e1 = pure (DoLet False True (PVar name) (curryLam pats e1))
 
 -- non-IDENT-led pattern: `let (a, b) = e`, `let Some v = e else alt`, …
 letPat : Parser DoStmt
@@ -2336,7 +2336,7 @@ letTailFor pat e1 TElse = do
   advance
   alt <- parseExpr
   pure (DoLetElse pat e1 alt)
-letTailFor pat e1 _ = pure (DoLet False pat e1)
+letTailFor pat e1 _ = pure (DoLet False False pat e1)
 
 -- mirror the reference `curry_lam`: one single-arg ELam per param
 curryLam : List Pat -> Expr -> Expr
