@@ -173,9 +173,16 @@ cevalGuardedArm env root arms occs i fail = match nthArm arms i
   Some (CArm pat guards body) => cevalGuardedBody env root arms occs pat guards body fail
   None => panic "core_ir decision tree: guarded arm index out of range"
 
+-- `None` from matchPat is a fall-through, not a panic: PRng/PRec arms
+-- canonicalize to PWild in the matrix (so the tree may route to them), but
+-- matchPat tests the ORIGINAL pattern, which can legitimately fail (e.g. a
+-- value out of range, or a record missing a required field).  The fall-through
+-- resumes the ordered semantics via the `fail` subtree, exactly as cevalMatch's
+-- sequential arm-by-arm search would.  For non-PRng/PRec arms the tree
+-- guarantees the pattern matches, so None is unreachable there.
 cevalGuardedBody : EvalEnv -> Value -> List CArm -> List Value -> Pat -> List CGuard -> CExpr -> CTree -> <Mut> Value
 cevalGuardedBody env root arms occs pat guards body fail = match matchPat pat root
-  None => panic "core_ir decision tree: guarded pattern did not match scrutinee"
+  None => cevalTree env root arms occs fail
   Some binds => match cevalGuards (extendEnv env binds) guards
     Some env2 => ceval env2 body
     None => cevalTree env root arms occs fail
