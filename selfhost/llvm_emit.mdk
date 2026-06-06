@@ -74,11 +74,22 @@
 --       • Refs: 1-field cells over @mdk_alloc (malloc-and-leak).  The real GC will
 --         need a write barrier on the `set_ref` store — this is the FIRST mutation
 --         site in the spike and the first place a GC would need to act.
--- Still OUT of scope: arrays / ranges / typeclass dispatch / GC; built-in list heads
--- (HCons/HNil/HUnit) and non-Int literal heads in matches; guarded / range / record
--- arms (CTGuard); recursive (CLet True) closures and capture of Ref/mutable
--- bindings.  Tuple SWITCH heads (multi-arm tuple match) and tuple-pattern let
--- inside a do-block are out — only `let (a, b) = t` (CLet PTuple) binds.
+--   • slice 5b — BUILT-IN LIST/TUPLE MATCH HEADS + RECURSIVE CLOSURES.  The
+--     decision tree's built-in list heads (HCons/HNil) and tuple head (HTuple n)
+--     are now treated as constructor tests: `conHeadInfo` maps HCon/HCons/HNil/
+--     HTuple to a (name, arity) pair — HCons → ("Cons", 2), HNil → ("Nil", 0),
+--     HTuple n → ("$tuple", n) — so emitSwitch/emitConChain compare the loaded tag
+--     against `hashName name`, the SAME tag the constructor/tuple alloc site stamps
+--     (so construction and match agree by construction).  `bindPattern` gains
+--     `PCons h t` (a 2-field [head, tail] extraction) and `PList []` (binds nothing).
+--     A recursive function-`let` (`let f p… = … in e2` → CLet True (PVar f) (CLam …))
+--     lambda-lifts like any CLam but EXCLUDES `f` from the capture set (it is the
+--     closure cell itself) and binds `f → %clos` inside the lifted body, so the
+--     self-call re-enters the same cell.
+-- Still OUT of scope: arrays / ranges / typeclass dispatch / GC; the HUnit match
+-- head and non-Int literal heads in matches; guarded / range / record arms
+-- (CTGuard); non-empty `PList` binding; capture of Ref/mutable bindings; partial /
+-- over-application of closures.
 -- An unsupported Core IR node panics with its tag (the spike refuses to emit wrong
 -- code rather than silently mis-lowering).
 --
@@ -417,7 +428,16 @@ emitLet e env False (PTuple ps) e1 e2 =
   let (v, _) = emitExpr e env e1
   let env2 = bindPattern e env (PTuple ps) v e2
   emitExpr e env2 e2
-emitLet _ _ _ _ _ _ = panic "llvm spike: only non-recursive `let <var|_|tuple> = e in e` supported (slice 1)"
+-- a recursive (function-`let`) closure: `let f p… = … in e2` lowers to
+-- CLet True (PVar f) (CLam …) (slice 5b).  The lambda's own name `f` is the
+-- closure itself, so it is EXCLUDED from the capture set at the alloc site and
+-- bound to `%clos` (the leading closure pointer) inside the lifted define — a
+-- recursive self-call re-enters the same code with the same cell.  Non-recursive
+-- function-lets take the same path harmlessly (`f` simply never appears free).
+emitLet e env True (PVar f) (CLam pats body) e2 =
+  let (w, ty) = emitRecLam e env f pats body
+  emitExpr e ((f, (w, ty)) :: env) e2
+emitLet _ _ _ _ _ _ = panic "llvm spike: only non-recursive `let <var|_|tuple> = e in e` and function-`let` (slice 5b) supported"
 
 emitLetGroup : Emit -> List (String, (String, LTy)) -> List CBind -> CExpr -> <Mut> (String, LTy)
 emitLetGroup e env [] body = emitExpr e env body
@@ -559,6 +579,42 @@ emitLam e env pats body =
   let captureWords = capWords env captured
   let _ = emitLamDefine e lamName pats captured body
   emitClosureAlloc e lamName captureWords
+
+-- emit a RECURSIVE function-`let` closure (slice 5b): lambda-lift exactly like
+-- emitLam, but EXCLUDE the binding's own name `f` from the captured set (it is the
+-- closure cell itself, not an external free variable) and, inside the lifted body,
+-- bind `f` to `%clos` so a self-call re-enters the same code with the same cell.
+emitRecLam : Emit -> List (String, (String, LTy)) -> String -> List Pat -> CExpr -> <Mut> (String, LTy)
+emitRecLam e env f pats body =
+  let lamName = "mdk_lam" ++ intToString (freshId e)
+  let pnames = patVarNames pats
+  let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
+  let captureWords = capWords env captured
+  let _ = emitRecLamDefine e lamName f pats captured body
+  emitClosureAlloc e lamName captureWords
+
+-- like emitLamDefine, but prepends `f -> %clos` to the body's env so the lifted
+-- body's recursive references resolve to the closure pointer (the leading param).
+emitRecLamDefine : Emit -> String -> String -> List Pat -> List String -> CExpr -> <Mut> Unit
+emitRecLamDefine e lamName f pats captured body =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ closureParamDecls pats ++ ") {")
+  let _ = emit e "entry:"
+  let cenv = loadCaptures e captured 0
+  let penv = paramEnv pats (allInt pats) 0
+  let _ = emitFnBody e (((f, ("%clos", LTClosure)) :: cenv) ++ penv) lamName body
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  set_ref (bufRef e) saved
+
+-- drop every occurrence of a name from a list (the recursive-closure self name is
+-- removed from its own free-variable set before computing the capture set).
+removeStr : String -> List String -> List String
+removeStr _ [] = []
+removeStr x (y::ys) = if x == y then removeStr x ys else y :: removeStr x ys
 
 -- eta-wrap a NAMED top-level function used as a value into a captureless static
 -- closure whose lifted body forwards every argument to `@mdk_<fname>`.  The arity
@@ -872,8 +928,14 @@ bindPattern e env (PVar x) v body =
   (x, (v, ty)) :: env
 bindPattern e env (PCon _ args) v body = bindFields e env args v body 0
 bindPattern e env (PTuple ps) v body = bindFields e env ps v body 0
+-- built-in list patterns (slice 5b): a cons cell is a 2-field "Cons" constructor
+-- (head = field 0, tail = field 1); the empty-list pattern (a "Nil" cell) binds
+-- nothing.  The decision tree already proved the shape (HCons/HNil switch), so
+-- this only EXTRACTS — same as the PCon binding path, with [head, tail] fields.
+bindPattern e env (PCons h t) v body = bindFields e env [h, t] v body 0
+bindPattern _ env (PList []) _ _ = env
 bindPattern _ _ p _ _ =
-  panic ("llvm spike: unsupported pattern in match arm (slice 3: variable / wildcard / constructor / int-literal only): " ++ ptag p)
+  panic ("llvm spike: unsupported pattern in match arm (slice 3/5b: variable / wildcard / constructor / tuple / cons / nil / int-literal only): " ++ ptag p)
 
 bindFields : Emit -> List (String, (String, LTy)) -> List Pat -> String -> CExpr -> Int -> <Mut> List (String, (String, LTy))
 bindFields _ env [] _ _ _ = env
@@ -882,21 +944,37 @@ bindFields e env (p::rest) v body i =
   let env2 = bindPattern e env p f body
   bindFields e env2 rest v body (i + 1)
 
--- a switch on the focus column (occs head): constructors test a loaded tag word,
--- literals test the immediate directly.  A homogeneous switch (the matrix is
--- either all-constructor or all-literal in a column), so the first branch's head
--- selects the test kind.
+-- a switch on the focus column (occs head): constructor-LIKE heads (named ADT
+-- constructors HCon, built-in list HCons/HNil, and tuples HTuple) test a loaded
+-- tag word; int literals test the immediate directly.  A homogeneous switch (the
+-- matrix is either all-constructor-like or all-literal in a column), so the first
+-- branch's head selects the test kind.  HCons/HNil/HTuple map to the same hashed
+-- tag the alloc site stamps (hashName "Cons"/"Nil"/"$tuple"), so a constructor
+-- test reaches them with no special case beyond the name/arity (see conHeadInfo).
 emitSwitch : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
 emitSwitch e env root arms occs branches dft slot endL rty = match occs
   [] => emitTree e env root arms [] slot endL rty dft
   (foc::rest) => match branches
     [] => emitTree e env root arms rest slot endL rty dft
-    ((CTBranch (HCon _ _) _)::_) =>
-      let tagReg = loadTag e foc
-      emitConChain e env root arms foc rest tagReg branches dft slot endL rty
     ((CTBranch (HLit _) _)::_) =>
       emitLitChain e env root arms foc rest branches dft slot endL rty
-    _ => panic "llvm spike: only constructor / int-literal switches supported (slice 3: no list / tuple / unit heads)"
+    ((CTBranch h _)::_) => match conHeadInfo h
+      Some _ =>
+        let tagReg = loadTag e foc
+        emitConChain e env root arms foc rest tagReg branches dft slot endL rty
+      None => panic "llvm spike: unsupported switch head (slice 5b: constructor / list / tuple / int-literal heads only; no unit heads)"
+
+-- the name + arity a constructor-LIKE head tests against: a named ADT constructor
+-- carries them directly; built-in list HCons/HNil and tuples HTuple reuse the same
+-- boxed-cell discipline with the fixed names the alloc sites stamp (emitTuple uses
+-- "$tuple"; a user `data … = Cons … | Nil` stamps "Cons"/"Nil").  HLit/HUnit are
+-- not constructor-like (HLit goes through emitLitChain; HUnit is out of scope).
+conHeadInfo : CHead -> Option (String, Int)
+conHeadInfo (HCon c a) = Some (c, a)
+conHeadInfo HCons = Some ("Cons", 2)
+conHeadInfo HNil = Some ("Nil", 0)
+conHeadInfo (HTuple n) = Some ("$tuple", n)
+conHeadInfo _ = None
 
 -- the constructor-switch test chain: compare the loaded tag against each branch's
 -- hashed name; on a match, descend with the matched cell's fields as the new
@@ -904,20 +982,22 @@ emitSwitch e env root arms occs branches dft slot endL rty = match occs
 emitConChain : Emit -> List (String, (String, LTy)) -> String -> List CArm -> String -> List String -> String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
 emitConChain e env root arms _ rest _ [] dft slot endL rty =
   emitTree e env root arms rest slot endL rty dft
-emitConChain e env root arms foc rest tagReg ((CTBranch (HCon c a) sub)::more) dft slot endL rty =
-  let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (hashName c))
-  let n = intToString (freshId e)
-  let yes = "conyes" ++ n
-  let next = "connext" ++ n
-  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
-  let _ = emit e (yes ++ ":")
-  let fields = loadFields e foc a 0
-  let _ = emitTree e env root arms (fields ++ rest) slot endL rty sub
-  let _ = emit e (next ++ ":")
-  emitConChain e env root arms foc rest tagReg more dft slot endL rty
-emitConChain _ _ _ _ _ _ _ _ _ _ _ _ =
-  panic "llvm spike: heterogeneous constructor switch (slice 3: a column is all-constructor or all-literal)"
+emitConChain e env root arms foc rest tagReg ((CTBranch h sub)::more) dft slot endL rty =
+  match conHeadInfo h
+    Some (c, a) =>
+      let cmp = freshReg e
+      let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (hashName c))
+      let n = intToString (freshId e)
+      let yes = "conyes" ++ n
+      let next = "connext" ++ n
+      let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+      let _ = emit e (yes ++ ":")
+      let fields = loadFields e foc a 0
+      let _ = emitTree e env root arms (fields ++ rest) slot endL rty sub
+      let _ = emit e (next ++ ":")
+      emitConChain e env root arms foc rest tagReg more dft slot endL rty
+    None =>
+      panic "llvm spike: heterogeneous constructor switch (slice 3: a column is all-constructor or all-literal)"
 
 -- the literal-switch test chain: compare the focus immediate against each branch's
 -- tagged-int constant; a literal head has arity 0, so a match descends with the

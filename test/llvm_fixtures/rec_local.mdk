@@ -1,0 +1,5 @@
+-- slice 5b: a recursive LOCAL function via the inline function-`let` form
+-- (`let f p = … in e2`), which lowers to CLet True (PVar f) (CLam …).  The lifted
+-- closure binds `f` to its own cell (`%clos`) so the self-call `fac (n - 1)` is an
+-- indirect call back into the same closure — the recursive-closure feature.
+main = let fac n = if n == 0 then 1 else n * fac (n - 1) in fac 5

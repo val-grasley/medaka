@@ -171,14 +171,14 @@ deliberately deferred to here:
   runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
   is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
-  - ✅ **Toolchain de-risking spike DONE (slices 1–5a)** — *ahead of the strict
+  - ✅ **Toolchain de-risking spike DONE (slices 1–5b)** — *ahead of the strict
     VM-first ordering by design* (front-loads the riskiest lift; runs parallel to
     the bytecode VM, uses only the tree-walker oracle). Proves the decided toolchain
     (EMIT textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings)
     end-to-end: `selfhost/llvm_emit.mdk` (Core IR → textual LLVM IR) +
     `selfhost/llvm_emit_main.mdk` + `runtime/medaka_rt.c` (a malloc-and-leak stub;
     GC deferred), gated by `test/diff_selfhost_llvm.sh` (emit → clang → link → run →
-    diff vs `dev/eval_probe.exe`, **31/31 byte-identical**). Slice 1 = scalars
+    diff vs `dev/eval_probe.exe`, **35/35 byte-identical**). Slice 1 = scalars
     (arithmetic / comparisons / `let` / `if` / value bindings / type-directed
     print). Slice 2 = top-level functions + saturated direct calls; self-recursive
     tail calls lower to `musttail call`+`ret` (the calling-convention proof,
@@ -208,9 +208,18 @@ deliberately deferred to here:
     Tuples use the same cell shape with `header = hashName "$tuple"`; `let (a,b) = t`
     (`CLet PTuple` / `CBlock CSLet PTuple`) binds by `loadField`. Mutable refs
     inline: `Ref x` → 1-field alloc; `set_ref r x` → store at offset 8; `r.value`
-    → `loadField 0` (4 new fixtures). **Not** the real backend (no arrays/dispatch/GC;
-    list match heads, tuple switch heads, guarded/range/record arms, partial
-    application, recursive closures, and Ref capture all still panic).
+    → `loadField 0` (4 new fixtures). Slice 5b (2026-06-06) = **built-in list
+    match heads, tuple switch heads, and recursive closures**: HCons/HNil/HTuple
+    decision-tree heads are now treated as constructor tests (`conHeadInfo` maps
+    them to `hashName "Cons"/"Nil"/"$tuple"` with arities 2/0/n — the same tags the
+    alloc sites stamp), so a multi-arm tuple match and a `data … = Cons … | Nil`
+    list fold lower like any other constructor switch (`bindPattern` gains `PCons`/
+    `PList []`); a recursive function-`let` (`let f p… = … in e2` →
+    `CLet True (PVar f) (CLam …)`) lambda-lifts with `f` bound to `%clos` inside the
+    lifted body (the self-call re-enters the same cell) and `f` excluded from the
+    capture set (4 new fixtures). **Not** the real backend (no arrays/dispatch/GC;
+    `HUnit` heads, guarded/range/record arms, non-empty `PList` binding, partial
+    application, and Ref capture all still panic).
     See [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4.
     - **Spike-surfaced rep notes (NOT acted on — the spike's job is to surface
       them; native-rep decisions belong to the real backend).** (a) **Nullary
@@ -528,20 +537,25 @@ Downstream (already captured, NOT near-term): **Phase 146b** parameterized effec
     `selfhost/README.md`. Fixtures `test/eval_dict_fixtures/method_constraint_*.mdk`.
     Out of scope: multi-impl *overrides* of such a method (dict param shifts the
     container-dispatch position; no prelude impl overrides `foldMap`).
-- **Core IR: reserved-name collision in `decodeHead` (latent, shared-path). TODO.**
+- **Core IR: reserved-name collision in `decodeHead` (latent, ceval-only). TODO.**
   `core_ir_lower.decodeHead` keys the built-in list/tuple/unit heads by NAME
   (`"Cons"` → `HCons`, `"Nil"` → `HNil`, `"Unit"` → `HUnit`, `"__tuple__"` →
   `HTuple`), so a **user constructor literally named `Cons`/`Nil`/`Unit`** lowers
-  to the built-in head and is then mis-decomposed at match time. `check` accepts
-  it and the AST tree-walker runs it correctly (`data T = Cons Int T | Nil; len …`
-  → right answer), but the **Core IR path diverges**: `ceval` panics `no matching
-  clause in match` (verified 2026-06-06) and both backends inherit it (the LLVM
-  spike's `emitSwitch` hits its `no list/tuple/unit heads` guard). A silent
-  front-end accept → Core-IR-only crash. Fix options: (a) carry a discriminator on
-  `CHead` so built-in vs user heads can't alias by name, or (b) reject/namespace
-  the reserved ctor names in resolve. Low real-world incidence (who names a ctor
-  `Cons`?), but it's a silent-miscompile class, not just a spike quirk — the LLVM
-  fixtures sidestep it by using `Node`/`Empty`.
+  to the built-in head. `check` accepts it and the AST tree-walker runs it correctly
+  (`data T = Cons Int T | Nil; len …` → right answer), but the **Core IR `ceval`
+  path diverges**: `ceval` panics `no matching clause in match`
+  (`core_ir_eval.mdk:144`, verified 2026-06-06) because it routes `HCons`/`HNil` to
+  the built-in `VList` shape while the value is a user `VCon "Cons"`. The **LLVM
+  spike does NOT inherit this** (since slice 5b): `conHeadInfo` maps `HCons`/`HNil`/
+  `HTuple` to `hashName "Cons"/"Nil"/"$tuple"`, the SAME tag the constructor alloc
+  site stamps, so construction and match agree by construction — the `list_sum`/
+  `list_filter` fixtures use `data … = Cons … | Nil` deliberately and pass the gate.
+  A silent front-end accept → `ceval`-only crash. Fix options: (a) carry a
+  discriminator on `CHead` so built-in vs user heads can't alias by name, or
+  (b) reject/namespace the reserved ctor names in resolve. Low real-world incidence
+  (who names a ctor `Cons`?), but it's a silent-miscompile class for the `ceval`
+  path — `adt_list_fold.mdk` sidesteps it with `Node`/`Empty` to keep that fixture
+  ceval-clean.
 
 ### CLI surface (Phase 82, continued)
 

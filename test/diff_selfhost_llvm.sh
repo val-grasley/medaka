@@ -12,12 +12,15 @@
 #   4. self = ./bin                                   (run the native binary)
 #   diff ref vs self byte-for-byte.
 #
-# Scope: slices 1–2b — slice 1 (integer/float arithmetic, comparisons, let, if,
+# Scope: slices 1–5b — slice 1 (integer/float arithmetic, comparisons, let, if,
 # top-level value bindings, type-directed print) + slice 2 (top-level functions
 # and saturated direct calls; self-recursive tail calls via musttail) + slice 2b
 # (Bool/Float function boundaries via two-pass signature inference; the ABI stays
-# a uniform i64 word, so the type only drives instruction + print selection).
-# No closures/ADTs/records/dispatch/GC.
+# a uniform i64 word, so the type only drives instruction + print selection) +
+# slice 3 (ADT constructors + decision-tree pattern matching) + slice 4 (closures
+# + higher-order functions) + slice 5a (records, tuples, mutable refs) + slice 5b
+# (built-in list/tuple match heads + recursive closures).
+# No arrays/dispatch/GC.
 #
 # Usage:  sh test/diff_selfhost_llvm.sh
 # Exit:   0 if every fixture's native stdout matches the tree-walker; 2 if the

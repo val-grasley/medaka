@@ -337,7 +337,7 @@ cheap, oracle-backed setting is where they should be settled.
 
 > **Status: PROPOSAL for human ratification — NOT locked.** The Stage-2.4
 > de-risking spike (`selfhost/llvm_emit.mdk` + `runtime/medaka_rt.c`, gated by
-> `test/diff_selfhost_llvm.sh`, 31/31 byte-identical to the tree-walker) used a
+> `test/diff_selfhost_llvm.sh`, 35/35 byte-identical to the tree-walker) used a
 > *provisional* uniform tagged word so it could run; this section turns what that
 > surfaced into a recommendation. **The spike's rep is explicitly revisable** —
 > changing it touches only `llvm_emit.mdk`'s tag/box helpers + `medaka_rt.c`, by
@@ -544,7 +544,7 @@ The uniform-word rep makes the convention fall out cleanly:
   closure rep below is now proven on the spike: a `CLam` lambda-lifts to a top-level
   `define`, the closure cell `{ header, code_ptr, captured… }` allocates via the
   same `mdk_alloc` path, and a higher-order call loads `code_ptr` and passes the
-  closure word as the leading arg. 31/31 gate (slices 1–5a). Rep decisions surfaced (deferred —
+  closure word as the leading arg. 35/35 gate (slices 1–5b). Rep decisions surfaced (deferred —
   PLAN.md spike-rep notes (d)–(f)): the one-word **header is never inspected** and
   could be dropped; **saturated calls only** (arity must move into the cell for
   partial/over-application); named-fn-as-value is **eta-wrapped per use** (could be

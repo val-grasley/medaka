@@ -1,0 +1,11 @@
+-- slice 5b: a multi-arm match on a TUPLE.  The decision-tree lowering discriminates
+-- the tuple with an HTuple n switch head (one branch, since every arm is a 2-tuple),
+-- then descends into the element columns with nested int-literal switches.  The
+-- emitter must treat HTuple like a constructor test against hashName "$tuple"
+-- (arity n) — the same tag tuple construction stamps.
+classify p = match p
+  (0, y) => y
+  (x, 0) => x
+  (x, y) => x + y
+
+main = classify (0, 5) + classify (3, 0) + classify (2, 4)

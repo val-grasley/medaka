@@ -617,7 +617,8 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   Still **not** the real backend (at slice 4): arrays / dispatch / GC, the built-in
   list match heads, guarded/range/record-arm patterns, recursive (`CLet True`)
   closures, tuples, records, and Ref remain out of scope and panic. (Records,
-  tuples, and Ref added in slice 5a — §2.4a below.)
+  tuples, and Ref added in slice 5a — §2.4a below; built-in list/tuple match heads
+  and recursive closures in slice 5b — §2.4a-2 below.)
 
 **2.4a — Slice 5a (RECORDS, TUPLES, MUTABLE REFS).** The three remaining Core-IR
   structural forms added, all lowering via the existing `emitCtorAlloc`/`storeFields`/
@@ -641,6 +642,35 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   in switches. (i) Ref cells use `@mdk_alloc` (malloc-and-leak) — **the first mutation
   site in the spike**, the first place a GC write barrier would be needed; the real
   runtime must add one on the `set_ref` store path.
+
+**2.4a-2 — Slice 5b (BUILT-IN LIST/TUPLE MATCH HEADS + RECURSIVE CLOSURES).** Three
+  decision-tree/closure forms that previously panicked, all reusing the slice-3/4
+  machinery: **(1) built-in list heads.** A `match` on `Cons`/`Nil` (or list-literal
+  patterns) lowers — via `core_ir_lower.decodeHead` — to `HCons`/`HNil` switch heads
+  rather than `HCon`. `emitSwitch`/`emitConChain` now route any constructor-LIKE head
+  through one helper, `conHeadInfo : CHead -> Option (String, Int)`, which maps
+  `HCon c a → (c, a)`, `HCons → ("Cons", 2)`, `HNil → ("Nil", 0)`, `HTuple n →
+  ("$tuple", n)` — i.e. the SAME hashed tag (`hashName`) the constructor/tuple alloc
+  site stamps, so construction and match agree by construction. `bindPattern` gains
+  `PCons h t` (a 2-field `[head, tail]` extraction) and `PList []` (binds nothing).
+  **(2) tuple switch heads.** A multi-arm tuple match yields a `CTSwitch HTuple n`
+  head (one branch, all arms being n-tuples), handled identically to a constructor
+  test against `hashName "$tuple"` — the `PTuple` leaf binding from slice 5a is
+  unchanged. **(3) recursive closures.** A function-`let` (`let f p… = … in e2`)
+  lowers to `CLet True (PVar f) (CLam …)`; `emitRecLam` lambda-lifts it like any
+  `CLam` but EXCLUDES `f` from the capture set (it is the closure cell itself) and,
+  inside the lifted `define`, binds `f → %clos` (the leading closure pointer) so the
+  self-call `f …` is an indirect call back into the same cell. Gate now spans
+  **35/35** fixtures (the prior 31 + 4: `list_sum` `data … = Cons … | Nil` recursive
+  fold, `list_filter` list construct+match across two recursive fns, `rec_local`
+  inline recursive function-`let`, `tuple_match` multi-arm tuple match). **Latent
+  bug surfaced (PLAN.md):** `decodeHead` keys built-in heads by NAME, so a user ctor
+  named `Cons`/`Nil` aliases the built-in head — harmless in the LLVM spike (the
+  symmetric hashed-tag discipline above) and in the AST tree-walker, but the Core-IR
+  `ceval` path panics (`core_ir_eval.mdk:144`) because it routes `HCons`/`HNil` to
+  the built-in `VList` shape. Still **not** the real backend (at slice 5b): arrays /
+  dispatch / GC, `HUnit` heads, guarded/range/record-arm patterns, non-empty `PList`
+  binding, partial application, and Ref capture remain out of scope and panic.
 
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /

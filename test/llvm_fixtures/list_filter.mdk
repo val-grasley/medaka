@@ -1,0 +1,16 @@
+-- slice 5b: built-in list match heads exercised through TWO recursive functions
+-- that both construct AND match list cells.  `filterBig` rebuilds a Cons/Nil list
+-- keeping only elements > 2 (constructor allocation inside a recursive call), and
+-- `sum` folds it to a scalar.  Together they drive the HCons/HNil switch heads on
+-- both the producer and consumer side.
+data IntList = Cons Int IntList | Nil
+
+filterBig lst = match lst
+  Cons x xs => if x > 2 then Cons x (filterBig xs) else filterBig xs
+  Nil => Nil
+
+sum lst = match lst
+  Cons x xs => x + sum xs
+  Nil => 0
+
+main = sum (filterBig (Cons 1 (Cons 5 (Cons 2 (Cons 4 Nil)))))
