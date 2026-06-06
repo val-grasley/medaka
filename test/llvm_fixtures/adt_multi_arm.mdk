@@ -1,0 +1,12 @@
+-- slice 3: a three-constructor (all-nullary) ADT matched by a three-arm decision
+-- tree.  Exercises the multi-branch constructor switch chain (three icmp/br tests
+-- + an `unreachable` default, since the match is exhaustive) and nullary-ctor
+-- allocation for each of Red/Green/Blue.
+data Color = Red | Green | Blue
+
+code c = match c
+  Red => 1
+  Green => 2
+  Blue => 3
+
+main = code Red + code Green * code Blue

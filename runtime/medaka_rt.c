@@ -1,4 +1,4 @@
-/* Medaka native runtime — Stage 2.4 DE-RISKING SPIKE (slice 1 only).
+/* Medaka native runtime — Stage 2.4 DE-RISKING SPIKE (slices 1–3).
  *
  * This is NOT the real runtime.  It is the minimal C stub the spike's emitted
  * LLVM IR links against to prove the emit -> clang -> link -> run -> diff
@@ -6,7 +6,9 @@
  * representation & calling convention" section of selfhost/RUNTIME-DESIGN.md).
  *
  * Scope discipline (matches the emitter): integers, floats, booleans, let, if,
- * and a print.  No closures / ADTs / records / dispatch / GC.
+ * functions, and (slice 3) algebraic data types + pattern matching — the latter
+ * box constructor cells through the same mdk_alloc below.  No closures / records
+ * / dispatch / GC.
  *
  * VALUE REPRESENTATION (PROVISIONAL — see RUNTIME-DESIGN.md, revisable):
  *   A Medaka value is a uniform 64-bit word (`i64` in the IR).
@@ -19,6 +21,10 @@
  *     - Floats are BOXED: word is a pointer (low bit 0, malloc is >=8-aligned) to
  *       a 16-byte heap cell { i64 header = TAG_FLOAT, double payload }.  This is
  *       what surfaces "floats don't fit in a tagged-int word" -> the alloc below.
+ *     - ADT values are BOXED (slice 3): word is a pointer to a cell
+ *       { i64 tag (constructor name hashed), field0, field1, ... } — one 8-byte
+ *       word each.  Same boxed-pointer discipline as Float, extended to n fields;
+ *       allocated through the same mdk_alloc.
  *
  * The tag arithmetic lives in the EMITTED IR (so the cost is visible); these
  * helpers take/return *native* C scalars (the emitter untags/unboxes first).

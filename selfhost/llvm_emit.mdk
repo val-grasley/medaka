@@ -1,4 +1,4 @@
--- Core IR -> textual LLVM IR — Stage 2.4 DE-RISKING SPIKE (slices 1–2).
+-- Core IR -> textual LLVM IR — Stage 2.4 DE-RISKING SPIKE (slices 1–3).
 --
 -- This is NOT the real LLVM backend (STAGE2-DESIGN.md §2.4 schedules that AFTER
 -- the bytecode VM).  It is a cheap end-to-end proof that the decided toolchain —
@@ -30,9 +30,23 @@
 --     recovered type only selects int-vs-float instructions in the body and the
 --     print routine for the result (so a Bool-returning function prints
 --     `true`/`false`, a Float param unboxes/reboxes).
--- Still OUT of scope: higher-order values / closures / ADTs / records / dispatch
--- / GC.  An unsupported Core IR node panics with its tag (the spike refuses to
--- emit wrong code rather than silently mis-lowering).
+--   • slice 3 — ALGEBRAIC DATA TYPES + PATTERN MATCHING.  A constructor lowers to
+--     a BOXED heap cell (RUNTIME-DESIGN.md §8.4 Option A): a one-word header (the
+--     constructor name string-hashed to an i64 tag) followed by the field words,
+--     allocated via @mdk_alloc (the same boxing path slice 1 uses for Float).  A
+--     `match` lowered to a decision tree (`CDecision`, the Maranget tree from
+--     core_ir_lower) becomes an LLVM CFG: each `CTSwitch` tests the focus value's
+--     head (load tag → icmp → br for constructors; icmp on the immediate for int
+--     literals) and descends into the matched cell's fields as the new focus
+--     columns; a leaf re-matches its arm's pattern against the scrutinee to bind
+--     variables (getelementptr loads), evaluates the body into an alloca result
+--     slot, and branches to the decision's end block.  Mirrors core_ir_eval's
+--     cevalDecision/cevalTree/cevalSwitch one-to-one, value-walk → block-emit.
+-- Still OUT of scope: higher-order values / closures / records / arrays / ranges
+-- / typeclass dispatch / GC; built-in list & tuple heads (HCons/HNil/HTuple/
+-- HUnit) and non-Int literal heads in matches; guarded / range / record arms
+-- (CTGuard).  An unsupported Core IR node panics with its tag (the spike refuses
+-- to emit wrong code rather than silently mis-lowering).
 --
 -- VALUE REPRESENTATION (PROVISIONAL — revisable; see RUNTIME-DESIGN.md "Value
 -- representation & calling convention").  A value is a uniform 64-bit word:
@@ -44,15 +58,22 @@
 --   • Float — BOXED: word is a pointer to a 16-byte cell {i64 header, double},
 --            allocated via @mdk_alloc.  Surfaces "floats don't fit a tagged-int
 --            word", which is the core input to the rep proposal.
+--   • ADT  — BOXED (slice 3): word is a pointer (low bit 0) to a heap cell
+--            [ i64 tag | field0 | field1 … ], one 8-byte word each; tag = the
+--            constructor name hashed to i64.  The same boxed-pointer discipline as
+--            Float, extended to n fields.
 
 import ast.{Lit(..), Pat(..), Addr(..)}
-import core_ir.{CExpr(..), CBind(..), CClause(..), CStmt(..), CProgram(..)}
+import core_ir.{CExpr(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..)}
 import util.{reverseL, joinNl, lookupAssoc}
 
--- the static type of a slice-1 value, used to pick the print routine and the
+-- the static type of a slice-1/3 value, used to pick the print routine and the
 -- int-vs-float instruction (Core IR is type-erased; for this subset the type is
--- recoverable structurally as we emit).
-data LTy = LTInt | LTFloat | LTBool
+-- recoverable structurally as we emit).  `LTCon` (slice 3) is an ADT value — a
+-- boxed heap-cell pointer word; it never reaches an arithmetic/print site in the
+-- supported subset (constructor values flow only as scrutinees and call args,
+-- which are LTy-agnostic uniform i64 words), so it carries no payload type.
+data LTy = LTInt | LTFloat | LTBool | LTCon
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
 -- — prepend is O(1); reverseL'd once at the end restores program order), the
@@ -62,8 +83,11 @@ data LTy = LTInt | LTFloat | LTBool
 -- (param types, return type)`), which lets a `CApp` recover the callee's return
 -- type and a `define` bind each parameter at its inferred type instead of
 -- assuming Int.  Both the function set and the signature table are populated
--- once, up front, in emitProgram.
-data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig)))
+-- once, up front, in emitProgram.  The fifth ref is the CONSTRUCTOR table
+-- (slice 3 — `name -> arity`, read out of `CProgram`): it tells a `CVar`/`CApp`
+-- head apart as an ADT constructor (→ heap-cell allocation) vs a function call /
+-- local variable, and supplies the arity for the alloc + field stores.
+data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int)))
 
 -- a function's inferred signature: its parameter types (in order) and its return
 -- type.  At the LLVM ABI every value is a uniform i64 word regardless (Int
@@ -78,7 +102,7 @@ data FnSig = FnSig (List LTy) LTy
 
 -- ── emitter plumbing ────────────────────────────────────────────────────────
 freshId : Emit -> <Mut> Int
-freshId (Emit c _ _ _) =
+freshId (Emit c _ _ _ _) =
   let n = c.value
   let _ = set_ref c (n + 1)
   n
@@ -87,12 +111,12 @@ freshReg : Emit -> <Mut> String
 freshReg e = "%t" ++ intToString (freshId e)
 
 emit : Emit -> String -> <Mut> Unit
-emit (Emit _ buf _ _) line = set_ref buf (line :: buf.value)
+emit (Emit _ buf _ _ _) line = set_ref buf (line :: buf.value)
 
 -- the known-function table (set once in emitProgram); membership decides whether
 -- a `CApp` head names a callable top-level function.
 fnNames : Emit -> <Mut> List String
-fnNames (Emit _ _ fns _) = fns.value
+fnNames (Emit _ _ fns _ _) = fns.value
 
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = containsStr name (fnNames e)
@@ -100,9 +124,20 @@ isKnownFn e name = containsStr name (fnNames e)
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
-fnRetTy (Emit _ _ _ sigs) name = match lookupAssoc name sigs.value
+fnRetTy (Emit _ _ _ sigs _) name = match lookupAssoc name sigs.value
   Some (FnSig _ rty) => rty
   None => LTInt
+
+-- ── constructor table (slice 3) ─────────────────────────────────────────────
+-- the constructor arity table (set once in emitProgram); membership decides
+-- whether a `CVar`/`CApp` head names an ADT constructor (→ heap allocation).
+ctorTable : Emit -> <Mut> List (String, Int)
+ctorTable (Emit _ _ _ _ ct) = ct.value
+
+isCtor : Emit -> String -> <Mut> Bool
+isCtor e name = match lookupAssoc name (ctorTable e)
+  Some _ => True
+  None => False
 
 containsStr : String -> List String -> Bool
 containsStr _ [] = False
@@ -152,7 +187,7 @@ unboxFloat e v =
 -- ── expressions ─────────────────────────────────────────────────────────────
 emitExpr : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> (String, LTy)
 emitExpr e _ (CLit l) = emitLit e l
-emitExpr _ env (CVar x _) = lookupVar env x
+emitExpr e env (CVar x _) = emitVar e env x
 emitExpr e env (CBinPrim op l r) = emitBin e env op l r
 emitExpr e env (CUnOp op x) = emitUn e env op x
 emitExpr e env (CIf c t f) = emitIf e env c t f
@@ -160,7 +195,15 @@ emitExpr e env (CLet recF pat e1 e2) = emitLet e env recF pat e1 e2
 emitExpr e env (CLetGroup binds body) = emitLetGroup e env binds body
 emitExpr e env (CBlock stmts) = emitBlock e env stmts
 emitExpr e env (CApp f a) = emitApp e env (CApp f a)
-emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag other ++ " (slice 1 is scalars only)")
+emitExpr e env (CDecision scrut arms tree) = emitDecision e env scrut arms tree
+emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag other ++ " (slice 1/3 subset only)")
+
+-- a variable occurrence: a bare constructor name (slice 3) is a NULLARY ADT value
+-- → allocate its heap cell; anything else is a let/param-bound local operand.
+emitVar : Emit -> List (String, (String, LTy)) -> String -> <Mut> (String, LTy)
+emitVar e env x =
+  if isCtor e x then emitCtorAlloc e x []
+  else lookupVar env x
 
 emitLit : Emit -> Lit -> <Mut> (String, LTy)
 emitLit _ (LInt n) = (intToString (n * 2 + 1), LTInt)
@@ -317,7 +360,10 @@ emitApp e env app =
   let (hd, args) = flattenApp app []
   match hd
     CVar fname _ =>
-      if isKnownFn e fname && hasArgs args then
+      if isCtor e fname then
+        let argOps = emitArgs e env args
+        emitCtorAlloc e fname argOps
+      else if isKnownFn e fname && hasArgs args then
         let argOps = emitArgs e env args
         let r = freshReg e
         let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
@@ -342,6 +388,234 @@ argDecls : List String -> String
 argDecls [] = ""
 argDecls [x] = "i64 " ++ x
 argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
+
+-- ── ADT constructors + pattern matching (slice 3) ───────────────────────────
+-- VALUE REPRESENTATION (RUNTIME-DESIGN.md §8.4 "Option A", extended from the
+-- slice-1 Float box): an ADT value is a BOXED heap cell with a one-word header.
+--   cell layout (8-byte words):  [ 0: i64 tag ] [ 8: field0 ] [ 16: field1 ] …
+-- the tag is the constructor name string-HASHED to an i64 (computed identically
+-- at the alloc site and at every switch test, so the two always agree); the word
+-- carried in registers is the cell pointer (`ptrtoint`, low bit 0 — disjoint from
+-- the immediate-int low-bit-1 encoding, exactly as the Float box is).  Allocation
+-- reuses the slice-1 `@mdk_alloc` (malloc-and-leak; no GC this slice).
+
+-- a constructor's tag: a deterministic string hash of its name (djb2).  Computed
+-- in the EMITTER (the .ll carries the decimal constant), so the stored tag and
+-- the switch's compared tag are the SAME value by construction — no runtime hash.
+hashName : String -> Int
+hashName s = hashChars (stringToChars s) 0 5381
+
+hashChars : Array Char -> Int -> Int -> Int
+hashChars cs i acc
+  | i >= arrayLength cs = acc
+  | otherwise = hashChars cs (i + 1) (acc * 33 + charCode (arrayGetUnsafe i cs))
+
+-- allocate a constructor cell {tag, field…}; the field words are already emitted.
+-- A nullary constructor is a one-word cell (just the tag).  Result is the cell
+-- pointer as an i64 word, typed LTCon.
+emitCtorAlloc : Emit -> String -> List String -> <Mut> (String, LTy)
+emitCtorAlloc e name fields =
+  let arity = lengthS fields
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (arity + 1)) ++ ")")
+  let _ = emit e ("  store i64 " ++ intToString (hashName name) ++ ", ptr " ++ p)
+  let _ = storeFields e p fields 0
+  let w = freshReg e
+  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  (w, LTCon)
+
+-- store each field at offset 8*(i+1) (field 0 follows the one-word header).
+storeFields : Emit -> String -> List String -> Int -> <Mut> Unit
+storeFields _ _ [] _ = ()
+storeFields e p (f::rest) i =
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ intToString (8 * (i + 1)))
+  let _ = emit e ("  store i64 " ++ f ++ ", ptr " ++ fp)
+  storeFields e p rest (i + 1)
+
+-- load a cell's tag (header word at offset 0) given the cell's pointer word.
+loadTag : Emit -> String -> <Mut> String
+loadTag e ptrWord =
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let t = freshReg e
+  let _ = emit e ("  " ++ t ++ " = load i64, ptr " ++ p)
+  t
+
+-- load field `idx` (offset 8*(idx+1)) of a cell given its pointer word.
+loadField : Emit -> String -> Int -> <Mut> String
+loadField e ptrWord idx =
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ intToString (8 * (idx + 1)))
+  let f = freshReg e
+  let _ = emit e ("  " ++ f ++ " = load i64, ptr " ++ fp)
+  f
+
+-- load the first `a` fields of a cell as a list of operand words.
+loadFields : Emit -> String -> Int -> Int -> <Mut> List String
+loadFields e foc a i
+  | i >= a = []
+  | otherwise =
+    let f = loadField e foc i
+    f :: loadFields e foc a (i + 1)
+
+-- a `match` lowered to a decision tree (CDecision).  Mirrors core_ir_eval's
+-- cevalDecision exactly, but emits an LLVM CFG instead of walking values: the
+-- scrutinee word, an `alloca` result slot, the tree (which routes control via
+-- br/icmp to the selected arm, where the arm stores its body value into the slot
+-- and branches to the end label), then a load of the slot in the end block.  The
+-- arm's static result type is captured into `rty` as the arm body is emitted (all
+-- arms agree — well-typed match).
+emitDecision : Emit -> List (String, (String, LTy)) -> CExpr -> List CArm -> CTree -> <Mut> (String, LTy)
+emitDecision e env scrut arms tree =
+  let (sv, _) = emitExpr e env scrut
+  let slot = freshReg e
+  let _ = emit e ("  " ++ slot ++ " = alloca i64")
+  let endL = "decend" ++ intToString (freshId e)
+  let rty = Ref LTInt
+  let _ = emitTree e env sv arms [sv] slot endL rty tree
+  let _ = emit e (endL ++ ":")
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  (r, rty.value)
+
+-- walk the compiled CTree, emitting basic blocks.  `root` is the whole scrutinee
+-- word (kept for the leaf re-match that recovers bindings — mirrors ceval's
+-- `root`); `occs` is the live column words (the matrix columns), starting as just
+-- [root] and expanding into a constructor's fields as the tree descends.  Every
+-- path terminates its current block (a `br` to `endL` after storing, a `br` into
+-- a sibling test block, or `unreachable` for CTFail).
+emitTree : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List String -> String -> String -> Ref LTy -> CTree -> <Mut> Unit
+emitTree e _ _ _ _ _ _ _ CTFail = emit e "  unreachable"
+emitTree e env root arms _ slot endL rty (CTLeaf i) = emitLeaf e env root arms i slot endL rty
+emitTree _ _ _ _ _ _ _ _ (CTGuard _ _) =
+  panic "llvm spike: guarded / range / record match arms unsupported (slice 3: constructor + int-literal patterns only)"
+emitTree e env root arms occs slot endL rty (CTDrop sub) =
+  emitTree e env root arms (tailS occs) slot endL rty sub
+emitTree e env root arms occs slot endL rty (CTSwitch branches dft) =
+  emitSwitch e env root arms occs branches dft slot endL rty
+
+-- a terminal leaf: re-match the selected arm's ORIGINAL pattern against the whole
+-- scrutinee `root` (the tree path guarantees it matches) to bind its variables —
+-- emitting getelementptr loads for each field a `PVar` deconstructs — then emit
+-- the body, store the result, and branch to the end block.
+emitLeaf : Emit -> List (String, (String, LTy)) -> String -> List CArm -> Int -> String -> String -> Ref LTy -> <Mut> Unit
+emitLeaf e env root arms i slot endL rty = match nthArm arms i
+  Some (CArm pat _ body) =>
+    let env2 = bindPattern e env pat root body
+    let (bv, bty) = emitExpr e env2 body
+    let _ = set_ref rty bty
+    let _ = emit e ("  store i64 " ++ bv ++ ", ptr " ++ slot)
+    emit e ("  br label %" ++ endL)
+  None => panic "llvm spike: decision arm index out of range"
+
+-- bind a pattern's variables against a value word, emitting field loads for the
+-- constructor sub-patterns.  Mirrors the binding half of eval.mdk's matchPat, but
+-- since the decision tree already proved the shape, it only EXTRACTS (no tests).
+-- A `PVar`'s static type is recovered from its first typed use in the arm body
+-- (reusing the slice-2b `paramUseTy`); pointer-typed fields default to Int, which
+-- is harmless — they only ever flow on as LTy-agnostic call args.
+bindPattern : Emit -> List (String, (String, LTy)) -> Pat -> String -> CExpr -> <Mut> List (String, (String, LTy))
+bindPattern _ env PWild _ _ = env
+bindPattern _ env (PLit _) _ _ = env
+bindPattern e env (PVar x) v body =
+  let ty = match paramUseTy (sigTable e) [] x body
+    Some t => t
+    None => LTInt
+  (x, (v, ty)) :: env
+bindPattern e env (PCon _ args) v body = bindFields e env args v body 0
+bindPattern _ _ p _ _ =
+  panic ("llvm spike: unsupported pattern in match arm (slice 3: variable / wildcard / constructor / int-literal only): " ++ ptag p)
+
+bindFields : Emit -> List (String, (String, LTy)) -> List Pat -> String -> CExpr -> Int -> <Mut> List (String, (String, LTy))
+bindFields _ env [] _ _ _ = env
+bindFields e env (p::rest) v body i =
+  let f = loadField e v i
+  let env2 = bindPattern e env p f body
+  bindFields e env2 rest v body (i + 1)
+
+-- a switch on the focus column (occs head): constructors test a loaded tag word,
+-- literals test the immediate directly.  A homogeneous switch (the matrix is
+-- either all-constructor or all-literal in a column), so the first branch's head
+-- selects the test kind.
+emitSwitch : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
+emitSwitch e env root arms occs branches dft slot endL rty = match occs
+  [] => emitTree e env root arms [] slot endL rty dft
+  (foc::rest) => match branches
+    [] => emitTree e env root arms rest slot endL rty dft
+    ((CTBranch (HCon _ _) _)::_) =>
+      let tagReg = loadTag e foc
+      emitConChain e env root arms foc rest tagReg branches dft slot endL rty
+    ((CTBranch (HLit _) _)::_) =>
+      emitLitChain e env root arms foc rest branches dft slot endL rty
+    _ => panic "llvm spike: only constructor / int-literal switches supported (slice 3: no list / tuple / unit heads)"
+
+-- the constructor-switch test chain: compare the loaded tag against each branch's
+-- hashed name; on a match, descend with the matched cell's fields as the new
+-- leading columns; on exhausting the branches, take the default (focus dropped).
+emitConChain : Emit -> List (String, (String, LTy)) -> String -> List CArm -> String -> List String -> String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
+emitConChain e env root arms _ rest _ [] dft slot endL rty =
+  emitTree e env root arms rest slot endL rty dft
+emitConChain e env root arms foc rest tagReg ((CTBranch (HCon c a) sub)::more) dft slot endL rty =
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (hashName c))
+  let n = intToString (freshId e)
+  let yes = "conyes" ++ n
+  let next = "connext" ++ n
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e (yes ++ ":")
+  let fields = loadFields e foc a 0
+  let _ = emitTree e env root arms (fields ++ rest) slot endL rty sub
+  let _ = emit e (next ++ ":")
+  emitConChain e env root arms foc rest tagReg more dft slot endL rty
+emitConChain _ _ _ _ _ _ _ _ _ _ _ _ =
+  panic "llvm spike: heterogeneous constructor switch (slice 3: a column is all-constructor or all-literal)"
+
+-- the literal-switch test chain: compare the focus immediate against each branch's
+-- tagged-int constant; a literal head has arity 0, so a match descends with the
+-- focus simply dropped (no field columns).
+emitLitChain : Emit -> List (String, (String, LTy)) -> String -> List CArm -> String -> List String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
+emitLitChain e env root arms _ rest [] dft slot endL rty =
+  emitTree e env root arms rest slot endL rty dft
+emitLitChain e env root arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) dft slot endL rty =
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ foc ++ ", " ++ intToString (k * 2 + 1))
+  let n = intToString (freshId e)
+  let yes = "lityes" ++ n
+  let next = "litnext" ++ n
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e (yes ++ ":")
+  let _ = emitTree e env root arms rest slot endL rty sub
+  let _ = emit e (next ++ ":")
+  emitLitChain e env root arms foc rest more dft slot endL rty
+emitLitChain _ _ _ _ _ _ _ _ _ _ _ =
+  panic "llvm spike: only Int literal switches supported (slice 3: no Float / String / Char / Bool literal heads)"
+
+-- ── small list helpers (slice 3) ────────────────────────────────────────────
+lengthS : List a -> Int
+lengthS [] = 0
+lengthS (_::xs) = 1 + lengthS xs
+
+tailS : List a -> List a
+tailS [] = []
+tailS (_::xs) = xs
+
+nthArm : List CArm -> Int -> Option CArm
+nthArm (a::_) 0 = Some a
+nthArm (_::rest) n = nthArm rest (n - 1)
+nthArm [] _ = None
+
+-- a readable tag for the unsupported-pattern panic.
+ptag : Pat -> String
+ptag (PTuple _) = "PTuple"
+ptag (PCons _ _) = "PCons"
+ptag (PList _) = "PList"
+ptag (PAs _ _) = "PAs"
+ptag (PRng _ _ _) = "PRng"
+ptag (PRec _ _ _) = "PRec"
+ptag _ = "?"
 
 -- ── top-level function definitions (slice 2) ────────────────────────────────
 -- Each non-`main` top-level binding with parameters becomes an LLVM function
@@ -374,7 +648,7 @@ emitFn _ (CBind name _) =
   panic ("llvm spike: function '" ++ name ++ "' is multi-clause (slice 2: single variable-pattern clause only)")
 
 sigTable : Emit -> <Mut> List (String, FnSig)
-sigTable (Emit _ _ _ sigs) = sigs.value
+sigTable (Emit _ _ _ sigs _) = sigs.value
 
 -- default param types when no signature was inferred (every param Int).
 allInt : List Pat -> List LTy
@@ -491,6 +765,7 @@ typeOf sigs env (CLet False (PVar x) e1 e2) =
 typeOf sigs env (CLetGroup binds body) =
   typeOf sigs (letGroupEnv sigs env binds) body
 typeOf sigs env (CBlock stmts) = blockTy sigs env stmts
+typeOf sigs env (CDecision _ arms _) = armsRetTy sigs env arms
 typeOf sigs env app =
   let (hd, args) = flattenApp app []
   match hd
@@ -502,6 +777,14 @@ callRetTy : List (String, FnSig) -> String -> LTy
 callRetTy sigs fname = match lookupAssoc fname sigs
   Some (FnSig _ rty) => rty
   None => LTInt
+
+-- a decision's result type is its first arm's body type (all arms agree —
+-- well-typed match).  Pattern-bound vars are unknown to the pure pass, so a body
+-- referencing them defaults via typeOf's CVar/None branch; the fixtures' arms are
+-- Int-typed, matching the runtime-captured `rty`.
+armsRetTy : List (String, FnSig) -> List (String, LTy) -> List CArm -> LTy
+armsRetTy _ _ [] = LTInt
+armsRetTy sigs env ((CArm _ _ body)::_) = typeOf sigs env body
 
 letGroupEnv : List (String, FnSig) -> List (String, LTy) -> List CBind -> List (String, LTy)
 letGroupEnv _ env [] = env
@@ -654,8 +937,8 @@ isCmpOp op = op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" ||
 -- then `main`'s body, then a type-directed print.
 export
 emitProgram : CProgram -> <Mut> String
-emitProgram (CProgram groups _ _ _) =
-  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups)))
+emitProgram (CProgram groups ctorArs _ _) =
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs)
   let _ = emitPreamble e
   let _ = emitFns e (fnBinds groups)
   let _ = emit e "define i32 @main() {"
@@ -666,7 +949,7 @@ emitProgram (CProgram groups _ _ _) =
   let _ = emit e "  ret i32 0"
   let _ = emit e "}"
   match e
-    Emit _ buf _ _ => joinNl (reverseL buf.value)
+    Emit _ buf _ _ _ => joinNl (reverseL buf.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =
@@ -696,6 +979,8 @@ emitPrint e v LTBool =
 emitPrint e v LTFloat =
   let d = unboxFloat e v
   emit e ("  call void @mdk_print_float(double " ++ d ++ ")")
+emitPrint _ _ LTCon =
+  panic "llvm spike: cannot print an ADT value (slice 3: `main` must reduce to a scalar Int/Bool/Float)"
 
 -- the body of the `main` binding (must be a nullary clause).
 mainBody : List CBind -> CExpr

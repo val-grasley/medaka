@@ -1,0 +1,11 @@
+-- slice 3: a Maybe-shaped ADT (one unary + one nullary constructor) built and
+-- pattern-matched.  Exercises CApp(CVar "Just") field allocation, CVar "Nothing"
+-- nullary allocation, and a two-branch HCon decision tree (both arms reached
+-- across the two calls).
+data Maybe = Just Int | Nothing
+
+orElse m = match m
+  Just n => n
+  Nothing => 0
+
+main = orElse (Just 7) + orElse Nothing

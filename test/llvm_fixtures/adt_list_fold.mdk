@@ -1,0 +1,16 @@
+-- slice 3: a recursive ADT with a simple recursive fold.  Exercises nested
+-- constructor allocation (Node over Node …), a single-clause function whose body
+-- is a decision tree over the recursive type, an Int field bound by pattern
+-- deconstruction and used in arithmetic, and a (non-tail) recursive call.
+--
+-- The constructors are NODE/EMPTY rather than Cons/Nil deliberately: the lowering
+-- (core_ir_lower.decodeHead) reserves the names `Cons`/`Nil`/`Unit`/`__tuple__`
+-- for the built-in list/tuple/unit heads, so a user constructor named `Cons`
+-- would lower to the list `HCons` head (out of this slice's scope).
+data IntList = Node Int IntList | Empty
+
+sum lst = match lst
+  Node x xs => x + sum xs
+  Empty => 0
+
+main = sum (Node 1 (Node 2 (Node 3 Empty)))

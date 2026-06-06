@@ -528,6 +528,18 @@ The uniform-word rep makes the convention fall out cleanly:
   (self-recursion trivially satisfies the prototype-match rule); cross-function
   `musttail` (mutual recursion) needs an explicit prototype-match check and is the
   next increment.
+- **Empirically validated (2026-06-06) — spike slice 3 (ADTs + match).** The spike
+  now emits the first **heap-allocated non-scalar** values: a constructor is a boxed
+  cell `{ i64 tag, field… }` via `mdk_alloc` (the §8.4 Option-A layout, the Float
+  box extended to N fields), and a `match` is a decision-tree CFG (tag-test `br`
+  switch → `getelementptr` field projection → arm body). 22/22 gate. Two rep
+  decisions surfaced for the real backend (deferred — see PLAN.md spike-rep notes):
+  (1) the spike **boxes nullary constructors** (1-word alloc) where §8.1 says they
+  should be **immediate/free** — fix in the native backend; (2) the **i64 string-hash
+  tag** is convenient here but a **dense i32 ctor-ordinal** (per type) is what ports
+  to LLVM/WasmGC `br_table` cleanly and avoids collisions. The emitted encoding is
+  the native physical rep (§8.6); a WasmGC sibling would use `i31ref` + typed structs
+  over the host GC, sharing only the Core IR, not the bits.
 - **Closures.** A closure value is a boxed cell `{ header, code_ptr, captured… }`;
   calling loads `code_ptr` and passes the closure (env) pointer as a leading
   argument. (Out of scope for the spike — flagged here as the next rep decision the
@@ -539,8 +551,9 @@ The uniform-word rep makes the convention fall out cleanly:
 be exercised at the **bytecode VM (§2.2)** against the tree-walker oracle before the
 real LLVM backend — the VM forces the same value-representation and C-ABI-extern
 commitments in the cheaper, single-steppable setting. This spike is the *earliest*
-such exercise (LLVM-side, scalar-only); the VM will broaden it to the full value set
-(aggregates, closures, thunks) with the same oracle.
+such exercise (LLVM-side; scalars + functions + ADTs/match so far); the VM will
+broaden it to the full value set (records, arrays, closures, thunks, dispatch) with
+the same oracle.
 
 ### 8.6 The shared contract + the WasmGC encoding (reconciliation)
 

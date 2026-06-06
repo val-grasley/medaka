@@ -1,0 +1,12 @@
+-- slice 3: a constructor field matched against an Int LITERAL pattern, mixed with
+-- a variable pattern.  After the outer HCon switch descends into the field, the
+-- inner column is an Int-literal switch (HLit) — exercising the literal test
+-- branch (icmp against a tagged-int immediate) and a field bound as a plain
+-- variable in the fall-through arm.
+data Wrap = W Int
+
+classify w = match w
+  W 0 => 100
+  W n => n
+
+main = classify (W 0) + classify (W 5)

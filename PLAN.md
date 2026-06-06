@@ -171,14 +171,14 @@ deliberately deferred to here:
   runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
   is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
-  - ✅ **Toolchain de-risking spike DONE (slices 1–2b)** — *ahead of the strict
+  - ✅ **Toolchain de-risking spike DONE (slices 1–3)** — *ahead of the strict
     VM-first ordering by design* (front-loads the riskiest lift; runs parallel to
     the bytecode VM, uses only the tree-walker oracle). Proves the decided toolchain
     (EMIT textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings)
     end-to-end: `selfhost/llvm_emit.mdk` (Core IR → textual LLVM IR) +
     `selfhost/llvm_emit_main.mdk` + `runtime/medaka_rt.c` (a malloc-and-leak stub;
     GC deferred), gated by `test/diff_selfhost_llvm.sh` (emit → clang → link → run →
-    diff vs `dev/eval_probe.exe`, **17/17 byte-identical**). Slice 1 = scalars
+    diff vs `dev/eval_probe.exe`, **22/22 byte-identical**). Slice 1 = scalars
     (arithmetic / comparisons / `let` / `if` / value bindings / type-directed
     print). Slice 2 = top-level functions + saturated direct calls; self-recursive
     tail calls lower to `musttail call`+`ret` (the calling-convention proof,
@@ -187,9 +187,28 @@ deliberately deferred to here:
     param + return type from the type-erased Core IR (param type from its first
     typed use, return type structural); the ABI stays a uniform i64 word, so the
     recovered type drives only int-vs-float instruction + print-routine selection,
-    no prototype/`musttail` change, **no value-rep edit**. **Not** the real backend
-    (no closures/ADTs/records/dispatch/GC; out-of-scope nodes panic). See
-    [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4.
+    no prototype/`musttail` change, **no value-rep edit**. Slice 3 (2026-06-06) =
+    **ADT constructors + pattern matching**: a constructor lowers to a boxed heap
+    cell (one-word string-hashed tag + field words via `@mdk_alloc`, the slice-1
+    Float-box path extended to N fields); a `match` lowered to a `CDecision` tree
+    becomes an LLVM CFG (tag-test/`br` switch → field-projection → arm body into an
+    `alloca` result slot), mirroring `core_ir_eval`'s `cevalDecision` one-to-one
+    (5 new fixtures). **Not** the real backend (no closures/records/arrays/dispatch/
+    GC; built-in list & tuple match heads and guarded/range/record arms still panic).
+    See [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4.
+    - **Spike-surfaced rep notes (NOT acted on — the spike's job is to surface
+      them; native-rep decisions belong to the real backend).** (a) **Nullary
+      constructors are boxed** (a 1-word alloc for `Nothing`/`Red`), but
+      RUNTIME-DESIGN.md §8.1 says nullary ctors should be **free/immediate** — a
+      divergence from the recommended *native* Option-A rep, not just from WasmGC.
+      (b) The **i64 string-hash tag** is LLVM-convenient (no ctor→ordinal table) but
+      foreshadows *neither* backend's real tag and carries collision risk; a **dense
+      i32 ctor-ordinal** (per type) would port to both LLVM `br_table` and WasmGC
+      `br_table`/`ref.test` cleanly. (c) The emitted encoding (`ptrtoint`/`inttoptr`
+      i64 words, byte-offset GEP, low-bit Int tag) is the **native** physical rep and
+      is intentionally NOT WasmGC-portable — §8.6 reconciles this (no single physical
+      rep; the **Core IR** is the shared portable layer, a WasmGC sibling emitter
+      uses `i31ref` + structs).
 - ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `selfhost/core_ir.mdk`,
   `core_ir_lower.mdk`, `core_ir_eval.mdk` (+ sexp/round-trip gates). 47/47
   fixtures byte-identical across 6 corpora. See `selfhost/README.md`.
@@ -465,6 +484,20 @@ Downstream (already captured, NOT near-term): **Phase 146b** parameterized effec
     `selfhost/README.md`. Fixtures `test/eval_dict_fixtures/method_constraint_*.mdk`.
     Out of scope: multi-impl *overrides* of such a method (dict param shifts the
     container-dispatch position; no prelude impl overrides `foldMap`).
+- **Core IR: reserved-name collision in `decodeHead` (latent, shared-path). TODO.**
+  `core_ir_lower.decodeHead` keys the built-in list/tuple/unit heads by NAME
+  (`"Cons"` → `HCons`, `"Nil"` → `HNil`, `"Unit"` → `HUnit`, `"__tuple__"` →
+  `HTuple`), so a **user constructor literally named `Cons`/`Nil`/`Unit`** lowers
+  to the built-in head and is then mis-decomposed at match time. `check` accepts
+  it and the AST tree-walker runs it correctly (`data T = Cons Int T | Nil; len …`
+  → right answer), but the **Core IR path diverges**: `ceval` panics `no matching
+  clause in match` (verified 2026-06-06) and both backends inherit it (the LLVM
+  spike's `emitSwitch` hits its `no list/tuple/unit heads` guard). A silent
+  front-end accept → Core-IR-only crash. Fix options: (a) carry a discriminator on
+  `CHead` so built-in vs user heads can't alias by name, or (b) reject/namespace
+  the reserved ctor names in resolve. Low real-world incidence (who names a ctor
+  `Cons`?), but it's a silent-miscompile class, not just a spike quirk — the LLVM
+  fixtures sidestep it by using `Node`/`Empty`.
 
 ### CLI surface (Phase 82, continued)
 

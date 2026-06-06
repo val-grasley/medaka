@@ -547,6 +547,45 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   rep must carry the type, not re-infer it. Still **not** the real backend:
   higher-order values / closures / ADTs / records / dispatch / GC remain out of
   scope and panic.
+- **SPIKE SLICE 3 DONE (2026-06-06) — ADT constructors + pattern matching.** The
+  first **heap-allocated, non-scalar** values, and the first `match`. A constructor
+  lowers to a **boxed heap cell** (RUNTIME-DESIGN.md §8.4 "Option A"): a one-word
+  header (the constructor name string-hashed to an i64 tag) followed by the field
+  words, allocated via `@mdk_alloc` — the slice-1 Float-box path extended to N
+  fields; the word carried in registers is the cell pointer (`ptrtoint`, low bit 0,
+  disjoint from the immediate-int low-bit-1 encoding). A `match` lowered to a
+  `CDecision` decision tree (the same Maranget tree `core_ir_lower` already
+  produces) becomes an **LLVM CFG**: each `CTSwitch` tests the focus value's head
+  (load tag → `icmp eq` → `br` for constructors; immediate compare for int
+  literals) and descends into the matched cell's fields as the new focus columns; a
+  leaf re-matches its arm's pattern against the scrutinee (`getelementptr` field
+  loads) to bind variables, evaluates the body into an `alloca` result slot, and
+  branches to the decision's end block. It mirrors `core_ir_eval`'s
+  `cevalDecision`/`cevalTree`/`cevalSwitch` **one-to-one** (value-walk → block-emit),
+  reusing the untouched Core IR lowering — the Axis-1 "backends are sibling
+  consumers" discipline, now over a structural type. Gate now spans **22/22**
+  fixtures (the prior 17 + 5 ADT/match: `adt_option` two-branch `Maybe`, `adt_list_fold`
+  recursive fold with an Int field in arithmetic, `adt_nested` two-level `Wrap (Leaf x)`
+  occurrence-stack descent, `adt_multi_arm` three-branch switch + `unreachable`
+  default, `adt_lit_field` an int-literal `HLit` switch on a field). **Decisions
+  surfaced (not silently taken):** (1) **nullary constructors are boxed** (a 1-word
+  alloc), where §8.1 says they should be **free/immediate** — a divergence from the
+  recommended *native* rep, deferred to the real backend (PLAN.md spike-rep notes).
+  (2) the **i64 string-hash tag** is LLVM-convenient (no ctor→ordinal table) but
+  foreshadows neither backend's real tag and carries collision risk; a **dense i32
+  ctor-ordinal** would port to both LLVM and WasmGC `br_table` cleanly (deferred).
+  (3) the encoding (`ptrtoint`/`inttoptr` i64 words, byte-offset `getelementptr`,
+  hash tag) is the **native** physical rep and intentionally NOT WasmGC-portable —
+  §8.6 reconciles this (no single physical rep; the **Core IR** is the shared
+  portable layer; a WasmGC sibling emitter would use `i31ref` + typed structs).
+  **Latent bug surfaced (filed, not fixed — PLAN.md Compiler/language):** a user
+  constructor literally named `Cons`/`Nil`/`Unit`/`__tuple__` aliases the built-in
+  list/tuple/unit heads in `core_ir_lower.decodeHead` and is mis-decomposed at match
+  time — `check` accepts it, the AST walker runs it, but the **Core IR path**
+  (`ceval` + both backends) crashes; the fixtures sidestep it with `Node`/`Empty`.
+  Still **not** the real backend: closures / records / arrays / dispatch / GC, the
+  built-in list & tuple match heads, and guarded/range/record arms remain out of
+  scope and panic.
 
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /

@@ -1,0 +1,13 @@
+-- slice 3: NESTED constructor patterns.  `Wrap (Leaf x)` is a two-level pattern,
+-- so the decision tree switches on the outer head, descends into its field as the
+-- new focus column, and switches again — exercising the occurrence-stack descent
+-- (subs ++ rest) in the switch emission, plus nested constructor allocation
+-- (Wrap over Leaf).
+data Nest = Wrap Nest | Leaf Int
+
+peek n = match n
+  Wrap (Leaf x) => x
+  Wrap (Wrap inner) => 99
+  Leaf y => y
+
+main = peek (Wrap (Leaf 42))
