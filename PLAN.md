@@ -260,6 +260,11 @@ item 5 (fine-grained labels) is the first *remaining* coding step.
    Depends on item 2 (design note pins the syntax). Lands across
    lexer/parser/resolve/typecheck (+ selfhost mirror). Skill: **add-language-feature**.
 
+**Concrete near-term target:** item 5 (labels) + a ~150–250-line harness, on the
+existing interpreter, produces the **minimal "wow" demo** (an AI-generated plugin
+auto-rejected for a call-graph-deep exfiltration attempt) — the first shareable
+artifact, decoupled from the backend. Full sketch: CAPABILITY-PLATFORM.md §7c.
+
 Downstream (already captured, NOT near-term): **Phase 146b** parameterized effects
 (CAPABILITY-EFFECTS §6a); the **WasmGC backend** (STAGE2-DESIGN §2.4b); the
 **capability platform/runtime** (CAPABILITY-PLATFORM.md).

