@@ -12,7 +12,7 @@ fits in the backend plan.
 > **`medaka_rt.c` is NOT the real runtime.** It is the minimal stub the Stage-2.4
 > *de-risking spike* (`../selfhost/llvm_emit.mdk`) links against to prove the
 > emit → `clang` → link → run → diff toolchain end-to-end for the scalar + function
-> + ADT/match + closure/HOF subset (slices 1–4). The real runtime (~54 leaf C functions per
+> + ADT/match + closure/HOF + records/tuples/refs subset (slices 1–5a). The real runtime (~54 leaf C functions per
 > RUNTIME-DESIGN.md §5) is built slice-by-slice later, after the bytecode VM (§2.2)
 > proves the same ABI against the tree-walker oracle.
 
@@ -20,7 +20,7 @@ What the stub provides today (4 functions):
 
 | Symbol | Role |
 |--------|------|
-| `mdk_alloc(i64) -> ptr` | Heap allocation entry point. **Spike: malloc-and-leak** (GC deferred — the later step is `brew install bdw-gc` and routing this to `GC_malloc`). Boxes the slice-1 `Float` cell, (slice 3) every ADT constructor cell `{ i64 tag, field… }`, and (slice 4) every closure cell `{ i64 header, code_ptr, captured… }`; every extern that *returns* a Medaka value must allocate through here so the GC swap is one function (RUNTIME-DESIGN.md §2a). |
+| `mdk_alloc(i64) -> ptr` | Heap allocation entry point. **Spike: malloc-and-leak** (GC deferred — the later step is `brew install bdw-gc` and routing this to `GC_malloc`). Boxes the slice-1 `Float` cell, (slice 3) every ADT constructor cell `{ i64 tag, field… }`, (slice 4) every closure cell `{ i64 header, code_ptr, captured… }`, and (slice 5a) Record/Tuple/Ref cells (same shape); every extern that *returns* a Medaka value must allocate through here so the GC swap is one function (RUNTIME-DESIGN.md §2a). |
 | `mdk_print_int(i64)` | Print an `Int`. Matches the tree-walker oracle: `Eval.pp_value (VInt n)` + newline. |
 | `mdk_print_bool(i64)` | Print a `Bool` (`true`/`false`). |
 | `mdk_print_float(double)` | Print a `Float`, reproducing OCaml `string_of_float` byte-for-byte (`%.12g` + a trailing `.` when integral, e.g. `14.`). |
@@ -47,6 +47,9 @@ The spike uses a uniform 64-bit tagged word, **revisable in one place** (this fi
   cell shape as an ADT (header + fields), so it shares the `mdk_alloc` path. A
   higher-order call loads `code_ptr` and `call`s it passing the closure word as the
   leading argument; the runtime itself stays oblivious (no closure-specific symbol).
+- **Record (slice 5a)** — boxed: same cell shape as ADT, with `header = hashName(record-type-name)` and one field per record attribute in declaration order.
+- **Tuple (slice 5a)** — boxed: same cell shape with `header = hashName("$tuple")`.
+- **Ref (slice 5a)** — boxed: 1-field cell `{ i64 header, i64 stored_value }` with `header = hashName("$ref")`. `.value` loads field 0; `set_ref` stores into field 0. Write barrier absent (spike uses malloc-and-leak — the first mutation site, noted as needing a GC write barrier in the real runtime).
 
 These helpers take/return *native* C scalars (the emitter untags/unboxes first), so
 the runtime stays a plain C-ABI leaf with no knowledge of the tag scheme beyond the

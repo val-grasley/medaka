@@ -1,0 +1,6 @@
+-- slice 5a: record update copies base fields, overwrites named ones.
+-- No `data` declaration so eval_probe uses VRecord (not VCon).
+main =
+  let p = Point { x = 5, y = 3 }
+  let q = { p | y = 10 }
+  q.x + q.y

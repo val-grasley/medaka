@@ -55,11 +55,32 @@
 --     `@mdk_<name>`.  SATURATED calls only — the type-erased Core IR can't see a
 --     closure's arity at the call site; partial / over-application are OUT (the
 --     real backend will carry arity in the cell).
--- Still OUT of scope: records / arrays / ranges / typeclass dispatch / GC; built-in
--- list & tuple heads (HCons/HNil/HTuple/HUnit) and non-Int literal heads in
--- matches; guarded / range / record arms (CTGuard); recursive (CLet True) closures
--- and capture of Ref/mutable bindings.  An unsupported Core IR node panics with its
--- tag (the spike refuses to emit wrong code rather than silently mis-lowering).
+--   • slice 5a — RECORDS, TUPLES, and MUTABLE REFS.  Records lower to boxed cells
+--     exactly like ADT constructors (emitCtorAlloc/storeFields/loadField verbatim):
+--     header = hashName(record-type-name), then one word per field in source
+--     declaration order.  Field access looks up the positional index from a record-
+--     field-order table built by scanning CRecord nodes in the program up front.
+--     Record update copies all fields from the base then overwrites the named ones.
+--     Tuples use the same cell layout with a fixed header (hashName "$tuple"); tuple
+--     destructuring via `let (a, b, c) = t` binds elements by loadField.  Mutable
+--     refs are lowered INLINE (no new runtime functions): `Ref x` allocates a 1-field
+--     cell; `set_ref r x` stores into its field; `r.value` loads from it.
+--     SPIKE-REP NOTES (filed here per the slice-3/4 convention):
+--       • Records: positional-by-declaration-order.  Name-keyed access at runtime
+--         would need a name→offset map; the spike sidesteps this by reading the
+--         declaration (from scanned CRecord nodes) at emit time.
+--       • Tuples: fixed header hashName "$tuple".  Headerless tuples would save one
+--         word but break the uniform cell discipline used for tag-testing in switches.
+--       • Refs: 1-field cells over @mdk_alloc (malloc-and-leak).  The real GC will
+--         need a write barrier on the `set_ref` store — this is the FIRST mutation
+--         site in the spike and the first place a GC would need to act.
+-- Still OUT of scope: arrays / ranges / typeclass dispatch / GC; built-in list heads
+-- (HCons/HNil/HUnit) and non-Int literal heads in matches; guarded / range / record
+-- arms (CTGuard); recursive (CLet True) closures and capture of Ref/mutable
+-- bindings.  Tuple SWITCH heads (multi-arm tuple match) and tuple-pattern let
+-- inside a do-block are out — only `let (a, b) = t` (CLet PTuple) binds.
+-- An unsupported Core IR node panics with its tag (the spike refuses to emit wrong
+-- code rather than silently mis-lowering).
 --
 -- VALUE REPRESENTATION (PROVISIONAL — revisable; see RUNTIME-DESIGN.md "Value
 -- representation & calling convention").  A value is a uniform 64-bit word:
@@ -80,9 +101,16 @@
 --            §8.5).  The same cell shape as an ADT (header + fields), so it reuses
 --            the slice-3 alloc; calling loads code_ptr and passes the cell pointer
 --            as the leading argument.
+--   • Record — BOXED (slice 5a): word is a pointer to a heap cell
+--            [ i64 header | field0 | field1 … ], fields in declaration order.
+--            header = hashName(record-type-name), same hashing as ADT constructors.
+--   • Tuple  — BOXED (slice 5a): same cell shape with header = hashName "$tuple".
+--   • Ref    — BOXED (slice 5a): 1-field cell [ i64 header | stored_value ].
+--            header = hashName "$ref".  .value loads field 0; set_ref stores into
+--            field 0.  Write barrier absent (malloc-and-leak, same as @mdk_alloc).
 
 import ast.{Lit(..), Pat(..), Addr(..)}
-import core_ir.{CExpr(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..)}
+import core_ir.{CExpr(..), CField(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..)}
 import util.{reverseL, joinNl, lookupAssoc}
 
 -- the static type of a slice-1/3 value, used to pick the print routine and the
@@ -95,6 +123,8 @@ import util.{reverseL, joinNl, lookupAssoc}
 -- pointer word, like `LTCon`.  It flows only as a call argument and as the head of
 -- an indirect call (both LTy-agnostic uniform i64 words); it never reaches an
 -- arithmetic or print site in the supported subset, so it carries no payload type.
+-- `LTRef` (slice 5a) is a mutable ref cell pointer word.  Like `LTCon`/`LTClosure`,
+-- it never reaches an arithmetic or print site directly — so it carries no payload.
 data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
@@ -114,8 +144,11 @@ data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure
 -- but it is DISCOVERED mid-body while the main buffer holds the enclosing
 -- function — so its `define` is emitted into this side buffer (via a save/restore
 -- swap of the main buffer) and concatenated after `@main` at module end (LLVM
--- define order is irrelevant).
-data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int))) (Ref (List String))
+-- define order is irrelevant).  The SEVENTH ref (slice 5a) is the RECORD FIELD
+-- ORDER table (`name -> [label_in_order]`, built by scanning CRecord nodes in the
+-- program up front): it lets CFieldAccess recover a label's positional index so
+-- the field can be reached by loadField without carrying type information.
+data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int))) (Ref (List String)) (Ref (List (String, List String)))
 
 -- a function's inferred signature: its parameter types (in order) and its return
 -- type.  At the LLVM ABI every value is a uniform i64 word regardless (Int
@@ -130,7 +163,7 @@ data FnSig = FnSig (List LTy) LTy
 
 -- ── emitter plumbing ────────────────────────────────────────────────────────
 freshId : Emit -> <Mut> Int
-freshId (Emit c _ _ _ _ _) =
+freshId (Emit c _ _ _ _ _ _) =
   let n = c.value
   let _ = set_ref c (n + 1)
   n
@@ -139,21 +172,21 @@ freshReg : Emit -> <Mut> String
 freshReg e = "%t" ++ intToString (freshId e)
 
 emit : Emit -> String -> <Mut> Unit
-emit (Emit _ buf _ _ _ _) line = set_ref buf (line :: buf.value)
+emit (Emit _ buf _ _ _ _ _) line = set_ref buf (line :: buf.value)
 
 -- the main output buffer ref (slice 4: needed for the save/restore swap that
 -- redirects emission of a lifted lambda's `define` into the side buffer).
 bufRef : Emit -> Ref (List String)
-bufRef (Emit _ buf _ _ _ _) = buf
+bufRef (Emit _ buf _ _ _ _ _) = buf
 
 -- the side buffer holding lifted-lambda `define`s, in FORWARD order (slice 4).
 lamsRef : Emit -> Ref (List String)
-lamsRef (Emit _ _ _ _ _ lams) = lams
+lamsRef (Emit _ _ _ _ _ lams _) = lams
 
 -- the known-function table (set once in emitProgram); membership decides whether
 -- a `CApp` head names a callable top-level function.
 fnNames : Emit -> <Mut> List String
-fnNames (Emit _ _ fns _ _ _) = fns.value
+fnNames (Emit _ _ fns _ _ _ _) = fns.value
 
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = containsStr name (fnNames e)
@@ -161,7 +194,7 @@ isKnownFn e name = containsStr name (fnNames e)
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
-fnRetTy (Emit _ _ _ sigs _ _) name = match lookupAssoc name sigs.value
+fnRetTy (Emit _ _ _ sigs _ _ _) name = match lookupAssoc name sigs.value
   Some (FnSig _ rty) => rty
   None => LTInt
 
@@ -169,12 +202,20 @@ fnRetTy (Emit _ _ _ sigs _ _) name = match lookupAssoc name sigs.value
 -- the constructor arity table (set once in emitProgram); membership decides
 -- whether a `CVar`/`CApp` head names an ADT constructor (→ heap allocation).
 ctorTable : Emit -> <Mut> List (String, Int)
-ctorTable (Emit _ _ _ _ ct _) = ct.value
+ctorTable (Emit _ _ _ _ ct _ _) = ct.value
 
 isCtor : Emit -> String -> <Mut> Bool
 isCtor e name = match lookupAssoc name (ctorTable e)
   Some _ => True
   None => False
+
+-- ── record field-order table (slice 5a) ─────────────────────────────────────
+-- maps record-type-name -> [field-names-in-declaration-order].  Built up front
+-- in emitProgram by scanning all CRecord nodes in the program's CBind groups.
+-- CFieldAccess uses it to convert a label name to a positional index so the
+-- field can be reached by loadField without carrying type information.
+recFieldTable : Emit -> <Mut> List (String, List String)
+recFieldTable (Emit _ _ _ _ _ _ rt) = rt.value
 
 containsStr : String -> List String -> Bool
 containsStr _ [] = False
@@ -234,6 +275,10 @@ emitExpr e env (CBlock stmts) = emitBlock e env stmts
 emitExpr e env (CApp f a) = emitApp e env (CApp f a)
 emitExpr e env (CLam pats body) = emitLam e env pats body
 emitExpr e env (CDecision scrut arms tree) = emitDecision e env scrut arms tree
+emitExpr e env (CTuple es) = emitTuple e env es
+emitExpr e env (CRecord name fields) = emitRecordCreate e env name fields
+emitExpr e env (CFieldAccess ex label) = emitFieldAccess e env ex label
+emitExpr e env (CRecordUpdate base updates) = emitRecordUpdate e env base updates
 emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag other ++ " (slice 1/3 subset only)")
 
 -- a variable occurrence: a bare constructor name (slice 3) is a NULLARY ADT value
@@ -365,7 +410,14 @@ emitLet : Emit -> List (String, (String, LTy)) -> Bool -> Pat -> CExpr -> CExpr 
 emitLet e env False (PVar x) e1 e2 =
   let (v, ty) = emitExpr e env e1
   emitExpr e ((x, (v, ty)) :: env) e2
-emitLet _ _ _ _ _ _ = panic "llvm spike: only non-recursive `let <var> = e in e` supported in slice 1"
+emitLet e env False PWild e1 e2 =
+  let _ = emitExpr e env e1
+  emitExpr e env e2
+emitLet e env False (PTuple ps) e1 e2 =
+  let (v, _) = emitExpr e env e1
+  let env2 = bindPattern e env (PTuple ps) v e2
+  emitExpr e env2 e2
+emitLet _ _ _ _ _ _ = panic "llvm spike: only non-recursive `let <var|_|tuple> = e in e` supported (slice 1)"
 
 emitLetGroup : Emit -> List (String, (String, LTy)) -> List CBind -> CExpr -> <Mut> (String, LTy)
 emitLetGroup e env [] body = emitExpr e env body
@@ -382,6 +434,13 @@ emitBlock e env ((CSExpr ex)::rest) =
 emitBlock e env ((CSLet _ (PVar x) ex)::rest) =
   let (v, ty) = emitExpr e env ex
   emitBlock e ((x, (v, ty)) :: env) rest
+emitBlock e env ((CSLet _ PWild ex)::rest) =
+  let _ = emitExpr e env ex
+  emitBlock e env rest
+emitBlock e env ((CSLet _ (PTuple ps) ex)::rest) =
+  let (v, _) = emitExpr e env ex
+  let env2 = bindPattern e env (PTuple ps) v (CLit (LInt 0))
+  emitBlock e env2 rest
 emitBlock _ _ [] = panic "llvm spike: empty block"
 emitBlock _ _ _ = panic "llvm spike: unsupported block statement in slice 1"
 
@@ -406,7 +465,9 @@ emitApp e env app =
   let (hd, args) = flattenApp app []
   match hd
     CVar fname _ =>
-      if isCtor e fname then
+      if fname == "Ref" then emitRefAlloc e env args
+      else if fname == "set_ref" then emitSetRef e env args
+      else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
       else if isKnownFn e fname && hasArgs args then
@@ -511,7 +572,7 @@ emitEtaClosure e fname =
 
 -- the inferred arity of a known top-level function (its signature's param count).
 fnArity : Emit -> String -> <Mut> Int
-fnArity (Emit _ _ _ sigs _ _) fname = match lookupAssoc fname sigs.value
+fnArity (Emit _ _ _ sigs _ _ _) fname = match lookupAssoc fname sigs.value
   Some (FnSig ptys _) => lengthS ptys
   None => 0
 
@@ -621,7 +682,14 @@ freeVars b (CMatch scrut arms) = freeVars b scrut ++ freeVarsArms b arms
 freeVars b (CDecision scrut arms _) = freeVars b scrut ++ freeVarsArms b arms
 freeVars b (CTuple es) = freeVarsList b es
 freeVars b (CList es) = freeVarsList b es
+freeVars b (CRecord _ fields) = freeVarsFields b fields
+freeVars b (CFieldAccess ex _) = freeVars b ex
+freeVars b (CRecordUpdate base updates) = freeVars b base ++ freeVarsFields b updates
 freeVars _ _ = []
+
+freeVarsFields : List String -> List CField -> List String
+freeVarsFields _ [] = []
+freeVarsFields b ((CField _ ex)::rest) = freeVars b ex ++ freeVarsFields b rest
 
 freeVarsList : List String -> List CExpr -> List String
 freeVarsList _ [] = []
@@ -803,6 +871,7 @@ bindPattern e env (PVar x) v body =
     None => LTInt
   (x, (v, ty)) :: env
 bindPattern e env (PCon _ args) v body = bindFields e env args v body 0
+bindPattern e env (PTuple ps) v body = bindFields e env ps v body 0
 bindPattern _ _ p _ _ =
   panic ("llvm spike: unsupported pattern in match arm (slice 3: variable / wildcard / constructor / int-literal only): " ++ ptag p)
 
@@ -925,7 +994,7 @@ emitFn _ (CBind name _) =
   panic ("llvm spike: function '" ++ name ++ "' is multi-clause (slice 2: single variable-pattern clause only)")
 
 sigTable : Emit -> <Mut> List (String, FnSig)
-sigTable (Emit _ _ _ sigs _ _) = sigs.value
+sigTable (Emit _ _ _ sigs _ _ _) = sigs.value
 
 -- default param types when no signature was inferred (every param Int).
 allInt : List Pat -> List LTy
@@ -1207,6 +1276,160 @@ floatPred op = panic ("llvm spike: unsupported comparison " ++ op)
 isCmpOp : String -> Bool
 isCmpOp op = op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" || op == ">="
 
+-- ── records, tuples, and mutable refs (slice 5a) ────────────────────────────
+
+emitTuple : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
+emitTuple e env es =
+  let words = emitArgs e env es
+  emitCtorAlloc e "$tuple" words
+
+emitRecordCreate : Emit -> List (String, (String, LTy)) -> String -> List CField -> <Mut> (String, LTy)
+emitRecordCreate e env name fields =
+  let words = emitFieldExprs e env fields
+  emitCtorAlloc e name words
+
+emitFieldAccess : Emit -> List (String, (String, LTy)) -> CExpr -> String -> <Mut> (String, LTy)
+emitFieldAccess e env ex label =
+  let (w, _) = emitExpr e env ex
+  if label == "value" then
+    let f = loadField e w 0
+    (f, LTInt)
+  else
+    let idx = findFieldIdx (recFieldTable e) label
+    let f = loadField e w idx
+    (f, LTInt)
+
+emitRecordUpdate : Emit -> List (String, (String, LTy)) -> CExpr -> List CField -> <Mut> (String, LTy)
+emitRecordUpdate e env base updates =
+  let (bw, _) = emitExpr e env base
+  let firstLabel = cFieldFirstLabel updates
+  match findRecordByLabel (recFieldTable e) firstLabel
+    None => panic ("llvm spike: CRecordUpdate: unknown record type for field '" ++ firstLabel ++ "'")
+    Some (name, labels) =>
+      let updatePairs = emitUpdatePairs e env updates
+      let words = buildUpdateWords e bw labels updatePairs 0
+      emitCtorAlloc e name words
+
+emitRefAlloc : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
+emitRefAlloc e env args = match args
+  [x] =>
+    let (xw, _) = emitExpr e env x
+    emitCtorAlloc e "$ref" [xw]
+  _ => panic "llvm spike: Ref expects exactly 1 argument"
+
+emitSetRef : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
+emitSetRef e env args = match args
+  [r, x] =>
+    let (rw, _) = emitExpr e env r
+    let (xw, _) = emitExpr e env x
+    let p = freshReg e
+    let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ rw ++ " to ptr")
+    let fp = freshReg e
+    let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 8")
+    let _ = emit e ("  store i64 " ++ xw ++ ", ptr " ++ fp)
+    ("1", LTInt)
+  _ => panic "llvm spike: set_ref expects exactly 2 arguments"
+
+emitFieldExprs : Emit -> List (String, (String, LTy)) -> List CField -> <Mut> List String
+emitFieldExprs _ _ [] = []
+emitFieldExprs e env ((CField _ ex)::rest) =
+  let (w, _) = emitExpr e env ex
+  w :: emitFieldExprs e env rest
+
+emitUpdatePairs : Emit -> List (String, (String, LTy)) -> List CField -> <Mut> List (String, String)
+emitUpdatePairs _ _ [] = []
+emitUpdatePairs e env ((CField k ex)::rest) =
+  let (w, _) = emitExpr e env ex
+  (k, w) :: emitUpdatePairs e env rest
+
+buildUpdateWords : Emit -> String -> List String -> List (String, String) -> Int -> <Mut> List String
+buildUpdateWords _ _ [] _ _ = []
+buildUpdateWords e bw (label::rest) updates i =
+  let w = match lookupAssoc label updates
+    Some newWord => newWord
+    None => loadField e bw i
+  w :: buildUpdateWords e bw rest updates (i + 1)
+
+cFieldFirstLabel : List CField -> String
+cFieldFirstLabel [] = panic "llvm spike: CRecordUpdate: empty update list"
+cFieldFirstLabel ((CField k _)::_) = k
+
+cFieldLabels : List CField -> List String
+cFieldLabels [] = []
+cFieldLabels ((CField k _)::rest) = k :: cFieldLabels rest
+
+cFieldExprs : List CField -> List CExpr
+cFieldExprs [] = []
+cFieldExprs ((CField _ ex)::rest) = ex :: cFieldExprs rest
+
+findFieldIdx : List (String, List String) -> String -> Int
+findFieldIdx table label = match findRecordByLabel table label
+  Some (_, labels) => match indexOfStr label labels
+    Some i => i
+    None => panic ("llvm spike: field '" ++ label ++ "' not found in record (internal error)")
+  None => panic ("llvm spike: CFieldAccess: unknown field '" ++ label ++ "'")
+
+findRecordByLabel : List (String, List String) -> String -> Option (String, List String)
+findRecordByLabel [] _ = None
+findRecordByLabel ((name, labels)::rest) label =
+  if containsStr label labels then Some (name, labels)
+  else findRecordByLabel rest label
+
+indexOfStr : String -> List String -> Option Int
+indexOfStr _ [] = None
+indexOfStr x (y::rest) =
+  if x == y then Some 0
+  else match indexOfStr x rest
+    Some i => Some (i + 1)
+    None => None
+
+collectRecords : List CBind -> List (String, List String)
+collectRecords [] = []
+collectRecords ((CBind _ clauses)::rest) =
+  collectRecordsClauses clauses ++ collectRecords rest
+
+collectRecordsClauses : List CClause -> List (String, List String)
+collectRecordsClauses [] = []
+collectRecordsClauses ((CClause _ body)::rest) =
+  scanExprRecords body ++ collectRecordsClauses rest
+
+scanExprRecords : CExpr -> List (String, List String)
+scanExprRecords (CRecord name fields) =
+  (name, cFieldLabels fields) :: scanExprsRecords (cFieldExprs fields)
+scanExprRecords (CFieldAccess ex _) = scanExprRecords ex
+scanExprRecords (CRecordUpdate base updates) =
+  scanExprRecords base ++ scanExprsRecords (cFieldExprs updates)
+scanExprRecords (CTuple es) = scanExprsRecords es
+scanExprRecords (CApp f a) = scanExprRecords f ++ scanExprRecords a
+scanExprRecords (CLam _ body) = scanExprRecords body
+scanExprRecords (CIf c t f) =
+  scanExprRecords c ++ scanExprRecords t ++ scanExprRecords f
+scanExprRecords (CBinPrim _ l r) = scanExprRecords l ++ scanExprRecords r
+scanExprRecords (CUnOp _ x) = scanExprRecords x
+scanExprRecords (CLet _ _ e1 e2) = scanExprRecords e1 ++ scanExprRecords e2
+scanExprRecords (CLetGroup binds body) =
+  collectRecords binds ++ scanExprRecords body
+scanExprRecords (CBlock stmts) = scanStmtsRecords stmts
+scanExprRecords (CDecision scrut arms _) =
+  scanExprRecords scrut ++ scanArmsRecords arms
+scanExprRecords (CMatch scrut arms) = scanExprRecords scrut ++ scanArmsRecords arms
+scanExprRecords _ = []
+
+scanExprsRecords : List CExpr -> List (String, List String)
+scanExprsRecords [] = []
+scanExprsRecords (e::rest) = scanExprRecords e ++ scanExprsRecords rest
+
+scanArmsRecords : List CArm -> List (String, List String)
+scanArmsRecords [] = []
+scanArmsRecords ((CArm _ _ body)::rest) =
+  scanExprRecords body ++ scanArmsRecords rest
+
+scanStmtsRecords : List CStmt -> List (String, List String)
+scanStmtsRecords [] = []
+scanStmtsRecords ((CSExpr ex)::rest) = scanExprRecords ex ++ scanStmtsRecords rest
+scanStmtsRecords ((CSLet _ _ ex)::rest) = scanExprRecords ex ++ scanStmtsRecords rest
+scanStmtsRecords (_::rest) = scanStmtsRecords rest
+
 -- ── program ─────────────────────────────────────────────────────────────────
 -- Emit a whole CProgram as a textual LLVM module: the runtime declares, then one
 -- LLVM function per top-level `name p… = …` binding (slice 2), then a single
@@ -1215,7 +1438,7 @@ isCmpOp op = op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" ||
 export
 emitProgram : CProgram -> <Mut> String
 emitProgram (CProgram groups ctorArs _ _) =
-  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref [])
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups))
   let _ = emitPreamble e
   let _ = emitFns e (fnBinds groups)
   let _ = emit e "define i32 @main() {"
@@ -1229,7 +1452,7 @@ emitProgram (CProgram groups ctorArs _ _) =
   -- then the lifted-lambda defines (slice 4; already forward).  LLVM define order
   -- is irrelevant, so appending the side buffer at the end is sound.
   match e
-    Emit _ buf _ _ _ lams => joinNl (reverseL buf.value ++ lams.value)
+    Emit _ buf _ _ _ lams _ => joinNl (reverseL buf.value ++ lams.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =

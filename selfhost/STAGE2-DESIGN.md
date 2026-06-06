@@ -618,6 +618,29 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   list & tuple match heads, guarded/range/record arms, recursive (`CLet True`)
   closures, and Ref capture remain out of scope and panic.
 
+**2.4a — Slice 5a (RECORDS, TUPLES, MUTABLE REFS).** The three remaining Core-IR
+  structural forms added, all lowering via the existing `emitCtorAlloc`/`storeFields`/
+  `loadField` verbatim: **Records** become boxed cells with `header = hashName(name)`,
+  fields in source declaration order (a scan of `CRecord` nodes at `emitProgram` time
+  builds the per-name field-order table so `CFieldAccess` can recover a positional
+  index without type information). **Tuples** use the same cell shape with a fixed
+  `header = hashName("$tuple")`; tuple destructuring `let (a,b,c) = t` (a `CLet PTuple`
+  / `CBlock CSLet PTuple` node) binds elements by `loadField` without touching the
+  switch machinery. **Mutable refs** are lowered inline (no new runtime functions):
+  `Ref x` → `emitCtorAlloc "$ref" [x]`; `set_ref r x` → `inttoptr` + `getelementptr`
+  offset 8 + `store`; `r.value` → `loadField 0`; `Ref`/`set_ref` are intercepted by
+  name in `emitApp` before the ctor/known-fn checks. Gate now spans **31/31** fixtures
+  (the prior 27 + 4: `rec_build` record creation+field access, `rec_update` record
+  update copy+overwrite, `ref_counter` Ref create+read+write×2, `tuple_fst` tuple
+  construction + `let (a,_,_) = t` destructuring). **Decisions surfaced (PLAN.md
+  spike-rep notes):** (g) records are positional-by-declaration-order — name-keyed
+  access at runtime would need a name→offset map; the spike sidesteps this by reading
+  the declaration at emit time. (h) tuple header is `hashName "$tuple"` — headerless
+  tuples would save one word but break the uniform cell discipline used for tag-testing
+  in switches. (i) Ref cells use `@mdk_alloc` (malloc-and-leak) — **the first mutation
+  site in the spike**, the first place a GC write barrier would be needed; the real
+  runtime must add one on the `set_ref` store path.
+
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /
 [`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)) ships on WebAssembly, so
