@@ -35,7 +35,7 @@ half).
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
 code comments reference them. Phases left *partial* keep their original number
 (e.g. Phase 83/84, 101); genuinely new work gets the next free number (last used:
-145). At task triage, match the work against AGENTS.md's task-playbook table and
+146). At task triage, match the work against AGENTS.md's task-playbook table and
 load the matching skill before planning.
 
 ---
@@ -49,6 +49,14 @@ the existing tree-walking interpreter first** — get a self-hosted compiler run
 compiler emits native code.
 
 Three stages, each a gate on the next.
+
+> **Why native matters — the wedge.** Self-hosting + LLVM aren't the end goal;
+> they're what *enables* it. The candidate "killer feature" is **capability-safe
+> effects** (Phase 146 / [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md)): a
+> function's type becomes a compiler-verified manifest of what it can do, aimed at
+> **WebAssembly edge / plugin / sandboxed compute** for untrusted, increasingly
+> AI-generated modules. The native (WasmGC) backend is the delivery vehicle for
+> that wedge; the wedge is the reason the backend is worth building.
 
 ### Stage 0 — Prerequisites before self-hosting can begin — ✅ COMPLETE
 
@@ -138,7 +146,11 @@ deliberately deferred to here:
 - **A frozen Core IR** as the codegen input: desugared, fully typed, effects
   erased, **dictionaries explicit**. The existing elaboration already inserts
   `EMethodRef`/`EDictApp` — this stage commits to it as a serializable lowering
-  target.
+  target. (Effects erase here; the capability *manifest* of Phase 146 is
+  compile-time metadata, not runtime state — see [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md).
+  A **WasmGC** backend, sibling to LLVM via the Core IR seam, is the natural target
+  for the edge/capability wedge — and is reached by a *direct* emitter, not through
+  LLVM, which targets only linear-memory Wasm.)
 - **Typeclass lowering strategy:** runtime dictionary passing (already the eval
   model) vs. monomorphization.
 - **Memory model & value representation:** heap allocation, closure layout,
@@ -197,6 +209,31 @@ strict priority.
 > no self-hosted counterpart.
 
 ### Compiler / language
+
+- ⭐ **Phase 146 — Capability-safe effects (the headline wedge).** Make Medaka's
+  existing effect rows **sound + fine-grained** so a function's type becomes a
+  compiler-verified **capability manifest** — "the program tells you (and the host
+  that runs it) exactly what it can do." Target use case: WebAssembly edge / plugin
+  / sandboxed compute, where untrusted, increasingly AI-generated modules need their
+  authority bounded at compile time. **Effect *tracking*, NOT algebraic-effect
+  *handlers*** (no `perform`/`handle`/`resume`/continuations — the host is the
+  handler; continuations are also Wasm-hostile). Two gaps to close vs. today
+  (annotation-only, coarse, no propagation): (1) **soundness via effect inference
+  with effect variables** (`map : (a -> <e> b) -> List a -> <e> List b`), (2)
+  **user/platform-definable fine-grained labels** (`<KV>`/`<Fetch>`/`<Log>`).
+  Opt-in at boundaries, inferred-and-invisible in everyday code (the PureScript
+  `Eff`-removal lesson). Effects stay **erased at runtime** (zero cost; manifest is
+  metadata). Bounded typechecker work (row unification + inference + label decls),
+  not a research project; the delicate part is threading effect rows through HM +
+  typeclass + dict-passing. Full design, scope, sequencing, and open questions in
+  [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md). **Prereq: research pass**
+  (WasmGC status, WASI/component-model capabilities, edge-host isolation models,
+  ocap/effects-as-security, MoonBit/Grain/Roc-platform comparanda) → design note
+  with concrete syntax + a worked plugin example → staged implementation. **Note:**
+  this deliberately revisits the *row-polymorphism* rejection in PLAN-ARCHIVE §8,
+  but narrowed to *effect* rows only (a scoped effect-label grammar, not general
+  extensible records). Skill: cross-cutting → **add-language-feature** (threads
+  resolve/typecheck/eval; not harden-typechecker despite the typechecker weight).
 
 - ~~**Phase 145**~~ **DONE.** See PLAN-ARCHIVE.md.
 
