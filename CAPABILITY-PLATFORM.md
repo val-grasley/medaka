@@ -318,7 +318,8 @@ near-term PLAN items (fine-grained labels + a thin harness) aim at. Guiding
 principle: **truthful** (the guarantee is real) but **minimal** (stub everything
 that isn't the story). **The story is compile-time capability verification, which is
 decoupled from the backend** — it's true and compelling on the *existing tree-walker*,
-years before native code exists. That decoupling is the point: the
+well ahead of the native backend (which, at the current cadence, is itself months —
+not years — away). That decoupling is the point: the
 "make-people-care" milestone is reachable cheaply.
 
 **One line:** *Submit an AI-generated edge plugin that tries to exfiltrate user
