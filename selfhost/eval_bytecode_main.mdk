@@ -1,0 +1,30 @@
+-- Entry point for the bytecode VM equivalence gate (STAGE2-DESIGN §2.2, slice 1):
+--
+--   medaka run selfhost/eval_bytecode_main.mdk <source.mdk>
+--
+-- parses + desugars the target (self-contained / prelude-free for this slice),
+-- ANNOTATES it (annotateProgram — resolve's §2.0 EMIT half, so each CVar is born
+-- with a lexical Addr), LOWERS it to Core IR (core_ir_lower.mdk), COMPILES the
+-- Core IR to bytecode and runs it on the stack VM (bytecode.mdk), then prints
+-- `pp_value` of the `main` binding.  Diffs byte-for-byte against dev/eval_probe.exe
+-- (the AST tree-walker) — the SAME oracle selfhost/eval_main.mdk and
+-- selfhost/core_ir_main.mdk diff against.  Equal output over the slice-1 fixture
+-- subset is the proof that compiling the Core IR to bytecode + running the VM
+-- preserves the AST semantics, exactly as §2.2 prescribes ("output byte-identical
+-- to the tree-walker over the existing fixtures — the exact diff_selfhost_eval*.sh
+-- harness shape, no new oracle").
+
+import parser.{parse}
+import desugar.{desugar}
+import annotate.{annotateProgram}
+import core_ir_lower.{lowerProgram}
+import bytecode.{bcEvalMain}
+
+main = match args ()
+  [targetPath] => withTarget targetPath
+  _ => ePutStrLn "usage: medaka run selfhost/eval_bytecode_main.mdk <file.mdk>"
+
+withTarget : String -> <IO, Mut> Unit
+withTarget targetPath = match readFile targetPath
+  Ok targetSrc => putStrLn (bcEvalMain (lowerProgram (annotateProgram (desugar (parse targetSrc)))))
+  Err msg => ePutStrLn msg
