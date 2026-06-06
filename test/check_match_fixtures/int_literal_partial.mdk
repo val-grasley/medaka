@@ -1,0 +1,5 @@
+-- An Int scrutinee is an open type: with no wildcard arm, some value escapes.
+f : Int -> Int
+f n = match n
+  0 => 1
+  1 => 2

@@ -30,6 +30,9 @@ litEq LUnit LUnit = True
 litEq _ _ = False
 
 -- ── synthetic tuple constructor names ─────────────────────────────────────
+-- (exported so the type-aware `check_match` exhaustiveness in typecheck.mdk can
+-- reuse the same synthetic per-arity tuple constructor names.)
+export
 tupleCtorName : Int -> String
 tupleCtorName n = "__tuple" ++ intToString n ++ "__"
 
@@ -75,11 +78,14 @@ digitVal c = charCode c - charCode '0'
 -- ── the constructor oracle ────────────────────────────────────────────────
 -- type → its constructors; ctor → arity; ctor → its type.  User data first so
 -- it overrides the builtins (mirrors Hashtbl.replace's last-wins for find).
-record Oracle
+-- (exported, with `buildOracle`, so typecheck.mdk's `check_match` can reuse the
+-- same oracle + matrix machinery — see the note at the top of this file.)
+public export record Oracle
   typeCtors : List (String, List String)
   ctorArity : List (String, Int)
   ctorType : List (String, String)
 
+export
 buildOracle : List Decl -> Oracle
 buildOracle prog = Oracle {
   typeCtors = concatMapList dataTypeCtors prog ++ builtinTypeCtors,
@@ -150,6 +156,7 @@ oGetArity oracle c = match tupleArityOfName c
   None => fromOption 0 (lookupAssoc c oracle.ctorArity)
 
 -- ── pattern → canonical matrix pattern ────────────────────────────────────
+export
 desugarPat : Pat -> Pat
 desugarPat PWild = PWild
 desugarPat (PVar _) = PWild
@@ -220,6 +227,7 @@ tryEachType oracle (c::cs) = match oGetCtorType oracle c
   None => tryEachType oracle cs
 
 -- ── usefulness (the Maranget recursion) ───────────────────────────────────
+export
 useful : Oracle -> Option String -> List (List Pat) -> List Pat -> Bool
 useful _ _ [] _ = True
 useful _ _ (_::_) [] = False

@@ -49,6 +49,7 @@ diff with `lib/`:
 | `eval_dict_main.mdk` | **Dict-passing execution**: like the typed path but also dictionary-passes `=>`-constrained functions (`typecheck.elaborateDict`) — both the *user* program's and the *prelude*'s own (`when`/`unless`, via `preludeReturnPosDictNames`) — so a return-position method used at a constraint variable's type (e.g. `empty` inside `f : Monoid a => a -> a`, or `pure ()` inside `when`) resolves through the dict parameter the caller supplies, which arg-tag / RKey dispatch cannot do. Diffs against `medaka run` (`test/diff_selfhost_eval_dict.sh`). |
 | `typecheck.mdk` | HM core (**slice 1**). `Mono`/`Scheme` + union-find `unify`, level-based `generalize`/`instantiate`, `pp_mono`, and `infer`/`inferPat`. `checkToLines : List Decl -> <Mut> String`. |
 | `typecheck_main.mdk` | Runnable entry: `medaka run selfhost/typecheck_main.mdk [runtime.mdk] <src.mdk>` prints `name : scheme` per top-level binding (diffs against `dev/tc_probe.exe`; both sorted). With a runtime.mdk arg its externs are seeded into scope, so `core.mdk` (+ a user program) type-checks against the `=== TYPES ===` goldens. |
+| `check_match_main.mdk` | Runnable entry for the **type-aware match-exhaustiveness** check (`check_match`, fired per `EMatch` from inside `typecheck`): `medaka run selfhost/check_match_main.mdk <runtime.mdk> <src.mdk>` parses + desugars + type-checks the target (runtime externs seeded, **no prelude** — mirrors `check_program_no_prelude`) and prints one `Warning: non-exhaustive match …` line per `match` whose non-guarded arms don't cover the scrutinee's type. Diffs against `dev/diagdump.exe --check-match` (the harness sorts). The check itself (`typecheck.checkMatchToLines` + `inferMatch`) **reuses** `exhaust.mdk`'s exported `Oracle`/`buildOracle`/`useful`/`desugarPat`/`tupleCtorName`. |
 | `check.mdk` | **Composed front-end** — `medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <src.mdk>` wires parse → desugar → resolve → exhaust → typecheck into one program (the self-hosted analog of `medaka check`). Prints resolve diagnostics, else guard warnings + inferred schemes. `test/diff_selfhost_check.sh` validates it reproduces the 16 TYPES goldens (clean) and 14 resolve diagnostics (broken). |
 | `loader.mdk` | Port of `lib/loader.ml`: `loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))` — DFS topo-sort of a root file's transitive `import`s (dependency-first; cycle detection). Flat single-root simplification. `loader_main.mdk` prints the module order. |
 | `check_modules_main.mdk` | **Multi-module typecheck front-end** (the bootstrap front-end): `medaka run selfhost/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]` loads entry + imports, typechecks them in dependency order against the shared prelude (`typecheck.checkModules`), prints the entry module's own schemes. Diffs against `dev/tc_module_probe.exe` (`test/diff_selfhost_check_modules.sh`, all 13 selfhost modules incl. `annotate`). |
@@ -66,9 +67,11 @@ diff with `lib/`:
 
 The OCaml-side validation references live in `dev/`: `lextok.exe` (token-stream
 dumper), `astdump.exe` (AST S-expression dumper, with `--parse`/`--desugar`/
-`--mark` stage modes), and `diagdump.exe` (`--resolve`/`--exhaust` single-file
-diagnostics dumper, plus `--resolve-modules <mod...>` for the multi-module
-`resolve_module` path over an ordered file list).
+`--mark` stage modes), and `diagdump.exe` (`--resolve`/`--exhaust`/`--check-match`
+single-file diagnostics dumper, plus `--resolve-modules <mod...>` for the
+multi-module `resolve_module` path over an ordered file list).  `--check-match`
+runs the type-aware path (parse → desugar → `check_program_no_prelude`) and dumps
+only the non-exhaustive-match warnings.
 
 ## Validation
 
@@ -76,6 +79,7 @@ diagnostics dumper, plus `--resolve-modules <mod...>` for the multi-module
 dune build --root .                           # build the reference binary
 sh test/diff_selfhost_lexer.sh                # diff the Medaka lexer vs OCaml goldens
 sh test/diff_selfhost_parse_errors.sh         # parser/lexer rejection path (~0.4s)
+sh test/diff_selfhost_check_match.sh          # type-aware non-exhaustive-match warnings vs diagdump --check-match (11 fixtures)
 sh test/diff_selfhost_eval_errors.sh          # eval runtime-error messages vs reference (~1s)
 sh test/diff_selfhost_typecheck_errors.sh     # typecheck TYPE ERROR accumulation (3 fixtures × 2 drivers, ~1s)
 sh test/diff_selfhost_selfproc.sh             # the bootstrap (#3) self-processing gate (4 legs, ~18s)
@@ -274,17 +278,16 @@ the stage is done when all pass.
 ## Roadmap — remaining Stage 1 stages
 
 Lexer, parser, **desugar**, **method_marker**, **resolve** (single-file path),
-and **exhaust** (guard-coverage pass) are done. What remains is the **typecheck**
-and **eval** capstones (typecheck also drives the type-aware `check_match`
-exhaustiveness, distinct from the guard pass ported here). This section sketches
-how to port them.
+and **exhaust** (both the guard-coverage pass *and*, inside typecheck, the
+type-aware `check_match` match-exhaustiveness) are done, as are the **typecheck**
+and **eval** capstones. This section sketches how each was ported.
 
 **Validation infrastructure for every remaining stage is already built** (the
 "de-risk first" pass):
 - `dev/astdump.exe` takes `--desugar` / `--mark` to dump the AST after those
   stages (the `--parse` default is unchanged). `test/diff_selfhost_{desugar,mark}.sh`
   diff the self-host stage against it.
-- `dev/diagdump.exe --resolve|--exhaust` dumps each stage's diagnostics in a
+- `dev/diagdump.exe --resolve|--exhaust|--check-match` dumps each stage's diagnostics in a
   canonical, sorted, location-stripped form. `test/resolve_fixtures/` (14) and
   `test/exhaust_fixtures/` (5, incl. negative controls) are the net-new negative
   corpus + committed goldens; `test/diff_selfhost_{resolve,exhaust}.sh` run them.
@@ -325,7 +328,7 @@ Stage-0 prerequisites in `../PLAN.md`).
 | 1 | ✅ **desugar** | ~980 | low–med | `program → program` | astdump `--desugar`, **95/95 corpus** |
 | 2 | ✅ **resolve** | ~1000 | med | `program → diagnostics` (+ name env) | diagdump `--resolve`, **full corpus + 14 fixtures** |
 | 3 | ✅ **method_marker** | ~420 | low–med | `program → program` (marks `EMethodRef`/`EDictApp`) | astdump `--mark`, **full corpus** |
-| 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures** |
+| 4 | ✅ **exhaust** | ~465 | hard (algorithm) | `program → warnings` | diagdump `--exhaust`, **full corpus + 5 fixtures**; type-aware `check_match` via diagdump `--check-match`, **11 fixtures** |
 | 5 | ✅ **eval** | ~2350 | hard (plumbing) | `program → values / stdout` | `dev/eval_probe.exe` + **all 16 `=== EVAL ===` goldens** (untyped *and* typed paths) |
 | 6 | ✅ **typecheck** | ~4650 | **very hard** | `program → schemes` | `dev/tc_probe.exe` + **all 16 `=== TYPES ===` goldens** |
 
@@ -423,8 +426,11 @@ Stage-0 prerequisites in `../PLAN.md`).
    methods, and interface defaults. Matches `diagdump --exhaust` byte-for-byte on
    the full corpus + all 5 `test/exhaust_fixtures/` cases (incl. the
    `useful`-machinery "excused by catch-all" control and the multi-warning case).
-   The type-aware `check_match` exhaustiveness is **not** here — it lives inside
-   typecheck (it needs the scrutinee type), so it ports with that stage.
+   The type-aware `check_match` exhaustiveness lives inside typecheck (it needs
+   the scrutinee type) and is now **also ported** — see the typecheck stage below
+   and `check_match_main.mdk`; it **reuses** this file's exported `Oracle` /
+   `buildOracle` / `useful` / `desugarPat` / `tupleCtorName` matrix machinery, the
+   only difference being the type-aware ctor oracle and scrutinee column type.
 5. 🚧 **Eval — IN PROGRESS (slice 1 of N).** The **Stage-1 capstone**: a
    tree-walk interpreter (`selfhost/eval.mdk` + `eval_main.mdk`) that makes the
    self-hosted compiler *executable on itself*. Plumbing-heavy (per-frame env
@@ -542,6 +548,22 @@ Stage-0 prerequisites in `../PLAN.md`).
      `test/diff_selfhost_typecheck_errors.sh` (3 fixtures × 2 drivers:
      `typecheck_main` + `check.mdk`; int-vs-string mismatch, tuple-arity
      mismatch, occurs-check).
+   - **Type-aware match exhaustiveness (`check_match`) — DONE 2026-06-05:**
+     `inferMatch` runs the exhaustiveness check after each `match`'s arms have
+     unified the scrutinee type, pushing `Warning: non-exhaustive match — some
+     values may not be covered` to a `matchWarnings : Ref (List String)`
+     accumulator when an all-wildcard query is still `useful` against the matrix
+     of the **non-guarded** arms.  It **reuses** `exhaust.mdk`'s exported matrix
+     machinery (`Oracle`/`buildOracle`/`useful`/`desugarPat`/`tupleCtorName`);
+     the only difference from the guard pass is the column-0 oracle — here the
+     ctor set comes from the program's data decls + the inferred scrutinee type's
+     head (a tuple maps to a synthetic `__tupleN__` type), set in `matchOracle`
+     by the `checkMatchToLines` driver.  The redundancy pass is **not** ported
+     (the `--check-match` oracle dumps only the non-exhaustive-match warnings).
+     Validated by `test/diff_selfhost_check_match.sh` (11 fixtures: non-exhaustive
+     user ADT / Bool / list / tuple / nested-ctor / Int-literal / guarded-arm /
+     multi-match, plus exhaustive + wildcard controls) against the net-new
+     `dev/diagdump.exe --check-match` oracle.
    - **Genuine remaining limits** (don't surface in the goldens): inferred effect
      *propagation* (an unsigned function calling an effectful extern), and the
      "signature too general" error.
@@ -635,6 +657,16 @@ byte-for-byte, plus two integration milestones beyond per-stage validation:
   one shared tree, so `pure`/`empty`/do-blocks in a user monad dispatch by their
   concrete return type (`test/diff_selfhost_eval_typed.sh`, oracle = `medaka run`).
   This is the *only* part of dictionary-passing the compiler needs — see below.
+- **Type-aware match exhaustiveness (`check_match`)** — the last Stage-1 stage
+  piece, ported inside `typecheck` (`inferMatch` → `checkMatchToLines`, reusing
+  `exhaust.mdk`'s matrix machinery), validated by `test/diff_selfhost_check_match.sh`
+  against the net-new `dev/diagdump.exe --check-match` oracle (11 fixtures).
+
+**What's next.** Every Stage-1 stage and sub-pass now has a validated self-hosted
+port; the remaining genuine gaps are the deferred typechecker niceties (inferred
+effect *propagation*, the "signature too general" error) and the broader Stage-2
+backend work (Core IR slices + bytecode VM, then LLVM) tracked in `../PLAN.md` and
+`STAGE2-DESIGN.md`.
 
 ### The bootstrap (#3) — "the compiler processes its own source"
 
@@ -992,9 +1024,10 @@ gap in fidelity. Concretely, by stage:
   the reference's single-exception behavior.  Validated by
   `test/diff_selfhost_typecheck_errors.sh` (int-vs-string, tuple-arity,
   occurs-check; each via both `typecheck_main.mdk` and `check.mdk`).
-  Still not accumulated: the type-aware `check_match` exhaustiveness pass (lives
-  inside the reference typechecker, needs the scrutinee type) and the "signature
-  too general" error — both remain deferred.
+  The type-aware `check_match` exhaustiveness pass (lives inside the reference
+  typechecker, needs the scrutinee type) is now **also ported** — it accumulates
+  into a separate `matchWarnings` ref, surfaced by `checkMatchToLines` (see the
+  typecheck stage notes above). Still deferred: the "signature too general" error.
 - ✅ **Eval — runtime-error messages now match the reference (fixed 2026-06-05).**
   Every `panic` message in `selfhost/eval.mdk` was cross-walked against
   `lib/eval.ml`'s `Eval_error` call sites and the diverging ones were corrected:
