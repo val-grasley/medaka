@@ -249,10 +249,12 @@ every site is at a concrete type (the `Parser` monad, no `=>` constraints,
   level only. LLVM's "dictionaries explicit" Core IR forces the structured-dict
   question; a VM can defer it (keep the flat tag) and still run everything the
   bootstrap needs.
-- **Effect propagation** is annotation-only (inferred effects don't propagate;
-  `README.md:719-722`). Both backends *erase* effects at runtime, so this blocks
-  neither's execution — but a "frozen Core IR" (`PLAN.md:200`) should still define
-  how effect-polymorphic code is *represented* even when erased.
+- **Effect propagation** is fully ported (Phase 146 selfhost mirror, 2026-06-06):
+  the self-hosted typechecker now does open-row inference, propagation, escape, and
+  laundering checks — no longer annotation-only. Both backends *erase* effects at
+  runtime, so this blocks neither's execution — but a "frozen Core IR"
+  (`PLAN.md:200`) should still define how effect-polymorphic code is *represented*
+  even when erased.
 
 **Verdict:** neutral between the options on *what must close* — both need the same
 gaps closed for arbitrary programs, neither needs them for the RKey-only

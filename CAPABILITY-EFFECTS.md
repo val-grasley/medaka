@@ -189,17 +189,21 @@ harnesses (typecheck/check/check_modules/golden/selfproc/eval_run/eval_modules/
 eval_dict). Tests: `test_typecheck.ml` `effects` group (`e_eff_leak_pointfree_*`,
 `t_eff_subsume_pure_into_effectful_field`, `t_eff_over_annotation_pointfree`).
 
+**Done (Phase 146 selfhost mirror, 2026-06-06):** the full effect-tracking
+subsystem is now ported into `selfhost/typecheck.mdk`. The earlier "remaining" note
+("the `unify_row` subset rule and the instantiation re-opening are not yet
+mirrored") understated it: selfhost had **no effect rows at all** (effects were a
+bare `List String` on `TFun`, discarded by unify; no effvars, no ambient state).
+The port reproduces Phase 79 (propagation) + 79e (escape) + 146 (laundering) across
+four committed stages (representation → propagation → escape → laundering). New
+fixtures `effect_leak`/`effect_escape` (reject) and `effect_subsume` (accept),
+verified against `dev/tc_probe.exe` first. Every `diff_selfhost_*` typecheck/error/
+golden/check/check_modules/selfproc/eval harness is byte-identical; `@thorough`
+green. The self-hosted typechecker now rejects laundering identically to the
+reference. (Expected proportionate cost: ~+20% per-decl typecheck overhead from
+per-arrow effvar allocation — see `selfhost/PERF-NOTES.md`.)
+
 **Remaining:**
-- **Selfhost mirror — DONE (2026-06-06).** The earlier note ("the `unify_row`
-  subset rule and the instantiation re-opening are not yet mirrored") understated
-  it: `selfhost/typecheck.mdk` had no effect rows at all. The full effect-tracking
-  subsystem (Phase 79 propagation + 79e escape + 146 laundering) was ported in four
-  committed stages (representation → propagation → escape → laundering). New
-  fixtures `effect_leak`/`effect_escape` (reject) and `effect_subsume` (accept),
-  verified against `dev/tc_probe.exe` first. Every `diff_selfhost_*` typecheck/
-  error/golden/check/check_modules/selfproc/eval harness is byte-identical;
-  `@thorough` green. The self-hosted typechecker now rejects laundering identically
-  to the reference.
 - **Gap 2 labels** — the `effect Foo` declaration form (above).
 - **Manifest emission** — unbuilt (waits on the edge runtime, §9).
 
@@ -284,17 +288,16 @@ gradual-verification principle Medaka applies elsewhere.
 
 Propagation/inference (§5 gap 1) shipped in Phase 79/79e; laundering soundness
 (open/closed rows + closed-closed point-free via instantiation re-opening)
-shipped this phase (§5a) — gap 1 is now sound. The remaining sequence:
+shipped this phase (§5a) — gap 1 is now sound, and the **selfhost mirror is done**
+(full subsystem ported, 2026-06-06, §5a). The remaining sequence:
 
-1. **Selfhost mirror** of the `unify_row` subset rule + the instantiation
-   re-opening into `selfhost/typecheck.mdk` (parity), with a laundering fixture.
-2. **Fine-grained labels** (gap 2): the `effect Foo` declaration form + resolve
+1. **Fine-grained labels** (gap 2): the `effect Foo` declaration form + resolve
    registration, so the manifest vocabulary is user/platform-definable.
-3. **Research** (for the manifest layer): WasmGC status + who targets it and how;
+2. **Research** (for the manifest layer): WasmGC status + who targets it and how;
    WASI Preview 2 / component-model capability model; Cloudflare/Fastly/Fermyon
    isolation models; object-capability & effects-as-security literature; Roc's
    platform model; MoonBit + Grain (closest competitors — has either touched
    capability/effect safety?).
-4. **Design note + manifest format**: concrete surface syntax + a worked plugin
+3. **Design note + manifest format**: concrete surface syntax + a worked plugin
    example + the manifest format, pressure-tested against 2–3 realistic plugin
    shapes, then the manifest emission/consumption when the edge runtime is built.

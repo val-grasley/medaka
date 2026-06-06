@@ -587,9 +587,10 @@ Stage-0 prerequisites in `../PLAN.md`).
      user ADT / Bool / list / tuple / nested-ctor / Int-literal / guarded-arm /
      multi-match, plus exhaustive + wildcard controls) against the net-new
      `dev/diagdump.exe --check-match` oracle.
-   - **Genuine remaining limits** (don't surface in the goldens): inferred effect
-     *propagation* (an unsigned function calling an effectful extern), and the
-     "signature too general" error.
+   - **Genuine remaining limits** (don't surface in the goldens): the
+     "signature too general" error. (Inferred effect *propagation* was a limit
+     here until the Phase 146 selfhost mirror — it is now ported; see *Known
+     limits carried forward* below.)
 
 **Ordering rationale.** Easy-first builds momentum and reuses the existing
 harness while Medaka fluency matures, leaving the type checker for last. Note the
@@ -796,10 +797,10 @@ byte-for-byte, plus two integration milestones beyond per-stage validation:
   against the net-new `dev/diagdump.exe --check-match` oracle (11 fixtures).
 
 **What's next.** Every Stage-1 stage and sub-pass now has a validated self-hosted
-port; the remaining genuine gaps are the deferred typechecker niceties (inferred
-effect *propagation*, the "signature too general" error) and the broader Stage-2
-backend work (Core IR slices + bytecode VM, then LLVM) tracked in `../PLAN.md` and
-`STAGE2-DESIGN.md`.
+port; the remaining genuine gap is the deferred typechecker nicety (the "signature
+too general" error) and the broader Stage-2 backend work (Core IR slices + bytecode
+VM, then LLVM) tracked in `../PLAN.md` and `STAGE2-DESIGN.md`. (Inferred effect
+*propagation* was a gap here until the Phase 146 selfhost mirror — now ported.)
 
 ### The bootstrap (#3) — "the compiler processes its own source"
 
@@ -844,8 +845,9 @@ by any single-file golden, so latent until now):
 
 The one effect-annotation gap (`check.mdk`'s unsigned IO wrappers inferred `Unit`
 vs the reference's `<IO, Mut> Unit` — the inferred-effect-propagation limit below)
-was closed by **signing those wrappers** (per the house style: a sig on every
-top-level fn), not by porting effect inference.
+was originally worked around by **signing those wrappers** (per the house style: a
+sig on every top-level fn). Effect inference has since been fully ported (Phase 146
+selfhost mirror, 2026-06-06), so unsigned wrappers now propagate effects too.
 
 #### Remaining for the full bootstrap
 
@@ -1199,10 +1201,14 @@ constructor-arity error while typechecking `typecheck.mdk`, which broke the *ent
 
 ### Known limits carried forward (don't block the bootstrap)
 
-- **Inferred effect propagation** — an unsigned function calling an effectful
-  extern doesn't pick up its effect (the typecheck effect rows are
-  annotation-only; full open-row inference is unported). Invisible in the
-  `=== TYPES ===` goldens.
+- **Inferred effect propagation — DONE (Phase 146 selfhost mirror, 2026-06-06).**
+  The full effect-tracking subsystem (Phase 79 propagation + 79e escape + 146
+  laundering) is now ported into `typecheck.mdk`: open-row inference, ambient
+  `curEffect`, `performEffect`/`unifyRow`/escape/laundering checks. An unsigned
+  function calling an effectful extern now picks up its effect, and the self-hosted
+  typechecker rejects effect laundering byte-identically to the reference (fixtures
+  `effect_leak`/`effect_escape`/`effect_subsume`). Invisible in the `=== TYPES ===`
+  goldens (empty tails render pure), validated by the typecheck/error harnesses.
 - **"Signature too general"** is not reported as an error (signed bindings report
   sig-unified-with-body, generalized).
 - **Performance** — the interpreter is slow (each run re-parses core/list); the

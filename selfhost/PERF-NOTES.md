@@ -855,3 +855,34 @@ stages and tracking regressions.
   by the VM); the `typecheck` phase should shrink when the VM replaces eval.
   Compare the `typecheck` row above against the VM-driven baseline to measure the
   VM speedup directly.
+
+## 2026-06-06 — Phase 146 effect-tracking port (expected typecheck regression)
+
+Ported the full effect-tracking subsystem (Phase 79 propagation + 79e escape +
+146 laundering) into `selfhost/typecheck.mdk`. This adds genuine per-arrow work to
+the typecheck phase — `openRow ()` allocates a fresh effvar `Ref` on every
+inference-synthesized arrow (each `EApp`/`ELam`-intermediate/pipe/compose), plus
+`performEffect`/`unifyRow` per application. Faithfully mirrors OCaml's
+`open_row`/`fresh_effvar` design; the cost is inherent to sound effect inference,
+not avoidable without diverging from the reference.
+
+Measured (min-of-3, `sh test/profile_selfhost.sh 3`, same machine as the
+2026-06-05 baseline above):
+
+| metric                       | 2026-06-05 | 2026-06-06 |    Δ |
+|---|--:|--:|--:|
+| lexer.mdk typecheck          |   0.168s   |   0.200s   | +19% |
+| all_modules typecheck        |   2.026s   |   2.501s   | +23% |
+| all_modules typecheck / decl | 0.404 ms   | 0.486 ms   | **+20%** |
+| all_modules total            |   6.046s   |   6.748s   | +12% |
+
+(Decl count rose 5017→5146; per-decl normalization isolates the true effect-inference
+overhead at +20%.) `substMonoP`/`reopenRow` (Stage D instantiation re-open) add
+near-zero: the reopen fires only on rare closed-with-labels covariant rows; pure
+schemes hit the cheap `_ r => r` arm. Heaviest single `check_modules` entry
+(`typecheck.mdk` closure) min-of-3 = **2.83s**. The Tarjan SCC 5× win is intact —
+check_modules remains far under its 1515s pre-optimization regime. Judged an
+acceptable, proportionate cost for the gap-1 soundness feature; no perf-work
+attempted to claw it back (would be premature pre-VM, and the dominant `load` phase
+is the real lever). Correctness gate: every `diff_selfhost_*` harness byte-identical;
+`@thorough` 72 green.
