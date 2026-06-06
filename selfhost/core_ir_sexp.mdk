@@ -1,0 +1,161 @@
+-- Structural S-expression dump of the Core IR (STAGE2-DESIGN §2.1).  Mirrors
+-- sexp.mdk's style (AST dump) so the format is familiar; cprogramToSexp is the
+-- canonical entry point and the frozen IR's serialization contract.
+--
+-- Losslessness: every field is serialized, including the lexical Addr on CVar
+-- and the dispatch Routes on CMethod/CDict, so a parsed-back CProgram carries
+-- the same structural information as the in-memory lowered program.
+--
+-- Sub-serializers are all exported so a future round-trip parser can import
+-- them for cross-checking (parse-back → re-dump → assert identical output).
+
+import ast.{Lit(..), Pat(..), Addr(..), Route(..)}
+import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..), CTree(..), CTBranch(..), CHead(..)}
+import sexp.{boolStr, node, slist, litSexp, patSexp}
+import util.{escStr, joinNl}
+
+-- ── Addr and Route ─────────────────────────────────────────────────────────────
+
+export
+addrSexp : Addr -> String
+addrSexp (ALocal frame slot) = node "ALocal" [intToString frame, intToString slot]
+addrSexp AGlobal = "AGlobal"
+
+export
+routeSexp : Route -> String
+routeSexp RNone = "RNone"
+routeSexp (RKey k) = node "RKey" [escStr k]
+routeSexp (RDict d) = node "RDict" [escStr d]
+
+-- ── CExpr ─────────────────────────────────────────────────────────────────────
+
+export
+cexprSexp : CExpr -> String
+cexprSexp (CLit l) = node "CLit" [litSexp l]
+cexprSexp (CVar x addr) = node "CVar" [escStr x, addrSexp addr]
+cexprSexp (CApp f x) = node "CApp" [cexprSexp f, cexprSexp x]
+cexprSexp (CLam pats body) = node "CLam" [slist (map patSexp pats), cexprSexp body]
+cexprSexp (CLet isRec pat e1 e2) =
+  node "CLet" [boolStr isRec, patSexp pat, cexprSexp e1, cexprSexp e2]
+cexprSexp (CLetGroup binds body) =
+  node "CLetGroup" [slist (map cbindSexp binds), cexprSexp body]
+cexprSexp (CMatch scrut arms) = node "CMatch" (cexprSexp scrut :: map carmSexp arms)
+cexprSexp (CDecision scrut arms tree) =
+  node "CDecision" [cexprSexp scrut, slist (map carmSexp arms), ctreeSexp tree]
+cexprSexp (CIf c t e) = node "CIf" [cexprSexp c, cexprSexp t, cexprSexp e]
+cexprSexp (CBinPrim op l r) = node "CBinPrim" [escStr op, cexprSexp l, cexprSexp r]
+cexprSexp (CUnOp op e) = node "CUnOp" [escStr op, cexprSexp e]
+cexprSexp (CTuple es) = node "CTuple" (map cexprSexp es)
+cexprSexp (CList es) = node "CList" (map cexprSexp es)
+cexprSexp (CRecord name fields) = node "CRecord" (escStr name :: map cfieldSexp fields)
+cexprSexp (CFieldAccess e f) = node "CFieldAccess" [cexprSexp e, escStr f]
+cexprSexp (CRecordUpdate base fields) =
+  node "CRecordUpdate" (cexprSexp base :: map cfieldSexp fields)
+cexprSexp (CArray es) = node "CArray" (map cexprSexp es)
+cexprSexp (CRangeList lo hi incl) =
+  node "CRangeList" [cexprSexp lo, cexprSexp hi, boolStr incl]
+cexprSexp (CRangeArray lo hi incl) =
+  node "CRangeArray" [cexprSexp lo, cexprSexp hi, boolStr incl]
+cexprSexp (CIndex a i) = node "CIndex" [cexprSexp a, cexprSexp i]
+cexprSexp (CSlice a lo hi incl) =
+  node "CSlice" [cexprSexp a, cexprSexp lo, cexprSexp hi, boolStr incl]
+cexprSexp (CBlock stmts) = node "CBlock" (map cstmtSexp stmts)
+cexprSexp (CMethod name route) = node "CMethod" [escStr name, routeSexp route]
+cexprSexp (CDict name routes) = node "CDict" [escStr name, slist (map routeSexp routes)]
+
+-- ── CField ────────────────────────────────────────────────────────────────────
+
+export
+cfieldSexp : CField -> String
+cfieldSexp (CField name e) = node "cf" [escStr name, cexprSexp e]
+
+-- ── CArm, CGuard ─────────────────────────────────────────────────────────────
+
+export
+carmSexp : CArm -> String
+carmSexp (CArm pat guards body) =
+  node "arm" [patSexp pat, slist (map cguardSexp guards), cexprSexp body]
+
+export
+cguardSexp : CGuard -> String
+cguardSexp (CGBool e) = node "CGBool" [cexprSexp e]
+cguardSexp (CGBind pat e) = node "CGBind" [patSexp pat, cexprSexp e]
+
+-- ── Decision tree ─────────────────────────────────────────────────────────────
+
+export
+ctreeSexp : CTree -> String
+ctreeSexp CTFail = "CTFail"
+ctreeSexp (CTLeaf i) = node "CTLeaf" [intToString i]
+ctreeSexp (CTGuard i fail) = node "CTGuard" [intToString i, ctreeSexp fail]
+ctreeSexp (CTSwitch branches dflt) =
+  node "CTSwitch" [slist (map ctbranchSexp branches), ctreeSexp dflt]
+ctreeSexp (CTDrop tree) = node "CTDrop" [ctreeSexp tree]
+
+export
+ctbranchSexp : CTBranch -> String
+ctbranchSexp (CTBranch head tree) = node "CTBranch" [cheadSexp head, ctreeSexp tree]
+
+export
+cheadSexp : CHead -> String
+cheadSexp (HCon name arity) = node "HCon" [escStr name, intToString arity]
+cheadSexp (HTuple arity) = node "HTuple" [intToString arity]
+cheadSexp HCons = "HCons"
+cheadSexp HNil = "HNil"
+cheadSexp HUnit = "HUnit"
+cheadSexp (HLit l) = node "HLit" [litSexp l]
+
+-- ── CStmt ─────────────────────────────────────────────────────────────────────
+
+export
+cstmtSexp : CStmt -> String
+cstmtSexp (CSExpr e) = node "CSExpr" [cexprSexp e]
+cstmtSexp (CSLet isRec pat e) = node "CSLet" [boolStr isRec, patSexp pat, cexprSexp e]
+cstmtSexp (CSLetElse pat e alt) =
+  node "CSLetElse" [patSexp pat, cexprSexp e, cexprSexp alt]
+cstmtSexp (CSAssign x e) = node "CSAssign" [escStr x, cexprSexp e]
+
+-- ── CBind, CClause ────────────────────────────────────────────────────────────
+
+export
+cbindSexp : CBind -> String
+cbindSexp (CBind name clauses) = node "CBind" (escStr name :: map cclauseSexp clauses)
+
+export
+cclauseSexp : CClause -> String
+cclauseSexp (CClause pats body) =
+  node "CClause" [slist (map patSexp pats), cexprSexp body]
+
+-- ── CImplEntry, CImplBody ─────────────────────────────────────────────────────
+
+export
+cimplBodySexp : CImplBody -> String
+cimplBodySexp (CImplTagged tag iface positions pats body) =
+  node "CImplTagged"
+    [escStr tag, escStr iface, slist (map intToString positions),
+     slist (map patSexp pats), cexprSexp body]
+cimplBodySexp (CImplDefault pats body) =
+  node "CImplDefault" [slist (map patSexp pats), cexprSexp body]
+
+export
+cimplEntrySexp : CImplEntry -> String
+cimplEntrySexp (CImplEntry name score body) =
+  node "CImplEntry" [escStr name, intToString score, cimplBodySexp body]
+
+-- ── CProgram ─────────────────────────────────────────────────────────────────
+
+ctorArityPairSexp : (String, Int) -> String
+ctorArityPairSexp (name, arity) = node "ca" [escStr name, intToString arity]
+
+ctorTypePairSexp : (String, String) -> String
+ctorTypePairSexp (ctor, ty) = node "ct" [escStr ctor, escStr ty]
+
+export
+cprogramToSexp : CProgram -> String
+cprogramToSexp (CProgram binds ctorArities ctorToType impls) =
+  node "CProgram"
+    [ slist (map cbindSexp binds)
+    , slist (map ctorArityPairSexp ctorArities)
+    , slist (map ctorTypePairSexp ctorToType)
+    , slist (map cimplEntrySexp impls)
+    ]

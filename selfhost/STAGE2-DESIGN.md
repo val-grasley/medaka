@@ -405,11 +405,22 @@ reference. The reference is the tree-walker (`eval_modules` / `eval_probe` and t
     new `core_ir_prelude_main.mdk` / `core_ir_typed_main.mdk` drivers and
     `test/diff_selfhost_core_ir{,_prelude,_list,_typed}.sh`. Reuse discipline: the
     only `eval.mdk` change across slices 1/3/5 is the additive `VClosureF` variant
-    + new `export`s; no runtime forked. **Remaining within 2.1:** decision-tree
-    match *compilation* (today `CMatch` carries ordered arms — semantically
-    identical, gate holds; compiling to a decision tree from `exhaust.mdk` is a
-    behaviour-preserving refinement); and the `eval_modules`/`eval_run` corpora,
-    which need a per-module-frame Core-IR driver.
+    + new `export`s; no runtime forked.
+  - **SERIALIZER + ROUND-TRIP DONE (2026-06-05).** `core_ir_sexp.mdk` —
+    `cprogramToSexp : CProgram -> String` (and all sub-serializers: `cexprSexp`,
+    `cbindSexp`, `ctreeSexp`, `cheadSexp`, `cimplEntrySexp`, …). Lossless structural
+    S-expression format: every `CVar` carries its `Addr`, every `CMethod`/`CDict`
+    carries its `Route`, every `CImplEntry` carries its tag/iface/positions. The
+    companion deserializer `core_ir_sexp_parse.mdk` — `parseCProgram : String ->
+    CProgram` — tokenizes and pattern-matches every tagged form back to typed ADTs.
+    Two new gates: `test/diff_selfhost_core_ir_sexp.sh` (snapshot: 18 golden
+    `.sexp` files in `test/core_ir_sexp_fixtures/`, regenerable) and
+    `test/diff_selfhost_core_ir_roundtrip.sh` (the real "frozen IR is faithful"
+    gate: lower → `cprogramToSexp` → `parseCProgram` → `cevalMain` → diff vs
+    `eval_probe`; **18/18 byte-identical**). A deserialized `CProgram` evaluates
+    identically to the freshly-lowered one — the serialization is semantics-faithful.
+    This is the LLVM-contract input: an LLVM backend can consume the sexp file
+    without touching the Medaka runtime or any in-memory state.
 
 **2.2 — Bytecode compiler + VM, slice by slice.** Compile Core IR → bytecode; the
 VM interprets it reusing the host `Value` ([`eval.mdk:18`](eval.mdk:18)),

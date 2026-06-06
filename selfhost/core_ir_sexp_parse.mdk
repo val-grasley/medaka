@@ -1,0 +1,353 @@
+-- Round-trip deserializer for the Core IR S-expression format produced by
+-- core_ir_sexp.mdk.  Parses the output of cprogramToSexp back into a CProgram
+-- so the round-trip gate can evaluate it and compare against the original.
+--
+-- The format is fully-parenthesized S-expressions (the same style sexp.mdk
+-- emits for the AST).  Every node is `(Tag fields...)` where fields are
+-- sub-sexps or quoted atoms.  Bare (unparenthesized) atoms are: AGlobal,
+-- CTFail, HCons, HNil, HUnit, RNone, true, false, LUnit, PWild.
+
+import ast.{Lit(..), Pat(..), RecPatField(..), Addr(..), Route(..)}
+import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..), CTree(..), CTBranch(..), CHead(..)}
+
+-- ── tokenizer ─────────────────────────────────────────────────────────────────
+
+public export data SToken = TOpen | TClose | TAtom String
+
+tokenize : String -> List SToken
+tokenize s = tokFrom (stringToChars s) 0
+
+-- build the slice [start..end) from the char array as a String
+buildSlice : Array Char -> Int -> Int -> String
+buildSlice cs i end = stringConcat (sliceChars cs i end)
+
+sliceChars : Array Char -> Int -> Int -> List String
+sliceChars cs i end
+  | i >= end = []
+  | otherwise = charToStr (arrayGetUnsafe i cs) :: sliceChars cs (i + 1) end
+
+isSpaceChar : Char -> Bool
+isSpaceChar ' ' = True
+isSpaceChar '\n' = True
+isSpaceChar '\t' = True
+isSpaceChar '\r' = True
+isSpaceChar _ = False
+
+isWordStop : Char -> Bool
+isWordStop '(' = True
+isWordStop ')' = True
+isWordStop c = isSpaceChar c
+
+tokFrom : Array Char -> Int -> List SToken
+tokFrom cs i
+  | i >= arrayLength cs = []
+  | otherwise =
+    let c = arrayGetUnsafe i cs
+    if c == '(' then TOpen :: tokFrom cs (i + 1)
+    else if c == ')' then TClose :: tokFrom cs (i + 1)
+    else if c == '"' then tokQuoted cs (i + 1) []
+    else if isSpaceChar c then tokFrom cs (i + 1)
+    else tokWord cs i (i + 1)
+
+tokWord : Array Char -> Int -> Int -> List SToken
+tokWord cs start i
+  | i >= arrayLength cs = [TAtom (buildSlice cs start i)]
+  | otherwise =
+    let c = arrayGetUnsafe i cs
+    if c == '(' then TAtom (buildSlice cs start i) :: TOpen :: tokFrom cs (i + 1)
+    else if c == ')' then TAtom (buildSlice cs start i) :: TClose :: tokFrom cs (i + 1)
+    else if isSpaceChar c then TAtom (buildSlice cs start i) :: tokFrom cs (i + 1)
+    else tokWord cs start (i + 1)
+
+-- tokQuoted: accumulate a quoted string (without the outer quotes, which we
+-- add back so unquote can strip them; this preserves the escStr-escaped form).
+tokQuoted : Array Char -> Int -> List String -> List SToken
+tokQuoted cs i acc
+  | i >= arrayLength cs = [TAtom ("\"" ++ stringConcat (reverseL acc) ++ "\"")]
+  | otherwise =
+    let c = arrayGetUnsafe i cs
+    if c == '"' then TAtom ("\"" ++ stringConcat (reverseL acc) ++ "\"") :: tokFrom cs (i + 1)
+    else if c == '\\' && i + 1 < arrayLength cs then
+      let next = arrayGetUnsafe (i + 1) cs
+      tokQuoted cs (i + 2) (escPair next :: acc)
+    else tokQuoted cs (i + 1) (charToStr c :: acc)
+
+escPair : Char -> String
+escPair 'n' = "\\n"
+escPair 't' = "\\t"
+escPair 'r' = "\\r"
+escPair '"' = "\\\""
+escPair '\\' = "\\\\"
+escPair c = charToStr c
+
+reverseL : List a -> List a
+reverseL xs = revGo xs []
+
+revGo : List a -> List a -> List a
+revGo [] acc = acc
+revGo (x::xs) acc = revGo xs (x :: acc)
+
+-- ── generic S-expression tree ─────────────────────────────────────────────────
+
+public export data SExp = SAtom String | SList (List SExp)
+
+parseSexp : List SToken -> (SExp, List SToken)
+parseSexp (TOpen :: rest) =
+  let (children, rest2) = parseList rest
+  (SList children, rest2)
+parseSexp (TAtom s :: rest) = (SAtom s, rest)
+parseSexp (TClose :: _) = panic "core_ir_sexp_parse: unexpected ')'"
+parseSexp [] = panic "core_ir_sexp_parse: unexpected end of input"
+
+parseList : List SToken -> (List SExp, List SToken)
+parseList (TClose :: rest) = ([], rest)
+parseList ts =
+  let (s, rest) = parseSexp ts
+  let (more, rest2) = parseList rest
+  (s :: more, rest2)
+
+parseAll : String -> SExp
+parseAll s = match parseSexp (tokenize s)
+  (sexp, _) => sexp
+
+-- ── string unescaping ─────────────────────────────────────────────────────────
+-- The serializer wraps strings with `escStr`, producing `"..."` with backslash
+-- escapes.  unquote strips the outer `"..."` and decodes the escapes.
+
+unquote : String -> String
+unquote s =
+  let cs = stringToChars s
+  let n = arrayLength cs
+  if n < 2 then s
+  else stringConcat (unqFrom cs 1 (n - 1))
+
+unqFrom : Array Char -> Int -> Int -> List String
+unqFrom cs i lim
+  | i >= lim = []
+  | otherwise =
+    let c = arrayGetUnsafe i cs
+    if c == '\\' && i + 1 < lim then
+      let next = arrayGetUnsafe (i + 1) cs
+      unescOne next :: unqFrom cs (i + 2) lim
+    else charToStr c :: unqFrom cs (i + 1) lim
+
+unescOne : Char -> String
+unescOne 'n' = "\n"
+unescOne 't' = "\t"
+unescOne 'r' = "\r"
+unescOne '"' = "\""
+unescOne '\\' = "\\"
+unescOne c = charToStr c
+
+-- ── typed converters: SExp → Core IR types ───────────────────────────────────
+
+toStr : SExp -> String
+toStr (SAtom s) = unquote s
+toStr other = panic ("core_ir_sexp_parse: expected atom, got list: " ++ sexprToStr other)
+
+toBool : SExp -> Bool
+toBool (SAtom "true") = True
+toBool (SAtom "false") = False
+toBool other = panic ("core_ir_sexp_parse: expected bool: " ++ sexprToStr other)
+
+-- parse a decimal integer (possibly negative) from a string
+parseIntStr : String -> Int
+parseIntStr s =
+  let cs = stringToChars s
+  let n = arrayLength cs
+  if n == 0 then panic "core_ir_sexp_parse: empty int"
+  else if arrayGetUnsafe 0 cs == '-' then 0 - parseDigits cs 1 n 0
+  else parseDigits cs 0 n 0
+
+parseDigits : Array Char -> Int -> Int -> Int -> Int
+parseDigits cs i n acc
+  | i >= n = acc
+  | otherwise = parseDigits cs (i + 1) n (acc * 10 + charCode (arrayGetUnsafe i cs) - charCode '0')
+
+toInt : SExp -> Int
+toInt (SAtom s) = parseIntStr s
+toInt other = panic ("core_ir_sexp_parse: expected int atom: " ++ sexprToStr other)
+
+toOptStr : SExp -> Option String
+toOptStr (SAtom "None") = None
+toOptStr (SList (SAtom "Some" :: [s])) = Some (toStr s)
+toOptStr other = panic ("core_ir_sexp_parse: expected Option String: " ++ sexprToStr other)
+
+toLit : SExp -> Lit
+toLit (SList (SAtom "LInt" :: [n])) = LInt (toInt n)
+toLit (SList (SAtom "LFloat" :: [f])) =
+  match stringToFloat (toStr f)
+    Some x => LFloat x
+    None => panic "core_ir_sexp_parse: bad float"
+toLit (SList (SAtom "LString" :: [s])) = LString (toStr s)
+toLit (SList (SAtom "LChar" :: [c])) = LChar (toStr c)
+toLit (SList (SAtom "LBool" :: [b])) = LBool (toBool b)
+toLit (SAtom "LUnit") = LUnit
+toLit other = panic ("core_ir_sexp_parse: bad Lit: " ++ sexprToStr other)
+
+toRecPatField : SExp -> RecPatField
+toRecPatField (SList (SAtom "rf" :: [f, SAtom "None"])) = RecPatField (toStr f) None
+toRecPatField (SList (SAtom "rf" :: [f, p])) = RecPatField (toStr f) (Some (toPat p))
+toRecPatField other = panic ("core_ir_sexp_parse: bad RecPatField: " ++ sexprToStr other)
+
+toPat : SExp -> Pat
+toPat (SList (SAtom "PVar" :: [n])) = PVar (toStr n)
+toPat (SAtom "PWild") = PWild
+toPat (SList (SAtom "PLit" :: [l])) = PLit (toLit l)
+toPat (SList (SAtom "PCon" :: name :: args)) = PCon (toStr name) (map toPat args)
+toPat (SList (SAtom "PCons" :: [h, t])) = PCons (toPat h) (toPat t)
+toPat (SList (SAtom "PTuple" :: ps)) = PTuple (map toPat ps)
+toPat (SList (SAtom "PList" :: ps)) = PList (map toPat ps)
+toPat (SList (SAtom "PAs" :: [n, p])) = PAs (toStr n) (toPat p)
+toPat (SList (SAtom "PRng" :: [lo, hi, incl])) = PRng (toLit lo) (toLit hi) (toBool incl)
+toPat (SList (SAtom "PRec" :: [name, SList fields, rest])) =
+  PRec (toStr name) (map toRecPatField fields) (toBool rest)
+toPat other = panic ("core_ir_sexp_parse: bad Pat: " ++ sexprToStr other)
+
+toAddr : SExp -> Addr
+toAddr (SAtom "AGlobal") = AGlobal
+toAddr (SList (SAtom "ALocal" :: [frame, slot])) = ALocal (toInt frame) (toInt slot)
+toAddr other = panic ("core_ir_sexp_parse: bad Addr: " ++ sexprToStr other)
+
+toRoute : SExp -> Route
+toRoute (SAtom "RNone") = RNone
+toRoute (SList (SAtom "RKey" :: [k])) = RKey (toStr k)
+toRoute (SList (SAtom "RDict" :: [d])) = RDict (toStr d)
+toRoute other = panic ("core_ir_sexp_parse: bad Route: " ++ sexprToStr other)
+
+toCField : SExp -> CField
+toCField (SList (SAtom "cf" :: [name, e])) = CField (toStr name) (toCExpr e)
+toCField other = panic ("core_ir_sexp_parse: bad CField: " ++ sexprToStr other)
+
+toCGuard : SExp -> CGuard
+toCGuard (SList (SAtom "CGBool" :: [e])) = CGBool (toCExpr e)
+toCGuard (SList (SAtom "CGBind" :: [p, e])) = CGBind (toPat p) (toCExpr e)
+toCGuard other = panic ("core_ir_sexp_parse: bad CGuard: " ++ sexprToStr other)
+
+toArm : SExp -> CArm
+toArm (SList (SAtom "arm" :: [pat, SList guards, body])) =
+  CArm (toPat pat) (map toCGuard guards) (toCExpr body)
+toArm other = panic ("core_ir_sexp_parse: bad CArm: " ++ sexprToStr other)
+
+toCStmt : SExp -> CStmt
+toCStmt (SList (SAtom "CSExpr" :: [e])) = CSExpr (toCExpr e)
+toCStmt (SList (SAtom "CSLet" :: [isRec, pat, e])) =
+  CSLet (toBool isRec) (toPat pat) (toCExpr e)
+toCStmt (SList (SAtom "CSLetElse" :: [pat, e, alt])) =
+  CSLetElse (toPat pat) (toCExpr e) (toCExpr alt)
+toCStmt (SList (SAtom "CSAssign" :: [x, e])) = CSAssign (toStr x) (toCExpr e)
+toCStmt other = panic ("core_ir_sexp_parse: bad CStmt: " ++ sexprToStr other)
+
+toCHead : SExp -> CHead
+toCHead (SList (SAtom "HCon" :: [name, arity])) = HCon (toStr name) (toInt arity)
+toCHead (SList (SAtom "HTuple" :: [arity])) = HTuple (toInt arity)
+toCHead (SAtom "HCons") = HCons
+toCHead (SAtom "HNil") = HNil
+toCHead (SAtom "HUnit") = HUnit
+toCHead (SList (SAtom "HLit" :: [l])) = HLit (toLit l)
+toCHead other = panic ("core_ir_sexp_parse: bad CHead: " ++ sexprToStr other)
+
+toCTree : SExp -> CTree
+toCTree (SAtom "CTFail") = CTFail
+toCTree (SList (SAtom "CTLeaf" :: [i])) = CTLeaf (toInt i)
+toCTree (SList (SAtom "CTGuard" :: [i, fail])) = CTGuard (toInt i) (toCTree fail)
+toCTree (SList (SAtom "CTSwitch" :: [SList branches, dflt])) =
+  CTSwitch (map toCTBranch branches) (toCTree dflt)
+toCTree (SList (SAtom "CTDrop" :: [tree])) = CTDrop (toCTree tree)
+toCTree other = panic ("core_ir_sexp_parse: bad CTree: " ++ sexprToStr other)
+
+toCTBranch : SExp -> CTBranch
+toCTBranch (SList (SAtom "CTBranch" :: [head, tree])) =
+  CTBranch (toCHead head) (toCTree tree)
+toCTBranch other = panic ("core_ir_sexp_parse: bad CTBranch: " ++ sexprToStr other)
+
+toCExpr : SExp -> CExpr
+toCExpr (SList (SAtom "CLit" :: [l])) = CLit (toLit l)
+toCExpr (SList (SAtom "CVar" :: [name, addr])) = CVar (toStr name) (toAddr addr)
+toCExpr (SList (SAtom "CApp" :: [f, x])) = CApp (toCExpr f) (toCExpr x)
+toCExpr (SList (SAtom "CLam" :: [SList pats, body])) =
+  CLam (map toPat pats) (toCExpr body)
+toCExpr (SList (SAtom "CLet" :: [isRec, pat, e1, e2])) =
+  CLet (toBool isRec) (toPat pat) (toCExpr e1) (toCExpr e2)
+toCExpr (SList (SAtom "CLetGroup" :: [SList binds, body])) =
+  CLetGroup (map toCBind binds) (toCExpr body)
+toCExpr (SList (SAtom "CMatch" :: scrut :: arms)) =
+  CMatch (toCExpr scrut) (map toArm arms)
+toCExpr (SList (SAtom "CDecision" :: [scrut, SList arms, tree])) =
+  CDecision (toCExpr scrut) (map toArm arms) (toCTree tree)
+toCExpr (SList (SAtom "CIf" :: [c, t, e])) = CIf (toCExpr c) (toCExpr t) (toCExpr e)
+toCExpr (SList (SAtom "CBinPrim" :: [op, l, r])) =
+  CBinPrim (toStr op) (toCExpr l) (toCExpr r)
+toCExpr (SList (SAtom "CUnOp" :: [op, e])) = CUnOp (toStr op) (toCExpr e)
+toCExpr (SList (SAtom "CTuple" :: es)) = CTuple (map toCExpr es)
+toCExpr (SList (SAtom "CList" :: es)) = CList (map toCExpr es)
+toCExpr (SList (SAtom "CRecord" :: name :: fields)) =
+  CRecord (toStr name) (map toCField fields)
+toCExpr (SList (SAtom "CFieldAccess" :: [e, f])) = CFieldAccess (toCExpr e) (toStr f)
+toCExpr (SList (SAtom "CRecordUpdate" :: base :: fields)) =
+  CRecordUpdate (toCExpr base) (map toCField fields)
+toCExpr (SList (SAtom "CArray" :: es)) = CArray (map toCExpr es)
+toCExpr (SList (SAtom "CRangeList" :: [lo, hi, incl])) =
+  CRangeList (toCExpr lo) (toCExpr hi) (toBool incl)
+toCExpr (SList (SAtom "CRangeArray" :: [lo, hi, incl])) =
+  CRangeArray (toCExpr lo) (toCExpr hi) (toBool incl)
+toCExpr (SList (SAtom "CIndex" :: [a, i])) = CIndex (toCExpr a) (toCExpr i)
+toCExpr (SList (SAtom "CSlice" :: [a, lo, hi, incl])) =
+  CSlice (toCExpr a) (toCExpr lo) (toCExpr hi) (toBool incl)
+toCExpr (SList (SAtom "CBlock" :: stmts)) = CBlock (map toCStmt stmts)
+toCExpr (SList (SAtom "CMethod" :: [name, route])) = CMethod (toStr name) (toRoute route)
+toCExpr (SList (SAtom "CDict" :: [name, SList routes])) =
+  CDict (toStr name) (map toRoute routes)
+toCExpr other = panic ("core_ir_sexp_parse: bad CExpr: " ++ sexprToStr other)
+
+toCClause : SExp -> CClause
+toCClause (SList (SAtom "CClause" :: [SList pats, body])) =
+  CClause (map toPat pats) (toCExpr body)
+toCClause other = panic ("core_ir_sexp_parse: bad CClause: " ++ sexprToStr other)
+
+toCBind : SExp -> CBind
+toCBind (SList (SAtom "CBind" :: name :: clauses)) =
+  CBind (toStr name) (map toCClause clauses)
+toCBind other = panic ("core_ir_sexp_parse: bad CBind: " ++ sexprToStr other)
+
+toCImplBody : SExp -> CImplBody
+toCImplBody (SList (SAtom "CImplTagged" :: [tag, iface, SList positions, SList pats, body])) =
+  CImplTagged (toStr tag) (toStr iface) (map toInt positions) (map toPat pats) (toCExpr body)
+toCImplBody (SList (SAtom "CImplDefault" :: [SList pats, body])) =
+  CImplDefault (map toPat pats) (toCExpr body)
+toCImplBody other = panic ("core_ir_sexp_parse: bad CImplBody: " ++ sexprToStr other)
+
+toCImplEntry : SExp -> CImplEntry
+toCImplEntry (SList (SAtom "CImplEntry" :: [name, score, body])) =
+  CImplEntry (toStr name) (toInt score) (toCImplBody body)
+toCImplEntry other = panic ("core_ir_sexp_parse: bad CImplEntry: " ++ sexprToStr other)
+
+toCtorArity : SExp -> (String, Int)
+toCtorArity (SList (SAtom "ca" :: [name, arity])) = (toStr name, toInt arity)
+toCtorArity other = panic ("core_ir_sexp_parse: bad ctor-arity: " ++ sexprToStr other)
+
+toCtorType : SExp -> (String, String)
+toCtorType (SList (SAtom "ct" :: [ctor, ty])) = (toStr ctor, toStr ty)
+toCtorType other = panic ("core_ir_sexp_parse: bad ctor-type: " ++ sexprToStr other)
+
+export
+parseCProgram : String -> CProgram
+parseCProgram s = match parseAll s
+  SList (SAtom "CProgram" :: [SList binds, SList ctorArities, SList ctorTypes, SList impls]) =>
+    CProgram
+      (map toCBind binds)
+      (map toCtorArity ctorArities)
+      (map toCtorType ctorTypes)
+      (map toCImplEntry impls)
+  other => panic ("core_ir_sexp_parse: bad CProgram: " ++ sexprToStr other)
+
+-- ── debug helper ─────────────────────────────────────────────────────────────
+
+sexprToStr : SExp -> String
+sexprToStr (SAtom s) = s
+sexprToStr (SList xs) = "(" ++ joinSexps xs ++ ")"
+
+joinSexps : List SExp -> String
+joinSexps [] = ""
+joinSexps [x] = sexprToStr x
+joinSexps (x::rest) = sexprToStr x ++ " " ++ joinSexps rest

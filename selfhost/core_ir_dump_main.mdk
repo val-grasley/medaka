@@ -1,0 +1,28 @@
+-- Canonical S-expression dump of the Core IR (STAGE2-DESIGN §2.1):
+--
+--   medaka run selfhost/core_ir_dump_main.mdk <source.mdk>
+--
+-- parses + desugars the target (self-contained / prelude-free), annotates
+-- (EVarAt lexical addressing), LOWERS to Core IR, and prints the S-expression
+-- via core_ir_sexp.cprogramToSexp.  The output is the frozen, lossless
+-- representation of the Core IR — every CVar carries its Addr, every CMethod/
+-- CDict carries its resolved Route — serving as:
+--   1. The snapshot golden for diff_selfhost_core_ir_sexp.sh (catches accidental
+--      lowering or serializer drift).
+--   2. The input for a future round-trip deserializer gate.
+
+import parser.{parse}
+import desugar.{desugar}
+import annotate.{annotateProgram}
+import core_ir_lower.{lowerProgram}
+import core_ir_sexp.{cprogramToSexp}
+
+main = match args ()
+  [targetPath] => withTarget targetPath
+  _ => ePutStrLn "usage: medaka run selfhost/core_ir_dump_main.mdk <file.mdk>"
+
+withTarget : String -> <IO, Mut> Unit
+withTarget targetPath = match readFile targetPath
+  Ok src =>
+    putStrLn (cprogramToSexp (lowerProgram (annotateProgram (desugar (parse src)))))
+  Err msg => ePutStrLn msg

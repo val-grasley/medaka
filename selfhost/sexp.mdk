@@ -6,6 +6,7 @@
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..), Attr(..)}
 import util.{escStr, joinNl, joinWith}
 
+export
 boolStr : Bool -> String
 boolStr True = "true"
 boolStr False = "false"
@@ -15,12 +16,15 @@ boolStr False = "false"
 joinSp : List String -> String
 joinSp xs = joinWith " " xs
 
+export
 node : String -> List String -> String
 node tag parts = "(" ++ joinSp (tag :: parts) ++ ")"
 
+export
 slist : List String -> String
 slist xs = "(" ++ joinSp xs ++ ")"
 
+export
 litSexp : Lit -> String
 litSexp (LInt n) = node "LInt" [intToString n]
 litSexp (LFloat f) = node "LFloat" [floatToString f]
@@ -29,6 +33,7 @@ litSexp (LChar s) = node "LChar" [escStr s]
 litSexp (LBool b) = node "LBool" [boolStr b]
 litSexp LUnit = "LUnit"
 
+export
 patSexp : Pat -> String
 patSexp (PVar x) = node "PVar" [escStr x]
 patSexp PWild = "PWild"
@@ -61,6 +66,7 @@ constraintSexp : Constraint -> String
 constraintSexp (Constraint iface args) =
   node "cstr" (escStr iface :: map tySexp args)
 
+export
 optStrSexp : Option String -> String
 optStrSexp (Some s) = node "Some" [escStr s]
 optStrSexp None = "None"

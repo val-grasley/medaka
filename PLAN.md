@@ -230,9 +230,12 @@ The design spec lists `new build run check test fmt lsp doc add remove update`;
 `check / run / test / repl / lsp / fmt / new` exist, plus `bench`. Remaining
 non-package-manager gaps:
 
-- **`medaka build`** — needs its own design first: there is no artifact cache or
-  typed-IR serialization format in the tree, so "typecheck + cache" has no honest
-  implementation. Until that exists it would only be an alias of `check`.
+- **`medaka build`** — needs its own design first: a serialized Core IR now
+  exists (`selfhost/core_ir_sexp.mdk` — `cprogramToSexp`/`parseCProgram`,
+  round-trip proven; `test/diff_selfhost_core_ir_roundtrip.sh`), but a build
+  artifact cache also needs a cache-key strategy (content hash of source +
+  transitive imports) and an on-disk layout. Until that design exists it would
+  only be an alias of `check`.
 - **`medaka doc`** — needs (a) a comment→decl matcher (doc comments aren't
   attached to AST nodes — a parallel `Lexer.take_comments()` stream matched by
   position, like `doctest.ml` does), (b) a signature renderer for a typechecker
