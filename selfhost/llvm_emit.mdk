@@ -18,9 +18,18 @@
 --     Self-recursive tail calls lower to `musttail call` + `ret` (the
 --     calling-convention proof: self-recursion ⇒ caller/callee prototypes match,
 --     which musttail requires; empirically TCO-correct under clang -O0).
---     Function BOUNDARIES are Int-only (params + return are i64 Int words); a
---     Bool/Float-typed parameter or result is out of scope.  Cross-function tail
---     calls stay ordinary `call` (correct, but not guaranteed-TCO).
+--   • slice 2b — Bool/Float FUNCTION BOUNDARIES.  Core IR is type-erased, so a
+--     two-pass signature inference (`inferSigs`/`typeOf`/`paramUseTy`) RECOVERS
+--     each function's param + return LTy: a param's type comes from its first
+--     typed use (an `if`-condition/`!` ⇒ Bool, an arith/compare operand shares its
+--     sibling, an argument to a known fn takes that fn's param type), the return
+--     type follows structurally.  This is the pure twin of the type-recovery
+--     `emitExpr` already does as it emits.  The ABI is UNCHANGED — every value is
+--     a uniform i64 word regardless (Int immediate, Bool immediate, Float
+--     boxed-pointer-as-i64), so no `define`/`call`/musttail prototype changes; the
+--     recovered type only selects int-vs-float instructions in the body and the
+--     print routine for the result (so a Bool-returning function prints
+--     `true`/`false`, a Float param unboxes/reboxes).
 -- Still OUT of scope: higher-order values / closures / ADTs / records / dispatch
 -- / GC.  An unsupported Core IR node panics with its tag (the spike refuses to
 -- emit wrong code rather than silently mis-lowering).
@@ -38,7 +47,7 @@
 
 import ast.{Lit(..), Pat(..), Addr(..)}
 import core_ir.{CExpr(..), CBind(..), CClause(..), CStmt(..), CProgram(..)}
-import util.{reverseL, joinNl}
+import util.{reverseL, joinNl, lookupAssoc}
 
 -- the static type of a slice-1 value, used to pick the print routine and the
 -- int-vs-float instruction (Core IR is type-erased; for this subset the type is
@@ -46,11 +55,22 @@ import util.{reverseL, joinNl}
 data LTy = LTInt | LTFloat | LTBool
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
--- — prepend is O(1); reverseL'd once at the end restores program order), and the
+-- — prepend is O(1); reverseL'd once at the end restores program order), the
 -- set of known top-level FUNCTION names (slice 2), so a `CApp` head can be
 -- distinguished as a direct call to `@mdk_<name>` vs an unsupported higher-order
--- application.  The function set is populated once, up front, in emitProgram.
-data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String))
+-- application, and the function SIGNATURE table (slice 2b — `name ->
+-- (param types, return type)`), which lets a `CApp` recover the callee's return
+-- type and a `define` bind each parameter at its inferred type instead of
+-- assuming Int.  Both the function set and the signature table are populated
+-- once, up front, in emitProgram.
+data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig)))
+
+-- a function's inferred signature: its parameter types (in order) and its return
+-- type.  At the LLVM ABI every value is a uniform i64 word regardless (Int
+-- immediate, Bool immediate, Float boxed-pointer-as-i64), so a signature changes
+-- NO `define`/`call` LLVM type — it only drives the static LTy bookkeeping that
+-- picks int-vs-float instructions in the body and the print routine for a result.
+data FnSig = FnSig (List LTy) LTy
 
 -- an emit-time environment: source name -> (its LLVM operand, its static type).
 -- A "register" is any LLVM operand text: a `%tN`, or an immediate like `5` for a
@@ -58,7 +78,7 @@ data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String))
 
 -- ── emitter plumbing ────────────────────────────────────────────────────────
 freshId : Emit -> <Mut> Int
-freshId (Emit c _ _) =
+freshId (Emit c _ _ _) =
   let n = c.value
   let _ = set_ref c (n + 1)
   n
@@ -67,15 +87,22 @@ freshReg : Emit -> <Mut> String
 freshReg e = "%t" ++ intToString (freshId e)
 
 emit : Emit -> String -> <Mut> Unit
-emit (Emit _ buf _) line = set_ref buf (line :: buf.value)
+emit (Emit _ buf _ _) line = set_ref buf (line :: buf.value)
 
 -- the known-function table (set once in emitProgram); membership decides whether
 -- a `CApp` head names a callable top-level function.
 fnNames : Emit -> <Mut> List String
-fnNames (Emit _ _ fns) = fns.value
+fnNames (Emit _ _ fns _) = fns.value
 
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = containsStr name (fnNames e)
+
+-- the inferred return type of a known function (Int if unknown — keeps the
+-- pre-signature behaviour for any head the table somehow misses).
+fnRetTy : Emit -> String -> <Mut> LTy
+fnRetTy (Emit _ _ _ sigs) name = match lookupAssoc name sigs.value
+  Some (FnSig _ rty) => rty
+  None => LTInt
 
 containsStr : String -> List String -> Bool
 containsStr _ [] = False
@@ -277,9 +304,10 @@ emitBlock _ _ _ = panic "llvm spike: unsupported block statement in slice 1"
 -- Only SATURATED direct calls to named top-level functions are supported: the
 -- head of the (curried) application spine must be a `CVar` naming a known
 -- function.  Every argument is passed as a uniform i64 word (the value rep), and
--- the result is taken to be an Int word (slice 2 functions are Int -> … -> Int;
--- non-Int function boundaries are out of scope — see the module header).  No
--- higher-order values or closures (a non-`CVar` / unknown head panics).
+-- the result's static type is the callee's INFERRED return type (slice 2b — read
+-- from the signature table via `fnRetTy`; defaults to Int if the head is somehow
+-- untyped).  No higher-order values or closures (a non-`CVar` / unknown head
+-- panics).
 flattenApp : CExpr -> List CExpr -> (CExpr, List CExpr)
 flattenApp (CApp f a) acc = flattenApp f (a :: acc)
 flattenApp hd acc = (hd, acc)
@@ -293,7 +321,7 @@ emitApp e env app =
         let argOps = emitArgs e env args
         let r = freshReg e
         let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
-        (r, LTInt)
+        (r, fnRetTy e fname)
       else
         panic ("llvm spike: '" ++ fname ++ "' is not a saturated call to a known top-level function (slice 2: no higher-order values / closures)")
     _ => panic "llvm spike: only direct calls to named top-level functions are supported in slice 2"
@@ -317,7 +345,9 @@ argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
 
 -- ── top-level function definitions (slice 2) ────────────────────────────────
 -- Each non-`main` top-level binding with parameters becomes an LLVM function
--- `@mdk_<name>(i64 %arg0, …) -> i64`.  Parameters bind to %argN (typed Int).  The
+-- `@mdk_<name>(i64 %arg0, …) -> i64`.  Parameters bind to %argN at their
+-- INFERRED static type (slice 2b — every param is still an i64 word at the ABI;
+-- the type only selects int-vs-float instructions in the body).  The
 -- body is emitted in TAIL position so a self-recursive tail call lowers to
 -- `musttail call` immediately followed by `ret` (the calling-convention proof:
 -- self-recursion guarantees the caller/callee prototypes match, which musttail
@@ -331,7 +361,10 @@ emitFns e (b::rest) =
 
 emitFn : Emit -> CBind -> <Mut> Unit
 emitFn e (CBind name [CClause pats body]) =
-  let env = paramEnv pats 0
+  let ptys = match lookupAssoc name (sigTable e)
+    Some (FnSig ts _) => ts
+    None => allInt pats
+  let env = paramEnv pats ptys 0
   let _ = emit e ("define i64 @mdk_" ++ name ++ "(" ++ paramDecls pats 0 ++ ") {")
   let _ = emit e "entry:"
   let _ = emitFnBody e env name body
@@ -340,16 +373,27 @@ emitFn e (CBind name [CClause pats body]) =
 emitFn _ (CBind name _) =
   panic ("llvm spike: function '" ++ name ++ "' is multi-clause (slice 2: single variable-pattern clause only)")
 
+sigTable : Emit -> <Mut> List (String, FnSig)
+sigTable (Emit _ _ _ sigs) = sigs.value
+
+-- default param types when no signature was inferred (every param Int).
+allInt : List Pat -> List LTy
+allInt [] = []
+allInt (_::rest) = LTInt :: allInt rest
+
 paramDecls : List Pat -> Int -> String
 paramDecls [] _ = ""
 paramDecls [PVar _] i = "i64 %arg" ++ intToString i
 paramDecls ((PVar _)::rest) i = "i64 %arg" ++ intToString i ++ ", " ++ paramDecls rest (i + 1)
 paramDecls _ _ = panic "llvm spike: function parameters must be plain variables in slice 2"
 
-paramEnv : List Pat -> Int -> List (String, (String, LTy))
-paramEnv [] _ = []
-paramEnv ((PVar x)::rest) i = (x, ("%arg" ++ intToString i, LTInt)) :: paramEnv rest (i + 1)
-paramEnv _ _ = panic "llvm spike: function parameters must be plain variables in slice 2"
+-- bind each parameter to %argN at its inferred static type (every param is an i64
+-- word at the ABI; the type only drives int-vs-float instruction selection).
+paramEnv : List Pat -> List LTy -> Int -> List (String, (String, LTy))
+paramEnv [] _ _ = []
+paramEnv ((PVar x)::rest) (ty::tys) i = (x, ("%arg" ++ intToString i, ty)) :: paramEnv rest tys (i + 1)
+paramEnv ((PVar x)::rest) [] i = (x, ("%arg" ++ intToString i, LTInt)) :: paramEnv rest [] (i + 1)
+paramEnv _ _ _ = panic "llvm spike: function parameters must be plain variables in slice 2"
 
 -- emit a function body in TAIL position: every control path ends in a `ret`.
 -- An `if` recurses into both arms (each arm is itself in tail position and rets);
@@ -412,6 +456,159 @@ valBinds [] = []
 valBinds ((CBind "main" cs)::rest) = valBinds rest
 valBinds (b::rest) = if isFnBind b then valBinds rest else b :: valBinds rest
 
+-- ── function signature inference (slice 2b) ──────────────────────────────────
+-- Core IR is type-erased, so to lower a Bool/Float-typed function boundary we
+-- must RECOVER the static type of each parameter and result.  `typeOf` is the
+-- pure (non-emitting) twin of the type-recovery that `emitExpr` already does as
+-- it emits — it computes a CExpr's LTy from the signature table + a var→LTy env,
+-- with no side effects.  `inferSigs` runs it to a two-pass fixpoint so a callee's
+-- signature is available before its caller's body is typed (one extra pass lets a
+-- caller see a callee defined later / mutual recursion settle).
+--
+-- Float/Bool ride the EXISTING uniform i64 word (Float boxed, Bool immediate), so
+-- inference changes no LLVM type — only which instructions the body emits and the
+-- print routine `main` picks.  Param/return remain i64 at the ABI, so musttail's
+-- prototype-match invariant is untouched.
+
+-- structural type of an expression given known fn signatures + a var→type env.
+-- Unknown vars (top-level value globals) default to Int — the slice's existing
+-- assumption (function bodies referencing globals are out of scope anyway).
+typeOf : List (String, FnSig) -> List (String, LTy) -> CExpr -> LTy
+typeOf _ _ (CLit (LInt _)) = LTInt
+typeOf _ _ (CLit (LFloat _)) = LTFloat
+typeOf _ _ (CLit (LBool _)) = LTBool
+typeOf _ env (CVar x _) = match lookupAssoc x env
+  Some t => t
+  None => LTInt
+typeOf sigs env (CBinPrim op l r)
+  | isCmpOp op = LTBool
+  | otherwise = typeOf sigs env l
+typeOf _ _ (CUnOp "!" _) = LTBool
+typeOf sigs env (CUnOp "-" x) = typeOf sigs env x
+typeOf sigs env (CIf _ t _) = typeOf sigs env t
+typeOf sigs env (CLet False (PVar x) e1 e2) =
+  typeOf sigs ((x, typeOf sigs env e1) :: env) e2
+typeOf sigs env (CLetGroup binds body) =
+  typeOf sigs (letGroupEnv sigs env binds) body
+typeOf sigs env (CBlock stmts) = blockTy sigs env stmts
+typeOf sigs env app =
+  let (hd, args) = flattenApp app []
+  match hd
+    CVar fname _ => if hasArgs args then callRetTy sigs fname else LTInt
+    _ => LTInt
+
+-- the return type of a known function from the sig table (Int if unknown).
+callRetTy : List (String, FnSig) -> String -> LTy
+callRetTy sigs fname = match lookupAssoc fname sigs
+  Some (FnSig _ rty) => rty
+  None => LTInt
+
+letGroupEnv : List (String, FnSig) -> List (String, LTy) -> List CBind -> List (String, LTy)
+letGroupEnv _ env [] = env
+letGroupEnv sigs env ((CBind name [CClause [] rhs])::rest) =
+  letGroupEnv sigs ((name, typeOf sigs env rhs) :: env) rest
+letGroupEnv _ env _ = env
+
+blockTy : List (String, FnSig) -> List (String, LTy) -> List CStmt -> LTy
+blockTy sigs env [CSExpr ex] = typeOf sigs env ex
+blockTy sigs env ((CSExpr _)::rest) = blockTy sigs env rest
+blockTy sigs env ((CSLet _ (PVar x) ex)::rest) =
+  blockTy sigs ((x, typeOf sigs env ex) :: env) rest
+blockTy _ _ _ = LTInt
+
+-- infer one parameter's type from its first typed USE in the body: the condition
+-- of an `if` or the operand of `!` forces Bool; an operand of an arithmetic/
+-- comparison binop shares its SIBLING's type; an argument to a known function
+-- takes that function's parameter type.  None ⇒ no determining use found (the
+-- caller defaults it to Int).
+paramUseTy : List (String, FnSig) -> List (String, LTy) -> String -> CExpr -> Option LTy
+paramUseTy sigs env p (CIf c t f) =
+  if isVarNamed p c then Some LTBool
+  else firstSome (paramUseTy sigs env p t) (paramUseTy sigs env p f)
+paramUseTy _ _ p (CUnOp "!" x) = if isVarNamed p x then Some LTBool else None
+paramUseTy sigs env p (CUnOp _ x) = paramUseTy sigs env p x
+paramUseTy sigs env p (CBinPrim _ l r) =
+  if isVarNamed p l then Some (typeOf sigs env r)
+  else if isVarNamed p r then Some (typeOf sigs env l)
+  else firstSome (paramUseTy sigs env p l) (paramUseTy sigs env p r)
+paramUseTy sigs env p (CLet _ _ e1 e2) =
+  firstSome (paramUseTy sigs env p e1) (paramUseTy sigs env p e2)
+paramUseTy sigs env p app =
+  let (hd, args) = flattenApp app []
+  match hd
+    CVar fname _ => if hasArgs args then
+        firstSome (argPosTy sigs env p fname args 0) (paramUseArgs sigs env p args)
+      else None
+    _ => paramUseArgs sigs env p args
+
+-- if `p` is passed as the Nth argument to a known function, its type is that
+-- function's Nth parameter type.
+argPosTy : List (String, FnSig) -> List (String, LTy) -> String -> String -> List CExpr -> Int -> Option LTy
+argPosTy _ _ _ _ [] _ = None
+argPosTy sigs env p fname (a::rest) i =
+  if isVarNamed p a then nthParamTy sigs fname i
+  else argPosTy sigs env p fname rest (i + 1)
+
+-- the type of the Nth parameter of a known function (None if unknown).
+nthParamTy : List (String, FnSig) -> String -> Int -> Option LTy
+nthParamTy sigs fname i = match lookupAssoc fname sigs
+  Some (FnSig ptys _) => nthTy ptys i
+  None => None
+
+nthTy : List LTy -> Int -> Option LTy
+nthTy [] _ = None
+nthTy (t::_) 0 = Some t
+nthTy (_::rest) i = nthTy rest (i - 1)
+
+paramUseArgs : List (String, FnSig) -> List (String, LTy) -> String -> List CExpr -> Option LTy
+paramUseArgs _ _ _ [] = None
+paramUseArgs sigs env p (a::rest) =
+  firstSome (paramUseTy sigs env p a) (paramUseArgs sigs env p rest)
+
+isVarNamed : String -> CExpr -> Bool
+isVarNamed p (CVar x _) = p == x
+isVarNamed _ _ = False
+
+firstSome : Option a -> Option a -> Option a
+firstSome (Some x) _ = Some x
+firstSome None y = y
+
+-- infer one function's full signature against the current (partial) sig table.
+inferOneSig : List (String, FnSig) -> CBind -> FnSig
+inferOneSig sigs (CBind _ [CClause pats body]) =
+  let ptys = inferParamTys sigs pats body
+  let env = zipParamEnv pats ptys
+  FnSig ptys (typeOf sigs env body)
+inferOneSig _ _ = FnSig [] LTInt
+
+inferParamTys : List (String, FnSig) -> List Pat -> CExpr -> List LTy
+inferParamTys _ [] _ = []
+inferParamTys sigs ((PVar x)::rest) body =
+  let ty = match paramUseTy sigs [] x body
+    Some t => t
+    None => LTInt
+  ty :: inferParamTys sigs rest body
+inferParamTys sigs (_::rest) body = LTInt :: inferParamTys sigs rest body
+
+zipParamEnv : List Pat -> List LTy -> List (String, LTy)
+zipParamEnv ((PVar x)::ps) (t::ts) = (x, t) :: zipParamEnv ps ts
+zipParamEnv (_::ps) (_::ts) = zipParamEnv ps ts
+zipParamEnv _ _ = []
+
+-- one inference pass: recompute every function's signature using the prior table.
+inferPass : List (String, FnSig) -> List CBind -> List (String, FnSig)
+inferPass _ [] = []
+inferPass sigs (b::rest) = (bindName b, inferOneSig sigs b) :: inferPass sigs rest
+
+-- fixpoint to two passes: pass 1 seeds signatures (callees defined earlier are
+-- already typed); pass 2 lets a caller see a callee defined later / mutual
+-- recursion settle.  Two passes suffice for the spike's call graphs (no deeper
+-- type-flow chains than caller→callee→sibling exist in the subset).
+inferSigs : List CBind -> List (String, FnSig)
+inferSigs fns =
+  let pass1 = inferPass [] fns
+  inferPass pass1 fns
+
 -- ── operator -> LLVM mnemonic tables ────────────────────────────────────────
 intOp : String -> String
 intOp "+" = "add"
@@ -458,7 +655,7 @@ isCmpOp op = op == "==" || op == "!=" || op == "<" || op == ">" || op == "<=" ||
 export
 emitProgram : CProgram -> <Mut> String
 emitProgram (CProgram groups _ _ _) =
-  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups))
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups)))
   let _ = emitPreamble e
   let _ = emitFns e (fnBinds groups)
   let _ = emit e "define i32 @main() {"
@@ -469,7 +666,7 @@ emitProgram (CProgram groups _ _ _) =
   let _ = emit e "  ret i32 0"
   let _ = emit e "}"
   match e
-    Emit _ buf _ => joinNl (reverseL buf.value)
+    Emit _ buf _ _ => joinNl (reverseL buf.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =

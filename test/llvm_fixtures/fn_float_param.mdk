@@ -1,0 +1,6 @@
+-- Float parameter + Float return across a function boundary (slice 2b).  `x` is
+-- inferred Float from `x *. ...`? — Medaka uses `*` for both; the sibling literal
+-- 2.0 is Float, so the binop is float and `x`'s type is recovered as Float; the
+-- result is the boxed-float word, returned as an i64 word and printed as a Float.
+scale x = x * 2.0
+main = scale 3.5 + 1.0

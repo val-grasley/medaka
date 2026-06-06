@@ -171,17 +171,25 @@ deliberately deferred to here:
   runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
   is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
-  - ✅ **Toolchain de-risking spike DONE (2026-06-05)** — *ahead of the strict
+  - ✅ **Toolchain de-risking spike DONE (slices 1–2b)** — *ahead of the strict
     VM-first ordering by design* (front-loads the riskiest lift; runs parallel to
     the bytecode VM, uses only the tree-walker oracle). Proves the decided toolchain
     (EMIT textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings)
-    end-to-end on the simplest scalar subset: `selfhost/llvm_emit.mdk` (Core IR →
-    textual LLVM IR) + `selfhost/llvm_emit_main.mdk` + `runtime/medaka_rt.c` (a
-    malloc-and-leak stub; GC deferred), gated by `test/diff_selfhost_llvm.sh` (emit
-    → clang → link → run → diff vs `dev/eval_probe.exe`, **8/8 byte-identical**).
-    Scope: arithmetic / comparisons / `let` / `if` / value bindings / print only —
-    **not** the real backend (no closures/ADTs/records/dispatch/GC; out-of-scope
-    nodes panic). See [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4.
+    end-to-end: `selfhost/llvm_emit.mdk` (Core IR → textual LLVM IR) +
+    `selfhost/llvm_emit_main.mdk` + `runtime/medaka_rt.c` (a malloc-and-leak stub;
+    GC deferred), gated by `test/diff_selfhost_llvm.sh` (emit → clang → link → run →
+    diff vs `dev/eval_probe.exe`, **17/17 byte-identical**). Slice 1 = scalars
+    (arithmetic / comparisons / `let` / `if` / value bindings / type-directed
+    print). Slice 2 = top-level functions + saturated direct calls; self-recursive
+    tail calls lower to `musttail call`+`ret` (the calling-convention proof,
+    TCO-correct under `clang -O0`). Slice 2b (2026-06-06) = **Bool/Float function
+    boundaries** via a two-pass signature inference that recovers each function's
+    param + return type from the type-erased Core IR (param type from its first
+    typed use, return type structural); the ABI stays a uniform i64 word, so the
+    recovered type drives only int-vs-float instruction + print-routine selection,
+    no prototype/`musttail` change, **no value-rep edit**. **Not** the real backend
+    (no closures/ADTs/records/dispatch/GC; out-of-scope nodes panic). See
+    [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4.
 - ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `selfhost/core_ir.mdk`,
   `core_ir_lower.mdk`, `core_ir_eval.mdk` (+ sexp/round-trip gates). 47/47
   fixtures byte-identical across 6 corpora. See `selfhost/README.md`.
