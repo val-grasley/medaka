@@ -1061,6 +1061,36 @@ let t_eff_pure_into_effectful_ok = assert_type
    pureCb u = ()\nmain : <IO> Unit\nmain = runCb pureCb\n"
   "main" "Unit"
 
+(* Phase 146 (re-open on instantiation): closed-closed point-free laundering.
+   A concrete effectful value (closed `<IO>` row from an instantiated scheme)
+   aliased to a pure signature / ctor field / list element used to launder via
+   the permissive None,None unify_row arm.  Re-opening the value's covariant
+   rows on instantiation turns each meeting into the Some/None subset check. *)
+
+(* point-free alias of an IO extern to a pure signature → EffectLeak *)
+let e_eff_leak_pointfree_alias = assert_err
+  "ioFn : String -> Unit\nioFn = putStrLn\n"
+
+(* point-free effectful value into a pure-arrow ctor field → EffectLeak *)
+let e_eff_leak_pointfree_ctor = assert_err
+  "data Box = Box (String -> Unit)\nmkBox = Box putStrLn\n"
+
+(* point-free effectful value into a pure-arrow list-element annotation → EffectLeak *)
+let e_eff_leak_pointfree_list = assert_err
+  "fns : List (String -> Unit)\nfns = [putStrLn]\n"
+
+(* Subsumption preserved under re-opening: a PURE function passed into an
+   effect-allowing (contravariant) ctor field is fine (pure ⊆ <Mut>).  This is
+   the VPrim shape that the variance-aware re-open must NOT reject. *)
+let t_eff_subsume_pure_into_effectful_field = assert_type
+  "data Prim = Prim (Int -> <Mut> Int)\nwrap : (Int -> Int) -> Prim\nwrap f = Prim f\n"
+  "wrap" "(Int -> Int) -> Prim"
+
+(* Over-annotation via a point-free pure value: declaring <IO> you don't use. *)
+let t_eff_over_annotation_pointfree = assert_type
+  "inc x = x + 1\nincIO : Int -> <IO> Int\nincIO = inc\n"
+  "incIO" "Int -> <IO> Int"
+
 (* Unit-level: an OPEN row that already carries a label (an inference arrow
    `<IO | _>`) unified against a closed bound that lacks it must raise — the
    escape the laundering fix adds. *)
@@ -4184,6 +4214,11 @@ let () =
       test_case "err: leak via callback param"  `Quick e_eff_leak_callback_param;
       test_case "err: leak via data field"      `Quick e_eff_leak_data_field;
       test_case "pure into effectful ok"        `Quick t_eff_pure_into_effectful_ok;
+      test_case "err: leak pointfree alias"      `Quick e_eff_leak_pointfree_alias;
+      test_case "err: leak pointfree ctor field" `Quick e_eff_leak_pointfree_ctor;
+      test_case "err: leak pointfree list elem"  `Quick e_eff_leak_pointfree_list;
+      test_case "subsume pure into eff field"    `Quick t_eff_subsume_pure_into_effectful_field;
+      test_case "over-annotation pointfree"      `Quick t_eff_over_annotation_pointfree;
       test_case "unify_row escape raises"        `Quick e_unify_row_escape;
     ];
     "pipe and compose", [

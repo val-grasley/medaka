@@ -169,19 +169,38 @@ impl whose interface row is pure. **Zero regressions** across all unit suites,
 code relied on the laundering). Regression tests in `test_typecheck.ml`
 (`effects` group).
 
+**Done (Phase 146, 2026-06-06):** closed-closed point-free laundering, via
+**variance-aware re-opening on instantiation**. A concrete effectful value whose
+row is *closed* (`putStrLn : String -> <IO> Unit`, an instantiated scheme) could
+unify `None,None` against a closed pure bound (a value signature, a ctor field, a
+list element) and silently drop its labels — symmetric `unify_row` can't tell
+safe pure→effectful subsumption from unsafe effectful→pure escape. Fix:
+`instantiate_raw` re-opens a closed-with-labels row to `<labels | ρ>` **only at
+covariant (positive) positions** (the value's own arrows), so the existing
+open/closed subset check fires. Contravariant rows (a ctor field / parameter the
+scheme *accepts*, e.g. `VPrim (Value -> <Mut> Value)`) stay closed, preserving
+safe subsumption (a pure argument into a `<Mut>`-allowing slot is fine).
+Measurement surfaced exactly **one** genuine latent unsoundness in the selfhost
+source — `concatMapList`'s pure callback signature hid a `<Mut>` effect — fixed
+by making it effect-polymorphic (`(a -> <e> List b) -> List a -> <e> List b`).
+Zero spurious regressions across all unit suites, `@thorough`, and the selfhost
+harnesses (typecheck/check/check_modules/golden/selfproc/eval_run/eval_modules/
+eval_dict). Tests: `test_typecheck.ml` `effects` group (`e_eff_leak_pointfree_*`,
+`t_eff_subsume_pure_into_effectful_field`, `t_eff_over_annotation_pointfree`).
+
 **Remaining:**
-- **Directional subsumption** — the closed-closed alias case (`f : String -> Unit
-  = putStrLn`) still launders: both rows are closed, and symmetric unification
-  can't tell safe pure→effectful subsumption from unsafe effectful→pure escape.
-  Needs an expected-vs-actual `subsume_row` at annotation/binding sites (where
-  direction is known), not in symmetric `unify_row`. `unify_row`'s `None,None`
-  arm is left permissive on purpose until then (see `t_unify_row_closed_permissive`).
-- **Gap 2 labels** — the `effect Foo` declaration form (above).
 - **Selfhost mirror** — `selfhost/typecheck.mdk` mirrors `lib/typecheck.ml`; the
-  `unify_row` change is not yet mirrored. Harnesses pass today only because no
-  fixture launders; parity requires the mirror + an `eval_typed`/`typecheck`
-  fixture that launders.
+  `unify_row` subset rule and the instantiation re-opening are not yet mirrored.
+  Harnesses pass today only because no fixture launders; parity requires the
+  mirror + an `eval_typed`/`typecheck` fixture that launders.
+- **Gap 2 labels** — the `effect Foo` declaration form (above).
 - **Manifest emission** — unbuilt (waits on the edge runtime, §9).
+
+Note: contravariant "laundering" is not a soundness hole — effects are performed
+by *calling* effectful functions, so a value only exposes the effects it will
+itself perform at covariant positions; effects at contravariant (argument)
+positions are attributed to whoever supplies the argument and checked there.
+Covariant-only re-opening is therefore sufficient.
 
 **The PureScript cautionary tale (decisive for the design).** PureScript shipped
 exactly fine-grained row-effect tracking (`Eff (random :: RANDOM, console ::
@@ -257,19 +276,18 @@ gradual-verification principle Medaka applies elsewhere.
 ## 9. Next steps
 
 Propagation/inference (§5 gap 1) shipped in Phase 79/79e; laundering soundness
-for open/closed rows shipped this phase (§5a). The remaining sequence:
+(open/closed rows + closed-closed point-free via instantiation re-opening)
+shipped this phase (§5a) — gap 1 is now sound. The remaining sequence:
 
-1. **Directional subsumption** — close the closed-closed alias hole (§5a) with an
-   expected-vs-actual `subsume_row` at annotation/binding sites. Completes the
-   soundness story; prerequisite for an *honest* manifest.
-2. **Selfhost mirror** of the `unify_row`/`subsume_row` changes (parity).
-3. **Fine-grained labels** (gap 2): the `effect Foo` declaration form + resolve
+1. **Selfhost mirror** of the `unify_row` subset rule + the instantiation
+   re-opening into `selfhost/typecheck.mdk` (parity), with a laundering fixture.
+2. **Fine-grained labels** (gap 2): the `effect Foo` declaration form + resolve
    registration, so the manifest vocabulary is user/platform-definable.
-4. **Research** (for the manifest layer): WasmGC status + who targets it and how;
+3. **Research** (for the manifest layer): WasmGC status + who targets it and how;
    WASI Preview 2 / component-model capability model; Cloudflare/Fastly/Fermyon
    isolation models; object-capability & effects-as-security literature; Roc's
    platform model; MoonBit + Grain (closest competitors — has either touched
    capability/effect safety?).
-5. **Design note + manifest format**: concrete surface syntax + a worked plugin
+4. **Design note + manifest format**: concrete surface syntax + a worked plugin
    example + the manifest format, pressure-tested against 2–3 realistic plugin
    shapes, then the manifest emission/consumption when the edge runtime is built.

@@ -236,14 +236,27 @@ strict priority.
     still flow into the open sink → legit calls unchanged); new `EffectLeak` error.
     Zero regressions across all unit suites, `@thorough`, and selfhost
     typecheck/check/selfproc. Tests in `test_typecheck.ml` `effects` group.
-  - **Gap 1 remaining — directional subsumption.** Closed-closed point-free
-    aliasing (`f : String -> Unit = putStrLn`) still launders: symmetric
-    unification can't distinguish safe pure→effectful subsumption from unsafe
-    effectful→pure escape. Needs an expected-vs-actual `subsume_row` at
-    annotation/binding sites; `unify_row` `None,None` is left permissive until then.
-  - **Selfhost mirror — TODO.** Mirror the `unify_row` change into
-    `selfhost/typecheck.mdk` + a laundering fixture (parity; harnesses pass today
-    only because no fixture launders).
+  - **Gap 1 remaining — directional subsumption. DONE (2026-06-06).**
+    Closed-closed point-free aliasing (`f : String -> Unit = putStrLn`,
+    `Box putStrLn`, `[putStrLn]` under a pure annotation) used to launder: both
+    rows closed → symmetric `unify_row None,None` couldn't tell safe
+    pure→effectful subsumption from unsafe effectful→pure escape. Fixed in
+    `instantiate_raw`: re-open a closed-with-labels row to `<labels | ρ>` **only
+    at covariant (positive) positions** (the value's own arrows), so the existing
+    open/closed subset check fires. Contravariant rows (ctor field / parameter the
+    scheme accepts, e.g. `VPrim (Value -> <Mut> Value)`) stay closed → safe
+    subsumption preserved (pure arg into a `<Mut>` slot is fine). Measurement
+    surfaced ONE genuine latent unsoundness in selfhost source — `concatMapList`'s
+    pure callback hid `<Mut>`; fixed by an effect-polymorphic signature
+    (`util.mdk`). Zero spurious regressions across all unit suites, `@thorough`,
+    and every selfhost harness. Gap 1 is now sound. Contravariant laundering is
+    NOT a hole: effects are performed by *calling* effectful functions, so a value
+    only exposes effects it itself performs (covariant); contravariant effects are
+    the supplier's, checked at the supply site.
+  - **Selfhost mirror — TODO.** Mirror BOTH the `unify_row` subset rule and the
+    `instantiate_raw` covariant re-opening into `selfhost/typecheck.mdk` + a
+    laundering fixture (parity; harnesses pass today only because no fixture
+    launders).
   - **Gap 2 (fine-grained labels) — TODO.** Replace the hardcoded
     `built_in_effects` (`IO, Mut, Async, Panic, Rand, Time`) in `resolve.ml` with an
     `effect Foo` declaration form so labels are user/platform-definable

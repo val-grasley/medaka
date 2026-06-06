@@ -474,17 +474,41 @@ let subst_row esub r =
 let instantiate_raw (Forall (vars, evars, t)) =
   let sub = List.map (fun id -> (id, fresh_var ())) vars in
   let esub = List.map (fun id -> (id, fresh_effvar ())) evars in
-  let rec walk t = match normalize t with
+  (* Phase 146: re-open a CLOSED row that carries concrete labels when an
+     effectful scheme is instantiated — but ONLY at a covariant (positive)
+     position, i.e. an arrow that the value itself produces.  A scheme's `<IO>`
+     arrow means "performs IO"; at an occurrence that arrow behaves like any
+     inference-synthesized arrow — its labels must flow into / be bounded by the
+     using context, exactly the open-row subsumption discipline unify_row already
+     enforces.  Leaving it closed lets a concrete effectful value
+     (`putStrLn : String -> <IO> Unit`) unify None/None against a pure closed
+     bound (an annotation, a ctor field, a list element) and silently drop its
+     labels — the laundering hole.  Re-opening turns every such meeting into the
+     Some/None subset check, which rejects the escape.
+
+     Variance matters: only the value's OWN (covariant) arrows are re-opened.
+     A row in CONTRAVARIANT position — a constructor field / function parameter
+     the scheme *accepts*, e.g. `VPrim (Value -> <Mut> Value)` — must stay
+     closed, or a legitimately pure argument passed into that effect-allowing
+     slot (safe subsumption: pure ⊆ <Mut>) would be wrongly rejected.  Pure
+     (label-less) rows are never re-opened: they have nothing to leak. *)
+  let reopen pos r =
+    let r = subst_row esub r in
+    match pos, r.tail, r.labels with
+    | true, None, (_ :: _) -> { r with tail = Some (fresh_effvar ()) }
+    | _ -> r
+  in
+  let rec walk pos t = match normalize t with
     | TVar v ->
       (match !v with
        | Unbound (id, _) -> (try List.assoc id sub with Not_found -> TVar v)
        | Link _ -> fail (InternalError "instantiate: Link survived normalize"))
     | TCon _ as t -> t
-    | TApp (a, b)  -> TApp (walk a, walk b)
-    | TFun (a, r, b) -> TFun (walk a, subst_row esub r, walk b)
-    | TTuple ts    -> TTuple (List.map walk ts)
+    | TApp (a, b)  -> TApp (walk pos a, walk pos b)
+    | TFun (a, r, b) -> TFun (walk (not pos) a, reopen pos r, walk pos b)
+    | TTuple ts    -> TTuple (List.map (walk pos) ts)
   in
-  (sub, walk t)
+  (sub, walk true t)
 
 let instantiate s = snd (instantiate_raw s)
 
