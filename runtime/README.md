@@ -12,7 +12,7 @@ fits in the backend plan.
 > **`medaka_rt.c` is NOT the real runtime.** It is the minimal stub the Stage-2.4
 > *de-risking spike* (`../selfhost/llvm_emit.mdk`) links against to prove the
 > emit → `clang` → link → run → diff toolchain end-to-end for the scalar + function
-> + ADT/match subset (slices 1–3). The real runtime (~54 leaf C functions per
+> + ADT/match + closure/HOF subset (slices 1–4). The real runtime (~54 leaf C functions per
 > RUNTIME-DESIGN.md §5) is built slice-by-slice later, after the bytecode VM (§2.2)
 > proves the same ABI against the tree-walker oracle.
 
@@ -20,7 +20,7 @@ What the stub provides today (4 functions):
 
 | Symbol | Role |
 |--------|------|
-| `mdk_alloc(i64) -> ptr` | Heap allocation entry point. **Spike: malloc-and-leak** (GC deferred — the later step is `brew install bdw-gc` and routing this to `GC_malloc`). Boxes the slice-1 `Float` cell and (slice 3) every ADT constructor cell `{ i64 tag, field… }`; every extern that *returns* a Medaka value must allocate through here so the GC swap is one function (RUNTIME-DESIGN.md §2a). |
+| `mdk_alloc(i64) -> ptr` | Heap allocation entry point. **Spike: malloc-and-leak** (GC deferred — the later step is `brew install bdw-gc` and routing this to `GC_malloc`). Boxes the slice-1 `Float` cell, (slice 3) every ADT constructor cell `{ i64 tag, field… }`, and (slice 4) every closure cell `{ i64 header, code_ptr, captured… }`; every extern that *returns* a Medaka value must allocate through here so the GC swap is one function (RUNTIME-DESIGN.md §2a). |
 | `mdk_print_int(i64)` | Print an `Int`. Matches the tree-walker oracle: `Eval.pp_value (VInt n)` + newline. |
 | `mdk_print_bool(i64)` | Print a `Bool` (`true`/`false`). |
 | `mdk_print_float(double)` | Print a `Float`, reproducing OCaml `string_of_float` byte-for-byte (`%.12g` + a trailing `.` when integral, e.g. `14.`). |
@@ -42,6 +42,11 @@ The spike uses a uniform 64-bit tagged word, **revisable in one place** (this fi
   The tag is the constructor name hashed to an i64 (computed in the emitter, so the
   stored tag and a `match`'s compared tag are the same constant by construction —
   no runtime hash). Same boxed-pointer discipline as `Float`, extended to N fields.
+- **Closure (slice 4)** — boxed: the word is a pointer to a cell
+  `{ i64 header, i64 code_ptr, capt0, capt1… }` (RUNTIME-DESIGN.md §8.5), the same
+  cell shape as an ADT (header + fields), so it shares the `mdk_alloc` path. A
+  higher-order call loads `code_ptr` and `call`s it passing the closure word as the
+  leading argument; the runtime itself stays oblivious (no closure-specific symbol).
 
 These helpers take/return *native* C scalars (the emitter untags/unboxes first), so
 the runtime stays a plain C-ABI leaf with no knowledge of the tag scheme beyond the
