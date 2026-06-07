@@ -1,0 +1,22 @@
+-- Boehm-GC verification: high-churn cons-cell allocation.
+--
+-- Each round builds a FRESH `[1..=width]` list (width cons cells via emitRangeList)
+-- and folds it to a scalar; the list dies at the end of the round.  `loop` is a
+-- tail-recursive accumulator (lowers to `musttail`, so no native stack growth),
+-- so over `rounds` rounds the program allocates rounds*width cons cells while
+-- only ONE list is ever live.  Under the old malloc-and-leak allocator RSS would
+-- grow without bound; under Boehm it stays flat — and the stdout is fully
+-- deterministic, so the gate still diffs byte-for-byte against the tree-walker.
+--
+-- Kept modest here so the tree-walker oracle finishes quickly; the unbounded-RSS
+-- demonstration scales `rounds`/`width` far higher against the native binary only
+-- (see the commit notes / RUNTIME-DESIGN.md §8 — GC_get_heap_size + bounded RSS).
+sumL lst = match lst
+  x :: xs => x + sumL xs
+  [] => 0
+
+loop rounds width acc =
+  if rounds == 0 then acc
+  else loop (rounds - 1) width (acc + sumL [1..=width])
+
+main = loop 1000 500 0

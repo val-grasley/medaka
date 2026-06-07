@@ -29,18 +29,30 @@
  * The tag arithmetic lives in the EMITTED IR (so the cost is visible); these
  * helpers take/return *native* C scalars (the emitter untags/unboxes first).
  *
- * GC: DEFERRED for the spike — mdk_alloc is malloc-and-leak.  The later step is
- *   `brew install bdw-gc` and routing mdk_alloc -> GC_malloc.
+ * GC: the spike now runs on the Boehm conservative collector (bdw-gc).  mdk_alloc
+ *   routes to GC_malloc; immediates are odd words (low bit 1), so Boehm never
+ *   mistakes an Int/Char/Bool/Unit/nullary-ctor for a pointer, and every boxed
+ *   value is an 8-byte-aligned real pointer Boehm tracks natively
+ *   (RUNTIME-DESIGN.md §8.0 fact 3, §8.1).  Precise GC remains future work.
  */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdnoreturn.h>
+#include <gc.h>
 
-/* Allocate `n` bytes in the (eventual) GC heap.  Spike: malloc, never freed.
- * Every extern that RETURNS a Medaka value must go through this entry point so
- * the later GC swap is one function (RUNTIME-DESIGN.md §2a). */
-void *mdk_alloc(long long n) { return malloc((size_t)n); }
+/* Initialize Boehm once before main().  The emitted IR owns `main`, so we can't
+ * call GC_INIT() from it; a constructor runs first, near the bottom of the stack,
+ * which is where GC_INIT wants to capture the stack base (recommended on macOS).
+ * GC_malloc would otherwise lazily init on its first call. */
+__attribute__((constructor)) static void mdk_gc_init(void) { GC_INIT(); }
+
+/* Allocate `n` bytes in the GC heap.  Routes to Boehm's GC_malloc (conservative,
+ * collected); every extern that RETURNS a Medaka value goes through this single
+ * entry point, so the malloc->GC swap was one function (RUNTIME-DESIGN.md §2a).
+ * GC_malloc returns >=8-byte-aligned, zeroed memory — satisfying the boxed-pointer
+ * alignment contract the value rep relies on. */
+void *mdk_alloc(long long n) { return GC_malloc((size_t)n); }
 
 noreturn void mdk_oob(void) {
   fprintf(stderr, "array index out of bounds\n");

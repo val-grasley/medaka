@@ -200,7 +200,7 @@ deliberately deferred to here:
     only the tree-walker oracle). Proves the decided toolchain end-to-end (EMIT
     textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings):
     `selfhost/llvm_emit.mdk` + `llvm_emit_main.mdk` + `runtime/medaka_rt.c`
-    (malloc-and-leak stub; GC deferred), gated by `test/diff_selfhost_llvm.sh`
+    (Boehm `GC_malloc` allocator since 2026-06-07; was a malloc-and-leak stub), gated by `test/diff_selfhost_llvm.sh`
     (emit → clang → link → run → diff vs `dev/eval_probe.exe`, **43/43
     byte-identical**). Slices cover scalars (1), top-level fns + `musttail`
     self-recursion (2), Bool/Float boundaries (2b), ADT ctors + decision-tree match
@@ -371,10 +371,17 @@ arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
    §8 status banner + §8.4. This unblocks item 2.
 2. **Promote the spike to the real LLVM backend** (§2.4). The spike covers the Core
    IR but is explicitly *not* the real backend; the remaining lifts are the
-   decision-dense ones deferred by design: a **GC** (Boehm to start — the spike is
-   malloc-and-leak), the **native extern catalog** re-implementation (per-extern
-   disposition in RUNTIME-DESIGN), and the spike's out-of-scope gaps
-   (arg-tag dispatch on non-ADT/Int args, nested-requires dicts). ~~the **dense i32
+   decision-dense ones deferred by design: ~~a **GC** (Boehm to start — the spike is
+   malloc-and-leak)~~ **DONE (2026-06-07)** — `mdk_alloc` now routes to Boehm's
+   `GC_malloc` (conservative GC), unblocked by the nullary-ctor IMMEDIATE rep (every
+   immediate is odd, every boxed value an 8-byte-aligned pointer, so Boehm's scan is
+   sound). Gate clang lines locate libgc via pkg-config / `brew --prefix bdw-gc` and
+   skip cleanly (exit 2) when absent. Verified active (not a silent malloc fallback):
+   the binary links `libgc` and `mdk_alloc` calls `_GC_malloc`, and a 2×10⁸-cons
+   churn fixture (`test/llvm_fixtures/gc_stress.mdk`, scaled up) holds ~3 MB RSS
+   where malloc-and-leak hits ~614 MB. The **native extern catalog** re-implementation
+   (per-extern disposition in RUNTIME-DESIGN) and the spike's out-of-scope gaps
+   (arg-tag dispatch on non-ADT/Int args, nested-requires dicts) remain. ~~the **dense i32
    ctor-ordinal** tag emission~~ **DONE (2026-06-07)** — the spike now stamps the
    ratified per-type ctor ordinal (a composite `typeId<<32 | ordinal`: the low half
    is the dense per-type 0-based ordinal `br_table` wants; the high half is a per-type

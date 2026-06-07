@@ -38,6 +38,21 @@ CC="${CC:-clang}"
 [ -x "$PROBE" ] || { echo "build first: dune build --root . (missing $PROBE)"; exit 2; }
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping spike"; exit 2; }
 
+# Boehm GC (bdw-gc) — the spike's allocator.  Locate it portably; skip cleanly
+# (exit 2, like the no-compiler case) when absent so CI without libgc doesn't
+# hard-fail.  pkg-config first (portable), then a Homebrew keg, then a bare -lgc
+# probe on the default path.  `brew --prefix bdw-gc` prints a path even when the
+# keg is NOT installed, so the include header must actually exist.
+if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then
+  GC_CFLAGS="$(pkg-config --cflags bdw-gc)"; GC_LIBS="$(pkg-config --libs bdw-gc)"
+elif GC_PREFIX="$(brew --prefix bdw-gc 2>/dev/null)" && [ -n "$GC_PREFIX" ] && [ -f "$GC_PREFIX/include/gc.h" ]; then
+  GC_CFLAGS="-I$GC_PREFIX/include"; GC_LIBS="-L$GC_PREFIX/lib -lgc"
+elif printf '#include <gc.h>\nint main(void){return 0;}\n' | "$CC" -x c - -lgc -o /dev/null 2>/dev/null; then
+  GC_CFLAGS=""; GC_LIBS="-lgc"
+else
+  echo "libgc (bdw-gc) not found — skipping spike (install bdw-gc, or set GC_PREFIX)"; exit 2
+fi
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -51,7 +66,7 @@ for f in "$FIXDIR"/*.mdk; do
   if ! "$MAIN" run "$EMIT" "$f" > "$ll" 2>"$WORK/emit.err"; then
     fail=$((fail+1)); printf 'FAIL %s (emit)\n%s\n' "$name" "$(cat "$WORK/emit.err")"; continue
   fi
-  if ! "$CC" "$ll" "$RT" -o "$bin" 2>"$WORK/cc.err"; then
+  if ! "$CC" $GC_CFLAGS "$ll" "$RT" $GC_LIBS -o "$bin" 2>"$WORK/cc.err"; then
     fail=$((fail+1)); printf 'FAIL %s (clang)\n%s\n' "$name" "$(cat "$WORK/cc.err")"; continue
   fi
   self="$("$bin" 2>/dev/null)"

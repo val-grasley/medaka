@@ -410,7 +410,15 @@ dominate the choice:
    precise GC. Conservative scanning of the C stack/heap interprets any word that
    *looks like* an aligned heap pointer as a live reference. This **couples the rep
    to GC correctness** and is the single most decision-changing constraint — it is
-   what eliminates the otherwise-attractive NaN-box (see 8.2).
+   what eliminates the otherwise-attractive NaN-box (see 8.2). **Spike status
+   (2026-06-07): live — `runtime/medaka_rt.c`'s `mdk_alloc` now routes to Boehm's
+   `GC_malloc` (`GC_INIT()` once via a constructor before the emitted `main`).** The
+   nullary-ctor IMMEDIATE rep made this sound across the whole value set: every
+   immediate is odd, every boxed value an 8-byte-aligned real pointer, so Boehm's
+   conservative scan never mistakes a scalar for a pointer and never misses a live
+   cell. Verified collecting (not a silent malloc fallback): a 2×10⁸-cons churn
+   program holds ~3 MB RSS where malloc-and-leak balloons to ~600 MB. Precise GC
+   remains future work.
 
 Also load-bearing, and already decided elsewhere in this doc: `hash`/`inspect` are
 `→METHOD` and `Eq`/`Ord`/`Debug` are typeclass methods (§2c, §4). So **the runtime
@@ -441,7 +449,9 @@ this: `{ i64 header, double }`.
 - **Conservative-GC-friendly** (fact 3) — immediates are *odd*, so Boehm never
   mistakes an `Int`/`Char`/`Bool` for a pointer; real pointers are genuine aligned
   pointers Boehm tracks natively. No hidden pointers, no displacement tricks. This
-  is the property NaN-box cannot offer under Boehm.
+  is the property NaN-box cannot offer under Boehm. **The spike now runs on Boehm**
+  (2026-06-07): `mdk_alloc` → `GC_malloc`; this odd-immediate invariant is exactly
+  what makes the conservative scan sound, now that nullary ctors are immediates too.
 - **Nullary constructors are free** — `None`/`Nil`/enum tags never allocate, a real
   win for the `Option`/`List`/`Result`-heavy stdlib.
 - **Proven** — it is what the spike runs, and it is OCaml's battle-tested scheme,
