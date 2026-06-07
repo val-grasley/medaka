@@ -64,7 +64,9 @@ SLICE3="arrays_ranges records refs_mut"
 SLICE23="string_ranges_infix rec_pat_tree"
 
 # slice 4 — closures, letrec, where-blocks (IMakeClosure/ILetBound/ILetRec/ILetGroup)
-SLICE4="hof_compose shadow_closure guards_where guarded_clauses"
+# effect_poly: an effect-polymorphic combinator (HOF + Ref) — its <e> row erases
+# to nothing, so the VM runs it identically to the tree-walker (STAGE2-DESIGN §2.3).
+SLICE4="hof_compose shadow_closure guards_where guarded_clauses effect_poly"
 
 # slice 5 — typeclass dispatch (IMethod/IDict + impl install)
 SLICE5="dispatch_basic dispatch_default dispatch_multi"

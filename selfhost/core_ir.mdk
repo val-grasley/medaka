@@ -23,6 +23,25 @@
 --     "dictionaries already explicit" the design names as the foundation both
 --     backends share.  (Emitted/evaluated from slice 5 on; present now so the IR
 --     type is complete.)
+--   • EFFECTS FULLY ERASED — the frozen-IR contract for effect-polymorphism
+--     (STAGE2-DESIGN §2.3).  Effects are TYPE-level only: they live inside `Ty`
+--     (`TyEffect`, `ast.mdk`) and the typechecker's `EffRow`/`Effvar` arrows
+--     (`typecheck.mdk`), never as standalone expression nodes, and the language
+--     has NO runtime effect construct (no perform/handle/resume — Phase 146 is a
+--     typecheck-time discipline: open-row inference, propagation, escape,
+--     laundering).  So effects erase WITH types at lowering
+--     (`lower (EAnnot e _) = lower e` in core_ir_lower.mdk) and the runtime has
+--     nothing to witness.  Representation after erasure, stated as a freeze:
+--     an effect-polymorphic function is represented IDENTICALLY to a monomorphic
+--     one — no effect node, no effect parameter, no effect-directed dispatch.
+--     This is the exact OPPOSITE of typeclass polymorphism: a `=>` constraint
+--     carries a runtime witness (the `CMethod`/`CDict` dict above); a `<e>`
+--     effect row carries NONE.  Dispatch is type-head directed, not effect
+--     directed, so erasure cannot perturb a `Route`.  (Verified by equivalence:
+--     a combinator instantiated at `<Mut>` and at the pure row evaluates
+--     identically across tree-walker / Core IR / bytecode VM — fixture
+--     `test/eval_fixtures/effect_poly.mdk`; the Core IR dump carries 0 effect
+--     tokens.)
 --
 -- Validation (the net-new-IR oracle problem, §2.1): there is no OCaml reference
 -- for Core IR.  It is validated by EQUIVALENCE — lower the elaborated AST to Core

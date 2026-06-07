@@ -252,9 +252,10 @@ every site is at a concrete type (the `Parser` monad, no `=>` constraints,
 - **Effect propagation** is fully ported (Phase 146 selfhost mirror, 2026-06-06):
   the self-hosted typechecker now does open-row inference, propagation, escape, and
   laundering checks — no longer annotation-only. Both backends *erase* effects at
-  runtime, so this blocks neither's execution — but a "frozen Core IR"
-  (`PLAN.md:200`) should still define how effect-polymorphic code is *represented*
-  even when erased.
+  runtime, so this blocks neither's execution — and the "frozen Core IR"
+  (`PLAN.md:200`) now **defines** how effect-polymorphic code is represented when
+  erased: full erasure, no runtime witness, effect-poly ≡ monomorphic (§2.3,
+  DONE 2026-06-07).
 
 **Verdict:** neutral between the options on *what must close* — both need the same
 gaps closed for arbitrary programs, neither needs them for the RKey-only
@@ -437,7 +438,8 @@ externs, and GC. Slices mirror `eval.mdk`'s own progression:
 6. ✅ **DONE (2026-06-06)** multi-module (`eval_modules` per-module-frame semantics).
 - **Gate per slice:** `eval_bytecode_main.mdk` output byte-identical to the
   tree-walker over the existing fixtures — the exact `diff_selfhost_eval*.sh`
-  harness shape, no new oracle. **Current: 18/18, 0 deferred (~1.5s).**
+  harness shape, no new oracle. **Current: 19/19, 0 deferred (~1.5s)** (the
+  19th, `effect_poly`, is the §2.3 item-3 effect-erasure regression).
 - **Capstone DONE (2026-06-06):** the VM runs the self-hosted lexer stage through
   `eval_bytecode_modules_main.mdk` and reproduces `selfproc_lex_probe.mdk` output
   byte-for-byte against the OCaml oracle. Harness: `test/diff_selfhost_bytecode_selfproc.sh`
@@ -454,7 +456,8 @@ externs, and GC. Slices mirror `eval.mdk`'s own progression:
 **2.3 — Close the front-end gaps the VM surfaces.** Harden the elaborated-AST / IR
 contract LLVM will inherit: dict-passing residuals (prelude constrained fns,
 nested/structured dicts beyond the flat `VDict String`), and the Core IR's
-representation of erased effect-polymorphism. Each fix validated against the
+representation of erased effect-polymorphism (defined: full erasure, no runtime
+witness — see the §2.3 item below). Each fix validated against the
 tree-walker oracle — the cheap setting, before any native runtime exists.
 
 Concrete §2.3 items (surfaced by the §2.2 capstone harness,
@@ -491,9 +494,31 @@ Concrete §2.3 items (surfaced by the §2.2 capstone harness,
   exports `methodAtNarrow`/`applyValues` from `eval.mdk`.
   Gate: `test/diff_selfhost_bytecode_eval_dict.sh` — **17/17**. Also: `diff_selfhost_eval_dict.sh`
   still **17/17**, `diff_selfhost_bytecode_selfproc.sh` still **6/6**.
-- **Erased effect-polymorphism in Core IR** — a "frozen Core IR" should define
-  how effect-polymorphic code is *represented* after erasure (Phase 146 erases
-  effects at runtime; the Core IR carries no effect annotations today).
+- ✅ **DONE (2026-06-07) — Erased effect-polymorphism in Core IR.** The frozen-IR
+  contract is **full erasure — no runtime representation**, the opposite of
+  typeclass polymorphism. Established empirically, not assumed: effects are
+  TYPE-level only (`TyEffect` in `ast.mdk`; `EffRow`/`Effvar` arrows in
+  `typecheck.mdk`), never standalone expression nodes, and the language has **no
+  runtime effect construct** (no perform/handle/resume — Phase 146 is a
+  typecheck-time discipline: open-row inference, propagation, escape, laundering).
+  So effects erase WITH types at lowering (`lower (EAnnot e _) = lower e`,
+  `core_ir_lower.mdk`), `CExpr` carries no `Ty`/`EffRow` field, and the runtime has
+  nothing to witness. **Representation after erasure, frozen:** an
+  effect-polymorphic function is represented IDENTICALLY to a monomorphic one — no
+  effect node, no effect parameter, no effect-directed dispatch (dispatch is
+  type-head directed, so erasure cannot perturb a `Route`). Contrast `=>`
+  constraints, which DO carry a runtime witness (`CMethod`/`CDict`); `<e>` rows
+  carry none. The contract is documented in the `core_ir.mdk` header (the new
+  "EFFECTS FULLY ERASED" bullet beside DESUGARED / PRIMITIVE / LEXICALLY ADDRESSED
+  / DICTS EXPLICIT). Gate: `test/eval_fixtures/effect_poly.mdk` — a combinator
+  `runTwice : (a -> <e> a) -> a -> <e> a` whose row is instantiated at `<Mut>`
+  (a `set_ref` callback) and at the pure row; iterated by all three engine
+  harnesses (`diff_selfhost_eval.sh` / `diff_selfhost_core_ir.sh` /
+  `diff_selfhost_eval_bytecode.sh`, `FIXDIR=.../eval_fixtures`) so the AST
+  tree-walker, the Core IR evaluator, AND the bytecode VM produce byte-identical
+  output, proving erasure is semantics-preserving on all three. The Core IR dump
+  carries **0** effect tokens. No new IR node (a dead field would contradict the
+  Phase-146 erasure design); no typechecker change.
 
 **2.4 — LLVM backend, same Core IR.** Swap consumers: Core IR → LLVM IR. The
 lexical addressing (2.0), decision-tree matches, and routing (2.1) are reused; the
