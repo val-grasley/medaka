@@ -108,7 +108,20 @@
 --     Cons(lo+i,acc) for i from count-1 downto 0) — avoids stack overflow and
 --     mirrors the slice-8 loop discipline.  See the "lists (slice 9)" section and
 --     §2.4a-6 in STAGE2-DESIGN.md for the (u)/(v) rep notes.
--- Still OUT of scope: arg-tag dispatch on non-ADT args; nested requires dicts; GC.
+--   • native extern catalog slice 1 — STRINGS + minimal string/IO externs (NOT a
+--     Core IR-surface slice; the first leg of the real-backend extern catalog,
+--     unblocked by Boehm GC).  Locks the String rep (RUNTIME-DESIGN §4/§7 decision
+--     2: UTF-8 bytes + cached codepoint count) as a boxed cell
+--     [ header | byte_len | cp_count | bytes… | NUL ].  `CLit (LString _)` emits a
+--     private `@.str.N` byte-array global (`\HH`-escaped, codepoints re-encoded to
+--     UTF-8 via utf8Bytes) + a run-time @mdk_str_lit box; `intToString` lowers to a
+--     direct @mdk_int_to_string call (first extern RETURNING a heap String — the
+--     §2a GC-alloc contract); a String-typed `main` auto-prints via @mdk_print_str
+--     (raw bytes + newline, matching pp_value (VString s) = s).  See the "string
+--     literals + string externs" section and §2.4a-7 for the (w)–(z) rep notes.
+-- Still OUT of scope: arg-tag dispatch on non-ADT args; nested requires dicts;
+-- further string/IO externs (charToStr/stringConcat/putStr/file-IO/unicode); the
+-- Char rep (gates charCode).
 -- An unsupported Core IR node panics with its tag (the spike refuses to emit wrong
 -- code rather than silently mis-lowering).
 --
@@ -145,6 +158,11 @@
 --   • Ref    — BOXED (slice 5a): 1-field cell [ i64 header | stored_value ].
 --            header = hashName "$ref".  .value loads field 0; set_ref stores into
 --            field 0.  Write barrier absent (malloc-and-leak, same as @mdk_alloc).
+--   • String — BOXED (native extern catalog slice 1): word is a pointer to a heap
+--            cell [ i64 header | i64 byte_len | i64 cp_count | UTF-8 bytes… | NUL ]
+--            (RUNTIME-DESIGN §4, rep LOCKED 2026-06-07).  Built by @mdk_str_lit
+--            (literals + intToString); cp_count cached so stringLength is O(1).
+--            GC-managed under Boehm for free (aligned pointer, low bit 0).
 
 import ast.{Lit(..), Pat(..), Addr(..), Route(..)}
 import core_ir.{CExpr(..), CField(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..), CImplEntry(..), CImplBody(..)}
@@ -163,7 +181,11 @@ import util.{reverseL, joinNl, lookupAssoc}
 -- arithmetic or print site in the supported subset, so it carries no payload type.
 -- `LTRef` (slice 5a) is a mutable ref cell pointer word.  Like `LTCon`/`LTClosure`,
 -- it never reaches an arithmetic or print site directly — so it carries no payload.
-data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure
+-- `LTStr` (native extern catalog slice 1) is a heap String value — a boxed cell
+-- pointer word (RUNTIME-DESIGN.md §4: UTF-8 bytes + cached codepoint count).  It
+-- flows as a call argument and reaches the top-level print site (mdk_print_str);
+-- it never reaches an arithmetic site, so it carries no payload type.
+data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
 -- — prepend is O(1); reverseL'd once at the end restores program order), the
@@ -446,11 +468,88 @@ emitLit _ (LBool b) = (if b then "3" else "1", LTBool)
 emitLit e (LFloat f) =
   let w = boxFloat e (floatToString f)
   (w, LTFloat)
-emitLit _ _ = panic "llvm spike: only Int/Float/Bool literals supported in slice 1"
+-- a String literal (native extern catalog slice 1): emit a private module-scope
+-- byte-array global for the UTF-8 bytes and box it at run time via @mdk_str_lit
+-- (which caches the codepoint count, RUNTIME-DESIGN.md §4).  Bytes are escaped
+-- one-per-`\HH` so the LLVM `c"…"` constant is byte-faithful to the source.
+emitLit e (LString s) =
+  let bytes = strBytes s
+  let n = lengthS bytes
+  let gid = ".str." ++ intToString (freshId e)
+  let _ = emitGlobal e ("@" ++ gid ++ " = private unnamed_addr constant [" ++ intToString n ++ " x i8] c\"" ++ escBytes bytes ++ "\"")
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = call i64 @mdk_str_lit(ptr @" ++ gid ++ ", i64 " ++ intToString n ++ ")")
+  (p, LTStr)
+emitLit _ _ = panic "llvm spike: only Int/Float/Bool/String literals supported in slice 1"
 
 lookupVar : List (String, (String, LTy)) -> String -> (String, LTy)
 lookupVar [] x = panic ("llvm spike: unbound variable " ++ x)
 lookupVar ((n, vt)::rest) x = if n == x then vt else lookupVar rest x
+
+-- ── string literals + string externs (native extern catalog slice 1) ─────────
+-- emit a module-scope line (a private string-literal global) into the side buffer
+-- the lifted-lambda defines also use — LLVM module-item order is irrelevant, so a
+-- `@.str.N = … constant …` appended after @main is sound (same discipline as the
+-- lifted `define`s).
+emitGlobal : Emit -> String -> <Mut> Unit
+emitGlobal e line = set_ref (lamsRef e) ((lamsRef e).value ++ [line])
+
+-- the raw UTF-8 bytes of a string literal, in order.  `stringToChars` yields the
+-- source codepoints; `utf8Bytes` re-encodes each to its UTF-8 byte sequence, so the
+-- emitted global is byte-faithful to the source whatever the codepoints' width.
+strBytes : String -> List Int
+strBytes s = strBytesGo (stringToChars s) 0
+
+strBytesGo : Array Char -> Int -> List Int
+strBytesGo cs i
+  | i >= arrayLength cs = []
+  | otherwise = utf8Bytes (charCode (arrayGetUnsafe i cs)) ++ strBytesGo cs (i + 1)
+
+-- encode one Unicode codepoint to its UTF-8 bytes (0..255).  The bit fields are
+-- disjoint, so `or` is `+` and the masks are `% 64`; no bitwise primitive needed.
+utf8Bytes : Int -> List Int
+utf8Bytes cp
+  | cp < 128 = [cp]
+  | cp < 2048 = [192 + (cp / 64), 128 + (cp % 64)]
+  | cp < 65536 = [224 + (cp / 4096), 128 + ((cp / 64) % 64), 128 + (cp % 64)]
+  | otherwise = [240 + (cp / 262144), 128 + ((cp / 4096) % 64), 128 + ((cp / 64) % 64), 128 + (cp % 64)]
+
+-- escape a byte list for an LLVM `c"…"` constant: EVERY byte as `\HH` (uppercase
+-- hex).  Always valid (no quoting edge cases) and exact — the constant's declared
+-- length is the byte count, and mdk_str_lit copies exactly that many bytes.
+escBytes : List Int -> String
+escBytes [] = ""
+escBytes (b::rest) = "\\" ++ hex2 b ++ escBytes rest
+
+hex2 : Int -> String
+hex2 b = hexDigit (b / 16) ++ hexDigit (b % 16)
+
+hexDigit : Int -> String
+hexDigit d
+  | d < 10 = intToString d
+  | d == 10 = "A"
+  | d == 11 = "B"
+  | d == 12 = "C"
+  | d == 13 = "D"
+  | d == 14 = "E"
+  | otherwise = "F"
+
+-- the string-returning leaf externs the spike lowers to direct C-ABI calls
+-- (RUNTIME-DESIGN.md §5 LEAF).  `intToString` is the first: it proves the §2a
+-- contract that an extern returning a Medaka value allocates it in the GC heap
+-- (mdk_int_to_string -> mdk_str_lit -> mdk_alloc).  charToStr/stringConcat/putStr
+-- are the obvious next additions (a follow-on slice).
+isStrExtern : String -> Bool
+isStrExtern name = containsStr name ["intToString"]
+
+emitStrExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitStrExtern e env "intToString" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_int_to_string(i64 " ++ a ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: intToString takes exactly one argument (slice 1)"
+emitStrExtern _ _ name _ = panic ("llvm spike: unsupported string extern " ++ name)
 
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
@@ -624,6 +723,7 @@ emitApp e env app =
     CVar fname _ =>
       if fname == "Ref" then emitRefAlloc e env args
       else if fname == "set_ref" then emitSetRef e env args
+      else if isStrExtern fname && hasArgs args then emitStrExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -1836,6 +1936,7 @@ typeOf : List (String, FnSig) -> List (String, LTy) -> CExpr -> LTy
 typeOf _ _ (CLit (LInt _)) = LTInt
 typeOf _ _ (CLit (LFloat _)) = LTFloat
 typeOf _ _ (CLit (LBool _)) = LTBool
+typeOf _ _ (CLit (LString _)) = LTStr
 typeOf _ env (CVar x _) = match lookupAssoc x env
   Some t => t
   None => LTInt
@@ -2498,6 +2599,9 @@ emitPreamble e =
   let _ = emit e "declare void @mdk_print_int(i64)"
   let _ = emit e "declare void @mdk_print_bool(i64)"
   let _ = emit e "declare void @mdk_print_float(double)"
+  let _ = emit e "declare i64 @mdk_str_lit(ptr, i64)"
+  let _ = emit e "declare void @mdk_print_str(i64)"
+  let _ = emit e "declare i64 @mdk_int_to_string(i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))
@@ -2518,6 +2622,8 @@ emitPrint e v LTBool =
 emitPrint e v LTFloat =
   let d = unboxFloat e v
   emit e ("  call void @mdk_print_float(double " ++ d ++ ")")
+emitPrint e v LTStr =
+  emit e ("  call void @mdk_print_str(i64 " ++ v ++ ")")
 emitPrint _ _ LTCon =
   panic "llvm spike: cannot print an ADT value (slice 3: `main` must reduce to a scalar Int/Bool/Float)"
 emitPrint _ _ LTClosure =

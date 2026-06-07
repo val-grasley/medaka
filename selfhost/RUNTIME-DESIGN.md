@@ -136,13 +136,15 @@ process-control primitive. `__fallthrough__` is compiler-internal (raised on a
 non-exhaustive match the checker couldn't rule out) — lower it to the same trap as
 `panic` with the standard "non-exhaustive match" message.
 
-**Strings & `stringLength` — representation-dependent.** If Medaka strings are
-stored UTF-8 with a cached codepoint count, `stringLength` is `INTRINSIC` (header
-read); if codepoint count is computed on demand it is `LEAF` (O(n) scan). Likewise
-`charCode` is `INTRINSIC` only if `Char` is a 32-bit codepoint. **Lock the string
-representation in §2a and revisit the two rows tagged `(rep)` below.** Medaka is
-codepoint-aware (per `runtime.mdk`), so favor a representation that keeps codepoint
-length and indexing cheap.
+**Strings & `stringLength` — DECIDED 2026-06-07 (§7 decision 2).** Medaka strings are
+stored **UTF-8 with a cached codepoint count** (boxed cell `[ header | byte_len |
+cp_count | bytes… | NUL ]`). So `stringLength` is **`INTRINSIC`** (read the cached
+`cp_count` header word — the `(rep)` row below resolves this way). `charCode` is
+INTRINSIC iff `Char` is a 32-bit codepoint — a *sibling* Char-rep decision the UTF-8
+string choice is consistent with (a decoded `Char` is a codepoint) but does not by
+itself lock; that row stays `(rep)`. Native-extern-catalog slice 1 has proven the
+literal/print/`intToString` path on this layout (`runtime/medaka_rt.c`,
+`llvm_emit.mdk`).
 
 ## 5. Per-extern disposition (all 71)
 
@@ -168,7 +170,7 @@ length and indexing cheap.
 | Extern | Signature | Disposition | Note |
 |--------|-----------|-------------|------|
 | `charToStr` | `Char -> String` | LEAF | encode codepoint → UTF-8, alloc |
-| `intToString` | `Int -> String` | LEAF | |
+| `intToString` | `Int -> String` | LEAF | **DONE — native-extern-catalog slice 1** (`mdk_int_to_string` → `mdk_str_lit`; first String-returning extern, proves the §2a GC-alloc contract) |
 | `floatToString` | `Float -> String` | LEAF | match `%g` rendering (see lexer float-text normalization note) |
 | `stringToFloat` | `String -> Option Float` | LEAF | alloc `Some`/`None` |
 | `debugStringLit` | `String -> String` | LEAF | escape rendering |
@@ -180,7 +182,7 @@ length and indexing cheap.
 | `stringConcat` | `List String -> String` | LEAF | single `gc_alloc` + blit; keep the amortized-O(1) behavior `PERF-NOTES.md` relies on |
 | `stringIndexOf` | `String -> String -> Option Int` | LEAF | |
 | `stringCompare` | `String -> String -> Ordering` | LEAF | returns `Lt`/`Eq`/`Gt` ctor |
-| `stringLength` | `String -> Int` | LEAF `(rep)` | INTRINSIC iff codepoint count is cached in the header |
+| `stringLength` | `String -> Int` | INTRINSIC `(rep)` | **DECIDED INTRINSIC** (cached `cp_count` header read) — string rep locked 2026-06-07, §7 decision 2 |
 | `arrayMake` | `Int -> a -> Array a` | LEAF | alloc + fill (opaque slots; no reflection) |
 | `arrayCopy` | `Array a -> Array a` | LEAF | |
 | `arrayBlit` | `Array a -> Int -> Array a -> Int -> Int -> <Mut> Unit` | LEAF | memmove of slots |
@@ -240,8 +242,10 @@ length and indexing cheap.
 | `inspect` | `a -> <IO> Unit` | →METHOD + IO | `Debug` render → `putStr` |
 
 ### Disposition totals
-`INTRINSIC` 12 · `LEAF` 19 · `UNICODE` 9 · `IO` 16 · `RNG` 5 · `GC/CTRL` 5 ·
-`→MEDAKA` 3 · `→METHOD` 2  = **71**.
+`INTRINSIC` 13 · `LEAF` 18 · `UNICODE` 9 · `IO` 16 · `RNG` 5 · `GC/CTRL` 5 ·
+`→MEDAKA` 3 · `→METHOD` 2  = **71**.  *(2026-06-07: `stringLength` reclassified
+`LEAF`→`INTRINSIC` when the string rep was locked with a cached codepoint count, §7
+decision 2.)*
 
 After applying `INTRINSIC` (no call), `→MEDAKA` (compiled Medaka), and `→METHOD`
 (typeclass), the **actual native runtime is ~54 leaf functions** — and every one
@@ -317,9 +321,19 @@ NOT separate forked language variants. The ratified middle path:
    semantics**. So §8's tagged word and the WasmGC constraint are not in conflict;
    they live at different layers. Gates every `LEAF` row and the two `(rep)` rows.
    (§2a; full reconciliation §8.6; rationale `STAGE2-DESIGN.md` §2.4/§2.4b.)
-2. **String representation** — UTF-8 + cached codepoint count vs. other; gates
-   `stringLength`/`charCode` intrinsic-vs-leaf and all string `LEAF`/`UNICODE`
-   helpers. (§4) — **still open.**
+2. **String representation — DECIDED 2026-06-07: UTF-8 bytes + cached codepoint
+   count** (the option §4 favored; Medaka is codepoint-aware). A `String` is a boxed
+   GC cell `[ i64 header | i64 byte_len | i64 cp_count | UTF-8 bytes… | NUL ]` — the
+   §8.1/§8.4 one-word-header boxed-pointer discipline, with two metadata words ahead
+   of the inline bytes. Caching `cp_count` is what makes the choice pay off. **(rep)-row
+   consequences** (§5): `stringLength` becomes **INTRINSIC** (a header read, not an
+   O(n) scan); `charCode` is INTRINSIC iff `Char` is a 32-bit codepoint — a *sibling*
+   `Char`-rep decision this String rep is consistent with but does not itself lock
+   (it stays `(rep)` until the Char rep is ratified). All string `LEAF`/`UNICODE`
+   helpers now target this layout. **Proven** by the native-extern-catalog slice 1
+   (`runtime/medaka_rt.c` `mdk_str_lit`/`mdk_print_str`/`mdk_int_to_string` +
+   `llvm_emit.mdk` `CLit (LString _)`; gated byte-identical by
+   `test/diff_selfhost_llvm{,_typed}.sh`).
 3. **GC**: Boehm-first is decided; the `gc_alloc`/object-header contract is now
    **partly settled** — the **uniform one-word header is ratified** (§8.4, 2026-06-07),
    so `gc_alloc` returns a `{header, fields…}` cell. **Still open:** whether `set_ref`
@@ -337,8 +351,10 @@ NOT separate forked language variants. The ratified middle path:
    spike thru slice 9 both exercised it; §2.2/§2.4).
 
 Decisions 1, 4, and 3's header half are now settled (2026-06-07 rep ratification, §8);
-2, the `set_ref` barrier, the unwind model, and string rep remain — all exercisable in
-the cheap, oracle-backed bytecode-VM/spike setting before any native runtime exists.
+string rep is now **DECIDED** too (2026-06-07, decision 2 above — UTF-8 + cached
+codepoint count). Remaining open: the `set_ref` write barrier and the `panic` unwind
+model — both exercisable in the cheap, oracle-backed bytecode-VM/spike setting before
+any native runtime exists.
 
 ## 8. Value representation & calling convention
 

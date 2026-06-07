@@ -1,0 +1,6 @@
+-- native extern catalog slice 1: intToString — the first LEAF extern that RETURNS
+-- a Medaka String (RUNTIME-DESIGN.md §5).  It allocates the result in the GC heap
+-- through mdk_int_to_string -> mdk_str_lit -> mdk_alloc (the §2a contract).  The
+-- tagged immediate arg is untagged in the runtime; decimal render matches OCaml
+-- string_of_int.
+main = intToString 42

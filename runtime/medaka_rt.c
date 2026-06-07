@@ -6,9 +6,11 @@
  * representation & calling convention" section of selfhost/RUNTIME-DESIGN.md).
  *
  * Scope discipline (matches the emitter): integers, floats, booleans, let, if,
- * functions, and (slice 3) algebraic data types + pattern matching — the latter
- * box constructor cells through the same mdk_alloc below.  No closures / records
- * / dispatch / GC.
+ * functions, (slice 3) algebraic data types + pattern matching, and (native
+ * extern catalog slice 1) heap Strings + the minimal string/IO leaf externs
+ * (`mdk_str_lit`, `mdk_print_str`, `mdk_int_to_string`).  ADT and String cells
+ * box through the same mdk_alloc below.  No closures / records / dispatch beyond
+ * what the emitter already drives.
  *
  * VALUE REPRESENTATION (PROVISIONAL — see RUNTIME-DESIGN.md, revisable):
  *   A Medaka value is a uniform 64-bit word (`i64` in the IR).
@@ -78,4 +80,67 @@ void mdk_print_float(double d) {
       !strchr(buf, 'n') && !strchr(buf, 'i')) /* skip nan/inf */
     strcat(buf, ".");
   printf("%s\n", buf);
+}
+
+/* ── Strings (native extern catalog, slice 1) ────────────────────────────────
+ * STRING REPRESENTATION — LOCKED 2026-06-07 (RUNTIME-DESIGN.md §4 / §7 decision
+ * 2): UTF-8 bytes + a CACHED codepoint count, boxed as one GC cell:
+ *
+ *   offset  0:  i64 header     layout id (MDK_STR_TAG; not yet tag-tested — no
+ *                              String match heads in this slice)
+ *   offset  8:  i64 byte_len   number of UTF-8 bytes (raw / untagged)
+ *   offset 16:  i64 cp_count   cached codepoint count  ->  stringLength is O(1)
+ *   offset 24:  byte_len bytes of UTF-8, then a NUL (for cheap C interop)
+ *
+ * Caching cp_count is the choice §4 calls for (Medaka is codepoint-aware): it
+ * makes `stringLength` INTRINSIC (a header read) rather than an O(n) scan — see
+ * the §5 (rep)-row reconciliation in RUNTIME-DESIGN.md.  The cell rides the same
+ * one-word-header boxed-pointer discipline (§8.1 / §8.4) as every other heap
+ * value, so it is GC-managed for free under Boehm: the value word is an aligned
+ * pointer (low bit 0) Boehm tracks, and the inline bytes are scanned harmlessly.
+ *
+ * Per §2a, every extern that RETURNS a Medaka String allocates it here, through
+ * mdk_alloc -> GC_malloc, with this exact layout — it never hands back a
+ * native-owned buffer.  mdk_int_to_string is the first such extern. */
+#define MDK_STR_TAG 1
+
+/* Count UTF-8 codepoints in the first `n` bytes of `p`: every byte that is not a
+ * 0b10xxxxxx continuation byte starts a new codepoint. */
+static long long mdk_utf8_cp_count(const char *p, long long n) {
+  long long c = 0;
+  for (long long i = 0; i < n; i++)
+    if (((unsigned char)p[i] & 0xC0) != 0x80) c++;
+  return c;
+}
+
+/* Build a boxed String cell from `byte_len` raw UTF-8 bytes; return the value
+ * word (cell pointer as i64, low bit 0).  The single GC allocation every
+ * String-returning extern (and the emitter's string literals) routes through. */
+long long mdk_str_lit(const char *bytes, long long byte_len) {
+  char *cell = (char *)mdk_alloc(24 + byte_len + 1);
+  ((long long *)cell)[0] = MDK_STR_TAG;
+  ((long long *)cell)[1] = byte_len;
+  ((long long *)cell)[2] = mdk_utf8_cp_count(bytes, byte_len);
+  memcpy(cell + 24, bytes, (size_t)byte_len);
+  cell[24 + byte_len] = '\0';
+  return (long long)cell;
+}
+
+/* Print a String RAW (no quoting).  Matches Eval.pp_value (VString s) = s, then
+ * the oracle's trailing newline (eval_probe / selfhost ppValue). */
+void mdk_print_str(long long w) {
+  const char *cell = (const char *)w;
+  long long byte_len = ((const long long *)cell)[1];
+  fwrite(cell + 24, 1, (size_t)byte_len, stdout);
+  putchar('\n');
+}
+
+/* intToString : Int -> String  (LEAF, RUNTIME-DESIGN.md §5).  The argument is a
+ * TAGGED immediate int word; untag (arithmetic shift), render decimal to match
+ * OCaml string_of_int, and box the result through mdk_str_lit. */
+long long mdk_int_to_string(long long tagged) {
+  long long n = tagged >> 1;
+  char buf[32];
+  int len = snprintf(buf, sizeof buf, "%lld", n);
+  return mdk_str_lit(buf, len);
 }

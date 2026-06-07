@@ -1,0 +1,4 @@
+-- native extern catalog slice 1: multi-byte UTF-8 literal.  The emitter re-encodes
+-- each source codepoint to its UTF-8 bytes (utf8Bytes), so the global is byte-
+-- faithful to the source; mdk_str_lit caches the codepoint count.  Prints raw.
+main = "café — déjà vu ☕"

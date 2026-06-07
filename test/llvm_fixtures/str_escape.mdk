@@ -1,0 +1,5 @@
+-- native extern catalog slice 1: escape sequences in a String literal.  Tab,
+-- newline, quote, and backslash bytes must survive the lex -> emit (per-byte `\HH`
+-- LLVM constant) -> mdk_str_lit -> mdk_print_str path byte-for-byte (the internal
+-- newline is preserved; only the trailing newline is stripped by the gate's `$()`).
+main = "a\tb\nc\"d\\e"

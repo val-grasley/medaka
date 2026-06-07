@@ -1,0 +1,4 @@
+-- native extern catalog slice 1: a plain ASCII String literal.  Boxed via
+-- @mdk_str_lit (UTF-8 bytes + cached codepoint count, RUNTIME-DESIGN.md §4) and
+-- printed RAW by mdk_print_str — must match Eval.pp_value (VString s) = s.
+main = "hello, world"

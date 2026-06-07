@@ -56,7 +56,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 — **full non-GC Core IR surface covered** (43/43 gate); §2.0 closed; **value rep RATIFIED (2026-06-07** — Option A tagged word under §8.6 contract, dense i32 ctor-ordinal, uniform header**)**; **ordinal tags now emitted by the spike (2026-06-07)**; next = real backend (GC + extern catalog) → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 — **full non-GC Core IR surface covered** (43/43 gate); §2.0 closed; **value rep RATIFIED (2026-06-07** — Option A tagged word under §8.6 contract, dense i32 ctor-ordinal, uniform header**)**; **ordinal tags now emitted by the spike (2026-06-07)**; **GC live (Boehm) + native extern catalog slice 1 (Strings) done (2026-06-07)**; next = extern-catalog remainder + dispatch gaps → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -380,7 +380,16 @@ arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
    the binary links `libgc` and `mdk_alloc` calls `_GC_malloc`, and a 2×10⁸-cons
    churn fixture (`test/llvm_fixtures/gc_stress.mdk`, scaled up) holds ~3 MB RSS
    where malloc-and-leak hits ~614 MB. The **native extern catalog** re-implementation
-   (per-extern disposition in RUNTIME-DESIGN) and the spike's out-of-scope gaps
+   (per-extern disposition in RUNTIME-DESIGN) — **slice 1 DONE (2026-06-07): Strings**
+   — the String rep is now LOCKED (RUNTIME-DESIGN §4/§7 decision 2: UTF-8 bytes +
+   cached codepoint count, boxed `[header|byte_len|cp_count|bytes|NUL]`, so
+   `stringLength` is INTRINSIC); `runtime/medaka_rt.c` gains `mdk_str_lit` /
+   `mdk_print_str` / `mdk_int_to_string`, the emitter lowers `CLit (LString _)` +
+   `intToString` (`selfhost/llvm_emit.mdk`), and 5 plain + 2 typed string fixtures gate
+   byte-identical (STAGE2-DESIGN §2.4a-7). `intToString` is the first extern returning a
+   heap Medaka value (proves the §2a GC-alloc contract). **Catalog remainder** —
+   `charToStr`/`stringConcat`/`putStr`/file-IO/unicode/RNG, the `Char` rep (gates
+   `charCode`) — and the spike's out-of-scope gaps
    (arg-tag dispatch on non-ADT/Int args, nested-requires dicts) remain. ~~the **dense i32
    ctor-ordinal** tag emission~~ **DONE (2026-06-07)** — the spike now stamps the
    ratified per-type ctor ordinal (a composite `typeId<<32 | ordinal`: the low half

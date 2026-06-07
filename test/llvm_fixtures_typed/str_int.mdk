@@ -1,0 +1,4 @@
+-- native extern catalog slice 1 (typed gate): intToString through the typed emit
+-- path.  The extern is declared in runtime.mdk (passed to both the oracle and the
+-- emitter); it lowers to a direct @mdk_int_to_string call returning a heap String.
+main = intToString 99
