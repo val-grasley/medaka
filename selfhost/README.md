@@ -114,6 +114,8 @@ sh test/diff_selfhost_eval_bytecode_modules.sh #   …slice 6 — multi-module p
 sh test/diff_selfhost_eval_bytecode_typed.sh  #   …typed path: elaborate→lower→VM vs `medaka run` oracle (3 ok)
 sh test/diff_selfhost_eval_bytecode_run.sh    #   …true-execution stdout: shadow-drop→annotate→lower→VM vs EVAL goldens (18 ok)
 sh test/diff_selfhost_bytecode_selfproc.sh    #   §2.2 capstone + §2.3 item 1: lex/parse/tc through untyped+typed bytecode VM (6/6 ok)
+sh test/diff_selfhost_eval_dict.sh            #   §2.3 item 2: dict-passing corpus through typed tree-walker (17/17 ok)
+sh test/diff_selfhost_bytecode_eval_dict.sh   #   §2.3 item 2: same corpus through typed bytecode VM (17/17 ok)
 sh test/diff_selfhost_llvm.sh                 # Stage 2 §2.4 LLVM spike — emit→clang→link→run→diff, scalar + function + Bool/Float + ADT/match + closure/HOF + records/tuples/refs + list/tuple-match/rec-closure slices (35/35; needs clang)
 
 # Per-stage wall-clock profiling (measurement only; output goes to stderr):
@@ -974,14 +976,14 @@ multi-module VM and reproduce its output byte-for-byte against the OCaml oracle.
   frames and produces the exact same token stream as `medaka run selfproc_lex_probe.mdk`
   (OCaml reference eval_modules). The lexer uses only untyped eval — no return-position
   dispatch — so the untyped bytecode VM handles it fully.
-- **Parse/TC probes — expected §2.3 gap.** `selfproc_parse_probe.mdk` and
-  `selfproc_tc_probe.mdk` fail through the untyped bytecode VM (panic:
-  non-exhaustive match in `eval.mdk:516`) because those stages use the `Parser`
-  monad whose `pure`/`andThen` are return-position dispatch — the same reason Leg
-  B stops at the lexer in `diff_selfhost_selfproc.sh`. Closing this gap requires
-  a typed multi-module bytecode path analogous to `eval_typed_modules_main.mdk`,
-  scoped to §2.3. Documented in `test/diff_selfhost_bytecode_selfproc.sh` as
-  expected-gaps (3/3 ok: 1 real pass + 2 documented).
+- **Parse/TC probes — closed by §2.3 item 1.** `selfproc_parse_probe.mdk` and
+  `selfproc_tc_probe.mdk` previously failed through the untyped bytecode VM because
+  those stages use the `Parser` monad whose `pure`/`andThen` are return-position
+  dispatch. Closed by `eval_bytecode_typed_modules_main.mdk` (§2.3 item 1): the typed
+  multi-module bytecode path runs `elaborateModules` before lowering, so all three
+  selfproc probes (lex/parse/tc) now pass byte-for-byte through the typed VM.
+  Gate: `test/diff_selfhost_bytecode_selfproc.sh` — 6/6 ok (typed-VM section 3/3; untyped-VM
+  parse/tc still carry expected-gap annotations — by design, untyped VM lacks return-pos dispatch).
 - **Performance:** 2.74× slower than the tree-walker intra-process on the lex
   probe (tree-walker 0.240s, bytecode VM 0.657s, min-of-3). The predicted
   structural win (no AST re-dispatch + O(1) slot loads + compiled decision trees)
@@ -1011,8 +1013,9 @@ and **INFERRED (unsignatured) constraints** — a function with no `=>` signatur
 whose body uses a return-position method (or *calls* a constrained fn) at one of
 its own tyvars is promoted automatically, including a constraint that propagates
 through a call **chain** to an unsignatured caller.
-Validated against `medaka run` by `test/diff_selfhost_eval_dict.sh` (11 fixtures in
-`test/eval_dict_fixtures/`).
+Validated against `medaka run` by `test/diff_selfhost_eval_dict.sh` (17 fixtures in
+`test/eval_dict_fixtures/`). Also validated through the typed bytecode VM by
+`test/diff_selfhost_bytecode_eval_dict.sh` — same 17 fixtures, 17/17 byte-identical (§2.3 item 2).
 
 Mechanism (mirrors the reference's marker → typecheck → dict_pass):
 - `ast.mdk` — a `Route` ADT (`RNone`/`RKey`/`RDict`) plus `EMethodAt`/`EDictAt`
