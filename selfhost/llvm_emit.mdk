@@ -131,6 +131,7 @@
 
 import ast.{Lit(..), Pat(..), Addr(..), Route(..)}
 import core_ir.{CExpr(..), CField(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..), CImplEntry(..), CImplBody(..)}
+import core_ir_lower.{compileTree, canonPat}
 import util.{reverseL, joinNl, lookupAssoc}
 
 -- the static type of a slice-1/3 value, used to pick the print routine and the
@@ -172,8 +173,13 @@ data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure
 -- `CImplEntry` list (read out of `CProgram`).  It tells a `CMethod` site which
 -- concrete impl body an `RKey`-resolved route names (→ a direct call to that
 -- impl's lifted `@mdk_impl_<tag>_<method>`), and supplies the full impl set a
--- runtime `RDict`/`RDictFwd` site switches over by the dict's head tag.
-data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int))) (Ref (List String)) (Ref (List (String, List String))) (Ref (List CImplEntry))
+-- runtime `RDict`/`RDictFwd` site switches over by the dict's head tag.  The
+-- NINTH ref (slice 7 — arg-position dispatch) is the CTOR→TYPE map (read out of
+-- `CProgram`'s 3rd field): a method dispatched on its argument's runtime tag
+-- (`eq`/`compare`/`show`) lowers to a bare `CVar` applied to args; the call site
+-- loads the discriminating argument's constructor tag and selects the impl whose
+-- TYPE owns that constructor — this map turns the loaded ctor tag into its type.
+data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int))) (Ref (List String)) (Ref (List (String, List String))) (Ref (List CImplEntry)) (Ref (List (String, String)))
 
 -- a function's inferred signature: its parameter types (in order) and its return
 -- type.  At the LLVM ABI every value is a uniform i64 word regardless (Int
@@ -188,7 +194,7 @@ data FnSig = FnSig (List LTy) LTy
 
 -- ── emitter plumbing ────────────────────────────────────────────────────────
 freshId : Emit -> <Mut> Int
-freshId (Emit c _ _ _ _ _ _ _) =
+freshId (Emit c _ _ _ _ _ _ _ _) =
   let n = c.value
   let _ = set_ref c (n + 1)
   n
@@ -197,21 +203,21 @@ freshReg : Emit -> <Mut> String
 freshReg e = "%t" ++ intToString (freshId e)
 
 emit : Emit -> String -> <Mut> Unit
-emit (Emit _ buf _ _ _ _ _ _) line = set_ref buf (line :: buf.value)
+emit (Emit _ buf _ _ _ _ _ _ _) line = set_ref buf (line :: buf.value)
 
 -- the main output buffer ref (slice 4: needed for the save/restore swap that
 -- redirects emission of a lifted lambda's `define` into the side buffer).
 bufRef : Emit -> Ref (List String)
-bufRef (Emit _ buf _ _ _ _ _ _) = buf
+bufRef (Emit _ buf _ _ _ _ _ _ _) = buf
 
 -- the side buffer holding lifted-lambda `define`s, in FORWARD order (slice 4).
 lamsRef : Emit -> Ref (List String)
-lamsRef (Emit _ _ _ _ _ lams _ _) = lams
+lamsRef (Emit _ _ _ _ _ lams _ _ _) = lams
 
 -- the known-function table (set once in emitProgram); membership decides whether
 -- a `CApp` head names a callable top-level function.
 fnNames : Emit -> <Mut> List String
-fnNames (Emit _ _ fns _ _ _ _ _) = fns.value
+fnNames (Emit _ _ fns _ _ _ _ _ _) = fns.value
 
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = containsStr name (fnNames e)
@@ -219,7 +225,7 @@ isKnownFn e name = containsStr name (fnNames e)
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
-fnRetTy (Emit _ _ _ sigs _ _ _ _) name = match lookupAssoc name sigs.value
+fnRetTy (Emit _ _ _ sigs _ _ _ _ _) name = match lookupAssoc name sigs.value
   Some (FnSig _ rty) => rty
   None => LTInt
 
@@ -227,7 +233,7 @@ fnRetTy (Emit _ _ _ sigs _ _ _ _) name = match lookupAssoc name sigs.value
 -- the constructor arity table (set once in emitProgram); membership decides
 -- whether a `CVar`/`CApp` head names an ADT constructor (→ heap allocation).
 ctorTable : Emit -> <Mut> List (String, Int)
-ctorTable (Emit _ _ _ _ ct _ _ _) = ct.value
+ctorTable (Emit _ _ _ _ ct _ _ _ _) = ct.value
 
 isCtor : Emit -> String -> <Mut> Bool
 isCtor e name = match lookupAssoc name (ctorTable e)
@@ -240,7 +246,7 @@ isCtor e name = match lookupAssoc name (ctorTable e)
 -- CFieldAccess uses it to convert a label name to a positional index so the
 -- field can be reached by loadField without carrying type information.
 recFieldTable : Emit -> <Mut> List (String, List String)
-recFieldTable (Emit _ _ _ _ _ _ rt _) = rt.value
+recFieldTable (Emit _ _ _ _ _ _ rt _ _) = rt.value
 
 -- ── impl table (slice 6) ────────────────────────────────────────────────────
 -- the program's CImplEntry list (set once in emitProgram).  A CMethod site reads
@@ -248,7 +254,7 @@ recFieldTable (Emit _ _ _ _ _ _ rt _) = rt.value
 -- it names (a direct call to that impl's lifted fn); `implsOf` returns every
 -- tagged impl of a method (the runtime RDict/RDictFwd dispatch-switch arms).
 implEntriesOf : Emit -> <Mut> List CImplEntry
-implEntriesOf (Emit _ _ _ _ _ _ _ ie) = ie.value
+implEntriesOf (Emit _ _ _ _ _ _ _ ie _) = ie.value
 
 -- the impls of a method, in program order — only the CImplTagged ones (an
 -- untagged CImplDefault is the arg-tag fallback, never a static-dispatch target).
@@ -282,6 +288,21 @@ findByTag tag (_::rest) = findByTag tag rest
 implFnName : String -> String -> String
 implFnName tag method = "mdk_impl_" ++ tag ++ "_" ++ method
 
+-- the distinct method names of the program's tagged impls (slice 7).  A bare CVar
+-- naming one of these, applied to args, is an arg-position dispatch site (return-
+-- position methods are CMethod nodes, never a bare applied CVar — so this set is
+-- exactly the arg-dispatched methods at a call site).
+implMethodNames : Emit -> <Mut> List String
+implMethodNames e = dedupS (taggedMethodNames (implEntriesOf e))
+
+taggedMethodNames : List CImplEntry -> List String
+taggedMethodNames [] = []
+taggedMethodNames ((CImplEntry m _ (CImplTagged _ _ _ _ _))::rest) = m :: taggedMethodNames rest
+taggedMethodNames (_::rest) = taggedMethodNames rest
+
+isImplMethod : Emit -> String -> <Mut> Bool
+isImplMethod e name = containsStr name (implMethodNames e)
+
 -- the parameter patterns + body of an impl entry (CImplTagged or CImplDefault).
 implPats : CImplEntry -> List Pat
 implPats (CImplEntry _ _ (CImplTagged _ _ _ pats _)) = pats
@@ -297,6 +318,25 @@ implEntryTag (CImplEntry _ _ (CImplDefault _ _)) = ""
 
 implEntryMethod : CImplEntry -> String
 implEntryMethod (CImplEntry n _ _) = n
+
+-- ── ctor→type map (slice 7) ─────────────────────────────────────────────────
+-- the program's constructor→type-name map (CProgram's 3rd field).  An arg-tag
+-- dispatch loads the discriminating argument's constructor tag at run time; this
+-- map names the constructors each candidate TYPE owns, so the dispatch chain can
+-- test "is the loaded ctor tag one of type T's constructors?" by OR-ing the
+-- hashName of each.
+ctorTypeTable : Emit -> <Mut> List (String, String)
+ctorTypeTable (Emit _ _ _ _ _ _ _ _ ctt) = ctt.value
+
+-- the constructor names owned by a type, in program order.
+ctorsOfType : Emit -> String -> <Mut> List String
+ctorsOfType e ty = ctorsOfTypeIn ty (ctorTypeTable e)
+
+ctorsOfTypeIn : String -> List (String, String) -> List String
+ctorsOfTypeIn _ [] = []
+ctorsOfTypeIn ty ((c, t)::rest)
+  | t == ty = c :: ctorsOfTypeIn ty rest
+  | otherwise = ctorsOfTypeIn ty rest
 
 
 containsStr : String -> List String -> Bool
@@ -371,7 +411,9 @@ emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag othe
 -- is a let/param-bound local operand.
 emitVar : Emit -> List (String, (String, LTy)) -> String -> <Mut> (String, LTy)
 emitVar e env x =
-  if isCtor e x then emitCtorAlloc e x []
+  if x == "True" then ("3", LTBool)
+  else if x == "False" then ("1", LTBool)
+  else if isCtor e x then emitCtorAlloc e x []
   else if isKnownFn e x then emitEtaClosure e x
   else lookupVar env x
 
@@ -567,6 +609,9 @@ emitApp e env app =
         let r = freshReg e
         let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
         (r, fnRetTy e fname)
+      else if isImplMethod e fname && hasArgs args then
+        let argOps = emitArgs e env args
+        emitMethodArgDispatch e fname argOps
       else emitIndirect e env hd args
     -- slice 6: an applied method / constrained-fn occurrence.  The real arguments
     -- emit first (left-to-right), then the dispatch resolves to a direct impl call
@@ -706,6 +751,106 @@ emitDispatchChain e dictWord (ent::rest) name argOps slot endL =
   let _ = emit e (next ++ ":")
   emitDispatchChain e dictWord rest name argOps slot endL
 
+-- ── arg-position (arg-tag) dispatch at a call site (slice 7) ─────────────────
+-- A bare CVar naming an impl method, applied to args.  The impl is chosen by the
+-- discriminating argument's runtime constructor TYPE (mirrors eval's
+-- filterByTag → runtimeTypeTag).  Two shapes:
+--   • ONE impl group (the method has impls at a single type) — no runtime test is
+--     needed: a well-typed call always reaches that impl, so emit a DIRECT call
+--     (covers single-impl + the multi-clause-body fixture; the multi-clause
+--     fall-through lives INSIDE the impl fn's decision tree, note (n)/(o)).
+--   • SEVERAL impl groups (impls at distinct types) — load the discriminating
+--     argument's cell tag and emit an if-chain: for each group, test whether the
+--     loaded ctor tag is one the group's TYPE owns (OR over its constructors'
+--     hashName, via ctorsOfType), and on a match call that group's impl fn.  An
+--     exhausted chain is `unreachable` (the typechecker proved a real impl).
+--     ADT-only — loadTag needs a boxed cell (note (p)).
+emitMethodArgDispatch : Emit -> String -> List String -> <Mut> (String, LTy)
+emitMethodArgDispatch e method argOps =
+  let groups = implGroupsForMethod e method
+  match groups
+    [g] => emitImplCall e (implFnName (groupTag g) method) argOps
+    _ => emitArgTagDispatch e method groups argOps
+
+emitArgTagDispatch : Emit -> String -> List ImplGroup -> List String -> <Mut> (String, LTy)
+emitArgTagDispatch e method groups argOps =
+  let discrimWord = nthStr argOps (headPos (groupPositionsOf (headGroup groups)))
+  let tagReg = loadTag e discrimWord
+  let slot = freshReg e
+  let _ = emit e ("  " ++ slot ++ " = alloca i64")
+  let endL = "argdispend" ++ intToString (freshId e)
+  let _ = emitArgDispatchChain e method tagReg groups argOps slot endL
+  let _ = emit e (endL ++ ":")
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  (r, LTInt)
+
+emitArgDispatchChain : Emit -> String -> String -> List ImplGroup -> List String -> String -> String -> <Mut> Unit
+emitArgDispatchChain e _ _ [] _ _ _ = emit e "  unreachable"
+emitArgDispatchChain e method tagReg (g::rest) argOps slot endL =
+  let tag = groupTag g
+  let cond = emitTagMatch e tagReg (ctorsOfType e tag)
+  let n = intToString (freshId e)
+  let yes = "argyes" ++ n
+  let next = "argnext" ++ n
+  let _ = emit e ("  br i1 " ++ cond ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e (yes ++ ":")
+  let (rv, _) = emitImplCall e (implFnName tag method) argOps
+  let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
+  let _ = emit e ("  br label %" ++ endL)
+  let _ = emit e (next ++ ":")
+  emitArgDispatchChain e method tagReg rest argOps slot endL
+
+-- an i1 that is true when the loaded ctor tag equals ANY of a type's constructor
+-- tags (OR-chain of icmp eq against each hashName).
+emitTagMatch : Emit -> String -> List String -> <Mut> String
+emitTagMatch _ _ [] = panic "llvm spike: impl type owns no constructors (slice 7)"
+emitTagMatch e tagReg [c] =
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (hashName c))
+  r
+emitTagMatch e tagReg (c::rest) =
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (hashName c))
+  let rrest = emitTagMatch e tagReg rest
+  let o = freshReg e
+  let _ = emit e ("  " ++ o ++ " = or i1 " ++ r ++ ", " ++ rrest)
+  o
+
+-- the impl groups of one method, in program order.
+implGroupsForMethod : Emit -> String -> <Mut> List ImplGroup
+implGroupsForMethod e method = filterGroupsByMethod method (groupImpls (implEntriesOf e))
+
+filterGroupsByMethod : String -> List ImplGroup -> List ImplGroup
+filterGroupsByMethod _ [] = []
+filterGroupsByMethod method (g::rest)
+  | groupMethodOf g == method = g :: filterGroupsByMethod method rest
+  | otherwise = filterGroupsByMethod method rest
+
+groupTag : ImplGroup -> String
+groupTag (ImplGroup _ tag _ _ _) = tag
+
+groupMethodOf : ImplGroup -> String
+groupMethodOf (ImplGroup m _ _ _ _) = m
+
+groupPositionsOf : ImplGroup -> List Int
+groupPositionsOf (ImplGroup _ _ p _ _) = p
+
+headGroup : List ImplGroup -> ImplGroup
+headGroup (g::_) = g
+headGroup [] = panic "llvm spike: no impl group for arg-tag dispatch (slice 7)"
+
+-- the discriminating arg position (first dispatch position; default 0 — for a
+-- single-position method like `eq` the head suffices, both args share the type).
+headPos : List Int -> Int
+headPos (p::_) = p
+headPos [] = 0
+
+nthStr : List String -> Int -> String
+nthStr (x::_) 0 = x
+nthStr (_::rest) i = nthStr rest (i - 1)
+nthStr [] _ = panic "llvm spike: discriminating arg index out of range (slice 7)"
+
 -- a constrained-function occurrence (CDict): `name` is a `=>`-constrained function
 -- that dict_pass gave leading dict PARAMETERS; the routes give the dict values for
 -- this call site.  Lower to a direct call passing the dict words FOLLOWED by the
@@ -748,28 +893,149 @@ ensureNoMethodDicts : List Route -> List Route -> <Mut> Unit
 ensureNoMethodDicts [] [] = ()
 ensureNoMethodDicts _ _ = panic "llvm spike: method-/instance-level constraint dicts on a CMethod unsupported (slice 6: unconstrained impls only)"
 
--- ── impl method definitions (slice 6) ───────────────────────────────────────
--- Each tagged impl method (CImplTagged) lowers to a top-level
--- `@mdk_impl_<tag>_<method>(params…)`, emitted alongside the ordinary function
--- defines (before @main).  Untagged interface defaults (CImplDefault) are the
--- arg-tag fallback path — never a static-dispatch target — so they are skipped.
--- The body emits in TAIL position (emitFnBody), exactly like a normal function.
-emitImpls : Emit -> List CImplEntry -> <Mut> Unit
-emitImpls _ [] = ()
-emitImpls e (ent::rest) =
-  let _ = emitImpl e ent
-  emitImpls e rest
+-- ── impl method definitions (slice 6 + slice 7) ─────────────────────────────
+-- Each typeclass impl method lowers to ONE top-level `@mdk_impl_<tag>_<method>`,
+-- emitted alongside the ordinary function defines (before @main).  Untagged
+-- interface defaults (CImplDefault) are the arg-tag fallback path — never a
+-- static-dispatch target — so they are skipped.
+--
+-- SLICE 7 — multi-clause / arg-position impl methods.  The Core IR carries one
+-- CImplEntry PER CLAUSE (eval coalesces same-named candidates into a VMulti that
+-- falls through arg-by-arg, leftmost clause winning — exactly Maranget column
+-- specialization, see ceval/applyOpt/collectPartials).  So same-`(method,tag)`
+-- entries are COALESCED here into a single lifted fn whose body is a decision
+-- tree built by the SAME `compileTree` the match lowering uses (Axis-1: shared
+-- backend-neutral pass).  By arity:
+--   • 0 (slice-6 nullary return-position `zero`/`def`): the body is emitted in
+--     TAIL position (emitFnBody), byte-for-byte the old single-clause path.
+--   • 1: the lone param `%arg0` is the scrutinee; the clauses' single patterns
+--     are the match arms.
+--   • ≥2: the params are wrapped in a synthetic tuple `(a0, a1, …)` so the
+--     multi-param match reduces to a single scrutinee — letting emitDecision /
+--     emitTree / bindPattern be reused VERBATIM (note (o); one extra `$tuple`
+--     cell alloc per call, acceptable for the spike).
 
-emitImpl : Emit -> CImplEntry -> <Mut> Unit
-emitImpl e (CImplEntry method _ (CImplTagged tag iface positions pats body)) =
+-- a coalesced impl group: method, type-head tag, dispatch positions, arity, and
+-- the clauses (patterns + body) in source order (leftmost-first — the priority
+-- the decision tree preserves).
+data ImplGroup = ImplGroup String String (List Int) Int (List (List Pat, CExpr))
+
+emitImpls : Emit -> List CImplEntry -> <Mut> Unit
+emitImpls e entries = emitGroups e (groupImpls entries)
+
+emitGroups : Emit -> List ImplGroup -> <Mut> Unit
+emitGroups _ [] = ()
+emitGroups e (g::rest) =
+  let _ = emitGroup e g
+  emitGroups e rest
+
+emitGroup : Emit -> ImplGroup -> <Mut> Unit
+emitGroup e (ImplGroup method tag _ arity clauses) =
   let fname = implFnName tag method
-  let env = paramEnv pats (allInt pats) 0
-  let _ = emit e ("define i64 @" ++ fname ++ "(" ++ paramDecls pats 0 ++ ") {")
+  let _ = emit e ("define i64 @" ++ fname ++ "(" ++ implParamDecls arity 0 ++ ") {")
   let _ = emit e "entry:"
-  let _ = emitFnBody e env fname body
+  let _ = emitGroupBody e fname arity clauses
   let _ = emit e "}"
   emit e ""
-emitImpl _ (CImplEntry _ _ (CImplDefault _ _)) = ()
+
+-- the lifted impl fn's positional parameter list: `i64 %arg0, …` (arity words),
+-- or "" for a nullary return-position impl.
+implParamDecls : Int -> Int -> String
+implParamDecls n i
+  | i >= n = ""
+  | i == n - 1 = "i64 %arg" ++ intToString i
+  | otherwise = "i64 %arg" ++ intToString i ++ ", " ++ implParamDecls n (i + 1)
+
+-- bind each positional param to its `%argK` operand under a synthetic name aK
+-- (the names the synthetic scrutinee CVars reference).
+implParamEnv : Int -> Int -> List (String, (String, LTy))
+implParamEnv n i
+  | i >= n = []
+  | otherwise = ("a" ++ intToString i, ("%arg" ++ intToString i, LTInt)) :: implParamEnv n (i + 1)
+
+emitGroupBody : Emit -> String -> Int -> List (List Pat, CExpr) -> <Mut> Unit
+emitGroupBody e fname 0 clauses = match clauses
+  [([], body)] => emitFnBody e [] fname body
+  _ => panic "llvm spike: nullary impl group must have exactly one clause (slice 6)"
+emitGroupBody e _ arity clauses =
+  let env = implParamEnv arity 0
+  let scrut = if arity == 1 then CVar "a0" AGlobal else CTuple (implScrutVars arity 0)
+  let arms = map (clauseArm arity) clauses
+  let tree = compileTree (map (_ => False) clauses) (implRows arity clauses 0)
+  let (v, _) = emitDecision e env scrut arms tree
+  emit e ("  ret i64 " ++ v)
+
+-- the synthetic scrutinee components for an arity-≥2 impl: `[a0, a1, …]`.
+implScrutVars : Int -> Int -> List CExpr
+implScrutVars n i
+  | i >= n = []
+  | otherwise = CVar ("a" ++ intToString i) AGlobal :: implScrutVars n (i + 1)
+
+-- one match arm per clause: arity 1 uses the lone pattern directly; arity ≥2
+-- wraps the patterns in a tuple pattern (matching the tuple scrutinee).
+clauseArm : Int -> (List Pat, CExpr) -> CArm
+clauseArm 1 (pats, body) = CArm (headPat pats) [] body
+clauseArm _ (pats, body) = CArm (PTuple pats) [] body
+
+-- one matrix row per clause (single column: the lone/tuple pattern, CANONICALISED
+-- into matrix form via canonPat — the same normalisation initialRows applies to
+-- match arms, so compileTree recognises tuple/bool/list heads), index = the
+-- clause position so the decision-tree leaf selects the right arm.  The ARM keeps
+-- the RAW pattern (clauseArm) — bindPattern re-matches that to bind variables.
+implRows : Int -> List (List Pat, CExpr) -> Int -> List (List Pat, Int)
+implRows _ [] _ = []
+implRows 1 ((pats, _)::rest) i = ([canonPat (headPat pats)], i) :: implRows 1 rest (i + 1)
+implRows arity ((pats, _)::rest) i = ([canonPat (PTuple pats)], i) :: implRows arity rest (i + 1)
+
+headPat : List Pat -> Pat
+headPat (p::_) = p
+headPat [] = PWild
+
+-- ── impl coalescing (slice 7) ───────────────────────────────────────────────
+-- group the per-clause CImplTagged entries by `(method, tag)`, preserving the
+-- first-seen group order and the source clause order within each (the Maranget
+-- priority).  CImplDefault entries (interface defaults) are skipped — they are
+-- the arg-tag fallback, never a lifted static-dispatch target.
+groupImpls : List CImplEntry -> List ImplGroup
+groupImpls entries = map (gatherGroup entries) (distinctImplKeys entries [])
+
+-- the (method, tag) keys of tagged entries, in first-seen order.
+distinctImplKeys : List CImplEntry -> List (String, String) -> List (String, String)
+distinctImplKeys [] seen = reverseL seen
+distinctImplKeys ((CImplEntry method _ (CImplTagged tag _ _ _ _))::rest) seen
+  | keySeen method tag seen = distinctImplKeys rest seen
+  | otherwise = distinctImplKeys rest ((method, tag) :: seen)
+distinctImplKeys (_::rest) seen = distinctImplKeys rest seen
+
+keySeen : String -> String -> List (String, String) -> Bool
+keySeen _ _ [] = False
+keySeen m t ((m2, t2)::rest) = if m == m2 && t == t2 then True else keySeen m t rest
+
+-- build the group for one (method, tag) key: positions + arity from the first
+-- matching entry, clauses (pats, body) from all matching entries in order.
+gatherGroup : List CImplEntry -> (String, String) -> ImplGroup
+gatherGroup entries (method, tag) =
+  let cls = gatherClauses method tag entries
+  let positions = groupPositions method tag entries
+  ImplGroup method tag positions (clauseArity cls) cls
+
+gatherClauses : String -> String -> List CImplEntry -> List (List Pat, CExpr)
+gatherClauses _ _ [] = []
+gatherClauses method tag ((CImplEntry m _ (CImplTagged t _ _ pats body))::rest)
+  | m == method && t == tag = (pats, body) :: gatherClauses method tag rest
+  | otherwise = gatherClauses method tag rest
+gatherClauses method tag (_::rest) = gatherClauses method tag rest
+
+groupPositions : String -> String -> List CImplEntry -> List Int
+groupPositions _ _ [] = []
+groupPositions method tag ((CImplEntry m _ (CImplTagged t _ positions _ _))::rest)
+  | m == method && t == tag = positions
+  | otherwise = groupPositions method tag rest
+groupPositions method tag (_::rest) = groupPositions method tag rest
+
+clauseArity : List (List Pat, CExpr) -> Int
+clauseArity ((pats, _)::_) = lengthS pats
+clauseArity [] = 0
 
 
 -- ── closures + higher-order functions (slice 4) ─────────────────────────────
@@ -870,7 +1136,7 @@ emitEtaClosure e fname =
 
 -- the inferred arity of a known top-level function (its signature's param count).
 fnArity : Emit -> String -> <Mut> Int
-fnArity (Emit _ _ _ sigs _ _ _ _) fname = match lookupAssoc fname sigs.value
+fnArity (Emit _ _ _ sigs _ _ _ _ _) fname = match lookupAssoc fname sigs.value
   Some (FnSig ptys _) => lengthS ptys
   None => 0
 
@@ -1316,7 +1582,7 @@ emitFn _ (CBind name _) =
   panic ("llvm spike: function '" ++ name ++ "' is multi-clause (slice 2: single variable-pattern clause only)")
 
 sigTable : Emit -> <Mut> List (String, FnSig)
-sigTable (Emit _ _ _ sigs _ _ _ _) = sigs.value
+sigTable (Emit _ _ _ sigs _ _ _ _ _) = sigs.value
 
 -- default param types when no signature was inferred (every param Int).
 allInt : List Pat -> List LTy
@@ -1759,8 +2025,8 @@ scanStmtsRecords (_::rest) = scanStmtsRecords rest
 -- then `main`'s body, then a type-directed print.
 export
 emitProgram : CProgram -> <Mut> String
-emitProgram (CProgram groups ctorArs _ implEntries) =
-  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries)
+emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes)
   let _ = emitPreamble e
   let _ = emitFns e (fnBinds groups)
   let _ = emitImpls e implEntries
@@ -1775,7 +2041,7 @@ emitProgram (CProgram groups ctorArs _ implEntries) =
   -- then the lifted-lambda defines (slice 4; already forward).  LLVM define order
   -- is irrelevant, so appending the side buffer at the end is sound.
   match e
-    Emit _ buf _ _ _ lams _ _ => joinNl (reverseL buf.value ++ lams.value)
+    Emit _ buf _ _ _ lams _ _ _ => joinNl (reverseL buf.value ++ lams.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =
