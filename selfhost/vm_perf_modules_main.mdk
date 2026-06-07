@@ -1,0 +1,90 @@
+-- Multi-module VM vs tree-walker performance comparison driver (§2.2 capstone).
+-- Times evalModulesOutput (self-hosted tree-walker) and bcEvalModulesOutput
+-- (bytecode compiler + stack VM) on the same module graph, reporting elapsed
+-- times when MEDAKA_PERF=1.  With MEDAKA_PERF unset, stdout is the tree-walker
+-- output (byte-identical to eval_modules_main.mdk).
+--
+--   MEDAKA_PERF=1 medaka run selfhost/vm_perf_modules_main.mdk \
+--       stdlib/core.mdk <entry.mdk> [root ...]
+--
+-- Phases reported (stderr, when MEDAKA_PERF=1):
+--   tree-walker  evalModulesOutput (desugar only)
+--   annotate     annotateProgram pass (bytecode VM setup)
+--   bytecode-vm  bcEvalModulesOutput (Core IR lower + stack VM exec)
+--   total
+--
+-- The tree-walker path uses desugar-only modules (no annotation); the bytecode
+-- VM path re-annotates the same desugared modules (annotateProgram is cheap
+-- relative to bytecode lowering + exec).  Annotation time is reported
+-- separately so the raw exec overhead can be read off.
+--
+-- Usage examples:
+--   MEDAKA_PERF=1 medaka run selfhost/vm_perf_modules_main.mdk \
+--       stdlib/core.mdk selfhost/selfproc_lex_probe.mdk selfhost
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import annotate.{annotateProgram}
+import loader.{loadProgram}
+import eval.{evalModulesOutput}
+import bytecode.{bcEvalModulesOutput}
+import timer.{perfEnabled, now, emitPhase, emitTotal}
+
+main = match args ()
+  (coreP :: entry :: roots) => run coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: MEDAKA_PERF=1 medaka run selfhost/vm_perf_modules_main.mdk <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+dirOf : String -> String
+dirOf path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo path 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+annotatePair : (String, List Decl) -> (String, List Decl)
+annotatePair (mid, p) = (mid, annotateProgram p)
+
+run : String -> String -> List String -> <IO, Mut> Unit
+run coreP entry roots = match readFile coreP
+  Err e => ePutStrLn e
+  Ok csrc => match loadProgram entry roots
+    Err e => ePutStrLn e
+    Ok rawMods =>
+      let on = perfEnabled ()
+      let tAll = now ()
+
+      -- shared front-end: desugar for both paths
+      let cDeclsRaw = desugar (parse csrc)
+      let modsRaw   = map desugarPair rawMods
+
+      -- tree-walker (no annotation needed)
+      let tW0 = now ()
+      let twOut = evalModulesOutput cDeclsRaw modsRaw
+      let tW1 = now ()
+      let _ = emitPhase on "tree-walker" (tW1 - tW0) "evalModulesOutput"
+
+      -- annotate for bytecode VM path (extra setup cost)
+      let tA0 = now ()
+      let cDeclsAnn = annotateProgram cDeclsRaw
+      let modsAnn   = map annotatePair modsRaw
+      let tA1 = now ()
+      let _ = emitPhase on "annotate" (tA1 - tA0) "annotateProgram"
+
+      -- bytecode VM (Core IR lower + stack exec inside bcEvalModulesOutput)
+      let tB0 = now ()
+      let _ = bcEvalModulesOutput cDeclsAnn modsAnn
+      let tB1 = now ()
+      let _ = emitPhase on "bytecode-vm" (tB1 - tB0) "bcEvalModulesOutput (lower+exec)"
+
+      let _ = emitTotal on (tB1 - tAll)
+      putStr twOut

@@ -963,3 +963,44 @@ exercise, not a performance target in itself.  The Core IR (§2.1) remains the
 faster choice for the self-hosted pipeline under the OCaml tree-walker.  When §2.4
 emits real LLVM IR for the VM instruction loop (or lowers Core IR directly), the
 performance picture reverses.
+
+---
+
+## §2.2 Capstone — selfproc_lex_probe through the bytecode multi-module VM (2026-06-06)
+
+The capstone gate: run a real self-hosted stage (the lexer) through the bytecode
+multi-module VM (`bytecode.bcEvalModulesOutput` via `eval_bytecode_modules_main.mdk`)
+and diff byte-for-byte against the OCaml oracle.  Harness: `test/diff_selfhost_bytecode_selfproc.sh`.
+
+**Result: lex probe PASSES** (3/3 ok — 1 real pass, 2 documented expected-gaps):
+
+| probe | result | notes |
+|-------|--------|-------|
+| `selfproc_lex_probe.mdk` | ✅ byte-identical | lexer uses untyped eval only |
+| `selfproc_parse_probe.mdk` | expected gap (§2.3) | Parser monad needs return-pos dispatch |
+| `selfproc_tc_probe.mdk` | expected gap (§2.3) | typecheck stage uses Parser monad |
+
+### Intra-process timing (vm_perf_modules_main.mdk, min-of-3, 2026-06-06)
+
+Workload: `selfproc_lex_probe.mdk` — tokenizes an embedded Medaka snippet through
+`selfhost/lexer.mdk` (a recursive descent lexer with string operations).
+
+| phase | time | notes |
+|-------|-----:|-------|
+| tree-walker | 0.240s | `evalModulesOutput` (desugar only, no annotation) |
+| annotate | 0.018s | `annotateProgram` per module (bytecode VM setup cost) |
+| bytecode-vm | 0.657s | `bcEvalModulesOutput` (Core IR lower + stack VM exec) |
+| **ratio** | **2.74×** | bytecode VM / tree-walker |
+
+The lex probe's 2.74× overhead is consistent with the single-file recursive-kernel
+measurements (2.36–4.88×) — the lexer is a recursive string-scanning loop, so
+each recursive call adds VM instruction-loop overhead on top of the interpreted
+`VClosureF` dispatch.  The "why not a win" analysis above applies: the VM runs
+under double interpretation.  The capstone confirms correctness (byte-identical
+output); the performance improvement awaits the LLVM backend (§2.4).
+
+**Command to reproduce:**
+```sh
+MEDAKA_PERF=1 medaka run selfhost/vm_perf_modules_main.mdk \
+    stdlib/core.mdk selfhost/selfproc_lex_probe.mdk selfhost
+```

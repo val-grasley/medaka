@@ -33,8 +33,9 @@ performance levers are all resolved (lexical-addressing eval-consumption half
 measured a non-win on the tree-walker and is parked; see `selfhost/PERF-NOTES.md`).
 
 **Stage 2 (native backend) is underway** — Core IR + evaluator (§2.1) and the
-bytecode VM (§2.2) are done; the LLVM toolchain de-risking spike runs through
-slice 5b. See the [Workstreams table](#workstreams--where-each-roadmap-lives) for
+bytecode VM (§2.2) are fully done, including the §2.2 capstone (lexer stage runs
+byte-for-byte through `bcEvalModulesOutput`); the LLVM toolchain de-risking spike
+runs through slice 5b. See the [Workstreams table](#workstreams--where-each-roadmap-lives) for
 the map and `selfhost/STAGE2-DESIGN.md` for the staged plan.
 
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
@@ -55,7 +56,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM done; LLVM spike thru slice 5b; next = §2.0 observability+lexical-addressing, then real backend; WasmGC sibling §2.4b |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 5b; next = §2.0 observability+lexical-addressing, then real backend; WasmGC sibling §2.4b |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred), Core IR `decodeHead` reserved-name bug |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -215,10 +216,24 @@ deliberately deferred to here:
 - ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `selfhost/core_ir.mdk`,
   `core_ir_lower.mdk`, `core_ir_eval.mdk` (+ sexp/round-trip gates). 47/47
   fixtures byte-identical across 6 corpora. See `selfhost/README.md`.
-- ✅ **§2.2 — Bytecode VM (all 6 slices) DONE (2026-06-05).** `selfhost/bytecode.mdk`
+- ✅ **§2.2 — Bytecode VM (all 6 slices + capstone) DONE (2026-06-06).** `selfhost/bytecode.mdk`
   (compiler + stack VM) + single-file driver + multi-module driver. 22/22 fixtures
-  (18 single-file slices 1–5 + 4 multi-module slice 6). Zero `eval.mdk` changes —
-  full Axis-2 reuse. See `selfhost/README.md`.
+  (18 single-file slices 1–5 + 4 multi-module slice 6). Capstone: lexer selfproc
+  probe runs byte-for-byte through the bytecode multi-module VM
+  (`test/diff_selfhost_bytecode_selfproc.sh`, 1 real pass + 2 documented
+  expected-gaps for parse/tc probes that need return-pos dispatch — §2.3 scope).
+  Zero `eval.mdk` changes — full Axis-2 reuse. See `selfhost/README.md`.
+- **§2.3 — Close front-end gaps the VM surfaces.** Three concrete items; see
+  `selfhost/STAGE2-DESIGN.md` §2.3 for detail:
+  - **Typed multi-module bytecode VM path** (`eval_bytecode_typed_modules_main.mdk`)
+    — thread `elaborateModules` before bytecode lowering so parse/tc selfproc
+    probes pass through the VM (currently expected-gaps in
+    `test/diff_selfhost_bytecode_selfproc.sh`).
+  - **Dict-passing residuals** — prelude constrained fns + nested/structured dicts
+    (Phase 83/84 item #5 in the untyped bytecode path).
+  - **Erased effect-polymorphism in Core IR** — define the representation for
+    effect-polymorphic code after erasure (Phase 146 erases at runtime; Core IR
+    carries no effect annotations today).
 - **Bootstrap closure:** self-hosted compiler + LLVM backend compiles itself to a
   standalone native binary — the finish line.
 

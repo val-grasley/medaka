@@ -434,21 +434,50 @@ externs, and GC. Slices mirror `eval.mdk`'s own progression:
    force-on-first-lookup memo exactly — a mismatch is a localizable diff);
 5. ✅ **DONE (2026-06-05)** typeclass dispatch from the elaborated routes (`RKey`
    narrow, `RDict` forward — port the `narrowMethod`/`applyDicts` logic to opcodes);
-6. multi-module (`eval_modules` per-module-frame semantics). **← next**
+6. ✅ **DONE (2026-06-06)** multi-module (`eval_modules` per-module-frame semantics).
 - **Gate per slice:** `eval_bytecode_main.mdk` output byte-identical to the
   tree-walker over the existing fixtures — the exact `diff_selfhost_eval*.sh`
   harness shape, no new oracle. **Current: 18/18, 0 deferred (~1.5s).**
-- **Capstone:** the VM runs the self-host compiler (RKey-only is sufficient,
-  `README.md:660`) and reproduces `check_modules` / `eval_modules` output. Measure
-  VM vs tree-walker; expect the interpretation-structural win (no AST re-dispatch +
-  O(1) slots + compiled matches). **Policy:** stop optimizing at the transferable
-  structural wins — no VM-only micro-opts (Axis 5).
+- **Capstone DONE (2026-06-06):** the VM runs the self-hosted lexer stage through
+  `eval_bytecode_modules_main.mdk` and reproduces `selfproc_lex_probe.mdk` output
+  byte-for-byte against the OCaml oracle. Harness: `test/diff_selfhost_bytecode_selfproc.sh`
+  (3/3 ok — 1 real lex-probe pass + 2 documented expected-gaps for parse/tc probes
+  that require return-position dispatch, scoped to §2.3). Performance measured
+  intra-process via `vm_perf_modules_main.mdk` (min-of-3 on the lex probe):
+  tree-walker 0.240s, bytecode VM 0.657s → **2.74× slower** under double
+  interpretation. The predicted structural win (no AST re-dispatch + O(1) slots +
+  compiled matches) does not materialize under double interpretation; it will
+  when §2.4 emits native code for the VM loop. See `PERF-NOTES.md` §"§2.2 Capstone".
+  **Policy:** no VM-only micro-opts (Axis 5) — the capstone confirms this is a
+  correctness + IR-validation exercise, not a performance play.
 
 **2.3 — Close the front-end gaps the VM surfaces.** Harden the elaborated-AST / IR
 contract LLVM will inherit: dict-passing residuals (prelude constrained fns,
 nested/structured dicts beyond the flat `VDict String`), and the Core IR's
 representation of erased effect-polymorphism. Each fix validated against the
 tree-walker oracle — the cheap setting, before any native runtime exists.
+
+Concrete §2.3 items (surfaced by the §2.2 capstone harness,
+`test/diff_selfhost_bytecode_selfproc.sh`):
+
+- **Typed multi-module bytecode VM path** — `eval_typed_modules_main.mdk`-analog
+  for the bytecode VM. The capstone harness runs `selfproc_parse_probe.mdk` and
+  `selfproc_tc_probe.mdk` as expected-gaps: the untyped `bcEvalModulesOutput`
+  cannot resolve return-position dispatch (`Parser` monad `pure`/`andThen`), so
+  those probes panic. The fix is a new `eval_bytecode_typed_modules_main.mdk`
+  that threads `typecheck.elaborateModules` (route-stamping) before the per-module
+  annotate → lower → `bcEvalModulesOutput` call — exactly the composition
+  `eval_typed_modules_main.mdk` uses for the tree-walker, with the bytecode VM
+  swapped in as the final consumer. Gate: both parse/tc selfproc probes
+  byte-identical through the typed bytecode VM.
+- **Dict-passing residuals** — prelude constrained functions (`when`/`unless`
+  and the higher-kinded `pure` at a constraint variable) plus nested/structured
+  dicts beyond the current flat `VDict String` tag (Phase 83/84 item #5 remains
+  out of scope for the bytecode VM's untyped path; confirmed harmless for the
+  RKey-only bootstrap source but required for arbitrary programs).
+- **Erased effect-polymorphism in Core IR** — a "frozen Core IR" should define
+  how effect-polymorphic code is *represented* after erasure (Phase 146 erases
+  effects at runtime; the Core IR carries no effect annotations today).
 
 **2.4 — LLVM backend, same Core IR.** Swap consumers: Core IR → LLVM IR. The
 lexical addressing (2.0), decision-tree matches, and routing (2.1) are reused; the
