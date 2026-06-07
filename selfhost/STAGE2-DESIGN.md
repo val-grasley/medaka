@@ -794,6 +794,50 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   arg-tag (`RNone`) dispatch, nested requires dicts, multi-clause/arg-position impl
   methods, arrays / GC remain out of scope and panic.
 
+**2.4a-4 — Slice 7 (ARG-POSITION / arg-tag DISPATCH).** The symmetric remaining
+  dispatch gap, also bootstrap-critical (`eq`/`compare`/`show` over values). **Key
+  representation finding (corrects the slice-6 "RNone arm" framing):** arg-position
+  dispatch does NOT lower to a `CMethod` node at all. Running the gate front-end
+  (`elaborateDict`) on `eq Off Off`, the call site stays a bare `CVar "eq"` — the
+  marker rewrites only RETURN-position occurrences to `CMethod`; an arg-dispatched
+  occurrence is left a plain `CVar` that resolves at run time to the coalesced `VMulti`
+  and is dispatched by the argument's runtime constructor type
+  (`ceval`→`applyOpt`→`collectPartials`→`matchPat`). So there is no `CMethod RNone` to
+  fill; the work lives at the bare-`CVar` call site (`emitApp`) and in the impl-method
+  defines. Tracing the runtime, the `VMulti` is applied ARG-BY-ARG — at each column,
+  candidate clauses whose pattern fails `matchPat` drop, the leftmost fully-matching
+  clause wins — which is exactly **Maranget column specialization**, so the lowering's
+  decision-tree compiler is a faithful port. **Axis-1 note:** this slice exports
+  `compileTree`/`canonPat` from `core_ir_lower.mdk` — the Axis-1 table designates the
+  Maranget decision-tree compilation as the backend-neutral pass shared by both
+  backends ("Yes, the tree … only leaf emission differs"), so surfacing it for its
+  second consumer is the intended reuse, not an IR change. **Spike-rep notes (extending
+  (a)–(m)):** **(n) call site** — a bare `CVar` naming a tagged-impl method, applied to
+  args, is the arg-dispatch site (return-position methods are `CMethod`, never a bare
+  applied `CVar`, so the impl-method-name set cleanly identifies these). One impl group
+  (method has impls at a single type) ⇒ a DIRECT `@mdk_impl_<tag>_<method>` call, no
+  runtime test (a well-typed call always reaches it); several groups ⇒ load the
+  discriminating arg's cell tag and emit an if-chain testing whether it is one the
+  group's TYPE owns (`OR` over `ctorsOfType`'s `hashName`s, the new ninth `Emit` ref =
+  `CProgram`'s ctor→type map), `unreachable` default. ADT-only — `loadTag` needs a
+  boxed cell. **(o) multi-clause / pattern-param impls** — the Core IR carries one
+  `CImplEntry` PER CLAUSE; same-`(method,tag)` entries are COALESCED into one lifted fn
+  whose body is a decision tree built by the shared `compileTree`. By arity: 0 (the
+  slice-6 nullary `zero`/`def`) emits the body in tail position, byte-for-byte the old
+  path; 1 uses the lone param as the scrutinee; ≥2 wraps the params in a synthetic
+  tuple `(a0,a1,…)` so the multi-param match reduces to a single scrutinee, reusing
+  `emitDecision`/`emitTree`/`bindPattern` VERBATIM (one extra `$tuple` alloc per call —
+  acceptable for the spike). The matrix rows are `canonPat`-normalised (else `PTuple`
+  isn't recognised as a constructor head and the column is wrongly dropped — a real bug
+  caught in development); the arms keep RAW patterns for `bindPattern`. **(p) bool
+  constructors** — impl bodies render `True`/`False` as `CVar "True"`/`"False"`;
+  `emitVar` maps them to the `3`/`1` immediate-Bool words (matching `emitLit (LBool …)`).
+  **6/6 typed gate** (the 3 slice-6 + `disp_arg_single` single-impl multi-clause,
+  `disp_arg_multi` two impls at distinct ADTs, `disp_arg_clauses` the `eq Flag`
+  three-clause wildcard fall-through) and **35/35 plain harness** stay byte-identical.
+  Still out of scope: arg-tag dispatch on non-ADT args (Int immediates have no cell to
+  `loadTag`), nested requires dicts, arrays / GC.
+
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /
 [`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)) ships on WebAssembly, so

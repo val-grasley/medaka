@@ -1,0 +1,24 @@
+-- slice 7: ARG-POSITION dispatch, MULTIPLE impls at DISTINCT types.  `code` has
+-- impls at two ADTs (Animal, Color); the impl is chosen by the discriminating
+-- argument's runtime constructor TYPE (mirrors eval's filterByTag →
+-- runtimeTypeTag).  The call site loads the argument's cell tag and emits an
+-- if-chain: for each impl group, test whether the loaded ctor tag is one the
+-- group's type owns (OR over its constructors' hashName, via ctorsOfType), and on
+-- a match call that group's `@mdk_impl_<Type>_code` — STAGE2-DESIGN §2.4a note (p).
+-- ADT-only (loadTag needs a boxed cell).  `code Cat` routes to Animal, `code Blue`
+-- to Color; reduces to a scalar Int (1 + 4 = 5).
+interface Code a where
+  code : a -> Int
+
+data Animal = Cat | Dog
+data Color = Red | Blue
+
+impl Code Animal where
+  code Cat = 1
+  code Dog = 2
+
+impl Code Color where
+  code Red = 3
+  code Blue = 4
+
+main = code Cat + code Blue

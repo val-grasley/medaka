@@ -1,0 +1,18 @@
+-- slice 7: ARG-POSITION dispatch, SINGLE impl (one type), multi-clause.  `code`
+-- is dispatched on its argument's runtime constructor (NOT a CMethod — the marker
+-- leaves an arg-dispatched occurrence as a bare `CVar` that resolves to the
+-- coalesced VMulti; see STAGE2-DESIGN §2.4a note (n)).  With only ONE impl group
+-- (Animal), the call site needs no runtime type test — a well-typed call always
+-- reaches `@mdk_impl_Animal_code`; the per-clause fall-through (Cat vs Dog) lives
+-- INSIDE that fn as a decision tree (the coalesced clauses, note (o)).  Reduces to
+-- a scalar Int.
+interface Code a where
+  code : a -> Int
+
+data Animal = Cat | Dog
+
+impl Code Animal where
+  code Cat = 1
+  code Dog = 2
+
+main = code Cat + code Dog

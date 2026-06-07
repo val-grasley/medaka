@@ -141,6 +141,11 @@ initialRows ((Arm pat _ _)::rest) i = ([canonPat pat], i) :: initialRows rest (i
 -- re-implemented here over index-carrying rows since exhaust's are stage-local).
 -- Always discriminates the leftmost column; a row's index rides along through
 -- specialization so the leaf knows which arm it selected.
+-- exported for the LLVM backend (slice 7): arg-position dispatch coalesces an
+-- impl method's clauses into a decision tree via this same Maranget compiler —
+-- the backend-neutral transform Axis-1 designates as shared by both backends
+-- (only leaf emission differs: bytecode SWITCH vs LLVM switch/br).
+export
 compileTree : List Bool -> List (List Pat, Int) -> CTree
 compileTree _ [] = CTFail
 compileTree guards (row::rest) = compileRows guards row rest (row::rest)
@@ -194,6 +199,10 @@ decodeHead c a = HCon c a
 tupleName : String
 tupleName = "__tuple__"
 
+-- exported for the LLVM backend (slice 7): impl-method clauses are canonicalised
+-- into the matrix form before `compileTree` (same as `initialRows` does for match
+-- arms) — part of the shared backend-neutral decision-tree pass (Axis-1).
+export
 canonPat : Pat -> Pat
 canonPat (PVar _) = PWild
 canonPat PWild = PWild

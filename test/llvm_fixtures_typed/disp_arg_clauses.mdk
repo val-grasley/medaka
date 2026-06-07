@@ -1,0 +1,19 @@
+-- slice 7: ARG-POSITION dispatch, MULTI-CLAUSE impl body with a WILDCARD
+-- fall-through.  `eq` dispatches on BOTH argument positions; its single impl
+-- (Eq Flag) has three clauses — `Off Off`, `On On`, and a `_ _` catch-all.  These
+-- coalesce into ONE `@mdk_impl_Flag_eq(a, b)` whose body is a decision tree (the
+-- two params wrapped in a synthetic tuple so the multi-param match reuses
+-- emitDecision verbatim, note (o)); the leftmost-matching clause wins, exactly the
+-- arg-by-arg VMulti fall-through the tree-walker does (ceval/collectPartials).  The
+-- bodies are `True`/`False` (bare nullary constructors).  Reduces to a scalar Int.
+interface Eq a where
+  eq : a -> a -> Bool
+
+data Flag = Off | On
+
+impl Eq Flag where
+  eq Off Off = True
+  eq On On = True
+  eq _ _ = False
+
+main = if eq Off Off then 1 else 0

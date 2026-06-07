@@ -1,5 +1,5 @@
 #!/bin/sh
-# TYPED equivalence gate for the Stage 2.4 LLVM de-risking spike, slice 6 —
+# TYPED equivalence gate for the Stage 2.4 LLVM de-risking spike, slices 6–7 —
 # TYPECLASS DISPATCH (STAGE2-DESIGN.md §2.4a).
 #
 # The plain harness (diff_selfhost_llvm.sh) drives the prelude-free, dispatch-free
@@ -26,8 +26,11 @@
 # route without pulling core.mdk's machinery into the emitted scalar module.
 #
 # Scope: slice 6 — RKey return-position dispatch (single + multi impl; the bootstrap
-# path) and RDict/RDictFwd dict-passing (one `=>`-constrained fn).  No arg-tag (RNone)
-# dispatch, no nested per-instance requires dicts, no GC.
+# path) and RDict/RDictFwd dict-passing (one `=>`-constrained fn).  slice 7 —
+# ARG-POSITION (arg-tag) dispatch: a bare CVar naming an impl method, dispatched on
+# its argument's runtime constructor type (single-impl direct call; multi-impl type
+# if-chain over ctorsOfType, ADT-only), with multi-clause impl bodies coalesced into
+# a decision tree.  No nested per-instance requires dicts, no GC.
 #
 # Usage:  sh test/diff_selfhost_llvm_typed.sh
 # Exit:   0 if every fixture's native stdout matches the typed tree-walker; 2 if the
