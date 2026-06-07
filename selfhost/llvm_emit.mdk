@@ -122,10 +122,17 @@
 --   • Float — BOXED: word is a pointer to a 16-byte cell {i64 header, double},
 --            allocated via @mdk_alloc.  Surfaces "floats don't fit a tagged-int
 --            word", which is the core input to the rep proposal.
---   • ADT  — BOXED (slice 3): word is a pointer (low bit 0) to a heap cell
---            [ i64 tag | field0 | field1 … ], one 8-byte word each; tag = the
---            constructor name hashed to i64.  The same boxed-pointer discipline as
---            Float, extended to n fields.
+--   • ADT  — a constructor with FIELDS is BOXED (slice 3): word is a pointer (low
+--            bit 0) to a heap cell [ i64 tag | field0 | field1 … ], one 8-byte word
+--            each; tag = the composite (typeId<<32 | ctor-ordinal) `cellTag` stamps.
+--            The same boxed-pointer discipline as Float, extended to n fields.  A
+--            NULLARY constructor is IMMEDIATE (low bit 1, RUNTIME-DESIGN §8.1/§8.4):
+--            the word is `(cellTag<<1)|1` carrying that same composite tag, NO
+--            allocation — the Bool immediate (True→3/False→1) generalised to every
+--            nullary ctor.  A `match` head recovers the tag via `loadDiscriminant`
+--            (branch on the low bit: immediate ⇒ `ashr 1`, boxed ⇒ load header), so
+--            a type mixing both (Option = None immediate + Some boxed) discriminates
+--            without ever dereferencing an immediate.
 --   • Closure — BOXED (slice 4): word is a pointer to a heap cell
 --            [ i64 header | i64 code_ptr | capt0 | capt1 … ] (RUNTIME-DESIGN.md
 --            §8.5).  The same cell shape as an ADT (header + fields), so it reuses
@@ -780,7 +787,8 @@ emitDispatchChain e dictWord (ent::rest) name argOps slot endL =
 --     loaded ctor tag is one the group's TYPE owns (OR over its constructors'
 --     hashName, via ctorsOfType), and on a match call that group's impl fn.  An
 --     exhausted chain is `unreachable` (the typechecker proved a real impl).
---     ADT-only — loadTag needs a boxed cell (note (p)).
+--     The discriminating arg may be an IMMEDIATE nullary ctor, so the tag is read
+--     via `loadDiscriminant` (low-bit branch), not a bare `loadTag` (note (p)).
 emitMethodArgDispatch : Emit -> String -> List String -> <Mut> (String, LTy)
 emitMethodArgDispatch e method argOps =
   let groups = implGroupsForMethod e method
@@ -791,7 +799,7 @@ emitMethodArgDispatch e method argOps =
 emitArgTagDispatch : Emit -> String -> List ImplGroup -> List String -> <Mut> (String, LTy)
 emitArgTagDispatch e method groups argOps =
   let discrimWord = nthStr argOps (headPos (groupPositionsOf (headGroup groups)))
-  let tagReg = loadTag e discrimWord
+  let tagReg = loadDiscriminant e discrimWord
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "argdispend" ++ intToString (freshId e)
@@ -1417,9 +1425,16 @@ nubStrAcc (x::xs) seen =
   else x :: nubStrAcc xs (x :: seen)
 
 -- allocate a constructor cell {tag, field…}; the field words are already emitted.
--- A nullary constructor is a one-word cell (just the tag).  Result is the cell
--- pointer as an i64 word, typed LTCon.
+-- Result is the cell pointer as an i64 word, typed LTCon.  A NULLARY constructor
+-- (RUNTIME-DESIGN §8.1 / §8.4 decision 1: nullary ctors are immediate/free) does
+-- NOT allocate — it is the IMMEDIATE word `(cellTag<<1)|1`, carrying the SAME
+-- composite (typeId, ordinal) tag a boxed cell would store in its header, untaggable
+-- by `ashr 1`.  This generalises the existing Bool immediate (emitVar True→"3"/
+-- False→"1") to every nullary ctor.  The constant operand emits no instructions; a
+-- `match` recovers the tag via `loadDiscriminant` (low-bit branch), so construction
+-- and the match-head test agree on `cellTag` whether the value is immediate or boxed.
 emitCtorAlloc : Emit -> String -> List String -> <Mut> (String, LTy)
+emitCtorAlloc e name [] = (intToString (cellTag e name * 2 + 1), LTCon)
 emitCtorAlloc e name fields =
   let arity = lengthS fields
   let p = freshReg e
@@ -1447,6 +1462,41 @@ loadTag e ptrWord =
   let t = freshReg e
   let _ = emit e ("  " ++ t ++ " = load i64, ptr " ++ p)
   t
+
+-- the DISCRIMINANT word a constructor `match` head (and arg-tag dispatch) tests.
+-- A value of an ADT type is EITHER an immediate nullary ctor (low bit 1 — its
+-- composite (typeId, ordinal) tag rides the payload, recovered by `ashr 1`) OR a
+-- boxed pointer to a cell whose header word IS that same composite tag (low bit 0 —
+-- `loadTag` it).  A type that mixes the two (e.g. Option = None immediate + Some
+-- boxed) means a single scrutinee can be either, so branch on the low bit BEFORE
+-- choosing — an immediate must NEVER be dereferenced (`loadTag` on an odd word
+-- inttoptr's to a misaligned address and segfaults).  Both arms phi to ONE tag word
+-- equal to the `cellTag` the alloc site stamps, so emitConChain/emitTagMatch compare
+-- against `cellTag` UNCHANGED: immediate and boxed reps are tag-comparable by
+-- construction (RUNTIME-DESIGN §8.1).  loadTag stays the raw boxed-cell load — used
+-- directly only where the value is known boxed (array length header).
+loadDiscriminant : Emit -> String -> <Mut> String
+loadDiscriminant e word =
+  let n = intToString (freshId e)
+  let imm = "discimm" ++ n
+  let box = "discbox" ++ n
+  let cont = "disccont" ++ n
+  let lb = freshReg e
+  let _ = emit e ("  " ++ lb ++ " = and i64 " ++ word ++ ", 1")
+  let isImm = freshReg e
+  let _ = emit e ("  " ++ isImm ++ " = icmp eq i64 " ++ lb ++ ", 1")
+  let _ = emit e ("  br i1 " ++ isImm ++ ", label %" ++ imm ++ ", label %" ++ box)
+  let _ = emit e (imm ++ ":")
+  let iv = freshReg e
+  let _ = emit e ("  " ++ iv ++ " = ashr i64 " ++ word ++ ", 1")
+  let _ = emit e ("  br label %" ++ cont)
+  let _ = emit e (box ++ ":")
+  let bv = loadTag e word
+  let _ = emit e ("  br label %" ++ cont)
+  let _ = emit e (cont ++ ":")
+  let d = freshReg e
+  let _ = emit e ("  " ++ d ++ " = phi i64 [ " ++ iv ++ ", %" ++ imm ++ " ], [ " ++ bv ++ ", %" ++ box ++ " ]")
+  d
 
 -- load field `idx` (offset 8*(idx+1)) of a cell given its pointer word.
 loadField : Emit -> String -> Int -> <Mut> String
@@ -1550,8 +1600,10 @@ bindFields e env (p::rest) v body i =
   bindFields e env2 rest v body (i + 1)
 
 -- a switch on the focus column (occs head): constructor-LIKE heads (named ADT
--- constructors HCon, built-in list HCons/HNil, and tuples HTuple) test a loaded
--- tag word; int literals test the immediate directly.  A homogeneous switch (the
+-- constructors HCon, built-in list HCons/HNil, and tuples HTuple) test a
+-- DISCRIMINANT word (`loadDiscriminant`: an immediate nullary ctor's `ashr 1`
+-- payload, or a boxed cell's loaded header — both the composite `cellTag`); int
+-- literals test the immediate directly.  A homogeneous switch (the
 -- matrix is either all-constructor-like or all-literal in a column), so the first
 -- branch's head selects the test kind.  HCons/HNil/HTuple map to the same tag the
 -- alloc site stamps (`cellTag` of "Cons"/"Nil"/"$tuple"), so a constructor
@@ -1565,7 +1617,7 @@ emitSwitch e env root arms occs branches dft slot endL rty = match occs
       emitLitChain e env root arms foc rest branches dft slot endL rty
     ((CTBranch h _)::_) => match conHeadInfo h
       Some _ =>
-        let tagReg = loadTag e foc
+        let tagReg = loadDiscriminant e foc
         emitConChain e env root arms foc rest tagReg branches dft slot endL rty
       None => panic "llvm spike: unsupported switch head (slice 5b: constructor / list / tuple / int-literal heads only; no unit heads)"
 
@@ -1581,8 +1633,9 @@ conHeadInfo HNil = Some ("Nil", 0)
 conHeadInfo (HTuple n) = Some ("$tuple", n)
 conHeadInfo _ = None
 
--- the constructor-switch test chain: compare the loaded tag against each branch's
--- composite (type, ctor) tag (`cellTag`); on a match, descend with the matched
+-- the constructor-switch test chain: compare the discriminant word (immediate or
+-- boxed, via loadDiscriminant) against each branch's composite (type, ctor) tag
+-- (`cellTag`); on a match, descend with the matched
 -- cell's fields as the new leading columns; on exhausting the branches, take the
 -- default (focus dropped).
 emitConChain : Emit -> List (String, (String, LTy)) -> String -> List CArm -> String -> List String -> String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> <Mut> Unit

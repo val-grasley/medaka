@@ -580,8 +580,14 @@ The uniform-word rep makes the convention fall out cleanly:
   switch → `getelementptr` field projection → arm body). 22/22 gate. Two rep
   decisions surfaced for the real backend (deferred — see STAGE2-DESIGN.md
   §2.4/§2.4a spike-rep notes):
-  (1) the spike **boxes nullary constructors** (1-word alloc) where §8.1 says they
-  should be **immediate/free** — fix in the native backend; (2) ~~the i64 string-hash
+  (1) ~~the spike **boxes nullary constructors** (1-word alloc) where §8.1 says they
+  should be **immediate/free**~~ **DONE 2026-06-07** — the spike now emits a nullary
+  ctor as the §8.1 IMMEDIATE word `(cellTag<<1)|1` (no alloc, the Bool immediate
+  generalised); a `match` head reads the tag via `loadDiscriminant` (branch on the
+  low bit: immediate ⇒ `ashr 1`, boxed ⇒ load header), so a type mixing nullary +
+  boxed ctors discriminates without dereferencing an immediate (`llvm_emit.mdk`
+  `emitCtorAlloc`/`loadDiscriminant`; adversarial `test/llvm_fixtures/adt_imm_mixed.mdk`);
+  (2) ~~the i64 string-hash
   tag~~ **DONE 2026-06-07** — the spike now emits the **dense i32 ctor-ordinal**
   (per type, via `cellTag`) that ports to LLVM/WasmGC `br_table` cleanly and avoids
   collisions. The emitted encoding is

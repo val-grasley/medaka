@@ -385,7 +385,14 @@ arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
    (`selfhost/llvm_emit.mdk` `cellTag`; gates `diff_selfhost_llvm{,_typed}.sh`;
    adversarial fixture `test/llvm_fixtures/adt_ordinal_collision.mdk`). The `decodeHead`
    reserved-name aliasing bug — a lift here until the ordinal scheme exposed it — is
-   now fixed ahead of this work (see Compiler / language). Gate: native
+   now fixed ahead of this work (see Compiler / language). ~~the spike **boxes nullary
+   constructors**~~ **DONE (2026-06-07)** — a nullary ctor is now the §8.1 IMMEDIATE
+   word `(cellTag<<1)|1` (no alloc, the Bool immediate generalised); a `match` head
+   reads the tag via `loadDiscriminant` (low-bit branch: immediate ⇒ `ashr 1`, boxed ⇒
+   load header), so a type mixing nullary + boxed ctors discriminates without
+   dereferencing an immediate (`selfhost/llvm_emit.mdk` `emitCtorAlloc`/
+   `loadDiscriminant`; adversarial fixture `test/llvm_fixtures/adt_imm_mixed.mdk`).
+   Gate: native
    stdout vs the tree-walker **and** the bytecode VM (the second, single-steppable
    oracle). Skill: none specific (lands in `selfhost/llvm_emit*.mdk` + `runtime/`).
 3. **Bootstrap closure** — self-hosted compiler + LLVM backend compiles itself to a

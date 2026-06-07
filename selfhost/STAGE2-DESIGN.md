@@ -621,16 +621,19 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   scope and panic.
 - **SPIKE SLICE 3 DONE (2026-06-06) — ADT constructors + pattern matching.** The
   first **heap-allocated, non-scalar** values, and the first `match`. A constructor
-  lowers to a **boxed heap cell** (RUNTIME-DESIGN.md §8.4 "Option A"): a one-word
+  lowers to a **boxed heap cell** (RUNTIME-DESIGN.md §8.4 "Option A") **iff it has
+  fields**: a one-word
   header (the constructor's tag — a dense per-type ctor-ordinal composite since
   2026-06-07, `cellTag`; an i64 string-hash through the original slice-3 spike) followed by the field
   words, allocated via `@mdk_alloc` — the slice-1 Float-box path extended to N
   fields; the word carried in registers is the cell pointer (`ptrtoint`, low bit 0,
-  disjoint from the immediate-int low-bit-1 encoding). A `match` lowered to a
+  disjoint from the immediate-int low-bit-1 encoding). A NULLARY ctor is instead the
+  IMMEDIATE word `(cellTag<<1)|1` (no alloc, since 2026-06-07; §8.1). A `match` lowered to a
   `CDecision` decision tree (the same Maranget tree `core_ir_lower` already
   produces) becomes an **LLVM CFG**: each `CTSwitch` tests the focus value's head
-  (load tag → `icmp eq` → `br` for constructors; immediate compare for int
-  literals) and descends into the matched cell's fields as the new focus columns; a
+  (a constructor head reads the tag via `loadDiscriminant` — branch on the low bit:
+  immediate ⇒ `ashr 1`, boxed ⇒ load header — then `icmp eq` → `br`; immediate
+  compare for int
   leaf re-matches its arm's pattern against the scrutinee (`getelementptr` field
   loads) to bind variables, evaluates the body into an `alloca` result slot, and
   branches to the decision's end block. It mirrors `core_ir_eval`'s
@@ -641,9 +644,14 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   recursive fold with an Int field in arithmetic, `adt_nested` two-level `Wrap (Leaf x)`
   occurrence-stack descent, `adt_multi_arm` three-branch switch + `unreachable`
   default, `adt_lit_field` an int-literal `HLit` switch on a field). **Decisions
-  surfaced (not silently taken):** (1) **nullary constructors are boxed** (a 1-word
-  alloc), where §8.1 says they should be **free/immediate** — a divergence from the
-  recommended *native* rep, deferred to the real backend (spike-rep notes below).
+  surfaced (not silently taken):** (1) ~~**nullary constructors are boxed** (a 1-word
+  alloc), where §8.1 says they should be **free/immediate**~~ — **DONE 2026-06-07:**
+  the spike now emits nullary ctors as the §8.1 IMMEDIATE word `(cellTag<<1)|1` (no
+  alloc), generalising the Bool immediate; a `match` head reads the tag via
+  `loadDiscriminant` (branch on the low bit: immediate ⇒ `ashr 1`, boxed ⇒ load
+  header), so a type mixing nullary + boxed ctors (Option = None immediate + Some
+  boxed) discriminates without dereferencing an immediate. Adversarial fixture
+  `test/llvm_fixtures/adt_imm_mixed.mdk` (ordinal-0 nullary + boxed ctor).
   (2) the **i64 string-hash tag** was LLVM-convenient (no ctor→ordinal table) but
   foreshadowed neither backend's real tag and carried collision risk — **RESOLVED
   2026-06-07: the spike now emits the ratified dense per-type ctor-ordinal**

@@ -1,0 +1,19 @@
+-- ADVERSARIAL (nullary-ctor IMMEDIATE rep, RUNTIME-DESIGN §8.1 / §8.4 decision 1):
+-- a type with a NULLARY ctor at ORDINAL 0 (`Empty`) AND a boxed ctor (`Full Int`),
+-- so one `match` scrutinee is EITHER an immediate (low bit 1) OR a pointer (low bit
+-- 0).  `Empty` constructs to the immediate word `(cellTag<<1)|1` — NO allocation —
+-- and matching it must NOT loadTag (an `inttoptr` of an odd word + load segfaults);
+-- `Full n` boxes and matching it MUST loadTag the cell header.  The match-head
+-- discrimination (`loadDiscriminant`: branch on the low bit before choosing
+-- ashr-untag vs header-load) is therefore LOAD-BEARING — a uniform always-loadTag
+-- head would crash on `describe Empty`.  Both arms are exercised (Empty + Full) and
+-- the nullary arm is reached first to prove the immediate is never dereferenced.
+-- Reduces to a scalar Int: 0 + 42 = 42.
+data Box = Empty | Full Int
+
+describe : Box -> Int
+describe b = match b
+  Empty => 0
+  Full n => n
+
+main = describe Empty + describe (Full 42)
