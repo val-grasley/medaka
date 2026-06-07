@@ -298,7 +298,8 @@ toCExpr (SList (SAtom "CIndex" :: [a, i])) = CIndex (toCExpr a) (toCExpr i)
 toCExpr (SList (SAtom "CSlice" :: [a, lo, hi, incl])) =
   CSlice (toCExpr a) (toCExpr lo) (toCExpr hi) (toBool incl)
 toCExpr (SList (SAtom "CBlock" :: stmts)) = CBlock (map toCStmt stmts)
-toCExpr (SList (SAtom "CMethod" :: [name, route])) = CMethod (toStr name) (toRoute route)
+toCExpr (SList (SAtom "CMethod" :: [name, route, SList implRoutes, SList methRoutes])) =
+  CMethod (toStr name) (toRoute route) (map toRoute implRoutes) (map toRoute methRoutes)
 toCExpr (SList (SAtom "CDict" :: [name, SList routes])) =
   CDict (toStr name) (map toRoute routes)
 toCExpr other = panic ("core_ir_sexp_parse: bad CExpr: " ++ sexprToStr other)

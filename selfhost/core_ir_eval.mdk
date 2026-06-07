@@ -38,7 +38,8 @@ import eval.{
   evalValueField, evalField, narrowMethod, routeTag, applyDicts, coalesceImpls, nub,
   buildCtorToType, collectCtors, buildIfaceDispatch, implMethodNames,
   importFrameOf, pubReexports,
-  evalVariantUpdate, buildCtorFieldOrders, ctorFieldOrdersRef
+  evalVariantUpdate, buildCtorFieldOrders, ctorFieldOrdersRef,
+  methodAtNarrow, applyValues
 }
 
 -- ── the evaluator ─────────────────────────────────────────────────────────
@@ -86,8 +87,11 @@ ceval env (CRangeArray lo hi incl) =
 -- resolve to the installed `VMulti` and dispatch by arg-tag in `applyValue`.  The
 -- arms mirror eval.mdk's `EMethodAt`/`EDictAt` exactly (Routes already read out
 -- into the immutable `CMethod`/`CDict` at lowering time).
-ceval env (CMethod name route) =
-  narrowMethod (lookupEnv env name) (routeTag env route)
+ceval env (CMethod name route implRoutes methRoutes) =
+  let (narrowed, fwdReqs) = methodAtNarrow env (lookupEnv env name) route
+  let v1 = applyDicts env narrowed methRoutes
+  let v2 = applyDicts env v1 implRoutes
+  applyValues v2 fwdReqs
 ceval env (CDict name routes) = applyDicts env (lookupEnv env name) routes
 ceval _ _ = panic "core_ir ceval: unsupported node"
 

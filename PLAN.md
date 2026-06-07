@@ -231,8 +231,14 @@ deliberately deferred to here:
     the typed VM (`test/diff_selfhost_bytecode_selfproc.sh` §2.3 section, 3/3).
     Also closed `EVariantUpdate` → `CVariantUpdate` Core IR gap (named-field
     constructor updates in `typecheck.mdk`'s `DImpl`/`DInterface` clauses).
-  - **Dict-passing residuals** — prelude constrained fns + nested/structured dicts
-    (Phase 83/84 item #5 in the untyped bytecode path).
+  - ✅ **DONE (2026-06-06) — Dict-passing corpus through typed bytecode VM**
+    (`eval_bytecode_typed_dict_main.mdk`) — `elaborateDict` + `lowerProgram` +
+    `bcEvalOutput`; all 17 `test/eval_dict_fixtures/` pass byte-for-byte
+    (`test/diff_selfhost_bytecode_eval_dict.sh`, 17/17). Also fixed the Core IR
+    `CMethod` lowering gap: `EMethodAt`'s `implRef`/`methodRef` were dropped; now
+    `CMethod String Route (List Route) (List Route)` carries all three dispatch
+    components (topRoute + implRoutes + methRoutes), mirroring the tree-walker's
+    `methodAtNarrow + applyDicts + applyValues(fwdReqs)` chain.
   - **Erased effect-polymorphism in Core IR** — define the representation for
     effect-polymorphic code after erasure (Phase 146 erases at runtime; Core IR
     carries no effect annotations today).

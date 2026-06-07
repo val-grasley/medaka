@@ -64,6 +64,7 @@ import eval.{
   evalRecordUpdate, evalValueField, evalField,
   evalVariantUpdate, buildCtorFieldOrders, ctorFieldOrdersRef,
   narrowMethod, routeTag, applyDicts, coalesceImpls, nub,
+  methodAtNarrow, applyValues,
   buildCtorToType, collectCtors, buildIfaceDispatch, implMethodNames,
   importFrameOf, pubReexports, outputRef
 }
@@ -143,8 +144,10 @@ public export data Instr
   | ILetGroup (List BcLetBind) Chunk
   -- slice 5: typeclass dispatch from elaborated routes ──────────────────────
   -- IMethod: return-position dispatch (CMethod).  Looks up the name, narrows
-  -- the VMulti to the impl whose tag matches the route's resolved key.
-  | IMethod String Route
+  -- the VMulti to the impl whose tag matches the route's resolved key, then
+  -- applies methRoutes (method-level dicts, Phase 69.x-e), implRoutes
+  -- (instance-requires element dicts, Phase 83/84), and any fwdReqs.
+  | IMethod String Route (List Route) (List Route)
   -- IDict: constrained-fn dict application (CDict).  Looks up the name, applies
   -- one VDict argument per route as a leading parameter.
   | IDict String (List Route)
@@ -197,7 +200,7 @@ compile (CLet _ pat e1 e2) = [ILetBound pat (compileChunk e1) (compileChunk e2)]
 -- CLetGroup: where-block / local mutually-recursive group.
 compile (CLetGroup binds body) = [ILetGroup (map compileBcLetBind binds) (compileChunk body)]
 -- ── slice 5: typeclass dispatch ────────────────────────────────────────────
-compile (CMethod name route) = [IMethod name route]
+compile (CMethod name route implRoutes methRoutes) = [IMethod name route implRoutes methRoutes]
 compile (CDict name routes) = [IDict name routes]
 compile other =
   panic ("bytecode compile: unhandled CExpr node — " ++ cNodeTag other)
@@ -378,8 +381,11 @@ step code ip stack env (ILetGroup binds bodyCh) =
   let _ = bcInstallLetBinds grpEnv cells binds
   runLoop code (ip + 1) (runChunk grpEnv bodyCh :: stack) env
 -- ── slice 5: typeclass dispatch from elaborated routes ──────────────────────
-step code ip stack env (IMethod name route) =
-  runLoop code (ip + 1) (narrowMethod (lookupEnv env name) (routeTag env route) :: stack) env
+step code ip stack env (IMethod name route implRoutes methRoutes) =
+  let (narrowed, fwdReqs) = methodAtNarrow env (lookupEnv env name) route
+  let v1 = applyDicts env narrowed methRoutes
+  let v2 = applyDicts env v1 implRoutes
+  runLoop code (ip + 1) (applyValues v2 fwdReqs :: stack) env
 step code ip stack env (IDict name routes) =
   runLoop code (ip + 1) (applyDicts env (lookupEnv env name) routes :: stack) env
 
