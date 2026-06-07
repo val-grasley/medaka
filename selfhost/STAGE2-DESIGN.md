@@ -946,9 +946,12 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   `str_escape`, `str_unicode`, `str_int`, `str_int_neg`) and **2/2 new typed
   fixtures** (`str_lit`, `str_int`) byte-identical; the prior 46 plain / 6 typed and
   the core_ir/eval gates unaffected.  **Covered:** String literals, raw print,
-  `intToString`.  **Remaining (follow-on slices):** `charToStr`, `stringConcat`,
-  `putStr`/`putStrLn`/file-IO, unicode, RNG; the `Char` rep (gates `charCode`
-  INTRINSIC-vs-LEAF — a sibling of this decision); the dispatch gaps and precise GC.
+  `intToString`.  **Remaining catalog work is scoped as ordered slices 2–16** in
+  [`../PLAN.md`](../PLAN.md) §"Native extern catalog — slice breakdown" (each sized
+  to this same template for a Sonnet agent): the mechanical string/char/array/IO
+  slices, the `Char`-rep lock (slice 8) and reserved-built-in-ADT-tag precursor
+  (slice 10) that gate the rest, and the separately-flagged non-mechanical ones
+  (`→MEDAKA` sorts, RNG, `hash`→method).
 
 **Spike status after slice 9 — what's next.** The de-risking spike has now lowered
 the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →

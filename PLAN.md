@@ -418,6 +418,102 @@ Downstream (captured, NOT near-term): the **WasmGC sibling backend** (§2.4b —
 capability-wedge delivery vehicle, reached by a direct emitter; soft-pivot
 constraints are already design inputs to the shared layers).
 
+#### Native extern catalog — slice breakdown (Stage 2.4, item 2)
+
+The catalog re-implementation (item 2 above) is decomposed into the small, ordered
+slices below. **Each slice follows the String-slice template verbatim**
+(STAGE2-DESIGN §2.4a-7 / commit `797bd32`): add a C helper to `runtime/medaka_rt.c`,
+intercept the extern in `selfhost/llvm_emit.mdk` (`emitApp`'s `CVar` arm for a
+LEAF/IO call, or an inline emit for an INTRINSIC), add fixtures to
+`test/llvm_fixtures/` (+ `_typed/` if dispatch-relevant), and gate **byte-identical
+vs the tree-walker oracle** (`test/diff_selfhost_llvm{,_typed}.sh`). The value/String
+reps are LOCKED, so **no design work** is required in the mechanical slices — they
+are sized for a **Sonnet agent**. Verify each extern's oracle rendering empirically
+(`dev/eval_probe.exe`) before chasing the emitter, exactly as the String slice did.
+Two structural facts set the slice order (both verified 2026-06-07): a C extern can
+**read** a built-in `List` tag-free (Nil = odd immediate, Cons = even pointer) but
+**cannot construct** an ADT cell — `Cons`/`Nil`/`Some`/`Ok` tags are *program-
+dependent* (`cellTag` keys off the program's type count), so every ADT-**returning**
+extern is gated behind the reserved-tag precursor (slice 10); and `Char` has no
+locked rep yet, gating the char/unicode slices behind slice 8.
+
+**Tier A — mechanical, no precursor (Sonnet-ideal):**
+
+| Slice | Externs | Disposition | Notes |
+|---|---|---|---|
+| 2 — numeric | `intToFloat` `floatToInt` `floatToString` `pi` `e` `intMinBound` `intMaxBound` | INTRINSIC + 1 LEAF | conversions are inline `sitofp`/`fptosi`; constants inline; `floatToString` is a C helper that mirrors `mdk_print_float`'s `%.12g`+dot logic, boxed via `mdk_str_lit`. No ADT, no Char. |
+| 3 — IO output | `putStr` `putStrLn` `ePutStr` `ePutStrLn` | IO | add **`LTUnit`** to the emitter + `emitPrint LTUnit` → print `"()"` (matches `pp_value VUnit`; a `putStr`-`main` reduces to Unit, so the gate output is `…()`). C helpers `fwrite` to stdout/stderr. stderr is dropped by the gate's `2>/dev/null` — `ePutStr*` fixtures still prove compile+link+run. |
+| 4 — abort | `panic` `exit` | GC/CTRL | tiny C: `panic` = `fputs` String to stderr + `exit(1)` (`noreturn`); `exit` = `exit(n)`. Oracle also errors/exits → both stdouts empty (weak but valid gate). |
+| 5 — string leaf (non-ADT) | `stringLength` `stringConcat` | INTRINSIC + LEAF | `stringLength` reads the cached `cp_count` word (offset 16) and tags it; `stringConcat` walks a built-in `List String` **structurally** (low-bit test), sums `byte_len`s, one `mdk_alloc` + blit. |
+| 6 — array intrinsics | `arrayLength` `arrayGetUnsafe` `arraySetUnsafe` | INTRINSIC | inline header-load / GEP+load / GEP+store (`<Mut>`), mirroring the existing `CIndex` codegen minus the bounds check. Left as extern `CVar` calls by lowering (only `EArrayLit`/`EIndex` become Core IR nodes), so they need `emitApp` intercepts. |
+| 7 — array leaf | `arrayMake` `arrayCopy` `arrayBlit` `arrayFill` `arrayFromList` | LEAF | array cells carry no program-specific tag (header = raw length), so construction is tag-free; `arrayFromList` reads a `List` structurally. `arrayBlit`/`arrayFill` are `<Mut>`. |
+
+**Tier B — gated behind the Char-rep lock:**
+
+- **Slice 8 — lock `Char` rep + char scalars.** *Decision pre-made for the agent:*
+  `Char` = an **immediate codepoint word** (low-bit-1, identical encoding to `Int`),
+  so `charCode` is **INTRINSIC** (identity — the word already *is* the tagged
+  codepoint). Implement: `LChar` literal emit (codepoint → immediate), `charCode`
+  (no-op pass-through), `charToStr` (UTF-8-encode the codepoint in C → `mdk_str_lit`,
+  reusing the `utf8Bytes` logic), `charMinBound`/`charMaxBound` constants. Resolves
+  the §5 `charCode (rep)` row to INTRINSIC and RUNTIME-DESIGN §4's sibling decision.
+  *Sonnet: good (decision is pre-baked above).*
+- **Slice 9 — string↔char + codepoint slicing** (dep: 8, 6/7). `stringToChars`
+  (→ `Array Char`: walk UTF-8, emit one immediate codepoint per cell),
+  `stringFromChars` (`Array Char` → UTF-8 String), `stringSlice` (codepoint `lo`/`hi`
+  → byte offsets via a UTF-8 walk → substring). *Sonnet: moderate — UTF-8 index
+  off-by-one is the only trap; the byte-identical gate catches it.*
+- **Slice 14 — unicode (ASCII subset)** (dep: 8). `charIsAlpha/Space/Upper/Lower/Punct`,
+  `charToUpper/Lower`, `stringToUpper/Lower`. C ASCII classification; **fixtures
+  ASCII-only** so they match the oracle's real-unicode OCaml impl; note full-unicode
+  (a Rust `unicode-*` crate, RUNTIME-DESIGN §6) as a deferred follow-up. *Sonnet:
+  good (repetitive `ctype.h`-shaped).*
+
+**Tier C — gated behind the reserved-ADT-tag precursor:**
+
+- **Slice 10 — reserve fixed tags for the built-in ADTs (PRECURSOR).** Give
+  `List`(Cons/Nil), `Option`(Some/None), `Result`(Ok/Err), `Ordering`(Lt/Eq/Gt) a
+  **fixed reserved tag block** shared by the emitter (`cellTag`) and the runtime (a
+  C header of tag constants), so a C extern can construct these cells with tags a
+  later `match` agrees with. Add runtime constructors (`mdk_some`/`mdk_none`/`mdk_ok`/
+  `mdk_err`/`mdk_cons`/`mdk_nil`/…). *Least mechanical slice — it touches the tag
+  scheme and must not regress existing ADT fixtures or collide with user types named
+  `Some`/`Ok`. Sonnet with the tight spec to be written here; escalate to Opus if the
+  tag-reservation interacts badly with user-declared same-named types.*
+- **Slice 11 — ADT-returning string externs** (dep: 10). `stringToFloat` (Option),
+  `stringIndexOf` (Option), `stringCompare` (Ordering). Fixtures must `match` the
+  result down to a scalar/String (the emitter can't auto-print an ADT). *Sonnet: good
+  after 10.*
+- **Slice 12 — args + env** (dep: 10). `args` (List String — needs Cons construction),
+  `getEnv` (Option String). Plumb `argc`/`argv` by changing the emitted entry to
+  `main(i32 %argc, ptr %argv)` and stashing them for the extern. *Sonnet: moderate
+  (argv plumbing).*
+- **Slice 13 — file IO** (dep: 10). `readFile`/`writeFile`/`appendFile` (Result),
+  `fileExists` (Bool), `listDir` (Result (List String)), `readLine`/`readLineOpt`/
+  `readAll`. Standard `fopen`/`fread`/`fwrite`; Result/Option wrapping is mechanical
+  once 10 lands. *Sonnet: good after 10.*
+
+**Tier D — different shape (NOT the C-extern template; scope/flag separately):**
+
+- **Slice 15 — `→MEDAKA` sorts + builder.** `arraySortBy`, `arraySortInPlaceBy`,
+  `arrayMakeWith` — *rewritten in Medaka* (a mergesort/introsort over `Array`), not C
+  externs (RUNTIME-DESIGN §4: the comparator/builder is a Medaka closure). Skill:
+  `extend-stdlib`. *Sonnet: good, but a stdlib task, not a runtime task.*
+- **RNG — `randomInt`/`randomBool`/`randomFloat`/`randomChar`/`setSeed`.** **Blocked
+  on a gating decision, NOT mechanical:** RNG output is nondeterministic, so it
+  cannot be byte-diffed against the OCaml-`Random` oracle. Needs either a shared
+  deterministic PRNG (same algorithm in `lib/eval.ml` and the runtime, seeded) or a
+  non-diff structural test. *Escalate — design first.*
+- **`hash` → `→METHOD` (derived `Hashable`).** Convert the lone structural extern to
+  a derived typeclass method (same `deriving` machinery as `Eq`). A typechecker/
+  desugar lift, not a runtime extern. Skill: `add-language-feature`. *Escalate — not
+  a catalog slice.*
+
+Dependency order for execution: **2–7 in any order (no deps) → 8 → {9, 14} → 10 →
+{11, 12, 13}**; 15 / RNG / hash are independent and separately scoped. Slices 2–9 and
+14 clear the bulk the self-host source leans on (string/char/array ops); 10–13 unlock
+the IO-and-`args`-heavy driver paths (`args` 140×, `readFile` 106× in `selfhost/`).
+
 ### Self-host (Stage 1 tail)
 
 - ✅ **Lexical-addressing perf hook — eval-consumption half. CLOSED (non-win on
