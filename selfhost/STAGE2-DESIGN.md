@@ -993,7 +993,21 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   (`io_putstrln` — actually `ePutStrLn`-bodied) byte-identical; all 61 plain + 10
   typed pass; core_ir/eval gates unaffected.
 
-**Spike status after slice 9 — what's next.** The de-risking spike has now lowered
+**2.4a-10 — Native extern catalog slice 4 (ABORT: panic + exit).**
+  Two process-terminating externs: `panic (String -> a)` and `exit (Int -> a)`.
+  `mdk_panic` reads the string cell via `mdk_fwrite_str(w, stderr, 1)` then calls
+  `exit(1)`; `mdk_exit` untags the Int (`tagged >> 1`) and calls `exit(n)`.  Both are
+  declared `noreturn` in C.  Emitter: `isAbortExtern`/`emitAbortExtern` intercept in
+  `emitApp`'s `CVar` arm (same pattern as slice 3); the call emits `call void
+  @mdk_panic/exit(i64 arg)`; returns `("1", LTUnit)` so the downstream `emitPrint
+  LTUnit` is dead code (the terminate call precedes it).  Gate model: both oracle and
+  native produce empty stdout (oracle: `Eval_error` → stderr; native: `mdk_panic/exit`
+  terminates before auto-print runs) — empty == empty is a valid compile+link+terminate
+  proof.  Stronger fixture (`abort_exit_after_output`) prints "before" then exits,
+  proving ordering.  4/4 new fixtures; all 65 plain pass; typed/core_ir/eval gates
+  unaffected.
+
+**Spike status after slice 10 — what's next.** The de-risking spike has now lowered
 the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
 ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in
 list/tuple heads + recursive closures → return-position dispatch → arg-tag

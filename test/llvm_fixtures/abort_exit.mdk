@@ -1,0 +1,3 @@
+-- native extern catalog slice 4: exit 0 — terminates with code 0.
+-- Oracle calls Stdlib.exit 0 -> stdout empty on both sides.
+main = exit 0

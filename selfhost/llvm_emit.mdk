@@ -618,6 +618,21 @@ emitIoExtern e env "ePutStrLn" args = match emitArgs e env args
   _ => panic "llvm spike: ePutStrLn takes exactly one argument (slice 3)"
 emitIoExtern _ _ name _ = panic ("llvm spike: unsupported IO extern " ++ name)
 
+-- abort externs (native extern catalog slice 4).
+-- panic/exit terminate the process; the call itself never returns, so the
+-- auto-print emitted downstream is dead code.  Return ("1", LTUnit) so
+-- emitPrint sees LTUnit (safe) rather than LTCon/LTClosure (compile panic).
+isAbortExtern : String -> Bool
+isAbortExtern name = containsStr name ["panic", "exit"]
+
+emitAbortExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitAbortExtern e env name args = match emitArgs e env args
+  [a] =>
+    let cname = if name == "panic" then "panic" else "exit"
+    let _ = emit e ("  call void @mdk_" ++ cname ++ "(i64 " ++ a ++ ")")
+    ("1", LTUnit)
+  _ => panic ("llvm spike: emitAbortExtern: " ++ name ++ " takes exactly one argument (slice 4)")
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -793,6 +808,7 @@ emitApp e env app =
       else if isStrExtern fname && hasArgs args then emitStrExtern e env fname args
       else if isNumExtern fname && hasArgs args then emitNumExtern e env fname args
       else if isIoExtern fname && hasArgs args then emitIoExtern e env fname args
+      else if isAbortExtern fname && hasArgs args then emitAbortExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -2677,6 +2693,8 @@ emitPreamble e =
   let _ = emit e "declare void @mdk_eputstr(i64)"
   let _ = emit e "declare void @mdk_eputstrln(i64)"
   let _ = emit e "declare void @mdk_print_unit()"
+  let _ = emit e "declare void @mdk_panic(i64)"
+  let _ = emit e "declare void @mdk_exit(i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

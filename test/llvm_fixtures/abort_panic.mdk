@@ -1,0 +1,3 @@
+-- native extern catalog slice 4: panic — writes message to stderr and exits 1.
+-- Oracle raises Eval_error -> stderr only; stdout empty on both sides.
+main = panic "boom"

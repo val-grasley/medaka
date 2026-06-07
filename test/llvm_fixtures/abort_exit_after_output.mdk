@@ -1,0 +1,3 @@
+-- native extern catalog slice 4: exit after output — proves side-effect ordering.
+-- Oracle: putStrLn runs first (stdout "before"), then exit 0.  Both sides identical.
+main = let _ = putStrLn "before" in exit 0
