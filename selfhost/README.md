@@ -117,7 +117,7 @@ sh test/diff_selfhost_bytecode_selfproc.sh    #   §2.2 capstone + §2.3 item 1:
 sh test/diff_selfhost_eval_dict.sh            #   §2.3 item 2: dict-passing corpus through typed tree-walker (17/17 ok)
 sh test/diff_selfhost_bytecode_eval_dict.sh   #   §2.3 item 2: same corpus through typed bytecode VM (17/17 ok)
 sh test/diff_selfhost_eval.sh                 #   §2.3 item 3: effect-poly erasure (effect_poly) + full engine corpus via tree-walker (19 ok)
-sh test/diff_selfhost_llvm.sh                 # Stage 2 §2.4 LLVM spike — emit→clang→link→run→diff, scalar + function + Bool/Float + ADT/match + closure/HOF + records/tuples/refs + list/tuple-match/rec-closure slices (35/35; needs clang)
+sh test/diff_selfhost_llvm.sh                 # Stage 2 §2.4 LLVM spike — emit→clang→link→run→diff, scalar + function + Bool/Float + ADT/match + closure/HOF + records/tuples/refs + list/tuple-match/rec-closure + arrays/ranges + lists (43/43; needs clang)
 sh test/diff_selfhost_llvm_typed.sh           # Stage 2 §2.4 LLVM spike slices 6–7 — TYPED dispatch (return-pos CMethod RKey/RDict + arg-pos bare-CVar arg-tag); oracle = typed Core-IR tree-walker (6/6; needs clang)
 
 # Per-stage wall-clock profiling (measurement only; output goes to stderr):

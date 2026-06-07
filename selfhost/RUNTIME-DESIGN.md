@@ -337,7 +337,7 @@ cheap, oracle-backed setting is where they should be settled.
 
 > **Status: PROPOSAL for human ratification — NOT locked.** The Stage-2.4
 > de-risking spike (`selfhost/llvm_emit.mdk` + `runtime/medaka_rt.c`, gated by
-> `test/diff_selfhost_llvm.sh`, 39/39 byte-identical to the tree-walker) used a
+> `test/diff_selfhost_llvm.sh`, 43/43 byte-identical to the tree-walker) used a
 > *provisional* uniform tagged word so it could run; this section turns what that
 > surfaced into a recommendation. **The spike's rep is explicitly revisable** —
 > changing it touches only `llvm_emit.mdk`'s tag/box helpers + `medaka_rt.c`, by

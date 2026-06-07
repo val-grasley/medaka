@@ -840,9 +840,9 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
 
 **2.4a-5 — Slice 8 (ARRAYS + RANGES).** The four remaining array/range Core-IR
   nodes: `CArray`, `CRangeArray`, `CIndex`, `CSlice`.  **Scope decision:** CList and
-  CRangeList deferred — adding list CONSTRUCTION (Cons/Nil cell allocation) would
-  require new runtime machinery beyond the slice's incremental budget; the existing
-  fixtures cover list MATCH (HCons/HNil from slice 5b) without list construction, and
+  CRangeList deferred to slice 9 — adding list construction in this slice would
+  have expanded scope beyond the array-focused increment; the existing fixtures
+  cover list MATCH (HCons/HNil from slice 5b) without list construction, and
   arrays are self-contained.  **Rep decision (extends (q)–(t)):**
   **(q) ARRAY CELL** — layout `[ i64 raw_len | elem0 | elem1 … ]` (header word =
   raw element count, NOT a constructor hash; elements at offsets 8*(i+1) via the
@@ -866,8 +866,8 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   supported; the `hi_adj` computation is a compile-time Medaka branch on the `incl`
   field.  **39/39 plain harness** (4 new fixtures: `arr_index`, `arr_range_sum`,
   `arr_slice`, `arr_range_excl`) and **6/6 typed gate** stay byte-identical.
-  Still out of scope: CList/CRangeList (list construction); arg-tag dispatch on
-  non-ADT args; nested requires dicts; GC.
+  Still out of scope (addressed in slice 9): CList/CRangeList. Remaining gaps:
+  arg-tag dispatch on non-ADT args; nested requires dicts; GC.
 
 **2.4a-6 — Slice 9 (LISTS: CList + CRangeList).** The last two list-construction
   Core IR nodes, completing the non-GC Core IR surface.  Both lower via the
