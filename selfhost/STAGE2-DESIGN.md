@@ -901,12 +901,16 @@ done: it is **not** the real backend, and continuing to add spike slices buys li
 — the remaining items are the decision-dense ones deferred to the real backend by
 design. The near-term sequence (mirrored in [`../PLAN.md`](../PLAN.md) §"Native
 backend (Stage 2) — near-term sequence"):
-1. **Ratify the value representation + calling convention** — the spike's tagged
-   word is **provisional** ([`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md) §8, for human
-   ratification). This is the gate before real-backend codegen.
+1. ✅ **Value representation + calling convention RATIFIED (2026-06-07)** — Option A
+   (uniform tagged word) as the native encoding *under §8.6's shared abstract
+   contract* (WasmGC-compatible by construction); constructor tag = **dense i32
+   ctor-ordinal per type** (replaces the spike's i64 hash — `br_table`-ready, no
+   collisions); uniform one-word header kept; `Float` boxed-first.
+   [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md) §8.
 2. **Promote the spike to the real backend** — integrate a GC (Boehm to start; the
    spike is malloc-and-leak), re-implement the native extern catalog (per-extern
-   disposition in RUNTIME-DESIGN), and close the spike's out-of-scope gaps (arg-tag
+   disposition in RUNTIME-DESIGN), emit the ratified **dense i32 ctor-ordinal** tags
+   (replacing the spike's hash), and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). Gate native stdout against
    **both** the tree-walker and the bytecode VM (the second, single-steppable
    oracle — the disambiguation LLVM-first cannot have).

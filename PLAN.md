@@ -56,7 +56,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 — **full non-GC Core IR surface covered** (43/43 gate); §2.0 closed (observability done; lexical-addressing a tree-walker non-win, already captured in VM/Core IR); next = **ratify value rep** (RUNTIME-DESIGN §8, human gate) → real backend (GC + extern catalog) → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 — **full non-GC Core IR surface covered** (43/43 gate); §2.0 closed; **value rep RATIFIED (2026-06-07** — Option A tagged word under §8.6 contract, dense i32 ctor-ordinal, uniform header**)**; next = real backend (GC + extern catalog + ordinal tags) → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred), Core IR `decodeHead` reserved-name bug |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -359,20 +359,25 @@ Core IR + evaluator + sexp round-trip ✅; §2.2 bytecode VM (6 slices + capston
 arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
 
 **Near-term (remaining), dependency-ordered:**
-1. **Ratify the value representation + calling convention** (human gate). The spike
-   exercised a **provisional** uniform tagged word across slices 1–9;
-   [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §8 turns that into a
-   proposal (tagged word vs NaN-box vs boxed-everything, `musttail` convention)
-   **for human ratification — not yet locked**. This gates real-backend codegen.
-   Skill: none (design decision).
+1. ✅ **Value representation + calling convention RATIFIED (2026-06-07).** Native
+   encoding = **Option A** (uniform tagged word, low-bit-1 immediate 63-bit `Int`),
+   adopted *under §8.6's shared abstract value contract* so semantics are
+   WasmGC-compatible by construction. Constructor tag = **dense i32 ctor-ordinal per
+   type** (not the spike's i64 hash — `br_table`-ready, kills the hash-collision
+   miscompile class; the separate `decodeHead` reserved-name aliasing bug is a
+   distinct resolve-level fix); **uniform
+   one-word heap header** kept; `Float` boxed-first; scalars not self-describing
+   (compile-time `Debug`). Record: [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md)
+   §8 status banner + §8.4. This unblocks item 2.
 2. **Promote the spike to the real LLVM backend** (§2.4). The spike covers the Core
    IR but is explicitly *not* the real backend; the remaining lifts are the
    decision-dense ones deferred by design: a **GC** (Boehm to start — the spike is
    malloc-and-leak), the **native extern catalog** re-implementation (per-extern
-   disposition in RUNTIME-DESIGN), and the spike's out-of-scope gaps (arg-tag
-   dispatch on non-ADT/Int args, nested-requires dicts). Gate: native stdout vs the
-   tree-walker **and** the bytecode VM (the second, single-steppable oracle). Skill:
-   none specific (lands in `selfhost/llvm_emit*.mdk` + `runtime/`).
+   disposition in RUNTIME-DESIGN), the **dense i32 ctor-ordinal** tag emission (the
+   ratified scheme, replacing the spike's hash), and the spike's out-of-scope gaps
+   (arg-tag dispatch on non-ADT/Int args, nested-requires dicts). Gate: native
+   stdout vs the tree-walker **and** the bytecode VM (the second, single-steppable
+   oracle). Skill: none specific (lands in `selfhost/llvm_emit*.mdk` + `runtime/`).
 3. **Bootstrap closure** — self-hosted compiler + LLVM backend compiles itself to a
    standalone native binary (the finish line, STAGE2-DESIGN §2.4).
 

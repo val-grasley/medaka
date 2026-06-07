@@ -304,7 +304,7 @@ NOT separate forked language variants. The ratified middle path:
 ## 7. Open decisions to lock before building the runtime
 
 1. **Value representation — one abstract contract, two physical encodings
-   (RECONCILED, see §8.6).** There is **no single physical rep across backends** —
+   (RATIFIED 2026-06-07; reconciliation in §8.6).** There is **no single physical rep across backends** —
    WasmGC has no machine words to tag and no conservative GC, so a tagged word cannot
    port to it. The resolution is layering, not a winner: a single **abstract value
    contract** (`Int` **63-bit** as today — §8.0 fact 1; `Float` 64-bit IEEE; the value
@@ -335,13 +335,34 @@ cheap, oracle-backed setting is where they should be settled.
 
 ## 8. Value representation & calling convention
 
-> **Status: PROPOSAL for human ratification — NOT locked.** The Stage-2.4
-> de-risking spike (`selfhost/llvm_emit.mdk` + `runtime/medaka_rt.c`, gated by
-> `test/diff_selfhost_llvm.sh`, 43/43 byte-identical to the tree-walker) used a
-> *provisional* uniform tagged word so it could run; this section turns what that
-> surfaced into a recommendation. **The spike's rep is explicitly revisable** —
-> changing it touches only `llvm_emit.mdk`'s tag/box helpers + `medaka_rt.c`, by
-> design (the tagging lives in emitted IR, not the runtime).
+> **Status: RATIFIED 2026-06-07.** Option A (uniform tagged word) is adopted as the
+> **native** physical encoding, *under the shared abstract value contract of §8.6* —
+> the ratification is of the contract + this encoding, not a backend-specific bit
+> layout (so WasmGC compatibility is structural: it implements the same contract with
+> `i31ref` + typed structs; §8.6). The Stage-2.4 de-risking spike
+> (`selfhost/llvm_emit.mdk` + `runtime/medaka_rt.c`, gated by
+> `test/diff_selfhost_llvm.sh`, 43/43 byte-identical to the tree-walker) proved the
+> encoding end-to-end. **Ratified decisions (human, 2026-06-07):**
+> 1. **Native rep = Option A** (low-bit-1 immediate 63-bit `Int`/`Char`/`Bool`/`Unit`/
+>    nullary ctors; boxed pointers) — *conditioned on §8.6's abstract contract so the
+>    semantics are WasmGC-compatible*.
+> 2. **Constructor tag = dense i32 ctor-ordinal per type** (NOT the spike's i64
+>    string-hash) — ports to LLVM/WasmGC `br_table` and eliminates the
+>    hash-**collision** miscompile class. (The separate `decodeHead` reserved-name
+>    aliasing bug — a user ctor named `Cons`/`Nil`/`Unit` decoding to the built-in
+>    head at lowering — is a *distinct* name-keying hazard, fixed at resolve level or
+>    with a `CHead` discriminator, not by the tag change; PLAN.md.) The spike +
+>    `ceval` keep the hash until the real backend; the real backend emits ordinals.
+> 3. **Heap header = keep a uniform one-word header on every boxed cell** (the ADT tag
+>    rides here; uniform cell shape for switch tag-testing; eases precise-GC migration).
+> 4. **`Float` = boxed-first** (§8.4) — type-directed local unboxing only if profiling
+>    demands it.
+> 5. **Scalar self-description = not required** (§8.4) — generic rendering goes through
+>    compile-time `Debug` (`→METHOD`, §2c); the runtime never reflects on scalar layout.
+>
+> The spike's rep remains revisable in one place (`llvm_emit.mdk`'s tag/box helpers +
+> `medaka_rt.c`); ratifying the *contract* is what is now locked, not the spike's
+> expedient i64 hash (decision 2 supersedes it for the real backend).
 
 > **Layering note (reconciles §7.1's WasmGC constraint — 2026-06-06).** §8.0–8.5
 > describe the **native (LLVM + Boehm) physical encoding** — *one of two* physical
@@ -468,21 +489,29 @@ under Boehm, frees nullary constructors, and is already proven by the spike. NaN
 is rejected primarily because it breaks conservative GC and secondarily because it
 narrows `Int`; boxed-everything is the correctness floor, not the rep.
 
-Decisions this still leaves open (the human-ratified part):
+Decisions this leaves open — **all RATIFIED 2026-06-07** (see the §8 status banner;
+recorded inline here):
 
+- **Constructor tag scheme** (NOT in the original list — surfaced by spike slice 3).
+  **RATIFIED: dense i32 ctor-ordinal per type**, replacing the spike's i64
+  string-hash. Ports to LLVM/WasmGC `br_table` and eliminates the hash-**collision**
+  miscompile class. (The `decodeHead` reserved-name aliasing bug is a *distinct*
+  name-keying hazard — fixed at resolve level or with a `CHead` discriminator, not by
+  the tag change.) The spike + `ceval` keep the hash until the real backend; the
+  real backend emits ordinals.
 - **Heap header.** Include a one-word header on boxed cells now (the spike does), or
   omit under Boehm (which tracks size itself) and add it when precise GC lands?
-  Recommendation: **include it** — 8 bytes/object buys an easy precise-GC migration
-  and a fallback generic `Debug`, and it is cheap relative to the allocation it
-  rides on.
+  **RATIFIED: include it** — 8 bytes/object buys an easy precise-GC migration, a
+  uniform cell shape for switch tag-testing (the ADT tag rides here), and a fallback
+  generic `Debug`, cheap relative to the allocation it rides on.
 - **`Float` unboxing.** Ship floats boxed (Option A baseline) and add type-directed
-  local unboxing later, or invest in unboxed `Float` from day one? Recommendation:
-  **boxed first** — floats are rare in the bootstrap path; unbox only if profiling
-  says so. (This is the one row where NaN-box would have helped — record it.)
+  local unboxing later, or invest in unboxed `Float` from day one? **RATIFIED: boxed
+  first** — floats are rare in the bootstrap path; unbox only if profiling says so.
+  (This is the one row where NaN-box would have helped — record it.)
 - **`Bool`/`Int` indistinguishability.** Under Option A a `Bool` and the `Int` 0/1
   share a bit-pattern. The spike handles this by choosing the print routine from the
   *static* type — fine because slice 1 is monomorphic and `Debug` is `→METHOD`
-  (compile-time dispatched, §2c). Ratify that **the rep is not required to
+  (compile-time dispatched, §2c). **RATIFIED: the rep is not required to
   self-distinguish scalar types** — generic rendering goes through compile-time
   `Debug`, never runtime reflection. (If a future feature needs runtime scalar
   reflection, that is when a header tag on a boxed scalar, or a distinct `Bool`
@@ -621,15 +650,19 @@ available, `STAGE2-DESIGN.md` §2.4b) — achieving the *same* guaranteed-TCO co
 a different instruction. Extern *bindings* differ per backend (C-ABI native;
 host-import/WIT on WasmGC — §6a); only the signatures are shared.
 
-**Single recommendation (resolves the §7.1 flag).**
+**Single recommendation (resolves the §7.1 flag) — RATIFIED 2026-06-07.**
 1. **Ratify §8.1 Option A as the *native* encoding** — its Boehm/tagged-word argument
-   is sound and spike-proven; nothing here changes it.
+   is sound and spike-proven; nothing here changes it. ✅ **ratified.**
 2. **Adopt the abstract contract above as the cross-backend source of truth** — Core
    IR, extern signatures, and observable semantics target *it*, never an encoding.
+   ✅ **ratified** (this is the condition attached to decision 1 — the native encoding
+   is adopted *under* this contract, so WasmGC compatibility is structural).
 3. **Plan the WasmGC encoding as a peer** (`i31ref` + typed structs, host GC),
-   designed to the same contract when the WasmGC backend is built.
+   designed to the same contract when the WasmGC backend is built. ✅ **ratified as the
+   plan;** the dense-i32-ctor-ordinal tag decision (§8.4) was made `br_table`-ready
+   precisely to serve this peer.
 4. **Accept the ≤31-bit unbox asymmetry on WasmGC** — the one net-new decision; it is
-   invisible to semantics, so accept it.
+   invisible to semantics, so accept it. ✅ **accepted.**
 
 Two physical runtimes (Boehm+tagged-word native; host-GC+structs WasmGC) are
 *expected and fine* — "one language" is guaranteed by the shared contract + the
