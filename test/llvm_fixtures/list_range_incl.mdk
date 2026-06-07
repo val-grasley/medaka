@@ -1,0 +1,7 @@
+-- slice 9: CRangeList inclusive.  [1..=5] builds a list [1,2,3,4,5] via
+-- emitRangeList (alloca-counter back-to-front loop).  Sum = 15.
+sumL lst = match lst
+  x :: xs => x + sumL xs
+  [] => 0
+
+main = sumL [1..=5]

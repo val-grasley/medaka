@@ -1,0 +1,7 @@
+-- slice 9: CList literal + CRangeList combination.  Sum [10,20,30] and [1..=5],
+-- combine the results.  [10,20,30] sum=60; [1..=5] sum=15; total=75.
+sumL lst = match lst
+  x :: xs => x + sumL xs
+  [] => 0
+
+main = sumL [10, 20, 30] + sumL [1..=5]

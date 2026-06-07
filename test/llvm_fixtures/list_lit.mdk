@@ -1,0 +1,8 @@
+-- slice 9: CList literal. Exercises construction of a list literal [1,2,3,4,5]
+-- via emitList (inline right-fold into Cons/Nil cells), then sums it via the
+-- HCons/HNil match heads from slice 5b.  Result: 15.
+sumL lst = match lst
+  x :: xs => x + sumL xs
+  [] => 0
+
+main = sumL [1, 2, 3, 4, 5]

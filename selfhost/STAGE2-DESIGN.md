@@ -869,6 +869,28 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   Still out of scope: CList/CRangeList (list construction); arg-tag dispatch on
   non-ADT args; nested requires dicts; GC.
 
+**2.4a-6 — Slice 9 (LISTS: CList + CRangeList).** The last two list-construction
+  Core IR nodes, completing the non-GC Core IR surface.  Both lower via the
+  existing `emitCtorAlloc` path (Cons/Nil boxed cells, the same `hashName "Cons"`/
+  `hashName "Nil"` tags the slice-5b HCons/HNil match heads test, so construction
+  and match agree by construction).  **Spike-rep notes (extending (a)–(t)):**
+  **(u) CList [e0…en] INLINE RIGHT-FOLD** — N+1 `emitCtorAlloc` calls emitted in
+  straight-line code from innermost (tail) to outermost (head); zero loops, no
+  runtime overhead beyond the allocations.  Consistent with `emitTuple` (static
+  arity → static unroll).  **(v) CRangeList lo hi incl BACK-TO-FRONT LOOP** —
+  two allocas (`acc` = current list head, `ic` = loop counter); init `acc=Nil`,
+  `ic=count-1`; while `ic≥0`: prepend `Cons(tagInt(lo+ic), acc)`, decrement.
+  Back-to-front guarantees the resulting list is ascending without a separate
+  reverse pass.  An empty range (`count≤0`) sets `ic=-1` and exits immediately,
+  returning Nil.  CFG shape mirrors the slice-8 alloca-counter loop (no phi nodes,
+  consistent `alloca/store/load` discipline).  **Scope decision (stated):** loop
+  chosen over a define-recursive helper for stack safety on large ranges and
+  consistency with slice 8; the inline-fold chosen for CList because the list size
+  is compile-time-known (no recursion-depth risk).  **43/43 plain harness** (4 new
+  fixtures: `list_lit`, `list_range_incl`, `list_range_excl`, `list_range_combo`)
+  and **6/6 typed gate** stay byte-identical.  Still out of scope: arg-tag dispatch
+  on non-ADT args; nested requires dicts; GC.
+
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /
 [`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)) ships on WebAssembly, so

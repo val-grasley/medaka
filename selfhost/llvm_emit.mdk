@@ -101,11 +101,14 @@
 --     GEPs to field (idx+1) dynamically.  CRangeArray and CSlice both emit an
 --     alloca-counter loop (the spike's first non-recursion loop): CRangeArray fills
 --     i ↦ lo+i (tagged Int word); CSlice copies elements from the source array.
---     CList and CRangeList remain out of scope (list construction not yet added);
---     the rationale is documented in §2.4a-5 below.  See also the "arrays + ranges
---     (slice 8)" section below for the (q)/(r)/(s)/(t) rep notes.
--- Still OUT of scope: CList/CRangeList (list construction); arg-tag dispatch on
---     non-ADT args; nested requires dicts; GC.
+--   • slice 9 — LISTS (CList + CRangeList).  CList [e0…en] right-folds inline into
+--     Cons/Nil boxed cells (the same cells the slice-5b HCons/HNil match heads test,
+--     so construction and match agree).  CRangeList lo hi incl builds an ascending
+--     list via an alloca-counter back-to-front loop (initialise Nil, prepend
+--     Cons(lo+i,acc) for i from count-1 downto 0) — avoids stack overflow and
+--     mirrors the slice-8 loop discipline.  See the "lists (slice 9)" section and
+--     §2.4a-6 in STAGE2-DESIGN.md for the (u)/(v) rep notes.
+-- Still OUT of scope: arg-tag dispatch on non-ADT args; nested requires dicts; GC.
 -- An unsupported Core IR node panics with its tag (the spike refuses to emit wrong
 -- code rather than silently mis-lowering).
 --
@@ -413,6 +416,8 @@ emitExpr e env (CArray es) = emitArrayCreate e env es
 emitExpr e env (CRangeArray lo hi incl) = emitRangeArray e env lo hi incl
 emitExpr e env (CIndex a i) = emitArrayIndex e env a i
 emitExpr e env (CSlice a lo hi incl) = emitArraySlice e env a lo hi incl
+emitExpr e env (CList es) = emitList e env es
+emitExpr e env (CRangeList lo hi incl) = emitRangeList e env lo hi incl
 emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag other ++ " (slice 1/3 subset only)")
 
 -- a variable occurrence: a bare constructor name (slice 3) is a NULLARY ADT value
@@ -1257,6 +1262,7 @@ freeVars b (CMatch scrut arms) = freeVars b scrut ++ freeVarsArms b arms
 freeVars b (CDecision scrut arms _) = freeVars b scrut ++ freeVarsArms b arms
 freeVars b (CTuple es) = freeVarsList b es
 freeVars b (CList es) = freeVarsList b es
+freeVars b (CRangeList lo hi _) = freeVars b lo ++ freeVars b hi
 freeVars b (CRecord _ fields) = freeVarsFields b fields
 freeVars b (CFieldAccess ex _) = freeVars b ex
 freeVars b (CRecordUpdate base updates) = freeVars b base ++ freeVarsFields b updates
@@ -2018,6 +2024,7 @@ scanExprRecords (CDecision scrut arms _) =
 scanExprRecords (CMatch scrut arms) = scanExprRecords scrut ++ scanArmsRecords arms
 scanExprRecords (CArray es) = scanExprsRecords es
 scanExprRecords (CRangeArray lo hi _) = scanExprRecords lo ++ scanExprRecords hi
+scanExprRecords (CRangeList lo hi _) = scanExprRecords lo ++ scanExprRecords hi
 scanExprRecords (CIndex a i) = scanExprRecords a ++ scanExprRecords i
 scanExprRecords (CSlice a lo hi _) =
   scanExprRecords a ++ scanExprRecords lo ++ scanExprRecords hi
@@ -2051,9 +2058,8 @@ scanStmtsRecords (_::rest) = scanStmtsRecords rest
 -- LOOPS: CRangeArray and CSlice use an alloca-counter loop (the first non-recursion
 -- loop in the spike — avoids phi instructions and matches the alloca/store/load
 -- pattern the rest of the emitter uses for multi-path merges).
--- SCOPE: CList and CRangeList remain out of scope (list CONSTRUCTION was not added;
--- list MATCH (HCons/HNil) works from slice 5b; adding CList/CRangeList is deferred
--- since the fixtures only need arrays).
+-- SCOPE: CList and CRangeList are covered by slice 9 ("lists" section below).
+-- list MATCH (HCons/HNil) works from slice 5b.
 -- SPIKE-REP NOTES (slice 8; extending (a)–(p)):
 --   (q) ARRAY CELL — header word = raw_len (not hashName), so `loadTag` gives the
 --       count directly.  Element i is at offset 8*(i+1), consistent with `loadField`.
@@ -2236,6 +2242,93 @@ emitArraySlice e env a lo hi incl =
   let w = freshReg e
   let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
   (w, LTCon)
+
+-- ── lists (slice 9) ─────────────────────────────────────────────────────────
+-- VALUE REPRESENTATION: a list is a chain of boxed Cons cells (matching the
+-- slice-5b match heads HCons/HNil which already test hashName "Cons"/"Nil").
+-- Cell layouts (8-byte words):
+--   Nil  → [ i64 hashName("Nil") ]                    (1-word cell, no fields)
+--   Cons → [ i64 hashName("Cons") | i64 head | i64 tail ]  (3-word cell)
+-- Construction uses emitCtorAlloc "Nil" [] / emitCtorAlloc "Cons" [hw, tw]
+-- verbatim — the SAME hashed tag the slice-5b switch tests, so construction
+-- and match agree by construction.
+--
+-- SPIKE-REP NOTES (slice 9; extending (a)–(t)):
+--   (u) CList [e0…en] is RIGHT-FOLDED INLINE (compile-time unroll): N+1 allocs
+--       emitted as a straight-line sequence from tail to head.  No loop, no
+--       stack growth — the list size is statically known.  Consistent with
+--       emitTuple (which also unrolls inline for a static arity).
+--   (v) CRangeList lo hi incl uses an ALLOCA-COUNTER LOOP (back-to-front):
+--       initialise tail=Nil, i=count-1; while i≥0 prepend Cons(lo+i, tail) and
+--       decrement i.  Back-to-front builds the list in ascending order (lo…hi)
+--       without reversing.  An alloca i64 `acc` holds the current list head word
+--       (a cell pointer as i64), so the same alloca/store/load discipline the
+--       rest of the emitter uses for multi-path merges.  An empty range (count≤0)
+--       returns Nil immediately (i=count-1 < 0 on first test).  This approach
+--       matches the slice-8 loop pattern and avoids stack overflow on large ranges.
+
+-- CList [e0, e1, …, en]: right-fold to Cons cells, innermost first.
+emitList : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
+emitList e _ [] = emitCtorAlloc e "Nil" []
+emitList e env (x::xs) =
+  let (xw, _) = emitExpr e env x
+  let (tw, _) = emitList e env xs
+  emitCtorAlloc e "Cons" [xw, tw]
+
+-- CRangeList lo hi incl: build an ascending list [lo…hi] (or [lo…<hi]) via a
+-- back-to-front alloca-counter loop.  An alloca i64 `acc` holds the current
+-- head pointer; a second alloca i64 `ic` holds the loop counter (count-1 downto 0).
+emitRangeList : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> Bool -> <Mut> (String, LTy)
+emitRangeList e env lo hi incl =
+  let (lo_w, _) = emitExpr e env lo
+  let (hi_w, _) = emitExpr e env hi
+  let lo_raw = untagInt e lo_w
+  let hi_raw = untagInt e hi_w
+  let hi_adj = if incl then
+      let r = freshReg e
+      let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_raw ++ ", 1")
+      r
+    else hi_raw
+  let count = freshReg e
+  let _ = emit e ("  " ++ count ++ " = sub i64 " ++ hi_adj ++ ", " ++ lo_raw)
+  -- Seed the accumulator with Nil.
+  let (nil_w, _) = emitCtorAlloc e "Nil" []
+  let acc = freshReg e
+  let _ = emit e ("  " ++ acc ++ " = alloca i64")
+  let _ = emit e ("  store i64 " ++ nil_w ++ ", ptr " ++ acc)
+  -- Counter starts at count-1 (back-to-front).
+  let ic = freshReg e
+  let _ = emit e ("  " ++ ic ++ " = alloca i64")
+  let im1 = freshReg e
+  let _ = emit e ("  " ++ im1 ++ " = sub i64 " ++ count ++ ", 1")
+  let _ = emit e ("  store i64 " ++ im1 ++ ", ptr " ++ ic)
+  let n = intToString (freshId e)
+  let condL = "rl_cond" ++ n
+  let bodyL = "rl_body" ++ n
+  let doneL = "rl_done" ++ n
+  let _ = emit e ("  br label %" ++ condL)
+  let _ = emit e (condL ++ ":")
+  let iv = freshReg e
+  let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp slt i64 " ++ iv ++ ", 0")
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
+  let _ = emit e (bodyL ++ ":")
+  let elem_raw = freshReg e
+  let _ = emit e ("  " ++ elem_raw ++ " = add i64 " ++ lo_raw ++ ", " ++ iv)
+  let elem_w = tagInt e elem_raw
+  let tail_w = freshReg e
+  let _ = emit e ("  " ++ tail_w ++ " = load i64, ptr " ++ acc)
+  let (cons_w, _) = emitCtorAlloc e "Cons" [elem_w, tail_w]
+  let _ = emit e ("  store i64 " ++ cons_w ++ ", ptr " ++ acc)
+  let iv2 = freshReg e
+  let _ = emit e ("  " ++ iv2 ++ " = sub i64 " ++ iv ++ ", 1")
+  let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
+  let _ = emit e ("  br label %" ++ condL)
+  let _ = emit e (doneL ++ ":")
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ acc)
+  (r, LTCon)
 
 -- ── program ─────────────────────────────────────────────────────────────────
 -- Emit a whole CProgram as a textual LLVM module: the runtime declares, then one

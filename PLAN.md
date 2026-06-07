@@ -195,18 +195,18 @@ deliberately deferred to here:
   runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
   is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
-  - ✅ **Toolchain de-risking spike DONE through slice 8** (2026-06-07) — *ahead
+  - ✅ **Toolchain de-risking spike DONE through slice 9** (2026-06-07) — *ahead
     of the strict VM-first ordering by design* (front-loads the riskiest lift; uses
     only the tree-walker oracle). Proves the decided toolchain end-to-end (EMIT
     textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings):
     `selfhost/llvm_emit.mdk` + `llvm_emit_main.mdk` + `runtime/medaka_rt.c`
     (malloc-and-leak stub; GC deferred), gated by `test/diff_selfhost_llvm.sh`
-    (emit → clang → link → run → diff vs `dev/eval_probe.exe`, **39/39
+    (emit → clang → link → run → diff vs `dev/eval_probe.exe`, **43/43
     byte-identical**). Slices cover scalars (1), top-level fns + `musttail`
     self-recursion (2), Bool/Float boundaries (2b), ADT ctors + decision-tree match
     (3), closures + HOFs via lambda-lifting (4), records/tuples/mutable refs (5a),
     built-in list/tuple match heads + recursive closures (5b), **typeclass dispatch
-    (6)**, **arg-position dispatch (7)**, **arrays + ranges (8)**. Slice 6 (the largest remaining Core-IR gap, and the one the bootstrap
+    (6)**, **arg-position dispatch (7)**, **arrays + ranges (8)**, **lists (9)**. Slice 6 (the largest remaining Core-IR gap, and the one the bootstrap
     needs — the self-host compiler dispatches return-position via `RKey`) lowers
     `CMethod`/`CDict`: an `RKey` route is statically resolved → a direct call to the
     impl's lifted `@mdk_impl_<tag>_<method>`; `RDict`/`RDictFwd` read a runtime dict
@@ -229,17 +229,21 @@ deliberately deferred to here:
     `CArray` allocates a length-prefixed boxed cell (raw_len at header position;
     elements at offsets 8*(i+1)); `CIndex` bounds-checks via `@mdk_oob()`; `CRangeArray`
     and `CSlice` emit alloca-counter loops (the spike's first non-recursion loop; no phi
-    nodes). `CList`/`CRangeList` deferred. 4 new fixtures (arr_index, arr_range_sum,
-    arr_slice, arr_range_excl). **Not** the real
-    backend (CList/CRangeList; arg-tag dispatch on non-ADT args, nested requires dicts,
+    nodes). 4 new fixtures (arr_index, arr_range_sum, arr_slice, arr_range_excl). Slice 9
+    (lists): `CList` inline right-folds into Cons/Nil heap cells via `emitCtorAlloc`
+    (cell hashes match slice-5b's `HCons`/`HNil` match heads); `CRangeList` reuses the
+    alloca-counter back-to-front loop (high-to-low index → ascending order, no reverse
+    pass). 4 new fixtures (list_lit, list_range_incl, list_range_excl, list_range_combo).
+    **Not** the real backend (arg-tag dispatch on non-ADT args, nested requires dicts,
     `HUnit` heads, guarded/range/record arms,
     non-empty `PList` binding, partial application, Ref capture still panic). Full
     per-slice log + the spike-surfaced representation notes (a)–(t) — nullary
     boxing, i64 hash-tag vs i32 ordinal, closure header, saturated-only calling,
     eta-wrapping, positional records, tuple headers, the `set_ref` write-barrier gap,
     the slice-6 dict-witness / impl-fn / dispatch-chain notes (j)–(m), the slice-7
-    arg-tag call-site / impl-coalescing / bool-ctor notes (n)–(p), and the slice-8
-    array-cell / bounds-check / range-loop / slice-loop notes (q)–(t) — live in
+    arg-tag call-site / impl-coalescing / bool-ctor notes (n)–(p), the slice-8
+    array-cell / bounds-check / range-loop / slice-loop notes (q)–(t), and the slice-9
+    list inline-fold / range-list back-to-front notes (u)–(v) — live in
     [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4/§2.4a
     (the spike's owning doc; rep decisions belong to the real backend).
 - ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `selfhost/core_ir.mdk`,
