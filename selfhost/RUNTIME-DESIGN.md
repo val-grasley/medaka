@@ -533,7 +533,8 @@ The uniform-word rep makes the convention fall out cleanly:
   cell `{ i64 tag, field… }` via `mdk_alloc` (the §8.4 Option-A layout, the Float
   box extended to N fields), and a `match` is a decision-tree CFG (tag-test `br`
   switch → `getelementptr` field projection → arm body). 22/22 gate. Two rep
-  decisions surfaced for the real backend (deferred — see PLAN.md spike-rep notes):
+  decisions surfaced for the real backend (deferred — see STAGE2-DESIGN.md
+  §2.4/§2.4a spike-rep notes):
   (1) the spike **boxes nullary constructors** (1-word alloc) where §8.1 says they
   should be **immediate/free** — fix in the native backend; (2) the **i64 string-hash
   tag** is convenient here but a **dense i32 ctor-ordinal** (per type) is what ports
@@ -545,7 +546,7 @@ The uniform-word rep makes the convention fall out cleanly:
   `define`, the closure cell `{ header, code_ptr, captured… }` allocates via the
   same `mdk_alloc` path, and a higher-order call loads `code_ptr` and passes the
   closure word as the leading arg. 35/35 gate (slices 1–5b). Rep decisions surfaced (deferred —
-  PLAN.md spike-rep notes (d)–(f)): the one-word **header is never inspected** and
+  STAGE2-DESIGN.md §2.4/§2.4a spike-rep notes (d)–(f)): the one-word **header is never inspected** and
   could be dropped; **saturated calls only** (arity must move into the cell for
   partial/over-application); named-fn-as-value is **eta-wrapped per use** (could be
   interned once arities are carried).
@@ -558,7 +559,7 @@ The uniform-word rep makes the convention fall out cleanly:
   **Saturated calls only** — the type-erased Core IR can't see arity at the call
   site, so partial/over-application are deferred: the real backend must carry arity
   in the cell. The spike's one-word header is never inspected and could be dropped.
-  See PLAN.md spike-rep notes (d)–(f).)
+  See STAGE2-DESIGN.md §2.4/§2.4a spike-rep notes (d)–(f).)
 - **`panic`/`exit`.** `noreturn` (§4). The unwind model (abort vs. catchable
   unwind) is deferred with the convention, as §4 already notes.
 

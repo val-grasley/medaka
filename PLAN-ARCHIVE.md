@@ -5192,6 +5192,51 @@ elements ARE its `toList`), so `toList`/`elem`/`length` resolve cleanly from use
 files. Both: removed the name from `resolve.ml`'s `primitive_types`. Skill:
 **extend-stdlib**. See [[project_module5_map]].
 
+### Phase 83/84 residual #5: true recursive/nested instance dictionaries ✅ DONE (reference + selfhost, 2026-06-05)
+
+The last Phase 83/84 dispatch residual. #5 — the `List (List Int)` case — replaces
+the flat impl-key strings with **structured/recursive** runtime dicts. (#1–#2 closed
+by Phase 115; #4 free-`e` `Result` closed via head-key routing — both above.)
+
+**Reference build — oracle established.** `medaka run` prints `def : List (List Int)`
+→ `[[0]]`, `List (List (List Int))` → `[[[0]]]`, mixed `Option (List (Option Int))`
+→ `Some [Some 0]` (single + multi-module loader paths). The runtime dict is now
+structured: `VDict of string * value list` / `VDictHead of string * value list` (key
+plus the impl's own `requires` dicts, recursively); `Ast.RKey of string * res_route
+list` carries the requires routes. Three moving parts, all mirroring the *checking*
+machinery:
+1. `lib/typecheck.ml` `impl_requires_routes_rec` — routing twin of the recursive
+   `check_entry_requires`; resolves each `requires` to `RKey (chosen_key, <its own
+   requires routes>)` recursively. Used by both the method-occurrence ground path
+   (`commit`) and the dict-application ground path (`resolve_one_route`).
+2. `lib/eval.ml` `dict_of_route` recurses to build the nested `VDict`; the
+   `EMethodRef` arm, for a *forwarded* (RDict) return-position site, splices the
+   runtime dict's own `requires` into the selected impl's body.
+3. Forward is **gated** by `res_fwd_requires : bool` on the resolved record (true
+   only for return-position RDict sites) — without it, arg-position methods
+   (`display`/`==`, arg-tag dispatched) get extra leading dict args and corrupt
+   (the regression that broke `println [1,2,3]` mid-build). `dict_pass.ml` needed
+   **no** change (param count unchanged; depth lives in the value). Regression test:
+   `test_run.ml t_nested_instance_dicts`.
+
+**Self-host mirror — DONE (2026-06-05).** `selfhost/ast.mdk`/`typecheck.mdk`/
+`eval.mdk` + fixture `test/eval_dict_fixtures/nested_instance_dicts.mdk`; all three
+cases match `medaka run`. Selfhost-specific gotchas: `implDictRoutesFor` must thread
+the **full** implTable (not `rest`) so sub-route lookup re-finds the `"List"` impl for
+the inner level; `siteRDictName` (dict_pass `usesImplDict` gate) must match `RDictFwd`
+as well as `RDict`. 17/17 eval-dict, 16/16 selfproc, 18/18 golden green. This also
+**lifts the Phase 101b nesting limit** (Arbitrary instance-requires dicts are now
+structurally nested on the self-host dict path).
+
+Earlier self-host parity layers toward this (Option C): Layer 1 — single-impl
+return-position methods on the typed/dict paths (a `VTypedImpl` wrapper-strip bug in
+`narrowMethod`); Layer 2 — single-level instance-`requires` (`def : List Int` → `[0]`
+etc., 4-step port); Method-level-constraint dicts (Phase 69.x-e) in the self-host
+(`foldMap : Monoid m => …` threads the caller `Monoid m` dict into the default body;
+`foldMap dup [1,2,3]` → `[1,1,2,2,3,3]`). Fixtures under `test/eval_dict_fixtures/`;
+per-file detail in `selfhost/README.md`. Out of scope: multi-impl *overrides* of a
+method-constrained method. Skill: **add-language-feature** (cross-cutting).
+
 ### Phase 83/84 (sub-part): instance-`requires` dict-threading into return-position impl bodies ✅ DONE (2026-06-02, single-level)
 
 (The broader Phase 83/84 residuals remain open in PLAN.md.) An impl's `requires`

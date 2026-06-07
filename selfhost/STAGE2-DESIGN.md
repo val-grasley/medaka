@@ -570,7 +570,7 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   default, `adt_lit_field` an int-literal `HLit` switch on a field). **Decisions
   surfaced (not silently taken):** (1) **nullary constructors are boxed** (a 1-word
   alloc), where §8.1 says they should be **free/immediate** — a divergence from the
-  recommended *native* rep, deferred to the real backend (PLAN.md spike-rep notes).
+  recommended *native* rep, deferred to the real backend (spike-rep notes below).
   (2) the **i64 string-hash tag** is LLVM-convenient (no ctor→ordinal table) but
   foreshadows neither backend's real tag and carries collision risk; a **dense i32
   ctor-ordinal** would port to both LLVM and WasmGC `br_table` cleanly (deferred).
@@ -604,7 +604,7 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   no-capture lambda, `clo_capture` a fn returning a param-capturing closure,
   `clo_hof` a lambda passed to a HOF and called indirectly, `clo_hof_named` a named
   fn eta-wrapped as a value, `clo_adt` a closure mapped over a user list ADT then
-  summed). **Decisions surfaced (not silently taken; PLAN.md spike-rep notes):**
+  summed). **Decisions surfaced (not silently taken; spike-rep notes below):**
   (d) the closure cell carries a **one-word header before code_ptr** (matching §8.5
   and reusing the slice-3 ADT cell shape), not code_ptr-at-offset-0 — the real
   backend may drop the never-inspected header. (e) **saturated calls only** — the
@@ -634,8 +634,8 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   name in `emitApp` before the ctor/known-fn checks. Gate now spans **31/31** fixtures
   (the prior 27 + 4: `rec_build` record creation+field access, `rec_update` record
   update copy+overwrite, `ref_counter` Ref create+read+write×2, `tuple_fst` tuple
-  construction + `let (a,_,_) = t` destructuring). **Decisions surfaced (PLAN.md
-  spike-rep notes):** (g) records are positional-by-declaration-order — name-keyed
+  construction + `let (a,_,_) = t` destructuring). **Decisions surfaced (spike-rep
+  notes):** (g) records are positional-by-declaration-order — name-keyed
   access at runtime would need a name→offset map; the spike sidesteps this by reading
   the declaration at emit time. (h) tuple header is `hashName "$tuple"` — headerless
   tuples would save one word but break the uniform cell discipline used for tag-testing

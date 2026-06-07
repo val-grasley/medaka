@@ -8,7 +8,7 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`selfhost/README.md`](./selfhost/README.md).
 
-## Current status (2026-06-05)
+## Current status (2026-06-06)
 
 The OCaml compiler pipeline is complete end-to-end —
 `lexer → parser → desugar → resolve → method_marker → typecheck (runs exhaust)
@@ -28,15 +28,38 @@ The stdlib in Medaka is **complete** across `core`, `list`, `array`, `string`
 ported to Medaka and validated byte-for-byte against the OCaml reference, and
 the bootstrap closure ("the compiler processes its own source") has landed for
 all four Legs A–D. See [North star → Stage 1](#stage-1--self-host-on-the-interpreter)
-below and `selfhost/README.md` for the full slice log. A couple of
-forward-looking performance levers remain (lexical addressing eval-consumption
-half).
+below and `selfhost/README.md` for the full slice log. The forward-looking
+performance levers are all resolved (lexical-addressing eval-consumption half
+measured a non-win on the tree-walker and is parked; see `selfhost/PERF-NOTES.md`).
+
+**Stage 2 (native backend) is underway** — Core IR + evaluator (§2.1) and the
+bytecode VM (§2.2) are done; the LLVM toolchain de-risking spike runs through
+slice 5b. See the [Workstreams table](#workstreams--where-each-roadmap-lives) for
+the map and `selfhost/STAGE2-DESIGN.md` for the staged plan.
 
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
 code comments reference them. Phases left *partial* keep their original number
 (e.g. Phase 83/84, 101); genuinely new work gets the next free number (last used:
 146). At task triage, match the work against AGENTS.md's task-playbook table and
 load the matching skill before planning.
+
+---
+
+## Workstreams — where each roadmap lives
+
+PLAN.md is the **hub**. Each workstream below has an **owning doc** that holds the
+detailed, living roadmap; this file keeps only the one-line status + a pointer.
+Edit the owning doc for detail; update the status line here when a workstream's
+state changes.
+
+| Workstream | Owning roadmap | Status | Near-term items |
+|------------|----------------|--------|-----------------|
+| **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM done; LLVM spike thru slice 5b; next = §2.0 observability+lexical-addressing, then real backend; WasmGC sibling §2.4b |
+| **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
+| **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred), Core IR `decodeHead` reserved-name bug |
+| **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
+| **CLI surface (Phase 82)** | **this file** → [CLI surface](#cli-surface-phase-82-continued) | 🟡 gaps | `medaka build` (needs design), `doc` multi-module, `--json` multi-file |
 
 ---
 
@@ -171,97 +194,24 @@ deliberately deferred to here:
   runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
   is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
-  - ✅ **Toolchain de-risking spike DONE (slices 1–5b)** — *ahead of the strict
-    VM-first ordering by design* (front-loads the riskiest lift; runs parallel to
-    the bytecode VM, uses only the tree-walker oracle). Proves the decided toolchain
-    (EMIT textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings)
-    end-to-end: `selfhost/llvm_emit.mdk` (Core IR → textual LLVM IR) +
-    `selfhost/llvm_emit_main.mdk` + `runtime/medaka_rt.c` (a malloc-and-leak stub;
-    GC deferred), gated by `test/diff_selfhost_llvm.sh` (emit → clang → link → run →
-    diff vs `dev/eval_probe.exe`, **35/35 byte-identical**). Slice 1 = scalars
-    (arithmetic / comparisons / `let` / `if` / value bindings / type-directed
-    print). Slice 2 = top-level functions + saturated direct calls; self-recursive
-    tail calls lower to `musttail call`+`ret` (the calling-convention proof,
-    TCO-correct under `clang -O0`). Slice 2b (2026-06-06) = **Bool/Float function
-    boundaries** via a two-pass signature inference that recovers each function's
-    param + return type from the type-erased Core IR (param type from its first
-    typed use, return type structural); the ABI stays a uniform i64 word, so the
-    recovered type drives only int-vs-float instruction + print-routine selection,
-    no prototype/`musttail` change, **no value-rep edit**. Slice 3 (2026-06-06) =
-    **ADT constructors + pattern matching**: a constructor lowers to a boxed heap
-    cell (one-word string-hashed tag + field words via `@mdk_alloc`, the slice-1
-    Float-box path extended to N fields); a `match` lowered to a `CDecision` tree
-    becomes an LLVM CFG (tag-test/`br` switch → field-projection → arm body into an
-    `alloca` result slot), mirroring `core_ir_eval`'s `cevalDecision` one-to-one
-    (5 new fixtures). Slice 4 (2026-06-06) = **closures + higher-order functions**:
-    each `CLam` is lambda-lifted to a top-level `define @mdk_lamN(i64 %clos,
-    i64 %arg…)` and, at its site, a boxed closure cell `{header, code_ptr,
-    captured…}` is allocated (the slice-3 ctor alloc reused verbatim, "fields" =
-    `[code_ptr, capture…]`); a closure-valued application head (param / let-binding
-    / returned closure / immediately-applied lambda) lowers to an INDIRECT call
-    (load code_ptr, `call` it passing the closure word as the leading arg, §8.5),
-    and a named top-level fn used as a value is eta-wrapped into a captureless
-    static closure forwarding to `@mdk_<name>` (5 new fixtures). Slice 5a
-    (2026-06-06) = **records, tuples, mutable refs**: Records lower to boxed cells
-    like ADT constructors (`emitCtorAlloc`/`storeFields`/`loadField` verbatim);
-    field access uses a per-name order table built by scanning `CRecord` nodes.
-    Tuples use the same cell shape with `header = hashName "$tuple"`; `let (a,b) = t`
-    (`CLet PTuple` / `CBlock CSLet PTuple`) binds by `loadField`. Mutable refs
-    inline: `Ref x` → 1-field alloc; `set_ref r x` → store at offset 8; `r.value`
-    → `loadField 0` (4 new fixtures). Slice 5b (2026-06-06) = **built-in list
-    match heads, tuple switch heads, and recursive closures**: HCons/HNil/HTuple
-    decision-tree heads are now treated as constructor tests (`conHeadInfo` maps
-    them to `hashName "Cons"/"Nil"/"$tuple"` with arities 2/0/n — the same tags the
-    alloc sites stamp), so a multi-arm tuple match and a `data … = Cons … | Nil`
-    list fold lower like any other constructor switch (`bindPattern` gains `PCons`/
-    `PList []`); a recursive function-`let` (`let f p… = … in e2` →
-    `CLet True (PVar f) (CLam …)`) lambda-lifts with `f` bound to `%clos` inside the
-    lifted body (the self-call re-enters the same cell) and `f` excluded from the
-    capture set (4 new fixtures). **Not** the real backend (no arrays/dispatch/GC;
-    `HUnit` heads, guarded/range/record arms, non-empty `PList` binding, partial
-    application, and Ref capture all still panic).
-    See [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4.
-    - **Spike-surfaced rep notes (NOT acted on — the spike's job is to surface
-      them; native-rep decisions belong to the real backend).** (a) **Nullary
-      constructors are boxed** (a 1-word alloc for `Nothing`/`Red`), but
-      RUNTIME-DESIGN.md §8.1 says nullary ctors should be **free/immediate** — a
-      divergence from the recommended *native* Option-A rep, not just from WasmGC.
-      (b) The **i64 string-hash tag** is LLVM-convenient (no ctor→ordinal table) but
-      foreshadows *neither* backend's real tag and carries collision risk; a **dense
-      i32 ctor-ordinal** (per type) would port to both LLVM `br_table` and WasmGC
-      `br_table`/`ref.test` cleanly. (c) The emitted encoding (`ptrtoint`/`inttoptr`
-      i64 words, byte-offset GEP, low-bit Int tag) is the **native** physical rep and
-      is intentionally NOT WasmGC-portable — §8.6 reconciles this (no single physical
-      rep; the **Core IR** is the shared portable layer, a WasmGC sibling emitter
-      uses `i31ref` + structs). (d) **Closure cell carries a one-word HEADER before
-      code_ptr** (`{header, code_ptr, captured…}`, code_ptr at offset 8) rather than
-      code_ptr-at-offset-0 — chosen to reuse the slice-3 ADT alloc/field I/O verbatim
-      and to match §8.5; the real backend may drop the header for closures (it is
-      never inspected — closures never enter a constructor `match`) to save a word.
-      (e) **Saturated-only calling**: the type-erased Core IR can't see a closure's
-      arity at the call site, so the spike emits a flat indirect call passing the
-      whole spine and relies on controlled fixtures; partial application
-      (under-application → residual closure) and over-application are unsupported.
-      The real backend must **carry arity in the closure cell** and branch
-      under/exact/over at the call site (or generate per-arity apply trampolines).
-      (f) **Captureless named-fn-as-value is eta-wrapped** into a static closure (a
-      lifted forwarder + a 2-word cell) so every call is uniformly indirect; a real
-      backend could instead intern one static closure per top-level fn (no per-use
-      alloc) once arities are carried.
-      (g) **Records are positional by declaration order** — name-keyed access at
-      runtime would need a name→offset map; the spike sidesteps this by reading the
-      declaration (from scanned `CRecord` nodes) at emit time. The real backend needs
-      to either carry this table in the IR or resolve it during lowering.
-      (h) **Tuple header = hashName "$tuple"** — headerless tuples would save one word
-      but break the uniform cell discipline used for tag-testing in constructor
-      switches. Multi-arm tuple matches (`CTSwitch HTuple`) would need a header to
-      distinguish from ADTs; headerless tuples would require a separate representation
-      path.
-      (i) **Ref cells use `@mdk_alloc` (malloc-and-leak)** — this is the **first
-      mutation site** in the spike. The real GC runtime must add a **write barrier**
-      on the `set_ref` store path (`store i64 … ptr …` at offset 8); without one a
-      moving/generational GC would not track the pointer write and would corrupt the
-      heap.
+  - ✅ **Toolchain de-risking spike DONE through slice 5b** (2026-06-06) — *ahead
+    of the strict VM-first ordering by design* (front-loads the riskiest lift; uses
+    only the tree-walker oracle). Proves the decided toolchain end-to-end (EMIT
+    textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings):
+    `selfhost/llvm_emit.mdk` + `llvm_emit_main.mdk` + `runtime/medaka_rt.c`
+    (malloc-and-leak stub; GC deferred), gated by `test/diff_selfhost_llvm.sh`
+    (emit → clang → link → run → diff vs `dev/eval_probe.exe`, **35/35
+    byte-identical**). Slices cover scalars (1), top-level fns + `musttail`
+    self-recursion (2), Bool/Float boundaries (2b), ADT ctors + decision-tree match
+    (3), closures + HOFs via lambda-lifting (4), records/tuples/mutable refs (5a),
+    built-in list/tuple match heads + recursive closures (5b). **Not** the real
+    backend (no arrays/dispatch/GC; `HUnit` heads, guarded/range/record arms,
+    non-empty `PList` binding, partial application, Ref capture still panic). Full
+    per-slice log + the nine spike-surfaced representation notes (a)–(i) — nullary
+    boxing, i64 hash-tag vs i32 ordinal, closure header, saturated-only calling,
+    eta-wrapping, positional records, tuple headers, the `set_ref` write-barrier gap
+    — live in [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §2.4/§2.4a
+    (the spike's owning doc; rep decisions belong to the real backend).
 - ✅ **§2.1 — Core IR + evaluator DONE (2026-06-05).** `selfhost/core_ir.mdk`,
   `core_ir_lower.mdk`, `core_ir_eval.mdk` (+ sexp/round-trip gates). 47/47
   fixtures byte-identical across 6 corpora. See `selfhost/README.md`.
@@ -297,60 +247,39 @@ strict priority.
 
 ### Capability-effects wedge — near-term sequence
 
-The immediate runway for the Phase 146 / WASM-edge wedge (full design:
-[`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md),
-[`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md); architecture decisions: the
-"Targets & the WASM soft-pivot" callout above). Dependency-ordered; items 1–3 are
-design/research and parallelizable. Item 4 (effect soundness) is **already done**;
-item 5 (fine-grained labels) is the first *remaining* coding step.
+**Owning roadmap:** [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (language
+work) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product/runtime).
+Architecture context: the "Targets & the WASM soft-pivot" callout above. Effect
+labels also drive [`STDLIB.md`](./STDLIB.md) §"Label refinement roadmap".
 
-1. **Research pass (narrowed).** WASI Preview 2 / Wasm component-model capability
-   model; edge-host isolation specifics (Cloudflare Workers, Fastly Compute, Fermyon
-   Spin); object-capability & effects-as-security literature; competitor scan
-   (MoonBit especially — closest; Grain; Roc's platform model). TCO + WasmGC
-   viability is already **verified** (STAGE2-DESIGN §2.4b). Output: a findings note.
-   Skill: none (research).
-2. **Phase 146 design note (gate before coding).** Concrete effect-tracking surface
-   syntax (label declaration, inferred-vs-annotated boundary, subsumption), the
-   capability-manifest format a host reads, and 2–3 worked plugin interfaces (reuse
-   the discount-calc / auth-middleware / pipeline examples in CAPABILITY-PLATFORM.md)
-   pressure-tested on paper. Skill: **add-language-feature** (planning).
-3. ✅ **Stdlib capability audit — DONE 2026-06-06.** Cataloged all extern/stdlib
-   functions by capability tier (P/M/H); designed the pure-core/capability-module
-   split; documented effect labels, the `<IO>`-split roadmap, and the `panic`
-   design gap. Output: `STDLIB.md` §"Capability stratification audit". Skill: **extend-stdlib**.
-4. ✅ **Sound effect tracking — DONE (Phase 79/79e/146; selfhost mirror 2026-06-06).**
-   Effect propagation/inference, higher-order `<e>` composition
-   (`map : (a -> <e> b) -> List a -> <e> List b`), binding-boundary escape, and
-   laundering soundness all shipped — in the reference *and* the selfhost mirror (see
-   the Phase 146 entry above + CAPABILITY-EFFECTS.md §5a). This was the prerequisite
-   for any capability guarantee; gap-1 is closed. No remaining work here.
-5. **User-definable fine-grained effect labels (gap 2). ✅ DONE 2026-06-06.**
-   Replaced the hardcoded `built_in_effects` membership check in `resolve.ml` with
-   *builtins (`IO`/`Mut`/`Async`/`Panic`/`Rand`/`Time`) ∪ user-declared* via a new
-   top-level `effect Foo` (`export effect Foo`) declaration form (`DEffect of bool *
-   ident`); an undeclared label in a row stays `UnknownEffect`. Threaded
-   lexer→parser→AST→resolve with **zero new parser conflicts**; typecheck needed no
-   change (the row-unify/subsumption path is label-agnostic, so user labels inherit
-   Phase 146 laundering soundness). Selfhost mirror complete (lexer/parser/ast/
-   sexp/resolve `.mdk`), all `diff_selfhost_*` byte-identical. Fixtures: unit
-   (test_parser/resolve/typecheck) + differential (diff_fixtures/effect_label,
-   parse_fixtures/effect_decl, resolve_fixtures/unknown_effect). Syntax + rationale:
-   CAPABILITY-EFFECTS.md §3a/§5a. **Remaining for the wedge:** cross-module label
-   export + manifest emission. Skill: **add-language-feature**.
+**Done (foundation):** effect soundness — propagation/inference, higher-order `<e>`
+composition, binding-boundary escape, laundering soundness — gap 1, reference +
+selfhost mirror ✅; user-definable fine-grained labels (`effect Foo` declaration) —
+gap 2 ✅; stdlib capability audit ✅; the minimal **"wow" demo** ✅
+(`demo/plugin_good.mdk` + `demo/plugin_malicious.mdk` + `medaka check-policy`: the
+malicious plugin buries `fetch` four calls deep; the harness rejects it with the
+full call chain). Detail in CAPABILITY-EFFECTS §5a + the Phase 146 entry below.
 
-**Concrete near-term target:** gap 2 (labels, ✅) + a ~150–250-line harness, on the
-existing interpreter, produces the **minimal "wow" demo** ✅ — `demo/plugin_good.mdk`
-and `demo/plugin_malicious.mdk` + `medaka check-policy` CLI subcommand. The malicious
-plugin buries `fetch` four calls deep; the harness typechecks the plugin, reads
-`transform`'s inferred effect row, checks it against the policy set, and either accepts
-(running it on a sample request) or rejects it with the full call chain:
-`transform → tagVisit → recordMetric → sendBeacon → fetch`. First shareable
-artifact, decoupled from the backend. Full sketch: CAPABILITY-PLATFORM.md §7c.
+**Near-term (remaining), dependency-ordered:**
+1. **Research pass** — WASI Preview 2 / Wasm component-model capability model;
+   edge-host isolation (Cloudflare/Fastly/Fermyon); object-capability &
+   effects-as-security literature; competitor scan (MoonBit closest; Grain; Roc).
+   TCO + WasmGC viability already verified (STAGE2-DESIGN §2.4b). Output: a findings
+   note. Skill: none (research).
+2. **Design note + manifest format** — concrete surface syntax + the
+   capability-manifest format a host reads, pressure-tested against the 2–3 worked
+   plugin shapes in CAPABILITY-PLATFORM.md. Gate before manifest coding. Skill:
+   **add-language-feature** (planning).
+3. **Cross-module effect label export** — `pub effect Fetch` in a platform SDK
+   module visible across the loader boundary (deferred in gap 2). Needed for
+   multi-module SDKs. Skill: **add-language-feature**.
+4. **Manifest emission** — emit `[package.capabilities]` from a verified entry
+   point's effect row; final Phase 146 item, waits on cross-module export + label
+   refinement (STDLIB.md §"Label refinement roadmap").
 
-Downstream (already captured, NOT near-term): **Phase 146b** parameterized effects
+Downstream (captured, NOT near-term): **Phase 146b** parameterized effects
 (CAPABILITY-EFFECTS §6a); the **WasmGC backend** (STAGE2-DESIGN §2.4b); the
-**capability platform/runtime** (CAPABILITY-PLATFORM.md).
+**capability platform/runtime** (CAPABILITY-PLATFORM.md §9 open questions).
 
 ### Self-host (Stage 1 tail)
 
@@ -377,81 +306,21 @@ Downstream (already captured, NOT near-term): **Phase 146b** parameterized effec
 - ⭐ **Phase 146 — Capability-safe effects (the headline wedge). IN PROGRESS.**
   Make Medaka's existing effect rows **sound + fine-grained** so a function's type
   becomes a compiler-verified **capability manifest** — "the program tells you (and
-  the host that runs it) exactly what it can do." Target use case: WebAssembly edge
-  / plugin / sandboxed compute, where untrusted, increasingly AI-generated modules
-  need their authority bounded at compile time. **Effect *tracking*, NOT
-  algebraic-effect *handlers*** (no `perform`/`handle`/`resume`/continuations — the
-  host is the handler; continuations are also Wasm-hostile). Effects stay **erased
-  at runtime** (zero cost; manifest is metadata). Full design and per-piece status
-  in [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) (§5a). Skill: cross-cutting
-  → **add-language-feature** (threads resolve/typecheck/eval; not harden-typechecker
-  despite the typechecker weight). **Note:** deliberately revisits the
-  *row-polymorphism* rejection in PLAN-ARCHIVE §8, narrowed to *effect* rows only (a
-  scoped effect-label grammar, not general extensible records).
-  - **Gap 1 (soundness) — propagation DONE (Phase 79/79e); laundering soundness
-    DONE for open/closed rows (2026-06-05).** The doc's "annotation-only, no
-    propagation" framing was stale: inference with effect variables, higher-order
-    `<e>` composition (`map : (a -> <e> b) -> List a -> <e> List b` on real stdlib),
-    and binding-boundary escape checks already shipped. What was still unsound was
-    **effect laundering** — an effectful closure stored in / annotated as a pure
-    arrow (data field, value signature, callback param, typeclass-method impl)
-    silently dropped its labels because `unify_row` was permissive. Fixed by
-    enforcing OPEN-row labels ⊆ CLOSED-bound labels in `unify_row` (closed extras
-    still flow into the open sink → legit calls unchanged); new `EffectLeak` error.
-    Zero regressions across all unit suites, `@thorough`, and selfhost
-    typecheck/check/selfproc. Tests in `test_typecheck.ml` `effects` group.
-  - **Gap 1 remaining — directional subsumption. DONE (2026-06-06).**
-    Closed-closed point-free aliasing (`f : String -> Unit = putStrLn`,
-    `Box putStrLn`, `[putStrLn]` under a pure annotation) used to launder: both
-    rows closed → symmetric `unify_row None,None` couldn't tell safe
-    pure→effectful subsumption from unsafe effectful→pure escape. Fixed in
-    `instantiate_raw`: re-open a closed-with-labels row to `<labels | ρ>` **only
-    at covariant (positive) positions** (the value's own arrows), so the existing
-    open/closed subset check fires. Contravariant rows (ctor field / parameter the
-    scheme accepts, e.g. `VPrim (Value -> <Mut> Value)`) stay closed → safe
-    subsumption preserved (pure arg into a `<Mut>` slot is fine). Measurement
-    surfaced ONE genuine latent unsoundness in selfhost source — `concatMapList`'s
-    pure callback hid `<Mut>`; fixed by an effect-polymorphic signature
-    (`util.mdk`). Zero spurious regressions across all unit suites, `@thorough`,
-    and every selfhost harness. Gap 1 is now sound. Contravariant laundering is
-    NOT a hole: effects are performed by *calling* effectful functions, so a value
-    only exposes effects it itself performs (covariant); contravariant effects are
-    the supplier's, checked at the supply site.
-  - **Selfhost mirror — DONE (2026-06-06).** The original framing ("mirror the two
-    small rules") was **wrong**: `selfhost/typecheck.mdk` had no effect rows at all
-    (effects were a bare `List String` on `TFun`, `unifyN` discarded them, `Scheme`
-    had no effect variables, no ambient-effect state). The real work was a **full
-    port of the effect-tracking subsystem** — Phase 79 (propagation), 79e (escape),
-    and 146 (laundering) — done across four committed stages: A (representation:
-    `EffRow`/`Effvar` mutual decls, `Scheme = Forall tyvars effvars`), B (ambient
-    `curEffect`, `performEffect`/`openRow`/`unifyRow`/`substRow`/`freeEffvars`,
-    named-tail sharing for `<e>`-poly sigs), C (binding-boundary escape in
-    `inferMembers`/`checkEffectEscape`), D (the `unifyRow` subset rule +
-    variance-aware `substMonoP`/`reopenRow` covariant re-open). Three new fixtures
-    (`effect_leak`/`effect_escape` reject, `effect_subsume` accepts) verified
-    against `dev/tc_probe.exe` first. All `diff_selfhost_*` typecheck/error/golden/
-    check/check_modules/selfproc/eval harnesses byte-identical; `@thorough` green.
-    The self-hosted typechecker now rejects effect laundering identically to the
-    reference — gap-1 selfhost parity closed.
-  - **Gap 2 (fine-grained labels) — ✅ DONE 2026-06-06.** Replaced the hardcoded
-    `built_in_effects` (`IO, Mut, Async, Panic, Rand, Time`) membership check in
-    `resolve.ml` with *builtins ∪ user-declared* via a top-level `effect Foo`
-    (`export effect Foo`) declaration form (`DEffect of bool * ident`); undeclared
-    labels stay `UnknownEffect`. Lexer→parser→AST→resolve, zero new parser
-    conflicts; typecheck unchanged (row-unify is label-agnostic → user labels get
-    Phase 146 laundering soundness free). `DExtern` is a top-level decl, so a
-    platform declares `<KV>` host imports as ordinary externs. Selfhost mirror
-    complete; all `diff_selfhost_*` byte-identical, `@thorough` green. Details:
-    CAPABILITY-EFFECTS.md §3a/§5a. Cross-module label export deferred.
-  - **Manifest emission — TODO** (waits on the edge runtime; research pass per
-    CAPABILITY-EFFECTS §9).
-  - **Phase 146b (parameterized effects) — TODO.** Pinned domains `<Fetch "x.com">`
-    / scoped storage `<KV "ns">` via type-level literal params over finite-set
-    lattices + literal-lifting — the layer the platform's pinned-domain &
-    namespaced-KV guarantees need. Designed in CAPABILITY-EFFECTS.md §6a; two
-    sub-questions deferred there (singleton-arg wrapper precision; param-aware
-    unification × typeclass/dict). Follows gap 2 (labels). The platform/runtime that
-    consumes all of this is [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md).
+  the host that runs it) exactly what it can do." Target: WebAssembly edge / plugin
+  / sandboxed compute for untrusted, increasingly AI-generated modules. **Effect
+  *tracking*, NOT algebraic-effect *handlers*** (no `perform`/`handle`/`resume`; the
+  host is the handler). Effects stay **erased at runtime** (manifest is metadata).
+  Skill: cross-cutting → **add-language-feature**. **Note:** deliberately revisits
+  the *row-polymorphism* rejection in PLAN-ARCHIVE §8, narrowed to *effect* rows.
+  - **Full design, per-piece status, and the implementation log live in
+    [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §5a.** The near-term sequence
+    is the [Capability-effects wedge](#capability-effects-wedge--near-term-sequence)
+    section above.
+  - **Done:** gap 1 (soundness — propagation, laundering, directional subsumption),
+    reference + selfhost mirror ✅; gap 2 (user-definable `effect Foo` labels) ✅.
+  - **Remaining:** cross-module label export → manifest emission (both in the wedge
+    sequence above); **Phase 146b** parameterized effects `<Fetch "x.com">` /
+    `<KV "ns">` (designed in CAPABILITY-EFFECTS §6a, follows gap 2).
 
 - ~~**Phase 145**~~ **DONE.** See PLAN-ARCHIVE.md.
 
@@ -471,72 +340,12 @@ Downstream (already captured, NOT near-term): **Phase 146b** parameterized effec
   `claude/suspicious-sammet-21d73e` (commit `860ba12`). Skill:
   **add-language-feature** (cross-cutting).
 
-- **Phase 83 / 84 #5 — true recursive/nested instance dictionaries. REFERENCE
-  DONE (2026-06-05); self-host mirror is the only remaining work.** The
-  instance-`requires` dict-threading into return-position impl bodies is DONE; the
-  tractable set was closed by Phase 115, and #4 (free-`e` `Result`) closed via
-  head-key dict-application routing (all in PLAN-ARCHIVE.md). #5 — the
-  `List (List Int)` case — is now **built in the reference**: structured/recursive
-  dicts replace the flat impl-key strings. Skill: **harden-typechecker** /
-  **add-language-feature** (cross-cutting).
-  - **(2026-06-05) #5 reference build — DONE; oracle established.** `medaka run`
-    now prints `def : List (List Int)` → `[[0]]`, `List (List (List Int))` →
-    `[[[0]]]`, and mixed `Option (List (Option Int))` → `Some [Some 0]` (single
-    and multi-module loader paths). The runtime dict is now **structured**:
-    `VDict of string * value list` / `VDictHead of string * value list` (key plus
-    the impl's own `requires` dicts, recursively); `Ast.RKey of string * res_route
-    list` carries the requires routes. The fix has three moving parts, all
-    mirroring machinery that already existed for *checking*:
-    1. `lib/typecheck.ml` `impl_requires_routes_rec` — the routing twin of the
-       already-recursive `check_entry_requires`; resolves each `requires` to
-       `RKey (chosen_key, <its own requires routes>)` recursively. Used by both
-       the method-occurrence ground path (`commit`) and the dict-application
-       ground path (`resolve_one_route`).
-    2. `lib/eval.ml` `dict_of_route` recurses to build the nested `VDict`; the
-       `EMethodRef` arm, for a *forwarded* (RDict) return-position site, splices
-       the runtime dict's own `requires` into the selected impl's body.
-    3. The forward is **gated** by a new `res_fwd_requires : bool` on the resolved
-       record (true only for return-position RDict sites) — without it,
-       arg-position methods (`display`/`==`, which dispatch by arg-tag) get extra
-       leading dict args and corrupt: the regression that broke `println [1,2,3]`
-       mid-build. `dict_pass.ml` needed **no** change (param count is unchanged;
-       depth lives in the value). Regression test:
-       `test_run.ml t_nested_instance_dicts`.
-  - **Self-host mirror — DONE (2026-06-05).** `selfhost/ast.mdk`/`typecheck.mdk`/
-    `eval.mdk` + fixture `test/eval_dict_fixtures/nested_instance_dicts.mdk`.
-    `def : List (List Int)` → `[[0]]`, `def : List (List (List Int))` → `[[[0]]]`,
-    `def : Option (List (Option Int))` → `Some [Some 0]` all match `medaka run`.
-    Key selfhost-specific gotcha: `implDictRoutesFor` must thread the **full**
-    implTable (not `rest`) through the helper so sub-route lookup can re-find the
-    `"List"` impl for the inner level. Also `siteRDictName` (dict_pass usesImplDict
-    gate) must match `RDictFwd` as well as `RDict`. 17/17 eval-dict, 16/16
-    selfproc, 18/18 golden — all gates green.
-  - **Phase 101b nesting limit is now lifted**: `Arbitrary` instance-requires dicts
-    are structurally nested (e.g. `gen : List (List Int)`) on the self-host dict
-    path. Phase 101b (synthesized typed generators) can proceed.
-  - **Self-host parity work toward this (Option C, user-approved):** Layer 1 DONE
-    — user-defined SINGLE-impl return-position methods now resolve on the
-    self-host typed/dict paths (a bare-`VTypedImpl` wrapper-strip bug in
-    `selfhost/eval.mdk narrowMethod`; fixture
-    `test/eval_typed_fixtures/single_impl_return_pos.mdk`). Layer 2 — single-level
-    instance-`requires` in the self-host — **DONE (2026-06-05).** `def : List Int`
-    → `[0]`, `def : List String` → `["empty"]`, `def : Option Int` → `Some 0` all
-    match `medaka run` on the self-host dict path. 4-step port (EMethodAt 2nd
-    impl-dicts ref; gated `implInferEnabled` impl-body inference sharing one tyvar
-    table head↔requires; `dictPassDecl` `DImpl` arm; eval folds via `applyDicts`)
-    — see the "Instance-`requires` dict-passing" block in `selfhost/README.md` for
-    the per-file detail. Fixtures `test/eval_dict_fixtures/instance_requires_*.mdk`.
-  - **Method-level-constraint dicts (Phase 69.x-e) in the self-host — DONE
-    (2026-06-05).** A method whose own signature carries a `=>` over a non-interface
-    tyvar (`foldMap : Monoid m => …`): the caller-supplied `Monoid m` dict is now
-    threaded into the method's default body so its return-position `empty` resolves
-    correctly. `foldMap dup [1,2,3]` → `[1,1,2,2,3,3]` matches `medaka run`. 4-step
-    port (EMethodAt 3rd method-dicts ref; `methodConstraintsRef` + `inferDefaultBodies`
-    gated by `implInferEnabled`; `dictPassDecl` `DInterface` arm; eval folds method
-    dicts before impl dicts) — see the "Method-level-constraint dict-passing" block in
-    `selfhost/README.md`. Fixtures `test/eval_dict_fixtures/method_constraint_*.mdk`.
-    Out of scope: multi-impl *overrides* of such a method (dict param shifts the
-    container-dispatch position; no prelude impl overrides `foldMap`).
+- ~~**Phase 83 / 84 #5 — recursive/nested instance dictionaries**~~ **DONE
+  (reference + selfhost mirror, 2026-06-05).** Structured/recursive runtime dicts
+  (`VDict`/`VDictHead` + `RKey` routes) replaced the flat impl-key strings;
+  `def : List (List Int)` → `[[0]]` etc. on both loader paths. Closing this also
+  lifted the Phase 101b nesting limit. Write-up moved to PLAN-ARCHIVE.md (§"Phase
+  83/84 residual #5"). No Phase 83/84 dispatch residuals remain.
 - **Core IR: reserved-name collision in `decodeHead` (latent, ceval-only). TODO.**
   `core_ir_lower.decodeHead` keys the built-in list/tuple/unit heads by NAME
   (`"Cons"` → `HCons`, `"Nil"` → `HNil`, `"Unit"` → `HUnit`, `"__tuple__"` →
@@ -579,12 +388,18 @@ non-package-manager gaps:
   resolve-error in the JSON output. Multi-file `--json` is the follow-up.
 - Skill: none specific (lands in `bin/main.ml` + `lib/lsp_server.ml`).
 
-### Stdlib enablement (Phase 19) — ✅ COMPLETE
+### Standard library (Phase 19)
 
-All of Modules 1–9 are done (`core`/`list`/`array`/`string` + `map`/`set`, hash
-containers, `io`, `mut_array`, `json`) — see PLAN-ARCHIVE.md and STDLIB.md. The
-hand-write-it-myself constraint was lifted 2026-06-02 and the remaining modules
-delegated. `stdlib/string.mdk` API frozen 2026-06-03 (Phase 128).
+**Owning roadmap:** [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label
+refinement roadmap" (the effect-label half is shared with the capability wedge).
+
+Core modules 1–9 are **complete** (`core`/`list`/`array`/`string` + `map`/`set`,
+hash containers, `io`, `mut_array`, `json`) — see PLAN-ARCHIVE.md. `stdlib/string.mdk`
+API frozen 2026-06-03 (Phase 128). Remaining work is incremental additions tracked in
+STDLIB.md: `List` `zip`/`zip3`/`zipWith`/`unzip`, an explicit `Semigroup List` impl,
+JSON pretty-printer + `ToJson`/`FromJson` codecs, and the effect-label refinement
+steps (`wallTimeSec`→`<Time>`, `<IO>` split, `panic`/`exit` split). Skill:
+**extend-stdlib** (user-reserved unless asked).
 
 ### Blocked on a package manager (out of scope until one exists)
 

@@ -46,6 +46,29 @@ roadmap.
 
 ---
 
+## Remaining work (roadmap)
+
+Modules 1–10 are implemented (✅). What's left is incremental — additions to
+existing modules, not new modules. PLAN.md's "Standard library" workstream points
+here. In rough priority order:
+
+- **`List` zipping** — `zip` / `zip3` / `zipWith` / `unzip` (Module 2 §"Zipping
+  and combining", ⏳).
+- **Explicit `Semigroup (List a)` impl** (Module 2 §Instances, ⏳) — currently
+  driven by the `++` dispatch path.
+- **JSON follow-ups** (Module 9, deferred from v1): indented pretty-printer;
+  `ToJson`/`FromJson` codec interfaces for user types (a strong `deriving`
+  exercise).
+- **Effect-label refinement** — see §"Label refinement roadmap" below. Shared with
+  the capability-effects wedge (PLAN.md): `wallTimeSec`→`<Time>`, the `<IO>` split
+  (`<Stdout>`/`<Stderr>`/`<Stdin>`/`<Fs>`/`<Args>`/`<Env>`), `panic`/`exit` split,
+  cross-module label export, then manifest emission.
+- **Deferred / minor:** single-codepoint `s.[i]` string indexing (rejected at
+  typecheck since bracket slicing landed); conditional auto-import of the `test`
+  vocabulary (Module 10 v2, blocked on `marked_prelude` coalescing).
+
+---
+
 ## Module 0 — `runtime` (extern catalog) ✅ implemented
 
 These are the OCaml-backed primitives declared as `extern` in
