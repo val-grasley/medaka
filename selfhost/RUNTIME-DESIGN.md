@@ -319,19 +319,26 @@ NOT separate forked language variants. The ratified middle path:
    (§2a; full reconciliation §8.6; rationale `STAGE2-DESIGN.md` §2.4/§2.4b.)
 2. **String representation** — UTF-8 + cached codepoint count vs. other; gates
    `stringLength`/`charCode` intrinsic-vs-leaf and all string `LEAF`/`UNICODE`
-   helpers. (§4)
-3. **GC**: Boehm-first is decided; confirm the `gc_alloc`/object-header contract
-   and whether `set_ref` needs a barrier now or later. (§2b)
-4. **Closure ABI & calling convention** — needed for `→MEDAKA` sorts to call their
-   comparator, and for the unwind model behind `panic`. (§2b) **Guaranteed tail
-   calls are available on both backends** (LLVM `musttail`; WasmGC `return_call`,
-   Wasm 3.0 — verified 2026-06-06, see `STAGE2-DESIGN.md` §2.4), so design the
-   calling convention assuming uniform guaranteed TCO.
+   helpers. (§4) — **still open.**
+3. **GC**: Boehm-first is decided; the `gc_alloc`/object-header contract is now
+   **partly settled** — the **uniform one-word header is ratified** (§8.4, 2026-06-07),
+   so `gc_alloc` returns a `{header, fields…}` cell. **Still open:** whether `set_ref`
+   needs a write barrier now or later. (§2b)
+4. **Closure ABI & calling convention** — **substantially RATIFIED 2026-06-07** (§8.5):
+   uniform `i64`-in/`i64`-out ABI, `musttail`/`tailcc` for guaranteed TCO (spike-proven,
+   self-recursive), and the boxed closure cell `{header, code_ptr, captured…}` with the
+   closure word passed as the leading arg. **Still open:** the `panic` **unwind model**
+   (abort vs. catchable unwind, §4) and cross-function `musttail` (mutual recursion,
+   the prototype-match increment). **Guaranteed tail calls are available on both
+   backends** (LLVM `musttail`; WasmGC `return_call`, Wasm 3.0 — verified 2026-06-06,
+   see `STAGE2-DESIGN.md` §2.4).
 5. **Where the ABI is first proven**: at the **bytecode VM (§2.2)**, against the
-   tree-walker oracle — not at LLVM. (§2 sequencing note)
+   tree-walker oracle — not at LLVM. (§2 sequencing note) — **done** (the VM + the LLVM
+   spike thru slice 9 both exercised it; §2.2/§2.4).
 
-All five are exercised by the bytecode VM before any native runtime exists, so the
-cheap, oracle-backed setting is where they should be settled.
+Decisions 1, 4, and 3's header half are now settled (2026-06-07 rep ratification, §8);
+2, the `set_ref` barrier, the unwind model, and string rep remain — all exercisable in
+the cheap, oracle-backed bytecode-VM/spike setting before any native runtime exists.
 
 ## 8. Value representation & calling convention
 
