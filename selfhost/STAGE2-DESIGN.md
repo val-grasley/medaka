@@ -918,6 +918,38 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   and **6/6 typed gate** stay byte-identical.  Still out of scope: arg-tag dispatch
   on non-ADT args; nested requires dicts; GC.
 
+**2.4a-7 — Native extern catalog slice 1 (STRINGS + minimal string/IO externs).**
+  The first slice of item 2 below (native extern catalog), not a Core IR-surface
+  slice — unblocked by the just-landed Boehm GC, since a heap String is GC-managed
+  for free.  It LOCKS the **String representation** (RUNTIME-DESIGN.md §4/§7
+  decision 2, previously OPEN): **UTF-8 bytes + a cached codepoint count**, boxed as
+  one cell `[ i64 header | i64 byte_len | i64 cp_count | bytes… | NUL ]` over the
+  §8.1/§8.4 one-word-header discipline.  **Spike-rep notes (extending (a)–(v)):**
+  **(w) STRING CELL** — two metadata words (`byte_len`, `cp_count`) ahead of the
+  inline UTF-8 bytes; the value word is the cell pointer (low bit 0), so Boehm
+  tracks it and scans the bytes harmlessly.  Caching `cp_count` makes `stringLength`
+  **INTRINSIC** (the §5 `(rep)` row resolves header-read, not O(n) scan).
+  **(x) STRING LITERAL** — `CLit (LString _)` emits a private module-scope
+  `@.str.N = … [N x i8] c"…"` global (every byte escaped `\HH`, byte-faithful to the
+  source; the emitter re-encodes source codepoints to UTF-8 via `utf8Bytes`) and a
+  run-time `@mdk_str_lit(ptr, i64)` call that boxes it.  Globals ride the lifted-
+  lambda side buffer (LLVM module-item order is irrelevant).  **(y) STRING EXTERN
+  `intToString`** — the first LEAF extern that RETURNS a Medaka value: it lowers to a
+  direct C-ABI `@mdk_int_to_string(i64)` call that untags the immediate, renders
+  decimal, and allocates the result String through `mdk_str_lit → mdk_alloc`
+  (proving the §2a contract — extern output lives in the GC heap, never a native
+  buffer).  **(z) PRINT PATH** — `main` reducing to a String auto-prints via
+  `@mdk_print_str(i64)` (raw bytes + newline), matching `Eval.pp_value (VString s) =
+  s` + the oracle's trailing newline; chosen over `putStr`/`putStrLn` to fit the
+  spike's type-directed auto-print of `main` (a Unit-returning `putStr` would double
+  the output with `pp_value VUnit`).  **5/5 new plain fixtures** (`str_lit`,
+  `str_escape`, `str_unicode`, `str_int`, `str_int_neg`) and **2/2 new typed
+  fixtures** (`str_lit`, `str_int`) byte-identical; the prior 46 plain / 6 typed and
+  the core_ir/eval gates unaffected.  **Covered:** String literals, raw print,
+  `intToString`.  **Remaining (follow-on slices):** `charToStr`, `stringConcat`,
+  `putStr`/`putStrLn`/file-IO, unicode, RNG; the `Char` rep (gates `charCode`
+  INTRINSIC-vs-LEAF — a sibling of this decision); the dispatch gaps and precise GC.
+
 **Spike status after slice 9 — what's next.** The de-risking spike has now lowered
 the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
 ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in
@@ -938,7 +970,9 @@ backend (Stage 2) — near-term sequence"):
    spike is malloc-and-leak)~~ **GC DONE 2026-06-07** (`mdk_alloc` → Boehm `GC_malloc`,
    conservative; verified collecting — ~3 MB RSS on a 2×10⁸-cons churn vs ~614 MB
    leaking); re-implement the native extern catalog (per-extern
-   disposition in RUNTIME-DESIGN), and close the spike's out-of-scope gaps (arg-tag
+   disposition in RUNTIME-DESIGN) — **catalog slice 1 DONE 2026-06-07** (Strings:
+   rep locked UTF-8 + cached codepoint count; `mdk_str_lit`/`mdk_print_str`/
+   `mdk_int_to_string`; §2.4a-7) — and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
    (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);

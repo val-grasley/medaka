@@ -1,0 +1,4 @@
+-- native extern catalog slice 1: intToString on a NEGATIVE result — exercises the
+-- arithmetic untag of a negative immediate word (tagged >> 1) and the sign in the
+-- runtime's snprintf("%lld").  Reduces to the String "-7".
+main = intToString (0 - 7)

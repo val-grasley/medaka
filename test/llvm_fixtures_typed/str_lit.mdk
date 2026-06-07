@@ -1,0 +1,5 @@
+-- native extern catalog slice 1 (typed gate): a String literal rides the typed
+-- emit path (llvm_emit_typed_main) identically to the plain path — strings are
+-- not dispatch-relevant, so this just proves CLit (LString _) lowers under the
+-- typed pipeline + dict-pp oracle.  Prints raw.
+main = "typed string"
