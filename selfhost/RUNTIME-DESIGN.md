@@ -9,15 +9,19 @@ must satisfy and the per-extern disposition for building it.
 See [`STAGE2-DESIGN.md`](./STAGE2-DESIGN.md) for the backend-architecture decision
 (bytecode-VM-first) and [`../PLAN.md`](../PLAN.md) "North star → Stage 2".
 
-> **Status (2026-06-05):** design only — no native runtime exists yet. The current
-> backend is the tree-walker; the bytecode VM (§2.2) is the next consumer that will
-> first exercise this contract. **Decide nothing here as final until the value
-> representation is fixed (see §2 and §8).** A Stage-2.4 *de-risking spike* (see
-> [`STAGE2-DESIGN.md`](./STAGE2-DESIGN.md) §2.4 and `selfhost/llvm_emit.mdk`) has now
-> exercised the emit→clang→link→run→diff toolchain end-to-end against the
-> tree-walker oracle for the scalar slice, using a **provisional** uniform tagged
-> word. §8 (new) turns what it surfaced into a value-representation +
-> calling-convention proposal **for human ratification** — it is not yet locked.
+> **Status (updated 2026-06-07):** the value representation + calling convention are
+> **RATIFIED** (§8: Option A uniform tagged word under §8.6's abstract contract; dense
+> i32 ctor-ordinal tags; uniform one-word header), and the **String representation is
+> DECIDED** (§4/§7 decision 2: UTF-8 bytes + cached codepoint count). A **partial
+> native runtime now exists** (`runtime/medaka_rt.c`): `mdk_alloc` routes to Boehm
+> `GC_malloc` (conservative GC, verified collecting), and the Stage-2.4 de-risking
+> spike (`selfhost/llvm_emit.mdk`) emits the full non-GC Core IR surface plus
+> **native-extern-catalog slice 1** (heap Strings: `mdk_str_lit`/`mdk_print_str`/
+> `mdk_int_to_string`), gated byte-identical against the tree-walker oracle
+> (`test/diff_selfhost_llvm{,_typed}.sh`). **Still open** (per §7): the `set_ref`
+> write barrier, the `panic` unwind model, and the bulk of the extern catalog
+> (~50 leaf/IO/RNG/unicode helpers still to re-implement). The spike remains a probe,
+> not yet promoted to the real backend.
 
 ---
 
@@ -248,7 +252,7 @@ literal/print/`intToString` path on this layout (`runtime/medaka_rt.c`,
 decision 2.)*
 
 After applying `INTRINSIC` (no call), `→MEDAKA` (compiled Medaka), and `→METHOD`
-(typeclass), the **actual native runtime is ~54 leaf functions** — and every one
+(typeclass), the **actual native runtime is ~53 leaf functions** — and every one
 is C-ABI over opaque pointers/scalars with **no callbacks and no value-layout
 reflection**.
 
