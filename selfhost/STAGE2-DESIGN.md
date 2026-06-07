@@ -622,7 +622,8 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
 - **SPIKE SLICE 3 DONE (2026-06-06) — ADT constructors + pattern matching.** The
   first **heap-allocated, non-scalar** values, and the first `match`. A constructor
   lowers to a **boxed heap cell** (RUNTIME-DESIGN.md §8.4 "Option A"): a one-word
-  header (the constructor name string-hashed to an i64 tag) followed by the field
+  header (the constructor's tag — a dense per-type ctor-ordinal composite since
+  2026-06-07, `cellTag`; an i64 string-hash through the original slice-3 spike) followed by the field
   words, allocated via `@mdk_alloc` — the slice-1 Float-box path extended to N
   fields; the word carried in registers is the cell pointer (`ptrtoint`, low bit 0,
   disjoint from the immediate-int low-bit-1 encoding). A `match` lowered to a
@@ -643,11 +644,14 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   surfaced (not silently taken):** (1) **nullary constructors are boxed** (a 1-word
   alloc), where §8.1 says they should be **free/immediate** — a divergence from the
   recommended *native* rep, deferred to the real backend (spike-rep notes below).
-  (2) the **i64 string-hash tag** is LLVM-convenient (no ctor→ordinal table) but
-  foreshadows neither backend's real tag and carries collision risk; a **dense i32
-  ctor-ordinal** would port to both LLVM and WasmGC `br_table` cleanly (deferred).
+  (2) the **i64 string-hash tag** was LLVM-convenient (no ctor→ordinal table) but
+  foreshadowed neither backend's real tag and carried collision risk — **RESOLVED
+  2026-06-07: the spike now emits the ratified dense per-type ctor-ordinal**
+  (`cellTag`, a composite `typeId<<32 | ordinal`; low half is the `br_table` ordinal,
+  high half a per-type id retained only for the spike's runtime cross-type arg-tag
+  dispatch). Ports to LLVM/WasmGC `br_table`; collisions impossible.
   (3) the encoding (`ptrtoint`/`inttoptr` i64 words, byte-offset `getelementptr`,
-  hash tag) is the **native** physical rep and intentionally NOT WasmGC-portable —
+  tagged word) is the **native** physical rep and intentionally NOT WasmGC-portable —
   §8.6 reconciles this (no single physical rep; the **Core IR** is the shared
   portable layer; a WasmGC sibling emitter would use `i31ref` + typed structs).
   **Reserved-name aliasing bug (FIXED 2026-06-07 — PLAN.md Compiler/language):** a
@@ -726,9 +730,9 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   now route any constructor-LIKE head
   through one helper, `conHeadInfo : CHead -> Option (String, Int)`, which maps
   `HCon c a → (c, a)`, `HCons → ("Cons", 2)`, `HNil → ("Nil", 0)`, `HTuple n →
-  ("$tuple", n)` — i.e. the SAME hashed tag (`hashName`) the constructor/tuple alloc
+  ("$tuple", n)` — i.e. the SAME tag (`cellTag`) the constructor/tuple alloc
   site stamps, so construction and match agree by construction (and `HCons` and a
-  user `HCon "Cons"` map to the same tag, so the spike is byte-identical either way).
+  user `HCon "Cons"` resolve to the same per-type ordinal, so the spike is byte-identical either way).
   `bindPattern` gains
   `PCons h t` (a 2-field `[head, tail]` extraction) and `PList []` (binds nothing).
   **(2) tuple switch heads.** A multi-arm tuple match yields a `CTSwitch HTuple n`
@@ -827,9 +831,14 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   (method has impls at a single type) ⇒ a DIRECT `@mdk_impl_<tag>_<method>` call, no
   runtime test (a well-typed call always reaches it); several groups ⇒ load the
   discriminating arg's cell tag and emit an if-chain testing whether it is one the
-  group's TYPE owns (`OR` over `ctorsOfType`'s `hashName`s, the new ninth `Emit` ref =
+  group's TYPE owns (`OR` over `ctorsOfType`'s `cellTag`s, the new ninth `Emit` ref =
   `CProgram`'s ctor→type map), `unreachable` default. ADT-only — `loadTag` needs a
-  boxed cell. **(o) multi-clause / pattern-param impls** — the Core IR carries one
+  boxed cell. **This cross-type test is exactly why the ordinal tag is a composite,
+  not a bare per-type ordinal:** every type has an ordinal-0 ctor, so bare ordinals
+  collide across the candidate groups (a `Color` value of ordinal 1 would spuriously
+  match `Animal`'s `{0,1}` test); the per-type id in the tag's high half restores
+  global uniqueness. The real backend resolves these sites statically / by dictionary
+  and keeps only the low-half ordinal. **(o) multi-clause / pattern-param impls** — the Core IR carries one
   `CImplEntry` PER CLAUSE; same-`(method,tag)` entries are COALESCED into one lifted fn
   whose body is a decision tree built by the shared `compileTree`. By arity: 0 (the
   slice-6 nullary `zero`/`def`) emits the body in tail position, byte-for-byte the old
@@ -880,8 +889,8 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
 
 **2.4a-6 — Slice 9 (LISTS: CList + CRangeList).** The last two list-construction
   Core IR nodes, completing the non-GC Core IR surface.  Both lower via the
-  existing `emitCtorAlloc` path (Cons/Nil boxed cells, the same `hashName "Cons"`/
-  `hashName "Nil"` tags the slice-5b HCons/HNil match heads test, so construction
+  existing `emitCtorAlloc` path (Cons/Nil boxed cells, the same `cellTag "Cons"`/
+  `cellTag "Nil"` tags the slice-5b HCons/HNil match heads test, so construction
   and match agree by construction).  **Spike-rep notes (extending (a)–(t)):**
   **(u) CList [e0…en] INLINE RIGHT-FOLD** — N+1 `emitCtorAlloc` calls emitted in
   straight-line code from innermost (tail) to outermost (head); zero loops, no
@@ -918,9 +927,11 @@ backend (Stage 2) — near-term sequence"):
    [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md) §8.
 2. **Promote the spike to the real backend** — integrate a GC (Boehm to start; the
    spike is malloc-and-leak), re-implement the native extern catalog (per-extern
-   disposition in RUNTIME-DESIGN), emit the ratified **dense i32 ctor-ordinal** tags
-   (replacing the spike's hash), and close the spike's out-of-scope gaps (arg-tag
-   dispatch on non-ADT/Int args, nested-requires dicts). Gate native stdout against
+   disposition in RUNTIME-DESIGN), and close the spike's out-of-scope gaps (arg-tag
+   dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
+   i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
+   (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);
+   last spike-vs-real tag gap closed. Gate native stdout against
    **both** the tree-walker and the bytecode VM (the second, single-steppable
    oracle — the disambiguation LLVM-first cannot have).
 3. **Bootstrap closure** — the self-hosted compiler + LLVM backend compiles itself

@@ -581,9 +581,10 @@ The uniform-word rep makes the convention fall out cleanly:
   decisions surfaced for the real backend (deferred — see STAGE2-DESIGN.md
   §2.4/§2.4a spike-rep notes):
   (1) the spike **boxes nullary constructors** (1-word alloc) where §8.1 says they
-  should be **immediate/free** — fix in the native backend; (2) the **i64 string-hash
-  tag** is convenient here but a **dense i32 ctor-ordinal** (per type) is what ports
-  to LLVM/WasmGC `br_table` cleanly and avoids collisions. The emitted encoding is
+  should be **immediate/free** — fix in the native backend; (2) ~~the i64 string-hash
+  tag~~ **DONE 2026-06-07** — the spike now emits the **dense i32 ctor-ordinal**
+  (per type, via `cellTag`) that ports to LLVM/WasmGC `br_table` cleanly and avoids
+  collisions. The emitted encoding is
   the native physical rep (§8.6); a WasmGC sibling would use `i31ref` + typed structs
   over the host GC, sharing only the Core IR, not the bits.
 - **Empirically validated (2026-06-06) — spike slice 4 (closures + HOFs).** The
