@@ -1,0 +1,4 @@
+import effect_a
+
+f : Unit -> <Fetch> Unit
+f _ = ()

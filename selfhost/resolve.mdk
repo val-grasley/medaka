@@ -743,6 +743,7 @@ public export record ModuleExports
   expFieldOwners : List (String, String)         -- (field, owner type/ctor)
   expInterfaces : List String
   expIfaceMethods : List (String, List String)   -- iface → method names
+  expEffects : List String                       -- exported effect labels (Phase 146)
 
 -- ── small generic helpers ──────────────────────────────────────────────────
 isNonEmpty : List a -> Bool
@@ -936,6 +937,20 @@ filterIfaceMethods baseIfaces ((iface, ms)::rest)
   | contains iface baseIfaces = (iface, ms) :: filterIfaceMethods baseIfaces rest
   | otherwise = filterIfaceMethods baseIfaces rest
 
+-- Install exported effect labels from all imported modules (Phase 146).
+importedEffects : List ModuleExports -> List Decl -> List String
+importedEffects known prog = concatMapList (oneImportEffects known) (usePathsOf prog)
+
+oneImportEffects : List ModuleExports -> UsePath -> List String
+oneImportEffects known path =
+  let mid = useModId path
+  if mid == "core" then
+    []
+  else
+    match findExports mid known
+      None => []
+      Some exp => exp.expEffects
+
 -- ── buildEnv (multi-module): like buildEnv but validating imports ──────────
 buildEnvMM : List Decl -> List Decl -> List ModuleExports -> List Decl -> (Env, List ResError)
 buildEnvMM runtimeDecls preludeDecls known prog =
@@ -949,6 +964,7 @@ buildEnvMM runtimeDecls preludeDecls known prog =
   let adds = collectImports known prog
   let baseIfaces = map fst pIfaces ++ map fst uIfaces ++ adds.iaIfaces
   let impIfaceMethods = importedIfaceMethods known prog baseIfaces
+  let impEffects = importedEffects known prog
   let env = Env {
     values = externNames runtimeDecls ++ pValues ++ userValueNames prog ++ adds.iaValues,
     types = primitiveTypes ++ pTypes ++ dataRecordNames prog ++ adds.iaTypes,
@@ -957,7 +973,7 @@ buildEnvMM runtimeDecls preludeDecls known prog =
     fieldOwners = pFieldOwners ++ fieldOwnersOf prog ++ adds.iaFieldOwners,
     interfaces = baseIfaces,
     ifaceMethods = pIfaces ++ uIfaces ++ impIfaceMethods,
-    effects = effectNames prog,
+    effects = effectNames prog ++ impEffects,
     imported = adds.iaImported
   }
   (env, adds.iaErrors)
@@ -972,7 +988,8 @@ buildExports known modId prog env = ModuleExports {
   expTypeCtors = expTypeCtorsDirect prog,
   expFieldOwners = expFieldOwnersDirect prog ++ reExpFieldOwners known prog,
   expInterfaces = expInterfacesDirect prog ++ reExpInterfaces known prog,
-  expIfaceMethods = expIfaceMethodsDirect prog ++ reExpIfaceMethods known prog
+  expIfaceMethods = expIfaceMethodsDirect prog ++ reExpIfaceMethods known prog,
+  expEffects = expEffectsDirect prog ++ reExpEffects known prog
 }
 
 -- pub DTypeSig/DExtern/DFunDef
@@ -1039,6 +1056,18 @@ expIfaceMethodsDirect [] = []
 expIfaceMethodsDirect (DInterface { pub = True, name = n, methods, ... }::rest) =
   (n, map ifaceMethodNm methods) :: expIfaceMethodsDirect rest
 expIfaceMethodsDirect (_::rest) = expIfaceMethodsDirect rest
+
+expEffectsDirect : List Decl -> List String
+expEffectsDirect [] = []
+expEffectsDirect ((DEffect True n)::rest) = n :: expEffectsDirect rest
+expEffectsDirect (_::rest) = expEffectsDirect rest
+
+reExpEffects : List ModuleExports -> List Decl -> List String
+reExpEffects known prog = concatMapList (overPubUse known reExpEffectsFrom) (pubUsePaths prog)
+
+reExpEffectsFrom : UsePath -> ModuleExports -> List String
+reExpEffectsFrom (UseWild _) src = src.expEffects
+reExpEffectsFrom _ _ = []
 
 -- ── pub-import re-export (export import …) — mirror lib's reexport_name ──────
 -- The names a pub use-path re-exports from its source module (errors suppressed

@@ -165,6 +165,7 @@ type module_exports = {
   exp_field_owners    : (ident, string) Hashtbl.t;
   exp_interfaces      : (ident, unit) Hashtbl.t;
   exp_iface_methods   : (ident, ident list) Hashtbl.t;
+  exp_effects         : (ident, unit) Hashtbl.t;  (* exported effect labels (Phase 146) *)
 }
 
 (* ── Module environment ────────────────────────── *)
@@ -435,6 +436,8 @@ let build_env ?(known_modules : module_exports list = [])
            if Hashtbl.mem env.interfaces iface then
              Hashtbl.replace env.iface_methods iface methods
          ) exp.exp_iface_methods;
+         (* Install exported effect labels so <Label> resolves in the importing module. *)
+         Hashtbl.iter (fun name () -> Hashtbl.replace env.effects name ()) exp.exp_effects;
          (* Register module alias / qualified-access name *)
          let alias = match path with
            | UseAlias (_, a)      -> Some a
@@ -822,6 +825,7 @@ let build_exports ?(known_modules : module_exports list = [])
     exp_field_owners  = Hashtbl.create 8;
     exp_interfaces    = Hashtbl.create 4;
     exp_iface_methods = Hashtbl.create 4;
+    exp_effects       = Hashtbl.create 4;
   } in
   (* Re-export one name from a source module's exports *)
   let reexport_name src_exp name =
@@ -894,9 +898,9 @@ let build_exports ?(known_modules : module_exports list = [])
       Hashtbl.replace exp.exp_iface_methods iface_name
         (List.map (fun m -> m.method_name) methods)
     | DImpl { is_pub = true; _ } ->
-      (* Impl declarations export their methods via the interface's methods;
-         we don't need to separately export the impl itself. *)
       ()
+    | DEffect (true, name) ->
+      Hashtbl.replace exp.exp_effects name ()
     | DUse (true, path) ->
       let src_mod_id = use_path_module_id path in
       (match List.find_opt (fun e -> e.exp_mod_id = src_mod_id) known_modules with
@@ -923,7 +927,8 @@ let build_exports ?(known_modules : module_exports list = [])
             Hashtbl.iter (fun n () -> Hashtbl.replace exp.exp_interfaces n ()) src_exp.exp_interfaces;
             Hashtbl.iter (fun n ms -> Hashtbl.replace exp.exp_iface_methods n ms) src_exp.exp_iface_methods;
             Hashtbl.iter (fun f () -> Hashtbl.replace exp.exp_fields f ()) src_exp.exp_fields;
-            Hashtbl.iter (fun f owner -> add_field_owner exp.exp_field_owners f owner) src_exp.exp_field_owners
+            Hashtbl.iter (fun f owner -> add_field_owner exp.exp_field_owners f owner) src_exp.exp_field_owners;
+            Hashtbl.iter (fun n () -> Hashtbl.replace exp.exp_effects n ()) src_exp.exp_effects
           | UseAlias _ ->
             (* export import foo as F: module-alias re-export not yet supported *)
             ()))
