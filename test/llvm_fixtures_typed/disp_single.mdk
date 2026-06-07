@@ -1,0 +1,15 @@
+-- slice 6: SINGLE-impl return-position dispatch (RKey).  The type param appears
+-- only in `def`'s result, so there is no discriminating argument — the typechecker
+-- resolves the impl from the annotated result type (`base : Int`) and stamps
+-- RKey "Int".  A single impl binds to a bare VTypedImpl in the tree-walker; here it
+-- is a direct call to the one lifted `@mdk_impl_Int_def`.  Reduces to a scalar Int.
+interface Default a where
+  def : a
+
+impl Default Int where
+  def = 7
+
+base : Int
+base = def
+
+main = base

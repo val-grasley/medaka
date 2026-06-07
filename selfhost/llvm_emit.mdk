@@ -86,10 +86,19 @@
 --     lambda-lifts like any CLam but EXCLUDES `f` from the capture set (it is the
 --     closure cell itself) and binds `f → %clos` inside the lifted body, so the
 --     self-call re-enters the same cell.
--- Still OUT of scope: arrays / ranges / typeclass dispatch / GC; the HUnit match
--- head and non-Int literal heads in matches; guarded / range / record arms
--- (CTGuard); non-empty `PList` binding; capture of Ref/mutable bindings; partial /
--- over-application of closures.
+--   • slice 6 — TYPECLASS DISPATCH.  The Core IR's two dispatch nodes lower here:
+--     `CMethod` (a method occurrence) and `CDict` (a `=>`-constrained-fn occurrence),
+--     each carrying the typechecker's resolved `Route`s.  An `RKey` route is
+--     STATICALLY resolved (the concrete impl is known at compile time) → a DIRECT
+--     call to that impl's lifted `@mdk_impl_<tag>_<method>`; `RDict`/`RDictFwd` read
+--     a runtime dict-parameter witness word → an inline if-chain over the method's
+--     impls.  Mirrors core_ir_eval's methodAtNarrow/applyDicts/narrowMethod.  See the
+--     "typeclass dispatch (slice 6)" section below for the (j)/(k)/(l) rep notes.
+-- Still OUT of scope: arrays / ranges / GC; arg-tag (RNone) dispatch and nested
+-- per-instance requires dicts and multi-clause / arg-position impl methods (slice 6);
+-- the HUnit match head and non-Int literal heads in matches; guarded / range /
+-- record arms (CTGuard); non-empty `PList` binding; capture of Ref/mutable bindings;
+-- partial / over-application of closures.
 -- An unsupported Core IR node panics with its tag (the spike refuses to emit wrong
 -- code rather than silently mis-lowering).
 --
@@ -120,8 +129,8 @@
 --            header = hashName "$ref".  .value loads field 0; set_ref stores into
 --            field 0.  Write barrier absent (malloc-and-leak, same as @mdk_alloc).
 
-import ast.{Lit(..), Pat(..), Addr(..)}
-import core_ir.{CExpr(..), CField(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..)}
+import ast.{Lit(..), Pat(..), Addr(..), Route(..)}
+import core_ir.{CExpr(..), CField(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..), CImplEntry(..), CImplBody(..)}
 import util.{reverseL, joinNl, lookupAssoc}
 
 -- the static type of a slice-1/3 value, used to pick the print routine and the
@@ -158,8 +167,13 @@ data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure
 -- define order is irrelevant).  The SEVENTH ref (slice 5a) is the RECORD FIELD
 -- ORDER table (`name -> [label_in_order]`, built by scanning CRecord nodes in the
 -- program up front): it lets CFieldAccess recover a label's positional index so
--- the field can be reached by loadField without carrying type information.
-data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int))) (Ref (List String)) (Ref (List (String, List String)))
+-- the field can be reached by loadField without carrying type information.  The
+-- EIGHTH ref (slice 6 — typeclass dispatch) is the IMPL TABLE: the program's
+-- `CImplEntry` list (read out of `CProgram`).  It tells a `CMethod` site which
+-- concrete impl body an `RKey`-resolved route names (→ a direct call to that
+-- impl's lifted `@mdk_impl_<tag>_<method>`), and supplies the full impl set a
+-- runtime `RDict`/`RDictFwd` site switches over by the dict's head tag.
+data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int))) (Ref (List String)) (Ref (List (String, List String))) (Ref (List CImplEntry))
 
 -- a function's inferred signature: its parameter types (in order) and its return
 -- type.  At the LLVM ABI every value is a uniform i64 word regardless (Int
@@ -174,7 +188,7 @@ data FnSig = FnSig (List LTy) LTy
 
 -- ── emitter plumbing ────────────────────────────────────────────────────────
 freshId : Emit -> <Mut> Int
-freshId (Emit c _ _ _ _ _ _) =
+freshId (Emit c _ _ _ _ _ _ _) =
   let n = c.value
   let _ = set_ref c (n + 1)
   n
@@ -183,21 +197,21 @@ freshReg : Emit -> <Mut> String
 freshReg e = "%t" ++ intToString (freshId e)
 
 emit : Emit -> String -> <Mut> Unit
-emit (Emit _ buf _ _ _ _ _) line = set_ref buf (line :: buf.value)
+emit (Emit _ buf _ _ _ _ _ _) line = set_ref buf (line :: buf.value)
 
 -- the main output buffer ref (slice 4: needed for the save/restore swap that
 -- redirects emission of a lifted lambda's `define` into the side buffer).
 bufRef : Emit -> Ref (List String)
-bufRef (Emit _ buf _ _ _ _ _) = buf
+bufRef (Emit _ buf _ _ _ _ _ _) = buf
 
 -- the side buffer holding lifted-lambda `define`s, in FORWARD order (slice 4).
 lamsRef : Emit -> Ref (List String)
-lamsRef (Emit _ _ _ _ _ lams _) = lams
+lamsRef (Emit _ _ _ _ _ lams _ _) = lams
 
 -- the known-function table (set once in emitProgram); membership decides whether
 -- a `CApp` head names a callable top-level function.
 fnNames : Emit -> <Mut> List String
-fnNames (Emit _ _ fns _ _ _ _) = fns.value
+fnNames (Emit _ _ fns _ _ _ _ _) = fns.value
 
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = containsStr name (fnNames e)
@@ -205,7 +219,7 @@ isKnownFn e name = containsStr name (fnNames e)
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
-fnRetTy (Emit _ _ _ sigs _ _ _) name = match lookupAssoc name sigs.value
+fnRetTy (Emit _ _ _ sigs _ _ _ _) name = match lookupAssoc name sigs.value
   Some (FnSig _ rty) => rty
   None => LTInt
 
@@ -213,7 +227,7 @@ fnRetTy (Emit _ _ _ sigs _ _ _) name = match lookupAssoc name sigs.value
 -- the constructor arity table (set once in emitProgram); membership decides
 -- whether a `CVar`/`CApp` head names an ADT constructor (→ heap allocation).
 ctorTable : Emit -> <Mut> List (String, Int)
-ctorTable (Emit _ _ _ _ ct _ _) = ct.value
+ctorTable (Emit _ _ _ _ ct _ _ _) = ct.value
 
 isCtor : Emit -> String -> <Mut> Bool
 isCtor e name = match lookupAssoc name (ctorTable e)
@@ -226,7 +240,64 @@ isCtor e name = match lookupAssoc name (ctorTable e)
 -- CFieldAccess uses it to convert a label name to a positional index so the
 -- field can be reached by loadField without carrying type information.
 recFieldTable : Emit -> <Mut> List (String, List String)
-recFieldTable (Emit _ _ _ _ _ _ rt) = rt.value
+recFieldTable (Emit _ _ _ _ _ _ rt _) = rt.value
+
+-- ── impl table (slice 6) ────────────────────────────────────────────────────
+-- the program's CImplEntry list (set once in emitProgram).  A CMethod site reads
+-- it two ways: `implFor` resolves an RKey-narrowed route to the ONE concrete impl
+-- it names (a direct call to that impl's lifted fn); `implsOf` returns every
+-- tagged impl of a method (the runtime RDict/RDictFwd dispatch-switch arms).
+implEntriesOf : Emit -> <Mut> List CImplEntry
+implEntriesOf (Emit _ _ _ _ _ _ _ ie) = ie.value
+
+-- the impls of a method, in program order — only the CImplTagged ones (an
+-- untagged CImplDefault is the arg-tag fallback, never a static-dispatch target).
+implsOf : Emit -> String -> <Mut> List CImplEntry
+implsOf e method = filterTagged method (implEntriesOf e)
+
+filterTagged : String -> List CImplEntry -> List CImplEntry
+filterTagged _ [] = []
+filterTagged method ((CImplEntry n s (CImplTagged tag iface ps pats body))::rest)
+  | n == method = (CImplEntry n s (CImplTagged tag iface ps pats body)) :: filterTagged method rest
+  | otherwise = filterTagged method rest
+filterTagged method (_::rest) = filterTagged method rest
+
+-- the single tagged impl an RKey route names: the CImplTagged of `method` whose
+-- type-head tag equals `tag`.  None ⇒ the route named an impl not in the program
+-- (an internal error — the typechecker only stamps tags it resolved an impl for).
+implFor : Emit -> String -> String -> <Mut> Option CImplEntry
+implFor e method tag = findByTag tag (implsOf e method)
+
+findByTag : String -> List CImplEntry -> Option CImplEntry
+findByTag _ [] = None
+findByTag tag ((CImplEntry n s (CImplTagged t iface ps pats body))::rest)
+  | t == tag = Some (CImplEntry n s (CImplTagged t iface ps pats body))
+  | otherwise = findByTag tag rest
+findByTag tag (_::rest) = findByTag tag rest
+
+-- the lifted LLVM name of a tagged impl method: `mdk_impl_<tag>_<method>`.  Type
+-- heads and method names are alphanumeric identifiers (an operator like `+` is a
+-- `CBinPrim`, never a method name here), so the concatenation is always a legal
+-- LLVM symbol — clang would reject it loudly otherwise, which the gate catches.
+implFnName : String -> String -> String
+implFnName tag method = "mdk_impl_" ++ tag ++ "_" ++ method
+
+-- the parameter patterns + body of an impl entry (CImplTagged or CImplDefault).
+implPats : CImplEntry -> List Pat
+implPats (CImplEntry _ _ (CImplTagged _ _ _ pats _)) = pats
+implPats (CImplEntry _ _ (CImplDefault pats _)) = pats
+
+implBody : CImplEntry -> CExpr
+implBody (CImplEntry _ _ (CImplTagged _ _ _ _ body)) = body
+implBody (CImplEntry _ _ (CImplDefault _ body)) = body
+
+implEntryTag : CImplEntry -> String
+implEntryTag (CImplEntry _ _ (CImplTagged tag _ _ _ _)) = tag
+implEntryTag (CImplEntry _ _ (CImplDefault _ _)) = ""
+
+implEntryMethod : CImplEntry -> String
+implEntryMethod (CImplEntry n _ _) = n
+
 
 containsStr : String -> List String -> Bool
 containsStr _ [] = False
@@ -290,6 +361,7 @@ emitExpr e env (CTuple es) = emitTuple e env es
 emitExpr e env (CRecord name fields) = emitRecordCreate e env name fields
 emitExpr e env (CFieldAccess ex label) = emitFieldAccess e env ex label
 emitExpr e env (CRecordUpdate base updates) = emitRecordUpdate e env base updates
+emitExpr e env (CMethod name route implRoutes methRoutes) = emitMethod e env name route implRoutes methRoutes []
 emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag other ++ " (slice 1/3 subset only)")
 
 -- a variable occurrence: a bare constructor name (slice 3) is a NULLARY ADT value
@@ -496,6 +568,15 @@ emitApp e env app =
         let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
         (r, fnRetTy e fname)
       else emitIndirect e env hd args
+    -- slice 6: an applied method / constrained-fn occurrence.  The real arguments
+    -- emit first (left-to-right), then the dispatch resolves to a direct impl call
+    -- (RKey), a runtime impl switch (RDict/RDictFwd), or a dict-passing call (CDict).
+    CMethod name route implRoutes methRoutes =>
+      let argOps = emitArgs e env args
+      emitMethod e env name route implRoutes methRoutes argOps
+    CDict name routes =>
+      let argOps = emitArgs e env args
+      emitDictApp e env name routes argOps
     _ => emitIndirect e env hd args
 
 -- a saturated INDIRECT call (slice 4): emit the head to a closure word, load its
@@ -529,6 +610,167 @@ argDecls : List String -> String
 argDecls [] = ""
 argDecls [x] = "i64 " ++ x
 argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
+
+-- ── typeclass dispatch (slice 6) ────────────────────────────────────────────
+-- Core IR carries the typechecker's resolved dispatch in two structural nodes
+-- (core_ir.mdk): `CMethod name route implRoutes methRoutes` (a method occurrence)
+-- and `CDict name routes` (a `=>`-constrained-function occurrence).  Each Route is
+-- RNone | RKey String (List Route) | RDict String | RDictFwd String (ast.mdk).
+--
+-- The KEY TRACTABILITY PROPERTY (the reason the bootstrap is in reach): an RKey
+-- route is STATICALLY resolved — the typechecker already pinned the concrete type
+-- head, so the impl is known at COMPILE time and the site lowers to a DIRECT call
+-- to that impl's lifted `@mdk_impl_<tag>_<method>`, with NO runtime tag inspection.
+-- The self-host compiler dispatches return-position via RKey (selfhost/README.md),
+-- so RKey alone covers the bootstrap.  RDict/RDictFwd read a named dict PARAMETER
+-- at run time, so they lower to an if-chain switching on the dict's head tag over
+-- the method's impls (corpus completeness — the dict-passing fixtures).  This
+-- mirrors core_ir_eval's `methodAtNarrow`/`applyDicts`/`narrowMethod` one-to-one,
+-- resolving the same routes in emitted control flow instead of walking VMulti
+-- values.  RNone (arg-tag fallback) and nested-requires dicts are out of scope.
+--
+-- SPIKE-REP NOTES (slice 6; the (j)/(k)/(l) entries in STAGE2-DESIGN §2.4a):
+--   (j) DICTS — a dict is a uniform i64 WITNESS word = `hashName(impl-head-tag)`
+--       (the same djb2 the ADT cell header uses), opaque: it never reaches an
+--       arithmetic/print site, only an `icmp eq` against an impl's tag.  RNone ⇒ 0.
+--       Nested per-instance requires dicts (a non-empty `RKey _ reqs`) are OUT —
+--       the spike's one-level fixtures carry none; a non-empty set panics.
+--   (k) IMPL FUNCTIONS — each tagged impl method lowers to a top-level
+--       `@mdk_impl_<tag>_<method>(params…)` (lambda-lift convention of emitFn).  A
+--       nullary return-position impl (`def`/`zero`/`empty`) is a zero-arg function
+--       the use site CALLs for its value; a parameterized impl takes its params.
+--   (l) DISPATCH — RKey ⇒ a direct call (impl chosen at compile time).  RDict/
+--       RDictFwd ⇒ an inline if-chain over the method's impls comparing the dict
+--       witness word to each impl's hashName tag; an exhausted chain is
+--       `unreachable` (the typechecker proves the dict names a real impl).
+
+-- a method occurrence.  `argOps` are the already-emitted real-argument words (empty
+-- for a bare nullary method like `def`).  methRoutes/implRoutes apply method-/
+-- instance-level constraint dicts as leading args — the spike's impls are
+-- unconstrained, so a non-empty set panics rather than emit an under-applied call.
+emitMethod : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> List String -> <Mut> (String, LTy)
+emitMethod e env name route implRoutes methRoutes argOps =
+  let _ = ensureNoMethodDicts methRoutes implRoutes
+  match route
+    RKey tag reqs =>
+      let _ = ensureNoReqs reqs
+      match implFor e name tag
+        Some _ => emitImplCall e (implFnName tag name) argOps
+        None => panic ("llvm spike: no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
+    RDict d => emitMethodDispatch e env name d argOps
+    RDictFwd d => emitMethodDispatch e env name d argOps
+    RNone => panic ("llvm spike: method '" ++ name ++ "' has route RNone — arg-tag fallback dispatch is out of scope (slice 6: RKey/RDict only)")
+
+-- a direct call to a statically-resolved impl fn (RKey).  Nullary (argOps == [])
+-- ⇒ `call @mdk_impl_<tag>_<method>()`, yielding the impl's value.  Result LTy is
+-- type-erased here; default Int (the fixtures' impl bodies are Int, or ADT words
+-- that flow only as LTy-agnostic match scrutinees / call args).
+emitImplCall : Emit -> String -> List String -> <Mut> (String, LTy)
+emitImplCall e fname argOps =
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @" ++ fname ++ "(" ++ argDecls argOps ++ ")")
+  (r, LTInt)
+
+-- a runtime method dispatch (RDict/RDictFwd): the enclosing function's dict
+-- PARAMETER `d` (a uniform i64 witness word, note (j)) selects the impl at run
+-- time.  Emit an if-chain over the method's tagged impls — compare the witness
+-- word to each impl's hashName tag, on a match call that impl's lifted fn into a
+-- result slot and branch to the end; an exhausted chain is `unreachable`.
+emitMethodDispatch : Emit -> List (String, (String, LTy)) -> String -> String -> List String -> <Mut> (String, LTy)
+emitMethodDispatch e env name d argOps =
+  let dictWord = dictOperand env d
+  let impls = implsOf e name
+  let slot = freshReg e
+  let _ = emit e ("  " ++ slot ++ " = alloca i64")
+  let endL = "dispend" ++ intToString (freshId e)
+  let _ = emitDispatchChain e dictWord impls name argOps slot endL
+  let _ = emit e (endL ++ ":")
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  (r, LTInt)
+
+emitDispatchChain : Emit -> String -> List CImplEntry -> String -> List String -> String -> String -> <Mut> Unit
+emitDispatchChain e _ [] _ _ _ _ = emit e "  unreachable"
+emitDispatchChain e dictWord (ent::rest) name argOps slot endL =
+  let tag = implEntryTag ent
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ dictWord ++ ", " ++ intToString (hashName tag))
+  let n = intToString (freshId e)
+  let yes = "dispyes" ++ n
+  let next = "dispnext" ++ n
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e (yes ++ ":")
+  let (rv, _) = emitImplCall e (implFnName tag name) argOps
+  let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
+  let _ = emit e ("  br label %" ++ endL)
+  let _ = emit e (next ++ ":")
+  emitDispatchChain e dictWord rest name argOps slot endL
+
+-- a constrained-function occurrence (CDict): `name` is a `=>`-constrained function
+-- that dict_pass gave leading dict PARAMETERS; the routes give the dict values for
+-- this call site.  Lower to a direct call passing the dict words FOLLOWED by the
+-- real argument words — the same order applyDicts prepends them at run time and
+-- the order emitFn bound `name`'s leading dict params.
+emitDictApp : Emit -> List (String, (String, LTy)) -> String -> List Route -> List String -> <Mut> (String, LTy)
+emitDictApp e env name routes argOps =
+  if isKnownFn e name then
+    let dictWords = dictWordsOf e env routes
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ name ++ "(" ++ argDecls (dictWords ++ argOps) ++ ")")
+    (r, fnRetTy e name)
+  else panic ("llvm spike: CDict head '" ++ name ++ "' is not a known top-level function (slice 6)")
+
+-- the dict witness words for a constrained-function call's routes (note (j)).
+dictWordsOf : Emit -> List (String, (String, LTy)) -> List Route -> List String
+dictWordsOf _ _ [] = []
+dictWordsOf e env (r::rest) = dictWordOfRoute e env r :: dictWordsOf e env rest
+
+-- one route -> its dict witness word: RKey builds the constant hashName(tag);
+-- RDict/RDictFwd forward the enclosing dict parameter's word; RNone is the 0 dict.
+-- A one-level dict carries only the head tag — nested `reqs` (per-instance requires
+-- dicts) are out of scope, so an RKey's reqs are not materialized here.
+dictWordOfRoute : Emit -> List (String, (String, LTy)) -> Route -> String
+dictWordOfRoute _ _ (RKey key _) = intToString (hashName key)
+dictWordOfRoute _ env (RDict d) = dictOperand env d
+dictWordOfRoute _ env (RDictFwd d) = dictOperand env d
+dictWordOfRoute _ _ RNone = "0"
+
+-- the operand word a dict parameter name is bound to in the emit env.
+dictOperand : List (String, (String, LTy)) -> String -> String
+dictOperand env d = match lookupVar env d
+  (op, _) => op
+
+ensureNoReqs : List Route -> <Mut> Unit
+ensureNoReqs [] = ()
+ensureNoReqs _ = panic "llvm spike: RKey with nested requires dicts unsupported (slice 6: one-level dispatch only)"
+
+ensureNoMethodDicts : List Route -> List Route -> <Mut> Unit
+ensureNoMethodDicts [] [] = ()
+ensureNoMethodDicts _ _ = panic "llvm spike: method-/instance-level constraint dicts on a CMethod unsupported (slice 6: unconstrained impls only)"
+
+-- ── impl method definitions (slice 6) ───────────────────────────────────────
+-- Each tagged impl method (CImplTagged) lowers to a top-level
+-- `@mdk_impl_<tag>_<method>(params…)`, emitted alongside the ordinary function
+-- defines (before @main).  Untagged interface defaults (CImplDefault) are the
+-- arg-tag fallback path — never a static-dispatch target — so they are skipped.
+-- The body emits in TAIL position (emitFnBody), exactly like a normal function.
+emitImpls : Emit -> List CImplEntry -> <Mut> Unit
+emitImpls _ [] = ()
+emitImpls e (ent::rest) =
+  let _ = emitImpl e ent
+  emitImpls e rest
+
+emitImpl : Emit -> CImplEntry -> <Mut> Unit
+emitImpl e (CImplEntry method _ (CImplTagged tag iface positions pats body)) =
+  let fname = implFnName tag method
+  let env = paramEnv pats (allInt pats) 0
+  let _ = emit e ("define i64 @" ++ fname ++ "(" ++ paramDecls pats 0 ++ ") {")
+  let _ = emit e "entry:"
+  let _ = emitFnBody e env fname body
+  let _ = emit e "}"
+  emit e ""
+emitImpl _ (CImplEntry _ _ (CImplDefault _ _)) = ()
+
 
 -- ── closures + higher-order functions (slice 4) ─────────────────────────────
 -- VALUE REPRESENTATION (RUNTIME-DESIGN.md §8.5 "Closures"): a closure value is a
@@ -628,7 +870,7 @@ emitEtaClosure e fname =
 
 -- the inferred arity of a known top-level function (its signature's param count).
 fnArity : Emit -> String -> <Mut> Int
-fnArity (Emit _ _ _ sigs _ _ _) fname = match lookupAssoc fname sigs.value
+fnArity (Emit _ _ _ sigs _ _ _ _) fname = match lookupAssoc fname sigs.value
   Some (FnSig ptys _) => lengthS ptys
   None => 0
 
@@ -1074,7 +1316,7 @@ emitFn _ (CBind name _) =
   panic ("llvm spike: function '" ++ name ++ "' is multi-clause (slice 2: single variable-pattern clause only)")
 
 sigTable : Emit -> <Mut> List (String, FnSig)
-sigTable (Emit _ _ _ sigs _ _ _) = sigs.value
+sigTable (Emit _ _ _ sigs _ _ _ _) = sigs.value
 
 -- default param types when no signature was inferred (every param Int).
 allInt : List Pat -> List LTy
@@ -1517,10 +1759,11 @@ scanStmtsRecords (_::rest) = scanStmtsRecords rest
 -- then `main`'s body, then a type-directed print.
 export
 emitProgram : CProgram -> <Mut> String
-emitProgram (CProgram groups ctorArs _ _) =
-  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups))
+emitProgram (CProgram groups ctorArs _ implEntries) =
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries)
   let _ = emitPreamble e
   let _ = emitFns e (fnBinds groups)
+  let _ = emitImpls e implEntries
   let _ = emit e "define i32 @main() {"
   let _ = emit e "entry:"
   let env = emitTopBinds e [] (valBinds groups)
@@ -1532,7 +1775,7 @@ emitProgram (CProgram groups ctorArs _ _) =
   -- then the lifted-lambda defines (slice 4; already forward).  LLVM define order
   -- is irrelevant, so appending the side buffer at the end is sound.
   match e
-    Emit _ buf _ _ _ lams _ => joinNl (reverseL buf.value ++ lams.value)
+    Emit _ buf _ _ _ lams _ _ => joinNl (reverseL buf.value ++ lams.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =

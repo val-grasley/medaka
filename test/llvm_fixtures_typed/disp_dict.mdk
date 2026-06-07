@@ -1,0 +1,23 @@
+-- slice 6: a `=>`-CONSTRAINED function dispatched through a runtime DICT
+-- (RDict/RDictFwd).  dict_pass gives `firstZero` a leading dict parameter; inside,
+-- `zero` resolves through that dict (RDictFwd) rather than a static type.  The two
+-- call sites supply DIFFERENT dicts (Flag then Int), so the emitted dispatch
+-- if-chain — switching on the dict witness word against each impl's head tag —
+-- is genuinely exercised at both Int and Flag.  Reduces to a scalar Int.
+interface Zero a where
+  zero : a
+
+data Flag = Off | On
+
+impl Zero Int where
+  zero = 0
+
+impl Zero Flag where
+  zero = On
+
+firstZero : Zero a => a -> a
+firstZero x = zero
+
+main = match firstZero Off
+  On => firstZero 5
+  Off => 42

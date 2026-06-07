@@ -1,0 +1,25 @@
+-- slice 6: MULTI-impl return-position dispatch (RKey narrow at distinct types).
+-- `zero` has impls at Int and Flag; the two return-position occurrences resolve to
+-- DIFFERENT impls (RKey "Int" vs RKey "Flag") by their annotated result type — a
+-- direct call to `@mdk_impl_Int_zero` / `@mdk_impl_Flag_zero` respectively, no
+-- runtime tag test.  `main` matches the Flag result back to a scalar Int.
+interface Zero a where
+  zero : a
+
+data Flag = Off | On
+
+impl Zero Int where
+  zero = 0
+
+impl Zero Flag where
+  zero = Off
+
+intZero : Int
+intZero = zero
+
+flagZero : Flag
+flagZero = zero
+
+main = match flagZero
+  Off => intZero
+  On => 99

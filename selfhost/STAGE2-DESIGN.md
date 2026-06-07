@@ -742,6 +742,56 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   dispatch / GC, `HUnit` heads, guarded/range/record-arm patterns, non-empty `PList`
   binding, partial application, and Ref capture remain out of scope and panic.
 
+**2.4a-3 — Slice 6 (TYPECLASS DISPATCH).** The largest remaining Core-IR feature
+  gap and the one the bootstrap needs: the self-host compiler dispatches
+  return-position via `RKey` ([`README.md:57`](README.md)). Two Core-IR nodes lower
+  here (no change to `core_ir.mdk` — Axis-1: `llvm_emit.mdk` is a sibling consumer of
+  the unchanged IR): `CMethod name route implRoutes methRoutes` (a method occurrence)
+  and `CDict name routes` (a `=>`-constrained-function occurrence). Each `Route =
+  RNone | RKey String (List Route) | RDict String | RDictFwd String`. **The key
+  tractability property:** an `RKey` route is STATICALLY resolved — the typechecker
+  already pinned the concrete type head, so the impl is known at COMPILE time and the
+  site lowers to a DIRECT call to that impl's lifted `@mdk_impl_<tag>_<method>`, with
+  NO runtime tag inspection. `RKey` alone covers the bootstrap. `RDict`/`RDictFwd`
+  read a named dict PARAMETER at run time, so they lower to an inline if-chain
+  switching on the dict witness word over the method's impls (corpus completeness —
+  the dict-passing fixtures). This mirrors `core_ir_eval`'s
+  `methodAtNarrow`/`applyDicts`/`narrowMethod` one-to-one, resolving the same routes
+  in emitted control flow instead of walking `VMulti` values; `bytecode.mdk`'s
+  `IMethod`/`IDict` lower the identical routes. **Spike-rep notes (extending the
+  slice-3/4/5 (a)–(i) log):** **(j) dicts** — a dict is a uniform i64 WITNESS word =
+  `hashName(impl-head-tag)` (the same djb2 the ADT cell header uses), opaque: it never
+  reaches an arithmetic/print site, only an `icmp eq` against an impl's tag. `RNone ⇒
+  0`. Nested per-instance requires dicts (a non-empty `RKey _ reqs`) are OUT — the
+  one-level fixtures carry none; a non-empty set panics. **(k) impl functions** — each
+  tagged impl method (`CImplTagged`, read out of `CProgram`'s impl-entry list, the new
+  eighth `Emit` ref) lowers to a top-level `@mdk_impl_<tag>_<method>(params…)` emitted
+  alongside the ordinary fn defines (`emitImpls`); a nullary return-position impl
+  (`def`/`zero`) is a zero-arg fn the use site CALLs for its value, a parameterized
+  impl takes its params; untagged interface defaults (`CImplDefault`, the arg-tag
+  fallback) are skipped. **(l) dispatch** — `RKey ⇒` a direct call; `RDict`/`RDictFwd
+  ⇒` an inline if-chain comparing the dict witness to each impl's `hashName` tag, with
+  an `unreachable` default (the typechecker proves the dict names a real impl). **(m)
+  constrained fns** — a `CDict name routes` at a call lowers to a direct
+  `@mdk_<name>(dictWords ++ argWords)`; `dict_pass` already gave `name` the matching
+  leading dict params, so the constrained fn is an ORDINARY `emitFn` define and only
+  the call site is new. **Driver + oracle.** Dispatch needs types, so this slice adds
+  a TYPED emit driver (`llvm_emit_typed_main.mdk`: desugar → `elaborateDict`
+  route-stamp + `dict_pass` → lower → emit) and a separate gate
+  (`diff_selfhost_llvm_typed.sh`) over `test/llvm_fixtures_typed/`. The oracle is NOT
+  `eval_probe` — being untyped it leaks the dispatch wrapper (`<impl@Int:7>`); it is
+  the TYPED Core-IR tree-walker (`core_ir_dict_pp_main.mdk`, the SAME lowered IR
+  ceval'd), so the proven equivalence is `emit→clang→run == ceval` over one typed IR.
+  Fixtures are prelude-free (own interface + impls, reduce `main` to a scalar Int) and
+  pass ONLY `runtime.mdk`, so `elaborateDict` resolves every route without pulling
+  `core.mdk` into the scalar module. **3/3 byte-identical** (`disp_single`
+  single-impl `RKey`, `disp_multi` one method narrowed at Int and Flag via distinct
+  `RKey`s, `disp_dict` a `=>`-constrained fn dispatched through the dict at both Int
+  and Flag) and the **35/35 plain-harness fixtures stay byte-identical** (dispatch
+  emission only fires when the impl list is non-empty). Still **not** the real backend:
+  arg-tag (`RNone`) dispatch, nested requires dicts, multi-clause/arg-position impl
+  methods, arrays / GC remain out of scope and panic.
+
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /
 [`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)) ships on WebAssembly, so
