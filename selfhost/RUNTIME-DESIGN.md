@@ -357,8 +357,9 @@ the cheap, oracle-backed bytecode-VM/spike setting before any native runtime exi
 >    string-hash) — ports to LLVM/WasmGC `br_table` and eliminates the
 >    hash-**collision** miscompile class. (The separate `decodeHead` reserved-name
 >    aliasing bug — a user ctor named `Cons`/`Nil`/`Unit` decoding to the built-in
->    head at lowering — is a *distinct* name-keying hazard, fixed at resolve level or
->    with a `CHead` discriminator, not by the tag change; PLAN.md.) The spike +
+>    head at lowering — was a *distinct* name-keying hazard; FIXED 2026-06-07 by
+>    reserving synthetic `__cons__`/`__nil__`/`__unit__` head names in `canonPat`,
+>    not by the tag change; PLAN.md.) The spike +
 >    `ceval` keep the hash until the real backend; the real backend emits ordinals.
 > 3. **Heap header = keep a uniform one-word header on every boxed cell** (the ADT tag
 >    rides here; uniform cell shape for switch tag-testing; eases precise-GC migration).
@@ -502,10 +503,10 @@ recorded inline here):
 - **Constructor tag scheme** (NOT in the original list — surfaced by spike slice 3).
   **RATIFIED: dense i32 ctor-ordinal per type**, replacing the spike's i64
   string-hash. Ports to LLVM/WasmGC `br_table` and eliminates the hash-**collision**
-  miscompile class. (The `decodeHead` reserved-name aliasing bug is a *distinct*
-  name-keying hazard — fixed at resolve level or with a `CHead` discriminator, not by
-  the tag change.) The spike + `ceval` keep the hash until the real backend; the
-  real backend emits ordinals.
+  miscompile class. (The `decodeHead` reserved-name aliasing bug was a *distinct*
+  name-keying hazard — FIXED 2026-06-07 by reserving synthetic `__cons__`/`__nil__`/
+  `__unit__` head names in `canonPat`, not by the tag change.) The spike + `ceval`
+  keep the hash until the real backend; the real backend emits ordinals.
 - **Heap header.** Include a one-word header on boxed cells now (the spike does), or
   omit under Boehm (which tracks size itself) and add it when precise GC lands?
   **RATIFIED: include it** — 8 bytes/object buys an easy precise-GC migration, a

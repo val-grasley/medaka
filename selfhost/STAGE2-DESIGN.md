@@ -650,11 +650,13 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   hash tag) is the **native** physical rep and intentionally NOT WasmGC-portable —
   §8.6 reconciles this (no single physical rep; the **Core IR** is the shared
   portable layer; a WasmGC sibling emitter would use `i31ref` + typed structs).
-  **Latent bug surfaced (filed, not fixed — PLAN.md Compiler/language):** a user
-  constructor literally named `Cons`/`Nil`/`Unit`/`__tuple__` aliases the built-in
-  list/tuple/unit heads in `core_ir_lower.decodeHead` and is mis-decomposed at match
-  time — `check` accepts it, the AST walker runs it, but the **Core IR path**
-  (`ceval` + both backends) crashes; the fixtures sidestep it with `Node`/`Empty`.
+  **Reserved-name aliasing bug (FIXED 2026-06-07 — PLAN.md Compiler/language):** a
+  user constructor literally named `Cons`/`Nil`/`Unit` used to alias the built-in
+  list/unit heads in `core_ir_lower.decodeHead` and was mis-decomposed at match time
+  — `check` accepted it, the AST walker ran it, but the **Core IR `ceval` path**
+  crashed. Fixed by having `canonPat` lower the built-in forms to reserved synthetic
+  head names (`__cons__`/`__nil__`/`__unit__`) so a user ctor keeps its own name and
+  lowers to `HCon`; the fixtures' `Node`/`Empty` workaround was unwound to `Cons`/`Nil`.
 
 - **Slice 4 — closures + higher-order functions (2026-06-06).** Each `CLam` is
   **lambda-lifted** to a top-level `define i64 @mdk_lamN(i64 %clos, i64 %arg…)`; at
@@ -717,13 +719,17 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
 
 **2.4a-2 — Slice 5b (BUILT-IN LIST/TUPLE MATCH HEADS + RECURSIVE CLOSURES).** Three
   decision-tree/closure forms that previously panicked, all reusing the slice-3/4
-  machinery: **(1) built-in list heads.** A `match` on `Cons`/`Nil` (or list-literal
-  patterns) lowers — via `core_ir_lower.decodeHead` — to `HCons`/`HNil` switch heads
-  rather than `HCon`. `emitSwitch`/`emitConChain` now route any constructor-LIKE head
+  machinery: **(1) built-in list heads.** A `match` on list-literal / `::` patterns
+  lowers — via `canonPat` → `core_ir_lower.decodeHead` — to `HCons`/`HNil` switch
+  heads rather than `HCon` (a user ctor named `Cons`/`Nil` keeps its own name and
+  lowers to `HCon` — see the reserved-name fix below). `emitSwitch`/`emitConChain`
+  now route any constructor-LIKE head
   through one helper, `conHeadInfo : CHead -> Option (String, Int)`, which maps
   `HCon c a → (c, a)`, `HCons → ("Cons", 2)`, `HNil → ("Nil", 0)`, `HTuple n →
   ("$tuple", n)` — i.e. the SAME hashed tag (`hashName`) the constructor/tuple alloc
-  site stamps, so construction and match agree by construction. `bindPattern` gains
+  site stamps, so construction and match agree by construction (and `HCons` and a
+  user `HCon "Cons"` map to the same tag, so the spike is byte-identical either way).
+  `bindPattern` gains
   `PCons h t` (a 2-field `[head, tail]` extraction) and `PList []` (binds nothing).
   **(2) tuple switch heads.** A multi-arm tuple match yields a `CTSwitch HTuple n`
   head (one branch, all arms being n-tuples), handled identically to a constructor
@@ -735,12 +741,15 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   self-call `f …` is an indirect call back into the same cell. Gate now spans
   **35/35** fixtures (the prior 31 + 4: `list_sum` `data … = Cons … | Nil` recursive
   fold, `list_filter` list construct+match across two recursive fns, `rec_local`
-  inline recursive function-`let`, `tuple_match` multi-arm tuple match). **Latent
-  bug surfaced (PLAN.md):** `decodeHead` keys built-in heads by NAME, so a user ctor
-  named `Cons`/`Nil` aliases the built-in head — harmless in the LLVM spike (the
-  symmetric hashed-tag discipline above) and in the AST tree-walker, but the Core-IR
-  `ceval` path panics (`core_ir_eval.mdk:144`) because it routes `HCons`/`HNil` to
-  the built-in `VList` shape. Still **not** the real backend (at slice 5b): arrays /
+  inline recursive function-`let`, `tuple_match` multi-arm tuple match). **Reserved-name
+  bug (since FIXED 2026-06-07 — PLAN.md):** `decodeHead` used to key built-in heads by
+  NAME, so a user ctor named `Cons`/`Nil` aliased the built-in head — harmless in the
+  LLVM spike (the symmetric hashed-tag discipline above) and in the AST tree-walker, but
+  the Core-IR `ceval` path panicked (`core_ir_eval.mdk:151`) because it routed
+  `HCons`/`HNil` to the built-in `VList` shape. Now fixed (`canonPat` reserves synthetic
+  `__cons__`/`__nil__` head names; user ctors lower to `HCon`), so `list_sum`/
+  `list_filter` are byte-identical across all backends. Still **not** the real backend
+  (at slice 5b): arrays /
   dispatch / GC, `HUnit` heads, guarded/range/record-arm patterns, non-empty `PList`
   binding, partial application, and Ref capture remain out of scope and panic.
 
