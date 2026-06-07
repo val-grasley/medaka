@@ -549,9 +549,9 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   IR, a sibling consumer of the same Core IR `core_ir_eval`/the bytecode VM consume
   — Axis-1 discipline in miniature), `llvm_emit_main.mdk` (driver: parse → desugar →
   `annotateProgram` → `lowerProgram` → emit, sharing the entire front-end + lowering
-  with `core_ir_main.mdk`), `../runtime/medaka_rt.c` (a malloc-and-leak `mdk_alloc`
-  + `mdk_print_int/bool/float`; GC deferred — `brew install bdw-gc` is the later
-  step). Gate: `test/diff_selfhost_llvm.sh` (emit → `clang <ll> medaka_rt.c` → run →
+  with `core_ir_main.mdk`), `../runtime/medaka_rt.c` (`mdk_alloc` → Boehm `GC_malloc`
+  since 2026-06-07, was malloc-and-leak; + `mdk_print_int/bool/float`). Gate:
+  `test/diff_selfhost_llvm.sh` (emit → `clang <ll> medaka_rt.c -lgc` → run →
   diff vs `dev/eval_probe.exe`) over 8 prelude-free scalar fixtures in
   `test/llvm_fixtures/` — **8/8 byte-identical**, including OCaml's trailing-dot
   float rendering (`14.`), `true`/`false`, negatives, and truncating `sdiv`/`srem`.
@@ -725,9 +725,10 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   access at runtime would need a name→offset map; the spike sidesteps this by reading
   the declaration at emit time. (h) tuple header is `hashName "$tuple"` — headerless
   tuples would save one word but break the uniform cell discipline used for tag-testing
-  in switches. (i) Ref cells use `@mdk_alloc` (malloc-and-leak) — **the first mutation
-  site in the spike**, the first place a GC write barrier would be needed; the real
-  runtime must add one on the `set_ref` store path.
+  in switches. (i) Ref cells use `@mdk_alloc` (Boehm `GC_malloc`) — **the first mutation
+  site in the spike**, the first place a GC write barrier would be needed; under Boehm
+  the plain store is safe, but a later precise/generational GC must add a barrier on
+  the `set_ref` store path.
 
 **2.4a-2 — Slice 5b (BUILT-IN LIST/TUPLE MATCH HEADS + RECURSIVE CLOSURES).** Three
   decision-tree/closure forms that previously panicked, all reusing the slice-3/4
@@ -874,7 +875,7 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   raw element count, NOT a constructor hash; elements at offsets 8*(i+1) via the
   slice-3 `storeFields`/`loadField` convention).  `loadTag` reads the raw count.
   `emitArrayAlloc` handles static-size (CArray) and `emitArrayDynAlloc` the dynamic
-  case (ranges and slices); both reuse `@mdk_alloc` (malloc-and-leak, no GC).
+  case (ranges and slices); both reuse `@mdk_alloc` (Boehm `GC_malloc`).
   **(r) BOUNDS CHECK** — `emitArrayIndex` emits two icmps (idx < 0 || idx ≥ len),
   OR'd to a single i1, and branches to an `@mdk_oob()` block (noreturn helper added
   to `runtime/medaka_rt.c`, call + unreachable) on OOB — matching `eval.mdk`'s
@@ -933,8 +934,10 @@ backend (Stage 2) — near-term sequence"):
    ctor-ordinal per type** (replaces the spike's i64 hash — `br_table`-ready, no
    collisions); uniform one-word header kept; `Float` boxed-first.
    [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md) §8.
-2. **Promote the spike to the real backend** — integrate a GC (Boehm to start; the
-   spike is malloc-and-leak), re-implement the native extern catalog (per-extern
+2. **Promote the spike to the real backend** — ~~integrate a GC (Boehm to start; the
+   spike is malloc-and-leak)~~ **GC DONE 2026-06-07** (`mdk_alloc` → Boehm `GC_malloc`,
+   conservative; verified collecting — ~3 MB RSS on a 2×10⁸-cons churn vs ~614 MB
+   leaking); re-implement the native extern catalog (per-extern
    disposition in RUNTIME-DESIGN), and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
