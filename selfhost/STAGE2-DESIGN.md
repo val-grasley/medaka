@@ -1029,7 +1029,11 @@ backend (Stage 2) — near-term sequence"):
    leaking); re-implement the native extern catalog (per-extern
    disposition in RUNTIME-DESIGN) — **catalog slice 1 DONE 2026-06-07** (Strings:
    rep locked UTF-8 + cached codepoint count; `mdk_str_lit`/`mdk_print_str`/
-   `mdk_int_to_string`; §2.4a-7) — and close the spike's out-of-scope gaps (arg-tag
+   `mdk_int_to_string`; §2.4a-7), **slices 2/3/4 DONE 2026-06-07** (numeric/IO/abort;
+   §2.4a-8–10), **slice 5 DONE 2026-06-07** (`stringLength` INTRINSIC: GEP to
+   `cp_count@16` + tag; `stringConcat` LEAF: `mdk_string_concat` walks built-in List
+   by low-bit, sums `byte_len`s, one alloc + blit via `mdk_str_lit`; 71/71 plain +
+   11/11 typed byte-identical) — and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
    (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);

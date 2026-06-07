@@ -172,3 +172,22 @@ void mdk_print_unit(void)       { printf("()\n"); }
 
 noreturn void mdk_panic(long long w) { mdk_fwrite_str(w, stderr, 1); exit(1); }
 noreturn void mdk_exit(long long tagged) { exit((int)(tagged >> 1)); }
+
+/* Concatenate a built-in List String (native extern catalog slice 5).
+   Nil = odd immediate (low bit 1, stop); Cons = even pointer to [tag | head@8 | tail@16].
+   head is a String cell (byte_len@8, bytes@24). Two passes: sum byte_lens, then blit;
+   mdk_str_lit recomputes cp_count correctly. Empty list (Nil) -> "" string cell. */
+long long mdk_string_concat(long long list) {
+  long long total = 0;
+  for (long long w = list; (w & 1) == 0; w = ((const long long *)w)[2])
+    total += ((const long long *)(((const long long *)w)[1]))[1];
+  char *buf = (char *)mdk_alloc(total + 1);
+  long long off = 0;
+  for (long long w = list; (w & 1) == 0; w = ((const long long *)w)[2]) {
+    long long s = ((const long long *)w)[1];
+    long long bl = ((const long long *)s)[1];
+    memcpy(buf + off, (const char *)s + 24, (size_t)bl);
+    off += bl;
+  }
+  return mdk_str_lit(buf, total);
+}
