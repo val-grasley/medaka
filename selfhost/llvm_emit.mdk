@@ -458,6 +458,10 @@ emitVar : Emit -> List (String, (String, LTy)) -> String -> <Mut> (String, LTy)
 emitVar e env x =
   if x == "True" then ("3", LTBool)
   else if x == "False" then ("1", LTBool)
+  else if x == "pi" then (boxFloat e "3.141592653589793", LTFloat)
+  else if x == "e" then (boxFloat e "2.718281828459045", LTFloat)
+  else if x == "intMaxBound" then ("9223372036854775807", LTInt)
+  else if x == "intMinBound" then ("-9223372036854775807", LTInt)
   else if isCtor e x then emitCtorAlloc e x []
   else if isKnownFn e x then emitEtaClosure e x
   else lookupVar env x
@@ -550,6 +554,37 @@ emitStrExtern e env "intToString" args = match emitArgs e env args
     (r, LTStr)
   _ => panic "llvm spike: intToString takes exactly one argument (slice 1)"
 emitStrExtern _ _ name _ = panic ("llvm spike: unsupported string extern " ++ name)
+
+-- numeric conversion externs (native extern catalog slice 2).
+-- intToFloat / floatToInt are INTRINSIC: inline sitofp / fptosi + box/untag.
+-- floatToString is a LEAF: delegates to mdk_float_to_string (mirrors mdk_print_float's
+-- %.12g+dot logic but returns a mdk_str_lit box instead of printf-ing).
+isNumExtern : String -> Bool
+isNumExtern name = containsStr name ["intToFloat", "floatToInt", "floatToString"]
+
+emitNumExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitNumExtern e env "intToFloat" args = match emitArgs e env args
+  [a] =>
+    let i = untagInt e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = sitofp i64 " ++ i ++ " to double")
+    (boxFloat e r, LTFloat)
+  _ => panic "llvm spike: intToFloat takes exactly one argument (slice 2)"
+emitNumExtern e env "floatToInt" args = match emitArgs e env args
+  [a] =>
+    let d = unboxFloat e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = fptosi double " ++ d ++ " to i64")
+    (tagInt e r, LTInt)
+  _ => panic "llvm spike: floatToInt takes exactly one argument (slice 2)"
+emitNumExtern e env "floatToString" args = match emitArgs e env args
+  [a] =>
+    let d = unboxFloat e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_float_to_string(double " ++ d ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: floatToString takes exactly one argument (slice 2)"
+emitNumExtern _ _ name _ = panic ("llvm spike: unsupported numeric extern " ++ name)
 
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
@@ -724,6 +759,7 @@ emitApp e env app =
       if fname == "Ref" then emitRefAlloc e env args
       else if fname == "set_ref" then emitSetRef e env args
       else if isStrExtern fname && hasArgs args then emitStrExtern e env fname args
+      else if isNumExtern fname && hasArgs args then emitNumExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -2602,6 +2638,7 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_str_lit(ptr, i64)"
   let _ = emit e "declare void @mdk_print_str(i64)"
   let _ = emit e "declare i64 @mdk_int_to_string(i64)"
+  let _ = emit e "declare i64 @mdk_float_to_string(double)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

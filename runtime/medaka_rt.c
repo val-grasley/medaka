@@ -144,3 +144,12 @@ long long mdk_int_to_string(long long tagged) {
   int len = snprintf(buf, sizeof buf, "%lld", n);
   return mdk_str_lit(buf, len);
 }
+
+long long mdk_float_to_string(double d) {
+  char buf[64];
+  snprintf(buf, sizeof buf, "%.12g", d);
+  if (!strchr(buf, '.') && !strchr(buf, 'e') &&
+      !strchr(buf, 'n') && !strchr(buf, 'i')) /* skip nan/inf */
+    strcat(buf, ".");
+  return mdk_str_lit(buf, (long long)strlen(buf));
+}

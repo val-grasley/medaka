@@ -1,0 +1,2 @@
+-- native extern catalog slice 2: e — INTRINSIC constant (nearest-double to e).
+main = e

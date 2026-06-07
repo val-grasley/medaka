@@ -1,0 +1,4 @@
+-- native extern catalog slice 2: intMaxBound — tagged immediate constant.
+-- Tagged word = 9223372036854775807 (i64 max); emitted as a literal string to
+-- avoid overflow in the self-host's own 63-bit Int (n*2+1 would overflow).
+main = intMaxBound

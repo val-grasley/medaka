@@ -953,6 +953,27 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   (slice 10) that gate the rest, and the separately-flagged non-mechanical ones
   (`→MEDAKA` sorts, RNG, `hash`→method).
 
+**2.4a-8 — Native extern catalog slice 2 (NUMERIC conversions + constants).**
+  Seven externs: three conversions (`intToFloat`, `floatToInt`, `floatToString`)
+  and four constants (`pi`, `e`, `intMaxBound`, `intMinBound`).  All mechanical
+  per the slice template.  **Spike-rep notes (extending (a)–(z)):** **(aa)
+  INTRINSIC CONVERSIONS** — `intToFloat` is `untagInt` + `sitofp i64 → double` +
+  `boxFloat`; `floatToInt` is `unboxFloat` + `fptosi double → i64` + `tagInt`
+  (truncates toward zero, matching OCaml `int_of_float`).  Both are intercepted in
+  `emitApp`'s `CVar` arm (new `isNumExtern`/`emitNumExtern` helpers beside the
+  existing `isStrExtern`/`emitStrExtern`).  **(bb) LEAF `floatToString`** — a new
+  C helper `mdk_float_to_string(double) -> long long` appended after
+  `mdk_int_to_string` in `runtime/medaka_rt.c`; it copies `mdk_print_float`'s
+  `%.12g` + trailing-dot logic EXACTLY but returns `mdk_str_lit(buf, strlen(buf))`
+  instead of printing — same bytes, GC-managed String cell.  Declared in
+  `emitPreamble` and intercepted in `emitNumExtern`.  **(cc) CONSTANTS** —
+  `pi`/`e` are intercepted in `emitVar` (like `True`/`False`) and box a decimal
+  double literal inline via `boxFloat`; `intMaxBound`/`intMinBound` emit the
+  already-tagged word as a literal string (`"9223372036854775807"` /
+  `"-9223372036854775807"`) to avoid overflow in the self-host's 63-bit Int
+  (`n*2+1` would silently wrap for these boundary values).  **58/58 plain + 9/9
+  typed fixtures byte-identical**; core_ir/eval gates unaffected.
+
 **Spike status after slice 9 — what's next.** The de-risking spike has now lowered
 the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
 ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in

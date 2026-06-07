@@ -441,7 +441,7 @@ locked rep yet, gating the char/unicode slices behind slice 8.
 
 | Slice | Externs | Disposition | Notes |
 |---|---|---|---|
-| 2 — numeric | `intToFloat` `floatToInt` `floatToString` `pi` `e` `intMinBound` `intMaxBound` | INTRINSIC + 1 LEAF | conversions are inline `sitofp`/`fptosi`; constants inline; `floatToString` is a C helper that mirrors `mdk_print_float`'s `%.12g`+dot logic, boxed via `mdk_str_lit`. No ADT, no Char. |
+| ✅ 2 — numeric | `intToFloat` `floatToInt` `floatToString` `pi` `e` `intMinBound` `intMaxBound` | INTRINSIC + 1 LEAF | **DONE 2026-06-07.** conversions are inline `sitofp`/`fptosi`; constants inline; `floatToString` is a C helper that mirrors `mdk_print_float`'s `%.12g`+dot logic, boxed via `mdk_str_lit`. No ADT, no Char. 58/58 plain + 9/9 typed fixtures byte-identical. |
 | 3 — IO output | `putStr` `putStrLn` `ePutStr` `ePutStrLn` | IO | add **`LTUnit`** to the emitter + `emitPrint LTUnit` → print `"()"` (matches `pp_value VUnit`; a `putStr`-`main` reduces to Unit, so the gate output is `…()`). C helpers `fwrite` to stdout/stderr. stderr is dropped by the gate's `2>/dev/null` — `ePutStr*` fixtures still prove compile+link+run. |
 | 4 — abort | `panic` `exit` | GC/CTRL | tiny C: `panic` = `fputs` String to stderr + `exit(1)` (`noreturn`); `exit` = `exit(n)`. Oracle also errors/exits → both stdouts empty (weak but valid gate). |
 | 5 — string leaf (non-ADT) | `stringLength` `stringConcat` | INTRINSIC + LEAF | `stringLength` reads the cached `cp_count` word (offset 16) and tags it; `stringConcat` walks a built-in `List String` **structurally** (low-bit test), sums `byte_len`s, one `mdk_alloc` + blit. |

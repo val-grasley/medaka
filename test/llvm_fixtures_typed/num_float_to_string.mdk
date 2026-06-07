@@ -1,0 +1,4 @@
+-- native extern catalog slice 2 (TYPED gate): floatToString via the typed
+-- elaboration path.  runtime.mdk provides the extern; main reduces to a String.
+import runtime.*
+main = floatToString (0.0 - 2.5)

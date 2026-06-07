@@ -1,0 +1,3 @@
+-- native extern catalog slice 2: floatToString — LEAF (mdk_float_to_string).
+-- Mirrors mdk_print_float's %.12g+trailing-dot logic but returns a String cell.
+main = floatToString 1.5

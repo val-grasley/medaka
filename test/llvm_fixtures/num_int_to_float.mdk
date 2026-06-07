@@ -1,0 +1,3 @@
+-- native extern catalog slice 2: intToFloat — INTRINSIC (sitofp).
+-- Untags the int word, converts to double, boxes as a Float cell.
+main = intToFloat 3

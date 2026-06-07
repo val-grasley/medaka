@@ -1,0 +1,2 @@
+-- native extern catalog slice 2: pi — INTRINSIC constant (nearest-double to pi).
+main = pi
