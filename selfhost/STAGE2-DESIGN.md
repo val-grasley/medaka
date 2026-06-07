@@ -54,12 +54,14 @@ lookup — it is still by-name.
 pipeline rewrites method/constrained-function occurrences into two nodes that
 carry a *resolved* dispatch decision:
 
-- `EMethodAt String (Ref Route)` ([`ast.mdk:141`](ast.mdk:141)) — a
-  return-position method occurrence, with a route the typechecker fills.
-- `EDictAt String (Ref (List Route))` ([`ast.mdk:146`](ast.mdk:146)) — a
+- `EMethodAt String (Ref Route) (Ref (List Route)) (Ref (List Route))`
+  ([`ast.mdk:182`](ast.mdk:182)) — a return-position method occurrence: the route
+  the typechecker fills, plus instance-`requires` and method-constraint dict routes.
+- `EDictAt String (Ref (List Route))` ([`ast.mdk:187`](ast.mdk:187)) — a
   constrained-function occurrence, one route per `=>` constraint.
-- `Route = RNone | RKey String | RDict String` ([`ast.mdk:34`](ast.mdk:34)):
-  `RKey` is a concrete impl head tag; `RDict` reads a named dict parameter at
+- `Route = RNone | RKey String (List Route) | RDict String | RDictFwd String`
+  ([`ast.mdk:38`](ast.mdk:38)): `RKey` is a concrete impl head tag (with nested
+  per-instance requires routes); `RDict`/`RDictFwd` read a named dict parameter at
   runtime.
 
 The routes are computed in `typecheck.mdk` (`elaborate`/`elaborateDict`
