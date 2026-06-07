@@ -378,6 +378,43 @@ let e_let_value_self_ref =
   assert_err (nonrec_value_let "x")
     "f = let x = x + 1 in x\n"
 
+(* ── Cross-module effect export (Phase 146) ─── *)
+
+let resolve_module_chain srcs =
+  let parse_src src =
+    Lexer.reset ();
+    Parser.program Lexer.token (Lexing.from_string src)
+  in
+  let rec go known = function
+    | [] -> (known, [])
+    | (id, src) :: rest ->
+      let prog = parse_src src in
+      let (exp, errs) = resolve_module known id prog in
+      let (all_exps, all_errs) = go (exp :: known) rest in
+      (all_exps, errs @ all_errs)
+  in
+  snd (go [] srcs)
+
+(* exported effect label is visible in importing module *)
+let v_effect_cross_module = fun () ->
+  let errs = resolve_module_chain [
+    ("effect_a", "export effect Fetch\n");
+    ("effect_b", "import effect_a\nf : Unit -> <Fetch> Unit\nf _ = ()\n");
+  ] in
+  if errs <> [] then
+    failwith (Printf.sprintf "Expected no errors, got: %s"
+      (String.concat "; " (List.map (fun (e, _) -> pp_error e) errs)))
+
+(* private effect not exported → UnknownEffect in importer *)
+let e_effect_cross_module_private = fun () ->
+  let errs = resolve_module_chain [
+    ("effect_a", "effect Fetch\n");
+    ("effect_b", "import effect_a\nf : Unit -> <Fetch> Unit\nf _ = ()\n");
+  ] in
+  if not (List.exists (fun (e, _) -> unknown_effect "Fetch" e) errs) then
+    failwith (Printf.sprintf "Expected UnknownEffect Fetch, got: %s"
+      (String.concat "; " (List.map (fun (e, _) -> pp_error e) errs)))
+
 (* ── Test runner ─────────────────────────────── *)
 
 let () =
@@ -486,5 +523,9 @@ let () =
         "record Person\n  name : String\nf p =\n  match p\n    Person { missing } => 0\n");
       test_case "err: field from other record" `Quick (assert_err (field_not_in "age" "Person")
         "record Person\n  name : String\nrecord Dog\n  age : Int\nf p =\n  match p\n    Person { age } => 0\n");
+    ];
+    "cross-module effect export (Phase 146)", [
+      test_case "exported effect visible in importer"     `Quick v_effect_cross_module;
+      test_case "private effect not visible in importer"  `Quick e_effect_cross_module_private;
     ];
   ]
