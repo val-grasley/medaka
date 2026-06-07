@@ -646,6 +646,7 @@ applyDicts env v (r :: rest) = applyDicts env (apply v (dictOfRoute env r)) rest
 
 -- apply an already-built list of VDict values directly (used to forward an impl's
 -- own requires into its body at a return-position RDictFwd site, Phase 83/84 #5).
+export
 applyValues : Value -> List Value -> <Mut> Value
 applyValues v [] = v
 applyValues v (x :: rest) = applyValues (apply v x) rest
@@ -666,6 +667,7 @@ dictOfRoute _ RNone = VDict "" []
 -- narrow a method VMulti by a route, returning the narrowed value and any
 -- forwarded requires (non-empty only for RDictFwd return-position sites where the
 -- enclosing dict carries nested element dicts for the selected impl, Phase 83/84 #5).
+export
 methodAtNarrow : EvalEnv -> Value -> Route -> <Mut> (Value, List Value)
 methodAtNarrow _ v RNone = (v, [])
 methodAtNarrow _ v (RKey key _) = (narrowMethod v key, [])

@@ -476,11 +476,21 @@ Concrete §2.3 items (surfaced by the §2.2 capstone harness,
   from `allDecls` before lowering via `eval.ctorFieldOrdersRef` (a global ref, set in
   `<Mut>` context — reads are pure so `lower : Expr -> CExpr` stays pure).
   Gate: `test/diff_selfhost_bytecode_selfproc.sh` §2.3 section — 3/3 typed VM passes.
-- **Dict-passing residuals** — prelude constrained functions (`when`/`unless`
-  and the higher-kinded `pure` at a constraint variable) plus nested/structured
-  dicts beyond the current flat `VDict String` tag (Phase 83/84 item #5 remains
-  out of scope for the bytecode VM's untyped path; confirmed harmless for the
-  RKey-only bootstrap source but required for arbitrary programs).
+- ✅ **DONE (2026-06-06) — Dict-passing corpus through typed bytecode VM** —
+  `eval_bytecode_typed_dict_main.mdk` (the `eval_dict_main.mdk`-analog for the
+  bytecode VM): desugar → `elaborateDict` (typecheck stamps routes + dict_pass
+  prepends leading dict params) → `lowerProgram` → `bcEvalOutput`. All 17
+  `test/eval_dict_fixtures/` pass byte-for-byte against the OCaml oracle. This
+  required fixing the Core IR lowering of `EMethodAt`: `lower (EMethodAt ...)` was
+  dropping `implRef` (instance-`requires` element dicts, Phase 83/84) and
+  `methodRef` (method-level constraint dicts, Phase 69.x-e). The fix extends
+  `CMethod String Route` → `CMethod String Route (List Route) (List Route)` (adding
+  `implRoutes`/`methRoutes`), updates lowering, `ceval`/`step` (which now mirror the
+  tree-walker's `methodAtNarrow + applyDicts(methRoutes) + applyDicts(implRoutes) +
+  applyValues(fwdReqs)` chain), sexp serializer/parser, `llvm_emit`'s ctag, and
+  exports `methodAtNarrow`/`applyValues` from `eval.mdk`.
+  Gate: `test/diff_selfhost_bytecode_eval_dict.sh` — **17/17**. Also: `diff_selfhost_eval_dict.sh`
+  still **17/17**, `diff_selfhost_bytecode_selfproc.sh` still **6/6**.
 - **Erased effect-polymorphism in Core IR** — a "frozen Core IR" should define
   how effect-polymorphic code is *represented* after erasure (Phase 146 erases
   effects at runtime; the Core IR carries no effect annotations today).

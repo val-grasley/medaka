@@ -79,9 +79,11 @@ public export data CExpr
   | CBlock (List CStmt)
   -- typeclass dispatch, dicts explicit (slice 5; Route read out of the AST's
   -- mutable cell at lowering time so the IR is immutable):
-  --   CMethod = a return-position method occurrence narrowed by its RKey/RDict.
+  --   CMethod = a return-position method occurrence narrowed by its RKey/RDict;
+  --             implRoutes applies per-instance requires dicts (Phase 83/84);
+  --             methRoutes applies method-level constraint dicts (Phase 69.x-e).
   --   CDict   = a constrained-function occurrence, one Route per `=>` constraint.
-  | CMethod String Route
+  | CMethod String Route (List Route) (List Route)
   | CDict String (List Route)
 
 -- a record field assignment `field = expr`

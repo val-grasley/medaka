@@ -53,7 +53,7 @@ lower (EHeadAnnot e _) = lower e
 -- structural + immutable in the IR (slice 5; present so the lowering is total).
 -- (instance-`requires` impl dicts — the second ref — are unsupported in the Core
 -- IR experiment; drop them, the core_ir fixtures carry no requires-impls)
-lower (EMethodAt name routeRef _ _) = CMethod name routeRef.value
+lower (EMethodAt name routeRef implRef methodRef) = CMethod name routeRef.value implRef.value methodRef.value
 lower (EDictAt name routesRef) = CDict name routesRef.value
 lower other = panic ("core_ir lower: unsupported node " ++ nodeTag other)
 

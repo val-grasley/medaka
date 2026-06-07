@@ -63,7 +63,7 @@ cexprSexp (CIndex a i) = node "CIndex" [cexprSexp a, cexprSexp i]
 cexprSexp (CSlice a lo hi incl) =
   node "CSlice" [cexprSexp a, cexprSexp lo, cexprSexp hi, boolStr incl]
 cexprSexp (CBlock stmts) = node "CBlock" (map cstmtSexp stmts)
-cexprSexp (CMethod name route) = node "CMethod" [escStr name, routeSexp route]
+cexprSexp (CMethod name route implRoutes methRoutes) = node "CMethod" [escStr name, routeSexp route, slist (map routeSexp implRoutes), slist (map routeSexp methRoutes)]
 cexprSexp (CDict name routes) = node "CDict" [escStr name, slist (map routeSexp routes)]
 
 -- ── CField ────────────────────────────────────────────────────────────────────
