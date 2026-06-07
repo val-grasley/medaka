@@ -454,6 +454,26 @@ constraints are already design inputs to the shared layers).
   `claude/suspicious-sammet-21d73e` (commit `860ba12`). Skill:
   **add-language-feature** (cross-cutting).
 
+- **Phase 148 (proposed) — diagnose duplicate / non-contiguous top-level bindings.**
+  Two same-named top-level bindings separated by other declarations are silently
+  **coalesced into one multi-clause function** instead of being flagged. Symptoms,
+  verified on the binary:
+  - conflicting type sigs → a confusing `Type mismatch` reported at the *first*
+    binding's body, with NO mention that a duplicate exists elsewhere (this cost a
+    real debugging loop while adding `cellTag`'s helpers — an accidental second
+    `indexOfStr` 600 lines from the original surfaced only as "Option Int vs Int");
+  - matching sigs → silently accepted, the later definition becoming **dead clauses**
+    with no warning.
+  The resolver already detects `Duplicate constructor: Bar`, so duplicate-detection
+  exists for the *constructor* namespace but not for value/function bindings, and
+  there is no "equations must be contiguous" check (Haskell errors *Multiple
+  declarations of foo* here). Fix: in `resolve` (+ selfhost `resolve.mdk` mirror),
+  treat a same-named top-level binding separated from its earlier clauses by an
+  intervening declaration as an error (`DuplicateBinding` / "clauses of `foo` must be
+  contiguous"); adjacent multi-clause stays valid. Lands in resolve + diagnostics,
+  not the typechecker — a missing diagnostic, not a unification change. Low blast
+  radius; high debuggability win. Skill: **add-language-feature** (resolve-rooted).
+
 - ~~**Phase 83 / 84 #5 — recursive/nested instance dictionaries**~~ **DONE
   (reference + selfhost mirror, 2026-06-05).** Structured/recursive runtime dicts
   (`VDict`/`VDictHead` + `RKey` routes) replaced the flat impl-key strings;
