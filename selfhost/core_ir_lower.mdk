@@ -185,19 +185,39 @@ litBranch guards rows l = CTBranch (HLit l) (compileTree guards (specializeLit l
 -- map a canonical constructor name + arity to the runtime head the evaluator
 -- tests with (the synthetic list/tuple/unit names canonPat introduced map back
 -- to their real Value shapes; everything else is a plain named constructor).
+-- The built-in forms key off RESERVED synthetic names (`__cons__`/`__nil__`/
+-- `__unit__`/`__tuple__`, all un-writable as user ctors) — NOT the user-facing
+-- `Cons`/`Nil`/`Unit`. A user `data T = Cons … | Nil` therefore lowers its
+-- ctors to `HCon "Cons"`/`HCon "Nil"` (→ VCon shapes), not the built-in list
+-- heads; aliasing the two was a silent ceval miscompile (decodeHead bug).
 decodeHead : String -> Int -> CHead
-decodeHead "Cons" _ = HCons
-decodeHead "Nil" _ = HNil
-decodeHead "Unit" _ = HUnit
+decodeHead "__cons__" _ = HCons
+decodeHead "__nil__" _ = HNil
+decodeHead "__unit__" _ = HUnit
 decodeHead "__tuple__" a = HTuple a
 decodeHead c a = HCon c a
 
 -- ── canonical patterns for the matrix (mirror exhaust.mdk's desugarPat) ─────
--- Var → wildcard; lists → Cons/Nil chains; tuples → a synthetic constructor;
--- Bool/Unit literals → nullary constructors — so specialization is uniform.
--- Only tree-able patterns reach here (PRng/PRec are gated out upstream).
+-- Var → wildcard; lists → reserved __cons__/__nil__ chains; tuples → __tuple__;
+-- Unit literal → reserved __unit__; Bool literals → True/False nullary ctors —
+-- so specialization is uniform. The list/unit forms use RESERVED synthetic names
+-- (not the user-facing `Cons`/`Nil`/`Unit`) so a user ctor of the same name can't
+-- alias the built-in head. Only tree-able patterns reach here (PRng/PRec gated).
 tupleName : String
 tupleName = "__tuple__"
+
+-- reserved synthetic head names for the built-in list/unit forms. Like
+-- `tupleName`, these are un-writable as user constructors (lower-case + leading
+-- `__`), so a user ctor literally named `Cons`/`Nil`/`Unit` keeps its own name
+-- through the matrix and lowers to `HCon`, never the built-in list/unit heads.
+consName : String
+consName = "__cons__"
+
+nilName : String
+nilName = "__nil__"
+
+unitName : String
+unitName = "__unit__"
 
 -- exported for the LLVM backend (slice 7): impl-method clauses are canonicalised
 -- into the matrix form before `compileTree` (same as `initialRows` does for match
@@ -208,13 +228,13 @@ canonPat (PVar _) = PWild
 canonPat PWild = PWild
 canonPat (PLit (LBool True)) = PCon "True" []
 canonPat (PLit (LBool False)) = PCon "False" []
-canonPat (PLit LUnit) = PCon "Unit" []
+canonPat (PLit LUnit) = PCon unitName []
 canonPat (PLit l) = PLit l
 canonPat (PTuple ps) = PCon tupleName (map canonPat ps)
 canonPat (PCon c args) = PCon c (map canonPat args)
-canonPat (PCons h t) = PCon "Cons" [canonPat h, canonPat t]
-canonPat (PList []) = PCon "Nil" []
-canonPat (PList (h::r)) = PCon "Cons" [canonPat h, canonPat (PList r)]
+canonPat (PCons h t) = PCon consName [canonPat h, canonPat t]
+canonPat (PList []) = PCon nilName []
+canonPat (PList (h::r)) = PCon consName [canonPat h, canonPat (PList r)]
 canonPat (PAs _ p) = canonPat p
 canonPat (PRng _ _ _) = PWild
 canonPat (PRec _ _ _) = PWild

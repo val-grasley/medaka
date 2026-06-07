@@ -58,7 +58,7 @@ state changes.
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
 | **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 — **full non-GC Core IR surface covered** (43/43 gate); §2.0 closed; **value rep RATIFIED (2026-06-07** — Option A tagged word under §8.6 contract, dense i32 ctor-ordinal, uniform header**)**; next = real backend (GC + extern catalog + ordinal tags) → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
-| **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred), Core IR `decodeHead` reserved-name bug (promoted to real-backend-blocking by the rep ratification) |
+| **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
 | **CLI surface (Phase 82)** | **this file** → [CLI surface](#cli-surface-phase-82-continued) | 🟡 gaps | `medaka build` (needs design), `doc` multi-module, `--json` multi-file |
 
@@ -364,8 +364,8 @@ arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
    adopted *under §8.6's shared abstract value contract* so semantics are
    WasmGC-compatible by construction. Constructor tag = **dense i32 ctor-ordinal per
    type** (not the spike's i64 hash — `br_table`-ready, kills the hash-collision
-   miscompile class; the separate `decodeHead` reserved-name aliasing bug is a
-   distinct resolve-level fix); **uniform
+   miscompile class; the separate `decodeHead` reserved-name aliasing bug is now
+   fixed — see Compiler / language); **uniform
    one-word heap header** kept; `Float` boxed-first; scalars not self-describing
    (compile-time `Debug`). Record: [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md)
    §8 status banner + §8.4. This unblocks item 2.
@@ -374,10 +374,10 @@ arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
    decision-dense ones deferred by design: a **GC** (Boehm to start — the spike is
    malloc-and-leak), the **native extern catalog** re-implementation (per-extern
    disposition in RUNTIME-DESIGN), the **dense i32 ctor-ordinal** tag emission (the
-   ratified scheme, replacing the spike's hash), the **`decodeHead` `CHead`-discriminator
-   fix** (the ordinal scheme removes the spike's accidental immunity — see Compiler /
-   language), and the spike's out-of-scope gaps
-   (arg-tag dispatch on non-ADT/Int args, nested-requires dicts). Gate: native
+   ratified scheme, replacing the spike's hash), and the spike's out-of-scope gaps
+   (arg-tag dispatch on non-ADT/Int args, nested-requires dicts). The `decodeHead`
+   reserved-name aliasing bug — a lift here until the ordinal scheme exposed it — is
+   now fixed ahead of this work (see Compiler / language). Gate: native
    stdout vs the tree-walker **and** the bytecode VM (the second, single-steppable
    oracle). Skill: none specific (lands in `selfhost/llvm_emit*.mdk` + `runtime/`).
 3. **Bootstrap closure** — self-hosted compiler + LLVM backend compiles itself to a
@@ -452,30 +452,34 @@ constraints are already design inputs to the shared layers).
   `def : List (List Int)` → `[[0]]` etc. on both loader paths. Closing this also
   lifted the Phase 101b nesting limit. Write-up moved to PLAN-ARCHIVE.md (§"Phase
   83/84 residual #5"). No Phase 83/84 dispatch residuals remain.
-- **Core IR: reserved-name collision in `decodeHead`. PROMOTED to real-backend-blocking
-  by the 2026-06-07 rep ratification (was latent, ceval-only).**
-  `core_ir_lower.decodeHead` keys the built-in list/tuple/unit heads by NAME
-  (`"Cons"` → `HCons`, `"Nil"` → `HNil`, `"Unit"` → `HUnit`, `"__tuple__"` →
-  `HTuple`), so a **user constructor literally named `Cons`/`Nil`/`Unit`** lowers
-  to the built-in head. `check` accepts it and the AST tree-walker runs it correctly
-  (`data T = Cons Int T | Nil; len …` → right answer), but the **Core IR `ceval`
-  path diverges**: `ceval` panics `no matching clause in match`
-  (`core_ir_eval.mdk:144`, verified 2026-06-06) because it routes `HCons`/`HNil` to
-  the built-in `VList` shape while the value is a user `VCon "Cons"`. The **LLVM
-  spike does NOT inherit this** (since slice 5b): `conHeadInfo` maps `HCons`/`HNil`/
-  `HTuple` to `hashName "Cons"/"Nil"/"$tuple"`, the SAME tag the constructor alloc
-  site stamps, so construction and match agree by construction — the `list_sum`/
-  `list_filter` fixtures use `data … = Cons … | Nil` deliberately and pass the gate.
-  **Why the ratification changes the stakes:** that spike immunity is a property of
-  the **i64-hash** tag scheme. The ratified **dense i32 ctor-ordinal per type** breaks
-  it — a user `Cons` in type `T` carries `T`'s ordinal while `decodeHead` still routes
-  its match to the built-in `HCons` (a different ordinal), so construction/match no
-  longer agree by construction. So the real backend **will** surface this; fix it as
-  part of real-backend lowering. Fix options: **(a) carry a discriminator on `CHead`
-  so built-in vs user heads can't alias by name** (the ordinal-clean fix — preferred),
-  or (b) reject/namespace the reserved ctor names in resolve. Low real-world incidence
-  (who names a ctor `Cons`?), but it's a silent-miscompile class — `adt_list_fold.mdk`
-  sidesteps it with `Node`/`Empty` to keep that fixture ceval-clean.
+- ✅ **Core IR: reserved-name collision in `decodeHead`. DONE (2026-06-07).**
+  `core_ir_lower.decodeHead` keyed the built-in list/tuple/unit heads by the
+  user-facing NAMES (`"Cons"` → `HCons`, `"Nil"` → `HNil`, `"Unit"` → `HUnit`),
+  so a user constructor literally named `Cons`/`Nil`/`Unit` aliased the built-in
+  head. `check` accepted it and the AST tree-walker ran it correctly, but `ceval`
+  panicked `no matching clause in match` (`core_ir_eval.mdk:151`) — `HCons`/`HNil`
+  route `headExtract` to the built-in `VList` shape while the value is a user
+  `VCon "Cons"`. The 2026-06-07 rep ratification promoted this from latent
+  (ceval-only) to real-backend-blocking: the spike's i64-hash immunity (both
+  user-`Cons` and built-in list hash to `"Cons"`) does NOT survive the ratified
+  dense i32 ctor-ordinal, under which a user `Cons` carries its type's ordinal
+  while a name-keyed match still routes to the built-in head.
+  **Fix path selected (research):** the two pattern forms — built-in `PCons`/
+  `PList` vs a user `PCon "Cons"` — are distinct *forms* only up to `canonPat`,
+  which collapsed both onto the bare name `"Cons"`; past that point only the name
+  reaches `decodeHead`. So neither prompt option was needed — instead `canonPat`
+  now lowers the built-in forms to **reserved synthetic head names** (`__cons__`/
+  `__nil__`/`__unit__`, un-writable as user ctors, mirroring the existing
+  `__tuple__`), and `decodeHead` keys those. A genuine user ctor keeps its own
+  name and lowers to `HCon "Cons"`. This is the lowest-blast-radius fix: **no
+  `CHead` shape change**, so no serializer / sexp / consumer churn. The whole
+  matrix machinery (colHeads/specializeCon) is pure string-equality and internal
+  to `compileTree`; serialized Core IR for genuine built-in lists is byte-identical,
+  and `conHeadInfo` maps `HCons` and `HCon "Cons"` to the same `hashName "Cons"`
+  tag so the LLVM spike stays green. Regression guard: `test/eval_fixtures/
+  adt_user_cons_nil.mdk` (byte-identical across tree-walker, ceval, bytecode VM,
+  and the LLVM spike); `test/llvm_fixtures/adt_list_fold.mdk` was unwound from its
+  `Node`/`Empty` workaround back to `Cons`/`Nil`.
 
 ### CLI surface (Phase 82, continued)
 

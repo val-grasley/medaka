@@ -1,8 +1,10 @@
--- slice 5b: built-in list match heads exercised through TWO recursive functions
--- that both construct AND match list cells.  `filterBig` rebuilds a Cons/Nil list
--- keeping only elements > 2 (constructor allocation inside a recursive call), and
--- `sum` folds it to a scalar.  Together they drive the HCons/HNil switch heads on
--- both the producer and consumer side.
+-- slice 5b: user-constructor list match heads exercised through TWO recursive
+-- functions that both construct AND match list cells.  `filterBig` rebuilds a
+-- Cons/Nil list keeping only elements > 2 (constructor allocation inside a
+-- recursive call), and `sum` folds it to a scalar.  Since the decodeHead
+-- reserved-name fix the user Cons/Nil lower to `HCon "Cons"`/`HCon "Nil"`;
+-- conHeadInfo still yields hashName "Cons"/"Nil" (arities 2/0), the same tags the
+-- alloc site stamps, so producer and consumer agree on both sides.
 data IntList = Cons Int IntList | Nil
 
 filterBig lst = match lst

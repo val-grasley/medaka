@@ -1,16 +1,20 @@
 -- slice 3: a recursive ADT with a simple recursive fold.  Exercises nested
--- constructor allocation (Node over Node …), a single-clause function whose body
+-- constructor allocation (Cons over Cons …), a single-clause function whose body
 -- is a decision tree over the recursive type, an Int field bound by pattern
 -- deconstruction and used in arithmetic, and a (non-tail) recursive call.
 --
--- The constructors are NODE/EMPTY rather than Cons/Nil deliberately: the lowering
--- (core_ir_lower.decodeHead) reserves the names `Cons`/`Nil`/`Unit`/`__tuple__`
--- for the built-in list/tuple/unit heads, so a user constructor named `Cons`
--- would lower to the list `HCons` head (out of this slice's scope).
-data IntList = Node Int IntList | Empty
+-- REGRESSION GUARD (decodeHead reserved-name fix): the constructors are named
+-- `Cons`/`Nil` — the user-facing names the built-in list syntax canonicalises to.
+-- Before the fix, decodeHead keyed the built-in list heads by those names, so a
+-- user ctor named `Cons` aliased the built-in `HCons` head; this fixture
+-- deliberately used `Node`/`Empty` to dodge that.  The fix reserves synthetic
+-- head names (`__cons__`/`__nil__`) for the built-in forms, so user `Cons`/`Nil`
+-- now lower to `HCon "Cons"`/`HCon "Nil"` — the SAME hashName tag the LLVM alloc
+-- site stamps, so construct/match still agree.  Tests Cons/Nil round-trip.
+data IntList = Cons Int IntList | Nil
 
 sum lst = match lst
-  Node x xs => x + sum xs
-  Empty => 0
+  Cons x xs => x + sum xs
+  Nil => 0
 
-main = sum (Node 1 (Node 2 (Node 3 Empty)))
+main = sum (Cons 1 (Cons 2 (Cons 3 Nil)))

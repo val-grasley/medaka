@@ -1,9 +1,10 @@
--- slice 5b: built-in list match heads.  A `data … = Cons … | Nil` ADT whose
--- constructors are named Cons/Nil — so the decision-tree lowering (decodeHead)
--- maps the match arms to the built-in HCons/HNil switch heads (not HCon).  The
--- emitter must treat those as constructor tests against hashName "Cons"/"Nil"
--- (arities 2/0), the same tags Cons/Nil construction stamps.  Exercises nested
--- cons allocation and a recursive fold to a scalar Int.
+-- slice 5b: user-constructor list match heads.  A `data … = Cons … | Nil` ADT
+-- whose constructors are named Cons/Nil.  Since the decodeHead reserved-name fix
+-- these lower to `HCon "Cons"`/`HCon "Nil"` (NOT the built-in HCons/HNil, which
+-- now key off reserved synthetic names).  conHeadInfo maps both forms to the
+-- SAME (name, arity) — hashName "Cons"/"Nil", arities 2/0 — the same tags Cons/Nil
+-- construction stamps, so construct/match agree and the LLVM gate is unchanged.
+-- Exercises nested cons allocation and a recursive fold to a scalar Int.
 data IntList = Cons Int IntList | Nil
 
 sum lst = match lst

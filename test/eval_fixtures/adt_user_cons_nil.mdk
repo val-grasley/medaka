@@ -1,0 +1,22 @@
+-- REGRESSION GUARD: user constructors literally named `Cons`/`Nil` (the names
+-- the built-in list syntax canonicalises to).  BEFORE the decodeHead reserved-
+-- name fix this PANICKED ceval ("no matching clause in match"): decodeHead keyed
+-- the built-in list heads by the user-facing names, so `data T = Cons … | Nil`
+-- lowered its arms to the built-in HCons/HNil heads, whose headExtract probes a
+-- VList shape against the actual VCon "Cons"/"Nil" value and falls through to
+-- CTFail.  The AST tree-walker ran it correctly the whole time, so this fixture
+-- is byte-identical across the tree-walker, ceval, the bytecode VM, and the LLVM
+-- spike only once the built-in heads key off RESERVED synthetic names instead.
+data T = Cons Int T | Nil
+
+sumT lst = match lst
+  Cons x xs => x + sumT xs
+  Nil => 0
+
+lenT lst = match lst
+  Cons _ xs => 1 + lenT xs
+  Nil => 0
+
+main =
+  let xs = Cons 10 (Cons 20 (Cons 30 Nil))
+  (sumT xs, lenT xs, sumT Nil)

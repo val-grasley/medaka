@@ -54,7 +54,9 @@ FIXDIR="$ROOT/test/eval_fixtures"
 SLICE1="adt_nested letrec_mutual list_ops string_kernel"
 
 # slice 2 — match expressions: CMatch (ordered arms) + CDecision (decision trees)
-SLICE2="patterns_misc range_pat_tree"
+# adt_user_cons_nil: user ctors named Cons/Nil — regression guard for the
+# decodeHead reserved-name fix (must not alias the built-in list heads).
+SLICE2="patterns_misc range_pat_tree adt_user_cons_nil"
 
 # slice 3 — arrays, records, refs, ranges, index/slice
 # (rec_pat_tree and string_ranges_infix also need slice 2 — promoted together)
