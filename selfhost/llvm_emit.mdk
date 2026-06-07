@@ -79,7 +79,7 @@
 --     are now treated as constructor tests: `conHeadInfo` maps HCon/HCons/HNil/
 --     HTuple to a (name, arity) pair — HCons → ("Cons", 2), HNil → ("Nil", 0),
 --     HTuple n → ("$tuple", n) — so emitSwitch/emitConChain compare the loaded tag
---     against `hashName name`, the SAME tag the constructor/tuple alloc site stamps
+--     against `cellTag e name`, the SAME tag the constructor/tuple alloc site stamps
 --     (so construction and match agree by construction).  `bindPattern` gains
 --     `PCons h t` (a 2-field [head, tail] extraction) and `PList []` (binds nothing).
 --     A recursive function-`let` (`let f p… = … in e2` → CLet True (PVar f) (CLam …))
@@ -823,11 +823,11 @@ emitTagMatch : Emit -> String -> List String -> <Mut> String
 emitTagMatch _ _ [] = panic "llvm spike: impl type owns no constructors (slice 7)"
 emitTagMatch e tagReg [c] =
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (hashName c))
+  let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (cellTag e c))
   r
 emitTagMatch e tagReg (c::rest) =
   let r = freshReg e
-  let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (hashName c))
+  let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (cellTag e c))
   let rrest = emitTagMatch e tagReg rest
   let o = freshReg e
   let _ = emit e ("  " ++ o ++ " = or i1 " ++ r ++ ", " ++ rrest)
@@ -1077,9 +1077,10 @@ clauseArity [] = 0
 -- (the type-erased subset; every slice-4 fixture's lambda is Int-typed) — a
 -- documented scope limit, like the saturated-only call rule above.
 
--- the fixed closure-cell header tag (distinct from any constructor's hashed name
--- only by intent — closures never flow into a constructor `match`, so the tag is
--- never compared; it just fills the §8.5 header word).
+-- the fixed closure-cell header tag.  A "$"-prefixed sentinel, so `cellTag` keeps
+-- it on `hashName` rather than a ctor ordinal — closures never flow into a
+-- constructor `match`, so the tag is never compared; it just fills the §8.5
+-- header word.
 closureHeaderName : String
 closureHeaderName = "$closure"
 
@@ -1323,15 +1324,17 @@ patVarNames ps = patVarsList ps
 -- VALUE REPRESENTATION (RUNTIME-DESIGN.md §8.4 "Option A", extended from the
 -- slice-1 Float box): an ADT value is a BOXED heap cell with a one-word header.
 --   cell layout (8-byte words):  [ 0: i64 tag ] [ 8: field0 ] [ 16: field1 ] …
--- the tag is the constructor name string-HASHED to an i64 (computed identically
--- at the alloc site and at every switch test, so the two always agree); the word
+-- the tag is the constructor's COMPOSITE (typeId, ordinal) — see `cellTag` (computed
+-- identically at the alloc site and at every switch test, so the two always agree); the word
 -- carried in registers is the cell pointer (`ptrtoint`, low bit 0 — disjoint from
 -- the immediate-int low-bit-1 encoding, exactly as the Float box is).  Allocation
 -- reuses the slice-1 `@mdk_alloc` (malloc-and-leak; no GC this slice).
 
--- a constructor's tag: a deterministic string hash of its name (djb2).  Computed
--- in the EMITTER (the .ll carries the decimal constant), so the stored tag and
--- the switch's compared tag are the SAME value by construction — no runtime hash.
+-- hashName: a deterministic djb2 string hash, computed in the EMITTER (the .ll
+-- carries the decimal constant).  STILL used for the NON-ctor sentinel headers
+-- ("$tuple"/"$ref"/"$closure") and the dict witness words (RKey impl-head keys) —
+-- those are not constructor tags and never share an icmp with a ctor cell tag, so
+-- a hash is fine there.  Constructor cell tags use `cellTag` (ordinals) instead.
 hashName : String -> Int
 hashName s = hashChars (stringToChars s) 0 5381
 
@@ -1339,6 +1342,79 @@ hashChars : Array Char -> Int -> Int -> Int
 hashChars cs i acc
   | i >= arrayLength cs = acc
   | otherwise = hashChars cs (i + 1) (acc * 33 + charCode (arrayGetUnsafe i cs))
+
+-- ── constructor tag = dense per-type ordinal (RUNTIME-DESIGN §8.4, ratified ──────
+--    2026-06-07; supersedes the spike's i64 string-hash for CONSTRUCTOR tags).
+-- A constructor C of type T is tagged with its 0-based index in T's
+-- declaration-ordered constructor list (the ratified value — `br_table`-ready and
+-- collision-free).  But the spike's ARG-TAG dispatch (emitTagMatch) discriminates a
+-- value's TYPE by loading its cell tag and OR-ing it against a candidate type's
+-- ctor tags — and per-type ordinals COLLIDE across types (every type has an
+-- ordinal-0 ctor), so a bare ordinal cannot identify the type.  The one-word header
+-- therefore carries a COMPOSITE: a dense per-type id in the high 32 bits and the
+-- ratified per-type ctor ordinal in the low 32 bits.
+--   • match-head test (within ONE statically-known type) and `br_table` use the low
+--     half — `tag & 0xffffffff` is the dense 0-based ordinal.
+--   • the spike's arg-tag dispatch uses the FULL composite, which is globally unique
+--     (distinct type ⇒ distinct high half), so cross-type discrimination is exact.
+-- The high half is spike scaffolding for that runtime dispatch; the real backend
+-- resolves such call sites statically / by dictionary and keeps only the low-half
+-- ordinal.  hashName is gone from every constructor tag — collisions are impossible.
+-- 2^32, the type-id shift.  (Int is 63-bit; type-id × 2^32 + ordinal stays well
+-- under 2^62 for any real program.)
+ctorTagShift : Int
+ctorTagShift = 4294967296
+
+-- the cell-header tag a NAME stamps / is tested against.  Sentinel headers
+-- ("$tuple"/"$ref"/"$closure") keep their hash; every constructor (incl. the
+-- built-in list Cons/Nil and a user ctor that owns those names) gets the composite
+-- (typeId, ordinal).  Alloc and every tag test route through THIS one function, so
+-- the stored tag and the compared tag are identical by construction.
+cellTag : Emit -> String -> <Mut> Int
+cellTag e name =
+  if containsStr name ["$tuple", "$ref", "$closure"] then hashName name
+  else ctorTypeId e name * ctorTagShift + ctorOrdinal e name
+
+-- the 0-based index of constructor `name` in its type's declaration-ordered ctor
+-- list.  The built-in list Cons/Nil are not user-declared (absent from the
+-- ctor→type table) → reserved ordinals 0/1 of the synthetic list type.
+ctorOrdinal : Emit -> String -> <Mut> Int
+ctorOrdinal e name = match lookupAssoc name (ctorTypeTable e)
+  Some ty => orZero (indexOfStr name (ctorsOfType e ty))
+  None => if name == "Nil" then 1 else 0
+
+-- the dense per-type id of the type that owns constructor `name`: its index among
+-- the program's distinct type names (declaration order).  The built-in list (and
+-- any name not in the ctor→type table) gets a reserved id one past the user types,
+-- so its composite tags can never collide with a user type's.
+ctorTypeId : Emit -> String -> <Mut> Int
+ctorTypeId e name = match lookupAssoc name (ctorTypeTable e)
+  Some ty => orZero (indexOfStr ty (distinctTypeNames e))
+  None => lengthS (distinctTypeNames e)
+
+-- the distinct type names of the program, in declaration order (the ctor→type
+-- table lists each type's ctors consecutively, so dedup-preserving-order gives the
+-- type declaration order).
+distinctTypeNames : Emit -> <Mut> List String
+distinctTypeNames e = nubStr (typeNamesOf (ctorTypeTable e))
+
+typeNamesOf : List (String, String) -> List String
+typeNamesOf [] = []
+typeNamesOf ((_, t)::rest) = t :: typeNamesOf rest
+
+orZero : Option Int -> Int
+orZero (Some i) = i
+orZero None = 0
+
+-- dedup a list of strings, preserving first-occurrence order.
+nubStr : List String -> List String
+nubStr xs = nubStrAcc xs []
+
+nubStrAcc : List String -> List String -> List String
+nubStrAcc [] _ = []
+nubStrAcc (x::xs) seen =
+  if containsStr x seen then nubStrAcc xs seen
+  else x :: nubStrAcc xs (x :: seen)
 
 -- allocate a constructor cell {tag, field…}; the field words are already emitted.
 -- A nullary constructor is a one-word cell (just the tag).  Result is the cell
@@ -1348,7 +1424,7 @@ emitCtorAlloc e name fields =
   let arity = lengthS fields
   let p = freshReg e
   let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (arity + 1)) ++ ")")
-  let _ = emit e ("  store i64 " ++ intToString (hashName name) ++ ", ptr " ++ p)
+  let _ = emit e ("  store i64 " ++ intToString (cellTag e name) ++ ", ptr " ++ p)
   let _ = storeFields e p fields 0
   let w = freshReg e
   let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
@@ -1477,8 +1553,8 @@ bindFields e env (p::rest) v body i =
 -- constructors HCon, built-in list HCons/HNil, and tuples HTuple) test a loaded
 -- tag word; int literals test the immediate directly.  A homogeneous switch (the
 -- matrix is either all-constructor-like or all-literal in a column), so the first
--- branch's head selects the test kind.  HCons/HNil/HTuple map to the same hashed
--- tag the alloc site stamps (hashName "Cons"/"Nil"/"$tuple"), so a constructor
+-- branch's head selects the test kind.  HCons/HNil/HTuple map to the same tag the
+-- alloc site stamps (`cellTag` of "Cons"/"Nil"/"$tuple"), so a constructor
 -- test reaches them with no special case beyond the name/arity (see conHeadInfo).
 emitSwitch : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
 emitSwitch e env root arms occs branches dft slot endL rty = match occs
@@ -1506,8 +1582,9 @@ conHeadInfo (HTuple n) = Some ("$tuple", n)
 conHeadInfo _ = None
 
 -- the constructor-switch test chain: compare the loaded tag against each branch's
--- hashed name; on a match, descend with the matched cell's fields as the new
--- leading columns; on exhausting the branches, take the default (focus dropped).
+-- composite (type, ctor) tag (`cellTag`); on a match, descend with the matched
+-- cell's fields as the new leading columns; on exhausting the branches, take the
+-- default (focus dropped).
 emitConChain : Emit -> List (String, (String, LTy)) -> String -> List CArm -> String -> List String -> String -> List CTBranch -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
 emitConChain e env root arms _ rest _ [] dft slot endL rty =
   emitTree e env root arms rest slot endL rty dft
@@ -1515,7 +1592,7 @@ emitConChain e env root arms foc rest tagReg ((CTBranch h sub)::more) dft slot e
   match conHeadInfo h
     Some (c, a) =>
       let cmp = freshReg e
-      let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (hashName c))
+      let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (cellTag e c))
       let n = intToString (freshId e)
       let yes = "conyes" ++ n
       let next = "connext" ++ n
@@ -2245,12 +2322,16 @@ emitArraySlice e env a lo hi incl =
 
 -- ── lists (slice 9) ─────────────────────────────────────────────────────────
 -- VALUE REPRESENTATION: a list is a chain of boxed Cons cells (matching the
--- slice-5b match heads HCons/HNil which already test hashName "Cons"/"Nil").
--- Cell layouts (8-byte words):
---   Nil  → [ i64 hashName("Nil") ]                    (1-word cell, no fields)
---   Cons → [ i64 hashName("Cons") | i64 head | i64 tail ]  (3-word cell)
+-- slice-5b match heads HCons/HNil, which test `cellTag` of "Cons"/"Nil").
+-- The built-in list is not user-declared, so "Cons"/"Nil" are absent from the
+-- ctor→type table and `cellTag` gives them the reserved list-type id with ordinals
+-- 0 (Cons) and 1 (Nil) — UNLESS a user `data` owns those names, in which case both
+-- the list literal and the user ctor resolve to that type's ordinal (they alias,
+-- exactly as they did under the old hash).  Cell layouts (8-byte words):
+--   Nil  → [ i64 cellTag "Nil" ]                       (1-word cell, no fields)
+--   Cons → [ i64 cellTag "Cons" | i64 head | i64 tail ]   (3-word cell)
 -- Construction uses emitCtorAlloc "Nil" [] / emitCtorAlloc "Cons" [hw, tw]
--- verbatim — the SAME hashed tag the slice-5b switch tests, so construction
+-- verbatim — the SAME tag the slice-5b switch tests, so construction
 -- and match agree by construction.
 --
 -- SPIKE-REP NOTES (slice 9; extending (a)–(t)):

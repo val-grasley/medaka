@@ -56,7 +56,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 — **full non-GC Core IR surface covered** (43/43 gate); §2.0 closed; **value rep RATIFIED (2026-06-07** — Option A tagged word under §8.6 contract, dense i32 ctor-ordinal, uniform header**)**; next = real backend (GC + extern catalog + ordinal tags) → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 — **full non-GC Core IR surface covered** (43/43 gate); §2.0 closed; **value rep RATIFIED (2026-06-07** — Option A tagged word under §8.6 contract, dense i32 ctor-ordinal, uniform header**)**; **ordinal tags now emitted by the spike (2026-06-07)**; next = real backend (GC + extern catalog) → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -373,9 +373,17 @@ arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
    IR but is explicitly *not* the real backend; the remaining lifts are the
    decision-dense ones deferred by design: a **GC** (Boehm to start — the spike is
    malloc-and-leak), the **native extern catalog** re-implementation (per-extern
-   disposition in RUNTIME-DESIGN), the **dense i32 ctor-ordinal** tag emission (the
-   ratified scheme, replacing the spike's hash), and the spike's out-of-scope gaps
-   (arg-tag dispatch on non-ADT/Int args, nested-requires dicts). The `decodeHead`
+   disposition in RUNTIME-DESIGN), and the spike's out-of-scope gaps
+   (arg-tag dispatch on non-ADT/Int args, nested-requires dicts). ~~the **dense i32
+   ctor-ordinal** tag emission~~ **DONE (2026-06-07)** — the spike now stamps the
+   ratified per-type ctor ordinal (a composite `typeId<<32 | ordinal`: the low half
+   is the dense per-type 0-based ordinal `br_table` wants; the high half is a per-type
+   id that keeps the spike's cross-type arg-tag dispatch correct, which the real
+   backend resolves statically and drops). hashName is gone from every constructor
+   tag, killing the hash-collision miscompile class — that was the **last spike-vs-real
+   tag gap**; the spike's value-rep no longer differs from the ratified scheme on tags
+   (`selfhost/llvm_emit.mdk` `cellTag`; gates `diff_selfhost_llvm{,_typed}.sh`;
+   adversarial fixture `test/llvm_fixtures/adt_ordinal_collision.mdk`). The `decodeHead`
    reserved-name aliasing bug — a lift here until the ordinal scheme exposed it — is
    now fixed ahead of this work (see Compiler / language). Gate: native
    stdout vs the tree-walker **and** the bytecode VM (the second, single-steppable
@@ -480,6 +488,28 @@ constraints are already design inputs to the shared layers).
   adt_user_cons_nil.mdk` (byte-identical across tree-walker, ceval, bytecode VM,
   and the LLVM spike); `test/llvm_fixtures/adt_list_fold.mdk` was unwound from its
   `Node`/`Empty` workaround back to `Cons`/`Nil`.
+
+- **Phase 147 (proposed) — type-directed constructor disambiguation.** Today a
+  constructor name must be **globally unique** (resolve rejects `Duplicate
+  constructor: Bar`), so `data A = Foo | Bar` and `data B = Bar | Baz` cannot
+  coexist — the Haskell-within-a-module model. Two cleaner end-states exist:
+  **OCaml-style** (unqualified `Bar` allowed in multiple types, resolved by the
+  expected type at the use site; ambiguity warns / annotates) and **Rust/Swift-style**
+  (always-qualified `A.Bar`). Recommend **OCaml-style**, because Medaka already has
+  the machinery: **Phase 72** added `field_owners` (receiver-directed resolution) so
+  record *field* names can be reused across types — this is the same problem for the
+  *constructor* namespace, i.e. generalize `field_owners` to ctors. **Coupling to the
+  native rep:** the ratified **per-type ctor-ordinal** tag (the LLVM spike's tag
+  scheme) is correct *precisely because* a constructor is conceptually owned by its
+  type; today's flattened namespace forces the tag to be keyed by globally-unique
+  *name* (and the spike's arg-tag dispatch to carry a synthetic type-id alongside the
+  ordinal — see `llvm_emit.mdk` `cellTag`). Per-type ctors would let lowering carry
+  `(type, ctor)` directly, dropping the name-keyed lookup and the built-in-list
+  special-casing. **Scope/cost:** resolver gains ambiguity handling + optional
+  qualifier syntax + the `data`-decl/inference coupling; a surface-syntax relaxation,
+  not a semantic necessity (the underlying model is already per-type). Not bundled
+  with the bootstrap-era tag work. Skill: **add-language-feature** (resolve +
+  typecheck, cross-cutting).
 
 ### CLI surface (Phase 82, continued)
 

@@ -1,0 +1,28 @@
+-- ADVERSARIAL (ratified per-type ctor-ordinal tag, RUNTIME-DESIGN §8.4): two ADTs
+-- whose constructors occupy OVERLAPPING per-type ordinal ranges — `Red`/`Sad` are
+-- both ordinal 0, `Green`/`Happy` both ordinal 2.  Under the ratified scheme each
+-- type gets an INDEPENDENT ordinal space (the cell tag is a composite of a per-type
+-- id + the ordinal; see `cellTag` in llvm_emit.mdk), so the two `Green`/`Happy`
+-- cells carry DIFFERENT tags and each `match` — being type-directed — only ever
+-- tests its own scrutinee type's tags.  The old i64 string-hash MASKED this case
+-- (distinct names hash distinctly, so a collision never surfaced); a naive single
+-- global ordinal table OR a per-type ordinal without the type-id disambiguator
+-- would let the two types' equal ordinals alias.  Confirms the alloc site and the
+-- match-head test agree on the SAME composite per (type, ctor).  Reduces to a
+-- scalar Int: 30 + 1 + 10 + 3 = 44.
+data Light = Red | Yellow | Green
+data Mood = Sad | Calm | Happy
+
+rank : Light -> Int
+rank l = match l
+  Red => 10
+  Yellow => 20
+  Green => 30
+
+score : Mood -> Int
+score m = match m
+  Sad => 1
+  Calm => 2
+  Happy => 3
+
+main = rank Green + score Sad + rank Red + score Happy

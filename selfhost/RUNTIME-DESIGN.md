@@ -359,8 +359,12 @@ the cheap, oracle-backed bytecode-VM/spike setting before any native runtime exi
 >    aliasing bug — a user ctor named `Cons`/`Nil`/`Unit` decoding to the built-in
 >    head at lowering — was a *distinct* name-keying hazard; FIXED 2026-06-07 by
 >    reserving synthetic `__cons__`/`__nil__`/`__unit__` head names in `canonPat`,
->    not by the tag change; PLAN.md.) The spike +
->    `ceval` keep the hash until the real backend; the real backend emits ordinals.
+>    not by the tag change; PLAN.md.) **The spike now emits ordinals** (done
+>    2026-06-07, `llvm_emit.mdk` `cellTag`): a composite `typeId<<32 | ordinal` whose
+>    low half is the ratified dense per-type ordinal and whose high half is a per-type
+>    id that keeps the spike's cross-type arg-tag dispatch correct (the real backend
+>    resolves those sites statically and keeps only the low-half ordinal). `ceval` is
+>    irrelevant to tags — it walks `VCon` by name and never materializes a tag.
 > 3. **Heap header = keep a uniform one-word header on every boxed cell** (the ADT tag
 >    rides here; uniform cell shape for switch tag-testing; eases precise-GC migration).
 > 4. **`Float` = boxed-first** (§8.4) — type-directed local unboxing only if profiling
@@ -505,8 +509,12 @@ recorded inline here):
   string-hash. Ports to LLVM/WasmGC `br_table` and eliminates the hash-**collision**
   miscompile class. (The `decodeHead` reserved-name aliasing bug was a *distinct*
   name-keying hazard — FIXED 2026-06-07 by reserving synthetic `__cons__`/`__nil__`/
-  `__unit__` head names in `canonPat`, not by the tag change.) The spike + `ceval`
-  keep the hash until the real backend; the real backend emits ordinals.
+  `__unit__` head names in `canonPat`, not by the tag change.) **The spike now emits
+  ordinals** (done 2026-06-07): `llvm_emit.mdk` `cellTag` stamps a composite
+  `typeId<<32 | ordinal` (low half = the ratified dense per-type ordinal for
+  `br_table`; high half = a per-type id retained only for the spike's runtime
+  cross-type arg-tag dispatch, which the real backend resolves statically). `ceval`
+  is irrelevant to tags — it dispatches on `VCon` by name, never a tag.
 - **Heap header.** Include a one-word header on boxed cells now (the spike does), or
   omit under Boehm (which tracks size itself) and add it when precise GC lands?
   **RATIFIED: include it** — 8 bytes/object buys an easy precise-GC migration, a
