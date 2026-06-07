@@ -8,7 +8,7 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`selfhost/README.md`](./selfhost/README.md).
 
-## Current status (2026-06-06)
+## Current status (2026-06-07)
 
 The OCaml compiler pipeline is complete end-to-end —
 `lexer → parser → desugar → resolve → method_marker → typecheck (runs exhaust)
@@ -35,7 +35,7 @@ measured a non-win on the tree-walker and is parked; see `selfhost/PERF-NOTES.md
 **Stage 2 (native backend) is underway** — Core IR + evaluator (§2.1) and the
 bytecode VM (§2.2) are fully done, including the §2.2 capstone (lexer stage runs
 byte-for-byte through `bcEvalModulesOutput`); the LLVM toolchain de-risking spike
-runs through slice 8. See the [Workstreams table](#workstreams--where-each-roadmap-lives) for
+runs through slice 9 (the full non-GC Core IR surface). See the [Workstreams table](#workstreams--where-each-roadmap-lives) for
 the map and `selfhost/STAGE2-DESIGN.md` for the staged plan.
 
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
@@ -56,7 +56,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 (lists: CList/CRangeList, 43/43 gate); next = §2.0 observability+lexical-addressing, then real backend; WasmGC sibling §2.4b |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 — **full non-GC Core IR surface covered** (43/43 gate); §2.0 closed (observability done; lexical-addressing a tree-walker non-win, already captured in VM/Core IR); next = **ratify value rep** (RUNTIME-DESIGN §8, human gate) → real backend (GC + extern catalog) → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred), Core IR `decodeHead` reserved-name bug |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -343,6 +343,42 @@ full call chain). Detail in CAPABILITY-EFFECTS §5a + the Phase 146 entry below.
 Downstream (captured, NOT near-term): **Phase 146b** parameterized effects
 (CAPABILITY-EFFECTS §6a); the **WasmGC backend** (STAGE2-DESIGN §2.4b); the
 **capability platform/runtime** (CAPABILITY-PLATFORM.md §9 open questions).
+
+### Native backend (Stage 2) — near-term sequence
+
+**Owning roadmap:** [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
+§"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8.
+
+**Done (foundation):** §2.0 observability (per-phase timing + allocation counter,
+2026-06-05) ✅; §2.0 lexical-addressing — EMIT done, CONSUME closed as a
+tree-walker non-win and already captured in the VM/Core IR (O(1) slots) ✅; §2.1
+Core IR + evaluator + sexp round-trip ✅; §2.2 bytecode VM (6 slices + capstone) ✅;
+§2.3 front-end gaps (typed multi-module VM, dict corpus, erased effect-poly) ✅;
+§2.4 **LLVM de-risking spike thru slice 9** — the full non-GC Core IR surface
+(scalars → fns → ADTs/match → closures → records/tuples/refs → return-position +
+arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
+
+**Near-term (remaining), dependency-ordered:**
+1. **Ratify the value representation + calling convention** (human gate). The spike
+   exercised a **provisional** uniform tagged word across slices 1–9;
+   [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §8 turns that into a
+   proposal (tagged word vs NaN-box vs boxed-everything, `musttail` convention)
+   **for human ratification — not yet locked**. This gates real-backend codegen.
+   Skill: none (design decision).
+2. **Promote the spike to the real LLVM backend** (§2.4). The spike covers the Core
+   IR but is explicitly *not* the real backend; the remaining lifts are the
+   decision-dense ones deferred by design: a **GC** (Boehm to start — the spike is
+   malloc-and-leak), the **native extern catalog** re-implementation (per-extern
+   disposition in RUNTIME-DESIGN), and the spike's out-of-scope gaps (arg-tag
+   dispatch on non-ADT/Int args, nested-requires dicts). Gate: native stdout vs the
+   tree-walker **and** the bytecode VM (the second, single-steppable oracle). Skill:
+   none specific (lands in `selfhost/llvm_emit*.mdk` + `runtime/`).
+3. **Bootstrap closure** — self-hosted compiler + LLVM backend compiles itself to a
+   standalone native binary (the finish line, STAGE2-DESIGN §2.4).
+
+Downstream (captured, NOT near-term): the **WasmGC sibling backend** (§2.4b — the
+capability-wedge delivery vehicle, reached by a direct emitter; soft-pivot
+constraints are already design inputs to the shared layers).
 
 ### Self-host (Stage 1 tail)
 

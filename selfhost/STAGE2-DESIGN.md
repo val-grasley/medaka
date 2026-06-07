@@ -891,6 +891,28 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   and **6/6 typed gate** stay byte-identical.  Still out of scope: arg-tag dispatch
   on non-ADT args; nested requires dicts; GC.
 
+**Spike status after slice 9 — what's next.** The de-risking spike has now lowered
+the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
+ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in
+list/tuple heads + recursive closures → return-position dispatch → arg-tag
+dispatch → arrays/ranges → lists), proving the decided toolchain (textual LLVM IR +
+`clang`, no llc/opt/bindings) end-to-end against the tree-walker oracle. Its job is
+done: it is **not** the real backend, and continuing to add spike slices buys little
+— the remaining items are the decision-dense ones deferred to the real backend by
+design. The near-term sequence (mirrored in [`../PLAN.md`](../PLAN.md) §"Native
+backend (Stage 2) — near-term sequence"):
+1. **Ratify the value representation + calling convention** — the spike's tagged
+   word is **provisional** ([`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md) §8, for human
+   ratification). This is the gate before real-backend codegen.
+2. **Promote the spike to the real backend** — integrate a GC (Boehm to start; the
+   spike is malloc-and-leak), re-implement the native extern catalog (per-extern
+   disposition in RUNTIME-DESIGN), and close the spike's out-of-scope gaps (arg-tag
+   dispatch on non-ADT/Int args, nested-requires dicts). Gate native stdout against
+   **both** the tree-walker and the bytecode VM (the second, single-steppable
+   oracle — the disambiguation LLVM-first cannot have).
+3. **Bootstrap closure** — the self-hosted compiler + LLVM backend compiles itself
+   to a standalone native binary.
+
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /
 [`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)) ships on WebAssembly, so
