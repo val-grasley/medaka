@@ -1,4 +1,4 @@
--- Core IR -> textual LLVM IR — Stage 2.4 DE-RISKING SPIKE (slices 1–4).
+-- Core IR -> textual LLVM IR — Stage 2.4 DE-RISKING SPIKE (slices 1–8).
 --
 -- This is NOT the real LLVM backend (STAGE2-DESIGN.md §2.4 schedules that AFTER
 -- the bytecode VM).  It is a cheap end-to-end proof that the decided toolchain —
@@ -94,11 +94,18 @@
 --     a runtime dict-parameter witness word → an inline if-chain over the method's
 --     impls.  Mirrors core_ir_eval's methodAtNarrow/applyDicts/narrowMethod.  See the
 --     "typeclass dispatch (slice 6)" section below for the (j)/(k)/(l) rep notes.
--- Still OUT of scope: arrays / ranges / GC; arg-tag (RNone) dispatch and nested
--- per-instance requires dicts and multi-clause / arg-position impl methods (slice 6);
--- the HUnit match head and non-Int literal heads in matches; guarded / range /
--- record arms (CTGuard); non-empty `PList` binding; capture of Ref/mutable bindings;
--- partial / over-application of closures.
+--   • slice 8 — ARRAYS + RANGES.  CArray allocates a length-prefixed boxed cell
+--     (layout: [ i64 raw_len | elem0 | elem1 … ], reusing the slice-3 cell shape
+--     but with the header word = raw element count rather than a constructor hash).
+--     CIndex loads the length, bounds-checks (calls @mdk_oob() on failure), then
+--     GEPs to field (idx+1) dynamically.  CRangeArray and CSlice both emit an
+--     alloca-counter loop (the spike's first non-recursion loop): CRangeArray fills
+--     i ↦ lo+i (tagged Int word); CSlice copies elements from the source array.
+--     CList and CRangeList remain out of scope (list construction not yet added);
+--     the rationale is documented in §2.4a-5 below.  See also the "arrays + ranges
+--     (slice 8)" section below for the (q)/(r)/(s)/(t) rep notes.
+-- Still OUT of scope: CList/CRangeList (list construction); arg-tag dispatch on
+--     non-ADT args; nested requires dicts; GC.
 -- An unsupported Core IR node panics with its tag (the spike refuses to emit wrong
 -- code rather than silently mis-lowering).
 --
@@ -402,6 +409,10 @@ emitExpr e env (CRecord name fields) = emitRecordCreate e env name fields
 emitExpr e env (CFieldAccess ex label) = emitFieldAccess e env ex label
 emitExpr e env (CRecordUpdate base updates) = emitRecordUpdate e env base updates
 emitExpr e env (CMethod name route implRoutes methRoutes) = emitMethod e env name route implRoutes methRoutes []
+emitExpr e env (CArray es) = emitArrayCreate e env es
+emitExpr e env (CRangeArray lo hi incl) = emitRangeArray e env lo hi incl
+emitExpr e env (CIndex a i) = emitArrayIndex e env a i
+emitExpr e env (CSlice a lo hi incl) = emitArraySlice e env a lo hi incl
 emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag other ++ " (slice 1/3 subset only)")
 
 -- a variable occurrence: a bare constructor name (slice 3) is a NULLARY ADT value
@@ -1249,6 +1260,10 @@ freeVars b (CList es) = freeVarsList b es
 freeVars b (CRecord _ fields) = freeVarsFields b fields
 freeVars b (CFieldAccess ex _) = freeVars b ex
 freeVars b (CRecordUpdate base updates) = freeVars b base ++ freeVarsFields b updates
+freeVars b (CArray es) = freeVarsList b es
+freeVars b (CRangeArray lo hi _) = freeVars b lo ++ freeVars b hi
+freeVars b (CIndex a i) = freeVars b a ++ freeVars b i
+freeVars b (CSlice a lo hi _) = freeVars b a ++ freeVars b lo ++ freeVars b hi
 freeVars _ _ = []
 
 freeVarsFields : List String -> List CField -> List String
@@ -2001,6 +2016,11 @@ scanExprRecords (CBlock stmts) = scanStmtsRecords stmts
 scanExprRecords (CDecision scrut arms _) =
   scanExprRecords scrut ++ scanArmsRecords arms
 scanExprRecords (CMatch scrut arms) = scanExprRecords scrut ++ scanArmsRecords arms
+scanExprRecords (CArray es) = scanExprsRecords es
+scanExprRecords (CRangeArray lo hi _) = scanExprRecords lo ++ scanExprRecords hi
+scanExprRecords (CIndex a i) = scanExprRecords a ++ scanExprRecords i
+scanExprRecords (CSlice a lo hi _) =
+  scanExprRecords a ++ scanExprRecords lo ++ scanExprRecords hi
 scanExprRecords _ = []
 
 scanExprsRecords : List CExpr -> List (String, List String)
@@ -2017,6 +2037,205 @@ scanStmtsRecords [] = []
 scanStmtsRecords ((CSExpr ex)::rest) = scanExprRecords ex ++ scanStmtsRecords rest
 scanStmtsRecords ((CSLet _ _ ex)::rest) = scanExprRecords ex ++ scanStmtsRecords rest
 scanStmtsRecords (_::rest) = scanStmtsRecords rest
+
+-- ── arrays + ranges (slice 8) ────────────────────────────────────────────────
+-- VALUE REPRESENTATION (RUNTIME-DESIGN.md §8 — see also §2.4a-5 in STAGE2-DESIGN.md):
+-- an array is a BOXED heap cell with the same layout as an ADT cell but with the
+-- header word = the raw element count (not a constructor hash):
+--   [ 0: i64 raw_len | 8: elem0 | 16: elem1 … ]
+-- `loadTag` thus reads the raw element count; `loadField e w i` reads element i
+-- (at offset 8*(i+1)), exactly the ADT field convention.  Allocation reuses
+-- @mdk_alloc; element words are uniform i64 (tagged Ints for range elements).
+-- BOUNDS CHECKS: OOB calls @mdk_oob() (noreturn; prints + exits, matching eval's
+-- panic).  Fixtures are in-bounds so the check never fires in practice.
+-- LOOPS: CRangeArray and CSlice use an alloca-counter loop (the first non-recursion
+-- loop in the spike — avoids phi instructions and matches the alloca/store/load
+-- pattern the rest of the emitter uses for multi-path merges).
+-- SCOPE: CList and CRangeList remain out of scope (list CONSTRUCTION was not added;
+-- list MATCH (HCons/HNil) works from slice 5b; adding CList/CRangeList is deferred
+-- since the fixtures only need arrays).
+-- SPIKE-REP NOTES (slice 8; extending (a)–(p)):
+--   (q) ARRAY CELL — header word = raw_len (not hashName), so `loadTag` gives the
+--       count directly.  Element i is at offset 8*(i+1), consistent with `loadField`.
+--   (r) BOUNDS CHECK — two icmps (idx < 0 || idx >= len) OR'd, br to an @mdk_oob
+--       block (call + unreachable); the ok path continues inline.
+--   (s) RANGE LOOP — alloca i64 counter + load/store inside the loop; each element
+--       = `tagInt(lo_raw + i)`.  CFG: br to cond block → load/icmp/br → body
+--       (compute+store+increment) → back to cond; done block receives the br on
+--       exit.  No phi nodes (consistent with the rest of the emitter).
+--   (t) SLICE LOOP — same alloca-counter pattern; each iteration loads element
+--       (lo_raw+i) from the source array via `loadFieldDyn` and stores it to dest
+--       field i.
+
+-- allocate an array cell with a STATICALLY known element list; header = raw count.
+emitArrayAlloc : Emit -> Int -> List String -> <Mut> (String, LTy)
+emitArrayAlloc e n fields =
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (n + 1)) ++ ")")
+  let _ = emit e ("  store i64 " ++ intToString n ++ ", ptr " ++ p)
+  let _ = storeFields e p fields 0
+  let w = freshReg e
+  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  (w, LTCon)
+
+-- allocate an array cell with a DYNAMIC element count (for ranges and slices);
+-- returns the raw ptr register (caller fills element fields).
+emitArrayDynAlloc : Emit -> String -> <Mut> String
+emitArrayDynAlloc e len_raw =
+  let sz = freshReg e
+  let _ = emit e ("  " ++ sz ++ " = add i64 " ++ len_raw ++ ", 1")
+  let bytes = freshReg e
+  let _ = emit e ("  " ++ bytes ++ " = mul i64 " ++ sz ++ ", 8")
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ bytes ++ ")")
+  let _ = emit e ("  store i64 " ++ len_raw ++ ", ptr " ++ p)
+  p
+
+-- CArray [e0, e1, …]: allocate a static-size array cell, emit each element,
+-- store them as fields, return the cell pointer word.
+emitArrayCreate : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
+emitArrayCreate e env es =
+  let words = emitArgs e env es
+  emitArrayAlloc e (lengthS words) words
+
+-- load a cell field at a DYNAMIC index (offset = (idxRaw+1)*8).  Used for CIndex
+-- and the CSlice copy loop.
+loadFieldDyn : Emit -> String -> String -> <Mut> String
+loadFieldDyn e ptrWord idxRaw =
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let off1 = freshReg e
+  let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ idxRaw ++ ", 1")
+  let off = freshReg e
+  let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
+  let f = freshReg e
+  let _ = emit e ("  " ++ f ++ " = load i64, ptr " ++ fp)
+  f
+
+-- CIndex arr i: bounds-check, then load element at dynamic offset.
+emitArrayIndex : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> <Mut> (String, LTy)
+emitArrayIndex e env a i =
+  let (arr_w, _) = emitExpr e env a
+  let (idx_w, _) = emitExpr e env i
+  let idx_raw = untagInt e idx_w
+  let arr_len = loadTag e arr_w
+  let c1 = freshReg e
+  let _ = emit e ("  " ++ c1 ++ " = icmp slt i64 " ++ idx_raw ++ ", 0")
+  let c2 = freshReg e
+  let _ = emit e ("  " ++ c2 ++ " = icmp sge i64 " ++ idx_raw ++ ", " ++ arr_len)
+  let oob = freshReg e
+  let _ = emit e ("  " ++ oob ++ " = or i1 " ++ c1 ++ ", " ++ c2)
+  let n = intToString (freshId e)
+  let oobL = "oob" ++ n
+  let okL = "idx_ok" ++ n
+  let _ = emit e ("  br i1 " ++ oob ++ ", label %" ++ oobL ++ ", label %" ++ okL)
+  let _ = emit e (oobL ++ ":")
+  let _ = emit e "  call void @mdk_oob()"
+  let _ = emit e "  unreachable"
+  let _ = emit e (okL ++ ":")
+  let r = loadFieldDyn e arr_w idx_raw
+  (r, LTInt)
+
+-- CRangeArray lo hi incl: compute count, alloc, fill with alloca-counter loop.
+emitRangeArray : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> Bool -> <Mut> (String, LTy)
+emitRangeArray e env lo hi incl =
+  let (lo_w, _) = emitExpr e env lo
+  let (hi_w, _) = emitExpr e env hi
+  let lo_raw = untagInt e lo_w
+  let hi_raw = untagInt e hi_w
+  let hi_adj = if incl then
+      let r = freshReg e
+      let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_raw ++ ", 1")
+      r
+    else hi_raw
+  let count = freshReg e
+  let _ = emit e ("  " ++ count ++ " = sub i64 " ++ hi_adj ++ ", " ++ lo_raw)
+  let p = emitArrayDynAlloc e count
+  let n = intToString (freshId e)
+  let condL = "rng_cond" ++ n
+  let bodyL = "rng_body" ++ n
+  let doneL = "rng_done" ++ n
+  let ic = freshReg e
+  let _ = emit e ("  " ++ ic ++ " = alloca i64")
+  let _ = emit e ("  store i64 0, ptr " ++ ic)
+  let _ = emit e ("  br label %" ++ condL)
+  let _ = emit e (condL ++ ":")
+  let iv = freshReg e
+  let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp sge i64 " ++ iv ++ ", " ++ count)
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
+  let _ = emit e (bodyL ++ ":")
+  let elem_sum = freshReg e
+  let _ = emit e ("  " ++ elem_sum ++ " = add i64 " ++ lo_raw ++ ", " ++ iv)
+  let elem_w = tagInt e elem_sum
+  let off1 = freshReg e
+  let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ iv ++ ", 1")
+  let off = freshReg e
+  let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
+  let _ = emit e ("  store i64 " ++ elem_w ++ ", ptr " ++ fp)
+  let iv2 = freshReg e
+  let _ = emit e ("  " ++ iv2 ++ " = add i64 " ++ iv ++ ", 1")
+  let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
+  let _ = emit e ("  br label %" ++ condL)
+  let _ = emit e (doneL ++ ":")
+  let w = freshReg e
+  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  (w, LTCon)
+
+-- CSlice arr lo hi incl: compute new_len, alloc, copy elements with loop.
+emitArraySlice : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> CExpr -> Bool -> <Mut> (String, LTy)
+emitArraySlice e env a lo hi incl =
+  let (arr_w, _) = emitExpr e env a
+  let (lo_w, _) = emitExpr e env lo
+  let (hi_w, _) = emitExpr e env hi
+  let lo_raw = untagInt e lo_w
+  let hi_raw = untagInt e hi_w
+  let end_raw = if incl then
+      let r = freshReg e
+      let _ = emit e ("  " ++ r ++ " = add i64 " ++ hi_raw ++ ", 1")
+      r
+    else hi_raw
+  let new_len = freshReg e
+  let _ = emit e ("  " ++ new_len ++ " = sub i64 " ++ end_raw ++ ", " ++ lo_raw)
+  let p = emitArrayDynAlloc e new_len
+  let n = intToString (freshId e)
+  let condL = "sl_cond" ++ n
+  let bodyL = "sl_body" ++ n
+  let doneL = "sl_done" ++ n
+  let ic = freshReg e
+  let _ = emit e ("  " ++ ic ++ " = alloca i64")
+  let _ = emit e ("  store i64 0, ptr " ++ ic)
+  let _ = emit e ("  br label %" ++ condL)
+  let _ = emit e (condL ++ ":")
+  let iv = freshReg e
+  let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp sge i64 " ++ iv ++ ", " ++ new_len)
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
+  let _ = emit e (bodyL ++ ":")
+  let src_idx = freshReg e
+  let _ = emit e ("  " ++ src_idx ++ " = add i64 " ++ lo_raw ++ ", " ++ iv)
+  let elem = loadFieldDyn e arr_w src_idx
+  let dst_off1 = freshReg e
+  let _ = emit e ("  " ++ dst_off1 ++ " = add i64 " ++ iv ++ ", 1")
+  let dst_off = freshReg e
+  let _ = emit e ("  " ++ dst_off ++ " = mul i64 " ++ dst_off1 ++ ", 8")
+  let dst_fp = freshReg e
+  let _ = emit e ("  " ++ dst_fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ dst_off)
+  let _ = emit e ("  store i64 " ++ elem ++ ", ptr " ++ dst_fp)
+  let iv2 = freshReg e
+  let _ = emit e ("  " ++ iv2 ++ " = add i64 " ++ iv ++ ", 1")
+  let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
+  let _ = emit e ("  br label %" ++ condL)
+  let _ = emit e (doneL ++ ":")
+  let w = freshReg e
+  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  (w, LTCon)
 
 -- ── program ─────────────────────────────────────────────────────────────────
 -- Emit a whole CProgram as a textual LLVM module: the runtime declares, then one
@@ -2048,6 +2267,7 @@ emitPreamble e =
   let _ = emit e "; Medaka native spike (Stage 2.4) — emitted textual LLVM IR."
   let _ = emit e "; Value rep is PROVISIONAL (uniform 64-bit tagged word); see RUNTIME-DESIGN.md."
   let _ = emit e "declare ptr @mdk_alloc(i64)"
+  let _ = emit e "declare void @mdk_oob() noreturn"
   let _ = emit e "declare void @mdk_print_int(i64)"
   let _ = emit e "declare void @mdk_print_bool(i64)"
   let _ = emit e "declare void @mdk_print_float(double)"

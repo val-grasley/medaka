@@ -838,6 +838,37 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   Still out of scope: arg-tag dispatch on non-ADT args (Int immediates have no cell to
   `loadTag`), nested requires dicts, arrays / GC.
 
+**2.4a-5 — Slice 8 (ARRAYS + RANGES).** The four remaining array/range Core-IR
+  nodes: `CArray`, `CRangeArray`, `CIndex`, `CSlice`.  **Scope decision:** CList and
+  CRangeList deferred — adding list CONSTRUCTION (Cons/Nil cell allocation) would
+  require new runtime machinery beyond the slice's incremental budget; the existing
+  fixtures cover list MATCH (HCons/HNil from slice 5b) without list construction, and
+  arrays are self-contained.  **Rep decision (extends (q)–(t)):**
+  **(q) ARRAY CELL** — layout `[ i64 raw_len | elem0 | elem1 … ]` (header word =
+  raw element count, NOT a constructor hash; elements at offsets 8*(i+1) via the
+  slice-3 `storeFields`/`loadField` convention).  `loadTag` reads the raw count.
+  `emitArrayAlloc` handles static-size (CArray) and `emitArrayDynAlloc` the dynamic
+  case (ranges and slices); both reuse `@mdk_alloc` (malloc-and-leak, no GC).
+  **(r) BOUNDS CHECK** — `emitArrayIndex` emits two icmps (idx < 0 || idx ≥ len),
+  OR'd to a single i1, and branches to an `@mdk_oob()` block (noreturn helper added
+  to `runtime/medaka_rt.c`, call + unreachable) on OOB — matching `eval.mdk`'s
+  panic.  Fixtures are in-bounds so the check never fires in practice.
+  **(s) RANGE LOOP (CRangeArray)** — the spike's FIRST non-recursion loop.  Uses an
+  alloca-counter pattern (consistent with the existing alloca/store/load merge
+  convention — avoids phi nodes): alloca i64 counter ic, init 0, `br loopCond`; in
+  `loopCond` load iv, `icmp sge iv count` → done/body; in `loopBody` compute
+  `tagInt(lo_raw + iv)`, GEP to `(iv+1)*8`, store, increment iv, `br loopCond`.
+  CFG is a well-formed natural loop (dominators: loopCond dominates body and done;
+  single back-edge body→cond).  **(t) SLICE LOOP (CSlice)** — same alloca-counter
+  pattern; each iteration loads element `(lo_raw+i)` from the source array via the
+  new `loadFieldDyn` helper (dynamic GEP `(idx+1)*8`) and stores it to dest field i.
+  Both inclusive (`incl=True`) and exclusive (`incl=False`) ranges/slices are
+  supported; the `hi_adj` computation is a compile-time Medaka branch on the `incl`
+  field.  **39/39 plain harness** (4 new fixtures: `arr_index`, `arr_range_sum`,
+  `arr_slice`, `arr_range_excl`) and **6/6 typed gate** stay byte-identical.
+  Still out of scope: CList/CRangeList (list construction); arg-tag dispatch on
+  non-ADT args; nested requires dicts; GC.
+
 **2.4b — WasmGC as a planned second backend (the wedge's delivery vehicle).** The
 capability-effects wedge ([`../CAPABILITY-EFFECTS.md`](../CAPABILITY-EFFECTS.md) /
 [`../CAPABILITY-PLATFORM.md`](../CAPABILITY-PLATFORM.md)) ships on WebAssembly, so

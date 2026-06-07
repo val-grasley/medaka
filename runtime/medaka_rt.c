@@ -35,11 +35,17 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdnoreturn.h>
 
 /* Allocate `n` bytes in the (eventual) GC heap.  Spike: malloc, never freed.
  * Every extern that RETURNS a Medaka value must go through this entry point so
  * the later GC swap is one function (RUNTIME-DESIGN.md §2a). */
 void *mdk_alloc(long long n) { return malloc((size_t)n); }
+
+noreturn void mdk_oob(void) {
+  fprintf(stderr, "array index out of bounds\n");
+  exit(1);
+}
 
 /* Print an Int.  Matches the tree-walker oracle: Eval.pp_value (VInt n) =
  * string_of_int n, then eval_probe adds a trailing newline. */
