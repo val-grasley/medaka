@@ -239,9 +239,16 @@ deliberately deferred to here:
     `CMethod String Route (List Route) (List Route)` carries all three dispatch
     components (topRoute + implRoutes + methRoutes), mirroring the tree-walker's
     `methodAtNarrow + applyDicts + applyValues(fwdReqs)` chain.
-  - **Erased effect-polymorphism in Core IR** — define the representation for
-    effect-polymorphic code after erasure (Phase 146 erases at runtime; Core IR
-    carries no effect annotations today).
+  - ✅ **DONE (2026-06-07) — Erased effect-polymorphism in Core IR.** Frozen-IR
+    contract: **full erasure, no runtime representation** (the opposite of
+    typeclass polymorphism). Effects are type-level only (`TyEffect`/`EffRow`),
+    no runtime construct (no perform/handle/resume), dispatch is type-head not
+    effect directed — so they erase WITH types at lowering and an
+    effect-polymorphic fn is represented identically to a monomorphic one (no
+    effect node/param/dispatch). Documented in the `core_ir.mdk` header; gate
+    `test/eval_fixtures/effect_poly.mdk` (a `<e>`-polymorphic combinator at
+    `<Mut>` + pure rows) byte-identical across tree-walker / Core IR / bytecode
+    VM (19/19 in `diff_selfhost_eval.sh` / `_core_ir.sh` / `_eval_bytecode.sh`).
 - **Bootstrap closure:** self-hosted compiler + LLVM backend compiles itself to a
   standalone native binary — the finish line.
 
