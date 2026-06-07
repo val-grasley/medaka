@@ -547,7 +547,7 @@ hexDigit d
 -- (mdk_int_to_string -> mdk_str_lit -> mdk_alloc).  charToStr/stringConcat/putStr
 -- are the obvious next additions (a follow-on slice).
 isStrExtern : String -> Bool
-isStrExtern name = containsStr name ["intToString"]
+isStrExtern name = containsStr name ["intToString", "stringConcat", "stringLength"]
 
 emitStrExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitStrExtern e env "intToString" args = match emitArgs e env args
@@ -556,6 +556,22 @@ emitStrExtern e env "intToString" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_int_to_string(i64 " ++ a ++ ")")
     (r, LTStr)
   _ => panic "llvm spike: intToString takes exactly one argument (slice 1)"
+emitStrExtern e env "stringConcat" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_concat(i64 " ++ a ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: stringConcat takes one argument (slice 5)"
+emitStrExtern e env "stringLength" args = match emitArgs e env args
+  [a] =>                                    -- INTRINSIC: load cp_count@16, tag it
+    let p = freshReg e
+    let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ a ++ " to ptr")
+    let cpp = freshReg e
+    let _ = emit e ("  " ++ cpp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 16")
+    let n = freshReg e
+    let _ = emit e ("  " ++ n ++ " = load i64, ptr " ++ cpp)
+    (tagInt e n, LTInt)
+  _ => panic "llvm spike: stringLength takes one argument (slice 5)"
 emitStrExtern _ _ name _ = panic ("llvm spike: unsupported string extern " ++ name)
 
 -- numeric conversion externs (native extern catalog slice 2).
@@ -2567,7 +2583,7 @@ emitArraySlice e env a lo hi incl =
 -- 0 (Cons) and 1 (Nil) — UNLESS a user `data` owns those names, in which case both
 -- the list literal and the user ctor resolve to that type's ordinal (they alias,
 -- exactly as they did under the old hash).  Cell layouts (8-byte words):
---   Nil  → [ i64 cellTag "Nil" ]                       (1-word cell, no fields)
+--   Nil  → odd immediate (nullary; low bit 1)                  (no cell allocated)
 --   Cons → [ i64 cellTag "Cons" | i64 head | i64 tail ]   (3-word cell)
 -- Construction uses emitCtorAlloc "Nil" [] / emitCtorAlloc "Cons" [hw, tw]
 -- verbatim — the SAME tag the slice-5b switch tests, so construction
@@ -2688,6 +2704,7 @@ emitPreamble e =
   let _ = emit e "declare void @mdk_print_str(i64)"
   let _ = emit e "declare i64 @mdk_int_to_string(i64)"
   let _ = emit e "declare i64 @mdk_float_to_string(double)"
+  let _ = emit e "declare i64 @mdk_string_concat(i64)"
   let _ = emit e "declare void @mdk_putstr(i64)"
   let _ = emit e "declare void @mdk_putstrln(i64)"
   let _ = emit e "declare void @mdk_eputstr(i64)"
