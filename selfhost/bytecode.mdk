@@ -62,6 +62,7 @@ import eval.{
   lookupBinding, isNullary, force, ppValue, ctorToTypeRef,
   evalIndex, evalSlice, evalRange, rangeListMk, rangeArrayMk,
   evalRecordUpdate, evalValueField, evalField,
+  evalVariantUpdate, buildCtorFieldOrders, ctorFieldOrdersRef,
   narrowMethod, routeTag, applyDicts, coalesceImpls, nub,
   buildCtorToType, collectCtors, buildIfaceDispatch, implMethodNames,
   importFrameOf, pubReexports, outputRef
@@ -118,6 +119,7 @@ public export data Instr
   | IField String                   -- pop v → push (evalField v fieldName)
   | IFieldValue                     -- pop v → push (evalValueField v) — .value deref
   | IRecordUpdate (List String)     -- pop n field vals + base → evalRecordUpdate
+  | IVariantUpdate String (List String) -- pop n field vals + base → evalVariantUpdate
   | IRangeList Bool                 -- pop hi, pop lo → evalRange lo hi incl rangeListMk
   | IRangeArray Bool                -- pop hi, pop lo → evalRange lo hi incl rangeArrayMk
   | IIndex                          -- pop i, pop container → evalIndex container i
@@ -177,6 +179,8 @@ compile (CFieldAccess e "value") = compile e ++ [IFieldValue]
 compile (CFieldAccess e field) = compile e ++ [IField field]
 compile (CRecordUpdate base fields) =
   compile base ++ concatMapList compileCField fields ++ [IRecordUpdate (map cFieldName fields)]
+compile (CVariantUpdate con base fields) =
+  compile base ++ concatMapList compileCField fields ++ [IVariantUpdate con (map cFieldName fields)]
 compile (CRangeList lo hi incl) = compile lo ++ compile hi ++ [IRangeList incl]
 compile (CRangeArray lo hi incl) = compile lo ++ compile hi ++ [IRangeArray incl]
 compile (CIndex a i) = compile a ++ compile i ++ [IIndex]
@@ -334,6 +338,10 @@ step code ip stack env (IRecordUpdate fieldNames) = match popN (listLen fieldNam
   (fieldVals, base :: rest) =>
     runLoop code (ip + 1) (evalRecordUpdate base (zipPairs fieldNames fieldVals) :: rest) env
   _ => panic "bytecode VM: IRecordUpdate stack underflow"
+step code ip stack env (IVariantUpdate con fieldNames) = match popN (listLen fieldNames) stack
+  (fieldVals, base :: rest) =>
+    runLoop code (ip + 1) (evalVariantUpdate con base (zipPairs fieldNames fieldVals) :: rest) env
+  _ => panic "bytecode VM: IVariantUpdate stack underflow"
 -- ── slice 3: ranges ──────────────────────────────────────────────────────────
 step code ip stack env (IRangeList incl) = match popN 2 stack
   ([lo, hi], rest) => runLoop code (ip + 1) (evalRange lo hi incl rangeListMk :: rest) env
@@ -696,6 +704,7 @@ bcEvalModules preludeDecls modules =
   let moduleDecls = concatMapList snd modules
   let allDecls = preludeDecls ++ moduleDecls
   let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
+  let _ = set_ref ctorFieldOrdersRef (buildCtorFieldOrders allDecls)
   let disp = buildIfaceDispatch allDecls
   let ctors = collectCtors allDecls
   let preludeGroups = lowerGroups preludeDecls

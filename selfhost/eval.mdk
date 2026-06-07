@@ -11,7 +11,7 @@
 -- Validated by rendering pp_value of a program's `main` binding and diffing
 -- against dev/eval_probe.exe (Eval.eval_program ~prelude:false → Eval.pp_value).
 
-import ast.{Lit(..), Ty(..), Addr(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), Route(..), ConPayload(..), Variant(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), UsePath(..), UseMember(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Addr(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FieldAssign(..), FunClause(..), LetBind(..), Expr(..), Route(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), UsePath(..), UseMember(..), Decl(..)}
 import util.{contains, concatMapList, listLen, reverseL, anyList, lookupAssoc}
 
 -- ── values & environment (mutually recursive) ─────────────────────────────
@@ -172,6 +172,27 @@ ctorTypeEntries _ = []
 
 variantName : Variant -> String
 variantName (Variant n _) = n
+
+-- named-field constructor field order: maps ctor name → ordered field name list.
+-- Only ConNamed variants produce entries; positional ConPos ones produce nothing.
+export
+ctorFieldOrdersRef : Ref (List (String, List String))
+ctorFieldOrdersRef = Ref []
+
+export
+buildCtorFieldOrders : List Decl -> List (String, List String)
+buildCtorFieldOrders prog = concatMapList ctorFieldOrderEntries prog
+
+ctorFieldOrderEntries : Decl -> List (String, List String)
+ctorFieldOrderEntries (DData _ _ _ variants _) = concatMapList variantFieldOrder variants
+ctorFieldOrderEntries _ = []
+
+variantFieldOrder : Variant -> List (String, List String)
+variantFieldOrder (Variant n (ConNamed fs)) = [(n, map fieldName fs)]
+variantFieldOrder _ = []
+
+fieldName : Field -> String
+fieldName (Field n _) = n
 
 -- runtime "head type" tag for a value, for filtering VMulti candidates
 runtimeTypeTag : Value -> Option String
@@ -844,6 +865,32 @@ mergeField : List (String, Value) -> (String, Value) -> (String, Value)
 mergeField updates (k, v) = match lookupAssoc k updates
   Some v2 => (k, v2)
   None => (k, v)
+
+-- variant (named-field constructor) update: `Con { base | f = v … }`.
+-- Looks up the constructor's field order from ctorFieldOrdersRef, then replaces
+-- positional values for the named fields in `updates`, keeping the rest.
+export
+evalVariantUpdate : String -> Value -> List (String, Value) -> Value
+evalVariantUpdate con (VCon con' vals) updates
+  | con == con' = VCon con (applyVariantUpdates updates (ctorFieldOrderFor con) vals)
+  | otherwise = panic ("evalVariantUpdate: expected " ++ con ++ " got " ++ con')
+evalVariantUpdate con _ _ = panic ("evalVariantUpdate: not a constructor: " ++ con)
+
+ctorFieldOrderFor : String -> List String
+ctorFieldOrderFor con = match lookupAssoc con ctorFieldOrdersRef.value
+  Some fs => fs
+  None => panic ("evalVariantUpdate: unknown constructor " ++ con)
+
+applyVariantUpdates : List (String, Value) -> List String -> List Value -> List Value
+applyVariantUpdates _ [] _ = []
+applyVariantUpdates _ _ [] = []
+applyVariantUpdates updates (f::fs) (v::vs) =
+  applyFieldUpdate updates f v :: applyVariantUpdates updates fs vs
+
+applyFieldUpdate : List (String, Value) -> String -> Value -> Value
+applyFieldUpdate updates field old = match lookupAssoc field updates
+  Some v => v
+  None => old
 
 export
 evalValueField : Value -> Value

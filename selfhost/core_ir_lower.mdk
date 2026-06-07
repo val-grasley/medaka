@@ -12,7 +12,7 @@
 
 import ast.{Lit(..), Pat(..), Expr(..), Arm(..), Guard(..), DoStmt(..), FieldAssign(..), LetBind(..), FunClause(..), Addr(..), Decl(..), Variant(..), ConPayload(..), Ty(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..)}
 import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..), CTree(..), CTBranch(..), CHead(..)}
-import eval.{buildCtorToType, buildIfaceDispatch, lookupPositions, tyvarsInArgs, headTyconHead}
+import eval.{buildCtorToType, buildCtorFieldOrders, ctorFieldOrdersRef, buildIfaceDispatch, lookupPositions, tyvarsInArgs, headTyconHead}
 import util.{contains, concatMapList, listLen, allList, anyList}
 
 -- a synthetic binder for the lowered composition operators; constructed
@@ -45,6 +45,7 @@ lower (ESlice a lo hi incl) = CSlice (lower a) (lower lo) (lower hi) incl
 lower (EFieldAccess e f) = CFieldAccess (lower e) f
 lower (ERecordCreate name fields) = CRecord name (map lowerField fields)
 lower (ERecordUpdate base fields) = CRecordUpdate (lower base) (map lowerField fields)
+lower (EVariantUpdate con base fields) = CVariantUpdate con (lower base) (map lowerField fields)
 lower (EBlock stmts) = CBlock (map lowerStmt stmts)
 lower (EAnnot e _) = lower e
 lower (EHeadAnnot e _) = lower e
@@ -339,8 +340,9 @@ lowerStmt _ = panic "core_ir lower: unsupported block statement"
 -- first-appearance order, exactly as eval.mdk's funGroupNames), gather the ctor
 -- arity + ctor→type tables.  Interfaces/impls are slice-5 (no dispatch yet).
 export
-lowerProgram : List Decl -> CProgram
+lowerProgram : List Decl -> <Mut> CProgram
 lowerProgram prog =
+  let _ = set_ref ctorFieldOrdersRef (buildCtorFieldOrders prog)
   CProgram (lowerGroups prog) (ctorArities prog) (buildCtorToType prog) (lowerImpls prog)
 
 -- the top-level function-group half of lowerProgram, exposed for the multi-module

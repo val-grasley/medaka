@@ -67,6 +67,8 @@ public export data CExpr
   | CRecord String (List CField)
   | CFieldAccess CExpr String
   | CRecordUpdate CExpr (List CField)
+  -- named-field variant (constructor) update: `Con { base | f = v … }` (§2.3)
+  | CVariantUpdate String CExpr (List CField)
   -- array / range / index / slice (slice 3)
   | CArray (List CExpr)
   | CRangeList CExpr CExpr Bool

@@ -221,14 +221,16 @@ deliberately deferred to here:
   (18 single-file slices 1–5 + 4 multi-module slice 6). Capstone: lexer selfproc
   probe runs byte-for-byte through the bytecode multi-module VM
   (`test/diff_selfhost_bytecode_selfproc.sh`, 1 real pass + 2 documented
-  expected-gaps for parse/tc probes that need return-pos dispatch — §2.3 scope).
+  expected-gaps for parse/tc probes that need return-pos dispatch — closed by §2.3).
   Zero `eval.mdk` changes — full Axis-2 reuse. See `selfhost/README.md`.
 - **§2.3 — Close front-end gaps the VM surfaces.** Three concrete items; see
   `selfhost/STAGE2-DESIGN.md` §2.3 for detail:
-  - **Typed multi-module bytecode VM path** (`eval_bytecode_typed_modules_main.mdk`)
-    — thread `elaborateModules` before bytecode lowering so parse/tc selfproc
-    probes pass through the VM (currently expected-gaps in
-    `test/diff_selfhost_bytecode_selfproc.sh`).
+  - ✅ **DONE (2026-06-06) — Typed multi-module bytecode VM path** (`eval_bytecode_typed_modules_main.mdk`)
+    — `elaborateModules` (route-stamping) + `annotateProgram` per module +
+    `bcEvalModulesOutput`; all three selfproc probes (lex/parse/tc) pass through
+    the typed VM (`test/diff_selfhost_bytecode_selfproc.sh` §2.3 section, 3/3).
+    Also closed `EVariantUpdate` → `CVariantUpdate` Core IR gap (named-field
+    constructor updates in `typecheck.mdk`'s `DImpl`/`DInterface` clauses).
   - **Dict-passing residuals** — prelude constrained fns + nested/structured dicts
     (Phase 83/84 item #5 in the untyped bytecode path).
   - **Erased effect-polymorphism in Core IR** — define the representation for

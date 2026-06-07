@@ -460,16 +460,22 @@ tree-walker oracle — the cheap setting, before any native runtime exists.
 Concrete §2.3 items (surfaced by the §2.2 capstone harness,
 `test/diff_selfhost_bytecode_selfproc.sh`):
 
-- **Typed multi-module bytecode VM path** — `eval_typed_modules_main.mdk`-analog
-  for the bytecode VM. The capstone harness runs `selfproc_parse_probe.mdk` and
-  `selfproc_tc_probe.mdk` as expected-gaps: the untyped `bcEvalModulesOutput`
-  cannot resolve return-position dispatch (`Parser` monad `pure`/`andThen`), so
-  those probes panic. The fix is a new `eval_bytecode_typed_modules_main.mdk`
-  that threads `typecheck.elaborateModules` (route-stamping) before the per-module
-  annotate → lower → `bcEvalModulesOutput` call — exactly the composition
-  `eval_typed_modules_main.mdk` uses for the tree-walker, with the bytecode VM
-  swapped in as the final consumer. Gate: both parse/tc selfproc probes
-  byte-identical through the typed bytecode VM.
+- ✅ **DONE (2026-06-06) — Typed multi-module bytecode VM path** —
+  `eval_bytecode_typed_modules_main.mdk` (the `eval_typed_modules_main.mdk`-analog
+  for the bytecode VM): loads → `elaborateModules` (route-stamping) → `annotateProgram`
+  per module → `bcEvalModulesOutput`. All three selfproc probes (lex/parse/tc) now
+  pass byte-for-byte through the typed bytecode VM. This also required adding
+  `CVariantUpdate` to the Core IR (lowering `EVariantUpdate` — named-field constructor
+  update syntax used in `typecheck.mdk`'s `DImpl`/`DInterface` update clauses) through
+  the full pipeline: `core_ir.mdk` (new `CVariantUpdate String CExpr (List CField)` node),
+  `core_ir_lower.mdk` (lowering + `ctorFieldOrdersRef` set by `lowerProgram`),
+  `core_ir_eval.mdk` (`ceval` arm + `ctorFieldOrdersRef` set in `cevalModules`),
+  `bytecode.mdk` (`IVariantUpdate` opcode + `ctorFieldOrdersRef` set in `bcEvalModules`),
+  `core_ir_sexp.mdk`/`core_ir_sexp_parse.mdk` (serializer/deserializer). Field order
+  (needed to reconstruct `VCon` positionally from named updates) is collected once
+  from `allDecls` before lowering via `eval.ctorFieldOrdersRef` (a global ref, set in
+  `<Mut>` context — reads are pure so `lower : Expr -> CExpr` stays pure).
+  Gate: `test/diff_selfhost_bytecode_selfproc.sh` §2.3 section — 3/3 typed VM passes.
 - **Dict-passing residuals** — prelude constrained functions (`when`/`unless`
   and the higher-kinded `pure` at a constraint variable) plus nested/structured
   dicts beyond the current flat `VDict String` tag (Phase 83/84 item #5 remains
