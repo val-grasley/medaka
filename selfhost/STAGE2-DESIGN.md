@@ -974,6 +974,25 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   (`n*2+1` would silently wrap for these boundary values).  **58/58 plain + 9/9
   typed fixtures byte-identical**; core_ir/eval gates unaffected.
 
+**2.4a-9 — Native extern catalog slice 3 (IO OUTPUT + Unit).**
+  Four externs: `putStr`/`putStrLn` (stdout) and `ePutStr`/`ePutStrLn` (stderr).
+  All return Unit, introducing `LTUnit` to the emitter's `data LTy`.  **Spike-rep
+  notes:** **(dd) LTUNIT** — a new `LTUnit` variant in `data LTy`; the Unit operand
+  word is an arbitrary immediate (`"1"`) never inspected, only auto-printed.
+  `emitPrint e _ LTUnit` calls `@mdk_print_unit()` which does `printf("()\n")`,
+  matching `Eval.pp_value VUnit = "()"`.  **(ee) IO-OUTPUT C HELPERS** — a shared
+  `mdk_fwrite_str(w, out, nl)` reads the string cell (bytes at offset 24, `byte_len`
+  at offset 8) and writes to the given `FILE`; `mdk_putstr`/`mdk_putstrln` pass
+  `stdout`, `mdk_eputstr`/`mdk_eputstrln` pass `stderr`.  `mdk_print_str` kept
+  unchanged (used by the String auto-print path).  **(ff) TYPED GATE ORACLE GAP** —
+  `core_ir_dict_pp_main.mdk` does not execute the stdout side effect of `putStrLn`,
+  so a stdout-writing typed fixture would diverge (`ref="()"` vs `self="hi\n()"`).
+  Fix: the typed fixture uses `ePutStrLn "err"` (stderr-only side effect, dropped by
+  `2>/dev/null` on both sides → both produce `"()"` on stdout).  **3/3 new plain
+  fixtures** (`io_putstr`, `io_putstrln`, `io_eputstrln`) and **1/1 new typed fixture**
+  (`io_putstrln` — actually `ePutStrLn`-bodied) byte-identical; all 61 plain + 10
+  typed pass; core_ir/eval gates unaffected.
+
 **Spike status after slice 9 — what's next.** The de-risking spike has now lowered
 the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
 ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in

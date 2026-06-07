@@ -153,3 +153,19 @@ long long mdk_float_to_string(double d) {
     strcat(buf, ".");
   return mdk_str_lit(buf, (long long)strlen(buf));
 }
+
+/* IO-output externs (native extern catalog slice 3).
+   mdk_fwrite_str reads the string cell (bytes at offset 24, byte_len at offset 8)
+   and writes to the given FILE; appends '\n' iff nl != 0. */
+static void mdk_fwrite_str(long long w, FILE *out, int nl) {
+  const char *cell = (const char *)w;
+  long long byte_len = ((const long long *)cell)[1];
+  fwrite(cell + 24, 1, (size_t)byte_len, out);
+  if (nl) fputc('\n', out);
+}
+
+void mdk_putstr(long long w)    { mdk_fwrite_str(w, stdout, 0); }
+void mdk_putstrln(long long w)  { mdk_fwrite_str(w, stdout, 1); }
+void mdk_eputstr(long long w)   { mdk_fwrite_str(w, stderr, 0); }
+void mdk_eputstrln(long long w) { mdk_fwrite_str(w, stderr, 1); }
+void mdk_print_unit(void)       { printf("()\n"); }

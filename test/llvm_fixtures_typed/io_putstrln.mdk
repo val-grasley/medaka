@@ -1,0 +1,5 @@
+-- native extern catalog slice 3 (typed gate): ePutStrLn via the typed pipeline.
+-- ePutStrLn writes to stderr, which the gate drops via 2>/dev/null on both sides.
+-- Oracle stdout: "()" (VUnit result).  Native stdout: "()" (mdk_print_unit).
+-- Proves compile + link + run via the typed oracle path without stdout divergence.
+main = ePutStrLn "err"

@@ -185,7 +185,10 @@ import util.{reverseL, joinNl, lookupAssoc}
 -- pointer word (RUNTIME-DESIGN.md §4: UTF-8 bytes + cached codepoint count).  It
 -- flows as a call argument and reaches the top-level print site (mdk_print_str);
 -- it never reaches an arithmetic site, so it carries no payload type.
-data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr
+-- `LTUnit` (native extern catalog slice 3) is the Unit return type of IO-output
+-- externs (putStr/putStrLn/ePutStr/ePutStrLn).  Its operand word is never
+-- inspected — only auto-printed as "()" by emitPrint.
+data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr | LTUnit
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
 -- — prepend is O(1); reverseL'd once at the end restores program order), the
@@ -586,6 +589,35 @@ emitNumExtern e env "floatToString" args = match emitArgs e env args
   _ => panic "llvm spike: floatToString takes exactly one argument (slice 2)"
 emitNumExtern _ _ name _ = panic ("llvm spike: unsupported numeric extern " ++ name)
 
+-- IO-output externs (native extern catalog slice 3).
+-- putStr/putStrLn write to stdout; ePutStr/ePutStrLn write to stderr.
+-- All return Unit (LTUnit); the operand "1" is an arbitrary immediate never read.
+isIoExtern : String -> Bool
+isIoExtern name = containsStr name ["putStr", "putStrLn", "ePutStr", "ePutStrLn"]
+
+emitIoExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitIoExtern e env "putStr" args = match emitArgs e env args
+  [s] =>
+    let _ = emit e ("  call void @mdk_putstr(i64 " ++ s ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: putStr takes exactly one argument (slice 3)"
+emitIoExtern e env "putStrLn" args = match emitArgs e env args
+  [s] =>
+    let _ = emit e ("  call void @mdk_putstrln(i64 " ++ s ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: putStrLn takes exactly one argument (slice 3)"
+emitIoExtern e env "ePutStr" args = match emitArgs e env args
+  [s] =>
+    let _ = emit e ("  call void @mdk_eputstr(i64 " ++ s ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: ePutStr takes exactly one argument (slice 3)"
+emitIoExtern e env "ePutStrLn" args = match emitArgs e env args
+  [s] =>
+    let _ = emit e ("  call void @mdk_eputstrln(i64 " ++ s ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: ePutStrLn takes exactly one argument (slice 3)"
+emitIoExtern _ _ name _ = panic ("llvm spike: unsupported IO extern " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -760,6 +792,7 @@ emitApp e env app =
       else if fname == "set_ref" then emitSetRef e env args
       else if isStrExtern fname && hasArgs args then emitStrExtern e env fname args
       else if isNumExtern fname && hasArgs args then emitNumExtern e env fname args
+      else if isIoExtern fname && hasArgs args then emitIoExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -2639,6 +2672,11 @@ emitPreamble e =
   let _ = emit e "declare void @mdk_print_str(i64)"
   let _ = emit e "declare i64 @mdk_int_to_string(i64)"
   let _ = emit e "declare i64 @mdk_float_to_string(double)"
+  let _ = emit e "declare void @mdk_putstr(i64)"
+  let _ = emit e "declare void @mdk_putstrln(i64)"
+  let _ = emit e "declare void @mdk_eputstr(i64)"
+  let _ = emit e "declare void @mdk_eputstrln(i64)"
+  let _ = emit e "declare void @mdk_print_unit()"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))
@@ -2661,6 +2699,8 @@ emitPrint e v LTFloat =
   emit e ("  call void @mdk_print_float(double " ++ d ++ ")")
 emitPrint e v LTStr =
   emit e ("  call void @mdk_print_str(i64 " ++ v ++ ")")
+emitPrint e _ LTUnit =
+  emit e "  call void @mdk_print_unit()"
 emitPrint _ _ LTCon =
   panic "llvm spike: cannot print an ADT value (slice 3: `main` must reduce to a scalar Int/Bool/Float)"
 emitPrint _ _ LTClosure =

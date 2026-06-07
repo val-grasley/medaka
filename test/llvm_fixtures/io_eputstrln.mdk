@@ -1,0 +1,4 @@
+-- native extern catalog slice 3: ePutStrLn — writes string to stderr with newline.
+-- stderr is dropped by the gate's 2>/dev/null; stdout is just "()" (Unit auto-print).
+-- Still proves compile + link + run for the stderr path.
+main = ePutStrLn "err"

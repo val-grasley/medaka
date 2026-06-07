@@ -1,0 +1,3 @@
+-- native extern catalog slice 3: putStr — writes string to stdout without newline.
+-- Returns Unit; auto-print adds "()" as the result.  Oracle stdout: "hi()".
+main = putStr "hi"
