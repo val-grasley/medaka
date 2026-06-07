@@ -318,7 +318,8 @@ labels also drive [`STDLIB.md`](./STDLIB.md) §"Label refinement roadmap".
 **Done (foundation):** effect soundness — propagation/inference, higher-order `<e>`
 composition, binding-boundary escape, laundering soundness — gap 1, reference +
 selfhost mirror ✅; user-definable fine-grained labels (`effect Foo` declaration) —
-gap 2 ✅; stdlib capability audit ✅; the minimal **"wow" demo** ✅
+gap 2 ✅; cross-module effect label export (`exp_effects` across the loader
+boundary) — gap 3 ✅; stdlib capability audit ✅; the minimal **"wow" demo** ✅
 (`demo/plugin_good.mdk` + `demo/plugin_malicious.mdk` + `medaka check-policy`: the
 malicious plugin buries `fetch` four calls deep; the harness rejects it with the
 full call chain). Detail in CAPABILITY-EFFECTS §5a + the Phase 146 entry below.
@@ -333,12 +334,11 @@ full call chain). Detail in CAPABILITY-EFFECTS §5a + the Phase 146 entry below.
    capability-manifest format a host reads, pressure-tested against the 2–3 worked
    plugin shapes in CAPABILITY-PLATFORM.md. Gate before manifest coding. Skill:
    **add-language-feature** (planning).
-3. **Cross-module effect label export** — `pub effect Fetch` in a platform SDK
-   module visible across the loader boundary (deferred in gap 2). Needed for
-   multi-module SDKs. Skill: **add-language-feature**.
+3. ✅ **Cross-module effect label export** — done (gap 3, 2026-06-07). `pub effect
+   Fetch` visible across the loader boundary via `exp_effects` in `module_exports`.
 4. **Manifest emission** — emit `[package.capabilities]` from a verified entry
-   point's effect row; final Phase 146 item, waits on cross-module export + label
-   refinement (STDLIB.md §"Label refinement roadmap").
+   point's effect row; final Phase 146 item, waits on label refinement
+   (STDLIB.md §"Label refinement roadmap").
 
 Downstream (captured, NOT near-term): **Phase 146b** parameterized effects
 (CAPABILITY-EFFECTS §6a); the **WasmGC backend** (STAGE2-DESIGN §2.4b); the

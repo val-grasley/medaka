@@ -7,8 +7,9 @@ closed-closed point-free cases (the latter via variance-aware covariant re-open)
 and the **selfhost mirror is done** (2026-06-06: full effect subsystem ported into
 `selfhost/typecheck.mdk`, byte-identical harnesses). User-definable effect labels
 (gap 2: the `effect Foo` declaration form) shipped 2026-06-06 (reference + selfhost
-mirror). Remaining: manifest emission (and cross-module label export). See **§5a
-(current state)** for the precise done/remaining split. Companion to [`language-design.md`](./language-design.md)
+mirror). Cross-module effect label export (gap 3) shipped 2026-06-07. Remaining:
+manifest emission only. See **§5a (current state)** for the precise done/remaining
+split. Companion to [`language-design.md`](./language-design.md)
 (effect rows as they exist today) and [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
 (effects are erased before codegen). The **platform/runtime architecture** that
 consumes this feature (verification pipeline, plugin SDK model, worked plugin
@@ -146,11 +147,8 @@ String` — which is exactly the "the handler is the host" model (§2): the labe
 the manifest entry, the extern is the granted host function.
 
 **Deliberately deferred:** the **parameterized** form (`effect Fetch (Str)`,
-`<Fetch "idp.example.com">`) is Phase 146b (§6a); **cross-module** export/import of a
-declared label (registering a `pub` `effect` across the loader's module boundary) is
-not yet wired — labels register within their compilation unit. For the single-module
-"wow" demo and the test fixtures this is sufficient; multi-module platforms revisit
-it alongside manifest emission.
+`<Fetch "idp.example.com">`) is Phase 146b (§6a). Cross-module export/import of a
+declared label is **done (gap 3, 2026-06-07)** — see §5a.
 
 
 ## 4. Non-goals
@@ -244,9 +242,18 @@ per-arrow effvar allocation — see `selfhost/PERF-NOTES.md`.)
 
 **Remaining:**
 - **Manifest emission** — unbuilt (waits on the edge runtime, §9).
-- **Cross-module effect labels** — a `pub` `effect` declared in one module is not yet
-  visible across the loader boundary (gap 2 registers labels within a compilation
-  unit; see §3a).
+
+**Done (Phase 146 gap 3, 2026-06-07):** cross-module effect label export. An
+`export effect Foo` declaration in one module is now visible across the loader
+boundary — importing modules see `<Foo>` as a known label in effect rows rather
+than `UnknownEffect`. Implementation: `exp_effects` added to `module_exports` in
+`lib/resolve.ml`; populated from public `DEffect` decls + UseWild re-exports in
+`build_exports`; installed into `env.effects` on import (same pattern as Phase 130
+iface-methods). Selfhost mirror in `selfhost/resolve.mdk`: `expEffects` on
+`ModuleExports`, `expEffectsDirect`/`reExpEffects`, `importedEffects`/
+`oneImportEffects`, `buildEnvMM` extended. Fixtures: `effect_export` (valid) +
+`effect_not_exported` (reject) in `test/resolve_module_fixtures/`; 2 inline
+`test_resolve.ml` cases; diff_selfhost_resolve_modules 10/10; @thorough green.
 
 **Done (Phase 146 gap 2, 2026-06-06):** user/platform-definable effect labels. A
 top-level `effect Foo` declaration (`DEffect of bool * ident`; `export effect Foo`
