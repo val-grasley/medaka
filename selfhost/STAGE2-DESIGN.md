@@ -790,9 +790,9 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   single-impl `RKey`, `disp_multi` one method narrowed at Int and Flag via distinct
   `RKey`s, `disp_dict` a `=>`-constrained fn dispatched through the dict at both Int
   and Flag) and the **35/35 plain-harness fixtures stay byte-identical** (dispatch
-  emission only fires when the impl list is non-empty). Still **not** the real backend:
-  arg-tag (`RNone`) dispatch, nested requires dicts, multi-clause/arg-position impl
-  methods, arrays / GC remain out of scope and panic.
+  emission only fires when the impl list is non-empty). Slice 6 deferred arg-tag /
+  arg-position dispatch and multi-clause impl methods to slice 7 (§2.4a-4 below);
+  nested requires dicts and arrays / GC remain out of scope and panic.
 
 **2.4a-4 — Slice 7 (ARG-POSITION / arg-tag DISPATCH).** The symmetric remaining
   dispatch gap, also bootstrap-critical (`eq`/`compare`/`show` over values). **Key
