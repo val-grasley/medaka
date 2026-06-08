@@ -1246,7 +1246,9 @@ argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
 -- the method's impls (corpus completeness — the dict-passing fixtures).  This
 -- mirrors core_ir_eval's `methodAtNarrow`/`applyDicts`/`narrowMethod` one-to-one,
 -- resolving the same routes in emitted control flow instead of walking VMulti
--- values.  RNone (arg-tag fallback) and nested-requires dicts are out of scope.
+-- values.  RNone (D3a: a type-variable arg-position site the front end left
+-- unstamped) falls back to runtime arg-tag dispatch; nested-requires dicts are out
+-- of scope.
 --
 -- SPIKE-REP NOTES (slice 6; the (j)/(k)/(l) entries in STAGE2-DESIGN §2.4a):
 --   (j) DICTS — a dict is a uniform i64 WITNESS word = `hashName(impl-head-tag)`
@@ -1278,7 +1280,7 @@ emitMethod e env name route implRoutes methRoutes argOps =
         None => panic ("llvm spike: no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
     RDict d => emitMethodDispatch e env name d argOps
     RDictFwd d => emitMethodDispatch e env name d argOps
-    RNone => panic ("llvm spike: method '" ++ name ++ "' has route RNone — arg-tag fallback dispatch is out of scope (slice 6: RKey/RDict only)")
+    RNone => emitMethodArgDispatch e name argOps
 
 -- a direct call to a statically-resolved impl fn (RKey).  Nullary (argOps == [])
 -- ⇒ `call @mdk_impl_<tag>_<method>()`, yielding the impl's value.  Result LTy is

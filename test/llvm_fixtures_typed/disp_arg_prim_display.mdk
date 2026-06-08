@@ -1,0 +1,21 @@
+-- D3a: ARG-POSITION dispatch `display@String` INSIDE an impl body — the dominant
+-- primitive arg-position case (Display/Debug impl bodies rendering string fields,
+-- 19 of the 25 primitive sites).  `impl Display Box`'s body calls `display s` where
+-- `s : String`; before D3a that inner call was a bare CVar → emitMethodArgDispatch,
+-- which a String immediate (no cell tag) defeats.  D3a infers the (non-`requires`)
+-- impl body on the emit path and stamps the inner site `RKey "String"` → a direct
+-- `@mdk_impl_String_display(s)`; the outer `display (Box …)` stamps `RKey "Box"`.
+-- main wraps the results in stringConcat so its static type is String (the print
+-- routine is type-directed) — `"hello " ++ "world"` = "hello world".
+interface Display a where
+  display : a -> String
+
+data Box = Box String
+
+impl Display String where
+  display s = s
+
+impl Display Box where
+  display (Box s) = display s
+
+main = stringConcat [display (Box "hello "), display (Box "world")]

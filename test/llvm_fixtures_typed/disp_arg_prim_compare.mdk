@@ -1,0 +1,29 @@
+-- D3a: ARG-POSITION dispatch on a PRIMITIVE receiver (`compare` on Int), with a
+-- SECOND impl present so the dispatch is genuinely multi-group.  Before D3a the
+-- marker left `compare x y` a bare CVar → emitMethodArgDispatch; with >1 impl that
+-- path LOADS the discriminating argument's cell tag at run time to pick the impl —
+-- but an Int immediate carries NO cell tag, so it read garbage / crashed (a
+-- single-impl method would have shortcut to a direct call and hidden the bug).
+-- D3a stamps the site `RKey "Int"` from the inferred Int argument type, so it
+-- lowers to a DIRECT call to `@mdk_impl_Int_compare(a, b)` — static dispatch, no
+-- tag inspection, the same RKey path return-position dispatch already uses.
+-- `compare 3 5` → CLt → 1.
+interface Ord a where
+  compare : a -> a -> Cmp
+
+data Cmp = CLt | CEq | CGt
+data Tag = A | B
+
+impl Ord Int where
+  compare a b = if a < b then CLt else if a > b then CGt else CEq
+
+impl Ord Tag where
+  compare A A = CEq
+  compare A B = CLt
+  compare B A = CGt
+  compare B B = CEq
+
+main = match compare 3 5
+  CLt => 1
+  CEq => 2
+  CGt => 3

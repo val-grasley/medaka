@@ -59,7 +59,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable + **inspect→method**); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend**: **typeclass dispatch in the backend** (DECIDED: runtime dict-passing; D0+D0.5 inventory DONE → re-scoped: 0 nested/0 CDict, return-pos done; remaining = **D3a** stamp ~903 concrete arg-position sites→RKey + **D3b** dict-pass 110 type-variable sites) → **bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable + **inspect→method**); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend**: **typeclass dispatch in the backend** (DECIDED: runtime dict-passing; D0+D0.5 inventory DONE → re-scoped: 0 nested/0 CDict, return-pos done; remaining = **D3a** stamp ~903 concrete arg-position sites→RKey (✅ DONE 2026-06-07; emitter now static-dispatches concrete arg-position, incl. the 25 primitive heads) + **D3b** dict-pass 110 type-variable sites) → **bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -427,16 +427,28 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
      - **D1/D2 (nested-dict cells, CDict params) — DROPPED for bootstrap.** Inventory
        shows 0 nesting / 0 CDict; defer this machinery until a non-bootstrap program needs
        it.
-     - **D3a — stamp concrete arg-position sites → RKey** (the bulk, ~903). Front-end
-       (selfhost typecheck): extend arg-position method resolution to stamp a static `RKey`
-       for concrete receivers, mirroring return-position `resolveSite`; the emitter's
-       existing RKey path then handles them (incl. the 25 primitive heads). Retires arg-tag
-       for everything except true polymorphism. Gate like Phase 83/84 (preserve goldens).
+     - ✅ **D3a — stamp concrete arg-position sites → RKey.** DONE (2026-06-07). The ~903
+       concrete arg-position sites (25 primitive + 878 ADT) are stamped static `RKey` on the
+       LLVM emit path, behind `argStampEnabled` (off for every golden/oracle driver, so all
+       goldens stay byte-identical). `typecheck.mdk`: `prePassDictArg` (arg-position `EVar`→
+       `EMethodAt`), `inferMethodAt`→`recordArgStamp` (keyed on the discriminating-arg mono),
+       `resolveArgStamps` (concrete→`RKey`, type-var→`RNone`), `inferPlainImpl` (infer
+       NON-`requires` impl bodies on the emit path so the `display@String` impl-body sites are
+       reached). **Emitter now does static dispatch for concrete arg-position** — its existing
+       `RKey` path already emitted primitive impl fns (`@mdk_impl_Int_compare`,
+       `@mdk_impl_String_display`); the only emitter change is `emitMethod`'s `RNone` arm →
+       arg-tag fallback (was panic) so the 110 type-variable sites keep working until D3b. New
+       fixtures `disp_arg_prim_{compare,display}` (panic pre-D3a, pass after); existing ADT
+       arg fixtures now lower to static `RKey`. `emitMethodArgDispatch` retained (D3b).
      - **D3b — dict-passing for the 110 type-variable sites.** Extend the Phase-83/84
        `requires`-dict from return- to **arg**-position element dispatch (~87, in the 5
        `Eq/Ord/Debug/Display/Hashable (List a)`-style impl bodies) + the ~23 prelude `=>`
        generic helpers. Emitter gains the arg-position dict-param path.
-     - **Resolve the 1 RNone `empty`** (return-position resolution gap) — fold into D3a.
+     - **Resolve the 1 RNone `empty`** — deferred (NOT closed by D3a): `foldMap`'s default-body
+       seed stays `RNone` because the `elaborateModules` bootstrap path never infers interface
+       default bodies (`implInferEnabled=False`, the gate that keeps module goldens identical).
+       Real work — fold into D3b/D4. Not on the LLVM fixture path; D3a's `RNone`→arg-tag fallback
+       means it no longer panics the emitter.
      - **D4 — dispatch corpus gate** over the real compiler's dispatch-heavy modules →
        bridge to bootstrap.
      - **(deferred) D5 — specialization/monomorphization** optimization; reach for it only

@@ -240,3 +240,40 @@ is *not* entirely statically resolvable — D3 cannot be "marking only."
 marking)** with a **small, well-localized dict-passing core (110 sites, all
 directly-applied, concentrated in 5 derived-impl method bodies + ~18 prelude helpers)**.
 No first-class/unapplied method values exist to complicate it.
+
+---
+
+## D3a: Concrete arg-position sites STAMPED → RKey (2026-06-07)
+
+The 903 concrete arg-position sites (25 primitive + 878 ADT) are now stamped as static
+`RKey <head>` on the LLVM **emit path** (gated behind `argStampEnabled`, off for every
+golden/oracle driver so all goldens stay byte-identical). Implementation: `typecheck.mdk`
+`prePassDictArg` (rewrite arg-position method `EVar`→`EMethodAt`), `inferMethodAt`→
+`recordArgStamp` (queue the route ref keyed on the *discriminating-arg* mono),
+`resolveArgStamps` (concrete head → `RKey`, type-variable → `RNone`), and `inferPlainImpl`
+(infer NON-`requires` impl bodies on the emit path so the `display@String` impl-body sites
+are reached). The emitter's existing `RKey` path emits primitive impl fns
+(`@mdk_impl_Int_compare`, `@mdk_impl_String_display`) unchanged — **no emitter-side fix was
+needed** beyond turning `emitMethod`'s `RNone` arm from a panic into the arg-tag fallback (so
+the 110 unstamped type-variable sites keep working until D3b).
+
+**The 25 primitive sites now emit.** Verified end-to-end by two fixtures that PANICKED before
+D3a (`emitMethodArgDispatch` → "impl type owns no constructors": primitive immediates have no
+cell tag) and pass after: `test/llvm_fixtures_typed/disp_arg_prim_compare.mdk` (`compare@Int`,
+multi-impl so the arg-tag path is genuinely exercised) and `disp_arg_prim_display.mdk`
+(`display@String` inside a `Display` impl body). The existing arg-position ADT fixtures
+(`disp_arg_single`/`multi`/`clauses`) now also lower to static `RKey` (same output) — retiring
+runtime arg-tag dispatch for concrete receivers.
+
+**Type-variable count unchanged at 110** (D3b): `resolveArgStamps` leaves those `RNone`; the
+emitter arg-tag-dispatches them. (Re-running the D0.5 probe post-D3a reports 25 primitive / 110
+type-variable **unchanged** and concrete-ADT 878→880 / total 1013→1015 — the +2 is D3a's own
+new code, which `all_modules_entry` analyzes: `map fst …` / `map snd …` calls in the added
+`elaborateDict`/stamp helpers are themselves `map@List` arg-position sites. The classification
+machinery is untouched.)
+
+**The 1 RNone `empty` is still open** (deferred): `foldMap`'s default-body seed routes `RNone`
+because the `elaborateModules` bootstrap path runs `implInferEnabled = False` and never infers
+interface default bodies (the gate that keeps module goldens byte-identical). Folded into
+D3b/D4 — see STAGE2-DESIGN §2.4c. It is not on the LLVM fixture path, so it blocks nothing now,
+and D3a's `RNone → arg-tag` fallback means it no longer panics the emitter.
