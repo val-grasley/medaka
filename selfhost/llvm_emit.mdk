@@ -492,6 +492,7 @@ emitLit e (LString s) =
 emitLit _ (LChar c) =
   let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
   (intToString (cp * 2 + 1), LTChar)
+emitLit _ LUnit = ("1", LTUnit)
 emitLit _ _ = panic "llvm spike: only Int/Float/Bool/String literals supported in slice 1"
 
 lookupVar : List (String, (String, LTy)) -> String -> (String, LTy)
@@ -868,6 +869,26 @@ emitAdtExtern e env "stringCompare" args = match emitArgs e env args
   _ => panic "llvm spike: stringCompare takes two arguments (slice 11)"
 emitAdtExtern _ _ name _ = panic ("llvm spike: unsupported adt extern " ++ name)
 
+-- slice 12: args + env externs.  `args ()` → List String of argv[1..];
+-- `getEnv name` → Option String.  Results are LTCon — never auto-printed.
+isEnvExtern : String -> Bool
+isEnvExtern name = containsStr name ["args", "getEnv"]
+
+emitEnvExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitEnvExtern e env "args" args = match emitArgs e env args
+  [u] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_args(i64 " ++ u ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: args takes one (Unit) argument (slice 12)"
+emitEnvExtern e env "getEnv" args = match emitArgs e env args
+  [n] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_get_env(i64 " ++ n ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: getEnv takes one argument (slice 12)"
+emitEnvExtern _ _ name _ = panic ("llvm spike: unsupported env extern " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -1050,6 +1071,7 @@ emitApp e env app =
       else if isStrCharExtern fname && hasArgs args then emitStrCharExtern e env fname args
       else if isUnicodeExtern fname && hasArgs args then emitUnicodeExtern e env fname args
       else if isAdtExtern fname && hasArgs args then emitAdtExtern e env fname args
+      else if isEnvExtern fname && hasArgs args then emitEnvExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -2957,8 +2979,9 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = emitPreamble e
   let _ = emitFns e (fnBinds groups)
   let _ = emitImpls e implEntries
-  let _ = emit e "define i32 @main() {"
+  let _ = emit e "define i32 @main(i32 %argc, ptr %argv) {"
   let _ = emit e "entry:"
+  let _ = emit e "  call void @mdk_set_args(i32 %argc, ptr %argv)"
   let env = emitTopBinds e [] (valBinds groups)
   let (mv, mty) = emitExpr e env (mainBody groups)
   let _ = emitPrint e mv mty
@@ -3014,6 +3037,9 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_string_to_float(i64)"
   let _ = emit e "declare i64 @mdk_string_index_of(i64, i64)"
   let _ = emit e "declare i64 @mdk_string_compare(i64, i64)"
+  let _ = emit e "declare void @mdk_set_args(i32, ptr)"
+  let _ = emit e "declare i64 @mdk_args(i64)"
+  let _ = emit e "declare i64 @mdk_get_env(i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

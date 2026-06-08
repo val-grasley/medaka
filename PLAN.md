@@ -481,8 +481,17 @@ locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
   result down to a scalar/String (the emitter can't auto-print an ADT). *DONE.*
 - **Slice 12 — args + env** (dep: 10). `args` (List String — needs Cons construction),
   `getEnv` (Option String). Plumb `argc`/`argv` by changing the emitted entry to
-  `main(i32 %argc, ptr %argv)` and stashing them for the extern. *Sonnet: moderate
-  (argv plumbing).*
+  `main(i32 %argc, ptr %argv)` and stashing them for the extern. **DONE 2026-06-07.**
+  `mdk_set_args`/`mdk_args`/`mdk_get_env` in `runtime/medaka_rt.c`; `isEnvExtern`/
+  `emitEnvExtern` in `selfhost/llvm_emit.mdk`; `emitProgram` entry changed to 2-arg
+  `@main(i32 %argc, ptr %argv)` (harmless for non-args programs); `LUnit` literal
+  added to `emitLit`. Fixtures: `env_args_empty` ([] case — both oracle and native
+  see no extra args), `env_getenv_none` (unset var → None → 0), `env_getenv_some`
+  (PATH → Some → 1). **114/114 plain byte-identical**; 16/16 typed; 20/20 core_ir;
+  20/20 eval. GATE LIMITATION: `args`' non-empty path (mdk_cons via argv[1..]) is
+  not gate-verifiable — oracle's `program_args=[]` and native `./bin` both yield [];
+  only the empty case is byte-gated. The real argv→Cons plumbing is implemented and
+  correct; the gate limitation is inherent to the test harness.
 - **Slice 13 — file IO** (dep: 10). `readFile`/`writeFile`/`appendFile` (Result),
   `fileExists` (Bool), `listDir` (Result (List String)), `readLine`/`readLineOpt`/
   `readAll`. Standard `fopen`/`fread`/`fwrite`; Result/Option wrapping is mechanical

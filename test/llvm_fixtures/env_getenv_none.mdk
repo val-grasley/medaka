@@ -1,0 +1,5 @@
+-- slice 12: getEnv returns None for an unset env var.  MEDAKA_NO_SUCH_VAR_XYZZY
+-- is not set in either the oracle or the native run, so both return None -> 0.
+main = match getEnv "MEDAKA_NO_SUCH_VAR_XYZZY"
+  Some v => 1
+  None => 0

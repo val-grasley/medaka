@@ -1109,7 +1109,13 @@ backend (Stage 2) — near-term sequence"):
    round-trip; 103/103 plain; gates the ADT-returning slices 11/12/13), **slice 11
    DONE 2026-06-07** (ADT-returning string externs: `stringToFloat` → `Option Float`,
    `stringIndexOf` → `Option Int`, `stringCompare` → `Ordering`; `mdk_box_float` helper
-   in `medaka_rt.c`; 8 new fixtures; 111/111 plain) — and close the spike's out-of-scope gaps (arg-tag
+   in `medaka_rt.c`; 8 new fixtures; 111/111 plain), **slice 12 DONE 2026-06-07**
+   (`args : Unit → List String` via `mdk_args` building Cons cells back-to-front from
+   `argv[1..]`; `getEnv : String → Option String` via `mdk_get_env`; `mdk_set_args`
+   stashes argc/argv; `emitProgram` entry changed to `@main(i32 %argc, ptr %argv)`;
+   `isEnvExtern`/`emitEnvExtern` added; `LUnit` literal added to `emitLit`; 3 new
+   fixtures; 114/114 plain; GATE LIMITATION: args non-empty path unverifiable — oracle
+   program_args=[] and native ./bin both yield []; real argv→Cons plumbing is in place) — and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
    (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);
