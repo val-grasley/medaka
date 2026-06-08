@@ -766,6 +766,72 @@ emitStrCharExtern e env "stringSlice" args = match emitArgs e env args
   _ => panic "llvm spike: stringSlice takes three arguments (slice 9)"
 emitStrCharExtern _ _ name _ = panic ("llvm spike: unsupported str-char extern " ++ name)
 
+-- slice 14: ASCII char classification + case mapping (unicode subset).
+-- Predicate externs return raw 0/1 from C; emitter wraps with tagInt to Bool.
+-- charIsPunct matches Unicode Pc/Pd/Pe/Pf/Pi/Po/Ps for ASCII (NOT C ispunct —
+-- symbols like + $ = ^ ` | ~ are excluded).
+isUnicodeExtern : String -> Bool
+isUnicodeExtern name = containsStr name
+  ["charIsAlpha", "charIsSpace", "charIsUpper", "charIsLower", "charIsPunct",
+   "charToUpper", "charToLower", "stringToUpper", "stringToLower"]
+
+emitUnicodeExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitUnicodeExtern e env "charIsAlpha" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_alpha(i64 " ++ a ++ ")")
+    (tagInt e r, LTBool)
+  _ => panic "llvm spike: charIsAlpha takes one argument (slice 14)"
+emitUnicodeExtern e env "charIsSpace" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_space(i64 " ++ a ++ ")")
+    (tagInt e r, LTBool)
+  _ => panic "llvm spike: charIsSpace takes one argument (slice 14)"
+emitUnicodeExtern e env "charIsUpper" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_upper(i64 " ++ a ++ ")")
+    (tagInt e r, LTBool)
+  _ => panic "llvm spike: charIsUpper takes one argument (slice 14)"
+emitUnicodeExtern e env "charIsLower" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_lower(i64 " ++ a ++ ")")
+    (tagInt e r, LTBool)
+  _ => panic "llvm spike: charIsLower takes one argument (slice 14)"
+emitUnicodeExtern e env "charIsPunct" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_is_punct(i64 " ++ a ++ ")")
+    (tagInt e r, LTBool)
+  _ => panic "llvm spike: charIsPunct takes one argument (slice 14)"
+emitUnicodeExtern e env "charToUpper" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_to_upper(i64 " ++ a ++ ")")
+    (r, LTChar)
+  _ => panic "llvm spike: charToUpper takes one argument (slice 14)"
+emitUnicodeExtern e env "charToLower" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_to_lower(i64 " ++ a ++ ")")
+    (r, LTChar)
+  _ => panic "llvm spike: charToLower takes one argument (slice 14)"
+emitUnicodeExtern e env "stringToUpper" args = match emitArgs e env args
+  [s] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_upper(i64 " ++ s ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: stringToUpper takes one argument (slice 14)"
+emitUnicodeExtern e env "stringToLower" args = match emitArgs e env args
+  [s] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_lower(i64 " ++ s ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: stringToLower takes one argument (slice 14)"
+emitUnicodeExtern _ _ name _ = panic ("llvm spike: unsupported unicode extern " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -946,6 +1012,7 @@ emitApp e env app =
       else if isArrLeafExtern fname && hasArgs args then emitArrLeafExtern e env fname args
       else if isCharExtern fname && hasArgs args then emitCharExtern e env fname args
       else if isStrCharExtern fname && hasArgs args then emitStrCharExtern e env fname args
+      else if isUnicodeExtern fname && hasArgs args then emitUnicodeExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -2859,6 +2926,15 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_string_to_chars(i64)"
   let _ = emit e "declare i64 @mdk_string_from_chars(i64)"
   let _ = emit e "declare i64 @mdk_string_slice(i64, i64, i64)"
+  let _ = emit e "declare i64 @mdk_char_is_alpha(i64)"
+  let _ = emit e "declare i64 @mdk_char_is_space(i64)"
+  let _ = emit e "declare i64 @mdk_char_is_upper(i64)"
+  let _ = emit e "declare i64 @mdk_char_is_lower(i64)"
+  let _ = emit e "declare i64 @mdk_char_is_punct(i64)"
+  let _ = emit e "declare i64 @mdk_char_to_upper(i64)"
+  let _ = emit e "declare i64 @mdk_char_to_lower(i64)"
+  let _ = emit e "declare i64 @mdk_string_to_upper(i64)"
+  let _ = emit e "declare i64 @mdk_string_to_lower(i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

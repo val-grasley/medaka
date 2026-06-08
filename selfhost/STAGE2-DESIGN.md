@@ -1075,7 +1075,14 @@ backend (Stage 2) — near-term sequence"):
    alloc + encode via `mdk_string_from_chars`; `stringSlice` LEAF: clamped codepoint
    indices via `mdk_utf8_byte_offset` + `mdk_string_slice`; `mdk_utf8_decode` added;
    Array result is `LTCon`, no auto-print; 91/91 plain + 15/15 typed byte-identical;
-   unicode round-trip `wörld` + codepoint slice `café→af` verified) — and close the spike's out-of-scope gaps (arg-tag
+   unicode round-trip `wörld` + codepoint slice `café→af` verified), **slice 14 DONE
+   2026-06-07** (`charIsAlpha/Space/Upper/Lower/Punct`, `charToUpper/Lower`,
+   `stringToUpper/Lower`; nine C helpers in `medaka_rt.c`; `isUnicodeExtern`/
+   `emitUnicodeExtern` in `selfhost/llvm_emit.mdk`; predicates call C and tag raw 0/1
+   to Bool via `tagInt`; `charIsPunct` is a switch over Unicode Pc/Pd/Pe/Pf/Pi/Po/Ps
+   ASCII members, NOT `ispunct()` — `+`/`$`/`=`/`^`/`|`/`~` return `False`; string
+   case-map is byte-wise ASCII, UTF-8 multi-byte bytes pass through; 101/101 plain +
+   16/16 typed byte-identical; full-Unicode deferred to RUNTIME-DESIGN §6) — and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
    (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);

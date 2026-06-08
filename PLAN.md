@@ -454,11 +454,7 @@ locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
 **Tier B — gated behind the Char-rep lock:**
 
 - ✅ **Slice 9 — string↔char + codepoint slicing** (dep: 8, 6/7). **DONE 2026-06-07.** `stringToChars` → `mdk_string_to_chars` (walk UTF-8, emit one Char immediate per codepoint into a raw-length Array cell); `stringFromChars` → `mdk_string_from_chars` (two-pass: sum UTF-8 widths, alloc, encode each Char); `stringSlice` → `mdk_string_slice` (codepoint-indexed, CLAMPED: `mdk_utf8_byte_offset` converts lo/hi codepoint indices to byte offsets). `mdk_utf8_decode` added to medaka_rt.c alongside `mdk_utf8_byte_offset`. 91/91 plain + 15/15 typed fixtures byte-identical; unicode round-trip (`wörld`) and codepoint-indexed slice (`café` → `af`) verified.
-- **Slice 14 — unicode (ASCII subset)** (dep: 8). `charIsAlpha/Space/Upper/Lower/Punct`,
-  `charToUpper/Lower`, `stringToUpper/Lower`. C ASCII classification; **fixtures
-  ASCII-only** so they match the oracle's real-unicode OCaml impl; note full-unicode
-  (a Rust `unicode-*` crate, RUNTIME-DESIGN §6) as a deferred follow-up. *Sonnet:
-  good (repetitive `ctype.h`-shaped).*
+- ✅ **Slice 14 — unicode (ASCII subset)** (dep: 8). **DONE 2026-06-07.** `charIsAlpha/Space/Upper/Lower/Punct`, `charToUpper/Lower`, `stringToUpper/Lower`. Nine C helpers in `medaka_rt.c`; `isUnicodeExtern`/`emitUnicodeExtern` added to `selfhost/llvm_emit.mdk` (predicates call C and tag raw 0/1 to Bool via `tagInt`; case-mappers return `LTChar`/`LTStr`). `charIsPunct` is a switch over Unicode Pc/Pd/Pe/Pf/Pi/Po/Ps ASCII members — NOT `ispunct()` — so `+`/`$`/`=`/`^`/`` ` ``/`|`/`~` (Unicode symbols Sm/Sc/Sk) correctly return `False`. String case-map is byte-wise ASCII (bytes ≥ 0x80 pass through, so UTF-8 multi-byte codepoints are unchanged). 10 plain fixtures (including `uni_punct_sym.mdk` proving `charIsPunct '+' = False`) + 1 typed fixture; 101/101 plain + 16/16 typed byte-identical. Full-Unicode classification (a Rust `unicode-*` crate) deferred; see RUNTIME-DESIGN §6.
 
 **Tier C — gated behind the reserved-ADT-tag precursor:**
 

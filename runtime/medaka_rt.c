@@ -314,3 +314,69 @@ long long mdk_string_slice(long long lo_t, long long hi_t, long long s) {
   long long bhi = mdk_utf8_byte_offset(bytes, byte_len, hi);
   return mdk_str_lit(bytes + blo, bhi - blo);
 }
+
+/* ── native extern catalog slice 14: ASCII char classification + case mapping ── */
+/* Predicates take a tagged Char, return raw 0/1 (emitter tags to Bool). */
+long long mdk_char_is_alpha(long long t) {
+  long long c = t >> 1;
+  return ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')) ? 1 : 0;
+}
+long long mdk_char_is_space(long long t) {
+  long long c = t >> 1;
+  return (c == ' ' || (c >= 9 && c <= 13)) ? 1 : 0;
+}
+long long mdk_char_is_upper(long long t) {
+  long long c = t >> 1;
+  return (c >= 'A' && c <= 'Z') ? 1 : 0;
+}
+long long mdk_char_is_lower(long long t) {
+  long long c = t >> 1;
+  return (c >= 'a' && c <= 'z') ? 1 : 0;
+}
+/* charIsPunct matches Unicode general categories Pc/Pd/Pe/Pf/Pi/Po/Ps for ASCII.
+   Several ASCII chars that C's ispunct() includes are Unicode symbols (Sm/Sc/Sk):
+   $ + < = > ^ ` | ~  — these return 0. */
+long long mdk_char_is_punct(long long t) {
+  long long c = t >> 1;
+  switch ((int)c) {
+    case '!': case '"': case '#': case '%': case '&': case '\'':
+    case '(': case ')': case '*': case ',': case '-': case '.':
+    case '/': case ':': case ';': case '?': case '@': case '[':
+    case '\\': case ']': case '_': case '{': case '}': return 1;
+    default: return 0;
+  }
+}
+long long mdk_char_to_upper(long long t) {
+  long long c = t >> 1;
+  if (c >= 'a' && c <= 'z') c -= 32;
+  return (c << 1) | 1;
+}
+long long mdk_char_to_lower(long long t) {
+  long long c = t >> 1;
+  if (c >= 'A' && c <= 'Z') c += 32;
+  return (c << 1) | 1;
+}
+/* Byte-wise ASCII case map: bytes >=0x80 (UTF-8 lead/continuation) are left
+   untouched, so multibyte codepoints pass through unchanged. */
+long long mdk_string_to_upper(long long s) {
+  const char *cell = (const char *)s;
+  long long bl = ((const long long *)cell)[1];
+  const char *src = cell + 24;
+  char *buf = (char *)mdk_alloc(bl + 1);
+  for (long long i = 0; i < bl; i++) {
+    char c = src[i];
+    buf[i] = (c >= 'a' && c <= 'z') ? (char)(c - 32) : c;
+  }
+  return mdk_str_lit(buf, bl);
+}
+long long mdk_string_to_lower(long long s) {
+  const char *cell = (const char *)s;
+  long long bl = ((const long long *)cell)[1];
+  const char *src = cell + 24;
+  char *buf = (char *)mdk_alloc(bl + 1);
+  for (long long i = 0; i < bl; i++) {
+    char c = src[i];
+    buf[i] = (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c;
+  }
+  return mdk_str_lit(buf, bl);
+}
