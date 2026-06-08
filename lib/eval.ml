@@ -1303,8 +1303,6 @@ let primitives : (string * value) list =
     ("putStrLn", VPrim (fun v -> match v with
        | VString s -> !output_hook s; !output_hook "\n"; VUnit
        | _ -> raise (Eval_error ("putStrLn: expected String", None))));
-    (* Escape hatch: the pre-Phase-111 raw structural dump (`pp_value`). *)
-    ("inspect", VPrim (fun v -> !output_hook (pp_value v); !output_hook "\n"; VUnit));
     (* `pure` is no longer a primitive — it's an ordinary Applicative interface
        method (stdlib/core.mdk), routed by its EMethodRef to the impl the
        typechecker chose (Phase 69.x-c retired the current_monad_type/pure_impls

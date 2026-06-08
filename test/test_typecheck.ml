@@ -3600,8 +3600,8 @@ mk n = tag n
 
 main : <IO> Unit
 main =
-  inspect (mk 5 : String)
-  if (mk 5 : Bool) then inspect "T" else inspect "F"
+  putStrLn (mk 5 : String)
+  if (mk 5 : Bool) then putStrLn "T" else putStrLn "F"
 |}
 
 (* Phase 115 (#1): the same routes via the two-pass elaboration (Elaborate) for an

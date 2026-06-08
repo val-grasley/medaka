@@ -21,10 +21,11 @@ See [`STAGE2-DESIGN.md`](./STAGE2-DESIGN.md) for the backend-architecture decisi
 > tree-walker oracle (`test/diff_selfhost_llvm{,_typed}.sh`). The three non-C-extern
 > dispositions are also **DONE**: RNG = deterministic SplitMix64 (shared oracle +
 > runtime); sorts = `→MEDAKA` (pure-Medaka stdlib); `hash` = `→METHOD` (`Hashable`
-> typeclass). **Still open** (per §7): the `set_ref` write barrier, the `panic` unwind
-> model, the lone remaining `→METHOD` extern `inspect`, and **promotion of the spike to
-> the real backend** (close the dispatch gaps + drive it over the real `selfhost/*.mdk`
-> source, then bootstrap).
+> typeclass); `inspect` = `→METHOD` (`inspect x = putStrLn (debug x)` in
+> `stdlib/io.mdk` — the last reflective extern is gone). **Still open** (per §7):
+> the `set_ref` write barrier, the `panic` unwind model, and **promotion of the
+> spike to the real backend** (close the dispatch gaps + drive it over the real
+> `selfhost/*.mdk` source, then bootstrap).
 
 ---
 
@@ -134,9 +135,10 @@ straggler, so per-type hash code is now *generated*, not computed by a runtime t
 walks an unknown layout. Net effect: **the native runtime needs zero knowledge of value
 layout** — it only ever sees opaque pointers and scalars.
 
-**`inspect : a -> <IO> Unit` → `→METHOD` + `IO`.** It's both reflective *and*
-effectful. Decompose: render via the `Debug` method (compile-time dispatched) to a
-`String`, then `putStr` it. No reflective extern remains.
+**`inspect : a -> <IO> Unit` → `→METHOD` + `IO`. DONE 2026-06-07** — `inspect`
+is now `inspect x = putStrLn (debug x)` in `stdlib/io.mdk` (requires `Debug a`).
+The reflective extern is gone; the native runtime has no knowledge of value layout.
+No reflective extern remains — the `→METHOD` column is fully cleared.
 
 **`Ref` / `set_ref` → `GC/CTRL`.** `Ref` allocates a one-slot mutable cell in the
 GC heap; `set_ref` is a store. Under Boehm both are trivial (plain store, no
@@ -252,16 +254,16 @@ literal/print/`intToString` path on this layout (`runtime/medaka_rt.c`,
 | `arraySortInPlaceBy` | `(a -> a -> Ordering) -> Array a -> <Mut> Unit` | →MEDAKA | |
 | `arrayMakeWith` | `Int -> (Int -> a) -> Array a` | →MEDAKA | builder is a Medaka closure |
 
-### Convert to typeclass (no extern) — `→METHOD`  *(`hash` DONE 2026-06-07 → `Hashable`; `inspect` remaining)*
+### Convert to typeclass (no extern) — `→METHOD`  *(both DONE 2026-06-07)*
 | `hash` | `a -> Int` | →METHOD | ✅ derived `Hashable` |
-| `inspect` | `a -> <IO> Unit` | →METHOD + IO | `Debug` render → `putStr` (remaining) |
+| `inspect` | `a -> <IO> Unit` | →METHOD + IO | ✅ `inspect x = putStrLn (debug x)` in `stdlib/io.mdk` |
 
 ### Disposition totals
 `INTRINSIC` 13 · `LEAF` 18 · `UNICODE` 9 · `IO` 16 · `RNG` 5 · `GC/CTRL` 5 ·
 `→MEDAKA` 3 · `→METHOD` 2  = **71**.  *(2026-06-07: `stringLength` reclassified
 `LEAF`→`INTRINSIC` when the string rep was locked with a cached codepoint count, §7
-decision 2. **Implementation status: all dispositions DONE except the one `→METHOD`
-extern `inspect`** — INTRINSIC/LEAF/UNICODE/IO/GC-CTRL ported via spike slices 1–14;
+decision 2. **Implementation status: all dispositions DONE** —
+INTRINSIC/LEAF/UNICODE/IO/GC-CTRL ported via spike slices 1–14;
 RNG via SplitMix64; →MEDAKA via stdlib; `hash` →METHOD via `Hashable`.)*
 
 After applying `INTRINSIC` (no call), `→MEDAKA` (compiled Medaka), and `→METHOD`

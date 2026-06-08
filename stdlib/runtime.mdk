@@ -12,9 +12,6 @@
 -- they're Medaka functions in core.mdk that render via `Display` and call these.
 extern putStr : String -> <IO> Unit
 extern putStrLn : String -> <IO> Unit
--- Escape hatch: dumps a value's raw internal structure (the pre-Phase-111
--- `println`), bypassing `Display`.  For REPL/debugging only.
-extern inspect : a -> <IO> Unit
 extern Ref : a -> Ref a
 extern set_ref : Ref a -> a -> <Mut> Unit
 -- Raw structural hash primitive backing the `Hashable` interface impls.

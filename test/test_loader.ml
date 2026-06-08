@@ -751,6 +751,10 @@ let test_eval_super_dict_cross_module () =
     let _ = write_file dir "submod.mdk"
       "export data Box a = Box a\n\
        export data Bag a = Bag a\n\n\
+       export impl Display (Box a) requires Display a where\n\
+      \  display (Box x) = \"Box \" ++ display x\n\n\
+       export impl Display (Bag a) requires Display a where\n\
+      \  display (Bag x) = \"Bag \" ++ display x\n\n\
        export interface Base f where\n\
       \  base : a -> f a\n\n\
        export interface Sub f requires Base f where\n\
@@ -769,8 +773,8 @@ let test_eval_super_dict_cross_module () =
       "import submod.{Box, Bag, Base, Sub, base, same, mk}\n\n\
        main : <IO> Unit\n\
        main =\n\
-      \  inspect (mk 5 : Box Int)\n\
-      \  inspect (mk 7 : Bag Int)\n" in
+      \  println (mk 5 : Box Int)\n\
+      \  println (mk 7 : Bag Int)\n" in
     let modules = Loader.load_program main_path [dir] in
     let modules = List.map (fun (mid, fp, prog) ->
       (mid, fp, Desugar.desugar_program prog)) modules in
@@ -817,7 +821,7 @@ let test_eval_method_dict_cross_module () =
        main : <IO> Unit\n\
        main =\n\
       \  let r = foldMap MkSum [1, 2, 3, 4]\n\
-      \  if unwrap r == 10 then inspect \"OK\" else inspect \"BAD\"\n" in
+      \  if unwrap r == 10 then putStrLn \"OK\" else putStrLn \"BAD\"\n" in
     let modules = Loader.load_program main_path [dir] in
     let modules = List.map (fun (mid, fp, prog) ->
       (mid, fp, Desugar.desugar_program prog)) modules in
@@ -866,8 +870,8 @@ let test_eval_module_isolation () =
        import arrmod.{singleton}\n\n\
        main : <IO> Unit\n\
        main =\n\
-      \  inspect (wrap 3 4)\n\
-      \  inspect (singleton 5)\n" in
+      \  putStrLn (intToString (wrap 3 4))\n\
+      \  putStrLn (intToString (singleton 5))\n" in
     let modules = Loader.load_program main_path [dir] in
     let modules = List.map (fun (mid, fp, prog) ->
       (mid, fp, Desugar.desugar_program prog)) modules in
@@ -980,10 +984,14 @@ let test_eval_standalone_vs_method () =
        ol = toList (Some 7)\n\n\
        main : <IO> Unit\n\
        main =\n\
-      \  inspect pairs\n\
-      \  inspect be\n\
-      \  inspect oe\n\
-      \  inspect ol\n" in
+      \  match pairs\n\
+      \    [(k, v)] => putStrLn (intToString k ++ \",\" ++ intToString v)\n\
+      \    _ => putStrLn \"?\"\n\
+      \  if be then putStrLn \"T\" else putStrLn \"F\"\n\
+      \  if oe then putStrLn \"T\" else putStrLn \"F\"\n\
+      \  match ol\n\
+      \    [x] => putStrLn (intToString x)\n\
+      \    _ => putStrLn \"?\"\n" in
     let modules = Loader.load_program main_path [dir] in
     let modules = List.map (fun (mid, fp, prog) ->
       (mid, fp, Desugar.desugar_program prog)) modules in
@@ -1005,7 +1013,7 @@ let test_eval_standalone_vs_method () =
     let out = Buffer.contents buf in
     (* pairs via the standalone (divergent pair type), then the two standalone /
        method isEmpty results, then the Option Foldable.toList method. *)
-    if out <> "[(1, 2)]\nfalse\nfalse\n[7]\n" then
+    if out <> "1,2\nF\nF\n7\n" then
       failwith (Printf.sprintf
         "Expected standalone+method coexistence output, got %S" out)
   )
