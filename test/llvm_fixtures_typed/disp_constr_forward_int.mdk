@@ -1,0 +1,20 @@
+-- D3b-2: dict FORWARDING through a chain of `=>`-constrained helpers.  `allNe`
+-- (Eq a =>) calls `neq` (Eq a =>), which dispatches `eq` in argument position.
+-- `allNe` does NOT build a dict — it FORWARDS its own threaded Eq dict to `neq`
+-- (the polymorphic-caller case the inventory flagged).  Only the outer concrete
+-- call site `allNe 1 2 3` (Eq Int) materializes the witness (RKey Int); it flows
+-- allNe → neq → eq with no arg-tag anywhere.  Proves the forwarding chain the
+-- prelude's `sum`/`product`/`flat`-via-helper shapes rely on.  `allNe 1 2 3` → 1.
+interface Eq a where
+  eq : a -> a -> Bool
+
+impl Eq Int where
+  eq a b = a == b
+
+neq : Eq a => a -> a -> Bool
+neq x y = if eq x y then False else True
+
+allNe : Eq a => a -> a -> a -> Bool
+allNe x y z = if neq x y then neq y z else False
+
+main = if allNe 1 2 3 then 1 else 0

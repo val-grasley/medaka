@@ -1937,6 +1937,25 @@ preludeReturnPosDictNames preludeDecls allDecls =
   let rpNames = returnPosMethodNames allDecls
   filterList (n => anyMember (declBodyVars n preludeDecls) rpNames) (constrainedSigNames preludeDecls)
 
+-- D3b-2: the PRELUDE's `=>`-constrained fns that dispatch a method in ARGUMENT
+-- position (the ~23 helpers: neq/elem/any/all/find/count/sum/product/maximum/
+-- minimum/clamp/flatMap/flat/debugListItems/displayListItems/hashListItems/print/
+-- println).  These stay OUT of the eval/golden dict set — arg-tag resolves them in
+-- ceval (tagged values) and the goldens type-check with them on RKey — but the
+-- NATIVE emit path MUST dict-pass them: arg-tag cannot dispatch on a PRIMITIVE
+-- element (an `Int`/`String` immediate carries no cell tag).  The arg-position
+-- analogue of preludeReturnPosDictNames: every constrained prelude fn that is NOT
+-- already return-position.  Wired (alongside preludeReturnPosDictNames) into the
+-- emit + dict_pp-oracle drivers ONLY (llvm_emit_typed_main / core_ir_dict_pp_main),
+-- which no golden driver shares — so module/`=== TYPES ===`/eval goldens stay
+-- byte-identical; the body sites route RDict $dict_<method>_<slot> through the same
+-- activeDictVars layer registerConstraintRegs already builds for return-position.
+export
+preludeArgPosDictNames : List Decl -> List Decl -> List String
+preludeArgPosDictNames preludeDecls allDecls =
+  let rpSet = preludeReturnPosDictNames preludeDecls allDecls
+  filterList (n => not (containsName n rpSet)) (constrainedSigNames preludeDecls)
+
 -- the EVars referenced anywhere in [n]'s definition body (multi-clause: union)
 declBodyVars : String -> List Decl -> List String
 declBodyVars n decls = concatMapL (declBodyVarsOf n) decls

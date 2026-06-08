@@ -59,7 +59,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable + **inspect→method**); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend**: **typeclass dispatch in the backend** (DECIDED: runtime dict-passing; D0+D0.5 inventory DONE → re-scoped: 0 nested/0 CDict, return-pos done; remaining = **D3a** stamp ~903 concrete arg-position sites→RKey (✅ DONE 2026-06-07; emitter now static-dispatches concrete arg-position, incl. the 25 primitive heads) + **D3b** dict-pass 110 type-variable sites (**D3b-1** ✅ DONE 2026-06-07: the ~87 derived-impl element dispatches route through the `requires`-dict + emitter threads element-dict witnesses; remaining **D3b-2** = ~23 prelude `=>` helpers + 1 `empty`)) → **bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable + **inspect→method**); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend**: **typeclass dispatch in the backend** (DECIDED: runtime dict-passing; D0+D0.5 inventory DONE → re-scoped: 0 nested/0 CDict, return-pos done; remaining = **D3a** stamp ~903 concrete arg-position sites→RKey (✅ DONE 2026-06-07; emitter now static-dispatches concrete arg-position, incl. the 25 primitive heads) + **D3b** dict-pass 110 type-variable sites (**D3b-1** ✅ DONE 2026-06-07: the ~87 derived-impl element dispatches route through the `requires`-dict + emitter threads element-dict witnesses; **D3b-2** ✅ DONE 2026-06-07: the ~23 prelude `=>` helpers dict-pass their constraint var in arg position — reused D3b-1's `activeDictVars`/`resolveArgStamp` machinery unchanged, the delta was the `preludeArgPosDictNames` selector + 4 fixtures; **D3b COMPLETE** — on the emit path all arg-position dispatch is RKey/RDict, no arg-tag for primitives; deferred to D4: native EMISSION of the real prelude (emitter-completeness, slice-2) + the 1 `empty` return-position default body)) → **D4 dispatch corpus gate → bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -461,17 +461,32 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
          the arg-position `RDict` element site reuses the existing `emitMethodDispatch`
          dict-read. New fixtures `disp_req_{eq,compare}_list_int` (`eq`/`compare` on `MyList
          Int` via `requires`; PANICKED pre-D3b-1, pass after).
-       - **D3b-2 — the remaining ~23 prelude `=>` generic helpers + the 1 `empty`
-         default-body seed** (`neq`/`clamp`/`debugListItems`/… and `foldMap`'s `empty`). Same
-         `=>`-dict-passing layer the typed pipeline already builds for return-position, applied
-         to arg-position method bodies in the prelude's constrained fns.
-     - **Resolve the 1 RNone `empty`** — deferred to **D3b-2** (NOT closed by D3a/D3b-1):
+       - **D3b-2 — the remaining ~23 prelude `=>` generic helpers** (`neq`/`clamp`/
+         `debugListItems`/`elem`/`sum`/`any`/…). ✅ DONE (2026-06-07). Same `=>`-dict-passing
+         layer the typed pipeline already builds for return-position (`when`/`unless`), applied
+         to arg-position method bodies — and it needed NO new typecheck/emitter code: D3b-1's
+         `activeDictVars`/`resolveArgStamp` already routes an arg-position method at a fn's `=>`
+         constraint var to `RDict $dict_<fn>_<slot>`, and `constrainedSigNames` already
+         dict-passes the call sites (concrete→`RKey` witness, polymorphic→forwarded dict). The
+         delta was the `preludeArgPosDictNames` selector (arg-position analogue of
+         `preludeReturnPosDictNames`, wired into the emit + dict_pp-oracle drivers only — no
+         golden driver shares them) + 4 prelude-free fixtures, one per shape:
+         `disp_constr_elem_int` (Eq element), `disp_constr_pick_int` (Ord element),
+         `disp_constr_fold_int` (Foldable container `fold` on `t`), `disp_constr_forward_int`
+         (dict forwarding through a `=>`-helper chain). All pass emit→clang→run == ceval at a
+         PRIMITIVE element. **D3b COMPLETE** — on the emit path all arg-position dispatch is
+         `RKey`/`RDict`, no arg-tag for primitives.
+     - **The 1 RNone `empty` — deferred to D4** (NOT closed by D3a/D3b-1/D3b-2):
        `foldMap`'s default-body seed stays `RNone` because the `elaborateModules` bootstrap path
        never infers interface default bodies (`implInferEnabled=False`, the gate that keeps
-       module goldens identical). Not on the LLVM fixture path; the `RNone`→arg-tag fallback
-       means it no longer panics the emitter.
+       module goldens identical). It is a RETURN-position default body needing separate
+       default-body-inference plumbing, not covered by D3b-2's constraint-dict *arg* routing. Not
+       on the LLVM fixture path; the `RNone`→arg-tag fallback means it no longer panics the
+       emitter. `emitMethodArgDispatch` is retained until then.
      - **D4 — dispatch corpus gate** over the real compiler's dispatch-heavy modules →
-       bridge to bootstrap.
+       bridge to bootstrap. Includes native EMISSION of the real prelude helpers (D3b-2 proved
+       their *routing*; emitting `core.mdk` whole is blocked only by orthogonal
+       emitter-completeness — multi-clause / point-free / operator-section top-level fns).
      - **(deferred) D5 — specialization/monomorphization** optimization; reach for it only
        if profiling demands it (it would collapse the 110 to concrete RKey per instance).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)

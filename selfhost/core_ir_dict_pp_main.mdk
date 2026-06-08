@@ -11,7 +11,7 @@
 import ast.{Decl}
 import parser.{parse}
 import desugar.{desugar}
-import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames}
+import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames}
 import eval.{funNamesOf, dropShadowedExp}
 import core_ir_lower.{lowerProgram}
 import core_ir_eval.{cevalMain}
@@ -42,7 +42,7 @@ runDict runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = dropShadowedExp userNames preludeDecls
   let combined = livePrelude ++ userDecls
-  let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames userDecls
+  let dictNames = preludeReturnPosDictNames livePrelude combined ++ preludeArgPosDictNames livePrelude combined ++ constrainedSigNames userDecls
   cevalMain (lowerProgram (elaborateDict runtimeDecls dictNames userNames combined))
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []

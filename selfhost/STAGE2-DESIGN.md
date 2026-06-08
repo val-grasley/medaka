@@ -1277,6 +1277,60 @@ immediate has no cell tag), so the native backend needs the dict. Still entirely
   `RNone`→`RDict` move is emit-path-only). The ~23 prelude `=>` helpers + the 1 `empty` remain
   D3b-2.
 
+**D3b-2 DONE (2026-06-07).** Arg-position dispatch inside `=>`-CONSTRAINED helpers — the last
+~23 type-variable sites (`neq`/`elem`/`any`/`all`/`find`/`count`/`sum`/`product`/`maximum`/
+`minimum`/`clamp`/`flatMap`/`flat`/`debugListItems`/`displayListItems`/`hashListItems`/`print`/
+`println`), whose bodies dispatch a method (`eq`/`compare`/`fold`/`andThen`/`debug`/…) on the
+FUNCTION'S OWN `=>` constraint variable in argument position. The `=>`-constraint analogue of
+D3b-1's impl-`requires` work: the dict comes from the function's constraint (caller-supplied)
+rather than an impl head.
+
+The key finding: **the routing needed NO new typecheck/emitter code.** D3b-1's infrastructure
+already covers the `=>`-constraint case, because both reuse `activeDictVars`:
+- BODY side — `registerConstraintRegs` (run per SCC, *already* present for the return-position
+  `when`/`unless` case) registers each `=>`-constrained fn's constraint vars by their surviving
+  normalized id into `activeDictVars[id] = $dict_<fn>_<slot>`. `resolveArgStamp` routes first by
+  `activeDictVarOf am` — so an arg-position method occurrence whose discriminating mono unifies
+  with the fn's constraint var routes `RDict $dict_<fn>_<slot>` with no new branch.
+- CALL-SITE side — `constrainedSigNames userDecls` already puts a user `=>`-constrained fn in the
+  dict-passed set, so `prePassDict` marks its occurrences `EDictAt`, `resolveDictApps` fills a
+  concrete caller's witness (RKey) and `realizeRecDictApps` forwards a polymorphic caller's own
+  dict param (the forwarding chain `sum`-via-`fold`, `flat`-via-`andThen` rely on). `dictPass`
+  prepends the leading dict params; the emitter reuses `emitDictApp`/`dictWordsOf`.
+
+So D3b-2 is **selector wiring + fixtures**:
+- `typecheck.mdk` `preludeArgPosDictNames` — the arg-position analogue of
+  `preludeReturnPosDictNames`: every constrained prelude fn NOT already return-position (the 23).
+  The prelude was deliberately split: arg-position helpers stayed OUT of the eval/golden dict set
+  (arg-tag resolves them in ceval's tagged values, goldens type-check them on RKey). The NATIVE
+  emit path MUST dict-pass them — arg-tag cannot dispatch a PRIMITIVE element. Wired (alongside
+  `preludeReturnPosDictNames`) into `llvm_emit_typed_main`/`core_ir_dict_pp_main` ONLY — no golden
+  driver shares them, so module/`=== TYPES ===`/eval/bytecode goldens stay byte-identical.
+- Fixtures (`test/llvm_fixtures_typed/`, prelude-free user helpers proving each shape):
+  `disp_constr_elem_int` (Eq element, `eq` on `a`), `disp_constr_pick_int` (Ord element,
+  `compare` on `a` — clamp/max/min family), `disp_constr_fold_int` (Foldable CONTAINER, `fold`
+  on `t` — sum/any/elem family), `disp_constr_forward_int` (dict FORWARDING `allNe`→`neq`→`eq`,
+  the polymorphic-caller chain). All four reduce `main` to a scalar at a PRIMITIVE element and
+  PANICKED-or-arg-tagged pre-D3b; pass after, dict-passed end-to-end (verified the emitted
+  `@mdk_neq`/`@mdk_allNe` carry the leading dict word and switch on it, no arg-tag).
+- Scale check: dict-passing ALL 23 constrained prelude fns over `stdlib/core.mdk` (via the
+  dict_pp oracle: `elem`/`sum`/`neq` at `Int`) stays correct — the existing dict-pass machinery
+  covers every call site across the prelude (no forwarding gap; CDict-from-0 concern was the
+  inventory's non-emit path, not a real coverage hole).
+- NOT closed (deferred to D4, documented): native EMISSION of the real prelude helpers — blocked
+  by orthogonal emitter-completeness gaps (multi-clause / point-free / operator-section top-level
+  fns = slice-2 limits), independent of dispatch. The routing is proven; emitting `core.mdk`
+  whole is the D4 bootstrap step. The 1 `empty` (`foldMap`'s Monoid default body) also stays
+  RNone: it is a RETURN-position default body needing separate default-body-inference plumbing
+  (the `elaborateModules` gate that keeps module goldens byte-identical never infers interface
+  defaults), NOT covered by the constraint-dict arg routing. Not on the fixture path; arg-tag
+  fallback holds; folded into D4.
+- D0.5 / route-inventory re-run: 25 primitive / 110 type-variable / 880 ADT / 1015 total and
+  RNone=1 — UNCHANGED (both probes run the measurement / `elaborateModules` non-emit path; the
+  prelude dict-pass + RDict routing are emit-driver-only). With D3b complete, on the emit path
+  ALL arg-position dispatch is statically resolved (RKey) or dict-passed (RDict) — the native
+  backend no longer relies on runtime arg-tag for primitives.
+
 **The 1 RNone `empty` is NOT yet resolved — deferred to D3b-2 (real work, not a gap fix).** It is the
 seed of `foldMap`'s default body (`foldMap f = fold (…) empty`, `core.mdk:630`): a
 return-position `empty` at `foldMap`'s method-level `Monoid m` constraint var, which should route

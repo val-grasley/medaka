@@ -311,3 +311,57 @@ type-variable bucket is unmoved; the `RNone`→`RDict` routing change is emit-pa
 110: the ~87 derived-impl element dispatches now route `RDict` on the emit path (D3b-1 done);
 the remaining ~23 prelude `=>` generic helpers + the 1 `empty` default-body seed stay `RNone` →
 arg-tag (D3b-2).**
+
+---
+
+## D3b-2: prelude `=>`-helper arg-position dispatch → RDict constraint-dict (2026-06-07)
+
+The final ~23 type-variable arg-position sites — those inside `=>`-CONSTRAINED helpers whose
+body dispatches a method on the FUNCTION'S OWN constraint variable (`neq`/`elem`/`any`/`all`/
+`find`/`count`/`sum`/`product`/`maximum`/`minimum`/`clamp`/`flatMap`/`flat`/`debugListItems`/
+`displayListItems`/`hashListItems`/`print`/`println`) — are now dict-passed end-to-end on the
+LLVM **emit path**. The `=>`-constraint analogue of D3b-1's impl-`requires` work: the dict comes
+from the function's caller-supplied constraint, not an impl head.
+
+**No new typecheck/emitter code was needed for the routing.** D3b-1's machinery already covers
+the `=>` case — both flow through `activeDictVars`:
+- BODY: `registerConstraintRegs` (already present for the return-position `when`/`unless` case)
+  registers each constrained fn's `=>` vars by surviving id → `$dict_<fn>_<slot>`; `resolveArgStamp`
+  routes first by `activeDictVarOf` → `RDict $dict_<fn>_<slot>` (no new branch).
+- CALL SITE: `constrainedSigNames` already dict-passes a `=>` fn → `prePassDict` marks `EDictAt`,
+  `resolveDictApps` fills a concrete caller's witness (`RKey`), `realizeRecDictApps` forwards a
+  polymorphic caller's own dict (the `sum`-via-`fold` / `flat`-via-`andThen` forwarding chain).
+
+The D3b-2 delta is **selector wiring + fixtures**: `typecheck.mdk` `preludeArgPosDictNames` (the
+arg-position analogue of `preludeReturnPosDictNames` — every constrained prelude fn not already
+return-position), wired into `llvm_emit_typed_main`/`core_ir_dict_pp_main` ONLY. The prelude
+arg-position helpers stay OUT of the eval/golden dict set (arg-tag resolves them in ceval's
+tagged values; goldens type-check them on RKey), but the native emit path MUST dict-pass them —
+arg-tag cannot dispatch a PRIMITIVE element. No golden driver shares those two emit/oracle
+drivers, so all module/`=== TYPES ===`/eval/bytecode goldens stay byte-identical.
+
+Verified by four prelude-free user-helper fixtures (`test/llvm_fixtures_typed/`), one per shape,
+each at a PRIMITIVE element so the in-body dispatch hits something arg-tag cannot do:
+`disp_constr_elem_int` (Eq element, `eq` on `a`), `disp_constr_pick_int` (Ord element, `compare`
+on `a`), `disp_constr_fold_int` (Foldable CONTAINER, `fold` on `t`), `disp_constr_forward_int`
+(dict FORWARDING `allNe`→`neq`→`eq`). All pass emit→clang→run == ceval; the emitted `@mdk_neq`/
+`@mdk_allNe` carry the leading dict word and switch on it (genuine RDict, no arg-tag). Scale
+check: dict-passing all 23 constrained prelude fns over `stdlib/core.mdk` (`elem`/`sum`/`neq` at
+`Int`, via the dict_pp oracle) stays correct — no call-site/forwarding gap.
+
+**Probe re-runs UNCHANGED:** D0.5 = 25 primitive / 110 type-variable / 880 ADT / 1015 total; route
+inventory RNone=1 — both run the measurement / `elaborateModules` non-emit path, invariant to the
+emit-driver-only dict-pass + RDict routing.
+
+**Deferred to D4 (documented, blocks nothing now):**
+- Native EMISSION of the real prelude helpers — blocked by orthogonal emitter-completeness gaps
+  (multi-clause / point-free / operator-section top-level fns = slice-2 limits), independent of
+  dispatch. The routing is proven; emitting `core.mdk` whole is the D4 bootstrap step.
+- The 1 RNone `empty` (`foldMap`'s Monoid default body) — a RETURN-position default body needing
+  separate default-body-inference plumbing (the `elaborateModules` gate that keeps module goldens
+  byte-identical never infers interface defaults), not covered by the constraint-dict arg routing.
+  Not on the fixture path; arg-tag fallback holds.
+
+**With D3b complete, on the emit path ALL arg-position dispatch is statically resolved (`RKey`) or
+dict-passed (`RDict`)** — the native backend no longer relies on runtime arg-tag for primitives.
+`emitMethodArgDispatch` is retained as the fallback for the deferred `empty` until D4.

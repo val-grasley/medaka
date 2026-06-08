@@ -1,0 +1,24 @@
+-- D3b-2: ARG-POSITION dispatch inside a `=>`-CONSTRAINED top-level helper, at a
+-- PRIMITIVE element type.  `elem : Eq a => a -> MyList a -> Bool` dispatches `eq`
+-- on its OWN constraint variable `a` (`eq x y`) in argument position, and recurses
+-- (`elem x ys`).  At the call site `elem` is applied to an `Int` element, so the
+-- in-body `eq` must resolve to `@mdk_impl_Int_eq` — which arg-tag CANNOT do (an Int
+-- immediate carries no cell tag).  D3b-2 routes the in-body `eq` to RDict
+-- $dict_eq_0 (the Eq dict `elem`'s `=>` constraint threads), forwards that dict on
+-- the recursive `elem x ys`, and the concrete call site supplies RKey Int as the
+-- witness.  The `=>`-constraint analogue of D3b-1's impl-`requires` element dispatch.
+-- `elem 2 [1,2,3]` → True → 1.
+interface Eq a where
+  eq : a -> a -> Bool
+
+data MyList a = Nil | Cons a (MyList a)
+
+impl Eq Int where
+  eq a b = a == b
+
+elem : Eq a => a -> MyList a -> Bool
+elem x ys = match ys
+  Nil => False
+  Cons y rest => if eq x y then True else elem x rest
+
+main = if elem 2 (Cons 1 (Cons 2 (Cons 3 Nil))) then 1 else 0

@@ -1,0 +1,21 @@
+-- D3b-2: ARG-POSITION dispatch inside a `=>`-CONSTRAINED helper, ELEMENT-var
+-- flavor with Ord (the `clamp`/`maximum`/`minimum` family).  `pick : Ord a => a ->
+-- a -> a` dispatches `compare` on its `=>` constraint variable `a` in argument
+-- position, applied at a PRIMITIVE (Int) call site, so the in-body `compare` must
+-- reach `@mdk_impl_Int_compare` through the threaded Ord dict — arg-tag cannot
+-- (Int immediates carry no cell tag).  Routes the body `compare x y` → RDict
+-- $dict_compare_0; concrete call site supplies RKey Int.  `pick 3 5` → CLt → 5.
+interface Ord a where
+  compare : a -> a -> Cmp
+
+data Cmp = CLt | CEq | CGt
+
+impl Ord Int where
+  compare a b = if a < b then CLt else if a > b then CGt else CEq
+
+pick : Ord a => a -> a -> a
+pick x y = match compare x y
+  CLt => y
+  _ => x
+
+main = pick 3 5

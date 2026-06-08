@@ -1,0 +1,23 @@
+-- D3b-2: ARG-POSITION dispatch inside a `=>`-CONSTRAINED helper, CONTAINER-var
+-- flavor (the `sum`/`any`/`elem`/`find` Foldable family).  `total : Foldable t =>
+-- t Int -> Int` dispatches `fold` on its `=>` constraint variable `t` (the
+-- CONTAINER), not the element.  Applied at a concrete container (`Bag Int`), the
+-- in-body `fold` must reach `@mdk_impl_Bag_fold` through the threaded Foldable
+-- dict.  Routes the body `fold f 0 xs` → RDict $dict_fold_0; concrete call site
+-- supplies RKey Bag.  Proves the container-constraint flavor (dispatch on `t`)
+-- alongside the element-constraint flavor (disp_constr_elem_int/pick on `a`).
+-- `total (Bag 4 (Bag 6 Empty))` → 10.
+interface Foldable t where
+  fold : (Int -> Int -> Int) -> Int -> t Int -> Int
+
+data Bag a = Empty | Bag a (Bag a)
+
+impl Foldable Bag where
+  fold f acc xs = match xs
+    Empty => acc
+    Bag x rest => fold f (f acc x) rest
+
+total : Foldable t => t Int -> Int
+total xs = fold (acc x => acc + x) 0 xs
+
+main = total (Bag 4 (Bag 6 Empty))
