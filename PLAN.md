@@ -59,7 +59,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable + **inspect→method**); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend**: **typeclass dispatch in the backend** (DECIDED: runtime dict-passing, monomorphization deferred; staged D0 inventory → D1 dict cells → D2 dict params → D3 retire arg-tag → D4 corpus gate) → **bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable + **inspect→method**); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend**: **typeclass dispatch in the backend** (DECIDED: runtime dict-passing; D0+D0.5 inventory DONE → re-scoped: 0 nested/0 CDict, return-pos done; remaining = **D3a** stamp ~903 concrete arg-position sites→RKey + **D3b** dict-pass 110 type-variable sites) → **bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -414,23 +414,33 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
      recursion / higher-rank / existentials — but it breaks across the wedge's
      separate-compilation/dynamic-plugin boundary, so dict-passing is the correct
      baseline; specialize statically-known sites later if perf needs it). Full analysis:
-     [`project_backend_dispatch_strategy`] memory + STAGE2-DESIGN §2.4c. Staged:
-     - **D0 — route-coverage inventory** (strategy-agnostic). Instrument the emitter over
-       the real `selfhost/*.mdk`: which `Route` shapes appear (RKey ground / RKey nested /
-       RDict / RDictFwd / RNone-arg-tag / CDict), nesting depth, primitive-typed sites,
-       which currently panic. Output: a coverage map that bounds D1–D3.
-     - **D1 — dict values as heap cells.** Lower the recursive `VDict(tag, [nested])` rep
-       + ground & nested `RKey(key, reqs)`; build dict cells. Gate vs the existing selfhost
-       dict fixtures.
-     - **D2 — dict params + forwarding.** Lower `CDict` / `RDictFwd` (leading dict params
-       threaded through calls, matching `applyDicts` order).
-     - **D3 — retire arg-tag dispatch.** Route every arg-position method site through
-       resolved routes so primitive-typed dispatch is static; delete the
-       `emitMethodArgDispatch` runtime fallback (or assert-unreachable).
-     - **D4 — dispatch corpus gate.** Gate over the real compiler's dispatch-heavy modules,
-       not just fixtures — the bridge into the bootstrap push.
-     - **(deferred) D5 — specialization/monomorphization** optimization pass; reach for it
-       only if profiling demands it.
+     [`project_backend_dispatch_strategy`] memory + STAGE2-DESIGN §2.4c. **Staging
+     RE-SCOPED 2026-06-07 by the D0+D0.5 inventory (`selfhost/DISPATCH-INVENTORY.md`)** —
+     the real compiler has **0 nested dicts, 0 CDict sites, 0 first-class method values**;
+     return-position dispatch is done (only 1 RNone `empty` panics). The whole remaining
+     gap is **1013 directly-applied arg-position method occurrences**, splitting **903
+     concrete (~89% → static RKey marking; incl. the only 25 sites the emitter can't do
+     today: `display@String`×19, `compare@Int/String/Float`×6) + 110 type-variable (~11% →
+     dict-passing, localized to 5 derived-impl bodies + ~18 prelude helpers)**:
+     - ✅ **D0 — route-coverage inventory.** DONE (`dispatch_inventory_main.mdk`).
+     - ✅ **D0.5 — arg-position classification.** DONE (`dispatch_argclass_main.mdk`).
+     - **D1/D2 (nested-dict cells, CDict params) — DROPPED for bootstrap.** Inventory
+       shows 0 nesting / 0 CDict; defer this machinery until a non-bootstrap program needs
+       it.
+     - **D3a — stamp concrete arg-position sites → RKey** (the bulk, ~903). Front-end
+       (selfhost typecheck): extend arg-position method resolution to stamp a static `RKey`
+       for concrete receivers, mirroring return-position `resolveSite`; the emitter's
+       existing RKey path then handles them (incl. the 25 primitive heads). Retires arg-tag
+       for everything except true polymorphism. Gate like Phase 83/84 (preserve goldens).
+     - **D3b — dict-passing for the 110 type-variable sites.** Extend the Phase-83/84
+       `requires`-dict from return- to **arg**-position element dispatch (~87, in the 5
+       `Eq/Ord/Debug/Display/Hashable (List a)`-style impl bodies) + the ~23 prelude `=>`
+       generic helpers. Emitter gains the arg-position dict-param path.
+     - **Resolve the 1 RNone `empty`** (return-position resolution gap) — fold into D3a.
+     - **D4 — dispatch corpus gate** over the real compiler's dispatch-heavy modules →
+       bridge to bootstrap.
+     - **(deferred) D5 — specialization/monomorphization** optimization; reach for it only
+       if profiling demands it (it would collapse the 110 to concrete RKey per instance).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)
      — the spike gates against `test/llvm_fixtures/`; the real backend must compile
      `selfhost/*.mdk`. Surfacing+closing whatever constructs that exposes is the bulk of

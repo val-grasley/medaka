@@ -1201,12 +1201,16 @@ monomorphization deferred to a later specialization optimization** (apply it to
 statically-known, whole-program-closed sites if profiling demands). Note: BOTH
 strategies preserve the byte-diff oracle (it compares stdout, not dispatch mechanism).
 
-Staged (mirrors PLAN.md "Native backend"): **D0** route-coverage inventory over the
-real `selfhost/*.mdk` (which Route shapes / nesting depth / primitive sites);
-**D1** dict values as heap cells (ground + nested RKey); **D2** dict params +
-forwarding (CDict / RDictFwd); **D3** retire arg-tag dispatch (route every arg-position
-site through resolved routes); **D4** dispatch corpus gate over the real compiler →
-bridge to bootstrap.
+Staged (mirrors PLAN.md "Native backend") — **RE-SCOPED by D0+D0.5** (`DISPATCH-INVENTORY.md`):
+**D0/D0.5 DONE** — the real compiler has 0 nested dicts, 0 CDict, 0 first-class method
+values; return-position dispatch is done (1 RNone `empty`). The gap is 1013 directly-applied
+arg-position method sites = **903 concrete (→ static RKey) + 110 type-variable (→ dict-passing)**.
+So: **D1/D2 (nested-dict cells, CDict params) DROPPED for bootstrap** (unexercised);
+**D3a** stamp the 903 concrete arg-position sites as RKey (front-end marking, emitter's RKey
+path handles them, incl. the only 25 sites it can't do today) + resolve the 1 RNone;
+**D3b** dict-pass the 110 type-variable sites (Phase-83/84 `requires`-dict extended from
+return- to arg-position element dispatch + ~23 prelude `=>` helpers); **D4** dispatch corpus
+gate over the real compiler → bridge to bootstrap.
 
 ---
 
