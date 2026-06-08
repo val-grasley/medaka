@@ -1176,6 +1176,40 @@ webassembly.org Wasm 3.0 (2025-09-17).
 
 ---
 
+**2.4c — Typeclass dispatch in the real backend (DECIDED 2026-06-07: runtime
+dict-passing).** The spike's two "dispatch gaps" — arg-tag dispatch on non-ADT/Int
+args, and nested-`requires` dicts — are one problem: the emitter lags the typed
+pipeline + interpreter, which already resolve dispatch via (possibly nested) dict
+routes. The runtime arg-tag shortcut (`emitMethodArgDispatch`) **cannot** discriminate
+primitive types (`Int`/`Bool`/`Char` immediates carry no type tag) and panics on
+nesting; the real compiler dispatches `eq`/`compare`/`show` over primitives
+pervasively, so this is bootstrap-critical.
+
+*Strategy fork resolved.* Two options: **runtime dict-passing** (dict cells + dict
+params + nested dicts) vs **monomorphization** (specialize each polymorphic fn per
+type; no runtime dicts). Medaka is unusually monomorphizable — no polymorphic
+recursion (group-monomorphism limit, PLAN-ARCHIVE), no higher-rank, no existentials/
+GADTs — so monomorph is *technically viable*, unlike Haskell. **But** the wedge's
+target (separately-compiled / dynamically-loaded plugins, AI-generated modules) is an
+open-world: a plugin instantiating a host generic at a new type has nothing to
+specialize, so monomorph would need a dict/witness-table fallback at module
+boundaries *anyway* (cf. Rust `dyn Trait`, Swift witness tables). Dict-passing is also
+the smaller delta — the Core IR is already dict-explicit and the interpreter's dict
+execution (`VDict(tag, [nested])`, `applyDicts`, nested `RKey(key, reqs)`) is built and
+validated, so the emitter becomes a *port*. **Decision: dict-passing baseline;
+monomorphization deferred to a later specialization optimization** (apply it to
+statically-known, whole-program-closed sites if profiling demands). Note: BOTH
+strategies preserve the byte-diff oracle (it compares stdout, not dispatch mechanism).
+
+Staged (mirrors PLAN.md "Native backend"): **D0** route-coverage inventory over the
+real `selfhost/*.mdk` (which Route shapes / nesting depth / primitive sites);
+**D1** dict values as heap cells (ground + nested RKey); **D2** dict params +
+forwarding (CDict / RDictFwd); **D3** retire arg-tag dispatch (route every arg-position
+site through resolved routes); **D4** dispatch corpus gate over the real compiler →
+bridge to bootstrap.
+
+---
+
 ### One-paragraph summary
 
 A bytecode VM is a *conditional* on-ramp: its reused artifacts (lexical addressing,
