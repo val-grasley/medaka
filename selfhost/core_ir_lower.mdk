@@ -419,6 +419,92 @@ lowerDefault _ (IfaceMethod _ _ None) = []
 lowerDefault typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) =
   [CImplEntry mname (listLen typeParams) (CImplDefault pats (lower body))]
 
+-- ── returns-self table (native backend: method-call RESULT-type inference) ───
+-- Per (interface, method): does the method's RESULT type mention an interface
+-- type parameter?  This is the result-side analogue of `dispatchPositionsOf`'s
+-- per-arg `tyMentions` (eval.mdk) — True for a container method whose result is
+-- the self/container type (`map`/`ap`/`andThen` at a container impl all return
+-- the container), False for a method returning a scalar/element/concrete type
+-- (`compare : a -> a -> Ordering`).  The LLVM emitter reads it to statically type
+-- a method-call result: a `returnsSelf` method dispatched (RKey) at type `T`
+-- yields `tagToLTy T`, so a downstream `++`/`::` on that result picks the right
+-- list/string instruction instead of falling to the `LTInt` default (the last
+-- EMITTER-GAPS.md #3 residual: `ap@List` / `andThen@List`, whose `++` operand is
+-- a CALL result like `map f xs` / `f x`, not a param).
+export
+returnsSelfTable : List Decl -> List ((String, String), Bool)
+returnsSelfTable prog = concatMapList ifaceReturnsSelfEntries prog
+
+ifaceReturnsSelfEntries : Decl -> List ((String, String), Bool)
+ifaceReturnsSelfEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } =
+  map (m => ifaceReturnsSelfEntry ifaceName typeParams m) methods
+ifaceReturnsSelfEntries _ = []
+
+ifaceReturnsSelfEntry : String -> List String -> IfaceMethod -> ((String, String), Bool)
+ifaceReturnsSelfEntry ifaceName typeParams (IfaceMethod mname mty _) =
+  ((ifaceName, mname), tyMentionsParams (methodResultTy mty) typeParams)
+
+-- the RESULT type of a method type: the final tail after stripping the TyFun
+-- argument chain (and any leading constraint/effect wrappers).
+methodResultTy : Ty -> Ty
+methodResultTy (TyConstrained _ t) = methodResultTy t
+methodResultTy (TyEffect _ _ t) = methodResultTy t
+methodResultTy (TyFun _ b) = methodResultTy b
+methodResultTy t = t
+
+-- does a type mention one of the given interface type-parameter names? (the
+-- result-side twin of eval.mdk's non-exported `tyMentions`).
+tyMentionsParams : Ty -> List String -> Bool
+tyMentionsParams (TyVar n) params = contains n params
+tyMentionsParams (TyCon _) _ = False
+tyMentionsParams (TyApp a b) params = tyMentionsParams a params || tyMentionsParams b params
+tyMentionsParams (TyFun a b) params = tyMentionsParams a params || tyMentionsParams b params
+tyMentionsParams (TyTuple ts) params = anyList (t => tyMentionsParams t params) ts
+tyMentionsParams (TyEffect _ _ t) params = tyMentionsParams t params
+tyMentionsParams (TyConstrained _ t) params = tyMentionsParams t params
+
+-- ── self-returning function-PARAM table (native backend) ────────────────────
+-- Per (interface, method): the ARGUMENT positions whose type is a FUNCTION whose
+-- RESULT mentions the interface/self type variable — i.e. a callback that yields
+-- the container.  e.g. `andThen : m a -> (a -> m b) -> m b` has param 1 of type
+-- `a -> m b`, a function returning self.  The emitter types the APPLICATION of
+-- such a param (`f x`) as the container (`tagToLTy tag`), closing `andThen@List`
+-- where the `++` LEFT operand `f x` is an indirect call the method-call
+-- inference (returnsSelfTable) cannot reach.  Result-side analogue scoped to
+-- function-typed params, not the whole-method result.
+export
+selfFnParamTable : List Decl -> List ((String, String), List Int)
+selfFnParamTable prog = concatMapList ifaceSelfFnParamEntries prog
+
+ifaceSelfFnParamEntries : Decl -> List ((String, String), List Int)
+ifaceSelfFnParamEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } =
+  map (m => ifaceSelfFnParamEntry ifaceName typeParams m) methods
+ifaceSelfFnParamEntries _ = []
+
+ifaceSelfFnParamEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
+ifaceSelfFnParamEntry ifaceName typeParams (IfaceMethod mname mty _) =
+  ((ifaceName, mname), selfFnPositions 0 (methodArgTys mty) typeParams)
+
+-- the argument types of a method type (the a's of `a -> a -> … -> r`).
+methodArgTys : Ty -> List Ty
+methodArgTys (TyConstrained _ t) = methodArgTys t
+methodArgTys (TyEffect _ _ t) = methodArgTys t
+methodArgTys (TyFun a b) = a :: methodArgTys b
+methodArgTys _ = []
+
+-- positions (0-based) whose type is a TyFun whose result mentions a param.
+selfFnPositions : Int -> List Ty -> List String -> List Int
+selfFnPositions _ [] _ = []
+selfFnPositions i (t::ts) params
+  | tyIsFunReturningSelf t params = i :: selfFnPositions (i + 1) ts params
+  | otherwise = selfFnPositions (i + 1) ts params
+
+tyIsFunReturningSelf : Ty -> List String -> Bool
+tyIsFunReturningSelf (TyFun _ b) params = tyMentionsParams (methodResultTy b) params
+tyIsFunReturningSelf (TyConstrained _ t) params = tyIsFunReturningSelf t params
+tyIsFunReturningSelf (TyEffect _ _ t) params = tyIsFunReturningSelf t params
+tyIsFunReturningSelf _ _ = False
+
 funClausesOf : List Decl -> List (String, CClause)
 funClausesOf [] = []
 funClausesOf ((DFunDef _ n pats body)::rest) =

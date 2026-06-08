@@ -38,7 +38,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |---|-----------------------------------------------------------|--------:|---------:|----------------------------------|---------------------|
 | 1 | **multi-clause top-level function**                       | 16      | 732      | Emitter                          | reuse impl-method decision-tree lowering |
 | 2 | **arg-tag dispatch on primitive receiver** (no cell tag)  | **0**   | 540      | Routing-not-wired (NOT new)      | port D3b arg-pos dict-passing to `elaborateModules` |
-| 3 | **`++` as `CBinPrim`** (list/string concat)               | ~~14~~ ~~4\*\*~~ **2\*\*\*** | ~~179~~  | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — 2 events remain where `++` is on a fn-call result (`ap@List`/`andThen@List`); the 2 `append` param-type events closed by **E2c** (2026-06-08) |
+| 3 | **`++` as `CBinPrim`** (list/string concat)               | ~~14~~ ~~4\*\*~~ ~~2\*\*\*~~ **0** | ~~179~~ **333\*\*\*\*** | Emitter (lowering keeps it)      | ✅ **core (A) FULLY CLOSED (E2a/E2c/E7)** — A's last 2 (`ap@List`/`andThen@List`, `++` on a CALL result) closed by **E7** (2026-06-08): method-call RETURN-TYPE inference. B's 333 residual are whole-compiler string-builder `++` (`scanTriple`/`splitLines`), a different category (E4/E5 tail) |
 | 4 | **non-variable parameter pattern** (fn) + **PAs/PList in `bindPattern`** | ~~4~~ **0** | ~~150~~ | Desugar/lower-fixable (fn: ✅ E1a) + Emitter (PAs/PList: ✅ **CLOSED E6**) | fn half → `emitClauseTree` (E1a); PAs/PList → two new `bindPattern` arms (2026-06-08) |
 | 5 | **non-variable lambda parameter pattern**                 | ~~1~~ **0** | ~~108~~ **0** | Desugar/lower-fixable          | ✅ **CLOSED (E2b)** — same decision-tree lowering as #4, inside the lifted-lambda frame |
 | 6 | **`::` as `CBinPrim`** (cons)                              | ~~2~~ **0** | ~~90~~ **0** | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — `emitCtorAlloc e "Cons" [lw, rw]` |
@@ -50,7 +50,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ **15** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ **1925** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ **13** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ **1924** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) were
 references to runtime/core primitives the spike's extern catalog didn't carry —
@@ -172,6 +172,31 @@ that owns no constructors (an `Int`/`String`/… immediate carries no cell tag).
   `++` operands are fn-call RESULTS (`map f xs`, `f x`), not direct params, so param typing
   alone can't resolve them).  **B: 1927→1925**.  New typed fixtures: `impl_append_str` (→6),
   `impl_append_list` (→10) — both byte-identical (27/27 typed gate).  core total: 17→**15**.
+- **✅ FULLY CLOSED — E7 (2026-06-08): method-call RETURN-TYPE inference closes the `ap`/`andThen` pair.**
+  The last 2 A events were `impl ap@List` (`map f xs ++ ap fs xs`) and `impl andThen@List`
+  (`f x ++ andThen xs f`): the `++` LEFT operand is a CALL RESULT, not a param, so E2c's
+  static impl-param typing can't reach it.  The emitter now statically types method-call
+  results: per **(interface, method)** it computes whether the method's RESULT type mentions
+  the interface/self type var (`returnsSelfTable`, in `core_ir_lower.mdk` — the result-side
+  analogue of `dispatchPositionsOf`'s per-arg `tyMentions`), and whether any ARG is a function
+  whose result mentions self (`selfFnParamTable`).  Both tables are computed from the iface
+  decls in `core_ir_lower` and installed into the emitter via module-level Refs
+  (`installReturnsSelf`/`installSelfFnParams`, no `CProgram` shape change → goldens
+  byte-identical).
+    - `ap@List`: `map f xs` is a CMethod RKey-dispatched at `List`; `map` returns self, so
+      `emitMethod` types its result `tagToLTy "List" = LTCon` (was `LTInt`).  The recursive
+      `ap fs xs` (RKey List, `ap` returns self) likewise types `LTCon`.  `emitBin`'s existing
+      `++` LTCon path then picks `mdk_list_append` — no `emitBin` change.
+    - `andThen@List`: the `++` LEFT operand `f x` is an INDIRECT call through callback param
+      `f : a -> m b` (a function returning self).  `emitGroup` sets a current-impl context
+      (tag + the names of self-returning-fn params) so `emitIndirect` types `f x` as the
+      container; the recursive `andThen xs f` is an RKey-List returns-self method call typed
+      `LTCon`.
+  **A: 2→0** (the `++` reason is gone from census A entirely).  **B: 334→333** (the
+  whole-compiler `andThen@List` instance also closes; the 333 residual are unrelated string-
+  builder `++` in `scanTriple`/`splitLines`, an E4/E5-tail category).  New typed fixtures:
+  `impl_ap_list` (→66, Applicative `ap` summed), `impl_andthen_list` (→206, monadic bind
+  summed) — both byte-identical native/oracle (29/29 typed gate).  core total: 15→**13**.
 
 #### 4 / 5 — non-variable parameter patterns, fn + lambda (A:5, B:258) — fn ✅ CLOSED (E1a), lambda ✅ CLOSED (E2b)
 `emitFnClause`/`emitLamGo` required every parameter to be a plain `PVar`;
@@ -354,6 +379,20 @@ source per unit of work**:
     `andThen@List` — `++` on fn-call RESULTS `map f xs` / `f x`, not direct params);
     **B: 1927→1925**.  New typed fixtures: `impl_append_str` (→6), `impl_append_list`
     (→10), both byte-identical (27/27 typed gate).  core total 17→**15**.
+  - **E7 (`++` fn-call-result residue) — ✅ DONE (2026-06-08).** Method-call RETURN-TYPE
+    inference closes the last 2 (`ap@List`, `andThen@List`).  `core_ir_lower` computes two
+    `(iface,method)` tables from the iface decls — `returnsSelfTable` (does the method's
+    result mention the self/container tyvar?) and `selfFnParamTable` (which arg positions are
+    callbacks returning self?) — installed into the emitter via module Refs
+    (`installReturnsSelf`/`installSelfFnParams`; no `CProgram` change → goldens unchanged).
+    `emitMethod`'s RKey path types a returns-self method-call result `tagToLTy tag` (so
+    `map f xs` / the recursive `ap fs xs` / `andThen xs f` are `LTCon`); `emitGroup` sets a
+    current-impl context so `emitIndirect` types a self-returning-fn-param application (`f x`
+    in `andThen`) as the container.  `emitBin`'s existing `++` LTCon path then picks
+    list-append — `emitBin` untouched.  **A: 2→0** (`++` reason gone from census A); **B:
+    334→333** (the 333 residual are unrelated string-builder `++`).  New typed fixtures:
+    `impl_ap_list` (→66), `impl_andthen_list` (→206), byte-identical (29/29 typed gate).
+    core total 15→**13**.
 
 - **E6 — PAs/PList residue in `bindPattern` (#4 residue).** `canonPat` shapes were
   already correct; `bindPattern` fell to gap for `PAs x p` and `PList (p::ps)`.
@@ -381,15 +420,16 @@ source per unit of work**:
   subset.
 
 **How close is `stdlib/core.mdk` alone (the first bootstrap milestone)?**
-Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ **15 gap events across ~8 kinds** (the count
+Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ **13 gap events across ~7 kinds** (the count
 rose temporarily when closing #10 unhid guard residue; E3 closed that residue, dropping
 it back to 30; closing #7's 7 core extern refs — the per-type hashers + debug-lit
 externs — dropped it to 23; E6 closed the `PAs`/`PList` #4 residue, dropping it to 17;
-E2c closed `append@List`/`append@String`, dropping it to 15).
-The kinds are exactly remaining E4 + E5 tail (E2/E3/E5-core/E6 all done; E4 is 0 on this path).
-Concretely, fully emitting core.mdk still needs: `++` (**2** remaining — `ap@List`/`andThen@List`,
-fn-call-result operands; `append` pair closed by E2c), dict-witness threads, and — excludable —
-the 5 `Arbitrary` unit-head switches. (`::`, both
+E2c closed `append@List`/`append@String`, dropping it to 15; **E7's method-call
+return-type inference closed `ap@List`/`andThen@List`, dropping it to 13**).
+The kinds are exactly remaining E4 + E5 tail (E2/E3/E5-core/E6/E7 all done; E4 is 0 on this path).
+Concretely, fully emitting core.mdk still needs: dict-witness threads, and — excludable —
+the 5 `Arbitrary` unit-head switches. (**`++` (all four `append`/`ap`/`andThen` impls, the last
+two via E7's return-type inference)**, `::`, both
 param-pattern halves, `PAs`/`PList` in `bindPattern`, let/where-group local fns, the guard
 residue, **and the `__hashRaw`/`debugStringLit`/`debugCharLit` extern references** are all closed.)
 **No gap kind in core.mdk is outside the E-series staging.** core.mdk

@@ -560,6 +560,25 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        `ap@List`/`andThen@List` remain — `++` is on fn-call RESULTS `map f xs`/`f x`, not
        direct params). **B: 1927→1925**.  New typed fixtures: `impl_append_str` (→6),
        `impl_append_list` (→10); all gates byte-identical (160/27/20/20). core total: 17→**15**.
+     - ✅ **E7 — method-call RETURN-TYPE inference** (`++` fn-call-result residue, #3's last 2).
+       DONE (2026-06-08). The `ap@List` (`map f xs ++ ap fs xs`) and `andThen@List`
+       (`f x ++ andThen xs f`) `++` operands are CALL RESULTS, not params, so E2c's static
+       impl-param typing can't reach them. `core_ir_lower` now computes two `(iface,method)`
+       tables from the iface decls — `returnsSelfTable` (does the method's RESULT type mention
+       the self/container tyvar? — the result-side analogue of `dispatchPositionsOf`'s per-arg
+       `tyMentions`) and `selfFnParamTable` (which arg positions are callbacks returning self,
+       e.g. `andThen`'s `f : a -> m b`) — installed into the emitter through module-level Refs
+       (`installReturnsSelf`/`installSelfFnParams`; **no `CProgram` shape change**, so eval /
+       bytecode / sexp goldens stay byte-identical). `emitMethod`'s RKey path types a
+       returns-self method-call result `tagToLTy tag` (so `map f xs` / the recursive
+       `ap fs xs` / `andThen xs f` are `LTCon`); `emitGroup` sets a current-impl context
+       (tag + self-returning-fn param names) so `emitIndirect` types `f x` as the container.
+       `emitBin`'s existing `++` LTCon path then selects list-append — **`emitBin` untouched**.
+       **`++` A:2→0** (the `++` reason leaves census A); **B:334→333** (whole-compiler
+       `andThen@List` also closes; the 333 residual are unrelated string-builder `++`).
+       New typed fixtures: `impl_ap_list` (→66), `impl_andthen_list` (→206); all gates
+       byte-identical (160/29/20/20). core total: 15→**13**. **EMITTER-GAPS #3 fully closed
+       for core.mdk.**
      - ✅ **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`). DONE (2026-06-08).
        `otherwise` in condition position is a `CVar` reaching `emitVar`; added as a constant
        arm → `("3", LTBool)` (same as `True`). `__fallthrough__` is always `CApp (CVar

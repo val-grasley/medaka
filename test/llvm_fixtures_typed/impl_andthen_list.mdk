@@ -1,0 +1,19 @@
+-- method-call RESULT-type inference: `andThen` (monadic bind) on `List` (Monad).
+-- Its body `concatMap` is written so the `++` operand is a CALL result: the
+-- self-recursive `bindList`/`andThen` and the user `f x` — both method/fn-call
+-- results, not params.  The emitter must type each returns-self method-call
+-- result as the container (LTCon) so `++` dispatches list-append.  Companion to
+-- impl_ap_list (Applicative); together they close EMITTER-GAPS #3's residual.
+--   andThen [1,2] (\x -> [x, x+100]) = [1,101, 2,102]; sum = 206.
+interface Bind m where
+  andThen : m a -> (a -> m b) -> m b
+
+impl Bind List where
+  andThen [] f = []
+  andThen (x :: xs) f = f x ++ andThen xs f
+
+sumList : List Int -> Int
+sumList [] = 0
+sumList (x :: xs) = x + sumList xs
+
+main = sumList (andThen [1, 2] (x => [x, x + 100]))
