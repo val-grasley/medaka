@@ -2420,14 +2420,26 @@ implDictNamesGo mname slot k
   | otherwise = dictParamName mname slot :: implDictNamesGo mname (slot + 1) k
 
 -- the dict-param names every EMethodAt in [e] routes RDict to (post-resolveSites)
+-- plus every EDictAt route-LIST that forwards RDict/RDictFwd to an impl param
+-- (a `=>`-constrained helper call that threads the impl dict through, e.g.
+-- `debug xs = "[\{debugListItems xs}]"` where `debugListItems` is an EDictAt).
 bodyRDictNames : Expr -> List String
 bodyRDictNames e = concatMapL siteRDictName (collectMethodSites e)
+               ++ concatMapL siteRDictNamesL (collectDictSites e)
 
 siteRDictName : Ref Route -> List String
 siteRDictName r = match r.value
   RDict d => [d]
   RDictFwd d => [d]
   _ => []
+
+siteRDictNamesL : Ref (List Route) -> List String
+siteRDictNamesL r = concatMapL routeRDictName r.value
+
+routeRDictName : Route -> List String
+routeRDictName (RDict d) = [d]
+routeRDictName (RDictFwd d) = [d]
+routeRDictName _ = []
 
 -- every EMethodAt route ref reachable in [e] (a pure structural walk; reading a
 -- ref's `.value` is done later by siteRDictName, not here)
@@ -2480,6 +2492,58 @@ doStmtSites (DoLetElse _ e alt) = collectMethodSites e ++ collectMethodSites alt
 
 fieldAssignSites : FieldAssign -> List (Ref Route)
 fieldAssignSites (FieldAssign _ e) = collectMethodSites e
+
+-- mirror of collectMethodSites's structural walk, but collecting EDictAt's
+-- route-LIST refs (`Ref (List Route)`) instead of EMethodAt's single route ref.
+collectDictSites : Expr -> List (Ref (List Route))
+collectDictSites (EDictAt _ rs) = [rs]
+collectDictSites (EApp f x) = collectDictSites f ++ collectDictSites x
+collectDictSites (ELam _ b) = collectDictSites b
+collectDictSites (ELet _ _ _ e1 e2) = collectDictSites e1 ++ collectDictSites e2
+collectDictSites (ELetGroup binds body) = concatMapL letBindDictSites binds ++ collectDictSites body
+collectDictSites (EMatch e arms) = collectDictSites e ++ concatMapL armDictSites arms
+collectDictSites (EIf c t e) = collectDictSites c ++ collectDictSites t ++ collectDictSites e
+collectDictSites (EBinOp _ l r) = collectDictSites l ++ collectDictSites r
+collectDictSites (EUnOp _ e) = collectDictSites e
+collectDictSites (EInfix _ l r) = collectDictSites l ++ collectDictSites r
+collectDictSites (EFieldAccess e _) = collectDictSites e
+collectDictSites (ETuple es) = concatMapL collectDictSites es
+collectDictSites (EListLit es) = concatMapL collectDictSites es
+collectDictSites (EArrayLit es) = concatMapL collectDictSites es
+collectDictSites (ERangeList a b _) = collectDictSites a ++ collectDictSites b
+collectDictSites (ERangeArray a b _) = collectDictSites a ++ collectDictSites b
+collectDictSites (ESlice e a b _) = collectDictSites e ++ collectDictSites a ++ collectDictSites b
+collectDictSites (EIndex e i) = collectDictSites e ++ collectDictSites i
+collectDictSites (EAnnot e _) = collectDictSites e
+collectDictSites (EBlock stmts) = concatMapL doStmtDictSites stmts
+collectDictSites (ERecordCreate _ fs) = concatMapL fieldAssignDictSites fs
+collectDictSites (ERecordUpdate e fs) = collectDictSites e ++ concatMapL fieldAssignDictSites fs
+collectDictSites (EVariantUpdate _ e fs) = collectDictSites e ++ concatMapL fieldAssignDictSites fs
+collectDictSites _ = []
+
+letBindDictSites : LetBind -> List (Ref (List Route))
+letBindDictSites (LetBind _ clauses) = concatMapL funClauseDictSites clauses
+
+funClauseDictSites : FunClause -> List (Ref (List Route))
+funClauseDictSites (FunClause _ body) = collectDictSites body
+
+armDictSites : Arm -> List (Ref (List Route))
+armDictSites (Arm _ guards body) = concatMapL guardDictSites guards ++ collectDictSites body
+
+guardDictSites : Guard -> List (Ref (List Route))
+guardDictSites (GBool e) = collectDictSites e
+guardDictSites (GBind _ e) = collectDictSites e
+
+doStmtDictSites : DoStmt -> List (Ref (List Route))
+doStmtDictSites (DoExpr e) = collectDictSites e
+doStmtDictSites (DoLet _ _ _ e) = collectDictSites e
+doStmtDictSites (DoBind _ e) = collectDictSites e
+doStmtDictSites (DoAssign _ e) = collectDictSites e
+doStmtDictSites (DoFieldAssign _ _ e) = collectDictSites e
+doStmtDictSites (DoLetElse _ e alt) = collectDictSites e ++ collectDictSites alt
+
+fieldAssignDictSites : FieldAssign -> List (Ref (List Route))
+fieldAssignDictSites (FieldAssign _ e) = collectDictSites e
 
 dictArityOf : String -> Int
 dictArityOf n = lengthL (fromOption [] (lookupAssocSL2 n funConstraintsRef.value))
