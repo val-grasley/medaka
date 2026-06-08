@@ -106,23 +106,24 @@ a *second* oracle for the native backend.
 
 ## 4. The hard cases, in detail
 
-**Sorts & array builder (`arraySortBy`, `arraySortInPlaceBy`, `arrayMakeWith`) →
-`→MEDAKA`. DONE 2026-06-07** — rewritten as pure-Medaka stdlib (`stdlib/array.mdk`),
-compiled by our own backend, no C extern. A native `sort_by` would have wanted a
-native comparator; ours is a Medaka closure. A native helper would have had to marshal
-the array to a raw `*mut Value`, wrap a trampoline that re-enters compiled Medaka per
-comparison through the C ABI, and allocate the result through the GC — i.e. `unsafe`
-raw-pointer code in which Rust's `Vec`/`sort_by`/safety all evaporate at the boundary.
-Writing the sort *in Medaka* (a standard mergesort over `Array`) keeps it one calling
-convention end-to-end, allocates through the normal path, and is validated by the
-existing differential harness for free. Same argument for `arrayMakeWith` (the
-`Int -> a` builder is a Medaka closure). **This is the lever that removes the
-FFI-callback problem entirely.** (They were native in the tree-walker only because
-OCaml's `Array.sort` was conveniently at hand.) **Cutover caveat:** the sort *logic* is
-pure Medaka, but `mergeSortBy` (and ~16 other `array.mdk` sites) still call the
-`arrayMakeWith` extern; the dead `arraySortBy`/`arraySortInPlaceBy` externs are still
-declared. Finishing the cutover (decide `arrayMakeWith` = inline INTRINSIC vs. pure
-`makeWith`; drop dead externs) is tracked in PLAN.md "Native backend".
+**Sorts (`arraySortBy`, `arraySortInPlaceBy`) → `→MEDAKA`. DONE 2026-06-07** —
+rewritten as pure-Medaka stdlib (`stdlib/array.mdk`), compiled by our own backend, no C
+extern. A native `sort_by` would have wanted a native comparator; ours is a Medaka
+closure. A native helper would have had to marshal the array to a raw `*mut Value`, wrap
+a trampoline that re-enters compiled Medaka per comparison through the C ABI, and
+allocate the result through the GC — i.e. `unsafe` raw-pointer code in which Rust's
+`Vec`/`sort_by`/safety all evaporate at the boundary. Writing the sort *in Medaka* (a
+standard mergesort over `Array`) keeps it one calling convention end-to-end, allocates
+through the normal path, and is validated by the existing differential harness for free.
+**This is the lever that removes the FFI-callback problem entirely.** (They were native
+in the tree-walker only because OCaml's `Array.sort` was conveniently at hand.)
+
+**`arrayMakeWith` → INTRINSIC. DONE 2026-06-07** — emitted as an inline builder loop
+by `selfhost/llvm_emit.mdk` (`emitArrayMakeWith`): alloca-counter loop, calls the Medaka
+closure `f : Int -> a` directly from the emitted loop body (code_ptr load + `call i64`)
+with the tagged index, stores each result into the allocated array cell. No C extern, no
+FFI boundary. `array.mdk`'s `mergeSortBy` and ~16 other sites use `arrayMakeWith` and
+remain unchanged — the sort/builder cutover is now complete on the native path.
 
 **`hash : a -> Int` → `→METHOD`. DONE 2026-06-07** — `hash` is now a derived
 **`Hashable`** typeclass method (combiner `acc*33 + hash field`), replacing the

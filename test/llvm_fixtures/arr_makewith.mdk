@@ -1,0 +1,3 @@
+-- arrayMakeWith intrinsic: 5-element array of squares; project index 3 -> 9.
+a = arrayMakeWith 5 (i => i * i)
+main = arrayGetUnsafe 3 a

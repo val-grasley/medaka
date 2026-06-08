@@ -1122,8 +1122,12 @@ near-term sequence"):
    complete — native extern catalog fully ported** (slices 10–13 detail in §2.4a-13
    above; slices 1–9/14 above). **Tier D DONE 2026-06-07**: RNG (deterministic
    SplitMix64 shared oracle+runtime, §2.4a-14), sorts (`arraySortBy`/
-   `arraySortInPlaceBy`/`arrayMakeWith` rewritten as pure-Medaka stdlib `→MEDAKA`),
-   `hash`→`Hashable` typeclass (`→METHOD`, replaced the structural extern). The dense
+   `arraySortInPlaceBy` rewritten as pure-Medaka stdlib `→MEDAKA`),
+   `hash`→`Hashable` typeclass (`→METHOD`, replaced the structural extern).
+   **`arrayMakeWith` → INTRINSIC DONE 2026-06-07**: inline builder loop
+   `emitArrayMakeWith` (alloca-counter, closure called from emitted code via
+   code_ptr load + `call i64`, no FFI); `array.mdk` unchanged; sort/builder
+   cutover complete on the native path. The dense
    i32 ctor-ordinal tags are emitted (`cellTag`; composite `typeId<<32 | ordinal`,
    hashName gone — last spike-vs-real tag gap closed). **REMAINING spike→real gap:**
    `inspect`→`→METHOD` (last reflective extern); the spike's out-of-scope dispatch gaps

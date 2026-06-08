@@ -1,0 +1,6 @@
+-- arrayMakeWith intrinsic: [1,2,3,4] via (i => i+1), recursive sum -> 10.
+sumGo arr i n acc =
+  if i >= n then acc
+  else sumGo arr (i + 1) n (acc + arrayGetUnsafe i arr)
+
+main = sumGo (arrayMakeWith 4 (i => i + 1)) 0 4 0

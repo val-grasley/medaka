@@ -396,13 +396,10 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
    **REMAINING (the spike→real-backend gap):**
    - `inspect : a -> <IO> Unit` → `→METHOD` (the last reflective extern — `Debug` render
      → `putStr`; mirrors the `hash`→`Hashable` move).
-   - **Finish the `→MEDAKA` sort/builder cutover.** `sortBy`/`sortInPlaceBy`/`sort` are
-     pure Medaka now, but `mergeSortBy` (and ~16 other `array.mdk` sites) still call the
-     `arrayMakeWith` **extern**; the pure `makeWith` exists but isn't adopted internally.
-     Decide `arrayMakeWith`'s native treatment — INTRINSIC inline builder-loop (closure
-     called from compiled code, no FFI) vs. route everything through the pure `makeWith`
-     — then drop the now-dead `arraySortBy`/`arraySortInPlaceBy` externs from the native
-     path (keep in the interpreter if desired).
+   - ~~**Finish the `→MEDAKA` sort/builder cutover.**~~ **DONE 2026-06-07** — `arrayMakeWith`
+     emitted as an inline INTRINSIC in `selfhost/llvm_emit.mdk` (`emitArrayMakeWith`):
+     alloca-counter loop calls the Medaka closure directly, no FFI. `array.mdk` unchanged.
+     Dead `arraySortBy`/`arraySortInPlaceBy` externs remain in interpreter (harmless).
    - The spike's out-of-scope **dispatch gaps**: arg-tag dispatch on non-ADT/Int args,
      and nested-`requires` dicts (Phase 83/84 #5 residual).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)
