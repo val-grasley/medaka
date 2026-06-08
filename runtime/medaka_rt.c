@@ -191,3 +191,43 @@ long long mdk_string_concat(long long list) {
   }
   return mdk_str_lit(buf, total);
 }
+
+/* Array cell: [i64 count | elem0@8 | ...]; total 8*(count+1) bytes.
+   count is raw (untagged); Int args are tagged (>> 1 to untag).
+   Native extern catalog slice 7 (array leaf). */
+long long mdk_array_make(long long n_tagged, long long x) {
+  long long n = n_tagged >> 1;
+  long long *cell = (long long *)mdk_alloc(8 * (n + 1));
+  cell[0] = n;
+  for (long long i = 0; i < n; i++) cell[i + 1] = x;
+  return (long long)cell;
+}
+long long mdk_array_copy(long long src) {
+  const long long *s = (const long long *)src;
+  long long n = s[0];
+  long long *cell = (long long *)mdk_alloc(8 * (n + 1));
+  memcpy(cell, s, (size_t)(8 * (n + 1)));
+  return (long long)cell;
+}
+void mdk_array_blit(long long src, long long so_t, long long dst,
+                    long long dof_t, long long len_t) {
+  const long long *s = (const long long *)src;
+  long long *d = (long long *)dst;
+  memmove(d + 1 + (dof_t >> 1), s + 1 + (so_t >> 1),
+          (size_t)(8 * (len_t >> 1)));
+}
+void mdk_array_fill(long long x, long long arr) {
+  long long *a = (long long *)arr;
+  long long n = a[0];
+  for (long long i = 0; i < n; i++) a[i + 1] = x;
+}
+long long mdk_array_from_list(long long list) {
+  long long n = 0;
+  for (long long w = list; (w & 1) == 0; w = ((const long long *)w)[2]) n++;
+  long long *cell = (long long *)mdk_alloc(8 * (n + 1));
+  cell[0] = n;
+  long long i = 0;
+  for (long long w = list; (w & 1) == 0; w = ((const long long *)w)[2])
+    cell[++i] = ((const long long *)w)[1];
+  return (long long)cell;
+}

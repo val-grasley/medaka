@@ -674,6 +674,47 @@ emitArrIntrinsic e env "arraySetUnsafe" args = match emitArgs e env args
   _ => panic "llvm spike: arraySetUnsafe takes three arguments (slice 6)"
 emitArrIntrinsic _ _ name _ = panic ("llvm spike: unsupported array intrinsic " ++ name)
 
+-- array leaf externs (native extern catalog slice 7).
+-- C helpers in runtime/medaka_rt.c; array cell = [i64 count | elem@8 | ...].
+-- arrayMake/arrayCopy/arrayFromList return Array (LTCon); arrayBlit/arrayFill return Unit.
+-- Do NOT end a fixture with an array-returning call: emitPrint LTCon panics.
+-- Project to scalar via .[i] (CIndex) in every fixture.
+isArrLeafExtern : String -> Bool
+isArrLeafExtern name = containsStr name
+  ["arrayMake", "arrayCopy", "arrayBlit", "arrayFill", "arrayFromList"]
+
+emitArrLeafExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitArrLeafExtern e env "arrayMake" args = match emitArgs e env args
+  [n, x] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_array_make(i64 " ++ n ++ ", i64 " ++ x ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: arrayMake takes two arguments (slice 7)"
+emitArrLeafExtern e env "arrayCopy" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_array_copy(i64 " ++ a ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: arrayCopy takes one argument (slice 7)"
+emitArrLeafExtern e env "arrayFromList" args = match emitArgs e env args
+  [l] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_array_from_list(i64 " ++ l ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: arrayFromList takes one argument (slice 7)"
+emitArrLeafExtern e env "arrayBlit" args = match emitArgs e env args
+  [src, so, dst, dof, len] =>
+    let _ = emit e ("  call void @mdk_array_blit(i64 " ++ src ++ ", i64 " ++ so ++
+      ", i64 " ++ dst ++ ", i64 " ++ dof ++ ", i64 " ++ len ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: arrayBlit takes five arguments (slice 7)"
+emitArrLeafExtern e env "arrayFill" args = match emitArgs e env args
+  [x, arr] =>
+    let _ = emit e ("  call void @mdk_array_fill(i64 " ++ x ++ ", i64 " ++ arr ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: arrayFill takes two arguments (slice 7)"
+emitArrLeafExtern _ _ name _ = panic ("llvm spike: unsupported array leaf extern " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -851,6 +892,7 @@ emitApp e env app =
       else if isIoExtern fname && hasArgs args then emitIoExtern e env fname args
       else if isAbortExtern fname && hasArgs args then emitAbortExtern e env fname args
       else if isArrIntrinsic fname && hasArgs args then emitArrIntrinsic e env fname args
+      else if isArrLeafExtern fname && hasArgs args then emitArrLeafExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -2753,6 +2795,11 @@ emitPreamble e =
   let _ = emit e "declare void @mdk_print_unit()"
   let _ = emit e "declare void @mdk_panic(i64)"
   let _ = emit e "declare void @mdk_exit(i64)"
+  let _ = emit e "declare i64 @mdk_array_make(i64, i64)"
+  let _ = emit e "declare i64 @mdk_array_copy(i64)"
+  let _ = emit e "declare void @mdk_array_blit(i64, i64, i64, i64, i64)"
+  let _ = emit e "declare void @mdk_array_fill(i64, i64)"
+  let _ = emit e "declare i64 @mdk_array_from_list(i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

@@ -1,0 +1,3 @@
+-- slice 7: arrayCopy. Shallow copy of [| 1, 2, 3 |]; project index 1.
+a = arrayCopy [| 1, 2, 3 |]
+main = a.[1]

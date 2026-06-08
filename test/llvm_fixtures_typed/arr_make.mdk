@@ -1,0 +1,3 @@
+-- slice 7: arrayMake typed fixture. 5-element array filled with 7; project index 2.
+a = arrayMake 5 7
+main = a.[2]

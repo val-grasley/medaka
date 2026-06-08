@@ -1047,7 +1047,13 @@ backend (Stage 2) — near-term sequence"):
    §2.4a-8–10), **slice 5 DONE 2026-06-07** (`stringLength` INTRINSIC: GEP to
    `cp_count@16` + tag; `stringConcat` LEAF: `mdk_string_concat` walks built-in List
    by low-bit, sums `byte_len`s, one alloc + blit via `mdk_str_lit`; 71/71 plain +
-   11/11 typed byte-identical) — and close the spike's out-of-scope gaps (arg-tag
+   11/11 typed byte-identical), **slice 6 DONE 2026-06-07** (`arrayLength` INTRINSIC:
+   `loadTag` + `tagInt`; `arrayGetUnsafe`/`arraySetUnsafe` INTRINSIC: `loadFieldDyn`/
+   `storeFieldDyn`; 75/75 plain + 12/12 typed byte-identical), **slice 7 DONE
+   2026-06-07** (`arrayMake`/`arrayCopy`/`arrayBlit`/`arrayFill`/`arrayFromList` LEAF:
+   C helpers in `mdk_array_*`; array cell = raw-length header, no tag; `arrayFromList`
+   walks built-in List by low-bit; 80/80 plain + 13/13 typed byte-identical; Tier A
+   complete) — and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
    (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);
