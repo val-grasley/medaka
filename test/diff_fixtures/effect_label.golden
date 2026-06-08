@@ -121,6 +121,8 @@ get : String -> <KV> String
 gt : a -> a -> Bool
 gte : a -> a -> Bool
 handler : String -> <KV, Log> String
+hash : a -> Int
+hashListItems : Int -> List a -> Int
 identity : a -> a
 isEmpty : a b -> Bool
 isErr : Result a b -> Bool

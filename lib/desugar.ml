@@ -404,6 +404,64 @@ let derive_generic_newtype type_name con_name =
                    generic_rcon con_name ["__a"])];
   }
 
+(* ------------------------------------------------------------------ *)
+(* Derive Hashable                                                      *)
+(* ------------------------------------------------------------------ *)
+(* djb2-style fold: acc starts at constructor ordinal, then for each
+   field left-to-right: acc = acc * 33 + hash field. *)
+
+let derive_hashable_data type_name variants =
+  let arms = List.mapi (fun ordinal v ->
+    let nfields = con_arity v in
+    let vars = List.init nfields (fun i -> Printf.sprintf "__f%d" i) in
+    let pat =
+      if nfields = 0 then PCon (v.con_name, [])
+      else PCon (v.con_name, List.map (fun x -> PVar x) vars)
+    in
+    let body =
+      if nfields = 0 then ELit (LInt ordinal)
+      else
+        List.fold_left (fun acc var ->
+          EBinOp ("+",
+            EBinOp ("*", acc, ELit (LInt 33)),
+            EApp (EVar "hash", EVar var))
+        ) (ELit (LInt ordinal)) vars
+    in
+    (pat, [], body)
+  ) variants in
+  let body = EMatch (EVar "__x", arms) in
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    impl_loc   = None;
+    iface_name = "Hashable";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [("hash", [PVar "__x"], body)];
+  }
+
+let derive_hashable_record type_name fields =
+  let body =
+    if fields = [] then ELit (LInt 0)
+    else
+      List.fold_left (fun acc f ->
+        EBinOp ("+",
+          EBinOp ("*", acc, ELit (LInt 33)),
+          EApp (EVar "hash", EFieldAccess (EVar "__r", f.field_name)))
+      ) (ELit (LInt 0)) fields
+  in
+  DImpl {
+    is_pub     = true;
+    is_default = false;
+    impl_loc   = None;
+    iface_name = "Hashable";
+    type_args  = [TyCon type_name];
+    impl_name  = None;
+    requires   = [];
+    methods    = [("hash", [PVar "__r"], body)];
+  }
+
 let derive_for_newtype type_name params con_name fty iface =
   let mk f = Some (apply_derive_params type_name params (f type_name con_name)) in
   (* A newtype is structurally a single-constructor, single-field data type, so
@@ -418,6 +476,7 @@ let derive_for_newtype type_name params con_name fty iface =
   | "Display" -> mk_data derive_display_data
   | "Eq"      -> mk_data derive_eq_data
   | "Ord"     -> mk_data derive_ord_data
+  | "Hashable" -> mk_data derive_hashable_data
   | _         -> None
 
 (* ── Derive Arbitrary ─────────────────────────────────────────────────── *)
@@ -512,6 +571,7 @@ let derive_for_data type_name params variants iface =
   | "Ord"       -> mk derive_ord_data
   | "Arbitrary" -> mk derive_arbitrary_data
   | "Generic"   -> mk derive_generic_data
+  | "Hashable"  -> mk derive_hashable_data
   | _           -> None  (* unknown derive ignored — typecheck will catch it *)
 
 let derive_for_record type_name params fields iface =
@@ -523,6 +583,7 @@ let derive_for_record type_name params fields iface =
   | "Ord"       -> mk derive_ord_record
   | "Arbitrary" -> mk derive_arbitrary_record
   | "Generic"   -> mk derive_generic_record
+  | "Hashable"  -> mk derive_hashable_record
   | _           -> None
 
 (* Expand a single decl into itself plus any generated impls. *)

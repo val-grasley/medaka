@@ -1412,10 +1412,10 @@ let primitives : (string * value) list =
        Used by the self-hosted perf driver as an allocation-count proxy;
        monotonically increasing, so deltas give per-phase allocation. *)
     ("allocBytes", VPrim (fun _ -> VFloat (Gc.allocated_bytes ())));
-    (* Structural hash of any value (Module 6 hash containers). Non-negative
-       (OCaml's Hashtbl.hash returns [0, 2^30)). Consistent with structural
-       `eq`, so it must agree with the key type's `Eq` impl. *)
-    ("hash", VPrim (fun v -> VInt (Hashtbl.hash v)));
+    (* Raw structural hash — backing primitive for the Hashable interface impls.
+       Non-negative (OCaml's Hashtbl.hash returns [0, 2^30)).
+       Not called directly: the Hashable method `hash` dispatches here per type. *)
+    ("__hashRaw", VPrim (fun v -> VInt (Hashtbl.hash v)));
     (* Phase 91: terminator of a desugared guard chain.  Raising Impl_no_match
        (the same signal a failed pattern raises) makes a multi-clause function's
        VMulti dispatch fall through to the next pattern clause when this clause's

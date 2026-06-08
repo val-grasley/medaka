@@ -10,10 +10,11 @@
    Reach for `Map` when you want persistence/ordering; reach for `HashMap` when
    you want raw speed and a single owner.
 
-   Keys hash via the global `hash` extern (structural). It must agree with the
-   key's `Eq`, which holds for every structural `Eq` impl (all the built-ins) —
-   a *custom* `Eq` that isn't structural would break it, so don't key a HashMap
-   on such a type. Iteration order is unspecified (hash order).
+   Keys hash via the `Hashable` typeclass method `hash` (structural by default via
+   `deriving (Hashable)`). It must agree with the key's `Eq`, which holds for every
+   structural `Eq` impl (all the built-ins) — a *custom* `Eq` that isn't structural
+   would break it, so don't key a HashMap on such a type. Iteration order is
+   unspecified (hash order).
 
    The mutating ops sequence `<Mut>` statements in block bodies. A conditional
    effect whose body is a multi-statement block (`deleteAt`) uses an **else-less
@@ -23,7 +24,7 @@
    line, since its single-application body can't soft-break) and the recursion
    base-cases (`reinsertAll`, `collectBuckets`), where `| i >= n` reads best. -}
 
-import core.{Eq, Debug, Option, Mappable}
+import core.{Eq, Debug, Option, Mappable, Hashable}
 
 {- `HashMap buckets count`: `buckets.value` is the bucket array (each slot a
    chain), `count.value` is the live entry count. Both are mutated in place. -}
@@ -33,7 +34,7 @@ initialCapacity : Int
 initialCapacity = 8
 
 -- Bucket index of a key at a given capacity (hash is non-negative, cap > 0).
-slotOf : k -> Int -> Int
+slotOf : Hashable k => k -> Int -> Int
 slotOf key cap = hash key % cap
 
 -- ── Construction ────────────────────────────────────────────────────────
@@ -75,7 +76,7 @@ bucketLookup key ((k, v)::rest)
    > get 9 (fromList [(1, 10), (2, 20)])
    None -}
 export
-get : Eq k => k -> HashMap k v -> Option v
+get : (Eq k, Hashable k) => k -> HashMap k v -> Option v
 get key (HashMap buckets _) =
   let arr = buckets.value
   bucketLookup key (arrayGetUnsafe (slotOf key (arrayLength arr)) arr)
@@ -85,7 +86,7 @@ get key (HashMap buckets _) =
    > member 2 (fromList [(1, 10), (2, 20)])
    True -}
 export
-member : Eq k => k -> HashMap k v -> Bool
+member : (Eq k, Hashable k) => k -> HashMap k v -> Bool
 member key m = isSome (get key m)
 
 {- | Value at a key, or a fallback.
@@ -93,7 +94,7 @@ member key m = isSome (get key m)
    > findWithDefault 0 9 (fromList [(1, 10)])
    0 -}
 export
-findWithDefault : Eq k => v -> k -> HashMap k v -> v
+findWithDefault : (Eq k, Hashable k) => v -> k -> HashMap k v -> v
 findWithDefault d key m = fromOption d (get key m)
 
 -- ── Bucket helpers (for insert/delete) ──────────────────────────────────
@@ -121,13 +122,13 @@ bucketRemove key ((k, v)::rest)
 {- | Insert (or overwrite) the value at a key, in place. Resizes (doubling)
    when the load factor passes 0.75. -}
 export
-insert : Eq k => k -> v -> HashMap k v -> <Mut> Unit
+insert : (Eq k, Hashable k) => k -> v -> HashMap k v -> <Mut> Unit
 insert key val (HashMap buckets count) =
   let arr = buckets.value
   let idx = slotOf key (arrayLength arr)
   insertAt key val arr idx buckets count
 
-insertAt : Eq k => k -> v -> Array (List (k, v)) -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+insertAt : (Eq k, Hashable k) => k -> v -> Array (List (k, v)) -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
 insertAt key val arr idx buckets count
   | bucketHas key (arrayGetUnsafe idx arr) = arraySetUnsafe idx (bucketReplace key val (arrayGetUnsafe idx arr)) arr
   | otherwise =
@@ -135,12 +136,12 @@ insertAt key val arr idx buckets count
     set_ref count (count.value + 1)
     maybeResize buckets count
 
-maybeResize : Eq k => Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+maybeResize : (Eq k, Hashable k) => Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
 maybeResize buckets count
   | count.value * 4 > arrayLength buckets.value * 3 = resize buckets count
   | otherwise = ()
 
-resize : Eq k => Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+resize : (Eq k, Hashable k) => Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
 resize buckets count =
   let oldArr = buckets.value
   let newArr = arrayMake (arrayLength oldArr * 2) []
@@ -148,21 +149,21 @@ resize buckets count =
   set_ref count 0
   reinsertAll oldArr 0 (arrayLength oldArr) buckets count
 
-reinsertAll : Eq k => Array (List (k, v)) -> Int -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+reinsertAll : (Eq k, Hashable k) => Array (List (k, v)) -> Int -> Int -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
 reinsertAll oldArr i n buckets count
   | i >= n = ()
   | otherwise =
     reinsertBucket (arrayGetUnsafe i oldArr) buckets count
     reinsertAll oldArr (i + 1) n buckets count
 
-reinsertBucket : Eq k => List (k, v) -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+reinsertBucket : (Eq k, Hashable k) => List (k, v) -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
 reinsertBucket [] _ _ = ()
 reinsertBucket ((k, v)::rest) buckets count =
   putRaw k v buckets count
   reinsertBucket rest buckets count
 
 -- Insert into a freshly-resized table (key known absent, so just prepend).
-putRaw : k -> v -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
+putRaw : Hashable k => k -> v -> Ref (Array (List (k, v))) -> Ref Int -> <Mut> Unit
 putRaw key val buckets count =
   let arr = buckets.value
   let idx = slotOf key (arrayLength arr)
@@ -174,13 +175,13 @@ putRaw key val buckets count =
    > size (fromList [(1, 1), (2, 2), (3, 3), (4, 4), (5, 5), (6, 6), (7, 7), (8, 8)])
    8 -}
 export
-fromList : Eq k => List (k, v) -> <Mut> HashMap k v
+fromList : (Eq k, Hashable k) => List (k, v) -> <Mut> HashMap k v
 fromList pairs =
   let m = new ()
   insertAll pairs m
   m
 
-insertAll : Eq k => List (k, v) -> HashMap k v -> <Mut> Unit
+insertAll : (Eq k, Hashable k) => List (k, v) -> HashMap k v -> <Mut> Unit
 insertAll [] _ = ()
 insertAll ((k, v)::rest) m =
   insert k v m
@@ -190,13 +191,13 @@ insertAll ((k, v)::rest) m =
 
 {- | Remove a key, in place. A no-op when absent. -}
 export
-delete : Eq k => k -> HashMap k v -> <Mut> Unit
+delete : (Eq k, Hashable k) => k -> HashMap k v -> <Mut> Unit
 delete key (HashMap buckets count) =
   let arr = buckets.value
   let idx = slotOf key (arrayLength arr)
   deleteAt key arr idx count
 
-deleteAt : Eq k => k -> Array (List (k, v)) -> Int -> Ref Int -> <Mut> Unit
+deleteAt : (Eq k, Hashable k) => k -> Array (List (k, v)) -> Int -> Ref Int -> <Mut> Unit
 deleteAt key arr idx count =
   if bucketHas key (arrayGetUnsafe idx arr) then
     arraySetUnsafe idx (bucketRemove key (arrayGetUnsafe idx arr)) arr

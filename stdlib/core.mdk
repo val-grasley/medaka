@@ -377,6 +377,69 @@ export impl Display (a, b, c, d) requires Display a, Display b, Display c, Displ
 export impl Display (a, b, c, d, e) requires Display a, Display b, Display c, Display d, Display e where
   display (a, b, c, d, e) = "(\{a}, \{b}, \{c}, \{d}, \{e})"
 
+{- | Hash code for use in hash tables.  Equal values (per `Eq`) must produce
+   the same hash — the contractual invariant.  Hash values need not be unique.
+   Primitive impls delegate to `__hashRaw` (Hashtbl.hash); derived and compound
+   impls use a djb2-style fold: seed with constructor ordinal, then
+   `acc = acc * 33 + hash field` left-to-right over fields.  `deriving (Hashable)`
+   generates this fold for `data` and `record` types. -}
+export interface Hashable a where
+  hash : a -> Int
+
+export impl Hashable Int where
+  hash n = __hashRaw n
+
+export impl Hashable Float where
+  hash x = __hashRaw x
+
+export impl Hashable String where
+  hash s = __hashRaw s
+
+export impl Hashable Char where
+  hash c = __hashRaw c
+
+export impl Hashable Bool where
+  hash b = __hashRaw b
+
+export impl Hashable Unit where
+  hash _ = 0
+
+-- Lt=0, Eq=1, Gt=2 — matches constructor declaration order.
+export impl Hashable Ordering where
+  hash Lt = 0
+  hash Eq = 1
+  hash Gt = 2
+
+-- None=1 (ordinal 1, no fields); Some x seeds at 0 then folds: 0*33+hash x.
+export impl Hashable (Option a) requires Hashable a where
+  hash None = 1
+  hash (Some x) = hash x
+
+-- Ok seeds at 0, Err at 1.
+export impl Hashable (Result e a) requires Hashable e, Hashable a where
+  hash (Ok x) = hash x
+  hash (Err e) = 33 + hash e
+
+-- Left-fold: acc starts at 0, each element: acc = acc*33 + hash x.
+hashListItems : Hashable a => Int -> List a -> Int
+hashListItems acc [] = acc
+hashListItems acc (x::xs) = hashListItems (acc * 33 + hash x) xs
+
+export impl Hashable (List a) requires Hashable a where
+  hash xs = hashListItems 0 xs
+
+export impl Hashable (a, b) requires Hashable a, Hashable b where
+  hash (a, b) = hash a * 33 + hash b
+
+export impl Hashable (a, b, c) requires Hashable a, Hashable b, Hashable c where
+  hash (a, b, c) = (hash a * 33 + hash b) * 33 + hash c
+
+export impl Hashable (a, b, c, d) requires Hashable a, Hashable b, Hashable c, Hashable d where
+  hash (a, b, c, d) = ((hash a * 33 + hash b) * 33 + hash c) * 33 + hash d
+
+export impl Hashable (a, b, c, d, e) requires Hashable a, Hashable b, Hashable c, Hashable d, Hashable e where
+  hash (a, b, c, d, e) = (((hash a * 33 + hash b) * 33 + hash c) * 33 + hash d) * 33 + hash e
+
 {- | Human-facing output (Phase 111).  `println`/`print` render via `Display`
    (unquoted, user-facing) rather than dumping internal `VCon` structure, so a
    `Map` prints `Map { 1 => 10 }`, not its weight-balanced tree.  The raw

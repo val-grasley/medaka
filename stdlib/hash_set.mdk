@@ -9,13 +9,14 @@
 
    Standalone rather than a wrapper over `HashMap a Unit` — same reasoning as
    set.mdk over `Map a Unit` (self-contained, no qualified-import gymnastics, no
-   `Unit` payload). Elements hash via the global structural `hash` extern, which
+   `Unit` payload). Elements hash via the `Hashable` typeclass method `hash`
+   (structural by default via `deriving (Hashable)`), which
    must agree with the element's `Eq`. Iteration order is unspecified.
 
    `Foldable HashSet` makes `toList`/`elem`/`length`/`any`/… work (a set's
    elements *are* its `toList`, unlike a map's pairs). -}
 
-import core.{Eq, Debug, Foldable}
+import core.{Eq, Debug, Foldable, Hashable}
 
 {- `HashSet buckets count`: chains in `buckets.value`, live count in
    `count.value`; both mutated in place. -}
@@ -24,7 +25,7 @@ public export data HashSet a = HashSet (Ref (Array (List a))) (Ref Int)
 initialCapacity : Int
 initialCapacity = 8
 
-slotOf : a -> Int -> Int
+slotOf : Hashable a => a -> Int -> Int
 slotOf x cap = hash x % cap
 
 -- ── Construction ────────────────────────────────────────────────────────
@@ -57,7 +58,7 @@ bucketHas x (y::rest)
    > member 9 (fromList [1, 2, 3])
    False -}
 export
-member : Eq a => a -> HashSet a -> Bool
+member : (Eq a, Hashable a) => a -> HashSet a -> Bool
 member x (HashSet buckets _) =
   let arr = buckets.value
   bucketHas x (arrayGetUnsafe (slotOf x (arrayLength arr)) arr)
@@ -73,13 +74,13 @@ bucketRemove x (y::rest)
 {- | Add an element, in place. A no-op when already present. Resizes (doubling)
    past load factor 0.75. -}
 export
-insert : Eq a => a -> HashSet a -> <Mut> Unit
+insert : (Eq a, Hashable a) => a -> HashSet a -> <Mut> Unit
 insert x (HashSet buckets count) =
   let arr = buckets.value
   let idx = slotOf x (arrayLength arr)
   insertAt x arr idx buckets count
 
-insertAt : Eq a => a -> Array (List a) -> Int -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+insertAt : (Eq a, Hashable a) => a -> Array (List a) -> Int -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
 insertAt x arr idx buckets count
   | bucketHas x (arrayGetUnsafe idx arr) = ()
   | otherwise =
@@ -87,12 +88,12 @@ insertAt x arr idx buckets count
     set_ref count (count.value + 1)
     maybeResize buckets count
 
-maybeResize : Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+maybeResize : Hashable a => Ref (Array (List a)) -> Ref Int -> <Mut> Unit
 maybeResize buckets count
   | count.value * 4 > arrayLength buckets.value * 3 = resize buckets count
   | otherwise = ()
 
-resize : Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+resize : Hashable a => Ref (Array (List a)) -> Ref Int -> <Mut> Unit
 resize buckets count =
   let oldArr = buckets.value
   let newArr = arrayMake (arrayLength oldArr * 2) []
@@ -100,20 +101,20 @@ resize buckets count =
   set_ref count 0
   reinsertAll oldArr 0 (arrayLength oldArr) buckets count
 
-reinsertAll : Array (List a) -> Int -> Int -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+reinsertAll : Hashable a => Array (List a) -> Int -> Int -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
 reinsertAll oldArr i n buckets count
   | i >= n = ()
   | otherwise =
     reinsertBucket (arrayGetUnsafe i oldArr) buckets count
     reinsertAll oldArr (i + 1) n buckets count
 
-reinsertBucket : List a -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+reinsertBucket : Hashable a => List a -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
 reinsertBucket [] _ _ = ()
 reinsertBucket (x::rest) buckets count =
   putRaw x buckets count
   reinsertBucket rest buckets count
 
-putRaw : a -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
+putRaw : Hashable a => a -> Ref (Array (List a)) -> Ref Int -> <Mut> Unit
 putRaw x buckets count =
   let arr = buckets.value
   let idx = slotOf x (arrayLength arr)
@@ -125,13 +126,13 @@ putRaw x buckets count =
    > size (fromList [1, 2, 3, 4, 5, 6, 7, 8, 8, 1])
    8 -}
 export
-fromList : Eq a => List a -> <Mut> HashSet a
+fromList : (Eq a, Hashable a) => List a -> <Mut> HashSet a
 fromList xs =
   let s = new ()
   insertAll xs s
   s
 
-insertAll : Eq a => List a -> HashSet a -> <Mut> Unit
+insertAll : (Eq a, Hashable a) => List a -> HashSet a -> <Mut> Unit
 insertAll [] _ = ()
 insertAll (x::rest) s =
   insert x s
@@ -139,13 +140,13 @@ insertAll (x::rest) s =
 
 {- | Remove an element, in place. A no-op when absent. -}
 export
-delete : Eq a => a -> HashSet a -> <Mut> Unit
+delete : (Eq a, Hashable a) => a -> HashSet a -> <Mut> Unit
 delete x (HashSet buckets count) =
   let arr = buckets.value
   let idx = slotOf x (arrayLength arr)
   deleteAt x arr idx count
 
-deleteAt : Eq a => a -> Array (List a) -> Int -> Ref Int -> <Mut> Unit
+deleteAt : (Eq a, Hashable a) => a -> Array (List a) -> Int -> Ref Int -> <Mut> Unit
 deleteAt x arr idx count =
   if bucketHas x (arrayGetUnsafe idx arr) then
     arraySetUnsafe idx (bucketRemove x (arrayGetUnsafe idx arr)) arr
