@@ -3415,14 +3415,40 @@ checkMatchToLines runtimeDecls prog =
 -- (`accData ++ prog`) so imported constructors AND named-field-variant record
 -- info (e.g. ast's DInterface) resolve.  Returns the module's own value schemes.
 checkModuleFull : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List (String, Scheme)
-checkModuleFull seedVars accData prog =
+checkModuleFull seedVars accData prog = checkModuleFullImpl seedVars accData [] prog
+
+-- E5: like checkModuleFull but takes [implDecls] (core + every EARLIER module +
+-- this module) as the impl-body inference universe.  Under implInferEnabled (the
+-- argStampEnabled emit path ONLY) it ALSO infers THIS module's parametric impl
+-- bodies — mirroring checkProgramSeeded's inferImplBodiesIfEnabled — so their
+-- ARG-position ELEMENT dispatch (`eq`/`compare`/… on the impl head tyvar) reaches
+-- inferMethodAt and lands in pendingArgStamps, which elabModuleStamp's
+-- resolveArgStamps then stamps RDict (via the requires dict registered by
+-- registerImplRequires).  [implDecls] gives ifaceMethodTy the interface decls
+-- (core's Eq/Ord/…) AND lets a body dispatch against an earlier module's impl.
+-- OFF (every golden module driver), this is exactly checkModuleFull pre-E5:
+-- implInferEnabled is False → no inference, no extra stamping, byte-identical.
+checkModuleFullImpl : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkModuleFullImpl seedVars accData implDecls prog =
   let _ = resetState ()
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   let env1 = extendVars (extendVars dataEnv seedVars) globalS
   let defs = funDefs prog
   let sigs = sigsOf prog
-  globalS ++ processTopGroups env1 sigs defs (groupNames defs [])
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs [])
+  -- E5: infer this module's parametric impl bodies (gated, emit path only), seeing
+  -- [implDecls] for interface method types + cross-module impl dispatch.  The sites
+  -- it records stay in pendingArgStamps/pendingSites for elabModuleStamp to resolve.
+  let _ = inferModuleImplBodiesIfEnabled (extendVars env1 topSchemes) implDecls prog
+  globalS ++ topSchemes
+
+-- gate: per-module impl-body inference runs only on the emit path (implInferEnabled).
+-- allProg = [implDecls] (interfaces + accumulated impls); rpNames computed over it.
+inferModuleImplBodiesIfEnabled : TcEnv -> List Decl -> List Decl -> <Mut> Unit
+inferModuleImplBodiesIfEnabled env implDecls prog
+  | implInferEnabled.value = inferImplBodies env implDecls (returnPosMethodNames implDecls) prog
+  | otherwise = ()
 
 -- public top-level value names (the pub flag may sit on the sig, def, or extern)
 publicValNames : List Decl -> List String
@@ -3524,10 +3550,30 @@ elaborateModules runtimeDecls coreDecls modules =
   -- `requires` element dict.  core2 seeds it.
   let coreSchemes = elabModuleStamp runtimeSeed [] core2 core2
   let _ = elabModulesGo (runtimeSeed ++ coreSchemes) (publicDataDecls core2) core2 modules2
-  (core2, modules2)
+  -- E5: on the emit path (argStampEnabled), dict-pass each module's now-stamped
+  -- trees, mirroring elaborateDict's final `dictPass`.  A parametric `requires`
+  -- impl whose body element-dispatch E5 routed RDict needs its leading
+  -- `$dict_<m>_<slot>` PARAM (dictPassDecl's DImpl arm) so the emitter can bind the
+  -- witness the route references; the call site's impl-dict route (filled by
+  -- resolveArgStamp) supplies the matching ARGUMENT.  dictNames = [] (RKey path:
+  -- no user `=>`-constrained functions), so only DImpl/DInterface arms fire — no
+  -- function gets spurious params.  OFF (oracle eval_typed_modules + every golden
+  -- module driver), dictPass is skipped → core2/modules2 returned verbatim,
+  -- byte-identical with the pre-E5 trees.
+  dictPassModulesIfEnabled core2 modules2
+
+-- E5: gated final dict-pass of the stamped module trees (emit path only).
+dictPassModulesIfEnabled : List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
+dictPassModulesIfEnabled core2 modules2
+  | argStampEnabled.value = (dictPass [] core2, map dictPassModulePair modules2)
+  | otherwise = (core2, modules2)
 
 prePassModulePair : List String -> (String, List Decl) -> (String, List Decl)
 prePassModulePair rpNames (mid, prog) = (mid, prePassDict rpNames [] prog)
+
+-- E5: dict-pass one module's decls (the `(mid, prog)` pair shape modules2 holds).
+dictPassModulePair : (String, List Decl) -> (String, List Decl)
+dictPassModulePair (mid, prog) = (mid, dictPass [] prog)
 
 -- E4: prePass a module rewriting ARG-position method occurrences to EMethodAt too
 -- (argNames non-empty only under argStampEnabled).  Degenerates to prePassModulePair
@@ -3561,7 +3607,7 @@ markModules coreDecls modules =
 -- is also still bound, so a tyvar receiver routes RDict.
 elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 elabModuleStamp seedVars accData implDecls prog =
-  let schemes = checkModuleFull seedVars accData prog
+  let schemes = checkModuleFullImpl seedVars accData implDecls prog
   let _ = resolveSites [] [] pendingSites.value
   let _ = if argStampEnabled.value then resolveArgStamps (buildImplTable implDecls) pendingArgStamps.value else ()
   let _ = if argMeasureEnabled.value then accumArgSites pendingArgSites.value else ()
