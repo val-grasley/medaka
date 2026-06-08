@@ -2043,9 +2043,12 @@ rewriteRPDict _ _ e = e
 -- function whose parameter happens to share a method name (`arithOp lt rt`,
 -- `composeOp gt ht`, `exprToPat … sub`) has that parameter mis-marked as a method
 -- occurrence → arg-tag dispatch with no impl groups at emit time.  Gated on
--- argNames so the golden path is provably unchanged.  rpNames/dictNames stay
--- scope-blind in BOTH paths (no return-position method or constrained-fn name is
--- shadowed by a local in the corpus, so they need no guard).
+-- argNames so the golden path is provably unchanged.  rpNames stays scope-blind
+-- in BOTH paths (no return-position method name is shadowed by a local in the
+-- corpus); the arg-position (`an`) and constrained-fn (`dn`) arms are scope-aware
+-- in the emit path — a local shadowing an arg-method (`lt`/`gt`/`sub`) or a
+-- constrained fn (`elem`, `let elem = freshVar ()` in inferArrayLit/inferIndex/
+-- inferPatList) stays a plain EVar instead of becoming `EMethodAt`/`EDictAt`.
 prePassDictArg : List String -> List String -> List String -> List Decl -> List Decl
 prePassDictArg rpNames dictNames [] prog = mapProg (rewriteRPDictArg rpNames dictNames []) prog
 prePassDictArg rpNames dictNames argNames prog =
@@ -2099,8 +2102,9 @@ propParamName : PropParam -> String
 propParamName (PropParam n _) = n
 
 -- the core scope-threaded rewrite.  `bound` is the set of names in scope as
--- locals at this node.  At an EVar: rp/dn arms are scope-blind (unchanged); the
--- arg-position arm fires only when the name is NOT shadowed by a local.  Binders
+-- locals at this node.  At an EVar: the rp arm is scope-blind (unchanged); the
+-- arg-position (`an`) and constrained-fn (`dn`) arms fire only when the name is
+-- NOT shadowed by a local.  Binders
 -- (ELam/ELet/ELetGroup/EMatch arms/EBlock/EDo/EListComp + the where/do/guard
 -- binders) extend `bound`; every other node recurses into its children with the
 -- same `bound`.
@@ -2108,7 +2112,7 @@ rewriteArgScoped : ArgRw -> List String -> Expr -> Expr
 rewriteArgScoped (ArgRw rp dn an) bound (EVar n)
   | containsName n rp = EMethodAt n (Ref RNone) (Ref []) (Ref [])
   | containsName n an && not (containsName n bound) = EMethodAt n (Ref RNone) (Ref []) (Ref [])
-  | containsName n dn = EDictAt n (Ref [])
+  | containsName n dn && not (containsName n bound) = EDictAt n (Ref [])
   | otherwise = EVar n
 -- binders
 rewriteArgScoped rw bound (ELam ps body) =
