@@ -1,0 +1,17 @@
+-- E6 cross-module `=>`-constrained-function dict-passing on the native emit path.
+-- The constrained helper `clampU : Ord2 a => a -> a -> a -> a` is imported from
+-- ord_clamp.mdk and applied at the concrete `Int` type.  Each call site supplies
+-- the `Ord2 Int` dict; the helper's body routes its inner `lt2`/`gt2` through the
+-- leading `$dict_clampU_0` param that E6's dict-pass now prepends.
+--
+-- Reduced to a single Int for a byte-stable print:
+--   clampU 0 10 5  = 5   (in range)
+--   clampU 0 10 99 = 10  (above hi → gt2 branch)
+--   clampU 0 10 (-7) = 0 (below lo → lt2 branch)
+-- result = 5 * 100 + 10 * 10 + 0 = 600
+import ord_clamp.{clampU}
+
+result : Int
+result = clampU 0 10 5 * 100 + clampU 0 10 99 * 10 + clampU 0 10 (0 - 7)
+
+main = putStrLn (intToString result)

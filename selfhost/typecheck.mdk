@@ -291,6 +291,18 @@ activeDictVars = Ref []
 funConstraintsRef : Ref (List (String, List Int))
 funConstraintsRef = Ref []
 
+-- E6 (module emit path only): funConstraintsRef is wiped by resetState at the start
+-- of EACH module's typecheck, but a cross-module `=>`-constrained CALL site (entry
+-- calling an imported `clampU`) must still find the callee's generalized constraint
+-- ids so inferDictAt records a real pendingDictApp (→ the call gets its dict ARG).
+-- This ref ACCUMULATES every module's registered fn-constraints across the graph and
+-- is NOT cleared by resetState; checkModuleFullImpl re-seeds funConstraintsRef from
+-- it after the per-module reset (gated argStampEnabled — empty + unused when OFF, so
+-- the golden module drivers are byte-identical).  The DEFINING module's entry (real
+-- ids, registered first) wins the lookupAssocSL2 first-match.
+crossModuleFunConstraintsRef : Ref (List (String, List Int))
+crossModuleFunConstraintsRef = Ref []
+
 pendingDictApps : Ref (List (Ref (List Route), List Mono))
 pendingDictApps = Ref []
 
@@ -3431,6 +3443,10 @@ checkModuleFull seedVars accData prog = checkModuleFullImpl seedVars accData [] 
 checkModuleFullImpl : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 checkModuleFullImpl seedVars accData implDecls prog =
   let _ = resetState ()
+  -- E6: re-install the cross-module constraint accumulator that resetState just
+  -- wiped, so this module's `=>`-constrained call sites into EARLIER modules resolve
+  -- (empty + no-op when OFF → golden module drivers byte-identical).
+  let _ = if argStampEnabled.value then set_ref funConstraintsRef crossModuleFunConstraintsRef.value else ()
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   let env1 = extendVars (extendVars dataEnv seedVars) globalS
@@ -3441,6 +3457,9 @@ checkModuleFullImpl seedVars accData implDecls prog =
   -- [implDecls] for interface method types + cross-module impl dispatch.  The sites
   -- it records stay in pendingArgStamps/pendingSites for elabModuleStamp to resolve.
   let _ = inferModuleImplBodiesIfEnabled (extendVars env1 topSchemes) implDecls prog
+  -- E6: fold THIS module's freshly-registered fn-constraints into the cross-module
+  -- accumulator so a LATER module's call site finds them after its own reset.
+  let _ = if argStampEnabled.value then set_ref crossModuleFunConstraintsRef funConstraintsRef.value else ()
   globalS ++ topSchemes
 
 -- gate: per-module impl-body inference runs only on the emit path (implInferEnabled).
@@ -3536,14 +3555,25 @@ elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (
 -- drivers) keeps every step byte-identical with the pre-E4 behaviour below.
 elaborateModules runtimeDecls coreDecls modules =
   let _ = set_ref implInferEnabled argStampEnabled.value
+  let _ = set_ref crossModuleFunConstraintsRef []
   let allDecls = coreDecls ++ concatMapL snd modules
   let rpNames = returnPosMethodNames allDecls
   -- arg-position interface-method names whose route resolveArgStamps may stamp
   -- (empty when OFF → prePassDictArg degenerates to prePassDict, goldens unchanged)
   let _ = if argStampEnabled.value then set_ref argDispatchIdxRef (argDispatchIndices allDecls) else ()
   let argNames = if argStampEnabled.value then map fst argDispatchIdxRef.value else []
-  let core2 = prePassDictArg rpNames [] argNames coreDecls
-  let modules2 = map (prePassModulePairArg rpNames argNames) modules
+  -- E6: dict-name set for the `=>`-constrained-function layer, mirroring the
+  -- single-file emit driver's assembly (llvm_emit_typed_main.runEmit): prelude
+  -- return- AND arg-position `=>`-constrained fns (clamp/debugListItems/…) plus the
+  -- modules' own constrained signatures.  [] when OFF (argStampEnabled gates every
+  -- consumer), so the golden module drivers compute nothing extra → byte-identical.
+  -- Used to MARK constrained-fn call sites EDictAt in the prePass (so the caller
+  -- supplies the dict ARGUMENT) AND to add the leading dict PARAM in the final
+  -- dictPass (so the callee body's witness binds).  BOTH halves are required: marking
+  -- alone under-defines the param; param alone under-applies the call (ABI mismatch).
+  let dictNames = moduleDictNames coreDecls allDecls modules
+  let core2 = prePassDictArg rpNames dictNames argNames coreDecls
+  let modules2 = map (prePassModulePairArg rpNames dictNames argNames) modules
   let runtimeSeed = externSchemes runtimeDecls
   -- impl table accumulates across modules (dependency order): a module's
   -- arg-position dispatch can thread an EARLIER module's / core's parametric
@@ -3555,31 +3585,78 @@ elaborateModules runtimeDecls coreDecls modules =
   -- impl whose body element-dispatch E5 routed RDict needs its leading
   -- `$dict_<m>_<slot>` PARAM (dictPassDecl's DImpl arm) so the emitter can bind the
   -- witness the route references; the call site's impl-dict route (filled by
-  -- resolveArgStamp) supplies the matching ARGUMENT.  dictNames = [] (RKey path:
-  -- no user `=>`-constrained functions), so only DImpl/DInterface arms fire — no
-  -- function gets spurious params.  OFF (oracle eval_typed_modules + every golden
-  -- module driver), dictPass is skipped → core2/modules2 returned verbatim,
-  -- byte-identical with the pre-E5 trees.
-  dictPassModulesIfEnabled core2 modules2
+  -- resolveArgStamp) supplies the matching ARGUMENT.  E6: dictNames now carries the
+  -- prelude/module `=>`-constrained fns (clamp/debugListItems/displayListItems/…),
+  -- so dictPassDecl's DFunDef arm ALSO prepends their `$dict_<fn>_<slot>` params —
+  -- closing the "unbound dict witness" residual.  OFF (oracle eval_typed_modules +
+  -- every golden module driver), dictPass is skipped → core2/modules2 returned
+  -- verbatim, byte-identical with the pre-E5 trees.
+  dictPassModulesIfEnabled dictNames core2 modules2
 
--- E5: gated final dict-pass of the stamped module trees (emit path only).
-dictPassModulesIfEnabled : List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
-dictPassModulesIfEnabled core2 modules2
-  | argStampEnabled.value = (dictPass [] core2, map dictPassModulePair modules2)
+-- E5/E6: gated final dict-pass of the stamped module trees (emit path only).
+-- [dictNames] is the prelude + module `=>`-constrained fn set; [] when OFF.
+-- E6: each module's typecheck calls resetState, which clears funConstraintsRef,
+-- so by this final pass only the LAST module's constraint arities survive — a
+-- core-level constrained fn like `clamp` would get `dictArityOf` = 0 and NO leading
+-- param.  Re-seed funConstraintsRef from every constrained signature (core +
+-- modules) so dictPassDecl's DFunDef arm prepends the right number of
+-- `$dict_<fn>_<slot>` params.  Only the COUNT is read here (the body's EDictAt/RDict
+-- routes were already stamped, with real ids, during each module's own pass), so a
+-- placeholder id list of the correct length is sufficient.  Prepended → wins the
+-- lookupAssocSL2 first-match over any stale last-module entry.  Gated by the
+-- argStampEnabled guard below (golden drivers never reach it).
+dictPassModulesIfEnabled : List String -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
+dictPassModulesIfEnabled dictNames core2 modules2
+  | argStampEnabled.value =
+      let _ = seedDictAritiesFromSigs (core2 ++ concatMapL snd modules2)
+      (dictPass dictNames core2, map (dictPassModulePair dictNames) modules2)
   | otherwise = (core2, modules2)
+
+-- E6: the `=>`-constrained-function dict-name set for the module emit path,
+-- mirroring the single-file driver (llvm_emit_typed_main.runEmit): prelude return-
+-- AND arg-position constrained fns (clamp/debugListItems/displayListItems/…) plus
+-- every module's own constrained signatures.  [] when OFF, so the golden module
+-- drivers neither MARK call sites EDictAt nor add leading dict PARAMs → trees stay
+-- byte-identical.  guarded so prePass/dictPass both see the SAME set.
+moduleDictNames : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List String
+moduleDictNames coreDecls allDecls modules
+  | argStampEnabled.value = preludeReturnPosDictNames coreDecls allDecls
+                            ++ preludeArgPosDictNames coreDecls allDecls
+                            ++ constrainedSigNames (concatMapL snd modules)
+  | otherwise = []
+
+-- E6: register a constraint-arity entry (placeholder ids of the right length) for
+-- every `=>`-constrained top-level signature, so dictArityOf returns the right
+-- count at the final cross-module dictPass.  Prepends to funConstraintsRef.
+seedDictAritiesFromSigs : List Decl -> <Mut> Unit
+seedDictAritiesFromSigs decls =
+  let entries = concatMapL constrainedSigArity decls
+  set_ref funConstraintsRef (entries ++ funConstraintsRef.value)
+
+constrainedSigArity : Decl -> List (String, List Int)
+constrainedSigArity (DTypeSig _ n ty)
+  | isConstrainedTy ty = [(n, zerosL (lengthL (sigConstraints ty)))]
+  | otherwise = []
+constrainedSigArity _ = []
+
+zerosL : Int -> List Int
+zerosL k
+  | k <= 0 = []
+  | otherwise = 0 :: zerosL (k - 1)
 
 prePassModulePair : List String -> (String, List Decl) -> (String, List Decl)
 prePassModulePair rpNames (mid, prog) = (mid, prePassDict rpNames [] prog)
 
--- E5: dict-pass one module's decls (the `(mid, prog)` pair shape modules2 holds).
-dictPassModulePair : (String, List Decl) -> (String, List Decl)
-dictPassModulePair (mid, prog) = (mid, dictPass [] prog)
+-- E5/E6: dict-pass one module's decls (the `(mid, prog)` pair shape modules2 holds).
+dictPassModulePair : List String -> (String, List Decl) -> (String, List Decl)
+dictPassModulePair dictNames (mid, prog) = (mid, dictPass dictNames prog)
 
--- E4: prePass a module rewriting ARG-position method occurrences to EMethodAt too
--- (argNames non-empty only under argStampEnabled).  Degenerates to prePassModulePair
--- when argNames = [] (prePassDictArg with empty argNames == prePassDict).
-prePassModulePairArg : List String -> List String -> (String, List Decl) -> (String, List Decl)
-prePassModulePairArg rpNames argNames (mid, prog) = (mid, prePassDictArg rpNames [] argNames prog)
+-- E4/E6: prePass a module rewriting ARG-position method occurrences to EMethodAt
+-- (argNames) AND `=>`-constrained-fn occurrences to EDictAt (dictNames); both
+-- non-empty only under argStampEnabled.  Degenerates to prePassModulePair when both
+-- are [] (prePassDictArg with empty argNames/dictNames == prePassDict).
+prePassModulePairArg : List String -> List String -> List String -> (String, List Decl) -> (String, List Decl)
+prePassModulePairArg rpNames dictNames argNames (mid, prog) = (mid, prePassDictArg rpNames dictNames argNames prog)
 
 -- The mark sub-phase of elaborateModules (RKey-only): compute rpNames over the
 -- full module graph and prePassDict each module.  Exported so profiling drivers
@@ -3610,6 +3687,13 @@ elabModuleStamp seedVars accData implDecls prog =
   let schemes = checkModuleFullImpl seedVars accData implDecls prog
   let _ = resolveSites [] [] pendingSites.value
   let _ = if argStampEnabled.value then resolveArgStamps (buildImplTable implDecls) pendingArgStamps.value else ()
+  -- E6: fill THIS module's `=>`-constrained-fn EDictAt routes (the call sites
+  -- prePassDictArg marked) so the emitter supplies the matching dict ARGUMENT —
+  -- realizeRecDictApps for self/mutually-recursive calls, resolveDictApps for the
+  -- normal ones.  Gated: no-op when OFF (pendingDictApps/pendingRecDictApps empty,
+  -- golden module drivers byte-identical).
+  let _ = if argStampEnabled.value then realizeRecDictApps pendingRecDictApps.value else ()
+  let _ = if argStampEnabled.value then resolveDictApps pendingDictApps.value else ()
   let _ = if argMeasureEnabled.value then accumArgSites pendingArgSites.value else ()
   schemes
 

@@ -1,0 +1,31 @@
+-- A `=>`-constrained helper crossing the module boundary — the case E6
+-- (threading `=>`-constrained-function dict params on the `elaborateModules`
+-- emit path) unlocks.  `Ord2` + its `Int` impl + the constrained helper
+-- `clampU : Ord2 a => a -> a -> a -> a` all live HERE (methods do not yet
+-- resolve cross-module through the selfhost typed pipeline); the ENTRY imports
+-- `clampU` and applies it at the concrete `Int` type.
+--
+-- `clampU`'s body dispatches `lt2`/`gt2` on the constraint variable `a`.  Under
+-- dict-passing it takes a leading `$dict_clampU_0` PARAM and routes those inner
+-- method calls RDict through it.  Pre-E6 the multi-module emit path called
+-- `dictPass []` (empty dict-name set), so `clampU` got NO leading param and the
+-- emitter reported its body witness `$dict_clampU_0` UNBOUND (census-B reason
+-- #11, "unbound dict witness").  E6 computes the proper prelude+module dict-name
+-- set and dict-passes `clampU`, so the param is bound and the witness resolves.
+export interface Ord2 a where
+  lt2 : a -> a -> Bool
+  gt2 : a -> a -> Bool
+
+export impl Ord2 Int where
+  lt2 a b = a < b
+  gt2 a b = a > b
+
+-- Ord2 a => : the constrained signature that must be dict-passed.  Bodied as a
+-- nested if so both `lt2` and `gt2` (the constraint-variable method calls that
+-- read the threaded dict) fire.
+export
+clampU : Ord2 a => a -> a -> a -> a
+clampU lo hi x =
+  if lt2 x lo then lo
+  else if gt2 x hi then hi
+  else x
