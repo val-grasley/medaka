@@ -1,0 +1,7 @@
+-- A parametric ADT crossing the module boundary.  The entry defines a
+-- `requires`-constrained impl over this imported type (`Eq2 (Box a) requires
+-- Eq2 a`); the impl BODY dispatches the element method `eq2` on the element
+-- tyvar `a`.  Instantiated at `Box Int`, that element call lands on a PRIMITIVE
+-- `Int` receiver — the impl-body arg-position element-dispatch case that E5
+-- (per-module impl-body inference on the `elaborateModules` emit path) unlocks.
+public export data Box a = Box a

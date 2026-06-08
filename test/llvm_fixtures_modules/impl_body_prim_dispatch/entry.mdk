@@ -1,0 +1,40 @@
+-- IMPL-BODY arg-position ELEMENT dispatch across a module boundary — the case
+-- E5 (per-module impl-body inference on the `elaborateModules` emit path)
+-- unlocks.  `Box` is imported from box.mdk; the `Eq2` interface + impls live
+-- HERE.  The parametric impl `Eq2 (Box a) requires Eq2 a` has a body that calls
+-- the element method `eq2 x y` on the impl head tyvar `a`.  Instantiated at
+-- `Box Int`, that inner `eq2` dispatches on a PRIMITIVE `Int` receiver.
+--
+-- Pre-E5 the multi-module path's `checkModuleFull` never inferred impl bodies,
+-- so this inner `eq2` stayed RNone → arg-tag → census-B gap #2 ("primitive
+-- receiver carries no cell tag"), the `eq@List`/`eq@Option`/`eq@Result` 344
+-- residual.  E5 infers the body (gated `argStampEnabled`) and `registerImplRequires`
+-- maps the element tyvar to the impl's `requires` dict, so `resolveArgStamps`
+-- routes the inner call RDict — emitting a direct dispatch through the threaded
+-- `Eq2 Int` dict instead of the gapping arg-tag fallback.
+--
+-- NOTE: exported interface METHODS do not yet resolve cross-module through the
+-- selfhost typed pipeline, so the interface/impls stay in the entry; only the
+-- parametric DATA TYPE (`Box`) crosses (same convention as prim_arg_dispatch).
+import box.{Box(..)}
+
+interface Eq2 a where
+  eq2 : a -> a -> Bool
+
+impl Eq2 Int where
+  eq2 a b = a == b
+
+impl Eq2 (Box a) requires Eq2 a where
+  eq2 (Box x) (Box y) = eq2 x y
+
+-- `same` reduces an element-dispatched Box equality to an Int (1 / 0) for a
+-- byte-stable print.  Both `eq2 (Box 3) (Box 3)` (True) and `eq2 (Box 3)
+-- (Box 4)` (False) drive the inner primitive-Int element dispatch.
+toInt : Bool -> Int
+toInt True = 1
+toInt False = 0
+
+result : Int
+result = toInt (eq2 (Box 3) (Box 3)) * 10 + toInt (eq2 (Box 3) (Box 4))
+
+main = putStrLn (intToString result)
