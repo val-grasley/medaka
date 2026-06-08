@@ -1,0 +1,12 @@
+-- impl-param typing: Semigroup (List a) `append` params must type as LTCon so
+-- `xs ++ ys` dispatches list-append (mdk_list_append), not string-append.
+-- match (append [1,2] [3,4]) { a::b::c::d::_ => a+b+c+d ; _ => 0 } → 10.
+interface Semigroup a where
+  append : a -> a -> a
+
+impl Semigroup (List a) where
+  append xs ys = xs ++ ys
+
+main = match append [1, 2] [3, 4]
+  (a :: b :: c :: d :: _) => a + b + c + d
+  _ => 0
