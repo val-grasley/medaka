@@ -1,0 +1,13 @@
+-- E1a: a recursive MULTI-CLAUSE top-level function over an ADT.  Each clause
+-- pattern-matches a distinct constructor (`Z` nullary, `S n` unary recursive),
+-- so `emitFn` routes the fn-bind through the shared clause-coalescing +
+-- decision-tree path (`emitMultiClauseFn` -> `emitClauseTree`) instead of the
+-- single-clause `emitFnClause`.  Exercises gap #1 (multi-clause top-level fn):
+-- arity 1, constructor-head switch, a pattern-bound var (`n`) used in arithmetic,
+-- and a non-tail recursive call.  Reduces to a scalar Int.
+data Nat = Z | S Nat
+
+toInt Z = 0
+toInt (S n) = 1 + toInt n
+
+main = toInt (S (S (S Z)))

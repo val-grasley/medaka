@@ -489,6 +489,30 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        emitter-completeness — multi-clause / point-free / operator-section top-level fns).
      - **(deferred) D5 — specialization/monomorphization** optimization; reach for it only
        if profiling demands it (it would collapse the 110 to concrete RKey per instance).
+   - **Emitter completeness (E-series) — close the construct-shape gaps so the emitter can
+     LOWER real modules** (orthogonal to dispatch, which is done). Inventory +
+     staging: [`selfhost/EMITTER-GAPS.md`](./selfhost/EMITTER-GAPS.md). Milestone =
+     fully emit `stdlib/core.mdk` (core.mdk-first).
+     - ✅ **E1a — multi-clause + patterned top-level fns.** DONE (2026-06-07). Routed
+       ordinary multi-clause fn-binds (and single-clause fns with non-variable params)
+       through the SAME clause-coalescing + decision-tree lowering the impl methods use
+       (`emitMultiClauseFn` → shared `emitClauseTree`, factored out of `emitGroupBody`);
+       extended signature inference to multi-clause bindings (`inferMultiSig`) so the
+       synthetic scrutinee params are typed from the fn's sig (`implParamEnvTyped`) and
+       `fnRetTy` reports the right result type for `main`'s print selection. **Closes
+       EMITTER-GAPS #1** (multi-clause top-level fn: core 16→0, whole 732→0) **and the
+       fn half of #4** (non-variable parameter pattern, fn: core 4→0, whole 150→0; the
+       lambda half #5 stays for E2). core.mdk gap total 57→44 (the multi-clause wall no
+       longer masks the downstream value-shape gaps in the now-reachable bodies). New
+       fixtures `fn_multiclause_{ctor,list,float}` + `fn_nonvar_param`; all four gates
+       byte-identical (133/25/20/20).
+     - **E1b — top-level value / mutable `Ref` globals** (#7). NEXT. Emit each top-level
+       non-fn binding as an LLVM global so other fns can name it (the second structural
+       wall; ≈254 whole / 7 core events).
+     - **E2 — value-shape lowering** (#3/#6 `::`/`++`, #5 lambda param patterns).
+     - **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`).
+     - **E4 — dispatch-routing port** (#2/#13: carry D3b arg-position dict-passing onto
+       the `elaborateModules` emit path; 0 on the single-file path already).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)
      — the spike gates against `test/llvm_fixtures/`; the real backend must compile
      `selfhost/*.mdk`. Surfacing+closing whatever constructs that exposes is the bulk of

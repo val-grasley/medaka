@@ -76,9 +76,9 @@ not a new shape.
 
 ### PER-GAP DETAIL
 
-#### 1 — multi-clause top-level function (A:16, B:732) — the dominant wall
-`emitFn` accepts a single variable-pattern clause; a `name p1 … = …` /
-`name p2 … = …` group panics before its body is even reached.
+#### 1 — multi-clause top-level function (A:16, B:732) — the dominant wall — ✅ CLOSED (E1a, 2026-06-07)
+`emitFn` accepted a single variable-pattern clause; a `name p1 … = …` /
+`name p2 … = …` group panicked before its body is even reached.
 - e.g. `thenCmp`, `debugListItems`, `displayListItems` (core); virtually every
   recursive worker in `parser.mdk`/`typecheck.mdk`/`eval.mdk` (whole).
 - **Emitter gap.** The machinery already exists for *impl* methods
@@ -86,6 +86,16 @@ not a new shape.
   decision tree); the fix is to route ordinary multi-clause fn-binds through the
   same clause-coalescing + decision-tree path instead of the single-clause
   `emitFnClause`. This is THE prerequisite to emitting any real module.
+- **✅ CLOSED — E1a (2026-06-07).** `emitFn` now routes any non-`allPVar` /
+  multi-clause fn-bind to `emitMultiClauseFn`, which calls the shared
+  `emitClauseTree` (factored out of `emitGroupBody`) — one path for impl methods
+  AND top-level fns. Signature inference extended to multi-clause bindings
+  (`inferMultiSig`), so the synthetic `aK` scrutinee params are typed from the
+  fn's sig (`implParamEnvTyped`) and `fnRetTy` reports the right result type for
+  `main`'s print selection. **Also closes the fn half of #4** (the decision tree
+  binds patterned params via `bindPattern`). Re-measured over core.mdk: gap #1
+  16→**0**, #4-fn 4→**0**; whole-compiler #1 732→**0**. core total 57→44 (the
+  wall no longer masks the now-reachable bodies' downstream value-shape gaps).
 
 #### 2 — arg-tag dispatch on a primitive receiver (A:0, B:540) — NOT a new gap
 `emitMethodArgDispatch`'s tag chain reaches `emitTagMatch […]` on an impl type
@@ -170,6 +180,12 @@ source per unit of work**:
   emits until both land. #1 *reuses* the impl-method decision-tree lowering; #7 is
   a new top-level-globals emission pass. **Largest, highest-leverage, mostly
   emitter-work** (one reuse + one new pass).
+  - **E1a (#1 multi-clause + fn-half of #4) — ✅ DONE (2026-06-07).** Multi-clause
+    and patterned top-level fns route through the shared `emitClauseTree`
+    decision-tree path (see gap #1 detail). core #1 16→0, whole 732→0; core total
+    57→44. Re-run `llvm_emit_gaps_main.mdk` to confirm.
+  - **E1b (#7 global value/`Ref` bindings) — NEXT.** Emit top-level non-fn
+    bindings as LLVM globals.
 
 - **E2 — value-shape lowering.** (#3/#6 `::`/`++`, #4/#5 param/lambda patterns.)
   **527** events. Half is desugar/lower (param-pattern → body `match`), half is
