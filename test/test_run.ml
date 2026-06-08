@@ -471,20 +471,24 @@ main =
 |}
   "Box 5\nBag 7\n"
 
-(* ── Phase 111: println routes through Display; inspect dumps raw structure ── *)
+(* ── Phase 111: println routes through Display; putStrLn (debug x) via Debug ── *)
 (* `println` is now a Medaka fn over `display`, so a custom `Display` impl wins
-   over the structural form — `<box 5>`, not `Box 5`.  `inspect` keeps the old
-   `pp_value` raw dump (`Box 5`), the debugging escape hatch. *)
+   over the structural form — `<box 5>`, not `Box 5`.  `inspect` (in io.mdk)
+   renders via `Debug` (`inspect x = putStrLn (debug x)`); the equivalent
+   inline form `putStrLn (debug (Box 5))` with a `Debug` impl shows `Box 5`. *)
 let t_println_display_vs_inspect = assert_output_typed
   {|data Box = Box Int
 
 impl Display Box where
   display (Box n) = "<box \{n}>"
 
+impl Debug Box where
+  debug (Box n) = "Box \{n}"
+
 main : <IO> Unit
 main =
   println (Box 5)
-  inspect (Box 5)
+  putStrLn (debug (Box 5))
 |}
   "<box 5>\nBox 5\n"
 
@@ -683,59 +687,56 @@ main = println (big 5)
 
 (* ── String/Char kernel (Phase 75) ───────────────────────────────────────── *)
 
-(* Smoke-tests each kernel extern.  Untyped capture_run is enough — these are
-   plain primitives.  Uses `inspect` (the raw structural dump) rather than
-   `println`: Phase 111 routed `println` through `Display`, whose dispatch the
-   untyped path can't resolve, so the dispatch-free `inspect` keeps these as pure
-   extern smoke tests.  (`inspect`'s output is byte-identical to the pre-111
-   `println`.) *)
-let t_string_kernel = assert_output
+(* Smoke-tests each kernel extern.  Uses `println` (Display-based) via the
+   typed pipeline — Display dispatch works correctly for all primitive types
+   and the expected output is unquoted (matching Display semantics). *)
+let t_string_kernel = assert_output_typed
   {|main : <IO> Unit
 main =
-  inspect (charCode 'A')
-  inspect (charFromCode 66)
-  inspect (charFromCode 55296)
-  inspect (stringConcat ["ab", "cd", "ef"])
-  inspect (stringCompare "abc" "abd")
-  inspect (stringCompare "abc" "abc")
-  inspect (stringCompare "abd" "abc")
-  inspect (stringToFloat "3.5")
-  inspect (stringToFloat "nope")
+  println (charCode 'A')
+  println (charFromCode 66)
+  println (charFromCode 55296)
+  println (stringConcat ["ab", "cd", "ef"])
+  println (stringCompare "abc" "abd")
+  println (stringCompare "abc" "abc")
+  println (stringCompare "abd" "abc")
+  println (stringToFloat "3.5")
+  println (stringToFloat "nope")
 |}
   "65\nSome B\nNone\nabcdef\nLt\nEq\nGt\nSome 3.5\nNone\n"
 
 (* Codepoint-vs-byte regression: "héllo→" is 6 codepoints but 9 UTF-8 bytes
    (é = 2 bytes, → = 3).  length / slice / index must count codepoints, and the
    Array Char bridge must round-trip. *)
-let t_string_codepoint = assert_output
+let t_string_codepoint = assert_output_typed
   {|main : <IO> Unit
 main =
-  inspect (stringLength "héllo→")
-  inspect (stringSlice 1 4 "héllo→")
-  inspect (stringSlice 5 6 "héllo→")
-  inspect (stringSlice 0 100 "héllo→")
-  inspect (charCode '→')
-  inspect (arrayLength (stringToChars "héllo→"))
-  inspect (stringFromChars (stringToChars "héllo→") == "héllo→")
+  println (stringLength "héllo→")
+  println (stringSlice 1 4 "héllo→")
+  println (stringSlice 5 6 "héllo→")
+  println (stringSlice 0 100 "héllo→")
+  println (charCode '→')
+  println (arrayLength (stringToChars "héllo→"))
+  println (stringFromChars (stringToChars "héllo→") == "héllo→")
 |}
-  "6\néll\n→\nhéllo→\n8594\n6\ntrue\n"
+  "6\néll\n→\nhéllo→\n8594\n6\nTrue\n"
 
 (* Unicode classification + case folding (uucp).  Key case: ß is identity under
    the Char→Char charToUpper (a 1→N expansion it can't represent), but expands
    to SS under the String-level stringToUpper. *)
-let t_string_unicode = assert_output
+let t_string_unicode = assert_output_typed
   {|main : <IO> Unit
 main =
-  inspect (charIsAlpha 'é')
-  inspect (charIsAlpha '7')
-  inspect (charIsSpace ' ')
-  inspect (charIsPunct '!')
-  inspect (charToUpper 'é')
-  inspect (charToUpper 'ß')
-  inspect (stringToUpper "Straße")
-  inspect (stringToLower "HÉLLO→")
+  println (charIsAlpha 'é')
+  println (charIsAlpha '7')
+  println (charIsSpace ' ')
+  println (charIsPunct '!')
+  println (charToUpper 'é')
+  println (charToUpper 'ß')
+  println (stringToUpper "Straße")
+  println (stringToLower "HÉLLO→")
 |}
-  "true\nfalse\ntrue\ntrue\nÉ\nß\nSTRASSE\nhéllo→\n"
+  "True\nFalse\nTrue\nTrue\nÉ\nß\nSTRASSE\nhéllo→\n"
 
 (* stringIndexOf: host byte search reported as a *codepoint* index.  In
    "a→b→c" the second "→" is at codepoint 3 though its bytes start later; an

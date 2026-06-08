@@ -442,11 +442,12 @@ export impl Hashable (a, b, c, d, e) requires Hashable a, Hashable b, Hashable c
 
 {- | Human-facing output (Phase 111).  `println`/`print` render via `Display`
    (unquoted, user-facing) rather than dumping internal `VCon` structure, so a
-   `Map` prints `Map { 1 => 10 }`, not its weight-balanced tree.  The raw
-   structural dump now lives behind `inspect` (runtime.mdk).  These are ordinary
-   Medaka functions over the string-only `putStr`/`putStrLn` externs, which moves
-   the `Display` constraint into Medaka where dict-passing works (an extern can't
-   receive a dictionary). -}
+   `Map` prints `Map { 1 => 10 }`, not its weight-balanced tree.  For
+   round-trippable Debug-rendering output (strings/chars quoted, constructor
+   names visible), import `io.mdk` and use `inspect` (`inspect x = putStrLn
+   (debug x)`).  These are ordinary Medaka functions over the string-only
+   `putStr`/`putStrLn` externs, which moves the `Display` constraint into
+   Medaka where dict-passing works (an extern can't receive a dictionary). -}
 export
 println : Display a => a -> <IO> Unit
 println x = putStrLn (display x)

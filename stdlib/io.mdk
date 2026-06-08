@@ -14,7 +14,7 @@
    `Err`; `getEnv` returns `Option`. There is no IO monad — an action runs when
    it is evaluated, so you can `match readFile path` directly. -}
 
-import core.{Display, Option, Result, fromOption}
+import core.{Debug, Display, Option, Result, fromOption}
 
 -- ── Standard error (Display, mirroring the prelude's print/println) ──────
 
@@ -29,6 +29,17 @@ eprint x = ePutStr (display x)
 export
 eprintln : Display a => a -> <IO> Unit
 eprintln x = ePutStrLn (display x)
+
+-- ── Debug output ─────────────────────────────────────────────────────────
+
+{- | Print a value via `Debug` followed by a newline — the `Debug`-rendering
+   analog of `println`.  Unlike `println` (which uses `Display` and is
+   user-facing), `inspect` produces round-trippable output: strings and chars
+   are quoted, ADTs print with constructor names and field values.  Handy for
+   tracing intermediate values without a custom `Display` impl. -}
+export
+inspect : Debug a => a -> <IO> Unit
+inspect x = putStrLn (debug x)
 
 -- ── Files ────────────────────────────────────────────────────────────────
 

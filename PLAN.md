@@ -59,7 +59,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend** (remaining gaps: `inspect`→method, arg-tag dispatch on non-ADT args, nested-requires dicts) → **bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable + **inspect→method**); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend** (remaining gaps: arg-tag dispatch on non-ADT args, nested-requires dicts) → **bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -394,8 +394,7 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
      rewritten as pure-Medaka stdlib `→MEDAKA`; **`hash`→`Hashable`** typeclass `→METHOD`
      replacing the structural extern). All byte-identical vs the tree-walker oracle.
    **REMAINING (the spike→real-backend gap):**
-   - `inspect : a -> <IO> Unit` → `→METHOD` (the last reflective extern — `Debug` render
-     → `putStr`; mirrors the `hash`→`Hashable` move).
+   - ~~`inspect : a -> <IO> Unit` → `→METHOD`~~ **DONE 2026-06-07**: `inspect x = putStrLn (debug x)` in `stdlib/io.mdk`; reflective extern gone.
    - **Finish the `→MEDAKA` sort/builder cutover.** `sortBy`/`sortInPlaceBy`/`sort` are
      pure Medaka now, but `mergeSortBy` (and ~16 other `array.mdk` sites) still call the
      `arrayMakeWith` **extern**; the pure `makeWith` exists but isn't adopted internally.
