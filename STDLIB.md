@@ -530,13 +530,14 @@ literals (`[|lo..hi|]`/`[|lo..=hi|]`), and panicking bracket indexing
 1. **Kernel** of OCaml-backed primitives in `stdlib/runtime.mdk`
    (`arrayLength`, `arrayMake`, `arrayMakeWith`, `arrayGetUnsafe`,
    `arraySetUnsafe`, `arrayCopy`, `arrayBlit`, `arrayFill`,
-   `arraySortInPlaceBy`, and the pure wrappers `arraySortBy`,
-   `arrayFromList`).  The two pure wrappers exist because Medaka has
-   no effect-masking: a function using `arrayBlit`/`arraySortInPlaceBy`
-   propagates `<Mut>` to all callers, which would force `sort`/`sortBy`
-   to surface `<Mut>` in their signatures.  Encapsulating "alloc +
-   mutate locally + return fresh" inside an extern keeps the pure API
-   honest.
+   `arrayFromList`).  **Note (2026-06-07, `→MEDAKA` migration):** `sortBy`/
+   `sortInPlaceBy`/`sort` no longer call the `arraySortBy`/`arraySortInPlaceBy`
+   externs — they route through a pure-Medaka top-down mergesort (`mergeSortBy`)
+   in `array.mdk`, so the FFI-callback coupling is gone for the LLVM backend. The
+   `arraySortBy`/`arraySortInPlaceBy` externs are now **dead in the stdlib** (still
+   declared in `runtime.mdk`/`eval.ml` for the interpreter). A pure `makeWith` also
+   exists, but `array.mdk` internals (incl. `mergeSortBy`) still call the
+   `arrayMakeWith` extern — see PLAN.md "Native backend" for the remaining cutover.
 2. **Pure stdlib** (Medaka) built on the kernel via `arrayMakeWith`
    and tail-recursive helpers.
 3. **Effectful stdlib** (Medaka) with explicit `<Mut>` in signatures.

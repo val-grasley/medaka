@@ -12,16 +12,19 @@ See [`STAGE2-DESIGN.md`](./STAGE2-DESIGN.md) for the backend-architecture decisi
 > **Status (updated 2026-06-07):** the value representation + calling convention are
 > **RATIFIED** (§8: Option A uniform tagged word under §8.6's abstract contract; dense
 > i32 ctor-ordinal tags; uniform one-word header), and the **String representation is
-> DECIDED** (§4/§7 decision 2: UTF-8 bytes + cached codepoint count). A **partial
-> native runtime now exists** (`runtime/medaka_rt.c`): `mdk_alloc` routes to Boehm
-> `GC_malloc` (conservative GC, verified collecting), and the Stage-2.4 de-risking
-> spike (`selfhost/llvm_emit.mdk`) emits the full non-GC Core IR surface plus
-> **native-extern-catalog slice 1** (heap Strings: `mdk_str_lit`/`mdk_print_str`/
-> `mdk_int_to_string`), gated byte-identical against the tree-walker oracle
-> (`test/diff_selfhost_llvm{,_typed}.sh`). **Still open** (per §7): the `set_ref`
-> write barrier, the `panic` unwind model, and the bulk of the extern catalog
-> (~50 leaf/IO/RNG/unicode helpers still to re-implement). The spike remains a probe,
-> not yet promoted to the real backend.
+> DECIDED** (§4/§7 decision 2: UTF-8 bytes + cached codepoint count). A **native
+> runtime exists** (`runtime/medaka_rt.c`): `mdk_alloc` routes to Boehm `GC_malloc`
+> (conservative GC, verified collecting), and the Stage-2.4 de-risking spike
+> (`selfhost/llvm_emit.mdk`) emits the full non-GC Core IR surface plus the **entire
+> native extern catalog** (slices 1–14: strings/numeric/IO/abort/arrays/char/unicode/
+> args-env/file-IO + ADT-returning externs), all gated byte-identical against the
+> tree-walker oracle (`test/diff_selfhost_llvm{,_typed}.sh`). The three non-C-extern
+> dispositions are also **DONE**: RNG = deterministic SplitMix64 (shared oracle +
+> runtime); sorts = `→MEDAKA` (pure-Medaka stdlib); `hash` = `→METHOD` (`Hashable`
+> typeclass). **Still open** (per §7): the `set_ref` write barrier, the `panic` unwind
+> model, the lone remaining `→METHOD` extern `inspect`, and **promotion of the spike to
+> the real backend** (close the dispatch gaps + drive it over the real `selfhost/*.mdk`
+> source, then bootstrap).
 
 ---
 
@@ -104,25 +107,31 @@ a *second* oracle for the native backend.
 ## 4. The hard cases, in detail
 
 **Sorts & array builder (`arraySortBy`, `arraySortInPlaceBy`, `arrayMakeWith`) →
-`→MEDAKA`.** A native `sort_by` wants a native comparator; ours is a Medaka
-closure. A native helper would have to marshal the array to a raw `*mut Value`,
-wrap a trampoline that re-enters compiled Medaka per comparison through the C ABI,
-and allocate the result through the GC — i.e. `unsafe` raw-pointer code in which
-Rust's `Vec`/`sort_by`/safety all evaporate at the boundary. Writing the sort *in
-Medaka* (a standard mergesort/introsort over `Array`, compiled by our backend)
-keeps it one calling convention end-to-end, allocates through the normal path, and
-is validated by the existing differential harness for free. Same argument for
-`arrayMakeWith` (the `Int -> a` builder is a Medaka closure). **This is the lever
-that removes the FFI-callback problem entirely.** (They are native in the
-tree-walker only because OCaml's `Array.sort` was conveniently at hand.)
+`→MEDAKA`. DONE 2026-06-07** — rewritten as pure-Medaka stdlib (`stdlib/array.mdk`),
+compiled by our own backend, no C extern. A native `sort_by` would have wanted a
+native comparator; ours is a Medaka closure. A native helper would have had to marshal
+the array to a raw `*mut Value`, wrap a trampoline that re-enters compiled Medaka per
+comparison through the C ABI, and allocate the result through the GC — i.e. `unsafe`
+raw-pointer code in which Rust's `Vec`/`sort_by`/safety all evaporate at the boundary.
+Writing the sort *in Medaka* (a standard mergesort over `Array`) keeps it one calling
+convention end-to-end, allocates through the normal path, and is validated by the
+existing differential harness for free. Same argument for `arrayMakeWith` (the
+`Int -> a` builder is a Medaka closure). **This is the lever that removes the
+FFI-callback problem entirely.** (They were native in the tree-walker only because
+OCaml's `Array.sort` was conveniently at hand.) **Cutover caveat:** the sort *logic* is
+pure Medaka, but `mergeSortBy` (and ~16 other `array.mdk` sites) still call the
+`arrayMakeWith` extern; the dead `arraySortBy`/`arraySortInPlaceBy` externs are still
+declared. Finishing the cutover (decide `arrayMakeWith` = inline INTRINSIC vs. pure
+`makeWith`; drop dead externs) is tracked in PLAN.md "Native backend".
 
-**`hash : a -> Int` → `→METHOD`.** Note `==`/`compare`/`debug` are already
-typeclass methods (`Eq`/`Ord`/`Debug`), not externs — they monomorphize /
-dictionary-pass at compile time. `hash` is the lone structural straggler. Make it
-a derived **`Hashable`** method (same `deriving` machinery as `Eq`), so per-type
-hash code is *generated*, not computed by a runtime that walks an unknown layout.
-Net effect: **the native runtime needs zero knowledge of value layout** — it only
-ever sees opaque pointers and scalars.
+**`hash : a -> Int` → `→METHOD`. DONE 2026-06-07** — `hash` is now a derived
+**`Hashable`** typeclass method (combiner `acc*33 + hash field`), replacing the
+structural extern; `hash_map`/`hash_set` gained a `requires Hashable` constraint.
+`==`/`compare`/`debug` were already typeclass methods (`Eq`/`Ord`/`Debug`), not externs
+— they monomorphize / dictionary-pass at compile time; `hash` was the lone structural
+straggler, so per-type hash code is now *generated*, not computed by a runtime that
+walks an unknown layout. Net effect: **the native runtime needs zero knowledge of value
+layout** — it only ever sees opaque pointers and scalars.
 
 **`inspect : a -> <IO> Unit` → `→METHOD` + `IO`.** It's both reflective *and*
 effectful. Decompose: render via the `Debug` method (compile-time dispatched) to a
@@ -223,7 +232,7 @@ literal/print/`intToString` path on this layout (`runtime/medaka_rt.c`,
 | `wallTimeSec` | `Unit -> <IO> Float` | IO | `gettimeofday` |
 | `assert_snapshot` | `String -> String -> <IO> Unit` | IO | test-harness only; may stay tree-walker-only and not ship in the native runtime |
 
-### RNG — `RNG`
+### RNG — `RNG`  *(DONE 2026-06-07: deterministic SplitMix64, shared `lib/eval.ml` oracle + `runtime/medaka_rt.c`, seeded → byte-identical streams)*
 | `randomInt` | `Int -> Int -> <Rand> Int` | RNG | holds state |
 | `randomBool` | `Unit -> <Rand> Bool` | RNG | |
 | `randomFloat` | `Unit -> <Rand> Float` | RNG | |
@@ -237,20 +246,22 @@ literal/print/`intToString` path on this layout (`runtime/medaka_rt.c`,
 | `exit` | `Int -> <Panic> Unit` | GC/CTRL | process exit |
 | `__fallthrough__` | `Unit -> a` | GC/CTRL | non-exhaustive-match trap (compiler-internal) |
 
-### Rewrite in Medaka (no native helper) — `→MEDAKA`
+### Rewrite in Medaka (no native helper) — `→MEDAKA`  *(sort logic DONE 2026-06-07 in `stdlib/array.mdk`; `arrayMakeWith` native treatment + dead-sort-extern cleanup pending — see PLAN.md)*
 | `arraySortBy` | `(a -> a -> Ordering) -> Array a -> Array a` | →MEDAKA | comparator is a Medaka closure |
 | `arraySortInPlaceBy` | `(a -> a -> Ordering) -> Array a -> <Mut> Unit` | →MEDAKA | |
 | `arrayMakeWith` | `Int -> (Int -> a) -> Array a` | →MEDAKA | builder is a Medaka closure |
 
-### Convert to typeclass (no extern) — `→METHOD`
-| `hash` | `a -> Int` | →METHOD | derive `Hashable` |
-| `inspect` | `a -> <IO> Unit` | →METHOD + IO | `Debug` render → `putStr` |
+### Convert to typeclass (no extern) — `→METHOD`  *(`hash` DONE 2026-06-07 → `Hashable`; `inspect` remaining)*
+| `hash` | `a -> Int` | →METHOD | ✅ derived `Hashable` |
+| `inspect` | `a -> <IO> Unit` | →METHOD + IO | `Debug` render → `putStr` (remaining) |
 
 ### Disposition totals
 `INTRINSIC` 13 · `LEAF` 18 · `UNICODE` 9 · `IO` 16 · `RNG` 5 · `GC/CTRL` 5 ·
 `→MEDAKA` 3 · `→METHOD` 2  = **71**.  *(2026-06-07: `stringLength` reclassified
 `LEAF`→`INTRINSIC` when the string rep was locked with a cached codepoint count, §7
-decision 2.)*
+decision 2. **Implementation status: all dispositions DONE except the one `→METHOD`
+extern `inspect`** — INTRINSIC/LEAF/UNICODE/IO/GC-CTRL ported via spike slices 1–14;
+RNG via SplitMix64; →MEDAKA via stdlib; `hash` →METHOD via `Hashable`.)*
 
 After applying `INTRINSIC` (no call), `→MEDAKA` (compiled Medaka), and `→METHOD`
 (typeclass), the **actual native runtime is ~53 leaf functions** — and every one
@@ -353,7 +364,7 @@ NOT separate forked language variants. The ratified middle path:
    see `STAGE2-DESIGN.md` §2.4).
 5. **Where the ABI is first proven**: at the **bytecode VM (§2.2)**, against the
    tree-walker oracle — not at LLVM. (§2 sequencing note) — **done** (the VM + the LLVM
-   spike thru slice 9 both exercised it; §2.2/§2.4).
+   spike both exercised it; §2.2/§2.4).
 
 Decisions 1, 4, and 3's header half are now settled (2026-06-07 rep ratification, §8);
 string rep is now **DECIDED** too (2026-06-07, decision 2 above — UTF-8 + cached

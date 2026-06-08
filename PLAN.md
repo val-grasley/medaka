@@ -35,7 +35,10 @@ measured a non-win on the tree-walker and is parked; see `selfhost/PERF-NOTES.md
 **Stage 2 (native backend) is underway** — Core IR + evaluator (§2.1) and the
 bytecode VM (§2.2) are fully done, including the §2.2 capstone (lexer stage runs
 byte-for-byte through `bcEvalModulesOutput`); the LLVM toolchain de-risking spike
-runs through slice 9 (the full non-GC Core IR surface). See the [Workstreams table](#workstreams--where-each-roadmap-lives) for
+is **complete** — it lowers the full non-GC Core IR surface, runs on Boehm GC, and
+the **entire native extern catalog is ported** (slices 1–14 + RNG/sorts/hash, all
+byte-identical against the oracle). The remaining work is promoting the spike into
+the real backend and the bootstrap closure. See the [Workstreams table](#workstreams--where-each-roadmap-lives) for
 the map and `selfhost/STAGE2-DESIGN.md` for the staged plan.
 
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
@@ -56,7 +59,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; LLVM spike thru slice 9 — **full non-GC Core IR surface covered** (43/43 gate); §2.0 closed; **value rep RATIFIED (2026-06-07** — Option A tagged word under §8.6 contract, dense i32 ctor-ordinal, uniform header**)**; **ordinal tags now emitted by the spike (2026-06-07)**; **GC live (Boehm) + native extern catalog slice 1 (Strings) done (2026-06-07)**; next = extern-catalog remainder + dispatch gaps → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend** (remaining gaps: `inspect`→method, arg-tag dispatch on non-ADT args, nested-requires dicts) → **bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -195,7 +198,7 @@ deliberately deferred to here:
   runtime. Per-extern disposition for all 71 primitives + the language/ABI strategy
   is in [`selfhost/RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md).
 - **LLVM lowering:** Core IR → LLVM IR, calling convention, FFI.
-  - ✅ **Toolchain de-risking spike DONE through slice 9** (2026-06-07) — *ahead
+  - ✅ **Toolchain de-risking spike COMPLETE** (2026-06-07) — *ahead
     of the strict VM-first ordering by design* (front-loads the riskiest lift; uses
     only the tree-walker oracle). Proves the decided toolchain end-to-end (EMIT
     textual LLVM IR + shell out to `clang`; no llc/opt, no C++/Rust bindings):
@@ -354,9 +357,10 @@ Downstream (captured, NOT near-term): **Phase 146b** parameterized effects
 tree-walker non-win and already captured in the VM/Core IR (O(1) slots) ✅; §2.1
 Core IR + evaluator + sexp round-trip ✅; §2.2 bytecode VM (6 slices + capstone) ✅;
 §2.3 front-end gaps (typed multi-module VM, dict corpus, erased effect-poly) ✅;
-§2.4 **LLVM de-risking spike thru slice 9** — the full non-GC Core IR surface
+§2.4 **LLVM de-risking spike COMPLETE** — the full non-GC Core IR surface
 (scalars → fns → ADTs/match → closures → records/tuples/refs → return-position +
-arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
+arg-tag dispatch → arrays/ranges → lists), Boehm GC, and the **entire native extern
+catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅.
 
 **Near-term (remaining), dependency-ordered:**
 1. ✅ **Value representation + calling convention RATIFIED (2026-06-07).** Native
@@ -369,49 +373,44 @@ arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
    one-word heap header** kept; `Float` boxed-first; scalars not self-describing
    (compile-time `Debug`). Record: [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md)
    §8 status banner + §8.4. This unblocks item 2.
-2. **Promote the spike to the real LLVM backend** (§2.4). The spike covers the Core
-   IR but is explicitly *not* the real backend; the remaining lifts are the
-   decision-dense ones deferred by design: ~~a **GC** (Boehm to start — the spike is
-   malloc-and-leak)~~ **DONE (2026-06-07)** — `mdk_alloc` now routes to Boehm's
-   `GC_malloc` (conservative GC), unblocked by the nullary-ctor IMMEDIATE rep (every
-   immediate is odd, every boxed value an 8-byte-aligned pointer, so Boehm's scan is
-   sound). Gate clang lines locate libgc via pkg-config / `brew --prefix bdw-gc` and
-   skip cleanly (exit 2) when absent. Verified active (not a silent malloc fallback):
-   the binary links `libgc` and `mdk_alloc` calls `_GC_malloc`, and a 2×10⁸-cons
-   churn fixture (`test/llvm_fixtures/gc_stress.mdk`, scaled up) holds ~3 MB RSS
-   where malloc-and-leak hits ~614 MB. The **native extern catalog** re-implementation
-   (per-extern disposition in RUNTIME-DESIGN) — **slice 1 DONE (2026-06-07): Strings**
-   — the String rep is now LOCKED (RUNTIME-DESIGN §4/§7 decision 2: UTF-8 bytes +
-   cached codepoint count, boxed `[header|byte_len|cp_count|bytes|NUL]`, so
-   `stringLength` is INTRINSIC); `runtime/medaka_rt.c` gains `mdk_str_lit` /
-   `mdk_print_str` / `mdk_int_to_string`, the emitter lowers `CLit (LString _)` +
-   `intToString` (`selfhost/llvm_emit.mdk`), and 5 plain + 2 typed string fixtures gate
-   byte-identical (STAGE2-DESIGN §2.4a-7). `intToString` is the first extern returning a
-   heap Medaka value (proves the §2a GC-alloc contract). **Catalog remainder** —
-   `charToStr`/`stringConcat`/`putStr`/file-IO/unicode/RNG — `charCode`/`charToStr`/
-   `charMinBound`/`charMaxBound` + `LChar` literals + `LTChar` auto-print are now **DONE
-   (slice 8, 2026-06-07)** — and the spike's out-of-scope gaps
-   (arg-tag dispatch on non-ADT/Int args, nested-requires dicts) remain. ~~the **dense i32
-   ctor-ordinal** tag emission~~ **DONE (2026-06-07)** — the spike now stamps the
-   ratified per-type ctor ordinal (a composite `typeId<<32 | ordinal`: the low half
-   is the dense per-type 0-based ordinal `br_table` wants; the high half is a per-type
-   id that keeps the spike's cross-type arg-tag dispatch correct, which the real
-   backend resolves statically and drops). hashName is gone from every constructor
-   tag, killing the hash-collision miscompile class — that was the **last spike-vs-real
-   tag gap**; the spike's value-rep no longer differs from the ratified scheme on tags
-   (`selfhost/llvm_emit.mdk` `cellTag`; gates `diff_selfhost_llvm{,_typed}.sh`;
-   adversarial fixture `test/llvm_fixtures/adt_ordinal_collision.mdk`). The `decodeHead`
-   reserved-name aliasing bug — a lift here until the ordinal scheme exposed it — is
-   now fixed ahead of this work (see Compiler / language). ~~the spike **boxes nullary
-   constructors**~~ **DONE (2026-06-07)** — a nullary ctor is now the §8.1 IMMEDIATE
-   word `(cellTag<<1)|1` (no alloc, the Bool immediate generalised); a `match` head
-   reads the tag via `loadDiscriminant` (low-bit branch: immediate ⇒ `ashr 1`, boxed ⇒
-   load header), so a type mixing nullary + boxed ctors discriminates without
-   dereferencing an immediate (`selfhost/llvm_emit.mdk` `emitCtorAlloc`/
-   `loadDiscriminant`; adversarial fixture `test/llvm_fixtures/adt_imm_mixed.mdk`).
-   Gate: native
-   stdout vs the tree-walker **and** the bytecode VM (the second, single-steppable
-   oracle). Skill: none specific (lands in `selfhost/llvm_emit*.mdk` + `runtime/`).
+2. **Promote the spike to the real LLVM backend** (§2.4). The de-risking spike has
+   now closed every lift it was scoped to prove — what remains is turning that probe
+   into the production backend that compiles the real self-hosted compiler.
+   **DONE (all 2026-06-07):**
+   - **GC** — `mdk_alloc` routes to Boehm `GC_malloc` (conservative). Verified active
+     (not a malloc fallback): a 2×10⁸-cons churn fixture (`gc_stress.mdk`) holds ~3 MB
+     RSS vs ~614 MB malloc-and-leak. Gate clang lines locate libgc via pkg-config /
+     `brew --prefix bdw-gc` and skip cleanly (exit 2) when absent.
+   - **Dense i32 ctor-ordinal tags** — the spike stamps the ratified per-type ordinal
+     (composite `typeId<<32 | ordinal`); hashName gone from every ctor tag, killing the
+     hash-collision miscompile class. **Nullary ctors immediate** (`(cellTag<<1)|1`, no
+     alloc); a `match` reads the tag via `loadDiscriminant` (low-bit branch). The spike's
+     value-rep no longer differs from the ratified scheme.
+   - **Native extern catalog — FULLY PORTED** (slices 1–14, slice breakdown below):
+     Tier A (numeric/IO/abort/string-leaf/array-intrinsics/array-leaf), Tier B (Char rep
+     lock, string↔char, unicode), Tier C (reserved ADT-tag precursor + ADT-returning
+     string externs + args/env + file IO), Tier D (**RNG** = deterministic SplitMix64
+     shared oracle+runtime; **sorts** = `arraySortBy`/`arraySortInPlaceBy`/`arrayMakeWith`
+     rewritten as pure-Medaka stdlib `→MEDAKA`; **`hash`→`Hashable`** typeclass `→METHOD`
+     replacing the structural extern). All byte-identical vs the tree-walker oracle.
+   **REMAINING (the spike→real-backend gap):**
+   - `inspect : a -> <IO> Unit` → `→METHOD` (the last reflective extern — `Debug` render
+     → `putStr`; mirrors the `hash`→`Hashable` move).
+   - **Finish the `→MEDAKA` sort/builder cutover.** `sortBy`/`sortInPlaceBy`/`sort` are
+     pure Medaka now, but `mergeSortBy` (and ~16 other `array.mdk` sites) still call the
+     `arrayMakeWith` **extern**; the pure `makeWith` exists but isn't adopted internally.
+     Decide `arrayMakeWith`'s native treatment — INTRINSIC inline builder-loop (closure
+     called from compiled code, no FFI) vs. route everything through the pure `makeWith`
+     — then drop the now-dead `arraySortBy`/`arraySortInPlaceBy` externs from the native
+     path (keep in the interpreter if desired).
+   - The spike's out-of-scope **dispatch gaps**: arg-tag dispatch on non-ADT/Int args,
+     and nested-`requires` dicts (Phase 83/84 #5 residual).
+   - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)
+     — the spike gates against `test/llvm_fixtures/`; the real backend must compile
+     `selfhost/*.mdk`. Surfacing+closing whatever constructs that exposes is the bulk of
+     the remaining work and feeds directly into item 3.
+   Skill: none specific (lands in `selfhost/llvm_emit*.mdk` + `runtime/`). Gate: native
+   stdout vs the tree-walker **and** the bytecode VM (the second, single-steppable oracle).
 3. **Bootstrap closure** — self-hosted compiler + LLVM backend compiles itself to a
    standalone native binary (the finish line, STAGE2-DESIGN §2.4).
 
@@ -420,6 +419,10 @@ capability-wedge delivery vehicle, reached by a direct emitter; soft-pivot
 constraints are already design inputs to the shared layers).
 
 #### Native extern catalog — slice breakdown (Stage 2.4, item 2)
+
+> **✅ COMPLETE (2026-06-07).** All slices 1–14 (Tiers A–C) plus Tier D (RNG, sorts,
+> hash) are landed and byte-identical-gated. The breakdown below is kept as the
+> implementation record. Remaining catalog item: `inspect` → `→METHOD` (see item 2).
 
 The catalog re-implementation (item 2 above) is decomposed into the small, ordered
 slices below. **Each slice follows the String-slice template verbatim**

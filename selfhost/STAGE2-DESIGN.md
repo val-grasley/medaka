@@ -1068,16 +1068,17 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   oracle (`lib/eval.ml`) deliberately — a language-semantics decision, not under the
   spike "no lib/" scope guard.
 
-**Spike status after slice 10 — what's next.** The de-risking spike has now lowered
-the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
-ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in
+**Spike status — COMPLETE; next is promotion to the real backend.** The de-risking
+spike has lowered the **full non-GC Core IR surface** (scalars → top-level fns +
+`musttail` → ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in
 list/tuple heads + recursive closures → return-position dispatch → arg-tag
-dispatch → arrays/ranges → lists), proving the decided toolchain (textual LLVM IR +
-`clang`, no llc/opt/bindings) end-to-end against the tree-walker oracle. Its job is
-done: it is **not** the real backend, and continuing to add spike slices buys little
-— the remaining items are the decision-dense ones deferred to the real backend by
-design. The near-term sequence (mirrored in [`../PLAN.md`](../PLAN.md) §"Native
-backend (Stage 2) — near-term sequence"):
+dispatch → arrays/ranges → lists), runs on Boehm GC, and the **entire native extern
+catalog is ported** (slices 1–14 + RNG/sorts/hash) — proving the decided toolchain
+(textual LLVM IR + `clang`, no llc/opt/bindings) end-to-end against the tree-walker
+oracle. Its job is **done**: it is *not* the real backend, and no further spike slices
+are planned. What remains is promotion (close the spike→real gap, then bootstrap). The
+near-term sequence (mirrored in [`../PLAN.md`](../PLAN.md) §"Native backend (Stage 2) —
+near-term sequence"):
 1. ✅ **Value representation + calling convention RATIFIED (2026-06-07)** — Option A
    (uniform tagged word) as the native encoding *under §8.6's shared abstract
    contract* (WasmGC-compatible by construction); constructor tag = **dense i32
@@ -1117,27 +1118,19 @@ backend (Stage 2) — near-term sequence"):
    to Bool via `tagInt`; `charIsPunct` is a switch over Unicode Pc/Pd/Pe/Pf/Pi/Po/Ps
    ASCII members, NOT `ispunct()` — `+`/`$`/`=`/`^`/`|`/`~` return `False`; string
    case-map is byte-wise ASCII, UTF-8 multi-byte bytes pass through; 101/101 plain +
-   16/16 typed byte-identical; full-Unicode deferred to RUNTIME-DESIGN §6), **slice 10
-   DONE 2026-06-07** (reserved ADT-tag precursor: `reservedTag`/`reservedTypeBase`
-   65536 in `llvm_emit.mdk` + matching `MDK_TAG_*` in `medaka_rt.c`; runtime cell
-   builders `mdk_some`/`ok`/`err`/`cons` + `mdk_none`/`nil`/`lt`/`eq`/`gt`; canary
-   `charFromCode` via `isAdtExtern`; `adt_some`/`adt_none` prove boxed + immediate
-   round-trip; 103/103 plain; gates the ADT-returning slices 11/12/13), **slice 11
-   DONE 2026-06-07** (ADT-returning string externs: `stringToFloat` → `Option Float`,
-   `stringIndexOf` → `Option Int`, `stringCompare` → `Ordering`; `mdk_box_float` helper
-   in `medaka_rt.c`; 8 new fixtures; 111/111 plain), **slice 12 DONE 2026-06-07**
-   (`args : Unit → List String` via `mdk_args` building Cons cells back-to-front from
-   `argv[1..]`; `getEnv : String → Option String` via `mdk_get_env`; `mdk_set_args`
-   stashes argc/argv; `emitProgram` entry changed to `@main(i32 %argc, ptr %argv)`;
-   `isEnvExtern`/`emitEnvExtern` added; `LUnit` literal added to `emitLit`; 3 new
-   fixtures; 114/114 plain; GATE LIMITATION: args non-empty path unverifiable — oracle
-   program_args=[] and native ./bin both yield []; real argv→Cons plumbing is in place), **slice 13 DONE 2026-06-07** (file IO + stdin: `readFile`/`writeFile`/`appendFile` Result, `fileExists` Bool, `listDir` Result (List String), `readLine`/`readLineOpt`/`readAll` stdin; `mdk_str_cstr` helper + seven C functions in `medaka_rt.c`; `isFileExtern`/`emitFileExtern` added to `selfhost/llvm_emit.mdk`; 8 new `declare i64` in `emitPreamble`; 6 fixtures s13_write_read/append/exists_true/exists_false/listdir_ok/listdir_err — all byte-identical; stdin readers implemented but NOT fixtured, gate does not pipe stdin; **Tier C complete — native extern catalog fully ported**) — and close the spike's out-of-scope gaps (arg-tag
-   dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
-   i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
-   (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);
-   last spike-vs-real tag gap closed. Gate native stdout against
-   **both** the tree-walker and the bytecode VM (the second, single-steppable
-   oracle — the disambiguation LLVM-first cannot have).
+   16/16 typed byte-identical; full-Unicode deferred to RUNTIME-DESIGN §6) — **Tier C
+   complete — native extern catalog fully ported** (slices 10–13 detail in §2.4a-13
+   above; slices 1–9/14 above). **Tier D DONE 2026-06-07**: RNG (deterministic
+   SplitMix64 shared oracle+runtime, §2.4a-14), sorts (`arraySortBy`/
+   `arraySortInPlaceBy`/`arrayMakeWith` rewritten as pure-Medaka stdlib `→MEDAKA`),
+   `hash`→`Hashable` typeclass (`→METHOD`, replaced the structural extern). The dense
+   i32 ctor-ordinal tags are emitted (`cellTag`; composite `typeId<<32 | ordinal`,
+   hashName gone — last spike-vs-real tag gap closed). **REMAINING spike→real gap:**
+   `inspect`→`→METHOD` (last reflective extern); the spike's out-of-scope dispatch gaps
+   (arg-tag dispatch on non-ADT/Int args, nested-`requires` dicts); and driving the
+   emitter over the REAL `selfhost/*.mdk` source rather than fixtures. Gate native
+   stdout against **both** the tree-walker and the bytecode VM (the second,
+   single-steppable oracle — the disambiguation LLVM-first cannot have).
 3. **Bootstrap closure** — the self-hosted compiler + LLVM backend compiles itself
    to a standalone native binary.
 
