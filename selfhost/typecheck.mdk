@@ -411,7 +411,11 @@ enableArgStamp _ = set_ref argStampEnabled True
 -- the route refs awaiting an arg-position stamp + their discriminating-argument
 -- mono (captured during inference, resolved by resolveArgStamps while the tyvar
 -- cells are still bound).  Reset per pass by resetState, like pendingArgSites.
-pendingArgStamps : Ref (List (Ref Route, Mono))
+-- D3b-1: also carries the method name + the EMethodAt impl-dicts ref, so a
+-- concrete site whose head names a parametric `requires` impl can thread the
+-- element dict (resolveArgStamp → argImplDictRoutesFor), exactly as the
+-- return-position pendingSites carry implRef for resolveSite.
+pendingArgStamps : Ref (List (String, Ref Route, Ref (List Route), Mono))
 pendingArgStamps = Ref []
 
 -- per-module captures (reset by resetState, like pendingSites): one entry per
@@ -490,24 +494,38 @@ nthArgMono n m = match normalize m
 
 -- D3a: queue an arg-position occurrence's route ref for stamping, keyed on the
 -- inferred type of its discriminating argument (the dispatch-position arg mono).
--- The cell is read later (resolveArgStamps), once inference has solved it.
-recordArgStamp : Ref Route -> Int -> Mono -> <Mut> Unit
-recordArgStamp tagRef idx mono = match nthArgMono idx mono
-  Some am => set_ref pendingArgStamps ((tagRef, am) :: pendingArgStamps.value)
+-- The cell is read later (resolveArgStamps), once inference has solved it.  D3b-1:
+-- also carry [name] + the impl-dicts ref so a concrete-head site can thread the
+-- element dict for a parametric `requires` impl.
+recordArgStamp : String -> Ref Route -> Ref (List Route) -> Int -> Mono -> <Mut> Unit
+recordArgStamp name tagRef implRef idx mono = match nthArgMono idx mono
+  Some am => set_ref pendingArgStamps ((name, tagRef, implRef, am) :: pendingArgStamps.value)
   None => ()
 
--- D3a: stamp each queued arg-position route from its now-resolved discriminating
--- arg mono.  A concrete head (Int/String/Float/… or any ADT tycon, via
--- headTyconMono) → a static `RKey tag []` (empty reqs — the inventory confirms 0
--- nesting for arg-position dispatch); a still-unsolved type variable → left RNone
--- (a D3b dict-passing site; the emitter arg-tag-dispatches it).
-resolveArgStamps : List (Ref Route, Mono) -> <Mut> Unit
-resolveArgStamps [] = ()
-resolveArgStamps ((tagRef, am) :: rest) =
-  let _ = match headTyconMono am
-            Some tag => set_ref tagRef (RKey tag [])
-            None => ()
-  resolveArgStamps rest
+-- D3a/D3b-1: stamp each queued arg-position route from its now-resolved
+-- discriminating arg mono.  D3b-1 first: a mono pinned to an impl's `requires`
+-- element tyvar (registered in activeDictVars by registerImplRequires) → the
+-- element dict param RDict $dict_<method>_<slot> — the ARGUMENT-position analogue
+-- of resolveSite's return-position RDict.  Else (D3a): a concrete head
+-- (Int/String/Float/… or any ADT tycon) → a static `RKey tag …`, and when that
+-- head names a parametric impl WITH a requires, fill the impl-dicts ref so the
+-- call threads the element dict (concrete element → RKey Int; a recursive element
+-- of the SAME parametric type → RDict forwarding the in-scope dict param).  A
+-- still-unsolved free type variable → left RNone (the emitter arg-tag-dispatches).
+resolveArgStamps : List ImplEntry -> List (String, Ref Route, Ref (List Route), Mono) -> <Mut> Unit
+resolveArgStamps _ [] = ()
+resolveArgStamps implTable ((name, tagRef, implRef, am) :: rest) =
+  let _ = resolveArgStamp implTable name tagRef implRef am
+  resolveArgStamps implTable rest
+
+resolveArgStamp : List ImplEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Unit
+resolveArgStamp implTable name tagRef implRef am = match activeDictVarOf am
+  Some dname => set_ref tagRef (RDict dname)
+  None => match headTyconMono am
+    Some tag =>
+      let _ = set_ref tagRef (RKey tag [])
+      set_ref implRef (argImplDictRoutesFor implTable name tag am)
+    None => ()
 
 -- the measured path for inferVar: a dispatch method gets its arg-site recorded;
 -- everything else instantiates normally.
@@ -1238,7 +1256,7 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
     let _ = recordMethodDicts name methodRef (snd inst)
     match argDispatchOf name
       Some idx =>
-        let _ = recordArgStamp tagRef idx (fst inst)
+        let _ = recordArgStamp name tagRef implRef idx (fst inst)
         fst inst
       None => recordSite name tagRef implRef (fst inst)
 
@@ -1860,11 +1878,12 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let argNames = if argStampEnabled.value then map fst argDispatchIdxRef.value else []
   let prog2 = prePassDictArg (returnPosMethodNames prog ++ methodConstraintNames prog) allNames argNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
-  let _ = resolveSites (buildImplTable prog2) (returnPosMethodNames prog2) pendingSites.value
+  let implTable = buildImplTable prog2
+  let _ = resolveSites implTable (returnPosMethodNames prog2) pendingSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps pendingDictApps.value
   let _ = resolveMethodDicts pendingMethodDicts.value
-  let _ = resolveArgStamps pendingArgStamps.value
+  let _ = resolveArgStamps implTable pendingArgStamps.value
   dictPass allNames prog2
 
 -- With no eligible names (the RKey-only / typed path), there is nothing to
@@ -2194,6 +2213,31 @@ routeOfMono m = match activeDictVarOf m
     Some tag => RKey tag []
     None => RNone
 
+-- ── D3b-1: arg-position element-dict routing ────────────────────────────────
+-- The argument-position analogue of implDictRoutesFor.  Same impl-table match +
+-- head-pattern unification against the discriminating-argument mono, but each
+-- requires route is computed by routeOfMono (activeDictVar-aware): a recursive
+-- element of the SAME parametric type (the impl's own element tyvar `a`, still a
+-- registered constraint var) forwards the in-scope `$dict_<method>_<slot>` param
+-- (RDict); a concrete element (`MyList Int`) materializes a static RKey.  Kept
+-- SEPARATE from the return-position reqRoute/implDictRoutesFor chain so that
+-- golden path's routing is untouched (this runs only for emit-path arg stamps).
+argImplDictRoutesFor : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
+argImplDictRoutesFor [] _ _ _ = []
+argImplDictRoutesFor (ImplEntry tag2 methodNames headTy reqs :: rest) name tag mono
+  | tag2 == tag && containsName name methodNames = match matchTyMono headTy mono
+      Some subst => argImplReqRoutes subst reqs
+      None => argImplDictRoutesFor rest name tag mono
+  | otherwise = argImplDictRoutesFor rest name tag mono
+
+argImplReqRoutes : List (String, Mono) -> List Require -> <Mut> List Route
+argImplReqRoutes _ [] = []
+argImplReqRoutes subst (Require _ rargs :: rest) = argReqRoute subst rargs :: argImplReqRoutes subst rest
+
+argReqRoute : List (String, Mono) -> List Ty -> <Mut> Route
+argReqRoute _ [] = RNone
+argReqRoute subst (arg :: _) = routeOfMono (fromAstType subst arg)
+
 -- Phase 69.x-e: fill each method occurrence's method-dicts ref — one route per
 -- method-level constraint, from the instantiated constraint mono.  A concrete head
 -- → RKey (eval supplies a literal VDict for the body's `empty`/… to read); a
@@ -2289,14 +2333,16 @@ dictPassDecl : List String -> List String -> Decl -> Decl
 dictPassDecl names _ (DFunDef pub n pats body)
   | containsName n names = DFunDef pub n (dictParams n (dictArityOf n) ++ pats) body
   | otherwise = DFunDef pub n pats body
--- Phase 83/84 single-level: a parametric impl with `requires` gets one leading
--- `$dict_<method>_<slot>` param on each return-position method whose body actually
--- reads an impl dict (so a nullary terminal body like `def = 0` takes none) — the
--- routes resolveSite filled on the call-site EMethodAt's impl-dicts ref line up
--- with these params, applied by eval after narrowMethod.
-dictPassDecl _ rpNames (d@DImpl { reqs, methods, ... }) = match reqs
+-- Phase 83/84 single-level + D3b-1: a parametric impl with `requires` gets one
+-- leading `$dict_<method>_<slot>` param on each method (return- OR argument-
+-- position) whose body actually reads an impl dict (so a terminal body like
+-- `eq Nil Nil = True` would take none — but see implDictPassMethods: the param is
+-- added UNIFORMLY across all clauses of a method when ANY clause uses the dict, so
+-- a multi-clause method keeps one arity).  The routes resolveSite/resolveArgStamp
+-- filled on the call-site EMethodAt's impl-dicts ref line up with these params.
+dictPassDecl _ _ (d@DImpl { reqs, methods, ... }) = match reqs
   [] => d
-  _ => DImpl { d | methods = map (implDictPassMethod (lengthL reqs) rpNames) methods }
+  _ => DImpl { d | methods = implDictPassMethods (lengthL reqs) methods }
 -- Phase 69.x-e: a method with method-level constraints (foldMap's `Monoid m`) gets
 -- one leading `$dict_<method>_<slot>` param per constraint on its DEFAULT body, so a
 -- caller can supply the dictionary the body's `empty`/… reads (routed RDict by
@@ -2316,9 +2362,28 @@ ifaceDictPassDefault n ty pats body k
 methodDictArityOf : String -> Int
 methodDictArityOf n = lengthL (fromOption [] (lookupAssocSL2 n methodConstraintsRef.value))
 
-implDictPassMethod : Int -> List String -> ImplMethod -> ImplMethod
-implDictPassMethod nReq rpNames (ImplMethod n pats body)
-  | containsName n rpNames && usesImplDict n nReq body = ImplMethod n (dictParams n nReq ++ pats) body
+-- D3b-1: add the leading `$dict_<method>_<slot>` params UNIFORMLY across all
+-- clauses of a method.  An impl method is many ImplMethod entries (one per
+-- clause), so a per-clause `usesImplDict` test would give clauses different
+-- arities (`eq Nil Nil = True` uses no dict; `eq (Cons …) (Cons …) = … eq x y …`
+-- does) and break coalescing.  Compute the set of method NAMES any of whose
+-- clauses reads the dict, then prepend the params to every clause of those names.
+-- No rpNames gate: usesImplDict already requires an in-body RDict route to one of
+-- these params, which on the non-emit path no arg-position site ever has (its
+-- occurrences stay bare EVar), so return-position goldens are unaffected.
+implDictPassMethods : Int -> List ImplMethod -> List ImplMethod
+implDictPassMethods nReq methods =
+  let users = dedupS (concatMapL (clauseImplDictUser nReq) methods)
+  map (prependImplDictIfUser nReq users) methods
+
+clauseImplDictUser : Int -> ImplMethod -> List String
+clauseImplDictUser nReq (ImplMethod n _ body)
+  | usesImplDict n nReq body = [n]
+  | otherwise = []
+
+prependImplDictIfUser : Int -> List String -> ImplMethod -> ImplMethod
+prependImplDictIfUser nReq users (ImplMethod n pats body)
+  | containsName n users = ImplMethod n (dictParams n nReq ++ pats) body
   | otherwise = ImplMethod n pats body
 
 -- does [body] reference an in-body return-position method already routed RDict to
@@ -2602,16 +2667,28 @@ methodTyOf mname (IfaceMethod n ty _ :: rest)
   | n == mname = Some ty
   | otherwise = methodTyOf mname rest
 
--- AFTER body inference: for each return-position method of the impl, register the
--- requires' surviving (normalized) tyvar ids → its `$dict_<method>_<slot>` param,
--- so the inner ref's pendingSite (also normalizing to that id) routes RDict.
+-- AFTER body inference: for each method of the impl that dispatches the element
+-- (return-position OR, on the emit path, argument-position), register the requires'
+-- surviving (normalized) tyvar ids → its `$dict_<method>_<slot>` param, so the
+-- inner ref's pendingSite/pendingArgStamp (also normalizing to that id) routes
+-- RDict.  D3b-1: arg-position methods (`eq`/`compare`/`debug`/… on the element)
+-- register only under argStampEnabled (argDispatchOf returns None otherwise), so
+-- the non-emit return-position path is unchanged.  (The element tyvar is shared
+-- across an impl's methods, so per-method dict names only disambiguate for
+-- single-method interfaces — exactly the D3b-1 targets Eq/Ord/Debug/Display/Hashable.)
 registerImplRequires : List (String, Mono) -> List String -> List Require -> List ImplMethod -> <Mut> Unit
 registerImplRequires _ _ _ [] = ()
 registerImplRequires implTvMap rpNames reqs (ImplMethod mname _ _ :: rest)
-  | containsName mname rpNames =
+  | registersElementDict mname rpNames =
       let _ = registerReqSlots mname implTvMap 0 reqs
       registerImplRequires implTvMap rpNames reqs rest
   | otherwise = registerImplRequires implTvMap rpNames reqs rest
+
+-- a method registers an element dict if it is return-position (rpNames) or — on
+-- the emit path only — an arg-position dispatch method (argDispatchOf is Some).
+registersElementDict : String -> List String -> <Mut> Bool
+registersElementDict mname rpNames = containsName mname rpNames || isSome (argDispatchOf mname)
+
 
 registerReqSlots : String -> List (String, Mono) -> Int -> List Require -> <Mut> Unit
 registerReqSlots _ _ _ [] = ()

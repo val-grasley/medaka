@@ -1,0 +1,26 @@
+-- D3b-1: ARG-POSITION ELEMENT dispatch inside a parametric `requires` impl body.
+-- `eq` on `MyList Int` routes through `impl Eq (MyList a) requires Eq a`, whose
+-- body dispatches `eq` on the element tyvar `a` (`eq x y`) and recurses on the
+-- tail (`eq xs ys`).  The element site is ARGUMENT position with a discriminating
+-- type that is the impl's own constraint variable — pre-D3b-1 it stayed RNone and
+-- the emitter arg-tag-dispatched it, which CANNOT work for a primitive element
+-- (Int immediates carry no cell tag).  D3b-1 routes it RDict $dict_eq_0 (the
+-- element dict the impl's `requires Eq a` threads), the recursive `eq xs ys` to
+-- RKey MyList forwarding that same dict, and the outer call (concrete `MyList Int`)
+-- to RKey MyList carrying RKey Int as the element dict — so every element compare
+-- reaches `@mdk_impl_Int_eq` through static dict dispatch, no arg-tag.
+-- `eq [1,2,3] [1,2,3]` → True → 1.
+interface Eq a where
+  eq : a -> a -> Bool
+
+data MyList a = Nil | Cons a (MyList a)
+
+impl Eq Int where
+  eq a b = a == b
+
+impl Eq (MyList a) requires Eq a where
+  eq Nil Nil = True
+  eq (Cons x xs) (Cons y ys) = if eq x y then eq xs ys else False
+  eq _ _ = False
+
+main = if eq (Cons 1 (Cons 2 (Cons 3 Nil))) (Cons 1 (Cons 2 (Cons 3 Nil))) then 1 else 0

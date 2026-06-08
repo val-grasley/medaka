@@ -1,0 +1,29 @@
+-- D3b-1: ARG-POSITION ELEMENT dispatch via `Ord (MyList a) requires Ord a`.
+-- `compare` on the element tyvar `a` (`compare x y`) is argument position with the
+-- impl's own constraint variable as its discriminating type — routed RDict
+-- $dict_compare_0 (the element dict the `requires Ord a` threads); the tail
+-- recursion `compare xs ys` is RKey MyList forwarding that dict; the outer call on
+-- concrete `MyList Int` is RKey MyList carrying RKey Int.  So each element compare
+-- reaches `@mdk_impl_Int_compare` by static dict dispatch.  `compare [1,2] [1,3]`
+-- → first elements equal, then 2 < 3 → CLt → 1.
+interface Ord a where
+  compare : a -> a -> Cmp
+
+data Cmp = CLt | CEq | CGt
+data MyList a = Nil | Cons a (MyList a)
+
+impl Ord Int where
+  compare a b = if a < b then CLt else if a > b then CGt else CEq
+
+impl Ord (MyList a) requires Ord a where
+  compare Nil Nil = CEq
+  compare Nil _ = CLt
+  compare _ Nil = CGt
+  compare (Cons x xs) (Cons y ys) = match compare x y
+    CEq => compare xs ys
+    c => c
+
+main = match compare (Cons 1 (Cons 2 Nil)) (Cons 1 (Cons 3 Nil))
+  CLt => 1
+  CEq => 2
+  CGt => 3
