@@ -49,7 +49,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |11 | **unbound dict witness** (dict not threaded to use)       | ~~3~~ **0** (closure root, E8) / ~~3~~ **0** (impl-body root, E9)        | 2        | Emitter / dict-pass              | ✅ **FULLY CLOSED** — closure half E8 (`freeVars` CMethod/CDict routes); impl-body half E9 (2026-06-08, `usesImplDict` EDictAt scan in typecheck — `debug`/`display`/`hash`@List forwarding the element dict) |
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
-|14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
+|14 | **non-Int literal switch** (String/Char/Bool head)        | ~~0~~ **0** | ~~30~~ **0** | Emitter                          | ✅ **CLOSED (E14, 2026-06-08)** — `emitLitChain` now handles `HLit (LChar _)` (icmp-eq against the `(cp<<1)\|1` immediate, same shape as Int) and `HLit (LString _)` (materialize the literal cell via `emitLit (LString _)`, compare with the new `@mdk_string_eq` runtime helper → tagged-Bool word, branch on `icmp eq i64 r, 3`). `LBool` never reaches here (`canonPat` rewrites bool literals to `PCon "True"/"False"`). EMIT-ONLY; runtime gains one helper `mdk_string_eq` (byte_len + memcmp). **B: non-Int literal switch 30→0; B TOTAL 88 → 76** (the 30 keyword/radix sites — `keywordOrIdent`/`radixBase`/`isRadixDigit` — now lower their String/Char switches; residual events at those sites fold into other gap classes). |
 |15 | **record pattern `PRec`** (+ field-name "unbound variable" cluster) | 0 | ~~110~~ **0** | Lowering (`canonPat` wildcarded PRec) | ✅ **CLOSED (E11, 2026-06-08)** — `lowerProgramEmit` rewrites `PRec "T" recFields open` → `PCon "T" [sub-pat per field, declared order]` (puns → `PVar label`, unnamed → `PWild`); the existing `PCon` cellTag-test + `bindFields` machinery destructures records/named-field variants (incl. the compiler's own `DInterface {…}`/`DImpl {…}` matches), so the field-name `methods`/`typarams`/`supers`/`reqs`/`tys`/`name`/… "unbound variable" events all bind. EMIT-ONLY (the by-name `VRecord` tree-walker keeps raw `PRec`); no emitter change. **B: PRec 43→0 + field-cluster ~80→0 (127 events). B TOTAL 215 → 88.** |
 |   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ ~~13~~ ~~11~~ **8** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ ~~1924~~ ~~1942‡~~ ~~888§~~ ~~560¶~~ ~~215~~ **88** (E11 PRec→PCon rewrite: 215→88) |                                  |                     |
 
@@ -415,7 +415,26 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter as
 - **unit-head switch** (5): the QuickCheck `Arbitrary` impls — out of bootstrap scope.
 - **arg-tag method under-applied** (6): `fold` passed without its discriminating
   arg (first-class method value) inside `any`/`all`/`elem`.
-- **non-Int literal switch** (1): `deriveForNewtype` matches a non-Int literal head.
+- **non-Int literal switch** ✅ **CLOSED (E14, 2026-06-08):** String + Char literal
+  match heads now lower. `emitLitChain` previously handled only `HLit (LInt k)`
+  (icmp-eq against the tagged-int immediate); the 30 census-B events were the
+  lexer's `keywordOrIdent`/`radixBase`/`isRadixDigit` switching on String/Char
+  literals. Extension:
+  - **`HLit (LChar c)`** — Char is an immediate codepoint word `(cp<<1)|1`, so the
+    arm is the exact icmp-eq shape as Int (`charCode (arrayGetUnsafe 0
+    (stringToChars c))` for the codepoint).
+  - **`HLit (LString s)`** — String is a boxed cell; materialize the literal
+    operand the same way `emitLit (LString _)` does (`@.str.N` global + `mdk_str_lit`
+    box), then call the new `@mdk_string_eq(i64, i64)` runtime helper (byte_len
+    compare + memcmp) which returns a TAGGED Bool word (`3`=True), and branch on
+    `icmp eq i64 r, 3`. Runtime gains one helper `mdk_string_eq` in
+    `runtime/medaka_rt.c` (the only contended-file exception, runtime is not
+    shared).
+  - **`LBool`** never reaches `emitLitChain`: `canonPat` rewrites bool literal
+    patterns to `PCon "True"/"False"`, so Bool `match` is a CONSTRUCTOR-head
+    switch (`emitConChain`) — see the FIXED note below.
+  - Fixtures: `match_str_lit` (→2), `match_char_lit` (→2), `match_str_default`
+    (wildcard default →0), all byte-identical to the tree-walker oracle.
   - **Bool match heads: ✅ FIXED (2026-06-07).** Bool `match` is a CONSTRUCTOR-head
     switch (`emitConChain`), not a literal one, but `cellTag` was not special-cased
     for `True`/`False`. `emitVar`/`emitLit` hardcode `True`→word `3` (tag 1 after
@@ -428,7 +447,7 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter as
   - **Float literal switch heads** (1 site in `deriveForNewtype`): remain unsupported.
     `emitLitChain` would need a float-compare path (float equality is fp `fcmp oeq`
     on the unboxed double, not a tag comparison). 1 site whole-compiler, rare — doc
-    only, deferred to E5 or excluded from bootstrap scope.
+    only, deferred or excluded from bootstrap scope.
 
 ---
 

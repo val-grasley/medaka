@@ -129,6 +129,21 @@ long long mdk_str_lit(const char *bytes, long long byte_len) {
   return (long long)cell;
 }
 
+/* String equality on two boxed String cells.  Returns a TAGGED Medaka Bool word
+ * (3 = True, 1 = False, matching the emitter's `if b then "3" else "1"` rep), so
+ * the literal-switch emitter can `icmp eq i64 r, 3` to branch.  Two strings are
+ * equal iff equal byte_len and byte-identical payload (codepoint count is a cache
+ * of byte content, so byte_len + memcmp is sufficient and exact). */
+long long mdk_string_eq(long long a, long long b) {
+  const char *ca = (const char *)a;
+  const char *cb = (const char *)b;
+  long long la = ((const long long *)ca)[1];
+  long long lb = ((const long long *)cb)[1];
+  if (la != lb) return 1;
+  if (memcmp(ca + 24, cb + 24, (size_t)la) != 0) return 1;
+  return 3;
+}
+
 /* Print a String RAW (no quoting).  Matches Eval.pp_value (VString s) = s, then
  * the oracle's trailing newline (eval_probe / selfhost ppValue). */
 void mdk_print_str(long long w) {

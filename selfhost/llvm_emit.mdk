@@ -2873,8 +2873,38 @@ emitLitChain e env root arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) dft
   let _ = emitTree e env root arms rest slot endL rty sub
   let _ = emit e (next ++ ":")
   emitLitChain e env root arms foc rest more dft slot endL rty
+-- Char = immediate codepoint word (cp << 1) | 1 — same comparison shape as Int.
+emitLitChain e env root arms foc rest ((CTBranch (HLit (LChar c)) sub)::more) dft slot endL rty =
+  let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ foc ++ ", " ++ intToString (cp * 2 + 1))
+  let n = intToString (freshId e)
+  let yes = "lityes" ++ n
+  let next = "litnext" ++ n
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e (yes ++ ":")
+  let _ = emitTree e env root arms rest slot endL rty sub
+  let _ = emit e (next ++ ":")
+  emitLitChain e env root arms foc rest more dft slot endL rty
+-- String = boxed cell; equality via the @mdk_string_eq runtime helper, which
+-- returns a TAGGED Bool word (3 = True), so branch on `icmp eq i64 r, 3`.
+-- Materialize the literal operand the same way emitLit (LString _) does.
+emitLitChain e env root arms foc rest ((CTBranch (HLit (LString s)) sub)::more) dft slot endL rty =
+  let (lit, _) = emitLit e (LString s)
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_eq(i64 " ++ foc ++ ", i64 " ++ lit ++ ")")
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ r ++ ", 3")
+  let n = intToString (freshId e)
+  let yes = "lityes" ++ n
+  let next = "litnext" ++ n
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e (yes ++ ":")
+  let _ = emitTree e env root arms rest slot endL rty sub
+  let _ = emit e (next ++ ":")
+  emitLitChain e env root arms foc rest more dft slot endL rty
 emitLitChain _ _ _ _ _ _ _ _ _ _ _ =
-  gapU "non-Int literal switch (slice 3: no Float / String / Char / Bool literal heads)"
+  gapU "non-Int literal switch (slice 3: no Float / Bool literal heads)"
 
 -- ── small list helpers (slice 3) ────────────────────────────────────────────
 lengthS : List a -> Int
@@ -3919,6 +3949,7 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_float_to_string(double)"
   let _ = emit e "declare i64 @mdk_string_concat(i64)"
   let _ = emit e "declare i64 @mdk_string_append(i64, i64)"
+  let _ = emit e "declare i64 @mdk_string_eq(i64, i64)"
   let _ = emit e "declare i64 @mdk_list_append(i64, i64)"
   let _ = emit e "declare i64 @mdk_append(i64, i64)"
   let _ = emit e "declare void @mdk_putstr(i64)"
