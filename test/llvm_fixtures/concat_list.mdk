@@ -1,0 +1,4 @@
+-- E2a: ++ on List. Result: 10
+main = match ([1, 2] ++ [3, 4])
+  a :: b :: c :: d :: _ => a + b + c + d
+  _ => 0

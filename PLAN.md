@@ -518,7 +518,15 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
      - **E1b — top-level value / mutable `Ref` globals** (#7). NEXT. Emit each top-level
        non-fn binding as an LLVM global so other fns can name it (the second structural
        wall; ≈254 whole / 7 core events).
-     - **E2 — value-shape lowering** (#3/#6 `::`/`++`, #5 lambda param patterns).
+     - ✅ **E2a — `::` and `++` as `CBinPrim`** (#3/#6). DONE (2026-06-07). `emitBin` now
+       handles `"::"` (→ `emitCtorAlloc e "Cons" [lw, rw]`, `typeOf` extended → `LTCon`) and
+       `"++"` (→ `mdk_string_append` for `LTStr`, `mdk_list_append` for `LTCon`). Two new C
+       helpers (`mdk_string_append` / `mdk_list_append`), declared in `emitPreamble`; 4 new
+       fixtures. **`::` A:2→0; `++` A:14→4** (4 remaining = `append`/`ap` impls with both
+       params unknown type; `paramUseTy` falls back to `LTInt`). core total: 44→**32**. All
+       gates byte-identical (140/25/20/20).
+     - **E2b — non-variable lambda parameter patterns** (#5). Lower `\(a,b) -> body` to
+       `\p -> match p { (a,b) => body }` before Core IR.
      - **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`).
      - **E4 — dispatch-routing port** (#2/#13: carry D3b arg-position dict-passing onto
        the `elaborateModules` emit path; 0 on the single-file path already).

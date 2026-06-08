@@ -1060,7 +1060,23 @@ emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <M
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
   | isArithOp op = emitArith e env op l r
-  | otherwise = gapE ("unsupported binary operator '" ++ op ++ "' (slice 1: arithmetic + comparison only — e.g. ::, ++)")
+  | op == "::" =
+    let (lv, _) = emitExpr e env l
+    let (rv, _) = emitExpr e env r
+    emitCtorAlloc e "Cons" [lv, rv]
+  | op == "++" =
+    let (lv, lty) = emitExpr e env l
+    let (rv, _) = emitExpr e env r
+    let r2 = freshReg e
+    match lty
+      LTStr =>
+        let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_string_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        (r2, LTStr)
+      LTCon =>
+        let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_list_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        (r2, LTCon)
+      _ => gapE ("++ on unsupported operand type")
+  | otherwise = gapE ("unsupported binary operator '" ++ op ++ "'")
 
 -- the arithmetic operators the spike lowers to int/float instructions.  `::` and
 -- `++` survive lowering as CBinPrim but are NOT arithmetic — they fall to the gap.
@@ -2597,6 +2613,7 @@ typeOf _ env (CVar x _) = match lookupAssoc x env
   None => LTInt
 typeOf sigs env (CBinPrim op l r)
   | isCmpOp op = LTBool
+  | op == "::" = LTCon
   | otherwise = typeOf sigs env l
 typeOf _ _ (CUnOp "!" _) = LTBool
 typeOf sigs env (CUnOp "-" x) = typeOf sigs env x
@@ -3387,6 +3404,8 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_int_to_string(i64)"
   let _ = emit e "declare i64 @mdk_float_to_string(double)"
   let _ = emit e "declare i64 @mdk_string_concat(i64)"
+  let _ = emit e "declare i64 @mdk_string_append(i64, i64)"
+  let _ = emit e "declare i64 @mdk_list_append(i64, i64)"
   let _ = emit e "declare void @mdk_putstr(i64)"
   let _ = emit e "declare void @mdk_putstrln(i64)"
   let _ = emit e "declare void @mdk_eputstr(i64)"
