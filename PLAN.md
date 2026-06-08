@@ -515,10 +515,23 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        `match_bool_false` (→9), `match_bool_fn` (→300); all four gates byte-identical
        (136/25/20/20). Float literal switch heads (1 whole-compiler site, rare) remain
        documented as deferred in EMITTER-GAPS #14.
-     - **E1b — top-level value / mutable `Ref` globals** (#7). NEXT. Emit each top-level
-       non-fn binding as an LLVM global so other fns can name it (the second structural
-       wall; now ≈237 whole / **0 core** — core's 7 events were all extern refs, closed
-       by the per-type-hashers + debug-lit work below).
+     - ✅ **E1b — top-level value / mutable `Ref` globals** (#7). DONE (2026-06-08).
+       Each top-level non-`main` non-fn binding emits as an LLVM global
+       `@mdk_g_<name> = global i64 0` (`emitGlobalDecls`); an `@main` **init prologue**
+       (`emitTopGlobals`) computes each rhs in **source order** and `store`s the word,
+       then `emitVar`/`lookupVarG` lowers any reference to `load i64, ptr @mdk_g_<name>`
+       — referenceable from ANY `define`. A `Ref v` global holds the heap-cell POINTER,
+       so `.value`/`set_ref` deref through it (mutation shared across calls). A new
+       `Emit` globals registry (10th ref, `name -> (initialised?, LTy)`) carries each
+       binding's resolved LTy; `@main` is emitted BEFORE the fn defines so the prologue
+       resolves every LTy first, and a forward/mutual init dependency records a precise
+       `gapE` rather than loading an uninitialised 0. **core #7 stays 0** (no genuine
+       value globals — its residual unbound-vars are pattern-cascade); **whole genuine
+       value-global refs 781→146 unbound events, whole TOTAL 2660→2025.** 3 new fixtures
+       (`global_value_ref` / `global_ref_mut` / `global_chain`); all gates byte-identical
+       (156/25/20/20). **Single-program milestone**; multi-module cross-module init order
+       deferred to D4 (census B flattens all modules to one program → measures this
+       capability).
      - ✅ **E2a — `::` and `++` as `CBinPrim`** (#3/#6). DONE (2026-06-07). `emitBin` now
        handles `"::"` (→ `emitCtorAlloc e "Cons" [lw, rw]`, `typeOf` extended → `LTCon`) and
        `"++"` (→ `mdk_string_append` for `LTStr`, `mdk_list_append` for `LTCon`). Two new C

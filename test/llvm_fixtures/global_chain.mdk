@@ -1,0 +1,7 @@
+-- slice E1b: two value globals where the SECOND references the first (`b = a + 1`).
+-- Confirms source-order init: `b`'s rhs in the @main prologue loads the already-
+-- stored `@mdk_g_a`.  A sibling function then reads `b` through its global.
+a = 7
+b = a + 1
+useB x = x * b
+main = useB 10

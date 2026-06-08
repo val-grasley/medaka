@@ -42,7 +42,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 | 4 | **non-variable parameter pattern** (fn)                   | 4       | 150      | Desugar/lower-fixable            | lower `f (a,b)=…` → param + body `match` |
 | 5 | **non-variable lambda parameter pattern**                 | ~~1~~ **0** | ~~108~~ **0** | Desugar/lower-fixable          | ✅ **CLOSED (E2b)** — same decision-tree lowering as #4, inside the lifted-lambda frame |
 | 6 | **`::` as `CBinPrim`** (cons)                              | ~~2~~ **0** | ~~90~~ **0** | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — `emitCtorAlloc e "Cons" [lw, rw]` |
-| 7 | **reference to top-level value / mutable `Ref` binding**  | ~~7\*~~ **0\*** | ~~254~~ **237** | Emitter                          | emit top-level non-fn bindings as **globals**; **core's 7 extern refs CLOSED** (see \*) |
+| 7 | **reference to top-level value / mutable `Ref` binding**  | ~~7\*~~ **0\*** | ~~254~~ ~~237~~ **0\*\*\*** | ✅ **CLOSED (E1b)** — emit as **globals** + `@main` init prologue (source order); core's 7 extern refs also CLOSED (see \*) |
 | 8 | **`otherwise`** (guard constant)                          | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — added to `emitVar` constants (= `True` → `"3"`, `LTBool`) |
 | 9 | **`__fallthrough__`** (guard-desugar sentinel)            | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — intercepted in `emitApp` CVar branch (`call void @mdk_oob()` + dummy; block terminator from surrounding `if`) |
 |10 | **non-nullary / recursive `let`-group** (`where` fns)     | ~~5~~ **0** | ~~5~~ **0** | Emitter                          | ✅ **CLOSED (E5)** — lambda-lift each local fn via `emitGroupBind` (self-rec through `%clos`, E1a clause-tree body); one-at-a-time env threading covers non-mutual groups; genuine forward/mutual ref → precise `gapE` (none in core) |
@@ -50,7 +50,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ **23** | ~~2722~~ ~~2677~~ **2660** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ **23** | ~~2722~~ ~~2677~~ ~~2660~~ **2025** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) were
 references to runtime/core primitives the spike's extern catalog didn't carry —
@@ -62,6 +62,15 @@ catalog + `emitPreamble` declares (with `mdk_hash_*`/`mdk_debug_*_lit` in
 `runtime/medaka_rt.c`).  Census A's 7 → 0 (total A 30 → 23); census B 2677 → 2660
 (the extern refs incl. `lexer.mdk`'s 10 `debugStringLit` calls).  The remaining
 core-`#7` count is 0 — core has no genuine top-level value / `Ref` global refs.
+
+\*\*\* **E1b (2026-06-08):** top-level non-`main` non-fn value / mutable `Ref`
+bindings now emit as LLVM **globals** (`@mdk_g_<name>`) initialised once in an
+`@main` prologue (source order), referenceable from any `define` (see detail #7).
+Census B's genuine value-global references — **781 → 146** "unbound variable"
+events (whole TOTAL **2660 → 2025**) — drop to 0; the 146 residual are
+PRec/PList/PAs pattern-cascade + extern-fn-as-value, NOT #7. MULTI-MODULE
+cross-module init order is deferred to D4 (census B flattens to one program, so it
+measures the single-program capability).
 
 † Closing gap #10 (E5) makes the **TOTAL tick UP** (A 31→34, B 3001→3008 at
 measurement time), not down: the old emitter recorded ONE gap per unsupported
@@ -166,18 +175,40 @@ carry tuple/constructor param patterns.
   (`Some`-style constructor-param lambda), `lam_rec_tuple` (recursive `let … in`
   lambda with a tuple param → `emitRecLam`). All byte-identical (143/25/20/20).
 
-#### 7 — references to top-level value / mutable `Ref` bindings (A:7, B:254)
-The spike computes top-level **non-function** bindings as `@main`-locals; a
-function body referencing one (`emitVar` → not ctor / not known-fn / not a param)
-is unbound. The compiler is full of these: global mutable `Ref` state
+#### 7 — references to top-level value / mutable `Ref` bindings (A:7→0, B:254→0 genuine) — ✅ CLOSED (E1b, 2026-06-08)
+The spike *used to* compute top-level **non-function** bindings as `@main`-locals;
+a function body referencing one (`emitVar` → not ctor / not known-fn / not a param)
+was unbound. The compiler is full of these: global mutable `Ref` state
 (`typeErrors`, `curEffect`, `tjLow/tjIndex/tjStack` Tarjan state, `pendingSites`,
 `recordsRef`, `outputRef`, the `argMeasureEnabled`/`argStampEnabled` flags…) and
 point-free combinator **value** bindings (`parseExpr`, `parseLam`, `parsePipe`,
 `advance`, `peekP`, …).
-- **Emitter gap (structural).** Emit each top-level non-fn binding as an LLVM
-  **global** (value-initialised once; `Ref`s as a mutable global cell), so other
-  top-level functions can name it. After multi-clause (#1), this is the
-  second-biggest structural blocker to emitting real modules.
+- **Emitter gap (structural) — CLOSED (E1b).** Each top-level non-`main` non-fn
+  binding is now emitted as an LLVM **global** `@mdk_g_<name> = global i64 0`
+  (`emitGlobalDecls`); an `@main` **init prologue** (`emitTopGlobals`) computes each
+  rhs in **source order** and `store`s the word, then `emitVar`/`lookupVarG` lowers
+  any reference to a `load i64, ptr @mdk_g_<name>` — referenceable from ANY `define`.
+  A `Ref v` rhs's global holds the heap-cell POINTER, so `.value`/`set_ref` deref
+  through the loaded pointer (mutation is shared across calls). A globals registry
+  (`Emit`'s 10th ref, `name -> (initialised?, LTy)`) carries each binding's resolved
+  static type; the `@main` body is emitted BEFORE the fn `define`s so the prologue
+  resolves every LTy first. Source-order init means a forward/mutual init dependency
+  (a global's rhs reading a not-yet-computed global) records a **precise** `gapE`
+  instead of loading an uninitialised 0 — none occur in core.
+  - Census A: 0 genuine value-global refs (core's residual `unbound x`/`acc` are
+    pattern-cascade from unsupported PList/PAs heads, gap-family #4/#5, not #7).
+  - Census B: the **781 → 146** "unbound variable" events (whole total **2660 →
+    2025**) — all 635 removed were genuine top-level value/`Ref` references now
+    lowered to global loads; the 146 residual are PRec/PList/PAs pattern-cascade
+    and extern-fn-as-value, not #7.
+  - Fixtures `global_value_ref` / `global_ref_mut` / `global_chain` (a value global
+    read from a sibling fn, a shared mutable `Ref` global, and source-order chained
+    init) are byte-identical to the oracle.
+- **MULTI-MODULE init DEFERRED (D4).** This is the SINGLE-program milestone (one
+  `@main` + prologue). Census B flattens core + 15 modules into ONE program, so it
+  measures this capability; the REAL multi-module emit (each module's globals
+  initialised in cross-module dependency order, one `@main` orchestrating them) is
+  a D4 concern and is NOT built here.
 
 #### 8 / 9 — guard residue: `otherwise` (B:88) and `__fallthrough__` (B:88) — ✅ CLOSED (E3, 2026-06-08)
 `| otherwise =` references the prelude constant `otherwise = True`; guard
@@ -234,7 +265,7 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter as
 
 | Class | Gaps | B-count | Meaning |
 |-------|------|--------:|---------|
-| **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #3, #7, #11, #12, #14 (#6, #10 now closed) | 1308 | needs emitter code |
+| **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #3, #11, #12, #14 (#6, #7, #10 now closed) | 1308 | needs emitter code |
 | **Desugar/lower-fixable** (eliminate the shape before Core IR) | #4, #5 | 258 | ✅ CLOSED — realised emitter-side via `emitClauseTree` (E1a fn + E2b lambda); Core IR unchanged |
 | **Front-end residue** (a name/sentinel that shouldn't reach emit) | #8, #9 | ~~176~~ **0** | ✅ CLOSED (E3) — `emitVar` + `emitApp` |
 | **Dispatch routing, already designed** (not new work) | #2, #13 | 546 | port D3b to multi-module |
@@ -255,8 +286,15 @@ source per unit of work**:
     and patterned top-level fns route through the shared `emitClauseTree`
     decision-tree path (see gap #1 detail). core #1 16→0, whole 732→0; core total
     57→44. Re-run `llvm_emit_gaps_main.mdk` to confirm.
-  - **E1b (#7 global value/`Ref` bindings) — NEXT.** Emit top-level non-fn
-    bindings as LLVM globals.
+  - **E1b (#7 global value/`Ref` bindings) — ✅ DONE (2026-06-08).** Top-level
+    non-`main` non-fn bindings emit as LLVM globals `@mdk_g_<name>`, initialised
+    once in an `@main` source-order init prologue (`emitGlobalDecls` +
+    `emitTopGlobals`); `emitVar`/`lookupVarG` lowers a reference to a global load
+    via the new `Emit` globals registry. core #7 stays 0 (no genuine value globals;
+    its residual unbound-vars are pattern-cascade); whole genuine value-global refs
+    **781→146** unbound events (whole TOTAL **2660→2025**). Single-program milestone;
+    multi-module cross-module init deferred to D4. Re-run `llvm_emit_gaps_main.mdk`
+    to confirm.
 
 - **E2 — value-shape lowering.** (#3/#6 `::`/`++`, #4/#5 param/lambda patterns.)
   **527** events. Half is desugar/lower (param-pattern → body `match`), half is

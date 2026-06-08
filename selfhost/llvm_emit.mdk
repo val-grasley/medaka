@@ -280,7 +280,20 @@ data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr | LTUnit | LTCha
 -- (`eq`/`compare`/`show`) lowers to a bare `CVar` applied to args; the call site
 -- loads the discriminating argument's constructor tag and selects the impl whose
 -- TYPE owns that constructor — this map turns the loaded ctor tag into its type.
-data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int))) (Ref (List String)) (Ref (List (String, List String))) (Ref (List CImplEntry)) (Ref (List (String, String)))
+-- The TENTH ref (slice E1b — top-level value/`Ref` globals) is the GLOBALS
+-- REGISTRY: `name -> (initialised?, LTy)`.  Each top-level non-`main` non-function
+-- binding is emitted as a module global `@mdk_g_<name>` and computed once in an
+-- `@main` init prologue (source order).  The registry lets `emitVar` recognise such
+-- a name and lower it to a `load i64, ptr @mdk_g_<name>` referenceable from ANY
+-- `define` (the gap #7 fix: a value binding referenced from a sibling function is
+-- no longer an unbound local).  The `initialised?` flag is set as the prologue
+-- computes each rhs in source order, so a reference to a NOT-yet-computed global
+-- inside the prologue (a forward / mutual init dependency) is caught precisely
+-- instead of loading an uninitialised 0; after the prologue every entry is `True`,
+-- so any function body may reference any global.  MULTI-MODULE init (each module's
+-- globals initialised in cross-module dependency order) is a D4 concern — NOT built
+-- here; this is the single-program (`@main` + prologue) milestone.
+data Emit = Emit (Ref Int) (Ref (List String)) (Ref (List String)) (Ref (List (String, FnSig))) (Ref (List (String, Int))) (Ref (List String)) (Ref (List (String, List String))) (Ref (List CImplEntry)) (Ref (List (String, String))) (Ref (List (String, (Bool, LTy))))
 
 -- a function's inferred signature: its parameter types (in order) and its return
 -- type.  At the LLVM ABI every value is a uniform i64 word regardless (Int
@@ -295,7 +308,7 @@ data FnSig = FnSig (List LTy) LTy
 
 -- ── emitter plumbing ────────────────────────────────────────────────────────
 freshId : Emit -> <Mut> Int
-freshId (Emit c _ _ _ _ _ _ _ _) =
+freshId (Emit c _ _ _ _ _ _ _ _ _) =
   let n = c.value
   let _ = set_ref c (n + 1)
   n
@@ -304,21 +317,21 @@ freshReg : Emit -> <Mut> String
 freshReg e = "%t" ++ intToString (freshId e)
 
 emit : Emit -> String -> <Mut> Unit
-emit (Emit _ buf _ _ _ _ _ _ _) line = set_ref buf (line :: buf.value)
+emit (Emit _ buf _ _ _ _ _ _ _ _) line = set_ref buf (line :: buf.value)
 
 -- the main output buffer ref (slice 4: needed for the save/restore swap that
 -- redirects emission of a lifted lambda's `define` into the side buffer).
 bufRef : Emit -> Ref (List String)
-bufRef (Emit _ buf _ _ _ _ _ _ _) = buf
+bufRef (Emit _ buf _ _ _ _ _ _ _ _) = buf
 
 -- the side buffer holding lifted-lambda `define`s, in FORWARD order (slice 4).
 lamsRef : Emit -> Ref (List String)
-lamsRef (Emit _ _ _ _ _ lams _ _ _) = lams
+lamsRef (Emit _ _ _ _ _ lams _ _ _ _) = lams
 
 -- the known-function table (set once in emitProgram); membership decides whether
 -- a `CApp` head names a callable top-level function.
 fnNames : Emit -> <Mut> List String
-fnNames (Emit _ _ fns _ _ _ _ _ _) = fns.value
+fnNames (Emit _ _ fns _ _ _ _ _ _ _) = fns.value
 
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = containsStr name (fnNames e)
@@ -326,7 +339,7 @@ isKnownFn e name = containsStr name (fnNames e)
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
-fnRetTy (Emit _ _ _ sigs _ _ _ _ _) name = match lookupAssoc name sigs.value
+fnRetTy (Emit _ _ _ sigs _ _ _ _ _ _) name = match lookupAssoc name sigs.value
   Some (FnSig _ rty) => rty
   None => LTInt
 
@@ -334,7 +347,7 @@ fnRetTy (Emit _ _ _ sigs _ _ _ _ _) name = match lookupAssoc name sigs.value
 -- the constructor arity table (set once in emitProgram); membership decides
 -- whether a `CVar`/`CApp` head names an ADT constructor (→ heap allocation).
 ctorTable : Emit -> <Mut> List (String, Int)
-ctorTable (Emit _ _ _ _ ct _ _ _ _) = ct.value
+ctorTable (Emit _ _ _ _ ct _ _ _ _ _) = ct.value
 
 isCtor : Emit -> String -> <Mut> Bool
 isCtor e name = match lookupAssoc name (ctorTable e)
@@ -347,7 +360,7 @@ isCtor e name = match lookupAssoc name (ctorTable e)
 -- CFieldAccess uses it to convert a label name to a positional index so the
 -- field can be reached by loadField without carrying type information.
 recFieldTable : Emit -> <Mut> List (String, List String)
-recFieldTable (Emit _ _ _ _ _ _ rt _ _) = rt.value
+recFieldTable (Emit _ _ _ _ _ _ rt _ _ _) = rt.value
 
 -- ── impl table (slice 6) ────────────────────────────────────────────────────
 -- the program's CImplEntry list (set once in emitProgram).  A CMethod site reads
@@ -355,7 +368,7 @@ recFieldTable (Emit _ _ _ _ _ _ rt _ _) = rt.value
 -- it names (a direct call to that impl's lifted fn); `implsOf` returns every
 -- tagged impl of a method (the runtime RDict/RDictFwd dispatch-switch arms).
 implEntriesOf : Emit -> <Mut> List CImplEntry
-implEntriesOf (Emit _ _ _ _ _ _ _ ie _) = ie.value
+implEntriesOf (Emit _ _ _ _ _ _ _ ie _ _) = ie.value
 
 -- the impls of a method, in program order — only the CImplTagged ones (an
 -- untagged CImplDefault is the arg-tag fallback, never a static-dispatch target).
@@ -427,7 +440,28 @@ implEntryMethod (CImplEntry n _ _) = n
 -- test "is the loaded ctor tag one of type T's constructors?" by OR-ing the
 -- hashName of each.
 ctorTypeTable : Emit -> <Mut> List (String, String)
-ctorTypeTable (Emit _ _ _ _ _ _ _ _ ctt) = ctt.value
+ctorTypeTable (Emit _ _ _ _ _ _ _ _ ctt _) = ctt.value
+
+-- ── globals registry (slice E1b) ────────────────────────────────────────────
+-- the top-level value/`Ref` globals registry ref: `name -> (initialised?, LTy)`.
+-- `emitVar` consults it (via lookupVarG) to lower a value-binding reference to a
+-- `load i64, ptr @mdk_g_<name>`; the `@main` init prologue computes each rhs in
+-- source order and flips its flag, so a forward/mutual init dependency is caught.
+globalsRegRef : Emit -> Ref (List (String, (Bool, LTy)))
+globalsRegRef (Emit _ _ _ _ _ _ _ _ _ gr) = gr
+
+-- mark a global initialised, recording the static type its rhs computed to.  Drops
+-- any prior (uninitialised) entry for the name and prepends the resolved one.
+markGlobalInit : Emit -> String -> LTy -> <Mut> Unit
+markGlobalInit e name ty =
+  let gr = globalsRegRef e
+  set_ref gr ((name, (True, ty)) :: dropAssoc name gr.value)
+
+-- drop the first entry keyed `k` from an assoc list (keeps the rest in order).
+dropAssoc : String -> List (String, (Bool, LTy)) -> List (String, (Bool, LTy))
+dropAssoc _ [] = []
+dropAssoc k ((n, v)::rest) = if n == k then rest else (n, v) :: dropAssoc k rest
+
 
 -- the constructor names owned by a type, in program order.
 ctorsOfType : Emit -> String -> <Mut> List String
@@ -531,13 +565,24 @@ emitVar e env x =
   else if isKnownFn e x then emitEtaClosure e x
   else lookupVarG e env x
 
--- a Mut-aware variable lookup used at the emit site (emitVar): when gap-recording
--- is on, an unbound variable records a gap and returns a placeholder instead of
--- aborting (the dict/internal callers keep the pure `lookupVar` panic).
+-- a Mut-aware variable lookup used at the emit site (emitVar): a local (let/param)
+-- operand shadows everything, so the env is checked FIRST; otherwise the name may
+-- be a top-level value/`Ref` global (slice E1b) → emit a `load i64, ptr @mdk_g_<x>`
+-- (referenceable from any `define`).  A global that the source-order init prologue
+-- has NOT yet computed (a forward/mutual init dependency) records a precise gap
+-- rather than loading an uninitialised 0.  When gap-recording is on, a genuinely
+-- unbound variable records a gap and returns a placeholder instead of aborting (the
+-- dict/internal callers keep the pure `lookupVar` panic).
 lookupVarG : Emit -> List (String, (String, LTy)) -> String -> <Mut> (String, LTy)
 lookupVarG e env x = match lookupAssoc x env
   Some vt => vt
-  None => gapE ("unbound variable '" ++ x ++ "' (not a local, ctor, or known fn)")
+  None => match lookupAssoc x (globalsRegRef e).value
+    Some (True, ty) =>
+      let r = freshReg e
+      let _ = emit e ("  " ++ r ++ " = load i64, ptr @mdk_g_" ++ x)
+      (r, ty)
+    Some (False, _) => gapE ("forward/mutual reference to top-level binding '" ++ x ++ "' before its initialisation (E1b: globals init in source order)")
+    None => gapE ("unbound variable '" ++ x ++ "' (not a local, ctor, or known fn)")
 
 emitLit : Emit -> Lit -> <Mut> (String, LTy)
 emitLit _ (LInt n) = (intToString (n * 2 + 1), LTInt)
@@ -2039,7 +2084,7 @@ emitEtaClosure e fname =
 
 -- the inferred arity of a known top-level function (its signature's param count).
 fnArity : Emit -> String -> <Mut> Int
-fnArity (Emit _ _ _ sigs _ _ _ _ _) fname = match lookupAssoc fname sigs.value
+fnArity (Emit _ _ _ sigs _ _ _ _ _ _) fname = match lookupAssoc fname sigs.value
   Some (FnSig ptys _) => lengthS ptys
   None => 0
 
@@ -2706,7 +2751,7 @@ allPVar ((PVar _)::rest) = allPVar rest
 allPVar _ = False
 
 sigTable : Emit -> <Mut> List (String, FnSig)
-sigTable (Emit _ _ _ sigs _ _ _ _ _) = sigs.value
+sigTable (Emit _ _ _ sigs _ _ _ _ _ _) = sigs.value
 
 -- default param types when no signature was inferred (every param Int).
 allInt : List Pat -> List LTy
@@ -2787,6 +2832,32 @@ valBinds : List CBind -> List CBind
 valBinds [] = []
 valBinds ((CBind "main" cs)::rest) = valBinds rest
 valBinds (b::rest) = if isFnBind b then valBinds rest else b :: valBinds rest
+
+-- the initial globals registry (slice E1b): every value binding's name registered
+-- UNinitialised (`False`) with a placeholder LTy.  The `@main` init prologue flips
+-- each to `(True, <its rhs LTy>)` in source order as it computes the rhs, so a
+-- reference to a not-yet-computed global is caught as a forward/mutual dependency.
+initGlobalsReg : List CBind -> List (String, (Bool, LTy))
+initGlobalsReg [] = []
+initGlobalsReg (b::rest) = (bindName b, (False, LTInt)) :: initGlobalsReg rest
+
+-- a fully-initialised globals registry: every value binding registered `True` with
+-- a placeholder LTy.  The D4 gaps probe uses this so a function body referencing a
+-- top-level value binding resolves to a global load (no spurious gap) — the probe
+-- discards the emitted text, so the placeholder LTy is immaterial.
+initGlobalsRegReady : List CBind -> List (String, (Bool, LTy))
+initGlobalsRegReady [] = []
+initGlobalsRegReady (b::rest) = (bindName b, (True, LTInt)) :: initGlobalsRegReady rest
+
+-- emit a zero-initialised module global `@mdk_g_<name> = global i64 0` for each
+-- value binding (into the side buffer, like string-literal globals — LLVM module
+-- item order is irrelevant).  The `@main` prologue stores each binding's computed
+-- rhs word here; references anywhere load it back.
+emitGlobalDecls : Emit -> List CBind -> <Mut> Unit
+emitGlobalDecls _ [] = ()
+emitGlobalDecls e (b::rest) =
+  let _ = emitGlobal e ("@mdk_g_" ++ bindName b ++ " = global i64 0")
+  emitGlobalDecls e rest
 
 -- ── function signature inference (slice 2b) ──────────────────────────────────
 -- Core IR is type-erased, so to lower a Bool/Float-typed function boundary we
@@ -3575,23 +3646,31 @@ emitRangeList e env lo hi incl =
 export
 emitProgram : CProgram -> <Mut> String
 emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
-  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes)
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes) (Ref (initGlobalsReg (valBinds groups)))
   let _ = emitPreamble e
-  let _ = emitFns e (fnBinds groups)
-  let _ = emitImpls e implEntries
+  -- declare a module global per top-level value/`Ref` binding (slice E1b).
+  let _ = emitGlobalDecls e (valBinds groups)
+  -- emit `@main` FIRST: its init prologue computes each value-binding rhs in
+  -- SOURCE ORDER and marks the registry, so the globals' LTys are resolved before
+  -- the function `define`s (emitted next) reference them.  LLVM module-item order
+  -- is irrelevant, so emitting `@main` ahead of the fn/impl defines is sound.
   let _ = emit e "define i32 @main(i32 %argc, ptr %argv) {"
   let _ = emit e "entry:"
   let _ = emit e "  call void @mdk_set_args(i32 %argc, ptr %argv)"
-  let env = emitTopBinds e [] (valBinds groups)
-  let (mv, mty) = emitExpr e env (mainBody groups)
+  let _ = emitTopGlobals e (valBinds groups)
+  let (mv, mty) = emitExpr e [] (mainBody groups)
   let _ = emitPrint e mv mty
   let _ = emit e "  ret i32 0"
   let _ = emit e "}"
-  -- the module body (preamble, top-level fn defines, @main) in forward order,
-  -- then the lifted-lambda defines (slice 4; already forward).  LLVM define order
-  -- is irrelevant, so appending the side buffer at the end is sound.
+  -- the function + impl defines (registry now fully initialised, so any body may
+  -- reference any global via a `load i64, ptr @mdk_g_<name>`).
+  let _ = emitFns e (fnBinds groups)
+  let _ = emitImpls e implEntries
+  -- the module body (preamble, @main, fn/impl defines) in forward order, then the
+  -- side buffer (string-literal + value-binding globals, lifted-lambda defines).
+  -- LLVM module-item order is irrelevant, so appending the side buffer is sound.
   match e
-    Emit _ buf _ _ _ lams _ _ _ => joinNl (reverseL buf.value ++ lams.value)
+    Emit _ buf _ _ _ lams _ _ _ _ => joinNl (reverseL buf.value ++ lams.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =
@@ -3664,12 +3743,22 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_debug_char_lit(i64)"
   emit e ""
 
-emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))
-emitTopBinds _ env [] = env
-emitTopBinds e env ((CBind name [CClause [] body])::rest) =
-  let (v, ty) = emitExpr e env body
-  emitTopBinds e ((name, (v, ty)) :: env) rest
-emitTopBinds _ _ ((CBind name _)::_) =
+-- the `@main` init prologue (slice E1b): compute each top-level value/`Ref`
+-- binding's rhs in SOURCE ORDER and `store` the word into its module global
+-- `@mdk_g_<name>`, then mark the registry entry initialised with the rhs's LTy.
+-- Computing in source order means a binding referencing an EARLIER one loads the
+-- already-stored global; a reference to a LATER (not-yet-marked) global hits the
+-- forward/mutual-dependency gap in lookupVarG instead of an uninitialised 0.
+-- A `Ref v` rhs allocs its cell as usual → the stored word is the cell POINTER, so
+-- `.value`/`set_ref` deref through the loaded global.
+emitTopGlobals : Emit -> List CBind -> <Mut> Unit
+emitTopGlobals _ [] = ()
+emitTopGlobals e ((CBind name [CClause [] body])::rest) =
+  let (v, ty) = emitExpr e [] body
+  let _ = emit e ("  store i64 " ++ v ++ ", ptr @mdk_g_" ++ name)
+  let _ = markGlobalInit e name ty
+  emitTopGlobals e rest
+emitTopGlobals _ ((CBind name _)::_) =
   panic ("llvm spike: top-level function '" ++ name ++ "' unsupported in slice 1 (value bindings only)")
 
 emitPrint : Emit -> String -> LTy -> <Mut> Unit
@@ -3731,7 +3820,7 @@ ctag _ = "?"
 export
 emitProgramGaps : CProgram -> <Mut> List String
 emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
-  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes)
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes) (Ref (initGlobalsRegReady (valBinds groups)))
   let _ = resetGaps ()
   let _ = enableGapRecord ()
   let _ = emitPreamble e

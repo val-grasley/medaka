@@ -1,0 +1,9 @@
+-- slice E1b: a top-level mutable `Ref` referenced + mutated from FUNCTIONS.
+-- `counter`'s global holds the heap-cell POINTER, so mutation through one function
+-- is visible to a later read — proving the global Ref cell is shared, not copied.
+counter = Ref 0
+bump n = set_ref counter (counter.value + n)
+main =
+  let _ = bump 5
+  let _ = bump 7
+  counter.value

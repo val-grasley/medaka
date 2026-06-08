@@ -1,0 +1,7 @@
+-- slice E1b: a top-level VALUE binding referenced from a FUNCTION (not just main).
+-- `base` lives in a module global `@mdk_g_base` (init'd in the @main prologue);
+-- `addBase`, a sibling `define`, loads it — the gap #7 fix (a value binding
+-- referenced from another function is no longer an unbound local).
+base = 100
+addBase x = x + base
+main = addBase 5
