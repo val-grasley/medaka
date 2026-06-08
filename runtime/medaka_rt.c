@@ -37,6 +37,7 @@
  *   value is an 8-byte-aligned real pointer Boehm tracks natively
  *   (RUNTIME-DESIGN.md §8.0 fact 3, §8.1).  Precise GC remains future work.
  */
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -437,4 +438,45 @@ long long mdk_char_from_code(long long n_tagged) {
   if (n >= 0 && n <= 0x10FFFF && !(n >= 0xD800 && n <= 0xDFFF))
     return mdk_some((n << 1) | 1);   /* Some (Char immediate) */
   return mdk_none();
+}
+
+/* slice 11: ADT-returning string externs. */
+
+/* Box a double as a Float cell [header=2 | double], matching emitter boxFloat. */
+static long long mdk_box_float(double d) {
+  long long *c = (long long *)mdk_alloc(16);
+  c[0] = 2; ((double *)c)[1] = d; return (long long)c;
+}
+
+long long mdk_string_to_float(long long s) {
+  const char *cell = (const char *)s;
+  long long bl = ((const long long *)cell)[1];
+  const char *bytes = cell + 24;
+  if (bl == 0) return mdk_none();
+  char *end; errno = 0;
+  double d = strtod(bytes, &end);
+  if (end != bytes + bl) return mdk_none();
+  return mdk_some(mdk_box_float(d));
+}
+
+long long mdk_string_index_of(long long needle, long long hay) {
+  const char *nc = (const char *)needle, *hc = (const char *)hay;
+  long long nl = ((const long long *)nc)[1], hl = ((const long long *)hc)[1];
+  const char *nb = nc + 24, *hb = hc + 24;
+  if (nl == 0) return mdk_some(1);   /* empty needle -> index 0 (Int immediate) */
+  for (long long b = 0; b + nl <= hl; b++)
+    if (memcmp(hb + b, nb, (size_t)nl) == 0) {
+      long long cp = mdk_utf8_cp_count(hb, b);
+      return mdk_some((cp << 1) | 1);
+    }
+  return mdk_none();
+}
+
+long long mdk_string_compare(long long a, long long b) {
+  const char *ac = (const char *)a, *bc = (const char *)b;
+  long long al = ((const long long *)ac)[1], bl = ((const long long *)bc)[1];
+  long long m = al < bl ? al : bl;
+  int c = memcmp(ac + 24, bc + 24, (size_t)m);
+  if (c == 0) c = (al < bl) ? -1 : (al > bl) ? 1 : 0;
+  return c < 0 ? mdk_lt() : c > 0 ? mdk_gt() : mdk_eq();
 }

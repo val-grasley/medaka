@@ -1,0 +1,4 @@
+main = match stringCompare "abc" "abd"
+  Lt => 0
+  Eq => 1
+  Gt => 2
