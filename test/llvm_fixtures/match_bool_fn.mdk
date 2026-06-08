@@ -1,0 +1,4 @@
+-- Multi-clause Bool dispatch: patterned top-level fn on Bool param, both arms exercised.
+label True  = 100
+label False = 200
+main = label True + label False

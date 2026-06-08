@@ -2073,9 +2073,14 @@ reservedTag name =
 -- `reservedTag` (fixed, program-stable); every other constructor gets the composite
 -- (typeId, ordinal).  Alloc and every tag test route through THIS one function, so
 -- the stored tag and the compared tag are identical by construction.
+-- Bool immediates are hardcoded by emitVar/emitLit: True→word 3 (ashr1→tag 1),
+-- False→word 1 (ashr1→tag 0).  Special-case before the ctor-table lookup so
+-- construction and discrimination agree regardless of whether Bool is in the table.
 cellTag : Emit -> String -> <Mut> Int
 cellTag e name =
-  if containsStr name ["$tuple", "$ref", "$closure"] then hashName name
+  if name == "True"  then 1
+  else if name == "False" then 0
+  else if containsStr name ["$tuple", "$ref", "$closure"] then hashName name
   else match reservedTag name
     Some t => t
     None => ctorTypeId e name * ctorTagShift + ctorOrdinal e name

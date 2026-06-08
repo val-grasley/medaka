@@ -506,6 +506,15 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        longer masks the downstream value-shape gaps in the now-reachable bodies). New
        fixtures `fn_multiclause_{ctor,list,float}` + `fn_nonvar_param`; all four gates
        byte-identical (133/25/20/20).
+     - ✅ **Bool `match` switch-head miscompile — FIXED (2026-06-07).** `cellTag` was
+       not special-cased for `True`/`False`: both returned tag 0 (not in ctor table on
+       prelude-free path), causing both arms to `icmp eq …, 0` → `True` never matched
+       → `unreachable`. Fix: `cellTag` now special-cases `True`→1 and `False`→0 before
+       the ctor-table lookup, mirroring `emitVar`/`emitLit` (word 3→tag 1, word 1→tag 0
+       after `loadDiscriminant` ashr 1). New fixtures `match_bool_true` (→7),
+       `match_bool_false` (→9), `match_bool_fn` (→300); all four gates byte-identical
+       (136/25/20/20). Float literal switch heads (1 whole-compiler site, rare) remain
+       documented as deferred in EMITTER-GAPS #14.
      - **E1b — top-level value / mutable `Ref` globals** (#7). NEXT. Emit each top-level
        non-fn binding as an LLVM global so other fns can name it (the second structural
        wall; ≈254 whole / 7 core events).

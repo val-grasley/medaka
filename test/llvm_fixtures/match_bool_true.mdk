@@ -1,0 +1,4 @@
+-- Bool match head: True arm taken.  Post-fix: 7; pre-fix miscompiles.
+main = match True
+  True  => 7
+  False => 9
