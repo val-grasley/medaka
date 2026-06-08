@@ -1267,16 +1267,25 @@ argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
 
 -- a method occurrence.  `argOps` are the already-emitted real-argument words (empty
 -- for a bare nullary method like `def`).  methRoutes/implRoutes apply method-/
--- instance-level constraint dicts as leading args — the spike's impls are
--- unconstrained, so a non-empty set panics rather than emit an under-applied call.
+-- instance-level constraint dicts as leading args (D3b-1): on an RKey call into a
+-- parametric `requires` impl, each materializes a one-word dict witness prepended
+-- ahead of the real args, matching dict_pass's leading `$dict_<method>_<slot>`
+-- params.  Both empty for an unconstrained impl ⇒ the plain direct call.
 emitMethod : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> List String -> <Mut> (String, LTy)
 emitMethod e env name route implRoutes methRoutes argOps =
-  let _ = ensureNoMethodDicts methRoutes implRoutes
   match route
     RKey tag reqs =>
       let _ = ensureNoReqs reqs
+      -- D3b-1: a parametric `requires` impl's method takes leading element-dict
+      -- params (dict_pass's implDictPassMethods).  Materialize one witness word per
+      -- method-/instance-level route and prepend — methRoutes then implRoutes,
+      -- mirroring ceval's applyDicts(applyDicts v methRoutes) implRoutes order and
+      -- the param order dict_pass bound.  Both empty for an unconstrained impl ⇒
+      -- the bare direct call, unchanged.
       match implFor e name tag
-        Some _ => emitImplCall e (implFnName tag name) argOps
+        Some _ =>
+          let dictWords = dictWordsOf e env (methRoutes ++ implRoutes)
+          emitImplCall e (implFnName tag name) (dictWords ++ argOps)
         None => panic ("llvm spike: no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
     RDict d => emitMethodDispatch e env name d argOps
     RDictFwd d => emitMethodDispatch e env name d argOps
@@ -1465,10 +1474,6 @@ dictOperand env d = match lookupVar env d
 ensureNoReqs : List Route -> <Mut> Unit
 ensureNoReqs [] = ()
 ensureNoReqs _ = panic "llvm spike: RKey with nested requires dicts unsupported (slice 6: one-level dispatch only)"
-
-ensureNoMethodDicts : List Route -> List Route -> <Mut> Unit
-ensureNoMethodDicts [] [] = ()
-ensureNoMethodDicts _ _ = panic "llvm spike: method-/instance-level constraint dicts on a CMethod unsupported (slice 6: unconstrained impls only)"
 
 -- ── impl method definitions (slice 6 + slice 7) ─────────────────────────────
 -- Each typeclass impl method lowers to ONE top-level `@mdk_impl_<tag>_<method>`,

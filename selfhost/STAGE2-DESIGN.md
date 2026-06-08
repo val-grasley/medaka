@@ -1209,7 +1209,8 @@ So: **D1/D2 (nested-dict cells, CDict params) DROPPED for bootstrap** (unexercis
 **D3a** stamp the 903 concrete arg-position sites as RKey (front-end marking, emitter's RKey
 path handles them, incl. the only 25 sites it can't do today) + resolve the 1 RNone;
 **D3b** dict-pass the 110 type-variable sites (Phase-83/84 `requires`-dict extended from
-return- to arg-position element dispatch + ~23 prelude `=>` helpers); **D4** dispatch corpus
+return- to arg-position element dispatch: **D3b-1** the ~87 derived-impl element dispatches +
+**D3b-2** ~23 prelude `=>` helpers + 1 `empty`); **D4** dispatch corpus
 gate over the real compiler → bridge to bootstrap.
 
 **D3a DONE (2026-06-07).** Arg-position concrete dispatch is stamped `RKey` on the emit
@@ -1235,14 +1236,55 @@ leave it off, so every golden stays byte-identical):
   arg-position ADT fixtures (`disp_arg_single`/`multi`/`clauses`) now also lower to static `RKey`
   (same output).
 
-**The 1 RNone `empty` is NOT yet resolved — deferred (real work, not a gap fix).** It is the
+**D3b-1 DONE (2026-06-07).** Arg-position ELEMENT dispatch inside parametric `requires` impl
+bodies (the ~87 type-variable sites in `Eq/Ord/Debug/Display/Hashable (List a)`-style impls —
+the dominant chunk of the 110) now routes through the impl's `requires`-dict instead of
+`RNone`→arg-tag. Arg-tag cannot resolve these when the element is a PRIMITIVE (an `Int`
+immediate has no cell tag), so the native backend needs the dict. Still entirely behind
+`argStampEnabled` (emit path only; goldens byte-identical):
+- `typecheck.mdk` `registerImplRequires` now registers the impl's element dict var
+  (`activeDictVars[id] = $dict_<method>_<slot>`) for arg-position dispatch methods too, not just
+  return-position — gated by `registersElementDict` (return-position `rpNames` OR, under
+  `argStampEnabled`, an `argDispatchOf` method). The element tyvar is shared across an impl's
+  methods, so per-method dict names disambiguate only for single-method interfaces — exactly the
+  D3b-1 targets (Eq/Ord/Debug/Display/Hashable).
+- `resolveArgStamp` (the per-site arg stamper) routes first by `activeDictVarOf` (the element
+  tyvar → `RDict $dict_<method>_<slot>`, the argument-position analogue of `resolveSite`'s
+  return-position `RDict`), then by concrete head → `RKey` while filling the EMethodAt
+  impl-dicts ref via the new `argImplDictRoutesFor`/`argReqRoute` (so the outer/recursive
+  `List` call threads the element dict: a concrete element → `RKey Int`, a recursive element of
+  the same parametric type → `RDict` forwarding the in-scope dict param). Kept separate from the
+  return-position `reqRoute` chain so that golden path is untouched.
+- `dictPass`'s `implDictPassMethods` prepends the leading `$dict_<method>_<slot>` param
+  UNIFORMLY across all clauses of a dict-using method (an impl method is one `ImplMethod` per
+  clause; a per-clause `usesImplDict` test would give clauses different arities and break
+  coalescing). Dropped the return-position-only `rpNames` gate — `usesImplDict` already requires
+  an in-body `RDict` route to those params, which no arg-position site has on the non-emit path.
+- Emitter (`llvm_emit.mdk`): `emitMethod`'s `RKey` arm now materializes `methRoutes ++
+  implRoutes` as leading one-word dict witnesses (`dictWordsOf` → `hashName(tag)` for a concrete
+  element, the in-scope dict-param word for a forwarded one) and prepends them to the impl call,
+  matching the params `dict_pass` bound (removed the `ensureNoMethodDicts` panic; both empty for
+  an unconstrained impl ⇒ the plain direct call, unchanged). The arg-position `RDict` element
+  site needed NO new emitter code — it reuses the existing `emitMethodDispatch` dict-read +
+  impl-switch the return-position `RDict` path already uses.
+- Fixtures: `test/llvm_fixtures_typed/disp_req_{eq,compare}_list_int.mdk` — `eq`/`compare` on
+  `MyList Int` via `impl Eq/Ord (MyList a) requires Eq/Ord a`, whose body dispatches the element
+  method on the primitive element. PANICKED pre-D3b-1 (the element site fell to arg-tag →
+  "impl type owns no constructors" on `Int`), pass after. One-level only (nested element dicts
+  like `MyList (MyList Int)` remain out of scope — the dict witness carries only the head tag).
+- D0.5 re-run: 25 primitive / 110 type-variable / 880 ADT / 1015 total — UNCHANGED (the probe
+  measures by discriminating-arg TYPE and runs the measurement path with stamping off; the
+  `RNone`→`RDict` move is emit-path-only). The ~23 prelude `=>` helpers + the 1 `empty` remain
+  D3b-2.
+
+**The 1 RNone `empty` is NOT yet resolved — deferred to D3b-2 (real work, not a gap fix).** It is the
 seed of `foldMap`'s default body (`foldMap f = fold (…) empty`, `core.mdk:630`): a
 return-position `empty` at `foldMap`'s method-level `Monoid m` constraint var, which should route
 `RDict` via the method-level dict (Phase 69.x-e). It stays `RNone` because the `elaborateModules`
 bootstrap path runs with `implInferEnabled = False` and therefore never infers interface DEFAULT
 bodies — the deliberate gate that keeps the module goldens byte-identical. Closing it means
 inferring method-level-dict default bodies on the modules path without disturbing those goldens;
-fold into D3b/D4 (it is not on the LLVM fixture path, so it blocks nothing today, and D3a's
+fold into D3b-2/D4 (it is not on the LLVM fixture path, so it blocks nothing today, and D3a's
 `RNone → arg-tag` emitter fallback no longer panics on it).
 
 ---

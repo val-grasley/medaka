@@ -275,5 +275,39 @@ machinery is untouched.)
 **The 1 RNone `empty` is still open** (deferred): `foldMap`'s default-body seed routes `RNone`
 because the `elaborateModules` bootstrap path runs `implInferEnabled = False` and never infers
 interface default bodies (the gate that keeps module goldens byte-identical). Folded into
-D3b/D4 — see STAGE2-DESIGN §2.4c. It is not on the LLVM fixture path, so it blocks nothing now,
+D3b-2/D4 — see STAGE2-DESIGN §2.4c. It is not on the LLVM fixture path, so it blocks nothing now,
 and D3a's `RNone → arg-tag` fallback means it no longer panics the emitter.
+
+---
+
+## D3b-1: derived-impl arg-position element dispatch → RDict requires-dict (2026-06-07)
+
+The ~87 type-variable arg-position sites that live INSIDE parametric `requires` impl bodies
+(`Eq.eq ×18`, `Ord.compare ×18`, `Debug.debug ×17`, `Display.display ×17`, `Hashable.hash ×17`
+in the D0.5 table — the element method dispatched on the impl's element tyvar `a`) now route
+through the impl's `requires`-dict (`RDict $dict_<method>_<slot>`) on the LLVM **emit path**,
+instead of `RNone`→arg-tag. Arg-tag cannot resolve these when the element is a PRIMITIVE (an
+`Int`/`Float`/`String` immediate carries no cell tag), so the native backend needs the dict.
+
+Implementation (all gated behind `argStampEnabled`, off for every golden/oracle driver):
+`typecheck.mdk` `registerImplRequires` registers the element dict var for arg-position dispatch
+methods too (via `registersElementDict`); `resolveArgStamp` routes the element tyvar →
+`RDict`, a concrete head → `RKey` while filling the impl-dicts ref via `argImplDictRoutesFor`
+(so the outer/recursive `List` call threads the element dict — concrete element → `RKey Int`,
+recursive element → `RDict` forward); `dictPass`'s `implDictPassMethods` prepends the leading
+`$dict_<method>_<slot>` param uniformly across a dict-using method's clauses. The emitter's
+`RKey` arm materializes the element-dict witnesses (`dictWordsOf`) as leading args; the
+arg-position `RDict` site reuses the existing `emitMethodDispatch` dict-read.
+
+Verified by two fixtures that PANICKED pre-D3b-1 (`emitMethodArgDispatch` → "impl type owns no
+constructors" on the primitive element) and pass after: `disp_req_eq_list_int.mdk` (`eq` on
+`MyList Int` via `Eq (MyList a) requires Eq a`) and `disp_req_compare_list_int.mdk`
+(`compare` via `Ord (MyList a) requires Ord a`). One-level only (nested element dicts like
+`MyList (MyList Int)` stay out of scope — the dict witness carries only the head tag).
+
+**D0.5 probe re-run UNCHANGED:** 25 primitive / 110 type-variable / 880 ADT / 1015 total — the
+probe classifies by discriminating-arg TYPE on the measurement path (stamping off), so the
+type-variable bucket is unmoved; the `RNone`→`RDict` routing change is emit-path-only. **Of the
+110: the ~87 derived-impl element dispatches now route `RDict` on the emit path (D3b-1 done);
+the remaining ~23 prelude `=>` generic helpers + the 1 `empty` default-body seed stay `RNone` →
+arg-tag (D3b-2).**
