@@ -1,0 +1,7 @@
+-- PList (list-literal pattern): `[a, b, c]` matches a 3-element list, binding
+-- `a`=1, `b`=2, `c`=3.  The decision tree (canonPat) normalises [a,b,c] to
+-- PCons/Nil form; bindPattern's new PList arm decomposes the raw PList.
+-- Reduces to 1 + 2 + 3 = 6.
+main = match [1, 2, 3]
+  [a, b, c] => a + b + c
+  _ => 0

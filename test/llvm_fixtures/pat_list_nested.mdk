@@ -1,0 +1,9 @@
+-- PList nested: a 2-element list pattern `[a, b]` exercises the PList recursion
+-- (PList [a, b] → bindFields [a, PList [b]] → head field 0 then tail → PList [b]
+-- → head field 0 then PList [] → done).  Second arm has a PAs on an element
+-- position (nested): not needed here — keep it focused on PList recursion.
+-- Pattern: `[a, b]` on [10, 20]; second arm `_` catches other lengths.
+-- Reduces to 10 * 100 + 20 = 1020.
+main = match [10, 20]
+  [a, b] => a * 100 + b
+  _ => 0

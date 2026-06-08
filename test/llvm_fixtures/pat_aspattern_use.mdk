@@ -1,0 +1,8 @@
+-- PAs where the AS-VARIABLE is directly referenced in the body, not just the
+-- inner-pattern vars.  `w@(a, b)` binds `w` = (3,7) AND `a`=3, `b`=7; the body
+-- passes `w` to `fst` which destructs it again, confirming the whole-value binding
+-- is live and loaded.  Reduces to: fst w + b = 3 + 7 = 10.
+fst (x, _) = x
+
+main = match (3, 7)
+  w@(a, b) => fst w + b

@@ -1,0 +1,6 @@
+-- PAs (as-pattern): the as-variable binds the WHOLE scrutinee; the inner
+-- pattern binds its own vars.  Exercises bindPattern's PAs arm: `p@(a,b)` binds
+-- `p` to the tuple AND destructs it into `a`/`b`.  This fixture only uses `a`/`b`
+-- (not `p`), so it tests that the inner descent works.  Reduces to 34.
+main = match (3, 4)
+  p@(a, b) => a * 10 + b

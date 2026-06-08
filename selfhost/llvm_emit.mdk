@@ -2555,6 +2555,17 @@ bindPattern e env (PTuple ps) v body = bindFields e env ps v body 0
 -- this only EXTRACTS — same as the PCon binding path, with [head, tail] fields.
 bindPattern e env (PCons h t) v body = bindFields e env [h, t] v body 0
 bindPattern _ env (PList []) _ _ = env
+-- as-pattern `x@p`: bind `x` to the WHOLE value v (same LTy lookup as PVar),
+-- then descend into `p` so its inner vars also bind.
+bindPattern e env (PAs x p) v body =
+  let ty = match paramUseTy (sigTable e) [] x body
+    Some t => t
+    None => LTInt
+  let env2 = (x, (v, ty)) :: env
+  bindPattern e env2 p v body
+-- non-empty list-literal pattern `[p::ps]`: v is a Cons cell (the switch proved
+-- it); bind the head element (field 0) to `p` and the tail (field 1) to `PList ps`.
+bindPattern e env (PList (p::ps)) v body = bindFields e env [p, PList ps] v body 0
 bindPattern _ env p _ _ =
   gapEnv ("unsupported pattern in match arm (slice 3/5b: variable / wildcard / constructor / tuple / cons / nil / int-literal only): " ++ ptag p) env
 

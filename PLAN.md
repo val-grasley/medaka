@@ -239,7 +239,7 @@ deliberately deferred to here:
     pass). 4 new fixtures (list_lit, list_range_incl, list_range_excl, list_range_combo).
     **Not** the real backend (arg-tag dispatch on non-ADT args, nested requires dicts,
     `HUnit` heads, guarded/range/record arms,
-    non-empty `PList` binding, partial application, Ref capture still panic). Full
+    ~~non-empty `PList` binding~~ [✅ E6], partial application, Ref capture still panic). Full
     per-slice log + the spike-surfaced representation notes (a)–(t) — nullary
     boxing, i64 hash-tag vs i32 ordinal, closure header, saturated-only calling,
     eta-wrapping, positional records, tuple headers, the `set_ref` write-barrier gap,
@@ -591,6 +591,18 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        fixtures (`hash_int`, `hash_string`, `debug_strlit`, `debug_charlit`); all gates
        byte-identical (153/25/20/20). hash_map/hash_set doctests are order-insensitive →
        no golden churn.
+     - ✅ **E6 (PAs/PList #4 residue) — as-pattern and list-literal pattern variable binding.** DONE
+       (2026-06-08). `canonPat` shape was already correct (transparent `PAs _ p` and
+       `PList (h::r) → PCon consName [h, PList r]`); the gap was in `bindPattern`'s
+       variable-extraction, which fell to the catch-all gap on `PAs x p` and non-empty
+       `PList`. Two new arms added before the catch-all: `PAs x p` binds `x` to the
+       whole value `v` (same `paramUseTy`/`LTInt`-default as `PVar`) then recurses into
+       `p`; `PList (p::ps)` delegates to `bindFields [p, PList ps] v body 0`, which loads
+       head (field 0) for `p` and tail (field 1) for the recursive `PList ps`, bottoming
+       out at the existing `PList [] → env` arm. **#4 residue core 4→0; core TOTAL
+       23→17; B TOTAL 2025→1927.** 4 new fixtures (`pat_aspattern` →34,
+       `pat_aspattern_use` →10, `pat_list_literal` →6, `pat_list_nested` →1020); all
+       gates byte-identical (160/25/20/20).
      - **E4 — dispatch-routing port** (#2/#13: carry D3b arg-position dict-passing onto
        the `elaborateModules` emit path; 0 on the single-file path already).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)

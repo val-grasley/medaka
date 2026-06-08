@@ -39,7 +39,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 | 1 | **multi-clause top-level function**                       | 16      | 732      | Emitter                          | reuse impl-method decision-tree lowering |
 | 2 | **arg-tag dispatch on primitive receiver** (no cell tag)  | **0**   | 540      | Routing-not-wired (NOT new)      | port D3b arg-pos dict-passing to `elaborateModules` |
 | 3 | **`++` as `CBinPrim`** (list/string concat)               | ~~14~~ **4\*\*** | ~~179~~  | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — 4 events remain where param type unknown (`append`/`ap` impls) |
-| 4 | **non-variable parameter pattern** (fn)                   | 4       | 150      | Desugar/lower-fixable            | lower `f (a,b)=…` → param + body `match` |
+| 4 | **non-variable parameter pattern** (fn) + **PAs/PList in `bindPattern`** | ~~4~~ **0** | ~~150~~ | Desugar/lower-fixable (fn: ✅ E1a) + Emitter (PAs/PList: ✅ **CLOSED E6**) | fn half → `emitClauseTree` (E1a); PAs/PList → two new `bindPattern` arms (2026-06-08) |
 | 5 | **non-variable lambda parameter pattern**                 | ~~1~~ **0** | ~~108~~ **0** | Desugar/lower-fixable          | ✅ **CLOSED (E2b)** — same decision-tree lowering as #4, inside the lifted-lambda frame |
 | 6 | **`::` as `CBinPrim`** (cons)                              | ~~2~~ **0** | ~~90~~ **0** | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — `emitCtorAlloc e "Cons" [lw, rw]` |
 | 7 | **reference to top-level value / mutable `Ref` binding**  | ~~7\*~~ **0\*** | ~~254~~ ~~237~~ **0\*\*\*** | ✅ **CLOSED (E1b)** — emit as **globals** + `@main` init prologue (source order); core's 7 extern refs also CLOSED (see \*) |
@@ -50,7 +50,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ **23** | ~~2722~~ ~~2677~~ ~~2660~~ **2025** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ **17** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ **1927** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) were
 references to runtime/core primitives the spike's extern catalog didn't carry —
@@ -68,7 +68,10 @@ bindings now emit as LLVM **globals** (`@mdk_g_<name>`) initialised once in an
 `@main` prologue (source order), referenceable from any `define` (see detail #7).
 Census B's genuine value-global references — **781 → 146** "unbound variable"
 events (whole TOTAL **2660 → 2025**) — drop to 0; the 146 residual are
-PRec/PList/PAs pattern-cascade + extern-fn-as-value, NOT #7. MULTI-MODULE
+PRec/PList/PAs pattern-cascade + extern-fn-as-value, NOT #7. **PList/PAs
+pattern-cascade now CLOSED (E6, 2026-06-08)** — see gap #4 detail below;
+the residual unbound-vars from PList/PAs patterns vanish, B TOTAL 2025→1927.
+MULTI-MODULE
 cross-module init order is deferred to D4 (census B flattens to one program, so it
 measures the single-program capability).
 
@@ -174,6 +177,22 @@ carry tuple/constructor param patterns.
   Fixtures: `lam_tuple_param` (applied tuple-param lambda), `lam_ctor_param`
   (`Some`-style constructor-param lambda), `lam_rec_tuple` (recursive `let … in`
   lambda with a tuple param → `emitRecLam`). All byte-identical (143/25/20/20).
+- **PAs/PList residue in `bindPattern` ✅ CLOSED — E6 (2026-06-08).** After E1a/E2b
+  the decision-tree SWITCH side was correct (`canonPat` normalises both: `PAs _ p →
+  canonPat p` transparent; `PList (h::r) → PCon consName [h, PList r]`), but
+  `bindPattern`'s variable-extraction still fell to the gap on `PAs` and non-empty
+  `PList`.  Two new arms added (before the catch-all):
+  - `bindPattern e env (PAs x p) v body` — bind `x` to whole value `v` (same
+    `paramUseTy`/`LTInt` default as `PVar`), then recurse into `p` with the same `v`:
+    `(x,(v,ty)) :: bindPattern e env2 p v body`.
+  - `bindPattern e env (PList (p::ps)) v body` — `v` is a proved Cons cell; delegate
+    to `bindFields e env [p, PList ps] v body 0`, which loads field 0 for `p` and
+    field 1 for the tail `PList ps`; the recursion bottoms out at the existing
+    `PList [] → env` arm.
+  **core #4 residue: 4→0.  core TOTAL: 23→17.  B TOTAL: 2025→1927.**
+  Fixtures (all byte-identical oracle/native, 160/25/20/20): `pat_aspattern` (→34),
+  `pat_aspattern_use` (→10, as-var used via `fst`), `pat_list_literal` (→6),
+  `pat_list_nested` (→1020).
 
 #### 7 — references to top-level value / mutable `Ref` bindings (A:7→0, B:254→0 genuine) — ✅ CLOSED (E1b, 2026-06-08)
 The spike *used to* compute top-level **non-function** bindings as `@main`-locals;
@@ -308,6 +327,14 @@ source per unit of work**:
     `emitPatLamDefine` lowers a patterned `CLam`/recursive-`let`-`CLam` inside the
     lifted-lambda frame. core total 32→**31**.
 
+- **E6 — PAs/PList residue in `bindPattern` (#4 residue).** `canonPat` shapes were
+  already correct; `bindPattern` fell to gap for `PAs x p` and `PList (p::ps)`.
+  **✅ CLOSED (E6, 2026-06-08).** Two arms added: `PAs x p` binds `x` → whole `v`
+  then recurses into `p`; `PList (p::ps)` delegates to `bindFields [p, PList ps]`.
+  core #4 residue 4→0; core TOTAL 23→**17**; B TOTAL 2025→**1927**.
+  Fixtures: `pat_aspattern` (→34), `pat_aspattern_use` (→10), `pat_list_literal`
+  (→6), `pat_list_nested` (→1020). All byte-identical (160/25/20/20).
+
 - **E3 — guard residue.** (#8 `otherwise`, #9 `__fallthrough__`.) **176** events,
   ~two trivial `emitVar`/desugar fixes. Cheap, high count.
   **✅ CLOSED (E3, 2026-06-08).** `otherwise` added to `emitVar` constants (= `True`).
@@ -326,16 +353,15 @@ source per unit of work**:
   subset.
 
 **How close is `stdlib/core.mdk` alone (the first bootstrap milestone)?**
-Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ **23 gap events across ~12 kinds** (the count
+Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ **17 gap events across ~8 kinds** (the count
 rose temporarily when closing #10 unhid guard residue; E3 closed that residue, dropping
 it back to 30; closing #7's 7 core extern refs — the per-type hashers + debug-lit
-externs — dropped it to 23). The kinds are exactly remaining E1b + E4 + E5 tail (E2/E3/E5-core
-all done; E4 is 0 on this path). Concretely, fully emitting core.mdk still needs: `++` (4
-remaining — unknown-param `append`/`ap`), the `PAs`/`PList` patterns in `find`/
-`debugListItems` (#4 residue), the genuine top-level value globals + dict-witness threads,
-and — excludable — the 5 `Arbitrary` unit-head switches. (`::`, both param-pattern halves,
-let/where-group local fns, the guard residue, **and the `__hashRaw`/`debugStringLit`/
-`debugCharLit` extern references** are all closed.)
+externs — dropped it to 23; E6 closed the `PAs`/`PList` #4 residue, dropping it to 17).
+The kinds are exactly remaining E4 + E5 tail (E2/E3/E5-core/E6 all done; E4 is 0 on this path).
+Concretely, fully emitting core.mdk still needs: `++` (4 remaining — unknown-param `append`/`ap`),
+dict-witness threads, and — excludable — the 5 `Arbitrary` unit-head switches. (`::`, both
+param-pattern halves, `PAs`/`PList` in `bindPattern`, let/where-group local fns, the guard
+residue, **and the `__hashRaw`/`debugStringLit`/`debugCharLit` extern references** are all closed.)
 **No gap kind in core.mdk is outside the E-series staging.** core.mdk
 is a *bounded* push, not open-ended — it is the realistic first native-bootstrap target.
 
