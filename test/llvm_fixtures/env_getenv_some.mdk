@@ -1,0 +1,7 @@
+-- slice 12: getEnv returns Some when a var is set.  Both oracle and native read
+-- the SAME process environment, so the result is byte-identical either way: both
+-- return 1 if PATH is set, both return 0 if it is stripped.  Does NOT compare
+-- the value — robust against any PATH content.
+main = match getEnv "PATH"
+  Some v => 1
+  None => 0

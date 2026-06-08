@@ -480,3 +480,24 @@ long long mdk_string_compare(long long a, long long b) {
   if (c == 0) c = (al < bl) ? -1 : (al > bl) ? 1 : 0;
   return c < 0 ? mdk_lt() : c > 0 ? mdk_gt() : mdk_eq();
 }
+
+/* slice 12: args + env ---------------------------------------------------- */
+static int    mdk_argc = 0;
+static char **mdk_argv = 0;
+void mdk_set_args(int argc, char **argv) { mdk_argc = argc; mdk_argv = argv; }
+
+/* args : Unit -> List String — argv[1..] as Cons cells, built back-to-front. */
+long long mdk_args(long long unit_ignored) {
+  (void)unit_ignored;
+  long long acc = mdk_nil();
+  for (int i = mdk_argc - 1; i >= 1; i--)
+    acc = mdk_cons(mdk_str_lit(mdk_argv[i], (long long)strlen(mdk_argv[i])), acc);
+  return acc;
+}
+
+/* getEnv : String -> Option String.  name cell is NUL-terminated at +24. */
+long long mdk_get_env(long long name) {
+  const char *v = getenv((const char *)name + 24);
+  if (v == 0) return mdk_none();
+  return mdk_some(mdk_str_lit(v, (long long)strlen(v)));
+}

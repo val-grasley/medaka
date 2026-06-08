@@ -1,0 +1,8 @@
+-- slice 12: args () returns argv[1..] as a List String.  In the gate the oracle
+-- runs with program_args=[] and the native binary runs as ./bin (no extra args),
+-- so both sides return [].  Only the empty case is byte-gated; the mdk_cons path
+-- is exercised by real argv but not verifiable here (gate limitation noted in
+-- PLAN.md slice 12).
+main = match args ()
+  [] => 0
+  _ => 1
