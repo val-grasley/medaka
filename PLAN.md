@@ -579,6 +579,25 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        New typed fixtures: `impl_ap_list` (→66), `impl_andthen_list` (→206); all gates
        byte-identical (160/29/20/20). core total: 15→**13**. **EMITTER-GAPS #3 fully closed
        for core.mdk.**
+     - ✅ **E8 — closure dict-capture (#11 closure events).** DONE (2026-06-08).
+       `freeVars` returned `[]` for `CMethod`/`CDict` nodes (catch-all arm), so a
+       closure whose body dispatches a method through a forwarded dict (`RDictFwd
+       "$dict_X"`) never captured the dict param → `dictOperand` gapped.  Root: `clamp
+       lo hi = min hi >> max lo` builds a lambda that calls `min`/`max` via `RDictFwd
+       "$dict_clamp_0"`; the lambda's `keepInEnv`-filtered free set didn't include the
+       dict, so it wasn't stored in the closure cell.  **Fix** (surgical, 2 arms + helper
+       in `freeVars`): `freeVars b (CMethod _ route implRoutes methRoutes) = routeDictNames
+       b (route :: (implRoutes ++ methRoutes))` and `freeVars b (CDict _ routes) =
+       routeDictNames b routes`, with helper `routeDictNames` extracting `RDict`/`RDictFwd`
+       dict-param names (the `$dict_X` params the enclosing constrained fn carries) while
+       skipping `RKey`/`RNone` (no captured variable).  **A: 13→11** (2 closure events
+       closed; 3 impl-body events for debug/display/hash@List remain — different root cause:
+       `usesImplDict` in `typecheck.mdk` misses `EDictAt` nodes, so those impls never get
+       the dict param prepended).  B: 1924 unchanged (`when`/`unless` B-only events — also
+       different root cause, reported in EMITTER-GAPS #11 detail).  New typed fixtures:
+       `dict_clamp.mdk` (→10, local lambda in `Ord`-constrained fn captures dict) and
+       `dict_when.mdk` (→1, `when True (Some ())` at Option); both byte-identical (31/31
+       typed gate). **EMITTER-GAPS #11 closure half closed.**
      - ✅ **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`). DONE (2026-06-08).
        `otherwise` in condition position is a `CVar` reaching `emitVar`; added as a constant
        arm → `("3", LTBool)` (same as `True`). `__fallthrough__` is always `CApp (CVar

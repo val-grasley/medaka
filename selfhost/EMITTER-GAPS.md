@@ -46,11 +46,11 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 | 8 | **`otherwise`** (guard constant)                          | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — added to `emitVar` constants (= `True` → `"3"`, `LTBool`) |
 | 9 | **`__fallthrough__`** (guard-desugar sentinel)            | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — intercepted in `emitApp` CVar branch (`call void @mdk_oob()` + dummy; block terminator from surrounding `if`) |
 |10 | **non-nullary / recursive `let`-group** (`where` fns)     | ~~5~~ **0** | ~~5~~ **0** | Emitter                          | ✅ **CLOSED (E5)** — lambda-lift each local fn via `emitGroupBind` (self-rec through `%clos`, E1a clause-tree body); one-at-a-time env threading covers non-mutual groups; genuine forward/mutual ref → precise `gapE` (none in core) |
-|11 | **unbound dict witness** (dict not threaded to use)       | 3       | 2        | Emitter / dict-pass              | thread forwarded dict to nested site |
+|11 | **unbound dict witness** (dict not threaded to use)       | ~~3~~ **0** (closure root) / **3** (impl-body root — different cause) | 2        | Emitter / dict-pass              | ✅ **closure half CLOSED (E8, 2026-06-08)** — `freeVars` now traverses CMethod/CDict routes; 3 impl-body events (debug/display/hash@List) need `usesImplDict` EDictAt fix in typecheck |
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ **13** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ **1924** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ ~~13~~ **11** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ **1924** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) were
 references to runtime/core primitives the spike's extern catalog didn't carry —
@@ -302,6 +302,34 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter as
 - **unbound dict witness** (`$dict_clamp_0`, `$dict_hash_0`, `$dict_when_0`,
   `$dict_unless_0`): a forwarded/nested dict use whose param isn't in the emit
   env — a dict-pass threading edge.
+  - **`$dict_clamp_0` (A:2 closure events) — ✅ CLOSED (E8, 2026-06-08).**
+    `clamp lo hi = min hi >> max lo` builds a closure whose body dispatches
+    `min`/`max` via `RDictFwd "$dict_clamp_0"`.  `freeVars` returned `[]` for
+    `CMethod`/`CDict` nodes (catch-all arm) → the dict was never added to the
+    closure's capture set → `dictOperand` gapped.  **Fix**: two new arms in
+    `freeVars` (before the catch-all) + helper `routeDictNames` that extracts
+    `RDict`/`RDictFwd` dict-param names from a Route list; `CMethod` traverses
+    all three Route fields, `CDict` traverses its routes list.  New fixture
+    `dict_clamp.mdk` (oracle=10, `myClamp 0 10 99` via local lambda capturing
+    Ord dict) — byte-identical (31/31 typed gate).  A: 5→3 (closure events gone;
+    3 impl-body events remain — different cause).  B: 1924 unchanged (clamp was
+    A-only; `when`/`unless` B-only, different cause, reported below).
+  - **`$dict_debug_0`, `$dict_display_0`, `$dict_hash_0` (A:3 impl-body events)
+    — DIFFERENT ROOT CAUSE.** `impl Debug (List a) requires Debug a where
+    debug xs = "[\{debugListItems xs}]"` calls `debugListItems` via `EDictAt`.
+    `usesImplDict` in `typecheck.mdk` only checks `EMethodAt` nodes (not
+    `EDictAt`), so it returns False for this body → `implDictPassMethods` does NOT
+    prepend the `$dict_debug_0` param → at emit time the dict is not in the env.
+    Fix lives in `typecheck.mdk`'s `usesImplDict`/`collectMethodSites` — outside
+    the E8 scope.  These 3 events remain in A.
+  - **`$dict_when_0`, `$dict_unless_0` (B:2 events, A:0) — DIFFERENT ROOT CAUSE.**
+    `when b m = if b then m else pure ()` emits correctly in the single-file typed
+    path (A) after E8 — `pure` dispatches via `RDictFwd` from the function's own
+    dict param, which IS in the env.  B-only events suggest the `elaborateModules`
+    path gives `when`/`unless` a different dict-param structure.  New fixture
+    `dict_when.mdk` (oracle=1, `when True (Some ())` at Option) is byte-identical
+    in the single-file typed gate (31/31); the B-only regression is a separate
+    investigation.
 - **unit-head switch** (5): the QuickCheck `Arbitrary` impls — out of bootstrap scope.
 - **arg-tag method under-applied** (6): `fold` passed without its discriminating
   arg (first-class method value) inside `any`/`all`/`elem`.
@@ -413,25 +441,41 @@ source per unit of work**:
   carry D3b's arg-position dict-passing selector onto the `elaborateModules` emit
   path (it is already 0 on the single-file path, per section A).
 
-- **E5 — long-tail.** (~~#10 rec let-group~~ ✅ CLOSED, #11 dict threading, #12
-  unit-head switch, #14 non-Int literal switch.) #10 done — local fns in
-  `let`/`where` groups lambda-lift (`emitGroupBind`); remaining ~8 events handled
-  as encountered; `Arbitrary`/unit-head sites can be excluded from the bootstrap
-  subset.
+- **E5 — long-tail.** (~~#10 rec let-group~~ ✅ CLOSED, ~~#11 closure-dict~~
+  ✅ CLOSED (E8), #11 impl-body-dict (3 remaining), #12 unit-head switch, #14
+  non-Int literal switch.) #10 done — local fns in `let`/`where` groups
+  lambda-lift (`emitGroupBind`); #11 closure half closed by E8; remaining ~8
+  events handled as encountered; `Arbitrary`/unit-head sites can be excluded
+  from the bootstrap subset.
+
+- **E8 — closure dict-capture (#11 closure events).** ✅ **CLOSED (E8, 2026-06-08).**
+  `freeVars` returned `[]` for `CMethod`/`CDict` nodes (catch-all arm), so a
+  closure body dispatching methods via `RDictFwd` never captured the forwarded
+  dict param → `dictOperand` gapped.  **Fix**: two new `freeVars` arms (before
+  catch-all) + helper `routeDictNames` that collects `RDict`/`RDictFwd` names
+  from a Route list (`RKey`/`RNone` carry no variable).  A: 5→3 (2 closure
+  events closed); B unchanged at 1924 (`$dict_when_0`/`$dict_unless_0` B-only,
+  different root cause).  New typed fixtures: `dict_clamp.mdk` (→10, local
+  lambda in constrained fn captures Ord dict) and `dict_when.mdk` (→1,
+  `when True (Some ())` at Option) — both byte-identical (31/31 typed gate).
+  core total 13→**11**.
 
 **How close is `stdlib/core.mdk` alone (the first bootstrap milestone)?**
-Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ **13 gap events across ~7 kinds** (the count
+Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ ~~13~~ **11 gap events across ~6 kinds** (the count
 rose temporarily when closing #10 unhid guard residue; E3 closed that residue, dropping
 it back to 30; closing #7's 7 core extern refs — the per-type hashers + debug-lit
 externs — dropped it to 23; E6 closed the `PAs`/`PList` #4 residue, dropping it to 17;
-E2c closed `append@List`/`append@String`, dropping it to 15; **E7's method-call
-return-type inference closed `ap@List`/`andThen@List`, dropping it to 13**).
-The kinds are exactly remaining E4 + E5 tail (E2/E3/E5-core/E6/E7 all done; E4 is 0 on this path).
-Concretely, fully emitting core.mdk still needs: dict-witness threads, and — excludable —
-the 5 `Arbitrary` unit-head switches. (**`++` (all four `append`/`ap`/`andThen` impls, the last
+E2c closed `append@List`/`append@String`, dropping it to 15; E7's method-call
+return-type inference closed `ap@List`/`andThen@List`, dropping it to 13; **E8's
+freeVars CMethod/CDict arms closed the 2 closure-dict-capture events (`$dict_clamp_0`),
+dropping it to 11**).
+The kinds are exactly remaining E4 + E5 tail (E2/E3/E5-core/E6/E7/E8 all done; E4 is 0 on this path).
+Concretely, fully emitting core.mdk still needs: the 3 impl-body dict events (debug/display/hash@List —
+`usesImplDict` EDictAt fix in `typecheck.mdk`), the 2 min/max arg-tag gaps (RNone; #2 path),
+and — excludable — the 5 `Arbitrary` unit-head switches. (**`++` (all four `append`/`ap`/`andThen` impls, the last
 two via E7's return-type inference)**, `::`, both
 param-pattern halves, `PAs`/`PList` in `bindPattern`, let/where-group local fns, the guard
-residue, **and the `__hashRaw`/`debugStringLit`/`debugCharLit` extern references** are all closed.)
+residue, the closure-dict-capture events, **and the `__hashRaw`/`debugStringLit`/`debugCharLit` extern references** are all closed.)
 **No gap kind in core.mdk is outside the E-series staging.** core.mdk
 is a *bounded* push, not open-ended — it is the realistic first native-bootstrap target.
 

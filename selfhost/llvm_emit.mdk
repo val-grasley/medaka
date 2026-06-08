@@ -2395,7 +2395,18 @@ freeVars b (CArray es) = freeVarsList b es
 freeVars b (CRangeArray lo hi _) = freeVars b lo ++ freeVars b hi
 freeVars b (CIndex a i) = freeVars b a ++ freeVars b i
 freeVars b (CSlice a lo hi _) = freeVars b a ++ freeVars b lo ++ freeVars b hi
+freeVars b (CMethod _ route implRoutes methRoutes) = routeDictNames b (route :: (implRoutes ++ methRoutes))
+freeVars b (CDict _ routes) = routeDictNames b routes
 freeVars _ _ = []
+
+-- collect the captured dict-param names (RDict/RDictFwd) from a list of Routes.
+-- RKey and RNone carry no captured variable name; only RDict/RDictFwd name a dict
+-- parameter that the enclosing closure must capture from its env.
+routeDictNames : List String -> List Route -> List String
+routeDictNames _ [] = []
+routeDictNames b (RDict d :: rest)    = (if containsStr d b then [] else [d]) ++ routeDictNames b rest
+routeDictNames b (RDictFwd d :: rest) = (if containsStr d b then [] else [d]) ++ routeDictNames b rest
+routeDictNames b (_ :: rest)          = routeDictNames b rest
 
 freeVarsFields : List String -> List CField -> List String
 freeVarsFields _ [] = []

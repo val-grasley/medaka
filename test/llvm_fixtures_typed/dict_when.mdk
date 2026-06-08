@@ -1,0 +1,23 @@
+-- freeVars fix: `when` builds an if-else body that dispatches `pure` via
+-- RDictFwd "$dict_when_0".  Before the fix, freeVars returned [] for CMethod
+-- nodes, so a closure wrapping a `when`-like fn would not capture the dict.
+-- This fixture exercises the single-file typed path (same root cause as clamp).
+-- `when True (Some ())` at Option → Some (); projected to 1.
+-- Oracle: when True (Some ()) → Some () → 1; when False (Some ()) → None → 0.
+interface Thenable m where
+  pure : a -> m a
+  andThen : m a -> (a -> m b) -> m b
+
+data Option a = None | Some a
+
+impl Thenable Option where
+  pure x = Some x
+  andThen None _ = None
+  andThen (Some x) f = f x
+
+when : Thenable m => Bool -> m Unit -> m Unit
+when b m = if b then m else pure ()
+
+main = match when True (Some ())
+  Some _ => 1
+  None => 0

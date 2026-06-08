@@ -1,0 +1,17 @@
+-- freeVars fix: a local lambda inside a constrained function must capture the
+-- forwarded dict param ($dict_myClamp_0).  `clip y = if lt y lo then lo else …`
+-- dispatches `lt` via `RDictFwd "$dict_myClamp_0"`; before the fix, freeVars
+-- returned [] for CMethod nodes so the dict was not captured into the closure →
+-- dictOperand gapped.  Oracle: myClamp 0 10 99 → 10.
+interface Ord a where
+  lt : a -> a -> Bool
+
+impl Ord Int where
+  lt a b = a < b
+
+myClamp : Ord a => a -> a -> a -> a
+myClamp lo hi x =
+  let clip = y => if lt y lo then lo else if lt hi y then hi else y
+  clip x
+
+main = myClamp 0 10 99
