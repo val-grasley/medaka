@@ -1,0 +1,4 @@
+-- slice 7: arrayBlit. Blit src[0..3] into dst[0..3]; project dst.[2].
+src = [| 1, 2, 3 |]
+dst = [| 0, 0, 0 |]
+main = let _ = arrayBlit src 0 dst 0 3 in dst.[2]
