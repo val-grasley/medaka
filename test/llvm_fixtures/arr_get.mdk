@@ -1,0 +1,3 @@
+-- slice 6: arrayGetUnsafe intrinsic.  CIndex path minus bounds-check.
+arr = [| 10, 20, 30 |]
+main = arrayGetUnsafe 1 arr

@@ -1,0 +1,3 @@
+-- slice 6: arrayLength intrinsic.  header word = raw element count, tagged Int.
+arr = [| 10, 20, 30 |]
+main = arrayLength arr

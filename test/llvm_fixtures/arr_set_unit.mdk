@@ -1,0 +1,3 @@
+-- slice 6: arraySetUnsafe returns Unit "()" — the store side-effect path.
+arr = [| 10, 20, 30 |]
+main = arraySetUnsafe 0 7 arr

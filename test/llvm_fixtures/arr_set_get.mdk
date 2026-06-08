@@ -1,0 +1,4 @@
+-- slice 6: arraySetUnsafe mutates in place; arrayGetUnsafe reads the updated slot.
+-- top-level `arr` is evaluated once and shared, so the store is visible to the read.
+arr = [| 10, 20, 30 |]
+main = let _ = arraySetUnsafe 1 99 arr in arrayGetUnsafe 1 arr

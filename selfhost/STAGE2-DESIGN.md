@@ -1007,6 +1007,20 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   proving ordering.  4/4 new fixtures; all 65 plain pass; typed/core_ir/eval gates
   unaffected.
 
+**2.4a-11 — Native extern catalog slice 6 (ARRAY INTRINSICS).**
+  Three pure-inline externs: `arrayLength`, `arrayGetUnsafe`, `arraySetUnsafe`.
+  No C helper (no `runtime/medaka_rt.c` change); all emit directly via existing
+  helpers.  `arrayLength` = `loadTag` (header word = raw count) + `tagInt`.
+  `arrayGetUnsafe` = `untagInt` index + `loadFieldDyn` (CIndex path minus bounds-check).
+  `arraySetUnsafe` = `untagInt` index + new `storeFieldDyn` helper (mirrors
+  `loadFieldDyn` but ends with `store i64 val, ptr fp` and returns `Unit`).
+  Intercepted via `isArrIntrinsic`/`emitArrIntrinsic` in `emitApp`'s `CVar` arm.
+  `arrayGetUnsafe` returns `LTInt` (matching `CIndex`'s hardcoded `LTInt`; spike array
+  fixtures are Int-element).  `arraySetUnsafe` returns `("1", LTUnit)`.  Four new plain
+  fixtures: `arr_length` (→3), `arr_get` (→20), `arr_set_get` (mutate-then-read →99,
+  proves store visibility), `arr_set_unit` (→`()`).  One typed fixture: `arr_get`
+  (→20).  **75/75 plain + 12/12 typed byte-identical**; core_ir/eval gates unaffected.
+
 **Spike status after slice 10 — what's next.** The de-risking spike has now lowered
 the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
 ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in

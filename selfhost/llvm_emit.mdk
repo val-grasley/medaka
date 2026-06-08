@@ -649,6 +649,31 @@ emitAbortExtern e env name args = match emitArgs e env args
     ("1", LTUnit)
   _ => panic ("llvm spike: emitAbortExtern: " ++ name ++ " takes exactly one argument (slice 4)")
 
+-- array intrinsics (native extern catalog slice 6).
+-- pure-inline: no C helper; all three reuse loadTag/loadFieldDyn/storeFieldDyn.
+-- arrayLength: header word = raw element count; tag it as a Medaka Int.
+-- arrayGetUnsafe: CIndex path minus bounds-check.
+-- arraySetUnsafe: store to element slot; returns Unit.
+isArrIntrinsic : String -> Bool
+isArrIntrinsic name = containsStr name ["arrayLength", "arrayGetUnsafe", "arraySetUnsafe"]
+
+emitArrIntrinsic : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitArrIntrinsic e env "arrayLength" args = match emitArgs e env args
+  [arr] => (tagInt e (loadTag e arr), LTInt)
+  _ => panic "llvm spike: arrayLength takes one argument (slice 6)"
+emitArrIntrinsic e env "arrayGetUnsafe" args = match emitArgs e env args
+  [i, arr] =>
+    let idx_raw = untagInt e i
+    (loadFieldDyn e arr idx_raw, LTInt)
+  _ => panic "llvm spike: arrayGetUnsafe takes two arguments (slice 6)"
+emitArrIntrinsic e env "arraySetUnsafe" args = match emitArgs e env args
+  [i, x, arr] =>
+    let idx_raw = untagInt e i
+    let _ = storeFieldDyn e arr idx_raw x
+    ("1", LTUnit)
+  _ => panic "llvm spike: arraySetUnsafe takes three arguments (slice 6)"
+emitArrIntrinsic _ _ name _ = panic ("llvm spike: unsupported array intrinsic " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -825,6 +850,7 @@ emitApp e env app =
       else if isNumExtern fname && hasArgs args then emitNumExtern e env fname args
       else if isIoExtern fname && hasArgs args then emitIoExtern e env fname args
       else if isAbortExtern fname && hasArgs args then emitAbortExtern e env fname args
+      else if isArrIntrinsic fname && hasArgs args then emitArrIntrinsic e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -2451,6 +2477,21 @@ loadFieldDyn e ptrWord idxRaw =
   let f = freshReg e
   let _ = emit e ("  " ++ f ++ " = load i64, ptr " ++ fp)
   f
+
+-- store `val` (an i64 word) to element at dynamic index `idxRaw` of a boxed array.
+-- mirrors loadFieldDyn verbatim, but ends with a store instead of a load.
+storeFieldDyn : Emit -> String -> String -> String -> <Mut> Unit
+storeFieldDyn e ptrWord idxRaw val =
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = inttoptr i64 " ++ ptrWord ++ " to ptr")
+  let off1 = freshReg e
+  let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ idxRaw ++ ", 1")
+  let off = freshReg e
+  let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
+  let _ = emit e ("  store i64 " ++ val ++ ", ptr " ++ fp)
+  ()
 
 -- CIndex arr i: bounds-check, then load element at dynamic offset.
 emitArrayIndex : Emit -> List (String, (String, LTy)) -> CExpr -> CExpr -> <Mut> (String, LTy)
