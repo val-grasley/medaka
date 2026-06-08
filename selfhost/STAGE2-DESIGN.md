@@ -1377,6 +1377,42 @@ inventory): core.mdk = 57 events / ~11 kinds, whole = 2248. Staged E1–E5 by le
   more reachable bodies carrying destructuring lambdas). core.mdk gap total 32→31. Fixtures
   `lam_tuple_param` / `lam_ctor_param` / `lam_rec_tuple`; all gates byte-identical
   (143/25/20/20).
+- **Multi-module emit+RUN gate (validation foundation for the whole-compiler push).
+  ✅ DONE (2026-06-08).** Until now the single-file `diff_selfhost_llvm_typed.sh`
+  byte-validated `core.mdk`'s scalar subset, and the gaps probe
+  (`llvm_emit_gaps_main.mdk`) only MEASURED emittability of the multi-module path —
+  nothing emitted a multi-module program, linked it, ran it, and diffed the oracle.
+  This gate fills that hole, the multi-module analog of the single-file LLVM gates,
+  so the upcoming E4 arg-position routing port (and the rest of the whole-compiler
+  work) is byte-verified, not just census-measured. **Driver:**
+  `selfhost/llvm_emit_modules_main.mdk` — same arg handling as
+  `eval_typed_modules_main.mdk` (`<runtime> <core> <entry> [root...]`: `loadProgram`
+  → desugar core + modules → `elaborateModules`), then the `censusWhole` flatten
+  (`coreD ++ concatMapList snd modules`) but with the REAL emitter
+  (`emitProgram`, not `emitProgramGaps`); it calls `enableArgStamp ()` + computes the
+  prelude return/arg-position + constrained dict names exactly as
+  `llvm_emit_typed_main.mdk` does, so it is E4-READY (pre-E4 that arg-stamping is a
+  no-op on the multi-module path). **Gate:** `test/diff_selfhost_llvm_modules.sh`,
+  modeled VERBATIM on `diff_selfhost_llvm_typed.sh`'s libgc-detection / skip-on-no-
+  compiler / exit-2 discipline. Per fixture SET (`test/llvm_fixtures_modules/<name>/`,
+  one subdir per set = `entry.mdk` + imported sibling module(s)): `ref` = the typed
+  multi-module oracle's captured IO stdout (`eval_typed_modules_main.mdk`), `ll` =
+  `llvm_emit_modules_main.mdk`, `bin` = clang-linked against `runtime/medaka_rt.c`,
+  `self` = `./bin`, diffed byte-for-byte. **Two scope facts.** (1) The full
+  `stdlib/core.mdk` prelude is itself OUTSIDE today's emit subset — `emitProgram`
+  panics on its `max`/`fold` arg-position-dispatch gaps (the gaps the census measures)
+  and there is no dead-code elimination — so the gate passes an EMPTY prelude file as
+  the `<core>` arg (the multi-module analog of the single-file gate passing ONLY
+  `runtime.mdk`); the driver's `<core>` signature stays verbatim so it flips to the
+  real `core.mdk` by one variable once the prelude emits. (2) Exported interface
+  METHODS do not yet resolve cross-module through the selfhost typed pipeline
+  (`elaborateModules`), so the fixtures keep the interface/impls in the ENTRY module
+  and cross the boundary with the DATA TYPE. **3/3 byte-identical:** `data_ctor`
+  (cross-module `data` ctor construct/match/call), `return_dispatch` (RKey
+  return-position dispatch with an impl at an imported type), `adt_dispatch`
+  (arg-tag multi-impl dispatch over imported ADT ctors). Arg-position dispatch on a
+  PRIMITIVE receiver is deliberately AVOIDED — that is exactly what **E4** unlocks;
+  this gate is its harness. All five gates byte-identical (160/33/20/20 + 3/3).
 
 ---
 

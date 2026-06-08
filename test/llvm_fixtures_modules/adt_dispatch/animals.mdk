@@ -1,0 +1,5 @@
+-- Two plain ADTs crossing the module boundary; the entry defines an arg-position
+-- interface (`Describe`) with impls AT these imported types, so the arg-tag
+-- dispatcher resolves each call by the IMPORTED constructor's cell tag.
+public export data Dog = Dog
+public export data Cat = Cat

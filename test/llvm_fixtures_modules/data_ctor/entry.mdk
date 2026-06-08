@@ -1,0 +1,8 @@
+-- Cross-module DATA: shape.mdk defines `data Shape` + functions; this entry
+-- imports the type, constructs its ctors (Rect/Square), matches them across the
+-- module boundary (inside `area`/`grow`, called here), and reduces `main` to a
+-- scalar rendered via putStrLn.  Pure ADT construction/match/call across modules —
+-- the multi-module analog of the single-file ADT slice.
+import shape.{Shape(..), area, grow}
+
+main = putStrLn (intToString (area (grow 1 (Rect 2 5)) + area (Square 3)))

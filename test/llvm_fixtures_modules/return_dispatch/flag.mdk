@@ -1,0 +1,4 @@
+-- A plain ADT crossing the module boundary; the entry defines a return-position
+-- interface (`Default`) with an impl AT this imported type, so the impl resolution
+-- + RKey route reach across modules.
+public export data Flag = Off | On

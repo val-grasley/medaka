@@ -1,0 +1,77 @@
+-- MULTI-MODULE LLVM emit driver — the emit analog of eval_typed_modules_main.mdk
+-- and the multi-module counterpart of llvm_emit_typed_main.mdk.  It is the
+-- emitting half of the multi-module emit+RUN gate (test/diff_selfhost_llvm_modules.sh),
+-- the validation foundation for the whole-compiler native push: where
+-- llvm_emit_gaps_main.mdk only MEASURES emittability of the multi-module path
+-- (emitProgramGaps), this driver runs the REAL emitter (emitProgram) so the
+-- gate can link + run + byte-diff the oracle.
+--
+--   medaka run selfhost/llvm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
+--
+-- loads <entry.mdk> + its transitive imports (dependency-first), desugars each +
+-- core, then `elaborateModules` threads the marker + typecheck route-stamping
+-- through the loader's module graph (mirroring eval_typed_modules_main.mdk).  The
+-- elaborated core + flattened module decls are lowered to Core IR and emitted as
+-- textual LLVM IR to stdout — same shape as llvm_emit_typed_main.mdk.
+--
+-- E4-READINESS: the driver calls enableArgStamp () and computes the prelude
+-- return/arg-position + constrained dict names exactly as llvm_emit_typed_main.mdk
+-- does, so when E4 (arg-position dict-passing on elaborateModules) lands the
+-- stamping is already wired.  Pre-E4 that arg-stamping is a no-op on the
+-- multi-module path (elaborateModules does not yet thread arg-position dicts), so
+-- it changes nothing today — the gate validates only the already-emittable subset.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import loader.{loadProgram}
+import typecheck.{elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
+import core_ir_lower.{lowerProgram, returnsSelfTable, selfFnParamTable}
+import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams}
+import util.{concatMapList}
+
+main : <IO, Mut> Unit
+main = match args ()
+  (runtimeP :: coreP :: entry :: roots) =>
+    run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run selfhost/llvm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+dirOf : String -> String
+dirOf path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo _ 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match loadProgram entry roots
+      Err e => ePutStrLn e
+      Ok mods => runEmit (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+
+runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runEmit runtimeDecls coreDecls modules =
+  let _ = enableArgStamp ()
+  let (coreD, modules2) = elaborateModules runtimeDecls coreDecls modules
+  let allDecls = coreD ++ concatMapList snd modules2
+  -- E4-ready dict-name wiring (mirrors llvm_emit_typed_main.mdk): coreD is the
+  -- elaborated prelude, allDecls the whole program.  No-op on the emit subset
+  -- pre-E4, but already threaded for when arg-position dict-passing lands.
+  let _ = preludeReturnPosDictNames coreD allDecls
+          ++ preludeArgPosDictNames coreD allDecls
+          ++ constrainedSigNames allDecls
+  let _ = installReturnsSelf (returnsSelfTable allDecls)
+  let _ = installSelfFnParams (selfFnParamTable allDecls)
+  putStr (emitProgram (lowerProgram allDecls))

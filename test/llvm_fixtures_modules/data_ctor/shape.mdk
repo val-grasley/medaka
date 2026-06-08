@@ -1,0 +1,9 @@
+public export data Shape = Rect Int Int | Square Int
+
+export area : Shape -> Int
+area (Rect w h) = w * h
+area (Square s) = s * s
+
+export grow : Int -> Shape -> Shape
+grow d (Rect w h) = Rect (w + d) (h + d)
+grow d (Square s) = Square (s + d)

@@ -1,0 +1,36 @@
+-- Cross-module RETURN-POSITION dispatch.  `Flag` is imported from flag.mdk; the
+-- `Default` interface + its Int/Flag impls live HERE, but the `Default Flag` impl
+-- dispatches on an IMPORTED type.  `def`'s type param appears only in the result,
+-- so each use resolves by the ANNOTATED result type (RKey), not a discriminating
+-- arg: `baseInt : Int = def` → the Int impl; `baseFlag : Flag = def` → the Flag
+-- impl (over the imported type) — a direct call to the lifted impl, no runtime tag
+-- test, the dispatch decided by the result type across the module boundary.
+-- Return-position dispatch is slice 6 — already emittable.
+--
+-- NOTE: exported interface METHODS do not yet resolve cross-module through the
+-- selfhost typed pipeline, so the interface/impls stay in the entry; the DATA TYPE
+-- is what crosses.  The nested `match` is lifted to a top-level binding because the
+-- selfhost parser rejects a `match` in argument position.
+import flag.{Flag(..)}
+
+interface Default a where
+  def : a
+
+impl Default Int where
+  def = 7
+
+impl Default Flag where
+  def = On
+
+baseInt : Int
+baseInt = def
+
+baseFlag : Flag
+baseFlag = def
+
+flagVal : Int
+flagVal = match baseFlag
+  Off => 0
+  On => baseInt
+
+main = putStrLn (intToString flagVal)

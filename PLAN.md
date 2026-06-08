@@ -684,6 +684,32 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        gates byte-identical (160/25/20/20).
      - **E4 — dispatch-routing port** (#2/#13: carry D3b arg-position dict-passing onto
        the `elaborateModules` emit path; 0 on the single-file path already).
+     - ✅ **Multi-module emit+RUN gate — E4's harness / whole-compiler validation
+       foundation.** DONE (2026-06-08). The multi-module analog of the single-file LLVM
+       gates: until now `diff_selfhost_llvm_typed.sh` byte-validated only `core.mdk`'s
+       single-file subset and `llvm_emit_gaps_main.mdk` only MEASURED the multi-module
+       path — nothing emitted a multi-module program, linked, ran, and diffed the oracle.
+       New driver `selfhost/llvm_emit_modules_main.mdk` (arg handling +
+       `loadProgram`/`elaborateModules` modeled on `eval_typed_modules_main.mdk`, then
+       `censusWhole`'s flatten `coreD ++ concatMapList snd modules` but through the REAL
+       `emitProgram`; `enableArgStamp` + prelude dict-name wiring mirror
+       `llvm_emit_typed_main.mdk` so it is E4-ready — a no-op on the module path pre-E4).
+       New gate `test/diff_selfhost_llvm_modules.sh` (libgc/skip/exit-2 discipline
+       VERBATIM from the typed gate): per fixture set under `test/llvm_fixtures_modules/`
+       (one subdir = `entry.mdk` + imported sibling module(s)), `ref` =
+       `eval_typed_modules_main` IO stdout, `self` = `emit→clang→run`, diffed
+       byte-for-byte. **Scope facts**: full `core.mdk` is itself un-emittable today
+       (`emitProgram` panics on `max`/`fold`, no DCE) so the gate passes an EMPTY prelude
+       (the module analog of the typed gate's runtime-only) — the driver's `<core>` arg
+       stays verbatim, flips to real `core.mdk` by one variable once the prelude emits;
+       and exported interface METHODS don't yet resolve cross-module through
+       `elaborateModules`, so fixtures keep the interface/impls in the entry and cross the
+       boundary with the DATA TYPE. **3/3 byte-identical**: `data_ctor` (cross-module
+       ctor construct/match/call), `return_dispatch` (RKey return-pos dispatch, impl at an
+       imported type), `adt_dispatch` (arg-tag multi-impl over imported ADT ctors).
+       Arg-position dispatch on a PRIMITIVE receiver is deliberately AVOIDED (that is what
+       E4 unlocks — this gate is its byte-verified harness). All five gates byte-identical
+       (160/33/20/20 + 3/3).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)
      — the spike gates against `test/llvm_fixtures/`; the real backend must compile
      `selfhost/*.mdk`. Surfacing+closing whatever constructs that exposes is the bulk of

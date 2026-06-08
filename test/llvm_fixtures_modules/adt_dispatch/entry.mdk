@@ -1,0 +1,25 @@
+-- Cross-module ARG-POSITION dispatch on ADT receivers.  `Dog`/`Cat` are imported
+-- from animals.mdk; the `Describe` interface + impls live HERE but dispatch on the
+-- IMPORTED constructors.  Each call (`describe Dog`/`describe Cat`) resolves by the
+-- argument's runtime constructor — an ADT, so the cell tag discriminates (NOT a
+-- primitive receiver, which is the still-gapping case E4 unlocks).  Multi-impl
+-- arg-tag dispatch over ADT-only ctors is slice 7 — already emittable.
+--
+-- NOTE: exported interface METHODS do not yet resolve cross-module through the
+-- selfhost typed pipeline, so the interface/impls stay in the entry; the DATA TYPES
+-- are what cross.
+import animals.{Dog(..), Cat(..)}
+
+interface Describe a where
+  describe : a -> Int
+
+impl Describe Dog where
+  describe Dog = 1
+
+impl Describe Cat where
+  describe Cat = 2
+
+total : Int
+total = describe Dog + describe Cat + describe Dog
+
+main = putStrLn (intToString total)
