@@ -195,7 +195,10 @@ enableGapRecord _ = set_ref gapRecordEnabled True
 -- clear the gap log (so one process can run several independent gap censuses).
 export
 resetGaps : Unit -> <Mut> Unit
-resetGaps _ = let _ = set_ref gapLog [] in set_ref curGapBind "?"
+resetGaps _ =
+  let _ = set_ref gapLog []
+  let _ = resetEmittedDefaults ()
+  set_ref curGapBind "?"
 
 -- the recorded gap events, in first-recorded order ("<binding>\t<reason>").
 export
@@ -270,6 +273,54 @@ lookupSelfFnParams _ _ [] = []
 lookupSelfFnParams iface method (((i, m), p)::rest)
   | i == iface && m == method = p
   | otherwise = lookupSelfFnParams iface method rest
+
+-- ── interface-default-method dispatch (native backend, E19) ──────────────────
+-- The method → (interface, full-arity) table from core_ir_lower's
+-- `methodIfaceTable`.  An interface DEFAULT method (a `CImplDefault` body the
+-- type's `impl` did not override — e.g. `filter` on a `Filterable List` that only
+-- defines `filterMap`, or `max`/`min` on an `Ord` instance) is dispatched by
+-- emitting the default body as a lifted `@mdk_default_<method>[_<tag>]` define.
+-- Two facts this table supplies:
+--   • ARITY — eta-expand a point-free default (`filter p = filterMap …` is
+--     arity-1 in source but the method is arity-2) to its full arity so the
+--     direct RKey call passes every call-site argument.
+--   • INTERFACE — recognise inner SAME-interface method occurrences in the default
+--     body (the `filterMap` in `filter`'s body) and re-stamp them to the concrete
+--     dispatch tag, so a partially-applied inner method lowers to a direct
+--     `@mdk_impl_<tag>_<method>` call instead of an un-dispatchable arg-tag site.
+-- Keyed by BARE method name (interface method names are distinct in the prelude).
+methodIfaceTableRef : Ref (List (String, (String, Int)))
+methodIfaceTableRef = Ref []
+
+export
+installMethodIface : List (String, (String, Int)) -> <Mut> Unit
+installMethodIface t = set_ref methodIfaceTableRef t
+
+-- the interface a method name belongs to (""=not an interface method).
+methodIfaceOf : String -> <Mut> String
+methodIfaceOf method = match lookupAssoc method methodIfaceTableRef.value
+  Some (iface, _) => iface
+  None => ""
+
+-- the declared full arity of an interface method (0 = not found).
+methodArityOf : String -> <Mut> Int
+methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
+  Some (_, arity) => arity
+  None => 0
+
+-- the set of default fn names already lifted (one define per (method, tag)),
+-- reset at the start of each emit run so the two censuses don't share state.
+emittedDefaultsRef : Ref (List String)
+emittedDefaultsRef = Ref []
+
+resetEmittedDefaults : Unit -> <Mut> Unit
+resetEmittedDefaults _ = set_ref emittedDefaultsRef []
+
+markDefaultEmitted : String -> <Mut> Unit
+markDefaultEmitted name = set_ref emittedDefaultsRef (name :: emittedDefaultsRef.value)
+
+defaultAlreadyEmitted : String -> <Mut> Bool
+defaultAlreadyEmitted name = containsStr name emittedDefaultsRef.value
 
 -- the impl currently being emitted: its type-head tag, and the NAMES of its
 -- params that are self-returning function callbacks (set in emitGroupBody).
@@ -470,13 +521,32 @@ filterTagged method (_::rest) = filterTagged method rest
 -- (an internal error — the typechecker only stamps tags it resolved an impl for).
 implFor : Emit -> String -> String -> <Mut> Option CImplEntry
 implFor e method tag = findByTag tag (implsOf e method)
-
 findByTag : String -> List CImplEntry -> Option CImplEntry
 findByTag _ [] = None
 findByTag tag ((CImplEntry n s (CImplTagged t iface ps pats body))::rest)
   | t == tag = Some (CImplEntry n s (CImplTagged t iface ps pats body))
   | otherwise = findByTag tag rest
 findByTag tag (_::rest) = findByTag tag rest
+
+-- the interface DEFAULT entry (CImplDefault) for a method: the untagged body the
+-- interface declared and the type's `impl` did not override.  None ⇒ no default
+-- (the method has no default body — a genuine missing-impl error).
+defaultFor : Emit -> String -> <Mut> Option CImplEntry
+defaultFor e method = findDefault method (implEntriesOf e)
+
+findDefault : String -> List CImplEntry -> Option CImplEntry
+findDefault _ [] = None
+findDefault method ((CImplEntry n s (CImplDefault pats body))::rest)
+  | n == method = Some (CImplEntry n s (CImplDefault pats body))
+  | otherwise = findDefault method rest
+findDefault method (_::rest) = findDefault method rest
+
+-- the lifted LLVM name of an interface default method (E19): `mdk_default_<method>_<tag>`.
+-- A default is emitted only on the CONCRETE RKey path (`filter`@List), keyed per
+-- (method, tag) — its inner same-interface calls are re-stamped to that tag, so
+-- distinct dispatch types need distinct defines.
+defaultFnName : String -> String -> String
+defaultFnName tag method = "mdk_default_" ++ method ++ "_" ++ tag
 
 -- the lifted LLVM name of a tagged impl method: `mdk_impl_<tag>_<method>`.  Type
 -- heads and method names are alphanumeric identifiers (an operator like `+` is a
@@ -1686,10 +1756,26 @@ emitMethod e env name route implRoutes methRoutes argOps =
           -- (scalar/element result) keep the LTInt default.
           let resTy = if methodReturnsSelf (implEntryIface entry) name then tagToLTy tag else LTInt
           emitImplCall e (implFnName tag name) (dictWords ++ argOps) resTy
-        None => gapE ("no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
+        None => emitDefaultRKey e name tag argOps
     RDict d => emitMethodDispatch e env name d argOps
     RDictFwd d => emitMethodDispatch e env name d argOps
     RNone => emitMethodArgDispatch e name argOps
+
+-- E19: an RKey route into a method with NO tagged impl for `tag` — the type's
+-- `impl` did not override an interface DEFAULT.  Emit the default body as a
+-- lifted `@mdk_default_<method>_<tag>` define (eta-expanded to full arity, inner
+-- same-interface calls re-stamped to `RKey tag` so a partially-applied inner
+-- method like `filterMap` lowers to a direct call), cache it, and call it
+-- directly with the call-site args.  No default ⇒ the original missing-impl gap.
+emitDefaultRKey : Emit -> String -> String -> List String -> <Mut> (String, LTy)
+emitDefaultRKey e name tag argOps = match defaultFor e name
+  Some entry =>
+    let fname = defaultFnName tag name
+    let _ = ensureDefaultEmitted e fname tag name entry
+    let resTy = if methodReturnsSelf (methodIfaceOf name) name then tagToLTy tag else LTInt
+    emitImplCall e fname argOps resTy
+  None => gapE ("no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
+
 
 -- a direct call to a statically-resolved impl fn (RKey).  Nullary (argOps == [])
 -- ⇒ `call @mdk_impl_<tag>_<method>()`, yielding the impl's value.  `resTy` is the
@@ -1762,9 +1848,26 @@ emitMethodArgDispatch : Emit -> String -> List String -> <Mut> (String, LTy)
 emitMethodArgDispatch e method argOps =
   let groups = implGroupsForMethod e method
   match groups
-    [] => gapE ("arg-tag dispatch for method '" ++ method ++ "' has no impl groups (slice 7: unresolved RNone fallback)")
+    [] => emitDefaultArgTag e method argOps
     [g] => emitImplCall e (implFnName (groupTag g) method) argOps LTInt
     _ => emitArgTagDispatch e method groups argOps
+
+-- E19: an arg-tag site for a method with NO tagged impl groups — an interface
+-- DEFAULT reached on the RNone fallback (`max`/`min`, whose `maximum`/`minimum`
+-- callers stay generic `Ord a`).  EMITTING the default body here is UNSOUND for
+-- the prelude's Ord defaults: `max`/`min` reduce to `compare m x`, and `compare`'s
+-- only impls are at PRIMITIVE types (Int/Float/String/Char/Bool/Ordering) which
+-- carry NO runtime constructor cell tag — so the inner `compare` arg-tag dispatch
+-- hits `emitTagMatch`'s "owns no constructors" gap (one event per primitive Ord
+-- impl × caller).  Emitting the default would therefore REPLACE 1 honest gap with
+-- ~6 deeper ones.  A correct max/min needs RKey-concrete `compare` (a monomorphic
+-- caller) or primitive-typed arg-tag dispatch — both out of this slice's scope.
+-- So a no-impl-groups default is left as the original honest gap; only a default
+-- whose inner same-interface calls reach a CONCRETE tag is emittable (the RKey
+-- path, emitDefaultRKey — `filter`@List).
+emitDefaultArgTag : Emit -> String -> List String -> <Mut> (String, LTy)
+emitDefaultArgTag e method argOps =
+  gapE ("arg-tag dispatch for method '" ++ method ++ "' has no impl groups (slice 7: unresolved RNone fallback)")
 
 emitArgTagDispatch : Emit -> String -> List ImplGroup -> List String -> <Mut> (String, LTy)
 emitArgTagDispatch e method groups argOps
@@ -1945,6 +2048,107 @@ emitGroup e (ImplGroup method tag positions arity clauses) =
   let _ = emit e "}"
   emit e ""
 
+-- ── interface DEFAULT method bodies (E19) ───────────────────────────────────
+-- An interface default (`CImplDefault`) the type's `impl` did not override is
+-- lifted to a `@mdk_default_<method>[_<tag>]` define ON DEMAND (the first dispatch
+-- that needs it), cached so each (method, tag) is emitted once.  Like a lifted
+-- lambda, the define is emitted into the SIDE buffer (LLVM forbids nesting it
+-- inside the body being emitted) via the bufRef save/restore swap.
+--
+-- Two transforms make the point-free / return-position default callable as a
+-- DIRECT impl-shaped fn:
+--   • ETA-EXPAND to the method's full declared arity (methodArityOf): `filter p =
+--     filterMap …` declares arity 2 (`(a->Bool) -> f a -> f a`) but binds one
+--     param; the missing trailing params are added and the body applied to them,
+--     so the direct call passes every call-site argument.
+--   • RE-STAMP inner SAME-interface method calls to `RKey tag` (concrete-tag
+--     defaults only — the `filter`@List path): the inner `filterMap` is partially
+--     applied (container not yet supplied) so it cannot arg-tag-dispatch; stamping
+--     it to the same dispatch tag lowers it to a direct `@mdk_impl_<tag>_filterMap`
+--     call.  The arg-tag default path (max/min, tag="") skips this — its inner
+--     `compare m x` HAS the discriminating arg and dispatches at run time.
+ensureDefaultEmitted : Emit -> String -> String -> String -> CImplEntry -> <Mut> Unit
+ensureDefaultEmitted e fname tag method entry =
+  if defaultAlreadyEmitted fname then ()
+  else
+    let _ = markDefaultEmitted fname
+    emitDefaultDefine e fname tag method entry
+
+emitDefaultDefine : Emit -> String -> String -> String -> CImplEntry -> <Mut> Unit
+emitDefaultDefine e fname tag method entry =
+  let pats0 = implPats entry
+  let body0 = implBody entry
+  let arity = maxInt (methodArityOf method) (listLen pats0)
+  let (pats, body1) = etaExpand pats0 body0 arity (listLen pats0)
+  -- re-stamp inner same-interface method occurrences to the concrete RKey tag so a
+  -- partially-applied inner method (`filterMap` in `filter`'s body) lowers to a
+  -- direct `@mdk_impl_<tag>_<method>` call instead of an arg-tag site.
+  let body = restampIface methodIfaceTableRef.value (methodIfaceOf method) tag body1
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ fname ++ "(" ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "entry:"
+  let _ = emitGroupBody e fname tag [] arity [(pats, body)]
+  let _ = emit e "}"
+  let _ = emit e ""
+  let defLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL defLines)
+  set_ref (bufRef e) saved
+
+maxInt : Int -> Int -> Int
+maxInt a b = if a >= b then a else b
+
+-- eta-expand `pats`/`body` from `have` params to `arity` by appending fresh
+-- `$etaK` params and applying the body to each (left-to-right).
+etaExpand : List Pat -> CExpr -> Int -> Int -> (List Pat, CExpr)
+etaExpand pats body arity have
+  | have >= arity = (pats, body)
+  | otherwise =
+      let name = "$eta" ++ intToString have
+      etaExpand (pats ++ [PVar name]) (CApp body (CVar name AGlobal)) arity (have + 1)
+
+-- rewrite every inner SAME-interface method occurrence (a bare `CVar m` whose
+-- interface equals `iface`) to a `CMethod m (RKey tag)`, so a partially-applied
+-- inner method lowers to a direct impl call.  Walks the whole CExpr tree.  The
+-- method→(iface,arity) table is passed in (a pure snapshot) so the walk stays pure.
+restampIface : List (String, (String, Int)) -> String -> String -> CExpr -> CExpr
+restampIface tbl iface tag (CVar m ad)
+  | iface != "" && ifaceOfIn tbl m == iface = CMethod m (RKey tag []) [] []
+  | otherwise = CVar m ad
+restampIface tbl iface tag (CApp f a) = CApp (restampIface tbl iface tag f) (restampIface tbl iface tag a)
+restampIface tbl iface tag (CLam ps b) = CLam ps (restampIface tbl iface tag b)
+restampIface tbl iface tag (CLet r p rhs b) = CLet r p (restampIface tbl iface tag rhs) (restampIface tbl iface tag b)
+restampIface tbl iface tag (CLetGroup bs b) = CLetGroup (map (restampBind tbl iface tag) bs) (restampIface tbl iface tag b)
+restampIface tbl iface tag (CMatch s arms) = CMatch (restampIface tbl iface tag s) (map (restampArm tbl iface tag) arms)
+restampIface tbl iface tag (CDecision s arms tr) = CDecision (restampIface tbl iface tag s) (map (restampArm tbl iface tag) arms) tr
+restampIface tbl iface tag (CIf c t el) = CIf (restampIface tbl iface tag c) (restampIface tbl iface tag t) (restampIface tbl iface tag el)
+restampIface tbl iface tag (CBinPrim op a b) = CBinPrim op (restampIface tbl iface tag a) (restampIface tbl iface tag b)
+restampIface tbl iface tag (CUnOp op a) = CUnOp op (restampIface tbl iface tag a)
+restampIface tbl iface tag (CTuple xs) = CTuple (map (restampIface tbl iface tag) xs)
+restampIface tbl iface tag (CList xs) = CList (map (restampIface tbl iface tag) xs)
+restampIface tbl iface tag (CFieldAccess a f) = CFieldAccess (restampIface tbl iface tag a) f
+restampIface tbl iface tag (CIndex a b) = CIndex (restampIface tbl iface tag a) (restampIface tbl iface tag b)
+restampIface _ _ _ other = other
+
+-- the interface a method name belongs to, looked up in a pure table snapshot.
+ifaceOfIn : List (String, (String, Int)) -> String -> String
+ifaceOfIn tbl m = match lookupAssoc m tbl
+  Some (iface, _) => iface
+  None => ""
+
+restampBind : List (String, (String, Int)) -> String -> String -> CBind -> CBind
+restampBind tbl iface tag (CBind n cs) = CBind n (map (restampClause tbl iface tag) cs)
+
+restampClause : List (String, (String, Int)) -> String -> String -> CClause -> CClause
+restampClause tbl iface tag (CClause ps b) = CClause ps (restampIface tbl iface tag b)
+
+restampArm : List (String, (String, Int)) -> String -> String -> CArm -> CArm
+restampArm tbl iface tag (CArm p gs b) = CArm p (map (restampGuard tbl iface tag) gs) (restampIface tbl iface tag b)
+
+restampGuard : List (String, (String, Int)) -> String -> String -> CGuard -> CGuard
+restampGuard tbl iface tag (CGBool c) = CGBool (restampIface tbl iface tag c)
+restampGuard tbl iface tag (CGBind p c) = CGBind p (restampIface tbl iface tag c)
+
 -- the interface a (method, tag) impl belongs to, via the resolved impl entry.
 implGroupIface : Emit -> String -> String -> <Mut> String
 implGroupIface e method tag = match implFor e method tag
@@ -2012,6 +2216,7 @@ listContains (x :: rest) v
   | otherwise = listContains rest v
 
 
+emitGroupBody : Emit -> String -> String -> List Int -> Int -> List (List Pat, CExpr) -> <Mut> Unit
 emitGroupBody e fname _ _ 0 clauses = match clauses
   [([], body)] => emitFnBody e [] fname body
   _ => gapU "nullary impl group with more than one clause (slice 6)"
@@ -3968,6 +4173,7 @@ export
 emitProgram : CProgram -> <Mut> String
 emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes) (Ref (initGlobalsReg (valBinds groups)))
+  let _ = resetEmittedDefaults ()
   let _ = emitPreamble e
   -- declare a module global per top-level value/`Ref` binding (slice E1b).
   let _ = emitGlobalDecls e (valBinds groups)

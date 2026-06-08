@@ -660,6 +660,30 @@ methodArgTys (TyEffect _ _ t) = methodArgTys t
 methodArgTys (TyFun a b) = a :: methodArgTys b
 methodArgTys _ = []
 
+-- ── method → (interface, full-arity) table (native backend: default methods) ─
+-- Per interface method name: the interface it belongs to and its full argument
+-- arity (from the declared signature `a -> b -> … -> r`).  The LLVM emitter reads
+-- it to emit an interface DEFAULT method (a `CImplDefault` body the type's `impl`
+-- did not override): the arity drives eta-expansion of a point-free default
+-- (`filter p = filterMap …` is arity-1 point-free but the method is arity-2), and
+-- the interface name lets the emitter recognise inner SAME-interface method calls
+-- in the default body and re-stamp them to the concrete dispatch tag (so the
+-- partially-applied inner `filterMap` lowers to a direct `@mdk_impl_<tag>_filterMap`
+-- call instead of an un-dispatchable arg-tag fallback).  Keyed by BARE method name
+-- (interface method names are distinct across the prelude's interfaces).
+export
+methodIfaceTable : List Decl -> List (String, (String, Int))
+methodIfaceTable prog = concatMapList ifaceMethodArityEntries prog
+
+ifaceMethodArityEntries : Decl -> List (String, (String, Int))
+ifaceMethodArityEntries DInterface { name = ifaceName, methods, ... } =
+  map (m => ifaceMethodArityEntry ifaceName m) methods
+ifaceMethodArityEntries _ = []
+
+ifaceMethodArityEntry : String -> IfaceMethod -> (String, (String, Int))
+ifaceMethodArityEntry ifaceName (IfaceMethod mname mty _) =
+  (mname, (ifaceName, listLen (methodArgTys mty)))
+
 -- positions (0-based) whose type is a TyFun whose result mentions a param.
 selfFnPositions : Int -> List Ty -> List String -> List Int
 selfFnPositions _ [] _ = []
