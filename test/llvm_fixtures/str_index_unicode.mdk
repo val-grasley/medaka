@@ -1,0 +1,3 @@
+main = match stringIndexOf "é" "café"
+  Some i => i
+  None => 0 - 1

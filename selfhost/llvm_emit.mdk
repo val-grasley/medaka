@@ -839,7 +839,7 @@ emitUnicodeExtern _ _ name _ = panic ("llvm spike: unsupported unicode extern " 
 -- 13 extend this family (stringToFloat, args, readFile, …).  Result is LTCon (an ADT
 -- value): never auto-printed — fixtures `match` it down to a scalar.
 isAdtExtern : String -> Bool
-isAdtExtern name = containsStr name ["charFromCode"]
+isAdtExtern name = containsStr name ["charFromCode", "stringToFloat", "stringIndexOf", "stringCompare"]
 
 emitAdtExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitAdtExtern e env "charFromCode" args = match emitArgs e env args
@@ -848,6 +848,24 @@ emitAdtExtern e env "charFromCode" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_from_code(i64 " ++ a ++ ")")
     (r, LTCon)
   _ => panic "llvm spike: charFromCode takes one argument (slice 10)"
+emitAdtExtern e env "stringToFloat" args = match emitArgs e env args
+  [s] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_float(i64 " ++ s ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: stringToFloat takes one argument (slice 11)"
+emitAdtExtern e env "stringIndexOf" args = match emitArgs e env args
+  [n, h] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_index_of(i64 " ++ n ++ ", i64 " ++ h ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: stringIndexOf takes two arguments (slice 11)"
+emitAdtExtern e env "stringCompare" args = match emitArgs e env args
+  [a, b] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_compare(i64 " ++ a ++ ", i64 " ++ b ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: stringCompare takes two arguments (slice 11)"
 emitAdtExtern _ _ name _ = panic ("llvm spike: unsupported adt extern " ++ name)
 
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
@@ -2993,6 +3011,9 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_string_to_upper(i64)"
   let _ = emit e "declare i64 @mdk_string_to_lower(i64)"
   let _ = emit e "declare i64 @mdk_char_from_code(i64)"
+  let _ = emit e "declare i64 @mdk_string_to_float(i64)"
+  let _ = emit e "declare i64 @mdk_string_index_of(i64, i64)"
+  let _ = emit e "declare i64 @mdk_string_compare(i64, i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

@@ -478,8 +478,7 @@ locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
   11/12/13 exercise the remaining constructors (`mdk_some`/`cons`/`ok`/`err`/…).
 - **Slice 11 — ADT-returning string externs** (dep: 10). `stringToFloat` (Option),
   `stringIndexOf` (Option), `stringCompare` (Ordering). Fixtures must `match` the
-  result down to a scalar/String (the emitter can't auto-print an ADT). *Sonnet: good
-  after 10.*
+  result down to a scalar/String (the emitter can't auto-print an ADT). *DONE.*
 - **Slice 12 — args + env** (dep: 10). `args` (List String — needs Cons construction),
   `getEnv` (Option String). Plumb `argc`/`argv` by changing the emitted entry to
   `main(i32 %argc, ptr %argv)` and stashing them for the extern. *Sonnet: moderate

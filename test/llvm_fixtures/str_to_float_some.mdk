@@ -1,0 +1,3 @@
+main = match stringToFloat "3.14"
+  Some f => floatToInt f
+  None => 0 - 1

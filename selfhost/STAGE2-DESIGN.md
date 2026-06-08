@@ -1106,7 +1106,10 @@ backend (Stage 2) — near-term sequence"):
    65536 in `llvm_emit.mdk` + matching `MDK_TAG_*` in `medaka_rt.c`; runtime cell
    builders `mdk_some`/`ok`/`err`/`cons` + `mdk_none`/`nil`/`lt`/`eq`/`gt`; canary
    `charFromCode` via `isAdtExtern`; `adt_some`/`adt_none` prove boxed + immediate
-   round-trip; 103/103 plain; gates the ADT-returning slices 11/12/13) — and close the spike's out-of-scope gaps (arg-tag
+   round-trip; 103/103 plain; gates the ADT-returning slices 11/12/13), **slice 11
+   DONE 2026-06-07** (ADT-returning string externs: `stringToFloat` → `Option Float`,
+   `stringIndexOf` → `Option Int`, `stringCompare` → `Ordering`; `mdk_box_float` helper
+   in `medaka_rt.c`; 8 new fixtures; 111/111 plain) — and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
    (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);
