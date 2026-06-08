@@ -598,6 +598,34 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        `dict_clamp.mdk` (→10, local lambda in `Ord`-constrained fn captures dict) and
        `dict_when.mdk` (→1, `when True (Some ())` at Option); both byte-identical (31/31
        typed gate). **EMITTER-GAPS #11 closure half closed.**
+     - ✅ **E9 — impl-body dict-capture (#11 impl-body events).** DONE (2026-06-08).
+       The complement to E8 in the front end: `usesImplDict` in `selfhost/typecheck.mdk`
+       decides whether to prepend an impl method its `$dict_<m>_<slot>` param by scanning
+       the body for an RDict route to that param, but its scanner `bodyRDictNames` →
+       `collectMethodSites` only visited `EMethodAt` nodes (route ref `Ref Route`), NOT
+       `EDictAt` (route LIST `Ref (List Route)`). So a parametric `requires` impl that
+       FORWARDS its element dict through a `=>`-constrained helper — `impl Debug (List a)
+       requires Debug a where debug xs = "[\{debugListItems xs}]"`, where `debugListItems`
+       is an `EDictAt` — was judged not to use the dict → got no dict param → the body's
+       `$dict_debug_0` was unbound at emit. **Fix** (`typecheck.mdk`, scoped to the
+       scanner): `collectDictSites` mirrors `collectMethodSites`'s structural walk EXACTLY
+       but matches `EDictAt _ rs => [rs]` (+ peer site-collectors `letBindDictSites`/
+       `armDictSites`/`guardDictSites`/`doStmtDictSites`/`fieldAssignDictSites`);
+       `siteRDictNamesL`/`routeRDictName` pull `RDict`/`RDictFwd` names from a route list;
+       `bodyRDictNames` unions the two. `collectMethodSites` UNCHANGED. **Golden-safe**:
+       core_ir/eval/typecheck/untyped-llvm goldens byte-identical — on the non-emit
+       (`implInferEnabled`/`argStampEnabled` OFF) path no EDictAt site routes RDict to an
+       impl param, so `usesImplDict` stays False there. **A: 3→0** — closing **EMITTER-GAPS
+       #11 fully** (closure half E8 + impl-body half E9). New typed fixtures
+       `dict_debug_list.mdk` (→3, `debug` a `MyList Int` via element-dict-forwarding helper)
+       and `dict_hash_list.mdk` (→10260, `hash` length-fold); both byte-identical (33/33
+       typed gate). **core (A) is now down to 8 events / 3 reasons: 6 excludable
+       `Arbitrary` unit-head-switch (#12) + `max`/`min` arg-tag fallback (#13). The last
+       non-excludable core dict gap is closed; core.mdk is one routing-port (gap #2:
+       D3b arg-pos dict-passing → `elaborateModules`) and the excludable `Arbitrary` impl
+       away from emitting end-to-end (the core.mdk-emits milestone).** B ticks 1924→1942
+       (the † reveal: `debug`/`display`/`hash`@List now emit + descend into their forwarded
+       helpers, exposing those helpers' pre-existing gap #2 arg-tag residue).
      - ✅ **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`). DONE (2026-06-08).
        `otherwise` in condition position is a `CVar` reaching `emitVar`; added as a constant
        arm → `("3", LTBool)` (same as `True`). `__fallthrough__` is always `CApp (CVar

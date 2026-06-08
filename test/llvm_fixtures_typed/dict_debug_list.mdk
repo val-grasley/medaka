@@ -1,0 +1,31 @@
+-- EMITTER-GAPS #11: a parametric `Debug (List a) requires Debug a` impl whose
+-- body FORWARDS the impl's element dict through a `=>`-constrained top-level
+-- helper (`debugListItems`, mirroring stdlib/core.mdk:283-289).  In the resolved
+-- AST that helper occurrence is an EDictAt (route LIST `Ref (List Route)`), NOT an
+-- EMethodAt — so the pre-fix `usesImplDict` scanner (`collectMethodSites`, which
+-- only visits EMethodAt) judged the impl body to NOT use its dict, gave `debug` no
+-- `$dict_debug_0` param, and the forwarded reference was unbound at emit ("unbound
+-- dict witness $dict_debug_0").  collectDictSites now also scans EDictAt route
+-- lists for RDict/RDictFwd to the impl param, so the param is restored.
+--
+-- `debug` is modeled to return an Int length-fold (prelude-free, scalar): the
+-- element-`debug` site dispatches through the forwarded dict on tyvar `a`, the
+-- self-call forwards it, and the outer concrete `List Int` call materializes the
+-- witness.  `debug (Cons 1 (Cons 2 (Cons 3 Nil)))` sums the per-element widths
+-- 1+1+1 = 3.
+interface Debug a where
+  debug : a -> Int
+
+data MyList a = Nil | Cons a (MyList a)
+
+impl Debug Int where
+  debug n = 1
+
+debugListItems : Debug a => MyList a -> Int
+debugListItems Nil = 0
+debugListItems (Cons x rest) = debug x + debugListItems rest
+
+impl Debug (MyList a) requires Debug a where
+  debug xs = debugListItems xs
+
+main = debug (Cons 1 (Cons 2 (Cons 3 Nil)))

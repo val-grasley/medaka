@@ -46,11 +46,11 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 | 8 | **`otherwise`** (guard constant)                          | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — added to `emitVar` constants (= `True` → `"3"`, `LTBool`) |
 | 9 | **`__fallthrough__`** (guard-desugar sentinel)            | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — intercepted in `emitApp` CVar branch (`call void @mdk_oob()` + dummy; block terminator from surrounding `if`) |
 |10 | **non-nullary / recursive `let`-group** (`where` fns)     | ~~5~~ **0** | ~~5~~ **0** | Emitter                          | ✅ **CLOSED (E5)** — lambda-lift each local fn via `emitGroupBind` (self-rec through `%clos`, E1a clause-tree body); one-at-a-time env threading covers non-mutual groups; genuine forward/mutual ref → precise `gapE` (none in core) |
-|11 | **unbound dict witness** (dict not threaded to use)       | ~~3~~ **0** (closure root) / **3** (impl-body root — different cause) | 2        | Emitter / dict-pass              | ✅ **closure half CLOSED (E8, 2026-06-08)** — `freeVars` now traverses CMethod/CDict routes; 3 impl-body events (debug/display/hash@List) need `usesImplDict` EDictAt fix in typecheck |
+|11 | **unbound dict witness** (dict not threaded to use)       | ~~3~~ **0** (closure root, E8) / ~~3~~ **0** (impl-body root, E9)        | 2        | Emitter / dict-pass              | ✅ **FULLY CLOSED** — closure half E8 (`freeVars` CMethod/CDict routes); impl-body half E9 (2026-06-08, `usesImplDict` EDictAt scan in typecheck — `debug`/`display`/`hash`@List forwarding the element dict) |
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ ~~13~~ **11** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ **1924** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ ~~13~~ ~~11~~ **8** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ ~~1924~~ **1942‡** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) were
 references to runtime/core primitives the spike's extern catalog didn't carry —
@@ -84,6 +84,21 @@ that `find`/`count`/`maximum`/`minimum` carry. `arbitraryList`'s worker emits
 cleanly (no guards). All revealed reasons are pre-existing categories; the
 *structural* `let`-group gap is gone (5→0 in both censuses, no mutual-recursion
 site left).
+
+‡ Closing gap #11's impl-body half (E9) makes the **B TOTAL tick UP** (1924→1942),
+same mechanism as the † note: the `Debug`/`Display`/`Hashable (List a)` impl bodies
+previously gapped EARLY at the unbound `$dict_<m>_0` witness and were skipped, so
+their forwarded-helper residue was hidden. Now `debug`/`display`/`hash`@List get
+their dict param and the emitter descends INTO them + the forwarded helpers
+(`debugListItems`/`displayListItems`), exposing those helpers' OWN pre-existing
+arg-tag residue (gap #2 "primitive receiver carries no cell tag" — routing-not-wired,
+closes when D3b arg-pos dict-passing ports to `elaborateModules`). All revealed
+reasons are pre-existing categories; **A: 3→0** (the milestone metric) is a clean
+drop. The A core total is now **8** across 3 reasons: 6 `Arbitrary` unit-head-switch
+events (gap #12 — `arbitraryString`, `arbitrary@Int`, `arbitrary@Bool`, …;
+excludable from bootstrap) + 1 `max` + 1 `min` arg-tag-fallback event (gap #13
+family — `maximum`/`minimum`'s unresolved RNone). core.mdk is one routing-port and
+the excludable `Arbitrary` impl away from emitting end-to-end.
 
 The **(A) core total of 57** spans only **~11 gap kinds**; **(B) whole-compiler
 2248** spans 151 distinct reasons, but 88% collapse into the 7 categories above
@@ -315,13 +330,28 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter as
     3 impl-body events remain — different cause).  B: 1924 unchanged (clamp was
     A-only; `when`/`unless` B-only, different cause, reported below).
   - **`$dict_debug_0`, `$dict_display_0`, `$dict_hash_0` (A:3 impl-body events)
-    — DIFFERENT ROOT CAUSE.** `impl Debug (List a) requires Debug a where
+    — ✅ CLOSED (E9, 2026-06-08).** `impl Debug (List a) requires Debug a where
     debug xs = "[\{debugListItems xs}]"` calls `debugListItems` via `EDictAt`.
-    `usesImplDict` in `typecheck.mdk` only checks `EMethodAt` nodes (not
-    `EDictAt`), so it returns False for this body → `implDictPassMethods` does NOT
-    prepend the `$dict_debug_0` param → at emit time the dict is not in the env.
-    Fix lives in `typecheck.mdk`'s `usesImplDict`/`collectMethodSites` — outside
-    the E8 scope.  These 3 events remain in A.
+    `usesImplDict`'s scanner `bodyRDictNames` → `collectMethodSites` only visited
+    `EMethodAt` nodes (route ref `Ref Route`), never `EDictAt` (route LIST
+    `Ref (List Route)`), so a body that FORWARDS the impl dict through a
+    `=>`-constrained helper was judged not to use it → `implDictPassMethods` did
+    NOT prepend the `$dict_<m>_0` param → at emit the dict was unbound.  **Fix**
+    (`typecheck.mdk`): a parallel collector `collectDictSites` mirroring
+    `collectMethodSites`'s structural walk EXACTLY but matching `EDictAt _ rs => [rs]`
+    (+ peer site-collectors `letBindDictSites`/`armDictSites`/`guardDictSites`/
+    `doStmtDictSites`/`fieldAssignDictSites`); `siteRDictNamesL`/`routeRDictName`
+    extract `RDict`/`RDictFwd` names from a route list; `bodyRDictNames` unions both.
+    `collectMethodSites` UNCHANGED.  **Golden-safe**: core_ir/eval/typecheck/untyped-llvm
+    goldens byte-identical — on the non-emit (`implInferEnabled`/`argStampEnabled` OFF)
+    path no EDictAt site routes RDict to an impl param, so `usesImplDict` stays False
+    there (the `implDictPassMethods` comment's invariant).  New fixtures
+    `dict_debug_list.mdk` (oracle=3, `debug (Cons 1 (Cons 2 (Cons 3 Nil)))` via
+    `debugListItems` forwarding the element dict) and `dict_hash_list.mdk`
+    (oracle=10260, `hash` length-fold) — byte-identical (33/33 typed gate).
+    **A: 3→0.**  B's `debugListItems`/`displayListItems` now appear only under the
+    benign slice-7 "primitive receiver carries no cell tag" arg-tag line (routing,
+    gap #2), not as unbound dict witnesses.
   - **`$dict_when_0`, `$dict_unless_0` (B:2 events, A:0) — DIFFERENT ROOT CAUSE.**
     `when b m = if b then m else pure ()` emits correctly in the single-file typed
     path (A) after E8 — `pure` dispatches via `RDictFwd` from the function's own
@@ -354,7 +384,7 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter as
 
 | Class | Gaps | B-count | Meaning |
 |-------|------|--------:|---------|
-| **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #3, #11, #12, #14 (#6, #7, #10 now closed) | 1308 | needs emitter code |
+| **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #3, #12, #14 (#6, #7, #10, #11 now closed) | 1308 | needs emitter code |
 | **Desugar/lower-fixable** (eliminate the shape before Core IR) | #4, #5 | 258 | ✅ CLOSED — realised emitter-side via `emitClauseTree` (E1a fn + E2b lambda); Core IR unchanged |
 | **Front-end residue** (a name/sentinel that shouldn't reach emit) | #8, #9 | ~~176~~ **0** | ✅ CLOSED (E3) — `emitVar` + `emitApp` |
 | **Dispatch routing, already designed** (not new work) | #2, #13 | 546 | port D3b to multi-module |

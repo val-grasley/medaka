@@ -1,0 +1,27 @@
+-- EMITTER-GAPS #11: a parametric `Hashable (List a) requires Hashable a` impl
+-- whose body FORWARDS the impl's element dict through a `=>`-constrained top-level
+-- helper (`hashListItems`, mirroring stdlib/core.mdk:426).  As with dict_debug_list
+-- that helper occurrence resolves to an EDictAt (route LIST), which the pre-fix
+-- `usesImplDict` scanner never visited — so `hash` lost its `$dict_hash_0` param
+-- and the forwarded witness was unbound at emit.  collectDictSites restores it.
+--
+-- `hash` folds a running accumulator over the element hashes; the element-`hash`
+-- site dispatches through the forwarded dict on tyvar `a`, the self-call forwards
+-- it, and the outer concrete `List Int` call materializes the witness.
+-- `hash (Cons 10 (Cons 20 (Cons 30 Nil)))` = (((0*31+10)*31+20)*31+30).
+interface Hashable a where
+  hash : a -> Int
+
+data MyList a = Nil | Cons a (MyList a)
+
+impl Hashable Int where
+  hash n = n
+
+hashListItems : Hashable a => Int -> MyList a -> Int
+hashListItems acc Nil = acc
+hashListItems acc (Cons x rest) = hashListItems (acc * 31 + hash x) rest
+
+impl Hashable (MyList a) requires Hashable a where
+  hash xs = hashListItems 0 xs
+
+main = hash (Cons 10 (Cons 20 (Cons 30 Nil)))
