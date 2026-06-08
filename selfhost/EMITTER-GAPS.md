@@ -50,7 +50,8 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ ~~13~~ ~~11~~ **8** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ ~~1924~~ ~~1942‡~~ ~~888§~~ ~~560¶~~ **215** (E5 impl-body inference: 560→215) |                                  |                     |
+|15 | **record pattern `PRec`** (+ field-name "unbound variable" cluster) | 0 | ~~110~~ **0** | Lowering (`canonPat` wildcarded PRec) | ✅ **CLOSED (E11, 2026-06-08)** — `lowerProgramEmit` rewrites `PRec "T" recFields open` → `PCon "T" [sub-pat per field, declared order]` (puns → `PVar label`, unnamed → `PWild`); the existing `PCon` cellTag-test + `bindFields` machinery destructures records/named-field variants (incl. the compiler's own `DInterface {…}`/`DImpl {…}` matches), so the field-name `methods`/`typarams`/`supers`/`reqs`/`tys`/`name`/… "unbound variable" events all bind. EMIT-ONLY (the by-name `VRecord` tree-walker keeps raw `PRec`); no emitter change. **B: PRec 43→0 + field-cluster ~80→0 (127 events). B TOTAL 215 → 88.** |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ ~~13~~ ~~11~~ **8** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ ~~1924~~ ~~1942‡~~ ~~888§~~ ~~560¶~~ ~~215~~ **88** (E11 PRec→PCon rewrite: 215→88) |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) were
 references to runtime/core primitives the spike's extern catalog didn't carry —
@@ -516,6 +517,34 @@ source per unit of work**:
     UNCHANGED — E10 fires only on the unknown-LTy arm. `declare i64 @mdk_append` added to
     `emitPreamble`. **#3: B 328→0. B TOTAL 888→560.** Fixture `concat_unknown` (→6),
     byte-identical native/oracle (161/161 llvm gate).
+  - **E11 (record patterns `PRec` → positional `PCon`, census-B) — ✅ DONE (2026-06-08).**
+    Single largest remaining census-B category: PRec match arms (43) + every field-name
+    "unbound variable" event (`methods` 38, `typarams` 8, `supers` 7, `reqs` 5, `tys` 5,
+    `name` 4, `pub`/`def`/`iface` 3 each, `n` 3, `ifaceName` 2, `typeParams`/`typeArgs` 1)
+    — the compiler destructures its OWN `DInterface {…}`/`DImpl {…}` named-field variants
+    and `canonPat` wildcarded `PRec`, dropping the field bindings. **Fix** (in
+    `core_ir_lower.mdk`, no emitter change): a lowering pattern-rewrite `rewritePat`
+    turns `PRec "T" recFields open` → `PCon "T" [sub-pat per field IN DECLARED ORDER]`,
+    where each declared field contributes the named `RecPatField`'s sub-pattern, `PVar
+    label` for a pun (`None`), or `PWild` if unnamed (covers open `..`/subset). The
+    field-order map (`buildRecPatFieldOrders`) is DECLARED order from `DRecord` field
+    lists + `DData` `ConNamed` variants — the same order the emitter's record CELL layout
+    / `recFieldTable` use, so positional indices line up with the cell's stored field
+    offsets (records/named-field variants are heap cells `[tag|f0|f1|…]` exactly like
+    ctors, allocated by `emitCtorAlloc`). The rewrite recurses into ALL nested forms
+    (`PCon` args, `PCons`, `PTuple`, `PList`, `PAs`, nested `PRec`), is applied to every
+    pattern position the lowered Core IR carries (match arms, clauses, `CLam`, `CLet`,
+    do-binds, guards, impls), and RECOMPILES each `CDecision` tree from the rewritten
+    arms (PRec was a needs-guard wildcard arm; the rewritten `PCon` compiles to a clean
+    constructor switch). **EMIT-ONLY**: it lives in `lowerProgramEmit` (called by the four
+    LLVM emit drivers — `llvm_emit_main`/`_modules_main`/`_gaps_main`/`_typed_main`), NOT
+    the shared `lowerProgram` that `core_ir_main`/`core_ir_eval` use — because the
+    tree-walker evaluates a record to a by-name `VRecord` and matches `PRec` by label, so
+    a positional `PCon` must never reach it (core_ir/eval gates stay 20/20 byte-identical).
+    **B: PRec 43→0 + field-cluster ~80→0 = 127 events. B TOTAL 215 → 88.** Fixtures
+    `pat_record` (→34), `pat_record_partial` (→12), `pat_record_variant` (→311),
+    byte-identical native/oracle (164/164 llvm gate; typed 33, modules 5 all green).
+
 
 - **E6 — PAs/PList residue in `bindPattern` (#4 residue).** `canonPat` shapes were
   already correct; `bindPattern` fell to gap for `PAs x p` and `PList (p::ps)`.

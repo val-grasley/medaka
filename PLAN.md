@@ -597,6 +597,29 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        `emitPreamble`. **#3: B 328→0. B TOTAL 888→560.** New fixture `concat_unknown` (→6),
        byte-identical native/oracle; all gates green (161/33/4/20/20). **EMITTER-GAPS #3 now
        FULLY closed (core A + whole-compiler B).**
+     - ✅ **E11 — record patterns `PRec` → positional `PCon`** (census-B #15, the single
+       largest remaining category). DONE (2026-06-08). The emitter had no record-pattern
+       path: `core_ir_lower.canonPat` wildcarded `PRec`, dropping every field binding — so
+       PRec match arms (43) AND every field-name "unbound variable" event (`methods` 38,
+       `typarams` 8, `supers` 7, `reqs` 5, `tys` 5, `name` 4, `pub`/`def`/`iface`/`n` 3 each,
+       `ifaceName` 2, `typeParams`/`typeArgs` 1) — the compiler destructuring its OWN
+       `DInterface {…}`/`DImpl {…}` named-field variants — were gaps. **Fix** (in
+       `core_ir_lower.mdk`, NO emitter change): a lowering pattern-rewrite `rewritePat`
+       turns `PRec "T" recFields open` → `PCon "T" [sub-pat per declared field]` (named field
+       → its sub-pattern; pun `None` → `PVar label`; unnamed → `PWild`, covering open `..` /
+       subset), recursing into all nested forms. Records/named-field variants are heap cells
+       `[tag|f0|f1|…]` allocated by the SAME `emitCtorAlloc` as ctors, so the existing `PCon`
+       cellTag-test + `bindFields` machinery destructures them with no emitter change; the
+       field-order map (`buildRecPatFieldOrders`, DECLARED order from `DRecord` fields + `DData
+       ConNamed` variants) matches the cell layout / `recFieldTable`, so positional indices line
+       up. **EMIT-ONLY**: applied by `lowerProgramEmit` (the four LLVM emit drivers), NOT the
+       shared `lowerProgram` the tree-walker uses — the tree-walker evaluates a record to a
+       by-name `VRecord` matched by label, so a positional `PCon` must never reach it. Each
+       rewritten `CDecision`'s tree is recompiled from the PCon arms (PRec was a needs-guard
+       wildcard arm → now a clean constructor switch). **B: PRec 43→0 + field-cluster ~80→0 =
+       127 events. B TOTAL 215 → 88.** 3 new fixtures (`pat_record` →34, `pat_record_partial`
+       →12, `pat_record_variant` →311), byte-identical native/oracle; all gates green
+       (164/33/5/20/20).
      - ✅ **E8 — closure dict-capture (#11 closure events).** DONE (2026-06-08).
        `freeVars` returned `[]` for `CMethod`/`CDict` nodes (catch-all arm), so a
        closure whose body dispatches a method through a forwarded dict (`RDictFwd

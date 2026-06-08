@@ -1,0 +1,10 @@
+-- PRec lowering, PARTIAL record pattern: a record with several fields matched by a
+-- pattern that names only a SUBSET (open `...` rest).  The PRec→PCon rewrite fills
+-- the unnamed fields with PWild in declared order so only the named ones bind.
+data Rec = Rec { x : Int, y : Int, z : Int }
+
+pick : Rec -> Int
+pick r = match r
+  Rec { x, z, ... } => x + z
+
+main = pick (Rec { x = 5, y = 100, z = 7 })

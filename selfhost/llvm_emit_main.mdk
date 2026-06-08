@@ -19,7 +19,7 @@
 import parser.{parse}
 import desugar.{desugar}
 import annotate.{annotateProgram}
-import core_ir_lower.{lowerProgram}
+import core_ir_lower.{lowerProgramEmit}
 import llvm_emit.{emitProgram}
 
 main = match args ()
@@ -28,5 +28,5 @@ main = match args ()
 
 withTarget : String -> <IO, Mut> Unit
 withTarget targetPath = match readFile targetPath
-  Ok targetSrc => putStr (emitProgram (lowerProgram (annotateProgram (desugar (parse targetSrc)))))
+  Ok targetSrc => putStr (emitProgram (lowerProgramEmit (annotateProgram (desugar (parse targetSrc)))))
   Err msg => ePutStrLn msg

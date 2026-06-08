@@ -1,0 +1,14 @@
+-- PRec lowering, named-field VARIANT: a `data` with a record-style constructor
+-- among several variants, matched by `Ctor { field }` against the other variants —
+-- mirrors the compiler's own `DInterface { typarams, methods }` shape.  Reduces to
+-- a scalar.  The PRec→PCon rewrite emits `PCon "Node" [PVar val, PVar kids]` in the
+-- variant's declared field order; the constructor-switch arms over Leaf/Node still
+-- discriminate by cellTag exactly as before.
+data Tree = Leaf Int | Node { val : Int, kids : Int }
+
+weigh : Tree -> Int
+weigh t = match t
+  Leaf n => n
+  Node { val, kids } => val + kids * 100
+
+main = weigh (Node { val = 2, kids = 3 }) + weigh (Leaf 9)

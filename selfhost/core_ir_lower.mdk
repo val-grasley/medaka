@@ -10,10 +10,10 @@
 -- map (the IR deliberately stays close to the core AST so the equivalence gate
 -- is a clean diff, not a rewrite).
 
-import ast.{Lit(..), Pat(..), Expr(..), Arm(..), Guard(..), DoStmt(..), FieldAssign(..), LetBind(..), FunClause(..), Addr(..), Decl(..), Variant(..), ConPayload(..), Ty(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..)}
+import ast.{Lit(..), Pat(..), RecPatField(..), Expr(..), Arm(..), Guard(..), DoStmt(..), FieldAssign(..), LetBind(..), FunClause(..), Addr(..), Decl(..), Variant(..), ConPayload(..), Field(..), Ty(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..)}
 import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..), CTree(..), CTBranch(..), CHead(..)}
 import eval.{buildCtorToType, buildCtorFieldOrders, ctorFieldOrdersRef, buildIfaceDispatch, lookupPositions, tyvarsInArgs, headTyconHead}
-import util.{contains, concatMapList, listLen, allList, anyList}
+import util.{contains, concatMapList, listLen, allList, anyList, lookupAssoc}
 
 -- a synthetic binder for the lowered composition operators; constructed
 -- directly (never parsed) so the unusual name is harmless.
@@ -373,6 +373,174 @@ lowerProgram : List Decl -> <Mut> CProgram
 lowerProgram prog =
   let _ = set_ref ctorFieldOrdersRef (buildCtorFieldOrders prog)
   CProgram (lowerGroups prog) (ctorArities prog) (buildCtorToType prog) (lowerImpls prog)
+
+-- ── record-pattern → positional-constructor-pattern rewrite (native backend) ──
+-- The LLVM emitter has no record-pattern path: records / named-field variants are
+-- heap CELLS `[tag | field0 | field1 | …]` exactly like positional constructors,
+-- so a `match` on one is destructured by the SAME cellTag-test + positional
+-- field-extraction machinery `PCon` already drives (emitDecision / bindPattern).
+-- A `PRec "T" recFields open` is therefore lowered to `PCon "T" [sub-pattern per
+-- field IN DECLARED ORDER]`: each declared field of `T` contributes (a) the
+-- matching `RecPatField`'s sub-pattern, (b) `PVar label` if it is a pun (`None`),
+-- or (c) `PWild` if the field is unnamed in the pattern (covers both the open
+-- `..` form and a fully-specified record naming a subset).  After the rewrite no
+-- PRec reaches canonPat / bindPattern, so the emitter needs no record-specific code.
+--
+-- This is an EMIT-ONLY transform: the tree-walking core_ir_eval evaluates a record
+-- to a by-name `VRecord` and matches `PRec` by label, so it must NOT see the
+-- positional `PCon` rewrite (a `PCon` would not match a `VRecord`).  Hence it lives
+-- in `lowerProgramEmit` — which the LLVM emit drivers call — NOT in the shared
+-- `lowerProgram` that core_ir_main / core_ir_eval use.  The field-order map is
+-- DECLARED order (DRecord field list + DData named-field variants), the same order
+-- the emitter's record cell layout / recFieldTable use, so the positional indices
+-- line up with the cell's stored field offsets (verified by the fixture byte-diff).
+export
+lowerProgramEmit : List Decl -> <Mut> CProgram
+lowerProgramEmit prog =
+  rewriteProgramRecPats (buildRecPatFieldOrders prog) (lowerProgram prog)
+
+-- type/ctor name → [field label in declared order], from every DRecord and every
+-- DData named-field (`ConNamed`) variant.  (`DInterface`/`DImpl` are themselves
+-- named-field variants of the AST's `Decl` type — declared in ast.mdk via `data
+-- Decl = … | DInterface { … }` — so a self-hosted compiler that destructures them
+-- gets their orders through the `DData ConNamed` branch when ast.mdk is in `prog`.)
+buildRecPatFieldOrders : List Decl -> List (String, List String)
+buildRecPatFieldOrders prog = concatMapList recPatFieldOrderEntries prog
+
+recPatFieldOrderEntries : Decl -> List (String, List String)
+recPatFieldOrderEntries (DRecord _ name _ fields _) = [(name, map fieldLabel fields)]
+recPatFieldOrderEntries (DData _ _ _ variants _) = concatMapList variantNamedOrder variants
+recPatFieldOrderEntries (DAttrib _ inner) = recPatFieldOrderEntries inner
+recPatFieldOrderEntries _ = []
+
+variantNamedOrder : Variant -> List (String, List String)
+variantNamedOrder (Variant n (ConNamed fs)) = [(n, map fieldLabel fs)]
+variantNamedOrder _ = []
+
+fieldLabel : Field -> String
+fieldLabel (Field n _) = n
+
+-- the single pattern rewrite: a record pattern becomes a positional constructor
+-- pattern over the type's declared field order; recurse into EVERY nested form.
+rewritePat : List (String, List String) -> Pat -> Pat
+rewritePat fo (PRec name recFields _) = match lookupAssoc name fo
+  Some labels => PCon name (map (recPatForLabel fo recFields) labels)
+  -- no declared order found (e.g. an anonymous record with no `data`): leave the
+  -- PRec untouched — the emitter's existing gap-path reports it, no silent miscompile.
+  None => PRec name (map (rewriteRecPatField fo) recFields) False
+rewritePat fo (PCon c args) = PCon c (map (rewritePat fo) args)
+rewritePat fo (PCons h t) = PCons (rewritePat fo h) (rewritePat fo t)
+rewritePat fo (PTuple ps) = PTuple (map (rewritePat fo) ps)
+rewritePat fo (PList ps) = PList (map (rewritePat fo) ps)
+rewritePat fo (PAs x p) = PAs x (rewritePat fo p)
+rewritePat _ p = p
+
+-- the sub-pattern bound to declared field `label`: the named field's sub-pattern
+-- (recursively rewritten), `PVar label` for a pun, or `PWild` when the field is
+-- not named in the pattern (open `..` / subset).
+recPatForLabel : List (String, List String) -> List RecPatField -> String -> Pat
+recPatForLabel fo recFields label = match findRecField label recFields
+  Some (RecPatField _ (Some sub)) => rewritePat fo sub
+  Some (RecPatField _ None) => PVar label
+  None => PWild
+
+findRecField : String -> List RecPatField -> Option RecPatField
+findRecField _ [] = None
+findRecField label ((RecPatField l sub)::rest)
+  | l == label = Some (RecPatField l sub)
+  | otherwise = findRecField label rest
+
+rewriteRecPatField : List (String, List String) -> RecPatField -> RecPatField
+rewriteRecPatField fo (RecPatField l (Some sub)) = RecPatField l (Some (rewritePat fo sub))
+rewriteRecPatField _ (RecPatField l None) = RecPatField l None
+
+-- ── apply the rewrite to every pattern position the lowered Core IR carries ───
+-- Walks the whole program (groups + impls), rewriting every pattern and — for a
+-- CDecision — RECOMPILING its decision tree from the rewritten arms (the tree was
+-- built from the original PRec arms, which canonPat wildcarded; the rewritten PCon
+-- arms compile to a proper constructor switch with no needs-guard fall-through).
+rewriteProgramRecPats : List (String, List String) -> CProgram -> CProgram
+rewriteProgramRecPats fo (CProgram groups ctorArs ctorTypes implEntries) =
+  CProgram (map (rewriteBindRP fo) groups) ctorArs ctorTypes (map (rewriteImplRP fo) implEntries)
+
+rewriteBindRP : List (String, List String) -> CBind -> CBind
+rewriteBindRP fo (CBind n clauses) = CBind n (map (rewriteClauseRP fo) clauses)
+
+rewriteClauseRP : List (String, List String) -> CClause -> CClause
+rewriteClauseRP fo (CClause pats body) =
+  CClause (map (rewritePat fo) pats) (rewriteExprRP fo body)
+
+rewriteImplRP : List (String, List String) -> CImplEntry -> CImplEntry
+rewriteImplRP fo (CImplEntry n s (CImplTagged tag iface ps pats body)) =
+  CImplEntry n s (CImplTagged tag iface ps (map (rewritePat fo) pats) (rewriteExprRP fo body))
+rewriteImplRP fo (CImplEntry n s (CImplDefault pats body)) =
+  CImplEntry n s (CImplDefault (map (rewritePat fo) pats) (rewriteExprRP fo body))
+
+rewriteExprRP : List (String, List String) -> CExpr -> CExpr
+rewriteExprRP _ (CLit l) = CLit l
+rewriteExprRP _ (CVar x addr) = CVar x addr
+rewriteExprRP fo (CApp f x) = CApp (rewriteExprRP fo f) (rewriteExprRP fo x)
+rewriteExprRP fo (CLam pats body) = CLam (map (rewritePat fo) pats) (rewriteExprRP fo body)
+rewriteExprRP fo (CLet r pat e1 e2) =
+  CLet r (rewritePat fo pat) (rewriteExprRP fo e1) (rewriteExprRP fo e2)
+rewriteExprRP fo (CLetGroup binds body) =
+  CLetGroup (map (rewriteBindRP fo) binds) (rewriteExprRP fo body)
+rewriteExprRP fo (CMatch scrut arms) =
+  CMatch (rewriteExprRP fo scrut) (map (rewriteArmRP fo) arms)
+rewriteExprRP fo (CDecision scrut arms _) =
+  let arms2 = map (rewriteArmRP fo) arms
+  CDecision (rewriteExprRP fo scrut) arms2 (compileArmsC arms2)
+rewriteExprRP fo (CIf c t e) =
+  CIf (rewriteExprRP fo c) (rewriteExprRP fo t) (rewriteExprRP fo e)
+rewriteExprRP fo (CBinPrim op l r) = CBinPrim op (rewriteExprRP fo l) (rewriteExprRP fo r)
+rewriteExprRP fo (CUnOp op x) = CUnOp op (rewriteExprRP fo x)
+rewriteExprRP fo (CTuple es) = CTuple (map (rewriteExprRP fo) es)
+rewriteExprRP fo (CList es) = CList (map (rewriteExprRP fo) es)
+rewriteExprRP fo (CRecord name fields) = CRecord name (map (rewriteFieldRP fo) fields)
+rewriteExprRP fo (CFieldAccess ex f) = CFieldAccess (rewriteExprRP fo ex) f
+rewriteExprRP fo (CRecordUpdate base fields) =
+  CRecordUpdate (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
+rewriteExprRP fo (CVariantUpdate con base fields) =
+  CVariantUpdate con (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
+rewriteExprRP fo (CArray es) = CArray (map (rewriteExprRP fo) es)
+rewriteExprRP fo (CRangeList lo hi incl) = CRangeList (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
+rewriteExprRP fo (CRangeArray lo hi incl) = CRangeArray (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
+rewriteExprRP fo (CIndex a i) = CIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
+rewriteExprRP fo (CSlice a lo hi incl) =
+  CSlice (rewriteExprRP fo a) (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
+rewriteExprRP fo (CBlock stmts) = CBlock (map (rewriteStmtRP fo) stmts)
+rewriteExprRP _ (CMethod name r ir mr) = CMethod name r ir mr
+rewriteExprRP _ (CDict name rs) = CDict name rs
+
+rewriteArmRP : List (String, List String) -> CArm -> CArm
+rewriteArmRP fo (CArm pat guards body) =
+  CArm (rewritePat fo pat) (map (rewriteGuardRP fo) guards) (rewriteExprRP fo body)
+
+rewriteGuardRP : List (String, List String) -> CGuard -> CGuard
+rewriteGuardRP fo (CGBool e) = CGBool (rewriteExprRP fo e)
+rewriteGuardRP fo (CGBind p e) = CGBind (rewritePat fo p) (rewriteExprRP fo e)
+
+rewriteStmtRP : List (String, List String) -> CStmt -> CStmt
+rewriteStmtRP fo (CSExpr e) = CSExpr (rewriteExprRP fo e)
+rewriteStmtRP fo (CSLet r pat e) = CSLet r (rewritePat fo pat) (rewriteExprRP fo e)
+rewriteStmtRP fo (CSLetElse pat e alt) =
+  CSLetElse (rewritePat fo pat) (rewriteExprRP fo e) (rewriteExprRP fo alt)
+rewriteStmtRP fo (CSAssign x e) = CSAssign x (rewriteExprRP fo e)
+
+rewriteFieldRP : List (String, List String) -> CField -> CField
+rewriteFieldRP fo (CField k e) = CField k (rewriteExprRP fo e)
+
+-- recompile a CDecision's tree from rewritten arms (same call lowerMatch makes).
+compileArmsC : List CArm -> CTree
+compileArmsC arms = compileTree (map carmHasGuard arms) (cInitialRows arms 0)
+
+carmHasGuard : CArm -> Bool
+carmHasGuard (CArm pat gs _) = not (nullL gs) || patNeedsGuard pat
+
+cInitialRows : List CArm -> Int -> List (List Pat, Int)
+cInitialRows [] _ = []
+cInitialRows ((CArm pat _ _)::rest) i = ([canonPat pat], i) :: cInitialRows rest (i + 1)
+
 
 -- the top-level function-group half of lowerProgram, exposed for the multi-module
 -- driver (core_ir_eval.cevalModules), which lowers each module's groups separately

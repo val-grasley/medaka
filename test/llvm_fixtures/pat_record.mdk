@@ -1,0 +1,12 @@
+-- PRec lowering: a DRecord-style declared record matched by a record pattern that
+-- binds several fields — a PUN `{ a }` and an explicit `{ b = p }` form — reduced
+-- to a scalar.  The PRec→PCon rewrite (core_ir_lower.mdk) turns the record pattern
+-- into a positional constructor pattern over the declared field order so the
+-- existing PCon decision-tree / field-extraction machinery handles it.
+data P = P { a : Int, b : Int }
+
+get : P -> Int
+get pt = match pt
+  P { a, b = bv } => a * 10 + bv
+
+main = get (P { a = 3, b = 4 })

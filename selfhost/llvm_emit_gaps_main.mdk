@@ -24,7 +24,7 @@ import desugar.{desugar}
 import loader.{loadProgram}
 import typecheck.{elaborateDict, elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
 import eval.{funNamesOf}
-import core_ir_lower.{lowerProgram, returnsSelfTable, selfFnParamTable}
+import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable}
 import llvm_emit.{emitProgramGaps, installReturnsSelf, installSelfFnParams}
 import util.{joinNl, joinWith, listLen, concatMapList}
 
@@ -77,7 +77,7 @@ censusCore runtimeDecls coreDecls =
                   ++ constrainedSigNames coreDecls
   let _ = installReturnsSelf (returnsSelfTable coreDecls)
   let _ = installSelfFnParams (selfFnParamTable coreDecls)
-  emitProgramGaps (lowerProgram (elaborateDict runtimeDecls dictNames userNames coreDecls))
+  emitProgramGaps (lowerProgramEmit (elaborateDict runtimeDecls dictNames userNames coreDecls))
 
 -- (B) the whole self-hosted compiler through the multi-module typed path
 -- (elaborateModules, as the dispatch probes use); flatten core + every module
@@ -88,7 +88,7 @@ censusWhole runtimeDecls coreDecls modPairs =
   let allDecls = coreD ++ concatMapList snd modules
   let _ = installReturnsSelf (returnsSelfTable allDecls)
   let _ = installSelfFnParams (selfFnParamTable allDecls)
-  emitProgramGaps (lowerProgram allDecls)
+  emitProgramGaps (lowerProgramEmit allDecls)
 
 runCensus : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 runCensus runtimeDecls coreDecls modPairs =

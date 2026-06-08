@@ -16,7 +16,7 @@ import parser.{parse}
 import desugar.{desugar}
 import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
 import eval.{funNamesOf, dropShadowedExp}
-import core_ir_lower.{lowerProgram, returnsSelfTable, selfFnParamTable}
+import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable}
 import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams}
 
 main = match args ()
@@ -55,7 +55,7 @@ runEmit runtimeDecls preludeDecls userDecls =
   let dictNames = preludeReturnPosDictNames livePrelude combined ++ preludeArgPosDictNames livePrelude combined ++ constrainedSigNames userDecls
   let _ = installReturnsSelf (returnsSelfTable combined)
   let _ = installSelfFnParams (selfFnParamTable combined)
-  emitProgram (lowerProgram (elaborateDict runtimeDecls dictNames userNames combined))
+  emitProgram (lowerProgramEmit (elaborateDict runtimeDecls dictNames userNames combined))
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []
