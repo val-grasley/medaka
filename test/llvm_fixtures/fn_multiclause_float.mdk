@@ -1,0 +1,15 @@
+-- E1a: a MULTI-CLAUSE top-level function with a non-Int (Float) parameter,
+-- exercising the param-type threading + multi-clause signature inference.  The
+-- fn's signature is inferred (`Int -> Float -> Float`): param 0 is `Int` (a
+-- literal-pattern clause head), param 1 is `Float` (recovered from its body use
+-- `x + …`).  `implParamEnvTyped` types the synthetic scrutinee params from that
+-- inferred sig, and `fnRetTy` reports `Float` so `main` prints the result as a
+-- float (not the raw boxed word).  Clause discrimination is on the FIRST (Int)
+-- param — an Int-literal switch head the decision tree supports (a Bool/Float
+-- switch HEAD is the separate gap #14, out of E1a scope).  Arity 2 → the
+-- tuple-scrutinee path.
+scale : Int -> Float -> Float
+scale 0 x = x + 1.0
+scale n x = x + 2.0
+
+main = scale 0 10.5

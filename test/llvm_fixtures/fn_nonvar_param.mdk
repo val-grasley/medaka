@@ -1,0 +1,8 @@
+-- E1a: a SINGLE-clause top-level function with a NON-variable parameter pattern
+-- (a tuple `(a, b)`).  Confirms the fn half of gap #4 — `emitFn` now routes a
+-- non-`allPVar` single clause through the decision-tree path, where the tuple
+-- pattern binds `a`/`b` via `bindPattern` in the leaf, instead of panicking on
+-- the slice-2 plain-variable requirement.  Reduces to a scalar Int (7).
+fst2 (a, b) = a
+
+main = fst2 (7, 9)

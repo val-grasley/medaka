@@ -1341,6 +1341,28 @@ inferring method-level-dict default bodies on the modules path without disturbin
 fold into D3b-2/D4 (it is not on the LLVM fixture path, so it blocks nothing today, and D3a's
 `RNone → arg-tag` emitter fallback no longer panics on it).
 
+**2.4c-E — Emitter completeness (the E-series), the axis orthogonal to dispatch.** Dispatch
+(D0–D3b) is done; what still blocks emitting a real module is the emitter's inability to LOWER
+certain Core IR *shapes* the prelude/compiler use. Sized by `selfhost/EMITTER-GAPS.md` (D4.0
+inventory): core.mdk = 57 events / ~11 kinds, whole = 2248. Staged E1–E5 by leverage.
+- **E1a — multi-clause + patterned top-level fns. ✅ DONE (2026-06-07).** `emitFn` routed a
+  multi-clause `CBind` (and a single non-`allPVar` clause) to a single-clause fast path or
+  PANIC; now it routes them to `emitMultiClauseFn`, which calls the SHARED `emitClauseTree`
+  (factored out of the impl-method `emitGroupBody`) — one clause-coalescing + `compileTree`
+  decision-tree path for impl methods AND top-level fns. The synthetic `aK` scrutinee params are
+  typed from the fn's signature (`implParamEnvTyped`, the refinement over the impl path's
+  all-`LTInt` `implParamEnv`); to populate that signature, sig inference was extended to
+  multi-clause bindings (`inferMultiSig`: a param's type = the first type-revealing finding across
+  clauses; the return type = the first clause's body typed under its param env) — without it a
+  multi-clause fn fell to `FnSig [] LTInt`, losing both the param types and the result type
+  `fnRetTy` feeds `main`'s print selection. **Closes EMITTER-GAPS #1** (multi-clause: core 16→0,
+  whole 732→0) **and the fn half of #4** (non-variable parameter pattern, fn: core 4→0, whole
+  150→0 — the decision tree binds patterned params via `bindPattern`; the lambda half #5 is E2).
+  core.mdk gap total 57→44 (the multi-clause wall no longer masks the downstream value-shape gaps
+  in the now-reachable bodies). Fixtures `fn_multiclause_{ctor,list,float}` + `fn_nonvar_param`;
+  all four diff gates byte-identical (133/25/20/20). Next: **E1b** (#7 top-level value / `Ref`
+  globals).
+
 ---
 
 ### One-paragraph summary

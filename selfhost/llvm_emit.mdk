@@ -167,7 +167,7 @@
 import ast.{Lit(..), Pat(..), Addr(..), Route(..)}
 import core_ir.{CExpr(..), CField(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..), CImplEntry(..), CImplBody(..)}
 import core_ir_lower.{compileTree, canonPat}
-import util.{reverseL, joinNl, lookupAssoc}
+import util.{reverseL, joinNl, lookupAssoc, listLen}
 
 -- ── D4 emitter-completeness inventory (record-and-skip) ──────────────────────
 -- A MEASUREMENT scaffold for STAGE D4 (selfhost/EMITTER-GAPS.md).  OFF by default:
@@ -1622,7 +1622,16 @@ emitGroupBody e fname 0 clauses = match clauses
   [([], body)] => emitFnBody e [] fname body
   _ => gapU "nullary impl group with more than one clause (slice 6)"
 emitGroupBody e _ arity clauses =
-  let env = implParamEnv arity 0
+  emitClauseTree e (implParamEnv arity 0) arity clauses
+
+-- the shared decision-tree body for a coalesced multi-clause group (impl methods
+-- AND top-level fns, slice 2/E1a).  `env` binds the synthetic `aK` scrutinee
+-- params to their `%argK` operands at the caller's chosen LTy (impl: all LTInt;
+-- top-level fn: the inferred signature param types).  arity 1 scrutinises the
+-- lone param directly; arity ≥2 wraps the params in a synthetic tuple so the
+-- multi-param match reduces to one scrutinee, reusing emitDecision verbatim.
+emitClauseTree : Emit -> List (String, (String, LTy)) -> Int -> List (List Pat, CExpr) -> <Mut> Unit
+emitClauseTree e env arity clauses =
   let scrut = if arity == 1 then CVar "a0" AGlobal else CTuple (implScrutVars arity 0)
   let arms = map (clauseArm arity) clauses
   let tree = compileTree (map (_ => False) clauses) (implRows arity clauses 0)
@@ -2409,10 +2418,49 @@ emitFns e (b::rest) =
 emitFn : Emit -> CBind -> <Mut> Unit
 emitFn e (CBind name [CClause pats body]) =
   if allPVar pats then emitFnClause e name pats body
-  else gapU "non-variable parameter pattern in top-level function clause (slice 2: plain-variable params only)"
-emitFn _ (CBind _ (_::_)) =
-  gapU "multi-clause top-level function (slice 2: single variable-pattern clause only)"
+  else emitMultiClauseFn e name [(pats, body)]
+emitFn e (CBind name (c::rest)) = emitMultiClauseFn e name (clausePairs (c::rest))
 emitFn _ (CBind _ []) = gapU "top-level function with no clauses"
+
+-- E1a — multi-clause / patterned top-level fns.  Route ordinary fn-binds whose
+-- clauses don't all reduce to plain-variable params through the SAME
+-- clause-coalescing + decision-tree lowering the impl methods use
+-- (`emitClauseTree`).  This closes EMITTER-GAPS #1 (multi-clause top-level fn)
+-- and the fn half of #4 (non-variable parameter pattern), since the decision
+-- tree binds patterned params via `bindPattern` in each leaf.  The synthetic
+-- `aK` scrutinee params are typed from the fn's inferred signature (sigTable /
+-- FnSig) so body arithmetic/printing selects the right instruction; absent a
+-- sig, params default to Int (the impl-path behaviour).
+emitMultiClauseFn : Emit -> String -> List (List Pat, CExpr) -> <Mut> Unit
+emitMultiClauseFn e name clauses =
+  let arity = clauseArity clauses
+  let ptys = match lookupAssoc name (sigTable e)
+    Some (FnSig ts _) => ts
+    None => []
+  let env = implParamEnvTyped arity ptys 0
+  let _ = emit e ("define i64 @mdk_" ++ name ++ "(" ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "entry:"
+  let _ = emitClauseTree e env arity clauses
+  let _ = emit e "}"
+  emit e ""
+
+-- the (List Pat, CExpr) clause pairs of a fn-bind, in source order.
+clausePairs : List CClause -> List (List Pat, CExpr)
+clausePairs [] = []
+clausePairs ((CClause pats body)::rest) = (pats, body) :: clausePairs rest
+
+-- the shared param count of a fn's clauses (first clause; all clauses agree).
+clauseArity : List (List Pat, CExpr) -> Int
+clauseArity ((pats, _)::_) = listLen pats
+clauseArity [] = 0
+
+-- like implParamEnv, but types each synthetic `aK` scrutinee param from the fn's
+-- inferred signature param types (FnSig ts) instead of defaulting to LTInt.
+-- Params past the signature length (or with no sig) fall back to LTInt.
+implParamEnvTyped : Int -> List LTy -> Int -> List (String, (String, LTy))
+implParamEnvTyped n _ i | i >= n = []
+implParamEnvTyped n (ty::tys) i = ("a" ++ intToString i, ("%arg" ++ intToString i, ty)) :: implParamEnvTyped n tys (i + 1)
+implParamEnvTyped n [] i = ("a" ++ intToString i, ("%arg" ++ intToString i, LTInt)) :: implParamEnvTyped n [] (i + 1)
 
 -- emit one variable-pattern function clause (the slice-2 path).
 emitFnClause : Emit -> String -> List Pat -> CExpr -> <Mut> Unit
@@ -2650,7 +2698,70 @@ inferOneSig sigs (CBind _ [CClause pats body]) =
   let ptys = inferParamTys sigs pats body
   let env = zipParamEnv pats ptys
   FnSig ptys (typeOf sigs env body)
+inferOneSig sigs (CBind _ (c::rest)) = inferMultiSig sigs (c::rest)
 inferOneSig _ _ = FnSig [] LTInt
+
+-- E1a: signature inference for a MULTI-CLAUSE binding.  A param's type is the
+-- first type-revealing finding scanning clauses left-to-right (a literal pattern
+-- names it directly; a plain-var pattern is inferred from that clause's body use
+-- via `paramUseTy`; a constructor/tuple/wild pattern is an i64 word, left to
+-- default Int).  The return type is the first clause's body typed under its
+-- param env.  Without this, a multi-clause fn fell to `FnSig [] LTInt`, so its
+-- non-Int params (`implParamEnvTyped`) and non-Int result (`fnRetTy` → print
+-- selection) were both lost.
+inferMultiSig : List (String, FnSig) -> List CClause -> FnSig
+inferMultiSig sigs clauses =
+  let arity = clauseArityC clauses
+  let ptys = inferMultiParamTys sigs clauses arity 0
+  FnSig ptys (inferMultiRetTy sigs clauses ptys)
+
+clauseArityC : List CClause -> Int
+clauseArityC ((CClause pats _)::_) = listLen pats
+clauseArityC [] = 0
+
+inferMultiParamTys : List (String, FnSig) -> List CClause -> Int -> Int -> List LTy
+inferMultiParamTys sigs clauses arity i
+  | i >= arity = []
+  | otherwise = paramTyAcross sigs clauses i :: inferMultiParamTys sigs clauses arity (i + 1)
+
+-- the i-th param's type: the first informative finding across clauses, else Int.
+paramTyAcross : List (String, FnSig) -> List CClause -> Int -> LTy
+paramTyAcross sigs clauses i = match firstInformative sigs clauses i
+  Some t => t
+  None => LTInt
+
+firstInformative : List (String, FnSig) -> List CClause -> Int -> Option LTy
+firstInformative _ [] _ = None
+firstInformative sigs ((CClause pats body)::rest) i =
+  firstSome (clausePatTy sigs pats body i) (firstInformative sigs rest i)
+
+-- one clause's contribution to the i-th param type: a plain var is inferred from
+-- its body use; a literal pattern carries its literal type; a ctor/tuple/wild
+-- pattern is uninformative (an i64 word, defaulted to Int by the caller).
+clausePatTy : List (String, FnSig) -> List Pat -> CExpr -> Int -> Option LTy
+clausePatTy sigs pats body i = match nthPat pats i
+  Some (PVar x) => paramUseTy sigs [] x body
+  Some (PLit l) => Some (litTy l)
+  _ => None
+
+litTy : Lit -> LTy
+litTy (LInt _) = LTInt
+litTy (LFloat _) = LTFloat
+litTy (LBool _) = LTBool
+litTy (LString _) = LTStr
+litTy (LChar _) = LTChar
+litTy LUnit = LTInt
+
+nthPat : List Pat -> Int -> Option Pat
+nthPat (p::_) 0 = Some p
+nthPat (_::rest) i = nthPat rest (i - 1)
+nthPat [] _ = None
+
+-- the multi-clause return type: the first clause's body typed under that clause's
+-- (var-pattern → inferred-param-type) env.
+inferMultiRetTy : List (String, FnSig) -> List CClause -> List LTy -> LTy
+inferMultiRetTy sigs ((CClause pats body)::_) ptys = typeOf sigs (zipParamEnv pats ptys) body
+inferMultiRetTy _ [] _ = LTInt
 
 inferParamTys : List (String, FnSig) -> List Pat -> CExpr -> List LTy
 inferParamTys _ [] _ = []

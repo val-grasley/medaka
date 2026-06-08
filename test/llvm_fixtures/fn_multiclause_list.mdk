@@ -1,0 +1,10 @@
+-- E1a: a MULTI-CLAUSE top-level function over built-in list heads.  Clause one
+-- matches the empty list `[]` (a `Nil` cell), clause two the cons head `(x::xs)`
+-- (a 2-field `Cons` cell) — a cons PATTERN, which the decision tree already
+-- lowers (only `::` as a CBinPrim EXPRESSION is the E2 gap).  Exercises gap #1:
+-- arity 1, an HCons/HNil constructor switch, pattern-bound head/tail vars, and a
+-- non-tail recursive call.  Reduces to a scalar Int.
+sumList [] = 0
+sumList (x::xs) = x + sumList xs
+
+main = sumList [10, 20, 30]
