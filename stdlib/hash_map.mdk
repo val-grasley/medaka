@@ -245,7 +245,7 @@ values m = [v | (_, v) <- entries m]
 
 -- ── Instances ───────────────────────────────────────────────────────────
 
-allEntriesIn : (Eq k, Eq v) => List (k, v) -> HashMap k v -> Bool
+allEntriesIn : (Eq k, Eq v, Hashable k) => List (k, v) -> HashMap k v -> Bool
 allEntriesIn [] _ = True
 allEntriesIn ((k, v)::rest) m
   | get k m == Some v = allEntriesIn rest m
@@ -255,7 +255,7 @@ allEntriesIn ((k, v)::rest) m
 
    > eq (fromList [(1, 10), (2, 20)]) (fromList [(2, 20), (1, 10)])
    True -}
-export default impl Eq (HashMap k v) requires Eq k, Eq v where
+export default impl Eq (HashMap k v) requires Eq k, Eq v, Hashable k where
   eq a b = if size a != size b then False else allEntriesIn (entries a) b
 
 {- | Rendered as `fromList [(k, v), …]` in hash order (so the exact text is

@@ -187,7 +187,7 @@ export default impl Foldable HashSet where
   isEmpty s = size s == 0
   length s = size s
 
-allIn : Eq a => List a -> HashSet a -> Bool
+allIn : (Eq a, Hashable a) => List a -> HashSet a -> Bool
 allIn [] _ = True
 allIn (x::rest) s
   | member x s = allIn rest s
@@ -197,7 +197,7 @@ allIn (x::rest) s
 
    > eq (fromList [1, 2, 3]) (fromList [3, 2, 1, 2])
    True -}
-export default impl Eq (HashSet a) requires Eq a where
+export default impl Eq (HashSet a) requires Eq a, Hashable a where
   eq a b = if size a != size b then False else allIn (elemList a) b
 
 {- | Rendered `fromList [a, …]` in hash order (layout-dependent; use `eq` for
