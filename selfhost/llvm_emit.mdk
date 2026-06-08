@@ -188,7 +188,7 @@ import util.{reverseL, joinNl, lookupAssoc}
 -- `LTUnit` (native extern catalog slice 3) is the Unit return type of IO-output
 -- externs (putStr/putStrLn/ePutStr/ePutStrLn).  Its operand word is never
 -- inspected — only auto-printed as "()" by emitPrint.
-data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr | LTUnit
+data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr | LTUnit | LTChar
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
 -- — prepend is O(1); reverseL'd once at the end restores program order), the
@@ -465,6 +465,8 @@ emitVar e env x =
   else if x == "e" then (boxFloat e "2.718281828459045", LTFloat)
   else if x == "intMaxBound" then ("9223372036854775807", LTInt)
   else if x == "intMinBound" then ("-9223372036854775807", LTInt)
+  else if x == "charMinBound" then ("1", LTChar)
+  else if x == "charMaxBound" then ("2228223", LTChar)
   else if isCtor e x then emitCtorAlloc e x []
   else if isKnownFn e x then emitEtaClosure e x
   else lookupVar env x
@@ -487,6 +489,9 @@ emitLit e (LString s) =
   let p = freshReg e
   let _ = emit e ("  " ++ p ++ " = call i64 @mdk_str_lit(ptr @" ++ gid ++ ", i64 " ++ intToString n ++ ")")
   (p, LTStr)
+emitLit _ (LChar c) =
+  let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
+  (intToString (cp * 2 + 1), LTChar)
 emitLit _ _ = panic "llvm spike: only Int/Float/Bool/String literals supported in slice 1"
 
 lookupVar : List (String, (String, LTy)) -> String -> (String, LTy)
@@ -715,6 +720,25 @@ emitArrLeafExtern e env "arrayFill" args = match emitArgs e env args
   _ => panic "llvm spike: arrayFill takes two arguments (slice 7)"
 emitArrLeafExtern _ _ name _ = panic ("llvm spike: unsupported array leaf extern " ++ name)
 
+-- char scalar externs (native extern catalog slice 8).
+-- charCode is INTRINSIC: Char and Int share the same tagged word encoding, so
+-- charCode is a pure re-type — emit the operand as-is and return LTInt.
+-- charToStr delegates to mdk_char_to_str (runtime/medaka_rt.c).
+isCharExtern : String -> Bool
+isCharExtern name = containsStr name ["charCode", "charToStr"]
+
+emitCharExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitCharExtern e env "charCode" args = match emitArgs e env args
+  [a] => (a, LTInt)
+  _ => panic "llvm spike: charCode takes one argument (slice 8)"
+emitCharExtern e env "charToStr" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_to_str(i64 " ++ a ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: charToStr takes one argument (slice 8)"
+emitCharExtern _ _ name _ = panic ("llvm spike: unsupported char extern " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -893,6 +917,7 @@ emitApp e env app =
       else if isAbortExtern fname && hasArgs args then emitAbortExtern e env fname args
       else if isArrIntrinsic fname && hasArgs args then emitArrIntrinsic e env fname args
       else if isArrLeafExtern fname && hasArgs args then emitArrLeafExtern e env fname args
+      else if isCharExtern fname && hasArgs args then emitCharExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -2106,6 +2131,7 @@ typeOf _ _ (CLit (LInt _)) = LTInt
 typeOf _ _ (CLit (LFloat _)) = LTFloat
 typeOf _ _ (CLit (LBool _)) = LTBool
 typeOf _ _ (CLit (LString _)) = LTStr
+typeOf _ _ (CLit (LChar _)) = LTChar
 typeOf _ env (CVar x _) = match lookupAssoc x env
   Some t => t
   None => LTInt
@@ -2800,6 +2826,8 @@ emitPreamble e =
   let _ = emit e "declare void @mdk_array_blit(i64, i64, i64, i64, i64)"
   let _ = emit e "declare void @mdk_array_fill(i64, i64)"
   let _ = emit e "declare i64 @mdk_array_from_list(i64)"
+  let _ = emit e "declare void @mdk_print_char(i64)"
+  let _ = emit e "declare i64 @mdk_char_to_str(i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))
@@ -2824,6 +2852,8 @@ emitPrint e v LTStr =
   emit e ("  call void @mdk_print_str(i64 " ++ v ++ ")")
 emitPrint e _ LTUnit =
   emit e "  call void @mdk_print_unit()"
+emitPrint e v LTChar =
+  emit e ("  call void @mdk_print_char(i64 " ++ v ++ ")")
 emitPrint _ _ LTCon =
   panic "llvm spike: cannot print an ADT value (slice 3: `main` must reduce to a scalar Int/Bool/Float)"
 emitPrint _ _ LTClosure =

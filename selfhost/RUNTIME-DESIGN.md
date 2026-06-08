@@ -143,12 +143,13 @@ non-exhaustive match the checker couldn't rule out) — lower it to the same tra
 **Strings & `stringLength` — DECIDED 2026-06-07 (§7 decision 2).** Medaka strings are
 stored **UTF-8 with a cached codepoint count** (boxed cell `[ header | byte_len |
 cp_count | bytes… | NUL ]`). So `stringLength` is **`INTRINSIC`** (read the cached
-`cp_count` header word — the `(rep)` row below resolves this way). `charCode` is
-INTRINSIC iff `Char` is a 32-bit codepoint — a *sibling* Char-rep decision the UTF-8
-string choice is consistent with (a decoded `Char` is a codepoint) but does not by
-itself lock; that row stays `(rep)`. Native-extern-catalog slice 1 has proven the
+`cp_count` header word — the `(rep)` row below resolves this way). **`Char` rep —
+DECIDED 2026-06-07 (slice 8):** `Char` = immediate codepoint word `(cp << 1) | 1`
+(same low-bit-1 tagged encoding as `Int`). So `charCode` is **INTRINSIC** (identity
+re-type from `LTChar` to `LTInt` — the word already carries the tagged codepoint, no
+instruction emitted). Native-extern-catalog slice 1 has proven the
 literal/print/`intToString` path on this layout (`runtime/medaka_rt.c`,
-`llvm_emit.mdk`).
+`llvm_emit.mdk`); slice 8 proves the Char path.
 
 ## 5. Per-extern disposition (all 71)
 
@@ -163,7 +164,7 @@ literal/print/`intToString` path on this layout (`runtime/medaka_rt.c`,
 | `charMaxBound` | `Char` | INTRINSIC | constant |
 | `intToFloat` | `Int -> Float` | INTRINSIC | `sitofp` |
 | `floatToInt` | `Float -> Int` | INTRINSIC | `fptosi` (truncates toward zero, matches OCaml `int_of_float`) |
-| `charCode` | `Char -> Int` | INTRINSIC `(rep)` | `zext`/identity iff `Char` is a 32-bit codepoint |
+| `charCode` | `Char -> Int` | INTRINSIC | identity: same tagged word, re-typed `LTChar → LTInt` (slice 8) |
 
 ### Array slots — `INTRINSIC`
 | `arrayLength` | `Array a -> Int` | INTRINSIC | header load |

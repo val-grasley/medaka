@@ -1021,6 +1021,18 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   proves store visibility), `arr_set_unit` (→`()`).  One typed fixture: `arr_get`
   (→20).  **75/75 plain + 12/12 typed byte-identical**; core_ir/eval gates unaffected.
 
+**2.4a-12 — Native extern catalog slice 8 (CHAR REP LOCK + char scalars).**
+  First Tier B slice. Locks `Char` = immediate codepoint word `(cp << 1) | 1` (same
+  low-bit-1 encoding as `Int`). `LChar` literal: extract codepoint via
+  `charCode (arrayGetUnsafe 0 (stringToChars c))`, emit `cp * 2 + 1`.  `charCode` is
+  INTRINSIC — identity re-type `LTChar → LTInt`, no instruction.  `charToStr` → new
+  C helper `mdk_char_to_str`: `mdk_utf8_encode` (static helper, ≤4 bytes) + `mdk_str_lit`.
+  `charMinBound = "1"` (cp 0 → `(0<<1)|1`), `charMaxBound = "2228223"` (cp 0x10FFFF →
+  `(0x10FFFF<<1)|1`).  `LTChar` auto-print → `@mdk_print_char` (UTF-8 bytes + newline).
+  `isCharExtern`/`emitCharExtern` wired into `emitApp`'s `CVar` arm alongside the other
+  extern families.  **86/86 plain + 14/14 typed byte-identical**; unicode round-trip
+  (`☕` = U+2615) verified; core_ir/eval gates unaffected.
+
 **Spike status after slice 10 — what's next.** The de-risking spike has now lowered
 the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
 ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in
@@ -1053,7 +1065,11 @@ backend (Stage 2) — near-term sequence"):
    2026-06-07** (`arrayMake`/`arrayCopy`/`arrayBlit`/`arrayFill`/`arrayFromList` LEAF:
    C helpers in `mdk_array_*`; array cell = raw-length header, no tag; `arrayFromList`
    walks built-in List by low-bit; 80/80 plain + 13/13 typed byte-identical; Tier A
-   complete) — and close the spike's out-of-scope gaps (arg-tag
+   complete), **slice 8 DONE 2026-06-07** (`Char` rep locked as immediate codepoint
+   word `(cp << 1) | 1`; `charCode` INTRINSIC identity; `charToStr` LEAF via
+   `mdk_char_to_str`; `LChar` literal → tagged immediate; `LTChar` auto-print via
+   `mdk_print_char`; 86/86 plain + 14/14 typed byte-identical; unicode round-trip
+   verified; Tier B slice 8 unblocks slices 9 + 14) — and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
    (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);

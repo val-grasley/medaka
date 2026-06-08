@@ -388,8 +388,9 @@ arg-tag dispatch → arrays/ranges → lists), 43/43 plain + 6/6 typed gate ✅.
    `intToString` (`selfhost/llvm_emit.mdk`), and 5 plain + 2 typed string fixtures gate
    byte-identical (STAGE2-DESIGN §2.4a-7). `intToString` is the first extern returning a
    heap Medaka value (proves the §2a GC-alloc contract). **Catalog remainder** —
-   `charToStr`/`stringConcat`/`putStr`/file-IO/unicode/RNG, the `Char` rep (gates
-   `charCode`) — and the spike's out-of-scope gaps
+   `charToStr`/`stringConcat`/`putStr`/file-IO/unicode/RNG — `charCode`/`charToStr`/
+   `charMinBound`/`charMaxBound` + `LChar` literals + `LTChar` auto-print are now **DONE
+   (slice 8, 2026-06-07)** — and the spike's out-of-scope gaps
    (arg-tag dispatch on non-ADT/Int args, nested-requires dicts) remain. ~~the **dense i32
    ctor-ordinal** tag emission~~ **DONE (2026-06-07)** — the spike now stamps the
    ratified per-type ctor ordinal (a composite `typeId<<32 | ordinal`: the low half
@@ -434,8 +435,8 @@ Two structural facts set the slice order (both verified 2026-06-07): a C extern 
 **read** a built-in `List` tag-free (Nil = odd immediate, Cons = even pointer) but
 **cannot construct** an ADT cell — `Cons`/`Nil`/`Some`/`Ok` tags are *program-
 dependent* (`cellTag` keys off the program's type count), so every ADT-**returning**
-extern is gated behind the reserved-tag precursor (slice 10); and `Char` has no
-locked rep yet, gating the char/unicode slices behind slice 8.
+extern is gated behind the reserved-tag precursor (slice 10); and `Char`'s rep is now
+locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
 
 **Tier A — mechanical, no precursor (Sonnet-ideal):**
 
@@ -447,17 +448,10 @@ locked rep yet, gating the char/unicode slices behind slice 8.
 | ✅ 5 — string leaf (non-ADT) | `stringLength` `stringConcat` | INTRINSIC + LEAF | **DONE 2026-06-07.** `stringLength` loads `cp_count` (offset 16) and tags it (INTRINSIC: inttoptr + GEP + load); `stringConcat` walks a built-in `List String` by low-bit (Nil = odd immediate, Cons = even ptr), sums `byte_len`s, one `mdk_alloc` + blit, boxed via `mdk_str_lit`. 71/71 plain + 11/11 typed fixtures byte-identical. |
 | ✅ 6 — array intrinsics | `arrayLength` `arrayGetUnsafe` `arraySetUnsafe` | INTRINSIC | **DONE 2026-06-07.** pure-inline: no C helper. `arrayLength` = `loadTag` + `tagInt`; `arrayGetUnsafe` = `untagInt` + `loadFieldDyn`; `arraySetUnsafe` = `untagInt` + `storeFieldDyn` (new helper mirroring `loadFieldDyn` with a store). All three intercepted via `isArrIntrinsic`/`emitArrIntrinsic` in `emitApp`'s `CVar` arm. 75/75 plain + 12/12 typed fixtures byte-identical; mutate-then-read fixture proves store visibility. |
 | ✅ 7 — array leaf | `arrayMake` `arrayCopy` `arrayBlit` `arrayFill` `arrayFromList` | LEAF | **DONE 2026-06-07.** array cells carry no program-specific tag (header = raw length), so construction is tag-free; `arrayFromList` reads a `List` structurally. `arrayBlit`/`arrayFill` are `<Mut>`. 80/80 plain + 13/13 typed fixtures byte-identical. **Tier A complete.** |
+| ✅ 8 — Char rep + char scalars | `charCode` `charToStr` `charMinBound` `charMaxBound` | INTRINSIC + LEAF | **DONE 2026-06-07.** `Char` = immediate codepoint word `(cp << 1) | 1` (same encoding as `Int`). `LChar` lit emit: `charCode(arrayGetUnsafe 0 (stringToChars c)) * 2 + 1`. `charCode` is pure identity (re-type `LTChar → LTInt`, no instruction). `charToStr` → `mdk_char_to_str` (UTF-8-encode codepoint via `mdk_utf8_encode`, box via `mdk_str_lit`). `charMinBound = "1"`, `charMaxBound = "2228223"`. `LTChar` auto-print via `@mdk_print_char`. 86/86 plain + 14/14 typed fixtures byte-identical; unicode round-trip (`☕` = U+2615) verified. **Tier B slice 8 complete; unblocks slices 9 + 14.** |
 
 **Tier B — gated behind the Char-rep lock:**
 
-- **Slice 8 — lock `Char` rep + char scalars.** *Decision pre-made for the agent:*
-  `Char` = an **immediate codepoint word** (low-bit-1, identical encoding to `Int`),
-  so `charCode` is **INTRINSIC** (identity — the word already *is* the tagged
-  codepoint). Implement: `LChar` literal emit (codepoint → immediate), `charCode`
-  (no-op pass-through), `charToStr` (UTF-8-encode the codepoint in C → `mdk_str_lit`,
-  reusing the `utf8Bytes` logic), `charMinBound`/`charMaxBound` constants. Resolves
-  the §5 `charCode (rep)` row to INTRINSIC and RUNTIME-DESIGN §4's sibling decision.
-  *Sonnet: good (decision is pre-baked above).*
 - **Slice 9 — string↔char + codepoint slicing** (dep: 8, 6/7). `stringToChars`
   (→ `Array Char`: walk UTF-8, emit one immediate codepoint per cell),
   `stringFromChars` (`Array Char` → UTF-8 String), `stringSlice` (codepoint `lo`/`hi`

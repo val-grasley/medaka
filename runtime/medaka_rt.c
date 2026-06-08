@@ -231,3 +231,27 @@ long long mdk_array_from_list(long long list) {
     cell[++i] = ((const long long *)w)[1];
   return (long long)cell;
 }
+
+/* Char scalar externs (native extern catalog slice 8).
+ * Char = immediate codepoint word: word = (codepoint << 1) | 1 (same tag as Int).
+ * charCode is INTRINSIC (identity re-type) — no C helper needed.
+ * mdk_print_char: auto-print a Char main value (UTF-8 bytes + newline).
+ * mdk_char_to_str: charToStr — encode codepoint to a boxed String cell. */
+static int mdk_utf8_encode(long long cp, char *out) {
+  if (cp < 0x80) { out[0]=(char)cp; return 1; }
+  if (cp < 0x800) {
+    out[0]=(char)(0xC0|(cp>>6)); out[1]=(char)(0x80|(cp&0x3F)); return 2; }
+  if (cp < 0x10000) {
+    out[0]=(char)(0xE0|(cp>>12)); out[1]=(char)(0x80|((cp>>6)&0x3F));
+    out[2]=(char)(0x80|(cp&0x3F)); return 3; }
+  out[0]=(char)(0xF0|(cp>>18)); out[1]=(char)(0x80|((cp>>12)&0x3F));
+  out[2]=(char)(0x80|((cp>>6)&0x3F)); out[3]=(char)(0x80|(cp&0x3F)); return 4;
+}
+void mdk_print_char(long long tagged) {
+  char buf[4]; int n = mdk_utf8_encode(tagged >> 1, buf);
+  fwrite(buf, 1, (size_t)n, stdout); putchar('\n');
+}
+long long mdk_char_to_str(long long tagged) {
+  char buf[4]; int n = mdk_utf8_encode(tagged >> 1, buf);
+  return mdk_str_lit(buf, n);
+}
