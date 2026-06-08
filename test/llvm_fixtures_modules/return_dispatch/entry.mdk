@@ -9,8 +9,10 @@
 --
 -- NOTE: exported interface METHODS do not yet resolve cross-module through the
 -- selfhost typed pipeline, so the interface/impls stay in the entry; the DATA TYPE
--- is what crosses.  The nested `match` is lifted to a top-level binding because the
--- selfhost parser rejects a `match` in argument position.
+-- is what crosses.  The nested `match` is lifted to a top-level binding (`flagVal`)
+-- because `match` in argument position (e.g. `f (match x …)`) is ALSO rejected by
+-- the OCaml reference parser — the lexer suppresses INDENT/DEDENT inside `(…)`, so
+-- the `MATCH expr_or INDENT arms DEDENT` rule can never fire.  Not a selfhost gap.
 import flag.{Flag(..)}
 
 interface Default a where
