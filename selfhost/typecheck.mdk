@@ -389,6 +389,31 @@ argMeasureEnabled = Ref False
 argDispatchIdxRef : Ref (List (String, Int))
 argDispatchIdxRef = Ref []
 
+-- ── D3a arg-position dispatch STAMPING (Native backend, the emit path) ───────
+-- The action analog of the D0.5 measurement: instead of classifying each
+-- ARGUMENT-position interface-method occurrence, STAMP a static `RKey <head>` for
+-- every one whose discriminating-argument type resolves to a concrete head (the
+-- 903 concrete sites = 25 primitive + 878 ADT).  Type-variable occurrences (the
+-- 110 D3b sites) stay RNone → the emitter falls back to runtime arg-tag dispatch.
+-- Entirely behind argStampEnabled (OFF by default; only the LLVM emit driver turns
+-- it ON), so the `=== TYPES ===` / Core-IR golden + ceval-oracle paths stay
+-- byte-identical: with it OFF, prePassDictArg leaves arg-position uses as bare
+-- EVar (no extra EMethodAt nodes) and inferMethodAt never reaches the stamp arm.
+argStampEnabled : Ref Bool
+argStampEnabled = Ref False
+
+-- enable arg-position stamping for the current elaboration (the emit path flips
+-- this before elaborateDict; the golden/oracle drivers leave it off).
+export
+enableArgStamp : Unit -> <Mut> Unit
+enableArgStamp _ = set_ref argStampEnabled True
+
+-- the route refs awaiting an arg-position stamp + their discriminating-argument
+-- mono (captured during inference, resolved by resolveArgStamps while the tyvar
+-- cells are still bound).  Reset per pass by resetState, like pendingArgSites.
+pendingArgStamps : Ref (List (Ref Route, Mono))
+pendingArgStamps = Ref []
+
 -- per-module captures (reset by resetState, like pendingSites): one entry per
 -- arg-position occurrence inferred this module — (method, discriminating-arg mono,
 -- enclosing fn).  Classified (mono normalized while tyvar cells still bound) by
@@ -462,6 +487,27 @@ nthArgMono 0 m = match normalize m
 nthArgMono n m = match normalize m
   TFun _ _ b => nthArgMono (n - 1) b
   _ => None
+
+-- D3a: queue an arg-position occurrence's route ref for stamping, keyed on the
+-- inferred type of its discriminating argument (the dispatch-position arg mono).
+-- The cell is read later (resolveArgStamps), once inference has solved it.
+recordArgStamp : Ref Route -> Int -> Mono -> <Mut> Unit
+recordArgStamp tagRef idx mono = match nthArgMono idx mono
+  Some am => set_ref pendingArgStamps ((tagRef, am) :: pendingArgStamps.value)
+  None => ()
+
+-- D3a: stamp each queued arg-position route from its now-resolved discriminating
+-- arg mono.  A concrete head (Int/String/Float/… or any ADT tycon, via
+-- headTyconMono) → a static `RKey tag []` (empty reqs — the inventory confirms 0
+-- nesting for arg-position dispatch); a still-unsolved type variable → left RNone
+-- (a D3b dict-passing site; the emitter arg-tag-dispatches it).
+resolveArgStamps : List (Ref Route, Mono) -> <Mut> Unit
+resolveArgStamps [] = ()
+resolveArgStamps ((tagRef, am) :: rest) =
+  let _ = match headTyconMono am
+            Some tag => set_ref tagRef (RKey tag [])
+            None => ()
+  resolveArgStamps rest
 
 -- the measured path for inferVar: a dispatch method gets its arg-site recorded;
 -- everything else instantiates normally.
@@ -546,6 +592,7 @@ resetState _ =
   let _ = set_ref recordsRef []
   let _ = set_ref pendingSites []
   let _ = set_ref pendingArgSites []
+  let _ = set_ref pendingArgStamps []
   let _ = set_ref activeDictVars []
   let _ = set_ref funConstraintsRef []
   let _ = set_ref pendingDictApps []
@@ -1178,16 +1225,29 @@ inferSlice env arr lo hi =
   let _ = unify (infer env hi) (TCon "Int")
   infer env arr
 
--- a return-position method occurrence: type it like the method, but record the
--- (routeRef, result mono) so resolveSites can later stamp the route (RKey concrete
--- impl tag, or RDict the enclosing constrained fn's dict param)
+-- a method occurrence.  Return-position: record (routeRef, result mono) so
+-- resolveSites can stamp RKey/RDict.  D3a arg-position (argStampEnabled + name in
+-- argDispatchIdxRef): the dispatch is decided by the DISCRIMINATING-ARGUMENT type,
+-- not the result, so queue recordArgStamp on the arg-position mono instead — it is
+-- NOT a pendingSites/methodSiteFns return-position site.
 inferMethodAt : TcEnv -> String -> Ref Route -> Ref (List Route) -> Ref (List Route) -> <Mut> Mono
 inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
   None => panic ("unbound method: " ++ name)
   Some s =>
     let inst = instantiateTracked s
     let _ = recordMethodDicts name methodRef (snd inst)
-    recordSite name tagRef implRef (fst inst)
+    match argDispatchOf name
+      Some idx =>
+        let _ = recordArgStamp tagRef idx (fst inst)
+        fst inst
+      None => recordSite name tagRef implRef (fst inst)
+
+-- the dispatch-arg index of an arg-position method, but only when stamping is
+-- enabled (the emit path) — off, every EMethodAt is a return-position site.
+argDispatchOf : String -> <Mut> Option Int
+argDispatchOf name
+  | argStampEnabled.value = lookupAssocS name argDispatchIdxRef.value
+  | otherwise = None
 
 -- Phase 69.x-e: if [name] is a method with method-level constraints (foldMap's
 -- `Monoid m`), map each constraint's scheme id through this occurrence's
@@ -1796,12 +1856,15 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let _ = set_ref dictEligibleRef eligibleNames
   let _ = set_ref implInferEnabled True
   let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
-  let prog2 = prePassDict (returnPosMethodNames prog ++ methodConstraintNames prog) allNames prog
+  let _ = if argStampEnabled.value then set_ref argDispatchIdxRef (argDispatchIndices prog) else ()
+  let argNames = if argStampEnabled.value then map fst argDispatchIdxRef.value else []
+  let prog2 = prePassDictArg (returnPosMethodNames prog ++ methodConstraintNames prog) allNames argNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
   let _ = resolveSites (buildImplTable prog2) (returnPosMethodNames prog2) pendingSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps pendingDictApps.value
   let _ = resolveMethodDicts pendingMethodDicts.value
+  let _ = resolveArgStamps pendingArgStamps.value
   dictPass allNames prog2
 
 -- With no eligible names (the RKey-only / typed path), there is nothing to
@@ -1913,6 +1976,21 @@ rewriteRPDict rpNames dictNames (EVar n)
   | containsName n dictNames = EDictAt n (Ref [])
   | otherwise = EVar n
 rewriteRPDict _ _ e = e
+
+-- D3a: like prePassDict but ALSO rewrite ARG-position method occurrences (names in
+-- [argNames]) to EMethodAt, so inferMethodAt can stamp their route from the
+-- discriminating-argument type.  [argNames] is empty unless argStampEnabled (the
+-- emit path), so the golden/oracle paths get the same tree prePassDict produced.
+prePassDictArg : List String -> List String -> List String -> List Decl -> List Decl
+prePassDictArg rpNames dictNames argNames prog = mapProg (rewriteRPDictArg rpNames dictNames argNames) prog
+
+rewriteRPDictArg : List String -> List String -> List String -> Expr -> Expr
+rewriteRPDictArg rpNames dictNames argNames (EVar n)
+  | containsName n rpNames = EMethodAt n (Ref RNone) (Ref []) (Ref [])
+  | containsName n argNames = EMethodAt n (Ref RNone) (Ref []) (Ref [])
+  | containsName n dictNames = EDictAt n (Ref [])
+  | otherwise = EVar n
+rewriteRPDictArg _ _ _ e = e
 
 -- interface methods carrying a method-level constraint (a `=>` over a tyvar that is
 -- NOT the interface param, e.g. foldMap's `Monoid m`) — rewritten to EMethodAt
@@ -2446,9 +2524,21 @@ inferImplBodies env allProg rpNames (d :: rest) =
 inferOneImpl : TcEnv -> List Decl -> List String -> Decl -> <Mut> Unit
 inferOneImpl env allProg rpNames (DAttrib _ d) = inferOneImpl env allProg rpNames d
 inferOneImpl env allProg rpNames (DImpl { iface, tys, reqs, methods, ... }) = match reqs
-  [] => ()
+  [] => if argStampEnabled.value then inferPlainImpl env allProg iface tys methods else ()
   _ => inferRequiresImpl env allProg rpNames iface tys reqs methods
 inferOneImpl _ _ _ _ = ()
+
+-- D3a: a NON-`requires` impl body, inferred only on the emit path (argStampEnabled)
+-- so its ARG-position method occurrences (e.g. `display` of a String field inside a
+-- `Display`/`Debug` impl — the 19 `display@String` sites) reach inferMethodAt and
+-- get stamped.  Mirrors inferRequiresImpl's head-mono substitution but with no
+-- requires to register (an unconstrained impl threads no element dict).  OFF, these
+-- impl bodies stay un-inferred exactly as before, keeping every golden identical.
+inferPlainImpl : TcEnv -> List Decl -> String -> List Ty -> List ImplMethod -> <Mut> Unit
+inferPlainImpl env allProg iface tys methods =
+  let implTvMap = freshTvMap (dedupS (concatMapL tyVarNames tys))
+  let headMonos = map (fromAstType implTvMap) tys
+  inferImplMethods env allProg iface implTvMap headMonos methods
 
 -- one impl `impl Iface (List a) requires Iface a where …`: build ONE tyvar map
 -- shared between the head (`List a`) and the requires (`Iface a`) so the body's

@@ -1212,6 +1212,39 @@ path handles them, incl. the only 25 sites it can't do today) + resolve the 1 RN
 return- to arg-position element dispatch + ~23 prelude `=>` helpers); **D4** dispatch corpus
 gate over the real compiler → bridge to bootstrap.
 
+**D3a DONE (2026-06-07).** Arg-position concrete dispatch is stamped `RKey` on the emit
+path. The work is in `typecheck.mdk`, behind `argStampEnabled` (flipped on only by the LLVM
+emit driver via `enableArgStamp`; the `=== TYPES ===` / Core-IR golden + ceval-oracle drivers
+leave it off, so every golden stays byte-identical):
+- `prePassDictArg`/`rewriteRPDictArg` rewrite arg-position interface-method occurrences (the
+  `argDispatchIndices` set) to `EMethodAt`, alongside the existing return-position rewrite.
+- `inferMethodAt` routes an arg-position `EMethodAt` to `recordArgStamp` (queue the route ref +
+  its *discriminating-argument* mono) instead of the return-position `recordSite` (result mono).
+- `resolveArgStamps` stamps each queued ref `RKey <headTycon>` when the arg mono resolved to a
+  concrete head (the 903), or leaves it `RNone` when still a type variable (the 110 → D3b).
+- `inferOneImpl` now also infers NON-`requires` impl bodies under `argStampEnabled`
+  (`inferPlainImpl`), so impl-body arg sites — the dominant `display@String` case (19 of the 25
+  primitive sites live in `Display`/`Debug` impl bodies) — are reached and stamped.
+- Emitter: the only change is `emitMethod`'s `RNone` arm now falls back to
+  `emitMethodArgDispatch` (runtime arg-tag) instead of panicking — so the unstamped
+  type-variable sites keep working until D3b. The `RKey` path already emitted primitive impl
+  fns (`@mdk_impl_Int_compare`, `@mdk_impl_String_display`); no emitter change was needed there.
+- Fixtures: `test/llvm_fixtures_typed/disp_arg_prim_{compare,display}.mdk` — multi-impl primitive
+  arg dispatch that PANICKED pre-D3a (`emitMethodArgDispatch` → "impl type owns no constructors":
+  a primitive immediate carries no cell tag) and now emits a static `RKey` call. Existing
+  arg-position ADT fixtures (`disp_arg_single`/`multi`/`clauses`) now also lower to static `RKey`
+  (same output).
+
+**The 1 RNone `empty` is NOT yet resolved — deferred (real work, not a gap fix).** It is the
+seed of `foldMap`'s default body (`foldMap f = fold (…) empty`, `core.mdk:630`): a
+return-position `empty` at `foldMap`'s method-level `Monoid m` constraint var, which should route
+`RDict` via the method-level dict (Phase 69.x-e). It stays `RNone` because the `elaborateModules`
+bootstrap path runs with `implInferEnabled = False` and therefore never infers interface DEFAULT
+bodies — the deliberate gate that keeps the module goldens byte-identical. Closing it means
+inferring method-level-dict default bodies on the modules path without disturbing those goldens;
+fold into D3b/D4 (it is not on the LLVM fixture path, so it blocks nothing today, and D3a's
+`RNone → arg-tag` emitter fallback no longer panics on it).
+
 ---
 
 ### One-paragraph summary
