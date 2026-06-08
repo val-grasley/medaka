@@ -547,6 +547,19 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        rewrite, goldens unchanged. **#5 core 1→0, whole 185→0** (the fn half #4 closed in
        E1a). core total: 32→**31**. 3 new fixtures (`lam_tuple_param`, `lam_ctor_param`,
        `lam_rec_tuple`); all gates byte-identical (143/25/20/20).
+     - ✅ **E2c — static impl-param typing** (`++` param-type residue). DONE (2026-06-08).
+       `emitGroup` now extracts `positions` from `ImplGroup` and passes `tag`+`positions`
+       into `emitGroupBody`.  For single-clause all-`PVar` impl methods, a new fast path
+       (`paramEnvByPos`) binds the actual param names directly to `%argK` at `tagToLTy
+       tag`-derived types (receiver positions → `LTStr`/`LTCon`/etc., non-receiver → `LTInt`),
+       bypassing the `emitClauseTree` tuple-scrutinee indirection that caused `paramUseTy`
+       to fall back to `LTInt`. For non-all-PVar / multi-clause clauses the general
+       `emitClauseTree` path runs unchanged but with `implParamEnvByPos` providing the
+       typed synthetic `aK` env.  Adds: `tagToLTy`, `implParamEnvByPos`, `listContains`,
+       `patPosTys`, `paramEnvByPos`.  **`++` A:4→2** (`append@List`/`append@String` fixed;
+       `ap@List`/`andThen@List` remain — `++` is on fn-call RESULTS `map f xs`/`f x`, not
+       direct params). **B: 1927→1925**.  New typed fixtures: `impl_append_str` (→6),
+       `impl_append_list` (→10); all gates byte-identical (160/27/20/20). core total: 17→**15**.
      - ✅ **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`). DONE (2026-06-08).
        `otherwise` in condition position is a `CVar` reaching `emitVar`; added as a constant
        arm → `("3", LTBool)` (same as `True`). `__fallthrough__` is always `CApp (CVar

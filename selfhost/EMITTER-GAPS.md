@@ -38,7 +38,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |---|-----------------------------------------------------------|--------:|---------:|----------------------------------|---------------------|
 | 1 | **multi-clause top-level function**                       | 16      | 732      | Emitter                          | reuse impl-method decision-tree lowering |
 | 2 | **arg-tag dispatch on primitive receiver** (no cell tag)  | **0**   | 540      | Routing-not-wired (NOT new)      | port D3b arg-pos dict-passing to `elaborateModules` |
-| 3 | **`++` as `CBinPrim`** (list/string concat)               | ~~14~~ **4\*\*** | ~~179~~  | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — 4 events remain where param type unknown (`append`/`ap` impls) |
+| 3 | **`++` as `CBinPrim`** (list/string concat)               | ~~14~~ ~~4\*\*~~ **2\*\*\*** | ~~179~~  | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — 2 events remain where `++` is on a fn-call result (`ap@List`/`andThen@List`); the 2 `append` param-type events closed by **E2c** (2026-06-08) |
 | 4 | **non-variable parameter pattern** (fn) + **PAs/PList in `bindPattern`** | ~~4~~ **0** | ~~150~~ | Desugar/lower-fixable (fn: ✅ E1a) + Emitter (PAs/PList: ✅ **CLOSED E6**) | fn half → `emitClauseTree` (E1a); PAs/PList → two new `bindPattern` arms (2026-06-08) |
 | 5 | **non-variable lambda parameter pattern**                 | ~~1~~ **0** | ~~108~~ **0** | Desugar/lower-fixable          | ✅ **CLOSED (E2b)** — same decision-tree lowering as #4, inside the lifted-lambda frame |
 | 6 | **`::` as `CBinPrim`** (cons)                              | ~~2~~ **0** | ~~90~~ **0** | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — `emitCtorAlloc e "Cons" [lw, rw]` |
@@ -50,7 +50,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ **17** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ **1927** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ **15** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ **1925** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) were
 references to runtime/core primitives the spike's extern catalog didn't carry —
@@ -150,11 +150,28 @@ that owns no constructors (an `Int`/`String`/… immediate carries no cell tag).
   and `"++"` (→ `mdk_string_append` for `LTStr`, `mdk_list_append` for `LTCon`). Two new C
   helpers in `runtime/medaka_rt.c`; declared in `emitPreamble`. `typeOf` extended: `CBinPrim
   "::"` → `LTCon`. Re-measured: **`::` A:2→0, B:90→0**; **`++` A:14→4** (the 4 remaining
-  events are `impl append@List`, `impl append@String`, `impl ap@List` — params `a`/`b` both
-  unknown type, so `paramUseTy` falls back to `LTInt` and the type-dispatch arm can't fire;
-  not a new gap — the `append` impls were always unresolvable without signature propagation).
+  events are `impl append@List`, `impl append@String`, `impl ap@List`, `impl andThen@List` —
+  params / fn-call results both unknown type, so `paramUseTy` falls back to `LTInt` and
+  the type-dispatch arm can't fire).
   core total: 57→44 (E1a) → **32 (E2a)**. New fixtures: `concat_str`, `cons_list`,
   `concat_list`, `concat_str_unicode` — all byte-identical (140/140 untyped, 25/25 typed).
+- **✅ PARTIAL — E2c (2026-06-08): static impl-param typing closes the `append` pair.**
+  `append xs ys = xs ++ ys` in `impl Semigroup (List a)` and `impl Semigroup String` were
+  unreachable because `emitGroupBody` passed `implParamEnv` (all `LTInt`) to `emitClauseTree`,
+  which in turn used `paramUseTy` to type-infer `xs`/`ys` — but peer params default to
+  `LTInt`, so `++` hit the gap.  Fix: `emitGroup` now extracts the `positions` list from the
+  `ImplGroup` and passes it with the `tag` into `emitGroupBody`.  `emitGroupBody` gains a
+  fast path for single-clause all-PVar impls: `paramEnvByPos` builds `xs → (%arg0, LTCon)`
+  / `ys → (%arg1, LTCon)` (for `List`) or `LTStr` (for `String`) directly from `tagToLTy tag`
+  at the receiver positions, bypassing the `emitClauseTree` tuple-scrutinee indirection that
+  lost the type.  For non-all-PVar clauses (constructor patterns: `eq Nil Nil = True`, etc.)
+  the general `emitClauseTree` path is used unchanged — and `implParamEnvByPos` types the
+  synthetic `aK` scrutinee params correctly there too.  `tagToLTy` maps `"String"→LTStr`,
+  `"Int"→LTInt`, `"Float"→LTFloat`, `"Bool"→LTBool`, `"Char"→LTChar`, everything else→`LTCon`.
+  **A: 4→2** (`append@List`, `append@String` fixed; `ap@List` and `andThen@List` remain — their
+  `++` operands are fn-call RESULTS (`map f xs`, `f x`), not direct params, so param typing
+  alone can't resolve them).  **B: 1927→1925**.  New typed fixtures: `impl_append_str` (→6),
+  `impl_append_list` (→10) — both byte-identical (27/27 typed gate).  core total: 17→**15**.
 
 #### 4 / 5 — non-variable parameter patterns, fn + lambda (A:5, B:258) — fn ✅ CLOSED (E1a), lambda ✅ CLOSED (E2b)
 `emitFnClause`/`emitLamGo` required every parameter to be a plain `PVar`;
@@ -326,6 +343,17 @@ source per unit of work**:
     tree. fn (E1a): core 4→0, whole 150→0. lambda (E2b): core 1→0, whole 185→0;
     `emitPatLamDefine` lowers a patterned `CLam`/recursive-`let`-`CLam` inside the
     lifted-lambda frame. core total 32→**31**.
+  - **E2c (`++` param-type residue) — ✅ DONE (2026-06-08).** Static impl-param typing
+    closes `append@List` and `append@String`.  `emitGroup` now extracts `positions`
+    from `ImplGroup` and passes `tag`+`positions` into `emitGroupBody`; for
+    single-clause all-PVar clauses `paramEnvByPos` builds the env directly from
+    actual param names at the correct `tagToLTy tag`-derived type (`LTCon` / `LTStr`)
+    at receiver positions, bypassing the `emitClauseTree` tuple-scrutinee indirection
+    that lost the type through `paramUseTy`.  A `++` `LTCon`/`LTStr` operand now fires
+    the `emitBin` static dispatch correctly.  **A: 4→2** (2 remain: `ap@List` /
+    `andThen@List` — `++` on fn-call RESULTS `map f xs` / `f x`, not direct params);
+    **B: 1927→1925**.  New typed fixtures: `impl_append_str` (→6), `impl_append_list`
+    (→10), both byte-identical (27/27 typed gate).  core total 17→**15**.
 
 - **E6 — PAs/PList residue in `bindPattern` (#4 residue).** `canonPat` shapes were
   already correct; `bindPattern` fell to gap for `PAs x p` and `PList (p::ps)`.
@@ -333,7 +361,7 @@ source per unit of work**:
   then recurses into `p`; `PList (p::ps)` delegates to `bindFields [p, PList ps]`.
   core #4 residue 4→0; core TOTAL 23→**17**; B TOTAL 2025→**1927**.
   Fixtures: `pat_aspattern` (→34), `pat_aspattern_use` (→10), `pat_list_literal`
-  (→6), `pat_list_nested` (→1020). All byte-identical (160/25/20/20).
+  (→6), `pat_list_nested` (→1020). All byte-identical (160/25/20/20); with E2c: 17→**15**, B 1927→**1925**.
 
 - **E3 — guard residue.** (#8 `otherwise`, #9 `__fallthrough__`.) **176** events,
   ~two trivial `emitVar`/desugar fixes. Cheap, high count.
@@ -353,13 +381,15 @@ source per unit of work**:
   subset.
 
 **How close is `stdlib/core.mdk` alone (the first bootstrap milestone)?**
-Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ **17 gap events across ~8 kinds** (the count
+Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ **15 gap events across ~8 kinds** (the count
 rose temporarily when closing #10 unhid guard residue; E3 closed that residue, dropping
 it back to 30; closing #7's 7 core extern refs — the per-type hashers + debug-lit
-externs — dropped it to 23; E6 closed the `PAs`/`PList` #4 residue, dropping it to 17).
+externs — dropped it to 23; E6 closed the `PAs`/`PList` #4 residue, dropping it to 17;
+E2c closed `append@List`/`append@String`, dropping it to 15).
 The kinds are exactly remaining E4 + E5 tail (E2/E3/E5-core/E6 all done; E4 is 0 on this path).
-Concretely, fully emitting core.mdk still needs: `++` (4 remaining — unknown-param `append`/`ap`),
-dict-witness threads, and — excludable — the 5 `Arbitrary` unit-head switches. (`::`, both
+Concretely, fully emitting core.mdk still needs: `++` (**2** remaining — `ap@List`/`andThen@List`,
+fn-call-result operands; `append` pair closed by E2c), dict-witness threads, and — excludable —
+the 5 `Arbitrary` unit-head switches. (`::`, both
 param-pattern halves, `PAs`/`PList` in `bindPattern`, let/where-group local fns, the guard
 residue, **and the `__hashRaw`/`debugStringLit`/`debugCharLit` extern references** are all closed.)
 **No gap kind in core.mdk is outside the E-series staging.** core.mdk

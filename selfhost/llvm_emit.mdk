@@ -1804,11 +1804,11 @@ emitGroups e (g::rest) =
   emitGroups e rest
 
 emitGroup : Emit -> ImplGroup -> <Mut> Unit
-emitGroup e (ImplGroup method tag _ arity clauses) =
+emitGroup e (ImplGroup method tag positions arity clauses) =
   let fname = implFnName tag method
   let _ = emit e ("define i64 @" ++ fname ++ "(" ++ implParamDecls arity 0 ++ ") {")
   let _ = emit e "entry:"
-  let _ = emitGroupBody e fname arity clauses
+  let _ = emitGroupBody e fname tag positions arity clauses
   let _ = emit e "}"
   emit e ""
 
@@ -1827,12 +1827,67 @@ implParamEnv n i
   | i >= n = []
   | otherwise = ("a" ++ intToString i, ("%arg" ++ intToString i, LTInt)) :: implParamEnv n (i + 1)
 
-emitGroupBody : Emit -> String -> Int -> List (List Pat, CExpr) -> <Mut> Unit
-emitGroupBody e fname 0 clauses = match clauses
+-- map an impl head tag name to its static LTy for use in param typing.
+-- Known primitives → their type; everything else (ADT, List, Array, tuples, …) → LTCon.
+tagToLTy : String -> LTy
+tagToLTy "String" = LTStr
+tagToLTy "Int"    = LTInt
+tagToLTy "Float"  = LTFloat
+tagToLTy "Bool"   = LTBool
+tagToLTy "Char"   = LTChar
+tagToLTy _        = LTCon
+
+-- like implParamEnv, but types param `i` as `tagToLTy tag` when `i ∈ positions`
+-- (the receiver-type positions from CImplTagged), otherwise LTInt.
+-- This lets `append xs ys = xs ++ ys` in impl Semigroup (List a) emit xs/ys as
+-- LTCon → mdk_list_append, and in impl Semigroup String emit them as LTStr →
+-- mdk_string_append — without touching emitBin.
+implParamEnvByPos : String -> List Int -> Int -> Int -> List (String, (String, LTy))
+implParamEnvByPos _ _ n i | i >= n = []
+implParamEnvByPos tag positions n i =
+  let ty = if listContains positions i then tagToLTy tag else LTInt
+  ("a" ++ intToString i, ("%arg" ++ intToString i, ty)) :: implParamEnvByPos tag positions n (i + 1)
+
+listContains : List Int -> Int -> Bool
+listContains [] _ = False
+listContains (x :: rest) v
+  | x == v    = True
+  | otherwise = listContains rest v
+
+
+emitGroupBody e fname _ _ 0 clauses = match clauses
   [([], body)] => emitFnBody e [] fname body
   _ => gapU "nullary impl group with more than one clause (slice 6)"
-emitGroupBody e _ arity clauses =
-  emitClauseTree e (implParamEnv arity 0) arity clauses
+-- Fast path: single-clause all-PVar impl (e.g. `append xs ys = xs ++ ys`).
+-- Build a typed env directly from param names × receiver type so that `++`/`::`
+-- operands inherit the correct LTy (LTStr/LTCon) from the impl head tag.
+-- The decision-tree path (emitClauseTree) loses this type info through the
+-- tuple-scrutinee indirection → paramUseTy falls back to LTInt → ++ gaps.
+emitGroupBody e fname tag positions arity clauses =
+  match clauses
+    [(pats, body)] if allPVar pats =>
+      let tyList = patPosTys tag positions (listLen pats) 0
+      let env = paramEnvByPos pats tyList 0
+      emitFnBody e env fname body
+    _ =>
+      emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses
+
+-- build a LTy list of length n, typed as tagToLTy tag at positions ∈ positions,
+-- LTInt elsewhere.
+patPosTys : String -> List Int -> Int -> Int -> List LTy
+patPosTys _ _ n i | i >= n = []
+patPosTys tag positions n i =
+  let ty = if listContains positions i then tagToLTy tag else LTInt
+  ty :: patPosTys tag positions n (i + 1)
+
+-- bind PVar params to their %argK operands at the given LTy list.
+paramEnvByPos : List Pat -> List LTy -> Int -> List (String, (String, LTy))
+paramEnvByPos [] _ _ = []
+paramEnvByPos ((PVar x) :: rest) (ty :: tys) i =
+  (x, ("%arg" ++ intToString i, ty)) :: paramEnvByPos rest tys (i + 1)
+paramEnvByPos ((PVar x) :: rest) [] i =
+  (x, ("%arg" ++ intToString i, LTInt)) :: paramEnvByPos rest [] (i + 1)
+paramEnvByPos _ _ _ = []
 
 -- the shared decision-tree body for a coalesced multi-clause group (impl methods
 -- AND top-level fns, slice 2/E1a).  `env` binds the synthetic `aK` scrutinee

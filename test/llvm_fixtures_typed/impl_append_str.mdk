@@ -1,0 +1,10 @@
+-- impl-param typing: Semigroup String `append` params must type as LTStr so
+-- `xs ++ ys` dispatches string-append (mdk_string_append), not list-append.
+-- stringLength (append "foo" "bar") → 6.
+interface Semigroup a where
+  append : a -> a -> a
+
+impl Semigroup String where
+  append xs ys = xs ++ ys
+
+main = stringLength (append "foo" "bar")
