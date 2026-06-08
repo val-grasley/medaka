@@ -1,0 +1,1 @@
+main = stringSlice 1 3 "café"

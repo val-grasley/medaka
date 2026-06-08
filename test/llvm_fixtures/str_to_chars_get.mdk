@@ -1,0 +1,1 @@
+main = charCode (arrayGetUnsafe 1 (stringToChars "abc"))

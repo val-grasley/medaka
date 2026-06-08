@@ -255,3 +255,62 @@ long long mdk_char_to_str(long long tagged) {
   char buf[4]; int n = mdk_utf8_encode(tagged >> 1, buf);
   return mdk_str_lit(buf, n);
 }
+
+/* String↔Char + codepoint slicing (native extern catalog slice 9).
+ * Char = immediate codepoint word (cp << 1) | 1 (same as Int).
+ * String cell: [i64 header | i64 byte_len@8 | i64 cp_count@16 | bytes@24 | NUL]. */
+static long long mdk_utf8_byte_offset(const char *p, long long byte_len,
+                                      long long cpi) {
+  long long b = 0, c = 0;
+  while (b < byte_len && c < cpi) {
+    b++;
+    while (b < byte_len && ((unsigned char)p[b] & 0xC0) == 0x80) b++;
+    c++;
+  }
+  return b;
+}
+static long long mdk_utf8_decode(const char *p, long long b, int *w) {
+  unsigned char ch = (unsigned char)p[b];
+  long long cp; int n;
+  if (ch < 0x80)             { cp = ch;        n = 1; }
+  else if ((ch >> 5) == 0x6) { cp = ch & 0x1F; n = 2; }
+  else if ((ch >> 4) == 0xE) { cp = ch & 0x0F; n = 3; }
+  else                       { cp = ch & 0x07; n = 4; }
+  for (int k = 1; k < n; k++) cp = (cp << 6) | ((unsigned char)p[b+k] & 0x3F);
+  *w = n; return cp;
+}
+long long mdk_string_to_chars(long long s) {
+  const char *cell = (const char *)s;
+  long long byte_len = ((const long long *)cell)[1];
+  long long cp_count = ((const long long *)cell)[2];
+  const char *bytes = cell + 24;
+  long long *arr = (long long *)mdk_alloc(8 * (cp_count + 1));
+  arr[0] = cp_count;
+  long long b = 0, i = 0;
+  while (b < byte_len) {
+    int w; long long cp = mdk_utf8_decode(bytes, b, &w);
+    arr[++i] = (cp << 1) | 1; b += w;
+  }
+  return (long long)arr;
+}
+long long mdk_string_from_chars(long long arr) {
+  const long long *a = (const long long *)arr;
+  long long n = a[0], total = 0; char tmp[4];
+  for (long long i = 0; i < n; i++) total += mdk_utf8_encode(a[i+1] >> 1, tmp);
+  char *buf = (char *)mdk_alloc(total + 1);
+  long long off = 0;
+  for (long long i = 0; i < n; i++) off += mdk_utf8_encode(a[i+1] >> 1, buf + off);
+  return mdk_str_lit(buf, total);
+}
+long long mdk_string_slice(long long lo_t, long long hi_t, long long s) {
+  const char *cell = (const char *)s;
+  long long byte_len = ((const long long *)cell)[1];
+  long long cp_count = ((const long long *)cell)[2];
+  const char *bytes = cell + 24;
+  long long lo = lo_t >> 1, hi = hi_t >> 1;
+  if (lo < 0) lo = 0; else if (lo > cp_count) lo = cp_count;
+  if (hi < lo) hi = lo; else if (hi > cp_count) hi = cp_count;
+  long long blo = mdk_utf8_byte_offset(bytes, byte_len, lo);
+  long long bhi = mdk_utf8_byte_offset(bytes, byte_len, hi);
+  return mdk_str_lit(bytes + blo, bhi - blo);
+}

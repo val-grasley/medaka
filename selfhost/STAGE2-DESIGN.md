@@ -1069,7 +1069,13 @@ backend (Stage 2) — near-term sequence"):
    word `(cp << 1) | 1`; `charCode` INTRINSIC identity; `charToStr` LEAF via
    `mdk_char_to_str`; `LChar` literal → tagged immediate; `LTChar` auto-print via
    `mdk_print_char`; 86/86 plain + 14/14 typed byte-identical; unicode round-trip
-   verified; Tier B slice 8 unblocks slices 9 + 14) — and close the spike's out-of-scope gaps (arg-tag
+   verified; Tier B slice 8 unblocks slices 9 + 14), **slice 9 DONE 2026-06-07**
+   (`stringToChars` LEAF: `mdk_string_to_chars` walks UTF-8, emits one Char immediate
+   per codepoint into a raw-length Array cell; `stringFromChars` LEAF: two-pass sum +
+   alloc + encode via `mdk_string_from_chars`; `stringSlice` LEAF: clamped codepoint
+   indices via `mdk_utf8_byte_offset` + `mdk_string_slice`; `mdk_utf8_decode` added;
+   Array result is `LTCon`, no auto-print; 91/91 plain + 15/15 typed byte-identical;
+   unicode round-trip `wörld` + codepoint slice `café→af` verified) — and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
    (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);

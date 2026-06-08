@@ -739,6 +739,33 @@ emitCharExtern e env "charToStr" args = match emitArgs e env args
   _ => panic "llvm spike: charToStr takes one argument (slice 8)"
 emitCharExtern _ _ name _ = panic ("llvm spike: unsupported char extern " ++ name)
 
+-- slice 9: string↔char conversions + codepoint slicing.
+isStrCharExtern : String -> Bool
+isStrCharExtern name =
+  containsStr name ["stringToChars", "stringFromChars", "stringSlice"]
+
+emitStrCharExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitStrCharExtern e env "stringToChars" args = match emitArgs e env args
+  [s] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_chars(i64 " ++ s ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: stringToChars takes one argument (slice 9)"
+emitStrCharExtern e env "stringFromChars" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_from_chars(i64 " ++ a ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: stringFromChars takes one argument (slice 9)"
+emitStrCharExtern e env "stringSlice" args = match emitArgs e env args
+  [lo, hi, s] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_slice(i64 " ++ lo ++
+      ", i64 " ++ hi ++ ", i64 " ++ s ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: stringSlice takes three arguments (slice 9)"
+emitStrCharExtern _ _ name _ = panic ("llvm spike: unsupported str-char extern " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -918,6 +945,7 @@ emitApp e env app =
       else if isArrIntrinsic fname && hasArgs args then emitArrIntrinsic e env fname args
       else if isArrLeafExtern fname && hasArgs args then emitArrLeafExtern e env fname args
       else if isCharExtern fname && hasArgs args then emitCharExtern e env fname args
+      else if isStrCharExtern fname && hasArgs args then emitStrCharExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -2828,6 +2856,9 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_array_from_list(i64)"
   let _ = emit e "declare void @mdk_print_char(i64)"
   let _ = emit e "declare i64 @mdk_char_to_str(i64)"
+  let _ = emit e "declare i64 @mdk_string_to_chars(i64)"
+  let _ = emit e "declare i64 @mdk_string_from_chars(i64)"
+  let _ = emit e "declare i64 @mdk_string_slice(i64, i64, i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

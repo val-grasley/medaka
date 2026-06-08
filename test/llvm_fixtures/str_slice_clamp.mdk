@@ -1,0 +1,1 @@
+main = stringSlice 0 100 "hi"
