@@ -710,6 +710,16 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        Arg-position dispatch on a PRIMITIVE receiver is deliberately AVOIDED (that is what
        E4 unlocks — this gate is its byte-verified harness). All five gates byte-identical
        (160/33/20/20 + 3/3).
+       **Investigated parser gaps (2026-06-08): two apparent gaps from writing these fixtures
+       confirmed as reference-correct, NOT selfhost defects.** (1) `public export interface`:
+       the OCaml parser (`PUBLIC EXPORT` → `inner_data_or_record`) only allows `data`/`record`
+       after `public export`; interfaces use `export interface` (without `public`).
+       `afterPublicFor` in `selfhost/parser.mdk` is correct to reject it. (2) `match` in
+       argument position (`f (match x …)`): the Medaka lexer suppresses INDENT/DEDENT inside
+       `(…)` (`paren_depth > 0` → `handle_indent` no-op), so the `MATCH expr_or INDENT arms
+       DEDENT` rule can never fire inside parentheses — both parsers reject this form for the
+       same structural reason. Workaround: lift the `match` to a named top-level binding (as
+       `return_dispatch/entry.mdk` does with `flagVal`).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)
      — the spike gates against `test/llvm_fixtures/`; the real backend must compile
      `selfhost/*.mdk`. Surfacing+closing whatever constructs that exposes is the bulk of
