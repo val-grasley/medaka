@@ -1271,7 +1271,24 @@ emitBin e env op l r
       LTCon =>
         let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_list_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
         (r2, LTCon)
-      _ => gapE ("++ on unsupported operand type")
+      -- E8 (#3 census-B): operand static LTy unknown (E2c/E7 couldn't recover
+      -- it) — the ~328 scanTriple/splitLines string-builder residual.  Instead
+      -- of gapE, dispatch at RUNTIME via @mdk_append, which inspects the left
+      -- cell header (odd => Nil/list; even header==MDK_STR_TAG => string; else
+      -- => Cons/list) and calls the right append helper.  The result VALUE is
+      -- always correct.  Result LTy is statically unknowable here, so we default
+      -- to LTStr: this gap is dominated by String-builders (scanTriple/
+      -- splitLines), and LTStr drives correct downstream selection
+      -- (emitPrint => mdk_print_str, a following `++` re-routes to string
+      -- append) for that case.  If a value is actually a List, the runtime
+      -- append is still correct; only a downstream STATIC string-op/print on it
+      -- would mis-select — but emitPrint LTCon already panics on lists, and
+      -- fixtures project String results through stringLength (a type-forcing
+      -- String read) so validation is byte-identical and independent of this
+      -- default.
+      _ =>
+        let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        (r2, LTStr)
   | otherwise = gapE ("unsupported binary operator '" ++ op ++ "'")
 
 -- the arithmetic operators the spike lowers to int/float instructions.  `::` and
@@ -3903,6 +3920,7 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_string_concat(i64)"
   let _ = emit e "declare i64 @mdk_string_append(i64, i64)"
   let _ = emit e "declare i64 @mdk_list_append(i64, i64)"
+  let _ = emit e "declare i64 @mdk_append(i64, i64)"
   let _ = emit e "declare void @mdk_putstr(i64)"
   let _ = emit e "declare void @mdk_putstrln(i64)"
   let _ = emit e "declare void @mdk_eputstr(i64)"
