@@ -114,6 +114,46 @@ let splitmix64_next () : int64 =
   let z = Int64.mul (Int64.logxor z (Int64.shift_right_logical z 27)) 0x94D049BB133111EBL in
   Int64.logxor z (Int64.shift_right_logical z 31)
 
+(* ── Hashable per-type hashers (specified hash, replacing structural __hashRaw) ─
+   The old `__hashRaw = Hashtbl.hash` content-hashed any value, but the native
+   backend is type-erased — one i64 word can't tell a tagged Int from a String
+   pointer, so it can't content-hash boxed values.  Fix (the RNG playbook): each
+   primitive `Hashable` impl calls a typed hasher specified IDENTICALLY here and
+   in runtime/medaka_rt.c (the mdk_hash_ helpers), so the hash is byte-identical
+   across the tree-walker oracle and native.  All math is unsigned 64-bit (Int64) so OCaml's
+   63-bit int can't diverge from C uint64 on overflow; every result is masked to
+   [0, 2^30) — NON-NEGATIVE (hash_map does `hash % cap`; a negative hash breaks
+   bucketing), matching the old Hashtbl.hash range. *)
+let hash_mask = 0x3FFFFFFFL   (* 2^30 - 1 *)
+
+(* SplitMix64 finalizer reused as a pure avalanche mixer.  == mdk_hash_mix64 (C). *)
+let hash_mix64 (x : int64) : int64 =
+  let z = Int64.add x 0x9E3779B97F4A7C15L in
+  let z = Int64.mul (Int64.logxor z (Int64.shift_right_logical z 30)) 0xBF58476D1CE4E5B9L in
+  let z = Int64.mul (Int64.logxor z (Int64.shift_right_logical z 27)) 0x94D049BB133111EBL in
+  Int64.logxor z (Int64.shift_right_logical z 31)
+
+(* hashInt: mix the int bits, mask.  == mdk_hash_int (C). *)
+let hash_int (n : int) : int =
+  Int64.to_int (Int64.logand (hash_mix64 (Int64.of_int n)) hash_mask)
+
+(* hashString: FNV-1a over the raw UTF-8 bytes, mask.  == mdk_hash_string (C).
+   offset basis 0xCBF29CE484222325, prime 0x100000001B3. *)
+let hash_string (s : string) : int =
+  let h = ref 0xCBF29CE484222325L in
+  String.iter (fun c ->
+    h := Int64.mul (Int64.logxor !h (Int64.of_int (Char.code c))) 0x100000001B3L) s;
+  Int64.to_int (Int64.logand !h hash_mask)
+
+(* hashFloat: bit-cast the double to u64, mix, mask.  == mdk_hash_float (C).
+   -0.0 and 0.0 have distinct bit patterns and so hash differently — acceptable. *)
+let hash_float (f : float) : int =
+  Int64.to_int (Int64.logand (hash_mix64 (Int64.bits_of_float f)) hash_mask)
+
+(* hashChar: hash the single codepoint as an int.  == mdk_hash_char (C). *)
+let hash_char (c : string) : int =
+  hash_int (Uchar.to_int (Uchar.utf_decode_uchar (String.get_utf_8_uchar c 0)))
+
 (* Extra name→value bindings injected before eval_program runs — used by the
    check-policy demo harness to stub platform-supplied externs (cacheGet etc.)
    without modifying the primitives table.  Reset to [] after each use. *)
@@ -1410,10 +1450,26 @@ let primitives : (string * value) list =
        Used by the self-hosted perf driver as an allocation-count proxy;
        monotonically increasing, so deltas give per-phase allocation. *)
     ("allocBytes", VPrim (fun _ -> VFloat (Gc.allocated_bytes ())));
-    (* Raw structural hash — backing primitive for the Hashable interface impls.
-       Non-negative (OCaml's Hashtbl.hash returns [0, 2^30)).
-       Not called directly: the Hashable method `hash` dispatches here per type. *)
-    ("__hashRaw", VPrim (fun v -> VInt (Hashtbl.hash v)));
+    (* Per-type Hashable hashers — specified, byte-identical to runtime/medaka_rt.c
+       (the mdk_hash_ helpers).  Replace the old structural __hashRaw (Hashtbl.hash),
+       which the type-erased native runtime cannot replicate.  Each primitive
+       Hashable impl in core.mdk calls one of these; results are non-negative,
+       in [0, 2^30). *)
+    ("hashInt", VPrim (fun v -> match v with
+      | VInt n -> VInt (hash_int n)
+      | _ -> raise (Eval_error ("hashInt: expected Int", None))));
+    ("hashString", VPrim (fun v -> match v with
+      | VString s -> VInt (hash_string s)
+      | _ -> raise (Eval_error ("hashString: expected String", None))));
+    ("hashChar", VPrim (fun v -> match v with
+      | VChar c -> VInt (hash_char c)
+      | _ -> raise (Eval_error ("hashChar: expected Char", None))));
+    ("hashBool", VPrim (fun v -> match v with
+      | VBool b -> VInt (if b then 1 else 0)
+      | _ -> raise (Eval_error ("hashBool: expected Bool", None))));
+    ("hashFloat", VPrim (fun v -> match v with
+      | VFloat f -> VInt (hash_float f)
+      | _ -> raise (Eval_error ("hashFloat: expected Float", None))));
     (* Phase 91: terminator of a desugared guard chain.  Raising Impl_no_match
        (the same signal a failed pattern raises) makes a multi-clause function's
        VMulti dispatch fall through to the next pattern clause when this clause's

@@ -1,0 +1,4 @@
+-- debugStringLit: quoted+escaped String rendering (the `debug` of a String).
+-- Mirrors escape_string_lit (lib/eval.ml) byte-for-byte in mdk_debug_string_lit.
+-- "a\tb\"c" -> the 8-char source form  "a\tb\"c"  (tab and dquote escaped).
+main = debugStringLit "a\tb\"c"

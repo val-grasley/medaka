@@ -42,7 +42,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 | 4 | **non-variable parameter pattern** (fn)                   | 4       | 150      | Desugar/lower-fixable            | lower `f (a,b)=…` → param + body `match` |
 | 5 | **non-variable lambda parameter pattern**                 | ~~1~~ **0** | ~~108~~ **0** | Desugar/lower-fixable          | ✅ **CLOSED (E2b)** — same decision-tree lowering as #4, inside the lifted-lambda frame |
 | 6 | **`::` as `CBinPrim`** (cons)                              | ~~2~~ **0** | ~~90~~ **0** | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — `emitCtorAlloc e "Cons" [lw, rw]` |
-| 7 | **reference to top-level value / mutable `Ref` binding**  | 7\*     | 254      | Emitter                          | emit top-level non-fn bindings as **globals** |
+| 7 | **reference to top-level value / mutable `Ref` binding**  | ~~7\*~~ **0\*** | ~~254~~ **237** | Emitter                          | emit top-level non-fn bindings as **globals**; **core's 7 extern refs CLOSED** (see \*) |
 | 8 | **`otherwise`** (guard constant)                          | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — added to `emitVar` constants (= `True` → `"3"`, `LTBool`) |
 | 9 | **`__fallthrough__`** (guard-desugar sentinel)            | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — intercepted in `emitApp` CVar branch (`call void @mdk_oob()` + dummy; block terminator from surrounding `if`) |
 |10 | **non-nullary / recursive `let`-group** (`where` fns)     | ~~5~~ **0** | ~~5~~ **0** | Emitter                          | ✅ **CLOSED (E5)** — lambda-lift each local fn via `emitGroupBind` (self-rec through `%clos`, E1a clause-tree body); one-at-a-time env threading covers non-mutual groups; genuine forward/mutual ref → precise `gapE` (none in core) |
@@ -50,11 +50,18 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ **30** | ~~2722~~ **2677** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ **23** | ~~2722~~ ~~2677~~ **2660** |                                  |                     |
 
-\* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) are
-references to runtime/core primitives the spike's extern catalog + global scope
-don't carry — the core-scale instance of gap #7.
+\* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) were
+references to runtime/core primitives the spike's extern catalog didn't carry —
+the core-scale instance of gap #7.  **CLOSED 2026-06-08**: `__hashRaw` was replaced
+by five SPECIFIED per-type hashers (`hashInt`/`hashString`/`hashChar`/`hashBool`/
+`hashFloat`, FNV-1a + SplitMix64-finalizer mix, byte-identical oracle/native — the
+RNG playbook), and all seven externs are now wired into `llvm_emit.mdk`'s extern
+catalog + `emitPreamble` declares (with `mdk_hash_*`/`mdk_debug_*_lit` in
+`runtime/medaka_rt.c`).  Census A's 7 → 0 (total A 30 → 23); census B 2677 → 2660
+(the extern refs incl. `lexer.mdk`'s 10 `debugStringLit` calls).  The remaining
+core-`#7` count is 0 — core has no genuine top-level value / `Ref` global refs.
 
 † Closing gap #10 (E5) makes the **TOTAL tick UP** (A 31→34, B 3001→3008 at
 measurement time), not down: the old emitter recorded ONE gap per unsupported
@@ -281,15 +288,16 @@ source per unit of work**:
   subset.
 
 **How close is `stdlib/core.mdk` alone (the first bootstrap milestone)?**
-Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ **30 gap events across ~15 kinds** (the count
+Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ **23 gap events across ~12 kinds** (the count
 rose temporarily when closing #10 unhid guard residue; E3 closed that residue, dropping
-it back to 30). The kinds are exactly remaining E1b + E4 + E5 tail (E2/E3/E5-core all
-done; E4 is 0 on this path). Concretely, fully emitting core.mdk still needs: `++` (4
+it back to 30; closing #7's 7 core extern refs — the per-type hashers + debug-lit
+externs — dropped it to 23). The kinds are exactly remaining E1b + E4 + E5 tail (E2/E3/E5-core
+all done; E4 is 0 on this path). Concretely, fully emitting core.mdk still needs: `++` (4
 remaining — unknown-param `append`/`ap`), the `PAs`/`PList` patterns in `find`/
-`debugListItems` (#4 residue), the global-value/extern references (`__hashRaw`/
-`debugStringLit`/`debugCharLit` + the dict-witness threads), and — excludable — the 5
-`Arbitrary` unit-head switches. (`::`, both param-pattern halves, let/where-group local
-fns, and the guard residue are all closed.)
+`debugListItems` (#4 residue), the genuine top-level value globals + dict-witness threads,
+and — excludable — the 5 `Arbitrary` unit-head switches. (`::`, both param-pattern halves,
+let/where-group local fns, the guard residue, **and the `__hashRaw`/`debugStringLit`/
+`debugCharLit` extern references** are all closed.)
 **No gap kind in core.mdk is outside the E-series staging.** core.mdk
 is a *bounded* push, not open-ended — it is the realistic first native-bootstrap target.
 

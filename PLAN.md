@@ -517,7 +517,8 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        documented as deferred in EMITTER-GAPS #14.
      - **E1b — top-level value / mutable `Ref` globals** (#7). NEXT. Emit each top-level
        non-fn binding as an LLVM global so other fns can name it (the second structural
-       wall; ≈254 whole / 7 core events).
+       wall; now ≈237 whole / **0 core** — core's 7 events were all extern refs, closed
+       by the per-type-hashers + debug-lit work below).
      - ✅ **E2a — `::` and `++` as `CBinPrim`** (#3/#6). DONE (2026-06-07). `emitBin` now
        handles `"::"` (→ `emitCtorAlloc e "Cons" [lw, rw]`, `typeOf` extended → `LTCon`) and
        `"++"` (→ `mdk_string_append` for `LTStr`, `mdk_list_append` for `LTCon`). Two new C
@@ -559,6 +560,24 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        *curried* nested `CLam` (arity-1 closures) and over-applies the saturated-call
        machinery — a pre-existing slice-4 limit, distinct from the where/group form which
        keeps arity-N in one clause; `let_local_rec` uses arity-1 recursion to stay green.
+     - ✅ **E6 (#7-core) — per-type Hashable hashers + debug-lit externs.** DONE
+       (2026-06-08). Closes core's last extern-catalog gap (the 7 `#7` core events =
+       `__hashRaw`×5 + `debugStringLit` + `debugCharLit`). Replaced the structural
+       `__hashRaw` (`Hashtbl.hash`, uncomputable by the type-erased native runtime) with
+       five SPECIFIED deterministic per-type hashers called from the primitive `Hashable`
+       impls: `hashInt`/`hashChar`/`hashFloat` = a SplitMix64-finalizer mix, `hashString`
+       = FNV-1a over the UTF-8 bytes, `hashBool` = 0/1 — all masked to `[0, 2^30)`
+       (non-negative) and byte-identical in `lib/eval.ml` (oracle) and
+       `runtime/medaka_rt.c` (`mdk_hash_*`), the RNG SplitMix64 playbook applied to
+       hashing (a deliberate oracle-editing semantics change → content-hashing now works
+       for String/Float keys natively). `debugStringLit`/`debugCharLit` gained
+       `mdk_debug_string_lit`/`mdk_debug_char_lit` (mirroring `escape_string_lit`/
+       `escape_char_lit`). All seven wired into `llvm_emit.mdk`'s extern catalog (new
+       `isHashExtern`/`emitHashExtern`, `isDebugLitExtern`/`emitDebugLitExtern`) +
+       `emitPreamble` declares. **#7 core 7→0, total A 30→23; whole 2677→2660.** 4 new
+       fixtures (`hash_int`, `hash_string`, `debug_strlit`, `debug_charlit`); all gates
+       byte-identical (153/25/20/20). hash_map/hash_set doctests are order-insensitive →
+       no golden churn.
      - **E4 — dispatch-routing port** (#2/#13: carry D3b arg-position dict-passing onto
        the `elaborateModules` emit path; 0 on the single-file path already).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)

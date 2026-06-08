@@ -655,3 +655,92 @@ long long mdk_random_float(long long u) { (void)u;  /* boxed Float word */
 long long mdk_random_char(long long u) { (void)u;  /* RAW codepoint — emitter tags to Char */
   return 32 + (long long)(mdk_next_u64() % 95ULL);
 }
+
+/* ── Hashable per-type hashers — SPECIFIED, byte-identical to lib/eval.ml ──────
+ * The old structural `__hashRaw` (OCaml Hashtbl.hash) can't run here: this runtime
+ * is type-erased, so one i64 word can't tell a tagged Int from a String pointer
+ * and so can't content-hash a boxed value (equal Strings would pointer-hash
+ * differently → hash_map String keys break).  Fix (the RNG playbook): each typed
+ * `Hashable` impl calls one of these, specified IDENTICALLY here and in
+ * lib/eval.ml (hash_*), so the hash is byte-identical across backends.  All math
+ * is uint64 + masked to [0, 2^30) — NON-NEGATIVE (hash_map does `hash % cap`).
+ * Each helper takes the NATIVE arg the emitter unpacks (untagged int / codepoint /
+ * String cell pointer / double) and returns a RAW int the emitter tags. */
+#define MDK_HASH_MASK 0x3FFFFFFFULL   /* 2^30 - 1 */
+
+/* SplitMix64 finalizer, as a pure mixer.  == hash_mix64 (OCaml). */
+static unsigned long long mdk_hash_mix64(unsigned long long x) {
+  unsigned long long z = x + 0x9E3779B97F4A7C15ULL;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+/* hashInt : Int -> Int.  `n` is the UNTAGGED int (emitter untags). */
+long long mdk_hash_int(long long n) {
+  return (long long)(mdk_hash_mix64((unsigned long long)n) & MDK_HASH_MASK);
+}
+/* hashChar : Char -> Int.  `cp` is the UNTAGGED codepoint — same mix as hashInt. */
+long long mdk_hash_char(long long cp) {
+  return (long long)(mdk_hash_mix64((unsigned long long)cp) & MDK_HASH_MASK);
+}
+/* hashBool : Bool -> Int.  `b` is 0/1 (already non-negative). */
+long long mdk_hash_bool(long long b) { return b ? 1 : 0; }
+/* hashFloat : Float -> Int.  `d` is the unboxed double; bit-cast to u64 then mix.
+ * -0.0 and 0.0 have distinct bit patterns and so hash differently — acceptable. */
+long long mdk_hash_float(double d) {
+  unsigned long long bits; memcpy(&bits, &d, 8);
+  return (long long)(mdk_hash_mix64(bits) & MDK_HASH_MASK);
+}
+/* hashString : String -> Int.  FNV-1a over the cell's raw UTF-8 bytes (byte_len@8,
+ * bytes@24).  offset basis 0xCBF29CE484222325, prime 0x100000001B3. */
+long long mdk_hash_string(long long w) {
+  const char *cell = (const char *)w;
+  long long byte_len = ((const long long *)cell)[1];
+  const unsigned char *bytes = (const unsigned char *)(cell + 24);
+  unsigned long long h = 0xCBF29CE484222325ULL;
+  for (long long i = 0; i < byte_len; i++)
+    h = (h ^ (unsigned long long)bytes[i]) * 0x100000001B3ULL;
+  return (long long)(h & MDK_HASH_MASK);
+}
+
+/* ── debug literal externs — quoted/escaped rendering, byte-exact, no oracle ───
+ * Mirror escape_string_lit / escape_char_lit in lib/eval.ml (the same escapes the
+ * lexer's read_string/read_char understand), so `debug` of a String/Char round-
+ * trips to valid source.  Output is boxed via mdk_str_lit. */
+
+/* Append the escaped form of one byte to buf[*off], advancing *off. */
+static void mdk_escape_byte(char *buf, long long *off, unsigned char c, char quote) {
+  switch (c) {
+    case '\\': buf[(*off)++]='\\'; buf[(*off)++]='\\'; break;
+    case '\n': buf[(*off)++]='\\'; buf[(*off)++]='n';  break;
+    case '\t': buf[(*off)++]='\\'; buf[(*off)++]='t';  break;
+    case '\r': buf[(*off)++]='\\'; buf[(*off)++]='r';  break;
+    case '\0': buf[(*off)++]='\\'; buf[(*off)++]='0';  break;
+    default:
+      if (c == (unsigned char)quote) { buf[(*off)++]='\\'; buf[(*off)++]=(char)c; }
+      else buf[(*off)++]=(char)c;
+  }
+}
+/* debugStringLit : String -> String  ->  "\"" + escape(bytes) + "\"" */
+long long mdk_debug_string_lit(long long w) {
+  const char *cell = (const char *)w;
+  long long byte_len = ((const long long *)cell)[1];
+  const unsigned char *bytes = (const unsigned char *)(cell + 24);
+  char *buf = (char *)mdk_alloc(2 + 2 * byte_len + 1);  /* worst case 2 bytes/char */
+  long long off = 0;
+  buf[off++] = '"';
+  for (long long i = 0; i < byte_len; i++) mdk_escape_byte(buf, &off, bytes[i], '"');
+  buf[off++] = '"';
+  return mdk_str_lit(buf, off);
+}
+/* debugCharLit : Char -> String  ->  "'" + escape(codepoint) + "'".  `cp` UNTAGGED.
+ * Escape the control bytes like escape_char_lit; otherwise UTF-8-encode the cp. */
+long long mdk_debug_char_lit(long long cp) {
+  char enc[4]; int n = mdk_utf8_encode(cp, enc);
+  char buf[16]; long long off = 0;
+  buf[off++] = '\'';
+  if (n == 1) mdk_escape_byte(buf, &off, (unsigned char)enc[0], '\'');
+  else for (int i = 0; i < n; i++) buf[off++] = enc[i];
+  buf[off++] = '\'';
+  return mdk_str_lit(buf, off);
+}

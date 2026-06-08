@@ -770,8 +770,11 @@ A growable mutable array (vector) over the fixed-size `Array`. Not yet built.
 
 ### Compiler notes
 
-- New `hash : a -> Int` extern (runtime.mdk + eval.ml) — structural,
-  non-negative (`Hashtbl.hash`).
+- `hash : a -> Int` is the `Hashable` typeclass method; the five primitive impls
+  call SPECIFIED per-type hasher externs (`hashInt`/`hashString`/`hashChar`/
+  `hashBool`/`hashFloat`, runtime.mdk + eval.ml + runtime/medaka_rt.c) — byte-
+  identical oracle/native, non-negative `[0, 2^30)`. Replaced the old structural
+  `__hashRaw` (`Hashtbl.hash`), which the type-erased native runtime can't run.
 - Removed `"HashMap"`/`"HashSet"` from `resolve.ml`'s `primitive_types` (reserved
   placeholders), mirroring the `Map`/`Set` removals.
 - Surfaced two language gaps (PLAN.md): **Phase 118** (`if`/`else` branches can't

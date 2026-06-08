@@ -379,27 +379,29 @@ export impl Display (a, b, c, d, e) requires Display a, Display b, Display c, Di
 
 {- | Hash code for use in hash tables.  Equal values (per `Eq`) must produce
    the same hash — the contractual invariant.  Hash values need not be unique.
-   Primitive impls delegate to `__hashRaw` (Hashtbl.hash); derived and compound
-   impls use a djb2-style fold: seed with constructor ordinal, then
-   `acc = acc * 33 + hash field` left-to-right over fields.  `deriving (Hashable)`
-   generates this fold for `data` and `record` types. -}
+   Primitive impls delegate to per-type externs (`hashInt`/`hashString`/… —
+   specified deterministic hashers, byte-identical across the tree-walker and the
+   native backend); derived and compound impls use a djb2-style fold: seed with
+   constructor ordinal, then `acc = acc * 33 + hash field` left-to-right over
+   fields.  `deriving (Hashable)` generates this fold for `data` and `record`
+   types. -}
 export interface Hashable a where
   hash : a -> Int
 
 export impl Hashable Int where
-  hash n = __hashRaw n
+  hash n = hashInt n
 
 export impl Hashable Float where
-  hash x = __hashRaw x
+  hash x = hashFloat x
 
 export impl Hashable String where
-  hash s = __hashRaw s
+  hash s = hashString s
 
 export impl Hashable Char where
-  hash c = __hashRaw c
+  hash c = hashChar c
 
 export impl Hashable Bool where
-  hash b = __hashRaw b
+  hash b = hashBool b
 
 export impl Hashable Unit where
   hash _ = 0

@@ -126,14 +126,26 @@ with the tagged index, stores each result into the allocated array cell. No C ex
 FFI boundary. `array.mdk`'s `mergeSortBy` and ~16 other sites use `arrayMakeWith` and
 remain unchanged — the sort/builder cutover is now complete on the native path.
 
-**`hash : a -> Int` → `→METHOD`. DONE 2026-06-07** — `hash` is now a derived
-**`Hashable`** typeclass method (combiner `acc*33 + hash field`), replacing the
-structural extern; `hash_map`/`hash_set` gained a `requires Hashable` constraint.
-`==`/`compare`/`debug` were already typeclass methods (`Eq`/`Ord`/`Debug`), not externs
-— they monomorphize / dictionary-pass at compile time; `hash` was the lone structural
-straggler, so per-type hash code is now *generated*, not computed by a runtime that
-walks an unknown layout. Net effect: **the native runtime needs zero knowledge of value
-layout** — it only ever sees opaque pointers and scalars.
+**`hash : a -> Int` → `→METHOD`. DONE 2026-06-07; per-type hashers SPECIFIED
+2026-06-08** — `hash` is a derived **`Hashable`** typeclass method (combiner
+`acc*33 + hash field`), replacing the structural extern; `hash_map`/`hash_set`
+gained a `requires Hashable` constraint. The five PRIMITIVE impls no longer
+delegate to the old structural `__hashRaw` (`Hashtbl.hash`): a type-erased native
+runtime can't content-hash a boxed value (one i64 word can't tell a tagged Int
+from a String pointer → equal Strings would pointer-hash differently → hash_map
+String keys break). Each now calls a SPECIFIED deterministic per-type hasher
+(`hashInt`/`hashChar`/`hashFloat` = a SplitMix64-finalizer mix; `hashString` =
+FNV-1a over the UTF-8 bytes; `hashBool` = 0/1), masked to `[0, 2^30)`
+(non-negative — `hash_map` does `hash % cap`). Each is byte-identical in
+`lib/eval.ml` (oracle) and `runtime/medaka_rt.c` (`mdk_hash_*`), all unsigned
+64-bit so OCaml's 63-bit int can't diverge from C's uint64 — the RNG SplitMix64
+playbook applied to hashing (a deliberate oracle-editing language-semantics
+change). `==`/`compare`/`debug` were already typeclass methods (`Eq`/`Ord`/`Debug`),
+not externs — they monomorphize / dictionary-pass at compile time; `hash` was the
+lone structural straggler, so per-type hash code is now *generated + specified*,
+not computed by a runtime that walks an unknown layout. Net effect: **the native
+runtime needs zero knowledge of value layout** — it only ever sees opaque pointers
+and scalars.
 
 **`inspect : a -> <IO> Unit` → `→METHOD` + `IO`. DONE 2026-06-07** — `inspect`
 is now `inspect x = putStrLn (debug x)` in `stdlib/io.mdk` (requires `Debug a`).
@@ -190,8 +202,13 @@ literal/print/`intToString` path on this layout (`runtime/medaka_rt.c`,
 | `intToString` | `Int -> String` | LEAF | **DONE — native-extern-catalog slice 1** (`mdk_int_to_string` → `mdk_str_lit`; first String-returning extern, proves the §2a GC-alloc contract) |
 | `floatToString` | `Float -> String` | LEAF | match `%g` rendering (see lexer float-text normalization note) |
 | `stringToFloat` | `String -> Option Float` | LEAF | alloc `Some`/`None` |
-| `debugStringLit` | `String -> String` | LEAF | escape rendering |
-| `debugCharLit` | `Char -> String` | LEAF | escape rendering |
+| `debugStringLit` | `String -> String` | LEAF | escape rendering — `mdk_debug_string_lit` (mirrors `escape_string_lit`) |
+| `debugCharLit` | `Char -> String` | LEAF | escape rendering — `mdk_debug_char_lit` (mirrors `escape_char_lit`) |
+| `hashInt` | `Int -> Int` | LEAF | SplitMix64-finalizer mix, masked `[0, 2^30)` — `mdk_hash_int` (byte-identical oracle) |
+| `hashChar` | `Char -> Int` | LEAF | `hashInt` of the codepoint — `mdk_hash_char` |
+| `hashFloat` | `Float -> Int` | LEAF | bit-cast double → u64, mix, mask — `mdk_hash_float` |
+| `hashBool` | `Bool -> Int` | LEAF | `0`/`1` — `mdk_hash_bool` |
+| `hashString` | `String -> Int` | LEAF | FNV-1a over UTF-8 bytes, masked — `mdk_hash_string` (content-hash; specified) |
 | `stringToChars` | `String -> Array Char` | LEAF | alloc array |
 | `stringFromChars` | `Array Char -> String` | LEAF | |
 | `charFromCode` | `Int -> Option Char` | LEAF | validate codepoint range |

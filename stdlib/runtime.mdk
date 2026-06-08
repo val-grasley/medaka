@@ -14,9 +14,17 @@ extern putStr : String -> <IO> Unit
 extern putStrLn : String -> <IO> Unit
 extern Ref : a -> Ref a
 extern set_ref : Ref a -> a -> <Mut> Unit
--- Raw structural hash primitive backing the `Hashable` interface impls.
--- Not for direct use: call `hash` (the Hashable method) instead.
-extern __hashRaw : a -> Int
+-- Per-type Hashable hashers — SPECIFIED deterministic algorithms, byte-identical
+-- in lib/eval.ml (oracle) and runtime/medaka_rt.c (native): hashInt/hashChar/
+-- hashFloat = SplitMix64-finalizer mix, hashString = FNV-1a, hashBool = 0/1; all
+-- masked to [0, 2^30) (non-negative).  Replaced the old structural __hashRaw,
+-- which the type-erased native runtime cannot replicate.  Called by the primitive
+-- `Hashable` impls in core.mdk; derived/compound impls compose them via `hash`.
+extern hashInt : Int -> Int
+extern hashFloat : Float -> Int
+extern hashString : String -> Int
+extern hashChar : Char -> Int
+extern hashBool : Bool -> Int
 extern pi : Float
 extern e : Float
 extern readLine : Unit -> <IO> String

@@ -1,0 +1,4 @@
+-- per-type Hashable hasher: hashInt is a SPECIFIED SplitMix64-finalizer mix of the
+-- untagged int, masked to [0, 2^30).  Byte-identical in lib/eval.ml (oracle) and
+-- runtime/medaka_rt.c (mdk_hash_int) — this gate proves emit->clang->run == oracle.
+main = hashInt 42

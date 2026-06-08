@@ -1,0 +1,3 @@
+-- debugCharLit: quoted+escaped Char rendering (the `debug` of a Char).
+-- Mirrors escape_char_lit (lib/eval.ml) in mdk_debug_char_lit.  '\n' -> '\n'.
+main = debugCharLit '\n'

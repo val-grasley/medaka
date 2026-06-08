@@ -1057,6 +1057,73 @@ emitRngExtern e env "setSeed" args = match emitArgs e env args
   _ => panic "llvm spike: setSeed takes one argument (Tier D)"
 emitRngExtern _ _ name _ = gapE ("unsupported rng extern " ++ name)
 
+-- Hashable per-type hashers (specified, byte-identical to lib/eval.ml hash_*).
+-- Each unpacks the native arg the C helper wants (untagged int / codepoint /
+-- unboxed double / String cell pointer) and tags the RAW Int result.  hashBool
+-- untags the 0/1 bool word.  See runtime/medaka_rt.c mdk_hash_*.
+isHashExtern : String -> Bool
+isHashExtern name =
+  containsStr name ["hashInt", "hashChar", "hashBool", "hashFloat", "hashString"]
+
+emitHashExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitHashExtern e env "hashInt" args = match emitArgs e env args
+  [a] =>
+    let i = untagInt e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_int(i64 " ++ i ++ ")")
+    (tagInt e r, LTInt)
+  _ => panic "llvm spike: hashInt takes one argument"
+emitHashExtern e env "hashChar" args = match emitArgs e env args
+  [a] =>
+    let cp = untagInt e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_char(i64 " ++ cp ++ ")")
+    (tagInt e r, LTInt)
+  _ => panic "llvm spike: hashChar takes one argument"
+emitHashExtern e env "hashBool" args = match emitArgs e env args
+  [a] =>
+    let b = untagInt e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_bool(i64 " ++ b ++ ")")
+    (tagInt e r, LTInt)
+  _ => panic "llvm spike: hashBool takes one argument"
+emitHashExtern e env "hashFloat" args = match emitArgs e env args
+  [a] =>
+    let d = unboxFloat e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_float(double " ++ d ++ ")")
+    (tagInt e r, LTInt)
+  _ => panic "llvm spike: hashFloat takes one argument"
+emitHashExtern e env "hashString" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_hash_string(i64 " ++ a ++ ")")
+    (tagInt e r, LTInt)
+  _ => panic "llvm spike: hashString takes one argument"
+emitHashExtern _ _ name _ = gapE ("unsupported hash extern " ++ name)
+
+-- Debug-literal externs (byte-exact quoted/escaped rendering; no oracle change).
+-- The String/Char arg word passes straight to the C helper (mdk_debug_*_lit
+-- reads the cell / untags the codepoint); result is a heap String (LTStr).
+isDebugLitExtern : String -> Bool
+isDebugLitExtern name = containsStr name ["debugStringLit", "debugCharLit"]
+
+emitDebugLitExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitDebugLitExtern e env "debugStringLit" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_debug_string_lit(i64 " ++ a ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: debugStringLit takes one argument"
+emitDebugLitExtern e env "debugCharLit" args = match emitArgs e env args
+  [a] =>
+    let cp = untagInt e a
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_debug_char_lit(i64 " ++ cp ++ ")")
+    (r, LTStr)
+  _ => panic "llvm spike: debugCharLit takes one argument"
+emitDebugLitExtern _ _ name _ = gapE ("unsupported debug-lit extern " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -1341,6 +1408,8 @@ emitApp e env app =
       else if isEnvExtern fname && hasArgs args then emitEnvExtern e env fname args
       else if isFileExtern fname && hasArgs args then emitFileExtern e env fname args
       else if isRngExtern fname && hasArgs args then emitRngExtern e env fname args
+      else if isHashExtern fname && hasArgs args then emitHashExtern e env fname args
+      else if isDebugLitExtern fname && hasArgs args then emitDebugLitExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -3586,6 +3655,13 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_random_bool(i64)"
   let _ = emit e "declare i64 @mdk_random_float(i64)"
   let _ = emit e "declare i64 @mdk_random_char(i64)"
+  let _ = emit e "declare i64 @mdk_hash_int(i64)"
+  let _ = emit e "declare i64 @mdk_hash_char(i64)"
+  let _ = emit e "declare i64 @mdk_hash_bool(i64)"
+  let _ = emit e "declare i64 @mdk_hash_float(double)"
+  let _ = emit e "declare i64 @mdk_hash_string(i64)"
+  let _ = emit e "declare i64 @mdk_debug_string_lit(i64)"
+  let _ = emit e "declare i64 @mdk_debug_char_lit(i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

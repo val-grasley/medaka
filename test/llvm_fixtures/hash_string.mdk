@@ -1,0 +1,5 @@
+-- per-type Hashable hasher: hashString is FNV-1a over the String cell's raw UTF-8
+-- bytes, masked to [0, 2^30).  This is the CONTENT-hashing the old structural
+-- __hashRaw gave but the type-erased native runtime could not — equal Strings must
+-- hash equal across backends.  Byte-identical to runtime/medaka_rt.c mdk_hash_string.
+main = hashString "hello"
