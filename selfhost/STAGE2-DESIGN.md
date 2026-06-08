@@ -1052,6 +1052,22 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   LIMITATION: a user type reusing a reserved ctor name aliases the reserved tag
   (internally consistent; the real backend resolves statically).
 
+**2.4a-14 — RNG (deterministic SplitMix64, Tier D).** Resolves the RNG gating
+  decision: Medaka's RNG is now a *specified* SplitMix64, the SAME algorithm in the
+  oracle (`lib/eval.ml` `splitmix64_next`, an `Int64` state replacing OCaml `Random`)
+  and the runtime (`mdk_next_u64` in `runtime/medaka_rt.c`), seeded identically, so
+  random* streams are byte-identical per seed (reproducible property tests +
+  cross-backend stable). Ranges preserved: `randomInt` INCLUSIVE [lo,hi], `randomFloat`
+  ∈ [-1,1), `randomChar` ASCII [32,126], `randomBool` 50/50. Parity hinges on unsigned
+  ops (OCaml `shift_right_logical`/`unsigned_rem`; C `uint64_t`) and a bit-identical
+  float path (`(next>>11) * 2^-53 * 2 - 1`) — `randomFloat` byte-matched at
+  `-0.476939056861`. `isRngExtern`/`emitRngExtern`: Int/Bool/Char tagged via `tagInt`,
+  Float boxed (`mdk_box_float`), setSeed→Unit. 6 fixtures (rng_int/bool/float/char/seq/
+  reseed; reseed=0 proves same-seed determinism). **126/126 plain byte-identical**;
+  16/16 typed; 20/20 core_ir; 20/20 eval. UNIQUE among the catalog work: it edits the
+  oracle (`lib/eval.ml`) deliberately — a language-semantics decision, not under the
+  spike "no lib/" scope guard.
+
 **Spike status after slice 10 — what's next.** The de-risking spike has now lowered
 the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
 ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in

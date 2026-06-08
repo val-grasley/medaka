@@ -1,0 +1,2 @@
+-- Tier D RNG: randomBool after a fixed seed.
+main = let _ = setSeed 7 in randomBool ()

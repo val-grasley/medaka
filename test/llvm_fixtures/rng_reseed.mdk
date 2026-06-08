@@ -1,0 +1,2 @@
+-- Tier D RNG: same seed -> same draw. Re-seeding resets the stream, so a - b = 0.
+main = let _ = setSeed 3 in let a = randomInt 0 100 in let _ = setSeed 3 in let b = randomInt 0 100 in a - b

@@ -1,0 +1,2 @@
+-- Tier D RNG: randomChar (ASCII [32,126]); project via charCode for a stable Int.
+main = let _ = setSeed 5 in charCode (randomChar ())

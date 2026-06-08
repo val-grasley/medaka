@@ -1,0 +1,2 @@
+-- Tier D RNG: state threads across calls — two draws differ and sum deterministically.
+main = let _ = setSeed 1 in let a = randomInt 0 1000 in let b = randomInt 0 1000 in a + b

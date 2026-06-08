@@ -949,6 +949,46 @@ emitFileExtern e env "readAll" args = match emitArgs e env args
   _ => panic "llvm spike: readAll takes one (Unit) argument (slice 13)"
 emitFileExtern _ _ name _ = panic ("llvm spike: unsupported file extern " ++ name)
 
+-- Tier D: RNG (deterministic SplitMix64).  The C runtime holds the state; the
+-- algorithm matches lib/eval.ml splitmix64_next, seeded identically, so output is
+-- byte-identical per seed.  randomInt/Bool/Char return RAW words tagged here;
+-- randomFloat returns a boxed Float word; setSeed is Unit.
+isRngExtern : String -> Bool
+isRngExtern name =
+  containsStr name ["randomInt", "randomBool", "randomFloat", "randomChar", "setSeed"]
+
+emitRngExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitRngExtern e env "randomInt" args = match emitArgs e env args
+  [lo, hi] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_random_int(i64 " ++ lo ++ ", i64 " ++ hi ++ ")")
+    (tagInt e r, LTInt)
+  _ => panic "llvm spike: randomInt takes two arguments (Tier D)"
+emitRngExtern e env "randomBool" args = match emitArgs e env args
+  [u] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_random_bool(i64 " ++ u ++ ")")
+    (tagInt e r, LTBool)
+  _ => panic "llvm spike: randomBool takes one (Unit) argument (Tier D)"
+emitRngExtern e env "randomFloat" args = match emitArgs e env args
+  [u] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_random_float(i64 " ++ u ++ ")")
+    (r, LTFloat)
+  _ => panic "llvm spike: randomFloat takes one (Unit) argument (Tier D)"
+emitRngExtern e env "randomChar" args = match emitArgs e env args
+  [u] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_random_char(i64 " ++ u ++ ")")
+    (tagInt e r, LTChar)
+  _ => panic "llvm spike: randomChar takes one (Unit) argument (Tier D)"
+emitRngExtern e env "setSeed" args = match emitArgs e env args
+  [n] =>
+    let _ = emit e ("  call void @mdk_set_seed(i64 " ++ n ++ ")")
+    ("1", LTUnit)
+  _ => panic "llvm spike: setSeed takes one argument (Tier D)"
+emitRngExtern _ _ name _ = panic ("llvm spike: unsupported rng extern " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -1133,6 +1173,7 @@ emitApp e env app =
       else if isAdtExtern fname && hasArgs args then emitAdtExtern e env fname args
       else if isEnvExtern fname && hasArgs args then emitEnvExtern e env fname args
       else if isFileExtern fname && hasArgs args then emitFileExtern e env fname args
+      else if isRngExtern fname && hasArgs args then emitRngExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -3109,6 +3150,11 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_read_line(i64)"
   let _ = emit e "declare i64 @mdk_read_line_opt(i64)"
   let _ = emit e "declare i64 @mdk_read_all(i64)"
+  let _ = emit e "declare void @mdk_set_seed(i64)"
+  let _ = emit e "declare i64 @mdk_random_int(i64, i64)"
+  let _ = emit e "declare i64 @mdk_random_bool(i64)"
+  let _ = emit e "declare i64 @mdk_random_float(i64)"
+  let _ = emit e "declare i64 @mdk_random_char(i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

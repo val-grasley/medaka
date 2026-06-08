@@ -510,15 +510,26 @@ locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
   `arrayMakeWith` — *rewritten in Medaka* (a mergesort/introsort over `Array`), not C
   externs (RUNTIME-DESIGN §4: the comparator/builder is a Medaka closure). Skill:
   `extend-stdlib`. *Sonnet: good, but a stdlib task, not a runtime task.*
-- **RNG — `randomInt`/`randomBool`/`randomFloat`/`randomChar`/`setSeed`.** **Blocked
-  on a gating decision, NOT mechanical:** RNG output is nondeterministic, so it
-  cannot be byte-diffed against the OCaml-`Random` oracle. Needs either a shared
-  deterministic PRNG (same algorithm in `lib/eval.ml` and the runtime, seeded) or a
-  non-diff structural test. *Escalate — design first.*
+- ✅ **RNG — `randomInt`/`randomBool`/`randomFloat`/`randomChar`/`setSeed`.** **DONE
+  2026-06-07 (deterministic SplitMix64).** Resolved the gating decision: Medaka's RNG
+  is now a *specified* SplitMix64, the SAME algorithm in `lib/eval.ml`
+  (`splitmix64_next`, an `Int64` state — replaces OCaml `Random`) and the runtime
+  (`mdk_next_u64` in `runtime/medaka_rt.c`), seeded identically → byte-identical
+  streams per seed, reproducible property tests, cross-backend stable. Ranges
+  preserved from the old oracle: `randomInt` INCLUSIVE [lo,hi]; `randomFloat` ∈ [-1,1);
+  `randomChar` ASCII [32,126]; `randomBool` 50/50. Parity: OCaml uses
+  `shift_right_logical`/`unsigned_rem`; C `uint64_t`; the float path is bit-identical
+  (`randomFloat` byte-matched at `-0.476939056861`). `isRngExtern`/`emitRngExtern` in
+  the emitter (Int/Bool/Char tagged via `tagInt`, Float boxed, setSeed→Unit). 6
+  fixtures (rng_int/bool/float/char/seq/reseed; `reseed`=0 proves same-seed
+  determinism). **126/126 plain byte-identical**; 16/16 typed; 20/20 core_ir; 20/20
+  eval. NOTE: this is the one Tier-D item that edits the oracle (`lib/eval.ml`) — a
+  deliberate language-semantics decision, not under the spike scope guard.
 - **`hash` → `→METHOD` (derived `Hashable`).** Convert the lone structural extern to
   a derived typeclass method (same `deriving` machinery as `Eq`). A typechecker/
   desugar lift, not a runtime extern. Skill: `add-language-feature`. *Escalate — not
-  a catalog slice.*
+  a catalog slice. Decided 2026-06-07: DO IT (combiner `acc*33 + hash field`; migrate
+  hash_map/hash_set off the extern).*
 
 Dependency order for execution: **2–7 in any order (no deps) → 8 → {9, 14} → 10 →
 {11, 12, 13}**; 15 / RNG / hash are independent and separately scoped. Slices 2–9 and

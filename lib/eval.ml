@@ -99,6 +99,21 @@ let error_hook : (string -> unit) ref = ref (fun s -> output_string stderr s; fl
    ["a"; "b"; "c"]). Set by bin/main.ml's run driver; empty everywhere else. *)
 let program_args : string list ref = ref []
 
+(* Deterministic RNG state — SplitMix64.  The SAME algorithm runs in the native
+   runtime (runtime/medaka_rt.c mdk_next_u64), seeded identically, so random*
+   output is byte-identical per seed and cross-backend stable (project decision
+   2026-06-07: reproducible property tests + WasmGC-portable streams).  State is a
+   uint64 held in an Int64; default 0; setSeed sets it.  Use ONLY unsigned 64-bit
+   ops so OCaml and C agree. *)
+let rng_state : int64 ref = ref 0L
+
+let splitmix64_next () : int64 =
+  rng_state := Int64.add !rng_state 0x9E3779B97F4A7C15L;
+  let z = !rng_state in
+  let z = Int64.mul (Int64.logxor z (Int64.shift_right_logical z 30)) 0xBF58476D1CE4E5B9L in
+  let z = Int64.mul (Int64.logxor z (Int64.shift_right_logical z 27)) 0x94D049BB133111EBL in
+  Int64.logxor z (Int64.shift_right_logical z 31)
+
 (* Extra name→value bindings injected before eval_program runs — used by the
    check-policy demo harness to stub platform-supplied externs (cacheGet etc.)
    without modifying the primitives table.  Reset to [] after each use. *)
@@ -1412,15 +1427,21 @@ let primitives : (string * value) list =
         match lo, hi with
         | VInt lo', VInt hi' ->
           let range = hi' - lo' + 1 in
-          VInt (if range <= 0 then lo' else lo' + Random.int range)
+          if range <= 0 then VInt lo'
+          else VInt (lo' + Int64.to_int
+                       (Int64.unsigned_rem (splitmix64_next ()) (Int64.of_int range)))
         | _ -> raise (Eval_error ("randomInt: expected Int Int", None)))));
-    ("randomBool", VPrim (fun _ -> VBool (Random.bool ())));
-    ("randomFloat", VPrim (fun _ -> VFloat (Random.float 2.0 -. 1.0)));
+    ("randomBool", VPrim (fun _ ->
+      VBool (Int64.logand (splitmix64_next ()) 1L = 1L)));
+    ("randomFloat", VPrim (fun _ ->
+      let bits = Int64.shift_right_logical (splitmix64_next ()) 11 in
+      VFloat (Int64.to_float bits *. (1.0 /. 9007199254740992.0) *. 2.0 -. 1.0)));
     ("randomChar", VPrim (fun _ ->
-      VChar (String.make 1 (Char.chr (32 + Random.int 95)))));
+      let c = 32 + Int64.to_int (Int64.unsigned_rem (splitmix64_next ()) 95L) in
+      VChar (String.make 1 (Char.chr c))));
     ("setSeed", VPrim (fun n ->
       match n with
-      | VInt seed -> Random.init seed; VUnit
+      | VInt seed -> rng_state := Int64.of_int seed; VUnit
       | _ -> raise (Eval_error ("setSeed: expected Int", None))));
     ("charToStr", VPrim (fun c ->
       match c with

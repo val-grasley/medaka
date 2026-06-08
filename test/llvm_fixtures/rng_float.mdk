@@ -1,0 +1,2 @@
+-- Tier D RNG: randomFloat in [-1,1), boxed Float. Both sides do identical IEEE ops.
+main = let _ = setSeed 99 in randomFloat ()

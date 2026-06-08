@@ -1,0 +1,3 @@
+-- Tier D RNG: deterministic SplitMix64. setSeed then a draw is reproducible, so
+-- the native binary and the tree-walker oracle (same algorithm) agree byte-for-byte.
+main = let _ = setSeed 42 in randomInt 1 6

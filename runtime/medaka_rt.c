@@ -588,3 +588,40 @@ long long mdk_read_all(long long u) {
   }
   long long r = mdk_str_lit(buf, (long long)len); free(buf); return r;
 }
+
+/* ── RNG — deterministic SplitMix64 (native extern catalog, Tier D) ───────────
+ * The SAME algorithm runs in the tree-walker oracle (lib/eval.ml splitmix64_next),
+ * seeded identically, so random* output is byte-identical per seed and stable
+ * across backends (project decision 2026-06-07). State is a uint64; default 0;
+ * mdk_set_seed sets it. Range semantics preserved from the old oracle: randomInt
+ * INCLUSIVE [lo,hi]; randomFloat in [-1,1); randomChar ASCII [32,126]. */
+static unsigned long long mdk_rng_state = 0;
+
+static unsigned long long mdk_next_u64(void) {
+  mdk_rng_state += 0x9E3779B97F4A7C15ULL;
+  unsigned long long z = mdk_rng_state;
+  z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+  z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+  return z ^ (z >> 31);
+}
+
+void mdk_set_seed(long long tagged) {        /* setSeed : Int -> Unit */
+  mdk_rng_state = (unsigned long long)(tagged >> 1);
+}
+/* randomInt : Int -> Int -> Int (INCLUSIVE).  Returns a RAW int — the emitter tags it. */
+long long mdk_random_int(long long lo_t, long long hi_t) {
+  long long lo = lo_t >> 1, hi = hi_t >> 1;
+  long long range = hi - lo + 1;
+  if (range <= 0) return lo;
+  return lo + (long long)(mdk_next_u64() % (unsigned long long)range);
+}
+long long mdk_random_bool(long long u) { (void)u;  /* RAW 0/1 — emitter tags to Bool */
+  return (long long)(mdk_next_u64() & 1ULL);
+}
+long long mdk_random_float(long long u) { (void)u;  /* boxed Float word */
+  unsigned long long bits = mdk_next_u64() >> 11;
+  return mdk_box_float((double)bits * (1.0 / 9007199254740992.0) * 2.0 - 1.0);
+}
+long long mdk_random_char(long long u) { (void)u;  /* RAW codepoint — emitter tags to Char */
+  return 32 + (long long)(mdk_next_u64() % 95ULL);
+}
