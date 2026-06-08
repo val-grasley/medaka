@@ -11,7 +11,7 @@
 -- the prelude), effect rows, records, interfaces/impls + constraint solving,
 -- and explicit type signatures.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), MethodDefault(..), Require(..), ImplMethod(..), DataVis(..), Decl(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), MethodDefault(..), Require(..), ImplMethod(..), DataVis(..), Decl(..), PropParam(..), LcQual(..), Section(..), InterpPart(..), GuardArm(..)}
 import desugar.{mapProg}
 -- The type-aware non-exhaustive-`match` check (`check_match` in lib/exhaust.ml)
 -- reuses the Maranget matrix machinery already ported in exhaust.mdk — the only
@@ -2031,8 +2031,25 @@ rewriteRPDict _ _ e = e
 -- [argNames]) to EMethodAt, so inferMethodAt can stamp their route from the
 -- discriminating-argument type.  [argNames] is empty unless argStampEnabled (the
 -- emit path), so the golden/oracle paths get the same tree prePassDict produced.
+-- The golden/oracle path (argNames == []) keeps the scope-BLIND mapProg rewrite,
+-- byte-for-byte identical to prePassDict.  The emit path (argNames non-empty, set
+-- only under argStampEnabled) instead uses the SCOPE-AWARE rewriteArgScoped below:
+-- an arg-position interface-method name (in argNames) that is shadowed by a local
+-- binder (a parameter, let, lambda arg, or match-pattern variable) stays a plain
+-- EVar rather than becoming an EMethodAt.  This mirrors the reference typecheck's
+-- Phase-95 `env.locals` guard (lib/typecheck.ml's EVar arm): the OCaml marker is
+-- likewise scope-blind and the reference RECOVERS at inference by skipping the
+-- scope-blind method table for locally-bound names.  Without it, a compiler
+-- function whose parameter happens to share a method name (`arithOp lt rt`,
+-- `composeOp gt ht`, `exprToPat … sub`) has that parameter mis-marked as a method
+-- occurrence → arg-tag dispatch with no impl groups at emit time.  Gated on
+-- argNames so the golden path is provably unchanged.  rpNames/dictNames stay
+-- scope-blind in BOTH paths (no return-position method or constrained-fn name is
+-- shadowed by a local in the corpus, so they need no guard).
 prePassDictArg : List String -> List String -> List String -> List Decl -> List Decl
-prePassDictArg rpNames dictNames argNames prog = mapProg (rewriteRPDictArg rpNames dictNames argNames) prog
+prePassDictArg rpNames dictNames [] prog = mapProg (rewriteRPDictArg rpNames dictNames []) prog
+prePassDictArg rpNames dictNames argNames prog =
+  map (prePassDeclScoped (ArgRw rpNames dictNames argNames)) prog
 
 rewriteRPDictArg : List String -> List String -> List String -> Expr -> Expr
 rewriteRPDictArg rpNames dictNames argNames (EVar n)
@@ -2041,6 +2058,217 @@ rewriteRPDictArg rpNames dictNames argNames (EVar n)
   | containsName n dictNames = EDictAt n (Ref [])
   | otherwise = EVar n
 rewriteRPDictArg _ _ _ e = e
+
+-- ── scope-aware arg-position prepass (emit path; D3a shadow guard) ───────────
+-- The three name sets carried through the scope-threaded rewrite (rp = return-
+-- position methods, dn = constrained-fn dict names, an = arg-position methods).
+data ArgRw = ArgRw (List String) (List String) (List String)
+
+-- rewrite a decl body with its own parameters seeded into the bound set.  Mirrors
+-- desugar's mapDecl coverage exactly (DFunDef / DInterface / DImpl / DProp /
+-- DTest / DBench / DAttrib; everything else — incl. DLetGroup — left unchanged),
+-- so with the emit path off this would degenerate to the same node set mapProg
+-- visits.
+prePassDeclScoped : ArgRw -> Decl -> Decl
+prePassDeclScoped rw (DFunDef pub n ps e) =
+  DFunDef pub n ps (rewriteArgScoped rw (patVarsListTc ps) e)
+prePassDeclScoped rw (d@DInterface { methods, ... }) =
+  DInterface { d | methods = map (prePassIfaceMethodScoped rw) methods }
+prePassDeclScoped rw (d@DImpl { methods, ... }) =
+  DImpl { d | methods = map (prePassImplMethodScoped rw) methods }
+prePassDeclScoped rw (DProp pub name params body) =
+  DProp pub name params (rewriteArgScoped rw (propParamNamesTc params) body)
+prePassDeclScoped rw (DTest pub name body) = DTest pub name (rewriteArgScoped rw [] body)
+prePassDeclScoped rw (DBench pub name body) = DBench pub name (rewriteArgScoped rw [] body)
+prePassDeclScoped rw (DAttrib attrs d) = DAttrib attrs (prePassDeclScoped rw d)
+prePassDeclScoped _ d = d
+
+prePassIfaceMethodScoped : ArgRw -> IfaceMethod -> IfaceMethod
+prePassIfaceMethodScoped _ (IfaceMethod n ty None) = IfaceMethod n ty None
+prePassIfaceMethodScoped rw (IfaceMethod n ty (Some (MethodDefault ps e))) =
+  IfaceMethod n ty (Some (MethodDefault ps (rewriteArgScoped rw (patVarsListTc ps) e)))
+
+prePassImplMethodScoped : ArgRw -> ImplMethod -> ImplMethod
+prePassImplMethodScoped rw (ImplMethod n ps e) =
+  ImplMethod n ps (rewriteArgScoped rw (patVarsListTc ps) e)
+
+propParamNamesTc : List PropParam -> List String
+propParamNamesTc ps = map propParamName ps
+
+propParamName : PropParam -> String
+propParamName (PropParam n _) = n
+
+-- the core scope-threaded rewrite.  `bound` is the set of names in scope as
+-- locals at this node.  At an EVar: rp/dn arms are scope-blind (unchanged); the
+-- arg-position arm fires only when the name is NOT shadowed by a local.  Binders
+-- (ELam/ELet/ELetGroup/EMatch arms/EBlock/EDo/EListComp + the where/do/guard
+-- binders) extend `bound`; every other node recurses into its children with the
+-- same `bound`.
+rewriteArgScoped : ArgRw -> List String -> Expr -> Expr
+rewriteArgScoped (ArgRw rp dn an) bound (EVar n)
+  | containsName n rp = EMethodAt n (Ref RNone) (Ref []) (Ref [])
+  | containsName n an && not (containsName n bound) = EMethodAt n (Ref RNone) (Ref []) (Ref [])
+  | containsName n dn = EDictAt n (Ref [])
+  | otherwise = EVar n
+-- binders
+rewriteArgScoped rw bound (ELam ps body) =
+  ELam ps (rewriteArgScoped rw (patVarsListTc ps ++ bound) body)
+rewriteArgScoped rw bound (ELet m r p e1 e2) =
+  let pv = patVarsTc p
+  let b1 = if r then pv ++ bound else bound
+  ELet m r p (rewriteArgScoped rw b1 e1) (rewriteArgScoped rw (pv ++ bound) e2)
+rewriteArgScoped rw bound (ELetGroup binds e2) =
+  let bnd = letBindNamesTc binds ++ bound
+  ELetGroup (map (rewriteArgLetBind rw bnd) binds) (rewriteArgScoped rw bnd e2)
+rewriteArgScoped rw bound (EMatch e0 arms) =
+  EMatch (rewriteArgScoped rw bound e0) (map (rewriteArgArm rw bound) arms)
+rewriteArgScoped rw bound (EBlock stmts) = EBlock (rewriteArgStmts rw bound stmts)
+rewriteArgScoped rw bound (EDo stmts) = EDo (rewriteArgStmts rw bound stmts)
+rewriteArgScoped rw bound (EListComp body quals) =
+  let (quals2, bnd) = rewriteArgQuals rw bound quals
+  EListComp (rewriteArgScoped rw bnd body) quals2
+-- non-binder composites: recurse children with the same bound
+rewriteArgScoped rw bound (EApp f x) =
+  EApp (rewriteArgScoped rw bound f) (rewriteArgScoped rw bound x)
+rewriteArgScoped rw bound (EIf c t e) =
+  EIf (rewriteArgScoped rw bound c) (rewriteArgScoped rw bound t) (rewriteArgScoped rw bound e)
+rewriteArgScoped rw bound (EBinOp op l r) =
+  EBinOp op (rewriteArgScoped rw bound l) (rewriteArgScoped rw bound r)
+rewriteArgScoped rw bound (EUnOp op x) = EUnOp op (rewriteArgScoped rw bound x)
+rewriteArgScoped rw bound (EInfix op l r) =
+  EInfix op (rewriteArgScoped rw bound l) (rewriteArgScoped rw bound r)
+rewriteArgScoped rw bound (EFieldAccess e0 n) = EFieldAccess (rewriteArgScoped rw bound e0) n
+rewriteArgScoped rw bound (ETuple es) = ETuple (map (rewriteArgScoped rw bound) es)
+rewriteArgScoped rw bound (EListLit es) = EListLit (map (rewriteArgScoped rw bound) es)
+rewriteArgScoped rw bound (EArrayLit es) = EArrayLit (map (rewriteArgScoped rw bound) es)
+rewriteArgScoped rw bound (ERangeList lo hi i) =
+  ERangeList (rewriteArgScoped rw bound lo) (rewriteArgScoped rw bound hi) i
+rewriteArgScoped rw bound (ERangeArray lo hi i) =
+  ERangeArray (rewriteArgScoped rw bound lo) (rewriteArgScoped rw bound hi) i
+rewriteArgScoped rw bound (ESlice e0 lo hi i) =
+  ESlice (rewriteArgScoped rw bound e0) (rewriteArgScoped rw bound lo) (rewriteArgScoped rw bound hi) i
+rewriteArgScoped rw bound (EIndex e0 i) =
+  EIndex (rewriteArgScoped rw bound e0) (rewriteArgScoped rw bound i)
+rewriteArgScoped rw bound (EAnnot e0 t) = EAnnot (rewriteArgScoped rw bound e0) t
+rewriteArgScoped rw bound (EHeadAnnot e0 t) = EHeadAnnot (rewriteArgScoped rw bound e0) t
+rewriteArgScoped rw bound (EQuestion e0) = EQuestion (rewriteArgScoped rw bound e0)
+rewriteArgScoped rw bound (ERecordCreate n fs) = ERecordCreate n (map (rewriteArgField rw bound) fs)
+rewriteArgScoped rw bound (ERecordUpdate e0 fs) =
+  ERecordUpdate (rewriteArgScoped rw bound e0) (map (rewriteArgField rw bound) fs)
+rewriteArgScoped rw bound (EVariantUpdate c e0 fs) =
+  EVariantUpdate c (rewriteArgScoped rw bound e0) (map (rewriteArgField rw bound) fs)
+rewriteArgScoped rw bound (EStringInterp parts) = EStringInterp (map (rewriteArgInterp rw bound) parts)
+rewriteArgScoped rw bound (EGuards arms) = EGuards (map (rewriteArgGuardArm rw bound) arms)
+rewriteArgScoped rw bound (EFunction arms) = EFunction (map (rewriteArgArm rw bound) arms)
+rewriteArgScoped rw bound (ESection (SecRight op e0)) = ESection (SecRight op (rewriteArgScoped rw bound e0))
+rewriteArgScoped rw bound (ESection (SecLeft e0 op)) = ESection (SecLeft (rewriteArgScoped rw bound e0) op)
+rewriteArgScoped rw bound (EMapLit n kvs) = EMapLit n (map (rewriteArgKv rw bound) kvs)
+rewriteArgScoped rw bound (ESetLit n es) = ESetLit n (map (rewriteArgScoped rw bound) es)
+rewriteArgScoped rw bound (EAsPat x sub) = EAsPat x (rewriteArgScoped rw bound sub)
+-- leaves (ELit / EMethodRef / EDictApp / EVarAt / EMethodAt / EDictAt / SecBare)
+rewriteArgScoped _ _ e = e
+
+rewriteArgField : ArgRw -> List String -> FieldAssign -> FieldAssign
+rewriteArgField rw bound (FieldAssign n e) = FieldAssign n (rewriteArgScoped rw bound e)
+
+rewriteArgKv : ArgRw -> List String -> (Expr, Expr) -> (Expr, Expr)
+rewriteArgKv rw bound (k, v) = (rewriteArgScoped rw bound k, rewriteArgScoped rw bound v)
+
+rewriteArgInterp : ArgRw -> List String -> InterpPart -> InterpPart
+rewriteArgInterp _ _ (InterpStr s) = InterpStr s
+rewriteArgInterp rw bound (InterpExpr e) = InterpExpr (rewriteArgScoped rw bound e)
+
+rewriteArgLetBind : ArgRw -> List String -> LetBind -> LetBind
+rewriteArgLetBind rw bound (LetBind n clauses) = LetBind n (map (rewriteArgFunClause rw bound) clauses)
+
+rewriteArgFunClause : ArgRw -> List String -> FunClause -> FunClause
+rewriteArgFunClause rw bound (FunClause ps body) =
+  FunClause ps (rewriteArgScoped rw (patVarsListTc ps ++ bound) body)
+
+-- a match/function arm: the pattern binds for the guards + body; a `| p <- e`
+-- guard binds for later guards + the body (threaded left-to-right).
+rewriteArgArm : ArgRw -> List String -> Arm -> Arm
+rewriteArgArm rw bound (Arm p gs body) =
+  let b0 = patVarsTc p ++ bound
+  let (gs2, bnd) = rewriteArgGuards rw b0 gs
+  Arm p gs2 (rewriteArgScoped rw bnd body)
+
+rewriteArgGuardArm : ArgRw -> List String -> GuardArm -> GuardArm
+rewriteArgGuardArm rw bound (GuardArm gs body) =
+  let (gs2, bnd) = rewriteArgGuards rw bound gs
+  GuardArm gs2 (rewriteArgScoped rw bnd body)
+
+rewriteArgGuards : ArgRw -> List String -> List Guard -> (List Guard, List String)
+rewriteArgGuards _ bound [] = ([], bound)
+rewriteArgGuards rw bound (GBool e :: rest) =
+  let e2 = rewriteArgScoped rw bound e
+  let (rest2, bnd) = rewriteArgGuards rw bound rest
+  (GBool e2 :: rest2, bnd)
+rewriteArgGuards rw bound (GBind p e :: rest) =
+  let e2 = rewriteArgScoped rw bound e
+  let (rest2, bnd) = rewriteArgGuards rw (patVarsTc p ++ bound) rest
+  (GBind p e2 :: rest2, bnd)
+
+-- do/block statements: a DoBind/DoLet/DoLetElse pattern binds for SUBSEQUENT
+-- statements (a recursive DoLet also for its own RHS).
+rewriteArgStmts : ArgRw -> List String -> List DoStmt -> List DoStmt
+rewriteArgStmts _ _ [] = []
+rewriteArgStmts rw bound (DoExpr e :: rest) =
+  DoExpr (rewriteArgScoped rw bound e) :: rewriteArgStmts rw bound rest
+rewriteArgStmts rw bound (DoBind p e :: rest) =
+  DoBind p (rewriteArgScoped rw bound e) :: rewriteArgStmts rw (patVarsTc p ++ bound) rest
+rewriteArgStmts rw bound (DoLet m r p e :: rest) =
+  let b1 = if r then patVarsTc p ++ bound else bound
+  DoLet m r p (rewriteArgScoped rw b1 e) :: rewriteArgStmts rw (patVarsTc p ++ bound) rest
+rewriteArgStmts rw bound (DoAssign x e :: rest) =
+  DoAssign x (rewriteArgScoped rw bound e) :: rewriteArgStmts rw bound rest
+rewriteArgStmts rw bound (DoFieldAssign x fs e :: rest) =
+  DoFieldAssign x fs (rewriteArgScoped rw bound e) :: rewriteArgStmts rw bound rest
+rewriteArgStmts rw bound (DoLetElse p e alt :: rest) =
+  DoLetElse p (rewriteArgScoped rw bound e) (rewriteArgScoped rw bound alt)
+    :: rewriteArgStmts rw (patVarsTc p ++ bound) rest
+
+-- list-comprehension qualifiers: a generator/let binds for later qualifiers + the
+-- body (the LCLet Bool is a mut flag, never recursive, so its RHS sees no binding).
+rewriteArgQuals : ArgRw -> List String -> List LcQual -> (List LcQual, List String)
+rewriteArgQuals _ bound [] = ([], bound)
+rewriteArgQuals rw bound (LCGen p e :: rest) =
+  let e2 = rewriteArgScoped rw bound e
+  let (rest2, bnd) = rewriteArgQuals rw (patVarsTc p ++ bound) rest
+  (LCGen p e2 :: rest2, bnd)
+rewriteArgQuals rw bound (LCGuard e :: rest) =
+  let e2 = rewriteArgScoped rw bound e
+  let (rest2, bnd) = rewriteArgQuals rw bound rest
+  (LCGuard e2 :: rest2, bnd)
+rewriteArgQuals rw bound (LCLet m p e :: rest) =
+  let e2 = rewriteArgScoped rw bound e
+  let (rest2, bnd) = rewriteArgQuals rw (patVarsTc p ++ bound) rest
+  (LCLet m p e2 :: rest2, bnd)
+
+letBindNamesTc : List LetBind -> List String
+letBindNamesTc binds = map letBindNameTc binds
+
+letBindNameTc : LetBind -> String
+letBindNameTc (LetBind n _) = n
+
+-- the variables a pattern binds (local copy; llvm_emit's patVars isn't importable
+-- here, and this one also covers PRec field/pun binders).
+patVarsTc : Pat -> List String
+patVarsTc (PVar x) = [x]
+patVarsTc (PCon _ args) = patVarsListTc args
+patVarsTc (PCons h t) = patVarsTc h ++ patVarsTc t
+patVarsTc (PTuple ps) = patVarsListTc ps
+patVarsTc (PList ps) = patVarsListTc ps
+patVarsTc (PAs x p) = x :: patVarsTc p
+patVarsTc (PRec _ fields _) = concatMapL recPatFieldVarsTc fields
+patVarsTc _ = []
+
+patVarsListTc : List Pat -> List String
+patVarsListTc ps = concatMapL patVarsTc ps
+
+recPatFieldVarsTc : RecPatField -> List String
+recPatFieldVarsTc (RecPatField label None) = [label]
+recPatFieldVarsTc (RecPatField _ (Some p)) = patVarsTc p
 
 -- interface methods carrying a method-level constraint (a `=>` over a tyvar that is
 -- NOT the interface param, e.g. foldMap's `Monoid m`) — rewritten to EMethodAt
