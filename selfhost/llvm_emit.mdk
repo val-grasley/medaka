@@ -1769,10 +1769,17 @@ emitClosureAlloc e lamName captureWords =
 
 -- emit a CLam: compute its captured set, lift its body to a top-level define, and
 -- allocate the closure cell capturing the live operand words.
+-- E2b — a CLam whose params are NOT all plain `PVar` (a tuple/constructor
+-- destructuring lambda) routes through `emitLamPatDefine`: the SAME lifted-frame
+-- machinery as `emitLamGo`, but the patterned params are bound by a single-clause
+-- decision tree (`emitClauseTree`) over the `%argK` words instead of a verbatim
+-- `paramEnv`.  Capture computation is identical — `patVarNames` already collects
+-- nested pattern vars, so the patterned param vars are correctly excluded from the
+-- captured set.  Closes the lambda half of EMITTER-GAPS #5.
 emitLam : Emit -> List (String, (String, LTy)) -> List Pat -> CExpr -> <Mut> (String, LTy)
 emitLam e env pats body =
   if allPVar pats then emitLamGo e env pats body
-  else gapE "non-variable lambda parameter pattern (slice 4: plain-variable lambda params only)"
+  else emitLamPat e env pats body
 
 emitLamGo : Emit -> List (String, (String, LTy)) -> List Pat -> CExpr -> <Mut> (String, LTy)
 emitLamGo e env pats body =
@@ -1783,6 +1790,15 @@ emitLamGo e env pats body =
   let _ = emitLamDefine e lamName pats captured body
   emitClosureAlloc e lamName captureWords
 
+emitLamPat : Emit -> List (String, (String, LTy)) -> List Pat -> CExpr -> <Mut> (String, LTy)
+emitLamPat e env pats body =
+  let lamName = "mdk_lam" ++ intToString (freshId e)
+  let pnames = patVarNames pats
+  let captured = keepInEnv env (dedupS (freeVars pnames body))
+  let captureWords = capWords env captured
+  let _ = emitPatLamDefine e lamName [] pats captured body
+  emitClosureAlloc e lamName captureWords
+
 -- emit a RECURSIVE function-`let` closure (slice 5b): lambda-lift exactly like
 -- emitLam, but EXCLUDE the binding's own name `f` from the captured set (it is the
 -- closure cell itself, not an external free variable) and, inside the lifted body,
@@ -1790,7 +1806,7 @@ emitLamGo e env pats body =
 emitRecLam : Emit -> List (String, (String, LTy)) -> String -> List Pat -> CExpr -> <Mut> (String, LTy)
 emitRecLam e env f pats body =
   if allPVar pats then emitRecLamGo e env f pats body
-  else gapE "non-variable recursive-let lambda parameter pattern (slice 5b)"
+  else emitRecLamPat e env f pats body
 
 emitRecLamGo : Emit -> List (String, (String, LTy)) -> String -> List Pat -> CExpr -> <Mut> (String, LTy)
 emitRecLamGo e env f pats body =
@@ -1799,6 +1815,19 @@ emitRecLamGo e env f pats body =
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
   let captureWords = capWords env captured
   let _ = emitRecLamDefine e lamName f pats captured body
+  emitClosureAlloc e lamName captureWords
+
+-- E2b — recursive-`let` lambda with non-`PVar` params: same patterned-frame body
+-- as `emitLamPat`, but binds `f -> %clos` ahead of captures so a self-call
+-- re-enters the same code with the same cell (mirrors `emitRecLamGo` vs
+-- `emitLamGo`).  `f` is removed from the free set before computing captures.
+emitRecLamPat : Emit -> List (String, (String, LTy)) -> String -> List Pat -> CExpr -> <Mut> (String, LTy)
+emitRecLamPat e env f pats body =
+  let lamName = "mdk_lam" ++ intToString (freshId e)
+  let pnames = patVarNames pats
+  let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
+  let captureWords = capWords env captured
+  let _ = emitPatLamDefine e lamName [(f, ("%clos", LTClosure))] pats captured body
   emitClosureAlloc e lamName captureWords
 
 -- like emitLamDefine, but prepends `f -> %clos` to the body's env so the lifted
@@ -1812,6 +1841,31 @@ emitRecLamDefine e lamName f pats captured body =
   let cenv = loadCaptures e captured 0
   let penv = paramEnv pats (allInt pats) 0
   let _ = emitFnBody e (((f, ("%clos", LTClosure)) :: cenv) ++ penv) lamName body
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  set_ref (bufRef e) saved
+
+-- E2b — emit a lifted lambda whose params are NON-variable patterns, into the side
+-- buffer (same swap discipline as emitLamDefine).  Captures load from `%clos`
+-- fields 1.., the patterned params are the synthetic `aK` scrutinee words
+-- (`%argK`, via `implParamEnv`), and the SINGLE clause's body is lowered by
+-- `emitClauseTree` — the SAME decision-tree path the patterned top-level fns use
+-- (E1a) — so a tuple/constructor param binds its vars via `bindPattern` and the
+-- body `ret`s.  `extra` is the leading env binding the recursive case prepends
+-- (`f -> %clos`); the non-recursive case passes `[]`.  Lambda params/captures
+-- default to Int (`implParamEnv`) — the documented slice-4 scope limit, identical
+-- to emitLamDefine's `paramEnv … (allInt pats)`.
+emitPatLamDefine : Emit -> String -> List (String, (String, LTy)) -> List Pat -> List String -> CExpr -> <Mut> Unit
+emitPatLamDefine e lamName extra pats captured body =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let arity = listLen pats
+  let _ = emit e ("define i64 @" ++ lamName ++ "(i64 %clos, " ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "entry:"
+  let cenv = loadCaptures e captured 0
+  let _ = emitClauseTree e ((extra ++ cenv) ++ implParamEnv arity 0) arity [(pats, body)]
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value

@@ -1,0 +1,7 @@
+-- E2b: a directly-applied lambda whose SOLE parameter is a NON-variable pattern
+-- (a tuple `(a, b)`).  Confirms the lambda half of gap #5 — `emitLam` now routes a
+-- non-`allPVar` lambda through the same decision-tree path the patterned fns use,
+-- where the tuple pattern binds `a`/`b` via `bindPattern` inside the lifted body,
+-- instead of panicking on the slice-4 plain-variable requirement.  Reduces to a
+-- scalar Int (7).
+main = ((a, b) => a + b) (3, 4)

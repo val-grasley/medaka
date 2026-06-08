@@ -40,7 +40,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 | 2 | **arg-tag dispatch on primitive receiver** (no cell tag)  | **0**   | 540      | Routing-not-wired (NOT new)      | port D3b arg-pos dict-passing to `elaborateModules` |
 | 3 | **`++` as `CBinPrim`** (list/string concat)               | ~~14~~ **4\*\*** | ~~179~~  | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — 4 events remain where param type unknown (`append`/`ap` impls) |
 | 4 | **non-variable parameter pattern** (fn)                   | 4       | 150      | Desugar/lower-fixable            | lower `f (a,b)=…` → param + body `match` |
-| 5 | **non-variable lambda parameter pattern**                 | 1       | 108      | Desugar/lower-fixable            | same as #4 for `CLam` |
+| 5 | **non-variable lambda parameter pattern**                 | ~~1~~ **0** | ~~108~~ **0** | Desugar/lower-fixable          | ✅ **CLOSED (E2b)** — same decision-tree lowering as #4, inside the lifted-lambda frame |
 | 6 | **`::` as `CBinPrim`** (cons)                              | ~~2~~ **0** | ~~90~~ **0** | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — `emitCtorAlloc e "Cons" [lw, rw]` |
 | 7 | **reference to top-level value / mutable `Ref` binding**  | 7\*     | 254      | Emitter                          | emit top-level non-fn bindings as **globals** |
 | 8 | **`otherwise`** (guard constant)                          | 0       | 88       | Front-end residue                | add to `emitVar` constants (= `True`) |
@@ -127,13 +127,27 @@ that owns no constructors (an `Int`/`String`/… immediate carries no cell tag).
   core total: 57→44 (E1a) → **32 (E2a)**. New fixtures: `concat_str`, `cons_list`,
   `concat_list`, `concat_str_unicode` — all byte-identical (140/140 untyped, 25/25 typed).
 
-#### 4 / 5 — non-variable parameter patterns, fn + lambda (A:5, B:258)
-`emitFnClause`/`emitLamGo` require every parameter to be a plain `PVar`;
+#### 4 / 5 — non-variable parameter patterns, fn + lambda (A:5, B:258) — fn ✅ CLOSED (E1a), lambda ✅ CLOSED (E2b)
+`emitFnClause`/`emitLamGo` required every parameter to be a plain `PVar`;
 `fst (a,b)=a`, `snd`, `const`, and destructuring lambdas (`sepThen`, `lamTail`…)
 carry tuple/constructor param patterns.
-- **Desugar/lower-fixable.** Lower `f (a,b) = body` to `f p = match p { (a,b) =>
-  body }` (and the lambda analogue) before Core IR, so the emitter only ever sees
-  `PVar` params + a `CDecision` body it already handles.
+- **Disposition was desugar/lower; realised emitter-side** (no Core IR rewrite —
+  goldens stay byte-identical). Both halves route the single clause through the
+  shared `emitClauseTree` decision tree (factored from the impl-method path), where
+  a tuple/constructor param binds its vars via `bindPattern` in the leaf.
+- **fn half ✅ CLOSED — E1a (2026-06-07).** `emitFn` routes a non-`allPVar` clause
+  to `emitMultiClauseFn` → `emitClauseTree`. core 4→0, whole 150→0.
+- **lambda half ✅ CLOSED — E2b (2026-06-08).** `emitLam`/`emitRecLam` route a
+  non-`allPVar` `CLam` to `emitPatLamDefine`, which runs `emitClauseTree` over the
+  `%argK` params *inside the lifted-lambda frame* (after `%clos`/capture binding —
+  the recursive case prepends `f -> %clos` so the self-call re-enters the same
+  cell). Capture computation is unchanged: `patVarNames` already collects nested
+  pattern vars, so patterned param vars are correctly excluded from the captured
+  set. **core 1→0, whole 185→0** (185, not the earlier 108 — E1a unblocked more
+  reachable bodies that carry destructuring lambdas). core total 32→**31**.
+  Fixtures: `lam_tuple_param` (applied tuple-param lambda), `lam_ctor_param`
+  (`Some`-style constructor-param lambda), `lam_rec_tuple` (recursive `let … in`
+  lambda with a tuple param → `emitRecLam`). All byte-identical (143/25/20/20).
 
 #### 7 — references to top-level value / mutable `Ref` bindings (A:7, B:254)
 The spike computes top-level **non-function** bindings as `@main`-locals; a
@@ -186,7 +200,7 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter.
 | Class | Gaps | B-count | Meaning |
 |-------|------|--------:|---------|
 | **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #3, #6, #7, #10, #11, #12, #14 | 1308 | needs emitter code |
-| **Desugar/lower-fixable** (eliminate the shape before Core IR) | #4, #5 | 258 | front-end lowering |
+| **Desugar/lower-fixable** (eliminate the shape before Core IR) | #4, #5 | 258 | ✅ CLOSED — realised emitter-side via `emitClauseTree` (E1a fn + E2b lambda); Core IR unchanged |
 | **Front-end residue** (a name/sentinel that shouldn't reach emit) | #8, #9 | 176 | desugar / `emitVar` |
 | **Dispatch routing, already designed** (not new work) | #2, #13 | 546 | port D3b to multi-module |
 
@@ -215,6 +229,11 @@ source per unit of work**:
   - **E2a (#3/#6 `::` and `++`) — ✅ DONE (2026-06-07).** `::` closes completely (A:2→0);
     `++` drops A:14→4 (4 remaining = unknown-param `append`/`ap` impls). New C helpers
     `mdk_string_append` / `mdk_list_append`; 4 new fixtures; core total 44→32.
+  - **E2b (#4/#5 fn/lambda param patterns) — ✅ DONE (E1a fn + E2b lambda).** Both
+    halves route their single clause through the shared `emitClauseTree` decision
+    tree. fn (E1a): core 4→0, whole 150→0. lambda (E2b): core 1→0, whole 185→0;
+    `emitPatLamDefine` lowers a patterned `CLam`/recursive-`let`-`CLam` inside the
+    lifted-lambda frame. core total 32→**31**.
 
 - **E3 — guard residue.** (#8 `otherwise`, #9 `__fallthrough__`.) **176** events,
   ~two trivial `emitVar`/desugar fixes. Cheap, high count.
@@ -228,14 +247,15 @@ source per unit of work**:
   `Arbitrary`/unit-head sites can be excluded from the bootstrap subset.
 
 **How close is `stdlib/core.mdk` alone (the first bootstrap milestone)?**
-Section A is ~~57~~ **32 gap events across ~13 kinds** — and the kinds are exactly E1–E3
+Section A is ~~57~~ ~~32~~ **31 gap events across ~12 kinds** — and the kinds are exactly E1–E3
 + E5 (E4 is already 0 on this path). Concretely, fully emitting core.mdk still needs:
-`::`/`++` (4 remaining — unknown-param `append`/`ap`), param-patterns (4), recursive let-groups
+`++` (4 remaining — unknown-param `append`/`ap`), recursive let-groups
 (5), the 7 global-value/extern references (`__hashRaw`/`debugStringLit`/
 `debugCharLit` + the 3 dict-witness threads), and — excludable — the 5
-`Arbitrary` unit-head switches. **No gap kind in core.mdk is outside the E1–E3
-staging, and #1/#3/#6 reuse machinery the impl/ctor paths already have.** core.mdk
-is a *bounded* push (≈ E2 param-patterns + a handful of externs/globals), not
+`Arbitrary` unit-head switches. (`::` and both param-pattern halves are now closed.)
+**No gap kind in core.mdk is outside the E1–E3 staging, and #1/#3/#4/#5/#6 reuse
+machinery the impl/ctor paths already have.** core.mdk
+is a *bounded* push (≈ a handful of externs/globals + rec let-groups), not
 open-ended — it is the realistic first native-bootstrap target.
 
 The **whole compiler (B)** then adds only *scale* of the same kinds plus the E4

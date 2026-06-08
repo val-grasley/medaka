@@ -1,0 +1,7 @@
+-- E2b: a directly-applied lambda whose SOLE parameter is a constructor pattern
+-- (`Som n`) over a user ADT — the `Some`-style destructuring lambda.  The single
+-- clause's `PCon` pattern binds `n` via `bindPattern` in the decision-tree leaf
+-- inside the lifted lambda frame.  Reduces to a scalar Int (42).
+data Opt = Som Int | Non
+
+main = ((Som n) => n + 1) (Som 41)

@@ -1,0 +1,7 @@
+-- E2b: a RECURSIVE function-`let` lambda whose parameter is a tuple pattern
+-- (the `let f … = … in e` form lowers to `CLet true (PVar go) (CLam [PTuple …])`,
+-- exercising the `emitRecLam` path — NOT `emitLam`).  `go` binds its own name to
+-- `%clos` for the self-call while the tuple pattern `(a, b)` is bound through the
+-- decision tree in the lifted body; the recursion sums 3+2+1 onto 0.  Reduces to
+-- a scalar Int (6).
+main = let go (a, b) = if a == 0 then b else go (a - 1, b + a) in go (3, 0)

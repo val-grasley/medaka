@@ -525,8 +525,14 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        fixtures. **`::` A:2→0; `++` A:14→4** (4 remaining = `append`/`ap` impls with both
        params unknown type; `paramUseTy` falls back to `LTInt`). core total: 44→**32**. All
        gates byte-identical (140/25/20/20).
-     - **E2b — non-variable lambda parameter patterns** (#5). Lower `\(a,b) -> body` to
-       `\p -> match p { (a,b) => body }` before Core IR.
+     - ✅ **E2b — non-variable lambda parameter patterns** (#5). DONE (2026-06-08).
+       `emitLam`/`emitRecLam` route a non-`allPVar` `CLam` (and recursive-`let`-`CLam`)
+       to `emitPatLamDefine`, which runs the shared `emitClauseTree` decision tree over
+       the `%argK` params *inside the lifted-lambda frame* (after `%clos`/capture binding;
+       the recursive case prepends `f -> %clos`). Realised emitter-side — no Core IR
+       rewrite, goldens unchanged. **#5 core 1→0, whole 185→0** (the fn half #4 closed in
+       E1a). core total: 32→**31**. 3 new fixtures (`lam_tuple_param`, `lam_ctor_param`,
+       `lam_rec_tuple`); all gates byte-identical (143/25/20/20).
      - **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`).
      - **E4 — dispatch-routing port** (#2/#13: carry D3b arg-position dict-passing onto
        the `elaborateModules` emit path; 0 on the single-file path already).

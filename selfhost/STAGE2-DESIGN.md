@@ -1362,6 +1362,21 @@ inventory): core.mdk = 57 events / ~11 kinds, whole = 2248. Staged E1–E5 by le
   in the now-reachable bodies). Fixtures `fn_multiclause_{ctor,list,float}` + `fn_nonvar_param`;
   all four diff gates byte-identical (133/25/20/20). Next: **E1b** (#7 top-level value / `Ref`
   globals).
+- **E2a — `::` and `++` as `CBinPrim`. ✅ DONE (2026-06-07).** `emitBin` now lowers `"::"`
+  (→ `emitCtorAlloc e "Cons"`) and `"++"` (→ `mdk_string_append`/`mdk_list_append` by operand
+  type). `::` core 2→0, whole 90→0; `++` core 14→4 (the 4 are unknown-param `append`/`ap` impls).
+- **E2b — non-variable lambda parameter patterns (#5). ✅ DONE (2026-06-08).** `emitLam`/
+  `emitRecLam` PANICKED on a non-`allPVar` `CLam`; now they route it to `emitPatLamDefine`, the
+  lambda analogue of E1a — it runs the SAME shared `emitClauseTree` decision tree over the `%argK`
+  params, but *inside the lifted-lambda frame* (after `%clos`/capture binding; the recursive-`let`
+  case prepends `f -> %clos` so the self-call re-enters the same closure cell). Realised
+  emitter-side, not as a Core IR desugar — so the eval/golden trees are untouched and stay
+  byte-identical. Capture computation is unchanged: `patVarNames` already collects nested pattern
+  vars, so the patterned param vars are correctly excluded from `freeVars`. **Closes the lambda
+  half of #4/#5** (core 1→0, whole 185→0 — 185, not the inventory's 108, because E1a unblocked
+  more reachable bodies carrying destructuring lambdas). core.mdk gap total 32→31. Fixtures
+  `lam_tuple_param` / `lam_ctor_param` / `lam_rec_tuple`; all gates byte-identical
+  (143/25/20/20).
 
 ---
 
