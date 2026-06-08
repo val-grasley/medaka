@@ -1,0 +1,1 @@
+main = let dbl x = x * 2 in dbl 21

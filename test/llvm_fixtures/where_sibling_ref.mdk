@@ -1,0 +1,5 @@
+main = compute 5
+  where
+    base = 10
+    addBase x = x + base
+    compute n = addBase (n * n)

@@ -1,0 +1,6 @@
+sumTo n = go n 0
+  where
+    go 0 acc = acc
+    go k acc = go (k - 1) (acc + k)
+
+main = sumTo 5

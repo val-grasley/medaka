@@ -534,6 +534,23 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        E1a). core total: 32→**31**. 3 new fixtures (`lam_tuple_param`, `lam_ctor_param`,
        `lam_rec_tuple`); all gates byte-identical (143/25/20/20).
      - **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`).
+     - ✅ **E5 (#10) — local function bindings in `let`/`where` groups.** DONE
+       (2026-06-08). `emitLetGroup` now lambda-lifts a non-nullary / recursive local
+       binding (`CBind name clauses` with params) into a closure via `emitGroupBind`:
+       self-recursion threads through `%clos` (reusing `emitRecLam`'s mechanism), and
+       multi-clause / patterned-param workers reuse the E1a `emitClauseTree` decision
+       tree. Bindings emit one-at-a-time with growing env, so a binding capturing an
+       EARLIER sibling (value or closure) works; a genuine forward/mutual reference to a
+       LATER sibling is a precise `gapE` (none occurs in core.mdk). **#10 core 5→0,
+       whole 5→0** — closes the structural `let`/`where`-group gap that `find`/`count`/
+       `maximum`/`arbitraryList` hit. Net core gap total *rose* 31→34 because the
+       now-emittable workers expose their own guard residue (#8/#9, #4) the old
+       early-skip hid — honest progress, all revealed reasons pre-existing. 4 new
+       fixtures (`let_local_fn`, `let_local_rec`, `where_local_rec`, `where_sibling_ref`);
+       all gates byte-identical (147/25/20/20). NB: multi-arg `let f a b = …` lowers to
+       *curried* nested `CLam` (arity-1 closures) and over-applies the saturated-call
+       machinery — a pre-existing slice-4 limit, distinct from the where/group form which
+       keeps arity-N in one clause; `let_local_rec` uses arity-1 recursion to stay green.
      - **E4 — dispatch-routing port** (#2/#13: carry D3b arg-position dict-passing onto
        the `elaborateModules` emit path; 0 on the single-file path already).
    - **Drive the emitter over the REAL self-hosted compiler source** (not just fixtures)

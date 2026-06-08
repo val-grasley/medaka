@@ -45,16 +45,26 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 | 7 | **reference to top-level value / mutable `Ref` binding**  | 7\*     | 254      | Emitter                          | emit top-level non-fn bindings as **globals** |
 | 8 | **`otherwise`** (guard constant)                          | 0       | 88       | Front-end residue                | add to `emitVar` constants (= `True`) |
 | 9 | **`__fallthrough__`** (guard-desugar sentinel)            | 0       | 88       | Front-end residue                | guard-lowering / `emitVar` recognition |
-|10 | **non-nullary / recursive `let`-group** (`where` fns)     | 5       | 5        | Emitter                          | lift local fns / handle rec groups |
+|10 | **non-nullary / recursive `let`-group** (`where` fns)     | ~~5~~ **0** | ~~5~~ **0** | Emitter                          | ✅ **CLOSED (E5)** — lambda-lift each local fn via `emitGroupBind` (self-rec through `%clos`, E1a clause-tree body); one-at-a-time env threading covers non-mutual groups; genuine forward/mutual ref → precise `gapE` (none in core) |
 |11 | **unbound dict witness** (dict not threaded to use)       | 3       | 2        | Emitter / dict-pass              | thread forwarded dict to nested site |
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ **32** | **2722** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ **34†** | ~~2722~~ **3008†** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) are
 references to runtime/core primitives the spike's extern catalog + global scope
 don't carry — the core-scale instance of gap #7.
+
+† Closing gap #10 (E5) makes the **TOTAL tick UP** (A 31→34, B 3001→3008 at
+measurement time), not down: the old emitter recorded ONE gap per unsupported
+`let`-group and skipped its body, so the worker bodies' own residue was hidden.
+Now the `where`-workers emit, and the emitter descends INTO them — exposing the
+guard residue (`otherwise` #8, `__fallthrough__` #9) and non-var patterns (#4)
+that `find`/`count`/`maximum`/`minimum` carry. `arbitraryList`'s worker emits
+cleanly (no guards). All revealed reasons are pre-existing categories; the
+*structural* `let`-group gap is gone (5→0 in both censuses, no mutual-recursion
+site left).
 
 The **(A) core total of 57** spans only **~11 gap kinds**; **(B) whole-compiler
 2248** spans 151 distinct reasons, but 88% collapse into the 7 categories above
@@ -170,8 +180,12 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter.
   recognise the sentinel (or eliminate it in desugar). High count, trivial fix.
 
 #### 10–14 — long-tail one-offs
-- **non-nullary/recursive `let`-group** (5): `find`/`count`/`maximum`/`arbitraryList`
-  use `where`/recursive local bindings — needs local-fn lifting.
+- **non-nullary/recursive `let`-group** (5): ✅ **CLOSED (E5)** —
+  `find`/`count`/`maximum`/`arbitraryList` use `where`/recursive local bindings;
+  each local fn is now lambda-lifted (`emitGroupBind`, self-rec via `%clos`,
+  E1a clause-tree body). Non-mutual groups thread one-at-a-time; a genuine
+  forward/mutual reference is a precise `gapE` (none occurs in core). Closing it
+  exposes the workers' own guard residue (#8/#9) — see the † note above the fold.
 - **unbound dict witness** (`$dict_clamp_0`, `$dict_hash_0`, `$dict_when_0`,
   `$dict_unless_0`): a forwarded/nested dict use whose param isn't in the emit
   env — a dict-pass threading edge.
@@ -199,7 +213,7 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter.
 
 | Class | Gaps | B-count | Meaning |
 |-------|------|--------:|---------|
-| **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #3, #6, #7, #10, #11, #12, #14 | 1308 | needs emitter code |
+| **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #3, #7, #11, #12, #14 (#6, #10 now closed) | 1308 | needs emitter code |
 | **Desugar/lower-fixable** (eliminate the shape before Core IR) | #4, #5 | 258 | ✅ CLOSED — realised emitter-side via `emitClauseTree` (E1a fn + E2b lambda); Core IR unchanged |
 | **Front-end residue** (a name/sentinel that shouldn't reach emit) | #8, #9 | 176 | desugar / `emitVar` |
 | **Dispatch routing, already designed** (not new work) | #2, #13 | 546 | port D3b to multi-module |
@@ -242,20 +256,25 @@ source per unit of work**:
   carry D3b's arg-position dict-passing selector onto the `elaborateModules` emit
   path (it is already 0 on the single-file path, per section A).
 
-- **E5 — long-tail.** (#10 rec let-group, #11 dict threading, #12 unit-head
-  switch, #14 non-Int literal switch.) ~13 events, handled as encountered;
-  `Arbitrary`/unit-head sites can be excluded from the bootstrap subset.
+- **E5 — long-tail.** (~~#10 rec let-group~~ ✅ CLOSED, #11 dict threading, #12
+  unit-head switch, #14 non-Int literal switch.) #10 done — local fns in
+  `let`/`where` groups lambda-lift (`emitGroupBind`); remaining ~8 events handled
+  as encountered; `Arbitrary`/unit-head sites can be excluded from the bootstrap
+  subset.
 
 **How close is `stdlib/core.mdk` alone (the first bootstrap milestone)?**
-Section A is ~~57~~ ~~32~~ **31 gap events across ~12 kinds** — and the kinds are exactly E1–E3
-+ E5 (E4 is already 0 on this path). Concretely, fully emitting core.mdk still needs:
-`++` (4 remaining — unknown-param `append`/`ap`), recursive let-groups
-(5), the 7 global-value/extern references (`__hashRaw`/`debugStringLit`/
-`debugCharLit` + the 3 dict-witness threads), and — excludable — the 5
-`Arbitrary` unit-head switches. (`::` and both param-pattern halves are now closed.)
-**No gap kind in core.mdk is outside the E1–E3 staging, and #1/#3/#4/#5/#6 reuse
+Section A is ~~57~~ ~~32~~ ~~31~~ **34 gap events across ~17 kinds** (the count rose
+because closing #10 unhid the workers' guard residue — see the † note). The kinds
+are exactly E1–E3 + E5 (E4 is already 0 on this path). Concretely, fully emitting
+core.mdk still needs: `++` (4 remaining — unknown-param `append`/`ap`), the guard
+residue now exposed in `find`/`count`/`maximum`/`minimum` (#8 `otherwise`, #9
+`__fallthrough__`, #4 non-var patterns), the global-value/extern references
+(`__hashRaw`/`debugStringLit`/`debugCharLit` + the dict-witness threads), and —
+excludable — the 5 `Arbitrary` unit-head switches. (`::`, both param-pattern
+halves, and the `let`/`where`-group local-fn lift are now closed.)
+**No gap kind in core.mdk is outside the E1–E3 staging, and #1/#3/#4/#5/#6/#10 reuse
 machinery the impl/ctor paths already have.** core.mdk
-is a *bounded* push (≈ a handful of externs/globals + rec let-groups), not
+is a *bounded* push (≈ a handful of externs/globals + the guard residue), not
 open-ended — it is the realistic first native-bootstrap target.
 
 The **whole compiler (B)** then adds only *scale* of the same kinds plus the E4
