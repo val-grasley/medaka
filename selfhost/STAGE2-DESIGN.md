@@ -1033,6 +1033,25 @@ LLVM — is in [`RUNTIME-DESIGN.md`](./RUNTIME-DESIGN.md).
   extern families.  **86/86 plain + 14/14 typed byte-identical**; unicode round-trip
   (`☕` = U+2615) verified; core_ir/eval gates unaffected.
 
+**2.4a-13 — Native extern catalog slice 10 (RESERVED ADT-TAG PRECURSOR).** First
+  Tier C slice; the gating precursor for every ADT-**returning** extern (11/12/13).
+  A C extern cannot stamp a program-dependent `cellTag`, so the runtime ADTs (`List`
+  Cons/Nil, `Option` Some/None, `Result` Ok/Err, `Ordering` Lt/Eq/Gt) get a FIXED
+  reserved tag block: `reservedTag` in `llvm_emit.mdk` returns
+  `(reservedTypeBase + typeId) * 2^32 + ordinal` (base 65536, typeIds 0–3), consulted
+  first in `cellTag`; `runtime/medaka_rt.c` hardcodes the same `MDK_TAG_*` constants.
+  Both alloc and every match-head test route through `cellTag`, so reserving keeps
+  construction (C builders) and match consistent by construction. Runtime constructors:
+  `mdk_some`/`mdk_ok`/`mdk_err`/`mdk_cons` (boxed cells) + `mdk_none`/`mdk_nil`/
+  `mdk_lt`/`mdk_eq`/`mdk_gt` (immediate words). Canary `charFromCode : Int -> Option
+  Char` (`isAdtExtern`/`emitAdtExtern`): `adt_some` (boxed `Some`, charCode 65) +
+  `adt_none` (immediate `None`, surrogate 0xD800 → -1) prove both reps round-trip
+  through `match`. **103/103 plain byte-identical**; core_ir/eval unaffected (existing
+  list/option/ordering fixtures re-pass). No typed fixture — the typed gate loads only
+  `runtime.mdk`, so the self-hosted typecheck has no `Option` ctor (scalar-only). KNOWN
+  LIMITATION: a user type reusing a reserved ctor name aliases the reserved tag
+  (internally consistent; the real backend resolves statically).
+
 **Spike status after slice 10 — what's next.** The de-risking spike has now lowered
 the **full non-GC Core IR surface** (scalars → top-level fns + `musttail` →
 ADTs/decision-tree match → closures/HOFs → records/tuples/refs → built-in
@@ -1082,7 +1101,12 @@ backend (Stage 2) — near-term sequence"):
    to Bool via `tagInt`; `charIsPunct` is a switch over Unicode Pc/Pd/Pe/Pf/Pi/Po/Ps
    ASCII members, NOT `ispunct()` — `+`/`$`/`=`/`^`/`|`/`~` return `False`; string
    case-map is byte-wise ASCII, UTF-8 multi-byte bytes pass through; 101/101 plain +
-   16/16 typed byte-identical; full-Unicode deferred to RUNTIME-DESIGN §6) — and close the spike's out-of-scope gaps (arg-tag
+   16/16 typed byte-identical; full-Unicode deferred to RUNTIME-DESIGN §6), **slice 10
+   DONE 2026-06-07** (reserved ADT-tag precursor: `reservedTag`/`reservedTypeBase`
+   65536 in `llvm_emit.mdk` + matching `MDK_TAG_*` in `medaka_rt.c`; runtime cell
+   builders `mdk_some`/`ok`/`err`/`cons` + `mdk_none`/`nil`/`lt`/`eq`/`gt`; canary
+   `charFromCode` via `isAdtExtern`; `adt_some`/`adt_none` prove boxed + immediate
+   round-trip; 103/103 plain; gates the ADT-returning slices 11/12/13) — and close the spike's out-of-scope gaps (arg-tag
    dispatch on non-ADT/Int args, nested-requires dicts). ~~emit the ratified dense
    i32 ctor-ordinal tags~~ **DONE 2026-06-07** — the spike already stamps them
    (`cellTag`; composite `typeId<<32 | ordinal`, hashName gone from every ctor tag);

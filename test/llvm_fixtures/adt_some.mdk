@@ -1,0 +1,7 @@
+-- slice 10: a C-constructed Option (reserved ADT tag) round-trips through a Medaka
+-- `match`.  charFromCode builds `Some (Char)` in C (runtime mdk_some / MDK_TAG_SOME);
+-- the match tests the SAME reserved tag (cellTag → reservedTag) and binds the Char,
+-- so charCode 65 = 65.  Proves the BOXED reserved tag + field extraction end-to-end.
+main = match charFromCode 65
+  Some c => charCode c
+  None => 0 - 1
