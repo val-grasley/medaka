@@ -619,6 +619,7 @@ emitExpr e env (CTuple es) = emitTuple e env es
 emitExpr e env (CRecord name fields) = emitRecordCreate e env name fields
 emitExpr e env (CFieldAccess ex label) = emitFieldAccess e env ex label
 emitExpr e env (CRecordUpdate base updates) = emitRecordUpdate e env base updates
+emitExpr e env (CVariantUpdate con base updates) = emitVariantUpdate e env con base updates
 emitExpr e env (CMethod name route implRoutes methRoutes) = emitMethod e env name route implRoutes methRoutes []
 emitExpr e env (CArray es) = emitArrayCreate e env es
 emitExpr e env (CRangeArray lo hi incl) = emitRangeArray e env lo hi incl
@@ -2408,6 +2409,7 @@ freeVars b (CRangeList lo hi _) = freeVars b lo ++ freeVars b hi
 freeVars b (CRecord _ fields) = freeVarsFields b fields
 freeVars b (CFieldAccess ex _) = freeVars b ex
 freeVars b (CRecordUpdate base updates) = freeVars b base ++ freeVarsFields b updates
+freeVars b (CVariantUpdate _ base updates) = freeVars b base ++ freeVarsFields b updates
 freeVars b (CArray es) = freeVarsList b es
 freeVars b (CRangeArray lo hi _) = freeVars b lo ++ freeVars b hi
 freeVars b (CIndex a i) = freeVars b a ++ freeVars b i
@@ -3421,6 +3423,16 @@ emitRecordUpdate e env base updates =
       let words = buildUpdateWords e bw labels updatePairs 0
       emitCtorAlloc e name words
 
+emitVariantUpdate : Emit -> List (String, (String, LTy)) -> String -> CExpr -> List CField -> <Mut> (String, LTy)
+emitVariantUpdate e env con base updates =
+  let (bw, _) = emitExpr e env base
+  match lookupAssoc con (recFieldTable e)
+    None => gapE ("CVariantUpdate: unknown variant type for constructor '" ++ con ++ "'")
+    Some labels =>
+      let updatePairs = emitUpdatePairs e env updates
+      let words = buildUpdateWords e bw labels updatePairs 0
+      emitCtorAlloc e con words
+
 emitRefAlloc : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
 emitRefAlloc e env args = match args
   [x] =>
@@ -3509,6 +3521,8 @@ scanExprRecords (CRecord name fields) =
   (name, cFieldLabels fields) :: scanExprsRecords (cFieldExprs fields)
 scanExprRecords (CFieldAccess ex _) = scanExprRecords ex
 scanExprRecords (CRecordUpdate base updates) =
+  scanExprRecords base ++ scanExprsRecords (cFieldExprs updates)
+scanExprRecords (CVariantUpdate _ base updates) =
   scanExprRecords base ++ scanExprsRecords (cFieldExprs updates)
 scanExprRecords (CTuple es) = scanExprsRecords es
 scanExprRecords (CApp f a) = scanExprRecords f ++ scanExprRecords a
