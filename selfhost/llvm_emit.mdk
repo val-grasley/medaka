@@ -832,6 +832,24 @@ emitUnicodeExtern e env "stringToLower" args = match emitArgs e env args
   _ => panic "llvm spike: stringToLower takes one argument (slice 14)"
 emitUnicodeExtern _ _ name _ = panic ("llvm spike: unsupported unicode extern " ++ name)
 
+-- slice 10: ADT-RETURNING externs (precursor canary).  The C side constructs the
+-- result cell with the reserved tags (see `reservedTag` / runtime mdk_some etc.), so
+-- a later `match` agrees.  `charFromCode` is the canary — it proves both the boxed
+-- (`Some`) and immediate (`None`) reserved-tag round-trips end-to-end.  Slices 11/12/
+-- 13 extend this family (stringToFloat, args, readFile, …).  Result is LTCon (an ADT
+-- value): never auto-printed — fixtures `match` it down to a scalar.
+isAdtExtern : String -> Bool
+isAdtExtern name = containsStr name ["charFromCode"]
+
+emitAdtExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitAdtExtern e env "charFromCode" args = match emitArgs e env args
+  [a] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_from_code(i64 " ++ a ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: charFromCode takes one argument (slice 10)"
+emitAdtExtern _ _ name _ = panic ("llvm spike: unsupported adt extern " ++ name)
+
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
@@ -1013,6 +1031,7 @@ emitApp e env app =
       else if isCharExtern fname && hasArgs args then emitCharExtern e env fname args
       else if isStrCharExtern fname && hasArgs args then emitStrCharExtern e env fname args
       else if isUnicodeExtern fname && hasArgs args then emitUnicodeExtern e env fname args
+      else if isAdtExtern fname && hasArgs args then emitAdtExtern e env fname args
       else if isCtor e fname then
         let argOps = emitArgs e env args
         emitCtorAlloc e fname argOps
@@ -1767,10 +1786,48 @@ ctorTagShift = 4294967296
 -- built-in list Cons/Nil and a user ctor that owns those names) gets the composite
 -- (typeId, ordinal).  Alloc and every tag test route through THIS one function, so
 -- the stored tag and the compared tag are identical by construction.
+-- RESERVED ADT-TAG BLOCK (slice 10 precursor).  The runtime ADTs — List, Option,
+-- Result, Ordering — get FIXED composite tags, far above any real program's dense
+-- type-id range, so a C extern can construct these cells (mdk_some/mdk_cons/… in
+-- runtime/medaka_rt.c) with a tag a later `match` agrees with.  The driver
+-- (llvm_emit_main.mdk) does NOT load the prelude, so a prelude-free fixture using
+-- `Some`/`None`/`Ok`/… has them ABSENT from the ctor→type table — without this
+-- reservation `Some` and `Cons` both fall to the "one past" type-id with ordinal 0
+-- and COLLIDE.  Both alloc and every tag test route through `cellTag`, so reserving
+-- here keeps construction and the match-head test consistent by construction.
+-- The C side hardcodes the SAME constants (MDK_TAG_* in runtime/medaka_rt.c); keep
+-- the two in sync.  Ordinals follow core.mdk: Option = Some|None, Result = Ok|Err,
+-- Ordering = Lt|Eq|Gt; List (synthetic) = Cons|Nil.  KNOWN SPIKE LIMITATION: a user
+-- type that reuses one of these constructor names aliases the reserved tag (still
+-- internally consistent, since alloc+match both reserve); the real backend resolves
+-- such sites statically and never relies on a global tag.
+reservedTypeBase : Int
+reservedTypeBase = 65536
+
+reservedTag : String -> Option Int
+reservedTag name =
+  if      name == "Cons" then Some ((reservedTypeBase + 0) * ctorTagShift + 0)
+  else if name == "Nil"  then Some ((reservedTypeBase + 0) * ctorTagShift + 1)
+  else if name == "Some" then Some ((reservedTypeBase + 1) * ctorTagShift + 0)
+  else if name == "None" then Some ((reservedTypeBase + 1) * ctorTagShift + 1)
+  else if name == "Ok"   then Some ((reservedTypeBase + 2) * ctorTagShift + 0)
+  else if name == "Err"  then Some ((reservedTypeBase + 2) * ctorTagShift + 1)
+  else if name == "Lt"   then Some ((reservedTypeBase + 3) * ctorTagShift + 0)
+  else if name == "Eq"   then Some ((reservedTypeBase + 3) * ctorTagShift + 1)
+  else if name == "Gt"   then Some ((reservedTypeBase + 3) * ctorTagShift + 2)
+  else None
+
+-- the cell-header tag a NAME stamps / is tested against.  Sentinel headers
+-- ("$tuple"/"$ref"/"$closure") keep their hash; the runtime ADTs route through
+-- `reservedTag` (fixed, program-stable); every other constructor gets the composite
+-- (typeId, ordinal).  Alloc and every tag test route through THIS one function, so
+-- the stored tag and the compared tag are identical by construction.
 cellTag : Emit -> String -> <Mut> Int
 cellTag e name =
   if containsStr name ["$tuple", "$ref", "$closure"] then hashName name
-  else ctorTypeId e name * ctorTagShift + ctorOrdinal e name
+  else match reservedTag name
+    Some t => t
+    None => ctorTypeId e name * ctorTagShift + ctorOrdinal e name
 
 -- the 0-based index of constructor `name` in its type's declaration-ordered ctor
 -- list.  The built-in list Cons/Nil are not user-declared (absent from the
@@ -2935,6 +2992,7 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_char_to_lower(i64)"
   let _ = emit e "declare i64 @mdk_string_to_upper(i64)"
   let _ = emit e "declare i64 @mdk_string_to_lower(i64)"
+  let _ = emit e "declare i64 @mdk_char_from_code(i64)"
   emit e ""
 
 emitTopBinds : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))

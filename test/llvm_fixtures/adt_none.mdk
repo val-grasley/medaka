@@ -1,0 +1,6 @@
+-- slice 10: a C-constructed None (IMMEDIATE reserved tag) hits the None arm.
+-- 55296 = 0xD800, a UTF-16 surrogate (invalid Unicode scalar), so charFromCode
+-- returns None → -1.  Proves the immediate reserved tag round-trips through `match`.
+main = match charFromCode 55296
+  Some c => charCode c
+  None => 0 - 1

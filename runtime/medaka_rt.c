@@ -380,3 +380,61 @@ long long mdk_string_to_lower(long long s) {
   }
   return mdk_str_lit(buf, bl);
 }
+
+/* ── Reserved ADT tags + cell constructors (native extern catalog, slice 10) ──
+ * The runtime ADTs (List, Option, Result, Ordering) get FIXED composite tags so a C
+ * extern can construct their cells with a tag a later Medaka `match` agrees with.
+ * These MUST stay in sync with selfhost/llvm_emit.mdk `reservedTag` / `ctorTagShift`:
+ *   cellTag = (reservedTypeBase + typeId) * 2^32 + ordinal.
+ * Nullary ctors are IMMEDIATE ((tag<<1)|1, RUNTIME-DESIGN §8.1); ctors with fields
+ * are boxed cells [i64 tag | field… ] (fields at offset 8*(i+1)), matching
+ * emitCtorAlloc.  Ordinals follow core.mdk: Option = Some|None, Result = Ok|Err,
+ * Ordering = Lt|Eq|Gt; List = Cons|Nil. */
+#define MDK_TAG_SHIFT     4294967296LL          /* 2^32 — ctorTagShift */
+#define MDK_RESERVED_BASE 65536LL               /* reservedTypeBase */
+#define MDK_TAG(tid, ord) (((MDK_RESERVED_BASE + (tid)) * MDK_TAG_SHIFT) + (ord))
+#define MDK_TAG_CONS MDK_TAG(0, 0)
+#define MDK_TAG_NIL  MDK_TAG(0, 1)
+#define MDK_TAG_SOME MDK_TAG(1, 0)
+#define MDK_TAG_NONE MDK_TAG(1, 1)
+#define MDK_TAG_OK   MDK_TAG(2, 0)
+#define MDK_TAG_ERR  MDK_TAG(2, 1)
+#define MDK_TAG_LT   MDK_TAG(3, 0)
+#define MDK_TAG_EQ   MDK_TAG(3, 1)
+#define MDK_TAG_GT   MDK_TAG(3, 2)
+
+/* Nullary ctors — immediate words. */
+long long mdk_none(void) { return (MDK_TAG_NONE << 1) | 1; }
+long long mdk_nil(void)  { return (MDK_TAG_NIL  << 1) | 1; }
+long long mdk_lt(void)   { return (MDK_TAG_LT   << 1) | 1; }
+long long mdk_eq(void)   { return (MDK_TAG_EQ   << 1) | 1; }
+long long mdk_gt(void)   { return (MDK_TAG_GT   << 1) | 1; }
+
+/* Ctors with fields — boxed cells [tag | field…]. */
+long long mdk_some(long long x) {
+  long long *c = (long long *)mdk_alloc(16); c[0] = MDK_TAG_SOME; c[1] = x;
+  return (long long)c;
+}
+long long mdk_ok(long long x) {
+  long long *c = (long long *)mdk_alloc(16); c[0] = MDK_TAG_OK; c[1] = x;
+  return (long long)c;
+}
+long long mdk_err(long long x) {
+  long long *c = (long long *)mdk_alloc(16); c[0] = MDK_TAG_ERR; c[1] = x;
+  return (long long)c;
+}
+long long mdk_cons(long long head, long long tail) {
+  long long *c = (long long *)mdk_alloc(24); c[0] = MDK_TAG_CONS; c[1] = head; c[2] = tail;
+  return (long long)c;
+}
+
+/* charFromCode : Int -> Option Char — slice-10 canary.  Valid scalar value (0..0x10FFFF
+ * excluding the UTF-16 surrogate range, matching OCaml Uchar.is_valid) -> Some (Char
+ * immediate); otherwise None.  Exercises both the boxed Some and immediate None
+ * reserved tags end-to-end against the oracle. */
+long long mdk_char_from_code(long long n_tagged) {
+  long long n = n_tagged >> 1;
+  if (n >= 0 && n <= 0x10FFFF && !(n >= 0xD800 && n <= 0xDFFF))
+    return mdk_some((n << 1) | 1);   /* Some (Char immediate) */
+  return mdk_none();
+}

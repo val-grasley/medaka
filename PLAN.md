@@ -458,15 +458,24 @@ locked (slice 8 DONE), unblocking the char/unicode slices 9 + 14.
 
 **Tier C — gated behind the reserved-ADT-tag precursor:**
 
-- **Slice 10 — reserve fixed tags for the built-in ADTs (PRECURSOR).** Give
-  `List`(Cons/Nil), `Option`(Some/None), `Result`(Ok/Err), `Ordering`(Lt/Eq/Gt) a
-  **fixed reserved tag block** shared by the emitter (`cellTag`) and the runtime (a
-  C header of tag constants), so a C extern can construct these cells with tags a
-  later `match` agrees with. Add runtime constructors (`mdk_some`/`mdk_none`/`mdk_ok`/
-  `mdk_err`/`mdk_cons`/`mdk_nil`/…). *Least mechanical slice — it touches the tag
-  scheme and must not regress existing ADT fixtures or collide with user types named
-  `Some`/`Ok`. Sonnet with the tight spec to be written here; escalate to Opus if the
-  tag-reservation interacts badly with user-declared same-named types.*
+- **Slice 10 — reserve fixed tags for the built-in ADTs (PRECURSOR).** **DONE
+  2026-06-07.** `List`(Cons/Nil), `Option`(Some/None), `Result`(Ok/Err),
+  `Ordering`(Lt/Eq/Gt) get a **fixed reserved tag block** at `reservedTypeBase`
+  (65536, far above any real program's dense type-ids), shared by the emitter
+  (`reservedTag` → `cellTag`) and the runtime (`MDK_TAG_*` in `runtime/medaka_rt.c`,
+  same `(base+typeId)*2^32+ordinal` formula). Without it, a prelude-free fixture's
+  untabled `Some`/`Cons` both collapse to the "one past" type-id ordinal 0 and
+  collide. Runtime constructors added: `mdk_some`/`mdk_ok`/`mdk_err`/`mdk_cons`
+  (boxed) + `mdk_none`/`mdk_nil`/`mdk_lt`/`mdk_eq`/`mdk_gt` (immediate). Canary:
+  `charFromCode : Int -> Option Char` (`isAdtExtern`/`emitAdtExtern`) — `adt_some`
+  (boxed `Some`, charCode 65) + `adt_none` (immediate `None`, surrogate 0xD800 → -1)
+  prove both reps round-trip through `match`. 103/103 plain gate; core_ir/eval
+  unaffected (existing list/option/ordering fixtures re-pass — alloc + match both
+  reserve). No typed fixture: the typed gate loads only `runtime.mdk`, so the
+  self-hosted typecheck has no `Option` ctor (scalar-only by design). KNOWN
+  LIMITATION (per spec): a user type reusing a reserved ctor name aliases the
+  reserved tag — internally consistent; the real backend resolves statically. Slices
+  11/12/13 exercise the remaining constructors (`mdk_some`/`cons`/`ok`/`err`/…).
 - **Slice 11 — ADT-returning string externs** (dep: 10). `stringToFloat` (Option),
   `stringIndexOf` (Option), `stringCompare` (Ordering). Fixtures must `match` the
   result down to a scalar/String (the emitter can't auto-print an ADT). *Sonnet: good
