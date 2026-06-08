@@ -1,0 +1,199 @@
+-- D0.5: Argument-position dispatch CLASSIFICATION — finishes the D0 inventory by
+-- resolving the one decision-driving number it left untyped: of the ~1065 bare-CVar
+-- argument-position interface-method occurrences (the arg-tag fallback population),
+-- how many have a STATICALLY-KNOWN receiver type (concrete → emittable as a static
+-- RKey, a front-end marking extension) vs a TYPE-VARIABLE receiver (genuinely needs
+-- runtime DICT-PASSING).  Measurement only: NO route stamping, NO emitter/eval
+-- change.  The instrumentation lives behind typecheck's argMeasureEnabled flag and
+-- is byte-identical with it OFF (the normal elaboration path).
+--
+-- Usage:
+--   medaka run selfhost/dispatch_argclass_main.mdk \
+--     stdlib/runtime.mdk stdlib/core.mdk selfhost/all_modules_entry.mdk selfhost/
+--
+-- Output: classification report to stdout (append the D0.5 section to
+-- selfhost/DISPATCH-INVENTORY.md).
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import loader.{loadProgram}
+import typecheck.{ArgSite(..), argDispatchIndices, setArgMeasurement, argSiteResultsList, appliedCountsList, measureModules}
+import util.{concatMapList, listLen, joinWith, joinNl}
+
+-- ── ArgSite accessors ──────────────────────────────────────────────────────
+
+siteMethod : ArgSite -> String
+siteMethod (ArgSite m _ _ _) = m
+
+siteBucket : ArgSite -> String
+siteBucket (ArgSite _ b _ _) = b
+
+siteTag : ArgSite -> String
+siteTag (ArgSite _ _ t _) = t
+
+siteEncl : ArgSite -> String
+siteEncl (ArgSite _ _ _ e) = e
+
+-- ── small list helpers ─────────────────────────────────────────────────────
+
+filterL : (a -> Bool) -> List a -> List a
+filterL _ [] = []
+filterL p (x :: xs)
+  | p x = x :: filterL p xs
+  | otherwise = filterL p xs
+
+countWhere : (a -> Bool) -> List a -> Int
+countWhere p xs = listLen (filterL p xs)
+
+mapL : (a -> b) -> List a -> List b
+mapL _ [] = []
+mapL f (x :: xs) = f x :: mapL f xs
+
+firstN : Int -> List a -> List a
+firstN 0 _ = []
+firstN _ [] = []
+firstN n (x :: xs) = x :: firstN (n - 1) xs
+
+elemS : String -> List String -> Bool
+elemS _ [] = False
+elemS x (y :: ys) = x == y || elemS x ys
+
+uniqS : List String -> List String
+uniqS [] = []
+uniqS (x :: xs) = x :: uniqS (filterL (s => s != x) xs)
+
+sumInts : List Int -> Int
+sumInts [] = 0
+sumInts (x :: xs) = x + sumInts xs
+
+-- count occurrences of each unique key, descending-ish (first-occurrence order)
+keyCounts : List String -> List (String, Int)
+keyCounts keys = mapL (k => (k, countWhere (s => s == k) keys)) (uniqS keys)
+
+renderCount : (String, Int) -> String
+renderCount (k, n) = "    " ++ k ++ "  ×" ++ intToString n
+
+-- ── report ─────────────────────────────────────────────────────────────────
+
+bucketIs : String -> ArgSite -> Bool
+bucketIs b s = siteBucket s == b
+
+-- "method@HeadTycon" key for a site
+methodTagKey : ArgSite -> String
+methodTagKey s = siteMethod s ++ "@" ++ siteTag s
+
+-- "method@HeadTycon (in encl)" example
+siteExample : ArgSite -> String
+siteExample s = siteMethod s ++ " @ " ++ siteTag s ++ "   (in " ++ siteEncl s ++ ")"
+
+examplesFor : (ArgSite -> Bool) -> List ArgSite -> List String
+examplesFor p sites = firstN 5 (uniqS (mapL siteExample (filterL p sites)))
+
+buildReport : List ArgSite -> List (String, Int) -> String
+buildReport sites applied =
+  let total = listLen sites
+  let nPrim = countWhere (bucketIs "prim") sites
+  let nAdt = countWhere (bucketIs "adt") sites
+  let nVar = countWhere (bucketIs "var") sites
+  let nOther = countWhere (bucketIs "other") sites
+  let nConcrete = nPrim + nAdt
+  let appliedTotal = sumInts (mapL snd applied)
+  let unapplied = total - appliedTotal
+  let primKeys = keyCounts (mapL methodTagKey (filterL (bucketIs "prim") sites))
+  let varKeys = keyCounts (mapL (s => siteMethod s) (filterL (bucketIs "var") sites))
+  let adtTagKeys = keyCounts (mapL siteTag (filterL (bucketIs "adt") sites))
+  joinNl
+    [ "=== D0.5 ARG-POSITION DISPATCH CLASSIFICATION ==="
+    , "Self-hosted Medaka compiler — discriminating-arg type of every arg-position"
+    , "interface-method occurrence (top-level + impl method bodies, measureModules)."
+    , ""
+    , "TOTAL arg-position interface-method occurrences: " ++ intToString total
+    , ""
+    , "BY RECEIVER TYPE-CLASS"
+    , "  concrete-primitive (Int/Float/String/Bool/Char/Array): " ++ intToString nPrim
+    , "  concrete-ADT       (user/stdlib ADT head):             " ++ intToString nAdt
+    , "  type-variable      (unsolved/quantified tyvar):        " ++ intToString nVar
+    , "  other              (Fun/Tuple discriminating arg):     " ++ intToString nOther
+    , ""
+    , "HEADLINE"
+    , "  statically-resolvable (concrete → static RKey, front-end marking): " ++ intToString nConcrete
+    , "  genuinely-polymorphic (type-variable → real dict-passing):         " ++ intToString nVar
+    , ""
+    , "APPLICATION SHAPE (orthogonal overlay)"
+    , "  directly-applied  (EApp (EVar m) _; dispatch arg supplied at call): " ++ intToString appliedTotal
+    , "  first-class/other (passed as value / section / let-bound):          " ++ intToString unapplied
+    , ""
+    , "CONCRETE-PRIMITIVE breakdown (method @ head tycon × count)"
+    , "  -- these are the sites the spike emitter CANNOT do today (primitive"
+    , "  -- immediates carry no runtime type tag); the static-stamping path covers them."
+    , joinNl (mapL renderCount primKeys)
+    , ""
+    , "CONCRETE-ADT head tycons (× count)"
+    , joinNl (mapL renderCount (firstN 25 adtTagKeys))
+    , ""
+    , "TYPE-VARIABLE methods (× count) — the dict-passing work"
+    , joinNl (mapL renderCount (firstN 25 varKeys))
+    , ""
+    , "TYPE-VARIABLE by enclosing fn (where the dict-passing work lives)"
+    , joinNl (mapL renderCount (firstN 40 (keyCounts (mapL siteEncl (filterL (bucketIs "var") sites)))))
+    , ""
+    , "ALL method@tag (× count) — full distribution"
+    , joinNl (mapL renderCount (firstN 60 (keyCounts (mapL methodTagKey sites))))
+    , ""
+    , "EXAMPLES"
+    , "  concrete-primitive:"
+    , joinNl (mapL (e => "    " ++ e) (examplesFor (bucketIs "prim") sites))
+    , "  concrete-ADT:"
+    , joinNl (mapL (e => "    " ++ e) (examplesFor (bucketIs "adt") sites))
+    , "  type-variable:"
+    , joinNl (mapL (e => "    " ++ e) (examplesFor (bucketIs "var") sites))
+    , "  other:"
+    , joinNl (mapL (e => "    " ++ e) (examplesFor (bucketIs "other") sites))
+    ]
+
+-- ── pipeline (mirrors dispatch_inventory_main) ─────────────────────────────
+
+main : <IO, Mut> Unit
+main = match args ()
+  (runtimeP :: coreP :: entry :: roots) =>
+    run runtimeP coreP entry (rootsOrDefault entry roots)
+  _ => ePutStrLn "usage: medaka run selfhost/dispatch_argclass_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault entry [] = [dirOf entry]
+rootsOrDefault _ roots = roots
+
+dirOf : String -> String
+dirOf path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo _ 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP entry roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match loadProgram entry roots
+      Err e => ePutStrLn e
+      Ok mods =>
+        let runtimeDecls = desugar (parse rsrc)
+        let coreDecls0 = desugar (parse csrc)
+        let modPairs = map desugarPair mods
+        runClassify runtimeDecls coreDecls0 modPairs
+
+runClassify : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
+runClassify runtimeDecls coreDecls0 modPairs =
+  let allDecls = runtimeDecls ++ coreDecls0 ++ concatMapList snd modPairs
+  let _ = setArgMeasurement (argDispatchIndices allDecls)
+  let _ = measureModules runtimeDecls coreDecls0 modPairs
+  let sites = argSiteResultsList ()
+  let applied = appliedCountsList ()
+  putStrLn (buildReport sites applied)

@@ -365,6 +365,154 @@ dictEligibleRef = Ref []
 implInferEnabled : Ref Bool
 implInferEnabled = Ref False
 
+-- ── D0.5 arg-position dispatch MEASUREMENT (probe-only) ─────────────────────
+-- Classify every ARGUMENT-position interface-method occurrence (the bare-EVar
+-- arg-tag population D0 counted, upper bound 1065) by the inferred type of its
+-- DISCRIMINATING argument: concrete-primitive / concrete-ADT / type-variable.
+-- Mirrors recordSite/resolveSites (which stamp RETURN-position sites) but for
+-- arg-position sites it MEASURES, never stamps.  Entirely behind argMeasureEnabled
+-- (off by default; only the dispatch_argclass probe turns it on), so normal
+-- elaboration output is byte-identical.  An arg-position method is exactly one
+-- that reached inferVar (return-position + method-constrained methods were already
+-- rewritten to EMethodAt/EDictAt by prePassDict, so they never arrive there).
+--
+-- ArgSite = (method name, bucket, head tycon, enclosing fn).  bucket ∈
+--   "prim" (Int/Float/String/Bool/Char/Array) | "adt" | "var" | "other".
+public export data ArgSite = ArgSite String String String String
+
+argMeasureEnabled : Ref Bool
+argMeasureEnabled = Ref False
+
+-- method name → 0-based index of its first argument mentioning the interface
+-- typaram (its dispatch position).  Set by the probe before elaboration; absence
+-- of a name means "not an arg-position interface method" → not measured.
+argDispatchIdxRef : Ref (List (String, Int))
+argDispatchIdxRef = Ref []
+
+-- per-module captures (reset by resetState, like pendingSites): one entry per
+-- arg-position occurrence inferred this module — (method, discriminating-arg mono,
+-- enclosing fn).  Classified (mono normalized while tyvar cells still bound) by
+-- accumArgSites at the end of each module's elabModuleStamp.
+pendingArgSites : Ref (List (String, Mono, String))
+pendingArgSites = Ref []
+
+-- cross-module accumulator of classified sites + a count of occurrences that are
+-- DIRECTLY APPLIED (`EApp (EVar m) _` — the dispatch arg is supplied at the call,
+-- so its type is knowable from context).  NOT reset by resetState — the probe
+-- clears them once via setArgMeasurement.
+argSiteResults : Ref (List ArgSite)
+argSiteResults = Ref []
+
+appliedCounts : Ref (List (String, Int))
+appliedCounts = Ref []
+
+-- enable measurement: install the dispatch-index registry and clear accumulators.
+export
+setArgMeasurement : List (String, Int) -> <Mut> Unit
+setArgMeasurement idx =
+  let _ = set_ref argDispatchIdxRef idx
+  let _ = set_ref argSiteResults []
+  let _ = set_ref appliedCounts []
+  let _ = set_ref pendingArgSites []
+  set_ref argMeasureEnabled True
+
+export
+argSiteResultsList : Unit -> <Mut> List ArgSite
+argSiteResultsList _ = argSiteResults.value
+
+export
+appliedCountsList : Unit -> <Mut> List (String, Int)
+appliedCountsList _ = appliedCounts.value
+
+-- the dispatch-index registry: each interface method → index of its first arg
+-- mentioning the interface typaram.  Methods with NO such arg (return-position)
+-- contribute nothing.  Computed structurally from interface decls.
+export
+argDispatchIndices : List Decl -> List (String, Int)
+argDispatchIndices prog = concatMapL argDispatchOfDecl prog
+
+argDispatchOfDecl : Decl -> List (String, Int)
+argDispatchOfDecl (DAttrib _ d) = argDispatchOfDecl d
+argDispatchOfDecl (DInterface { typarams, methods, ... }) = concatMapL (argDispatchOfMethod typarams) methods
+argDispatchOfDecl _ = []
+
+argDispatchOfMethod : List String -> IfaceMethod -> List (String, Int)
+argDispatchOfMethod typarams (IfaceMethod mname mty _) = match firstDispatchIdx typarams 0 (methodArgs mty)
+  Some i => [(mname, i)]
+  None => []
+
+firstDispatchIdx : List String -> Int -> List Ty -> Option Int
+firstDispatchIdx _ _ [] = None
+firstDispatchIdx typarams i (ty :: rest)
+  | argMentions typarams ty = Some i
+  | otherwise = firstDispatchIdx typarams (i + 1) rest
+
+-- the discriminating-arg mono of an arg-position occurrence: instantiate-tracked
+-- (same mono `instantiate` produces), capture the dispatch-position argument's
+-- mono cell (resolved later by normalize) tagged with the enclosing fn.
+recordArgSite : String -> Int -> Mono -> <Mut> Unit
+recordArgSite name idx mono = match nthArgMono idx mono
+  Some am => set_ref pendingArgSites ((name, am, currentFn.value) :: pendingArgSites.value)
+  None => ()
+
+nthArgMono : Int -> Mono -> Option Mono
+nthArgMono 0 m = match normalize m
+  TFun a _ _ => Some a
+  _ => None
+nthArgMono n m = match normalize m
+  TFun _ _ b => nthArgMono (n - 1) b
+  _ => None
+
+-- the measured path for inferVar: a dispatch method gets its arg-site recorded;
+-- everything else instantiates normally.
+inferVarMeasured : String -> Scheme -> <Mut> Mono
+inferVarMeasured x s = match lookupAssocS x argDispatchIdxRef.value
+  None => instantiate s
+  Some idx =>
+    let inst = instantiateTracked s
+    let _ = recordArgSite x idx (fst inst)
+    fst inst
+
+-- note a directly-applied dispatch method (`EApp (EVar m) _`): bump its applied
+-- count.  Pure structural inspection of the application head, no type effect.
+noteApplied : Expr -> <Mut> Unit
+noteApplied (EVar m) = match lookupAssocS m argDispatchIdxRef.value
+  Some _ => bumpApplied m
+  None => ()
+noteApplied _ = ()
+
+bumpApplied : String -> <Mut> Unit
+bumpApplied m = match lookupAssocS m appliedCounts.value
+  Some n => set_ref appliedCounts ((m, n + 1) :: removeAssocS m appliedCounts.value)
+  None => set_ref appliedCounts ((m, 1) :: appliedCounts.value)
+
+removeAssocS : String -> List (String, b) -> List (String, b)
+removeAssocS _ [] = []
+removeAssocS k ((k2, v) :: rest)
+  | k == k2 = removeAssocS k rest
+  | otherwise = (k2, v) :: removeAssocS k rest
+
+-- classify + accumulate this module's pending arg-sites (cells still bound).
+accumArgSites : List (String, Mono, String) -> <Mut> Unit
+accumArgSites [] = ()
+accumArgSites ((name, am, encl) :: rest) =
+  let bt = classifyArgMono am
+  let _ = set_ref argSiteResults (ArgSite name (fst bt) (snd bt) encl :: argSiteResults.value)
+  accumArgSites rest
+
+-- (bucket, head tycon) of a discriminating-arg mono, normalized.
+classifyArgMono : Mono -> (String, String)
+classifyArgMono m = match normalize m
+  TVar _ => ("var", "?")
+  TTuple _ => ("adt", "Tuple")
+  TFun _ _ _ => ("other", "Fun")
+  other => match headTyconMono other
+    Some tag => (if isPrimTycon tag then "prim" else "adt", tag)
+    None => ("var", "?")
+
+isPrimTycon : String -> Bool
+isPrimTycon t = containsName t ["Int", "Float", "String", "Bool", "Char", "Array"]
+
 -- ── type-error accumulator ─────────────────────────────────────────────────
 -- Unification failures record diagnostics here instead of panicking, so
 -- ill-typed programs emit matching `TYPE ERROR: …` lines.  occursCheckFailed
@@ -397,6 +545,7 @@ resetState _ =
   let _ = set_ref curEffect (EffRow [] None)
   let _ = set_ref recordsRef []
   let _ = set_ref pendingSites []
+  let _ = set_ref pendingArgSites []
   let _ = set_ref activeDictVars []
   let _ = set_ref funConstraintsRef []
   let _ = set_ref pendingDictApps []
@@ -971,7 +1120,9 @@ unifyAll t (x :: xs) =
 infer : TcEnv -> Expr -> <Mut> Mono
 infer _ (ELit l) = litType l
 infer env (EVar x) = inferVar env x
-infer env (EApp f x) = inferApp (infer env f) (infer env x)
+infer env (EApp f x) =
+  let _ = if argMeasureEnabled.value then noteApplied f else ()
+  inferApp (infer env f) (infer env x)
 infer env (ELam pats body) = inferLam env pats body
 infer env (ELet _ _ pat e1 e2) = inferLet env pat e1 e2
 infer env (ELetGroup binds body) = inferLetGroup env binds body
@@ -1333,7 +1484,7 @@ inferInfix env op l r =
 
 inferVar : TcEnv -> String -> <Mut> Mono
 inferVar env x = match lookupVar env x
-  Some s => instantiate s
+  Some s => if argMeasureEnabled.value then inferVarMeasured x s else instantiate s
   None => panic ("unbound variable: " ++ x)
 
 inferApp : Mono -> Mono -> <Mut> Mono
@@ -3136,6 +3287,7 @@ elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List 
 elabModuleStamp seedVars accData prog =
   let schemes = checkModuleFull seedVars accData prog
   let _ = resolveSites [] [] pendingSites.value
+  let _ = if argMeasureEnabled.value then accumArgSites pendingArgSites.value else ()
   schemes
 
 elabModulesGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> Unit
@@ -3144,6 +3296,79 @@ elabModulesGo accV accData ((mid, prog) :: rest) =
   let schemes = elabModuleStamp accV accData prog
   let pubV = pickSchemes (publicValNames prog) schemes
   elabModulesGo (accV ++ pubV) (accData ++ publicDataDecls prog) rest
+
+-- ── D0.5 measurement driver (probe-only, no stamping) ──────────────────────
+-- The classification analog of elaborateModules: prePass return-position methods
+-- to EMethodAt (so only TRUE arg-position methods stay EVar and reach inferVar),
+-- typecheck each module in dependency order seeded like checkModules, AND ALSO
+-- infer every impl method body (which the golden elaborateModules path skips) so
+-- derived/explicit impl-body dispatch sites are captured too.  Captures classified
+-- arg-sites into argSiteResults via accumArgSites per module (cells still bound).
+-- Requires setArgMeasurement to have installed the dispatch registry + flag.
+export
+measureModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> Unit
+measureModules runtimeDecls coreDecls modules =
+  let _ = set_ref implInferEnabled False
+  let rpNames = returnPosMethodNames (coreDecls ++ concatMapL snd modules)
+  let core2 = prePassDict rpNames [] coreDecls
+  let modules2 = map (prePassModulePair rpNames) modules
+  let runtimeSeed = externSchemes runtimeDecls
+  let coreSchemes = measureModuleStamp runtimeSeed [] core2
+  measureModulesGo (runtimeSeed ++ coreSchemes) (publicDataDecls core2) modules2
+
+measureModulesGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> Unit
+measureModulesGo _ _ [] = ()
+measureModulesGo accV accData ((mid, prog) :: rest) =
+  let schemes = measureModuleStamp accV accData prog
+  let pubV = pickSchemes (publicValNames prog) schemes
+  measureModulesGo (accV ++ pubV) (accData ++ publicDataDecls prog) rest
+
+-- like checkModuleFull, then ALSO infer impl method bodies, then flush captures.
+measureModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> <Mut> List (String, Scheme)
+measureModuleStamp seedVars accData prog =
+  let _ = resetState ()
+  let dataEnv = registerAllData initialEnv (accData ++ prog)
+  let globalS = ifaceMethodSchemes prog ++ externSchemes prog
+  let env1 = extendVars (extendVars dataEnv seedVars) globalS
+  let defs = funDefs prog
+  let sigs = sigsOf prog
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs [])
+  let _ = measureImplBodies (extendVars env1 topSchemes) prog prog
+  let _ = accumArgSites pendingArgSites.value
+  globalS ++ topSchemes
+
+-- infer EVERY impl method body (not just requires-impls), capturing arg-position
+-- dispatch sites in derived/explicit impl bodies.  Mirrors inferImplMethod's
+-- head-mono substitution but unconditional on reqs and used only for measurement.
+measureImplBodies : TcEnv -> List Decl -> List Decl -> <Mut> Unit
+measureImplBodies _ _ [] = ()
+measureImplBodies env allProg (d :: rest) =
+  let _ = measureOneImpl env allProg d
+  measureImplBodies env allProg rest
+
+measureOneImpl : TcEnv -> List Decl -> Decl -> <Mut> Unit
+measureOneImpl env allProg (DAttrib _ d) = measureOneImpl env allProg d
+measureOneImpl env allProg (DImpl { iface, tys, methods, ... }) =
+  let implTvMap = freshTvMap (dedupS (concatMapL tyVarNames tys))
+  let headMonos = map (fromAstType implTvMap) tys
+  measureImplMethodsM env allProg iface implTvMap headMonos methods
+measureOneImpl _ _ _ = ()
+
+measureImplMethodsM : TcEnv -> List Decl -> String -> List (String, Mono) -> List Mono -> List ImplMethod -> <Mut> Unit
+measureImplMethodsM _ _ _ _ _ [] = ()
+measureImplMethodsM env allProg iface tvm hm (ImplMethod mname pats body :: rest) =
+  let _ = measureImplMethodM env allProg iface tvm hm mname pats body
+  measureImplMethodsM env allProg iface tvm hm rest
+
+measureImplMethodM : TcEnv -> List Decl -> String -> List (String, Mono) -> List Mono -> String -> List Pat -> Expr -> <Mut> Unit
+measureImplMethodM env allProg iface tvm hm mname pats body = match ifaceMethodTy allProg iface mname
+  None => ()
+  Some (ifaceParams, mty) =>
+    let _ = set_ref currentFn (iface ++ "." ++ mname)
+    let expected = expectedMethodType ifaceParams hm mty
+    let actual = inferClauses env [(pats, body)]
+    unify expected actual
+
 
 schemeLines : List (String, Scheme) -> <Mut> List String
 schemeLines [] = []
