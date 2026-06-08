@@ -38,7 +38,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |---|-----------------------------------------------------------|--------:|---------:|----------------------------------|---------------------|
 | 1 | **multi-clause top-level function**                       | 16      | 732      | Emitter                          | reuse impl-method decision-tree lowering |
 | 2 | **arg-tag dispatch on primitive receiver** (no cell tag)  | **0**   | ~~540~~ ~~1399\*\*\*\*\*~~ **344** | Routing-not-wired (NOT new)      | ✅ **PARTIAL — E4 (2026-06-08)** ported D3b arg-pos dict-passing onto `elaborateModules` (gated `argStampEnabled`): **1399 → 344**.  Residual 344 are IMPL-body sites (`eq@List`/`eq@Option`/`eq@Result`), which the modules path's `checkModuleFull` does not infer (no impl-body inference); a later step closes those |
-| 3 | **`++` as `CBinPrim`** (list/string concat)               | ~~14~~ ~~4\*\*~~ ~~2\*\*\*~~ **0** | ~~179~~ **333\*\*\*\*** | Emitter (lowering keeps it)      | ✅ **core (A) FULLY CLOSED (E2a/E2c/E7)** — A's last 2 (`ap@List`/`andThen@List`, `++` on a CALL result) closed by **E7** (2026-06-08): method-call RETURN-TYPE inference. B's 333 residual are whole-compiler string-builder `++` (`scanTriple`/`splitLines`), a different category (E4/E5 tail) |
+| 3 | **`++` as `CBinPrim`** (list/string concat)               | ~~14~~ ~~4\*\*~~ ~~2\*\*\*~~ **0** | ~~179~~ ~~333\*\*\*\*~~ **0** | Emitter (lowering keeps it)      | ✅ **FULLY CLOSED (A: E2a/E2c/E7; B: E10)** — A's last 2 (`ap@List`/`andThen@List`, `++` on a CALL result) closed by **E7** (2026-06-08): method-call RETURN-TYPE inference. B's ~328 whole-compiler string-builder `++` (`scanTriple`/`splitLines`) closed by **E10** (2026-06-08): a RUNTIME header-dispatch fallback. When the operand static LTy is neither `LTStr` (E2a) nor `LTCon` — i.e. E2c/E7 couldn't recover it — `emitBin` now emits `call i64 @mdk_append`, a C helper that inspects the left cell header (odd ⇒ Nil/list; even header==`MDK_STR_TAG` ⇒ string; else ⇒ Cons/list) and routes to `mdk_string_append`/`mdk_list_append`. The result VALUE is always correct; the statically-unknowable result LTy defaults to `LTStr` (this gap is String-builder-dominated). E2a's static `LTStr`/`LTCon` dispatch is unchanged — E10 fires only on the unknown-LTy otherwise arm. Fixture `concat_unknown` (oracle 6) |
 | 4 | **non-variable parameter pattern** (fn) + **PAs/PList in `bindPattern`** | ~~4~~ **0** | ~~150~~ | Desugar/lower-fixable (fn: ✅ E1a) + Emitter (PAs/PList: ✅ **CLOSED E6**) | fn half → `emitClauseTree` (E1a); PAs/PList → two new `bindPattern` arms (2026-06-08) |
 | 5 | **non-variable lambda parameter pattern**                 | ~~1~~ **0** | ~~108~~ **0** | Desugar/lower-fixable          | ✅ **CLOSED (E2b)** — same decision-tree lowering as #4, inside the lifted-lambda frame |
 | 6 | **`::` as `CBinPrim`** (cons)                              | ~~2~~ **0** | ~~90~~ **0** | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — `emitCtorAlloc e "Cons" [lw, rw]` |
@@ -50,7 +50,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ ~~13~~ ~~11~~ **8** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ ~~1924~~ ~~1942‡~~ **888§** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ ~~30~~ ~~23~~ ~~17~~ ~~15~~ ~~13~~ ~~11~~ **8** | ~~2722~~ ~~2677~~ ~~2660~~ ~~2025~~ ~~1927~~ ~~1925~~ ~~1924~~ ~~1942‡~~ ~~888§~~ **560¶** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) were
 references to runtime/core primitives the spike's extern catalog didn't carry —
@@ -124,6 +124,21 @@ position → 113) byte-identical native/oracle.
 (E6/E9) made the emitter descend into MORE bodies (the † / ‡ tick-up mechanism),
 exposing more pre-existing arg-tag residue → **1399** by the E4 baseline. E4 then
 drops it to **344**.
+
+¶ **E10 (2026-06-08): runtime header-dispatch fallback for `++`** closes census-B
+gap #3. ~328 whole-compiler `++` sites (`scanTriple`/`splitLines` string-builders)
+have an operand whose static LTy the emitter can't recover, so E2a's
+`LTStr`/`LTCon` static dispatch doesn't apply and `emitBin`'s otherwise arm
+`gapE`d. E10 emits `call i64 @mdk_append` there instead — a C helper
+(`runtime/medaka_rt.c`) that header-dispatches at runtime (odd ⇒ Nil/list; even
+header==`MDK_STR_TAG` ⇒ string; else ⇒ Cons/list) to the existing
+`mdk_string_append`/`mdk_list_append`. The result VALUE is always correct; the
+statically-unknowable result LTy defaults to `LTStr` (gap is String-builder-
+dominated; if a value is a List the append is still correct, only a downstream
+static string-op/print would mis-select — but `emitPrint LTCon` already panics on
+lists, and fixtures project String results through `stringLength`). **Gap #3: 328
+→ 0. B TOTAL: 888 → 560.** Fixture `concat_unknown` (oracle 6) byte-identical
+native/oracle; E2a's static `LTStr`/`LTCon` dispatch untouched.
 
 The **(A) core total of 57** spans only **~11 gap kinds**; **(B) whole-compiler
 2248** spans 151 distinct reasons, but 88% collapse into the 7 categories above
@@ -420,7 +435,7 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter as
 
 | Class | Gaps | B-count | Meaning |
 |-------|------|--------:|---------|
-| **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #3, #12, #14 (#6, #7, #10, #11 now closed) | 1308 | needs emitter code |
+| **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #12, #14 (#3, #6, #7, #10, #11 now closed) | 1308 | needs emitter code |
 | **Desugar/lower-fixable** (eliminate the shape before Core IR) | #4, #5 | 258 | ✅ CLOSED — realised emitter-side via `emitClauseTree` (E1a fn + E2b lambda); Core IR unchanged |
 | **Front-end residue** (a name/sentinel that shouldn't reach emit) | #8, #9 | ~~176~~ **0** | ✅ CLOSED (E3) — `emitVar` + `emitApp` |
 | **Dispatch routing, already designed** (not new work) | #2, #13 | ~~546~~ **350** | ✅ #2 PARTIAL (E4): D3b arg-pos dict-passing ported onto `elaborateModules` (gated), 1399→344; #13 (~6) remains |
@@ -487,6 +502,20 @@ source per unit of work**:
     334→333** (the 333 residual are unrelated string-builder `++`).  New typed fixtures:
     `impl_ap_list` (→66), `impl_andthen_list` (→206), byte-identical (29/29 typed gate).
     core total 15→**13**.
+  - **E10 (`++` unknown-operand-LTy residue, census-B) — ✅ DONE (2026-06-08).** RUNTIME
+    header-dispatch fallback closes the ~328 whole-compiler string-builder `++`
+    (`scanTriple`/`splitLines`) whose operand static LTy the emitter can't recover
+    (E2a/E2c/E7 don't apply). `emitBin`'s `++` otherwise arm — previously `gapE` — now
+    emits `call i64 @mdk_append`, a new C helper (`runtime/medaka_rt.c`) that inspects
+    the left cell header (odd ⇒ Nil/list; even header==`MDK_STR_TAG` ⇒ string; else ⇒
+    Cons/list) and routes to the existing `mdk_string_append`/`mdk_list_append`. The
+    result VALUE is always correct; the statically-unknowable result LTy defaults to
+    `LTStr` (this gap is String-builder-dominated; downstream a List value's only risk
+    is a static string-op/print, but `emitPrint LTCon` already panics on lists and the
+    fixture projects through `stringLength`). E2a's static `LTStr`/`LTCon` dispatch is
+    UNCHANGED — E10 fires only on the unknown-LTy arm. `declare i64 @mdk_append` added to
+    `emitPreamble`. **#3: B 328→0. B TOTAL 888→560.** Fixture `concat_unknown` (→6),
+    byte-identical native/oracle (161/161 llvm gate).
 
 - **E6 — PAs/PList residue in `bindPattern` (#4 residue).** `canonPat` shapes were
   already correct; `bindPattern` fell to gap for `PAs x p` and `PList (p::ps)`.
