@@ -533,7 +533,15 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        rewrite, goldens unchanged. **#5 core 1→0, whole 185→0** (the fn half #4 closed in
        E1a). core total: 32→**31**. 3 new fixtures (`lam_tuple_param`, `lam_ctor_param`,
        `lam_rec_tuple`); all gates byte-identical (143/25/20/20).
-     - **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`).
+     - ✅ **E3 — guard residue** (#8 `otherwise`, #9 `__fallthrough__`). DONE (2026-06-08).
+       `otherwise` in condition position is a `CVar` reaching `emitVar`; added as a constant
+       arm → `("3", LTBool)` (same as `True`). `__fallthrough__` is always `CApp (CVar
+       "__fallthrough__") (LUnit)`; intercepted in `emitApp`'s `CVar fname _` branch before
+       `emitIndirect` → `call void @mdk_oob()` + dummy `("0", LTInt)` (the block's real
+       terminator comes from the surrounding `if`'s `br`; dead but valid IR). **#8 B:88→0,
+       #9 B:88→0**; core (A) was already 0 before E5 but the E5 let-group workers exposed
+       guard residue — now gone. core total: 34→**30**. 2 new fixtures (`guard_otherwise`,
+       `guard_chain`); all gates byte-identical (149/25/20/20).
      - ✅ **E5 (#10) — local function bindings in `let`/`where` groups.** DONE
        (2026-06-08). `emitLetGroup` now lambda-lifts a non-nullary / recursive local
        binding (`CBind name clauses` with params) into a closure via `emitGroupBind`:

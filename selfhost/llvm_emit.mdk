@@ -520,6 +520,7 @@ emitVar : Emit -> List (String, (String, LTy)) -> String -> <Mut> (String, LTy)
 emitVar e env x =
   if x == "True" then ("3", LTBool)
   else if x == "False" then ("1", LTBool)
+  else if x == "otherwise" then ("3", LTBool)
   else if x == "pi" then (boxFloat e "3.141592653589793", LTFloat)
   else if x == "e" then (boxFloat e "2.718281828459045", LTFloat)
   else if x == "intMaxBound" then ("9223372036854775807", LTInt)
@@ -1351,6 +1352,9 @@ emitApp e env app =
       else if isImplMethod e fname && hasArgs args then
         let argOps = emitArgs e env args
         emitMethodArgDispatch e fname argOps
+      else if fname == "__fallthrough__" then
+        let _ = emit e "  call void @mdk_oob()"
+        ("0", LTInt)
       else emitIndirect e env hd args
     -- slice 6: an applied method / constrained-fn occurrence.  The real arguments
     -- emit first (left-to-right), then the dispatch resolves to a direct impl call
