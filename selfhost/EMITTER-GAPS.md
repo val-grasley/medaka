@@ -43,14 +43,14 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 | 5 | **non-variable lambda parameter pattern**                 | ~~1~~ **0** | ~~108~~ **0** | Desugar/lower-fixable          | ✅ **CLOSED (E2b)** — same decision-tree lowering as #4, inside the lifted-lambda frame |
 | 6 | **`::` as `CBinPrim`** (cons)                              | ~~2~~ **0** | ~~90~~ **0** | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — `emitCtorAlloc e "Cons" [lw, rw]` |
 | 7 | **reference to top-level value / mutable `Ref` binding**  | 7\*     | 254      | Emitter                          | emit top-level non-fn bindings as **globals** |
-| 8 | **`otherwise`** (guard constant)                          | 0       | 88       | Front-end residue                | add to `emitVar` constants (= `True`) |
-| 9 | **`__fallthrough__`** (guard-desugar sentinel)            | 0       | 88       | Front-end residue                | guard-lowering / `emitVar` recognition |
+| 8 | **`otherwise`** (guard constant)                          | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — added to `emitVar` constants (= `True` → `"3"`, `LTBool`) |
+| 9 | **`__fallthrough__`** (guard-desugar sentinel)            | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — intercepted in `emitApp` CVar branch (`call void @mdk_oob()` + dummy; block terminator from surrounding `if`) |
 |10 | **non-nullary / recursive `let`-group** (`where` fns)     | ~~5~~ **0** | ~~5~~ **0** | Emitter                          | ✅ **CLOSED (E5)** — lambda-lift each local fn via `emitGroupBind` (self-rec through `%clos`, E1a clause-tree body); one-at-a-time env threading covers non-mutual groups; genuine forward/mutual ref → precise `gapE` (none in core) |
 |11 | **unbound dict witness** (dict not threaded to use)       | 3       | 2        | Emitter / dict-pass              | thread forwarded dict to nested site |
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ **34†** | ~~2722~~ **3008†** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ ~~32~~ ~~31~~ ~~34†~~ **30** | ~~2722~~ **2677** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) are
 references to runtime/core primitives the spike's extern catalog + global scope
@@ -172,12 +172,26 @@ point-free combinator **value** bindings (`parseExpr`, `parseLam`, `parsePipe`,
   top-level functions can name it. After multi-clause (#1), this is the
   second-biggest structural blocker to emitting real modules.
 
-#### 8 / 9 — guard residue: `otherwise` (B:88) and `__fallthrough__` (B:88)
+#### 8 / 9 — guard residue: `otherwise` (B:88) and `__fallthrough__` (B:88) — ✅ CLOSED (E3, 2026-06-08)
 `| otherwise =` references the prelude constant `otherwise = True`; guard
-desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter.
-- **Front-end residue.** `otherwise`: add to `emitVar`'s constant arm (like
-  `True`/`False`/`pi`). `__fallthrough__`: have `emitVar`/match-lowering
-  recognise the sentinel (or eliminate it in desugar). High count, trivial fix.
+desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter as
+`CApp (CVar "__fallthrough__" AGlobal) (CLit LUnit)`.
+- **`otherwise`** appears as `CVar "otherwise" AGlobal` in the condition position
+  of the desugared `if`-chain (`emitVar`). **Fix**: added to `emitVar`'s constant
+  arm alongside `True`/`False`/`pi`/`intMaxBound`: `x == "otherwise" → ("3", LTBool)`.
+- **`__fallthrough__`** appears as `CApp (CVar "__fallthrough__" ...) (LUnit)` —
+  always an application.  **Fix**: intercepted in `emitApp`'s `CVar fname _` branch
+  (before `emitIndirect`) when `fname == "__fallthrough__"`: emits `call void @mdk_oob()`
+  (noreturn, but NOT a terminator in LLVM IR — the surrounding `if`'s `br` terminates
+  the block) and returns dummy `("0", LTInt)`.  The dead `store` + `br` the caller emits
+  are unreachable but valid IR (`call noreturn` ≠ LLVM terminator; `unreachable` would
+  have produced instructions-after-terminator which the IR verifier rejects).  At runtime,
+  the typechecker proves guard exhaustiveness, so `__fallthrough__` is never reached;
+  `mdk_oob` is a belt-and-suspenders trap matching the interpreter's `Impl_no_match` crash.
+- **B: 88→0 each; core (A): 0 already** (core guard workers' residue was temporarily
+  exposed by E5's let-group fix — now gone).  core total 34→**30**; whole B 3008→**2677**.
+- **New fixtures** `guard_otherwise.mdk` (2-way: n>0/otherwise; main=1) and
+  `guard_chain.mdk` (3-way: n>0/n==0/otherwise; main=-99); both byte-identical (149/25/20/20).
 
 #### 10–14 — long-tail one-offs
 - **non-nullary/recursive `let`-group** (5): ✅ **CLOSED (E5)** —
@@ -215,7 +229,7 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter.
 |-------|------|--------:|---------|
 | **Genuine emitter gap** (Core IR node/shape the emitter can't lower) | #1, #3, #7, #11, #12, #14 (#6, #10 now closed) | 1308 | needs emitter code |
 | **Desugar/lower-fixable** (eliminate the shape before Core IR) | #4, #5 | 258 | ✅ CLOSED — realised emitter-side via `emitClauseTree` (E1a fn + E2b lambda); Core IR unchanged |
-| **Front-end residue** (a name/sentinel that shouldn't reach emit) | #8, #9 | 176 | desugar / `emitVar` |
+| **Front-end residue** (a name/sentinel that shouldn't reach emit) | #8, #9 | ~~176~~ **0** | ✅ CLOSED (E3) — `emitVar` + `emitApp` |
 | **Dispatch routing, already designed** (not new work) | #2, #13 | 546 | port D3b to multi-module |
 
 ---
@@ -251,6 +265,10 @@ source per unit of work**:
 
 - **E3 — guard residue.** (#8 `otherwise`, #9 `__fallthrough__`.) **176** events,
   ~two trivial `emitVar`/desugar fixes. Cheap, high count.
+  **✅ CLOSED (E3, 2026-06-08).** `otherwise` added to `emitVar` constants (= `True`).
+  `__fallthrough__` intercepted in `emitApp` CVar branch → `call void @mdk_oob()` +
+  dummy (noreturn not a terminator; dead store+br from surrounding `if` is valid IR).
+  B: 88+88→0.  core total 34→30.  Fixtures `guard_otherwise`/`guard_chain` green.
 
 - **E4 — dispatch-routing port.** (#2, #13.) **546** events, **zero new design** —
   carry D3b's arg-position dict-passing selector onto the `elaborateModules` emit
@@ -263,21 +281,19 @@ source per unit of work**:
   subset.
 
 **How close is `stdlib/core.mdk` alone (the first bootstrap milestone)?**
-Section A is ~~57~~ ~~32~~ ~~31~~ **34 gap events across ~17 kinds** (the count rose
-because closing #10 unhid the workers' guard residue — see the † note). The kinds
-are exactly E1–E3 + E5 (E4 is already 0 on this path). Concretely, fully emitting
-core.mdk still needs: `++` (4 remaining — unknown-param `append`/`ap`), the guard
-residue now exposed in `find`/`count`/`maximum`/`minimum` (#8 `otherwise`, #9
-`__fallthrough__`, #4 non-var patterns), the global-value/extern references
-(`__hashRaw`/`debugStringLit`/`debugCharLit` + the dict-witness threads), and —
-excludable — the 5 `Arbitrary` unit-head switches. (`::`, both param-pattern
-halves, and the `let`/`where`-group local-fn lift are now closed.)
-**No gap kind in core.mdk is outside the E1–E3 staging, and #1/#3/#4/#5/#6/#10 reuse
-machinery the impl/ctor paths already have.** core.mdk
-is a *bounded* push (≈ a handful of externs/globals + the guard residue), not
-open-ended — it is the realistic first native-bootstrap target.
+Section A is ~~57~~ ~~32~~ ~~31~~ ~~34†~~ **30 gap events across ~15 kinds** (the count
+rose temporarily when closing #10 unhid guard residue; E3 closed that residue, dropping
+it back to 30). The kinds are exactly remaining E1b + E4 + E5 tail (E2/E3/E5-core all
+done; E4 is 0 on this path). Concretely, fully emitting core.mdk still needs: `++` (4
+remaining — unknown-param `append`/`ap`), the `PAs`/`PList` patterns in `find`/
+`debugListItems` (#4 residue), the global-value/extern references (`__hashRaw`/
+`debugStringLit`/`debugCharLit` + the dict-witness threads), and — excludable — the 5
+`Arbitrary` unit-head switches. (`::`, both param-pattern halves, let/where-group local
+fns, and the guard residue are all closed.)
+**No gap kind in core.mdk is outside the E-series staging.** core.mdk
+is a *bounded* push, not open-ended — it is the realistic first native-bootstrap target.
 
 The **whole compiler (B)** then adds only *scale* of the same kinds plus the E4
 routing port — no new gap categories beyond core's set except the global-`Ref`
-volume (#7) and the guard residue (#8/#9). The map is closed: **emit the real
-compiler = E1 → E4, in that leverage order.**
+volume (#7). The map is closed: **emit the real
+compiler = E1b → E4, in that leverage order.**

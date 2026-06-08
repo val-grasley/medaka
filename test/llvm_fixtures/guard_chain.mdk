@@ -1,0 +1,13 @@
+-- E3: 3-way guard chain hitting middle and last arms.
+-- `otherwise` closes the chain; `__fallthrough__` is the unreachable sentinel.
+-- label 5 = 1 (first arm: n > 0)
+-- label 0 = 0 (middle arm: n == 0)
+-- label (-3) = -1 (last arm: otherwise)
+-- main = label 5 + label 0 * 10 + label (0 - 3) * 100
+-- = 1 + 0 + (-1 * 100) = -99
+label n
+  | n > 0 = 1
+  | n == 0 = 0
+  | otherwise = -1
+
+main = label 5 + label 0 * 10 + label (0 - 3) * 100
