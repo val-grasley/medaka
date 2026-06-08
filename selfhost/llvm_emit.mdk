@@ -169,6 +169,65 @@ import core_ir.{CExpr(..), CField(..), CBind(..), CClause(..), CStmt(..), CProgr
 import core_ir_lower.{compileTree, canonPat}
 import util.{reverseL, joinNl, lookupAssoc}
 
+-- ── D4 emitter-completeness inventory (record-and-skip) ──────────────────────
+-- A MEASUREMENT scaffold for STAGE D4 (selfhost/EMITTER-GAPS.md).  OFF by default:
+-- when `gapRecordEnabled` is False every gap site below still `panic`s, exactly as
+-- before, so normal emit output and all four diff_selfhost_* gates stay
+-- byte-identical.  The D4 gaps probe (llvm_emit_gaps_main.mdk) flips it ON to
+-- COLLECT every gap in one pass instead of aborting on the first: each gap is
+-- recorded as "<binding>\t<reason>" and the offending construct returns a benign
+-- placeholder so emission of the rest of the program proceeds.  The placeholder
+-- poisons only that one sub-expression's output (which the probe discards — it
+-- never compiles/links the .ll), so it surfaces ALL gaps rather than one.
+gapRecordEnabled : Ref Bool
+gapRecordEnabled = Ref False
+
+gapLog : Ref (List String)
+gapLog = Ref []
+
+curGapBind : Ref String
+curGapBind = Ref "?"
+
+export
+enableGapRecord : Unit -> <Mut> Unit
+enableGapRecord _ = set_ref gapRecordEnabled True
+
+-- clear the gap log (so one process can run several independent gap censuses).
+export
+resetGaps : Unit -> <Mut> Unit
+resetGaps _ = let _ = set_ref gapLog [] in set_ref curGapBind "?"
+
+-- the recorded gap events, in first-recorded order ("<binding>\t<reason>").
+export
+gapEvents : Unit -> List String
+gapEvents _ = reverseL gapLog.value
+
+-- set the binding name attributed to subsequent gaps (the probe sets this per
+-- top-level binding / impl entry before emitting it).
+export
+setGapBind : String -> <Mut> Unit
+setGapBind name = set_ref curGapBind name
+
+noteGap : String -> <Mut> Unit
+noteGap reason = set_ref gapLog ((curGapBind.value ++ "\t" ++ reason) :: gapLog.value)
+
+-- gap helpers: when recording is on, log the reason + return a placeholder so
+-- emission continues; otherwise `panic` (the unchanged normal-path behaviour).
+-- One per return shape the panic sites need.
+gapE : String -> <Mut> (String, LTy)
+gapE reason = if gapRecordEnabled.value then let _ = noteGap reason in ("0", LTInt) else panic reason
+
+gapU : String -> <Mut> Unit
+gapU reason = if gapRecordEnabled.value then noteGap reason else panic reason
+
+-- gap that returns the unchanged emit env (the bindPattern accumulator).
+gapEnv : String -> List (String, (String, LTy)) -> <Mut> List (String, (String, LTy))
+gapEnv reason env = if gapRecordEnabled.value then let _ = noteGap reason in env else panic reason
+
+-- gap that returns a placeholder operand word (an unbound dict witness).
+gapStr : String -> <Mut> String
+gapStr reason = if gapRecordEnabled.value then let _ = noteGap reason in "0" else panic reason
+
 -- the static type of a slice-1/3 value, used to pick the print routine and the
 -- int-vs-float instruction (Core IR is type-erased; for this subset the type is
 -- recoverable structurally as we emit).  `LTCon` (slice 3) is an ADT value — a
@@ -450,7 +509,7 @@ emitExpr e env (CIndex a i) = emitArrayIndex e env a i
 emitExpr e env (CSlice a lo hi incl) = emitArraySlice e env a lo hi incl
 emitExpr e env (CList es) = emitList e env es
 emitExpr e env (CRangeList lo hi incl) = emitRangeList e env lo hi incl
-emitExpr _ _ other = panic ("llvm spike: unsupported Core IR node " ++ ctag other ++ " (slice 1/3 subset only)")
+emitExpr _ _ other = gapE ("unsupported Core IR node " ++ ctag other)
 
 -- a variable occurrence: a bare constructor name (slice 3) is a NULLARY ADT value
 -- → allocate its heap cell; a bare KNOWN top-level FUNCTION name used as a VALUE
@@ -469,7 +528,15 @@ emitVar e env x =
   else if x == "charMaxBound" then ("2228223", LTChar)
   else if isCtor e x then emitCtorAlloc e x []
   else if isKnownFn e x then emitEtaClosure e x
-  else lookupVar env x
+  else lookupVarG e env x
+
+-- a Mut-aware variable lookup used at the emit site (emitVar): when gap-recording
+-- is on, an unbound variable records a gap and returns a placeholder instead of
+-- aborting (the dict/internal callers keep the pure `lookupVar` panic).
+lookupVarG : Emit -> List (String, (String, LTy)) -> String -> <Mut> (String, LTy)
+lookupVarG e env x = match lookupAssoc x env
+  Some vt => vt
+  None => gapE ("unbound variable '" ++ x ++ "' (not a local, ctor, or known fn)")
 
 emitLit : Emit -> Lit -> <Mut> (String, LTy)
 emitLit _ (LInt n) = (intToString (n * 2 + 1), LTInt)
@@ -493,7 +560,7 @@ emitLit _ (LChar c) =
   let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
   (intToString (cp * 2 + 1), LTChar)
 emitLit _ LUnit = ("1", LTUnit)
-emitLit _ _ = panic "llvm spike: only Int/Float/Bool/String literals supported in slice 1"
+emitLit _ _ = gapE "non-Int/Float/Bool/String/Char/Unit literal (slice 1)"
 
 lookupVar : List (String, (String, LTy)) -> String -> (String, LTy)
 lookupVar [] x = panic ("llvm spike: unbound variable " ++ x)
@@ -578,7 +645,7 @@ emitStrExtern e env "stringLength" args = match emitArgs e env args
     let _ = emit e ("  " ++ n ++ " = load i64, ptr " ++ cpp)
     (tagInt e n, LTInt)
   _ => panic "llvm spike: stringLength takes one argument (slice 5)"
-emitStrExtern _ _ name _ = panic ("llvm spike: unsupported string extern " ++ name)
+emitStrExtern _ _ name _ = gapE ("unsupported string extern " ++ name)
 
 -- numeric conversion externs (native extern catalog slice 2).
 -- intToFloat / floatToInt are INTRINSIC: inline sitofp / fptosi + box/untag.
@@ -609,7 +676,7 @@ emitNumExtern e env "floatToString" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_float_to_string(double " ++ d ++ ")")
     (r, LTStr)
   _ => panic "llvm spike: floatToString takes exactly one argument (slice 2)"
-emitNumExtern _ _ name _ = panic ("llvm spike: unsupported numeric extern " ++ name)
+emitNumExtern _ _ name _ = gapE ("unsupported numeric extern " ++ name)
 
 -- IO-output externs (native extern catalog slice 3).
 -- putStr/putStrLn write to stdout; ePutStr/ePutStrLn write to stderr.
@@ -638,7 +705,7 @@ emitIoExtern e env "ePutStrLn" args = match emitArgs e env args
     let _ = emit e ("  call void @mdk_eputstrln(i64 " ++ s ++ ")")
     ("1", LTUnit)
   _ => panic "llvm spike: ePutStrLn takes exactly one argument (slice 3)"
-emitIoExtern _ _ name _ = panic ("llvm spike: unsupported IO extern " ++ name)
+emitIoExtern _ _ name _ = gapE ("unsupported IO extern " ++ name)
 
 -- abort externs (native extern catalog slice 4).
 -- panic/exit terminate the process; the call itself never returns, so the
@@ -678,7 +745,7 @@ emitArrIntrinsic e env "arraySetUnsafe" args = match emitArgs e env args
     let _ = storeFieldDyn e arr idx_raw x
     ("1", LTUnit)
   _ => panic "llvm spike: arraySetUnsafe takes three arguments (slice 6)"
-emitArrIntrinsic _ _ name _ = panic ("llvm spike: unsupported array intrinsic " ++ name)
+emitArrIntrinsic _ _ name _ = gapE ("unsupported array intrinsic " ++ name)
 
 -- array leaf externs (native extern catalog slice 7).
 -- C helpers in runtime/medaka_rt.c; array cell = [i64 count | elem@8 | ...].
@@ -719,7 +786,7 @@ emitArrLeafExtern e env "arrayFill" args = match emitArgs e env args
     let _ = emit e ("  call void @mdk_array_fill(i64 " ++ x ++ ", i64 " ++ arr ++ ")")
     ("1", LTUnit)
   _ => panic "llvm spike: arrayFill takes two arguments (slice 7)"
-emitArrLeafExtern _ _ name _ = panic ("llvm spike: unsupported array leaf extern " ++ name)
+emitArrLeafExtern _ _ name _ = gapE ("unsupported array leaf extern " ++ name)
 
 -- char scalar externs (native extern catalog slice 8).
 -- charCode is INTRINSIC: Char and Int share the same tagged word encoding, so
@@ -738,7 +805,7 @@ emitCharExtern e env "charToStr" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_char_to_str(i64 " ++ a ++ ")")
     (r, LTStr)
   _ => panic "llvm spike: charToStr takes one argument (slice 8)"
-emitCharExtern _ _ name _ = panic ("llvm spike: unsupported char extern " ++ name)
+emitCharExtern _ _ name _ = gapE ("unsupported char extern " ++ name)
 
 -- slice 9: string↔char conversions + codepoint slicing.
 isStrCharExtern : String -> Bool
@@ -765,7 +832,7 @@ emitStrCharExtern e env "stringSlice" args = match emitArgs e env args
       ", i64 " ++ hi ++ ", i64 " ++ s ++ ")")
     (r, LTStr)
   _ => panic "llvm spike: stringSlice takes three arguments (slice 9)"
-emitStrCharExtern _ _ name _ = panic ("llvm spike: unsupported str-char extern " ++ name)
+emitStrCharExtern _ _ name _ = gapE ("unsupported str-char extern " ++ name)
 
 -- slice 14: ASCII char classification + case mapping (unicode subset).
 -- Predicate externs return raw 0/1 from C; emitter wraps with tagInt to Bool.
@@ -831,7 +898,7 @@ emitUnicodeExtern e env "stringToLower" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_to_lower(i64 " ++ s ++ ")")
     (r, LTStr)
   _ => panic "llvm spike: stringToLower takes one argument (slice 14)"
-emitUnicodeExtern _ _ name _ = panic ("llvm spike: unsupported unicode extern " ++ name)
+emitUnicodeExtern _ _ name _ = gapE ("unsupported unicode extern " ++ name)
 
 -- slice 10: ADT-RETURNING externs (precursor canary).  The C side constructs the
 -- result cell with the reserved tags (see `reservedTag` / runtime mdk_some etc.), so
@@ -867,7 +934,7 @@ emitAdtExtern e env "stringCompare" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_compare(i64 " ++ a ++ ", i64 " ++ b ++ ")")
     (r, LTCon)
   _ => panic "llvm spike: stringCompare takes two arguments (slice 11)"
-emitAdtExtern _ _ name _ = panic ("llvm spike: unsupported adt extern " ++ name)
+emitAdtExtern _ _ name _ = gapE ("unsupported adt extern " ++ name)
 
 -- slice 12: args + env externs.  `args ()` → List String of argv[1..];
 -- `getEnv name` → Option String.  Results are LTCon — never auto-printed.
@@ -887,7 +954,7 @@ emitEnvExtern e env "getEnv" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_get_env(i64 " ++ n ++ ")")
     (r, LTCon)
   _ => panic "llvm spike: getEnv takes one argument (slice 12)"
-emitEnvExtern _ _ name _ = panic ("llvm spike: unsupported env extern " ++ name)
+emitEnvExtern _ _ name _ = gapE ("unsupported env extern " ++ name)
 
 -- slice 13: file IO + stdin externs.  Result/Option/List returns are LTCon;
 -- fileExists returns raw 0/1 which the emitter tags (LTBool); readLine/readAll
@@ -947,7 +1014,7 @@ emitFileExtern e env "readAll" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_all(i64 " ++ u ++ ")")
     (r, LTStr)
   _ => panic "llvm spike: readAll takes one (Unit) argument (slice 13)"
-emitFileExtern _ _ name _ = panic ("llvm spike: unsupported file extern " ++ name)
+emitFileExtern _ _ name _ = gapE ("unsupported file extern " ++ name)
 
 -- Tier D: RNG (deterministic SplitMix64).  The C runtime holds the state; the
 -- algorithm matches lib/eval.ml splitmix64_next, seeded identically, so output is
@@ -987,12 +1054,18 @@ emitRngExtern e env "setSeed" args = match emitArgs e env args
     let _ = emit e ("  call void @mdk_set_seed(i64 " ++ n ++ ")")
     ("1", LTUnit)
   _ => panic "llvm spike: setSeed takes one argument (Tier D)"
-emitRngExtern _ _ name _ = panic ("llvm spike: unsupported rng extern " ++ name)
+emitRngExtern _ _ name _ = gapE ("unsupported rng extern " ++ name)
 
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitBin e env op l r
   | isCmpOp op = emitCmp e env op l r
-  | otherwise = emitArith e env op l r
+  | isArithOp op = emitArith e env op l r
+  | otherwise = gapE ("unsupported binary operator '" ++ op ++ "' (slice 1: arithmetic + comparison only — e.g. ::, ++)")
+
+-- the arithmetic operators the spike lowers to int/float instructions.  `::` and
+-- `++` survive lowering as CBinPrim but are NOT arithmetic — they fall to the gap.
+isArithOp : String -> Bool
+isArithOp op = op == "+" || op == "-" || op == "*" || op == "/" || op == "%"
 
 -- arithmetic preserves operand type (well-typed: both operands share a type).
 emitArith : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
@@ -1059,7 +1132,7 @@ emitUn e env "!" x =
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = xor i64 " ++ i ++ ", 1")
   (tagInt e r, LTBool)
-emitUn _ _ op _ = panic ("llvm spike: unsupported unary op " ++ op)
+emitUn _ _ op _ = gapE ("unsupported unary op " ++ op)
 
 -- `if`: lower via an alloca slot (memory, not phi) so a branch's own internal
 -- control flow never has to be threaded into a phi's incoming-block list — the
@@ -1111,14 +1184,14 @@ emitLet e env False (PTuple ps) e1 e2 =
 emitLet e env True (PVar f) (CLam pats body) e2 =
   let (w, ty) = emitRecLam e env f pats body
   emitExpr e ((f, (w, ty)) :: env) e2
-emitLet _ _ _ _ _ _ = panic "llvm spike: only non-recursive `let <var|_|tuple> = e in e` and function-`let` (slice 5b) supported"
+emitLet _ _ _ _ _ _ = gapE "unsupported let (slice 5b: only non-recursive let var/_/tuple = e, or function-let)"
 
 emitLetGroup : Emit -> List (String, (String, LTy)) -> List CBind -> CExpr -> <Mut> (String, LTy)
 emitLetGroup e env [] body = emitExpr e env body
 emitLetGroup e env ((CBind name [CClause [] rhs])::rest) body =
   let (v, ty) = emitExpr e env rhs
   emitLetGroup e ((name, (v, ty)) :: env) rest body
-emitLetGroup _ _ _ _ = panic "llvm spike: only nullary non-recursive let-group bindings supported in slice 1"
+emitLetGroup _ _ _ _ = gapE "unsupported let-group (slice 1: only nullary non-recursive bindings)"
 
 emitBlock : Emit -> List (String, (String, LTy)) -> List CStmt -> <Mut> (String, LTy)
 emitBlock e env [CSExpr ex] = emitExpr e env ex
@@ -1135,8 +1208,8 @@ emitBlock e env ((CSLet _ (PTuple ps) ex)::rest) =
   let (v, _) = emitExpr e env ex
   let env2 = bindPattern e env (PTuple ps) v (CLit (LInt 0))
   emitBlock e env2 rest
-emitBlock _ _ [] = panic "llvm spike: empty block"
-emitBlock _ _ _ = panic "llvm spike: unsupported block statement in slice 1"
+emitBlock _ _ [] = gapE "empty block"
+emitBlock _ _ _ = gapE "unsupported block statement (slice 1)"
 
 -- ── function application (slices 2 + 4) ─────────────────────────────────────
 -- Three call shapes, by the application spine's head:
@@ -1286,7 +1359,7 @@ emitMethod e env name route implRoutes methRoutes argOps =
         Some _ =>
           let dictWords = dictWordsOf e env (methRoutes ++ implRoutes)
           emitImplCall e (implFnName tag name) (dictWords ++ argOps)
-        None => panic ("llvm spike: no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
+        None => gapE ("no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
     RDict d => emitMethodDispatch e env name d argOps
     RDictFwd d => emitMethodDispatch e env name d argOps
     RNone => emitMethodArgDispatch e name argOps
@@ -1355,12 +1428,20 @@ emitMethodArgDispatch : Emit -> String -> List String -> <Mut> (String, LTy)
 emitMethodArgDispatch e method argOps =
   let groups = implGroupsForMethod e method
   match groups
+    [] => gapE ("arg-tag dispatch for method '" ++ method ++ "' has no impl groups (slice 7: unresolved RNone fallback)")
     [g] => emitImplCall e (implFnName (groupTag g) method) argOps
     _ => emitArgTagDispatch e method groups argOps
 
 emitArgTagDispatch : Emit -> String -> List ImplGroup -> List String -> <Mut> (String, LTy)
-emitArgTagDispatch e method groups argOps =
-  let discrimWord = nthStr argOps (headPos (groupPositionsOf (headGroup groups)))
+emitArgTagDispatch e method groups argOps
+  | headPos (groupPositionsOf (headGroup groups)) >= lengthS argOps =
+      gapE ("arg-tag dispatch for method '" ++ method ++ "': discriminating arg position not supplied (slice 7: under-applied / unapplied method)")
+  | otherwise =
+      emitArgTagDispatchGo e method groups argOps (headPos (groupPositionsOf (headGroup groups)))
+
+emitArgTagDispatchGo : Emit -> String -> List ImplGroup -> List String -> Int -> <Mut> (String, LTy)
+emitArgTagDispatchGo e method groups argOps discrimPos =
+  let discrimWord = nthStr argOps discrimPos
   let tagReg = loadDiscriminant e discrimWord
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
@@ -1390,7 +1471,7 @@ emitArgDispatchChain e method tagReg (g::rest) argOps slot endL =
 -- an i1 that is true when the loaded ctor tag equals ANY of a type's constructor
 -- tags (OR-chain of icmp eq against each hashName).
 emitTagMatch : Emit -> String -> List String -> <Mut> String
-emitTagMatch _ _ [] = panic "llvm spike: impl type owns no constructors (slice 7)"
+emitTagMatch _ _ [] = gapStr "arg-tag dispatch on impl type that owns no constructors (slice 7: primitive receiver carries no cell tag)"
 emitTagMatch e tagReg [c] =
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = icmp eq i64 " ++ tagReg ++ ", " ++ intToString (cellTag e c))
@@ -1449,10 +1530,10 @@ emitDictApp e env name routes argOps =
     let r = freshReg e
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ name ++ "(" ++ argDecls (dictWords ++ argOps) ++ ")")
     (r, fnRetTy e name)
-  else panic ("llvm spike: CDict head '" ++ name ++ "' is not a known top-level function (slice 6)")
+  else gapE ("CDict head '" ++ name ++ "' is not a known top-level function (slice 6)")
 
 -- the dict witness words for a constrained-function call's routes (note (j)).
-dictWordsOf : Emit -> List (String, (String, LTy)) -> List Route -> List String
+dictWordsOf : Emit -> List (String, (String, LTy)) -> List Route -> <Mut> List String
 dictWordsOf _ _ [] = []
 dictWordsOf e env (r::rest) = dictWordOfRoute e env r :: dictWordsOf e env rest
 
@@ -1460,20 +1541,21 @@ dictWordsOf e env (r::rest) = dictWordOfRoute e env r :: dictWordsOf e env rest
 -- RDict/RDictFwd forward the enclosing dict parameter's word; RNone is the 0 dict.
 -- A one-level dict carries only the head tag — nested `reqs` (per-instance requires
 -- dicts) are out of scope, so an RKey's reqs are not materialized here.
-dictWordOfRoute : Emit -> List (String, (String, LTy)) -> Route -> String
+dictWordOfRoute : Emit -> List (String, (String, LTy)) -> Route -> <Mut> String
 dictWordOfRoute _ _ (RKey key _) = intToString (hashName key)
 dictWordOfRoute _ env (RDict d) = dictOperand env d
 dictWordOfRoute _ env (RDictFwd d) = dictOperand env d
 dictWordOfRoute _ _ RNone = "0"
 
 -- the operand word a dict parameter name is bound to in the emit env.
-dictOperand : List (String, (String, LTy)) -> String -> String
-dictOperand env d = match lookupVar env d
-  (op, _) => op
+dictOperand : List (String, (String, LTy)) -> String -> <Mut> String
+dictOperand env d = match lookupAssoc d env
+  Some (op, _) => op
+  None => gapStr ("unbound dict witness '" ++ d ++ "' in emit env (slice 6: dict not threaded to this site)")
 
 ensureNoReqs : List Route -> <Mut> Unit
 ensureNoReqs [] = ()
-ensureNoReqs _ = panic "llvm spike: RKey with nested requires dicts unsupported (slice 6: one-level dispatch only)"
+ensureNoReqs _ = gapU "RKey with nested requires dicts (slice 6: one-level dispatch only)"
 
 -- ── impl method definitions (slice 6 + slice 7) ─────────────────────────────
 -- Each typeclass impl method lowers to ONE top-level `@mdk_impl_<tag>_<method>`,
@@ -1538,7 +1620,7 @@ implParamEnv n i
 emitGroupBody : Emit -> String -> Int -> List (List Pat, CExpr) -> <Mut> Unit
 emitGroupBody e fname 0 clauses = match clauses
   [([], body)] => emitFnBody e [] fname body
-  _ => panic "llvm spike: nullary impl group must have exactly one clause (slice 6)"
+  _ => gapU "nullary impl group with more than one clause (slice 6)"
 emitGroupBody e _ arity clauses =
   let env = implParamEnv arity 0
   let scrut = if arity == 1 then CVar "a0" AGlobal else CTuple (implScrutVars arity 0)
@@ -1664,6 +1746,11 @@ emitClosureAlloc e lamName captureWords =
 -- allocate the closure cell capturing the live operand words.
 emitLam : Emit -> List (String, (String, LTy)) -> List Pat -> CExpr -> <Mut> (String, LTy)
 emitLam e env pats body =
+  if allPVar pats then emitLamGo e env pats body
+  else gapE "non-variable lambda parameter pattern (slice 4: plain-variable lambda params only)"
+
+emitLamGo : Emit -> List (String, (String, LTy)) -> List Pat -> CExpr -> <Mut> (String, LTy)
+emitLamGo e env pats body =
   let lamName = "mdk_lam" ++ intToString (freshId e)
   let pnames = patVarNames pats
   let captured = keepInEnv env (dedupS (freeVars pnames body))
@@ -1677,6 +1764,11 @@ emitLam e env pats body =
 -- bind `f` to `%clos` so a self-call re-enters the same code with the same cell.
 emitRecLam : Emit -> List (String, (String, LTy)) -> String -> List Pat -> CExpr -> <Mut> (String, LTy)
 emitRecLam e env f pats body =
+  if allPVar pats then emitRecLamGo e env f pats body
+  else gapE "non-variable recursive-let lambda parameter pattern (slice 5b)"
+
+emitRecLamGo : Emit -> List (String, (String, LTy)) -> String -> List Pat -> CExpr -> <Mut> (String, LTy)
+emitRecLamGo e env f pats body =
   let lamName = "mdk_lam" ++ intToString (freshId e)
   let pnames = patVarNames pats
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
@@ -2143,7 +2235,7 @@ emitTree : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List S
 emitTree e _ _ _ _ _ _ _ CTFail = emit e "  unreachable"
 emitTree e env root arms _ slot endL rty (CTLeaf i) = emitLeaf e env root arms i slot endL rty
 emitTree _ _ _ _ _ _ _ _ (CTGuard _ _) =
-  panic "llvm spike: guarded / range / record match arms unsupported (slice 3: constructor + int-literal patterns only)"
+  gapU "guarded / range / record match arm (slice 3: constructor + int-literal patterns only)"
 emitTree e env root arms occs slot endL rty (CTDrop sub) =
   emitTree e env root arms (tailS occs) slot endL rty sub
 emitTree e env root arms occs slot endL rty (CTSwitch branches dft) =
@@ -2161,7 +2253,7 @@ emitLeaf e env root arms i slot endL rty = match nthArm arms i
     let _ = set_ref rty bty
     let _ = emit e ("  store i64 " ++ bv ++ ", ptr " ++ slot)
     emit e ("  br label %" ++ endL)
-  None => panic "llvm spike: decision arm index out of range"
+  None => gapU "decision arm index out of range"
 
 -- bind a pattern's variables against a value word, emitting field loads for the
 -- constructor sub-patterns.  Mirrors the binding half of eval.mdk's matchPat, but
@@ -2185,8 +2277,8 @@ bindPattern e env (PTuple ps) v body = bindFields e env ps v body 0
 -- this only EXTRACTS — same as the PCon binding path, with [head, tail] fields.
 bindPattern e env (PCons h t) v body = bindFields e env [h, t] v body 0
 bindPattern _ env (PList []) _ _ = env
-bindPattern _ _ p _ _ =
-  panic ("llvm spike: unsupported pattern in match arm (slice 3/5b: variable / wildcard / constructor / tuple / cons / nil / int-literal only): " ++ ptag p)
+bindPattern _ env p _ _ =
+  gapEnv ("unsupported pattern in match arm (slice 3/5b: variable / wildcard / constructor / tuple / cons / nil / int-literal only): " ++ ptag p) env
 
 bindFields : Emit -> List (String, (String, LTy)) -> List Pat -> String -> CExpr -> Int -> <Mut> List (String, (String, LTy))
 bindFields _ env [] _ _ _ = env
@@ -2215,7 +2307,7 @@ emitSwitch e env root arms occs branches dft slot endL rty = match occs
       Some _ =>
         let tagReg = loadDiscriminant e foc
         emitConChain e env root arms foc rest tagReg branches dft slot endL rty
-      None => panic "llvm spike: unsupported switch head (slice 5b: constructor / list / tuple / int-literal heads only; no unit heads)"
+      None => gapU "unsupported switch head (slice 5b: constructor / list / tuple / int-literal heads only; no unit heads)"
 
 -- the name + arity a constructor-LIKE head tests against: a named ADT constructor
 -- carries them directly; built-in list HCons/HNil and tuples HTuple reuse the same
@@ -2252,7 +2344,7 @@ emitConChain e env root arms foc rest tagReg ((CTBranch h sub)::more) dft slot e
       let _ = emit e (next ++ ":")
       emitConChain e env root arms foc rest tagReg more dft slot endL rty
     None =>
-      panic "llvm spike: heterogeneous constructor switch (slice 3: a column is all-constructor or all-literal)"
+      gapU "heterogeneous constructor switch (slice 3: a column is all-constructor or all-literal)"
 
 -- the literal-switch test chain: compare the focus immediate against each branch's
 -- tagged-int constant; a literal head has arity 0, so a match descends with the
@@ -2272,7 +2364,7 @@ emitLitChain e env root arms foc rest ((CTBranch (HLit (LInt k)) sub)::more) dft
   let _ = emit e (next ++ ":")
   emitLitChain e env root arms foc rest more dft slot endL rty
 emitLitChain _ _ _ _ _ _ _ _ _ _ _ =
-  panic "llvm spike: only Int literal switches supported (slice 3: no Float / String / Char / Bool literal heads)"
+  gapU "non-Int literal switch (slice 3: no Float / String / Char / Bool literal heads)"
 
 -- ── small list helpers (slice 3) ────────────────────────────────────────────
 lengthS : List a -> Int
@@ -2316,6 +2408,15 @@ emitFns e (b::rest) =
 
 emitFn : Emit -> CBind -> <Mut> Unit
 emitFn e (CBind name [CClause pats body]) =
+  if allPVar pats then emitFnClause e name pats body
+  else gapU "non-variable parameter pattern in top-level function clause (slice 2: plain-variable params only)"
+emitFn _ (CBind _ (_::_)) =
+  gapU "multi-clause top-level function (slice 2: single variable-pattern clause only)"
+emitFn _ (CBind _ []) = gapU "top-level function with no clauses"
+
+-- emit one variable-pattern function clause (the slice-2 path).
+emitFnClause : Emit -> String -> List Pat -> CExpr -> <Mut> Unit
+emitFnClause e name pats body =
   let ptys = match lookupAssoc name (sigTable e)
     Some (FnSig ts _) => ts
     None => allInt pats
@@ -2325,8 +2426,12 @@ emitFn e (CBind name [CClause pats body]) =
   let _ = emitFnBody e env name body
   let _ = emit e "}"
   emit e ""
-emitFn _ (CBind name _) =
-  panic ("llvm spike: function '" ++ name ++ "' is multi-clause (slice 2: single variable-pattern clause only)")
+
+-- every parameter is a plain variable pattern (the slice-2 ABI requirement).
+allPVar : List Pat -> Bool
+allPVar [] = True
+allPVar ((PVar _)::rest) = allPVar rest
+allPVar _ = False
 
 sigTable : Emit -> <Mut> List (String, FnSig)
 sigTable (Emit _ _ _ sigs _ _ _ _ _) = sigs.value
@@ -2641,7 +2746,7 @@ emitRecordUpdate e env base updates =
   let (bw, _) = emitExpr e env base
   let firstLabel = cFieldFirstLabel updates
   match findRecordByLabel (recFieldTable e) firstLabel
-    None => panic ("llvm spike: CRecordUpdate: unknown record type for field '" ++ firstLabel ++ "'")
+    None => gapE ("CRecordUpdate: unknown record type for field '" ++ firstLabel ++ "'")
     Some (name, labels) =>
       let updatePairs = emitUpdatePairs e env updates
       let words = buildUpdateWords e bw labels updatePairs 0
@@ -2652,7 +2757,7 @@ emitRefAlloc e env args = match args
   [x] =>
     let (xw, _) = emitExpr e env x
     emitCtorAlloc e "$ref" [xw]
-  _ => panic "llvm spike: Ref expects exactly 1 argument"
+  _ => gapE "Ref expects exactly 1 argument"
 
 emitSetRef : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
 emitSetRef e env args = match args
@@ -2665,7 +2770,7 @@ emitSetRef e env args = match args
     let _ = emit e ("  " ++ fp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 8")
     let _ = emit e ("  store i64 " ++ xw ++ ", ptr " ++ fp)
     ("1", LTInt)
-  _ => panic "llvm spike: set_ref expects exactly 2 arguments"
+  _ => gapE "set_ref expects exactly 2 arguments"
 
 emitFieldExprs : Emit -> List (String, (String, LTy)) -> List CField -> <Mut> List String
 emitFieldExprs _ _ [] = []
@@ -3033,7 +3138,7 @@ emitArrayMakeWith e env args = match args
     let w = freshReg e
     let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
     (w, LTCon)
-  _ => panic "llvm spike: arrayMakeWith takes two arguments"
+  _ => gapE "arrayMakeWith takes two arguments"
 
 -- ── lists (slice 9) ─────────────────────────────────────────────────────────
 -- VALUE REPRESENTATION: a list is a chain of boxed Cons cells (matching the
@@ -3269,4 +3374,51 @@ ctag (CIndex _ _) = "CIndex"
 ctag (CSlice _ _ _ _) = "CSlice"
 ctag (CMethod _ _ _ _) = "CMethod (typeclass dispatch)"
 ctag (CDict _ _) = "CDict (dictionary)"
+ctag (CVariantUpdate _ _ _) = "CVariantUpdate (named-field variant update)"
 ctag _ = "?"
+
+-- ── D4 emitter-completeness inventory entry point ───────────────────────────
+-- Mirrors emitProgram's setup but turns gap-recording ON, attributes each gap to
+-- the top-level binding / impl group being emitted, and SKIPS the `@main` path (a
+-- real prelude/compiler module carries no `main`).  Emits every fn-bind, value
+-- bind, and impl group; returns the recorded gap events ("<binding>\t<reason>").
+-- The emitted LLVM text is discarded by the probe — only the gap log matters.
+export
+emitProgramGaps : CProgram -> <Mut> List String
+emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
+  let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes)
+  let _ = resetGaps ()
+  let _ = enableGapRecord ()
+  let _ = emitPreamble e
+  let _ = emitFnsGaps e (fnBinds groups)
+  let _ = emitImplsGaps e implEntries
+  let _ = emitTopBindsGaps e [] (valBinds groups)
+  gapEvents ()
+
+emitFnsGaps : Emit -> List CBind -> <Mut> Unit
+emitFnsGaps _ [] = ()
+emitFnsGaps e ((CBind name cs)::rest) =
+  let _ = setGapBind ("fn " ++ name)
+  let _ = emitFn e (CBind name cs)
+  emitFnsGaps e rest
+
+emitImplsGaps : Emit -> List CImplEntry -> <Mut> Unit
+emitImplsGaps e entries = emitGroupsGaps e (groupImpls entries)
+
+emitGroupsGaps : Emit -> List ImplGroup -> <Mut> Unit
+emitGroupsGaps _ [] = ()
+emitGroupsGaps e (g::rest) =
+  let _ = setGapBind ("impl " ++ groupMethodOf g ++ "@" ++ groupTag g)
+  let _ = emitGroup e g
+  emitGroupsGaps e rest
+
+emitTopBindsGaps : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> Unit
+emitTopBindsGaps _ _ [] = ()
+emitTopBindsGaps e env ((CBind name [CClause [] body])::rest) =
+  let _ = setGapBind ("val " ++ name)
+  let (v, ty) = emitExpr e env body
+  emitTopBindsGaps e ((name, (v, ty)) :: env) rest
+emitTopBindsGaps e env ((CBind name _)::rest) =
+  let _ = setGapBind ("val " ++ name)
+  let _ = gapU "non-nullary / multi-clause value binding (slice 1)"
+  emitTopBindsGaps e env rest
