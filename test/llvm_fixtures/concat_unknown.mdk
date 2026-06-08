@@ -1,0 +1,14 @@
+-- E8 (#3 census-B runtime header-dispatch fallback for `++`): a string-builder
+-- helper whose `++` operand static LTy the emitter CANNOT recover.  `acc` has no
+-- type-forcing use before the `++`, so two-pass signature inference leaves it the
+-- LTInt default; the `++` therefore can't statically pick string-vs-list append
+-- (E2a/E7 don't apply) and falls to the E8 runtime fallback — `@mdk_append`,
+-- which inspects the left cell header and routes to string vs list append.
+-- This mirrors the scanTriple/splitLines string-builder shape that left ~333
+-- `++` sites in the #3 gap.  The accumulator is actually a String at runtime;
+-- the result is projected through `stringLength` (a type-forcing String read) so
+-- it is consumed correctly and byte-identically regardless of the fallback's
+-- statically-defaulted result LTy.  Oracle: 6 (= length of "foobar").
+build acc s = acc ++ s
+
+main = stringLength (build "foo" "bar")

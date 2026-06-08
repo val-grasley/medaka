@@ -579,6 +579,24 @@ catalog** (slices 1–14 + RNG/sorts/hash); 126/126 plain + 16/16 typed gate ✅
        New typed fixtures: `impl_ap_list` (→66), `impl_andthen_list` (→206); all gates
        byte-identical (160/29/20/20). core total: 15→**13**. **EMITTER-GAPS #3 fully closed
        for core.mdk.**
+     - ✅ **E10 — `++` runtime header-dispatch fallback** (census-B #3 string-builder residue).
+       DONE (2026-06-08). The ~328 whole-compiler `++` sites in `scanTriple`/`splitLines`
+       string-builders have an operand whose static LTy the emitter can't recover (E2a's
+       `LTStr`/`LTCon` static dispatch and E2c/E7's inference don't reach them), so `emitBin`'s
+       `++` otherwise arm `gapE`d. Chasing per-pattern static inference for all of them is
+       infeasible; instead E10 dispatches at RUNTIME. `emitBin`'s otherwise arm now emits
+       `call i64 @mdk_append`, a new C helper (`runtime/medaka_rt.c`) that inspects the LEFT
+       cell header — odd ⇒ Nil/list, even header==`MDK_STR_TAG` ⇒ String, else ⇒ Cons/list —
+       and routes to the existing `mdk_string_append`/`mdk_list_append` (both from E2a). The
+       result VALUE is always correct; the statically-unknowable result LTy defaults to `LTStr`
+       (this gap is String-builder-dominated, and `LTStr` drives correct downstream
+       print/instruction selection for that case; a List value's only mis-select risk is a
+       downstream static string-op/print, but `emitPrint LTCon` already panics on lists and the
+       fixture projects through `stringLength`). E2a's static `LTStr`/`LTCon` dispatch is
+       UNCHANGED — E10 fires only on the unknown-LTy arm; `declare i64 @mdk_append` added to
+       `emitPreamble`. **#3: B 328→0. B TOTAL 888→560.** New fixture `concat_unknown` (→6),
+       byte-identical native/oracle; all gates green (161/33/4/20/20). **EMITTER-GAPS #3 now
+       FULLY closed (core A + whole-compiler B).**
      - ✅ **E8 — closure dict-capture (#11 closure events).** DONE (2026-06-08).
        `freeVars` returned `[]` for `CMethod`/`CDict` nodes (catch-all arm), so a
        closure whose body dispatches a method through a forwarded dict (`RDictFwd

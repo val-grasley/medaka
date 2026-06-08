@@ -225,6 +225,21 @@ long long mdk_list_append(long long xs, long long ys) {
   return acc;
 }
 
+/* Runtime header-dispatch fallback for `++` (Medaka concat) whose operand
+ * static LTy the emitter cannot recover (census-B gap #3 residual: the
+ * scanTriple/splitLines string-builders).  A `++` left operand is always
+ * String or List, distinguishable at runtime:
+ *   odd immediate           -> Nil (empty list)            -> list append
+ *   even boxed, header==1    -> String (MDK_STR_TAG cell)  -> string append
+ *   even boxed, header!=1    -> Cons cell                  -> list append
+ * The result VALUE is always correct; the caller's static result LTy only
+ * drives downstream instruction/print selection. */
+long long mdk_append(long long a, long long b) {
+  if ((a & 1) == 0 && ((const long long *)a)[0] == MDK_STR_TAG)
+    return mdk_string_append(a, b);
+  return mdk_list_append(a, b);
+}
+
 /* Array cell: [i64 count | elem0@8 | ...]; total 8*(count+1) bytes.
    count is raw (untagged); Int args are tagged (>> 1 to untag).
    Native extern catalog slice 7 (array leaf). */
