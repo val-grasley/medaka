@@ -1,0 +1,9 @@
+-- E14 / EMITTER-GAPS #14 (non-Int literal switch): a Char-literal match head.
+-- Char is an immediate codepoint word (cp << 1) | 1, so the emitLitChain arm for
+-- `HLit (LChar _)` is the same icmp-eq shape as Int — but the head still reaches
+-- the previously-unhandled non-Int branch.  The first arm ('a') falls through to
+-- the second ('b'), proving chain order on a Char column.
+main = match 'b'
+  'a' => 1
+  'b' => 2
+  _ => 0

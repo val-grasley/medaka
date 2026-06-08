@@ -1,0 +1,8 @@
+-- E14 / EMITTER-GAPS #14 (non-Int literal switch): a String-literal switch where
+-- the scrutinee matches NONE of the explicit literal heads and falls through to
+-- the wildcard default — exercising the emitLitChain base case (all branches
+-- compared false, `emitTree` on the default tree).  "while" != "let"/"if" → 0.
+main = match "while"
+  "let" => 1
+  "if" => 2
+  _ => 0

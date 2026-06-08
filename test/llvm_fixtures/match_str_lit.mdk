@@ -1,0 +1,10 @@
+-- E14 / EMITTER-GAPS #14 (non-Int literal switch): a String-literal match head.
+-- The match column is all-String-literal, so the decision tree lowers to an
+-- emitLitChain over `HLit (LString _)` heads — each compares the scrutinee cell
+-- against a materialized literal cell via the @mdk_string_eq runtime helper
+-- (tagged-Bool result, branch on `icmp eq i64 r, 3`).  The first arm ("let")
+-- must NOT match and fall through to the second ("if"), proving the chain order.
+main = match "if"
+  "let" => 1
+  "if" => 2
+  _ => 0
