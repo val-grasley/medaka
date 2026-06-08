@@ -1202,12 +1202,88 @@ emitLet e env True (PVar f) (CLam pats body) e2 =
   emitExpr e ((f, (w, ty)) :: env) e2
 emitLet _ _ _ _ _ _ = gapE "unsupported let (slice 5b: only non-recursive let var/_/tuple = e, or function-let)"
 
+-- a `let`/`where` group.  Bindings emit one at a time, left-to-right, threading
+-- the growing env, so a later binding sees the earlier ones (and the body sees
+-- all).  Two binding shapes:
+--   • `CBind name [CClause [] rhs]` — a nullary VALUE binding (slice 1): emit the
+--     rhs, bind the word, recurse.
+--   • `CBind name clauses` with non-empty params (a LOCAL FUNCTION, possibly
+--     multi-clause / self-recursive — the `go`/`step`/`g` workers core.mdk writes
+--     with `where`): lambda-lift it into a (self-recursive) closure via
+--     `emitGroupBind` and bind its closure word, then recurse.
+-- A binding that forward/mutually references a LATER sibling can't be lifted
+-- here — the referent's closure word isn't allocated when this binding's captures
+-- are taken — so it is rejected precisely (`gapE`) rather than silently
+-- miscompiled.  References to EARLIER siblings (already bound) and self-references
+-- (bound to `%clos` inside the lift) emit correctly.
 emitLetGroup : Emit -> List (String, (String, LTy)) -> List CBind -> CExpr -> <Mut> (String, LTy)
 emitLetGroup e env [] body = emitExpr e env body
 emitLetGroup e env ((CBind name [CClause [] rhs])::rest) body =
   let (v, ty) = emitExpr e env rhs
   emitLetGroup e ((name, (v, ty)) :: env) rest body
-emitLetGroup _ _ _ _ = gapE "unsupported let-group (slice 1: only nullary non-recursive bindings)"
+emitLetGroup e env ((CBind name clauses)::rest) body
+  | refsLater name clauses (bindNames rest) =
+      gapE ("unsupported let-group: binding `" ++ name ++ "` forward/mutually references a later sibling (only non-mutual local function bindings)")
+  | otherwise =
+      let (w, ty) = emitGroupBind e env (CBind name clauses)
+      emitLetGroup e ((name, (w, ty)) :: env) rest body
+
+-- True when any clause of a local-function binding references a sibling bound
+-- LATER in the same group (a forward or mutually-recursive reference whose
+-- closure word is not yet available at this binding's capture site).  Self- and
+-- param-bound names are excluded by `clausesFreeVars`.
+refsLater : String -> List CClause -> List String -> Bool
+refsLater name clauses laterNames =
+  anyInList (dedupS (clausesFreeVars name clauses)) laterNames
+
+-- the free variables across ALL clauses of a binding, with the self name and each
+-- clause's own parameter variables treated as bound.
+clausesFreeVars : String -> List CClause -> List String
+clausesFreeVars _ [] = []
+clausesFreeVars self ((CClause pats body)::rest) =
+  freeVars (self :: patVarNames pats) body ++ clausesFreeVars self rest
+
+anyInList : List String -> List String -> Bool
+anyInList [] _ = False
+anyInList (x::xs) ys = if containsStr x ys then True else anyInList xs ys
+
+-- lambda-lift a LOCAL FUNCTION binding from a `let`/`where` group into a (possibly
+-- self-recursive) closure.  Captures are the free variables across all clauses
+-- present in the emit env, MINUS the binding's own name (it is the closure cell
+-- itself, bound to `%clos` inside the lift — a self-call re-enters the same cell).
+-- The lifted body reuses the E1a decision-tree path (`emitClauseTree`), so a
+-- multi-clause worker or a patterned param lowers exactly as a top-level fn does.
+emitGroupBind : Emit -> List (String, (String, LTy)) -> CBind -> <Mut> (String, LTy)
+emitGroupBind e env (CBind name clauses) =
+  let lamName = "mdk_lam" ++ intToString (freshId e)
+  let arity = clauseArity (clauseList clauses)
+  let captured = keepInEnv env (removeStr name (dedupS (clausesFreeVars name clauses)))
+  let captureWords = capWords env captured
+  let _ = emitGroupBindDefine e lamName name arity clauses captured
+  emitClosureAlloc e lamName captureWords
+
+-- emit the lifted multi-clause `define` for a let-group local function into the
+-- SIDE buffer (same swap discipline as emitPatLamDefine).  Captures load from
+-- `%clos` fields 1.., the self name binds to `%clos` (recursive self-call
+-- re-enters the same cell), and `emitClauseTree` lowers the clauses over the
+-- `%argK` words (arity ≥1 here — nullary values take the fast path above).
+emitGroupBindDefine : Emit -> String -> String -> Int -> List CClause -> List String -> <Mut> Unit
+emitGroupBindDefine e lamName name arity clauses captured =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ lamName ++ "(i64 %clos, " ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "entry:"
+  let cenv = loadCaptures e captured 0
+  let _ = emitClauseTree e (((name, ("%clos", LTClosure)) :: cenv) ++ implParamEnv arity 0) arity (clauseList clauses)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  set_ref (bufRef e) saved
+
+clauseList : List CClause -> List (List Pat, CExpr)
+clauseList [] = []
+clauseList ((CClause pats body)::rest) = (pats, body) :: clauseList rest
 
 emitBlock : Emit -> List (String, (String, LTy)) -> List CStmt -> <Mut> (String, LTy)
 emitBlock e env [CSExpr ex] = emitExpr e env ex
