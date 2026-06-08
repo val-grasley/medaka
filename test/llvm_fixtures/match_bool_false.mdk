@@ -1,0 +1,4 @@
+-- Bool match head: False arm taken.  Post-fix: 9.
+main = match False
+  True  => 7
+  False => 9

@@ -156,20 +156,19 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter.
 - **arg-tag method under-applied** (6): `fold` passed without its discriminating
   arg (first-class method value) inside `any`/`all`/`elem`.
 - **non-Int literal switch** (1): `deriveForNewtype` matches a non-Int literal head.
-  - **Related (E1a finding, 2026-06-07): a Bool match is a CONSTRUCTOR-head switch,
-    not a literal one — and it MISCOMPILES, prelude or not.** `True`/`False` are
-    ctors, so a `match` on them goes through `emitConChain`, comparing
-    `loadDiscriminant` against `cellTag e c`. But `emitVar` HARDCODES the Bool
-    immediates (`True`→`3`=tag 1, `False`→`1`=tag 0), while `cellTag` is NOT
-    special-cased for them: on the prelude-free emit path `True`/`False` aren't in
-    the ctor→type table so `cellTag` returns **0 for both** (both branches
-    `icmp eq …, 0` → `True` never matches → `unreachable`); even WITH the prelude,
-    `cellTag` would compute a `typeId<<32 | ordinal` tag that still doesn't equal
-    the hardcoded 1/0. Fix (when E2/E3 reaches it): special-case `True`/`False` in
-    `cellTag` to `1`/`0`, mirroring `emitVar`. Float `match` heads are likewise
-    unsupported (float-literal switch). Out of E1a scope — E1a's `fn_multiclause_float`
-    fixture deliberately discriminates on an **Int** param to stay on a supported
-    switch head while still carrying non-Int (Float) params.
+  - **Bool match heads: ✅ FIXED (2026-06-07).** Bool `match` is a CONSTRUCTOR-head
+    switch (`emitConChain`), not a literal one, but `cellTag` was not special-cased
+    for `True`/`False`. `emitVar`/`emitLit` hardcode `True`→word `3` (tag 1 after
+    `loadDiscriminant` ashr 1) and `False`→word `1` (tag 0), while `cellTag` returned
+    0 for both (ctor not in prelude-free table → `unreachable`). Fix: `cellTag`
+    special-cases `True`→`1` and `False`→`0` before the ctor-table lookup, so
+    construction and discrimination agree. Gates: `match_bool_true` (→7),
+    `match_bool_false` (→9), `match_bool_fn` (→300) all byte-identical; 136-fixture
+    full gate still 0 failing.
+  - **Float literal switch heads** (1 site in `deriveForNewtype`): remain unsupported.
+    `emitLitChain` would need a float-compare path (float equality is fp `fcmp oeq`
+    on the unboxed double, not a tag comparison). 1 site whole-compiler, rare — doc
+    only, deferred to E5 or excluded from bootstrap scope.
 
 ---
 
