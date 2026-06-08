@@ -1,0 +1,22 @@
+-- method-call RESULT-type inference: `ap` on `List` (Applicative).  Its body
+-- `map f xs ++ ap fs xs` concatenates two CALL results — `map f xs` (a method
+-- call) and `ap fs xs` (the self-recursive call) — NOT params, so static
+-- impl-param typing (E2c) can't reach them.  The emitter must type each
+-- returns-self method-call result as the container (LTCon) so `++` dispatches
+-- list-append.  This is EMITTER-GAPS #3's last residual.
+--   ap [\x->x+10, \x->x+20] [1,2] = [11,12, 21,22]; sum = 66.
+interface Mapp f where
+  fmap : (a -> b) -> f a -> f b
+  ap   : f (a -> b) -> f a -> f b
+
+impl Mapp List where
+  fmap g [] = []
+  fmap g (x :: xs) = g x :: fmap g xs
+  ap [] xs = []
+  ap (f :: fs) xs = fmap f xs ++ ap fs xs
+
+sumList : List Int -> Int
+sumList [] = 0
+sumList (x :: xs) = x + sumList xs
+
+main = sumList (ap [(x => x + 10), (x => x + 20)] [1, 2])

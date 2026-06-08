@@ -211,6 +211,89 @@ setGapBind name = set_ref curGapBind name
 noteGap : String -> <Mut> Unit
 noteGap reason = set_ref gapLog ((curGapBind.value ++ "\t" ++ reason) :: gapLog.value)
 
+-- ── method-call RESULT-type inference (native backend) ──────────────────────
+-- The (interface, method) -> returns-self table, computed by core_ir_lower's
+-- `returnsSelfTable` and installed once at the start of emitProgram/
+-- emitProgramGaps (a module-level Ref, mirroring gapLog — avoids threading a
+-- field through every Emit pattern).  A method whose RESULT type mentions the
+-- interface/self type variable (`map`/`ap`/`andThen`: f a -> … -> f b) returns
+-- the CONTAINER; the emitter types its RKey-dispatched call result as the impl's
+-- own type (`tagToLTy tag` → LTCon for List), so a downstream `++`/`::` on that
+-- result picks list/string append instead of falling to the LTInt default.  This
+-- closes EMITTER-GAPS #3's last residual (`ap@List` / `andThen@List`, whose `++`
+-- operand is a CALL result like `map f xs` / the recursive `ap fs xs`, not a
+-- param the static E2c typing could reach).
+returnsSelfTableRef : Ref (List ((String, String), Bool))
+returnsSelfTableRef = Ref []
+
+-- install the (interface, method) -> returns-self table (from core_ir_lower's
+-- `returnsSelfTable <decls>`).  A consumer that emits typeclass methods calls
+-- this BEFORE emitProgram/emitProgramGaps; a method/interface-free consumer may
+-- skip it (the empty default ⇒ returns-self False ⇒ unchanged behaviour).
+export
+installReturnsSelf : List ((String, String), Bool) -> <Mut> Unit
+installReturnsSelf t = set_ref returnsSelfTableRef t
+
+-- does interface method (iface, method) return the self/container type?
+-- (False when absent — the conservative default keeps the pre-change behaviour.)
+methodReturnsSelf : String -> String -> <Mut> Bool
+methodReturnsSelf iface method = lookupReturnsSelf iface method returnsSelfTableRef.value
+
+lookupReturnsSelf : String -> String -> List ((String, String), Bool) -> Bool
+lookupReturnsSelf _ _ [] = False
+lookupReturnsSelf iface method (((i, m), b)::rest)
+  | i == iface && m == method = b
+  | otherwise = lookupReturnsSelf iface method rest
+
+-- ── self-returning function-PARAM typing (native backend) ───────────────────
+-- The (interface, method) -> [function-param positions returning self] table,
+-- from core_ir_lower's `selfFnParamTable`.  When emitting an impl method's body,
+-- the params at those positions are callbacks that yield the container (e.g.
+-- `andThen : m a -> (a -> m b) -> m b`, param 1 = `a -> m b`).  Before emitting a
+-- group body, `curSelfFnParamsRef` is set to the NAMES of those params and
+-- `curImplTagRef` to the impl's type-head tag; `emitIndirect` then types the
+-- APPLICATION of such a param (`f x`) as `tagToLTy curImplTagRef` instead of the
+-- LTInt indirect-call default.  This closes `andThen@List`, whose `++` LEFT
+-- operand `f x` is an indirect call the method-call inference can't reach.
+selfFnParamTableRef : Ref (List ((String, String), List Int))
+selfFnParamTableRef = Ref []
+
+export
+installSelfFnParams : List ((String, String), List Int) -> <Mut> Unit
+installSelfFnParams t = set_ref selfFnParamTableRef t
+
+selfFnParamPositions : String -> String -> <Mut> List Int
+selfFnParamPositions iface method = lookupSelfFnParams iface method selfFnParamTableRef.value
+
+lookupSelfFnParams : String -> String -> List ((String, String), List Int) -> List Int
+lookupSelfFnParams _ _ [] = []
+lookupSelfFnParams iface method (((i, m), p)::rest)
+  | i == iface && m == method = p
+  | otherwise = lookupSelfFnParams iface method rest
+
+-- the impl currently being emitted: its type-head tag, and the NAMES of its
+-- params that are self-returning function callbacks (set in emitGroupBody).
+curImplTagRef : Ref String
+curImplTagRef = Ref ""
+
+curSelfFnParamsRef : Ref (List String)
+curSelfFnParamsRef = Ref []
+
+-- set the current-impl context for self-returning-fn-param typing; cleared after
+-- the group body so a following top-level fn body isn't mis-typed.
+setCurImplSelfFns : String -> List String -> <Mut> Unit
+setCurImplSelfFns tag names =
+  let _ = set_ref curImplTagRef tag in set_ref curSelfFnParamsRef names
+
+clearCurImplSelfFns : Unit -> <Mut> Unit
+clearCurImplSelfFns _ =
+  let _ = set_ref curImplTagRef "" in set_ref curSelfFnParamsRef []
+
+-- is `name` a self-returning function param of the impl currently being emitted?
+isCurSelfFnParam : String -> <Mut> Bool
+isCurSelfFnParam name = containsStr name curSelfFnParamsRef.value
+
+
 -- gap helpers: when recording is on, log the reason + return a placeholder so
 -- emission continues; otherwise `panic` (the unchanged normal-path behaviour).
 -- One per return shape the panic sites need.
@@ -1484,7 +1567,9 @@ emitApp e env app =
 -- a saturated INDIRECT call (slice 4): emit the head to a closure word, load its
 -- code_ptr (cell field 0), and `call` the loaded pointer with the closure word as
 -- the leading argument.  The result type is unknown to the type-erased call site;
--- default Int (every supported fixture's indirect call returns a scalar Int).
+-- default Int — EXCEPT (native backend) when the head is a self-returning function
+-- PARAM of the impl currently being emitted (`andThen`'s `f` in `f x`): that
+-- callback yields the container, so type the result as `tagToLTy <curImplTag>`.
 emitIndirect : Emit -> List (String, (String, LTy)) -> CExpr -> List CExpr -> <Mut> (String, LTy)
 emitIndirect e env hd args =
   let (cw, _) = emitExpr e env hd
@@ -1494,7 +1579,14 @@ emitIndirect e env hd args =
   let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = call i64 " ++ fp ++ "(" ++ argDecls (cw :: argOps) ++ ")")
-  (r, LTInt)
+  (r, indirectResultTy hd)
+
+-- the static result type of an indirect call: container when the head is a
+-- self-returning function param of the current impl, else LTInt (unchanged).
+indirectResultTy : CExpr -> <Mut> LTy
+indirectResultTy (CVar f _) = if isCurSelfFnParam f then tagToLTy curImplTagRef.value else LTInt
+indirectResultTy _ = LTInt
+
 
 hasArgs : List CExpr -> Bool
 hasArgs [] = False
@@ -1566,23 +1658,36 @@ emitMethod e env name route implRoutes methRoutes argOps =
       -- the param order dict_pass bound.  Both empty for an unconstrained impl ⇒
       -- the bare direct call, unchanged.
       match implFor e name tag
-        Some _ =>
+        Some entry =>
           let dictWords = dictWordsOf e env (methRoutes ++ implRoutes)
-          emitImplCall e (implFnName tag name) (dictWords ++ argOps)
+          -- native backend: a method whose RESULT mentions the interface/self
+          -- type variable (map/ap/andThen) returns the CONTAINER; type its
+          -- RKey-dispatched result as the impl's own type (tagToLTy tag) so a
+          -- downstream `++`/`::` on it dispatches list/string append.  Otherwise
+          -- (scalar/element result) keep the LTInt default.
+          let resTy = if methodReturnsSelf (implEntryIface entry) name then tagToLTy tag else LTInt
+          emitImplCall e (implFnName tag name) (dictWords ++ argOps) resTy
         None => gapE ("no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
     RDict d => emitMethodDispatch e env name d argOps
     RDictFwd d => emitMethodDispatch e env name d argOps
     RNone => emitMethodArgDispatch e name argOps
 
 -- a direct call to a statically-resolved impl fn (RKey).  Nullary (argOps == [])
--- ⇒ `call @mdk_impl_<tag>_<method>()`, yielding the impl's value.  Result LTy is
--- type-erased here; default Int (the fixtures' impl bodies are Int, or ADT words
--- that flow only as LTy-agnostic match scrutinees / call args).
-emitImplCall : Emit -> String -> List String -> <Mut> (String, LTy)
-emitImplCall e fname argOps =
+-- ⇒ `call @mdk_impl_<tag>_<method>()`, yielding the impl's value.  `resTy` is the
+-- statically-inferred result type: LTInt for a scalar/element-returning method,
+-- or the container (tagToLTy tag) for a returns-self method (map/ap/andThen) so
+-- a downstream `++`/`::` types its operand correctly (native backend).
+emitImplCall : Emit -> String -> List String -> LTy -> <Mut> (String, LTy)
+emitImplCall e fname argOps resTy =
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = call i64 @" ++ fname ++ "(" ++ argDecls argOps ++ ")")
-  (r, LTInt)
+  (r, resTy)
+
+-- the interface name a resolved impl entry belongs to (for the returns-self
+-- lookup); "" for a default entry (it carries no tag/iface — never RKey-reached).
+implEntryIface : CImplEntry -> String
+implEntryIface (CImplEntry _ _ (CImplTagged _ iface _ _ _)) = iface
+implEntryIface (CImplEntry _ _ (CImplDefault _ _)) = ""
 
 -- a runtime method dispatch (RDict/RDictFwd): the enclosing function's dict
 -- PARAMETER `d` (a uniform i64 witness word, note (j)) selects the impl at run
@@ -1613,7 +1718,7 @@ emitDispatchChain e dictWord (ent::rest) name argOps slot endL =
   let next = "dispnext" ++ n
   let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
   let _ = emit e (yes ++ ":")
-  let (rv, _) = emitImplCall e (implFnName tag name) argOps
+  let (rv, _) = emitImplCall e (implFnName tag name) argOps LTInt
   let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
@@ -1639,7 +1744,7 @@ emitMethodArgDispatch e method argOps =
   let groups = implGroupsForMethod e method
   match groups
     [] => gapE ("arg-tag dispatch for method '" ++ method ++ "' has no impl groups (slice 7: unresolved RNone fallback)")
-    [g] => emitImplCall e (implFnName (groupTag g) method) argOps
+    [g] => emitImplCall e (implFnName (groupTag g) method) argOps LTInt
     _ => emitArgTagDispatch e method groups argOps
 
 emitArgTagDispatch : Emit -> String -> List ImplGroup -> List String -> <Mut> (String, LTy)
@@ -1672,7 +1777,7 @@ emitArgDispatchChain e method tagReg (g::rest) argOps slot endL =
   let next = "argnext" ++ n
   let _ = emit e ("  br i1 " ++ cond ++ ", label %" ++ yes ++ ", label %" ++ next)
   let _ = emit e (yes ++ ":")
-  let (rv, _) = emitImplCall e (implFnName tag method) argOps
+  let (rv, _) = emitImplCall e (implFnName tag method) argOps LTInt
   let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
@@ -1808,9 +1913,42 @@ emitGroup e (ImplGroup method tag positions arity clauses) =
   let fname = implFnName tag method
   let _ = emit e ("define i64 @" ++ fname ++ "(" ++ implParamDecls arity 0 ++ ") {")
   let _ = emit e "entry:"
+  -- native backend: set the self-returning-fn-param context for this impl body so
+  -- `emitIndirect` types `f x` (a callback returning the container) as the impl's
+  -- own type.  The self-fn positions come from the method's signature (keyed by
+  -- iface, looked up from the resolved impl entry); their names are the PVar names
+  -- the clauses bind at those positions.
+  let iface = implGroupIface e method tag
+  let selfFnPos = selfFnParamPositions iface method
+  let _ = setCurImplSelfFns tag (selfFnParamNames clauses selfFnPos)
   let _ = emitGroupBody e fname tag positions arity clauses
+  let _ = clearCurImplSelfFns ()
   let _ = emit e "}"
   emit e ""
+
+-- the interface a (method, tag) impl belongs to, via the resolved impl entry.
+implGroupIface : Emit -> String -> String -> <Mut> String
+implGroupIface e method tag = match implFor e method tag
+  Some entry => implEntryIface entry
+  None => ""
+
+-- the PVar names bound at the self-fn positions, taken from the FIRST clause that
+-- binds a plain variable there (impl callback params are PVars across clauses; a
+-- non-PVar position contributes no name and is simply not typed specially).
+selfFnParamNames : List (List Pat, CExpr) -> List Int -> List String
+selfFnParamNames clauses positions = dedupS (concatMapClausePVars clauses positions)
+
+concatMapClausePVars : List (List Pat, CExpr) -> List Int -> List String
+concatMapClausePVars [] _ = []
+concatMapClausePVars ((pats, _)::rest) positions =
+  pvarsAtPositions pats positions 0 ++ concatMapClausePVars rest positions
+
+pvarsAtPositions : List Pat -> List Int -> Int -> List String
+pvarsAtPositions [] _ _ = []
+pvarsAtPositions ((PVar x)::rest) positions i
+  | listContains positions i = x :: pvarsAtPositions rest positions (i + 1)
+  | otherwise = pvarsAtPositions rest positions (i + 1)
+pvarsAtPositions (_::rest) positions i = pvarsAtPositions rest positions (i + 1)
 
 -- the lifted impl fn's positional parameter list: `i64 %arg0, …` (arity words),
 -- or "" for a nullary return-position impl.
