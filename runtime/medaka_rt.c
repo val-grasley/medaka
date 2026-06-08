@@ -195,6 +195,36 @@ long long mdk_string_concat(long long list) {
   return mdk_str_lit(buf, total);
 }
 
+/* Append two String cells (++ on String, E2a).
+   String cell: [i64 tag | i64 byte_len | i64 cp_count | bytes...].
+   Allocates one buffer, blits both byte spans, returns a new mdk_str_lit cell. */
+long long mdk_string_append(long long a, long long b) {
+  long long al = ((const long long *)a)[1];
+  long long bl = ((const long long *)b)[1];
+  long long total = al + bl;
+  char *buf = (char *)mdk_alloc(total + 1);
+  memcpy(buf,      (const char *)a + 24, (size_t)al);
+  memcpy(buf + al, (const char *)b + 24, (size_t)bl);
+  return mdk_str_lit(buf, total);
+}
+
+/* Append two persistent lists (++ on List, E2a).
+   Walks xs collecting heads into a stack array, then conses them onto ys
+   back-to-front so the result is xs ++ ys.  ys is shared (not copied). */
+long long mdk_cons(long long head, long long tail);  /* defined below (slice 10) */
+long long mdk_list_append(long long xs, long long ys) {
+  long long n = 0;
+  for (long long w = xs; (w & 1) == 0; w = ((const long long *)w)[2]) n++;
+  if (n == 0) return ys;
+  long long *heads = (long long *)mdk_alloc(8 * n);
+  long long i = 0;
+  for (long long w = xs; (w & 1) == 0; w = ((const long long *)w)[2])
+    heads[i++] = ((const long long *)w)[1];
+  long long acc = ys;
+  for (long long j = n - 1; j >= 0; j--) acc = mdk_cons(heads[j], acc);
+  return acc;
+}
+
 /* Array cell: [i64 count | elem0@8 | ...]; total 8*(count+1) bytes.
    count is raw (untagged); Int args are tagged (>> 1 to untag).
    Native extern catalog slice 7 (array leaf). */

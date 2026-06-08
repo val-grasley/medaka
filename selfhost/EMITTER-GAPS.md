@@ -38,10 +38,10 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |---|-----------------------------------------------------------|--------:|---------:|----------------------------------|---------------------|
 | 1 | **multi-clause top-level function**                       | 16      | 732      | Emitter                          | reuse impl-method decision-tree lowering |
 | 2 | **arg-tag dispatch on primitive receiver** (no cell tag)  | **0**   | 540      | Routing-not-wired (NOT new)      | port D3b arg-pos dict-passing to `elaborateModules` |
-| 3 | **`++` as `CBinPrim`** (list/string concat)               | 14      | 179      | Emitter (lowering keeps it)      | emitter case (string→extern, list→loop) |
+| 3 | **`++` as `CBinPrim`** (list/string concat)               | ~~14~~ **4\*\*** | ~~179~~  | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — 4 events remain where param type unknown (`append`/`ap` impls) |
 | 4 | **non-variable parameter pattern** (fn)                   | 4       | 150      | Desugar/lower-fixable            | lower `f (a,b)=…` → param + body `match` |
 | 5 | **non-variable lambda parameter pattern**                 | 1       | 108      | Desugar/lower-fixable            | same as #4 for `CLam` |
-| 6 | **`::` as `CBinPrim`** (cons)                              | 2       | 90       | Emitter (lowering keeps it)      | emitter case → `Cons` cell alloc |
+| 6 | **`::` as `CBinPrim`** (cons)                              | ~~2~~ **0** | ~~90~~ **0** | Emitter (lowering keeps it)      | ✅ **CLOSED (E2a)** — `emitCtorAlloc e "Cons" [lw, rw]` |
 | 7 | **reference to top-level value / mutable `Ref` binding**  | 7\*     | 254      | Emitter                          | emit top-level non-fn bindings as **globals** |
 | 8 | **`otherwise`** (guard constant)                          | 0       | 88       | Front-end residue                | add to `emitVar` constants (= `True`) |
 | 9 | **`__fallthrough__`** (guard-desugar sentinel)            | 0       | 88       | Front-end residue                | guard-lowering / `emitVar` recognition |
@@ -50,7 +50,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 |12 | **unsupported switch head** (unit-pattern head)           | 5       | 5        | Emitter (low pri: `Arbitrary`)   | unit-head switch (or exclude impl) |
 |13 | **arg-tag dispatch, method under-applied** (`fold`…)      | 0       | 6        | Emitter / dispatch               | first-class/unapplied method values |
 |14 | **non-Int literal switch** (String/Char/Bool head)        | 0       | 1        | Emitter                          | literal-switch over non-Int |
-|   | **TOTAL gap events**                                      | **57**  | **2248** |                                  |                     |
+|   | **TOTAL gap events**                                      | ~~57~~ **32** | **2722** |                                  |                     |
 
 \* core's `__hashRaw` (×5), `debugStringLit` (×1), `debugCharLit` (×1) are
 references to runtime/core primitives the spike's extern catalog + global scope
@@ -108,7 +108,7 @@ that owns no constructors (an `Int`/`String`/… immediate carries no cell tag).
   (`llvm_emit_typed_main`/`core_ir_dict_pp_main` today) onto the multi-module
   emit path. Zero emitter-side work — the dispatch is already designed (D3b-2).
 
-#### 3 / 6 — `++` and `::` survive lowering as `CBinPrim` (A:16, B:269)
+#### 3 / 6 — `++` and `::` survive lowering as `CBinPrim` (A:16, B:269) — ✅ CLOSED (E2a, 2026-06-07)
 `core_ir.mdk` deliberately keeps `::` and `++` as `CBinPrim` (its own comment);
 `emitBin` only knows arithmetic + comparison, so both fall to the gap.
 - `++`: e.g. `impl append@List/@String`, `impl debug@List`, `scanStr*` (string
@@ -117,6 +117,15 @@ that owns no constructors (an `Int`/`String`/… immediate carries no cell tag).
   already present). `++` → dispatch on operand type: `String` to the
   `@mdk_string_concat` extern (present), `List` to an append loop. Small, with
   most primitives already emitted for other slices.
+- **✅ CLOSED — E2a (2026-06-07).** `emitBin` now handles `"::"` (→ `emitCtorAlloc e "Cons" [lw, rw]`)
+  and `"++"` (→ `mdk_string_append` for `LTStr`, `mdk_list_append` for `LTCon`). Two new C
+  helpers in `runtime/medaka_rt.c`; declared in `emitPreamble`. `typeOf` extended: `CBinPrim
+  "::"` → `LTCon`. Re-measured: **`::` A:2→0, B:90→0**; **`++` A:14→4** (the 4 remaining
+  events are `impl append@List`, `impl append@String`, `impl ap@List` — params `a`/`b` both
+  unknown type, so `paramUseTy` falls back to `LTInt` and the type-dispatch arm can't fire;
+  not a new gap — the `append` impls were always unresolvable without signature propagation).
+  core total: 57→44 (E1a) → **32 (E2a)**. New fixtures: `concat_str`, `cons_list`,
+  `concat_list`, `concat_str_unicode` — all byte-identical (140/140 untyped, 25/25 typed).
 
 #### 4 / 5 — non-variable parameter patterns, fn + lambda (A:5, B:258)
 `emitFnClause`/`emitLamGo` require every parameter to be a plain `PVar`;
@@ -203,6 +212,9 @@ source per unit of work**:
 - **E2 — value-shape lowering.** (#3/#6 `::`/`++`, #4/#5 param/lambda patterns.)
   **527** events. Half is desugar/lower (param-pattern → body `match`), half is
   small emitter cases reusing existing ctor/extern emission. Independent of E1.
+  - **E2a (#3/#6 `::` and `++`) — ✅ DONE (2026-06-07).** `::` closes completely (A:2→0);
+    `++` drops A:14→4 (4 remaining = unknown-param `append`/`ap` impls). New C helpers
+    `mdk_string_append` / `mdk_list_append`; 4 new fixtures; core total 44→32.
 
 - **E3 — guard residue.** (#8 `otherwise`, #9 `__fallthrough__`.) **176** events,
   ~two trivial `emitVar`/desugar fixes. Cheap, high count.
@@ -216,16 +228,15 @@ source per unit of work**:
   `Arbitrary`/unit-head sites can be excluded from the bootstrap subset.
 
 **How close is `stdlib/core.mdk` alone (the first bootstrap milestone)?**
-Section A is **57 gap events across ~11 kinds** — and the kinds are exactly E1–E3
-+ E5 (E4 is already 0 on this path). Concretely, fully emitting core.mdk needs:
-multi-clause fns (16), `::`/`++` (16), param-patterns (5), recursive let-groups
+Section A is ~~57~~ **32 gap events across ~13 kinds** — and the kinds are exactly E1–E3
++ E5 (E4 is already 0 on this path). Concretely, fully emitting core.mdk still needs:
+`::`/`++` (4 remaining — unknown-param `append`/`ap`), param-patterns (4), recursive let-groups
 (5), the 7 global-value/extern references (`__hashRaw`/`debugStringLit`/
 `debugCharLit` + the 3 dict-witness threads), and — excludable — the 5
 `Arbitrary` unit-head switches. **No gap kind in core.mdk is outside the E1–E3
 staging, and #1/#3/#6 reuse machinery the impl/ctor paths already have.** core.mdk
-is a *bounded* push (≈ E1 multi-clause + E2 value-shapes + a handful of
-externs/globals), not open-ended — it is the realistic first native-bootstrap
-target.
+is a *bounded* push (≈ E2 param-patterns + a handful of externs/globals), not
+open-ended — it is the realistic first native-bootstrap target.
 
 The **whole compiler (B)** then adds only *scale* of the same kinds plus the E4
 routing port — no new gap categories beyond core's set except the global-`Ref`

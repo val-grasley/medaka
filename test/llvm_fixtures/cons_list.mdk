@@ -1,0 +1,4 @@
+-- E2a: :: cons operator builds a list; match destructures it. Result: 3
+main = match (1 :: 2 :: [])
+  a :: b :: _ => a + b
+  _ => 0
