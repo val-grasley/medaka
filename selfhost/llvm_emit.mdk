@@ -1166,6 +1166,7 @@ emitApp e env app =
       else if isIoExtern fname && hasArgs args then emitIoExtern e env fname args
       else if isAbortExtern fname && hasArgs args then emitAbortExtern e env fname args
       else if isArrIntrinsic fname && hasArgs args then emitArrIntrinsic e env fname args
+      else if fname == "arrayMakeWith" && hasArgs args then emitArrayMakeWith e env args
       else if isArrLeafExtern fname && hasArgs args then emitArrLeafExtern e env fname args
       else if isCharExtern fname && hasArgs args then emitCharExtern e env fname args
       else if isStrCharExtern fname && hasArgs args then emitStrCharExtern e env fname args
@@ -2977,6 +2978,55 @@ emitArraySlice e env a lo hi incl =
   let w = freshReg e
   let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
   (w, LTCon)
+
+-- arrayMakeWith n f: INLINE INTRINSIC.  Allocates a dynamic array of `n` elements;
+-- fills element i by calling the Medaka closure `f` with the tagged index `i`.
+-- Shape mirrors emitRangeArray (alloca-counter loop) + emitIndirect (closure call).
+-- No C extern; the closure is called directly from the emitted loop body.
+emitArrayMakeWith : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
+emitArrayMakeWith e env args = match args
+  [nExpr, fExpr] =>
+    let (n_w, _) = emitExpr e env nExpr
+    let (fw, _) = emitExpr e env fExpr
+    let count = untagInt e n_w
+    let p = emitArrayDynAlloc e count
+    let n = intToString (freshId e)
+    let condL = "mw_cond" ++ n
+    let bodyL = "mw_body" ++ n
+    let doneL = "mw_done" ++ n
+    let ic = freshReg e
+    let _ = emit e ("  " ++ ic ++ " = alloca i64")
+    let _ = emit e ("  store i64 0, ptr " ++ ic)
+    let _ = emit e ("  br label %" ++ condL)
+    let _ = emit e (condL ++ ":")
+    let iv = freshReg e
+    let _ = emit e ("  " ++ iv ++ " = load i64, ptr " ++ ic)
+    let cmp = freshReg e
+    let _ = emit e ("  " ++ cmp ++ " = icmp sge i64 " ++ iv ++ ", " ++ count)
+    let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ doneL ++ ", label %" ++ bodyL)
+    let _ = emit e (bodyL ++ ":")
+    let ti = tagInt e iv
+    let cp = loadField e fw 0
+    let fp = freshReg e
+    let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
+    let elem = freshReg e
+    let _ = emit e ("  " ++ elem ++ " = call i64 " ++ fp ++ "(i64 " ++ fw ++ ", i64 " ++ ti ++ ")")
+    let off1 = freshReg e
+    let _ = emit e ("  " ++ off1 ++ " = add i64 " ++ iv ++ ", 1")
+    let off = freshReg e
+    let _ = emit e ("  " ++ off ++ " = mul i64 " ++ off1 ++ ", 8")
+    let ep = freshReg e
+    let _ = emit e ("  " ++ ep ++ " = getelementptr i8, ptr " ++ p ++ ", i64 " ++ off)
+    let _ = emit e ("  store i64 " ++ elem ++ ", ptr " ++ ep)
+    let iv2 = freshReg e
+    let _ = emit e ("  " ++ iv2 ++ " = add i64 " ++ iv ++ ", 1")
+    let _ = emit e ("  store i64 " ++ iv2 ++ ", ptr " ++ ic)
+    let _ = emit e ("  br label %" ++ condL)
+    let _ = emit e (doneL ++ ":")
+    let w = freshReg e
+    let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+    (w, LTCon)
+  _ => panic "llvm spike: arrayMakeWith takes two arguments"
 
 -- ── lists (slice 9) ─────────────────────────────────────────────────────────
 -- VALUE REPRESENTATION: a list is a chain of boxed Cons cells (matching the

@@ -1,0 +1,3 @@
+-- arrayMakeWith intrinsic: empty array (count=0) -> arrayLength returns 0.
+a = arrayMakeWith 0 (i => i)
+main = arrayLength a
