@@ -1546,9 +1546,12 @@ isLTUnknown _ = False
 -- String `==`/`!=`: pointer identity is WRONG for boxed string cells, so route
 -- content equality through @mdk_string_eq (the same helper the pattern-match
 -- literal path uses, returning a TAGGED Bool word 3/1).  `==` returns it directly;
--- `!=` flips 3<->1 via `xor … 2`.  Ordering ops (`<`/`>`/…) on strings are not
--- exercised by the bootstrap; they keep the pre-existing integer compare (a
--- `@mdk_string_compare` route can replace it when needed).
+-- `!=` flips 3<->1 via `xor … 2`.  Ordering ops (`<`/`>`/`<=`/`>=`) on strings
+-- route through @mdk_string_compare_raw, which returns a PLAIN -1/0/1 i64; the
+-- operator then becomes `icmp <intPred op> raw, 0` (e.g. `a < b` ⟺ `cmp < 0`),
+-- reusing intPred's slt/sgt/sle/sge and boolFromI1.  (Self-compile C2 exercises
+-- this: the native emitter's own sanitizeId/safeChar do String `<`/`<=` at emit
+-- time; a pointer `icmp` there mis-mangled module names.)
 emitStrCmp : Emit -> String -> String -> String -> <Mut> (String, LTy)
 emitStrCmp e op lv rv
   | op == "==" =
@@ -1562,10 +1565,10 @@ emitStrCmp e op lv rv
       let _ = emit e ("  " ++ n ++ " = xor i64 " ++ r ++ ", 2")
       (n, LTBool)
   | otherwise =
-      let li = untagInt e lv
-      let ri = untagInt e rv
+      let cmp = freshReg e
+      let _ = emit e ("  " ++ cmp ++ " = call i64 @mdk_string_compare_raw(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
       let c = freshReg e
-      let _ = emit e ("  " ++ c ++ " = icmp " ++ intPred op ++ " i64 " ++ li ++ ", " ++ ri)
+      let _ = emit e ("  " ++ c ++ " = icmp " ++ intPred op ++ " i64 " ++ cmp ++ ", 0")
       boolFromI1 e c
 
 -- an i1 (from icmp/fcmp) -> a Bool word (zext to i64, then tag as immediate int).
@@ -4865,6 +4868,7 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_string_to_float(i64)"
   let _ = emit e "declare i64 @mdk_string_index_of(i64, i64)"
   let _ = emit e "declare i64 @mdk_string_compare(i64, i64)"
+  let _ = emit e "declare i64 @mdk_string_compare_raw(i64, i64)"
   let _ = emit e "declare void @mdk_set_args(i32, ptr)"
   let _ = emit e "declare i64 @mdk_args(i64)"
   let _ = emit e "declare i64 @mdk_get_env(i64)"

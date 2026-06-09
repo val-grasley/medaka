@@ -559,3 +559,78 @@ guards — not a semantics change: the interpreted emitter produces identical IR
   semantics-preserving — the interpreted emitter's IR is unchanged).
 
 
+## C2 — native compiler compiles a REAL program ✅ **DONE (19/19 + IR byte-match)**
+
+C1 proved a native-compiled emitter reproduces the interpreted emitter's IR on
+small module fixtures. C2 takes the next step: use a NATIVE-compiled, gap-tolerant
+emitter to compile the self-hosted LEXER DRIVER (`selfhost/lex_main.mdk`)
+end-to-end — the first time the native compiler compiles a REAL, prelude-bearing
+program. Same end state as B1 (`bootstrap_lex.sh`, 19/19) EXCEPT the emit step is
+done by a NATIVE binary instead of the OCaml-hosted interpreter.
+
+Harness: `test/selfcompile_lex.sh`.
+1. Build the native gap-tolerant emitter: interpreted `llvm_bootstrap_lex_main.mdk`
+   emits its OWN module graph → clang + `runtime/medaka_rt.c` + libgc → native
+   `bootstrap-emit`.
+2. `./bootstrap-emit <runtime> <core> lex_main.mdk <selfhost>` → `lex.ll` — the
+   BIG, REAL emit (the native emitter recurses over lex_main's whole graph and
+   builds a multi-MB IR string).
+3. clang `lex.ll` → native `lex`; for each `test/diff_fixtures/<f>.mdk`,
+   `./lex <f>` byte-matches the interpreter oracle (`medaka run lex_main.mdk <f>`,
+   with the trailing-`()` Unit auto-print convention). Plus the STRONGER check:
+   diff the native-emitted `lex.ll` against the interpreted-emitter's `lex.ll`
+   byte-for-byte.
+
+### Stack story — option (a), 512 MiB, no worker thread
+
+The native emitter's deep Core-IR recursion + multi-MB IR-string construction over
+lex_main's whole graph is the real-size input that stresses the native emitter's
+OWN stack. It fits within the largest `-Wl,-stack_size` the linker allows on arm64
+macOS — **0x20000000 (512 MiB)**; the linker REJECTS anything larger on arm64
+(`ld: -stack_size must be <= 512MB on arm64 platforms`). So option (a) — the
+max-allowed stack flag — sufficed, and NO big-stack worker thread (option (b)) was
+needed. `STACK_SIZE` is overridable but defaults to the 512 MiB ceiling.
+
+### One emitter bug fixed (string ordering `<`/`<=`/`>`/`>=`)
+
+C2 is the first program where the native emitter RUNS string ordering comparisons
+at emit time: its own `private_mangle.sanitizeId` / `safeChar` do `c >= "a"`,
+`c <= "z"`, etc. to sanitize module names. `emitStrCmp`'s `otherwise` arm (the
+`<`/`>`/`<=`/`>=` path on strings) carried a documented deferral — it did an
+integer `icmp` on the string *pointers* ("Ordering ops on strings are not exercised
+by the bootstrap; a `@mdk_string_compare` route can replace it when needed").
+
+That pointer compare is wrong for boxed string cells. In the native `bootstrap-emit`
+binary it made `safeChar "l" = False` for every non-`_` char, so `sanitizeId`
+turned each char of a module id into `_` → `@mdk________emit` instead of
+`@mdk_lexer__emit`. The interpreted emitter dodged this (its `safeChar` runs in the
+OCaml interpreter, where String `<=` is correct), which is exactly why B1
+(interpreted-emit) was green while C2 (native-emit) first diverged ONLY in the
+mangled names.
+
+Fix (emit + runtime):
+- `runtime/medaka_rt.c`: add `mdk_string_compare_raw(a,b)` → a PLAIN `-1/0/1` i64
+  (not the tagged `Ordering` cell `mdk_string_compare` returns for the
+  `Ord String.compare` method).
+- `selfhost/llvm_emit.mdk`: declare it, and rewrite `emitStrCmp`'s ordering arm to
+  `cmp = call @mdk_string_compare_raw(lv, rv)` then `icmp <intPred op> i64 cmp, 0`
+  (e.g. `a < b` ⟺ `cmp < 0`), reusing `intPred`'s `slt`/`sgt`/`sle`/`sge` +
+  `boolFromI1`. (Note: the operand must be statically `LTStr` for `emitCmp` to route
+  here — a string LITERAL on either side suffices, which `safeChar`/the lexer always
+  have; two signature-only `String` params with no literal still fall to the LTInt
+  default, an unchanged pre-existing limitation not exercised by the lexer.)
+
+This is semantics-preserving for every existing gate (none emit a native String
+ordering compare), so all `diff_selfhost_*` gates stay byte-identical and C1 stays
+6/6.
+
+### Validation
+- `test/selfcompile_lex.sh` → **19/19** byte-match the interpreter oracle, AND the
+  native-emitted `lex.ll` == the interpreted-emitter `lex.ll` **byte-for-byte**
+  (the C1 guarantee, now at REAL scale: the native emitter reproduced the
+  interpreter's compilation of a real, prelude-bearing program).
+- `test/selfcompile_emit.sh` stays **6/6**; all seven bootstraps green
+  (`bootstrap_lex.sh` 19/19 … `bootstrap_eval.sh` 20/20); all 15 `diff_selfhost_*`
+  gates byte-identical.
+
+

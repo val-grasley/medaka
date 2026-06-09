@@ -559,6 +559,20 @@ long long mdk_string_compare(long long a, long long b) {
   return c < 0 ? mdk_lt() : c > 0 ? mdk_gt() : mdk_eq();
 }
 
+/* Raw three-way string compare: -1 / 0 / 1 as a PLAIN i64 (NOT a tagged Ordering
+ * cell).  Backs the emitter's string ordering operators (`<`/`>`/`<=`/`>=`): the
+ * emitted IR does `icmp <pred> i64 (mdk_string_compare_raw a b), 0`, mirroring the
+ * `cmp <pred> 0` idiom a C `strcmp` caller uses.  (mdk_string_compare returns an
+ * Ordering ADT for the `Ord String.compare` method; this is the operator path.) */
+long long mdk_string_compare_raw(long long a, long long b) {
+  const char *ac = (const char *)a, *bc = (const char *)b;
+  long long al = ((const long long *)ac)[1], bl = ((const long long *)bc)[1];
+  long long m = al < bl ? al : bl;
+  int c = memcmp(ac + 24, bc + 24, (size_t)m);
+  if (c == 0) c = (al < bl) ? -1 : (al > bl) ? 1 : 0;
+  return c < 0 ? -1 : c > 0 ? 1 : 0;
+}
+
 /* slice 12: args + env ---------------------------------------------------- */
 static int    mdk_argc = 0;
 static char **mdk_argv = 0;
