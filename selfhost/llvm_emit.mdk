@@ -3844,6 +3844,15 @@ typeOf _ _ (CLit (LFloat _)) = LTFloat
 typeOf _ _ (CLit (LBool _)) = LTBool
 typeOf _ _ (CLit (LString _)) = LTStr
 typeOf _ _ (CLit (LChar _)) = LTChar
+-- A list literal / range-list is a chain of Cons/Nil cells — a constructor
+-- value (LTCon), NOT an Int.  Without this, the empty-list base clause of a
+-- list-returning multi-clause fn (e.g. `externNames [] = []`) typed as LTInt, so
+-- the fn's inferred return LTy was LTInt; a `++` on its result then fell to the
+-- runtime-dispatch arm (default LTStr), and a CHAINED outer `++` saw LTStr and
+-- statically emitted mdk_string_append on a List → memmove crash.  LTCon routes
+-- the whole `++` chain through mdk_list_append correctly.
+typeOf _ _ (CList _) = LTCon
+typeOf _ _ (CRangeList _ _ _) = LTCon
 typeOf _ env (CVar x _) = match lookupAssoc x env
   Some t => t
   None => LTInt
@@ -3904,6 +3913,15 @@ paramUseTy sigs env p (CIf c t f) =
   else firstSome (paramUseTy sigs env p t) (paramUseTy sigs env p f)
 paramUseTy _ _ p (CUnOp "!" x) = if isVarNamed p x then Some LTBool else None
 paramUseTy sigs env p (CUnOp _ x) = paramUseTy sigs env p x
+-- `::` is NOT a symmetric binop: in `l :: r`, l is the ELEMENT and r is the
+-- `List element` — their LTys differ.  So a var on the LEFT of `::` cannot take
+-- the right operand's (list) type; doing so mistypes a String accumulator as
+-- LTCon (e.g. `acc :: …` in splitLines), routing its OTHER `++` use to
+-- mdk_list_append on a String → crash.  Skip the element side; a var on the
+-- right of `::` is a list (LTCon).
+paramUseTy sigs env p (CBinPrim "::" l r) =
+  if isVarNamed p r then Some LTCon
+  else firstSome (paramUseTy sigs env p l) (paramUseTy sigs env p r)
 paramUseTy sigs env p (CBinPrim _ l r) =
   if isVarNamed p l then Some (typeOf sigs env r)
   else if isVarNamed p r then Some (typeOf sigs env l)

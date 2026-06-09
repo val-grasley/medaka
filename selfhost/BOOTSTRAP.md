@@ -242,3 +242,69 @@ byte-diff.
   a front-end-shared dump path). The clause-chaining change re-shapes the IR for
   every multi-clause function, but every gate diffs against the interpreter and
   passes.
+
+## B4 — native RESOLVE ✅ **DONE (14/14 byte-identical to the interpreter)**
+
+**Result: 14/14 `test/resolve_fixtures/*.mdk` byte-match** the interpreter. The
+self-hosted RESOLVE stage (name binding / scope resolution) natively compiled,
+end-to-end, emitting the SAME diagnostic S-expressions (`resolveToLines`) as
+`medaka run selfhost/resolve_main.mdk <runtime> <core> <fixture>`. The fixtures
+are mostly ERROR-path cases (`UnboundVariable`, `DuplicateDefinition`,
+`ExternWithBody`, `MethodNotInInterface`, `UnknownType`/`Ctor`/`Interface`/
+`Effect`, `NonRecursiveValueLet`, `AsPatternMisplaced`, `QuestionMisplaced`,
+multi-error) — the native binary produces byte-identical diagnostic lines.
+
+Unlike B1–B3, `resolve_main` takes **THREE file-path args** — `<runtime.mdk>
+<core.mdk> <target.mdk>` — and seeds its name environment by parsing
+`runtime.mdk` (externs) + `core.mdk` (prelude) at RUNTIME, then parses+desugars
+the target and resolves it. (The emit-time prelude is still the real
+`stdlib/core.mdk`; resolve_main *reading* runtime/core at runtime is independent
+of that.)
+
+**Harness:** `test/bootstrap_resolve.sh` (clone of `bootstrap_desugar.sh`:
+ORACLE/entry = `selfhost/resolve_main.mdk`, FIXDIR = `test/resolve_fixtures`,
+same generic driver, real `core.mdk`, libgc/clang block, `-Wl,-stack_size` flag,
+`()` Unit-auto-print convention). BOTH the oracle and native invocations pass the
+3 args (`$RUNTIME $CORE $fix`); native `args ()` returns argv[1..] so all three
+reach `resolve_main`. Both sides emit selfhost diagnostics running the SAME
+deterministic resolve code → raw byte-diff, NO sort/normalization. (The
+`.expected` files in `resolve_fixtures/` are the OCaml-reference golden for
+`diff_selfhost_resolve.sh`; they are NOT this harness's oracle.)
+
+### One emitter bug fixed (in `selfhost/llvm_emit.mdk`)
+**List-typed `++` chain mis-selected `mdk_string_append` → memmove crash.**
+`buildEnv` (resolve.mdk) builds the name environment with chained list appends:
+`externNames runtimeDecls ++ pValues ++ userValueNames prog ++ imported` (each
+operand a `List String`). The emitter selects `++`'s helper by the LEFT operand's
+static LTy: `LTStr` → `mdk_string_append`, `LTCon` → `mdk_list_append`, else →
+runtime `mdk_append` (whose result it *defaults* to `LTStr`). Two compounding
+inference gaps:
+- `typeOf` had **no `CList` arm**, so the empty-list base of a list-returning
+  multi-clause fn (`externNames [] = []`) typed as `LTInt` → the fn's inferred
+  return LTy was `LTInt` → the first `++` fell to the runtime-dispatch arm whose
+  result defaults to `LTStr` → the CHAINED outer `++` saw `LTStr` and statically
+  emitted `mdk_string_append` on a List cell → `memmove` over a garbage length →
+  segfault.
+
+  Fix: `typeOf (CList _) = LTCon` and `typeOf (CRangeList _ _ _) = LTCon` (a
+  list/range-list is a Cons/Nil constructor chain). Now `externNames` & friends
+  infer `LTCon`, so the whole `++` chain routes through `mdk_list_append`.
+- That `CList`-fix exposed a second bug in `paramUseTy`: it inferred a param's
+  type from a `::` operand as if `::` were a SYMMETRIC binop (`l :: r` ⇒ left
+  takes right's type). But `::` is asymmetric — `l` is the ELEMENT, `r` is
+  `List element`. With `CList → LTCon`, `splitLines`'s String accumulator `acc`
+  (used as `acc :: splitLines …`) suddenly inferred `LTCon` from the list tail,
+  so its OTHER use `acc ++ charToStr …` (a genuine String append) emitted
+  `mdk_list_append` on a String → crash (the inverse of the first bug).
+
+  Fix: a dedicated `paramUseTy … (CBinPrim "::" l r)` arm — a var on the RIGHT of
+  `::` is a list (`LTCon`); a var on the LEFT (the element) is NOT inferable from
+  the list tail, so it's skipped (recurse for another determining use). `acc`
+  then correctly infers `LTStr` from its `++ charToStr` use.
+
+### Validation
+- `test/bootstrap_resolve.sh` → **14/14**. `bootstrap_desugar.sh` stays **26/26**,
+  `bootstrap_parse.sh` **26/26**, `bootstrap_lex.sh` **19/19** (the `paramUseTy`
+  fix was found *via* a triple_str lexer regression and re-greened it).
+- All `diff_selfhost_*` gates byte-identical (both fixes are emit-only inference
+  refinements; neither touches a front-end-shared dump path).
