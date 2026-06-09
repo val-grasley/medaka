@@ -197,6 +197,7 @@ Dev probes (build to `_build/default/dev/`):
 - Development is organized by numbered **Phases**. Open/forward work is in
   `PLAN.md`; the completed Phases 1–97 (with implementation notes) are in
   `PLAN-ARCHIVE.md`. Commit messages and code comments reference phase numbers.
+- **`selfhost/` code that must SELF-COMPILE (the native LLVM bootstrap, `selfhost/BOOTSTRAP.md`) must be written GUARD-FREE.** The native emitter (`llvm_emit.mdk`) **cannot lower a clause/match guard** — `emitTree`'s `CTGuard` arm is an unclosed emitter gap, so under the gap-tolerant self-compile build a guarded arm lowers to a `store i64 0` placeholder and the function **silently returns 0/Unit** with no error. This bit the emitter's own source at self-compile step C1 (`emitGroupBody`/`emitCmp` had guarded arms → blanked bodies). All seven stage modules + `llvm_emit.mdk` are deliberately guard-free; **use `if`/`else` or the `function` form instead of `| guard =` in any module on the self-compile path.** (The interpreted pipeline handles guards fine — this is native-emit-only. Tracked as the one open non-`max`/`min` emitter gap in `selfhost/EMITTER-GAPS.md`; closing it (real `CTGuard` lowering) would retire this convention.)
 
 ## Dogfooding the language
 

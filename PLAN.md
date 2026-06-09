@@ -352,6 +352,13 @@ Downstream (captured, NOT near-term): **Phase 146b** parameterized effects
 **Owning roadmap:** [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
 §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8.
 
+> **STATUS UPDATE (2026-06-08): native self-compile bootstrap is largely DONE — this section's D0–D4 narrative below predates it and needs reconciliation.** All SEVEN pipeline stages (lex/parse/desugar/resolve/mark/typecheck/eval) are native-compiled and byte-identical to the tree-walker interpreter (141 fixtures; `selfhost/BOOTSTRAP.md`, `test/bootstrap_*.sh`). Self-compile capstone: **C1 DONE** — the native-compiled emitter reproduces the interpreted emitter's IR byte-for-byte (`test/selfcompile_emit.sh`, 6/6). **Remaining:** C2 (native emitter on a real module → forces the deferred stack-scalability fix) → C3 (fixpoint: native emitter emits itself, reproducing its own IR = true self-hosting).
+>
+> **Open emitter CAPABILITY gaps** (see `selfhost/EMITTER-GAPS.md` "Open emitter CAPABILITY gaps"):
+> 1. **`CTGuard` — clause/match guards not lowered.** Worked around by the GUARD-FREE convention (all self-compile-path modules use `if`/`function`, never `| guard =`); a guarded arm silently lowers to placeholder `0`. AGENTS.md gotcha. **Close it** by emitting a real guard test+branch in `emitTree`'s `CTGuard` arm (thread the next-clause fallthrough label like `emitClauseChain` does) → retires the convention.
+> 2. **`max`/`min` over PRIMITIVE `Ord` receivers** — generic default-method dispatch over primitives (no runtime cell tag); deferred D3b. Dead code for the bootstrap (`maximum`/`minimum` unused by the compiler).
+> 3. **Stack scalability** — non-tail `x :: recurse` list-builders overflow the default stack on real-file inputs; band-aid `-Wl,-stack_size` (512MB). Principled: worker-thread big-stack (general, first) + narrow TRMC (cons-loops). Forced by C2.
+
 **Done (foundation):** §2.0 observability (per-phase timing + allocation counter,
 2026-06-05) ✅; §2.0 lexical-addressing — EMIT done, CONSUME closed as a
 tree-walker non-win and already captured in the VM/Core IR (O(1) slots) ✅; §2.1
