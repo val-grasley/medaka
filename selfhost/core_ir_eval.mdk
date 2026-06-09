@@ -309,8 +309,9 @@ cInstallGroup env cells ((CBind name clauses)::rest) =
 -- let-group binding value: a nullary single clause is eager (recursive let);
 -- multi-clause coalesces into a VMulti dispatched by arg pattern + fall-through.
 cGroupValue : EvalEnv -> List CClause -> <Mut> Value
-cGroupValue env [(CClause pats body)] =
-  if isNullary pats then ceval env body else cClauseClosure env (CClause pats body)
+cGroupValue env [(CClause pats body)]
+  | isNullary pats = ceval env body
+  | otherwise = cClauseClosure env (CClause pats body)
 cGroupValue env clauses = VMulti (map (cClauseClosure env) clauses)
 
 cClauseClosure : EvalEnv -> CClause -> Value

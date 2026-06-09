@@ -451,16 +451,10 @@ matchPat (PList pats) (VList vals)
 matchPat (PAs x p) v = matchAs x p v
 matchPat (PRec _ fields _) (VRecord _ recFields) =
   matchRecFields fields recFields
-matchPat (PRng (LInt lo) (LInt hi) incl) (VInt v) =
-  if inIntRange v lo hi incl then
-    Some []
-  else
-    None
-matchPat (PRng (LChar lo) (LChar hi) incl) (VChar c) =
-  if inCharRange c lo hi incl then
-    Some []
-  else
-    None
+matchPat (PRng (LInt lo) (LInt hi) incl) (VInt v)
+  | inIntRange v lo hi incl = Some []
+matchPat (PRng (LChar lo) (LChar hi) incl) (VChar c)
+  | inCharRange c lo hi incl = Some []
 matchPat _ _ = None
 
 inIntRange : Int -> Int -> Int -> Bool -> Bool
@@ -805,11 +799,9 @@ evalIndex container (VInt i) = evalIndexInt container i
 evalIndex _ _ = panic "index is not an Int"
 
 evalIndexInt : Value -> Int -> Value
-evalIndexInt (VArray a) i =
-  if i < 0 || i >= arrayLength a then
-    panic ("index " ++ intToString i ++ " out of bounds")
-  else
-    arrayGetUnsafe i a
+evalIndexInt (VArray a) i
+  | i < 0 || i >= arrayLength a = panic ("index " ++ intToString i ++ " out of bounds")
+  | otherwise = arrayGetUnsafe i a
 evalIndexInt (VList vs) i = listNthAt vs i i
 evalIndexInt (VString s) i = stringIndexCp s i
 evalIndexInt _ _ = panic "index on non-array/list/string"
@@ -986,11 +978,9 @@ funClauseToClause : FunClause -> (List Pat, Expr)
 funClauseToClause (FunClause pats body) = (pats, body)
 
 groupValue : EvalEnv -> List (List Pat, Expr) -> <Mut> Value
-groupValue env [(pats, body)] =
-  if isNullary pats then
-    eval env body
-  else
-    VClosure env pats body
+groupValue env [(pats, body)]
+  | isNullary pats = eval env body
+  | otherwise = VClosure env pats body
 groupValue env clauses = VMulti (map (clauseClosure env) clauses)
 
 -- top-level variant: a nullary binding becomes a deferred VThunk (forced on
@@ -1091,16 +1081,12 @@ evalArith : String -> Value -> Value -> Value
 evalArith "+" (VInt a) (VInt b) = VInt (a + b)
 evalArith "-" (VInt a) (VInt b) = VInt (a - b)
 evalArith "*" (VInt a) (VInt b) = VInt (a * b)
-evalArith "/" (VInt a) (VInt b) =
-  if b == 0 then
-    panic "division by zero"
-  else
-    VInt (a / b)
-evalArith "%" (VInt a) (VInt b) =
-  if b == 0 then
-    panic "modulo by zero"
-  else
-    VInt (a % b)
+evalArith "/" (VInt a) (VInt b)
+  | b == 0 = panic "division by zero"
+  | otherwise = VInt (a / b)
+evalArith "%" (VInt a) (VInt b)
+  | b == 0 = panic "modulo by zero"
+  | otherwise = VInt (a % b)
 evalArith "+" (VFloat a) (VFloat b) = VFloat (a + b)
 evalArith "-" (VFloat a) (VFloat b) = VFloat (a - b)
 evalArith "*" (VFloat a) (VFloat b) = VFloat (a * b)

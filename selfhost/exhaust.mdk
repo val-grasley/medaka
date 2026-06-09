@@ -188,11 +188,9 @@ specializeCon c arity pmat = filterMapRows (specConRow c arity) pmat
 
 specConRow : String -> Int -> List Pat -> Option (List Pat)
 specConRow _ _ [] = None
-specConRow c _ ((PCon c2 args)::rest) =
-  if c2 == c then
-    Some (args ++ rest)
-  else
-    None
+specConRow c _ ((PCon c2 args)::rest)
+  | c2 == c = Some (args ++ rest)
+  | otherwise = None
 specConRow _ arity (PWild::rest) = Some (replicateWild arity ++ rest)
 specConRow _ _ _ = None
 
