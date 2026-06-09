@@ -704,11 +704,20 @@ emitExpr _ _ other = gapE ("unsupported Core IR node " ++ ctag other)
 -- (slice 4 — not the head of a saturated call) must become a closure, so eta-wrap
 -- it into a captureless static closure forwarding to `@mdk_<name>`; anything else
 -- is a let/param-bound local operand.
+--
+-- The math/bound constants (`pi`/`e`/`intMaxBound`/…) are ordinary PRELUDE
+-- bindings, so a LOCAL of the same name must shadow them — check the local env
+-- FIRST for those.  (`True`/`False`/`otherwise` and constructors are reserved
+-- value keywords a local can never rebind, so they stay ahead of the env check.)
+-- This matters for real code: the self-hosted lexer uses `e` as a parameter name
+-- pervasively (`let e = identEnd …`); intercepting it as Euler's number wrecked
+-- every `substr … e` call (B1 bootstrap bug).
 emitVar : Emit -> List (String, (String, LTy)) -> String -> <Mut> (String, LTy)
 emitVar e env x =
   if x == "True" then ("3", LTBool)
   else if x == "False" then ("1", LTBool)
   else if x == "otherwise" then ("3", LTBool)
+  else if isLocal env x then lookupVarG e env x
   else if x == "pi" then (boxFloat e "3.141592653589793", LTFloat)
   else if x == "e" then (boxFloat e "2.718281828459045", LTFloat)
   else if x == "intMaxBound" then ("9223372036854775807", LTInt)
@@ -719,6 +728,13 @@ emitVar e env x =
   else if isKnownFn e x then emitEtaClosure e x
   else if isUnicodeExtern x then emitUnicodeEtaClosure e x
   else lookupVarG e env x
+
+-- is `x` a local (let/param) binding in the current emit env?  Used to let a local
+-- shadow the prelude math/bound constants (pi/e/intMaxBound/…) above.
+isLocal : List (String, (String, LTy)) -> String -> Bool
+isLocal env x = match lookupAssoc x env
+  Some _ => True
+  None => False
 
 -- a Mut-aware variable lookup used at the emit site (emitVar): a local (let/param)
 -- operand shadows everything, so the env is checked FIRST; otherwise the name may
@@ -2985,8 +3001,16 @@ emitDecision e env scrut arms tree =
 emitTree : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List String -> String -> String -> Ref LTy -> CTree -> <Mut> Unit
 emitTree e _ _ _ _ _ _ _ CTFail = emit e "  unreachable"
 emitTree e env root arms _ slot endL rty (CTLeaf i) = emitLeaf e env root arms i slot endL rty
-emitTree _ _ _ _ _ _ _ _ (CTGuard _ _) =
-  gapU "guarded / range / record match arm (slice 3: constructor + int-literal patterns only)"
+-- gap-TOLERANT (bootstrap): a guarded/range/record arm cannot be lowered.  With
+-- recording OFF this `gapU` panics (the four byte gates' behaviour, unchanged).
+-- With recording ON (the bootstrap emit driver) it must still TERMINATE the
+-- current block so the surrounding module is structurally valid LLVM — store a
+-- "0" placeholder and branch to the decision-end block.  The harness byte-diff
+-- is the safety net: a guard arm the program actually REACHES would diverge.
+emitTree e _ _ _ _ slot endL _ (CTGuard _ _) =
+  let _ = gapU "guarded / range / record match arm (slice 3: constructor + int-literal patterns only)"
+  let _ = emit e ("  store i64 0, ptr " ++ slot)
+  emit e ("  br label %" ++ endL)
 emitTree e env root arms occs slot endL rty (CTDrop sub) =
   emitTree e env root arms (tailS occs) slot endL rty sub
 emitTree e env root arms occs slot endL rty (CTSwitch branches dft) =
@@ -3069,7 +3093,19 @@ emitSwitch e env root arms occs branches dft slot endL rty = match occs
       Some _ =>
         let tagReg = loadDiscriminant e foc
         emitConChain e env root arms foc rest tagReg branches dft slot endL rty
-      None => gapU "unsupported switch head (slice 5b: constructor / list / tuple / int-literal heads only; no unit heads)"
+      None => gapSwitchHead e slot endL
+
+-- gap-TOLERANT terminator (bootstrap): a switch head the spike cannot lower (e.g.
+-- a Unit head) records the gap, then — when recording is ON — still TERMINATES the
+-- current block (store "0" placeholder, branch to the decision end) so the module
+-- stays structurally valid LLVM even though the function is dead code.  With
+-- recording OFF the `gapU` panics first, exactly as before.  The harness byte-diff
+-- catches any switch the program actually REACHES (its output would diverge).
+gapSwitchHead : Emit -> String -> String -> <Mut> Unit
+gapSwitchHead e slot endL =
+  let _ = gapU "unsupported switch head (slice 5b: constructor / list / tuple / int-literal heads only; no unit heads)"
+  let _ = emit e ("  store i64 0, ptr " ++ slot)
+  emit e ("  br label %" ++ endL)
 
 -- the name + arity a constructor-LIKE head tests against: a named ADT constructor
 -- carries them directly; built-in list HCons/HNil and tuples HTuple reuse the same
@@ -3106,7 +3142,9 @@ emitConChain e env root arms foc rest tagReg ((CTBranch h sub)::more) dft slot e
       let _ = emit e (next ++ ":")
       emitConChain e env root arms foc rest tagReg more dft slot endL rty
     None =>
-      gapU "heterogeneous constructor switch (slice 3: a column is all-constructor or all-literal)"
+      let _ = gapU "heterogeneous constructor switch (slice 3: a column is all-constructor or all-literal)"
+      let _ = emit e ("  store i64 0, ptr " ++ slot)
+      emit e ("  br label %" ++ endL)
 
 -- the literal-switch test chain: compare the focus immediate against each branch's
 -- tagged-int constant; a literal head has arity 0, so a match descends with the
