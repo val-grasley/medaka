@@ -4,12 +4,20 @@ A pragmatic, modern functional programming language. Sits at the intersection of
 a cleaned-up OCaml, a practical Haskell, and a more functional, garbage-collected
 Rust. See [language-design.md](./language-design.md) for the full design.
 
-The compiler is written in OCaml (Phase 1). Eventually we'll target LLVM and/or
-self-host.
+The reference compiler is written in OCaml (`lib/`). **Medaka also self-hosts and
+compiles to native code:** the compiler is rewritten in Medaka (`selfhost/`) and a
+native **LLVM backend** compiles it — all seven pipeline stages are native-compiled
+and byte-identical to the interpreter, and the compiler reproduces itself
+byte-for-byte (the self-compile fixpoint). See [PLAN.md](./PLAN.md) and
+[selfhost/BOOTSTRAP.md](./selfhost/BOOTSTRAP.md). The OCaml compiler is currently
+the reference + differential oracle; the [roadmap](./PLAN.md#stage-3--make-the-llvm-backend-canonical-retire-ocaml)
+hardens the native backend toward becoming canonical.
 
 ## Status
 
-Frontend and interpreter complete; standard library underway; codegen not yet started.
+Frontend, interpreter, and standard library complete; **self-hosting + native LLVM
+codegen done** (the native compiler self-hosts to a reproducing fixpoint —
+PLAN.md). Next: hardening the native backend toward canonical (Stage 3).
 
 - **AST** — `lib/ast.ml`
 - **Lexer** — `lib/lexer.mll` (indentation-sensitive, OCaml-style)
@@ -36,10 +44,16 @@ Frontend and interpreter complete; standard library underway; codegen not yet st
   highlight, completion, inlay hints)
 - **Test suite** — parser, roundtrip, resolve, typecheck, eval, run,
   repl, loader, diagnostics, fmt, project_config, new_cmd, and doc suites
+- **Self-hosted compiler** — `selfhost/*.mdk` (the whole pipeline rewritten in
+  Medaka), validated byte-for-byte against the OCaml reference
+- **Native LLVM backend** — `selfhost/llvm_emit.mdk` (Core IR → textual LLVM IR →
+  `clang`), `runtime/medaka_rt.c` (C runtime + Boehm GC); `test/bootstrap_*.sh` +
+  `test/selfcompile_*.sh` are the differential + self-compile gates
 
-The standard library is being developed in Medaka itself on top of the
-`extern` primitives — see [STDLIB.md](./STDLIB.md). Codegen has not started.
-See [PLAN.md](./PLAN.md) for the roadmap (and
+The standard library is developed in Medaka itself on top of the `extern`
+primitives — see [STDLIB.md](./STDLIB.md). Self-hosting + native LLVM codegen are
+done (the native compiler self-hosts to a reproducing fixpoint). See
+[PLAN.md](./PLAN.md) for the roadmap (and
 [PLAN-ARCHIVE.md](./PLAN-ARCHIVE.md) for the completed-phase history).
 
 ## Building
