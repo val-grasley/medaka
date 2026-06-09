@@ -30,6 +30,7 @@ import typecheck.{elaborateModules, constrainedSigNames, preludeReturnPosDictNam
 import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable}
 import llvm_emit.{emitProgram, enableGapRecord, installReturnsSelf, installSelfFnParams, installMethodIface}
 import util.{concatMapList}
+import private_mangle.{mangleUnits}
 
 main : <IO, Mut> Unit
 main = match args ()
@@ -65,7 +66,12 @@ run runtimeP coreP entry roots = match readFile runtimeP
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 runEmit runtimeDecls coreDecls modules =
   let _ = enableArgStamp ()
-  let (coreD, modules2) = elaborateModules runtimeDecls coreDecls modules
+  -- Module-qualify module-PRIVATE top-level functions whose bare name collides
+  -- across units, BEFORE elaborateModules flattens the boundaries away.  Without
+  -- this, two modules' same-named privates (e.g. lex_main.emit vs lexer.emit) both
+  -- mangle to @mdk_emit and only one survives → @main calls the wrong arity.
+  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
+  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
   let allDecls = coreD ++ concatMapList snd modules2
   let _ = preludeReturnPosDictNames coreD allDecls
           ++ preludeArgPosDictNames coreD allDecls

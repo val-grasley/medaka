@@ -29,6 +29,7 @@ import typecheck.{elaborateModules, constrainedSigNames, preludeReturnPosDictNam
 import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable}
 import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface}
 import util.{concatMapList}
+import private_mangle.{mangleUnits}
 
 main : <IO, Mut> Unit
 main = match args ()
@@ -64,7 +65,13 @@ run runtimeP coreP entry roots = match readFile runtimeP
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 runEmit runtimeDecls coreDecls modules =
   let _ = enableArgStamp ()
-  let (coreD, modules2) = elaborateModules runtimeDecls coreDecls modules
+  -- Module-qualify module-PRIVATE top-level functions whose bare name collides
+  -- across units, BEFORE elaborateModules flattens the boundaries away (same
+  -- flat-emit @mdk_<name> collision risk the bootstrap driver fixes).  The gate
+  -- diffs OUTPUT, not symbols, so renaming uncollided privates is a no-op and the
+  -- gate stays byte-identical; it only matters when two units share a private name.
+  let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
+  let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
   let allDecls = coreD ++ concatMapList snd modules2
   -- E4-ready dict-name wiring (mirrors llvm_emit_typed_main.mdk): coreD is the
   -- elaborated prelude, allDecls the whole program.  No-op on the emit subset

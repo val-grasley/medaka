@@ -75,9 +75,15 @@ pass=0; fail=0
 for fix in "$FIXDIR"/*.mdk; do
   [ -f "$fix" ] || continue
   name="$(basename "$fix")"
-  # oracle IO stdout + the invariant native Unit auto-print ("()\n").
-  ref="$("$MAIN" run "$ORACLE" "$fix" 2>/dev/null)
-()"
+  # oracle IO stdout + the invariant native Unit auto-print.  lex_main's `emit`
+  # renders the token stream via `joinNl` (NO trailing newline) and `putStr`, so
+  # the oracle ends at the last token (e.g. `EOF`) with no newline.  The native
+  # binary appends the runtime Unit auto-print `()\n` directly after that, giving
+  # `…EOF()\n`; `$(…)` strips the trailing newline from `self`, leaving `…EOF()`.
+  # So append exactly `()` (no surrounding newline) to the oracle to match.
+  # (The sibling diff_selfhost_llvm_modules.sh appends `\n()` instead because its
+  # oracle output IS newline-terminated — that form is wrong for joinNl output.)
+  ref="$("$MAIN" run "$ORACLE" "$fix" 2>/dev/null)()"
   self="$("$BIN" "$fix" 2>/dev/null)"
   if [ "$ref" = "$self" ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else
