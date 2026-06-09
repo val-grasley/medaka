@@ -67,7 +67,14 @@ BIN="$WORK/lex"
 if ! "$MAIN" run "$EMIT" "$RUNTIME" "$CORE" "$ORACLE" "$SELFHOST" > "$LL" 2>"$WORK/emit.err"; then
   echo "FAIL (emit lex_main): $(cat "$WORK/emit.err")"; exit 1
 fi
-if ! "$CC" $GC_CFLAGS "$LL" "$RT" $GC_LIBS -o "$BIN" 2>"$WORK/cc.err"; then
+# `-Wl,-stack_size` grows the MAIN-THREAD stack (default ~8 MB on macOS): the
+# self-hosted lexer builds its token list with non-tail `RTok … :: scan …`
+# recursion, so a real-file-sized source (~60 KB+ / tens of thousands of tokens)
+# overflows the default stack and SIGSEGVs.  512 MB clears every realistic input
+# (the small fixtures here never needed it; this future-proofs bigger inputs and
+# the deeper-recursing parser/typecheck slices).  A tail-recursive lexer loop or a
+# big-stack worker thread is the principled fix — tracked, not yet needed.
+if ! "$CC" -Wl,-stack_size,0x20000000 $GC_CFLAGS "$LL" "$RT" $GC_LIBS -o "$BIN" 2>"$WORK/cc.err"; then
   echo "FAIL (clang lex_main): $(cat "$WORK/cc.err")"; exit 1
 fi
 
