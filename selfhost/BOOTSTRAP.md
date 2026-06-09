@@ -308,3 +308,40 @@ inference gaps:
   fix was found *via* a triple_str lexer regression and re-greened it).
 - All `diff_selfhost_*` gates byte-identical (both fixes are emit-only inference
   refinements; neither touches a front-end-shared dump path).
+
+## B5 — native METHOD-MARKER ✅ **DONE (26/26 byte-identical to the interpreter)**
+
+**Result: 26/26 `test/parse_fixtures/*.mdk` byte-match** the interpreter. The
+self-hosted MARK stage (`marker.mdk`, ~290 lines — rewrites interface-method /
+constrained-fn `EVar` occurrences to `EMethodRef` / `EDictApp`) natively
+compiled, end-to-end, emitting the SAME canonical marked-AST S-expression
+(`programToSexp (markWithPrelude …)`) as `medaka run selfhost/mark_main.mdk
+<core> <fixture>`.
+
+Like B4 but `mark_main` takes **TWO file-path args** — `<prelude.mdk>
+<target.mdk>` — parsing+desugaring the prelude (`stdlib/core.mdk`) and the
+target at RUNTIME, then `markWithPrelude`-ing the target against the prelude's
+interface methods + constrained fns. (The emit-time prelude is still the real
+`stdlib/core.mdk`; mark_main *reading* core at runtime is independent of that.)
+No `runtime.mdk` arg — mark doesn't seed an extern environment.
+
+**Harness:** `test/bootstrap_mark.sh` (clone of `bootstrap_resolve.sh`:
+ORACLE/entry = `selfhost/mark_main.mdk`, FIXDIR = `test/parse_fixtures` — the
+same 26-fixture corpus as B3 desugar, which all parse+desugar+mark cleanly;
+**2-arg invocations** `<core> <fixture>` instead of B4's 3 args; generic emit
+driver, real `core.mdk` prelude, libgc/clang block, `-Wl,-stack_size,0x20000000`,
+`()` Unit-auto-print convention; raw byte-diff, NO sort, NO float normalization).
+
+### Zero new emitter bugs
+The marker stage surfaced **no new divergences** — 26/26 on the first run. It is
+a small structural rewrite over the already-emittable AST/CExpr surface, reusing
+the prior slices' emitter fixes (string `==`, PAP closures, value-global init
+ordering, ctor eta-wrap, guarded-clause chaining, `CList → LTCon` inference). No
+`selfhost/llvm_emit.mdk` or `runtime/medaka_rt.c` change was needed.
+
+### Validation
+- `test/bootstrap_mark.sh` → **26/26**. Earlier bootstraps stay green:
+  `bootstrap_resolve.sh` **14/14**, `bootstrap_desugar.sh` **26/26**,
+  `bootstrap_parse.sh` **26/26**, `bootstrap_lex.sh` **19/19**.
+- All 15 `diff_selfhost_*` gates byte-identical (harness-only slice — no emitter
+  or front-end change).
