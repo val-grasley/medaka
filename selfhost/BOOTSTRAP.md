@@ -633,4 +633,45 @@ ordering compare), so all `diff_selfhost_*` gates stay byte-identical and C1 sta
   (`bootstrap_lex.sh` 19/19 … `bootstrap_eval.sh` 20/20); all 15 `diff_selfhost_*`
   gates byte-identical.
 
+## C3 — native self-hosting FIXPOINT ✅ **DONE (the emitter compiles itself and reproduces its own IR)**
+
+The milestone that makes Medaka a native self-hosting compiler: the native emitter
+compiles the EMITTER ITSELF and reproduces its own output byte-for-byte. C1 proved a
+native emitter reproduces the interpreter's IR on small fixtures; C2 did it for the
+real lexer driver. C3 uses the gap-tolerant emitter driver
+(`selfhost/llvm_bootstrap_lex_main.mdk`) — whose module graph IS the whole emitter +
+front-end + prelude, the LARGEST program in the tree — as BOTH the compiler AND the
+program being compiled.
+
+### Pipeline
+- **emitter-A** = native-compiled `llvm_bootstrap_lex_main.mdk`, built exactly as C2
+  builds its native emitter: the INTERPRETED gap-tolerant driver emits the emitter's
+  own module graph (`INTERP.ll`, ~10.6 MB) → clang + runtime + libgc → native `emitA`.
+  That interpreted emission doubles as the C3a oracle.
+- **IR1** = `emitA` emitting the emitter's graph — the native emitter compiling the
+  whole emitter. The biggest emit in the project (~10.6 MB IR, deep Core-IR recursion
+  + huge string construction).
+- **C3a (reproduction):** IR1 == `INTERP.ll` byte-for-byte. ✅ (the C1/C2 guarantee at
+  emitter-self scale).
+- **emitter-B** = clang(IR1) → native `emitB`. **IR2** = `emitB` emitting the emitter
+  graph.
+- **C3b (fixpoint):** IR1 == IR2 byte-for-byte — the compiled compiler reproduces its
+  own output. ✅ **FIXPOINT REACHED.**
+
+### Stack mechanism — 512 MiB flag sufficed (NO worker thread)
+C2 established that arm64 macOS HARD-CAPS `-Wl,-stack_size` at `0x20000000` (512 MiB —
+the linker rejects anything larger). The whole-emitter emit is the biggest in the
+project, but it still FITS within 512 MiB: the native emit completes without overflow
+and produces IR byte-identical to the interpreter's. So the max-allowed stack flag is
+enough — **no big-stack worker thread was needed**, the emitted program entry stays
+`@main` on the process main stack, and `runtime/medaka_rt.c` is unchanged. No emitter
+change was required either (C3a held on the first try). This is a pure-harness slice:
+the only new file is `test/selfcompile_fixpoint.sh`.
+
+### Validation
+- `test/selfcompile_fixpoint.sh` → **C3a YES** (IR1 == interpreted emission of the
+  emitter, byte-for-byte) and **C3b YES** (IR1 == IR2, the fixpoint).
+- All earlier harnesses unchanged: `selfcompile_lex.sh` 19/19 + IR match,
+  `selfcompile_emit.sh` 6/6, all seven bootstraps green (19/26/26/14/26/10/20), all
+  15 `diff_selfhost_*` gates byte-identical.
 
