@@ -68,7 +68,7 @@ state changes.
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
 | **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) + [`selfhost/BOOTSTRAP.md`](./selfhost/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done; LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
-| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟡 **next** | Harden the native backend toward CANONICAL + gated OCaml retirement: `medaka build` CLI → completeness (max/min + emitter-gap sweep) → port OCaml test suites to Medaka → differential fuzzer → TRMC/worker-thread stack scalability → perf (-O2, value-rep) → self-bootstrapping build → retire `lib/` (gated). |
+| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟡 **next** | Harden the native backend toward CANONICAL + gated OCaml retirement: `medaka build` CLI → completeness (max/min + emitter-gap sweep) → port OCaml test suites to Medaka → differential fuzzer → TRMC/worker-thread stack scalability → perf (-O2, value-rep) → housekeeping refactor (style/DRY) → self-bootstrapping build → retire `lib/` (gated). |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -402,6 +402,17 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
   canonical.
 - **GC** — Boehm conservative GC today. Evaluate precise GC + the WasmGC path (the
   wedge target needs WasmGC, a sibling backend off the Core IR seam — §2.4b).
+- **Housekeeping refactor of the compiler** — now that it works + self-compiles,
+  a general code-quality pass over `selfhost/*.mdk` (+ `llvm_emit.mdk`,
+  `runtime/medaka_rt.c`): style + readability + naming consistency, **DRY**
+  (consolidate duplicated helpers — e.g. `util.mdk` vs prelude, repeated emit
+  patterns), remove dead/historical code + stale comments, and dogfood Medaka
+  idioms where genuinely clearer (extends the guard-dogfood pass — sections,
+  comprehensions, guards, pipes; per the "verify on binary, most sites aren't
+  wins" guidance). **The differential harness + bootstraps + self-compile fixpoint
+  are the safety net** — every refactor must be semantics-preserving (all gates
+  byte-identical, all `bootstrap_*`/`selfcompile_*` green), so this is the safe
+  moment to do it. Pairs naturally with the completeness/coverage work (item 2).
 
 **Gated milestone — retire `lib/*.ml`.** Once the bar is met: make native
 `medaka` the default build, re-root the remaining gates on the hybrid oracle,
