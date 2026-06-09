@@ -188,6 +188,29 @@ gapLog = Ref []
 curGapBind : Ref String
 curGapBind = Ref "?"
 
+-- The fallthrough target for a multi-clause function (or guarded match) emitted as
+-- a CHAIN of single-clause decision trees: when clause K's pattern fails to match
+-- (CTFail) OR its guard chain falls through (`__fallthrough__ ()`), control must
+-- resume at clause K+1's entry block — exactly the interpreter's VFallthrough →
+-- "try next clause" semantics (eval.mdk's fallthroughToNone).  Holds the current
+-- next-clause LLVM label; "" means "no next clause" → the historical `@mdk_oob`
+-- non-exhaustive abort.  Set per-clause by emitClauseChain; read by CTFail and the
+-- `__fallthrough__` arm of emitApp.  A module-level Ref (mirrors gapLog) to avoid
+-- threading the label through every emitTree/emitExpr arm.
+fallthroughLabelRef : Ref String
+fallthroughLabelRef = Ref ""
+
+-- emit a branch to the current next-clause fallthrough target, or the historical
+-- @mdk_oob abort when there is none (single-clause / exhausted chains).
+emitFallthrough : Emit -> <Mut> (String, LTy)
+emitFallthrough e = match fallthroughLabelRef.value
+  "" =>
+    let _ = emit e "  call void @mdk_oob()"
+    ("0", LTInt)
+  lbl =>
+    let _ = emit e ("  br label %" ++ lbl)
+    ("0", LTInt)
+
 export
 enableGapRecord : Unit -> <Mut> Unit
 enableGapRecord _ = set_ref gapRecordEnabled True
@@ -724,7 +747,9 @@ emitVar e env x =
   else if x == "intMinBound" then ("-9223372036854775807", LTInt)
   else if x == "charMinBound" then ("1", LTChar)
   else if x == "charMaxBound" then ("2228223", LTChar)
-  else if isCtor e x then emitCtorAlloc e x []
+  else if isCtor e x then
+    if ctorArity e x == 0 then emitCtorAlloc e x []
+    else emitCtorEtaClosure e x
   else if isKnownFn e x then emitEtaClosure e x
   else if isUnicodeExtern x then emitUnicodeEtaClosure e x
   else lookupVarG e env x
@@ -1730,9 +1755,7 @@ emitApp e env app =
       else if isImplMethod e fname && hasArgs args then
         let argOps = emitArgs e env args
         emitMethodArgDispatch e fname argOps
-      else if fname == "__fallthrough__" then
-        let _ = emit e "  call void @mdk_oob()"
-        ("0", LTInt)
+      else if fname == "__fallthrough__" then emitFallthrough e
       else emitIndirect e env hd args
     -- slice 6: an applied method / constrained-fn occurrence.  The real arguments
     -- emit first (left-to-right), then the dispatch resolves to a direct impl call
@@ -2421,10 +2444,54 @@ paramEnvByPos _ _ _ = []
 emitClauseTree : Emit -> List (String, (String, LTy)) -> Int -> List (List Pat, CExpr) -> <Mut> Unit
 emitClauseTree e env arity clauses =
   let scrut = if arity == 1 then CVar "a0" AGlobal else CTuple (implScrutVars arity 0)
-  let arms = map (clauseArm arity) clauses
-  let tree = compileTree (map (_ => False) clauses) (implRows arity clauses 0)
-  let (v, _) = emitDecision e env scrut arms tree
-  emit e ("  ret i64 " ++ v)
+  -- Emit the clauses as a CHAIN of single-clause decision trees sharing one result
+  -- slot + end label.  Each clause sets fallthroughLabelRef to the NEXT clause's
+  -- entry block before emitting, so a pattern miss (CTFail) or a guard fallthrough
+  -- (`__fallthrough__`) resumes the next clause — the interpreter's "try next
+  -- clause" semantics.  The scrutinee is emitted ONCE, before the chain.  (A lone
+  -- clause degenerates to the historical single-tree path: no next label → CTFail
+  -- stays `unreachable`, fallthrough stays oob.)
+  let (sv, _) = emitExpr e env scrut
+  let slot = freshReg e
+  let _ = emit e ("  " ++ slot ++ " = alloca i64")
+  let endL = "decend" ++ intToString (freshId e)
+  let rty = Ref LTInt
+  let saved = fallthroughLabelRef.value
+  let _ = emitClauseChain e env arity clauses sv slot endL rty saved
+  let _ = set_ref fallthroughLabelRef saved
+  let _ = emit e (endL ++ ":")
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  emit e ("  ret i64 " ++ r)
+
+-- emit clause chain: each clause's fallthrough target is the NEXT clause's entry
+-- block; the LAST clause falls through to `outer` (the fallthrough that was in
+-- effect when the chain began — "" at top level → oob; a nested chain inside a
+-- guarded clause body inherits the enclosing clause's next-clause label).  A
+-- single-clause function degenerates to `outer` directly, preserving the historical
+-- single-tree behaviour.
+emitClauseChain : Emit -> List (String, (String, LTy)) -> Int -> List (List Pat, CExpr) -> String -> String -> String -> Ref LTy -> String -> <Mut> Unit
+emitClauseChain _ _ _ [] _ _ _ _ _ = ()
+emitClauseChain e env arity (c::rest) sv slot endL rty outer =
+  let nextL = chainNextLabel e rest outer
+  let arms = [clauseArm arity c]
+  let tree = compileTree [False] (implRows arity [c] 0)
+  let _ = set_ref fallthroughLabelRef nextL
+  let _ = emitTree e env sv arms [sv] slot endL rty tree
+  if isEmptyL rest then ()
+  else
+    let _ = emit e (nextL ++ ":")
+    emitClauseChain e env arity rest sv slot endL rty outer
+
+-- the next clause's entry label: the outer fallthrough when this is the last
+-- clause, else a fresh `clauseN` block label.
+chainNextLabel : Emit -> List (List Pat, CExpr) -> String -> <Mut> String
+chainNextLabel _ [] outer = outer
+chainNextLabel e _ _ = "clause" ++ intToString (freshId e)
+
+isEmptyL : List a -> Bool
+isEmptyL [] = True
+isEmptyL _ = False
 
 -- the synthetic scrutinee components for an arity-≥2 impl: `[a0, a1, …]`.
 implScrutVars : Int -> Int -> List CExpr
@@ -2683,6 +2750,43 @@ fnArity : Emit -> String -> <Mut> Int
 fnArity (Emit _ _ _ sigs _ _ _ _ _ _) fname = match lookupAssoc fname sigs.value
   Some (FnSig ptys _) => lengthS ptys
   None => 0
+
+-- the declared arity of constructor `name` (its field count, from the ctor table).
+ctorArity : Emit -> String -> <Mut> Int
+ctorArity e name = match lookupAssoc name (ctorTable e)
+  Some n => n
+  None => 0
+
+-- a CONSTRUCTOR with arity>0 referenced as a FIRST-CLASS value (`map PVar vars`):
+-- emitApp only builds the cell when the ctor is SATURATED (via emitCtorAlloc), so a
+-- bare/partial ctor name reaches emitVar.  Eta-wrap it into a captureless static
+-- closure whose lifted forwarder allocates the ctor cell from its `%argK` words —
+-- mirrors emitEtaClosure (known-fn eta) but the body is emitCtorAlloc, not a call.
+-- (Arity-0 ctors stay the immediate `emitCtorAlloc e name []` in emitVar — already a
+-- complete value, not a function.)
+emitCtorEtaClosure : Emit -> String -> <Mut> (String, LTy)
+emitCtorEtaClosure e name =
+  let arity = ctorArity e name
+  let lamName = "mdk_etac_" ++ name ++ "_" ++ intToString (freshId e)
+  let _ = emitCtorEtaDefine e lamName name arity
+  emitClosureAlloc e lamName []
+
+-- emit the captureless ctor-eta forwarder `@mdk_etacN(i64 %clos, %arg…) { <alloc
+-- cell from %arg0..%argN-1>; ret }` into the side buffer (same swap discipline as
+-- emitEtaDefine).
+emitCtorEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
+emitCtorEtaDefine e lamName name arity =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
+  let _ = emit e "entry:"
+  let (w, _) = emitCtorAlloc e name (argNames arity 0)
+  let _ = emit e ("  ret i64 " ++ w)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  set_ref (bufRef e) saved
 
 -- emit a lifted lambda's top-level `define` into the SIDE buffer (LLVM forbids a
 -- nested define).  Swap the main buffer out, emit the define with `emit` (so it
@@ -3149,7 +3253,15 @@ emitDecision e env scrut arms tree =
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "decend" ++ intToString (freshId e)
   let rty = Ref LTInt
+  -- A `match` in expression position is self-contained: its own non-exhaustive
+  -- CTFail is a genuine abort, NOT the enclosing clause-chain's fallthrough.  Save
+  -- + null the fallthrough label across the tree so a body-level match emitted
+  -- inside a chained clause leaf doesn't inherit (and wrongly branch to) the
+  -- next-clause block.  Restored after.
+  let saved = fallthroughLabelRef.value
+  let _ = set_ref fallthroughLabelRef ""
   let _ = emitTree e env sv arms [sv] slot endL rty tree
+  let _ = set_ref fallthroughLabelRef saved
   let _ = emit e (endL ++ ":")
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
@@ -3162,7 +3274,14 @@ emitDecision e env scrut arms tree =
 -- path terminates its current block (a `br` to `endL` after storing, a `br` into
 -- a sibling test block, or `unreachable` for CTFail).
 emitTree : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List String -> String -> String -> Ref LTy -> CTree -> <Mut> Unit
-emitTree e _ _ _ _ _ _ _ CTFail = emit e "  unreachable"
+-- CTFail: the matrix path matched no row.  In a CHAINED single-clause tree
+-- (emitClauseChain) this is "this clause's pattern didn't match" → resume the next
+-- clause via the fallthrough label; with no next clause (`""`) it is the historical
+-- non-exhaustive `unreachable`/oob.  emitFallthrough emits the branch; a redundant
+-- `unreachable` keeps the block well-formed when it abort()s.
+emitTree e _ _ _ _ _ _ _ CTFail = match fallthroughLabelRef.value
+  "" => emit e "  unreachable"
+  lbl => emit e ("  br label %" ++ lbl)
 emitTree e env root arms _ slot endL rty (CTLeaf i) = emitLeaf e env root arms i slot endL rty
 -- gap-TOLERANT (bootstrap): a guarded/range/record arm cannot be lowered.  With
 -- recording OFF this `gapU` panics (the four byte gates' behaviour, unchanged).

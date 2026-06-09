@@ -181,3 +181,64 @@ S-expressions, so a RAW byte-diff is correct (no float normalization — unlike
 - `test/bootstrap_parse.sh` → **26/26**. `test/bootstrap_lex.sh` stays **19/19**.
 - All `diff_selfhost_*` gates byte-identical (the four fixes are emit-only /
   runtime-helper; none touch a front-end-shared dump path).
+
+## B3 — native DESUGAR ✅ **DONE (26/26 byte-identical to the interpreter)**
+
+**Result: 26/26 `test/parse_fixtures/*.mdk` byte-match** the interpreter. The
+self-hosted DESUGAR stage (parse + desugar) natively compiled, end-to-end,
+producing the SAME canonical desugared-AST S-expression (`programToSexp`) as
+`medaka run selfhost/desugar_main.mdk <fixture>`.
+
+Desugar adds passes (`deriving`, record puns, container literals, list
+comprehensions, do-blocks, operator sections, string interp, `?`-questions) on
+top of the parser, so the native binary now includes `desugar.mdk`'s code — more
+emitter surface than B2. It surfaced **two real emitter bugs**, both clean fixes
+in `selfhost/llvm_emit.mdk`.
+
+**Harness:** `test/bootstrap_desugar.sh` (clone of `bootstrap_parse.sh`:
+ORACLE/entry = `selfhost/desugar_main.mdk`, FIXDIR = `test/parse_fixtures`, same
+generic driver, real `core.mdk`, libgc/clang block, `-Wl,-stack_size` flag, `()`
+Unit-auto-print convention). Both sides emit selfhost S-expressions → raw
+byte-diff.
+
+### Two emitter bugs fixed (both in `selfhost/llvm_emit.mdk`)
+1. **Constructor with arity>0 used FIRST-CLASS → built a malformed nullary cell.**
+   `map PVar vars` (deriving's `conPatVars`) passes the constructor `PVar`
+   (arity 1) UNAPPLIED to `map`. `emitApp` only allocates a ctor cell when the
+   ctor is SATURATED; a bare/partial ctor name reaches `emitVar`, which did
+   `emitCtorAlloc e x []` — a ZERO-FIELD `PVar` cell (an immediate tag), NOT a
+   callable closure. `List.map` then loaded a "code ptr" from that immediate and
+   `call`ed it → `SIGBUS`. Fix: `emitVar` now eta-wraps an arity>0 ctor into a
+   captureless static closure (`emitCtorEtaClosure` → `emitCtorEtaDefine`, mirror
+   of the known-fn `emitEtaClosure` but the forwarder body is `emitCtorAlloc` over
+   its `%argK` words). Arity-0 ctors stay the immediate `emitCtorAlloc e x []`
+   (already a complete value). Surfaced by every `deriving (Eq|Ord|Debug|Display)`
+   on a constructor that carries fields (`datatypes.mdk`, `decls_extra.mdk`).
+2. **Guarded clause falling through to a later, broader clause → `@mdk_oob`.**
+   `rewriteRecordPun recordNames (ESetLit name items) | <guard> = … ` followed by
+   a catch-all `rewriteRecordPun _ e = e`: when the guard fails, desugar lowers it
+   to `CApp (CVar "__fallthrough__") (CLit LUnit)`, which the interpreter treats as
+   "this clause didn't match → try the next clause" (`eval.mdk`'s VFallthrough →
+   `fallthroughToNone`). The emitter compiled `__fallthrough__` to `call
+   @mdk_oob()` (abort) and built ONE combined Maranget tree whose leaf bodies could
+   not branch to a sibling clause — so a Set/Map literal (`Set { … }` parses as
+   `ESetLit`, hitting the guarded clause; its guard `contains name recordNames`
+   fails because `Set` is not a record) aborted with "array index out of bounds".
+   Fix: `emitClauseTree` now emits the clauses as a CHAIN of single-clause decision
+   trees (`emitClauseChain`) sharing one result slot + end label; a module-level
+   `fallthroughLabelRef` holds the current next-clause block. A clause's pattern
+   miss (`CTFail`) OR a guard `__fallthrough__` branches to that label; the last
+   clause's label is the OUTER fallthrough (`""` → the historical `@mdk_oob` at
+   top level). `emitDecision` (a `match` in expression position) saves/nulls the
+   ref across its own tree, so a body-level match's non-exhaustive `CTFail` stays
+   a genuine abort rather than inheriting the enclosing clause's fallthrough. The
+   gates compare program OUTPUT (not IR text), so re-structuring multi-clause IR is
+   safe as long as semantics match — they do.
+
+### Validation
+- `test/bootstrap_desugar.sh` → **26/26**. `bootstrap_parse.sh` stays **26/26**,
+  `bootstrap_lex.sh` stays **19/19**.
+- All `diff_selfhost_*` gates byte-identical (both fixes are emit-only; none touch
+  a front-end-shared dump path). The clause-chaining change re-shapes the IR for
+  every multi-clause function, but every gate diffs against the interpreter and
+  passes.
