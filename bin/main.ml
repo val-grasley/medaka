@@ -43,6 +43,7 @@ Usage:
   medaka                    Start the REPL.
   medaka repl               Start the REPL.
   medaka run [--release] <file.mdk>   Type-check and run a program.
+  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang).
   medaka check [--json] <file.mdk>    Type-check without running.
   medaka test [file.mdk]    Run doctests + prop tests.
   medaka bench [file.mdk]   Run bench declarations.
@@ -347,6 +348,10 @@ let () =
        show_snippet source loc_opt;
        exit 1);
     exit 0
+  end;
+  if has_sub "build" then begin
+    let rest = Array.sub argv 2 (argc - 2) in
+    exit (Medaka_lib.Build_cmd.run rest)
   end;
   if has_sub "doc" then begin
     let filename =
