@@ -52,7 +52,7 @@ interpreter-perf levers are all resolved (`selfhost/PERF-NOTES.md`).
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
 code comments reference them. Phases left *partial* keep their original number
 (e.g. Phase 83/84, 101); genuinely new work gets the next free number (last used:
-146). At task triage, match the work against AGENTS.md's task-playbook table and
+149). At task triage, match the work against AGENTS.md's task-playbook table and
 load the matching skill before planning.
 
 ---
@@ -334,6 +334,48 @@ Current native-backend state + residual gaps: `selfhost/BOOTSTRAP.md`,
   contiguous"); adjacent multi-clause stays valid. Lands in resolve + diagnostics,
   not the typechecker — a missing diagnostic, not a unification change. Low blast
   radius; high debuggability win. Skill: **add-language-feature** (resolve-rooted).
+
+- **Phase 149 (proposed) — record rest-capture pattern + construction spread sugar.**
+  Surface sugar for the "transform some fields, keep the rest" idiom that recurs all
+  over the compiler passes (`annotateDecl`, `desugar`, etc.):
+  ```
+  annotateDecl DInterface { methods, ...rest } =
+    DInterface { methods = map annotateIfaceMethod methods, ...rest }
+  ```
+  desugars to today's record/variant update — `DInterface { rest | methods = ... }`.
+  **Scope decision (locked 2026-06-09): FULL rest semantics, NO row polymorphism.**
+  `rest` binds to the **whole scrutinee** at the *same nominal record type* (it still
+  carries the captured fields — harmless, the explicit field overrides it on the
+  construct side). So this is **same-nominal-type only**: you cannot spread `rest`
+  into a *different* constructor, and `rest.field` for a captured field returns the
+  *old* value. The cross-type version (a standalone "type-minus-fields" value) needs
+  row/structural records — **explicitly out of scope** (stays on the PLAN-ARCHIVE §8
+  / "Won't-do" row-polymorphism rejection).
+  - **Why it's cheap:** both halves land on existing nodes. Construction spread →
+    `EVariantUpdate` (named-field ctors, `ast.ml:160`/`eval.ml:1051`) or
+    `ERecordUpdate` (bare record types). Pattern rest-bind → bind the matched
+    `VCon`/`VRecord` value (`eval.ml:431-466`). No new typecheck/eval *machinery*,
+    no new runtime value shape.
+  - **The work (thread through the pipeline + selfhost mirror):**
+    1. **Parser** (`parser.mly:538`, `record_pat_rest`): the rest tail is currently
+       an anonymous `ELLIPSIS` (= "ignore remaining fields"); extend to
+       `ELLIPSIS IDENT` to carry a **bind name**. Add `...IDENT` spread to the
+       record-construction field list (`parser.mly:805-830`).
+    2. **AST** (`ast.ml:39`, `PRec`): the rest flag is `bool` → widen to
+       `ident option` so the bound name survives to eval. New construction-spread
+       carries the rest source expr (reuse / lower to the update nodes in desugar).
+    3. **Typecheck** (`typecheck.ml:1302`): on a named rest, add `rest : <nominal
+       record type>` to the env. Confirm `has_rest=true` already relaxes the
+       all-declared-fields-must-appear check (it must, for partial mention — verify;
+       may be part of the work).
+    4. **Eval** (`eval.ml:431-466`): bind the rest name to the matched record value.
+       Construction spread is pure desugar → existing update eval, so no new arm.
+    5. **Exhaust** (`exhaust.ml:65`): unchanged — rest fields already map to
+       wildcards.
+    6. **Selfhost mirror** (`selfhost/{parser,desugar,typecheck,eval}.mdk`) +
+       `SYNTAX.md` entry + `test/parse_fixtures` / round-trip / eval fixtures.
+  - Estimate: ~a day (Full scope). Skill: **add-language-feature** (cross-cutting —
+    new pattern + construction syntax through parser/ast/typecheck/eval + selfhost).
 
 - ~~**Phase 83 / 84 #5 — recursive/nested instance dictionaries**~~ **DONE
   (reference + selfhost mirror, 2026-06-05).** Structured/recursive runtime dicts
