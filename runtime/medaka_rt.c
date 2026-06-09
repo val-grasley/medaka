@@ -144,6 +144,22 @@ long long mdk_string_eq(long long a, long long b) {
   return 3;
 }
 
+/* Polymorphic `==`/`!=` for operands whose static LTy the emitter could not
+ * recover (both default to LTInt — e.g. two String-typed function parameters
+ * whose only use is `n == name`).  Distinguishes at runtime exactly like
+ * mdk_append: a boxed String cell (even pointer, header == MDK_STR_TAG) routes to
+ * byte-content equality; anything else (tagged immediates — Int/Bool/Char/Char,
+ * nullary-ctor words, or unequal-kind operands) compares by value word.  Returns a
+ * TAGGED Bool (3 = True, 1 = False), matching mdk_string_eq.  Two boxed cells of
+ * DIFFERENT kinds (one String, one not) fall to the word compare and so are
+ * unequal, which is correct for the bootstrap's homogeneous `==` sites. */
+long long mdk_value_eq(long long a, long long b) {
+  int a_str = ((a & 1) == 0) && ((const long long *)a)[0] == MDK_STR_TAG;
+  int b_str = ((b & 1) == 0) && ((const long long *)b)[0] == MDK_STR_TAG;
+  if (a_str && b_str) return mdk_string_eq(a, b);
+  return a == b ? 3 : 1;
+}
+
 /* Print a String RAW (no quoting).  Matches Eval.pp_value (VString s) = s, then
  * the oracle's trailing newline (eval_probe / selfhost ppValue). */
 void mdk_print_str(long long w) {

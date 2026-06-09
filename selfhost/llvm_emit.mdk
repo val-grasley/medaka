@@ -752,7 +752,24 @@ lookupVarG e env x = match lookupAssoc x env
       let r = freshReg e
       let _ = emit e ("  " ++ r ++ " = load i64, ptr @mdk_g_" ++ x)
       (r, ty)
-    Some (False, _) => gapE ("forward/mutual reference to top-level binding '" ++ x ++ "' before its initialisation (E1b: globals init in source order)")
+    -- A not-yet-initialised global is still loaded from its `@mdk_g_<name>` cell:
+    -- the `load` resolves at the instruction's RUNTIME, not emit time.  Two cases
+    -- reach here, both correct as a deferred load.  (1) A reference INSIDE A LAMBDA
+    -- body emitted during an enclosing global's init (`stmtsCons`'s continuation
+    -- closes over `stmtsLoop`, defined later): the closure runs only at parse time,
+    -- long after every global is initialised, so the load sees the real value — a
+    -- gap-`0` here would bake a permanent null into the closure and crash.  (2) An
+    -- eager same-init forward ref: orderedValBinds topologically sorts eager
+    -- dependencies, so a surviving eager forward ref is a genuine value cycle (none
+    -- arise in practice) and the cell still holds 0 — but that is exactly the
+    -- interpreter's recursive-value semantics, not an emit-time error.  Either way
+    -- the cell exists (declared `@mdk_g_<name> = global i64 0` up front), so emit
+    -- the load.  LTy is unknown until init computes it; default LTInt (the loaded
+    -- word is a uniform i64 — a downstream container op re-derives its shape).
+    Some (False, _) =>
+      let r = freshReg e
+      let _ = emit e ("  " ++ r ++ " = load i64, ptr @mdk_g_" ++ x)
+      (r, LTInt)
     None => gapE ("unbound variable '" ++ x ++ "' (not a local, ctor, or known fn)")
 
 emitLit : Emit -> Lit -> <Mut> (String, LTy)
@@ -1419,12 +1436,40 @@ emitCmp e env op l r =
       let c = freshReg e
       let _ = emit e ("  " ++ c ++ " = fcmp " ++ floatPred op ++ " double " ++ ld ++ ", " ++ rd)
       boolFromI1 e c
+    -- Unknown static type (LTInt default — could be Int/Bool/Char OR a boxed
+    -- String the emitter couldn't recover, e.g. two String params used only in
+    -- `n == name`): an integer `icmp eq` is pointer-identity for a boxed String
+    -- cell and so WRONG.  Route equality through @mdk_value_eq, which discriminates
+    -- at run time (String cell → byte compare; immediate → word compare), mirroring
+    -- mdk_append's runtime String/List discrimination.  Ordering ops (`<`/`>`/…)
+    -- are never string-valued at an unknown site in the bootstrap, so they keep the
+    -- integer compare.  A statically-typed numeric operand never reaches here.
+    LTInt if isEqOp op => emitValueEq e op lv rv
     _ =>
       let li = untagInt e lv
       let ri = untagInt e rv
       let c = freshReg e
       let _ = emit e ("  " ++ c ++ " = icmp " ++ intPred op ++ " i64 " ++ li ++ ", " ++ ri)
       boolFromI1 e c
+
+-- equality of two operands of statically-unknown kind via the runtime
+-- discriminator (note at emitCmp).  `==` returns @mdk_value_eq's tagged Bool
+-- directly; `!=` flips 3<->1 with `xor … 2` (same shape as emitStrCmp).
+emitValueEq : Emit -> String -> String -> String -> <Mut> (String, LTy)
+emitValueEq e op lv rv
+  | op == "==" =
+      let r = freshReg e
+      let _ = emit e ("  " ++ r ++ " = call i64 @mdk_value_eq(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+      (r, LTBool)
+  | otherwise =
+      let r = freshReg e
+      let _ = emit e ("  " ++ r ++ " = call i64 @mdk_value_eq(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+      let n = freshReg e
+      let _ = emit e ("  " ++ n ++ " = xor i64 " ++ r ++ ", 2")
+      (n, LTBool)
+
+isEqOp : String -> Bool
+isEqOp op = op == "==" || op == "!="
 
 isStrLTy : LTy -> Bool
 isStrLTy LTStr = True
@@ -1681,9 +1726,7 @@ emitApp e env app =
         emitCtorAlloc e fname argOps
       else if isKnownFn e fname && hasArgs args then
         let argOps = emitArgs e env args
-        let r = freshReg e
-        let _ = emit e ("  " ++ r ++ " = call i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
-        (r, fnRetTy e fname)
+        emitKnownFnSat e ("mdk_" ++ fname) argOps (fnArity e fname) (fnRetTy e fname)
       else if isImplMethod e fname && hasArgs args then
         let argOps = emitArgs e env args
         emitMethodArgDispatch e fname argOps
@@ -1804,7 +1847,7 @@ emitMethod e env name route implRoutes methRoutes argOps =
           -- downstream `++`/`::` on it dispatches list/string append.  Otherwise
           -- (scalar/element result) keep the LTInt default.
           let resTy = if methodReturnsSelf (implEntryIface entry) name then tagToLTy tag else LTInt
-          emitImplCall e (implFnName tag name) (dictWords ++ argOps) resTy
+          emitImplCallSat e (implFnName tag name) (dictWords ++ argOps) (methodArityOf name + lengthS dictWords) resTy
         None => emitDefaultRKey e name tag argOps
     RDict d => emitMethodDispatch e env name d argOps
     RDictFwd d => emitMethodDispatch e env name d argOps
@@ -1836,6 +1879,75 @@ emitImplCall e fname argOps resTy =
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = call i64 @" ++ fname ++ "(" ++ argDecls argOps ++ ")")
   (r, resTy)
+
+-- a call to a statically-resolved impl fn (RKey / single arg-tag group) that
+-- may be UNDER-APPLIED.  A point-free prelude binding (`length = fold f 0`)
+-- lowers to the impl method applied to FEWER args than the impl fn's full arity:
+-- a saturated `emitImplCall` would emit a call missing its trailing parameter(s),
+-- which on the native backend reads a garbage register for the missing arg and
+-- crashes.  When `lengthS argOps < arity`, build a PARTIAL-APPLICATION closure
+-- capturing the supplied words; the residual closure completes the call when the
+-- remaining args arrive at an indirect call site.  Saturated (`==`) ⇒ the plain
+-- direct call, unchanged.  (Over-application can't arise at an impl call head —
+-- the method's declared arity is its full arity.)
+emitImplCallSat : Emit -> String -> List String -> Int -> LTy -> <Mut> (String, LTy)
+emitImplCallSat e fname argOps arity resTy
+  | lengthS argOps < arity = emitPapClosure e fname argOps arity
+  | otherwise = emitImplCall e fname argOps resTy
+
+-- a call to a known top-level function (`@<sym>`, sym already mdk-prefixed) that
+-- may be UNDER-APPLIED.  A partial application of a named function passed to a
+-- higher-order combinator (`map (desugarDottedField e) fields` — 1 of 2 args)
+-- lowers to a residual closure capturing the supplied args, not a truncated
+-- direct call (which would read garbage for the missing trailing param).
+-- Saturated (`==`) ⇒ the plain direct call, unchanged.  fnArity returns 0 for a
+-- fn with no recorded signature; then `lengthS argOps >= 0` is always saturated,
+-- preserving the old direct-call behaviour for such (signature-less) callees.
+emitKnownFnSat : Emit -> String -> List String -> Int -> LTy -> <Mut> (String, LTy)
+emitKnownFnSat e sym argOps arity resTy
+  | arity > 0 && lengthS argOps < arity = emitPapClosure e sym argOps arity
+  | otherwise = emitImplCall e sym argOps resTy
+
+-- build a partial-application closure over `@fname` with `argOps` already-supplied
+-- arg words captured.  Emits a forwarder `@mdk_pap_..(%clos, %arg0..%arg(rem-1))`
+-- that loads the captured words from the closure cell (fields 1..k, code_ptr is
+-- field 0) and tail-calls `@fname(captured.., remaining..)`; allocates the closure
+-- capturing `argOps`.  The residual is a closure VALUE (LTClosure) consumed at an
+-- indirect call site — the same cell shape emitClosureAlloc / emitIndirect use.
+emitPapClosure : Emit -> String -> List String -> Int -> <Mut> (String, LTy)
+emitPapClosure e fname argOps arity =
+  let supplied = lengthS argOps
+  let remaining = arity - supplied
+  let papName = "mdk_pap_" ++ fname ++ "_" ++ intToString (freshId e)
+  let _ = emitPapDefine e papName fname supplied remaining
+  emitClosureAlloc e papName argOps
+
+-- emit the PAP forwarder define into the side buffer (same swap discipline as
+-- emitEtaDefine).  `supplied` captured words are loaded from %clos fields 1..k;
+-- `remaining` fresh %argK params follow; the body calls @fname with the captured
+-- words first, then the fresh params, in original order, and returns the result.
+emitPapDefine : Emit -> String -> String -> Int -> Int -> <Mut> Unit
+emitPapDefine e papName fname supplied remaining =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ papName ++ "(" ++ etaParamDecls remaining ++ ") {")
+  let _ = emit e "entry:"
+  let capOps = loadPapCaptures e supplied 0
+  let allArgs = capOps ++ argNames remaining 0
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @" ++ fname ++ "(" ++ argDecls allArgs ++ ")")
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  set_ref (bufRef e) saved
+
+-- load the `k` captured argument words from %clos fields 1..k (code_ptr is 0).
+loadPapCaptures : Emit -> Int -> Int -> <Mut> List String
+loadPapCaptures e k i
+  | i >= k = []
+  | otherwise = loadField e "%clos" (i + 1) :: loadPapCaptures e k (i + 1)
 
 -- the interface name a resolved impl entry belongs to (for the returns-self
 -- lookup); "" for a default entry (it carries no tag/iface — never RKey-reached).
@@ -1898,7 +2010,7 @@ emitMethodArgDispatch e method argOps =
   let groups = implGroupsForMethod e method
   match groups
     [] => emitDefaultArgTag e method argOps
-    [g] => emitImplCall e (implFnName (groupTag g) method) argOps LTInt
+    [g] => emitImplCallSat e (implFnName (groupTag g) method) argOps (methodArityOf method) LTInt
     _ => emitArgTagDispatch e method groups argOps
 
 -- E19: an arg-tag site for a method with NO tagged impl groups — an interface
@@ -2345,8 +2457,14 @@ headPat [] = PWild
 -- first-seen group order and the source clause order within each (the Maranget
 -- priority).  CImplDefault entries (interface defaults) are skipped — they are
 -- the arg-tag fallback, never a lifted static-dispatch target.
-groupImpls : List CImplEntry -> List ImplGroup
-groupImpls entries = map (gatherGroup entries) (distinctImplKeys entries [])
+groupImpls : List CImplEntry -> <Mut> List ImplGroup
+groupImpls entries = mapMut (gatherGroup entries) (distinctImplKeys entries [])
+
+-- map a <Mut> function over a list (map is pure; gatherGroup now reads the method
+-- arity table to eta-expand point-free impls, so the walk must be <Mut>).
+mapMut : (a -> <Mut> b) -> List a -> <Mut> List b
+mapMut _ [] = []
+mapMut f (x::rest) = f x :: mapMut f rest
 
 -- the (method, tag) keys of tagged entries, in first-seen order.
 distinctImplKeys : List CImplEntry -> List (String, String) -> List (String, String)
@@ -2361,12 +2479,24 @@ keySeen _ _ [] = False
 keySeen m t ((m2, t2)::rest) = if m == m2 && t == t2 then True else keySeen m t rest
 
 -- build the group for one (method, tag) key: positions + arity from the first
--- matching entry, clauses (pats, body) from all matching entries in order.
-gatherGroup : List CImplEntry -> (String, String) -> ImplGroup
+-- matching entry, clauses (pats, body) from all matching entries in order.  A
+-- POINT-FREE impl (`length = fold f 0` — clauseArity < the method's declared
+-- arity) is ETA-EXPANDED to the method's full arity, mirroring emitDefaultDefine:
+-- the lifted `@mdk_impl_<tag>_<method>` then takes every call-site arg, so the
+-- RKey/arg-tag call sites (which use methodArityOf) and the define agree.  A
+-- multi-clause or already-full-arity impl is unchanged (etaExpand is a no-op when
+-- have >= arity).
+gatherGroup : List CImplEntry -> (String, String) -> <Mut> ImplGroup
 gatherGroup entries (method, tag) =
-  let cls = gatherClauses method tag entries
+  let cls0 = gatherClauses method tag entries
   let positions = groupPositions method tag entries
-  ImplGroup method tag positions (clauseArity cls) cls
+  let arity = maxInt (clauseArity cls0) (methodArityOf method)
+  let cls = map (etaExpandClause arity) cls0
+  ImplGroup method tag positions arity cls
+
+-- eta-expand one impl clause's (pats, body) to `arity` (no-op when already there).
+etaExpandClause : Int -> (List Pat, CExpr) -> (List Pat, CExpr)
+etaExpandClause arity (pats, body) = etaExpand pats body arity (lengthS pats)
 
 gatherClauses : String -> String -> List CImplEntry -> List (List Pat, CExpr)
 gatherClauses _ _ [] = []
@@ -3418,6 +3548,134 @@ valBinds [] = []
 valBinds ((CBind "main" cs)::rest) = valBinds rest
 valBinds (b::rest) = if isFnBind b then valBinds rest else b :: valBinds rest
 
+-- value bindings ORDERED so a binding precedes the ones that reference it (E1b).
+-- The init prologue computes each rhs once, eagerly, so a binding whose rhs reads
+-- ANOTHER value global (`prog = andThen skip …`, `skip` defined later) must run
+-- after that dependency or it captures the still-zero global cell — a null that
+-- crashes at use.  Source order is NOT dependency order in general (the self-host
+-- parser binds combinator values forward of their producers), so topologically
+-- sort by intra-value-global references.  A genuine VALUE cycle (mutual recursion
+-- through nullary globals — none arise in practice) keeps its members in source
+-- order, the pre-existing behaviour (still caught by the forward-ref gap).
+orderedValBinds : List CBind -> List CBind
+orderedValBinds binds =
+  let names = map bindName binds
+  let (_, ordered) = topoValGo binds names binds [] []
+  ordered
+
+-- DFS post-order: visit each binding's value-global dependencies first, appending
+-- the binding after them.  `visiting` guards against cycles (a back-edge is
+-- skipped — its target stays where source order placed it).  Returns the grown
+-- (done-names, ordered-binds) accumulators.
+topoValGo : List CBind -> List String -> List CBind -> List String -> List CBind -> (List String, List CBind)
+topoValGo _ _ [] done acc = (done, acc)
+topoValGo all names (b::rest) done acc =
+  let (done2, acc2) = topoValVisit all names b done acc []
+  topoValGo all names rest done2 acc2
+
+topoValVisit : List CBind -> List String -> CBind -> List String -> List CBind -> List String -> (List String, List CBind)
+topoValVisit all names b done acc visiting
+  | containsStr (bindName b) done = (done, acc)
+  | containsStr (bindName b) visiting = (done, acc)
+  | otherwise =
+      let deps = intersectStr (dedupS (bindFreeVars b)) names
+      let (done2, acc2) = topoValVisitDeps all names deps done acc (bindName b :: visiting)
+      (bindName b :: done2, acc2 ++ [b])
+
+topoValVisitDeps : List CBind -> List String -> List String -> List String -> List CBind -> List String -> (List String, List CBind)
+topoValVisitDeps _ _ [] done acc _ = (done, acc)
+topoValVisitDeps all names (d::rest) done acc visiting =
+  match findBind d all
+    Some db =>
+      let (done2, acc2) = topoValVisit all names db done acc visiting
+      topoValVisitDeps all names rest done2 acc2 visiting
+    None => topoValVisitDeps all names rest done acc visiting
+
+-- the value-global names a binding's rhs references EAGERLY (at init time) — i.e.
+-- references NOT inside a lambda body.  A `CLam` captures a global by reference
+-- and resolves it only when the closure is later CALLED (at parse time, long after
+-- all globals are initialised), so a name appearing only inside a lambda is NOT an
+-- init-order dependency.  Counting it would forge a false cycle between two
+-- combinator globals that reference each other solely through their closures
+-- (`stmtsLoop = orElse stmtsCons (pure [])` ← eager; `stmtsCons = do … stmtsLoop`
+-- ← the back-reference is inside stmtsCons's `do` closure, lazy), and the
+-- cycle-fallback would then emit them in source order, leaving the eager ref null.
+bindFreeVars : CBind -> List String
+bindFreeVars (CBind _ [CClause [] body]) = eagerVars [] body
+bindFreeVars _ = []
+
+-- free CVar names evaluated EAGERLY in `body`: like freeVars, but a `CLam` body is
+-- NOT descended (its references are deferred to call time).  Bound names (`b`)
+-- accumulate so a let/match-bound local is not mistaken for a global.
+eagerVars : List String -> CExpr -> List String
+eagerVars _ (CLam _ _) = []
+eagerVars b (CVar x _) = if containsStr x b then [] else [x]
+eagerVars _ (CLit _) = []
+eagerVars b (CApp f a) = eagerVars b f ++ eagerVars b a
+eagerVars b (CLet recF pat e1 e2) =
+  let b2 = patVars pat ++ b
+  let fe1 = if recF then eagerVars b2 e1 else eagerVars b e1
+  fe1 ++ eagerVars b2 e2
+eagerVars b (CLetGroup binds body) =
+  let b2 = bindNames binds ++ b
+  eagerVarsBinds b2 binds ++ eagerVars b2 body
+eagerVars b (CBlock stmts) = eagerVarsStmts b stmts
+eagerVars b (CIf c t f) = eagerVars b c ++ eagerVars b t ++ eagerVars b f
+eagerVars b (CBinPrim _ l r) = eagerVars b l ++ eagerVars b r
+eagerVars b (CUnOp _ x) = eagerVars b x
+eagerVars b (CMatch scrut arms) = eagerVars b scrut ++ eagerVarsArms b arms
+eagerVars b (CDecision scrut arms _) = eagerVars b scrut ++ eagerVarsArms b arms
+eagerVars b (CTuple es) = eagerVarsList b es
+eagerVars b (CList es) = eagerVarsList b es
+eagerVars b (CRangeList lo hi _) = eagerVars b lo ++ eagerVars b hi
+eagerVars b (CRecord _ fields) = eagerVarsFields b fields
+eagerVars b (CFieldAccess ex _) = eagerVars b ex
+eagerVars b (CRecordUpdate base updates) = eagerVars b base ++ eagerVarsFields b updates
+eagerVars b (CVariantUpdate _ base updates) = eagerVars b base ++ eagerVarsFields b updates
+eagerVars b (CArray es) = eagerVarsList b es
+eagerVars b (CRangeArray lo hi _) = eagerVars b lo ++ eagerVars b hi
+eagerVars b (CIndex a i) = eagerVars b a ++ eagerVars b i
+eagerVars b (CSlice a lo hi _) = eagerVars b a ++ eagerVars b lo ++ eagerVars b hi
+eagerVars _ _ = []
+
+eagerVarsList : List String -> List CExpr -> List String
+eagerVarsList _ [] = []
+eagerVarsList b (e::rest) = eagerVars b e ++ eagerVarsList b rest
+
+eagerVarsArms : List String -> List CArm -> List String
+eagerVarsArms _ [] = []
+eagerVarsArms b ((CArm pat _ body)::rest) =
+  eagerVars (patVars pat ++ b) body ++ eagerVarsArms b rest
+
+eagerVarsFields : List String -> List CField -> List String
+eagerVarsFields _ [] = []
+eagerVarsFields b ((CField _ ex)::rest) = eagerVars b ex ++ eagerVarsFields b rest
+
+eagerVarsStmts : List String -> List CStmt -> List String
+eagerVarsStmts _ [] = []
+eagerVarsStmts b ((CSExpr ex)::rest) = eagerVars b ex ++ eagerVarsStmts b rest
+eagerVarsStmts b ((CSLet _ pat ex)::rest) =
+  eagerVars b ex ++ eagerVarsStmts (patVars pat ++ b) rest
+eagerVarsStmts b (_::rest) = eagerVarsStmts b rest
+
+eagerVarsBinds : List String -> List CBind -> List String
+eagerVarsBinds _ [] = []
+eagerVarsBinds b ((CBind _ [CClause [] rhs])::rest) =
+  eagerVars b rhs ++ eagerVarsBinds b rest
+eagerVarsBinds b (_::rest) = eagerVarsBinds b rest
+
+findBind : String -> List CBind -> Option CBind
+findBind _ [] = None
+findBind name (b::rest) = if bindName b == name then Some b else findBind name rest
+
+-- the elements of `xs` that also appear in `ys` (membership, order from xs).
+intersectStr : List String -> List String -> List String
+intersectStr [] _ = []
+intersectStr (x::rest) ys
+  | containsStr x ys = x :: intersectStr rest ys
+  | otherwise = intersectStr rest ys
+
+
 -- the initial globals registry (slice E1b): every value binding's name registered
 -- UNinitialised (`False`) with a placeholder LTy.  The `@main` init prologue flips
 -- each to `(True, <its rhs LTy>)` in source order as it computes the rhs, so a
@@ -4255,7 +4513,7 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = emit e "define i32 @main(i32 %argc, ptr %argv) {"
   let _ = emit e "entry:"
   let _ = emit e "  call void @mdk_set_args(i32 %argc, ptr %argv)"
-  let _ = emitTopGlobals e (valBinds groups)
+  let _ = emitTopGlobals e (orderedValBinds (valBinds groups))
   let (mv, mty) = emitExpr e [] (mainBody groups)
   let _ = emitPrint e mv mty
   let _ = emit e "  ret i32 0"
@@ -4286,6 +4544,7 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_string_concat(i64)"
   let _ = emit e "declare i64 @mdk_string_append(i64, i64)"
   let _ = emit e "declare i64 @mdk_string_eq(i64, i64)"
+  let _ = emit e "declare i64 @mdk_value_eq(i64, i64)"
   let _ = emit e "declare i64 @mdk_list_append(i64, i64)"
   let _ = emit e "declare i64 @mdk_append(i64, i64)"
   let _ = emit e "declare void @mdk_putstr(i64)"
