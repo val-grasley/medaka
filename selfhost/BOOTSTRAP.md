@@ -494,3 +494,68 @@ content is compared byte-for-byte.
   golden corpus over-applies a known fn or redefines a prelude pub name through
   the flat-emit `private_mangle` path).
 
+---
+
+## C1 — native emitter reproduces IR ✅ **DONE (6/6 byte-identical to the interpreter)**
+
+The seven `B*` slices natively compiled each PIPELINE STAGE and proved each
+byte-matches the tree-walker. C1 is the first step of self-hosting the COMPILER
+BACK-END: natively compile the EMITTER ITSELF —
+`selfhost/llvm_emit_modules_main.mdk`'s whole module graph (`llvm_emit.mdk` +
+`core_ir_lower.mdk` + the front end + prelude) — and prove the resulting native
+`emit` binary turns each fixture into the SAME LLVM IR the interpreted emitter
+does. This is the largest, most string-heavy emit target yet (the `.ll` is
+~10 MB) and the FIRST time the emitter's OWN code runs natively, so it exercises
+emitter correctness the earlier slices never did.
+
+Harness: `test/selfcompile_emit.sh`. Builds the native `emit` via the gap-tolerant
+bootstrap driver (`llvm_bootstrap_lex_main.mdk`, real `core.mdk` at BUILD time so
+its dead-code gaps become placeholders; the native binary's own runtime
+`emitProgram` has gap-recording OFF). Then for each of the 6
+`test/llvm_fixtures_modules/<dir>` (same corpus + EMPTY-core invocation as
+`diff_selfhost_llvm_modules.sh`) it diffs `ir_native` vs `ir_interp`
+byte-for-byte. Native auto-prints `main`'s `Unit` as a trailing `()\n`, appended
+to the interpreted IR before the diff (same convention as the `bootstrap_*.sh`).
+
+### One emitter bug fixed (in `selfhost/llvm_emit.mdk`)
+
+**Guarded match arms in the emitter's OWN source → blanked bodies in the native
+emitter.** `llvm_emit.mdk` was the only selfhost stage that still contained
+*guarded* `match` arms (the other six stages were written guard-free precisely
+because the emitter cannot lower a guard — `emitTree`'s `CTGuard` arm is a
+documented gap). When the gap-tolerant driver self-compiled the emitter, those
+two guarded arms each became a `store i64 0` placeholder (the recording-ON gap
+shape), so in the native binary the affected functions silently returned `0`/Unit:
+
+- `emitGroupBody`'s `[(pats, body)] if allPVar pats => …` — every arity-≥1 impl
+  method (`describe Dog = 1`, etc.) is a single-clause group, so the native
+  emitter matched the `[_]` list shape, hit the gapped guard, and emitted an
+  EMPTY impl-method body (`define … { entry: }`) instead of the decision tree.
+  This broke 4 of the 6 fixtures (adt_dispatch, dict_constr_module,
+  impl_body_prim_dispatch, prim_arg_dispatch). The two passing fixtures
+  (data_ctor — no impls; return_dispatch — arity-0 impls via the literal-`0`
+  clause, no guard) were exactly the ones that never reach the guarded arm.
+- `emitCmp`'s `LTInt if isEqOp op => emitValueEq …` — the same gap shape for the
+  unknown-static-type equality route.
+
+Fix (emit-only, IR byte-identical to the guarded form): rewrite both guarded
+arms as `if`-EXPRESSIONS. `emitGroupBody` matches `[(pats, body)] =>` then
+branches on `if allPVar pats then … else emitClauseTree …`; `emitCmp` matches
+`LTInt =>` then `if isEqOp op then emitValueEq … else emitIntCmp …` (the shared
+integer-compare path factored into a new `emitIntCmp`). This is the established
+self-compilability convention — the same reason the other stages carry no
+guards — not a semantics change: the interpreted emitter produces identical IR
+(`diff_selfhost_llvm_modules.sh` stays 6/6).
+
+### Validation
+- `test/selfcompile_emit.sh` → **6/6** byte-identical (adt_dispatch, data_ctor,
+  dict_constr_module, impl_body_prim_dispatch, prim_arg_dispatch,
+  return_dispatch).
+- All seven bootstraps stay green: `bootstrap_lex.sh` **19/19**,
+  `bootstrap_parse.sh` **26/26**, `bootstrap_desugar.sh` **26/26**,
+  `bootstrap_resolve.sh` **14/14**, `bootstrap_mark.sh` **26/26**,
+  `bootstrap_typecheck.sh` **10/10**, `bootstrap_eval.sh` **20/20**.
+- All `diff_selfhost_*` gates byte-identical (the guard→`if` rewrites are
+  semantics-preserving — the interpreted emitter's IR is unchanged).
+
+

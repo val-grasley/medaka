@@ -1494,13 +1494,24 @@ emitCmp e env op l r =
     -- mdk_append's runtime String/List discrimination.  Ordering ops (`<`/`>`/…)
     -- are never string-valued at an unknown site in the bootstrap, so they keep the
     -- integer compare.  A statically-typed numeric operand never reaches here.
-    LTInt if isEqOp op => emitValueEq e op lv rv
-    _ =>
-      let li = untagInt e lv
-      let ri = untagInt e rv
-      let c = freshReg e
-      let _ = emit e ("  " ++ c ++ " = icmp " ++ intPred op ++ " i64 " ++ li ++ ", " ++ ri)
-      boolFromI1 e c
+    --
+    -- An `if`-EXPRESSION (not a guarded `LTInt if isEqOp op` arm) keeps this
+    -- function self-compilable: the gap-tolerant bootstrap emitter cannot lower a
+    -- guarded match arm.  IR is byte-identical to the guarded form.
+    LTInt =>
+      if isEqOp op then emitValueEq e op lv rv
+      else emitIntCmp e op lv rv
+    _ => emitIntCmp e op lv rv
+
+-- the integer `icmp` compare path shared by the LTInt-non-eq and default arms of
+-- emitCmp (factored out so neither needs a guarded match arm).
+emitIntCmp : Emit -> String -> String -> String -> <Mut> (String, LTy)
+emitIntCmp e op lv rv =
+  let li = untagInt e lv
+  let ri = untagInt e rv
+  let c = freshReg e
+  let _ = emit e ("  " ++ c ++ " = icmp " ++ intPred op ++ " i64 " ++ li ++ ", " ++ ri)
+  boolFromI1 e c
 
 -- equality of two operands of statically-unknown kind via the runtime
 -- discriminator (note at emitCmp).  `==` returns @mdk_value_eq's tagged Bool
@@ -2468,12 +2479,22 @@ emitGroupBody e fname _ _ 0 clauses = match clauses
 -- operands inherit the correct LTy (LTStr/LTCon) from the impl head tag.
 -- The decision-tree path (emitClauseTree) loses this type info through the
 -- tuple-scrutinee indirection → paramUseTy falls back to LTInt → ++ gaps.
+--
+-- NOTE: this dispatch is written with `if`-EXPRESSIONS (not a guarded match arm)
+-- so the emitter itself is self-compilable — the gap-tolerant bootstrap driver
+-- cannot lower a guarded match arm (it inserts a `store 0` placeholder, see the
+-- CTGuard arm of emitTree), which would silently blank this body in the native
+-- emitter.  The IR produced is byte-identical to the guarded form; only the
+-- source shape changes.  (The other selfhost stages contain NO guarded matches
+-- for the same reason.)
 emitGroupBody e fname tag positions arity clauses =
   match clauses
-    [(pats, body)] if allPVar pats =>
-      let tyList = patPosTys tag positions (listLen pats) 0
-      let env = paramEnvByPos pats tyList 0
-      emitFnBody e env fname body
+    [(pats, body)] =>
+      if allPVar pats then
+        let tyList = patPosTys tag positions (listLen pats) 0
+        let env = paramEnvByPos pats tyList 0
+        emitFnBody e env fname body
+      else emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses
     _ =>
       emitClauseTree e (implParamEnvByPos tag positions arity 0) arity clauses
 
