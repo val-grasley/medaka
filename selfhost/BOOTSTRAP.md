@@ -110,3 +110,74 @@ dedent → `triple_str.mdk` token 10 emits the raw un-dedented content. None of
 is a pre-existing emitter bug. **Fix (separate slice, out of B1 mangling scope):**
 add an `LTStr` arm to `emitCmp` that calls `@mdk_string_eq` (returns tagged Bool
 `3`) and branches on `icmp eq i64 r, 3`, exactly as the pattern path already does.
+
+## B2 — native PARSER ✅ **DONE (26/26 byte-identical to the interpreter)**
+
+**Result: 26/26 `test/parse_fixtures/*.mdk` byte-match** the interpreter. The
+self-hosted PARSER (a monadic combinator parser over the lexer's token stream)
+natively compiled, end-to-end, producing the SAME canonical AST S-expression
+(`programToSexp`) as `medaka run selfhost/parse_main.mdk <fixture>`.
+
+The parser exercises far more of the compiler than the lexer — the `Parser`
+monad's `Mappable`/`Applicative`/`Thenable` impls, the precedence ladder, deep
+mutual recursion among nullary combinator globals, records, ranges — so it
+surfaced **four real emitter bugs**, all clean fixes in `selfhost/llvm_emit.mdk`
+(plus one runtime helper). Each helps later slices.
+
+**Harness:** `test/bootstrap_parse.sh` (clone of `bootstrap_lex.sh`: real
+`core.mdk`, generic bootstrap driver, libgc/clang block, `()` Unit-auto-print
+convention; FIXDIR = `test/parse_fixtures`). Both sides emit selfhost
+S-expressions, so a RAW byte-diff is correct (no float normalization — unlike
+`diff_selfhost_parse.sh` which diffs selfhost-vs-OCaml).
+**Emit driver:** reuses the GENERIC `selfhost/llvm_bootstrap_lex_main.mdk`
+(takes the entry as an argument — not lexer-specific despite the name).
+
+### Four emitter bugs fixed (all in `selfhost/llvm_emit.mdk`)
+1. **Under-applied impl method → truncated direct call.** A point-free prelude
+   binding (`length = fold f 0`) lowers the impl method applied to FEWER args than
+   the impl fn's arity; `emitImplCall` emitted a call MISSING its trailing
+   param(s), reading a garbage register → crash. Fix: `emitImplCallSat` builds a
+   PARTIAL-APPLICATION closure (`emitPapClosure` + `emitPapDefine` — a forwarder
+   that loads captured args from the closure cell and tail-calls the impl) when
+   `argOps < arity`; saturated calls unchanged. Plus the inverse: tagged impl
+   groups are now ETA-EXPANDED to the method's full declared arity in
+   `gatherGroup` (mirroring `emitDefaultDefine`), so a point-free impl
+   (`@mdk_impl_List_length` was emitted NULLARY while call sites passed 1 arg)
+   takes every call-site arg.
+2. **Under-applied known function → truncated direct call.** Same class for plain
+   top-level fns passed partially applied to a combinator
+   (`map (desugarDottedField e) fields` — 1 of 2 args lowered as a 1-arg direct
+   call to a 2-arg fn). Fix: `emitKnownFnSat` routes the `isKnownFn` call site
+   through the same PAP machinery when under-applied.
+3. **Top-level value globals initialised in source order, not dependency order.**
+   The native `@main` init prologue computed each nullary value-binding rhs in
+   SOURCE order, but the parser binds combinator values FORWARD of their producers
+   (`prog = andThen skip …`, `skip` defined later) → `prog` captured the
+   still-zero `@mdk_g_skip` cell → null `runP` crash. Fix: `orderedValBinds`
+   topologically sorts value bindings by their EAGER inter-global references
+   (`eagerVars` — like `freeVars` but does NOT descend into `CLam` bodies, since a
+   reference inside a closure resolves at call time, not init time; counting it
+   forges false cycles between mutually-recursive combinators like
+   `stmtsLoop`/`stmtsCons`). A genuine value cycle keeps source order.
+   Companion fix: a not-yet-initialised global reference now emits a deferred
+   `load @mdk_g_<name>` (resolved at the instruction's RUNTIME) instead of a gap
+   `0` — critical for a reference INSIDE a lambda body emitted during an enclosing
+   global's init (the closure runs long after every global is initialised, so the
+   load sees the real value; a baked-in `0` was a permanent null).
+4. **String `==`/`!=` between statically-untyped operands compared as pointers.**
+   B1 fixed `emitCmp` to route `LTStr` operands through `@mdk_string_eq`, but two
+   String-typed PARAMETERS used only in `n == name` (coalesceClauses' clause
+   grouping) infer to `LTInt` (the emitter's body-based `inferSigs` can't resolve
+   two mutually-dependent params), so the integer `icmp eq` compared heap
+   pointers → distinct equal strings tested unequal → `where`-block `go` clauses
+   were not coalesced. Fix: a new runtime helper **`mdk_value_eq`** (in
+   `runtime/medaka_rt.c`, mirroring `mdk_append`'s runtime String/List
+   discrimination) distinguishes a boxed String cell (header `MDK_STR_TAG`) from an
+   immediate at run time; `emitCmp` routes the unknown-type (`LTInt`) `==`/`!=`
+   case through it. Ordering ops and statically-typed operands keep the integer
+   compare.
+
+### Validation
+- `test/bootstrap_parse.sh` → **26/26**. `test/bootstrap_lex.sh` stays **19/19**.
+- All `diff_selfhost_*` gates byte-identical (the four fixes are emit-only /
+  runtime-helper; none touch a front-end-shared dump path).
