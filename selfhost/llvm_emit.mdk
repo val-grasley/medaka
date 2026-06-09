@@ -404,7 +404,19 @@ gapStr reason = if gapRecordEnabled.value then let _ = noteGap reason in "0" els
 -- `LTUnit` (native extern catalog slice 3) is the Unit return type of IO-output
 -- externs (putStr/putStrLn/ePutStr/ePutStrLn).  Its operand word is never
 -- inspected — only auto-printed as "()" by emitPrint.
-data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr | LTUnit | LTChar
+-- `LTUnknown` tags the result of a `++` whose operand static LTy could NOT be
+-- recovered (the runtime-dispatched @mdk_append fallback below).  Its VALUE is
+-- always correct (mdk_append inspects the cell header: String → string append,
+-- list → list append), but its static kind is genuinely unknown — it may be a
+-- String (the dominant `scanTriple`/`splitLines` string-builder case) OR a list
+-- (e.g. typecheck.mdk's `freeEffvars a ++ rowFreeEffvars r ++ freeEffvars b`,
+-- `List Int`).  Crucially it must NOT be treated as a guaranteed String: a
+-- CHAINED `++` over an LTUnknown left operand re-routes through @mdk_append
+-- (runtime dispatch) rather than a DIRECT @mdk_string_append, which would read a
+-- list cell as a String header and segfault.  Everywhere a guaranteed String is
+-- treated specially (print, `==`/`!=`) LTUnknown follows LTStr, because those
+-- sites are only reached for the string-builder case in practice.
+data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr | LTUnit | LTChar | LTUnknown
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
 -- — prepend is O(1); reverseL'd once at the end restores program order), the
@@ -1401,24 +1413,33 @@ emitBin e env op l r
       LTCon =>
         let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_list_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
         (r2, LTCon)
+      -- LTUnknown: the left operand is itself a runtime-dispatched-append result
+      -- (a CHAINED `++`, e.g. `a ++ b ++ c`).  Its kind is genuinely unknown — it
+      -- may be a String OR a list (typecheck.mdk's `freeEffvars` builds `List Int`
+      -- this way).  Re-route through @mdk_append (NOT a direct @mdk_string_append,
+      -- which would crash on a list cell), keeping the result LTUnknown so any
+      -- further chaining stays runtime-dispatched.  Value-identical to the direct
+      -- path for the string case (mdk_append → mdk_string_append on a String
+      -- header), so every byte-diff gate is unaffected.
+      LTUnknown =>
+        let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        (r2, LTUnknown)
       -- E8 (#3 census-B): operand static LTy unknown (E2c/E7 couldn't recover
       -- it) — the ~328 scanTriple/splitLines string-builder residual.  Instead
       -- of gapE, dispatch at RUNTIME via @mdk_append, which inspects the left
       -- cell header (odd => Nil/list; even header==MDK_STR_TAG => string; else
       -- => Cons/list) and calls the right append helper.  The result VALUE is
-      -- always correct.  Result LTy is statically unknowable here, so we default
-      -- to LTStr: this gap is dominated by String-builders (scanTriple/
-      -- splitLines), and LTStr drives correct downstream selection
-      -- (emitPrint => mdk_print_str, a following `++` re-routes to string
-      -- append) for that case.  If a value is actually a List, the runtime
-      -- append is still correct; only a downstream STATIC string-op/print on it
-      -- would mis-select — but emitPrint LTCon already panics on lists, and
-      -- fixtures project String results through stringLength (a type-forcing
-      -- String read) so validation is byte-identical and independent of this
-      -- default.
+      -- always correct.  Result LTy is statically unknowable here, so we tag it
+      -- LTUnknown (NOT LTStr): LTUnknown follows LTStr at print/`==` sites (the
+      -- dominant String-builder downstream) but a CHAINED `++` over it re-routes
+      -- through @mdk_append instead of a direct @mdk_string_append — closing the
+      -- segfault when the value is actually a list.  emitPrint LTCon already
+      -- panics on lists, and fixtures project String results through
+      -- stringLength (a type-forcing String read) so validation is
+      -- byte-identical and independent of this default.
       _ =>
         let _ = emit e ("  " ++ r2 ++ " = call i64 @mdk_append(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
-        (r2, LTStr)
+        (r2, LTUnknown)
   | otherwise = gapE ("unsupported binary operator '" ++ op ++ "'")
 
 -- the arithmetic operators the spike lowers to int/float instructions.  `::` and
@@ -1453,7 +1474,11 @@ emitCmp e env op l r =
   -- A boxed-string operand (EITHER side — a `""` literal forces it even when the
   -- other side's static LTy wasn't inferred to LTStr) routes `==`/`!=` through
   -- @mdk_string_eq; pointer identity (the integer arm) is WRONG for string cells.
-  if isStrLTy lty || isStrLTy rty then emitStrCmp e op lv rv
+  -- An LTUnknown operand (chained-`++` result) could be a String OR a list, so
+  -- for `==`/`!=` route through @mdk_value_eq (runtime String/word discriminator)
+  -- rather than @mdk_string_eq, which would crash reading a list cell as a String.
+  if (isLTUnknown lty || isLTUnknown rty) && isEqOp op then emitValueEq e op lv rv
+  else if isStrLTy lty || isStrLTy rty then emitStrCmp e op lv rv
   else match lty
     LTFloat =>
       let ld = unboxFloat e lv
@@ -1498,7 +1523,14 @@ isEqOp op = op == "==" || op == "!="
 
 isStrLTy : LTy -> Bool
 isStrLTy LTStr = True
+-- LTUnknown (chained-`++` result) follows LTStr for `==`/`!=`: route through the
+-- runtime string/value discriminator rather than a pointer-identity icmp.
+isStrLTy LTUnknown = True
 isStrLTy _ = False
+
+isLTUnknown : LTy -> Bool
+isLTUnknown LTUnknown = True
+isLTUnknown _ = False
 
 -- String `==`/`!=`: pointer identity is WRONG for boxed string cells, so route
 -- content equality through @mdk_string_eq (the same helper the pattern-match
@@ -4768,6 +4800,11 @@ emitPrint e v LTFloat =
   let d = unboxFloat e v
   emit e ("  call void @mdk_print_float(double " ++ d ++ ")")
 emitPrint e v LTStr =
+  emit e ("  call void @mdk_print_str(i64 " ++ v ++ ")")
+-- LTUnknown reaches print only for the dominant String-builder case (a chained
+-- `++` whose value is a String); print it as a String, matching the old LTStr
+-- default.  A list-valued LTUnknown is never printed by the bootstrap fixtures.
+emitPrint e v LTUnknown =
   emit e ("  call void @mdk_print_str(i64 " ++ v ++ ")")
 emitPrint e _ LTUnit =
   emit e "  call void @mdk_print_unit()"

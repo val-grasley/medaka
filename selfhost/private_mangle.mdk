@@ -92,24 +92,41 @@ mangleUnit collisions (mid, decls) =
   if isEmptyPM rm then (mid, decls)
   else (mid, map (renameDecl rm) decls)
 
--- rename map = [(oldName, newName)] for THIS unit's private + colliding funcs
+-- rename map = [(oldName, newName)] for THIS unit's private + colliding funcs.
+-- A function may be exported via a `pub` DTypeSig while its DFunDef clause(s)
+-- carry `pub = False` (the `export` keyword precedes the SIGNATURE, and the
+-- definition clause on the next line parses as a separate, private DFunDef —
+-- mirroring resolve.mdk's `expValuesDirect`, which exports off the `DTypeSig
+-- True`).  Such a name is importable and referenced cross-module by its BARE
+-- name, so it must NOT be collision-renamed.  Collect the unit's pub-via-sig
+-- names and treat them as exported in `declRenameEntries`.
 buildRenameMap : String -> List String -> List Decl -> List (String, String)
 buildRenameMap mid collisions decls =
-  concatMapPM (declRenameEntries mid collisions) decls
+  let pubSigs = pubSigNames decls
+  concatMapPM (declRenameEntries mid collisions pubSigs) decls
 
-declRenameEntries : String -> List String -> Decl -> List (String, String)
-declRenameEntries mid collisions (DFunDef pub n _ _)
-  | not pub && containsPM n collisions = [(n, mangledName mid n)]
-  | otherwise = []
-declRenameEntries mid collisions (DLetGroup pub binds)
-  | not pub = concatMapPM (letBindRenameEntry mid collisions) binds
-  | otherwise = []
-declRenameEntries mid collisions (DAttrib _ d) = declRenameEntries mid collisions d
-declRenameEntries _ _ _ = []
+-- names exported via a `pub` DTypeSig/DExtern in this unit (so their DFunDef
+-- clauses, which parse private, still keep their bare @mdk_<name> symbol).
+pubSigNames : List Decl -> List String
+pubSigNames [] = []
+pubSigNames ((DTypeSig True n _)::rest) = n :: pubSigNames rest
+pubSigNames ((DExtern True n _)::rest) = n :: pubSigNames rest
+pubSigNames ((DAttrib _ d)::rest) = pubSigNames [d] ++ pubSigNames rest
+pubSigNames (_::rest) = pubSigNames rest
 
-letBindRenameEntry : String -> List String -> LetBind -> List (String, String)
-letBindRenameEntry mid collisions (LetBind n _)
-  | containsPM n collisions = [(n, mangledName mid n)]
+declRenameEntries : String -> List String -> List String -> Decl -> List (String, String)
+declRenameEntries mid collisions pubSigs (DFunDef pub n _ _)
+  | not pub && not (containsPM n pubSigs) && containsPM n collisions = [(n, mangledName mid n)]
+  | otherwise = []
+declRenameEntries mid collisions pubSigs (DLetGroup pub binds)
+  | not pub = concatMapPM (letBindRenameEntry mid collisions pubSigs) binds
+  | otherwise = []
+declRenameEntries mid collisions pubSigs (DAttrib _ d) = declRenameEntries mid collisions pubSigs d
+declRenameEntries _ _ _ _ = []
+
+letBindRenameEntry : String -> List String -> List String -> LetBind -> List (String, String)
+letBindRenameEntry mid collisions pubSigs (LetBind n _)
+  | not (containsPM n pubSigs) && containsPM n collisions = [(n, mangledName mid n)]
   | otherwise = []
 
 -- `<mid>__<name>` with the mid sanitized to a valid identifier (`/`, `.`, `-` →

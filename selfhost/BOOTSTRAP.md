@@ -345,3 +345,75 @@ ordering, ctor eta-wrap, guarded-clause chaining, `CList → LTCon` inference). 
   `bootstrap_parse.sh` **26/26**, `bootstrap_lex.sh` **19/19**.
 - All 15 `diff_selfhost_*` gates byte-identical (harness-only slice — no emitter
   or front-end change).
+
+## B6 — native TYPECHECK ✅ **DONE (10/10 byte-identical to the interpreter)**
+
+**Result: 10/10 `test/typecheck_fixtures/*.mdk` byte-match** the interpreter.
+The self-hosted TYPECHECK stage (`typecheck.mdk`, ~4000 lines — the largest,
+most stateful module: Hindley-Milner inference via mutable tyvar cells, level
+brackets, effect rows, the heaviest typeclass dispatch in the compiler, ~378
+`Ref`/`set_ref`/`.value` sites) natively compiled, end-to-end, emitting the SAME
+inferred top-level schemes (`name : scheme`, one per binding) as `medaka run
+selfhost/typecheck_main.mdk <fixture>`. This is the real completeness test of the
+native backend, and it surfaced **two genuine emitter/driver bugs**.
+
+`typecheck_main` takes **ONE file-path arg** (`<target.mdk>`); the fixtures are
+self-contained / prelude-free, so per-fixture inference depth stays bounded (the
+prelude is NOT typechecked at runtime). No segfault from stack depth — the
+`-Wl,-stack_size,0x20000000` (512 MB) flag was sufficient; the deferred
+big-stack / TRMC work was NOT needed for this slice.
+
+**Harness:** `test/bootstrap_typecheck.sh` (clone of `bootstrap_resolve.sh`:
+ORACLE/entry = `selfhost/typecheck_main.mdk`, FIXDIR = `test/typecheck_fixtures`;
+**1-arg** invocation `<fixture>`; generic emit driver, real `core.mdk` prelude,
+libgc/clang block, `-Wl,-stack_size,0x20000000`, `()` Unit-auto-print
+convention). Like `diff_selfhost_typecheck.sh`, **BOTH sides are SORTED** before
+the byte-compare (top-level bindings emit in a non-line-comparable order; the
+`()` Unit line sorts to the same position on both sides).
+
+### Two bugs fixed
+
+**1. `private_mangle.mdk` — collision-rename wrongly renamed an EXPORTED
+function (the sole emit blocker).**
+`typecheck_main` loads `typecheck.mdk`, which defines a *private* `joinNl`, while
+`util.mdk` defines an *exported* `joinNl` that `exhaust.mdk` (also loaded)
+imports by bare name. `mangleUnits` collision-renames a unit's private
+top-level functions that collide across units. But the `export` keyword precedes
+the SIGNATURE, so the function's `DFunDef` clause (parsed on the next line as a
+separate decl) carries `pub = False` — the export lives on the `DTypeSig True`
+(mirroring `resolve.mdk`'s `expValuesDirect`, which exports off `DTypeSig True`).
+`mangleUnits` keyed solely off `DFunDef.pub`, so it renamed `util.joinNl` to
+`util__joinNl` while `exhaust.mdk`'s bare imported reference was left unrewritten
+→ the self-hosted `elaborateModules` (run during emit) panicked `unbound
+variable: joinNl`. Fix: collect each unit's pub-via-`DTypeSig`/`DExtern` names
+(`pubSigNames`) and exclude them from the rename in `declRenameEntries` /
+`letBindRenameEntry`.
+
+**2. `llvm_emit.mdk` — chained `++` over a runtime-dispatched operand emitted a
+direct `@mdk_string_append` on a list value → SIGSEGV.**
+The `++` lowering's unknown-operand fallback emits the runtime-dispatched
+`@mdk_append` (correct value: inspects the cell header, string→string append /
+list→list append) but tagged its result `LTStr`. A CHAINED `++`
+(`a ++ b ++ c` = `(a ++ b) ++ c`) then saw the inner result's static `LTStr` and
+emitted a DIRECT `@mdk_string_append` for the outer — which reads a list cell as
+a String header and segfaults. `typecheck.mdk`'s `freeEffvars` builds a
+`List Int` exactly this way (`freeEffvars a ++ rowFreeEffvars r ++ freeEffvars
+b`), so EVERY polymorphic scheme (whose generalization walks effvars) crashed.
+Fix: a new `LTUnknown` LTy tags the runtime-dispatched-append result. A `++` over
+an `LTUnknown` left operand re-routes through `@mdk_append` (NOT a direct
+`@mdk_string_append`), and `==`/`!=` route through `@mdk_value_eq` (runtime
+String/word discriminator) instead of `@mdk_string_eq`. `LTUnknown` otherwise
+follows `LTStr` (print → `@mdk_print_str`, `isStrLTy`), since the dominant
+string-builder downstream is the only one reached in practice. Value-identical to
+the old direct path for the string case, so all 15 `diff_selfhost_*` gates stay
+byte-identical.
+
+### Validation
+- `test/bootstrap_typecheck.sh` → **10/10**. Earlier bootstraps stay green:
+  `bootstrap_mark.sh` **26/26**, `bootstrap_resolve.sh` **14/14**,
+  `bootstrap_desugar.sh` **26/26**, `bootstrap_parse.sh` **26/26**,
+  `bootstrap_lex.sh` **19/19**.
+- All 15 `diff_selfhost_*` gates byte-identical (the `LTUnknown` change is
+  value-equivalent to the prior `LTStr` default for every string case the gates
+  exercise; the list case it fixes was a latent crash never hit before B6).
+
