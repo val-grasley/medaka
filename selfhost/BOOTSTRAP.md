@@ -417,3 +417,80 @@ byte-identical.
   value-equivalent to the prior `LTStr` default for every string case the gates
   exercise; the list case it fixes was a latent crash never hit before B6).
 
+## B7 — native EVAL ✅ **DONE (20/20 byte-identical to the interpreter)**
+
+**Result: 20/20 `test/eval_fixtures/*.mdk` byte-match** the interpreter. The
+self-hosted EVAL stage (`selfhost/eval.mdk`, ~1765 lines — the tree-walking
+interpreter itself: closures/env/match, `VMulti` UNTYPED typeclass dispatch,
+`externBindings` primitive table, `pp_value` rendering) compiled natively
+(emit → `clang` → link `runtime/medaka_rt.c` + libgc) renders the SAME
+`pp_value` of the `main` binding as `medaka run selfhost/eval_main.mdk
+<fixture>`.
+
+**With B7, ALL SEVEN pipeline stages — lex → parse → desugar → resolve → mark
+→ typecheck → eval — are individually native-compiled and proven byte-identical
+to the tree-walker interpreter.**
+
+`eval_main` takes **ONE file-path arg** (`<target.mdk>`); the fixtures are
+self-contained / prelude-free and aggregate their results into a single `main`
+value, so the output is ONE deterministic `pp_value` line. eval_main uses the
+slice-1 untyped path (no marker/typecheck — arg-tag "first impl wins"
+`VMulti` dispatch), so this slice stresses runtime dispatch hardest of all the
+stages.
+
+**Harness:** `test/bootstrap_eval.sh` (models `bootstrap_typecheck.sh`:
+ORACLE/entry = `selfhost/eval_main.mdk`, FIXDIR = `test/eval_fixtures`,
+generic emit driver `selfhost/llvm_bootstrap_lex_main.mdk` with gap-recording +
+`private_mangle.mangleUnits`). Output is a SINGLE deterministic value line —
+**NO sort, NO float normalization** (both sides run the SAME eval). eval_main
+uses **`putStrLn`** (not `putStr`), so its stdout is `<value>\n`; the native
+runtime then auto-prints `main`'s Unit as `()\n`, giving `<value>\n()\n`. The
+oracle is rebuilt to the same shape (`<value>` + newline + `()`); the value
+content is compared byte-for-byte.
+
+### Two emitter bugs fixed
+
+1. **Over-application of a known function** (`selfhost/llvm_emit.mdk`,
+   `emitKnownFnSat`). A known fn of arity N applied to **more than N** args
+   (`makeAdder 10 5` — `makeAdder n = (m => n + m)` returns a closure that
+   consumes the extra arg) fell into the saturated `otherwise` branch, which
+   passed ALL args to `@mdk_<name>`: the trailing args were silently dropped
+   into a function that ignores them and the returned closure was never applied
+   → garbage result. Fix: a new `lengthS argOps > arity` guard (`emitOverApp`)
+   saturates the direct call with the FIRST N args, then applies the residual
+   closure VALUE to each remaining arg through an indirect call (`emitApplyExtra`
+   — load code_ptr from cell field 0, `call codePtr(closure, arg)`, the same
+   shape as `emitIndirect`). Added local `takeS`/`dropS` helpers. This is a
+   GENERAL emitter correctness fix (over-application was previously OUT of
+   scope) — every prior stage was green only because none over-applied a
+   known fn.
+
+2. **Flat-emit pub-name collision with a redefined prelude function**
+   (`selfhost/private_mangle.mdk`). `eval.mdk` exports its own `apply`
+   (`apply f x = match applyOpt f x …`, the dispatch-aware value application)
+   while the prelude `core.mdk` ALSO exports `apply` (`apply f a = f a`). The
+   mangler renamed only *private* cross-module collisions and kept all pub names
+   bare, so both `apply`s emitted `@mdk_apply`; LLVM dropped the duplicate
+   (keeping the prelude's naive `f a`), and `eval.mdk`'s `applyValue`/`applyDicts`
+   /`applyValues` calls routed to it — calling a tagged `Value` (VClosure/VMulti/…)
+   as a raw closure → load garbage code_ptr → `EXC_BAD_ACCESS` at the indirect
+   `blr`. Fix: a NON-CORE module that **redefines a prelude (core) name** — pub or
+   private — now gets that definition renamed to `<mid>__<name>` with its
+   intra-unit references rewritten (`shouldRename`'s `preludeRedef` rule;
+   `coreNames` threaded from `mangleUnits`). Core keeps the bare prelude symbol
+   for importers. This models the correct local-shadows-import semantic the
+   loader already enforces. `private_mangle` runs ONLY in the emit drivers (never
+   the oracle/golden drivers), so no golden/oracle dump changes. (`eval.mdk`'s
+   `apply` is genuinely module-internal: importers use the `applyValue` alias
+   precisely because `import eval.{apply}` is ambiguous with the prelude.)
+
+### Validation
+- `test/bootstrap_eval.sh` → **20/20**. Earlier bootstraps stay green:
+  `bootstrap_typecheck.sh` **10/10**, `bootstrap_mark.sh` **26/26**,
+  `bootstrap_resolve.sh` **14/14**, `bootstrap_desugar.sh` **26/26**,
+  `bootstrap_parse.sh` **26/26**, `bootstrap_lex.sh` **19/19**.
+- All `diff_selfhost_*` gates byte-identical (the over-app + prelude-redefine
+  mangle fixes are emit-only and dead for every gate the corpus exercises — no
+  golden corpus over-applies a known fn or redefines a prelude pub name through
+  the flat-emit `private_mangle` path).
+

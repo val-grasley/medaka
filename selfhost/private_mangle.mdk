@@ -40,8 +40,16 @@ mangleUnits coreDecls modules =
   -- the global count); a global count >= 2 then means a cross-unit collision.
   let defsPerUnit = map dedupUnitDefNames allUnits
   let collisions = collidingNames (concatMapPM identityPM defsPerUnit)
-  let coreOut = mangleUnit collisions ("core", coreDecls)
-  let modsOut = map (mangleUnit collisions) modules
+  -- the prelude (core) function names: a NON-CORE module that REDEFINES a prelude
+  -- name (e.g. eval.mdk's `apply`, also bound by core.mdk) must keep its OWN
+  -- definition for that module's references — local shadows the imported prelude.
+  -- The flat emit collapses both pub `@mdk_<name>` defines to one (LLVM drops the
+  -- duplicate, leaving the prelude's), so the module's calls silently route to the
+  -- wrong impl.  Rename the module's redefining function to `<mid>__<name>` and
+  -- rewrite its intra-unit refs (core keeps the bare prelude symbol for importers).
+  let coreNames = dedupPM (unitDefNames ("core", coreDecls))
+  let coreOut = mangleUnit collisions [] ("core", coreDecls)
+  let modsOut = map (mangleUnit collisions coreNames) modules
   (snd coreOut, modsOut)
 
 -- ── collision detection ──────────────────────────────────────────────────────
@@ -86,9 +94,9 @@ countOccPM x (y :: ys) = (if x == y then 1 else 0) + countOccPM x ys
 -- For one unit: build the rename map for THIS unit's private functions whose name
 -- is a global collision, then rewrite the unit's decls (definition names + all
 -- in-scope references).  Exported (pub) functions keep their bare name.
-mangleUnit : List String -> (String, List Decl) -> (String, List Decl)
-mangleUnit collisions (mid, decls) =
-  let rm = buildRenameMap mid collisions decls
+mangleUnit : List String -> List String -> (String, List Decl) -> (String, List Decl)
+mangleUnit collisions coreNames (mid, decls) =
+  let rm = buildRenameMap mid collisions coreNames decls
   if isEmptyPM rm then (mid, decls)
   else (mid, map (renameDecl rm) decls)
 
@@ -100,10 +108,10 @@ mangleUnit collisions (mid, decls) =
 -- True`).  Such a name is importable and referenced cross-module by its BARE
 -- name, so it must NOT be collision-renamed.  Collect the unit's pub-via-sig
 -- names and treat them as exported in `declRenameEntries`.
-buildRenameMap : String -> List String -> List Decl -> List (String, String)
-buildRenameMap mid collisions decls =
+buildRenameMap : String -> List String -> List String -> List Decl -> List (String, String)
+buildRenameMap mid collisions coreNames decls =
   let pubSigs = pubSigNames decls
-  concatMapPM (declRenameEntries mid collisions pubSigs) decls
+  concatMapPM (declRenameEntries mid collisions coreNames pubSigs) decls
 
 -- names exported via a `pub` DTypeSig/DExtern in this unit (so their DFunDef
 -- clauses, which parse private, still keep their bare @mdk_<name> symbol).
@@ -114,19 +122,42 @@ pubSigNames ((DExtern True n _)::rest) = n :: pubSigNames rest
 pubSigNames ((DAttrib _ d)::rest) = pubSigNames [d] ++ pubSigNames rest
 pubSigNames (_::rest) = pubSigNames rest
 
-declRenameEntries : String -> List String -> List String -> Decl -> List (String, String)
-declRenameEntries mid collisions pubSigs (DFunDef pub n _ _)
-  | not pub && not (containsPM n pubSigs) && containsPM n collisions = [(n, mangledName mid n)]
+-- A name is renamed in this (non-core) unit when EITHER:
+--   • it is a PRIVATE function whose bare name collides across units (the original
+--     rule — two modules' privates can't both keep `@mdk_<name>`), OR
+--   • it REDEFINES a prelude (core) name — pub or private.  A module's local
+--     definition must win over the imported prelude for that module's references;
+--     the flat emit otherwise drops the duplicate `@mdk_<name>` and routes the
+--     module's calls to the prelude impl.  (Core itself passes coreNames = [] so it
+--     is never renamed by this rule and keeps the bare prelude symbol.)
+declRenameEntries : String -> List String -> List String -> List String -> Decl -> List (String, String)
+declRenameEntries mid collisions coreNames pubSigs (DFunDef pub n _ _)
+  | shouldRename n pub collisions coreNames pubSigs = [(n, mangledName mid n)]
   | otherwise = []
-declRenameEntries mid collisions pubSigs (DLetGroup pub binds)
-  | not pub = concatMapPM (letBindRenameEntry mid collisions pubSigs) binds
-  | otherwise = []
-declRenameEntries mid collisions pubSigs (DAttrib _ d) = declRenameEntries mid collisions pubSigs d
-declRenameEntries _ _ _ _ = []
+declRenameEntries mid collisions coreNames pubSigs (DLetGroup pub binds)
+  | pub = concatMapPM (letBindCoreRedef mid coreNames) binds
+  | otherwise = concatMapPM (letBindRenameEntry mid collisions coreNames pubSigs) binds
+declRenameEntries mid collisions coreNames pubSigs (DAttrib _ d) = declRenameEntries mid collisions coreNames pubSigs d
+declRenameEntries _ _ _ _ _ = []
 
-letBindRenameEntry : String -> List String -> List String -> LetBind -> List (String, String)
-letBindRenameEntry mid collisions pubSigs (LetBind n _)
-  | not (containsPM n pubSigs) && containsPM n collisions = [(n, mangledName mid n)]
+-- rename a top-level function name iff it is a colliding private (original rule) OR
+-- a redefinition of a prelude name (new rule, applies to pub names too).
+shouldRename : String -> Bool -> List String -> List String -> List String -> Bool
+shouldRename n pub collisions coreNames pubSigs =
+  let isPub = pub || containsPM n pubSigs
+  let collidingPrivate = not isPub && containsPM n collisions
+  let preludeRedef = containsPM n coreNames
+  collidingPrivate || preludeRedef
+
+letBindRenameEntry : String -> List String -> List String -> List String -> LetBind -> List (String, String)
+letBindRenameEntry mid collisions coreNames pubSigs (LetBind n _)
+  | shouldRename n False collisions coreNames pubSigs = [(n, mangledName mid n)]
+  | otherwise = []
+
+-- a pub DLetGroup binder still gets renamed if it redefines a prelude name.
+letBindCoreRedef : String -> List String -> LetBind -> List (String, String)
+letBindCoreRedef mid coreNames (LetBind n _)
+  | containsPM n coreNames = [(n, mangledName mid n)]
   | otherwise = []
 
 -- `<mid>__<name>` with the mid sanitized to a valid identifier (`/`, `.`, `-` →

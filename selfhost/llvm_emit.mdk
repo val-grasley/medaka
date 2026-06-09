@@ -1961,7 +1961,34 @@ emitImplCallSat e fname argOps arity resTy
 emitKnownFnSat : Emit -> String -> List String -> Int -> LTy -> <Mut> (String, LTy)
 emitKnownFnSat e sym argOps arity resTy
   | arity > 0 && lengthS argOps < arity = emitPapClosure e sym argOps arity
+  | arity > 0 && lengthS argOps > arity = emitOverApp e sym argOps arity resTy
   | otherwise = emitImplCall e sym argOps resTy
+
+-- OVER-APPLICATION: a known fn of arity N applied to >N args (`makeAdder 10 5` —
+-- `makeAdder` returns a closure that consumes the extra arg).  Saturate the direct
+-- call with the FIRST N args, then apply the residual VALUE (a closure) to each
+-- remaining arg through an indirect call (the same load-code_ptr / call-(closure,
+-- arg) shape as emitIndirect).  Without this the trailing args are silently dropped
+-- into @sym (which ignores them) and the returned closure is never applied —
+-- garbage result / crash.
+emitOverApp : Emit -> String -> List String -> Int -> LTy -> <Mut> (String, LTy)
+emitOverApp e sym argOps arity resTy =
+  let satArgs = takeS arity argOps
+  let extra = dropS arity argOps
+  let (r0, _) = emitImplCall e sym satArgs resTy
+  (emitApplyExtra e r0 extra, LTInt)
+
+-- apply a residual closure VALUE to each remaining arg word, left to right, via an
+-- indirect call (load code_ptr from cell field 0, `call codePtr(closure, arg)`).
+emitApplyExtra : Emit -> String -> List String -> <Mut> String
+emitApplyExtra _ cw [] = cw
+emitApplyExtra e cw (a::rest) =
+  let cp = loadField e cw 0
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 " ++ fp ++ "(i64 " ++ cw ++ ", i64 " ++ a ++ ")")
+  emitApplyExtra e r rest
 
 -- build a partial-application closure over `@fname` with `argOps` already-supplied
 -- arg words captured.  Emits a forwarder `@mdk_pap_..(%clos, %arg0..%arg(rem-1))`
@@ -3514,6 +3541,20 @@ emitLitChain _ _ _ _ _ _ _ _ _ _ _ =
 lengthS : List a -> Int
 lengthS [] = 0
 lengthS (_::xs) = 1 + lengthS xs
+
+takeS : Int -> List a -> List a
+takeS n xs
+  | n <= 0 = []
+  | otherwise = match xs
+      [] => []
+      (y::ys) => y :: takeS (n - 1) ys
+
+dropS : Int -> List a -> List a
+dropS n xs
+  | n <= 0 = xs
+  | otherwise = match xs
+      [] => []
+      (_::ys) => dropS (n - 1) ys
 
 tailS : List a -> List a
 tailS [] = []
