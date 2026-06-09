@@ -1,9 +1,14 @@
 # Stage 2 backend architecture — bytecode VM first, or straight to LLVM?
 
-Status: **design proposal** (no code yet). Decides the *shape* of Stage 2 (the
-North star's native-codegen stage; see [`../PLAN.md`](../PLAN.md) §"Stage 2 — LLVM
-backend"). Companion to [`README.md`](./README.md) §Performance and
-[`PERF-NOTES.md`](./PERF-NOTES.md).
+Status: ✅ **BUILT (2026-06-08).** This was the design proposal; it is now the
+as-built record. Both on-ramps were taken — the Core IR + bytecode VM (§2.1–2.2)
+and the native **LLVM backend**, which now self-hosts the compiler to a
+reproducing fixpoint (all 7 stages native==interpreter; C1–C3). See
+[`BOOTSTRAP.md`](./BOOTSTRAP.md) for the as-built log and
+[`../PLAN.md` Stage 3](../PLAN.md#stage-3--make-the-llvm-backend-canonical-retire-ocaml)
+for forward work. Decides the *shape* of Stage 2 (the North star's native-codegen
+stage; see [`../PLAN.md`](../PLAN.md) §"Stage 2 — LLVM backend"). Companion to
+[`README.md`](./README.md) §Performance and [`PERF-NOTES.md`](./PERF-NOTES.md).
 
 Stage 1 is done: a Medaka-written front-end (lex → parse → desugar → resolve →
 mark → typecheck → exhaust) plus a tree-walking interpreter (`eval.mdk`), all

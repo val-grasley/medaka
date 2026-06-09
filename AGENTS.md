@@ -9,6 +9,20 @@ The compiler is one OCaml library, `medaka_lib` (everything in `lib/`).
 **There are no `.mli` files** — modules expose everything. Compilation is a
 linear pipeline; each stage is one file.
 
+> **Medaka self-hosts and compiles to native code.** Besides the OCaml reference
+> compiler (`lib/`, described below), the whole pipeline is rewritten in Medaka
+> (`selfhost/*.mdk`) and a native **LLVM backend** (`selfhost/llvm_emit.mdk` → text
+> IR → `clang`; C runtime `runtime/medaka_rt.c` + Boehm GC) compiles it. As of
+> 2026-06-08 all 7 stages are native-compiled byte-identical to the interpreter
+> and the compiler self-hosts to a **reproducing fixpoint** (`selfhost/BOOTSTRAP.md`).
+> The OCaml compiler is still the **reference + differential oracle** and the
+> bootstrap host. **Current focus = [PLAN.md Stage 3](./PLAN.md#stage-3--make-the-llvm-backend-canonical-retire-ocaml):
+> harden the native backend toward CANONICAL + gated OCaml retirement.** Native-backend
+> docs: `selfhost/BOOTSTRAP.md` (the B1–B7 + C1–C3 log), `selfhost/EMITTER-GAPS.md`
+> (closed/residual emitter gaps), `selfhost/STAGE2-DESIGN.md` + `selfhost/RUNTIME-DESIGN.md`
+> (design), `selfhost/README.md` (slice log). Harnesses: `test/bootstrap_*.sh`
+> (native stage == interpreter), `test/selfcompile_*.sh` (emitter self-compile).
+
 ## Pipeline — where each stage lives
 
 **Execution order** (the drivers in `diagnostics.ml` / `bin/main.ml` run it this
@@ -291,3 +305,7 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 | `PLAN-ARCHIVE.md` | Completed Phases 1–97 + per-phase implementation notes |
 | `STDLIB.md` | Stdlib module plan |
 | `stdlib/README.md` | Conventions for adding extern primitives |
+| `selfhost/BOOTSTRAP.md` | Native self-compile log: B1–B7 (each stage native==interpreter) + C1–C3 (emitter self-compile fixpoint), with the emitter bugs fixed per slice |
+| `selfhost/EMITTER-GAPS.md` | Native emitter gap census — closed gaps (E-series) + the open capability gaps (`max`/`min`, refutable pattern-guards) |
+| `selfhost/STAGE2-DESIGN.md` / `selfhost/RUNTIME-DESIGN.md` | Native backend design: Core IR seam, value rep, GC, per-extern disposition |
+| `selfhost/README.md` | Self-host port slice log + roadmap |

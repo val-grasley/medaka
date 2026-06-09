@@ -8,7 +8,26 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`selfhost/README.md`](./selfhost/README.md).
 
-## Current status (2026-06-07)
+## Current status (2026-06-09)
+
+**🏁 Medaka is a native self-hosting compiler.** The compiler is written in
+Medaka (`selfhost/`), and the native **LLVM backend now compiles it**: all seven
+pipeline stages (lex → parse → desugar → resolve → mark → typecheck → eval) are
+native-compiled and **byte-identical to the tree-walker interpreter** (141
+fixtures across `test/bootstrap_*.sh`), and the **self-compile fixpoint is
+reached** — the native-compiled emitter emits the whole emitter graph (~10.6 MB
+IR), reproduces the interpreter's IR byte-for-byte (C3a), and a second-generation
+native emitter reproduces that IR exactly (C3b: `IR1 == IR2`). See
+`selfhost/BOOTSTRAP.md` for the B1–B7 + C1–C3 log and `selfhost/EMITTER-GAPS.md`
+for the closed/residual emitter gaps. The native lexer runs ~90× faster than the
+tree-walker.
+
+The **OCaml compiler** (`lib/*.ml`) remains the reference + the differential
+oracle, and the build still bootstraps the first native compiler by running the
+`.mdk` sources through the OCaml-hosted interpreter (`medaka run`). The near-term
+roadmap ([Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml))
+hardens the native backend toward making it **canonical** and retiring the OCaml
+dependency on a **gated** schedule.
 
 The OCaml compiler pipeline is complete end-to-end —
 `lexer → parser → desugar → resolve → method_marker → typecheck (runs exhaust)
@@ -24,22 +43,11 @@ The stdlib in Medaka is **complete** across `core`, `list`, `array`, `string`
 (frozen, Phase 128), ordered `map`/`set`, mutable `hash_map`/`hash_set`,
 `mut_array`, `io`, and `json` (STDLIB.md Modules 1–9 all done).
 
-**The self-host port (Stage 1) is complete** — all eight pipeline stages are
-ported to Medaka and validated byte-for-byte against the OCaml reference, and
-the bootstrap closure ("the compiler processes its own source") has landed for
-all four Legs A–D. See [North star → Stage 1](#stage-1--self-host-on-the-interpreter)
-below and `selfhost/README.md` for the full slice log. The forward-looking
-performance levers are all resolved (lexical-addressing eval-consumption half
-measured a non-win on the tree-walker and is parked; see `selfhost/PERF-NOTES.md`).
-
-**Stage 2 (native backend) is underway** — Core IR + evaluator (§2.1) and the
-bytecode VM (§2.2) are fully done, including the §2.2 capstone (lexer stage runs
-byte-for-byte through `bcEvalModulesOutput`); the LLVM toolchain de-risking spike
-is **complete** — it lowers the full non-GC Core IR surface, runs on Boehm GC, and
-the **entire native extern catalog is ported** (slices 1–14 + RNG/sorts/hash, all
-byte-identical against the oracle). The remaining work is promoting the spike into
-the real backend and the bootstrap closure. See the [Workstreams table](#workstreams--where-each-roadmap-lives) for
-the map and `selfhost/STAGE2-DESIGN.md` for the staged plan.
+**Self-host (Stage 1) and the native backend (Stage 2)** are both ✅ COMPLETE —
+all eight pipeline stages ported to Medaka and validated byte-for-byte, the
+bootstrap closure landed for Legs A–D, and the LLVM backend promoted from spike to
+a self-hosting native compiler (the C1–C3 fixpoint above). The forward-looking
+interpreter-perf levers are all resolved (`selfhost/PERF-NOTES.md`).
 
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
 code comments reference them. Phases left *partial* keep their original number
@@ -59,7 +67,8 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8 | 🟡 in progress | Core IR + bytecode VM (§2.1–2.2) fully done incl. capstone; **LLVM de-risking spike COMPLETE** — full non-GC Core IR surface (126/126 plain + 16/16 typed gate), Boehm GC live, **entire native extern catalog ported** (slices 1–14 + RNG SplitMix64 + sorts →MEDAKA + hash→Hashable + **inspect→method**); value rep RATIFIED + dense i32 ctor-ordinal tags + nullary-immediate; next = **promote spike → real backend**: **typeclass dispatch in the backend** (DECIDED: runtime dict-passing; D0+D0.5 inventory DONE → re-scoped: 0 nested/0 CDict, return-pos done; remaining = **D3a** stamp ~903 concrete arg-position sites→RKey (✅ DONE 2026-06-07; emitter now static-dispatches concrete arg-position, incl. the 25 primitive heads) + **D3b** dict-pass 110 type-variable sites (**D3b-1** ✅ DONE 2026-06-07: the ~87 derived-impl element dispatches route through the `requires`-dict + emitter threads element-dict witnesses; **D3b-2** ✅ DONE 2026-06-07: the ~23 prelude `=>` helpers dict-pass their constraint var in arg position — reused D3b-1's `activeDictVars`/`resolveArgStamp` machinery unchanged, the delta was the `preludeArgPosDictNames` selector + 4 fixtures; **D3b COMPLETE** — on the emit path all arg-position dispatch is RKey/RDict, no arg-tag for primitives; deferred to D4: native EMISSION of the real prelude (emitter-completeness, slice-2) + the 1 `empty` return-position default body)) → **D4 dispatch corpus gate → bootstrap closure** → WasmGC sibling §2.4b. See [Native backend near-term sequence](#native-backend-stage-2--near-term-sequence) |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) + [`selfhost/BOOTSTRAP.md`](./selfhost/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done; LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
+| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟡 **next** | Harden the native backend toward CANONICAL + gated OCaml retirement: `medaka build` CLI → completeness (max/min + emitter-gap sweep) → port OCaml test suites to Medaka → differential fuzzer → TRMC/worker-thread stack scalability → perf (-O2, value-rep) → self-bootstrapping build → retire `lib/` (gated). |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -164,7 +173,13 @@ to retrofit — recorded so they aren't lost; not blocking):
 - Larger levers (bytecode VM, decision-tree match compilation) are recorded as
   post-profiling work, and feed Stage 2.
 
-### Stage 2 — LLVM backend (after self-host)
+### Stage 2 — LLVM backend (after self-host) — ✅ COMPLETE
+
+> ✅ **DONE (2026-06-08).** The LLVM backend is built and the compiler self-hosts
+> natively: all 7 stages native==interpreter (141 fixtures) and the self-compile
+> fixpoint is reached (C1–C3, `selfhost/BOOTSTRAP.md`). The design below is the
+> as-built record; the next phase ([Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml))
+> hardens it toward canonical.
 
 > **Backend-architecture decision (bytecode VM first vs. straight to LLVM):** see
 > [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md). Recommends a Core IR
@@ -306,6 +321,97 @@ deliberately deferred to here:
 
 ---
 
+### Stage 3 — Make the LLVM backend canonical, retire OCaml
+
+Stages 1–2 are done: Medaka self-hosts and the native LLVM backend compiles the
+compiler to a self-reproducing fixpoint. **Stage 3 makes the native backend the
+CANONICAL compiler** — the one users invoke and the one that builds the compiler —
+and retires the OCaml reference (`lib/*.ml`) on a **gated** schedule (no fixed
+date; deletion is unlocked only when the bar below is met).
+
+**The "native is canonical" bar (gates `lib/` retirement):**
+1. `medaka build` compiles + runs arbitrary USER programs natively (not just the
+   compiler's own stages).
+2. The ported test suite passes on the native compiler (the OCaml `test/*.ml`
+   suites re-expressed as Medaka tests).
+3. A differential fuzzer runs clean (random valid programs: native == oracle).
+4. Performance is acceptable (self-compile time + emitted-code speed within an
+   agreed factor of the OCaml compiler).
+5. The build self-bootstraps without the OCaml interpreter (a seed path that
+   produces the native compiler from the `.mdk` sources).
+
+**Oracle (hybrid).** As OCaml recedes, ground truth = the Medaka tree-walker
+(`eval.mdk`) for runtime BEHAVIOR (native diffed vs interpreted-selfhost — the
+bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
+(tokens/AST/Core-IR/types). Belt-and-suspenders; neither depends on `lib/`.
+
+**Near-term sequence (front-loaded order, decided 2026-06-09):**
+
+1. **`medaka build` CLI** — wire the LLVM backend into the actual CLI so
+   `medaka build foo.mdk` emits → `clang` → native binary for ARBITRARY user
+   programs (today native compilation lives only in `test/selfcompile_*.sh` /
+   `bootstrap_*.sh`). Surfaces the backend and forces it to handle programs beyond
+   the compiler's own source. Design points: output path + linking (`medaka_rt.c`
+   + libgc), the **gap policy** (a *reachable* gap must be a hard error, not a
+   silent placeholder — the gap-tolerant driver is bootstrap-only), error
+   reporting, and how it relates to `medaka run` (interpreter) — see the
+   [CLI surface](#cli-surface-phase-82-continued) `medaka build` note.
+2. **Completeness — `max`/`min` + emitter-gap sweep.** Close the last known gap
+   (`max`/`min` over primitive `Ord`: a default method whose `compare` impls are
+   primitives with no runtime tag — via dict-passing or monomorphic
+   specialization; `selfhost/EMITTER-GAPS.md`). Then AUDIT `emitTree`/`emitExpr`/
+   `emitApp` for every reachable `gapU`/`gapE`, and build a **language-construct
+   coverage matrix**: the bootstrap only exercised what the compiler's own source
+   uses — user programs use more (list comprehensions, all operator sections,
+   inclusive ranges, string interpolation, every `do`/guard form, record/variant
+   update, etc.). One native==interpreter fixture per construct in `SYNTAX.md`.
+3. **Port OCaml test suites to native Medaka.** Re-express `test/*.ml` (the
+   alcotest suites — parser/typecheck/eval/resolve/exhaust/…) as Medaka tests
+   (`medaka test`) so the suite stops depending on `lib/`. This is the bulk of
+   bar-item 2.
+4. **Differential fuzzer.** Generate random parse-valid / well-typed Medaka
+   programs and diff native vs the tree-walker oracle. Highest-leverage bug finder
+   — fixtures have finite coverage; the fuzzer hunts the long tail
+   (order-dependence, value-rep edges, dispatch corners, big/deeply-nested
+   inputs). Shrink failing cases to minimal repros.
+
+**Supporting / parallel work:**
+
+- **Stack scalability** — the `-Wl,-stack_size` band-aid is **maxed at 512 MB on
+  arm64** (the linker rejects larger). (a) **Worker-thread big-stack** in
+  `medaka_rt.c` (emit the entry as a named fn; C `main` spawns a large-stack
+  `pthread`) — general, covers deep STRUCTURAL recursion (typecheck/eval on big
+  inputs); do first. (b) **TRMC** (tail-recursion-modulo-cons / destination-passing)
+  in the emitter for `x :: recurse` list-builders → O(1) stack — the principled
+  fix for the streaming loops (OCaml `[@tail_mod_cons]` is the blueprint); the
+  cons-loop optimization on top of (a). Not yet forced (512 MB sufficed through C3).
+- **Error-path / diagnostics parity.** The bootstrap diffed happy-path stdout;
+  native panics/aborts/diagnostics need parity with the interpreter (the selfhost
+  error path was noted unvalidated). Diff error output too.
+- **Performance.** Emitted IR is naive (`clang -O0` in harnesses): turn on `-O2`,
+  measure; consider value-rep / dispatch optimizations + an emitter-side pass if
+  profiling demands. Benchmark native-compiler-compiling-itself vs the OCaml
+  compiler (bar-item 4).
+- **Self-bootstrapping build** (bar-item 5) — remove the OCaml-interpreter
+  dependency from producing the *first* native compiler: a checked-in/reproducible
+  seed binary that compiles the `.mdk` sources, or a documented multi-stage
+  bootstrap from a minimal seed. (C3 proves the native compiler reproduces itself;
+  this makes the *build* not need `medaka run`.)
+- **Cross-platform** — currently arm64 macOS only. Linux/x86-64 (runtime, the
+  stack-flag specifics, clang target triple) before the backend is broadly
+  canonical.
+- **GC** — Boehm conservative GC today. Evaluate precise GC + the WasmGC path (the
+  wedge target needs WasmGC, a sibling backend off the Core IR seam — §2.4b).
+
+**Gated milestone — retire `lib/*.ml`.** Once the bar is met: make native
+`medaka` the default build, re-root the remaining gates on the hybrid oracle,
+archive/delete the OCaml compiler, update all docs. Sequenced toward, not dated.
+
+After Stage 3, the **capability-effects wedge** (Phase 146) + the **WasmGC
+backend** are the product horizon (see the Workstreams table).
+
+---
+
 ## Open roadmap
 
 Each item is independently shippable; pick one per session. Grouped by area, not
@@ -347,12 +453,21 @@ Downstream (captured, NOT near-term): **Phase 146b** parameterized effects
 (CAPABILITY-EFFECTS §6a); the **WasmGC backend** (STAGE2-DESIGN §2.4b); the
 **capability platform/runtime** (CAPABILITY-PLATFORM.md §9 open questions).
 
-### Native backend (Stage 2) — near-term sequence
+### Native backend (Stage 2) — near-term sequence — ✅ COMPLETE (historical record)
 
 **Owning roadmap:** [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md)
 §"Staged plan" + [`RUNTIME-DESIGN.md`](./selfhost/RUNTIME-DESIGN.md) §7–8.
 
-> **STATUS UPDATE (2026-06-08): native self-compile bootstrap is largely DONE — this section's D0–D4 narrative below predates it and needs reconciliation.** All SEVEN pipeline stages (lex/parse/desugar/resolve/mark/typecheck/eval) are native-compiled and byte-identical to the tree-walker interpreter (141 fixtures; `selfhost/BOOTSTRAP.md`, `test/bootstrap_*.sh`). Self-compile capstone: **C1 DONE** — the native-compiled emitter reproduces the interpreted emitter's IR byte-for-byte (`test/selfcompile_emit.sh`, 6/6). **Remaining:** C2 (native emitter on a real module → forces the deferred stack-scalability fix) → C3 (fixpoint: native emitter emits itself, reproducing its own IR = true self-hosting).
+> ✅ **DONE (2026-06-08).** The D0–D4 narrative below is the AS-BUILT historical
+> record of how the spike became a native self-hosting compiler — kept for the
+> per-stage detail, not as open work. Forward work is now
+> **[Stage 3 — Make the LLVM backend canonical](#stage-3--make-the-llvm-backend-canonical-retire-ocaml)**.
+> Summary: all 7 stages native==interpreter (141 fixtures); self-compile fixpoint
+> reached (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3
+> `IR1==IR2`); runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard
+> lowered; ~14 emitter bugs fixed (`selfhost/BOOTSTRAP.md` / `EMITTER-GAPS.md`).
+> Residual: `max`/`min` over primitive `Ord` (dead code → Stage 3 item 2); stack
+> band-aid maxed at arm64's 512 MB (→ Stage 3 worker-thread/TRMC).
 >
 > **Open emitter CAPABILITY gaps** (see `selfhost/EMITTER-GAPS.md` "Open emitter CAPABILITY gaps"):
 > 1. **`CTGuard` — clause/match guards.** ✅ **CLOSED (2026-06-08)** — `emitTree`'s `CTGuard` arm emits a real guard test + branch (`emitGuardedArm`/`emitGuardChain`); `match pat if guard => body` now lowers natively (refutable `p <- e` pattern-guards remain a contained gap). Retires the guard-free convention. Fixtures `test/llvm_fixtures/guard_match_{chain,ctor}.mdk`.

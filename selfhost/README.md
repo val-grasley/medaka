@@ -5,7 +5,14 @@ OCaml reference in `lib/` and validated against it via differential testing.
 See the **North star → Stage 1** section of [`../PLAN.md`](../PLAN.md).
 
 Runs **on the existing tree-walking interpreter** (`medaka run …`) — correctness
-first; native codegen is Stage 2.
+first. **Native codegen (Stage 2) is now DONE:** the native LLVM backend
+(`llvm_emit.mdk`) compiles this self-hosted compiler — all 7 stages
+native==interpreter and the compiler self-hosts to a reproducing fixpoint. See
+[`BOOTSTRAP.md`](./BOOTSTRAP.md) (the as-built native log) and
+[`../PLAN.md` Stage 3](../PLAN.md#stage-3--make-the-llvm-backend-canonical-retire-ocaml)
+(forward work). Some slice descriptions below predate that and call `llvm_emit.mdk`
+a "spike" / list now-closed out-of-scope items — `BOOTSTRAP.md`/`EMITTER-GAPS.md`
+are the current source of truth.
 
 ## House style
 
