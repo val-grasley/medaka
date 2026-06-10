@@ -365,6 +365,51 @@ fieldNameToLTy "Char"   = Some LTChar
 fieldNameToLTy "String" = Some LTStr
 fieldNameToLTy _        = None
 
+-- ── function → DECLARED param/return type-head names (native backend, Gap E1) ─
+-- The fn → (declared-param-type-head-names, declared-return-type-head-name) table
+-- from core_ir_lower's `declSigTypeNames` (e.g. `double : Float -> Float` →
+-- ("double", (["Float"], "Float"))).  Signature inference (`inferSigs` →
+-- `inferOneSig`/`inferParamTys`) SEEDS each param/return LTy from this declared
+-- type when it is a known scalar, winning over the body-use guess (`paramUseTy`,
+-- which for a literal-free annotated body like `double x = x + x` finds no Float
+-- anchor → LTInt → integer arith on a boxed-Float word → garbage; Gap E1).
+-- Installed before emitProgram/emitProgramGaps (module-level Ref, mirroring
+-- ctorFieldTypesRef); empty default ⇒ no fn is seeded ⇒ unchanged pre-change
+-- behaviour.  ADDITIVE: only known-scalar declared params/returns override; an
+-- unannotated fn / non-scalar declared type falls through to the existing guess.
+declSigTypesRef : Ref (List (String, (List String, String)))
+declSigTypesRef = Ref []
+
+export
+installDeclSigTypes : List (String, (List String, String)) -> <Mut> Unit
+installDeclSigTypes t = set_ref declSigTypesRef t
+
+-- the declared (param-type-head-names, return-type-head-name) of a function, or
+-- None when it has no annotation.
+declSigOf : String -> <Mut> Option (List String, String)
+declSigOf name = lookupAssoc name declSigTypesRef.value
+
+-- the declared LTy of param index `i` of function `name`, if annotated with a
+-- known scalar there; else None (caller falls back to body-use inference).
+declParamLTy : String -> Int -> <Mut> Option LTy
+declParamLTy name i = match declSigOf name
+  Some (ptyNames, _) => match nthName ptyNames i
+    Some n => fieldNameToLTy n
+    None => None
+  None => None
+
+-- the declared RETURN LTy of function `name`, if annotated with a known scalar;
+-- else None.
+declRetLTy : String -> <Mut> Option LTy
+declRetLTy name = match declSigOf name
+  Some (_, retName) => fieldNameToLTy retName
+  None => None
+
+nthName : List String -> Int -> Option String
+nthName (x::_) 0 = Some x
+nthName (_::rest) i = nthName rest (i - 1)
+nthName [] _ = None
+
 -- the set of default fn names already lifted (one define per (method, tag)),
 -- reset at the start of each emit run so the two censuses don't share state.
 emittedDefaultsRef : Ref (List String)
@@ -4328,13 +4373,40 @@ firstSome (Some x) _ = Some x
 firstSome None y = y
 
 -- infer one function's full signature against the current (partial) sig table.
-inferOneSig : List (String, FnSig) -> CBind -> FnSig
-inferOneSig sigs (CBind _ [CClause pats body]) =
-  let ptys = inferParamTys sigs pats body
+inferOneSig : List (String, FnSig) -> Option (List String, String) -> CBind -> FnSig
+inferOneSig sigs dsig (CBind _ [CClause pats body]) =
+  let ptys = inferParamTysSeed sigs dsig pats body 0
   let env = zipParamEnv pats ptys
-  FnSig ptys (typeOf sigs env body)
-inferOneSig sigs (CBind _ (c::rest)) = inferMultiSig sigs (c::rest)
-inferOneSig _ _ = FnSig [] LTInt
+  FnSig ptys (seedRetTy dsig (typeOf sigs env body))
+inferOneSig sigs dsig (CBind _ (c::rest)) = inferMultiSig sigs dsig (c::rest)
+inferOneSig _ _ _ = FnSig [] LTInt
+
+-- E1: a DECLARED scalar param/return type (from `declSigTypesRef`, sourced from
+-- the fn's `DTypeSig`) WINS over the body-use guess.  `seedParamTy` overrides the
+-- i-th inferred param type with its declared scalar LTy when one is known (else
+-- keeps the guess); `seedRetTy` likewise for the return.  ADDITIVE: an
+-- unannotated fn (`dsig = None`) or a non-scalar declared type leaves the guess
+-- untouched, so literal-anchored Float fns and Int fns are unchanged.
+seedParamTy : Option (List String, String) -> Int -> LTy -> LTy
+seedParamTy dsig i guessed = match dsig
+  Some (ptyNames, _) => match declScalarAt ptyNames i
+    Some t => t
+    None => guessed
+  None => guessed
+
+seedRetTy : Option (List String, String) -> LTy -> LTy
+seedRetTy dsig guessed = match dsig
+  Some (_, retName) => match fieldNameToLTy retName
+    Some t => t
+    None => guessed
+  None => guessed
+
+-- the declared scalar LTy at param index `i` of a declared param-type-head list,
+-- or None when out of range / not a known scalar.
+declScalarAt : List String -> Int -> Option LTy
+declScalarAt names i = match nthName names i
+  Some n => fieldNameToLTy n
+  None => None
 
 -- E1a: signature inference for a MULTI-CLAUSE binding.  A param's type is the
 -- first type-revealing finding scanning clauses left-to-right (a literal pattern
@@ -4343,21 +4415,22 @@ inferOneSig _ _ = FnSig [] LTInt
 -- default Int).  The return type is the first clause's body typed under its
 -- param env.  Without this, a multi-clause fn fell to `FnSig [] LTInt`, so its
 -- non-Int params (`implParamEnvTyped`) and non-Int result (`fnRetTy` → print
--- selection) were both lost.
-inferMultiSig : List (String, FnSig) -> List CClause -> FnSig
-inferMultiSig sigs clauses =
+-- selection) were both lost.  (Gap E1: a declared scalar param/return seeds over
+-- the guess via `seedParamTy`/`seedRetTy`.)
+inferMultiSig : List (String, FnSig) -> Option (List String, String) -> List CClause -> FnSig
+inferMultiSig sigs dsig clauses =
   let arity = clauseArityC clauses
-  let ptys = inferMultiParamTys sigs clauses arity 0
-  FnSig ptys (inferMultiRetTy sigs clauses ptys)
+  let ptys = inferMultiParamTys sigs dsig clauses arity 0
+  FnSig ptys (seedRetTy dsig (inferMultiRetTy sigs clauses ptys))
 
 clauseArityC : List CClause -> Int
 clauseArityC ((CClause pats _)::_) = listLen pats
 clauseArityC [] = 0
 
-inferMultiParamTys : List (String, FnSig) -> List CClause -> Int -> Int -> List LTy
-inferMultiParamTys sigs clauses arity i
+inferMultiParamTys : List (String, FnSig) -> Option (List String, String) -> List CClause -> Int -> Int -> List LTy
+inferMultiParamTys sigs dsig clauses arity i
   | i >= arity = []
-  | otherwise = paramTyAcross sigs clauses i :: inferMultiParamTys sigs clauses arity (i + 1)
+  | otherwise = seedParamTy dsig i (paramTyAcross sigs clauses i) :: inferMultiParamTys sigs dsig clauses arity (i + 1)
 
 -- the i-th param's type: the first informative finding across clauses, else Int.
 paramTyAcross : List (String, FnSig) -> List CClause -> Int -> LTy
@@ -4407,21 +4480,39 @@ inferParamTys sigs ((PVar x)::rest) body =
   ty :: inferParamTys sigs rest body
 inferParamTys sigs (_::rest) body = LTInt :: inferParamTys sigs rest body
 
+-- like inferParamTys, but a DECLARED scalar type at param index `i` seeds (wins)
+-- over the body-use guess (Gap E1: `double x = x + x : Float -> Float` has no
+-- Float literal anchor, so the guess is LTInt → int arith on a boxed Float;
+-- the declared `Float` overrides to LTFloat).  Index-tracked so each param's
+-- declared type lines up by position.
+inferParamTysSeed : List (String, FnSig) -> Option (List String, String) -> List Pat -> CExpr -> Int -> List LTy
+inferParamTysSeed _ _ [] _ _ = []
+inferParamTysSeed sigs dsig ((PVar x)::rest) body i =
+  let guessed = match paramUseTy sigs [] x body
+    Some t => t
+    None => LTInt
+  seedParamTy dsig i guessed :: inferParamTysSeed sigs dsig rest body (i + 1)
+inferParamTysSeed sigs dsig (_::rest) body i =
+  seedParamTy dsig i LTInt :: inferParamTysSeed sigs dsig rest body (i + 1)
+
 zipParamEnv : List Pat -> List LTy -> List (String, LTy)
 zipParamEnv ((PVar x)::ps) (t::ts) = (x, t) :: zipParamEnv ps ts
 zipParamEnv (_::ps) (_::ts) = zipParamEnv ps ts
 zipParamEnv _ _ = []
 
 -- one inference pass: recompute every function's signature using the prior table.
-inferPass : List (String, FnSig) -> List CBind -> List (String, FnSig)
+-- (Gap E1: each binding's DECLARED signature, looked up by name in the installed
+-- `declSigTypesRef` table, seeds its param/return types over the body-use guess.)
+inferPass : List (String, FnSig) -> List CBind -> <Mut> List (String, FnSig)
 inferPass _ [] = []
-inferPass sigs (b::rest) = (bindName b, inferOneSig sigs b) :: inferPass sigs rest
+inferPass sigs (b::rest) =
+  (bindName b, inferOneSig sigs (declSigOf (bindName b)) b) :: inferPass sigs rest
 
 -- fixpoint to two passes: pass 1 seeds signatures (callees defined earlier are
 -- already typed); pass 2 lets a caller see a callee defined later / mutual
 -- recursion settle.  Two passes suffice for the spike's call graphs (no deeper
 -- type-flow chains than caller→callee→sibling exist in the subset).
-inferSigs : List CBind -> List (String, FnSig)
+inferSigs : List CBind -> <Mut> List (String, FnSig)
 inferSigs fns =
   let pass1 = inferPass [] fns
   inferPass pass1 fns

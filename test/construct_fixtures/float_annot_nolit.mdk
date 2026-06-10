@@ -1,0 +1,11 @@
+-- Gap E1: literal-free Float arithmetic in an ANNOTATED function.  `double`'s
+-- body `x + x` has no Float literal to anchor body-use inference, so the emitter
+-- formerly defaulted `x` to LTInt → integer arith on a boxed-Float word →
+-- garbage.  The DECLARED `: Float -> Float` now SEEDS the param/return LTy
+-- (declSigTypeNames → installDeclSigTypes → inferSigs seed), so `x + x` is FLOAT
+-- add and the result is 6.28 == oracle.
+double : Float -> Float
+double x = x + x
+
+main : <IO> Unit
+main = println (floatToString (double 3.14))

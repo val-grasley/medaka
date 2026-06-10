@@ -16,8 +16,8 @@ import parser.{parse}
 import desugar.{desugar}
 import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
 import eval.{funNamesOf, dropShadowedExp}
-import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, ctorFieldTypeNames}
-import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface, installCtorFieldTypes}
+import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, ctorFieldTypeNames, declSigTypeNames}
+import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface, installCtorFieldTypes, installDeclSigTypes}
 
 main = match args ()
   (runtimePath :: rest) => withRuntime runtimePath rest
@@ -57,6 +57,7 @@ runEmit runtimeDecls preludeDecls userDecls =
   let _ = installSelfFnParams (selfFnParamTable combined)
   let _ = installMethodIface (methodIfaceTable combined)
   let _ = installCtorFieldTypes (ctorFieldTypeNames combined)
+  let _ = installDeclSigTypes (declSigTypeNames combined)
   emitProgram (lowerProgramEmit (elaborateDict runtimeDecls dictNames userNames combined))
 
 readAllDecls : List String -> <IO> Result String (List Decl)

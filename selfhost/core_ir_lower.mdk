@@ -721,6 +721,36 @@ tyHeadName (TyConstrained _ t) = tyHeadName t
 tyHeadName (TyEffect _ _ t) = tyHeadName t
 tyHeadName _ = ""
 
+-- ── function → DECLARED param/return type-head names (native backend, Gap E1) ─
+-- Per top-level function name (from its `DTypeSig` annotation): the head
+-- type-name of each declared PARAMETER (in order) plus the declared RETURN type
+-- head, e.g. `double : Float -> Float` → ("double", (["Float"], "Float")).  The
+-- LLVM emitter's signature inference (`inferSigs`/`inferParamTys`/`paramUseTy`)
+-- otherwise recovers param/return LTys purely from BODY USE; a literal-free
+-- annotated body like `double x = x + x` has no Float anchor → param defaults
+-- LTInt → integer arith on a boxed-Float word → garbage (Gap E1).  Seeding the
+-- DECLARED scalar type wins over the body-use guess.  A non-scalar head (TyVar /
+-- applied / function / tuple) maps to "" and the emitter falls back to the
+-- existing guess, so the seed is ADDITIVE: only known-scalar declared params/
+-- returns change typing (and `Int`-annotated fns seed LTInt = current default).
+export
+declSigTypeNames : List Decl -> List (String, (List String, String))
+declSigTypeNames prog = concatMapList declSigTypeEntries prog
+
+declSigTypeEntries : Decl -> List (String, (List String, String))
+declSigTypeEntries (DTypeSig _ name ty) =
+  [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]
+declSigTypeEntries (DAttrib _ inner) = declSigTypeEntries inner
+declSigTypeEntries _ = []
+
+-- the RESULT type of a (possibly-constrained, possibly-effectful) function type
+-- (the `r` of `a -> b -> … -> r`); a non-function type is its own result.
+methodRetTy : Ty -> Ty
+methodRetTy (TyConstrained _ t) = methodRetTy t
+methodRetTy (TyEffect _ _ t) = methodRetTy t
+methodRetTy (TyFun _ b) = methodRetTy b
+methodRetTy t = t
+
 -- positions (0-based) whose type is a TyFun whose result mentions a param.
 selfFnPositions : Int -> List Ty -> List String -> List Int
 selfFnPositions _ [] _ = []
