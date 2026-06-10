@@ -16,7 +16,7 @@
 -- forms, and the rest of the operator ladder come in later slices.
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..), Attr(..), Route(..)}
-import lexer.{Token(..), tokenize, tokenizeWithLines}
+import lexer.{Token(..), tokenize, tokenizeWithLines, tokenizeWithOffsets, offsetToLineCol}
 import util.{reverseL}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -2606,3 +2606,80 @@ parse : String -> List Decl
 parse src =
   let toks = arrayFromList (tokenize src)
   resultDecls toks (runP parseProgram toks 0)
+
+-- ── Structured parse errors (non-panicking entry) ───────────────────────────
+-- The LSP prerequisite (Stage 4 task #24): a parser should yield errors as
+-- DATA, not abort.  The combinator already threads errors as values internally
+-- (`PR a = POk | PErr String Int`); only the top boundary (`resultDecls`,
+-- `parseWithPositions`) panics on `PErr` / leftover tokens.  `parseResult` is a
+-- purely-additive non-panicking entry: it returns the same parse on success and
+-- a located, structured `ParseError` on failure, leaving `parse` byte-identical.
+--
+-- `ParseError line col message` mirrors `lib/loader.ml`'s
+--   ParseError { file; line; col; message }
+-- (the `file` field is the caller's concern — not carried here), with the same
+-- `L:C` numbering the OCaml oracle prints: 1-based line, 0-based column derived
+-- from the error token's char offset via the lexer's `offsetToLineCol`.
+public export data ParseError = ParseError Int Int String
+
+export
+parseErrorLine : ParseError -> Int
+parseErrorLine (ParseError l _ _) = l
+
+export
+parseErrorCol : ParseError -> Int
+parseErrorCol (ParseError _ c _) = c
+
+export
+parseErrorMessage : ParseError -> String
+parseErrorMessage (ParseError _ _ m) = m
+
+-- Char offset of token index `i` from the parallel offset array.  Two synthetic
+-- tail tokens (a trailing NEWLINE and the EOF) carry offset 0 rather than a real
+-- source position, so an end-of-input failure must NOT resolve through them or
+-- it mislocates to 1:0.  `locateOffset` therefore pins any failure AT-OR-AFTER
+-- the last real token (TEof, or an index past the array) to the source length —
+-- i.e. end-of-file — and otherwise returns the token's own offset.
+offsetAt : Array Int -> Int -> Int -> Int
+offsetAt offs srcLen i
+  | i < arrayLength offs = arrayGetUnsafe i offs
+  | otherwise = srcLen
+
+-- Resolve a failing token index to a char offset, treating the EOF / past-end
+-- positions as end-of-file (srcLen) so a dangling-operator / unexpected-EOF
+-- error lands at the file's end rather than the synthetic token's bogus 0.
+locateOffset : Array Token -> Array Int -> Int -> Int -> Int
+locateOffset toks offs srcLen pos
+  | pos >= arrayLength toks = srcLen
+  | peekTok toks pos == TEof = srcLen
+  | otherwise = offsetAt offs srcLen pos
+
+-- Non-panicking analog of `resultDecls`: turn a finished parse into a structured
+-- result.  `PErr msg pos` → located error at `pos`; a `POk` that did not consume
+-- through `TEof` → "parse error" at the first leftover token (mirroring the
+-- OCaml oracle, which reports the cursor where the grammar got stuck).
+resultDeclsResult : String -> Array Token -> Array Int -> Int -> PR (List Decl) -> Result ParseError (List Decl)
+resultDeclsResult src toks offs srcLen (PErr msg pos) =
+  Err (mkLocated src toks offs srcLen msg pos)
+resultDeclsResult src toks offs srcLen (POk ds pos)
+  | peekTok toks pos == TEof = Ok ds
+  | otherwise = Err (mkLocated src toks offs srcLen "parse error" pos)
+
+-- offset(idx) → (line,col) → ParseError, single place so both arms agree.
+mkLocated : String -> Array Token -> Array Int -> Int -> String -> Int -> ParseError
+mkLocated src toks offs srcLen msg pos =
+  match offsetToLineCol src (locateOffset toks offs srcLen pos)
+    (line, col) => ParseError line col msg
+
+-- Parse `src`, returning `Ok decls` or a structured, located `Err ParseError`.
+-- Purely additive: does NOT touch the panicking `parse` path the happy-path
+-- drivers (check / eval / fmt) rely on.
+export
+parseResult : String -> Result ParseError (List Decl)
+parseResult src =
+  match tokenizeWithOffsets src
+    (tokList, offList) =>
+      let toks = arrayFromList tokList
+      let offs = arrayFromList offList
+      let srcLen = stringLength src
+      resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)

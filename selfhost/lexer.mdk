@@ -1014,6 +1014,30 @@ tokenizeWithLines s =
   let lines = offsetsToLines src (map snd pairs)
   (toks, lines)
 
+-- Tokenize and return each token paired with the 0-based char OFFSET of its
+-- first character.  Parallel to `tokenizeWithLines` but exposes the raw offset
+-- (not the derived line) so a consumer can recover both line AND column for a
+-- token index — the structured parse-error path (`parser.mdk`'s `parseResult`)
+-- needs the column to mirror the OCaml oracle's `L:C` format.  The Token stream
+-- (`map fst`) is byte-identical to `tokenize`.
+export
+tokenizeWithOffsets : String -> (List Token, List Int)
+tokenizeWithOffsets s =
+  let src = stringToChars s
+  let len = arrayLength src
+  let pairs = layoutWithOffsets src len
+  let toks = map fst pairs
+  let offs = map snd pairs
+  (toks, offs)
+
+-- Convert a 0-based char offset into `s` to a (1-based line, 0-based column)
+-- pair, mirroring the OCaml `pos_lnum` / `pos_cnum - pos_bol` reported by the
+-- parse-error oracle.  Reuses `posLineColFrom` (the comment side-channel's
+-- offset→line/col walk).  Used by `parseResult` to locate a structured error.
+export
+offsetToLineCol : String -> Int -> (Int, Int)
+offsetToLineCol s off = posLineColFrom (stringToChars s) off 0 1 0
+
 -- Convert a list of char offsets (in non-decreasing-ish source order — the
 -- synthetic tail tokens all share the EOF offset, which is monotone) to 1-based
 -- source lines in a single left-to-right walk over the source, mirroring
