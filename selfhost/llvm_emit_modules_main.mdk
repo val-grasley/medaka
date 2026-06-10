@@ -30,6 +30,7 @@ import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, meth
 import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface}
 import util.{concatMapList}
 import private_mangle.{mangleUnits}
+import dce.{dceFilter}
 
 main : <IO, Mut> Unit
 main = match args ()
@@ -72,7 +73,14 @@ runEmit runtimeDecls coreDecls modules =
   -- gate stays byte-identical; it only matters when two units share a private name.
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
-  let allDecls = coreD ++ concatMapList snd modules2
+  let allDecls0 = coreD ++ concatMapList snd modules2
+  -- DEAD-CODE ELIMINATION (Stage 3 #2a): drop plain top-level functions unreached
+  -- from main + impl/interface bodies, so an unreached-but-gapped prelude binding
+  -- (core.mdk's maximum/minimum/clamp → the open max/min gap) no longer aborts the
+  -- whole build.  CONSERVATIVE + SOUND: all impls/interfaces (dynamic-dispatch
+  -- targets) are retained whole; only unreachable DFunDefs are removed.  Order-
+  -- preserving ⇒ IR stays byte-stable.  See selfhost/dce.mdk.
+  let allDecls = dceFilter allDecls0
   -- E4-ready dict-name wiring (mirrors llvm_emit_typed_main.mdk): coreD is the
   -- elaborated prelude, allDecls the whole program.  No-op on the emit subset
   -- pre-E4, but already threaded for when arg-position dict-passing lands.

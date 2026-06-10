@@ -157,9 +157,11 @@ declDefines _ = []
 implMethodNameOf : ImplMethod -> String
 implMethodNameOf (ImplMethod n _ _) = n
 
+export
 declRefs : Decl -> List String
 declRefs d = concatMapList collectVars (declBodies d)
 
+export
 declBodies : Decl -> List Expr
 declBodies (DFunDef _ _ _ body) = [body]
 declBodies DImpl { methods, ... } = map implMethodBody methods
@@ -216,6 +218,23 @@ collectVars (EGuards arms) = concatMapList guardArmVars arms
 collectVars (EFunction arms) = concatMapList armVars arms
 collectVars (ESection (SecRight _ e0)) = collectVars e0
 collectVars (ESection (SecLeft e0 _)) = collectVars e0
+-- Post-typecheck elaborated reference nodes (EVarAt/EMethodAt/EDictAt all carry
+-- the referenced name as their first field).  These never appear in marker's own
+-- pre-elaboration input, so adding them is inert for marking — but it makes
+-- collectVars a sound reference walk for POST-elaboration consumers (DCE runs on
+-- the elaborated tree, where return-position methods are EMethodAt, constrained
+-- fns EDictAt, and resolved vars EVarAt).  Missing one here would silently drop a
+-- still-reachable binding.
+collectVars (EVarAt x _) = [x]
+collectVars (EMethodAt x _ _ _) = [x]
+collectVars (EDictAt x _) = [x]
+-- Remaining reference-bearing forms (for soundness as a DCE reference walk; some
+-- are desugared away before the prelude reaches DCE, but the user program may
+-- still carry them).  Missing one risks dropping a reachable binding.
+collectVars (EHeadAnnot e0 _) = collectVars e0
+collectVars (EAsPat _ e0) = collectVars e0
+collectVars (EMapLit _ kvs) = concatMapList mapLitPairVars kvs
+collectVars (ESetLit _ es) = concatMapList collectVars es
 collectVars _ = []
 
 letBindVars : LetBind -> List String
@@ -253,6 +272,9 @@ lcQualVars (LCLet _ _ e) = collectVars e
 interpVars : InterpPart -> List String
 interpVars (InterpStr _) = []
 interpVars (InterpExpr e) = collectVars e
+
+mapLitPairVars : (Expr, Expr) -> List String
+mapLitPairVars (k, v) = collectVars k ++ collectVars v
 
 -- ── Top-level entry ───────────────────────────────────────────────────────
 -- `preludeProg` is the desugared prelude (core.mdk); `prog` the desugared
