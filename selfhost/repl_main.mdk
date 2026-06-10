@@ -1,0 +1,32 @@
+-- Self-hosted REPL driver (Stage 4, Phase B.9)
+--
+-- Entry point: reads runtime.mdk and core.mdk paths from CLI args, then runs
+-- the interactive REPL loop.
+--
+--   medaka run selfhost/repl_main.mdk <runtime.mdk> <core.mdk>
+--
+-- When reading from a pipe (non-interactive), behaves identically — reads lines
+-- until EOF, printing prompts and results just as the OCaml `medaka repl` does.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import repl.{initSession, replLoop}
+
+main = match args ()
+  [runtimePath, corePath] => withFiles runtimePath corePath
+  _ => ePutStrLn "usage: medaka run selfhost/repl_main.mdk <runtime.mdk> <core.mdk>"
+
+withFiles : String -> String -> <IO, Mut> Unit
+withFiles runtimePath corePath = match readFile runtimePath
+  Err msg => ePutStrLn msg
+  Ok rsrc => withCore rsrc corePath
+
+withCore : String -> String -> <IO, Mut> Unit
+withCore rsrc corePath = match readFile corePath
+  Err msg => ePutStrLn msg
+  Ok csrc =>
+    let runtimeDecls = desugar (parse rsrc)
+    let preludeDecls = desugar (parse csrc)
+    let _ = initSession runtimeDecls preludeDecls
+    replLoop ()
