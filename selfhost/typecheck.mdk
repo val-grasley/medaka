@@ -4795,6 +4795,20 @@ checkMatchToLines runtimeDecls prog =
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
   joinNl (revLL matchWarnings.value)
 
+-- ── diagnostics entry point (selfhost/diagnostics.mdk bridge) ────────────
+-- Run the full typecheck pass (runtime-seeded) over [prog] and return the raw
+-- error strings + warning strings separately, so diagnostics.mdk can wrap them
+-- in structured Diag values without reformatting.
+export
+checkProgramDiags : List Decl -> List Decl -> <Mut> (List String, List String)
+checkProgramDiags runtimeDecls prog =
+  let _ = set_ref implInferEnabled False
+  let _ = set_ref matchWarnings []
+  let _ = set_ref matchOracle (buildOracle prog)
+  let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
+  let _ = checkCoherence coherenceUserDecls.value
+  (revLL typeErrors.value, revLL matchWarnings.value)
+
 -- ── multi-module typecheck (bootstrap front-end) ───────────────────────────
 -- Threads per-module exports in dependency order.  The prelude (core) is checked
 -- ONCE and ALL its schemes + ctors seed every module (it's implicitly visible);

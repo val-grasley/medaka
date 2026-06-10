@@ -710,10 +710,32 @@ resErrorSexp AsPatternMisplaced = "AsPatternMisplaced"
 
 -- ── resolve_program ───────────────────────────────────────────────────────
 -- runtimeDecls = runtime.mdk externs; preludeDecls = core.mdk; prog = target.
+export
 resolveProgram : List Decl -> List Decl -> List Decl -> List ResError
 resolveProgram runtimeDecls preludeDecls prog =
   let env = buildEnv runtimeDecls preludeDecls prog
   buildErrors preludeDecls prog ++ concatMapList (checkDecl env) prog
+
+-- Human-readable message for a ResError (mirrors lib/resolve.ml's pp_error).
+-- Used by diagnostics.mdk to produce "error: <msg>" lines.
+export
+ppResError : ResError -> String
+ppResError (UnboundVariable n) = "Unbound variable: " ++ n
+ppResError (UnknownConstructor n) = "Unknown constructor: " ++ n
+ppResError (UnknownType n) = "Unknown type: " ++ n
+ppResError (UnknownEffect n) = "Unknown effect: " ++ n
+ppResError (UnknownField n) = "Unknown field: " ++ n
+ppResError (FieldNotInRecord f r) = "Field " ++ f ++ " does not belong to record " ++ r
+ppResError (DuplicateDefinition k n) = "Duplicate " ++ k ++ ": " ++ n
+ppResError (UnknownInterface n) = "Unknown interface: " ++ n
+ppResError (MethodNotInInterface m i) = "Method '" ++ m ++ "' is not part of interface " ++ i
+ppResError (ExternWithBody n) = "extern '" ++ n ++ "' must not have a definition body"
+ppResError (PrivateNameAccess n m) = "'" ++ n ++ "' is private to module " ++ m
+ppResError (NoExportedConstructors n m) = "'" ++ n ++ "' exports no constructors from module " ++ m ++ " (it is exported abstractly); remove the `(..)` or export it with `public export`."
+ppResError (UnknownModule n) = "Unknown module: " ++ n
+ppResError QuestionMisplaced = "`?` is only allowed as the right-hand side of a `let` binding, e.g. `let x = expr ?`. Use `<-` inside do-blocks."
+ppResError AsPatternMisplaced = "`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern)."
+ppResError (NonRecursiveValueLet n) = "'" ++ n ++ "' is not in scope on the right-hand side of its own binding. Non-function `let` bindings are not recursive — write `let rec " ++ n ++ " = ...` to opt in to recursion (the RHS must be a lambda)."
 
 -- one S-expression per line (the harness sorts); matches diagdump output set
 export

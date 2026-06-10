@@ -1,0 +1,96 @@
+-- selfhost/diagnostics.mdk — structured error pipeline (Phase A.4)
+--
+-- Mirrors lib/diagnostics.ml: runs all pipeline stages accumulating diagnostics
+-- WITHOUT exit-on-first-error, returning a structured List Diag.
+--
+-- Design note: lib/diagnostics.ml carries Ast.loc (file/line/col) on every
+-- Diag because the OCaml AST threads source positions through every node.
+-- The selfhost AST intentionally strips locations — so Diag carries only
+-- severity + message.  Location attribution is deferred to a later phase
+-- when the selfhost AST gains span metadata.
+--
+-- Output format for the diff gate (diagdump --analyze):
+--   "error: <message>"   or   "warning: <message>"
+-- one per line, sorted by the harness.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import resolve.{resolveProgram, ppResError}
+import exhaust.{checkGuardExhaustiveness}
+import typecheck.{checkProgramDiags, setCoherenceUserDecls}
+
+-- ── types ──────────────────────────────────────────────────────────────────
+
+public export data Severity = SevError | SevWarning
+
+-- A structured diagnostic: severity + human-readable message.
+-- No location — the selfhost AST is location-stripped.
+public export data Diag = Diag Severity String
+
+-- ── rendering ──────────────────────────────────────────────────────────────
+
+export
+ppSeverity : Severity -> String
+ppSeverity SevError = "error"
+ppSeverity SevWarning = "warning"
+
+-- Render a diagnostic as "severity: message" (loc-free, diffable against
+-- the location-stripped oracle).
+export
+ppDiag : Diag -> String
+ppDiag (Diag sev msg) = ppSeverity sev ++ ": " ++ msg
+
+-- ── single-file analysis ───────────────────────────────────────────────────
+--
+-- Mirrors lib/diagnostics.ml's `analyze`: runs parse → desugar → resolve →
+-- guard-exhaustiveness → typecheck, accumulating all stages' diagnostics.
+-- Does NOT stop on the first error (errors accumulate).
+--
+-- Arguments: runtimeSrc (runtime.mdk source), coreSrc (core.mdk source),
+-- progSrc (target source).
+
+export
+analyze : String -> String -> String -> <Mut> List Diag
+analyze runtimeSrc coreSrc progSrc =
+  let raw = parse progSrc
+  -- guard-exhaustiveness runs on the RAW program (before desugar), mirroring
+  -- diagnostics.ml's guard-exhaustiveness pass on the pre-desugar AST.
+  let guardWarns = checkGuardExhaustiveness raw
+  let desugared = desugar raw
+  let runtimeP = desugar (parse runtimeSrc)
+  let coreP = desugar (parse coreSrc)
+  -- resolve over runtime + core (prelude) + target
+  let resErrs = resolveProgram runtimeP coreP desugared
+  let resDiags = map (Diag SevError << ppResError) resErrs
+  -- Stage the user decls for coherence (mirrors check.mdk's setCoherenceUserDecls).
+  let _ = setCoherenceUserDecls desugared
+  -- Only run typecheck when resolve found no errors (same gate as diagnostics.ml).
+  let tcDiags = match resErrs
+    [] =>
+      let (tcErrs, tcWarns) = checkProgramDiags runtimeP (coreP ++ desugared)
+      map (Diag SevError) tcErrs ++ map (Diag SevWarning << stripWarnPrefix) tcWarns
+    _ => []
+  let guardDiags = map (Diag SevWarning << stripWarnPrefix) guardWarns
+  guardDiags ++ resDiags ++ tcDiags
+
+-- Strip the leading "Warning: " prefix that exhaust/typecheck include in their
+-- warning strings, so ppDiag emits "warning: <msg>" not "warning: Warning: <msg>".
+stripWarnPrefix : String -> String
+stripWarnPrefix s =
+  if stringSlice 0 9 s == "Warning: " then stringSlice 9 (stringLength s) s
+  else s
+
+-- ── text entry point (for diff gate) ──────────────────────────────────────
+
+export
+analyzeToLines : String -> String -> String -> <Mut> String
+analyzeToLines runtimeSrc coreSrc progSrc =
+  joinNl (map ppDiag (analyze runtimeSrc coreSrc progSrc))
+
+-- ── helpers ────────────────────────────────────────────────────────────────
+
+joinNl : List String -> String
+joinNl [] = ""
+joinNl [x] = x
+joinNl (x :: xs) = x ++ "\n" ++ joinNl xs

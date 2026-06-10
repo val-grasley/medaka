@@ -75,7 +75,7 @@ let sexp_error : Resolve.error -> string = function
   | Resolve.AsPatternMisplaced       -> "AsPatternMisplaced"
   | Resolve.NonRecursiveValueLet n   -> node "NonRecursiveValueLet" [esc_str n]
 
-type mode = Resolve_m | Exhaust_m | CheckMatch_m | ResolveModules_m
+type mode = Resolve_m | Exhaust_m | CheckMatch_m | ResolveModules_m | Analyze_m
 
 (* Strip the "file:line:col: " location prefix from a warning.  Every warning is
    "<loc>Warning: <msg>", so keep from the first "Warning:" (matches the
@@ -86,6 +86,23 @@ let strip_warning_loc s =
   let rec find i =
     if i + m > n then s
     else if String.sub s i m = needle then String.sub s i (n - i)
+    else find (i + 1)
+  in find 0
+
+(* Strip "file:line:col: " location prefix from a diagnostic message.  Used
+   for guard-exhaustiveness warnings which embed the location in the message
+   string (the self-hosted AST strips locations, so it can't reproduce them).
+   We strip everything up to and including the FIRST ": " after a location-like
+   prefix, then the "Warning: " label the message itself carries (since
+   ppDiag adds "warning: ").
+   A location prefix looks like "<path>:<int>:<int>: ". *)
+let strip_msg_loc msg =
+  (* find "Warning: " in the message and keep from there on *)
+  let needle = "Warning: " in
+  let n = String.length msg and m = String.length needle in
+  let rec find i =
+    if i + m > n then msg  (* no prefix found — keep as-is *)
+    else if String.sub msg i m = needle then String.sub msg (i + m) (n - i - m)
     else find (i + 1)
   in find 0
 
@@ -120,11 +137,12 @@ let () =
       | "--exhaust"         -> mode := Some Exhaust_m
       | "--check-match"     -> mode := Some CheckMatch_m
       | "--resolve-modules" -> mode := Some ResolveModules_m
+      | "--analyze"         -> mode := Some Analyze_m
       | _                   -> files := a :: !files) Sys.argv;
   let files = List.rev !files in
   let mode = match !mode with
     | Some m -> m
-    | None -> prerr_endline "usage: diagdump (--resolve | --exhaust | --check-match | --resolve-modules) <file...>"; exit 2 in
+    | None -> prerr_endline "usage: diagdump (--resolve | --exhaust | --check-match | --resolve-modules | --analyze) <file...>"; exit 2 in
   (* The multi-module path consumes ALL files (in order); the single-file paths
      use the first (last-given) one. *)
   if mode = ResolveModules_m then begin
@@ -137,6 +155,23 @@ let () =
       List.map (fun (e, _loc) -> sexp_error e) errs
     ) files in
     print_string (String.concat "\n" (List.sort compare lines))
+  end else if mode = Analyze_m then begin
+    (* --analyze: call Diagnostics.analyze for each file, emit location-stripped
+       "severity: message" lines (sorted).  Mirrors selfhost/diagnostics_main.mdk.
+       Multiple files: each file's diagnostics are emitted in order; the harness
+       sorts the union so file order doesn't matter. *)
+    let lines = List.concat_map (fun path ->
+      let src = read_file path in
+      Diagnostics.analyze ~file:path ~source:src
+      |> List.map (fun d ->
+        let sev = match d.Diagnostics.severity with
+          | Diagnostics.Error   -> "error"
+          | Diagnostics.Warning -> "warning"
+        in
+        let msg = strip_msg_loc d.Diagnostics.message in
+        sev ^ ": " ^ msg)
+    ) files in
+    print_string (String.concat "\n" (List.sort compare lines))
   end else begin
   let path = match files with
     | p :: _ -> p
@@ -144,6 +179,7 @@ let () =
   let prog = parse_file path in
   let lines = match mode with
     | ResolveModules_m -> assert false  (* handled above *)
+    | Analyze_m        -> assert false  (* handled above *)
     | Resolve_m ->
         let prog = Desugar.desugar_program prog in
         List.map (fun (e, _loc) -> sexp_error e) (Resolve.resolve_program prog)

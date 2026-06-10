@@ -461,6 +461,7 @@ interpBinds (InterpStr _) = []
 interpBinds (InterpExpr e) = collectLetBinds e
 
 -- ── top-level entry ───────────────────────────────────────────────────────
+export
 checkGuardExhaustiveness : List Decl -> List String
 checkGuardExhaustiveness prog =
   let oracle = buildOracle prog
