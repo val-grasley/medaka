@@ -192,12 +192,13 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
    inclusive ranges, string interpolation, every `do`/guard form, record/variant
    update, etc.). One native==interpreter fixture per construct in `SYNTAX.md`.
 
-   *Adjacent finding (2026-06-09, NOT a native gap — interpreter has it too):*
-   `do`-block sequencing of IO actions (`do { println a; println b }`) fails in
-   BOTH native and the tree-walker — the `do`→`andThen`/`pure` desugar wants an
-   `IO`/`Monad` instance the prelude doesn't provide (interp errors `Type mismatch:
-   a b vs Unit`). `let _ = println a` sequencing works in both. A language/prelude
-   gap (missing IO monad), tracked here so it isn't mistaken for a backend gap.
+   *Construct note (verified 2026-06-09):* multi-statement imperative IO uses a
+   **bare indented block** (SYNTAX.md §"do notation") — `main` is a statement
+   block; Medaka IO is deliberately **NOT** a monad. `medaka build` compiles it
+   correctly: a two-`println` bare-block `main` is native==interpreter
+   (`one\ntwo\n()`). `do` is monadic sugar (Option/Result/custom, lowers to
+   `andThen`/`pure`) — intentionally not an IO sequencer; reaching for `do` to
+   sequence IO is a usage error, not a backend gap.
 3. **Port OCaml test suites to native Medaka.** Re-express `test/*.ml` (the
    alcotest suites — parser/typecheck/eval/resolve/exhaust/…) as Medaka tests
    (`medaka test`) so the suite stops depending on `lib/`. This is the bulk of
