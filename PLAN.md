@@ -225,6 +225,16 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   mutual-rec untouched; **self-compile fixpoint holds**. **Unlocks the C2 + C9
   sig-typed-param residuals** (`getA a = a.x`, `g s = s.[0]` now resolve). Fixture +
   all gates green, no golden re-bless.
+- **C7** — ✅ **CLOSED (`c93c7b9`, dict-eval path).** `RKey` now carries the
+  canonical impl key (`iface|args|name`, mirror `impl_key`) and `hasTag` matches it,
+  but ONLY upgraded at sites with a real head collision (≥2 impls share a head tycon)
+  — non-colliding sites + the native backend stay byte-identical. Two non-overlapping
+  same-head impls (`Pair Int Bool` / `Pair Bool Int`) now dispatch correctly ==
+  oracle; fixpoint holds. **Residual (C7-native, follow-up):** the native Core-IR/LLVM
+  backend is still head-tag-keyed (`CImplTagged`/`implFnName`), so a same-head
+  collision resolves on the interpreter but hard-errors natively (no silent
+  mis-dispatch). Closing it touches the emitter tag scheme broadly — out of C7 scope;
+  relevant to native-canonical completeness.
 - **C4** — ⏭️ **SKIPPED (design-blocked, not a pure gap).** Selfhost makes top-level
   nullary bindings lazy `VThunk`s — the *deliberate* Phase-125 design — so an
   unreferenced `sideEffect = println …` doesn't run; the oracle forces all nullary
@@ -254,7 +264,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 **Near-term sequence (front-loaded order, decided 2026-06-09):**
 
 > **Overnight autonomous run (2026-06-09 22:xx → 07:00 PDT):** working the audit
-> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6, C9, C1. **C4 skipped** (design — Phase-125 lazy nullary, needs user input). **L1 deferred** (E4-gated — fix
+> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6, C9, C1, C7. **C4 skipped** (design — Phase-125 lazy nullary, needs user input). **L1 deferred** (E4-gated — fix
 > with the E4 work). **L2 deferred for the unattended run** (latent + arg-tag-masked;
 > the full fix touches the fragile route-keying area + the interim typecheck error
 > risks over-rejection — wants careful attention near E4, not unattended). Proceeding
