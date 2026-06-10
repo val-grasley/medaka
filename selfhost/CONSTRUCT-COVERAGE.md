@@ -13,7 +13,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 
 ## Summary
 
-**115 PASS, 15 GAP** across 37 construct families.
+**123 PASS fixtures** (gate `build_construct_coverage.sh` is the authoritative PASS list; the per-row matrix below may lag — the **§Gaps** sections are authoritative for each gap's closed/open status). Started 114 PASS / 15 GAP; closed F1·H-a·D1·D2·B1·B2 overnight. Confirmed NOT gaps: A1 (inline `|` match — ref rejects too), A4 (negative literal pattern — ref rejects too). Re-scoped: A2/A3 range patterns = selfhost typecheck (`PRng` in `inferPat`), not parser.
 
 ---
 
