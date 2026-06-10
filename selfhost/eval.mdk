@@ -483,6 +483,11 @@ matchPat (PList pats) (VList vals)
 matchPat (PAs x p) v = matchAs x p v
 matchPat (PRec _ fields _) (VRecord _ recFields) =
   matchRecFields fields recFields
+matchPat (PRec ctor fields _) (VCon ctor2 vals)
+  | ctor == ctor2 = match lookupAssoc ctor ctorFieldOrdersRef.value
+      Some order => matchRecFields fields (zipFieldOrder order vals)
+      None => None
+  | otherwise = None
 matchPat (PRng (LInt lo) (LInt hi) incl) (VInt v)
   | inIntRange v lo hi incl = Some []
 matchPat (PRng (LChar lo) (LChar hi) incl) (VChar c)
@@ -505,6 +510,14 @@ matchRecFields [] _ = Some []
 matchRecFields ((RecPatField fname mp)::rest) recFields = match lookupAssoc fname recFields
   None => None
   Some v => matchRecField fname mp v rest recFields
+
+-- Zip a registered ctor's field order with its positional VCon vals into a
+-- name->value assoc, so a record pattern can match a named-field data variant
+-- (mirrors lib/eval.ml match_pat's PRec/VCon arm via ctor_field_order).
+zipFieldOrder : List String -> List Value -> List (String, Value)
+zipFieldOrder [] _ = []
+zipFieldOrder _ [] = []
+zipFieldOrder (f::fs) (v::vs) = (f, v) :: zipFieldOrder fs vs
 
 matchRecField : String -> Option Pat -> Value -> List RecPatField -> List (String, Value) -> Option (List (String, Value))
 matchRecField fname None v rest recFields = match matchRecFields rest recFields
@@ -824,7 +837,10 @@ eval env (ETuple es) = VTuple (map (eval env) es)
 eval env (EListLit es) = VList (map (eval env) es)
 eval env (EArrayLit es) = VArray (arrayFromList (map (eval env) es))
 eval env (ERecordCreate name fields) =
-  VRecord name (map (evalFieldAssign env) fields)
+  let assigns = map (evalFieldAssign env) fields
+  match lookupAssoc name ctorFieldOrdersRef.value
+    Some order => VCon name (recordCreateVals name order assigns)
+    None => VRecord name assigns
 eval env (ERecordUpdate base fields) =
   evalRecordUpdate (eval env base) (map (evalFieldAssign env) fields)
 eval env (EFieldAccess e "value") = evalValueField (eval env e)
@@ -895,6 +911,16 @@ rangeArrayMk ns = VArray (arrayFromList (map VInt ns))
 
 evalFieldAssign : EvalEnv -> FieldAssign -> <Mut> (String, Value)
 evalFieldAssign env (FieldAssign k e) = (k, eval env e)
+
+-- A named-field DATA constructor (registered in ctorFieldOrdersRef) builds a
+-- positional VCon, reordering the field assignments into declaration order
+-- (mirrors lib/eval.ml ERecordCreate's ctor_field_order path). Plain record
+-- declarations are not registered and fall through to VRecord.
+recordCreateVals : String -> List String -> List (String, Value) -> List Value
+recordCreateVals _ [] _ = []
+recordCreateVals con (f::fs) assigns = match lookupAssoc f assigns
+  Some v => v :: recordCreateVals con fs assigns
+  None => panic ("missing field: " ++ f)
 
 export
 evalRecordUpdate : Value -> List (String, Value) -> Value
@@ -1332,6 +1358,7 @@ defaultName (IfaceMethod _ _ None) = []
 evalProgram : List Decl -> <Mut> List (String, Value)
 evalProgram prog =
   let _ = set_ref ctorToTypeRef (buildCtorToType prog)
+  let _ = set_ref ctorFieldOrdersRef (buildCtorFieldOrders prog)
   let ctors = collectCtors prog
   let defs = funDefs prog
   let groups = map (mkGroup defs) (funGroupNames defs [])

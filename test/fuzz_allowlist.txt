@@ -19,20 +19,11 @@
 # fuzzer's Tier-B target IS the tree-walker, so derived-ADT comparison is
 # EXPECTED to agree — NOT allowlisted.  (Only native-`<` is deferred, and the
 # native tier is out of MVP scope.)
-
-# --- KNOWN GAP: derived Eq/Ord/Debug on a named-field `data` variant ---------
-# `data T = C { f : .. } deriving (..)` : the selfhost tree-walker's deriving
-# generator (selfhost/desugar.mdk showArm/conPatVars) builds a POSITIONAL
-# `PCon C [..]` pattern for the impl body, which fails to match the VRecord
-# value at eval time -> non-exhaustive panic at selfhost/eval.mdk:1050.  The
-# OCaml oracle handles it (renders `C "A" 30`).  Filed here as a NEW divergence
-# discovered by this work (see the fuzzer report); related docs:
-#   - selfhost/CONSTRUCT-COVERAGE.md:189  "Record deriving (Debug) | GAP"
-#     (documents the native-emitter & parser side; this is the distinct
-#      tree-walker eval-time panic on the *derived impl pattern shape*)
-#   - PLAN.md OBS4 (record CONSTRUCTION missing-field check — adjacent, distinct)
-# The generator does NOT emit named-field data variants, so this should never
-# fire; it is the classifier of record-bearing corpus/hand inputs.  Match is on
-# the SOURCE: a `data ... = ... { ... } ... deriving` (named-field variant that
-# derives), which is the only shape that triggers the tree-walker panic.
-^(data|record).*[{].*[}].*deriving
+#
+# NOTE on named-field `data` deriving: derived Eq/Ord/Debug on a named-field
+# `data` variant (`data T = C { f : .. } deriving (..)`) is now CLOSED on the
+# selfhost tree-walker too — the tree-walker's ERecordCreate produces a
+# positional VCon for registered named-field constructors (mirroring lib/eval.ml
+# ctor_field_order), so the derived positional `PCon` impl bodies match.  This
+# was previously allowlisted as a known divergence; it is now fixed and EXPECTED
+# to agree, so the entry has been removed.
