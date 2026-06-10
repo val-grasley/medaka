@@ -103,9 +103,26 @@ runSingle runtimeDecls coreDecls userDecls examples synthDecls =
   let userNames = funNamesOf allUser
   let livePrelude = if programIsCore userDecls then [] else dropShadowedExp userNames coreDecls
   let combined = livePrelude ++ allUser
-  let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames allUser
+  let dictNames = coreDictNames userDecls livePrelude combined allUser
   let env = evalProgram (elaborateDict runtimeDecls dictNames userNames combined)
   buildDetails (Ok env) examples
+
+-- The eval/golden dict-set.  Normal file: the prelude's return-position
+-- constrained fns (when/unless via `pure`) + the file's own constrained sigs.
+-- When the file IS core (`medaka test stdlib/core.mdk`), `livePrelude` is empty
+-- and `constrainedSigNames` of core would sweep in core's ARG-position helpers
+-- (neq/elem/any/all/find/…).  Those must STAY OUT of the eval env: arg-tag
+-- resolves them in eval, and the prop/doctest bodies call them WITHOUT a dict
+-- (the bodies are not dict-passed), so a leading dict param would under-apply
+-- the 2-arg call to a closure (the `neq is the negation of eq` hang: a closure
+-- never `== True`, the prop "fails" everywhere, and the Int shrinker oscillates
+-- 0↔1 forever).  Mirror the OCaml path, which dict-passes ONLY return-position
+-- constrained fns through core: treat core's own decls as the prelude and keep
+-- arg-position helpers out.
+coreDictNames : List Decl -> List Decl -> List Decl -> List Decl -> List String
+coreDictNames userDecls livePrelude combined allUser
+  | programIsCore userDecls = preludeReturnPosDictNames userDecls combined
+  | otherwise = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames allUser
 
 -- Mirror of lib/typecheck.ml's program_is_core (also selfhost/resolve.mdk's
 -- programIsCore): the prelude is the unique program declaring BOTH the
@@ -219,7 +236,7 @@ runPropsSingle runtimeDecls coreDecls userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = if programIsCore userDecls then [] else dropShadowedExp userNames coreDecls
   let combined = livePrelude ++ userDecls
-  let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames userDecls
+  let dictNames = coreDictNames userDecls livePrelude combined userDecls
   let env = evalProgram (elaborateDict runtimeDecls dictNames userNames combined)
   runAllProps env userDecls
 

@@ -21,16 +21,13 @@
 #   stdlib/json.mdk      multi-module doctests (imports list + string)
 #   stdlib/toml.mdk      multi-module doctests (imports string)
 #   stdlib/list.mdk      multi-module doctests + passing PROPS
+#   stdlib/core.mdk      core-as-prelude-AND-target (programIsCore): full doctest
+#                        + prop suite, all passing props
 #   test/selfhost_test_fixtures/mixed.mdk
 #                        single-file: passing + FAILING doctest + block-comment
 #                        + a passing prop (exercises the FAIL report path)
 #
 # STILL OUT OF SCOPE (selfhost-pipeline capability gaps, not doctest-machinery):
-#   stdlib/core.mdk — running core's FULL doctest+prop suite through the selfhost
-#     test runner HANGS (>40min, no output; the prelude-as-target programIsCore
-#     path loops or is pathologically slow on some core example/prop).  array/map/
-#     set/the OBS3 EHeadAnnot + arrayCopy/charCode work landed and pass; core alone
-#     is deferred until the hang is root-caused.  Reduced from the fixture set.
 #   stdlib/hash_map.mdk / hash_set.mdk — need byte-identical hashInt/hashString
 #     (SplitMix64 / FNV-1a) in the selfhost eval oracle.  Those algorithms require
 #     64-bit wrapping bitwise xor/shift, which selfhost Medaka has no extern for
@@ -66,7 +63,8 @@ CORE="$ROOT/stdlib/core.mdk"
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT/stdlib/string.mdk \
+  files="$ROOT/stdlib/core.mdk \
+         $ROOT/stdlib/string.mdk \
          $ROOT/stdlib/mut_array.mdk \
          $ROOT/stdlib/json.mdk \
          $ROOT/stdlib/toml.mdk \
