@@ -208,6 +208,18 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   gated OFF on the plain-check path; the oracle type-checks ALL default bodies
   unconditionally. Full oracle-parity on *unconstrained* default-body diagnostics
   needs extending `inferDefaultBodies` to all defaults + ungating — out of C8 scope.
+- **C6** — ✅ **CLOSED (`2926307`).** Memoised nullary return-position impl thunks
+  (`implMethodValue` → `memoThunk`: a private `Ref (Option Value)` evaluated once,
+  read back after) so a point-free impl body runs its effects once == oracle (was
+  twice). Value-preserving; Phase-125 force *timing* untouched (that's C4). Fixture
+  + all gates green incl. native fixpoint.
+- **C4** — ⏭️ **SKIPPED (design-blocked, not a pure gap).** Selfhost makes top-level
+  nullary bindings lazy `VThunk`s — the *deliberate* Phase-125 design — so an
+  unreferenced `sideEffect = println …` doesn't run; the oracle forces all nullary
+  thunks in source order. The audit itself offers "fix OR document the divergence,"
+  i.e. forcing-to-match-oracle would partly revert Phase 125 = a **language-design
+  decision** (eager vs lazy top-level nullary effects). Deferred for user input; NOT
+  closed autonomously.
 - **S3** — ✅ **CLOSED (`6140e0a`).** Ported `check_coherence` (Phase 68) into
   selfhost as `checkCoherence` — overlap rule mirrors `impls_overlap` byte-for-byte
   (wildcard unify with resolve-before-bind; `default` dup → `Multiple default impls`,
@@ -230,7 +242,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 **Near-term sequence (front-loaded order, decided 2026-06-09):**
 
 > **Overnight autonomous run (2026-06-09 22:xx → 07:00 PDT):** working the audit
-> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8. **L1 deferred** (E4-gated — fix
+> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6. **C4 skipped** (design — Phase-125 lazy nullary, needs user input). **L1 deferred** (E4-gated — fix
 > with the E4 work). **L2 deferred for the unattended run** (latent + arg-tag-masked;
 > the full fix touches the fragile route-keying area + the interim typecheck error
 > risks over-rejection — wants careful attention near E4, not unattended). Proceeding
