@@ -293,6 +293,25 @@ pendingSites = Ref []
 pendingBinopSites : Ref (List (String, Ref Route, Mono))
 pendingBinopSites = Ref []
 
+-- Error-path BLOCKER B4 (audit finding D3): missing-impl dispatch obligations.
+-- methodIfaceParamsRef maps each interface method NAME → (iface name, the iface's
+-- typarams, the method's declared AST type).  Built once per checkProgramSeeded
+-- from the program's DInterface decls.  At each EVar/EMethodAt occurrence of a
+-- registered method, recordImplObligation captures the OCCURRENCE mono so that,
+-- after inference, checkImplObligations can read what the interface params
+-- resolved to (parallel-walking the declared type against the normalized
+-- occurrence mono) and reject the call when those concrete head types have NO
+-- matching impl in the program — mirroring lib/typecheck.ml's check_method_usages
+-- (`No impl of … for …`, lib/typecheck.ml:3845).  Skips while a param is still a
+-- polymorphic tyvar (deferred to the caller, exactly like the oracle).
+methodIfaceParamsRef : Ref (List (String, (String, List String, Ty)))
+methodIfaceParamsRef = Ref []
+
+-- one entry per occurrence of a registered interface method: (iface, typarams,
+-- declared method Ty, the occurrence's instantiated mono).  Resolved post-inference.
+pendingImplObligations : Ref (List (String, List String, Ty, Mono))
+pendingImplObligations = Ref []
+
 -- dict-passing state (the typed pipeline's `=>`-constraint layer):
 --   activeDictVars   : constraint tyvar id → the dict parameter name a method
 --                      occurrence at that variable's type reads (RDict).
@@ -650,6 +669,8 @@ resetState _ =
   let _ = set_ref recordsRef []
   let _ = set_ref pendingSites []
   let _ = set_ref pendingBinopSites []
+  let _ = set_ref methodIfaceParamsRef []
+  let _ = set_ref pendingImplObligations []
   let _ = set_ref pendingArgSites []
   let _ = set_ref pendingArgStamps []
   let _ = set_ref activeDictVars []
@@ -1413,6 +1434,7 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
   Some s =>
     let inst = instantiateTracked s
     let _ = recordMethodDicts name methodRef (snd inst)
+    let _ = recordImplObligation name (fst inst)
     match argDispatchOf name
       Some idx =>
         let _ = recordArgStamp name tagRef implRef idx (fst inst)
@@ -1899,8 +1921,20 @@ inferInfix env op l r =
 
 inferVar : TcEnv -> String -> <Mut> Mono
 inferVar env x = match lookupVar env x
-  Some s => if argMeasureEnabled.value then inferVarMeasured x s else instantiate s
+  Some s => if argMeasureEnabled.value then inferVarMeasured x s else recordImplObligation x (instantiate s)
   None => unboundVarFresh x
+
+-- Error-path B4: if [x] is a registered interface method, record this occurrence's
+-- (post-instantiation) mono so checkImplObligations can verify a matching impl
+-- exists once the dispatch type is resolved.  Returns the mono unchanged.  A
+-- non-method name records nothing (the common case).  The marked path records the
+-- same via inferMethodAt; the bare typecheck_main path records here.
+recordImplObligation : String -> Mono -> <Mut> Mono
+recordImplObligation x mono = match lookupAssocS x methodIfaceParamsRef.value
+  None => mono
+  Some (iface, typarams, mty) =>
+    let _ = set_ref pendingImplObligations ((iface, typarams, mty, mono) :: pendingImplObligations.value)
+    mono
 
 inferApp : Mono -> Mono -> <Mut> Mono
 inferApp ft xt =
@@ -3676,6 +3710,7 @@ checkProgramSeeded seed prog =
   let _ = checkLetRecDecls prog
   let dataEnv = registerAllData initialEnv prog
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
+  let _ = registerMethodIfaceParamsAll prog
   let env1 = extendVars (extendVars dataEnv seed) globalS
   let defs = funDefs prog
   let sigs = sigsOf prog
@@ -3689,6 +3724,10 @@ checkProgramSeeded seed prog =
   -- method-level constraint (foldMap's default), registering the constraint var so
   -- the in-body return-position ref (`empty`) routes RDict to `$dict_<method>_<slot>`.
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
+  -- Error-path B4: now every method occurrence's dispatch type is fully resolved;
+  -- reject any whose concrete head type has no matching impl (mirrors the oracle's
+  -- check_method_usages, lib/typecheck.ml:3845).
+  let _ = checkImplObligations prog pendingImplObligations.value
   globalS ++ topSchemes
 
 -- gate: impl-body inference runs only when the elaborate/dict path turned it on
@@ -3737,6 +3776,141 @@ inferDefaultMethod env (IfaceMethod mname _ (Some (MethodDefault pats body))) = 
       let _ = unify (fst inst) (inferClauses env [(pats, body)])
       registerMethodDictSlots mname 0 ids (snd inst)
 inferDefaultMethod _ _ = ()
+
+-- ── Error-path B4: missing-impl dispatch-obligation check ──────────────────
+-- Mirror lib/typecheck.ml's check_method_usages (the `No impl of … for …` reject,
+-- :3845).  For each recorded interface-method occurrence, recover the types the
+-- interface params resolved to at this site (dispatchMonosOf), and — ONLY when
+-- they are all CONCRETE (a resolved head tycon, no remaining polymorphic var, so
+-- a constrained-generic `Ord a =>` site whose receiver is still `a` is correctly
+-- deferred to the caller) — verify the program declares a matching impl.  None →
+-- `No impl of <iface> for <args>`.  An impl block (even one defaulting every
+-- method to its interface default body) creates a head entry, so a default-method
+-- call on a type WITH an impl is satisfied; a default-method call on a type with
+-- NO impl is rejected — both matching the oracle.
+checkImplObligations : List Decl -> List (String, List String, Ty, Mono) -> <Mut> Unit
+checkImplObligations prog obligations = checkImplObligationsGo (implHeadsOf prog) obligations
+
+checkImplObligationsGo : List (String, List Ty) -> List (String, List String, Ty, Mono) -> <Mut> Unit
+checkImplObligationsGo _ [] = ()
+checkImplObligationsGo heads ((iface, typarams, mty, occ) :: rest) =
+  let _ = checkOneImplObligation heads iface typarams mty occ
+  checkImplObligationsGo heads rest
+
+checkOneImplObligation : List (String, List Ty) -> String -> List String -> Ty -> Mono -> <Mut> Unit
+checkOneImplObligation heads iface typarams mty occ =
+  let args = dispatchMonosOf typarams mty occ
+  if isEmptyL args then ()
+  else if not (allConcreteHeads args) then ()
+  else if implMatches heads iface args then ()
+  else set_ref typeErrors (noImplFoundMsg iface args :: typeErrors.value)
+
+noImplFoundMsg : String -> List Mono -> <Mut> String
+noImplFoundMsg iface args = "No impl of " ++ iface ++ " for " ++ ppMonosShared args
+
+-- the (iface, head-arg types) of every USER/prelude impl declared in [prog].
+implHeadsOf : List Decl -> List (String, List Ty)
+implHeadsOf prog = concatMapL implHeadOf prog
+
+implHeadOf : Decl -> List (String, List Ty)
+implHeadOf (DAttrib _ d) = implHeadOf d
+implHeadOf (DImpl { iface, tys, ... }) = [(iface, tys)]
+implHeadOf _ = []
+
+-- the dispatch (interface-param) monos at one occurrence: parallel-walk the
+-- declared method type against the normalized occurrence mono; wherever the
+-- declared type is a bare interface-param tyvar, read the corresponding sub-mono.
+-- Returns one entry per interface param, in typaram order (deduplicated by name).
+-- An empty result means the walk found no iface-param position (shadowed method /
+-- shape mismatch) — the caller then skips, so a shadow never produces a false
+-- reject.
+dispatchMonosOf : List String -> Ty -> Mono -> List Mono
+dispatchMonosOf typarams mty occ =
+  let pairs = walkDispatch typarams (stripTyConstraints mty) occ
+  collectByParam typarams pairs
+
+-- strip leading `=>` constraints / effect rows so the walk aligns the method's
+-- value type with the occurrence mono.
+stripTyConstraints : Ty -> Ty
+stripTyConstraints (TyConstrained _ t) = stripTyConstraints t
+stripTyConstraints (TyEffect _ _ t) = stripTyConstraints t
+stripTyConstraints t = t
+
+-- parallel structural walk collecting (paramName, mono) wherever the declared
+-- type is a bare iface-param tyvar.  Other positions recurse; a shape mismatch
+-- (declared has structure the occurrence lacks) simply stops that branch.
+walkDispatch : List String -> Ty -> Mono -> List (String, Mono)
+walkDispatch typarams (TyVar n) m
+  | containsName n typarams = [(n, normalize m)]
+  | otherwise = []
+walkDispatch typarams (TyFun a b) m = match normalize m
+  TFun ma _ mb => walkDispatch typarams (stripTyConstraints a) ma ++ walkDispatch typarams (stripTyConstraints b) mb
+  _ => []
+walkDispatch typarams (TyApp a b) m = match normalize m
+  TApp ma mb => walkDispatch typarams a ma ++ walkDispatch typarams b mb
+  _ => []
+walkDispatch typarams (TyTuple ts) m = match normalize m
+  TTuple ms => concatMapL (p => walkDispatch typarams (fst p) (snd p)) (zipL ts ms)
+  _ => []
+walkDispatch _ _ _ = []
+
+-- one mono per interface param, in declaration order; if ANY param has no
+-- recovered binding the whole obligation is abandoned (return [] → caller skips).
+collectByParam : List String -> List (String, Mono) -> List Mono
+collectByParam typarams pairs = match collectByParamGo typarams pairs
+  None => []
+  Some ms => ms
+
+collectByParamGo : List String -> List (String, Mono) -> Option (List Mono)
+collectByParamGo [] _ = Some []
+collectByParamGo (p :: rest) pairs = match lookupAssocS p pairs
+  None => None
+  Some m => match collectByParamGo rest pairs
+    None => None
+    Some ms => Some (m :: ms)
+
+-- every dispatch mono has a resolved concrete head tycon (no remaining bare
+-- TVar at the head) — the oracle's is_concrete gate, restricted to the head (a
+-- concrete head with free args, e.g. `Maybe a`, still uniquely picks the impl).
+allConcreteHeads : List Mono -> Bool
+allConcreteHeads [] = True
+allConcreteHeads (m :: rest) = isSome (headTyconMono m) && allConcreteHeads rest
+
+-- does some impl of [iface] in [heads] match the concrete dispatch monos?  Each
+-- head-arg type pattern is matched against the corresponding mono via matchTyMono
+-- (a TyVar in the head is a wildcard; a parametric impl `impl Eq (List a)` thus
+-- matches `List Int`).
+implMatches : List (String, List Ty) -> String -> List Mono -> <Mut> Bool
+implMatches [] _ _ = False
+implMatches ((iface2, tys) :: rest) iface args
+  | iface2 == iface && implHeadMatchesArgs tys args = True
+  | otherwise = implMatches rest iface args
+
+implHeadMatchesArgs : List Ty -> List Mono -> <Mut> Bool
+implHeadMatchesArgs tys args
+  | lengthL tys == lengthL args = allHeadArgsMatch (zipL tys args)
+  | otherwise = False
+
+allHeadArgsMatch : List (Ty, Mono) -> <Mut> Bool
+allHeadArgsMatch [] = True
+allHeadArgsMatch ((ty, m) :: rest) = match matchTyMono ty m
+  Some _ => allHeadArgsMatch rest
+  None => False
+
+-- render the dispatch monos space-separated under ONE shared naming context
+-- (mirrors lib/typecheck.ml's pp_monos), so distinct free vars don't all collapse
+-- to "a".  Concrete heads (the only case that reaches an error) render as the
+-- type name.
+ppMonosShared : List Mono -> <Mut> String
+ppMonosShared ms =
+  let ctx = Ref []
+  let cnt = Ref 0
+  joinWith " " (ppEachShared ctx cnt ms)
+
+ppEachShared : Ref (List (Int, String)) -> Ref Int -> List Mono -> <Mut> List String
+ppEachShared _ _ [] = []
+ppEachShared ctx cnt (m :: rest) = ppGo ctx cnt 2 m :: ppEachShared ctx cnt rest
+
 
 -- register, per slot, the default body's constraint var id → `$dict_<method>_<slot>`
 -- in activeDictVars, so an in-body method ref unified to that var routes RDict.
@@ -3906,6 +4080,28 @@ ifaceMethodSchemes (d :: rest) = declIfaceMethods d ++ ifaceMethodSchemes rest
 declIfaceMethods : Decl -> <Mut> List (String, Scheme)
 declIfaceMethods (DInterface { typarams, methods, ... }) = methodSchemes typarams methods
 declIfaceMethods _ = []
+
+-- Error-path B4: register each interface method → (iface, typarams, declared Ty)
+-- so checkImplObligations can recover its dispatch (iface-param) types at a call
+-- site.  Built from the SAME prog the impl lookup uses, so an interface absent
+-- from prog (e.g. a prelude method in the no-prelude path) is never checked.
+registerMethodIfaceParamsAll : List Decl -> <Mut> Unit
+registerMethodIfaceParamsAll [] = ()
+registerMethodIfaceParamsAll (d :: rest) =
+  let _ = registerMethodIfaceParamsDecl d
+  registerMethodIfaceParamsAll rest
+
+registerMethodIfaceParamsDecl : Decl -> <Mut> Unit
+registerMethodIfaceParamsDecl (DAttrib _ d) = registerMethodIfaceParamsDecl d
+registerMethodIfaceParamsDecl (DInterface { name, typarams, methods, ... }) =
+  registerMethodIfaceParamsMethods name typarams methods
+registerMethodIfaceParamsDecl _ = ()
+
+registerMethodIfaceParamsMethods : String -> List String -> List IfaceMethod -> <Mut> Unit
+registerMethodIfaceParamsMethods _ _ [] = ()
+registerMethodIfaceParamsMethods iface typarams (IfaceMethod mname mty _ :: rest) =
+  let _ = set_ref methodIfaceParamsRef ((mname, (iface, typarams, mty)) :: methodIfaceParamsRef.value)
+  registerMethodIfaceParamsMethods iface typarams rest
 
 -- build each method's scheme AND register its method-level constraints (foldMap's
 -- `Monoid m`) into methodConstraintsRef, keyed by the scheme's own quantified ids

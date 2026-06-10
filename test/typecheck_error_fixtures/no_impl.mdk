@@ -1,0 +1,11 @@
+-- Error-path BLOCKER B4 (audit finding D3): calling an interface method on a
+-- concrete type that has NO impl is a dispatch obligation the type checker must
+-- reject.  Mirrors lib/typecheck.ml's check_method_usages (`No impl of … for …`,
+-- :3845) — the obligation fires once the receiver resolves to a concrete head
+-- type with no matching impl (NOT while it is still a polymorphic `a`).
+interface Printable a where
+  prettyPrint : a -> String
+
+data Foo = Foo
+
+main = prettyPrint Foo
