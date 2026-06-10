@@ -582,47 +582,57 @@ route the constrained call through `RDictFwd` (not `RNone`).
 
 ---
 
-### Gap G: Ord default-method dispatch bug — BOTH tree-walkers wrong, native correct — INVESTIGATED 2026-06-10
+### Gap G: comparison/equality OPERATORS never dispatch to user `Eq`/`Ord` impls — ALL THREE backends wrong — RE-DIAGNOSED 2026-06-10
 
-**Confirmed: a dispatch bug in BOTH the OCaml (`eval.ml`) and selfhost (`eval.mdk`)
-tree-walkers; the native LLVM backend is the only one correct.** This is a
-**behavioral-oracle soundness issue** with direct bearing on the Stage-3 retirement
-strategy (the differential native-vs-tree-walker would flag *correct* native output
-as wrong).
+**⚠️ Earlier framing here ("Ord default-method dispatch bug; native correct") was
+WRONG.** A deeper read-only investigation overturned it. The real bug is far more
+fundamental and affects **all three** backends.
 
-Three-way result on `Low < High` (correct answer = `True`: rank Low=0 < rank High=2):
+**Root cause:** the operators `==` `!=` `<` `>` `<=` `>=` are parsed to an `EBinOp`
+AST node that is **never rewritten into a method call** (desugar/marker/typecheck
+leave it). So they NEVER dispatch to a user/derived `Eq`/`Ord` impl — each backend
+hard-codes a structural built-in that ignores the impl:
 
-| Path | Result |
-|------|--------|
-| OCaml oracle (`eval.ml`) | `False` ❌ |
-| selfhost tree-walker (`eval.mdk`, the hybrid behavioral oracle) | `False` ❌ |
-| native LLVM (`medaka build`) | `True` ✅ |
+| Backend | built-in for ADT `<` | orders by |
+|---|---|---|
+| `lib/eval.ml:1267-1270` (`eval_arith`, `Stdlib.compare` on `value`) | constructor **NAME** (alphabetical) |
+| `selfhost/eval.mdk:1143-1146` (`evalArith`→`valueCompare`, `:438`) | constructor **NAME** |
+| native: `core_ir_lower.mdk:68` `EBinOp`→`CBinPrim` → `llvm_emit.mdk:1508` `emitIntCmp` | constructor **TAG** (declaration order) |
 
-**Localization (probes run):**
-- core.mdk `Ord` defaults are CORRECT: `lt x y = match compare x y { Lt => True; _ => False }`.
-- `compare Low High` called DIRECTLY = `Lt` on all three (correct).
-- `Low < High` (= `lt`, the default method) = `False` on both tree-walkers, `True` native.
-- **Reproduces with a HAND-WRITTEN `impl Ord Level` (not deriving)** — so it is NOT a
-  `deriving` bug. It is the **default-method dispatch**: the `compare` call *inside the
-  `lt` default-method body* mis-dispatches in the tree-walkers (Phase-69.x interface-
-  method-from-default-method dispatch), even though the direct `compare` resolves fine.
-- Affects `<`/`>`/`<=`/`>=`/`min`/`max` (all Ord defaults) on user/derived Ord impls.
-  Masked wherever code uses `compare` directly (e.g. map/set tree ops) rather than `<`.
+`==`/`!=` have the identical defect (`eval.ml:1265-1266`, `eval.mdk:1141-1142`).
+`typecheck` records the iface usage (`lib/typecheck.ml:2285-2291`) only to *verify an
+impl exists* — it never rewrites the node, so eval never calls the impl.
 
-**Why deferred (not fixed autonomously):** the fix is a dispatch change in BOTH
-tree-walkers (`lib/eval.ml` + `selfhost/eval.mdk`) — the most bug-prone area in the
-project — with broad reach (every Ord default method). Too risky for an unattended
-merge. **Needs oversight.** Repro:
-```
-data Level = Low | Mid | High deriving (Eq)
-impl Ord Level where
-  compare a b = compare (rank a) (rank b)
-rank x = match x { Low => 0; Mid => 1; High => 2 }
-main = println (debug (Low < High))   -- True (native) vs False (both tree-walkers)
-```
-**Strategic note:** the hybrid-oracle retirement bar must account for this — for Ord
-default methods the tree-walker is NOT ground truth; native is. Either fix the
-tree-walker dispatch first, or special-case this in the differential.
+**Both the `Low < High` result AND "native correct" were coincidences.** Proof native
+is also wrong (rank order ≠ declaration order): `data Level = Apple | Zebra; impl Ord …
+compare = compare (rank a) (rank b)` with `rank Apple=100, rank Zebra=1`. `Apple <
+Zebra` should be `False`; **all three return `True`** (tree-walkers: `"Apple"<"Zebra"`;
+native: Apple-tag<Zebra-tag). `==` likewise: custom mod-3 `Eq`, `(M 1) == (M 4)` should
+be True; operator gives False on all three, while `eq (M 1) (M 4)` (method form) = True.
+
+**What works:** the METHOD forms `lt`/`gt`/`lte`/`gte`/`min`/`max`/`eq` invoked by name
+dispatch correctly (the default-method→`compare` dispatch is sound). `Int`/`Float`
+operators are fine (structural == numeric). Only the OPERATOR SYNTAX on user `Eq`/`Ord`
+ADTs is broken. Masked wherever code uses `compare`/`eq` directly (map/set tree ops).
+
+**Blast radius:** all 6 operators on any user/derived `Eq`/`Ord` ADT whose
+semantic order/equality differs from the backend's structural built-in. This is a real
+correctness bug in *every* backend, not just an oracle quirk.
+
+**Fix plan (recommended; DEFERRED — needs oversight):** desugar `EBinOp {==,!=,<,>,<=,>=}`
+into the corresponding method application (`<`→`lt`, `==`→`eq`, `!=`→`not (eq …)`, …)
+in `lib/desugar.ml` + the `selfhost/desugar.mdk` mirror, routing operators through the
+existing Phase-69.x dispatch so all three backends agree and call the user impl. The
+`eval_arith`/`emitIntCmp` arms for these ops become dead. **Must special-case
+primitives** (`Int`/`Float`/`Char`/`String`/`Bool`) onto the fast structural path to
+avoid regressing the hot path / infinite recursion (`impl Ord Int.compare` uses `<` on
+Int). **Risk: medium-high** — reroutes every comparison in every program; expect large
+golden/byte-IR churn → needs full `@thorough` + `bootstrap_*`/`selfcompile_*`
+re-baseline. `add-language-feature`-scoped. NOT done autonomously.
+
+Repro: `data Level = Apple | Zebra; impl Ord Level where compare a b = compare (rank a)
+(rank b); rank x = match x { Apple => 100; Zebra => 1 }; main = println (debug (Apple <
+Zebra))` → should be `False`; all three backends give `True`.
 
 
 ---

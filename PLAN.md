@@ -296,14 +296,15 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   corruption/SIGSEGV — too subtle for unattended), I (effect rows), most of A
 >   (parser grammar), H-b (map/set emitter dispatch), F1-Layer2 (dict-pass SIGSEGV
 >   for unannotated polymorphic constrained fn), D3/D4, let-else-refutable-nonctor.
-> - **⚠️ Gap G — CONFIRMED behavioral-oracle bug (needs oversight):** Ord
->   default-method `<`/`lt` mis-dispatches in BOTH tree-walkers (`eval.ml` +
->   `eval.mdk`) → `Low < High` = False; **native is CORRECT (True)**. Direct
->   `compare` is fine; the bug is the `compare` call inside the `lt` default method
->   (reproduces hand-written, not deriving). Affects `<`/`>`/`min`/`max` on user Ord.
->   **Bears on the retirement oracle strategy** — the tree-walker is not ground truth
->   here. Full diagnosis: CONSTRUCT-COVERAGE §Gap G. Deferred (both-tree-walker
->   dispatch fix — risky).
+>   - **⚠️ Gap G — RE-DIAGNOSED (needs oversight): comparison/equality OPERATORS
+>   never dispatch to user `Eq`/`Ord` impls in ANY backend.** `==`/`!=`/`<`/`>`/`<=`/`>=`
+>   parse to `EBinOp` and are never desugared to method calls → each backend uses a
+>   structural built-in (tree-walkers order by ctor NAME, native by ctor TAG) — ALL
+>   THREE wrong, each differently (proven with rank≠declaration-order impl). The
+>   earlier "default-method dispatch / native correct" framing was WRONG. Method forms
+>   (`lt`/`eq`/`min`) work; only operator syntax broken. Fix = desugar operators →
+>   method calls (lib/desugar.ml + selfhost mirror), special-case primitives;
+>   medium-high risk (golden churn). Full diagnosis: CONSTRUCT-COVERAGE §Gap G.
 >
 > **Bar-item-2 (port tests to `medaka test`) — STARTED:** `test/ported/test_run_ported.mdk`
 > = 40/46 `test_run.ml` cases → 96 assertions, all green + deterministic, no source
