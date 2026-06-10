@@ -11,7 +11,7 @@
 -- the prelude), effect rows, records, interfaces/impls + constraint solving,
 -- and explicit type signatures.
 
-import ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), MethodDefault(..), Require(..), ImplMethod(..), DataVis(..), Decl(..), PropParam(..), LcQual(..), Section(..), InterpPart(..), GuardArm(..)}
+import ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), MethodDefault(..), Require(..), ImplMethod(..), DataVis(..), Decl(..), PropParam(..), LcQual(..), Section(..), InterpPart(..), GuardArm(..), UsePath(..)}
 import desugar.{mapProg}
 -- The type-aware non-exhaustive-`match` check (`check_match` in lib/exhaust.ml)
 -- reuses the Maranget matrix machinery already ported in exhaust.mdk — the only
@@ -528,6 +528,18 @@ nthArgMono n m = match normalize m
 recordArgStamp : String -> Ref Route -> Ref (List Route) -> Int -> Mono -> <Mut> Unit
 recordArgStamp name tagRef implRef idx mono = match nthArgMono idx mono
   Some am => set_ref pendingArgStamps ((name, tagRef, implRef, am) :: pendingArgStamps.value)
+  None => ()
+
+-- Cause-A prerequisite: an ARG-position method occurrence's discriminating-arg
+-- mono, keyed by the enclosing fn (currentFn), pushed into methodSiteFns — the
+-- arg-position analogue of recordSite's return-position push.  inferredConstraintIds
+-- reads methodSiteFns to discover the enclosing fn's INFERRED constraint, so this
+-- lets `f s = display s` promote `f` to a dict-passed fn (it had no signature, so
+-- the constraint is inferred, not declared).  Idx-th arg mono = the receiver whose
+-- (constraint) tyvar must be discovered.
+recordArgSiteFn : String -> Int -> Mono -> <Mut> Unit
+recordArgSiteFn _ idx mono = match nthArgMono idx mono
+  Some am => set_ref methodSiteFns ((currentFn.value, am) :: methodSiteFns.value)
   None => ()
 
 -- D3a/D3b-1: stamp each queued arg-position route from its now-resolved
@@ -1404,6 +1416,14 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
     match argDispatchOf name
       Some idx =>
         let _ = recordArgStamp name tagRef implRef idx (fst inst)
+        -- Cause-A prerequisite: ALSO record the discriminating-arg mono into
+        -- methodSiteFns keyed by currentFn (mirroring recordSite, which only fires
+        -- for return-position).  Without this, an unsignatured fn whose body
+        -- dispatches a method in ARGUMENT position (`f s = display s`) never
+        -- surfaces its inferred constraint to inferredConstraintIds → never gets
+        -- promoted → no leading dict param on the build path → dict word 0 (SIGSEGV/
+        -- silent).  Inert unless promotion (discoverPromotedModules) consumes it.
+        let _ = recordArgSiteFn name idx (fst inst)
         fst inst
       None => recordSite name tagRef implRef (fst inst)
 
@@ -2312,6 +2332,73 @@ discoverNext : List Decl -> List Decl -> List String -> List String -> <Mut> Lis
 discoverNext runtimeDecls prog current next
   | lengthL next == lengthL current = current
   | otherwise = discoverPromoted runtimeDecls prog next
+
+-- ── Cause A: module-path promotion fixpoint ───────────────────────────────
+-- The multi-module analogue of discoverPromoted/discoverAll.  elaborateModules
+-- typechecks each module in its own frame (checkModuleFullImpl), but PROMOTION
+-- (deciding which unsignatured fns carry an inferred constraint) needs to see the
+-- whole graph at once so a caller in module B that uses a constrained fn from A is
+-- discovered.  Mirror the oracle's joint mark→typecheck: flatten runtime ++ core ++
+-- all modules into ONE program and run discoverPromoted's fixpoint on it.  The seed
+-- is dictEligibleRef (already set to the user modules' fn names).  Returns the
+-- promoted names and, as a side effect, seeds crossModuleFunConstraintsRef with the
+-- joint-discovered constraint arities (count per promoted fn) so they survive the
+-- per-module resetState and dictArityOf can read them at the final dictPass —
+-- mirroring how each defining module's own pass re-registers REAL var-ids into
+-- activeDictVars (the count must agree; the body routes carry the surviving ids).
+-- argNames marks ARG-position method occurrences EMethodAt so inferMethodAt's
+-- recordArgSiteFn surfaces an inferred arg-position constraint to inferredConstraintIds
+-- (the Cause-A `f s = display s` shape, where the dispatch is the bare method itself).
+discoverPromotedModules : List Decl -> List Decl -> List (String, List Decl) -> List String -> List String -> <Mut> List String
+discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
+  let joint = coreDecls ++ concatMapL snd modules
+  let dictSeed = moduleDictNames coreDecls joint modules
+  -- discoverPromotedJoint returns dictSeed GROWN by the newly-promoted user fns;
+  -- subtract the seed so [promoted] is ONLY the inferred-constraint user fns (the
+  -- prelude constrained fns in dictSeed are already handled by moduleDictNames +
+  -- constrainedSigArity — re-snapshotting THEIR joint-discovery arity into
+  -- crossModuleFunConstraintsRef would override each module's own sig-registered
+  -- arity and drop the prelude helpers' element-dict args → SIGSEGV).
+  let grown = discoverPromotedJoint runtimeDecls joint rpNames argNames dictSeed
+  let promoted = filterList (n => not (containsName n dictSeed)) grown
+  let snapshot = promotedConstraints promoted funConstraintsRef.value
+  -- Discovery is a SCRATCH typecheck purely to compute the promoted-name set; its
+  -- side effects on the shared inference refs (funConstraintsRef/activeDictVars/
+  -- pendingArgStamps/route refs left by the last checkProgramSeeded) must NOT leak
+  -- into the real per-module stamping that follows.  resetState wipes them; the
+  -- promoted arities survive in the snapshot, carried to the real pass via
+  -- crossModuleFunConstraintsRef.  dictEligibleRef + argStampEnabled are NOT touched
+  -- by resetState (set by the driver, constant).
+  let _ = resetState ()
+  let _ = set_ref crossModuleFunConstraintsRef snapshot
+  promoted
+
+-- Fixpoint body: prePass the joint program (return-position + constrained-fn names
+-- → EMethodAt/EDictAt; arg-position method names → EMethodAt), typecheck it whole
+-- (checkProgramSeeded resets promotedRef + funConstraintsRef each pass), grow the
+-- set by the newly-promoted names, repeat until stable.  Uses prePassDictArg so
+-- arg-position dispatch surfaces inferred constraints (recordArgSiteFn → methodSiteFns).
+discoverPromotedJoint : List Decl -> List Decl -> List String -> List String -> List String -> <Mut> List String
+discoverPromotedJoint runtimeDecls joint rpNames argNames current =
+  let prog1 = prePassDictArg (rpNames ++ methodConstraintNames joint) current argNames joint
+  let _ = checkProgramSeeded (externSchemes runtimeDecls) prog1
+  discoverNextJoint runtimeDecls joint rpNames argNames current (dedupS (current ++ promotedRef.value))
+
+discoverNextJoint : List Decl -> List Decl -> List String -> List String -> List String -> List String -> <Mut> List String
+discoverNextJoint runtimeDecls joint rpNames argNames current next
+  | lengthL next == lengthL current = current
+  | otherwise = discoverPromotedJoint runtimeDecls joint rpNames argNames next
+
+-- the funConstraintsRef entries (name, ids) for the promoted user fns only —
+-- snapshot of the joint discovery, carried across resetState by
+-- crossModuleFunConstraintsRef so dictArityOf reads the right param count.
+promotedConstraints : List String -> List (String, List Int) -> List (String, List Int)
+promotedConstraints promoted entries = filterList (e => containsName (fst e) promoted) entries
+
+-- the USER modules' top-level fn names (NOT core/prelude) — the promotion-eligible
+-- set on the build path.  Mirrors elaborateDict's eligibleNames = funNamesOf userDecls.
+moduleUserFnNames : List (String, List Decl) -> List String
+moduleUserFnNames modules = dedupS (concatMapL (p => map fst (funDefs (snd p))) modules)
 
 -- the user program's top-level functions carrying a `=>` constraint in their
 -- signature — the set elaborateDict dict-passes
@@ -4667,6 +4754,20 @@ elaborateModules runtimeDecls coreDecls modules =
   -- (empty when OFF → prePassDictArg degenerates to prePassDict, goldens unchanged)
   let _ = if argStampEnabled.value then set_ref argDispatchIdxRef (argDispatchIndices allDecls) else ()
   let argNames = if argStampEnabled.value then map fst argDispatchIdxRef.value else []
+  -- Cause A (build path only): seed the promotion-eligible set with the USER
+  -- modules' top-level fn names (NOT core/prelude — those keep arg-tag / RKey
+  -- dispatch, which type-checks the goldens).  Gated on argStampEnabled so the
+  -- oracle/golden module drivers leave it [] → maybeInferConstraint short-circuits
+  -- → no promotion → byte-identical.  Mirrors elaborateDict's dictEligibleRef seed.
+  let _ = set_ref dictEligibleRef (if argStampEnabled.value then moduleUserFnNames modules else [])
+  -- Cause A: run a JOINT-flattened promotion fixpoint over runtime ++ core ++ all
+  -- modules (mirror discoverPromoted) so an unsignatured fn whose body dispatches a
+  -- method in ARG position (`f s = println s` → inferred `Display a => …`) is
+  -- discovered + registered in promotedRef/funConstraintsRef/activeDictVars.  The
+  -- promoted names then join the dict-name set so their call sites are marked EDictAt
+  -- (caller supplies the dict ARGUMENT) and their defs get the leading dict PARAM.
+  -- No-op (returns []) when OFF.
+  let promoted = if argStampEnabled.value then discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames else []
   -- E6: dict-name set for the `=>`-constrained-function layer, mirroring the
   -- single-file emit driver's assembly (llvm_emit_typed_main.runEmit): prelude
   -- return- AND arg-position `=>`-constrained fns (clamp/debugListItems/…) plus the
@@ -4676,7 +4777,8 @@ elaborateModules runtimeDecls coreDecls modules =
   -- supplies the dict ARGUMENT) AND to add the leading dict PARAM in the final
   -- dictPass (so the callee body's witness binds).  BOTH halves are required: marking
   -- alone under-defines the param; param alone under-applies the call (ABI mismatch).
-  let dictNames = moduleDictNames coreDecls allDecls modules
+  -- Cause A: promoted (inferred-constraint) user fns join the set.
+  let dictNames = dedupS (moduleDictNames coreDecls allDecls modules ++ promoted)
   let core2 = prePassDictArg rpNames dictNames argNames coreDecls
   let modules2 = map (prePassModulePairArg rpNames dictNames argNames) modules
   let runtimeSeed = externSchemes runtimeDecls
@@ -4710,12 +4812,108 @@ elaborateModules runtimeDecls coreDecls modules =
 -- placeholder id list of the correct length is sufficient.  Prepended → wins the
 -- lookupAssocSL2 first-match over any stale last-module entry.  Gated by the
 -- argStampEnabled guard below (golden drivers never reach it).
+-- Step 4 (Phase-134 fix): per-module importer-scoped arity, mirroring the oracle
+-- eval.ml:2104-2164 collect_arities-per-scope.  The pre-fix JOINT
+-- seedDictAritiesFromSigs keyed arity by BARE NAME, so a constrained fn in module A
+-- forced spurious leading dict params onto an unconstrained same-named fn in module
+-- B (whose call sites then under-applied → silent partial closure).  Core
+-- (≈ the oracle's prelude) is imported by every module, so it keeps the FULL joint
+-- scope.  Each module's scope = its own decls ∪ the decls of its transitive
+-- importers ∪ core (the importer part covers a PUBLIC constrained fn referenced only
+-- by its importers; mangleUnits already de-collided PRIVATES).  promotedC = the
+-- joint-discovered promoted-fn arities (unsignatured, so constrainedSigArity misses
+-- them) carried across resetState in crossModuleFunConstraintsRef.
 dictPassModulesIfEnabled : List String -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
 dictPassModulesIfEnabled dictNames core2 modules2
   | argStampEnabled.value =
-      let _ = seedDictAritiesFromSigs (core2 ++ concatMapL snd modules2)
-      (dictPass dictNames core2, map (dictPassModulePair dictNames) modules2)
+      let allModDecls = concatMapL snd modules2
+      let promotedC = crossModuleFunConstraintsRef.value
+      let _ = set_ref funConstraintsRef (scopeArities promotedC (core2 ++ allModDecls))
+      let core2' = dictPass dictNames core2
+      let modules2' = dictPassModulesScoped dictNames promotedC core2 modules2 modules2
+      (core2', modules2')
   | otherwise = (core2, modules2)
+
+-- per-module: set funConstraintsRef to the module's importer-scoped arities, then
+-- dict-pass that module.  [allModules] is the full set (for the transitive-importer
+-- walk); [modules2] is the remaining suffix to process.  core2 is always in scope.
+dictPassModulesScoped : List String -> List (String, List Int) -> List Decl -> List (String, List Decl) -> List (String, List Decl) -> <Mut> List (String, List Decl)
+dictPassModulesScoped _ _ _ _ [] = []
+dictPassModulesScoped dictNames promotedC core2 allModules ((mid, prog) :: rest) =
+  let importerDecls = transitiveImporterDecls mid allModules
+  let scope = core2 ++ prog ++ importerDecls
+  let _ = set_ref funConstraintsRef (scopeArities promotedC scope)
+  (mid, dictPass dictNames prog) :: dictPassModulesScoped dictNames promotedC core2 allModules rest
+
+-- the arity table for a scope: every `=>`-constrained signature in [scope]
+-- (constrainedSigArity) PLUS the joint-discovered promoted-fn arities whose fn is
+-- DEFINED in [scope] (so a promoted fn out of scope doesn't leak a param count in).
+scopeArities : List (String, List Int) -> List Decl -> List (String, List Int)
+scopeArities promotedC scope =
+  let scopeNames = declTopFnNames scope
+  concatMapL constrainedSigArity scope
+    ++ filterList (e => containsName (fst e) scopeNames) promotedC
+
+declTopFnNames : List Decl -> List String
+declTopFnNames decls = map fst (funDefs decls)
+
+-- the decls of every module that transitively imports [mid] (excluding [mid]),
+-- so a public constrained/promoted fn defined in [mid] but referenced only by an
+-- importer is in scope when [mid] is dict-passed.
+transitiveImporterDecls : String -> List (String, List Decl) -> List Decl
+transitiveImporterDecls mid modules =
+  concatMapL (p => if fst p != mid && transitivelyImports (fst p) mid modules then snd p else []) modules
+
+-- does module [a] transitively import module [target]?
+transitivelyImports : String -> String -> List (String, List Decl) -> Bool
+transitivelyImports a target modules = depReaches [] a target modules
+
+depReaches : List String -> String -> String -> List (String, List Decl) -> Bool
+depReaches seen a target modules
+  | containsName a seen = False
+  | otherwise =
+      let deps = directImports a modules
+      containsName target deps || anyDepReaches (a :: seen) deps target modules
+
+anyDepReaches : List String -> List String -> String -> List (String, List Decl) -> Bool
+anyDepReaches _ [] _ _ = False
+anyDepReaches seen (d :: rest) target modules =
+  depReaches seen d target modules || anyDepReaches seen rest target modules
+
+-- the module ids module [mid] imports directly (from its DUse decls), mirroring the
+-- oracle's path→module-id mapping (last component of a dotted UseName, else the path).
+directImports : String -> List (String, List Decl) -> List String
+directImports mid modules = match lookupAssocS mid modules
+  Some prog => concatMapL useModuleId prog
+  None => []
+
+useModuleId : Decl -> List String
+useModuleId (DUse _ path) = [usePathModuleId path]
+useModuleId _ = []
+
+usePathModuleId : UsePath -> String
+usePathModuleId (UseName ns)
+  | lengthL ns > 1 = joinDot (dropLast ns)
+  | otherwise = lastComponent ns
+usePathModuleId (UseGroup ns _) = joinDot ns
+usePathModuleId (UseWild ns) = joinDot ns
+usePathModuleId (UseAlias ns _) = joinDot ns
+
+dropLast : List String -> List String
+dropLast [] = []
+dropLast [_] = []
+dropLast (x :: rest) = x :: dropLast rest
+
+lastComponent : List String -> String
+lastComponent [] = ""
+lastComponent [x] = x
+lastComponent (_ :: rest) = lastComponent rest
+
+joinDot : List String -> String
+joinDot [] = ""
+joinDot [x] = x
+joinDot (x :: rest) = x ++ "." ++ joinDot rest
+
 
 -- E6: the `=>`-constrained-function dict-name set for the module emit path,
 -- mirroring the single-file driver (llvm_emit_typed_main.runEmit): prelude return-

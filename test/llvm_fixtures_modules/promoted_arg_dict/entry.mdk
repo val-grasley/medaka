@@ -1,0 +1,21 @@
+-- Cause A: an UNSIGNATURED helper (`label`) that dispatches a method in ARGUMENT
+-- position (`render x`) carries an INFERRED `Render a => …` constraint.  On the
+-- multi-module build path (elaborateModules) it must be PROMOTED to a dict-passed
+-- fn — given a leading Render-dict param — and each call site (`label (7:Int)`,
+-- `label True`) must supply the matching impl-group dict.  Pre-fix the build path
+-- never promoted it → `render` received dict word 0 → SIGSEGV/silent (the
+-- interpreter masked it via runtime type tags).  render is arg-position over Int and
+-- Bool; label is the inferred-constrained wrapper.  Oracle: "7 yes".
+interface Render a where
+  render : a -> String
+
+impl Render Int where
+  render n = intToString n
+
+impl Render Bool where
+  render True = "yes"
+  render False = "no"
+
+label x = render x
+
+main = putStrLn (label (7 : Int) ++ " " ++ label True)

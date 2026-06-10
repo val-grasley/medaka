@@ -795,12 +795,33 @@ test/construct_fixtures/
 ### Dict-pass SIGSEGV cluster — ROOT-CAUSED 2026-06-10 (read-only investigation)
 
 Two distinct selfhost-only root causes (oracle is correct in both):
-- **Cause A (F1-Layer2):** `typecheck.mdk` `inferMethodAt` arg-position arm (`:1393-96`,
-  `recordArgStamp`) records nothing into `methodSiteFns`; only the return-position arm
-  (`recordSite`, `:1416-21`) does. So an inferred constraint from an arg-position method
-  call (`println s`) never reaches `inferredConstraintIds` → fn never promoted → no dict
-  param → dict word 0/`RNone`. Oracle (`lib/typecheck.ml:1504`) records ALL occurrences.
-  **Fix A:** record arg-position monos in the arg arm too. Selfhost-only, low-med risk.
+- **Cause A (F1-Layer2) — ✅ CLOSED 2026-06-10 (elaborateModules promotion+arity layer):**
+  the build path (`elaborateModules`) had no inferred-constraint promotion — an
+  unsignatured fn whose body dispatches a method (`f s = println s` / `f s = display s`)
+  was never promoted → no leading dict param → `println`/`display` received dict word 0
+  → SIGSEGV/silent. **Fix (3 pieces, selfhost-only):** (1) `inferMethodAt`'s arg-position
+  arm now ALSO records the discriminating-arg mono into `methodSiteFns` (new
+  `recordArgSiteFn`), mirroring `recordSite`, so `inferredConstraintIds` discovers an
+  arg-position inferred constraint; (2) `elaborateModules` seeds `dictEligibleRef` with
+  the USER modules' fn names (gated `argStampEnabled`) and runs a JOINT-flattened
+  promotion fixpoint (`discoverPromotedModules`/`discoverPromotedJoint`, mirror of
+  `discoverPromoted`) over `runtime ++ core ++ all-modules`, feeding the promoted names
+  into the dict-name set and snapshotting their arities into `crossModuleFunConstraintsRef`
+  (carried across the per-module `resetState`); (3) the joint bare-name `seedDictAritiesFromSigs`
+  was replaced with **per-module importer-scoped arity** (`dictPassModulesScoped`/`scopeArities`,
+  mirroring oracle `eval.ml:2104-2164` — scope = own decls ∪ transitive importers ∪ core,
+  import edges reconstructed from `DUse`), closing the Phase-134 bare-name conflation.
+  **EARLY-CHECKPOINT (var-id seam): CLEAN** — `mdk_f` emits 2 args (leading `$dict_f_0` +
+  value), forwards the dict to `mdk_println`, and the call site supplies a real impl-group
+  dict word (not 0); joint-discovery vs per-module-stamping arities agreed (no silent
+  partial closures). One regression caught + fixed during the work: `discoverPromotedJoint`
+  returns seed-GROWN names, so the snapshot must SUBTRACT the seed (else prelude
+  `debugListItems`/`displayListItems`/`hashListItems` got re-snapshotted joint arities that
+  overrode their per-module sig arity → element-dict arg dropped → `cons_op` SIGSEGV); also
+  a `resetState ()` after discovery wipes its scratch inference side-effects. Repro
+  `f s = println s; main = f "hello"` → native `hello` == oracle; `f s = display s`, f→g
+  promotion chains, multi-type use all native==oracle. Fixture
+  `test/llvm_fixtures_modules/promoted_arg_dict/`.
 - **Cause B (H-b2 ≡ audit L2) — ✅ CLOSED (one-level, 2026-06-10):** `routeOfMono`
   returned `RKey tag []` — dropped nested element reqs (`Eq a` inside
   `Eq (Box a) requires Eq a`). The real victim was the build/module path:
@@ -911,17 +932,30 @@ fixpoint held byte-for-byte through every fix). Fixtures: `float_annot_nolit.mdk
   - *Mech 1 — no head tycon → RNone → arg-tag panic* ("owns no constructors"):
     `headTyconMono` (`typecheck.mdk:3482`) returns `None` for `TTuple`/`TVar`; arg-tag
     can't inspect a tuple/primitive/typevar (no per-type cell tag). C2/C3-unannotated =
-    **Cause A** (inferred constraint not promoted on the build path). C1/C5b (bare tuple,
-    monomorphic) = **self-contained**: needs tuple-as-a-dispatch-tag (give
+    **Cause A — ✅ CLOSED 2026-06-10** (promotion now gives the poly/unannotated fn its
+    dict param; `f s = display s`/`p x = println x` build native==oracle). C1/C5b (bare
+    tuple, monomorphic) = **self-contained, OPEN**: needs tuple-as-a-dispatch-tag (give
     `headTyconMono (TTuple _)` a `$tuple` head → RKey route to `mdk_impl_tuple_*`).
   - *Mech 2 — nested element dict dropped (RKey reqs=[]) → SIGSEGV:* C5 (`debug` on
-    `List (Int,Int)`), C2-tuple = **Cause B** (`routeOfMono` empty reqs).
-- **Consolidation:** Cause A + Cause B + C5 + C2-tuple + C2/C3-unannotated ALL gate on the
-  single **`elaborateModules` dict-promotion + implTable-threading layer** — build it once,
-  the whole cluster closes. Only C1/C5b (tuple-as-tag, independent/medium) + C4 (→Gap E)
-  are separate. Interpreter masks all via runtime type tags (`eval.mdk:198`).
+    `List (Int,Int)`), C2-tuple = **Cause B** (`routeOfMono` empty reqs) — one-level CLOSED,
+    two-level+ RESIDUAL.
+- **Consolidation:** Cause A (+ Gap C C2/C3-unannotated) ✅ CLOSED by the `elaborateModules`
+  promotion+arity layer; Cause B one-level CLOSED. Documented Gap-C/promotion RESIDUALS
+  (still gap, by design): (1) **`debug`/`display` on a `List a` element** (`g xs = debug xs`,
+  `cons_op`-with-element-dict, C5) needs the nested element dict — the Cause-B two-level
+  emitter dict-rep limit (flat i64 word can't carry a nested dict); (2) **a constraint that
+  lives on an inner lambda bound to a zero-arg value** (`g = (x => debug x)`) — promotion
+  targets top-level fn params, not a lambda inside a value binding; dict-passing the lambda
+  is a deeper (emitter lambda-dict) layer. Still separate: C1/C5b (tuple-as-tag) + C4 (→Gap E).
+  Interpreter masks all via runtime type tags (`eval.mdk:198`).
 
 ### IMPLEMENTATION PLAN — elaborateModules dict layer (the cluster-closing fix; oversight-scale)
+**STATUS 2026-06-10: piece 1 (Cause B one-level) + piece 2 (Cause A promotion) + piece 3
+(per-module arity) ALL LANDED.** Cause A CLOSED; Gap C C2/C3-unannotated CLOSED; Phase-134
+bare-name conflation removed. Residuals (by design, documented above): Cause-B two-level
+nesting + `debug`-on-`List`-element + lambda-bound-constraint + tuple-as-tag (C1/C5b) + Gap-E
+C4. Self-compile fixpoint (C3a/C3b) byte-identical, no re-baseline. Original plan below.
+
 *Correction:* `elaborateModules` (`typecheck.mdk:4576`) ALREADY has an E4/E5/E6 layer that
 dict-passes *signatured* constrained fns cross-module. The remaining gap is 3 specific pieces:
 1. **Cause B (LANDED 2026-06-10 — one-level CLOSED):** threaded the cumulative
