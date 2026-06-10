@@ -159,12 +159,16 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   (inferLet/blockLet/generalizeGroup/sccSchemes); `Ref []` now rejects == oracle.
   Mirrors the oracle exactly (incl. its `mut` hole — see T1b). All gates green; no
   dispatch/route-keying perturbation.
-- **T1b** (follow-up, both-sides) — the `mut`-gen hole the oracle ALSO has:
-  `lib/typecheck.ml:1968` keys `gen_restricted` on `is_nonexpansive` only (ignores
-  `mut`), and `DoAssign` re-instantiates per assignment — `let mut x = []` then
-  heterogeneous pushes checks clean + runs on BOTH sides. Fix both (restrict when
-  `mut`, or don't re-instantiate on assignment). Deferred deliberately to keep the
-  T1 selfhost port a clean oracle-mirror. Audit §T1.
+- **T1b** — ✅ **CLOSED (both sides, 2026-06-09).** The `mut`-gen hole the oracle
+  ALSO had: `lib/typecheck.ml:1968` keyed `gen_restricted` on `is_nonexpansive`
+  only (ignored `mut`), so `let mut x = []` generalized and heterogeneous pushes
+  checked clean + ran on BOTH sides. **Fixed via gen-restrict-on-mut alone** (no
+  `DoAssign` change needed — once the binding is monomorphic the per-assignment
+  re-instantiation can't widen it; confirmed empirically). Oracle: `is_value =
+  (not mut) && is_nonexpansive e`. Selfhost: threaded the `mut` flag into
+  `blockLet` (`typecheck.mdk:1436,1451`) → `(not isMut) && isNonexpansive e`. Now
+  rejects `Type mismatch` identically; valid mut still typechecks. Fixture
+  `test/typecheck_error_fixtures/mut_generalization.mdk`. All gates green. Audit §T1.
 - **OBS1** (selfhost missing diagnostic, surfaced during T1) — selfhost does NOT
   enforce the oracle's `let mut not allowed inside a do block` prohibition; an
   invalid `do { let mut … }` is wrongly accepted by selfhost (oracle rejects).

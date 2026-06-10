@@ -1,0 +1,13 @@
+-- T1b mut-generalization soundness hole: a `let mut` binding must be
+-- MONOMORPHIC.  Historically the value restriction ignored the `mut` flag, so a
+-- nonexpansive RHS (`let mut x = []`) generalized to `List a` and each
+-- reassignment re-instantiated it — letting one mutable binding accept
+-- heterogeneous values (`x = [1]` then `"s" :: x`).  With the fix, `let mut x`
+-- is value-restricted regardless of the RHS, so `x` is fixed to `List Int` by
+-- the `x = [1]` assignment and consing a String onto it is a type error (same on
+-- the oracle and the self-hosted typechecker).
+main =
+  let mut x = []
+  x = [1]
+  let y = "s" :: x
+  y

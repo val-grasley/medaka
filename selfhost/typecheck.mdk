@@ -1433,8 +1433,8 @@ inferStmt env (DoExpr e) =
   let _ = infer env e
   env
 inferStmt env (DoLet _ True (PVar x) e) = blockRecLet env x e
-inferStmt env (DoLet _ _ pat e) = blockLet env pat e
-inferStmt env (DoLetElse pat e _) = blockLet env pat e
+inferStmt env (DoLet isMut _ pat e) = blockLet env isMut pat e
+inferStmt env (DoLetElse pat e _) = blockLet env False pat e
 inferStmt env (DoAssign x e) = extendVar env x (monoScheme (infer env e))
 inferStmt _ _ = panic "typecheck: unsupported block statement"
 
@@ -1448,13 +1448,17 @@ blockRecLet env x e =
   let _ = exitLevel ()
   extendVar env x (generalize t1)
 
-blockLet : TcEnv -> Pat -> Expr -> <Mut> TcEnv
-blockLet env (PVar x) e =
+blockLet : TcEnv -> Bool -> Pat -> Expr -> <Mut> TcEnv
+blockLet env isMut (PVar x) e =
   let _ = enterLevel ()
   let t = infer env e
   let _ = exitLevel ()
-  extendVar env x (genRestricted (isNonexpansive e) t)
-blockLet env pat e =
+  -- T1b: a `mut` binding must be monomorphic — generalizing it (when the RHS is
+  -- nonexpansive, e.g. `let mut x = []`) lets later assignments re-instantiate,
+  -- so the binding would accept heterogeneous values.  Force the value-restricted
+  -- (monomorphic) path when mut.
+  extendVar env x (genRestricted ((not isMut) && isNonexpansive e) t)
+blockLet env _ pat e =
   let t = infer env e
   let pr = inferPat env pat
   let _ = unify (fst pr) t

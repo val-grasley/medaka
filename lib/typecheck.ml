@@ -1965,7 +1965,12 @@ let rec infer env = function
            exit_level ();
            let env' = match pat with
              | PVar x ->
-               let env' = mark_locals (extend_var env x (gen_restricted (is_nonexpansive e) t1)) [x] in
+               (* T1b: a `mut` binding must be monomorphic — generalizing it (when
+                  the RHS is nonexpansive, e.g. `let mut x = []`) lets DoAssign
+                  re-instantiate per assignment, so the binding would accept
+                  heterogeneous values.  Force the value-restricted path. *)
+               let is_value = (not mut) && is_nonexpansive e in
+               let env' = mark_locals (extend_var env x (gen_restricted is_value t1)) [x] in
                if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
              | _ ->
                let tp, bindings = type_pat env pat in

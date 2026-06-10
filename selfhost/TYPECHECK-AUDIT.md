@@ -152,13 +152,25 @@ green; no S1↔eval interaction (eval untouched). Original finding below.
   tuple/list elementwise; ALL applications expansive incl. ctors), `gen_restricted`,
   and `lower_to_current`; thread into all five sites. Also port the Phase 89
   relaxation (signed arrow-typed point-free bindings) or top-level goldens regress.
-- **Adjacent oracle hole (reference, out of selfhost scope):** `lib/typecheck.ml:1968`
-  keys `gen_restricted` on `is_nonexpansive` only, ignoring the `mut` flag, and
-  `DoAssign` (`:1976-1979`) re-instantiates per assignment —
-  `/tmp/audit-hm/mutgen.mdk` (`let mut x = []` … `"s" :: x` after `x = [1]`) checks
-  clean AND runs, printing a heterogeneous list. Mirroring the oracle for T1
-  reproduces this hole; fix both sides (restrict when `mut`, or don't re-instantiate
-  on assignment).
+- **Adjacent oracle hole = T1b — ✅ CLOSED (2026-06-09, both sides):**
+  `lib/typecheck.ml:1968` keyed `gen_restricted` on `is_nonexpansive` only,
+  ignoring the `mut` flag, and `DoAssign` (`:1976-1979`) re-instantiates per
+  assignment — `/tmp/audit-hm/mutgen.mdk` (`let mut x = []` … `"s" :: x` after
+  `x = [1]`) checked clean AND ran, printing a heterogeneous list on BOTH the
+  oracle and (post-T1) selfhost. **Fix = gen-restrict-on-mut alone** (the
+  `DoAssign` re-instantiation never fires once the binding is monomorphic, so no
+  `DoAssign` change was needed — confirmed empirically). Oracle:
+  `lib/typecheck.ml:1968` now computes `is_value = (not mut) && is_nonexpansive e`
+  and feeds it to `gen_restricted` (value-restricted path lowers + monotypes).
+  Selfhost: `blockLet` (`selfhost/typecheck.mdk:1451-1456`) now takes the `mut`
+  flag (threaded from `inferStmt`'s `DoLet` arm, `:1436`) and passes
+  `(not isMut) && isNonexpansive e` to `genRestricted`. `let mut x = []` is now
+  monomorphic on both → `x = [1]` pins it `List Int` → `"s" :: x` rejects
+  identically (`Type mismatch: Int vs String`). Valid mut (`let mut c = 0`;
+  `c = c + 1`) still typechecks. Differential fixture:
+  `test/typecheck_error_fixtures/mut_generalization.mdk` (prelude-free; passes
+  both drivers of `diff_selfhost_typecheck_errors.sh`). All OCaml unit suites +
+  selfhost/bootstrap/native/fixpoint gates green; no golden re-bless needed.
 - **Fix landed (2026-06-09):** ported `isNonexpansive` / `lowerToCurrent` /
   `genRestricted` into `selfhost/typecheck.mdk` (after `generalize`) and threaded
   the value flag into all generalize sites: `inferLetBody` (now passes the RHS
