@@ -1,0 +1,59 @@
+-- Self-hosted implementation of `medaka new <name>`.
+-- Mirrors lib/new_cmd.ml exactly: same files, same byte content, same error
+-- messages and exit codes.
+--
+-- Usage (from new_main.mdk):
+--   newProject name  ->  exit code Int
+
+-- True if the name contains character c.
+nameContainsChar : Char -> String -> Bool
+nameContainsChar c name = isSome (stringIndexOf (charToStr c) name)
+
+-- True if the project name is invalid.
+invalidName : String -> Bool
+invalidName name =
+  name == "" || name == "." || name == ".."
+  || nameContainsChar '/' name
+  || nameContainsChar '\\' name
+
+-- File templates, interpolating the project name where needed.
+tomlTemplate : String -> String
+tomlTemplate name = stringConcat
+  ["[package]\nname = \"", name, "\"\nversion = \"0.1.0\"\nentry = \"main.mdk\"\n"]
+
+mainTemplate : String
+mainTemplate = "main : <IO> Unit\nmain = println \"Hello, Medaka!\"\n"
+
+gitignoreTemplate : String
+gitignoreTemplate = "_build/\n"
+
+readmeTemplate : String -> String
+readmeTemplate name = stringConcat ["# ", name, "\n\nA new Medaka project.\n"]
+
+-- Write a file; panic on unexpected error (directory was just created).
+writeProjectFile : String -> String -> <IO> Unit
+writeProjectFile path contents = match writeFile path contents
+  Ok _ => ()
+  Err msg => panic ("medaka new: writeFile failed: " ++ msg)
+
+-- Scaffold the project.  Returns the exit code.
+export newProject : String -> <IO> Int
+newProject name =
+  if invalidName name then
+    let _ = ePutStrLn ("medaka new: invalid project name: \"" ++ name ++ "\"")
+    2
+  else if fileExists name then
+    let _ = ePutStrLn ("medaka new: path already exists: " ++ name)
+    1
+  else
+    match makeDir name
+      Err msg =>
+        let _ = ePutStrLn ("medaka new: mkdir failed: " ++ msg)
+        1
+      Ok _ =>
+        let _ = writeProjectFile (name ++ "/medaka.toml") (tomlTemplate name)
+        let _ = writeProjectFile (name ++ "/main.mdk") mainTemplate
+        let _ = writeProjectFile (name ++ "/.gitignore") gitignoreTemplate
+        let _ = writeProjectFile (name ++ "/README.md") (readmeTemplate name)
+        let _ = putStrLn ("Created " ++ name ++ "/")
+        0

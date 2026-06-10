@@ -46,6 +46,7 @@ extern getEnv : String -> <IO> Option String  -- environment variable, or None
 extern fileExists : String -> <IO> Bool
 extern appendFile : String -> String -> <IO> Result String Unit
 extern listDir : String -> <IO> Result String (List String)  -- directory entries (names)
+extern makeDir : String -> <IO> Result String Unit            -- create directory (mkdir 0o755)
 extern ePutStr : String -> <IO> Unit  -- raw stderr output
 extern ePutStrLn : String -> <IO> Unit
 extern readLineOpt : Unit -> <IO> Option String  -- one stdin line, None at EOF

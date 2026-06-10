@@ -43,6 +43,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdnoreturn.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <gc.h>
@@ -646,6 +647,13 @@ long long mdk_list_dir(long long path) {
   }
   closedir(d);
   return mdk_ok(acc);
+}
+
+/* makeDir : String -> Result String Unit — mkdir 0755. */
+long long mdk_make_dir(long long path) {
+  const char *p = (const char *)path + 24;
+  if (mkdir(p, 0755) == 0) return mdk_ok(1);  /* Ok () */
+  return mdk_err(mdk_str_cstr(strerror(errno)));
 }
 
 /* runCommand : String -> List String -> Result (Int, String, String) String.

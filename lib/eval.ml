@@ -1480,6 +1480,13 @@ let primitives : (string * value) list =
          (try VCon ("Ok", [VList (Array.to_list (Array.map (fun s -> VString s) (Sys.readdir p)))])
           with Sys_error msg -> VCon ("Err", [VString msg]))
        | _ -> raise (Eval_error ("listDir: expected String", None))));
+    ("makeDir", VPrim (fun path -> match path with
+       | VString p ->
+         (try Unix.mkdir p 0o755; VCon ("Ok", [VUnit])
+          with
+          | Unix.Unix_error (Unix.EEXIST, _, _) -> VCon ("Err", [VString ("Directory already exists: " ^ p)])
+          | Unix.Unix_error (e, _, _) -> VCon ("Err", [VString (Unix.error_message e)]))
+       | _ -> raise (Eval_error ("makeDir: expected String", None))));
     (* stderr output (raw string), routed through error_hook. *)
     ("ePutStr", VPrim (fun v -> match v with
        | VString s -> !error_hook s; VUnit

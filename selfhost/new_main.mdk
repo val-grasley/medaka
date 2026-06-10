@@ -1,0 +1,17 @@
+-- Entry point for the self-hosted `medaka new` scaffolding command.
+--
+--   medaka run selfhost/new_main.mdk <name>
+--
+-- Creates a new Medaka project directory with medaka.toml, main.mdk,
+-- .gitignore, and README.md.  Exit code: 0 success, 1 path-exists, 2 bad arg.
+
+import new_cmd.{newProject}
+
+main = match args ()
+  [name] =>
+    let code = newProject name
+    if code == 0 then ()
+    else exit code
+  _ =>
+    let _ = ePutStrLn "Usage: medaka new <name>"
+    exit 2
