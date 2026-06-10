@@ -1,0 +1,8 @@
+data Color = Red | Green | Blue
+
+colorName : Color -> String
+colorName c = match c
+  Red => "red"
+  Green => "green"
+
+main = println (colorName Red)

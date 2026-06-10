@@ -4765,13 +4765,19 @@ export
 checkToLinesWithRuntime : List Decl -> List Decl -> <Mut> String
 checkToLinesWithRuntime runtimeDecls prog =
   let _ = set_ref implInferEnabled False
+  -- B5: seed the exhaustiveness oracle and clear any stale match warnings so the
+  -- composed check.mdk path surfaces non-exhaustive-match warnings, mirroring the
+  -- OCaml oracle's `medaka check` output.
+  let _ = set_ref matchWarnings []
+  let _ = set_ref matchOracle (buildOracle prog)
   let schemes = checkProgramSeeded (externSchemes runtimeDecls) prog
   -- coherence over the USER decls the driver staged (NO prelude) — empty when the
   -- driver staged nothing (golden/profile paths) ⇒ no check, byte-identical.
   let _ = checkCoherence coherenceUserDecls.value
   let errs = revLL typeErrors.value
+  let warns = revLL matchWarnings.value
   match errs
-    [] => joinNl (schemeLines schemes)
+    [] => joinNl (schemeLines schemes ++ warns)
     _ => joinNl (typeErrorLines errs)
 
 -- ── type-aware non-exhaustive-match check (the `check_match` driver) ────────

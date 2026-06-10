@@ -52,14 +52,30 @@ let gen_ast src =
 
 let gen_types src =
   let prog = Desugar.desugar_program (parse src) in
-  let (env, _) = Typecheck.check_program prog in
-  env
-  |> List.filter (fun (n, _) ->
-      String.length n > 0 && n.[0] <> '$'
-      && not (String.length n > 4 && String.sub n 0 4 = "__dt"))
-  |> List.sort (fun (a, _) (b, _) -> String.compare a b)
-  |> List.map (fun (n, s) -> n ^ " : " ^ Typecheck.pp_scheme s)
-  |> String.concat "\n"
+  let (env, warnings) = Typecheck.check_program prog in
+  let scheme_lines =
+    env
+    |> List.filter (fun (n, _) ->
+        String.length n > 0 && n.[0] <> '$'
+        && not (String.length n > 4 && String.sub n 0 4 = "__dt"))
+    |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+    |> List.map (fun (n, s) -> n ^ " : " ^ Typecheck.pp_scheme s)
+  in
+  (* B5: include non-exhaustive-match warnings in the TYPES section, mirroring
+     the selfhost check.mdk path (checkToLinesWithRuntime) which appends them.
+     Strip the location prefix ("file:line:col: ") since the golden stores the
+     location-free form — the diff harness sorts both sides so position doesn't
+     matter there, but here we compare verbatim against the golden. *)
+  let strip_loc w =
+    (* Warnings may carry a "file:line:col: " prefix from pp_loc.  Drop
+       everything before the first "Warning:" marker. *)
+    match String.index_opt w 'W' with
+    | Some i when i > 0 && String.length w > i + 8
+                && String.sub w i 8 = "Warning:" ->
+      String.sub w i (String.length w - i)
+    | _ -> w
+  in
+  String.concat "\n" (scheme_lines @ List.map strip_loc warnings)
 
 let gen_eval src =
   let prog = Desugar.desugar_program (parse src) in

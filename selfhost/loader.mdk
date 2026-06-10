@@ -111,10 +111,33 @@ readModuleProg roots modId = match findModuleFile roots modId
 -- carries in-progress modules so a back-edge into one is reported as a cycle.
 -- acc accumulates each module AFTER its dependencies → dependency-first order.
 
+-- R2: build the full cycle chain from the in-progress stack when a back-edge to
+-- `modId` is detected.  stack is most-recent-first (e.g. ["b","a"] when a→b→a).
+-- We extract everything up to and including `modId`, reverse it, then append
+-- `modId` again: ["b","a"] → take ["b","a"] → reverse ["a","b"] → + "a" = ["a","b","a"]
+-- Mirrors lib/loader.ml's `take_until [mod_id] stack` → `List.rev` → join " → ".
+cycleChain : String -> List String -> List String
+cycleChain modId stack = reverseL (takeTo modId stack) ++ [modId]
+
+takeTo : String -> List String -> List String
+takeTo _ [] = []
+takeTo target (x :: xs) =
+  if x == target then [x]
+  else x :: takeTo target xs
+
+reverseL : List a -> List a
+reverseL [] = []
+reverseL (x :: xs) = reverseL xs ++ [x]
+
+joinArrow : List String -> String
+joinArrow [] = ""
+joinArrow [x] = x
+joinArrow (x :: xs) = stringConcat [x, " → ", joinArrow xs]
+
 visitMod : List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
 visitMod roots stack visited acc modId =
   if memStr modId visited then Ok (visited, acc)
-  else if memStr modId stack then Err (stringConcat ["cyclic dependency: ", modId])
+  else if memStr modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
   else match readModuleProg roots modId
     Err e => Err e
     Ok prog => match visitMods roots (modId :: stack) visited acc (directImports prog)

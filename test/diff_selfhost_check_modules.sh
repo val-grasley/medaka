@@ -65,5 +65,18 @@ if [ -d "$FIXDIR" ]; then
   done
 fi
 
+# ── 3. R2: cycle-chain error format (loader.mdk) ────────────────────────────
+# Create a minimal a→b→a cycle in a tmpdir, run check_modules_main over it, and
+# verify the selfhost emits the full chain "cyclic dependency: a → b → a" to
+# stderr (mirroring the OCaml oracle's CyclicDependency formatting).
+CTMP="$(mktemp -d)"
+trap 'rm -rf "$CTMP"' EXIT
+printf 'import b.{bar}\nexport foo : Int\nfoo = 1\n' > "$CTMP/a.mdk"
+printf 'import a.{foo}\nexport bar : Int\nbar = 2\n' > "$CTMP/b.mdk"
+cycle_self="$("$MAIN" run "$SELF" "$RUNTIME" "$CORE" "$CTMP/a.mdk" "$CTMP" 2>&1 >/dev/null)"
+want_cycle="cyclic dependency: a → b → a"
+if [ "$cycle_self" = "$want_cycle" ]; then pass=$((pass+1)); printf 'ok   cycle/a-b-a\n'
+else fail=$((fail+1)); printf 'FAIL cycle/a-b-a (got: %s)\n' "$cycle_self"; fi
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
