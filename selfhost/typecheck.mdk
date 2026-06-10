@@ -4207,6 +4207,10 @@ checkModuleFullImpl seedVars accData implDecls prog =
   -- [implDecls] for interface method types + cross-module impl dispatch.  The sites
   -- it records stay in pendingArgStamps/pendingSites for elabModuleStamp to resolve.
   let _ = inferModuleImplBodiesIfEnabled (extendVars env1 topSchemes) implDecls prog
+  -- C8(b): also infer THIS module's interface DEFAULT bodies (gated identically to
+  -- the single-file path's inferDefaultBodiesIfEnabled) so a default body's type
+  -- error is caught on the module path too — mirrors checkProgramSeeded.
+  let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
   -- E6: fold THIS module's freshly-registered fn-constraints into the cross-module
   -- accumulator so a LATER module's call site finds them after its own reset.
   let _ = if argStampEnabled.value then set_ref crossModuleFunConstraintsRef funConstraintsRef.value else ()
@@ -4219,13 +4223,22 @@ inferModuleImplBodiesIfEnabled env implDecls prog
   | implInferEnabled.value = inferImplBodies env implDecls (returnPosMethodNames implDecls) prog
   | otherwise = ()
 
--- public top-level value names (the pub flag may sit on the sig, def, or extern)
+-- public top-level value names (the pub flag may sit on the sig, def, or extern).
+-- C8(a): a PUBLIC interface ALSO exports its method names so an importer can see
+-- their schemes (mirrors lib/typecheck.ml's pub_iface_schemes — methods of an
+-- `is_pub = true` interface are appended to the exported value schemes).
 publicValNames : List Decl -> List String
 publicValNames [] = []
+publicValNames (DAttrib _ d :: rest) = publicValNames [d] ++ publicValNames rest
 publicValNames (DFunDef True n _ _ :: rest) = n :: publicValNames rest
 publicValNames (DTypeSig True n _ :: rest) = n :: publicValNames rest
 publicValNames (DExtern True n _ :: rest) = n :: publicValNames rest
+publicValNames (DInterface { pub = True, methods, ... } :: rest) = ifaceMethodNames methods ++ publicValNames rest
 publicValNames (_ :: rest) = publicValNames rest
+
+ifaceMethodNames : List IfaceMethod -> List String
+ifaceMethodNames [] = []
+ifaceMethodNames (IfaceMethod n _ _ :: rest) = n :: ifaceMethodNames rest
 
 -- `public export data` / `public export record` decls — re-registered in every
 -- importing module so their constructors + field layout are in scope.

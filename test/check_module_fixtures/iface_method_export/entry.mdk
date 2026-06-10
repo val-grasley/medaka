@@ -1,0 +1,4 @@
+import mod_a.*
+
+greeting : String
+greeting = show2 5

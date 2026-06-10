@@ -394,7 +394,7 @@ narrowing → falls to first-impl-wins. Compounds S3 (no overlap rejection upstr
 **Fix:** carry the canonical impl key (typecheck knows it at stamp time); match
 `VTypedImpl.key`.
 
-### C8. Module export surface incomplete on the typed path
+### C8. Module export surface incomplete on the typed path — ✅ CLOSED (2026-06-09)
 (a) `publicValNames` omits interface methods (`typecheck.mdk:3704-3710` — DFunDef/
 DTypeSig/DExtern only): a non-core module's interface methods don't export their
 schemes. (b) `checkModuleFullImpl` lacks the `inferDefaultBodiesIfEnabled` call
@@ -402,6 +402,32 @@ schemes. (b) `checkModuleFullImpl` lacks the `inferDefaultBodiesIfEnabled` call
 inference checking. Both violate the mirror-both-entry-points discipline the OCaml side
 documents. **Fix:** extend `publicValNames` to DInterface method sigs; add the hook to
 the module path.
+
+**Done (2026-06-09):** (a) `publicValNames` (`typecheck.mdk`) now peels `DAttrib` and
+exports the method names of every `DInterface { pub = True, … }` via a new
+`ifaceMethodNames` helper — mirrors `lib/typecheck.ml`'s `pub_iface_schemes`
+(`is_pub = true` interfaces append their method schemes). Before: a wildcard-importing
+module panicked `unbound variable: <method>` on the selfhost typed module path; after:
+exports the scheme and typechecks == oracle. Fixture
+`test/check_module_fixtures/iface_method_export/` (driven by a new fixtures section in
+`test/diff_selfhost_check_modules.sh`) regresses without the fix. (b) Added
+`inferDefaultBodiesIfEnabled` to `checkModuleFullImpl` right after
+`inferModuleImplBodiesIfEnabled`, gated identically (`implInferEnabled`) — the module
+path now mirrors `checkProgramSeeded`'s default-body hook. On the LLVM emit path
+(`elaborateModules` sets `implInferEnabled := argStampEnabled`, ON) the module path now
+reaches the same default-body inference as the single-file emit path.
+**Residual gap (not closed by C8's scoped fix, NEW finding):** `inferDefaultBodies`/
+`inferDefaultMethod` only infer **constraint-carrying** default bodies (methods in
+`methodConstraintsRef`, e.g. `foldMap`'s `Monoid m`) — for the dict-slot registration.
+A *plain* unconstrained default body (`greet x = 5`) is skipped on BOTH selfhost entry
+points, and on the plain-check driver the hook is gated OFF entirely. The OCaml oracle,
+by contrast, type-checks ALL default bodies unconditionally during interface
+registration (`lib/typecheck.ml:3079-3110+`). So a general bad-default-body type error
+in a module is still caught by neither selfhost path — C8(b)'s hook achieves
+two-entry-point parity (the audited defect) but not full oracle parity for unconstrained
+defaults. Closing the residual would need (i) extending `inferDefaultBodies` to all
+defaults and (ii) ungating it on the check path — both out of C8's "export-list + hook"
+scope; file as a follow-up if oracle-parity on default-body diagnostics is wanted.
 
 ### C9. `inferIndex` is List-only; container default diverges
 `typecheck.mdk:1240-1248` unifies every `xs.[i]` receiver with `List elem`; oracle
