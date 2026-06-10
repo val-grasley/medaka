@@ -369,7 +369,7 @@ skipLineComment src len p
 skipBlockComment : Array Char -> Int -> Int -> Int -> Int
 skipBlockComment src len p d
   | d <= 0 = p
-  | p >= len = p
+  | p >= len = panic "Unterminated block comment"
   | at src p == '{' && p + 1 < len && at src (p + 1) == '-' = skipBlockComment src len (p + 2) (d + 1)
   | at src p == '-' && p + 1 < len && at src (p + 1) == '}' = skipBlockComment src len (p + 2) (d - 1)
   | otherwise = skipBlockComment src len (p + 1) d
@@ -479,9 +479,10 @@ floatTok src len pos e1 depth id =
 -- strings (escapes processed into the content; `\{` opens an interpolation)
 scanStr : Array Char -> Int -> Int -> Int -> Int -> String -> List RawTok
 scanStr src len p depth id acc
-  | p >= len = RTok (TString acc) :: scan src len p depth id
+  | p >= len = panic "Unterminated string literal"
   | isQuote (at src p) = RTok (TString acc) :: scan src len (p + 1) depth id
   | isBackslash (at src p) && p + 1 < len = scanStrEsc src len p depth id acc (at src (p + 1))
+  | isBackslash (at src p) = panic "Unterminated string literal"
   | otherwise = scanStr src len (p + 1) depth id (acc ++ charToStr (at src p))
 
 scanStrEsc : Array Char -> Int -> Int -> Int -> Int -> String -> Char -> List RawTok
@@ -494,7 +495,7 @@ scanStrEsc src len p depth id acc e
   | e == 'r' = scanStr src len (p + 2) depth id (acc ++ "\r")
   | e == '0' = scanStr src len (p + 2) depth id (acc ++ charToStr (fromOption ' ' (charFromCode 0)))
   | isUnicodeEsc src len p e = scanStr src len (uniEscEnd src len p) depth id (acc ++ uniEscStr src len p)
-  | otherwise = scanStr src len (p + 2) depth id (acc ++ charToStr e)
+  | otherwise = panic "lexing: empty token"
 
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
 scanInterpCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
