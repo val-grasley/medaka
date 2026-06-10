@@ -24,8 +24,8 @@ import desugar.{desugar}
 import loader.{loadProgram}
 import typecheck.{elaborateDict, elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
 import eval.{funNamesOf}
-import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, ctorFieldTypeNames}
-import llvm_emit.{emitProgramGaps, installReturnsSelf, installSelfFnParams, installMethodIface, installCtorFieldTypes}
+import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, ctorFieldTypeNames, declSigTypeNames}
+import llvm_emit.{emitProgramGaps, installReturnsSelf, installSelfFnParams, installMethodIface, installCtorFieldTypes, installDeclSigTypes}
 import util.{joinNl, joinWith, listLen, concatMapList}
 
 main : <IO, Mut> Unit
@@ -79,6 +79,7 @@ censusCore runtimeDecls coreDecls =
   let _ = installSelfFnParams (selfFnParamTable coreDecls)
   let _ = installMethodIface (methodIfaceTable coreDecls)
   let _ = installCtorFieldTypes (ctorFieldTypeNames coreDecls)
+  let _ = installDeclSigTypes (declSigTypeNames coreDecls)
   emitProgramGaps (lowerProgramEmit (elaborateDict runtimeDecls dictNames userNames coreDecls))
 
 -- (B) the whole self-hosted compiler through the multi-module typed path
@@ -92,6 +93,7 @@ censusWhole runtimeDecls coreDecls modPairs =
   let _ = installSelfFnParams (selfFnParamTable allDecls)
   let _ = installMethodIface (methodIfaceTable allDecls)
   let _ = installCtorFieldTypes (ctorFieldTypeNames allDecls)
+  let _ = installDeclSigTypes (declSigTypeNames allDecls)
   emitProgramGaps (lowerProgramEmit allDecls)
 
 runCensus : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit

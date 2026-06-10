@@ -532,15 +532,15 @@ emitter graph still DCEs + reproduces byte-for-byte); `bootstrap_eval` 20/0.
 
 ---
 
-### Gap E: Float value corruption / wrong output
+### Gap E: Float value corruption / wrong output — **FULLY CLOSED 2026-06-10**
 
 | # | Construct | Oracle | Native | Note |
 |---|-----------|--------|--------|------|
-| E1 | Named fn `double : Float -> Float; double x = x + x` (no Float literal in body) | `6.28` | garbage or `0.` | `+` dispatches via Num on Float params without a literal anchor — **OPEN** |
+| E1 | Named fn `double : Float -> Float; double x = x + x` (no Float literal in body) | `6.28` | `6.28` | **CLOSED 2026-06-10 (Fix C):** signature inference seeds param/return LTy from the DECLARED `DTypeSig` — see Gap E note below |
 | E2 | ADT with two Float fields, extracting both: `Rect Float Float; Rect w h => w * h` | `12.` | `12.` | **CLOSED 2026-06-10 (Fix B):** field vars now typed from ctor's DECLARED field types — see Gap E note below |
 | E3 | lambda Float param `(y => y + 1.0) 3.0` | `4.` | `4.` | **CLOSED 2026-06-10 (Fix A)** — lambda params typed via `paramUseTy` |
 
-**Fix target:** `selfhost/llvm_emit.mdk` — E1 (OPEN): thread declared signatures into `inferSigs` so a told Float param isn't guessed `LTInt`; E2/E3 closed.
+**Fix target:** `selfhost/llvm_emit.mdk` — all three closed. Gap E is the LLVM emitter's static `LTy` recovery guessing too weakly; each fix sources a stronger, DECLARED type into inference rather than relying on body-use.
 
 ---
 
@@ -768,8 +768,24 @@ note.)
 `LTInt`; `emitArith` (`llvm_emit.mdk:1451-1467`) then selects INTEGER ops (`ashr`+`add`)
 on a boxed-Float pointer-word → garbage / SIGSEGV. Value rep + box/unbox/field layout are
 SOUND — bug is int-vs-float instruction selection from too-weak inference.
-- **E1** `double x = x+x`: `paramUseTy` can't anchor a symmetric binop of bare vars (no
-  Float literal) → param `LTInt` → int arith → garbage. (`x+1.0` works — literal anchors.)
+- **E1 — CLOSED 2026-06-10 (Fix C).** `double x = x+x` (`: Float -> Float`): `paramUseTy`
+  can't anchor a symmetric binop of bare vars (no Float literal) → param `LTInt` → int
+  arith → garbage. **Fix:** `core_ir_lower.declSigTypeNames : List Decl -> List (String,
+  (List String, String))` reads each `DTypeSig` (also under `DAttrib`) into fn-name →
+  (declared-param-type-head-names, declared-return-type-head-name), e.g. `double` →
+  (`["Float"]`, `"Float"`) (`methodArgTys`/new `methodRetTy` split the `TyFun` chain,
+  `tyHeadName` takes each head). Each emit driver installs it into
+  `llvm_emit.declSigTypesRef` via `installDeclSigTypes` (mirrors `installCtorFieldTypes`).
+  Signature inference SEEDS from it: `inferSigs`/`inferPass` look up the binding's declared
+  sig by name (`declSigOf`); `inferOneSig`/`inferMultiSig` pass it to `inferParamTysSeed`/
+  `inferMultiParamTys` (per-param `seedParamTy` overrides the body-use guess with the
+  declared scalar `fieldNameToLTy` when known) and wrap the return in `seedRetTy`. ADDITIVE:
+  an unannotated fn (`dsig=None`) or a non-scalar declared head keeps the existing guess, so
+  literal-anchored Float fns and Int fns (declared `Int` seeds `LTInt` = default) are
+  unchanged. Repro `double : Float -> Float; double x = x + x`, `double 3.14`: oracle `6.28`,
+  native was garbage, now `6.28`. Fixture `test/construct_fixtures/float_annot_nolit.mdk`.
+  Anchored-Float (`x+1.0`), Int, and unannotated fns verified unaffected. Self-compile
+  fixpoint (C3a/C3b) holds byte-for-byte.
 - **E2 — CLOSED 2026-06-10 (Fix B).** `Rect w h => w*h`: match-bound field vars
   defaulted `LTInt` (`bindPattern`/`bindFields`) → int-mul on Float pointers → small int
   word → fed to `mdk_impl_Float_debug` → `inttoptr`+`load double` at a bogus addr → SIGSEGV.
@@ -786,7 +802,7 @@ SOUND — bug is int-vs-float instruction selection from too-weak inference.
   { Rect w h => w*h }`, `area (Rect 3.0 4.0)`: oracle `12.`, native was SIGSEGV, now `12.`.
   Fixture `test/construct_fixtures/adt_float_ctor_arith.mdk`. Single-Float-field
   (`adt_float_ctor.mdk`), Int-field, and Bool+Float variants verified unaffected. Self-compile
-  fixpoint (C3a/C3b) holds byte-for-byte. **E1 remains open.**
+  fixpoint (C3a/C3b) holds byte-for-byte. **(E1 since closed by Fix C — see below.)**
 - **E3 — CLOSED 2026-06-10 (Fix A).** lambda Float: lambda params were forced `LTInt`
   UNCONDITIONALLY via `allInt` (`:2873`,`:2977`) — `paramUseTy` never consulted → corruption
   even with a body literal. **Fix:** both lambda-define sites (`emitLamDefine`,
@@ -795,10 +811,12 @@ SOUND — bug is int-vs-float instruction selection from too-weak inference.
   Additive: params `paramUseTy` can't resolve still default `LTInt`; captured vars (typed via
   `cenv`/`loadCaptures`) unchanged. Repro `(y => y + 1.0)` 3.0: oracle `4.`, native was garbage
   (`7.54792489297e+168`), now `4.`. Fixture `test/construct_fixtures/lambda_float_param.mdk`.
-  Self-compile fixpoint (C3a/C3b) holds. **E1 remains open.**
+  Self-compile fixpoint (C3a/C3b) holds. **(E1 since closed by Fix C — see below.)**
 **Fix plan:** ~~Fix A (E3) thread `paramUseTy` into lambda params (replace `allInt`)~~ DONE;
 ~~Fix B (E2) recover field types from the ctor's DECLARED field types~~ DONE;
-Fix C (E1, OPEN) thread declared signatures into `inferSigs` (emitter shouldn't guess told types).
-All emitter-local type-inference fixes; rep untouched; low golden churn (existing Float
-fixtures have literal anchors). Needs new fixtures (literal-free/field/lambda Float) + fixpoint.
+~~Fix C (E1) thread declared signatures into `inferSigs` (emitter shouldn't guess told types)~~ DONE.
+**Gap E FULLY CLOSED 2026-06-10 (E1+E2+E3).** All emitter-local type-inference fixes; rep
+untouched; zero golden churn (existing Float fixtures have literal anchors; the self-compile
+fixpoint held byte-for-byte through every fix). Fixtures: `float_annot_nolit.mdk` (E1),
+`adt_float_ctor_arith.mdk` (E2), `lambda_float_param.mdk` (E3).
 
