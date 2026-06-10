@@ -1,0 +1,9 @@
+-- GAP-2 phase-a: a where-helper dispatching `compare` on the enclosing
+-- constrained fn's type var must route to the enclosing dict (RDict), not
+-- degrade to arg-tag (which panics on a primitive Int receiver natively).
+cmp2 : Ord a => a -> a -> Ordering
+cmp2 x y = go x y
+  where
+    go p q = compare p q
+main : <IO> Unit
+main = println (cmp2 3 5)

@@ -1,0 +1,8 @@
+-- GAP-2 phase-a: where-helper `compare` on a SECOND primitive (Float) — the
+-- enclosing-dict propagation is type-agnostic, not Int-special.
+cmpf : Ord a => a -> a -> Ordering
+cmpf x y = go x y
+  where
+    go p q = compare p q
+main : <IO> Unit
+main = println (cmpf 1.5 2.5)

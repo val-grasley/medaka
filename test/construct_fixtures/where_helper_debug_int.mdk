@@ -1,0 +1,7 @@
+-- GAP-2 phase-a: where-helper `debug` on the enclosing `Debug a` dict (Int).
+shw : Debug a => a -> String
+shw x = go x
+  where
+    go p = debug p
+main : <IO> Unit
+main = println (shw 42)

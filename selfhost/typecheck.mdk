@@ -836,6 +836,12 @@ allList p (x :: xs)
   | p x = allList p xs
   | otherwise = False
 
+anyList : (a -> Bool) -> List a -> Bool
+anyList _ [] = False
+anyList p (x :: xs)
+  | p x = True
+  | otherwise = anyList p xs
+
 -- Lower every unbound var in [t] deeper than the current level down to the
 -- current level, so a value-restricted (non-generalized) binding's vars can't be
 -- picked up by an enclosing let's generalize.  Mirrors the lowering `unify`
@@ -2276,10 +2282,44 @@ inferLetBinds env ((LetBind _ clauses, (_, sch)) :: rest) =
 schemeMono : Scheme -> Mono
 schemeMono (Forall _ _ t) = t
 
+-- Phase / GAP-2 phase-a: the tyvar ids that some ARG-position method occurrence
+-- discriminates on (the receiver monos queued in pendingArgStamps).  A where-helper
+-- whose own type shares one of these is *method-constrained by the enclosing fn's
+-- dispatch* — its receiver var unifies (at the helper's call site) with the
+-- enclosing fn's constraint var that activeDictVars maps to a dict param.  We must
+-- NOT generalize over such a var, or the helper instantiates a fresh (id != the
+-- enclosing constraint var) so resolveArgStamp can't see the in-scope dict → the
+-- in-body method route degrades to RNone → arg-tag → native panic on a primitive
+-- receiver.  Keeping it monomorphic links the ids (normalize collapses them) so the
+-- existing resolveArgStamp routes RDict and dict_pass threads the enclosing dict in.
+-- Sound: an UNconstrained helper var (e.g. `pair x = (x,x)`) never appears in a
+-- method-usage mono, so it still generalizes; only dispatch-constrained vars (which
+-- selfhost cannot dict-pass per-where-helper anyway) are pinned, matching their
+-- single enclosing-typed use.
+methodConstrainedIds : Unit -> List Int
+methodConstrainedIds _ = concatMapL (s => monoUnboundIds (argStampMono s)) pendingArgStamps.value
+
+argStampMono : (String, Ref Route, Ref (List Route), Mono) -> Mono
+argStampMono (_, _, _, am) = am
+
+monoUnboundIds : Mono -> List Int
+monoUnboundIds t = match normalize t
+  TVar cell => [tyvarId cell]
+  TCon _ => []
+  TApp a b => monoUnboundIds a ++ monoUnboundIds b
+  TFun a _ b => monoUnboundIds a ++ monoUnboundIds b
+  TTuple ts => concatMapL monoUnboundIds ts
+
+anyIn : List Int -> List Int -> Bool
+anyIn xs ys = anyList (x => containsI x ys) xs
+
 generalizeGroup : TcEnv -> List (LetBind, (String, Scheme)) -> <Mut> TcEnv
 generalizeGroup env [] = env
 generalizeGroup env ((LetBind name clauses, (_, sch)) :: rest) =
-  generalizeGroup (extendVar env name (genRestricted (clausesAreValue clauses) (schemeMono sch))) rest
+  let constrained = methodConstrainedIds ()
+  let mono = schemeMono sch
+  let isVal = clausesAreValue clauses && not (anyIn (freeGenVars currentLevel.value mono) constrained)
+  generalizeGroup (extendVar env name (genRestricted isVal mono)) rest
 
 -- A where-clause binding is a value (generalizable) iff every clause has params
 -- (it's a function) or its zero-arg RHS is non-expansive.  Mirrors the oracle

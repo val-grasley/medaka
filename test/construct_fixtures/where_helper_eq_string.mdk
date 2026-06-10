@@ -1,0 +1,7 @@
+-- GAP-2 phase-a: where-helper `eq` on a SECOND primitive (String receiver).
+chkeqs : Eq a => a -> a -> Bool
+chkeqs x y = go x y
+  where
+    go p q = eq p q
+main : <IO> Unit
+main = println (chkeqs "ab" "ac")

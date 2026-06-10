@@ -1,0 +1,7 @@
+-- GAP-2 phase-a: where-helper `eq` on the enclosing `Eq a` dict (Int receiver).
+chkeq : Eq a => a -> a -> Bool
+chkeq x y = go x y
+  where
+    go p q = eq p q
+main : <IO> Unit
+main = println (chkeq 3 3)
