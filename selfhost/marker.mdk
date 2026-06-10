@@ -169,7 +169,21 @@ declBodies DInterface { methods, ... } = concatMapList ifaceMethodBodies methods
 declBodies (DProp _ _ _ body) = [body]
 declBodies (DTest _ _ body) = [body]
 declBodies (DBench _ _ body) = [body]
+-- OBS5: a `@attr…`-wrapped decl carries its body in the INNER decl; without this
+-- arm declRefs of e.g. `@inline f = … helper …` is [] → a helper referenced ONLY
+-- through an attributed function would be DCE'd (unbound-variable miscompile).
+declBodies (DAttrib _ d) = declBodies d
+-- OBS5: a top-level `let rec … with …` group's clause bodies carry references;
+-- DCE keeps the group whole (non-DFunDef) but must still seed reachability from
+-- its refs, or a binding used ONLY inside a top-level let-group is dropped.
+declBodies (DLetGroup _ binds) = concatMapList letBindBodies binds
 declBodies _ = []
+
+letBindBodies : LetBind -> List Expr
+letBindBodies (LetBind _ clauses) = map funClauseBody clauses
+
+funClauseBody : FunClause -> Expr
+funClauseBody (FunClause _ body) = body
 
 implMethodBody : ImplMethod -> Expr
 implMethodBody (ImplMethod _ _ body) = body

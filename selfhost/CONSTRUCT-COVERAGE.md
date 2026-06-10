@@ -386,6 +386,70 @@ so the fix registers it as an arity-1 ctor:
 
 ---
 
+### OBS5 — `marker.collectVars` / `declRefs` DCE-reference-walk completeness audit (2026-06-10)
+
+DCE (`dce.dceFilter`) drops any top-level `DFunDef` unreachable from `main` +
+impl/interface bodies. Reachability is computed with `marker.collectVars`
+(per-expr refs) + `marker.declRefs`/`declBodies` (per-decl bodies). If either
+fails to walk a sub-expression or a NAME that can reference a top-level binding,
+DCE silently drops a *reachable* function → emitter `unbound variable` crash
+(this is exactly how D1 bit us). This audit enumerated every `Expr`, pattern,
+and `Decl` form (`selfhost/ast.mdk`) against the walk.
+
+**`collectVars` — Expr forms (all 40 ctors):**
+
+- *Variable references, all walked:* `EVar`, `EMethodRef`, `EDictApp`, and the
+  post-elaboration `EVarAt`/`EMethodAt`/`EDictAt` (each carries the name in field
+  1 — DCE runs on the elaborated tree, so these are the live forms).
+- *Operator-name reference:* `EInfix op …` walks `op` (the **D1 fix** — a backtick
+  `` a `f` b `` names plain fn `f`). `EBinOp`/`EUnOp`/`ESection` operators are
+  built-in SYMBOLIC operators only — **verified in both parsers** (`section_op`,
+  `EUnOp "-"|"!"`, and `EBinOp` is only ever produced for symbolic ops); a symbol
+  never names a `DFunDef`, so dropping it is sound. Sections desugar to
+  `EBinOp op …` before DCE — same symbolic-only guarantee.
+- *Sub-expression recursion, all walked:* `EApp`, `ELam`, `ELet`, `ELetGroup`,
+  `EMatch` (+ guards via `armVars`/`guardVars`), `EIf`, `EFieldAccess`,
+  `ERecordCreate`/`ERecordUpdate`/`EVariantUpdate` (field-assign exprs; record
+  PUNS desugar to `field = EVar field` so the pun name is captured), `EArrayLit`,
+  `EListLit`, `ETuple`, `EIndex`, `ERangeList`/`ERangeArray`, `ESlice`, `EBlock`,
+  `EDo` (do-binds/guards via `doStmtVars`), `EAnnot`, `EHeadAnnot`, `EListComp`
+  (generators/guards/lets via `lcQualVars`), `EQuestion`, `EStringInterp`,
+  `EGuards`, `EFunction`, `EAsPat`, `EMapLit`/`ESetLit` (entries — these also
+  desugar to `EApp (EVar "fromEntries") …` before DCE, so `fromEntries` is
+  captured via `EVar` regardless).
+- *Name fields that are NOT DFunDefs (sound to skip — DCE only drops DFunDef):*
+  field labels (`EFieldAccess`), constructor/type names (`ERecordCreate`/
+  `EVariantUpdate`/`EMapLit`/`ESetLit` head) → reference `DData`/`DRecord`.
+- *`ELit`* → wildcard `[]` (literals carry no reference) — correct.
+
+**`declBodies`/`declRefs` — Decl forms:** `DFunDef`, `DImpl` (method bodies),
+`DInterface` (default bodies), `DProp`/`DTest`/`DBench` already walked.
+**Added (OBS5):** `DAttrib _ d` → `declBodies d`; `DLetGroup _ binds` →
+clause bodies. Both were holes in the reference walk.
+
+**Holes found:** none in `collectVars` (the live walk was already complete — D1
+and the earlier EVarAt/EMethodAt/EDictAt/EHeadAnnot/EAsPat/EMapLit/ESetLit work
+closed them). Two latent holes in `declBodies` (`DAttrib`, `DLetGroup`) — fixed.
+
+**Why no native regression fixture for the two declBodies additions:** both
+forms are **not lowered by the native emitter today** — `core_ir_lower.funClausesOf`
+emits only *bare* `DFunDef` and skips `DAttrib (DFunDef …)` and top-level
+`DLetGroup` (the latter is the already-documented **D4** gap). So a function in
+those forms is never emitted whether or not DCE retains it — the `declBodies`
+holes are *latent*, not live. The added arms are correct as a reference walk and
+**forward-compatible** for when `funClausesOf` learns to lower attributed /
+let-group top-level functions; they are **inert for the current corpus** (no
+top-level `DAttrib`/`DLetGroup` in `core.mdk` or any imported stdlib module), so
+`diff_selfhost_mark` stays byte-identical (verified: 144/0) — the marker's own
+`droppablePreludeFns` use of `declRefs` sees identical results.
+
+**Gates (all green, 2026-06-10):** `build_cmd` 13/0; `build_construct_coverage`
+121/0; `diff_selfhost_llvm` 170/0; `_typed` 33/0; `_modules` 6/0;
+`diff_selfhost_mark` 144/0; `selfcompile_fixpoint` C3a + C3b PASS (the whole
+emitter graph still DCEs + reproduces byte-for-byte); `bootstrap_eval` 20/0.
+
+---
+
 ### Gap E: Float value corruption / wrong output
 
 | # | Construct | Oracle | Native | Note |
