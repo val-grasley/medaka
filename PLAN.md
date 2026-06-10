@@ -52,7 +52,7 @@ interpreter-perf levers are all resolved (`selfhost/PERF-NOTES.md`).
 **Conventions.** Work is organized by numbered **Phases**; commit messages and
 code comments reference them. Phases left *partial* keep their original number
 (e.g. Phase 83/84, 101); genuinely new work gets the next free number (last used:
-149). At task triage, match the work against AGENTS.md's task-playbook table and
+150). At task triage, match the work against AGENTS.md's task-playbook table and
 load the matching skill before planning.
 
 ---
@@ -427,6 +427,31 @@ Current native-backend state + residual gaps: `selfhost/BOOTSTRAP.md`,
        `SYNTAX.md` entry + `test/parse_fixtures` / round-trip / eval fixtures.
   - Estimate: ~a day (Full scope). Skill: **add-language-feature** (cross-cutting —
     new pattern + construction syntax through parser/ast/typecheck/eval + selfhost).
+
+- **Phase 150 (proposed) — better error for `do` used on a non-monad.** Using `do`
+  to sequence IO (a common newcomer mistake, since Medaka IO is **not** a monad —
+  imperative IO is a bare indented block, see [[medaka-io-not-a-monad]] / SYNTAX.md
+  §"do notation") produces a baffling diagnostic. Verified on the binary:
+  ```
+  main = do
+    println "one"
+    println "two"
+  -- → 2:12: Type mismatch: a b vs Unit   (caret on the string literal!)
+  ```
+  No mention of `do`, monads, or the fix; the caret lands on `println`'s argument.
+  **Root:** `do` lowers to `andThen`/`pure` in **`desugar.ml` (runs first)**, so by
+  typecheck the `do` shape is gone — unification fails deep in the synthesized chain
+  with no provenance back to the `do`. **Fix path:** thread `do`-origin provenance
+  from the desugaring (tag the lowered `EApp (andThen …)`/`pure` nodes, or keep an
+  `EDo` source span) so the typechecker, on failure to satisfy the
+  `andThen`/`Monad`/`Mappable` constraint for a do-lowered node, emits a tailored
+  `type_error`: *"`do` requires a monad (e.g. `Option`/`Result`); for imperative IO
+  sequencing use a bare indented block."* Lands in `desugar.ml` (provenance) +
+  `typecheck.ml` (the tailored error) + selfhost `{desugar,typecheck}.mdk` mirror.
+  Surfaced when an orchestrated agent misused `do` for IO and mis-filed the failure
+  as a "missing IO monad gap" (2026-06-09) — the language is fine; the *diagnostic*
+  is the gap. Skill: **add-language-feature** (desugar+typecheck provenance thread;
+  not pure harden-typechecker — it needs the desugar tag).
 
 - ~~**Phase 83 / 84 #5 — recursive/nested instance dictionaries**~~ **DONE
   (reference + selfhost mirror, 2026-06-05).** Structured/recursive runtime dicts
