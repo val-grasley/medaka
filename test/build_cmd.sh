@@ -1,17 +1,22 @@
 #!/bin/sh
 # medaka build — end-to-end native-binary build smoke + differential gate.
 #
-# Stage 3 sequence item 1.  Drives the `medaka build` CLI subcommand on a handful
-# of real user programs of increasing complexity, then diffs each native binary's
-# stdout against the `medaka run` interpreter oracle (the bootstrap differential
-# pattern — interpreter is the oracle).
+# Stage 3 sequence item 1 (prelude flip complete, Stage 3 #2a).  Drives the
+# `medaka build` CLI subcommand on real user programs of increasing complexity,
+# then diffs each native binary's stdout against the `medaka run` interpreter
+# oracle (the bootstrap differential pattern — interpreter is the oracle).
 #
-# `medaka build` shells the self-hosted LLVM emitter
-# (selfhost/llvm_emit_modules_main.mdk) with an EMPTY prelude — the same subset
-# every LLVM gate uses (the full stdlib/core.mdk prelude is not yet emittable; it
-# hits the open max/min arg-tag-dispatch gap, EMITTER-GAPS.md residual).  So the
-# test programs stay within that subset: runtime externs (putStrLn/intToString),
-# primitive arithmetic, ADTs + match, recursion, closures, multi-module data.
+# `medaka build` now passes the REAL `stdlib/core.mdk` prelude (Stage 3 #2a
+# complete).  DCE drops unreachable `maximum`/`minimum`/`clamp`; the E20 unit-head
+# fix closed the Arbitrary-impl gap.  The buildable surface includes:
+#   - runtime externs (putStrLn/intToString/…), arithmetic, ADTs + match,
+#     recursion, closures, tuples, records, arrays, multi-module data
+#   - typeclass dispatch via the real prelude: debug/Debug, ==/Eq, compare/Ord,
+#     map/Foldable, deriving (Eq, Debug)
+# KNOWN GAP: `println` prints `0` instead of `()` as `main`'s auto-print because
+# the emitter does not yet infer that the prelude function `println` returns LTUnit
+# (it is emitted as a Medaka dict-dispatch call returning i64, typed LTInt by
+# default; mdk_print_int(0) is called instead of mdk_print_unit). Item 2b sweep.
 #
 # NATIVE AUTO-PRINT.  The native runtime auto-prints `main`'s Unit as a trailing
 # "()\n" that the interpreter oracle does NOT emit (same convention as
@@ -95,7 +100,40 @@ main : <IO> Unit
 main = putStrLn (intToString (double 21))
 EOF
 
-PROGRAMS="arith recur adt list closure"
+# Real-prelude typeclass cases (Stage 3 #2a census):
+# debug/Debug, ==/Eq, compare/Ord, map/Foldable, deriving (Eq, Debug).
+# SKIPPED: println — known gap: emitter types println's return as LTInt (not
+# LTUnit) so mdk_print_int(0) is called instead of mdk_print_unit().  Item 2b sweep.
+
+cat > "$WORK/src/show_debug.mdk" <<'EOF'
+main : <IO> Unit
+main = putStrLn (debug 42)
+EOF
+
+cat > "$WORK/src/eq.mdk" <<'EOF'
+main : <IO> Unit
+main = putStrLn (debug (42 == 42))
+EOF
+
+cat > "$WORK/src/ord.mdk" <<'EOF'
+main : <IO> Unit
+main = putStrLn (debug (compare 3 5))
+EOF
+
+cat > "$WORK/src/list_map.mdk" <<'EOF'
+double : Int -> Int
+double x = x * 2
+main : <IO> Unit
+main = putStrLn (debug (map double [1, 2, 3]))
+EOF
+
+cat > "$WORK/src/deriving.mdk" <<'EOF'
+data Color = Red | Green | Blue deriving (Eq, Debug)
+main : <IO> Unit
+main = putStrLn (debug Red ++ " " ++ debug Blue ++ " " ++ debug (Red == Red))
+EOF
+
+PROGRAMS="arith recur adt list closure show_debug eq ord list_map deriving"
 
 pass=0; fail=0
 

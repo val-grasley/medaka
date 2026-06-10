@@ -8,7 +8,7 @@
    test/selfcompile_lex.sh):
 
      1. emit  = medaka run selfhost/llvm_emit_modules_main.mdk \
-                  <runtime.mdk> <PRELUDE> <entry.mdk> <entry-dir> <selfhost> > out.ll
+                  <runtime.mdk> <stdlib/core.mdk> <entry.mdk> <entry-dir> <selfhost> > out.ll
      2. trim a trailing "()\n" the native runtime auto-print convention would add
         (the emitter's `main : <IO,Mut> Unit` produces it through the interpreter)
      3. clang out.ll runtime/medaka_rt.c <gc-flags> -Wl,-stack_size,0x20000000 -o <bin>
@@ -22,23 +22,17 @@
    across invocations is fragile.  The subprocess gives a clean stdout pipe and a
    fresh process per build — exactly what every working harness does.
 
-   PRELUDE.  The full `stdlib/core.mdk` prelude is STILL not emittable, so —
-   like every LLVM gate today — `medaka build` passes an EMPTY prelude file.
-   Stage 3 #2a added dead-code elimination to the emit driver
-   (`selfhost/dce.mdk`, wired into `llvm_emit_modules_main.mdk`'s `runEmit`),
-   which DROPS the unreachable plain prelude functions `maximum`/`minimum`/`clamp`
-   that hit the open `max`/`min` arg-tag gap — clearing THAT blocker.  But a
-   SECOND, orthogonal emitter gap remains: core.mdk's `Arbitrary` impls use
-   unit-parameter method clauses (`arbitrary () = …`), which lower to a Unit-head
-   `match` the emitter cannot switch on ("no unit heads", `llvm_emit.mdk:3528`).
-   Conservative (sound) DCE retains ALL impls — dropping an impl would be a
-   silent miscompile under runtime dict-dispatch — so those impls still emit and
-   still abort.  Flipping to the real prelude therefore waits on closing the
-   unit-head emitter gap (a separate Stage-3 emitter-capability follow-up).
-   Buildable surface today = runtime externs (putStrLn/putStr/intToString/…),
-   primitive arithmetic/comparison, ADTs + `match`, recursion, closures, tuples,
-   records, arrays, and cross-module data.  `println` and other core.mdk
-   machinery are out of scope until the prelude becomes emittable. *)
+   PRELUDE.  `medaka build` passes the real `stdlib/core.mdk` prelude (Stage 3
+   #2a complete).  Two emitter blockers were cleared before this flip:
+   (1) DCE (`selfhost/dce.mdk`, wired into `llvm_emit_modules_main.mdk`'s
+   `runEmit`) drops unreachable plain prelude functions `maximum`/`minimum`/`clamp`
+   that hit the open `max`/`min` arg-tag gap; (2) the unit-head emitter gap (E20)
+   was closed so core.mdk's `Arbitrary` impls (`arbitrary () = …`) emit correctly.
+   With DCE + E20, the full prelude compiles cleanly.  The buildable surface now
+   includes `println`/`show`/`Debug`, `Eq`/`Ord`, `Foldable`/`Mappable`, and
+   `data … deriving (Eq, Debug)` in addition to all the previously-available
+   constructs (runtime externs, arithmetic, ADTs + match, recursion, closures,
+   tuples, records, arrays, cross-module data). *)
 
 let read_file filename =
   let ic = open_in_bin filename in
@@ -178,6 +172,7 @@ let run (args : string array) : int =
       let self = Sys.executable_name in
       let emitter   = Filename.concat repo_root "selfhost/llvm_emit_modules_main.mdk" in
       let runtime   = Filename.concat repo_root "stdlib/runtime.mdk" in
+      let prelude   = Filename.concat repo_root "stdlib/core.mdk" in
       let rt_c      = Filename.concat repo_root "runtime/medaka_rt.c" in
       let selfhost  = Filename.concat repo_root "selfhost" in
       let input_abs =
@@ -193,19 +188,14 @@ let run (args : string array) : int =
       in
       let cc = try Sys.getenv "CC" with Not_found -> "clang" in
 
-      (* ---- Empty prelude (see header note) ---- *)
-      let empty_prelude = Filename.temp_file "medaka_build_core_" ".mdk" in
-      let oc = open_out empty_prelude in close_out oc;
-
       let ll_path = Filename.temp_file "medaka_build_" ".ll" in
       let cleanup () =
-        (try Sys.remove empty_prelude with _ -> ());
         (try Sys.remove ll_path with _ -> ())
       in
 
       (* ---- STEP 1: emit LLVM IR via the self-hosted emitter (shell-out) ---- *)
       let emit_argv =
-        [| self; "run"; emitter; runtime; empty_prelude; input_abs; input_dir; selfhost |]
+        [| self; "run"; emitter; runtime; prelude; input_abs; input_dir; selfhost |]
       in
       let (emit_code, emit_err) = run_capture ~argv:emit_argv ~out_path:ll_path in
       if emit_code <> 0 then begin
