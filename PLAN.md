@@ -188,6 +188,10 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   typed path. Not exercised by current fixtures; the C3 oracle exemption holds
   regardless. A native typed-path completeness gap — close if container-literal
   head-pins need to typecheck natively. Low priority.
+- **OBS4** (selfhost correctness gap, surfaced during D1) — record *construction*
+  lacks the oracle's `MissingField` check: `Pt { x = 1 }` omitting a required field
+  typechecks clean on selfhost but the oracle reports `Missing field …`. A missing
+  check (not a panic). Clean contained correctness port — close next.
 - **C3** — ✅ **CLOSED (`d4f1469`).** Added `AnnotationTooGeneral` — after
   `inferAnnot`'s unify, requires the annotation's tyvars to stay distinct unbound
   (flags grounding + collapse via `sigTvarIds`/`hasDupI`); message byte-identical
@@ -272,7 +276,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 **Near-term sequence (front-loaded order, decided 2026-06-09):**
 
 > **Overnight autonomous run (2026-06-09 22:xx → 07:00 PDT):** working the audit
-> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6, C9, C1, C7. C-series: C1/C2/C3/C6/C7/C8/C9 ✅; **C4 skipped** (design — Phase-125 lazy nullary); **C5 deferred** (route-taxonomy + uncertain blast radius, wants oversight). **D-series:** D2 ✅ (LetRecNonFunction guard). **L1 deferred** (E4-gated — fix
+> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6, C9, C1, C7. C-series: C1/C2/C3/C6/C7/C8/C9 ✅; **C4 skipped** (design — Phase-125 lazy nullary); **C5 deferred** (route-taxonomy + uncertain blast radius, wants oversight). **D-series:** D2 ✅ (LetRecNonFunction), D1 ✅ (error-path parity: 6 panic sites → accumulated typeErrors). **L1 deferred** (E4-gated — fix
 > with the E4 work). **L2 deferred for the unattended run** (latent + arg-tag-masked;
 > the full fix touches the fragile route-keying area + the interim typecheck error
 > risks over-rejection — wants careful attention near E4, not unattended). Proceeding
