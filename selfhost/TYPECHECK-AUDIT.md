@@ -404,13 +404,19 @@ unbound vars; emit the error into `typeErrors`. Keep `EHeadAnnot` exempt (oracle
   Gates: bootstrap_typecheck 10/0, bootstrap_eval 20/0, diff_selfhost_check 34/0 + _batch 34/0,
   typecheck_errors 26/0, eval_run 20/0, core_ir 20/0, llvm_modules 6/0, selfcompile_fixpoint C3a+C3b YES.
 
-### C4. Unreferenced zero-param bindings' effects never run
+### C4. Unreferenced zero-param bindings' effects never run — ✅ RESOLVED BY DECISION (2026-06-10): lazy IS canonical
 Selfhost `evalOutput` forces only `main` (`eval.mdk:1563-1569, 1597-1600`); nullary
 bindings are lazy `VThunk`s (the documented Phase-125 replacement, `eval.mdk:1607-1611`).
 Oracle forces ALL deferred nullary thunks in source order (`eval.ml:2075-2076, 2318`).
 `sideEffect = println "side"` before `main` prints on the oracle, not on selfhost.
-**Fix:** force top-level nullary user bindings in source order post-install, or document
-the divergence in driver headers + diff harnesses.
+**DECISION (user, 2026-06-10): LAZY is canonical** — top-level bindings are definitions
+(values), not statements; effects flow only through `main`; an unreferenced effectful
+binding does nothing. Grounded in the functional model + the capability-effects thesis (an
+effect firing because a binding merely exists = spooky-action-at-a-distance, the opposite of
+explicit effects). Selfhost (Phase-125) is already correct; the oracle's eager forcing is the
+legacy/script behavior — NOT reverted. Loose end (low priority): document the divergence in
+driver headers / diff harnesses, or make the dying oracle lazy for gate-cleanliness. See
+memory `lazy-toplevel-nullary-canonical`.
 
 ### C5. Phase-112 standalone-vs-method machinery unported: no `lookup_method`, no `RLocal`, install-order shadowing
 Three related gaps: (a) `EMethodAt` resolves via plain `lookupEnv` — first frame wins;
