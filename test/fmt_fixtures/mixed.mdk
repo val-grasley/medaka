@@ -1,0 +1,8 @@
+-- module doc
+
+data Color = Red | Green | Blue
+
+x = 1  -- inline
+
+-- final note
+y = 2

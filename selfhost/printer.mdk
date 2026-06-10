@@ -154,6 +154,7 @@ go col (Item i _ (FlatGroup d) :: z) =
   else
     go col (Item i Break d :: z)
 
+export
 render : Doc -> String
 render doc = stringConcat (go 0 [Item 0 Break doc])
 
@@ -918,6 +919,42 @@ dataVariantDocs (v::vs) =
       (Cat Line (Cat (text "= ") (printVariant v)))
       (concatD (map (v2 => Cat Line (Cat (text "| ") (printVariant v2))) vs)))
 
+-- Render a `data` declaration with interior comments interleaved before the
+-- variants they document.  Mirror of lib/printer.ml's `print_data_decl_commented`.
+-- `vcomments` is parallel to `variants`: entry i holds the comment lexemes (in
+-- source order) immediately preceding variant i.  Any non-empty entry forces the
+-- one-variant-per-line layout (a comment can't share a line), and each comment
+-- lands at the variant indent.  Uses `Hardline` (always break) — never the soft
+-- `Line` `dataVariantDocs` uses — so a documented `data` is never reflowed flat.
+export
+printDataDeclCommented : DataVis -> String -> List String -> List Variant -> List String -> List (List String) -> Doc
+printDataDeclCommented vis n params variants derives vcomments =
+  let head = Cat (text "data ") (Cat (text n) (concatD (map (p => Cat (text " ") (text p)) params)))
+  let variantDocs = dataVariantDocsCommented variants vcomments
+  let deriveDoc = if isEmptyL derives then Nil else Cat Hardline (printDerives derives)
+  Cat (visPrefix vis) (Cat head (Cat variantDocs deriveDoc))
+
+-- One Hardline + comment text per leading comment of a variant.
+commentLinesDoc : List String -> Doc
+commentLinesDoc cs = concatD (map (c => Cat Hardline (text c)) cs)
+
+dataVariantDocsCommented : List Variant -> List (List String) -> Doc
+dataVariantDocsCommented [] _ = Nil
+dataVariantDocsCommented _ [] = Nil
+dataVariantDocsCommented (v::vs) (vc::vcs) =
+  nest
+    (Cat
+      (Cat (commentLinesDoc vc) (Cat Hardline (Cat (text "= ") (printVariant v))))
+      (concatD (map2VariantComment vs vcs)))
+
+-- Mirror of List.map2 (fun v vc -> comment_lines vc ^^ Hardline ^^ "| " ^^ variant).
+map2VariantComment : List Variant -> List (List String) -> List Doc
+map2VariantComment [] _ = []
+map2VariantComment _ [] = []
+map2VariantComment (v::vs) (vc::vcs) =
+  Cat (commentLinesDoc vc) (Cat Hardline (Cat (text "| ") (printVariant v))) :: map2VariantComment vs vcs
+
+export
 printDecl : Decl -> Doc
 printDecl (DTypeSig pub n t) =
   Cat
