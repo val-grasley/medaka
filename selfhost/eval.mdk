@@ -228,6 +228,38 @@ export
 tyvarsInArgs : List Ty -> Int
 tyvarsInArgs ts = sumInts (map countTyvars ts)
 
+-- TYPECHECK-AUDIT C7: the canonical impl key, mirroring lib/ast.ml's `impl_key`
+-- byte-for-byte: `iface ++ "|" ++ <type args, prec-2 pretty> ++ "|" ++ name`.
+-- Built from the same source (the impl's AST type args) here at install time and
+-- by typecheck at each ground RKey route site, so the two strings agree by
+-- construction.  Two impls sharing a head tycon but differing type args
+-- (Pair Int Bool vs Pair Bool Int) get DISTINCT keys, so narrowing can pick the
+-- one the typechecker chose instead of falling to first-impl-wins.
+export
+implKeyOf : String -> List Ty -> Option String -> String
+implKeyOf iface typeArgs nm =
+  iface ++ "|" ++ joinWith " " (map ppTyAtomK typeArgs) ++ "|" ++ fromOption "" nm
+
+-- prec-2 Ty pretty-printer (mirrors lib/ast.ml pp_ty_prec 2 / typecheck's
+-- ppTyAtom): wraps applications and arrows, leaves atoms bare.
+ppTyK : Ty -> String
+ppTyK (TyCon n) = n
+ppTyK (TyVar n) = n
+ppTyK (TyApp a b) = ppTyK a ++ " " ++ ppTyAtomK b
+ppTyK (TyFun a b) = ppTyFunArgK a ++ " -> " ++ ppTyK b
+ppTyK (TyTuple ts) = "(" ++ joinComma (map ppTyK ts) ++ ")"
+ppTyK (TyEffect _ _ t) = ppTyK t
+ppTyK (TyConstrained _ t) = ppTyK t
+
+ppTyFunArgK : Ty -> String
+ppTyFunArgK (TyFun a b) = "(" ++ ppTyK (TyFun a b) ++ ")"
+ppTyFunArgK t = ppTyK t
+
+ppTyAtomK : Ty -> String
+ppTyAtomK (TyFun a b) = "(" ++ ppTyK (TyFun a b) ++ ")"
+ppTyAtomK (TyApp a b) = "(" ++ ppTyK (TyApp a b) ++ ")"
+ppTyAtomK t = ppTyK t
+
 headTycon : Ty -> Option String
 headTycon (TyCon n) = Some n
 headTycon (TyApp a _) = headTycon a
@@ -677,8 +709,15 @@ oneOrMultiV [v] _ = v
 oneOrMultiV [] original = VMulti original
 oneOrMultiV many _ = VMulti many
 
+-- TYPECHECK-AUDIT C7: a candidate matches a route string when the string equals
+-- EITHER its head tycon (field 1, the args-free RHeadKey-analog route) OR its
+-- canonical impl key (field 2, the ground route the typechecker stamps).  The two
+-- string spaces are disjoint — a bare head tycon ("Pair") never contains "|",
+-- while a canonical key always does — so this can't cross-match.  This is what
+-- lets two same-head non-overlapping impls (Pair Int Bool vs Pair Bool Int)
+-- narrow to the one the checker picked instead of first-impl-wins.
 hasTag : String -> Value -> Bool
-hasTag tag (VTypedImpl t _ _ _ _) = t == tag
+hasTag tag (VTypedImpl t k _ _ _) = t == tag || k == tag
 hasTag _ _ = False
 
 filterList : (a -> Bool) -> List a -> List a
@@ -688,7 +727,7 @@ filterList p (x::xs)
   | otherwise = filterList p xs
 
 matchesTag : String -> Value -> Bool
-matchesTag tag (VTypedImpl t _ _ _ _) = t == tag
+matchesTag tag (VTypedImpl t k _ _ _) = t == tag || k == tag
 matchesTag _ _ = True
 
 applyClosure : EvalEnv -> List Pat -> Expr -> Value -> <Mut> Option Value
@@ -1210,17 +1249,18 @@ nullList _ = False
 
 -- one (methodName, (specificity-score, taggedValue)) per impl method / default
 declImplEntries : EvalEnv -> List ((String, String), List Int) -> Decl -> List (String, (Int, Value))
-declImplEntries env disp DImpl { iface = ifaceName, tys = typeArgs, methods, ... } = map (implMethodEntry env disp ifaceName typeArgs) methods
+declImplEntries env disp DImpl { iface = ifaceName, tys = typeArgs, name = implNm, methods, ... } = map (implMethodEntry env disp ifaceName typeArgs implNm) methods
 declImplEntries env _ DInterface { typarams = typeParams, methods, ... } =
   concatMapList (defaultEntry env typeParams) methods
 declImplEntries _ _ _ = []
 
-implMethodEntry : EvalEnv -> List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> (String, (Int, Value))
-implMethodEntry env disp ifaceName typeArgs (ImplMethod mname pats body) =
+implMethodEntry : EvalEnv -> List ((String, String), List Int) -> String -> List Ty -> Option String -> ImplMethod -> (String, (Int, Value))
+implMethodEntry env disp ifaceName typeArgs implNm (ImplMethod mname pats body) =
   let tag = fromOption "__none__" (headTyconHead typeArgs)
+  let key = implKeyOf ifaceName typeArgs implNm
   let positions = lookupPositions ifaceName mname disp
   let inner = implMethodValue env positions pats body
-  (mname, (tyvarsInArgs typeArgs, VTypedImpl tag ifaceName positions 0 inner))
+  (mname, (tyvarsInArgs typeArgs, VTypedImpl tag key positions 0 inner))
 
 export
 headTyconHead : List Ty -> Option String

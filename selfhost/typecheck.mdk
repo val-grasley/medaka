@@ -2133,7 +2133,8 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let prog2 = prePassDictArg (returnPosMethodNames prog ++ methodConstraintNames prog) allNames argNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
   let implTable = buildImplTable prog2
-  let _ = resolveSites implTable (returnPosMethodNames prog2) pendingSites.value
+  let keyTable = buildKeyTable prog2
+  let _ = resolveSites implTable keyTable (returnPosMethodNames prog2) pendingSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps pendingDictApps.value
   let _ = resolveMethodDicts pendingMethodDicts.value
@@ -2556,11 +2557,11 @@ isEmptyL : List a -> Bool
 isEmptyL [] = True
 isEmptyL _ = False
 
-resolveSites : List ImplEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono) -> <Mut> Unit
-resolveSites _ _ [] = ()
-resolveSites implTable rpNames ((name, tagRef, implRef, resultMono) :: rest) =
-  let _ = resolveSite implTable rpNames name tagRef implRef resultMono
-  resolveSites implTable rpNames rest
+resolveSites : List ImplEntry -> List KeyEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono) -> <Mut> Unit
+resolveSites _ _ _ [] = ()
+resolveSites implTable keyTable rpNames ((name, tagRef, implRef, resultMono) :: rest) =
+  let _ = resolveSite implTable keyTable rpNames name tagRef implRef resultMono
+  resolveSites implTable keyTable rpNames rest
 
 -- a method occurrence's route: if its discriminating type is a constrained
 -- function's constraint variable, read that function's dict param (RDict);
@@ -2574,13 +2575,19 @@ resolveSites implTable rpNames ((name, tagRef, implRef, resultMono) :: rest) =
 -- RDictFwd for return-position methods — eval will extract and forward the
 -- enclosing VDict's nested requires at runtime.  Arg-position methods (display/==)
 -- stay RDict; their VMulti dispatch is by arg-tag, not by the forwarded reqs.
-resolveSite : List ImplEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Unit
-resolveSite implTable rpNames name tagRef implRef resultMono = match activeDictVarOf resultMono
+-- TYPECHECK-AUDIT C7: the ground RKey case prefers the canonical impl KEY (via
+-- keyForSite) over the bare head tycon, so two non-overlapping impls sharing a
+-- head tycon (Pair Int Bool vs Pair Bool Int) route to distinct keys; eval's
+-- narrowMethod then matches the right VTypedImpl by its key field.  No matching
+-- key entry (args-free / unknown) → fall back to the head tag, behaviour unchanged.
+resolveSite : List ImplEntry -> List KeyEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Unit
+resolveSite implTable keyTable rpNames name tagRef implRef resultMono = match activeDictVarOf resultMono
   Some dname =>
     set_ref tagRef (if containsName name rpNames then RDictFwd dname else RDict dname)
   None => match headTyconMono resultMono
     Some tag =>
-      let _ = set_ref tagRef (RKey tag [])
+      let routeKey = fromOption tag (keyForSite keyTable name resultMono)
+      let _ = set_ref tagRef (RKey routeKey [])
       set_ref implRef (implDictRoutesFor implTable name tag resultMono)
     None => ()
 
@@ -2841,6 +2848,69 @@ implEntryFromTys (headTy :: _) reqs methods = match headTyconTy headTy
 
 implMethodNameTc : ImplMethod -> String
 implMethodNameTc (ImplMethod n _ _) = n
+
+-- ── TYPECHECK-AUDIT C7: canonical-impl-key registry ────────────────────────
+-- One entry per USER impl (regardless of `requires`): the methods it defines (to
+-- match a method site), its head tycon (to detect a head-tag collision), its
+-- head-arg type pattern (matched against the site's concrete result mono), and its
+-- canonical impl key.  Mirrors lib/typecheck.ml's `matching_impls` + `entry.impl_key`.
+-- The route normally keeps the bare head tycon (the established head-tag dispatch
+-- the native Core-IR/LLVM backend keys symbols by); it is UPGRADED to the full
+-- canonical key ONLY when two impls share that head tycon for the method (the C7
+-- case, e.g. Pair Int Bool vs Pair Bool Int).  This keeps every single-impl-per-head
+-- site — i.e. all existing code and the native backend — byte-identical, while
+-- letting eval's narrowMethod pick the right VTypedImpl by its key field when the
+-- heads genuinely collide.
+public export data KeyEntry = KeyEntry (List String) String Ty String
+
+buildKeyTable : List Decl -> List KeyEntry
+buildKeyTable prog = concatMapL keyEntryOf prog
+
+keyEntryOf : Decl -> List KeyEntry
+keyEntryOf (DAttrib _ d) = keyEntryOf d
+keyEntryOf (DImpl { iface, tys, name, methods, ... }) = match tys
+  (headTy :: _) => match headTyconTy headTy
+    Some tag => [KeyEntry (map implMethodNameTc methods) tag headTy (implKeyTc iface tys name)]
+    None => []
+  [] => []
+keyEntryOf _ = []
+
+-- the canonical impl key, byte-identical to eval.mdk's implKeyOf and to
+-- lib/ast.ml's impl_key: `iface ++ "|" ++ <prec-2 args> ++ "|" ++ name`.
+implKeyTc : String -> List Ty -> Option String -> String
+implKeyTc iface tys nm =
+  iface ++ "|" ++ intercalateS " " (map ppTyAtom tys) ++ "|" ++ fromOption "" nm
+
+-- the canonical key to stamp for the impl of [name] matching the ground result
+-- mono — but ONLY when another impl of the same method shares its head tycon (so
+-- bare-head routing is ambiguous).  No collision (the common case) or no match →
+-- None → the caller keeps the head tag, behaviour unchanged.
+keyForSite : List KeyEntry -> String -> Mono -> Option String
+keyForSite table name resultMono = match matchedEntry table name resultMono
+  Some (KeyEntry _ tag _ key) =>
+    if headCollides table name tag then Some key else None
+  None => None
+
+-- the entry whose method set contains [name] and whose head pattern matches the
+-- concrete result mono (the impl the checker dispatches into at this site).
+matchedEntry : List KeyEntry -> String -> Mono -> Option KeyEntry
+matchedEntry [] _ _ = None
+matchedEntry (KeyEntry methodNames tag headTy key :: rest) name resultMono
+  | containsName name methodNames = match matchTyMono headTy resultMono
+      Some _ => Some (KeyEntry methodNames tag headTy key)
+      None => matchedEntry rest name resultMono
+  | otherwise = matchedEntry rest name resultMono
+
+-- do two distinct impls of [name] share head tycon [tag]?  (≥2 entries that
+-- define [name] at the same head tycon.)
+headCollides : List KeyEntry -> String -> String -> Bool
+headCollides table name tag = countHead table name tag > 1
+
+countHead : List KeyEntry -> String -> String -> Int
+countHead [] _ _ = 0
+countHead (KeyEntry methodNames tag2 _ _ :: rest) name tag
+  | containsName name methodNames && tag2 == tag = 1 + countHead rest name tag
+  | otherwise = countHead rest name tag
 
 -- the head type constructor of an (unelaborated) AST type
 headTyconTy : Ty -> Option String
@@ -4512,7 +4582,7 @@ markModules coreDecls modules =
 elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 elabModuleStamp seedVars accData implDecls prog =
   let schemes = checkModuleFullImpl seedVars accData implDecls prog
-  let _ = resolveSites [] [] pendingSites.value
+  let _ = resolveSites [] (buildKeyTable implDecls) [] pendingSites.value
   let _ = if argStampEnabled.value then resolveArgStamps (buildImplTable implDecls) pendingArgStamps.value else ()
   -- E6: fill THIS module's `=>`-constrained-fn EDictAt routes (the call sites
   -- prePassDictArg marked) so the emitter supplies the matching dict ARGUMENT —

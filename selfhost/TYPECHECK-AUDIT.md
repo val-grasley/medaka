@@ -434,12 +434,30 @@ type — before: selfhost printed `[eval] [eval] XX`, oracle `[eval] XX`; after:
 `[eval] XX`. All eval/dict/typed/modules/check/core_ir + native llvm_modules +
 selfcompile_fixpoint gates green; no value change in any existing program.
 
-### C7. Selfhost `RKey` carries head tycon, not canonical impl key
+### C7. Selfhost `RKey` carries head tycon, not canonical impl key — ✅ CLOSED (2026-06-10)
 `ast.mdk:160`, `eval.mdk:680-682` (`hasTag` matches head-tag only) vs oracle
 `select_impl_by_key` (`eval.ml:600`). Two impls sharing a head tycon both survive
 narrowing → falls to first-impl-wins. Compounds S3 (no overlap rejection upstream).
 **Fix:** carry the canonical impl key (typecheck knows it at stamp time); match
 `VTypedImpl.key`.
+
+**Done.** Mirror of `lib/ast.ml`'s `impl_key` (`iface|<prec-2 args>|name`) added on
+both sides: `eval.mdk` `implKeyOf`/`ppTyAtomK` (impl install now stamps the canonical
+key into `VTypedImpl`'s key field instead of the bare iface name); `typecheck.mdk`
+`implKeyTc` + a `KeyEntry` registry (`buildKeyTable`/`keyForSite`, `resolveSite`).
+Narrowing (`eval.mdk` `hasTag`/`matchesTag`) now matches the route string against
+EITHER the head tycon (field 1) OR the canonical key (field 2) — disjoint string
+spaces (a bare tycon never contains `|`), so no cross-match. To keep the native
+Core-IR/LLVM backend (which keys symbols by head tycon) byte-identical, `keyForSite`
+UPGRADES a ground route to the full key ONLY when ≥2 impls of the method share a head
+tycon (the genuine collision); every single-impl-per-head site keeps the head tag.
+Repro `test/eval_dict_fixtures/same_head_impls.mdk` (`Def (Pair Int Bool)` /
+`(Pair Bool Int)`): oracle = selfhost-dict-eval = `1,True / False,2` (each type picks
+its own impl). Self-compile fixpoint (C3a/C3b) holds; all eval/check/core-ir/llvm
+gates green. **Residual:** the native Core-IR/LLVM backend does not yet disambiguate
+same-head impls (its `CImplTagged`/`implFnName`/`implFor` plumbing is head-tag-keyed);
+the collision case only resolves on the tree-walking dict-eval path. Closing the
+native side would touch the emitter's tag scheme broadly (out of C7 scope).
 
 ### C8. Module export surface incomplete on the typed path — ✅ CLOSED (2026-06-09)
 (a) `publicValNames` omits interface methods (`typecheck.mdk:3704-3710` — DFunDef/

@@ -29,7 +29,8 @@ public export data Constraint = Constraint String (List Ty)
 
 -- a resolved typeclass-dispatch route (filled by the typed-pipeline typechecker).
 -- RNone = unresolved / no dispatch (eval keeps the VMulti for arg-tag fallback);
--- RKey = a concrete impl head tag plus its own requires routes recursively (Phase
+-- RKey = a concrete impl head tag (or, for two same-head impls, the canonical impl
+--   key — TYPECHECK-AUDIT C7) plus its own requires routes recursively (Phase
 --   83/84 #5: the nested element-dict routes so dict_of_route builds a structured
 --   VDict carrying every element dict the impl body needs);
 -- RDict = read the named dict parameter at runtime (enclosing constraint);
@@ -157,7 +158,9 @@ public export data Expr
   | EVarAt String Addr
   -- Return-position method occurrence (pure/empty/…) rewritten by the self-hosted
   -- typecheck's pre-pass: method name + a mutable route the typechecker resolves.
-  -- RKey = the concrete impl's head type (eval narrows the VMulti by it); RDict =
+  -- RKey = the concrete impl's head type — or, when two impls share that head type
+  -- (TYPECHECK-AUDIT C7), the canonical impl key (`iface|args|name`); eval narrows the
+  -- VMulti by matching EITHER against each candidate's head tag or its key.  RDict =
   -- the enclosing constrained function's dict parameter (read at runtime, then
   -- narrow).  Only appears in the typed eval pipeline, never in parse/mark output.
   --
