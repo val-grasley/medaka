@@ -2542,6 +2542,15 @@ restampIface : List (String, (String, Int)) -> String -> String -> CExpr -> CExp
 restampIface tbl iface tag (CVar m ad)
   | iface != "" && ifaceOfIn tbl m == iface = CMethod m (RKey tag []) [] []
   | otherwise = CVar m ad
+-- An inner same-interface method that method_marker already rewrote to a
+-- `CMethod m RNone` (e.g. `compare` inside the `lt`/`gt`/… Ord defaults) must
+-- ALSO be re-stamped to `RKey tag`, or it falls to arg-tag dispatch and a
+-- primitive-Ord receiver (which owns no cell tag) panics in emitTagMatch.  Only
+-- an unrouted (RNone) same-iface method is restamped — an already-concrete route
+-- (a different element type) is left intact.
+restampIface tbl iface tag (CMethod m RNone irs mrs)
+  | iface != "" && ifaceOfIn tbl m == iface = CMethod m (RKey tag []) irs mrs
+  | otherwise = CMethod m RNone irs mrs
 restampIface tbl iface tag (CApp f a) = CApp (restampIface tbl iface tag f) (restampIface tbl iface tag a)
 restampIface tbl iface tag (CLam ps b) = CLam ps (restampIface tbl iface tag b)
 restampIface tbl iface tag (CLet r p rhs b) = CLet r p (restampIface tbl iface tag rhs) (restampIface tbl iface tag b)

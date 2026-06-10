@@ -1,0 +1,30 @@
+-- gap #G-ord: `>` on a user-Ord ADT whose impl supplies only `compare`;
+-- `gt` is the interface DEFAULT over `compare`.  The dict-pass rewrites
+-- `>` to that default `gt`, whose inner `compare` (a CMethod RNone after
+-- method-marking) must be re-stamped to RKey (restampIface's CMethod arm) — else
+-- it arg-tag dispatches, and the coexisting `impl Ord Int` group (a PRIMITIVE
+-- receiver owning no constructors) makes emitTagMatch panic ("primitive receiver
+-- carries no cell tag", slice 7).  The Int impl is REQUIRED to reproduce: a
+-- single-group arg-tag chain would shortcut and hide the gap.
+interface Ord a where
+  compare : a -> a -> Cmp
+  gt : a -> a -> Bool
+  gt x y = match compare x y
+    CGt => True
+    _ => False
+
+data Cmp = CLt | CEq | CGt
+data Color = Red | Blue
+
+impl Ord Int where
+  compare a b = if a < b then CLt else if a > b then CGt else CEq
+
+impl Ord Color where
+  compare Red Red = CEq
+  compare Red Blue = CLt
+  compare Blue Red = CGt
+  compare Blue Blue = CEq
+
+main = match Blue > Red
+  True => 1
+  False => 0
