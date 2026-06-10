@@ -1,0 +1,8 @@
+-- C8b: unconstrained interface default body with a type error.
+-- Oracle (lib/typecheck.ml:3122-3160) checks ALL default bodies unconditionally.
+-- Selfhost previously skipped unconstrained defaults (None arm in inferDefaultMethod).
+-- greetDefault declared to return Int; default body annotates 5 as Bool → mismatch.
+interface Greeter a where
+  greet : a -> String
+  greetDefault : a -> Int
+  greetDefault _ = (5 : Bool)
