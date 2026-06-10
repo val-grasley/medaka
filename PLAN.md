@@ -310,7 +310,10 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 > changed. Skipped: 5 runtime-error cases (need `runExpectation` **exported** in
 > `stdlib/test.mdk` — a 1-word stdlib edit, RECOMMENDED but not done per the
 > stdlib-is-hand-written policy) + 2 IO-env cases. `test/ported/README.md` maps
-> ported-vs-skipped. Portable = program→value cases; internal-API cases (AST/scheme
+> ported-vs-skipped. **test_eval also ported: 240 assertions green** (~120 cases; total
+> bar-item-2 = 336 assertions). Recurring unblock: `runExpectation` unexported blocks
+> 13 runtime-error cases — RECOMMEND `export` it (1-word stdlib edit, not done per policy).
+> Portable = program→value cases; internal-API cases (AST/scheme
 > inspection) are not expressible as `medaka test` and stay in the OCaml suites.
 >
 > **Method note:** every fix in its own worktree agent → verified on main → docs
