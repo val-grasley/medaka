@@ -182,12 +182,12 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   `let … in` as an indented clause body (oracle accepts). Moved to the canonical
   [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) list; verified repro
   there.
-- **OBS3** (selfhost typed-path gap, surfaced during C3) — selfhost has no `infer`
-  arm for `EHeadAnnot` (head annotations like `Map`/`Set` literal head-pins via
-  `fromEntries`); they fall to `panic "unsupported expression (slice 1)"` on the
-  typed path. Not exercised by current fixtures; the C3 oracle exemption holds
-  regardless. A native typed-path completeness gap — close if container-literal
-  head-pins need to typecheck natively. Low priority.
+- **OBS3** (selfhost typed-path gap, surfaced during C3) — ✅ **CLOSED 2026-06-10** (as a
+  side-effect of the medaka-test GAP-C work). selfhost now has an `infer` arm for
+  `EHeadAnnot` (head annotations like `Map`/`Set` literal head-pins via `fromEntries`):
+  `infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty` (`typecheck.mdk:1385`, helper
+  `:2038`) — was `panic "unsupported expression (slice 1)"`. `check.mdk` on `map.mdk`/`set.mdk`
+  now typechecks (schemes, no panic); their doctests are in the `diff_selfhost_test` gate.
 - **OBS4** (selfhost correctness gap, surfaced during D1) — record *construction*
   lacks the oracle's `MissingField` check: `Pt { x = 1 }` omitting a required field
   typechecks clean on selfhost but the oracle reports `Missing field …`. A missing
@@ -286,7 +286,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   dormant) D9 (port-or-reject, borderline design) D10 (README-blocked) D11 (E4).
 > - **Residuals tracked:** C8b (unconstrained default-body diagnostics), C7-native
 >   (native same-head dispatch), OBS1 (let-mut-in-do diag), OBS2 (parser: let..in
->   indented clause body), OBS3 (EHeadAnnot typed path).
+>   indented clause body). [OBS3 EHeadAnnot typed-path — ✅ CLOSED 2026-06-10.]
 >
 > **Construct-coverage sweep (Stage 3 #2b)** — `selfhost/CONSTRUCT-COVERAGE.md` +
 > gate `test/build_construct_coverage.sh`. Started 114 PASS / 15 GAP; **closed
