@@ -191,7 +191,12 @@ collectVars (EMatch e0 arms) = collectVars e0 ++ concatMapList armVars arms
 collectVars (EIf c t el) = collectVars c ++ collectVars t ++ collectVars el
 collectVars (EBinOp _ a b) = collectVars a ++ collectVars b
 collectVars (EUnOp _ a) = collectVars a
-collectVars (EInfix _ a b) = collectVars a ++ collectVars b
+-- The operator name IS a reference: a backtick infix `a `divide` b` names the
+-- plain top-level function `divide` (marker leaves it EInfix when `divide` is
+-- neither a method nor a constrained fn), so DCE must see `divide` as reachable
+-- or it drops the def and the emitter hits `unbound variable 'divide'`. Built-in
+-- operator symbols (`+`/`==`) never name a DFunDef, so adding them is inert.
+collectVars (EInfix op a b) = op :: collectVars a ++ collectVars b
 collectVars (EFieldAccess e0 _) = collectVars e0
 collectVars (ERecordCreate _ fs) = concatMapList fieldAssignVars fs
 collectVars (ERecordUpdate e0 fs) = collectVars e0

@@ -359,14 +359,30 @@ Dispatch via interface method when receiver is a tuple or polymorphic type varia
 
 ### Gap D: Emitter unbound variable for specific constructs
 
-| # | Construct | Error |
-|---|-----------|-------|
-| D1 | Backtick infix `` f `divide` g `` | `unbound variable 'divide'` — backtick call site creates an `EVar` with the wrong name |
-| D2 | Newtype constructor `UserId 42` used as a function | `unbound variable 'UserId'` — newtype constructors not emitted as toplevel functions |
+| # | Construct | Status |
+|---|-----------|--------|
+| D1 | Backtick infix `` a `divide` b `` | **PASS** (2026-06-10) — fixture `backtick_infix.mdk` |
+| D2 | Newtype constructor `UserId 42` used as a function | **PASS** (2026-06-10) — fixture `newtype_ctor_fn.mdk` |
 | D3 | Named impl `combine @Sum` hint syntax | `unbound variable '@Sum'` |
 | D4 | `let rec ... with ...` top-level mutual rec | `unbound variable 'isEven'` — mutual rec bindings not wired together |
 
-**Fix target:** `selfhost/llvm_emit.mdk` — D1: fix backtick EVar construction; D2: emit newtype wrapper function; D3: impl hints; D4: mutual-rec top-level wiring.
+**D1 root cause + fix (2026-06-10).** `` a `f` b `` parses to `EInfix "f" a b` and
+lowers correctly to `CApp (CApp (CVar "f" AGlobal) a) b`. The bug was NOT in
+emit — it was DCE: `marker.collectVars (EInfix _ a b)` dropped the operator name,
+so the backtick-referenced function `f` looked unreachable and `dce.dceFilter`
+removed its `DFunDef`. The emitter then hit `unbound variable 'f'`. Fix:
+`collectVars (EInfix op a b) = op :: …` (`selfhost/marker.mdk`). Built-in operator
+symbols (`+`/`==`) never name a `DFunDef`, so the added name is inert for them.
+
+**D2 root cause + fix (2026-06-10).** `core_ir_lower.ctorArities` only scanned
+`DData`, so a `DNewtype`'s constructor was absent from the emitter's ctor table
+and `UserId 42` resolved to an unbound variable. A newtype is structurally a
+single-constructor, single-field data type (the oracle uses `make_ctor con 1`),
+so the fix registers it as an arity-1 ctor:
+`ctorArities ((DNewtype _ _ _ con _ _)::rest) = (con, 1) :: …`
+(`selfhost/core_ir_lower.mdk`). EMIT-ONLY — no eval/canonPat/Core-IR shape change.
+
+**Fix target (remaining):** `selfhost/llvm_emit.mdk` — D3: impl hints; D4: mutual-rec top-level wiring.
 
 ---
 

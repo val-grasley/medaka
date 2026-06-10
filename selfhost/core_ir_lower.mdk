@@ -719,6 +719,11 @@ ctorArities : List Decl -> List (String, Int)
 ctorArities [] = []
 ctorArities ((DData _ _ _ variants _)::rest) =
   map variantArity variants ++ ctorArities rest
+-- A newtype is structurally a single-constructor, single-field data type, so its
+-- constructor is a callable arity-1 ctor (matches the oracle's `make_ctor con 1`).
+-- Without this the emitter sees `UserId 42` as an unbound variable.
+ctorArities ((DNewtype _ _ _ con _ _)::rest) =
+  (con, 1) :: ctorArities rest
 ctorArities (_::rest) = ctorArities rest
 
 variantArity : Variant -> (String, Int)

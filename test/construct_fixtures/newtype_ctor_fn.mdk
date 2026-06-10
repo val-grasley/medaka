@@ -1,0 +1,7 @@
+-- Gap D2: a newtype constructor used as a function (arity-1 callable ctor).
+newtype UserId = UserId Int
+
+unwrap u = match u
+  UserId n => n
+
+main = println (intToString (unwrap (UserId 42)))
