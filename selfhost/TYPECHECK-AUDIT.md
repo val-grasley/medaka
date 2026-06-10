@@ -138,7 +138,7 @@ green; no S1↔eval interaction (eval untouched). Original finding below.
   Add to the Stage 3 retirement bar explicitly, with overlap/orphan rejection cases in
   the ported test suite.
 
-### T1. Value restriction entirely missing — polymorphic mutable refs — [NEW] CONFIRMED
+### T1. Value restriction entirely missing — polymorphic mutable refs — [NEW] ✅ CLOSED (2026-06-09)
 
 - **Where:** all five generalize sites generalize unconditionally:
   `selfhost/typecheck.mdk:1606` (inferLetBody), `:1390-1395` (blockLet), `:1844-1847`
@@ -159,7 +159,19 @@ green; no S1↔eval interaction (eval untouched). Original finding below.
   clean AND runs, printing a heterogeneous list. Mirroring the oracle for T1
   reproduces this hole; fix both sides (restrict when `mut`, or don't re-instantiate
   on assignment).
-
+- **Fix landed (2026-06-09):** ported `isNonexpansive` / `lowerToCurrent` /
+  `genRestricted` into `selfhost/typecheck.mdk` (after `generalize`) and threaded
+  the value flag into all generalize sites: `inferLetBody` (now passes the RHS
+  expr through `inferLet`), `blockLet` (`DoLet`/block-statement path), the
+  where-clause `generalizeGroup` (gated on `clausesAreValue`), and the top-level
+  `sccSchemes` (gated on `plainVal || sigIsFun`, with `isLetrecGroup` = multi-
+  member SCC and the Phase 89 point-free relaxation via `memberSigIsFun`).  Mirrors
+  the oracle exactly, ignoring the `mut` flag (the `mut`-gen hole is T1b).  Repro
+  (`r = Ref []`; `1 :: r.value`; `"two" :: r.value`) now rejects `Type mismatch`
+  == oracle; `let mut x = []` still generalizes == oracle.  Differential fixture:
+  `test/typecheck_error_fixtures/value_restriction.mdk` (passes both drivers of
+  `diff_selfhost_typecheck_errors.sh`).  All selfhost/bootstrap/native/fixpoint
+  gates green.
 ### T2. Inline `let … in` drops `mut`/`is_fun` flags — recursive inline let panics — [NEW] CONFIRMED
 
 - **Where:** `selfhost/typecheck.mdk:1204` (`infer env (ELet _ _ pat e1 e2)` — both

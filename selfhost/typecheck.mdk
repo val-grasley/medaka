@@ -761,6 +761,67 @@ typeMismatch a b =
 generalize : Mono -> <Mut> Scheme
 generalize t = Forall (dedupI (freeGenVars currentLevel.value t)) (dedupI (freeEffvars t)) t
 
+-- ── value restriction (T1) ────────────────────────────────────────────────
+-- A binding RHS is *non-expansive* (a syntactic value) iff it cannot allocate a
+-- mutable cell: literals, variables and lambdas are values; annotations are
+-- transparent; tuples/lists are values iff their elements are.  EVERY
+-- application is expansive — including constructor applications (`Ref []`,
+-- `Some x`), since a constructor may build a mutable cell.  Mirrors the oracle
+-- `lib/typecheck.ml:545-549` exactly.  Note: this ignores the `mut` flag (like
+-- the oracle), so `let mut x = []` generalizes — the separate `mut`-gen hole is
+-- a both-sides follow-up (T1b), deliberately not handled here.
+isNonexpansive : Expr -> Bool
+isNonexpansive (ELit _) = True
+isNonexpansive (EVar _) = True
+isNonexpansive (ELam _ _) = True
+isNonexpansive (EAnnot e _) = isNonexpansive e
+isNonexpansive (EHeadAnnot e _) = isNonexpansive e
+isNonexpansive (ETuple es) = allList isNonexpansive es
+isNonexpansive (EListLit es) = allList isNonexpansive es
+isNonexpansive _ = False
+
+allList : (a -> Bool) -> List a -> Bool
+allList _ [] = True
+allList p (x :: xs)
+  | p x = allList p xs
+  | otherwise = False
+
+-- Lower every unbound var in [t] deeper than the current level down to the
+-- current level, so a value-restricted (non-generalized) binding's vars can't be
+-- picked up by an enclosing let's generalize.  Mirrors the lowering `unify`
+-- performs via occursAdjust in the non-PVar pattern path (oracle
+-- `lib/typecheck.ml:555-565`).
+lowerToCurrent : Mono -> <Mut> Unit
+lowerToCurrent t = match normalize t
+  TVar cell => match cell.value
+    Unbound id lvl => if lvl > currentLevel.value then set_ref cell (Unbound id currentLevel.value) else ()
+    Link t2 => lowerToCurrent t2
+  TCon _ => ()
+  TApp a b =>
+    let _ = lowerToCurrent a
+    lowerToCurrent b
+  TFun a r b =>
+    let _ = lowerToCurrent a
+    let _ = lowerRowLevels currentLevel.value r
+    lowerToCurrent b
+  TTuple ts => lowerToCurrentList ts
+
+lowerToCurrentList : List Mono -> <Mut> Unit
+lowerToCurrentList [] = ()
+lowerToCurrentList (t :: rest) =
+  let _ = lowerToCurrent t
+  lowerToCurrentList rest
+
+-- Generalize a value RHS; value-restrict (monomorphize, lowering free vars)
+-- otherwise.  monoScheme leaves the mono ungeneralized.  Oracle
+-- `lib/typecheck.ml:569-571`.
+genRestricted : Bool -> Mono -> <Mut> Scheme
+genRestricted isValue t
+  | isValue = generalize t
+  | otherwise =
+    let _ = lowerToCurrent t
+    monoScheme t
+
 freeGenVars : Int -> Mono -> List Int
 freeGenVars lvl t = match normalize t
   TVar cell => if tyvarLevel cell > lvl then [tyvarId cell] else []
@@ -1392,7 +1453,7 @@ blockLet env (PVar x) e =
   let _ = enterLevel ()
   let t = infer env e
   let _ = exitLevel ()
-  extendVar env x (generalize t)
+  extendVar env x (genRestricted (isNonexpansive e) t)
 blockLet env pat e =
   let t = infer env e
   let pr = inferPat env pat
@@ -1600,11 +1661,11 @@ inferLet env pat e1 e2 =
   let _ = enterLevel ()
   let t1 = infer env e1
   let _ = exitLevel ()
-  inferLetBody env pat t1 e2
+  inferLetBody env pat t1 e1 e2
 
-inferLetBody : TcEnv -> Pat -> Mono -> Expr -> <Mut> Mono
-inferLetBody env (PVar x) t1 e2 = infer (extendVar env x (generalize t1)) e2
-inferLetBody env pat t1 e2 =
+inferLetBody : TcEnv -> Pat -> Mono -> Expr -> Expr -> <Mut> Mono
+inferLetBody env (PVar x) t1 e1 e2 = infer (extendVar env x (genRestricted (isNonexpansive e1) t1)) e2
+inferLetBody env pat t1 _ e2 =
   let pr = inferPat env pat
   let _ = unify (fst pr) t1
   infer (extendVars env (snd pr)) e2
@@ -1843,8 +1904,18 @@ schemeMono (Forall _ _ t) = t
 
 generalizeGroup : TcEnv -> List (LetBind, (String, Scheme)) -> <Mut> TcEnv
 generalizeGroup env [] = env
-generalizeGroup env ((LetBind name _, (_, sch)) :: rest) =
-  generalizeGroup (extendVar env name (generalize (schemeMono sch))) rest
+generalizeGroup env ((LetBind name clauses, (_, sch)) :: rest) =
+  generalizeGroup (extendVar env name (genRestricted (clausesAreValue clauses) (schemeMono sch))) rest
+
+-- A where-clause binding is a value (generalizable) iff every clause has params
+-- (it's a function) or its zero-arg RHS is non-expansive.  Mirrors the oracle
+-- `ELetGroup` value test (lib/typecheck.ml:1715-1716).
+clausesAreValue : List FunClause -> Bool
+clausesAreValue clauses = allList clauseIsValue clauses
+
+clauseIsValue : FunClause -> Bool
+clauseIsValue (FunClause [] rhs) = isNonexpansive rhs
+clauseIsValue (FunClause _ _) = True
 
 -- infer a clause group (multi-clause function), unifying all clauses to one type
 inferClauses : TcEnv -> List (List Pat, Expr) -> <Mut> Mono
@@ -3334,9 +3405,19 @@ processSCC env sigs defs members =
   let _ = checkSigsTooGeneral sigTvMaps
   let _ = registerConstraintRegs regs
   let _ = exitLevel ()
-  let schemes = sccSchemes sigs placeholders
+  let schemes = sccSchemes sigs defs (isLetrecGroup members) placeholders
   let _ = registerInferredConstraints sigs schemes
   (extendVars env schemes, schemes)
+
+-- A multi-member SCC is a mutually-recursive group (always a function group, like
+-- the oracle's DLetGroup); a singleton is a plain binding gated on its RHS.  Self-
+-- recursive singletons have had their self-edge stripped (filterNonSelf) so they
+-- arrive as size-1 SCCs — strict evaluation rules out a self-recursive zero-arg
+-- value, so gating them on the RHS is sound and matches the oracle's DFunDef path.
+isLetrecGroup : List String -> Bool
+isLetrecGroup [] = False
+isLetrecGroup [_] = False
+isLetrecGroup _ = True
 
 placeholderBinding : (String, Mono) -> (String, Scheme)
 placeholderBinding (m, v) = (m, monoScheme v)
@@ -3484,9 +3565,36 @@ effectEscapeMsg name declared extras =
 -- already unified into the placeholder by preunifySigs, so generalizing the
 -- result respects it AND any further specialization the body forces (e.g.
 -- sum : t a -> a with body `fold (+) 0` reports a Int -> Int, not the raw sig).
-sccSchemes : List (String, Ty) -> List (String, Mono) -> <Mut> List (String, Scheme)
-sccSchemes _ [] = []
-sccSchemes sigs ((m, v) :: rest) = (m, generalize v) :: sccSchemes sigs rest
+-- Value restriction (T1): generalize a member only if it is a *value* —
+--   plainVal = isLetrec (multi-member SCC, always a function group) OR every
+--              clause has params / a non-expansive zero-arg RHS;
+--   sigIsFun = the member is signed AND its (post-unify) type is an arrow
+--              (Phase 89 point-free relaxation: a signed arrow-typed point-free
+--              binding like `maximum = fold step None` stays generalizable even
+--              though its RHS is an application);
+--   isVal    = plainVal || sigIsFun.
+-- A non-function expansive unsigned binding (`r = Ref []`) is value-restricted and
+-- stays monomorphic.  Mirrors oracle lib/typecheck.ml:2705-2710 + 2756.
+sccSchemes : List (String, Ty) -> List (String, (List Pat, Expr)) -> Bool -> List (String, Mono) -> <Mut> List (String, Scheme)
+sccSchemes _ _ _ [] = []
+sccSchemes sigs defs isLetrec ((m, v) :: rest) =
+  let plainVal = isLetrec || allList memberClauseIsValue (clausesFor m defs)
+  let sigIsFun = memberSigIsFun sigs m v
+  let isVal = plainVal || sigIsFun
+  (m, genRestricted isVal v) :: sccSchemes sigs defs isLetrec rest
+
+-- a top-level clause is a value if it has params (function) or a non-expansive RHS
+memberClauseIsValue : (List Pat, Expr) -> Bool
+memberClauseIsValue ([], rhs) = isNonexpansive rhs
+memberClauseIsValue (_, _) = True
+
+-- Phase 89: a signed binding whose (post-unify) type is an arrow is generalizable
+memberSigIsFun : List (String, Ty) -> String -> Mono -> Bool
+memberSigIsFun sigs m v = match lookupAssocS m sigs
+  None => False
+  Some _ => match normalize v
+    TFun _ _ _ => True
+    _ => False
 
 -- ── signature-too-general check ──────────────────────────────────────────────
 -- After body inference, the declared signature's type variables must map to

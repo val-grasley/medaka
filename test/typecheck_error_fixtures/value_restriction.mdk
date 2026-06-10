@@ -1,0 +1,10 @@
+-- T1 value restriction: an expansive (application) binding must NOT be
+-- generalized, so its type stays monomorphic.  `c = poly poly` is an application
+-- whose result type `a -> a` is polymorphic; without the value restriction `c`
+-- would generalize and both `c 1` and `c "two"` would typecheck — the classic
+-- polymorphic-mutable-reference / let-should-not-generalize soundness hole.  With
+-- the value restriction `c` is monomorphic, so using it at Int and String inside
+-- one tuple is a type error (same on the oracle and the self-hosted typechecker).
+poly x = x
+c = poly poly
+pair = (c 1, c "two")
