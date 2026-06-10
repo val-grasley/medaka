@@ -1,0 +1,4 @@
+applyIO : (a -> <IO> b) -> a -> <IO> b
+applyIO f x = f x
+main : <IO> Unit
+main = println (debug (applyIO (x => x + 1) 5))

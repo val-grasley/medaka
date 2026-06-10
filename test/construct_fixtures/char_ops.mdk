@@ -1,0 +1,4 @@
+main : <IO> Unit
+main =
+  let c = 'A'
+  println (debug (charCode c) ++ " " ++ debug (charToLower c))

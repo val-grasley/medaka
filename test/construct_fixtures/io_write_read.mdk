@@ -1,0 +1,8 @@
+main : <IO> Unit
+main =
+  let r = writeFile "/tmp/medaka_test_tmp.txt" "hello native"
+  let result2 = readFile "/tmp/medaka_test_tmp.txt"
+  let r2 = match result2
+    Ok s => s
+    Err e => "error: " ++ e
+  println r2

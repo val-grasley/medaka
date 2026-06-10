@@ -1,0 +1,8 @@
+grade : Int -> String
+grade n
+  | n >= 90 = "A"
+  | n >= 80 = "B"
+  | n >= 70 = "C"
+  | otherwise = "F"
+main : <IO> Unit
+main = println (grade 95 ++ " " ++ grade 85 ++ " " ++ grade 65)

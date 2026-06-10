@@ -1,0 +1,8 @@
+record Person
+  name : String
+  age : Int
+main : <IO> Unit
+main =
+  let p = Person { name = "Alice", age = 30 }
+  let p2 = { p | age = 31 }
+  println (debug p2.age)

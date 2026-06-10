@@ -1,0 +1,6 @@
+describe : Option Int -> String
+describe = function
+  Some x => "got " ++ debug x
+  None => "nothing"
+main : <IO> Unit
+main = println (describe (Some 42) ++ " " ++ describe None)

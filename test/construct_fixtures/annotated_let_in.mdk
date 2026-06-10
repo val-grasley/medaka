@@ -1,0 +1,4 @@
+main : <IO> Unit
+main = println (debug (annotated_let_in))
+  where
+    annotated_let_in = let x : Int = 42 in x

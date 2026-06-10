@@ -1,0 +1,9 @@
+record Person
+  name : String
+  age : Int
+main : <IO> Unit
+main =
+  let p = Person { name = "Alice", age = 30 }
+  let r = match p
+    Person { name, ... } => name
+  println r

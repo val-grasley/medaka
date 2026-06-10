@@ -1,0 +1,5 @@
+main : <IO> Unit
+main =
+  let r = match (1, 2)
+    (a, b) => a + b
+  println (debug r)

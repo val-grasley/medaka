@@ -1,0 +1,6 @@
+double : Int -> Int
+double x = x * 2
+inc : Int -> Int
+inc x = x + 1
+main : <IO> Unit
+main = println (debug ((inc << double) 5))

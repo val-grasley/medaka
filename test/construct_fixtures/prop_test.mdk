@@ -1,0 +1,3 @@
+prop "add commutes" (x : Int) (y : Int) = x + y == y + x
+main : <IO> Unit
+main = println "ok"

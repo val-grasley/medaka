@@ -1,0 +1,7 @@
+-- arraySetUnsafe mutates in place; arrayGetUnsafe reads back.
+-- Uses <IO, Mut> to satisfy effects; oracle also accepts this.
+main : <IO, Mut> Unit
+main =
+  let a = arrayMake 3 0
+  let _ = arraySetUnsafe 1 42 a
+  println (debug (arrayGetUnsafe 1 a))

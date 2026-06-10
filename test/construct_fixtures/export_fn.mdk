@@ -1,0 +1,5 @@
+export
+foo : Int -> Int
+foo x = x * 2
+main : <IO> Unit
+main = println (debug (foo 21))

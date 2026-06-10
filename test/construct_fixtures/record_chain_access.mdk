@@ -1,0 +1,8 @@
+record Inner
+  val : Int
+record Outer
+  inner : Inner
+main : <IO> Unit
+main =
+  let o = Outer { inner = Inner { val = 42 } }
+  println (debug o.inner.val)

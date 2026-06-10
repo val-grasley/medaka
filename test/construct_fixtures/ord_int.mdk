@@ -1,0 +1,2 @@
+main : <IO> Unit
+main = println (debug (compare 3 5) ++ " " ++ debug (compare 5 5) ++ " " ++ debug (compare 7 5))

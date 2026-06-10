@@ -1,0 +1,3 @@
+data Color = Red | Green | Blue deriving (Debug)
+main : <IO> Unit
+main = println (debug Red ++ " " ++ debug Blue)

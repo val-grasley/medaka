@@ -1,0 +1,5 @@
+main : <IO> Unit
+main =
+  let x = 9.0
+  let y = 4.0
+  println (debug (x + y))

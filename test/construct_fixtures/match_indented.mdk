@@ -1,0 +1,6 @@
+main : <IO> Unit
+main =
+  let r = match 0
+    0 => "zero"
+    _ => "other"
+  println r

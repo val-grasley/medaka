@@ -1,0 +1,4 @@
+main : <IO> Unit
+main =
+  putStr "hello "
+  putStrLn "world"

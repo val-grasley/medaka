@@ -1,0 +1,6 @@
+main : <IO> Unit
+main =
+  let r = match 5
+    x if x > 0 => "pos"
+    _ => "other"
+  println r

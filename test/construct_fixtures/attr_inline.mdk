@@ -1,0 +1,5 @@
+@inline
+double : Int -> Int
+double x = x * 2
+main : <IO> Unit
+main = println (debug (double 21))

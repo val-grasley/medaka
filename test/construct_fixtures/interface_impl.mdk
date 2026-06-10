@@ -1,0 +1,10 @@
+interface Describable a where
+  describe : a -> String
+data Color = Red | Green | Blue
+impl Describable Color where
+  describe c = match c
+    Red => "red"
+    Green => "green"
+    Blue => "blue"
+main : <IO> Unit
+main = println (describe Red ++ " " ++ describe Blue)

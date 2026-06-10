@@ -1,0 +1,3 @@
+main : <IO> Unit
+main =
+  if True then println "hit"

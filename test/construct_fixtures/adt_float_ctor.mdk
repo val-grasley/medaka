@@ -1,0 +1,7 @@
+data Box = Box Float
+main : <IO> Unit
+main =
+  let b = Box 5.0
+  let r = match b
+    Box x => x
+  println (debug r)

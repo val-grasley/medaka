@@ -1,0 +1,7 @@
+classify : Int -> String
+classify n
+  | n < 0 = "neg"
+  | n > 0 = "pos"
+  | otherwise = "zero"
+main : <IO> Unit
+main = println (classify (-3) ++ " " ++ classify 5 ++ " " ++ classify 0)

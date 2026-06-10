@@ -1,0 +1,4 @@
+main : <IO> Unit
+main =
+  let xs = [1, 2, 3]
+  if let x :: _ = xs then println (debug x) else println "empty"

@@ -1,0 +1,6 @@
+applyTwice : (a -> a) -> a -> a
+applyTwice f x = f (f x)
+inc : Int -> Int
+inc x = x + 1
+main : <IO> Unit
+main = println (debug (applyTwice inc 5))

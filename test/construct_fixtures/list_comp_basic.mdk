@@ -1,0 +1,2 @@
+main : <IO> Unit
+main = println (debug [x * 2 | x <- [1, 2, 3, 4, 5], x > 2])

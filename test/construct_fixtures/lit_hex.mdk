@@ -1,0 +1,2 @@
+main : <IO> Unit
+main = println (debug 0xFF)

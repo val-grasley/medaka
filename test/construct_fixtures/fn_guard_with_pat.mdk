@@ -1,0 +1,6 @@
+safeDivide : Int -> Int -> Option Int
+safeDivide a b
+  | b == 0 = None
+  | otherwise = Some (a / b)
+main : <IO> Unit
+main = println (debug (safeDivide 10 2) ++ " " ++ debug (safeDivide 10 0))

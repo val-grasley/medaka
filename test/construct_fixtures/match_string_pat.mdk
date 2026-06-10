@@ -1,0 +1,7 @@
+greet : String -> String
+greet name = match name
+  "Alice" => "Hi Alice!"
+  "Bob" => "Hey Bob!"
+  n => "Hello " ++ n
+main : <IO> Unit
+main = println (greet "Alice" ++ " " ++ greet "Charlie")

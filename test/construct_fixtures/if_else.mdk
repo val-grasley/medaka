@@ -1,0 +1,5 @@
+main : <IO> Unit
+main =
+  let a = if 3 > 2 then "yes" else "no"
+  let b = if 1 > 2 then "yes" else "no"
+  println (a ++ " " ++ b)

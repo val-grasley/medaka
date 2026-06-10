@@ -1,0 +1,7 @@
+compute : Int -> Int
+compute x = a + b
+  where
+    a = x * 2
+    b = x + 1
+main : <IO> Unit
+main = println (debug (compute 5))

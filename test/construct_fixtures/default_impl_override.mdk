@@ -1,0 +1,8 @@
+impl Greet Anon where
+  greet _ = "Custom!"
+interface Greet a where
+  greet : a -> String
+  greet _ = "Hello!"
+data Anon = Anon
+main : <IO> Unit
+main = println (greet Anon)

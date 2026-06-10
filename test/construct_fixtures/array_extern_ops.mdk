@@ -1,0 +1,4 @@
+main : <IO> Unit
+main =
+  let a = arrayMake 5 7
+  println (debug (arrayLength a) ++ " " ++ debug a.[2])

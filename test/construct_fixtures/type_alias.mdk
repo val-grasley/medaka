@@ -1,0 +1,5 @@
+type Name = String
+greet : Name -> String
+greet n = "Hello " ++ n
+main : <IO> Unit
+main = println (greet "Alice")

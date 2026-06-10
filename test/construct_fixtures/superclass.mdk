@@ -1,0 +1,10 @@
+interface MyEq a where
+  myEq : a -> a -> Bool
+interface MyOrd a requires MyEq a where
+  myLt : a -> a -> Bool
+impl MyEq Int where
+  myEq a b = a == b
+impl MyOrd Int where
+  myLt a b = a < b
+main : <IO> Unit
+main = println (debug (myLt 3 5))

@@ -1,0 +1,2 @@
+main : <IO> Unit
+main = println "\u{48}\u{65}\u{6C}\u{6C}\u{6F}"

@@ -1,0 +1,5 @@
+main : <IO> Unit
+main =
+  let a = [|10, 20, 30|]
+  let b = arrayCopy a
+  println (debug b.[1])

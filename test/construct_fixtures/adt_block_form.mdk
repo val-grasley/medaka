@@ -1,0 +1,9 @@
+data Shape
+  = Circle Float
+  | Square Float
+getCircle : Shape -> Float
+getCircle s = match s
+  Circle r => r
+  Square _ => 0.0
+main : <IO> Unit
+main = println (debug (getCircle (Circle 5.0)))

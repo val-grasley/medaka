@@ -1,0 +1,5 @@
+ctor_pat_test : Option Int -> Int
+ctor_pat_test (Some x) = x
+ctor_pat_test None = 0
+main : <IO> Unit
+main = println (debug (ctor_pat_test (Some 5)))

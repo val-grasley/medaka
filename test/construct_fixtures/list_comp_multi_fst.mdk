@@ -1,0 +1,6 @@
+fst : (a, b) -> a
+fst (a, _) = a
+main : <IO> Unit
+main =
+  let r = [(x, y) | x <- [1, 2], y <- [3, 4]]
+  println (debug (map fst r))

@@ -1,0 +1,5 @@
+main : <IO> Unit
+main =
+  let x = 42
+  let s = "value is \{x} and doubled is \{x * 2}"
+  println s

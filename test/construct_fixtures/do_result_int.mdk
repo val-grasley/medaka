@@ -1,0 +1,10 @@
+safeDiv : Int -> Int -> Result String Int
+safeDiv _ 0 = Err "zero"
+safeDiv a b = Ok (a / b)
+compute : Result String Int
+compute = do
+  x <- safeDiv 10 2
+  y <- safeDiv x 1
+  pure (x + y)
+main : <IO> Unit
+main = println (debug compute)

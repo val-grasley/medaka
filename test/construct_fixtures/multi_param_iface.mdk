@@ -1,0 +1,6 @@
+interface Convert a b where
+  convert : a -> b
+impl Convert Int String where
+  convert n = debug n
+main : <IO> Unit
+main = println (convert 42 : String)

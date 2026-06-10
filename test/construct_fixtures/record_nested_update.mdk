@@ -1,0 +1,11 @@
+record Addr
+  city : String
+record Person
+  name : String
+  addr : Addr
+main : <IO> Unit
+main =
+  let a = Addr { city = "Portland" }
+  let p = Person { name = "Alice", addr = a }
+  let p2 = { p | addr.city = "Boston" }
+  println p2.addr.city

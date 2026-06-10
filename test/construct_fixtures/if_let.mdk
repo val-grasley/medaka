@@ -1,0 +1,4 @@
+main : <IO> Unit
+main =
+  let opt = Some 42
+  if let Some x = opt then println (debug x) else println "none"

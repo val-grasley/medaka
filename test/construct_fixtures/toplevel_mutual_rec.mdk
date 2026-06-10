@@ -1,0 +1,6 @@
+isEven : Int -> Bool
+isEven n = if n == 0 then True else isOdd (n - 1)
+isOdd : Int -> Bool
+isOdd n = if n == 0 then False else isEven (n - 1)
+main : <IO> Unit
+main = println (debug (isEven 10))

@@ -1,0 +1,2 @@
+main : <IO> Unit
+main = println (debug (let x = 5 in x + 1))

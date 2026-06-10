@@ -1,0 +1,5 @@
+power : Int -> Int -> Int
+power _ 0 = 1
+power base n = base * power base (n - 1)
+main : <IO> Unit
+main = println (debug (power 2 10))

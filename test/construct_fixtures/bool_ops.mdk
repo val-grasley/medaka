@@ -1,0 +1,5 @@
+main : <IO> Unit
+main =
+  let a = True && False
+  let b = True || False
+  println (debug a ++ " " ++ debug b)

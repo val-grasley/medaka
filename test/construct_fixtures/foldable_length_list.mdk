@@ -1,0 +1,2 @@
+main : <IO> Unit
+main = println (debug (length [1, 2, 3, 4, 5]))

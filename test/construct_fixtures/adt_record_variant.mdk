@@ -1,0 +1,8 @@
+data Shape = Circle { r : Int } | Rect { w : Int, h : Int }
+main : <IO> Unit
+main =
+  let s = Circle { r = 5 }
+  let r = match s
+    Circle { r } => r * r * 3
+    Rect { w, h } => w * h
+  println (debug r)

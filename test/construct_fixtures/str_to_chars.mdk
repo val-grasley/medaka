@@ -1,0 +1,4 @@
+main : <IO> Unit
+main =
+  let chars = stringToChars "abc"
+  println (debug (arrayGetUnsafe 0 chars))

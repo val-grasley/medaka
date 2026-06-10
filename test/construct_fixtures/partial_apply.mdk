@@ -1,0 +1,6 @@
+add : Int -> Int -> Int
+add x y = x + y
+main : <IO> Unit
+main =
+  let add5 = add 5
+  println (debug (map add5 [1, 2, 3]))
