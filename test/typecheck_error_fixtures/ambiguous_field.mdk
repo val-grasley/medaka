@@ -1,0 +1,7 @@
+record Cat
+  name : String
+
+record Box
+  name : Int
+
+getName r = r.name

@@ -1501,12 +1501,21 @@ unifyFieldAssign env fieldTypes fn val = match lookupAssocS fn fieldTypes
   None => panic ("unknown field: " ++ fn)
   Some ft => unify (infer env val) ft
 
+-- Phase 72 / TYPECHECK-AUDIT C2: receiver-directed field resolution.  Infer the
+-- receiver FIRST, then pick the owning record by its head tycon when known; if
+-- the receiver is still an unbound var and the field is owned by several
+-- records, the access is ambiguous (mirrors lib/typecheck.ml's EFieldAccess +
+-- field_owners multimap).  `value` keeps the Ref-projection special case (no
+-- record in selfhost/stdlib declares a `value` field, so this matches the
+-- oracle's structural `(Ref a).value → a`).
 inferFieldAccess : TcEnv -> Expr -> String -> <Mut> Mono
 inferFieldAccess env e fname
   | fname == "value" = inferValueField env e
-  | otherwise = match lookupRecordByField fname
-    None => panic ("unknown field: " ++ fname)
-    Some ri => inferFieldAccessWith env e ri fname
+  | otherwise =
+    let te = normalize (infer env e)
+    match resolveFieldRecord te fname
+      None => freshVar ()
+      Some (rname, ri) => inferFieldOfRecord te rname ri fname
 
 -- `cell.value` projects a Ref's contents.  Unify the receiver with `Ref a`
 -- (forcing it, like the reference's `(Ref a).value → a` special case) and return
@@ -1520,14 +1529,91 @@ inferValueField env e =
   let _ = unify et (TApp (TCon "Ref") inner)
   inner
 
-
-inferFieldAccessWith : TcEnv -> Expr -> RecordInfo -> String -> <Mut> Mono
-inferFieldAccessWith env e ri fname =
+-- the field's type from a resolved record `rname`, given the (already-inferred)
+-- receiver type `te` to unify against the record's instantiated result type.  A
+-- field absent from a KNOWN record names it (mirrors the oracle's `resolve_in`,
+-- which raises UnknownField with the resolved record name).
+inferFieldOfRecord : Mono -> String -> RecordInfo -> String -> <Mut> Mono
+inferFieldOfRecord te rname ri fname =
   let ir = instantiateRecord ri
-  let _ = unify (infer env e) (fst ir)
+  let _ = unify te (fst ir)
   match lookupAssocS fname (snd ir)
     Some ft => ft
-    None => panic ("no field: " ++ fname)
+    None => unknownFieldFresh fname rname
+
+-- field_owners (Phase 72): every registry KEY whose RecordInfo declares `fname`,
+-- sorted + deduped (mirrors lib/typecheck.ml's `field_candidates` +
+-- `List.sort_uniq compare`).  For a plain record the key is its type name; for a
+-- named-field variant it's the constructor name — matching the oracle, whose
+-- field_owners maps to the record's type name and the variant's con_name.
+fieldOwnerNames : String -> List String
+fieldOwnerNames fname = sortUniqS (fieldOwnerNamesGo fname recordsRef.value)
+
+fieldOwnerNamesGo : String -> List (String, RecordInfo) -> List String
+fieldOwnerNamesGo _ [] = []
+fieldOwnerNamesGo fname ((key, ri) :: rest)
+  | recordHasField fname ri = key :: fieldOwnerNamesGo fname rest
+  | otherwise = fieldOwnerNamesGo fname rest
+
+-- Resolve the record (name + info) that owns `fname` for a receiver of type `te`
+-- (normalized).
+-- (a) receiver head tycon is a known record → that record;
+-- (b) receiver is an undetermined var → 0 owners = unknown field, 1 = that one,
+--     >1 = ambiguous (push AmbiguousField, return None);
+-- (c) receiver is a concrete non-record → first owner (so the later unify raises
+--     the usual mismatch), or unknown field if none.
+-- On error it pushes the matching type error and returns None.
+resolveFieldRecord : Mono -> String -> <Mut> Option (String, RecordInfo)
+resolveFieldRecord te fname = match headTyconMono te
+  Some r => match lookupRecordByName r
+    Some ri => Some (r, ri)
+    None => resolveFieldByOwners te fname
+  None => resolveFieldByOwners te fname
+
+resolveFieldByOwners : Mono -> String -> <Mut> Option (String, RecordInfo)
+resolveFieldByOwners te fname = match fieldOwnerNames fname
+  [] =>
+    let _ = pushUnknownField fname "<unknown>"
+    None
+  [r] => pairRecordByName r
+  (r :: rest) => resolveFieldAmbiguous te fname (r :: rest)
+
+-- multiple owners: receiver still an unbound var ⇒ genuinely ambiguous; a
+-- concrete (non-record) receiver ⇒ pick the first owner so the later unify
+-- surfaces the type mismatch (mirrors the oracle's two `_` sub-branches).
+resolveFieldAmbiguous : Mono -> String -> List String -> <Mut> Option (String, RecordInfo)
+resolveFieldAmbiguous te fname owners = match normalize te
+  TVar _ =>
+    let _ = set_ref typeErrors (ambiguousFieldMsg fname owners :: typeErrors.value)
+    None
+  _ => pairRecordByName (headL owners)
+
+pairRecordByName : String -> <Mut> Option (String, RecordInfo)
+pairRecordByName r = match lookupRecordByName r
+  Some ri => Some (r, ri)
+  None => None
+
+headL : List String -> String
+headL [] = ""
+headL (x :: _) = x
+
+pushUnknownField : String -> String -> <Mut> Unit
+pushUnknownField fname rname = set_ref typeErrors (unknownFieldMsg fname rname :: typeErrors.value)
+
+unknownFieldFresh : String -> String -> <Mut> Mono
+unknownFieldFresh fname rname =
+  let _ = pushUnknownField fname rname
+  freshVar ()
+
+-- byte-for-byte with lib/typecheck.ml UnknownField / AmbiguousField messages.
+unknownFieldMsg : String -> String -> String
+unknownFieldMsg fname rname = "Field " ++ fname ++ " does not belong to record " ++ rname
+
+ambiguousFieldMsg : String -> List String -> String
+ambiguousFieldMsg fname owners =
+  "Ambiguous field access: '." ++ fname ++ "' is declared by " ++ intercalateS ", " owners
+    ++ ". I can't tell which record this value is — add a type annotation on it (e.g. '(r : "
+    ++ headL owners ++ ")." ++ fname ++ "')."
 
 inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> <Mut> Mono
 inferRecordUpdate env base fields = match firstFieldName fields
@@ -1547,10 +1633,22 @@ firstFieldName : List FieldAssign -> Option String
 firstFieldName [] = None
 firstFieldName (FieldAssign fn _ :: _) = Some fn
 
+-- receiver-directed (Phase 72), like inferFieldAccess: infer base first, then
+-- pick the owning record by the base's head tycon, falling back to the first
+-- update field's owners.
 inferRecordUpdateField : TcEnv -> Expr -> List FieldAssign -> String -> <Mut> Mono
-inferRecordUpdateField env base fields fn = match lookupRecordByField fn
-  None => panic ("unknown field: " ++ fn)
-  Some ri => inferRecordUpdateWith env base fields ri
+inferRecordUpdateField env base fields fn =
+  let bt = normalize (infer env base)
+  match resolveFieldRecord bt fn
+    None => freshVar ()
+    Some (_, ri) => inferRecordUpdatePicked bt env fields ri
+
+inferRecordUpdatePicked : Mono -> TcEnv -> List FieldAssign -> RecordInfo -> <Mut> Mono
+inferRecordUpdatePicked bt env fields ri =
+  let ir = instantiateRecord ri
+  let _ = unify bt (fst ir)
+  let _ = unifyFieldAssigns env (snd ir) fields
+  fst ir
 
 inferRecordUpdateWith : TcEnv -> Expr -> List FieldAssign -> RecordInfo -> <Mut> Mono
 inferRecordUpdateWith env base fields ri =
@@ -1849,15 +1947,6 @@ recFieldMono tvs (Field fn ty) = (fn, fromAstType tvs ty)
 
 lookupRecordByName : String -> Option RecordInfo
 lookupRecordByName name = lookupAssocS name recordsRef.value
-
-lookupRecordByField : String -> Option RecordInfo
-lookupRecordByField fname = lookupRecordByFieldGo fname recordsRef.value
-
-lookupRecordByFieldGo : String -> List (String, RecordInfo) -> Option RecordInfo
-lookupRecordByFieldGo _ [] = None
-lookupRecordByFieldGo fname ((_, ri) :: rest)
-  | recordHasField fname ri = Some ri
-  | otherwise = lookupRecordByFieldGo fname rest
 
 recordHasField : String -> RecordInfo -> Bool
 recordHasField fname (RecordInfo _ _ fields) = isSome (lookupAssocS fname fields)

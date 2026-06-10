@@ -1,0 +1,16 @@
+record Cat
+  name : String
+
+record Box
+  name : Int
+
+catName c = (c : Cat).name
+
+boxName b = (b : Box).name
+
+main : <IO> Unit
+main =
+  let c = Cat { name = "Tom" }
+  let b = Box { name = 7 }
+  println (catName c)
+  println (boxName b)

@@ -297,12 +297,44 @@ relying on checking-mode propagation typecheck on the oracle, fail or infer diff
 on selfhost; error positions diverge. **Fix:** port arrow-peel + zip-unify into
 `inferMembers`.
 
-### C2. Phase 72 receiver-directed field resolution absent — first-match field lookup
-`lookupRecordByField` returns the first record declaring the field
-(`typecheck.mdk:1726-1732`); panics on unknown field. Oracle: `field_owners` multimap +
+### C2. Phase 72 receiver-directed field resolution absent — first-match field lookup — ✅ CLOSED (2026-06-09)
+`lookupRecordByField` returned the first record declaring the field
+(`typecheck.mdk:1726-1732`); panicked on unknown field. Oracle: `field_owners` multimap +
 receiver-directed pick + `AmbiguousField`. Two records sharing a field name → selfhost
-types against whichever was declared first. **Fix:** port the multimap; receiver head
+typed against whichever was declared first. **Fix:** port the multimap; receiver head
 known → pick that owner; else error.
+
+- **Done (2026-06-09):** rewrote `inferFieldAccess` / `inferRecordUpdateField` in
+  `selfhost/typecheck.mdk` to mirror lib/typecheck.ml's `EFieldAccess` (Phase 72). New
+  helpers: `fieldOwnerNames` — the field_owners multimap, derived live from `recordsRef`
+  (every registry KEY whose `RecordInfo` declares the field, `sortUniqS`-deduped, matching
+  the oracle's `field_candidates` + `List.sort_uniq compare`; key = record type name for a
+  `record`, ctor name for a named-field variant, exactly like the oracle's `add_field_owner`);
+  `resolveFieldRecord` — receiver-directed pick returning `Option (String, RecordInfo)`:
+  (a) receiver head tycon is a known record → that record; (b) undetermined `TVar` receiver
+  → 0 owners = `UnknownField "<unknown>"`, 1 = that owner, >1 = `AmbiguousField`; (c) concrete
+  non-record → first owner so the later `unify` surfaces the usual `Type mismatch`.
+  `inferFieldOfRecord` names the resolved record on an unknown field (mirrors `resolve_in`).
+  Both error messages are byte-for-byte with the oracle (`unknownFieldMsg`/`ambiguousFieldMsg`),
+  pushed into `typeErrors` instead of `panic`. The `value` Ref-projection special case is
+  preserved (no record in selfhost/stdlib declares a `value` field, so the guard coincides
+  with the oracle's structural `(Ref a).value → a`). Repros vs oracle: two records sharing
+  `x` (`Int` vs `String`) — `(b : B).x → String` (was `Int` first-match), `(a : A).x → Int`,
+  record literal `(A {…}).x` resolves; `(b : B).x` used as `Int` → `Type mismatch: Int vs
+  String` (== oracle); undetermined receiver `r.x` → `AmbiguousField '.x' declared by A, B …`
+  (== oracle, both tc_main + check); `(r : A).z` → `Field z does not belong to record A`
+  (== oracle, names the record). Single-owner unannotated access (`distSq p = p.x`) still
+  resolves — sole candidate path, no Phase 73 needed. **Dependency noted:** the unpinned-param
+  shape `getA : A -> Int; getA a = a.x` resolves on the oracle via Phase 73 (signature-driven
+  param typing) but is AMBIGUOUS on selfhost — gated by **C1** (Phase 73 absent), not C2. The
+  C2 accept fixtures therefore pin the receiver by annotation/literal; once C1 lands the
+  sig-typed-param case will resolve too. Fixtures: accept `test/diff_fixtures/record_shared_field.mdk`
+  (+ golden; flows through check/eval_run/core_ir/llvm gates), reject
+  `test/typecheck_error_fixtures/ambiguous_field.mdk`. Gates: bootstrap_typecheck 10/0,
+  bootstrap_eval 20/0, diff_selfhost_check 35/0 + _batch 35/0, check_modules 13/0 + _batch 13/0,
+  resolve 14/0 + _batch 14/0 + _modules 10/0, typecheck_errors 28/0, eval_run 21/0 + _batch 21/0,
+  core_ir 20/0 + core_ir_run 21/0, llvm 170/0 + llvm_typed 33/0 + llvm_modules 6/0,
+  selfcompile_fixpoint C3a+C3b YES.
 
 ### C3. `AnnotationTooGeneral` check missing — ✅ CLOSED (2026-06-09)
 `inferAnnot` (`typecheck.mdk:1631-1636`) unifies the annotation's fresh vars with the
