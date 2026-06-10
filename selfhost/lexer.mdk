@@ -224,7 +224,13 @@ tokenToString TEof = "EOF"
 -- *stripped before the layout pass* (`stripComments`), so the Token stream the
 -- parser consumes is byte-identical to before — comments are purely a side
 -- channel.  `collectComments` re-reads the raw stream to surface them.
-data RawTok = RTok Token | RNewline Int | RComment Int String
+-- `RTok tok off` carries the source char offset `off` of the token's lexeme
+-- start, so the position side-channel (`tokenizeWithLines`) can derive a 1-based
+-- source line per token. `tokenize` discards `off` (token stream byte-identical).
+-- `RNewline col off` likewise carries the offset of the newline char that ended
+-- the preceding line, so synthetic NEWLINE/INDENT/DEDENT tokens inserted by the
+-- layout pass get a source line too.
+data RawTok = RTok Token Int | RNewline Int Int | RComment Int String
 
 -- ── Character classification (ASCII, matching lib/lexer.mll's char classes) ──
 isSp : Char -> Bool
@@ -394,7 +400,7 @@ identEnd src len p
 scanLower : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanLower src len pos depth id =
   let e = identEnd src len (pos + 1)
-  RTok (identToken src pos e) :: scan src len e depth id
+  RTok (identToken src pos e) pos :: scan src len e depth id
 
 identToken : Array Char -> Int -> Int -> Token
 identToken src pos e
@@ -404,12 +410,12 @@ identToken src pos e
 scanUpper : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanUpper src len pos depth id =
   let e = identEnd src len (pos + 1)
-  RTok (TUpper (substr src pos e)) :: scan src len e depth id
+  RTok (TUpper (substr src pos e)) pos :: scan src len e depth id
 
 scanBacktick : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanBacktick src len pos depth id =
   let e = btClose src len (pos + 1)
-  RTok (TBacktickIdent (substr src (pos + 1) e)) :: scan src len (e + 1) depth id
+  RTok (TBacktickIdent (substr src (pos + 1) e)) pos :: scan src len (e + 1) depth id
 
 btClose : Array Char -> Int -> Int -> Int
 btClose src len p
@@ -464,7 +470,7 @@ scanRadix : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanRadix src len pos depth id =
   let k = at src (pos + 1)
   let e = radixEnd src len (pos + 2) k
-  RTok (TInt (parseRadix src (pos + 2) e (radixBase k) 0)) :: scan src len e depth id
+  RTok (TInt (parseRadix src (pos + 2) e (radixBase k) 0)) pos :: scan src len e depth id
 
 scanNumber : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 scanNumber src len pos depth id
@@ -480,25 +486,25 @@ isFloatAt src len e1 = e1 < len
 numFinish : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 numFinish src len pos e1 depth id
   | isFloatAt src len e1 = floatTok src len pos e1 depth id
-  | otherwise = RTok (TInt (parseIntFrom src pos e1 0)) :: scan src len e1 depth id
+  | otherwise = RTok (TInt (parseIntFrom src pos e1 0)) pos :: scan src len e1 depth id
 
 floatTok : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
 floatTok src len pos e1 depth id =
   let e2 = digitsEnd src len (e1 + 1)
-  RTok (TFloat (fromOption 0.0 (stringToFloat (substrNoUs src pos e2)))) :: scan src len e2 depth id
+  RTok (TFloat (fromOption 0.0 (stringToFloat (substrNoUs src pos e2)))) pos :: scan src len e2 depth id
 
 -- strings (escapes processed into the content; `\{` opens an interpolation)
 scanStr : Array Char -> Int -> Int -> Int -> Int -> String -> List RawTok
 scanStr src len p depth id acc
   | p >= len = panic "Unterminated string literal"
-  | isQuote (at src p) = RTok (TString acc) :: scan src len (p + 1) depth id
+  | isQuote (at src p) = RTok (TString acc) p :: scan src len (p + 1) depth id
   | isBackslash (at src p) && p + 1 < len = scanStrEsc src len p depth id acc (at src (p + 1))
   | isBackslash (at src p) = panic "Unterminated string literal"
   | otherwise = scanStr src len (p + 1) depth id (acc ++ charToStr (at src p))
 
 scanStrEsc : Array Char -> Int -> Int -> Int -> Int -> String -> Char -> List RawTok
 scanStrEsc src len p depth id acc e
-  | e == '{' = RTok (TInterpOpen acc) :: scan src len (p + 2) depth 1
+  | e == '{' = RTok (TInterpOpen acc) p :: scan src len (p + 2) depth 1
   | e == 'n' = scanStr src len (p + 2) depth id (acc ++ "\n")
   | e == 't' = scanStr src len (p + 2) depth id (acc ++ "\t")
   | isQuote e = scanStr src len (p + 2) depth id (acc ++ "\"")
@@ -511,9 +517,9 @@ scanStrEsc src len p depth id acc e
 -- string part after an interpolation's `}` closes (`\{`→INTERP_MID, `"`→INTERP_END)
 scanInterpCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
 scanInterpCont src len p depth acc
-  | p >= len = RTok (TInterpEnd acc) :: scan src len p depth 0
-  | isQuote (at src p) = RTok (TInterpEnd acc) :: scan src len (p + 1) depth 0
-  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpMid acc) :: scan src len (p + 2) depth 1
+  | p >= len = RTok (TInterpEnd acc) p :: scan src len p depth 0
+  | isQuote (at src p) = RTok (TInterpEnd acc) p :: scan src len (p + 1) depth 0
+  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpMid acc) p :: scan src len (p + 2) depth 1
   | isBackslash (at src p) && p + 1 < len = scanInterpEsc src len p depth acc (at src (p + 1))
   | otherwise = scanInterpCont src len (p + 1) depth (acc ++ charToStr (at src p))
 
@@ -551,9 +557,9 @@ maybeStrip False acc = acc
 
 scanTriple : Array Char -> Int -> Int -> Int -> Int -> Bool -> String -> List RawTok
 scanTriple src len p depth id leadingNl acc
-  | p >= len = RTok (TString (maybeStrip leadingNl acc)) :: scan src len p depth id
-  | isTripleAt src len p = RTok (TString (maybeStrip leadingNl acc)) :: scan src len (p + 3) depth id
-  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpOpen acc) :: scan src len (p + 2) depth (0 - 1)
+  | p >= len = RTok (TString (maybeStrip leadingNl acc)) p :: scan src len p depth id
+  | isTripleAt src len p = RTok (TString (maybeStrip leadingNl acc)) p :: scan src len (p + 3) depth id
+  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpOpen acc) p :: scan src len (p + 2) depth (0 - 1)
   | isBackslash (at src p) && p + 1 < len = scanTripleEsc src len p depth id leadingNl acc (at src (p + 1))
   | isNL (at src p) = scanTriple src len (p + 1) depth id (firstNl leadingNl acc) (acc ++ "\n")
   | isQuote (at src p) && p + 1 < len && isQuote (at src (p + 1)) = scanTriple src len (p + 2) depth id leadingNl (acc ++ "\"\"")
@@ -575,9 +581,9 @@ scanTripleEsc src len p depth id leadingNl acc e
 -- (`"""`→INTERP_END with stripIndent, `\{`→INTERP_MID re-marking id = -1)
 scanInterpTripleCont : Array Char -> Int -> Int -> Int -> String -> List RawTok
 scanInterpTripleCont src len p depth acc
-  | p >= len = RTok (TInterpEnd (stripIndent acc)) :: scan src len p depth 0
-  | isTripleAt src len p = RTok (TInterpEnd (stripIndent acc)) :: scan src len (p + 3) depth 0
-  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpMid acc) :: scan src len (p + 2) depth (0 - 1)
+  | p >= len = RTok (TInterpEnd (stripIndent acc)) p :: scan src len p depth 0
+  | isTripleAt src len p = RTok (TInterpEnd (stripIndent acc)) p :: scan src len (p + 3) depth 0
+  | isBackslash (at src p) && p + 1 < len && at src (p + 1) == '{' = RTok (TInterpMid acc) p :: scan src len (p + 2) depth (0 - 1)
   | isBackslash (at src p) && p + 1 < len = scanInterpTripleEsc src len p depth acc (at src (p + 1))
   | isNL (at src p) = scanInterpTripleCont src len (p + 1) depth (acc ++ "\n")
   | isQuote (at src p) && p + 1 < len && isQuote (at src (p + 1)) = scanInterpTripleCont src len (p + 2) depth (acc ++ "\"\"")
@@ -679,19 +685,19 @@ readChar src len p depth id
 -- `\<e>'` escape forms: three source chars (`\`, e, `'`), so advance by 3.
 escChar : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 escChar src len p depth id e
-  | e == 'n' = RTok (TChar "\n") :: scan src len (p + 3) depth id
-  | e == 't' = RTok (TChar "\t") :: scan src len (p + 3) depth id
-  | e == 'r' = RTok (TChar "\r") :: scan src len (p + 3) depth id
-  | isApos e = RTok (TChar "'") :: scan src len (p + 3) depth id
-  | isBackslash e = RTok (TChar "\\") :: scan src len (p + 3) depth id
-  | e == '0' = RTok (TChar (charToStr (fromOption ' ' (charFromCode 0)))) :: scan src len (p + 3) depth id
-  | otherwise = RTok (TChar (charToStr e)) :: scan src len (p + 3) depth id
+  | e == 'n' = RTok (TChar "\n") p :: scan src len (p + 3) depth id
+  | e == 't' = RTok (TChar "\t") p :: scan src len (p + 3) depth id
+  | e == 'r' = RTok (TChar "\r") p :: scan src len (p + 3) depth id
+  | isApos e = RTok (TChar "'") p :: scan src len (p + 3) depth id
+  | isBackslash e = RTok (TChar "\\") p :: scan src len (p + 3) depth id
+  | e == '0' = RTok (TChar (charToStr (fromOption ' ' (charFromCode 0)))) p :: scan src len (p + 3) depth id
+  | otherwise = RTok (TChar (charToStr e)) p :: scan src len (p + 3) depth id
 
 -- `[^'\\]+ '` — raw chars up to the closing quote.
 rawChar : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 rawChar src len p depth id =
   let e = charClose src len p
-  RTok (TChar (substr src p e)) :: scan src len (e + 1) depth id
+  RTok (TChar (substr src p e)) p :: scan src len (e + 1) depth id
 
 charClose : Array Char -> Int -> Int -> Int
 charClose src len p
@@ -704,7 +710,7 @@ readCharUnicode : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 readCharUnicode src len p depth id =
   let he = uHexEnd src len (p + 3)
   let cp = parseRadix src (p + 3) he 16 0
-  RTok (TChar (charToStr (fromOption ' ' (charFromCode cp)))) :: scan src len (he + 2) depth id
+  RTok (TChar (charToStr (fromOption ' ' (charFromCode cp)))) p :: scan src len (he + 2) depth id
 
 uHexEnd : Array Char -> Int -> Int -> Int
 uHexEnd src len p
@@ -730,7 +736,7 @@ uniEscEnd src len p = uHexEnd src len (p + 3) + 1
 
 -- operators + punctuation
 emit : Array Char -> Int -> Int -> Int -> Int -> Token -> Int -> Int -> List RawTok
-emit src len pos depth id tok length ddelta = RTok tok :: scan src len (pos + length) (depth + ddelta) id
+emit src len pos depth id tok length ddelta = RTok tok pos :: scan src len (pos + length) (depth + ddelta) id
 
 scanOp : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 scanOp src len pos depth id c
@@ -808,23 +814,23 @@ identStartLower src p = isLower (at src p) || at src p == '_'
 -- 0 = ordinary braces (tracked by `depth`).
 openBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 openBrace src len pos depth id
-  | id > 0 = RTok TLBrace :: scan src len (pos + 1) depth (id + 1)
-  | id < 0 = RTok TLBrace :: scan src len (pos + 1) depth (id - 1)
-  | otherwise = RTok TLBrace :: scan src len (pos + 1) (depth + 1) id
+  | id > 0 = RTok TLBrace pos :: scan src len (pos + 1) depth (id + 1)
+  | id < 0 = RTok TLBrace pos :: scan src len (pos + 1) depth (id - 1)
+  | otherwise = RTok TLBrace pos :: scan src len (pos + 1) (depth + 1) id
 
 closeBrace : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 closeBrace src len pos depth id
-  | id > 1 = RTok TRBrace :: scan src len (pos + 1) depth (id - 1)
+  | id > 1 = RTok TRBrace pos :: scan src len (pos + 1) depth (id - 1)
   | id == 1 = scanInterpCont src len (pos + 1) depth ""
   | id == 0 - 1 = scanInterpTripleCont src len (pos + 1) depth ""
-  | id < 0 = RTok TRBrace :: scan src len (pos + 1) depth (id + 1)
-  | otherwise = RTok TRBrace :: scan src len (pos + 1) (depth - 1) id
+  | id < 0 = RTok TRBrace pos :: scan src len (pos + 1) depth (id + 1)
+  | otherwise = RTok TRBrace pos :: scan src len (pos + 1) (depth - 1) id
 
 -- newline + indentation handling
 handleNewline : Array Char -> Int -> Int -> Int -> Int -> List RawTok
 handleNewline src len pos depth id =
   let (indent, np) = consumeNl src len pos 0
-  afterNl src len np depth id indent
+  afterNl src len np depth id indent pos
 
 -- consume one or more (newline white*) runs; returns (indentOfLastLine, newPos)
 consumeNl : Array Char -> Int -> Int -> Int -> (Int, Int)
@@ -837,11 +843,11 @@ consumeNl src len p indent
   | isTab (at src p) = consumeNl src len (p + 1) ((indent / 8 + 1) * 8)
   | otherwise = (indent, p)
 
-afterNl : Array Char -> Int -> Int -> Int -> Int -> Int -> List RawTok
-afterNl src len np depth id indent
+afterNl : Array Char -> Int -> Int -> Int -> Int -> Int -> Int -> List RawTok
+afterNl src len np depth id indent nlPos
   | depth > 0 = scan src len np depth id
   | isContinuation src len np = emit src len np depth id (continuationTok src len np) 2 0
-  | otherwise = RNewline indent :: scan src len np depth id
+  | otherwise = RNewline indent nlPos :: scan src len np depth id
 
 -- leading-operator line continuation (|> >> << && || ++ ::)
 isContinuation : Array Char -> Int -> Int -> Bool
@@ -869,11 +875,18 @@ continuationTok src len np
 -- and `opener` (whether a `match`/`record` header appeared on the line being
 -- ended), so a would-be INDENT can be suppressed into an application
 -- continuation when the deeper line just continues the current expression.
-layout : List RawTok -> List Int -> Option Token -> Bool -> List Token
-layout [] stack prev opener = closeAll stack
-layout ((RTok t)::rest) stack prev opener = t :: layout rest stack (Some t) (opener || isOpener t)
-layout ((RNewline col)::rest) stack prev opener =
-  applyNl col rest stack prev opener
+-- The layout pass threads each token's source char offset alongside it as a
+-- `(Token, Int)` pair.  Real tokens carry their `RTok` offset; synthetic
+-- NEWLINE/INDENT/DEDENT tokens carry the offset of the `RNewline` (or the EOF
+-- position) that produced them, so the position side-channel can assign every
+-- token a 1-based source line.  `tokenize` projects out `fst`, so the Token
+-- stream the parser matches on is byte-identical regardless of this threading.
+layout : List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)
+layout [] stack prev opener = closeAll stack 0
+layout ((RTok t off)::rest) stack prev opener = (t, off) :: layout rest stack (Some t) (opener || isOpener t)
+layout ((RComment _ _)::rest) stack prev opener = layout rest stack prev opener
+layout ((RNewline col off)::rest) stack prev opener =
+  applyNl col off rest stack prev opener
 
 isOpener : Token -> Bool
 isOpener TMatch = True
@@ -920,48 +933,50 @@ canStartAtom TAt = True
 canStartAtom (TInterpOpen _) = True
 canStartAtom _ = False
 
-applyNl : Int -> List RawTok -> List Int -> Option Token -> Bool -> List Token
-applyNl col rest [] prev opener = TNewline :: layout rest [] None False
-applyNl col rest (top::tl) prev opener =
-  applyNlTop col top (top :: tl) rest prev opener
+applyNl : Int -> Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)
+applyNl col off rest [] prev opener = (TNewline, off) :: layout rest [] None False
+applyNl col off rest (top::tl) prev opener =
+  applyNlTop col off top (top :: tl) rest prev opener
 
-applyNlTop : Int -> Int -> List Int -> List RawTok -> Option Token -> Bool -> List Token
-applyNlTop col top stack rest prev opener
-  | col > top = wouldIndent col stack rest prev opener
-  | col == top = TNewline :: layout rest stack None False
-  | otherwise = TNewline :: popDedents col stack rest
+applyNlTop : Int -> Int -> Int -> List Int -> List RawTok -> Option Token -> Bool -> List (Token, Int)
+applyNlTop col off top stack rest prev opener
+  | col > top = wouldIndent col off stack rest prev opener
+  | col == top = (TNewline, off) :: layout rest stack None False
+  | otherwise = (TNewline, off) :: popDedents col off stack rest
 
 -- col > top: a block opener pushes INDENT; otherwise it's a candidate
 -- continuation, decided by the deeper line's first token (Phase 137)
-wouldIndent : Int -> List Int -> List RawTok -> Option Token -> Bool -> List Token
-wouldIndent col stack rest prev opener
-  | opener || not (prevCanEnd prev) = TIndent :: layout rest (col :: stack) None False
-  | otherwise = resolveCont col stack rest prev opener
+wouldIndent : Int -> Int -> List Int -> List RawTok -> Option Token -> Bool -> List (Token, Int)
+wouldIndent col off stack rest prev opener
+  | opener || not (prevCanEnd prev) = (TIndent, off) :: layout rest (col :: stack) None False
+  | otherwise = resolveCont col off stack rest prev opener
 
-resolveCont : Int -> List Int -> List RawTok -> Option Token -> Bool -> List Token
-resolveCont col stack ((RTok t)::more) prev opener
-  | canStartAtom t = layout (RTok t :: more) stack prev opener
-  | otherwise = TIndent :: layout (RTok t :: more) (col :: stack) None False
-resolveCont col stack rest prev opener = layout rest stack None False
+resolveCont : Int -> Int -> List Int -> List RawTok -> Option Token -> Bool -> List (Token, Int)
+resolveCont col off stack ((RTok t toff)::more) prev opener
+  | canStartAtom t = layout (RTok t toff :: more) stack prev opener
+  | otherwise = (TIndent, off) :: layout (RTok t toff :: more) (col :: stack) None False
+resolveCont col off stack rest prev opener = layout rest stack None False
 
-popDedents : Int -> List Int -> List RawTok -> List Token
-popDedents col [] rest = layout rest [] None False
-popDedents col (top::tl) rest
-  | top > col = TDedent :: TNewline :: popDedents col tl rest
+popDedents : Int -> Int -> List Int -> List RawTok -> List (Token, Int)
+popDedents col off [] rest = layout rest [] None False
+popDedents col off (top::tl) rest
+  | top > col = (TDedent, off) :: (TNewline, off) :: popDedents col off tl rest
   | otherwise = layout rest (top :: tl) None False
 
--- end of input: NEWLINE, then DEDENT/NEWLINE pairs back to base, then EOF
-closeAll : List Int -> List Token
-closeAll stack = TNewline :: closeDedents stack
+-- end of input: NEWLINE, then DEDENT/NEWLINE pairs back to base, then EOF.
+-- `off` is the EOF char offset (source length) so the synthetic tail tokens
+-- get a source line past the last content line.
+closeAll : List Int -> Int -> List (Token, Int)
+closeAll stack off = (TNewline, off) :: closeDedents stack off
 
-closeDedents : List Int -> List Token
-closeDedents [] = [TEof]
-closeDedents [_] = [TEof]
-closeDedents (_::tl) = TDedent :: TNewline :: closeDedents tl
+closeDedents : List Int -> Int -> List (Token, Int)
+closeDedents [] off = [(TEof, off)]
+closeDedents [_] off = [(TEof, off)]
+closeDedents (_::tl) off = (TDedent, off) :: (TNewline, off) :: closeDedents tl off
 
 -- Phase 122 else-continuation filter: drop a NEWLINE immediately before ELSE.
-elseFilter : List Token -> List Token
-elseFilter (TNewline::TElse::rest) = TElse :: elseFilter rest
+elseFilter : List (Token, Int) -> List (Token, Int)
+elseFilter ((TNewline, _)::(TElse, eoff)::rest) = (TElse, eoff) :: elseFilter rest
 elseFilter (t::rest) = t :: elseFilter rest
 elseFilter [] = []
 
@@ -972,12 +987,54 @@ stripComments [] = []
 stripComments ((RComment _ _)::rest) = stripComments rest
 stripComments (r::rest) = r :: stripComments rest
 
+-- The layout pass over the raw stream, carrying offsets.  Shared by `tokenize`
+-- (which drops offsets) and `tokenizeWithOffsets` (the position side-channel).
+layoutWithOffsets : Array Char -> Int -> List (Token, Int)
+layoutWithOffsets src len =
+  elseFilter (layout (stripComments (scan src len 0 0 0)) [0] None False)
+
 export
 tokenize : String -> List Token
 tokenize s =
   let src = stringToChars s
   let len = arrayLength src
-  elseFilter (layout (stripComments (scan src len 0 0 0)) [0] None False)
+  map fst (layoutWithOffsets src len)
+
+-- Tokenize and return each token paired with the 1-based source line of its
+-- char offset.  The position side-channel (`selfhost/parser.mdk`) consults the
+-- line array to record per-decl / per-variant source lines.  The Token stream
+-- (`map fst`) is byte-identical to `tokenize`.
+export
+tokenizeWithLines : String -> (List Token, List Int)
+tokenizeWithLines s =
+  let src = stringToChars s
+  let len = arrayLength src
+  let pairs = layoutWithOffsets src len
+  let toks = map fst pairs
+  let lines = offsetsToLines src (map snd pairs)
+  (toks, lines)
+
+-- Convert a list of char offsets (in non-decreasing-ish source order — the
+-- synthetic tail tokens all share the EOF offset, which is monotone) to 1-based
+-- source lines in a single left-to-right walk over the source, mirroring
+-- `posToLineCol`'s amortized-linear strategy for comments.
+offsetsToLines : Array Char -> List Int -> List Int
+offsetsToLines src offs = offsetsToLinesGo src offs 0 1
+
+offsetsToLinesGo : Array Char -> List Int -> Int -> Int -> List Int
+offsetsToLinesGo src [] p line = []
+offsetsToLinesGo src (off::rest) p line =
+  match advanceLine src off p line
+    (line2, p2) => line2 :: offsetsToLinesGo src rest p2 line2
+
+-- Walk forward from char `p` (1-based `line`) to `target`, counting newlines.
+-- Offsets arrive in non-decreasing order so each call resumes from the last.
+advanceLine : Array Char -> Int -> Int -> Int -> (Int, Int)
+advanceLine src target p line
+  | p >= target = (line, p)
+  | p >= arrayLength src = (line, p)
+  | arrayGetUnsafe p src == '\n' = advanceLine src target (p + 1) (line + 1)
+  | otherwise = advanceLine src target (p + 1) line
 
 -- ── Comment side channel ─────────────────────────────────────────────────
 -- Mirrors lib/lexer.mll's `comment` record + `take_comments`: each captured

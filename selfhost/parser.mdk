@@ -16,7 +16,7 @@
 -- forms, and the rest of the operator ladder come in later slices.
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..), Attr(..), Route(..)}
-import lexer.{Token(..), tokenize}
+import lexer.{Token(..), tokenize, tokenizeWithLines}
 import util.{reverseL}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -61,6 +61,12 @@ failP msg = Parser (toks pos => PErr msg pos)
 
 peekP : Parser Token
 peekP = Parser (toks pos => POk (peekTok toks pos) pos)
+
+-- Read the current token index without consuming.  Used by the position
+-- side-channel (`parseWithPositions`) to capture per-decl / per-variant token
+-- spans; does not affect parsing (it's a pure read of `pos`).
+getPos : Parser Int
+getPos = Parser (toks pos => POk pos pos)
 
 advance : Parser Token
 advance = Parser (toks pos => advanceR (peekTok toks pos) pos)
@@ -2418,6 +2424,174 @@ parseProgram : Parser (List Decl)
 parseProgram = do
   skipNoise
   many declThenNoise
+
+-- ── Position side-channel ─────────────────────────────────────────────────
+-- Mirrors lib/parser_state.ml's three channels, surfaced for `medaka fmt`'s
+-- comment-interleaving engine (lib/printer.ml `format_program`):
+--   * decl_positions  — per top-level decl, a (line, end_line) pair, in source
+--                        order;
+--   * variant_lines   — start line of each `data` variant, flat across the file
+--                        in decl order;
+--   * last_content_line — the line of the last non-trivia token in the file.
+-- These are computed *out of band* from the token/line arrays produced by
+-- `tokenizeWithLines`: parsing itself is untouched (the AST has no `loc`).  Each
+-- decl is parsed with its start/end token index captured via `getPos`; lines
+-- come from the parallel line array; variant start lines are re-derived from the
+-- decl's token span (the data-body's depth-0 `=`/`|` separators).
+public export data DeclPos = DeclPos Int Int     -- (line, end_line), 1-based
+public export data Positions = Positions (List DeclPos) (List Int) Int
+  -- decl positions, variant start lines, last_content_line
+
+export
+positionsDecls : Positions -> List DeclPos
+positionsDecls (Positions ds _ _) = ds
+
+export
+positionsVariantLines : Positions -> List Int
+positionsVariantLines (Positions _ vs _) = vs
+
+export
+positionsLastContentLine : Positions -> Int
+positionsLastContentLine (Positions _ _ l) = l
+
+export
+declPosLine : DeclPos -> Int
+declPosLine (DeclPos l _) = l
+
+export
+declPosEndLine : DeclPos -> Int
+declPosEndLine (DeclPos _ e) = e
+
+-- Parse one decl, capturing the (startTokIdx, endTokIdx) span around it.
+declWithSpan : Parser (Decl, Int, Int)
+declWithSpan = do
+  s <- getPos
+  d <- parseDecl
+  e <- getPos
+  pure (d, s, e)
+
+-- Program parse that records each decl's token span, mirroring parseProgram's
+-- skipNoise + many declThenNoise but threading spans.
+spanDeclThenNoise : Parser (Decl, Int, Int)
+spanDeclThenNoise = do
+  ds <- declWithSpan
+  skipNoise
+  pure ds
+
+programWithSpans : Parser (List (Decl, Int, Int))
+programWithSpans = do
+  skipNoise
+  many spanDeclThenNoise
+
+-- Layout-noise predicate over the token array (NEWLINE/INDENT/DEDENT).
+isNoiseTok : Token -> Bool
+isNoiseTok TNewline = True
+isNoiseTok TIndent = True
+isNoiseTok TDedent = True
+isNoiseTok _ = False
+
+-- Last content (non-noise) token index strictly below `e`, scanning back from
+-- e-1 down to `s`.  Returns `s` if none (degenerate; a decl always has content).
+lastContentIdx : Array Token -> Int -> Int -> Int
+lastContentIdx toks s i
+  | i < s = s
+  | isNoiseTok (arrayGetUnsafe i toks) = lastContentIdx toks s (i - 1)
+  | otherwise = i
+
+-- 1-based source line of token index `i` from the parallel line array.
+lineAt : Array Int -> Int -> Int
+lineAt lines i
+  | i < arrayLength lines = arrayGetUnsafe i lines
+  | otherwise = 0
+
+-- Build a DeclPos from a captured (start, end) token span: start line is the
+-- line of the first token; end line is the line of the last *content* token in
+-- the span (mirrors lib/parser_state.record_decl_pos's last_content_line fixup,
+-- which pins end_line to the decl's final non-trivia token).
+declPosOf : Array Token -> Array Int -> (Decl, Int, Int) -> DeclPos
+declPosOf toks lines (_, s, e) =
+  DeclPos (lineAt lines s) (lineAt lines (lastContentIdx toks s (e - 1)))
+
+-- Re-derive a data decl's variant start lines from its token span.  Within a
+-- `data` body the only `|` at delimiter-depth 0 are variant separators (the
+-- leading `=` introduces the first variant; each later `|` a subsequent one);
+-- payloads keep any `|` inside ()/[]/{}/[| |].  So we walk the span tracking
+-- delimiter depth and emit the line of the token *after* the first depth-0 `=`
+-- and after each depth-0 `|`.
+variantStartsIn : Array Token -> Array Int -> Int -> Int -> List Int
+variantStartsIn toks lines i e = variantStartsGo toks lines i e 0 False
+
+-- `depth` = delimiter nesting; `seenEq` = whether the body's `=` was passed.
+variantStartsGo : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> List Int
+variantStartsGo toks lines i e depth seenEq
+  | i >= e = []
+  | otherwise = variantStartsAt toks lines i e depth seenEq (arrayGetUnsafe i toks)
+
+variantStartsAt : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> Token -> List Int
+variantStartsAt toks lines i e depth seenEq t
+  | isOpenDelim t = variantStartsGo toks lines (i + 1) e (depth + 1) seenEq
+  | isCloseDelim t = variantStartsGo toks lines (i + 1) e (depth - 1) seenEq
+  | depth == 0 && not seenEq && t == TEqual = lineAt lines (i + 1) :: variantStartsGo toks lines (i + 1) e depth True
+  | depth == 0 && seenEq && t == TPipe = lineAt lines (i + 1) :: variantStartsGo toks lines (i + 1) e depth seenEq
+  | otherwise = variantStartsGo toks lines (i + 1) e depth seenEq
+
+isOpenDelim : Token -> Bool
+isOpenDelim TLParen = True
+isOpenDelim TLBracket = True
+isOpenDelim TLBrace = True
+isOpenDelim TLArray = True
+isOpenDelim _ = False
+
+isCloseDelim : Token -> Bool
+isCloseDelim TRParen = True
+isCloseDelim TRBracket = True
+isCloseDelim TRBrace = True
+isCloseDelim TRArray = True
+isCloseDelim _ = False
+
+-- Is the parsed decl a `data` declaration?  (Variant lines are emitted only
+-- for these, mirroring lib/parser_state.record_variant_line, which fires from
+-- the data-variant grammar productions.)
+isDataDecl : Decl -> Bool
+isDataDecl (DData _ _ _ _ _) = True
+isDataDecl _ = False
+
+-- Flat list of every data decl's variant start lines, in decl order.
+allVariantLines : Array Token -> Array Int -> List (Decl, Int, Int) -> List Int
+allVariantLines toks lines [] = []
+allVariantLines toks lines ((d, s, e)::rest)
+  | isDataDecl d = variantStartsIn toks lines s e ++ allVariantLines toks lines rest
+  | otherwise = allVariantLines toks lines rest
+
+-- last_content_line: line of the last content token across the whole file.
+lastContentLineOf : Array Token -> Array Int -> List (Decl, Int, Int) -> Int
+lastContentLineOf toks lines spans = lastContentLineGo toks lines spans 0
+
+lastContentLineGo : Array Token -> Array Int -> List (Decl, Int, Int) -> Int -> Int
+lastContentLineGo toks lines [] acc = acc
+lastContentLineGo toks lines ((_, s, e)::rest) acc =
+  lastContentLineGo toks lines rest (lineAt lines (lastContentIdx toks s (e - 1)))
+
+resultSpans : Array Token -> PR (List (Decl, Int, Int)) -> List (Decl, Int, Int)
+resultSpans _ (PErr _ _) = panic "parse error"
+resultSpans toks (POk ds pos)
+  | peekTok toks pos == TEof = ds
+  | otherwise = panic "parse error"
+
+-- Parse `src` and return the position side-channel alongside the decls.
+export
+parseWithPositions : String -> (List Decl, Positions)
+parseWithPositions src =
+  match tokenizeWithLines src
+    (tokList, lineList) =>
+      let toks = arrayFromList tokList
+      let lines = arrayFromList lineList
+      let spans = resultSpans toks (runP programWithSpans toks 0)
+      let decls = map (((d, _s, _e)) => d) spans
+      let dps = map (declPosOf toks lines) spans
+      let vls = allVariantLines toks lines spans
+      let lcl = lastContentLineOf toks lines spans
+      (decls, Positions dps vls lcl)
 
 -- Check that the parse consumed all tokens (no trailing garbage), panic on error.
 -- Mirrors lib/loader.ml: raises Failure "Parse error" on Parser.Error or Failure.

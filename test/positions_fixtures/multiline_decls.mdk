@@ -1,0 +1,8 @@
+add a b =
+  let s = a + b
+  s
+
+double x =
+  x * 2
+
+triple x = x + x + x

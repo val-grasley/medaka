@@ -1,0 +1,13 @@
+data Tree a
+  = Leaf
+  | Node { left : Tree a, value : a, right : Tree a }
+
+data Cmd
+  = Move Int Int
+  | Draw (List Int)
+  | Stop
+
+insert v t =
+  match t
+    Leaf => Node { left = Leaf, value = v, right = Leaf }
+    Node r => r.value

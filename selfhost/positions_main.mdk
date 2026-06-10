@@ -1,0 +1,49 @@
+-- Entry point that drives the self-hosted parser's POSITION side channel as a
+-- runnable program, so the differential harness can shell out to it:
+--
+--   medaka run selfhost/positions_main.mdk <source.mdk>
+--
+-- reads <source.mdk>, parses it with `parseWithPositions`, and prints the three
+-- channels lib/parser_state.ml exposes for `medaka fmt`'s comment-interleaving
+-- engine (lib/printer.ml `format_program`):
+--
+--   === DECLS ===
+--   <line>:<end_line>      (one per top-level decl, source order, 1-based)
+--   ...
+--   === VARIANTS ===
+--   <line>                 (start line of each `data` variant, flat, decl order)
+--   ...
+--   === LASTLINE ===
+--   <n>                    (last_content_line)
+--
+-- This mirrors the OCaml reference dumped by dev/positions_dump.exe.  Uses only
+-- prelude + global externs (no stdlib import), so it resolves with `selfhost/`
+-- as the sole project root.
+
+import parser.{parseWithPositions, Positions, DeclPos, positionsDecls, positionsVariantLines, positionsLastContentLine, declPosLine, declPosEndLine}
+
+-- Each entry carries its own trailing newline (matching dev/positions_dump.ml's
+-- `%d:%d\n` / `%d\n`), so an empty section is just its header line followed
+-- immediately by the next header — byte-identical to the reference.
+renderDeclPos : DeclPos -> String
+renderDeclPos d = intToString (declPosLine d) ++ ":" ++ intToString (declPosEndLine d) ++ "\n"
+
+renderVariant : Int -> String
+renderVariant n = intToString n ++ "\n"
+
+renderPositions : Positions -> String
+renderPositions p =
+  let decls = stringConcat (map renderDeclPos (positionsDecls p))
+  let vars = stringConcat (map renderVariant (positionsVariantLines p))
+  "=== DECLS ===\n" ++ decls ++ "=== VARIANTS ===\n" ++ vars
+    ++ "=== LASTLINE ===\n" ++ intToString (positionsLastContentLine p) ++ "\n"
+
+emit : String -> <IO> Unit
+emit path = match readFile path
+  Ok src => match parseWithPositions src
+    (_decls, pos) => putStr (renderPositions pos)
+  Err msg => ePutStrLn msg
+
+main = match args ()
+  [path] => emit path
+  _ => ePutStrLn "usage: medaka run selfhost/positions_main.mdk <file>"
