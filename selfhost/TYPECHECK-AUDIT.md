@@ -513,18 +513,26 @@ exports the scheme and typechecks == oracle. Fixture
 path now mirrors `checkProgramSeeded`'s default-body hook. On the LLVM emit path
 (`elaborateModules` sets `implInferEnabled := argStampEnabled`, ON) the module path now
 reaches the same default-body inference as the single-file emit path.
-**Residual gap (not closed by C8's scoped fix, NEW finding):** `inferDefaultBodies`/
-`inferDefaultMethod` only infer **constraint-carrying** default bodies (methods in
+**C8b residual — ✅ CLOSED (2026-06-10, c203aff):** `inferDefaultBodies`/
+`inferDefaultMethod` only inferred **constraint-carrying** default bodies (methods in
 `methodConstraintsRef`, e.g. `foldMap`'s `Monoid m`) — for the dict-slot registration.
-A *plain* unconstrained default body (`greet x = 5`) is skipped on BOTH selfhost entry
-points, and on the plain-check driver the hook is gated OFF entirely. The OCaml oracle,
-by contrast, type-checks ALL default bodies unconditionally during interface
-registration (`lib/typecheck.ml:3079-3110+`). So a general bad-default-body type error
-in a module is still caught by neither selfhost path — C8(b)'s hook achieves
-two-entry-point parity (the audited defect) but not full oracle parity for unconstrained
-defaults. Closing the residual would need (i) extending `inferDefaultBodies` to all
-defaults and (ii) ungating it on the check path — both out of C8's "export-list + hook"
-scope; file as a follow-up if oracle-parity on default-body diagnostics is wanted.
+A *plain* unconstrained default body (`greet x = 5`) was skipped on BOTH selfhost entry
+points, and on the plain-check driver the hook was gated OFF entirely. The OCaml oracle
+type-checks ALL default bodies unconditionally during interface registration
+(`lib/typecheck.ml:3079-3110+`). **Fix (2026-06-10):** (i) `inferDefaultBodiesIfEnabled`
+now always calls `inferDefaultBodies` unconditionally (gate removed); (ii) `inferDefaultMethod`
+gains a new `None` arm that instantiates the scheme, infers the body, and unifies — same as
+the `Some ids` arm minus `registerMethodDictSlots`. Both arms share `inferDefaultMethodBody`
+which includes a double-error guard (snapshot `typeErrors` length before body inference;
+skip the outer `unify` if new errors were already pushed — prevents duplicate errors from
+the accumulating system that the oracle's raise-on-first avoids). Both selfhost entry points
+covered (`checkProgramSeeded` + `checkModuleFullImpl`, both call `inferDefaultBodiesIfEnabled`).
+Repro `test/typecheck_error_fixtures/default_body_type_error.mdk`; oracle == selfhost.
+No `lib/` changes needed. Compiler's own default bodies (Ord.lt/gt/min/max,
+Foldable.length/isEmpty, Filterable.filter) type-check correctly — self-compile fixpoint
+C3a+C3b YES. No corpus program newly rejected. Gates: diff_selfhost_typecheck_errors 36/0,
+diff_selfhost_check 39/0, diff_selfhost_check_modules 15/0, bootstrap_typecheck 12/0,
+dune build @thorough 100/100, selfcompile_fixpoint C3a+C3b YES.
 
 ### C9. `inferIndex` is List-only; container default diverges — ✅ CLOSED (2026-06-09)
 `typecheck.mdk` `inferIndex` unified every `xs.[i]` receiver with `List elem`; oracle
