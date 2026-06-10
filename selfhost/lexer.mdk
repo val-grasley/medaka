@@ -217,7 +217,14 @@ tokenToString TEof = "EOF"
 -- (one per significant source line break, carrying the indentation of the
 -- following line). A second `layout` pass turns those markers into
 -- INDENT/DEDENT/NEWLINE per the OCaml `handle_indent` algorithm.
-data RawTok = RTok Token | RNewline Int
+-- `RComment startPos text` carries a captured comment out-of-band: `startPos`
+-- is the source char offset of the opening `--`/`{-`, `text` the full lexeme
+-- (including the `--` / `{- … -}` delimiters, matching lib/lexer.mll's
+-- `c_text`).  These markers are produced by the comment arms of `scanAt` and
+-- *stripped before the layout pass* (`stripComments`), so the Token stream the
+-- parser consumes is byte-identical to before — comments are purely a side
+-- channel.  `collectComments` re-reads the raw stream to surface them.
+data RawTok = RTok Token | RNewline Int | RComment Int String
 
 -- ── Character classification (ASCII, matching lib/lexer.mll's char classes) ──
 isSp : Char -> Bool
@@ -347,8 +354,12 @@ scanAt : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 scanAt src len pos depth id c
   | isSpace c = scan src len (pos + 1) depth id
   | isNL c || isCR c = handleNewline src len pos depth id
-  | c == '-' && pos + 1 < len && at src (pos + 1) == '-' = scan src len (skipLineComment src len pos) depth id
-  | c == '{' && pos + 1 < len && at src (pos + 1) == '-' = scan src len (skipBlockComment src len (pos + 2) 1) depth id
+  | c == '-' && pos + 1 < len && at src (pos + 1) == '-' =
+      let e = skipLineComment src len pos
+      RComment pos (substr src pos e) :: scan src len e depth id
+  | c == '{' && pos + 1 < len && at src (pos + 1) == '-' =
+      let e = skipBlockComment src len (pos + 2) 1
+      RComment pos (substr src pos e) :: scan src len e depth id
   | isDigit c = scanNumber src len pos depth id
   | isQuote c && isTripleAt src len pos = scanTriple src len (pos + 3) depth id False ""
   | isQuote c = scanStr src len (pos + 1) depth id ""
@@ -954,9 +965,66 @@ elseFilter (TNewline::TElse::rest) = TElse :: elseFilter rest
 elseFilter (t::rest) = t :: elseFilter rest
 elseFilter [] = []
 
+-- Drop the out-of-band `RComment` markers before the layout pass, so the Token
+-- stream the parser consumes is byte-identical regardless of comment capture.
+stripComments : List RawTok -> List RawTok
+stripComments [] = []
+stripComments ((RComment _ _)::rest) = stripComments rest
+stripComments (r::rest) = r :: stripComments rest
+
 export
 tokenize : String -> List Token
 tokenize s =
   let src = stringToChars s
   let len = arrayLength src
-  elseFilter (layout (scan src len 0 0 0) [0] None False)
+  elseFilter (layout (stripComments (scan src len 0 0 0)) [0] None False)
+
+-- ── Comment side channel ─────────────────────────────────────────────────
+-- Mirrors lib/lexer.mll's `comment` record + `take_comments`: each captured
+-- comment carries its 1-based start line, 0-based start column, and full
+-- lexeme text (the `--…` / `{- … -}`, delimiters included).  Surfaced in
+-- SOURCE ORDER, exactly as the OCaml `take_comments ()` (which reverses the
+-- accumulator).  `format_program`/the comment-preserving printer consume this
+-- list keyed by position; the parser is unaffected (comments are stripped
+-- before layout — see `stripComments`).
+export
+data Comment = Comment Int Int String
+
+export
+commentLine : Comment -> Int
+commentLine (Comment l _ _) = l
+
+export
+commentCol : Comment -> Int
+commentCol (Comment _ c _) = c
+
+export
+commentText : Comment -> String
+commentText (Comment _ _ t) = t
+
+-- Convert a source char offset to (1-based line, 0-based column) by scanning
+-- the preceding characters.  `lineStart` is the offset of the current line's
+-- first char; `line` its 1-based number.  O(pos) per call, but only invoked
+-- once per comment in a single left-to-right walk (see `posToLineCol`).
+posLineColFrom : Array Char -> Int -> Int -> Int -> Int -> (Int, Int)
+posLineColFrom src target p line lineStart
+  | p >= target = (line, target - lineStart)
+  | at src p == '\n' = posLineColFrom src target (p + 1) (line + 1) (p + 1)
+  | otherwise = posLineColFrom src target (p + 1) line lineStart
+
+-- Turn each `RComment startPos text` into a `Comment line col text`.
+rawToComments : Array Char -> List RawTok -> List Comment
+rawToComments src [] = []
+rawToComments src ((RComment startPos text)::rest) =
+  match posLineColFrom src startPos 0 1 0
+    (line, col) => Comment line col text :: rawToComments src rest
+rawToComments src (_::rest) = rawToComments src rest
+
+-- Tokenize-and-collect the comment side channel, in source order.
+export
+collectComments : String -> List Comment
+collectComments s =
+  let src = stringToChars s
+  let len = arrayLength src
+  rawToComments src (scan src len 0 0 0)
+

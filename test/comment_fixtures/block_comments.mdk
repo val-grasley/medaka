@@ -1,0 +1,6 @@
+{- single line block -}
+m = 1
+{- a block
+   spanning
+   three lines -}
+n = 2

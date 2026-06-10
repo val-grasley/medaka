@@ -1,0 +1,5 @@
+p = 1
+
+-- a comment between two declarations
+
+q = 2

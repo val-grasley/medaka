@@ -1,0 +1,9 @@
+-- header
+-- second header line
+f x = x + 1  -- trailing on f
+
+{- block before g
+   line two -}
+g y = y - 1
+-- between
+h = f 3 {- inline -} + g 4 -- end

@@ -1,0 +1,5 @@
+-- top of file
+x = 1
+-- standalone before y
+y = 2
+z = 3 -- trailing

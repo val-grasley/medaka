@@ -1,0 +1,3 @@
+-- real comment
+s = "not -- a comment and not {- block -} either"
+t = 2
