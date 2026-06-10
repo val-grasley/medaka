@@ -1,0 +1,4 @@
+-- makeDir on a path whose parent doesn't exist → Err (deterministic)
+main = match makeDir "/tmp/mdk_s13_nonexistent_parent/child"
+  Ok _ => 0
+  Err _ => 1

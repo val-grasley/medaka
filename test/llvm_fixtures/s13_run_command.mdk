@@ -1,0 +1,3 @@
+main = match runCommand "echo" ["hello"]
+  Ok (code, out, err) => code
+  Err e => 0 - 1
