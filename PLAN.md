@@ -198,6 +198,16 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   → `AmbiguousField`; unknown → clean type error (not panic). Messages byte-identical;
   fixtures + all gates green. (Unpinned sig-typed-param `getA a = a.x` still ambiguous
   until **C1**/Phase 73 lands — then receiver-directs for free.)
+- **C8** — ✅ **CLOSED (`b3a6b2c`).** (a) `publicValNames` now exports `pub`
+  interface method schemes (`ifaceMethodNames`, mirror `pub_iface_schemes`) →
+  cross-module interface-method use resolves. (b) added `inferDefaultBodiesIfEnabled`
+  to the module path (`checkModuleFullImpl`), gated identically → two-entry-point
+  parity. Multi-module fixture + all gates green (also fixed a trailing-slash root
+  bug in the modules harness). **Residual (C8b, follow-up):** default-body inference
+  only covers *constraint-carrying* defaults on BOTH selfhost entry points, and is
+  gated OFF on the plain-check path; the oracle type-checks ALL default bodies
+  unconditionally. Full oracle-parity on *unconstrained* default-body diagnostics
+  needs extending `inferDefaultBodies` to all defaults + ungating — out of C8 scope.
 - **S3** — ✅ **CLOSED (`6140e0a`).** Ported `check_coherence` (Phase 68) into
   selfhost as `checkCoherence` — overlap rule mirrors `impls_overlap` byte-for-byte
   (wildcard unify with resolve-before-bind; `default` dup → `Multiple default impls`,
@@ -220,7 +230,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 **Near-term sequence (front-loaded order, decided 2026-06-09):**
 
 > **Overnight autonomous run (2026-06-09 22:xx → 07:00 PDT):** working the audit
-> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2. **L1 deferred** (E4-gated — fix
+> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8. **L1 deferred** (E4-gated — fix
 > with the E4 work). **L2 deferred for the unattended run** (latent + arg-tag-masked;
 > the full fix touches the fragile route-keying area + the interim typecheck error
 > risks over-rejection — wants careful attention near E4, not unattended). Proceeding
