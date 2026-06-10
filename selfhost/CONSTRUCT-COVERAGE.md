@@ -530,13 +530,48 @@ route the constrained call through `RDictFwd` (not `RNone`).
 
 ---
 
-### Gap G: `deriving (Eq, Ord)` comparison wrong
+### Gap G: Ord default-method dispatch bug — BOTH tree-walkers wrong, native correct — INVESTIGATED 2026-06-10
 
-| # | Construct | Oracle | Native | Note |
-|---|-----------|--------|--------|------|
-| G1 | `data Level = Low \| Mid \| High deriving (Eq, Ord); Low < High` | `False` (ref bug — actually Low < High should be True) | `True` | The reference interpreter and native disagree; reference returns `False` for `Low < High` (possible oracle bug). |
+**Confirmed: a dispatch bug in BOTH the OCaml (`eval.ml`) and selfhost (`eval.mdk`)
+tree-walkers; the native LLVM backend is the only one correct.** This is a
+**behavioral-oracle soundness issue** with direct bearing on the Stage-3 retirement
+strategy (the differential native-vs-tree-walker would flag *correct* native output
+as wrong).
 
-**Note:** The oracle result `False` for `Low < High` appears incorrect (tag-ordering says Low=0 < High=2 → True). This may be an oracle bug in the derived Ord implementation, not a native gap. Mark for investigation.
+Three-way result on `Low < High` (correct answer = `True`: rank Low=0 < rank High=2):
+
+| Path | Result |
+|------|--------|
+| OCaml oracle (`eval.ml`) | `False` ❌ |
+| selfhost tree-walker (`eval.mdk`, the hybrid behavioral oracle) | `False` ❌ |
+| native LLVM (`medaka build`) | `True` ✅ |
+
+**Localization (probes run):**
+- core.mdk `Ord` defaults are CORRECT: `lt x y = match compare x y { Lt => True; _ => False }`.
+- `compare Low High` called DIRECTLY = `Lt` on all three (correct).
+- `Low < High` (= `lt`, the default method) = `False` on both tree-walkers, `True` native.
+- **Reproduces with a HAND-WRITTEN `impl Ord Level` (not deriving)** — so it is NOT a
+  `deriving` bug. It is the **default-method dispatch**: the `compare` call *inside the
+  `lt` default-method body* mis-dispatches in the tree-walkers (Phase-69.x interface-
+  method-from-default-method dispatch), even though the direct `compare` resolves fine.
+- Affects `<`/`>`/`<=`/`>=`/`min`/`max` (all Ord defaults) on user/derived Ord impls.
+  Masked wherever code uses `compare` directly (e.g. map/set tree ops) rather than `<`.
+
+**Why deferred (not fixed autonomously):** the fix is a dispatch change in BOTH
+tree-walkers (`lib/eval.ml` + `selfhost/eval.mdk`) — the most bug-prone area in the
+project — with broad reach (every Ord default method). Too risky for an unattended
+merge. **Needs oversight.** Repro:
+```
+data Level = Low | Mid | High deriving (Eq)
+impl Ord Level where
+  compare a b = compare (rank a) (rank b)
+rank x = match x { Low => 0; Mid => 1; High => 2 }
+main = println (debug (Low < High))   -- True (native) vs False (both tree-walkers)
+```
+**Strategic note:** the hybrid-oracle retirement bar must account for this — for Ord
+default methods the tree-walker is NOT ground truth; native is. Either fix the
+tree-walker dispatch first, or special-case this in the differential.
+
 
 ---
 
