@@ -1164,13 +1164,45 @@ lookupPositions iface mname (((i, m), p)::rest)
   | otherwise = lookupPositions iface mname rest
 
 -- A point-free (no-param) impl/default body: if the method is return-position
--- (no discriminating arg) defer it as a VThunk; otherwise eta-expand so the
--- discriminating argument still reaches the body (mirrors lib/eval.ml Phase 121).
+-- (no discriminating arg) defer it as a memoising VThunk; otherwise eta-expand so
+-- the discriminating argument still reaches the body (mirrors lib/eval.ml Phase 121).
+--
+-- TYPECHECK-AUDIT C6: the nullary return-position thunk is nested in a
+-- VTypedImpl's `inner` field inside a VMulti list (not in a Ref cell of its own),
+-- so the cell-level forceCell/forceMemo memoisation never reaches it.  stripBody
+-- (the only forcer of this thunk, line 608) calls `f ()` directly, so a bare
+-- `VThunk (_ => eval env body)` re-evaluates the body — duplicating effects/cost
+-- — on every EMethodAt occurrence at the resolved type.  The OCaml oracle
+-- (eval.ml:1899-1903) evaluates the nullary return-position body EAGERLY ONCE at
+-- binding time.  memoThunk closes the gap: it caches the first force through a
+-- private Ref so subsequent forces (whatever path) return the same value without
+-- re-running the body — identical VALUE, effects/work run once like the oracle.
 implMethodValue : EvalEnv -> List Int -> List Pat -> Expr -> Value
 implMethodValue env positions [] body
-  | nullList positions = VThunk (_ => eval env body)
+  | nullList positions = memoThunk env body
   | otherwise = VClosure env [PVar "$eta"] (EApp body (EVar "$eta"))
 implMethodValue env _ pats body = VClosure env pats body
+
+-- A VThunk whose body evaluates at most once: the first force writes the result
+-- into a private Ref, later forces read it back (no re-evaluation of `body`).
+-- The Ref is built ONCE here (captured by the closure), not inside the lambda —
+-- otherwise each force would mint a fresh empty cell and never see the cache.
+memoThunk : EvalEnv -> Expr -> Value
+memoThunk env body = memoThunkOf (Ref None) env body
+
+memoThunkOf : Ref (Option Value) -> EvalEnv -> Expr -> Value
+memoThunkOf cell env body = VThunk (_ => forceMemoCell cell env body)
+
+forceMemoCell : Ref (Option Value) -> EvalEnv -> Expr -> <Mut> Value
+forceMemoCell cell env body = match cell.value
+  Some v => v
+  None => storeMemo cell (eval env body)
+
+storeMemo : Ref (Option Value) -> Value -> <Mut> Value
+storeMemo cell v = seqV (set_ref cell (Some v)) v
+
+seqV : Unit -> Value -> Value
+seqV _ v = v
 
 nullList : List a -> Bool
 nullList [] = True

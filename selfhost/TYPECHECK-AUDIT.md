@@ -381,11 +381,26 @@ name. Note: the obvious single-module repro is rejected by the oracle too (verif
 or prelude redefinition; exact blast radius [UNCERTAIN]. **Fix:** port `lookup_method`
 + an `RLocal` analogue; merge standalone+impls into one VMulti candidate set per name.
 
-### C6. `stripBody` re-forces nullary impl thunks without memoising
+### C6. `stripBody` re-forces nullary impl thunks without memoising — ✅ CLOSED (2026-06-09)
 `eval.mdk:603-618, 1161-1165` — a point-free return-position impl body re-evaluates per
 occurrence (effects/cost duplicated); oracle evaluates once (`eval.ml:1899-1903`).
 Combined with S1, wrapper-kept thunk + non-empty dicts can panic. **Fix:** memoise
 (write back through the cell) or evaluate eagerly like the oracle.
+
+**Done:** `implMethodValue` (`eval.mdk`) now builds the nullary return-position thunk
+via `memoThunk env body` — a `VThunk` that captures a private `Ref (Option Value)`
+created ONCE (outside the lambda). First force evals `body` and stores `Some v`;
+later forces read it back without re-evaluating. The thunk lives nested in a
+`VTypedImpl.inner` inside a `VMulti` list (no Ref cell of its own), so the existing
+`forceCell`/`forceMemo` cell-memoisation never reached it and `stripBody`'s direct
+`f ()` re-ran the body every `EMethodAt` occurrence. memoThunk makes the thunk
+idempotent regardless of forcer (`stripBody`/`forceCell`/`force`), so the body's
+effects/work run once — identical VALUE to before, matching the oracle's eager-once
+semantics. Repro (`test/eval_dict_fixtures/return_pos_memoised.mdk`): a return-position
+`theUnit : a` impl whose body prints `[eval]`, referenced twice at the same concrete
+type — before: selfhost printed `[eval] [eval] XX`, oracle `[eval] XX`; after: both
+`[eval] XX`. All eval/dict/typed/modules/check/core_ir + native llvm_modules +
+selfcompile_fixpoint gates green; no value change in any existing program.
 
 ### C7. Selfhost `RKey` carries head tycon, not canonical impl key
 `ast.mdk:160`, `eval.mdk:680-682` (`hasTag` matches head-tag only) vs oracle
