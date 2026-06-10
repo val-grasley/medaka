@@ -3792,11 +3792,17 @@ inferImplBodiesIfEnabled env prog
   | implInferEnabled.value = inferImplBodies env prog (returnPosMethodNames prog) prog
   | otherwise = ()
 
--- gate: default-body inference (method-level dicts) runs only on the dict path
+-- C8b: default-body type-checking runs UNCONDITIONALLY (mirrors the oracle's
+-- register_interface default-body loop at lib/typecheck.ml:3122-3160 which checks
+-- ALL default bodies regardless of whether they carry method-level constraints).
+-- Previously gated on implInferEnabled — that blocked unconstrained defaults
+-- (Ord.lt/gt/min/max, Foldable.length/isEmpty, Filterable.filter, …) from being
+-- type-checked on the plain-check path, so bad unconstrained default bodies were
+-- silently accepted.  The constrained branch still registers dict slots (needed
+-- for the emit/dict path); the unconstrained branch only type-checks — safe on
+-- the plain-check path (activeDictVars mutation is harmless; reset by resetState).
 inferDefaultBodiesIfEnabled : TcEnv -> List Decl -> <Mut> Unit
-inferDefaultBodiesIfEnabled env prog
-  | implInferEnabled.value = inferDefaultBodies env prog
-  | otherwise = ()
+inferDefaultBodiesIfEnabled env prog = inferDefaultBodies env prog
 
 inferDefaultBodies : TcEnv -> List Decl -> <Mut> Unit
 inferDefaultBodies _ [] = ()
@@ -3815,23 +3821,51 @@ inferDefaultMethods env (m :: rest) =
   let _ = inferDefaultMethod env m
   inferDefaultMethods env rest
 
--- a method with both a method-level constraint AND a default body: instantiate its
--- scheme, register each constraint var (mapped through the subst) → its
--- `$dict_<method>_<slot>` param, then infer the default body against the
--- instantiated method type so the in-body `empty` (etc.) unifies to the registered
--- var and resolveSites routes it RDict.  Methods with no method-level constraint or
--- no default are skipped.  Mirrors lib/typecheck.ml's default-body loop (Phase 69.x-e).
+-- C8b: type-check ALL interface default bodies, unconditionally.
+--
+-- Constrained arm (Some ids): method has method-level constraints (e.g. foldMap : Monoid m =>):
+--   Instantiate scheme, register constraint vars → dict param names (for dict-passing
+--   emit path), infer body, unify.  Mirrors lib/typecheck.ml:3132-3142 + 3143-3150.
+--
+-- Unconstrained arm (None): method has no method-level constraints (e.g. Ord.lt, Foldable.length):
+--   Instantiate scheme, infer body, unify — same but no dict registration.
+--   This was the missing branch: the oracle checks these unconditionally
+--   (lib/typecheck.ml:3122-3160 iterates ALL methods with a default body);
+--   selfhost previously skipped them via `None => ()`.
+--
+-- Double-error guard (both arms): the oracle raises on first error, so a mismatch
+-- inside the body (e.g. a bad annotation) never reaches the outer unify.  The
+-- selfhost accumulates, so the body's inner error AND the outer unify both fire,
+-- producing duplicates.  Fix: snapshot typeErrors length before body inference;
+-- skip the outer unify if new errors were added (matches oracle single-error).
+--
+-- Methods without a default body (third pattern arm) are skipped by both oracle and selfhost.
 inferDefaultMethod : TcEnv -> IfaceMethod -> <Mut> Unit
 inferDefaultMethod env (IfaceMethod mname _ (Some (MethodDefault pats body))) = match lookupVar env mname
   None => ()
   Some scheme => match lookupAssocSL2 mname methodConstraintsRef.value
-    None => ()
     Some ids =>
       let _ = set_ref currentFn ""
       let inst = instantiateTracked scheme
-      let _ = unify (fst inst) (inferClauses env [(pats, body)])
+      let _ = inferDefaultMethodBody env (fst inst) pats body
       registerMethodDictSlots mname 0 ids (snd inst)
+    None =>
+      let _ = set_ref currentFn ""
+      let inst = instantiateTracked scheme
+      inferDefaultMethodBody env (fst inst) pats body
 inferDefaultMethod _ _ = ()
+
+-- Infer a default method body against [expectedTy], suppressing the outer
+-- unify if the body itself already pushed a type error (prevents duplicates
+-- that would arise when the accumulating selfhost differs from the oracle's
+-- raise-on-first behaviour: oracle's TypeMismatch from inside `infer` never
+-- reaches the outer `unify`, whereas selfhost would report both).
+inferDefaultMethodBody : TcEnv -> Mono -> List Pat -> Expr -> <Mut> Unit
+inferDefaultMethodBody env expectedTy pats body =
+  let errsBefore = lengthL typeErrors.value
+  let actualTy = inferClauses env [(pats, body)]
+  let errsAfter = lengthL typeErrors.value
+  if errsAfter == errsBefore then unify expectedTy actualTy else ()
 
 -- ── Error-path B4: missing-impl dispatch-obligation check ──────────────────
 -- Mirror lib/typecheck.ml's check_method_usages (the `No impl of … for …` reject,
