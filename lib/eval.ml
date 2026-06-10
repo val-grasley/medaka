@@ -1500,6 +1500,23 @@ let primitives : (string * value) list =
        with End_of_file -> VCon ("None", []))));
     (* Read all of stdin to a single string. *)
     ("readAll", VPrim (fun _ -> VString (In_channel.input_all stdin)));
+    (* Read exactly N bytes from stdin; Some s or None at EOF / short read. *)
+    ("readExactly", VPrim (fun v ->
+      let n = match v with VInt n -> n | _ -> raise (Eval_error ("readExactly: expected Int", None)) in
+      if n <= 0 then VCon ("Some", [VString ""])
+      else
+        let buf = Bytes.create n in
+        let rec loop pos =
+          if pos >= n then pos
+          else
+            let got = input stdin buf pos (n - pos) in
+            if got = 0 then pos
+            else loop (pos + got)
+        in
+        let filled = loop 0 in
+        if filled = 0 then VCon ("None", [])
+        else if filled = n then VCon ("Some", [VString (Bytes.sub_string buf 0 n)])
+        else VCon ("None", [])));
     (* Wall-clock time in seconds (gettimeofday; monotonic-ish).  Used by the
        self-hosted perf driver to bracket each pipeline stage. *)
     ("wallTimeSec", VPrim (fun _ -> VFloat (Unix.gettimeofday ())));

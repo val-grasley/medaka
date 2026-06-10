@@ -1313,7 +1313,7 @@ emitEnvExtern _ _ name _ = gapE ("unsupported env extern " ++ name)
 isFileExtern : String -> Bool
 isFileExtern name = containsStr name
   ["readFile", "writeFile", "appendFile", "fileExists", "listDir",
-   "readLine", "readLineOpt", "readAll", "makeDir", "runCommand"]
+   "readLine", "readLineOpt", "readAll", "readExactly", "makeDir", "runCommand"]
 
 emitFileExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitFileExtern e env "readFile" args = match emitArgs e env args
@@ -1364,6 +1364,12 @@ emitFileExtern e env "readAll" args = match emitArgs e env args
     let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_all(i64 " ++ u ++ ")")
     (r, LTStr)
   _ => panic "llvm spike: readAll takes one (Unit) argument (slice 13)"
+emitFileExtern e env "readExactly" args = match emitArgs e env args
+  [n] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_read_exactly(i64 " ++ n ++ ")")
+    (r, LTCon)
+  _ => panic "llvm spike: readExactly takes one (Int) argument"
 emitFileExtern e env "makeDir" args = match emitArgs e env args
   [p] =>
     let r = freshReg e
@@ -5305,6 +5311,7 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_read_line(i64)"
   let _ = emit e "declare i64 @mdk_read_line_opt(i64)"
   let _ = emit e "declare i64 @mdk_read_all(i64)"
+  let _ = emit e "declare i64 @mdk_read_exactly(i64)"
   let _ = emit e "declare i64 @mdk_make_dir(i64)"
   let _ = emit e "declare i64 @mdk_run_command(i64, i64)"
   let _ = emit e "declare void @mdk_set_seed(i64)"

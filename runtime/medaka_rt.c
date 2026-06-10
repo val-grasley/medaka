@@ -775,6 +775,22 @@ long long mdk_read_line_opt(long long u) {
   long long r = mdk_some(mdk_str_lit(line, (long long)n)); free(line); return r;
 }
 
+/* readExactly : Int -> Option String — read exactly N bytes; None at EOF or short read. */
+long long mdk_read_exactly(long long n_tagged) {
+  long long n = n_tagged >> 1;  /* untag Int */
+  if (n <= 0) return mdk_some(mdk_str_lit("", 0));
+  char *buf = (char *)malloc((size_t)n);
+  size_t total = 0;
+  while (total < (size_t)n) {
+    size_t got = fread(buf + total, 1, (size_t)n - total, stdin);
+    if (got == 0) break;
+    total += got;
+  }
+  if (total == 0) { free(buf); return mdk_none(); }
+  if ((long long)total < n) { free(buf); return mdk_none(); }
+  long long r = mdk_some(mdk_str_lit(buf, (long long)total)); free(buf); return r;
+}
+
 /* readAll : Unit -> String — all of stdin. */
 long long mdk_read_all(long long u) {
   (void)u;
