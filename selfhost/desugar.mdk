@@ -323,8 +323,132 @@ deriveForData name params variants "Ord" =
   Some (applyDeriveParams name params (deriveOrdData name variants))
 deriveForData _ _ _ _ = None
 
+-- Records derive via dedicated field-access generators (a record's fields are
+-- read by name through EFieldAccess, not pattern-bound positionally like a
+-- data constructor), mirroring lib/desugar.ml's derive_*_record family.
 deriveForRecord : String -> List String -> List Field -> String -> Option Decl
+deriveForRecord name params fields "Eq" =
+  Some (applyDeriveParams name params (deriveEqRecord name fields))
+deriveForRecord name params fields "Ord" =
+  Some (applyDeriveParams name params (deriveOrdRecord name fields))
+deriveForRecord name params fields "Debug" =
+  Some (applyDeriveParams name params (deriveShowRecord "Debug" "debug" name fields))
+deriveForRecord name params fields "Display" =
+  Some (applyDeriveParams name params (deriveShowRecord "Display" "display" name fields))
+deriveForRecord name params fields "Generic" =
+  Some (applyDeriveParams name params (deriveGenericRecord name fields))
 deriveForRecord _ _ _ _ = None
+
+fieldName : Field -> String
+fieldName (Field n _) = n
+
+-- Eq: AND-fold `eq __a.f __b.f` over the declared fields (True if none).
+deriveEqRecord : String -> List Field -> Decl
+deriveEqRecord name fields = DImpl {
+  pub = True,
+  def = False,
+  iface = "Eq",
+  tys = [TyCon name],
+  name = None,
+  reqs = [],
+  methods = [
+    ImplMethod "eq" [
+      PVar "__a",
+      PVar "__b"
+    ] (andAll (map eqFieldCall fields))
+  ]
+}
+
+eqFieldCall : Field -> Expr
+eqFieldCall f =
+  let n = fieldName f
+  EApp (EApp (EVar "eq") (EFieldAccess (EVar "__a") n)) (EFieldAccess (EVar "__b") n)
+
+-- Ord: lexicographic compare over the declared fields in order.
+deriveOrdRecord : String -> List Field -> Decl
+deriveOrdRecord name fields = DImpl {
+  pub = True,
+  def = False,
+  iface = "Ord",
+  tys = [TyCon name],
+  name = None,
+  reqs = [],
+  methods = [
+    ImplMethod "compare" [
+      PVar "__a",
+      PVar "__b"
+    ] (lexCompareExprs (map ordFieldPair fields))
+  ]
+}
+
+ordFieldPair : Field -> (Expr, Expr)
+ordFieldPair f =
+  let n = fieldName f
+  (EFieldAccess (EVar "__a") n, EFieldAccess (EVar "__b") n)
+
+-- Debug/Display: `"Name {" ++ " f = " ++ <call> __r.f ++ ", g = " ++ … ++ " }"`.
+-- The first field is prefixed " ", later fields ", " (lib/desugar.ml).
+deriveShowRecord : String -> String -> String -> List Field -> Decl
+deriveShowRecord iface callName name fields = DImpl {
+  pub = True,
+  def = False,
+  iface = iface,
+  tys = [TyCon name],
+  name = None,
+  reqs = [],
+  methods = [
+    ImplMethod callName [
+      PVar "__r"
+    ] (concatStrings (showRecordParts callName name fields))
+  ]
+}
+
+showRecordParts : String -> String -> List Field -> List Expr
+showRecordParts callName name fields =
+  ELit (LString (name ++ " {"))
+    :: showRecordFields callName 0 fields
+    ++ [ELit (LString " }")]
+
+showRecordFields : String -> Int -> List Field -> List Expr
+showRecordFields _ _ [] = []
+showRecordFields callName i (f::fs) = showRecordField callName i f
+  ++ showRecordFields callName (i + 1) fs
+
+showRecordField : String -> Int -> Field -> List Expr
+showRecordField callName i f =
+  let n = fieldName f
+  [
+    ELit (LString (recordFieldPrefix i ++ n ++ " = ")),
+    EApp (EVar callName) (EFieldAccess (EVar "__r") n)
+  ]
+
+recordFieldPrefix : Int -> String
+recordFieldPrefix 0 = " "
+recordFieldPrefix _ = ", "
+
+-- Generic: `RRecord "Name" [RField { fld_name = "f", fld_rep = to_rep __r.f }, …]`.
+deriveGenericRecord : String -> List Field -> Decl
+deriveGenericRecord name fields = DImpl {
+  pub = True,
+  def = False,
+  iface = "Generic",
+  tys = [TyCon name],
+  name = None,
+  reqs = [],
+  methods = [
+    ImplMethod "to_rep" [
+      PVar "__r"
+    ] (EApp (EApp (EVar "RRecord") (ELit (LString name))) (EListLit (map genericRField fields)))
+  ]
+}
+
+genericRField : Field -> Expr
+genericRField f =
+  let n = fieldName f
+  ERecordCreate "RField" [
+    FieldAssign "fld_name" (ELit (LString n)),
+    FieldAssign "fld_rep" (EApp (EVar "to_rep") (EFieldAccess (EVar "__r") n))
+  ]
 
 -- A newtype is structurally a single-constructor, single-field data type, so the
 -- data derivers produce the right tagged rendering via a synthetic variant.

@@ -317,9 +317,15 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   ctor-tag fallback. Added the one arm mirroring `lib/desugar.ml:574`
 >   (`deriveOrdData` generator already existed, wired only into newtype); `compare Red Blue` =
 >   `Lt` and `Red < Blue` = `True` selfhost == oracle, nullary + payload. Fixpoint untouched.
->   Fixtures `test/{diff_fixtures,eval_dict_fixtures}/adt_deriving_ord.{mdk,golden}`. **Follow-up:**
->   `deriveForRecord` is still a full stub — records derive NO interfaces.) Full record:
->   CONSTRUCT-COVERAGE §Gap G.
+>   Fixtures `test/{diff_fixtures,eval_dict_fixtures}/adt_deriving_ord.{mdk,golden}`. **Follow-up
+>   CLOSED 2026-06-10:** `deriveForRecord` was a full stub — records derived NO interfaces.
+>   Added `Eq`/`Ord`/`Debug`/`Display`/`Generic` arms (dedicated field-access generators
+>   mirroring `lib/desugar.ml`'s `derive_*_record` family — records read fields by name via
+>   `EFieldAccess`, not positional ctor patterns, so they do NOT reuse the data derivers).
+>   `Point { x:Int, y:Int } deriving (Eq, Ord, Debug)`: `==`/`compare`/`debug` selfhost == oracle,
+>   byte-identical desugar dump. Fixtures `test/diff_fixtures/record_deriving.{mdk,golden}` +
+>   `test/eval_dict_fixtures/record_deriving_ord.mdk` (typed-path `<` dispatch). Fixpoint
+>   untouched — no `selfhost/*.mdk` record derives.)
 >
 > **Bar-item-2 (port tests to `medaka test`) — STARTED:** `test/ported/test_run_ported.mdk`
 > = 40/46 `test_run.ml` cases → 96 assertions, all green + deterministic, no source

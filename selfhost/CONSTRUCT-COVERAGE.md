@@ -635,9 +635,15 @@ mirroring the OCaml oracle (`lib/desugar.ml:574`). Now `compare Red Blue` = `Lt`
 operator rewrite (Gap-G) now routes `<` to the *correct* derived compare. Fixtures:
 `test/diff_fixtures/adt_deriving_ord.mdk` (compare-only, untyped-safe; in the eval_run/golden
 corpus) + `test/eval_dict_fixtures/adt_deriving_ord.mdk` (adds `<`, typed/dict path). Self-compile
-fixpoint untouched — no `selfhost/*.mdk` derives `Ord` on a `data` type. **Follow-up still open:**
-`deriveForRecord` is a full stub (`deriveForRecord _ _ _ _ = None`) — records derive NO
-interfaces (Eq/Ord/Debug); separate task.
+fixpoint untouched — no `selfhost/*.mdk` derives `Ord` on a `data` type. **Follow-up CLOSED
+2026-06-10:** `deriveForRecord` was a full stub (`deriveForRecord _ _ _ _ = None`) — records
+derived NO interfaces. Added `Eq`/`Ord`/`Debug`/`Display`/`Generic` arms via dedicated
+field-access generators (`deriveEqRecord`/`deriveOrdRecord`/`deriveShowRecord`/
+`deriveGenericRecord`) mirroring `lib/desugar.ml`'s `derive_*_record` family — a record reads
+its fields by name through `EFieldAccess` (NOT positional ctor patterns), so records do NOT
+reuse the data derivers. `record Point { x:Int, y:Int } deriving (Eq, Ord, Debug)`:
+`==`/`compare`/`debug` byte-identical selfhost == oracle (incl. typed-path `<` dispatch).
+Fixtures `test/diff_fixtures/record_deriving.{mdk,golden}` + `test/eval_dict_fixtures/record_deriving_ord.mdk`.
 
 ---
 
