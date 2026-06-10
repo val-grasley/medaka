@@ -30,6 +30,12 @@ extern e : Float
 extern readLine : Unit -> <IO> String
 extern readFile : String -> <IO> Result String String
 extern writeFile : String -> String -> <IO> Result String Unit
+-- Run a subprocess: prog args -> Ok (exitCode, stdout, stderr) | Err osError.
+-- Return type: Result String (Int, String, String) (Result e a: e=error, a=ok).
+-- stdout and stderr are captured as strings.  On spawn failure (e.g. ENOENT)
+-- returns Err with the OS error message; exit-code non-zero is still Ok.
+-- Used by a Medaka-hosted medaka build to invoke clang and the emitter.
+extern runCommand : String -> List String -> <IO> Result String (Int, String, String)
 extern exit : Int -> <Panic> Unit
 extern panic : String -> a
 

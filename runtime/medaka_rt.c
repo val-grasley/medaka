@@ -44,6 +44,7 @@
 #include <string.h>
 #include <stdnoreturn.h>
 #include <unistd.h>
+#include <sys/wait.h>
 #include <gc.h>
 
 /* Initialize Boehm once before main().  The emitted IR owns `main`, so we can't
@@ -645,6 +646,105 @@ long long mdk_list_dir(long long path) {
   }
   closedir(d);
   return mdk_ok(acc);
+}
+
+/* runCommand : String -> List String -> Result (Int, String, String) String.
+ * Spawns prog with args, captures stdout+stderr via temp files.
+ * Ok (exitCode, stdout, stderr) on spawn success; Err osError on fork/exec fail.
+ * Tuple cell layout: [header=TUPLE_TAG, tagged_exitcode, stdout_str, stderr_str].
+ * TUPLE_TAG = hashName("$tuple") = djb2 of "$tuple" = 6950939912435. */
+#define MDK_TUPLE_TAG 6950939912435LL
+
+static long long mdk_read_temp(const char *path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) return mdk_str_cstr("");
+  fseek(f, 0, SEEK_END); long n = ftell(f); fseek(f, 0, SEEK_SET);
+  char *buf = (char *)mdk_alloc((size_t)(n + 1));
+  size_t got = fread(buf, 1, (size_t)n, f); fclose(f);
+  return mdk_str_lit(buf, (long long)got);
+}
+
+/* Convert a Medaka List String (linked Cons/Nil cells) into a NULL-terminated
+ * C argv array.  The first slot is reserved for prog (filled by caller). */
+static char **mdk_list_to_argv(long long list, int *argc_out) {
+  /* Count elements first. */
+  int n = 0; long long cur = list;
+  while (!(cur & 1)) {  /* not an immediate (Nil is immediate) */
+    long long tag = ((long long *)cur)[0];
+    if (tag == MDK_TAG_CONS) { n++; cur = ((long long *)cur)[2]; } else break;
+  }
+  /* Allocate argv: prog + n args + NULL. */
+  char **argv = (char **)malloc((size_t)(n + 2) * sizeof(char *));
+  argv[0] = NULL; /* filled by caller */
+  cur = list;
+  for (int i = 0; i < n; i++) {
+    long long cell = (long long)cur;
+    long long str  = ((long long *)cell)[1];
+    argv[i + 1] = (char *)str + 24;  /* UTF-8 bytes start at offset 24 */
+    cur = ((long long *)cell)[2];
+  }
+  argv[n + 1] = NULL;
+  if (argc_out) *argc_out = n + 1;
+  return argv;
+}
+
+long long mdk_run_command(long long prog_w, long long args_w) {
+  const char *prog = (const char *)prog_w + 24;
+  /* Build argv: prog followed by the Medaka List String args. */
+  int argc = 0;
+  char **argv = mdk_list_to_argv(args_w, &argc);
+  argv[0] = (char *)prog;
+
+  /* Temp files for captured stdout/stderr. */
+  char out_path[] = "/tmp/mdk_cmd_out_XXXXXX";
+  char err_path[] = "/tmp/mdk_cmd_err_XXXXXX";
+  int out_fd = mkstemp(out_path);
+  int err_fd = mkstemp(err_path);
+  if (out_fd < 0 || err_fd < 0) {
+    free(argv);
+    if (out_fd >= 0) { close(out_fd); unlink(out_path); }
+    if (err_fd >= 0) { close(err_fd); unlink(err_path); }
+    return mdk_err(mdk_str_cstr("mkstemp failed"));
+  }
+
+  pid_t pid = fork();
+  if (pid < 0) {
+    /* fork failed */
+    close(out_fd); close(err_fd);
+    unlink(out_path); unlink(err_path);
+    free(argv);
+    return mdk_err(mdk_str_cstr(strerror(errno)));
+  }
+  if (pid == 0) {
+    /* child: redirect stdout/stderr then exec */
+    dup2(out_fd, STDOUT_FILENO);
+    dup2(err_fd, STDERR_FILENO);
+    close(out_fd); close(err_fd);
+    execvp(prog, argv);
+    /* exec failed — write errno message to stderr (already dup'd) and exit */
+    const char *msg = strerror(errno);
+    write(STDERR_FILENO, msg, strlen(msg));
+    _exit(127);
+  }
+  /* parent: wait for child */
+  close(out_fd); close(err_fd);
+  free(argv);
+  int wstatus = 0;
+  waitpid(pid, &wstatus, 0);
+  int code = WIFEXITED(wstatus)   ? WEXITSTATUS(wstatus)
+           : WIFSIGNALED(wstatus) ? 128 + WTERMSIG(wstatus) : 1;
+
+  long long stdout_s = mdk_read_temp(out_path);
+  long long stderr_s = mdk_read_temp(err_path);
+  unlink(out_path); unlink(err_path);
+
+  /* Box the 3-tuple (exitCode, stdout, stderr). */
+  long long *tup = (long long *)mdk_alloc(4 * 8);
+  tup[0] = MDK_TUPLE_TAG;
+  tup[1] = ((long long)code << 1) | 1;  /* tagged int */
+  tup[2] = stdout_s;
+  tup[3] = stderr_s;
+  return mdk_ok((long long)tup);
 }
 
 /* stdin readers — implemented, NOT fixtured (gate doesn't pipe stdin). */

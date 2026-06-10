@@ -1037,6 +1037,24 @@ main =
 |}
   "True\nTrue\nFalse\nTrue\n"
 
+let t_run_command = assert_output
+  {|main =
+  match runCommand "echo" ["hello"]
+    Ok (code, out, err) =>
+      println (intToString code)
+      println out
+    Err msg => println ("error: " ++ msg)
+|}
+  "0\nhello\n\n"
+
+let t_run_command_fail = assert_output
+  {|main =
+  match runCommand "/no/such/binary/xyz" []
+    Ok (code, out, err) => println (intToString code)
+    Err msg => println "spawn-error"
+|}
+  "spawn-error\n"
+
 let () = Alcotest.run "Run"
   [("run", [
     "point-free prelude toList (Phase 121)", `Quick, t_pointfree_prelude_tolist;
@@ -1093,4 +1111,6 @@ let () = Alcotest.run "Run"
     "string bracket index oob", `Quick, t_string_bracket_index_oob;
     "prelude fn shadow",    `Quick, t_prelude_fn_shadow;
     "prelude method shadow", `Quick, t_prelude_method_shadow;
+    "runCommand: subprocess exec + capture", `Quick, t_run_command;
+    "runCommand: spawn failure", `Quick, t_run_command_fail;
   ])]

@@ -1389,6 +1389,56 @@ let primitives : (string * value) list =
              VCon ("Ok", [VUnit])
            with Sys_error msg -> VCon ("Err", [VString msg]))
         | _ -> raise (Eval_error ("writeFile: expected String String", None)))));
+    (* runCommand prog args: spawn a subprocess, capture stdout+stderr.
+       Returns Ok (exitCode, stdout, stderr) on spawn success (any exit code),
+       or Err osError if the process could not be created. *)
+    ("runCommand", VPrim (fun prog_v ->
+      VPrim (fun args_v ->
+        match prog_v with
+        | VString prog ->
+          let rec list_to_strings = function
+            | VList vs -> List.map (function VString s -> s | _ -> "") vs
+            | VCon ("Cons", [VString h; tl]) -> h :: list_to_strings tl
+            | VCon ("Nil", []) -> []
+            | _ -> []
+          in
+          let str_args = list_to_strings args_v in
+          let argv = Array.of_list (prog :: str_args) in
+          let out_path = Filename.temp_file "mdk_cmd_out_" "" in
+          let err_path = Filename.temp_file "mdk_cmd_err_" "" in
+          let cleanup () =
+            (try Sys.remove out_path with _ -> ());
+            (try Sys.remove err_path with _ -> ())
+          in
+          (try
+            let out_fd = Unix.openfile out_path
+              [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o600 in
+            let err_fd = Unix.openfile err_path
+              [ Unix.O_WRONLY; Unix.O_CREAT; Unix.O_TRUNC ] 0o600 in
+            let pid = Unix.create_process prog argv Unix.stdin out_fd err_fd in
+            Unix.close out_fd;
+            Unix.close err_fd;
+            let (_, status) = Unix.waitpid [] pid in
+            let exit_code = match status with
+              | Unix.WEXITED c  -> c
+              | Unix.WSIGNALED s -> 128 + s
+              | Unix.WSTOPPED  s -> 128 + s
+            in
+            let read_temp p =
+              try
+                let ic = open_in_bin p in
+                let s = really_input_string ic (in_channel_length ic) in
+                close_in ic; s
+              with _ -> ""
+            in
+            let stdout_s = read_temp out_path in
+            let stderr_s = read_temp err_path in
+            cleanup ();
+            VCon ("Ok", [VTuple [VInt exit_code; VString stdout_s; VString stderr_s]])
+           with Unix.Unix_error (e, _, _) ->
+             cleanup ();
+             VCon ("Err", [VString (Unix.error_message e)]))
+        | _ -> raise (Eval_error ("runCommand: expected String", None)))));
     ("exit", VPrim (fun code ->
       match code with
       | VInt n -> Stdlib.exit n
