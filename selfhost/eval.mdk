@@ -757,9 +757,17 @@ eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
 eval env (EVarAt x addr) = if startsWithAt x then VUnit else lookupAtAddr env x addr
 eval env (EMethodAt name routeRef implRef methodRef) =
   let (narrowed, fwdReqs) = methodAtNarrow env (lookupEnv env name) routeRef.value
-  let v1 = applyDicts env narrowed methodRef.value
-  let v2 = applyDicts env v1 implRef.value
-  applyValues v2 fwdReqs
+  -- Mirror lib/eval.ml:869-873 (Phase 103): only fold method-/impl-dicts and
+  -- forwarded requires onto a value still awaiting application. A terminal
+  -- nullary return-position impl body (`def = []`, stripped to a bare value by
+  -- stripResolved) takes no dict params — dict_pass's usesImplDict gate adds none
+  -- — so applying the route's dicts would over-apply to a constructor/scalar
+  -- ("applied non-function"). Drop them when the narrowed value awaits no args.
+  if awaitsArgs narrowed then
+    let v1 = applyDicts env narrowed methodRef.value
+    let v2 = applyDicts env v1 implRef.value
+    applyValues v2 fwdReqs
+  else narrowed
 eval env (EDictAt name routesRef) =
   applyDicts env (lookupEnv env name) routesRef.value
 eval env (EApp f x) = apply (eval env f) (eval env x)
