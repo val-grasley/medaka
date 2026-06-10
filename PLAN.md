@@ -182,8 +182,14 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   `let … in` as an indented clause body (oracle accepts). Moved to the canonical
   [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) list; verified repro
   there.
-- **S3** — no coherence checking (overlap/duplicate/orphan impls); port
-  `impls_overlap` + duplicate rejection. STATIC; explicit retirement-gate item.
+- **S3** — ✅ **CLOSED (`6140e0a`).** Ported `check_coherence` (Phase 68) into
+  selfhost as `checkCoherence` — overlap rule mirrors `impls_overlap` byte-for-byte
+  (wildcard unify with resolve-before-bind; `default` dup → `Multiple default impls`,
+  anonymous non-default non-specialization overlap → `Overlapping impls`; named /
+  strict-specialization accepted). Runs over USER decls only (prelude excluded → no
+  over-rejection). 3 fixtures; all gates green incl. native fixpoint. **Deferred:**
+  most-specific-wins dispatch (no corpus needs it) + orphan rejection (separate
+  multi-module `check_orphans`, unrelated to first-impl-wins soundness).
 - **OH1** (oracle-side, surfaced during S2) — combined method-level constraint +
   impl-`requires` + terminal body panics on the **OCaml oracle itself**
   (`unbound identifier: $dict_base_0`). A `lib/` dict-passing hole, no correct
@@ -196,6 +202,16 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 (tokens/AST/Core-IR/types). Belt-and-suspenders; neither depends on `lib/`.
 
 **Near-term sequence (front-loaded order, decided 2026-06-09):**
+
+> **Overnight autonomous run (2026-06-09 22:xx → 07:00 PDT):** working the audit
+> queue unattended. Done: S1, S2, T1, T1b, T2, S3. **L1 deferred** (E4-gated — fix
+> with the E4 work). **L2 deferred for the unattended run** (latent + arg-tag-masked;
+> the full fix touches the fragile route-keying area + the interim typecheck error
+> risks over-rejection — wants careful attention near E4, not unattended). Proceeding
+> to the **C-series** (real correctness divergences, cleaner oracle-mirrors), then
+> the D-series, then broader Stage-3 roadmap. Skipping only genuine language-design
+> items.
+
 
 1. ✅ **`medaka build` CLI — DONE (MVP, 2026-06-09, `39f3318`).** `medaka build
    foo.mdk [-o out]` emits IR via the self-hosted emitter → `clang` → native
