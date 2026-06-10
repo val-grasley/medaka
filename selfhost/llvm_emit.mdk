@@ -2242,11 +2242,61 @@ emitMethodDispatch e env name d argOps =
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "dispend" ++ intToString (freshId e)
-  let _ = emitDispatchChain e dictPtr headTag impls name argOps slot endL
+  -- GAP 2 phase-b: a method with NO tagged impl but a CImplDefault (a pure
+  -- interface default like `max`/`min` over `Ord`) reaches an RDict site
+  -- generically (`maximum [..]` keeps `Ord a`).  An empty impl chain emits only
+  -- `unreachable`, so the dispatched body blanks.  Synthesize a per-tag default
+  -- (the E19 machinery) for every tag the interface's dict can carry: the chain
+  -- switches the dict's head tag and calls `@mdk_default_<method>_<tag>`, whose
+  -- inner same-interface `compare` is restamped to that concrete `RKey tag` (so
+  -- it stays a direct call, never the unsound arg-tag site of emitDefaultArgTag).
+  let _ = match impls
+    [] => match defaultFor e name
+            Some entry => emitDefaultDispatchChain e dictPtr headTag (ifaceTags e (methodIfaceOf name)) name entry argOps slot endL
+            None => emitDispatchChain e dictPtr headTag impls name argOps slot endL
+    _ => emitDispatchChain e dictPtr headTag impls name argOps slot endL
   let _ = emit e (endL ++ ":")
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
   (r, LTInt)
+
+-- GAP 2 phase-b: the distinct type-head tags an `iface`'s dict can carry — every
+-- tagged impl entry whose interface equals `iface`, deduped.  These are exactly
+-- the runtime element tags a generic `iface a` dict-word may hold, so the default
+-- dispatch chain enumerates one default-synthesis arm per tag.
+ifaceTags : Emit -> String -> <Mut> List String
+ifaceTags e iface = dedupS (ifaceTagsGo iface (implEntriesOf e))
+
+ifaceTagsGo : String -> List CImplEntry -> List String
+ifaceTagsGo _ [] = []
+ifaceTagsGo iface ((CImplEntry _ _ (CImplTagged tag ifc _ _ _))::rest)
+  | ifc == iface = tag :: ifaceTagsGo iface rest
+  | otherwise = ifaceTagsGo iface rest
+ifaceTagsGo iface (_::rest) = ifaceTagsGo iface rest
+
+-- GAP 2 phase-b: emit the default-synthesis dispatch chain.  For each `tag` the
+-- interface's dict may carry, test the dict head tag and on a match synthesize +
+-- call `@mdk_default_<method>_<tag>` (ensureDefaultEmitted restamps its inner
+-- same-interface calls to `RKey tag`, keeping `compare` a concrete direct call —
+-- the unsoundness trap is avoided precisely because the tag is concrete here).
+-- An exhausted chain is `unreachable` (the dict names a real interface impl).
+emitDefaultDispatchChain : Emit -> String -> String -> List String -> String -> CImplEntry -> List String -> String -> String -> <Mut> Unit
+emitDefaultDispatchChain e _ _ [] _ _ _ _ _ = emit e "  unreachable"
+emitDefaultDispatchChain e dictPtr headTag (tag::rest) name entry argOps slot endL =
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ headTag ++ ", " ++ intToString (hashName tag))
+  let n = intToString (freshId e)
+  let yes = "ddispyes" ++ n
+  let next = "ddispnext" ++ n
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
+  let _ = emit e (yes ++ ":")
+  let fname = defaultFnName tag name
+  let _ = ensureDefaultEmitted e fname tag name entry
+  let (rv, _) = emitImplCall e fname argOps LTInt
+  let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
+  let _ = emit e ("  br label %" ++ endL)
+  let _ = emit e (next ++ ":")
+  emitDefaultDispatchChain e dictPtr headTag rest name entry argOps slot endL
 
 -- the count of leading element-dict params a matched impl's lifted fn expects: its
 -- full clause arity (number of patterns) minus the method's interface arity.  This

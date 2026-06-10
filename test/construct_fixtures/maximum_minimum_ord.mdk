@@ -1,0 +1,15 @@
+-- GAP 2 phase-b: `maximum`/`minimum` are Foldable folds over the `Ord` interface
+-- DEFAULTS `max`/`min` (no tagged impl — pure interface defaults reducing to
+-- `compare`).  At a generic `Ord a` site they dispatch via RDict; the native
+-- emitter synthesizes a per-element-tag default body (`@mdk_default_max_<tag>`)
+-- whose inner `compare` is RKey-restamped to the concrete tag.  Covers Int, Float,
+-- and String element types (three distinct primitive Ord tags through one dict).
+main : <IO> Unit
+main =
+  let mi = maximum [3, 1, 4, 1, 5, 9, 2, 6]
+  let ni = minimum [3, 1, 4, 1, 5, 9, 2, 6]
+  let mf = maximum [3.5, 1.2, 9.9, 2.0]
+  let nf = minimum [3.5, 1.2, 9.9, 2.0]
+  let ms = maximum ["pear", "apple", "zed"]
+  let ns = minimum ["pear", "apple", "zed"]
+  println (debug mi ++ " " ++ debug ni ++ " " ++ debug mf ++ " " ++ debug nf ++ " " ++ debug ms ++ " " ++ debug ns)

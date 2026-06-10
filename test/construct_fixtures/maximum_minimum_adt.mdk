@@ -1,0 +1,24 @@
+-- GAP 2 phase-b: `maximum`/`minimum` over a DERIVED-Ord ADT element type.  The
+-- generic `Ord a` dict carries the user type's tag at runtime; the native default
+-- dispatch chain (emitDefaultDispatchChain) tests that tag and calls
+-- `@mdk_default_max_Color` / `@mdk_default_min_Color`, whose inner `compare` is
+-- restamped to `RKey Color` (the derived structural-Ord impl).  Confirms the
+-- synthesis is not Int-only — any tag with an Ord impl flows through the chain.
+data Color = Red | Green | Blue deriving (Eq, Ord, Debug)
+
+colorRank : Color -> Int
+colorRank c = match c
+  Red => 0
+  Green => 1
+  Blue => 2
+
+rankOf : Option Color -> Int
+rankOf m = match m
+  Some c => colorRank c
+  None => -1
+
+main : <IO> Unit
+main =
+  let hi = rankOf (maximum [Red, Blue, Green])
+  let lo = rankOf (minimum [Red, Blue, Green])
+  println (debug hi ++ " " ++ debug lo)
