@@ -192,6 +192,12 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   `inferAnnot`'s unify, requires the annotation's tyvars to stay distinct unbound
   (flags grounding + collapse via `sigTvarIds`/`hasDupI`); message byte-identical
   to oracle; `EHeadAnnot` exempt by construction. Fixture + all gates green.
+- **C2** — ✅ **CLOSED (`d8d7ac6`).** Ported Phase 72 `field_owners` multimap +
+  receiver-directed field resolution into `typecheck.mdk` (`fieldOwnerNames`/
+  `resolveFieldRecord`): receiver head known → that owner; undetermined + multi-owner
+  → `AmbiguousField`; unknown → clean type error (not panic). Messages byte-identical;
+  fixtures + all gates green. (Unpinned sig-typed-param `getA a = a.x` still ambiguous
+  until **C1**/Phase 73 lands — then receiver-directs for free.)
 - **S3** — ✅ **CLOSED (`6140e0a`).** Ported `check_coherence` (Phase 68) into
   selfhost as `checkCoherence` — overlap rule mirrors `impls_overlap` byte-for-byte
   (wildcard unify with resolve-before-bind; `default` dup → `Multiple default impls`,
@@ -214,7 +220,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 **Near-term sequence (front-loaded order, decided 2026-06-09):**
 
 > **Overnight autonomous run (2026-06-09 22:xx → 07:00 PDT):** working the audit
-> queue unattended. Done: S1, S2, T1, T1b, T2, S3. **L1 deferred** (E4-gated — fix
+> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2. **L1 deferred** (E4-gated — fix
 > with the E4 work). **L2 deferred for the unattended run** (latent + arg-tag-masked;
 > the full fix touches the fragile route-keying area + the interim typecheck error
 > risks over-rejection — wants careful attention near E4, not unattended). Proceeding
