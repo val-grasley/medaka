@@ -820,3 +820,25 @@ untouched; zero golden churn (existing Float fixtures have literal anchors; the 
 fixpoint held byte-for-byte through every fix). Fixtures: `float_annot_nolit.mdk` (E1),
 `adt_float_ctor_arith.mdk` (E2), `lambda_float_param.mdk` (E3).
 
+### Gap C — RE-DIAGNOSED 2026-06-10 (shrunk 8→4; mostly folds into the elaborateModules layer)
+- **C6/C7/C8 = NOT gaps (doc false-positives):** the fixtures omitted `import array`
+  (the `Debug (Array a)`/`Foldable Array` impls are in `stdlib/array.mdk:446,496`, not
+  `core.mdk`) — the ORACLE fails identically. With `import array`, native == oracle
+  (`[|1, 2, 3|]`, `3`, `[|20, 30|]`). Action: fix the fixtures / drop these rows.
+- **C4 = Gap E, not Gap C:** post the E1/Fix-C declared-sig seeding, C4 now BUILDS (dict
+  promoted, `double` gets a leading dict param) but emits garbage Float — int-vs-float
+  instruction selection gated by the declared head being typevar `a`. Belongs in Gap E.
+- **Genuine Gap C = 4 sites, 2 mechanisms:**
+  - *Mech 1 — no head tycon → RNone → arg-tag panic* ("owns no constructors"):
+    `headTyconMono` (`typecheck.mdk:3482`) returns `None` for `TTuple`/`TVar`; arg-tag
+    can't inspect a tuple/primitive/typevar (no per-type cell tag). C2/C3-unannotated =
+    **Cause A** (inferred constraint not promoted on the build path). C1/C5b (bare tuple,
+    monomorphic) = **self-contained**: needs tuple-as-a-dispatch-tag (give
+    `headTyconMono (TTuple _)` a `$tuple` head → RKey route to `mdk_impl_tuple_*`).
+  - *Mech 2 — nested element dict dropped (RKey reqs=[]) → SIGSEGV:* C5 (`debug` on
+    `List (Int,Int)`), C2-tuple = **Cause B** (`routeOfMono` empty reqs).
+- **Consolidation:** Cause A + Cause B + C5 + C2-tuple + C2/C3-unannotated ALL gate on the
+  single **`elaborateModules` dict-promotion + implTable-threading layer** — build it once,
+  the whole cluster closes. Only C1/C5b (tuple-as-tag, independent/medium) + C4 (→Gap E)
+  are separate. Interpreter masks all via runtime type tags (`eval.mdk:198`).
+
