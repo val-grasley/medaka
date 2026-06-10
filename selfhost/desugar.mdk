@@ -319,6 +319,8 @@ deriveForData name params variants "Display" =
     (applyDeriveParams name params (deriveShowData "Display" "display" name variants))
 deriveForData name params variants "Generic" =
   Some (applyDeriveParams name params (deriveGenericData name variants))
+deriveForData name params variants "Ord" =
+  Some (applyDeriveParams name params (deriveOrdData name variants))
 deriveForData _ _ _ _ = None
 
 deriveForRecord : String -> List String -> List Field -> String -> Option Decl

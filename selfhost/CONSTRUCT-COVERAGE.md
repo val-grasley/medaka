@@ -622,11 +622,22 @@ cross-module operator dispatch (drives `eval_modules`).
 rewritten `lt` method-app hits the SAME pre-existing slice-7 arg-tag-on-primitive emitter
 gap a direct `lt` call does. This is the Gap-C/D3b class; NOT fixed here (out of scope).
 
-**Out of scope (pre-existing).** A selfhost-vs-oracle divergence on *derived* `Ord`
-`compare`/`lt` (e.g. `compare Red Blue` = `Gt` selfhost vs `Lt` oracle) exists on `main`,
-independent of operators — confirmed by running the *method* form through main's selfhost.
-The A2 rewrite makes the operator agree with the (pre-existingly-divergent) selfhost method
-form, which is the correct Gap-G behavior; the derived-Ord selfhost gap is a separate issue.
+**Out of scope (pre-existing) — NOW FIXED 2026-06-10.** A selfhost-vs-oracle divergence on
+*derived* `Ord` `compare`/`lt` (e.g. `compare Red Blue` = `Gt` selfhost vs `Lt` oracle)
+existed on `main`, independent of operators. **Root cause:** `selfhost/desugar.mdk`'s
+`deriveForData` had no `"Ord"` arm, so derived `Ord` for `data`/record types was silently
+dropped → fell back to the inverted primitive ctor-tag `compare`. The generator
+`deriveOrdData` already existed and was correct (wired only into `deriveForNewtype`). **Fix:**
+added the one missing arm
+`deriveForData name params variants "Ord" = Some (applyDeriveParams name params (deriveOrdData name variants))`,
+mirroring the OCaml oracle (`lib/desugar.ml:574`). Now `compare Red Blue` = `Lt` and
+`Red < Blue` = `True` on selfhost == oracle (nullary AND payload, field-lexicographic). The A2
+operator rewrite (Gap-G) now routes `<` to the *correct* derived compare. Fixtures:
+`test/diff_fixtures/adt_deriving_ord.mdk` (compare-only, untyped-safe; in the eval_run/golden
+corpus) + `test/eval_dict_fixtures/adt_deriving_ord.mdk` (adds `<`, typed/dict path). Self-compile
+fixpoint untouched — no `selfhost/*.mdk` derives `Ord` on a `data` type. **Follow-up still open:**
+`deriveForRecord` is a full stub (`deriveForRecord _ _ _ _ = None`) — records derive NO
+interfaces (Eq/Ord/Debug); separate task.
 
 ---
 

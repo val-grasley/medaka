@@ -312,7 +312,14 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   gap** (Gap-C/D3b class) — the rewritten `lt` method-app hits it exactly as a direct
 >   `lt` call does; NOT fixed here. (A pre-existing, independent selfhost-vs-oracle
 >   divergence on *derived* `Ord` `compare`/`lt` — present on `main`, untouched by this
->   change — is out of scope.) Full record: CONSTRUCT-COVERAGE §Gap G.
+>   change — was **CLOSED 2026-06-10**: `selfhost/desugar.mdk` `deriveForData` was missing
+>   the `"Ord"` arm, so derived `Ord` on `data`/record types was silently dropped → inverted
+>   ctor-tag fallback. Added the one arm mirroring `lib/desugar.ml:574`
+>   (`deriveOrdData` generator already existed, wired only into newtype); `compare Red Blue` =
+>   `Lt` and `Red < Blue` = `True` selfhost == oracle, nullary + payload. Fixpoint untouched.
+>   Fixtures `test/{diff_fixtures,eval_dict_fixtures}/adt_deriving_ord.{mdk,golden}`. **Follow-up:**
+>   `deriveForRecord` is still a full stub — records derive NO interfaces.) Full record:
+>   CONSTRUCT-COVERAGE §Gap G.
 >
 > **Bar-item-2 (port tests to `medaka test`) — STARTED:** `test/ported/test_run_ported.mdk`
 > = 40/46 `test_run.ml` cases → 96 assertions, all green + deterministic, no source
