@@ -1,0 +1,34 @@
+-- GAP 1 — TWO-LEVEL NESTED dict-witness dispatch (native backend, Option A).
+--
+-- This is the self-contained (empty-prelude) reproduction of the GAP-1 SIGSEGV
+-- that `eq [[1, 2]] [[1, 2]]` exhibits with the real prelude.  `Cmp (Box a)` is a
+-- PARAMETRIC instance whose method takes a leading `Cmp a` element dict (dict_pass
+-- prepends it); nesting `Box (Box Int)` makes that element dict ITSELF carry a
+-- `Cmp (Box Int)` dict — a TWO-LEVEL instance dict.
+--
+-- Before Option A the dict witness was a flat i64 `hashName(tag)` that dropped the
+-- inner dict, so `mdk_impl_Box_cmp`'s element dispatch chain (the RDict path) re-
+-- entered `mdk_impl_Box_cmp` with its leading element-dict ARG missing →
+-- uninitialized `%arg` deref → SIGSEGV.  Option A boxes every dict witness as a
+-- heap cell `[ i64 head_tag | i64 reqdict… ]` (via the existing @mdk_alloc): the
+-- inner `Cmp Int` dict is nested in the cell, the dispatch chain loads the head tag
+-- from field 0 for the `icmp` and prepends the matched impl's nested dicts
+-- (fields 1..n) as its leading element-dict args.
+--
+-- Native stdout must match the typed multi-module oracle byte-for-byte (prints 1).
+interface Cmp a where
+  cmp : a -> a -> Int
+
+data Box a = MkBox a
+
+impl Cmp Int where
+  cmp x y = if x == y then 1 else 0
+
+impl Cmp (Box a) requires Cmp a where
+  cmp (MkBox x) (MkBox y) = cmp x y
+
+result : Int
+result = cmp (MkBox (MkBox 5)) (MkBox (MkBox 5))
+
+main : <IO> Unit
+main = putStrLn (intToString result)

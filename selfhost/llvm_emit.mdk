@@ -2046,11 +2046,19 @@ argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
 -- of scope.
 --
 -- SPIKE-REP NOTES (slice 6; the (j)/(k)/(l) entries in STAGE2-DESIGN §2.4a):
---   (j) DICTS — a dict is a uniform i64 WITNESS word = `hashName(impl-head-tag)`
---       (the same djb2 the ADT cell header uses), opaque: it never reaches an
---       arithmetic/print site, only an `icmp eq` against an impl's tag.  RNone ⇒ 0.
---       Nested per-instance requires dicts (a non-empty `RKey _ reqs`) are OUT —
---       the spike's one-level fixtures carry none; a non-empty set panics.
+--   (j) DICTS (GAP 1, Option A — BOXED witness) — a dict witness is a POINTER to a
+--       heap cell `[ i64 head_tag | i64 reqdict_0 | … ]` (via @mdk_alloc, the same
+--       boxed-cell shape ADT ctors use): field 0 = `hashName(impl-head-tag)` (the
+--       djb2 used for the `icmp eq` dispatch test), fields 1..n = the RECURSIVELY-
+--       built witness words for the impl's per-instance `requires` dicts.  RNone ⇒ 0
+--       (no cell).  The rep is UNIFORM: a one-level dict (`RKey k []`) is a 1-word
+--       cell `[ hashName k ]`; a two-level dict (`RKey k [RKey k2 …]`) nests another
+--       cell pointer in field 1.  Consumption: the RKey direct-call path forwards the
+--       boxed pointer as the impl fn's leading dict param; the RDict dispatch chain
+--       (emitDispatchChain) loads the head tag from field 0 for the `icmp` and
+--       prepends fields 1..n as the matched impl's leading element-dict args.
+--       (Previously the witness was a flat i64 that dropped nested reqs and panicked
+--       on a non-empty set — the GAP-1 SIGSEGV `medaka build` hit on `[[Int]]`.)
 --   (k) IMPL FUNCTIONS — each tagged impl method lowers to a top-level
 --       `@mdk_impl_<tag>_<method>(params…)` (lambda-lift convention of emitFn).  A
 --       nullary return-position impl (`def`/`zero`/`empty`) is a zero-arg function
@@ -2066,17 +2074,14 @@ argDecls (x::rest) = "i64 " ++ x ++ ", " ++ argDecls rest
 -- parametric `requires` impl, each materializes a one-word dict witness prepended
 -- ahead of the real args, matching dict_pass's leading `$dict_<method>_<slot>`
 -- params.  Both empty for an unconstrained impl ⇒ the plain direct call.
+-- GAP 1: the route's OWN nested `reqs` are now representable (boxed dict cells,
+-- Option A) — the former `ensureNoReqs reqs` guard is gone.  This site's leading
+-- dicts come from the call-site routes (methRoutes ++ implRoutes); each such
+-- route's nested reqs are materialized recursively inside dictWordOfRoute.
 emitMethod : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> List String -> <Mut> (String, LTy)
 emitMethod e env name route implRoutes methRoutes argOps =
   match route
-    RKey tag reqs =>
-      let _ = ensureNoReqs reqs
-      -- D3b-1: a parametric `requires` impl's method takes leading element-dict
-      -- params (dict_pass's implDictPassMethods).  Materialize one witness word per
-      -- method-/instance-level route and prepend — methRoutes then implRoutes,
-      -- mirroring ceval's applyDicts(applyDicts v methRoutes) implRoutes order and
-      -- the param order dict_pass bound.  Both empty for an unconstrained impl ⇒
-      -- the bare direct call, unchanged.
+    RKey tag _ =>
       match implFor e name tag
         Some entry =>
           let dictWords = dictWordsOf e env (methRoutes ++ implRoutes)
@@ -2222,39 +2227,63 @@ implEntryIface (CImplEntry _ _ (CImplTagged _ iface _ _ _)) = iface
 implEntryIface (CImplEntry _ _ (CImplDefault _ _)) = ""
 
 -- a runtime method dispatch (RDict/RDictFwd): the enclosing function's dict
--- PARAMETER `d` (a uniform i64 witness word, note (j)) selects the impl at run
--- time.  Emit an if-chain over the method's tagged impls — compare the witness
--- word to each impl's hashName tag, on a match call that impl's lifted fn into a
--- result slot and branch to the end; an exhausted chain is `unreachable`.
+-- PARAMETER `d` (a BOXED dict-witness pointer, GAP 1 Option A) selects the impl at
+-- run time.  Load the head tag from the cell's field 0, then emit an if-chain over
+-- the method's tagged impls — compare the head tag to each impl's hashName tag, on
+-- a match load the matched impl's nested per-instance dicts from the cell's fields
+-- 1..n, PREPEND them to argOps (the impl fn's leading element-dict params), call
+-- that impl's lifted fn into a result slot and branch to the end; an exhausted
+-- chain is `unreachable`.
 emitMethodDispatch : Emit -> List (String, (String, LTy)) -> String -> String -> List String -> <Mut> (String, LTy)
 emitMethodDispatch e env name d argOps =
-  let dictWord = dictOperand env d
+  let dictPtr = dictOperand env d
+  let headTag = loadTag e dictPtr
   let impls = implsOf e name
   let slot = freshReg e
   let _ = emit e ("  " ++ slot ++ " = alloca i64")
   let endL = "dispend" ++ intToString (freshId e)
-  let _ = emitDispatchChain e dictWord impls name argOps slot endL
+  let _ = emitDispatchChain e dictPtr headTag impls name argOps slot endL
   let _ = emit e (endL ++ ":")
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
   (r, LTInt)
 
-emitDispatchChain : Emit -> String -> List CImplEntry -> String -> List String -> String -> String -> <Mut> Unit
-emitDispatchChain e _ [] _ _ _ _ = emit e "  unreachable"
-emitDispatchChain e dictWord (ent::rest) name argOps slot endL =
+-- the count of leading element-dict params a matched impl's lifted fn expects: its
+-- full clause arity (number of patterns) minus the method's interface arity.  This
+-- equals the number of per-instance `requires` dicts stored in the boxed dict cell
+-- (fields 1..count), so the chain loads exactly that many and prepends them.
+implReqCount : Emit -> String -> CImplEntry -> <Mut> Int
+implReqCount e name ent = listLen (implPats ent) - methodArityOf name
+
+-- load `n` nested dict words from the boxed dict cell `dictPtr`.  The head tag is
+-- the cell header (offset 0); the nested req dicts are fields 0..n-1 (loadField i ⇒
+-- offset 8*(i+1)), stored by emitDictCell via storeFields at the same field indices.
+loadReqDicts : Emit -> String -> Int -> Int -> <Mut> List String
+loadReqDicts e dictPtr n i
+  | i >= n = []
+  | otherwise = loadField e dictPtr i :: loadReqDicts e dictPtr n (i + 1)
+
+emitDispatchChain : Emit -> String -> String -> List CImplEntry -> String -> List String -> String -> String -> <Mut> Unit
+emitDispatchChain e _ _ [] _ _ _ _ = emit e "  unreachable"
+emitDispatchChain e dictPtr headTag (ent::rest) name argOps slot endL =
   let tag = implEntryTag ent
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ dictWord ++ ", " ++ intToString (hashName tag))
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ headTag ++ ", " ++ intToString (hashName tag))
   let n = intToString (freshId e)
   let yes = "dispyes" ++ n
   let next = "dispnext" ++ n
   let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ next)
   let _ = emit e (yes ++ ":")
-  let (rv, _) = emitImplCall e (implFnName tag name) argOps LTInt
+  -- GAP 1: prepend the matched impl's nested element-dicts (cell fields 1..reqCount)
+  -- ahead of the real args, matching its leading dict-param order (dict_pass's
+  -- methRoutes ++ implRoutes; here the impl's own requires, stored in cell order).
+  let reqCount = implReqCount e name ent
+  let reqDicts = loadReqDicts e dictPtr reqCount 0
+  let (rv, _) = emitImplCall e (implFnName tag name) (reqDicts ++ argOps) LTInt
   let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
-  emitDispatchChain e dictWord rest name argOps slot endL
+  emitDispatchChain e dictPtr headTag rest name argOps slot endL
 
 -- ── arg-position (arg-tag) dispatch at a call site (slice 7) ─────────────────
 -- A bare CVar naming an impl method, applied to args.  The impl is chosen by the
@@ -2401,15 +2430,42 @@ dictWordsOf : Emit -> List (String, (String, LTy)) -> List Route -> <Mut> List S
 dictWordsOf _ _ [] = []
 dictWordsOf e env (r::rest) = dictWordOfRoute e env r :: dictWordsOf e env rest
 
--- one route -> its dict witness word: RKey builds the constant hashName(tag);
--- RDict/RDictFwd forward the enclosing dict parameter's word; RNone is the 0 dict.
--- A one-level dict carries only the head tag — nested `reqs` (per-instance requires
--- dicts) are out of scope, so an RKey's reqs are not materialized here.
+-- one route -> its dict witness word (GAP 1, Option A — BOXED dict witness).
+-- A dict witness is a POINTER to a heap cell `[ i64 head_tag | i64 reqdict_0 | … ]`
+-- allocated via @mdk_alloc (the same boxed-cell shape emitCtorAlloc uses): field 0
+-- is `hashName(impl-head-tag)`, fields 1..n are the RECURSIVELY-built witness words
+-- for the impl's per-instance `requires` dicts, in `reqs` order (matching the
+-- interpreter's structured `VDict(key, map dict_of_route reqs)` and the leading
+-- dict-param order dict_pass binds — methRoutes then implRoutes, here the impl's
+-- own requires).  This makes the rep UNIFORM: a one-level dict (`RKey k []`) is a
+-- pointer to a 1-word cell `[ hashName k ]`; a two-level dict nests another cell
+-- pointer in field 1.  Consumption (emitDispatchChain / the RKey direct-call path)
+-- loads field 0 for the icmp and prepends fields 1..n as the matched impl's leading
+-- element-dict args.  RDict/RDictFwd forward the enclosing dict parameter's word
+-- (already a boxed-cell pointer); RNone is the 0 dict (no cell).
 dictWordOfRoute : Emit -> List (String, (String, LTy)) -> Route -> <Mut> String
-dictWordOfRoute _ _ (RKey key _) = intToString (hashName key)
+dictWordOfRoute e env (RKey key reqs) =
+  let reqWords = dictWordsOf e env reqs
+  emitDictCell e (hashName key) reqWords
 dictWordOfRoute _ env (RDict d) = dictOperand env d
 dictWordOfRoute _ env (RDictFwd d) = dictOperand env d
 dictWordOfRoute _ _ RNone = "0"
+
+-- allocate a boxed dict-witness cell `[ i64 headTag | i64 req_0 | … | i64 req_(n-1) ]`
+-- via @mdk_alloc and return its pointer word (ptrtoint).  Mirrors emitCtorAlloc's
+-- header+fields layout (header at offset 0, field i at 8*(i+1)) so loadField /
+-- loadTag read it back without type info.  A one-word cell (no reqs) is the
+-- uniform one-level dict.
+emitDictCell : Emit -> Int -> List String -> <Mut> String
+emitDictCell e headTag reqWords =
+  let n = lengthS reqWords
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (n + 1)) ++ ")")
+  let _ = emit e ("  store i64 " ++ intToString headTag ++ ", ptr " ++ p)
+  let _ = storeFields e p reqWords 0
+  let w = freshReg e
+  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  w
 
 -- the operand word a dict parameter name is bound to in the emit env.
 dictOperand : List (String, (String, LTy)) -> String -> <Mut> String
@@ -2419,7 +2475,7 @@ dictOperand env d = match lookupAssoc d env
 
 ensureNoReqs : List Route -> <Mut> Unit
 ensureNoReqs [] = ()
-ensureNoReqs _ = gapU "RKey with nested requires dicts (slice 6: one-level dispatch only)"
+ensureNoReqs _ = ()
 
 -- ── impl method definitions (slice 6 + slice 7) ─────────────────────────────
 -- Each typeclass impl method lowers to ONE top-level `@mdk_impl_<tag>_<method>`,
