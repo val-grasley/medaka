@@ -511,6 +511,28 @@ binds the annotated param type *before* body inference and accepts. That is the 
 signature-driven-param-typing gap (upstream of `inferIndex`), symmetric (whatever the
 default container, the other annotated container fails) — out of C9 scope.
 
+### OBS4. Record construction missing-field check absent — ✅ CLOSED (2026-06-10)
+
+Surfaced during D1 (PLAN.md OBS4). `inferRecordCreateWith` called `unifyFieldAssigns`
+(which validates that SUPPLIED fields exist in the declared set) but never checked that
+ALL declared fields are present. So `Pt { x = 1 }` omitting a required field typechecked
+clean on selfhost; the oracle rejects with `Missing field y in construction of record MkPt`
+(`lib/typecheck.ml:2042-2044 / 2073-2075`, `MissingField` variant).
+
+**Fix:** added `checkMissingFields` (`selfhost/typecheck.mdk:1547-1559`) — iterates the
+declared field list from `instantiateRecord` and pushes `missingFieldMsg fname rname`
+(`"Missing field <f> in construction of record <r>"`) for each absent name, mirroring the
+oracle's per-declared-field loop. Called from `inferRecordCreateWith` BEFORE
+`unifyFieldAssigns`. `fieldAssignContains` helper walks the supplied `FieldAssign` list.
+Message byte-identical to oracle (`lib/typecheck.ml:718`). Applies to both plain record
+construction and named-field variant construction (both route through `inferRecordCreateWith`).
+
+**Verification:** `Pt { x = 1 }` (omits `y`) → `TYPE ERROR: Missing field y in
+construction of record MkPt` on both oracle and selfhost. `Pt { x = 1, y = 2 }` →
+accepted on both. Fixture `test/typecheck_error_fixtures/missing_field.mdk` (plain record
+form; passes both `tc_main` and `check.mdk` drivers in `diff_selfhost_typecheck_errors.sh`).
+All bootstrap/check/eval/core_ir/llvm_modules/selfcompile_fixpoint gates green.
+
 ---
 
 ## Diagnostic-quality / contained divergences

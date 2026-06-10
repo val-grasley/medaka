@@ -1525,6 +1525,7 @@ inferRecordCreate env name fields = match lookupRecordByName name
 inferRecordCreateWith : TcEnv -> String -> RecordInfo -> List FieldAssign -> <Mut> Mono
 inferRecordCreateWith env rname ri fields =
   let ir = instantiateRecord ri
+  let _ = checkMissingFields rname (snd ir) fields
   let _ = unifyFieldAssigns env rname (snd ir) fields
   fst ir
 
@@ -1538,6 +1539,24 @@ unifyFieldAssign : TcEnv -> String -> List (String, Mono) -> String -> Expr -> <
 unifyFieldAssign env rname fieldTypes fn val = match lookupAssocS fn fieldTypes
   None => set_ref typeErrors (unknownFieldMsg fn rname :: typeErrors.value)
   Some ft => unify (infer env val) ft
+
+-- TYPECHECK-AUDIT OBS4: every declared field must be supplied in a record
+-- construction (mirrors lib/typecheck.ml ERecordCreate "Every declared field
+-- must be supplied" loop).  Walk `declaredFields`, check each name is present
+-- among the supplied `FieldAssign` list; push MissingField for any absent one.
+checkMissingFields : String -> List (String, Mono) -> List FieldAssign -> <Mut> Unit
+checkMissingFields _ [] _ = ()
+checkMissingFields rname ((fname, _) :: rest) supplied
+  | fieldAssignContains fname supplied = checkMissingFields rname rest supplied
+  | otherwise =
+    let _ = set_ref typeErrors (missingFieldMsg fname rname :: typeErrors.value)
+    checkMissingFields rname rest supplied
+
+fieldAssignContains : String -> List FieldAssign -> Bool
+fieldAssignContains _ [] = False
+fieldAssignContains fname (FieldAssign fn _ :: rest)
+  | fname == fn = True
+  | otherwise = fieldAssignContains fname rest
 
 -- Phase 72 / TYPECHECK-AUDIT C2: receiver-directed field resolution.  Infer the
 -- receiver FIRST, then pick the owning record by its head tycon when known; if
@@ -1643,9 +1662,13 @@ unknownFieldFresh fname rname =
   let _ = pushUnknownField fname rname
   freshVar ()
 
--- byte-for-byte with lib/typecheck.ml UnknownField / AmbiguousField messages.
+-- byte-for-byte with lib/typecheck.ml UnknownField / AmbiguousField / MissingField messages.
 unknownFieldMsg : String -> String -> String
 unknownFieldMsg fname rname = "Field " ++ fname ++ " does not belong to record " ++ rname
+
+-- TYPECHECK-AUDIT OBS4: mirrors lib/typecheck.ml MissingField message byte-for-byte.
+missingFieldMsg : String -> String -> String
+missingFieldMsg fname rname = "Missing field " ++ fname ++ " in construction of record " ++ rname
 
 ambiguousFieldMsg : String -> List String -> String
 ambiguousFieldMsg fname owners =
