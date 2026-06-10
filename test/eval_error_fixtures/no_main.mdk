@@ -1,0 +1,2 @@
+-- program with no `main` binding: should error
+x = 5

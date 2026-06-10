@@ -1663,7 +1663,7 @@ export
 evalMain : List Decl -> <Mut> String
 evalMain prog = match lookupBinding "main" (evalProgram prog)
   Some v => ppValue (force v)
-  None => panic "eval: no `main` binding"
+  None => panic "program has no 'main' binding"
 
 -- Run the program for its OUTPUT (forcing `main`, whose IO side-effects append
 -- to outputRef) and return the captured stdout — diffs against === EVAL ===.
@@ -1704,7 +1704,7 @@ shadowedFun _ _ = False
 runMainForEffect : List (String, Value) -> <Mut> Value
 runMainForEffect binds = match lookupBinding "main" binds
   Some v => force v
-  None => VUnit
+  None => panic "program has no 'main' binding"
 
 -- ── multi-module evaluation (per-module frames over a shared global) ───────
 -- Port of lib/eval.ml's eval_modules.  The prelude (core) installs GLOBALLY

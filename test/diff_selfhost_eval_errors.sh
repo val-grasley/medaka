@@ -28,10 +28,12 @@ FIXDIR="$ROOT/test/eval_error_fixtures"
 
 [ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
 
-# Extract the error message from a "…: panic: MESSAGE" stderr line.
+# Extract the error message from a "…: panic: MESSAGE" or "error: MESSAGE" stderr line.
 # Greedy ".*panic: " matches up to and including the final "panic: " on the line.
+# The "error: MESSAGE" branch handles oracle errors that are not runtime panics
+# (e.g. "program has no 'main' binding" which main.exe emits as "error: …").
 norm_msg() {
-  grep "panic:" | head -1 | sed 's/.*panic: //'
+  grep -E "panic:|^error:" | head -1 | sed -E 's/.*panic: //; s/^error: //'
 }
 
 pass=0; fail=0
