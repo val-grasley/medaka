@@ -374,14 +374,22 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   All 5 deriver kinds fixed. (Recurring "looks like desugar, is the eval driver" trap.)
 > - **✅ Error-path BLOCKERs** — see the Error-path bullet under Supporting work (updated):
 >   audit found 6, closed 5 (B1-B4, B6), B5+R2 in flight.
-> - **Scoped 2026-06-10 (read-only, not yet built):** the two remaining native dispatch
->   holes — **GAP 1** two-level nested dicts (silent SIGSEGV; flat i64 dict-witness
->   `llvm_emit.mdk:2409` drops nested `reqs`; fix = box the dict / tagged-indirection,
->   emitter-only) and **GAP 2** `max`/`min` over generic `Ord a` (clean panic; pure default
->   methods need RDict→default-body synthesis). Both emitter-only, no design decision, share
->   the `emitDispatchChain` seam, independent fixes. Recommend GAP 1 first (silent crash >
->   clean panic; rep foundation). Plus the empirically-top native construct gap from the
->   fuzzer: **tuple-as-receiver** (Gap C C1/C5b — `headTyconMono (TTuple _)` → `$tuple` head).
+> - **Native dispatch holes (scoped 2026-06-10):**
+>   - **✅ GAP 1 — two-level nested dicts (silent SIGSEGV) — CLOSED 2026-06-10 (`5913297`).**
+>     Boxed dict-witness rep (Option A): every dict witness is now a pointer to a heap cell
+>     `[head_tag | reqdict_0 | …]` via `@mdk_alloc` (was a flat i64 `hashName(tag)` dropping
+>     nested `reqs`). `emitDispatchChain` loads nested dicts from the cell and prepends to
+>     `argOps` (order = `dict_pass` `methRoutes++implRoutes`). `eq [[1,2]] [[1,2]]` → `True`;
+>     depth-agnostic (`[[[1,2]]]` works). Emitter-only; fixpoint re-stabilized automatically
+>     C3a/C3b. **Residual (separate gap, task #21):** `Box (List (List Int))` still SIGSEGVs —
+>     NOT the rep, but multi-module route flattening (`elaborateModules`/`elabModuleStamp`
+>     stamps the element-dict FLAT as `RKey "List" []`; single-module path resolves it nested).
+>     Phase-134-class; tracked in `EMITTER-GAPS.md`.
+>   - **GAP 2 — `max`/`min` over generic `Ord a`** (clean panic; pure default methods need
+>     RDict→default-body synthesis reusing E19 `emitDefaultDefine`/`restampIface`). NOT built;
+>     emitter-only, no design decision; doesn't block fixpoint (DCE prunes). `emitDispatchChain` seam.
+>   - **tuple-as-receiver** (Gap C C1/C5b — `headTyconMono (TTuple _)` → `$tuple` head) — the
+>     empirically-top native construct gap from the fuzzer Tier-C. Touches `typecheck.mdk`+emitter.
 >   Details in memory `project_native_dispatch_gaps`.
 
 
@@ -551,25 +559,36 @@ Host capabilities already present (`stdlib/runtime.mdk`): stdin (`readLine`/`rea
 and a TOML reader (for `medaka.toml`).
 
 **Phase A — prerequisites (parallelizable; independent of the emitter-gap work):**
-1. **`printer.mdk`** (AST→source, mirror `lib/printer.ml` 1082 LOC) — foundation under
-   fmt/repl/new/LSP. Differential-test via AST round-trip.
-2. **Subprocess extern** (`add-primitive`: `runtime.mdk` decl + `eval.ml` + `medaka_rt.c`
-   + the `llvm_emit.mdk` extern-table entry — the last part serialized after any in-flight
-   emitter work). Gates the `build` driver.
-3. **TOML reader** (pure-Medaka stdlib or thin extern) — gates `project_config`.
+**Phase A — prerequisites (parallelizable; independent of the emitter-gap work):**
+1. ✅ **`printer.mdk`** (AST→source, mirror `lib/printer.ml`) — DONE 2026-06-10. Full
+   Wadler/Leijen doc algebra, every AST node, **26/26 byte-identical** to OCaml
+   `program_to_string`; `dev/print_probe.ml` oracle + `test/diff_selfhost_printer.sh`.
+   NOTE: this is `program_to_string` (AST→source core), NOT `format_program` (comment-
+   preserving) — see A.5.
+2. ✅ **Subprocess extern `runCommand`** — interpreter side DONE 2026-06-10
+   (`runtime.mdk` + `eval.ml` `Unix.create_process` + `medaka_rt.c` `fork`/`execvp`;
+   `: String -> List String -> <IO> Result String (Int, String, String)`). **FOLLOW-UP
+   remaining:** the `llvm_emit.mdk` extern-table entry for native emission (deferred during
+   GAP 1; do now that `llvm_emit.mdk` is free).
+3. ✅ **TOML reader** (`stdlib/toml.mdk`) — DONE 2026-06-10. Mirrors `project_config.ml`'s
+   subset (`[section]`, `key="string"`, string arrays, `#` comments); 12/12 doctests.
 4. **Diagnostics surfacing layer** (mirror `lib/diagnostics.ml` 479) — structured errors
-   the CLI + LSP consume.
+   the CLI + LSP consume. ⏳ TODO.
+5. ✅ **Comment side-channel** (selfhost lexer) — DONE 2026-06-10. `RComment` in
+   `lexer.mdk` (stripped before layout → token stream byte-identical); `collectComments`
+   surfaces line/col/text; **8/8 byte-identical** to `lib/`'s channel. Unblocks the fmt port.
 
 **Phase B — tools (each differential-tested vs OCaml):**
-5. Formatter `medaka fmt` (`fmt.ml`+`doc.ml`, 198+221) — after printer.
-6. `medaka test` (`test_cmd.ml`+`doctest.ml`+`prop_runner.ml`, 61+494+266).
-7. `medaka new` (`new_cmd.ml`, 57).
-8. REPL (`repl.ml`, 487) — after printer.
-9. LSP (`lsp_server.ml`+`lsp_log.ml`, 912+83) — after printer+diagnostics+config+json. Largest.
-10. `build` driver (`build_cmd.ml`, 254) — after subprocess extern.
+6. Formatter `medaka fmt` (`fmt.ml`+`doc.ml`, 198+221) — **UNBLOCKED** (printer + comment
+   channel both done); port `format_program` (comment interleaving) over the new channel.
+7. `medaka test` (`test_cmd.ml`+`doctest.ml`+`prop_runner.ml`, 61+494+266).
+8. `medaka new` (`new_cmd.ml`, 57).
+9. REPL (`repl.ml`, 487) — after printer.
+10. LSP (`lsp_server.ml`+`lsp_log.ml`, 912+83) — after printer+diagnostics+config+json. Largest.
+11. `build` driver (`build_cmd.ml`, 254) — after subprocess extern (incl. its native-emit entry).
 
 **Phase C — capstone:**
-11. CLI dispatcher (replaces `bin/main.ml`, 1076), then **native-compile the whole `medaka`
+12. CLI dispatcher (replaces `bin/main.ml`, 1076), then **native-compile the whole `medaka`
     from `.mdk` sources** — the retirement. Converges with bar-item-5 (self-bootstrapping build).
 
 **Implied sub-tracks:**
