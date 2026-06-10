@@ -13,7 +13,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 
 ## Summary
 
-**114 PASS, 15 GAP** across 37 construct families.
+**115 PASS, 15 GAP** across 37 construct families.
 
 ---
 
@@ -278,7 +278,8 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 |-----------|--------|---------|
 | `putStr` / `putStrLn` | PASS | `put_str.mdk` |
 | `println` in `main` directly | PASS | (all IO fixtures) |
-| `println` in parameterized `<IO>` named fn | GAP | see §Gaps below |
+| `println` in parameterized `<IO>` named fn (unannotated, generic `Display a`) | GAP | see §Gap F (Layer 2 dict routing) |
+| `println` in parameterized `<IO>` named fn (concrete-typed) | PASS | `println_param_fn_typed.mdk` |
 | `putStrLn` in parameterized `<IO>` named fn | PASS | (tested) |
 | Bare indented IO block (multi-statement `main`) | PASS | `bare_io_block.mdk` |
 | `readFile` / `writeFile` | PASS | `io_write_read.mdk` |
@@ -385,9 +386,37 @@ Dispatch via interface method when receiver is a tuple or polymorphic type varia
 
 | # | Construct | Oracle | Native | Note |
 |---|-----------|--------|--------|------|
-| F1 | `f s = println s; main = f "hello"` | `hello` | `hello\n0` | `println` (a Display-constrained stdlib fn) returns `0` instead of `Unit` in a parameterized function context. `putStrLn` in the same position works correctly. |
+| F1 | `f s = println s; main = f "hello"` (UNANNOTATED — generic `Display a`) | `hello` | SIGSEGV (exit 133) | Two layers. Layer 1 (return-type inference) FIXED 2026-06-10. Layer 2 (dict routing) is a selfhost-typecheck/dict_pass gap, NOT an emitter gap — out of EMIT-ONLY scope. |
+| F1b | `f : String -> <IO> Unit; f s = println s; main = f "hello"` (CONCRETE-annotated) | `hello` | `hello\n()` PASS | FIXED 2026-06-10 by the return-type-propagation fix (see below). Was `hello\n0` before. Fixture: `println_param_fn_typed.mdk` |
 
-**Fix target:** `selfhost/llvm_emit.mdk` — investigate `println` dict-passing / return value when called from inside a parameterized function. The Display constraint dict is likely misrouted.
+**Layer 1 (return-type inference) — FIXED (Stage 3 #2b layering, construct-gap F1, 2026-06-10).**
+`f`'s body lowers to `CApp (CDict "println" routes) [s]` — a constrained-function
+occurrence with a `CDict`/`CMethod` head, not a bare `CVar`. `typeOf`'s
+application arm in `selfhost/llvm_emit.mdk` only handled a `CVar` head (routing to
+`callRetTy`) and defaulted every other head — including `CDict`/`CMethod` — to
+`LTInt`. So `f`'s inferred return type was `LTInt`, propagating to `main`'s result
+LTy and auto-printing `0` instead of `()`. Fix: extend `typeOf`'s app arm with
+`CDict fname _ => callRetTy sigs fname` and `CMethod fname _ _ _ => callRetTy sigs
+fname`, mirroring the emit path (`emitDictApp`/`emitMethod` both type their result
+via `fnRetTy e name`). This makes the CONCRETE-annotated form (F1b) emit
+`hello\n()` and the diff/fixpoint gates stay byte-identical.
+
+**Layer 2 (dict routing) — STILL OPEN, NOT an emitter gap.** With `f` left
+UNANNOTATED, the typechecker generalizes it to `Display a => a -> <IO> Unit`, so
+`f` should receive a leading Display **dict parameter** and forward it (`RDictFwd`)
+into the `println` call. The selfhost dict-pass does NOT do this: `mdk_f` is
+emitted as `mdk_f(i64 %arg0)` (no dict param) and `f`'s body calls
+`mdk_println(i64 0, i64 %arg0)` — dict word `0` (`RNone`). `println`'s body is a
+Display dict-dispatch switch over its dict arg; dict `0` matches no impl tag and
+falls to the `unreachable` terminator → SIGSEGV. The emitter is faithfully
+lowering what dict_pass produced; the missing leading dict param + `RDictFwd` route
+is upstream in `selfhost/typecheck.mdk` (dict-passing for a user fn that is generic
+over a constraint consumed by a return-position constrained call). This is an
+EMIT-ONLY-out-of-scope dispatch fix, deferred.
+
+**Fix target (Layer 2):** `selfhost/typecheck.mdk` — give a user fn generic over a
+constraint used in a return-position constrained call a leading dict parameter and
+route the constrained call through `RDictFwd` (not `RNone`).
 
 ---
 
@@ -431,7 +460,7 @@ search path for `medaka build` of a single-file user program. Additionally,
 
 ## Fixture directory
 
-All PASS fixtures: `test/construct_fixtures/*.mdk` (114 files)
+All PASS fixtures: `test/construct_fixtures/*.mdk` (115 files)
 Gate script: `test/build_construct_coverage.sh`
 
 ```

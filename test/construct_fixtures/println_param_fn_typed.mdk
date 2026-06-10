@@ -1,0 +1,9 @@
+-- Construct-gap F1b (return-type inference, Stage 3 #2b layering):
+-- `println` (a Display-constrained stdlib fn) called inside a CONCRETE-typed
+-- parameterized fn must infer the fn's return type as Unit, so `main`'s result
+-- auto-prints "()" not "0".  Before the fix `typeOf` defaulted a CDict/CMethod
+-- call head to LTInt, mis-typing `f`'s return.
+f : String -> <IO> Unit
+f s = println s
+
+main = f "hello"

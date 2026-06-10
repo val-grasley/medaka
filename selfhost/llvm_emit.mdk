@@ -4030,10 +4030,21 @@ typeOf sigs env (CLetGroup binds body) =
   typeOf sigs (letGroupEnv sigs env binds) body
 typeOf sigs env (CBlock stmts) = blockTy sigs env stmts
 typeOf sigs env (CDecision _ arms _) = armsRetTy sigs env arms
+-- A constrained-function or return-position-method occurrence (CDict/CMethod)
+-- carries the SAME callee name as the bare CVar would; its emit path
+-- (`emitDictApp`/`emitMethod`) types the result via `fnRetTy e name`, so the pure
+-- twin must mirror that and route through `callRetTy sigs name` — not default to
+-- LTInt.  Without this, a Unit-returning constrained stdlib fn called inside a
+-- user fn (e.g. `f s = println s`, where `println : Display a => a -> <IO> Unit`
+-- lowers `f`'s body to `CDict "println" …`) inferred `f`'s return as LTInt,
+-- mis-printing `main`'s `()` result as `0` (construct-gap F1; layers on #2b's
+-- LTUnit IO-extern fix).
 typeOf sigs env app =
   let (hd, args) = flattenApp app []
   match hd
     CVar fname _ => if hasArgs args then callRetTy sigs fname else LTInt
+    CDict fname _ => callRetTy sigs fname
+    CMethod fname _ _ _ => callRetTy sigs fname
     _ => LTInt
 
 -- the return type of a known function from the sig table (Int if unknown).
