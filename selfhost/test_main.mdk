@@ -1,0 +1,214 @@
+-- Self-hosted `medaka test` driver — doctests + property tests.
+--
+--   medaka run selfhost/test_main.mdk <runtime.mdk> <core.mdk> <file.mdk>
+--
+-- Mirrors `./_build/default/bin/main.exe test <file.mdk>` byte-for-byte for the
+-- doctest phase and (passing) prop phase:
+--
+--   running doctests in <file>
+--     ok   <file>:<line>: <input>
+--     FAIL <file>:<line>: <input>
+--          expected: <e>
+--            actual: <a>
+--     ERROR <file>:<line>: <input>
+--           <msg>
+--   <blank>
+--   <file>: P/T passed[ (F failed, E errors)]
+--   Testing "<prop>" ... OK (100 tests)        -- prop phase, only if props exist
+--   <blank>
+--   N passed, M failed
+--
+-- The doctest phase chooses Phase-92's two paths: a file importing only the
+-- prelude (`core`) → single-file (elaborateDict on the flattened tree); a file
+-- importing real sibling modules → multi-module (loadProgram + elaborateModules
+-- + evalModules), so cross-module instances/values resolve.
+
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import loader.{loadProgram}
+import typecheck.{elaborateDict, elaborateModules, constrainedSigNames, preludeReturnPosDictNames}
+import lexer.{collectComments}
+import eval.{Value, evalProgram, evalModules, evalModulesRootEnv, funNamesOf, dropShadowedExp}
+import doctest.{Example, ExResult(..), RunResult, extractExamples, buildSynthDecls,
+                buildDetails, hasUseDecls, runDetails, runPassed, runFailed,
+                runErrors, exampleInput, exampleLine, synthName}
+import prop_runner.{runAllProps, hasProps}
+import util.{listLen}
+
+main = match args ()
+  (runtimeP :: coreP :: target :: roots) =>
+    run runtimeP coreP target (rootsOrDefault target roots)
+  _ => ePutStrLn "usage: medaka run selfhost/test_main.mdk <runtime.mdk> <core.mdk> <file.mdk> [root ...]"
+
+rootsOrDefault : String -> List String -> List String
+rootsOrDefault target [] = [dirOf target]
+rootsOrDefault _ roots = roots
+
+dirOf : String -> String
+dirOf path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo _ 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+run : String -> String -> String -> List String -> <IO, Mut> Unit
+run runtimeP coreP target roots = match readFile runtimeP
+  Err e => ePutStrLn e
+  Ok rsrc => match readFile coreP
+    Err e => ePutStrLn e
+    Ok csrc => match readFile target
+      Err e => ePutStrLn e
+      Ok tsrc => driveAll (desugar (parse rsrc)) (desugar (parse csrc))
+                          target tsrc roots
+
+driveAll : List Decl -> List Decl -> String -> String -> List String -> <IO, Mut> Unit
+driveAll runtimeDecls coreDecls target tsrc roots =
+  let userDecls = desugar (parse tsrc)
+  let _ = runDoctests runtimeDecls coreDecls target tsrc userDecls roots
+  let _ = runProps runtimeDecls coreDecls target userDecls roots
+  ()
+
+-- ── doctest phase ────────────────────────────────────────────────────────────
+
+runDoctests : List Decl -> List Decl -> String -> String -> List Decl -> List String -> <IO, Mut> Bool
+runDoctests runtimeDecls coreDecls target tsrc userDecls roots =
+  let _ = putStrLn ("running doctests in " ++ target)
+  let examples = extractExamples (collectComments tsrc)
+  match examples
+    [] =>
+      let _ = putStrLn "  (no doctests found)"
+      True
+    _ =>
+      let synthDecls = buildSynthDecls examples
+      let result = runChosen runtimeDecls coreDecls target userDecls roots examples synthDecls
+      reportDoctests target result
+
+runChosen : List Decl -> List Decl -> String -> List Decl -> List String -> List Example -> List Decl -> <IO, Mut> RunResult
+runChosen runtimeDecls coreDecls target userDecls roots examples synthDecls
+  | hasUseDecls userDecls = runMulti runtimeDecls coreDecls target userDecls roots examples synthDecls
+  | otherwise = runSingle runtimeDecls coreDecls userDecls examples synthDecls
+
+-- Single-file path: drop shadowed prelude, append synth, dict-elaborate, run.
+runSingle : List Decl -> List Decl -> List Decl -> List Example -> List Decl -> <Mut> RunResult
+runSingle runtimeDecls coreDecls userDecls examples synthDecls =
+  let allUser = userDecls ++ synthDecls
+  let userNames = funNamesOf allUser
+  let livePrelude = dropShadowedExp userNames coreDecls
+  let combined = livePrelude ++ allUser
+  let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames allUser
+  let env = evalProgram (elaborateDict runtimeDecls dictNames userNames combined)
+  buildDetails (Ok env) examples
+
+-- Multi-module path: load the module graph, inject synth into the root module,
+-- elaborate across modules, eval (root env carries the __dt_i__ bindings).
+runMulti : List Decl -> List Decl -> String -> List Decl -> List String -> List Example -> List Decl -> <IO, Mut> RunResult
+runMulti runtimeDecls coreDecls target _userDecls roots examples synthDecls =
+  match loadProgram target roots
+    Err e => buildDetails (Err e) examples
+    Ok mods =>
+      let injected = injectIntoRoot target synthDecls (map desugarPair mods)
+      let elaborated = elaborateModules runtimeDecls coreDecls injected
+      let env = evalModules (fst elaborated) (snd elaborated)
+      buildDetails (Ok env) examples
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+-- Append synth decls to whichever loaded module's id matches the target's base
+-- module name.  The loader keys modules by module-id (basename without `.mdk`),
+-- so match the target's basename; the root is conventionally last.
+injectIntoRoot : String -> List Decl -> List (String, List Decl) -> List (String, List Decl)
+injectIntoRoot target synthDecls mods =
+  let rootId = baseModuleId target
+  map (injectIf rootId synthDecls) mods
+
+injectIf : String -> List Decl -> (String, List Decl) -> (String, List Decl)
+injectIf rootId synthDecls (mid, decls)
+  | mid == rootId = (mid, decls ++ synthDecls)
+  | otherwise = (mid, decls)
+
+-- "stdlib/json.mdk" → "json"
+baseModuleId : String -> String
+baseModuleId path =
+  let base = afterLastSlash path (stringLength path)
+  stripMdk base
+
+afterLastSlash : String -> Int -> String
+afterLastSlash path 0 = path
+afterLastSlash path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice i (stringLength path) path
+  else afterLastSlash path (i - 1)
+
+stripMdk : String -> String
+stripMdk s =
+  let n = stringLength s
+  if n >= 4 && stringSlice (n - 4) n s == ".mdk" then stringSlice 0 (n - 4) s else s
+
+-- ── doctest reporting (mirrors lib/test_cmd.ml) ──────────────────────────────
+
+reportDoctests : String -> RunResult -> <IO> Bool
+reportDoctests target result =
+  let _ = printDetails target (runDetails result)
+  let total = runPassed result + runFailed result + runErrors result
+  let _ = putStr ("\n" ++ target ++ ": " ++ intToString (runPassed result) ++ "/" ++ intToString total ++ " passed")
+  let _ = putStr (failSuffix result)
+  let _ = putStr "\n"
+  runFailed result == 0 && runErrors result == 0
+
+failSuffix : RunResult -> String
+failSuffix result
+  | runFailed result > 0 || runErrors result > 0 =
+    " (" ++ intToString (runFailed result) ++ " failed, " ++ intToString (runErrors result) ++ " errors)"
+  | otherwise = ""
+
+printDetails : String -> List (Example, ExResult) -> <IO> Unit
+printDetails _ [] = ()
+printDetails target ((ex, res) :: rest) =
+  let _ = printOne target ex res
+  printDetails target rest
+
+printOne : String -> Example -> ExResult -> <IO> Unit
+printOne target ex res =
+  let loc = target ++ ":" ++ intToString (exampleLine ex)
+  match res
+    Pass => putStrLn ("  ok   " ++ loc ++ ": " ++ exampleInput ex)
+    Fail expected actual =>
+      let _ = putStrLn ("  FAIL " ++ loc ++ ": " ++ exampleInput ex)
+      let _ = putStrLn ("       expected: " ++ expected)
+      putStrLn ("         actual: " ++ actual)
+    Errored msg =>
+      let _ = putStrLn ("  ERROR " ++ loc ++ ": " ++ exampleInput ex)
+      putStrLn ("        " ++ msg)
+
+-- ── prop phase ───────────────────────────────────────────────────────────────
+-- Only runs (and prints) if the file declares props — mirrors the OCaml short
+-- circuit (`Prop_runner.run_all` returns true with no output when none).
+
+runProps : List Decl -> List Decl -> String -> List Decl -> List String -> <IO, Mut> Bool
+runProps runtimeDecls coreDecls target userDecls roots
+  | not (hasProps userDecls) = True
+  | hasUseDecls userDecls = runPropsMulti runtimeDecls coreDecls target userDecls roots
+  | otherwise = runPropsSingle runtimeDecls coreDecls userDecls
+
+runPropsSingle : List Decl -> List Decl -> List Decl -> <IO, Mut> Bool
+runPropsSingle runtimeDecls coreDecls userDecls =
+  let userNames = funNamesOf userDecls
+  let livePrelude = dropShadowedExp userNames coreDecls
+  let combined = livePrelude ++ userDecls
+  let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames userDecls
+  let env = evalProgram (elaborateDict runtimeDecls dictNames userNames combined)
+  runAllProps env userDecls
+
+runPropsMulti : List Decl -> List Decl -> String -> List Decl -> List String -> <IO, Mut> Bool
+runPropsMulti runtimeDecls coreDecls target userDecls roots =
+  match loadProgram target roots
+    Err e =>
+      let _ = ePutStrLn e
+      False
+    Ok mods =>
+      let elaborated = elaborateModules runtimeDecls coreDecls (map desugarPair mods)
+      let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
+      runAllProps env userDecls

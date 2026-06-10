@@ -1,0 +1,22 @@
+-- A self-contained fixture (imports only the prelude) exercising every doctest
+-- outcome plus a passing property.
+
+-- > double 21
+-- 42
+double : Int -> Int
+double x = x * 2
+
+-- A doctest whose expected value is WRONG (exercises the FAIL path):
+-- > triple 2
+-- 7
+triple : Int -> Int
+triple x = x * 3
+
+{- A block-comment doctest (expanded to line form):
+   > addOne 4
+   5
+-}
+addOne : Int -> Int
+addOne x = x + 1
+
+prop "double is add-to-self" (x : Int) = double x == x + x

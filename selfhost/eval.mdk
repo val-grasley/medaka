@@ -788,6 +788,7 @@ isPartial (VTypedImpl _ _ _ _ _) = True
 isPartial _ = False
 
 -- ── the evaluator ─────────────────────────────────────────────────────────
+export
 eval : EvalEnv -> Expr -> <Mut> Value
 eval _ (ELit (LInt n)) = VInt n
 eval _ (ELit (LFloat f)) = VFloat f
@@ -1355,6 +1356,7 @@ defaultName : IfaceMethod -> List String
 defaultName (IfaceMethod n _ (Some _)) = [n]
 defaultName (IfaceMethod _ _ None) = []
 
+export
 evalProgram : List Decl -> <Mut> List (String, Value)
 evalProgram prog =
   let _ = set_ref ctorToTypeRef (buildCtorToType prog)
@@ -1467,9 +1469,66 @@ optionToValue : Option Value -> Value
 optionToValue None = VCon "None" []
 optionToValue (Some v) = VCon "Some" [v]
 
+-- ── deterministic RNG for prop tests ──────────────────────────────────────
+-- The selfhost eval oracle ports a value computation, so it has no <Rand>
+-- effect; the reference's `randomInt`/… externs (SplitMix64) are absent.  Prop
+-- generation (prop_runner.mdk) needs *some* RNG, so we install a self-contained
+-- linear-congruential generator over a process-global `Ref Int`.  The sequence
+-- need NOT match the reference: `medaka test`'s prop runner uses OCaml's own
+-- `Random` module (a third, unrelated algorithm), and a PASSING prop prints
+-- `OK (100 tests)` regardless of which values were drawn.  Only a FAILING prop's
+-- shrunk counterexample depends on the draw — and those diverge across all three
+-- RNGs anyway (documented in test/diff_selfhost_test.sh).
+export
+rngStateRef : Ref Int
+rngStateRef = Ref 123456789
+
+-- Knuth/POSIX LCG over a 2^31 modulus.  Constants chosen so the product
+-- `state * 1103515245` stays under the 63-bit OCaml int max (no overflow), and
+-- the result is always non-negative — selfhost exposes no bitwise externs.
+rngNext : Unit -> <Mut> Int
+rngNext _ =
+  let s = (rngStateRef.value * 1103515245 + 12345) % 2147483648
+  let _ = set_ref rngStateRef s
+  s
+
+pRandomInt : Value -> Value -> <Mut> Value
+pRandomInt (VInt lo) (VInt hi) =
+  let range = hi - lo + 1
+  if range <= 0 then VInt lo
+  else VInt (lo + (rngNext () % range))
+pRandomInt _ _ = panic "randomInt: expected Int Int"
+
+pRandomBool : Value -> <Mut> Value
+pRandomBool _ = VBool (rngNext () % 2 == 1)
+
+pRandomFloat : Value -> <Mut> Value
+pRandomFloat _ =
+  let r = rngNext () % 2000001
+  VFloat (intToFloat r * (1.0 / 1000000.0) - 1.0)
+
+pRandomChar : Value -> <Mut> Value
+pRandomChar _ = VChar (charToStr (charFromCodeUnsafe (32 + (rngNext () % 95))))
+
+charFromCodeUnsafe : Int -> Char
+charFromCodeUnsafe n = match charFromCode n
+  Some c => c
+  None => ' '
+
+pSetSeed : Value -> <Mut> Value
+pSetSeed (VInt seed) =
+  let _ = set_ref rngStateRef seed
+  VUnit
+pSetSeed _ = panic "setSeed: expected Int"
+
 export
 externBindings : List (String, Value)
 externBindings = [
+  ("randomInt", prim2M pRandomInt),
+  ("randomBool", prim1M pRandomBool),
+  ("randomFloat", prim1M pRandomFloat),
+  ("randomChar", prim1M pRandomChar),
+  ("setSeed", prim1M pSetSeed),
   ("intToString", prim1 pIntToString),
   ("intToFloat", prim1 pIntToFloat),
   ("floatToInt", prim1 pFloatToInt),
@@ -1726,6 +1785,7 @@ runMainForEffect binds = match lookupBinding "main" binds
 -- cross-module), plus the cells re-exported by a `pub import`.
 data ModInfo = ModInfo String (List Decl) (List (String, List (List Pat, Expr))) (List (String, Ref Value)) EvalEnv
 
+export
 evalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
 evalModules preludeDecls modules =
   let moduleDecls = concatMapList snd modules
@@ -1776,6 +1836,50 @@ rootLocals : List ModInfo -> <Mut> List (String, Value)
 rootLocals [] = []
 rootLocals [ModInfo _ _ _ cells _] = map cellResult cells
 rootLocals (_::rest) = rootLocals rest
+
+-- Like evalModules but returns the root module's FULL eval frame — local ∪
+-- imports ∪ globals — flattened to (name, value).  The prop runner evaluates a
+-- prop body against this single frame, and a prop references not only the
+-- file's own helpers (locals) and imported names but also prelude methods like
+-- `eq`/`compare` (globals), which rootLocals alone omits.  Mirrors lib/eval.ml's
+-- eval_modules_root_env.
+export
+evalModulesRootEnv : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
+evalModulesRootEnv preludeDecls modules =
+  let moduleDecls = concatMapList snd modules
+  let allDecls = preludeDecls ++ moduleDecls
+  let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
+  let disp = buildIfaceDispatch allDecls
+  let ctors = collectCtors allDecls
+  let preludeGroups = groupsOf preludeDecls
+  let globalNames = map fst boolSeeds ++ map fst externBindings ++ map fst ctors ++ implMethodNames allDecls ++ map fst preludeGroups
+  let globalCells = map (n => (n, Ref VUnit)) globalNames
+  let globalEnv = EvalEnv [globalCells]
+  let mods = buildModInfos globalCells [] modules
+  let implEntries = concatMapList (declImplEntries globalEnv disp) preludeDecls ++ concatMapList (modImplEntries disp) mods
+  let _ = installConsts globalCells boolSeeds
+  let _ = installConsts globalCells externBindings
+  let _ = installConsts globalCells ctors
+  let _ = installConsts globalCells (coalesceImpls implEntries)
+  let _ = installGroups globalEnv globalCells preludeGroups
+  let _ = installModGroups mods
+  rootFullEnv mods globalCells
+
+-- Flatten the root module's frame stack (locals first, then imports, then
+-- globals) to an assoc list — local names shadow imports shadow globals, which
+-- is the lookup order in its EvalEnv.
+rootFullEnv : List ModInfo -> List (String, Ref Value) -> <Mut> List (String, Value)
+rootFullEnv [] globalCells = map cellResult globalCells
+rootFullEnv [ModInfo _ _ _ cells menv] globalCells = flattenEnv menv
+rootFullEnv (_::rest) globalCells = rootFullEnv rest globalCells
+
+flattenEnv : EvalEnv -> <Mut> List (String, Value)
+flattenEnv (EvalEnv frames) = map cellResult (concatList frames)
+
+concatList : List (List a) -> List a
+concatList [] = []
+concatList (x::xs) = x ++ concatList xs
+
 
 groupsOf : List Decl -> List (String, List (List Pat, Expr))
 groupsOf decls =
