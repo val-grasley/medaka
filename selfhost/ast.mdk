@@ -36,7 +36,12 @@ public export data Constraint = Constraint String (List Ty)
 -- RDict = read the named dict parameter at runtime (enclosing constraint);
 -- RDictFwd = like RDict but for return-position sites: also forward the structured
 --   dict's own requires into the selected impl body (Phase 83/84 #5).
-public export data Route = RNone | RKey String (List Route) | RDict String | RDictFwd String
+-- RLocal = NOT a method dispatch (Phase 112 / TYPECHECK-AUDIT C5): at this call
+--   site the interface has no impl for the concrete receiver, but an explicitly-
+--   imported/local standalone function shadows the method name, so eval ignores
+--   VMulti dispatch and evaluates the bound name as the plain standalone (no
+--   narrowing, no dicts).  Mirrors lib/ast.ml's RLocal.
+public export data Route = RNone | RKey String (List Route) | RDict String | RDictFwd String | RLocal
 
 -- a resolved lexical address for a variable reference (STAGE2-DESIGN §2.0, the
 -- de-risked first half: resolve EMITS the slot; eval does NOT yet consume it —

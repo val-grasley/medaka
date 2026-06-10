@@ -100,6 +100,36 @@ main : <IO> Unit
 main = putStrLn (intToString (double 21))
 EOF
 
+# C5 (TYPECHECK-AUDIT): a name that is BOTH an imported standalone function AND an
+# interface method.  box exports a standalone `toList`/`isEmpty` for a `Box` that has
+# NO Foldable impl; entry uses them on a Box (-> standalone, routes RLocal) ALONGSIDE
+# the genuine Foldable methods on List/Option.  The native RLocal arm must emit a
+# direct call to the standalone; the genuine sites stay arg-tag dispatch.
+mkdir -p "$WORK/src/svm"
+cat > "$WORK/src/svm/box.mdk" <<'EOF'
+public export data Box a = Box (List a)
+
+export toList : Box a -> List a
+toList (Box xs) = xs
+
+export isEmpty : Box a -> Bool
+isEmpty (Box xs) = match xs
+  [] => True
+  _ => False
+EOF
+cat > "$WORK/src/svm/entry.mdk" <<'EOF'
+import box.{Box(..), toList, isEmpty}
+
+b : Box Int
+b = Box [1, 2]
+
+main =
+  println (toList b)
+  println (isEmpty b)
+  println (isEmpty [10, 20, 30])
+  println (toList (Some 7))
+EOF
+
 # Real-prelude typeclass cases (Stage 3 #2a census):
 # debug/Debug, ==/Eq, compare/Ord, map/Foldable, deriving (Eq, Debug).
 # println: Stage 3 #2b — the Unit-return auto-print gap is fixed.  `println`'s
@@ -177,6 +207,7 @@ for p in $PROGRAMS; do
   check "$p" "$WORK/src/$p.mdk"
 done
 check "multimodule" "$WORK/src/mm/entry.mdk"
+check "standalone_vs_method" "$WORK/src/svm/entry.mdk"
 
 printf '\n%d ok, %d failing (of %d)\n' "$pass" "$fail" "$((pass+fail))"
 [ "$fail" -eq 0 ]

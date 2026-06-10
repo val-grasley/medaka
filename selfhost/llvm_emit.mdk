@@ -2114,6 +2114,14 @@ emitMethod e env name route implRoutes methRoutes argOps =
     RDict d => emitMethodDispatch e env name d argOps
     RDictFwd d => emitMethodDispatch e env name d argOps
     RNone => emitMethodArgDispatch e name argOps
+    -- C5 (mirror lib/eval.ml RLocal): NOT a method dispatch — the receiver has no
+    -- impl of this interface but an explicitly-imported/local standalone shadows the
+    -- method name.  Emit a DIRECT call to that standalone top-level fn (`mdk_<name>`),
+    -- exactly as emitApp's isKnownFn branch would for a plain call — no dispatch, no
+    -- dicts.  (The self-host compiler's OWN source has no standalone-shadowing-method
+    -- site, so this arm is never exercised compiling the compiler → emitted IR for the
+    -- fixpoint stays byte-identical; only the box/main fixture reaches it.)
+    RLocal => emitKnownFnSat e ("mdk_" ++ name) argOps (fnArity e name) (fnRetTy e name)
 
 -- E19: an RKey route into a method with NO tagged impl for `tag` — the type's
 -- `impl` did not override an interface DEFAULT.  Emit the default body as a
@@ -2518,6 +2526,7 @@ dictWordOfRoute e env (RKey key reqs) =
 dictWordOfRoute _ env (RDict d) = dictOperand env d
 dictWordOfRoute _ env (RDictFwd d) = dictOperand env d
 dictWordOfRoute _ _ RNone = "0"
+dictWordOfRoute _ _ RLocal = "0"  -- C5: RLocal carries no dict (mirror eval.mdk's no-op dict)
 
 -- allocate a boxed dict-witness cell `[ i64 headTag | i64 req_0 | … | i64 req_(n-1) ]`
 -- via @mdk_alloc and return its pointer word (ptrtoint).  Mirrors emitCtorAlloc's

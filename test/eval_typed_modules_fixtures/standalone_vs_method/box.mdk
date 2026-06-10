@@ -1,0 +1,9 @@
+public export data Box a = Box (List a)
+
+export toList : Box a -> List a
+toList (Box xs) = xs
+
+export isEmpty : Box a -> Bool
+isEmpty (Box xs) = match xs
+  [] => True
+  _ => False
