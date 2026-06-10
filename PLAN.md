@@ -275,14 +275,39 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 
 **Near-term sequence (front-loaded order, decided 2026-06-09):**
 
-> **Overnight autonomous run (2026-06-09 22:xx → 07:00 PDT):** working the audit
-> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6, C9, C1, C7. C-series: C1/C2/C3/C6/C7/C8/C9 ✅; **C4 skipped** (design — Phase-125 lazy nullary); **C5 deferred** (route-taxonomy + uncertain blast radius, wants oversight). **D-series:** D2 ✅ (LetRecNonFunction), D1 ✅ (error-path parity: 6 panic sites → accumulated typeErrors); OBS4 ✅ (record MissingField check). **Autonomous audit phase COMPLETE — 16 findings closed.** Remaining deferred (documented): C4 (design), C5 (oversight), L1/L2 (E4/route-fragile), D3/D4/D7/D8/D9/D10/D11 (scope/route/dispatch-latent/dormant/borderline-design/README-blocked/E4), residuals C8b·C7-native·OBS1·OBS2·OBS3. Pivoted to broader Stage-3 roadmap. **Construct-coverage sweep done: 114 PASS / 15 GAP across 37 families** (`selfhost/CONSTRUCT-COVERAGE.md`, gate `test/build_construct_coverage.sh`). Closing: F1 ✅ (Layer1: CDict/CMethod return-type; Layer2 dict-pass SIGSEGV deferred), H-a ✅ (stdlib on build+run path — list/array/string/io build; map/set gap H-b emitter dispatch). D1 ✅ (root cause: DCE `collectVars` dropped EInfix operator name → live fn DCE'd — a DCE soundness hole, fixed), D2 ✅ (newtype ctor arity). OBS5 ✅ (DCE `collectVars` audited complete for live forms; 2 latent declBodies holes fixed; marker inert, fixpoint holds). In progress: Gap B (let-mut/let-else native). Remaining deferred: Gap C (primitive dispatch), E (Float corruption), G (oracle Ord?), I (effect rows), A (parser), H-b (map/set emitter dispatch), F1-L2 (dict-pass SIGSEGV), D3/D4. Deferred (documented): Gap C (primitive arg-tag dispatch — known D3b), Gap E (Float corruption/SIGSEGV — too subtle for unattended, oversight), Gap G (likely ORACLE derived-Ord bug — investigate), Gap I (effect rows), most of Gap A (parser-grammar work). **L1 deferred** (E4-gated — fix
-> with the E4 work). **L2 deferred for the unattended run** (latent + arg-tag-masked;
-> the full fix touches the fragile route-keying area + the interim typecheck error
-> risks over-rejection — wants careful attention near E4, not unattended). Proceeding
-> to the **C-series** (real correctness divergences, cleaner oracle-mirrors), then
-> the D-series, then broader Stage-3 roadmap. Skipping only genuine language-design
-> items.
+> ### Overnight autonomous run — 2026-06-09 22:00 → 07:00 PDT (progress log)
+>
+> **TYPECHECK-AUDIT — autonomous phase COMPLETE, 16 findings closed** (all verified
+> on main, all gates incl. native self-compile fixpoint green): S1 S2 T1 **T1b**
+> T2 S3 · C1 C2 C3 C6 C7 C8 C9 · D1 D2 · OBS4. Detail in `selfhost/TYPECHECK-AUDIT.md`.
+> - **Deferred (need oversight / gated):** C4 (design — Phase-125 lazy nullary),
+>   C5 (route-taxonomy `RLocal` + uncertain blast radius), L1/L2 (E4-gated /
+>   route-fragile), D3 (scope-cut) D4 (route) D7 (dispatch-latent) D8 (annotate
+>   dormant) D9 (port-or-reject, borderline design) D10 (README-blocked) D11 (E4).
+> - **Residuals tracked:** C8b (unconstrained default-body diagnostics), C7-native
+>   (native same-head dispatch), OBS1 (let-mut-in-do diag), OBS2 (parser: let..in
+>   indented clause body), OBS3 (EHeadAnnot typed path).
+>
+> **Construct-coverage sweep (Stage 3 #2b)** — `selfhost/CONSTRUCT-COVERAGE.md` +
+> gate `test/build_construct_coverage.sh`. Started 114 PASS / 15 GAP; **closed
+> F1·H-a·D1·D2·B1·B2 + the OBS5 DCE-`collectVars` soundness audit → 123 PASS**,
+> fixpoint intact throughout.
+> - **Deferred construct gaps:** C (primitive arg-tag dispatch — known D3b), E (Float
+>   corruption/SIGSEGV — too subtle for unattended), I (effect rows), most of A
+>   (parser grammar), H-b (map/set emitter dispatch), F1-Layer2 (dict-pass SIGSEGV
+>   for unannotated polymorphic constrained fn), D3/D4, let-else-refutable-nonctor.
+> - **⚠️ Gap G — CONFIRMED behavioral-oracle bug (needs oversight):** Ord
+>   default-method `<`/`lt` mis-dispatches in BOTH tree-walkers (`eval.ml` +
+>   `eval.mdk`) → `Low < High` = False; **native is CORRECT (True)**. Direct
+>   `compare` is fine; the bug is the `compare` call inside the `lt` default method
+>   (reproduces hand-written, not deriving). Affects `<`/`>`/`min`/`max` on user Ord.
+>   **Bears on the retirement oracle strategy** — the tree-walker is not ground truth
+>   here. Full diagnosis: CONSTRUCT-COVERAGE §Gap G. Deferred (both-tree-walker
+>   dispatch fix — risky).
+>
+> **Method note:** every fix in its own worktree agent → verified on main → docs
+> updated. L1/L2 deferred for the run (latent + route-fragile; near E4). Skipped
+> only genuine language-design items. Heartbeat cron `d6dca841` armed until 7am.
 
 
 1. ✅ **`medaka build` CLI — DONE (MVP, 2026-06-09, `39f3318`).** `medaka build
