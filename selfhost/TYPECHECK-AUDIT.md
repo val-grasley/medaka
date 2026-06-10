@@ -418,7 +418,21 @@ legacy/script behavior — NOT reverted. Loose end (low priority): document the 
 driver headers / diff harnesses, or make the dying oracle lazy for gate-cleanliness. See
 memory `lazy-toplevel-nullary-canonical`.
 
-### C5. Phase-112 standalone-vs-method machinery unported: no `lookup_method`, no `RLocal`, install-order shadowing
+### C5. Phase-112 standalone-vs-method machinery unported: no `lookup_method`, no `RLocal`, install-order shadowing — ⏸️ SCOPED 2026-06-10 → DEFERRED to documented known-gap
+**Scoping (2026-06-10):** divergence is REAL but NARROW — repro `/tmp/c5box` (`box.mdk` exports
+standalone `toList`/`isEmpty` over a no-Foldable `Box`; `main.mdk` imports them AND uses genuine
+Foldable `toList`/`isEmpty`): oracle `1,2/F/F/7`; selfhost panics `eval.mdk:576`; native panics
+`llvm_emit.mdk:454`. Triggers ONLY when a name is both an explicitly-imported standalone (non-
+wildcard receiver, no impl) AND a genuine interface method, both used in one multi-module program
+(real-world: `map`/`set` `toList`/`isEmpty` on the native path — not exercised yet). It's a
+PARITY/ROBUSTNESS gap (both backends PANIC, no silent wrong answer) → lower severity. Fix =
+selfhost-only `RLocal` mirror across ~6 files (~120-150 LOC; `lib/` already has RLocal complete),
+but the **emitter arm (`llvm_emit.mdk:2095`) forces a self-compile fixpoint re-baseline** and the
+cheap typecheck/eval/sexp pieces don't yield a working program without it. Install-order subtlety:
+standalone + impl candidate sets must stay DISTINGUISHABLE (route by RLocal-vs-method), not merged.
+**DEFERRED** — revisit if `map`/`set` need this shape natively; build plan in task #34 / memory.
+
+### C5 (original detail).
 Three related gaps: (a) `EMethodAt` resolves via plain `lookupEnv` — first frame wins;
 oracle's `lookup_method` (`eval.ml:223-234`) walks past non-method shadows to the
 VMulti; (b) selfhost `Route` has no `RLocal` (`ast.mdk:38`); (c) `evalProgram` installs

@@ -514,11 +514,13 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
   seed binary that compiles the `.mdk` sources, or a documented multi-stage
   bootstrap from a minimal seed. (C3 proves the native compiler reproduces itself;
   this makes the *build* not need `medaka run`.)
-- **Cross-platform** — currently arm64 macOS only. Linux/x86-64 (runtime, the
-  stack-flag specifics, clang target triple) before the backend is broadly
-  canonical.
-- **GC** — Boehm conservative GC today. Evaluate precise GC + the WasmGC path (the
-  wedge target needs WasmGC, a sibling backend off the Core IR seam — §2.4b).
+- **Cross-platform** — ⏸️ **DEFERRED (user, 2026-06-10) — not a near/mid-term priority.**
+  Currently arm64 macOS only. Linux/x86-64 (runtime, the stack-flag specifics, clang target
+  triple) before the backend is broadly canonical — but canonicalizing arm64-first is an
+  accepted scope decision; do the platform port later.
+- **GC** — ⏸️ **DEFERRED (user, 2026-06-10) — revisit only if GC perf proves truly awful.**
+  Boehm conservative GC today. Precise GC + the WasmGC path (the wedge target needs WasmGC, a
+  sibling backend off the Core IR seam — §2.4b) are eventual, not roadmap-blocking.
 - **Housekeeping refactor of the compiler** — now that it works + self-compiles,
   a general code-quality pass over `selfhost/*.mdk` (+ `llvm_emit.mdk`,
   `runtime/medaka_rt.c`): style + readability + naming consistency, **DRY**
