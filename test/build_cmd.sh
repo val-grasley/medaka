@@ -102,8 +102,22 @@ EOF
 
 # Real-prelude typeclass cases (Stage 3 #2a census):
 # debug/Debug, ==/Eq, compare/Ord, map/Foldable, deriving (Eq, Debug).
-# SKIPPED: println — known gap: emitter types println's return as LTInt (not
-# LTUnit) so mdk_print_int(0) is called instead of mdk_print_unit().  Item 2b sweep.
+# println: Stage 3 #2b — the Unit-return auto-print gap is fixed.  `println`'s
+# inferred return type now resolves to LTUnit (callRetTy treats IO output externs
+# as Unit), so `main`'s result auto-prints "()" instead of mdk_print_int(0).
+cat > "$WORK/src/println.mdk" <<'EOF'
+main : <IO> Unit
+main = println "hello"
+EOF
+
+# println sequencing: two side-effecting println statements via let-_ binding,
+# then a Unit result that auto-prints "()" (Stage 3 #2b).
+cat > "$WORK/src/println_seq.mdk" <<'EOF'
+main : <IO> Unit
+main =
+  let _ = println "one"
+  println "two"
+EOF
 
 cat > "$WORK/src/show_debug.mdk" <<'EOF'
 main : <IO> Unit
@@ -133,7 +147,7 @@ main : <IO> Unit
 main = putStrLn (debug Red ++ " " ++ debug Blue ++ " " ++ debug (Red == Red))
 EOF
 
-PROGRAMS="arith recur adt list closure show_debug eq ord list_map deriving"
+PROGRAMS="arith recur adt list closure println println_seq show_debug eq ord list_map deriving"
 
 pass=0; fail=0
 

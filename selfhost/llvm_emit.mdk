@@ -4037,10 +4037,18 @@ typeOf sigs env app =
     _ => LTInt
 
 -- the return type of a known function from the sig table (Int if unknown).
+-- the return type of a known function from the sig table (Int if unknown).
+-- IO output externs (putStr/putStrLn/…) return Unit but are NOT user-fn binds,
+-- so they are absent from `sigs` and would default to LTInt — typing a
+-- Unit-returning wrapper (e.g. `println x = putStrLn (display x)`) as LTInt and
+-- mis-rendering `main`'s result as `0` instead of `()` (Stage 3 #2b).  Resolve
+-- them to LTUnit up front, matching the real emit path (`emitIoExtern`).
 callRetTy : List (String, FnSig) -> String -> LTy
-callRetTy sigs fname = match lookupAssoc fname sigs
-  Some (FnSig _ rty) => rty
-  None => LTInt
+callRetTy sigs fname =
+  if isIoExtern fname then LTUnit
+  else match lookupAssoc fname sigs
+    Some (FnSig _ rty) => rty
+    None => LTInt
 
 -- a decision's result type is its first arm's body type (all arms agree —
 -- well-typed match).  Pattern-bound vars are unknown to the pure pass, so a body
