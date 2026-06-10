@@ -844,3 +844,33 @@ fixpoint held byte-for-byte through every fix). Fixtures: `float_annot_nolit.mdk
   the whole cluster closes. Only C1/C5b (tuple-as-tag, independent/medium) + C4 (→Gap E)
   are separate. Interpreter masks all via runtime type tags (`eval.mdk:198`).
 
+### IMPLEMENTATION PLAN — elaborateModules dict layer (the cluster-closing fix; oversight-scale)
+*Correction:* `elaborateModules` (`typecheck.mdk:4576`) ALREADY has an E4/E5/E6 layer that
+dict-passes *signatured* constrained fns cross-module. The remaining gap is 3 specific pieces:
+1. **Cause B (LAND FIRST — small, self-contained, ~30 lines):** thread the cumulative
+   `implTable` (already built at `elabModuleStamp:4709`) into the return-position route chain
+   `resolveDictApps:3111`→`routesOfMonos:3117`→`routeOfMono:3121`, and change the concrete arm
+   `RKey tag []` → `RKey tag (implRequiresRoutesRec implTable tag m)` (recursive fn already at
+   `:3093`). Unblocks set/map nested-dict SIGSEGVs immediately; no promotion needed. Verify +
+   `@thorough`/`selfcompile_fixpoint` re-baseline BEFORE touching promotion.
+2. **Cause A + promotion (the bulk):** seed `dictEligibleRef` with USER-module fn names only
+   (mirror `elaborateDict:2246`; gate on `argStampEnabled` so oracle drivers stay `[]`); run a
+   JOINT-flattened discovery fixpoint (`discoverPromotedModules`, mirror `discoverPromoted:2273`)
+   to populate `promotedRef`/`funConstraintsRef`; feed promoted names into `moduleDictNames:4641`.
+   Prerequisite: record arg-position method occurrences in `inferMethodAt`'s `Some idx` arm
+   (`:1394-96`) into `methodSiteFns` (mirror `recordSite:1420`) — inert alone (why the prior
+   Fix-A STOPPED), land WITH promotion.
+3. **Per-module arity (land WITH #2 or the Phase-134 bug bites):** replace the JOINT
+   `seedDictAritiesFromSigs (core2 ++ all modules)` (`:4629-4651`, bare-name keyed = Phase-134
+   conflation) with per-module importer-scoped arity, mirroring oracle `eval.ml:2104-2164`
+   (`collect_arities` over own-decls ∪ transitive-importers; reconstruct import edges from `DUse`).
+   `mangleUnits` (`llvm_emit_modules_main.mdk:74`) already de-collides PRIVATE names; public
+   cross-module constrained names are the residual the importer-scope must cover.
+**Highest STOP risk:** the joint-discovery vs per-module-stamping seam — if surviving-unify-var-id
+diverges between the two typechecks, routes bind wrong slots → silent partial closures (the Fix-A
+STOP class). Instrument eval's `EDictAt`/`EMethodAt` resolution arms (NOT `module_debug`, which
+mirrors the joint pass and won't flag it). **Tests:** loader-driven fixtures in
+`diff_selfhost_llvm_modules.sh` (Cause A/B + Gap C C2/C3/C5/C2-tuple); goldens stay byte-identical
+(argStampEnabled OFF firewall); `@thorough` + `selfcompile_fixpoint` re-baseline (long pole).
+**Scope:** medium-large; 3 landings (Cause B → promotion+A+arity → assertion). NOT one commit.
+
