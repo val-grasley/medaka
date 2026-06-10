@@ -217,7 +217,7 @@ runProps runtimeDecls coreDecls target userDecls roots
 runPropsSingle : List Decl -> List Decl -> List Decl -> <IO, Mut> Bool
 runPropsSingle runtimeDecls coreDecls userDecls =
   let userNames = funNamesOf userDecls
-  let livePrelude = dropShadowedExp userNames coreDecls
+  let livePrelude = if programIsCore userDecls then [] else dropShadowedExp userNames coreDecls
   let combined = livePrelude ++ userDecls
   let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames userDecls
   let env = evalProgram (elaborateDict runtimeDecls dictNames userNames combined)
