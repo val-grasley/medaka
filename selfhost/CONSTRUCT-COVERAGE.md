@@ -774,10 +774,17 @@ SOUND — bug is int-vs-float instruction selection from too-weak inference.
   (`bindPattern :3559-63,:3577`) → int-mul on Float pointers → small int word → fed to
   `mdk_impl_Float_debug` (return inferred `LTFloat`) → `inttoptr`+`load double` at a bogus
   addr → crash. NOT about two fields — it's arithmetic on a mistyped field var.
-- **E3** lambda Float: lambda params forced `LTInt` UNCONDITIONALLY via `allInt`
-  (`:2873`,`:2977`) — `paramUseTy` never even consulted → corruption even with a body literal.
-**Fix plan (deferred/attempting):** Fix A (E3) thread `paramUseTy` into lambda params
-(replace `allInt`); Fix B (E2) recover field types from the ctor's DECLARED field types;
+- **E3 — CLOSED 2026-06-10 (Fix A).** lambda Float: lambda params were forced `LTInt`
+  UNCONDITIONALLY via `allInt` (`:2873`,`:2977`) — `paramUseTy` never consulted → corruption
+  even with a body literal. **Fix:** both lambda-define sites (`emitLamDefine`,
+  `emitRecLamDefine`) now type params via `inferParamTys (sigTable e) pats body` instead of
+  `allInt pats` — the SAME per-param `paramUseTy` inference named-fn params already use.
+  Additive: params `paramUseTy` can't resolve still default `LTInt`; captured vars (typed via
+  `cenv`/`loadCaptures`) unchanged. Repro `(y => y + 1.0)` 3.0: oracle `4.`, native was garbage
+  (`7.54792489297e+168`), now `4.`. Fixture `test/construct_fixtures/lambda_float_param.mdk`.
+  Self-compile fixpoint (C3a/C3b) holds. **E1/E2 remain open.**
+**Fix plan (deferred/attempting):** ~~Fix A (E3) thread `paramUseTy` into lambda params
+(replace `allInt`)~~ DONE; Fix B (E2) recover field types from the ctor's DECLARED field types;
 Fix C (E1) thread declared signatures into `inferSigs` (emitter shouldn't guess told types).
 All emitter-local type-inference fixes; rep untouched; low golden churn (existing Float
 fixtures have literal anchors). Needs new fixtures (literal-free/field/lambda Float) + fixpoint.

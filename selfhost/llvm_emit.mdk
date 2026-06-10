@@ -2863,6 +2863,9 @@ emitRecLamPat e env f pats body =
 
 -- like emitLamDefine, but prepends `f -> %clos` to the body's env so the lifted
 -- body's recursive references resolve to the closure pointer (the leading param).
+-- (Gap E3: lambda params are per-param inferred from the body via `inferParamTys`/
+-- `paramUseTy`, so a Float-param lambda gets float instruction selection; params
+-- `paramUseTy` can't resolve default to LTInt as before.)
 emitRecLamDefine : Emit -> String -> String -> List Pat -> List String -> CExpr -> <Mut> Unit
 emitRecLamDefine e lamName f pats captured body =
   let saved = (bufRef e).value
@@ -2870,7 +2873,7 @@ emitRecLamDefine e lamName f pats captured body =
   let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ closureParamDecls pats ++ ") {")
   let _ = emit e "entry:"
   let cenv = loadCaptures e captured 0
-  let penv = paramEnv pats (allInt pats) 0
+  let penv = paramEnv pats (inferParamTys (sigTable e) pats body) 0
   let _ = emitFnBody e (((f, ("%clos", LTClosure)) :: cenv) ++ penv) lamName body
   let _ = emit e "}"
   let _ = emit e ""
@@ -2967,6 +2970,8 @@ emitCtorEtaDefine e lamName name arity =
 -- lands in a private buffer), then move those lines (forward order) into the lams
 -- buffer and restore the main buffer.  Captures bind by loading `%clos` fields
 -- 1.., params bind to `%argK`; the body is emitted in TAIL position (it `ret`s).
+-- (Gap E3: param types are per-param inferred from the body via `inferParamTys`/
+-- `paramUseTy` — a Float-param lambda gets float ops; unresolved params → LTInt.)
 emitLamDefine : Emit -> String -> List Pat -> List String -> CExpr -> <Mut> Unit
 emitLamDefine e lamName pats captured body =
   let saved = (bufRef e).value
@@ -2974,7 +2979,7 @@ emitLamDefine e lamName pats captured body =
   let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ closureParamDecls pats ++ ") {")
   let _ = emit e "entry:"
   let cenv = loadCaptures e captured 0
-  let penv = paramEnv pats (allInt pats) 0
+  let penv = paramEnv pats (inferParamTys (sigTable e) pats body) 0
   let _ = emitFnBody e (cenv ++ penv) lamName body
   let _ = emit e "}"
   let _ = emit e ""

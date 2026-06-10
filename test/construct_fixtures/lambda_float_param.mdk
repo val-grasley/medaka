@@ -1,0 +1,8 @@
+-- Gap E3: a Float-param lambda passed to a higher-order fn.  The native emitter
+-- now per-param infers `y : Float` from the body literal `y + 1.0` (inferParamTys/
+-- paramUseTy), so the lambda body emits float arithmetic instead of integer ops on
+-- the boxed-Float word.  Before the fix this printed garbage (e.g. 7.5e+168).
+apply : (Float -> Float) -> Float -> Float
+apply f x = f x
+main : <IO> Unit
+main = println (floatToString (apply (y => y + 1.0) 3.0))
