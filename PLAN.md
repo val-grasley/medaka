@@ -235,6 +235,14 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   collision resolves on the interpreter but hard-errors natively (no silent
   mis-dispatch). Closing it touches the emitter tag scheme broadly — out of C7 scope;
   relevant to native-canonical completeness.
+- **C5** — ⏸️ **DEFERRED for oversight (not design-blocked; risk/scope).** Phase-112
+  standalone-vs-method (no `lookup_method`, no `RLocal` route, install-order
+  shadowing). The fix needs a **route-taxonomy addition** (`RLocal`) + `lookup_method`
+  (walk past non-method shadows) + merging standalone+impl candidate sets — a larger
+  feature-port with **UNCERTAIN blast radius** (audit), and the repro needs an
+  imported-standalone / prelude-redefinition shape that's hard to verify unattended.
+  Not merged autonomously — recommend human oversight (it's a route-taxonomy change,
+  the flagged-fragile area). Audit §C5.
 - **C4** — ⏭️ **SKIPPED (design-blocked, not a pure gap).** Selfhost makes top-level
   nullary bindings lazy `VThunk`s — the *deliberate* Phase-125 design — so an
   unreferenced `sideEffect = println …` doesn't run; the oracle forces all nullary
@@ -264,7 +272,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 **Near-term sequence (front-loaded order, decided 2026-06-09):**
 
 > **Overnight autonomous run (2026-06-09 22:xx → 07:00 PDT):** working the audit
-> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6, C9, C1, C7. **C4 skipped** (design — Phase-125 lazy nullary, needs user input). **L1 deferred** (E4-gated — fix
+> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6, C9, C1, C7. C-series: C1/C2/C3/C6/C7/C8/C9 ✅; **C4 skipped** (design — Phase-125 lazy nullary); **C5 deferred** (route-taxonomy + uncertain blast radius, wants oversight). **L1 deferred** (E4-gated — fix
 > with the E4 work). **L2 deferred for the unattended run** (latent + arg-tag-masked;
 > the full fix touches the fragile route-keying area + the interim typecheck error
 > risks over-rejection — wants careful attention near E4, not unattended). Proceeding
