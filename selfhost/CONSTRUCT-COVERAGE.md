@@ -761,3 +761,24 @@ needs @thorough + selfcompile_fixpoint re-baseline. DEFERRED (clean STOP, no par
 merge). (Also: F1 unannotated native = SIGSEGV exit 133, not silent — corrects the F1
 note.)
 
+### Gap E (Float corruption) — ROOT-CAUSED 2026-06-10 (read-only investigation)
+
+**ONE shared root cause:** the emitter's static `LTy` recovery (`inferSigs`/`paramUseTy`/
+`typeOf`) **never reads declared signatures** and defaults Float-typed bindings to
+`LTInt`; `emitArith` (`llvm_emit.mdk:1451-1467`) then selects INTEGER ops (`ashr`+`add`)
+on a boxed-Float pointer-word → garbage / SIGSEGV. Value rep + box/unbox/field layout are
+SOUND — bug is int-vs-float instruction selection from too-weak inference.
+- **E1** `double x = x+x`: `paramUseTy` can't anchor a symmetric binop of bare vars (no
+  Float literal) → param `LTInt` → int arith → garbage. (`x+1.0` works — literal anchors.)
+- **E2 (SIGSEGV)** `Rect w h => w*h`: match-bound field vars default `LTInt`
+  (`bindPattern :3559-63,:3577`) → int-mul on Float pointers → small int word → fed to
+  `mdk_impl_Float_debug` (return inferred `LTFloat`) → `inttoptr`+`load double` at a bogus
+  addr → crash. NOT about two fields — it's arithmetic on a mistyped field var.
+- **E3** lambda Float: lambda params forced `LTInt` UNCONDITIONALLY via `allInt`
+  (`:2873`,`:2977`) — `paramUseTy` never even consulted → corruption even with a body literal.
+**Fix plan (deferred/attempting):** Fix A (E3) thread `paramUseTy` into lambda params
+(replace `allInt`); Fix B (E2) recover field types from the ctor's DECLARED field types;
+Fix C (E1) thread declared signatures into `inferSigs` (emitter shouldn't guess told types).
+All emitter-local type-inference fixes; rep untouched; low golden churn (existing Float
+fixtures have literal anchors). Needs new fixtures (literal-free/field/lambda Float) + fixpoint.
+
