@@ -182,6 +182,16 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   `let … in` as an indented clause body (oracle accepts). Moved to the canonical
   [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) list; verified repro
   there.
+- **OBS3** (selfhost typed-path gap, surfaced during C3) — selfhost has no `infer`
+  arm for `EHeadAnnot` (head annotations like `Map`/`Set` literal head-pins via
+  `fromEntries`); they fall to `panic "unsupported expression (slice 1)"` on the
+  typed path. Not exercised by current fixtures; the C3 oracle exemption holds
+  regardless. A native typed-path completeness gap — close if container-literal
+  head-pins need to typecheck natively. Low priority.
+- **C3** — ✅ **CLOSED (`d4f1469`).** Added `AnnotationTooGeneral` — after
+  `inferAnnot`'s unify, requires the annotation's tyvars to stay distinct unbound
+  (flags grounding + collapse via `sigTvarIds`/`hasDupI`); message byte-identical
+  to oracle; `EHeadAnnot` exempt by construction. Fixture + all gates green.
 - **S3** — ✅ **CLOSED (`6140e0a`).** Ported `check_coherence` (Phase 68) into
   selfhost as `checkCoherence` — overlap rule mirrors `impls_overlap` byte-for-byte
   (wildcard unify with resolve-before-bind; `default` dup → `Multiple default impls`,
