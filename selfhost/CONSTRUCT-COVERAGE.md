@@ -309,9 +309,47 @@ These constructs parse correctly in the OCaml reference compiler but produce
 | # | Construct | Error | Repro |
 |---|-----------|-------|-------|
 | A1 | Match inline `\|` form: `match x \| 0 => "z" \| _ => "o"` | `parser.mdk:2428:32: panic: parse error` | `let r = match 0 \| 0 => "zero" \| _ => "other"` |
-| A2 | Match int range pattern `1..9` | `parser.mdk:2428:32: panic: parse error` | `match n \| 1..9 => "digit" \| _ => "other"` |
-| A3 | Match char range pattern `'a'..='z'` | `parser.mdk:2428:32: panic: parse error` | `match c \| 'a'..='z' => True \| _ => False` |
-| A4 | Match negative literal pattern `-1` | `parser.mdk:2428:32: panic: parse error` | `match n \| -1 => "minus" \| _ => "other"` |
+| A2 | Match int range pattern `1..9` | (parses; fails at selfhost typecheck) | `match n` / `  1..9 => "digit"` / `  _ => "other"` |
+| A3 | Match char range pattern `'a'..='z'` | (parses; fails at selfhost typecheck) | `match c` / `  'a'..='z' => True` / `  _ => False` |
+| A4 | Match negative literal pattern `-1` | NOT A GAP — ref REJECTS it too | `match n` / `  -1 => "minus"` / `  _ => "other"` |
+
+**Triage (2026-06-10, indentation-form repros — the table's original `\|`-form
+repros all hit A1 first, masking the real downstream behavior):**
+
+- **A1** (inline `\|` match) — **NOT a selfhost-only gap. The OCaml reference
+  parser also REJECTS `match x \| p => e \| _ => e`** (verified: `medaka run`
+  → `Parse error`). The reference match grammar is indentation-based only.
+  Adding the inline-`\|` form to the selfhost parser would make it *accept what
+  the reference rejects* — a differential-oracle divergence, not a gap closure.
+  Reclassify as design-decision (do not add) unless the reference grammar gains
+  it first.
+
+- **A2 / A3** (int / char range patterns `1..9`, `'a'..='z'`) — **FULL-PIPELINE
+  gap, NOT parser-only.** The selfhost *parser already accepts them*
+  (`parsePatAtom` → `intPatRest`/`charPatRest` → `PRng`, parser.mdk:1216-1255).
+  They fail downstream at **selfhost typecheck**: `inferPat` (typecheck.mdk:1180)
+  has no `PRng` arm and falls through to `panic "typecheck: unsupported pattern
+  (slice 1)"`. Notably the selfhost **eval** stage *does* handle `PRng`
+  (`bootstrap_eval.sh`'s `range_pat_tree.mdk` — parse+desugar+eval, no typecheck —
+  passes), so the gap is specifically `inferPat` (and the LLVM emit path, which
+  also goes through `medaka build`). The oracle handles `PRng` fully
+  (parse+tc+exhaust+eval). Closing A2/A3 needs `PRng` threaded through selfhost
+  typecheck (`inferPat`) and emit — a multi-stage feature, not a parser production.
+  *Caveat:* the selfhost parser's range **bounds** also reject `MINUS INT`
+  (`intBoundFor` only matches `TInt`), so even after typecheck support, negative
+  range bounds (`-1..1`, which the ref accepts via parser.mly:561-566) remain a
+  separate selfhost-parser gap.
+
+- **A4** (bare negative literal pattern `-1`) — **NOT A GAP. The OCaml reference
+  parser REJECTS bare negative literal patterns in ALL positions** (match arm,
+  fn-clause head `f (-1) =`, parenthesized `(-1)`, let-pattern) — verified
+  `medaka run` → `Parse error` for each. Reference grammar `pat_atom`
+  (parser.mly:549-573) has NO standalone `MINUS INT → PLit` production; `MINUS
+  INT` appears in patterns ONLY as a range bound (parser.mly:561-566). Adding a
+  bare-negative-literal pattern to `selfhost/parser.mdk` would make selfhost
+  accept what the reference rejects → diverge from the differential oracle.
+  The task premise ("the OCaml reference parser accepts it") does not hold.
+  **No selfhost change made.**
 | A5 | `where` clause inline (at end-of-body-line) | `parser.mdk:2428:32: panic: parse error` | `f x = x where g = 1` |
 | A6 | `let rec fib = n => ...` in block (block form) | Both ref and selfhost fail; ref: `Parse error` at col 0 | N/A — both parsers reject this |
 | A7 | `let rec ... with ...` at top-level | `emitter: unbound variable 'isEven'` (compiles but emitter can't resolve mutual refs) | `let rec isEven = n => ... with isOdd = n => ...` |
