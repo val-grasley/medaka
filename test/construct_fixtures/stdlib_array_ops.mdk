@@ -1,0 +1,8 @@
+import array.*
+
+xs = [|10, 20, 30|]
+
+main =
+  println (debug xs)
+  println (intToString (length xs))
+  println (debug xs.[1..3])

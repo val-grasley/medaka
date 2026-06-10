@@ -821,10 +821,12 @@ fixpoint held byte-for-byte through every fix). Fixtures: `float_annot_nolit.mdk
 `adt_float_ctor_arith.mdk` (E2), `lambda_float_param.mdk` (E3).
 
 ### Gap C — RE-DIAGNOSED 2026-06-10 (shrunk 8→4; mostly folds into the elaborateModules layer)
-- **C6/C7/C8 = NOT gaps (doc false-positives):** the fixtures omitted `import array`
-  (the `Debug (Array a)`/`Foldable Array` impls are in `stdlib/array.mdk:446,496`, not
-  `core.mdk`) — the ORACLE fails identically. With `import array`, native == oracle
-  (`[|1, 2, 3|]`, `3`, `[|20, 30|]`). Action: fix the fixtures / drop these rows.
+- **C6/C7/C8 = NOT gaps — now CONFIRMED PASS (fixture added):** the original fixtures
+  omitted `import array` (the `Debug (Array a)`/`Foldable Array` impls are in
+  `stdlib/array.mdk:446,496`, not `core.mdk`) — the ORACLE failed identically. With
+  `import array` (enabled by the H-a stdlib-on-build-path fix), native == oracle.
+  Fixture `test/construct_fixtures/stdlib_array_ops.mdk` (debug-on-Array + length-via-
+  Foldable + slice) is GREEN native==interpreter. C6/C7/C8 closed.
 - **C4 = Gap E, not Gap C:** post the E1/Fix-C declared-sig seeding, C4 now BUILDS (dict
   promoted, `double` gets a leading dict param) but emits garbage Float — int-vs-float
   instruction selection gated by the declared head being typevar `a`. Belongs in Gap E.
