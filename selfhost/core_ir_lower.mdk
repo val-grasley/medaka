@@ -684,6 +684,43 @@ ifaceMethodArityEntry : String -> IfaceMethod -> (String, (String, Int))
 ifaceMethodArityEntry ifaceName (IfaceMethod mname mty _) =
   (mname, (ifaceName, listLen (methodArgTys mty)))
 
+-- ── constructor → DECLARED field type-head names (native backend, Gap E2) ────
+-- Per data-constructor name: the head type-name of each declared field, IN
+-- DECLARED ORDER (e.g. `Rect Float Float` → ("Rect", ["Float","Float"])).  The
+-- LLVM emitter (`bindFields`) reads it to type a match-bound field VARIABLE from
+-- the ctor's declared field type rather than guessing from body-use (`paramUseTy`,
+-- which defaults Float fields to LTInt → integer arith on a boxed-Float word →
+-- SIGSEGV; Gap E2).  A field whose type is not a simple type-constructor head
+-- (polymorphic `TyVar`, applied/function/tuple types) maps to "" — the emitter
+-- treats "" / unknown-scalar names as "fall back to paramUseTy/LTInt", so the
+-- change is ADDITIVE: only fields with a known scalar head (Float/Bool/Int/…)
+-- change typing.  Both positional (`ConPos`) and named-field (`ConNamed`)
+-- payloads are covered, in the same DECLARED order the cell layout stores.
+export
+ctorFieldTypeNames : List Decl -> List (String, List String)
+ctorFieldTypeNames prog = concatMapList ctorFieldTypeEntries prog
+
+ctorFieldTypeEntries : Decl -> List (String, List String)
+ctorFieldTypeEntries (DData _ _ _ variants _) = map variantFieldTypeEntry variants
+ctorFieldTypeEntries (DNewtype _ _ _ con fieldTy _) = [(con, [tyHeadName fieldTy])]
+ctorFieldTypeEntries _ = []
+
+variantFieldTypeEntry : Variant -> (String, List String)
+variantFieldTypeEntry (Variant name (ConPos tys)) = (name, map tyHeadName tys)
+variantFieldTypeEntry (Variant name (ConNamed fields)) = (name, map fieldTyHeadName fields)
+
+fieldTyHeadName : Field -> String
+fieldTyHeadName (Field _ ty) = tyHeadName ty
+
+-- the head type-CONSTRUCTOR name of a field type, or "" if it has no simple head
+-- (TyVar / TyFun / TyTuple / applied types) — the emitter treats "" as "unknown".
+tyHeadName : Ty -> String
+tyHeadName (TyCon n) = n
+tyHeadName (TyApp a _) = tyHeadName a
+tyHeadName (TyConstrained _ t) = tyHeadName t
+tyHeadName (TyEffect _ _ t) = tyHeadName t
+tyHeadName _ = ""
+
 -- positions (0-based) whose type is a TyFun whose result mentions a param.
 selfFnPositions : Int -> List Ty -> List String -> List Int
 selfFnPositions _ [] _ = []

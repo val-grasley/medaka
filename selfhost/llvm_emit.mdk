@@ -331,6 +331,40 @@ methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
   Some (_, arity) => arity
   None => 0
 
+-- ── constructor → DECLARED field type-head names (native backend, Gap E2) ────
+-- The ctor → declared-field-type-head-name table from core_ir_lower's
+-- `ctorFieldTypeNames` (e.g. `Rect Float Float` → ("Rect", ["Float","Float"])).
+-- `bindFields` reads it to type a match-bound field VARIABLE from the ctor's
+-- DECLARED field type rather than guessing from body-use (`paramUseTy`, which
+-- defaults a Float field to LTInt → integer arith on a boxed-Float pointer-word →
+-- SIGSEGV; Gap E2).  Installed before emitProgram/emitProgramGaps (module-level
+-- Ref, mirroring returnsSelfTableRef); empty default ⇒ no field is overridden ⇒
+-- unchanged pre-change behaviour.
+ctorFieldTypesRef : Ref (List (String, List String))
+ctorFieldTypesRef = Ref []
+
+export
+installCtorFieldTypes : List (String, List String) -> <Mut> Unit
+installCtorFieldTypes t = set_ref ctorFieldTypesRef t
+
+-- the declared field type-head names of a constructor, or [] if unknown.
+ctorFieldTypeNamesOf : String -> <Mut> List String
+ctorFieldTypeNamesOf con = match lookupAssoc con ctorFieldTypesRef.value
+  Some names => names
+  None => []
+
+-- map a declared field type-head NAME to a definite scalar LTy, or None when it
+-- is not a known scalar (polymorphic / pointer-typed / "" unknown) — None ⇒ the
+-- caller falls back to paramUseTy/LTInt, so the override is ADDITIVE: only
+-- known-scalar fields (esp. Float/Bool) change typing.
+fieldNameToLTy : String -> Option LTy
+fieldNameToLTy "Float"  = Some LTFloat
+fieldNameToLTy "Bool"   = Some LTBool
+fieldNameToLTy "Int"    = Some LTInt
+fieldNameToLTy "Char"   = Some LTChar
+fieldNameToLTy "String" = Some LTStr
+fieldNameToLTy _        = None
+
 -- the set of default fn names already lifted (one define per (method, tag)),
 -- reset at the start of each emit run so the two censuses don't share state.
 emittedDefaultsRef : Ref (List String)
@@ -3561,12 +3595,14 @@ irrefutablePat _ = False
 bindPattern : Emit -> List (String, (String, LTy)) -> Pat -> String -> CExpr -> <Mut> List (String, (String, LTy))
 bindPattern _ env PWild _ _ = env
 bindPattern _ env (PLit _) _ _ = env
-bindPattern e env (PVar x) v body =
-  let ty = match paramUseTy (sigTable e) [] x body
-    Some t => t
-    None => LTInt
-  (x, (v, ty)) :: env
-bindPattern e env (PCon _ args) v body = bindFields e env args v body 0
+bindPattern e env (PVar x) v body = bindVarTy e env x v body ""
+-- A constructor pattern binds each field with the field's DECLARED type (Gap E2):
+-- a scalar declared field type (esp. Float/Bool) types the bound var directly,
+-- so `match (Rect w h) { … w * h }` does FLOAT arith on the unboxed fields rather
+-- than guessing LTInt from body-use.  Non-scalar / unknown fields fall back to the
+-- paramUseTy guess (declared name "" passed through bindFieldsDecl).
+bindPattern e env (PCon c args) v body =
+  bindFieldsDecl e env args (ctorFieldTypeNamesOf c) v body 0
 bindPattern e env (PTuple ps) v body = bindFields e env ps v body 0
 -- built-in list patterns (slice 5b): a cons cell is a 2-field "Cons" constructor
 -- (head = field 0, tail = field 1); the empty-list pattern (a "Nil" cell) binds
@@ -3577,10 +3613,7 @@ bindPattern _ env (PList []) _ _ = env
 -- as-pattern `x@p`: bind `x` to the WHOLE value v (same LTy lookup as PVar),
 -- then descend into `p` so its inner vars also bind.
 bindPattern e env (PAs x p) v body =
-  let ty = match paramUseTy (sigTable e) [] x body
-    Some t => t
-    None => LTInt
-  let env2 = (x, (v, ty)) :: env
+  let env2 = bindVarTy e env x v body ""
   bindPattern e env2 p v body
 -- non-empty list-literal pattern `[p::ps]`: v is a Cons cell (the switch proved
 -- it); bind the head element (field 0) to `p` and the tail (field 1) to `PList ps`.
@@ -3588,12 +3621,52 @@ bindPattern e env (PList (p::ps)) v body = bindFields e env [p, PList ps] v body
 bindPattern _ env p _ _ =
   gapEnv ("unsupported pattern in match arm (slice 3/5b: variable / wildcard / constructor / tuple / cons / nil / int-literal only): " ++ ptag p) env
 
+-- bind variable `x` to word `v`.  Its LTy is the DECLARED field type-head name
+-- `declName` when that is a known scalar (Gap E2), else the paramUseTy guess from
+-- the arm body, else LTInt — so the declared-type override is additive.
+bindVarTy : Emit -> List (String, (String, LTy)) -> String -> String -> CExpr -> String -> <Mut> List (String, (String, LTy))
+bindVarTy e env x v body declName =
+  let ty = match fieldNameToLTy declName
+    Some t => t
+    None => match paramUseTy (sigTable e) [] x body
+      Some t => t
+      None => LTInt
+  (x, (v, ty)) :: env
+
 bindFields : Emit -> List (String, (String, LTy)) -> List Pat -> String -> CExpr -> Int -> <Mut> List (String, (String, LTy))
 bindFields _ env [] _ _ _ = env
 bindFields e env (p::rest) v body i =
   let f = loadField e v i
   let env2 = bindPattern e env p f body
   bindFields e env2 rest v body (i + 1)
+
+-- like bindFields, but pairs each field pattern with its constructor's DECLARED
+-- field type-head name (Gap E2).  A bare PVar/PAs field uses the declared scalar
+-- type when known; everything else (nested patterns, unknown/non-scalar fields,
+-- missing declared names) falls through to the paramUseTy guess.
+bindFieldsDecl : Emit -> List (String, (String, LTy)) -> List Pat -> List String -> String -> CExpr -> Int -> <Mut> List (String, (String, LTy))
+bindFieldsDecl _ env [] _ _ _ _ = env
+bindFieldsDecl e env (p::rest) declNames v body i =
+  let f = loadField e v i
+  let declName = nthOr declNames i ""
+  let env2 = bindFieldDecl e env p declName f body
+  bindFieldsDecl e env2 rest declNames v body (i + 1)
+
+-- bind one constructor field: a bare PVar/PAs uses its declared scalar type, any
+-- other pattern recurses through bindPattern (no scalar to apply at the top).
+bindFieldDecl : Emit -> List (String, (String, LTy)) -> Pat -> String -> String -> CExpr -> <Mut> List (String, (String, LTy))
+bindFieldDecl e env (PVar x) declName f body = bindVarTy e env x f body declName
+bindFieldDecl e env (PAs x p) declName f body =
+  let env2 = bindVarTy e env x f body declName
+  bindPattern e env2 p f body
+bindFieldDecl e env p _ f body = bindPattern e env p f body
+
+-- the i-th element of a list, or `dflt` if out of range.
+nthOr : List String -> Int -> String -> String
+nthOr [] _ dflt = dflt
+nthOr (x::rest) i dflt
+  | i == 0 = x
+  | otherwise = nthOr rest (i - 1) dflt
 
 -- a switch on the focus column (occs head): constructor-LIKE heads (named ADT
 -- constructors HCon, built-in list HCons/HNil, and tuples HTuple) test a

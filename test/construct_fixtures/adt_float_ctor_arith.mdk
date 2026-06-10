@@ -1,0 +1,12 @@
+-- Gap E2: Float arithmetic over match-bound ADT fields.  Both fields are
+-- declared Float; `bindFields` types w,h LTFloat from the ctor's DECLARED field
+-- types (not a body-use guess that defaults LTInt), so `w * h` is FLOAT mul on
+-- the unboxed fields rather than int mul on boxed-Float words (which SIGSEGVd).
+data Rect = Rect Float Float
+
+area : Rect -> Float
+area r = match r
+  Rect w h => w * h
+
+main : <IO> Unit
+main = println (floatToString (area (Rect 3.0 4.0)))

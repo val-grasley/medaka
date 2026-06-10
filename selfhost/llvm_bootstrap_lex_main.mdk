@@ -27,8 +27,8 @@ import parser.{parse}
 import desugar.{desugar}
 import loader.{loadProgram}
 import typecheck.{elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
-import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable}
-import llvm_emit.{emitProgram, enableGapRecord, installReturnsSelf, installSelfFnParams, installMethodIface}
+import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, ctorFieldTypeNames}
+import llvm_emit.{emitProgram, enableGapRecord, installReturnsSelf, installSelfFnParams, installMethodIface, installCtorFieldTypes}
 import util.{concatMapList}
 import private_mangle.{mangleUnits}
 
@@ -79,6 +79,7 @@ runEmit runtimeDecls coreDecls modules =
   let _ = installReturnsSelf (returnsSelfTable allDecls)
   let _ = installSelfFnParams (selfFnParamTable allDecls)
   let _ = installMethodIface (methodIfaceTable allDecls)
+  let _ = installCtorFieldTypes (ctorFieldTypeNames allDecls)
   -- gap-TOLERANT: unreachable dead-code gaps in core.mdk become "0" placeholders
   -- instead of aborting.  The harness byte-diff is the safety net.
   let _ = enableGapRecord ()

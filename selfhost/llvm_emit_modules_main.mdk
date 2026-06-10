@@ -26,8 +26,8 @@ import parser.{parse}
 import desugar.{desugar}
 import loader.{loadProgram}
 import typecheck.{elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
-import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable}
-import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface}
+import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, ctorFieldTypeNames}
+import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface, installCtorFieldTypes}
 import util.{concatMapList}
 import private_mangle.{mangleUnits}
 import dce.{dceFilter}
@@ -90,4 +90,5 @@ runEmit runtimeDecls coreDecls modules =
   let _ = installReturnsSelf (returnsSelfTable allDecls)
   let _ = installSelfFnParams (selfFnParamTable allDecls)
   let _ = installMethodIface (methodIfaceTable allDecls)
+  let _ = installCtorFieldTypes (ctorFieldTypeNames allDecls)
   putStr (emitProgram (lowerProgramEmit allDecls))

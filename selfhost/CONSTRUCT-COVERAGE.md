@@ -536,11 +536,11 @@ emitter graph still DCEs + reproduces byte-for-byte); `bootstrap_eval` 20/0.
 
 | # | Construct | Oracle | Native | Note |
 |---|-----------|--------|--------|------|
-| E1 | Named fn `double : Float -> Float; double x = x + x` (no Float literal in body) | `6.28` | garbage or `0.` | `+` dispatches via Num on Float params without a literal anchor |
-| E2 | ADT with two Float fields, extracting both: `Rect Float Float; Rect w h => w * h` | `12.` | SIGSEGV | Two-Float-payload variant match crashes (single-Float-payload works) |
-| E3 | `do`-notation for Result with Float bind: `x <- Ok 3.0; pure (x + 1.0)` | `Ok 4.` | `Ok <garbage>` | Float value in monadic bind chain is corrupted |
+| E1 | Named fn `double : Float -> Float; double x = x + x` (no Float literal in body) | `6.28` | garbage or `0.` | `+` dispatches via Num on Float params without a literal anchor — **OPEN** |
+| E2 | ADT with two Float fields, extracting both: `Rect Float Float; Rect w h => w * h` | `12.` | `12.` | **CLOSED 2026-06-10 (Fix B):** field vars now typed from ctor's DECLARED field types — see Gap E note below |
+| E3 | lambda Float param `(y => y + 1.0) 3.0` | `4.` | `4.` | **CLOSED 2026-06-10 (Fix A)** — lambda params typed via `paramUseTy` |
 
-**Fix target:** `selfhost/llvm_emit.mdk` — E1: type-directed Float `+` for known Float params; E2: fix two-Float-payload variant match lowering; E3: Float boxing/unboxing in monadic bind chain.
+**Fix target:** `selfhost/llvm_emit.mdk` — E1 (OPEN): thread declared signatures into `inferSigs` so a told Float param isn't guessed `LTInt`; E2/E3 closed.
 
 ---
 
@@ -770,10 +770,23 @@ on a boxed-Float pointer-word → garbage / SIGSEGV. Value rep + box/unbox/field
 SOUND — bug is int-vs-float instruction selection from too-weak inference.
 - **E1** `double x = x+x`: `paramUseTy` can't anchor a symmetric binop of bare vars (no
   Float literal) → param `LTInt` → int arith → garbage. (`x+1.0` works — literal anchors.)
-- **E2 (SIGSEGV)** `Rect w h => w*h`: match-bound field vars default `LTInt`
-  (`bindPattern :3559-63,:3577`) → int-mul on Float pointers → small int word → fed to
-  `mdk_impl_Float_debug` (return inferred `LTFloat`) → `inttoptr`+`load double` at a bogus
-  addr → crash. NOT about two fields — it's arithmetic on a mistyped field var.
+- **E2 — CLOSED 2026-06-10 (Fix B).** `Rect w h => w*h`: match-bound field vars
+  defaulted `LTInt` (`bindPattern`/`bindFields`) → int-mul on Float pointers → small int
+  word → fed to `mdk_impl_Float_debug` → `inttoptr`+`load double` at a bogus addr → SIGSEGV.
+  NOT about two fields — arithmetic on a mistyped field var. **Fix:** recover each match-bound
+  field's type from the constructor's **DECLARED** field types (not body-use guessing).
+  `core_ir_lower.ctorFieldTypeNames : List Decl -> List (String, List String)` builds
+  ctor→declared-field-type-head-name (`Rect` → `["Float","Float"]`, both `ConPos`/`ConNamed`
+  + `DNewtype`); each emit driver installs it into `llvm_emit.ctorFieldTypesRef` via
+  `installCtorFieldTypes` (mirrors `installReturnsSelf`); `bindPattern (PCon c args)` now calls
+  `bindFieldsDecl … (ctorFieldTypeNamesOf c)`, and `bindVarTy` types a field PVar/PAs from the
+  declared scalar (`fieldNameToLTy`: Float/Bool/Int/Char/String) when known, else falls back
+  to `paramUseTy`/`LTInt`. Additive: only known-scalar declared fields change typing; nested
+  patterns / unknown / non-scalar fields unchanged. Repro `Rect Float Float; area r = match r
+  { Rect w h => w*h }`, `area (Rect 3.0 4.0)`: oracle `12.`, native was SIGSEGV, now `12.`.
+  Fixture `test/construct_fixtures/adt_float_ctor_arith.mdk`. Single-Float-field
+  (`adt_float_ctor.mdk`), Int-field, and Bool+Float variants verified unaffected. Self-compile
+  fixpoint (C3a/C3b) holds byte-for-byte. **E1 remains open.**
 - **E3 — CLOSED 2026-06-10 (Fix A).** lambda Float: lambda params were forced `LTInt`
   UNCONDITIONALLY via `allInt` (`:2873`,`:2977`) — `paramUseTy` never consulted → corruption
   even with a body literal. **Fix:** both lambda-define sites (`emitLamDefine`,
@@ -782,10 +795,10 @@ SOUND — bug is int-vs-float instruction selection from too-weak inference.
   Additive: params `paramUseTy` can't resolve still default `LTInt`; captured vars (typed via
   `cenv`/`loadCaptures`) unchanged. Repro `(y => y + 1.0)` 3.0: oracle `4.`, native was garbage
   (`7.54792489297e+168`), now `4.`. Fixture `test/construct_fixtures/lambda_float_param.mdk`.
-  Self-compile fixpoint (C3a/C3b) holds. **E1/E2 remain open.**
-**Fix plan (deferred/attempting):** ~~Fix A (E3) thread `paramUseTy` into lambda params
-(replace `allInt`)~~ DONE; Fix B (E2) recover field types from the ctor's DECLARED field types;
-Fix C (E1) thread declared signatures into `inferSigs` (emitter shouldn't guess told types).
+  Self-compile fixpoint (C3a/C3b) holds. **E1 remains open.**
+**Fix plan:** ~~Fix A (E3) thread `paramUseTy` into lambda params (replace `allInt`)~~ DONE;
+~~Fix B (E2) recover field types from the ctor's DECLARED field types~~ DONE;
+Fix C (E1, OPEN) thread declared signatures into `inferSigs` (emitter shouldn't guess told types).
 All emitter-local type-inference fixes; rep untouched; low golden churn (existing Float
 fixtures have literal anchors). Needs new fixtures (literal-free/field/lambda Float) + fixpoint.
 
