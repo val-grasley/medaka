@@ -304,6 +304,42 @@ lookupFrames (frame::rest) name = match lookupFrameCell frame name
   Some cell => forceCell cell
   None => lookupFrames rest name
 
+-- C5 (mirror lib/eval.ml:223 lookup_method): resolve a method occurrence to the
+-- coalesced method binding (the dispatcher), looking PAST a nearer same-named
+-- non-method shadow.  This matters only when a name is both an interface method and
+-- an explicitly-imported standalone (e.g. box's `toList`/`isEmpty` vs Foldable's):
+-- evalModules binds the import in a frame AHEAD of the global method binding, so a
+-- plain lookupEnv returns the standalone even for a genuine method call.  Walk frames,
+-- returning the first METHOD binding — a bare VTypedImpl (single-impl method) or a
+-- VMulti whose candidates are VTypedImpls (multi-impl method); a standalone shadow
+-- (a VClosure, or a VMulti of plain VClosures from a multi-clause standalone) is
+-- skipped.  If no frame binds a method, fall back to the nearest binding (normal
+-- lookup) — preserving every non-collision case, where the nearest binding IS the
+-- method.  NOTE: in this runtime EVERY top-level group installs as a VMulti (even a
+-- single-clause standalone), so the OCaml "first VMulti wins" test is too coarse —
+-- the candidates' shape (VTypedImpl vs VClosure) is the real discriminator.
+export
+lookupMethod : EvalEnv -> String -> <Mut> Value
+lookupMethod (EvalEnv frames) name = lookupMethodFrames frames frames name
+
+lookupMethodFrames : List (List (String, Ref Value)) -> List (List (String, Ref Value)) -> String -> <Mut> Value
+lookupMethodFrames all [] name = lookupFrames all name
+lookupMethodFrames all (frame::rest) name = match lookupFrameCell frame name
+  Some cell => if isMethodBinding (forceCell cell) then forceCell cell else lookupMethodFrames all rest name
+  None => lookupMethodFrames all rest name
+
+-- a method dispatcher binding: a bare VTypedImpl, or a VMulti containing at least one
+-- VTypedImpl candidate.  A standalone function (VClosure / VMulti of VClosures) is not.
+isMethodBinding : Value -> Bool
+isMethodBinding (VTypedImpl _ _ _ _ _) = True
+isMethodBinding (VMulti vs) = anyTypedImpl vs
+isMethodBinding _ = False
+
+anyTypedImpl : List Value -> Bool
+anyTypedImpl [] = False
+anyTypedImpl (VTypedImpl _ _ _ _ _ :: _) = True
+anyTypedImpl (_ :: rest) = anyTypedImpl rest
+
 -- read a cell, forcing + memoising a deferred thunk on first access
 forceCell : Ref Value -> <Mut> Value
 forceCell cell = match cell.value
@@ -675,6 +711,7 @@ routeTag env (RDict d) = match lookupEnv env d
 routeTag env (RDictFwd d) = match lookupEnv env d
   VDict key _ => key
   _ => ""
+routeTag _ RLocal = ""
 
 -- a constrained-function occurrence: apply one runtime dictionary per resolved
 -- route as a leading argument (matching the dict params dict_pass prepended).
@@ -702,6 +739,7 @@ dictOfRoute env (RDictFwd d) = match lookupEnv env d
   VDict key reqs => VDict key reqs
   _ => VDict "" []
 dictOfRoute _ RNone = VDict "" []
+dictOfRoute _ RLocal = VDict "" []  -- C5: RLocal never carries a dict (lib/eval.ml:633)
 
 -- narrow a method VMulti by a route, returning the narrowed value and any
 -- forwarded requires (non-empty only for RDictFwd return-position sites where the
@@ -716,6 +754,10 @@ methodAtNarrow env v (RDict d) = match lookupEnv env d
 methodAtNarrow env v (RDictFwd d) = match lookupEnv env d
   VDict key reqs => (narrowMethod v key, reqs)
   _ => (v, [])
+-- RLocal: not a method dispatch — the EMethodAt arm resolves the standalone
+-- directly (lookupEnv) and never calls methodAtNarrow with RLocal.  This arm
+-- exists only to keep the match exhaustive; it returns the value unnarrowed.
+methodAtNarrow _ v RLocal = (v, [])
 
 oneOrMultiV : List Value -> List Value -> Value
 oneOrMultiV [v] _ = v
@@ -809,7 +851,20 @@ eval env (EVar x) = if startsWithAt x then VUnit else lookupEnv env x
 -- annotateProgram in evalProgram/evalModules.
 eval env (EVarAt x addr) = if startsWithAt x then VUnit else lookupAtAddr env x addr
 eval env (EMethodAt name routeRef implRef methodRef) =
-  let (narrowed, fwdReqs) = methodAtNarrow env (lookupEnv env name) routeRef.value
+  evalMethodAt env name routeRef.value implRef.value methodRef.value
+
+-- C5: an RLocal route is NOT a method dispatch — the typechecker found no impl
+-- of this interface for the concrete receiver but the name has an explicitly-
+-- imported/local standalone (which the import frame binds ahead of the global
+-- method VMulti).  Resolve the standalone with a plain lookupEnv, unnarrowed and
+-- with no dict folding (mirror lib/eval.ml:816 EMethodRef RLocal).  Every other
+-- route is a genuine method dispatch: resolve the VMulti past any nearer same-
+-- named standalone shadow with lookupMethod (C5 / lib/eval.ml:223), then narrow.
+evalMethodAt : EvalEnv -> String -> Route -> List Route -> List Route -> <Mut> Value
+evalMethodAt env name RLocal _ _ = lookupEnv env name
+evalMethodAt env name route implRoutes methodRoutes =
+  let lm = lookupMethod env name
+  let (narrowed, fwdReqs) = methodAtNarrow env lm route
   -- Mirror lib/eval.ml:869-873 (Phase 103): only fold method-/impl-dicts and
   -- forwarded requires onto a value still awaiting application. A terminal
   -- nullary return-position impl body (`def = []`, stripped to a bare value by
@@ -817,8 +872,8 @@ eval env (EMethodAt name routeRef implRef methodRef) =
   -- — so applying the route's dicts would over-apply to a constructor/scalar
   -- ("applied non-function"). Drop them when the narrowed value awaits no args.
   if awaitsArgs narrowed then
-    let v1 = applyDicts env narrowed methodRef.value
-    let v2 = applyDicts env v1 implRef.value
+    let v1 = applyDicts env narrowed methodRoutes
+    let v2 = applyDicts env v1 implRoutes
     applyValues v2 fwdReqs
   else narrowed
 eval env (EDictAt name routesRef) =

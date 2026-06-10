@@ -307,6 +307,36 @@ pendingBinopSites = Ref []
 methodIfaceParamsRef : Ref (List (String, (String, List String, Ty)))
 methodIfaceParamsRef = Ref []
 
+-- C5 (TYPECHECK-AUDIT / Phase 112): names that are BOTH an interface method AND a
+-- cross-module-imported standalone top-level function (e.g. box's `toList`/`isEmpty`
+-- shadowing Foldable's).  Populated per module by elabModuleStamp from the full graph
+-- (a top-level funDef name that is also a method name and is NOT defined in the
+-- current module).  resolveSite consults it: a method site at a concrete receiver
+-- with NO impl, whose name is here, routes RLocal (eval reads the standalone) instead
+-- of RKey<head> (which would panic with no impl).  Mirrors lib/typecheck.ml's
+-- env.standalone_values + the EApp RLocal stamp (typecheck.ml:1603-1640,4585).
+-- NOT cleared by resetState — elabModuleStamp rebuilds it per module.
+standaloneValuesRef : Ref (List String)
+standaloneValuesRef = Ref []
+
+-- C5: method name → dispatch-arg index, built graph-wide from ALL interface decls
+-- (so a PRELUDE method like Foldable's `toList` — absent from a user module's own
+-- decls — still resolves its index during that module's check).  Set per module by
+-- checkModuleFullImpl from [implDecls].  Independent of methodIfaceParamsRef (which
+-- the module path populates only for the module's OWN interfaces).
+methodDispatchIdxRef : Ref (List (String, Int))
+methodDispatchIdxRef = Ref []
+
+-- C5: arg-position method occurrences whose name is a standalone-shadow, recorded
+-- UNGATED (the eval path leaves argStampEnabled OFF, so the ordinary arg-stamp
+-- machinery never fires for them, yet eval still arg-tag-dispatches and panics on a
+-- receiver with no impl — box's `toList b`).  Each entry is (name, route ref, the
+-- discriminating-argument mono CELL); resolveRLocalSites reads the cell post-
+-- inference and stamps RLocal when the receiver grounds to a head with no impl.
+-- Mirrors lib/typecheck.ml's EApp-receiver RLocal stamp.  Reset by resetState.
+pendingRLocalSites : Ref (List (String, Ref Route, Mono))
+pendingRLocalSites = Ref []
+
 -- one entry per occurrence of a registered interface method: (iface, typarams,
 -- declared method Ty, the occurrence's instantiated mono).  Resolved post-inference.
 pendingImplObligations : Ref (List (String, List String, Ty, Mono))
@@ -668,6 +698,7 @@ resetState _ =
   let _ = set_ref curEffect (EffRow [] None)
   let _ = set_ref recordsRef []
   let _ = set_ref pendingSites []
+  let _ = set_ref pendingRLocalSites []
   let _ = set_ref pendingBinopSites []
   let _ = set_ref methodIfaceParamsRef []
   let _ = set_ref pendingImplObligations []
@@ -1442,6 +1473,11 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
     let inst = instantiateTracked s
     let _ = recordMethodDicts name methodRef (snd inst)
     let _ = recordImplObligation name (fst inst)
+    -- C5: if [name] is a standalone-shadow method, record its discriminating-arg
+    -- mono cell UNGATED so resolveRLocalSites can route RLocal when the receiver
+    -- grounds to a no-impl head (the eval path never sets argStampEnabled, so the
+    -- ordinary arg-stamp path below would otherwise leave it RNone → arg-tag panic).
+    let _ = recordRLocalSite env name tagRef (fst inst)
     match argDispatchOf name
       Some idx =>
         let _ = recordArgStamp name tagRef implRef idx (fst inst)
@@ -1455,6 +1491,26 @@ inferMethodAt env name tagRef implRef methodRef = match lookupVar env name
         let _ = recordArgSiteFn name idx (fst inst)
         fst inst
       None => recordSite name tagRef implRef (fst inst)
+
+-- C5: queue a standalone-shadow method occurrence's discriminating-arg mono cell so
+-- resolveRLocalSites can stamp RLocal once inference grounds the receiver.  Only
+-- shadows (standaloneValuesRef) are recorded — every other method occurrence is
+-- untouched (no entry → byte-identical).  The dispatch index comes from the method's
+-- declared interface type (methodDispatchIdx), independent of argStampEnabled.
+recordRLocalSite : TcEnv -> String -> Ref Route -> Mono -> <Mut> Unit
+recordRLocalSite _ name tagRef inst
+  | not (containsName name standaloneValuesRef.value) = ()
+  | otherwise = match methodDispatchIdx name
+      None => ()
+      Some idx => match nthArgMono idx inst
+        Some am => set_ref pendingRLocalSites ((name, tagRef, am) :: pendingRLocalSites.value)
+        None => ()
+
+-- C5: the dispatch-arg index of an interface method, from the graph-wide map
+-- methodDispatchIdxRef (built by checkModuleFullImpl from every interface decl).
+-- Ungated, unlike argDispatchOf — RLocal detection must run on the eval path too.
+methodDispatchIdx : String -> <Mut> Option Int
+methodDispatchIdx name = lookupAssocS name methodDispatchIdxRef.value
 
 -- the dispatch-arg index of an arg-position method, but only when stamping is
 -- enabled (the emit path) — off, every EMethodAt is a return-position site.
@@ -2907,6 +2963,10 @@ resolveSites implTable keyTable rpNames ((name, tagRef, implRef, resultMono) :: 
 -- head tycon (Pair Int Bool vs Pair Bool Int) route to distinct keys; eval's
 -- narrowMethod then matches the right VTypedImpl by its key field.  No matching
 -- key entry (args-free / unknown) → fall back to the head tag, behaviour unchanged.
+-- C5 NOTE: standalone-shadow RLocal routing is NOT done here — a return-position
+-- site keys off the RESULT mono (`isEmpty`'s `Bool`), which never names the receiver's
+-- impl, so this gate would mis-route every shadow method.  RLocal is stamped by the
+-- arg-position resolveRLocalSites (keyed on the RECEIVER mono) AFTER resolveSites.
 resolveSite : List ImplEntry -> List KeyEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Unit
 resolveSite implTable keyTable rpNames name tagRef implRef resultMono = match activeDictVarOf resultMono
   Some dname =>
@@ -2917,6 +2977,50 @@ resolveSite implTable keyTable rpNames name tagRef implRef resultMono = match ac
       let _ = set_ref tagRef (RKey routeKey [])
       set_ref implRef (implDictRoutesFor implTable name tag resultMono)
     None => ()
+
+-- C5: does some impl in [keyTable] define method [name] at head tycon [tag]?  The
+-- static analogue of eval's narrowMethod finding a VTypedImpl tagged [tag] in the
+-- method's VMulti — keyTable carries one entry per user+prelude impl with the methods
+-- it defines and its head tycon.  Mirrors lib/typecheck.ml's impl_exists_for_head.
+implExistsForHead : List KeyEntry -> String -> String -> Bool
+implExistsForHead [] _ _ = False
+implExistsForHead (KeyEntry methods tag2 _ _ :: rest) name tag
+  | tag2 == tag && containsName name methods = True
+  | otherwise = implExistsForHead rest name tag
+
+-- C5: stamp RLocal on each recorded standalone-shadow arg-position site whose
+-- receiver mono now grounds to a concrete head tycon with NO impl of the method.
+-- The receiver HAS an impl (the genuine-method case, e.g. `toList (Some 7)`) → leave
+-- the route untouched (RNone → eval arg-tag-dispatches to the real impl).  An
+-- ungrounded receiver (still a tyvar) → leave it (polymorphic, deferred).  Mirrors
+-- lib/typecheck.ml:1603-1640: RLocal only when impl_exists is false.
+resolveRLocalSites : List KeyEntry -> List (String, Ref Route, Mono) -> <Mut> Unit
+resolveRLocalSites _ [] = ()
+resolveRLocalSites keyTable ((name, tagRef, am) :: rest) =
+  let _ = resolveRLocalSite keyTable name tagRef am
+  resolveRLocalSites keyTable rest
+
+-- C5: stamp RLocal on each recorded standalone-shadow arg-position site whose
+-- receiver mono now grounds to a concrete head tycon with NO impl of the method.
+-- The receiver HAS an impl (the genuine-method case, e.g. `toList (Some 7)`):
+--   • EVAL path (argStampEnabled OFF): RESET to RNone — resolveSites mis-stamped
+--     RKey<resultType> (`toList`'s `List` from its `List a` result), which narrows to
+--     the WRONG impl; RNone makes eval arg-tag-dispatch on the receiver instead.
+--   • EMIT path (argStampEnabled ON): LEAVE untouched — resolveArgStamps already
+--     stamped the correct RKey<receiverHead>, which the emitter dispatches directly.
+-- An ungrounded receiver (still a tyvar) → leave it.  Mirrors lib/typecheck.ml's
+-- RLocal-vs-ordinary-dispatch split (the oracle keys the genuine case off the receiver).
+resolveRLocalSite : List KeyEntry -> String -> Ref Route -> Mono -> <Mut> Unit
+resolveRLocalSite keyTable name tagRef am = match headTyconMono am
+  Some tag => stampRLocalOrFallback (implExistsForHead keyTable name tag) tagRef
+  None => ()
+
+-- C5: hasImpl ⇒ genuine method.  EVAL path (argStampEnabled OFF) resets to RNone
+-- (resolveSites mis-stamped RKey<result>); EMIT path leaves resolveArgStamps' route.
+-- no impl ⇒ standalone shadow ⇒ RLocal.
+stampRLocalOrFallback : Bool -> Ref Route -> <Mut> Unit
+stampRLocalOrFallback True tagRef = if argStampEnabled.value then () else set_ref tagRef RNone
+stampRLocalOrFallback False tagRef = set_ref tagRef RLocal
 
 -- if [m] normalizes to a registered constraint variable, the dict parameter name
 -- a method at that type reads.  A return-position method at a HIGHER-KINDED
@@ -4928,13 +5032,27 @@ checkModuleFull seedVars accData prog = checkModuleFullImpl seedVars accData [] 
 checkModuleFullImpl : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 checkModuleFullImpl seedVars accData implDecls prog =
   let _ = resetState ()
+  -- C5: compute this module's standalone-shadow set BEFORE inference, so the
+  -- inferMethodAt arg-position record can gate on it (resetState cleared it via
+  -- pendingRLocalSites, but standaloneValuesRef is set fresh here per module).
+  let _ = set_ref standaloneValuesRef (buildStandaloneShadows implDecls prog)
+  let _ = set_ref methodDispatchIdxRef (argDispatchIndices implDecls)
   -- E6: re-install the cross-module constraint accumulator that resetState just
   -- wiped, so this module's `=>`-constrained call sites into EARLIER modules resolve
   -- (empty + no-op when OFF → golden module drivers byte-identical).
   let _ = if argStampEnabled.value then set_ref funConstraintsRef crossModuleFunConstraintsRef.value else ()
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
-  let env1 = extendVars (extendVars dataEnv seedVars) globalS
+  -- C5: a standalone-shadow method name (box's `toList`/`isEmpty`) is bound in
+  -- seedVars to its imported MONOMORPHIC standalone scheme (`Box k v -> …`), which
+  -- would shadow the polymorphic interface-method scheme and mis-type a genuine
+  -- method call (`isEmpty [1,2,3]` unifying List with Box).  Re-bind those names to
+  -- the graph-wide METHOD scheme so the call site types against the method (oracle
+  -- behaviour); RLocal then redirects only the no-impl receiver back to the standalone
+  -- at eval.  Mirrors lib/typecheck.ml: the EApp method-head arm types against the
+  -- method scheme even when standalone_values holds the name.
+  let shadowMethodSchemes = pickSchemes standaloneValuesRef.value (ifaceMethodSchemes implDecls)
+  let env1 = extendVars (extendVars (extendVars dataEnv seedVars) globalS) shadowMethodSchemes
   let defs = funDefs prog
   let sigs = sigsOf prog
   let topSchemes = processTopGroups env1 sigs defs (groupNames defs [])
@@ -4974,6 +5092,37 @@ publicValNames (_ :: rest) = publicValNames rest
 ifaceMethodNames : List IfaceMethod -> List String
 ifaceMethodNames [] = []
 ifaceMethodNames (IfaceMethod n _ _ :: rest) = n :: ifaceMethodNames rest
+
+-- C5: every interface method name declared anywhere in [decls] (unwrapping DAttrib).
+allIfaceMethodNames : List Decl -> List String
+allIfaceMethodNames [] = []
+allIfaceMethodNames (DAttrib _ d :: rest) = allIfaceMethodNames [d] ++ allIfaceMethodNames rest
+allIfaceMethodNames (DInterface { methods, ... } :: rest) = ifaceMethodNames methods ++ allIfaceMethodNames rest
+allIfaceMethodNames (_ :: rest) = allIfaceMethodNames rest
+
+-- C5: the standalone-shadows-method set for THIS module.  A name qualifies when it
+-- is (a) a top-level standalone funDef in the FULL graph [implDecls], (b) an interface
+-- method name, and (c) NOT defined in the current module [prog] (a same-module def
+-- shadows the method through ordinary scoping, taking the non-RLocal EVar path — only
+-- the CROSS-module import is the RLocal case).  Mirrors lib/typecheck.ml's
+-- standalone_values ∩ method_iface, minus env.locals.
+buildStandaloneShadows : List Decl -> List Decl -> List String
+buildStandaloneShadows implDecls prog =
+  let methodNames = allIfaceMethodNames implDecls
+  let localNames = map fst (funDefs prog)
+  let importedFns = map fst (funDefs implDecls)
+  filter (n => containsName n methodNames && containsName n importedFns && not (containsName n localNames)) (dedupS importedFns)
+
+-- C5: graph-wide standalone-shadow names — every top-level funDef name in [userDecls]
+-- (the user modules, NOT core) that is also an interface method name anywhere in
+-- [allDecls].  Used by the MARK pass to rewrite such occurrences to EMethodAt (so the
+-- route ref exists for resolveRLocalSites to stamp).  Excludes core's own decls as the
+-- funDef source so core's elaboration (no standalone shadows there) is untouched.
+buildStandaloneShadowsGraph : List Decl -> List Decl -> List String
+buildStandaloneShadowsGraph allDecls userDecls =
+  let methodNames = allIfaceMethodNames allDecls
+  let fns = dedupS (map fst (funDefs userDecls))
+  filter (n => containsName n methodNames) fns
 
 -- `public export data` / `public export record` decls — re-registered in every
 -- importing module so their constructors + field layout are in scope.
@@ -5085,8 +5234,15 @@ elaborateModules runtimeDecls coreDecls modules =
   -- alone under-defines the param; param alone under-applies the call (ABI mismatch).
   -- Cause A: promoted (inferred-constraint) user fns join the set.
   let dictNames = dedupS (moduleDictNames coreDecls allDecls modules ++ promoted)
-  let core2 = prePassDictArg rpNames dictNames argNames coreDecls
-  let modules2 = map (prePassModulePairArg rpNames dictNames argNames) modules
+  -- C5: ALSO mark cross-module standalone-shadow method occurrences (box's
+  -- `toList`/`isEmpty`) as EMethodAt, so they carry a route ref for elabModuleStamp's
+  -- resolveRLocalSites to stamp RLocal.  Without this they stay EVar (arg-position,
+  -- argStampEnabled OFF on the eval path) → no route ref → arg-tag panic on a no-impl
+  -- receiver.  Only added to the MARK set (not rpNames proper, which discoverPromoted
+  -- etc. consume) so other passes are unchanged.
+  let markRpNames = dedupS (rpNames ++ buildStandaloneShadowsGraph allDecls (concatMapL snd modules))
+  let core2 = prePassDictArg markRpNames dictNames argNames coreDecls
+  let modules2 = map (prePassModulePairArg markRpNames dictNames argNames) modules
   let runtimeSeed = externSchemes runtimeDecls
   -- impl table accumulates across modules (dependency order): a module's
   -- arg-position dispatch can thread an EARLIER module's / core's parametric
@@ -5301,6 +5457,11 @@ elabModuleStamp seedVars accData implDecls prog =
   -- → dictPass-skipped → byte-identical).
   let _ = if argStampEnabled.value then resolveBinopSites (buildKeyTable implDecls) pendingBinopSites.value else ()
   let _ = if argStampEnabled.value then resolveArgStamps stampImplTable pendingArgStamps.value else ()
+  -- C5: LAST among the route-stampers (after resolveSites AND resolveArgStamps) so the
+  -- receiver-grounded RLocal/RNone overrides whatever those stamped on the SAME ref —
+  -- resolveSites mis-stamps RKey<resultType> (eval path) and resolveArgStamps stamps
+  -- RKey<receiverHead> (emit path), both wrong for a standalone-shadow site.
+  let _ = resolveRLocalSites (buildKeyTable implDecls) pendingRLocalSites.value
   -- E6: fill THIS module's `=>`-constrained-fn EDictAt routes (the call sites
   -- prePassDictArg marked) so the emitter supplies the matching dict ARGUMENT —
   -- realizeRecDictApps for self/mutually-recursive calls, resolveDictApps for the
