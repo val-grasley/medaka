@@ -1,0 +1,12 @@
+-- Module for test_loader_ported.mdk: Phase 151 / Gap G operator dispatch
+public export data Level = Apple | Zebra
+
+export rank : Level -> Int
+rank Apple = 100
+rank Zebra = 1
+
+export impl Eq Level where
+  eq a b = rank a == rank b
+
+export impl Ord Level where
+  compare a b = compare (rank a) (rank b)

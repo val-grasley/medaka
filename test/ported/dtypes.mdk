@@ -1,0 +1,2 @@
+-- Module for test_loader_ported.mdk: cross-module named-field variant
+public export data D = C { x : Int, y : Int } | Other Int deriving (Debug)

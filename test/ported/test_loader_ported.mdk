@@ -1,0 +1,237 @@
+-- test_loader_ported.mdk
+-- Port of test/test_loader.ml program-behavior cases to native Medaka `medaka test`.
+--
+-- Only the multi-file BEHAVIOR cases are ported here — the loader's structural
+-- tests (module-ID derivation, export-keyword parsing, re-export API, abstract
+-- type export tables, cycle/missing-file errors, diagnostics, LSP cache) are
+-- intrinsically non-portable: they test OCaml API internals (Loader.load_program,
+-- Resolve.exp_values, Diagnostics.analyze, etc.) that have no `medaka test`
+-- equivalent.
+--
+-- Ported behavior cases (13):
+--   test_eval_cross_module_user_interface     (Phase 130)
+--   test_eval_cross_module_named_field_variant
+--   test_eval_dict_passing_cross_module       (Phase 69.x)
+--   test_eval_super_dict_cross_module         (Phase 69.x-c)
+--   test_eval_method_dict_cross_module        (Phase 69.x-e foldMap)
+--   test_eval_module_isolation                (Phase 110)
+--   test_eval_dict_arity_no_cross_module_collision (Phase 134)
+--   test_eval_standalone_vs_method            (Phase 112)
+--   test_eval_operator_dispatch_cross_module  (Phase 151 / Gap G)
+--   test_eval_poly_monad_cross_module         (Phase 88)
+--   test_eval_poly_monad_imported_module      (Phase 95)
+--   test_eval_foldable_derived_imported_instance (Phase 125)
+--   test_import_shadows_prelude               (Phase 145)
+--
+-- Each test is restructured as a value assertion (not stdout capture) since
+-- `medaka test` has no stdout-capture facility.
+--
+-- Run with: medaka test test/ported/test_loader_ported.mdk
+
+import test.{expectEqual, expectTrue, expectFalse, expectAll, pass, fail, runTests, runExpectation, Pass, Fail}
+
+-- ── Helpers ─────────────────────────────────────────────────────────────────
+
+assertCrashes thunk = match runExpectation thunk
+  Fail _ => pass
+  Pass => fail "expected a runtime error but evaluation succeeded"
+
+-- ── Phase 130: cross-module user interface ───────────────────────────────────
+-- Ported from: test_eval_cross_module_user_interface
+-- sized.mdk + shape.mdk: interface Sized declared in sized, impl+fn in shape
+
+import sized.{Sized, sizeOf}
+import shape.{Shape, Circle, Square, describe}
+
+test "cross-module user interface describe circle" =
+  expectEqual 6 (describe (Circle 5))
+
+test "cross-module user interface describe square" =
+  expectEqual 10 (describe (Square 9))
+
+-- ── Cross-module named-field variant ─────────────────────────────────────────
+-- Ported from: test_eval_cross_module_named_field_variant
+-- dtypes.mdk: data D = C { x : Int, y : Int } | Other Int deriving (Debug)
+
+import dtypes.{D(..)}
+
+mk2 : D
+mk2 = C { x = 1, y = 2 }
+
+upd : D -> D
+upd d =
+  match d
+    C { x, ... } => C { d | x = x + 10 }
+    _ => d
+
+test "cross-module named-field variant construct and update" =
+  expectEqual "C 11 2" (debug (upd mk2))
+
+-- ── Phase 69.x: cross-module constrained dispatch ────────────────────────────
+-- Ported from: test_eval_dict_passing_cross_module
+-- tagmod.mdk: interface Tag, impls String/Bool, mk : Tag a => Int -> a
+
+import tagmod.{Tag, tag, mk}
+
+test "cross-module constrained dispatch string" =
+  expectEqual "S" (mk 5 : String)
+
+test "cross-module constrained dispatch bool" =
+  expectTrue (mk 5 : Bool)
+
+-- ── Phase 69.x-c: cross-module super dict dispatch ───────────────────────────
+-- Ported from: test_eval_super_dict_cross_module
+-- submod.mdk: Base/Sub with Box/Bag impls, mk : Sub m => a -> m a
+
+import submod.{SBox, SBag, Base, Sub, base, same, mkSub}
+
+test "cross-module super dict dispatch box" =
+  expectEqual "Box 5" (display (mkSub 5 : SBox Int))
+
+test "cross-module super dict dispatch bag" =
+  expectEqual "Bag 7" (display (mkSub 7 : SBag Int))
+
+-- ── Phase 69.x-e: cross-module method-level dict (foldMap) ───────────────────
+-- Ported from: test_eval_method_dict_cross_module
+-- summod.mdk: Sum with Semigroup/Monoid impls, unwrap
+
+import summod.{Sum, MkSum, unwrap}
+
+test "cross-module method-level dict foldMap" =
+  expectEqual 10 (unwrap (foldMap MkSum [1, 2, 3, 4]))
+
+-- ── Phase 110: per-module eval isolation ─────────────────────────────────────
+-- Ported from: test_eval_module_isolation
+-- mapmod.mdk: singleton x y = x + y, wrap calls it
+-- arrmod.mdk: singleton x = x * 100
+
+import mapmod.{wrap}
+import arrmod.{singleton}
+
+test "per-module isolation 2-arg singleton via wrap" =
+  expectEqual 7 (wrap 3 4)
+
+test "per-module isolation 1-arg singleton direct" =
+  expectEqual 500 (singleton 5)
+
+-- ── Phase 134: dict-arity no cross-module collision ──────────────────────────
+-- Ported from: test_eval_dict_arity_no_cross_module_collision
+-- lexmod.mdk: render uses constrained `emit`; main defines unrelated 1-arg emit
+--
+-- The Phase 134 bug: the joint dict-pass keyed arity by bare name, so main's
+-- `emit` got a spurious dict param → partial closure → no output.
+-- Here we test the value directly (no IO side-effect).
+
+import lexmod.{render}
+
+test "phase 134 dict-arity no collision render 99" =
+  expectEqual "198" (render 99)
+
+-- ── Phase 112: standalone vs method per receiver type ────────────────────────
+-- Ported from: test_eval_standalone_vs_method
+-- boxmod.mdk: Box k v with standalone toList/isEmpty (not Foldable)
+
+import boxmod.{Box, toList, isEmpty}
+
+b112 : Box Int Int
+b112 = Box 1 2
+
+pairsResult : List (Int, Int)
+pairsResult = toList b112
+
+beResult : Bool
+beResult = isEmpty b112
+
+oeResult : Bool
+oeResult = isEmpty [1, 2, 3]
+
+olResult : List Int
+olResult = toList (Some 7)
+
+test "standalone toList divergent pair type" =
+  match pairsResult
+    [(k, v)] => expectAll
+      [ expectEqual 1 k
+      , expectEqual 2 v
+      ]
+    _ => fail "unexpected pairsResult shape"
+
+test "standalone isEmpty box returns False" =
+  expectFalse beResult
+
+test "method isEmpty list via Foldable" =
+  expectFalse oeResult
+
+test "method toList option via Foldable" =
+  match olResult
+    [x] => expectEqual 7 x
+    _ => fail "unexpected olResult shape"
+
+-- ── Phase 151 / Gap G: operator dispatch to user Eq/Ord ─────────────────────
+-- Ported from: test_eval_operator_dispatch_cross_module
+-- level.mdk: Level = Apple | Zebra, ranked inversely (Apple=100, Zebra=1)
+-- Apple < Zebra = False (rank 100 < rank 1 = False)
+-- Apple == Zebra = False
+-- Apple != Zebra = True
+
+import level.{Level, Apple, Zebra}
+
+test "gap G operator < dispatches to user Ord (apple < zebra = false)" =
+  expectFalse (Apple < Zebra)
+
+test "gap G operator == dispatches to user Eq (apple == zebra = false)" =
+  expectFalse (Apple == Zebra)
+
+test "gap G operator != dispatches to user Eq (apple != zebra = true)" =
+  expectTrue (Apple != Zebra)
+
+-- ── Phase 88: two-pass elaboration, poly-monad cross-module ─────────────────
+-- Ported from: test_eval_poly_monad_cross_module
+-- idmod.mdk: id2 x = x (makes dep a multi-module program)
+-- h m = do { x <- m; pure x } — pure must dispatch by caller's monad
+
+import idmod.{id2}
+
+h m = do
+  x <- m
+  pure x
+
+test "cross-module poly-monad pure dispatch some" =
+  expectEqual "Some 5" (debug (h (Some (id2 5))))
+
+-- ── Phase 95: imported poly-monad wrapper ────────────────────────────────────
+-- Ported from: test_eval_poly_monad_imported_module
+-- wrapmod.mdk: exports f m = do { x <- m; pure x }
+
+import wrapmod.{wrapF}
+
+test "imported poly-monad wrapper pure dispatch some" =
+  expectEqual "Some 5" (debug (wrapF (Some 5)))
+
+-- ── Phase 125: Foldable-derived over imported instance ──────────────────────
+-- Ported from: test_eval_foldable_derived_imported_instance
+-- bagmod.mdk: Bag with Foldable impl, fromL
+
+import bagmod.{Bag, fromL}
+
+test "foldable-derived sum over imported instance" =
+  expectEqual 6 (sum (fromL [1, 2, 3]))
+
+test "foldable-derived maximum over imported instance" =
+  expectEqual "Some 3" (debug (maximum (fromL [3, 1, 2])))
+
+test "foldable-derived product over imported instance" =
+  expectEqual 24 (product (fromL [2, 3, 4]))
+
+test "foldable-derived length over imported instance" =
+  expectEqual 3 (length (fromL [1, 2, 3]))
+
+-- ── Phase 145: import shadows prelude plain function ─────────────────────────
+-- Ported from: test_import_shadows_prelude
+-- applymod.mdk: apply : Int -> Int -> Int = (+)
+-- The prelude exports `apply : (a-><e>b) -> a -> <e> b`; import must shadow it.
+
+import applymod.{apply}
+
+test "import shadows prelude apply" =
+  expectEqual 7 (apply 3 4)

@@ -1,0 +1,8 @@
+-- Module for test_loader_ported.mdk: Phase 112 standalone vs method
+public export data Box k v = Box k v
+
+export toList : Box k v -> List (k, v)
+toList (Box k v) = [(k, v)]
+
+export isEmpty : Box k v -> Bool
+isEmpty _ = False

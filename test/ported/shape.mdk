@@ -1,0 +1,13 @@
+-- Module for test_loader_ported.mdk: Phase 130 cross-module user interface
+import sized.{Sized, sizeOf}
+
+public export data Shape = Circle Int | Square Int
+
+export impl Sized Shape where
+  sizeOf s =
+    match s
+      Circle r => r
+      Square w => w
+
+export describe : Sized a => a -> Int
+describe x = sizeOf x + 1

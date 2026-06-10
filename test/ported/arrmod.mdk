@@ -1,0 +1,3 @@
+-- Module for test_loader_ported.mdk: Phase 110 module isolation (1-arg singleton)
+export singleton : Int -> Int
+singleton x = x * 100

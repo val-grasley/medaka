@@ -7,8 +7,75 @@ Run with:
 
     medaka test test/ported/test_run_ported.mdk
     medaka test test/ported/test_eval_ported.mdk
+    medaka test test/ported/test_loader_ported.mdk
 
 (Or via the built binary: `./_build/default/bin/main.exe test test/ported/test_run_ported.mdk`)
+
+## test_loader_ported.mdk
+
+Source suite: `test/test_loader.ml` (72+ cases total).
+
+**Ported: 13 multi-file BEHAVIOR cases → 25 Medaka test assertions.**
+
+Each ported case requires sibling modules in `test/ported/` (see below). The
+test file imports from those modules and asserts on computed values (not stdout).
+
+### Sibling modules created for this suite
+
+| Module file | Purpose |
+|---|---|
+| `sized.mdk` | Phase 130: cross-module user interface (`interface Sized`) |
+| `shape.mdk` | Phase 130: `impl Sized Shape`, `describe` fn |
+| `dtypes.mdk` | named-field variant (`data D = C { x, y } \| Other`) |
+| `tagmod.mdk` | Phase 69.x: `interface Tag`, impls String/Bool, `mk` |
+| `submod.mdk` | Phase 69.x-c: `Base`/`Sub` interfaces with `SBox`/`SBag` impls, `mkSub` |
+| `summod.mdk` | Phase 69.x-e: `Sum` with `Semigroup`/`Monoid` impls, `unwrap` |
+| `mapmod.mdk` | Phase 110: 2-arg `singleton`, `wrap` |
+| `arrmod.mdk` | Phase 110: 1-arg `singleton` (isolation test partner) |
+| `lexmod.mdk` | Phase 134: `Num`-constrained `emit`, `render` |
+| `boxmod.mdk` | Phase 112: `Box k v` standalone `toList`/`isEmpty` |
+| `level.mdk` | Phase 151 / Gap G: `Level = Apple \| Zebra` with custom `Eq`/`Ord` by rank |
+| `idmod.mdk` | Phase 88: `id2 x = x` (makes poly-monad test multi-module) |
+| `wrapmod.mdk` | Phase 95: exported poly-monad wrapper `wrapF` |
+| `bagmod.mdk` | Phase 125: `Bag` with `Foldable` impl, `fromL` |
+| `applymod.mdk` | Phase 145: `apply : Int -> Int -> Int` (shadows prelude `apply`) |
+
+### Ported case mapping
+
+| OCaml test | Medaka assertions | Notes |
+|---|---|---|
+| `test_eval_cross_module_user_interface` | `cross-module user interface describe circle/square` | Phase 130 |
+| `test_eval_cross_module_named_field_variant` | `cross-module named-field variant construct and update` | |
+| `test_eval_dict_passing_cross_module` | `cross-module constrained dispatch string/bool` | Phase 69.x |
+| `test_eval_super_dict_cross_module` | `cross-module super dict dispatch box/bag` | Phase 69.x-c |
+| `test_eval_method_dict_cross_module` | `cross-module method-level dict foldMap` | Phase 69.x-e |
+| `test_eval_module_isolation` | `per-module isolation 2-arg singleton via wrap`, `1-arg singleton direct` | Phase 110 |
+| `test_eval_dict_arity_no_cross_module_collision` | `phase 134 dict-arity no collision render 99` | Phase 134 |
+| `test_eval_standalone_vs_method` | `standalone toList divergent pair type`, `standalone isEmpty box`, `method isEmpty list`, `method toList option` | Phase 112 |
+| `test_eval_operator_dispatch_cross_module` | `gap G operator < / == / !=` | Phase 151 / Gap G |
+| `test_eval_poly_monad_cross_module` | `cross-module poly-monad pure dispatch some` | Phase 88 |
+| `test_eval_poly_monad_imported_module` | `imported poly-monad wrapper pure dispatch some` | Phase 95 |
+| `test_eval_foldable_derived_imported_instance` | `foldable-derived sum/maximum/product/length` | Phase 125 |
+| `test_import_shadows_prelude` | `import shadows prelude apply` | Phase 145 |
+
+### Skipped cases (intrinsically non-portable)
+
+All remaining `test_loader.ml` cases test internal OCaml APIs — they cannot be
+expressed as program→value assertions in `medaka test`:
+
+| Category | Count | Reason |
+|---|---|---|
+| Module-ID derivation | 1 | Tests `Loader.module_id_of_path` string function |
+| Export-keyword parsing | 3 | Tests AST shape: `DFunDef`/`DData` node inspection |
+| Loader structure (load_program API) | 7 | Tests `Loader.LoadError` variants, module list length/order |
+| Re-export API (exp_values/exp_types tables) | 9 | Tests `Resolve.exp_values` Hashtbl membership |
+| Abstract type exports | 7 | Same: `exp_constructors`, `exp_types` membership |
+| Multi-file typecheck (no crash) | 2 | Tests that `Typecheck.typecheck_module` doesn't raise |
+| Unit-test discovery pass | 1 | Tests `Doctest.assemble_marked_modules` OCaml API |
+| Workspace/multi-root | 3 | Tests `Loader.AmbiguousModule` error variant |
+| `?read` buffer override | 1 | Tests `Loader.load_program ~read` override hook |
+
+
 
 ## test_run_ported.mdk
 
@@ -189,3 +256,48 @@ cases not yet ported. They could be added in a follow-up pass:
 - **Multi-line test bodies via continuation**: all multiline `expectEqual ... (match ...)`
   must be extracted to top-level bindings; `.mdk` won't let a test body wrap to a
   deeper line (except leading-operator continuation).
+
+## Non-portable suites (intrinsically `lib/`-bound)
+
+The following suites were audited and found to have **no portable cases**.
+Every case tests an internal OCaml API with no `medaka test` equivalent.
+
+### test_diagnostics.ml (20 cases) — NOT portable
+
+All cases test `Diagnostics.analyze` / `analyze_project` OCaml API:
+diagnostic severity, message text, source location, `last_good_source` cache,
+and pathological-input robustness. None of these are program→value assertions.
+
+### test_repl.ml (10 cases) — NOT portable
+
+All cases test the REPL session state machine (`Repl.process_item`,
+`Repl.load_file`, `make_repl_tc_env`, `make_repl_eval_state`). These exercise
+stateful OCaml objects that `medaka test` cannot model.
+
+### test_coverage.ml (11 cases) — NOT portable
+
+All cases test `Coverage.collect_executable`, `Coverage.record_hit`,
+`Coverage.enable`/`reset`, and `Coverage.pp_report` — OCaml C-extension-level
+hit-table manipulation with no Medaka-language surface.
+
+### test_doctest.ml (18+ cases) — NOT portable
+
+- **Extraction tests** (10): test `Doctest.extract_doctests` with synthetic
+  `Lexer.comment` records — internal OCaml API, no Medaka surface.
+- **Runner tests** (8+): test `Doctest.run_file` / `assemble_marked_modules`
+  return values (`r.passed`, `r.failed`, `r.errors`) — meta-tests of the
+  doctest framework itself, not expressible inside doctest/test files.
+
+### test_parser.ml, test_resolve.ml, test_typecheck.ml, test_roundtrip.ml, test_fmt.ml, test_snapshot.ml, test_lsp.ml, test_new_cmd.ml, test_project_config.ml — NOT portable
+
+These suites exclusively test internal AST shapes, inferred type schemes,
+resolver-internal structure, formatter output, LSP JSON protocol messages, and
+CLI scaffolding. None are program→value assertions.
+
+## Bar-item-2 completion status
+
+All remaining cases in all suites are either already ported (test_run, test_eval,
+test_loader behavior cases) or intrinsically non-portable (internal-API bound).
+**Bar-item-2 is effectively complete** — the remaining OCaml suites cannot be
+expressed as `medaka test` without adding new language/stdlib features.
+

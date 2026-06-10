@@ -1,0 +1,3 @@
+-- Module for test_loader_ported.mdk: Phase 130 cross-module user interface
+export interface Sized a where
+  sizeOf : a -> Int

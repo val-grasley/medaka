@@ -1,0 +1,11 @@
+-- Module for test_loader_ported.mdk: cross-module method-level dict (foldMap)
+public export data Sum = MkSum Int
+
+export impl Semigroup Sum where
+  append (MkSum a) (MkSum b) = MkSum (a + b)
+
+export impl Monoid Sum where
+  empty = MkSum 0
+
+export unwrap : Sum -> Int
+unwrap (MkSum n) = n

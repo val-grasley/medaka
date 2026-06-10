@@ -1,0 +1,12 @@
+-- Module for test_loader_ported.mdk: cross-module constrained dispatch
+export interface Tag a where
+  tag : Int -> a
+
+export impl Tag String where
+  tag n = "S"
+
+export impl Tag Bool where
+  tag n = n > 0
+
+export mk : Tag a => Int -> a
+mk n = tag n

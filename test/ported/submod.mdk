@@ -1,0 +1,28 @@
+-- Module for test_loader_ported.mdk: cross-module super dict dispatch
+export data SBox a = SBox a
+export data SBag a = SBag a
+
+export impl Display (SBox a) requires Display a where
+  display (SBox x) = "Box " ++ display x
+
+export impl Display (SBag a) requires Display a where
+  display (SBag x) = "Bag " ++ display x
+
+export interface Base f where
+  base : a -> f a
+
+export interface Sub f requires Base f where
+  same : f a -> f a
+
+export impl Base SBag where
+  base x = SBag x
+export impl Sub SBag where
+  same x = x
+
+export impl Base SBox where
+  base x = SBox x
+export impl Sub SBox where
+  same x = x
+
+export mkSub : Sub m => a -> m a
+mkSub x = same (base x)

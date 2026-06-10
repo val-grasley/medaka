@@ -1,0 +1,3 @@
+-- Module for test_loader_ported.mdk: Phase 88/95 poly-monad cross-module
+export id2 : a -> a
+id2 x = x

@@ -1,0 +1,4 @@
+-- Module for test_loader_ported.mdk: Phase 145 import shadows prelude
+export
+apply : Int -> Int -> Int
+apply x y = x + y

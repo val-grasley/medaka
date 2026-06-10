@@ -1,0 +1,6 @@
+-- Module for test_loader_ported.mdk: Phase 134 dict-arity cross-module collision
+export render : Int -> String
+render n = intToString (emit n n)
+
+emit : Num a => a -> a -> a
+emit a b = a + b

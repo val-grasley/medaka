@@ -1,0 +1,6 @@
+-- Module for test_loader_ported.mdk: Phase 110 module isolation (2-arg singleton)
+export wrap : Int -> Int -> Int
+wrap x y = singleton x y
+
+export singleton : Int -> Int -> Int
+singleton x y = x + y

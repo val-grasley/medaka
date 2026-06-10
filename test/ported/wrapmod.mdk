@@ -1,0 +1,5 @@
+-- Module for test_loader_ported.mdk: Phase 95 poly-monad imported wrapper
+export
+wrapF m = do
+  x <- m
+  pure x

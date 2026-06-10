@@ -1,0 +1,10 @@
+-- Module for test_loader_ported.mdk: Phase 125 Foldable-derived over imported instance
+public export data Bag a = Bag (List a)
+
+export impl Foldable Bag where
+  fold f z (Bag xs) = fold f z xs
+  foldRight f z (Bag xs) = foldRight f z xs
+  toList (Bag xs) = xs
+
+export fromL : List a -> Bag a
+fromL xs = Bag xs
