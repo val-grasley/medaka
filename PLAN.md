@@ -173,8 +173,15 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   enforce the oracle's `let mut not allowed inside a do block` prohibition; an
   invalid `do { let mut … }` is wrongly accepted by selfhost (oracle rejects).
   Separate from value restriction; a missing-diagnostic divergence. Low priority.
-- **T2** — inline `let … in` drops `mut`/`is_fun` → recursive inline let panics
-  (`typecheck.mdk:1204`; split the arm per `typecheck.ml:1664-1696`). CONFIRMED.
+- **T2** — ✅ **CLOSED (`9dfb9e5`).** Inline `let … in` dropped `mut`/`is_fun` →
+  recursive inline let panicked `unbound variable`. Split the `ELet` arm
+  (`inferLet`): `is_fun`+`PVar` → `inferRecLet` (placeholder pre-bind + generalize
+  via `genRestricted`); `mut` → `MutLetRequiresBlock` error. Repro accepts == oracle;
+  inline `let mut … in` rejected == oracle; T1 generalize interaction clean.
+- **OBS2** (selfhost parser gap, surfaced during T2) — selfhost can't parse a
+  `let … in` as an indented clause body (oracle accepts). Moved to the canonical
+  [Known parser gaps](#known-parser-gaps-selfhost-parsermdk) list; verified repro
+  there.
 - **S3** — no coherence checking (overlap/duplicate/orphan impls); port
   `impls_overlap` + duplicate rejection. STATIC; explicit retirement-gate item.
 - **OH1** (oracle-side, surfaced during S2) — combined method-level constraint +
@@ -368,6 +375,25 @@ Current native-backend state + residual gaps: `selfhost/BOOTSTRAP.md`,
 [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml).
 
 ### Self-host (Stage 1 tail)
+
+#### Known parser gaps (selfhost `parser.mdk`)
+
+Constructs the **OCaml parser accepts but `selfhost/parser.mdk` rejects** — check
+here before assuming `selfhost/` can parse a construct (AGENTS.md points here).
+The differential `test/diff_selfhost_parse*` / `diff_selfhost_check*` gates only
+cover the corpus; these are known holes outside it.
+
+- **`let … in` as an indented clause body.** A clause whose head is on its own
+  line with the body on the next indented line, where that body is a `let … in`
+  expression — e.g.
+  ```
+  f x =
+    let go n = if n == 0 then 0 else go (n - 1) in go x
+  ```
+  Oracle **accepts**; selfhost **rejects** (`parser.mdk` parse error). Workaround:
+  put the whole clause on one line (`f x = let … in …`). Verified 2026-06-09 (T2).
+  (The general "expression RHS cannot wrap to a second indented line" rule —
+  SYNTAX.md — is a *language* rule both honor; this is a selfhost-only divergence.)
 
 - ✅ **Lexical-addressing perf hook — eval-consumption half. CLOSED (non-win on
   the tree-walker; 2026-06-05).** Wired `annotateProgram` into the single-file eval
