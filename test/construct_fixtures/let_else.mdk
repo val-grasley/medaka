@@ -1,0 +1,6 @@
+getX : Option Int -> Int
+getX opt =
+  let Some x = opt else panic "no value"
+  x + 100
+main : <IO> Unit
+main = println (debug (getX (Some 5)))

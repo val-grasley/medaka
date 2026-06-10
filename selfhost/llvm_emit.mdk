@@ -1750,8 +1750,99 @@ emitBlock e env ((CSLet _ (PTuple ps) ex)::rest) =
   let (v, _) = emitExpr e env ex
   let env2 = bindPattern e env (PTuple ps) v (CLit (LInt 0))
   emitBlock e env2 rest
+-- `let mut x = e` reuses the irrefutable `CSLet _ (PVar x)` arm above (the mut
+-- flag carries no extra emit work — a mutable local is just an SSA value the
+-- block's tail rebinds).  A reassignment `x = e` (CSAssign, gap B1) mirrors the
+-- tree-walker's `cevalBlock ((CSAssign x e)::rest)`: re-evaluate `e` and SHADOW
+-- the `x` binding for the rest of the block.  Blocks are linear (no back-edge re-
+-- enters the binding), so functional rebinding is observationally identical to a
+-- real mutable slot — no Ref cell needed.
+emitBlock e env ((CSAssign x ex)::rest) =
+  let (v, ty) = emitExpr e env ex
+  emitBlock e ((x, (v, ty)) :: env) rest
+-- the tail statement of a block may be a bare assignment (`x = e`): evaluate for
+-- effect, the block yields Unit.
+emitBlock e env [CSAssign _ ex] =
+  let _ = emitExpr e env ex
+  ("1", LTUnit)
+-- let-else `let pat = e else alt` (gap B2): match `e` against `pat`; on success
+-- bind pattern vars + continue the block; on failure emit `alt` (which diverges —
+-- panic / early-exit).  Mirrors core_ir_eval's `cBlockLetElse`.  For an
+-- irrefutable pattern the else is dead, so just bind + continue.
+emitBlock e env ((CSLetElse pat ex alt)::rest) =
+  if irrefutableLet pat then
+    let (v, _) = emitExpr e env ex
+    let env2 = bindPattern e env pat v (CLit (LInt 0))
+    emitBlock e env2 rest
+  else
+    emitLetElse e env pat ex alt rest
 emitBlock _ _ [] = gapE "empty block"
 emitBlock _ _ _ = gapE "unsupported block statement (slice 1)"
+
+-- emit a let-else with a REFUTABLE pattern: evaluate the scrutinee, test its
+-- discriminant against the pattern's head ctor; on a tag match bind the fields and
+-- continue the block into a result slot; on a miss run `alt` (diverges).  Reuses
+-- loadDiscriminant / cellTag / loadFields / bindPattern — the same primitives the
+-- decision-tree switch chain uses.  Result is the continuation block's value.
+emitLetElse : Emit -> List (String, (String, LTy)) -> Pat -> CExpr -> CExpr -> List CStmt -> <Mut> (String, LTy)
+emitLetElse e env pat ex alt rest = match letElseHead pat
+  Some (c, a, fieldPats) =>
+    let (sv, _) = emitExpr e env ex
+    let slot = freshReg e
+    let _ = emit e ("  " ++ slot ++ " = alloca i64")
+    let rty = Ref LTInt
+    let tag = loadDiscriminant e sv
+    let cmp = freshReg e
+    let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ tag ++ ", " ++ intToString (cellTag e c))
+    let n = intToString (freshId e)
+    let yes = "letelseok" ++ n
+    let no = "letelsealt" ++ n
+    let endL = "letelseend" ++ n
+    let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ yes ++ ", label %" ++ no)
+    let _ = emit e (yes ++ ":")
+    let fields = loadFields e sv a 0
+    let env2 = bindFieldList e env fieldPats fields
+    let (bv, bty) = emitBlock e env2 rest
+    let _ = set_ref rty bty
+    let _ = emit e ("  store i64 " ++ bv ++ ", ptr " ++ slot)
+    let _ = emit e ("  br label %" ++ endL)
+    let _ = emit e (no ++ ":")
+    let (av, _) = emitExpr e env alt
+    let _ = emit e ("  store i64 " ++ av ++ ", ptr " ++ slot)
+    let _ = emit e ("  br label %" ++ endL)
+    let _ = emit e (endL ++ ":")
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+    (r, rty.value)
+  None =>
+    let _ = gapU "let-else with a non-constructor refutable pattern (B2: constructor patterns only)"
+    let _ = emitExpr e env ex
+    ("1", LTUnit)
+
+-- bind a list of field patterns to a parallel list of loaded field words.
+bindFieldList : Emit -> List (String, (String, LTy)) -> List Pat -> List String -> <Mut> List (String, (String, LTy))
+bindFieldList _ env [] _ = env
+bindFieldList _ env _ [] = env
+bindFieldList e env (p::ps) (v::vs) =
+  let env2 = bindPattern e env p v (CLit (LInt 0))
+  bindFieldList e env2 ps vs
+
+-- the head ctor (name, arity, field patterns) of a refutable let-else pattern, if
+-- it is a constructor-like pattern (named ctor, cons, or non-empty list literal).
+letElseHead : Pat -> Option (String, Int, List Pat)
+letElseHead (PCon c args) = Some (c, listLen args, args)
+letElseHead (PCons h t) = Some ("Cons", 2, [h, t])
+letElseHead (PList (p::ps)) = Some ("Cons", 2, [p, PList ps])
+letElseHead _ = None
+
+-- a let-else pattern whose else branch is statically dead (always matches): a bare
+-- var / wildcard / tuple (single inhabitant).  A PLit / ctor / cons can miss.
+irrefutableLet : Pat -> Bool
+irrefutableLet (PVar _) = True
+irrefutableLet PWild = True
+irrefutableLet (PTuple _) = True
+irrefutableLet (PAs _ p) = irrefutableLet p
+irrefutableLet _ = False
 
 -- ── function application (slices 2 + 4) ─────────────────────────────────────
 -- Three call shapes, by the application spine's head:
@@ -3061,6 +3152,10 @@ freeVarsStmts _ [] = []
 freeVarsStmts b ((CSExpr ex)::rest) = freeVars b ex ++ freeVarsStmts b rest
 freeVarsStmts b ((CSLet _ pat ex)::rest) =
   freeVars b ex ++ freeVarsStmts (patVars pat ++ b) rest
+freeVarsStmts b ((CSAssign _ ex)::rest) =
+  freeVars b ex ++ freeVarsStmts b rest
+freeVarsStmts b ((CSLetElse pat ex alt)::rest) =
+  freeVars b ex ++ freeVars b alt ++ freeVarsStmts (patVars pat ++ b) rest
 freeVarsStmts b (_::rest) = freeVarsStmts b rest
 
 freeVarsBinds : List String -> List CBind -> List String
@@ -3936,6 +4031,10 @@ eagerVarsStmts _ [] = []
 eagerVarsStmts b ((CSExpr ex)::rest) = eagerVars b ex ++ eagerVarsStmts b rest
 eagerVarsStmts b ((CSLet _ pat ex)::rest) =
   eagerVars b ex ++ eagerVarsStmts (patVars pat ++ b) rest
+eagerVarsStmts b ((CSAssign _ ex)::rest) =
+  eagerVars b ex ++ eagerVarsStmts b rest
+eagerVarsStmts b ((CSLetElse pat ex alt)::rest) =
+  eagerVars b ex ++ eagerVars b alt ++ eagerVarsStmts (patVars pat ++ b) rest
 eagerVarsStmts b (_::rest) = eagerVarsStmts b rest
 
 eagerVarsBinds : List String -> List CBind -> List String
@@ -4079,6 +4178,8 @@ blockTy : List (String, FnSig) -> List (String, LTy) -> List CStmt -> LTy
 blockTy sigs env [CSExpr ex] = typeOf sigs env ex
 blockTy sigs env ((CSExpr _)::rest) = blockTy sigs env rest
 blockTy sigs env ((CSLet _ (PVar x) ex)::rest) =
+  blockTy sigs ((x, typeOf sigs env ex) :: env) rest
+blockTy sigs env ((CSAssign x ex)::rest) =
   blockTy sigs ((x, typeOf sigs env ex) :: env) rest
 blockTy _ _ _ = LTInt
 
@@ -4455,6 +4556,8 @@ scanStmtsRecords : List CStmt -> List (String, List String)
 scanStmtsRecords [] = []
 scanStmtsRecords ((CSExpr ex)::rest) = scanExprRecords ex ++ scanStmtsRecords rest
 scanStmtsRecords ((CSLet _ _ ex)::rest) = scanExprRecords ex ++ scanStmtsRecords rest
+scanStmtsRecords ((CSAssign _ ex)::rest) = scanExprRecords ex ++ scanStmtsRecords rest
+scanStmtsRecords ((CSLetElse _ ex alt)::rest) = scanExprRecords ex ++ scanExprRecords alt ++ scanStmtsRecords rest
 scanStmtsRecords (_::rest) = scanStmtsRecords rest
 
 -- ── arrays + ranges (slice 8) ────────────────────────────────────────────────

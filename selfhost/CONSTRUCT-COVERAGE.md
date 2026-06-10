@@ -122,9 +122,9 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | `let rec f = x => ...` in block | GAP | see §Gaps below |
 | `let rec ... with ...` at top-level | GAP | see §Gaps below |
 | Top-level mutual recursion (separate clauses) | PASS | `toplevel_mutual_rec.mdk` |
-| `let mut x = e` + reassignment `x = e` | GAP | see §Gaps below |
+| `let mut x = e` + reassignment `x = e` | PASS | `let_mut_reassign.mdk` |
 | `let mut r = Ref e` + `set_ref r v` + `r.value` | PASS | `ref_let_mut.mdk` |
-| `let Some x = opt else panic` | GAP | see §Gaps below |
+| `let Some x = opt else panic` | PASS | `let_else.mdk` |
 | `where` clause (indented block form) | PASS | `where_multi_defs.mdk` |
 | `where` clause (inline form `f x = e where g = ...`) | GAP | see §Gaps below |
 
@@ -324,16 +324,46 @@ These constructs parse correctly in the OCaml reference compiler but produce
 
 ---
 
-### Gap Group B: Emitter missing block statement forms
-`emitBlock` in `selfhost/llvm_emit.mdk` only handles `CSLet`(PVar/PWild/PTuple) and `CSExpr`.
-Missing cases produce `panic: unsupported block statement (slice 1)`.
+### Gap Group B: Emitter missing block statement forms — CLOSED (2026-06-10)
+`emitBlock` in `selfhost/llvm_emit.mdk` historically only handled `CSLet`(PVar/
+PWild/PTuple) and `CSExpr`; missing cases produced `panic: unsupported block
+statement (slice 1)`. Both gaps are now closed (EMIT-ONLY, deterministic).
 
-| # | Construct | Error |
-|---|-----------|-------|
-| B1 | `let mut x = e` + `x = e` reassignment in block | `unsupported block statement (slice 1)` |
-| B2 | `let Some x = opt else panic "..."` (let-else) | `unsupported block statement (slice 1)` |
+| # | Construct | Status |
+|---|-----------|--------|
+| B1 | `let mut x = e` + `x = e` reassignment in block | **PASS** (2026-06-10) — `let_mut_reassign.mdk` |
+| B2 | `let Some x = opt else panic "..."` (let-else) | **PASS** (2026-06-10) — `let_else.mdk` |
 
-**Fix target:** `selfhost/llvm_emit.mdk` `emitBlock` — add `CSSet`/`CSLetMut`/`CSLetElse` arms.
+**B1 approach.** `let mut x = e` already lowers to `CSLet True (PVar x) e`, which
+the existing irrefutable `CSLet _ (PVar x)` arm handles (the mut flag carries no
+emit work). The missing piece was the reassignment statement `CSAssign x e`. It
+is lowered EMIT-ONLY by mirroring the tree-walker (`core_ir_eval.cevalBlock
+((CSAssign x e)::rest)`): re-evaluate `e` to a fresh SSA value and SHADOW the `x`
+binding in the emit env for the rest of the block. Blocks are linear (no back-edge
+re-enters the binding), so functional rebinding of an immutable SSA value is
+observationally identical to a real mutable slot — no Ref cell or value-model
+change needed. Added arms: `emitBlock … ((CSAssign x ex)::rest)` and the tail
+`emitBlock … [CSAssign _ ex]` (yields Unit).
+
+**B2 approach.** `let <pat> = e else alt` lowers to `CSLetElse pat e alt`. Mirrors
+`core_ir_eval.cBlockLetElse`. For an irrefutable pattern (PVar/PWild/PTuple/PAs)
+the else is statically dead → bind + continue like a normal let. For a refutable
+constructor pattern (`PCon c args`, `PCons`, non-empty `PList`) → `emitLetElse`
+emits a discriminant test (`loadDiscriminant` + `icmp` against `cellTag e c`) and
+branches: match → `loadFields` + `bindPattern` + continue the block into a result
+slot; miss → emit `alt` (which diverges via `@mdk_panic`/exit). Reuses the exact
+primitives the decision-tree switch chain uses; no decision-tree builder needed.
+
+**Location:** `selfhost/llvm_emit.mdk` `emitBlock` (new `CSAssign`/`CSLetElse`
+arms) + new helpers `emitLetElse` / `bindFieldList` / `letElseHead` /
+`irrefutableLet`. The four CStmt-walking analyses (`freeVarsStmts`,
+`eagerVarsStmts`, `blockTy`, `scanStmtsRecords`) gained explicit `CSAssign` /
+`CSLetElse` arms so their RHS/alt sub-expressions are no longer dropped by a
+catch-all (matters for closure free-var capture + DCE reachability).
+
+**Residual:** a let-else with a refutable NON-constructor pattern (e.g. a bare
+int literal `let 0 = n else …`) records a contained gap (`letElseHead = None`);
+not produced by current `selfhost/` source.
 
 ---
 

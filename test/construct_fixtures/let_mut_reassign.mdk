@@ -1,0 +1,6 @@
+main : <IO, Mut> Unit
+main =
+  let mut x = 1
+  x = x + 10
+  x = x * 2
+  println (debug x)
