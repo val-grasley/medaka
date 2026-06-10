@@ -1,0 +1,4 @@
+-- Lexer error: block comment opened but never closed.
+-- OCaml reference: Unterminated block comment
+{- never closed
+x = 1

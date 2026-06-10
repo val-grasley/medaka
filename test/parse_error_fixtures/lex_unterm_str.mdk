@@ -1,0 +1,3 @@
+-- Lexer error: string literal not closed before end of file.
+-- OCaml reference: Unterminated string literal
+x = "hello world

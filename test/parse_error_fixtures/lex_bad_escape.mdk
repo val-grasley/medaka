@@ -1,0 +1,3 @@
+-- Lexer error: \q is not a valid escape sequence.
+-- OCaml reference: lexing: empty token
+x = "\q"
