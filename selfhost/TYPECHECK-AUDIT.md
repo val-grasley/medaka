@@ -289,13 +289,45 @@ green; no S1↔eval interaction (eval untouched). Original finding below.
 
 ## Correctness divergences (oracle accepts/behaves X, selfhost differs) — STATIC unless noted
 
-### C1. Phase 73 bidirectional signature-driven parameter typing absent
+### C1. Phase 73 bidirectional signature-driven parameter typing absent — ✅ CLOSED (2026-06-10)
 `processSCC` runs `preunifySigsEx` (sig → placeholder) but infers clause params
 bottom-up, unifying the sig after (`typecheck.mdk:3323-3361`); oracle peels sig arrows
 into clause-pattern types BEFORE body inference (`typecheck.ml:2604-2644`). Programs
 relying on checking-mode propagation typecheck on the oracle, fail or infer differently
 on selfhost; error positions diverge. **Fix:** port arrow-peel + zip-unify into
 `inferMembers`.
+
+- **Done (2026-06-10):** ported the oracle's arrow-peel + zip-unify into the
+  per-clause inference path. `inferMembers` (`typecheck.mdk`) now computes a peel
+  source per member via `memberPeelSource` — `Some placeholder` when the member has
+  a signature, `None` otherwise. (The placeholder already holds the sig
+  instantiation, unified in by `preunifySigsEx`; its shared tyvars accumulate
+  unifications across clauses exactly as the oracle's `sig_t` does — so peeling the
+  placeholder is byte-faithful and needs no re-instantiation.) The source threads
+  through `inferMemberClauses` → `inferClauseEff`, which calls new `peelOntoParams`
+  AFTER `inferPats` (fresh param TVars) but BEFORE `infer …body`: for a signed
+  clause with params it `peelArrows (length pats) src` (peel up to one arrow per
+  param, normalizing at each level; stops early on a partial sig) and `zipUnify`s
+  the equal-length prefix onto the param types. Unsigned member, value binding
+  (no params), and out-of-arrows cases are all no-ops. Purely additive — the
+  existing per-clause `unify v arrow` imposes the same equalities, so the solution
+  is unchanged; the peel only makes the param types concrete *earlier* so
+  type-directed body expressions (receiver-directed field access, `String`-indexed
+  `ESlice`) resolve from the signature alone. SCC grouping / generalization /
+  mutual-recursion paths untouched (contained checking-mode addition to the clause
+  inference, not an SCC-path rewrite). **Unlocks the C2 + C9 sig-typed-param
+  residuals:** `g : String -> Char; g s = s.[0]` was `Type mismatch: String vs
+  Array a` (fresh receiver TVar defaulted to Array) → now `String -> Char` == oracle;
+  two records sharing a field with sig-typed params (`getA : A -> Int; getA a =
+  a.shared` + `getB : B -> String; getB b = b.shared`) was `Ambiguous field access`
+  (fresh receiver TVar, both owners survive) → now resolves each receiver-directed
+  == oracle. Single-owner sig param (`unwrap : Box -> Int; unwrap b = b.val`)
+  worked on both before/after. Fixture: accept `test/diff_fixtures/sig_param_typing.mdk`
+  (+ golden; flows through check + eval_run gates). Gates: bootstrap_typecheck 11/0,
+  bootstrap_eval 20/0, diff_selfhost_check 36/0 + _batch 35/0, check_modules 14/0 +
+  _batch 13/0, typecheck 11/0 + _golden 21/0, typecheck_errors 28/0, eval_run 22/0 +
+  _batch 21/0, eval_dict 20/0, core_ir 20/0, llvm_modules 6/0, selfcompile_fixpoint
+  C3a+C3b YES (the compiler's own inference unchanged — the critical canary holds).
 
 ### C2. Phase 72 receiver-directed field resolution absent — first-match field lookup — ✅ CLOSED (2026-06-09)
 `lookupRecordByField` returned the first record declaring the field

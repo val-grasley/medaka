@@ -3905,37 +3905,86 @@ registerMemberSlots m kept (mono :: rest) = match normalize mono
     id :: registerMemberSlots m (kept + 1) rest
   _ => registerMemberSlots m kept rest
 
--- Pass B: infer each member's clauses, unifying with its placeholder
+-- Pass B: infer each member's clauses, unifying with its placeholder.
+-- Phase 73 (bidirectional, signature-driven parameter typing): a member WITH a
+-- signature peels its declared arrow types onto the clause parameter patterns
+-- BEFORE inferring the body, so the body sees concrete parameter types (a
+-- receiver-directed field access `f p = p.x` or a `String`-indexed `s.[0]`
+-- resolves from the signature alone).  [peel] is Some(placeholder) for a signed
+-- member, None otherwise; the placeholder already holds the sig instantiation
+-- (preunifySigsEx unified it), and its shared tyvars accumulate unifications
+-- across clauses exactly as the oracle's `sig_t` does.  Purely additive: the
+-- per-clause `unify v arrow` below imposes the same equalities anyway.
 inferMembers : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
 inferMembers _ _ _ [] = ()
 inferMembers env sigs defs ((m, v) :: rest) =
   let _ = set_ref currentFn m
-  let effs = inferMemberClauses env v (clausesFor m defs)
+  let peel = memberPeelSource sigs m v
+  let effs = inferMemberClauses env peel v (clausesFor m defs)
   let _ = set_ref currentFn ""
   let _ = checkEffectEscape sigs m effs
   inferMembers env sigs defs rest
 
+-- the peel source for a member: Some placeholder if it has a signature (peel the
+-- declared arrow domains onto the clause params), None otherwise
+memberPeelSource : List (String, Ty) -> String -> Mono -> Option Mono
+memberPeelSource sigs m v = match lookupAssocS m sigs
+  Some _ => Some v
+  None => None
+
+-- peel up to [n] arrow domains off [t], normalizing at each level.  A signature
+-- with fewer arrows than the clause has params stops early and returns fewer
+-- domains (the mismatch then surfaces at the per-clause `unify v arrow`).
+peelArrows : Int -> Mono -> List Mono
+peelArrows n t
+  | n <= 0 = []
+  | otherwise = match normalize t
+    TFun a _ b => a :: peelArrows (n - 1) b
+    _ => []
+
+-- zip-unify the equal-length prefix of param types and peeled sig domains; a
+-- shorter [qs] (partial sig) pushes nothing past its end
+zipUnify : List Mono -> List Mono -> <Mut> Unit
+zipUnify (p :: ps) (q :: qs) =
+  let _ = unify p q
+  zipUnify ps qs
+zipUnify _ _ = ()
+
 -- infer each clause, unifying it to the member placeholder [v] and collecting the
--- concrete effect labels the bodies perform (Phase 79e binding-boundary check)
-inferMemberClauses : TcEnv -> Mono -> List (List Pat, Expr) -> <Mut> List String
-inferMemberClauses _ _ [] = []
-inferMemberClauses env v (cl :: rest) =
-  let ce = inferClauseEff env cl
+-- concrete effect labels the bodies perform (Phase 79e binding-boundary check).
+-- [peel] threads the Phase-73 sig peel source (Some placeholder when signed).
+inferMemberClauses : TcEnv -> Option Mono -> Mono -> List (List Pat, Expr) -> <Mut> List String
+inferMemberClauses _ _ _ [] = []
+inferMemberClauses env peel v (cl :: rest) =
+  let ce = inferClauseEff env peel cl
   let _ = unify v (fst ce)
-  sortUniqS (snd ce ++ inferMemberClauses env v rest)
+  sortUniqS (snd ce ++ inferMemberClauses env peel v rest)
 
 -- infer one clause, returning its arrow type AND the concrete effect labels its
 -- body performs (captured under a fresh open ambient, then the ambient restored —
 -- building a closure performs nothing).  Mirrors inferLam but exposes the effect.
-inferClauseEff : TcEnv -> (List Pat, Expr) -> <Mut> (Mono, List String)
-inferClauseEff env (pats, body) =
+-- Phase 73: when [peel] is Some(sig source) and the clause has params, peel the
+-- signature's arrow domains and zip-unify them onto the clause param types BEFORE
+-- inferring the body (bidirectional checking mode).
+inferClauseEff : TcEnv -> Option Mono -> (List Pat, Expr) -> <Mut> (Mono, List String)
+inferClauseEff env peel (pats, body) =
   let pr = inferPats env pats
+  let _ = peelOntoParams peel (fst pr) pats
   let saved = curEffect.value
   let _ = set_ref curEffect (openRow ())
   let bodyTy = infer (extendVars env (snd pr)) body
   let bodyEff = curEffect.value
   let _ = set_ref curEffect saved
   (arrowsWithLastEffect (fst pr) bodyEff bodyTy, effrowLabels bodyEff)
+
+-- Phase 73 peel: for a signed clause with params, zip-unify the peeled sig
+-- domains onto the inferred param types.  No-op for an unsigned member, a value
+-- binding (no params), or a sig with no remaining arrows.
+peelOntoParams : Option Mono -> List Mono -> List Pat -> <Mut> Unit
+peelOntoParams None _ _ = ()
+peelOntoParams (Some _) _ [] = ()
+peelOntoParams (Some src) patTypes pats =
+  zipUnify patTypes (peelArrows (lengthL pats) src)
 
 -- a signatured binding's body must not perform a concrete effect its signature
 -- doesn't declare; effect *variables* (polymorphic `<e>`) carry no labels and so

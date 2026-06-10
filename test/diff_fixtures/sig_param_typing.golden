@@ -1,0 +1,225 @@
+=== TOKENS ===
+RECORD
+UPPER "Inv"
+INDENT
+IDENT "shared"
+COLON
+UPPER "Int"
+NEWLINE
+DEDENT
+NEWLINE
+RECORD
+UPPER "Wat"
+INDENT
+IDENT "shared"
+COLON
+UPPER "String"
+NEWLINE
+DEDENT
+NEWLINE
+IDENT "invShared"
+COLON
+UPPER "Inv"
+ARROW
+UPPER "Int"
+NEWLINE
+IDENT "invShared"
+IDENT "a"
+EQUAL
+IDENT "a"
+DOT
+IDENT "shared"
+NEWLINE
+IDENT "watShared"
+COLON
+UPPER "Wat"
+ARROW
+UPPER "String"
+NEWLINE
+IDENT "watShared"
+IDENT "b"
+EQUAL
+IDENT "b"
+DOT
+IDENT "shared"
+NEWLINE
+IDENT "charAt"
+COLON
+UPPER "String"
+ARROW
+UPPER "Char"
+NEWLINE
+IDENT "charAt"
+IDENT "s"
+EQUAL
+IDENT "s"
+DOT
+LBRACKET
+INT 0
+RBRACKET
+NEWLINE
+IDENT "main"
+COLON
+LT
+UPPER "IO"
+GT
+UPPER "Unit"
+NEWLINE
+IDENT "main"
+EQUAL
+INDENT
+LET
+IDENT "i"
+EQUAL
+UPPER "Inv"
+LBRACE
+IDENT "shared"
+EQUAL
+INT 7
+RBRACE
+NEWLINE
+LET
+IDENT "w"
+EQUAL
+UPPER "Wat"
+LBRACE
+IDENT "shared"
+EQUAL
+STRING "hi"
+RBRACE
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "invShared"
+IDENT "i"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "watShared"
+IDENT "w"
+RPAREN
+NEWLINE
+IDENT "println"
+LPAREN
+IDENT "charAt"
+STRING "abc"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+NEWLINE
+EOF
+=== AST ===
+record Inv
+  shared : Int
+record Wat
+  shared : String
+invShared : Inv -> Int
+invShared a = a.shared
+watShared : Wat -> String
+watShared b = b.shared
+charAt : String -> Char
+charAt s = s.[0]
+main : <IO> Unit
+main =
+  let i = Inv { shared = 7 }
+  let w = Wat { shared = "hi" }
+  println (invShared i)
+  println (watShared w)
+  println (charAt "abc")
+=== TYPES ===
+abs : a -> a
+add : a -> a -> a
+all : (a -> Bool) -> b a -> Bool
+and : Bool -> Bool -> Bool
+andThen : a b -> (b -> a c) -> a c
+any : (a -> Bool) -> b a -> Bool
+ap : a (b -> c) -> a b -> a c
+append : a -> a -> a
+apply : (a -> b) -> a -> b
+arbitrary : Unit -> <Rand> a
+arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> List a
+arbitraryString : Unit -> <Rand> String
+charAt : String -> Char
+clamp : a -> a -> a -> a
+compare : a -> a -> Ordering
+compose : (a -> b) -> (c -> a) -> c -> b
+const : a -> b -> a
+count : (a -> Bool) -> b a -> Int
+debug : a -> String
+debugListItems : List a -> String
+display : a -> String
+displayListItems : List a -> String
+div : a -> a -> a
+elem : a -> b a -> Bool
+empty : a
+eq : a -> a -> Bool
+filter : (a -> Bool) -> b a -> b a
+filterMap : (a -> Option b) -> c a -> c b
+find : (a -> Bool) -> b a -> Option a
+flat : a (a b) -> a b
+flatMap : (a -> b c) -> b a -> b c
+flip : (a -> b -> c) -> b -> a -> c
+fold : (a -> b -> a) -> a -> c b -> a
+foldMap : (a -> b) -> c a -> b
+foldRight : (a -> b -> b) -> b -> c a -> b
+fromEntries : List a -> b
+fromInt : Int -> a
+fromOption : a -> Option a -> a
+fromResult : Result a b -> Option b
+fromResultOr : a -> Result b a -> a
+from_rep : Rep -> a
+fst : (a, b) -> a
+gt : a -> a -> Bool
+gte : a -> a -> Bool
+hash : a -> Int
+hashListItems : Int -> List a -> Int
+identity : a -> a
+invShared : Inv -> Int
+isEmpty : a b -> Bool
+isErr : Result a b -> Bool
+isNone : Option a -> Bool
+isOk : Result a b -> Bool
+isSome : Option a -> Bool
+length : a b -> Int
+lt : a -> a -> Bool
+lte : a -> a -> Bool
+main : Unit
+map : (a -> b) -> c a -> c b
+mapErr : (a -> b) -> Result a c -> Result b c
+max : a -> a -> a
+maxBound : a
+maximum : a b -> Option b
+min : a -> a -> a
+minBound : a
+minimum : a b -> Option b
+mul : a -> a -> a
+negate : a -> a
+neq : a -> a -> Bool
+not : Bool -> Bool
+notElem : a -> b a -> Bool
+or : Bool -> Bool -> Bool
+otherwise : Bool
+pipe : (a -> b) -> (b -> c) -> a -> c
+print : a -> <IO> Unit
+println : a -> <IO> Unit
+product : a Int -> Int
+pure : a -> b a
+shrink : a -> List a
+signum : a -> a
+snd : (a, b) -> b
+sub : a -> a -> a
+sum : a Int -> Int
+thenCmp : Ordering -> Ordering -> Ordering
+toList : a b -> List b
+toResult : a -> Option b -> Result a b
+to_rep : a -> Rep
+unless : Bool -> a Unit -> a Unit
+watShared : Wat -> String
+when : Bool -> a Unit -> a Unit
+xor : Bool -> Bool -> Bool
+=== EVAL ===
+7
+hi
+a
