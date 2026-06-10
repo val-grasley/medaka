@@ -3511,21 +3511,27 @@ emitSwitch e env root arms occs branches dft slot endL rty = match occs
     [] => emitTree e env root arms rest slot endL rty dft
     ((CTBranch (HLit _) _)::_) =>
       emitLitChain e env root arms foc rest branches dft slot endL rty
+    -- HUnit is irrefutable (Unit has exactly one inhabitant): no discriminant test
+    -- needed.  Drop the focus occurrence and descend into the single branch body.
+    -- This closes gap #12 (the 6 Arbitrary impls in core.mdk and any user f()=…).
+    ((CTBranch HUnit sub)::_) =>
+      emitTree e env root arms rest slot endL rty sub
     ((CTBranch h _)::_) => match conHeadInfo h
       Some _ =>
         let tagReg = loadDiscriminant e foc
         emitConChain e env root arms foc rest tagReg branches dft slot endL rty
       None => gapSwitchHead e slot endL
 
--- gap-TOLERANT terminator (bootstrap): a switch head the spike cannot lower (e.g.
--- a Unit head) records the gap, then — when recording is ON — still TERMINATES the
--- current block (store "0" placeholder, branch to the decision end) so the module
--- stays structurally valid LLVM even though the function is dead code.  With
--- recording OFF the `gapU` panics first, exactly as before.  The harness byte-diff
--- catches any switch the program actually REACHES (its output would diverge).
+-- gap-TOLERANT terminator (bootstrap): a switch head the spike cannot lower
+-- records the gap, then — when recording is ON — still TERMINATES the current block
+-- (store "0" placeholder, branch to the decision end) so the module stays
+-- structurally valid LLVM even though the function is dead code.  With recording
+-- OFF the `gapU` panics first, exactly as before.  The harness byte-diff catches
+-- any switch the program actually REACHES (its output would diverge).
+-- Note: HUnit is now handled before reaching here (irrefutable — no test needed).
 gapSwitchHead : Emit -> String -> String -> <Mut> Unit
 gapSwitchHead e slot endL =
-  let _ = gapU "unsupported switch head (slice 5b: constructor / list / tuple / int-literal heads only; no unit heads)"
+  let _ = gapU "unsupported switch head (slice 5b: constructor / list / tuple / int-literal / unit heads only)"
   let _ = emit e ("  store i64 0, ptr " ++ slot)
   emit e ("  br label %" ++ endL)
 
@@ -3533,7 +3539,8 @@ gapSwitchHead e slot endL =
 -- carries them directly; built-in list HCons/HNil and tuples HTuple reuse the same
 -- boxed-cell discipline with the fixed names the alloc sites stamp (emitTuple uses
 -- "$tuple"; a user `data … = Cons … | Nil` stamps "Cons"/"Nil").  HLit/HUnit are
--- not constructor-like (HLit goes through emitLitChain; HUnit is out of scope).
+-- not constructor-like (HLit goes through emitLitChain; HUnit handled irrefutably
+-- before this call — see emitSwitch).
 conHeadInfo : CHead -> Option (String, Int)
 conHeadInfo (HCon c a) = Some (c, a)
 conHeadInfo HCons = Some ("Cons", 2)

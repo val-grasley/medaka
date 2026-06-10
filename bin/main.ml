@@ -44,6 +44,7 @@ Usage:
   medaka repl               Start the REPL.
   medaka run [--release] <file.mdk>   Type-check and run a program.
   medaka check [--json] <file.mdk>    Type-check without running.
+  medaka build [--output <bin>] <file.mdk>  Native-compile via LLVM backend.
   medaka test [file.mdk]    Run doctests + prop tests.
   medaka bench [file.mdk]   Run bench declarations.
   medaka doc [file.mdk]     Generate Markdown documentation.
@@ -81,6 +82,11 @@ let () =
   if has_sub "new" then begin
     let rest = Array.sub argv 2 (argc - 2) in
     exit (Medaka_lib.New_cmd.run rest)
+  end;
+  (* Stage 3 #1: native-compile a user program via the LLVM backend. *)
+  if has_sub "build" then begin
+    let rest = Array.sub argv 2 (argc - 2) in
+    exit (Medaka_lib.Build_cmd.run rest)
   end;
   if has_sub "test" then begin
     let rest_list = Array.to_list (Array.sub argv 2 (argc - 2)) in
