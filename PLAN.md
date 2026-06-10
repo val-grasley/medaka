@@ -147,22 +147,40 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
    `unbound variable` hard-error at that boundary). This makes #2 the gating
    unblocker, not just a completeness chore. Deferred: Core-IR artifact cache
    (cache-key + on-disk layout), install-prefix asset packaging.
-2. **Prelude-emittability + completeness — `max`/`min` + DCE + emitter-gap sweep.**
-   *Sharpened by the #1 finding:* this is now the **unblocker that makes `medaka
-   build` useful for real programs** (anything using `println`/typeclasses), not a
-   tail-end polish item. Two sub-goals: **(a) make the real `stdlib/core.mdk`
-   prelude emittable** — close the `max`/`min` gap (`max`/`min` over primitive
-   `Ord`: a default method whose `compare` impls are primitives with no runtime
-   tag — via dict-passing or monomorphic specialization; `selfhost/EMITTER-GAPS.md`)
-   and/or add **dead-code elimination** so unreached prelude bindings (`maximum`/
-   `minimum`, `Arbitrary` impls, …) don't force emission of gapped code; then flip
-   `medaka build` from the empty prelude to the real one. **(b)** AUDIT
-   `emitTree`/`emitExpr`/`emitApp` for every reachable `gapU`/`gapE`, and build a
-   **language-construct coverage matrix**: the bootstrap only exercised what the
-   compiler's own source uses — user programs use more (list comprehensions, all
-   operator sections, inclusive ranges, string interpolation, every `do`/guard
-   form, record/variant update, etc.). One native==interpreter fixture per
-   construct in `SYNTAX.md`.
+2. **Prelude-emittability + completeness — DCE ✅ + unit-head gap → flip + emitter-gap sweep.**
+   *Sharpened by the #1 finding:* this is the **unblocker that makes `medaka build`
+   useful for real programs** (anything using `println`/typeclasses), not tail-end
+   polish. Sub-goal **(a) make the real `stdlib/core.mdk` prelude emittable:**
+   - ✅ **DCE done (2026-06-09, `08be86a`).** `selfhost/dce.mdk` (`dceFilter`)
+     filters `allDecls` in `llvm_emit_modules_main.mdk`'s `runEmit` before lowering:
+     drops plain (`DFunDef`) bindings unreachable from `main` + emitting-decl roots;
+     **retains ALL impls/interfaces whole** (sound — impls are dynamic-dispatch
+     targets, off the static call graph). Order-preserving → IR byte-stable (C3
+     fixpoint intact); always-on, all gates green. This cleared TWO of the three
+     prelude blockers (`max`/`min` in `maximum`/`minimum`, unit-head in
+     `arbitraryString` — both plain fns, now dropped).
+   - 🔜 **NEXT — close the unit-head emitter gap (blocks the prelude flip).** The
+     third blocker survives DCE because it's in *impls* (`impl arbitrary@Int/@Bool/
+     @Float/@Char/@String`, each `arbitrary () = …`), which DCE soundly retains.
+     Gap: `llvm_emit.mdk:3528 "unsupported switch head (slice 5b): …no unit heads"`.
+     `canonPat (PLit LUnit)` → `HUnit`, which `conHeadInfo`/`emitSwitch` reject. A
+     `()` pattern is irrefutable → principled fix is **emit-only**: treat `HUnit` as
+     a no-test irrefutable head in `llvm_emit.mdk`'s switch lowering (emit the single
+     branch, no discriminant). Do NOT touch `canonPat` (shared with eval + golden
+     dumps → Core-IR/oracle change). Pre-existing + orthogonal (a bare `f () = 42`
+     gaps identically). Update `selfhost/EMITTER-GAPS.md`.
+   - 🔜 **Then flip + re-census.** Once unit-head emits, flip `lib/build_cmd.ml`
+     from the empty prelude to the real `stdlib/core.mdk` (~one line) and add
+     real-prelude cases to `test/build_cmd.sh`. The DCE census was for `println
+     "hello"` specifically — re-census for the richer acceptance set (`show`/`Eq`/
+     `Ord`/`Foldable`/`deriving`); more gaps may surface.
+
+   Sub-goal **(b)** AUDIT `emitTree`/`emitExpr`/`emitApp` for every reachable
+   `gapU`/`gapE`, and build a **language-construct coverage matrix**: the bootstrap
+   only exercised what the compiler's own source uses — user programs use more (list
+   comprehensions, all operator sections, inclusive ranges, string interpolation,
+   every `do`/guard form, record/variant update, etc.). One native==interpreter
+   fixture per construct in `SYNTAX.md`.
 3. **Port OCaml test suites to native Medaka.** Re-express `test/*.ml` (the
    alcotest suites — parser/typecheck/eval/resolve/exhaust/…) as Medaka tests
    (`medaka test`) so the suite stops depending on `lib/`. This is the bulk of
