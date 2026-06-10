@@ -305,6 +305,14 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 >   here. Full diagnosis: CONSTRUCT-COVERAGE §Gap G. Deferred (both-tree-walker
 >   dispatch fix — risky).
 >
+> **Bar-item-2 (port tests to `medaka test`) — STARTED:** `test/ported/test_run_ported.mdk`
+> = 40/46 `test_run.ml` cases → 96 assertions, all green + deterministic, no source
+> changed. Skipped: 5 runtime-error cases (need `runExpectation` **exported** in
+> `stdlib/test.mdk` — a 1-word stdlib edit, RECOMMENDED but not done per the
+> stdlib-is-hand-written policy) + 2 IO-env cases. `test/ported/README.md` maps
+> ported-vs-skipped. Portable = program→value cases; internal-API cases (AST/scheme
+> inspection) are not expressible as `medaka test` and stay in the OCaml suites.
+>
 > **Method note:** every fix in its own worktree agent → verified on main → docs
 > updated. L1/L2 deferred for the run (latent + route-fragile; near E4). Skipped
 > only genuine language-design items. Heartbeat cron `d6dca841` armed until 7am.
