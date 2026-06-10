@@ -83,6 +83,11 @@ let () =
     let rest = Array.sub argv 2 (argc - 2) in
     exit (Medaka_lib.New_cmd.run rest)
   end;
+  (* Stage 3 #1: native-compile a user program via the LLVM backend. *)
+  if has_sub "build" then begin
+    let rest = Array.sub argv 2 (argc - 2) in
+    exit (Medaka_lib.Build_cmd.run rest)
+  end;
   if has_sub "test" then begin
     let rest_list = Array.to_list (Array.sub argv 2 (argc - 2)) in
     let use_coverage     = List.mem "--coverage"         rest_list in
@@ -348,10 +353,6 @@ let () =
        show_snippet source loc_opt;
        exit 1);
     exit 0
-  end;
-  if has_sub "build" then begin
-    let rest = Array.sub argv 2 (argc - 2) in
-    exit (Medaka_lib.Build_cmd.run rest)
   end;
   if has_sub "doc" then begin
     let filename =

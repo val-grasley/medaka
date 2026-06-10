@@ -1,0 +1,9 @@
+-- Gap #12 closure (E20): HUnit switch head is irrefutable — no discriminant test
+-- needed.  A () parameter pattern lowers to PLit LUnit → PCon "__unit__" [] →
+-- HUnit in the decision tree; emitSwitch now descends directly into the sub-tree.
+-- f () = 42     ← single unit-head clause
+-- g x () = x + 1  ← unit-head with another param
+-- main = f () + g 10 ()  → 42 + 11 = 53
+f () = 42
+g x () = x + 1
+main = f () + g 10 ()
