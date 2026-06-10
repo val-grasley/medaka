@@ -105,8 +105,8 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | Match record pattern `Person { name }` | PASS | `match_record_pat.mdk` |
 | Match record pattern with rest `{ ... }` | PASS | `record_pat_rest.mdk` |
 | Match string literal `"Alice"` | PASS | `match_string_pat.mdk` |
-| Match int range pattern `1..9` | GAP | see §Gaps below |
-| Match char range pattern `'a'..='z'` | GAP | see §Gaps below |
+| Match int range pattern `1..9` | TYPECHECK-CLOSED, EMIT-OPEN | typecheck `range_pat.mdk`; see §Gaps A2/A3 |
+| Match char range pattern `'a'..='z'` | TYPECHECK-CLOSED, EMIT-OPEN | typecheck `range_pat.mdk`; see §Gaps A2/A3 |
 | Match negative literal `-1` | GAP | see §Gaps below |
 | Match inline `\|` form (`match x \| p => e \| _ => e`) | GAP | see §Gaps below |
 | Refutable match-arm pattern-guard `x if Some y <- f x` | GAP | see §Gaps below |
@@ -309,8 +309,8 @@ These constructs parse correctly in the OCaml reference compiler but produce
 | # | Construct | Error | Repro |
 |---|-----------|-------|-------|
 | A1 | Match inline `\|` form: `match x \| 0 => "z" \| _ => "o"` | `parser.mdk:2428:32: panic: parse error` | `let r = match 0 \| 0 => "zero" \| _ => "other"` |
-| A2 | Match int range pattern `1..9` | (parses; fails at selfhost typecheck) | `match n` / `  1..9 => "digit"` / `  _ => "other"` |
-| A3 | Match char range pattern `'a'..='z'` | (parses; fails at selfhost typecheck) | `match c` / `  'a'..='z' => True` / `  _ => False` |
+| A2 | Match int range pattern `1..9` | TYPECHECK-CLOSED (2026-06-10); EMIT-OPEN | `match n` / `  1..9 => "digit"` / `  _ => "other"` |
+| A3 | Match char range pattern `'a'..='z'` | TYPECHECK-CLOSED (2026-06-10); EMIT-OPEN | `match c` / `  'a'..='z' => True` / `  _ => False` |
 | A4 | Match negative literal pattern `-1` | NOT A GAP — ref REJECTS it too | `match n` / `  -1 => "minus"` / `  _ => "other"` |
 
 **Triage (2026-06-10, indentation-form repros — the table's original `\|`-form
@@ -324,21 +324,35 @@ repros all hit A1 first, masking the real downstream behavior):**
   Reclassify as design-decision (do not add) unless the reference grammar gains
   it first.
 
-- **A2 / A3** (int / char range patterns `1..9`, `'a'..='z'`) — **FULL-PIPELINE
-  gap, NOT parser-only.** The selfhost *parser already accepts them*
+- **A2 / A3** (int / char range patterns `1..9`, `'a'..='z'`) — **TYPECHECK
+  CLOSED 2026-06-10; EMIT still OPEN.** The selfhost *parser already accepts them*
   (`parsePatAtom` → `intPatRest`/`charPatRest` → `PRng`, parser.mdk:1216-1255).
-  They fail downstream at **selfhost typecheck**: `inferPat` (typecheck.mdk:1180)
-  has no `PRng` arm and falls through to `panic "typecheck: unsupported pattern
-  (slice 1)"`. Notably the selfhost **eval** stage *does* handle `PRng`
-  (`bootstrap_eval.sh`'s `range_pat_tree.mdk` — parse+desugar+eval, no typecheck —
-  passes), so the gap is specifically `inferPat` (and the LLVM emit path, which
-  also goes through `medaka build`). The oracle handles `PRng` fully
-  (parse+tc+exhaust+eval). Closing A2/A3 needs `PRng` threaded through selfhost
-  typecheck (`inferPat`) and emit — a multi-stage feature, not a parser production.
-  *Caveat:* the selfhost parser's range **bounds** also reject `MINUS INT`
-  (`intBoundFor` only matches `TInt`), so even after typecheck support, negative
-  range bounds (`-1..1`, which the ref accepts via parser.mly:561-566) remain a
-  separate selfhost-parser gap.
+  **Selfhost typecheck now handles them**: `inferPat` gained a `PRng` arm
+  (`inferPatRng`, typecheck.mdk:~1180) mirroring the oracle (`lib/typecheck.ml:1299`):
+  both bounds `LInt` → `Int`, both `LChar` → `Char`, anything else → a
+  `Type mismatch` error; binds nothing; pattern type = the bound type. Verified
+  selfhost == oracle on `test/typecheck_fixtures/range_pat.mdk` (`Int -> String`,
+  `Char -> Bool`). Selfhost **eval** already handled `PRng` (`bootstrap_eval.sh`'s
+  `range_pat_tree.mdk`).
+  **EMIT remains a gap** (`medaka build`): two missing pieces in `llvm_emit.mdk`.
+  (1) `bindPattern` has no `PRng` arm → falls through to `gapEnv`
+  (llvm_emit.mdk:382) and `panic: unsupported pattern in match arm … PRng`.
+  (2) More fundamentally, the decision-tree lowering (`core_ir_lower.mdk`)
+  canonicalises `PRng` to `PWild` in the matrix (`canonPat`) and routes the arm
+  through `CTGuard` (`patNeedsGuard (PRng …) = True`), but the arm's explicit
+  `guards` list is **empty** — the range bound lives in the *pattern*, not a
+  `CGuard`. `emitGuardedArm` (llvm_emit.mdk:3507) only emits tests for the
+  explicit `guards`, so even past the `bindPattern` panic it would emit **no
+  range-comparison test** and fire the arm unconditionally (the `50` scrutinee
+  would wrongly match `1..9`). Closing emit requires a NEW range-test lowering: a
+  `bindPattern` `PRng` no-op arm PLUS synthesizing the comparison
+  (`lo <= v && v <= hi` for `..=`, `lo <= v && v < hi` for `..`) as an emitted
+  guard test branching to the `CTGuard` fail subtree. That is a genuine emit
+  feature (a range-comparison test the emitter does not produce) — deferred,
+  STOPPED per task guardrails (not built unattended).
+  *Caveat (unchanged):* the selfhost parser's range **bounds** reject `MINUS INT`
+  (`intBoundFor` only matches `TInt`), so negative range bounds (`-1..1`, which
+  the ref accepts via parser.mly:561-566) remain a separate selfhost-parser gap.
 
 - **A4** (bare negative literal pattern `-1`) — **NOT A GAP. The OCaml reference
   parser REJECTS bare negative literal patterns in ALL positions** (match arm,

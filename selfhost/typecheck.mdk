@@ -1177,7 +1177,17 @@ inferPat env (PCons h t) = inferPatCons env h t
 inferPat env (PList pats) = inferPatList env pats
 inferPat env (PAs x p) = inferPatAs env x p
 inferPat env (PRec name fields _) = inferPatRec env name fields
+inferPat _ (PRng lo hi _) = inferPatRng lo hi
 inferPat _ _ = panic "typecheck: unsupported pattern (slice 1)"
+
+-- range pattern `lo..hi` / `lo..=hi`: only Int and Char bounds are valid
+-- (mirrors lib/typecheck.ml PRng arm); binds no variables
+inferPatRng : Lit -> Lit -> <Mut> (Mono, List (String, Scheme))
+inferPatRng (LInt _) (LInt _) = (TCon "Int", [])
+inferPatRng (LChar _) (LChar _) = (TCon "Char", [])
+inferPatRng lo hi =
+  let _ = set_ref typeErrors ("Type mismatch: " ++ ppMono (litType lo) ++ " vs " ++ ppMono (litType hi) :: typeErrors.value)
+  (TCon "Int", [])
 
 inferPatRec : TcEnv -> String -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
 inferPatRec env name fields = match lookupRecordByName name
