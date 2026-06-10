@@ -2603,9 +2603,8 @@ dictPassDecl names _ (DFunDef pub n pats body)
 -- added UNIFORMLY across all clauses of a method when ANY clause uses the dict, so
 -- a multi-clause method keeps one arity).  The routes resolveSite/resolveArgStamp
 -- filled on the call-site EMethodAt's impl-dicts ref line up with these params.
-dictPassDecl _ _ (d@DImpl { reqs, methods, ... }) = match reqs
-  [] => d
-  _ => DImpl { d | methods = implDictPassMethods (lengthL reqs) methods }
+dictPassDecl _ _ (d@DImpl { reqs, methods, ... }) =
+  DImpl { d | methods = implDictPassMethods (lengthL reqs) methods }
 -- Phase 69.x-e: a method with method-level constraints (foldMap's `Monoid m`) gets
 -- one leading `$dict_<method>_<slot>` param per constraint on its DEFAULT body, so a
 -- caller can supply the dictionary the body's `empty`/… reads (routed RDict by
@@ -2634,6 +2633,15 @@ methodDictArityOf n = lengthL (fromOption [] (lookupAssocSL2 n methodConstraints
 -- No rpNames gate: usesImplDict already requires an in-body RDict route to one of
 -- these params, which on the non-emit path no arg-position site ever has (its
 -- occurrences stay bare EVar), so return-position goldens are unaffected.
+-- TYPECHECK-AUDIT S2: each method gets, in oracle slot order, its METHOD-LEVEL
+-- dict params (`dictParams n k`, k = methodDictArityOf n — e.g. `build`'s `Num e`)
+-- FOLLOWED BY the impl-`requires` element-dict params (at slots k..k+nReq-1, only
+-- when the body reads one), then the original pats.  Direct mirror of
+-- lib/dict_pass.ml:99-119 (`dict_pats n k @ impl_pats @ pats`) and the
+-- `method_off + slot` impl-dict naming in lib/typecheck.ml:3682-3690.  Eval applies
+-- method dicts unconditionally first (eval.mdk), so dropping the leading method-level
+-- params (the old `match reqs []=>d` early-out) mis-bound the dict into the first
+-- value parameter.
 implDictPassMethods : Int -> List ImplMethod -> List ImplMethod
 implDictPassMethods nReq methods =
   let users = dedupS (concatMapL (clauseImplDictUser nReq) methods)
@@ -2644,24 +2652,32 @@ clauseImplDictUser nReq (ImplMethod n _ body)
   | usesImplDict n nReq body = [n]
   | otherwise = []
 
+-- params = method-level dicts (slots 0..k-1) ++ impl-`requires` dicts (slots
+-- k..k+nReq-1, only when this method's body consumes one) ++ original pats.  Skip
+-- entirely only when there are neither (k = 0 and no impl-dict use), matching the
+-- oracle's `if k = 0 && not uses_impl_dict then (n, pats, body)`.
 prependImplDictIfUser : Int -> List String -> ImplMethod -> ImplMethod
-prependImplDictIfUser nReq users (ImplMethod n pats body)
-  | containsName n users = ImplMethod n (dictParams n nReq ++ pats) body
-  | otherwise = ImplMethod n pats body
+prependImplDictIfUser nReq users (ImplMethod n pats body) =
+  let k = methodDictArityOf n
+  let implPats = if containsName n users then dictParamsFrom n k nReq else []
+  if k == 0 && isEmptyL implPats then ImplMethod n pats body
+  else ImplMethod n (dictParams n k ++ implPats ++ pats) body
 
 -- does [body] reference an in-body return-position method already routed RDict to
 -- one of THIS method's would-be impl-dict params? (the gate that distinguishes a
--- body that consumes the element dict from a terminal one that doesn't)
+-- body that consumes the element dict from a terminal one that doesn't).  Impl-dict
+-- slots are offset by the method's own method-level arity (S2), so probe at k..k+nReq-1.
 usesImplDict : String -> Int -> Expr -> Bool
 usesImplDict mname nReq body = anyMember (bodyRDictNames body) (implDictNames mname nReq)
 
 implDictNames : String -> Int -> List String
-implDictNames mname nReq = implDictNamesGo mname 0 nReq
+implDictNames mname nReq = map (dictParamName mname) (rangeFromCount (methodDictArityOf mname) nReq)
 
-implDictNamesGo : String -> Int -> Int -> List String
-implDictNamesGo mname slot k
-  | slot >= k = []
-  | otherwise = dictParamName mname slot :: implDictNamesGo mname (slot + 1) k
+-- [start, start+1, .. start+count-1]
+rangeFromCount : Int -> Int -> List Int
+rangeFromCount start count
+  | count <= 0 = []
+  | otherwise = start :: rangeFromCount (start + 1) (count - 1)
 
 -- the dict-param names every EMethodAt in [e] routes RDict to (post-resolveSites)
 -- plus every EDictAt route-LIST that forwards RDict/RDictFwd to an impl param
@@ -2799,6 +2815,14 @@ dictParamsGo : String -> Int -> Int -> List Pat
 dictParamsGo n slot k
   | slot >= k = []
   | otherwise = PVar (dictParamName n slot) :: dictParamsGo n (slot + 1) k
+
+-- [count] dict params for [n] starting at slot [start]: $dict_n_start ..
+-- $dict_n_(start+count-1).  Used for impl-`requires` element-dict params, which
+-- follow the method's own method-level params (S2 offset = methodDictArityOf).
+dictParamsFrom : String -> Int -> Int -> List Pat
+dictParamsFrom n start count
+  | count <= 0 = []
+  | otherwise = PVar (dictParamName n start) :: dictParamsFrom n (start + 1) (count - 1)
 
 dictParamName : String -> Int -> String
 dictParamName fn slot = "$dict_" ++ fn ++ "_" ++ intToString slot
@@ -3007,7 +3031,7 @@ registerImplRequires : List (String, Mono) -> List String -> List Require -> Lis
 registerImplRequires _ _ _ [] = ()
 registerImplRequires implTvMap rpNames reqs (ImplMethod mname _ _ :: rest)
   | registersElementDict mname rpNames =
-      let _ = registerReqSlots mname implTvMap 0 reqs
+      let _ = registerReqSlots mname implTvMap (methodDictArityOf mname) reqs
       registerImplRequires implTvMap rpNames reqs rest
   | otherwise = registerImplRequires implTvMap rpNames reqs rest
 

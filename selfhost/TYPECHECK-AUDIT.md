@@ -73,7 +73,23 @@ gates green; no S1↔S2 interaction. Original finding below.
 - **Fix:** port the gate — apply `methodRef`/`implRef` dicts only when the narrowed
   value awaits args; drop them otherwise.
 
-### S2. Method-level dict params dropped from explicit impl clauses (k-offset missing) — [NEW] CONFIRMED
+### S2. Method-level dict params dropped from explicit impl clauses (k-offset missing) — [NEW] ✅ CLOSED (2026-06-09)
+
+**Fix applied:** `dictPassDecl`'s DImpl arm no longer early-returns on `reqs = []`; it
+always runs `implDictPassMethods`. `prependImplDictIfUser` now prepends `dictParams n k`
+(k = `methodDictArityOf n`, method-level constraint count) and offsets the impl-`requires`
+dict params to slots `k..k+nReq-1` via the new `dictParamsFrom n k nReq` helper —
+`dictParams n k ++ implPats ++ pats`, mirroring `dict_pass.ml:118` (`dict_pats n k @
+impl_pats @ pats`) and skipping only when `k == 0 && implPats == []`. The route side
+(`registerReqSlots`) starts its impl-dict slot at `methodDictArityOf mname` instead of 0,
+matching `typecheck.ml:3690`'s `method_off + slot`. `implDictNames`/`usesImplDict` probe
+the offset slots. Repro (`build : Num e => e -> t` / `impl Builder Box`) now prints `6` ==
+oracle on the `eval_dict_main` path; fixture `test/eval_dict_fixtures/method_constraint_impl_offset.mdk`.
+The 2-method method-level-constraint variant (D6 family) also works (prints `22` == oracle),
+so D6 is subsumed for the method-level case. All dict/check/bootstrap/native/fixpoint gates
+green; no S1↔eval interaction (eval untouched). Original finding below.
+
+### S2 (original). Method-level dict params dropped from explicit impl clauses (k-offset missing) — [NEW] CONFIRMED
 
 - **Where:** `selfhost/typecheck.mdk:2595-2614` (`dictPassDecl` DImpl arm →
   `implDictPassMethods`, impl-dict slots start at 0, no method-level dicts prepended);

@@ -1,0 +1,19 @@
+-- TYPECHECK-AUDIT S2: a method with its OWN method-level constraint
+-- (`build : Num e => e -> t`) implemented by an explicit impl. The method-level
+-- dict param (`$dict_build_0`, from `Num e`) must lead the impl clause's params;
+-- dropping it (the old DImpl `match reqs []=>d` early-out) mis-bound the dict into
+-- the first VALUE parameter `n`, so `n + n` panicked `unknown op '+'`. After the
+-- k-offset fix (dictParams n k prepended in implDictPassMethods), selfhost prints
+-- `6` matching the oracle.
+interface Builder t where
+  build : Num e => e -> t
+
+data Box = MkBox Int
+
+impl Builder Box where
+  build n = MkBox (n + n)
+
+unbox : Box -> Int
+unbox (MkBox x) = x
+
+main = putStrLn (intToString (unbox (build 3 : Box)))
