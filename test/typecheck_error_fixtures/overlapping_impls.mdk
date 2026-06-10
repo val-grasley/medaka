@@ -1,0 +1,15 @@
+-- TYPECHECK-AUDIT S3 coherence: two parametric impls of the SAME interface whose
+-- heads overlap (`a` and `b` both match any type) and neither is strictly more
+-- specific than the other — an unresolvable overlap.  Mirrors the oracle's
+-- OverlappingImpls (Phase 68).  (A specific-vs-parametric pair like `Foo Int` +
+-- `Foo a` is ACCEPTED — most-specific-wins — so it is not a reject fixture.)
+interface Foo a where
+  foo : a -> Int
+
+impl Foo a where
+  foo x = 1
+
+impl Foo b where
+  foo x = 2
+
+main = foo 3

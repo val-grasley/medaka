@@ -2467,6 +2467,225 @@ activeDictVarOf m = match normalize m
   TApp a _ => activeDictVarOf a
   _ => None
 
+-- ── coherence check (TYPECHECK-AUDIT S3) ───────────────────────────────────
+-- Mirror lib/typecheck.ml's check_coherence (Phase 68): reject incoherent USER
+-- impl sets at declaration time.  Two impls of the SAME interface whose head
+-- types can match the same concrete type (impls_overlap) are unresolvable unless
+-- the user has a disambiguation path:
+--   • exactly one is `default impl` — the blessed fallback;
+--   • at least one is a *named* (`@Name`) impl — selected at the call site.
+-- Genuinely incoherent (flagged here, mirroring the oracle):
+--   • two overlapping `default` impls   → MultipleDefaultImpls;
+--   • two overlapping anonymous non-default impls that are NOT a strict
+--     specialization (most-specific-wins, deferred dispatch) → OverlappingImpls.
+-- Prelude/seeded impls are excluded entirely (the driver passes USER decls only):
+-- user impls are meant to override prelude impls (e.g. single-file `impl Ord Int`),
+-- so they must not pair with a prelude `impl Ord Int`.  At most ONE error is
+-- emitted (mirrors the oracle raising Type_error on the first conflict).
+
+-- a user impl, reduced to what coherence needs: iface, head-arg monos (fresh
+-- vars), is_default, is_named.
+public export data CohImpl = CohImpl String (List Mono) Bool Bool
+
+cohImplsOf : Decl -> <Mut> List CohImpl
+cohImplsOf (DAttrib _ d) = cohImplsOf d
+cohImplsOf (DImpl { def, iface, tys, name, ... }) =
+  [CohImpl iface (cohFreshTys tys) def (isSome name)]
+cohImplsOf _ = []
+
+-- the impl's head args → monos under ONE shared fresh-var map (so a var reused
+-- across args, e.g. `Conv a a`, is the SAME fresh tyvar — the oracle shares one
+-- tbl across the whole impl head; distinct impls get distinct ids).
+cohFreshTys : List Ty -> <Mut> List Mono
+cohFreshTys tys =
+  let names = dedupS (concatMapL tyVarNames tys)
+  let tvs = freshTvMap names
+  map (fromAstType tvs) tys
+
+-- impls_overlap: do two impl head-arg lists share a common instance?  Every
+-- TVar (fresh per impl, so distinct ids) is a unification wildcard with a shared
+-- subst — `(List Int)` vs `(List a)` overlap via a:=Int; `a a` vs `Int Bool`
+-- does NOT (resolve binds a:=Int, then Int vs Bool fails), mirroring the oracle.
+cohOverlap : List Mono -> List Mono -> <Mut> Bool
+cohOverlap xs ys
+  | lengthL xs == lengthL ys = cohOverlapGo (Ref []) (zipL xs ys)
+  | otherwise = False
+
+cohOverlapGo : Ref (List (Int, Mono)) -> List (Mono, Mono) -> <Mut> Bool
+cohOverlapGo _ [] = True
+cohOverlapGo subst ((a, b) :: rest)
+  | cohGo subst a b = cohOverlapGo subst rest
+  | otherwise = False
+
+-- resolve a mono through the wildcard subst (chasing bound vars)
+cohResolve : Ref (List (Int, Mono)) -> Mono -> <Mut> Mono
+cohResolve subst m = match normalize m
+  TVar cell => match lookupAssocI (tyvarId cell) subst.value
+    Some m2 => cohResolve subst m2
+    None => TVar cell
+  other => other
+
+cohGo : Ref (List (Int, Mono)) -> Mono -> Mono -> <Mut> Bool
+cohGo subst t1 t2 = cohGoR subst (cohResolve subst t1) (cohResolve subst t2)
+
+cohGoR : Ref (List (Int, Mono)) -> Mono -> Mono -> <Mut> Bool
+cohGoR subst (TVar c1) (TVar c2)
+  | tyvarId c1 == tyvarId c2 = True
+  | otherwise = cohBind subst (tyvarId c1) (TVar c2)
+cohGoR subst (TVar c1) t = cohBind subst (tyvarId c1) t
+cohGoR subst t (TVar c2) = cohBind subst (tyvarId c2) t
+cohGoR _ (TCon a) (TCon b) = a == b
+cohGoR subst (TApp f1 a1) (TApp f2 a2) = cohGo subst f1 f2 && cohGo subst a1 a2
+cohGoR subst (TFun a1 _ b1) (TFun a2 _ b2) = cohGo subst a1 a2 && cohGo subst b1 b2
+cohGoR subst (TTuple xs) (TTuple ys)
+  | lengthL xs == lengthL ys = cohOverlapGo subst (zipL xs ys)
+  | otherwise = False
+cohGoR _ _ _ = False
+
+-- bind id := m in the wildcard subst and return True
+cohBind : Ref (List (Int, Mono)) -> Int -> Mono -> <Mut> Bool
+cohBind subst id m =
+  let _ = set_ref subst ((id, m) :: subst.value)
+  True
+
+-- subsumes ~general ~specific: is [specific] an instance of [general]?  Only the
+-- general side's vars bind (consistently: a var bound twice must see structurally
+-- equal types); the specific side's vars are rigid (match only the same id).
+cohSubsumes : List Mono -> List Mono -> <Mut> Bool
+cohSubsumes general specific
+  | lengthL general == lengthL specific = cohSubGo (Ref []) (zipL general specific)
+  | otherwise = False
+
+cohSubGo : Ref (List (Int, Mono)) -> List (Mono, Mono) -> <Mut> Bool
+cohSubGo _ [] = True
+cohSubGo subst ((g, s) :: rest)
+  | cohSub subst g s = cohSubGo subst rest
+  | otherwise = False
+
+cohSub : Ref (List (Int, Mono)) -> Mono -> Mono -> <Mut> Bool
+cohSub subst g s = cohSubR subst (normalize g) (normalize s)
+
+cohSubR : Ref (List (Int, Mono)) -> Mono -> Mono -> <Mut> Bool
+cohSubR subst (TVar c) s = match lookupAssocI (tyvarId c) subst.value
+  Some prev => cohEqMono prev s
+  None => cohBind subst (tyvarId c) s
+cohSubR _ (TCon a) (TCon b) = a == b
+cohSubR subst (TApp f1 a1) (TApp f2 a2) = cohSub subst f1 f2 && cohSub subst a1 a2
+cohSubR subst (TFun a1 _ b1) (TFun a2 _ b2) = cohSub subst a1 a2 && cohSub subst b1 b2
+cohSubR subst (TTuple xs) (TTuple ys)
+  | lengthL xs == lengthL ys = cohSubGo subst (zipL xs ys)
+  | otherwise = False
+cohSubR _ _ _ = False
+
+-- rigid structural equality (the specific side's vars match only the same id)
+cohEqMono : Mono -> Mono -> <Mut> Bool
+cohEqMono a b = cohEqR (normalize a) (normalize b)
+
+cohEqR : Mono -> Mono -> <Mut> Bool
+cohEqR (TVar c1) (TVar c2) = tyvarId c1 == tyvarId c2
+cohEqR (TCon a) (TCon b) = a == b
+cohEqR (TApp f1 a1) (TApp f2 a2) = cohEqMono f1 f2 && cohEqMono a1 a2
+cohEqR (TFun a1 _ b1) (TFun a2 _ b2) = cohEqMono a1 a2 && cohEqMono b1 b2
+cohEqR (TTuple xs) (TTuple ys)
+  | lengthL xs == lengthL ys = cohEqAll (zipL xs ys)
+  | otherwise = False
+cohEqR _ _ = False
+
+cohEqAll : List (Mono, Mono) -> <Mut> Bool
+cohEqAll [] = True
+cohEqAll ((a, b) :: rest) = cohEqMono a b && cohEqAll rest
+
+-- [a] strictly more specific than [b]: b subsumes a but not a subsumes b
+cohStrictlyMoreSpecific : List Mono -> List Mono -> <Mut> Bool
+cohStrictlyMoreSpecific a b = cohSubsumes b a && not (cohSubsumes a b)
+
+-- render two impl head-arg lists against ONE shared naming ctx (so a var shared
+-- across both prints identically and distinct vars never collide) — mirrors the
+-- oracle's pp_monos_pair.
+cohPpPair : List Mono -> List Mono -> <Mut> (String, String)
+cohPpPair xs ys =
+  let ctx = Ref []
+  let cnt = Ref 0
+  let s1 = joinWith " " (cohPpEach ctx cnt xs)
+  let s2 = joinWith " " (cohPpEach ctx cnt ys)
+  (s1, s2)
+
+cohPpEach : Ref (List (Int, String)) -> Ref Int -> List Mono -> <Mut> List String
+cohPpEach _ _ [] = []
+cohPpEach ctx cnt (m :: ms) = ppGo ctx cnt 0 m :: cohPpEach ctx cnt ms
+
+-- the coherence error string for one conflicting pair (exactly the oracle's
+-- pp_error text for OverlappingImpls / MultipleDefaultImpls).
+cohOverlapMsg : String -> List Mono -> List Mono -> <Mut> String
+cohOverlapMsg iface xs ys = match cohPpPair xs ys
+  (s1, s2) =>
+    "Overlapping impls of " ++ iface ++ ": " ++ s1 ++ " and " ++ s2
+    ++ " can match the same type — mark the more general one `default impl`, or make them disjoint"
+
+cohDefaultMsg : String -> List Mono -> <Mut> String
+cohDefaultMsg iface xs = match cohPpPair xs xs
+  (s1, _) =>
+    "Multiple default impls of " ++ iface ++ " for " ++ s1
+    ++ " — at most one default allowed"
+
+-- scan all ordered pairs; return the FIRST conflict message (mirrors the oracle
+-- raising on the first incoherent pair).  None ⇒ coherent.
+cohFirstConflict : List CohImpl -> <Mut> Option String
+cohFirstConflict [] = None
+cohFirstConflict (e :: rest) = match cohConflictWith e rest
+  Some msg => Some msg
+  None => cohFirstConflict rest
+
+cohConflictWith : CohImpl -> List CohImpl -> <Mut> Option String
+cohConflictWith _ [] = None
+cohConflictWith (e1@(CohImpl if1 xs def1 named1)) ((CohImpl if2 ys def2 named2) :: rest)
+  | if1 == if2 && cohOverlap xs ys = match (def1, def2)
+      (True, True) => Some (cohDefaultMsg if1 xs)
+      (False, False) => cohAnonConflict e1 xs ys (named1 || named2) rest
+      _ => cohConflictWith e1 rest
+  | otherwise = cohConflictWith e1 rest
+
+-- two overlapping anonymous non-default impls: a *named* impl on either side
+-- disambiguates (@Name), and a strict specialization (most-specific-wins) is
+-- coherent — both fall through to the rest of the scan.  Otherwise it is an
+-- unresolvable overlap (mirrors the oracle's OverlappingImpls).
+cohAnonConflict : CohImpl -> List Mono -> List Mono -> Bool -> List CohImpl -> <Mut> Option String
+cohAnonConflict e1 xs ys named rest
+  | named = cohConflictWith e1 rest
+  | cohStrictlyMoreSpecific xs ys = cohConflictWith e1 rest
+  | cohStrictlyMoreSpecific ys xs = cohConflictWith e1 rest
+  | otherwise = Some (cohOverlapMsg (cohImplIface e1) xs ys)
+
+cohImplIface : CohImpl -> String
+cohImplIface (CohImpl i _ _ _) = i
+
+-- run coherence over USER decls; push the first conflict (if any) into typeErrors.
+-- The impls are scanned in REVERSE declaration order to mirror the oracle, whose
+-- env.impls is built by prepending each entry (`entry :: !(env.impls)`) — so the
+-- conflict message names the later-declared impl as the first head, byte-identical.
+checkCoherence : List Decl -> <Mut> Unit
+checkCoherence userDecls = match cohFirstConflict (revLL (cohCollectImpls userDecls))
+  Some msg => set_ref typeErrors (msg :: typeErrors.value)
+  None => ()
+
+-- effectful concatMap of cohImplsOf (astTypeFresh allocates fresh tyvars → <Mut>)
+cohCollectImpls : List Decl -> <Mut> List CohImpl
+cohCollectImpls [] = []
+cohCollectImpls (d :: rest) = cohImplsOf d ++ cohCollectImpls rest
+
+-- the USER decls a driver wants coherence-checked.  Set by single-file drivers
+-- (check.mdk / typecheck_main.mdk / check_batch.mdk) to the desugared USER program
+-- (NO prelude), so a user impl that overrides a prelude impl is not flagged.  []
+-- (the golden/profile drivers and the no-runtime path) ⇒ checkToLines uses its own
+-- prelude-free arg; checkToLinesWithRuntime runs no coherence (byte-identical).
+coherenceUserDecls : Ref (List Decl)
+coherenceUserDecls = Ref []
+
+-- exported so the single-file front-end drivers set the user boundary before check
+export
+setCoherenceUserDecls : List Decl -> <Mut> Unit
+setCoherenceUserDecls ds = set_ref coherenceUserDecls ds
+
 -- ── instance-`requires` impl-dict routing (Phase 83/84 single-level) ────────
 -- One parametric impl that carries a `requires`: its head tag (the tycon eval
 -- narrows by), the methods it defines (to disambiguate which impl a method site
@@ -3788,6 +4007,9 @@ export
 checkToLines : List Decl -> <Mut> String
 checkToLines prog =
   let schemes = checkProgram prog
+  -- coherence over the WHOLE prog: this path (typecheck_main single-arg) is
+  -- prelude-free, so every impl is a user impl (mirrors check_program_no_prelude).
+  let _ = checkCoherence prog
   let errs = revLL typeErrors.value
   match errs
     [] => joinNl (schemeLines schemes)
@@ -3800,6 +4022,9 @@ checkToLinesWithRuntime : List Decl -> List Decl -> <Mut> String
 checkToLinesWithRuntime runtimeDecls prog =
   let _ = set_ref implInferEnabled False
   let schemes = checkProgramSeeded (externSchemes runtimeDecls) prog
+  -- coherence over the USER decls the driver staged (NO prelude) — empty when the
+  -- driver staged nothing (golden/profile paths) ⇒ no check, byte-identical.
+  let _ = checkCoherence coherenceUserDecls.value
   let errs = revLL typeErrors.value
   match errs
     [] => joinNl (schemeLines schemes)

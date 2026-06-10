@@ -10,7 +10,7 @@
 
 import parser.{parse}
 import desugar.{desugar}
-import typecheck.{checkToLines, checkToLinesWithRuntime}
+import typecheck.{checkToLines, checkToLinesWithRuntime, setCoherenceUserDecls}
 
 main = match args ()
   [targetPath] => withTarget targetPath
@@ -26,5 +26,8 @@ withRuntime runtimePath targetPath = match readFile runtimePath
   Err msg => ePutStrLn msg
 
 withRuntimeTarget rsrc targetPath = match readFile targetPath
-  Ok src => putStr (checkToLinesWithRuntime (desugar (parse rsrc)) (desugar (parse src)))
+  Ok src =>
+    let desugared = desugar (parse src)
+    let _ = setCoherenceUserDecls desugared
+    putStr (checkToLinesWithRuntime (desugar (parse rsrc)) desugared)
   Err msg => ePutStrLn msg

@@ -1,0 +1,13 @@
+-- TYPECHECK-AUDIT S3 coherence: two overlapping `default impl`s are an ambiguous
+-- fallback — at most one default is allowed.  Mirrors the oracle's
+-- MultipleDefaultImpls (Phase 68).
+interface Foo a where
+  foo : a -> Int
+
+default impl Foo Int where
+  foo x = 1
+
+default impl Foo a where
+  foo x = 2
+
+main = foo 3

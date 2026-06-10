@@ -122,6 +122,8 @@ green; no S1↔eval interaction (eval untouched). Original finding below.
   impl-`requires`'d terminal `base`. Low priority (niche shape, no corpus hit).
 
 
+### S3. No coherence checking — overlapping/duplicate impls silently accepted — [NEW] ✅ CLOSED (2026-06-09)
+
 - **Where:** oracle only: `lib/typecheck.ml:149-150, 3288-3293 (impls_overlap),
   3352-3370 (rejection), 3871-3885 (pick_dispatch_impl most-specific-wins)` (Phase 68).
   Selfhost: zero hits for any of it; `findImplEntry` (`typecheck.mdk:2453-2457`) takes
@@ -137,6 +139,36 @@ green; no S1↔eval interaction (eval untouched). Original finding below.
   construction now (cheap); defer most-specific-wins until a corpus file needs it.
   Add to the Stage 3 retirement bar explicitly, with overlap/orphan rejection cases in
   the ported test suite.
+- **Done (2026-06-09):** ported `check_coherence` into `selfhost/typecheck.mdk` as
+  `checkCoherence` (+ `cohOverlap`/`cohSubsumes`/`cohStrictlyMoreSpecific`/`cohPpPair`
+  helpers, search `coherence check (TYPECHECK-AUDIT S3)`). Each USER impl's head args
+  are realized to monos under one shared fresh-var map (distinct ids per impl); the
+  overlap test is the oracle's wildcard-unification `impls_overlap` byte-for-byte
+  (parametric-vs-specific overlap via `a:=Int`; `a a` vs `Int Bool` correctly fails
+  via resolve-before-bind). Flags, mirroring the oracle exactly: two overlapping
+  `default` impls → `Multiple default impls of …`; two overlapping anonymous
+  non-default impls that are NOT a strict specialization (and neither `@Name`) →
+  `Overlapping impls of …`. A *named* impl or a strict specialization
+  (most-specific-wins) is accepted. Impls are scanned in REVERSE declaration order
+  and only the FIRST conflict is emitted, mirroring the oracle's prepend-built
+  `env.impls` + raise-on-first — so the rendered head order is byte-identical. The
+  check runs over USER decls only (prelude impls excluded via `setCoherenceUserDecls`,
+  staged by the single-file drivers `check.mdk`/`check_batch.mdk`/`typecheck_main.mdk`;
+  `checkToLines`'s prelude-free path checks its whole arg) so a user impl OVERRIDING a
+  prelude impl (e.g. single-file `impl Eq Int`) is NOT flagged. **Deferred:**
+  most-specific-wins dispatch (`pick_dispatch_impl` — accepted but not yet picked
+  per-site; no corpus file needs it). **NOT ported — orphan-impl rejection**
+  (`check_orphans`): it is a separate multi-module-only check requiring
+  imported-user-module name tracking (`known_modules`), unrelated to the
+  first-impl-wins / `unreachable` arg-tag soundness this finding is about, and bigger
+  than "a check at impl-table construction" — left for a follow-up. Verified: 3 reject
+  fixtures (`test/typecheck_error_fixtures/{dup_impl,overlapping_impls,multiple_default_impls}.mdk`)
+  + 11 ad-hoc repros agree with the oracle byte-for-byte (accept AND reject decisions,
+  incl. parametric/partial-overlap head rendering); no corpus program newly rejected.
+  All gates green: `diff_selfhost_typecheck_errors` 24/0, `bootstrap_typecheck` 10/0,
+  `bootstrap_eval` 20/0, `diff_selfhost_check(+_batch)` 34/0, `diff_selfhost_check_modules(+_batch)`
+  13/0, `diff_selfhost_eval_run` 20/0, `diff_selfhost_eval_dict` 19/0, `diff_selfhost_core_ir`
+  20/0, `diff_selfhost_llvm_modules` 6/0, `selfcompile_fixpoint` C3a+C3b YES.
 
 ### T1. Value restriction entirely missing — polymorphic mutable refs — [NEW] ✅ CLOSED (2026-06-09)
 

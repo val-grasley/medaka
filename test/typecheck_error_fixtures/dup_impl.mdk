@@ -1,0 +1,14 @@
+-- TYPECHECK-AUDIT S3 coherence: two impls of the SAME interface for the SAME
+-- type are a duplicate — no way to ever pick one.  Mirrors the oracle's
+-- OverlappingImpls (Phase 68).  Both heads are `Int`, neither is a strict
+-- specialization, so the overlap is unresolvable.
+interface Foo a where
+  foo : a -> Int
+
+impl Foo Int where
+  foo x = 1
+
+impl Foo Int where
+  foo x = 2
+
+main = foo 3

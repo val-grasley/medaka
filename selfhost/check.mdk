@@ -21,7 +21,7 @@ import parser.{parse}
 import desugar.{desugar}
 import resolve.{resolveToLines}
 import exhaust.{exhaustToLines}
-import typecheck.{checkToLinesWithRuntime}
+import typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls}
 
 main = match args ()
   [runtimePath, corePath, targetPath] => withFiles runtimePath corePath targetPath
@@ -61,6 +61,9 @@ reportFor resDiags _ _ _ _ = resDiags
 cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
 cleanReport runtimeP coreP raw desugared =
   let exWarns = exhaustToLines raw
+  -- TYPECHECK-AUDIT S3: stage the USER decls (NO prelude) for the coherence check
+  -- so a user impl overriding a prelude impl is not flagged as overlapping.
+  let _ = setCoherenceUserDecls desugared
   let schemes = checkToLinesWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
   joinNonEmpty exWarns schemes
 
