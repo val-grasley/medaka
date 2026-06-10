@@ -213,6 +213,11 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   read back after) so a point-free impl body runs its effects once == oracle (was
   twice). Value-preserving; Phase-125 force *timing* untouched (that's C4). Fixture
   + all gates green incl. native fixpoint.
+- **C9** — ✅ **CLOSED (`e31296f`).** Ported `inferIndex` normalize-and-branch
+  (String→Char, Array/List→elem, **undetermined→Array** default) mirroring the
+  oracle; `f xs = xs.[0]` now infers `Array a -> a` == oracle (was `List`). No
+  golden shifts (corpus had none); fixture + gates green. (Annotated-param indexing
+  `g : String -> Char; g s = s.[0]` still needs **C1**/Phase 73 — upstream.)
 - **C4** — ⏭️ **SKIPPED (design-blocked, not a pure gap).** Selfhost makes top-level
   nullary bindings lazy `VThunk`s — the *deliberate* Phase-125 design — so an
   unreferenced `sideEffect = println …` doesn't run; the oracle forces all nullary
@@ -242,7 +247,7 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 **Near-term sequence (front-loaded order, decided 2026-06-09):**
 
 > **Overnight autonomous run (2026-06-09 22:xx → 07:00 PDT):** working the audit
-> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6. **C4 skipped** (design — Phase-125 lazy nullary, needs user input). **L1 deferred** (E4-gated — fix
+> queue unattended. Done: S1, S2, T1, T1b, T2, S3, C3, C2, C8, C6, C9. **C4 skipped** (design — Phase-125 lazy nullary, needs user input). **L1 deferred** (E4-gated — fix
 > with the E4 work). **L2 deferred for the unattended run** (latent + arg-tag-masked;
 > the full fix touches the fragile route-keying area + the interim typecheck error
 > risks over-rejection — wants careful attention near E4, not unattended). Proceeding
