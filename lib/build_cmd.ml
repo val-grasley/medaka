@@ -175,6 +175,7 @@ let run (args : string array) : int =
       let prelude   = Filename.concat repo_root "stdlib/core.mdk" in
       let rt_c      = Filename.concat repo_root "runtime/medaka_rt.c" in
       let selfhost  = Filename.concat repo_root "selfhost" in
+      let stdlib_dir = Filename.concat repo_root "stdlib" in
       let input_abs =
         if Filename.is_relative input then Filename.concat (Sys.getcwd ()) input else input
       in
@@ -194,8 +195,12 @@ let run (args : string array) : int =
       in
 
       (* ---- STEP 1: emit LLVM IR via the self-hosted emitter (shell-out) ---- *)
+      (* Roots: input_dir first (user modules shadow stdlib), then selfhost,
+         then stdlib_dir so stdlib modules (list, array, string, map, set, io,
+         …) resolve without requiring them to sit next to the user's file.
+         This mirrors the loader's root-ordered search in lib/loader.ml. *)
       let emit_argv =
-        [| self; "run"; emitter; runtime; prelude; input_abs; input_dir; selfhost |]
+        [| self; "run"; emitter; runtime; prelude; input_abs; input_dir; selfhost; stdlib_dir |]
       in
       let (emit_code, emit_err) = run_capture ~argv:emit_argv ~out_path:ll_path in
       if emit_code <> 0 then begin

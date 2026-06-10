@@ -1,0 +1,6 @@
+import list.{range, singleton}
+
+main : <IO> Unit
+main =
+  println (debug (range 1 5))
+  println (debug (singleton 99))

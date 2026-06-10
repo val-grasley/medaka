@@ -840,6 +840,15 @@ cd into a member or specify a file\n"; exit 1
     | Some d -> d
     | None   -> Filename.dirname filename
   in
+  (* Stdlib root: add stdlib/ from the repo to the loader search path so that
+     `import list.{…}` / `import array.{…}` etc. resolve for any user file.
+     project_dir listed first so user modules shadow stdlib names (same
+     priority as the existing single-root behaviour — user wins on ambiguity). *)
+  let stdlib_roots =
+    match Medaka_lib.Build_cmd.find_repo_root () with
+    | Some repo -> [ project_dir; Filename.concat repo "stdlib" ]
+    | None      -> [ project_dir ]
+  in
 
   (* Single-file fast path: no use declarations → bypass loader *)
   let source = read_file filename in
@@ -933,7 +942,7 @@ cd into a member or specify a file\n"; exit 1
   end else begin
     (* ── Multi-file mode ── *)
     let modules =
-      (try Medaka_lib.Loader.load_program filename [project_dir]
+      (try Medaka_lib.Loader.load_program filename stdlib_roots
        with
        | Medaka_lib.Loader.LoadError (Medaka_lib.Loader.FileNotFound f) ->
          Printf.eprintf "error: file not found: %s\n" f; exit 1

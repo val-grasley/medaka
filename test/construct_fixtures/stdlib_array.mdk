@@ -1,0 +1,6 @@
+import array.{fromList, make}
+
+main : <IO> Unit
+main =
+  println (debug (fromList [1, 2, 3]))
+  println (debug (make 3 0))

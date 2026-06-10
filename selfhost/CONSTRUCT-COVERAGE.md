@@ -270,7 +270,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | Cross-module import + entry-point build | PASS | (build_cmd.sh `multimodule`) |
 | `export fn` | PASS | `export_fn.mdk` |
 | `public export data` | PASS | `pub_export_debug.mdk` |
-| `import map.*` / stdlib module imports | GAP (stdlib modules not on build path) | — |
+| `import map.*` / stdlib module imports | GAP-H (path fixed; `map`/`set` hit emitter gap) | `stdlib_list.mdk`, `stdlib_array.mdk`, `stdlib_string.mdk`, `stdlib_io.mdk` |
 
 ### IO and effects
 
@@ -430,21 +430,35 @@ route the constrained call through `RDictFwd` (not `RNone`).
 
 ---
 
-### Gap H: Stdlib module imports not on build path
+### Gap H: Stdlib module imports — path + emitter gaps
 
-`medaka build` passes `input_dir` and `selfhost/` as module roots. The stdlib
-modules (`map.mdk`, `set.mdk`, `list.mdk`, `array.mdk`, etc.) are not on the
-search path for `medaka build` of a single-file user program. Additionally,
-`map.mdk` uses constructs not yet supported by the selfhost typechecker
-(`typecheck.mdk:1325: unsupported expression (slice 1)`).
+**H-a CLOSED** (`lib/build_cmd.ml` + `bin/main.ml`): `stdlib/` is now added as a
+trailing root for both `medaka run` (multi-file loader) and `medaka build` (emitter
+subprocess). User `input_dir` comes first so user-side modules shadow stdlib names.
+`medaka run` / `medaka build` for a single-file program can now resolve `import list.{…}`,
+`import array.{…}`, `import string.{…}`, `import io.{…}`, etc.
 
-| # | Construct | Error |
-|---|-----------|-------|
-| H1 | `import map.{Map}` / `Map { "a" => 1 }` | `unknown module: map` |
-| H2 | `import set.{Set}` / `Set { 1, 2 }` | `unknown module: set` |
-| H3 | `import list.{foldLeft}` | `unknown module: list` |
+**H-b OPEN** (emitter gaps): `map.mdk` and `set.mdk` hit emitter gaps even after the
+path fix — they build and run fine under `medaka run` (interpreter) but fail at `medaka build`:
 
-**Fix target:** (a) Add stdlib path to `medaka build` module search path; (b) Fix selfhost typechecker to handle remaining `map.mdk` constructs.
+| # | Module | Error (medaka build) | Root cause |
+|---|--------|----------------------|------------|
+| H-b1 | `map` | `llvm_emit.mdk:375: panic: no impl of method 'toList' for type 'Map'` | `impl Foldable (Map k v)` uses `toList` dispatch the emitter can't resolve for Map |
+| H-b2 | `set` | `llvm_emit.mdk:386: panic: unbound dict witness '$dict_eq_0' in emit env` | Constrained `Eq` dict not threaded to Set comparison sites |
+
+**Path fix results per module:**
+
+| Module | medaka run | medaka build | Fixture |
+|--------|-----------|--------------|---------|
+| `list`   | PASS | PASS | `stdlib_list.mdk` |
+| `array`  | PASS | PASS | `stdlib_array.mdk` |
+| `string` | PASS | PASS | `stdlib_string.mdk` |
+| `io`     | PASS | PASS | `stdlib_io.mdk` |
+| `map`    | PASS | GAP (H-b1 emitter) | — |
+| `set`    | PASS | GAP (H-b2 emitter) | — |
+
+**Fix target for H-b:** emitter dict-threading for constrained impls over `Map`/`Set` types.
+Not touched here (emitter change, out of scope for this patch).
 
 ---
 

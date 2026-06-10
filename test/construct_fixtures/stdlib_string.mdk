@@ -1,0 +1,7 @@
+import string.{isDigit, fromChar, startsWith}
+
+main : <IO> Unit
+main =
+  println (debug (isDigit '5'))
+  println (fromChar 'A')
+  println (debug (startsWith "he" "hello"))

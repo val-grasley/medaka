@@ -1,0 +1,6 @@
+import io.{eprintln}
+
+main : <IO> Unit
+main =
+  let _ = eprintln "stderr"
+  println "stdout"
