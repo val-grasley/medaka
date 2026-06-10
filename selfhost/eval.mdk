@@ -847,6 +847,7 @@ eval env (ERecordUpdate base fields) =
 eval env (EFieldAccess e "value") = evalValueField (eval env e)
 eval env (EFieldAccess e field) = evalField (eval env e) field
 eval env (EAnnot e _) = eval env e
+eval env (EHeadAnnot e _) = eval env e
 eval env (EBlock stmts) = evalBlock env stmts
 eval env (EIndex arr idx) = evalIndex (eval env arr) (eval env idx)
 eval env (ESlice arr lo hi incl) =
@@ -1552,6 +1553,7 @@ externBindings = [
   ("arrayGetUnsafe", prim2 pArrayGetUnsafe),
   ("arrayMake", prim2 pArrayMake),
   ("arrayMakeWith", prim2M pArrayMakeWith),
+  ("arrayCopy", prim1 pArrayCopy),
   ("Ref", prim1 pRef),
   ("set_ref", prim2M pSetRef),
   ("putStr", prim1M pPutStr),
@@ -1691,6 +1693,13 @@ pArrayMake _ _ = panic "arrayMake: bad operands"
 pArrayMakeWith : Value -> Value -> <Mut> Value
 pArrayMakeWith (VInt n) f = VArray (arrayFromList (buildWith f 0 n))
 pArrayMakeWith _ _ = panic "arrayMakeWith: bad operands"
+
+-- arrayCopy : Array a -> Array a — a fresh, mutation-independent copy.  Routes
+-- to the host `arrayCopy` extern (eval.mdk is compiled by the reference, so the
+-- runtime extern is in scope), mirroring lib/eval.ml's Array.copy.
+pArrayCopy : Value -> Value
+pArrayCopy (VArray a) = VArray (arrayCopy a)
+pArrayCopy _ = panic "arrayCopy: not an Array"
 
 buildWith : Value -> Int -> Int -> <Mut> List Value
 buildWith f i n = if i >= n then [] else apply f (VInt i) :: buildWith f (i + 1) n

@@ -13,12 +13,31 @@
 # Coverage spans BOTH Phase-92 doctest paths and the prop phase:
 #   stdlib/string.mdk    single-file doctests (block-comment examples)
 #   stdlib/mut_array.mdk single-file doctests
+#   stdlib/core.mdk      single-file doctests + props; IS the prelude (the runner
+#                        skips the prelude prepend for it — programIsCore guard)
+#   stdlib/array.mdk     single-file doctests + props (needs the arrayCopy oracle
+#                        extern in selfhost/eval.mdk)
+#   stdlib/map.mdk       single-file doctests + props (Map literal head-pins via
+#                        the EHeadAnnot infer arm in selfhost/typecheck.mdk)
+#   stdlib/set.mdk       single-file doctests + props (Set literal, EHeadAnnot)
 #   stdlib/json.mdk      multi-module doctests (imports list + string)
 #   stdlib/toml.mdk      multi-module doctests (imports string)
 #   stdlib/list.mdk      multi-module doctests + passing PROPS
 #   test/selfhost_test_fixtures/mixed.mdk
 #                        single-file: passing + FAILING doctest + block-comment
 #                        + a passing prop (exercises the FAIL report path)
+#
+# STILL OUT OF SCOPE (selfhost-pipeline capability gaps, not doctest-machinery):
+#   stdlib/hash_map.mdk / hash_set.mdk — need byte-identical hashInt/hashString
+#     (SplitMix64 / FNV-1a) in the selfhost eval oracle.  Those algorithms require
+#     64-bit wrapping bitwise xor/shift, which selfhost Medaka has no extern for
+#     (Int is 63-bit, no bitwise / Int64).  The doctests render keys/values/debug
+#     in hash order, so a non-identical hash diverges.  Needs a new bitwise/Int64
+#     extern (add-primitive) before these can join the fixture set.
+#   error-path doctests — a doctest whose evaluation panics.  OCaml's
+#     eval_suppressed traps the per-binding panic (native `try ... with`) and
+#     reports one `ERROR` line; the selfhost eval oracle has no panic-catch
+#     primitive, so a panic aborts the whole run.  Needs a recover/try capability.
 #
 # Property output is matched only for PASSING props (`OK (100 tests)` is
 # RNG-independent).  A FAILING prop's shrunk counterexample depends on the draw,
@@ -49,6 +68,10 @@ else
          $ROOT/stdlib/json.mdk \
          $ROOT/stdlib/toml.mdk \
          $ROOT/stdlib/list.mdk \
+         $ROOT/stdlib/core.mdk \
+         $ROOT/stdlib/array.mdk \
+         $ROOT/stdlib/map.mdk \
+         $ROOT/stdlib/set.mdk \
          $ROOT/test/selfhost_test_fixtures/mixed.mdk"
 fi
 

@@ -23,7 +23,7 @@
 -- importing real sibling modules → multi-module (loadProgram + elaborateModules
 -- + evalModules), so cross-module instances/values resolve.
 
-import ast.{Decl}
+import ast.{Decl, DData, DInterface}
 import parser.{parse}
 import desugar.{desugar}
 import loader.{loadProgram}
@@ -92,15 +92,36 @@ runChosen runtimeDecls coreDecls target userDecls roots examples synthDecls
   | otherwise = runSingle runtimeDecls coreDecls userDecls examples synthDecls
 
 -- Single-file path: drop shadowed prelude, append synth, dict-elaborate, run.
+-- When the file under test IS the prelude (`medaka test stdlib/core.mdk`), it
+-- already declares everything the prelude provides, so prepending the prelude
+-- would duplicate every top-level decl (two `Bounded Char` impls, etc.) and
+-- corrupt return-position dispatch.  Mirror lib/doctest.ml's `program_is_core`
+-- guard: skip the prelude prepend for core.
 runSingle : List Decl -> List Decl -> List Decl -> List Example -> List Decl -> <Mut> RunResult
 runSingle runtimeDecls coreDecls userDecls examples synthDecls =
   let allUser = userDecls ++ synthDecls
   let userNames = funNamesOf allUser
-  let livePrelude = dropShadowedExp userNames coreDecls
+  let livePrelude = if programIsCore userDecls then [] else dropShadowedExp userNames coreDecls
   let combined = livePrelude ++ allUser
   let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames allUser
   let env = evalProgram (elaborateDict runtimeDecls dictNames userNames combined)
   buildDetails (Ok env) examples
+
+-- Mirror of lib/typecheck.ml's program_is_core (also selfhost/resolve.mdk's
+-- programIsCore): the prelude is the unique program declaring BOTH the
+-- `Ordering` data type and the `Foldable` interface.
+programIsCore : List Decl -> Bool
+programIsCore prog = pcHasOrdering prog && pcHasFoldable prog
+
+pcHasOrdering : List Decl -> Bool
+pcHasOrdering [] = False
+pcHasOrdering ((DData _ "Ordering" _ _ _)::_) = True
+pcHasOrdering (_::rest) = pcHasOrdering rest
+
+pcHasFoldable : List Decl -> Bool
+pcHasFoldable [] = False
+pcHasFoldable (DInterface { name = "Foldable", ... }::_) = True
+pcHasFoldable (_::rest) = pcHasFoldable rest
 
 -- Multi-module path: load the module graph, inject synth into the root module,
 -- elaborate across modules, eval (root env carries the __dt_i__ bindings).

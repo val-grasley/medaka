@@ -1382,6 +1382,7 @@ infer env (ERangeList lo hi _) = inferIntRange env lo hi (TCon "List")
 infer env (ERangeArray lo hi _) = inferIntRange env lo hi (TCon "Array")
 infer env (EIndex arr idx) = inferIndex env arr idx
 infer env (ESlice arr lo hi _) = inferSlice env arr lo hi
+infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty
 infer _ _ = panic "typecheck: unsupported expression (slice 1)"
 
 inferArrayLit : TcEnv -> List Expr -> <Mut> Mono
@@ -2033,6 +2034,21 @@ inferAnnot env e ty =
   let _ = unify t annot
   let _ = checkAnnotTooGeneral ty (map snd (snd pair))
   annot
+
+-- Phase 108 head-pin (`:~`, EHeadAnnot): like inferAnnot but WITHOUT the
+-- checkAnnotTooGeneral skolemization guard — the pin's type variables are MEANT
+-- to ground (the container literal's element types).  Fixes `e`'s head tycon to
+-- the named container so `fromEntries`'s return-position dispatch resolves to
+-- that container's impl.  Mirror of lib/typecheck.ml's EHeadAnnot arm.  The
+-- selfhost lowering (desugar.mdk rewriteContainerLit) always supplies the head
+-- tycon at its full declared arity (`Map _k _v`, `Set _a`), so unlike the
+-- reference we need no arity-fix for empty literals.
+inferHeadAnnot : TcEnv -> Expr -> Ty -> <Mut> Mono
+inferHeadAnnot env e ty =
+  let t = infer env e
+  let annot = fst (astTypeFreshTbl ty)
+  let _ = unify t annot
+  t
 
 -- C3 (mirrors lib/typecheck.ml:1821-1842): each type variable named in the
 -- annotation asserts polymorphism, so after unification it must still be a
