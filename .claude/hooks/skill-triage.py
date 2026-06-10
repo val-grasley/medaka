@@ -46,9 +46,7 @@ if roadmap:
 
 if stdlib:
     print(
-        "Skill triage (stdlib task detected): the user normally hand-writes the "
-        "stdlib (project-stdlib-division-of-labor) — only proceed if they've "
-        "explicitly delegated it. Then route:\n"
+        "Skill triage (stdlib task detected): route:\n"
         "- Pure-Medaka function/impl/doctest/prop in stdlib/*.mdk -> load "
         "extend-stdlib (read its doctest-harness + language sharp-edge notes "
         "BEFORE writing — they cost real iterations otherwise).\n"
