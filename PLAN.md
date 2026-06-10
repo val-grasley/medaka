@@ -144,6 +144,11 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   (758-771, reuses `awaitsArgs`); repro yields `[]` == oracle; all gates green.
 - **S2** — method-level dict params dropped from explicit impl clauses (k-offset;
   `typecheck.mdk:2595-2614`; mirror `dict_pass.ml:103`). CONFIRMED; subsumes D6.
+- **S2** — ✅ **CLOSED (`945053c`).** Method-level dict params dropped from explicit
+  impl clauses → dict mis-bound to first value param. Ported `dictPats n k` prepend +
+  slot offset into `implDictPassMethods`/`registerReqSlots` (mirror `dict_pass.ml:118`);
+  repro prints `6` == oracle. **Subsumes D6** for the method-level case (2-method
+  variant → `22`). *Surfaced a new oracle-side gap (OH1, below).*
 - **T1** — value restriction entirely missing → polymorphic mutable refs typecheck
   (5 generalize sites; port `is_nonexpansive`/`gen_restricted`/`lower_to_current`).
   CONFIRMED. *Note:* mirroring the oracle reproduces an adjacent oracle `mut`-gen
@@ -152,6 +157,11 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   (`typecheck.mdk:1204`; split the arm per `typecheck.ml:1664-1696`). CONFIRMED.
 - **S3** — no coherence checking (overlap/duplicate/orphan impls); port
   `impls_overlap` + duplicate rejection. STATIC; explicit retirement-gate item.
+- **OH1** (oracle-side, surfaced during S2) — combined method-level constraint +
+  impl-`requires` + terminal body panics on the **OCaml oracle itself**
+  (`unbound identifier: $dict_base_0`). A `lib/` dict-passing hole, no correct
+  reference to mirror. Low priority (niche), but the hybrid oracle must not enshrine
+  it before retirement. See TYPECHECK-AUDIT §OH1.
 
 **Oracle (hybrid).** As OCaml recedes, ground truth = the Medaka tree-walker
 (`eval.mdk`) for runtime BEHAVIOR (native diffed vs interpreted-selfhost — the

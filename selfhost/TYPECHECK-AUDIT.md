@@ -108,7 +108,19 @@ green; no S1↔eval interaction (eval untouched). Original finding below.
   `dict_pass.ml:103`. Fixing this likely also subsumes D6 (multi-method `requires`
   naming ambiguity).
 
-### S3. No coherence checking in selfhost: overlapping/duplicate/orphan impls accepted — [NEW for the transition] STATIC (grep-verified)
+### OH1. Oracle gap — combined method-level constraint + impl-`requires` + terminal body — [NEW] CONFIRMED (oracle-side, surfaced during S2)
+
+- **What:** an interface method with BOTH its own method-level constraint AND an impl
+  whose body forwards an impl-`requires` dict to a *terminal* (non-awaiting) base value
+  panics on the **OCaml oracle itself**: `panic: unbound identifier: $dict_base_0`. So
+  this shape has no correct reference behavior to mirror — it's a `lib/` dict-passing
+  hole (the `method_off + slot` naming and the terminal-forward path don't compose).
+- **Status:** out of S2 scope (S2 fixed the method-level offset; the selfhost side is
+  now AHEAD of the oracle here — it would need a correct oracle to diff against).
+  Register as an oracle-side dict-passing fix; relevant to retirement parity (the
+  hybrid oracle must not enshrine this hole). Repro: extend the S2 fixture with an
+  impl-`requires`'d terminal `base`. Low priority (niche shape, no corpus hit).
+
 
 - **Where:** oracle only: `lib/typecheck.ml:149-150, 3288-3293 (impls_overlap),
   3352-3370 (rejection), 3871-3885 (pick_dispatch_impl most-specific-wins)` (Phase 68).
