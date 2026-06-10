@@ -22,15 +22,23 @@
    across invocations is fragile.  The subprocess gives a clean stdout pipe and a
    fresh process per build — exactly what every working harness does.
 
-   PRELUDE.  The full `stdlib/core.mdk` prelude is NOT yet emittable: the emitter
-   has no dead-code elimination and `core.mdk`'s `maximum`/`minimum` hit the
-   open `max`/`min` arg-tag-dispatch gap (EMITTER-GAPS.md residual #2), so ANY
-   program loaded with the real prelude aborts before emitting.  So — like every
-   LLVM gate today — `medaka build` passes an EMPTY prelude file.  Buildable
-   surface = runtime externs (putStrLn/putStr/intToString/…), primitive
-   arithmetic/comparison, ADTs + `match`, recursion, closures, tuples, records,
-   arrays, and cross-module data.  `println` and other core.mdk machinery are
-   out of scope until the prelude becomes emittable (a later Stage-3 item). *)
+   PRELUDE.  The full `stdlib/core.mdk` prelude is STILL not emittable, so —
+   like every LLVM gate today — `medaka build` passes an EMPTY prelude file.
+   Stage 3 #2a added dead-code elimination to the emit driver
+   (`selfhost/dce.mdk`, wired into `llvm_emit_modules_main.mdk`'s `runEmit`),
+   which DROPS the unreachable plain prelude functions `maximum`/`minimum`/`clamp`
+   that hit the open `max`/`min` arg-tag gap — clearing THAT blocker.  But a
+   SECOND, orthogonal emitter gap remains: core.mdk's `Arbitrary` impls use
+   unit-parameter method clauses (`arbitrary () = …`), which lower to a Unit-head
+   `match` the emitter cannot switch on ("no unit heads", `llvm_emit.mdk:3528`).
+   Conservative (sound) DCE retains ALL impls — dropping an impl would be a
+   silent miscompile under runtime dict-dispatch — so those impls still emit and
+   still abort.  Flipping to the real prelude therefore waits on closing the
+   unit-head emitter gap (a separate Stage-3 emitter-capability follow-up).
+   Buildable surface today = runtime externs (putStrLn/putStr/intToString/…),
+   primitive arithmetic/comparison, ADTs + `match`, recursion, closures, tuples,
+   records, arrays, and cross-module data.  `println` and other core.mdk
+   machinery are out of scope until the prelude becomes emittable. *)
 
 let read_file filename =
   let ic = open_in_bin filename in
