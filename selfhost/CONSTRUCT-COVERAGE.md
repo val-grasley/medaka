@@ -744,3 +744,20 @@ Two distinct selfhost-only root causes (oracle is correct in both):
 - F1-L2 ≠ H-b2 (upstream promotion vs downstream nested route). D11 (driver coverage) is
   orthogonal. Interpreter masks both via arg-tag fallback; native fails loud.
 
+**UPDATE 2026-06-10 (Fix A attempted → STOPPED; sharper root cause):** `medaka build`
+routes through `elaborateModules` (`typecheck.mdk:4574`), NOT `elaborateDict`.
+**`elaborateModules` has NO inferred-constraint promotion fixpoint** — no
+`discoverAll`/`discoverPromoted`, and it never seeds `dictEligibleRef` (only
+`elaborateDict:2248` does). So on the build path an unannotated constrained fn is never
+eligible → never promoted → no dict param (Cause A), AND `routeOfMono`'s implTable
+(built only in `elaborateDict:2253`) isn't threaded (Cause B). Recording the
+arg-position occurrence (Fix A) is a correct PREREQUISITE but inert without an
+`elaborateModules` promotion layer. **Both Cause A and Cause B are blocked on the same
+structural gap: the build/multi-module path (`elaborateModules`) lacks the dict-promotion
++ implTable machinery the single-file typed path (`elaborateDict`) has** — the audit's
+"dual drivers fragile" issue. Closing them needs an `elaborateModules` promotion +
+implTable-threading layer with cross-module dict-arity consistency → oversight-scale,
+needs @thorough + selfcompile_fixpoint re-baseline. DEFERRED (clean STOP, no partial
+merge). (Also: F1 unannotated native = SIGSEGV exit 133, not silent — corrects the F1
+note.)
+
