@@ -571,7 +571,10 @@ emit (Emit _ buf _ _ _ _ _ _ _ _) line = set_ref buf (line :: buf.value)
 bufRef : Emit -> Ref (List String)
 bufRef (Emit _ buf _ _ _ _ _ _ _ _) = buf
 
--- the side buffer holding lifted-lambda `define`s, in FORWARD order (slice 4).
+-- the side buffer holding lifted-lambda `define`s, in REVERSE order (newest
+-- first): each append prepends its chunk (O(chunk), amortized O(total)) instead
+-- of the old O(N²) `acc ++ forward`; the consumer `reverseL`s it once at module
+-- end (slice 4).
 lamsRef : Emit -> Ref (List String)
 lamsRef (Emit _ _ _ _ _ lams _ _ _ _) = lams
 
@@ -921,7 +924,7 @@ lookupVar ((n, vt)::rest) x = if n == x then vt else lookupVar rest x
 -- `@.str.N = … constant …` appended after @main is sound (same discipline as the
 -- lifted `define`s).
 emitGlobal : Emit -> String -> <Mut> Unit
-emitGlobal e line = set_ref (lamsRef e) ((lamsRef e).value ++ [line])
+emitGlobal e line = set_ref (lamsRef e) (line :: (lamsRef e).value)
 
 -- the raw UTF-8 bytes of a string literal, in order.  `stringToChars` yields the
 -- source codepoints; `utf8Bytes` re-encodes each to its UTF-8 byte sequence, so the
@@ -1832,7 +1835,7 @@ emitGroupBindDefine e lamName name arity clauses captured =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
@@ -2245,7 +2248,7 @@ emitPapDefine e papName fname supplied remaining =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- load the `k` captured argument words from %clos fields 1..k (code_ptr is 0).
@@ -2662,7 +2665,7 @@ emitDefaultDefine e fname tag method entry =
   let _ = emit e "}"
   let _ = emit e ""
   let defLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL defLines)
+  let _ = set_ref (lamsRef e) (defLines ++ (lamsRef e).value)
   let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
@@ -3110,7 +3113,7 @@ emitRecLamDefine e lamName f pats captured body =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- E2b — emit a lifted lambda whose params are NON-variable patterns, into the side
@@ -3137,7 +3140,7 @@ emitPatLamDefine e lamName extra pats captured body =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
@@ -3197,7 +3200,7 @@ emitCtorEtaDefine e lamName name arity =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- emit a lifted lambda's top-level `define` into the SIDE buffer (LLVM forbids a
@@ -3219,7 +3222,7 @@ emitLamDefine e lamName pats captured body =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- emit the captureless eta-forwarder `@mdk_etaN(i64 %clos, %arg…) { ret = call
@@ -3236,7 +3239,7 @@ emitEtaDefine e lamName fname arity =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- E17: a unicode extern (slice 14) referenced as a FIRST-CLASS value (passed
@@ -3280,7 +3283,7 @@ emitUnicodeEtaDefine e lamName name =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- the lifted lambda's parameter list: a leading `%clos`, then the source params.
@@ -5271,7 +5274,7 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   -- side buffer (string-literal + value-binding globals, lifted-lambda defines).
   -- LLVM module-item order is irrelevant, so appending the side buffer is sound.
   match e
-    Emit _ buf _ _ _ lams _ _ _ _ => joinNl (reverseL buf.value ++ lams.value)
+    Emit _ buf _ _ _ lams _ _ _ _ => joinNl (reverseL buf.value ++ reverseL lams.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =

@@ -176,5 +176,50 @@ fixpoint — to be done as carefully-gated emitter changes. The clang `-O2` +
 GC-divisor wins are banked and universal; the heap-size knob is documented for
 heavy batch use.
 
+---
+
+## Entry 4 — emitter lifted-define buffer: O(N²) → O(N) (2026-06-10)
+
+**Change:** `selfhost/llvm_emit.mdk` accumulated all lifted-lambda / global /
+impl `define`s into the `lamsRef` side buffer with `acc ++ reverseL chunk` at 10
+append sites — each append copies the *entire growing* buffer, so building the
+side buffer was **O(N²)** in the number of accumulated lines. Switched the buffer
+to reverse (newest-first) order: each site now **prepends** its chunk
+(`chunk ++ acc`, copying only the small chunk → amortized O(N) total), and the
+single consumer `reverseL`s once at module end. Uses
+`reverseL (a ++ b) = reverseL b ++ reverseL a`, so the emitted order is provably
+unchanged.
+
+**Gates (all green):**
+- `selfcompile_fixpoint.sh` — C3a YES, C3b YES (emitter reproduces itself
+  byte-for-byte under the new buffer logic).
+- `diff_selfhost_llvm` 172/172, `diff_selfhost_llvm_typed` 37/37,
+  `diff_selfhost_llvm_modules` 8/8 — **217 fixtures byte-identical to the
+  unchanged OCaml emitter oracle**, proving the reorder is output-preserving.
+- `diff_selfhost_build.sh` 9/9 byte-identical.
+- ⚠️ Seed (`selfhost/seed/emitter.ll`) is now stale (emitter graph changed). Per
+  policy NOT re-minted here — fixpoint verified instead; human re-mints at a
+  checkpoint.
+
+**Numbers (self-compile, min-of-3, -O2 + divisor=1):**
+
+| | wall | RSS |
+|---|---|---|
+| before (Entry 2) | 6.16 s | 216 MB |
+| after lams O(N) | **5.49 s** | 198 MB |
+
+~11 % wall, ~8 % RSS. Modest because the lams buffer is only one of many
+allocation sources in the full self-compile pipeline, but it is a genuine
+algorithmic fix (O(N²)→O(N)) on the emitter's own output path and removes a
+quadratic that would worsen as the compiler grows.
+
+**Cumulative vs original -O0 / default-GC baseline:**
+
+| Workload | original | now | speedup |
+|---|---|---|---|
+| self-compile | 12.04 s | **5.49 s** | **2.19×** |
+| vs OCaml interpreter | 125.35 s | 5.49 s | **22.8×** |
+
+
 
 
