@@ -584,3 +584,31 @@ i.e. the route-fragile dispatch territory that is **out of scope** for unattende
 work. The same SMap-membership fix would apply but must be done supervised. The
 rest of the profile is now flat (closure/rewriteArgScoped/core_ir_lower group-by,
 each ≲6%).
+
+---
+
+## Definitive remaining-work finding (end of unattended session, 2026-06-11)
+
+After 15 fixpoint-gated wins (self-compile 12.04 s → ~2.4 s, ~5×; ~52× vs the OCaml
+interpreter), the front-end O(N²) costs are eliminated and the profile is flat
+EXCEPT for one cluster: **the dict-passing / constraint-promotion elaboration**
+(`discoverPromotedJoint`/`discoverNextJoint` fixpoint loop → `prePassDictArg` →
+`rewriteArgScoped` + `promotedConstraints`). These do O(N²) list-membership scans
+(`containsName n rp/an/dn/promoted` per `EVar`, inside a fixpoint loop) and now
+dominate (~40 % of compute: `lam86999` = the `containsName (fst e) promoted`
+filter ≈25 %, `rewriteArgScoped` ≈6 %, plus the loop's repeated `checkProgramSeeded`).
+
+**This is the obvious next high-value win** — the SAME SMap-membership conversion
+applied to the typechecker above would remove it — **but it is the route-fragile
+dispatch machinery** (`EMethodAt`/`EDictAt`/`RDict` routing, the gaps #54/#55/#50/#21
+and the dict-passing cluster). It is explicitly **out of scope for unattended
+work** and must be done supervised, gated by `selfcompile_fixpoint` +
+`diff_selfhost_llvm`/`llvm_modules` + the dispatch differential gates. The
+membership change itself is output-preserving in principle (filters/lookups stay
+identical), so it should be a clean supervised port.
+
+Lower-priority safe leftovers (each ≲3–6 %, need in-module map/structure):
+`core_ir_lower.lowerGroups` group-by (needs an order-preserving map — a pure
+index-carrying merge-sort group, or export typecheck's `SMap`); `isKnownFn`
+(blocked on the hash-container-in-`llvm_emit` self-compile gap — a plain-List
+sorted index won't give O(1) on a linked list).
