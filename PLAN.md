@@ -645,6 +645,29 @@ and a TOML reader (for `medaka.toml`).
   native construct gaps → a forcing function feeding the GAP-2/tuple/emitter work.
 - Coverage (`coverage.ml`, 148) + bench (`bench_runner.ml`, 44) — auxiliary, port last.
 
+### Future idea (parked, not scheduled): effect-reannotation utility
+
+**Problem (the effect-annotation tax):** add an effect at a program leaf — e.g. a `<Mut>`
+deep in a helper — and every transitive caller's written effect annotation is now too
+narrow, so each one must be hand-updated up the call graph. Tedious for humans and a
+recurring friction for agents.
+
+**Idea:** a utility that propagates the new effect and **rewrites the stale annotations
+automatically.** Medaka is well-suited to this because the effect system **already infers
+the true effect rows** — the typechecker already knows where an annotation is narrower than
+the inferred effect (that's the same information behind the "effect not in annotation" error).
+So the tool mostly *consumes* existing inference: run effect inference, find each signature
+whose written row ⊊ inferred row, and rewrite the annotation to the inferred row (using the
+printer/`fmt` machinery to edit in place, comment-preserving).
+
+**Surfaces:** an LSP **code action / quick-fix** ("update effect annotation" — and a
+"propagate effect through callers" project-wide variant), and/or a CLI command
+(`medaka fix-effects`). Leverages: the effect inference (have it), the located diagnostics +
+LSP (B.10.x), `parseWithPositions`/`ELoc` for the edit site, and `fmt`/printer for the rewrite.
+
+**Why parked:** nice-to-have ergonomics, not on the retirement path. Lands naturally AFTER the
+LSP code-action infrastructure exists. Cross-ref [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md).
+
 ### Capability-effects wedge — near-term sequence
 
 **Owning roadmap:** [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (language
