@@ -1,0 +1,325 @@
+-- selfhost/lsp.mdk — self-hosted Language Server (Stage 4 Phase B.10)
+--
+-- Slices B.10.0 + B.10.1:
+--   B.10.0 — JSON-RPC-over-stdio skeleton: Content-Length framing, the
+--            `initialize` handshake, `initialized`/`shutdown`/`exit`.
+--   B.10.1 — textDocument/didOpen + didChange → publishDiagnostics
+--            (decl-level fidelity; the selfhost AST is location-stripped so
+--            resolve/typecheck diagnostics span the whole document, parse
+--            errors use parseResult's located line/col).
+--
+-- Mirrors lib/lsp_server.ml's framing (`Content-Length: N\r\n\r\n` then exactly
+-- N body bytes) and handle_initialize's capability set, but only advertises
+-- what B.10 implements: textDocumentSync = Full (1).  Hover/completion/
+-- definition/symbols/highlight/inlay and the ELoc expr-level ranges are LATER
+-- slices and are deliberately NOT advertised here.
+--
+-- The runtime/core prelude sources are threaded in from the driver
+-- (lsp_main.mdk reads them once at startup) so `analyze` can run the full
+-- resolve+typecheck pipeline per document.
+
+import json.{Json, JNull, JBool, JInt, JString, JArray, JObject,
+             jObject, jArray, stringify, parse, lookup, asString, asInt}
+import diagnostics.{Diag, Severity, SevError, SevWarning, analyze}
+import parser.{ParseError, parseResult, parseErrorLine, parseErrorCol,
+               parseErrorMessage}
+
+-- ── open-document store ─────────────────────────────────────────────────────
+-- uri → source text.  A plain association list; LSP sessions open a handful of
+-- files, so linear scan is fine.
+
+public export data Docs = Docs (List (String, String))
+
+emptyDocs : Docs
+emptyDocs = Docs []
+
+docsPut : String -> String -> Docs -> Docs
+docsPut uri src (Docs xs) = Docs ((uri, src) :: docsRemove uri xs)
+
+docsRemove : String -> List (String, String) -> List (String, String)
+docsRemove _ [] = []
+docsRemove uri ((k, v) :: rest)
+  | k == uri = docsRemove uri rest
+  | otherwise = (k, v) :: docsRemove uri rest
+
+-- ── JSON helpers ────────────────────────────────────────────────────────────
+
+-- 0-based LSP Position: { line, character }.
+jPosition : Int -> Int -> Json
+jPosition line ch = jObject [("line", JInt line), ("character", JInt ch)]
+
+-- LSP Range: { start, end }.
+jRange : Int -> Int -> Int -> Int -> Json
+jRange sl sc el ec =
+  jObject [("start", jPosition sl sc), ("end", jPosition el ec)]
+
+-- A single LSP Diagnostic object.  severity: 1=Error, 2=Warning (LSP spec).
+jDiagnostic : Int -> Json -> String -> Json
+jDiagnostic sev range msg =
+  jObject [ ("range", range)
+          , ("severity", JInt sev)
+          , ("source", JString "medaka")
+          , ("message", JString msg) ]
+
+severityCode : Severity -> Int
+severityCode SevError = 1
+severityCode SevWarning = 2
+
+-- ── diagnostics → LSP (decl-level) ──────────────────────────────────────────
+--
+-- B.10.1 fidelity: parse errors carry a located line/col (parseResult); the
+-- whole document's first character is column 0.  resolve/typecheck diagnostics
+-- come from `analyze`, which on the location-stripped selfhost AST cannot
+-- attribute an error to a decl — so they span the whole document (line 0 to the
+-- last line).  Precise per-decl / per-expr ranges are the LATER ELoc slice.
+
+-- Count the lines in a source string (number of '\n' separators).  Used to
+-- build the whole-document range end position.
+countLines : String -> Int
+countLines src = countLinesGo (stringToChars src) 0 0
+
+countLinesGo : Array Char -> Int -> Int -> Int
+countLinesGo arr i acc
+  | i >= arrayLength arr = acc
+  | arrayGetUnsafe i arr == '\n' = countLinesGo arr (i + 1) (acc + 1)
+  | otherwise = countLinesGo arr (i + 1) acc
+
+-- The range covering the whole document: (0,0) .. (lineCount, 0).
+wholeDocRange : String -> Json
+wholeDocRange src = jRange 0 0 (countLines src) 0
+
+-- Map one analyze Diag onto an LSP diagnostic JSON at whole-document range.
+diagToJson : String -> Diag -> Json
+diagToJson src (Diag sev msg) =
+  jDiagnostic (severityCode sev) (wholeDocRange src) msg
+
+-- Produce the LSP diagnostics array for a source.  A parse failure short-
+-- circuits to a single located diagnostic (parseResult); otherwise run the
+-- full resolve+typecheck `analyze` pipeline.
+diagnosticsFor : String -> String -> String -> <Mut> List Json
+diagnosticsFor runtimeSrc coreSrc src = match parseResult src
+  Err e =>
+    let ln = maxI 0 (parseErrorLine e - 1)
+    -- parseResult line is 1-based, col 0-based (matches the OCaml loader); LSP
+    -- wants 0-based lines, so subtract 1 from the line.
+    let col = maxI 0 (parseErrorCol e)
+    let r = jRange ln col ln (col + 1)
+    [jDiagnostic 1 r (parseErrorMessage e)]
+  Ok _ =>
+    map (diagToJson src) (analyze runtimeSrc coreSrc src)
+
+maxI : Int -> Int -> Int
+maxI a b = if a >= b then a else b
+
+-- ── JSON-RPC framing ────────────────────────────────────────────────────────
+
+-- Write a JSON value as a Content-Length-framed JSON-RPC packet to stdout,
+-- then flush (the buffered stdout would otherwise strand the response).
+writeMessage : Json -> <IO> Unit
+writeMessage j =
+  let body = stringify j
+  let n = utf8Len body
+  let header = stringConcat ["Content-Length: ", intToString n, "\r\n\r\n"]
+  let _ = putStr header
+  let _ = putStr body
+  flushStdout ()
+
+-- Content-Length counts BYTES.  Our JSON bodies are ASCII (messages, file
+-- paths, and stdlib diagnostics are ASCII), so the byte length equals the
+-- character length; stringLength suffices.  (A UTF-8 byte counter is a later
+-- refinement if non-ASCII identifiers appear in diagnostics.)
+utf8Len : String -> Int
+utf8Len = stringLength
+
+-- A JSON-RPC response envelope: { jsonrpc, id, result }.
+responseMsg : Json -> Json -> Json
+responseMsg idJson result =
+  jObject [("jsonrpc", JString "2.0"), ("id", idJson), ("result", result)]
+
+-- A JSON-RPC notification envelope: { jsonrpc, method, params }.
+notificationMsg : String -> Json -> Json
+notificationMsg meth params =
+  jObject [("jsonrpc", JString "2.0"), ("method", JString meth), ("params", params)]
+
+-- ── header reading ──────────────────────────────────────────────────────────
+--
+-- Read header lines via readLineOpt until a blank line, accumulating the
+-- Content-Length.  readLineOpt strips the trailing '\n'; a CRLF line therefore
+-- arrives as "...\r", so we trim a trailing '\r'.  Returns the byte length, or
+-- None at EOF (clean shutdown of the input stream).
+
+public export data Headers = Headers Int
+
+readHeaders : Int -> <IO> Option Int
+readHeaders lenAcc = match readLineOpt ()
+  None => None                          -- EOF mid-stream
+  Some raw =>
+    let line = chompCR raw
+    if line == "" then Some lenAcc      -- blank line ends the header block
+    else
+      let lenAcc2 = match parseContentLength line
+        Some n => n
+        None => lenAcc
+      readHeaders lenAcc2
+
+-- Drop a single trailing '\r' (CRLF → LF after readLineOpt strips the '\n').
+chompCR : String -> String
+chompCR s =
+  let n = stringLength s
+  if n > 0 && stringSlice (n - 1) n s == "\r" then stringSlice 0 (n - 1) s
+  else s
+
+-- Parse "Content-Length: <n>" (case-sensitive, as clients emit it).  Returns
+-- the integer N or None if this header line is something else.
+parseContentLength : String -> Option Int
+parseContentLength line =
+  let prefix = "Content-Length:"
+  let pn = stringLength prefix
+  if stringLength line >= pn && stringSlice 0 pn line == prefix then
+    parseDigits (stringToChars (stringSlice pn (stringLength line) line)) 0 (arrayLength (stringToChars (stringSlice pn (stringLength line) line))) 0 False
+  else None
+
+-- Parse a run of ASCII digits (skipping leading spaces) into an Int.  `seen`
+-- tracks whether at least one digit was consumed.
+parseDigits : Array Char -> Int -> Int -> Int -> Bool -> Option Int
+parseDigits arr i n acc seen
+  | i >= n = if seen then Some acc else None
+  | arrayGetUnsafe i arr == ' ' && not seen = parseDigits arr (i + 1) n acc seen
+  | isDigit (arrayGetUnsafe i arr) =
+      parseDigits arr (i + 1) n (acc * 10 + (charCode (arrayGetUnsafe i arr) - 48)) True
+  | otherwise = if seen then Some acc else None
+
+isDigit : Char -> Bool
+isDigit c = charCode c >= 48 && charCode c <= 57
+
+-- ── request dispatch ────────────────────────────────────────────────────────
+--
+-- The driver loops: read headers → read body → parse JSON → dispatch.  The
+-- state threaded through the loop is the Docs store; the runtime/core prelude
+-- sources are constants for the session.
+
+-- The `initialize` result: serverInfo + the B.10 capability set.
+-- textDocumentSync = 1 (Full).  We advertise ONLY diagnostics-via-sync; the
+-- richer providers (hover/completion/etc.) belong to later slices.
+initializeResult : Json
+initializeResult =
+  jObject
+    [ ("capabilities", jObject [("textDocumentSync", JInt 1)])
+    , ("serverInfo", jObject [ ("name", JString "medaka-lsp")
+                             , ("version", JString "0.1.0") ]) ]
+
+-- Build + send a publishDiagnostics notification for one uri.
+publishDiagnostics : String -> String -> String -> String -> <IO, Mut> Unit
+publishDiagnostics runtimeSrc coreSrc uri src =
+  let diags = diagnosticsFor runtimeSrc coreSrc src
+  let params = jObject [("uri", JString uri), ("diagnostics", jArray diags)]
+  writeMessage (notificationMsg "textDocument/publishDiagnostics" params)
+
+-- Extract a textDocument/{didOpen,didChange} uri + text and publish.
+-- didOpen:   params.textDocument.{uri,text}
+-- didChange: params.textDocument.uri + params.contentChanges[last].text
+--            (Full sync: the last change replaces the whole document).
+handleDidOpen : String -> String -> Json -> Docs -> <IO, Mut> Docs
+handleDidOpen runtimeSrc coreSrc params docs =
+  match fieldStr "uri" (fieldOr "textDocument" params)
+    None => docs
+    Some uri =>
+      match fieldStr "text" (fieldOr "textDocument" params)
+        None => docs
+        Some text =>
+          let _ = publishDiagnostics runtimeSrc coreSrc uri text
+          docsPut uri text docs
+
+handleDidChange : String -> String -> Json -> Docs -> <IO, Mut> Docs
+handleDidChange runtimeSrc coreSrc params docs =
+  match fieldStr "uri" (fieldOr "textDocument" params)
+    None => docs
+    Some uri =>
+      match lastChangeText (fieldOr "contentChanges" params)
+        None => docs
+        Some text =>
+          let _ = publishDiagnostics runtimeSrc coreSrc uri text
+          docsPut uri text docs
+
+-- The `.text` of the LAST element of a contentChanges JArray (Full sync).
+lastChangeText : Json -> Option String
+lastChangeText (JArray arr)
+  | arrayLength arr == 0 = None
+  | otherwise = fieldStr "text" (arrayGetUnsafe (arrayLength arr - 1) arr)
+lastChangeText _ = None
+
+-- json field accessors specialized to the shapes we read.
+fieldOr : String -> Json -> Json
+fieldOr key j = match lookup key j
+  Some v => v
+  None => JNull
+
+fieldStr : String -> Json -> Option String
+fieldStr key j = match lookup key j
+  Some v => asString v
+  None => None
+
+-- The request `id` (number or string), passed through verbatim into responses.
+-- We keep it as the raw Json so a string id round-trips unchanged.
+requestId : Json -> Json
+requestId msg = fieldOr "id" msg
+
+methodOf : Json -> Option String
+methodOf msg = fieldStr "method" msg
+
+-- Dispatch one decoded message.  Returns the (possibly updated) Docs store and
+-- a flag: True = keep looping, False = `exit` was received (stop).
+public export data Step = Step Docs Bool
+
+dispatch : String -> String -> Json -> Docs -> <IO, Mut> Step
+dispatch runtimeSrc coreSrc msg docs = match methodOf msg
+  None => Step docs True                -- a response/unknown — ignore, keep going
+  Some meth =>
+    if meth == "initialize" then
+      let _ = writeMessage (responseMsg (requestId msg) initializeResult)
+      Step docs True
+    else if meth == "initialized" then
+      Step docs True
+    else if meth == "textDocument/didOpen" then
+      let docs2 = handleDidOpen runtimeSrc coreSrc (fieldOr "params" msg) docs
+      Step docs2 True
+    else if meth == "textDocument/didChange" then
+      let docs2 = handleDidChange runtimeSrc coreSrc (fieldOr "params" msg) docs
+      Step docs2 True
+    else if meth == "shutdown" then
+      let _ = writeMessage (responseMsg (requestId msg) JNull)
+      Step docs True
+    else if meth == "exit" then
+      Step docs False                   -- stop the loop
+    else
+      Step docs True                    -- unrecognized method — ignore
+
+-- ── the framed read/dispatch loop ───────────────────────────────────────────
+
+-- Read one full message (headers + body), parse it, dispatch.  Returns the
+-- next Step, or a terminal Step on EOF.
+serveOnce : String -> String -> Docs -> <IO, Mut> Step
+serveOnce runtimeSrc coreSrc docs = match readHeaders 0
+  None => Step docs False               -- input stream closed
+  Some len =>
+    match readExactly len
+      None => Step docs False           -- short read / EOF mid-body
+      Some body =>
+        match parse body
+          Err _ => Step docs True       -- malformed JSON body — skip, keep going
+          Ok msg => dispatch runtimeSrc coreSrc msg docs
+
+-- The session loop: serve messages until `exit` or EOF.
+serve : String -> String -> Docs -> <IO, Mut> Unit
+serve runtimeSrc coreSrc docs =
+  match serveOnce runtimeSrc coreSrc docs
+    Step _ False => unit
+    Step docs2 True => serve runtimeSrc coreSrc docs2
+
+-- Public entry point for the driver.
+export
+runServer : String -> String -> <IO, Mut> Unit
+runServer runtimeSrc coreSrc = serve runtimeSrc coreSrc emptyDocs
+
+unit : Unit
+unit = ()

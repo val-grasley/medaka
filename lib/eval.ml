@@ -1500,6 +1500,9 @@ let primitives : (string * value) list =
        with End_of_file -> VCon ("None", []))));
     (* Read all of stdin to a single string. *)
     ("readAll", VPrim (fun _ -> VString (In_channel.input_all stdin)));
+    (* Flush buffered stdout — required by the LSP stdio loop so framed
+       responses reach the client before the process exits. *)
+    ("flushStdout", VPrim (fun _ -> flush stdout; VUnit));
     (* Read exactly N bytes from stdin; Some s or None at EOF / short read. *)
     ("readExactly", VPrim (fun v ->
       let n = match v with VInt n -> n | _ -> raise (Eval_error ("readExactly: expected Int", None)) in

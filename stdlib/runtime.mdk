@@ -52,6 +52,7 @@ extern ePutStrLn : String -> <IO> Unit
 extern readLineOpt : Unit -> <IO> Option String  -- one stdin line, None at EOF
 extern readAll : Unit -> <IO> String  -- all of stdin
 extern readExactly : Int -> <IO> Option String  -- read exactly N bytes; None at EOF or short read
+extern flushStdout : Unit -> <IO> Unit  -- flush buffered stdout (LSP stdio framing)
 extern wallTimeSec : Unit -> <IO> Float  -- wall-clock time in seconds (gettimeofday)
 extern allocBytes : Unit -> <IO> Float   -- total GC-allocated bytes since process start (Gc.allocated_bytes proxy)
 -- Internal: the terminator of a desugared guard chain (Phase 91).  Raises the

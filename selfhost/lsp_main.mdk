@@ -1,0 +1,26 @@
+-- selfhost/lsp_main.mdk — driver for the self-hosted LSP (Stage 4 Phase B.10).
+--
+--   medaka run selfhost/lsp_main.mdk <runtime.mdk> <core.mdk>
+--
+-- Reads the runtime + core prelude sources once at startup (so the per-document
+-- `analyze` pipeline can resolve+typecheck against the real prelude), then runs
+-- the JSON-RPC-over-stdio loop (lsp.mdk: initialize handshake + publish-
+-- diagnostics on didOpen/didChange).  Mirrors diagnostics_main.mdk's prelude-
+-- loading convention.
+
+import lsp.{runServer}
+
+main : <IO, Mut> Unit
+main = match args ()
+  [runtimePath, corePath] => withFiles runtimePath corePath
+  _ => ePutStrLn "usage: medaka run selfhost/lsp_main.mdk <runtime.mdk> <core.mdk>"
+
+withFiles : String -> String -> <IO, Mut> Unit
+withFiles runtimePath corePath = match readFile runtimePath
+  Ok rsrc => withCore rsrc corePath
+  Err msg => ePutStrLn msg
+
+withCore : String -> String -> <IO, Mut> Unit
+withCore rsrc corePath = match readFile corePath
+  Ok csrc => runServer rsrc csrc
+  Err msg => ePutStrLn msg
