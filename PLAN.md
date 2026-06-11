@@ -113,10 +113,14 @@ and retires the OCaml reference (`lib/*.ml`) on a **gated** schedule (no fixed
 date; deletion is unlocked only when the bar below is met).
 
 **The "native is canonical" bar (gates `lib/` retirement) — status as of 2026-06-10:**
-1. 🟡 **~90%.** `medaka build` compiles + runs arbitrary USER programs natively. Gap G / Cause A /
-   GAP 1 (nested dicts) / GAP 2 (max/min) / **C5 standalone-vs-method** all ✅. Remaining:
-   **tuple-as-receiver** (add-language-feature class), **2-level multi-module route flattening (#21)**,
-   and a **stdlib-emittability sweep** (the tooling uses the full stdlib natively).
+1. 🟢 **~95%.** `medaka build` compiles + runs arbitrary USER programs natively. Gap G / Cause A /
+   GAP 1 (nested dicts) / GAP 2 (max/min) / C5 standalone-vs-method / **tuple-as-receiver** (`debug`/
+   `==`/`!=`/`compare` on tuples, arity-distinguished heads) all ✅. Remaining: **parametric-Ord
+   ordering operators `< > <= >=`** (#50 — on `Ord (T a)` parametric receivers; builds but doesn't
+   dispatch — needs the GAP-2 default-method element-dict machinery extended; not a crash); **2-level
+   multi-module route flattening (#21)**; and a **stdlib-emittability sweep** (the tooling uses the
+   full stdlib natively). (tuple work also fixed a real bug: `==` was crashing on ANY parametric
+   `Eq` impl — empty element-dict routes in the Gap-G binop rewrite.)
 2. ✅ **Effectively done.** Behavior suites ported to `medaka test` (`test_run`/`test_eval`/`test_loader`);
    the rest is internal OCaml API, intrinsically non-portable.
 3. ✅ **Done.** Differential fuzzer (MVP + native Tier-C, 1080 native programs clean, found+fixed
