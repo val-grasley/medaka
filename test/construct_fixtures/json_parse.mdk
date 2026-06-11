@@ -1,0 +1,13 @@
+-- Issue #53 regression: emitting a program that imports `json` and runs
+-- `json.parse`.  The JSON recursive-descent parser is full of multi-clause
+-- functions with lifted inner-lambda workers; before the fix several of those
+-- lambdas branched to clause blocks defined in sibling functions, producing
+-- `use of undefined value %clauseN` at clang link time.
+import json.{parse}
+
+main : <IO> Unit
+main =
+  let r = match parse "[1,2,3]"
+        Ok _ => "ok"
+        Err e => e
+  println r

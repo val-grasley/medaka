@@ -1818,6 +1818,14 @@ emitGroupBindDefine : Emit -> String -> String -> Int -> List CClause -> List St
 emitGroupBindDefine e lamName name arity clauses captured =
   let saved = (bufRef e).value
   let _ = set_ref (bufRef e) []
+  -- A lifted define is a FRESH function: its clause chain's last-clause
+  -- fallthrough must be @mdk_oob (non-exhaustive abort), NOT the enclosing
+  -- function's leftover next-clause label.  Without this the lifted `go`'s final
+  -- clause would `br label %clauseN` to a block defined in the PARENT function —
+  -- invalid LLVM once functions are concatenated in the multi-module output
+  -- (issue #53).  Same save+null+restore discipline emitDecision uses.
+  let savedFt = fallthroughLabelRef.value
+  let _ = set_ref fallthroughLabelRef ""
   let _ = emit e ("define i64 @" ++ lamName ++ "(i64 %clos, " ++ implParamDecls arity 0 ++ ") {")
   let _ = emit e "entry:"
   let cenv = loadCaptures e captured 0
@@ -1826,6 +1834,7 @@ emitGroupBindDefine e lamName name arity clauses captured =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
 clauseList : List CClause -> List (List Pat, CExpr)
@@ -2646,6 +2655,8 @@ emitDefaultDefine e fname tag method entry =
   let body = restampIface methodIfaceTableRef.value (methodIfaceOf method) tag body1
   let saved = (bufRef e).value
   let _ = set_ref (bufRef e) []
+  let savedFt = fallthroughLabelRef.value
+  let _ = set_ref fallthroughLabelRef ""
   let _ = emit e ("define i64 @" ++ fname ++ "(" ++ implParamDecls arity 0 ++ ") {")
   let _ = emit e "entry:"
   let _ = emitGroupBody e fname tag [] arity [(pats, body)]
@@ -2653,6 +2664,7 @@ emitDefaultDefine e fname tag method entry =
   let _ = emit e ""
   let defLines = (bufRef e).value
   let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL defLines)
+  let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
 maxInt : Int -> Int -> Int
@@ -3116,6 +3128,8 @@ emitPatLamDefine : Emit -> String -> List (String, (String, LTy)) -> List Pat ->
 emitPatLamDefine e lamName extra pats captured body =
   let saved = (bufRef e).value
   let _ = set_ref (bufRef e) []
+  let savedFt = fallthroughLabelRef.value
+  let _ = set_ref fallthroughLabelRef ""
   let arity = listLen pats
   let _ = emit e ("define i64 @" ++ lamName ++ "(i64 %clos, " ++ implParamDecls arity 0 ++ ") {")
   let _ = emit e "entry:"
@@ -3125,6 +3139,7 @@ emitPatLamDefine e lamName extra pats captured body =
   let _ = emit e ""
   let lamLines = (bufRef e).value
   let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
 -- drop every occurrence of a name from a list (the recursive-closure self name is

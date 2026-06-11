@@ -1,0 +1,14 @@
+-- Issue #53 regression: multi-module emit of a multi-clause function with a
+-- lifted inner lambda (`list.reverse`'s `go` worker) alongside another stdlib
+-- module (`string`).  Before the fix the lifted `go`'s last-clause fallthrough
+-- branched to `%clauseN` — a block defined in the SIBLING `@mdk_reverse`
+-- (string.reverse coalesced into the same name) — invalid LLVM in the
+-- concatenated module.  Single-module reverse was clean; the collision appeared
+-- only once modules were concatenated.
+import list.{range, reverse}
+import string.{startsWith}
+
+main : <IO> Unit
+main =
+  println (length (reverse (range 1 9)))
+  println (debug (startsWith "ab" "abcd"))
