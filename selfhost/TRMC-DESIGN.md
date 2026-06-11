@@ -50,7 +50,7 @@ exit:   %r = load i64, ptr %hole ; ret i64 %r
 
 O(1) stack, identical list value + order + effect sequence.
 
-## Phase 1 scope (APPROVED)
+## Phase 1 scope (APPROVED → IMPLEMENTED 2026-06-11, #56)
 
 **Cons-only (`::`), top-level NON-DICT self-recursive defines, syntactic
 clause-result `head :: self-call`.** Fixes every user-written list builder
@@ -111,3 +111,76 @@ eta-saturation, medium risk); (b) `match`/`if`-arm tail descent (`filterMap`'s
 in-arm cons); (c) general single-constructor last-field TMC (not just `::`). Each
 independently gateable. Until Phase 2, stdlib `map (+1) [1..1M]` still overflows;
 hand-rolled builders are stack-safe.
+
+## Phase 1 — AS BUILT (2026-06-11, `selfhost/llvm_emit.mdk`)
+
+Implemented exactly to the destination-passing mechanism above, with an
+ALLOCA-based mutable destination + param slots (not block phis) — simpler, robust
+at every clang `-O` level (`mem2reg` promotes them under `-O2`), and it sidesteps
+all phi-wiring across decision-tree leaves.
+
+**Eligible-detection** (`trmcEligible` + `isConsTail`/`trmcBodyOk`, structural,
+deterministic): a clause qualifies when, descending through `CIf`/`CLet`/
+`CLetGroup` tail wrappers, every leaf is EITHER self-free OR an eligible cons-tail
+`CBinPrim "::" head tail` with `head` self-free and `tail` a SATURATED self
+`CApp`-spine (arity-exact). ANY self-call outside a cons-tail leaf disqualifies the
+whole function → current codegen. `match`/`CDecision` are NOT descended (a self-call
+inside a match arm is treated as a leaf with a self-ref ⇒ disqualified — that's the
+Phase-2 in-arm-cons case). Gated to NON-DICT defines via `leadingDictPats == 0`
+(`isDictParamName`), so dict-passed `map`/`filterMap` + lifted lambdas are untouched.
+
+**Two shapes handled** (both observed in real builders, which the original design
+under-specified — function-clause guards desugar to nested `CIf`, NOT a decision
+tree):
+- *Single-clause guarded* (`upto`/`replicate`: `f x | g = [] | otherwise = x :: f …`)
+  → body is nested `CIf`; `emitTrmcBody` descends the `CIf`/let wrappers and routes
+  each value leaf to the cons/base emit directly.
+- *Multi-clause* (`myMap f [] = [] ; myMap f (x::xs) = f x :: myMap f xs`) → reuses
+  `emitClauseTree`'s decision-tree clause chain VERBATIM; the per-clause leaf
+  (`emitLeaf`) is TRMC-aware via a module-level `trmcCtxRef` (mirrors
+  `fallthroughLabelRef`), so the clause body is descended in tail position instead
+  of computing a value. `emitDecision` saves+clears `trmcCtxRef` across an
+  expression-position `match`, so a nested match's arms still compute values.
+
+**Emit shape** (`@mdk_upto` example):
+```
+entry:  %hole = alloca i64 ; %dest = alloca ptr ; store ptr %hole, ptr %dest
+        %tp0 = alloca i64 ; store %arg0,%tp0 ; %tp1 = alloca i64 ; store %arg1,%tp1
+        br label %trmcloop
+trmcloop: <reload %tpK> ; <CIf guard chain / decision tree>
+  base leaf:  %d=load ptr,%dest ; store <nil-imm 562949953421315>, %d ; br trmcexit
+  cons leaf:  %cell=call ptr @mdk_alloc(24) ; store <ConsHdr>,%cell
+              store <head>, %cell+8 ; %d=load %dest ; store ptrtoint(%cell), %d
+              %nd=gep %cell,+16 ; store ptr %nd, %dest
+              <recompute args → %tpK> ; br trmcloop      ; NO `call @mdk_upto`
+trmcexit: %r=load i64,%hole ; ret %r
+```
+The cell's own tail word stays ZEROED (GC_malloc) until the next iteration fills it
+(GC-safe per §"Risk"). Recursion args are computed into temps THEN stored, so an
+in-place slot store can't clobber a not-yet-read param.
+
+**Deviations / notes:**
+- The multi-clause path re-allocates the synthetic tuple scrutinee (`emitClauseTree`,
+  arity≥2) once per iteration — one extra GC cell/element. Bounded, O(1)-stack, value-
+  correct; left as-is (an `emitClauseTree` TRMC-specialisation is a possible later
+  cleanup). The decision-tree's own `decend`/result slot becomes a dead block (no
+  predecessor) — LLVM tolerates it.
+- The self-call is fully BYPASSED: verified no `call …@mdk_<self>` in an eligible
+  define's body (only the head's indirect closure call `call i64 %reg(...)` for
+  `myMap`'s `f x`, and the external caller's own call site, remain).
+
+**Gates (all green):** `diff_selfhost_llvm` 172, `_modules` 9, `_typed` 37,
+`diff_selfhost_build` 15, `diff_native_cli` 54; `selfcompile_fixpoint` C3a **YES** /
+C3b **YES** (the emitter's own `:: <ident>` builders became TRMC-eligible — its
+emitted IR changed but reproduces byte-for-byte, fixpoint holds by determinism). New
+`test/diff_native_stack.sh` (2 fixtures under `test/stack_fixtures/`): `upto 1 2_000_000`
+single-clause + `myMap … (upto 1 2_000_000)` multi-clause both print `2000000`, exit 0,
+== oracle. **Before/after:** at the default clang stack the single-clause builder
+SIGSEGV(139)→`2000000`.
+
+**Out of scope confirmed (expected fallbacks):** a `myMap`-as-`match` (single clause,
+body is `CDecision`) is NOT transformed — the self-call sits in a match arm (Phase 2b).
+A *very* deep (>~1M) linked list can still SIGSEGV under the DEFAULT stack from Boehm
+GC's RECURSIVE mark (a separate pre-existing native-runtime limit, unrelated to TRMC) —
+the production build (`build_cmd.mdk`: `-O2 -Wl,-stack_size,0x20000000`) gives the mark
+room; the stack gate links with those flags.

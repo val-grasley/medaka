@@ -1,0 +1,21 @@
+-- TRMC stack-safety: a SINGLE-CLAUSE guarded cons-tail builder (`upto`) builds a
+-- 2,000,000-element list in O(1) stack (destination-passing loop, no recursive
+-- call), then a musttail accumulator length consumes it.  SIGSEGV(139) before
+-- TRMC at ~80k cells; prints 2000000 after.
+upto m n
+  | m > n = []
+  | otherwise = m :: upto (m + 1) n
+
+isNil xs = match xs
+  [] => True
+  _ => False
+
+tl xs = match xs
+  (_::ys) => ys
+  [] => []
+
+lenAcc acc xs
+  | isNil xs = acc
+  | otherwise = lenAcc (acc + 1) (tl xs)
+
+main = lenAcc 0 (upto 1 2000000)
