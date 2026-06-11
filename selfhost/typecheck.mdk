@@ -4807,9 +4807,9 @@ revLLGo : List a -> List a -> List a
 revLLGo [] acc = acc
 revLLGo (x :: xs) acc = revLLGo xs (x :: acc)
 
-depGraphMap : List String -> List (String, (List Pat, Expr)) -> SMap (List String)
-depGraphMap names defs =
-  buildAdj names (namesToSet names STip) (groupClauses defs) STip
+depGraphMap : List String -> SMap (List (List Pat, Expr)) -> SMap (List String)
+depGraphMap names grouped =
+  buildAdj names (namesToSet names STip) grouped STip
 
 -- name-membership set, built ONCE, so `keepGroupNames` is O(log n)/ref instead of
 -- O(names)/ref (the dep-graph build was O(names²·refs)). Output-order-preserving:
@@ -4922,8 +4922,9 @@ tjPop v acc = match tjStack.value
 
 processTopGroups : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
 processTopGroups env sigs defs names =
-  let ordered = tarjanSCCs names (depGraphMap names defs)
-  processSCCs env sigs defs ordered
+  let grouped = groupClauses defs
+  let ordered = tarjanSCCs names (depGraphMap names grouped)
+  processSCCs env sigs grouped ordered
 
 -- per-name dependencies: the other top-level names a binding's bodies reference
 -- (a conservative over-approximation via all free EVars is fine — only names
@@ -4956,23 +4957,23 @@ filterList p (x :: xs)
   | otherwise = filterList p xs
 
 -- process each SCC as a letrec group in topological order
-processSCCs : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (List String) -> <Mut> List (String, Scheme)
+processSCCs : TcEnv -> List (String, Ty) -> SMap (List (List Pat, Expr)) -> List (List String) -> <Mut> List (String, Scheme)
 processSCCs _ _ _ [] = []
-processSCCs env sigs defs (scc :: rest) =
-  let er = processSCC env sigs defs scc
-  snd er ++ processSCCs (fst er) sigs defs rest
+processSCCs env sigs grouped (scc :: rest) =
+  let er = processSCC env sigs grouped scc
+  snd er ++ processSCCs (fst er) sigs grouped rest
 
-processSCC : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
-processSCC env sigs defs members =
+processSCC : TcEnv -> List (String, Ty) -> SMap (List (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
+processSCC env sigs grouped members =
   let _ = enterLevel ()
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
   let (regs, sigTvMaps) = preunifySigsEx sigs placeholders
-  let _ = inferMembers env2 sigs defs placeholders
+  let _ = inferMembers env2 sigs grouped placeholders
   let _ = checkSigsTooGeneral sigTvMaps
   let _ = registerConstraintRegs regs
   let _ = exitLevel ()
-  let schemes = sccSchemes sigs defs (isLetrecGroup members) placeholders
+  let schemes = sccSchemes sigs grouped (isLetrecGroup members) placeholders
   let _ = registerInferredConstraints sigs schemes
   (extendVars env schemes, schemes)
 
@@ -5092,15 +5093,15 @@ registerMemberSlots m kept (mono :: rest) = match normalize mono
 -- (preunifySigsEx unified it), and its shared tyvars accumulate unifications
 -- across clauses exactly as the oracle's `sig_t` does.  Purely additive: the
 -- per-clause `unify v arrow` below imposes the same equalities anyway.
-inferMembers : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
+inferMembers : TcEnv -> List (String, Ty) -> SMap (List (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
 inferMembers _ _ _ [] = ()
-inferMembers env sigs defs ((m, v) :: rest) =
+inferMembers env sigs grouped ((m, v) :: rest) =
   let _ = set_ref currentFn m
   let peel = memberPeelSource sigs m v
-  let effs = inferMemberClauses env peel v (clausesFor m defs)
+  let effs = inferMemberClauses env peel v (clausesOf m grouped)
   let _ = set_ref currentFn ""
   let _ = checkEffectEscape sigs m effs
-  inferMembers env sigs defs rest
+  inferMembers env sigs grouped rest
 
 -- the peel source for a member: Some placeholder if it has a signature (peel the
 -- declared arrow domains onto the clause params), None otherwise
@@ -5191,13 +5192,13 @@ effectEscapeMsg name declared extras =
 --   isVal    = plainVal || sigIsFun.
 -- A non-function expansive unsigned binding (`r = Ref []`) is value-restricted and
 -- stays monomorphic.  Mirrors oracle lib/typecheck.ml:2705-2710 + 2756.
-sccSchemes : List (String, Ty) -> List (String, (List Pat, Expr)) -> Bool -> List (String, Mono) -> <Mut> List (String, Scheme)
+sccSchemes : List (String, Ty) -> SMap (List (List Pat, Expr)) -> Bool -> List (String, Mono) -> <Mut> List (String, Scheme)
 sccSchemes _ _ _ [] = []
-sccSchemes sigs defs isLetrec ((m, v) :: rest) =
-  let plainVal = isLetrec || allList memberClauseIsValue (clausesFor m defs)
+sccSchemes sigs grouped isLetrec ((m, v) :: rest) =
+  let plainVal = isLetrec || allList memberClauseIsValue (clausesOf m grouped)
   let sigIsFun = memberSigIsFun sigs m v
   let isVal = plainVal || sigIsFun
-  (m, genRestricted isVal v) :: sccSchemes sigs defs isLetrec rest
+  (m, genRestricted isVal v) :: sccSchemes sigs grouped isLetrec rest
 
 -- a top-level clause is a value if it has params (function) or a non-expansive RHS
 memberClauseIsValue : (List Pat, Expr) -> Bool
