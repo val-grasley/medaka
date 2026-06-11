@@ -3829,8 +3829,29 @@ routeOfMono : List ImplEntry -> Mono -> <Mut> Route
 routeOfMono implTable m = match activeDictVarOf m
   Some dname => RDict dname
   None => match headTyconMono m
-    Some tag => RKey tag (implRequiresRoutesRec implTable tag m)
+    Some tag => RKey tag (argImplRequiresRoutesRec implTable tag m)
     None => RNone
+
+-- Native #54/#21 residual: the activeDictVar-AWARE analogue of
+-- implRequiresRoutesRec, used ONLY by the arg-position routeOfMono recursion.
+-- The return-position implRequiresRoutesRec recurses through reqRoute, which is
+-- activeDictVar-BLIND (RNone for an abstract var) — correct for the golden return
+-- path, but WRONG one level down on the arg path: e.g. a `Debug (Map k v)` impl
+-- body's `debug (toList m)` arg-stamps `List (k, v)` → RKey "List" recursing into
+-- the tuple `(k, v)` whose element vars `k`/`v` ARE the enclosing impl's
+-- `requires Debug k, Debug v` dict params (registered in activeDictVars), so they
+-- must route RDict $dict_debug_<slot>, NOT RNone.  Recursing via routeOfMono
+-- (not reqRoute) keeps every nesting level activeDictVar-aware, so the emitted
+-- element-dict cell carries the live impl dicts instead of a null (0) field — the
+-- null field was the SIGSEGV (the inner per-element debug/eq/compare dispatched
+-- through a 0 dict).  Kept SEPARATE from implRequiresRoutesRec so the golden
+-- return-position routing stays byte-identical.
+argImplRequiresRoutesRec : List ImplEntry -> String -> Mono -> <Mut> List Route
+argImplRequiresRoutesRec implTable tag m = match findImplEntry implTable tag m
+  Some (ImplEntry _ _ headTy reqs) => match matchTyMono headTy m
+    Some subst => argImplReqRoutes implTable subst reqs
+    None => []
+  None => []
 
 -- ── D3b-1: arg-position element-dict routing ────────────────────────────────
 -- The argument-position analogue of implDictRoutesFor.  Same impl-table match +
@@ -4087,6 +4108,13 @@ siteRDictNamesL r = concatMapL routeRDictName r.value
 routeRDictName : Route -> List String
 routeRDictName (RDict d) = [d]
 routeRDictName (RDictFwd d) = [d]
+-- Native #54/#21 residual: an element-dict RKey route can NEST an RDict forwarding
+-- the enclosing impl's `requires` dict (e.g. `RKey "$tuple" [RDict $dict_debug_0,
+-- RDict $dict_debug_1]` for `debug (toList m)` in a `Debug (Map k v)` body).  The
+-- gate that decides whether to PREPEND those impl-dict params (usesImplDict) must
+-- see the nested name, else the route references a param the clause never declares
+-- → emitter panics "unbound dict witness".  Recurse into the nested reqs.
+routeRDictName (RKey _ reqs) = concatMapL routeRDictName reqs
 routeRDictName _ = []
 
 -- every EMethodAt route ref reachable in [e] (a pure structural walk; reading a

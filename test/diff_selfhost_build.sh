@@ -160,7 +160,26 @@ main : <IO> Unit
 main = putStrLn (debug Red ++ " " ++ debug Blue ++ " " ++ debug (Red == Red))
 EOF
 
-PROGRAMS="arith recur adt list closure maxalias maxprim clampc show_debug eq deriving"
+# Native #54/#21 residual: the Map interface-impl bodies (Eq/Ord/Debug/Display)
+# delegate to `eq`/`compare`/`debug`/`display` of `toList m : List (k, v)`, whose
+# nested per-element dispatch needs the impl's `requires` (Eq/Debug/… k, … v) dicts
+# threaded into the synthesized element-dict cell.  Before the fix the cell's inner
+# fields were 0 (null) → SIGSEGV; this fixture exercises all four impls.
+cat > "$WORK/src/map_impl.mdk" <<'EOF'
+import map.{Map, fromList}
+main : <IO> Unit
+main =
+  let a = fromList [(1, "x"), (2, "y")] : Map Int String
+  let b = fromList [(2, "y"), (1, "x")] : Map Int String
+  let c = fromList [(1, "x")] : Map Int String
+  putStrLn (debug (a == b))
+  putStrLn (debug (a == c))
+  putStrLn (debug a)
+  putStrLn (display a)
+  putStrLn (debug (compare c a))
+EOF
+
+PROGRAMS="arith recur adt list closure maxalias maxprim clampc show_debug eq deriving map_impl"
 
 pass=0; fail=0
 

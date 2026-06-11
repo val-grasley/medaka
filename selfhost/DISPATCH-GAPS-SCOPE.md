@@ -225,6 +225,62 @@ The Cause-B residual tracked in PLAN means: the `elaborateModules` path (the mul
 
 ## Gap #54 — Map `toList` bare-name (H-b1, standalone shadows Foldable method)
 
+> **CLOSED 2026-06-11** (`feat(selfhost): fix native SIGSEGV in Map interface-impl bodies — closes #54/#21 residual`).
+> The originally-documented #54 (compile-time panic `no impl of method 'toList' for type 'Map'`)
+> and #21 (2-level `Box (List (List Int))` route flattening) were **BOTH already closed** by the
+> 2026-06-11 universal per-module mangling (`332ef41`) + eta-saturation work (`abfd656`/`fdcc95b`/`ac2f4bb`):
+> `debug (toList m)`, `debug [[1,2],[3,4]]`, and `debug (toList (fromList … : Map Int (List String)))`
+> (the #21 2-level nesting) all native==interpreter on current main. Those fixes exposed a DEEPER
+> residual: the Map's OWN interface-impl bodies (`Eq`/`Ord`/`Debug`/`Display`) **SIGSEGV'd (exit 139)**
+> natively while the interpreter was correct — `a == b`, `debug m`, `display m`, `compare a b` on a Map.
+>
+> **ACTUAL current-main root cause (matches this doc's line-383 prediction exactly):** the abstract
+> element variable was not propagated through `implRequiresRoutesRec`. A `Debug (Map k v)` impl body
+> is `debug m = "fromList \{debug (toList m)}"`; `toList m : List (k, v)` with `k`/`v` ABSTRACT (bound
+> by the impl's `requires Debug k, Debug v`). The emit-path ARG-stamp (`resolveArgStamp` →
+> `argImplDictRoutesFor` → `argReqRoute` → `routeOfMono`) routes that site `RKey "List" [...]`, then
+> recurses into the element `(k, v)` tuple. **The recursion lost activeDictVar-awareness one level
+> down:** `routeOfMono` (arg-aware: an active impl-dict var → `RDict $dict_debug_<slot>`) delegated the
+> nested level to `implRequiresRoutesRec` → `implReqRoutes` → **`reqRoute`**, the RETURN-position route
+> builder, which is activeDictVar-BLIND (`headTyconMono var → None → RNone`). So the tuple's two element
+> routes came out `RNone` → the emitted pair-`Debug` dict cell (`RKey "$tuple" [RNone, RNone]`) had its
+> two inner-dict fields stored as **`0` (null)** → `debugListItems`/`__tuple2___debug` dispatched the
+> per-element `debug`/`eq`/`compare` through a **null dict pointer** → SIGSEGV. (The Map's `Display`
+> impl worked because it delegates through a *separate* `(Display k, Display v) =>`-constrained helper
+> `displayMapEntries`, which gets its dicts the ordinary constrained-fn way; `display` of a Map with a
+> *non*-helper path would crash identically — `display a` on a `Map Int String` was confirmed crashing
+> and is now fixed too.) **Diagnosed empirically:** dumped the emitted IR; the impl defines `Map_eq`/
+> `Map_compare`/`Map_debug` carried NO dict params (arity = just the map(s)) yet built a pair dict with
+> `store i64 0` inner fields, vs the WORKING `debug (toList m)` site where the pair dict's fields are
+> the real Int/String dicts; crash frame `mdk_map__foldrWithKey` (the `toList` walk) is a red herring —
+> the deref is in the element-debug dispatch the impl body invokes on the toList result.
+>
+> **Fix (typecheck-only, two coupled parts, general):**
+> 1. **`argImplRequiresRoutesRec`** — a new activeDictVar-AWARE analogue of `implRequiresRoutesRec`,
+>    used ONLY by the arg-position `routeOfMono` recursion. It recurses via `argImplReqRoutes` →
+>    `argReqRoute` → `routeOfMono` (not `reqRoute`), so EVERY nesting level stays activeDictVar-aware:
+>    a recursive element that is one of the enclosing impl's `requires` vars routes `RDict
+>    $dict_<method>_<slot>` (forwarding the live impl dict) instead of `RNone`/null. Kept SEPARATE
+>    from `implRequiresRoutesRec` so the golden RETURN-position routing stays byte-identical.
+> 2. **`routeRDictName` recurses into `RKey` nested reqs.** The `usesImplDict` gate (which decides
+>    whether to PREPEND the impl's `requires` dict params to a method clause, via `bodyRDictNames`)
+>    only saw top-level `RDict`/`RDictFwd` routes. The fix from (1) buries the forwarding `RDict` one
+>    level deep inside an `RKey "$tuple" [RDict $dict_debug_0, …]` element route, so the gate did not
+>    fire and the clause never declared the param → emitter panic `unbound dict witness '$dict_eq_0'`.
+>    Making `routeRDictName` recurse into `RKey`'s nested routes lets the gate see the nested name, so
+>    the impl method declares the `requires` dict params it now references.
+>
+> **Generality:** fixes the SIGSEGV for ALL container interface-impl bodies that delegate a constrained
+> method through a value whose element type is an abstract impl-`requires` var — Map/Set/HashMap/Array/
+> MutArray Eq/Ord/Debug/Display, at any nesting depth (verified `Map Int (Map Int String)` —
+> 2-level container nesting — renders correctly). Not coupled to #55. **Verified repros** (native
+> build+run == interpreter): `a == b`→`True`, `a == c`→`False`; `debug m`→`fromList [(1, "a")]`;
+> `display m`→`Map { 1 => x, 2 => y }`; `compare c a`→`Lt`; `Set` eq/debug; nested Map. Already-working
+> cases unchanged (`debug (toList m)`, `debug [[1,2]]`, `debug (toList … : Map Int (List String))`).
+> **Gates:** diff `172/9/37` byte-identical, build **13** (+`map_impl` fixture), self-compile fixpoint
+> C3a/C3b **YES** (the compiler uses `Map`/`HashMap` internally — a strong end-to-end test), native CLI
+> `54/54`.
+
 ### Minimal repro
 
 ```
