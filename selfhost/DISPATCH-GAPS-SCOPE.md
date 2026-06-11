@@ -47,6 +47,28 @@ The native backend pipeline: `typecheck.mdk` `elaborateModules` route-stamps →
 > `callMax "a" "z"`→`"z"`; `min` analogs→`3`/`"a"`; `clamp lo hi x = max lo (min hi x)`→`7`/`10`;
 > `applyOp : Ord a => (a→a→a)→a→a→a; applyOp max 3 7`→`7`. **Gates:** diff 172/9/37/9 byte-identical,
 > self-compile fixpoint C3a/C3b YES, native CLI 54/54. **Not coupled** to #54/#21/#55.
+>
+> **FOLLOW-UP CLOSED 2026-06-11** (`feat(selfhost): dispatch max/min over primitive Ord via threaded
+> dict — closes the RNone-over-primitive residual`). The `maximum`/`minimum` prelude-helper facet
+> (`maximum = fold step None` where `step` calls `max m x`) — the one the EMITTER-GAPS SPLIT note
+> left OPEN as "RNone over primitives" — turned out to be the SAME #50 arity-mismatch, NOT an RNone
+> primitive-tag problem. **Diagnosis (empirical):** the inner `max m x` already lowers to
+> `CMethod "max" (RDict $dict_maximum_1)` on BOTH the single-file (`elaborateDict`) and module
+> (`elaborateModules` — the build path; its "Pre-E4 no-op" comment is stale, E4 has landed) front-ends
+> — the `Ord a` dict IS threaded. The bug: `maximum = fold step None` is point-free, `dictPass`
+> prepends the 2 dict params, but `etaSaturateMethodBody`'s `methodBodyDeficit` did not look through
+> the `where`-helper `CLetGroup` wrapping the `fold step None` tail → the define came out **arity 2
+> (dicts only)** while the call site passed **3 args** (dicts + the list) → the value arg dropped →
+> the body returned the partial `fold` closure → caller used it as `Option Int`. **Masked at `-O0`,
+> SIGSEGV at `-O1+`** (clang turns the ABI mismatch into a null-dict deref; `medaka build` uses `-O2`).
+> **Fix (emitter-only, general):** `methodBodyDeficit` recurses through `CLet`/`CLetGroup` to the tail,
+> and `applyEtaArgsTail` threads the eta args into that tail (rebuilding the let wrappers). General
+> for any point-free `=>`-constrained fn whose under-applied method spine is under a `where`/`let`.
+> **Repros:** `maximum [3,7,1]`→`Some 7`, `minimum [3,7,1]`→`Some 1`, `maximum ["a","z","m"]`→`Some z`,
+> all native==oracle. **Gates:** diff 172/9/37, build **11** (+`maxprim`), fixpoint C3a/C3b YES,
+> native CLI 54/54. The real-prelude `maximum`/`minimum` users are now unblocked. **Residual
+> (separate):** `clamp lo hi = min hi >> max lo` (point-free over compose `>>` → `CLam`, not a
+> let-group tail) still emits garbage under build — pre-existing on stale main, out of scope.
 
 ### Minimal repro
 

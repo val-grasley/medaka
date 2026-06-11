@@ -99,6 +99,20 @@ main =
   putStrLn (intToString (applyOp max 4 9))
 EOF
 
+# maximum/minimum over a PRIMITIVE Ord receiver (Int + String).  The prelude
+# helpers `maximum = fold step None` (where step calls `max m x`) are point-free,
+# `=>`-constrained, and their under-applied method spine sits UNDER the `where`
+# CLetGroup — the define came out arity-(dicts-only) while the call site supplied
+# the value arg too, so the binary SIGSEGV'd under clang -O1+ (closed by
+# etaSaturateMethodBody looking through CLet/CLetGroup to the tail).
+cat > "$WORK/src/maxprim.mdk" <<'EOF'
+main : <IO> Unit
+main =
+  putStrLn (debug (maximum [3, 7, 1]))
+  putStrLn (debug (minimum [3, 7, 1]))
+  putStrLn (debug (maximum ["a", "z", "m"]))
+EOF
+
 # multi-module
 mkdir -p "$WORK/src/mm"
 cat > "$WORK/src/mm/helper.mdk" <<'EOF'
@@ -127,7 +141,7 @@ main : <IO> Unit
 main = putStrLn (debug Red ++ " " ++ debug Blue ++ " " ++ debug (Red == Red))
 EOF
 
-PROGRAMS="arith recur adt list closure maxalias show_debug eq deriving"
+PROGRAMS="arith recur adt list closure maxalias maxprim show_debug eq deriving"
 
 pass=0; fail=0
 

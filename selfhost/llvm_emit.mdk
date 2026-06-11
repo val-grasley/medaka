@@ -4507,7 +4507,7 @@ etaSaturateMethodBody e pats body =
   if deficit <= 0 then (pats, body)
   else
     let fresh = etaFreshPats deficit (listLen pats)
-    (pats ++ fresh, applyEtaArgs body fresh)
+    (pats ++ fresh, applyEtaArgsTail body fresh)
 
 -- the count of still-unapplied VALUE params of an under-applied method/dict body
 -- (0 = saturated / not a method-or-dict head ⇒ no eta-expansion).  A bare CMethod
@@ -4515,7 +4515,13 @@ etaSaturateMethodBody e pats body =
 -- needs `methodArityOf - k`.  CDict (a constrained-fn occurrence) is left alone:
 -- when its head is point-free it is an arity-0 value alias handled elsewhere, and a
 -- partially-applied CDict already passes its supplied args through emitDictApp.
+-- A `where`/`let` wrapper (CLet/CLetGroup) is TRANSPARENT to the deficit — the
+-- under-applied method may be the let-body TAIL (`maximum = fold step None`
+-- desugars its `step` `where`-helper to a CLetGroup around the `fold` spine).  The
+-- companion applyEtaArgsTail threads the fresh args into that same tail.
 methodBodyDeficit : Emit -> CExpr -> <Mut> Int
+methodBodyDeficit e (CLet _ _ _ b) = methodBodyDeficit e b
+methodBodyDeficit e (CLetGroup _ b) = methodBodyDeficit e b
 methodBodyDeficit _ (CMethod name _ _ _) = methodArityOf name
 methodBodyDeficit e app =
   let (hd, args) = flattenApp app []
@@ -4528,6 +4534,15 @@ methodBodyDeficit e app =
 etaFreshPats : Int -> Int -> List Pat
 etaFreshPats 0 _ = []
 etaFreshPats n start = PVar ("__eta_" ++ intToString start) :: etaFreshPats (n - 1) (start + 1)
+
+-- apply the fresh eta params at the body's TAIL position, threading THROUGH any
+-- enclosing `where`/`let` wrappers so the let bindings (e.g. `maximum`'s `step`
+-- helper) stay in scope for the now-saturated tail application.  Mirrors
+-- methodBodyDeficit's CLet/CLetGroup transparency.
+applyEtaArgsTail : CExpr -> List Pat -> CExpr
+applyEtaArgsTail (CLet r p rhs b) fresh = CLet r p rhs (applyEtaArgsTail b fresh)
+applyEtaArgsTail (CLetGroup bs b) fresh = CLetGroup bs (applyEtaArgsTail b fresh)
+applyEtaArgsTail body fresh = applyEtaArgs body fresh
 
 -- apply `body` to each fresh eta param as a CVar (AGlobal — emit resolves a CVar by
 -- NAME against the param env, ignoring the Addr), left to right.
