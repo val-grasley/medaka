@@ -1,0 +1,10 @@
+-- Perf microbenchmark: exponential tree recursion, no I/O.
+-- fib 38 ~ 126M recursive calls. See selfhost/PERF-SCOPE.md.
+fib : Int -> Int
+fib n = match n
+  0 => 0
+  1 => 1
+  n => fib (n - 1) + fib (n - 2)
+
+main : <IO> Unit
+main = putStrLn (intToString (fib 38))

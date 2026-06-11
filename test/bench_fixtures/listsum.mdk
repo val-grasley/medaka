@@ -1,0 +1,20 @@
+-- Perf microbenchmark: allocation + GC pressure (cons cells).
+-- Self-contained (no stdlib import) so it builds via `medaka build`.
+-- See selfhost/PERF-SCOPE.md.
+build : Int -> List Int -> List Int
+build n acc = match n
+  0 => acc
+  n => build (n - 1) (n :: acc)
+
+sum : Int -> List Int -> Int
+sum acc xs = match xs
+  [] => acc
+  (y :: rest) => sum (acc + y) rest
+
+loop : Int -> Int -> Int
+loop acc k = match k
+  0 => acc
+  k => loop (acc + sum 0 (build 1000 [])) (k - 1)
+
+main : <IO> Unit
+main = putStrLn (intToString (loop 0 20000))
