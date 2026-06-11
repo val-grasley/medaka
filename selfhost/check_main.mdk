@@ -1,0 +1,35 @@
+-- Thin driver for the composed self-hosted front-end (selfhost/check.mdk).
+-- The `main` + readFile plumbing was split out of check.mdk (Phase C Slice 0)
+-- so check.mdk is LOGIC-ONLY (exports runCheck) and its `main` no longer
+-- collides with the native CLI dispatcher's `main` under private_mangle.
+--
+--   medaka run selfhost/check_main.mdk <runtime.mdk> <core.mdk> <source.mdk>
+--
+--   parse → desugar → resolve → exhaust → typecheck
+--
+-- Output (location-free, so it diffs against the location-stripped oracles):
+--   • if resolve reports errors, print them (sorted by the harness) and stop;
+--   • otherwise print guard-exhaustiveness warnings followed by the inferred
+--     top-level schemes.
+-- runtime.mdk seeds the extern signatures; core.mdk is the prepended prelude.
+
+import check.{runCheck}
+
+main = match args ()
+  [runtimePath, corePath, targetPath] => withFiles runtimePath corePath targetPath
+  _ => ePutStrLn "usage: medaka run selfhost/check_main.mdk <runtime.mdk> <core.mdk> <file.mdk>"
+
+withFiles : String -> String -> String -> <IO, Mut> Unit
+withFiles runtimePath corePath targetPath = match readFile runtimePath
+  Ok rsrc => withCore rsrc corePath targetPath
+  Err msg => ePutStrLn msg
+
+withCore : String -> String -> String -> <IO, Mut> Unit
+withCore rsrc corePath targetPath = match readFile corePath
+  Ok csrc => withTarget rsrc csrc targetPath
+  Err msg => ePutStrLn msg
+
+withTarget : String -> String -> String -> <IO, Mut> Unit
+withTarget rsrc csrc targetPath = match readFile targetPath
+  Ok tsrc => putStr (runCheck rsrc csrc tsrc)
+  Err msg => ePutStrLn msg

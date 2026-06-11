@@ -1,9 +1,9 @@
--- Composed self-hosted front-end driver — wires the stage ports into one
--- program, the way bin/main.ml's `check` runs the OCaml pipeline:
---
---   medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <source.mdk>
+-- Composed self-hosted front-end LOGIC — wires the stage ports into one
+-- `runCheck`, the way bin/main.ml's `check` runs the OCaml pipeline:
 --
 --   parse → desugar → resolve → exhaust → typecheck
+--
+-- Run via the thin driver: medaka run selfhost/check_main.mdk <rt> <core> <src>
 --
 -- Output (location-free, so it diffs against the location-stripped oracles):
 --   • if resolve reports errors, print them (sorted by the harness) and stop —
@@ -16,6 +16,12 @@
 -- prints its guard warning(s) ahead of the schemes.  runtime.mdk seeds the
 -- extern signatures; core.mdk is the prelude prepended for resolve + typecheck.
 
+-- LOGIC-ONLY module (Phase C Slice 0): the `main` + `withFiles`/`withCore`/
+-- `withTarget` driver moved to selfhost/check_main.mdk so two private `main`s
+-- (this driver's + the native CLI dispatcher's) don't collide under
+-- private_mangle.  This module now exposes only `runCheck` + its helpers, so it
+-- composes cleanly into selfhost/medaka_cli.mdk and the batch/modules harnesses.
+
 import ast.{Decl}
 import parser.{parse}
 import desugar.{desugar}
@@ -24,27 +30,9 @@ import resolve.{resolveToLines, singleFileImportErrors, resErrorSexp}
 import exhaust.{exhaustToLines}
 import typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls, collectDoWellformedErrors}
 
-main = match args ()
-  [runtimePath, corePath, targetPath] => withFiles runtimePath corePath targetPath
-  _ => ePutStrLn "usage: medaka run selfhost/check.mdk <runtime.mdk> <core.mdk> <file.mdk>"
-
-withFiles : String -> String -> String -> <IO, Mut> Unit
-withFiles runtimePath corePath targetPath = match readFile runtimePath
-  Ok rsrc => withCore rsrc corePath targetPath
-  Err msg => ePutStrLn msg
-
-withCore : String -> String -> String -> <IO, Mut> Unit
-withCore rsrc corePath targetPath = match readFile corePath
-  Ok csrc => withTarget rsrc csrc targetPath
-  Err msg => ePutStrLn msg
-
-withTarget : String -> String -> String -> <IO, Mut> Unit
-withTarget rsrc csrc targetPath = match readFile targetPath
-  Ok tsrc => putStr (runCheck rsrc csrc tsrc)
-  Err msg => ePutStrLn msg
-
 -- exported so the batch typecheck harness's synthetic entry can pull this
--- module into a single union closure (does not change its inferred schemes).
+-- module into a single union closure (does not change its inferred schemes),
+-- and so selfhost/check_main.mdk + selfhost/medaka_cli.mdk can drive it.
 export
 runCheck : String -> String -> String -> <Mut> String
 runCheck rsrc csrc tsrc =
