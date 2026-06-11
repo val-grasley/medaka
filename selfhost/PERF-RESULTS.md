@@ -292,15 +292,15 @@ Tested and **rejected** — recorded so future sessions skip them:
 
 | Workload | original (-O0, div 3) | final | speedup |
 |---|---|---|---|
-| emitter self-compile | 12.04 s / 770 MB | **2.45 s / 199 MB** | **4.91× / 3.9× less RSS** |
-| vs OCaml interpreter | 125.35 s / 1467 MB | 2.45 s / 199 MB | **51.2× / 7.4× less RSS** |
+| emitter self-compile | 12.04 s / 770 MB | **2.38 s / 199 MB** | **5.06× / 3.9× less RSS** |
+| vs OCaml interpreter | 125.35 s / 1467 MB | 2.38 s / 199 MB | **52.7× / 7.4× less RSS** |
 | fib 38 (no alloc) | 0.11 s | 0.10 s | flat (already optimal) |
 
 Banked, all universal defaults, every change gated byte-identical (fixpoint +
 differential fixtures + build gate): clang `-O2`, GC `free_space_divisor=1`,
 lifted-define buffer O(N²)→O(N), DCE reachability+graph O(N²)→O(N) via HashMap,
 typecheck dep-graph + SCC clause grouping + dedup O(N²)→O(N·log N) via SMap. The
-native compiler is **~51× faster than the OCaml interpreter** at the representative
+native compiler is **~53× faster than the OCaml interpreter** at the representative
 self-compile workload — the OCaml-retirement performance bar is met with wide
 margin.
 
@@ -556,3 +556,31 @@ self-compiles cleanly — the reverted `isKnownFn` attempt failed specifically o
 `HashMap`-in-`llvm_emit` shape, not the `Ref (Option …)` memo pattern. So the other
 recompute hotspots can use a plain-List memo safely; only hash *containers* inside
 `llvm_emit` are blocked pending the emitter self-compile gap.
+
+---
+
+## Entry 15 — private-name collision detection O(n²) → O(n log n) (2026-06-11)
+
+**Change (`selfhost/private_mangle.mdk`):** `collidingNames` found cross-unit name
+collisions with `collidingGo`, calling `countOccPM n allNames` (a full O(n) scan)
+per name → O(n²) over all top-level names (~2 800). Replaced with a local merge
+sort (`msortPM`/`mergePM`/`splitAltPM`, using the `stringCompare` extern — no new
+imports, no typeclass dispatch) + an adjacent-duplicate scan (`adjDupsPM`); a name
+occurring ≥2× forms a sorted run. The result is a membership SET (`buildRenameMap`
+only tests membership), so the changed order is irrelevant → renames, and emitted
+output, byte-identical.
+
+**Gates:** `selfcompile_fixpoint` C3a/C3b YES; `diff_selfhost_build` 9/9;
+`diff_selfhost_llvm` 172/172; `llvm_modules` 8/8. Seed stale; not re-minted.
+
+**Numbers (self-compile, min-of-5, -O2 + divisor=1):** 2.45 s → **2.38 s** (~3%).
+**Crossed 5×:** cumulative this session 12.04 s → 2.38 s (**5.06×**); vs OCaml
+interpreter **52.7×**.
+
+**Profile note:** after Entry 14 the single dominant remaining hotspot (~25%) is a
+filter closure `\e → containsName (fst e) promoted` inside the **dict-passing
+constraint-promotion** machinery (`promotedConstraints`/`discoverPromotedJoint`) —
+i.e. the route-fragile dispatch territory that is **out of scope** for unattended
+work. The same SMap-membership fix would apply but must be done supervised. The
+rest of the profile is now flat (closure/rewriteArgScoped/core_ir_lower group-by,
+each ≲6%).
