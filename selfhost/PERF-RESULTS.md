@@ -635,3 +635,33 @@ Seed stale; not re-minted.
 Cumulative this session: 12.04 s → 2.34 s (**5.15×**); vs OCaml interpreter 53.6×.
 Confirms the provably-correct index-carrying merge-sort group-by works without a
 map — reusable where a module lacks `SMap`/`HashMap`.
+
+---
+
+## Attempted & reverted — sig-table index (callRetTy/fnRetTy/fnArity/nthParamTy)
+
+The emitter's per-call-site sig lookups (`callRetTy`/`fnRetTy`/`fnArity`/
+`nthParamTy`, all `lookupAssoc name (sigTable e)`) are ~14 % of compute. Tried
+indexing the Emit's `sigs` into a memoized plain-BST (`EMap`, installed at
+emitProgram — a plain ADT, so it DID self-compile, fixpoint C3a/C3b green, unlike
+the hash_map isKnownFn attempt). But `diff_selfhost_llvm` caught **1/172 failing**
+(`fn_float_chain.mdk`): the **`sigs` table is MUTATED** during the two-pass
+Float-parameter-propagation fixpoint (`f x = x + 1.0` re-infers `f`'s param/return
+as Float on the second pass), so a memo built once at emitProgram serves stale
+(Int) types. **`sigs` is NOT constant** — unlike `fnNames`/`distinctTypeNames`,
+which are, and which memoize fine. Reverted.
+
+**To do this supervised:** thread an `SMap`/`EMap` as the live sig representation
+(rebuilt or updated when the two-pass fixpoint writes `sigs`), or convert the
+threaded `sigs : List (String, FnSig)` in `typeOf` and the param-inference passes
+to a tree throughout. Both are wider changes that must preserve the float-chain
+two-pass semantics; gate with `diff_selfhost_llvm` (the float fixtures catch it).
+
+## Session close (genuine safe-perf ceiling)
+
+Self-compile **12.04 s → ~2.34 s (~5.15×)**, **~54× vs the OCaml interpreter**, 16
+fixpoint-gated wins. The remaining compute is either (a) the route-fragile
+dict-passing machinery (~40 %, the dominant `lam` filter — supervised only) or
+(b) the mutable-sigs lookup cluster (~14 % — needs the threaded-tree refactor
+above, supervised). Both are mapped; neither is a safe unattended edit. The
+OCaml-retirement performance bar is met with very wide margin.
