@@ -21,7 +21,7 @@ import parser.{parse}
 import desugar.{desugar}
 import resolve.{resolveToLines}
 import exhaust.{exhaustToLines}
-import typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls}
+import typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls, collectDoWellformedErrors}
 
 main = match args ()
   [runtimePath, corePath, targetPath] => withFiles runtimePath corePath targetPath
@@ -48,11 +48,15 @@ export
 runCheck : String -> String -> String -> <Mut> String
 runCheck rsrc csrc tsrc =
   let raw = parse tsrc
-  let desugared = desugar raw
-  let runtimeP = parse rsrc
-  let coreP = parse csrc
-  let resDiags = resolveToLines runtimeP coreP desugared
-  reportFor resDiags runtimeP coreP raw desugared
+  let doErrs = collectDoWellformedErrors raw
+  match doErrs
+    (e :: _) => e ++ "\n"
+    [] =>
+      let desugared = desugar raw
+      let runtimeP = parse rsrc
+      let coreP = parse csrc
+      let resDiags = resolveToLines runtimeP coreP desugared
+      reportFor resDiags runtimeP coreP raw desugared
 
 reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
 reportFor "" runtimeP coreP raw desugared = cleanReport runtimeP coreP raw desugared

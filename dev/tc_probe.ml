@@ -35,12 +35,16 @@ let is_internal n =
 
 let () =
   let file = Sys.argv.(1) in
-  let prog = Desugar.desugar_program (parse (read_file file)) in
-  match Typecheck.check_program_no_prelude prog with
-  | (schemes, _warnings) ->
-    schemes
-    |> List.filter (fun (n, _) -> not (is_internal n))
-    |> List.sort (fun (a, _) (b, _) -> String.compare a b)
-    |> List.iter (fun (n, s) -> Printf.printf "%s : %s\n" n (Typecheck.pp_scheme s))
-  | exception Typecheck.Type_error (e, _) ->
-    Printf.printf "TYPE ERROR: %s\n" (Typecheck.pp_error e)
+  let raw = parse (read_file file) in
+  match Desugar.desugar_program raw with
+  | prog ->
+    (match Typecheck.check_program_no_prelude prog with
+    | (schemes, _warnings) ->
+      schemes
+      |> List.filter (fun (n, _) -> not (is_internal n))
+      |> List.sort (fun (a, _) (b, _) -> String.compare a b)
+      |> List.iter (fun (n, s) -> Printf.printf "%s : %s\n" n (Typecheck.pp_scheme s))
+    | exception Typecheck.Type_error (e, _) ->
+      Printf.printf "TYPE ERROR: %s\n" (Typecheck.pp_error e))
+  | exception Desugar.Do_error (msg, _) ->
+    Printf.printf "TYPE ERROR: %s\n" msg
