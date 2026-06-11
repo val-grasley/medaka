@@ -185,14 +185,19 @@ if [ "$build_skip" = 1 ]; then
   printf 'skip build/* (no clang or libgc)\n'
 else
   BUILD_FIXTURES="$RUN_FIXTURES"
-  if [ "$RUN_WIRED" = 1 ]; then EMIT_HOST="$MEDAKA"; else EMIT_HOST="$MAIN"; fi
+  if [ -n "${MEDAKA_EMITTER:-}" ] && [ -x "${MEDAKA_EMITTER}" ]; then
+    EMIT_ENV="MEDAKA_EMITTER=$MEDAKA_EMITTER"; emit_label="native-emitter (OCaml-free)"
+  else
+    EMIT_ENV="MEDAKA=$MAIN"; emit_label="ocaml-emit (native CLI drives emit→clang)"
+  fi
+  printf 'note build emit host: %s\n' "$emit_label"
   for base in $BUILD_FIXTURES; do
     f="$SRC/$base.mdk"
     # OCaml-built binary (oracle).
     bound "$MAIN" build "$f" -o "$TMP/oc_$base" >/dev/null 2>&1
     want="$("$TMP/oc_$base" 2>/dev/null)"
     # Native-CLI-built binary; emit hosted by native ./medaka run (OCaml-free).
-    MEDAKA_ROOT="$ROOT" MEDAKA="$EMIT_HOST" bound "$MEDAKA" build "$f" -o "$TMP/nat_$base" >/dev/null 2>&1
+    ( export MEDAKA_ROOT="$ROOT"; eval "export $EMIT_ENV"; bound "$MEDAKA" build "$f" -o "$TMP/nat_$base" ) >/dev/null 2>&1
     got="$("$TMP/nat_$base" 2>/dev/null)"
     if [ -x "$TMP/nat_$base" ] && [ "$got" = "$want" ]; then
       pass=$((pass+1)); printf 'ok   build/%s\n' "$base"

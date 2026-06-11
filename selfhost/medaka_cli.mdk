@@ -19,6 +19,12 @@ import fmt.{formatSource}
 import new_cmd.{newProject}
 import build_cmd.{BuildResult, BuildOk, BuildErr, runBuild, baseOf, chopExt, envOr}
 import util.{reverseL}
+import ast.{Decl}
+import parser.{parse}
+import desugar.{desugar}
+import loader.{loadProgram}
+import typecheck.{elaborateModules}
+import eval.{evalModulesOutput}
 
 main : <IO, Mut, Panic> Unit
 main = match args ()
@@ -30,6 +36,7 @@ main = match args ()
   ("fmt" :: rest) => runFmtCmd rest
   ("new" :: rest) => runNewCmd rest
   ("build" :: rest) => runBuildCmd rest
+  ("run" :: rest) => runRunCmd rest
   (sub :: _) => notYet sub
 
 -- ── usage (mirrors bin/main.ml print_usage) ───────────────────────────────
@@ -195,3 +202,61 @@ finishBuildArgs : List String -> Option String -> Result String (String, Option 
 finishBuildArgs [] _ = Err "usage: medaka build <file.mdk> [-o <out>]"
 finishBuildArgs [input] out = Ok (input, out)
 finishBuildArgs _ _ = Err "error: medaka build takes exactly one input file"
+
+-- ── run ───────────────────────────────────────────────────────────────────
+-- Mirrors bin/main.ml's `run` arm + eval_typed_modules_main.mdk: load the entry
+-- + its transitive imports (dependency-first), desugar each, elaborateModules
+-- (marker + typecheck route-stamping over the module graph), then evalModules
+-- forces `main` for IO and returns the captured stdout.  `main` must be a
+-- zero-arg value (`main = …`); top-level nullary bindings are LAZY (Phase-125),
+-- so only effects reached from main run.  Roots: the entry's dir (user modules
+-- shadow stdlib) then MEDAKA_ROOT/stdlib — same priority as the OCaml loader.
+-- `--release`/`--json` are accepted-but-ignored (dropFlags), matching `check`.
+--
+-- ARGS NOTE.  `medaka run FILE a b c` passes a/b/c as the program's args.  The
+-- native runtime's `args` extern returns the WHOLE process argv[1..] (set once in
+-- @main's prologue), so a program run this way observes the CLI's own argv —
+-- unlike the OCaml driver, which slices argv[3..].  This only matters for
+-- programs that read `args ()`; the common `main = …` case is unaffected.  The
+-- first positional after dropFlags is the entry; any further positionals are
+-- the program's intended args (passthrough; observed via the native extern).
+runRunCmd : List String -> <IO, Mut, Panic> Unit
+runRunCmd argv = match dropFlags argv
+  [] =>
+    let _ = ePutStrLn "usage: medaka run [--release] <file.mdk>"
+    exit 1
+  (target :: _) =>
+    let root = envOr "MEDAKA_ROOT" "."
+    let rtPath = root ++ "/stdlib/runtime.mdk"
+    let corePath = root ++ "/stdlib/core.mdk"
+    let stdlibDir = root ++ "/stdlib"
+    let roots = [dirOf2 target, stdlibDir]
+    match readFile rtPath
+      Err msg =>
+        let _ = ePutStrLn msg
+        exit 1
+      Ok rsrc => match readFile corePath
+        Err msg =>
+          let _ = ePutStrLn msg
+          exit 1
+        Ok csrc => match loadProgram target roots
+          Err msg =>
+            let _ = ePutStrLn msg
+            exit 1
+          Ok mods =>
+            let elaborated = elaborateModules (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+            putStr (evalModulesOutput (fst elaborated) (snd elaborated))
+
+desugarPair : (String, List Decl) -> (String, List Decl)
+desugarPair (mid, p) = (mid, desugar p)
+
+-- dirname on a POSIX path (mirrors build_cmd.dirOf, kept local to avoid an extra
+-- import of a non-exported helper).
+dirOf2 : String -> String
+dirOf2 path = dirGo2 path (stringLength path)
+
+dirGo2 : String -> Int -> String
+dirGo2 path 0 = "."
+dirGo2 path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo2 path (i - 1)
