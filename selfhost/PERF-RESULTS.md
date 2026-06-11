@@ -124,3 +124,18 @@ byte-identical to Entry-1 output; listsum output unchanged.
 remaining 6.25 s self-compile to see whether it is now emit-logic-bound or still
 alloc-bound (try divisor=2 as a memory/speed midpoint; measure GC_get_heap_size).
 
+**Divisor sweep (self-compile, min-of-3, -O2, via `GC_FREE_SPACE_DIVISOR`):**
+
+| divisor | wall | RSS | note |
+|---|---|---|---|
+| 1 | 6.26 s | 218 MB | chosen — speed floor |
+| 2 | 8.36 s | 175 MB | midpoint |
+| 3 | 10.35 s | 153 MB | Boehm default |
+| 4 | 11.23 s | 154 MB | |
+
+Monotonic: lower divisor → fewer collections → faster, more RSS. The curve shows
+GC still costs ~40 % of self-compile wall-clock at the default — collection, not
+codegen, was the bottleneck. divisor=1 is the practical floor (218 MB stays 3.5×
+under the -O0 baseline's 770 MB), so it is the chosen default.
+
+
