@@ -95,15 +95,147 @@ else
   printf '  oc:  %s\n  nat: %s\n' "$ocfiles" "$natfiles"
 fi
 
-# ── deferred: build subcommand → "not yet" on stderr, exit 1 ────────────────
-defmsg="$(bound "$MEDAKA" lsp 2>&1 1>/dev/null)"
-bound "$MEDAKA" lsp >/dev/null 2>&1; defcode=$?
-case "$defmsg" in
-  *"not yet in native CLI"*)
-    if [ "$defcode" = 1 ]; then pass=$((pass+1)); printf 'ok   deferred/lsp\n'
-    else fail=$((fail+1)); printf 'FAIL deferred/lsp (exit %s != 1)\n' "$defcode"; fi ;;
-  *) fail=$((fail+1)); printf 'FAIL deferred/lsp (msg: %s)\n' "$defmsg" ;;
+# ── repl: native ./medaka repl == OCaml main.exe repl ───────────────────────
+# Feed the same scripted session used in diff_selfhost_repl.sh and compare
+# native vs OCaml byte-for-byte.
+REPL_INPUT='x = 42
+y = x + 1
+[x, y]
+badname
+x + 1
+:type x
+:browse
+:reset
+:browse
+:quit
+'
+
+repl_probe="$(printf ':quit\n' | MEDAKA_ROOT="$ROOT" bound "$MEDAKA" repl 2>&1)"
+case "$repl_probe" in
+  *"not yet in native CLI"*) REPL_WIRED=0 ;;
+  *) REPL_WIRED=1 ;;
 esac
+
+if [ "$REPL_WIRED" = 1 ]; then
+  repl_want="$(printf '%s' "$REPL_INPUT" | bound "$MAIN" repl 2>/dev/null)"
+  repl_got="$(printf '%s' "$REPL_INPUT" | MEDAKA_ROOT="$ROOT" bound "$MEDAKA" repl 2>/dev/null | strip_unit)"
+  if [ "$repl_got" = "$repl_want" ]; then
+    pass=$((pass+1)); printf 'ok   repl/session\n'
+  else
+    fail=$((fail+1)); printf 'FAIL repl/session\n'
+    printf '  want: [%s]\n  got:  [%s]\n' "$repl_want" "$repl_got"
+  fi
+else
+  printf 'skip repl/* (native repl not yet wired)\n'
+fi
+
+# ── lsp: native ./medaka lsp == interpreted selfhost lsp_main.mdk ────────────
+# Mirror diff_selfhost_lsp.sh: feed a canned JSON-RPC exchange (initialize +
+# didOpen clean + exit) to BOTH the native `medaka lsp` and the interpreted
+# `medaka run selfhost/lsp_main.mdk`, decode the framed responses, and compare
+# the initialize capabilities and publishDiagnostics semantically (field order
+# may differ; Content-Type header absent in native output).
+#
+# The OCaml lsp_server is NOT the oracle here — it has different capabilities
+# and requires `initialized` before dispatching didOpen.  The interpreted
+# selfhost IS the oracle (diff_selfhost_lsp.sh already validates it vs a
+# semantic spec; here we just confirm native matches interpreted).
+
+lsp_probe="$(printf '' | MEDAKA_ROOT="$ROOT" bound "$MEDAKA" lsp 2>&1 1>/dev/null)"
+case "$lsp_probe" in
+  *"not yet in native CLI"*) LSP_WIRED=0 ;;
+  *) LSP_WIRED=1 ;;
+esac
+
+LSP_MAIN="$ROOT/selfhost/lsp_main.mdk"
+RT="$ROOT/stdlib/runtime.mdk"
+CORE="$ROOT/stdlib/core.mdk"
+
+if [ "$LSP_WIRED" = 1 ]; then
+  lsp_frame() { python3 -c "
+import sys
+b = sys.argv[1].encode('utf-8')
+sys.stdout.buffer.write(b'Content-Length: %d\r\n\r\n' % len(b))
+sys.stdout.buffer.write(b)
+" "$1"; }
+
+  lsp_decode() { python3 - "$1" <<'PY'
+import sys, re, json
+data = open(sys.argv[1], "rb").read()
+# Strip optional Content-Type header line between Content-Length and body
+parts = re.split(rb"Content-Length: \d+\r\n(?:Content-Type:[^\r\n]*\r\n)?\r\n", data)
+for p in parts:
+    p = p.strip()
+    if not p: continue
+    dec = json.JSONDecoder(); idx = 0; s = p.decode("utf-8", errors="replace")
+    while idx < len(s):
+        s2 = s[idx:].lstrip()
+        if not s2: break
+        try:
+            obj, end = dec.raw_decode(s2)
+            print(json.dumps(obj))
+            idx += len(s[idx:]) - len(s2) + end
+        except Exception:
+            break
+PY
+}
+
+  LSP_TMP="$(mktemp -d)"
+  trap 'rm -rf "$LSP_TMP"' EXIT
+
+  INIT_MSG='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+  OPEN_MSG='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///clean.mdk","text":"main = println \"hi\"\n"}}}'
+  EXIT_MSG='{"jsonrpc":"2.0","method":"exit","params":{}}'
+
+  > "$LSP_TMP/req.bin"
+  lsp_frame "$INIT_MSG" >> "$LSP_TMP/req.bin"
+  lsp_frame "$OPEN_MSG"  >> "$LSP_TMP/req.bin"
+  lsp_frame "$EXIT_MSG"  >> "$LSP_TMP/req.bin"
+
+  # Oracle: interpreted selfhost lsp_main.mdk
+  bound "$MAIN" run "$LSP_MAIN" "$RT" "$CORE" < "$LSP_TMP/req.bin" > "$LSP_TMP/interp.bin" 2>/dev/null || true
+  # Native: ./medaka lsp
+  MEDAKA_ROOT="$ROOT" bound "$MEDAKA" lsp < "$LSP_TMP/req.bin" > "$LSP_TMP/nat.bin" 2>/dev/null || true
+
+  lsp_decode "$LSP_TMP/interp.bin" > "$LSP_TMP/interp.json" 2>/dev/null || true
+  lsp_decode "$LSP_TMP/nat.bin"    > "$LSP_TMP/nat.json"    2>/dev/null || true
+
+  # Compare: initialize capabilities (same key set + serverInfo), publishDiagnostics (empty)
+  python3 - "$LSP_TMP/interp.json" "$LSP_TMP/nat.json" <<'PY'
+import sys, json
+interp = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+nat    = [json.loads(l) for l in open(sys.argv[2]) if l.strip()]
+def find(msgs, **kw):
+    for m in msgs:
+        if all(m.get(k)==v for k,v in kw.items()): return m
+    return None
+i_init = find(interp, id=1)
+n_init = find(nat,    id=1)
+ok_init = (i_init is not None and n_init is not None
+           and "result" in i_init and "result" in n_init
+           and set(i_init["result"].get("capabilities",{}).keys()) ==
+               set(n_init["result"].get("capabilities",{}).keys())
+           and i_init["result"].get("serverInfo",{}).get("name") == "medaka-lsp"
+           and n_init["result"].get("serverInfo",{}).get("name") == "medaka-lsp")
+i_pub = find(interp, method="textDocument/publishDiagnostics")
+n_pub = find(nat,    method="textDocument/publishDiagnostics")
+ok_pub = (i_pub is not None and n_pub is not None
+          and i_pub["params"]["diagnostics"] == n_pub["params"]["diagnostics"] == [])
+if not ok_init:
+    sys.stderr.write("init mismatch: interp=%s nat=%s\n" % (i_init, n_init))
+if not ok_pub:
+    sys.stderr.write("pub mismatch: interp=%s nat=%s\n" % (i_pub, n_pub))
+sys.exit(0 if (ok_init and ok_pub) else 1)
+PY
+  lsp_rc=$?
+  if [ "$lsp_rc" = 0 ]; then
+    pass=$((pass+1)); printf 'ok   lsp/session\n'
+  else
+    fail=$((fail+1)); printf 'FAIL lsp/session\n'
+  fi
+else
+  printf 'skip lsp/* (native lsp not yet wired)\n'
+fi
 
 # ── run: native ./medaka run F == OCaml main.exe run F ──────────────────────
 # A handful of representative runnable fixtures.  The native CLI's `run` routes

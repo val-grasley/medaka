@@ -186,8 +186,10 @@ CANONICAL compiler** — the one users invoke and the one that builds the compil
 
 **Also gating retirement, beyond the 6-item bar:** the **Stage-4 tooling port** (lib/+bin/ host the
 tooling) — fmt/test/new/REPL/build/**LSP** ✅ (all 6 tools ported + differential-tested), and the
-**Phase-C CLI capstone IN PROGRESS** (Slices 0–3 ✅: native `medaka` does check/fmt/new/build/run/test
-OCaml-free in a ~1.6 MB binary; Slice 4 `repl`/`lsp` remains — see Phase C #12 below).
+**Phase-C CLI capstone ✅ COMPLETE 2026-06-11** (Slices 0–4 ✅: native `medaka` does
+check/fmt/new/build/run/test/repl/lsp OCaml-free in a ~1.6 MB binary; wiring repl+lsp required the
+universal per-module name-mangling fix (`332ef41`) which made cross-module collisions impossible by
+construction — see Phase C #12 below).
 **Deferred (user, not near/mid-term):** GC, cross-platform (arm64-first accepted).
 
 **🔝 TOP PRIORITY (set 2026-06-09): close the TYPECHECK-AUDIT findings.** The
@@ -680,7 +682,7 @@ and a TOML reader (for `medaka.toml`).
     shell-out emit (Ref isolation) + `runCommand`→clang; 9/9 differential builds == OCaml `medaka
     build`. (`runCommand`/`makeDir` native-emit done, #18 `a0c7b111`.)
 
-**Phase C — capstone (#57, IN PROGRESS — Slices 0–2 DONE 2026-06-10):**
+**Phase C — capstone (#57, ✅ COMPLETE 2026-06-11 — Slices 0–4 DONE):**
 12. CLI dispatcher `selfhost/medaka_cli.mdk` (replaces `bin/main.ml`, 1076 LOC), native-compiled into
     the `medaka` binary — the retirement integration piece. Converges with bar-item-5 (self-bootstrap).
     **UNBLOCKED 2026-06-10** by clause-label SSA (#53). **Slices landed:**
@@ -708,7 +710,19 @@ and a TOML reader (for `medaka.toml`).
       bar item 1 + `selfhost/EMITTER-GAPS.md`). `test_cmd`/`medaka_cli` are NOT in the emitter graph →
       seed byte-identical. Gates: `diff_selfhost_test` byte-identical (10/10), `diff_native_cli` 53/0
       (extended with `test/{doc,prop,nodoc}` — `test/prop` is the native prop_runner block-let proof).
-    - **Remaining:** Slice 4 (`repl`/`lsp`).
+    - **Slice 4 ✅ (CAPSTONE COMPLETE, `repl`/`lsp`):** added `runReplCmd` + `runLspCmd` directly to
+      `medaka_cli.mdk` importing `repl.{initSession, replLoop}` + `lsp.{runServer}` (no new `*_cmd.mdk`
+      — both logic modules were already callable); `[] => runReplCmd []` arm matches `bin/main.ml`'s
+      bare-invocation → REPL behavior. `MEDAKA_ROOT` for stdlib path (same `envOr` convention as other
+      arms). The universal per-module name-mangling fix (`332ef41`, merged pre-work) resolved any
+      cross-module name collisions (e.g. `isIdentChar` in repl.mdk/lsp.mdk) without function renames.
+      `diff_native_cli.sh` extended with `repl/session` (same input as `diff_selfhost_repl.sh` piped
+      to native `medaka repl`, strip_unit trailing `0`) and `lsp/session` (initialize+didOpen+exit
+      framed to native `medaka lsp`, compared semantically vs interpreted `lsp_main.mdk`). Gates:
+      `diff_selfhost_repl` PASS; `diff_selfhost_lsp` 5/0; `diff_native_cli` 54/0; fixpoint C3a YES /
+      C3b YES; seed byte-identical. **Phase C capstone: native `medaka` does
+      check/fmt/new/build/run/test/repl/lsp OCaml-free.**
+    - **Remaining:** ~~Slice 4 (`repl`/`lsp`)~~ — DONE.
 
     The parked dispatch gaps (#54 map / #55 sum-product / #50 parametric-Ord / #21 nested dicts /
     C7-native) are verified **NOT on this critical path** (the tooling never touches them) → end-user

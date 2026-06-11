@@ -26,10 +26,12 @@ import loader.{loadProgram}
 import typecheck.{elaborateModules}
 import eval.{evalModulesOutput}
 import test_cmd.{runTest}
+import repl.{initSession, replLoop}
+import lsp.{runServer}
 
 main : <IO, Mut, Panic> Unit
 main = match args ()
-  [] => usage ()
+  [] => runReplCmd []
   ("help" :: _) => usage ()
   ("--help" :: _) => usage ()
   ("-h" :: _) => usage ()
@@ -39,6 +41,8 @@ main = match args ()
   ("build" :: rest) => runBuildCmd rest
   ("run" :: rest) => runRunCmd rest
   ("test" :: rest) => runTestCmd rest
+  ("repl" :: rest) => runReplCmd rest
+  ("lsp" :: rest) => runLspCmd rest
   (sub :: _) => notYet sub
 
 -- ── usage (mirrors bin/main.ml print_usage) ───────────────────────────────
@@ -282,3 +286,46 @@ dirGo2 path 0 = "."
 dirGo2 path i =
   if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
   else dirGo2 path (i - 1)
+
+-- ── repl ──────────────────────────────────────────────────────────────────
+-- Mirrors bin/main.ml's `repl` arm (Repl.run) + repl_main.mdk: read
+-- MEDAKA_ROOT/stdlib/{runtime,core}.mdk, init the session, then run the
+-- interactive REPL loop.  Any extra args are silently ignored (consistent with
+-- the OCaml driver, which also ignores extra args after "repl").
+runReplCmd : List String -> <IO, Mut, Panic> Unit
+runReplCmd _ =
+  let root = envOr "MEDAKA_ROOT" "."
+  let rtPath = root ++ "/stdlib/runtime.mdk"
+  let corePath = root ++ "/stdlib/core.mdk"
+  match readFile rtPath
+    Err msg =>
+      let _ = ePutStrLn msg
+      exit 1
+    Ok rsrc => match readFile corePath
+      Err msg =>
+        let _ = ePutStrLn msg
+        exit 1
+      Ok csrc =>
+        let runtimeDecls = desugar (parse rsrc)
+        let preludeDecls = desugar (parse csrc)
+        let _ = initSession runtimeDecls preludeDecls
+        replLoop ()
+
+-- ── lsp ───────────────────────────────────────────────────────────────────
+-- Mirrors bin/main.ml's `lsp` arm (Lsp_server.run) + lsp_main.mdk: read
+-- MEDAKA_ROOT/stdlib/{runtime,core}.mdk, then run the JSON-RPC-over-stdio
+-- loop (initialize handshake + publishDiagnostics on didOpen/didChange).
+runLspCmd : List String -> <IO, Mut, Panic> Unit
+runLspCmd _ =
+  let root = envOr "MEDAKA_ROOT" "."
+  let rtPath = root ++ "/stdlib/runtime.mdk"
+  let corePath = root ++ "/stdlib/core.mdk"
+  match readFile rtPath
+    Err msg =>
+      let _ = ePutStrLn msg
+      exit 1
+    Ok rsrc => match readFile corePath
+      Err msg =>
+        let _ = ePutStrLn msg
+        exit 1
+      Ok csrc => runServer rsrc csrc
