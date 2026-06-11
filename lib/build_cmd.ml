@@ -230,7 +230,7 @@ let run (args : string array) : int =
        | Some (gc_cflags, gc_libs) ->
          let clang_argv =
            Array.of_list
-             ([ cc; "-Wl,-stack_size,0x20000000" ]
+             ([ cc; "-Wl,-stack_size,0x20000000"; "-O2" ]
               @ gc_cflags
               @ [ ll_path; rt_c ]
               @ gc_libs

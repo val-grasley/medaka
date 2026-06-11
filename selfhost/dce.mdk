@@ -33,45 +33,52 @@
 -- the eval pipeline are unaffected.
 
 import ast.{Decl(..)}
-import util.{contains, concatMapList}
 import marker.{declRefs}
+import hash_map.{HashMap, new, insert, member, findWithDefault}
 
 -- ── entry point ────────────────────────────────────────────────────────────
 -- Filter `decls` (the flattened, elaborated whole-program decl list) to retain
 -- every non-DFunDef decl plus the DFunDefs reachable from main + impls/interfaces.
 export
-dceFilter : List Decl -> List Decl
+dceFilter : List Decl -> <Mut> List Decl
 dceFilter decls = filterReachable (reachableNames decls) decls
 
 -- Drop only unreachable DFunDefs; keep everything else verbatim, in order.
-filterReachable : List String -> List Decl -> List Decl
+-- `reach` is a HashMap-as-set, so `member` is O(1) average and this is O(#decls).
+filterReachable : HashMap String Unit -> List Decl -> List Decl
 filterReachable _ [] = []
 filterReachable reach ((DFunDef pub n ps body)::rest)
-  | contains n reach = DFunDef pub n ps body :: filterReachable reach rest
+  | member n reach = DFunDef pub n ps body :: filterReachable reach rest
   | otherwise = filterReachable reach rest
 filterReachable reach (d::rest) = d :: filterReachable reach rest
 
 -- ── reachability ───────────────────────────────────────────────────────────
--- Transitive closure of the roots over the DFunDef call graph.
-reachableNames : List Decl -> List String
+-- Transitive closure of the roots over the DFunDef call graph, collected into a
+-- HashMap-as-set (consumed only by `filterReachable`'s membership test — order
+-- and duplicates are irrelevant).  O(1)-average membership + O(1) graph lookup
+-- turn the old O(N²) list dedup/closure/scan into ~O(reachable + edges).
+reachableNames : List Decl -> <Mut> HashMap String Unit
 reachableNames decls =
-  let graph = funGraph decls []
-  let roots = seedSet ("main" :: emittingRoots decls)
-  closure graph roots roots
+  let graph = funGraph decls
+  let seen = new ()
+  let _ = closure graph seen ("main" :: emittingRoots decls)
+  seen
 
--- name -> refs(body), one entry per DFunDef name (multi-clause defs unioned).
-funGraph : List Decl -> List (String, List String) -> List (String, List String)
-funGraph [] acc = acc
-funGraph ((DFunDef _ n ps body)::rest) acc =
-  funGraph rest (addRefs n (declRefs (DFunDef False n ps body)) acc)
-funGraph (_::rest) acc = funGraph rest acc
+-- name -> refs(body) as a HashMap (multi-clause defs merged). O(1) insert/lookup;
+-- replaces the old O(N²) assoc-list `addRefs`. Ref-list order is irrelevant (fed
+-- to the membership-only closure).
+funGraph : List Decl -> <Mut> HashMap String (List String)
+funGraph decls =
+  let g = new ()
+  let _ = funGraphInto decls g
+  g
 
--- accumulate refs for `n` (merge multi-clause definitions of the same name).
-addRefs : String -> List String -> List (String, List String) -> List (String, List String)
-addRefs n rs [] = [(n, rs)]
-addRefs n rs ((k, v)::rest)
-  | k == n = (k, v ++ rs) :: rest
-  | otherwise = (k, v) :: addRefs n rs rest
+funGraphInto : List Decl -> HashMap String (List String) -> <Mut> Unit
+funGraphInto [] _ = ()
+funGraphInto ((DFunDef _ n ps body)::rest) g =
+  let _ = insert n (declRefs (DFunDef False n ps body) ++ findWithDefault [] n g) g
+  funGraphInto rest g
+funGraphInto (_::rest) g = funGraphInto rest g
 
 -- roots from emitting non-DFunDef decls: impl-method + interface-default bodies.
 -- (declRefs walks an impl's method bodies / an interface's default bodies; it is
@@ -91,36 +98,17 @@ isEmittingDecl (DInterface { ... }) = True
 isEmittingDecl _ = False
 
 -- ── worklist closure ───────────────────────────────────────────────────────
--- seedSet: the initial reachable set (deduped) from the roots.
-seedSet : List String -> List String
-seedSet xs = dedup xs []
+-- BFS over the call graph: insert each unseen name into `seen`, enqueue its
+-- refs.  `member` skips already-processed names, so every name is inserted once
+-- → O(reachable + edges) with O(1)-average membership and O(1) graph lookup.
+-- The resulting `seen` set is the same set the old list-based closure produced.
+closure : HashMap String (List String) -> HashMap String Unit -> List String -> <Mut> Unit
+closure _ _ [] = ()
+closure graph seen (w::work)
+  | member w seen = closure graph seen work
+  | otherwise =
+      let _ = insert w () seen
+      closure graph seen (refsOf graph w ++ work)
 
-dedup : List String -> List String -> List String
-dedup [] acc = acc
-dedup (x::xs) acc
-  | contains x acc = dedup xs acc
-  | otherwise = dedup xs (acc ++ [x])
-
--- closure: process the worklist; for each name that is a DFunDef, add its refs.
-closure : List (String, List String) -> List String -> List String -> List String
-closure _ visited [] = visited
-closure graph visited (w::work) =
-  let fresh = newOnes (refsOf graph w) visited
-  closure graph (visited ++ fresh) (work ++ fresh)
-
-refsOf : List (String, List String) -> String -> List String
-refsOf [] _ = []
-refsOf ((k, v)::rest) n
-  | k == n = v
-  | otherwise = refsOf rest n
-
--- the names in `candidates` not yet in `visited`, deduped against each other.
-newOnes : List String -> List String -> List String
-newOnes candidates visited = dedupAgainst candidates visited []
-
-dedupAgainst : List String -> List String -> List String -> List String
-dedupAgainst [] _ acc = acc
-dedupAgainst (x::xs) visited acc
-  | contains x visited = dedupAgainst xs visited acc
-  | contains x acc = dedupAgainst xs visited acc
-  | otherwise = dedupAgainst xs visited (acc ++ [x])
+refsOf : HashMap String (List String) -> String -> List String
+refsOf graph n = findWithDefault [] n graph

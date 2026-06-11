@@ -571,7 +571,10 @@ emit (Emit _ buf _ _ _ _ _ _ _ _) line = set_ref buf (line :: buf.value)
 bufRef : Emit -> Ref (List String)
 bufRef (Emit _ buf _ _ _ _ _ _ _ _) = buf
 
--- the side buffer holding lifted-lambda `define`s, in FORWARD order (slice 4).
+-- the side buffer holding lifted-lambda `define`s, in REVERSE order (newest
+-- first): each append prepends its chunk (O(chunk), amortized O(total)) instead
+-- of the old O(N²) `acc ++ forward`; the consumer `reverseL`s it once at module
+-- end (slice 4).
 lamsRef : Emit -> Ref (List String)
 lamsRef (Emit _ _ _ _ _ lams _ _ _ _) = lams
 
@@ -580,15 +583,80 @@ lamsRef (Emit _ _ _ _ _ lams _ _ _ _) = lams
 fnNames : Emit -> <Mut> List String
 fnNames (Emit _ _ fns _ _ _ _ _ _ _) = fns.value
 
+-- ── known-function index (perf) ─────────────────────────────────────────────
+-- `fnNames` is set ONCE at Emit construction and never mutated (unlike `sigs`,
+-- which the two-pass float propagation rewrites — that is why only THIS table,
+-- not the sig table, is safely indexable). Index it into a BST (EMap, a plain ADT
+-- → self-compiles in llvm_emit's own graph) installed at emitProgram, so the
+-- per-CApp/CVar `isKnownFn` membership test is O(log n) not O(fns).
+data EMap a = ETip | EBin String a (EMap a) (EMap a)
+
+emInsert : String -> a -> EMap a -> EMap a
+emInsert k v ETip = EBin k v ETip ETip
+emInsert k v (EBin k2 v2 l r) = match stringCompare k k2
+  Lt => EBin k2 v2 (emInsert k v l) r
+  Gt => EBin k2 v2 l (emInsert k v r)
+  Eq => EBin k2 v l r
+
+emLookup : String -> EMap a -> Option a
+emLookup k ETip = None
+emLookup k (EBin k2 v l r) = match stringCompare k k2
+  Lt => emLookup k l
+  Gt => emLookup k r
+  Eq => Some v
+
+emFromNames : List String -> EMap Unit -> EMap Unit
+emFromNames [] m = m
+emFromNames (x :: rest) m = emFromNames rest (emInsert x () m)
+
+-- generic key-value index; insert REVERSED so the FIRST list entry wins on a
+-- duplicate key (matches lookupAssoc's first-match). For CONSTANT tables only.
+emFromPairs : List (String, a) -> EMap a -> EMap a
+emFromPairs [] m = m
+emFromPairs ((k, v) :: rest) m = emFromPairs rest (emInsert k v m)
+
+knownFnMapRef : Ref (Option (EMap Unit))
+knownFnMapRef = Ref None
+
+installKnownFnMap : List String -> <Mut> Unit
+installKnownFnMap fns = set_ref knownFnMapRef (Some (emFromNames fns ETip))
+
+-- ctor-arity table index (ct field is set once at Emit construction, constant).
+ctorMapRef : Ref (Option (EMap Int))
+ctorMapRef = Ref None
+
+installCtorMap : List (String, Int) -> <Mut> Unit
+installCtorMap t = set_ref ctorMapRef (Some (emFromPairs (reverseL t) ETip))
+
+-- sig table index — ONLY for the GLOBAL-`sigs` users (fnRetTy/fnArity), which read
+-- the Emit's `sigs` field. That field is set once at construction and never
+-- mutated (constant), so a memo built from `sigTable e` is byte-identical to the
+-- old `lookupAssoc name sigs.value`. NOTE: callRetTy/nthParamTy use a DIFFERENT,
+-- THREADED `sigs` augmented with locally-inferred Float-propagation types — those
+-- are NOT covered here (see the reverted sig-table attempt + fn_float_chain).
+sigMapRef : Ref (Option (EMap FnSig))
+sigMapRef = Ref None
+
+installSigMap : List (String, FnSig) -> <Mut> Unit
+installSigMap t = set_ref sigMapRef (Some (emFromPairs (reverseL t) ETip))
+
 isKnownFn : Emit -> String -> <Mut> Bool
-isKnownFn e name = containsStr name (fnNames e)
+isKnownFn e name = match knownFnMapRef.value
+  Some m => match emLookup name m
+    Some _ => True
+    None => False
+  None => containsStr name (fnNames e)
 
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
-fnRetTy (Emit _ _ _ sigs _ _ _ _ _ _) name = match lookupAssoc name sigs.value
-  Some (FnSig _ rty) => rty
-  None => LTInt
+fnRetTy e name = match sigMapRef.value
+  Some m => match emLookup name m
+    Some (FnSig _ rty) => rty
+    None => LTInt
+  None => match lookupAssoc name (sigTable e)
+    Some (FnSig _ rty) => rty
+    None => LTInt
 
 -- ── constructor table (slice 3) ─────────────────────────────────────────────
 -- the constructor arity table (set once in emitProgram); membership decides
@@ -597,9 +665,13 @@ ctorTable : Emit -> <Mut> List (String, Int)
 ctorTable (Emit _ _ _ _ ct _ _ _ _ _) = ct.value
 
 isCtor : Emit -> String -> <Mut> Bool
-isCtor e name = match lookupAssoc name (ctorTable e)
-  Some _ => True
-  None => False
+isCtor e name = match ctorMapRef.value
+  Some m => match emLookup name m
+    Some _ => True
+    None => False
+  None => match lookupAssoc name (ctorTable e)
+    Some _ => True
+    None => False
 
 -- ── record field-order table (slice 5a) ─────────────────────────────────────
 -- maps record-type-name -> [field-names-in-declaration-order].  Built up front
@@ -921,7 +993,7 @@ lookupVar ((n, vt)::rest) x = if n == x then vt else lookupVar rest x
 -- `@.str.N = … constant …` appended after @main is sound (same discipline as the
 -- lifted `define`s).
 emitGlobal : Emit -> String -> <Mut> Unit
-emitGlobal e line = set_ref (lamsRef e) ((lamsRef e).value ++ [line])
+emitGlobal e line = set_ref (lamsRef e) (line :: (lamsRef e).value)
 
 -- the raw UTF-8 bytes of a string literal, in order.  `stringToChars` yields the
 -- source codepoints; `utf8Bytes` re-encodes each to its UTF-8 byte sequence, so the
@@ -1832,7 +1904,7 @@ emitGroupBindDefine e lamName name arity clauses captured =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
@@ -2245,7 +2317,7 @@ emitPapDefine e papName fname supplied remaining =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- load the `k` captured argument words from %clos fields 1..k (code_ptr is 0).
@@ -2662,7 +2734,7 @@ emitDefaultDefine e fname tag method entry =
   let _ = emit e "}"
   let _ = emit e ""
   let defLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL defLines)
+  let _ = set_ref (lamsRef e) (defLines ++ (lamsRef e).value)
   let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
@@ -3110,7 +3182,7 @@ emitRecLamDefine e lamName f pats captured body =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- E2b — emit a lifted lambda whose params are NON-variable patterns, into the side
@@ -3137,7 +3209,7 @@ emitPatLamDefine e lamName extra pats captured body =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
@@ -3159,15 +3231,23 @@ emitEtaClosure e fname =
 
 -- the inferred arity of a known top-level function (its signature's param count).
 fnArity : Emit -> String -> <Mut> Int
-fnArity (Emit _ _ _ sigs _ _ _ _ _ _) fname = match lookupAssoc fname sigs.value
-  Some (FnSig ptys _) => lengthS ptys
-  None => 0
+fnArity e fname = match sigMapRef.value
+  Some m => match emLookup fname m
+    Some (FnSig ptys _) => lengthS ptys
+    None => 0
+  None => match lookupAssoc fname (sigTable e)
+    Some (FnSig ptys _) => lengthS ptys
+    None => 0
 
 -- the declared arity of constructor `name` (its field count, from the ctor table).
 ctorArity : Emit -> String -> <Mut> Int
-ctorArity e name = match lookupAssoc name (ctorTable e)
-  Some n => n
-  None => 0
+ctorArity e name = match ctorMapRef.value
+  Some m => match emLookup name m
+    Some n => n
+    None => 0
+  None => match lookupAssoc name (ctorTable e)
+    Some n => n
+    None => 0
 
 -- a CONSTRUCTOR with arity>0 referenced as a FIRST-CLASS value (`map PVar vars`):
 -- emitApp only builds the cell when the ctor is SATURATED (via emitCtorAlloc), so a
@@ -3197,7 +3277,7 @@ emitCtorEtaDefine e lamName name arity =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- emit a lifted lambda's top-level `define` into the SIDE buffer (LLVM forbids a
@@ -3219,7 +3299,7 @@ emitLamDefine e lamName pats captured body =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- emit the captureless eta-forwarder `@mdk_etaN(i64 %clos, %arg…) { ret = call
@@ -3236,7 +3316,7 @@ emitEtaDefine e lamName fname arity =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- E17: a unicode extern (slice 14) referenced as a FIRST-CLASS value (passed
@@ -3280,7 +3360,7 @@ emitUnicodeEtaDefine e lamName name =
   let _ = emit e "}"
   let _ = emit e ""
   let lamLines = (bufRef e).value
-  let _ = set_ref (lamsRef e) ((lamsRef e).value ++ reverseL lamLines)
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
   set_ref (bufRef e) saved
 
 -- the lifted lambda's parameter list: a leading `%clos`, then the source params.
@@ -3543,8 +3623,24 @@ ctorTypeId e name = match lookupAssoc name (ctorTypeTable e)
 -- the distinct type names of the program, in declaration order (the ctor→type
 -- table lists each type's ctors consecutively, so dedup-preserving-order gives the
 -- type declaration order).
+-- `distinctTypeNames` is constant during a program's emission (the ctor→type
+-- table is set once), but `ctorTypeId` calls it per ADT-constructor emission and
+-- it recomputes the O(n²) `nubStr` each time. Memoize the result (a plain
+-- List String — no hash container, so it self-compiles cleanly) in a module-level
+-- ref, reset to None at each emitProgram/emitProgramGaps so batched emits recompute.
+distinctTypeNamesRef : Ref (Option (List String))
+distinctTypeNamesRef = Ref None
+
+resetDistinctTypeNames : Unit -> <Mut> Unit
+resetDistinctTypeNames _ = set_ref distinctTypeNamesRef None
+
 distinctTypeNames : Emit -> <Mut> List String
-distinctTypeNames e = nubStr (typeNamesOf (ctorTypeTable e))
+distinctTypeNames e = match distinctTypeNamesRef.value
+  Some xs => xs
+  None =>
+    let xs = nubStr (typeNamesOf (ctorTypeTable e))
+    let _ = set_ref distinctTypeNamesRef (Some xs)
+    xs
 
 typeNamesOf : List (String, String) -> List String
 typeNamesOf [] = []
@@ -5247,6 +5343,10 @@ export
 emitProgram : CProgram -> <Mut> String
 emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes) (Ref (initGlobalsReg (valBinds groups)))
+  let _ = resetDistinctTypeNames ()
+  let _ = installKnownFnMap (collectFns groups)
+  let _ = installCtorMap ctorArs
+  let _ = installSigMap (sigTable e)
   let _ = resetEmittedDefaults ()
   let _ = emitPreamble e
   -- declare a module global per top-level value/`Ref` binding (slice E1b).
@@ -5271,7 +5371,7 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   -- side buffer (string-literal + value-binding globals, lifted-lambda defines).
   -- LLVM module-item order is irrelevant, so appending the side buffer is sound.
   match e
-    Emit _ buf _ _ _ lams _ _ _ _ => joinNl (reverseL buf.value ++ lams.value)
+    Emit _ buf _ _ _ lams _ _ _ _ => joinNl (reverseL buf.value ++ reverseL lams.value)
 
 emitPreamble : Emit -> <Mut> Unit
 emitPreamble e =
@@ -5434,6 +5534,10 @@ export
 emitProgramGaps : CProgram -> <Mut> List String
 emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
   let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes) (Ref (initGlobalsRegReady (valBinds groups)))
+  let _ = resetDistinctTypeNames ()
+  let _ = installKnownFnMap (collectFns groups)
+  let _ = installCtorMap ctorArs
+  let _ = installSigMap (sigTable e)
   let _ = resetGaps ()
   let _ = enableGapRecord ()
   let _ = emitPreamble e

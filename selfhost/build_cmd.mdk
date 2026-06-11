@@ -216,7 +216,7 @@ clangLink : String -> String -> String -> String -> String -> <IO> BuildResult
 clangLink cc rtC llPath outPath inputAbs = match detectGC cc
   None => BuildErr "error: libgc (bdw-gc) not found — install bdw-gc (brew install bdw-gc) or set GC_PREFIX/pkg-config."
   Some (gcCflags, gcLibs) =>
-    let clangArgs = ["-Wl,-stack_size,0x20000000"]
+    let clangArgs = ["-Wl,-stack_size,0x20000000", "-O2"]
                     ++ gcCflags
                     ++ [llPath, rtC]
                     ++ gcLibs

@@ -74,21 +74,41 @@ letBindName (LetBind n _) = n
 -- flattened; a name collides iff it occurs in two DISTINCT units.  We approximate
 -- "distinct unit" by counting occurrences after de-duping WITHIN each unit (a unit
 -- defining a name once contributes 1), so a global count >= 2 ⇒ cross-unit.
+-- Found via merge-sort + adjacent-duplicate scan (O(n log n)) instead of the old
+-- O(n²) per-name `countOccPM` rescan. The result is a membership SET (buildRenameMap
+-- only tests membership), so the changed order is irrelevant → output byte-identical.
 collidingNames : List String -> List String
-collidingNames names = dedupPM (collidingGo names names [])
+collidingNames names = dedupPM (adjDupsPM (msortPM names))
 
--- a name collides if it appears at least twice across the per-unit (de-duped)
--- lists.  Callers pass already-per-unit-deduped lists (see mangleUnits), so a
--- second occurrence means a second unit.
-collidingGo : List String -> List String -> List String -> List String
-collidingGo [] _ acc = acc
-collidingGo (n :: rest) allNames acc =
-  if countOccPM n allNames > 1 then collidingGo rest allNames (n :: acc)
-  else collidingGo rest allNames acc
+msortPM : List String -> List String
+msortPM [] = []
+msortPM [x] = [x]
+msortPM xs =
+  let (a, b) = splitAltPM xs
+  mergePM (msortPM a) (msortPM b)
 
-countOccPM : String -> List String -> Int
-countOccPM _ [] = 0
-countOccPM x (y :: ys) = (if x == y then 1 else 0) + countOccPM x ys
+splitAltPM : List String -> (List String, List String)
+splitAltPM [] = ([], [])
+splitAltPM [x] = ([x], [])
+splitAltPM (x :: y :: rest) =
+  let (a, b) = splitAltPM rest
+  (x :: a, y :: b)
+
+mergePM : List String -> List String -> List String
+mergePM [] ys = ys
+mergePM xs [] = xs
+mergePM (x :: xs) (y :: ys) = match stringCompare x y
+  Gt => y :: mergePM (x :: xs) ys
+  _ => x :: mergePM xs (y :: ys)
+
+-- names equal to an adjacent element in the sorted list (i.e. occurring >= 2x).
+-- A run of k≥2 equal names emits k-1 copies; `dedupPM` in the caller collapses them.
+adjDupsPM : List String -> List String
+adjDupsPM [] = []
+adjDupsPM [_] = []
+adjDupsPM (x :: y :: rest) =
+  if x == y then x :: adjDupsPM (y :: rest)
+  else adjDupsPM (y :: rest)
 
 -- ── per-unit rename ───────────────────────────────────────────────────────────
 -- For one unit: build the rename map for THIS unit's private functions whose name

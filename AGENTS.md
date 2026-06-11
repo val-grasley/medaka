@@ -27,7 +27,9 @@ linear pipeline; each stage is one file.
 > docs: `selfhost/BOOTSTRAP.md` (the B1–B7 + C1–C3 log), `selfhost/EMITTER-GAPS.md`
 > (closed/residual emitter gaps), `selfhost/DISPATCH-GAPS-SCOPE.md` (repro-verified scope of
 > the parked native dispatch gaps #54/#55/#50/#21), `selfhost/PERF-SCOPE.md` (bar-4 `-O2`/benchmark
-> scoping), `selfhost/STAGE2-DESIGN.md` + `selfhost/RUNTIME-DESIGN.md`
+> scoping) + `selfhost/PERF-RESULTS.md` (**bar-4 EXECUTED 2026-06-11: self-compile 5.68× / ~59× vs
+> the OCaml interpreter, 18 fixpoint-gated wins; harness `test/bench.sh`**),
+> `selfhost/STAGE2-DESIGN.md` + `selfhost/RUNTIME-DESIGN.md`
 > (design), `selfhost/README.md` (slice log). Harnesses: `test/bootstrap_*.sh`
 > (native stage == interpreter), `test/selfcompile_*.sh` (emitter self-compile).
 
@@ -317,5 +319,6 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 | `selfhost/EMITTER-GAPS.md` | Native emitter gap census — closed gaps (E-series) + the open capability gaps (`max`/`min`, refutable pattern-guards) |
 | `selfhost/DISPATCH-GAPS-SCOPE.md` | Repro-verified scope of the 4 parked native dispatch gaps (#54 Map `toList` / #55 sum-product / #50 parametric-Ord / #21 nested route flattening): minimal repro + root cause + fix-location + spawn-readiness per gap. **#54 is coupled to #21** (panic-fix exposes the nested-element-dict route bug) |
 | `selfhost/PERF-SCOPE.md` | Bar-4 performance scoping: every `clang` invocation + the one-line `-O2` enable, why `-O2` is fixpoint-safe (text IR is pre-clang), benchmark-harness plan, ranked hot paths (2234 `alloca`→`mem2reg`, GC alloc density), sequenced session steps |
+| `selfhost/PERF-RESULTS.md` | **Bar-4 EXECUTED (2026-06-11).** Measured log of the 18 fixpoint-gated perf wins: self-compile **12.04 s → 2.12 s (5.68×); ~59× vs the OCaml interpreter**. `-O2` + GC `free_space_divisor=1` + O(N²)→O(N·log N) SMap/EMap membership/index fixes across DCE/typecheck/emit. Reusable patterns, every dead-end, and the supervised-only remaining levers (dict-passing membership, threaded-sig tree, TRMC). Harness: `test/bench.sh` |
 | `selfhost/STAGE2-DESIGN.md` / `selfhost/RUNTIME-DESIGN.md` | Native backend design: Core IR seam, value rep, GC, per-extern disposition |
 | `selfhost/README.md` | Self-host port slice log + roadmap |

@@ -68,7 +68,7 @@ state changes.
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
 | **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) + [`selfhost/BOOTSTRAP.md`](./selfhost/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done (bytecode VM removed 2026-06-10 — off canonical path); LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
-| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟡 **in progress** | **TYPECHECK-AUDIT autonomous phase ✅ (16: S1·S2·T1·T1b·T2·S3·C1·C2·C3·C6·C7·C8·C9·D1·D2·OBS4)**; construct-coverage matrix built + 10 gaps closed (**Gap E Float-corruption cluster fully closed** — garbage/SIGSEGV/lambda; range-pattern typecheck; backtick/newtype/let-mut/let-else native; stdlib-on-build-path); DCE `collectVars` soundness audited; bar-item-2 = 336 ported `medaka test` assertions. ✅ #1 `medaka build` + #2a/#2b. **Deferred for oversight (precise plans in CONSTRUCT-COVERAGE/TYPECHECK-AUDIT):** ✅ Gap G CLOSED (Phase 151 — operators dispatch to user `Eq`/`Ord` via A2 type-directed rewrite; interpreter+selfhost+native-`==`; native-`<` deferred behind slice-7), dict-pass cluster — **Cause B/L2 ✅ CLOSED** (`ba757de`, set builds natively, one-level nested reqs); **Cause A + per-module-arity promotion layer ✅ CLOSED** (2026-06-10 — `elaborateModules` now seeds `dictEligibleRef`, runs a joint promotion fixpoint, snapshots promoted arities across `resetState`, and uses per-module importer-scoped arity replacing the Phase-134 bare-name `seedDictAritiesFromSigs`; `recordArgSiteFn` surfaces arg-position inferred constraints; `f s = println s` builds native==oracle; Gap C C2/C3-unannotated closed; fixpoint byte-identical; residuals: Cause-B two-level, `debug`-on-List-element, lambda-bound constraint), Gap C (primitive arg-tag dispatch — C1/C5b tuple-as-tag remains), C5/L1/D-tail. Then: differential fuzzer → stack scalability → perf → housekeeping → retire `lib/` (gated). |
+| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟡 **in progress** | **TYPECHECK-AUDIT autonomous phase ✅ (16: S1·S2·T1·T1b·T2·S3·C1·C2·C3·C6·C7·C8·C9·D1·D2·OBS4)**; construct-coverage matrix built + 10 gaps closed (**Gap E Float-corruption cluster fully closed** — garbage/SIGSEGV/lambda; range-pattern typecheck; backtick/newtype/let-mut/let-else native; stdlib-on-build-path); DCE `collectVars` soundness audited; bar-item-2 = 336 ported `medaka test` assertions. ✅ #1 `medaka build` + #2a/#2b. **Deferred for oversight (precise plans in CONSTRUCT-COVERAGE/TYPECHECK-AUDIT):** ✅ Gap G CLOSED (Phase 151 — operators dispatch to user `Eq`/`Ord` via A2 type-directed rewrite; interpreter+selfhost+native-`==`; native-`<` deferred behind slice-7), dict-pass cluster — **Cause B/L2 ✅ CLOSED** (`ba757de`, set builds natively, one-level nested reqs); **Cause A + per-module-arity promotion layer ✅ CLOSED** (2026-06-10 — `elaborateModules` now seeds `dictEligibleRef`, runs a joint promotion fixpoint, snapshots promoted arities across `resetState`, and uses per-module importer-scoped arity replacing the Phase-134 bare-name `seedDictAritiesFromSigs`; `recordArgSiteFn` surfaces arg-position inferred constraints; `f s = println s` builds native==oracle; Gap C C2/C3-unannotated closed; fixpoint byte-identical; residuals: Cause-B two-level, `debug`-on-List-element, lambda-bound constraint), Gap C (primitive arg-tag dispatch — C1/C5b tuple-as-tag remains), C5/L1/D-tail. Then: differential fuzzer ✅ → **perf ✅ (2026-06-11, bar-item 4, 5.68× self-compile / ~59× vs interp — PERF-RESULTS.md)** → stack scalability (TRMC #56) → housekeeping → retire `lib/` (gated). |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -141,15 +141,21 @@ CANONICAL compiler** — the one users invoke and the one that builds the compil
    the rest is internal OCaml API, intrinsically non-portable.
 3. ✅ **Done.** Differential fuzzer (MVP + native Tier-C, 1080 native programs clean, found+fixed
    named-field deriving).
-4. ⏳ **SCOPED, execution pending.** Performance — emitted IR is `-O0`; nobody's turned on `-O2`
-   or benchmarked native-compiler-vs-OCaml. **Scoping DONE 2026-06-10 (`16efcda`, `selfhost/PERF-SCOPE.md`):**
-   6 clang invocations, all implicit `-O0`; one-line `-O2` insert into `clangArgs` in both build drivers
-   (`lib/build_cmd.ml:232`, `selfhost/build_cmd.mdk:219`). **`-O2` does NOT threaten the fixpoint** —
-   C3a/C3b compare emitted TEXT IR (pre-clang); clang only affects the binary (soft risk: Boehm GC
-   stack-scanning under `-O2` → add `-fno-omit-frame-pointer` if behavioral tests regress). Top hot paths:
-   2234 `alloca` slots (`mem2reg` at `-O2` = highest payoff), 4201 `mdk_alloc`/`GC_malloc` (value-rep
-   structural — TRMC #56 territory), dict-passing register pressure. Execution = the dedicated quiet-machine
-   session (flip `-O2` → re-run fixpoint → baseline/-O2 benchmarks → compare).
+4. ✅ **DONE 2026-06-11 (`selfhost/PERF-RESULTS.md`, 18 fixpoint-gated wins).** Performance —
+   emitter self-compile **12.04 s → 2.12 s (5.68×); ~59× faster than the OCaml interpreter**
+   (125 s), peak RSS 770 → 200 MB. `-O2` flipped in both build drivers (the predicted `mem2reg`
+   alloca win → 4.7× RSS drop); Boehm `GC_set_free_space_divisor(1)` (−36% alone); then a sweep of
+   O(N²)→O(N·log N) / constant-table-index fixes across DCE, the typechecker (dep-graph membership,
+   clause grouping, SCC clause lookup, dedupS/groupNames, member-sig presence — all via the in-tree
+   `SMap`), and the emitter (lifted-define buffer, distinctTypeNames memo, isKnownFn/ctor/global-sig
+   `EMap` indexes), plus core_ir_lower group-by and private-name collision merge-sort. `-O2` confirmed
+   fixpoint-safe + GC-safe (no `-fno-omit-frame-pointer` needed). Reproducible via `test/bench.sh`.
+   **Remaining levers are supervised-only** (mapped in PERF-RESULTS.md): the dict-passing
+   constraint-promotion membership (~25 %, route-fragile dispatch) and the threaded-sig lookup cluster
+   (~12 %, Float-two-pass-sensitive); TRMC (#56) is deferred (stack-scalability, not a measured
+   wall-clock win). Documented dead-ends: LTO, GC_MARKERS, hash_map-in-emitter (breaks fixpoint),
+   interior-pointers-off (unverifiable corruption risk).
+
 5. ✅ **DONE 2026-06-10 (`44f5433`).** OCaml-free seed bootstrap. The strict `medaka build` driver
    (`llvm_emit_modules_main.mdk`) **fixpoints** (C3a/C3b YES — the one real gap, now verified via
    `test/selfcompile_build_fixpoint.sh`). Committed seed `selfhost/seed/emitter.ll` (~9.6 MB text IR,
@@ -162,10 +168,9 @@ CANONICAL compiler** — the one users invoke and the one that builds the compil
    **LEAVE the seed STALE** (confirm `selfcompile_fixpoint` C3a/C3b, SKIP `bootstrap_from_seed`, do NOT
    commit a re-mint) — to avoid per-agent 10 MB churn. The **orchestrator re-mints once at release
    checkpoints** via `test/refresh_seed.sh` + verifies `bootstrap_from_seed.sh`. (Last re-mint:
-   `df13070`, LSP token-length #48. **Seed is CURRENT as of 2026-06-10** — verified: zero
-   emitter-graph source changes since `df13070`; this session's landings — Slice 0+1/Slice 2 (CLI,
-   not in emitter graph), perf/dispatch scope docs — left the emitter source untouched, so the seed
-   needs no re-mint.)
+   the **2026-06-11 perf checkpoint** — the ~18 emitter/typecheck perf wins (PERF-RESULTS.md) rewrote
+   the emitter graph; re-minted via `test/refresh_seed.sh` and verified `bootstrap_from_seed.sh` C3a/C3b
+   byte-identical.)
 6. 🟢 **Soundness + correctness CLOSED.** TYPECHECK-AUDIT: all confirmed soundness/correctness/
    diagnostic findings closed (S1-S3, T1/T1b/T2, C1-C9, D1/D2, OBS3/OBS4); **C4 resolved by decision**
    (lazy nullary canonical); **C5 ✅ CLOSED** (`5db8a83`, RLocal end-to-end, fixpoint byte-identical);
@@ -560,10 +565,10 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
   side-effect thunks — the Phase-125 lazy-nullary design point), E8/TC5/E9 (typecheck-error
   → runtime-panic degradation, intrinsic to the untyped `eval_main` driver). Full inventory
   + repros in the 2026-06-10 progress log below + memory `project_selfhost_error_path_gap`.
-- **Performance.** Emitted IR is naive (`clang -O0` in harnesses): turn on `-O2`,
-  measure; consider value-rep / dispatch optimizations + an emitter-side pass if
-  profiling demands. Benchmark native-compiler-compiling-itself vs the OCaml
-  compiler (bar-item 4).
+- **Performance** — ✅ **DONE 2026-06-11 (bar-item 4, `selfhost/PERF-RESULTS.md`).** `-O2` on,
+  Boehm GC tuned, ~18 emitter/typecheck O(N²) hot paths fixed: self-compile **12.04 s → 2.12 s
+  (5.68×); ~59× faster than the OCaml interpreter**. Remaining levers (dict-passing membership,
+  threaded-sig tree, TRMC #56) are supervised-only / stack-scalability, mapped in PERF-RESULTS.md.
 - **Self-bootstrapping build** (bar-item 5) — remove the OCaml-interpreter
   dependency from producing the *first* native compiler: a checked-in/reproducible
   seed binary that compiles the `.mdk` sources, or a documented multi-stage

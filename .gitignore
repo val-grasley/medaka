@@ -3,3 +3,6 @@ _build/
 .merlin
 *.swp
 .DS_Store
+
+# bootstrap_from_seed.sh output (regenerable native emitter binary)
+/medaka_emitter

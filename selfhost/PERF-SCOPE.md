@@ -1,5 +1,11 @@
 # PERF-SCOPE.md — Stage-3 bar-item-4 performance scoping
 
+> ✅ **EXECUTED 2026-06-11 — see [`PERF-RESULTS.md`](./PERF-RESULTS.md).** This was the
+> read-only scoping pass; the work it planned (and much more) is done: `-O2` flipped, GC tuned,
+> 18 fixpoint-gated O(N²) fixes → self-compile **12.04 s → 2.12 s (5.68×); ~59× vs the OCaml
+> interpreter**. The `-O2`-is-fixpoint-safe and `mem2reg`-alloca-win predictions below were
+> confirmed empirically. Kept for the rationale/hot-path analysis.
+
 > Read-only scoping pass, 2026-06-10. Sources inspected:
 > `selfhost/build_cmd.mdk`, `lib/build_cmd.ml`, `test/bootstrap_from_seed.sh`,
 > `test/selfcompile_build_fixpoint.sh`, `test/refresh_seed.sh`,
