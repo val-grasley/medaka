@@ -551,10 +551,80 @@ cInitialRows ((CArm pat _ _)::rest) i = ([canonPat pat], i) :: cInitialRows rest
 -- (per-module local frames) rather than as one flat program.
 export
 lowerGroups : List Decl -> List CBind
-lowerGroups prog =
-  let clauses = funClausesOf prog
-  let names = groupNames clauses []
-  map (n => CBind n (clausesFor n clauses)) names
+lowerGroups prog = lgGroup (funClausesOf prog)
+
+-- O(n log n) group-by-name, IDENTICAL output to
+-- `map (n => CBind n (clausesFor n clauses)) (groupNames clauses [])`: preserves
+-- clause order within a name AND first-occurrence order of names, via an
+-- index-carrying merge sort (no map, no typeclass dispatch). Replaces the old
+-- O(names·clauses) groupNames+clausesFor rescan. Elements are ((name, idx), clause).
+lgGroup : List (String, CClause) -> List CBind
+lgGroup clauses =
+  let groups = lgRuns (lgSortName (lgTag clauses 0))
+  map lgToBind (lgSortIdx groups)
+
+lgTag : List (String, CClause) -> Int -> List ((String, Int), CClause)
+lgTag [] _ = []
+lgTag ((n, c) :: rest) i = ((n, i), c) :: lgTag rest (i + 1)
+
+lgSplit : List a -> (List a, List a)
+lgSplit [] = ([], [])
+lgSplit [x] = ([x], [])
+lgSplit (x :: y :: rest) =
+  let (a, b) = lgSplit rest
+  (x :: a, y :: b)
+
+-- merge sort by name, ascending-index tiebreak (stable ⇒ clause order preserved).
+lgSortName : List ((String, Int), CClause) -> List ((String, Int), CClause)
+lgSortName [] = []
+lgSortName [x] = [x]
+lgSortName xs =
+  let (a, b) = lgSplit xs
+  lgMergeName (lgSortName a) (lgSortName b)
+
+lgMergeName : List ((String, Int), CClause) -> List ((String, Int), CClause) -> List ((String, Int), CClause)
+lgMergeName [] ys = ys
+lgMergeName xs [] = xs
+lgMergeName (((n1, i1), c1) :: xs) (((n2, i2), c2) :: ys) = match stringCompare n1 n2
+  Lt => ((n1, i1), c1) :: lgMergeName xs (((n2, i2), c2) :: ys)
+  Gt => ((n2, i2), c2) :: lgMergeName (((n1, i1), c1) :: xs) ys
+  Eq =>
+    if i1 <= i2 then ((n1, i1), c1) :: lgMergeName xs (((n2, i2), c2) :: ys)
+    else ((n2, i2), c2) :: lgMergeName (((n1, i1), c1) :: xs) ys
+
+-- collapse runs of equal name (now contiguous, index-ascending) into
+-- ((name, firstIdx), clausesInOrder).
+lgRuns : List ((String, Int), CClause) -> List ((String, Int), List CClause)
+lgRuns [] = []
+lgRuns (((n, i), c) :: rest) =
+  let (cs, others) = lgSpan n rest
+  ((n, i), c :: cs) :: lgRuns others
+
+lgSpan : String -> List ((String, Int), CClause) -> (List CClause, List ((String, Int), CClause))
+lgSpan _ [] = ([], [])
+lgSpan n (((m, j), c) :: rest) =
+  if m == n then
+    let (cs, o) = lgSpan n rest
+    (c :: cs, o)
+  else ([], ((m, j), c) :: rest)
+
+-- order groups by first-occurrence index (== groupNames order).
+lgSortIdx : List ((String, Int), List CClause) -> List ((String, Int), List CClause)
+lgSortIdx [] = []
+lgSortIdx [x] = [x]
+lgSortIdx xs =
+  let (a, b) = lgSplit xs
+  lgMergeIdx (lgSortIdx a) (lgSortIdx b)
+
+lgMergeIdx : List ((String, Int), List CClause) -> List ((String, Int), List CClause) -> List ((String, Int), List CClause)
+lgMergeIdx [] ys = ys
+lgMergeIdx xs [] = xs
+lgMergeIdx (((n1, i1), cs1) :: xs) (((n2, i2), cs2) :: ys) =
+  if i1 <= i2 then ((n1, i1), cs1) :: lgMergeIdx xs (((n2, i2), cs2) :: ys)
+  else ((n2, i2), cs2) :: lgMergeIdx (((n1, i1), cs1) :: xs) ys
+
+lgToBind : ((String, Int), List CClause) -> CBind
+lgToBind ((n, _), cs) = CBind n cs
 
 -- ── typeclass impls / interface defaults (slice 5) ─────────────────────────
 -- Mirror eval.mdk's `declImplEntries` exactly: build the iface dispatch-position

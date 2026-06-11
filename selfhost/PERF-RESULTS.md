@@ -292,15 +292,15 @@ Tested and **rejected** — recorded so future sessions skip them:
 
 | Workload | original (-O0, div 3) | final | speedup |
 |---|---|---|---|
-| emitter self-compile | 12.04 s / 770 MB | **2.38 s / 199 MB** | **5.06× / 3.9× less RSS** |
-| vs OCaml interpreter | 125.35 s / 1467 MB | 2.38 s / 199 MB | **52.7× / 7.4× less RSS** |
+| emitter self-compile | 12.04 s / 770 MB | **2.34 s / 199 MB** | **5.15× / 3.9× less RSS** |
+| vs OCaml interpreter | 125.35 s / 1467 MB | 2.34 s / 199 MB | **53.6× / 7.4× less RSS** |
 | fib 38 (no alloc) | 0.11 s | 0.10 s | flat (already optimal) |
 
 Banked, all universal defaults, every change gated byte-identical (fixpoint +
 differential fixtures + build gate): clang `-O2`, GC `free_space_divisor=1`,
 lifted-define buffer O(N²)→O(N), DCE reachability+graph O(N²)→O(N) via HashMap,
 typecheck dep-graph + SCC clause grouping + dedup O(N²)→O(N·log N) via SMap. The
-native compiler is **~53× faster than the OCaml interpreter** at the representative
+native compiler is **~54× faster than the OCaml interpreter** at the representative
 self-compile workload — the OCaml-retirement performance bar is met with wide
 margin.
 
@@ -612,3 +612,26 @@ Lower-priority safe leftovers (each ≲3–6 %, need in-module map/structure):
 index-carrying merge-sort group, or export typecheck's `SMap`); `isKnownFn`
 (blocked on the hash-container-in-`llvm_emit` self-compile gap — a plain-List
 sorted index won't give O(1) on a linked list).
+
+---
+
+## Entry 16 — core_ir_lower group-by O(n²) → O(n log n) (2026-06-11)
+
+**Change (`selfhost/core_ir_lower.mdk`):** `lowerGroups` did
+`map (n => CBind n (clausesFor n clauses)) (groupNames clauses [])` — O(names·clauses)
+(a full clause rescan per name) + O(n²) `groupNames`. Replaced with an
+index-carrying merge-sort group (`lgGroup`): tag clauses with their position,
+merge-sort by name (ascending-index tiebreak = stable clause order), collapse
+runs into `((name, firstIdx), clauses)`, merge-sort groups by firstIdx (= first
+occurrence order). Provably identical output (no contiguity assumption, no map, no
+typeclass dispatch — `stringCompare` extern + Int `<=`).
+
+**Gates:** `selfcompile_fixpoint` C3a/C3b YES; `diff_selfhost_build` 9/9;
+`diff_selfhost_llvm` 172/172; `llvm_modules` 8/8; `core_ir_run` 25/25;
+`eval_run` 25/25; `eval_typed_modules` 1/1 (core_ir_lower feeds the eval path too).
+Seed stale; not re-minted.
+
+**Numbers (self-compile, min-of-5, -O2 + divisor=1):** 2.38 s → **2.34 s** (~2%).
+Cumulative this session: 12.04 s → 2.34 s (**5.15×**); vs OCaml interpreter 53.6×.
+Confirms the provably-correct index-carrying merge-sort group-by works without a
+map — reusable where a module lacks `SMap`/`HashMap`.
