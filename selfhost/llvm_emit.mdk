@@ -628,6 +628,18 @@ ctorMapRef = Ref None
 installCtorMap : List (String, Int) -> <Mut> Unit
 installCtorMap t = set_ref ctorMapRef (Some (emFromPairs (reverseL t) ETip))
 
+-- sig table index — ONLY for the GLOBAL-`sigs` users (fnRetTy/fnArity), which read
+-- the Emit's `sigs` field. That field is set once at construction and never
+-- mutated (constant), so a memo built from `sigTable e` is byte-identical to the
+-- old `lookupAssoc name sigs.value`. NOTE: callRetTy/nthParamTy use a DIFFERENT,
+-- THREADED `sigs` augmented with locally-inferred Float-propagation types — those
+-- are NOT covered here (see the reverted sig-table attempt + fn_float_chain).
+sigMapRef : Ref (Option (EMap FnSig))
+sigMapRef = Ref None
+
+installSigMap : List (String, FnSig) -> <Mut> Unit
+installSigMap t = set_ref sigMapRef (Some (emFromPairs (reverseL t) ETip))
+
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = match knownFnMapRef.value
   Some m => match emLookup name m
@@ -638,9 +650,13 @@ isKnownFn e name = match knownFnMapRef.value
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
-fnRetTy (Emit _ _ _ sigs _ _ _ _ _ _) name = match lookupAssoc name sigs.value
-  Some (FnSig _ rty) => rty
-  None => LTInt
+fnRetTy e name = match sigMapRef.value
+  Some m => match emLookup name m
+    Some (FnSig _ rty) => rty
+    None => LTInt
+  None => match lookupAssoc name (sigTable e)
+    Some (FnSig _ rty) => rty
+    None => LTInt
 
 -- ── constructor table (slice 3) ─────────────────────────────────────────────
 -- the constructor arity table (set once in emitProgram); membership decides
@@ -3215,9 +3231,13 @@ emitEtaClosure e fname =
 
 -- the inferred arity of a known top-level function (its signature's param count).
 fnArity : Emit -> String -> <Mut> Int
-fnArity (Emit _ _ _ sigs _ _ _ _ _ _) fname = match lookupAssoc fname sigs.value
-  Some (FnSig ptys _) => lengthS ptys
-  None => 0
+fnArity e fname = match sigMapRef.value
+  Some m => match emLookup fname m
+    Some (FnSig ptys _) => lengthS ptys
+    None => 0
+  None => match lookupAssoc fname (sigTable e)
+    Some (FnSig ptys _) => lengthS ptys
+    None => 0
 
 -- the declared arity of constructor `name` (its field count, from the ctor table).
 ctorArity : Emit -> String -> <Mut> Int
@@ -5326,6 +5346,7 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = resetDistinctTypeNames ()
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
+  let _ = installSigMap (sigTable e)
   let _ = resetEmittedDefaults ()
   let _ = emitPreamble e
   -- declare a module global per top-level value/`Ref` binding (slice E1b).
@@ -5516,6 +5537,7 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = resetDistinctTypeNames ()
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
+  let _ = installSigMap (sigTable e)
   let _ = resetGaps ()
   let _ = enableGapRecord ()
   let _ = emitPreamble e

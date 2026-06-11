@@ -292,15 +292,15 @@ Tested and **rejected** — recorded so future sessions skip them:
 
 | Workload | original (-O0, div 3) | final | speedup |
 |---|---|---|---|
-| emitter self-compile | 12.04 s / 770 MB | **2.33 s / 200 MB** | **5.17× / 3.9× less RSS** |
-| vs OCaml interpreter | 125.35 s / 1467 MB | 2.33 s / 200 MB | **53.8× / 7.3× less RSS** |
+| emitter self-compile | 12.04 s / 770 MB | **2.17 s / 200 MB** | **5.55× / 3.9× less RSS** |
+| vs OCaml interpreter | 125.35 s / 1467 MB | 2.17 s / 200 MB | **57.8× / 7.3× less RSS** |
 | fib 38 (no alloc) | 0.11 s | 0.10 s | flat (already optimal) |
 
 Banked, all universal defaults, every change gated byte-identical (fixpoint +
 differential fixtures + build gate): clang `-O2`, GC `free_space_divisor=1`,
 lifted-define buffer O(N²)→O(N), DCE reachability+graph O(N²)→O(N) via HashMap,
 typecheck dep-graph + SCC clause grouping + dedup O(N²)→O(N·log N) via SMap. The
-native compiler is **~54× faster than the OCaml interpreter** (certified `test/bench.sh` min-of-5) at the representative
+native compiler is **~58× faster than the OCaml interpreter** at the representative
 self-compile workload — the OCaml-retirement performance bar is met with wide
 margin.
 
@@ -726,3 +726,25 @@ state — absolute timings drift ±0.2 s with load, so compared pairwise):**
 remains **~5.5× / ~57× vs the OCaml interpreter** (the headline figures were
 established earlier under steady conditions; sub-3% deltas now sit within the
 machine's drift band but are verified pairwise).
+
+---
+
+## Entry 20 — sig-table index, the SAFE subset (fnRetTy/fnArity) (2026-06-11)
+
+The reverted sig-table index (broke `fn_float_chain`) failed only because it
+rerouted `callRetTy`/`nthParamTy`, which use a THREADED `sigs` augmented with
+locally-inferred Float-propagation types. **Re-examination found the Emit `sigs`
+field is NEVER mutated** (`grep` confirms no `set_ref` on it) — it is constant;
+the Float types are inferred locally and threaded, not written back. So
+`fnRetTy`/`fnArity`, which read the *global* `sigs.value` directly, ARE safely
+memoizable: a `sigMapRef : EMap FnSig` built once from `sigTable e` is
+byte-identical to their `lookupAssoc`. `callRetTy`/`nthParamTy` (threaded) are
+left untouched.
+
+**Gates:** `selfcompile_fixpoint` C3a/C3b YES; `diff_selfhost_build` 9/9;
+`diff_selfhost_llvm` **172/172 (incl. fn_float_chain)**; `llvm_modules` 8/8.
+
+**Numbers (back-to-back min-of-5 vs prior commit):** 2.34 s → **2.17 s** (~7%,
+consistent). Cumulative this session: 12.04 s → 2.17 s (**5.55×**); vs OCaml
+interpreter **57.8×**. (The remaining ~10 % `nthParamTy` and `callRetTy` lookups
+use the threaded augmented sigs and still need the supervised float-aware refactor.)
