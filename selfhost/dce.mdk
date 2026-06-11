@@ -33,31 +33,36 @@
 -- the eval pipeline are unaffected.
 
 import ast.{Decl(..)}
-import util.{contains, concatMapList}
 import marker.{declRefs}
+import hash_set.{HashSet, new, insert, member}
 
 -- ── entry point ────────────────────────────────────────────────────────────
 -- Filter `decls` (the flattened, elaborated whole-program decl list) to retain
 -- every non-DFunDef decl plus the DFunDefs reachable from main + impls/interfaces.
 export
-dceFilter : List Decl -> List Decl
+dceFilter : List Decl -> <Mut> List Decl
 dceFilter decls = filterReachable (reachableNames decls) decls
 
 -- Drop only unreachable DFunDefs; keep everything else verbatim, in order.
-filterReachable : List String -> List Decl -> List Decl
+-- `reach` is a HashSet, so `member` is O(1) average and this pass is O(#decls).
+filterReachable : HashSet String -> List Decl -> List Decl
 filterReachable _ [] = []
 filterReachable reach ((DFunDef pub n ps body)::rest)
-  | contains n reach = DFunDef pub n ps body :: filterReachable reach rest
+  | member n reach = DFunDef pub n ps body :: filterReachable reach rest
   | otherwise = filterReachable reach rest
 filterReachable reach (d::rest) = d :: filterReachable reach rest
 
 -- ── reachability ───────────────────────────────────────────────────────────
--- Transitive closure of the roots over the DFunDef call graph.
-reachableNames : List Decl -> List String
+-- Transitive closure of the roots over the DFunDef call graph, collected into a
+-- HashSet (consumed only by `filterReachable`'s membership test — order and
+-- duplicates are irrelevant).  O(1)-average membership turns the old O(N²) list
+-- dedup/closure into ~O(reachable + edges).
+reachableNames : List Decl -> <Mut> HashSet String
 reachableNames decls =
   let graph = funGraph decls []
-  let roots = seedSet ("main" :: emittingRoots decls)
-  closure graph roots roots
+  let seen = new ()
+  let _ = closure graph seen ("main" :: emittingRoots decls)
+  seen
 
 -- name -> refs(body), one entry per DFunDef name (multi-clause defs unioned).
 funGraph : List Decl -> List (String, List String) -> List (String, List String)
@@ -94,40 +99,20 @@ isEmittingDecl (DInterface { ... }) = True
 isEmittingDecl _ = False
 
 -- ── worklist closure ───────────────────────────────────────────────────────
--- seedSet: the initial reachable set (deduped) from the roots.
-seedSet : List String -> List String
-seedSet xs = dedup xs []
-
-dedup : List String -> List String -> List String
-dedup [] acc = acc
-dedup (x::xs) acc
-  | contains x acc = dedup xs acc
-  | otherwise = dedup xs (x :: acc)
-
--- closure: process the worklist; for each name that is a DFunDef, add its refs.
--- The final `visited` SET is the closure fixpoint — independent of worklist order
--- and of duplicates — and is consumed only by membership tests, so prepend the
--- fresh names (O(|fresh|)) instead of `visited ++ fresh` / `work ++ fresh`
--- (O(|visited|) / O(|work|)), turning the closure loop from O(N²) to ~O(N).
-closure : List (String, List String) -> List String -> List String -> List String
-closure _ visited [] = visited
-closure graph visited (w::work) =
-  let fresh = newOnes (refsOf graph w) visited
-  closure graph (fresh ++ visited) (fresh ++ work)
+-- BFS over the call graph: insert each unseen name into `seen`, enqueue its
+-- refs.  `member` skips already-processed names, so every name is inserted once
+-- → O(reachable + edges) with O(1)-average membership (was O(N²) list dedup).
+-- The resulting `seen` set is the same set the old list-based closure produced.
+closure : List (String, List String) -> HashSet String -> List String -> <Mut> Unit
+closure _ _ [] = ()
+closure graph seen (w::work)
+  | member w seen = closure graph seen work
+  | otherwise =
+      let _ = insert w seen
+      closure graph seen (refsOf graph w ++ work)
 
 refsOf : List (String, List String) -> String -> List String
 refsOf [] _ = []
 refsOf ((k, v)::rest) n
   | k == n = v
   | otherwise = refsOf rest n
-
--- the names in `candidates` not yet in `visited`, deduped against each other.
-newOnes : List String -> List String -> List String
-newOnes candidates visited = dedupAgainst candidates visited []
-
-dedupAgainst : List String -> List String -> List String -> List String
-dedupAgainst [] _ acc = acc
-dedupAgainst (x::xs) visited acc
-  | contains x visited = dedupAgainst xs visited acc
-  | contains x acc = dedupAgainst xs visited acc
-  | otherwise = dedupAgainst xs visited (x :: acc)

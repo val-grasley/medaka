@@ -290,17 +290,55 @@ Tested and **rejected** — recorded so future sessions skip them:
 
 ## Final state (this session)
 
-| Workload | original (-O0, div 3) | final (-O2, div 1, O(N) lams+DCE) | speedup |
+| Workload | original (-O0, div 3) | final (-O2, div 1, O(N) lams+DCE, hashset DCE) | speedup |
 |---|---|---|---|
-| emitter self-compile | 12.04 s / 770 MB | **5.33 s / 199 MB** | **2.26× / 3.9× less RSS** |
-| vs OCaml interpreter | 125.35 s / 1467 MB | 5.33 s / 199 MB | **23.5× / 7.4× less RSS** |
+| emitter self-compile | 12.04 s / 770 MB | **4.98 s / 199 MB** | **2.42× / 3.9× less RSS** |
+| vs OCaml interpreter | 125.35 s / 1467 MB | 4.98 s / 199 MB | **25.2× / 7.4× less RSS** |
 | fib 38 (no alloc) | 0.11 s | 0.10 s | flat (already optimal) |
 
 Banked, all universal defaults, every change gated byte-identical (fixpoint +
 ≥180 differential fixtures + build gate): clang `-O2`, GC `free_space_divisor=1`,
-lifted-define buffer O(N²)→O(N), DCE reachability O(N²)→O(N). The native compiler
-is ~23× faster than the OCaml interpreter at the representative self-compile
-workload — the performance bar for OCaml retirement is met with wide margin.
+lifted-define buffer O(N²)→O(N), DCE reachability O(N²)→O(N) list ops, DCE
+membership → HashSet (O(1)). The native compiler is ~25× faster than the OCaml
+interpreter at the representative self-compile workload — the performance bar for
+OCaml retirement is met with wide margin.
+
+---
+
+## Entry 7 — DCE membership via HashSet: O(N²) → O(N) (2026-06-11)
+
+**Change (`selfhost/dce.mdk`):** the reachability closure and `filterReachable`
+used linear-scan `contains` for set membership (O(N²) over the reachable set).
+Replaced the visited set with a `stdlib/hash_set.mdk` `HashSet String`: the
+closure is now a BFS that `insert`s each unseen name and skips seen ones (O(1)
+average `member`), and `filterReachable` tests `member` per decl. The reachable
+**set** is identical (membership-only consumption — order/dups never surface;
+`HashSet` is never iterated), so output is byte-identical.
+
+**De-risking:** `hash_set` was not previously in the emit graph. Verified first
+that a `hash_set` user program self-compiles AND runs correctly via the native
+backend (insert/member, `Hashable`/`Eq String` dispatch — NOT blocked by the
+parked dispatch gaps). Only then imported it into `dce.mdk`.
+
+**Gates:** `medaka check` clean (93 bindings); `selfcompile_fixpoint` C3a/C3b YES
+(emitter self-compiles **with hash_set now in its own graph** and reproduces
+byte-for-byte); `diff_selfhost_build` 9/9; `diff_selfhost_llvm` 172/172;
+`diff_selfhost_llvm_modules` 8/8. Seed stale (emit graph changed); fixpoint
+verified, not re-minted.
+
+**Numbers (self-compile, min-of-3, -O2 + divisor=1):** 5.33 s → **4.98 s**
+(~7 %), RSS flat ~199 MB. The remaining DCE cost is the `funGraph`/`addRefs`
+graph build and `refsOf` linear scan (both still O(N)·assoc); hashing the graph
+map would remove them next.
+
+**Significance beyond the number:** this is the first use of `hash_set` in the
+emitter's own module graph, proven self-compiling and fixpoint-stable. It
+unblocks the higher-value typechecker O(N²) work (`dedupSGo`/`clausesFor`/
+`groupNames`), which was deferred precisely because O(1) string membership had no
+emit-proven structure — now it has one. That conversion is still
+output-order-sensitive (typecheck SCC/tyvar order) and should be done supervised,
+but the structural blocker is cleared.
+
 
 
 
