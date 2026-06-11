@@ -256,6 +256,49 @@ safe rewrite needs O(1) membership (hash set) with full differential
 re-verification — deferred as higher-risk than tonight's banked wins warrant
 unattended.
 
+---
+
+## Entry 6 — negative results (don't re-investigate) (2026-06-10)
+
+Tested and **rejected** — recorded so future sessions skip them:
+
+- **`-flto`** (clang LTO, on top of -O2): listsum flat (0.11→0.10 s, noise),
+  self-compile **no gain** (5.50 s vs 5.33 s, RSS slightly worse), build time
+  unchanged (~128 s). `mdk_alloc` is a thin `GC_malloc` wrapper and `GC_malloc`
+  lives in the `-lgc` dylib (not LTO-visible), so the inlinable surface is tiny.
+  Reverted.
+- **`GC_MARKERS` parallel marking** (env sweep 1/2/4/8): within noise of the
+  divisor=1 baseline (markers=4 ~5.27 s vs markers=1 ~5.67 s, ranges overlap).
+  The brew `bdw-gc` likely lacks parallel-mark, or marking isn't the
+  parallelizable bottleneck. Not baked — would add GC threads + nondeterminism to
+  a conservative collector for no reliable gain.
+- **`GC_INITIAL_HEAP_SIZE` large default** (Entry 3): real speedup but RSS scales
+  1:1 → regresses tiny programs. Kept as an env knob, not a default.
+- **`GC_set_all_interior_pointers(0)`**: potential mark speedup, but unsound to
+  flip without a full audit that no pointer ever targets an object interior
+  (conservative-GC premature-free bugs are nondeterministic and won't reliably
+  surface in the small build gate). Not attempted unattended.
+- **hash-set for typecheck/DCE membership**: the principled O(N) fix for the
+  remaining O(N²) `contains` scans, but `stdlib/hash_set.mdk` is not yet in the
+  emit graph and its `Hashable`/`Eq` constrained dispatch + mutable `Array`
+  resize risk the parked route-fragile dispatch gaps (#54/#55/#50/#21). Deferred
+  to a supervised session.
+
+## Final state (this session)
+
+| Workload | original (-O0, div 3) | final (-O2, div 1, O(N) lams+DCE) | speedup |
+|---|---|---|---|
+| emitter self-compile | 12.04 s / 770 MB | **5.33 s / 199 MB** | **2.26× / 3.9× less RSS** |
+| vs OCaml interpreter | 125.35 s / 1467 MB | 5.33 s / 199 MB | **23.5× / 7.4× less RSS** |
+| fib 38 (no alloc) | 0.11 s | 0.10 s | flat (already optimal) |
+
+Banked, all universal defaults, every change gated byte-identical (fixpoint +
+≥180 differential fixtures + build gate): clang `-O2`, GC `free_space_divisor=1`,
+lifted-define buffer O(N²)→O(N), DCE reachability O(N²)→O(N). The native compiler
+is ~23× faster than the OCaml interpreter at the representative self-compile
+workload — the performance bar for OCaml retirement is met with wide margin.
+
+
 
 
 
