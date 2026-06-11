@@ -24,6 +24,8 @@ import diagnostics.{Diag, Severity, SevError, SevWarning, analyze}
 import parser.{ParseError, parseResult, parseErrorLine, parseErrorCol,
                parseErrorMessage, parseWithPositions,
                positionsDecls, DeclPos, declPosLine, declPosEndLine}
+import desugar.{desugar}
+import typecheck.{checkProgram, ppScheme, Scheme(..)}
 import fmt.{formatSource}
 import ast.{Decl, DTypeSig, DExtern, DFunDef, DData, DRecord, DUse, DEffect,
             DProp, DTest, DBench, DInterface, DImpl, DTypeAlias, DNewtype,
@@ -379,6 +381,242 @@ defZip (d :: ds) (p :: ps) name
   | otherwise = defZip ds ps name
 defZip _ _ _ = None
 
+-- ── typecheck-env build (hover / completion / inlayHint) ────────────────────
+-- Mirror lib/lsp_server.ml's handlers, which run `Typecheck.check_program prog`
+-- (which prepends the prelude) and look names up in the returned env.  Here the
+-- self-host `checkProgram` does NOT auto-prepend, so we mirror repl.mdk's
+-- pipeline (selfhost/repl.mdk:221): desugar the prelude (coreSrc) + the desugared
+-- user buffer, then `checkProgram (coreDecls ++ userDecls)` → the (name, Scheme)
+-- env.  The runtime externs reach scope via core.mdk's own DExterns, exactly as
+-- in repl (whose `checkProgram (preludeDecls ++ combined)` likewise omits a
+-- separate runtime seed).  Returns None when the buffer doesn't parse (the
+-- OCaml handlers bail the same way on a parse failure).
+docSchemes : String -> String -> <Mut> Option (List (String, Scheme))
+docSchemes coreSrc src = match parseResult src
+  Err _ => None
+  Ok userRaw =>
+    let coreDecls = desugar (unwrapDecls (parseResult coreSrc))
+    let userDecls = desugar userRaw
+    Some (checkProgram (coreDecls ++ userDecls))
+
+-- core.mdk always parses; unwrap its parseResult (defensive None → []).
+unwrapDecls : Result ParseError (List Decl) -> List Decl
+unwrapDecls (Ok ds) = ds
+unwrapDecls (Err _) = []
+
+-- Lookup a name's Scheme in the env (mirror repl.mdk lookupScheme / OCaml
+-- List.assoc_opt).
+lookupSchemeL : String -> List (String, Scheme) -> Option Scheme
+lookupSchemeL _ [] = None
+lookupSchemeL name ((n, s) :: rest)
+  | name == n = Some s
+  | otherwise = lookupSchemeL name rest
+
+-- ── textDocument/hover ──────────────────────────────────────────────────────
+-- Mirror handle_hover (lib/lsp_server.ml:482): identifier-at-cursor → checkProgram
+-- env → lookup → a Hover whose contents is a Markdown MarkupContent rendering
+--   ```medaka
+--   <name> : <type>
+--   ```
+-- (exactly the OCaml format string).  Null when off an identifier or not in env.
+hoverResult : String -> String -> Json -> <Mut> Json
+hoverResult coreSrc src params =
+  match (positionLine params, positionChar params)
+    (Some line, Some col) => match identifierAt src line col
+      None => JNull
+      Some name => match docSchemes coreSrc src
+        None => JNull
+        Some env => match lookupSchemeL name env
+          None => JNull
+          Some sch => jHover name (ppScheme sch)
+    _ => JNull
+
+-- Build the Hover { contents: MarkupContent{ kind:"markdown", value } } object.
+jHover : String -> String -> Json
+jHover name ty =
+  let value = stringConcat ["```medaka\n", name, " : ", ty, "\n```"]
+  jObject [("contents", jObject [ ("kind", JString "markdown")
+                                , ("value", JString value) ])]
+
+handleHover : String -> Json -> Json -> Docs -> <IO, Mut> Unit
+handleHover coreSrc idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => hoverResult coreSrc src params
+  writeMessage (responseMsg idJson result)
+
+-- ── textDocument/completion ─────────────────────────────────────────────────
+-- Mirror handle_completion (lib/lsp_server.ml:693): the identifier prefix ending
+-- just before the cursor → env names with that prefix → CompletionItem[]
+-- { label, kind, detail }.  kind = Function (3) for every item (OCaml's
+-- completion_kind_for_scheme defaults to Function); detail = ppScheme.  Names are
+-- emitted in env order, deduplicated, prefix-filtered — mirroring
+-- filter_completions.
+prefixBefore : String -> Int -> Int -> String
+prefixBefore src line col =
+  let arr = stringToChars src
+  let len = arrayLength arr
+  match offsetOfLineStart arr len line
+    None => ""
+    Some lineStart =>
+      let stop = lineStart + col - 1
+      if stop < lineStart then ""
+      else if stop >= len then ""
+      else if not (isIdentChar (arrayGetUnsafe stop arr)) then ""
+      else
+        let start = prefixStart arr lineStart stop
+        stringSlice start (stop + 1) src
+
+-- Byte offset of the start of 0-based `line`, or None if it doesn't exist.
+offsetOfLineStart : Array Char -> Int -> Int -> Option Int
+offsetOfLineStart arr len line = lineStartGo arr len 0 0 0 line
+
+lineStartGo : Array Char -> Int -> Int -> Int -> Int -> Int -> Option Int
+lineStartGo arr len i curLine lineStart line
+  | curLine == line = Some lineStart
+  | i >= len = None
+  | arrayGetUnsafe i arr == '\n' = lineStartGo arr len (i + 1) (curLine + 1) (i + 1) line
+  | otherwise = lineStartGo arr len (i + 1) curLine lineStart line
+
+-- Walk left from `stop` over identifier chars, not past the line start.
+prefixStart : Array Char -> Int -> Int -> Int
+prefixStart arr lineStart i
+  | i <= lineStart = lineStart
+  | isIdentChar (arrayGetUnsafe (i - 1) arr) = prefixStart arr lineStart (i - 1)
+  | otherwise = i
+
+-- True when string n has prefix p (mirror plen==0 || prefix match).
+hasPrefix : String -> String -> Bool
+hasPrefix p n =
+  let pl = stringLength p
+  if pl == 0 then True
+  else stringLength n >= pl && stringSlice 0 pl n == p
+
+-- Filter env to names matching the prefix, deduplicating (first occurrence
+-- wins).  Mirror filter_completions.
+filterCompletions : String -> List String -> List (String, Scheme) -> <Mut> List Json
+filterCompletions _ _ [] = []
+filterCompletions prefix seen ((n, s) :: rest)
+  | hasPrefix prefix n && not (anyName seen n) =
+      jCompletionItem n (ppScheme s) :: filterCompletions prefix (n :: seen) rest
+  | otherwise = filterCompletions prefix seen rest
+
+-- One CompletionItem { label, kind, detail }.  kind 3 = Function (LSP spec).
+jCompletionItem : String -> String -> Json
+jCompletionItem label detail =
+  jObject [ ("label", JString label)
+          , ("kind", JInt 3)
+          , ("detail", JString detail) ]
+
+completionResult : String -> String -> Json -> <Mut> Json
+completionResult coreSrc src params =
+  match (positionLine params, positionChar params)
+    (Some line, Some col) => match docSchemes coreSrc src
+      None => JNull
+      Some env =>
+        let prefix = prefixBefore src line col
+        jArray (filterCompletions prefix [] env)
+    _ => JNull
+
+handleCompletion : String -> Json -> Json -> Docs -> <IO, Mut> Unit
+handleCompletion coreSrc idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => completionResult coreSrc src params
+  writeMessage (responseMsg idJson result)
+
+-- ── textDocument/inlayHint ──────────────────────────────────────────────────
+-- Mirror handle_inlay_hint (lib/lsp_server.ml:759): for each top-level decl that
+-- binds a value (DFunDef, or the first name of a DLetGroup) AND has no explicit
+-- DTypeSig in the program AND is in the typecheck env, emit one hint at the
+-- column right after its name on its start line, labelled `: <ppScheme>` with
+-- paddingLeft.  The self-host DeclPos has no column (the AST is location-
+-- stripped), but every top-level decl starts at column 0, so the name-end column
+-- is found by scanning the decl's start line from char 0 over identifier chars
+-- (mirror column_after_name with loc.col = 0).
+
+-- The binding name a decl introduces a value hint for, or None (mirror
+-- decl_binding_name: only DFunDef + DLetGroup-first).
+declBindingName : Decl -> Option String
+declBindingName d = match innerDecl d
+  DFunDef _ n _ _ => Some n
+  DLetGroup _ binds => match binds
+    (LetBind n _) :: _ => Some n
+    [] => None
+  _ => None
+
+-- Whether `prog` carries an explicit DTypeSig for `name` (mirror has_explicit_sig).
+hasExplicitSig : List Decl -> String -> Bool
+hasExplicitSig [] _ = False
+hasExplicitSig (d :: rest) name = match innerDecl d
+  DTypeSig _ n _ => n == name || hasExplicitSig rest name
+  _ => hasExplicitSig rest name
+
+-- Column right after the name on the decl's start line (0-based `line`).  Scan
+-- from char 0 over identifier chars; None if the line has no leading identifier.
+columnAfterName : String -> Int -> Option Int
+columnAfterName src line =
+  let arr = stringToChars src
+  let len = arrayLength arr
+  match offsetOfLineStart arr len line
+    None => None
+    Some lineStart =>
+      let endCol = identRunLen arr len lineStart 0
+      if endCol == 0 then None else Some endCol
+
+-- Length of the leading identifier run starting at byte `i` (stops at EOL/EOF).
+identRunLen : Array Char -> Int -> Int -> Int -> Int
+identRunLen arr len i acc
+  | i >= len = acc
+  | arrayGetUnsafe i arr == '\n' = acc
+  | isIdentChar (arrayGetUnsafe i arr) = identRunLen arr len (i + 1) (acc + 1)
+  | otherwise = acc
+
+-- inlay hints for a buffer: zip parse decls with positions, filter to
+-- unsignatured value bindings present in the env, place one hint each.
+inlayHints : String -> String -> <Mut> List Json
+inlayHints coreSrc src = match docSchemes coreSrc src
+  None => []
+  Some env => match parseWithPositions src
+    (decls, positions) =>
+      inlayZip src decls decls (positionsDecls positions) env
+
+-- decls passed twice: `allDecls` for the has-explicit-sig scan, `ds` walked.
+inlayZip : String -> List Decl -> List Decl -> List DeclPos -> List (String, Scheme) -> <Mut> List Json
+inlayZip src allDecls (d :: ds) (p :: ps) env = match declBindingName d
+  None => inlayZip src allDecls ds ps env
+  Some name =>
+    if hasExplicitSig allDecls name then inlayZip src allDecls ds ps env
+    else match lookupSchemeL name env
+      None => inlayZip src allDecls ds ps env
+      Some sch => match columnAfterName src (declPosLine p - 1)
+        None => inlayZip src allDecls ds ps env
+        Some col =>
+          jInlayHint (declPosLine p - 1) col (stringConcat [": ", ppScheme sch])
+            :: inlayZip src allDecls ds ps env
+inlayZip _ _ _ _ _ = []
+
+-- One InlayHint { position, label, paddingLeft } (mirror the OCaml create).
+jInlayHint : Int -> Int -> String -> Json
+jInlayHint line col label =
+  jObject [ ("position", jPosition line col)
+          , ("label", JString label)
+          , ("paddingLeft", JBool True) ]
+
+handleInlayHint : String -> Json -> Json -> Docs -> <IO, Mut> Unit
+handleInlayHint coreSrc idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => jArray (inlayHints coreSrc src)
+  writeMessage (responseMsg idJson result)
+
+
 -- ── request-position helpers ────────────────────────────────────────────────
 -- Pull params.position.{line,character} (0-based) from a request message.
 positionLine : Json -> Option Int
@@ -498,7 +736,10 @@ initializeResult =
                                , ("documentFormattingProvider", JBool True)
                                , ("documentSymbolProvider", JBool True)
                                , ("definitionProvider", JBool True)
-                               , ("documentHighlightProvider", JBool True) ])
+                               , ("documentHighlightProvider", JBool True)
+                               , ("hoverProvider", JBool True)
+                               , ("completionProvider", jObject [])
+                               , ("inlayHintProvider", JBool True) ])
     , ("serverInfo", jObject [ ("name", JString "medaka-lsp")
                              , ("version", JString "0.1.0") ]) ]
 
@@ -654,6 +895,15 @@ dispatch runtimeSrc coreSrc msg docs = match methodOf msg
       Step docs True
     else if meth == "textDocument/documentHighlight" then
       let _ = handleHighlight (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/hover" then
+      let _ = handleHover coreSrc (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/completion" then
+      let _ = handleCompletion coreSrc (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/inlayHint" then
+      let _ = handleInlayHint coreSrc (requestId msg) (fieldOr "params" msg) docs
       Step docs True
     else if meth == "shutdown" then
       let _ = writeMessage (responseMsg (requestId msg) JNull)
