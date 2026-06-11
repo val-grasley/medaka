@@ -108,9 +108,17 @@ owning docs: `selfhost/README.md` (Stage 1), `selfhost/STAGE2-DESIGN.md` +
 
 Stages 1–2 are done: Medaka self-hosts and the native LLVM backend compiles the
 compiler to a self-reproducing fixpoint. **Stage 3 makes the native backend the
-CANONICAL compiler** — the one users invoke and the one that builds the compiler —
-and retires the OCaml reference (`lib/*.ml`) on a **gated** schedule (no fixed
-date; deletion is unlocked only when the bar below is met).
+CANONICAL compiler** — the one users invoke and the one that builds the compiler.
+
+**Retirement ≠ removal (user, 2026-06-10 — see memory `retirement-is-not-removal`):**
+- **RETIREMENT (the milestone):** native is canonical; the OCaml reference (`lib/`+`bin/`) is
+  DEMOTED from "the reference" but **kept in-tree, frozen, as a soak-period oracle.** Reached
+  when the bar below is met.
+- **REMOVAL (separate, later, confidence-gated):** delete `lib/`+`bin/` ONLY after **a few days
+  of clean native-only development with no need to consult OCaml** AND **the tools suite exercised
+  end-to-end** (real use, beyond the per-slice differential gates). The frozen OCaml = the
+  soak-period safety net (maps to the frozen-third-oracle bar item). Do NOT `rm lib/` at the
+  retirement milestone.
 
 **The "native is canonical" bar (gates `lib/` retirement) — status as of 2026-06-10:**
 1. 🟢 **~95%.** `medaka build` compiles + runs arbitrary USER programs natively. Gap G / Cause A /
