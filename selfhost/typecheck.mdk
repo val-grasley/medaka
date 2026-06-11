@@ -1364,13 +1364,17 @@ tyVarNames (TyEffect _ _ t) = tyVarNames t
 tyVarNames (TyConstrained _ t) = tyVarNames t
 
 dedupS : List String -> List String
-dedupS xs = dedupSGo xs []
+dedupS xs = dedupSGo xs STip
 
-dedupSGo : List String -> List String -> List String
+-- keep first occurrence, in first-occurrence order (unchanged semantics), but use
+-- an SMap `seen` for O(log n) membership instead of the old O(n) `containsName`
+-- scan → dedup is O(n·log n) not O(n²). (SMap is defined below; top-level refs
+-- are order-independent.)
+dedupSGo : List String -> SMap Unit -> List String
 dedupSGo [] _ = []
-dedupSGo (x :: xs) seen
-  | containsName x seen = dedupSGo xs seen
-  | otherwise = x :: dedupSGo xs (x :: seen)
+dedupSGo (x :: xs) seen = match smLookup x seen
+  Some _ => dedupSGo xs seen
+  None => x :: dedupSGo xs (smInsert x () seen)
 
 -- an annotation / signature mono with free tyvars realized as fresh vars
 astTypeFresh : Ty -> <Mut> Mono
