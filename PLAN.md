@@ -644,6 +644,12 @@ and a TOML reader (for `medaka.toml`).
 **Phase C — capstone:**
 12. CLI dispatcher (replaces `bin/main.ml`, 1076), then **native-compile the whole `medaka`
     from `.mdk` sources** — the retirement. Converges with bar-item-5 (self-bootstrapping build).
+    **UNBLOCKED 2026-06-10:** clause-label SSA (#53) cleared the last multi-module-emit blocker;
+    the tooling's stdlib deps all build clean. The remaining dispatch gaps (#54 map / #55 sum-product /
+    #50 parametric-Ord / #21 nested dicts / C7-native) are verified **NOT on this critical path** (the
+    tooling never touches them) → PARKED as end-user stdlib-completeness, not retirement-blocking.
+    Scoping in flight (#57, a418e967) — incl. the empirical "does the whole toolchain native-compile
+    in one binary" stress test.
 
 **Implied sub-tracks:**
 - **Stdlib emittability sweep** — native-compiling these tools needs the FULL stdlib
