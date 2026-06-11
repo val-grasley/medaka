@@ -4808,7 +4808,8 @@ revLLGo [] acc = acc
 revLLGo (x :: xs) acc = revLLGo xs (x :: acc)
 
 depGraphMap : List String -> List (String, (List Pat, Expr)) -> SMap (List String)
-depGraphMap names defs = buildAdj names (namesToSet names STip) defs STip
+depGraphMap names defs =
+  buildAdj names (namesToSet names STip) (groupClauses defs) STip
 
 -- name-membership set, built ONCE, so `keepGroupNames` is O(log n)/ref instead of
 -- O(names)/ref (the dep-graph build was O(names²·refs)). Output-order-preserving:
@@ -4817,9 +4818,32 @@ namesToSet : List String -> SMap Unit -> SMap Unit
 namesToSet [] m = m
 namesToSet (n :: rest) m = namesToSet rest (smInsert n () m)
 
-buildAdj : List String -> SMap Unit -> List (String, (List Pat, Expr)) -> SMap (List String) -> SMap (List String)
+-- defs grouped by name ONCE (name -> its clauses, in defs order), so `depsOf`
+-- does an O(log n) lookup instead of re-scanning all defs per name (was
+-- O(names·defs)). Built by prepend (O(1)); `clausesOf` reverses on read to
+-- restore defs order — so the per-name clause list is identical to the old
+-- `clausesFor name defs`, keeping dep lists / SCC order / output byte-identical.
+groupClauses : List (String, (List Pat, Expr)) -> SMap (List (List Pat, Expr))
+groupClauses defs = groupClausesGo defs STip
+groupClausesGo : List (String, (List Pat, Expr)) -> SMap (List (List Pat, Expr)) -> SMap (List (List Pat, Expr))
+groupClausesGo [] m = m
+groupClausesGo ((n, c) :: rest) m = groupClausesGo rest (smInsert n (c :: clausesAt n m) m)
+
+clausesAt : String -> SMap (List (List Pat, Expr)) -> List (List Pat, Expr)
+clausesAt n m = match smLookup n m
+  Some xs => xs
+  None => []
+
+clausesOf : String -> SMap (List (List Pat, Expr)) -> List (List Pat, Expr)
+clausesOf n m = revClauses (clausesAt n m) []
+
+revClauses : List (List Pat, Expr) -> List (List Pat, Expr) -> List (List Pat, Expr)
+revClauses [] acc = acc
+revClauses (x :: xs) acc = revClauses xs (x :: acc)
+
+buildAdj : List String -> SMap Unit -> SMap (List (List Pat, Expr)) -> SMap (List String) -> SMap (List String)
 buildAdj [] _ _ m = m
-buildAdj (n :: rest) nameSet defs m = buildAdj rest nameSet defs (smInsert n (depsOf n nameSet defs) m)
+buildAdj (n :: rest) nameSet cbn m = buildAdj rest nameSet cbn (smInsert n (depsOf n nameSet cbn) m)
 
 tjCounter : Ref Int
 tjCounter = Ref 0
@@ -4904,9 +4928,9 @@ processTopGroups env sigs defs names =
 -- per-name dependencies: the other top-level names a binding's bodies reference
 -- (a conservative over-approximation via all free EVars is fine — only names
 -- that are themselves groups matter).  Consumed by depGraphMap → Tarjan.
-depsOf : String -> SMap Unit -> List (String, (List Pat, Expr)) -> List String
-depsOf name nameSet defs =
-  filterNonSelf name (keepGroupNames nameSet (dedupS (groupRefs (clausesFor name defs))))
+depsOf : String -> SMap Unit -> SMap (List (List Pat, Expr)) -> List String
+depsOf name nameSet cbn =
+  filterNonSelf name (keepGroupNames nameSet (dedupS (groupRefs (clausesOf name cbn))))
 
 groupRefs : List (List Pat, Expr) -> List String
 groupRefs clauses = concatMapL clauseRefs clauses
