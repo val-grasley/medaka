@@ -22,7 +22,13 @@ import json.{Json, JNull, JBool, JInt, JString, JArray, JObject,
              jObject, jArray, stringify, parse, lookup, asString, asInt}
 import diagnostics.{Diag, Severity, SevError, SevWarning, analyze}
 import parser.{ParseError, parseResult, parseErrorLine, parseErrorCol,
-               parseErrorMessage}
+               parseErrorMessage, parseWithPositions,
+               positionsDecls, DeclPos, declPosLine, declPosEndLine}
+import fmt.{formatSource}
+import ast.{Decl, DTypeSig, DExtern, DFunDef, DData, DRecord, DUse, DEffect,
+            DProp, DTest, DBench, DInterface, DImpl, DTypeAlias, DNewtype,
+            DLetGroup, DAttrib,
+            Variant, Field, IfaceMethod, ImplMethod, LetBind, UsePath}
 
 -- ── open-document store ─────────────────────────────────────────────────────
 -- uri → source text.  A plain association list; LSP sessions open a handful of
@@ -110,6 +116,288 @@ diagnosticsFor runtimeSrc coreSrc src = match parseResult src
 
 maxI : Int -> Int -> Int
 maxI a b = if a >= b then a else b
+
+-- ── document store accessor (request handlers) ──────────────────────────────
+-- Look up an open document's source by uri.  Request handlers (formatting/
+-- documentSymbol/definition/highlight) read the buffer the client last sent.
+docsGet : String -> Docs -> Option String
+docsGet uri (Docs xs) = docsLookup uri xs
+
+docsLookup : String -> List (String, String) -> Option String
+docsLookup _ [] = None
+docsLookup uri ((k, v) :: rest)
+  | k == uri = Some v
+  | otherwise = docsLookup uri rest
+
+-- ── textDocument/formatting ─────────────────────────────────────────────────
+-- Mirror lib/lsp_server.ml handle_formatting: run the formatter; if the text is
+-- unchanged return [] (no edits); otherwise return ONE TextEdit replacing the
+-- whole document with the formatted source.  The replaced range is
+-- (0,0)..(lineCount+1, 0) — mirrors OCaml full_document_range, which uses
+-- `nl = newline_count + 1` for the end line so every line (incl. the last) is
+-- covered without knowing its width.  A formatter/parse failure yields [] here
+-- rather than crashing (the selfhost formatSource is total on parseable input;
+-- a parse error short-circuits to []).
+fullDocRangeFmt : String -> Json
+fullDocRangeFmt src = jRange 0 0 (countLines src + 1) 0
+
+formattingEdits : String -> List Json
+formattingEdits src = match parseResult src
+  Err _ => []                            -- unparseable → no edits (client keeps buffer)
+  Ok _ =>
+    let formatted = formatSource src
+    if formatted == src then []
+    else [jObject [ ("range", fullDocRangeFmt src)
+                  , ("newText", JString formatted) ]]
+
+-- ── identifier-at-cursor + occurrence scan (pure string ops) ────────────────
+-- Mirrors lib/lsp_server.ml is_ident_char / identifier_at / find_all_occurrences.
+
+isIdentChar : Char -> Bool
+isIdentChar c =
+  let n = charCode c
+  (n >= 97 && n <= 122)                  -- a-z
+    || (n >= 65 && n <= 90)              -- A-Z
+    || (n >= 48 && n <= 57)              -- 0-9
+    || c == '_' || c == '\''
+
+-- Byte offset of 0-based (line, col): walk to the line start, add col.  Returns
+-- None if the line doesn't exist or the offset is past EOF.
+offsetOfLineCol : Array Char -> Int -> Int -> Option Int
+offsetOfLineCol arr line col = offsetGo arr (arrayLength arr) 0 0 0 line col
+
+offsetGo : Array Char -> Int -> Int -> Int -> Int -> Int -> Int -> Option Int
+offsetGo arr len i curLine lineStart line col
+  | curLine == line =
+      let pos = lineStart + col
+      if pos >= 0 && pos < len then Some pos else None
+  | i >= len = None                      -- ran out before reaching `line`
+  | arrayGetUnsafe i arr == '\n' = offsetGo arr len (i + 1) (curLine + 1) (i + 1) line col
+  | otherwise = offsetGo arr len (i + 1) curLine lineStart line col
+
+-- Expand left/right from `pos` over identifier chars; returns (start, stopExcl).
+identStart : Array Char -> Int -> Int
+identStart arr i
+  | i <= 0 = 0
+  | isIdentChar (arrayGetUnsafe (i - 1) arr) = identStart arr (i - 1)
+  | otherwise = i
+
+identStop : Array Char -> Int -> Int -> Int
+identStop arr len i
+  | i + 1 >= len = i + 1
+  | isIdentChar (arrayGetUnsafe (i + 1) arr) = identStop arr len (i + 1)
+  | otherwise = i + 1
+
+-- The identifier under (line, col), or None if the cursor isn't on one.
+identifierAt : String -> Int -> Int -> Option String
+identifierAt src line col =
+  let arr = stringToChars src
+  let len = arrayLength arr
+  match offsetOfLineCol arr line col
+    None => None
+    Some pos =>
+      if not (isIdentChar (arrayGetUnsafe pos arr)) then None
+      else
+        let s = identStart arr pos
+        let e = identStop arr len pos
+        Some (stringSlice s e src)
+
+-- 0-based (line, character) of a byte offset.  Used to turn occurrence offsets
+-- back into LSP Positions (mirror offset_to_position).
+posOfOffset : Array Char -> Int -> (Int, Int)
+posOfOffset arr off = posOffGo arr off 0 0 0
+
+posOffGo : Array Char -> Int -> Int -> Int -> Int -> (Int, Int)
+posOffGo arr off i line lineStart
+  | i >= off = (line, off - lineStart)
+  | arrayGetUnsafe i arr == '\n' = posOffGo arr off (i + 1) (line + 1) (i + 1)
+  | otherwise = posOffGo arr off (i + 1) line lineStart
+
+-- A whole-source word-boundary occurrence scan: every offset where `name`
+-- appears as a standalone identifier.  Returns the offsets in source order.
+occurrences : String -> String -> List Int
+occurrences src name =
+  let arr = stringToChars src
+  let len = arrayLength arr
+  let nlen = stringLength name
+  if nlen == 0 then [] else occGo src arr len name nlen 0
+
+occGo : String -> Array Char -> Int -> String -> Int -> Int -> List Int
+occGo src arr len name nlen i
+  | i + nlen > len = []
+  | windowEq src i name nlen
+      && (i == 0 || not (isIdentChar (arrayGetUnsafe (i - 1) arr)))
+      && (i + nlen == len || not (isIdentChar (arrayGetUnsafe (i + nlen) arr))) =
+      i :: occGo src arr len name nlen (i + nlen)
+  | otherwise = occGo src arr len name nlen (i + 1)
+
+windowEq : String -> Int -> String -> Int -> Bool
+windowEq src i name nlen = stringSlice i (i + nlen) src == name
+
+-- documentHighlight ranges (one per occurrence) of `name` in `src`.
+highlightRanges : String -> String -> List Json
+highlightRanges src name =
+  let arr = stringToChars src
+  let nlen = stringLength name
+  map (occToHighlight arr nlen) (occurrences src name)
+
+occToHighlight : Array Char -> Int -> Int -> Json
+occToHighlight arr nlen off =
+  match posOfOffset arr off
+    (sl, sc) => match posOfOffset arr (off + nlen)
+      (el, ec) => jObject [("range", jRange sl sc el ec)]
+
+-- ── textDocument/documentSymbol ─────────────────────────────────────────────
+-- parseWithPositions → zip decls with their DeclPos (1-based line..end_line) →
+-- one DocumentSymbol per decl: { name, kind, range, selectionRange, children }.
+-- Range/selectionRange are decl-level: (line-1, 0)..(end_line-1, 0).  The
+-- selfhost AST is location-stripped of columns, so symbol ranges are line-
+-- granular (the column-precise spans are the ELoc slice).  SymbolKind codes are
+-- the LSP spec integers (Struct=23, Method=6, Field=8, Enum=10, EnumMember=22,
+-- Interface=11, Class=5, Function=12, Variable=13, TypeParameter=26, Event=24).
+-- Mirrors symbol_of_decl's kind mapping + child nesting.
+
+-- Strip a DAttrib wrapper to the inner decl (mirror inner_decl).
+innerDecl : Decl -> Decl
+innerDecl (DAttrib _ d) = innerDecl d
+innerDecl d = d
+
+jSymbol : String -> Int -> Json -> List Json -> Json
+jSymbol name kind range children =
+  jObject [ ("name", JString name)
+          , ("kind", JInt kind)
+          , ("range", range)
+          , ("selectionRange", range)
+          , ("children", jArray children) ]
+
+jChild : String -> Int -> Json -> Json
+jChild name kind range = jSymbol name kind range []
+
+variantName : Variant -> String
+variantName (Variant n _) = n
+
+fieldName : Field -> String
+fieldName (Field n _) = n
+
+ifaceMethodName : IfaceMethod -> String
+ifaceMethodName (IfaceMethod n _ _) = n
+
+implMethodName : ImplMethod -> String
+implMethodName (ImplMethod n _ _) = n
+
+letBindName : LetBind -> String
+letBindName (LetBind n _) = n
+
+-- One DocumentSymbol JSON for a decl + its DeclPos, or None for decls that
+-- don't surface in the outline (DUse).
+symbolOfDecl : Decl -> DeclPos -> Option Json
+symbolOfDecl d dp =
+  let range = jRange (declPosLine dp - 1) 0 (declPosEndLine dp - 1) 0
+  match innerDecl d
+    DTypeSig _ name _ => Some (jSymbol name 13 range [])           -- Variable
+    DExtern _ name _ => Some (jSymbol name 12 range [])            -- Function
+    DFunDef _ name _ _ => Some (jSymbol name 12 range [])          -- Function
+    DLetGroup _ binds => match binds
+      [] => None
+      (LetBind n0 _) :: _ =>
+        let kids = map (((LetBind n _)) => jChild n 12 range) binds
+        Some (jSymbol n0 12 range kids)
+    DData _ name _ variants _ =>
+      let kids = map (((Variant vn _)) => jChild vn 22 range) variants  -- EnumMember
+      Some (jSymbol name 10 range kids)                            -- Enum
+    DRecord _ name _ fields _ =>
+      let kids = map (((Field fn _)) => jChild fn 8 range) fields  -- Field
+      Some (jSymbol name 23 range kids)                            -- Struct
+    DInterface { name = n, methods = ms, ... } =>
+      let kids = map (((IfaceMethod mn _ _)) => jChild mn 6 range) ms
+      Some (jSymbol n 11 range kids)                              -- Interface
+    DImpl { iface = ifc, name = nm, methods = ms, ... } =>
+      let label = implLabel nm ifc
+      let kids = map (((ImplMethod mn _ _)) => jChild mn 6 range) ms
+      Some (jSymbol label 5 range kids)                           -- Class
+    DTypeAlias _ name _ _ => Some (jSymbol name 26 range [])       -- TypeParameter
+    DNewtype _ name _ _ _ _ => Some (jSymbol name 23 range [])     -- Struct
+    DUse _ _ => None
+    DProp _ name _ _ => Some (jSymbol name 12 range [])
+    DTest _ name _ => Some (jSymbol name 12 range [])
+    DBench _ name _ => Some (jSymbol name 12 range [])
+    DEffect _ name => Some (jSymbol name 24 range [])              -- Event
+    DAttrib _ _ => None                                            -- unreachable post innerDecl
+
+-- "impl Iface" / "Name of impl Iface" label (mirror handle_document_symbol's).
+implLabel : Option String -> String -> String
+implLabel None iface = stringConcat ["impl ", iface]
+implLabel (Some n) iface = stringConcat [n, " of impl ", iface]
+
+-- Zip decls with positions (1:1; defensive truncation to the shorter list) and
+-- collect the symbols.
+documentSymbols : String -> List Json
+documentSymbols src = match parseWithPositions src
+  (decls, positions) => symbolsZip decls (positionsDecls positions)
+
+symbolsZip : List Decl -> List DeclPos -> List Json
+symbolsZip (d :: ds) (p :: ps) = match symbolOfDecl d p
+  None => symbolsZip ds ps
+  Some s => s :: symbolsZip ds ps
+symbolsZip _ _ = []
+
+-- ── textDocument/definition ─────────────────────────────────────────────────
+-- identifier-at-cursor → first decl that DEFINES that name → its DeclPos range
+-- as a Location { uri, range }.  Mirror decl_defines / find_definition_loc.
+
+declDefines : Decl -> String -> Bool
+declDefines d name = match innerDecl d
+  DTypeSig _ n _ => n == name
+  DExtern _ n _ => n == name
+  DFunDef _ n _ _ => n == name
+  DLetGroup _ binds => anyName (map letBindName binds) name
+  DData _ n _ vs _ => n == name || anyName (map variantName vs) name
+  DRecord _ n _ fs _ => n == name || anyName (map fieldName fs) name
+  DInterface { name = n, methods = ms, ... } => n == name || anyName (map ifaceMethodName ms) name
+  DImpl { methods = ms, ... } => anyName (map implMethodName ms) name
+  DTypeAlias _ n _ _ => n == name
+  DNewtype _ n _ c _ _ => n == name || c == name
+  DUse _ _ => False
+  DProp _ n _ _ => n == name
+  DTest _ n _ => n == name
+  DBench _ n _ => n == name
+  DEffect _ n => n == name
+  DAttrib _ _ => False
+
+anyName : List String -> String -> Bool
+anyName [] _ = False
+anyName (x :: xs) name = x == name || anyName xs name
+
+-- The DeclPos of the first decl defining `name`, or None.
+definitionRange : String -> String -> Option Json
+definitionRange src name = match parseWithPositions src
+  (decls, positions) => defZip decls (positionsDecls positions) name
+
+defZip : List Decl -> List DeclPos -> String -> Option Json
+defZip (d :: ds) (p :: ps) name
+  | declDefines d name = Some (jRange (declPosLine p - 1) 0 (declPosEndLine p - 1) 0)
+  | otherwise = defZip ds ps name
+defZip _ _ _ = None
+
+-- ── request-position helpers ────────────────────────────────────────────────
+-- Pull params.position.{line,character} (0-based) from a request message.
+positionLine : Json -> Option Int
+positionLine params = match lookup "position" params
+  Some pos => match lookup "line" pos
+    Some v => asInt v
+    None => None
+  None => None
+
+positionChar : Json -> Option Int
+positionChar params = match lookup "position" params
+  Some pos => match lookup "character" pos
+    Some v => asInt v
+    None => None
+  None => None
+
+-- params.textDocument.uri for a request.
+requestUri : Json -> Option String
+requestUri params = fieldStr "uri" (fieldOr "textDocument" params)
 
 -- ── JSON-RPC framing ────────────────────────────────────────────────────────
 
@@ -199,12 +487,18 @@ isDigit c = charCode c >= 48 && charCode c <= 57
 -- sources are constants for the session.
 
 -- The `initialize` result: serverInfo + the B.10 capability set.
--- textDocumentSync = 1 (Full).  We advertise ONLY diagnostics-via-sync; the
--- richer providers (hover/completion/etc.) belong to later slices.
+-- textDocumentSync = 1 (Full).  B.10.3 adds the decl/textual providers:
+-- formatting / documentSymbol / definition / documentHighlight (each a plain
+-- `true`, mirroring lib/lsp_server.ml's `Bool true`).  The richer providers
+-- (hover/completion/inlayHint) and ELoc expr-precise ranges are later slices.
 initializeResult : Json
 initializeResult =
   jObject
-    [ ("capabilities", jObject [("textDocumentSync", JInt 1)])
+    [ ("capabilities", jObject [ ("textDocumentSync", JInt 1)
+                               , ("documentFormattingProvider", JBool True)
+                               , ("documentSymbolProvider", JBool True)
+                               , ("definitionProvider", JBool True)
+                               , ("documentHighlightProvider", JBool True) ])
     , ("serverInfo", jObject [ ("name", JString "medaka-lsp")
                              , ("version", JString "0.1.0") ]) ]
 
@@ -240,6 +534,69 @@ handleDidChange runtimeSrc coreSrc params docs =
         Some text =>
           let _ = publishDiagnostics runtimeSrc coreSrc uri text
           docsPut uri text docs
+
+-- ── B.10.3 request handlers ─────────────────────────────────────────────────
+-- Each looks the doc up in the store and writes a JSON-RPC response.  A missing
+-- doc / no-identifier-at-cursor yields the LSP "no result" — JNull (mirroring
+-- the OCaml handlers returning None, which the rpc layer renders as null).
+
+-- textDocument/formatting → TextEdit[] (or [] when already formatted).
+handleFormatting : Json -> Json -> Docs -> <IO, Mut> Unit
+handleFormatting idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => jArray (formattingEdits src)
+  writeMessage (responseMsg idJson result)
+
+-- textDocument/documentSymbol → DocumentSymbol[].
+handleDocumentSymbol : Json -> Json -> Docs -> <IO, Mut> Unit
+handleDocumentSymbol idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => jArray (documentSymbols src)
+  writeMessage (responseMsg idJson result)
+
+-- textDocument/definition → Location[] (singleton) or null.
+handleDefinition : Json -> Json -> Docs -> <IO, Mut> Unit
+handleDefinition idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => definitionResult uri src params
+  writeMessage (responseMsg idJson result)
+
+definitionResult : String -> String -> Json -> Json
+definitionResult uri src params =
+  match (positionLine params, positionChar params)
+    (Some line, Some col) => match identifierAt src line col
+      None => JNull
+      Some name => match definitionRange src name
+        None => JNull
+        Some range => jArray [jObject [("uri", JString uri), ("range", range)]]
+    _ => JNull
+
+-- textDocument/documentHighlight → DocumentHighlight[].
+handleHighlight : Json -> Json -> Docs -> <IO, Mut> Unit
+handleHighlight idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => highlightResult src params
+  writeMessage (responseMsg idJson result)
+
+highlightResult : String -> Json -> Json
+highlightResult src params =
+  match (positionLine params, positionChar params)
+    (Some line, Some col) => match identifierAt src line col
+      None => JNull
+      Some name => jArray (highlightRanges src name)
+    _ => JNull
 
 -- The `.text` of the LAST element of a contentChanges JArray (Full sync).
 lastChangeText : Json -> Option String
@@ -286,6 +643,18 @@ dispatch runtimeSrc coreSrc msg docs = match methodOf msg
     else if meth == "textDocument/didChange" then
       let docs2 = handleDidChange runtimeSrc coreSrc (fieldOr "params" msg) docs
       Step docs2 True
+    else if meth == "textDocument/formatting" then
+      let _ = handleFormatting (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/documentSymbol" then
+      let _ = handleDocumentSymbol (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/definition" then
+      let _ = handleDefinition (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/documentHighlight" then
+      let _ = handleHighlight (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
     else if meth == "shutdown" then
       let _ = writeMessage (responseMsg (requestId msg) JNull)
       Step docs True
