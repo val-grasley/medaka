@@ -52,7 +52,16 @@
  * call GC_INIT() from it; a constructor runs first, near the bottom of the stack,
  * which is where GC_INIT wants to capture the stack base (recommended on macOS).
  * GC_malloc would otherwise lazily init on its first call. */
-__attribute__((constructor)) static void mdk_gc_init(void) { GC_INIT(); }
+__attribute__((constructor)) static void mdk_gc_init(void) {
+  GC_INIT();
+  /* Perf tuning (selfhost/PERF-RESULTS.md): Medaka workloads are
+   * allocation-heavy and mostly short-lived (the emitter alone allocates
+   * ~4200 cells/run plus every cons/closure/ADT).  The default free-space
+   * divisor (3) collects aggressively to keep RSS low; we trade some memory
+   * for fewer collection pauses by letting the heap grow further between GCs.
+   * Env var GC_FREE_SPACE_DIVISOR still overrides this if set. */
+  if (!getenv("GC_FREE_SPACE_DIVISOR")) GC_set_free_space_divisor(1);
+}
 
 /* Allocate `n` bytes in the GC heap.  Routes to Boehm's GC_malloc (conservative,
  * collected); every extern that RETURNS a Medaka value goes through this single
