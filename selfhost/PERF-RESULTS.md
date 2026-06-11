@@ -290,18 +290,41 @@ Tested and **rejected** — recorded so future sessions skip them:
 
 ## Final state (this session)
 
-| Workload | original (-O0, div 3) | final (-O2, div 1, O(N) lams+DCE, hashset DCE) | speedup |
+| Workload | original (-O0, div 3) | final | speedup |
 |---|---|---|---|
-| emitter self-compile | 12.04 s / 770 MB | **4.98 s / 199 MB** | **2.42× / 3.9× less RSS** |
-| vs OCaml interpreter | 125.35 s / 1467 MB | 4.98 s / 199 MB | **25.2× / 7.4× less RSS** |
+| emitter self-compile | 12.04 s / 770 MB | **4.69 s / 207 MB** | **2.57× / 3.7× less RSS** |
+| vs OCaml interpreter | 125.35 s / 1467 MB | 4.69 s / 207 MB | **26.7× / 7.1× less RSS** |
 | fib 38 (no alloc) | 0.11 s | 0.10 s | flat (already optimal) |
 
 Banked, all universal defaults, every change gated byte-identical (fixpoint +
 ≥180 differential fixtures + build gate): clang `-O2`, GC `free_space_divisor=1`,
-lifted-define buffer O(N²)→O(N), DCE reachability O(N²)→O(N) list ops, DCE
-membership → HashSet (O(1)). The native compiler is ~25× faster than the OCaml
-interpreter at the representative self-compile workload — the performance bar for
-OCaml retirement is met with wide margin.
+lifted-define buffer O(N²)→O(N), DCE reachability+graph O(N²)→O(N) via HashMap.
+The native compiler is ~27× faster than the OCaml interpreter at the
+representative self-compile workload — the OCaml-retirement performance bar is met
+with wide margin.
+
+---
+
+## Entry 8 — DCE graph also via HashMap; full O(N) DCE (2026-06-11)
+
+**Change (`selfhost/dce.mdk`):** completed the DCE rewrite — the call graph
+(`funGraph`/`addRefs` assoc list, O(N²) to build; `refsOf` O(N) scan) is now a
+`HashMap String (List String)` with O(1) insert/merge/lookup, and the visited set
+is a `HashMap String Unit` (replacing Entry 7's `HashSet` — `hash_map` carries
+both, avoiding the `new`/`insert` name clash from importing two containers, since
+Medaka aliased imports `import m as M` are **not** supported by the self-hosted
+emitter). The whole DCE pass is now ~O(reachable + edges); reachable set
+unchanged → output byte-identical.
+
+**Gates:** `medaka check` clean (93 bindings); `selfcompile_fixpoint` C3a/C3b YES;
+`diff_selfhost_build` 9/9; `diff_selfhost_llvm` 172/172. Seed stale; not re-minted.
+
+**Numbers (self-compile, min-of-4, -O2 + divisor=1):** 4.98 s → **4.69 s** (~6%),
+RSS ~207 MB. DCE is no longer a profile hotspot.
+
+**Cumulative this session:** 12.04 s → 4.69 s (**2.57×**); vs OCaml interpreter
+125.35 s → 4.69 s (**26.7×**).
+
 
 ---
 
