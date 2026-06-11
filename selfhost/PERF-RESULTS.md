@@ -4,6 +4,43 @@ Running log of measured native-backend performance. Companion to
 `selfhost/PERF-SCOPE.md` (the scoping/plan). Each entry: what changed, the
 gate state, and the numbers (min-of-N, single-threaded, quiet machine).
 
+---
+
+## TL;DR (overnight session 2026-06-10 → 11)
+
+**Emitter self-compile: 12.04 s → 2.12 s = 5.68×; ~59× faster than the OCaml
+interpreter (125 s → 2.12 s); peak RSS 770 → 200 MB.** The OCaml-retirement
+performance bar is met with very wide margin. 30 commits on
+`worktree-graceful-roaming-river`; main untouched.
+
+**18 fixpoint-gated wins** (each byte-identical: emit + build-path fixpoints,
+`diff_selfhost_llvm` 172/172, build 9/9, typecheck check/golden/typecheck, eval &
+core_ir paths — the *full* `diff_selfhost` suite certifies the final state):
+`-O2` in both build drivers · Boehm `free_space_divisor=1` (−36% alone) · then a
+sweep of O(N²)→O(N·log N) / constant-table-index fixes via the in-tree balanced
+BST (`SMap`) and a plain `EMap`: lifted-define buffer, DCE reachability+graph,
+typecheck dep-graph membership + clause grouping + SCC clause lookup + dedupS +
+member-sig presence + groupNames, distinctTypeNames memo, private-name collision
+merge-sort, core_ir_lower group-by, isKnownFn / ctor-table / global-sig
+(fnRetTy/fnArity) EMap indexes.
+
+**Two reusable lessons** (details below): (1) a list used only for *membership* or
+*order-preserving filter/group-by* is safe to back with `SMap`/`EMap` — output stays
+byte-identical; (2) in `llvm_emit.mdk`'s own graph a **plain-ADT BST self-compiles**
+(a `hash_map` does NOT), and you may index only **constant** Emit tables
+(`fnNames`/`ctorTable`/global `sigs`) — the *threaded* sigs is mutated by the
+two-pass Float propagation, so it is NOT memoizable (`fn_float_chain` catches it).
+
+**Remaining levers are SUPERVISED-ONLY** (mapped in detail below): the dict-passing
+constraint-promotion membership (~25 % of compute, route-fragile dispatch
+elaboration) and the threaded-sig lookup cluster (~12 %, float-semantics-sensitive
+tree refactor). Everything else (front-end passes, string flush, GC marking,
+small-table call-volume) was profiled and is already optimal or non-actionable —
+verify any future candidate with a **back-to-back min-of-N** timing and revert
+anything that doesn't move the number (as `declSigOf` was).
+
+---
+
 ## Machine / toolchain
 
 | | |
