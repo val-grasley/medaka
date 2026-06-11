@@ -210,6 +210,30 @@ emitFallthrough e = match fallthroughLabelRef.value
     let _ = emit e ("  br label %" ++ lbl)
     ("0", LTInt)
 
+-- ── TRMC (tail-recursion-modulo-cons) context (PLAN #56, TRMC-DESIGN.md) ─────
+-- When a top-level NON-DICT self-recursive define is `trmcEligible` — its tail
+-- leaves are `head :: self-call` cons-tails (`upto`/`replicate`/`myMap`) — it is
+-- emitted in destination-passing form: an O(1)-stack loop with a MUTABLE
+-- destination slot (`%trmc_dest`, an `alloca ptr` holding the address of the i64
+-- to fill next).  A cons leaf allocates the cell, links it into `*dest`, advances
+-- `dest` to the cell's tail slot, recomputes the recursion args into the param
+-- slots, and branches back to the loop head; a base leaf stores its value into
+-- `*dest` and branches to the exit, which loads `%trmc_hole` (the final list head)
+-- and rets.  The self-call is NEVER emitted as a `call` — only its arg
+-- recomputation feeds the loop, which is what removes the stack-growing call.
+--
+-- A module-level Ref (mirroring fallthroughLabelRef) carries the active context
+-- so the decision-tree leaf (emitLeaf) and the single-clause CIf-tail descent
+-- (emitTrmcBody) both route into it without threading it through every emit arm.
+-- TrmcOff = ordinary (non-TRMC) codegen; TrmcOn destSlot loopL exitL paramSlots
+-- = the live context.  destSlot is the `alloca ptr` register (the mutable
+-- destination); loopL/exitL the loop-head / exit blocks; paramSlots the mutable
+-- `alloca i64` param slots the cons leaf recomputes the recursion args into.
+data TrmcCtx = TrmcOff | TrmcOn String Int String String String (List String)
+
+trmcCtxRef : Ref TrmcCtx
+trmcCtxRef = Ref TrmcOff
+
 export
 enableGapRecord : Unit -> <Mut> Unit
 enableGapRecord _ = set_ref gapRecordEnabled True
@@ -4104,8 +4128,14 @@ emitDecision e env scrut arms tree =
   -- next-clause block.  Restored after.
   let saved = fallthroughLabelRef.value
   let _ = set_ref fallthroughLabelRef ""
+  -- Likewise self-contained for TRMC: an expression-position `match`'s arms
+  -- compute VALUES into `slot`, never cons-into-dest — so clear the TRMC ctx
+  -- across the tree (a tail cons in a match arm is Phase 2, deliberately not here).
+  let savedTrmc = trmcCtxRef.value
+  let _ = set_ref trmcCtxRef TrmcOff
   let _ = emitTree e env sv arms [sv] slot endL rty tree
   let _ = set_ref fallthroughLabelRef saved
+  let _ = set_ref trmcCtxRef savedTrmc
   let _ = emit e (endL ++ ":")
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
@@ -4160,10 +4190,19 @@ emitLeaf : Emit -> List (String, (String, LTy)) -> String -> List CArm -> Int ->
 emitLeaf e env root arms i slot endL rty = match nthArm arms i
   Some (CArm pat _ body) =>
     let env2 = bindPattern e env pat root body
-    let (bv, bty) = emitExpr e env2 body
-    let _ = set_ref rty bty
-    let _ = emit e ("  store i64 " ++ bv ++ ", ptr " ++ slot)
-    emit e ("  br label %" ++ endL)
+    -- TRMC (TRMC-DESIGN.md): when a destination-passing loop is active (multi-clause
+    -- eligible fn — emitClauseTree's clause-selection tree), the clause body is a
+    -- TAIL leaf → descend it via emitTrmcBody (cons-into-dest+loop / store+exit)
+    -- instead of computing a value into `slot`.  trmcCtxRef is cleared inside any
+    -- expression-position `match` (emitDecision), so a nested match's arms still
+    -- compute values normally.
+    match trmcCtxRef.value
+      TrmcOn _ _ _ _ _ _ => emitTrmcBody e env2 body
+      TrmcOff =>
+        let (bv, bty) = emitExpr e env2 body
+        let _ = set_ref rty bty
+        let _ = emit e ("  store i64 " ++ bv ++ ", ptr " ++ slot)
+        emit e ("  br label %" ++ endL)
   None => gapU "decision arm index out of range"
 
 -- a guarded clause: bind the arm pattern, run the guards (branching to `failL` on
@@ -4482,10 +4521,48 @@ emitFns e (b::rest) =
 emitFn : Emit -> CBind -> <Mut> Unit
 emitFn e (CBind name [CClause pats body]) =
   let (pats2, body2) = etaSaturateMethodBody e name pats body
-  if allPVar pats2 then emitFnClause e name pats2 body2
+  if trmcTryFn e name [(pats2, body2)] True then ()
+  else if allPVar pats2 then emitFnClause e name pats2 body2
   else emitMultiClauseFn e name [(pats2, body2)]
-emitFn e (CBind name (c::rest)) = emitMultiClauseFn e name (clausePairs (c::rest))
+emitFn e (CBind name (c::rest)) =
+  let clauses = clausePairs (c::rest)
+  if trmcTryFn e name clauses False then ()
+  else emitMultiClauseFn e name clauses
 emitFn _ (CBind _ []) = gapU "top-level function with no clauses"
+
+-- TRMC branch point (TRMC-DESIGN.md §"Emitter touchpoints" #2): if `name`'s
+-- clauses are TRMC-eligible AND the function is a top-level NON-DICT define (no
+-- leading `$dict` params — stdlib `map`/`filterMap` and lifted lambdas are Phase
+-- 2, out of scope), emit it as a destination-passing loop and return True; else
+-- return False so the caller falls back to the current (stack-growing) codegen.
+-- `forceSingle` marks the all-PVar single-clause path so emitTrmcFn descends the
+-- CIf-guarded body directly instead of the decision-tree chain.
+trmcTryFn : Emit -> String -> List (List Pat, CExpr) -> Bool -> <Mut> Bool
+trmcTryFn e name clauses forceSingle =
+  let arity = clauseArity clauses
+  let single = forceSingle && allClausesPVar clauses
+  if arity > 0 && trmcNonDict clauses && trmcEligible e name arity clauses then
+    let ptys = match lookupAssoc name (sigTable e)
+      Some (FnSig ts _) => ts
+      None => []
+    let (spats, sbody) = match clauses
+      ((ps, b)::_) => (ps, b)
+      [] => ([], CLit LUnit)
+    let _ = emitTrmcFn e name arity ptys clauses single spats sbody
+    True
+  else False
+
+-- every clause's params are all plain PVars (the single-clause TRMC ABI shape).
+allClausesPVar : List (List Pat, CExpr) -> Bool
+allClausesPVar [] = True
+allClausesPVar ((pats, _)::rest) = allPVar pats && allClausesPVar rest
+
+-- a NON-DICT define: no clause has a leading `$dict_…` param (dict-passed methods
+-- / lifted lambdas are Phase 2).  leadingDictPats counts them; 0 ⇒ non-dict.
+trmcNonDict : List (List Pat, CExpr) -> Bool
+trmcNonDict [] = True
+trmcNonDict ((pats, _)::rest) = leadingDictPats pats == 0 && trmcNonDict rest
+
 
 -- Gap #50 — eta-SATURATE a point-free constrained binding whose body is an
 -- UNDER-APPLIED interface-method (CMethod) or constrained-fn (CDict) occurrence.
@@ -4649,6 +4726,289 @@ clausePairs ((CClause pats body)::rest) = (pats, body) :: clausePairs rest
 clauseArity : List (List Pat, CExpr) -> Int
 clauseArity ((pats, _)::_) = listLen pats
 clauseArity [] = 0
+
+-- ── TRMC eligibility analysis (TRMC-DESIGN.md §"Phase 1 scope") ──────────────
+-- A function `self` of `arity` is TRMC-eligible when every clause body descends
+-- (through CIf / CLet / CLetGroup tail wrappers) to leaves that are EITHER a
+-- base/other leaf with NO self-call, OR an eligible cons-tail leaf
+-- `CBinPrim "::" head (self-call)` where the tail is a SATURATED self CApp-spine
+-- and `head` contains no self-call.  At least one cons-tail leaf must exist (else
+-- there is nothing to transform).  Any self-call OUTSIDE a cons-tail leaf
+-- DISQUALIFIES the whole function (we cannot prove the loop preserves it) → fall
+-- back to the current stack-growing codegen.  Structural + deterministic, so
+-- interp- and native-emit produce identical IR (fixpoint holds by construction).
+trmcEligible : Emit -> String -> Int -> List (List Pat, CExpr) -> Bool
+trmcEligible e self arity clauses =
+  trmcClausesOk self arity clauses && trmcAnyCons self arity clauses
+
+-- every clause body is TRMC-safe (no misplaced self-call).
+trmcClausesOk : String -> Int -> List (List Pat, CExpr) -> Bool
+trmcClausesOk _ _ [] = True
+trmcClausesOk self arity ((_, body)::rest) =
+  trmcBodyOk self arity body && trmcClausesOk self arity rest
+
+-- at least one clause has an eligible cons-tail leaf.
+trmcAnyCons : String -> Int -> List (List Pat, CExpr) -> Bool
+trmcAnyCons _ _ [] = False
+trmcAnyCons self arity ((_, body)::rest) =
+  trmcBodyHasCons self arity body || trmcAnyCons self arity rest
+
+-- a tail expr is TRMC-safe: descend through CIf/CLet/CLetGroup wrappers; at a
+-- leaf, either it is an eligible cons-tail (`head :: self-call`, head self-free)
+-- or it contains no self-call at all.  A self-call anywhere else fails.
+trmcBodyOk : String -> Int -> CExpr -> Bool
+trmcBodyOk self arity (CIf c t f) =
+  not (refersTo self c) && trmcBodyOk self arity t && trmcBodyOk self arity f
+trmcBodyOk self arity (CLet _ _ rhs b) =
+  not (refersTo self rhs) && trmcBodyOk self arity b
+trmcBodyOk self arity (CLetGroup binds b) =
+  not (refersToBinds self binds) && trmcBodyOk self arity b
+trmcBodyOk self arity ex =
+  if isConsTail self arity ex then True else not (refersTo self ex)
+
+-- does a tail expr (under the same wrappers) reach an eligible cons-tail leaf?
+trmcBodyHasCons : String -> Int -> CExpr -> Bool
+trmcBodyHasCons self arity (CIf _ t f) =
+  trmcBodyHasCons self arity t || trmcBodyHasCons self arity f
+trmcBodyHasCons self arity (CLet _ _ _ b) = trmcBodyHasCons self arity b
+trmcBodyHasCons self arity (CLetGroup _ b) = trmcBodyHasCons self arity b
+trmcBodyHasCons self arity ex = isConsTail self arity ex
+
+-- the eligible cons-tail shape: `CBinPrim "::" head tail` where `head` is
+-- self-free and `tail` is a SATURATED self-recursive CApp-spine (head CVar==self,
+-- exactly `arity` args).
+isConsTail : String -> Int -> CExpr -> Bool
+isConsTail self arity (CBinPrim "::" head tail) =
+  not (refersTo self head) && isSelfSatApp self arity tail
+isConsTail _ _ _ = False
+
+-- `tail` is a saturated application of `self` to exactly `arity` value args.
+isSelfSatApp : String -> Int -> CExpr -> Bool
+isSelfSatApp self arity ex = match flattenApp ex []
+  (CVar f _, args) => f == self && listLen args == arity
+  _ => False
+
+-- does `ex` reference name `self` anywhere (free)?  Reuses freeVars.
+refersTo : String -> CExpr -> Bool
+refersTo self ex = containsStr self (freeVars [] ex)
+
+-- does any nullary let-group binding's RHS reference `self`?  (Only the nullary
+-- shape is descendable here; a parametric where-helper that called `self` would
+-- be a misplaced self-call, so treat a non-nullary binding conservatively too.)
+refersToBinds : String -> List CBind -> Bool
+refersToBinds _ [] = False
+refersToBinds self ((CBind _ [CClause [] rhs])::rest) =
+  refersTo self rhs || refersToBinds self rest
+refersToBinds self ((CBind _ clauses)::rest) =
+  refersToBindClauses self clauses || refersToBinds self rest
+refersToBinds self (_::rest) = refersToBinds self rest
+
+refersToBindClauses : String -> List CClause -> Bool
+refersToBindClauses _ [] = False
+refersToBindClauses self ((CClause _ body)::rest) =
+  refersTo self body || refersToBindClauses self rest
+
+-- the recursion args of an eligible cons-tail's self-call (saturated spine).
+consTailArgs : CExpr -> List CExpr
+consTailArgs (CBinPrim "::" _ tail) = match flattenApp tail []
+  (_, args) => args
+consTailArgs _ = []
+
+consTailHead : CExpr -> CExpr
+consTailHead (CBinPrim "::" head _) = head
+consTailHead ex = ex
+
+-- ── TRMC emit (destination-passing loop) ────────────────────────────────────
+-- emit a TRMC-eligible function as an O(1)-stack destination-passing loop.
+-- entry sets up the result hole + the mutable destination slot + the mutable
+-- param slots, then jumps to the loop head; the loop reloads the params, runs the
+-- ORDINARY param dispatch (single-clause: CIf-tail descent; multi-clause: the
+-- decision-tree clause chain) whose LEAVES are redirected via trmcCtxRef:
+--   • cons leaf:  alloc Cons cell, store head, link cell into `*dest`, advance
+--                 `dest` to the cell's tail slot (+16), recompute the recursion
+--                 args into the param slots, br loop.
+--   • base leaf:  store the value into `*dest`, br exit.
+-- exit loads the hole (the final list head) and rets it.  destSlot holds the
+-- ADDRESS of the next i64 to fill; the hole's address is the first destination, a
+-- linked cell's tail slot (cell+16) each subsequent one.
+emitTrmcFn : Emit -> String -> Int -> List LTy -> List (List Pat, CExpr) -> Bool -> List Pat -> CExpr -> <Mut> Unit
+emitTrmcFn e name arity ptys clauses single singlePats singleBody =
+  let _ = emit e ("define i64 @mdk_" ++ name ++ "(" ++ implParamDecls arity 0 ++ ") {")
+  let _ = emit e "entry:"
+  let hole = freshReg e
+  let _ = emit e ("  " ++ hole ++ " = alloca i64")
+  let destSlot = freshReg e
+  let _ = emit e ("  " ++ destSlot ++ " = alloca ptr")
+  let _ = emit e ("  store ptr " ++ hole ++ ", ptr " ++ destSlot)
+  -- mutable param slots, seeded from the incoming %argK words.
+  let pslots = trmcEmitParamSlots e arity 0
+  let loopL = "trmcloop" ++ intToString (freshId e)
+  let exitL = "trmcexit" ++ intToString (freshId e)
+  let _ = emit e ("  br label %" ++ loopL)
+  let _ = emit e (loopL ++ ":")
+  -- reload the params into fresh regs for THIS iteration (each loop re-executes
+  -- the loads, so a back-edge to %loop re-reads the mutated slots — valid SSA).
+  let reloaded = trmcReloadParams e pslots ptys 0
+  let saved = trmcCtxRef.value
+  let _ = set_ref trmcCtxRef (TrmcOn name arity destSlot loopL exitL pslots)
+  let _ = trmcEmitDispatch e reloaded arity clauses single singlePats reloaded singleBody
+  let _ = set_ref trmcCtxRef saved
+  let _ = emit e (exitL ++ ":")
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ hole)
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  emit e ""
+
+-- one mutable `alloca i64` param slot per arg, seeded from %argK; returns the slot
+-- registers in order.
+trmcEmitParamSlots : Emit -> Int -> Int -> <Mut> List String
+trmcEmitParamSlots e arity i
+  | i >= arity = []
+  | otherwise =
+    let slot = freshReg e
+    let _ = emit e ("  " ++ slot ++ " = alloca i64")
+    let _ = emit e ("  store i64 %arg" ++ intToString i ++ ", ptr " ++ slot)
+    slot :: trmcEmitParamSlots e arity (i + 1)
+
+-- reload each param slot into a fresh reg at the loop head, binding the synthetic
+-- `aK` scrutinee name (the name emitClauseTree's scrutinee tuple uses) to the
+-- loaded word at the fn's inferred param type.
+trmcReloadParams : Emit -> List String -> List LTy -> Int -> <Mut> List (String, (String, LTy))
+trmcReloadParams _ [] _ _ = []
+trmcReloadParams e (slot::rest) tys i =
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ slot)
+  let ty = match tys
+    (t::_) => t
+    [] => LTInt
+  (("a" ++ intToString i), (r, ty)) :: trmcReloadParams e rest (trmcTail tys) (i + 1)
+
+trmcTail : List a -> List a
+trmcTail [] = []
+trmcTail (_::xs) = xs
+
+-- run the in-loop param dispatch.  Single-clause (all-PVar params): rename the
+-- reloaded `aK` env to the clause's PVar names and descend the body in tail
+-- position (emitTrmcBody).  Multi-clause: reuse emitClauseTree's decision-tree
+-- chain verbatim — its emitLeaf is TRMC-aware via trmcCtxRef.
+trmcEmitDispatch : Emit -> List (String, (String, LTy)) -> Int -> List (List Pat, CExpr) -> Bool -> List Pat -> List (String, (String, LTy)) -> CExpr -> <Mut> Unit
+trmcEmitDispatch e reloaded arity clauses single singlePats aenv singleBody =
+  if single then
+    let env = trmcRenameEnv singlePats aenv
+    emitTrmcBody e env singleBody
+  else emitClauseTree e reloaded arity clauses
+
+-- bind the clause's PVar param names to the reloaded `aK` operand words (single
+-- clause, all-PVar params — the slice-2 ABI requirement also holds for TRMC).
+trmcRenameEnv : List Pat -> List (String, (String, LTy)) -> List (String, (String, LTy))
+trmcRenameEnv [] _ = []
+trmcRenameEnv ((PVar x)::ps) ((_, op)::rest) = (x, op) :: trmcRenameEnv ps rest
+trmcRenameEnv (_::ps) (_::rest) = trmcRenameEnv ps rest
+trmcRenameEnv _ [] = []
+
+-- single-clause TRMC body in TAIL position: descend CIf/CLet/CLetGroup wrappers,
+-- emit each leaf via the TRMC context (cons leaf or base leaf).  Mirrors
+-- emitFnBody's CIf descent but redirects the value leaves.  CLet/CLetGroup descend
+-- only their (self-free, verified by trmcBodyOk) simple value-binding shapes; any
+-- richer let is emitted whole as a base leaf (no self-call inside ⇒ no stack risk).
+emitTrmcBody : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> Unit
+emitTrmcBody e env (CIf c t f) =
+  let (cv, _) = emitExpr e env c
+  let ci = untagInt e cv
+  let cb = freshReg e
+  let _ = emit e ("  " ++ cb ++ " = icmp ne i64 " ++ ci ++ ", 0")
+  let n = intToString (freshId e)
+  let thenL = "trmcthen" ++ n
+  let elseL = "trmcelse" ++ n
+  let _ = emit e ("  br i1 " ++ cb ++ ", label %" ++ thenL ++ ", label %" ++ elseL)
+  let _ = emit e (thenL ++ ":")
+  let _ = emitTrmcBody e env t
+  let _ = emit e (elseL ++ ":")
+  emitTrmcBody e env f
+emitTrmcBody e env (CLet False (PVar x) rhs b) =
+  let (v, ty) = emitExpr e env rhs
+  emitTrmcBody e ((x, (v, ty)) :: env) b
+emitTrmcBody e env (CLetGroup binds b) =
+  if allNullaryBinds binds then
+    let env2 = trmcBindNullaryGroup e env binds
+    emitTrmcBody e env2 b
+  else emitTrmcLeaf e env (CLetGroup binds b)
+emitTrmcBody e env ex = emitTrmcLeaf e env ex
+
+-- every binding is a nullary value binding (the descendable let-group shape).
+allNullaryBinds : List CBind -> Bool
+allNullaryBinds [] = True
+allNullaryBinds ((CBind _ [CClause [] _])::rest) = allNullaryBinds rest
+allNullaryBinds _ = False
+
+-- emit each nullary value binding left-to-right, threading the env (mirrors
+-- emitLetGroup's value-binding arm).
+trmcBindNullaryGroup : Emit -> List (String, (String, LTy)) -> List CBind -> <Mut> List (String, (String, LTy))
+trmcBindNullaryGroup _ env [] = env
+trmcBindNullaryGroup e env ((CBind name [CClause [] rhs])::rest) =
+  let (v, ty) = emitExpr e env rhs
+  trmcBindNullaryGroup e ((name, (v, ty)) :: env) rest
+trmcBindNullaryGroup _ env (_::rest) = env
+
+-- a TRMC tail leaf: an eligible cons-tail conses into the destination + loops; any
+-- other leaf stores its value into the destination + exits.
+emitTrmcLeaf : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> Unit
+emitTrmcLeaf e env ex = match trmcCtxRef.value
+  TrmcOff => emitValueRet e env ex
+  TrmcOn self arity destSlot loopL exitL pslots =>
+    if isConsTail self arity ex then
+      emitTrmcCons e env (consTailHead ex) (consTailArgs ex) destSlot loopL pslots
+    else emitTrmcBase e env ex destSlot exitL
+
+-- cons leaf: alloc a Cons cell (header + head), link it into the current
+-- destination, advance the destination to the cell's tail slot (+16), recompute
+-- the recursion args into the param slots, and branch back to the loop head.  The
+-- self-call is NOT emitted — only the head + arg recomputations are, which is what
+-- removes the stack-growing `call`.  Store order (GC-safe, TRMC-DESIGN §"Risk"):
+-- alloc → header → head → link-into-dest → advance-dest; the cell's own tail word
+-- stays ZEROED (GC_malloc returns zeroed memory; an even/null word is never
+-- dereferenced by Boehm) until the next iteration fills it.
+emitTrmcCons : Emit -> List (String, (String, LTy)) -> CExpr -> List CExpr -> String -> String -> List String -> <Mut> Unit
+emitTrmcCons e env head args destSlot loopL pslots =
+  let (hv, _) = emitExpr e env head
+  let cell = freshReg e
+  let _ = emit e ("  " ++ cell ++ " = call ptr @mdk_alloc(i64 24)")
+  let _ = emit e ("  store i64 " ++ intToString (cellTag e "Cons") ++ ", ptr " ++ cell)
+  let hp = freshReg e
+  let _ = emit e ("  " ++ hp ++ " = getelementptr i8, ptr " ++ cell ++ ", i64 8")
+  let _ = emit e ("  store i64 " ++ hv ++ ", ptr " ++ hp)
+  let cellw = freshReg e
+  let _ = emit e ("  " ++ cellw ++ " = ptrtoint ptr " ++ cell ++ " to i64")
+  let d = freshReg e
+  let _ = emit e ("  " ++ d ++ " = load ptr, ptr " ++ destSlot)
+  let _ = emit e ("  store i64 " ++ cellw ++ ", ptr " ++ d)
+  let newdest = freshReg e
+  let _ = emit e ("  " ++ newdest ++ " = getelementptr i8, ptr " ++ cell ++ ", i64 16")
+  let _ = emit e ("  store ptr " ++ newdest ++ ", ptr " ++ destSlot)
+  -- recompute every recursion arg into a TEMP first (an arg may read an earlier
+  -- param), THEN store all temps into the slots, so an in-place store can't clobber
+  -- a not-yet-read param within the same iteration.
+  let argOps = emitArgs e env args
+  let _ = trmcStoreParamSlots e pslots argOps
+  emit e ("  br label %" ++ loopL)
+
+-- store the recomputed arg operands back into the loop's mutable param slots.
+trmcStoreParamSlots : Emit -> List String -> List String -> <Mut> Unit
+trmcStoreParamSlots _ [] _ = ()
+trmcStoreParamSlots _ _ [] = ()
+trmcStoreParamSlots e (slot::slots) (op::ops) =
+  let _ = emit e ("  store i64 " ++ op ++ ", ptr " ++ slot)
+  trmcStoreParamSlots e slots ops
+
+-- base/other leaf: store the value into the current destination, branch to exit.
+emitTrmcBase : Emit -> List (String, (String, LTy)) -> CExpr -> String -> String -> <Mut> Unit
+emitTrmcBase e env ex destSlot exitL =
+  let (v, _) = emitExpr e env ex
+  let d = freshReg e
+  let _ = emit e ("  " ++ d ++ " = load ptr, ptr " ++ destSlot)
+  let _ = emit e ("  store i64 " ++ v ++ ", ptr " ++ d)
+  emit e ("  br label %" ++ exitL)
 
 -- like implParamEnv, but types each synthetic `aK` scrutinee param from the fn's
 -- inferred signature param types (FnSig ts) instead of defaulting to LTInt.

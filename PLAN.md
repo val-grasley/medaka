@@ -554,9 +554,14 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
   `medaka_rt.c` (emit the entry as a named fn; C `main` spawns a large-stack
   `pthread`) — general, covers deep STRUCTURAL recursion (typecheck/eval on big
   inputs); do first. (b) **TRMC** (tail-recursion-modulo-cons / destination-passing)
-  in the emitter for `x :: recurse` list-builders → O(1) stack — the principled
-  fix for the streaming loops (OCaml `[@tail_mod_cons]` is the blueprint); the
-  cons-loop optimization on top of (a). Not yet forced (512 MB sufficed through C3).
+  in the emitter for `x :: recurse` list-builders → O(1) stack — ✅ **Phase 1 DONE
+  2026-06-11 (#56):** top-level NON-DICT cons-tail builders (`upto`/`replicate`/
+  `take`/hand-rolled `myMap`, single-clause guarded + multi-clause) lower to an
+  O(1)-stack destination-passing loop; `upto 1 2_000_000` SIGSEGV(139)→`2000000`.
+  Structural+deterministic (fixpoint C3a/C3b YES). Gate `test/diff_native_stack.sh`.
+  See `selfhost/TRMC-DESIGN.md`. **Phase 2 deferred:** dict-passed methods (stdlib
+  `map`/`filterMap` still overflow), match/if-arm in-position cons, non-`::` last-field
+  TMC. (OCaml `[@tail_mod_cons]` is the blueprint.)
 - **Error-path / diagnostics parity — AUDITED 2026-06-10 + BLOCKERs closing.** Full
   read-only sweep (lex/parse/resolve/typecheck/eval) found **6 BLOCKERs** (selfhost
   false-accepts an invalid program or crashes uninformatively) + 7 MAJORs + 3 MINORs;

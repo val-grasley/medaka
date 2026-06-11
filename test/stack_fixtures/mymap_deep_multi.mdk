@@ -1,0 +1,23 @@
+-- TRMC stack-safety: a MULTI-CLAUSE cons-tail builder (`myMap`, head = f x)
+-- builds a deep list in O(1) stack via the decision-tree TRMC path, then a
+-- musttail length consumes it.
+myMap f [] = []
+myMap f (x::xs) = f x :: myMap f xs
+
+upto m n
+  | m > n = []
+  | otherwise = m :: upto (m + 1) n
+
+isNil xs = match xs
+  [] => True
+  _ => False
+
+tl xs = match xs
+  (_::ys) => ys
+  [] => []
+
+lenAcc acc xs
+  | isNil xs = acc
+  | otherwise = lenAcc (acc + 1) (tl xs)
+
+main = lenAcc 0 (myMap (x => x + 1) (upto 1 2000000))
