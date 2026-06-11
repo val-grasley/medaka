@@ -292,15 +292,15 @@ Tested and **rejected** — recorded so future sessions skip them:
 
 | Workload | original (-O0, div 3) | final | speedup |
 |---|---|---|---|
-| emitter self-compile | 12.04 s / 770 MB | **2.27 s / 199 MB** | **5.30× / 3.9× less RSS** |
-| vs OCaml interpreter | 125.35 s / 1467 MB | 2.27 s / 199 MB | **55.2× / 7.4× less RSS** |
+| emitter self-compile | 12.04 s / 770 MB | **2.20 s / 199 MB** | **5.47× / 3.9× less RSS** |
+| vs OCaml interpreter | 125.35 s / 1467 MB | 2.20 s / 199 MB | **57.0× / 7.4× less RSS** |
 | fib 38 (no alloc) | 0.11 s | 0.10 s | flat (already optimal) |
 
 Banked, all universal defaults, every change gated byte-identical (fixpoint +
 differential fixtures + build gate): clang `-O2`, GC `free_space_divisor=1`,
 lifted-define buffer O(N²)→O(N), DCE reachability+graph O(N²)→O(N) via HashMap,
 typecheck dep-graph + SCC clause grouping + dedup O(N²)→O(N·log N) via SMap. The
-native compiler is **~55× faster than the OCaml interpreter** at the representative
+native compiler is **~57× faster than the OCaml interpreter** at the representative
 self-compile workload — the OCaml-retirement performance bar is met with wide
 margin.
 
@@ -689,3 +689,20 @@ llvm_emit's own graph.
 Cumulative this session: 12.04 s → 2.27 s (**5.30×**); vs OCaml interpreter 55.2×.
 The `EMap` is now in place for any other CONSTANT Emit table (ctor/record tables)
 that profiles hot.
+
+---
+
+## Entry 18 — typecheck groupNames O(n²) → O(n log n) (2026-06-11)
+
+**Change (`selfhost/typecheck.mdk`):** `groupNames` (the unique-top-level-name
+dedup feeding `processTopGroups`) kept its `seen` set as a list with O(n)
+`containsName` → O(n²). Switched `seen` to `SMap Unit` (the same fix as `dedupS`);
+first-occurrence order preserved → output byte-identical. Callers updated
+`groupNames defs []` → `groupNames defs STip`.
+
+**Gates:** `diff_selfhost_check` 40/40; `diff_selfhost_typecheck` 12/12;
+`typecheck_golden` 25/25; `selfcompile_fixpoint` C3a/C3b YES; `diff_selfhost_build`
+9/9; `diff_selfhost_llvm` 172/172. Seed stale.
+
+**Numbers (self-compile, min-of-5, -O2 + divisor=1):** 2.27 s → **2.20 s** (~3%).
+Cumulative this session: 12.04 s → 2.20 s (**5.47×**); vs OCaml interpreter 57.0×.

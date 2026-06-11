@@ -2628,11 +2628,11 @@ letRecNonFunctionMsg : String -> String
 letRecNonFunctionMsg name =
   "'" ++ name ++ "' is bound by 'let rec' but its right-hand side is not a function. Recursive value bindings must have a lambda right-hand side; cyclic data structures are not supported."
 
-groupNames : List (String, (List Pat, Expr)) -> List String -> List String
+groupNames : List (String, (List Pat, Expr)) -> SMap Unit -> List String
 groupNames [] _ = []
-groupNames ((n, _) :: rest) seen
-  | containsName n seen = groupNames rest seen
-  | otherwise = n :: groupNames rest (n :: seen)
+groupNames ((n, _) :: rest) seen = match smLookup n seen
+  Some _ => groupNames rest seen
+  None => n :: groupNames rest (smInsert n () seen)
 
 containsName : String -> List String -> Bool
 containsName _ [] = False
@@ -4262,7 +4262,7 @@ checkProgramSeeded seed prog =
   let env1 = extendVars (extendVars dataEnv seed) globalS
   let defs = funDefs prog
   let sigs = sigsOf prog
-  let topSchemes = processTopGroups env1 sigs defs (groupNames defs [])
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs STip)
   -- Phase 83/84 single-level: AFTER top-level inference (so the scheme output is
   -- unchanged), and ONLY on the elaborate/dict path, infer each parametric impl's
   -- return-position method bodies, registering the requires' element dict so the
@@ -5496,7 +5496,7 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let env1 = extendVars (extendVars (extendVars dataEnv seedVars) globalS) shadowMethodSchemes
   let defs = funDefs prog
   let sigs = sigsOf prog
-  let topSchemes = processTopGroups env1 sigs defs (groupNames defs [])
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs STip)
   -- E5: infer this module's parametric impl bodies (gated, emit path only), seeing
   -- [implDecls] for interface method types + cross-module impl dispatch.  The sites
   -- it records stay in pendingArgStamps/pendingSites for elabModuleStamp to resolve.
@@ -5955,7 +5955,7 @@ measureModuleStamp seedVars accData prog =
   let env1 = extendVars (extendVars dataEnv seedVars) globalS
   let defs = funDefs prog
   let sigs = sigsOf prog
-  let topSchemes = processTopGroups env1 sigs defs (groupNames defs [])
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs STip)
   let _ = measureImplBodies (extendVars env1 topSchemes) prog prog
   let _ = accumArgSites pendingArgSites.value
   globalS ++ topSchemes
