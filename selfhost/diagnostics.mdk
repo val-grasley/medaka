@@ -5,16 +5,20 @@
 --
 -- Design note: lib/diagnostics.ml carries Ast.loc (file/line/col) on every
 -- Diag because the OCaml AST threads source positions through every node.
--- The selfhost AST intentionally strips locations — so Diag carries only
--- severity + message.  Location attribution is deferred to a later phase
--- when the selfhost AST gains span metadata.
+-- B.10.2b: the selfhost AST now carries expr-level spans via the transparent
+-- `ELoc` wrapper, and typecheck pairs each error with the `currentLoc` span in
+-- effect at the push site (`checkProgramDiags` returns `(msg, Option Loc)`).  So
+-- `Diag` carries an `Option Loc` — `Some` for type errors (expr-level span),
+-- `None` for resolve / guard / match-exhaustiveness diagnostics, which the
+-- selfhost pipeline does not yet attribute to a span (they fall back to the
+-- whole-document range in the LSP).
 --
 -- Output format for the diff gate (diagdump --analyze):
 --   "error: <message>"   or   "warning: <message>"
 -- one per line, sorted by the harness.
 
-import ast.{Decl}
-import parser.{parse}
+import ast.{Decl, Loc(..)}
+import parser.{parse, parseLocated}
 import desugar.{desugar}
 import resolve.{resolveProgram, ppResError}
 import exhaust.{checkGuardExhaustiveness}
@@ -24,9 +28,11 @@ import typecheck.{checkProgramDiags, setCoherenceUserDecls}
 
 public export data Severity = SevError | SevWarning
 
--- A structured diagnostic: severity + human-readable message.
--- No location — the selfhost AST is location-stripped.
-public export data Diag = Diag Severity String
+-- A structured diagnostic: severity + human-readable message + an optional
+-- source span (B.10.2b).  `Some` for type errors (expr-level span from the
+-- ELoc substrate); `None` for resolve / guard / match diagnostics the selfhost
+-- pipeline does not yet locate.
+public export data Diag = Diag Severity String (Option Loc)
 
 -- ── rendering ──────────────────────────────────────────────────────────────
 
@@ -36,10 +42,11 @@ ppSeverity SevError = "error"
 ppSeverity SevWarning = "warning"
 
 -- Render a diagnostic as "severity: message" (loc-free, diffable against
--- the location-stripped oracle).
+-- the location-stripped oracle — the loc is consumed by the LSP, not this text
+-- form, so the diff gate stays byte-identical).
 export
 ppDiag : Diag -> String
-ppDiag (Diag sev msg) = ppSeverity sev ++ ": " ++ msg
+ppDiag (Diag sev msg _) = ppSeverity sev ++ ": " ++ msg
 
 -- ── single-file analysis ───────────────────────────────────────────────────
 --
@@ -53,25 +60,41 @@ ppDiag (Diag sev msg) = ppSeverity sev ++ ": " ++ msg
 export
 analyze : String -> String -> String -> <Mut> List Diag
 analyze runtimeSrc coreSrc progSrc =
-  let raw = parse progSrc
-  -- guard-exhaustiveness runs on the RAW program (before desugar), mirroring
-  -- diagnostics.ml's guard-exhaustiveness pass on the pre-desugar AST.
+  analyzeFrom runtimeSrc coreSrc (parse progSrc)
+
+-- B.10.2b: the LSP path runs the same pipeline but parses the target with
+-- `parseLocated` so the ELoc wrappers carry REAL line/col spans (the pure
+-- `parse` carries placeholder locs).  Type-error Diags then surface the true
+-- expr-level span; runtime/core stay on `parse` (their locs are never reported).
+export
+analyzeLocated : String -> String -> String -> <Mut> List Diag
+analyzeLocated runtimeSrc coreSrc progSrc =
+  analyzeFrom runtimeSrc coreSrc (parseLocated progSrc)
+
+-- Shared analysis body, parameterised over the already-parsed target program
+-- (so `analyze` can pass placeholder-loc `parse` decls and `analyzeLocated` can
+-- pass real-loc `parseLocated` decls without duplicating the pipeline).
+analyzeFrom : String -> String -> List Decl -> <Mut> List Diag
+analyzeFrom runtimeSrc coreSrc raw =
   let guardWarns = checkGuardExhaustiveness raw
   let desugared = desugar raw
   let runtimeP = desugar (parse runtimeSrc)
   let coreP = desugar (parse coreSrc)
   -- resolve over runtime + core (prelude) + target
   let resErrs = resolveProgram runtimeP coreP desugared
-  let resDiags = map (Diag SevError << ppResError) resErrs
+  -- resolve has no per-error loc in the selfhost pipeline → None.
+  let resDiags = map (e => Diag SevError (ppResError e) None) resErrs
   -- Stage the user decls for coherence (mirrors check.mdk's setCoherenceUserDecls).
   let _ = setCoherenceUserDecls desugared
   -- Only run typecheck when resolve found no errors (same gate as diagnostics.ml).
   let tcDiags = match resErrs
     [] =>
       let (tcErrs, tcWarns) = checkProgramDiags runtimeP (coreP ++ desugared)
-      map (Diag SevError) tcErrs ++ map (Diag SevWarning << stripWarnPrefix) tcWarns
+      -- each tcErr is (msg, Option Loc): carry the captured span (B.10.2b).
+      map (((msg, loc)) => Diag SevError msg loc) tcErrs
+        ++ map (w => Diag SevWarning (stripWarnPrefix w) None) tcWarns
     _ => []
-  let guardDiags = map (Diag SevWarning << stripWarnPrefix) guardWarns
+  let guardDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) guardWarns
   guardDiags ++ resDiags ++ tcDiags
 
 -- Strip the leading "Warning: " prefix that exhaust/typecheck include in their

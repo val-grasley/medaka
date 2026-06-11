@@ -20,7 +20,7 @@
 
 import json.{Json, JNull, JBool, JInt, JString, JArray, JObject,
              jObject, jArray, stringify, parse, lookup, asString, asInt}
-import diagnostics.{Diag, Severity, SevError, SevWarning, analyze}
+import diagnostics.{Diag, Severity, SevError, SevWarning, analyzeLocated}
 import parser.{ParseError, parseResult, parseErrorLine, parseErrorCol,
                parseErrorMessage, parseWithPositions,
                positionsDecls, DeclPos, declPosLine, declPosEndLine}
@@ -29,7 +29,7 @@ import typecheck.{checkProgram, ppScheme, Scheme(..)}
 import fmt.{formatSource}
 import ast.{Decl, DTypeSig, DExtern, DFunDef, DData, DRecord, DUse, DEffect,
             DProp, DTest, DBench, DInterface, DImpl, DTypeAlias, DNewtype,
-            DLetGroup, DAttrib,
+            DLetGroup, DAttrib, Loc(..),
             Variant, Field, IfaceMethod, ImplMethod, LetBind, UsePath}
 
 -- ── open-document store ─────────────────────────────────────────────────────
@@ -73,13 +73,15 @@ severityCode : Severity -> Int
 severityCode SevError = 1
 severityCode SevWarning = 2
 
--- ── diagnostics → LSP (decl-level) ──────────────────────────────────────────
+-- ── diagnostics → LSP (expr-level) ──────────────────────────────────────────
 --
--- B.10.1 fidelity: parse errors carry a located line/col (parseResult); the
--- whole document's first character is column 0.  resolve/typecheck diagnostics
--- come from `analyze`, which on the location-stripped selfhost AST cannot
--- attribute an error to a decl — so they span the whole document (line 0 to the
--- last line).  Precise per-decl / per-expr ranges are the LATER ELoc slice.
+-- B.10.2b: type-error Diags now carry the ELoc span captured at the push site
+-- (`Some Loc`), so they map to an expr-level LSP range — mirror of the OCaml
+-- LSP's `range_of_loc` (lib/lsp_server.ml:100): a 1-based `Loc` line maps to a
+-- 0-based LSP line (line-1), the col is already 0-based.  Resolve / guard /
+-- match diagnostics carry `None` (the selfhost pipeline doesn't locate them) and
+-- fall back to the whole-document range.  Parse errors keep using parseResult's
+-- located line/col (below).
 
 -- Count the lines in a source string (number of '\n' separators).  Used to
 -- build the whole-document range end position.
@@ -96,14 +98,24 @@ countLinesGo arr i acc
 wholeDocRange : String -> Json
 wholeDocRange src = jRange 0 0 (countLines src) 0
 
--- Map one analyze Diag onto an LSP diagnostic JSON at whole-document range.
+-- Map an `Option Loc` to an LSP range.  `Some` → the expr-level span (mirror of
+-- OCaml `range_of_loc`: line-1 for both start/end line, cols verbatim); `None` →
+-- the whole-document fallback.
+rangeOfLoc : String -> Option Loc -> Json
+rangeOfLoc src (Some (Loc _ sl sc el ec)) = jRange (sl - 1) sc (el - 1) ec
+rangeOfLoc src None = wholeDocRange src
+
+-- Map one analyze Diag onto an LSP diagnostic JSON, using its captured span
+-- (B.10.2b) for an expr-level range, falling back to whole-document for
+-- loc-less diagnostics.
 diagToJson : String -> Diag -> Json
-diagToJson src (Diag sev msg) =
-  jDiagnostic (severityCode sev) (wholeDocRange src) msg
+diagToJson src (Diag sev msg loc) =
+  jDiagnostic (severityCode sev) (rangeOfLoc src loc) msg
 
 -- Produce the LSP diagnostics array for a source.  A parse failure short-
 -- circuits to a single located diagnostic (parseResult); otherwise run the
--- full resolve+typecheck `analyze` pipeline.
+-- full resolve+typecheck `analyzeLocated` pipeline (real ELoc spans, so type
+-- errors carry expr-level ranges).
 diagnosticsFor : String -> String -> String -> <Mut> List Json
 diagnosticsFor runtimeSrc coreSrc src = match parseResult src
   Err e =>
@@ -114,7 +126,7 @@ diagnosticsFor runtimeSrc coreSrc src = match parseResult src
     let r = jRange ln col ln (col + 1)
     [jDiagnostic 1 r (parseErrorMessage e)]
   Ok _ =>
-    map (diagToJson src) (analyze runtimeSrc coreSrc src)
+    map (diagToJson src) (analyzeLocated runtimeSrc coreSrc src)
 
 maxI : Int -> Int -> Int
 maxI a b = if a >= b then a else b

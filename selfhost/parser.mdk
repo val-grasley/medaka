@@ -96,10 +96,14 @@ tokOffsetAt i =
   if i >= 0 && i < arrayLength offs then arrayGetUnsafe i offs else 0
 
 -- Build a `Loc` from a [start, end) token-index span.  start → the span's first
--- token's offset; end → the last consumed token (`endIdx - 1`)'s offset (an
--- approximation of Menhir's `$endpos`, adequate since ELoc is transparent to
--- every byte-identity gate and only surfaces for B.10.2b attribution).  `file`
--- is left "" for the caller to fill.
+-- token's offset; end → the last consumed token (`endIdx - 1`)'s START offset (an
+-- approximation of Menhir's `$endpos`).  B.10.2b consequence: the LSP surfaces
+-- this span as a diagnostic range, so the START line/col are exact (match the
+-- OCaml LSP), but the END equals the last token's start — a single-token expr
+-- yields an empty span where OCaml's `$endpos` reaches the token's end.  A tight
+-- end would need token LENGTHS threaded through the lexer layout pass (the offset
+-- side-channel only carries token starts); deferred as a cross-cutting lexer
+-- change.  `file` is left "" for the caller to fill.
 locOfSpan : Int -> Int -> Loc
 locOfSpan startIdx endIdx =
   let src = locSrcRef.value

@@ -199,7 +199,7 @@ unifyRowN (EffRow _ None) (EffRow _ None) = ()
 effectLeakCheck : List String -> List String -> <Mut> Unit
 effectLeakCheck escaping bound = match escaping
   [] => ()
-  _ => set_ref typeErrors (effectLeakMsg bound escaping :: typeErrors.value)
+  _ => pushTypeError (effectLeakMsg bound escaping)
 
 effectLeakMsg : List String -> List String -> String
 effectLeakMsg bound extras =
@@ -672,15 +672,24 @@ isPrimTycon t = containsName t ["Int", "Float", "String", "Bool", "Char", "Array
 -- ill-typed programs emit matching `TYPE ERROR: …` lines.  occursCheckFailed
 -- is a per-bindVar flag: occursAdjustUnbound sets it so bindVar can skip the
 -- actual link (preventing a cyclic union-find entry).
-typeErrors : Ref (List String)
+-- B.10.2b: each accumulated error is paired with the `currentLoc` span in
+-- effect at the push site (its `Option Loc`), mirroring lib/typecheck.ml binding
+-- `!current_loc` into `Type_error (e, !current_loc)` at the RAISE site rather
+-- than reading the global last-entered loc afterwards.  `pushTypeError` captures
+-- `currentLoc.value` so locs don't drift as inference continues past the error.
+typeErrors : Ref (List (String, Option Loc))
 typeErrors = Ref []
+
+-- Push one type-error message, snapshotting the current ELoc span (B.10.2b).
+pushTypeError : String -> <Mut> Unit
+pushTypeError msg = set_ref typeErrors ((msg, currentLoc.value) :: typeErrors.value)
 
 -- Source-location attribution (Phase B.10.2): the innermost ELoc span the
 -- `infer` walk has entered.  Set by infer's transparent ELoc arm before
 -- recursing (mirror of lib/typecheck.ml's `current_loc` ref, set in its ELoc
--- arm; cf. `fail e = raise (Type_error (e, !current_loc))`).  B.10.2b will
--- surface this through Diag / the LSP — here it is only captured.  `None` until
--- the first ELoc is entered (top-level decls aren't ELoc-wrapped).
+-- arm; cf. `fail e = raise (Type_error (e, !current_loc))`).  Surfaced through
+-- Diag / the LSP via `pushTypeError`.  `None` until the first ELoc is entered
+-- (top-level decls aren't ELoc-wrapped).
 currentLoc : Ref (Option Loc)
 currentLoc = Ref None
 
@@ -808,7 +817,7 @@ occursAdjustUnbound : Int -> Int -> Ref Tyvar -> Int -> Int -> <Mut> Unit
 occursAdjustUnbound id level cell id2 lvl2
   | id2 == id =
       let _ = set_ref occursCheckFailed True
-      set_ref typeErrors ("Cannot construct infinite type involving " ++ ppMono (TVar cell) :: typeErrors.value)
+      pushTypeError ("Cannot construct infinite type involving " ++ ppMono (TVar cell))
   | lvl2 > level = set_ref cell (Unbound id2 level)
   | otherwise = ()
 
@@ -856,7 +865,7 @@ unifyList _ _ = panic "unify: tuple arity mismatch"
 
 typeMismatch : Mono -> Mono -> <Mut> Unit
 typeMismatch a b =
-  set_ref typeErrors ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b :: typeErrors.value)
+  pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
 
 -- ── generalization & instantiation ────────────────────────────────────────
 generalize : Mono -> <Mut> Scheme
@@ -1288,13 +1297,13 @@ inferPatRng : Lit -> Lit -> <Mut> (Mono, List (String, Scheme))
 inferPatRng (LInt _) (LInt _) = (TCon "Int", [])
 inferPatRng (LChar _) (LChar _) = (TCon "Char", [])
 inferPatRng lo hi =
-  let _ = set_ref typeErrors ("Type mismatch: " ++ ppMono (litType lo) ++ " vs " ++ ppMono (litType hi) :: typeErrors.value)
+  let _ = pushTypeError ("Type mismatch: " ++ ppMono (litType lo) ++ " vs " ++ ppMono (litType hi))
   (TCon "Int", [])
 
 inferPatRec : TcEnv -> String -> List RecPatField -> <Mut> (Mono, List (String, Scheme))
 inferPatRec env name fields = match lookupRecordByName name
   None =>
-    let _ = set_ref typeErrors (unknownRecordMsg name :: typeErrors.value)
+    let _ = pushTypeError (unknownRecordMsg name)
     -- bind the field pattern vars with fresh types (no field-type info) so the
     -- arm body still typechecks; the oracle fails fast on the unknown record, we
     -- accumulate, so dropping the bindings would raise spurious unbound-var errors
@@ -1321,7 +1330,7 @@ inferRecPatFields env rname fieldTypes (RecPatField fname mp :: rest) =
 inferRecPatField : TcEnv -> String -> List (String, Mono) -> String -> Option Pat -> <Mut> List (String, Scheme)
 inferRecPatField env rname fieldTypes fname mp = match lookupAssocS fname fieldTypes
   None =>
-    let _ = set_ref typeErrors (unknownFieldMsg fname rname :: typeErrors.value)
+    let _ = pushTypeError (unknownFieldMsg fname rname)
     -- bind the field's pattern vars against a fresh type so the arm body still
     -- typechecks (the oracle fails fast on the unknown field; we accumulate, so
     -- skipping the binding would raise spurious downstream unbound-variable errors)
@@ -1346,7 +1355,7 @@ litType LUnit = TCon "Unit"
 inferPatCon : TcEnv -> String -> List Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatCon env name pats = match lookupCtor env name
   None =>
-    let _ = set_ref typeErrors (unknownCtorMsg name :: typeErrors.value)
+    let _ = pushTypeError (unknownCtorMsg name)
     -- still infer the sub-patterns so their bindings reach the arm body
     -- (else the continued path raises spurious unbound-variable errors the
     -- oracle never reaches — it fails fast on the unknown constructor)
@@ -1690,7 +1699,7 @@ unifyFieldAssigns env rname fieldTypes (FieldAssign fn val :: rest) =
 
 unifyFieldAssign : TcEnv -> String -> List (String, Mono) -> String -> Expr -> <Mut> Unit
 unifyFieldAssign env rname fieldTypes fn val = match lookupAssocS fn fieldTypes
-  None => set_ref typeErrors (unknownFieldMsg fn rname :: typeErrors.value)
+  None => pushTypeError (unknownFieldMsg fn rname)
   Some ft => unify (infer env val) ft
 
 -- TYPECHECK-AUDIT OBS4: every declared field must be supplied in a record
@@ -1702,7 +1711,7 @@ checkMissingFields _ [] _ = ()
 checkMissingFields rname ((fname, _) :: rest) supplied
   | fieldAssignContains fname supplied = checkMissingFields rname rest supplied
   | otherwise =
-    let _ = set_ref typeErrors (missingFieldMsg fname rname :: typeErrors.value)
+    let _ = pushTypeError (missingFieldMsg fname rname)
     checkMissingFields rname rest supplied
 
 fieldAssignContains : String -> List FieldAssign -> Bool
@@ -1794,7 +1803,7 @@ resolveFieldByOwners te fname = match fieldOwnerNames fname
 resolveFieldAmbiguous : Mono -> String -> List String -> <Mut> Option (String, RecordInfo)
 resolveFieldAmbiguous te fname owners = match normalize te
   TVar _ =>
-    let _ = set_ref typeErrors (ambiguousFieldMsg fname owners :: typeErrors.value)
+    let _ = pushTypeError (ambiguousFieldMsg fname owners)
     None
   _ => pairRecordByName (headL owners)
 
@@ -1808,7 +1817,7 @@ headL [] = ""
 headL (x :: _) = x
 
 pushUnknownField : String -> String -> <Mut> Unit
-pushUnknownField fname rname = set_ref typeErrors (unknownFieldMsg fname rname :: typeErrors.value)
+pushUnknownField fname rname = pushTypeError (unknownFieldMsg fname rname)
 
 unknownFieldFresh : String -> String -> <Mut> Mono
 unknownFieldFresh fname rname =
@@ -1846,12 +1855,12 @@ unboundVarMsg name = "Unbound variable: " ++ name
 -- in a valid state (the oracle accumulate-and-continue analog for these shapes).
 unknownRecordFresh : String -> <Mut> Mono
 unknownRecordFresh name =
-  let _ = set_ref typeErrors (unknownRecordMsg name :: typeErrors.value)
+  let _ = pushTypeError (unknownRecordMsg name)
   freshVar ()
 
 unboundVarFresh : String -> <Mut> Mono
 unboundVarFresh name =
-  let _ = set_ref typeErrors (unboundVarMsg name :: typeErrors.value)
+  let _ = pushTypeError (unboundVarMsg name)
   freshVar ()
 
 inferRecordUpdate : TcEnv -> Expr -> List FieldAssign -> <Mut> Mono
@@ -2052,7 +2061,7 @@ inferLet env isMut isFun pat e1 e2
     let nm = match pat
       PVar x => x
       _ => "_"
-    let _ = set_ref typeErrors (mutLetRequiresBlockMsg nm :: typeErrors.value)
+    let _ = pushTypeError (mutLetRequiresBlockMsg nm)
     -- record the error but still bind the pattern + type the body, so
     -- accumulation continues without a spurious unbound-variable panic
     inferLetSimple env pat e1 e2
@@ -2144,7 +2153,7 @@ checkAnnotTooGeneral : Ty -> List Mono -> <Mut> Unit
 checkAnnotTooGeneral ty resolved =
   let ids = sigTvarIds resolved
   if (lengthL ids < lengthL resolved) || hasDupI ids then
-    set_ref typeErrors (annotTooGeneralMsg ty :: typeErrors.value)
+    pushTypeError (annotTooGeneralMsg ty)
   else ()
 
 inferMatch : TcEnv -> Mono -> List Arm -> <Mut> Mono
@@ -2332,7 +2341,7 @@ checkLetBinds ((LetBind name clauses) :: rest) =
 
 checkLetBind : String -> List FunClause -> <Mut> Unit
 checkLetBind name clauses
-  | allList clauseIsNonFunction clauses = set_ref typeErrors (letRecNonFunctionMsg name :: typeErrors.value)
+  | allList clauseIsNonFunction clauses = pushTypeError (letRecNonFunctionMsg name)
   | otherwise = ()
 
 clauseIsNonFunction : FunClause -> Bool
@@ -3286,7 +3295,7 @@ cohImplIface (CohImpl i _ _ _) = i
 -- conflict message names the later-declared impl as the first head, byte-identical.
 checkCoherence : List Decl -> <Mut> Unit
 checkCoherence userDecls = match cohFirstConflict (revLL (cohCollectImpls userDecls))
-  Some msg => set_ref typeErrors (msg :: typeErrors.value)
+  Some msg => pushTypeError msg
   None => ()
 
 -- effectful concatMap of cohImplsOf (astTypeFresh allocates fresh tyvars → <Mut>)
@@ -4027,7 +4036,7 @@ checkOneImplObligation heads iface typarams mty occ =
   if isEmptyL args then ()
   else if not (allConcreteHeads args) then ()
   else if implMatches heads iface args then ()
-  else set_ref typeErrors (noImplFoundMsg iface args :: typeErrors.value)
+  else pushTypeError (noImplFoundMsg iface args)
 
 noImplFoundMsg : String -> List Mono -> <Mut> String
 noImplFoundMsg iface args = "No impl of " ++ iface ++ " for " ++ ppMonosShared args
@@ -4780,7 +4789,7 @@ checkEffectEscape sigs m effs = match lookupAssocS m sigs
   None => ()
   Some ty => match diffS effs (declaredEffects ty)
     [] => ()
-    extras => set_ref typeErrors (effectEscapeMsg m (declaredEffects ty) extras :: typeErrors.value)
+    extras => pushTypeError (effectEscapeMsg m (declaredEffects ty) extras)
 
 effectEscapeMsg : String -> List String -> List String -> String
 effectEscapeMsg name declared extras =
@@ -4838,7 +4847,7 @@ checkSigTooGeneral : String -> Ty -> List (String, Mono) -> <Mut> Unit
 checkSigTooGeneral name ty tvs =
   let tvarIds = sigTvarIds (map snd tvs)
   if hasDupI tvarIds then
-    set_ref typeErrors (sigTooGeneralMsg name ty :: typeErrors.value)
+    pushTypeError (sigTooGeneralMsg name ty)
   else ()
 
 -- collect the TVar ids of those entries in tvs that normalize to a TVar
@@ -4982,7 +4991,7 @@ checkToLines prog =
   let errs = revLL typeErrors.value
   match errs
     [] => joinNl (schemeLines schemes)
-    _ => joinNl (typeErrorLines errs)
+    _ => joinNl (typeErrorLines (map fst errs))
 
 -- like checkToLines but seeds runtime.mdk's externs (for typechecking core.mdk,
 -- which references putStrLn / etc. declared in runtime.mdk)
@@ -5003,7 +5012,7 @@ checkToLinesWithRuntime runtimeDecls prog =
   let warns = revLL matchWarnings.value
   match errs
     [] => joinNl (schemeLines schemes ++ warns)
-    _ => joinNl (typeErrorLines errs)
+    _ => joinNl (typeErrorLines (map fst errs))
 
 -- ── type-aware non-exhaustive-match check (the `check_match` driver) ────────
 -- Run the full typecheck pass over [prog] (runtime externs seeded, NO prelude —
@@ -5022,10 +5031,11 @@ checkMatchToLines runtimeDecls prog =
 
 -- ── diagnostics entry point (selfhost/diagnostics.mdk bridge) ────────────
 -- Run the full typecheck pass (runtime-seeded) over [prog] and return the raw
--- error strings + warning strings separately, so diagnostics.mdk can wrap them
--- in structured Diag values without reformatting.
+-- error strings — each paired with its captured `Option Loc` (B.10.2b) — plus
+-- the warning strings, so diagnostics.mdk can wrap them in structured Diag
+-- values (carrying the loc) without reformatting.
 export
-checkProgramDiags : List Decl -> List Decl -> <Mut> (List String, List String)
+checkProgramDiags : List Decl -> List Decl -> <Mut> (List (String, Option Loc), List String)
 checkProgramDiags runtimeDecls prog =
   let _ = set_ref implInferEnabled False
   let _ = set_ref matchWarnings []

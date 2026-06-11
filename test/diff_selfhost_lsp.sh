@@ -16,14 +16,21 @@
 #                           matching `medaka check --json` (no diagnostics).
 #   • didOpen (type err)  — publishDiagnostics carrying one Error diagnostic
 #                           (severity 1, source "medaka"), matching the
-#                           single-diagnostic shape of `check --json`.
+#                           single-diagnostic shape of `check --json`.  B.10.2b:
+#                           the diagnostic now carries an EXPR-LEVEL range from
+#                           the ELoc substrate — this gate asserts its START
+#                           position matches the OCaml LSP's expr range exactly.
 #
-# Message TEXT and expr-level RANGE are intentionally NOT diffed: the selfhost
-# AST is location-stripped (ranges are decl/whole-document granular until the
-# ELoc slice), and type-error messages differ from the oracle in unification
-# order (the documented selfhost limitation, cf. diff_selfhost_diagnostics.sh).
-# The gate asserts the structural parity B.10.1 guarantees: presence, count,
-# severity, and source.
+# Message TEXT is intentionally NOT diffed (unification order differs from the
+# oracle — the documented selfhost limitation, cf. diff_selfhost_diagnostics.sh).
+#
+# RANGE (B.10.2b): the start position is asserted to match the OCaml LSP's
+# expr-level range exactly.  The END position is an APPROXIMATION: the selfhost
+# parser derives a token span from token START offsets (`locOfSpan`), so a
+# single-token expr yields an empty span (end == start) where OCaml's `$endpos`
+# reaches the token's end.  True end positions need token lengths threaded
+# through the lexer's layout pass (a cross-cutting lexer change deferred here);
+# the start — the position editors anchor a squiggle at — is exact.
 #
 # Usage: sh test/diff_selfhost_lsp.sh
 set -u
@@ -140,14 +147,29 @@ if pub is None:
     sys.exit(1)
 sd = pub["params"]["diagnostics"]
 # Structural parity: same count, same first-diagnostic severity + source.
-# (message text + expr-level range diverge by design — see header.)
-ok = (len(sd) == len(od) == 1
+# (message text diverges by design — unification order — see header.)
+struct_ok = (len(sd) == len(od) == 1
       and sd[0]["severity"] == od[0]["severity"] == 1
       and sd[0]["source"] == od[0]["source"] == "medaka"
       and "range" in sd[0] and "message" in sd[0])
+# B.10.2b: expr-level RANGE.  The START position must match the OCaml LSP's
+# expr-level range exactly (the ELoc substrate captures the same span).  The END
+# position is an approximation (token-START-derived span → empty span); we assert
+# only that it is well-formed and does not precede the start, and that it is on
+# the same line as OCaml's end (documented $endpos gap — see header).
+sr, oj = sd[0]["range"], od[0]["range"]
+start_ok = (sr["start"] == oj["start"])
+end_ok = (sr["end"]["line"] == oj["end"]["line"]
+          and sr["end"]["character"] >= sr["start"]["character"])
+if not start_ok:
+    sys.stderr.write("RANGE START mismatch: self=%s oracle=%s\n" % (sr["start"], oj["start"]))
+if sr["end"] != oj["end"]:
+    sys.stderr.write("RANGE END approximate (documented $endpos gap): self=%s oracle=%s\n"
+                     % (sr["end"], oj["end"]))
+ok = struct_ok and start_ok and end_ok
 sys.exit(0 if ok else 1)
 PY
-check "didOpen type-error → one Error diagnostic (severity+source == check --json)" "$?"
+check "didOpen type-error → one Error diagnostic; expr-range START == check --json (end approx)" "$?"
 
 # ── 4. didChange replaces a clean buffer with an error one ──────────────────
 drive_lsp \
