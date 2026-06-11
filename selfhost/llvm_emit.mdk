@@ -583,8 +583,44 @@ lamsRef (Emit _ _ _ _ _ lams _ _ _ _) = lams
 fnNames : Emit -> <Mut> List String
 fnNames (Emit _ _ fns _ _ _ _ _ _ _) = fns.value
 
+-- ── known-function index (perf) ─────────────────────────────────────────────
+-- `fnNames` is set ONCE at Emit construction and never mutated (unlike `sigs`,
+-- which the two-pass float propagation rewrites — that is why only THIS table,
+-- not the sig table, is safely indexable). Index it into a BST (EMap, a plain ADT
+-- → self-compiles in llvm_emit's own graph) installed at emitProgram, so the
+-- per-CApp/CVar `isKnownFn` membership test is O(log n) not O(fns).
+data EMap a = ETip | EBin String a (EMap a) (EMap a)
+
+emInsert : String -> a -> EMap a -> EMap a
+emInsert k v ETip = EBin k v ETip ETip
+emInsert k v (EBin k2 v2 l r) = match stringCompare k k2
+  Lt => EBin k2 v2 (emInsert k v l) r
+  Gt => EBin k2 v2 l (emInsert k v r)
+  Eq => EBin k2 v l r
+
+emLookup : String -> EMap a -> Option a
+emLookup k ETip = None
+emLookup k (EBin k2 v l r) = match stringCompare k k2
+  Lt => emLookup k l
+  Gt => emLookup k r
+  Eq => Some v
+
+emFromNames : List String -> EMap Unit -> EMap Unit
+emFromNames [] m = m
+emFromNames (x :: rest) m = emFromNames rest (emInsert x () m)
+
+knownFnMapRef : Ref (Option (EMap Unit))
+knownFnMapRef = Ref None
+
+installKnownFnMap : List String -> <Mut> Unit
+installKnownFnMap fns = set_ref knownFnMapRef (Some (emFromNames fns ETip))
+
 isKnownFn : Emit -> String -> <Mut> Bool
-isKnownFn e name = containsStr name (fnNames e)
+isKnownFn e name = match knownFnMapRef.value
+  Some m => match emLookup name m
+    Some _ => True
+    None => False
+  None => containsStr name (fnNames e)
 
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
@@ -5267,6 +5303,7 @@ emitProgram : CProgram -> <Mut> String
 emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes) (Ref (initGlobalsReg (valBinds groups)))
   let _ = resetDistinctTypeNames ()
+  let _ = installKnownFnMap (collectFns groups)
   let _ = resetEmittedDefaults ()
   let _ = emitPreamble e
   -- declare a module global per top-level value/`Ref` binding (slice E1b).
@@ -5455,6 +5492,7 @@ emitProgramGaps : CProgram -> <Mut> List String
 emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
   let e = Emit (Ref 0) (Ref []) (Ref (collectFns groups)) (Ref (inferSigs (fnBinds groups))) (Ref ctorArs) (Ref []) (Ref (collectRecords groups)) (Ref implEntries) (Ref ctorTypes) (Ref (initGlobalsRegReady (valBinds groups)))
   let _ = resetDistinctTypeNames ()
+  let _ = installKnownFnMap (collectFns groups)
   let _ = resetGaps ()
   let _ = enableGapRecord ()
   let _ = emitPreamble e

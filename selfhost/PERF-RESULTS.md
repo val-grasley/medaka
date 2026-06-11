@@ -292,15 +292,15 @@ Tested and **rejected** — recorded so future sessions skip them:
 
 | Workload | original (-O0, div 3) | final | speedup |
 |---|---|---|---|
-| emitter self-compile | 12.04 s / 770 MB | **2.34 s / 199 MB** | **5.15× / 3.9× less RSS** |
-| vs OCaml interpreter | 125.35 s / 1467 MB | 2.34 s / 199 MB | **53.6× / 7.4× less RSS** |
+| emitter self-compile | 12.04 s / 770 MB | **2.27 s / 199 MB** | **5.30× / 3.9× less RSS** |
+| vs OCaml interpreter | 125.35 s / 1467 MB | 2.27 s / 199 MB | **55.2× / 7.4× less RSS** |
 | fib 38 (no alloc) | 0.11 s | 0.10 s | flat (already optimal) |
 
 Banked, all universal defaults, every change gated byte-identical (fixpoint +
 differential fixtures + build gate): clang `-O2`, GC `free_space_divisor=1`,
 lifted-define buffer O(N²)→O(N), DCE reachability+graph O(N²)→O(N) via HashMap,
 typecheck dep-graph + SCC clause grouping + dedup O(N²)→O(N·log N) via SMap. The
-native compiler is **~54× faster than the OCaml interpreter** at the representative
+native compiler is **~55× faster than the OCaml interpreter** at the representative
 self-compile workload — the OCaml-retirement performance bar is met with wide
 margin.
 
@@ -665,3 +665,27 @@ dict-passing machinery (~40 %, the dominant `lam` filter — supervised only) or
 (b) the mutable-sigs lookup cluster (~14 % — needs the threaded-tree refactor
 above, supervised). Both are mapped; neither is a safe unattended edit. The
 OCaml-retirement performance bar is met with very wide margin.
+
+---
+
+## Entry 17 — isKnownFn via EMap index (constant fnNames) (2026-06-11)
+
+**Change (`selfhost/llvm_emit.mdk`):** `isKnownFn e name = containsStr name (fnNames e)`
+was an O(fns) scan per CApp/CVar node → O(nodes·fns). Index `fnNames` into a plain
+BST (`EMap`) installed at emitProgram; `isKnownFn` now does an O(log n) `emLookup`.
+
+**Why this is safe where the sig-table index was NOT:** `fnNames` is set once at
+`Emit` construction and **never mutated**, so a once-built index never goes stale.
+(The reverted sig-table index broke `fn_float_chain` because `sigs` IS rewritten
+by the two-pass Float propagation.) And `EMap` is a plain ADT (not a hash
+container), so — unlike the reverted hash_map `isKnownFn` — it self-compiles in
+llvm_emit's own graph.
+
+**Gates:** `selfcompile_fixpoint` C3a/C3b YES; `diff_selfhost_build` 9/9;
+`diff_selfhost_llvm` **172/172** (incl. `fn_float_chain`); `llvm_modules` 8/8;
+`llvm_typed` 37/37. Seed stale; not re-minted.
+
+**Numbers (self-compile, min-of-5, -O2 + divisor=1):** 2.34 s → **2.27 s** (~3%).
+Cumulative this session: 12.04 s → 2.27 s (**5.30×**); vs OCaml interpreter 55.2×.
+The `EMap` is now in place for any other CONSTANT Emit table (ctor/record tables)
+that profiles hot.
