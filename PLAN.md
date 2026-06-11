@@ -134,8 +134,15 @@ CANONICAL compiler** — the one users invoke and the one that builds the compil
    the rest is internal OCaml API, intrinsically non-portable.
 3. ✅ **Done.** Differential fuzzer (MVP + native Tier-C, 1080 native programs clean, found+fixed
    named-field deriving).
-4. ⏳ **NOT STARTED.** Performance — emitted IR is `-O0`; nobody's turned on `-O2` or benchmarked
-   native-compiler-vs-OCaml. (Worth a scoping pass.)
+4. ⏳ **SCOPED, execution pending.** Performance — emitted IR is `-O0`; nobody's turned on `-O2`
+   or benchmarked native-compiler-vs-OCaml. **Scoping DONE 2026-06-10 (`16efcda`, `selfhost/PERF-SCOPE.md`):**
+   6 clang invocations, all implicit `-O0`; one-line `-O2` insert into `clangArgs` in both build drivers
+   (`lib/build_cmd.ml:232`, `selfhost/build_cmd.mdk:219`). **`-O2` does NOT threaten the fixpoint** —
+   C3a/C3b compare emitted TEXT IR (pre-clang); clang only affects the binary (soft risk: Boehm GC
+   stack-scanning under `-O2` → add `-fno-omit-frame-pointer` if behavioral tests regress). Top hot paths:
+   2234 `alloca` slots (`mem2reg` at `-O2` = highest payoff), 4201 `mdk_alloc`/`GC_malloc` (value-rep
+   structural — TRMC #56 territory), dict-passing register pressure. Execution = the dedicated quiet-machine
+   session (flip `-O2` → re-run fixpoint → baseline/-O2 benchmarks → compare).
 5. ✅ **DONE 2026-06-10 (`44f5433`).** OCaml-free seed bootstrap. The strict `medaka build` driver
    (`llvm_emit_modules_main.mdk`) **fixpoints** (C3a/C3b YES — the one real gap, now verified via
    `test/selfcompile_build_fixpoint.sh`). Committed seed `selfhost/seed/emitter.ll` (~9.6 MB text IR,
