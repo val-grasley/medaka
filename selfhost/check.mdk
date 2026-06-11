@@ -19,7 +19,8 @@
 import ast.{Decl}
 import parser.{parse}
 import desugar.{desugar}
-import resolve.{resolveToLines}
+import util.{joinNl}
+import resolve.{resolveToLines, singleFileImportErrors, resErrorSexp}
 import exhaust.{exhaustToLines}
 import typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls}
 
@@ -51,8 +52,19 @@ runCheck rsrc csrc tsrc =
   let desugared = desugar raw
   let runtimeP = parse rsrc
   let coreP = parse csrc
+  -- R3: check for imports of unknown modules before resolve so we emit
+  -- UnknownModule (right category) rather than falling through to a
+  -- spurious typecheck "Unbound variable".  In single-file mode there is
+  -- no loader, so any non-core import is by definition unknown.
+  let importErrs = singleFileImportErrors desugared
+  let importDiags = joinNl (map resErrorSexp importErrs)
+  routeImportCheck importDiags runtimeP coreP raw desugared
+
+routeImportCheck : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
+routeImportCheck "" runtimeP coreP raw desugared =
   let resDiags = resolveToLines runtimeP coreP desugared
   reportFor resDiags runtimeP coreP raw desugared
+routeImportCheck diags _ _ _ _ = diags
 
 reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
 reportFor "" runtimeP coreP raw desugared = cleanReport runtimeP coreP raw desugared

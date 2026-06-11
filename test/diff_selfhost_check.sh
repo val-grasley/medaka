@@ -6,6 +6,9 @@
 #     prelude + user schemes), proving resolve+exhaust pass and typecheck runs;
 #   • resolve_fixtures (broken)            → the resolve diagnostics
 #     (dev/diagdump.exe --resolve), proving the driver routes resolve errors.
+#   • import_error_fixtures (bad imports)  → committed .expected golden
+#     (UnknownModule S-expression), proving R3: bad imports halt with the right
+#     error category rather than falling through to a spurious typecheck error.
 # Both sides sorted before compare.  (exhaust_fixtures emit warning + schemes;
 # validated by the standalone exhaust harness.)
 #
@@ -34,6 +37,20 @@ for f in "$ROOT"/test/resolve_fixtures/*.mdk; do
   want="$("$DIAG" --resolve "$f" 2>/dev/null | LC_ALL=C sort)"
   if [ "$self" = "$want" ]; then pass=$((pass+1)); printf 'ok   resolve/%s\n' "$name"
   else fail=$((fail+1)); printf 'FAIL resolve/%s\n' "$name"; fi
+done
+
+# R3: import-error fixtures — bad imports should produce UnknownModule (right
+# category) not a spurious typecheck error.  Oracle = committed .expected golden.
+for f in "$ROOT"/test/import_error_fixtures/*.mdk; do
+  [ -f "$f" ] || continue
+  name="$(basename "$f")"
+  golden="${f%.mdk}.expected"
+  [ -f "$golden" ] || { fail=$((fail+1)); printf 'FAIL import_error/%s (no .expected)\n' "$name"; continue; }
+  self="$("$MAIN" run "$CHECK" "$RT" "$CORE" "$f" 2>/dev/null | LC_ALL=C sort)"
+  want="$(LC_ALL=C sort < "$golden")"
+  if [ "$self" = "$want" ]; then pass=$((pass+1)); printf 'ok   import_error/%s\n' "$name"
+  else fail=$((fail+1)); printf 'FAIL import_error/%s\n' "$name"
+    printf '  want: %s\n  self: %s\n' "$want" "$self"; fi
 done
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"

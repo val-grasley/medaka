@@ -1,0 +1,5 @@
+-- R3: import of a non-existent module should be reported as UnknownModule,
+-- not fall through to a spurious typecheck "Unbound variable".
+import nonexistent.{foo}
+
+main = println foo

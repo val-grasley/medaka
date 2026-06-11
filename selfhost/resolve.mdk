@@ -675,6 +675,7 @@ findDups seen (n::rest)
   | otherwise = findDups (n :: seen) rest
 
 -- ── Serialization (matches dev/diagdump.ml's sexp_error) ─────────────────
+export
 resErrorSexp : ResError -> String
 resErrorSexp (UnboundVariable n) = "(UnboundVariable " ++ escStr n ++ ")"
 resErrorSexp (UnknownConstructor n) = "(UnknownConstructor " ++ escStr n ++ ")"
@@ -747,6 +748,22 @@ export
 resolveToLines : List Decl -> List Decl -> List Decl -> String
 resolveToLines runtimeDecls preludeDecls prog =
   joinNl (map resErrorSexp (resolveProgram runtimeDecls preludeDecls prog))
+
+-- ── Single-file import validation ─────────────────────────────────────────
+-- In single-file mode the loader is absent, so resolve_program stubs unknown
+-- imports into scope (mirroring lib/resolve.ml's behaviour when known_modules=[]).
+-- This function catches DUse declarations that reference a non-core module and
+-- emits UnknownModule — used by check.mdk BEFORE running resolveToLines so the
+-- pipeline halts with the correct error category rather than falling through to
+-- a spurious typecheck "Unbound variable".
+export
+singleFileImportErrors : List Decl -> List ResError
+singleFileImportErrors [] = []
+singleFileImportErrors ((DUse _ path)::rest) =
+  let mid = useModId path
+  if mid == "core" || mid == "" then singleFileImportErrors rest
+  else UnknownModule mid :: singleFileImportErrors rest
+singleFileImportErrors (_::rest) = singleFileImportErrors rest
 
 -- ══════════════════════════════════════════════════════════════════════════
 -- Multi-module path — port of lib/resolve.ml's `resolve_module`.
