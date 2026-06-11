@@ -1,0 +1,10 @@
+-- Module B: same-named exported `tag`, DIFFERENT behavior (+200 not +100), and a
+-- `viaBeta` that calls IT.  Both `viaAlpha` (from alpha.mdk) and `viaBeta` are
+-- reached from main, so a collision routes one of them to the wrong `tag`.
+export
+tag : Int -> Int
+tag n = n + 200
+
+export
+viaBeta : Int -> Int
+viaBeta n = tag n

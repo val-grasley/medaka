@@ -1,0 +1,13 @@
+-- Module A defines an EXPORTED top-level function `tag` that returns n+100.
+-- Module B (beta.mdk) ALSO defines an exported `tag` returning n+200.  Under the
+-- flat multi-module emit both used to mangle to the SAME `@mdk_tag` symbol, so
+-- only one survived and BOTH modules' callers routed to it → wrong output / SIGSEGV.
+-- Universal per-module mangling makes the two `<mid>__tag` symbols distinct, and
+-- each importer's reference resolves import-aware to its own origin module.
+export
+tag : Int -> Int
+tag n = n + 100
+
+export
+viaAlpha : Int -> Int
+viaAlpha n = tag n

@@ -1,0 +1,13 @@
+-- Cross-module same-name COLLISION repro.  alpha.mdk and beta.mdk each export a
+-- top-level `tag` with different behavior; `viaAlpha`/`viaBeta` each call THEIR
+-- module's `tag`.  Correct output: viaAlpha 1 = 1+100 = 101; viaBeta 1 = 1+200 =
+-- 201; sum = 302.  Under the pre-fix flat emit both `tag`s collapse to one
+-- `@mdk_tag`, so both `via*` route to whichever survived → wrong sum (202 or 402)
+-- or a SIGSEGV.  Universal per-module mangling makes it correct by construction.
+import alpha.{viaAlpha}
+import beta.{viaBeta}
+
+total : Int
+total = viaAlpha 1 + viaBeta 1
+
+main = putStrLn (intToString total)
