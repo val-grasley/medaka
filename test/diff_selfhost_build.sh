@@ -160,6 +160,40 @@ main : <IO> Unit
 main = putStrLn (intToString (double 21))
 EOF
 
+# L1 regression (TYPECHECK-AUDIT §L1): two modules each export a same-named
+# top-level fn `f`, but module a's is `Num a => a -> a` (CONSTRAINED: 1 leading
+# dict param) and module b's is `Int -> Int` (UNCONSTRAINED: no dict param).
+# Both reached from main via distinct wrappers.  The pre-mangling joint dict-pass
+# keyed arity by BARE NAME `f`, so a's constraint would force a spurious dict
+# param onto b's `f` → b's call site under-applies → un-run partial closure →
+# silent wrong/empty output (the Phase-134 class).  Universal per-module mangling
+# (332ef41) renames them to `a__f`/`b__f` BEFORE elaborateModules dict-passes, so
+# the bare-name collision is impossible by construction.  Correct output: viaA 10
+# = 10+10 = 20, viaB 10 = 10+1 = 11 → "20 11".
+mkdir -p "$WORK/src/l1"
+cat > "$WORK/src/l1/a.mdk" <<'EOF'
+export
+f : Num a => a -> a
+f x = x + x
+export
+viaA : Int -> Int
+viaA n = f n
+EOF
+cat > "$WORK/src/l1/b.mdk" <<'EOF'
+export
+f : Int -> Int
+f x = x + 1
+export
+viaB : Int -> Int
+viaB n = f n
+EOF
+cat > "$WORK/src/l1/entry.mdk" <<'EOF'
+import a.{viaA}
+import b.{viaB}
+main : <IO> Unit
+main = putStrLn (intToString (viaA 10) ++ " " ++ intToString (viaB 10))
+EOF
+
 cat > "$WORK/src/show_debug.mdk" <<'EOF'
 main : <IO> Unit
 main = putStrLn (debug 42)
@@ -236,6 +270,7 @@ for p in $PROGRAMS; do
   check "$p" "$WORK/src/$p.mdk"
 done
 check "multimodule" "$WORK/src/mm/entry.mdk"
+check "l1_twomod" "$WORK/src/l1/entry.mdk"
 
 printf '\n%d ok, %d failing (of %d)\n' "$pass" "$fail" "$((pass+fail))"
 [ "$fail" -eq 0 ]

@@ -14,12 +14,15 @@
 -- elaborated core + flattened module decls are lowered to Core IR and emitted as
 -- textual LLVM IR to stdout — same shape as llvm_emit_typed_main.mdk.
 --
--- E4-READINESS: the driver calls enableArgStamp () and computes the prelude
--- return/arg-position + constrained dict names exactly as llvm_emit_typed_main.mdk
--- does, so when E4 (arg-position dict-passing on elaborateModules) lands the
--- stamping is already wired.  Pre-E4 that arg-stamping is a no-op on the
--- multi-module path (elaborateModules does not yet thread arg-position dicts), so
--- it changes nothing today — the gate validates only the already-emittable subset.
+-- E4 (LANDED): the driver calls enableArgStamp (), so elaborateModules's
+-- dictPassModulesIfEnabled enabled branch runs the joint arg-position dict-pass
+-- (constrained-fn dict params threaded through call sites cross-module).  The
+-- earlier "Pre-E4 no-op" note here was STALE — arg-position dict-passing IS active
+-- on this path (verified: a cross-module `Eq a => x == y` builds + runs native ==
+-- oracle; TYPECHECK-AUDIT.md §L1).  The joint keying it consumes is made SAFE by
+-- universal per-module mangling (mangleUnits, run below before elaborateModules):
+-- every top-level fn is `<mid>__<name>`, so two modules' same-named constrained/
+-- unconstrained fns can never share a dict-arity key (the former L1 hazard).
 
 import ast.{Decl}
 import parser.{parse}
@@ -81,9 +84,11 @@ runEmit runtimeDecls coreDecls modules =
   -- targets) are retained whole; only unreachable DFunDefs are removed.  Order-
   -- preserving ⇒ IR stays byte-stable.  See selfhost/dce.mdk.
   let allDecls = dceFilter allDecls0
-  -- E4-ready dict-name wiring (mirrors llvm_emit_typed_main.mdk): coreD is the
-  -- elaborated prelude, allDecls the whole program.  No-op on the emit subset
-  -- pre-E4, but already threaded for when arg-position dict-passing lands.
+  -- Dict-name wiring mirrored from llvm_emit_typed_main.mdk: coreD is the
+  -- elaborated prelude, allDecls the whole program.  THIS `let _` is itself inert
+  -- (the result is discarded) — the real arg-/return-position dict-passing happens
+  -- INSIDE elaborateModules above (E4 landed; enableArgStamp drives it).  Kept for
+  -- parity with the single-file typed driver.
   let _ = preludeReturnPosDictNames coreD allDecls
           ++ preludeArgPosDictNames coreD allDecls
           ++ constrainedSigNames allDecls

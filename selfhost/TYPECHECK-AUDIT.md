@@ -31,10 +31,12 @@ native = `llvm_emit_modules_main` → clang → run). Repro files under `/tmp/ve
    duplicate-impl, or orphan checks — every dispatch mechanism downstream (first-match
    narrowing, arg-tag if-chains, the native `unreachable` arm) assumes a guarantee only
    the OCaml typechecker enforces. Must be a gate item for OCaml retirement.
-3. **Two latent Phase-134-class hazards** are present in code but masked today: bare-name
-   joint dict arity/name keying on the multi-module emit path (L1 — fires when E4 lands)
-   and `RKey tag []` empty nested-req routes at `=>`-call sites (L2 — masked by arg-tag
-   on the interpreter).
+3. **Two former Phase-134-class hazards, both now resolved:** bare-name
+   joint dict arity/name keying on the multi-module emit path (L1 — ✅ CLOSED, mooted
+   by universal mangling `332ef41`: every top-level fn is renamed `<mid>__<name>` before
+   dict-passing, so the bare-name collision is impossible by construction; E4 IS live)
+   and `RKey tag []` empty nested-req routes at `=>`-call sites (L2 — ✅ CLOSED one-level
+   2026-06-10; deeper nesting residual).
 4. The architecture itself is **sound enough to become canonical**, conditional on:
    porting coherence, collapsing the dual eval/typecheck drivers, de-risking the two
    identity-keying fragilities (surviving unify var-id, bare names), and adding a
@@ -244,24 +246,44 @@ green; no S1↔eval interaction (eval untouched). Original finding below.
 
 ## Latent hazards (present in code, masked today — fix before the masking condition changes)
 
-### L1. Bare-name joint dict arity/name keying on the multi-module emit path (Phase-134 shape) — [NEW] LATENT
+### L1. Bare-name joint dict arity/name keying on the multi-module emit path (Phase-134 shape) — ✅ CLOSED (mooted by universal mangling, verified 2026-06-11)
 
-- **Where:** `selfhost/typecheck.mdk:3853-3872` (`moduleDictNames` = one global
-  bare-name union over all modules; `seedDictAritiesFromSigs` bare-name keyed),
-  `:2595-2614` (`dictPassDecl` bare-name match), `:1339-1343` (`constraintMonosOf`
-  silently drops absent ids). Oracle fix it never ported: `lib/eval.ml:2100-2163`
-  (per-module arity scope = own decls + transitive importers).
-- **Empirical:** two-module repro (`/tmp/verify/dp1/` — constrained `shout : Num x =>`
-  in module `a`, unconstrained `shout : Int -> Int` in entry) emitted, compiled, and
-  ran CORRECTLY (prints 21) — pre-E4, arg-stamping is a no-op on the multi-module path
-  (documented in `llvm_emit_modules_main.mdk` E4-READINESS note), so the joint keying
-  is not yet consumed. It fires the day E4 (arg-position dict-passing on
-  `elaborateModules`) lands; failure mode is the worst in the project: spurious dict
-  params → under-applied call → un-run partial closure, clean exit, no output.
-- **Fix:** module-qualify dict-pass keys (`mid.name`) or scope
-  `moduleDictNames`/arities per module (own + transitive importers), mirroring the
-  OCaml fix — *as part of* the E4 work, with a loader-driven regression fixture
-  (same-named constrained/unconstrained pair across modules) in the multi-module gate.
+- **Where (original):** `selfhost/typecheck.mdk` (`moduleDictNames` global bare-name
+  union; `scopeArities`/`constrainedSigArity` bare-name keyed; `dictPassDecl` bare-name
+  match; `crossModuleFunConstraintsRef` snapshot). The Phase-134 fix already added
+  per-module importer-scoped arity (`dictPassModulesScoped`/`scopeArities`,
+  `typecheck.mdk:5746-5802`), but the keying within a scope was still bare-name.
+- **Verdict: MOOTED by universal per-module mangling (`332ef41`).** `mangleUnits`
+  (`selfhost/private_mangle.mdk`) runs in `runEmit`
+  (`llvm_emit_modules_main.mdk:74`) **BEFORE** `elaborateModules`
+  (`:75`), renaming EVERY top-level `DFunDef` — public AND private — to a unique
+  `<mid>__<name>` symbol, with all references rewritten import-aware. So by the time
+  the joint dict-pass keys arities, the two same-named fns are already `a__f`/`b__f`
+  (distinct names), and the bare-name collision is **impossible by construction**.
+  The keying tables (`moduleDictNames`, `scopeArities`, `crossModuleFunConstraintsRef`,
+  `funConstraintsRef`) all walk the post-mangle decls, so every key is unique.
+- **Empirical (2026-06-11, current main):** the exact §L1 trigger — module `a` with
+  constrained `f : Num a => a -> a` (doubles), module `b` with unconstrained
+  `f : Int -> Int` (+1), both reached from `main` via `viaA`/`viaB` wrappers — built
+  native (`medaka build`) and ran: oracle `20 11`, native `20 11` (+ autoprint `()`).
+  The emitted IR proves the mechanism: `@mdk_a__f(i64 %arg0, i64 %arg1)` (constrained,
+  1 dict + 1 value param) and `@mdk_b__f(i64 %arg0)` (unconstrained, 1 value param) —
+  DISTINCT symbols, DISTINCT param counts, no collision. Six trigger shapes all
+  native==oracle: forward (a-constr/b-unconstr), reversed, the audit `shout` shape
+  (constrained-in-a / unconstrained-in-entry), 2-constraint vs unconstrained, both-
+  constrained-different-counts (1 vs 2 dicts), and genuine arg-position dispatch
+  (`Eq a => x == y` cross-module). Regression fixture: `l1_twomod` in
+  `test/diff_selfhost_build.sh`.
+- **E4 discrepancy RESOLVED — arg-position joint dict-passing IS active on
+  `medaka build`.** The original §L1 / `llvm_emit_modules_main.mdk:17-22,86`
+  "Pre-E4 no-op" note is **STALE**. `enableArgStamp ()` sets `argStampEnabled := True`
+  (`typecheck.mdk:757`), so `dictPassModulesIfEnabled`'s enabled branch
+  (`typecheck.mdk:5759-5765`) runs the joint dict-pass. Proof: the constrained `a__f`
+  receives its leading dict param and the call threads it (correct `20`); a pure
+  arg-position cross-module `Eq a => x == y && y == z` builds + runs native==oracle
+  (`yes`). So E4 (arg-position dict-passing on `elaborateModules`) HAS landed — the
+  joint keying is live AND consumed, and it was rendered safe by mangling rather than
+  by the keying staying a no-op.
 
 ### L2. `routeOfMono` emits `RKey tag []` — nested element-dict reqs dropped at `=>`-call sites — ✅ CLOSED (one-level, 2026-06-10)
 
@@ -720,7 +742,7 @@ Condensed verdicts; the dispatch design needs consolidation, not redesign.
 | T2 inline rec-let | oracle `check` OK; selfhost `typecheck_main` | CONFIRMED — `panic: unbound variable: go` |
 | S1 awaits-args gate | oracle `[]`; selfhost `eval_dict_main` | CONFIRMED — `applied non-function: []` |
 | S2 method-dict offset | oracle `6`; selfhost `eval_dict_main` | CONFIRMED — `panic: unknown op '+'` |
-| L1 bare-name emit keying | 2-module native emit+clang+run | NOT FIRED — prints 21 (pre-E4 no-op confirms latency) |
+| L1 bare-name emit keying | 2-module native build+run, 6 trigger shapes + arg-pos | ✅ CLOSED — MOOTED by universal mangling (332ef41); every shape native==oracle |
 | L2 nested reqs at `=>`-site | selfhost `eval_dict_main`, arg-position shape | NOT FIRED — prints 3 (arg-tag masks); return-position shape = S1's repro family |
 | C5 install-order shadow | oracle rejects the single-module shape | repro shape invalid; finding stays static |
 | S3, C1-C4, C6-C9, D1-D11 | static + grep | unrun — repro sketches in finding text |
