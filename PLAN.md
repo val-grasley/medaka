@@ -114,8 +114,8 @@ date; deletion is unlocked only when the bar below is met).
 
 **The "native is canonical" bar (gates `lib/` retirement) — status as of 2026-06-10:**
 1. 🟡 **~90%.** `medaka build` compiles + runs arbitrary USER programs natively. Gap G / Cause A /
-   GAP 1 (nested dicts) / GAP 2 (max/min) all ✅. Remaining: **tuple-as-receiver** (add-language-feature
-   class), **2-level multi-module route flattening (#21)**, **C5 standalone-vs-method** (building, #39),
+   GAP 1 (nested dicts) / GAP 2 (max/min) / **C5 standalone-vs-method** all ✅. Remaining:
+   **tuple-as-receiver** (add-language-feature class), **2-level multi-module route flattening (#21)**,
    and a **stdlib-emittability sweep** (the tooling uses the full stdlib natively).
 2. ✅ **Effectively done.** Behavior suites ported to `medaka test` (`test_run`/`test_eval`/`test_loader`);
    the rest is internal OCaml API, intrinsically non-portable.
@@ -134,9 +134,10 @@ date; deletion is unlocked only when the bar below is met).
    emitter binary instead of `medaka run`.
 6. 🟢 **Soundness + correctness CLOSED.** TYPECHECK-AUDIT: all confirmed soundness/correctness/
    diagnostic findings closed (S1-S3, T1/T1b/T2, C1-C9, D1/D2, OBS3/OBS4); **C4 resolved by decision**
-   (lazy nullary canonical). Tail in motion: **C5** (building #39), **C8b** (in flight), **C7-native**,
-   **L1** (latent, fires at E4), **OBS1**; **D3** = scope cut shared with the oracle. Plus the
-   "de-risk identity-keying fragilities" condition (C5 + L1).
+   (lazy nullary canonical); **C5 ✅ CLOSED** (`5db8a83`, RLocal end-to-end, fixpoint byte-identical);
+   **C8b ✅ CLOSED**. Tail remaining: **C7-native**, **L1** (latent, fires at E4), **OBS1**; **D3** =
+   scope cut shared with the oracle. The "de-risk identity-keying fragilities" condition is now down to
+   **L1** (C5's bare-name/install-order side closed).
 
 **Also gating retirement, beyond the 6-item bar:** the **Stage-4 tooling port** (lib/+bin/ host the
 tooling) — fmt/test/new/REPL/build ✅ (5/6), LSP scoped (#36, prereqs #37/#38), then the Phase-C CLI
