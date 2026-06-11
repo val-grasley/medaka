@@ -3,7 +3,9 @@
 Status: ✅ **BUILT (2026-06-08).** This was the design proposal; it is now the
 as-built record. Both on-ramps were taken — the Core IR + bytecode VM (§2.1–2.2)
 and the native **LLVM backend**, which now self-hosts the compiler to a
-reproducing fixpoint (all 7 stages native==interpreter; C1–C3). See
+reproducing fixpoint (all 7 stages native==interpreter; C1–C3). The bytecode VM
+(§2.2, `selfhost/bytecode.mdk` + dedicated drivers) was removed 2026-06-10 as
+confirmed off the canonical path — kept here as historical record only. See
 [`BOOTSTRAP.md`](./BOOTSTRAP.md) for the as-built log and
 [`../PLAN.md` Stage 3](../PLAN.md#stage-3--make-the-llvm-backend-canonical-retire-ocaml)
 for forward work. Decides the *shape* of Stage 2 (the North star's native-codegen

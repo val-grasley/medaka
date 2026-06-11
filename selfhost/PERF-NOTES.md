@@ -890,6 +890,10 @@ is the real lever). Correctness gate: every `diff_selfhost_*` harness byte-ident
 
 ## §2.2 VM capstone: VM vs Core IR tree-walker (2026-06-06)
 
+> **Note:** The bytecode VM (`selfhost/bytecode.mdk` + `vm_perf_main.mdk`) was
+> removed 2026-06-10 as confirmed off the canonical path. This section is kept
+> as a historical performance record.
+
 **New driver:** `selfhost/vm_perf_main.mdk` — lowers a source file once to
 `CProgram`, then runs both evaluators in the same process and times each via
 `timer.mdk`; `MEDAKA_PERF` unset ⇒ byte-identical to `core_ir_main.mdk`.

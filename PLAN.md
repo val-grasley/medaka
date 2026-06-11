@@ -67,7 +67,7 @@ state changes.
 | Workstream | Owning roadmap | Status | Near-term items |
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
-| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) + [`selfhost/BOOTSTRAP.md`](./selfhost/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done; LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
+| **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) + [`selfhost/BOOTSTRAP.md`](./selfhost/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done (bytecode VM removed 2026-06-10 — off canonical path); LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
 | **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟡 **in progress** | **TYPECHECK-AUDIT autonomous phase ✅ (16: S1·S2·T1·T1b·T2·S3·C1·C2·C3·C6·C7·C8·C9·D1·D2·OBS4)**; construct-coverage matrix built + 10 gaps closed (**Gap E Float-corruption cluster fully closed** — garbage/SIGSEGV/lambda; range-pattern typecheck; backtick/newtype/let-mut/let-else native; stdlib-on-build-path); DCE `collectVars` soundness audited; bar-item-2 = 336 ported `medaka test` assertions. ✅ #1 `medaka build` + #2a/#2b. **Deferred for oversight (precise plans in CONSTRUCT-COVERAGE/TYPECHECK-AUDIT):** ✅ Gap G CLOSED (Phase 151 — operators dispatch to user `Eq`/`Ord` via A2 type-directed rewrite; interpreter+selfhost+native-`==`; native-`<` deferred behind slice-7), dict-pass cluster — **Cause B/L2 ✅ CLOSED** (`ba757de`, set builds natively, one-level nested reqs); **Cause A + per-module-arity promotion layer ✅ CLOSED** (2026-06-10 — `elaborateModules` now seeds `dictEligibleRef`, runs a joint promotion fixpoint, snapshots promoted arities across `resetState`, and uses per-module importer-scoped arity replacing the Phase-134 bare-name `seedDictAritiesFromSigs`; `recordArgSiteFn` surfaces arg-position inferred constraints; `f s = println s` builds native==oracle; Gap C C2/C3-unannotated closed; fixpoint byte-identical; residuals: Cause-B two-level, `debug`-on-List-element, lambda-bound constraint), Gap C (primitive arg-tag dispatch — C1/C5b tuple-as-tag remains), C5/L1/D-tail. Then: differential fuzzer → stack scalability → perf → housekeeping → retire `lib/` (gated). |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
@@ -744,9 +744,9 @@ cover the corpus; these are known holes outside it.
   consume active; the slot/name assert never fires) but **~2.5% slower** than the
   by-name baseline (`fib 25`), independently re-confirming the earlier finding
   (list-indexed neutral, array frames −14%). Reverted the wiring; the `EVarAt` arm
-  stays dormant. The lever's payoff is already captured by the bytecode VM (§2.2),
-  which lowers the same addresses to O(1) compiled slot loads. Do not re-attempt on
-  the tree-walker. See `selfhost/PERF-NOTES.md`.
+  stays dormant. The lever's payoff is captured by the native LLVM backend; the
+  bytecode VM (§2.2) that previously held this note was removed 2026-06-10. Do not
+  re-attempt on the tree-walker. See `selfhost/PERF-NOTES.md`.
 
 > **Note for OCaml-compiler tasks below:** the self-host port mirrors the OCaml
 > pipeline stage-for-stage (`selfhost/{lexer,parser,desugar,resolve,marker,
@@ -913,8 +913,7 @@ cover the corpus; these are known holes outside it.
   to `compileTree`; serialized Core IR for genuine built-in lists is byte-identical,
   and `conHeadInfo` maps `HCons` and `HCon "Cons"` to the same `hashName "Cons"`
   tag so the LLVM spike stays green. Regression guard: `test/eval_fixtures/
-  adt_user_cons_nil.mdk` (byte-identical across tree-walker, ceval, bytecode VM,
-  and the LLVM spike); `test/llvm_fixtures/adt_list_fold.mdk` was unwound from its
+  adt_user_cons_nil.mdk` (byte-identical across tree-walker, ceval, and the LLVM spike; `test/llvm_fixtures/adt_list_fold.mdk` was unwound from its
   `Node`/`Empty` workaround back to `Cons`/`Nil`.
 
 - **Phase 147 (proposed) — type-directed constructor disambiguation.** Today a

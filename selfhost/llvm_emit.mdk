@@ -1,11 +1,10 @@
--- Core IR -> textual LLVM IR — Stage 2.4 DE-RISKING SPIKE (slices 1–8).
+-- Core IR -> textual LLVM IR — Stage 2.4 NATIVE BACKEND (slices 1–8+).
 --
--- This is NOT the real LLVM backend (STAGE2-DESIGN.md §2.4 schedules that AFTER
--- the bytecode VM).  It is a cheap end-to-end proof that the decided toolchain —
--- EMIT textual LLVM IR + shell out to clang (no llc/opt, no C++ bindings) —
--- works, and a probe to SURFACE the value-representation + calling-convention
--- decisions before the real backend commits to them.  It consumes the SAME Core
--- IR (core_ir.mdk) the tree-walker-validated lowering produces, and its emitted
+-- This IS the canonical LLVM backend (STAGE2-DESIGN.md §2.4). Originally
+-- developed as a de-risking spike AFTER the bytecode VM (§2.2, removed
+-- 2026-06-10). It emits textual LLVM IR + shells out to clang (no llc/opt,
+-- no C++ bindings). Consumes the Core IR (core_ir.mdk) the tree-walker-
+-- validated lowering produces, and its emitted
 -- binary's stdout is diffed byte-for-byte against the tree-walker oracle
 -- (test/diff_selfhost_llvm.sh) over prelude-free fixtures — the usual
 -- equivalence-gate shape, exactly as core_ir_main.mdk gates the lowering itself.

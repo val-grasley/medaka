@@ -338,7 +338,7 @@ return-position), wired into `llvm_emit_typed_main`/`core_ir_dict_pp_main` ONLY.
 arg-position helpers stay OUT of the eval/golden dict set (arg-tag resolves them in ceval's
 tagged values; goldens type-check them on RKey), but the native emit path MUST dict-pass them —
 arg-tag cannot dispatch a PRIMITIVE element. No golden driver shares those two emit/oracle
-drivers, so all module/`=== TYPES ===`/eval/bytecode goldens stay byte-identical.
+drivers, so all module/`=== TYPES ===`/eval goldens stay byte-identical. (bytecode VM removed 2026-06-10)
 
 Verified by four prelude-free user-helper fixtures (`test/llvm_fixtures_typed/`), one per shape,
 each at a PRIMITIVE element so the in-body dispatch hits something arg-tag cannot do:
