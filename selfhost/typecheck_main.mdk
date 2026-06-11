@@ -10,7 +10,7 @@
 
 import parser.{parse}
 import desugar.{desugar}
-import typecheck.{checkToLines, checkToLinesWithRuntime, setCoherenceUserDecls}
+import typecheck.{checkToLines, checkToLinesWithRuntime, setCoherenceUserDecls, collectDoWellformedErrors}
 
 main = match args ()
   [targetPath] => withTarget targetPath
@@ -18,7 +18,12 @@ main = match args ()
   _ => ePutStrLn "usage: medaka run selfhost/typecheck_main.mdk [runtime.mdk] <file.mdk>"
 
 withTarget targetPath = match readFile targetPath
-  Ok src => putStr (checkToLines (desugar (parse src)))
+  Ok src =>
+    let raw = parse src
+    let doErrs = collectDoWellformedErrors raw
+    match doErrs
+      [] => putStr (checkToLines (desugar raw))
+      (e :: _) => putStrLn e
   Err msg => ePutStrLn msg
 
 withRuntime runtimePath targetPath = match readFile runtimePath
@@ -27,7 +32,12 @@ withRuntime runtimePath targetPath = match readFile runtimePath
 
 withRuntimeTarget rsrc targetPath = match readFile targetPath
   Ok src =>
-    let desugared = desugar (parse src)
-    let _ = setCoherenceUserDecls desugared
-    putStr (checkToLinesWithRuntime (desugar (parse rsrc)) desugared)
+    let raw = parse src
+    let doErrs = collectDoWellformedErrors raw
+    match doErrs
+      [] =>
+        let desugared = desugar raw
+        let _ = setCoherenceUserDecls desugared
+        putStr (checkToLinesWithRuntime (desugar (parse rsrc)) desugared)
+      (e :: _) => putStrLn e
   Err msg => ePutStrLn msg
