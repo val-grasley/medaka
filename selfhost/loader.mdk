@@ -9,7 +9,7 @@
 --   * Cycles ARE detected (an in-progress stack) and reported as an Err.
 
 import ast.{Decl, DUse, UsePath, UseName, UseGroup, UseWild, UseAlias}
-import parser.{parse}
+import parser.{parse, parseLocated}
 
 -- ── small list helpers (no stdlib import — selfhost is single-root) ──
 
@@ -105,6 +105,31 @@ readModuleProg roots modId = match findModuleFile roots modId
     Err e => Err e
     Ok src => Ok (parse src)
 
+-- ── read-callback variant (B.10.5: unsaved-editor-buffer overrides) ──
+--
+-- A `String -> Option String` callback keyed by FILE PATH (mirror
+-- lib/diagnostics.ml's `read : string -> string option`).  `Some src` shadows the
+-- on-disk file with an editor buffer that has not been saved yet; `None` falls
+-- back to `readFile`.  This lets the LSP analyse a project against the documents
+-- the client currently holds rather than the (possibly stale) disk copies.  The
+-- existing disk-only `loadProgram`/`readModuleProg` are kept unchanged; this is
+-- purely additive (`loadProgramFiles` below threads the callback through the same
+-- topo-sort, so there is no second graph-walk to keep in sync).
+
+-- Resolve a module ID to its FILE PATH + source, consulting the override callback
+-- first (so an unsaved buffer wins), then disk.  Returns (path, decls) so the
+-- caller can bucket diagnostics BY FILE.  `read` is the path-keyed override;
+-- `parseFn` is the parser to apply (so the located variant can carry real ELoc
+-- spans via parseLocated while the plain variant uses placeholder-loc parse).
+readModuleProgF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> String -> <IO, Mut> Result String (String, List Decl)
+readModuleProgF parseFn read roots modId = match findModuleFile roots modId
+  None => Err (stringConcat ["unknown module: ", modId])
+  Some path => match read path
+    Some src => Ok (path, parseFn src)      -- unsaved editor buffer shadows disk
+    None => match readFile path
+      Err e => Err e
+      Ok src => Ok (path, parseFn src)
+
 -- ── DFS topological sort (dependency-first; leaves before roots) ──
 --
 -- threads (visited, acc): visited = modules fully processed (Done); the stack
@@ -154,5 +179,49 @@ visitMods roots stack visited acc (d :: ds) = match visitMod roots stack visited
 -- module IDs to file paths (selfhost: a single project dir).
 export loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
 loadProgram entry roots = match visitMod roots [] [] [] (moduleIdOfPath roots entry)
+  Err e => Err e
+  Ok (_, acc) => Ok acc
+
+-- ── path-carrying read-callback topo-sort (B.10.5) ──
+--
+-- The same dependency-first DFS as visitMod, but (a) every read goes through the
+-- `read` override callback (unsaved buffers win) and (b) the accumulator carries
+-- the FILE PATH alongside (modId, decls), so analyzeProject can bucket diagnostics
+-- by file.  Structurally identical to visitMod/visitMods — only the read source
+-- (readModuleProgF) and the acc tuple shape differ — so the cycle detection and
+-- ordering guarantees carry over verbatim.
+
+visitModF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
+visitModF parseFn read roots stack visited acc modId =
+  if memStr modId visited then Ok (visited, acc)
+  else if memStr modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
+  else match readModuleProgF parseFn read roots modId
+    Err e => Err e
+    Ok (path, prog) => match visitModsF parseFn read roots (modId :: stack) visited acc (directImports prog)
+      Err e => Err e
+      Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, path, prog)])
+
+visitModsF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
+visitModsF _ _ _ _ visited acc [] = Ok (visited, acc)
+visitModsF parseFn read roots stack visited acc (d :: ds) = match visitModF parseFn read roots stack visited acc d
+  Err e => Err e
+  Ok (v2, a2) => visitModsF parseFn read roots stack v2 a2 ds
+
+-- Load a root file + transitive deps, dependency-first, with an unsaved-buffer
+-- override and FILE PATHS in the result.  Mirrors lib/diagnostics.ml's
+-- `Loader.load_program ~read` returning `(mod_id, file_path, prog)` triples.
+-- A `read` of `(_ => None)` is exactly `loadProgram` (disk-only) plus paths.
+-- Uses placeholder-loc `parse`.
+export loadProgramFiles : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+loadProgramFiles read entry roots = match visitModF parse read roots [] [] [] (moduleIdOfPath roots entry)
+  Err e => Err e
+  Ok (_, acc) => Ok acc
+
+-- Like loadProgramFiles but parses every module with `parseLocated`, so the
+-- resulting decls carry REAL ELoc spans (B.10.2b) — the LSP project path uses
+-- this so type-error diagnostics get expr-level ranges, mirroring the single-doc
+-- `analyzeLocated`.
+export loadProgramFilesLocated : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+loadProgramFilesLocated read entry roots = match visitModF parseLocated read roots [] [] [] (moduleIdOfPath roots entry)
   Err e => Err e
   Ok (_, acc) => Ok acc

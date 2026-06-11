@@ -20,7 +20,7 @@
 
 import json.{Json, JNull, JBool, JInt, JString, JArray, JObject,
              jObject, jArray, stringify, parse, lookup, asString, asInt}
-import diagnostics.{Diag, Severity, SevError, SevWarning, analyzeLocated}
+import diagnostics.{Diag, Severity, SevError, SevWarning, analyzeLocated, analyzeProject}
 import parser.{ParseError, parseResult, parseErrorLine, parseErrorCol,
                parseErrorMessage, parseWithPositions,
                positionsDecls, DeclPos, declPosLine, declPosEndLine}
@@ -30,7 +30,8 @@ import fmt.{formatSource}
 import ast.{Decl, DTypeSig, DExtern, DFunDef, DData, DRecord, DUse, DEffect,
             DProp, DTest, DBench, DInterface, DImpl, DTypeAlias, DNewtype,
             DLetGroup, DAttrib, Loc(..),
-            Variant, Field, IfaceMethod, ImplMethod, LetBind, UsePath}
+            Variant, Field, IfaceMethod, ImplMethod, LetBind,
+            UsePath, UseName, UseGroup, UseWild, UseAlias}
 
 -- ── open-document store ─────────────────────────────────────────────────────
 -- uri → source text.  A plain association list; LSP sessions open a handful of
@@ -762,6 +763,103 @@ publishDiagnostics runtimeSrc coreSrc uri src =
   let params = jObject [("uri", JString uri), ("diagnostics", jArray diags)]
   writeMessage (notificationMsg "textDocument/publishDiagnostics" params)
 
+-- ── B.10.5: project-wide (multi-file) diagnostics ───────────────────────────
+--
+-- When the edited buffer imports a sibling module, run analyzeProject over the
+-- whole import graph (with the OPEN BUFFERS as unsaved-source overrides) and
+-- publish one publishDiagnostics PER affected file — the self-hosted analog of
+-- lib/lsp_server.ml's publish_project_diagnostics.  A buffer with no (non-core)
+-- imports keeps the single-document path (publishDiagnostics above).
+--
+-- Simplifications vs the OCaml LSP (consistent with the single-root selfhost
+-- loader, which has no medaka.toml / multi-root support — see loader.mdk):
+--   * project_dir = the DIRECTORY OF THE EDITED FILE (the loader's default root),
+--     not a medaka.toml / .git walk-up (no Project_config port in selfhost).
+--   * last-good source cache is a SESSION-LIVED module Ref (projectCache), so a
+--     buffer that currently fails to parse falls back to its last-parsed source
+--     across didChange events (mirror analyze_project's last_good_source Hashtbl)
+--     without threading extra state through the serve loop.
+
+-- session-lived last-good-source cache (file path → last source that parsed).
+projectCache : Ref (List (String, String))
+projectCache = Ref []
+
+-- file:// URI ↔ filesystem path.  LSP clients send `file://<abs-path>`; the
+-- loader works in plain paths.  pathOfUri strips the scheme; uriOfPath re-adds
+-- it (so a loader file path maps back to the Docs key for the read override).
+pathOfUri : String -> String
+pathOfUri uri =
+  if stringLength uri >= 7 && stringSlice 0 7 uri == "file://" then stringSlice 7 (stringLength uri) uri
+  else uri
+
+uriOfPath : String -> String
+uriOfPath path =
+  if stringLength path >= 7 && stringSlice 0 7 path == "file://" then path
+  else stringConcat ["file://", path]
+
+-- directory of a path (everything before the last '/'; "." if none).
+dirOfPath : String -> String
+dirOfPath path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo path 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+-- True when the buffer has a non-core `import` (→ project / multi-file path).
+bufferHasImports : String -> Bool
+bufferHasImports src = match parseResult src
+  Err _ => False                          -- unparseable → single-doc path squiggles it
+  Ok decls => anyImport decls
+
+anyImport : List Decl -> Bool
+anyImport [] = False
+anyImport (DUse _ path :: rest) = not (isCoreImport path) || anyImport rest
+anyImport (_ :: rest) = anyImport rest
+
+-- core is the implicit prelude — an `import core.{…}` is not a sibling dep.
+isCoreImport : UsePath -> Bool
+isCoreImport p = useHead p == "core"
+
+useHead : UsePath -> String
+useHead (UseName ns) = headOr "" ns
+useHead (UseGroup ns _) = headOr "" ns
+useHead (UseWild ns) = headOr "" ns
+useHead (UseAlias ns _) = headOr "" ns
+
+headOr : String -> List String -> String
+headOr d [] = d
+headOr _ (x :: _) = x
+
+-- Run analyzeProject over the graph rooted at the edited file and publish one
+-- notification per file in the result (clean files → []).  `docs` already holds
+-- the just-edited buffer; the read override maps a loader file path back to the
+-- Docs buffer for that uri (unsaved buffers shadow disk).
+publishProjectDiagnostics : String -> String -> String -> Docs -> <IO, Mut> Unit
+publishProjectDiagnostics runtimeSrc coreSrc uri docs =
+  let rootFile = pathOfUri uri
+  let projectDir = dirOfPath rootFile
+  let read = (path => docsGet (uriOfPath path) docs)
+  let results = analyzeProject projectCache read rootFile [projectDir] runtimeSrc coreSrc
+  publishEach results
+
+-- Publish a publishDiagnostics notification for each (file, diags) bucket,
+-- mapping the loader file path back to a file:// uri (mirror DocumentUri.of_path).
+publishEach : List (String, List Diag) -> <IO, Mut> Unit
+publishEach [] = ()
+publishEach ((file, ds) :: rest) =
+  let uri = uriOfPath file
+  let params = jObject [("uri", JString uri), ("diagnostics", jArray (map (diagToJson "") ds))]
+  let _ = writeMessage (notificationMsg "textDocument/publishDiagnostics" params)
+  publishEach rest
+
+-- Choose the single-document or project path for a freshly-edited buffer.
+publishFor : String -> String -> String -> String -> Docs -> <IO, Mut> Unit
+publishFor runtimeSrc coreSrc uri text docs =
+  if bufferHasImports text then publishProjectDiagnostics runtimeSrc coreSrc uri docs
+  else publishDiagnostics runtimeSrc coreSrc uri text
+
 -- Extract a textDocument/{didOpen,didChange} uri + text and publish.
 -- didOpen:   params.textDocument.{uri,text}
 -- didChange: params.textDocument.uri + params.contentChanges[last].text
@@ -774,8 +872,9 @@ handleDidOpen runtimeSrc coreSrc params docs =
       match fieldStr "text" (fieldOr "textDocument" params)
         None => docs
         Some text =>
-          let _ = publishDiagnostics runtimeSrc coreSrc uri text
-          docsPut uri text docs
+          let docs2 = docsPut uri text docs
+          let _ = publishFor runtimeSrc coreSrc uri text docs2
+          docs2
 
 handleDidChange : String -> String -> Json -> Docs -> <IO, Mut> Docs
 handleDidChange runtimeSrc coreSrc params docs =
@@ -785,8 +884,9 @@ handleDidChange runtimeSrc coreSrc params docs =
       match lastChangeText (fieldOr "contentChanges" params)
         None => docs
         Some text =>
-          let _ = publishDiagnostics runtimeSrc coreSrc uri text
-          docsPut uri text docs
+          let docs2 = docsPut uri text docs
+          let _ = publishFor runtimeSrc coreSrc uri text docs2
+          docs2
 
 -- ── B.10.3 request handlers ─────────────────────────────────────────────────
 -- Each looks the doc up in the store and writes a JSON-RPC response.  A missing

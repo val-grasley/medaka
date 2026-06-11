@@ -1,0 +1,4 @@
+import util_a.{triple}
+
+export sixfold : Int -> Int
+sixfold x = triple x + triple x

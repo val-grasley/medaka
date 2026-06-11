@@ -1,0 +1,4 @@
+import lib_clean.{double}
+
+export oops : Int
+oops = double "not an int"
