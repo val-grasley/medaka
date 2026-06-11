@@ -220,6 +220,43 @@ quadratic that would worsen as the compiler grows.
 | self-compile | 12.04 s | **5.49 s** | **2.19×** |
 | vs OCaml interpreter | 125.35 s | 5.49 s | **22.8×** |
 
+---
+
+## Entry 5 — DCE reachability: O(N²) list appends → O(1) prepends (2026-06-10)
+
+**Profile first.** `sample` on the emitter during self-compile (2 GB heap to
+isolate compute from GC) ranked the hot symbols: O(N²) dedup/closure routines
+dominate — `dedupSGo`/`clausesFor` (typechecker), and the DCE pass
+(`addRefs`/`filterReachable`/`dedupAgainst`/`closure`).
+
+**Change (`selfhost/dce.mdk`):** the DCE reachability result is consumed *only* by
+`filterReachable`'s membership test (`contains n reach`), and `filterReachable`
+emits decls in their original order — so the reachable list's **order and
+duplicates are irrelevant**, only its set membership matters. That makes every
+`acc ++ [x]` / `visited ++ fresh` / `work ++ fresh` / `v ++ rs` append (each
+O(len) inside a loop → O(N²)) safe to flip to an O(1) prepend (`x :: acc`,
+`fresh ++ visited`, `rs ++ v`). The closure fixpoint set is unchanged.
+
+**Gates:** `selfcompile_fixpoint` C3a/C3b YES; `diff_selfhost_build` 9/9
+byte-identical; `diff_selfhost_llvm` 172/172; `diff_selfhost_llvm_modules` 8/8.
+Set membership is provably invariant under the reorder. (Seed stale — dce.mdk is
+in the emit graph; fixpoint verified, not re-minted.)
+
+**Numbers (self-compile, min-of-3, -O2 + divisor=1):** 5.49 s → **5.33 s**
+(~3 %), RSS flat at 199 MB. Modest — the append-quadratic was only part of the
+DCE cost; the remaining `contains` membership scans are still linear-per-element
+(a future hash-set conversion, safe for the same set-invariance reason, would
+remove them). Banked because it is correct, verified, and kills a quadratic that
+grows with the compiler.
+
+**Remaining hotspots (profiled, not yet addressed):** typechecker `dedupSGo` /
+`clausesFor` / `groupNames` are O(N²) over the whole-program clause list and rank
+above DCE, but they sit on the typecheck output path (not order-invariant) and a
+safe rewrite needs O(1) membership (hash set) with full differential
+re-verification — deferred as higher-risk than tonight's banked wins warrant
+unattended.
+
+
 
 
 

@@ -67,10 +67,13 @@ funGraph ((DFunDef _ n ps body)::rest) acc =
 funGraph (_::rest) acc = funGraph rest acc
 
 -- accumulate refs for `n` (merge multi-clause definitions of the same name).
+-- Order within a node's ref list is irrelevant — `reachableNames` is consumed
+-- only by `filterReachable`'s membership test — so prepend the (small) new refs
+-- onto the accumulated list (O(|rs|)) instead of `v ++ rs` (O(|v|)).
 addRefs : String -> List String -> List (String, List String) -> List (String, List String)
 addRefs n rs [] = [(n, rs)]
 addRefs n rs ((k, v)::rest)
-  | k == n = (k, v ++ rs) :: rest
+  | k == n = (k, rs ++ v) :: rest
   | otherwise = (k, v) :: addRefs n rs rest
 
 -- roots from emitting non-DFunDef decls: impl-method + interface-default bodies.
@@ -99,14 +102,18 @@ dedup : List String -> List String -> List String
 dedup [] acc = acc
 dedup (x::xs) acc
   | contains x acc = dedup xs acc
-  | otherwise = dedup xs (acc ++ [x])
+  | otherwise = dedup xs (x :: acc)
 
 -- closure: process the worklist; for each name that is a DFunDef, add its refs.
+-- The final `visited` SET is the closure fixpoint — independent of worklist order
+-- and of duplicates — and is consumed only by membership tests, so prepend the
+-- fresh names (O(|fresh|)) instead of `visited ++ fresh` / `work ++ fresh`
+-- (O(|visited|) / O(|work|)), turning the closure loop from O(N²) to ~O(N).
 closure : List (String, List String) -> List String -> List String -> List String
 closure _ visited [] = visited
 closure graph visited (w::work) =
   let fresh = newOnes (refsOf graph w) visited
-  closure graph (visited ++ fresh) (work ++ fresh)
+  closure graph (fresh ++ visited) (fresh ++ work)
 
 refsOf : List (String, List String) -> String -> List String
 refsOf [] _ = []
@@ -123,4 +130,4 @@ dedupAgainst [] _ acc = acc
 dedupAgainst (x::xs) visited acc
   | contains x visited = dedupAgainst xs visited acc
   | contains x acc = dedupAgainst xs visited acc
-  | otherwise = dedupAgainst xs visited (acc ++ [x])
+  | otherwise = dedupAgainst xs visited (x :: acc)
