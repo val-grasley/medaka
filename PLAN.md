@@ -123,15 +123,16 @@ date; deletion is unlocked only when the bar below is met).
    named-field deriving).
 4. ⏳ **NOT STARTED.** Performance — emitted IR is `-O0`; nobody's turned on `-O2` or benchmarked
    native-compiler-vs-OCaml. (Worth a scoping pass.)
-5. 🟡 **SCOPED 2026-06-10 — ~90% done at the capability level; packaging queued (#41, after C5).**
-   The C3 fixpoint already produces + byte-verifies a native emitter; remaining is packaging
-   (~1-2 days, no source change). Decided: commit a ~10.6 MB **checked-in IR seed**
-   (`selfhost/seed/emitter.ll`), single-platform arm64-macOS, per-release/on-demand gating.
-   **Key insight: the seed is self-refreshing** — OCaml is needed only for the first mint; after
-   that the native emitter emitting itself (C3b) regenerates it → genuine OCaml-free steady state.
-   Real gaps to close in the build: verify the strict `medaka build` driver fixpoints (proven only
-   for the gap-tolerant bootstrap driver so far); a ~5-line `build_cmd.mdk` edit to call a native
-   emitter binary instead of `medaka run`.
+5. ✅ **DONE 2026-06-10 (`44f5433`).** OCaml-free seed bootstrap. The strict `medaka build` driver
+   (`llvm_emit_modules_main.mdk`) **fixpoints** (C3a/C3b YES — the one real gap, now verified via
+   `test/selfcompile_build_fixpoint.sh`). Committed seed `selfhost/seed/emitter.ll` (~9.6 MB text IR,
+   deterministic); `test/bootstrap_from_seed.sh` = `clang(seed)→seed_emitter→re-emit→cmp→clang→medaka_emitter`,
+   **no `medaka run` anywhere** (opt-in gate). `build_cmd.mdk` reads `MEDAKA_EMITTER` env (native emitter
+   binary) with the `medaka run` fallback. Self-refresh confirmed (native emitter reproduces the seed = C3b);
+   `test/refresh_seed.sh` is the only OCaml-using script, run on demand. Decisions honored (text IR, arm64,
+   opt-in gating). Doc: `BOOTSTRAP.md` §"C4 — OCaml-free seed bootstrap". **⚠️ Any future emitter-IR change
+   (ELoc, tuple-as-receiver, C7-native, …) makes the committed seed stale → run `test/refresh_seed.sh` to
+   re-mint (per-release flow).**
 6. 🟢 **Soundness + correctness CLOSED.** TYPECHECK-AUDIT: all confirmed soundness/correctness/
    diagnostic findings closed (S1-S3, T1/T1b/T2, C1-C9, D1/D2, OBS3/OBS4); **C4 resolved by decision**
    (lazy nullary canonical); **C5 ✅ CLOSED** (`5db8a83`, RLocal end-to-end, fixpoint byte-identical);
