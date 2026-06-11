@@ -222,10 +222,12 @@ stage's `diff_selfhost_*` / `bootstrap_*` harness. Confirmed soundness items fir
   `infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty` (`typecheck.mdk:1385`, helper
   `:2038`) — was `panic "unsupported expression (slice 1)"`. `check.mdk` on `map.mdk`/`set.mdk`
   now typechecks (schemes, no panic); their doctests are in the `diff_selfhost_test` gate.
-- **OBS4** (selfhost correctness gap, surfaced during D1) — record *construction*
-  lacks the oracle's `MissingField` check: `Pt { x = 1 }` omitting a required field
-  typechecks clean on selfhost but the oracle reports `Missing field …`. A missing
-  check (not a panic). Clean contained correctness port — close next.
+- **OBS4** — ✅ **CLOSED (2026-06-10, during the medaka-test GAP-C work).** Record
+  *construction* `MissingField` check: `checkMissingFields`/`missingFieldMsg`
+  (`selfhost/typecheck.mdk:1981-1993`, called from `inferRecordCreateWith`) — message
+  `"Missing field <f> in construction of record <r>"` byte-identical to oracle
+  (`lib/typecheck.ml:718`). Fixture `test/typecheck_error_fixtures/missing_field.mdk`;
+  `test_typecheck` 482/482, `diff_selfhost_check` 40/40, C3a/C3b fixpoint green.
 - **C3** — ✅ **CLOSED (`d4f1469`).** Added `AnnotationTooGeneral` — after
   `inferAnnot`'s unify, requires the annotation's tyvars to stay distinct unbound
   (flags grounding + collapse via `sigTvarIds`/`hasDupI`); message byte-identical
