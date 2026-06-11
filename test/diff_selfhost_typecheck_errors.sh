@@ -11,7 +11,7 @@
 #
 # Two drivers tested:
 #   A. typecheck_main.mdk  — bare HM engine, no prelude, matches tc_probe.exe
-#   B. check.mdk           — full composed front-end with prelude; same error
+#   B. check_main.mdk      — full composed front-end with prelude; same error
 #
 # Usage:  sh test/diff_selfhost_typecheck_errors.sh
 set -u
@@ -20,7 +20,7 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 MAIN="$ROOT/_build/default/bin/main.exe"
 TC="$ROOT/_build/default/dev/tc_probe.exe"
 TC_MAIN="$ROOT/selfhost/typecheck_main.mdk"
-CHECK="$ROOT/selfhost/check.mdk"
+CHECK="$ROOT/selfhost/check_main.mdk"
 RT="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 FIXDIR="$ROOT/test/typecheck_error_fixtures"
