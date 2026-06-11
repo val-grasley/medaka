@@ -81,6 +81,24 @@ main : <IO> Unit
 main = putStrLn (intToString (applyTwice (x => x + 10) 5))
 EOF
 
+# gap #50 — interface method (max/min) used as a first-class value through a
+# generic `Ord a`: point-free alias (callMax = max), the min analog, and a method
+# passed to an Ord-constrained HOF.  All three lowered to garbage pre-fix.
+cat > "$WORK/src/maxalias.mdk" <<'EOF'
+callMax : Ord a => a -> a -> a
+callMax = max
+callMin : Ord a => a -> a -> a
+callMin = min
+applyOp : Ord a => (a -> a -> a) -> a -> a -> a
+applyOp f x y = f x y
+main : <IO> Unit
+main =
+  putStrLn (intToString (callMax 3 7))
+  putStrLn (callMax "a" "z")
+  putStrLn (intToString (callMin 3 7))
+  putStrLn (intToString (applyOp max 4 9))
+EOF
+
 # multi-module
 mkdir -p "$WORK/src/mm"
 cat > "$WORK/src/mm/helper.mdk" <<'EOF'
@@ -109,7 +127,7 @@ main : <IO> Unit
 main = putStrLn (debug Red ++ " " ++ debug Blue ++ " " ++ debug (Red == Red))
 EOF
 
-PROGRAMS="arith recur adt list closure show_debug eq deriving"
+PROGRAMS="arith recur adt list closure maxalias show_debug eq deriving"
 
 pass=0; fail=0
 

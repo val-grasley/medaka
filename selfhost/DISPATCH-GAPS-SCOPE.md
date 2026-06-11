@@ -16,6 +16,38 @@ The native backend pipeline: `typecheck.mdk` `elaborateModules` route-stamps →
 
 ## Gap #50 — `max`/`min` over generic `Ord a` (RDict → default-body synthesis)
 
+> **CLOSED 2026-06-11** (`feat(selfhost): emit interface-method-as-value via dispatching eta-closure`).
+> The 2026-06-10 root-cause hypothesis below (raw `emitVar "max"` value lookup / `@mdk_g_callMax`
+> global storing 0) was **WRONG** — empirical trace on current main showed NO global and NO gap.
+> **Actual root cause:** an arity mismatch between the call site and the lifted define for a
+> point-free `=>`-constrained binding. `callMax = max` dict-passes to a single clause with ONE
+> param (the `Ord a` dict) and body `CMethod "max" (RDict $d)` applied to ZERO value args, but
+> `max` needs TWO. So `emitFnClause` emits `@…callMax(i64 %arg0)` (arity 1, dict only) whose body
+> dispatches `max` with `argOps=[]` (→ `@mdk_default_max_Int()` called with no operands), while the
+> call site (`emitDictApp callMax $d x y`) passes dict + the two real args, **over-applying** the
+> define and silently dropping the value args → the default body reads garbage (observed `0`).
+> **Fix (emitter-only, general):**
+> 1. `etaSaturateMethodBody` (in `emitFn`) — a binding whose body is an under-applied `CMethod`
+>    eta-SATURATES: appends `methodArityOf − applied` fresh value params to the clause and applies
+>    them to the body, so the define's arity matches the call site and the body becomes a SATURATED
+>    method application (full args threaded through the RDict dispatch chain). Closes `callMax = max`,
+>    `callMin = min`, over any `Ord a` element type (Int/String/…).
+> 2. `emitMethodValue` (replaces the bare-`CMethod`-value arm of `emitExpr`) — a method occurrence
+>    used as a FIRST-CLASS VALUE (passed to a HOF, e.g. `applyOp max 3 7`) eta-wraps into a real
+>    closure `@mdk_methval_<name>_N(%clos, %arg…)` whose body re-emits the saturated dispatch; for an
+>    RDict/RDictFwd route the closure CAPTURES the dict word and rebinds it from `%clos` in the body,
+>    so the runtime impl switch still reads the caller's dict.
+> 3. `emitVar` gains an `isImplMethod x → emitMethodEtaClosure` arm (mirror of the extern-as-value
+>    `emitExternEtaClosure`) for a bare tagged-method name reaching value position as a `CVar`.
+>
+> **What is now general:** any interface method used as a value — point-free alias under a `=>`
+> constraint, passed to a HOF, or reached through a generic `Ord a` function calling `max`/`min`
+> internally — lowers correctly. Mirrors the extern-as-value generalization (`6b8d215`).
+> **Verified repros** (native build+run == interpreter): `callMax = max; callMax 3 7`→`7`,
+> `callMax "a" "z"`→`"z"`; `min` analogs→`3`/`"a"`; `clamp lo hi x = max lo (min hi x)`→`7`/`10`;
+> `applyOp : Ord a => (a→a→a)→a→a→a; applyOp max 3 7`→`7`. **Gates:** diff 172/9/37/9 byte-identical,
+> self-compile fixpoint C3a/C3b YES, native CLI 54/54. **Not coupled** to #54/#21/#55.
+
 ### Minimal repro
 
 ```

@@ -875,7 +875,7 @@ emitExpr e env (CRecord name fields) = emitRecordCreate e env name fields
 emitExpr e env (CFieldAccess ex label) = emitFieldAccess e env ex label
 emitExpr e env (CRecordUpdate base updates) = emitRecordUpdate e env base updates
 emitExpr e env (CVariantUpdate con base updates) = emitVariantUpdate e env con base updates
-emitExpr e env (CMethod name route implRoutes methRoutes) = emitMethod e env name route implRoutes methRoutes []
+emitExpr e env (CMethod name route implRoutes methRoutes) = emitMethodValue e env name route implRoutes methRoutes
 emitExpr e env (CArray es) = emitArrayCreate e env es
 emitExpr e env (CRangeArray lo hi incl) = emitRangeArray e env lo hi incl
 emitExpr e env (CIndex a i) = emitArrayIndex e env a i
@@ -914,6 +914,7 @@ emitVar e env x =
     else emitCtorEtaClosure e x
   else if isKnownFn e x then emitEtaClosure e x
   else if isAnyExtern x then emitExternEtaClosure e x
+  else if isImplMethod e x then emitMethodEtaClosure e x
   else lookupVarG e env x
 
 -- is `x` a local (let/param) binding in the current emit env?  Used to let a local
@@ -2375,6 +2376,61 @@ emitMethod e env name route implRoutes methRoutes argOps =
     -- fixpoint stays byte-identical; only the box/main fixture reaches it.)
     RLocal => emitKnownFnSat e ("mdk_" ++ name) argOps (fnArity e name) (fnRetTy e name)
 
+-- Gap #50 (value position) — a bare method occurrence `CMethod name route ..` used
+-- as a FIRST-CLASS VALUE (passed to a HOF, e.g. `applyOp max 3 7`): there are no
+-- applied args, so the saturated dispatch chain that `emitMethod .. []` would emit
+-- runs the impl/default with ZERO operands (garbage), and the result is then handed
+-- to the HOF as a closure word and INDIRECTLY called → crash.  Instead eta-wrap the
+-- method into a real closure value: a lifted `@mdk_methval_<name>_N(%clos, %arg…)`
+-- whose body re-emits the SATURATED dispatch (emitMethod with the full %argK
+-- operands) under the method's own route.  For an RDict/RDictFwd route the closure
+-- CAPTURES the dict word and rebinds it from `%clos` field 1 in the body, so the
+-- runtime impl switch still reads the caller's dict.  A nullary method (arity 0,
+-- e.g. `def`) is a plain value — keep the immediate `emitMethod .. []`.
+emitMethodValue : Emit -> List (String, (String, LTy)) -> String -> Route -> List Route -> List Route -> <Mut> (String, LTy)
+emitMethodValue e env name route implRoutes methRoutes =
+  let arity = methodArityOf name
+  if arity <= 0 then emitMethod e env name route implRoutes methRoutes []
+  else
+    let capNames = methValDictNames route
+    let capWords = capDictWords env capNames
+    let lamName = "mdk_methval_" ++ name ++ "_" ++ intToString (freshId e)
+    let _ = emitMethodValDefine e lamName name route implRoutes methRoutes arity capNames
+    emitClosureAlloc e lamName capWords
+
+-- the dict-witness param name(s) a route reads at runtime (the names whose words the
+-- value-closure must capture so the lifted body can rebind them).  Only RDict/
+-- RDictFwd name a dict; RKey/RNone/RLocal capture nothing.  (Distinct from the
+-- `freeVars` helper `routeDictNames`, which scans a route LIST for free dict vars.)
+methValDictNames : Route -> List String
+methValDictNames (RDict d) = [d]
+methValDictNames (RDictFwd d) = [d]
+methValDictNames _ = []
+
+-- the operand words for each captured dict name, looked up in the current emit env.
+capDictWords : List (String, (String, LTy)) -> List String -> <Mut> List String
+capDictWords _ [] = []
+capDictWords env (d::rest) = dictOperand env d :: capDictWords env rest
+
+-- emit the lifted method-value forwarder.  Captures (the dict words) load from
+-- `%clos` fields 1.. and rebind the route's dict name(s); the body re-emits the
+-- SATURATED method dispatch over the `%argK` value operands.
+emitMethodValDefine : Emit -> String -> String -> Route -> List Route -> List Route -> Int -> List String -> <Mut> Unit
+emitMethodValDefine e lamName name route implRoutes methRoutes arity capNames =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
+  let _ = emit e "entry:"
+  let cenv = loadCaptures e capNames 0
+  let synArgs = etaArgOps arity 0
+  let (r, _) = emitMethod e cenv name route implRoutes methRoutes synArgs
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
+  set_ref (bufRef e) saved
+
 -- E19: an RKey route into a method with NO tagged impl for `tag` — the type's
 -- `impl` did not override an interface DEFAULT.  Emit the default body as a
 -- lifted `@mdk_default_<method>_<tag>` define (eta-expanded to full arity, inner
@@ -3552,6 +3608,38 @@ emitExternEtaClosure e name =
   let _ = emitExternEtaDefine e lamName name (externArity e name)
   emitClosureAlloc e lamName []
 
+-- Gap #50 (value position) — an interface METHOD name reaching emitVar as a bare
+-- first-class value (passed to a HOF, e.g. `apply2 max 3 8`).  At a value site the
+-- receiver type is monomorphic but NO route accompanies the bare CVar (routes live
+-- on CMethod, not CVar), so dispatch must fall to the runtime arg-tag path.  Eta-
+-- wrap into a captureless closure whose lifted body REPLAYS emitMethodArgDispatch's
+-- applied-form codegen on the incoming `%argK` operands — byte-consistent with the
+-- saturated `isImplMethod` call site (emitApp).  Arity = methodArityOf.  (A method
+-- reached point-free under a `=>` CONSTRAINT instead becomes a fn-bind with a dict
+-- param and is eta-saturated at the define by etaSaturateMethodBody.)
+emitMethodEtaClosure : Emit -> String -> <Mut> (String, LTy)
+emitMethodEtaClosure e name =
+  let lamName = "mdk_eta_" ++ name ++ "_" ++ intToString (freshId e)
+  let _ = emitMethodEtaDefine e lamName name (methodArityOf name)
+  emitClosureAlloc e lamName []
+
+-- the captureless method-eta forwarder `@mdk_etaN(i64 %clos, %arg…) { <inline
+-- arg-tag dispatch over %arg0..%arg(N-1)>; ret }` (mirror of emitExternEtaDefine).
+emitMethodEtaDefine : Emit -> String -> String -> Int -> <Mut> Unit
+emitMethodEtaDefine e lamName name arity =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
+  let _ = emit e "entry:"
+  let synArgs = etaArgOps arity 0
+  let (r, _) = emitMethodArgDispatch e name synArgs
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
+  set_ref (bufRef e) saved
+
 -- the declared arity of extern `name` = the arrow count of its runtime signature
 -- (`declSigOf` is seeded from the runtime extern decls via declSigTypeNames).  An
 -- extern with no recorded signature defaults to arity 1 (every current extern is
@@ -3596,6 +3684,14 @@ etaArgVars : Int -> Int -> List CExpr
 etaArgVars n i =
   if i >= n then []
   else CVar ("__eta_arg" ++ intToString i ++ "__") AGlobal :: etaArgVars n (i + 1)
+
+-- the eta-define's `%arg0..%arg(n-1)` parameter OPERAND words (as raw register
+-- strings), for an eta body that consumes operands directly (emitMethodArgDispatch)
+-- rather than re-emitting CVars through an env.
+etaArgOps : Int -> Int -> List String
+etaArgOps n i =
+  if i >= n then []
+  else ("%arg" ++ intToString i) :: etaArgOps n (i + 1)
 
 
 closureParamDecls : List Pat -> String
@@ -4385,10 +4481,60 @@ emitFns e (b::rest) =
 
 emitFn : Emit -> CBind -> <Mut> Unit
 emitFn e (CBind name [CClause pats body]) =
-  if allPVar pats then emitFnClause e name pats body
-  else emitMultiClauseFn e name [(pats, body)]
+  let (pats2, body2) = etaSaturateMethodBody e pats body
+  if allPVar pats2 then emitFnClause e name pats2 body2
+  else emitMultiClauseFn e name [(pats2, body2)]
 emitFn e (CBind name (c::rest)) = emitMultiClauseFn e name (clausePairs (c::rest))
 emitFn _ (CBind _ []) = gapU "top-level function with no clauses"
+
+-- Gap #50 — eta-SATURATE a point-free constrained binding whose body is an
+-- UNDER-APPLIED interface-method (CMethod) or constrained-fn (CDict) occurrence.
+-- `callMax : Ord a => a -> a -> a; callMax = max` dict-passes to a clause with ONE
+-- param (the `Ord a` dict) and body `CMethod "max" (RDict $d) ..` applied to ZERO
+-- value args — but `max` needs TWO.  The lifted define then has arity 1 (dict only)
+-- while the call site (emitDictApp `callMax $d x y`) passes dict + the two real
+-- args, OVER-applying the define and silently DROPPING the value args → the method
+-- dispatch runs with garbage operands (observed: 0).  Append `deficit` fresh value
+-- params to the clause and apply them to the body, so (1) the define's arity matches
+-- what the call site passes, and (2) the body becomes a SATURATED method application
+-- (emitMethod threads the full argOps through the RDict dispatch chain).  General:
+-- any method/constrained-fn used point-free under a `=>` constraint (the dict makes
+-- it a fn-bind, not the arity-0 value global that an UNCONSTRAINED alias becomes and
+-- which already eta-closures correctly via emitVar→emitEtaClosure).
+etaSaturateMethodBody : Emit -> List Pat -> CExpr -> <Mut> (List Pat, CExpr)
+etaSaturateMethodBody e pats body =
+  let deficit = methodBodyDeficit e body
+  if deficit <= 0 then (pats, body)
+  else
+    let fresh = etaFreshPats deficit (listLen pats)
+    (pats ++ fresh, applyEtaArgs body fresh)
+
+-- the count of still-unapplied VALUE params of an under-applied method/dict body
+-- (0 = saturated / not a method-or-dict head ⇒ no eta-expansion).  A bare CMethod
+-- needs its full `methodArityOf`; an applied spine `(CApp.. (CMethod..) a1..ak)`
+-- needs `methodArityOf - k`.  CDict (a constrained-fn occurrence) is left alone:
+-- when its head is point-free it is an arity-0 value alias handled elsewhere, and a
+-- partially-applied CDict already passes its supplied args through emitDictApp.
+methodBodyDeficit : Emit -> CExpr -> <Mut> Int
+methodBodyDeficit _ (CMethod name _ _ _) = methodArityOf name
+methodBodyDeficit e app =
+  let (hd, args) = flattenApp app []
+  match hd
+    CMethod name _ _ _ => maxInt 0 (methodArityOf name - listLen args)
+    _ => 0
+
+-- `n` fresh value-param PVars (`__eta_<i>`) numbered after the existing `start`
+-- params so paramEnv/paramDecls index them positionally without clashing.
+etaFreshPats : Int -> Int -> List Pat
+etaFreshPats 0 _ = []
+etaFreshPats n start = PVar ("__eta_" ++ intToString start) :: etaFreshPats (n - 1) (start + 1)
+
+-- apply `body` to each fresh eta param as a CVar (AGlobal — emit resolves a CVar by
+-- NAME against the param env, ignoring the Addr), left to right.
+applyEtaArgs : CExpr -> List Pat -> CExpr
+applyEtaArgs body [] = body
+applyEtaArgs body ((PVar x)::rest) = applyEtaArgs (CApp body (CVar x AGlobal)) rest
+applyEtaArgs body (_::rest) = applyEtaArgs body rest
 
 -- E1a — multi-clause / patterned top-level fns.  Route ordinary fn-binds whose
 -- clauses don't all reduce to plain-variable params through the SAME
