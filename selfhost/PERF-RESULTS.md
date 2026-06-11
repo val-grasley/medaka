@@ -292,15 +292,15 @@ Tested and **rejected** — recorded so future sessions skip them:
 
 | Workload | original (-O0, div 3) | final | speedup |
 |---|---|---|---|
-| emitter self-compile | 12.04 s / 770 MB | **2.17 s / 200 MB** | **5.55× / 3.9× less RSS** |
-| vs OCaml interpreter | 125.35 s / 1467 MB | 2.17 s / 200 MB | **57.8× / 7.3× less RSS** |
+| emitter self-compile | 12.04 s / 770 MB | **2.12 s / 200 MB** | **5.68× / 3.9× less RSS** |
+| vs OCaml interpreter | 125.35 s / 1467 MB | 2.12 s / 200 MB | **59.1× / 7.3× less RSS** |
 | fib 38 (no alloc) | 0.11 s | 0.10 s | flat (already optimal) |
 
 Banked, all universal defaults, every change gated byte-identical (fixpoint +
 differential fixtures + build gate): clang `-O2`, GC `free_space_divisor=1`,
 lifted-define buffer O(N²)→O(N), DCE reachability+graph O(N²)→O(N) via HashMap,
 typecheck dep-graph + SCC clause grouping + dedup O(N²)→O(N·log N) via SMap. The
-native compiler is **~58× faster than the OCaml interpreter** at the representative
+native compiler is **~59× faster than the OCaml interpreter** (min-of-10, quiet machine) at the representative
 self-compile workload — the OCaml-retirement performance bar is met with wide
 margin.
 
@@ -794,3 +794,21 @@ fixpoints were run at HEAD — all green, byte-identical to the OCaml oracle:
 pathologically slow and exercises stdlib *function behaviour*, which these
 perf-only, output-preserving changes do not touch.) The 18-win, ~5.55× / ~58×
 result is durable and fully oracle-certified.
+
+---
+
+## Authoritative final figure (2026-06-11 04:03, quiet machine, min-of-10)
+
+Self-compile timed min-of-10 with the machine idle: runs 2.12–2.31 s,
+**min 2.12 s** (median ~2.21 s). Definitive cumulative for the session:
+
+| | -O0 / default-GC baseline | final (18 wins) | speedup |
+|---|---|---|---|
+| emitter self-compile | 12.04 s | **2.12 s** | **5.68×** |
+| vs OCaml interpreter | 125.35 s | 2.12 s | **59.1×** |
+| peak RSS | 770 MB | 200 MB | 3.9× less |
+
+The earlier per-entry figures (2.17–2.40 s) were under variable daytime/evening
+load; this min-of-10 at ~04:00 is the cleanest measurement. Result: the native
+backend self-compiles in ~2.1 s and is **~59× faster than the OCaml interpreter**,
+meeting the OCaml-retirement performance bar with very wide margin.
