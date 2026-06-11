@@ -16,6 +16,10 @@ gate state, and the numbers (min-of-N, single-threaded, quiet machine).
 Method: `/usr/bin/time -l`, min-of-3 unless noted, cache pre-warmed, no parallel
 CPU work during timing runs.
 
+Reproduce with **`sh test/bench.sh`** (`--quick` for micros only, `--interp` to
+add the OCaml-interpreter self-compile, `-n N` for min-of-N). It builds each
+fixture via `medaka build` so it always reflects the current build-driver flags.
+
 Workloads:
 - **fib 38** (`test/bench_fixtures/fib.mdk`) — exponential tree recursion,
   pure Int, **no heap allocation** → isolates raw codegen, zero GC.
