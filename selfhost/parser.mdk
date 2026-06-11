@@ -16,7 +16,7 @@
 -- forms, and the rest of the operator ladder come in later slices.
 
 import ast.{Lit(..), Ty(..), Constraint(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), Loc(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..), Attr(..), Route(..)}
-import lexer.{Token(..), tokenize, tokenizeWithLines, tokenizeWithOffsets, offsetToLineCol}
+import lexer.{Token(..), tokenize, tokenizeWithLines, tokenizeWithOffsets, tokenizeWithOffsetPairs, offsetToLineCol}
 import util.{reverseL}
 
 -- ── The Parser monad ────────────────────────────────────────────────────
@@ -81,35 +81,39 @@ getPos = Parser (toks pos => POk pos pos)
 locSrcRef : Ref String
 locSrcRef = Ref ""
 
-locOffsRef : Ref (Array Int)
+locOffsRef : Ref (Array (Int, Int))
 locOffsRef = Ref (arrayFromList [])
 
-setLocState : String -> Array Int -> <Mut> Unit
+setLocState : String -> Array (Int, Int) -> <Mut> Unit
 setLocState src offs =
   let _ = set_ref locSrcRef src
   set_ref locOffsRef offs
 
--- offset of token `i`'s first char (0 when out of range / unset).
+-- start char offset of token `i` (0 when out of range / unset).
 tokOffsetAt : Int -> Int
 tokOffsetAt i =
   let offs = locOffsRef.value
-  if i >= 0 && i < arrayLength offs then arrayGetUnsafe i offs else 0
+  if i >= 0 && i < arrayLength offs then fst (arrayGetUnsafe i offs) else 0
+
+-- end char offset of token `i` — one past its last character (0 when out of range / unset).
+tokEndOffsetAt : Int -> Int
+tokEndOffsetAt i =
+  let offs = locOffsRef.value
+  if i >= 0 && i < arrayLength offs then snd (arrayGetUnsafe i offs) else 0
 
 -- Build a `Loc` from a [start, end) token-index span.  start → the span's first
--- token's offset; end → the last consumed token (`endIdx - 1`)'s START offset (an
--- approximation of Menhir's `$endpos`).  B.10.2b consequence: the LSP surfaces
--- this span as a diagnostic range, so the START line/col are exact (match the
--- OCaml LSP), but the END equals the last token's start — a single-token expr
--- yields an empty span where OCaml's `$endpos` reaches the token's end.  A tight
--- end would need token LENGTHS threaded through the lexer layout pass (the offset
--- side-channel only carries token starts); deferred as a cross-cutting lexer
--- change.  `file` is left "" for the caller to fill.
+-- token's START offset; end → the last consumed token's END offset (one past its
+-- last character), matching Menhir's `$endpos`.  Both start and end offsets are
+-- now exact: `tokenizeWithOffsetPairs` threads the lexer-computed end (the next
+-- scan position after each token) through the layout pass.  For a single-token
+-- expr (`"x"`) start_col < end_col = start_col + token_length, matching the
+-- OCaml LSP's range exactly.  `file` is left "" for the caller to fill.
 locOfSpan : Int -> Int -> Loc
 locOfSpan startIdx endIdx =
   let src = locSrcRef.value
   let lastIdx = if endIdx > startIdx then endIdx - 1 else startIdx
   match offsetToLineCol src (tokOffsetAt startIdx)
-    (sl, sc) => match offsetToLineCol src (tokOffsetAt lastIdx)
+    (sl, sc) => match offsetToLineCol src (tokEndOffsetAt lastIdx)
       (el, ec) => Loc "" sl sc el ec
 
 -- Wrap an expr production in a transparent ELoc capturing its token span.
@@ -2713,9 +2717,9 @@ parse src =
 export
 parseLocated : String -> <Mut> List Decl
 parseLocated src =
-  match tokenizeWithOffsets src
-    (tokList, offList) =>
-      let _ = setLocState src (arrayFromList offList)
+  match tokenizeWithOffsetPairs src
+    (tokList, offPairs) =>
+      let _ = setLocState src (arrayFromList offPairs)
       let toks = arrayFromList tokList
       resultDecls toks (runP parseProgram toks 0)
 

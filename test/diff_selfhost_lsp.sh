@@ -159,17 +159,15 @@ struct_ok = (len(sd) == len(od) == 1
 # the same line as OCaml's end (documented $endpos gap — see header).
 sr, oj = sd[0]["range"], od[0]["range"]
 start_ok = (sr["start"] == oj["start"])
-end_ok = (sr["end"]["line"] == oj["end"]["line"]
-          and sr["end"]["character"] >= sr["start"]["character"])
+end_ok = (sr["end"] == oj["end"])
 if not start_ok:
     sys.stderr.write("RANGE START mismatch: self=%s oracle=%s\n" % (sr["start"], oj["start"]))
-if sr["end"] != oj["end"]:
-    sys.stderr.write("RANGE END approximate (documented $endpos gap): self=%s oracle=%s\n"
-                     % (sr["end"], oj["end"]))
+if not end_ok:
+    sys.stderr.write("RANGE END mismatch: self=%s oracle=%s\n" % (sr["end"], oj["end"]))
 ok = struct_ok and start_ok and end_ok
 sys.exit(0 if ok else 1)
 PY
-check "didOpen type-error → one Error diagnostic; expr-range START == check --json (end approx)" "$?"
+check "didOpen type-error → one Error diagnostic; expr-range START and END == check --json" "$?"
 
 # ── 4. didChange replaces a clean buffer with an error one ──────────────────
 drive_lsp \
