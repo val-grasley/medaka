@@ -489,3 +489,24 @@ behaviour is identical.
 **Numbers (self-compile, min-of-5, -O2 + divisor=1):** 3.24 s → **2.98 s** (~8%).
 **Crossed 4×:** cumulative this session 12.04 s → 2.98 s (**4.04×**); vs OCaml
 interpreter 42.1×.
+
+---
+
+## Attempted & reverted — `isKnownFn` via HashMap (2026-06-11)
+
+`isKnownFn e name = containsStr name (fnNames e)` (O(fns) scan per CApp/CVar node,
+~105 profile samples) was the next O(N²) target. Tried indexing `fns` into a
+module-level `Ref (Option (HashMap String Unit))` populated at each `Emit`
+construction. **Output gates passed** (build 9/9, llvm 172/172, llvm_modules 8/8,
+llvm_typed 37/37 — byte-identical) BUT the **self-compile fixpoint FAILED**: the
+emitter could not emit *its own* new code (the emitted `INTERP.ll` was truncated,
+missing `@main`) — a contained native-emitter gap when `llvm_emit.mdk` itself
+carries a module-level `Ref (Option (HashMap …))` + `Option` match through the
+self-compile path (test programs don't exercise that exact shape, so the output
+gates stayed green). Reverted to keep the fixpoint byte-identical.
+
+**Future:** isKnownFn (and the smaller `core_ir_lower` group-by, `nubStr`
+memoization) are real remaining O(N²)/recompute hotspots, but accelerating
+`llvm_emit.mdk` with a hash container needs the native emitter to first
+self-compile that container-in-emitter shape (or a hash-free approach). Best done
+supervised, with the fixpoint as the gate. Everything banked above is fixpoint-safe.
