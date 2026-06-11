@@ -18,11 +18,12 @@
 -- one per line, sorted by the harness.
 
 import ast.{Decl, Loc(..)}
-import parser.{parse, parseLocated}
+import parser.{parse, parseLocated, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
 import desugar.{desugar}
-import resolve.{resolveProgram, ppResError}
+import resolve.{resolveProgram, ppResError, resolveModule, ModuleExports}
 import exhaust.{checkGuardExhaustiveness}
 import typecheck.{checkProgramDiags, setCoherenceUserDecls}
+import loader.{loadProgramFilesLocated}
 
 -- ── types ──────────────────────────────────────────────────────────────────
 
@@ -117,3 +118,260 @@ joinNl : List String -> String
 joinNl [] = ""
 joinNl [x] = x
 joinNl (x :: xs) = x ++ "\n" ++ joinNl xs
+
+-- ── multi-file / project-wide analysis (B.10.5) ─────────────────────────────
+--
+-- Mirror of lib/diagnostics.ml's `analyze_project` (:335-479): load a root file's
+-- transitive import graph with an unsaved-buffer override, then run desugar /
+-- resolve / typecheck per module, BUCKETING every diagnostic by its file so the
+-- LSP can publish one set of squiggles per file.  Clean files publish `[]` (their
+-- bucket is seeded empty), and a bad file does NOT sink the batch — the
+-- Result-returning loader + the per-module resolve/typecheck threading make
+-- "continue past a broken file" natural (no try/catch needed).
+--
+-- Selfhost deviations from the OCaml model, all faithful where it matters:
+--   * Buckets / the last-good cache are ASSOCIATION LISTS (`List (file, …)`), not
+--     a Hashtbl/Map — the established selfhost idiom (cf. lsp.mdk's `Docs`); a
+--     project opens a handful of files so linear scan is fine, and `Map` is not in
+--     the implicit prelude (it lives in stdlib/map.mdk, unreachable from the
+--     single-root selfhost tree).
+--   * Per-module TYPECHECK reuses the exported single-program `checkProgramDiags`
+--     via a PREFIX-DIFF: module M's own diagnostics = diags(core ++ earlier ++ M)
+--     minus diags(core ++ earlier).  This isolates M's contribution exactly (an
+--     earlier module's error appears in BOTH runs → subtracted out, never
+--     double-counted) without needing the unexported per-module
+--     `checkModuleFull` (owned by the typecheck module).  Resolve uses the
+--     exported per-module `resolveModule` directly (it threads exports).
+
+-- A per-file bucket of diagnostics, in dependency order.  Newest pushed last.
+-- file → reversed-or-forward diag list; we keep forward order by appending.
+
+-- Look a file's bucket up in the assoc list (None = not seeded yet).
+lookupBucket : String -> List (String, List Diag) -> Option (List Diag)
+lookupBucket _ [] = None
+lookupBucket f ((k, v) :: rest)
+  | k == f = Some v
+  | otherwise = lookupBucket f rest
+
+-- Replace (or insert) a file's bucket.  Preserves order: an existing key keeps
+-- its position; a new key is appended at the end (so files appear in load order).
+putBucket : String -> List Diag -> List (String, List Diag) -> List (String, List Diag)
+putBucket f v [] = [(f, v)]
+putBucket f v ((k, old) :: rest)
+  | k == f = (f, v) :: rest
+  | otherwise = (k, old) :: putBucket f v rest
+
+-- Append one diagnostic to a file's bucket (seeding the bucket if absent).
+pushDiag : String -> Diag -> List (String, List Diag) -> List (String, List Diag)
+pushDiag f d buckets = match lookupBucket f buckets
+  None => putBucket f [d] buckets
+  Some ds => putBucket f (ds ++ [d]) buckets
+
+-- Seed an empty bucket for a file (no-op if already present) so a clean file
+-- still appears in the result with `[]` (mirror the empty-bucket seeding).
+seedBucket : String -> List (String, List Diag) -> List (String, List Diag)
+seedBucket f buckets = match lookupBucket f buckets
+  None => putBucket f [] buckets
+  Some _ => buckets
+
+-- Append a whole list of diagnostics to one file's bucket.
+pushDiags : String -> List Diag -> List (String, List Diag) -> List (String, List Diag)
+pushDiags _ [] buckets = buckets
+pushDiags f (d :: ds) buckets = pushDiags f ds (pushDiag f d buckets)
+
+-- ── last-good-source cache + wrapped read (mirror wrapped_read) ─────────────
+--
+-- The cache is a `Ref (List (file, lastSourceThatParsed))`.  `wrappedRead` is the
+-- callback handed to the loader: it consults the user's `read` (open buffers),
+-- and when the current buffer FAILS to parse it (a) records the real parse-error
+-- diagnostic in `staleRef` (so the user still sees the squiggle) and (b) returns
+-- the last source that parsed (so one broken file doesn't blank the whole
+-- project's downstream analysis).  A buffer that parses updates the cache.
+
+cacheLookup : String -> List (String, String) -> Option String
+cacheLookup _ [] = None
+cacheLookup f ((k, v) :: rest)
+  | k == f = Some v
+  | otherwise = cacheLookup f rest
+
+cachePut : String -> String -> List (String, String) -> List (String, String)
+cachePut f v xs = (f, v) :: cacheRemove f xs
+
+cacheRemove : String -> List (String, String) -> List (String, String)
+cacheRemove _ [] = []
+cacheRemove f ((k, v) :: rest)
+  | k == f = cacheRemove f rest
+  | otherwise = (k, v) :: cacheRemove f rest
+
+-- The wrapped read callback.  `cacheRef` persists last-good sources across
+-- analyses (threaded by the caller); `staleRef` collects this round's parse
+-- errors (file → Diag) to append after the graph analysis.
+wrappedRead : Ref (List (String, String)) -> Ref (List (String, Diag)) -> (String -> Option String) -> String -> <Mut> Option String
+wrappedRead cacheRef staleRef read path = match read path
+  None => None
+  Some src => match parseResult src
+    Ok _ =>
+      let _ = set_ref cacheRef (cachePut path src cacheRef.value)
+      Some src
+    Err e =>
+      let diag = Diag SevError (parseErrorMessage e) (Some (parseErrLoc path e))
+      let _ = set_ref staleRef ((path, diag) :: staleRef.value)
+      match cacheLookup path cacheRef.value
+        Some good => Some good        -- fall back to the last source that parsed
+        None => Some src              -- no cached version → use the broken one
+
+-- A parse-error `Loc` for the editing buffer (1-based line, 0-based col), so the
+-- LSP can squiggle the offending token (mirror parseResult's located line/col).
+parseErrLoc : String -> ParseError -> Loc
+parseErrLoc path e =
+  let ln = parseErrorLine e
+  let c = parseErrorCol e
+  Loc path ln c ln (c + 1)
+
+-- ── project analysis ────────────────────────────────────────────────────────
+--
+-- runtimeSrc / coreSrc seed the extern + prelude scope (as in `analyze`); `read`
+-- supplies open-buffer overrides; entry + roots drive the loader.  Returns one
+-- (file, List Diag) per file in the graph (clean files → []).
+export
+analyzeProject : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> List (String, List Diag)
+analyzeProject cacheRef read entry roots runtimeSrc coreSrc =
+  let staleRef = newStale ()
+  let wread = (p => wrappedRead cacheRef staleRef read p)
+  let runtimeP = desugar (parse runtimeSrc)
+  let coreP = desugar (parse coreSrc)
+  -- A load error (cycle / unknown module / unreadable file) is attributed to the
+  -- entry file (the selfhost loader returns a single Err string without a per-file
+  -- split, unlike the OCaml attribute_load_error; entry is the conservative
+  -- fallback there too for cycle/ambiguous).
+  match loadProgramFilesLocated wread entry roots
+    Err e =>
+      appendStale staleRef [(entry, [Diag SevError e None])]
+    Ok mods =>
+      let seeded = seedAll (map midPath mods) []
+      -- resolve per module (threading exports), bucketing by file.
+      let afterRes = resolvePass runtimeP coreP [] mods seeded
+      -- typecheck per module via prefix-diff, bucketing by file.
+      let afterTc = typecheckPass runtimeP coreP [] mods afterRes
+      -- finally fold in the stale parse-error diagnostics (and seed their files).
+      appendStale staleRef afterTc
+
+-- newStale: a fresh per-call stale-collection Ref.
+newStale : Unit -> <Mut> Ref (List (String, Diag))
+newStale _ = Ref []
+
+-- (modId, path, decls) → path (the bucket key) and the desugared decls helper.
+midPath : (String, String, List Decl) -> String
+midPath (_, p, _) = p
+
+seedAll : List String -> List (String, List Diag) -> List (String, List Diag)
+seedAll [] buckets = buckets
+seedAll (f :: fs) buckets = seedAll fs (seedBucket f buckets)
+
+-- Append the collected stale parse-error diagnostics into their files' buckets
+-- (seeding the bucket first so the file appears even if it produced nothing else).
+appendStale : Ref (List (String, Diag)) -> List (String, List Diag) -> <Mut> List (String, List Diag)
+appendStale staleRef buckets = foldStale staleRef.value buckets
+
+foldStale : List (String, Diag) -> List (String, List Diag) -> List (String, List Diag)
+foldStale [] buckets = buckets
+foldStale ((path, d) :: rest) buckets = foldStale rest (pushDiag path d (seedBucket path buckets))
+
+-- ── resolve pass (per module, threading exports) ────────────────────────────
+-- Mirror analyze_project's resolve loop: resolveModule per module in dependency
+-- order, accumulating ModuleExports, bucketing each module's errors by its file.
+-- Resolve errors have no per-error loc in the selfhost pipeline → None.
+resolvePass : List Decl -> List Decl -> List ModuleExports -> List (String, String, List Decl) -> List (String, List Diag) -> List (String, List Diag)
+resolvePass _ _ _ [] buckets = buckets
+resolvePass rt core known ((mid, path, prog) :: rest) buckets =
+  let desugared = desugar prog
+  let (exp, errs) = resolveModule rt core known mid desugared
+  let diags = map (e => Diag SevError (ppResError e) None) errs
+  resolvePass rt core (exp :: known) rest (pushDiags path diags buckets)
+
+-- ── typecheck pass (per module, prefix-diff) ────────────────────────────────
+-- For each module M (dependency order) accumulate the DESUGARED decls of core +
+-- all earlier modules as the prefix; M's own diagnostics are
+-- diags(prefix ++ M) minus diags(prefix).  Guard-exhaustiveness warnings come
+-- from the RAW (pre-desugar) module decls, like analyzeFrom.  Resolve gates
+-- typecheck per-module: a module whose own resolve produced errors is skipped for
+-- typecheck (mirror analyze_project, which only typechecks when resolve is clean…
+-- actually analyze_project always typechecks; here we mirror analyzeFrom's
+-- per-program gate: typecheck runs only when THIS module + its prefix resolve
+-- clean, to avoid unbound-name noise from a broken import).
+typecheckPass : List Decl -> List Decl -> List Decl -> List (String, String, List Decl) -> List (String, List Diag) -> <Mut> List (String, List Diag)
+typecheckPass _ _ _ [] buckets = buckets
+typecheckPass runtimeP coreP prefix ((mid, path, prog) :: rest) buckets =
+  let desugared = desugar prog
+  let guardWarns = checkGuardExhaustiveness prog
+  let guardDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) guardWarns
+  -- prefix-diff typecheck (only its NEW diagnostics belong to this file).
+  let newDiags = moduleTypeDiags runtimeP (coreP ++ prefix) desugared
+  let buckets2 = pushDiags path (guardDiags ++ newDiags) buckets
+  typecheckPass runtimeP coreP (prefix ++ desugared) rest buckets2
+
+-- diags(prefix ++ module) minus diags(prefix): the module's own type diagnostics.
+-- Each checkProgramDiags run resets typecheck state, so the two runs are
+-- independent; identical prefix decls yield identical prefix diagnostics, which
+-- multiset-subtraction removes, leaving exactly the module's contribution.
+moduleTypeDiags : List Decl -> List Decl -> List Decl -> <Mut> List Diag
+moduleTypeDiags runtimeP prefixDecls moduleDecls =
+  let _ = setCoherenceUserDecls moduleDecls
+  let (fullErrs, fullWarns) = checkProgramDiags runtimeP (prefixDecls ++ moduleDecls)
+  let _ = setCoherenceUserDecls []
+  let (preErrs, preWarns) = checkProgramDiags runtimeP prefixDecls
+  let errDiags = map (((msg, loc)) => Diag SevError msg loc) (subtractErrs preErrs fullErrs)
+  let warnDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) (subtractStr preWarns fullWarns)
+  errDiags ++ warnDiags
+
+-- Multiset difference `full \ prefix` for type errors keyed on (msg, loc): drop
+-- one occurrence of each prefix error from the full list, keep the remainder.
+subtractErrs : List (String, Option Loc) -> List (String, Option Loc) -> List (String, Option Loc)
+subtractErrs [] full = full
+subtractErrs (p :: ps) full = subtractErrs ps (removeFirstErr p full)
+
+removeFirstErr : (String, Option Loc) -> List (String, Option Loc) -> List (String, Option Loc)
+removeFirstErr _ [] = []
+removeFirstErr p (x :: xs)
+  | errEq p x = xs
+  | otherwise = x :: removeFirstErr p xs
+
+errEq : (String, Option Loc) -> (String, Option Loc) -> Bool
+errEq (m1, _) (m2, _) = m1 == m2
+
+-- Multiset difference `full \ prefix` for warning strings.
+subtractStr : List String -> List String -> List String
+subtractStr [] full = full
+subtractStr (p :: ps) full = subtractStr ps (removeFirstStr p full)
+
+removeFirstStr : String -> List String -> List String
+removeFirstStr _ [] = []
+removeFirstStr p (x :: xs)
+  | p == x = xs
+  | otherwise = x :: removeFirstStr p xs
+
+-- ── project text entry point (diff gate) ────────────────────────────────────
+-- Render the per-file buckets as one block per file:
+--   "## FILE <path>"  followed by each diag's "severity: message" line.
+-- The harness splits on the marker and sorts each file's lines, diffing against
+-- the OCaml analyze_project's per-file buckets.
+export
+analyzeProjectToLines : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> String
+analyzeProjectToLines cacheRef read entry roots runtimeSrc coreSrc =
+  joinNl (projectLines (analyzeProject cacheRef read entry roots runtimeSrc coreSrc))
+
+projectLines : List (String, List Diag) -> List String
+projectLines [] = []
+projectLines ((file, ds) :: rest) =
+  ("## FILE " ++ file) :: (map ppDiagLoc ds ++ projectLines rest)
+
+-- Render a diagnostic for the project gate WITH its start position, so the diff
+-- can assert positions (the loc is otherwise consumed only by the LSP JSON).
+--   "<severity>@<line>:<col>: <message>"   (0-based LSP line/col, mirror
+--   range_of_loc: line = startLine-1, character = startCol)
+--   "<severity>: <message>"                when the diag carries no loc (None →
+--   whole-document range in the LSP; positionless here).
+ppDiagLoc : Diag -> String
+ppDiagLoc (Diag sev msg None) = ppSeverity sev ++ ": " ++ msg
+ppDiagLoc (Diag sev msg (Some (Loc _ sl sc _ _))) =
+  ppSeverity sev ++ "@" ++ intToString (sl - 1) ++ ":" ++ intToString sc ++ ": " ++ msg

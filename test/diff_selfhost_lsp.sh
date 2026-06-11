@@ -190,5 +190,63 @@ sys.exit(0 if ok else 1)
 PY
 check "didChange clean→error → republish with one diagnostic" "$?"
 
+# ── 5. B.10.5: project-wide didOpen → one publish PER graph file ─────────────
+# A multi-file project (entry imports a clean sibling + a sibling with a type
+# error).  Opening the entry triggers analyzeProject: one publishDiagnostics per
+# file in the import graph, the bad file carrying its diagnostic WITHOUT blanking
+# the clean files (the "bad import doesn't sink the batch" property).  The entry's
+# absolute file:// uri drives project_dir = its directory (the loader root); the
+# read override is only needed for the entry (its siblings are read from disk).
+PROJ="$TMP/proj"
+mkdir -p "$PROJ"
+printf 'export double : Int -> Int\ndouble x = x + x\n' > "$PROJ/lib_clean.mdk"
+printf 'import lib_clean.{double}\n\nexport oops : Int\noops = double "no"\n' > "$PROJ/lib_bad.mdk"
+printf 'import lib_clean.{double}\nimport lib_bad.{oops}\n\nmain = println (double 21)\n' > "$PROJ/main_app.mdk"
+ENTRY_TXT="$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1]).read()))' "$PROJ/main_app.mdk")"
+# Oracle: medaka check --json over the same entry (the real analyze_project).
+ORACLE_PROJ="$("$MAIN" check --json "$PROJ/main_app.mdk" 2>/dev/null)"
+drive_lsp \
+  '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
+  "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://$PROJ/main_app.mdk\",\"text\":$ENTRY_TXT}}}" \
+  '{"jsonrpc":"2.0","method":"exit","params":{}}'
+python3 - "$TMP/out.json" "$ORACLE_PROJ" <<'PY'
+import sys, json, os
+objs = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
+pubs = [o for o in objs if o.get("method") == "textDocument/publishDiagnostics"]
+# selfhost: {basename: [(sev, msg, start)]}
+self = {}
+for p in pubs:
+    base = os.path.basename(p["params"]["uri"])
+    self[base] = [(d["severity"], d["message"], (d["range"]["start"]["line"], d["range"]["start"]["character"]))
+                  for d in p["params"]["diagnostics"]]
+# oracle: same shape from analyze_project's files array
+oracle = {}
+oj = json.loads(sys.argv[2])
+for f in oj["files"]:
+    base = os.path.basename(f["file"])
+    oracle[base] = [(d["severity"], d["message"], (d["range"]["start"]["line"], d["range"]["start"]["character"]))
+                    for d in f["diagnostics"]]
+# One publish per graph file; same file set.
+if set(self) != set(oracle):
+    sys.stderr.write("FILE SET: self=%s oracle=%s\n" % (sorted(self), sorted(oracle)))
+    sys.exit(1)
+ok = True
+for base in oracle:
+    o = sorted(oracle[base]); s = sorted(self[base])
+    # severity + start must match exactly; message matches here (stable type msg).
+    o_key = sorted((sev, st) for (sev, _m, st) in oracle[base])
+    s_key = sorted((sev, st) for (sev, _m, st) in self[base])
+    if o_key != s_key:
+        sys.stderr.write("  %s: (sev,start) mismatch self=%s oracle=%s\n" % (base, s_key, o_key))
+        ok = False
+# Explicitly: the clean siblings are [], the bad one is non-empty.
+if self.get("lib_clean.mdk") != [] or self.get("main_app.mdk") != []:
+    sys.stderr.write("clean files not blank: %s\n" % self); ok = False
+if not self.get("lib_bad.mdk"):
+    sys.stderr.write("bad file blanked: %s\n" % self); ok = False
+sys.exit(0 if ok else 1)
+PY
+check "project didOpen → per-file publishDiagnostics (== check --json; bad import doesn't blank clean files)" "$?"
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]

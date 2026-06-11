@@ -1,0 +1,4 @@
+import lib_clean.{double}
+import lib_bad.{oops}
+
+main = println (double 21)

@@ -1,0 +1,2 @@
+export triple : Int -> Int
+triple x = x + x + x

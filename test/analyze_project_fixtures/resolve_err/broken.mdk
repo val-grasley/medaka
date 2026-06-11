@@ -1,0 +1,4 @@
+import helper.{inc}
+
+export bad : Int
+bad = inc undefinedThing
