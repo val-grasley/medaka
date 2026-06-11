@@ -151,6 +151,45 @@ The specific failure: `max` is point-free (`callMax = max`), so at the call to `
 
 ## Gap #55 — `sum`/`product` two-constraint dict threading (#21 Cause-B residual)
 
+> **CLOSED 2026-06-11** (`feat(selfhost): thread two-constraint dicts for point-free
+> sum/product — closes #55`). **Actual root cause (did NOT match any of the three
+> filed hypotheses — none blamed the sig-vs-inferred arity skew):** the bug was a
+> DEFINE/CALL-SITE dict-count mismatch driven by `scopeArities`/`constrainedSigArity`
+> using the SYNTACTIC `=>`-constraint count (2) instead of the INFERRED surviving
+> count (1). **Diagnosis (empirical, via panic-traces on the module emit path):**
+> `sum = fold (+) 0` is point-free over two constraints `(Foldable t, Num a)`. The
+> selfhost typechecker types integer literals MONOMORPHICALLY as `Int`
+> (`litType (LInt _) = TCon "Int"`), so the `0` seed pins `Num a`'s `a = Int`; `a` is
+> therefore NOT generalized and `sum`'s inferred scheme keeps only `Foldable t` (ONE
+> constraint var). At the `sum [1,2,3]` call site, `inferDictAt` instantiates that
+> 1-var scheme → `funConstraintsRef["core__sum"] ids=1, subst=1, monos=1` → exactly
+> ONE dict route (the `List` Foldable dict) → call `@mdk_core__sum(dict, list)` (2
+> args). But the DEFINE was sized by `dictArityOf` reading `scopeArities`, which
+> PREPENDED `constrainedSigArity` (the raw 2-constraint signature) ahead of the
+> inferred entry → arity-3 define `@mdk_core__sum(arg0=dict, arg1=UNUSED-2nd-dict,
+> arg2=list)`. The call passed only 2 words, so `arg2` (the container) read an
+> unpassed register → garbage pointer → SIGSEGV at clang `-O2`. **`elem` was the
+> control because BOTH its `Foldable t` and `Eq a` vars genuinely survive (no literal
+> pins them) → inferred(2) == sig(2), no skew.** Confirmed via traces:
+> `promotedC core__sum=1 core__elem=2 | sigArity core__sum=2`. **Fix (typecheck.mdk,
+> 1 function, ~6 lines):** in `scopeArities`, the INFERRED arity (from
+> `crossModuleFunConstraintsRef`/`promotedC`, the surviving generalized constraint
+> vars) now WINS over the signature-derived count: for any fn with an inferred entry,
+> drop its `constrainedSigArity` entry; the sig count remains the fallback only for
+> never-inferred (unreached) constrained fns. This realigns the define arity with what
+> every call site computes from the same generalized scheme. **General** for any
+> N-constraint point-free `=>`-fn whose body monomorphizes a subset of its constraint
+> vars (literals/concrete ops). **Did NOT touch the eta-saturation family (#11/#12/#50/
+> #13) — those fix a different mismatch (clause params < define arity); this is
+> define-dict-count vs call-site-dict-count.** **Repros (native == interpreter):**
+> `sum [1,2,3]`→6, `product [2,3,4]`→24, `sumOf [1,2,3]`→6, all exit 0. **Controls
+> unregressed:** `elem 2 [1,2,3]`→True, `any`/`all`→correct, `maximum [3,7,1]`→Some 7,
+> `callMax 3 7`→7, `clamp 0 10 7`→7, Map `a == b`→True. (`sum` over a Float list is
+> rejected by the typechecker in BOTH paths — `0`-as-Int monomorphizes the seed — a
+> pre-existing Num-literal limitation, not this gap.) **Gates:** diff 172/9/37, build
+> **14** (+`sum_twocstr`), fixpoint C3a/C3b YES, native CLI 54/54. **#55 is the LAST
+> substantive user-facing dispatch gap.**
+
 ### Minimal repro
 
 ```

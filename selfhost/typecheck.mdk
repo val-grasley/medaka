@@ -5779,11 +5779,27 @@ dictPassModulesScoped dictNames promotedC core2 allModules ((mid, prog) :: rest)
 -- the arity table for a scope: every `=>`-constrained signature in [scope]
 -- (constrainedSigArity) PLUS the joint-discovered promoted-fn arities whose fn is
 -- DEFINED in [scope] (so a promoted fn out of scope doesn't leak a param count in).
+-- #55: the signature count (`constrainedSigArity`) is the SYNTACTIC `=>`-constraint
+-- count; the INFERRED count in [promotedC] (crossModuleFunConstraintsRef, the
+-- surviving generalized constraint vars from each body's inference) is what every
+-- CALL site computes (constraintMonosOf over the call's instantiated scheme).  These
+-- diverge for a point-free fn whose body MONOMORPHIZES a constraint var — e.g.
+-- `sum = fold (+) 0`: the `0` literal is typed `Int` (litType), pinning `Num a`'s `a`
+-- to `Int`, so `a` is NOT generalized → the scheme keeps only `Foldable t` (1
+-- constraint) while the signature still lists 2.  If the define were sized off the
+-- 2-count sig it would take 2 leading dict params while call sites pass 1 (dict +
+-- container) → the container arg lands in an unpassed register → garbage deref /
+-- SIGSEGV at -O2.  So for a fn WITH an inferred entry, the inferred arity WINS (drop
+-- its sig entry); the sig count is the fallback for fns the body-inference path never
+-- registered (unreached/never-called constrained fns).  `elem` is unaffected: both
+-- its `Eq a` and `Foldable t` vars survive (no literal pins them) → inferred == sig == 2.
 scopeArities : List (String, List Int) -> List Decl -> List (String, List Int)
 scopeArities promotedC scope =
   let scopeNames = declTopFnNames scope
-  concatMapL constrainedSigArity scope
-    ++ filterList (e => containsName (fst e) scopeNames) promotedC
+  let inferred = filterList (e => containsName (fst e) scopeNames) promotedC
+  let inferredNames = map fst inferred
+  let sigEntries = filterList (e => not (containsName (fst e) inferredNames)) (concatMapL constrainedSigArity scope)
+  inferred ++ sigEntries
 
 declTopFnNames : List Decl -> List String
 declTopFnNames decls = map fst (funDefs decls)

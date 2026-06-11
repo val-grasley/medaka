@@ -132,6 +132,22 @@ main =
   putStrLn (clamp "c" "p" "z")
 EOF
 
+# #55: point-free two-constraint (Foldable t, Num a) => fns.  sum/product are
+# `fold (+) 0` / `fold (*) 1`: their `Num a` constraint var monomorphizes to Int
+# (the literal seed), so the generalized scheme keeps ONLY `Foldable t` (1 dict)
+# while the signature lists 2.  The define must be sized off the INFERRED arity (1
+# dict + container) to match the call site; sizing off the sig (2) over-allocated a
+# dict param → the container arg landed in an unpassed register → SIGSEGV at -O2.
+cat > "$WORK/src/sum_twocstr.mdk" <<'EOF'
+sumOf : (Foldable t, Num a) => t a -> a
+sumOf = fold (+) 0
+main : <IO> Unit
+main =
+  putStrLn (intToString (sum [1, 2, 3]))
+  putStrLn (intToString (product [2, 3, 4]))
+  putStrLn (intToString (sumOf [10, 20, 30]))
+EOF
+
 # multi-module
 mkdir -p "$WORK/src/mm"
 cat > "$WORK/src/mm/helper.mdk" <<'EOF'
@@ -179,7 +195,7 @@ main =
   putStrLn (debug (compare c a))
 EOF
 
-PROGRAMS="arith recur adt list closure maxalias maxprim clampc show_debug eq deriving map_impl"
+PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr show_debug eq deriving map_impl"
 
 pass=0; fail=0
 
