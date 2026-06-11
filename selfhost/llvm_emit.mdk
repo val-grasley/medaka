@@ -1927,6 +1927,26 @@ emitBlock e env ((CSLet _ (PTuple ps) ex)::rest) =
   let (v, _) = emitExpr e env ex
   let env2 = bindPattern e env (PTuple ps) v (CLit (LInt 0))
   emitBlock e env2 rest
+-- General irrefutable block-let `let pat = e` for an ARBITRARY pattern (PCon,
+-- PCons, PList, PAs, nested).  A bare `CSLet _ pat` is irrefutable by
+-- construction — a refutable surface let desugars to CSLetElse (handled above) —
+-- so we destructure with NO failure branch, exactly as cevalBlock's cBlockLet
+-- does (core_ir_eval :269) and as the PTuple arm above does.  Reuses bindPattern,
+-- the same destructure path match-arm emission uses; the `rest` block evaluates
+-- in the extended env.  Placed after the specialized PVar/PWild/PTuple arms so
+-- those stay byte-identical.
+emitBlock e env ((CSLet _ pat ex)::rest) =
+  let (v, _) = emitExpr e env ex
+  let env2 = bindPattern e env pat v (CLit (LInt 0))
+  emitBlock e env2 rest
+-- last-position block-let `[let pat = e]`: mirror cevalBlock's cBlockLetLast
+-- (core_ir_eval :265/:277) — evaluate `e` (for effect + to honour the binding),
+-- destructure, and the block yields Unit.  Without this a block ending in a let
+-- would recurse into `emitBlock e env2 []` and hit the "empty block" gap.
+emitBlock e env [CSLet _ pat ex] =
+  let (v, _) = emitExpr e env ex
+  let _ = bindPattern e env pat v (CLit (LInt 0))
+  ("1", LTUnit)
 -- `let mut x = e` reuses the irrefutable `CSLet _ (PVar x)` arm above (the mut
 -- flag carries no extra emit work — a mutable local is just an SSA value the
 -- block's tail rebinds).  A reassignment `x = e` (CSAssign, gap B1) mirrors the
@@ -4554,9 +4574,27 @@ blockTy sigs env [CSExpr ex] = typeOf sigs env ex
 blockTy sigs env ((CSExpr _)::rest) = blockTy sigs env rest
 blockTy sigs env ((CSLet _ (PVar x) ex)::rest) =
   blockTy sigs ((x, typeOf sigs env ex) :: env) rest
+-- a constructor / nested block-let (emitBlock now binds these): type its pattern
+-- vars in blockTy's env so a tail expr that uses a bound field still recurses
+-- (the old catch-all stopped at LTInt for the whole tail).  blockTy is pure, so
+-- it cannot consult the (Mut) ctor field-type table — each var gets LTInt, the
+-- same default the catch-all produced.  emitBlock's bindPattern applies the
+-- precise declared scalar types at emit time; this only types the result lookup.
+blockTy sigs env ((CSLet _ pat ex)::rest) =
+  blockTy sigs (patBindTys pat ++ env) rest
 blockTy sigs env ((CSAssign x ex)::rest) =
   blockTy sigs ((x, typeOf sigs env ex) :: env) rest
 blockTy _ _ _ = LTInt
+
+-- bind a non-PVar block-let pattern's vars for blockTy's env.  blockTy is pure,
+-- so we cannot consult the (Mut) ctor field-type table; each var gets LTInt (the
+-- same value the catch-all `blockTy _ _ _ = LTInt` produced for these lets).
+patBindTys : Pat -> List (String, LTy)
+patBindTys pat = mapVarLTInt (patVars pat)
+
+mapVarLTInt : List String -> List (String, LTy)
+mapVarLTInt [] = []
+mapVarLTInt (x::rest) = (x, LTInt) :: mapVarLTInt rest
 
 -- infer one parameter's type from its first typed USE in the body: the condition
 -- of an `if` or the operand of `!` forces Bool; an operand of an arithmetic/

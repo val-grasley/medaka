@@ -137,6 +137,11 @@ CANONICAL compiler** — the one users invoke and the one that builds the compil
    `RKey "__tuple2__" [Int, String]` — i.e. the **#21 nested-element-dict route-flattening bug**.
    So #54-correct-output needs #21 first; an attempt STOPPED clean (no merge, no commit) rather than
    ship panic-gone-but-output-wrong. These two should be fixed together, Opus + oversight (route-fragile).
+   **Block-let completeness gap CLOSED (2026-06-11):** `emitBlock` now handles `CSLet _ pat` for an
+   arbitrary irrefutable pattern (`PCon`/`PCons`/`PList`/`PAs`/nested) — mid-block + last-position —
+   via the existing `bindPattern` destructure (was `PVar`/`PWild`/`PTuple` only → `gapE`). Unblocked
+   Phase-C Slice 3 `test` (pulls `prop_runner`'s constructor block-let into the native graph). See
+   `selfhost/EMITTER-GAPS.md`.
 2. ✅ **Effectively done.** Behavior suites ported to `medaka test` (`test_run`/`test_eval`/`test_loader`);
    the rest is internal OCaml API, intrinsically non-portable.
 3. ✅ **Done.** Differential fuzzer (MVP + native Tier-C, 1080 native programs clean, found+fixed
