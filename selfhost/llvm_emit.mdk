@@ -1876,10 +1876,17 @@ emitLet _ _ _ _ _ _ = gapE "unsupported let (slice 5b: only non-recursive let va
 --     with `where`): lambda-lift it into a (self-recursive) closure via
 --     `emitGroupBind` and bind its closure word, then recurse.
 -- A binding that forward/mutually references a LATER sibling can't be lifted
--- here — the referent's closure word isn't allocated when this binding's captures
--- are taken — so it is rejected precisely (`gapE`) rather than silently
--- miscompiled.  References to EARLIER siblings (already bound) and self-references
--- (bound to `%clos` inside the lift) emit correctly.
+-- one-at-a-time — the referent's closure word isn't allocated when this binding's
+-- captures are taken.  When that happens the maximal contiguous run of LOCAL
+-- FUNCTION bindings starting here is KNOT-TIED together (`emitLetGroupKnot`): all
+-- their closure cells are allocated up front (so every sibling word exists), every
+-- sibling name is bound in the env, and each cell's capture fields are then
+-- back-patched with the now-available sibling words (and any enclosing-scope
+-- captures).  References to EARLIER siblings, self-references (bound to `%clos`),
+-- arbitrary forward refs and true mutual recursion all emit correctly.  A value
+-- binding interleaved INSIDE such a run (a mutual ref crossing a non-function
+-- sibling) is the residue this scheme doesn't cover — it is rejected precisely
+-- (`gapE`) rather than miscompiled.
 emitLetGroup : Emit -> List (String, (String, LTy)) -> List CBind -> CExpr -> <Mut> (String, LTy)
 emitLetGroup e env [] body = emitExpr e env body
 emitLetGroup e env ((CBind name [CClause [] rhs])::rest) body =
@@ -1887,10 +1894,45 @@ emitLetGroup e env ((CBind name [CClause [] rhs])::rest) body =
   emitLetGroup e ((name, (v, ty)) :: env) rest body
 emitLetGroup e env ((CBind name clauses)::rest) body
   | refsLater name clauses (bindNames rest) =
-      gapE ("unsupported let-group: binding `" ++ name ++ "` forward/mutually references a later sibling (only non-mutual local function bindings)")
+      emitKnotRun e env ((CBind name clauses)::rest) body
   | otherwise =
       let (w, ty) = emitGroupBind e env (CBind name clauses)
       emitLetGroup e ((name, (w, ty)) :: env) rest body
+
+-- knot-tie the maximal leading run of function bindings of `binds`, then continue
+-- the group with the remainder.  A forward/mutual ref crossing into a LATER value
+-- binding (outside the run) is the uncovered residue — rejected precisely.
+emitKnotRun : Emit -> List (String, (String, LTy)) -> List CBind -> CExpr -> <Mut> (String, LTy)
+emitKnotRun e env binds body =
+  let run = takeFnRun binds
+  let after = dropS (lengthS run) binds
+  let runNames = bindNames run
+  if anyRefsOutsideRun run runNames (bindNames after) then
+    gapE ("unsupported let-group: a binding forward/mutually references a later value binding (knot-tying covers only mutual function bindings)")
+  else
+    let env2 = emitLetGroupKnot e env run runNames
+    emitLetGroup e env2 after body
+
+-- the maximal leading run of LOCAL FUNCTION bindings (non-empty params) — a nullary
+-- VALUE binding (`CBind _ [CClause [] _]`) ends the run.
+takeFnRun : List CBind -> List CBind
+takeFnRun [] = []
+takeFnRun ((CBind _ [CClause [] _])::_) = []
+takeFnRun (b::rest) = b :: takeFnRun rest
+
+dropS : Int -> List a -> List a
+dropS _ [] = []
+dropS n (x::xs) = if n <= 0 then x :: xs else dropS (n - 1) xs
+
+-- True if any binding in the run references a name bound LATER but OUTSIDE the run
+-- (i.e. a later value binding) — the case knot-tying cannot tie.
+anyRefsOutsideRun : List CBind -> List String -> List String -> Bool
+anyRefsOutsideRun [] _ _ = False
+anyRefsOutsideRun ((CBind name clauses)::rest) runNames laterOutside
+  | anyInList (dedupS (clausesFreeVars name clauses)) laterOutside = True
+  | otherwise = anyRefsOutsideRun rest runNames laterOutside
+anyRefsOutsideRun (_::rest) runNames laterOutside =
+  anyRefsOutsideRun rest runNames laterOutside
 
 -- True when any clause of a local-function binding references a sibling bound
 -- LATER in the same group (a forward or mutually-recursive reference whose
@@ -1957,6 +1999,85 @@ emitGroupBindDefine e lamName name arity clauses captured =
 clauseList : List CClause -> List (List Pat, CExpr)
 clauseList [] = []
 clauseList ((CClause pats body)::rest) = (pats, body) :: clauseList rest
+
+-- ── knot-tying: forward/mutual local function bindings ──────────────────────
+-- Tie the knot for a RUN of mutually/forward-referencing local function bindings
+-- (E5 residual / EMITTER-GAPS #10).  Two passes over the run:
+--   1. ALLOC: for each fn binding, lambda-lift it (the lifted `@mdk_lamN` define is
+--      independent of the cells — captures load from `%clos` fields by index), then
+--      allocate its closure cell with the code pointer in field 0 and PLACEHOLDER
+--      `0` words in the capture fields (`emitClosureAllocPatch` returns the raw cell
+--      pointer for later stores).  Every sibling name is bound to its cell word.
+--   2. PATCH: now that every sibling word exists, store each cell's REAL capture
+--      words — looked up in the fully-knotted env (siblings + enclosing scope) — into
+--      its capture fields.  This BY-VALUE back-patch ties arbitrary mutual recursion
+--      and forward references; self-recursion still flows through `%clos`.
+-- The capture-NAME list per binding is computed against a sibling env (so a sibling
+-- ref is kept by `keepInEnv` and indexed correctly), and must MATCH the field order
+-- the lifted define's `loadCaptures` reads — both walk the same `captured` list.
+emitLetGroupKnot : Emit -> List (String, (String, LTy)) -> List CBind -> List String -> <Mut> List (String, (String, LTy))
+emitLetGroupKnot e env run runNames =
+  let sibEnv = sibPlaceholderEnv runNames
+  let cellEnv = sibEnv ++ env
+  let (cells, env2) = knotAlloc e env cellEnv run
+  -- pass 2: back-patch each cell's capture fields with real words from env2.
+  let _ = knotPatch e env2 cells
+  env2
+
+-- a placeholder env entry per run name (word "0", LTClosure) for capture-name
+-- computation only.
+sibPlaceholderEnv : List String -> List (String, (String, LTy))
+sibPlaceholderEnv [] = []
+sibPlaceholderEnv (n::rest) = (n, ("0", LTClosure)) :: sibPlaceholderEnv rest
+
+-- a knot cell records the binding name, its allocated cell POINTER (for stores),
+-- and its ordered capture-name list (matching the lifted define's field layout).
+data KnotCell = KnotCell String String (List String)
+
+-- pass 1: for each fn binding, lift it and alloc its closure cell with placeholder
+-- captures; thread the env binding each cell word.  `cellEnv` (siblings + outer)
+-- is used to compute the capture NAME set so a sibling ref is kept and indexed.
+knotAlloc : Emit -> List (String, (String, LTy)) -> List (String, (String, LTy)) -> List CBind -> <Mut> (List KnotCell, List (String, (String, LTy)))
+knotAlloc _ env _ [] = ([], env)
+knotAlloc e env cellEnv ((CBind name clauses)::rest) =
+  let lamName = "mdk_lam" ++ intToString (freshId e)
+  let arity = clauseArity (clauseList clauses)
+  let captured = keepInEnv cellEnv (removeStr name (dedupS (clausesFreeVars name clauses)))
+  let _ = emitGroupBindDefine e lamName name arity clauses captured
+  let (cellPtr, cellWord) = emitClosureAllocPatch e lamName (lengthS captured)
+  let (cells, env2) = knotAlloc e ((name, (cellWord, LTClosure)) :: env) cellEnv rest
+  (KnotCell name cellPtr captured :: cells, env2)
+knotAlloc e env cellEnv (_::rest) = knotAlloc e env cellEnv rest
+
+-- pass 2: store each cell's real capture words (from the fully-bound env) into its
+-- capture fields (offset 8*(i+1), field 0 holds the code pointer).
+knotPatch : Emit -> List (String, (String, LTy)) -> List KnotCell -> <Mut> Unit
+knotPatch _ _ [] = ()
+knotPatch e env ((KnotCell _ cellPtr captureNames)::rest) =
+  let words = capWords env captureNames
+  let _ = storeFields e cellPtr words 1
+  knotPatch e env rest
+
+-- allocate a closure cell with the code pointer in field 0 and `nCap` PLACEHOLDER
+-- zero capture words, returning BOTH the raw cell pointer (for later stores) and
+-- the cell word (the closure value).  Mirrors emitClosureAlloc/emitCtorAlloc's
+-- layout exactly — field 0 = code_ptr — so the cell is callable immediately
+-- (`emitIndirect` loads field 0); only the capture fields await back-patch.
+emitClosureAllocPatch : Emit -> String -> Int -> <Mut> (String, String)
+emitClosureAllocPatch e lamName nCap =
+  let codePtr = "ptrtoint (ptr @" ++ lamName ++ " to i64)"
+  let fields = codePtr :: zeroWords nCap
+  let arity = lengthS fields
+  let p = freshReg e
+  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 " ++ intToString (8 * (arity + 1)) ++ ")")
+  let _ = emit e ("  store i64 " ++ intToString (cellTag e closureHeaderName) ++ ", ptr " ++ p)
+  let _ = storeFields e p fields 0
+  let w = freshReg e
+  let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
+  (p, w)
+
+zeroWords : Int -> List String
+zeroWords n = if n <= 0 then [] else "0" :: zeroWords (n - 1)
 
 emitBlock : Emit -> List (String, (String, LTy)) -> List CStmt -> <Mut> (String, LTy)
 emitBlock e env [CSExpr ex] = emitExpr e env ex

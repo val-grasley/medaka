@@ -45,7 +45,7 @@ multi-module path (`elaborateModules`, as the dispatch probes use).
 | 7 | **reference to top-level value / mutable `Ref` binding**  | ~~7\*~~ **0\*** | ~~254~~ ~~237~~ **0\*\*\*** | ✅ **CLOSED (E1b)** — emit as **globals** + `@main` init prologue (source order); core's 7 extern refs also CLOSED (see \*) |
 | 8 | **`otherwise`** (guard constant)                          | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — added to `emitVar` constants (= `True` → `"3"`, `LTBool`) |
 | 9 | **`__fallthrough__`** (guard-desugar sentinel)            | ~~0~~ **0** | ~~88~~ **0** | Front-end residue                | ✅ **CLOSED (E3)** — intercepted in `emitApp` CVar branch (`call void @mdk_oob()` + dummy; block terminator from surrounding `if`) |
-|10 | **non-nullary / recursive `let`-group** (`where` fns)     | ~~5~~ **0** | ~~5~~ **0** | Emitter                          | ✅ **CLOSED (E5)** — lambda-lift each local fn via `emitGroupBind` (self-rec through `%clos`, E1a clause-tree body); one-at-a-time env threading covers non-mutual groups; genuine forward/mutual ref → precise `gapE` (none in core) |
+|10 | **non-nullary / recursive `let`-group** (`where` fns)     | ~~5~~ **0** | ~~5~~ **0** | Emitter                          | ✅ **CLOSED (E5 + knot-tying)** — lambda-lift each local fn via `emitGroupBind` (self-rec through `%clos`, E1a clause-tree body); one-at-a-time env threading covers non-mutual groups; **forward/mutual refs now lowered by back-patch knot-tying** (`emitLetGroupKnot`: alloc all sibling cells w/ placeholder captures → bind names → `storeFields` real words) — covers `tally`/`isEven`-`isOdd`/captures; LSP gap 3/3; only a VALUE binding interleaved in a mutual run is a precise `gapE` |
 |11 | **unbound dict witness** (dict not threaded to use)       | ~~3~~ **0** (closure root, E8) / ~~3~~ **0** (impl-body root, E9)        | ~~2~~ **0** | Emitter / dict-pass              | ✅ **FULLY CLOSED** — closure half E8 (`freeVars` CMethod/CDict routes); impl-body half E9 (2026-06-08, `usesImplDict` EDictAt scan in typecheck); **`=>`-constrained-fn module half E12 (2026-06-08)** — `elaborateModules` computed its dict-name set (`preludeReturnPosDictNames ++ preludeArgPosDictNames ++ module `constrainedSigNames`) and threaded it through BOTH the prePass (mark call sites `EDictAt`) and the final `dictPass` (add leading `$dict_<fn>_<slot>` PARAM); `crossModuleFunConstraintsRef` survives the per-module `resetState` so a cross-module call site resolves the callee's constraint ids; `elabModuleStamp` now runs `realizeRecDictApps`/`resolveDictApps`; clamp/debugListItems/displayListItems/sum/any/elem/… (B **24→0**). Gated `argStampEnabled` → golden module drivers byte-identical |
 |12 | **unsupported switch head** (unit-pattern head)           | ~~6~~ **0** | ~~6~~ **0** | Emitter (`Arbitrary` only)       | ✅ **CLOSED (E20, 2026-06-09)** — `HUnit` is irrefutable (Unit has exactly one inhabitant); no discriminant test is needed. `emitSwitch` now handles `CTBranch HUnit sub` before the `conHeadInfo` fallthrough: it drops the focus occurrence and descends directly into `sub`. The fix is EMIT-ONLY (`canonPat`/Core IR/`decodeHead`/eval/goldens untouched). Fixture `test/llvm_fixtures/unit_head.mdk` (`f () = 42; g x () = x + 1; main = f () + g 10 ()` → 53) byte-identical oracle/native; all 170 `diff_selfhost_llvm.sh` fixtures pass. **The 6 `Arbitrary` impls (`arbitraryString`, `arbitrary@Int`, `arbitrary@Bool`, …) now emit and link correctly.** Note: the `max`/`min` gap (2 events in `maximum`/`minimum`) remains — see TOTAL-row residual + the Open capability gap note below; it BLOCKS using the real `core.mdk` in `medaka build` until D3b closes it. |
 |13 | **arg-position method name shadowed by a local** (`lt`/`gt`/`sub` as a *parameter* name) | 0 | ~~6~~ ~~32~~ **0** | Front-end (prepass scope-blind) | ✅ **CLOSED (E15, 2026-06-08)** — root cause was NOT "first-class/unapplied method values" (the pre-diagnosis guess): the dominant cluster was the arg-position EVar→`EMethodAt` prepass (`prePassDictArg`/`rewriteRPDictArg`) being **scope-blind**, so a compiler function whose *parameter* shares an Ord/Num method name (`arithOp lt rt`, `compareOp lt rt`, `composeOp gt ht`, `exprToPat … sub`) had that parameter mis-marked as a method occurrence → arg-tag dispatch with no impl groups / under-applied. **E15** ported the reference's Phase-95 `env.locals` guard as a scope-threaded rewrite (`rewriteArgScoped`, threading the bound-name set through `ELam`/`ELet`/`ELetGroup`/`EMatch`-arms/`EBlock`/`EDo`/`EListComp` + where/do/guard binders): an arg-position method name shadowed by a local stays a plain `EVar`. Gated on `argNames` (non-empty only under `argStampEnabled`) → the golden/oracle path keeps the exact scope-blind `mapProg` rewrite, byte-identical. **B: `lt` 26 + `sub` under-applied 4 + `gt` 2 = 32 events → 0; B TOTAL 61 → 31** (net −30: closing the upstream `lt` gaps in `mapDecl`/`applyDeriveParams`/`mergeIfaceDecl` let the emitter descend further and surface +2 pre-existing downstream `CVariantUpdate` events). The 2 residual genuine-generic `max`/`min` sites (`maximum`/`minimum` at `Ord a`) are NOT shadowing — they need real D3b default-method dict-passing, deferred. |
@@ -380,6 +380,34 @@ desugaring leaves a `__fallthrough__` sentinel name that reaches the emitter as
   E1a clause-tree body). Non-mutual groups thread one-at-a-time; a genuine
   forward/mutual reference is a precise `gapE` (none occurs in core). Closing it
   exposes the workers' own guard residue (#8/#9) — see the † note above the fold.
+  - **forward/mutual residue — ✅ CLOSED (knot-tying, 2026-06-11; LSP gap 3/3).**
+    The E5 residue (a binding forward/mutually referencing a LATER sibling, whose
+    closure word isn't allocated at the capture site) is now lowered by **back-patch
+    knot-tying** (`emitLetGroupKnot`).  When `refsLater` fires, the maximal leading
+    run of LOCAL FUNCTION bindings is tied as a set (`emitKnotRun`): **pass 1**
+    (`knotAlloc`) lifts each fn's `@mdk_lamN` define — independent of the cells,
+    captures load from `%clos` fields by index — then allocs its closure cell with
+    the code pointer in field 0 and PLACEHOLDER `0` capture words
+    (`emitClosureAllocPatch`, returning the raw cell pointer); every sibling name is
+    bound to its cell word.  **Pass 2** (`knotPatch`) stores each cell's REAL capture
+    words — looked up in the fully-knotted env (siblings + enclosing scope) — into its
+    capture fields via `storeFields … 1`.  The capture-NAME list per binding is
+    computed against a sibling placeholder env so a sibling ref is kept by `keepInEnv`
+    and indexed in the SAME field order the lifted define's `loadCaptures` reads.
+    **Covered:** forward refs (`go` → later `bump`, the live `stdlib/list.mdk`
+    `tally`), true mutual recursion (`isEven`/`isOdd`), and mutual recursion WITH an
+    enclosing-scope capture (a sibling closing over an outer let var) — capture and
+    knot-tying compose since the patch reads the joint env.  Self-recursion still
+    flows through `%clos` unchanged; the nullary-VALUE fast path and the non-mutual
+    single-binding path are byte-identical (the new path is taken ONLY when
+    `refsLater` fires).  **Precise residual gap:** a nullary VALUE binding interleaved
+    INSIDE a mutually-referencing run — a forward/mutual ref crossing a non-function
+    sibling — is rejected by `anyRefsOutsideRun` rather than miscompiled (does not
+    occur in the LSP graph or stdlib).  Gates held byte-identical (llvm 172, modules
+    8, typed 37, build 9); fixpoint C3a/C3b YES.  **Payoff:** `medaka build
+    selfhost/lsp_main.mdk` now SUCCEEDS — first full native compile of the LSP; all
+    three LSP-blocking native emitter gaps (flushStdout, general extern-as-value,
+    forward/mutual local fns) are CLOSED.
 - **unbound dict witness** (`$dict_clamp_0`, `$dict_hash_0`, `$dict_when_0`,
   `$dict_unless_0`): a forwarded/nested dict use whose param isn't in the emit
   env — a dict-pass threading edge.
