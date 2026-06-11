@@ -120,23 +120,23 @@ CANONICAL compiler** — the one users invoke and the one that builds the compil
   soak-period safety net (maps to the frozen-third-oracle bar item). Do NOT `rm lib/` at the
   retirement milestone.
 
-**The "native is canonical" bar (gates `lib/` retirement) — status as of 2026-06-10:**
-1. 🟢 **~95%.** `medaka build` compiles + runs arbitrary USER programs natively. Gap G / Cause A /
-   GAP 1 (nested dicts) / GAP 2 (max/min) / C5 standalone-vs-method / tuple-as-receiver all ✅.
-   **Stdlib-emittability sweep DONE** (2026-06-10): 8/12 modules build CLEAN; **clause-label SSA
-   collision** (#53, gated the Phase-C capstone — every multi-module build) ✅ CLOSED (`da3958f`);
-   **hashing needs NO language decision** (works via C externs). Remaining (all tracked; full
-   repro-verified scope in [`selfhost/DISPATCH-GAPS-SCOPE.md`](./selfhost/DISPATCH-GAPS-SCOPE.md)):
-   **#54 Map `toList` bare-name** (H-b1 — module-local standalone shadows the Foldable method);
-   **#55 sum/product two-constraint dicts** (#21 Cause-B residual); **#50 parametric-Ord `< > <= >=`**;
-   **#21 2-level multi-module route flattening**. (tuple work also fixed `==` crashing on ANY parametric
-   `Eq` impl.) **⚠️ #54 is COUPLED to #21 (found 2026-06-10):** the scope doc's "surgical one-node
-   `buildKeyTable` fix" hypothesis was WRONG. The `prePassModulePairArgShadow` panic-fix removes the
-   `no impl of 'toList' for 'Map'` panic, but then `debug (toList m)` emits garbage
-   (`["\0\0\0", …]`) because the element-dict route comes out `RKey "String"` instead of
-   `RKey "__tuple2__" [Int, String]` — i.e. the **#21 nested-element-dict route-flattening bug**.
-   So #54-correct-output needs #21 first; an attempt STOPPED clean (no merge, no commit) rather than
-   ship panic-gone-but-output-wrong. These two should be fixed together, Opus + oversight (route-fragile).
+**The "native is canonical" bar (gates `lib/` retirement) — status as of 2026-06-11:**
+1. ✅ **DONE (all dispatch gaps closed 2026-06-11; verified gap audit).** `medaka build` compiles + runs
+   arbitrary USER programs natively. Gap G / Cause A / GAP 1 (nested dicts) / GAP 2 (max/min) / C5
+   standalone-vs-method / tuple-as-receiver all ✅. **Stdlib-emittability sweep DONE**; **clause-label SSA
+   collision** (#53) ✅ CLOSED (`da3958f`). **The parked dispatch gaps are now ALL CLOSED this session**
+   (each diagnose-first — every filed root cause in `DISPATCH-GAPS-SCOPE.md` was disproven on contact):
+   **#54 Map `toList` + #21 nested-route** ✅ (incidentally, by universal mangling `332ef41` + the
+   nested-`requires` propagation `5ddfbf5`); **#50 method-as-value + max/min over generic & primitive Ord**
+   ✅ (`abfd656`/`fdcc95b`/`ac2f4bb` — the eta-saturation family, all 3 wrapper shapes); **#55 sum/product
+   two-constraint** ✅ (`c31d808` — sig-vs-inferred dict-arity skew, NOT the eta family); **Map interface-impl
+   bodies + #21 two-level+** ✅ (`5ddfbf5`); **L1** multi-module bare-name dict keying ✅ CLOSED-by-mooting
+   (`23b6c3d` — universal mangling renames before the joint dict-pass keys, so the collision is impossible;
+   E4 confirmed live on `medaka build`). **Cross-module name collisions** impossible by construction
+   (universal per-module mangling). Emitter census: **core A=0**, whole-compiler **B=1** (a cosmetic
+   attribution artifact — "unbound `modules`" mis-credited to `directImports`; does NOT block the
+   self-compile fixpoint). The ONLY item-1 residual is that 1 cosmetic census event. Verified inventory +
+   the recurring "docs-stale, diagnose-on-current-main" lesson logged in memory.
    **Block-let completeness gap CLOSED (2026-06-11):** `emitBlock` now handles `CSLet _ pat` for an
    arbitrary irrefutable pattern (`PCon`/`PCons`/`PList`/`PAs`/nested) — mid-block + last-position —
    via the existing `bindPattern` destructure (was `PVar`/`PWild`/`PTuple` only → `gapE`). Unblocked
