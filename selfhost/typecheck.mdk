@@ -2486,7 +2486,7 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let implTable = buildImplTable prog2
   let keyTable = buildKeyTable prog2
   let _ = resolveSites implTable keyTable (returnPosMethodNames prog2) pendingSites.value
-  let _ = resolveBinopSites keyTable pendingBinopSites.value
+  let _ = resolveBinopSites implTable keyTable pendingBinopSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps implTable pendingDictApps.value
   let _ = resolveMethodDicts implTable pendingMethodDicts.value
@@ -3081,21 +3081,62 @@ activeDictVarOf m = match normalize m
 binopPrimitiveHead : String -> Bool
 binopPrimitiveHead h = containsName h ["Int", "Float", "String", "Bool", "Char"]
 
-resolveBinopSites : List KeyEntry -> List (String, Ref Route, Mono) -> <Mut> Unit
-resolveBinopSites _ [] = ()
-resolveBinopSites keyTable ((method, tagRef, operandMono) :: rest) =
-  let _ = resolveBinopSite keyTable method tagRef operandMono
-  resolveBinopSites keyTable rest
+resolveBinopSites : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Mono) -> <Mut> Unit
+resolveBinopSites _ _ [] = ()
+resolveBinopSites implTable keyTable ((method, tagRef, operandMono) :: rest) =
+  let _ = resolveBinopSite implTable keyTable method tagRef operandMono
+  resolveBinopSites implTable keyTable rest
 
-resolveBinopSite : List KeyEntry -> String -> Ref Route -> Mono -> <Mut> Unit
-resolveBinopSite keyTable method tagRef operandMono = match headTyconMono operandMono
-  Some tag => stampBinopRoute keyTable method tagRef operandMono tag
+resolveBinopSite : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> <Mut> Unit
+resolveBinopSite implTable keyTable method tagRef operandMono = match headTyconMono operandMono
+  Some tag => stampBinopRoute implTable keyTable method tagRef operandMono tag
   None => ()
 
-stampBinopRoute : List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
-stampBinopRoute keyTable method tagRef operandMono tag
+-- Native Gap C: a tuple (or other parametric-with-requires) Eq/Ord impl carries
+-- element `requires` dicts (Eq a, Eq b) that the rewritten `eq`/`compare` method body
+-- reads.  Stamp them into the RKey route's reqs so binopMethodApp can forward them
+-- as the EMethodAt impl-dict routes — exactly as resolveArgStamp does for a direct
+-- `eq`/`compare` call.  A concrete non-parametric impl (user `Eq MyType`) has no
+-- requires → empty reqs → the plain direct call, behaviour unchanged.
+--
+-- DEFERRED CASE (left RNone → structural-builtin baseline, no crash): a comparison
+-- OPERATOR (`<`/`>`/`<=`/`>=` → `lt`/`gt`/`lte`/`gte`) whose method is NOT itself
+-- impl'd at this head (an Ord interface DEFAULT reducing to inner `compare`) AND the
+-- head's Ord impl HAS `requires` (parametric, e.g. tuple / `Box a`).  Routing it RKey
+-- would reach `emitDefaultRKey`, whose default define cannot yet thread the element
+-- dicts into the inner `compare` (the documented `max`/`min`-class default-method
+-- dict-synthesis gap, PLAN.md Gap G).  Concrete Ord (no requires) default-`lt` DOES
+-- work (PLAN Gap-G closed) and stays routed; only the parametric-default case backs off.
+stampBinopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
+stampBinopRoute implTable keyTable method tagRef operandMono tag
   | binopPrimitiveHead tag = ()
-  | otherwise = set_ref tagRef (RKey (fromOption tag (keyForSite keyTable method operandMono)) [])
+  | parametricDefaultBinop implTable method tag = ()
+  | otherwise =
+      let key = fromOption tag (keyForSite keyTable method operandMono)
+      set_ref tagRef (RKey key (argImplDictRoutesFor implTable method tag operandMono))
+
+-- True when [method] has NO own impl at head [tag] (so it reaches the interface
+-- default) but SOME impl at [tag] carries a `requires` (so the default body's inner
+-- `compare` needs an element dict the default-RKey path cannot yet thread).
+parametricDefaultBinop : List ImplEntry -> String -> String -> Bool
+parametricDefaultBinop implTable method tag =
+  not (implDefinesMethodAt implTable method tag) && headHasRequires implTable tag
+
+implDefinesMethodAt : List ImplEntry -> String -> String -> Bool
+implDefinesMethodAt [] _ _ = False
+implDefinesMethodAt (ImplEntry tag2 methodNames _ _ :: rest) method tag
+  | tag2 == tag && containsName method methodNames = True
+  | otherwise = implDefinesMethodAt rest method tag
+
+headHasRequires : List ImplEntry -> String -> Bool
+headHasRequires [] _ = False
+headHasRequires (ImplEntry tag2 _ _ reqs :: rest) tag
+  | tag2 == tag && not (isEmptyList reqs) = True
+  | otherwise = headHasRequires rest tag
+
+isEmptyList : List a -> Bool
+isEmptyList [] = True
+isEmptyList _ = False
 
 -- ── coherence check (TYPECHECK-AUDIT S3) ───────────────────────────────────
 -- Mirror lib/typecheck.ml's check_coherence (Phase 68): reject incoherent USER
@@ -3410,6 +3451,7 @@ countHead (KeyEntry methodNames tag2 _ _ :: rest) name tag
 headTyconTy : Ty -> Option String
 headTyconTy (TyCon n) = Some n
 headTyconTy (TyApp a _) = headTyconTy a
+headTyconTy (TyTuple ts) = Some (tupleHeadTagTc (lengthL ts))
 headTyconTy _ = None
 
 -- the impl-dict routes for a method site that resolved to head tag [tag]: find the
@@ -3440,7 +3482,20 @@ matchTyMono (TyCon n) m = match normalize m
 matchTyMono (TyApp a b) m = match normalize m
   TApp ma mb => combineSubst (matchTyMono a ma) (matchTyMono b mb)
   _ => None
+-- Native Gap C: a tuple impl head (`(a, b)`) matches a same-arity tuple mono,
+-- recovering one element-var subst per position — so a tuple impl's per-element
+-- `requires` (Eq a, Eq b, …) recover their element-dict routes, exactly as the
+-- TyApp arm does for parametric ADTs.  Mismatched arity → None (distinct groups).
+matchTyMono (TyTuple ts) m = match normalize m
+  TTuple ms => if lengthL ts == lengthL ms then matchTyMonoList ts ms else None
+  _ => None
 matchTyMono _ _ = None
+
+-- zip-match element-type patterns against element monos, combining the substs.
+matchTyMonoList : List Ty -> List Mono -> Option (List (String, Mono))
+matchTyMonoList [] [] = Some []
+matchTyMonoList (t :: ts) (m :: ms) = combineSubst (matchTyMono t m) (matchTyMonoList ts ms)
+matchTyMonoList _ _ = None
 
 combineSubst : Option (List (String, Mono)) -> Option (List (String, Mono)) -> Option (List (String, Mono))
 combineSubst (Some xs) (Some ys) = Some (xs ++ ys)
@@ -3622,9 +3677,11 @@ dictPass names prog =
 -- Eq/Ord method application via EMethodAt (the same dispatch node `eq`/`lt` calls
 -- become), so eval routes to the user/derived impl.  Only nodes resolveBinopSites
 -- stamped (ground non-primitive operand) carry a non-RNone route; primitives /
--- arithmetic stay the literal EBinOp the eval builtin handles (no recursion).  The
--- stamped route ref is reused as the EMethodAt route; impl-/method-dict refs are
--- empty (eq/lt are arg-position — they narrow by arg tag, no forwarded element dict).
+-- arithmetic stay the literal EBinOp the eval builtin handles (no recursion).
+-- Native Gap C: a parametric impl (tuple `Eq (a,b)`) has element `requires` dicts
+-- the body reads; resolveBinopSite stamped them into the RKey route's reqs, which
+-- binopMethodApp now forwards as the EMethodAt impl-dict routes (the 3rd ref).  A
+-- non-parametric concrete impl stamps empty reqs → the plain direct call.
 --   <→lt  >→gt  <=→lte  >=→gte  ==→eq  !=→not (eq a b)
 rewriteBinopExpr : Expr -> Expr
 rewriteBinopExpr (EBinOp op l r routeRef) = match routeRef.value
@@ -3632,10 +3689,19 @@ rewriteBinopExpr (EBinOp op l r routeRef) = match routeRef.value
   _ => binopMethodApp op l r routeRef
 rewriteBinopExpr e = e
 
+-- split the stamped RKey route into a bare-tag route (reqs dropped) + the element
+-- dict routes, so the dicts ride on the EMethodAt impl-dict ref (where emitMethod /
+-- eval read leading dict words) rather than the route reqs (which the RKey call
+-- path ignores).  A non-RKey / empty-reqs route forwards no dicts.
+binopRouteSplit : Route -> (Route, List Route)
+binopRouteSplit (RKey tag reqs) = (RKey tag [], reqs)
+binopRouteSplit r = (r, [])
+
 binopMethodApp : String -> Expr -> Expr -> Ref Route -> Expr
 binopMethodApp op l r routeRef =
   let method = fromOption "eq" (binopMethod op)
-  let call = EApp (EApp (EMethodAt method routeRef (Ref []) (Ref [])) l) r
+  let split = binopRouteSplit routeRef.value
+  let call = EApp (EApp (EMethodAt method (Ref (fst split)) (Ref (snd split)) (Ref [])) l) r
   if op == "!=" then EApp (EVar "not") call else call
 
 dictPassDecl : List String -> List String -> Decl -> Decl
@@ -3888,7 +3954,14 @@ headTyconMono : Mono -> Option String
 headTyconMono t = match normalize t
   TApp a _ => headTyconMono a
   TCon n => Some n
+  TTuple ts => Some (tupleHeadTagTc (lengthL ts))
   _ => None
+
+-- Native Gap C: the arity-distinguished tuple dispatch tag (`__tuple2__`, …),
+-- byte-identical to eval.mdk's `tupleHeadTag`.  Stamped as the RKey route tag at a
+-- tuple method site so each arity routes to its own impl group / lifted define.
+tupleHeadTagTc : Int -> String
+tupleHeadTagTc n = "__tuple" ++ intToString n ++ "__"
 
 export
 checkProgram : List Decl -> <Mut> List (String, Scheme)
@@ -5496,7 +5569,7 @@ elabModuleStamp seedVars accData implDecls prog =
   -- Phase 151 / Gap G: stamp this module's comparison-operator binop sites (emit
   -- path only, mirroring resolveArgStamps — golden type-only path leaves them RNone
   -- → dictPass-skipped → byte-identical).
-  let _ = if argStampEnabled.value then resolveBinopSites (buildKeyTable implDecls) pendingBinopSites.value else ()
+  let _ = if argStampEnabled.value then resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value else ()
   let _ = if argStampEnabled.value then resolveArgStamps stampImplTable pendingArgStamps.value else ()
   -- C5: LAST among the route-stampers (after resolveSites AND resolveArgStamps) so the
   -- receiver-grounded RLocal/RNone overrides whatever those stamped on the SAME ref —

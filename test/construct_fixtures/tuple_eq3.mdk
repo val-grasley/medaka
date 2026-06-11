@@ -1,0 +1,2 @@
+main : <IO> Unit
+main = println ((1, 2, 3) == (1, 2, 4))

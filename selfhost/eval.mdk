@@ -204,7 +204,7 @@ runtimeTypeTag (VBool _) = Some "Bool"
 runtimeTypeTag VUnit = Some "Unit"
 runtimeTypeTag (VList _) = Some "List"
 runtimeTypeTag (VArray _) = Some "Array"
-runtimeTypeTag (VTuple _) = Some "__tuple__"
+runtimeTypeTag (VTuple vs) = Some (tupleHeadTag (listLen vs))
 runtimeTypeTag (VCon cname _) = lookupAssoc cname ctorToTypeRef.value
 runtimeTypeTag (VRecord name _) = Some name
 runtimeTypeTag (VTypedImpl t _ _ _ _) = Some t
@@ -260,12 +260,23 @@ ppTyAtomK (TyFun a b) = "(" ++ ppTyK (TyFun a b) ++ ")"
 ppTyAtomK (TyApp a b) = "(" ++ ppTyK (TyApp a b) ++ ")"
 ppTyAtomK t = ppTyK t
 
+-- Native Gap C: an ARITY-DISTINGUISHED tuple dispatch/impl-tag (`__tuple2__`,
+-- `__tuple3__`, …).  Each tuple arity gets its OWN impl group / lifted define and
+-- its own runtime dispatch tag, so the 2-/3-/4-/5-tuple `Eq`/`Ord`/`Debug` impls
+-- no longer coalesce under one mis-arity'd `__tuple__` group.  This is the
+-- DISPATCH namespace; it is deliberately distinct from core_ir_lower's MATCH
+-- pattern-canonical `tupleName = "__tuple__"` (which stays arity-erased — a match
+-- column is arity-homogeneous and carries its arity in HTuple).
+export
+tupleHeadTag : Int -> String
+tupleHeadTag n = "__tuple" ++ intToString n ++ "__"
+
 headTycon : Ty -> Option String
 headTycon (TyCon n) = Some n
 headTycon (TyApp a _) = headTycon a
 headTycon (TyConstrained _ t) = headTycon t
 headTycon (TyEffect _ _ t) = headTycon t
-headTycon (TyTuple _) = Some "__tuple__"
+headTycon (TyTuple ts) = Some (tupleHeadTag (listLen ts))
 headTycon _ = None
 
 -- arg positions of a method type that mention an interface type parameter

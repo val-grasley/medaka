@@ -35,18 +35,19 @@
 # stderr as the `extra` arg), never against ordinary program source, so they
 # cannot accidentally bury a Tier-A/Tier-B finding.
 #
-# IMPORTANT — these are DEFENCE-IN-DEPTH.  The Tier-C generator runs with
-# `--no-tuple`, which SUPPRESSES the only open native gap the type-directed
-# generator can actually reach (Gap C1/C5: `debug` on a tuple receiver).  With
-# `--no-tuple` the generator emits NO open-native-gap construct — every monomorphic
-# scalar/ADT/match program it produces is EXPECTED to build and match the oracle.
-# So in normal Tier-C operation NOTHING here should fire; an entry firing means
-# `--no-tuple` was off (or the generator grew a new construct) and the gap is the
-# already-filed one cited.  Keep MINIMAL: each line is one exact documented panic.
+# IMPORTANT — these are DEFENCE-IN-DEPTH.  The type-directed Tier-C generator emits
+# NO open-native-gap construct: `debug`/`==`/`compare` on a tuple receiver now build
+# native==oracle (the arity-distinguished tuple-head fix closed former Gap C1/C5), so
+# tuples are no longer suppressed; and the generator never compares a tuple with
+# `<`/`>` (the one deferred parametric-default-`<` gap is unreachable).  So in normal
+# Tier-C operation NOTHING here should fire; an entry firing means the generator grew
+# a new construct reaching an open gap, classified as the already-filed one cited.
+# Keep MINIMAL: each line is one exact documented panic.
 #
-# Gap C — arg-tag dispatch on a constructorless receiver (tuple / primitive /
-# polymorphic).  selfhost/CONSTRUCT-COVERAGE.md §"Gap C" (C1/C5 = `debug` on a
-# tuple); selfhost/EMITTER-GAPS.md row 2.  Exact emitter panic:
+# Gap C (RESIDUAL) — arg-tag dispatch on a constructorless PRIMITIVE / polymorphic
+# receiver (the tuple case is CLOSED; primitive/polymorphic still open).
+# selfhost/CONSTRUCT-COVERAGE.md §"Gap C"; selfhost/EMITTER-GAPS.md row 2.  Exact
+# emitter panic:
 arg-tag dispatch on impl type that owns no constructors
 no impl groups
 #

@@ -35,10 +35,11 @@
 #     ~480ms+clang fixed cost amortizes over all BATCH blocks just like Tier-B).
 #     The native runtime auto-prints `main`'s Unit as a trailing "()" line, which
 #     `medaka run` (oracle) does NOT — the harness strips one trailing "()" line
-#     from native output before diffing.  Tier-C regenerates each seed with
-#     `--no-tuple` (the type-directed generator's `debug` on a tuple is the open
-#     native Gap C1/C5 and would otherwise flood EVERY program) and diffs against
-#     that no-tuple program's OWN oracle output.
+#     from native output before diffing.  Tier-C diffs each seed's native build
+#     against that program's OWN oracle output.  (Tuples are NO LONGER suppressed:
+#     `debug`/`==`/`compare` on a tuple receiver is native==oracle as of the
+#     arity-distinguished tuple-head fix — former Gap C1/C5.  The generator never
+#     emits `<`/`>` on a tuple, so the deferred parametric-default-`<` gap is unreached.)
 #
 # Usage: test/fuzz_diff.sh [START_SEED] [COUNT] [TIER] [BATCH] [NATIVE] [NATIVE_COUNT]
 #   defaults: START_SEED=1 COUNT=200 TIER=2 BATCH=12 NATIVE=0 NATIVE_COUNT=40
@@ -107,7 +108,7 @@ dump_failure() {
   echo "  -> dumped $out"
 }
 
-# Tier-C native-divergence dump.  Records the --no-tuple SOURCE, the oracle
+# Tier-C native-divergence dump.  Records the SOURCE, the oracle
 # output, and the native build error OR native stdout, so a candidate new native
 # gap is a self-contained repro.
 dump_native() {
@@ -115,9 +116,9 @@ dump_native() {
   local out="$FAILDIR/native_seed_${seed}.mdk"
   {
     echo "-- NATIVE FUZZ FAILURE  seed=$seed  tier=$TIER  batch=$BATCH  kind=$kind"
-    echo "-- reproduce: $GEN --seed $seed --tier $TIER --batch $BATCH --no-tuple > p.mdk"
+    echo "-- reproduce: $GEN --seed $seed --tier $TIER --batch $BATCH > p.mdk"
     echo "--            $MAIN build p.mdk -o p && ./p   (vs  $MAIN run p.mdk)"
-    echo "-- ============================== SOURCE (--no-tuple) ================="
+    echo "-- ============================== SOURCE ================="
   } > "$out"
   cat "$NSRC" >> "$out"
   {
@@ -174,18 +175,18 @@ done
 # ===================== Tier-C: oracle vs NATIVE (`medaka build`) =====================
 # Opt-in (NATIVE=1).  Runs its OWN seed range (START..START+NATIVE_COUNT-1) because
 # native build is ~2.8s/program — far heavier than Tier-A/B — so it gets a smaller
-# default count.  Each seed is regenerated with --no-tuple (suppresses the open
-# native Gap C1/C5 `debug`-on-tuple that would flood every program), built, run,
-# and its stripped stdout diffed against that no-tuple program's own oracle output.
+# default count.  Each seed is built, run, and its stripped stdout diffed against
+# that program.s own oracle output.  (Tuples enabled: `debug`/`==`/`compare` on a
+# tuple receiver is native==oracle since the arity-distinguished tuple-head fix.)
 if [ "$NATIVE" = "1" ]; then
   nend=$((START + NATIVE_COUNT - 1))
   echo "------------------------------------------------------------"
-  echo "Tier-C (native): seeds $START..$nend  --no-tuple  (build ~2.8s each)"
+  echo "Tier-C (native): seeds $START..$nend  (build ~2.8s each)"
   for seed in $(seq "$START" "$nend"); do
     nat_ran=$((nat_ran + 1))
     : > "$NERR"; rm -f "$NATSTRIP"
-    "$GEN" --seed "$seed" --tier "$TIER" --batch "$BATCH" --no-tuple > "$NSRC" 2>/dev/null
-    # oracle for THIS (--no-tuple) program — skip seeds the oracle itself rejects
+    "$GEN" --seed "$seed" --tier "$TIER" --batch "$BATCH" > "$NSRC" 2>/dev/null
+    # oracle for THIS program — skip seeds the oracle itself rejects
     # (those are Tier-A's job on the normal program; here we only compare native
     # against a known-good oracle baseline).
     if ! "$MAIN" run "$NSRC" > "$NORA" 2>&1; then
