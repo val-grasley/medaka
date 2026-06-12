@@ -14,7 +14,7 @@
 -- check-policy/etc.) prints "not yet in native CLI" and exits 1; those land in
 -- later slices (run/build = Slice 2, test = Slice 3, repl/lsp = Slice 4).
 
-import check.{runCheck}
+import check.{runCheck, checkHasErrors}
 import fmt.{formatSource}
 import new_cmd.{newProject}
 import build_cmd.{BuildResult, BuildOk, BuildErr, runBuild, baseOf, chopExt, envOr}
@@ -23,7 +23,7 @@ import ast.{Decl}
 import parser.{parse}
 import desugar.{desugar}
 import loader.{loadProgram}
-import typecheck.{elaborateModules}
+import typecheck.{elaborateModules, resetTypeErrorsSticky, hadTypeErrors}
 import eval.{evalModulesOutput}
 import test_cmd.{runTest}
 import repl.{initSession, replLoop}
@@ -94,7 +94,14 @@ runCheckCmd argv = match dropFlags argv
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
-          Ok tsrc => putStr (runCheck rsrc csrc tsrc)
+          -- G1: print the report (byte-identical stdout: diff_native_cli gate),
+          -- then gate the EXIT CODE on the error predicate so CI `$?` matches
+          -- OCaml `check` (exit 1 on any error).
+          Ok tsrc =>
+            let _ = putStr (runCheck rsrc csrc tsrc)
+            match checkHasErrors rsrc csrc tsrc
+              True => exit 1
+              False => ()
   _ =>
     let _ = ePutStrLn "usage: medaka check [--json] <file.mdk>"
     exit 1
@@ -188,11 +195,51 @@ runBuildCmd argv = match parseBuildArgs argv
       let outPath = match outOpt
         Some o => o
         None => chopExt (baseOf input)
-      match runBuild root medaka cc inputAbs outPath
-        BuildOk msg => println msg
-        BuildErr msg =>
+      -- G1 (SOUNDNESS): typecheck the whole module graph BEFORE shelling out to
+      -- the emitter.  runBuild emits/clangs whatever the emitter produces — for
+      -- an ill-typed program that is garbage (the G1 bug), so we abort here on any
+      -- type error.  Mirrors the OCaml driver's STEP-0 check gate.
+      match typecheckGate root inputAbs
+        TGErr msg =>
           let _ = ePutStrLn msg
           exit 1
+        TGFail =>
+          let _ = ePutStrLn ("error: type error in " ++ input ++ " — run `medaka check` for details")
+          exit 1
+        TGOk =>
+          match runBuild root medaka cc inputAbs outPath
+            BuildOk msg => println msg
+            BuildErr msg =>
+              let _ = ePutStrLn msg
+              exit 1
+
+-- G1 typecheck gate result: clean / type error in some module / a pre-typecheck
+-- failure (bad read or load) whose message we surface verbatim.
+data TypecheckGate = TGOk | TGFail | TGErr String
+
+-- Load the entry + transitive imports, elaborate the whole graph (route-stamp +
+-- per-module typecheck, which feeds the sticky error accumulator), and report
+-- whether any type error fired.  Read/load failures become TGErr (surfaced as-is)
+-- so the caller mirrors runBuild/loadProgram's own diagnostics.  Shared by build
+-- (here) — run inlines the same shape since it already holds the loaded mods.
+typecheckGate : String -> String -> <IO, Mut, Panic> TypecheckGate
+typecheckGate root input =
+  let rtPath = root ++ "/stdlib/runtime.mdk"
+  let corePath = root ++ "/stdlib/core.mdk"
+  let stdlibDir = root ++ "/stdlib"
+  let roots = [dirOf2 input, stdlibDir]
+  match readFile rtPath
+    Err msg => TGErr msg
+    Ok rsrc => match readFile corePath
+      Err msg => TGErr msg
+      Ok csrc => match loadProgram input roots
+        Err msg => TGErr msg
+        Ok mods =>
+          let _ = resetTypeErrorsSticky ()
+          let _ = elaborateModules (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
+          match hadTypeErrors ()
+            True => TGFail
+            False => TGOk
 
 -- Parse a single optional `-o <out>`; first remaining positional is the input.
 parseBuildArgs : List String -> Result String (String, Option String)
@@ -249,9 +296,20 @@ runRunCmd argv = match dropFlags argv
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
+          -- G1 (SOUNDNESS): typecheck the WHOLE module graph and abort before
+          -- eval on ANY type error.  elaborateModules route-stamps via the
+          -- per-module typecheck (checkModuleFullImpl), which pushes into the
+          -- sticky error accumulator; resetTypeErrorsSticky clears it first so
+          -- hadTypeErrors reflects THIS run only.  A type error makes
+          -- evalModulesOutput miscompile (the G1 bug), so we never reach it.
           Ok mods =>
+            let _ = resetTypeErrorsSticky ()
             let elaborated = elaborateModules (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
-            putStr (evalModulesOutput (fst elaborated) (snd elaborated))
+            match hadTypeErrors ()
+              True =>
+                let _ = ePutStrLn ("error: type error in " ++ target ++ " — run `medaka check` for details")
+                exit 1
+              False => putStr (evalModulesOutput (fst elaborated) (snd elaborated))
 
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)

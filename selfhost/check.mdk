@@ -28,7 +28,7 @@ import desugar.{desugar}
 import util.{joinNl}
 import resolve.{resolveToLines, singleFileImportErrors, resErrorSexp}
 import exhaust.{exhaustToLines}
-import typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls, collectDoWellformedErrors}
+import typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls, collectDoWellformedErrors, checkErrorsWithRuntime}
 
 -- exported so the batch typecheck harness's synthetic entry can pull this
 -- module into a single union closure (does not change its inferred schemes),
@@ -75,3 +75,35 @@ joinNonEmpty : String -> String -> String
 joinNonEmpty "" b = b
 joinNonEmpty a "" = a
 joinNonEmpty a b = a ++ "\n" ++ b
+
+-- G1 (SOUNDNESS): does the same front-end pipeline runCheck drives report ANY
+-- error?  This is the exit-code predicate for the native CLI: runCheck returns a
+-- REPORT string whose success path is a NON-empty signature dump, so "report
+-- non-empty" is NOT "had an error".  checkHasErrors instead mirrors runCheck's
+-- exact short-circuit ROUTING (do-wellformedness → single-file imports → resolve
+-- → typecheck) and tests each error CATEGORY for content, reusing the same error
+-- sources, while ignoring exhaustiveness WARNINGS (not errors) and the success
+-- scheme dump.  Keeping this separate from runCheck leaves its stdout byte-
+-- identical (the diff_native_cli gate stays green); only the exit code is gated.
+export
+checkHasErrors : String -> String -> String -> <Mut> Bool
+checkHasErrors rsrc csrc tsrc =
+  let raw = parse tsrc
+  let doErrs = collectDoWellformedErrors raw
+  match doErrs
+    (_ :: _) => True
+    [] =>
+      let desugared = desugar raw
+      let runtimeP = parse rsrc
+      let coreP = parse csrc
+      let importErrs = singleFileImportErrors desugared
+      match importErrs
+        (_ :: _) => True
+        [] =>
+          let resDiags = resolveToLines runtimeP coreP desugared
+          match resDiags
+            "" =>
+              let _ = setCoherenceUserDecls desugared
+              checkErrorsWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
+            _ => True
+

@@ -952,9 +952,31 @@ isPrimTycon t = containsName t ["Int", "Float", "String", "Bool", "Char", "Array
 typeErrors : Ref (List (String, Option Loc))
 typeErrors = Ref []
 
+-- G1 (SOUNDNESS): a STICKY mirror of typeErrors that resetState does NOT clear.
+-- The multi-module elaborate path (elaborateModules → checkModuleFullImpl) calls
+-- resetState at the start of EACH module, wiping `typeErrors`, so after the whole
+-- graph only the LAST module's errors survive there.  build/run must abort on a
+-- type error in ANY module, so `pushTypeError` also records into this accumulator,
+-- which only `resetTypeErrorsSticky` clears (the driver, once, before a run).  Read
+-- via `hadTypeErrors` to gate the CLI exit code BEFORE emit/eval.
+typeErrorsSticky : Ref Bool
+typeErrorsSticky = Ref False
+
+-- Clear the sticky accumulator.  Call once at the start of a build/run pipeline.
+export
+resetTypeErrorsSticky : Unit -> <Mut> Unit
+resetTypeErrorsSticky _ = set_ref typeErrorsSticky False
+
+-- True iff any type error was pushed since the last resetTypeErrorsSticky.
+export
+hadTypeErrors : Unit -> <Mut> Bool
+hadTypeErrors _ = typeErrorsSticky.value
+
 -- Push one type-error message, snapshotting the current ELoc span (B.10.2b).
 pushTypeError : String -> <Mut> Unit
-pushTypeError msg = set_ref typeErrors ((msg, currentLoc.value) :: typeErrors.value)
+pushTypeError msg =
+  let _ = set_ref typeErrorsSticky True
+  set_ref typeErrors ((msg, currentLoc.value) :: typeErrors.value)
 
 -- Source-location attribution (Phase B.10.2): the innermost ELoc span the
 -- `infer` walk has entered.  Set by infer's transparent ELoc arm before
@@ -5441,6 +5463,24 @@ checkToLinesWithRuntime runtimeDecls prog =
   match errs
     [] => joinNl (schemeLines schemes ++ warns)
     _ => joinNl (typeErrorLines (map fst errs))
+
+-- G1 (SOUNDNESS): does the runtime-seeded typecheck pass produce any TYPE ERROR?
+-- Mirrors checkToLinesWithRuntime's side-effects EXACTLY (same seeding + coherence
+-- over the same staged user decls) but returns a Bool keyed on the typeErrors
+-- accumulator, ignoring the success-path scheme dump and the match WARNINGS (which
+-- are not errors).  Used by check.mdk's checkHasErrors to gate the CLI exit code
+-- WITHOUT altering runCheck's reported stdout.
+export
+checkErrorsWithRuntime : List Decl -> List Decl -> <Mut> Bool
+checkErrorsWithRuntime runtimeDecls prog =
+  let _ = set_ref implInferEnabled False
+  let _ = set_ref matchWarnings []
+  let _ = set_ref matchOracle (buildOracle prog)
+  let _ = checkProgramSeeded (externSchemes runtimeDecls) prog
+  let _ = checkCoherence coherenceUserDecls.value
+  match typeErrors.value
+    [] => False
+    _ => True
 
 -- ── type-aware non-exhaustive-match check (the `check_match` driver) ────────
 -- Run the full typecheck pass over [prog] (runtime externs seeded, NO prelude —

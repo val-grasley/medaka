@@ -194,6 +194,28 @@ let run (args : string array) : int =
         (try Sys.remove ll_path with _ -> ())
       in
 
+      (* ---- STEP 0: typecheck gate (G1) ------------------------------------ *)
+      (* SOUNDNESS: never emit/clang an ill-typed program.  Reuse this binary's
+         own `check` subcommand as the oracle — it runs the full
+         loader→resolve→mark→typecheck pipeline (single- AND multi-file) with the
+         same stdlib root resolution as `run`, and exits non-zero on ANY parse /
+         resolve / type error.  Shelling out (rather than re-deriving the gate
+         in-process) keeps `build` and `check` byte-identical on what they reject,
+         with zero duplicated pipeline plumbing.  On failure we forward check's
+         own diagnostic (stdout+stderr) and abort before any emit/clang work. *)
+      let check_out = Filename.temp_file "medaka_build_chk_" ".out" in
+      let check_argv = [| self; "check"; input_abs |] in
+      let (check_code, check_err) = run_capture ~argv:check_argv ~out_path:check_out in
+      if check_code <> 0 then begin
+        (* check prints the type error to STDERR; the success "OK — N bindings"
+           goes to STDOUT, which we discard on the failure path.  Forward the
+           diagnostic so the user sees exactly what `check` would have shown. *)
+        if String.trim check_err <> "" then prerr_string check_err;
+        (try Sys.remove check_out with _ -> ());
+        cleanup (); exit 1
+      end;
+      (try Sys.remove check_out with _ -> ());
+
       (* ---- STEP 1: emit LLVM IR via the self-hosted emitter (shell-out) ---- *)
       (* Roots: input_dir first (user modules shadow stdlib), then selfhost,
          then stdlib_dir so stdlib modules (list, array, string, map, set, io,
