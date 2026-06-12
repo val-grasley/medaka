@@ -1,0 +1,23 @@
+-- G9 (PRE-FLIP-GAPS §G9): a bare arithmetic SECTION `(+)`/`(*)` passed as a
+-- first-class function value and applied at Float.  `(+)` desugars to
+-- `\_a _b => _a + _b` (desugar.mdk sectionToCore); the section lambda's two params
+-- carry no declared sig and no Float-literal anchor, so the emitter defaulted them
+-- LTInt and emitted integer `add`/`mul` — which untags a boxed-Float pointer as a
+-- tagged int → garbage / SIGSEGV / empty output when fed Float operands.  The fix
+-- (inferParamTys' isArithSectionLam case) seeds an arith-section lambda's params
+-- LTNum so the body routes through the runtime tag-dispatched @mdk_num_add /
+-- @mdk_num_mul (low-bit Int-vs-Float discriminator) — correct for BOTH Int
+-- (low-bit immediate, byte-identical value to the old int path) and Float (boxed →
+-- fadd/fmul).  This is the native blocker that made the prelude's point-ful
+-- `sum xs = fold (+) (fromInt 0) xs` produce empty output at Float.
+-- floatToString/intToString pin the print routine so the test doesn't depend on
+-- auto-print return-type recovery (a separate, unrelated gap).
+-- Oracle: (1.5 + 2.5)=4.0, (2.0 * 3.0)=6.0, (1 + 2)=3, (2 * 3)=6.
+apply2 : (a -> a -> a) -> a -> a -> a
+apply2 f x y = f x y
+
+main =
+  putStrLn (floatToString (apply2 (+) 1.5 2.5))
+  putStrLn (floatToString (apply2 (*) 2.0 3.0))
+  putStrLn (intToString (apply2 (+) 1 2))
+  putStrLn (intToString (apply2 (*) 2 3))

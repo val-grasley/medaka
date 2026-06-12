@@ -6152,12 +6152,36 @@ inferMultiRetTy _ [] _ = LTInt
 
 inferParamTys : List (String, FnSig) -> List Pat -> CExpr -> List LTy
 inferParamTys _ [] _ = []
+inferParamTys sigs pats body
+  | isArithSectionLam pats body = mapConst LTNum pats
 inferParamTys sigs ((PVar x)::rest) body =
   let ty = match paramUseTy sigs [] x body
     Some t => t
     None => LTInt
   ty :: inferParamTys sigs rest body
 inferParamTys sigs (_::rest) body = LTInt :: inferParamTys sigs rest body
+
+-- G9: an operator-SECTION lambda — `\_a _b => _a OP _b` for an arithmetic OP,
+-- the desugaring of a bare arithmetic section `(+)`/`(*)`/… (desugar.mdk
+-- `sectionToCore (SecBare op)`).  Such a section flows as a first-class function
+-- value (`fold (+) seed xs`), so it is POLYMORPHIC over `Num` — neither
+-- statically Int nor Float.  Its two params carry no declared sig and no Float
+-- literal anchor, so the default LTInt path would emit integer `add`/`mul`,
+-- which is WRONG when the section is applied at Float (untags a boxed Float
+-- pointer → garbage/SIGSEGV).  Seeding LTNum routes the body through the runtime
+-- tag-dispatched @mdk_num_* helper (low-bit Int/Float discriminator), correct for
+-- BOTH (Int: low-bit immediate → int op, byte-identical value to the old int
+-- path; Float: boxed → float op).  Shape is EXACT: body is a single CBinPrim of
+-- an arith op over the two params in order, so only the genuine section lambda is
+-- affected — a lambda doing other work keeps its per-param inference.
+isArithSectionLam : List Pat -> CExpr -> Bool
+isArithSectionLam [PVar a, PVar b] (CBinPrim op (CVar la _) (CVar rb _)) =
+  isArithOp op && la == a && rb == b
+isArithSectionLam _ _ = False
+
+mapConst : a -> List b -> List a
+mapConst _ [] = []
+mapConst v (_::rest) = v :: mapConst v rest
 
 -- like inferParamTys, but a DECLARED scalar type at param index `i` seeds (wins)
 -- over the body-use guess (Gap E1: `double x = x + x : Float -> Float` has no

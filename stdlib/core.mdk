@@ -742,12 +742,12 @@ count f = fold g 0
    dispatch through `Num.add` for user-defined numeric types. -}
 export
 sum : (Foldable t, Num a) => t a -> a
-sum = fold (+) 0
+sum xs = fold (+) (fromInt 0) xs
 
 -- | Product of a numeric foldable.  Identity is `1`.  Same caveat as `sum`.
 export
 product : (Foldable t, Num a) => t a -> a
-product = fold (*) 1
+product xs = fold (*) (fromInt 1) xs
 
 -- | True when the value appears in the container (by `Eq`).
 export

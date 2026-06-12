@@ -151,6 +151,23 @@ EOF
 # G7: foldMap default body threads a method-level Monoid dict (`empty`) into the
 # shared default define.  Covers BOTH monoids over the SAME container define (List
 # container → List monoid AND String monoid) and a different container (Option).
+# G9 regression (PRE-FLIP-GAPS §G9): the prelude `sum`/`product` seed via
+# `fromInt 0`/`fromInt 1` (point-ful) so the accumulator type-directs to the
+# element type, not pinned Int.  At Float, `fold (+) (fromInt 0)` was the blocker:
+# the bare arithmetic SECTION `(+)`/`(*)` desugars to `\_a _b => _a OP _b`, whose
+# untyped params defaulted LTInt -> integer add/mul on a boxed Float pointer
+# (garbage / SIGSEGV / empty output).  The fix seeds an arith-section lambda's
+# params LTNum so the body routes through @mdk_num_* (low-bit Int-vs-Float
+# discriminator), correct for BOTH.  Exercises sum/product at Float AND Int.
+cat > "$WORK/src/sumprod_float.mdk" <<'EOF'
+main : <IO> Unit
+main =
+  putStrLn (debug (sum [1.0, 2.0, 3.0]))
+  putStrLn (debug (product [2.0, 3.0]))
+  putStrLn (debug (sum [1, 2, 3]))
+  putStrLn (debug (product [2, 3, 4]))
+EOF
+
 cat > "$WORK/src/foldmap.mdk" <<'EOF'
 main : <IO> Unit
 main =
@@ -288,7 +305,7 @@ main =
   putStrLn (debug (eq (Box [1, 2, 3]) (Box [1, 2, 4])))
 EOF
 
-PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr numpoly show_debug eq deriving map_impl g4_box_eq foldmap"
+PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumprod_float numpoly show_debug eq deriving map_impl g4_box_eq foldmap"
 
 pass=0; fail=0
 
