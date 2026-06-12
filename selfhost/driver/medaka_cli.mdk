@@ -22,7 +22,7 @@ import support.util.{reverseL}
 import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
-import driver.loader.{loadProgram}
+import driver.loader.{loadProgram, findProjectRoot}
 import types.typecheck.{elaborateModules, resetTypeErrorsSticky, hadTypeErrors}
 import eval.eval.{evalModulesOutput}
 import tools.test_cmd.{runTest}
@@ -227,7 +227,7 @@ typecheckGate root input =
   let rtPath = root ++ "/stdlib/runtime.mdk"
   let corePath = root ++ "/stdlib/core.mdk"
   let stdlibDir = root ++ "/stdlib"
-  let roots = [dirOf2 input, stdlibDir]
+  let roots = [findProjectRoot (dirOf2 input), stdlibDir]
   match readFile rtPath
     Err msg => TGErr msg
     Ok rsrc => match readFile corePath
@@ -283,7 +283,7 @@ runRunCmd argv = match dropFlags argv
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
     let stdlibDir = root ++ "/stdlib"
-    let roots = [dirOf2 target, stdlibDir]
+    let roots = [findProjectRoot (dirOf2 target), stdlibDir]
     match readFile rtPath
       Err msg =>
         let _ = ePutStrLn msg
@@ -331,7 +331,7 @@ runTestCmd argv = match dropFlags argv
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
     let stdlibDir = root ++ "/stdlib"
-    let roots = [dirOf2 target, stdlibDir]
+    let roots = [findProjectRoot (dirOf2 target), stdlibDir]
     runTest rtPath corePath target roots
 
 -- dirname on a POSIX path (mirrors build_cmd.dirOf, kept local to avoid an extra

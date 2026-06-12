@@ -25,6 +25,7 @@
 -- the emitter's own diagnostic surfaced.
 
 import support.util.{reverseL}
+import driver.loader.{findProjectRoot}
 
 -- A build either succeeds (writing the binary) or fails with a message.
 public export data BuildResult = BuildOk String | BuildErr String
@@ -178,7 +179,7 @@ runBuild root medaka cc inputAbs outPath =
   let rtC = joinPath root "runtime/medaka_rt.c"
   let selfhostDir = joinPath root "selfhost"
   let stdlibDir = joinPath root "stdlib"
-  let inputDir = dirOf inputAbs
+  let inputDir = findProjectRoot (dirOf inputAbs)
   let llPath = "/tmp/medaka_build_" ++ baseOf (chopExt inputAbs) ++ ".ll"
   -- EMIT STEP.  Two paths, selected by the MEDAKA_EMITTER env var:
   --   * set   → invoke that NATIVE EMITTER BINARY directly (OCaml-free path — the
