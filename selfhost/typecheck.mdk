@@ -2233,11 +2233,11 @@ binopMethod ">=" = Some "gte"
 binopMethod _ = None
 
 inferBinop : String -> Mono -> Mono -> <Mut> Mono
-inferBinop "+" lt rt = arithOp lt rt
-inferBinop "-" lt rt = arithOp lt rt
-inferBinop "*" lt rt = arithOp lt rt
-inferBinop "/" lt rt = arithOp lt rt
-inferBinop "%" lt rt = arithOp lt rt
+inferBinop "+" lt rt = numArithOp lt rt
+inferBinop "-" lt rt = numArithOp lt rt
+inferBinop "*" lt rt = numArithOp lt rt
+inferBinop "/" lt rt = numArithOp lt rt
+inferBinop "%" lt rt = numArithOp lt rt
 inferBinop "++" lt rt = arithOp lt rt
 inferBinop "==" lt rt = compareOp lt rt
 inferBinop "!=" lt rt = compareOp lt rt
@@ -2257,6 +2257,44 @@ arithOp : Mono -> Mono -> <Mut> Mono
 arithOp lt rt =
   let _ = unify lt rt
   lt
+
+-- G2: arithmetic `+ - * / %` carry a `Num` obligation on their (unified) operand
+-- type — mirrors the oracle's `No impl of Num for <T>` reject (lib/typecheck.ml).
+-- `++` (string/list APPEND) is NOT Num and stays on plain arithOp.  We reuse the
+-- existing pendingImplObligations / checkImplObligations path: a synthetic Num
+-- obligation with a bare iface-param declared type (`TyVar "a"`, typaram ["a"]) so
+-- dispatchMonosOf recovers exactly the operand mono.  When it grounds to a concrete
+-- non-Num head (String/Bool) with no `impl Num`, the post-inference check rejects;
+-- while still a polymorphic var (a `Num a =>` site) allConcreteHeads defers it to
+-- the caller — exactly the oracle's behaviour.
+--
+-- Gated on the `Num` interface being REGISTERED (prelude loaded): the bare-HM,
+-- no-prelude oracle (tc_probe / typecheck_main.mdk) imposes NO class constraint on
+-- `+`, so `1 + 2 : Int` and `"a" - "b" : String` both type there.  Recording the
+-- obligation only when Num exists keeps the no-prelude drivers byte-identical to
+-- that oracle while the full check_main (prelude) path rejects, matching `medaka
+-- check`.
+numArithOp : Mono -> Mono -> <Mut> Mono
+numArithOp lt rt =
+  let _ = unify lt rt
+  let _ = recordNumObligation lt
+  lt
+
+-- Record a `Num` obligation on the operand, but ONLY when a `Num` interface is
+-- registered (prelude loaded).  The bare-HM no-prelude oracle imposes no class
+-- constraint on `+`, so gating here keeps the no-prelude drivers byte-identical.
+recordNumObligation : Mono -> <Mut> Unit
+recordNumObligation lt
+  | numIfaceRegistered () = set_ref pendingImplObligations (("Num", ["a"], TyVar "a", lt) :: pendingImplObligations.value)
+  | otherwise = ()
+
+-- True iff a `Num` interface is registered (its methods are in methodIfaceParamsRef,
+-- populated per program from the DInterface decls — present once core.mdk is loaded).
+numIfaceRegistered : Unit -> <Mut> Bool
+numIfaceRegistered _ = anyList numEntry methodIfaceParamsRef.value
+
+numEntry : (String, (String, List String, Ty)) -> Bool
+numEntry (_, (iface, _, _)) = iface == "Num"
 
 compareOp : Mono -> Mono -> <Mut> Mono
 compareOp lt rt =

@@ -2724,6 +2724,11 @@ let e_string_num = assert_err "x = \"a\" + \"b\"\n"
 let e_int_float_mismatch = assert_err "x = 1 + 1.5\n"
 (* `%` still rejects non-Num operands (no `Num String` impl). *)
 let e_string_mod = assert_err "x = \"a\" % \"b\"\n"
+(* G2: `- * /` likewise impose Num — reject String/Bool operands (no impl).
+   These lock the oracle the self-hosted checker's G2 fix mirrors. *)
+let e_string_sub = assert_err "x = \"a\" - \"b\"\n"
+let e_string_mul = assert_err "x = \"a\" * \"b\"\n"
+let e_bool_sub   = assert_err "x = True - False\n"
 
 (* ── Phase 18: runtime.mdk externs ─────────────── *)
 
@@ -4513,6 +4518,9 @@ let () =
       test_case "err: String Num"        `Quick e_string_num;
       test_case "err: Int+Float mismatch" `Quick e_int_float_mismatch;
       test_case "err: String mod"        `Quick e_string_mod;
+      test_case "err: String sub"        `Quick e_string_sub;
+      test_case "err: String mul"        `Quick e_string_mul;
+      test_case "err: Bool sub"          `Quick e_bool_sub;
     ];
     "runtime.mdk externs (Phase 18)", [
       test_case "readLine type"          `Quick t_readLine_type;
