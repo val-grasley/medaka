@@ -5746,6 +5746,51 @@ checkModules runtimeDecls coreDecls modules =
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
   checkModulesGo (runtimeSeed ++ coreSchemes) (publicDataDecls coreDecls) modules
 
+-- ── per-module ISOLATED diagnostics (the analyzeProject typecheck stage) ────
+-- Like checkModuleFull but ALSO harvests THIS module's type diagnostics: it
+-- mirrors checkProgramDiags's side-effects (matchOracle/matchWarnings seeded,
+-- coherence over the module's OWN decls) while keeping the module ISOLATED — only
+-- PUBLIC schemes/data of earlier modules are seeded (via seedVars/accData), so a
+-- private same-named helper in another module never collides (the bug the old
+-- flat prefix-concat diagnostics path had).  checkModuleFull calls resetState (),
+-- which clears typeErrors at module start, so the post-call typeErrors snapshot is
+-- exactly THIS module's contribution; matchWarnings is cleared here explicitly
+-- (resetState does NOT clear it).  Returns (own value schemes, errs, warns) so the
+-- driver can thread accV/accData exactly as checkModulesGo does.
+export
+checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> <Mut> (List (String, Scheme), List (String, Option Loc), List String)
+checkModuleFullDiags seedVars accData prog =
+  let _ = set_ref implInferEnabled False
+  let _ = set_ref matchWarnings []
+  let _ = set_ref matchOracle (buildOracle prog)
+  -- checkModuleFull → checkModuleFullImpl runs resetState () first (clears
+  -- typeErrors + currentLevel), so the snapshot below is this module's own errors.
+  let schemes = checkModuleFull seedVars accData prog
+  -- coherence over THIS module's own decls (mirrors checkProgramDiags's
+  -- checkCoherence coherenceUserDecls.value, which moduleTypeDiags set to the
+  -- module decls).  Pushes any conflict into typeErrors AFTER the resetState above.
+  let _ = checkCoherence prog
+  (schemes, revLL typeErrors.value, revLL matchWarnings.value)
+
+-- multi-module diagnostics driver: threads the runtime+core seed and per-module
+-- PUBLIC accumulators exactly as checkModulesGo, but at each module harvests its
+-- ISOLATED diagnostics via checkModuleFullDiags.  Returns one
+-- (mid, (errs, warns)) per module in load order.  Core is checked ONCE (its
+-- diagnostics are not surfaced — it is the trusted prelude, as in checkModules).
+checkModulesDiagsGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, Option Loc), List String))
+checkModulesDiagsGo _ _ [] = []
+checkModulesDiagsGo accV accData ((mid, prog) :: rest) =
+  let (schemes, errs, warns) = checkModuleFullDiags accV accData prog
+  let pubV = pickSchemes (publicValNames prog) schemes
+  (mid, (errs, warns)) :: checkModulesDiagsGo (accV ++ pubV) (accData ++ publicDataDecls prog) rest
+
+export
+checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, Option Loc), List String))
+checkModulesDiags runtimeDecls coreDecls modules =
+  let runtimeSeed = externSchemes runtimeDecls
+  let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
+  checkModulesDiagsGo (runtimeSeed ++ coreSchemes) (publicDataDecls coreDecls) modules
+
 -- the entry module is last in dependency-first order
 entryOwnSchemes : List (String, List (String, Scheme)) -> List (String, Scheme)
 entryOwnSchemes [] = []

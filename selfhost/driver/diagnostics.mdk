@@ -22,7 +22,7 @@ import frontend.parser.{parse, parseLocated, parseResult, ParseError, parseError
 import frontend.desugar.{desugar}
 import frontend.resolve.{resolveProgram, ppResError, resolveModule, ModuleExports}
 import frontend.exhaust.{checkGuardExhaustiveness}
-import types.typecheck.{checkProgramDiags, setCoherenceUserDecls}
+import types.typecheck.{checkProgramDiags, checkModulesDiags, setCoherenceUserDecls}
 import driver.loader.{loadProgramFilesLocated}
 
 -- ── types ──────────────────────────────────────────────────────────────────
@@ -135,13 +135,15 @@ joinNl (x :: xs) = x ++ "\n" ++ joinNl xs
 --     project opens a handful of files so linear scan is fine, and `Map` is not in
 --     the implicit prelude (it lives in stdlib/map.mdk, unreachable from the
 --     single-root selfhost tree).
---   * Per-module TYPECHECK reuses the exported single-program `checkProgramDiags`
---     via a PREFIX-DIFF: module M's own diagnostics = diags(core ++ earlier ++ M)
---     minus diags(core ++ earlier).  This isolates M's contribution exactly (an
---     earlier module's error appears in BOTH runs → subtracted out, never
---     double-counted) without needing the unexported per-module
---     `checkModuleFull` (owned by the typecheck module).  Resolve uses the
---     exported per-module `resolveModule` directly (it threads exports).
+--   * Per-module TYPECHECK threads the shared prelude (core) + runtime externs
+--     through the exported multi-module `checkModulesDiags`, which runs each
+--     module ISOLATED via `checkModuleFull` (only earlier modules' PUBLIC
+--     schemes/data are seeded) and harvests that module's own diagnostics by
+--     snapshotting the typeErrors/matchWarnings refs after its check (each module
+--     starts with resetState ()).  This keeps a private same-named helper in one
+--     module from colliding with a different-typed one in another — the
+--     per-module-frame property the OCaml `typecheck_module` has.  Resolve uses
+--     the exported per-module `resolveModule` directly (it threads exports).
 
 -- A per-file bucket of diagnostics, in dependency order.  Newest pushed last.
 -- file → reversed-or-forward diag list; we keep forward order by appending.
@@ -289,66 +291,45 @@ resolvePass rt core known ((mid, path, prog) :: rest) buckets =
   let diags = map (e => Diag SevError (ppResError e) None) errs
   resolvePass rt core (exp :: known) rest (pushDiags path diags buckets)
 
--- ── typecheck pass (per module, prefix-diff) ────────────────────────────────
--- For each module M (dependency order) accumulate the DESUGARED decls of core +
--- all earlier modules as the prefix; M's own diagnostics are
--- diags(prefix ++ M) minus diags(prefix).  Guard-exhaustiveness warnings come
--- from the RAW (pre-desugar) module decls, like analyzeFrom.  Resolve gates
--- typecheck per-module: a module whose own resolve produced errors is skipped for
--- typecheck (mirror analyze_project, which only typechecks when resolve is clean…
--- actually analyze_project always typechecks; here we mirror analyzeFrom's
--- per-program gate: typecheck runs only when THIS module + its prefix resolve
--- clean, to avoid unbound-name noise from a broken import).
+-- ── typecheck pass (per module, ISOLATED) ───────────────────────────────────
+-- Run the shared multi-module typecheck (`checkModulesDiags`): core + runtime are
+-- seeded ONCE and each module is checked in its OWN frame via `checkModuleFull`
+-- (only earlier modules' PUBLIC schemes/data carry forward), harvesting that
+-- module's own diagnostics from the typeErrors/matchWarnings refs.  This gives the
+-- per-module isolation OCaml's `typecheck_module` has, so a private helper named
+-- the same across two modules but with different types never collides.
+-- Guard-exhaustiveness warnings still come from the RAW (pre-desugar) module decls
+-- (checkGuardExhaustiveness needs the surface `EGuards` shape, gone after desugar),
+-- bucketed per file alongside the module's type diagnostics.
 typecheckPass : List Decl -> List Decl -> List Decl -> List (String, String, List Decl) -> List (String, List Diag) -> <Mut> List (String, List Diag)
-typecheckPass _ _ _ [] buckets = buckets
-typecheckPass runtimeP coreP prefix ((mid, path, prog) :: rest) buckets =
-  let desugared = desugar prog
+typecheckPass runtimeP coreP _ mods buckets =
+  let modPairs = map midToDesugaredPair mods
+  let tcByMid = checkModulesDiags runtimeP coreP modPairs
+  foldModuleTc mods tcByMid buckets
+
+-- (mid, path, rawDecls) → (mid, desugared decls) for checkModulesDiags.
+midToDesugaredPair : (String, String, List Decl) -> (String, List Decl)
+midToDesugaredPair (mid, _, prog) = (mid, desugar prog)
+
+-- For each (mid, path, rawProg): look up its harvested (errs, warns) by mid, wrap
+-- them as Diags (preserving each type error's Option Loc), fold in this module's
+-- guard-exhaustiveness warnings from the raw decls, and bucket by path.
+foldModuleTc : List (String, String, List Decl) -> List (String, (List (String, Option Loc), List String)) -> List (String, List Diag) -> <Mut> List (String, List Diag)
+foldModuleTc [] _ buckets = buckets
+foldModuleTc ((mid, path, prog) :: rest) tcByMid buckets =
+  let (tcErrs, tcWarns) = lookupTcDiags mid tcByMid
+  let errDiags = map (((msg, loc)) => Diag SevError msg loc) tcErrs
+  let warnDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) tcWarns
   let guardWarns = checkGuardExhaustiveness prog
   let guardDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) guardWarns
-  -- prefix-diff typecheck (only its NEW diagnostics belong to this file).
-  let newDiags = moduleTypeDiags runtimeP (coreP ++ prefix) desugared
-  let buckets2 = pushDiags path (guardDiags ++ newDiags) buckets
-  typecheckPass runtimeP coreP (prefix ++ desugared) rest buckets2
+  let buckets2 = pushDiags path (guardDiags ++ errDiags ++ warnDiags) buckets
+  foldModuleTc rest tcByMid buckets2
 
--- diags(prefix ++ module) minus diags(prefix): the module's own type diagnostics.
--- Each checkProgramDiags run resets typecheck state, so the two runs are
--- independent; identical prefix decls yield identical prefix diagnostics, which
--- multiset-subtraction removes, leaving exactly the module's contribution.
-moduleTypeDiags : List Decl -> List Decl -> List Decl -> <Mut> List Diag
-moduleTypeDiags runtimeP prefixDecls moduleDecls =
-  let _ = setCoherenceUserDecls moduleDecls
-  let (fullErrs, fullWarns) = checkProgramDiags runtimeP (prefixDecls ++ moduleDecls)
-  let _ = setCoherenceUserDecls []
-  let (preErrs, preWarns) = checkProgramDiags runtimeP prefixDecls
-  let errDiags = map (((msg, loc)) => Diag SevError msg loc) (subtractErrs preErrs fullErrs)
-  let warnDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) (subtractStr preWarns fullWarns)
-  errDiags ++ warnDiags
-
--- Multiset difference `full \ prefix` for type errors keyed on (msg, loc): drop
--- one occurrence of each prefix error from the full list, keep the remainder.
-subtractErrs : List (String, Option Loc) -> List (String, Option Loc) -> List (String, Option Loc)
-subtractErrs [] full = full
-subtractErrs (p :: ps) full = subtractErrs ps (removeFirstErr p full)
-
-removeFirstErr : (String, Option Loc) -> List (String, Option Loc) -> List (String, Option Loc)
-removeFirstErr _ [] = []
-removeFirstErr p (x :: xs)
-  | errEq p x = xs
-  | otherwise = x :: removeFirstErr p xs
-
-errEq : (String, Option Loc) -> (String, Option Loc) -> Bool
-errEq (m1, _) (m2, _) = m1 == m2
-
--- Multiset difference `full \ prefix` for warning strings.
-subtractStr : List String -> List String -> List String
-subtractStr [] full = full
-subtractStr (p :: ps) full = subtractStr ps (removeFirstStr p full)
-
-removeFirstStr : String -> List String -> List String
-removeFirstStr _ [] = []
-removeFirstStr p (x :: xs)
-  | p == x = xs
-  | otherwise = x :: removeFirstStr p xs
+lookupTcDiags : String -> List (String, (List (String, Option Loc), List String)) -> (List (String, Option Loc), List String)
+lookupTcDiags _ [] = ([], [])
+lookupTcDiags mid ((m, d) :: rest)
+  | m == mid = d
+  | otherwise = lookupTcDiags mid rest
 
 -- ── project text entry point (diff gate) ────────────────────────────────────
 -- Render the per-file buckets as one block per file:
