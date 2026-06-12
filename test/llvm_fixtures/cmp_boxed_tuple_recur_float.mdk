@@ -1,0 +1,20 @@
+-- SOUNDNESS regression (Float analog of cmp_boxed_tuple_recur): a relational
+-- `<=` over a boxed FLOAT bound through a tuple destructure in a recursive List
+-- walk.  Same emitter bug — a raw integer `icmp` on the boxed-Float POINTER —
+-- now routed through @mdk_value_cmp_raw (Float cell → double compare).
+-- `main` reduces to a scalar Bool: firstKey of the sorted list must be 1.0.
+insertSorted : (Float, String) -> List (Float, String) -> List (Float, String)
+insertSorted x [] = [x]
+insertSorted (k, v) ((k2, v2) :: rest)
+  | k <= k2 = (k, v) :: (k2, v2) :: rest
+  | otherwise = (k2, v2) :: insertSorted (k, v) rest
+
+sortByKey : List (Float, String) -> List (Float, String)
+sortByKey [] = []
+sortByKey (x :: rest) = insertSorted x (sortByKey rest)
+
+firstKey : List (Float, String) -> Float
+firstKey ((k, v) :: rest) = k
+firstKey [] = 0.0
+
+main = firstKey (sortByKey [(3.0, "x"), (1.0, "y"), (2.0, "z")]) <= 1.0

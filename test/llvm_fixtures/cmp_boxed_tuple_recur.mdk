@@ -1,0 +1,24 @@
+-- SOUNDNESS regression: a relational `<=` over a STRING bound through a TUPLE
+-- destructure inside a recursive List walk.  The emitter's local type inference
+-- could not recover the String type at the `k <= k2` site (both operands default
+-- to LTInt), so it emitted a raw integer `icmp` on the boxed-String POINTERS —
+-- pointer-identity (heap-ADDRESS) ordering → unsorted + nondeterministic output.
+-- Fix: the type-unknown ordering arm routes through @mdk_value_cmp_raw (runtime
+-- String/Float/immediate discriminator), the ordering analog of @mdk_value_eq.
+-- `main` reduces to a scalar (this gate's single-file emitter cannot print an
+-- ADT): firstKey of the sorted list must be "a", so the result is 1 (True).
+insertSorted : (String, String) -> List (String, String) -> List (String, String)
+insertSorted x [] = [x]
+insertSorted (k, v) ((k2, v2) :: rest)
+  | k <= k2 = (k, v) :: (k2, v2) :: rest
+  | otherwise = (k2, v2) :: insertSorted (k, v) rest
+
+sortByKey : List (String, String) -> List (String, String)
+sortByKey [] = []
+sortByKey (x :: rest) = insertSorted x (sortByKey rest)
+
+firstKey : List (String, String) -> String
+firstKey ((k, v) :: rest) = k
+firstKey [] = "?"
+
+main = firstKey (sortByKey [("c", "x"), ("a", "y"), ("b", "z")]) == "a"

@@ -628,6 +628,35 @@ long long mdk_string_compare_raw(long long a, long long b) {
   return c < 0 ? -1 : c > 0 ? 1 : 0;
 }
 
+/* Polymorphic three-way compare for ORDERING operators (`<`/`>`/`<=`/`>=`) whose
+ * operand static LTy the emitter could not recover — both default to LTInt, e.g.
+ * a String/Float bound through a tuple destructure inside a recursive list walk
+ * (`k <= k2` where `(k,_)`/`(k2,_)` came from `(String,String)` pair fields).  An
+ * inline integer `icmp` there compares boxed-String/Float POINTERS as ints —
+ * pointer-identity ordering, the heap-ADDRESS bug.  This is the ordering analog
+ * of mdk_value_eq: discriminate at run time on the low bit / header tag and
+ * return a PLAIN -1/0/1 i64 (like mdk_string_compare_raw), so the emitter keeps
+ * its `icmp <pred> i64 raw, 0` shape.  Both operands of one Ord op share a type
+ * (well-typed), so testing the LEFT operand suffices:
+ *   - boxed String cell (even pointer, header == MDK_STR_TAG) -> byte compare;
+ *   - boxed Float cell  (even pointer, header == 2)           -> double compare;
+ *   - otherwise (tagged immediate: Int/Bool/Char, or a ctor word) -> word compare
+ *     of the untagged (>>1) immediates, matching the inline Int icmp path.
+ * At a CONCRETE Int/Float/String type the emitter keeps its specialized inline
+ * IR (mirroring the mdk_value_eq precedent for `==`), so this is reached only at
+ * a genuinely type-unknown ordering site. */
+long long mdk_value_cmp_raw(long long a, long long b) {
+  int a_str = ((a & 1) == 0) && ((const long long *)a)[0] == MDK_STR_TAG;
+  if (a_str) return mdk_string_compare_raw(a, b);
+  int a_flt = ((a & 1) == 0) && ((const long long *)a)[0] == 2;
+  if (a_flt) {
+    double da = ((const double *)a)[1], db = ((const double *)b)[1];
+    return da < db ? -1 : da > db ? 1 : 0;
+  }
+  long long ia = a >> 1, ib = b >> 1;
+  return ia < ib ? -1 : ia > ib ? 1 : 0;
+}
+
 /* slice 12: args + env ---------------------------------------------------- */
 static int    mdk_argc = 0;
 static char **mdk_argv = 0;

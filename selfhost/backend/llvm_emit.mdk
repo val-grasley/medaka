@@ -1778,30 +1778,38 @@ emitCmp e env op l r =
       let _ = emit e ("  " ++ c ++ " = fcmp " ++ floatPred op ++ " double " ++ ld ++ ", " ++ rd)
       boolFromI1 e c
     -- Unknown static type (LTInt default — could be Int/Bool/Char OR a boxed
-    -- String the emitter couldn't recover, e.g. two String params used only in
-    -- `n == name`): an integer `icmp eq` is pointer-identity for a boxed String
-    -- cell and so WRONG.  Route equality through @mdk_value_eq, which discriminates
-    -- at run time (String cell → byte compare; immediate → word compare), mirroring
-    -- mdk_append's runtime String/List discrimination.  Ordering ops (`<`/`>`/…)
-    -- are never string-valued at an unknown site in the bootstrap, so they keep the
-    -- integer compare.  A statically-typed numeric operand never reaches here.
+    -- String/Float the emitter couldn't recover, e.g. `k <= k2` where `k`/`k2`
+    -- were bound through a TUPLE destructure inside a recursive list walk, losing
+    -- their `(String,String)` component type → both default to LTInt): an integer
+    -- `icmp` then compares boxed-String/Float POINTERS as ints — pointer-identity
+    -- (heap-ADDRESS) ordering, and so WRONG.  Route BOTH equality AND ordering
+    -- through the runtime discriminators: `==`/`!=` via @mdk_value_eq, `<`/`>`/…
+    -- via @mdk_value_cmp_raw (String cell → byte compare; Float cell → double
+    -- compare; immediate → word compare), mirroring mdk_append's runtime
+    -- String/List discrimination.  This is the ordering analog of the @mdk_value_eq
+    -- precedent — concrete-Int ordering also routes through the runtime helper
+    -- (as concrete-Int `==` already does), staying correct and uniform.
     --
     -- An `if`-EXPRESSION (not a guarded `LTInt if isEqOp op` arm) keeps this
     -- function self-compilable: the gap-tolerant bootstrap emitter cannot lower a
     -- guarded match arm.  IR is byte-identical to the guarded form.
     LTInt =>
       if isEqOp op then emitValueEq e op lv rv
-      else emitIntCmp e op lv rv
-    _ => emitIntCmp e op lv rv
+      else emitValueCmp e op lv rv
+    _ => emitValueCmp e op lv rv
 
--- the integer `icmp` compare path shared by the LTInt-non-eq and default arms of
--- emitCmp (factored out so neither needs a guarded match arm).
-emitIntCmp : Emit -> String -> String -> String -> <Mut> (String, LTy)
-emitIntCmp e op lv rv =
-  let li = untagInt e lv
-  let ri = untagInt e rv
+-- ordering (`<`/`>`/`<=`/`>=`) of two operands of statically-unknown kind via the
+-- runtime three-way discriminator @mdk_value_cmp_raw (note at emitCmp): it returns
+-- a PLAIN -1/0/1 i64 (String byte / Float double / immediate word compare), and
+-- the operator becomes `icmp <intPred op> raw, 0` (e.g. `a < b` ⟺ `cmp < 0`),
+-- reusing intPred's slt/sgt/sle/sge and boolFromI1 — the same shape emitStrCmp
+-- uses over @mdk_string_compare_raw.
+emitValueCmp : Emit -> String -> String -> String -> <Mut> (String, LTy)
+emitValueCmp e op lv rv =
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = call i64 @mdk_value_cmp_raw(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
   let c = freshReg e
-  let _ = emit e ("  " ++ c ++ " = icmp " ++ intPred op ++ " i64 " ++ li ++ ", " ++ ri)
+  let _ = emit e ("  " ++ c ++ " = icmp " ++ intPred op ++ " i64 " ++ cmp ++ ", 0")
   boolFromI1 e c
 
 -- equality of two operands of statically-unknown kind via the runtime
@@ -7047,6 +7055,7 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_string_index_of(i64, i64)"
   let _ = emit e "declare i64 @mdk_string_compare(i64, i64)"
   let _ = emit e "declare i64 @mdk_string_compare_raw(i64, i64)"
+  let _ = emit e "declare i64 @mdk_value_cmp_raw(i64, i64)"
   let _ = emit e "declare void @mdk_set_args(i32, ptr)"
   let _ = emit e "declare i64 @mdk_args(i64)"
   let _ = emit e "declare i64 @mdk_get_env(i64)"
