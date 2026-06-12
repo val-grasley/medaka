@@ -14,9 +14,9 @@
 #   stdlib/string.mdk    single-file doctests (block-comment examples)
 #   stdlib/mut_array.mdk single-file doctests
 #   stdlib/array.mdk     single-file doctests + props (needs the arrayCopy oracle
-#                        extern in selfhost/eval.mdk)
+#                        extern in selfhost/eval/eval.mdk)
 #   stdlib/map.mdk       single-file doctests + props (Map literal head-pins via
-#                        the EHeadAnnot infer arm in selfhost/typecheck.mdk)
+#                        the EHeadAnnot infer arm in selfhost/types/typecheck.mdk)
 #   stdlib/set.mdk       single-file doctests + props (Set literal, EHeadAnnot)
 #   stdlib/json.mdk      multi-module doctests (imports list + string)
 #   stdlib/toml.mdk      multi-module doctests (imports string)

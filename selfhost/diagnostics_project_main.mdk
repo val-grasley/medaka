@@ -16,7 +16,7 @@
 -- (the OCaml analyze_project).  Disk-only here (read = (_ => None)); the unsaved-
 -- buffer override path is exercised by the LSP (lsp.mdk).
 
-import diagnostics.{analyzeProjectToLines}
+import driver.diagnostics.{analyzeProjectToLines}
 
 main = match args ()
   (runtimeP :: coreP :: entry :: roots) => run runtimeP coreP entry (rootsOrDefault entry roots)

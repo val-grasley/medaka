@@ -19,7 +19,7 @@
 -- eval_modules path cannot resolve — running those stages through the
 -- self-hosted eval is tracked as a separate bootstrap step (see PLAN.md).
 
-import lexer.{Token, tokenize, tokenToString}
+import frontend.lexer.{Token, tokenize, tokenToString}
 
 renderToks : List Token -> String
 renderToks [] = ""

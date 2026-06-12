@@ -1,6 +1,6 @@
 #!/bin/sh
 # Differential validation for the self-hosted MARK stage:
-#   selfhost/mark_main.mdk  (lex → parse → desugar → selfhost/sexp.mdk dump)
+#   selfhost/mark_main.mdk  (lex → parse → desugar → selfhost/ir/sexp.mdk dump)
 # vs the OCaml reference
 #   dev/astdump.exe --mark  (parse → Desugar.desugar_program → strip_locs → S-expr)
 #

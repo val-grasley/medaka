@@ -12,12 +12,12 @@
 -- dispatch (Eq/Ord/Debug/Display/Num impls + deriving) through the Core IR's
 -- installed arg-tag VMultis, the slice-5 install path over genuine stdlib code.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import annotate.{annotateProgram}
-import core_ir_lower.{lowerProgram}
-import core_ir_eval.{cevalMain}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.annotate.{annotateProgram}
+import ir.core_ir_lower.{lowerProgram}
+import ir.core_ir_eval.{cevalMain}
 
 main = match splitLast (args ())
   Some (preludePaths, targetPath) => withPreludes preludePaths targetPath

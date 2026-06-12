@@ -9,9 +9,9 @@
 -- so the harness (test/diff_selfhost_desugar.sh) can split one process's output
 -- back per file instead of paying OCaml-startup + module-load 92 times over.
 
-import parser.{parse}
-import desugar.{desugar}
-import sexp.{programToSexp}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import ir.sexp.{programToSexp}
 
 main = match args ()
   [] => ePutStrLn "usage: medaka run selfhost/desugar_batch.mdk <file.mdk>..."

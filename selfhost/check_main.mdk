@@ -13,7 +13,7 @@
 --     top-level schemes.
 -- runtime.mdk seeds the extern signatures; core.mdk is the prepended prelude.
 
-import check.{runCheck}
+import tools.check.{runCheck}
 
 main = match args ()
   [runtimePath, corePath, targetPath] => withFiles runtimePath corePath targetPath

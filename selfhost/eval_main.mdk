@@ -6,9 +6,9 @@
 -- this slice), evaluates it, and prints `pp_value` of the `main` binding —
 -- diffs against dev/eval_probe.exe (Eval.eval_program ~prelude:false → pp_value).
 
-import parser.{parse}
-import desugar.{desugar}
-import eval.{evalMain}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import eval.eval.{evalMain}
 
 main = match args ()
   [targetPath] => withTarget targetPath

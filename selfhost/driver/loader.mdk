@@ -1,0 +1,259 @@
+-- Port of lib/loader.ml: parse a root .mdk file's transitive imports and return
+-- them in dependency-first (topological) order.
+--
+-- Simplifications vs the reference (sufficient for the flat, single-root selfhost
+-- tree; noted so they're not mistaken for completeness):
+--   * Nested module paths ARE supported: a dotted module ID `a.b` maps to the
+--     nested file `<root>/a/b.mdk`, and a file path's module ID replaces `/`→`.`
+--     (mirrors loader.ml file_of_module_id / module_id_of_path).  Flat bare names
+--     (no `.` / no nested `/`) round-trip unchanged.
+--   * No LSP buffer-override `read`, no multi-root AmbiguousModule check.
+--   * Cycles ARE detected (an in-progress stack) and reported as an Err.
+
+import frontend.ast.{Decl, DUse, UsePath, UseName, UseGroup, UseWild, UseAlias}
+import frontend.parser.{parse, parseLocated}
+
+-- ── small list helpers (no stdlib import — selfhost is single-root) ──
+
+memStr : String -> List String -> Bool
+memStr _ [] = False
+memStr x (y :: ys) = x == y || memStr x ys
+
+lenL : List a -> Int
+lenL [] = 0
+lenL (_ :: xs) = 1 + lenL xs
+
+initL : List a -> List a
+initL [] = []
+initL [_] = []
+initL (x :: xs) = x :: initL xs
+
+lastOr : a -> List a -> a
+lastOr d [] = d
+lastOr _ [x] = x
+lastOr d (_ :: xs) = lastOr d xs
+
+joinDot : List String -> String
+joinDot [] = ""
+joinDot [x] = x
+joinDot (x :: xs) = stringConcat [x, ".", joinDot xs]
+
+-- split a String on a single-char separator (mirrors String.split_on_char).
+-- Always returns ≥1 segment; empty input → [""].  No-sep input → [s].
+splitOnChar : String -> String -> List String
+splitOnChar sep s = splitGo sep s 0 (stringLength s) ""
+
+splitGo : String -> String -> Int -> Int -> String -> List String
+splitGo sep s i len acc =
+  if i >= len then [acc]
+  else
+    let c = stringSlice i (i + 1) s
+    if c == sep then acc :: splitGo sep s (i + 1) len ""
+    else splitGo sep s (i + 1) len (acc ++ c)
+
+-- join segments with "/" (mirrors String.concat "/")
+joinSlash : List String -> String
+joinSlash [] = ""
+joinSlash [x] = x
+joinSlash (x :: xs) = stringConcat [x, "/", joinSlash xs]
+
+-- replace every "/" with "." in a path (mirrors loader.ml module_id_of_path's
+-- `String.map (fun c -> if c = '/' then '.' else c)`)
+slashToDot : String -> String
+slashToDot s = joinDot (splitOnChar "/" s)
+
+-- ── path / module-id utilities ──
+
+startsWith : String -> String -> Bool
+startsWith pre s =
+  let n = stringLength pre
+  n <= stringLength s && stringSlice 0 n s == pre
+
+endsWith : String -> String -> Bool
+endsWith suf s =
+  let n = stringLength s
+  let k = stringLength suf
+  k <= n && stringSlice (n - k) n s == suf
+
+dropPrefix : Int -> String -> String
+dropPrefix k s = stringSlice k (stringLength s) s
+
+stripSuffixStr : String -> String -> String
+stripSuffixStr suf s =
+  if endsWith suf s then stringSlice 0 (stringLength s - stringLength suf) s else s
+
+-- the file path a module ID maps to under a single root (no existence check).
+-- A dotted module ID maps to a nested path: split on `.`, join with `/`, append
+-- `.mdk` (mirrors loader.ml file_of_module_id).  A flat bare name (no `.`) →
+-- `[name]` → `name`, so `<root>/name.mdk` — unchanged from the flat behaviour.
+fileOfModuleId : String -> String -> String
+fileOfModuleId root modId =
+  stringConcat [root, "/", joinSlash (splitOnChar "." modId), ".mdk"]
+
+-- the module ID a file path carries: strip the first matching root prefix, then
+-- the `.mdk` suffix, then replace `/`→`.` (mirrors loader.ml module_id_of_path).
+-- A flat file under the root has no `/` left after stripping → slashToDot is a
+-- no-op, so flat behaviour is unchanged.
+relUnderRoots : List String -> String -> String
+relUnderRoots [] path = path
+relUnderRoots (r :: rs) path =
+  let pre = stringConcat [r, "/"]
+  if startsWith pre path then dropPrefix (stringLength pre) path
+  else relUnderRoots rs path
+
+moduleIdOfPath : List String -> String -> String
+moduleIdOfPath roots path = slashToDot (stripSuffixStr ".mdk" (relUnderRoots roots path))
+
+-- ── dependency extraction (mirrors loader.ml's direct_imports) ──
+
+-- "core" is the implicit prelude — its names are already in scope, so an
+-- `import core.{…}` is a no-op the loader must skip (else it duplicates).
+importModId : UsePath -> String
+importModId (UseName ns) =
+  if lenL ns > 1 then joinDot (initL ns) else lastOr "" ns
+importModId (UseGroup ns _) = joinDot ns
+importModId (UseWild ns) = joinDot ns
+importModId (UseAlias ns _) = joinDot ns
+
+directImports : List Decl -> List String
+directImports [] = []
+directImports (DUse _ path :: rest) =
+  let m = importModId path
+  if m == "core" then directImports rest else m :: directImports rest
+directImports (_ :: rest) = directImports rest
+
+-- ── file resolution + parsing ──
+
+findModuleFile : List String -> String -> <IO> Option String
+findModuleFile [] _ = None
+findModuleFile (r :: rs) modId =
+  let path = fileOfModuleId r modId
+  if fileExists path then Some path else findModuleFile rs modId
+
+readModuleProg : List String -> String -> <IO> Result String (List Decl)
+readModuleProg roots modId = match findModuleFile roots modId
+  None => Err (stringConcat ["unknown module: ", modId])
+  Some path => match readFile path
+    Err e => Err e
+    Ok src => Ok (parse src)
+
+-- ── read-callback variant (B.10.5: unsaved-editor-buffer overrides) ──
+--
+-- A `String -> Option String` callback keyed by FILE PATH (mirror
+-- lib/diagnostics.ml's `read : string -> string option`).  `Some src` shadows the
+-- on-disk file with an editor buffer that has not been saved yet; `None` falls
+-- back to `readFile`.  This lets the LSP analyse a project against the documents
+-- the client currently holds rather than the (possibly stale) disk copies.  The
+-- existing disk-only `loadProgram`/`readModuleProg` are kept unchanged; this is
+-- purely additive (`loadProgramFiles` below threads the callback through the same
+-- topo-sort, so there is no second graph-walk to keep in sync).
+
+-- Resolve a module ID to its FILE PATH + source, consulting the override callback
+-- first (so an unsaved buffer wins), then disk.  Returns (path, decls) so the
+-- caller can bucket diagnostics BY FILE.  `read` is the path-keyed override;
+-- `parseFn` is the parser to apply (so the located variant can carry real ELoc
+-- spans via parseLocated while the plain variant uses placeholder-loc parse).
+readModuleProgF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> String -> <IO, Mut> Result String (String, List Decl)
+readModuleProgF parseFn read roots modId = match findModuleFile roots modId
+  None => Err (stringConcat ["unknown module: ", modId])
+  Some path => match read path
+    Some src => Ok (path, parseFn src)      -- unsaved editor buffer shadows disk
+    None => match readFile path
+      Err e => Err e
+      Ok src => Ok (path, parseFn src)
+
+-- ── DFS topological sort (dependency-first; leaves before roots) ──
+--
+-- threads (visited, acc): visited = modules fully processed (Done); the stack
+-- carries in-progress modules so a back-edge into one is reported as a cycle.
+-- acc accumulates each module AFTER its dependencies → dependency-first order.
+
+-- R2: build the full cycle chain from the in-progress stack when a back-edge to
+-- `modId` is detected.  stack is most-recent-first (e.g. ["b","a"] when a→b→a).
+-- We extract everything up to and including `modId`, reverse it, then append
+-- `modId` again: ["b","a"] → take ["b","a"] → reverse ["a","b"] → + "a" = ["a","b","a"]
+-- Mirrors lib/loader.ml's `take_until [mod_id] stack` → `List.rev` → join " → ".
+cycleChain : String -> List String -> List String
+cycleChain modId stack = reverseL (takeTo modId stack) ++ [modId]
+
+takeTo : String -> List String -> List String
+takeTo _ [] = []
+takeTo target (x :: xs) =
+  if x == target then [x]
+  else x :: takeTo target xs
+
+reverseL : List a -> List a
+reverseL [] = []
+reverseL (x :: xs) = reverseL xs ++ [x]
+
+joinArrow : List String -> String
+joinArrow [] = ""
+joinArrow [x] = x
+joinArrow (x :: xs) = stringConcat [x, " → ", joinArrow xs]
+
+visitMod : List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
+visitMod roots stack visited acc modId =
+  if memStr modId visited then Ok (visited, acc)
+  else if memStr modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
+  else match readModuleProg roots modId
+    Err e => Err e
+    Ok prog => match visitMods roots (modId :: stack) visited acc (directImports prog)
+      Err e => Err e
+      Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, prog)])
+
+visitMods : List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
+visitMods _ _ visited acc [] = Ok (visited, acc)
+visitMods roots stack visited acc (d :: ds) = match visitMod roots stack visited acc d
+  Err e => Err e
+  Ok (v2, a2) => visitMods roots stack v2 a2 ds
+
+-- Load a root file + all transitive deps, dependency-first.  roots resolves
+-- module IDs to file paths (selfhost: a single project dir).
+export loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
+loadProgram entry roots = match visitMod roots [] [] [] (moduleIdOfPath roots entry)
+  Err e => Err e
+  Ok (_, acc) => Ok acc
+
+-- ── path-carrying read-callback topo-sort (B.10.5) ──
+--
+-- The same dependency-first DFS as visitMod, but (a) every read goes through the
+-- `read` override callback (unsaved buffers win) and (b) the accumulator carries
+-- the FILE PATH alongside (modId, decls), so analyzeProject can bucket diagnostics
+-- by file.  Structurally identical to visitMod/visitMods — only the read source
+-- (readModuleProgF) and the acc tuple shape differ — so the cycle detection and
+-- ordering guarantees carry over verbatim.
+
+visitModF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
+visitModF parseFn read roots stack visited acc modId =
+  if memStr modId visited then Ok (visited, acc)
+  else if memStr modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
+  else match readModuleProgF parseFn read roots modId
+    Err e => Err e
+    Ok (path, prog) => match visitModsF parseFn read roots (modId :: stack) visited acc (directImports prog)
+      Err e => Err e
+      Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, path, prog)])
+
+visitModsF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
+visitModsF _ _ _ _ visited acc [] = Ok (visited, acc)
+visitModsF parseFn read roots stack visited acc (d :: ds) = match visitModF parseFn read roots stack visited acc d
+  Err e => Err e
+  Ok (v2, a2) => visitModsF parseFn read roots stack v2 a2 ds
+
+-- Load a root file + transitive deps, dependency-first, with an unsaved-buffer
+-- override and FILE PATHS in the result.  Mirrors lib/diagnostics.ml's
+-- `Loader.load_program ~read` returning `(mod_id, file_path, prog)` triples.
+-- A `read` of `(_ => None)` is exactly `loadProgram` (disk-only) plus paths.
+-- Uses placeholder-loc `parse`.
+export loadProgramFiles : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+loadProgramFiles read entry roots = match visitModF parse read roots [] [] [] (moduleIdOfPath roots entry)
+  Err e => Err e
+  Ok (_, acc) => Ok acc
+
+-- Like loadProgramFiles but parses every module with `parseLocated`, so the
+-- resulting decls carry REAL ELoc spans (B.10.2b) — the LSP project path uses
+-- this so type-error diagnostics get expr-level ranges, mirroring the single-doc
+-- `analyzeLocated`.
+export loadProgramFilesLocated : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+loadProgramFilesLocated read entry roots = match visitModF parseLocated read roots [] [] [] (moduleIdOfPath roots entry)
+  Err e => Err e
+  Ok (_, acc) => Ok acc

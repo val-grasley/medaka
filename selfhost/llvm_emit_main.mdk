@@ -16,11 +16,11 @@
 -- swaps the final consumer (emit LLVM instead of ceval) — the Axis-1 discipline
 -- (Core IR is backend-neutral; backends are sibling consumers) in miniature.
 
-import parser.{parse}
-import desugar.{desugar}
-import annotate.{annotateProgram}
-import core_ir_lower.{lowerProgramEmit}
-import llvm_emit.{emitProgram}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.annotate.{annotateProgram}
+import ir.core_ir_lower.{lowerProgramEmit}
+import backend.llvm_emit.{emitProgram}
 
 main = match args ()
   [targetPath] => withTarget targetPath

@@ -12,10 +12,10 @@
 -- Unlike exhaust_main (which runs on the RAW AST), this runs on the DESUGARED
 -- tree, since the checker fires from inside typecheck after each EMatch is typed.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import typecheck.{checkMatchToLines}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{checkMatchToLines}
 
 main = match args ()
   [runtimePath, targetPath] => withFiles runtimePath targetPath

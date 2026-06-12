@@ -9,7 +9,7 @@
 -- a port of lib/printer.ml `format_program`) to stdout — diffed against the
 -- OCaml `medaka fmt --stdout` oracle, see test/diff_selfhost_fmt.sh.
 
-import fmt.{formatSource}
+import tools.fmt.{formatSource}
 
 main = match args ()
   [path] => match readFile path

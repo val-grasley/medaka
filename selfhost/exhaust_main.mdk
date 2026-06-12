@@ -8,8 +8,8 @@
 -- sorts).  No prelude needed: the oracle is built from the file's own data
 -- decls plus the syntactic builtins.
 
-import parser.{parse}
-import exhaust.{exhaustToLines}
+import frontend.parser.{parse}
+import frontend.exhaust.{exhaustToLines}
 
 main = match args ()
   [targetPath] => withTarget targetPath

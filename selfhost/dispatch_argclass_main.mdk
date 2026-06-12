@@ -14,12 +14,12 @@
 -- Output: classification report to stdout (append the D0.5 section to
 -- selfhost/DISPATCH-INVENTORY.md).
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{ArgSite(..), argDispatchIndices, setArgMeasurement, argSiteResultsList, appliedCountsList, measureModules}
-import util.{concatMapList, listLen, joinWith, joinNl}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{ArgSite(..), argDispatchIndices, setArgMeasurement, argSiteResultsList, appliedCountsList, measureModules}
+import support.util.{concatMapList, listLen, joinWith, joinNl}
 
 -- ── ArgSite accessors ──────────────────────────────────────────────────────
 

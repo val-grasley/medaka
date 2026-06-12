@@ -13,10 +13,10 @@
 -- foo.{…}`.  runtime.mdk + core.mdk are NOT desugared (their NAMES seed the env,
 -- as in resolve_main); the module files ARE desugared (matching the oracle).
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import resolve.{resolveModulesToLines}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.resolve.{resolveModulesToLines}
 
 main = match args ()
   (runtimeP :: coreP :: f :: rest) => run runtimeP coreP (f :: rest)

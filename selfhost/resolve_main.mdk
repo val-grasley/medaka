@@ -8,9 +8,9 @@
 -- runtime.mdk and core.mdk are passed explicitly (the self-host has no embedded
 -- prelude); the harness supplies both paths.
 
-import parser.{parse}
-import desugar.{desugar}
-import resolve.{resolveToLines}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.resolve.{resolveToLines}
 
 main = match args ()
   [runtimePath, preludePath, targetPath] => withRuntime runtimePath preludePath targetPath

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Validation for the COMPOSED self-hosted front-end (selfhost/check.mdk): one
+# Validation for the COMPOSED self-hosted front-end (selfhost/tools/check.mdk): one
 # driver runs parse → desugar → resolve → exhaust → typecheck and must reproduce
 # each stage's oracle depending on the input category:
 #   • diff_fixtures (clean, prelude-using) → the === TYPES === golden (full

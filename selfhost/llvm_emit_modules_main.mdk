@@ -24,16 +24,16 @@
 -- every top-level fn is `<mid>__<name>`, so two modules' same-named constrained/
 -- unconstrained fns can never share a dict-arity key (the former L1 hazard).
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
-import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, methodConstraintIfaces, ctorFieldTypeNames, declSigTypeNames}
-import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface, installMethodConstraintIfaces, installCtorFieldTypes, installDeclSigTypes}
-import util.{concatMapList}
-import private_mangle.{mangleUnits}
-import dce.{dceFilter}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
+import ir.core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, methodConstraintIfaces, ctorFieldTypeNames, declSigTypeNames}
+import backend.llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface, installMethodConstraintIfaces, installCtorFieldTypes, installDeclSigTypes}
+import support.util.{concatMapList}
+import backend.private_mangle.{mangleUnits}
+import ir.dce.{dceFilter}
 
 main : <IO, Mut> Unit
 main = match args ()

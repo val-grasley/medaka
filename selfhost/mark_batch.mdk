@@ -8,11 +8,11 @@
 --   <sexp dump>
 -- so the harness can split one process's output back per fixture.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import marker.{markerFor}
-import sexp.{programToSexp}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.marker.{markerFor}
+import ir.sexp.{programToSexp}
 
 main = match args ()
   (preludePath :: targets) => markFiles preludePath targets

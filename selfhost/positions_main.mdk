@@ -20,7 +20,7 @@
 -- prelude + global externs (no stdlib import), so it resolves with `selfhost/`
 -- as the sole project root.
 
-import parser.{parseWithPositions, Positions, DeclPos, positionsDecls, positionsVariantLines, positionsLastContentLine, declPosLine, declPosEndLine}
+import frontend.parser.{parseWithPositions, Positions, DeclPos, positionsDecls, positionsVariantLines, positionsLastContentLine, declPosLine, declPosEndLine}
 
 -- Each entry carries its own trailing newline (matching dev/positions_dump.ml's
 -- `%d:%d\n` / `%d\n`), so an empty section is just its header line followed

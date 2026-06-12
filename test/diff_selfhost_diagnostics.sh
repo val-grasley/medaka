@@ -1,5 +1,5 @@
 #!/bin/sh
-# Validation for selfhost/diagnostics.mdk: compares structured diagnostic output
+# Validation for selfhost/driver/diagnostics.mdk: compares structured diagnostic output
 # against the OCaml reference (dev/diagdump.exe --analyze).
 #
 # The oracle strips source locations from messages (the selfhost AST is

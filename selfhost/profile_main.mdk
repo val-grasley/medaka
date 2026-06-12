@@ -20,14 +20,14 @@
 -- times and reports per-stage minimums.  Complements perf_main.mdk (which
 -- times the full multi-module loader path with elaborate as a single phase).
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import resolve.{resolveToLines}
-import marker.{markWithPrelude}
-import typecheck.{checkToLinesWithRuntime}
-import timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap}
-import util.{listLen}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.resolve.{resolveToLines}
+import frontend.marker.{markWithPrelude}
+import types.typecheck.{checkToLinesWithRuntime}
+import support.timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap}
+import support.util.{listLen}
 
 main = match args ()
   (runtimePath :: corePath :: targetPath :: _) => run runtimePath corePath targetPath

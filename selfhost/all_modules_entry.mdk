@@ -5,19 +5,19 @@
 -- process instead of several.  The imports exist only to force the closure; the
 -- module's own (empty-ish) schemes are ignored by the harness.
 
-import ast.{Decl}
-import lexer.{tokenize}
-import parser.{parse}
-import sexp.{programToSexp}
-import desugar.{desugar}
-import marker.{markWithPrelude}
-import annotate.{annotateProgram}
-import resolve.{resolveToLines}
-import exhaust.{exhaustToLines}
-import loader.{loadProgram}
-import typecheck.{ppScheme}
-import eval.{ppValue}
-import check.{runCheck}
+import frontend.ast.{Decl}
+import frontend.lexer.{tokenize}
+import frontend.parser.{parse}
+import ir.sexp.{programToSexp}
+import frontend.desugar.{desugar}
+import frontend.marker.{markWithPrelude}
+import types.annotate.{annotateProgram}
+import frontend.resolve.{resolveToLines}
+import frontend.exhaust.{exhaustToLines}
+import driver.loader.{loadProgram}
+import types.typecheck.{ppScheme}
+import eval.eval.{ppValue}
+import tools.check.{runCheck}
 
 batchEntryDummy : Int
 batchEntryDummy = 0

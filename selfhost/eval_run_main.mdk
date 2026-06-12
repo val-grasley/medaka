@@ -7,10 +7,10 @@
 -- === EVAL === goldens.  This is the "true execution" path (vs eval_main, which
 -- renders pp_value of `main`): the program actually runs its IO.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import eval.{evalOutputWith}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import eval.eval.{evalOutputWith}
 
 main = match splitLast (args ())
   Some (preludePaths, targetPath) => withPreludes preludePaths targetPath

@@ -3,10 +3,10 @@
 -- Parses + desugars core.mdk + list.mdk ONCE, evaluates pp_value of each target's
 -- `main`.  Strict per-target IO loop (see eval_prelude_batch.mdk for why).
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import eval.{evalMain}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import eval.eval.{evalMain}
 
 main = match args ()
   (corePath :: listPath :: targets) => withPreludes corePath listPath targets

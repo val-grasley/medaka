@@ -8,9 +8,9 @@
 -- against `dev/tc_probe.exe` (the harness sorts).  With a runtime.mdk argument,
 -- its externs (putStrLn / etc.) are seeded into scope so core.mdk type-checks.
 
-import parser.{parse}
-import desugar.{desugar}
-import typecheck.{checkToLines, checkToLinesWithRuntime, setCoherenceUserDecls, collectDoWellformedErrors}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{checkToLines, checkToLinesWithRuntime, setCoherenceUserDecls, collectDoWellformedErrors}
 
 main = match args ()
   [targetPath] => withTarget targetPath

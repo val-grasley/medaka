@@ -14,12 +14,12 @@
 -- loader-driven path: lowering + Core-IR evaluation preserve the AST semantics
 -- across module boundaries.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import annotate.{annotateProgram}
-import loader.{loadProgram}
-import core_ir_eval.{cevalModulesOutput}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.annotate.{annotateProgram}
+import driver.loader.{loadProgram}
+import ir.core_ir_eval.{cevalModulesOutput}
 
 main = match args ()
   (coreP :: entry :: roots) => run coreP entry (rootsOrDefault entry roots)

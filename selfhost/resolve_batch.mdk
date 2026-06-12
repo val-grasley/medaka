@@ -2,9 +2,9 @@
 --   medaka run selfhost/resolve_batch.mdk <runtime.mdk> <core.mdk> <file.mdk>...
 -- Parses runtime.mdk + core.mdk ONCE, resolves each target against them.
 
-import parser.{parse}
-import desugar.{desugar}
-import resolve.{resolveToLines}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.resolve.{resolveToLines}
 
 main = match args ()
   (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets

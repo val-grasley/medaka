@@ -8,9 +8,9 @@
 -- `dev/astdump.exe --desugar`, so the two can be diffed
 -- (test/diff_selfhost_desugar.sh).
 
-import parser.{parse}
-import desugar.{desugar}
-import sexp.{programToSexp}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import ir.sexp.{programToSexp}
 
 main = match args ()
   [path] => match readFile path

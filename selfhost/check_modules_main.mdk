@@ -7,11 +7,11 @@
 -- externs, and prints the ENTRY module's own bindings as `name : scheme` (one per
 -- line; the harness sorts) — the self-hosted analog of dev/tc_module_probe.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{checkModulesEntryLines}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{checkModulesEntryLines}
 
 main = match args ()
   (runtimeP :: coreP :: entry :: roots) => run runtimeP coreP entry (rootsOrDefault entry roots)

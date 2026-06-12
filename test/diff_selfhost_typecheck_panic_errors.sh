@@ -3,7 +3,7 @@
 # shapes that resolve normally pre-screens — TYPECHECK-AUDIT finding D1.
 #
 # These programs reference an unknown constructor / record / field, or an
-# unbound variable.  In the FULL front-end (selfhost/check.mdk) resolve catches
+# unbound variable.  In the FULL front-end (selfhost/tools/check.mdk) resolve catches
 # them first, so the typecheck stage never sees them.  But on the no-resolve
 # differential path (dev/tc_probe.exe oracle vs selfhost/typecheck_main.mdk) the
 # typecheck stage IS the one that reaches the error.  Before D1 the self-hosted

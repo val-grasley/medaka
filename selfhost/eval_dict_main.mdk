@@ -10,11 +10,11 @@
 -- the user's constrained fns, typecheck stamps every route, then dict_pass
 -- prepends the matching leading dict params) → eval.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames}
-import eval.{evalOutput, funNamesOf, dropShadowedExp}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames}
+import eval.eval.{evalOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
   (runtimePath :: rest) => withRuntime runtimePath rest

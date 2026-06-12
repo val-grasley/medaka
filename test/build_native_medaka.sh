@@ -7,7 +7,7 @@
 #   1. test/bootstrap_from_seed.sh  ->  ./medaka_emitter
 #      (clang the committed seed selfhost/seed/emitter.ll into a native emitter,
 #       verifying C3a: the seed reproduces from current sources byte-for-byte).
-#   2. ./medaka_emitter <runtime> <core> selfhost/medaka_cli.mdk <selfhost> <stdlib>
+#   2. ./medaka_emitter <runtime> <core> selfhost/driver/medaka_cli.mdk <selfhost> <stdlib>
 #       ->  medaka_cli.ll   (the native emitter emitting the CLI's module graph;
 #       trim the trailing interpreter Unit `()` if present).
 #   3. clang(medaka_cli.ll) + runtime/medaka_rt.c + libgc  ->  ./medaka
@@ -32,7 +32,7 @@ EMITTER="$ROOT/medaka_emitter"
 RT="$ROOT/runtime/medaka_rt.c"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
-CLI="$ROOT/selfhost/medaka_cli.mdk"
+CLI="$ROOT/selfhost/driver/medaka_cli.mdk"
 SELFHOST="$ROOT/selfhost"
 STDLIB="$ROOT/stdlib"
 

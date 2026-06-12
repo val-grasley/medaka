@@ -1,0 +1,296 @@
+-- annotate.mdk — Lexical-addressing EMISSION pass (STAGE2-DESIGN §2.0).
+--
+-- Extracted into its own lean module (imports only ast + util) so the eval
+-- drivers can consume it without pulling all of resolve.mdk into their load
+-- closure.  Rewrites every variable REFERENCE `EVar n` → `EVarAt n addr`, where
+-- `addr` is the (frame, slot) position the slot-indexing eval reads.  The pass
+-- is pure AST→AST and runs right before eval (after marker + typecheck
+-- elaboration), so it sees `EMethodRef`/`EMethodAt`/`EDictApp`/`EDictAt` already
+-- in place and leaves them untouched (passthrough).
+--
+-- The frame model mirrors `eval.mdk`'s `EvalEnv (List (List (String, Ref
+-- Value)))` EXACTLY, so the emitted address is the one a slot-indexing lookup
+-- would need:
+--   * applyClosure CURRIES — one frame PER parameter, innermost = last param;
+--   * a let-rec `let f = …`  pushes one frame `[f]` over both RHS and body;
+--   * a non-rec let / match-arm pattern / do-let pushes one frame of the
+--     pattern's bindings (even an empty frame for `_`, which still counts for
+--     depth — eval `extendEnv env []` pushes an empty frame);
+--   * each match-arm `GBind` guard pushes a further frame; `GBool` pushes none;
+--   * an `ELetGroup` pushes one frame of all the group names;
+--   * `DoAssign x` pushes a frame `[x]` (eval re-extends for reassignment).
+-- Slot order within a frame = `patBindings` order, which is byte-identical to
+-- the order `matchPat` accumulates binds (`b ++ bs` / `x :: binds`).
+-- A name found in no local frame is `AGlobal` (top-level / prelude / extern):
+-- eval resolves it by name, so no slot applies.  An `@Impl` hint stays a plain
+-- `EVar` (eval short-circuits it to `VUnit`, it is not a variable lookup).
+--
+-- NOTE for the consumer: this pass does the PLAIN lexical resolution only.  The
+-- Phase-112 `lookup_method` shadow-bypass is a CONSUMER concern — for the
+-- self-hosted eval that reduces to: AGlobal stays a by-name scan (`lookupEnv`),
+-- which already reaches a global method's VMulti past any local frame.
+
+import frontend.ast.{Lit(..), Ty(..), Constraint(..), Addr(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), InterpPart(..), GuardArm(..), FieldAssign(..), LcQual(..), Section(..), FunClause(..), LetBind(..), Expr(..), UseMember(..), UsePath(..), PropParam(..), MethodDefault(..), IfaceMethod(..), Super(..), Require(..), ImplMethod(..), DataVis(..), Field(..), ConPayload(..), Variant(..), Decl(..)}
+import support.util.{concatMapList, reverseL}
+
+-- ── self-contained helper copies (resolve.mdk keeps its own for its main pass) ─
+patBindings : Pat -> List String
+patBindings (PVar x) = [x]
+patBindings PWild = []
+patBindings (PLit _) = []
+patBindings (PCon _ ps) = concatMapList patBindings ps
+patBindings (PCons a b) = patBindings a ++ patBindings b
+patBindings (PTuple ps) = concatMapList patBindings ps
+patBindings (PList ps) = concatMapList patBindings ps
+patBindings (PAs x p) = x :: patBindings p
+patBindings (PRng _ _ _) = []
+patBindings (PRec _ fields _) = concatMapList recFieldBindings fields
+
+recFieldBindings : RecPatField -> List String
+recFieldBindings (RecPatField fname None) = [fname]
+recFieldBindings (RecPatField _ (Some p)) = patBindings p
+
+startsWithAt : Array Char -> Bool
+startsWithAt cs = arrayLength cs > 0 && arrayGetUnsafe 0 cs == '@'
+
+isHint : String -> Bool
+isHint n = startsWithAt (stringToChars n)
+
+letBindName : LetBind -> String
+letBindName (LetBind n _) = n
+
+propParamName : PropParam -> String
+propParamName (PropParam x _) = x
+
+-- ── framed scope (innermost frame first; each frame its names in slot order) ──
+-- per-parameter frames for a closure's params: applyClosure pushes one frame per
+-- param, innermost = last, so reverse the left-to-right per-param binding lists
+paramFrames : List Pat -> List (List String)
+paramFrames pats = reverseL (map patBindings pats)
+
+slotIn : List String -> String -> Int -> Option Int
+slotIn [] _ _ = None
+slotIn (m::rest) n i
+  | m == n = Some i
+  | otherwise = slotIn rest n (i + 1)
+
+addrOf : List (List String) -> String -> Addr
+addrOf frames n = addrOfGo frames n 0
+
+addrOfGo : List (List String) -> String -> Int -> Addr
+addrOfGo [] _ _ = AGlobal
+addrOfGo (frame::rest) n depth = match slotIn frame n 0
+  Some slot => ALocal depth slot
+  None => addrOfGo rest n (depth + 1)
+
+-- ── annotateExpr (scope = framed lexical environment) ─────────────────────
+annotateExpr : List (List String) -> Expr -> Expr
+annotateExpr _ (ELit l) = ELit l
+annotateExpr _ (EMethodRef m) = EMethodRef m
+annotateExpr _ (EDictApp d) = EDictApp d
+annotateExpr _ (EMethodAt name r ir mr) = EMethodAt name r ir mr
+annotateExpr _ (EDictAt name r) = EDictAt name r
+annotateExpr _ (EVarAt n a) = EVarAt n a
+annotateExpr fr (EVar n)
+  | isHint n = EVar n
+  | otherwise = EVarAt n (addrOf fr n)
+annotateExpr fr (EApp f x) = EApp (annotateExpr fr f) (annotateExpr fr x)
+annotateExpr fr (ELam pats body) =
+  ELam pats (annotateExpr (paramFrames pats ++ fr) body)
+annotateExpr fr (ELet m isRec pat e1 e2) = annotateLet fr m isRec pat e1 e2
+annotateExpr fr (ELetGroup binds body) = annotateLetGroup fr binds body
+annotateExpr fr (EMatch e0 arms) =
+  EMatch (annotateExpr fr e0) (map (annotateArm fr) arms)
+annotateExpr fr (EIf c t el) =
+  EIf (annotateExpr fr c) (annotateExpr fr t) (annotateExpr fr el)
+annotateExpr fr (EBinOp op a b r) =
+  EBinOp op (annotateExpr fr a) (annotateExpr fr b) r
+annotateExpr fr (EUnOp op a) = EUnOp op (annotateExpr fr a)
+annotateExpr fr (EInfix op a b) =
+  EInfix op (annotateExpr fr a) (annotateExpr fr b)
+annotateExpr fr (EFieldAccess e0 f) = EFieldAccess (annotateExpr fr e0) f
+annotateExpr fr (ETuple es) = ETuple (map (annotateExpr fr) es)
+annotateExpr fr (EListLit es) = EListLit (map (annotateExpr fr) es)
+annotateExpr fr (EArrayLit es) = EArrayLit (map (annotateExpr fr) es)
+annotateExpr fr (EListComp body quals) = annotateListComp fr body quals
+annotateExpr fr (ERangeList lo hi incl) =
+  ERangeList (annotateExpr fr lo) (annotateExpr fr hi) incl
+annotateExpr fr (ERangeArray lo hi incl) =
+  ERangeArray (annotateExpr fr lo) (annotateExpr fr hi) incl
+annotateExpr fr (ESlice e0 lo hi incl) =
+  ESlice (annotateExpr fr e0) (annotateExpr fr lo) (annotateExpr fr hi) incl
+annotateExpr fr (EIndex e0 i) = EIndex (annotateExpr fr e0) (annotateExpr fr i)
+annotateExpr fr (EAnnot e0 t) = EAnnot (annotateExpr fr e0) t
+annotateExpr fr (EHeadAnnot e0 t) = EHeadAnnot (annotateExpr fr e0) t
+annotateExpr fr (EBlock stmts) = EBlock (annotateStmts fr stmts)
+annotateExpr fr (EDo stmts) = EDo (annotateStmts fr stmts)
+annotateExpr fr (EStringInterp parts) =
+  EStringInterp (map (annotateInterp fr) parts)
+annotateExpr fr (EGuards arms) = EGuards (map (annotateGuardArm fr) arms)
+annotateExpr fr (EFunction arms) = EFunction (map (annotateArm fr) arms)
+annotateExpr fr (ERecordCreate name fs) =
+  ERecordCreate name (map (annotateFieldAssign fr) fs)
+annotateExpr fr (ERecordUpdate e0 fs) =
+  ERecordUpdate (annotateExpr fr e0) (map (annotateFieldAssign fr) fs)
+annotateExpr fr (EVariantUpdate con e0 fs) =
+  EVariantUpdate con (annotateExpr fr e0) (map (annotateFieldAssign fr) fs)
+annotateExpr fr (EMapLit n kvs) = EMapLit n (map (annotateKv fr) kvs)
+annotateExpr fr (ESetLit n es) = ESetLit n (map (annotateExpr fr) es)
+annotateExpr fr (EQuestion e0) = EQuestion (annotateExpr fr e0)
+annotateExpr fr (EAsPat x e0) = EAsPat x (annotateExpr fr e0)
+annotateExpr fr (ESection s) = ESection (annotateSection fr s)
+-- ELoc is transparent: preserve the loc, annotate the wrapped expr.
+annotateExpr fr (ELoc l e) = ELoc l (annotateExpr fr e)
+
+-- let-rec `let f = …` binds f in a fresh frame over BOTH the RHS and the body
+-- (eval's evalRecLet pushFrame [f]); any other let evaluates the RHS in the
+-- OUTER scope and pushes the pattern's bindings for the body only (evalLet).
+annotateLet : List (List String) -> Bool -> Bool -> Pat -> Expr -> Expr -> Expr
+annotateLet fr m True (PVar f) e1 e2 =
+  let inner = [f] :: fr
+  ELet m True (PVar f) (annotateExpr inner e1) (annotateExpr inner e2)
+annotateLet fr m isRec pat e1 e2 =
+  ELet m isRec pat (annotateExpr fr e1)
+    (annotateExpr (patBindings pat :: fr) e2)
+
+-- where-group: one frame holds all the group names, in scope for every clause
+-- body (under that clause's own per-param frames) and the result expression
+annotateLetGroup : List (List String) -> List LetBind -> Expr -> Expr
+annotateLetGroup fr binds body =
+  let groupScope = map letBindName binds :: fr
+  ELetGroup (map (annotateLetBind groupScope) binds) (annotateExpr groupScope body)
+
+annotateLetBind : List (List String) -> LetBind -> LetBind
+annotateLetBind groupScope (LetBind name clauses) =
+  LetBind name (map (annotateClause groupScope) clauses)
+
+annotateClause : List (List String) -> FunClause -> FunClause
+annotateClause groupScope (FunClause pats body) =
+  FunClause pats (annotateExpr (paramFrames pats ++ groupScope) body)
+
+-- a match/function arm: the pattern pushes one frame; each GBind guard pushes a
+-- further frame (GBool none); the body sees the fully-extended scope
+annotateArm : List (List String) -> Arm -> Arm
+annotateArm fr (Arm pat gs body) =
+  let scope0 = patBindings pat :: fr
+  let (gs2, scope2) = annotateGuards scope0 gs
+  Arm pat gs2 (annotateExpr scope2 body)
+
+annotateGuards : List (List String) -> List Guard -> (List Guard, List (List String))
+annotateGuards scope [] = ([], scope)
+annotateGuards scope ((GBool e)::rest) =
+  let (rest2, scope2) = annotateGuards scope rest
+  (GBool (annotateExpr scope e) :: rest2, scope2)
+annotateGuards scope ((GBind p e)::rest) =
+  let e2 = annotateExpr scope e
+  let (rest2, scope2) = annotateGuards (patBindings p :: scope) rest
+  (GBind p e2 :: rest2, scope2)
+
+-- EGuards survive only pre-desugar; best-effort: each arm's GBind guards extend
+-- the scope for the later guards and the body, mirroring annotateArm's threading
+annotateGuardArm : List (List String) -> GuardArm -> GuardArm
+annotateGuardArm fr (GuardArm gs body) =
+  let (gs2, scope2) = annotateGuards fr gs
+  GuardArm gs2 (annotateExpr scope2 body)
+
+-- a bare block / do-block: each binding statement pushes a frame for the rest
+annotateStmts : List (List String) -> List DoStmt -> List DoStmt
+annotateStmts _ [] = []
+annotateStmts fr ((DoExpr e)::rest) =
+  DoExpr (annotateExpr fr e) :: annotateStmts fr rest
+annotateStmts fr ((DoLet m r p e)::rest) =
+  DoLet m r p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
+annotateStmts fr ((DoBind p e)::rest) =
+  DoBind p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
+annotateStmts fr ((DoLetElse p e alt)::rest) =
+  let s2 = DoLetElse p (annotateExpr fr e) (annotateExpr fr alt)
+  s2 :: annotateStmts (patBindings p :: fr) rest
+annotateStmts fr ((DoAssign x e)::rest) =
+  DoAssign x (annotateExpr fr e) :: annotateStmts ([x] :: fr) rest
+annotateStmts fr ((DoFieldAssign x fs e)::rest) =
+  DoFieldAssign x fs (annotateExpr fr e) :: annotateStmts fr rest
+
+annotateInterp : List (List String) -> InterpPart -> InterpPart
+annotateInterp _ (InterpStr s) = InterpStr s
+annotateInterp fr (InterpExpr e) = InterpExpr (annotateExpr fr e)
+
+annotateFieldAssign : List (List String) -> FieldAssign -> FieldAssign
+annotateFieldAssign fr (FieldAssign n e) = FieldAssign n (annotateExpr fr e)
+
+annotateKv : List (List String) -> (Expr, Expr) -> (Expr, Expr)
+annotateKv fr (k, v) = (annotateExpr fr k, annotateExpr fr v)
+
+annotateSection : List (List String) -> Section -> Section
+annotateSection _ (SecBare op) = SecBare op
+annotateSection fr (SecRight op e) = SecRight op (annotateExpr fr e)
+annotateSection fr (SecLeft e op) = SecLeft (annotateExpr fr e) op
+
+-- a list-comprehension's generators / lets extend the scope left-to-right for
+-- the later qualifiers and the body (survives only pre-desugar; best-effort)
+annotateListComp : List (List String) -> Expr -> List LcQual -> Expr
+annotateListComp fr body quals =
+  let (quals2, scope2) = annotateQuals fr quals
+  EListComp (annotateExpr scope2 body) quals2
+
+annotateQuals : List (List String) -> List LcQual -> (List LcQual, List (List String))
+annotateQuals scope [] = ([], scope)
+annotateQuals scope ((LCGen p e)::rest) =
+  let e2 = annotateExpr scope e
+  let (rest2, scope2) = annotateQuals (patBindings p :: scope) rest
+  (LCGen p e2 :: rest2, scope2)
+annotateQuals scope ((LCGuard e)::rest) =
+  let (rest2, scope2) = annotateQuals scope rest
+  (LCGuard (annotateExpr scope e) :: rest2, scope2)
+annotateQuals scope ((LCLet m p e)::rest) =
+  let e2 = annotateExpr scope e
+  let (rest2, scope2) = annotateQuals (patBindings p :: scope) rest
+  (LCLet m p e2 :: rest2, scope2)
+
+-- ── annotateDecl ──────────────────────────────────────────────────────────
+-- a top-level function's params become per-parameter frames (the only local
+-- scope; sibling top-level names resolve to AGlobal by-name)
+annotateDecl : Decl -> Decl
+annotateDecl (DFunDef p n pats body) =
+  DFunDef p n pats (annotateExpr (paramFrames pats) body)
+annotateDecl (DProp p n params body) =
+  DProp p n params (annotateExpr [map propParamName params] body)
+annotateDecl (DTest p n body) = DTest p n (annotateExpr [] body)
+annotateDecl (DBench p n body) = DBench p n (annotateExpr [] body)
+annotateDecl (DLetGroup p binds) =
+  DLetGroup p (map (annotateLetBind (map letBindName binds :: [])) binds)
+annotateDecl DInterface { pub, def, name, typarams, supers, methods } =
+  DInterface {
+    pub = pub,
+    def = def,
+    name = name,
+    typarams = typarams,
+    supers = supers,
+    methods = map annotateIfaceMethod methods
+  }
+annotateDecl DImpl { pub, def, iface, tys, name, reqs, methods } =
+  DImpl {
+    pub = pub,
+    def = def,
+    iface = iface,
+    tys = tys,
+    name = name,
+    reqs = reqs,
+    methods = map annotateImplMethod methods
+  }
+annotateDecl (DAttrib attrs inner) = DAttrib attrs (annotateDecl inner)
+annotateDecl d = d
+
+annotateIfaceMethod : IfaceMethod -> IfaceMethod
+annotateIfaceMethod (IfaceMethod nm ty None) = IfaceMethod nm ty None
+annotateIfaceMethod (IfaceMethod nm ty (Some (MethodDefault pats body))) =
+  IfaceMethod nm ty (Some (MethodDefault pats (annotateExpr (paramFrames pats) body)))
+
+annotateImplMethod : ImplMethod -> ImplMethod
+annotateImplMethod (ImplMethod nm pats body) =
+  ImplMethod nm pats (annotateExpr (paramFrames pats) body)
+
+-- EMIT the lexical addresses across a whole program.  The eval drivers run this
+-- right before eval and the EVarAt arm in eval.mdk indexes frames by it.
+export
+annotateProgram : List Decl -> List Decl
+annotateProgram prog = map annotateDecl prog

@@ -15,13 +15,13 @@
 -- program redefines (dropShadowedExp), so a user `sum` doesn't coalesce with the
 -- prelude's point-free `sum` into a mixed-arity VMulti.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import annotate.{annotateProgram}
-import core_ir_lower.{lowerProgram}
-import core_ir_eval.{cevalOutput}
-import eval.{dropShadowedExp, funNamesOf}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.annotate.{annotateProgram}
+import ir.core_ir_lower.{lowerProgram}
+import ir.core_ir_eval.{cevalOutput}
+import eval.eval.{dropShadowedExp, funNamesOf}
 
 main = match splitLast (args ())
   Some (preludePaths, targetPath) => withPreludes preludePaths targetPath

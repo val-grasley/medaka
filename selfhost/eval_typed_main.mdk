@@ -8,11 +8,11 @@
 -- what makes `pure`/`empty`/… dispatch by the concrete return type (RKey) instead
 -- of the untyped arg-tag fallback — e.g. a user Applicative's `pure`.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import typecheck.{elaborate}
-import eval.{evalOutput, funNamesOf, dropShadowedExp}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{elaborate}
+import eval.eval.{evalOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
   (runtimePath :: rest) => withRuntime runtimePath rest

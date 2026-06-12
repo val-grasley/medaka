@@ -9,15 +9,15 @@
 --
 -- Output: route-coverage report written to stdout.
 
-import ast.{Decl, Route(..)}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{elaborateModules}
-import core_ir.{CExpr(..), CBind(..), CClause(..), CArm(..), CGuard(..), CStmt(..), CField(..), CImplEntry(..), CImplBody(..)}
-import core_ir_lower.{lowerGroups, lowerImplsWith}
-import eval.{buildIfaceDispatch, implMethodNames}
-import util.{contains, concatMapList, listLen, joinWith, joinNl}
+import frontend.ast.{Decl, Route(..)}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{elaborateModules}
+import ir.core_ir.{CExpr(..), CBind(..), CClause(..), CArm(..), CGuard(..), CStmt(..), CField(..), CImplEntry(..), CImplBody(..)}
+import ir.core_ir_lower.{lowerGroups, lowerImplsWith}
+import eval.eval.{buildIfaceDispatch, implMethodNames}
+import support.util.{contains, concatMapList, listLen, joinWith, joinNl}
 
 -- ── Dispatch site record ───────────────────────────────────────────────────
 

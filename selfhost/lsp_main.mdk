@@ -8,7 +8,7 @@
 -- diagnostics on didOpen/didChange).  Mirrors diagnostics_main.mdk's prelude-
 -- loading convention.
 
-import lsp.{runServer}
+import tools.lsp.{runServer}
 
 main : <IO, Mut> Unit
 main = match args ()

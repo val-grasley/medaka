@@ -11,13 +11,13 @@
 -- The dispatch fixtures are prelude-free (their own interfaces + impls), so the
 -- harness passes ONLY runtime.mdk: elaborateDict resolves every route without
 -- pulling core.mdk's machinery into the emitted module (the spike's scalar subset).
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
-import eval.{funNamesOf, dropShadowedExp}
-import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, methodConstraintIfaces, ctorFieldTypeNames, declSigTypeNames}
-import llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface, installMethodConstraintIfaces, installCtorFieldTypes, installDeclSigTypes}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
+import eval.eval.{funNamesOf, dropShadowedExp}
+import ir.core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, methodConstraintIfaces, ctorFieldTypeNames, declSigTypeNames}
+import backend.llvm_emit.{emitProgram, installReturnsSelf, installSelfFnParams, installMethodIface, installMethodConstraintIfaces, installCtorFieldTypes, installDeclSigTypes}
 
 main = match args ()
   (runtimePath :: rest) => withRuntime runtimePath rest

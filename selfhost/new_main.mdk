@@ -5,7 +5,7 @@
 -- Creates a new Medaka project directory with medaka.toml, main.mdk,
 -- .gitignore, and README.md.  Exit code: 0 success, 1 path-exists, 2 bad arg.
 
-import new_cmd.{newProject}
+import tools.new_cmd.{newProject}
 
 main = match args ()
   [name] =>

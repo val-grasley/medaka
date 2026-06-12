@@ -1,12 +1,12 @@
 #!/bin/sh
-# Differential validation for the self-hosted Medaka lexer (selfhost/lexer.mdk)
+# Differential validation for the self-hosted Medaka lexer (selfhost/frontend/lexer.mdk)
 # against the OCaml reference.
 #
 # For each fixture in test/diff_fixtures/, run the Medaka lexer ON THE
 # INTERPRETER over the fixture source and diff its token stream against the
 # golden's `=== TOKENS ===` section (those goldens are produced by the OCaml
 # `Lexer.tokenize_string` — see test/thorough/gen_golden.ml). As lib/lexer.mll
-# is ported into selfhost/lexer.mdk, fixtures flip from FAIL to ok; the port is
+# is ported into selfhost/frontend/lexer.mdk, fixtures flip from FAIL to ok; the port is
 # done for this stage when all pass.
 #
 # Usage:  sh test/diff_selfhost_lexer.sh

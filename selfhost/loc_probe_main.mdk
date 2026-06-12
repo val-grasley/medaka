@@ -7,9 +7,9 @@
 --
 --   medaka run selfhost/loc_probe_main.mdk <file.mdk>
 
-import parser.{parseLocated}
-import desugar.{desugar}
-import typecheck.{checkToLines, currentLocString, setCoherenceUserDecls}
+import frontend.parser.{parseLocated}
+import frontend.desugar.{desugar}
+import types.typecheck.{checkToLines, currentLocString, setCoherenceUserDecls}
 
 main = match args ()
   [targetPath] => probe targetPath

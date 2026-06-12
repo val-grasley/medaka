@@ -6,7 +6,7 @@
 -- diagnostic, sorted.  Empty output = no diagnostics (program is clean).
 -- Diffs against `dev/diagdump.exe --analyze <source.mdk>`.
 
-import diagnostics.{analyzeToLines}
+import driver.diagnostics.{analyzeToLines}
 
 main = match args ()
   [runtimePath, corePath, targetPath] => withFiles runtimePath corePath targetPath

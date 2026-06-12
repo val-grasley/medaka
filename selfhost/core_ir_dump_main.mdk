@@ -11,11 +11,11 @@
 --      lowering or serializer drift).
 --   2. The input for a future round-trip deserializer gate.
 
-import parser.{parse}
-import desugar.{desugar}
-import annotate.{annotateProgram}
-import core_ir_lower.{lowerProgram}
-import core_ir_sexp.{cprogramToSexp}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.annotate.{annotateProgram}
+import ir.core_ir_lower.{lowerProgram}
+import ir.core_ir_sexp.{cprogramToSexp}
 
 main = match args ()
   [targetPath] => withTarget targetPath

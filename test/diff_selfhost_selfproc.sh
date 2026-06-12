@@ -93,7 +93,7 @@ else
 fi
 
 # ── LEG C: TYPED eval runs a stage that needs return-position dispatch ─────
-# The parser (selfhost/parser.mdk) is built on a `Parser` monad whose
+# The parser (selfhost/frontend/parser.mdk) is built on a `Parser` monad whose
 # `pure`/`andThen` are return-position method dispatch — which the UNTYPED
 # eval_modules path (Leg B) cannot resolve (it panics "no matching clause").
 # The TYPED multi-module path threads the marker + typecheck.elaborate route-
@@ -115,7 +115,7 @@ else
 fi
 
 # ── LEG D: TYPED eval runs the TYPECHECKER stage (typecheck.mdk) ───────────
-# The typechecker (selfhost/typecheck.mdk) is the deepest stage to execute on
+# The typechecker (selfhost/types/typecheck.mdk) is the deepest stage to execute on
 # the self-hosted eval: it drives Ref-based union-find mutation (the `<Mut>`
 # effect) over a larger primitive surface than the parser, and — like the
 # parser — threads return-position dispatch through its monadic surface, so the

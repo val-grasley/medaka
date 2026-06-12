@@ -19,9 +19,9 @@
 -- typechecker also threads return-position dispatch through its monadic surface,
 -- so it runs through the typed path (Leg C/D), not the untyped eval_modules path.
 
-import parser.{parse}
-import desugar.{desugar}
-import typecheck.{checkToLines}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{checkToLines}
 
 -- A SELF-CONTAINED (prelude-free) Medaka snippet — checkToLines seeds no
 -- prelude, so every free name must be bound in the snippet itself (like the

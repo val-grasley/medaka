@@ -3,11 +3,11 @@
 -- Parses + desugars runtime.mdk + core.mdk ONCE, dict-elaborates + evals each
 -- target.  Strict per-target IO loop (see eval_prelude_batch.mdk for why).
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames}
-import eval.{evalOutput, funNamesOf, dropShadowedExp}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames}
+import eval.eval.{evalOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
   (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets

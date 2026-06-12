@@ -9,11 +9,11 @@
 -- oracle selfhost/eval_main.mdk diffs against.  Equal output over the corpus is
 -- the proof that lowering + Core IR evaluation preserve the AST semantics.
 
-import parser.{parse}
-import desugar.{desugar}
-import annotate.{annotateProgram}
-import core_ir_lower.{lowerProgram}
-import core_ir_eval.{cevalMain}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.annotate.{annotateProgram}
+import ir.core_ir_lower.{lowerProgram}
+import ir.core_ir_eval.{cevalMain}
 
 main = match args ()
   [targetPath] => withTarget targetPath

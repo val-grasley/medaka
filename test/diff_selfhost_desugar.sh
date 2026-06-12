@@ -1,11 +1,11 @@
 #!/bin/sh
 # Differential validation for the self-hosted DESUGAR stage:
-#   selfhost/desugar_main.mdk  (lex → parse → desugar → selfhost/sexp.mdk dump)
+#   selfhost/desugar_main.mdk  (lex → parse → desugar → selfhost/ir/sexp.mdk dump)
 # vs the OCaml reference
 #   dev/astdump.exe --desugar  (parse → Desugar.desugar_program → strip_locs → S-expr)
 #
 # Desugar lowers surface sugar (EGuards/EDo/ESection/EStringInterp/EListComp/
-# EFunction/…) to core nodes that selfhost/sexp.mdk already renders, so no new
+# EFunction/…) to core nodes that selfhost/ir/sexp.mdk already renders, so no new
 # dump rendering is needed — only the selfhost desugar pass.  FLOAT literal text
 # is normalized away (OCaml %g vs floatToString), like the other harnesses.
 #

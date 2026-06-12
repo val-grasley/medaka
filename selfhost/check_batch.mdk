@@ -11,12 +11,12 @@
 -- Semantics per target are identical to check.mdk's runCheck; only the prelude
 -- parse is hoisted out of the per-target loop.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import resolve.{resolveToLines}
-import exhaust.{exhaustToLines}
-import typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.resolve.{resolveToLines}
+import frontend.exhaust.{exhaustToLines}
+import types.typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls}
 
 main = match args ()
   (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets

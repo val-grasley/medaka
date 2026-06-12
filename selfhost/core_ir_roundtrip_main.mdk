@@ -10,13 +10,13 @@
 -- a program lowered, serialized, and parsed back evaluates identically to the
 -- freshly lowered program, i.e. the frozen IR captures the full computation.
 
-import parser.{parse}
-import desugar.{desugar}
-import annotate.{annotateProgram}
-import core_ir_lower.{lowerProgram}
-import core_ir_sexp.{cprogramToSexp}
-import core_ir_sexp_parse.{parseCProgram}
-import core_ir_eval.{cevalMain}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.annotate.{annotateProgram}
+import ir.core_ir_lower.{lowerProgram}
+import ir.core_ir_sexp.{cprogramToSexp}
+import ir.core_ir_sexp_parse.{parseCProgram}
+import ir.core_ir_eval.{cevalMain}
 
 main = match args ()
   [targetPath] => withTarget targetPath

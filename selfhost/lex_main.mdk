@@ -8,8 +8,8 @@
 -- prelude + global externs (no stdlib import), so it resolves with `selfhost/`
 -- as the sole project root.
 
-import lexer.{Token, tokenize, tokenToString}
-import util.{joinNl}
+import frontend.lexer.{Token, tokenize, tokenToString}
+import support.util.{joinNl}
 
 -- Render the token stream, one per line, no trailing newline (matches the
 -- golden TOKENS section).  `joinNl` joins in O(total) via `stringConcat`; the

@@ -10,8 +10,8 @@
 # Results go to stdout; progress/debug goes to stderr.
 #
 # Single-file targets:
-#   selfhost/lexer.mdk     — self-contained (no imports); all stages accurate
-#   selfhost/parser.mdk    — large file with imports; parse+desugar accurate
+#   selfhost/frontend/lexer.mdk     — self-contained (no imports); all stages accurate
+#   selfhost/frontend/parser.mdk    — large file with imports; parse+desugar accurate
 #
 # Multi-module target:
 #   selfhost/all_modules_entry.mdk — full 15-module selfhost closure;
@@ -115,6 +115,6 @@ profile_modules() {
   printf '\n'
 }
 
-profile_single "$ROOT/selfhost/lexer.mdk"
-profile_single "$ROOT/selfhost/parser.mdk"
+profile_single "$ROOT/selfhost/frontend/lexer.mdk"
+profile_single "$ROOT/selfhost/frontend/parser.mdk"
 profile_modules "$ROOT/selfhost/all_modules_entry.mdk" "$ROOT/selfhost"

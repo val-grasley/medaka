@@ -6,7 +6,7 @@
 # Both sides go parse → AST→source.  This isolates the printer: it diffs the
 # AST→source rendering only, NOT the comment-interleaving format_program path
 # (which depends on the lexer comment side-channel the self-host parser does not
-# surface).  A byte-identical match means selfhost/printer.mdk reproduces
+# surface).  A byte-identical match means selfhost/tools/printer.mdk reproduces
 # lib/printer.ml's layout, precedence, and spelling exactly.
 #
 # Runs over test/parse_fixtures/ — the same small corpus diff_selfhost_parse.sh

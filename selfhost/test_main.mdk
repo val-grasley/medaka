@@ -7,7 +7,7 @@
 -- defaults the roots, then calls runTest.  Output byte-mirrors
 -- `./_build/default/bin/main.exe test <file.mdk>`.
 
-import test_cmd.{runTest, rootsOrDefault}
+import tools.test_cmd.{runTest, rootsOrDefault}
 
 main = match args ()
   (runtimeP :: coreP :: target :: roots) =>

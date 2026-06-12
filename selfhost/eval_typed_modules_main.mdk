@@ -17,12 +17,12 @@
 -- Diffs against `medaka run <entry.mdk>` (the OCaml Loader → typecheck (+marker)
 -- → eval_modules oracle), the same oracle eval_typed_main / eval_modules_main use.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{elaborateModules}
-import eval.{evalModulesOutput}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{elaborateModules}
+import eval.eval.{evalModulesOutput}
 
 main = match args ()
   (runtimeP :: coreP :: entry :: roots) => run runtimeP coreP entry (rootsOrDefault entry roots)

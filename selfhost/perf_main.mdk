@@ -21,14 +21,14 @@
 --   MEDAKA_PERF=1 medaka run selfhost/perf_main.mdk \
 --       stdlib/runtime.mdk stdlib/core.mdk selfhost/all_modules_entry.mdk selfhost
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{elaborateModules}
-import eval.{evalModulesOutput}
-import timer.{perfEnabled, now, emitPhase, emitTotal, totalDecls}
-import util.{listLen}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{elaborateModules}
+import eval.eval.{evalModulesOutput}
+import support.timer.{perfEnabled, now, emitPhase, emitTotal, totalDecls}
+import support.util.{listLen}
 
 main = match args ()
   (runtimeP :: coreP :: entry :: roots) => run runtimeP coreP entry (rootsOrDefault entry roots)

@@ -29,7 +29,7 @@ norm() { sed 's/^FLOAT .*/FLOAT/'; }
 if [ "$#" -gt 0 ]; then
   files="$*"
 else
-  files="$ROOT/selfhost/lexer.mdk"
+  files="$ROOT/selfhost/frontend/lexer.mdk"
   for f in core list array string map set io hash_map hash_set mut_array json test; do
     files="$files $ROOT/stdlib/$f.mdk"
   done

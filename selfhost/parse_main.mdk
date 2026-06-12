@@ -7,8 +7,8 @@
 -- S-expression of the AST (one decl per line) — the same format as
 -- dev/astdump.exe, so the two can be diffed (test/diff_selfhost_parse.sh).
 
-import parser.{parse}
-import sexp.{programToSexp}
+import frontend.parser.{parse}
+import ir.sexp.{programToSexp}
 
 main = match args ()
   [path] => match readFile path

@@ -4,10 +4,10 @@
 -- (core ++ target) per target — mirroring the harness's `cat core fixture`
 -- concatenation, but without re-parsing core each time.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import typecheck.{checkToLinesWithRuntime}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{checkToLinesWithRuntime}
 
 main = match args ()
   (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets

@@ -18,13 +18,13 @@
 -- Without MEDAKA_PERF set the driver exits silently.
 -- Use test/profile_selfhost.sh [N] to collect min-of-N and print a table.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{checkModules, markModules}
-import timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap, totalDecls}
-import util.{listLen}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{checkModules, markModules}
+import support.timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap, totalDecls}
+import support.util.{listLen}
 
 main : <IO, Mut> Unit
 main = match args ()

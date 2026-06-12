@@ -5,8 +5,8 @@
 -- prints the loaded module IDs one per line, in dependency-first order — diff
 -- against the order the reference Loader.load_program produces for the same entry.
 
-import ast.{Decl}
-import loader.{loadProgram}
+import frontend.ast.{Decl}
+import driver.loader.{loadProgram}
 
 main = match args ()
   [] => ePutStrLn "usage: medaka run selfhost/loader_main.mdk <entry.mdk> [root ...]"

@@ -8,10 +8,10 @@
 -- string-builder would let one program's dispatch be forced after the next has
 -- already clobbered that table.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import eval.{evalMain}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import eval.eval.{evalMain}
 
 main = match args ()
   (corePath :: targets) => withCore corePath targets

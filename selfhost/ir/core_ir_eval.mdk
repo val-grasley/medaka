@@ -1,0 +1,505 @@
+-- Core IR evaluator — STAGE2-DESIGN §2.1's "trivial Core-IR tree-walker" that
+-- closes the net-new-IR oracle gap by EQUIVALENCE: it evaluates the lowered Core
+-- IR and its stdout/pp_value is diffed against the AST tree-walker (eval.mdk /
+-- dev/eval_probe) over the whole fixture corpus.  Core IR is correct iff
+-- evaluating it matches evaluating the AST.
+--
+-- It deliberately REUSES eval.mdk's runtime — the host `Value`, environment,
+-- `apply`/dispatch/fall-through machinery, pattern matcher, arithmetic, externs
+-- and `pp_value` — exactly the "reuse the host Value/GC/externs" the design
+-- prescribes (Axis 2/§2.2).  A Core IR closure is a `VClosureF` (the host-fn
+-- closure added to eval.mdk), so multi-clause functions and guard fall-through
+-- run through the SAME `VMulti` + `VFallthrough` path the AST interpreter uses.
+--
+-- SLICE 1: the engine core — literals, lexically-addressed variables (resolved
+-- by name for now; the slot-indexing consume-half is 2.0's parked rework),
+-- application, lambdas, let / letrec / let-groups, match (with guards), if,
+-- primitive binops (arith / compare / `::` / `++`), unary ops, tuples, lists,
+-- ADT constructors + pattern matching, single- and multi-clause recursion.
+-- SLICE 3: records (create / field access / update), refs (`Ref`/`set_ref`/
+-- `.value` externs + deref), arrays, ranges (list + array), index, slice, and
+-- bare sequential blocks (`let mut` / `<-` rebinding) — the value-level helpers
+-- are reused verbatim from eval.mdk, these arms only thread `ceval`.
+-- SLICE 5: typeclass dispatch — impls/interface-defaults are lowered (Ty-free)
+-- and installed into the driver's env as arg-tag-dispatched `VMulti`s (the same
+-- values eval.mdk installs); `CMethod`/`CDict` arms consume the elaborated routes
+-- on the typed lowering path.
+
+import frontend.ast.{Lit(..), Pat(..), Addr(..), Route(..), Decl}
+import ir.core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..), CTree(..), CTBranch(..), CHead(..)}
+import ir.core_ir_lower.{lowerGroups, lowerImplsWith}
+import support.util.{concatMapList}
+import eval.eval.{
+  Value(..), EvalEnv(..), lookupEnv, extendEnv, pushFrame, findCell, applyValue,
+  matchPat, force, startsWithAt, evalArith, evalUnop, consVal, appendVal,
+  makeCtor, boolSeeds, externBindings, ctorToTypeRef, installConsts, cellResult,
+  lookupBinding, isNullary, ppValue, outputRef,
+  evalIndex, evalSlice, evalRange, rangeListMk, rangeArrayMk, evalRecordUpdate,
+  evalValueField, evalField, narrowMethod, routeTag, applyDicts, coalesceImpls, nub,
+  buildCtorToType, collectCtors, buildIfaceDispatch, implMethodNames,
+  importFrameOf, pubReexports,
+  evalVariantUpdate, buildCtorFieldOrders, ctorFieldOrdersRef,
+  methodAtNarrow, applyValues
+}
+
+-- ── the evaluator ─────────────────────────────────────────────────────────
+export
+ceval : EvalEnv -> CExpr -> <Mut> Value
+ceval _ (CLit l) = litValue l
+ceval env (CVar x _) = if startsWithAt x then VUnit else lookupEnv env x
+ceval env (CApp f x) = applyValue (ceval env f) (ceval env x)
+ceval env (CLam pats body) = VClosureF env pats (e => ceval e body)
+ceval env (CLet True (PVar f) e1 e2) = cevalRecLet env f e1 e2
+ceval env (CLet _ pat e1 e2) = cevalLet env pat e1 e2
+ceval env (CLetGroup binds body) = cevalLetGroup env binds body
+ceval env (CMatch scrut arms) = cevalMatch env (ceval env scrut) arms
+ceval env (CDecision scrut arms tree) = cevalDecision env (ceval env scrut) arms tree
+ceval env (CIf c t e) = cevalIf env (ceval env c) t e
+ceval env (CBinPrim op l r) = cevalBinPrim op (ceval env l) (ceval env r)
+ceval env (CUnOp op e) = evalUnop op (ceval env e)
+ceval env (CTuple es) = VTuple (map (ceval env) es)
+ceval env (CList es) = VList (map (ceval env) es)
+ceval env (CBlock stmts) = cevalBlock env stmts
+-- ── slice 3: records / refs / arrays / ranges / index / slice ──────────────
+-- The value-level work (build / deref / index / range) is REUSED verbatim from
+-- eval.mdk — these arms only thread `ceval` over the sub-expressions and hand the
+-- resulting Values to eval.mdk's helpers, so the IR path and the AST path share
+-- one runtime (the Axis-2 discipline).  Refs are plain externs (`Ref`/`set_ref`)
+-- reached through `CApp`/`CVar`; `.value` deref is `CFieldAccess _ "value"`.
+ceval env (CArray es) = VArray (arrayFromList (map (ceval env) es))
+ceval env (CRecord name fields) = VRecord name (map (cevalField env) fields)
+ceval env (CRecordUpdate base fields) =
+  evalRecordUpdate (ceval env base) (map (cevalField env) fields)
+ceval env (CVariantUpdate con base fields) =
+  evalVariantUpdate con (ceval env base) (map (cevalField env) fields)
+ceval env (CFieldAccess e "value") = evalValueField (ceval env e)
+ceval env (CFieldAccess e field) = evalField (ceval env e) field
+ceval env (CIndex a i) = evalIndex (ceval env a) (ceval env i)
+ceval env (CSlice a lo hi incl) =
+  evalSlice (ceval env a) (ceval env lo) (ceval env hi) incl
+ceval env (CRangeList lo hi incl) =
+  evalRange (ceval env lo) (ceval env hi) incl rangeListMk
+ceval env (CRangeArray lo hi incl) =
+  evalRange (ceval env lo) (ceval env hi) incl rangeArrayMk
+-- ── slice 5: typeclass dispatch read out of the elaborated routes ──────────
+-- These fire only on the TYPED lowering path (marker + typecheck.elaborate fills
+-- the routes); the untyped driver leaves method occurrences as plain `CVar`s that
+-- resolve to the installed `VMulti` and dispatch by arg-tag in `applyValue`.  The
+-- arms mirror eval.mdk's `EMethodAt`/`EDictAt` exactly (Routes already read out
+-- into the immutable `CMethod`/`CDict` at lowering time).
+ceval env (CMethod name route implRoutes methRoutes) =
+  let (narrowed, fwdReqs) = methodAtNarrow env (lookupEnv env name) route
+  let v1 = applyDicts env narrowed methRoutes
+  let v2 = applyDicts env v1 implRoutes
+  applyValues v2 fwdReqs
+ceval env (CDict name routes) = applyDicts env (lookupEnv env name) routes
+ceval _ _ = panic "core_ir ceval: unsupported node"
+
+cevalField : EvalEnv -> CField -> <Mut> (String, Value)
+cevalField env (CField k e) = (k, ceval env e)
+
+litValue : Lit -> Value
+litValue (LInt n) = VInt n
+litValue (LFloat f) = VFloat f
+litValue (LString s) = VString s
+litValue (LChar c) = VChar c
+litValue (LBool b) = VBool b
+litValue LUnit = VUnit
+
+cevalBinPrim : String -> Value -> Value -> Value
+cevalBinPrim "::" l r = consVal l r
+cevalBinPrim "++" l r = appendVal l r
+cevalBinPrim op l r = evalArith op l r
+
+cevalIf : EvalEnv -> Value -> CExpr -> CExpr -> <Mut> Value
+cevalIf env (VBool True) t _ = ceval env t
+cevalIf env (VCon "True" []) t _ = ceval env t
+cevalIf env (VBool False) _ e = ceval env e
+cevalIf env (VCon "False" []) _ e = ceval env e
+cevalIf _ _ _ _ = panic "if condition is not a Bool"
+
+cevalMatch : EvalEnv -> Value -> List CArm -> <Mut> Value
+cevalMatch _ _ [] = panic "no matching clause in match"
+cevalMatch env sv ((CArm pat guards body)::rest) = match matchPat pat sv
+  None => cevalMatch env sv rest
+  Some binds => match cevalGuards (extendEnv env binds) guards
+    Some env2 => ceval env2 body
+    None => cevalMatch env sv rest
+
+cevalGuards : EvalEnv -> List CGuard -> <Mut> Option EvalEnv
+cevalGuards env [] = Some env
+cevalGuards env ((CGBool g)::qs) = match ceval env g
+  VBool True => cevalGuards env qs
+  VCon "True" [] => cevalGuards env qs
+  _ => None
+cevalGuards env ((CGBind p e)::qs) = match matchPat p (ceval env e)
+  Some b => cevalGuards (extendEnv env b) qs
+  None => None
+
+-- ── decision-tree match evaluation (§2.1) ──────────────────────────────────
+-- Walk the compiled CTree against the scrutinee value, testing each field's
+-- head once and routing to the selected arm — the same result cevalMatch's
+-- ordered arms compute, with the per-clause re-tests collapsed into one tree.
+-- `root` is the whole scrutinee (kept for the leaf re-match that recovers
+-- bindings + runs guards); `occs` is the live column values (the matrix
+-- columns), starting as just [root] and expanding into a constructor's fields
+-- as the tree descends — kept in lockstep with the lowering's specialization.
+cevalDecision : EvalEnv -> Value -> List CArm -> CTree -> <Mut> Value
+cevalDecision env root arms tree = cevalTree env root arms [root] tree
+
+cevalTree : EvalEnv -> Value -> List CArm -> List Value -> CTree -> <Mut> Value
+cevalTree _ _ _ _ CTFail = panic "no matching clause in match"
+cevalTree env root arms _ (CTLeaf i) = cevalArm env root arms i
+cevalTree env root arms occs (CTGuard i fail) = cevalGuardedArm env root arms occs i fail
+cevalTree env root arms occs (CTDrop sub) = cevalTree env root arms (cOccsTail occs) sub
+cevalTree env root arms occs (CTSwitch branches dft) =
+  cevalSwitch env root arms occs branches dft
+
+cOccsTail : List Value -> List Value
+cOccsTail [] = []
+cOccsTail (_::xs) = xs
+
+-- a terminal leaf: re-match the selected arm's ORIGINAL pattern against the
+-- whole scrutinee (guaranteed to match — the tree path implies it) to recover
+-- its variable bindings, then evaluate its body.
+cevalArm : EvalEnv -> Value -> List CArm -> Int -> <Mut> Value
+cevalArm env root arms i = match nthArm arms i
+  Some (CArm pat _ body) => cevalArmBody env root pat body
+  None => panic "core_ir decision tree: arm index out of range"
+
+cevalArmBody : EvalEnv -> Value -> Pat -> CExpr -> <Mut> Value
+cevalArmBody env root pat body = match matchPat pat root
+  Some binds => ceval (extendEnv env binds) body
+  None => panic "core_ir decision tree: leaf pattern did not match scrutinee"
+
+-- a guarded leaf: re-match for bindings, run the guards; on success eval the
+-- body, on failure resume the ordered semantics via the `fail` subtree (at the
+-- current column context, so its switches read the same live sub-values).
+cevalGuardedArm : EvalEnv -> Value -> List CArm -> List Value -> Int -> CTree -> <Mut> Value
+cevalGuardedArm env root arms occs i fail = match nthArm arms i
+  Some (CArm pat guards body) => cevalGuardedBody env root arms occs pat guards body fail
+  None => panic "core_ir decision tree: guarded arm index out of range"
+
+-- `None` from matchPat is a fall-through, not a panic: PRng/PRec arms
+-- canonicalize to PWild in the matrix (so the tree may route to them), but
+-- matchPat tests the ORIGINAL pattern, which can legitimately fail (e.g. a
+-- value out of range, or a record missing a required field).  The fall-through
+-- resumes the ordered semantics via the `fail` subtree, exactly as cevalMatch's
+-- sequential arm-by-arm search would.  For non-PRng/PRec arms the tree
+-- guarantees the pattern matches, so None is unreachable there.
+cevalGuardedBody : EvalEnv -> Value -> List CArm -> List Value -> Pat -> List CGuard -> CExpr -> CTree -> <Mut> Value
+cevalGuardedBody env root arms occs pat guards body fail = match matchPat pat root
+  None => cevalTree env root arms occs fail
+  Some binds => match cevalGuards (extendEnv env binds) guards
+    Some env2 => ceval env2 body
+    None => cevalTree env root arms occs fail
+
+-- a switch: the head occurrence (column 0) is `occs`'s head; try each branch's
+-- head against it (constructors/literals are disjoint, so the first match is
+-- THE match), descending into the matched head's fields ++ the remaining
+-- columns; if none match, the default branch drops the head column.
+cevalSwitch : EvalEnv -> Value -> List CArm -> List Value -> List CTBranch -> CTree -> <Mut> Value
+cevalSwitch env root arms occs branches dft = match occs
+  [] => cevalTree env root arms [] dft
+  (v::rest) => cevalSwitchOn env root arms v rest branches dft
+
+cevalSwitchOn : EvalEnv -> Value -> List CArm -> Value -> List Value -> List CTBranch -> CTree -> <Mut> Value
+cevalSwitchOn env root arms _ rest [] dft = cevalTree env root arms rest dft
+cevalSwitchOn env root arms v rest ((CTBranch head sub)::more) dft =
+  match headExtract head v
+    Some subs => cevalTree env root arms (subs ++ rest) sub
+    None => cevalSwitchOn env root arms v rest more dft
+
+-- test a head against a value, returning its decomposed sub-values when it
+-- matches.  Reuses matchPat (with fresh binders) for BOTH the test and the
+-- field extraction, so list/tuple/bool/unit value shapes need no special code.
+headExtract : CHead -> Value -> Option (List Value)
+headExtract (HCon c a) v = extractWith (PCon c (cBinders a)) v
+headExtract (HTuple n) v = extractWith (PTuple (cBinders n)) v
+headExtract HCons v = extractWith (PCons (PVar "$d0") (PVar "$d1")) v
+headExtract HNil v = extractWith (PList []) v
+headExtract HUnit v = extractWith (PLit LUnit) v
+headExtract (HLit l) v = extractWith (PLit l) v
+
+extractWith : Pat -> Value -> Option (List Value)
+extractWith p v = match matchPat p v
+  Some binds => Some (map snd binds)
+  None => None
+
+-- `a` fresh binder patterns ($d0, $d1, …); matchPats binds them left-to-right,
+-- so `map snd` recovers the constructor's fields in order.  The names are
+-- discarded, so collisions are harmless.
+cBinders : Int -> List Pat
+cBinders n = cBindersGo 0 n
+
+cBindersGo : Int -> Int -> List Pat
+cBindersGo i n
+  | i >= n = []
+  | otherwise = PVar ("$d" ++ intToString i) :: cBindersGo (i + 1) n
+
+nthArm : List CArm -> Int -> Option CArm
+nthArm (a::_) 0 = Some a
+nthArm (_::rest) n = nthArm rest (n - 1)
+nthArm [] _ = None
+
+cevalRecLet : EvalEnv -> String -> CExpr -> CExpr -> <Mut> Value
+cevalRecLet env f e1 e2 =
+  let cell = Ref VUnit
+  let recEnv = pushFrame env [(f, cell)]
+  let v = ceval recEnv e1
+  let _ = set_ref cell v
+  ceval recEnv e2
+
+cevalLet : EvalEnv -> Pat -> CExpr -> CExpr -> <Mut> Value
+cevalLet env pat e1 e2 = match matchPat pat (ceval env e1)
+  None => panic "let pattern match failure"
+  Some binds => ceval (extendEnv env binds) e2
+
+-- ── bare sequential blocks (function-body `let` sequences, imperative IO) ───
+-- Mirrors eval.mdk's evalBlock: a block ending in a `let` yields VUnit; ending
+-- in an expr yields that expr.  (Mutable-cell `let mut` / Ref rebinding via
+-- DoAssign is carried for slice 3; slice-1 fixtures use only let + expr.)
+cevalBlock : EvalEnv -> List CStmt -> <Mut> Value
+cevalBlock _ [] = VUnit
+cevalBlock env [(CSExpr e)] = ceval env e
+cevalBlock env [(CSLet _ pat e)] = cBlockLetLast env pat e
+cevalBlock env ((CSExpr e)::rest) =
+  let _ = ceval env e
+  cevalBlock env rest
+cevalBlock env ((CSLet _ pat e)::rest) = cBlockLet env pat e rest
+cevalBlock env ((CSLetElse pat e alt)::rest) = cBlockLetElse env pat e alt rest
+cevalBlock env [(CSAssign _ e)] =
+  let _ = ceval env e
+  VUnit
+cevalBlock env ((CSAssign x e)::rest) =
+  cevalBlock (extendEnv env [(x, ceval env e)]) rest
+
+cBlockLetLast : EvalEnv -> Pat -> CExpr -> <Mut> Value
+cBlockLetLast env pat e = match matchPat pat (ceval env e)
+  None => panic "let pattern match failure in block"
+  Some _ => VUnit
+
+cBlockLet : EvalEnv -> Pat -> CExpr -> List CStmt -> <Mut> Value
+cBlockLet env pat e rest = match matchPat pat (ceval env e)
+  None => panic "let pattern match failure in block"
+  Some binds => cevalBlock (extendEnv env binds) rest
+
+cBlockLetElse : EvalEnv -> Pat -> CExpr -> CExpr -> List CStmt -> <Mut> Value
+cBlockLetElse env pat e alt rest = match matchPat pat (ceval env e)
+  None => ceval env alt
+  Some binds => cevalBlock (extendEnv env binds) rest
+
+-- ── let-groups (where / mutually-recursive coalesced bindings) ─────────────
+cevalLetGroup : EvalEnv -> List CBind -> CExpr -> <Mut> Value
+cevalLetGroup env binds body =
+  let cells = map cBindCell binds
+  let env2 = pushFrame env cells
+  let _ = cInstallGroup env2 cells binds
+  ceval env2 body
+
+cBindCell : CBind -> (String, Ref Value)
+cBindCell (CBind name _) = (name, Ref VUnit)
+
+cInstallGroup : EvalEnv -> List (String, Ref Value) -> List CBind -> <Mut> Unit
+cInstallGroup _ _ [] = ()
+cInstallGroup env cells ((CBind name clauses)::rest) =
+  let _ = set_ref (findCell cells name) (cGroupValue env clauses)
+  cInstallGroup env cells rest
+
+-- let-group binding value: a nullary single clause is eager (recursive let);
+-- multi-clause coalesces into a VMulti dispatched by arg pattern + fall-through.
+cGroupValue : EvalEnv -> List CClause -> <Mut> Value
+cGroupValue env [(CClause pats body)]
+  | isNullary pats = ceval env body
+  | otherwise = cClauseClosure env (CClause pats body)
+cGroupValue env clauses = VMulti (map (cClauseClosure env) clauses)
+
+cClauseClosure : EvalEnv -> CClause -> Value
+cClauseClosure env (CClause pats body) = VClosureF env pats (e => ceval e body)
+
+-- ── program driver ─────────────────────────────────────────────────────────
+-- Mirror of eval.mdk's evalProgram, but installs Core IR groups.  A nullary
+-- top-level binding becomes a deferred VThunk (forced on first lookup) so
+-- point-free defs can reference values installed later, in any order.
+export
+cevalProgram : CProgram -> <Mut> List (String, Value)
+cevalProgram (CProgram groups ctorArs ctorToType implEntries) =
+  let _ = set_ref ctorToTypeRef ctorToType
+  let ctors = map ctorBinding ctorArs
+  let allNames = map fst boolSeeds
+    ++ map fst externBindings
+    ++ map fst ctors
+    ++ map cBindName groups
+    ++ cImplMethodNames implEntries
+  let cells = map (n => (n, Ref VUnit)) allNames
+  let env = EvalEnv [cells]
+  let _ = installConsts cells boolSeeds
+  let _ = installConsts cells externBindings
+  let _ = installConsts cells ctors
+  -- impls (lazy closures) install BEFORE groups so a nullary group's eager body
+  -- can already see the dispatch tables — mirrors eval.mdk's evalProgram order.
+  let _ = installConsts cells (coalesceImpls (map (cImplEntryValue env) implEntries))
+  let _ = cInstallTopGroups env cells groups
+  map cellResult cells
+
+ctorBinding : (String, Int) -> (String, Value)
+ctorBinding (name, arity) = (name, makeCtor name arity)
+
+-- ── typeclass impl installation (slice 5) ──────────────────────────────────
+-- Turn each lowered CImplEntry into the same (name, (score, Value)) eval.mdk's
+-- declImplEntries produces, then `coalesceImpls` (reused) sorts by specificity
+-- and folds same-named candidates into one VMulti — the arg-tag-dispatched value
+-- the AST walker installs.  The only difference from eval.mdk is the closure
+-- body runs `ceval` over a `CExpr` instead of `eval` over an `Expr`.
+cImplMethodNames : List CImplEntry -> List String
+cImplMethodNames entries = nub (map cImplEntryName entries)
+
+cImplEntryName : CImplEntry -> String
+cImplEntryName (CImplEntry n _ _) = n
+
+cImplEntryValue : EvalEnv -> CImplEntry -> (String, (Int, Value))
+cImplEntryValue env (CImplEntry name score body) = (name, (score, cImplBodyValue env body))
+
+cImplBodyValue : EvalEnv -> CImplBody -> Value
+cImplBodyValue env (CImplTagged tag iface positions pats body) =
+  VTypedImpl tag iface positions 0 (cImplMethodValue env positions pats body)
+cImplBodyValue env (CImplDefault pats body) = cImplMethodValue env [] pats body
+
+-- A point-free (no-param) impl/default body: defer a return-position method as a
+-- VThunk; otherwise eta-expand so the discriminating arg still reaches the body
+-- (mirrors eval.mdk's implMethodValue / Phase 121).
+cImplMethodValue : EvalEnv -> List Int -> List Pat -> CExpr -> Value
+cImplMethodValue env positions [] body
+  | cNullList positions = VThunk (_ => ceval env body)
+  | otherwise = VClosureF env [PVar "$eta"] (e => ceval e (CApp body (CVar "$eta" AGlobal)))
+cImplMethodValue env _ pats body = VClosureF env pats (e => ceval e body)
+
+cNullList : List a -> Bool
+cNullList [] = True
+cNullList _ = False
+
+cBindName : CBind -> String
+cBindName (CBind n _) = n
+
+cInstallTopGroups : EvalEnv -> List (String, Ref Value) -> List CBind -> <Mut> Unit
+cInstallTopGroups _ _ [] = ()
+cInstallTopGroups env cells ((CBind n clauses)::rest) =
+  let _ = set_ref (findCell cells n) (cTopGroupValue env clauses)
+  cInstallTopGroups env cells rest
+
+cTopGroupValue : EvalEnv -> List CClause -> Value
+cTopGroupValue env [(CClause pats body)]
+  | isNullary pats = VThunk (_ => ceval env body)
+  | otherwise = VClosureF env pats (e => ceval e body)
+cTopGroupValue env clauses = VMulti (map (cClauseClosure env) clauses)
+
+-- ── entry point (pure-value path, diffed via pp_value of `main`) ───────────
+export
+cevalMain : CProgram -> <Mut> String
+cevalMain prog = match lookupBinding "main" (cevalProgram prog)
+  Some v => ppValue (force v)
+  None => panic "core_ir eval: no `main` binding"
+
+-- Run the Core IR program for its OUTPUT (forcing `main`, whose IO side-effects
+-- append to eval.mdk's outputRef) and return the captured stdout — the Core-IR
+-- analog of eval.mdk's evalOutput, for the typed / run corpora that diff stdout
+-- (=== EVAL === goldens) rather than pp_value of `main`.
+export
+cevalOutput : CProgram -> <Mut> String
+cevalOutput prog =
+  let _ = set_ref outputRef ""
+  let binds = cevalProgram prog
+  let _ = cRunMainForEffect binds
+  outputRef.value
+
+cRunMainForEffect : List (String, Value) -> <Mut> Value
+cRunMainForEffect binds = match lookupBinding "main" binds
+  Some v => force v
+  None => VUnit
+
+-- ── multi-module evaluation (per-module Core-IR frames over a shared global) ──
+-- The Core-IR analog of eval.mdk's evalModules — the loader-driven path that runs
+-- the compiler's own module graph through the Core IR.  Structure mirrors the AST
+-- evalModules EXACTLY: the prelude (core) installs GLOBALLY (all its names
+-- global); each loaded module's top-level groups are LOCAL, so same-named
+-- functions across modules stay isolated (Phase 110); ctors and impl methods
+-- coalesce GLOBALLY into one coherent VMulti per interface method.  Modules arrive
+-- dependency-first (loader order); a module's `import`s resolve to the exporting
+-- module's cells.  VThunk laziness defers every nullary binding to its first
+-- lookup, so the reference's explicit deferred-thunk ordering is unnecessary here.
+--
+-- The only Core-IR-specific work vs evalModules is the LOWERING: each module's
+-- groups lower to `CBind`s (installed via cInstallTopGroups's ceval-closures) and
+-- its impls lower to `CImplEntry`s against the JOINT dispatch table built from
+-- ALL decls (an impl in one module for a prelude interface needs the prelude's
+-- dispatch positions).  The value-agnostic import-frame machinery (importFrameOf /
+-- pubReexports — they thread only cells + DUse paths, never Values) is reused
+-- verbatim from eval.mdk.  UNTYPED path, like cevalProgram / evalModules.
+data CModInfo = CModInfo String (List Decl) (List CBind) (List CImplEntry) (List (String, Ref Value)) EvalEnv
+
+export
+cevalModules : List Decl -> List (String, List Decl) -> <Mut> List (String, Value)
+cevalModules preludeDecls modules =
+  let moduleDecls = concatMapList snd modules
+  let allDecls = preludeDecls ++ moduleDecls
+  let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
+  let _ = set_ref ctorFieldOrdersRef (buildCtorFieldOrders allDecls)
+  let disp = buildIfaceDispatch allDecls
+  let ctors = collectCtors allDecls
+  let preludeGroups = lowerGroups preludeDecls
+  let preludeImpls = lowerImplsWith disp preludeDecls
+  let globalNames = map fst boolSeeds ++ map fst externBindings ++ map fst ctors ++ implMethodNames allDecls ++ map cBindName preludeGroups
+  let globalCells = map (n => (n, Ref VUnit)) globalNames
+  let globalEnv = EvalEnv [globalCells]
+  let mods = cBuildModInfos disp globalCells [] modules
+  let implEntries = map (cImplEntryValue globalEnv) preludeImpls ++ concatMapList cModImplValues mods
+  let _ = installConsts globalCells boolSeeds
+  let _ = installConsts globalCells externBindings
+  let _ = installConsts globalCells ctors
+  let _ = installConsts globalCells (coalesceImpls implEntries)
+  let _ = cInstallTopGroups globalEnv globalCells preludeGroups
+  let _ = cInstallModGroups mods
+  cRootLocals mods
+
+-- pass 1: lower + allocate each module's local cells and build its env (imports
+-- resolved against already-processed modules, since loader order is
+-- dependency-first).  Mirror of eval.mdk's buildModInfos, lowering groups/impls.
+cBuildModInfos : List ((String, String), List Int) -> List (String, Ref Value) -> List (String, List (String, Ref Value)) -> List (String, List Decl) -> List CModInfo
+cBuildModInfos _ _ _ [] = []
+cBuildModInfos disp globalCells exportsMap ((mid, decls)::rest) =
+  let cbinds = lowerGroups decls
+  let cimpls = lowerImplsWith disp decls
+  let localCells = map (n => (n, Ref VUnit)) (map cBindName cbinds)
+  let imports = importFrameOf exportsMap decls
+  let menv = EvalEnv [localCells, imports, globalCells]
+  let exports = localCells ++ pubReexports exportsMap decls
+  CModInfo mid decls cbinds cimpls localCells menv :: cBuildModInfos disp globalCells ((mid, exports)::exportsMap) rest
+
+-- a module's impl methods / interface defaults close over ITS env but coalesce
+-- into the shared global VMulti (mirror of eval.mdk's modImplEntries)
+cModImplValues : CModInfo -> <Mut> List (String, (Int, Value))
+cModImplValues (CModInfo _ _ _ cimpls _ menv) = map (cImplEntryValue menv) cimpls
+
+-- pass 2: install each module's groups into its own cells (its env)
+cInstallModGroups : List CModInfo -> <Mut> Unit
+cInstallModGroups [] = ()
+cInstallModGroups ((CModInfo _ _ cbinds _ cells menv)::rest) =
+  let _ = cInstallTopGroups menv cells cbinds
+  cInstallModGroups rest
+
+-- the root module is last in dependency order; its locals hold `main`
+cRootLocals : List CModInfo -> <Mut> List (String, Value)
+cRootLocals [] = []
+cRootLocals [CModInfo _ _ _ _ cells _] = map cellResult cells
+cRootLocals (_::rest) = cRootLocals rest
+
+-- Run a multi-module Core-IR program for its OUTPUT (the loader-driven analog of
+-- cevalOutput): evaluate every module in dependency order, force the root module's
+-- `main` for its IO side-effects, return the captured stdout.
+export
+cevalModulesOutput : List Decl -> List (String, List Decl) -> <Mut> String
+cevalModulesOutput preludeDecls modules =
+  let _ = set_ref outputRef ""
+  let binds = cevalModules preludeDecls modules
+  let _ = cRunMainForEffect binds
+  outputRef.value

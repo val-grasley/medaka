@@ -1,6 +1,6 @@
 #!/bin/sh
 # Differential validation for the NATIVE medaka CLI (Phase C Slice 0+1):
-# selfhost/medaka_cli.mdk, native-compiled to ./medaka, must reproduce the OCaml
+# selfhost/driver/medaka_cli.mdk, native-compiled to ./medaka, must reproduce the OCaml
 # reference for the check / fmt / new subcommands it wires.
 #
 #   check  — native `./medaka check <f>`  ==  OCaml `main.exe run check_main.mdk
@@ -41,7 +41,7 @@ RT="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 
 [ -x "$MAIN" ]   || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
-[ -x "$MEDAKA" ] || { echo "build first: medaka build selfhost/medaka_cli.mdk -o ./medaka (missing $MEDAKA)"; exit 2; }
+[ -x "$MEDAKA" ] || { echo "build first: medaka build selfhost/driver/medaka_cli.mdk -o ./medaka (missing $MEDAKA)"; exit 2; }
 
 bound() { perl -e 'alarm 120; exec @ARGV' "$@"; }
 

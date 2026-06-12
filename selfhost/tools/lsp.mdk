@@ -1,0 +1,1069 @@
+-- selfhost/lsp.mdk — self-hosted Language Server (Stage 4 Phase B.10)
+--
+-- Slices B.10.0 + B.10.1:
+--   B.10.0 — JSON-RPC-over-stdio skeleton: Content-Length framing, the
+--            `initialize` handshake, `initialized`/`shutdown`/`exit`.
+--   B.10.1 — textDocument/didOpen + didChange → publishDiagnostics
+--            (decl-level fidelity; the selfhost AST is location-stripped so
+--            resolve/typecheck diagnostics span the whole document, parse
+--            errors use parseResult's located line/col).
+--
+-- Mirrors lib/lsp_server.ml's framing (`Content-Length: N\r\n\r\n` then exactly
+-- N body bytes) and handle_initialize's capability set, but only advertises
+-- what B.10 implements: textDocumentSync = Full (1).  Hover/completion/
+-- definition/symbols/highlight/inlay and the ELoc expr-level ranges are LATER
+-- slices and are deliberately NOT advertised here.
+--
+-- The runtime/core prelude sources are threaded in from the driver
+-- (lsp_main.mdk reads them once at startup) so `analyze` can run the full
+-- resolve+typecheck pipeline per document.
+
+import json.{Json, JNull, JBool, JInt, JString, JArray, JObject,
+             jObject, jArray, stringify, parse, lookup, asString, asInt}
+import driver.diagnostics.{Diag, Severity, SevError, SevWarning, analyzeLocated, analyzeProject}
+import frontend.parser.{ParseError, parseResult, parseErrorLine, parseErrorCol,
+               parseErrorMessage, parseWithPositions,
+               positionsDecls, DeclPos, declPosLine, declPosEndLine}
+import frontend.desugar.{desugar}
+import types.typecheck.{checkProgram, ppScheme, Scheme(..)}
+import tools.fmt.{formatSource}
+import frontend.ast.{Decl, DTypeSig, DExtern, DFunDef, DData, DRecord, DUse, DEffect,
+            DProp, DTest, DBench, DInterface, DImpl, DTypeAlias, DNewtype,
+            DLetGroup, DAttrib, Loc(..),
+            Variant, Field, IfaceMethod, ImplMethod, LetBind,
+            UsePath, UseName, UseGroup, UseWild, UseAlias}
+
+-- ── open-document store ─────────────────────────────────────────────────────
+-- uri → source text.  A plain association list; LSP sessions open a handful of
+-- files, so linear scan is fine.
+
+public export data Docs = Docs (List (String, String))
+
+emptyDocs : Docs
+emptyDocs = Docs []
+
+docsPut : String -> String -> Docs -> Docs
+docsPut uri src (Docs xs) = Docs ((uri, src) :: docsRemove uri xs)
+
+docsRemove : String -> List (String, String) -> List (String, String)
+docsRemove _ [] = []
+docsRemove uri ((k, v) :: rest)
+  | k == uri = docsRemove uri rest
+  | otherwise = (k, v) :: docsRemove uri rest
+
+-- ── JSON helpers ────────────────────────────────────────────────────────────
+
+-- 0-based LSP Position: { line, character }.
+jPosition : Int -> Int -> Json
+jPosition line ch = jObject [("line", JInt line), ("character", JInt ch)]
+
+-- LSP Range: { start, end }.
+jRange : Int -> Int -> Int -> Int -> Json
+jRange sl sc el ec =
+  jObject [("start", jPosition sl sc), ("end", jPosition el ec)]
+
+-- A single LSP Diagnostic object.  severity: 1=Error, 2=Warning (LSP spec).
+jDiagnostic : Int -> Json -> String -> Json
+jDiagnostic sev range msg =
+  jObject [ ("range", range)
+          , ("severity", JInt sev)
+          , ("source", JString "medaka")
+          , ("message", JString msg) ]
+
+severityCode : Severity -> Int
+severityCode SevError = 1
+severityCode SevWarning = 2
+
+-- ── diagnostics → LSP (expr-level) ──────────────────────────────────────────
+--
+-- B.10.2b: type-error Diags now carry the ELoc span captured at the push site
+-- (`Some Loc`), so they map to an expr-level LSP range — mirror of the OCaml
+-- LSP's `range_of_loc` (lib/lsp_server.ml:100): a 1-based `Loc` line maps to a
+-- 0-based LSP line (line-1), the col is already 0-based.  Resolve / guard /
+-- match diagnostics carry `None` (the selfhost pipeline doesn't locate them) and
+-- fall back to the whole-document range.  Parse errors keep using parseResult's
+-- located line/col (below).
+
+-- Count the lines in a source string (number of '\n' separators).  Used to
+-- build the whole-document range end position.
+countLines : String -> Int
+countLines src = countLinesGo (stringToChars src) 0 0
+
+countLinesGo : Array Char -> Int -> Int -> Int
+countLinesGo arr i acc
+  | i >= arrayLength arr = acc
+  | arrayGetUnsafe i arr == '\n' = countLinesGo arr (i + 1) (acc + 1)
+  | otherwise = countLinesGo arr (i + 1) acc
+
+-- The range covering the whole document: (0,0) .. (lineCount, 0).
+wholeDocRange : String -> Json
+wholeDocRange src = jRange 0 0 (countLines src) 0
+
+-- Map an `Option Loc` to an LSP range.  `Some` → the expr-level span (mirror of
+-- OCaml `range_of_loc`: line-1 for both start/end line, cols verbatim); `None` →
+-- the whole-document fallback.
+rangeOfLoc : String -> Option Loc -> Json
+rangeOfLoc src (Some (Loc _ sl sc el ec)) = jRange (sl - 1) sc (el - 1) ec
+rangeOfLoc src None = wholeDocRange src
+
+-- Map one analyze Diag onto an LSP diagnostic JSON, using its captured span
+-- (B.10.2b) for an expr-level range, falling back to whole-document for
+-- loc-less diagnostics.
+diagToJson : String -> Diag -> Json
+diagToJson src (Diag sev msg loc) =
+  jDiagnostic (severityCode sev) (rangeOfLoc src loc) msg
+
+-- Produce the LSP diagnostics array for a source.  A parse failure short-
+-- circuits to a single located diagnostic (parseResult); otherwise run the
+-- full resolve+typecheck `analyzeLocated` pipeline (real ELoc spans, so type
+-- errors carry expr-level ranges).
+diagnosticsFor : String -> String -> String -> <Mut> List Json
+diagnosticsFor runtimeSrc coreSrc src = match parseResult src
+  Err e =>
+    let ln = maxI 0 (parseErrorLine e - 1)
+    -- parseResult line is 1-based, col 0-based (matches the OCaml loader); LSP
+    -- wants 0-based lines, so subtract 1 from the line.
+    let col = maxI 0 (parseErrorCol e)
+    let r = jRange ln col ln (col + 1)
+    [jDiagnostic 1 r (parseErrorMessage e)]
+  Ok _ =>
+    map (diagToJson src) (analyzeLocated runtimeSrc coreSrc src)
+
+maxI : Int -> Int -> Int
+maxI a b = if a >= b then a else b
+
+-- ── document store accessor (request handlers) ──────────────────────────────
+-- Look up an open document's source by uri.  Request handlers (formatting/
+-- documentSymbol/definition/highlight) read the buffer the client last sent.
+docsGet : String -> Docs -> Option String
+docsGet uri (Docs xs) = docsLookup uri xs
+
+docsLookup : String -> List (String, String) -> Option String
+docsLookup _ [] = None
+docsLookup uri ((k, v) :: rest)
+  | k == uri = Some v
+  | otherwise = docsLookup uri rest
+
+-- ── textDocument/formatting ─────────────────────────────────────────────────
+-- Mirror lib/lsp_server.ml handle_formatting: run the formatter; if the text is
+-- unchanged return [] (no edits); otherwise return ONE TextEdit replacing the
+-- whole document with the formatted source.  The replaced range is
+-- (0,0)..(lineCount+1, 0) — mirrors OCaml full_document_range, which uses
+-- `nl = newline_count + 1` for the end line so every line (incl. the last) is
+-- covered without knowing its width.  A formatter/parse failure yields [] here
+-- rather than crashing (the selfhost formatSource is total on parseable input;
+-- a parse error short-circuits to []).
+fullDocRangeFmt : String -> Json
+fullDocRangeFmt src = jRange 0 0 (countLines src + 1) 0
+
+formattingEdits : String -> List Json
+formattingEdits src = match parseResult src
+  Err _ => []                            -- unparseable → no edits (client keeps buffer)
+  Ok _ =>
+    let formatted = formatSource src
+    if formatted == src then []
+    else [jObject [ ("range", fullDocRangeFmt src)
+                  , ("newText", JString formatted) ]]
+
+-- ── identifier-at-cursor + occurrence scan (pure string ops) ────────────────
+-- Mirrors lib/lsp_server.ml is_ident_char / identifier_at / find_all_occurrences.
+
+isIdentChar : Char -> Bool
+isIdentChar c =
+  let n = charCode c
+  (n >= 97 && n <= 122)                  -- a-z
+    || (n >= 65 && n <= 90)              -- A-Z
+    || (n >= 48 && n <= 57)              -- 0-9
+    || c == '_' || c == '\''
+
+-- Byte offset of 0-based (line, col): walk to the line start, add col.  Returns
+-- None if the line doesn't exist or the offset is past EOF.
+offsetOfLineCol : Array Char -> Int -> Int -> Option Int
+offsetOfLineCol arr line col = offsetGo arr (arrayLength arr) 0 0 0 line col
+
+offsetGo : Array Char -> Int -> Int -> Int -> Int -> Int -> Int -> Option Int
+offsetGo arr len i curLine lineStart line col
+  | curLine == line =
+      let pos = lineStart + col
+      if pos >= 0 && pos < len then Some pos else None
+  | i >= len = None                      -- ran out before reaching `line`
+  | arrayGetUnsafe i arr == '\n' = offsetGo arr len (i + 1) (curLine + 1) (i + 1) line col
+  | otherwise = offsetGo arr len (i + 1) curLine lineStart line col
+
+-- Expand left/right from `pos` over identifier chars; returns (start, stopExcl).
+identStart : Array Char -> Int -> Int
+identStart arr i
+  | i <= 0 = 0
+  | isIdentChar (arrayGetUnsafe (i - 1) arr) = identStart arr (i - 1)
+  | otherwise = i
+
+identStop : Array Char -> Int -> Int -> Int
+identStop arr len i
+  | i + 1 >= len = i + 1
+  | isIdentChar (arrayGetUnsafe (i + 1) arr) = identStop arr len (i + 1)
+  | otherwise = i + 1
+
+-- The identifier under (line, col), or None if the cursor isn't on one.
+identifierAt : String -> Int -> Int -> Option String
+identifierAt src line col =
+  let arr = stringToChars src
+  let len = arrayLength arr
+  match offsetOfLineCol arr line col
+    None => None
+    Some pos =>
+      if not (isIdentChar (arrayGetUnsafe pos arr)) then None
+      else
+        let s = identStart arr pos
+        let e = identStop arr len pos
+        Some (stringSlice s e src)
+
+-- 0-based (line, character) of a byte offset.  Used to turn occurrence offsets
+-- back into LSP Positions (mirror offset_to_position).
+posOfOffset : Array Char -> Int -> (Int, Int)
+posOfOffset arr off = posOffGo arr off 0 0 0
+
+posOffGo : Array Char -> Int -> Int -> Int -> Int -> (Int, Int)
+posOffGo arr off i line lineStart
+  | i >= off = (line, off - lineStart)
+  | arrayGetUnsafe i arr == '\n' = posOffGo arr off (i + 1) (line + 1) (i + 1)
+  | otherwise = posOffGo arr off (i + 1) line lineStart
+
+-- A whole-source word-boundary occurrence scan: every offset where `name`
+-- appears as a standalone identifier.  Returns the offsets in source order.
+occurrences : String -> String -> List Int
+occurrences src name =
+  let arr = stringToChars src
+  let len = arrayLength arr
+  let nlen = stringLength name
+  if nlen == 0 then [] else occGo src arr len name nlen 0
+
+occGo : String -> Array Char -> Int -> String -> Int -> Int -> List Int
+occGo src arr len name nlen i
+  | i + nlen > len = []
+  | windowEq src i name nlen
+      && (i == 0 || not (isIdentChar (arrayGetUnsafe (i - 1) arr)))
+      && (i + nlen == len || not (isIdentChar (arrayGetUnsafe (i + nlen) arr))) =
+      i :: occGo src arr len name nlen (i + nlen)
+  | otherwise = occGo src arr len name nlen (i + 1)
+
+windowEq : String -> Int -> String -> Int -> Bool
+windowEq src i name nlen = stringSlice i (i + nlen) src == name
+
+-- documentHighlight ranges (one per occurrence) of `name` in `src`.
+highlightRanges : String -> String -> List Json
+highlightRanges src name =
+  let arr = stringToChars src
+  let nlen = stringLength name
+  map (occToHighlight arr nlen) (occurrences src name)
+
+occToHighlight : Array Char -> Int -> Int -> Json
+occToHighlight arr nlen off =
+  match posOfOffset arr off
+    (sl, sc) => match posOfOffset arr (off + nlen)
+      (el, ec) => jObject [("range", jRange sl sc el ec)]
+
+-- ── textDocument/documentSymbol ─────────────────────────────────────────────
+-- parseWithPositions → zip decls with their DeclPos (1-based line..end_line) →
+-- one DocumentSymbol per decl: { name, kind, range, selectionRange, children }.
+-- Range/selectionRange are decl-level: (line-1, 0)..(end_line-1, 0).  The
+-- selfhost AST is location-stripped of columns, so symbol ranges are line-
+-- granular (the column-precise spans are the ELoc slice).  SymbolKind codes are
+-- the LSP spec integers (Struct=23, Method=6, Field=8, Enum=10, EnumMember=22,
+-- Interface=11, Class=5, Function=12, Variable=13, TypeParameter=26, Event=24).
+-- Mirrors symbol_of_decl's kind mapping + child nesting.
+
+-- Strip a DAttrib wrapper to the inner decl (mirror inner_decl).
+innerDecl : Decl -> Decl
+innerDecl (DAttrib _ d) = innerDecl d
+innerDecl d = d
+
+jSymbol : String -> Int -> Json -> List Json -> Json
+jSymbol name kind range children =
+  jObject [ ("name", JString name)
+          , ("kind", JInt kind)
+          , ("range", range)
+          , ("selectionRange", range)
+          , ("children", jArray children) ]
+
+jChild : String -> Int -> Json -> Json
+jChild name kind range = jSymbol name kind range []
+
+variantName : Variant -> String
+variantName (Variant n _) = n
+
+fieldName : Field -> String
+fieldName (Field n _) = n
+
+ifaceMethodName : IfaceMethod -> String
+ifaceMethodName (IfaceMethod n _ _) = n
+
+implMethodName : ImplMethod -> String
+implMethodName (ImplMethod n _ _) = n
+
+letBindName : LetBind -> String
+letBindName (LetBind n _) = n
+
+-- One DocumentSymbol JSON for a decl + its DeclPos, or None for decls that
+-- don't surface in the outline (DUse).
+symbolOfDecl : Decl -> DeclPos -> Option Json
+symbolOfDecl d dp =
+  let range = jRange (declPosLine dp - 1) 0 (declPosEndLine dp - 1) 0
+  match innerDecl d
+    DTypeSig _ name _ => Some (jSymbol name 13 range [])           -- Variable
+    DExtern _ name _ => Some (jSymbol name 12 range [])            -- Function
+    DFunDef _ name _ _ => Some (jSymbol name 12 range [])          -- Function
+    DLetGroup _ binds => match binds
+      [] => None
+      (LetBind n0 _) :: _ =>
+        let kids = map (((LetBind n _)) => jChild n 12 range) binds
+        Some (jSymbol n0 12 range kids)
+    DData _ name _ variants _ =>
+      let kids = map (((Variant vn _)) => jChild vn 22 range) variants  -- EnumMember
+      Some (jSymbol name 10 range kids)                            -- Enum
+    DRecord _ name _ fields _ =>
+      let kids = map (((Field fn _)) => jChild fn 8 range) fields  -- Field
+      Some (jSymbol name 23 range kids)                            -- Struct
+    DInterface { name = n, methods = ms, ... } =>
+      let kids = map (((IfaceMethod mn _ _)) => jChild mn 6 range) ms
+      Some (jSymbol n 11 range kids)                              -- Interface
+    DImpl { iface = ifc, name = nm, methods = ms, ... } =>
+      let label = implLabel nm ifc
+      let kids = map (((ImplMethod mn _ _)) => jChild mn 6 range) ms
+      Some (jSymbol label 5 range kids)                           -- Class
+    DTypeAlias _ name _ _ => Some (jSymbol name 26 range [])       -- TypeParameter
+    DNewtype _ name _ _ _ _ => Some (jSymbol name 23 range [])     -- Struct
+    DUse _ _ => None
+    DProp _ name _ _ => Some (jSymbol name 12 range [])
+    DTest _ name _ => Some (jSymbol name 12 range [])
+    DBench _ name _ => Some (jSymbol name 12 range [])
+    DEffect _ name => Some (jSymbol name 24 range [])              -- Event
+    DAttrib _ _ => None                                            -- unreachable post innerDecl
+
+-- "impl Iface" / "Name of impl Iface" label (mirror handle_document_symbol's).
+implLabel : Option String -> String -> String
+implLabel None iface = stringConcat ["impl ", iface]
+implLabel (Some n) iface = stringConcat [n, " of impl ", iface]
+
+-- Zip decls with positions (1:1; defensive truncation to the shorter list) and
+-- collect the symbols.
+documentSymbols : String -> List Json
+documentSymbols src = match parseWithPositions src
+  (decls, positions) => symbolsZip decls (positionsDecls positions)
+
+symbolsZip : List Decl -> List DeclPos -> List Json
+symbolsZip (d :: ds) (p :: ps) = match symbolOfDecl d p
+  None => symbolsZip ds ps
+  Some s => s :: symbolsZip ds ps
+symbolsZip _ _ = []
+
+-- ── textDocument/definition ─────────────────────────────────────────────────
+-- identifier-at-cursor → first decl that DEFINES that name → its DeclPos range
+-- as a Location { uri, range }.  Mirror decl_defines / find_definition_loc.
+
+declDefines : Decl -> String -> Bool
+declDefines d name = match innerDecl d
+  DTypeSig _ n _ => n == name
+  DExtern _ n _ => n == name
+  DFunDef _ n _ _ => n == name
+  DLetGroup _ binds => anyName (map letBindName binds) name
+  DData _ n _ vs _ => n == name || anyName (map variantName vs) name
+  DRecord _ n _ fs _ => n == name || anyName (map fieldName fs) name
+  DInterface { name = n, methods = ms, ... } => n == name || anyName (map ifaceMethodName ms) name
+  DImpl { methods = ms, ... } => anyName (map implMethodName ms) name
+  DTypeAlias _ n _ _ => n == name
+  DNewtype _ n _ c _ _ => n == name || c == name
+  DUse _ _ => False
+  DProp _ n _ _ => n == name
+  DTest _ n _ => n == name
+  DBench _ n _ => n == name
+  DEffect _ n => n == name
+  DAttrib _ _ => False
+
+anyName : List String -> String -> Bool
+anyName [] _ = False
+anyName (x :: xs) name = x == name || anyName xs name
+
+-- The DeclPos of the first decl defining `name`, or None.
+definitionRange : String -> String -> Option Json
+definitionRange src name = match parseWithPositions src
+  (decls, positions) => defZip decls (positionsDecls positions) name
+
+defZip : List Decl -> List DeclPos -> String -> Option Json
+defZip (d :: ds) (p :: ps) name
+  | declDefines d name = Some (jRange (declPosLine p - 1) 0 (declPosEndLine p - 1) 0)
+  | otherwise = defZip ds ps name
+defZip _ _ _ = None
+
+-- ── typecheck-env build (hover / completion / inlayHint) ────────────────────
+-- Mirror lib/lsp_server.ml's handlers, which run `Typecheck.check_program prog`
+-- (which prepends the prelude) and look names up in the returned env.  Here the
+-- self-host `checkProgram` does NOT auto-prepend, so we mirror repl.mdk's
+-- pipeline (selfhost/repl.mdk:221): desugar the prelude (coreSrc) + the desugared
+-- user buffer, then `checkProgram (coreDecls ++ userDecls)` → the (name, Scheme)
+-- env.  The runtime externs reach scope via core.mdk's own DExterns, exactly as
+-- in repl (whose `checkProgram (preludeDecls ++ combined)` likewise omits a
+-- separate runtime seed).  Returns None when the buffer doesn't parse (the
+-- OCaml handlers bail the same way on a parse failure).
+docSchemes : String -> String -> <Mut> Option (List (String, Scheme))
+docSchemes coreSrc src = match parseResult src
+  Err _ => None
+  Ok userRaw =>
+    let coreDecls = desugar (unwrapDecls (parseResult coreSrc))
+    let userDecls = desugar userRaw
+    Some (checkProgram (coreDecls ++ userDecls))
+
+-- core.mdk always parses; unwrap its parseResult (defensive None → []).
+unwrapDecls : Result ParseError (List Decl) -> List Decl
+unwrapDecls (Ok ds) = ds
+unwrapDecls (Err _) = []
+
+-- Lookup a name's Scheme in the env (mirror repl.mdk lookupScheme / OCaml
+-- List.assoc_opt).
+lookupSchemeL : String -> List (String, Scheme) -> Option Scheme
+lookupSchemeL _ [] = None
+lookupSchemeL name ((n, s) :: rest)
+  | name == n = Some s
+  | otherwise = lookupSchemeL name rest
+
+-- ── textDocument/hover ──────────────────────────────────────────────────────
+-- Mirror handle_hover (lib/lsp_server.ml:482): identifier-at-cursor → checkProgram
+-- env → lookup → a Hover whose contents is a Markdown MarkupContent rendering
+--   ```medaka
+--   <name> : <type>
+--   ```
+-- (exactly the OCaml format string).  Null when off an identifier or not in env.
+hoverResult : String -> String -> Json -> <Mut> Json
+hoverResult coreSrc src params =
+  match (positionLine params, positionChar params)
+    (Some line, Some col) => match identifierAt src line col
+      None => JNull
+      Some name => match docSchemes coreSrc src
+        None => JNull
+        Some env => match lookupSchemeL name env
+          None => JNull
+          Some sch => jHover name (ppScheme sch)
+    _ => JNull
+
+-- Build the Hover { contents: MarkupContent{ kind:"markdown", value } } object.
+jHover : String -> String -> Json
+jHover name ty =
+  let value = stringConcat ["```medaka\n", name, " : ", ty, "\n```"]
+  jObject [("contents", jObject [ ("kind", JString "markdown")
+                                , ("value", JString value) ])]
+
+handleHover : String -> Json -> Json -> Docs -> <IO, Mut> Unit
+handleHover coreSrc idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => hoverResult coreSrc src params
+  writeMessage (responseMsg idJson result)
+
+-- ── textDocument/completion ─────────────────────────────────────────────────
+-- Mirror handle_completion (lib/lsp_server.ml:693): the identifier prefix ending
+-- just before the cursor → env names with that prefix → CompletionItem[]
+-- { label, kind, detail }.  kind = Function (3) for every item (OCaml's
+-- completion_kind_for_scheme defaults to Function); detail = ppScheme.  Names are
+-- emitted in env order, deduplicated, prefix-filtered — mirroring
+-- filter_completions.
+prefixBefore : String -> Int -> Int -> String
+prefixBefore src line col =
+  let arr = stringToChars src
+  let len = arrayLength arr
+  match offsetOfLineStart arr len line
+    None => ""
+    Some lineStart =>
+      let stop = lineStart + col - 1
+      if stop < lineStart then ""
+      else if stop >= len then ""
+      else if not (isIdentChar (arrayGetUnsafe stop arr)) then ""
+      else
+        let start = prefixStart arr lineStart stop
+        stringSlice start (stop + 1) src
+
+-- Byte offset of the start of 0-based `line`, or None if it doesn't exist.
+offsetOfLineStart : Array Char -> Int -> Int -> Option Int
+offsetOfLineStart arr len line = lineStartGo arr len 0 0 0 line
+
+lineStartGo : Array Char -> Int -> Int -> Int -> Int -> Int -> Option Int
+lineStartGo arr len i curLine lineStart line
+  | curLine == line = Some lineStart
+  | i >= len = None
+  | arrayGetUnsafe i arr == '\n' = lineStartGo arr len (i + 1) (curLine + 1) (i + 1) line
+  | otherwise = lineStartGo arr len (i + 1) curLine lineStart line
+
+-- Walk left from `stop` over identifier chars, not past the line start.
+prefixStart : Array Char -> Int -> Int -> Int
+prefixStart arr lineStart i
+  | i <= lineStart = lineStart
+  | isIdentChar (arrayGetUnsafe (i - 1) arr) = prefixStart arr lineStart (i - 1)
+  | otherwise = i
+
+-- True when string n has prefix p (mirror plen==0 || prefix match).
+hasPrefix : String -> String -> Bool
+hasPrefix p n =
+  let pl = stringLength p
+  if pl == 0 then True
+  else stringLength n >= pl && stringSlice 0 pl n == p
+
+-- Filter env to names matching the prefix, deduplicating (first occurrence
+-- wins).  Mirror filter_completions.
+filterCompletions : String -> List String -> List (String, Scheme) -> <Mut> List Json
+filterCompletions _ _ [] = []
+filterCompletions prefix seen ((n, s) :: rest)
+  | hasPrefix prefix n && not (anyName seen n) =
+      jCompletionItem n (ppScheme s) :: filterCompletions prefix (n :: seen) rest
+  | otherwise = filterCompletions prefix seen rest
+
+-- One CompletionItem { label, kind, detail }.  kind 3 = Function (LSP spec).
+jCompletionItem : String -> String -> Json
+jCompletionItem label detail =
+  jObject [ ("label", JString label)
+          , ("kind", JInt 3)
+          , ("detail", JString detail) ]
+
+completionResult : String -> String -> Json -> <Mut> Json
+completionResult coreSrc src params =
+  match (positionLine params, positionChar params)
+    (Some line, Some col) => match docSchemes coreSrc src
+      None => JNull
+      Some env =>
+        let prefix = prefixBefore src line col
+        jArray (filterCompletions prefix [] env)
+    _ => JNull
+
+handleCompletion : String -> Json -> Json -> Docs -> <IO, Mut> Unit
+handleCompletion coreSrc idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => completionResult coreSrc src params
+  writeMessage (responseMsg idJson result)
+
+-- ── textDocument/inlayHint ──────────────────────────────────────────────────
+-- Mirror handle_inlay_hint (lib/lsp_server.ml:759): for each top-level decl that
+-- binds a value (DFunDef, or the first name of a DLetGroup) AND has no explicit
+-- DTypeSig in the program AND is in the typecheck env, emit one hint at the
+-- column right after its name on its start line, labelled `: <ppScheme>` with
+-- paddingLeft.  The self-host DeclPos has no column (the AST is location-
+-- stripped), but every top-level decl starts at column 0, so the name-end column
+-- is found by scanning the decl's start line from char 0 over identifier chars
+-- (mirror column_after_name with loc.col = 0).
+
+-- The binding name a decl introduces a value hint for, or None (mirror
+-- decl_binding_name: only DFunDef + DLetGroup-first).
+declBindingName : Decl -> Option String
+declBindingName d = match innerDecl d
+  DFunDef _ n _ _ => Some n
+  DLetGroup _ binds => match binds
+    (LetBind n _) :: _ => Some n
+    [] => None
+  _ => None
+
+-- Whether `prog` carries an explicit DTypeSig for `name` (mirror has_explicit_sig).
+hasExplicitSig : List Decl -> String -> Bool
+hasExplicitSig [] _ = False
+hasExplicitSig (d :: rest) name = match innerDecl d
+  DTypeSig _ n _ => n == name || hasExplicitSig rest name
+  _ => hasExplicitSig rest name
+
+-- Column right after the name on the decl's start line (0-based `line`).  Scan
+-- from char 0 over identifier chars; None if the line has no leading identifier.
+columnAfterName : String -> Int -> Option Int
+columnAfterName src line =
+  let arr = stringToChars src
+  let len = arrayLength arr
+  match offsetOfLineStart arr len line
+    None => None
+    Some lineStart =>
+      let endCol = identRunLen arr len lineStart 0
+      if endCol == 0 then None else Some endCol
+
+-- Length of the leading identifier run starting at byte `i` (stops at EOL/EOF).
+identRunLen : Array Char -> Int -> Int -> Int -> Int
+identRunLen arr len i acc
+  | i >= len = acc
+  | arrayGetUnsafe i arr == '\n' = acc
+  | isIdentChar (arrayGetUnsafe i arr) = identRunLen arr len (i + 1) (acc + 1)
+  | otherwise = acc
+
+-- inlay hints for a buffer: zip parse decls with positions, filter to
+-- unsignatured value bindings present in the env, place one hint each.
+inlayHints : String -> String -> <Mut> List Json
+inlayHints coreSrc src = match docSchemes coreSrc src
+  None => []
+  Some env => match parseWithPositions src
+    (decls, positions) =>
+      inlayZip src decls decls (positionsDecls positions) env
+
+-- decls passed twice: `allDecls` for the has-explicit-sig scan, `ds` walked.
+inlayZip : String -> List Decl -> List Decl -> List DeclPos -> List (String, Scheme) -> <Mut> List Json
+inlayZip src allDecls (d :: ds) (p :: ps) env = match declBindingName d
+  None => inlayZip src allDecls ds ps env
+  Some name =>
+    if hasExplicitSig allDecls name then inlayZip src allDecls ds ps env
+    else match lookupSchemeL name env
+      None => inlayZip src allDecls ds ps env
+      Some sch => match columnAfterName src (declPosLine p - 1)
+        None => inlayZip src allDecls ds ps env
+        Some col =>
+          jInlayHint (declPosLine p - 1) col (stringConcat [": ", ppScheme sch])
+            :: inlayZip src allDecls ds ps env
+inlayZip _ _ _ _ _ = []
+
+-- One InlayHint { position, label, paddingLeft } (mirror the OCaml create).
+jInlayHint : Int -> Int -> String -> Json
+jInlayHint line col label =
+  jObject [ ("position", jPosition line col)
+          , ("label", JString label)
+          , ("paddingLeft", JBool True) ]
+
+handleInlayHint : String -> Json -> Json -> Docs -> <IO, Mut> Unit
+handleInlayHint coreSrc idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => jArray (inlayHints coreSrc src)
+  writeMessage (responseMsg idJson result)
+
+
+-- ── request-position helpers ────────────────────────────────────────────────
+-- Pull params.position.{line,character} (0-based) from a request message.
+positionLine : Json -> Option Int
+positionLine params = match lookup "position" params
+  Some pos => match lookup "line" pos
+    Some v => asInt v
+    None => None
+  None => None
+
+positionChar : Json -> Option Int
+positionChar params = match lookup "position" params
+  Some pos => match lookup "character" pos
+    Some v => asInt v
+    None => None
+  None => None
+
+-- params.textDocument.uri for a request.
+requestUri : Json -> Option String
+requestUri params = fieldStr "uri" (fieldOr "textDocument" params)
+
+-- ── JSON-RPC framing ────────────────────────────────────────────────────────
+
+-- Write a JSON value as a Content-Length-framed JSON-RPC packet to stdout,
+-- then flush (the buffered stdout would otherwise strand the response).
+writeMessage : Json -> <IO> Unit
+writeMessage j =
+  let body = stringify j
+  let n = utf8Len body
+  let header = stringConcat ["Content-Length: ", intToString n, "\r\n\r\n"]
+  let _ = putStr header
+  let _ = putStr body
+  flushStdout ()
+
+-- Content-Length counts BYTES.  Our JSON bodies are ASCII (messages, file
+-- paths, and stdlib diagnostics are ASCII), so the byte length equals the
+-- character length; stringLength suffices.  (A UTF-8 byte counter is a later
+-- refinement if non-ASCII identifiers appear in diagnostics.)
+utf8Len : String -> Int
+utf8Len = stringLength
+
+-- A JSON-RPC response envelope: { jsonrpc, id, result }.
+responseMsg : Json -> Json -> Json
+responseMsg idJson result =
+  jObject [("jsonrpc", JString "2.0"), ("id", idJson), ("result", result)]
+
+-- A JSON-RPC notification envelope: { jsonrpc, method, params }.
+notificationMsg : String -> Json -> Json
+notificationMsg meth params =
+  jObject [("jsonrpc", JString "2.0"), ("method", JString meth), ("params", params)]
+
+-- ── header reading ──────────────────────────────────────────────────────────
+--
+-- Read header lines via readLineOpt until a blank line, accumulating the
+-- Content-Length.  readLineOpt strips the trailing '\n'; a CRLF line therefore
+-- arrives as "...\r", so we trim a trailing '\r'.  Returns the byte length, or
+-- None at EOF (clean shutdown of the input stream).
+
+public export data Headers = Headers Int
+
+readHeaders : Int -> <IO> Option Int
+readHeaders lenAcc = match readLineOpt ()
+  None => None                          -- EOF mid-stream
+  Some raw =>
+    let line = chompCR raw
+    if line == "" then Some lenAcc      -- blank line ends the header block
+    else
+      let lenAcc2 = match parseContentLength line
+        Some n => n
+        None => lenAcc
+      readHeaders lenAcc2
+
+-- Drop a single trailing '\r' (CRLF → LF after readLineOpt strips the '\n').
+chompCR : String -> String
+chompCR s =
+  let n = stringLength s
+  if n > 0 && stringSlice (n - 1) n s == "\r" then stringSlice 0 (n - 1) s
+  else s
+
+-- Parse "Content-Length: <n>" (case-sensitive, as clients emit it).  Returns
+-- the integer N or None if this header line is something else.
+parseContentLength : String -> Option Int
+parseContentLength line =
+  let prefix = "Content-Length:"
+  let pn = stringLength prefix
+  if stringLength line >= pn && stringSlice 0 pn line == prefix then
+    parseDigits (stringToChars (stringSlice pn (stringLength line) line)) 0 (arrayLength (stringToChars (stringSlice pn (stringLength line) line))) 0 False
+  else None
+
+-- Parse a run of ASCII digits (skipping leading spaces) into an Int.  `seen`
+-- tracks whether at least one digit was consumed.
+parseDigits : Array Char -> Int -> Int -> Int -> Bool -> Option Int
+parseDigits arr i n acc seen
+  | i >= n = if seen then Some acc else None
+  | arrayGetUnsafe i arr == ' ' && not seen = parseDigits arr (i + 1) n acc seen
+  | isDigit (arrayGetUnsafe i arr) =
+      parseDigits arr (i + 1) n (acc * 10 + (charCode (arrayGetUnsafe i arr) - 48)) True
+  | otherwise = if seen then Some acc else None
+
+isDigit : Char -> Bool
+isDigit c = charCode c >= 48 && charCode c <= 57
+
+-- ── request dispatch ────────────────────────────────────────────────────────
+--
+-- The driver loops: read headers → read body → parse JSON → dispatch.  The
+-- state threaded through the loop is the Docs store; the runtime/core prelude
+-- sources are constants for the session.
+
+-- The `initialize` result: serverInfo + the B.10 capability set.
+-- textDocumentSync = 1 (Full).  B.10.3 adds the decl/textual providers:
+-- formatting / documentSymbol / definition / documentHighlight (each a plain
+-- `true`, mirroring lib/lsp_server.ml's `Bool true`).  The richer providers
+-- (hover/completion/inlayHint) and ELoc expr-precise ranges are later slices.
+initializeResult : Json
+initializeResult =
+  jObject
+    [ ("capabilities", jObject [ ("textDocumentSync", JInt 1)
+                               , ("documentFormattingProvider", JBool True)
+                               , ("documentSymbolProvider", JBool True)
+                               , ("definitionProvider", JBool True)
+                               , ("documentHighlightProvider", JBool True)
+                               , ("hoverProvider", JBool True)
+                               , ("completionProvider", jObject [])
+                               , ("inlayHintProvider", JBool True) ])
+    , ("serverInfo", jObject [ ("name", JString "medaka-lsp")
+                             , ("version", JString "0.1.0") ]) ]
+
+-- Build + send a publishDiagnostics notification for one uri.
+publishDiagnostics : String -> String -> String -> String -> <IO, Mut> Unit
+publishDiagnostics runtimeSrc coreSrc uri src =
+  let diags = diagnosticsFor runtimeSrc coreSrc src
+  let params = jObject [("uri", JString uri), ("diagnostics", jArray diags)]
+  writeMessage (notificationMsg "textDocument/publishDiagnostics" params)
+
+-- ── B.10.5: project-wide (multi-file) diagnostics ───────────────────────────
+--
+-- When the edited buffer imports a sibling module, run analyzeProject over the
+-- whole import graph (with the OPEN BUFFERS as unsaved-source overrides) and
+-- publish one publishDiagnostics PER affected file — the self-hosted analog of
+-- lib/lsp_server.ml's publish_project_diagnostics.  A buffer with no (non-core)
+-- imports keeps the single-document path (publishDiagnostics above).
+--
+-- Simplifications vs the OCaml LSP (consistent with the single-root selfhost
+-- loader, which has no medaka.toml / multi-root support — see loader.mdk):
+--   * project_dir = the DIRECTORY OF THE EDITED FILE (the loader's default root),
+--     not a medaka.toml / .git walk-up (no Project_config port in selfhost).
+--   * last-good source cache is a SESSION-LIVED module Ref (projectCache), so a
+--     buffer that currently fails to parse falls back to its last-parsed source
+--     across didChange events (mirror analyze_project's last_good_source Hashtbl)
+--     without threading extra state through the serve loop.
+
+-- session-lived last-good-source cache (file path → last source that parsed).
+projectCache : Ref (List (String, String))
+projectCache = Ref []
+
+-- file:// URI ↔ filesystem path.  LSP clients send `file://<abs-path>`; the
+-- loader works in plain paths.  pathOfUri strips the scheme; uriOfPath re-adds
+-- it (so a loader file path maps back to the Docs key for the read override).
+pathOfUri : String -> String
+pathOfUri uri =
+  if stringLength uri >= 7 && stringSlice 0 7 uri == "file://" then stringSlice 7 (stringLength uri) uri
+  else uri
+
+uriOfPath : String -> String
+uriOfPath path =
+  if stringLength path >= 7 && stringSlice 0 7 path == "file://" then path
+  else stringConcat ["file://", path]
+
+-- directory of a path (everything before the last '/'; "." if none).
+dirOfPath : String -> String
+dirOfPath path = dirGo path (stringLength path)
+
+dirGo : String -> Int -> String
+dirGo path 0 = "."
+dirGo path i =
+  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
+  else dirGo path (i - 1)
+
+-- True when the buffer has a non-core `import` (→ project / multi-file path).
+bufferHasImports : String -> Bool
+bufferHasImports src = match parseResult src
+  Err _ => False                          -- unparseable → single-doc path squiggles it
+  Ok decls => anyImport decls
+
+anyImport : List Decl -> Bool
+anyImport [] = False
+anyImport (DUse _ path :: rest) = not (isCoreImport path) || anyImport rest
+anyImport (_ :: rest) = anyImport rest
+
+-- core is the implicit prelude — an `import core.{…}` is not a sibling dep.
+isCoreImport : UsePath -> Bool
+isCoreImport p = useHead p == "core"
+
+useHead : UsePath -> String
+useHead (UseName ns) = headOr "" ns
+useHead (UseGroup ns _) = headOr "" ns
+useHead (UseWild ns) = headOr "" ns
+useHead (UseAlias ns _) = headOr "" ns
+
+headOr : String -> List String -> String
+headOr d [] = d
+headOr _ (x :: _) = x
+
+-- Run analyzeProject over the graph rooted at the edited file and publish one
+-- notification per file in the result (clean files → []).  `docs` already holds
+-- the just-edited buffer; the read override maps a loader file path back to the
+-- Docs buffer for that uri (unsaved buffers shadow disk).
+--
+-- Roots mirror the build/run loader (`medaka_cli` runRunCmd): the edited file's
+-- directory first (user modules shadow stdlib), then MEDAKA_ROOT/stdlib so an
+-- `import json` / other stdlib module resolves (without this, a buffer importing
+-- a stdlib module reports a spurious `UnknownModule`).
+publishProjectDiagnostics : String -> String -> String -> Docs -> <IO, Mut> Unit
+publishProjectDiagnostics runtimeSrc coreSrc uri docs =
+  let rootFile = pathOfUri uri
+  let projectDir = dirOfPath rootFile
+  let stdlibDir = lspMedakaRoot "." ++ "/stdlib"
+  let read = (path => docsGet (uriOfPath path) docs)
+  let results = analyzeProject projectCache read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
+  publishEach results
+
+-- MEDAKA_ROOT (where stdlib/ lives), or `dflt` when unset/empty.  Mirrors
+-- build_cmd.envOr but kept local so the LSP graph doesn't pull in build_cmd.
+lspMedakaRoot : String -> <IO> String
+lspMedakaRoot dflt = match getEnv "MEDAKA_ROOT"
+  Some v => if v == "" then dflt else v
+  None => dflt
+
+-- Publish a publishDiagnostics notification for each (file, diags) bucket,
+-- mapping the loader file path back to a file:// uri (mirror DocumentUri.of_path).
+publishEach : List (String, List Diag) -> <IO, Mut> Unit
+publishEach [] = ()
+publishEach ((file, ds) :: rest) =
+  let uri = uriOfPath file
+  let params = jObject [("uri", JString uri), ("diagnostics", jArray (map (diagToJson "") ds))]
+  let _ = writeMessage (notificationMsg "textDocument/publishDiagnostics" params)
+  publishEach rest
+
+-- Choose the single-document or project path for a freshly-edited buffer.
+publishFor : String -> String -> String -> String -> Docs -> <IO, Mut> Unit
+publishFor runtimeSrc coreSrc uri text docs =
+  if bufferHasImports text then publishProjectDiagnostics runtimeSrc coreSrc uri docs
+  else publishDiagnostics runtimeSrc coreSrc uri text
+
+-- Extract a textDocument/{didOpen,didChange} uri + text and publish.
+-- didOpen:   params.textDocument.{uri,text}
+-- didChange: params.textDocument.uri + params.contentChanges[last].text
+--            (Full sync: the last change replaces the whole document).
+handleDidOpen : String -> String -> Json -> Docs -> <IO, Mut> Docs
+handleDidOpen runtimeSrc coreSrc params docs =
+  match fieldStr "uri" (fieldOr "textDocument" params)
+    None => docs
+    Some uri =>
+      match fieldStr "text" (fieldOr "textDocument" params)
+        None => docs
+        Some text =>
+          let docs2 = docsPut uri text docs
+          let _ = publishFor runtimeSrc coreSrc uri text docs2
+          docs2
+
+handleDidChange : String -> String -> Json -> Docs -> <IO, Mut> Docs
+handleDidChange runtimeSrc coreSrc params docs =
+  match fieldStr "uri" (fieldOr "textDocument" params)
+    None => docs
+    Some uri =>
+      match lastChangeText (fieldOr "contentChanges" params)
+        None => docs
+        Some text =>
+          let docs2 = docsPut uri text docs
+          let _ = publishFor runtimeSrc coreSrc uri text docs2
+          docs2
+
+-- ── B.10.3 request handlers ─────────────────────────────────────────────────
+-- Each looks the doc up in the store and writes a JSON-RPC response.  A missing
+-- doc / no-identifier-at-cursor yields the LSP "no result" — JNull (mirroring
+-- the OCaml handlers returning None, which the rpc layer renders as null).
+
+-- textDocument/formatting → TextEdit[] (or [] when already formatted).
+handleFormatting : Json -> Json -> Docs -> <IO, Mut> Unit
+handleFormatting idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => jArray (formattingEdits src)
+  writeMessage (responseMsg idJson result)
+
+-- textDocument/documentSymbol → DocumentSymbol[].
+handleDocumentSymbol : Json -> Json -> Docs -> <IO, Mut> Unit
+handleDocumentSymbol idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => jArray (documentSymbols src)
+  writeMessage (responseMsg idJson result)
+
+-- textDocument/definition → Location[] (singleton) or null.
+handleDefinition : Json -> Json -> Docs -> <IO, Mut> Unit
+handleDefinition idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => definitionResult uri src params
+  writeMessage (responseMsg idJson result)
+
+definitionResult : String -> String -> Json -> Json
+definitionResult uri src params =
+  match (positionLine params, positionChar params)
+    (Some line, Some col) => match identifierAt src line col
+      None => JNull
+      Some name => match definitionRange src name
+        None => JNull
+        Some range => jArray [jObject [("uri", JString uri), ("range", range)]]
+    _ => JNull
+
+-- textDocument/documentHighlight → DocumentHighlight[].
+handleHighlight : Json -> Json -> Docs -> <IO, Mut> Unit
+handleHighlight idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src => highlightResult src params
+  writeMessage (responseMsg idJson result)
+
+highlightResult : String -> Json -> Json
+highlightResult src params =
+  match (positionLine params, positionChar params)
+    (Some line, Some col) => match identifierAt src line col
+      None => JNull
+      Some name => jArray (highlightRanges src name)
+    _ => JNull
+
+-- The `.text` of the LAST element of a contentChanges JArray (Full sync).
+lastChangeText : Json -> Option String
+lastChangeText (JArray arr)
+  | arrayLength arr == 0 = None
+  | otherwise = fieldStr "text" (arrayGetUnsafe (arrayLength arr - 1) arr)
+lastChangeText _ = None
+
+-- json field accessors specialized to the shapes we read.
+fieldOr : String -> Json -> Json
+fieldOr key j = match lookup key j
+  Some v => v
+  None => JNull
+
+fieldStr : String -> Json -> Option String
+fieldStr key j = match lookup key j
+  Some v => asString v
+  None => None
+
+-- The request `id` (number or string), passed through verbatim into responses.
+-- We keep it as the raw Json so a string id round-trips unchanged.
+requestId : Json -> Json
+requestId msg = fieldOr "id" msg
+
+methodOf : Json -> Option String
+methodOf msg = fieldStr "method" msg
+
+-- Dispatch one decoded message.  Returns the (possibly updated) Docs store and
+-- a flag: True = keep looping, False = `exit` was received (stop).
+public export data Step = Step Docs Bool
+
+dispatch : String -> String -> Json -> Docs -> <IO, Mut> Step
+dispatch runtimeSrc coreSrc msg docs = match methodOf msg
+  None => Step docs True                -- a response/unknown — ignore, keep going
+  Some meth =>
+    if meth == "initialize" then
+      let _ = writeMessage (responseMsg (requestId msg) initializeResult)
+      Step docs True
+    else if meth == "initialized" then
+      Step docs True
+    else if meth == "textDocument/didOpen" then
+      let docs2 = handleDidOpen runtimeSrc coreSrc (fieldOr "params" msg) docs
+      Step docs2 True
+    else if meth == "textDocument/didChange" then
+      let docs2 = handleDidChange runtimeSrc coreSrc (fieldOr "params" msg) docs
+      Step docs2 True
+    else if meth == "textDocument/formatting" then
+      let _ = handleFormatting (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/documentSymbol" then
+      let _ = handleDocumentSymbol (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/definition" then
+      let _ = handleDefinition (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/documentHighlight" then
+      let _ = handleHighlight (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/hover" then
+      let _ = handleHover coreSrc (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/completion" then
+      let _ = handleCompletion coreSrc (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "textDocument/inlayHint" then
+      let _ = handleInlayHint coreSrc (requestId msg) (fieldOr "params" msg) docs
+      Step docs True
+    else if meth == "shutdown" then
+      let _ = writeMessage (responseMsg (requestId msg) JNull)
+      Step docs True
+    else if meth == "exit" then
+      Step docs False                   -- stop the loop
+    else
+      Step docs True                    -- unrecognized method — ignore
+
+-- ── the framed read/dispatch loop ───────────────────────────────────────────
+
+-- Read one full message (headers + body), parse it, dispatch.  Returns the
+-- next Step, or a terminal Step on EOF.
+serveOnce : String -> String -> Docs -> <IO, Mut> Step
+serveOnce runtimeSrc coreSrc docs = match readHeaders 0
+  None => Step docs False               -- input stream closed
+  Some len =>
+    match readExactly len
+      None => Step docs False           -- short read / EOF mid-body
+      Some body =>
+        match parse body
+          Err _ => Step docs True       -- malformed JSON body — skip, keep going
+          Ok msg => dispatch runtimeSrc coreSrc msg docs
+
+-- The session loop: serve messages until `exit` or EOF.
+serve : String -> String -> Docs -> <IO, Mut> Unit
+serve runtimeSrc coreSrc docs =
+  match serveOnce runtimeSrc coreSrc docs
+    Step _ False => unit
+    Step docs2 True => serve runtimeSrc coreSrc docs2
+
+-- Public entry point for the driver.
+export
+runServer : String -> String -> <IO, Mut> Unit
+runServer runtimeSrc coreSrc = serve runtimeSrc coreSrc emptyDocs
+
+unit : Unit
+unit = ()

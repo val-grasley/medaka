@@ -8,10 +8,10 @@
 -- (test/diff_selfhost_mark.sh).  The prelude is passed explicitly because the
 -- self-host has no embedded prelude (the reference uses `Prelude.program`).
 
-import parser.{parse}
-import desugar.{desugar}
-import marker.{markWithPrelude}
-import sexp.{programToSexp}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import frontend.marker.{markWithPrelude}
+import ir.sexp.{programToSexp}
 
 main = match args ()
   [preludePath, targetPath] => markFiles preludePath targetPath

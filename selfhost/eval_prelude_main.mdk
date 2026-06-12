@@ -8,10 +8,10 @@
 -- --prepend <prelude.mdk>... <source.mdk>`.  The prelude has no embedded copy in
 -- the self-host, so its paths are passed in (like the marker/resolve stages).
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import eval.{evalMain}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import eval.eval.{evalMain}
 
 main = match splitLast (args ())
   Some (preludePaths, targetPath) => withPreludes preludePaths targetPath

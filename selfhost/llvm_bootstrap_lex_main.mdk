@@ -22,15 +22,15 @@
 --
 --   medaka run selfhost/llvm_bootstrap_lex_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
-import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, methodConstraintIfaces, ctorFieldTypeNames, declSigTypeNames}
-import llvm_emit.{emitProgram, enableGapRecord, installReturnsSelf, installSelfFnParams, installMethodIface, installMethodConstraintIfaces, installCtorFieldTypes, installDeclSigTypes}
-import util.{concatMapList}
-import private_mangle.{mangleUnits}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
+import ir.core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, methodConstraintIfaces, ctorFieldTypeNames, declSigTypeNames}
+import backend.llvm_emit.{emitProgram, enableGapRecord, installReturnsSelf, installSelfFnParams, installMethodIface, installMethodConstraintIfaces, installCtorFieldTypes, installDeclSigTypes}
+import support.util.{concatMapList}
+import backend.private_mangle.{mangleUnits}
 
 main : <IO, Mut> Unit
 main = match args ()

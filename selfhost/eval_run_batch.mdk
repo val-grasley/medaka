@@ -4,10 +4,10 @@
 -- captured stdout.  Each target is evaluated + printed strictly before the next
 -- (IO loop) — see eval_prelude_batch.mdk for why (global ctorToTypeRef).
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import eval.{evalOutputWith}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import eval.eval.{evalOutputWith}
 
 main = match args ()
   (corePath :: listPath :: targets) => withPreludes corePath listPath targets

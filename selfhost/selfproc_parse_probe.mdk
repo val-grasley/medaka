@@ -19,8 +19,8 @@
 -- UNTYPED eval_modules path cannot resolve.  This probe is the executable slice
 -- the typed path unlocks.
 
-import parser.{parse}
-import sexp.{programToSexp}
+import frontend.parser.{parse}
+import ir.sexp.{programToSexp}
 
 -- A small Medaka snippet covering the constructs the parser threads through the
 -- monad: data decl, signature, lambda, list literal, if/then/else, match, and

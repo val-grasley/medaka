@@ -8,10 +8,10 @@
 -- When reading from a pipe (non-interactive), behaves identically — reads lines
 -- until EOF, printing prompts and results just as the OCaml `medaka repl` does.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import repl.{initSession, replLoop}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import tools.repl.{initSession, replLoop}
 
 main = match args ()
   [runtimePath, corePath] => withFiles runtimePath corePath

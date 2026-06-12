@@ -1,6 +1,6 @@
 #!/bin/sh
 # Differential validation for the self-hosted parser: selfhost/parse_main.mdk
-# (lex → parse → selfhost/sexp.mdk structural dump) vs the OCaml reference
+# (lex → parse → selfhost/ir/sexp.mdk structural dump) vs the OCaml reference
 # dev/astdump.exe (parse → strip_locs → canonical S-expression).
 #
 # Runs over test/parse_fixtures/ + test/parse_only_fixtures/ — small .mdk programs

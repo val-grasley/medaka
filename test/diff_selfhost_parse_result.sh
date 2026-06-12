@@ -1,6 +1,6 @@
 #!/bin/sh
 # Differential validation for the self-hosted parser's NON-panicking, structured
-# parse-error path (selfhost/parser.mdk `parseResult`), driven by
+# parse-error path (selfhost/frontend/parser.mdk `parseResult`), driven by
 # selfhost/parse_result_main.mdk.
 #
 # This is the LSP prerequisite (Stage 4 task #24): a parser should yield parse

@@ -8,13 +8,13 @@
 --
 --   medaka run selfhost/core_ir_dict_pp_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames}
-import eval.{funNamesOf, dropShadowedExp}
-import core_ir_lower.{lowerProgram}
-import core_ir_eval.{cevalMain}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames}
+import eval.eval.{funNamesOf, dropShadowedExp}
+import ir.core_ir_lower.{lowerProgram}
+import ir.core_ir_eval.{cevalMain}
 
 main = match args ()
   (runtimePath :: rest) => withRuntime runtimePath rest

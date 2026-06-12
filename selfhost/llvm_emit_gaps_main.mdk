@@ -18,15 +18,15 @@
 -- Each census is a reason -> count -> example-bindings table, mirroring
 -- DISPATCH-INVENTORY.md's tone, plus the raw "<binding>\t<reason>" events.
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{elaborateDict, elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
-import eval.{funNamesOf}
-import core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, methodConstraintIfaces, ctorFieldTypeNames, declSigTypeNames}
-import llvm_emit.{emitProgramGaps, installReturnsSelf, installSelfFnParams, installMethodIface, installMethodConstraintIfaces, installCtorFieldTypes, installDeclSigTypes}
-import util.{joinNl, joinWith, listLen, concatMapList}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{elaborateDict, elaborateModules, constrainedSigNames, preludeReturnPosDictNames, preludeArgPosDictNames, enableArgStamp}
+import eval.eval.{funNamesOf}
+import ir.core_ir_lower.{lowerProgramEmit, returnsSelfTable, selfFnParamTable, methodIfaceTable, methodConstraintIfaces, ctorFieldTypeNames, declSigTypeNames}
+import backend.llvm_emit.{emitProgramGaps, installReturnsSelf, installSelfFnParams, installMethodIface, installMethodConstraintIfaces, installCtorFieldTypes, installDeclSigTypes}
+import support.util.{joinNl, joinWith, listLen, concatMapList}
 
 main : <IO, Mut> Unit
 main = match args ()

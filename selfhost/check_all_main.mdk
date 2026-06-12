@@ -7,11 +7,11 @@
 --
 --   medaka run selfhost/check_all_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]
 
-import ast.{Decl}
-import parser.{parse}
-import desugar.{desugar}
-import loader.{loadProgram}
-import typecheck.{checkModulesAllLines}
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import driver.loader.{loadProgram}
+import types.typecheck.{checkModulesAllLines}
 
 main = match args ()
   (runtimeP :: coreP :: entry :: roots) => run runtimeP coreP entry (rootsOrDefault entry roots)

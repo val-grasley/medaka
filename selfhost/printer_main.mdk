@@ -8,8 +8,8 @@
 -- `Printer.program_to_string` oracle (dev/print_probe.exe), see
 -- test/diff_selfhost_printer.sh.
 
-import parser.{parse}
-import printer.{programToString}
+import frontend.parser.{parse}
+import tools.printer.{programToString}
 
 main = match args ()
   [path] => match readFile path
