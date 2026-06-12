@@ -327,3 +327,84 @@ deterministic transform). `test/diff_native_stack.sh` now 4 fixtures: existing
 deferred — falls to current codegen); dispatch/dict-passed impl methods (B-dispatch);
 match-arm tail descent (B-match). Axis A is strictly top-level non-dict `emitFn`→`trmcTryFn`
 defines.
+
+## Phase 2 B-dispatch — AS BUILT (2026-06-11, `selfhost/llvm_emit.mdk`, #56)
+
+The HEADLINE win: TRMC now reaches the DISPATCHED impl-emit path, so the stdlib
+`map` instance method (Functor List) builds a 2,000,000-element list in O(1) stack.
+F2(a) scope: NON-dict, NON-eta impls (List `map`/`ap`-shape — `filterMap`'s cons is
+in a match arm, B-match-descent territory, see below).
+
+**Diagnosis (traced impl IR).** `map`/`filterMap` impls carry NO dict params and reach
+a SEPARATE emit path from Axis A: `emitImpls`→`emitGroups`→`emitGroup`→`emitGroupBody`
+(Axis A is `emitFn`→`trmcTryFn`, never visited here). The lowered `map` impl is
+`@mdk_impl_List_map(i64 %arg0, i64 %arg1)`, arity 2, two clauses (`map _ [] = []` /
+`map f (x::xs) = f x :: map f xs`); the recursive call is **`CMethod "map" (RKey "List" [])`**
+(post-`restampIface`), NOT `CVar self` — it lowers (`emitMethod`'s `RKey` arm →
+`emitImplCallSat`) to a direct `call @mdk_impl_List_map`, the stack-growing site.
+
+**B2 — `CMethod`-self detection (`SelfRef`).** The self-predicate is generalised from
+a bare `self : String` to `data SelfRef = SelfByVar String | SelfByMethod String String`
+(method, tag), threaded through the SAME structural walk (`isCtorTail`/`isSelfSatApp`/
+`trmcBodyOk`/`trmcBodyHasCons`/`ctorTailFieldsOk`/`allSelfFreeF`). `isSelfHead` matches
+`CVar f` (SelfByVar) or `CMethod m (RKey t _)` with `m==method && t==tag` (SelfByMethod).
+`TrmcOn` now carries the `SelfRef` so the cons/ctor leaf recognises the self-call.
+
+**B2 — the SAFETY-CRITICAL disqualification.** `freeVars (CMethod …)` returns ONLY the
+dict names — the method NAME is invisible — so Phase-1/Axis-A's freeVars-based
+`refersTo`/`selfFree` net is BLIND to a dispatched self-call. A body that self-recurses
+via `CMethod` in a NON-tail position would be wrongly accepted as "self-free" →
+TRMC-transformed → the non-tail self recursion DROPPED → silent MISCOMPILE. Fix:
+`selfFree` is SelfRef-directed — `SelfByVar` uses `freeVars` (unchanged); `SelfByMethod`
+uses a dedicated full-tree walk **`mentionsSelfMethod method tag`** that descends every
+CExpr constructor (incl. `CDecision`/`CMatch` arms, guards, `CBlock` stmts, record/index/
+slice subtrees) looking for a `CMethod method (RKey tag)` occurrence. Verified
+empirically: (1) `filterMap`'s cons sits inside a `CDecision` arm → its leaf is the whole
+`CDecision`, which `mentionsSelfMethod` reports as containing the self-call → `trmcBodyOk`
+False → `filterMap` stays ORDINARY (NOT TRMC'd, 2 recursive calls remain, output correct);
+(2) an adversarial `mapb f (x::xs) = f x :: append (mapb f xs) []` (self-call NON-tail under
+`append`) → `isCtorTail` False (head is `append`, not the self-method), then `selfFree`
+False (the `CDecision`-free `mentionsSelfMethod` finds the buried `mapb`) → disqualified,
+recursive call KEPT. Both confirm the net is not blind.
+
+**B1 — wiring (`emitGroup`→TRMC).** `emitTrmcFn` is split into `emitTrmcHeader defineName
+arity` (emits `define @<name>(…) {` + `entry:`) + reusable **`emitTrmcLoopBody self arity
+slotTys clauses single …`** (entry-block setup → loop → reload → `TrmcOn` dispatch → exit
+ret; does NOT emit the closing `}`). The top-level path (`emitTrmcFn`) and the new impl path
+(`trmcImplTry`, called from `emitGroup` before `emitGroupBody`) BOTH call it. The impl path
+supplies the `@mdk_impl_<tag>_<method>` define name, the receiver-typed `aK` scrutinee env
+(`patPosTys tag positions` — matching `emitGroupBody`'s `implParamEnvByPos`), and
+`SelfByMethod method tag`. The cons-leaf emit (`emitTrmcCtor`, shared from Axis A) is
+unchanged. `setCurImplSelfFns` is set BEFORE the TRMC/ordinary choice so the cons-head
+callback `f x` (`map`'s `f x :: …`) still types as the container.
+
+**Emit shape** (`@mdk_impl_List_map`, post-B-dispatch): `entry` sets up `%hole`/`%dest`/
+two param slots, `br %trmcloop`; the loop reloads `f`/`xs`, runs the decision-tree clause
+chain (`emitClauseTree`, TRMC-aware leaf via `trmcCtxRef`); the Cons leaf does the indirect
+`call %f(…)` (head `f x`, KEPT), allocs the Cons cell, stores head, links into `*dest`,
+advances `%dest` to +16, recomputes `f`/`xs` into the slots, `br %trmcloop` — **NO `call
+@mdk_impl_List_map`**; the Nil leaf stores the nil immediate into `*dest`, `br %trmcexit`.
+
+**F2(b) param-threading seam (confirmed GENERIC).** The loop param-threading
+(`trmcEmitParamSlots`/`trmcReloadParams`/`trmcStoreParamSlots`) is keyed purely on `arity`
+and a positional `slotTys` list — it makes NO assumption of zero leading params. F2(b)
+(dict/eta-carrying constrained impls) is therefore a DETECTION-ONLY relax: broaden the F2(a)
+`trmcNonDict` gate to admit leading dict/eta params and thread them as loop-invariants by
+identity; the loop machinery is unchanged. No real constrained cons-tail impl exists today.
+
+**`filterMap` awaits B-match.** `filterMap`'s cons lives inside a `match` arm (`CDecision`),
+which `trmcBodyOk` does NOT descend (a tail cons in a match arm is the B-match-descent stage).
+So B-dispatch does NOT fully transform `filterMap` — EXPECTED, and the B2 walk correctly keeps
+it ineligible rather than miscompiling it. `map` (whose cons IS the syntactic clause result)
+is fully TRMC'd.
+
+**Gates (all green):** `diff_selfhost_llvm` 172, `_modules` 9, `_typed` 37,
+`diff_selfhost_build` 15, `diff_native_cli` 54; `selfcompile_fixpoint` C3a **YES** / C3b
+**YES** (deterministic structural transform → reproduces byte-for-byte). `diff_native_stack.sh`
+extended to drive the TYPED emitter (`llvm_emit_typed_main` + runtime + core, oracle
+`eval_probe --prelude`) for stdlib-method fixtures under `test/stack_fixtures_typed/`; new
+`map_deep` fixture (`map (x => x+1) [1..=2_000_000] |> length` → 2000000). **Before/after**
+(`map_deep`, DEFAULT stack): pre-B-dispatch `@mdk_impl_List_map` carries `call
+@mdk_impl_List_map` → SIGSEGV(139); post-B-dispatch the self-call is `br label %trmcloop`
+(NO recursive call) → prints 2000000, exit 0, `== eval_probe --prelude`. Small: `map (+1)
+[1,2,3]` → `2,3,4`.

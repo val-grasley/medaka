@@ -1,0 +1,20 @@
+-- TRMC Phase 2 B-dispatch (TRMC-DESIGN.md): the HEADLINE win — the stdlib
+-- `map` instance method (Functor List, recursing via a dispatched `CMethod map
+-- (RKey List)`, NOT a `CVar self`) builds a 2,000,000-element list in O(1) stack
+-- (destination-passing loop, no recursive `call @mdk_impl_List_map`), then a
+-- musttail accumulator length consumes it.  Pre-B-dispatch this SIGSEGV(139)'d at
+-- the default stack (~80k cells); prints 2000000 after.  Uses the prelude
+-- (`map`/`[..=]` are stdlib), so this fixture runs through the TYPED emit path.
+isNil xs = match xs
+  [] => True
+  _ => False
+
+tl xs = match xs
+  (_::ys) => ys
+  [] => []
+
+lenAcc acc xs
+  | isNil xs = acc
+  | otherwise = lenAcc (acc + 1) (tl xs)
+
+main = lenAcc 0 (map (x => x + 1) [1..=2000000])

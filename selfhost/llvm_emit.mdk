@@ -225,11 +225,21 @@ emitFallthrough e = match fallthroughLabelRef.value
 -- A module-level Ref (mirroring fallthroughLabelRef) carries the active context
 -- so the decision-tree leaf (emitLeaf) and the single-clause CIf-tail descent
 -- (emitTrmcBody) both route into it without threading it through every emit arm.
--- TrmcOff = ordinary (non-TRMC) codegen; TrmcOn destSlot loopL exitL paramSlots
--- = the live context.  destSlot is the `alloca ptr` register (the mutable
--- destination); loopL/exitL the loop-head / exit blocks; paramSlots the mutable
--- `alloca i64` param slots the cons leaf recomputes the recursion args into.
-data TrmcCtx = TrmcOff | TrmcOn String Int String String String (List String)
+-- TrmcOff = ordinary (non-TRMC) codegen; TrmcOn self arity destSlot loopL exitL
+-- paramSlots = the live context.  `self` is the SelfRef the loop recurses on (a
+-- top-level CVar name, or a dispatched CMethod method+tag — Phase 2 B-dispatch);
+-- destSlot is the `alloca ptr` register (the mutable destination); loopL/exitL the
+-- loop-head / exit blocks; paramSlots the mutable `alloca i64` param slots the cons
+-- leaf recomputes the recursion args into.
+data TrmcCtx = TrmcOff | TrmcOn SelfRef Int String String String (List String)
+
+-- How the eligible function refers to ITSELF in a tail self-call.  A top-level
+-- define recurses by NAME (`CVar self`); a dispatched instance method (Phase 2
+-- B-dispatch — stdlib `map`/`filterMap`) recurses via a `CMethod method (RKey tag)`
+-- node post-restampIface, where the method NAME is invisible to `freeVars` — so the
+-- self-walk MUST be SelfRef-aware, not freeVars-based, or a non-tail `CMethod`
+-- self-recursion is silently accepted and MISCOMPILED (TRMC-DESIGN §"SAFETY-CRITICAL").
+data SelfRef = SelfByVar String | SelfByMethod String String
 
 trmcCtxRef : Ref TrmcCtx
 trmcCtxRef = Ref TrmcOff
@@ -2925,20 +2935,56 @@ emitGroups e (g::rest) =
 emitGroup : Emit -> ImplGroup -> <Mut> Unit
 emitGroup e (ImplGroup method tag positions arity clauses) =
   let fname = implFnName tag method
-  let _ = emit e ("define i64 @" ++ fname ++ "(" ++ implParamDecls arity 0 ++ ") {")
-  let _ = emit e "entry:"
   -- native backend: set the self-returning-fn-param context for this impl body so
   -- `emitIndirect` types `f x` (a callback returning the container) as the impl's
   -- own type.  The self-fn positions come from the method's signature (keyed by
   -- iface, looked up from the resolved impl entry); their names are the PVar names
-  -- the clauses bind at those positions.
+  -- the clauses bind at those positions.  (Set BEFORE choosing the TRMC vs ordinary
+  -- body so a cons-head callback `f x` — e.g. `map`'s `f x :: …` — types correctly.)
   let iface = implGroupIface e method tag
   let selfFnPos = selfFnParamPositions iface method
   let _ = setCurImplSelfFns tag (selfFnParamNames clauses selfFnPos)
-  let _ = emitGroupBody e fname tag positions arity clauses
-  let _ = clearCurImplSelfFns ()
-  let _ = emit e "}"
-  emit e ""
+  -- Phase 2 B-dispatch (TRMC-DESIGN.md): a DISPATCHED self-recursive cons/ctor-tail
+  -- impl method (`map`/`filterMap`/`ap` over List, recursing via a `CMethod method
+  -- (RKey tag)` node) is emitted as an O(1)-stack destination-passing loop, just like
+  -- a top-level builder.  F2(a) scope: NON-dict impls only (`trmcNonDict`); a
+  -- point-free eta-reshaped impl (`filter p = filterMap …`) is a single dispatched
+  -- call, NOT cons-tail-recursive, so `trmcEligible` rejects it (stays ordinary).
+  if trmcImplTry e fname method tag positions arity clauses then
+    let _ = clearCurImplSelfFns ()
+    ()
+  else
+    let _ = emit e ("define i64 @" ++ fname ++ "(" ++ implParamDecls arity 0 ++ ") {")
+    let _ = emit e "entry:"
+    let _ = emitGroupBody e fname tag positions arity clauses
+    let _ = clearCurImplSelfFns ()
+    let _ = emit e "}"
+    emit e ""
+
+-- Phase 2 B-dispatch: try to emit an impl group as a TRMC destination-passing loop.
+-- Returns True (and emits the whole define) when the impl is F2(a)-eligible: NON-dict
+-- (`trmcNonDict`) and cons/ctor-tail self-recursive via its own `CMethod method
+-- (RKey tag)` dispatch (`trmcEligible (SelfByMethod …)`).  Otherwise returns False so
+-- emitGroup falls back to the ordinary `emitGroupBody`.  The loop body reuses
+-- emitTrmcLoopBody verbatim (the shared Axis-A machinery); the impl path supplies the
+-- `@mdk_impl_<tag>_<method>` define name, the receiver-typed `aK` scrutinee env
+-- (`patPosTys`), and the SelfByMethod self-ref for the cons/ctor leaf's self-call
+-- recognition + the safety-critical `mentionsSelfMethod` disqualification.
+trmcImplTry : Emit -> String -> String -> String -> List Int -> Int -> List (List Pat, CExpr) -> <Mut> Bool
+trmcImplTry e fname method tag positions arity clauses =
+  let self = SelfByMethod method tag
+  if arity > 0 && trmcNonDict clauses && trmcEligible e self arity clauses then
+    let slotTys = patPosTys tag positions arity 0
+    let (spats, sbody) = match clauses
+      ((ps, b)::_) => (ps, b)
+      [] => ([], CLit LUnit)
+    let single = listLen clauses == 1 && allClausesPVar clauses
+    let _ = emitTrmcHeader e fname arity
+    let _ = emitTrmcLoopBody e self arity slotTys clauses single spats sbody
+    let _ = emit e "}"
+    let _ = emit e ""
+    True
+  else False
 
 -- ── interface DEFAULT method bodies (E19) ───────────────────────────────────
 -- An interface default (`CImplDefault`) the type's `impl` did not override is
@@ -4541,7 +4587,7 @@ trmcTryFn : Emit -> String -> List (List Pat, CExpr) -> Bool -> <Mut> Bool
 trmcTryFn e name clauses forceSingle =
   let arity = clauseArity clauses
   let single = forceSingle && allClausesPVar clauses
-  if arity > 0 && trmcNonDict clauses && trmcEligible e name arity clauses then
+  if arity > 0 && trmcNonDict clauses && trmcEligible e (SelfByVar name) arity clauses then
     let ptys = match lookupAssoc name (sigTable e)
       Some (FnSig ts _) => ts
       None => []
@@ -4737,18 +4783,18 @@ clauseArity [] = 0
 -- DISQUALIFIES the whole function (we cannot prove the loop preserves it) → fall
 -- back to the current stack-growing codegen.  Structural + deterministic, so
 -- interp- and native-emit produce identical IR (fixpoint holds by construction).
-trmcEligible : Emit -> String -> Int -> List (List Pat, CExpr) -> <Mut> Bool
+trmcEligible : Emit -> SelfRef -> Int -> List (List Pat, CExpr) -> <Mut> Bool
 trmcEligible e self arity clauses =
   trmcClausesOk e self arity clauses && trmcAnyCons e self arity clauses
 
 -- every clause body is TRMC-safe (no misplaced self-call).
-trmcClausesOk : Emit -> String -> Int -> List (List Pat, CExpr) -> <Mut> Bool
+trmcClausesOk : Emit -> SelfRef -> Int -> List (List Pat, CExpr) -> <Mut> Bool
 trmcClausesOk _ _ _ [] = True
 trmcClausesOk e self arity ((_, body)::rest) =
   trmcBodyOk e self arity body && trmcClausesOk e self arity rest
 
 -- at least one clause has an eligible cons/ctor-tail leaf.
-trmcAnyCons : Emit -> String -> Int -> List (List Pat, CExpr) -> <Mut> Bool
+trmcAnyCons : Emit -> SelfRef -> Int -> List (List Pat, CExpr) -> <Mut> Bool
 trmcAnyCons _ _ _ [] = False
 trmcAnyCons e self arity ((_, body)::rest) =
   trmcBodyHasCons e self arity body || trmcAnyCons e self arity rest
@@ -4756,19 +4802,23 @@ trmcAnyCons e self arity ((_, body)::rest) =
 -- a tail expr is TRMC-safe: descend through CIf/CLet/CLetGroup wrappers; at a
 -- leaf, either it is an eligible ctor-tail (`Ctor f… (self-call)`, the LAST field
 -- is the self-call and every other field self-free) or it contains no self-call
--- at all.  A self-call anywhere else fails.
-trmcBodyOk : Emit -> String -> Int -> CExpr -> <Mut> Bool
+-- at all.  A self-call anywhere else fails.  "Self-free" is SelfRef-directed:
+-- `selfFree` (freeVars for SelfByVar; the CMethod-aware `mentionsSelfMethod` walk
+-- for SelfByMethod — `freeVars` is BLIND to the method name, so a dispatched self
+-- recursion outside an eligible tail leaf MUST be caught here, TRMC-DESIGN
+-- §"SAFETY-CRITICAL", or it is silently accepted and MISCOMPILED).
+trmcBodyOk : Emit -> SelfRef -> Int -> CExpr -> <Mut> Bool
 trmcBodyOk e self arity (CIf c t f) =
-  not (refersTo self c) && trmcBodyOk e self arity t && trmcBodyOk e self arity f
+  selfFree self c && trmcBodyOk e self arity t && trmcBodyOk e self arity f
 trmcBodyOk e self arity (CLet _ _ rhs b) =
-  not (refersTo self rhs) && trmcBodyOk e self arity b
+  selfFree self rhs && trmcBodyOk e self arity b
 trmcBodyOk e self arity (CLetGroup binds b) =
-  not (refersToBinds self binds) && trmcBodyOk e self arity b
+  not (selfRefersToBinds self binds) && trmcBodyOk e self arity b
 trmcBodyOk e self arity ex =
-  if isCtorTail e self arity ex then True else not (refersTo self ex)
+  if isCtorTail e self arity ex then True else selfFree self ex
 
 -- does a tail expr (under the same wrappers) reach an eligible ctor-tail leaf?
-trmcBodyHasCons : Emit -> String -> Int -> CExpr -> <Mut> Bool
+trmcBodyHasCons : Emit -> SelfRef -> Int -> CExpr -> <Mut> Bool
 trmcBodyHasCons e self arity (CIf _ t f) =
   trmcBodyHasCons e self arity t || trmcBodyHasCons e self arity f
 trmcBodyHasCons e self arity (CLet _ _ _ b) = trmcBodyHasCons e self arity b
@@ -4777,15 +4827,17 @@ trmcBodyHasCons e self arity ex = isCtorTail e self arity ex
 
 -- the eligible ctor-tail shape (Phase 2 Axis A — general single-constructor
 -- LAST-field TMC).  Two cases, both: the LAST field is a SATURATED self-recursive
--- CApp-spine (head CVar==self, exactly `arity` args), every OTHER field self-free.
+-- spine (head==self, exactly `arity` args), every OTHER field self-free.
 --   • `CBinPrim "::" head tail` — the `::`/Cons special case (never flattens to a
 --     `CVar` head): field0=head (self-free), last field=tail (the self-call).
 --   • a saturated ctor app `Ctor f0 f1 … (self …)`: flattenApp head is `CVar ctor`
 --     with `isCtor`, exactly `ctorArity` fields, `ctorArity ≥ 1`, the LAST field a
 --     saturated self-call, every other field self-free.
-isCtorTail : Emit -> String -> Int -> CExpr -> <Mut> Bool
+-- `self` is a SelfRef: SelfByVar (top-level define) → the self-call spine head is
+-- `CVar self`; SelfByMethod (Phase 2 B-dispatch) → `CMethod method (RKey tag) …`.
+isCtorTail : Emit -> SelfRef -> Int -> CExpr -> <Mut> Bool
 isCtorTail _ self arity (CBinPrim "::" head tail) =
-  not (refersTo self head) && isSelfSatApp self arity tail
+  selfFree self head && isSelfSatApp self arity tail
 isCtorTail e self arity ex = match flattenApp ex []
   (CVar ctor _, fields) =>
     if isCtor e ctor && lengthS fields == ctorArity e ctor && ctorArity e ctor >= 1 then
@@ -4795,15 +4847,15 @@ isCtorTail e self arity ex = match flattenApp ex []
 
 -- the field list of a saturated ctor app is TRMC-eligible: the LAST field is the
 -- saturated self-call (`isSelfSatApp`), every OTHER (leading) field is self-free.
-ctorTailFieldsOk : String -> Int -> List CExpr -> Bool
+ctorTailFieldsOk : SelfRef -> Int -> List CExpr -> Bool
 ctorTailFieldsOk self arity fields = match splitLastF fields
   Some (lead, last) =>
     allSelfFreeF self lead && isSelfSatApp self arity last
   None => False
 
-allSelfFreeF : String -> List CExpr -> Bool
+allSelfFreeF : SelfRef -> List CExpr -> Bool
 allSelfFreeF _ [] = True
-allSelfFreeF self (x::rest) = not (refersTo self x) && allSelfFreeF self rest
+allSelfFreeF self (x::rest) = selfFree self x && allSelfFreeF self rest
 
 -- split a non-empty list into (leading elements, last element).
 splitLastF : List a -> Option (List a, a)
@@ -4813,31 +4865,140 @@ splitLastF (x::rest) = match splitLastF rest
   Some (lead, last) => Some (x :: lead, last)
   None => None
 
--- `tail` is a saturated application of `self` to exactly `arity` value args.
-isSelfSatApp : String -> Int -> CExpr -> Bool
+-- `ex` is a SATURATED self-call to exactly `arity` value args.  SelfByVar: a
+-- `CVar self`-headed spine.  SelfByMethod: a `CMethod method (RKey tag) …`-headed
+-- spine (the dispatched recursive call post-restampIface — the only shape that
+-- lowers to a direct `@mdk_impl_<tag>_<method>` recursion).
+isSelfSatApp : SelfRef -> Int -> CExpr -> Bool
 isSelfSatApp self arity ex = match flattenApp ex []
-  (CVar f _, args) => f == self && listLen args == arity
-  _ => False
+  (hd, args) => isSelfHead self hd && listLen args == arity
 
--- does `ex` reference name `self` anywhere (free)?  Reuses freeVars.
-refersTo : String -> CExpr -> Bool
-refersTo self ex = containsStr self (freeVars [] ex)
+-- is `hd` the head of a self-call for this SelfRef?
+isSelfHead : SelfRef -> CExpr -> Bool
+isSelfHead (SelfByVar self) (CVar f _) = f == self
+isSelfHead (SelfByMethod method tag) (CMethod m route _ _) =
+  m == method && routeIsKey tag route
+isSelfHead _ _ = False
+
+-- a route is `RKey tag …` for this tag (the concrete-impl dispatch a dispatched
+-- self-recursion carries after restampIface).
+routeIsKey : String -> Route -> Bool
+routeIsKey tag (RKey t _) = t == tag
+routeIsKey _ _ = False
+
+-- `ex` contains NO free reference to `self`.  SelfByVar: freeVars (a CVar name).
+-- SelfByMethod: the CMethod-aware walk (freeVars CANNOT see a method name —
+-- TRMC-DESIGN §"SAFETY-CRITICAL").
+selfFree : SelfRef -> CExpr -> Bool
+selfFree (SelfByVar self) ex = not (containsStr self (freeVars [] ex))
+selfFree (SelfByMethod method tag) ex = not (mentionsSelfMethod method tag ex)
+
+-- does `ex` mention the self-method `method`@`tag` (a `CMethod method (RKey tag)`
+-- occurrence) ANYWHERE in its tree?  This is the safety-critical disqualification:
+-- `freeVars (CMethod …)` returns only the dict NAMES, so a dispatched self-call in
+-- a NON-tail position is invisible to the freeVars-based `selfFree` and would be
+-- wrongly accepted as "self-free" → the body TRMC-transformed → the non-tail self
+-- recursion DROPPED → silent miscompile.  This full structural walk closes that.
+mentionsSelfMethod : String -> String -> CExpr -> Bool
+mentionsSelfMethod method tag (CMethod m route _ _) =
+  m == method && routeIsKey tag route
+mentionsSelfMethod method tag (CApp f a) =
+  mentionsSelfMethod method tag f || mentionsSelfMethod method tag a
+mentionsSelfMethod method tag (CLam _ b) = mentionsSelfMethod method tag b
+mentionsSelfMethod method tag (CLet _ _ rhs b) =
+  mentionsSelfMethod method tag rhs || mentionsSelfMethod method tag b
+mentionsSelfMethod method tag (CLetGroup binds b) =
+  mentionsSelfMethodBinds method tag binds || mentionsSelfMethod method tag b
+mentionsSelfMethod method tag (CBlock stmts) = mentionsSelfMethodStmts method tag stmts
+mentionsSelfMethod method tag (CIf c t f) =
+  mentionsSelfMethod method tag c || mentionsSelfMethod method tag t || mentionsSelfMethod method tag f
+mentionsSelfMethod method tag (CBinPrim _ l r) =
+  mentionsSelfMethod method tag l || mentionsSelfMethod method tag r
+mentionsSelfMethod method tag (CUnOp _ x) = mentionsSelfMethod method tag x
+mentionsSelfMethod method tag (CMatch s arms) =
+  mentionsSelfMethod method tag s || mentionsSelfMethodArms method tag arms
+mentionsSelfMethod method tag (CDecision s arms _) =
+  mentionsSelfMethod method tag s || mentionsSelfMethodArms method tag arms
+mentionsSelfMethod method tag (CTuple xs) = mentionsSelfMethodList method tag xs
+mentionsSelfMethod method tag (CList xs) = mentionsSelfMethodList method tag xs
+mentionsSelfMethod method tag (CArray xs) = mentionsSelfMethodList method tag xs
+mentionsSelfMethod method tag (CRangeList lo hi _) =
+  mentionsSelfMethod method tag lo || mentionsSelfMethod method tag hi
+mentionsSelfMethod method tag (CRangeArray lo hi _) =
+  mentionsSelfMethod method tag lo || mentionsSelfMethod method tag hi
+mentionsSelfMethod method tag (CRecord _ fields) = mentionsSelfMethodFields method tag fields
+mentionsSelfMethod method tag (CFieldAccess ex _) = mentionsSelfMethod method tag ex
+mentionsSelfMethod method tag (CRecordUpdate base ups) =
+  mentionsSelfMethod method tag base || mentionsSelfMethodFields method tag ups
+mentionsSelfMethod method tag (CVariantUpdate _ base ups) =
+  mentionsSelfMethod method tag base || mentionsSelfMethodFields method tag ups
+mentionsSelfMethod method tag (CIndex a i) =
+  mentionsSelfMethod method tag a || mentionsSelfMethod method tag i
+mentionsSelfMethod method tag (CSlice a lo hi _) =
+  mentionsSelfMethod method tag a || mentionsSelfMethod method tag lo || mentionsSelfMethod method tag hi
+mentionsSelfMethod _ _ _ = False
+
+mentionsSelfMethodList : String -> String -> List CExpr -> Bool
+mentionsSelfMethodList _ _ [] = False
+mentionsSelfMethodList method tag (x::rest) =
+  mentionsSelfMethod method tag x || mentionsSelfMethodList method tag rest
+
+mentionsSelfMethodArms : String -> String -> List CArm -> Bool
+mentionsSelfMethodArms _ _ [] = False
+mentionsSelfMethodArms method tag ((CArm _ guards body)::rest) =
+  mentionsSelfMethodGuards method tag guards
+  || mentionsSelfMethod method tag body
+  || mentionsSelfMethodArms method tag rest
+
+mentionsSelfMethodGuards : String -> String -> List CGuard -> Bool
+mentionsSelfMethodGuards _ _ [] = False
+mentionsSelfMethodGuards method tag ((CGBool c)::rest) =
+  mentionsSelfMethod method tag c || mentionsSelfMethodGuards method tag rest
+mentionsSelfMethodGuards method tag ((CGBind _ c)::rest) =
+  mentionsSelfMethod method tag c || mentionsSelfMethodGuards method tag rest
+
+mentionsSelfMethodFields : String -> String -> List CField -> Bool
+mentionsSelfMethodFields _ _ [] = False
+mentionsSelfMethodFields method tag ((CField _ v)::rest) =
+  mentionsSelfMethod method tag v || mentionsSelfMethodFields method tag rest
+
+mentionsSelfMethodStmts : String -> String -> List CStmt -> Bool
+mentionsSelfMethodStmts _ _ [] = False
+mentionsSelfMethodStmts method tag (s::rest) =
+  mentionsSelfMethodStmt method tag s || mentionsSelfMethodStmts method tag rest
+
+mentionsSelfMethodStmt : String -> String -> CStmt -> Bool
+mentionsSelfMethodStmt method tag (CSExpr ex) = mentionsSelfMethod method tag ex
+mentionsSelfMethodStmt method tag (CSLet _ _ ex) = mentionsSelfMethod method tag ex
+mentionsSelfMethodStmt method tag (CSLetElse _ ex el) =
+  mentionsSelfMethod method tag ex || mentionsSelfMethod method tag el
+mentionsSelfMethodStmt method tag (CSAssign _ ex) = mentionsSelfMethod method tag ex
+
+mentionsSelfMethodBinds : String -> String -> List CBind -> Bool
+mentionsSelfMethodBinds _ _ [] = False
+mentionsSelfMethodBinds method tag ((CBind _ clauses)::rest) =
+  mentionsSelfMethodClauses method tag clauses || mentionsSelfMethodBinds method tag rest
+
+mentionsSelfMethodClauses : String -> String -> List CClause -> Bool
+mentionsSelfMethodClauses _ _ [] = False
+mentionsSelfMethodClauses method tag ((CClause _ body)::rest) =
+  mentionsSelfMethod method tag body || mentionsSelfMethodClauses method tag rest
 
 -- does any nullary let-group binding's RHS reference `self`?  (Only the nullary
 -- shape is descendable here; a parametric where-helper that called `self` would
 -- be a misplaced self-call, so treat a non-nullary binding conservatively too.)
-refersToBinds : String -> List CBind -> Bool
-refersToBinds _ [] = False
-refersToBinds self ((CBind _ [CClause [] rhs])::rest) =
-  refersTo self rhs || refersToBinds self rest
-refersToBinds self ((CBind _ clauses)::rest) =
-  refersToBindClauses self clauses || refersToBinds self rest
-refersToBinds self (_::rest) = refersToBinds self rest
+selfRefersToBinds : SelfRef -> List CBind -> Bool
+selfRefersToBinds _ [] = False
+selfRefersToBinds self ((CBind _ [CClause [] rhs])::rest) =
+  not (selfFree self rhs) || selfRefersToBinds self rest
+selfRefersToBinds self ((CBind _ clauses)::rest) =
+  selfRefersToBindClauses self clauses || selfRefersToBinds self rest
+selfRefersToBinds self (_::rest) = selfRefersToBinds self rest
 
-refersToBindClauses : String -> List CClause -> Bool
-refersToBindClauses _ [] = False
-refersToBindClauses self ((CClause _ body)::rest) =
-  refersTo self body || refersToBindClauses self rest
+selfRefersToBindClauses : SelfRef -> List CClause -> Bool
+selfRefersToBindClauses _ [] = False
+selfRefersToBindClauses self ((CClause _ body)::rest) =
+  not (selfFree self body) || selfRefersToBindClauses self rest
 
 -- the recursion args of an eligible ctor-tail's self-call (the LAST field's
 -- saturated self CApp-spine args).  Works for both the `::` form and a general
@@ -4892,8 +5053,32 @@ ctorTailSelfIdx ex = match flattenApp ex []
 -- linked cell's tail slot (cell+16) each subsequent one.
 emitTrmcFn : Emit -> String -> Int -> List LTy -> List (List Pat, CExpr) -> Bool -> List Pat -> CExpr -> <Mut> Unit
 emitTrmcFn e name arity ptys clauses single singlePats singleBody =
-  let _ = emit e ("define i64 @mdk_" ++ name ++ "(" ++ implParamDecls arity 0 ++ ") {")
-  let _ = emit e "entry:"
+  let _ = emitTrmcHeader e ("mdk_" ++ name) arity
+  let _ = emitTrmcLoopBody e (SelfByVar name) arity ptys clauses single singlePats singleBody
+  let _ = emit e "}"
+  emit e ""
+
+-- emit the `define` header + entry label for a TRMC define.  `defineName` is the
+-- bare symbol (`mdk_<name>` for a top-level fn, `mdk_impl_<tag>_<method>` for a
+-- dispatched impl method).  The caller emits the closing `}` (the impl path's
+-- emitGroup already brackets the define).
+emitTrmcHeader : Emit -> String -> Int -> <Mut> Unit
+emitTrmcHeader e defineName arity =
+  let _ = emit e ("define i64 @" ++ defineName ++ "(" ++ implParamDecls arity 0 ++ ") {")
+  emit e "entry:"
+
+-- the REUSABLE TRMC loop body (assumes `define`+`entry:` already emitted; does NOT
+-- emit the closing `}`).  Sets up the result hole + mutable destination slot +
+-- mutable param slots, jumps to the loop head, reloads the params, runs the
+-- ordinary param dispatch (single-clause: CIf-tail descent; multi-clause: the
+-- decision-tree clause chain) with the LEAVES redirected via trmcCtxRef (TrmcOn
+-- carries the SelfRef so the cons/ctor leaf recognises the self-call — a CVar for
+-- a top-level fn, a CMethod for a dispatched impl method), then emits the exit
+-- block (load hole, ret).  `self` is the SelfRef the loop recurses on; `slotTys`
+-- types each reloaded `aK` scrutinee word (top-level: inferred sig types, padded
+-- with LTInt; impl: receiver type at the impl positions, LTInt elsewhere).
+emitTrmcLoopBody : Emit -> SelfRef -> Int -> List LTy -> List (List Pat, CExpr) -> Bool -> List Pat -> CExpr -> <Mut> Unit
+emitTrmcLoopBody e self arity slotTys clauses single singlePats singleBody =
   let hole = freshReg e
   let _ = emit e ("  " ++ hole ++ " = alloca i64")
   let destSlot = freshReg e
@@ -4907,17 +5092,15 @@ emitTrmcFn e name arity ptys clauses single singlePats singleBody =
   let _ = emit e (loopL ++ ":")
   -- reload the params into fresh regs for THIS iteration (each loop re-executes
   -- the loads, so a back-edge to %loop re-reads the mutated slots — valid SSA).
-  let reloaded = trmcReloadParams e pslots ptys 0
+  let reloaded = trmcReloadParams e pslots slotTys 0
   let saved = trmcCtxRef.value
-  let _ = set_ref trmcCtxRef (TrmcOn name arity destSlot loopL exitL pslots)
+  let _ = set_ref trmcCtxRef (TrmcOn self arity destSlot loopL exitL pslots)
   let _ = trmcEmitDispatch e reloaded arity clauses single singlePats reloaded singleBody
   let _ = set_ref trmcCtxRef saved
   let _ = emit e (exitL ++ ":")
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = load i64, ptr " ++ hole)
-  let _ = emit e ("  ret i64 " ++ r)
-  let _ = emit e "}"
-  emit e ""
+  emit e ("  ret i64 " ++ r)
 
 -- one mutable `alloca i64` param slot per arg, seeded from %argK; returns the slot
 -- registers in order.
