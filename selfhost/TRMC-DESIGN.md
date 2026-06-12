@@ -244,6 +244,33 @@ path); a multi-field non-`::` ctor builder (Axis A). Plus full `diff_selfhost_*`
 + `selfcompile_fixpoint` C3a/C3b YES (the emitter's own `map`/`filterMap` become loops — deterministic,
 reproduces byte-for-byte, the Phase-1 precedent).
 
+### Backend portability — what the eventual WasmGC backend inherits
+
+TRMC splits into a backend-agnostic ANALYSIS and a backend-specific EMIT:
+
+- **Reusable (Core-IR-level, no LLVM dependency):** the eligibility analysis —
+  `trmcEligible`/`isConsTail`/`isCtorTail`, the `CMethod`-self detection, the
+  match-arm descent. Pure structural analysis over `CExpr`/`CApp`/`CBinPrim`/`CMethod`
+  (which clause is tail-modulo-constructor, which field is the self-call, what
+  disqualifies). **This is where most of the intellectual work + route-fragile risk
+  lives** (the `CMethod`-blindness gotcha, disqualification soundness) — so the
+  expensive part is portable. *Currently physically in `llvm_emit.mdk`; the logic is
+  not LLVM-coupled — lift it into a shared/Core-IR module when WasmGC arrives (a
+  mechanical move; not worth factoring now with no second consumer).*
+- **Backend-specific (rebuild for WasmGC):** the destination-passing EMIT
+  (`emitTrmcCtor`/`emitTrmcFn`) — `alloca` dest pointer, `@mdk_alloc`, `getelementptr`
+  into the field slot, `store` child address, `br loop`. Raw-pointer + mutable-memory
+  codegen. **The TECHNIQUE transfers directly:** WasmGC has no raw pointers but has
+  `struct.new`/`struct.set` — destination-passing becomes "hold the parent cell ref,
+  `struct.set` the child into the parent's recursive field, loop with parent := child."
+  Same algorithm, ~the size of `emitTrmcCtor`, not a reinvention.
+- **Constraint TRMC imposes on the WasmGC type defs:** destination-passing writes the
+  child AFTER creating the parent, so the constructor fields used as TRMC destinations
+  (the cons tail, an ADT's recursive field) MUST be declared **`mut`** in the WasmGC
+  struct types (you'd otherwise make functional-list fields immutable). Slight optimizer
+  cost; standard for TMC on any GC'd backend. Bake it into the cons/ADT struct types
+  from the start.
+
 ## Phase 2 Axis A — AS BUILT (2026-06-11, `selfhost/llvm_emit.mdk`, #56)
 
 General single-constructor LAST-field TMC. Generalizes the Phase-1 cons-only
