@@ -69,8 +69,10 @@ Medaka has **two** compilers (see [AGENTS.md](./AGENTS.md)):
 
 **Build the native compiler (no OCaml — just clang + Boehm GC):**
 ```sh
-make medaka          # bootstraps the emitter from selfhost/seed/emitter.ll,
-                     # then compiles selfhost/medaka_cli.mdk → ./medaka
+make medaka          # WARM (./medaka_emitter present): 2-stage rebuild from
+                     # current source, no seed.  COLD (fresh clone): bootstraps
+                     # the emitter from selfhost/seed/emitter.ll.gz first, then
+                     # compiles selfhost/driver/medaka_cli.mdk → ./medaka
 ./medaka run yourfile.mdk
 ```
 The result is a self-contained ~1.9 MB native binary doing

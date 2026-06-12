@@ -21,8 +21,10 @@ linear pipeline; each stage is one file.
 > that does all 8 subcommands (`check`/`fmt`/`new`/`build`/`run`/`test`/`repl`/`lsp`) with no
 > OCaml at runtime. **As of 2026-06-12 the native `medaka` is CANONICAL (milestone flip):** all
 > PRE-FLIP-GAPS.md soundness/capability gaps (G1–G9) are closed, and **`make medaka` builds the
-> native compiler OCaml-free** from the checked-in IR seed (`selfhost/seed/emitter.ll` →
-> `bootstrap_from_seed.sh` → `build_native_medaka.sh`). The OCaml compiler (`lib/`+`bin/`) is now
+> native compiler OCaml-free** — day-to-day a 2-stage warm rebuild from current source
+> (`build_native_medaka.sh`, no seed), and on a fresh clone a cold bootstrap from the
+> gzipped checked-in IR seed (`selfhost/seed/emitter.ll.gz` → `bootstrap_from_seed.sh` →
+> `build_native_medaka.sh`). The OCaml compiler (`lib/`+`bin/`) is now
 > the **frozen soak-period differential oracle** — **retired (≠ removed; see PLAN.md "Retirement ≠
 > removal" + [[retirement-is-not-removal]])**. **Current focus = the post-flip soak: keep native
 > canonical, then [PLAN.md Stage 3](./PLAN.md#stage-3--make-the-llvm-backend-canonical-retire-ocaml)

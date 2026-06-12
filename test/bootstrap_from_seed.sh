@@ -1,32 +1,38 @@
 #!/bin/sh
-# OCAML-FREE BOOTSTRAP — rebuild the native Medaka emitter from the checked-in IR
-# seed (selfhost/seed/emitter.ll), with NO `medaka run` / OCaml interpreter anywhere.
+# OCAML-FREE BOOTSTRAP / SEED-CURRENCY GATE — rebuild the native Medaka emitter from
+# the checked-in gzipped IR seed (selfhost/seed/emitter.ll.gz), NO `medaka run`/OCaml.
 #
-# This is retirement bar-5: the native compiler is producible from .mdk sources via
-# a checked-in IR seed alone.  Flow (mirrors test/selfcompile_fixpoint.sh MINUS the
-# interpreted `$MAIN run` emit step — the seed REPLACES it):
+# Two roles:
+#   • `make bootstrap` (strict, default): release/CI gate that the committed seed is
+#     CURRENT — gunzip(seed) builds seed_emitter, which re-emits the build-driver graph
+#     to emitter2.ll; C3a asserts seed == emitter2 byte-for-byte (hard fail on drift).
+#   • COLD-START build leg (SEED_TOLERANT=1, set by build_native_medaka.sh): a C3a
+#     mismatch is only a WARNING — a lagging seed still builds a working emitter_v0
+#     (clang'd from emitter2.ll = the CURRENT-source re-emission), which then compiles
+#     current source.  The build never aborts on a slightly-old seed.
 #
-#   1. clang(seed) + runtime + libgc  ->  seed_emitter   (native build emitter)
-#   2. seed_emitter <runtime> <core> <build-driver> <selfhost> <stdlib>  ->  emitter2.ll
+# Flow (mirrors test/selfcompile_fixpoint.sh MINUS the interpreted `$MAIN run` emit
+# step — the seed REPLACES it):
+#   1. gunzip(seed.gz) -> seed.ll ; clang(seed.ll)+runtime+libgc -> seed_emitter
+#   2. seed_emitter <runtime> <core> <build-driver> <selfhost> <stdlib> -> emitter2.ll
 #      (the seed emitter re-emitting the build driver's own graph; trim trailing ()).
-#   3. C3a check:  cmp -s seed  emitter2.ll
-#      The seed reproduces from CURRENT sources via the native emitter — if these
-#      differ, the seed is stale (run test/refresh_seed.sh) or the emitter changed.
+#   3. C3a check:  cmp -s seed.ll  emitter2.ll  (strict: fail; tolerant: warn).
 #   4. clang(emitter2.ll) -> medaka_emitter   (the bootstrapped native emitter binary,
 #      usable as MEDAKA_EMITTER for `medaka build`).
 #
 # OPT-IN like the other LLVM gates: skips cleanly (exit 2) when clang or libgc is
 # absent.  Run on-demand / per-release, NOT per-PR.
 #
-# Usage:  sh test/bootstrap_from_seed.sh
-# Exit:   0 iff seed_emitter builds, emitter2 == seed, and medaka_emitter builds;
+# Usage:  sh test/bootstrap_from_seed.sh [out-path] [tolerant]
+#         SEED_TOLERANT=1 sh test/bootstrap_from_seed.sh   (cold-start build leg)
+# Exit:   0 iff seed_emitter builds, (strict) emitter2 == seed, and medaka_emitter builds;
 #         2 if clang/libgc absent (opt-in skip); 1 on any divergence or build failure.
 #
 # Artifacts (in repo root, for the MEDAKA_EMITTER build check):  ./medaka_emitter
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-SEED="$ROOT/selfhost/seed/emitter.ll"
+SEED_GZ="$ROOT/selfhost/seed/emitter.ll.gz"
 DRIVER="$ROOT/selfhost/llvm_emit_modules_main.mdk"
 RT="$ROOT/runtime/medaka_rt.c"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
@@ -37,8 +43,16 @@ CC="${CC:-clang}"
 STACK_SIZE="${STACK_SIZE:-0x20000000}"
 OUT="${1:-$ROOT/medaka_emitter}"
 
-[ -f "$SEED" ] || { echo "missing seed: $SEED (mint with test/refresh_seed.sh)"; exit 1; }
+# SEED_TOLERANT=1 (or arg2 = "tolerant"): a C3a mismatch is a WARNING, not a hard
+# fail — a lagging seed still builds a working emitter_v0 that compiles current
+# source.  The cold build path (build_native_medaka.sh) sets this.  Unset (the
+# default, and `make bootstrap`) keeps C3a as a strict release/CI seed-currency gate.
+SEED_TOLERANT="${SEED_TOLERANT:-0}"
+[ "${2:-}" = "tolerant" ] && SEED_TOLERANT=1
+
+[ -f "$SEED_GZ" ] || { echo "missing seed: $SEED_GZ (mint with test/refresh_seed.sh)"; exit 1; }
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping (opt-in)"; exit 2; }
+command -v gunzip >/dev/null 2>&1 || { echo "gunzip not found (needed to expand the seed)"; exit 1; }
 
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then
   GC_CFLAGS="$(pkg-config --cflags bdw-gc)"; GC_LIBS="$(pkg-config --libs bdw-gc)"
@@ -52,6 +66,12 @@ fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
+
+# Expand the gzipped committed seed to plain LLVM IR for clang.
+SEED="$WORK/seed.ll"
+if ! gunzip -c "$SEED_GZ" > "$SEED" 2>"$WORK/gz.err"; then
+  echo "FAIL (gunzip seed): $(cat "$WORK/gz.err")"; exit 1
+fi
 
 trim_unit() {
   f="$1"
@@ -79,10 +99,15 @@ trim_unit "$EMITTER2"
 if cmp -s "$SEED" "$EMITTER2"; then
   echo "C3a PASS: seed == native re-emission from current sources, byte-for-byte"
 else
-  echo "C3a FAIL: seed differs from native re-emission (stale seed or emitter changed)"
-  echo "  -> refresh with: dune build --root . && sh test/refresh_seed.sh"
-  cmp "$SEED" "$EMITTER2" | head -3; diff "$SEED" "$EMITTER2" | head -20
-  exit 1
+  if [ "$SEED_TOLERANT" = "1" ]; then
+    echo "C3a WARN: committed seed differs from native re-emission (lagging seed)."
+    echo "  -> building from emitter2 anyway (tolerant cold-start); re-mint with: sh test/refresh_seed.sh"
+  else
+    echo "C3a FAIL: seed differs from native re-emission (stale seed or emitter changed)"
+    echo "  -> refresh with: sh test/refresh_seed.sh"
+    cmp "$SEED" "$EMITTER2" | head -3; diff "$SEED" "$EMITTER2" | head -20
+    exit 1
+  fi
 fi
 
 # ---- STEP 4: clang emitter2 -> the bootstrapped native emitter binary -------
@@ -92,4 +117,4 @@ if ! "$CC" -Wl,-stack_size,"$STACK_SIZE" $GC_CFLAGS "$EMITTER2" "$RT" $GC_LIBS -
 fi
 
 echo
-echo "BOOTSTRAP-FROM-SEED PASS: built $OUT OCaml-free; seed cmp byte-identical."
+echo "BOOTSTRAP-FROM-SEED PASS: built $OUT OCaml-free from the gzipped seed."
