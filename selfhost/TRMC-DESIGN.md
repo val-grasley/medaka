@@ -184,3 +184,62 @@ A *very* deep (>~1M) linked list can still SIGSEGV under the DEFAULT stack from 
 GC's RECURSIVE mark (a separate pre-existing native-runtime limit, unrelated to TRMC) —
 the production build (`build_cmd.mdk`: `-O2 -Wl,-stack_size,0x20000000`) gives the mark
 room; the stack gate links with those flags.
+
+## Phase 2 — DESIGN (full general TMC; scope locked 2026-06-11)
+
+Scoping pass against the Phase-1 AS-BUILT machinery. **Key reframe:** stdlib
+`map`/`filterMap` impls carry **NO dict params** (Phase-1's `leadingDictPats==0` gate
+was a red herring) — the real reason they aren't TRMC'd is that **TRMC has zero reach
+into the impl-emit path** (`emitImpls`→`emitGroup`→`emitGroupBody`, ~`llvm_emit.mdk:2916-3149`),
+and the recursive call is a `CMethod method (RKey tag)` (post-`restampIface`), NOT a
+`CVar self`. The feared eta-saturation interaction is **orthogonal** for List
+`map`/`filterMap` (full-arity, `gatherGroup` no-op, `etaSaturateMethodBody` is `emitFn`-only).
+
+**SAFETY-CRITICAL:** `freeVars (CMethod …)` returns only dict names — the method NAME is
+invisible. So Phase-1's `not (refersTo self)` disqualification net is BLIND to dispatched
+self-calls. B-dispatch MUST add a `CMethod`-aware self walk (`mentionsSelfMethod method tag`)
+to disqualify a body that self-recurses via `CMethod` in a non-tail position, else miscompile.
+
+### Three sub-parts + staging (each independently gated; decline → current codegen, no regression)
+
+1. **Axis A — general single-constructor LAST field** (lowest risk, FIRST). Generalize
+   `isConsTail`/`emitTrmcCons` from `CBinPrim "::"` to any saturated `CVar ctor` app
+   (`isCtor`, `ctorArity≥1`) whose LAST field is the saturated self-call, other fields
+   self-free. Thread `Emit` into the detection helpers (for `isCtor`/`ctorArity`). Emit:
+   alloc `8*(arity+1)`, header `cellTag e ctor`, `storeFields` non-last fields, link cell
+   into the **last-field slot (offset `8*arity`)**, advance dest there. `::` stays the
+   special case. Already routes through `emitFn`→`trmcTryFn` (non-dict top-level). Clean.
+2. **B-dispatch — `map`/`filterMap` via instances** (headline, medium). (B1) wire TRMC into
+   `emitGroup` (split `emitTrmcFn` into `emitTrmcHeader` + reusable `emitTrmcLoopBody`; the
+   impl path supplies `@mdk_impl_<tag>_<method>` + the impl param-env). (B2) `CMethod`-self
+   detection (`isSelfMethodSatApp method tag arity`) + the safety-critical `mentionsSelfMethod`
+   disqualification. Self-predicate becomes `SelfByVar name | SelfByMethod method tag` threaded
+   through the same structural walk. Builds on A's `emitTrmcCtor`.
+3. **B-match-descent — `filterMap`'s in-arm cons** (medium, after B-dispatch). Add a
+   `CDecision` tail arm to `trmcBodyOk`/`emitTrmcBody`: descend each arm in tail position
+   (scrut self-free), classifying {cons-tail | **plain-tail self-call** | base}. New leaf kind
+   `emitTrmcTailCall` (recompute args + `br loop`, no cell) for the bare-self arm. The tail
+   CDecision keeps `trmcCtxRef` LIVE (vs `emitDecision`'s save/clear for expression-position).
+
+### Scope LOCKED (user, 2026-06-11): a / a / yes — (b) deferred as CLEAN future extensions
+- **F1 = (a):** detect only when the self-call is the constructor's LAST field. (b) [any field
+  position] is purely additive later — parameterize the dest-offset by field index (the emit
+  mechanism is identical; (a) is the `idx=arity-1` case). **Keep the offset COMPUTED, not
+  hardcoded, so (b) is a localized patch.** No real target needs (b) today.
+- **F2 = (a):** B-dispatch covers non-dict/non-eta impls (map/filterMap/ap over List — every
+  real target). (b) [dict-carrying/eta-reshaped constrained impls] is additive later — relax the
+  predicate + thread the loop-invariant leading dict/eta params through the loop by identity.
+  **Keep the param-threading GENERIC (don't assume zero leading params), so (b) is a relax.**
+  No real constrained cons-tail impl exists today.
+- **F3 = yes:** the plain-tail self-call leaf (iterate on a shorter list, build no cell) is
+  required for `filter`/`filterMap` and is in scope.
+
+### Gate
+Extend `test/diff_native_stack.sh` (fixtures under `test/stack_fixtures/`), each SIGSEGV-before /
+correct-after, == `eval_probe` oracle, exit 0, linked with `-O2 -Wl,-stack_size,0x20000000`:
+`map (+1) [1..2_000_000] |> sum` (B-dispatch; needs the TYPED emit path `llvm_emit_typed_main.mdk`
++ runtime + core, since `map` is a stdlib method); `filter`/`filterMap` over 2M (B-match);
+a deep user-ADT `data Chain = Link Int Chain | End; build 2_000_000 |> depth` (Axis A, prelude-free
+path); a multi-field non-`::` ctor builder (Axis A). Plus full `diff_selfhost_*` + `diff_native_cli`
++ `selfcompile_fixpoint` C3a/C3b YES (the emitter's own `map`/`filterMap` become loops — deterministic,
+reproduces byte-for-byte, the Phase-1 precedent).
