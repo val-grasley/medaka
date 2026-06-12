@@ -36,6 +36,11 @@
           "type": "string",
           "default": "medaka",
           "description": "Path to the medaka binary. Must support the `lsp` subcommand."
+        },
+        "medaka.root": {
+          "type": "string",
+          "default": "",
+          "description": "MEDAKA_ROOT for the language server (where stdlib/ lives). The native server reads stdlib from disk; defaults to the first workspace folder when empty."
         }
       }
     }
