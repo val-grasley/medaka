@@ -538,6 +538,49 @@ static long long mdk_box_float(double d) {
   c[0] = 2; ((double *)c)[1] = d; return (long long)c;
 }
 
+/* ── G3: polymorphic `Num a =>` arithmetic (runtime numeric dispatch) ─────────
+ * A `Num a =>`-constrained function (`double x = x + x`) is monomorphic at the
+ * IR level: its operand could be an immediate Int (odd word, low bit 1) OR a
+ * boxed Float (even pointer to {header=2, double}).  The emitter cannot pick
+ * int- vs float-instructions statically (the param type is the type variable
+ * `a`), so for LTNum operands it emits a call to these helpers, which discriminate
+ * on the low bit — exactly the discipline `mdk_append` uses for `++`.  At a
+ * CONCRETE Int or Float type the emitter keeps its specialized inline IR (these
+ * helpers are never reached), so every byte-diff gate is unchanged.
+ *
+ * Both operands of one `Num` op share a type (well-typed), so testing the LEFT
+ * operand's tag suffices.  Int untag = >>1 (arithmetic); re-tag = (n<<1)|1. */
+static inline int mdk_is_int(long long w) { return (w & 1) != 0; }
+
+long long mdk_num_add(long long l, long long r) {
+  if (mdk_is_int(l)) return (((l >> 1) + (r >> 1)) << 1) | 1;
+  return mdk_box_float(((double *)l)[1] + ((double *)r)[1]);
+}
+long long mdk_num_sub(long long l, long long r) {
+  if (mdk_is_int(l)) return (((l >> 1) - (r >> 1)) << 1) | 1;
+  return mdk_box_float(((double *)l)[1] - ((double *)r)[1]);
+}
+long long mdk_num_mul(long long l, long long r) {
+  if (mdk_is_int(l)) return (((l >> 1) * (r >> 1)) << 1) | 1;
+  return mdk_box_float(((double *)l)[1] * ((double *)r)[1]);
+}
+long long mdk_num_div(long long l, long long r) {
+  if (mdk_is_int(l)) return (((l >> 1) / (r >> 1)) << 1) | 1;
+  return mdk_box_float(((double *)l)[1] / ((double *)r)[1]);
+}
+long long mdk_num_mod(long long l, long long r) {
+  if (mdk_is_int(l)) return (((l >> 1) % (r >> 1)) << 1) | 1;
+  double a = ((double *)l)[1], b = ((double *)r)[1];
+  return mdk_box_float(a - b * (double)((long long)(a / b)));
+}
+
+/* Print a polymorphic numeric value (LTNum result of `Num a =>` arithmetic):
+ * dispatch on the runtime tag like the arithmetic helpers above. */
+void mdk_print_num(long long w) {
+  if (mdk_is_int(w)) mdk_print_int(w >> 1);
+  else mdk_print_float(((double *)w)[1]);
+}
+
 long long mdk_string_to_float(long long s) {
   const char *cell = (const char *)s;
   long long bl = ((const long long *)cell)[1];

@@ -528,7 +528,15 @@ gapStr reason = if gapRecordEnabled.value then let _ = noteGap reason in "0" els
 -- list cell as a String header and segfault.  Everywhere a guaranteed String is
 -- treated specially (print, `==`/`!=`) LTUnknown follows LTStr, because those
 -- sites are only reached for the string-builder case in practice.
-data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr | LTUnit | LTChar | LTUnknown
+-- LTNum (G3): a POLYMORPHIC numeric operand — a `Num a =>`-constrained param
+-- whose declared type head is a type variable, so it could be an Int OR a Float
+-- at runtime.  The emitter can't pick int- vs float-instructions statically, so
+-- LTNum arithmetic/print route through the runtime tag-dispatched @mdk_num_*
+-- helpers (low-bit discriminator).  EVERYWHERE ELSE LTNum behaves like LTInt
+-- (its word rep IS the tagged-int/boxed-float word, default-handled like a word),
+-- so concrete Int/Float paths are byte-unchanged; only emitArith/emitPrint
+-- special-case it.
+data LTy = LTInt | LTFloat | LTBool | LTCon | LTClosure | LTStr | LTUnit | LTChar | LTUnknown | LTNum
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
 -- — prepend is O(1); reverseL'd once at the end restores program order), the
@@ -1700,7 +1708,7 @@ isArithOp op = op == "+" || op == "-" || op == "*" || op == "/" || op == "%"
 emitArith : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitArith e env op l r =
   let (lv, lty) = emitExpr e env l
-  let (rv, _) = emitExpr e env r
+  let (rv, rty) = emitExpr e env r
   match lty
     LTFloat =>
       let ld = unboxFloat e lv
@@ -1708,12 +1716,26 @@ emitArith e env op l r =
       let res = freshReg e
       let _ = emit e ("  " ++ res ++ " = " ++ floatOp op ++ " double " ++ ld ++ ", " ++ rd)
       (boxFloat e res, LTFloat)
-    _ =>
-      let li = untagInt e lv
-      let ri = untagInt e rv
+    -- G3: a POLYMORPHIC Num operand (declared type-var param) — could be Int OR
+    -- Float at runtime.  Route through the runtime tag-dispatched @mdk_num_* helper
+    -- (low-bit discriminator), keeping the result LTNum so a chained `Num` op and
+    -- the polymorphic print site stay runtime-dispatched.  An LTNum on EITHER side
+    -- propagates (the other operand shares the type by well-typing).
+    LTNum =>
       let res = freshReg e
-      let _ = emit e ("  " ++ res ++ " = " ++ intOp op ++ " i64 " ++ li ++ ", " ++ ri)
-      (tagInt e res, LTInt)
+      let _ = emit e ("  " ++ res ++ " = call i64 @" ++ numOp op ++ "(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+      (res, LTNum)
+    _ => match rty
+      LTNum =>
+        let res = freshReg e
+        let _ = emit e ("  " ++ res ++ " = call i64 @" ++ numOp op ++ "(i64 " ++ lv ++ ", i64 " ++ rv ++ ")")
+        (res, LTNum)
+      _ =>
+        let li = untagInt e lv
+        let ri = untagInt e rv
+        let res = freshReg e
+        let _ = emit e ("  " ++ res ++ " = " ++ intOp op ++ " i64 " ++ li ++ ", " ++ ri)
+        (tagInt e res, LTInt)
 
 -- comparison always yields a Bool word; dispatch the compare on operand type.
 emitCmp : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
@@ -5918,14 +5940,99 @@ inferParamTys sigs (_::rest) body = LTInt :: inferParamTys sigs rest body
 -- the declared `Float` overrides to LTFloat).  Index-tracked so each param's
 -- declared type lines up by position.
 inferParamTysSeed : List (String, FnSig) -> Option (List String, String) -> List Pat -> CExpr -> Int -> List LTy
-inferParamTysSeed _ _ [] _ _ = []
-inferParamTysSeed sigs dsig ((PVar x)::rest) body i =
-  let guessed = match paramUseTy sigs [] x body
-    Some t => t
-    None => LTInt
-  seedParamTy dsig i guessed :: inferParamTysSeed sigs dsig rest body (i + 1)
-inferParamTysSeed sigs dsig (_::rest) body i =
-  seedParamTy dsig i LTInt :: inferParamTysSeed sigs dsig rest body (i + 1)
+inferParamTysSeed sigs dsig pats body i = inferParamTysSeedD sigs dsig pats body i i
+
+-- like inferParamTysSeed, but tracks the DECLARED-param index `di` separately from
+-- the emit/IR position `i`.  A dict-passing param (`$dict_<fn>_<slot>`, prepended
+-- by elaborateModules to a `=>`-constrained fn) advances `i` but NOT `di`, so the
+-- declared signature's param types — which DON'T include the synthesized dict
+-- params — stay aligned to the source params.  Without this, a `Num a =>` fn's
+-- real param sits one slot right of where `declScalarAt`/`isNumPolyParam` look
+-- (the G3 root cause: x's LTNum seed was read at the dict's index → missed).
+inferParamTysSeedD : List (String, FnSig) -> Option (List String, String) -> List Pat -> CExpr -> Int -> Int -> List LTy
+inferParamTysSeedD _ _ [] _ _ _ = []
+inferParamTysSeedD sigs dsig ((PVar x)::rest) body i di
+  | isDictParamName x = LTInt :: inferParamTysSeedD sigs dsig rest body (i + 1) di
+  | otherwise =
+    let guessed = match paramUseTy sigs [] x body
+      Some t => t
+      None => LTInt
+    -- G3: a param whose DECLARED type head is a type variable (`a` in
+    -- `double : Num a => a -> a`) and which is USED arithmetically is polymorphic
+    -- over Num — neither statically Int nor Float.  Seed LTNum so emitArith/emitPrint
+    -- route through the runtime tag-dispatched @mdk_num_* helpers.  A concrete
+    -- declared scalar (Int/Float/…) still wins via seedParamTy; a type-var param
+    -- NOT used in arithmetic (e.g. `id : a -> a`) keeps its guess (no LTNum).
+    let seeded = seedParamTy dsig di guessed
+    let final = numPolySeed dsig di seeded (paramUsedInArith x body)
+    final :: inferParamTysSeedD sigs dsig rest body (i + 1) (di + 1)
+inferParamTysSeedD sigs dsig (_::rest) body i di =
+  seedParamTy dsig di LTInt :: inferParamTysSeedD sigs dsig rest body (i + 1) (di + 1)
+
+-- a dict-passing parameter synthesized by elaborateModules carries the
+-- `$dict_<fn>_<slot>` naming (typecheck.mdk `dictParamName`).
+isDictParamName : String -> Bool
+isDictParamName n = strHasPrefix "$dict_" n
+
+strHasPrefix : String -> String -> Bool
+strHasPrefix pre s
+  | stringLength s < stringLength pre = False
+  | otherwise = stringSlice 0 (stringLength pre) s == pre
+
+-- G3: override a type-var param's LTInt seed with LTNum when it's used in
+-- arithmetic (a polymorphic Num operand); otherwise keep the seed unchanged.
+numPolySeed : Option (List String, String) -> Int -> LTy -> Bool -> LTy
+numPolySeed dsig i seeded usedArith
+  | isNumPolyParam dsig i seeded && usedArith = LTNum
+  | otherwise = seeded
+
+-- G3: True when param index `i`'s declared type head is a type VARIABLE (a
+-- lowercase-initial name like `a` — concrete cons are uppercase) and the
+-- seedParamTy result is still LTInt (i.e. no concrete scalar declared/inferred).
+-- This is the "polymorphic Num operand" signal.
+isNumPolyParam : Option (List String, String) -> Int -> LTy -> Bool
+isNumPolyParam dsig i seeded = match seeded
+  LTInt => match dsig
+    Some (ptyNames, _) => match nthName ptyNames i
+      Some n => isTypeVarName n
+      None => False
+    None => False
+  _ => False
+
+-- a type-variable head name is lowercase-initial (`a`, `elem`); a concrete type
+-- (`Int`, `Float`, a user type) is uppercase-initial.  Empty ⇒ not a var.
+isTypeVarName : String -> Bool
+isTypeVarName n =
+  let cs = stringToChars n
+  numVarFirst cs
+
+numVarFirst : Array Char -> Bool
+numVarFirst cs
+  | arrayLength cs == 0 = False
+  | otherwise = isLowerCode (charCode (arrayGetUnsafe 0 cs))
+
+isLowerCode : Int -> Bool
+isLowerCode c = c >= 97 && c <= 122
+
+-- G3: True when `p` is an operand of an arithmetic binop anywhere in the body.
+paramUsedInArith : String -> CExpr -> Bool
+paramUsedInArith p (CBinPrim op l r) =
+  if isArithOp op && (isVarNamed p l || isVarNamed p r) then True
+  else paramUsedInArith p l || paramUsedInArith p r
+paramUsedInArith p (CIf c t f) =
+  paramUsedInArith p c || paramUsedInArith p t || paramUsedInArith p f
+paramUsedInArith p (CUnOp _ x) = paramUsedInArith p x
+paramUsedInArith p (CLet _ _ e1 e2) = paramUsedInArith p e1 || paramUsedInArith p e2
+paramUsedInArith p app =
+  let (_, args) = flattenApp app []
+  anyArithArg p args
+paramUsedInArith _ _ = False
+
+anyArithArg : String -> List CExpr -> Bool
+anyArithArg _ [] = False
+anyArithArg p (a::rest) = paramUsedInArith p a || anyArithArg p rest
+
+
 
 zipParamEnv : List Pat -> List LTy -> List (String, LTy)
 zipParamEnv ((PVar x)::ps) (t::ts) = (x, t) :: zipParamEnv ps ts
@@ -5965,6 +6072,16 @@ floatOp "*" = "fmul"
 floatOp "/" = "fdiv"
 floatOp "%" = "frem"   -- OCaml Float.rem == C fmod == LLVM frem
 floatOp op = panic ("llvm spike: unsupported float operator " ++ op)
+
+-- G3: the runtime tag-dispatched numeric helper for a POLYMORPHIC Num operand
+-- (mdk_num_* branch on the low bit: Int → int op, boxed Float → float op).
+numOp : String -> String
+numOp "+" = "mdk_num_add"
+numOp "-" = "mdk_num_sub"
+numOp "*" = "mdk_num_mul"
+numOp "/" = "mdk_num_div"
+numOp "%" = "mdk_num_mod"
+numOp op = panic ("llvm spike: unsupported num operator " ++ op)
 
 intPred : String -> String
 intPred "==" = "eq"
@@ -6562,6 +6679,12 @@ emitPreamble e =
   let _ = emit e "declare void @mdk_print_int(i64)"
   let _ = emit e "declare void @mdk_print_bool(i64)"
   let _ = emit e "declare void @mdk_print_float(double)"
+  let _ = emit e "declare i64 @mdk_num_add(i64, i64)"
+  let _ = emit e "declare i64 @mdk_num_sub(i64, i64)"
+  let _ = emit e "declare i64 @mdk_num_mul(i64, i64)"
+  let _ = emit e "declare i64 @mdk_num_div(i64, i64)"
+  let _ = emit e "declare i64 @mdk_num_mod(i64, i64)"
+  let _ = emit e "declare void @mdk_print_num(i64)"
   let _ = emit e "declare i64 @mdk_str_lit(ptr, i64)"
   let _ = emit e "declare void @mdk_print_str(i64)"
   let _ = emit e "declare i64 @mdk_int_to_string(i64)"
@@ -6671,6 +6794,10 @@ emitPrint e _ LTUnit =
   emit e "  call void @mdk_print_unit()"
 emitPrint e v LTChar =
   emit e ("  call void @mdk_print_char(i64 " ++ v ++ ")")
+-- G3: a polymorphic Num result (LTNum) is an Int OR boxed-Float word; dispatch
+-- the print on its runtime tag via @mdk_print_num (mirrors the @mdk_num_* arith).
+emitPrint e v LTNum =
+  emit e ("  call void @mdk_print_num(i64 " ++ v ++ ")")
 emitPrint _ _ LTCon =
   panic "llvm spike: cannot print an ADT value (slice 3: `main` must reduce to a scalar Int/Bool/Float)"
 emitPrint _ _ LTClosure =

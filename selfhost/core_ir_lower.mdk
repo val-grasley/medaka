@@ -790,6 +790,13 @@ fieldTyHeadName (Field _ ty) = tyHeadName ty
 -- (TyVar / TyFun / TyTuple / applied types) — the emitter treats "" as "unknown".
 tyHeadName : Ty -> String
 tyHeadName (TyCon n) = n
+-- G3: a type VARIABLE head (`a` in `Num a => a -> a`) yields its var name, so the
+-- emitter's declSig table can recognise a polymorphic Num param (isTypeVarName) and
+-- route its arithmetic through the runtime tag-dispatched @mdk_num_* helpers.
+-- ADDITIVE for every other consumer: a var name (lowercase) is not a known scalar,
+-- so `fieldNameToLTy` maps it to None exactly as the old "" did (ctor-field /
+-- record-field LTy seeding is unchanged); only the new G3 check reads the name.
+tyHeadName (TyVar n) = n
 tyHeadName (TyApp a _) = tyHeadName a
 tyHeadName (TyConstrained _ t) = tyHeadName t
 tyHeadName (TyEffect _ _ t) = tyHeadName t

@@ -199,6 +199,25 @@ main : <IO> Unit
 main = putStrLn (debug 42)
 EOF
 
+# G3 regression (PRE-FLIP-GAPS §G3): `Num a =>`-polymorphic arithmetic must
+# tag-dispatch +/* at the operand's RUNTIME numeric type.  Before the fix the
+# emitter hardwired the Int primitive for a type-var operand → at Float `+` gave
+# garbage (silent wrong answer) and `*` SIGSEGV'd; Int was accidentally correct.
+# The fix seeds such params/return LTNum and routes them through @mdk_num_*
+# (low-bit Int-vs-boxed-Float discriminator).  Exercises + and * at Float AND Int.
+cat > "$WORK/src/numpoly.mdk" <<'EOF'
+double : Num a => a -> a
+double x = x + x
+square : Num a => a -> a
+square x = x * x
+main : <IO> Unit
+main =
+  putStrLn (debug (double 2.5))
+  putStrLn (debug (square 2.5))
+  putStrLn (debug (double 2))
+  putStrLn (debug (square 3))
+EOF
+
 cat > "$WORK/src/eq.mdk" <<'EOF'
 main : <IO> Unit
 main = putStrLn (debug (42 == 42))
@@ -229,7 +248,7 @@ main =
   putStrLn (debug (compare c a))
 EOF
 
-PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr show_debug eq deriving map_impl"
+PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr numpoly show_debug eq deriving map_impl"
 
 pass=0; fail=0
 
