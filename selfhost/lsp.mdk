@@ -836,13 +836,26 @@ headOr _ (x :: _) = x
 -- notification per file in the result (clean files → []).  `docs` already holds
 -- the just-edited buffer; the read override maps a loader file path back to the
 -- Docs buffer for that uri (unsaved buffers shadow disk).
+--
+-- Roots mirror the build/run loader (`medaka_cli` runRunCmd): the edited file's
+-- directory first (user modules shadow stdlib), then MEDAKA_ROOT/stdlib so an
+-- `import json` / other stdlib module resolves (without this, a buffer importing
+-- a stdlib module reports a spurious `UnknownModule`).
 publishProjectDiagnostics : String -> String -> String -> Docs -> <IO, Mut> Unit
 publishProjectDiagnostics runtimeSrc coreSrc uri docs =
   let rootFile = pathOfUri uri
   let projectDir = dirOfPath rootFile
+  let stdlibDir = lspMedakaRoot "." ++ "/stdlib"
   let read = (path => docsGet (uriOfPath path) docs)
-  let results = analyzeProject projectCache read rootFile [projectDir] runtimeSrc coreSrc
+  let results = analyzeProject projectCache read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
   publishEach results
+
+-- MEDAKA_ROOT (where stdlib/ lives), or `dflt` when unset/empty.  Mirrors
+-- build_cmd.envOr but kept local so the LSP graph doesn't pull in build_cmd.
+lspMedakaRoot : String -> <IO> String
+lspMedakaRoot dflt = match getEnv "MEDAKA_ROOT"
+  Some v => if v == "" then dflt else v
+  None => dflt
 
 -- Publish a publishDiagnostics notification for each (file, diags) bucket,
 -- mapping the loader file path back to a file:// uri (mirror DocumentUri.of_path).
