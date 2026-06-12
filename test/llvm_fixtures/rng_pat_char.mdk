@@ -1,0 +1,9 @@
+-- G6: CHAR range pattern `'a'..='z'` — element type Char.  Char words are tagged
+-- codepoints (`cp*2+1`), same monotonic comparison shape as Int.  Inclusive.
+-- 'a'->lower, 'c'->lower, 'z'->lower (included), 'A'->other.
+-- lower=1, other=0 ; main = 1 + 1 + 1 + 0 = 3
+classify ch = match ch
+  'a'..='z' => 1
+  _ => 0
+
+main = classify 'a' + classify 'c' + classify 'z' + classify 'A'

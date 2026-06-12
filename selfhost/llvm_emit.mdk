@@ -4273,13 +4273,17 @@ emitLeaf e env root arms i slot endL rty = match nthArm arms i
         emit e ("  br label %" ++ endL)
   None => gapU "decision arm index out of range"
 
--- a guarded clause: bind the arm pattern, run the guards (branching to `failL` on
--- any failure), and on all-pass eval the body into `slot`; then emit `failL` and
--- the `fail` subtree (resumes the match at the same column context `occs`).
+-- a guarded clause: re-match the arm pattern against `root` (a RANGE/`PRng` arm
+-- canonicalizes to PWild in the matrix, so the tree routed here unconditionally
+-- and the actual range comparison happens HERE — `emitRefutMatch` branches to
+-- `failL` on no-match; an irrefutable pattern emits no test, preserving the
+-- plain-`if`-guard case), run the guards (branching to `failL` on any failure),
+-- and on all-pass eval the body into `slot`; then emit `failL` and the `fail`
+-- subtree (resumes the match at the same column context `occs`).
 emitGuardedArm : Emit -> List (String, (String, LTy)) -> String -> List CArm -> List String -> Pat -> List CGuard -> CExpr -> CTree -> String -> String -> Ref LTy -> <Mut> Unit
 emitGuardedArm e env root arms occs pat guards body fail slot endL rty =
   let failL = "guardfail" ++ intToString (freshId e)
-  let env2 = bindPattern e env pat root body
+  let env2 = emitRefutMatch e env pat root body failL
   let env3 = emitGuardChain e env2 guards body failL
   let (bv, bty) = emitExpr e env3 body
   let _ = set_ref rty bty
@@ -4289,9 +4293,12 @@ emitGuardedArm e env root arms occs pat guards body fail slot endL rty =
   emitTree e env root arms occs slot endL rty fail
 
 -- emit the guard tests left-to-right: a `CGBool` tests a Bool (`True` = the word
--- 3) and branches to `failL` on failure, falling through on success; an
--- (irrefutable) `CGBind p <- e` binds `p` and continues.  Returns the env
--- extended by any `CGBind` bindings (visible to later guards + the body).
+-- 3) and branches to `failL` on failure, falling through on success; a
+-- `CGBind p <- e` evaluates `e` and refutably matches `p` against it via
+-- `emitRefutMatch` (an irrefutable `p` emits no test + just binds; a refutable
+-- `Just x <- e` tests the discriminant and branches to `failL` on no-match — G5).
+-- Returns the env extended by any `CGBind` bindings (visible to later guards +
+-- the body).
 emitGuardChain : Emit -> List (String, (String, LTy)) -> List CGuard -> CExpr -> String -> <Mut> List (String, (String, LTy))
 emitGuardChain _ env [] _ _ = env
 emitGuardChain e env ((CGBool g)::rest) body failL =
@@ -4304,16 +4311,16 @@ emitGuardChain e env ((CGBool g)::rest) body failL =
   emitGuardChain e env rest body failL
 emitGuardChain e env ((CGBind p ex)::rest) body failL =
   let (v, _) = emitExpr e env ex
-  let env2 = bindPattern e env p v body
+  let env2 = emitRefutMatch e env p v body failL
   emitGuardChain e env2 rest body failL
 
--- a clause's guards are emittable iff every `CGBind`'s pattern is irrefutable (a
--- refutable `p <- e` needs a runtime match test — not yet lowered).  `CGBool`
--- guards are always emittable.
+-- a clause's guards are now ALL emittable: `CGBool` guards always were; a
+-- `CGBind p <- e` is lowered via `emitRefutMatch` whether `p` is irrefutable
+-- (just binds) or refutable (`Just x <- e` — runtime discriminant test, G5).
 allGuardsEmittable : List CGuard -> Bool
 allGuardsEmittable [] = True
 allGuardsEmittable ((CGBool _)::rest) = allGuardsEmittable rest
-allGuardsEmittable ((CGBind p _)::rest) = irrefutablePat p && allGuardsEmittable rest
+allGuardsEmittable ((CGBind _ _)::rest) = allGuardsEmittable rest
 
 irrefutablePat : Pat -> Bool
 irrefutablePat (PVar _) = True
@@ -4394,6 +4401,124 @@ bindFieldDecl e env (PAs x p) declName f body =
   let env2 = bindVarTy e env x f body declName
   bindPattern e env2 p f body
 bindFieldDecl e env p _ f body = bindPattern e env p f body
+
+-- ── refutable pattern match (G5 refutable pattern-guards / G6 range patterns) ──
+-- Test pattern `p` against value word `v`, branching to `failL` on a MISMATCH;
+-- on a match, bind `p`'s variables and FALL THROUGH, returning the extended env
+-- (visible to later guards + the body).  Unlike `bindPattern` (which only
+-- EXTRACTS at a tree leaf the decision tree already proved), this emits the
+-- runtime TEST too — for the two sites the decision tree can't pre-test: a
+-- refutable `p <- e` pattern guard (CGBind) and a range/`PRng` arm pattern
+-- (which canonicalizes to PWild in the matrix, so the tree routes to it
+-- unconditionally and the guarded-arm re-match must do the comparison — exactly
+-- mirroring core_ir_eval's `cevalGuardedBody` re-running `matchPat`).
+--   Irrefutable patterns (PWild/PVar/PAs/PTuple) emit NO test (reuse
+-- bindPattern's extraction); refutable ones (PLit/PRng/PCon/PCons/PList) emit a
+-- discriminant/range/equality test + a `br … failL`.  An unsupported shape is a
+-- gap (records, nested-refutable beyond this set).
+emitRefutMatch : Emit -> List (String, (String, LTy)) -> Pat -> String -> CExpr -> String -> <Mut> List (String, (String, LTy))
+-- irrefutable: no test, just bind (delegates to bindPattern's extraction).
+emitRefutMatch e env PWild v body _ = bindPattern e env PWild v body
+emitRefutMatch e env (PVar x) v body _ = bindPattern e env (PVar x) v body
+emitRefutMatch e env (PAs x p) v body failL =
+  let env2 = bindVarTy e env x v body ""
+  emitRefutMatch e env2 p v body failL
+-- a tuple is irrefutable in SHAPE (the type fixes the arity), but its element
+-- patterns can be refutable — recurse element-wise on the loaded fields.
+emitRefutMatch e env (PTuple ps) v body failL =
+  emitRefutFields e env ps v body failL 0
+-- integer / char literal: compare the tagged immediate word directly (both are
+-- `n*2+1`); String literal via @mdk_string_eq (tagged Bool result); Bool literal
+-- compares the immediate (3/1).
+emitRefutMatch e env (PLit (LInt k)) v _ failL =
+  let _ = emitWordEqTest e v (intToString (k * 2 + 1)) failL
+  env
+emitRefutMatch e env (PLit (LChar c)) v _ failL =
+  let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
+  let _ = emitWordEqTest e v (intToString (cp * 2 + 1)) failL
+  env
+emitRefutMatch e env (PLit (LBool b)) v _ failL =
+  let _ = emitWordEqTest e v (if b then "3" else "1") failL
+  env
+emitRefutMatch e env (PLit (LString s)) v _ failL =
+  let (lit, _) = emitLit e (LString s)
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 @mdk_string_eq(i64 " ++ v ++ ", i64 " ++ lit ++ ")")
+  let _ = emitWordEqTest e r "3" failL
+  env
+-- range pattern (G6): `lo <= v && v <= hi` (`..=`) or `lo <= v && v < hi` (`..`),
+-- on the tagged immediate words (the `n*2+1` transform is strictly monotonic for
+-- both Int and Char, so the tagged comparison matches the untagged one).  Mirrors
+-- eval.mdk's inIntRange/inCharRange: incl ⇒ `<= hi`, else `<= hi-1` ≡ `< hi`.
+emitRefutMatch e env (PRng lo hi incl) v _ failL =
+  let _ = emitRangeTest e v (rngBound lo) (rngBound hi) incl failL
+  env
+-- constructor: test the discriminant against the ctor's composite tag; on
+-- mismatch branch to failL, on match load fields and recurse element-wise.
+emitRefutMatch e env (PCon "True" []) v body failL = emitRefutMatch e env (PLit (LBool True)) v body failL
+emitRefutMatch e env (PCon "False" []) v body failL = emitRefutMatch e env (PLit (LBool False)) v body failL
+emitRefutMatch e env (PCon c args) v body failL =
+  let tagReg = loadDiscriminant e v
+  let _ = emitWordEqTest e tagReg (intToString (cellTag e c)) failL
+  emitRefutFields e env args v body failL 0
+-- list cons cell: test the discriminant is "Cons", then recurse on head/tail.
+emitRefutMatch e env (PCons h t) v body failL =
+  let tagReg = loadDiscriminant e v
+  let _ = emitWordEqTest e tagReg (intToString (cellTag e "Cons")) failL
+  emitRefutFields e env [h, t] v body failL 0
+emitRefutMatch e env (PList []) v _ failL =
+  let tagReg = loadDiscriminant e v
+  let _ = emitWordEqTest e tagReg (intToString (cellTag e "Nil")) failL
+  env
+emitRefutMatch e env (PList (p::ps)) v body failL =
+  let tagReg = loadDiscriminant e v
+  let _ = emitWordEqTest e tagReg (intToString (cellTag e "Cons")) failL
+  emitRefutFields e env [p, PList ps] v body failL 0
+emitRefutMatch e env p _ _ _ =
+  gapEnv ("refutable pattern in guard/range arm not lowered (variable / wildcard / as / tuple / literal / range / constructor / cons / list only): " ++ ptag p) env
+
+-- recurse a refutable test over a cell's leading fields (loadField per index).
+emitRefutFields : Emit -> List (String, (String, LTy)) -> List Pat -> String -> CExpr -> String -> Int -> <Mut> List (String, (String, LTy))
+emitRefutFields _ env [] _ _ _ _ = env
+emitRefutFields e env (p::rest) v body failL i =
+  let f = loadField e v i
+  let env2 = emitRefutMatch e env p f body failL
+  emitRefutFields e env2 rest v body failL (i + 1)
+
+-- emit `icmp eq word, k`; on inequality branch to failL, else fall through.
+emitWordEqTest : Emit -> String -> String -> String -> <Mut> Unit
+emitWordEqTest e word k failL =
+  let cmp = freshReg e
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ word ++ ", " ++ k)
+  let ok = "refok" ++ intToString (freshId e)
+  let _ = emit e ("  br i1 " ++ cmp ++ ", label %" ++ ok ++ ", label %" ++ failL)
+  emit e (ok ++ ":")
+
+-- emit a range membership test on the tagged word `v`: `v >= loWord` AND
+-- (incl ? `v <= hiWord` : `v < hiWord`); any failing comparison branches to failL.
+emitRangeTest : Emit -> String -> Int -> Int -> Bool -> String -> <Mut> Unit
+emitRangeTest e v lo hi incl failL =
+  let loW = intToString (lo * 2 + 1)
+  let hiW = intToString (hi * 2 + 1)
+  let n = intToString (freshId e)
+  let cLo = freshReg e
+  let _ = emit e ("  " ++ cLo ++ " = icmp sge i64 " ++ v ++ ", " ++ loW)
+  let mid = "rngmid" ++ n
+  let _ = emit e ("  br i1 " ++ cLo ++ ", label %" ++ mid ++ ", label %" ++ failL)
+  let _ = emit e (mid ++ ":")
+  let cHi = freshReg e
+  let op = if incl then "sle" else "slt"
+  let _ = emit e ("  " ++ cHi ++ " = icmp " ++ op ++ " i64 " ++ v ++ ", " ++ hiW)
+  let ok = "rngok" ++ n
+  let _ = emit e ("  br i1 " ++ cHi ++ ", label %" ++ ok ++ ", label %" ++ failL)
+  emit e (ok ++ ":")
+
+-- the Int codepoint of a range bound literal (Int directly, Char as its
+-- codepoint); other literal kinds can't form a range pattern (parser-rejected).
+rngBound : Lit -> Int
+rngBound (LInt n) = n
+rngBound (LChar c) = charCode (arrayGetUnsafe 0 (stringToChars c))
+rngBound _ = 0
 
 -- the i-th element of a list, or `dflt` if out of range.
 nthOr : List String -> Int -> String -> String

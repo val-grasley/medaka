@@ -83,17 +83,24 @@ which closed Map-impl + #21 one-level via `argImplRequiresRoutesRec`)** — exte
 
 ## TIER 2 — CAPABILITY GAPS (a VALID construct can't build, but fails LOUD). Close before flip (user wants all closed).
 
-### G5 — refutable pattern-guards
-**Repro:** `match … x if Just y <- e => …` → native clean-panics `refutable pattern guard …
-not yet lowered`; oracle runs it. (Irrefutable `x <- e` guards + match-arm `if` guards WORK
-— CTGuard closed.) `selfhost/llvm_emit.mdk` `emitGuardedArm`/`emitGuardChain` — add the
-refutable `CGBind` case (test + branch to next clause on match-failure). See AGENTS.md
-gotcha + `test/llvm_fixtures/guard_match_*`.
+### G5 — refutable pattern-guards — ✅ CLOSED 2026-06-12
+**Repro:** `match … x if Just y <- e => …` → native clean-panicked `refutable pattern guard …
+not yet lowered`; oracle ran it. (Irrefutable `x <- e` guards + match-arm `if` guards WORK
+— CTGuard closed.) **Fix:** `selfhost/llvm_emit.mdk` new `emitRefutMatch` (refutable pattern
+test + `br failL` on mismatch, binds vars + falls through on match); `emitGuardChain`'s
+`CGBind` arm routes through it; `allGuardsEmittable` now accepts all `CGBind`. Native `f (Box w
+<- x)`→`w`, fallthrough on mismatch→next clause; irrefutable + `if` guards preserved. Fixpoint
+C3a/C3b hold. Fixture `test/llvm_fixtures/guard_refut_ctor.mdk`.
 
-### G6 — range patterns in `match`
+### G6 — range patterns in `match` — ✅ CLOSED 2026-06-12
 **Repro:** `match n { 1..9 => "digit" ; _ => "big" }` / `'a'..='z'` → parse + typecheck OK,
-then **emitter panic** `selfhost/llvm_emit.mdk:~494 unsupported pattern … PRng`. `bindPattern`
-PRng + synthesized range-comparison guard (per `CONSTRUCT-COVERAGE.md` A2/A3 prose). Emit-only.
+then **emitter panicked** `selfhost/llvm_emit.mdk:~494 unsupported pattern … PRng`. **Fix:**
+`PRng` canonicalizes to PWild in the matrix (`patNeedsGuard`), so the tree routes to a CTGuard;
+`emitGuardedArm` now re-matches the arm pattern via `emitRefutMatch`, whose `PRng` case emits
+`lo <= n && (incl ? n <= hi : n < hi)` on the tagged words (`n*2+1` monotonic → tagged compare
+== untagged; Int + Char). Matches `eval.mdk`'s inIntRange/inCharRange boundaries exactly
+(verified incl/excl/negative/char on the binary). Fixpoint C3a/C3b hold. Fixtures
+`test/llvm_fixtures/rng_pat_int_{excl,incl,neg}.mdk` + `rng_pat_char.mdk`.
 
 ### G7 — `foldMap` / `empty` (RNone Monoid-default seed)
 **Repro:** `foldMap (x => [x, x]) [1,2,3]` → native clean-panics; oracle `[1,1,2,2,3,3]`. A

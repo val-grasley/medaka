@@ -1,0 +1,8 @@
+-- G6: INCLUSIVE range pattern `lo..=hi` in a match arm — emits `lo <= n && n <= hi`.
+-- Boundaries: 1->in, 9->in (included), 10->out.
+-- in=1, out=0 ; main = 1 + 1 + 0 = 2
+classify n = match n
+  1..=9 => 1
+  _ => 0
+
+main = classify 1 + classify 9 + classify 10

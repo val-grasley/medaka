@@ -1,0 +1,9 @@
+-- G6: range pattern with NEGATIVE bounds (`-1..1`) — the tagged-word comparison
+-- (`n*2+1`, strictly monotonic incl. negatives) matches the untagged range.
+-- Half-open: -1->mid, 0->mid, 1->out (excluded).
+-- mid=1, out=0 ; main = 1 + 1 + 0 = 2
+classify n = match n
+  -1..1 => 1
+  _ => 0
+
+main = classify (-1) + classify 0 + classify 1

@@ -1,0 +1,10 @@
+-- G6: half-open range pattern `lo..hi` in a match arm.  PRng canonicalizes to
+-- PWild in the decision matrix, so the tree routes here unconditionally and the
+-- guarded-arm re-match emits `lo <= n && n < hi` (half-open: `n <= hi-1`).
+-- Boundaries: 1->digit, 8->digit, 9->big (excluded), 0->big.
+-- digit=1, big=0 ; main = 1 + 1 + 0 + 0 = 2
+classify n = match n
+  1..9 => 1
+  _ => 0
+
+main = classify 1 + classify 8 + classify 9 + classify 0

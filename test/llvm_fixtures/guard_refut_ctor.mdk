@@ -1,0 +1,13 @@
+-- G5: REFUTABLE pattern-guard (`Box w <- x`) in a match arm (CTGuard).  The guard
+-- binds `w` from `x` only when `x` matches `Box w`; on a refutable mismatch
+-- (Empty) the arm falls through to the unguarded `_` arm.  Mirrors the
+-- interpreter's cevalGuardedBody re-running matchPat on the guard bind.  Uses a
+-- local ADT (fixtures are prelude-free, so no Option/Some).
+-- f (Box 5) = 5 ; f Empty = 0 ; main = 5 + 0 + 100 = 105
+data Box = Box Int | Empty
+
+f x = match x
+  v if Box w <- x => w
+  _ => 0
+
+main = f (Box 5) + f Empty + 100
