@@ -1,0 +1,6 @@
+-- Private helper `emit` with type Int -> Int (NOT exported).
+export emitA : Int -> Int
+emitA x = emit x
+
+emit : Int -> Int
+emit x = x + 1

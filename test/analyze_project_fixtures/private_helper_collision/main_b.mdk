@@ -1,0 +1,14 @@
+-- Imports lib_a, has its OWN private `emit` of a DIFFERENT type (String -> String).
+-- Per-module isolation (OCaml typecheck_module) keeps these separate → CLEAN.
+-- The native analyzeProject flat-concats both modules' decls into one
+-- checkProgramDiags, so lib_a's `emit : Int -> Int` collides with this module's
+-- `emit : String -> String`, yielding spurious `Type mismatch: Int vs String`.
+import lib_a.{emitA}
+
+useEmit : String -> String
+useEmit s = emit s
+
+emit : String -> String
+emit s = s
+
+main = println (useEmit "x")
