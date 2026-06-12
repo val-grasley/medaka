@@ -222,6 +222,32 @@ main : <IO> Unit
 main = putStrLn (intToString (viaA 10) ++ " " ++ intToString (viaB 10))
 EOF
 
+# nested (subfolder) module resolution: a DOTTED import `sub.helper` resolves to
+# the nested file <root>/sub/helper.mdk (loader.mdk fileOfModuleId/moduleIdOfPath
+# dot↔slash).  The nested module also imports a FLAT sibling (sib) at the entry
+# root AND a stdlib module (list), confirming the loader roots compose and that a
+# dotted module ID survives per-module name mangling into a valid LLVM symbol.
+mkdir -p "$WORK/src/nested/sub"
+cat > "$WORK/src/nested/sib.mdk" <<'EOF'
+export bang : String -> String
+bang s = stringConcat [s, "!!"]
+EOF
+cat > "$WORK/src/nested/sub/helper.mdk" <<'EOF'
+import sib.{bang}
+import list.{range, head}
+export greet : String -> String
+greet name =
+  let n = match head (range 5 9)
+    Some x => x
+    None => 0
+  bang (stringConcat ["Hi ", name, " first=", intToString n])
+EOF
+cat > "$WORK/src/nested/main.mdk" <<'EOF'
+import sub.helper.{greet}
+main : <IO> Unit
+main = putStrLn (greet "there")
+EOF
+
 cat > "$WORK/src/show_debug.mdk" <<'EOF'
 main : <IO> Unit
 main = putStrLn (debug 42)
@@ -347,6 +373,7 @@ for p in $PROGRAMS; do
 done
 check "multimodule" "$WORK/src/mm/entry.mdk"
 check "l1_twomod" "$WORK/src/l1/entry.mdk"
+check "nested_subfolder" "$WORK/src/nested/main.mdk"
 
 printf '\n%d ok, %d failing (of %d)\n' "$pass" "$fail" "$((pass+fail))"
 [ "$fail" -eq 0 ]

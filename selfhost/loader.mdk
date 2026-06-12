@@ -3,8 +3,10 @@
 --
 -- Simplifications vs the reference (sufficient for the flat, single-root selfhost
 -- tree; noted so they're not mistaken for completeness):
---   * Module IDs are flat — no subdirectory `/`↔`.` rewriting (selfhost has no
---     nested module paths).  fileOfModuleId / moduleIdOfPath assume this.
+--   * Nested module paths ARE supported: a dotted module ID `a.b` maps to the
+--     nested file `<root>/a/b.mdk`, and a file path's module ID replaces `/`→`.`
+--     (mirrors loader.ml file_of_module_id / module_id_of_path).  Flat bare names
+--     (no `.` / no nested `/`) round-trip unchanged.
 --   * No LSP buffer-override `read`, no multi-root AmbiguousModule check.
 --   * Cycles ARE detected (an in-progress stack) and reported as an Err.
 
@@ -36,6 +38,30 @@ joinDot [] = ""
 joinDot [x] = x
 joinDot (x :: xs) = stringConcat [x, ".", joinDot xs]
 
+-- split a String on a single-char separator (mirrors String.split_on_char).
+-- Always returns ≥1 segment; empty input → [""].  No-sep input → [s].
+splitOnChar : String -> String -> List String
+splitOnChar sep s = splitGo sep s 0 (stringLength s) ""
+
+splitGo : String -> String -> Int -> Int -> String -> List String
+splitGo sep s i len acc =
+  if i >= len then [acc]
+  else
+    let c = stringSlice i (i + 1) s
+    if c == sep then acc :: splitGo sep s (i + 1) len ""
+    else splitGo sep s (i + 1) len (acc ++ c)
+
+-- join segments with "/" (mirrors String.concat "/")
+joinSlash : List String -> String
+joinSlash [] = ""
+joinSlash [x] = x
+joinSlash (x :: xs) = stringConcat [x, "/", joinSlash xs]
+
+-- replace every "/" with "." in a path (mirrors loader.ml module_id_of_path's
+-- `String.map (fun c -> if c = '/' then '.' else c)`)
+slashToDot : String -> String
+slashToDot s = joinDot (splitOnChar "/" s)
+
 -- ── path / module-id utilities ──
 
 startsWith : String -> String -> Bool
@@ -56,12 +82,18 @@ stripSuffixStr : String -> String -> String
 stripSuffixStr suf s =
   if endsWith suf s then stringSlice 0 (stringLength s - stringLength suf) s else s
 
--- the file path a module ID maps to under a single root (no existence check)
+-- the file path a module ID maps to under a single root (no existence check).
+-- A dotted module ID maps to a nested path: split on `.`, join with `/`, append
+-- `.mdk` (mirrors loader.ml file_of_module_id).  A flat bare name (no `.`) →
+-- `[name]` → `name`, so `<root>/name.mdk` — unchanged from the flat behaviour.
 fileOfModuleId : String -> String -> String
-fileOfModuleId root modId = stringConcat [root, "/", modId, ".mdk"]
+fileOfModuleId root modId =
+  stringConcat [root, "/", joinSlash (splitOnChar "." modId), ".mdk"]
 
 -- the module ID a file path carries: strip the first matching root prefix, then
--- the `.mdk` suffix (flat — no `/`→`.` since selfhost has no nested modules)
+-- the `.mdk` suffix, then replace `/`→`.` (mirrors loader.ml module_id_of_path).
+-- A flat file under the root has no `/` left after stripping → slashToDot is a
+-- no-op, so flat behaviour is unchanged.
 relUnderRoots : List String -> String -> String
 relUnderRoots [] path = path
 relUnderRoots (r :: rs) path =
@@ -70,7 +102,7 @@ relUnderRoots (r :: rs) path =
   else relUnderRoots rs path
 
 moduleIdOfPath : List String -> String -> String
-moduleIdOfPath roots path = stripSuffixStr ".mdk" (relUnderRoots roots path)
+moduleIdOfPath roots path = slashToDot (stripSuffixStr ".mdk" (relUnderRoots roots path))
 
 -- ── dependency extraction (mirrors loader.ml's direct_imports) ──
 
