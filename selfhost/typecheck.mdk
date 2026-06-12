@@ -6077,6 +6077,13 @@ elabModuleStamp seedVars accData implDecls prog =
   -- golden module drivers byte-identical).
   let _ = if argStampEnabled.value then realizeRecDictApps pendingRecDictApps.value else ()
   let _ = if argStampEnabled.value then resolveDictApps stampImplTable pendingDictApps.value else ()
+  -- G7 (emit path only): fill each foldMap-style method occurrence's methRoutes from
+  -- the monos its `Monoid m` constraint resolved to AT THE CALL SITE (List vs String),
+  -- so emitDefaultRKey threads the right per-call dict word into the shared default
+  -- body.  Independent of the body-side dict routing (the emitter restamps the body's
+  -- cross-interface `empty` to its `$dict_<method>_<slot>` param directly).  Gated on
+  -- argStampEnabled → golden/eval drivers route via elaborateDict, stay byte-identical.
+  let _ = if argStampEnabled.value then resolveMethodDicts stampImplTable pendingMethodDicts.value else ()
   let _ = if argMeasureEnabled.value then accumArgSites pendingArgSites.value else ()
   schemes
 

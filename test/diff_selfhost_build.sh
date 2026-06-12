@@ -148,6 +148,17 @@ main =
   putStrLn (intToString (sumOf [10, 20, 30]))
 EOF
 
+# G7: foldMap default body threads a method-level Monoid dict (`empty`) into the
+# shared default define.  Covers BOTH monoids over the SAME container define (List
+# container → List monoid AND String monoid) and a different container (Option).
+cat > "$WORK/src/foldmap.mdk" <<'EOF'
+main : <IO> Unit
+main =
+  putStrLn (debug (foldMap (x => [x, x]) [1, 2, 3]))
+  putStrLn (foldMap (x => x) ["a", "b", "c"])
+  putStrLn (debug (foldMap (x => [x]) (Some 42)))
+EOF
+
 # multi-module
 mkdir -p "$WORK/src/mm"
 cat > "$WORK/src/mm/helper.mdk" <<'EOF'
@@ -277,7 +288,7 @@ main =
   putStrLn (debug (eq (Box [1, 2, 3]) (Box [1, 2, 4])))
 EOF
 
-PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr numpoly show_debug eq deriving map_impl g4_box_eq"
+PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr numpoly show_debug eq deriving map_impl g4_box_eq foldmap"
 
 pass=0; fail=0
 

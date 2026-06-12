@@ -10,7 +10,7 @@
 -- map (the IR deliberately stays close to the core AST so the equivalence gate
 -- is a clean diff, not a rewrite).
 
-import ast.{Lit(..), Pat(..), RecPatField(..), Expr(..), Arm(..), Guard(..), DoStmt(..), FieldAssign(..), LetBind(..), FunClause(..), Addr(..), Decl(..), Variant(..), ConPayload(..), Field(..), Ty(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..)}
+import ast.{Lit(..), Pat(..), RecPatField(..), Expr(..), Arm(..), Guard(..), DoStmt(..), FieldAssign(..), LetBind(..), FunClause(..), Addr(..), Decl(..), Variant(..), ConPayload(..), Field(..), Ty(..), Constraint(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..)}
 import core_ir.{CExpr(..), CArm(..), CGuard(..), CStmt(..), CField(..), CBind(..), CClause(..), CImplEntry(..), CImplBody(..), CProgram(..), CTree(..), CTBranch(..), CHead(..)}
 import eval.{buildCtorToType, buildCtorFieldOrders, ctorFieldOrdersRef, buildIfaceDispatch, lookupPositions, tyvarsInArgs, headTyconHead}
 import util.{contains, concatMapList, listLen, allList, anyList, lookupAssoc}
@@ -757,6 +757,62 @@ ifaceMethodArityEntries _ = []
 ifaceMethodArityEntry : String -> IfaceMethod -> (String, (String, Int))
 ifaceMethodArityEntry ifaceName (IfaceMethod mname mty _) =
   (mname, (ifaceName, listLen (methodArgTys mty)))
+
+-- ── method → method-level constraint INTERFACE names (native backend, G7) ────
+-- Per interface method that carries a method-level `=>` constraint (foldMap's
+-- `Monoid m =>`): the interface name of each such constraint, IN SLOT ORDER —
+-- the SAME order typecheck's `methodConstraintSlotIds`/`resolveMethodDicts` fill
+-- the method occurrence's `methRoutes` list.  This lets the default-body emitter
+-- map a cross-interface method (e.g. the `empty` in foldMap's default, a Monoid
+-- method whose dict is threaded per-call by the RESULT type, not the container)
+-- to the threaded method-dict PARAM and dispatch it at run time — so one shared
+-- `@mdk_default_foldMap_List` serves both a List-monoid and a String-monoid fold.
+-- A constraint over ONLY interface params contributes no slot (it dispatches via
+-- the impl, not a per-call dict); mirrors typecheck's `constraintIsMethodLevel`.
+export
+methodConstraintIfaces : List Decl -> List (String, List String)
+methodConstraintIfaces prog = concatMapList methodConstraintIfaceEntries prog
+
+methodConstraintIfaceEntries : Decl -> List (String, List String)
+methodConstraintIfaceEntries DInterface { typarams, methods, ... } =
+  concatMapList (m => methodConstraintIfaceEntry typarams m) methods
+methodConstraintIfaceEntries _ = []
+
+methodConstraintIfaceEntry : List String -> IfaceMethod -> List (String, List String)
+methodConstraintIfaceEntry typarams (IfaceMethod mname mty _) =
+  let ifaces = methodLevelConstraintIfaces typarams mty
+  if isEmptyList ifaces then [] else [(mname, ifaces)]
+
+-- the interface name of each method-level constraint in [ty], in declaration
+-- order (peels TyConstrained/TyEffect like methodConstraintSlotIds).
+methodLevelConstraintIfaces : List String -> Ty -> List String
+methodLevelConstraintIfaces typarams (TyConstrained cs t) =
+  concatMapList (c => constraintIfaceIfMethodLevel typarams c) cs ++ methodLevelConstraintIfaces typarams t
+methodLevelConstraintIfaces typarams (TyEffect _ _ t) = methodLevelConstraintIfaces typarams t
+methodLevelConstraintIfaces _ _ = []
+
+constraintIfaceIfMethodLevel : List String -> Constraint -> List String
+constraintIfaceIfMethodLevel typarams (Constraint ifaceName args)
+  | constraintArgsMentionNonParam typarams args = [ifaceName]
+  | otherwise = []
+
+-- a constraint is method-level iff one of its argument types mentions a tyvar
+-- that is NOT an interface param (so the dict is supplied per-call).
+constraintArgsMentionNonParam : List String -> List Ty -> Bool
+constraintArgsMentionNonParam typarams args = anyList (t => tyMentionsNonParam t typarams) args
+
+tyMentionsNonParam : Ty -> List String -> Bool
+tyMentionsNonParam (TyVar n) params = not (contains n params)
+tyMentionsNonParam (TyCon _) _ = False
+tyMentionsNonParam (TyApp a b) params = tyMentionsNonParam a params || tyMentionsNonParam b params
+tyMentionsNonParam (TyFun a b) params = tyMentionsNonParam a params || tyMentionsNonParam b params
+tyMentionsNonParam (TyTuple ts) params = anyList (t => tyMentionsNonParam t params) ts
+tyMentionsNonParam (TyEffect _ _ t) params = tyMentionsNonParam t params
+tyMentionsNonParam (TyConstrained _ t) params = tyMentionsNonParam t params
+
+isEmptyList : List a -> Bool
+isEmptyList [] = True
+isEmptyList _ = False
 
 -- ── constructor → DECLARED field type-head names (native backend, Gap E2) ────
 -- Per data-constructor name: the head type-name of each declared field, IN

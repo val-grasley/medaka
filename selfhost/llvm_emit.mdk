@@ -364,6 +364,26 @@ methodArityOf method = match lookupAssoc method methodIfaceTableRef.value
   Some (_, arity) => arity
   None => 0
 
+-- ── method → method-level constraint INTERFACE names (native backend, G7) ────
+-- Per interface method that carries a method-level `=>` constraint, the interface
+-- names of those constraints IN SLOT ORDER (the order typecheck fills the method
+-- occurrence's `methRoutes`).  The default-body emitter reads this to map a
+-- cross-interface method in the body (foldMap's `empty`, a Monoid method) to the
+-- threaded method-dict param at its slot, so it dispatches the right impl at run
+-- time without baking a single Monoid tag into the shared default define.
+methodConstraintIfacesRef : Ref (List (String, List String))
+methodConstraintIfacesRef = Ref []
+
+export
+installMethodConstraintIfaces : List (String, List String) -> <Mut> Unit
+installMethodConstraintIfaces t = set_ref methodConstraintIfacesRef t
+
+-- the method-level constraint interface names for [method], in slot order ([]=none).
+methodConstraintIfacesOf : String -> <Mut> List String
+methodConstraintIfacesOf method = match lookupAssoc method methodConstraintIfacesRef.value
+  Some ifaces => ifaces
+  None => []
+
 -- ── constructor → DECLARED field type-head names (native backend, Gap E2) ────
 -- The ctor → declared-field-type-head-name table from core_ir_lower's
 -- `ctorFieldTypeNames` (e.g. `Rect Float Float` → ("Rect", ["Float","Float"])).
@@ -2419,7 +2439,7 @@ emitMethod e env name route implRoutes methRoutes argOps =
           -- (scalar/element result) keep the LTInt default.
           let resTy = if methodReturnsSelf (implEntryIface entry) name then tagToLTy tag else LTInt
           emitImplCallSat e (implFnName tag name) (dictWords ++ argOps) (methodArityOf name + lengthS dictWords) resTy
-        None => emitDefaultRKey e name tag argOps
+        None => emitDefaultRKey e env name tag methRoutes implRoutes argOps
     RDict d => emitMethodDispatch e env name d argOps
     RDictFwd d => emitMethodDispatch e env name d argOps
     RNone => emitMethodArgDispatch e name argOps
@@ -2493,13 +2513,23 @@ emitMethodValDefine e lamName name route implRoutes methRoutes arity capNames =
 -- same-interface calls re-stamped to `RKey tag` so a partially-applied inner
 -- method like `filterMap` lowers to a direct call), cache it, and call it
 -- directly with the call-site args.  No default ⇒ the original missing-impl gap.
-emitDefaultRKey : Emit -> String -> String -> List String -> <Mut> (String, LTy)
-emitDefaultRKey e name tag argOps = match defaultFor e name
+-- G7: a default-method body may call methods of a DIFFERENT interface whose dict
+-- is threaded per-call by the method's own `=>` constraint (foldMap's `empty`, a
+-- Monoid method routed by the RESULT type, not the Foldable container).  Those
+-- method-level dicts (methRoutes, resolved from the CALL-SITE constraint monos) are
+-- passed as LEADING dict-word args to the shared `@mdk_default_<method>_<tag>` define,
+-- whose cross-interface methods the emitter restamped to `RDict $dict_<method>_<slot>`
+-- (the dict-passing param) and dispatch the right impl at run time.  The define is
+-- still shared across monoids: only the runtime dict word differs per call, so one
+-- `@mdk_default_foldMap_List` serves both a List- and a String-monoid fold.
+emitDefaultRKey : Emit -> List (String, (String, LTy)) -> String -> String -> List Route -> List Route -> List String -> <Mut> (String, LTy)
+emitDefaultRKey e env name tag methRoutes _ argOps = match defaultFor e name
   Some entry =>
     let fname = defaultFnName tag name
     let _ = ensureDefaultEmitted e fname tag name entry
+    let mdictWords = dictWordsOf e env methRoutes
     let resTy = if methodReturnsSelf (methodIfaceOf name) name then tagToLTy tag else LTInt
-    emitImplCall e fname argOps resTy
+    emitImplCall e fname (mdictWords ++ argOps) resTy
   None => gapE ("no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
 
 
@@ -3038,12 +3068,26 @@ emitDefaultDefine : Emit -> String -> String -> String -> CImplEntry -> <Mut> Un
 emitDefaultDefine e fname tag method entry =
   let pats0 = implPats entry
   let body0 = implBody entry
-  let arity = maxInt (methodArityOf method) (listLen pats0)
+  -- G7: the dict-passing pass already PREPENDED one `$dict_<method>_<slot>` param per
+  -- method-level constraint (foldMap's `Monoid m`) to this default's pats, so the full
+  -- arity is nDicts + the method's interface arity.  `methodArityOf` counts only the
+  -- interface args (f + container); add nDicts back so eta-expansion supplies the
+  -- still-missing trailing interface params (the container) — without it the body stays
+  -- the under-applied `fold lam empty` (a partial closure, never run on the container).
+  let dictIfaces = methodConstraintIfacesOf method
+  let nDicts = listLen dictIfaces
+  let arity = maxInt (nDicts + methodArityOf method) (listLen pats0)
   let (pats, body1) = etaExpand pats0 body0 arity (listLen pats0)
   -- re-stamp inner same-interface method occurrences to the concrete RKey tag so a
   -- partially-applied inner method (`filterMap` in `filter`'s body) lowers to a
   -- direct `@mdk_impl_<tag>_<method>` call instead of an arg-tag site.
-  let body = restampIface methodIfaceTableRef.value (methodIfaceOf method) tag body1
+  let bodyS = restampIface methodIfaceTableRef.value (methodIfaceOf method) tag body1
+  -- G7: a CROSS-interface method in the body (the Monoid `empty`, routed per-call by
+  -- the RESULT type) is left RNone by restampIface (different interface) → arg-tag
+  -- dispatch with no discriminating arg → panic.  Route it through the dict-passing's
+  -- own `$dict_<method>_<slot>` PARAM (RDict) so it dispatches the right Monoid impl at
+  -- run time from the threaded word; emitDefaultRKey supplies that word at the call site.
+  let body = restampCrossIface methodIfaceTableRef.value method dictIfaces bodyS
   let saved = (bufRef e).value
   let _ = set_ref (bufRef e) []
   let savedFt = fallthroughLabelRef.value
@@ -3101,6 +3145,62 @@ restampIface tbl iface tag (CList xs) = CList (map (restampIface tbl iface tag) 
 restampIface tbl iface tag (CFieldAccess a f) = CFieldAccess (restampIface tbl iface tag a) f
 restampIface tbl iface tag (CIndex a b) = CIndex (restampIface tbl iface tag a) (restampIface tbl iface tag b)
 restampIface _ _ _ other = other
+
+-- G7: route every CROSS-interface method occurrence in a default body (a bare
+-- `CVar m` / `CMethod m RNone` whose interface is one of the method's constraint
+-- interfaces, e.g. the Monoid `empty` in foldMap's default) to read the dict PARAM
+-- the dict-passing pass already prepended (`$dict_<method>_<slot>`, slot = the
+-- iface's index in dictIfaces).  emitGroupBody binds that PVar (by name) to its
+-- %argK, so `dictOperand env "$dict_<method>_<slot>"` resolves it at the dispatch
+-- site, and emitMethodDispatch switches the right Monoid impl off the threaded word.
+-- Same-interface methods were already restamped to RKey by restampIface — untouched.
+restampCrossIface : List (String, (String, Int)) -> String -> List String -> CExpr -> CExpr
+restampCrossIface tbl method difs (CVar m ad) = match crossDictSlot tbl difs m
+  Some k => CMethod m (RDict (dictParamNameE method k)) [] []
+  None => CVar m ad
+restampCrossIface tbl method difs (CMethod m RNone irs mrs) = match crossDictSlot tbl difs m
+  Some k => CMethod m (RDict (dictParamNameE method k)) irs mrs
+  None => CMethod m RNone irs mrs
+restampCrossIface tbl method difs (CApp f a) = CApp (restampCrossIface tbl method difs f) (restampCrossIface tbl method difs a)
+restampCrossIface tbl method difs (CLam ps b) = CLam ps (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CLet r p rhs b) = CLet r p (restampCrossIface tbl method difs rhs) (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CLetGroup bs b) = CLetGroup (map (restampCrossBind tbl method difs) bs) (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CMatch s arms) = CMatch (restampCrossIface tbl method difs s) (map (restampCrossArm tbl method difs) arms)
+restampCrossIface tbl method difs (CDecision s arms tr) = CDecision (restampCrossIface tbl method difs s) (map (restampCrossArm tbl method difs) arms) tr
+restampCrossIface tbl method difs (CIf c t el) = CIf (restampCrossIface tbl method difs c) (restampCrossIface tbl method difs t) (restampCrossIface tbl method difs el)
+restampCrossIface tbl method difs (CBinPrim op a b) = CBinPrim op (restampCrossIface tbl method difs a) (restampCrossIface tbl method difs b)
+restampCrossIface tbl method difs (CUnOp op a) = CUnOp op (restampCrossIface tbl method difs a)
+restampCrossIface tbl method difs (CTuple xs) = CTuple (map (restampCrossIface tbl method difs) xs)
+restampCrossIface tbl method difs (CList xs) = CList (map (restampCrossIface tbl method difs) xs)
+restampCrossIface tbl method difs (CFieldAccess a f) = CFieldAccess (restampCrossIface tbl method difs a) f
+restampCrossIface tbl method difs (CIndex a b) = CIndex (restampCrossIface tbl method difs a) (restampCrossIface tbl method difs b)
+restampCrossIface _ _ _ other = other
+
+-- the dict-passing param name for [method]'s [slot]-th method-level constraint dict;
+-- matches typecheck.mdk's dictParamName ("$dict_" ++ fn ++ "_" ++ slot).
+dictParamNameE : String -> Int -> String
+dictParamNameE method slot = "$dict_" ++ method ++ "_" ++ intToString slot
+
+-- the dict slot (index in dictIfaces) for method [m], if its interface is one of
+-- the method's method-level constraint interfaces; None otherwise.
+crossDictSlot : List (String, (String, Int)) -> List String -> String -> Option Int
+crossDictSlot tbl difs m =
+  let mi = ifaceOfIn tbl m
+  if mi == "" then None else indexOfStr mi difs
+
+restampCrossBind : List (String, (String, Int)) -> String -> List String -> CBind -> CBind
+restampCrossBind tbl method difs (CBind n cs) = CBind n (map (restampCrossClause tbl method difs) cs)
+
+restampCrossClause : List (String, (String, Int)) -> String -> List String -> CClause -> CClause
+restampCrossClause tbl method difs (CClause ps b) = CClause ps (restampCrossIface tbl method difs b)
+
+restampCrossArm : List (String, (String, Int)) -> String -> List String -> CArm -> CArm
+restampCrossArm tbl method difs (CArm p gs b) = CArm p (map (restampCrossGuard tbl method difs) gs) (restampCrossIface tbl method difs b)
+
+restampCrossGuard : List (String, (String, Int)) -> String -> List String -> CGuard -> CGuard
+restampCrossGuard tbl method difs (CGBool c) = CGBool (restampCrossIface tbl method difs c)
+restampCrossGuard tbl method difs (CGBind p c) = CGBind p (restampCrossIface tbl method difs c)
+
 
 -- the interface a method name belongs to, looked up in a pure table snapshot.
 ifaceOfIn : List (String, (String, Int)) -> String -> String
