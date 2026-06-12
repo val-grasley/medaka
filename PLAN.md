@@ -176,20 +176,22 @@ CANONICAL compiler** — the one users invoke and the one that builds the compil
    the **2026-06-11 perf checkpoint** — the ~18 emitter/typecheck perf wins (PERF-RESULTS.md) rewrote
    the emitter graph; re-minted via `test/refresh_seed.sh` and verified `bootstrap_from_seed.sh` C3a/C3b
    byte-identical.)
-6. 🟡 **Soundness + correctness — NOT fully closed (verified gap audit 2026-06-11, see
-   [`selfhost/PRE-FLIP-GAPS.md`](./selfhost/PRE-FLIP-GAPS.md)).** The TYPECHECK-AUDIT confirmed
-   findings (S1-S3, T1/T1b/T2, C1-C9, D1/D2, OBS1/3/4, C4-by-decision, C5, C8b) are closed, and
-   **L1 is now CLOSED** (mooted by universal mangling `332ef41`). BUT a 3-agent verified audit
-   (each repro'd on current main) found **outstanding soundness blockers the milestone flip must
-   close**: **G1** `build`/`run`/`check` don't typecheck-gate (ill-typed `1+"x"` builds + runs
-   garbage; check exits 0); **G2/D3** typechecker FALSE-ACCEPTS non-Num arithmetic (`"a"-"b"`);
-   **G3** `Num a =>` arithmetic at Float silently miscompiles (garbage / SIGSEGV); **G4** two-level
-   nested instance dict SIGSEGV (+ C7-native, D4). Plus loud capability gaps (G5 refutable
-   pattern-guards, G6 range patterns in match, G7 foldMap/empty) and narrow parser false-rejects
-   (G8) + the Float-literal limit (G9). **PRE-FLIP-GAPS.md is the gating punch list** (per-item
-   repro + fix-location + order). Good news the audit also confirmed: the error-path retirement-gate
-   (6 BLOCKERs + 7 MAJORs) is **CLEAR**, the session's dispatch fixes (#50/#54/#55/#21-one-level/L1)
-   verify CLOSED, and several COVERAGE/EMITTER-GAPS statuses are stale-*pessimistic* (already fixed).
+6. ✅ **Soundness + correctness — CLOSED 2026-06-12 (PRE-FLIP-GAPS.md punch list, all 9 items).**
+   The TYPECHECK-AUDIT confirmed findings (S1-S3, T1/T1b/T2, C1-C9, D1/D2, OBS1/3/4, C4-by-decision,
+   C5, C8b) are closed, **L1 CLOSED** (universal mangling `332ef41`), and the **3-agent verified
+   gap audit's 9 items are ALL CLOSED** (each diagnosed empirically — several audit root-causes were
+   wrong: G3≠#11, G4 broader than documented, G7 bigger than "add a route"): **G1** typecheck-gate
+   build/run/check (`1ca4fb7`); **G2** reject non-Num arithmetic (`3104031`); **G3** `Num a =>` at
+   Float via runtime `@mdk_num_*` tag-dispatch (`8752c60`); **G4** user-ADT `requires` dict — base +
+   nested + #21, covers C7-native/D4 (`f5c658b`); **G5/G6** refutable guards + range patterns
+   (`78ebb10`); **G7** method-level dicts into default bodies — also closes the Ord/`max`/`min`
+   default-method family (`4fb1160`); **G8** parser false-rejects (`2bc48a1`); **G9** Float
+   `sum`/`product` via `fromInt` seed (`fa0bbe9`). Seed re-minted (`0836d1e`), `bootstrap_from_seed`
+   PASS. **Deferred post-flip (not gates):** full Num-polymorphic integer literals + the
+   unconstrained-fn `fromInt`/section RNone edge. The error-path retirement-gate (6 BLOCKERs + 7
+   MAJORs) is **CLEAR**. **→ The milestone flip is now UNGATED** (make native canonical + re-root
+   gates on a hybrid oracle + doc sweep; then confidence-gated `lib/` removal after soak —
+   retirement ≠ removal).
 
 **Also gating retirement, beyond the 6-item bar:** the **Stage-4 tooling port** (lib/+bin/ host the
 tooling) — fmt/test/new/REPL/build/**LSP** ✅ (all 6 tools ported + differential-tested), and the

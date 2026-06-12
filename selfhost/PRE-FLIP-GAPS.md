@@ -1,16 +1,33 @@
 # PRE-FLIP-GAPS.md — outstanding native-compiler items to close before the canonicalization milestone flip
 
-**Status: the milestone flip (make native `medaka` canonical, retire OCaml) is GATED on
-this punch list.** Produced by a 3-agent verified gap audit (2026-06-11), each item
-**reproduced on current main** (`a6a95ce`-era). TRMC + all prior dispatch gaps are done;
-these are the residual soundness + capability gaps the flip must not ship with.
+**Status: ✅ ALL 9 ITEMS CLOSED (2026-06-12).** The punch-list gate on the milestone flip
+(make native `medaka` canonical, retire OCaml) is **clear**. Each item was reproduced on
+current main, diagnosed empirically (the audit's root-cause hypotheses were wrong on
+several — see notes), fixed, and verified native==interp with the full differential suite +
+`selfcompile_fixpoint` C3a/C3b. Seed re-minted at this checkpoint (`0836d1e`);
+`bootstrap_from_seed` PASS (native compiler built OCaml-free, seed byte-identical).
 
-> **CRITICAL META (held all session):** the gap docs (EMITTER-GAPS / COVERAGE /
-> TYPECHECK-AUDIT / DISPATCH-GAPS-SCOPE) are **stale** — every gap mispredicted on
-> contact this week (already-closed items marked open; documented root causes wrong 5×).
-> **DIAGNOSE-FIRST: reproduce each item on current main before trusting any root-cause
-> claim here or in the source docs.** The fix locations below are audit hypotheses, not
-> verified roots.
+| Gap | What | Commit | Notes |
+|-----|------|--------|-------|
+| G1 | typecheck-gate build/run/check (both drivers) | `1ca4fb7` | driver-level; OCaml `check` already gated |
+| G2 | typechecker reject non-Num arithmetic | `3104031` | hooked existing `checkImplObligations`; `++` kept separate; gated on `numIfaceRegistered` |
+| G3 | `Num a =>` arithmetic at Float | `8752c60` | **NOT #11's class** — `emitArith` picked int IR from static LTy; fixed via runtime `@mdk_num_*` tag-dispatch + `LTNum` |
+| G4 | user-ADT `requires` instance dict | `f5c658b` | **broader than documented** — base-case `Box Int` crashed + `Box(Box Int)` silently wrong; 2 causes (abstract-operand RDict route + #21 full-table threading); covers C7-native/D4 (element dicts threaded by value) |
+| G5 | refutable pattern-guards | `78ebb10` | `emitRefutMatch` arm |
+| G6 | range patterns in match | `78ebb10` | tagged-word range compare matches `eval.mdk` |
+| G7 | method-level dicts into default bodies | `4fb1160` | general fix; **also closes Ord/`max`/`min` default-method family**; foldMap List+String share one define |
+| G8 | selfhost parser false-rejects | `2bc48a1` | indented `let…in` body + negative range bounds |
+| G9 | Float `sum`/`product` (targeted) | `fa0bbe9` | `fromInt` point-ful seed + native arith-section `LTNum`; full Num-poly literals DEFERRED post-flip |
+
+**Deferred (post-flip, not flip gates):**
+- **Full Num-polymorphic integer literals** (`litType (LInt) → Num a` + defaulting, both compilers) — the larger version of G9; G9 closed the practical Float-numeric gap via `fromInt` seeds instead.
+- **Unconstrained-fn `fromInt`/operator-section RNone** (surfaced during G9): a return-position `fromInt`/section in a fn with NO `Num a =>` sig still hits the arg-tag gap, and auto-printing a polymorphic-`a` indirect-call result mistypes print. Narrow, non-soundness; dodged by the `Num a =>` sig on stdlib `sum`/`product`.
+
+> **META that held all session (kept as a record):** the gap docs (EMITTER-GAPS / COVERAGE /
+> TYPECHECK-AUDIT / DISPATCH-GAPS-SCOPE) were **stale** — root causes mispredicted repeatedly
+> (G3 ≠ #11, G4 broader than documented, G7 bigger than "add a route"). DIAGNOSE-FIRST paid off
+> every time. The per-gap sections below are the ORIGINAL audit hypotheses (historical; several
+> were wrong — see the result table above for what each actually was).
 
 ## How to verify any item
 - Oracle (reference): `./_build/default/bin/main.exe run <f>` and `… check <f>`.
@@ -31,7 +48,7 @@ checkpoint; do NOT re-mint per-fix).
 
 ## TIER 1 — SOUNDNESS BLOCKERS (native gives a wrong/crashing answer for a VALID program, or accepts an INVALID one). MUST close before flip.
 
-### G1 — `build`/`run`/`check` do not gate on typecheck  *(the keystone; silent miscompile)*
+### G1 — `build`/`run`/`check` do not gate on typecheck — ✅ CLOSED 2026-06-12 (`1ca4fb7`)
 **Repro:** `main = println (1 + "x")` → `medaka build` **emits + runs, prints garbage**
 (`2156693489`); both `check` and `build` **exit 0** while a type error exists.
 **Root (audit):** the native CLI drivers (`selfhost/medaka_cli.mdk` `runBuildCmd`/`runRunCmd`/
@@ -44,7 +61,7 @@ emit/eval** (abort + non-zero exit on any `typeError`); make `check` **exit non-
 diagnostics exist (CI `$?` parity). Driver-level, not deep typecheck.
 **Note:** G1 alone does NOT subsume G2 — G2 is the typechecker itself being wrong.
 
-### G2 — typechecker FALSE-ACCEPTS non-Num arithmetic (D3)
+### G2 — typechecker FALSE-ACCEPTS non-Num arithmetic — ✅ CLOSED 2026-06-12 (`3104031`)
 **Repro:** selfhost `check` **accepts** `"a" - "b"` / `True - False` / `"a" * "b"`; OCaml
 rejects (`No impl of Num for String`).
 **Root (audit):** the selfhost arithmetic operators (`-`,`*`,…) don't record the `Num`
@@ -53,7 +70,7 @@ operator→method desugar/typecheck must thread the `Num` constraint so a non-Nu
 is rejected. **`harden-typechecker` skill.** `selfhost/typecheck.mdk` (+ mirror the
 operator-constraint logic; check `builtins`/the binop typing path).
 
-### G3 — `Num a =>` arithmetic at Float — SILENT miscompile  *(scariest — wrong float, no crash)*
+### G3 — `Num a =>` arithmetic at Float — ✅ CLOSED 2026-06-12 (`8752c60`)
 **Repro:** `double : Num a => a -> a ; double x = x + x ; double 2.5` → interp `5.`, native
 **`-4.86e-63`** (garbage). `x * x` at Float → **SIGSEGV 139**. Both fine at **Int**;
 concrete `Float -> Float` fine.
@@ -64,7 +81,7 @@ primitive Float receiver** (primitives carry no runtime cell tag for arg-tag dis
 Num dict to a primitive-typed dispatch. Diagnose against #11's fix as the precedent.
 `selfhost/llvm_emit.mdk` + dispatch/`typecheck.mdk`. Route-fragile, Opus + oversight.
 
-### G4 — two-level nested instance dict — SIGSEGV
+### G4 — user-ADT `requires` instance dict — ✅ CLOSED 2026-06-12 (`f5c658b`; broader than documented)
 **Repro:** `data Box a = Box a ; impl Eq (Box a) requires Eq a where eq (Box x)(Box y)=x==y`
 over `Box [1,2,3]` (poly field instantiated at `List`) → native crashes; oracle `True`.
 `Box (List a)` fixed-field and `Box (Box Int)` WORK; the poly-field-over-List two-level case
@@ -102,7 +119,7 @@ then **emitter panicked** `selfhost/llvm_emit.mdk:~494 unsupported pattern … P
 (verified incl/excl/negative/char on the binary). Fixpoint C3a/C3b hold. Fixtures
 `test/llvm_fixtures/rng_pat_int_{excl,incl,neg}.mdk` + `rng_pat_char.mdk`.
 
-### G7 — `foldMap` / `empty` (RNone Monoid-default seed)
+### G7 — `foldMap`/`empty` + Ord-default family — ✅ CLOSED 2026-06-12 (`4fb1160`)
 **Repro:** `foldMap (x => [x, x]) [1,2,3]` → native clean-panics; oracle `[1,1,2,2,3,3]`. A
 common stdlib shape (Foldable default-method dispatch where the Monoid `empty` seed has no
 concrete tag → RNone). Same default-method-dispatch family as the closed gaps; diagnose its
@@ -112,7 +129,7 @@ route. `selfhost/typecheck.mdk` + emit.
 
 ## TIER 3 — NARROW (parser false-rejects + a known limit). Close for completeness.
 
-### G8 — selfhost parser false-rejects (vs OCaml accepts)
+### G8 — selfhost parser false-rejects — ✅ CLOSED 2026-06-12 (`2bc48a1`)
 - **Indented multi-line `let … in` clause body:** `f x =⏎  let go n = … in go x` →
   `parser.mdk:2704 parse error`; single-line `f x = let … in …` parses. (PLAN "Known parser
   gaps" / OBS2 / T2.)
@@ -120,7 +137,7 @@ route. `selfhost/typecheck.mdk` + emit.
   `TInt`, not `MINUS INT`). Non-negative ranges parse.
 `selfhost/parser.mdk`. UX footguns; the bootstrap corpus avoids both.
 
-### G9 — Float-literal arithmetic (KNOWN LIMIT, not a divergence)
+### G9 — Float `sum`/`product` (targeted) — ✅ CLOSED 2026-06-12 (`fa0bbe9`); full literals deferred
 **Repro:** `sum [1.0, 2.0, 3.0]` / Float-literal computations → **both** oracle and selfhost
 reject (`Int vs Float`): the selfhost typechecker monomorphizes int literals to `Int`
 (`litType (LInt _) = TCon "Int"`), so a Float-literal list doesn't typecheck. **Consistent
