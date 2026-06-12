@@ -614,9 +614,11 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
   byte-identical, all `bootstrap_*`/`selfcompile_*` green), so this is the safe
   moment to do it. Pairs naturally with the completeness/coverage work (item 2).
 
-**Gated milestone — retire `lib/*.ml`.** Once the bar is met: make native
-`medaka` the default build, re-root the remaining gates on the hybrid oracle,
-archive/delete the OCaml compiler, update all docs. Sequenced toward, not dated.
+**Gated milestone — retire `lib/*.ml`.** ✅ **Native is now the default build (2026-06-12
+flip):** `make medaka` builds the canonical native compiler OCaml-free from the seed; docs
+updated; OCaml frozen as the soak oracle. **Remaining gated steps (post-soak):** re-root the
+remaining differential gates on the hybrid oracle (off the OCaml `eval_probe`), then
+archive/delete the OCaml compiler. Sequenced toward, not dated.
 
 After Stage 3, the **capability-effects wedge** (Phase 146) + the **WasmGC
 backend** are the product horizon (see the Workstreams table).
@@ -875,6 +877,18 @@ cover the corpus; these are known holes outside it.
 > no self-hosted counterpart.
 
 ### Compiler / language
+
+- **Num-polymorphic numeric literals (deferred from the 2026-06-12 flip; not a flip gate).**
+  Today `litType (LInt _) = TCon "Int"` monomorphizes integer literals, so a bare `0`/`1`
+  can't be a `Float` by context. G9 closed the *practical* Float-numeric gap by seeding
+  stdlib `sum`/`product` via `fromInt` (point-ful), but the general feature — `litType (LInt)
+  → Num a` with Haskell-style defaulting (unconstrained `Num` → `Int`), threaded through **both**
+  the OCaml and selfhost typecheckers — remains. Broad differential-gate blast radius +
+  two-compiler defaulting-parity risk; do it as its own effort. Sub-item surfaced during G9:
+  a return-position `fromInt`/operator-section in an **unconstrained** fn (no `Num a =>` sig →
+  RNone) still hits the native arg-tag gap, and auto-printing a polymorphic-`a` indirect-call
+  result mistypes the print routine — narrow, non-soundness, dodged by the `Num a =>` sig on
+  `sum`/`product`. Skill: cross-cutting → **add-language-feature**.
 
 - ⭐ **Phase 146 — Capability-safe effects (the headline wedge). IN PROGRESS.**
   Make Medaka's existing effect rows **sound + fine-grained** so a function's type
