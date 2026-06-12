@@ -2523,13 +2523,21 @@ emitMethodValDefine e lamName name route implRoutes methRoutes arity capNames =
 -- still shared across monoids: only the runtime dict word differs per call, so one
 -- `@mdk_default_foldMap_List` serves both a List- and a String-monoid fold.
 emitDefaultRKey : Emit -> List (String, (String, LTy)) -> String -> String -> List Route -> List Route -> List String -> <Mut> (String, LTy)
-emitDefaultRKey e env name tag methRoutes _ argOps = match defaultFor e name
+emitDefaultRKey e env name tag methRoutes implRoutes argOps = match defaultFor e name
   Some entry =>
     let fname = defaultFnName tag name
     let _ = ensureDefaultEmitted e fname tag name entry
-    let mdictWords = dictWordsOf e env methRoutes
+    -- Native Gap C (parametric default-method dict-synthesis, 2026-06-12): a
+    -- relational OPERATOR (`<`→`lt`/…) on a parametric Ord head (tuple/`List a`/
+    -- `Box a`) carries the impl's element `requires` dicts on implRoutes (stamped by
+    -- typecheck's stampBinopRoute, keyed on the inner `compare`).  Thread them — with
+    -- the method-level dicts — as LEADING words to `@mdk_default_<op>_<tag>`, whose
+    -- emitDefaultDefine eta-prepends the matching dict params and forwards them into
+    -- the inner `@mdk_impl_<tag>_compare(dict.., a, b)` call.  Concrete Ord has empty
+    -- implRoutes → the plain `(a, b)` call, byte-identical to before.
+    let dictWords = dictWordsOf e env (methRoutes ++ implRoutes)
     let resTy = if methodReturnsSelf (methodIfaceOf name) name then tagToLTy tag else LTInt
-    emitImplCall e fname (mdictWords ++ argOps) resTy
+    emitImplCall e fname (dictWords ++ argOps) resTy
   None => gapE ("no impl of method '" ++ name ++ "' for type '" ++ tag ++ "' (slice 6)")
 
 
@@ -2712,7 +2720,15 @@ emitDefaultDispatchChain e dictPtr headTag (tag::rest) name entry argOps slot en
   let _ = emit e (yes ++ ":")
   let fname = defaultFnName tag name
   let _ = ensureDefaultEmitted e fname tag name entry
-  let (rv, _) = emitImplCall e fname argOps LTInt
+  -- Native Gap C (parametric default-method dict-synthesis, 2026-06-12): when this
+  -- default reduces to a PARAMETRIC inner `compare` (tag = tuple/`List`/`Box`), the
+  -- lifted `@mdk_default_<method>_<tag>` now takes leading element-dict params (see
+  -- emitDefaultDefine).  They live in THIS runtime dict cell (the `Ord <tag>` witness),
+  -- fields 0..nReq-1, exactly like emitDispatchChain loads an impl's own requires —
+  -- load + PREPEND them.  Concrete tag ⇒ nReq=0 ⇒ unchanged (`maximum [Int]`).
+  let reqCount = innerDefaultReqCount e name tag
+  let reqDicts = loadReqDicts e dictPtr reqCount 0
+  let (rv, _) = emitImplCall e fname (reqDicts ++ argOps) LTInt
   let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
@@ -3076,12 +3092,25 @@ emitDefaultDefine e fname tag method entry =
   -- the under-applied `fold lam empty` (a partial closure, never run on the container).
   let dictIfaces = methodConstraintIfacesOf method
   let nDicts = listLen dictIfaces
-  let arity = maxInt (nDicts + methodArityOf method) (listLen pats0)
-  let (pats, body1) = etaExpand pats0 body0 arity (listLen pats0)
+  let arity0 = maxInt (nDicts + methodArityOf method) (listLen pats0)
+  let (pats1, body1) = etaExpand pats0 body0 arity0 (listLen pats0)
+  -- Native Gap C (parametric default-method dict-synthesis, 2026-06-12): a parametric
+  -- Ord head (tuple/`List a`/`Box a`) reaches this default (`lt`/`gt`/…) whose inner
+  -- same-interface `compare` is impl'd with element `requires` dicts.  PREPEND that many
+  -- `$reqdict_<k>` PVar params (so emitGroupBody's all-PVar path binds them by name to
+  -- the leading `%argK`), and restamp the inner `compare` to carry them as its impl-dict
+  -- routes (RDict `$reqdict_<k>`).  Then `@mdk_default_<op>_<tag>(reqdict.., a, b)` calls
+  -- `@mdk_impl_<tag>_compare(reqdict.., a, b)`.  Concrete Ord (no requires) ⇒ nReq=0 ⇒
+  -- no prepended params, the inner compare keeps empty impl-dicts — byte-identical.
+  let nReq = innerDefaultReqCount e method tag
+  let reqPats = reqDictPats nReq 0
+  let pats = reqPats ++ pats1
+  let arity = arity0 + nReq
   -- re-stamp inner same-interface method occurrences to the concrete RKey tag so a
   -- partially-applied inner method (`filterMap` in `filter`'s body) lowers to a
-  -- direct `@mdk_impl_<tag>_<method>` call instead of an arg-tag site.
-  let bodyS = restampIface methodIfaceTableRef.value (methodIfaceOf method) tag body1
+  -- direct `@mdk_impl_<tag>_<method>` call instead of an arg-tag site.  The parametric
+  -- variant also fills the matched call's impl-dict routes from the `$reqdict_<k>` params.
+  let bodyS = restampIfaceDicts methodIfaceTableRef.value (methodIfaceOf method) tag (reqDictRoutes nReq 0) body1
   -- G7: a CROSS-interface method in the body (the Monoid `empty`, routed per-call by
   -- the RESULT type) is left RNone by restampIface (different interface) → arg-tag
   -- dispatch with no discriminating arg → panic.  Route it through the dict-passing's
@@ -3102,6 +3131,36 @@ emitDefaultDefine e fname tag method entry =
   let _ = set_ref fallthroughLabelRef savedFt
   set_ref (bufRef e) saved
 
+-- Native Gap C: the element-`requires` dict count of the inner same-interface method
+-- a default reduces to at head [tag].  Ord's `lt`/`gt`/`lte`/`gte`/`min`/`max` defaults
+-- reduce to `compare`; that impl carries the parametric element dicts.  A method WITH
+-- its own impl at [tag], or whose inner impl has no requires, yields 0 (concrete path).
+innerDefaultReqCount : Emit -> String -> String -> <Mut> Int
+innerDefaultReqCount e method tag = match implFor e (innerDefaultMethodE method) tag
+  Some entry => maxInt 0 (implReqCount e (innerDefaultMethodE method) entry)
+  None => 0
+
+-- the inner same-interface method a relational default reduces to (mirror of
+-- typecheck.mdk's innerDefaultMethod): Ord defaults reduce to `compare`.
+innerDefaultMethodE : String -> String
+innerDefaultMethodE m
+  | containsStr m ["lt", "gt", "lte", "gte", "min", "max"] = "compare"
+  | otherwise = m
+
+-- `n` element-dict PVar params named `$reqdict_<i>..` (emitGroupBody's all-PVar path
+-- binds each by name to the leading `%argK`).
+reqDictPats : Int -> Int -> List Pat
+reqDictPats n i
+  | i >= n = []
+  | otherwise = PVar ("$reqdict_" ++ intToString i) :: reqDictPats n (i + 1)
+
+-- `n` RDict routes forwarding the `$reqdict_<i>` params into the inner same-interface
+-- call's impl-dict slots (matching the inner impl fn's leading element-dict params).
+reqDictRoutes : Int -> Int -> List Route
+reqDictRoutes n i
+  | i >= n = []
+  | otherwise = RDict ("$reqdict_" ++ intToString i) :: reqDictRoutes n (i + 1)
+
 maxInt : Int -> Int -> Int
 maxInt a b = if a >= b then a else b
 
@@ -3115,36 +3174,48 @@ etaExpand pats body arity have
       etaExpand (pats ++ [PVar name]) (CApp body (CVar name AGlobal)) arity (have + 1)
 
 -- rewrite every inner SAME-interface method occurrence (a bare `CVar m` whose
--- interface equals `iface`) to a `CMethod m (RKey tag)`, so a partially-applied
--- inner method lowers to a direct impl call.  Walks the whole CExpr tree.  The
+-- interface equals `iface`) to a `CMethod m (RKey tag) reqRoutes`, so a partially-
+-- applied inner method lowers to a direct impl call.  Walks the whole CExpr tree.  The
 -- method→(iface,arity) table is passed in (a pure snapshot) so the walk stays pure.
-restampIface : List (String, (String, Int)) -> String -> String -> CExpr -> CExpr
-restampIface tbl iface tag (CVar m ad)
-  | iface != "" && ifaceOfIn tbl m == iface = CMethod m (RKey tag []) [] []
+-- [reqRoutes] are the element `requires` dict routes (RDict `$reqdict_<k>`) threaded
+-- into the matched inner call's impl-dict slots for a PARAMETRIC head (tuple/`List a`/
+-- `Box a`); [] for a concrete head (the `filter`@List / non-parametric default path),
+-- byte-identical to the old empty-impl-dicts restamp.
+restampIfaceDicts : List (String, (String, Int)) -> String -> String -> List Route -> CExpr -> CExpr
+restampIfaceDicts tbl iface tag rr (CVar m ad)
+  | iface != "" && ifaceOfIn tbl m == iface = CMethod m (RKey tag []) rr []
   | otherwise = CVar m ad
 -- An inner same-interface method that method_marker already rewrote to a
 -- `CMethod m RNone` (e.g. `compare` inside the `lt`/`gt`/… Ord defaults) must
 -- ALSO be re-stamped to `RKey tag`, or it falls to arg-tag dispatch and a
 -- primitive-Ord receiver (which owns no cell tag) panics in emitTagMatch.  Only
 -- an unrouted (RNone) same-iface method is restamped — an already-concrete route
--- (a different element type) is left intact.
-restampIface tbl iface tag (CMethod m RNone irs mrs)
-  | iface != "" && ifaceOfIn tbl m == iface = CMethod m (RKey tag []) irs mrs
+-- (a different element type) is left intact.  The parametric element dicts [rr]
+-- REPLACE the call's empty impl-dicts so the inner `@mdk_impl_<tag>_compare` sees
+-- its leading element-dict params (`reqDictRoutes`); [] preserves the old behaviour.
+restampIfaceDicts tbl iface tag rr (CMethod m RNone irs mrs)
+  | iface != "" && ifaceOfIn tbl m == iface = CMethod m (RKey tag []) (chooseReqRoutes rr irs) mrs
   | otherwise = CMethod m RNone irs mrs
-restampIface tbl iface tag (CApp f a) = CApp (restampIface tbl iface tag f) (restampIface tbl iface tag a)
-restampIface tbl iface tag (CLam ps b) = CLam ps (restampIface tbl iface tag b)
-restampIface tbl iface tag (CLet r p rhs b) = CLet r p (restampIface tbl iface tag rhs) (restampIface tbl iface tag b)
-restampIface tbl iface tag (CLetGroup bs b) = CLetGroup (map (restampBind tbl iface tag) bs) (restampIface tbl iface tag b)
-restampIface tbl iface tag (CMatch s arms) = CMatch (restampIface tbl iface tag s) (map (restampArm tbl iface tag) arms)
-restampIface tbl iface tag (CDecision s arms tr) = CDecision (restampIface tbl iface tag s) (map (restampArm tbl iface tag) arms) tr
-restampIface tbl iface tag (CIf c t el) = CIf (restampIface tbl iface tag c) (restampIface tbl iface tag t) (restampIface tbl iface tag el)
-restampIface tbl iface tag (CBinPrim op a b) = CBinPrim op (restampIface tbl iface tag a) (restampIface tbl iface tag b)
-restampIface tbl iface tag (CUnOp op a) = CUnOp op (restampIface tbl iface tag a)
-restampIface tbl iface tag (CTuple xs) = CTuple (map (restampIface tbl iface tag) xs)
-restampIface tbl iface tag (CList xs) = CList (map (restampIface tbl iface tag) xs)
-restampIface tbl iface tag (CFieldAccess a f) = CFieldAccess (restampIface tbl iface tag a) f
-restampIface tbl iface tag (CIndex a b) = CIndex (restampIface tbl iface tag a) (restampIface tbl iface tag b)
-restampIface _ _ _ other = other
+restampIfaceDicts tbl iface tag rr (CApp f a) = CApp (restampIfaceDicts tbl iface tag rr f) (restampIfaceDicts tbl iface tag rr a)
+restampIfaceDicts tbl iface tag rr (CLam ps b) = CLam ps (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CLet r p rhs b) = CLet r p (restampIfaceDicts tbl iface tag rr rhs) (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CLetGroup bs b) = CLetGroup (map (restampBind tbl iface tag rr) bs) (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CMatch s arms) = CMatch (restampIfaceDicts tbl iface tag rr s) (map (restampArm tbl iface tag rr) arms)
+restampIfaceDicts tbl iface tag rr (CDecision s arms tr) = CDecision (restampIfaceDicts tbl iface tag rr s) (map (restampArm tbl iface tag rr) arms) tr
+restampIfaceDicts tbl iface tag rr (CIf c t el) = CIf (restampIfaceDicts tbl iface tag rr c) (restampIfaceDicts tbl iface tag rr t) (restampIfaceDicts tbl iface tag rr el)
+restampIfaceDicts tbl iface tag rr (CBinPrim op a b) = CBinPrim op (restampIfaceDicts tbl iface tag rr a) (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts tbl iface tag rr (CUnOp op a) = CUnOp op (restampIfaceDicts tbl iface tag rr a)
+restampIfaceDicts tbl iface tag rr (CTuple xs) = CTuple (map (restampIfaceDicts tbl iface tag rr) xs)
+restampIfaceDicts tbl iface tag rr (CList xs) = CList (map (restampIfaceDicts tbl iface tag rr) xs)
+restampIfaceDicts tbl iface tag rr (CFieldAccess a f) = CFieldAccess (restampIfaceDicts tbl iface tag rr a) f
+restampIfaceDicts tbl iface tag rr (CIndex a b) = CIndex (restampIfaceDicts tbl iface tag rr a) (restampIfaceDicts tbl iface tag rr b)
+restampIfaceDicts _ _ _ _ other = other
+
+-- prefer the threaded element dict routes [rr] when present; else keep whatever the
+-- call already carried (empty for the non-parametric path).
+chooseReqRoutes : List Route -> List Route -> List Route
+chooseReqRoutes [] irs = irs
+chooseReqRoutes rr _ = rr
 
 -- G7: route every CROSS-interface method occurrence in a default body (a bare
 -- `CVar m` / `CMethod m RNone` whose interface is one of the method's constraint
@@ -3208,18 +3279,18 @@ ifaceOfIn tbl m = match lookupAssoc m tbl
   Some (iface, _) => iface
   None => ""
 
-restampBind : List (String, (String, Int)) -> String -> String -> CBind -> CBind
-restampBind tbl iface tag (CBind n cs) = CBind n (map (restampClause tbl iface tag) cs)
+restampBind : List (String, (String, Int)) -> String -> String -> List Route -> CBind -> CBind
+restampBind tbl iface tag rr (CBind n cs) = CBind n (map (restampClause tbl iface tag rr) cs)
 
-restampClause : List (String, (String, Int)) -> String -> String -> CClause -> CClause
-restampClause tbl iface tag (CClause ps b) = CClause ps (restampIface tbl iface tag b)
+restampClause : List (String, (String, Int)) -> String -> String -> List Route -> CClause -> CClause
+restampClause tbl iface tag rr (CClause ps b) = CClause ps (restampIfaceDicts tbl iface tag rr b)
 
-restampArm : List (String, (String, Int)) -> String -> String -> CArm -> CArm
-restampArm tbl iface tag (CArm p gs b) = CArm p (map (restampGuard tbl iface tag) gs) (restampIface tbl iface tag b)
+restampArm : List (String, (String, Int)) -> String -> String -> List Route -> CArm -> CArm
+restampArm tbl iface tag rr (CArm p gs b) = CArm p (map (restampGuard tbl iface tag rr) gs) (restampIfaceDicts tbl iface tag rr b)
 
-restampGuard : List (String, (String, Int)) -> String -> String -> CGuard -> CGuard
-restampGuard tbl iface tag (CGBool c) = CGBool (restampIface tbl iface tag c)
-restampGuard tbl iface tag (CGBind p c) = CGBind p (restampIface tbl iface tag c)
+restampGuard : List (String, (String, Int)) -> String -> String -> List Route -> CGuard -> CGuard
+restampGuard tbl iface tag rr (CGBool c) = CGBool (restampIfaceDicts tbl iface tag rr c)
+restampGuard tbl iface tag rr (CGBind p c) = CGBind p (restampIfaceDicts tbl iface tag rr c)
 
 -- the interface a (method, tag) impl belongs to, via the resolved impl entry.
 implGroupIface : Emit -> String -> String -> <Mut> String

@@ -331,7 +331,46 @@ main =
   putStrLn (debug (eq (Box [1, 2, 3]) (Box [1, 2, 4])))
 EOF
 
-PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumprod_float numpoly show_debug eq deriving map_impl g4_box_eq foldmap"
+# Native Gap C (parametric default-method dict-synthesis, 2026-06-12): relational
+# OPERATORS (`< <= > >=` → the Ord `lt`/`lte`/`gt`/`gte` DEFAULTS) and the by-name
+# `lt`/`gte`, plus `max`/`min`/`maximum`/`minimum`, over a PARAMETRIC Ord head
+# (built-in tuple, `List a`, AND a user `data Box a` with `impl Ord (Box a) requires
+# Ord a`).  The Ord default reduces to the inner `compare`, whose parametric impl
+# carries element `requires` dicts.  Before the fix typecheck's stampBinopRoute /
+# resolveArgStamp BACKED OFF to RNone, which the backend lowered as a raw pointer
+# `icmp` (silently WRONG result) on the operator path and a SIGSEGV on the by-name
+# `lt` path; `maximum`/`minimum` (RDict dispatch chain) SIGSEGV'd too.  The fix keys
+# the element dicts off the inner `compare`, eta-prepends matching dict params to
+# `@mdk_default_<op>_<tag>`, and threads them into `@mdk_impl_<tag>_compare`.  Both
+# the RKey path (direct `<`/`max`) AND the RDict path (`maximum`/`minimum`'s fold)
+# load the element dicts.  Concrete Ord (Int/String) stays byte-identical.
+cat > "$WORK/src/ord_parametric.mdk" <<'EOF'
+data Box a = Box a
+impl Eq (Box a) requires Eq a where
+  eq (Box x) (Box y) = x == y
+impl Ord (Box a) requires Ord a where
+  compare (Box x) (Box y) = compare x y
+main : <IO> Unit
+main =
+  putStrLn (debug ((1, 2) < (3, 4)))
+  putStrLn (debug ((1, 2) >= (3, 4)))
+  putStrLn (debug ((1, 5) > (1, 2)))
+  putStrLn (debug (lt (1, 2) (3, 4)))
+  putStrLn (debug (gte (1, 2) (3, 4)))
+  putStrLn (debug (([1, 2] : List Int) < [1, 3]))
+  putStrLn (debug (([1] : List Int) < [1, 2]))
+  putStrLn (debug (Box 1 < Box 2))
+  putStrLn (debug (Box 5 < Box 2))
+  putStrLn (debug (lt (Box 1) (Box 9)))
+  putStrLn (debug (max (1, 2) (3, 4)))
+  putStrLn (debug (min (3, 4) (1, 2)))
+  putStrLn (debug (maximum [(1, 2), (3, 1), (2, 9)]))
+  putStrLn (debug (minimum [(3, 1), (1, 2), (2, 9)]))
+  putStrLn (debug (1 < 2))
+  putStrLn (debug ("abc" < "abd"))
+EOF
+
+PROGRAMS="arith recur adt list closure maxalias maxprim clampc sum_twocstr sumprod_float numpoly show_debug eq deriving map_impl g4_box_eq foldmap ord_parametric"
 
 pass=0; fail=0
 

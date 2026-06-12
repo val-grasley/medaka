@@ -896,7 +896,14 @@ resolveArgStamp implTable name tagRef implRef am = match activeDictVarOf am
   None => match headTyconMono am
     Some tag =>
       let _ = set_ref tagRef (RKey tag [])
-      set_ref implRef (argImplDictRoutesFor implTable name tag am)
+      -- Native Gap C (parametric default-method dict-synthesis, 2026-06-12): a BY-NAME
+      -- relational method (`lt`/`gt`/…) at a parametric Ord head (tuple/`List a`/`Box a`)
+      -- has NO own impl, so its element `requires` dicts must be keyed off the inner
+      -- `compare` (whose impl carries them).  emitDefaultDefine eta-prepends matching
+      -- dict params; emitDefaultRKey forwards these words.  Concrete head / a method
+      -- with its own impl ⇒ same key as before (empty for non-parametric), unchanged.
+      let dictName = if implDefinesMethodAt implTable name tag then name else innerDefaultMethod name
+      set_ref implRef (argImplDictRoutesFor implTable dictName tag am)
     None => ()
 
 -- the measured path for inferVar: a dispatch method gets its arg-site recorded;
@@ -3465,28 +3472,34 @@ resolveBinopSite implTable keyTable method tagRef operandMono inImpl =
 -- `eq`/`compare` call.  A concrete non-parametric impl (user `Eq MyType`) has no
 -- requires → empty reqs → the plain direct call, behaviour unchanged.
 --
--- DEFERRED CASE (left RNone → structural-builtin baseline, no crash): a comparison
+-- PARAMETRIC DEFAULT CASE (now routed RKey, gap closed 2026-06-12): a comparison
 -- OPERATOR (`<`/`>`/`<=`/`>=` → `lt`/`gt`/`lte`/`gte`) whose method is NOT itself
 -- impl'd at this head (an Ord interface DEFAULT reducing to inner `compare`) AND the
--- head's Ord impl HAS `requires` (parametric, e.g. tuple / `Box a`).  Routing it RKey
--- would reach `emitDefaultRKey`, whose default define cannot yet thread the element
--- dicts into the inner `compare` (the documented `max`/`min`-class default-method
--- dict-synthesis gap, PLAN.md Gap G).  Concrete Ord (no requires) default-`lt` DOES
--- work (PLAN Gap-G closed) and stays routed; only the parametric-default case backs off.
+-- head's Ord impl HAS `requires` (parametric, e.g. tuple / `List a` / `Box a`).  This
+-- stamps the RKey route with the SAME element-dict reqs as the `==`/`eq` path, but
+-- keyed on the INNER same-interface `compare` (the relational method has no own impl
+-- at this head, so `argImplDictRoutesFor` keyed on it would find nothing).
+-- binopMethodApp forwards them as the EMethodAt impl-dicts; emitDefaultRKey passes
+-- them as leading words to `@mdk_default_<op>_<tag>`, whose emitDefaultDefine
+-- eta-PREPENDS the matching dict params and threads them into the inner
+-- `@mdk_impl_<tag>_compare(dict.., a, b)` call.  Previously this case BACKED OFF to
+-- RNone, which the backend lowered as a raw pointer `icmp` (silently WRONG result) /
+-- SIGSEGV on the by-name `lt` path.  Concrete Ord (no requires) keeps empty reqs →
+-- the plain `@mdk_default_<op>_<tag>(a, b)` direct call, unchanged.
 stampBinopRoute : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Mono -> String -> <Mut> Unit
 stampBinopRoute implTable keyTable method tagRef operandMono tag
   | binopPrimitiveHead tag = ()
-  | parametricDefaultBinop implTable method tag = ()
   | otherwise =
       let key = fromOption tag (keyForSite keyTable method operandMono)
-      set_ref tagRef (RKey key (argImplDictRoutesFor implTable method tag operandMono))
+      let dictMethod = if implDefinesMethodAt implTable method tag then method else innerDefaultMethod method
+      set_ref tagRef (RKey key (argImplDictRoutesFor implTable dictMethod tag operandMono))
 
--- True when [method] has NO own impl at head [tag] (so it reaches the interface
--- default) but SOME impl at [tag] carries a `requires` (so the default body's inner
--- `compare` needs an element dict the default-RKey path cannot yet thread).
-parametricDefaultBinop : List ImplEntry -> String -> String -> Bool
-parametricDefaultBinop implTable method tag =
-  not (implDefinesMethodAt implTable method tag) && headHasRequires implTable tag
+-- The inner same-interface method an interface DEFAULT reduces to, supplying the
+-- element `requires` dicts.  Ord's `lt`/`gt`/`lte`/`gte`/`min`/`max` defaults all
+-- reduce to `compare`; any other relational/equality method has its own impl so the
+-- `implDefinesMethodAt` guard keeps it on `method`, never reaching here.
+innerDefaultMethod : String -> String
+innerDefaultMethod m = if containsName m ["lt", "gt", "lte", "gte", "min", "max"] then "compare" else m
 
 implDefinesMethodAt : List ImplEntry -> String -> String -> Bool
 implDefinesMethodAt [] _ _ = False
