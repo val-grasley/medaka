@@ -1286,6 +1286,7 @@ parsePatAtom = do
     TIdent x => emit (PVar x)
     TUnderscore => emit PWild
     TInt n => intPatRest (LInt n)
+    TMinus => negIntPat
     TFloat f => emit (PLit (LFloat f))
     TString s => emit (PLit (LString s))
     TChar s => charPatRest (LChar s)
@@ -1325,6 +1326,33 @@ intPatRest lo = do
   t <- peekP
   rngPatRest lo intBound t
 
+-- a negative int literal pattern `-N`, or a negative-bound range `-N..hi`
+-- Mirrors OCaml grammar: only `MINUS INT` followed by `..` or `..=` is valid;
+-- a bare `-1` literal pattern is not accepted (consistent with OCaml parser).
+negIntPat : Parser Pat
+negIntPat = do
+  advance                        -- consume MINUS
+  t <- peekP
+  match t
+    TInt n => negIntRng (LInt (negate n))
+    _ => failP "expected integer after -"
+
+-- After parsing MINUS INT, require a `..` or `..=` (range is mandatory).
+negIntRng : Lit -> Parser Pat
+negIntRng lo = do
+  advance                        -- consume INT
+  t <- peekP
+  match t
+    TDotDot => do
+      advance
+      hi <- intBound
+      pure (PRng lo hi False)
+    TDotDotEq => do
+      advance
+      hi <- intBound
+      pure (PRng lo hi True)
+    _ => failP "expected .. or ..= after negative range bound"
+
 charPatRest : Lit -> Parser Pat
 charPatRest lo = do
   advance
@@ -1349,6 +1377,12 @@ intBound = do
 
 intBoundFor : Token -> Parser Lit
 intBoundFor (TInt n) = emit (LInt n)
+intBoundFor TMinus = do
+  advance
+  t <- peekP
+  match t
+    TInt n => emit (LInt (negate n))
+    _ => failP "expected integer after - in range bound"
 intBoundFor _ = failP "expected int range bound"
 
 charBound : Parser Lit
@@ -2432,7 +2466,17 @@ letIdentRest : String -> List Pat -> Expr -> Parser DoStmt
 letIdentRest name [] e1 = do
   t <- peekP
   letTailFor (PVar name) e1 t
-letIdentRest name pats e1 = pure (DoLet False True (PVar name) (curryLam pats e1))
+letIdentRest name pats e1 = do
+  t <- peekP
+  letFunTailFor name pats e1 t
+
+-- `let f params = e1 in e2` → DoExpr (ELet); without `in` → DoLet (stmt)
+letFunTailFor : String -> List Pat -> Expr -> Token -> Parser DoStmt
+letFunTailFor name pats e1 TIn = do
+  advance
+  e2 <- parseExpr
+  pure (DoExpr (ELet False True (PVar name) (curryLam pats e1) e2))
+letFunTailFor name pats e1 _ = pure (DoLet False True (PVar name) (curryLam pats e1))
 
 -- non-IDENT-led pattern: `let (a, b) = e`, `let Some v = e else alt`, …
 letPat : Parser DoStmt

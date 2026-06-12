@@ -1,2 +1,10 @@
 double a = let s = a + 1 in s * 2
 swap p = let x = p.a in let y = p.b in (y, x)
+
+-- indented clause body that is a let-in expression (G8 case 1)
+stepDown x =
+  let go n = if n == 0 then 0 else go (n - 1) in go x
+
+-- function-let with params followed by `in` (G8 case 1 variant)
+counted x =
+  let loop n acc = if n == 0 then acc else loop (n - 1) (acc + 1) in loop x 0

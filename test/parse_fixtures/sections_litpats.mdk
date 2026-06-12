@@ -14,3 +14,11 @@ classify c = Other
 unitArg () = 0
 
 negArg = randomInt (-1000) 1000
+
+-- negative integer range patterns (G8 case 2)
+rangeClassify n =
+  match n
+    -10..-1 => "negative"
+    0 => "zero"
+    1..10 => "positive"
+    _ => "large"
