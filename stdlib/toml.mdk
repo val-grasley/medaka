@@ -453,7 +453,7 @@ prop "packageVersion round-trips an Int-derived version" (n : Int) =
 prop "packageName is stable regardless of the version value" (n : Int) =
   parsePackageName (mkPackage (intToString n)) == Some "demo"
 
-prop "packageVersion agrees with getString \"version\"" (n : Int) =
+prop "packageVersion agrees with getString version" (n : Int) =
   parsePackageVersion (mkPackage (intToString n)) == parseGetStr "version" (mkPackage (intToString n))
 
 prop "parse is deterministic" (n : Int) =

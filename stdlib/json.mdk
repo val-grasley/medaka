@@ -35,6 +35,7 @@
 
 import core.{Eq, Debug, Display, Option, Result, Thenable, map}
 import list.{reverse}
+import array
 import string.{join, fromChars, isDigit, toInt}
 
 public export data Json
@@ -542,7 +543,7 @@ objEqJson a b i
     fst pa == fst pb && eq (snd pa) (snd pb) && objEqJson a b (i + 1)
 
 {- | Structural equality. Objects compare **positionally** (same pairs in the
-   same order), which is what `parse ∘ stringify` preserves.
+   same order), which is what `parse-then-stringify` preserves.
 
    > eq (parse "[1, 2]") (Ok (jArray [JInt 1, JInt 2]))
    True -}
@@ -573,20 +574,20 @@ export impl Display Json where
 -- not a JSON bug — fixed-float round-tripping is covered by the `1000.0` and
 -- `1.5` doctests instead.
 
-prop "parse ∘ stringify round-trips a JInt" (n : Int) =
+prop "parse-then-stringify round-trips a JInt" (n : Int) =
   parse (stringify (JInt n)) == Ok (JInt n)
 
-prop "parse ∘ stringify round-trips a JString (exercises escaping)" (s : String) =
+prop "parse-then-stringify round-trips a JString (exercises escaping)" (s : String) =
   parse (stringify (JString s)) == Ok (JString s)
 
-prop "parse ∘ stringify round-trips a JBool" (b : Bool) =
+prop "parse-then-stringify round-trips a JBool" (b : Bool) =
   parse (stringify (JBool b)) == Ok (JBool b)
 
-prop "parse ∘ stringify round-trips an int JArray" (xs : List Int) =
+prop "parse-then-stringify round-trips an int JArray" (xs : List Int) =
   let j = jArray (map JInt xs)
   parse (stringify j) == Ok j
 
-prop "parse ∘ stringify round-trips a JObject" (xs : List Int) =
+prop "parse-then-stringify round-trips a JObject" (xs : List Int) =
   let j = jObject (map (n => (intToString n, JInt n)) xs)
   parse (stringify j) == Ok j
 

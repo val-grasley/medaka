@@ -5,11 +5,32 @@ running doctests in stdlib/toml.mdk
   ok   stdlib/toml.mdk:207: parse "name = \"hello\" # a comment" == Ok (Toml [("name", TStr "hello")])
   ok   stdlib/toml.mdk:217: parse "bad line no equals"
   ok   stdlib/toml.mdk:220: parse "[package]\nname = unterminated"
-  ok   stdlib/toml.mdk:245: parseGetStr "name" "[package]\nname = \"medaka\"\nversion = \"1.0.0\"\nentry = \"main.mdk\""
-  ok   stdlib/toml.mdk:250: parseGetStr "workspace.members" "[workspace]\nmembers = [\"a\"]"
-  ok   stdlib/toml.mdk:262: parseGetArr "workspace.members" "[workspace]\nmembers = [\"pkg-a\", \"pkg-b\"]"
-  ok   stdlib/toml.mdk:267: parseGetArr "name" "[package]\nname = \"x\"\nversion = \"0.1.0\"\nentry = \"main.mdk\""
-  ok   stdlib/toml.mdk:280: parseGetStr "name" "[package]\nname = \"my-project\"\nversion = \"0.1.0\"\nentry = \"main.mdk\""
-  ok   stdlib/toml.mdk:298: parseGetArr "workspace.members" "[workspace]\nmembers = [\"pkgs/core\", \"pkgs/net\"]"
+  ok   stdlib/toml.mdk:267: parseGetStr "name" "[package]\nname = \"medaka\"\nversion = \"1.0.0\"\nentry = \"main.mdk\""
+  ok   stdlib/toml.mdk:272: parseGetStr "workspace.members" "[workspace]\nmembers = [\"a\"]"
+  ok   stdlib/toml.mdk:277: parseGetStr "missing" "[package]\nname = \"x\""
+  ok   stdlib/toml.mdk:282: parseGetStr "server.host" "[package]\nname = \"x\""
+  ok   stdlib/toml.mdk:294: parseGetArr "workspace.members" "[workspace]\nmembers = [\"pkg-a\", \"pkg-b\"]"
+  ok   stdlib/toml.mdk:299: parseGetArr "name" "[package]\nname = \"x\"\nversion = \"0.1.0\"\nentry = \"main.mdk\""
+  ok   stdlib/toml.mdk:304: parseGetArr "workspace.members" "[package]\nname = \"x\""
+  ok   stdlib/toml.mdk:309: parseGetArr "workspace.members" "[workspace]\nmembers = []"
+  ok   stdlib/toml.mdk:322: parsePackageName "[package]\nname = \"my-project\"\nversion = \"0.1.0\"\nentry = \"main.mdk\""
+  ok   stdlib/toml.mdk:327: parsePackageName "[package]\nversion = \"0.1.0\""
+  ok   stdlib/toml.mdk:335: parsePackageVersion "[package]\nname = \"x\"\nversion = \"2.3.4\"\nentry = \"main.mdk\""
+  ok   stdlib/toml.mdk:340: parsePackageVersion "[package]\nname = \"x\""
+  ok   stdlib/toml.mdk:348: parsePackageEntry "[package]\nname = \"x\"\nversion = \"0.1.0\"\nentry = \"src/main.mdk\""
+  ok   stdlib/toml.mdk:353: parsePackageEntry "[package]\nname = \"x\""
+  ok   stdlib/toml.mdk:361: parseWorkspaceMembers "[workspace]\nmembers = [\"pkgs/core\", \"pkgs/net\"]"
+  ok   stdlib/toml.mdk:366: parseWorkspaceMembers "[package]\nname = \"x\""
+  ok   stdlib/toml.mdk:376: eqTomlValue (TStr "a") (TStr "a")
+  ok   stdlib/toml.mdk:379: eqTomlValue (TArr ["a", "b"]) (TArr ["a", "b"])
+  ok   stdlib/toml.mdk:384: eqTomlValue (TStr "a") (TArr ["a"])
+  ok   stdlib/toml.mdk:409: debugTomlValue (TStr "hi")
+  ok   stdlib/toml.mdk:412: debugTomlValue (TArr ["a", "b"])
 
-stdlib/toml.mdk: 12/12 passed
+stdlib/toml.mdk: 27/27 passed
+Testing "packageVersion round-trips an Int-derived version" ... OK (100 tests)
+Testing "packageName is stable regardless of the version value" ... OK (100 tests)
+Testing "packageVersion agrees with getString version" ... OK (100 tests)
+Testing "parse is deterministic" ... OK (100 tests)
+
+4 passed, 0 failed
