@@ -11,7 +11,7 @@
 -- the prelude), effect rows, records, interfaces/impls + constraint solving,
 -- and explicit type signatures.
 
-import frontend.ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), Loc(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), MethodDefault(..), Require(..), ImplMethod(..), DataVis(..), Decl(..), PropParam(..), LcQual(..), Section(..), InterpPart(..), GuardArm(..), UsePath(..)}
+import frontend.ast.{Lit(..), Ty(..), Constraint(..), Route(..), Pat(..), RecPatField(..), Guard(..), Arm(..), DoStmt(..), FunClause(..), FieldAssign(..), LetBind(..), Expr(..), Loc(..), ConPayload(..), Field(..), Variant(..), IfaceMethod(..), MethodDefault(..), Require(..), ImplMethod(..), DataVis(..), Decl(..), PropParam(..), LcQual(..), Section(..), InterpPart(..), GuardArm(..), UsePath(..), UseMember(..)}
 import frontend.desugar.{mapProg}
 -- The type-aware non-exhaustive-`match` check (`check_match` in lib/exhaust.ml)
 -- reuses the Maranget matrix machinery already ported in exhaust.mdk — the only
@@ -5743,12 +5743,85 @@ pickSchemes (n :: ns) table = match lookupAssocS n table
   Some s => (n, s) :: pickSchemes ns table
   None => pickSchemes ns table
 
-checkModulesGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> List (String, List (String, Scheme))
-checkModulesGo _ _ [] = []
-checkModulesGo accV accData ((mid, prog) :: rest) =
-  let schemes = checkModuleFull accV accData prog
+-- ── IMPORT-SCOPED per-module seeding (mirrors lib/typecheck.ml:4513-4543) ────
+-- The multi-module drivers must NOT flat-seed the cumulative UNION of every
+-- dependency's public schemes into each module's env: smInsert is last-write-wins,
+-- so a later-loaded dependency's same-named binding (e.g. `string.reverse :
+-- String -> String`) silently overwrites an earlier one (`list.reverse :
+-- List a -> List a`) — mis-typing a module that explicitly `import list.{reverse}`.
+-- Instead each module's seed is built from ONLY the names its own `DUse` decls
+-- import, looked up in the SPECIFIC dependency they name.  The implicit prelude
+-- (runtime + core) is always fully in scope and is threaded separately as baseSeed.
+
+-- the bare member names a single `import` form names from its dependency —
+-- mirrors lib/typecheck.ml's imported_names match (BEFORE mangle-key resolution):
+--   UseGroup (_, ms) → the member names         (import dep.{a, b, c})
+--   UseWild _        → ALL of the dep's schemes  (import dep.*)
+--   UseName ns       → [last ns] if dotted (import a.b.name), else [] (bare name)
+--   UseAlias _       → [] (alias only — no auto-imported value names)
+-- `None` ⇒ wildcard (every scheme); `Some names` ⇒ exactly those member names.
+useMemberName : UseMember -> String
+useMemberName (UseMember n _) = n
+
+importedMembers : UsePath -> Option (List String)
+importedMembers (UseGroup _ ms) = Some (map useMemberName ms)
+importedMembers (UseWild _) = None
+importedMembers (UseName ns)
+  | lengthL ns > 1 = Some [lastComponent ns]
+  | otherwise = Some []
+importedMembers (UseAlias _ _) = Some []
+
+-- resolve one imported bare member name to its actual key in a dependency's public
+-- schemes.  The golden path keys schemes by the bare name; the EMIT path runs after
+-- universal mangling (backend.private_mangle), which rewrites a definition `member`
+-- to `<dep>__member` but leaves the importer's `DUse` member name BARE — so the key
+-- is the SUFFIX-matching scheme `…__member` (uniquely identified within THIS dep's
+-- own schemes; distinct members never share an `__<name>` suffix).  Try the bare
+-- key first (golden), then the `__<name>` suffix (mangled emit path).
+memberSuffix : String -> String
+memberSuffix n = "__" ++ n
+
+-- local suffix test (string.endsWith is not imported here): `s` ends with `suf`.
+endsWithStr : String -> String -> Bool
+endsWithStr suf s =
+  let ls = stringLength s
+  let lsuf = stringLength suf
+  lsuf <= ls && stringSlice (ls - lsuf) ls s == suf
+
+resolveMemberSchemes : String -> List (String, Scheme) -> List (String, Scheme)
+resolveMemberSchemes n depSchemes = match lookupAssocS n depSchemes
+  Some s => [(n, s)]
+  None => filter (kv => endsWithStr (memberSuffix n) (fst kv)) depSchemes
+
+-- the (key, scheme) pairs a single `import` form brings into scope, resolving each
+-- member to its (possibly mangled) key in the dependency's schemes.
+importFormSchemes : UsePath -> List (String, Scheme) -> List (String, Scheme)
+importFormSchemes path depSchemes = match importedMembers path
+  None => depSchemes
+  Some names => concatMapL (n => resolveMemberSchemes n depSchemes) names
+
+-- build THIS module's import-scoped seed: walk its DUse decls, and for each one
+-- pick the imported names out of the named dependency's public schemes (held in
+-- depEnv, keyed by the dotted module id that usePathModuleId yields == the loader's
+-- mid).  `core` DUse decls are skipped — core is always seeded via baseSeed.
+importSeed : List Decl -> List (String, List (String, Scheme)) -> List (String, Scheme)
+importSeed [] _ = []
+importSeed (DAttrib _ d :: rest) depEnv = importSeed [d] depEnv ++ importSeed rest depEnv
+importSeed (DUse _ path :: rest) depEnv =
+  let depId = usePathModuleId path
+  match lookupAssocS depId depEnv
+    None => importSeed rest depEnv
+    Some depSchemes =>
+      importFormSchemes path depSchemes ++ importSeed rest depEnv
+importSeed (_ :: rest) depEnv = importSeed rest depEnv
+
+checkModulesGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> List (String, List (String, Scheme))
+checkModulesGo _ _ _ [] = []
+checkModulesGo baseSeed depEnv accData ((mid, prog) :: rest) =
+  let seed = baseSeed ++ importSeed prog depEnv
+  let schemes = checkModuleFull seed accData prog
   let pubV = pickSchemes (publicValNames prog) schemes
-  (mid, schemes) :: checkModulesGo (accV ++ pubV) (accData ++ publicDataDecls prog) rest
+  (mid, schemes) :: checkModulesGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) rest
 
 -- check every module in dependency order against a shared prelude + runtime.
 -- modules = (moduleId, desugared program) in dependency-first order.
@@ -5757,7 +5830,7 @@ checkModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List 
 checkModules runtimeDecls coreDecls modules =
   let runtimeSeed = externSchemes runtimeDecls
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
-  checkModulesGo (runtimeSeed ++ coreSchemes) (publicDataDecls coreDecls) modules
+  checkModulesGo (runtimeSeed ++ coreSchemes) [] (publicDataDecls coreDecls) modules
 
 -- ── per-module ISOLATED diagnostics (the analyzeProject typecheck stage) ────
 -- Like checkModuleFull but ALSO harvests THIS module's type diagnostics: it
@@ -5898,7 +5971,7 @@ elaborateModules runtimeDecls coreDecls modules =
   -- arg-position dispatch can thread an EARLIER module's / core's parametric
   -- `requires` element dict.  core2 seeds it.
   let coreSchemes = elabModuleStamp runtimeSeed [] core2 core2
-  let _ = elabModulesGo (runtimeSeed ++ coreSchemes) (publicDataDecls core2) core2 modules2
+  let _ = elabModulesGo (runtimeSeed ++ coreSchemes) [] (publicDataDecls core2) core2 modules2
   -- E5: on the emit path (argStampEnabled), dict-pass each module's now-stamped
   -- trees, mirroring elaborateDict's final `dictPass`.  A parametric `requires`
   -- impl whose body element-dispatch E5 routed RDict needs its leading
@@ -6145,12 +6218,15 @@ elabModuleStamp seedVars accData implDecls prog =
   let _ = if argMeasureEnabled.value then accumArgSites pendingArgSites.value else ()
   schemes
 
-elabModulesGo : List (String, Scheme) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> Unit
-elabModulesGo _ _ _ [] = ()
-elabModulesGo accV accData accAll ((mid, prog) :: rest) =
-  let schemes = elabModuleStamp accV accData (accAll ++ prog) prog
+elabModulesGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List Decl -> List (String, List Decl) -> <Mut> Unit
+elabModulesGo _ _ _ _ [] = ()
+-- IMPORT-SCOPED seed (see importSeed / checkModulesGo): only the names THIS
+-- module's DUse decls import; accAll stays the cumulative impl-body universe.
+elabModulesGo baseSeed depEnv accData accAll ((mid, prog) :: rest) =
+  let seed = baseSeed ++ importSeed prog depEnv
+  let schemes = elabModuleStamp seed accData (accAll ++ prog) prog
   let pubV = pickSchemes (publicValNames prog) schemes
-  elabModulesGo (accV ++ pubV) (accData ++ publicDataDecls prog) (accAll ++ prog) rest
+  elabModulesGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) (accAll ++ prog) rest
 
 -- ── D0.5 measurement driver (probe-only, no stamping) ──────────────────────
 -- The classification analog of elaborateModules: prePass return-position methods

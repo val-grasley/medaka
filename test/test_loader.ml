@@ -1386,6 +1386,69 @@ let test_import_shadows_prelude () =
       failwith (Printf.sprintf
         "Expected \"7\\n\" from apply 3 4 with imported apply, got %S" out))
 
+(* Regression: import-scoped per-module seeding.  A module that imports
+   `mylist.{myrev}` must type `myrev` as `List a -> List a` even when ANOTHER
+   module in the graph (`mystr`, loaded LATER) exports a same-named
+   `myrev : String -> String`.  The bug (native selfhost typecheck) flat-seeded
+   the UNION of every dependency's public schemes keyed by bare name into each
+   module's env under a last-write-wins map, so `mystr.myrev` clobbered
+   `mylist.myrev` → `main`'s `myrev acc` (acc : List a) mis-typed `String vs
+   List`.  OCaml's typecheck_module seeds ONLY each module's explicitly-imported
+   names (lib/typecheck.ml:4513-4543) and is the oracle; this guards that
+   invariant.  Must be a loader test: the union-seed bug lives only on the
+   multi-module typecheck path, never single-file. *)
+let test_typecheck_import_scoped_seeding () =
+  with_tmp_dir (fun dir ->
+    let _ = write_file dir "mylist.mdk"
+      "export myrev : List a -> List a\n\
+       myrev xs = xs\n" in
+    (* mystr is loaded AFTER mylist (main imports mylist first); under the buggy
+       union seed its String-typed myrev would overwrite mylist's. *)
+    let _ = write_file dir "mystr.mdk"
+      "export myrev : String -> String\n\
+       myrev s = s\n" in
+    let main_path = write_file dir "main.mdk"
+      "import mylist.{myrev}\n\
+       import mystr\n\n\
+       export useList : List Int\n\
+       useList = myrev [1, 2, 3]\n\n\
+       main : <IO> Unit\n\
+       main = println (debug useList)\n" in
+    let modules = Loader.load_program main_path [dir] in
+    let modules = List.map (fun (mid, _fp, prog) ->
+      (mid, Desugar.desugar_program prog)) modules in
+    (* Should type cleanly: myrev in main is List a -> List a, applied to a List.
+       Under the union-seed bug it raised "Type mismatch: String vs List Int". *)
+    (try
+      typecheck_module_chain modules
+    with Typecheck.Type_error (e, _) ->
+      failwith ("import-scoped seeding regressed — unexpected type error: "
+        ^ Typecheck.pp_error e));
+    (* And confirm main's `myrev` actually resolves to the List scheme by checking
+       its inferred type via the typecheck chain's exported env. *)
+    let te_acc = ref [] in
+    let main_te = ref None in
+    List.iter (fun (mid, prog) ->
+      let (te, _, _) = Typecheck.typecheck_module !te_acc mid prog in
+      if mid = "main" then main_te := Some te;
+      te_acc := te :: !te_acc) modules;
+    match !main_te with
+    | None -> failwith "main module not found in typecheck chain"
+    | Some te ->
+      (match List.assoc_opt "useList" te.Typecheck.te_schemes with
+       | None -> failwith "useList not exported from main"
+       | Some sch ->
+         let s = Typecheck.pp_scheme sch in
+         (* useList : List Int — only possible if myrev typed as List a -> List a *)
+         let contains_list =
+           let n = String.length s and m = String.length "List" in
+           let rec go i = i + m <= n &&
+             (String.sub s i m = "List" || go (i + 1)) in
+           go 0 in
+         if not contains_list then
+           failwith (Printf.sprintf
+             "expected useList : List Int (myrev typed List a -> List a), got %s" s)))
+
 (* ── Runner ──────────────────────────────────────── *)
 
 let () =
@@ -1463,6 +1526,9 @@ let () =
     ];
     "import shadows prelude (Phase 145)", [
       test_case "selective import overrides prelude plain fn" `Quick test_import_shadows_prelude;
+    ];
+    "import-scoped per-module seeding", [
+      test_case "import list.{reverse} not clobbered by string.reverse" `Quick test_typecheck_import_scoped_seeding;
     ];
     "workspace / multi-root", [
       test_case "cross-member import"    `Quick test_workspace_cross_member_import;
