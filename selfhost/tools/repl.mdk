@@ -31,7 +31,7 @@ import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import frontend.resolve.{resolveProgram, ppResError}
 import types.typecheck.{checkProgramDiags, checkProgram, ppScheme, Scheme(..)}
-import eval.eval.{Value(..), evalProgram, ppValue, lookupBinding, force}
+import eval.eval.{Value(..), evalOneRootEnv, ppValue, lookupBinding, force}
 
 -- ── Session state ─────────────────────────────────────────────────────────
 accumulatedRef : Ref (List Decl)
@@ -219,7 +219,13 @@ runPipeline combined =
         (e :: _) => (map fst tcErrs, [], [])
         [] =>
           let allSchemes = checkProgram (preludeDecls ++ combined)
-          let bindings = evalProgram (preludeDecls ++ combined)
+          -- DRIVER-COLLAPSE Phase 3/4: eval via the 1-module wrapper (evalOneRootEnv
+          -- = evalModulesRootEnv over [("__repl__", combined)]) instead of the flat
+          -- evalProgram (preludeDecls ++ combined).  The prelude is installed
+          -- GLOBALLY and the session decls as the root module's LOCALS; the returned
+          -- frame is local ∪ imports ∪ globals — the same by-name surface evalProgram
+          -- exposed (so the `__repl__` lookup + `:browse`/`:env` are unchanged).
+          let bindings = evalOneRootEnv preludeDecls ("__repl__", combined)
           ([], allSchemes, bindings)
 
 combinedDecls : List Decl -> List Decl

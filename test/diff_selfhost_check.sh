@@ -15,6 +15,20 @@
 # OCaml-free (REROOT-PLAN §2b): native host test/bin/check_main; every oracle leg
 # is a committed golden (no live main.exe / diagdump re-derivation).
 #
+# DRIVER-COLLAPSE Phase 4 RE-ROOT (OPTION A, 2026-06-13): the real `medaka check`
+# CLI now RESOLVES imports (loadProgram → multi-module typecheck) instead of
+# emitting `UnknownModule` for non-core imports.  This gate's host (check_main) is
+# the SINGLE-FILE front-end (selfhost/tools/check.mdk runCheck) and is UNCHANGED —
+# it still exercises the 1-module degenerate case, so the no-import fixtures below
+# stay byte-identical (the CLI routes 1-module loads through this same runCheck).
+# The import-bearing `check` behaviour (option A) is verified ELSEWHERE, not here:
+#   • diff_selfhost_check_modules.sh — native multi-module typecheck vs the OCaml
+#     MULTI-module oracle (the import-aware path `check` now shares with run/build);
+#   • diff_native_cli.sh — the real `./medaka check` CLI vs committed goldens
+#     (no-import goldens prove byte-identity), plus its check/repl/run legs.
+# The import_error_fixtures below remain SINGLE-FILE (the loader cannot resolve a
+# module that does not exist), so check_main still emits UnknownModule for them.
+#
 # KNOWN PRE-EXISTING DIVERGENCE (#55, tracked by task #11): the TYPES leg's golden
 # prelude has `sum`/`product : a Int -> Int`; the native check infers `a b -> b`,
 # so all 25 diff_fixtures TYPES checks MISMATCH — the resolve (14) + import_error (1)

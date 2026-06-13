@@ -26,9 +26,9 @@ import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import support.util.{joinNl}
-import frontend.resolve.{resolveToLines, singleFileImportErrors, resErrorSexp}
+import frontend.resolve.{resolveToLines, resolveModulesToLines, singleFileImportErrors, resErrorSexp}
 import frontend.exhaust.{exhaustToLines}
-import types.typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls, collectDoWellformedErrors, checkErrorsWithRuntime}
+import types.typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls, collectDoWellformedErrors, checkErrorsWithRuntime, checkModulesEntryReport, checkModulesEntryHasErrors}
 
 -- exported so the batch typecheck harness's synthetic entry can pull this
 -- module into a single union closure (does not change its inferred schemes),
@@ -106,4 +106,45 @@ checkHasErrors rsrc csrc tsrc =
               let _ = setCoherenceUserDecls desugared
               checkErrorsWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
             _ => True
+
+-- ── multi-module `check` (DRIVER-COLLAPSE Phase 4, OPTION A) ───────────────
+-- The unified `medaka check` path for IMPORT-BEARING files.  The CLI loads the
+-- entry + its transitive imports (loadProgram, entry LAST in dependency-first
+-- order) and DESUGARS each, then calls these.  This RESOLVES imports (vs the
+-- single-file path's `UnknownModule`), mirroring how `build`/`run` route through
+-- loadProgram → the multi-module typecheck.  Output mirrors runCheck's shape over
+-- the entry module: multi-module resolve diagnostics short-circuit first, else the
+-- entry module's schemes/type-errors/match-warnings via checkModulesEntryReport.
+-- `rtD`/`coreD` are the DESUGARED runtime/core decls; `mods` are the DESUGARED
+-- loaded modules (entry last).  Kept separate from runCheck so the no-import path
+-- stays byte-identical (the CLI routes 1-module loads through runCheck).
+export
+runCheckModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
+runCheckModules rtD coreD mods =
+  let resDiags = resolveModulesToLines rtD coreD mods
+  match resDiags
+    "" =>
+      let exWarns = entryExhaust mods
+      let report = checkModulesEntryReport rtD coreD mods
+      joinNonEmpty exWarns report
+    _ => resDiags
+
+-- exit-code predicate analog of checkHasErrors for the multi-module path: a
+-- resolve error OR any type error in the entry module.
+export
+checkModulesHasErrors : List Decl -> List Decl -> List (String, List Decl) -> <Mut> Bool
+checkModulesHasErrors rtD coreD mods =
+  let resDiags = resolveModulesToLines rtD coreD mods
+  match resDiags
+    "" => checkModulesEntryHasErrors rtD coreD mods
+    _ => True
+
+-- guard-exhaustiveness warnings on the ENTRY module (last) — the multi-module
+-- analog of runCheck's `exhaustToLines raw`.  exhaustToLines runs on the desugared
+-- decls here (the loaded mods are already desugared); guard-coverage lowering does
+-- not erase the `match` shape exhaust inspects, so this surfaces the same warnings.
+entryExhaust : List (String, List Decl) -> String
+entryExhaust [] = ""
+entryExhaust [(_, prog)] = exhaustToLines prog
+entryExhaust (_ :: rest) = entryExhaust rest
 

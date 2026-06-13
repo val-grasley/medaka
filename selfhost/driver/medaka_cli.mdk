@@ -14,7 +14,7 @@
 -- check-policy/etc.) prints "not yet in native CLI" and exits 1; those land in
 -- later slices (run/build = Slice 2, test = Slice 3, repl/lsp = Slice 4).
 
-import tools.check.{runCheck, checkHasErrors}
+import tools.check.{runCheck, checkHasErrors, runCheckModules, checkModulesHasErrors}
 import tools.fmt.{formatSource}
 import tools.new_cmd.{newProject}
 import driver.build_cmd.{BuildResult, BuildOk, BuildErr, runBuild, baseOf, chopExt, envOr}
@@ -76,12 +76,22 @@ notYet sub =
 -- Reads <MEDAKA_ROOT>/stdlib/{runtime,core}.mdk + the target, runs
 -- check.runCheck, prints schemes/diagnostics.  Mirrors check_main.mdk; exit 0
 -- (runCheck reports diagnostics in-band, like the interpreted driver).
+--
+-- DRIVER-COLLAPSE Phase 4 (OPTION A): `check` now RESOLVES imports.  We load the
+-- entry + its transitive imports via loadProgram (same roots/priority as run/build)
+-- and route by module count: a 1-module load (no non-core imports) goes through the
+-- single-file runCheck (full prelude+user scheme dump, byte-identical to the old
+-- behaviour — keeps the no-import goldens green); a multi-module load goes through
+-- runCheckModules (multi-module resolve + per-module-frame typecheck), so a valid
+-- cross-module reference reports import-aware diagnostics instead of `UnknownModule`.
 runCheckCmd : List String -> <IO, Mut, Panic> Unit
 runCheckCmd argv = match dropFlags argv
   [target] =>
     let root = envOr "MEDAKA_ROOT" "."
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
+    let stdlibDir = root ++ "/stdlib"
+    let roots = [findProjectRoot (dirOf2 target), stdlibDir]
     match readFile rtPath
       Err msg =>
         let _ = ePutStrLn msg
@@ -94,17 +104,37 @@ runCheckCmd argv = match dropFlags argv
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
-          -- G1: print the report (byte-identical stdout: diff_native_cli gate),
-          -- then gate the EXIT CODE on the error predicate so CI `$?` matches
-          -- OCaml `check` (exit 1 on any error).
-          Ok tsrc =>
-            let _ = putStr (runCheck rsrc csrc tsrc)
-            match checkHasErrors rsrc csrc tsrc
-              True => exit 1
-              False => ()
+          -- G1: print the report (byte-identical stdout for no-import files:
+          -- diff_native_cli gate), then gate the EXIT CODE on the error predicate
+          -- so CI `$?` matches OCaml `check` (exit 1 on any error).
+          Ok tsrc => match loadProgram target roots
+            -- A load error (missing/cyclic import) is reported verbatim, like
+            -- build/run; exit 1.  No-fixture single-file files never error here.
+            Err lmsg =>
+              let _ = ePutStrLn lmsg
+              exit 1
+            Ok mods => checkRoute rsrc csrc tsrc mods
   _ =>
     let _ = ePutStrLn "usage: medaka check [--json] <file.mdk>"
     exit 1
+
+-- Route by module count: a single loaded module (no non-core imports) ⇒ the
+-- single-file runCheck (byte-identical full dump); >1 module ⇒ the multi-module
+-- import-resolving report.  `mods` is dependency-first, entry last.
+checkRoute : String -> String -> String -> List (String, List Decl) -> <IO, Mut, Panic> Unit
+checkRoute rsrc csrc tsrc [_] =
+  let _ = putStr (runCheck rsrc csrc tsrc)
+  match checkHasErrors rsrc csrc tsrc
+    True => exit 1
+    False => ()
+checkRoute rsrc csrc tsrc mods =
+  let rtD = desugar (parse rsrc)
+  let coreD = desugar (parse csrc)
+  let modsD = map desugarPair mods
+  let _ = putStr (runCheckModules rtD coreD modsD)
+  match checkModulesHasErrors rtD coreD modsD
+    True => exit 1
+    False => ()
 
 -- Drop check's accepted-but-ignored flags (--json/--release are OCaml-only;
 -- the native MVP type-checks identically regardless).

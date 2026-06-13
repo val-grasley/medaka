@@ -6099,6 +6099,56 @@ entryOwnSchemes [] = []
 entryOwnSchemes [(_, ss)] = ss
 entryOwnSchemes (_ :: rest) = entryOwnSchemes rest
 
+-- ── multi-module `check` CLI report (DRIVER-COLLAPSE Phase 4, OPTION A) ─────
+-- The unified `medaka check` path for IMPORT-BEARING files: the caller loads the
+-- entry + its transitive imports (loadProgram), then this typechecks the whole
+-- graph in dependency order (checkModuleFullDiags per module: per-module-frame,
+-- prelude seeded once) and harvests the ENTRY module's OWN (schemes, errs, warns).
+-- Imports are RESOLVED (their public schemes seed the entry), so a valid cross-
+-- module reference no longer falls through to `UnknownModule` — the known "native
+-- check is single-file" limitation, fixed.  The entry is last in dependency-first
+-- order.  No-import (1-module) files still route through runCheck (full prelude+
+-- user dump, byte-identical); this path is reached ONLY when the load returned
+-- more than one module.
+checkModulesEntryFull : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, Option Loc), List String)
+checkModulesEntryFull runtimeDecls coreDecls modules =
+  let runtimeSeed = externSchemes runtimeDecls
+  let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
+  checkModulesEntryFullGo (runtimeSeed ++ coreSchemes) (publicDataDecls coreDecls) modules
+
+-- thread the public accumulators exactly as checkModulesDiagsGo, but keep only the
+-- LAST (entry) module's full triple — earlier modules' diagnostics belong to their
+-- own `check`, not the entry's report.
+checkModulesEntryFullGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, Option Loc), List String)
+checkModulesEntryFullGo _ _ [] = ([], [], [])
+checkModulesEntryFullGo accV accData [(_, prog)] = checkModuleFullDiags accV accData prog
+checkModulesEntryFullGo accV accData ((_, prog) :: rest) =
+  let (schemes, _, _) = checkModuleFullDiags accV accData prog
+  let pubV = pickSchemes (publicValNames prog) schemes
+  checkModulesEntryFullGo (accV ++ pubV) (accData ++ publicDataDecls prog) rest
+
+-- render the entry report: type errors win (each `TYPE ERROR: …`), else the
+-- entry's `name : scheme` lines followed by its non-exhaustive-match warnings.
+-- The harness sorts, so scheme/warn relative order is not load-bearing.  Mirrors
+-- runCheck's single-file shape, but over the entry module of a resolved graph.
+export
+checkModulesEntryReport : List Decl -> List Decl -> List (String, List Decl) -> <Mut> String
+checkModulesEntryReport runtimeDecls coreDecls modules =
+  let (schemes, errs, warns) = checkModulesEntryFull runtimeDecls coreDecls modules
+  match errs
+    [] => joinNl (schemeLines schemes ++ warns)
+    _ => joinNl (typeErrorLines (map fst errs))
+
+-- exit-code predicate analog of checkHasErrors: any type error in the ENTRY
+-- module's own check.
+export
+checkModulesEntryHasErrors : List Decl -> List Decl -> List (String, List Decl) -> <Mut> Bool
+checkModulesEntryHasErrors runtimeDecls coreDecls modules =
+  let (_, errs, _) = checkModulesEntryFull runtimeDecls coreDecls modules
+  match errs
+    [] => False
+    _ => True
+
 -- run the multi-module front-end and render the ENTRY module's own bindings as
 -- `name : scheme` per line (the harness sorts) — diffs vs dev/tc_module_probe.
 export
