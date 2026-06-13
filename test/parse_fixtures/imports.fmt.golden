@@ -1,0 +1,19 @@
+import core.{Eq, Ord, Option}
+import list.{reverse}
+export import string.{join, Foo(..)}
+import utils.helper
+import utils.*
+import utils as U
+
+extern putStr : String -> <IO> Unit
+extern Ref : a -> Ref a
+
+export
+neq : Eq a => a -> a -> Bool
+neq x y = not (eq x y)
+
+export
+clampMin : Ord a => a -> a -> a
+clampMin lo x
+  | x < lo = lo
+  | True = x

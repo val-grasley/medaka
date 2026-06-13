@@ -1,104 +1,61 @@
 #!/bin/sh
-# BOOTSTRAP (B1) — the FIRST native self-compile slice: natively compile the
-# self-hosted LEXER and prove its token stream byte-matches the tree-walker
-# interpreter over real fixtures.  This is the milestone the whole emitter effort
-# has driven toward: a REAL compiler subcommand (the lexer) compiled natively,
-# end-to-end (emit textual LLVM IR -> clang -> link libgc + runtime -> run), and
-# validated byte-for-byte against `medaka run selfhost/entries/lex_main.mdk`.
+# BOOTSTRAP (B1) — the FIRST native self-compile slice: prove the natively
+# compiled self-hosted LEXER stage reproduces the reference lexer over real
+# fixtures.  This is the milestone the whole emitter effort drove toward: a REAL
+# compiler subcommand (the lexer) compiled natively and validated byte-for-byte
+# against the reference token stream.
 #
-# Unlike diff_selfhost_llvm_modules.sh (which forces an EMPTY core prelude), this
-# pushes the REAL stdlib/core.mdk through emitProgram — the actual bootstrap gate.
-# The driver (selfhost/entries/llvm_bootstrap_lex_main.mdk) enables gap-recording before
-# emitProgram so the 8 UNREACHABLE dead-code gaps in core.mdk (max/min in
-# maximum/minimum, the Arbitrary impls) become harmless "0" placeholders instead
-# of aborting.  The byte-diff is the safety net: a gap the lexer ACTUALLY reaches
-# would make a fixture diverge and FAIL — a passing diff proves every placeholder
-# was dead code.
+# OCaml-free (REROOT-PLAN §2e).  Both legs are now off the OCaml oracle:
+#   reference (the "interpreter stage"): a committed golden per fixture, captured
+#     from `main.exe run selfhost/entries/lex_main.mdk <fixture>` while OCaml was
+#     trusted (test/capture_goldens.sh boot_lex) — frozen as <fixture>.boot_lex.golden.
+#   native   : test/bin/lex_main <fixture>  — the lex_main entry native-compiled by
+#     `./medaka build` (test/build_oracles.sh), i.e. lex_main's graph emitted to
+#     textual LLVM IR -> clang -> link libgc + runtime -> run.  This is exactly the
+#     native lexer stage the spike validated; the emit+clang step now lives in the
+#     OCaml-free `./medaka build` rather than `main.exe run <emitter>`.
 #
-# For each fixture in test/diff_fixtures/*.mdk:
-#   oracle = medaka run selfhost/entries/lex_main.mdk <fixture>           (the interpreter)
-#   native = ./lex <fixture>   (emit lex_main's graph once -> clang -> run)
-# Diff oracle vs native.  The native runtime AUTO-PRINTS main's value
-# (lex_main's `main : <IO> Unit` -> a trailing "()\n" via mdk_print_unit) which the
-# interpreted oracle does NOT emit; lex_main's `emit` uses `putStr` (no trailing
-# newline), so the invariant native suffix is exactly "()\n".  We append "()\n" to
-# the oracle output before the diff (the same auto-print convention
-# diff_selfhost_llvm_modules.sh relies on).
+# The native runtime AUTO-PRINTS main's value (lex_main's `main : <IO> Unit` -> a
+# trailing "()" via mdk_print_unit) which the reference does NOT emit.  We strip
+# that trailing "()" from the native output (strip_unit) before the diff — the
+# golden is the raw reference token stream.
+#
+# This gate is now nearly redundant with diff_selfhost_lexer.sh (native lex stage
+# == golden over the same diff_fixtures corpus, via the TOKENS golden section);
+# kept distinct per REROOT-PLAN §2e (could fold later).
 #
 # Usage:  sh test/bootstrap_lex.sh
-# Exit:   0 if every fixture's native token stream matches the interpreter;
-#         2 if the build is missing, no C compiler, or libgc is absent (the LLVM
-#         gates are opt-in — same skip discipline as the other diff gates).
+# Exit:   0 if every fixture's native token stream matches the golden;
+#         2 if the oracle binary is missing (run sh test/build_oracles.sh first).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-ORACLE="$ROOT/selfhost/entries/lex_main.mdk"
-EMIT="$ROOT/selfhost/entries/llvm_bootstrap_lex_main.mdk"
-RT="$ROOT/runtime/medaka_rt.c"
-RUNTIME="$ROOT/stdlib/runtime.mdk"
-CORE="$ROOT/stdlib/core.mdk"
-SELFHOST="$ROOT/selfhost"
+RUN="$ROOT/test/bin/lex_main"
 FIXDIR="$ROOT/test/diff_fixtures"
-CC="${CC:-clang}"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
-command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping spike"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
-# libgc (bdw-gc) detection — VERBATIM from diff_selfhost_llvm_modules.sh.
-if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then
-  GC_CFLAGS="$(pkg-config --cflags bdw-gc)"; GC_LIBS="$(pkg-config --libs bdw-gc)"
-elif GC_PREFIX="$(brew --prefix bdw-gc 2>/dev/null)" && [ -n "$GC_PREFIX" ] && [ -f "$GC_PREFIX/include/gc.h" ]; then
-  GC_CFLAGS="-I$GC_PREFIX/include"; GC_LIBS="-L$GC_PREFIX/lib -lgc"
-elif printf '#include <gc.h>\nint main(void){return 0;}\n' | "$CC" -x c - -lgc -o /dev/null 2>/dev/null; then
-  GC_CFLAGS=""; GC_LIBS="-lgc"
-else
-  echo "libgc (bdw-gc) not found — skipping spike (install bdw-gc, or set GC_PREFIX)"; exit 2
-fi
-
-WORK="$(mktemp -d)"
-trap 'rm -rf "$WORK"' EXIT
-
-# Emit the native lexer ONCE — lex_main's graph (lexer + util + the REAL core
-# prelude) through the gap-tolerant bootstrap driver — then clang+link it.  The
-# resulting ./lex is reused across every fixture.
-LL="$WORK/lex.ll"
-BIN="$WORK/lex"
-if ! "$MAIN" run "$EMIT" "$RUNTIME" "$CORE" "$ORACLE" "$SELFHOST" > "$LL" 2>"$WORK/emit.err"; then
-  echo "FAIL (emit lex_main): $(cat "$WORK/emit.err")"; exit 1
-fi
-# `-Wl,-stack_size` grows the MAIN-THREAD stack (default ~8 MB on macOS): the
-# self-hosted lexer builds its token list with non-tail `RTok … :: scan …`
-# recursion, so a real-file-sized source (~60 KB+ / tens of thousands of tokens)
-# overflows the default stack and SIGSEGVs.  512 MB clears every realistic input
-# (the small fixtures here never needed it; this future-proofs bigger inputs and
-# the deeper-recursing parser/typecheck slices).  A tail-recursive lexer loop or a
-# big-stack worker thread is the principled fix — tracked, not yet needed.
-if ! "$CC" -Wl,-stack_size,0x20000000 $GC_CFLAGS "$LL" "$RT" $GC_LIBS -o "$BIN" 2>"$WORK/cc.err"; then
-  echo "FAIL (clang lex_main): $(cat "$WORK/cc.err")"; exit 1
-fi
+# Drop the native value entry's trailing "()" (Unit auto-print; runtime/medaka_rt.c).
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 pass=0; fail=0
 for fix in "$FIXDIR"/*.mdk; do
   [ -f "$fix" ] || continue
   name="$(basename "$fix")"
-  # oracle IO stdout + the invariant native Unit auto-print.  lex_main's `emit`
-  # renders the token stream via `joinNl` (NO trailing newline) and `putStr`, so
-  # the oracle ends at the last token (e.g. `EOF`) with no newline.  The native
-  # binary appends the runtime Unit auto-print `()\n` directly after that, giving
-  # `…EOF()\n`; `$(…)` strips the trailing newline from `self`, leaving `…EOF()`.
-  # So append exactly `()` (no surrounding newline) to the oracle to match.
-  # (The sibling diff_selfhost_llvm_modules.sh appends `\n()` instead because its
-  # oracle output IS newline-terminated — that form is wrong for joinNl output.)
-  ref="$("$MAIN" run "$ORACLE" "$fix" 2>/dev/null)()"
-  self="$("$BIN" "$fix" 2>/dev/null)"
+  golden="${fix%.mdk}.boot_lex.golden"
+  if [ ! -f "$golden" ]; then
+    fail=$((fail+1)); printf 'FAIL %s (no .boot_lex.golden — run sh test/capture_goldens.sh boot_lex)\n' "$name"; continue
+  fi
+  ref="$(cat "$golden")"
+  self="$("$RUN" "$fix" 2>/dev/null | strip_unit)"
   if [ "$ref" = "$self" ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else
     fail=$((fail+1))
     printf 'FAIL %s\n' "$name"
-    printf '%s' "$ref"  > "$WORK/ref.txt"
-    printf '%s' "$self" > "$WORK/self.txt"
-    diff "$WORK/ref.txt" "$WORK/self.txt" | head -20 | sed 's/^/    /'
+    printf '%s' "$ref"  > "$ROOT/.boot_ref.$$"
+    printf '%s' "$self" > "$ROOT/.boot_self.$$"
+    diff "$ROOT/.boot_ref.$$" "$ROOT/.boot_self.$$" | head -20 | sed 's/^/    /'
+    rm -f "$ROOT/.boot_ref.$$" "$ROOT/.boot_self.$$"
   fi
 done
 

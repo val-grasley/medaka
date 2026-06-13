@@ -1,32 +1,26 @@
 #!/bin/sh
-# Differential validation for the self-hosted comment-preserving formatter:
-# selfhost/entries/fmt_main.mdk (parseWithPositions + collectComments → fmt.formatProgram,
-# a port of lib/printer.ml's `format_program`) vs the OCaml `medaka fmt --stdout`
-# oracle (the same `format_program`, driven by lib/fmt.ml).
+# Differential gate for the self-hosted FORMATTER (selfhost/entries/fmt_main.mdk).
 #
-# Unlike diff_selfhost_printer.sh (which isolates the AST→source core), this gate
-# exercises the COMMENT-INTERLEAVING path: leading/standalone comments with
-# blank-line gaps, trailing inline comments, between-decl comments, interior
-# `data`-variant comments, and block comments.
+# OCaml-free (REROOT-PLAN §2c): native host test/bin/fmt_main vs a committed
+# golden captured from `main.exe fmt --stdout <f>` (test/capture_goldens.sh fmt).
+# The gate applies `norm` (float-text normalization) to BOTH the golden and the
+# native output, and strip_unit's the native binary's trailing "()" Unit auto-print
+# before the compare.  Sibling golden: <fixture>.fmt.golden.
 #
-# Runs over test/fmt_fixtures/ (comment-heavy cases authored for this gate) plus
-# test/parse_fixtures/ (the comment-FREE corpus the other selfhost gates use —
-# confirms the no-comment path stays byte-identical too).
-#
-# Usage:  sh test/diff_selfhost_fmt.sh [file.mdk ...]
-# Exit:   0 if every file's formatting matches, else 1.
-
+# Usage:  sh test/diff_selfhost_fmt.sh [files...]
+# Exit:   0 if every fixture's native formatting matches the golden;
+#         2 if the oracle binary is missing (run sh test/build_oracles.sh first).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-FMTMAIN="$ROOT/selfhost/entries/fmt_main.mdk"
+RUN="$ROOT/test/bin/fmt_main"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
-# Normalize float-literal text (OCaml %g vs selfhost floatToString) so a float
-# literal does not spuriously fail; matches the other selfhost gates.
+# Normalize volatile float text (mirrors the original gate's both-sides norm).
 norm() { sed -E 's/-?[0-9]+\.[0-9eE+-]+/<F>/g'; }
+# Drop the native value entry's trailing "()" (Unit auto-print; runtime/medaka_rt.c).
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 if [ "$#" -gt 0 ]; then
   files="$*"
@@ -39,8 +33,12 @@ fail=0
 for f in $files; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
-  expected="$("$MAIN" fmt --stdout "$f" 2>/dev/null | norm)"
-  actual="$("$MAIN" run "$FMTMAIN" "$f" 2>/dev/null | norm)"
+  golden="${f%.mdk}.fmt.golden"
+  if [ ! -f "$golden" ]; then
+    fail=$((fail+1)); printf 'FAIL %s (no .fmt.golden — run sh test/capture_goldens.sh fmt)\n' "$name"; continue
+  fi
+  expected="$(norm < "$golden")"
+  actual="$("$RUN" "$f" 2>/dev/null | strip_unit | norm)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

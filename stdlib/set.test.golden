@@ -1,0 +1,40 @@
+running doctests in /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:90: size (singleton 5)
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:101: size (Set { 1, 2, 3, 2, 1 })
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:103: toList (fromList [3, 1, 2, 3, 1])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:109: size (Set { } : Set Int)
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:119: size (fromList [1, 2, 3, 2])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:128: member 2 (fromList [1, 2, 3])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:130: member 9 (fromList [1, 2, 3])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:144: size (insert 2 (fromList [1, 2, 3]))
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:146: size (insert 9 (fromList [1, 2, 3]))
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:158: member 2 (delete 2 (fromList [1, 2, 3]))
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:208: lookupMin (fromList [3, 1, 2])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:218: lookupMax (fromList [3, 1, 2])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:228: toList (deleteMin (fromList [3, 1, 2]))
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:238: toList (deleteMax (fromList [3, 1, 2]))
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:260: toList (union (fromList [1, 2]) (fromList [2, 3]))
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:268: toList (intersection (fromList [1, 2, 3]) (fromList [2, 3, 4]))
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:279: toList (difference (fromList [1, 2, 3]) (fromList [2]))
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:287: isSubsetOf (fromList [1, 2]) (fromList [1, 2, 3])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:289: isSubsetOf (fromList [1, 4]) (fromList [1, 2, 3])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:302: toList (fromList [3, 1, 2, 1])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:304: length (fromList [3, 1, 2, 1])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:317: eq (fromList [1, 2, 3]) (fromList [3, 2, 1, 2])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:325: compare (fromList [1, 2]) (fromList [1, 3])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:334: debug (fromList [1, 2, 3]) == "fromList [1, 2, 3]"
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:348: display (fromList [1, 2, 3]) == "Set { 1, 2, 3 }"
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:350: display (empty : Set Int) == "Set {}"
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk:370: isEmpty (empty : Set Int)
+
+/Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/set.mdk: 27/27 passed
+Testing "fromList builds a well-formed tree" ... OK (100 tests)
+Testing "elements come out strictly ascending (sorted, deduped)" ... OK (100 tests)
+Testing "insert then member" ... OK (100 tests)
+Testing "insert preserves well-formedness" ... OK (100 tests)
+Testing "delete removes the element and preserves well-formedness" ... OK (100 tests)
+Testing "union preserves well-formedness" ... OK (100 tests)
+Testing "intersection elements are in both sets" ... OK (100 tests)
+Testing "difference elements are in the first but not the second" ... OK (100 tests)
+
+8 passed, 0 failed

@@ -1,0 +1,4 @@
+inc = x => x + 1
+add = x y => x + y
+compose f g = x => f (g x)
+applyTwice f = x => f (f x)

@@ -1,0 +1,56 @@
+running doctests in /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:29: rangeStep 0 10 3
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:31: rangeStep 5 0 (-2)
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:42: replicate 3 0
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:52: iterate 4 (n => n * 2) 1
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:63: unfold (n => if n > 5 then None else Some (n, n + 1)) 1
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:76: reverse [1, 2, 3]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:87: intersperse 0 [1, 2, 3]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:98: intercalate [0] [[1], [2, 3], [4]]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:107: transpose [[1, 2, 3], [4, 5, 6]]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:109: transpose [[1, 2], [3], [4, 5, 6]]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:119: subsequences [1, 2, 3]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:129: permutations [1, 2, 3]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:147: scanLeft (acc x => acc + x) 0 [1, 2, 3]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:156: scanRight (x acc => x + acc) 0 [1, 2, 3]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:169: findIndex (x => x > 2) [1, 2, 3, 4]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:182: findIndices (x => x > 2) [1, 3, 2, 4]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:195: elemIndex 3 [1, 2, 3, 2]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:205: take 2 [1, 2, 3, 4]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:216: drop 2 [1, 2, 3, 4]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:227: takeWhile (x => x < 3) [1, 2, 3, 1]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:238: dropWhile (x => x < 3) [1, 2, 3, 1]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:249: span (x => x < 3) [1, 2, 3, 1]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:261: break (x => x > 2) [1, 2, 3, 1]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:269: splitAt 2 [1, 2, 3, 4]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:280: slice 1 3 [10, 20, 30, 40]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:289: chunks 2 [1, 2, 3, 4, 5]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:303: sortBy (x y => compare y x) [3, 1, 2]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:323: sort [3, 1, 2, 1]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:333: sortOn (x => 0 - x) [1, 3, 2]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:344: nubBy (x y => x == y) [1, 2, 1, 3, 2]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:357: nub [1, 2, 1, 3, 2, 1]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:367: groupBy (x y => x == y) [1, 1, 2, 3, 3, 3]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:378: group [1, 1, 2, 3, 3]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:386: partition (x => x > 2) [1, 2, 3, 4]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:397: tally [1, 2, 1, 3, 1, 2]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:446: zip [1, 2, 3] [10, 20]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:448: zip [] [1, 2]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:459: zip3 [1, 2] [3, 4] [5, 6]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:461: zip3 [1, 2, 3] [4, 5] [6]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:473: zipWith (x y => x + y) [1, 2, 3] [10, 20, 30]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:475: zipWith (x y => x * y) [1, 2, 3, 4] [10, 20]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:485: unzip [(1, 2), (3, 4)]
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk:487: unzip []
+
+/Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/list.mdk: 43/43 passed
+Testing "reverse is an involution" ... OK (100 tests)
+Testing "take n ++ drop n recovers the list" ... OK (100 tests)
+Testing "splitAt agrees with take/drop" ... OK (100 tests)
+Testing "span ++ recovers the list" ... OK (100 tests)
+Testing "sort is ascending and length-preserving" ... OK (100 tests)
+Testing "partition splits by the predicate" ... OK (100 tests)
+Testing "nub removes all duplicates" ... OK (100 tests)
+Testing "concat of group recovers the list" ... OK (100 tests)
+
+8 passed, 0 failed

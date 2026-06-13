@@ -1,0 +1,7 @@
+wrap : a -> Opt a
+fromOpt : a -> Opt a -> a
+mapOpt : (a -> b) -> Opt a -> Opt b
+swap : Pair a b -> Pair b a
+applyPair : Pair (a -> b) a -> b
+single : a -> Tree a
+mirror : Tree a -> Tree a

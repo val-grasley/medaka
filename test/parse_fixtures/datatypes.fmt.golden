@@ -1,0 +1,17 @@
+data Bool = True | False
+
+data Option a = Some a | None
+
+data Shape = Circle Int | Rect Int Int deriving (Display)
+
+public export data Tree a = Leaf | Node (Tree a) a (Tree a)
+
+export data Color = Red | Green | Blue
+
+data Shape2 = Sphere Int | Box Int Int Int
+
+record Point
+  x : Int
+  y : Int
+
+data Event = Click { x : Int, y : Int } | Scroll Int

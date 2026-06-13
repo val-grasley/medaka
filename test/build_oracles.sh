@@ -79,6 +79,14 @@ CC="${CC:-clang}"
 #   exhaust_main            — diff_selfhost_exhaust.sh
 #   diagnostics_main        — diff_selfhost_diagnostics.sh
 #   diagnostics_project_main — diff_selfhost_analyze_project.sh
+#   ── Phase 2 §2c tooling gates (fmt/new/test/repl/lsp) ──
+#   fmt_main    — diff_selfhost_fmt.sh        (native host vs .fmt.golden)
+#   new_main    — diff_selfhost_new.sh        (native scaffold tree vs golden tree)
+#   test_main   — diff_selfhost_test.sh       (native test report vs .test.golden)
+#   repl_main   — diff_selfhost_repl.sh       (SKIPPED re-root; see capture_goldens.sh)
+#   (lsp_main is NOT a build target: `medaka build lsp_main.mdk` fails the native G1
+#    typecheck gate — tools.lsp imports don't resolve under the build path's roots.
+#    The 3 lsp gates stay on the OCaml oracle.  See REROOT-PLAN STOP guardrail.)
 ENTRIES="eval_run_main eval_run_batch core_ir_run_main core_ir_dump_main \
 eval_main eval_prelude_main eval_prelude_batch eval_list_batch \
 eval_dict_main eval_dict_batch eval_typed_main eval_typed_batch \
@@ -91,7 +99,8 @@ resolve_main resolve_batch resolve_modules_main \
 printer_main positions_main lex_comments_main \
 typecheck_main typecheck_golden_batch check_main check_batch \
 check_modules_main check_all_main check_match_main exhaust_main \
-diagnostics_main diagnostics_project_main"
+diagnostics_main diagnostics_project_main \
+fmt_main new_main test_main repl_main"
 
 # ── Opt-in skip when clang/libgc absent (mirror the other native scripts) ──────
 command -v "$CC" >/dev/null 2>&1 || {

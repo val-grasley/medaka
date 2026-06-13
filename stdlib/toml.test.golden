@@ -1,0 +1,15 @@
+running doctests in /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:192: parse "[package]\nname = \"hello\"\nversion = \"0.1.0\"\nentry = \"main.mdk\"" == Ok (Toml [("name", TStr "hello"), ("version", TStr "0.1.0"), ("entry", TStr "main.mdk")])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:197: parse "[workspace]\nmembers = [\"pkg-a\", \"pkg-b\"]" == Ok (Toml [("workspace.members", TArr ["pkg-a", "pkg-b"])])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:202: parse "# just a comment\n\nname = \"x\"" == Ok (Toml [("name", TStr "x")])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:207: parse "name = \"hello\" # a comment" == Ok (Toml [("name", TStr "hello")])
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:217: parse "bad line no equals"
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:220: parse "[package]\nname = unterminated"
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:245: parseGetStr "name" "[package]\nname = \"medaka\"\nversion = \"1.0.0\"\nentry = \"main.mdk\""
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:250: parseGetStr "workspace.members" "[workspace]\nmembers = [\"a\"]"
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:262: parseGetArr "workspace.members" "[workspace]\nmembers = [\"pkg-a\", \"pkg-b\"]"
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:267: parseGetArr "name" "[package]\nname = \"x\"\nversion = \"0.1.0\"\nentry = \"main.mdk\""
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:280: parseGetStr "name" "[package]\nname = \"my-project\"\nversion = \"0.1.0\"\nentry = \"main.mdk\""
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk:298: parseGetArr "workspace.members" "[workspace]\nmembers = [\"pkgs/core\", \"pkgs/net\"]"
+
+/Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/stdlib/toml.mdk: 12/12 passed

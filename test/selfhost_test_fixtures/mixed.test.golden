@@ -1,0 +1,11 @@
+running doctests in /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/test/selfhost_test_fixtures/mixed.mdk
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/test/selfhost_test_fixtures/mixed.mdk:4: double 21
+  FAIL /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/test/selfhost_test_fixtures/mixed.mdk:10: triple 2
+       expected: 7
+         actual: 6
+  ok   /Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/test/selfhost_test_fixtures/mixed.mdk:16: addOne 4
+
+/Users/val/medaka/.claude/worktrees/agent-a59dd845012bce257/test/selfhost_test_fixtures/mixed.mdk: 2/3 passed (1 failed, 0 errors)
+Testing "double is add-to-self" ... OK (100 tests)
+
+1 passed, 0 failed

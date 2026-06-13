@@ -317,6 +317,90 @@ if want analyze_project; then
   done
 fi
 
+# ── §2e BOOTSTRAP stage goldens (native stage == reference stage) ─────────────
+# Each bootstrap_<stage>.sh proves the native-compiled stage (test/bin/<stage>_main)
+# reproduces the REFERENCE stage output.  The reference is the OCaml interpreter
+# running the SAME selfhost entry (`main.exe run <entry> <args> <fix>`), captured
+# RAW here (no trailing "()"; the gate strip_unit's the native side).  Suffix
+# `.boot_<stage>.golden`, sibling to each fixture.
+# capture_boot <tag> <fixdir> <suffix> <entry> [fixed-args...]:
+#   golden = main.exe run selfhost/entries/<entry>.mdk <fixed-args...> <fixture>
+capture_boot() {
+  tag="$1"; fixdir="$2"; suffix="$3"; entry="$4"; shift 4
+  want "$tag" || return 0
+  total=$((total+1))
+  ent="$ROOT/selfhost/entries/$entry.mdk"
+  for f in "$fixdir"/*.mdk; do
+    [ -f "$f" ] || continue
+    emit_golden "${f%.mdk}.$suffix" "$MAIN" run "$ent" "$@" "$f"
+  done
+}
+capture_boot boot_lex       "$ROOT/test/diff_fixtures"       boot_lex.golden       lex_main
+capture_boot boot_parse     "$ROOT/test/parse_fixtures"      boot_parse.golden     parse_main
+capture_boot boot_desugar   "$ROOT/test/parse_fixtures"      boot_desugar.golden   desugar_main
+capture_boot boot_resolve   "$ROOT/test/resolve_fixtures"    boot_resolve.golden   resolve_main "$RUNTIME" "$CORE"
+capture_boot boot_mark      "$ROOT/test/parse_fixtures"      boot_mark.golden      mark_main "$CORE"
+capture_boot boot_typecheck "$ROOT/test/typecheck_fixtures"  boot_typecheck.golden typecheck_main
+capture_boot boot_eval      "$ROOT/test/eval_fixtures"       boot_eval.golden      eval_main
+
+# ── §2c TOOLING goldens (fmt / test) — captured from the OCaml subcommand ──────
+# fmt : golden = `main.exe fmt --stdout <f>` RAW; the gate applies `norm` (float
+# text) to BOTH golden and native output, so capture raw here.  Sibling .fmt.golden.
+if want fmt; then
+  total=$((total+1))
+  for f in "$ROOT"/test/fmt_fixtures/*.mdk "$ROOT"/test/parse_fixtures/*.mdk; do
+    [ -f "$f" ] || continue
+    emit_golden "${f%.mdk}.fmt.golden" "$MAIN" fmt --stdout "$f"
+  done
+fi
+# test : golden = `main.exe test <f>` (doctest/prop report).  Fixtures = the
+# modules the self-hosted test_main genuinely reproduces (string/mut_array/array/
+# map are deferred behind the parked dispatch gap #55 + Unicode case-folding — see
+# diff_selfhost_test.sh).  Golden lives next to each as .test.golden.
+if want test; then
+  total=$((total+1))
+  for f in "$ROOT"/stdlib/core.mdk "$ROOT"/stdlib/json.mdk "$ROOT"/stdlib/toml.mdk \
+           "$ROOT"/stdlib/list.mdk "$ROOT"/stdlib/set.mdk \
+           "$ROOT"/test/selfhost_test_fixtures/mixed.mdk; do
+    [ -f "$f" ] || continue
+    emit_golden "${f%.mdk}.test.golden" "$MAIN" test "$f"
+  done
+fi
+
+# ── §2c `new` scaffold golden (project tree from `main.exe new`) ───────────────
+# Capture the OCaml `medaka new myapp` tree into a committed reference dir under
+# test/new_golden/myapp.  The re-rooted gate diffs the native new_main tree vs this.
+if want new; then
+  total=$((total+1))
+  fixtures=$((fixtures+1))
+  GOLDDIR="$ROOT/test/new_golden"
+  tmpnew="$TMP/newref"; rm -rf "$tmpnew"; mkdir -p "$tmpnew"
+  ( cd "$tmpnew" && "$MAIN" new myapp >/dev/null 2>&1 ) || true
+  if [ "$CHECK" -eq 1 ]; then
+    if [ -d "$GOLDDIR/myapp" ] && diff -r "$GOLDDIR/myapp" "$tmpnew/myapp" >/dev/null 2>&1; then :
+    else mism=$((mism+1)); [ -d "$GOLDDIR/myapp" ] && echo "DRIFT $GOLDDIR/myapp" || echo "MISSING $GOLDDIR/myapp"; fi
+  else
+    rm -rf "$GOLDDIR"; mkdir -p "$GOLDDIR"; cp -R "$tmpnew/myapp" "$GOLDDIR/myapp"; wrote=$((wrote+1))
+  fi
+fi
+
+# ── §2c `repl` / `lsp` goldens — SKIPPED (REROOT-PLAN STOP guardrail) ──────────
+# repl: the OCaml `medaka repl` and the self-hosted repl diverge on the post-error
+#   command sequence (after an unbound-variable line the OCaml repl keeps emitting
+#   prompts for the remaining commands; the selfhost repl — both interpreted AND
+#   native-compiled — stops short).  The interp/native selfhost outputs AGREE, so
+#   this is a selfhost-vs-OCaml behavioural difference, not a native-compile bug;
+#   the original gate only "passed" because its stderr-redirected pipe raced the
+#   two legs into the same truncated transcript.  An OCaml-captured golden is
+#   therefore not reproducible by the native host → NOT goldened.  Gate left on
+#   the OCaml oracle pending a selfhost-repl fix.
+# lsp: `medaka build selfhost/entries/lsp_main.mdk` fails the native G1 typecheck
+#   gate (selfhost/driver/medaka_cli.mdk typecheckGate uses roots
+#   [inputDir, stdlib] — missing `selfhost` — so tools.lsp's transitive imports
+#   don't resolve; check_all_main with explicit [selfhost, stdlib] roots typechecks
+#   lsp_main cleanly).  No native lsp host binary can be built → the 3 lsp gates
+#   cannot be re-rooted onto a native host.  Gates left on the OCaml oracle.
+
 echo
 if [ "$CHECK" -eq 1 ]; then
   printf 'CHECK: %d rows, %d fixtures, %d mismatch(es)\n' "$total" "$fixtures" "$mism"

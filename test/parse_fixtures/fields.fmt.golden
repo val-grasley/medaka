@@ -1,0 +1,3 @@
+getX p = p.x
+deep p = p.a.b.c
+combine p q = p.x + q.y

@@ -1,0 +1,8 @@
+(DTypeSig false "range" (TyFun (TyCon "Int") (TyFun (TyCon "Int") (TyApp (TyCon "List") (TyCon "Int")))))
+(DFunDef false "range" ((PVar "lo") (PVar "hi")) (ERangeList (EVar "lo") (EVar "hi") false))
+(DFunDef false "upto" ((PVar "n")) (ERangeList (ELit (LInt 0)) (EVar "n") true))
+(DFunDef false "arr" () (EArrayLit (ELit (LInt 1)) (ELit (LInt 2)) (ELit (LInt 3))))
+(DFunDef false "empties" () (EArrayLit))
+(DFunDef false "reverse" ((PVar "xs")) (ELetGroup ((lgb "go" (clause ((PList) (PVar "acc")) (EVar "acc")) (clause ((PCons (PVar "y") (PVar "ys")) (PVar "acc")) (EApp (EApp (EVar "go") (EVar "ys")) (EBinOp "::" (EVar "y") (EVar "acc")))))) (EApp (EApp (EVar "go") (EVar "xs")) (EListLit))))
+(DFunDef false "permute" ((PVar "xs")) (EApp (EApp (EDictApp "flatMap") (ETuple (EVar "h") (ELam ((PVar "rest")) (EApp (EApp (EMethodRef "map") (ELam ((PVar "p")) (EBinOp "::" (EVar "h") (EVar "p")))) (EVar "rest"))))) (EApp (EVar "selections") (EVar "xs"))))
+(DFunDef false "drop" ((PVar "n") (PAs "xs" (PCons PWild (PVar "rest")))) (EIf (EBinOp "<=" (EVar "n") (ELit (LInt 0))) (EVar "xs") (EIf (EVar "otherwise") (EApp (EApp (EVar "drop") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "rest")) (EApp (EVar "__fallthrough__") (ELit LUnit)))))
