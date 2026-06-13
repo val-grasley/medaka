@@ -19,6 +19,17 @@ export
 singleton : a -> List a
 singleton a = [a]
 
+{- | The half-open integer interval `[lo, hi)` — `lo` up to but excluding `hi`.
+   Empty when `lo >= hi`.
+
+   > range 2 5
+   [2, 3, 4]
+   > range 5 5
+   []
+   > range 5 2
+   []
+   > range 0 1
+   [0] -}
 export
 range : Int -> Int -> List Int
 range lo hi = [lo..hi]
@@ -47,10 +58,14 @@ replicate n x
   | n <= 0 = []
   | otherwise = x :: replicate (n - 1) x
 
-{- | `[x, f x, f (f x), …]` of length `n`.
+{- | `[x, f x, f (f x), …]` of length `n`.  Empty when `n <= 0`.
 
    > iterate 4 (n => n * 2) 1
-   [1, 2, 4, 8] -}
+   [1, 2, 4, 8]
+   > iterate 0 (n => n * 2) 1
+   []
+   > iterate 1 (n => n * 2) 1
+   [1] -}
 export
 iterate : Int -> (a -> <e> a) -> a -> <e> List a
 iterate n f x
@@ -61,7 +76,11 @@ iterate n f x
    an element and continue, or `None` to stop.
 
    > unfold (n => if n > 5 then None else Some (n, n + 1)) 1
-   [1, 2, 3, 4, 5] -}
+   [1, 2, 3, 4, 5]
+   > unfold (n => if n > 0 then None else Some (n, n + 1)) 1
+   []
+   > unfold (n => if n > 0 then None else Some (n, n + 1)) 0
+   [0] -}
 export
 unfold : (b -> <e> Option (a, b)) -> b -> <e> List a
 unfold gen seed = match gen seed
@@ -225,7 +244,13 @@ drop n (xs@(_::rest))
 {- | Longest prefix whose elements all satisfy the predicate.
 
    > takeWhile (x => x < 3) [1, 2, 3, 1]
-   [1, 2] -}
+   [1, 2]
+   > takeWhile (x => x < 9) [1, 2, 3]
+   [1, 2, 3]
+   > takeWhile (x => x < 0) [1, 2, 3]
+   []
+   > takeWhile (x => x < 3) ([] : List Int)
+   [] -}
 export
 takeWhile : (a -> <e> Bool) -> List a -> <e> List a
 takeWhile _ [] = []
@@ -236,7 +261,13 @@ takeWhile p (x::xs)
 {- | Drop the longest prefix whose elements satisfy the predicate.
 
    > dropWhile (x => x < 3) [1, 2, 3, 1]
-   [3, 1] -}
+   [3, 1]
+   > dropWhile (x => x < 9) [1, 2, 3]
+   []
+   > dropWhile (x => x < 0) [1, 2, 3]
+   [1, 2, 3]
+   > dropWhile (x => x < 3) ([] : List Int)
+   [] -}
 export
 dropWhile : (a -> <e> Bool) -> List a -> <e> List a
 dropWhile _ [] = []
@@ -247,7 +278,13 @@ dropWhile p (xs@(x::rest))
 {- | `(takeWhile p xs, dropWhile p xs)`, in a single pass.
 
    > span (x => x < 3) [1, 2, 3, 1]
-   ([1, 2], [3, 1]) -}
+   ([1, 2], [3, 1])
+   > span (x => x < 9) [1, 2, 3]
+   ([1, 2, 3], [])
+   > span (x => x < 0) [1, 2, 3]
+   ([], [1, 2, 3])
+   > span (x => x < 3) ([] : List Int)
+   ([], []) -}
 export
 span : (a -> <e> Bool) -> List a -> <e> (List a, List a)
 span _ [] = ([], [])
@@ -259,7 +296,13 @@ span p (xs@(x::rest))
    satisfy `p`.
 
    > break (x => x > 2) [1, 2, 3, 1]
-   ([1, 2], [3, 1]) -}
+   ([1, 2], [3, 1])
+   > break (x => x > 9) [1, 2, 3]
+   ([1, 2, 3], [])
+   > break (x => x > 0) [1, 2, 3]
+   ([], [1, 2, 3])
+   > break (x => x > 2) ([] : List Int)
+   ([], []) -}
 export
 break : (a -> <e> Bool) -> List a -> <e> (List a, List a)
 break p xs = span (x => not (p x)) xs
@@ -524,3 +567,18 @@ prop "nub removes all duplicates" (xs : List Int) = eq (nub (nub xs)) (nub xs)
 
 prop "concat of group recovers the list" (xs : List Int) =
   eq (flat (group xs)) xs
+
+prop "span prefix all satisfies, and concatenates back" (xs : List Int) =
+  let (a, b) = span (x => x < 5) xs
+  all (x => x < 5) a && eq (a ++ b) xs
+
+prop "takeWhile ++ dropWhile recovers the list" (xs : List Int) =
+  eq (takeWhile (x => x < 5) xs ++ dropWhile (x => x < 5) xs) xs
+
+prop "break equals span of the negated predicate" (xs : List Int) =
+  let (a1, b1) = break (x => x > 5) xs
+  let (a2, b2) = span (x => not (x > 5)) xs
+  eq a1 a2 && eq b1 b2
+
+prop "range length is max 0 (hi - lo)" (lo : Int) (hi : Int) =
+  length (range lo hi) == max 0 (hi - lo)
