@@ -359,7 +359,9 @@ if want analyze_project; then
     entry="$(ls "$d"root_*.mdk "$d"main_*.mdk 2>/dev/null | head -1)"
     [ -n "$entry" ] || continue
     out="$TMP/aproj"
-    "$MAIN" check --json "$entry" 2>/dev/null > "$out" || true
+    # Strip the repo-root prefix from the "file" paths so oracle.json is
+    # worktree-relative (the gate compares by basename anyway — keep it clean).
+    "$MAIN" check --json "$entry" 2>/dev/null | sed "s#$ROOT/##g" > "$out" || true
     fixtures=$((fixtures+1))
     golden="${d%/}/oracle.json"
     if [ "$CHECK" -eq 1 ]; then
