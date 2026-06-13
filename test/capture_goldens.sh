@@ -34,6 +34,8 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROBE="$ROOT/_build/default/dev/eval_probe.exe"
+MAIN="$ROOT/_build/default/bin/main.exe"
+CORE="$ROOT/stdlib/core.mdk"; LIST="$ROOT/stdlib/list.mdk"; RUNTIME="$ROOT/stdlib/runtime.mdk"
 
 CHECK=0
 FILTER=""
@@ -44,20 +46,50 @@ case "${1:-}" in
 esac
 
 [ -x "$PROBE" ] || { echo "build first: dune build --root . (missing $PROBE)"; exit 2; }
+[ -x "$MAIN" ]  || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
 
 # ── driver table ───────────────────────────────────────────────────────────────
 # Implemented as a function dispatch so each oracle's exact argv is explicit and
 # auditable (no eval of a template string).  oracle_<tag> <fixture> -> stdout.
-oracle_eval() { "$PROBE" "$1"; }
+# Each oracle_<tag> reproduces, byte-for-byte, the OCaml leg of the gate that
+# consumes the resulting `.eval.golden` — same flags, same prepend order.
+oracle_eval()         { "$PROBE" "$1"; }                               # eval / core_ir / roundtrip
+oracle_eval_prelude() { "$PROBE" --prelude "$1"; }                     # eval_prelude / core_ir_prelude
+oracle_eval_list()    { "$PROBE" --prepend "$CORE" "$LIST" "$1"; }     # eval_list / core_ir_list
+oracle_run_file()     { "$MAIN" run "$1"; }                            # eval_dict / eval_typed / core_ir_typed
 
 # rows: "<glob>::<oracle-tag>::<golden-suffix>"
 ROWS="
 $ROOT/test/eval_fixtures/*.mdk::eval::eval.golden
 $ROOT/test/llvm_fixtures/*.mdk::eval::eval.golden
+$ROOT/test/eval_prelude_fixtures/*.mdk::eval_prelude::eval.golden
+$ROOT/test/eval_list_fixtures/*.mdk::eval_list::eval.golden
+$ROOT/test/eval_dict_fixtures/*.mdk::run_file::eval.golden
+$ROOT/test/eval_typed_fixtures/*.mdk::run_file::eval.golden
 "
 
 total=0 wrote=0 mism=0 fixtures=0
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
+
+# emit_golden <golden-path> <cmd...> : run cmd (stderr/exit ignored, mirroring the
+# gates), then write/check its stdout against <golden-path>.  Honours $FILTER via
+# the caller (callers gate themselves on the suffix tag).  Updates fixtures/wrote/mism.
+emit_golden() {
+  golden="$1"; shift
+  fixtures=$((fixtures+1))
+  out="$TMP/out"
+  "$@" > "$out" 2>/dev/null || true
+  if [ "$CHECK" -eq 1 ]; then
+    if [ -f "$golden" ] && cmp -s "$out" "$golden"; then :
+    else
+      mism=$((mism+1))
+      if [ ! -f "$golden" ]; then echo "MISSING  $golden"
+      else echo "DRIFT    $golden"; diff "$golden" "$out" | head -6 | sed 's/^/    /'; fi
+    fi
+  else
+    cp "$out" "$golden"; wrote=$((wrote+1))
+  fi
+}
 
 for row in $ROWS; do
   [ -n "$row" ] || continue
@@ -70,28 +102,75 @@ for row in $ROWS; do
   total=$((total+1))
   for f in $glob; do
     [ -f "$f" ] || continue
-    fixtures=$((fixtures+1))
     golden="${f%.mdk}.$suffix"
-    out="$TMP/out"
     # Mirror the gates exactly: the oracle PRODUCT is stdout; stderr is discarded
     # and the exit code is ignored (the gates use `$("$PROBE" "$f" 2>/dev/null)`).
     # This is load-bearing for the abort/panic fixtures (e.g. llvm_fixtures/
     # abort_exit_nonzero, abort_panic): they exit non-zero with EMPTY stdout, and
     # the gate compares that empty stdout against the native binary's empty stdout.
     # So the correct golden is an empty file, NOT a skip.
-    "oracle_$tag" "$f" > "$out" 2>/dev/null || true
-    if [ "$CHECK" -eq 1 ]; then
-      if [ -f "$golden" ] && cmp -s "$out" "$golden"; then :
-      else
-        mism=$((mism+1))
-        if [ ! -f "$golden" ]; then echo "MISSING  $golden"
-        else echo "DRIFT    $golden"; diff "$golden" "$out" | head -6 | sed 's/^/    /'; fi
-      fi
-    else
-      cp "$out" "$golden"; wrote=$((wrote+1))
-    fi
+    emit_golden "$golden" "oracle_$tag" "$f"
   done
 done
+
+# ── directory + selfhost-oracle fixtures (not a single-glob/single-arg shape) ──
+# These goldens are captured from the EXACT OCaml oracle each gate used (a selfhost
+# entry run via main.exe, or `main.exe run <entry>` per fixture dir), so the
+# re-rooted gate diffs its native host's stdout against this committed reference.
+
+want() {  # want <tag> : true if no FILTER, or FILTER prefixes the tag/"eval"
+  [ -z "$FILTER" ] && return 0
+  case "eval" in "$FILTER"*) return 0 ;; esac
+  case "$1" in "$FILTER"*) return 0 ;; esac
+  return 1
+}
+
+# eval_modules / core_ir_modules : golden = `main.exe run <entry>` per dir.
+if want eval_modules; then
+  total=$((total+1))
+  for dir in "$ROOT"/test/eval_modules_fixtures/*/; do
+    [ -d "$dir" ] || continue
+    entry="$(ls "$dir"main_*.mdk 2>/dev/null | head -1)"
+    [ -n "$entry" ] || continue
+    emit_golden "${dir%/}/main.eval.golden" "$MAIN" run "$entry"
+  done
+fi
+
+# eval_typed_modules : golden = `main.exe run <dir>/main.mdk` per dir.
+if want eval_typed_modules; then
+  total=$((total+1))
+  for dir in "$ROOT"/test/eval_typed_modules_fixtures/*/; do
+    [ -d "$dir" ] || continue
+    entry="$dir/main.mdk"
+    [ -f "$entry" ] || continue
+    emit_golden "${dir%/}/main.eval.golden" "$MAIN" run "$entry"
+  done
+fi
+
+# llvm_typed : golden = the program value via the typed Core-IR pp oracle entry.
+if want llvm_typed; then
+  total=$((total+1))
+  for f in "$ROOT"/test/llvm_fixtures_typed/*.mdk; do
+    [ -f "$f" ] || continue
+    emit_golden "${f%.mdk}.eval.golden" \
+      "$MAIN" run "$ROOT/selfhost/entries/core_ir_dict_pp_main.mdk" "$RUNTIME" "$f"
+  done
+fi
+
+# llvm_modules : golden = the program stdout via the typed-modules eval oracle entry
+# (empty-core prelude + dir), matching diff_selfhost_llvm_modules.sh's ORACLE leg.
+if want llvm_modules; then
+  total=$((total+1))
+  EMPTY_CORE="$TMP/empty_core.mdk"; : > "$EMPTY_CORE"
+  for dir in "$ROOT"/test/llvm_fixtures_modules/*/; do
+    [ -d "$dir" ] || continue
+    entry="$dir/entry.mdk"
+    [ -f "$entry" ] || continue
+    emit_golden "${dir%/}/entry.eval.golden" \
+      "$MAIN" run "$ROOT/selfhost/entries/eval_typed_modules_main.mdk" \
+      "$RUNTIME" "$EMPTY_CORE" "$entry" "${dir%/}"
+  done
+fi
 
 echo
 if [ "$CHECK" -eq 1 ]; then

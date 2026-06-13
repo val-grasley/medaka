@@ -4,34 +4,35 @@
 # Where diff_selfhost_core_ir.sh isolates the engine on prelude-free fixtures,
 # this exercises real prelude dispatch — the typeclass methods defined in
 # core.mdk (Eq/Ord/Debug/Display/Num + deriving) — flowing through the Core IR's
-# slice-5 impl install + arg-tag VMultis, validated by EQUIVALENCE against the
-# AST tree-walker over genuine stdlib code.
+# slice-5 impl install + arg-tag VMultis.
 #
-# Oracle: dev/eval_probe.exe --prelude  (the embedded core.mdk → pp_value of
-# `main`) — the SAME oracle selfhost/entries/eval_prelude_main.mdk diffs against.
-# Self-host: core_ir_prelude_main.mdk prepends the *parsed* stdlib/core.mdk,
-# annotates + lowers to Core IR, evaluates it; pp_value of `main` must match
-# byte-for-byte.
+# Reference: the committed test/eval_prelude_fixtures/<name>.eval.golden (captured
+# from dev/eval_probe.exe --prelude, the SAME oracle diff_selfhost_eval_prelude.sh
+# uses).
+#
+# OCaml-free (REROOT-PLAN.md Phase 2): the self-hosted Core-IR eval runs as the
+# pre-compiled native binary test/bin/core_ir_prelude_main (build_oracles.sh).
 #
 # Usage:  sh test/diff_selfhost_core_ir_prelude.sh
 # Exit:   0 if every fixture matches.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PROBE="$ROOT/_build/default/dev/eval_probe.exe"
-MAIN="$ROOT/_build/default/bin/main.exe"
-SELFMAIN="$ROOT/selfhost/entries/core_ir_prelude_main.mdk"
+RUN="$ROOT/test/bin/core_ir_prelude_main"
 CORE="$ROOT/stdlib/core.mdk"
 FIXDIR="$ROOT/test/eval_prelude_fixtures"
 
-[ -x "$PROBE" ] || { echo "build first: dune build --root . (missing $PROBE)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+strip_unit() { sed '${/^()$/d;}'; }  # drop native runtime's trailing Unit auto-print
 
 pass=0; fail=0
 for f in "$FIXDIR"/*.mdk; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
-  ref="$("$PROBE" --prelude "$f" 2>/dev/null)"
-  self="$("$MAIN" run "$SELFMAIN" "$CORE" "$f" 2>/dev/null)"
+  golden="${f%.mdk}.eval.golden"
+  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh)"; fail=$((fail+1)); continue; }
+  ref="$(cat "$golden")"
+  self="$("$RUN" "$CORE" "$f" 2>/dev/null | strip_unit)"
   if [ "$ref" = "$self" ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else fail=$((fail+1)); printf 'FAIL %s\n  ref : %s\n  self: %s\n' "$name" "$ref" "$self"; fi
 done

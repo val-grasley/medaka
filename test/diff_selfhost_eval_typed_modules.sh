@@ -1,32 +1,33 @@
 #!/bin/sh
-# TYPED multi-module EVAL validation for the bootstrap: run the self-hosted TYPED
-# loader-driven eval path (eval_typed_modules_main.mdk: loader -> desugar ->
-# elaborateModules route-stamping -> eval.evalModules over per-module frames) on
-# each fixture WITH the real stdlib/core.mdk prelude, and diff its captured stdout
-# against the OCaml reference doing the same (`medaka run <entry>`).
+# TYPED multi-module EVAL validation: run the self-hosted TYPED loader-driven eval
+# path (eval_typed_modules_main.mdk: loader -> desugar -> elaborateModules
+# route-stamping -> eval.evalModules over per-module frames) on each fixture WITH
+# the real stdlib/core.mdk prelude.
 #
-# This is the TYPED analog of diff_selfhost_eval_modules.sh (which stays on the
-# UNTYPED path): the fixtures here exercise interface-method dispatch that only
-# resolves once the typed pipeline stamps routes (return-position / RLocal / etc.),
-# so the untyped path would diverge.
+# Reference: the committed <dir>/main.eval.golden, captured (test/capture_goldens.sh)
+# from the OCaml reference `main.exe run <entry>` while OCaml was trusted.  This is
+# the TYPED analog of diff_selfhost_eval_modules.sh: the fixtures exercise
+# interface-method dispatch that only resolves once the typed pipeline stamps
+# routes, so the untyped path would diverge.
 #
 # C5 (TYPECHECK-AUDIT) regression: standalone_vs_method exercises a name that is
 # BOTH an imported standalone function AND an interface method (box's `toList`/
 # `isEmpty` on a Box with no Foldable impl) ALONGSIDE the genuine Foldable methods
-# on List/Option.  Before the fix the self-host typed eval panicked
-# (`non-exhaustive match`, eval.mdk) where the oracle printed the right result;
-# this is a LOADER-ONLY divergence (a green single-file doctest), so it must live in
-# a multi-module gate.
+# on List/Option.  This is a LOADER-ONLY divergence (a green single-file doctest),
+# so it must live in a multi-module gate.
+#
+# OCaml-free (REROOT-PLAN.md Phase 2): the self-hosted typed loader-eval runs as
+# the pre-compiled native binary test/bin/eval_typed_modules_main (build_oracles.sh).
 #
 # Usage:  sh test/diff_selfhost_eval_typed_modules.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-SELF="$ROOT/selfhost/entries/eval_typed_modules_main.mdk"
+SELF="$ROOT/test/bin/eval_typed_modules_main"
 CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 FIXDIR="$ROOT/test/eval_typed_modules_fixtures"
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
+[ -x "$SELF" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $SELF)"; exit 2; }
+strip_unit() { sed '${/^()$/d;}'; }  # drop native runtime's trailing Unit auto-print
 
 pass=0; fail=0
 for dir in "$FIXDIR"/*/; do
@@ -34,8 +35,10 @@ for dir in "$FIXDIR"/*/; do
   entry="$dir/main.mdk"
   [ -f "$entry" ] || { echo "skip $(basename "$dir") (no main.mdk)"; continue; }
   name="$(basename "$dir")"
-  ref="$("$MAIN" run "$entry" 2>&1)"
-  self="$("$MAIN" run "$SELF" "$RUNTIME" "$CORE" "$entry" "${dir%/}" 2>&1)"
+  golden="${dir%/}/main.eval.golden"
+  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh)"; fail=$((fail+1)); continue; }
+  ref="$(cat "$golden")"
+  self="$("$SELF" "$RUNTIME" "$CORE" "$entry" "${dir%/}" 2>/dev/null | strip_unit)"
   if [ "$ref" = "$self" ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else
     fail=$((fail+1)); printf 'FAIL %s\n' "$name"

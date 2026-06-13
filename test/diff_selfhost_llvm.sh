@@ -2,47 +2,37 @@
 # Equivalence gate for the Stage 2.4 LLVM de-risking spike (STAGE2-DESIGN.md §2.4).
 #
 # Proves the decided native toolchain end-to-end — EMIT textual LLVM IR + shell
-# out to clang (no llc/opt, no C++ bindings) — against the tree-walker oracle, the
-# same equivalence-gate shape selfhost/entries/eval_main.mdk and core_ir_main.mdk use.
+# out to clang (no llc/opt, no C++ bindings) — against the committed value golden.
 #
 # For each prelude-free fixture in test/llvm_fixtures/:
-#   1. ref  = dev/eval_probe.exe <fixture>            (the AST tree-walker oracle)
-#   2. emit = medaka run llvm_emit_main.mdk <fixture> (Core IR -> textual LLVM IR)
+#   1. ref  = test/llvm_fixtures/<name>.eval.golden   (captured from dev/eval_probe.exe;
+#             the program VALUE — IR is symbol-renaming-volatile, but the program's
+#             runtime stdout is stable, see MEMORY "Diff gates compare OUTPUT not IR")
+#   2. emit = test/bin/llvm_emit_main <fixture>       (Core IR -> textual LLVM IR)
 #   3. clang <emit>.ll runtime/medaka_rt.c -o bin     (compile + link the stub)
 #   4. self = ./bin                                   (run the native binary)
 #   diff ref vs self byte-for-byte.
 #
-# Scope: slices 1–5b — slice 1 (integer/float arithmetic, comparisons, let, if,
-# top-level value bindings, type-directed print) + slice 2 (top-level functions
-# and saturated direct calls; self-recursive tail calls via musttail) + slice 2b
-# (Bool/Float function boundaries via two-pass signature inference; the ABI stays
-# a uniform i64 word, so the type only drives instruction + print selection) +
-# slice 3 (ADT constructors + decision-tree pattern matching) + slice 4 (closures
-# + higher-order functions) + slice 5a (records, tuples, mutable refs) + slice 5b
-# (built-in list/tuple match heads + recursive closures).
-# No arrays/dispatch/GC.
+# Scope: slices 1–5b.  No arrays/dispatch/GC.
+#
+# OCaml-free (REROOT-PLAN.md Phase 2): the emitter runs as the pre-compiled native
+# binary test/bin/llvm_emit_main (built by test/build_oracles.sh) instead of
+# `main.exe run`; the reference is the committed .eval.golden.
 #
 # Usage:  sh test/diff_selfhost_llvm.sh
-# Exit:   0 if every fixture's native stdout matches the tree-walker; 2 if the
-#         build is missing or no C compiler is available (spike is opt-in).
+# Exit:   0 if every fixture's native stdout matches the golden; 2 if the build is
+#         missing or no C compiler is available (spike is opt-in).
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-PROBE="$ROOT/_build/default/dev/eval_probe.exe"
-MAIN="$ROOT/_build/default/bin/main.exe"
-EMIT="$ROOT/selfhost/entries/llvm_emit_main.mdk"
+EMITBIN="$ROOT/test/bin/llvm_emit_main"
 RT="$ROOT/runtime/medaka_rt.c"
 FIXDIR="$ROOT/test/llvm_fixtures"
 CC="${CC:-clang}"
 
-[ -x "$PROBE" ] || { echo "build first: dune build --root . (missing $PROBE)"; exit 2; }
+[ -x "$EMITBIN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $EMITBIN)"; exit 2; }
 command -v "$CC" >/dev/null 2>&1 || { echo "no C compiler ($CC) on PATH — skipping spike"; exit 2; }
 
-# Boehm GC (bdw-gc) — the spike's allocator.  Locate it portably; skip cleanly
-# (exit 2, like the no-compiler case) when absent so CI without libgc doesn't
-# hard-fail.  pkg-config first (portable), then a Homebrew keg, then a bare -lgc
-# probe on the default path.  `brew --prefix bdw-gc` prints a path even when the
-# keg is NOT installed, so the include header must actually exist.
 if command -v pkg-config >/dev/null 2>&1 && pkg-config --exists bdw-gc 2>/dev/null; then
   GC_CFLAGS="$(pkg-config --cflags bdw-gc)"; GC_LIBS="$(pkg-config --libs bdw-gc)"
 elif GC_PREFIX="$(brew --prefix bdw-gc 2>/dev/null)" && [ -n "$GC_PREFIX" ] && [ -f "$GC_PREFIX/include/gc.h" ]; then
@@ -56,16 +46,23 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
+# The native emitter binary auto-prints main's Unit return as a trailing "()" line
+# after the IR (runtime/medaka_rt.c); strip a sole trailing "()" before clang.
+strip_unit() { perl -0pe 's/\(\)\s*\z//'; }
+
 pass=0; fail=0
 for f in "$FIXDIR"/*.mdk; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
-  ref="$("$PROBE" "$f" 2>/dev/null)"
+  golden="${f%.mdk}.eval.golden"
+  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh)"; fail=$((fail+1)); continue; }
+  ref="$(cat "$golden")"
   ll="$WORK/$name.ll"
   bin="$WORK/$name.bin"
-  if ! "$MAIN" run "$EMIT" "$f" > "$ll" 2>"$WORK/emit.err"; then
+  if ! "$EMITBIN" "$f" > "$WORK/raw.ll" 2>"$WORK/emit.err"; then
     fail=$((fail+1)); printf 'FAIL %s (emit)\n%s\n' "$name" "$(cat "$WORK/emit.err")"; continue
   fi
+  strip_unit < "$WORK/raw.ll" > "$ll"
   if ! "$CC" $GC_CFLAGS "$ll" "$RT" $GC_LIBS -o "$bin" 2>"$WORK/cc.err"; then
     fail=$((fail+1)); printf 'FAIL %s (clang)\n%s\n' "$name" "$(cat "$WORK/cc.err")"; continue
   fi

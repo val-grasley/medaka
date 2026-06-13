@@ -35,7 +35,31 @@ CC="${CC:-clang}"
 #   eval_run_batch    — diff_selfhost_eval_run_batch.sh  (=== EVAL === goldens)
 #   core_ir_run_main  — diff_selfhost_core_ir_run.sh     (=== EVAL === goldens)
 #   core_ir_dump_main — diff_selfhost_core_ir_sexp.sh    (.sexp snapshot goldens)
-ENTRIES="eval_run_main eval_run_batch core_ir_run_main core_ir_dump_main"
+#   ── Phase 2 §2a value gates (eval / core-ir / llvm), goldens = .eval.golden ──
+#   eval_main             — diff_selfhost_eval.sh
+#   eval_prelude_main     — diff_selfhost_eval_prelude.sh + diff_selfhost_eval_list.sh
+#   eval_prelude_batch    — diff_selfhost_eval_prelude_batch.sh
+#   eval_list_batch       — diff_selfhost_eval_list_batch.sh
+#   eval_dict_main        — diff_selfhost_eval_dict.sh
+#   eval_dict_batch       — diff_selfhost_eval_dict_batch.sh
+#   eval_typed_main       — diff_selfhost_eval_typed.sh
+#   eval_typed_batch      — diff_selfhost_eval_typed_batch.sh
+#   eval_typed_modules_main — diff_selfhost_eval_typed_modules.sh
+#   eval_modules_main     — diff_selfhost_eval_modules.sh
+#   core_ir_main          — diff_selfhost_core_ir.sh
+#   core_ir_prelude_main  — diff_selfhost_core_ir_prelude.sh + diff_selfhost_core_ir_list.sh
+#   core_ir_typed_main    — diff_selfhost_core_ir_typed.sh
+#   core_ir_roundtrip_main — diff_selfhost_core_ir_roundtrip.sh
+#   core_ir_modules_main  — diff_selfhost_core_ir_modules.sh
+#   llvm_emit_main        — diff_selfhost_llvm.sh        (emit → clang → run vs golden)
+#   llvm_emit_typed_main  — diff_selfhost_llvm_typed.sh
+#   llvm_emit_modules_main — diff_selfhost_llvm_modules.sh
+ENTRIES="eval_run_main eval_run_batch core_ir_run_main core_ir_dump_main \
+eval_main eval_prelude_main eval_prelude_batch eval_list_batch \
+eval_dict_main eval_dict_batch eval_typed_main eval_typed_batch \
+eval_typed_modules_main eval_modules_main \
+core_ir_main core_ir_prelude_main core_ir_typed_main core_ir_roundtrip_main core_ir_modules_main \
+llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main"
 
 # ── Opt-in skip when clang/libgc absent (mirror the other native scripts) ──────
 command -v "$CC" >/dev/null 2>&1 || {
