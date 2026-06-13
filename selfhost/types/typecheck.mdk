@@ -779,6 +779,21 @@ enableArgStamp _ = set_ref argStampEnabled True
 evalDictLayerActive : Ref Bool
 evalDictLayerActive = Ref False
 
+-- DRIVER-COLLAPSE Phase 2 follow-up: the doctest/prop TEST eval path (test_cmd's
+-- runMulti/runPropsMulti) evaluates bodies that are NOT part of the dict-passed
+-- emit tree, so operator (`==`/`<`) sites in them must stay PRIMITIVE EBinOps the
+-- eval builtin compares structurally — exactly as clean-main did (its test path
+-- left resolveBinopSites gated OFF on eval).  Phase 2 globally ungated binop
+-- stamping for flat≡1-module parity, which over-applies the nested element dicts of
+-- a RECURSIVE user Eq impl (json's `impl Eq Json` over `Result`/`Array Json` → the
+-- parked #21 route-flatten gap → `applied non-function`).  This flag, set ONLY by
+-- the test driver (NOT by elaborateOne, so flat_vs_onemodule keeps stamping and
+-- stays byte-identical to elaborateDict), suppresses binop stamping on the test
+-- eval path, restoring clean-main's correct builtin-`==` doctest/prop behaviour.
+export
+suppressBinopStamp : Ref Bool
+suppressBinopStamp = Ref False
+
 -- the route refs awaiting an arg-position stamp + their discriminating-argument
 -- mono (captured during inference, resolved by resolveArgStamps while the tyvar
 -- cells are still bound).  Reset per pass by resetState, like pendingArgSites.
@@ -4477,11 +4492,56 @@ checkProgramSeeded seed prog =
   -- method-level constraint (foldMap's default), registering the constraint var so
   -- the in-body return-position ref (`empty`) routes RDict to `$dict_<method>_<slot>`.
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
+  -- Phase 4.55 (mirror lib/typecheck.ml:4254-4262): type-check each prop body with
+  -- its declared params in scope.  This is what RESOLVES the EDictAt/EMethodAt route
+  -- refs the prepass marked inside a prop body — without it the routes stay empty,
+  -- and on the dict-passed eval path (DRIVER-COLLAPSE Phase 2 promotes the file's own
+  -- `=>`-constrained fns) the prop body would call a now-dict-passed `wf`/`fromList`
+  -- with no dict argument → under-application → `force` a partial closure → not VBool
+  -- → every prop "fails" (set's `fromList []` reported ill-formed).  The selfhost
+  -- typechecker previously skipped props entirely (funDefs ignores DProp), so this
+  -- gap was latent until Phase 2's promotion exposed it.
+  let _ = inferPropBodies (extendVars env1 topSchemes) prog
   -- Error-path B4: now every method occurrence's dispatch type is fully resolved;
   -- reject any whose concrete head type has no matching impl (mirrors the oracle's
   -- check_method_usages, lib/typecheck.ml:3845).
   let _ = checkImplObligations prog pendingImplObligations.value
   globalS ++ topSchemes
+
+-- Phase 4.55: infer each prop body with its declared params in scope, so the
+-- prepass-marked EDictAt/EMethodAt route refs inside resolve (mirror of
+-- lib/typecheck.ml:4254-4262).  Runs unconditionally (props are eval-only; the
+-- emit/golden paths have no props), like the OCaml `infer prop_body; unify t_bool`.
+-- A prop body is eval-only and is NOT dict-passed for operator dispatch: like the
+-- OCaml oracle (which evals raw prop bodies against the marked env), its comparison
+-- operators must stay PRIMITIVE EBinOps the eval builtin handles structurally, not
+-- get stamped and rewritten to eq/lt method apps (whose dict route would then be
+-- applied to a non-dict-passed comparison, panic: applied non-function).  So
+-- snapshot pendingBinopSites around prop inference and restore it after: the routes
+-- the prop body NEEDS (EDictAt for the file's promoted constrained fns, via
+-- pendingDictApps/pendingSites) are still collected; only the binop-rewrite sites
+-- the prop body would otherwise contribute are dropped.
+inferPropBodies : TcEnv -> List Decl -> <Mut> Unit
+inferPropBodies env prog =
+  let savedBinop = pendingBinopSites.value
+  let _ = inferPropBodiesGo env prog
+  set_ref pendingBinopSites savedBinop
+
+inferPropBodiesGo : TcEnv -> List Decl -> <Mut> Unit
+inferPropBodiesGo _ [] = ()
+inferPropBodiesGo env (DProp _ _ params body :: rest) =
+  let local = extendPropParams env params
+  let _ = infer local body
+  inferPropBodiesGo env rest
+inferPropBodiesGo env (_ :: rest) = inferPropBodiesGo env rest
+
+-- bind each prop param `x : ty` as a monomorphic scheme in the env (fresh tyvars
+-- for any free type variable in ty; props are normally concrete, e.g. `List Int`).
+extendPropParams : TcEnv -> List PropParam -> <Mut> TcEnv
+extendPropParams env [] = env
+extendPropParams env (PropParam x ty :: rest) =
+  let scheme = monoScheme (fromAstType (freshTvMap (dedupS (tyVarNames ty))) ty)
+  extendPropParams (extendVar env x scheme) rest
 
 -- gate: impl-body inference runs only when the elaborate/dict path turned it on
 inferImplBodiesIfEnabled : TcEnv -> List Decl -> <Mut> Unit
@@ -5798,6 +5858,15 @@ checkModuleFullImpl seedVars accData implDecls prog =
   -- the single-file path's inferDefaultBodiesIfEnabled) so a default body's type
   -- error is caught on the module path too — mirrors checkProgramSeeded.
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
+  -- Phase 4.55 (mirror checkProgramSeeded + lib/typecheck.ml:4254-4262): infer this
+  -- module's prop bodies so their prepass-marked EDictAt/EMethodAt routes resolve.
+  -- The multi-module test path (runPropsMulti) evaluates the ELABORATED prop body
+  -- against the dict-passed env, so the body's calls into the file's own promoted
+  -- `=>`-constrained fns (set's `wellFormed`/`fromList`) need their dict-arg routes
+  -- filled here — otherwise the call under-applies the dict-passed callee → not VBool
+  -- → every prop "fails".  funDefs ignores DProp, so without this the module path
+  -- never typed props at all.
+  let _ = inferPropBodies (extendVars env1 topSchemes) prog
   -- E6: fold THIS module's freshly-registered fn-constraints into the cross-module
   -- accumulator so a LATER module's call site finds them after its own reset.  #55:
   -- on the eval path (evalDictLayerActive) the eval-dict layer needs core's
@@ -6419,7 +6488,11 @@ elabModuleStamp seedVars accData implDecls prog =
   -- `<`/… to user/derived Eq/Ord impls (adt_deriving_ord / record_deriving_ord).
   -- No-op when pendingBinopSites is empty (no comparison-operator site) → golden
   -- type-only path leaves them RNone → dictPass-skipped → byte-identical.
-  let _ = resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value
+  -- suppressBinopStamp (set ONLY by the doctest/prop test driver) leaves them RNone
+  -- so the eval builtin compares structurally — avoids over-applying a recursive user
+  -- Eq impl's nested element dicts (#21).  elaborateOne (flat_vs_onemodule) never sets
+  -- it, so that gate stays byte-identical to flat elaborateDict.
+  let _ = if suppressBinopStamp.value then () else resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value
   let _ = if argStampEnabled.value then resolveArgStamps stampImplTable pendingArgStamps.value else ()
   -- C5: LAST among the route-stampers (after resolveSites AND resolveArgStamps) so the
   -- receiver-grounded RLocal/RNone overrides whatever those stamped on the SAME ref —

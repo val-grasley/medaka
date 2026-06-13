@@ -32,7 +32,7 @@ import frontend.ast.{Decl, DData, DInterface}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram}
-import types.typecheck.{elaborateDict, elaborateModules, constrainedSigNames, preludeReturnPosDictNames}
+import types.typecheck.{elaborateDict, elaborateModules, constrainedSigNames, preludeReturnPosDictNames, suppressBinopStamp}
 import frontend.lexer.{collectComments}
 import eval.eval.{Value, evalProgram, evalModules, evalModulesRootEnv, funNamesOf, dropShadowedExp}
 import tools.doctest.{Example, ExResult(..), RunResult, extractExamples, buildSynthDecls,
@@ -151,7 +151,12 @@ runMulti runtimeDecls coreDecls target _userDecls roots examples synthDecls =
     Err e => buildDetails (Err e) examples
     Ok mods =>
       let injected = injectIntoRoot target synthDecls (map desugarPair mods)
+      -- Test eval path: keep `==`/`<` in doctest+module bodies PRIMITIVE (builtin
+      -- structural compare), as clean-main did — avoids over-applying a recursive
+      -- user Eq impl's nested element dicts (#21).
+      let _ = set_ref suppressBinopStamp True
       let elaborated = elaborateModules runtimeDecls coreDecls injected
+      let _ = set_ref suppressBinopStamp False
       let env = evalModules (fst elaborated) (snd elaborated)
       buildDetails (Ok env) examples
 
@@ -250,6 +255,35 @@ runPropsMulti runtimeDecls coreDecls target userDecls roots =
       let _ = ePutStrLn e
       False
     Ok mods =>
+      let _ = set_ref suppressBinopStamp True
       let elaborated = elaborateModules runtimeDecls coreDecls (map desugarPair mods)
+      let _ = set_ref suppressBinopStamp False
       let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
-      runAllProps env userDecls
+      -- DRIVER-COLLAPSE Phase 2: the eval-dict layer now promotes the file's own
+      -- `=>`-constrained fns (set's `wellFormed`/`fromList`, etc.), so the bindings in
+      -- [env] take a leading dict ARGUMENT.  A prop body calls those fns, so its call
+      -- sites must carry the matching dict argument — i.e. the bodies must be the
+      -- ELABORATED (marked + dict-passed) ones, NOT raw `userDecls`.  Pull the props
+      -- from the elaborated root module (mirrors how runMulti's doctest synth bodies
+      -- are elaborated in-tree); raw bodies would under-apply the now-dict-passed call
+      -- and `force` a partial closure → not VBool → every prop "fails" (set's
+      -- `fromList []` reported ill-formed).
+      let rootProps = elaboratedRootProps target (snd elaborated) userDecls
+      runAllProps env rootProps
+
+-- The prop decls to evaluate: the elaborated root module's props (dict-passed call
+-- sites) when the loader kept a module whose id matches the target's basename;
+-- otherwise fall back to the raw userDecls (preserves the pre-Phase-2 behaviour for
+-- any path where the root module isn't separately present).
+elaboratedRootProps : String -> List (String, List Decl) -> List Decl -> List Decl
+elaboratedRootProps target modules userDecls =
+  let rootId = baseModuleId target
+  match lookupModuleDecls rootId modules
+    Some decls => decls
+    None => userDecls
+
+lookupModuleDecls : String -> List (String, List Decl) -> Option (List Decl)
+lookupModuleDecls _ [] = None
+lookupModuleDecls rootId ((mid, decls) :: rest)
+  | mid == rootId = Some decls
+  | otherwise = lookupModuleDecls rootId rest
