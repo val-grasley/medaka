@@ -23,18 +23,20 @@
 --   <blank>
 --   N passed, M failed
 --
--- The doctest phase chooses Phase-92's two paths: a file importing only the
--- prelude (`core`) → single-file (elaborateDict on the flattened tree); a file
--- importing real sibling modules → multi-module (loadProgram + elaborateModules
--- + evalModules), so cross-module instances/values resolve.
+-- The doctest/prop phases route EVERY file through the multi-module path
+-- (DRIVER-COLLAPSE Phase 1+3): a no-import file uses the degenerate 1-module case
+-- (elaborateOne/elaborateModules over [("__user__", decls)] + evalOne/
+-- evalModulesRootEnv); an import-bearing file loads its real sibling graph
+-- (loadProgram + elaborateModules + evalModules), so cross-module instances/values
+-- resolve.  Neither path calls the flat elaborateDict/evalProgram anymore.
 
 import frontend.ast.{Decl, DData, DInterface}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram}
-import types.typecheck.{elaborateDict, elaborateModules, constrainedSigNames, preludeReturnPosDictNames, suppressBinopStamp}
+import types.typecheck.{elaborateOne, elaborateModules, suppressBinopStamp}
 import frontend.lexer.{collectComments}
-import eval.eval.{Value, evalProgram, evalModules, evalModulesRootEnv, funNamesOf, dropShadowedExp}
+import eval.eval.{Value, evalOne, evalModules, evalModulesRootEnv, funNamesOf, dropShadowedExp}
 import tools.doctest.{Example, ExResult(..), RunResult, extractExamples, buildSynthDecls,
                 buildDetails, hasUseDecls, runDetails, runPassed, runFailed,
                 runErrors, exampleInput, exampleLine, synthName}
@@ -100,32 +102,34 @@ runChosen runtimeDecls coreDecls target userDecls roots examples synthDecls
 -- would duplicate every top-level decl (two `Bounded Char` impls, etc.) and
 -- corrupt return-position dispatch.  Mirror lib/doctest.ml's `program_is_core`
 -- guard: skip the prelude prepend for core.
+-- Single-file (no-import) path, DRIVER-COLLAPSE Phase 1+3: route the degenerate
+-- no-import file through the SAME multi-module path as an import-bearing one — the
+-- 1-module wrappers (elaborateOne → evalOne).  elaborateModules owns the dict-set
+-- (its `moduleDictNames` return-position subset == coreDictNames's non-core case:
+-- preludeReturnPosDictNames ++ the file's constrained sigs, arg-position helpers
+-- excluded so the `neq`-hang stays closed).  livePrelude is the shadow-dropped core,
+-- passed SEPARATE (elaborateOne folds it in); for `medaka test stdlib/core.mdk`
+-- (programIsCore) livePrelude is [] so the prelude is not double-prepended.  Set
+-- suppressBinopStamp the SAME way runMulti does (keep `==`/`<` PRIMITIVE in
+-- doctest bodies → no over-applied recursive Eq element dicts, #21).  evalOne's
+-- rootLocals carry the synthesized __dt_i__ bindings (same as runMulti).
 runSingle : List Decl -> List Decl -> List Decl -> List Example -> List Decl -> <Mut> RunResult
 runSingle runtimeDecls coreDecls userDecls examples synthDecls =
   let allUser = userDecls ++ synthDecls
   let userNames = funNamesOf allUser
   let livePrelude = if programIsCore userDecls then [] else dropShadowedExp userNames coreDecls
-  let combined = livePrelude ++ allUser
-  let dictNames = coreDictNames userDecls livePrelude combined allUser
-  let env = evalProgram (elaborateDict runtimeDecls dictNames userNames combined)
+  let _ = set_ref suppressBinopStamp True
+  let elaborated = elaborateOne runtimeDecls livePrelude ("__user__", allUser)
+  let _ = set_ref suppressBinopStamp False
+  let env = evalOne [] ("__main__", elaborated)
   buildDetails (Ok env) examples
 
--- The eval/golden dict-set.  Normal file: the prelude's return-position
--- constrained fns (when/unless via `pure`) + the file's own constrained sigs.
--- When the file IS core (`medaka test stdlib/core.mdk`), `livePrelude` is empty
--- and `constrainedSigNames` of core would sweep in core's ARG-position helpers
--- (neq/elem/any/all/find/…).  Those must STAY OUT of the eval env: arg-tag
--- resolves them in eval, and the prop/doctest bodies call them WITHOUT a dict
--- (the bodies are not dict-passed), so a leading dict param would under-apply
--- the 2-arg call to a closure (the `neq is the negation of eq` hang: a closure
--- never `== True`, the prop "fails" everywhere, and the Int shrinker oscillates
--- 0↔1 forever).  Mirror the OCaml path, which dict-passes ONLY return-position
--- constrained fns through core: treat core's own decls as the prelude and keep
--- arg-position helpers out.
-coreDictNames : List Decl -> List Decl -> List Decl -> List Decl -> List String
-coreDictNames userDecls livePrelude combined allUser
-  | programIsCore userDecls = preludeReturnPosDictNames userDecls combined
-  | otherwise = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames allUser
+-- DRIVER-COLLAPSE Phase 1+3 note on the dict-set: the old `coreDictNames`
+-- externally-built dict-set (preludeReturnPosDictNames ++ constrainedSigNames, with
+-- arg-position helpers excluded to keep the `neq`-hang closed) is gone — the
+-- migrated runSingle/runPropsSingle route through elaborateModules, which OWNS the
+-- equivalent return-position dict-set via its own `moduleDictNames`.  The
+-- `medaka test stdlib/core.mdk` canary guards the neq-hang.
 
 -- Mirror of lib/typecheck.ml's program_is_core (also selfhost/resolve.mdk's
 -- programIsCore): the prelude is the unique program declaring BOTH the
@@ -239,14 +243,27 @@ runProps runtimeDecls coreDecls target userDecls roots
   | hasUseDecls userDecls = runPropsMulti runtimeDecls coreDecls target userDecls roots
   | otherwise = runPropsSingle runtimeDecls coreDecls userDecls
 
+-- Single-file (no-import) prop path, DRIVER-COLLAPSE Phase 1+3: same multi-module
+-- path as runPropsMulti, with the degenerate 1-module list [("__user__", userDecls)].
+-- livePrelude passed SEPARATE (programIsCore ⇒ []); elaborateModules owns the
+-- dict-set; suppressBinopStamp set as runPropsMulti does (builtin `==`, #21).
+-- evalModulesRootEnv exposes prelude globals (eq/compare) the prop bodies need, and
+-- the prop bodies themselves are pulled from the ELABORATED root module (dict-passed
+-- call sites) — keyed by the "__user__" id — so the file's own `=>`-constrained fns
+-- (set's `fromList`/`wellFormed`) get their leading dict argument, mirroring
+-- runPropsMulti's elaboratedRootProps (which inferPropBodies typed in-module).
 runPropsSingle : List Decl -> List Decl -> List Decl -> <IO, Mut> Bool
 runPropsSingle runtimeDecls coreDecls userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = if programIsCore userDecls then [] else dropShadowedExp userNames coreDecls
-  let combined = livePrelude ++ userDecls
-  let dictNames = coreDictNames userDecls livePrelude combined userDecls
-  let env = evalProgram (elaborateDict runtimeDecls dictNames userNames combined)
-  runAllProps env userDecls
+  let _ = set_ref suppressBinopStamp True
+  let elaborated = elaborateModules runtimeDecls livePrelude [("__user__", userDecls)]
+  let _ = set_ref suppressBinopStamp False
+  let env = evalModulesRootEnv (fst elaborated) (snd elaborated)
+  let rootProps = match lookupModuleDecls "__user__" (snd elaborated)
+        Some decls => decls
+        None => userDecls
+  runAllProps env rootProps
 
 runPropsMulti : List Decl -> List Decl -> String -> List Decl -> List String -> <IO, Mut> Bool
 runPropsMulti runtimeDecls coreDecls target userDecls roots =

@@ -13,16 +13,16 @@
 -- "smoke" examples: synthesized raw (`__dt_i__ = expr`) and only checked to
 -- evaluate without error.
 --
--- This module is pure extraction + the run plumbing; the comment side channel
--- comes from selfhost/lexer.mdk (`collectComments`), the run pipeline from
--- selfhost/typecheck.mdk (`elaborateDict`/`elaborateModules`) + selfhost/eval.mdk.
+-- This module is pure extraction + the run plumbing (Example/RunResult types,
+-- buildDetails, hasUseDecls); the comment side channel comes from
+-- selfhost/lexer.mdk (`collectComments`), the run drivers (single/multi) from
+-- selfhost/tools/test_cmd.mdk.
 
 import frontend.lexer.{Comment, collectComments, commentLine, commentText}
 import frontend.ast.{Decl, DUse}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
-import types.typecheck.{elaborateDict, elaborateModules, constrainedSigNames, preludeReturnPosDictNames}
-import eval.eval.{Value(..), evalProgram, evalModules, lookupBinding, force, ppValue, funNamesOf, dropShadowedExp}
+import eval.eval.{Value(..), lookupBinding, force, ppValue}
 import support.util.{listLen, reverseL}
 
 -- ── Data ──────────────────────────────────────────────────────────────────
