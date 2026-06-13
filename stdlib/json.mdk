@@ -33,7 +33,7 @@
    **Not handled (v1):** `\uXXXX` surrogate pairs (astral codepoints); strict
    leading-zero / number-grammar rejection (the number scan is lenient). -}
 
-import core.{Eq, Debug, Display, Option, Result, Thenable}
+import core.{Eq, Debug, Display, Option, Result, Thenable, map}
 import list.{reverse}
 import string.{join, fromChars, isDigit, toInt}
 
@@ -48,12 +48,22 @@ public export data Json
 
 -- ── Construction helpers ────────────────────────────────────────────────
 
-{- | Build a `JArray` from a list (stored as a contiguous `Array`). -}
+{- | Build a `JArray` from a list (stored as a contiguous `Array`).
+
+   > stringify (jArray [JInt 1, JInt 2, JInt 3]) == "[1,2,3]"
+   True
+   > stringify (jArray []) == "[]"
+   True -}
 export
 jArray : List Json -> Json
 jArray xs = JArray (arrayFromList xs)
 
-{- | Build a `JObject` from a list of key/value pairs (order preserved). -}
+{- | Build a `JObject` from a list of key/value pairs (order preserved).
+
+   > stringify (jObject [("a", JInt 1), ("b", JBool True)]) == "{\"a\":1,\"b\":true}"
+   True
+   > stringify (jObject []) == "{}"
+   True -}
 export
 jObject : List (String, Json) -> Json
 jObject xs = JObject (arrayFromList xs)
@@ -446,6 +456,10 @@ lookupGo key pairs i n
 {- | Element at an index in a `JArray` (O(1)), or `None`.
 
    > index 1 (jArray [JInt 10, JInt 20, JInt 30]) == Some (JInt 20)
+   True
+   > index 5 (jArray [JInt 10]) == None
+   True
+   > index 0 (JInt 1) == None
    True -}
 export
 index : Int -> Json -> Option Json
@@ -454,31 +468,58 @@ index k (JArray arr)
   | otherwise = None
 index _ _ = None
 
-{- | The `String` inside a `JString`, or `None`. -}
+{- | The `String` inside a `JString`, or `None`.
+
+   > asString (JString "hi") == Some "hi"
+   True
+   > asString (JInt 1) == None
+   True -}
 export
 asString : Json -> Option String
 asString (JString s) = Some s
 asString _ = None
 
-{- | The `Int` inside a `JInt`, or `None`. -}
+{- | The `Int` inside a `JInt`, or `None`.
+
+   > asInt (JInt 7) == Some 7
+   True
+   > asInt JNull == None
+   True -}
 export
 asInt : Json -> Option Int
 asInt (JInt n) = Some n
 asInt _ = None
 
-{- | The `Float` inside a `JFloat`, or `None`. -}
+{- | The `Float` inside a `JFloat`, or `None`.
+
+   > asFloat (JFloat 1.5) == Some 1.5
+   True
+   > asFloat (JInt 1) == None
+   True -}
 export
 asFloat : Json -> Option Float
 asFloat (JFloat f) = Some f
 asFloat _ = None
 
-{- | The `Bool` inside a `JBool`, or `None`. -}
+{- | The `Bool` inside a `JBool`, or `None`.
+
+   > asBool (JBool True) == Some True
+   True
+   > asBool JNull == None
+   True -}
 export
 asBool : Json -> Option Bool
 asBool (JBool b) = Some b
 asBool _ = None
 
-{- | The backing `Array` of a `JArray`, or `None`. -}
+{- | The backing `Array` of a `JArray`, or `None`.  (Re-wrap the result in
+   `JArray` with `map` to compare it as a `Json` — there is no `Eq (Array Json)`
+   in scope here.)
+
+   > map JArray (asArray (jArray [JInt 1, JInt 2])) == Some (jArray [JInt 1, JInt 2])
+   True
+   > asArray (JInt 1) == None
+   True -}
 export
 asArray : Json -> Option (Array Json)
 asArray (JArray a) = Some a
@@ -522,3 +563,45 @@ export impl Debug Json where
 {- | `display`/`\{…}` also render compact JSON text. -}
 export impl Display Json where
   display j = stringify j
+
+-- ── Property tests ───────────────────────────────────────────────────────
+-- `parse` is a left inverse of `stringify` for every value `stringify` emits.
+-- (`Json` has no `Arbitrary` instance, so each prop builds representative
+-- values from generated `Int`/`String`/`Bool` inputs.)  A generative float
+-- round-trip is intentionally omitted: `floatToString`/`stringToFloat` lose
+-- subnormal floats (e.g. 1.7e-311), which is a number-formatting limitation,
+-- not a JSON bug — fixed-float round-tripping is covered by the `1000.0` and
+-- `1.5` doctests instead.
+
+prop "parse ∘ stringify round-trips a JInt" (n : Int) =
+  parse (stringify (JInt n)) == Ok (JInt n)
+
+prop "parse ∘ stringify round-trips a JString (exercises escaping)" (s : String) =
+  parse (stringify (JString s)) == Ok (JString s)
+
+prop "parse ∘ stringify round-trips a JBool" (b : Bool) =
+  parse (stringify (JBool b)) == Ok (JBool b)
+
+prop "parse ∘ stringify round-trips an int JArray" (xs : List Int) =
+  let j = jArray (map JInt xs)
+  parse (stringify j) == Ok j
+
+prop "parse ∘ stringify round-trips a JObject" (xs : List Int) =
+  let j = jObject (map (n => (intToString n, JInt n)) xs)
+  parse (stringify j) == Ok j
+
+prop "asInt (JInt n) == Some n" (n : Int) = asInt (JInt n) == Some n
+prop "asString (JString s) == Some s" (s : String) = asString (JString s) == Some s
+prop "asBool (JBool b) == Some b" (b : Bool) = asBool (JBool b) == Some b
+prop "asFloat (JFloat f) == Some f" (f : Float) = asFloat (JFloat f) == Some f
+
+prop "asArray recovers a built JArray" (xs : List Int) =
+  let arr = map JInt xs
+  map JArray (asArray (jArray arr)) == Some (jArray arr)
+
+prop "index k recovers the k-th element of a JArray" (n : Int) =
+  let k = if n < 0 then 0 - n else n
+  index k (jArray (map JInt [0..=k])) == Some (JInt k)
+
+prop "lookup finds an inserted key" (k : Int) (v : Int) =
+  lookup (intToString k) (jObject [(intToString k, JInt v)]) == Some (JInt v)
