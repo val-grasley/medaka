@@ -1,0 +1,11 @@
+apply : (a -> b) -> a -> b
+compose : (a -> b) -> (c -> a) -> c -> b
+const : a -> b -> a
+flip : (a -> b -> c) -> b -> a -> c
+fst3 : (a, b) -> a
+id : a -> a
+on : (a -> a -> b) -> (c -> a) -> c -> c -> b
+pair : a -> b -> (a, b)
+snd3 : (a, b) -> b
+swapT : (a, b) -> (b, a)
+twice : (a -> a) -> a -> a

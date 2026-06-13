@@ -68,6 +68,17 @@ CC="${CC:-clang}"
 #   printer_main          — diff_selfhost_printer.sh
 #   positions_main        — diff_selfhost_positions.sh
 #   lex_comments_main     — diff_selfhost_comments.sh
+#   ── Phase 2 §2b typecheck/check/error gates ──
+#   typecheck_main          — diff_selfhost_typecheck.sh / _errors / _panic_errors / _golden
+#   typecheck_golden_batch  — diff_selfhost_typecheck_golden_batch.sh
+#   check_main              — diff_selfhost_typecheck_errors.sh (driver B) / diff_selfhost_check.sh
+#   check_batch             — diff_selfhost_check_batch.sh
+#   check_modules_main      — diff_selfhost_check_modules.sh
+#   check_all_main          — diff_selfhost_check_modules_batch.sh
+#   check_match_main        — diff_selfhost_check_match.sh
+#   exhaust_main            — diff_selfhost_exhaust.sh
+#   diagnostics_main        — diff_selfhost_diagnostics.sh
+#   diagnostics_project_main — diff_selfhost_analyze_project.sh
 ENTRIES="eval_run_main eval_run_batch core_ir_run_main core_ir_dump_main \
 eval_main eval_prelude_main eval_prelude_batch eval_list_batch \
 eval_dict_main eval_dict_batch eval_typed_main eval_typed_batch \
@@ -77,7 +88,10 @@ llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main \
 lex_main parse_main parse_result_main \
 desugar_main desugar_batch mark_main mark_batch \
 resolve_main resolve_batch resolve_modules_main \
-printer_main positions_main lex_comments_main"
+printer_main positions_main lex_comments_main \
+typecheck_main typecheck_golden_batch check_main check_batch \
+check_modules_main check_all_main check_match_main exhaust_main \
+diagnostics_main diagnostics_project_main"
 
 # ── Opt-in skip when clang/libgc absent (mirror the other native scripts) ──────
 command -v "$CC" >/dev/null 2>&1 || {

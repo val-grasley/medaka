@@ -1,0 +1,3 @@
+pureId : String -> Unit
+run : Unit
+useEff : (String -> <IO> Unit) -> Unit

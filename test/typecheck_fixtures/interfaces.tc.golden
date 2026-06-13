@@ -1,0 +1,10 @@
+build : a -> a -> b a
+collect : a b -> List b
+empty2 : a b
+eq2 : a -> a -> Bool
+insert2 : a -> b a -> b a
+map2 : (a -> b) -> c a -> c b
+mapTwice : (a -> b) -> c (d a) -> c (d b)
+neq2 : a -> a -> Bool
+toL : a b -> List b
+useEq : a -> a -> Bool

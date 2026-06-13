@@ -1,0 +1,4 @@
+f : Array a -> a
+fa : Int
+fc : Char
+fl : a -> List a -> a

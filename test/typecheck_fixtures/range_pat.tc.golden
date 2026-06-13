@@ -1,0 +1,2 @@
+classifyInt : Int -> String
+isLower : Char -> Bool

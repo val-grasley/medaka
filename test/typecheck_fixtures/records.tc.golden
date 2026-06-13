@@ -1,0 +1,12 @@
+dist : P -> Int
+endY : Line -> Int
+getV : Box a -> a
+getX : P -> Int
+mkLine : P -> P -> Line
+mkP : Int -> Int -> P
+moveX : P -> P
+retag : Box a -> String -> Box a
+sumP : P -> Int
+swapBoxes : Box a -> Box b -> (a, b)
+unwrap : Box a -> a
+wrap : a -> Box a

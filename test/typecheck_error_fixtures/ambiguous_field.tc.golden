@@ -1,0 +1,1 @@
+TYPE ERROR: Ambiguous field access: '.name' is declared by Box, Cat. I can't tell which record this value is — add a type annotation on it (e.g. '(r : Box).name').

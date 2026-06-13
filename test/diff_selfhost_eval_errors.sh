@@ -5,35 +5,31 @@
 # fails at evaluation time.  A committed <name>.expected golden holds the
 # normalized error message text (no location, no "panic:" prefix).
 #
-# Per fixture, three checks:
-#   A. Oracle stability — main.exe run <fixture> must produce the expected message
-#      on stderr (ensures the golden matches the reference OCaml eval).
+# OCaml-free (REROOT-PLAN §2b): native host test/bin/eval_main vs the committed
+# <name>.expected golden (the OCaml main.exe oracle that originally derived these
+# messages is no longer run live — the golden is frozen).
+#
+# Per fixture, two checks:
 #   B. Self-hosted must exit non-zero on the bad input.
 #   C. Self-hosted message must equal the golden.
 #
-# Normalization — both sides produce an stderr line of the form:
-#   Reference: "file:line:col: panic: MESSAGE"
-#   Selfhost:  "file:line:col: panic: panic: MESSAGE"
-# The greedy ".*panic: " strips everything up to and including the final
-# "panic: " prefix, leaving just MESSAGE, making both sides directly comparable.
+# Normalization: the native binary prints the bare message to stderr; a defensive
+# ".*panic: " strip handles any runtime that prefixes it.
 #
 # Usage:  sh test/diff_selfhost_eval_errors.sh
 # Exit:   0 if every fixture passes, else 1.
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-EVALM="$ROOT/selfhost/entries/eval_main.mdk"
+RUN="$ROOT/test/bin/eval_main"
 FIXDIR="$ROOT/test/eval_error_fixtures"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
-# Extract the error message from a "…: panic: MESSAGE" or "error: MESSAGE" stderr line.
-# Greedy ".*panic: " matches up to and including the final "panic: " on the line.
-# The "error: MESSAGE" branch handles oracle errors that are not runtime panics
-# (e.g. "program has no 'main' binding" which main.exe emits as "error: …").
+# Extract the message from the native binary's stderr (first message-bearing line),
+# stripping any "…: panic: " or "error: " prefix a runtime might add.
 norm_msg() {
-  grep -E "panic:|^error:" | head -1 | sed -E 's/.*panic: //; s/^error: //'
+  grep -E "panic:|^error:|." | head -1 | sed -E 's/.*panic: //; s/^error: //'
 }
 
 pass=0; fail=0
@@ -45,20 +41,14 @@ for f in "$FIXDIR"/*.mdk; do
 
   ok=1; reason=""
 
-  # A. Oracle (main.exe run <fixture>) must match golden
-  oracle_out="$("$MAIN" run "$f" 2>&1 | norm_msg)"
-  [ "$oracle_out" = "$golden" ] || { ok=0; reason="oracle: got \"$oracle_out\" want \"$golden\""; }
-
   # B. Self-hosted must exit non-zero
-  if [ "$ok" -eq 1 ]; then
-    "$MAIN" run "$EVALM" "$f" >/dev/null 2>&1
-    exit_code=$?
-    [ "$exit_code" -ne 0 ] || { ok=0; reason="selfhost exited 0 (should error)"; }
-  fi
+  "$RUN" "$f" >/dev/null 2>&1
+  exit_code=$?
+  [ "$exit_code" -ne 0 ] || { ok=0; reason="selfhost exited 0 (should error)"; }
 
   # C. Self-hosted message must match golden
   if [ "$ok" -eq 1 ]; then
-    self_out="$("$MAIN" run "$EVALM" "$f" 2>&1 >/dev/null | norm_msg)"
+    self_out="$("$RUN" "$f" 2>&1 >/dev/null | norm_msg)"
     [ "$self_out" = "$golden" ] || { ok=0; reason="selfhost: got \"$self_out\" want \"$golden\""; }
   fi
 

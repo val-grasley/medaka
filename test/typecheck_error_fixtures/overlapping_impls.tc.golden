@@ -1,0 +1,1 @@
+TYPE ERROR: Overlapping impls of Foo: a and b can match the same type — mark the more general one `default impl`, or make them disjoint

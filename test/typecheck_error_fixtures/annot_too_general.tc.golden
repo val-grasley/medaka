@@ -1,0 +1,1 @@
+TYPE ERROR: Type annotation 'a -> a' is more polymorphic than the expression — a type variable in the annotation is actually a specific type (or two annotation variables are the same type)

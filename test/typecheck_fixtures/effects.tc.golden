@@ -1,0 +1,7 @@
+emit : Int -> <IO> Unit
+gen : a -> <IO, Rand> a
+higher : (a -> <IO> b) -> a -> <IO> b
+mixed : Int -> Int -> <Rand> Bool
+purePoly : a -> a
+pureVal : Int
+runTwice : (Unit -> <IO> a) -> <IO> Unit

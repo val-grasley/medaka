@@ -1,0 +1,17 @@
+add : a -> a -> a
+andb : Bool -> Bool -> Bool
+appx : a -> a -> a
+backtick : (a -> b -> c) -> a -> b -> c
+bwd : (a -> b) -> (c -> a) -> c -> b
+clampish : a -> a -> a -> a
+consx : a -> List a -> List a
+eqp : a -> a -> Bool
+fwd : (a -> b) -> (b -> c) -> a -> c
+ltp : a -> a -> Bool
+negI : Int -> Int
+negP : a -> a
+notb : Bool -> Bool
+orb : Bool -> Bool -> Bool
+pipeIt : a -> (a -> b) -> b
+poly : Int -> Int -> Int -> Int
+total : L Int -> Int

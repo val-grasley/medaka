@@ -1,0 +1,10 @@
+boxIt : a -> List a
+charsOf : String -> List Char
+combine : String -> String -> Int
+emit : String -> <IO> Unit
+rng : Unit -> <Rand> Int
+shout : String -> <IO> Unit
+strLen : String -> Int
+toChars : String -> List Char
+useLen : String -> Int
+wrapL : a -> List a

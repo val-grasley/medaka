@@ -33,12 +33,11 @@
 # Usage: sh test/diff_selfhost_analyze_project.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-SELF="$ROOT/selfhost/entries/diagnostics_project_main.mdk"
+SELF="$ROOT/test/bin/diagnostics_project_main"
 RT="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 FIXDIR="$ROOT/test/analyze_project_fixtures"
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
+[ -x "$SELF" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $SELF)"; exit 2; }
 
 pass=0; fail=0
 
@@ -49,9 +48,16 @@ for d in "$FIXDIR"/*/; do
   entry="$(ls "$d"root_*.mdk "$d"main_*.mdk 2>/dev/null | head -1)"
   [ -n "$entry" ] || { echo "skip $name (no root_*.mdk / main_*.mdk entry)"; continue; }
 
-  oracle_json="$("$MAIN" check --json "$entry" 2>/dev/null)"
+  # OCaml-free (REROOT-PLAN §2b): the oracle JSON is the committed
+  # <dir>/oracle.json captured from `medaka check --json` by capture_goldens.sh;
+  # the self-hosted analyzeProject runs as the native diagnostics_project_main.
+  golden="$root/oracle.json"
+  [ -f "$golden" ] || { fail=$((fail+1)); printf 'FAIL %s (no oracle.json — run sh test/capture_goldens.sh analyze_project)\n' "$name"; continue; }
+  oracle_json="$(cat "$golden")"
+  # Strip the native value-entry's trailing "()" (Unit return; runtime/medaka_rt.c)
+  # appended to the last output line, so it can't corrupt the final "## FILE" path.
   self_text="$(perl -e 'alarm 180; exec @ARGV' \
-      "$MAIN" run "$SELF" "$RT" "$CORE" "$entry" "$root" 2>/dev/null)"
+      "$SELF" "$RT" "$CORE" "$entry" "$root" 2>/dev/null | sed '$ s/()$//; ${/^$/d;}')"
 
   ORACLE_JSON="$oracle_json" SELF_TEXT="$self_text" python3 - "$name" <<'PY'
 import sys, os, json, re

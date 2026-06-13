@@ -1,0 +1,1 @@
+error: `?` is only allowed as the right-hand side of a `let` binding, e.g. `let x = expr ?`. Use `<-` inside do-blocks.

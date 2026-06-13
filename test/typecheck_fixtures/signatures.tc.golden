@@ -1,0 +1,9 @@
+ann : Int
+f : Int -> Int
+g : a -> a
+h : (a -> b) -> a -> b
+konst : a -> b -> a
+mapO : (a -> b) -> Opt a -> Opt b
+poly : a -> (a, a)
+safeHead : List a -> Opt a
+strAnn : String

@@ -42,6 +42,10 @@ LEXTOK="$ROOT/_build/default/dev/lextok.exe"
 PRINTPROBE="$ROOT/_build/default/dev/print_probe.exe"
 POSDUMP="$ROOT/_build/default/dev/positions_dump.exe"
 CMTDUMP="$ROOT/_build/default/dev/comment_dump.exe"
+# §2b typecheck/check/diagnostics oracles (location-free dumps).
+TCPROBE="$ROOT/_build/default/dev/tc_probe.exe"
+TCMODPROBE="$ROOT/_build/default/dev/tc_module_probe.exe"
+DIAGDUMP="$ROOT/_build/default/dev/diagdump.exe"
 
 CHECK=0
 FILTER=""
@@ -79,6 +83,13 @@ oracle_parse_result_lc() {
   "$ASTDUMP" "$1" 2>&1 \
     | sed -n 's/.*Failure("parse error \([0-9]*:[0-9]*\)").*/\1/p' | head -1
 }
+# ── §2b typecheck / check / diagnostics oracles ──
+# tc_probe : bare HM, no prelude → `name : scheme` (or "TYPE ERROR: …").  Sorted,
+# matching diff_selfhost_typecheck{,_errors,_panic_errors}.sh's reference leg.
+oracle_tc_probe()       { "$TCPROBE" "$1" 2>/dev/null | LC_ALL=C sort; }
+# diagdump --analyze : structured per-fixture diagnostics (human message, no loc),
+# sorted — the OCaml leg of diff_selfhost_diagnostics.sh.
+oracle_diag_analyze()   { "$DIAGDUMP" --analyze "$1" 2>/dev/null | LC_ALL=C sort; }
 
 # rows: "<glob>::<oracle-tag>::<golden-suffix>"
 ROWS="
@@ -91,6 +102,12 @@ $ROOT/test/eval_typed_fixtures/*.mdk::run_file::eval.golden
 $ROOT/test/parse_fixtures/*.mdk::print_probe::printer.golden
 $ROOT/test/positions_fixtures/*.mdk::positions_dump::positions.golden
 $ROOT/test/comment_fixtures/*.mdk::comment_dump::comments.golden
+$ROOT/test/typecheck_fixtures/*.mdk::tc_probe::tc.golden
+$ROOT/test/typecheck_error_fixtures/*.mdk::tc_probe::tc.golden
+$ROOT/test/typecheck_panic_fixtures/*.mdk::tc_probe::tc.golden
+$ROOT/test/resolve_fixtures/*.mdk::diag_analyze::analyze.golden
+$ROOT/test/exhaust_fixtures/*.mdk::diag_analyze::analyze.golden
+$ROOT/test/check_match_fixtures/*.mdk::diag_analyze::analyze.golden
 "
 
 total=0 wrote=0 mism=0 fixtures=0
@@ -252,6 +269,51 @@ if want lextok; then
   for f in $LF_FILES; do
     [ -f "$f" ] || continue
     emit_golden "${f%.mdk}.lextok.golden" oracle_lextok "$f"
+  done
+fi
+
+# check_modules fixtures : the entry's per-binding schemes via tc_module_probe
+# (the OCaml leg of diff_selfhost_check_modules.sh's fixture check).  Each fixture
+# dir already ships an `expected` golden == this probe's sorted output; capture it
+# fresh here as `<dir>/oracle.tcmod` so the re-rooted gate compares the native
+# host against a committed reference rather than re-running the OCaml probe live.
+if want tcmod; then
+  total=$((total+1))
+  for d in "$ROOT"/test/check_module_fixtures/*/; do
+    [ -d "$d" ] || continue
+    [ -f "$d/entry" ] || continue
+    entry="${d%/}/$(cat "$d/entry")"
+    [ -f "$entry" ] || continue
+    out="$TMP/tcmod"
+    "$TCMODPROBE" "$entry" "${d%/}" 2>/dev/null | LC_ALL=C sort > "$out" || true
+    fixtures=$((fixtures+1))
+    golden="${d%/}/oracle.tcmod"
+    if [ "$CHECK" -eq 1 ]; then
+      if [ -f "$golden" ] && cmp -s "$out" "$golden"; then :
+      else mism=$((mism+1)); [ -f "$golden" ] && echo "DRIFT $golden" || echo "MISSING $golden"; fi
+    else cp "$out" "$golden"; wrote=$((wrote+1)); fi
+  done
+fi
+
+# analyze_project fixtures : the OCaml `medaka check --json <entry>` per-file
+# diagnostics bucket (diff_selfhost_analyze_project.sh's oracle).  Captured as
+# committed JSON so the re-rooted gate diffs the native diagnostics_project_main
+# text against this frozen bucket instead of running main.exe check --json live.
+if want analyze_project; then
+  total=$((total+1))
+  for d in "$ROOT"/test/analyze_project_fixtures/*/; do
+    [ -d "$d" ] || continue
+    name="$(basename "${d%/}")"
+    entry="$(ls "$d"root_*.mdk "$d"main_*.mdk 2>/dev/null | head -1)"
+    [ -n "$entry" ] || continue
+    out="$TMP/aproj"
+    "$MAIN" check --json "$entry" 2>/dev/null > "$out" || true
+    fixtures=$((fixtures+1))
+    golden="${d%/}/oracle.json"
+    if [ "$CHECK" -eq 1 ]; then
+      if [ -f "$golden" ] && cmp -s "$out" "$golden"; then :
+      else mism=$((mism+1)); [ -f "$golden" ] && echo "DRIFT $golden" || echo "MISSING $golden"; fi
+    else cp "$out" "$golden"; wrote=$((wrote+1)); fi
   done
 fi
 

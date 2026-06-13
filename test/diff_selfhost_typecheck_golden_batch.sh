@@ -1,14 +1,24 @@
 #!/bin/sh
 # Batched variant of diff_selfhost_typecheck_golden.sh — prelude caching.
 # Parses runtime + core ONCE; infers schemes for (core ++ fixture) per fixture.
+#
+# OCaml-free (REROOT-PLAN §2b): native host test/bin/typecheck_golden_batch vs the
+# FROZEN === TYPES === section of diff_fixtures/*.golden.
+#
+# KNOWN PRE-EXISTING DIVERGENCE (#55, tracked by task #11): native infers
+# `sum`/`product : a b -> b` vs the golden's `a Int -> Int`.  Present in every
+# fixture's whole-prelude dump → 0 ok, 25 failing is the CORRECT documented state
+# (identical to the OCaml-host pre-re-root behavior).  Do NOT edit goldens/fixtures.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-BATCH="$ROOT/selfhost/entries/typecheck_golden_batch.mdk"
+BATCH="$ROOT/test/bin/typecheck_golden_batch"
 CORE="$ROOT/stdlib/core.mdk"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 FIXDIR="$ROOT/test/diff_fixtures"
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
+[ -x "$BATCH" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $BATCH)"; exit 2; }
+
+# Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 targets=""
 for g in "$FIXDIR"/*.golden; do
@@ -17,7 +27,7 @@ for g in "$FIXDIR"/*.golden; do
   targets="$targets $FIXDIR/$fix.mdk"
 done
 
-ALL="$("$MAIN" run "$BATCH" "$RUNTIME" "$CORE" $targets 2>/dev/null)"
+ALL="$("$BATCH" "$RUNTIME" "$CORE" $targets 2>/dev/null | strip_unit)"
 section() { awk -v p="$1" '$0=="===SELFHOST-FIX=== "p {f=1;next} /^===SELFHOST-FIX=== /{f=0} f'; }
 
 pass=0; fail=0
@@ -30,4 +40,5 @@ for g in "$FIXDIR"/*.golden; do
   else fail=$((fail+1)); printf 'FAIL %s\n' "$fix"; fi
 done
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
+printf '(NOTE: all-fail is the documented #55 sum/product drift, task #11 — not a regression)\n'
 [ "$fail" -eq 0 ]

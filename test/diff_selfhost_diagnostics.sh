@@ -1,41 +1,46 @@
 #!/bin/sh
-# Validation for selfhost/driver/diagnostics.mdk: compares structured diagnostic output
-# against the OCaml reference (dev/diagdump.exe --analyze).
+# Validation for selfhost/driver/diagnostics.mdk: compares structured diagnostic
+# output against a committed golden captured from dev/diagdump.exe --analyze.
 #
-# The oracle strips source locations from messages (the selfhost AST is
-# location-stripped and cannot reproduce them).  Both sides are sorted before
-# comparison so ordering differences don't matter.
+# OCaml-free (REROOT-PLAN §2b): native host test/bin/diagnostics_main vs the
+# committed <name>.analyze.golden (sorted diagdump --analyze output, captured by
+# test/capture_goldens.sh).  The oracle strips source locations from messages
+# (the selfhost AST is location-stripped and cannot reproduce them).  Native
+# output sorted before comparison.
 #
 # Coverage:
 #   • resolve_fixtures  — error accumulation (multiple errors, no exit-on-first)
 #   • exhaust_fixtures  — guard-exhaustiveness warnings
 #   • check_match_fixtures — non-exhaustive-match warnings
-#   • clean programs    — no diagnostics expected (a sample from diff_fixtures)
 #
-# Parse-error fixtures are excluded: the selfhost parser panics on parse errors
-# (returns List Decl, not Result) and cannot surface them as structured Diags.
+# Parse-error fixtures are excluded: the selfhost parser panics on parse errors.
 # Type-error oracle/selfhost messages differ in unification order (pre-existing
-# selfhost limitation) — excluded from this gate, covered by diff_selfhost_check.
+# selfhost limitation) — excluded; covered by diff_selfhost_check.
 #
 # Usage: sh test/diff_selfhost_diagnostics.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-DIAG="$ROOT/_build/default/dev/diagdump.exe"
-DIAG_MAIN="$ROOT/selfhost/entries/diagnostics_main.mdk"
+RUN="$ROOT/test/bin/diagnostics_main"
 RT="$ROOT/stdlib/runtime.mdk"; CORE="$ROOT/stdlib/core.mdk"
-[ -x "$MAIN" ] || { echo "build first: dune build --root ."; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 pass=0; fail=0
+
+# Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 run_case() {
   category="$1"; name="$2"; f="$3"
-  oracle="$("$DIAG" --analyze "$f" 2>/dev/null | LC_ALL=C sort)"
-  self="$("$MAIN" run "$DIAG_MAIN" "$RT" "$CORE" "$f" 2>/dev/null | LC_ALL=C sort)"
-  if [ "$oracle" = "$self" ]; then
+  golden="${f%.mdk}.analyze.golden"
+  if [ ! -f "$golden" ]; then
+    fail=$((fail+1)); printf 'FAIL %s/%s (no .analyze.golden — run sh test/capture_goldens.sh diag_analyze)\n' "$category" "$name"; return
+  fi
+  want="$(LC_ALL=C sort < "$golden")"
+  self="$("$RUN" "$RT" "$CORE" "$f" 2>/dev/null | strip_unit | LC_ALL=C sort)"
+  if [ "$want" = "$self" ]; then
     pass=$((pass+1)); printf 'ok   %s/%s\n' "$category" "$name"
   else
     fail=$((fail+1)); printf 'FAIL %s/%s\n' "$category" "$name"
-    printf '  oracle: %s\n  self:   %s\n' "$oracle" "$self"
+    printf '  golden: %s\n  self:   %s\n' "$want" "$self"
   fi
 }
 
@@ -54,7 +59,7 @@ for f in "$ROOT"/test/check_match_fixtures/*.mdk; do
   run_case "check_match" "$(basename "$f")" "$f"
 done
 
-# clean programs — no diagnostics expected (spot-check)
+# clean programs — no diagnostics expected (spot-check; skipped if absent)
 for f in "$ROOT"/test/diff_fixtures/let_binding.mdk \
          "$ROOT"/test/diff_fixtures/basic_adt.mdk \
          "$ROOT"/test/diff_fixtures/records.mdk; do
