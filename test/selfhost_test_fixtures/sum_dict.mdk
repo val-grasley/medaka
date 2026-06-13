@@ -1,0 +1,21 @@
+-- Regression for native dispatch gap #55 on the `medaka test` / eval path:
+-- `sum`/`product` are `(Foldable t, Num a) =>`-constrained prelude fns whose body
+-- dispatches a RETURN-position `Num` method (`fromInt`) on the SECOND constraint var.
+-- On the multi-module EVAL path (`medaka run`/`test`/`check`, argStampEnabled OFF) the
+-- constrained-fn dict layer used to be gated to the emit path only, so the body routed
+-- `RDictFwd $dict_sum_1` with no leading dict PARAM bound → eval panicked
+-- `unbound identifier: $dict_sum_1` (build/emit worked because they dict-pass).  The
+-- fix dict-passes the RETURN-position constrained prelude/module fns on the eval path
+-- too (mirroring the OCaml oracle's eval_modules).  These doctests exercise that path
+-- end-to-end through the self-hosted `medaka test`.  (A `prop` over `sum` is omitted:
+-- the property-generator eval is a separate path with its own residual, out of scope
+-- for the doctest/test-path #55 fix.)
+
+-- > sum [1, 2, 3, 4]
+-- 10
+-- > product [2, 3, 4]
+-- 24
+-- > sum [10]
+-- 10
+sumList : List Int -> Int
+sumList xs = sum xs

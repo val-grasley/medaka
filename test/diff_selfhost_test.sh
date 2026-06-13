@@ -26,11 +26,14 @@
 #   stdlib/string.mdk  — full Unicode case-folding: native toUpper "Straße" yields
 #     "STRAßE" not "STRASSE" (the native runtime's toUpper/toLower don't expand ß /
 #     fold accented chars).  2 doctest FAILs vs the OCaml golden.
-#   stdlib/{mut_array,array,map}.mdk — the parked dispatch gap #55 (point-free
-#     sum/product): native test_main panics `unbound identifier: $dict_sum_1` and
-#     the INTERPRETED selfhost test_main likewise stops after the header, so these
-#     were already RED on the OCaml host in this tree (verified: both selfhost legs
-#     emit only `running doctests in …`).  Re-add once #55 lands natively.
+#   stdlib/{mut_array,array,map}.mdk — the #55 `$dict_sum_1` panic on the eval/test
+#     path is FIXED (see test/selfhost_test_fixtures/sum_dict.mdk, now in the default
+#     set, for the focused regression).  These full modules stay DEFERRED only for
+#     OTHER reasons: array/mut_array carry props whose shrunk counterexamples are
+#     RNG-draw-dependent (differ across impls), and map additionally needs the
+#     hash-table work below.  `medaka test stdlib/{array,mut_array}.mdk` now run clean
+#     end-to-end natively (no `$dict_*` unbound) — add to the gate once their props are
+#     made RNG-independent (or trimmed to passing-only).
 #   stdlib/hash_map.mdk / hash_set.mdk — need byte-identical hashInt/hashString
 #     (SplitMix64 / FNV-1a) in the selfhost eval oracle (64-bit wrapping bitwise,
 #     no Int64 extern yet).
@@ -62,7 +65,8 @@ else
          $ROOT/stdlib/toml.mdk \
          $ROOT/stdlib/list.mdk \
          $ROOT/stdlib/set.mdk \
-         $ROOT/test/selfhost_test_fixtures/mixed.mdk"
+         $ROOT/test/selfhost_test_fixtures/mixed.mdk \
+         $ROOT/test/selfhost_test_fixtures/sum_dict.mdk"
 fi
 
 pass=0

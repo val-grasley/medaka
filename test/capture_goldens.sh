@@ -415,7 +415,8 @@ if want test; then
   total=$((total+1))
   for f in "$ROOT"/stdlib/core.mdk "$ROOT"/stdlib/json.mdk "$ROOT"/stdlib/toml.mdk \
            "$ROOT"/stdlib/list.mdk "$ROOT"/stdlib/set.mdk \
-           "$ROOT"/test/selfhost_test_fixtures/mixed.mdk; do
+           "$ROOT"/test/selfhost_test_fixtures/mixed.mdk \
+           "$ROOT"/test/selfhost_test_fixtures/sum_dict.mdk; do
     [ -f "$f" ] || continue
     emit_golden "${f%.mdk}.test.golden" "$MAIN" test "$f"
   done

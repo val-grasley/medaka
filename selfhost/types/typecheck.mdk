@@ -768,6 +768,17 @@ export
 enableArgStamp : Unit -> <Mut> Unit
 enableArgStamp _ = set_ref argStampEnabled True
 
+-- #55 EVAL residual: active on the multi-module EVAL path (elaborateModules with
+-- argStampEnabled OFF) when there is a RETURN-position constrained fn to dict-pass
+-- (sum/product via `fromInt`, when/unless via `pure`).  Distinct from argStampEnabled:
+-- it turns on the constrained-FUNCTION dict layer (mark call sites EDictAt + resolve
+-- routes + prepend define params + thread crossModuleFunConstraintsRef) for the eval
+-- interpreter — WITHOUT the emit path's arg-position stamping or its
+-- discoverPromotedModules snapshot.  elaborateModules sets it per run; reset to False
+-- at the top of elaborateModules so a prior emit run can't leak it.
+evalDictLayerActive : Ref Bool
+evalDictLayerActive = Ref False
+
 -- the route refs awaiting an arg-position stamp + their discriminating-argument
 -- mono (captured during inference, resolved by resolveArgStamps while the tyvar
 -- cells are still bound).  Reset per pass by resetState, like pendingArgSites.
@@ -2967,6 +2978,17 @@ preludeReturnPosDictNames : List Decl -> List Decl -> List String
 preludeReturnPosDictNames preludeDecls allDecls =
   let rpNames = returnPosMethodNames allDecls
   filterList (n => anyMember (declBodyVars n preludeDecls) rpNames) (constrainedSigNames preludeDecls)
+
+-- #55 EVAL-path residual: the MODULE analogue of preludeReturnPosDictNames — each
+-- module-level `=>`-constrained fn whose body dispatches a return-position method
+-- (so it routes RDictFwd `$dict_<fn>_<slot>` and genuinely needs the leading dict
+-- param at eval, which arg-tag cannot supply).  [moduleDecls] is the constrained-sig
+-- universe to filter; [allDecls] computes the full return-position method set.  An
+-- arg-position-only constrained module fn stays OUT (arg-tag resolves it in eval).
+returnPosConstrainedSigNames : List Decl -> List Decl -> <Mut> List String
+returnPosConstrainedSigNames allDecls moduleDecls =
+  let rpNames = returnPosMethodNames allDecls
+  filterList (n => anyMember (declBodyVars n moduleDecls) rpNames) (constrainedSigNames moduleDecls)
 
 -- D3b-2: the PRELUDE's `=>`-constrained fns that dispatch a method in ARGUMENT
 -- position (the ~23 helpers: neq/elem/any/all/find/count/sum/product/maximum/
@@ -5644,8 +5666,12 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let _ = set_ref methodDispatchIdxRef (argDispatchIndices implDecls)
   -- E6: re-install the cross-module constraint accumulator that resetState just
   -- wiped, so this module's `=>`-constrained call sites into EARLIER modules resolve
-  -- (empty + no-op when OFF → golden module drivers byte-identical).
-  let _ = if argStampEnabled.value then set_ref funConstraintsRef crossModuleFunConstraintsRef.value else ()
+  -- (empty + no-op when OFF → golden module drivers byte-identical).  #55 EVAL
+  -- residual: the eval path ALSO needs this (a user module's call to core's
+  -- return-position constrained sum/product) — gate it on the eval-dict layer being
+  -- active (evalDictLayerActive), kept SEPARATE from argStampEnabled so the emit
+  -- path's discoverPromotedModules-seeded snapshot is untouched.
+  let _ = if argStampEnabled.value || evalDictLayerActive.value then set_ref funConstraintsRef crossModuleFunConstraintsRef.value else ()
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   -- C5: a standalone-shadow method name (box's `toList`/`isEmpty`) is bound in
@@ -5670,8 +5696,11 @@ checkModuleFullImpl seedVars accData implDecls prog =
   -- error is caught on the module path too — mirrors checkProgramSeeded.
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
   -- E6: fold THIS module's freshly-registered fn-constraints into the cross-module
-  -- accumulator so a LATER module's call site finds them after its own reset.
-  let _ = if argStampEnabled.value then set_ref crossModuleFunConstraintsRef funConstraintsRef.value else ()
+  -- accumulator so a LATER module's call site finds them after its own reset.  #55:
+  -- on the eval path (evalDictLayerActive) the eval-dict layer needs core's
+  -- sum/product constraint ids visible to the user module's call sites; kept separate
+  -- from the emit path's careful discoverPromotedModules snapshot.
+  let _ = if argStampEnabled.value || evalDictLayerActive.value then set_ref crossModuleFunConstraintsRef funConstraintsRef.value else ()
   globalS ++ topSchemes
 
 -- gate: per-module impl-body inference runs only on the emit path (implInferEnabled).
@@ -5957,6 +5986,12 @@ elaborateModules runtimeDecls coreDecls modules =
   -- alone under-defines the param; param alone under-applies the call (ABI mismatch).
   -- Cause A: promoted (inferred-constraint) user fns join the set.
   let dictNames = dedupS (moduleDictNames coreDecls allDecls modules ++ promoted)
+  -- #55 EVAL residual: when arg-position stamping is OFF (the eval path) but
+  -- moduleDictNames still produced a RETURN-position constrained-fn set (sum/product/
+  -- when/unless), turn on the constrained-fn dict layer for the eval interpreter so
+  -- those defines get their leading dict params and their call sites the matching dict
+  -- routes.  Empty set ⇒ stays off ⇒ byte-identical golden trees.
+  let _ = set_ref evalDictLayerActive (not argStampEnabled.value && not (isEmptyL dictNames))
   -- C5: ALSO mark cross-module standalone-shadow method occurrences (box's
   -- `toList`/`isEmpty`) as EMethodAt, so they carry a route ref for elabModuleStamp's
   -- resolveRLocalSites to stamp RLocal.  Without this they stay EVar (arg-position,
@@ -6010,7 +6045,14 @@ elaborateModules runtimeDecls coreDecls modules =
 -- them) carried across resetState in crossModuleFunConstraintsRef.
 dictPassModulesIfEnabled : List String -> List Decl -> List (String, List Decl) -> <Mut> (List Decl, List (String, List Decl))
 dictPassModulesIfEnabled dictNames core2 modules2
-  | argStampEnabled.value =
+  -- Emit path (argStampEnabled): ALWAYS run — the DImpl arm prepends parametric
+  -- impl-body element-dict params even when no top-level `=>`-constrained FUNCTION is
+  -- in [dictNames] (e.g. the empty-prelude nested_dict_dispatch fixture: a parametric
+  -- `Cmp (Box a) requires Cmp a` with no constrained fn).  EVAL path (#55): run when
+  -- [dictNames] carries the return-position subset (sum/product/when/unless).  OFF on
+  -- both ⇒ trees returned verbatim, byte-identical golden eval trees.  scopeArities
+  -- sizes each define's leading dict params to its surviving-constraint count.
+  | argStampEnabled.value || not (isEmptyL dictNames) =
       let allModDecls = concatMapL snd modules2
       let promotedC = crossModuleFunConstraintsRef.value
       let _ = set_ref funConstraintsRef (scopeArities promotedC (core2 ++ allModDecls))
@@ -6127,7 +6169,19 @@ moduleDictNames coreDecls allDecls modules
   | argStampEnabled.value = preludeReturnPosDictNames coreDecls allDecls
                             ++ preludeArgPosDictNames coreDecls allDecls
                             ++ constrainedSigNames (concatMapL snd modules)
-  | otherwise = []
+  -- EVAL path (#55 residual): even with arg-position stamping OFF, the RETURN-
+  -- position constrained prelude/module fns (sum/product via `fromInt`, when/unless
+  -- via `pure`) MUST be dict-passed.  Their bodies route a return-position method
+  -- (`fromInt`/`pure`) RDictFwd `$dict_<fn>_<slot>` during the per-module typecheck
+  -- (registerConstraintRegs is ungated), but with no leading dict PARAM the witness
+  -- is unbound — `sum [1,2,3]` panics `unbound identifier: $dict_sum_1` (the `fromInt`
+  -- seed is ALWAYS evaluated; `when`'s `pure ()` only hid the same skew in a dead
+  -- `if` branch).  The OCaml oracle's eval_modules dict-passes prelude+modules
+  -- unconditionally; this mirrors that for the return-position subset.  ARG-position
+  -- (neq/elem/clamp/…) stay OUT — arg-tag resolves them in ceval on tagged values,
+  -- and keeping them out preserves the golden eval trees.
+  | otherwise = preludeReturnPosDictNames coreDecls allDecls
+                ++ returnPosConstrainedSigNames allDecls (concatMapL snd modules)
 
 -- E6: register a constraint-arity entry (placeholder ids of the right length) for
 -- every `=>`-constrained top-level signature, so dictArityOf returns the right
@@ -6204,10 +6258,13 @@ elabModuleStamp seedVars accData implDecls prog =
   -- E6: fill THIS module's `=>`-constrained-fn EDictAt routes (the call sites
   -- prePassDictArg marked) so the emitter supplies the matching dict ARGUMENT —
   -- realizeRecDictApps for self/mutually-recursive calls, resolveDictApps for the
-  -- normal ones.  Gated: no-op when OFF (pendingDictApps/pendingRecDictApps empty,
-  -- golden module drivers byte-identical).
-  let _ = if argStampEnabled.value then realizeRecDictApps pendingRecDictApps.value else ()
-  let _ = if argStampEnabled.value then resolveDictApps stampImplTable pendingDictApps.value else ()
+  -- normal ones.  #55 eval residual: the EVAL path (evalDictLayerActive) now also
+  -- marks the RETURN-position constrained fns (sum/product/when/unless) EDictAt via
+  -- moduleDictNames, so their call-site routes must resolve here too.  No-op when
+  -- nothing was marked (pendingDictApps/pendingRecDictApps empty → golden drivers
+  -- byte-identical).
+  let _ = if argStampEnabled.value || evalDictLayerActive.value then realizeRecDictApps pendingRecDictApps.value else ()
+  let _ = if argStampEnabled.value || evalDictLayerActive.value then resolveDictApps stampImplTable pendingDictApps.value else ()
   -- G7 (emit path only): fill each foldMap-style method occurrence's methRoutes from
   -- the monos its `Monoid m` constraint resolved to AT THE CALL SITE (List vs String),
   -- so emitDefaultRKey threads the right per-call dict word into the shared default
