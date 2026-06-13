@@ -13,7 +13,7 @@
 # To regenerate all goldens (after an intentional IR/serializer change):
 #   for f in test/eval_fixtures/*.mdk; do
 #     name=$(basename "$f" .mdk)
-#     ./_build/default/bin/main.exe run selfhost/entries/core_ir_dump_main.mdk "$f" \
+#     test/bin/core_ir_dump_main "$f" | sed '${/^()$/d;}' \
 #       > test/core_ir_sexp_fixtures/"$name".sexp
 #   done
 #
@@ -22,13 +22,18 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-DUMP="$ROOT/selfhost/entries/core_ir_dump_main.mdk"
+# OCaml-free (REROOT-PLAN.md Phase 2): the Core-IR S-expression dump runs as the
+# pre-compiled native binary test/bin/core_ir_dump_main (built by
+# test/build_oracles.sh).  This is already a SELF-CONSISTENCY snapshot gate — the
+# reference is the committed .sexp golden, never a live OCaml oracle.  The native
+# runtime auto-prints main's Unit return as a trailing "()" line; strip_unit drops it.
+DUMP="$ROOT/test/bin/core_ir_dump_main"
 FIXDIR="$ROOT/test/eval_fixtures"
 GOLDDIR="$ROOT/test/core_ir_sexp_fixtures"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
+[ -x "$DUMP" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $DUMP)"; exit 2; }
 [ -d "$GOLDDIR" ] || { echo "no goldens yet — run the regeneration loop above"; exit 2; }
+strip_unit() { sed '${/^()$/d;}'; }
 
 pass=0; fail=0
 for f in "$FIXDIR"/*.mdk; do
@@ -36,7 +41,7 @@ for f in "$FIXDIR"/*.mdk; do
   name="$(basename "$f" .mdk)"
   gold="$GOLDDIR/${name}.sexp"
   [ -f "$gold" ] || { printf 'MISSING golden: %s\n' "$name"; fail=$((fail+1)); continue; }
-  self="$("$MAIN" run "$DUMP" "$f" 2>/dev/null)"
+  self="$("$DUMP" "$f" 2>/dev/null | strip_unit)"
   expected="$(cat "$gold")"
   if [ "$self" = "$expected" ]; then
     pass=$((pass+1)); printf 'ok   %s\n' "$name"

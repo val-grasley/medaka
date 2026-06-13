@@ -8,3 +8,6 @@ _build/
 /medaka_emitter
 # build_native_medaka.sh output (the native OCaml-free `medaka` CLI binary)
 /medaka
+
+# Native gate oracles (built by test/build_oracles.sh)
+/test/bin/
