@@ -2931,6 +2931,17 @@ discoverPromotedModules : List Decl -> List Decl -> List (String, List Decl) -> 
 discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
   let joint = coreDecls ++ concatMapL snd modules
   let dictSeed = moduleDictNames coreDecls joint modules
+  -- DRIVER-COLLAPSE Phase 2: discovery is a SCRATCH joint typecheck (see below); its
+  -- type-error side effects must NOT leak into the STICKY accumulator that gates the
+  -- build/run exit code.  The joint-flattened program can surface spurious errors
+  -- (cross-module names that resolve per-module but look ambiguous flattened) that
+  -- the REAL per-module pass (elabModulesGo) does not — so snapshot typeErrors +
+  -- typeErrorsSticky here and restore them after, leaving the gate to reflect only
+  -- the real per-module typecheck.  On the EMIT path discovery already ran, but
+  -- elaborateModules's caller (the emit driver) never reads hadTypeErrors, so this
+  -- was latent; the eval-path build/run gate (typecheckGate) DOES read it.
+  let savedSticky = typeErrorsSticky.value
+  let savedErrors = typeErrors.value
   -- discoverPromotedJoint returns dictSeed GROWN by the newly-promoted user fns;
   -- subtract the seed so [promoted] is ONLY the inferred-constraint user fns (the
   -- prelude constrained fns in dictSeed are already handled by moduleDictNames +
@@ -2948,6 +2959,8 @@ discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
   -- crossModuleFunConstraintsRef.  dictEligibleRef + argStampEnabled are NOT touched
   -- by resetState (set by the driver, constant).
   let _ = resetState ()
+  let _ = set_ref typeErrorsSticky savedSticky
+  let _ = set_ref typeErrors savedErrors
   let _ = set_ref crossModuleFunConstraintsRef snapshot
   promoted
 
@@ -4918,7 +4931,25 @@ methodSchemesPure (IfaceMethod mname mty _ :: rest) =
 registerMethodConstraints : List String -> String -> Ty -> List (String, Mono) -> <Mut> Unit
 registerMethodConstraints typarams mname mty tvs =
   let ids = methodConstraintSlotIds typarams mty tvs
-  if isEmptyL ids then () else set_ref methodConstraintsRef ((mname, ids) :: methodConstraintsRef.value)
+  -- DRIVER-COLLAPSE Phase 2: skip when [mname] is ALREADY registered in THIS pass.
+  -- The ids must be the SAME quantified ids the call-site instantiation maps through
+  -- its subst (see methodConstraintsRef doc).  The module path's checkModuleFullImpl
+  -- can call ifaceMethodSchemes more than once per pass (env setup + impl/default body
+  -- inference re-resolving schemes), and a SECOND registration prepends DIFFERENT
+  -- freshly-instantiated ids → lookupAssocSL2 (first-match) returns the stale ids →
+  -- constraintMonosOf drops them → empty method-dict route (method_constraint_impl_offset:
+  -- methodN=0).  Keeping the FIRST (env-setup) registration — whose scheme is the one
+  -- lookupVar returns at call sites — restores the flat path's single-registration
+  -- invariant.  resetState clears methodConstraintsRef between modules, so this only
+  -- de-dups WITHIN a pass.
+  if isEmptyL ids then ()
+  else if hasAssocSL2 mname methodConstraintsRef.value then ()
+  else set_ref methodConstraintsRef ((mname, ids) :: methodConstraintsRef.value)
+
+hasAssocSL2 : String -> List (String, List Int) -> Bool
+hasAssocSL2 n xs = match lookupAssocSL2 n xs
+  Some _ => True
+  None => False
 
 methodConstraintSlotIds : List String -> Ty -> List (String, Mono) -> List Int
 methodConstraintSlotIds typarams (TyConstrained cs t) tvs = concatMapL (constraintSlotId typarams tvs) cs ++ methodConstraintSlotIds typarams t tvs
@@ -6058,20 +6089,30 @@ elaborateModules runtimeDecls coreDecls modules =
   -- (empty when OFF → prePassDictArg degenerates to prePassDict, goldens unchanged)
   let _ = if argStampEnabled.value then set_ref argDispatchIdxRef (argDispatchIndices allDecls) else ()
   let argNames = if argStampEnabled.value then map fst argDispatchIdxRef.value else []
-  -- Cause A (build path only): seed the promotion-eligible set with the USER
+  -- DRIVER-COLLAPSE Phase 2 (global): seed the promotion-eligible set with the USER
   -- modules' top-level fn names (NOT core/prelude — those keep arg-tag / RKey
-  -- dispatch, which type-checks the goldens).  Gated on argStampEnabled so the
-  -- oracle/golden module drivers leave it [] → maybeInferConstraint short-circuits
-  -- → no promotion → byte-identical.  Mirrors elaborateDict's dictEligibleRef seed.
-  let _ = set_ref dictEligibleRef (if argStampEnabled.value then moduleUserFnNames modules else [])
-  -- Cause A: run a JOINT-flattened promotion fixpoint over runtime ++ core ++ all
-  -- modules (mirror discoverPromoted) so an unsignatured fn whose body dispatches a
-  -- method in ARG position (`f s = println s` → inferred `Display a => …`) is
-  -- discovered + registered in promotedRef/funConstraintsRef/activeDictVars.  The
-  -- promoted names then join the dict-name set so their call sites are marked EDictAt
-  -- (caller supplies the dict ARGUMENT) and their defs get the leading dict PARAM.
-  -- No-op (returns []) when OFF.
-  let promoted = if argStampEnabled.value then discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames else []
+  -- dispatch, which type-checks the goldens).  Previously gated on argStampEnabled
+  -- (build path only); now ALSO seeded on the eval path (argStampEnabled OFF) so
+  -- elaborateModules promotes INFERRED-constraint user fns exactly as flat
+  -- elaborateDict does (discoverAll runs discoverPromoted whenever eligibleNames is
+  -- non-empty, independent of argStampEnabled).  The TYPECHECK golden module drivers
+  -- (checkModulesEntryLines/checkModulesDiags) never reach elaborateModules, so their
+  -- goldens are unaffected; the eval goldens are captured from the OCaml oracle's
+  -- run, which dict-passes prelude+modules unconditionally — so promotion-on-eval
+  -- matches them.  Mirrors elaborateDict's dictEligibleRef seed.
+  let _ = set_ref dictEligibleRef (moduleUserFnNames modules)
+  -- Cause A / Phase 2: run a JOINT-flattened promotion fixpoint over runtime ++ core
+  -- ++ all modules (mirror discoverPromoted) so an unsignatured fn whose body
+  -- dispatches a method in ARG position (`f s = println s` → inferred `Display a => …`)
+  -- OR uses a return-position method (`doubleEmpty x = append (append x empty) empty`
+  -- → inferred `Monoid a => …`) is discovered + registered in
+  -- promotedRef/funConstraintsRef/activeDictVars.  The promoted names then join the
+  -- dict-name set so their call sites are marked EDictAt (caller supplies the dict
+  -- ARGUMENT) and their defs get the leading dict PARAM.  Now runs on BOTH paths
+  -- (eval too): with argNames=[] on eval it surfaces only RETURN-position inferred
+  -- constraints (no arg-position dict-passing), matching flat elaborateDict's eval
+  -- behaviour (argStampEnabled OFF ⇒ argNames=[] there too).
+  let promoted = discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames
   -- E6: dict-name set for the `=>`-constrained-function layer, mirroring the
   -- single-file emit driver's assembly (llvm_emit_typed_main.runEmit): prelude
   -- return- AND arg-position `=>`-constrained fns (clamp/debugListItems/…) plus the
@@ -6083,19 +6124,30 @@ elaborateModules runtimeDecls coreDecls modules =
   -- alone under-defines the param; param alone under-applies the call (ABI mismatch).
   -- Cause A: promoted (inferred-constraint) user fns join the set.
   let dictNames = dedupS (moduleDictNames coreDecls allDecls modules ++ promoted)
-  -- #55 EVAL residual: when arg-position stamping is OFF (the eval path) but
-  -- moduleDictNames still produced a RETURN-position constrained-fn set (sum/product/
-  -- when/unless), turn on the constrained-fn dict layer for the eval interpreter so
-  -- those defines get their leading dict params and their call sites the matching dict
-  -- routes.  Empty set ⇒ stays off ⇒ byte-identical golden trees.
-  let _ = set_ref evalDictLayerActive (not argStampEnabled.value && not (isEmptyL dictNames))
+  -- DRIVER-COLLAPSE Phase 2 (global): the eval-dict layer is now active for the ENTIRE
+  -- eval path (argStampEnabled OFF), not only when moduleDictNames produced a non-empty
+  -- set.  Flat elaborateDict runs its resolve chain + dictPass UNCONDITIONALLY; the
+  -- 1-module / multi-module eval path must match, so method-level constraints
+  -- (`build : Num e =>`) and parametric-impl `requires` (`impl Default (List a) requires
+  -- Default a`) — which leave dictNames EMPTY (no top-level constrained FUNCTION) but
+  -- still need resolveMethodDicts / the DImpl dict-pass — get serviced.  Was gated on
+  -- `not (isEmptyL dictNames)`; the dictPass/resolve passes are no-ops when nothing was
+  -- marked, so widening to the whole eval path leaves the golden eval trees
+  -- byte-identical where there is genuinely nothing to dict-pass.
+  let _ = set_ref evalDictLayerActive (not argStampEnabled.value)
   -- C5: ALSO mark cross-module standalone-shadow method occurrences (box's
   -- `toList`/`isEmpty`) as EMethodAt, so they carry a route ref for elabModuleStamp's
   -- resolveRLocalSites to stamp RLocal.  Without this they stay EVar (arg-position,
   -- argStampEnabled OFF on the eval path) → no route ref → arg-tag panic on a no-impl
   -- receiver.  Only added to the MARK set (not rpNames proper, which discoverPromoted
   -- etc. consume) so other passes are unchanged.
-  let markRpNames = dedupS (rpNames ++ buildStandaloneShadowsGraph allDecls (concatMapL snd modules))
+  -- DRIVER-COLLAPSE Phase 2: ALSO include methodConstraintNames (methods with their OWN
+  -- method-level `=>` constraint, e.g. `build : Num e => e -> t`), mirroring flat
+  -- elaborateDict's prePass mark set (`returnPosMethodNames prog ++ methodConstraintNames
+  -- prog`).  Without it the method-constraint occurrence stays unmarked → its impl
+  -- clause's leading method-dict param is dropped/mis-bound → `non-exhaustive match`
+  -- (method_constraint_impl_offset).
+  let markRpNames = dedupS (rpNames ++ methodConstraintNames allDecls ++ buildStandaloneShadowsGraph allDecls (concatMapL snd modules))
   let core2 = prePassDictArg markRpNames dictNames argNames coreDecls
   let modules2 = map (prePassModulePairArg markRpNames dictNames argNames) modules
   let runtimeSeed = externSchemes runtimeDecls
@@ -6145,11 +6197,15 @@ dictPassModulesIfEnabled dictNames core2 modules2
   -- Emit path (argStampEnabled): ALWAYS run — the DImpl arm prepends parametric
   -- impl-body element-dict params even when no top-level `=>`-constrained FUNCTION is
   -- in [dictNames] (e.g. the empty-prelude nested_dict_dispatch fixture: a parametric
-  -- `Cmp (Box a) requires Cmp a` with no constrained fn).  EVAL path (#55): run when
-  -- [dictNames] carries the return-position subset (sum/product/when/unless).  OFF on
-  -- both ⇒ trees returned verbatim, byte-identical golden eval trees.  scopeArities
-  -- sizes each define's leading dict params to its surviving-constraint count.
-  | argStampEnabled.value || not (isEmptyL dictNames) =
+  -- `Cmp (Box a) requires Cmp a` with no constrained fn).  EVAL path: DRIVER-COLLAPSE
+  -- Phase 2 (global) — run for the WHOLE eval path (evalDictLayerActive), not only when
+  -- dictNames is non-empty, so a parametric-impl `requires` whose DImpl body needs its
+  -- leading element-dict param (nested_instance_dicts: `impl Default (List a) requires
+  -- Default a`) gets dict-passed even though no top-level constrained FUNCTION is in
+  -- dictNames.  Mirrors flat elaborateDict's unconditional final dictPass.  No-op when
+  -- nothing was marked → byte-identical golden eval trees.  scopeArities sizes each
+  -- define's leading dict params to its surviving-constraint count.
+  | argStampEnabled.value || evalDictLayerActive.value =
       let allModDecls = concatMapL snd modules2
       let promotedC = crossModuleFunConstraintsRef.value
       let _ = set_ref funConstraintsRef (scopeArities promotedC (core2 ++ allModDecls))
@@ -6266,19 +6322,25 @@ moduleDictNames coreDecls allDecls modules
   | argStampEnabled.value = preludeReturnPosDictNames coreDecls allDecls
                             ++ preludeArgPosDictNames coreDecls allDecls
                             ++ constrainedSigNames (concatMapL snd modules)
-  -- EVAL path (#55 residual): even with arg-position stamping OFF, the RETURN-
-  -- position constrained prelude/module fns (sum/product via `fromInt`, when/unless
-  -- via `pure`) MUST be dict-passed.  Their bodies route a return-position method
-  -- (`fromInt`/`pure`) RDictFwd `$dict_<fn>_<slot>` during the per-module typecheck
-  -- (registerConstraintRegs is ungated), but with no leading dict PARAM the witness
-  -- is unbound — `sum [1,2,3]` panics `unbound identifier: $dict_sum_1` (the `fromInt`
-  -- seed is ALWAYS evaluated; `when`'s `pure ()` only hid the same skew in a dead
-  -- `if` branch).  The OCaml oracle's eval_modules dict-passes prelude+modules
-  -- unconditionally; this mirrors that for the return-position subset.  ARG-position
-  -- (neq/elem/clamp/…) stay OUT — arg-tag resolves them in ceval on tagged values,
-  -- and keeping them out preserves the golden eval trees.
+  -- EVAL path: even with arg-position stamping OFF, the constrained prelude/module
+  -- fns MUST be dict-passed.  DRIVER-COLLAPSE Phase 2: the MODULE part now uses the
+  -- FULL constrainedSigNames (every `=>`-constrained module signature), mirroring flat
+  -- elaborateDict's caller (constrainedSigNames userDecls) — NOT the return-position
+  -- subset.  Rationale: dictPass adds a leading dict PARAM to every fn whose
+  -- constrained signature is in scopeArities (all constrained sigs), so the prePass
+  -- MARK set must match or a fn like `quad : Monoid a => a -> a` (body calls another
+  -- constrained fn, NOT a return-position method directly) gets the PARAM but its call
+  -- sites are unmarked → `unbound identifier: $dict_quad_0`.  The PRELUDE part stays
+  -- return-position-only (preludeReturnPosDictNames): arg-position prelude helpers
+  -- (neq/elem/clamp) keep arg-tag dispatch in ceval and sweeping them in re-triggers
+  -- the prop-shrinker `neq`-hang.  User modules have no such hazard (flat already
+  -- dict-passes their full constrained set).  #55 background: their bodies route a
+  -- return-position method (`fromInt`/`pure`) RDictFwd `$dict_<fn>_<slot>` during the
+  -- per-module typecheck (registerConstraintRegs ungated); with no leading dict PARAM
+  -- the witness is unbound.  The OCaml oracle's eval_modules dict-passes
+  -- prelude+modules unconditionally; this mirrors that.
   | otherwise = preludeReturnPosDictNames coreDecls allDecls
-                ++ returnPosConstrainedSigNames allDecls (concatMapL snd modules)
+                ++ constrainedSigNames (concatMapL snd modules)
 
 -- E6: register a constraint-arity entry (placeholder ids of the right length) for
 -- every `=>`-constrained top-level signature, so dictArityOf returns the right
@@ -6341,11 +6403,23 @@ elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> List Decl -
 elabModuleStamp seedVars accData implDecls prog =
   let schemes = checkModuleFullImpl seedVars accData implDecls prog
   let stampImplTable = buildImplTable implDecls
-  let _ = resolveSites stampImplTable (buildKeyTable implDecls) [] pendingSites.value
-  -- Phase 151 / Gap G: stamp this module's comparison-operator binop sites (emit
-  -- path only, mirroring resolveArgStamps — golden type-only path leaves them RNone
-  -- → dictPass-skipped → byte-identical).
-  let _ = if argStampEnabled.value then resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value else ()
+  -- DRIVER-COLLAPSE Phase 2: pass the return-position method names (was `[]`) so
+  -- resolveSite's RDict-case routes a RETURN-position method site RDictFwd (forward the
+  -- enclosing dict's nested reqs) rather than RDict (arg-position).  Flat elaborateDict
+  -- passes `returnPosMethodNames prog2`; the empty list mis-stamped a parametric-impl
+  -- body's inner return-position method (`impl Default (List a) requires Default a where
+  -- def = [def]` — the inner `def` must be RDictFwd:$dict_def_0, not RDict) → eval
+  -- `no matching impl for dispatch` (nested_instance_dicts).  `implDecls` is this
+  -- module's full impl universe (core/earlier-modules ++ prog), the analogue of flat's
+  -- whole-program `prog2`.
+  let _ = resolveSites stampImplTable (buildKeyTable implDecls) (returnPosMethodNames implDecls) pendingSites.value
+  -- Phase 151 / Gap G: stamp this module's comparison-operator binop sites.
+  -- DRIVER-COLLAPSE Phase 2 (global): now UNGATED (mirrors flat elaborateDict, which
+  -- calls resolveBinopSites unconditionally) so the EVAL path also dispatches `==`/
+  -- `<`/… to user/derived Eq/Ord impls (adt_deriving_ord / record_deriving_ord).
+  -- No-op when pendingBinopSites is empty (no comparison-operator site) → golden
+  -- type-only path leaves them RNone → dictPass-skipped → byte-identical.
+  let _ = resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value
   let _ = if argStampEnabled.value then resolveArgStamps stampImplTable pendingArgStamps.value else ()
   -- C5: LAST among the route-stampers (after resolveSites AND resolveArgStamps) so the
   -- receiver-grounded RLocal/RNone overrides whatever those stamped on the SAME ref —
@@ -6362,13 +6436,18 @@ elabModuleStamp seedVars accData implDecls prog =
   -- byte-identical).
   let _ = if argStampEnabled.value || evalDictLayerActive.value then realizeRecDictApps pendingRecDictApps.value else ()
   let _ = if argStampEnabled.value || evalDictLayerActive.value then resolveDictApps stampImplTable pendingDictApps.value else ()
-  -- G7 (emit path only): fill each foldMap-style method occurrence's methRoutes from
-  -- the monos its `Monoid m` constraint resolved to AT THE CALL SITE (List vs String),
-  -- so emitDefaultRKey threads the right per-call dict word into the shared default
-  -- body.  Independent of the body-side dict routing (the emitter restamps the body's
-  -- cross-interface `empty` to its `$dict_<method>_<slot>` param directly).  Gated on
-  -- argStampEnabled → golden/eval drivers route via elaborateDict, stay byte-identical.
-  let _ = if argStampEnabled.value then resolveMethodDicts stampImplTable pendingMethodDicts.value else ()
+  -- G7: fill each foldMap-style method occurrence's methRoutes from the monos its
+  -- `Monoid m` constraint resolved to AT THE CALL SITE (List vs String), so
+  -- emitDefaultRKey threads the right per-call dict word into the shared default body.
+  -- Independent of the body-side dict routing (the emitter restamps the body's
+  -- cross-interface `empty` to its `$dict_<method>_<slot>` param directly).
+  -- DRIVER-COLLAPSE Phase 2: ALSO run on the eval path (evalDictLayerActive), mirroring
+  -- flat elaborateDict (which calls resolveMethodDicts unconditionally) — a method with
+  -- its OWN method-level constraint (`build : Num e => e -> t`) needs its method-dict
+  -- route filled so its impl clause binds the leading dict param instead of mis-binding
+  -- it into the first value param (method_constraint_impl_offset: was `non-exhaustive
+  -- match`).  No-op when pendingMethodDicts is empty → golden drivers byte-identical.
+  let _ = if argStampEnabled.value || evalDictLayerActive.value then resolveMethodDicts stampImplTable pendingMethodDicts.value else ()
   let _ = if argMeasureEnabled.value then accumArgSites pendingArgSites.value else ()
   schemes
 
