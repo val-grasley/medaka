@@ -1,0 +1,6 @@
+main : <IO> Unit
+main =
+  putStrLn (debug (sum [1.0, 2.0, 3.0]))
+  putStrLn (debug (product [2.0, 3.0]))
+  putStrLn (debug (sum [1, 2, 3]))
+  putStrLn (debug (product [2, 3, 4]))

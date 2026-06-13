@@ -1,0 +1,5 @@
+main : <IO> Unit
+main =
+  putStrLn (debug (maximum [3, 7, 1]))
+  putStrLn (debug (minimum [3, 7, 1]))
+  putStrLn (debug (maximum ["a", "z", "m"]))

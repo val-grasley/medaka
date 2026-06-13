@@ -1,0 +1,7 @@
+sumOf : (Foldable t, Num a) => t a -> a
+sumOf = fold (+) 0
+main : <IO> Unit
+main =
+  putStrLn (intToString (sum [1, 2, 3]))
+  putStrLn (intToString (product [2, 3, 4]))
+  putStrLn (intToString (sumOf [10, 20, 30]))

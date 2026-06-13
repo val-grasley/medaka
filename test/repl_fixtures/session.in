@@ -1,0 +1,10 @@
+x = 42
+y = x + 1
+[x, y]
+badname
+x + 1
+type x
+browse
+reset
+browse
+quit

@@ -1,0 +1,10 @@
+double : Num a => a -> a
+double x = x + x
+square : Num a => a -> a
+square x = x * x
+main : <IO> Unit
+main =
+  putStrLn (debug (double 2.5))
+  putStrLn (debug (square 2.5))
+  putStrLn (debug (double 2))
+  putStrLn (debug (square 3))

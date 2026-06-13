@@ -1,0 +1,4 @@
+[package]
+name = "proj"
+version = "0.1.0"
+entry = "main.mdk"

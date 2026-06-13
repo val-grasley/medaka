@@ -1,0 +1,10 @@
+import box.{Box(..), toList, isEmpty}
+
+b : Box Int
+b = Box [1, 2]
+
+main =
+  println (toList b)
+  println (isEmpty b)
+  println (isEmpty [10, 20, 30])
+  println (toList (Some 7))

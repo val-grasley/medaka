@@ -1,0 +1,3 @@
+data Color = Red | Green | Blue deriving (Eq, Debug)
+main : <IO> Unit
+main = putStrLn (debug Red ++ " " ++ debug Blue ++ " " ++ debug (Red == Red))

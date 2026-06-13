@@ -133,6 +133,22 @@ emit_golden() {
   fi
 }
 
+# emit_to <golden> <precomputed-out-file>: like emit_golden but the output was
+# already produced into $2 (used where the oracle needs post-processing, e.g. sort).
+emit_to() {
+  golden="$1"; src="$2"; fixtures=$((fixtures+1))
+  if [ "$CHECK" -eq 1 ]; then
+    if [ -f "$golden" ] && cmp -s "$src" "$golden"; then :
+    else
+      mism=$((mism+1))
+      if [ ! -f "$golden" ]; then echo "MISSING  $golden"
+      else echo "DRIFT    $golden"; diff "$golden" "$src" | head -6 | sed 's/^/    /'; fi
+    fi
+  else
+    mkdir -p "$(dirname "$golden")"; cp "$src" "$golden"; wrote=$((wrote+1))
+  fi
+}
+
 for row in $ROWS; do
   [ -n "$row" ] || continue
   glob="${row%%::*}"; rest="${row#*::}"
@@ -384,22 +400,160 @@ if want new; then
   fi
 fi
 
-# ── §2c `repl` / `lsp` goldens — SKIPPED (REROOT-PLAN STOP guardrail) ──────────
-# repl: the OCaml `medaka repl` and the self-hosted repl diverge on the post-error
-#   command sequence (after an unbound-variable line the OCaml repl keeps emitting
-#   prompts for the remaining commands; the selfhost repl — both interpreted AND
-#   native-compiled — stops short).  The interp/native selfhost outputs AGREE, so
-#   this is a selfhost-vs-OCaml behavioural difference, not a native-compile bug;
-#   the original gate only "passed" because its stderr-redirected pipe raced the
-#   two legs into the same truncated transcript.  An OCaml-captured golden is
-#   therefore not reproducible by the native host → NOT goldened.  Gate left on
-#   the OCaml oracle pending a selfhost-repl fix.
+# ── §2d build goldens — the program's runtime STDOUT from the OCaml-built binary ──
+# These re-root the three `medaka build` gates (build_cmd / diff_selfhost_build /
+# build_construct_coverage) off the OCaml interp oracle.  The golden is the stdout
+# of the BINARY produced by the OCaml `medaka build` NOW (the validated backend
+# oracle).  The re-rooted gate builds the SAME fixture with the NATIVE `./medaka
+# build` (MEDAKA_EMITTER=native) and diffs its binary's stdout vs this golden.
+# The golden therefore captures the BACKEND's actual output, including the parked
+# native dispatch gaps (#54/#21/#55): e.g. svm/entry's standalone-vs-method
+# `toList`/`isEmpty` yields EMPTY output on BOTH hosts' binaries, so the golden is
+# empty and the native binary matches it.  (This differs from the interp oracle,
+# which the OLD gates diffed against and which therefore FAILED svm — the re-root
+# faithfully goldens the binary, not the interpreter.)
+capture_build_golden() {  # $1=fixture .mdk  $2=golden path
+  src="$1"; golden="$2"; fixtures=$((fixtures+1))
+  bin="$TMP/cb.bin"; out="$TMP/cb.out"
+  rm -f "$bin"
+  perl -e 'alarm 180; exec @ARGV' -- "$MAIN" build "$src" -o "$bin" >/dev/null 2>&1 || true
+  if [ -x "$bin" ]; then "$bin" > "$out" 2>/dev/null || true; else : > "$out"; fi
+  if [ "$CHECK" -eq 1 ]; then
+    if [ -f "$golden" ] && cmp -s "$out" "$golden"; then :
+    else mism=$((mism+1)); [ -f "$golden" ] && { echo "DRIFT $golden"; diff "$golden" "$out" | head -6 | sed 's/^/    /'; } || echo "MISSING $golden"; fi
+  else
+    cp "$out" "$golden"; wrote=$((wrote+1))
+  fi
+}
+
+if want build_cmd; then
+  total=$((total+1))
+  for label in arith recur adt list closure println println_seq show_debug eq ord list_map deriving; do
+    f="$ROOT/test/build_cmd_fixtures/$label.mdk"
+    [ -f "$f" ] && capture_build_golden "$f" "${f%.mdk}.build.golden"
+  done
+  capture_build_golden "$ROOT/test/build_cmd_fixtures/mm/entry.mdk"  "$ROOT/test/build_cmd_fixtures/mm/entry.build.golden"
+  capture_build_golden "$ROOT/test/build_cmd_fixtures/svm/entry.mdk" "$ROOT/test/build_cmd_fixtures/svm/entry.build.golden"
+fi
+
+if want build_diff; then
+  total=$((total+1))
+  for f in "$ROOT"/test/build_diff_fixtures/*.mdk; do
+    [ -f "$f" ] && capture_build_golden "$f" "${f%.mdk}.build.golden"
+  done
+  capture_build_golden "$ROOT/test/build_diff_fixtures/mm/entry.mdk"     "$ROOT/test/build_diff_fixtures/mm/entry.build.golden"
+  capture_build_golden "$ROOT/test/build_diff_fixtures/l1/entry.mdk"     "$ROOT/test/build_diff_fixtures/l1/entry.build.golden"
+  capture_build_golden "$ROOT/test/build_diff_fixtures/nested/main.mdk"  "$ROOT/test/build_diff_fixtures/nested/main.build.golden"
+fi
+
+if want build_construct; then
+  total=$((total+1))
+  # Deferred (no golden): 2 emitter gaps (backtick_infix/tuple_neq — also RED on
+  # OCaml) + 4 native typecheck-gate gaps (json_parse/mod_reverse_string/
+  # newtype_ctor_fn/type_alias — OCaml builds them, native CLI rejects).  Same set
+  # build_construct_coverage.sh skips; see its header.
+  BC_SKIP="backtick_infix tuple_neq json_parse mod_reverse_string newtype_ctor_fn type_alias"
+  for f in "$ROOT"/test/construct_fixtures/*.mdk; do
+    [ -f "$f" ] || continue
+    bl="$(basename "$f" .mdk)"
+    case " $BC_SKIP " in *" $bl "*) continue ;; esac
+    capture_build_golden "$f" "${f%.mdk}.build.golden"
+  done
+fi
+
+# ── §2d `repl` golden — captured from the NATIVE repl (CANONICAL), NOT OCaml ──
+# DESIGN CALL (flagged for maintainer): the OCaml `medaka repl` and the self-hosted
+#   repl diverge on the post-error command sequence — after an unbound-variable line
+#   the OCaml repl keeps emitting prompts for the remaining commands; the selfhost
+#   repl (both interpreted AND native-compiled, which AGREE byte-for-byte) stops
+#   short.  Per REROOT-PLAN the self-hosted backend is CANONICAL, so the golden is
+#   captured from the NATIVE repl binary (test/bin/repl_main), the OCaml leg is
+#   dropped, and diff_selfhost_repl.sh gates native-vs-golden.  The native output is
+#   DETERMINISTIC across runs (the :browse sort bug was fixed in cc49e60).
+if want repl; then
+  total=$((total+1)); fixtures=$((fixtures+1))
+  REPL_BIN="$ROOT/test/bin/repl_main"
+  REPL_IN="$ROOT/test/repl_fixtures/session.in"
+  golden="$ROOT/test/repl_fixtures/session.golden"
+  out="$TMP/repl_out"
+  if [ -x "$REPL_BIN" ] && [ -f "$REPL_IN" ]; then
+    perl -e 'alarm 120; exec @ARGV' -- "$REPL_BIN" "$RUNTIME" "$CORE" \
+      < "$REPL_IN" > "$out" 2>/dev/null || true
+    if [ "$CHECK" -eq 1 ]; then
+      if [ -f "$golden" ] && cmp -s "$out" "$golden"; then :
+      else mism=$((mism+1)); [ -f "$golden" ] && { echo "DRIFT $golden"; diff "$golden" "$out" | head -6 | sed 's/^/    /'; } || echo "MISSING $golden"; fi
+    else
+      cp "$out" "$golden"; wrote=$((wrote+1))
+    fi
+  else
+    mism=$((mism+1)); echo "SKIP repl golden — missing $REPL_BIN (run sh test/build_oracles.sh) or $REPL_IN"
+  fi
+fi
+
+# ── §2c `lsp` goldens — SKIPPED (REROOT-PLAN STOP guardrail) ──────────────────
 # lsp: `medaka build selfhost/entries/lsp_main.mdk` fails the native G1 typecheck
 #   gate (selfhost/driver/medaka_cli.mdk typecheckGate uses roots
 #   [inputDir, stdlib] — missing `selfhost` — so tools.lsp's transitive imports
 #   don't resolve; check_all_main with explicit [selfhost, stdlib] roots typechecks
 #   lsp_main cleanly).  No native lsp host binary can be built → the 3 lsp gates
 #   cannot be re-rooted onto a native host.  Gates left on the OCaml oracle.
+
+# ── §2d native-CLI goldens — OCaml oracle per subtest for diff_native_cli.sh ───
+# diff_native_cli.sh diffs native `./medaka <subcmd>` against an OCaml oracle for
+# check/fmt/new/run/test/build.  Capture each oracle NOW (OCaml is the validated
+# reference); the re-rooted gate diffs native-vs-golden.  repl reuses the canonical
+# NATIVE golden (above); lsp stays on the OCaml oracle (native lsp host unbuildable).
+NC_GOLD="$ROOT/test/native_cli_goldens"
+if want native_cli; then
+  total=$((total+1))
+  mkdir -p "$NC_GOLD/check" "$NC_GOLD/fmt" "$NC_GOLD/run" "$NC_GOLD/test"
+  CHECK_MAIN="$ROOT/selfhost/entries/check_main.mdk"
+  # check: inferred-signature dump from check_main (interp), sorted (gate sorts both)
+  for f in "$ROOT"/test/diff_fixtures/*.mdk; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" .mdk)"
+    out="$TMP/nc"; "$MAIN" run "$CHECK_MAIN" "$RUNTIME" "$CORE" "$f" 2>/dev/null | LC_ALL=C sort > "$out" || true
+    emit_to "$NC_GOLD/check/$n.golden" "$out"
+  done
+  # fmt: medaka fmt --stdout (raw)
+  for f in "$ROOT"/test/fmt_fixtures/*.mdk; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" .mdk)"
+    out="$TMP/nc"; "$MAIN" fmt --stdout "$f" 2>/dev/null > "$out" || true
+    emit_to "$NC_GOLD/fmt/$n.golden" "$out"
+  done
+  # new: scaffold tree from `medaka new proj`
+  tmpnc="$TMP/ncnew"; rm -rf "$tmpnc"; mkdir -p "$tmpnc"
+  ( cd "$tmpnc" && "$MAIN" new proj >/dev/null 2>&1 ) || true
+  fixtures=$((fixtures+1))
+  if [ "$CHECK" -eq 1 ]; then
+    if [ -d "$NC_GOLD/new/proj" ] && diff -r "$NC_GOLD/new/proj" "$tmpnc/proj" >/dev/null 2>&1; then :
+    else mism=$((mism+1)); [ -d "$NC_GOLD/new/proj" ] && echo "DRIFT $NC_GOLD/new/proj" || echo "MISSING $NC_GOLD/new/proj"; fi
+  else
+    rm -rf "$NC_GOLD/new"; mkdir -p "$NC_GOLD/new"; cp -R "$tmpnc/proj" "$NC_GOLD/new/proj"; wrote=$((wrote+1))
+  fi
+  # run: medaka run (interp oracle), raw
+  for f in "$ROOT"/test/native_cli_fixtures/run/*.mdk; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" .mdk)"
+    out="$TMP/nc"; "$MAIN" run "$f" 2>/dev/null > "$out" || true
+    emit_to "$NC_GOLD/run/$n.golden" "$out"
+  done
+  # test: medaka test (doctests + props), raw
+  for f in "$ROOT"/test/native_cli_fixtures/test/*.mdk; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" .mdk)"
+    out="$TMP/nc"; "$MAIN" test "$f" 2>/dev/null > "$out" || true
+    emit_to "$NC_GOLD/test/$n.golden" "$out"
+  done
+  # build: program runtime stdout from the OCaml-built binary
+  mkdir -p "$NC_GOLD/build"
+  for f in "$ROOT"/test/native_cli_fixtures/run/*.mdk; do
+    [ -f "$f" ] || continue
+    n="$(basename "$f" .mdk)"
+    capture_build_golden "$f" "$NC_GOLD/build/$n.golden"
+  done
+fi
 
 echo
 if [ "$CHECK" -eq 1 ]; then

@@ -1,0 +1,23 @@
+data Box a = Box a
+impl Eq (Box a) requires Eq a where
+  eq (Box x) (Box y) = x == y
+impl Ord (Box a) requires Ord a where
+  compare (Box x) (Box y) = compare x y
+main : <IO> Unit
+main =
+  putStrLn (debug ((1, 2) < (3, 4)))
+  putStrLn (debug ((1, 2) >= (3, 4)))
+  putStrLn (debug ((1, 5) > (1, 2)))
+  putStrLn (debug (lt (1, 2) (3, 4)))
+  putStrLn (debug (gte (1, 2) (3, 4)))
+  putStrLn (debug (([1, 2] : List Int) < [1, 3]))
+  putStrLn (debug (([1] : List Int) < [1, 2]))
+  putStrLn (debug (Box 1 < Box 2))
+  putStrLn (debug (Box 5 < Box 2))
+  putStrLn (debug (lt (Box 1) (Box 9)))
+  putStrLn (debug (max (1, 2) (3, 4)))
+  putStrLn (debug (min (3, 4) (1, 2)))
+  putStrLn (debug (maximum [(1, 2), (3, 1), (2, 9)]))
+  putStrLn (debug (minimum [(3, 1), (1, 2), (2, 9)]))
+  putStrLn (debug (1 < 2))
+  putStrLn (debug ("abc" < "abd"))

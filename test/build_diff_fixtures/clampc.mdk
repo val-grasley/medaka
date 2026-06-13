@@ -1,0 +1,8 @@
+clamp : Ord a => a -> a -> a -> a
+clamp lo hi = min hi >> max lo
+main : <IO> Unit
+main =
+  putStrLn (intToString (clamp 0 10 7))
+  putStrLn (intToString (clamp 0 10 (0 - 5)))
+  putStrLn (intToString (clamp 0 10 15))
+  putStrLn (clamp "c" "p" "z")

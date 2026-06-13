@@ -1,0 +1,8 @@
+import sib.{bang}
+import list.{range, head}
+export greet : String -> String
+greet name =
+  let n = match head (range 5 9)
+    Some x => x
+    None => 0
+  bang (stringConcat ["Hi ", name, " first=", intToString n])

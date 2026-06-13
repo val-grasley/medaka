@@ -1,0 +1,11 @@
+import map.{Map, fromList}
+main : <IO> Unit
+main =
+  let a = fromList [(1, "x"), (2, "y")] : Map Int String
+  let b = fromList [(2, "y"), (1, "x")] : Map Int String
+  let c = fromList [(1, "x")] : Map Int String
+  putStrLn (debug (a == b))
+  putStrLn (debug (a == c))
+  putStrLn (debug a)
+  putStrLn (display a)
+  putStrLn (debug (compare c a))
