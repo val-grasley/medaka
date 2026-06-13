@@ -45,7 +45,7 @@ let read_file filename =
    pins the repo root.  Mirrors the harness scripts' `ROOT=…/..` but robust to
    where the exe is invoked from. *)
 let find_repo_root () =
-  let marker = Filename.concat "selfhost" "llvm_emit_modules_main.mdk" in
+  let marker = Filename.concat "selfhost" (Filename.concat "entries" "llvm_emit_modules_main.mdk") in
   let exists_at dir = Sys.file_exists (Filename.concat dir marker) in
   let rec walk dir =
     if exists_at dir then Some dir
