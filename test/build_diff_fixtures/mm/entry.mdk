@@ -1,0 +1,3 @@
+import helper.{double}
+main : <IO> Unit
+main = putStrLn (intToString (double 21))

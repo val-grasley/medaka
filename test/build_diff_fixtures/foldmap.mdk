@@ -1,0 +1,5 @@
+main : <IO> Unit
+main =
+  putStrLn (debug (foldMap (x => [x, x]) [1, 2, 3]))
+  putStrLn (foldMap (x => x) ["a", "b", "c"])
+  putStrLn (debug (foldMap (x => [x]) (Some 42)))

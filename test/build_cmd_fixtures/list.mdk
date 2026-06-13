@@ -1,0 +1,7 @@
+data IntList = Nil | Cons Int IntList
+sumL : IntList -> Int
+sumL xs = match xs
+  Nil => 0
+  Cons h t => h + sumL t
+main : <IO> Unit
+main = putStrLn (intToString (sumL (Cons 1 (Cons 2 (Cons 3 (Cons 4 Nil))))))

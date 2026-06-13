@@ -1,0 +1,6 @@
+-- > triple 2
+-- 6
+triple : Int -> Int
+triple x = x * 3
+
+prop "triple is add-thrice" (x : Int) = triple x == x + x + x

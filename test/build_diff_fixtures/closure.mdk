@@ -1,0 +1,4 @@
+applyTwice : (Int -> Int) -> Int -> Int
+applyTwice f x = f (f x)
+main : <IO> Unit
+main = putStrLn (intToString (applyTwice (x => x + 10) 5))

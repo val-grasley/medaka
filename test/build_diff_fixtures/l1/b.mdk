@@ -1,0 +1,6 @@
+export
+f : Int -> Int
+f x = x + 1
+export
+viaB : Int -> Int
+viaB n = f n

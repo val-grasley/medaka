@@ -1,0 +1,4 @@
+double : Int -> Int
+double x = x * 2
+main : <IO> Unit
+main = putStrLn (debug (map double [1, 2, 3]))

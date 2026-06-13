@@ -1,0 +1,2 @@
+export bang : String -> String
+bang s = stringConcat [s, "!!"]

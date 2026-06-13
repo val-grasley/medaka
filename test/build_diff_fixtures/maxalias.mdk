@@ -1,0 +1,12 @@
+callMax : Ord a => a -> a -> a
+callMax = max
+callMin : Ord a => a -> a -> a
+callMin = min
+applyOp : Ord a => (a -> a -> a) -> a -> a -> a
+applyOp f x y = f x y
+main : <IO> Unit
+main =
+  putStrLn (intToString (callMax 3 7))
+  putStrLn (callMax "a" "z")
+  putStrLn (intToString (callMin 3 7))
+  putStrLn (intToString (applyOp max 4 9))

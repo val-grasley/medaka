@@ -1,0 +1,4 @@
+-- > double 3
+-- 6
+double : Int -> Int
+double x = x * 2

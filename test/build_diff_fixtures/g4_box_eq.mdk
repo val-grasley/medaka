@@ -1,0 +1,13 @@
+data Box a = Box a
+impl Eq (Box a) requires Eq a where
+  eq (Box x) (Box y) = x == y
+data Wrap a = Wrap a
+impl Eq (Wrap a) requires Eq a where
+  eq (Wrap x) (Wrap y) = x == y
+main : <IO> Unit
+main =
+  putStrLn (debug (eq (Box 1) (Box 1)))
+  putStrLn (debug (eq (Box [1, 2, 3]) (Box [1, 2, 3])))
+  putStrLn (debug (eq (Box (Box 1)) (Box (Box 1))))
+  putStrLn (debug (eq (Box (Wrap 1)) (Box (Wrap 1))))
+  putStrLn (debug (eq (Box [1, 2, 3]) (Box [1, 2, 4])))

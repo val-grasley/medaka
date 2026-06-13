@@ -1,0 +1,7 @@
+data Shape = Circle Int | Rect Int Int
+area : Shape -> Int
+area s = match s
+  Circle r => r * r * 3
+  Rect w h => w * h
+main : <IO> Unit
+main = putStrLn (intToString (area (Circle 4) + area (Rect 3 5)))

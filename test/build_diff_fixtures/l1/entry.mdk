@@ -1,0 +1,4 @@
+import a.{viaA}
+import b.{viaB}
+main : <IO> Unit
+main = putStrLn (intToString (viaA 10) ++ " " ++ intToString (viaB 10))
