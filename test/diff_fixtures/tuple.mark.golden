@@ -1,0 +1,4 @@
+(DFunDef false "swap" ((PTuple (PVar "a") (PVar "b"))) (ETuple (EVar "b") (EVar "a")))
+(DFunDef false "addPair" ((PTuple (PVar "a") (PVar "b"))) (EBinOp "+" (EVar "a") (EVar "b")))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoLet false false (PVar "t") (ETuple (ELit (LInt 3)) (ELit (LInt 7)))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "fst") (EVar "t")))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "snd") (EVar "t")))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "addPair") (EVar "t")))) (DoLet false false (PVar "u") (EApp (EVar "swap") (EVar "t"))) (DoExpr (EApp (EDictApp "println") (EApp (EVar "fst") (EVar "u"))))))

@@ -1,0 +1,4 @@
+(DFunDef false "sum" ((PVar "xs")) (EApp (EApp (EApp (EVar "fold") (ELam ((PVar "acc") (PVar "x")) (EBinOp "+" (EVar "acc") (EVar "x")))) (ELit (LInt 0))) (EVar "xs")))
+(DFunDef false "myLength" ((PVar "xs")) (EApp (EApp (EApp (EVar "fold") (ELam ((PVar "acc") PWild) (EBinOp "+" (EVar "acc") (ELit (LInt 1))))) (ELit (LInt 0))) (EVar "xs")))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoLet false false (PVar "xs") (EListLit (ELit (LInt 1)) (ELit (LInt 2)) (ELit (LInt 3)) (ELit (LInt 4)) (ELit (LInt 5)))) (DoExpr (EApp (EVar "println") (EApp (EVar "sum") (EVar "xs")))) (DoExpr (EApp (EVar "println") (EApp (EVar "myLength") (EVar "xs")))) (DoExpr (EApp (EVar "println") (EApp (EVar "sum") (EAnnot (EListLit) (TyApp (TyCon "List") (TyCon "Int")))))) (DoExpr (EApp (EVar "println") (EBinOp "++" (EListLit (ELit (LInt 1)) (ELit (LInt 2))) (EListLit (ELit (LInt 3)) (ELit (LInt 4))))))))

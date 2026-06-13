@@ -16,29 +16,23 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DIAG="$ROOT/_build/default/dev/diagdump.exe"
-MAIN="$ROOT/_build/default/bin/main.exe"
-SELFMAIN="$ROOT/selfhost/entries/resolve_main.mdk"
+RUN="$ROOT/test/bin/resolve_main"
 FIXDIR="$ROOT/test/resolve_fixtures"
 
-[ -x "$DIAG" ] || { echo "build first: dune build --root . (missing $DIAG)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
-have_self=0
-[ -f "$SELFMAIN" ] && have_self=1
-[ "$have_self" -eq 0 ] && echo "note: selfhost/entries/resolve_main.mdk not yet ported — checking reference vs goldens only."
+# Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c)
+# BEFORE sorting, so it can't reorder into the middle of the diagnostics.
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 pass=0; fail=0
 for f in "$FIXDIR"/*.mdk; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
   golden="$(cat "${f%.mdk}.expected")"
-  ref="$("$DIAG" --resolve "$f" 2>/dev/null)"
   ok=1
-  [ "$ref" = "$golden" ] || { ok=0; reason="reference drifted from golden"; }
-  if [ "$ok" -eq 1 ] && [ "$have_self" -eq 1 ]; then
-    self="$("$MAIN" run "$SELFMAIN" "$ROOT/stdlib/runtime.mdk" "$ROOT/stdlib/core.mdk" "$f" 2>/dev/null | LC_ALL=C sort)"
-    [ "$self" = "$golden" ] || { ok=0; reason="selfhost differs from reference"; }
-  fi
+  self="$("$RUN" "$ROOT/stdlib/runtime.mdk" "$ROOT/stdlib/core.mdk" "$f" 2>/dev/null | strip_unit | LC_ALL=C sort)"
+  [ "$self" = "$golden" ] || { ok=0; reason="selfhost differs from golden"; }
   if [ "$ok" -eq 1 ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else fail=$((fail+1)); printf 'FAIL %s (%s)\n' "$name" "$reason"; fi
 done

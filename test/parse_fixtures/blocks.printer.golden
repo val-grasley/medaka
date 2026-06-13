@@ -1,0 +1,8 @@
+greet name =
+  let msg = name
+  println msg
+  println name
+compute a b =
+  let s = a + b
+  let p = a * b
+  s + p

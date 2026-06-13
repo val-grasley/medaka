@@ -1,0 +1,8 @@
+(DData Private "Bool" () ((variant "True" (ConPos)) (variant "False" (ConPos))) ())
+(DData Private "Option" ("a") ((variant "Some" (ConPos (TyVar "a"))) (variant "None" (ConPos))) ())
+(DData Private "Shape" () ((variant "Circle" (ConPos (TyCon "Int"))) (variant "Rect" (ConPos (TyCon "Int") (TyCon "Int")))) ("Display"))
+(DData Public "Tree" ("a") ((variant "Leaf" (ConPos)) (variant "Node" (ConPos (TyApp (TyCon "Tree") (TyVar "a")) (TyVar "a") (TyApp (TyCon "Tree") (TyVar "a"))))) ())
+(DData Abstract "Color" () ((variant "Red" (ConPos)) (variant "Green" (ConPos)) (variant "Blue" (ConPos))) ())
+(DData Private "Shape2" () ((variant "Sphere" (ConPos (TyCon "Int"))) (variant "Box" (ConPos (TyCon "Int") (TyCon "Int") (TyCon "Int")))) ())
+(DRecord Private "Point" () ((field "x" (TyCon "Int")) (field "y" (TyCon "Int"))) ())
+(DData Private "Event" () ((variant "Click" (ConNamed (field "x" (TyCon "Int")) (field "y" (TyCon "Int")))) (variant "Scroll" (ConPos (TyCon "Int")))) ())

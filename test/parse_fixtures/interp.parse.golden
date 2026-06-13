@@ -1,0 +1,5 @@
+(DFunDef false "greet" ((PVar "name")) (EStringInterp (InterpStr "hello, ") (InterpExpr (EVar "name")) (InterpStr "")))
+(DFunDef false "report" ((PVar "n")) (EStringInterp (InterpStr "got ") (InterpExpr (EVar "n")) (InterpStr " items")))
+(DFunDef false "math" ((PVar "a") (PVar "b")) (EStringInterp (InterpStr "sum = ") (InterpExpr (EBinOp "+" (EVar "a") (EVar "b"))) (InterpStr "")))
+(DFunDef false "multi" ((PVar "x") (PVar "y")) (EStringInterp (InterpStr "x=") (InterpExpr (EVar "x")) (InterpStr " y=") (InterpExpr (EVar "y")) (InterpStr "!")))
+(DFunDef false "nested" ((PVar "f") (PVar "x")) (EStringInterp (InterpStr "result: ") (InterpExpr (EApp (EVar "f") (EVar "x"))) (InterpStr "")))

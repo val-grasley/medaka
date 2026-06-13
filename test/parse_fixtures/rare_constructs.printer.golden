@@ -1,0 +1,42 @@
+leftSection = (2 * _)
+cmpSection = (== 0)
+notFlag b = !b
+keys m = [k | (k, _) <- entries m]
+evens xs = [x | x <- xs, x % 2 == 0]
+triples = [(x, y, z) | x <- xs, let s = x + 1, y <- ys, x < y]
+classify = function
+  0 => "zero"
+  n if n < 0 => "neg"
+  n => "pos"
+tryParse x =
+  let y = (parse x) ?
+  y
+arrRange = [|1..5|]
+arrRangeIncl = [|0..=9|]
+sliceIt xs = xs.[1..3]
+sliceInclIt xs = xs.[1..=3]
+indexIt xs = xs.[0]
+grade n = match n
+  0..59 => "F"
+  60..=100 => "P"
+vowelKind c = match c
+  'a'..'z' => "lower"
+  _ => "other"
+counter =
+  let mut a = 0
+  a = a + 1
+  a
+setField r =
+  r.x = 1
+  r.pos.y = 2
+withFallback m =
+  let (Some v) = m else fallback
+  v
+doFunLet =
+  let twice = n => n + n
+  twice 21
+shape s = match s
+  Point { x = px, y = py } => px + py
+  Circle { radius } => radius
+  Box { w, ... } => w
+  Empty { ... } => 0

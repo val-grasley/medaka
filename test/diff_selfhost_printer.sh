@@ -20,12 +20,13 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-REF="$ROOT/_build/default/dev/print_probe.exe"
-PRINTMAIN="$ROOT/selfhost/entries/printer_main.mdk"
+RUN="$ROOT/test/bin/printer_main"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
-[ -x "$REF" ]  || { echo "build first: dune build --root . dev/print_probe.exe"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+
+# Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
+# Printer output ends in a newline, so the "()" is a sole final line here.
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 # Normalize float-literal text (OCaml %g vs selfhost floatToString) so a float
 # literal does not spuriously fail; no fixture exercises this today.
@@ -42,8 +43,10 @@ fail=0
 for f in $files; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
-  expected="$("$REF" "$f" 2>/dev/null | norm)"
-  actual="$("$MAIN" run "$PRINTMAIN" "$f" 2>/dev/null | norm)"
+  golden="${f%.mdk}.printer.golden"
+  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh printer)"; fail=$((fail+1)); continue; }
+  expected="$(norm < "$golden")"
+  actual="$("$RUN" "$f" 2>/dev/null | strip_unit | norm)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

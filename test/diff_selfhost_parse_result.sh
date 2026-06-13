@@ -37,21 +37,21 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-REF="$ROOT/_build/default/dev/astdump.exe"
-MAIN="$ROOT/_build/default/bin/main.exe"
-DRIVER="$ROOT/selfhost/entries/parse_result_main.mdk"
+RUN="$ROOT/test/bin/parse_result_main"
 FIXDIR="$ROOT/test/parse_error_fixtures"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
-[ -x "$REF"  ] || { echo "build first: dune build --root . (missing $REF)";  exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
-run_self() { perl -e 'alarm 120; exec @ARGV' "$MAIN" run "$DRIVER" "$1" 2>&1; }
+# run_self drops the native value entry's trailing "()" (Unit return;
+# runtime/medaka_rt.c) so the structured `parse error L:C` / `ok` line stands alone.
+run_self() { perl -e 'alarm 120; exec @ARGV' "$RUN" "$1" 2>&1 | sed '$ s/()$//; ${/^$/d;}'; }
 
-# Oracle "parse error L:C" (or empty if this fixture is a LEXER error, which the
-# self-hosted lexer panics on before parseResult ever runs — not in scope here).
+# OCaml-oracle L:C, frozen per fixture in <name>.parse_result_oracle by
+# test/capture_goldens.sh (REROOT-PLAN §2b).  Confirms the fixture is a genuine
+# located parse error; the self-host location is NOT required to match.
 oracle_lc() {
-  "$REF" "$1" 2>&1 \
-    | sed -n 's/.*Failure("parse error \([0-9]*:[0-9]*\)").*/\1/p' | head -1
+  golden="${1%.mdk}.parse_result_oracle"
+  [ -f "$golden" ] && cat "$golden"
 }
 
 # The four parser-error fixtures (lexer-error fixtures are excluded: the

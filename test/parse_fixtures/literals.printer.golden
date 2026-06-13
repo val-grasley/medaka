@@ -1,0 +1,9 @@
+i = 42
+s = "hello"
+u = ()
+pair = (1, 2)
+triple = (1, 2, 3)
+nums = [1, 2, 3]
+empty = []
+nested = [f x, g y, 7]
+ctor = None

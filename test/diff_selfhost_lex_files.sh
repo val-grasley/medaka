@@ -17,12 +17,12 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-REF="$ROOT/_build/default/dev/lextok.exe"
-LEXMAIN="$ROOT/selfhost/entries/lex_main.mdk"
+RUN="$ROOT/test/bin/lex_main"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
-[ -x "$REF" ]  || { echo "build first: dune build --root . dev/lextok.exe"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+
+# Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 norm() { sed 's/^FLOAT .*/FLOAT/'; }
 
@@ -40,8 +40,10 @@ fail=0
 for f in $files; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
-  expected="$("$REF" "$f" | norm)"
-  actual="$("$MAIN" run "$LEXMAIN" "$f" 2>/dev/null | norm)"
+  golden="${f%.mdk}.lextok.golden"
+  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh lextok)"; fail=$((fail+1)); continue; }
+  expected="$(norm < "$golden")"
+  actual="$("$RUN" "$f" 2>/dev/null | strip_unit | norm)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

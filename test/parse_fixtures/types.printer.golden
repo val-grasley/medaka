@@ -1,0 +1,6 @@
+inc : Int -> Int
+add : Int -> Int -> Int
+ids : List a
+pair : (Int, String)
+mapper : (a -> b) -> List a -> List b
+const : a -> b -> a

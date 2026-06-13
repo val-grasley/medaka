@@ -1,0 +1,7 @@
+sign n
+  | n < 0 = "neg"
+  | n > 0 = "pos"
+  | True = "zero"
+firstPos xs
+  | x <- head xs, x > 0 = x
+  | True = 0

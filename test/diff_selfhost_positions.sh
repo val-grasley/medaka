@@ -23,13 +23,13 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-REF="$ROOT/_build/default/dev/positions_dump.exe"
-POSMAIN="$ROOT/selfhost/entries/positions_main.mdk"
+RUN="$ROOT/test/bin/positions_main"
 FIXDIR="$ROOT/test/positions_fixtures"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
-[ -x "$REF" ]  || { echo "build first: dune build --root . dev/positions_dump.exe"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+
+# Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 if [ "$#" -gt 0 ]; then
   files="$*"
@@ -42,8 +42,10 @@ fail=0
 for f in $files; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
-  expected="$("$REF" "$f")"
-  actual="$("$MAIN" run "$POSMAIN" "$f" 2>/dev/null)"
+  golden="${f%.mdk}.positions.golden"
+  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh positions)"; fail=$((fail+1)); continue; }
+  expected="$(cat "$golden")"
+  actual="$("$RUN" "$f" 2>/dev/null | strip_unit)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

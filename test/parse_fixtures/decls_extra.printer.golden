@@ -1,0 +1,15 @@
+type Name = String
+type Wrapper a = Option a
+newtype UserId = UserId Int
+newtype Age = Age Int deriving (Eq, Ord)
+let rec isEven = n => if n == 0 then True else isOdd (n - 1)
+with isOdd = n => if n == 0 then False else isEven (n - 1)
+@inline
+double x = x + x
+@deprecated "use double"
+twice x = x + x
+@must_use
+important x = x
+scores = Map { "a" => 1, "b" => 2 }
+emptyish = Set { 1, 2, 3 }
+nested = Map { "k" => Set { 1, 2 } }

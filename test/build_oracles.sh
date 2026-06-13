@@ -54,12 +54,30 @@ CC="${CC:-clang}"
 #   llvm_emit_main        — diff_selfhost_llvm.sh        (emit → clang → run vs golden)
 #   llvm_emit_typed_main  — diff_selfhost_llvm_typed.sh
 #   llvm_emit_modules_main — diff_selfhost_llvm_modules.sh
+#   ── Phase 2 §2b front-end gates, goldens captured from dev probes ──
+#   lex_main              — diff_selfhost_lexer.sh / diff_selfhost_lex_files.sh
+#   parse_main            — diff_selfhost_parse.sh
+#   parse_result_main     — diff_selfhost_parse_result.sh
+#   desugar_main          — diff_selfhost_desugar.sh
+#   desugar_batch         — diff_selfhost_desugar_batch.sh
+#   mark_main             — diff_selfhost_mark.sh
+#   mark_batch            — diff_selfhost_mark_batch.sh
+#   resolve_main          — diff_selfhost_resolve.sh
+#   resolve_batch         — diff_selfhost_resolve_batch.sh
+#   resolve_modules_main  — diff_selfhost_resolve_modules.sh
+#   printer_main          — diff_selfhost_printer.sh
+#   positions_main        — diff_selfhost_positions.sh
+#   lex_comments_main     — diff_selfhost_comments.sh
 ENTRIES="eval_run_main eval_run_batch core_ir_run_main core_ir_dump_main \
 eval_main eval_prelude_main eval_prelude_batch eval_list_batch \
 eval_dict_main eval_dict_batch eval_typed_main eval_typed_batch \
 eval_typed_modules_main eval_modules_main \
 core_ir_main core_ir_prelude_main core_ir_typed_main core_ir_roundtrip_main core_ir_modules_main \
-llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main"
+llvm_emit_main llvm_emit_typed_main llvm_emit_modules_main \
+lex_main parse_main parse_result_main \
+desugar_main desugar_batch mark_main mark_batch \
+resolve_main resolve_batch resolve_modules_main \
+printer_main positions_main lex_comments_main"
 
 # ── Opt-in skip when clang/libgc absent (mirror the other native scripts) ──────
 command -v "$CC" >/dev/null 2>&1 || {

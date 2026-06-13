@@ -1,0 +1,7 @@
+1:0:-- header
+2:0:-- second header line
+3:13:-- trailing on f
+5:0:{- block before g\n   line two -}
+8:0:-- between
+9:8:{- inline -}
+9:27:-- end

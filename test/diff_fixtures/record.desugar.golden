@@ -1,0 +1,5 @@
+(DRecord Private "Point" () ((field "x" (TyCon "Int")) (field "y" (TyCon "Int"))) ())
+(DFunDef false "distSq" ((PVar "p")) (EBinOp "+" (EBinOp "*" (EFieldAccess (EVar "p") "x") (EFieldAccess (EVar "p") "x")) (EBinOp "*" (EFieldAccess (EVar "p") "y") (EFieldAccess (EVar "p") "y"))))
+(DFunDef false "moveRight" ((PVar "p")) (ERecordUpdate (EVar "p") ((fa "x" (EBinOp "+" (EFieldAccess (EVar "p") "x") (ELit (LInt 1)))))))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoLet false false (PVar "p") (ERecordCreate "Point" ((fa "x" (ELit (LInt 3))) (fa "y" (ELit (LInt 4)))))) (DoExpr (EApp (EVar "println") (EApp (EVar "distSq") (EVar "p")))) (DoLet false false (PVar "q") (EApp (EVar "moveRight") (EVar "p"))) (DoExpr (EApp (EVar "println") (EFieldAccess (EVar "q") "x"))) (DoExpr (EApp (EVar "println") (EApp (EVar "distSq") (EVar "q"))))))

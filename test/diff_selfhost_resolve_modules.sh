@@ -25,20 +25,17 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DIAG="$ROOT/_build/default/dev/diagdump.exe"
-MAIN="$ROOT/_build/default/bin/main.exe"
-SELFMAIN="$ROOT/selfhost/entries/resolve_modules_main.mdk"
+RUN="$ROOT/test/bin/resolve_modules_main"
 FIXDIR="$ROOT/test/resolve_module_fixtures"
 RUNTIME="$ROOT/stdlib/runtime.mdk"
 CORE="$ROOT/stdlib/core.mdk"
 SHDIR="$ROOT/selfhost"
 
-[ -x "$DIAG" ] || { echo "build first: dune build --root . (missing $DIAG)"; exit 2; }
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
-have_self=0
-[ -f "$SELFMAIN" ] && have_self=1
-[ "$have_self" -eq 0 ] && echo "note: selfhost/entries/resolve_modules_main.mdk not present — checking reference vs goldens only."
+# Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c)
+# before sorting / emptiness-checking the diagnostic set.
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 pass=0; fail=0
 
@@ -51,13 +48,9 @@ for d in "$FIXDIR"/*/; do
   files=""
   for m in $order; do files="$files $d$m"; done
   golden="$(cat "$d/expected")"
-  ref="$("$DIAG" --resolve-modules $files 2>/dev/null | LC_ALL=C sort)"
   ok=1
-  [ "$ref" = "$golden" ] || { ok=0; reason="reference drifted from golden"; }
-  if [ "$ok" -eq 1 ] && [ "$have_self" -eq 1 ]; then
-    self="$("$MAIN" run "$SELFMAIN" "$RUNTIME" "$CORE" $files 2>/dev/null | LC_ALL=C sort)"
-    [ "$self" = "$golden" ] || { ok=0; reason="selfhost differs from reference"; }
-  fi
+  self="$("$RUN" "$RUNTIME" "$CORE" $files 2>/dev/null | strip_unit | LC_ALL=C sort)"
+  [ "$self" = "$golden" ] || { ok=0; reason="selfhost differs from golden"; }
   if [ "$ok" -eq 1 ]; then pass=$((pass+1)); printf 'ok   %s\n' "$name"
   else fail=$((fail+1)); printf 'FAIL %s (%s)\n' "$name" "$reason"; fi
 done
@@ -71,14 +64,12 @@ cfiles=""
 for m in $CORPUS; do
   [ -f "$SHDIR/$m.mdk" ] && cfiles="$cfiles $SHDIR/$m.mdk"
 done
-cref="$("$DIAG" --resolve-modules $cfiles 2>/dev/null | LC_ALL=C sort)"
+# A valid program ⇒ zero resolve diagnostics: the frozen golden here is the
+# EMPTY error set (captured while OCaml was trusted; REROOT-PLAN §2b).  The
+# native resolve_modules over the corpus must produce no output.
+cself="$("$RUN" "$RUNTIME" "$CORE" $cfiles 2>/dev/null | strip_unit | LC_ALL=C sort)"
 ok=1; reason=""
-[ -z "$cref" ] || { ok=0; reason="reference reports errors on the valid corpus"; }
-if [ "$ok" -eq 1 ] && [ "$have_self" -eq 1 ]; then
-  cself="$("$MAIN" run "$SELFMAIN" "$RUNTIME" "$CORE" $cfiles 2>/dev/null | LC_ALL=C sort)"
-  if [ -n "$cself" ]; then ok=0; reason="selfhost reports errors on the valid corpus"
-  elif [ "$cself" != "$cref" ]; then ok=0; reason="selfhost/reference disagree on corpus"; fi
-fi
+[ -z "$cself" ] || { ok=0; reason="selfhost reports errors on the valid corpus"; }
 if [ "$ok" -eq 1 ]; then pass=$((pass+1)); printf 'ok   corpus (no false positives)\n'
 else fail=$((fail+1)); printf 'FAIL corpus (%s)\n' "$reason"; fi
 

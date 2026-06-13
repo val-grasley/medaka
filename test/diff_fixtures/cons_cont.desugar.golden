@@ -1,0 +1,2 @@
+(DFunDef false "wrap" ((PVar "x") (PVar "y")) (EBinOp "::" (EVar "x") (EVar "y")))
+(DFunDef false "main" () (EApp (EVar "println") (EApp (EApp (EVar "wrap") (ELit (LInt 1))) (EListLit (ELit (LInt 2)) (ELit (LInt 3))))))

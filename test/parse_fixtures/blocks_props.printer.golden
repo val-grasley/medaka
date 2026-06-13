@@ -1,0 +1,17 @@
+expectEqual expected actual =
+  if eq expected actual then
+    Pass
+  else
+    Fail "mismatch"
+goTests t = match runExpectation t
+  Pass =>
+    println "ok"
+    done 1
+  Fail msg =>
+    println msg
+    done 0
+prop "reverse is involutive" (xs : List Int) = eq (reverse (reverse xs)) xs
+prop "span recovers" (xs : List Int) (n : Int) =
+  let (a, b) = span p xs
+  eq (a ++ b) xs
+test "two plus two" = expectEqual 4 (2 + 2)

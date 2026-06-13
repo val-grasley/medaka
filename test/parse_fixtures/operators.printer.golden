@@ -1,0 +1,8 @@
+gt x y = x > y
+both a b = a && b
+either a b = a || b
+eq3 a b c = a == b && b == c
+cons x xs = x :: xs
+catAll a b c = a ++ b ++ c
+classify n = if n < 0 then "neg" else "nonneg"
+wrap x y = x :: y

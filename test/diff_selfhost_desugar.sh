@@ -15,18 +15,12 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-REF="$ROOT/_build/default/dev/astdump.exe"
-DESUGARMAIN="$ROOT/selfhost/entries/desugar_main.mdk"
+RUN="$ROOT/test/bin/desugar_main"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
-[ -x "$REF" ]  || { echo "build first: dune build --root . dev/astdump.exe"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
-if [ ! -f "$DESUGARMAIN" ]; then
-  echo "pending: selfhost/entries/desugar_main.mdk not yet ported — reference side ready."
-  echo "         (run: $REF --desugar <file>  to see the target dump)"
-  exit 0
-fi
+# Drop the native value entry's trailing "()" (Unit return; runtime/medaka_rt.c).
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
 
@@ -41,8 +35,10 @@ fail=0
 for f in $files; do
   [ -f "$f" ] || continue
   name="$(basename "$f")"
-  expected="$("$REF" --desugar "$f" 2>/dev/null | norm)"
-  actual="$("$MAIN" run "$DESUGARMAIN" "$f" 2>/dev/null | norm)"
+  golden="${f%.mdk}.desugar.golden"
+  [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh desugar)"; fail=$((fail+1)); continue; }
+  expected="$(norm < "$golden")"
+  actual="$("$RUN" "$f" 2>/dev/null | strip_unit | norm)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$name"

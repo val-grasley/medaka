@@ -1,0 +1,4 @@
+(DFunDef false "greet" ((PVar "name")) (EBinOp "++" (EBinOp "++" (ELit (LString "Hello, ")) (EVar "name")) (ELit (LString "!"))))
+(DFunDef false "repeat" ((PVar "n") (PVar "s")) (EMatch (EVar "n") (arm (PLit (LInt 0)) () (ELit (LString ""))) (arm (PVar "n") () (EBinOp "++" (EVar "s") (EApp (EApp (EVar "repeat") (EBinOp "-" (EVar "n") (ELit (LInt 1)))) (EVar "s"))))))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoExpr (EApp (EDictApp "println") (EApp (EVar "greet") (ELit (LString "Medaka"))))) (DoExpr (EApp (EDictApp "println") (EApp (EApp (EVar "repeat") (ELit (LInt 3))) (ELit (LString "ab"))))) (DoLet false false (PVar "x") (ELit (LInt 42))) (DoExpr (EApp (EDictApp "println") (EBinOp "++" (EBinOp "++" (ELit (LString "value: ")) (EApp (EMethodRef "display") (EVar "x"))) (ELit (LString "")))))))

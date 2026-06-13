@@ -1,0 +1,7 @@
+main : <IO> Unit
+greet : String -> <IO> Unit
+readAll : <IO> String
+runState : <e> a
+combine : <IO, Mut> Unit
+withTail : <IO | e> a
+pureFn : Int -> Int

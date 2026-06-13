@@ -14,11 +14,15 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
+RUN="$ROOT/test/bin/lex_main"
 FIXDIR="$ROOT/test/diff_fixtures"
-LEXMAIN="$ROOT/selfhost/entries/lex_main.mdk"
 
-[ -x "$MAIN" ] || { echo "build first: dune build --root . (missing $MAIN)"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
+
+# The native value entry auto-prints main's Unit return as a trailing "()"
+# (runtime/medaka_rt.c) — appended to the final dump line (no newline) or as a
+# sole "()" line.  The OCaml-captured golden has none; drop it.
+strip_unit() { sed '$ s/()$//; ${/^$/d;}'; }
 
 # Extract the lines between '=== TOKENS ===' and the next '=== ' header.
 golden_tokens() {
@@ -28,7 +32,7 @@ golden_tokens() {
 # Positive control: an empty source must lex to exactly "NEWLINE\nEOF". This
 # proves the comparison reports `ok` correctly, independent of the fixture loop.
 empty_src="$(mktemp)"; : > "$empty_src"
-ctrl_actual="$("$MAIN" run "$LEXMAIN" "$empty_src" 2>/dev/null)"
+ctrl_actual="$("$RUN" "$empty_src" 2>/dev/null | strip_unit)"
 rm -f "$empty_src"
 ctrl_expected="$(printf 'NEWLINE\nEOF')"
 if [ "$ctrl_actual" = "$ctrl_expected" ]; then
@@ -46,7 +50,7 @@ for mdk in "$FIXDIR"/*.mdk; do
   golden="${mdk%.mdk}.golden"
   [ -f "$golden" ] || continue
   expected="$(golden_tokens "$golden")"
-  actual="$("$MAIN" run "$LEXMAIN" "$mdk" 2>/dev/null)"
+  actual="$("$RUN" "$mdk" 2>/dev/null | strip_unit)"
   if [ "$expected" = "$actual" ]; then
     pass=$((pass + 1))
     printf 'ok   %s\n' "$base"

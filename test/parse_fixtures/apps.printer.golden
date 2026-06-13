@@ -1,0 +1,4 @@
+a = f x y
+b = twice g z
+c = f (g x) (h y)
+compose f g x = f (g x)

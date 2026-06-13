@@ -36,6 +36,12 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROBE="$ROOT/_build/default/dev/eval_probe.exe"
 MAIN="$ROOT/_build/default/bin/main.exe"
 CORE="$ROOT/stdlib/core.mdk"; LIST="$ROOT/stdlib/list.mdk"; RUNTIME="$ROOT/stdlib/runtime.mdk"
+# §2b front-end dev probes (location-free dumps, the OCaml leg of the front-end gates).
+ASTDUMP="$ROOT/_build/default/dev/astdump.exe"
+LEXTOK="$ROOT/_build/default/dev/lextok.exe"
+PRINTPROBE="$ROOT/_build/default/dev/print_probe.exe"
+POSDUMP="$ROOT/_build/default/dev/positions_dump.exe"
+CMTDUMP="$ROOT/_build/default/dev/comment_dump.exe"
 
 CHECK=0
 FILTER=""
@@ -57,6 +63,22 @@ oracle_eval()         { "$PROBE" "$1"; }                               # eval / 
 oracle_eval_prelude() { "$PROBE" --prelude "$1"; }                     # eval_prelude / core_ir_prelude
 oracle_eval_list()    { "$PROBE" --prepend "$CORE" "$LIST" "$1"; }     # eval_list / core_ir_list
 oracle_run_file()     { "$MAIN" run "$1"; }                            # eval_dict / eval_typed / core_ir_typed
+# ── §2b front-end oracles (raw dumps; the gate applies the same `norm` to both
+#    the golden and the native output, so capture RAW here). ──
+oracle_lextok()          { "$LEXTOK" "$1"; }                           # lex_files corpus token stream
+oracle_astdump()         { "$ASTDUMP" "$1"; }                          # parse AST S-expr
+oracle_astdump_desugar() { "$ASTDUMP" --desugar "$1"; }               # desugar / desugar_batch
+oracle_astdump_mark()    { "$ASTDUMP" --mark "$1"; }                  # mark / mark_batch
+oracle_print_probe()     { "$PRINTPROBE" "$1"; }                       # printer reprint
+oracle_positions_dump()  { "$POSDUMP" "$1"; }                          # parser position channel
+oracle_comment_dump()    { "$CMTDUMP" "$1"; }                          # lexer comment channel
+# parse_result : the OCaml oracle only confirms the fixture is a genuine parse
+# error and yields its L:C (the self-host leg's location is NOT required to match;
+# line agreement is reported, not enforced).  Capture just that L:C string.
+oracle_parse_result_lc() {
+  "$ASTDUMP" "$1" 2>&1 \
+    | sed -n 's/.*Failure("parse error \([0-9]*:[0-9]*\)").*/\1/p' | head -1
+}
 
 # rows: "<glob>::<oracle-tag>::<golden-suffix>"
 ROWS="
@@ -66,6 +88,9 @@ $ROOT/test/eval_prelude_fixtures/*.mdk::eval_prelude::eval.golden
 $ROOT/test/eval_list_fixtures/*.mdk::eval_list::eval.golden
 $ROOT/test/eval_dict_fixtures/*.mdk::run_file::eval.golden
 $ROOT/test/eval_typed_fixtures/*.mdk::run_file::eval.golden
+$ROOT/test/parse_fixtures/*.mdk::print_probe::printer.golden
+$ROOT/test/positions_fixtures/*.mdk::positions_dump::positions.golden
+$ROOT/test/comment_fixtures/*.mdk::comment_dump::comments.golden
 "
 
 total=0 wrote=0 mism=0 fixtures=0
@@ -169,6 +194,64 @@ if want llvm_modules; then
     emit_golden "${dir%/}/entry.eval.golden" \
       "$MAIN" run "$ROOT/selfhost/entries/eval_typed_modules_main.mdk" \
       "$RUNTIME" "$EMPTY_CORE" "$entry" "${dir%/}"
+  done
+fi
+
+# ── §2b multi-glob corpus gates (parse / desugar / mark / lex_files) ──────────
+# These read a multi-directory corpus that the line-split ROWS loop can't express
+# (one row = one glob token), so capture them here with explicit globs.  The gate
+# applies its own `norm` (float-text) to BOTH golden and native output, so we
+# capture the RAW oracle dump.
+
+# parse : astdump AST S-expr over parse_fixtures + parse_only_fixtures.
+if want parse; then
+  total=$((total+1))
+  for f in "$ROOT"/test/parse_fixtures/*.mdk "$ROOT"/test/parse_only_fixtures/*.mdk; do
+    [ -f "$f" ] || continue
+    emit_golden "${f%.mdk}.parse.golden" oracle_astdump "$f"
+  done
+fi
+
+# desugar + mark : the SAME stdlib + diff + parse + selfhost corpus; the batch and
+# non-batch variants share these goldens.  diagdump --desugar / --mark dumps.
+DM_CORPUS="$ROOT/stdlib/*.mdk $ROOT/test/diff_fixtures/*.mdk $ROOT/test/parse_fixtures/*.mdk $ROOT/selfhost/*.mdk"
+if want desugar; then
+  total=$((total+1))
+  for f in $DM_CORPUS; do
+    [ -f "$f" ] || continue
+    emit_golden "${f%.mdk}.desugar.golden" oracle_astdump_desugar "$f"
+  done
+fi
+if want mark; then
+  total=$((total+1))
+  for f in $DM_CORPUS; do
+    [ -f "$f" ] || continue
+    emit_golden "${f%.mdk}.mark.golden" oracle_astdump_mark "$f"
+  done
+fi
+
+# parse_result : capture the OCaml oracle's `L:C` per parser-error fixture (the
+# self-host parseResult leg is validated live for no-panic + structured output;
+# only the oracle's located-error confirmation is frozen here).
+if want parse_result; then
+  total=$((total+1))
+  for name in bad_second_decl dangling_plus leading_rparen question_leftover; do
+    f="$ROOT/test/parse_error_fixtures/$name.mdk"
+    [ -f "$f" ] || continue
+    emit_golden "${f%.mdk}.parse_result_oracle" oracle_parse_result_lc "$f"
+  done
+fi
+
+# lex_files : lextok token stream over the lexer source + the importable stdlib.
+if want lextok; then
+  total=$((total+1))
+  LF_FILES="$ROOT/selfhost/frontend/lexer.mdk"
+  for m in core list array string map set io hash_map hash_set mut_array json test; do
+    LF_FILES="$LF_FILES $ROOT/stdlib/$m.mdk"
+  done
+  for f in $LF_FILES; do
+    [ -f "$f" ] || continue
+    emit_golden "${f%.mdk}.lextok.golden" oracle_lextok "$f"
   done
 fi
 

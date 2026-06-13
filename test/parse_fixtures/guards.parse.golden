@@ -1,0 +1,2 @@
+(DFunDef false "sign" ((PVar "n")) (EGuards (garm ((GBool (EBinOp "<" (EVar "n") (ELit (LInt 0))))) (ELit (LString "neg"))) (garm ((GBool (EBinOp ">" (EVar "n") (ELit (LInt 0))))) (ELit (LString "pos"))) (garm ((GBool (EVar "True"))) (ELit (LString "zero")))))
+(DFunDef false "firstPos" ((PVar "xs")) (EGuards (garm ((GBind (PVar "x") (EApp (EVar "head") (EVar "xs"))) (GBool (EBinOp ">" (EVar "x") (ELit (LInt 0))))) (EVar "x")) (garm ((GBool (EVar "True"))) (ELit (LInt 0)))))

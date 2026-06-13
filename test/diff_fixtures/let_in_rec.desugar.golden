@@ -1,0 +1,4 @@
+(DTypeSig false "countdown" (TyFun (TyCon "Int") (TyCon "Int")))
+(DFunDef false "countdown" ((PVar "start")) (ELet false (PVar "go") (ELam ((PVar "n")) (EIf (EBinOp "==" (EVar "n") (ELit (LInt 0))) (ELit (LInt 0)) (EApp (EVar "go") (EBinOp "-" (EVar "n") (ELit (LInt 1)))))) (EApp (EVar "go") (EVar "start"))))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoExpr (EApp (EVar "println") (EApp (EVar "countdown") (ELit (LInt 5))))) (DoExpr (EApp (EVar "println") (EApp (EVar "countdown") (ELit (LInt 0)))))))

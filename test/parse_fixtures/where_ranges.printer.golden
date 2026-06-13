@@ -1,0 +1,13 @@
+range : Int -> Int -> List Int
+range lo hi = [lo..hi]
+upto n = [0..=n]
+arr = [|1, 2, 3|]
+empties = [||]
+reverse xs = go xs []
+  where
+    go [] acc = acc
+    go (y::ys) acc = go ys (y :: acc)
+permute xs = flatMap (h, rest => map (p => h :: p) rest) (selections xs)
+drop n (xs@(_::rest))
+  | n <= 0 = xs
+  | otherwise = drop (n - 1) rest

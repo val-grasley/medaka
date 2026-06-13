@@ -4,12 +4,9 @@
 # splits the delimited output per file, and compares each against astdump --mark.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-REF="$ROOT/_build/default/dev/astdump.exe"
-BATCH="$ROOT/selfhost/entries/mark_batch.mdk"
+RUN="$ROOT/test/bin/mark_batch"
 CORE="$ROOT/stdlib/core.mdk"
-[ -x "$MAIN" ] || { echo "build first: dune build --root ."; exit 2; }
-[ -x "$REF" ]  || { echo "build first: dune build --root . dev/astdump.exe"; exit 2; }
+[ -x "$RUN" ] || { echo "build oracles first: sh test/build_oracles.sh (missing $RUN)"; exit 2; }
 
 norm() { sed 's/(LFloat [^)]*)/(LFloat)/g'; }
 
@@ -23,7 +20,7 @@ fi
 list=""
 for f in $files; do [ -f "$f" ] && list="$list $f"; done
 
-ALL="$("$MAIN" run "$BATCH" "$CORE" $list 2>/dev/null)"
+ALL="$("$RUN" "$CORE" $list 2>/dev/null | sed '$ s/()$//; ${/^$/d;}')"  # strip native Unit "()" tail
 
 # Split the combined output into one file per section in a SINGLE awk pass
 # (keyed by a path->filename transform both sides compute), instead of
@@ -40,7 +37,8 @@ printf '%s' "$ALL" | awk -v dir="$SECDIR" '
 pass=0; fail=0
 for f in $list; do
   name="$(basename "$f")"
-  expected="$("$REF" --mark "$f" 2>/dev/null | norm)"
+  golden="${f%.mdk}.mark.golden"
+  if [ -f "$golden" ]; then expected="$(norm < "$golden")"; else expected=""; fi
   key="$(printf '%s' "$f" | tr '/.' '__')"
   if [ -f "$SECDIR/$key" ]; then actual="$(norm < "$SECDIR/$key")"; else actual=""; fi
   if [ "$expected" = "$actual" ]; then pass=$((pass + 1)); printf 'ok   %s\n' "$name"
