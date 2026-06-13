@@ -13,8 +13,8 @@
 import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
-import types.typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames}
-import eval.eval.{evalOutput, funNamesOf, dropShadowedExp}
+import types.typecheck.{elaborateOne}
+import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
   (runtimePath :: rest) => withRuntime runtimePath rest
@@ -47,12 +47,10 @@ runDict : List Decl -> List Decl -> List Decl -> <Mut> String
 runDict runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = dropShadowedExp userNames preludeDecls
-  let combined = livePrelude ++ userDecls
-  -- The user's own constrained sigs (already covered by the slice) PLUS the
-  -- prelude's constrained fns that use a return-position method (when/unless →
-  -- pure) — the latter can't be resolved by arg-tag at a constraint var's type.
-  let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames userDecls
-  evalOutput (elaborateDict runtimeDecls dictNames userNames combined)
+  -- DRIVER-COLLAPSE Phase 5: route through the 1-module case of the multi-module
+  -- path (elaborateOne owns the dict-set + per-module eval).  Byte-identical to the
+  -- old flat elaborateDict→evalOutput by diff_flat_vs_onemodule.sh.
+  evalOneOutput [] ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []

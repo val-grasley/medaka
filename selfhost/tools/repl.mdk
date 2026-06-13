@@ -30,7 +30,7 @@ import frontend.lexer.{Token(..), tokenize}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import frontend.resolve.{resolveProgram, ppResError}
-import types.typecheck.{checkProgramDiags, checkProgram, ppScheme, Scheme(..)}
+import types.typecheck.{checkProgramDiags, checkProgramSchemes, ppScheme, Scheme(..)}
 import eval.eval.{Value(..), evalOneRootEnv, ppValue, lookupBinding, force}
 
 -- ── Session state ─────────────────────────────────────────────────────────
@@ -58,7 +58,7 @@ initSession : List Decl -> List Decl -> <Mut> Unit
 initSession runtimeDecls preludeDecls =
   let _ = set_ref runtimeDeclsRef runtimeDecls
   let _ = set_ref preludeDeclsRef preludeDecls
-  let prelSchemes = checkProgram preludeDecls
+  let prelSchemes = checkProgramSchemes preludeDecls
   let prelNames = map fst prelSchemes
   let _ = set_ref preludeNamesRef prelNames
   let _ = set_ref knownNamesRef prelNames
@@ -218,7 +218,7 @@ runPipeline combined =
       match tcErrs
         (e :: _) => (map fst tcErrs, [], [])
         [] =>
-          let allSchemes = checkProgram (preludeDecls ++ combined)
+          let allSchemes = checkProgramSchemes (preludeDecls ++ combined)
           -- DRIVER-COLLAPSE Phase 3/4: eval via the 1-module wrapper (evalOneRootEnv
           -- = evalModulesRootEnv over [("__repl__", combined)]) instead of the flat
           -- evalProgram (preludeDecls ++ combined).  The prelude is installed

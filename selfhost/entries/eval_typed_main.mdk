@@ -11,8 +11,8 @@
 import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
-import types.typecheck.{elaborate}
-import eval.eval.{evalOutput, funNamesOf, dropShadowedExp}
+import types.typecheck.{elaborateOne}
+import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
   (runtimePath :: rest) => withRuntime runtimePath rest
@@ -43,8 +43,8 @@ withTarget rsrc preludeDecls targetPath = match readFile targetPath
 
 runTyped : List Decl -> List Decl -> List Decl -> <Mut> String
 runTyped runtimeDecls preludeDecls userDecls =
-  let combined = dropShadowedExp (funNamesOf userDecls) preludeDecls ++ userDecls
-  evalOutput (elaborate runtimeDecls combined)
+  let livePrelude = dropShadowedExp (funNamesOf userDecls) preludeDecls
+  evalOneOutput [] ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []

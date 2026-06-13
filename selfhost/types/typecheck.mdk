@@ -2839,9 +2839,10 @@ unifyClauses env v ((pats, body) :: rest) =
 -- Rewrite each return-position method occurrence to EMethodAt (with a fresh route
 -- ref), type-check (recording the sites), then stamp each site's route from its
 -- now-resolved result type.  Returns the SAME tree (refs filled) for eval.
-export
-elaborate : List Decl -> List Decl -> <Mut> List Decl
-elaborate runtimeDecls prog = elaborateDict runtimeDecls [] [] prog
+-- DRIVER-COLLAPSE Phase 5: the flat `elaborate` wrapper is DELETED; callers use
+-- the 1-module `elaborateOne` (the typed/dict tree of the degenerate 1-module
+-- multi path).  `elaborateDict` itself is RETAINED — the EMIT path
+-- (core_ir_dict_pp_main / llvm_emit_*_main, argStamp mode) still uses it.
 
 -- ── Phase 0 (DRIVER-COLLAPSE): 1-module wrapper over the multi-module path ──
 -- elaborateOne runs the SINGLE flat program [prog] (the user's decls, the live
@@ -4459,9 +4460,16 @@ headTyconMono t = match normalize t
 tupleHeadTagTc : Int -> String
 tupleHeadTagTc n = "__tuple" ++ intToString n ++ "__"
 
+-- DRIVER-COLLAPSE Phase 5: scheme extraction for repl/lsp `:type`/hover + the
+-- `=== TYPES ===` golden (checkToLines), the surviving replacement for the
+-- deleted flat `checkProgram`.  implInferEnabled OFF + the seeded path, which
+-- keeps the checkLetRecDecls / LetRecNonFunction guard checkModuleFull skips.
+-- Callers pass the 1-module decl list (preludeDecls ++ user buffer) and read
+-- schemes by name; no eval, so this is the typecheck-only sibling of the
+-- 1-module path.
 export
-checkProgram : List Decl -> <Mut> List (String, Scheme)
-checkProgram prog =
+checkProgramSchemes : List Decl -> <Mut> List (String, Scheme)
+checkProgramSchemes prog =
   let _ = set_ref implInferEnabled False
   checkProgramSeeded [] prog
 
@@ -5692,7 +5700,7 @@ typeErrorLines (e :: rest) = ("TYPE ERROR: " ++ e) :: typeErrorLines rest
 export
 checkToLines : List Decl -> <Mut> String
 checkToLines prog =
-  let schemes = checkProgram prog
+  let schemes = checkProgramSchemes prog
   -- coherence over the WHOLE prog: this path (typecheck_main single-arg) is
   -- prelude-free, so every impl is a user impl (mirrors check_program_no_prelude).
   let _ = checkCoherence prog

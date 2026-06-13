@@ -18,7 +18,7 @@
 import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
-import types.typecheck.{elaborate}
+import types.typecheck.{elaborateOne}
 import eval.eval.{funNamesOf, dropShadowedExp}
 import ir.core_ir_lower.{lowerProgram}
 import ir.core_ir_eval.{cevalOutput}
@@ -52,8 +52,8 @@ withTarget rsrc preludeDecls targetPath = match readFile targetPath
 
 runTyped : List Decl -> List Decl -> List Decl -> <Mut> String
 runTyped runtimeDecls preludeDecls userDecls =
-  let combined = dropShadowedExp (funNamesOf userDecls) preludeDecls ++ userDecls
-  cevalOutput (lowerProgram (elaborate runtimeDecls combined))
+  let livePrelude = dropShadowedExp (funNamesOf userDecls) preludeDecls
+  cevalOutput (lowerProgram (elaborateOne runtimeDecls livePrelude ("__user__", userDecls)))
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []

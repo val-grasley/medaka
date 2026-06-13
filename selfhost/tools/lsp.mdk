@@ -26,7 +26,7 @@ import frontend.parser.{ParseError, parseResult, parseErrorLine, parseErrorCol,
                parseErrorMessage, parseWithPositions,
                positionsDecls, DeclPos, declPosLine, declPosEndLine}
 import frontend.desugar.{desugar}
-import types.typecheck.{checkProgram, ppScheme, Scheme(..)}
+import types.typecheck.{checkProgramSchemes, ppScheme, Scheme(..)}
 import tools.fmt.{formatSource}
 import frontend.ast.{Decl, DTypeSig, DExtern, DFunDef, DData, DRecord, DUse, DEffect,
             DProp, DTest, DBench, DInterface, DImpl, DTypeAlias, DNewtype,
@@ -411,7 +411,7 @@ docSchemes coreSrc src = match parseResult src
   Ok userRaw =>
     let coreDecls = desugar (unwrapDecls (parseResult coreSrc))
     let userDecls = desugar userRaw
-    Some (checkProgram (coreDecls ++ userDecls))
+    Some (checkProgramSchemes (coreDecls ++ userDecls))
 
 -- core.mdk always parses; unwrap its parseResult (defensive None → []).
 unwrapDecls : Result ParseError (List Decl) -> List Decl

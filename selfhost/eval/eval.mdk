@@ -1427,27 +1427,10 @@ defaultName : IfaceMethod -> List String
 defaultName (IfaceMethod n _ (Some _)) = [n]
 defaultName (IfaceMethod _ _ None) = []
 
-export
-evalProgram : List Decl -> <Mut> List (String, Value)
-evalProgram prog =
-  let _ = set_ref ctorToTypeRef (buildCtorToType prog)
-  let _ = set_ref ctorFieldOrdersRef (buildCtorFieldOrders prog)
-  let ctors = collectCtors prog
-  let defs = funDefs prog
-  let groups = map (mkGroup defs) (funGroupNames defs [])
-  let disp = buildIfaceDispatch prog
-  let allNames = map fst boolSeeds ++ map fst externBindings ++ map fst ctors ++ map fst groups ++ implMethodNames prog
-  let cells = map (n => (n, Ref VUnit)) allNames
-  let env = EvalEnv [cells]
-  let _ = installConsts cells boolSeeds
-  let _ = installConsts cells externBindings
-  let _ = installConsts cells ctors
-  let _ = installConsts cells (coalesceImpls (concatMapList (declImplEntries env disp) prog))
-  let _ = installGroups env cells groups
-  map cellResult cells
--- impls (lazy VClosures) before groups, so a nullary binding's eager body can
--- already see the dispatch tables (mirrors the reference forcing zero-arg
--- thunks only after all impls install)
+-- DRIVER-COLLAPSE Phase 5: the flat single-frame evalProgram is DELETED.  Its
+-- one-by-name-frame install (prelude+user merged) is subsumed by the 1-module
+-- case of evalModules (evalOne); the shared helpers it used (cellResult,
+-- installGroups, installConsts, coalesceImpls, …) are retained by evalModules.
 
 export
 cellResult : (String, Ref Value) -> (String, Value)
@@ -1799,19 +1782,14 @@ lookupBinding name ((n, v)::rest)
 
 export
 evalMain : List Decl -> <Mut> String
-evalMain prog = match lookupBinding "main" (evalProgram prog)
+evalMain prog = match lookupBinding "main" (evalOne [] ("__main__", prog))
   Some v => ppValue (force v)
   None => panic "program has no 'main' binding"
 
 -- Run the program for its OUTPUT (forcing `main`, whose IO side-effects append
 -- to outputRef) and return the captured stdout — diffs against === EVAL ===.
-export
-evalOutput : List Decl -> <Mut> String
-evalOutput prog =
-  let _ = set_ref outputRef ""
-  let binds = evalProgram prog
-  let _ = runMainForEffect binds
-  outputRef.value
+-- DRIVER-COLLAPSE Phase 5: the flat evalOutput is DELETED; evalOneOutput (the
+-- 1-module case of evalModules) is the surviving OUTPUT entry point.
 
 -- Like evalOutput, but drops any prelude function the user program redefines
 -- (mirrors the reference's prelude_for shadow-drop) so a user `sum` doesn't
@@ -1819,7 +1797,7 @@ evalOutput prog =
 export
 evalOutputWith : List Decl -> List Decl -> <Mut> String
 evalOutputWith preludeDecls userDecls =
-  evalOutput (dropShadowed (funNamesOf userDecls) preludeDecls ++ userDecls)
+  evalOneOutput [] ("__main__", dropShadowed (funNamesOf userDecls) preludeDecls ++ userDecls)
 
 export
 funNamesOf : List Decl -> List String

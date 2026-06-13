@@ -76,12 +76,21 @@ of Phase 4.
   `checkToLinesWithRuntime` through the unified path; `check` now resolves imports.
   Re-root the check gate per §check. Gates: re-rooted `diff_selfhost_check`,
   `diff_selfhost_check_modules`, `_typecheck_errors`, `_panic_errors`, fixpoint.
-- **Phase 5 — delete flat fns + temporary harness (small).** Delete `checkProgram`,
-  `elaborateDict` (+ its discover* fixpoint), `evalProgram`, `evalOutput`. KEEP
-  shared helpers (`checkProgramSeeded`, `inferDefaultBodies`, `resetState`,
-  `coalesceImpls`, `lookupMethod`, …) — the module path uses them. Remove
-  `diff_flat_vs_onemodule.sh` last. Full gate matrix + fixpoint green without the
-  flat fns proves redundancy.
+- **Phase 5 — delete flat fns + temporary harness (small). DONE 2026-06-13.**
+  Migrated remaining flat callers to the 1-module wrappers: the eval/typed/dict
+  gate entries (`eval_dict_main/_batch`, `eval_typed_main/_batch`,
+  `core_ir_typed_main`) → `elaborateOne`/`evalOneOutput`; `evalMain` +
+  `evalOutputWith` re-backed by `evalOne`/`evalOneOutput`; repl/lsp `:type`/hover
+  schemes + the `=== TYPES ===` `checkToLines` path → new `checkProgramSchemes`
+  (backed by `checkProgramSeeded`, keeping the `LetRecNonFunction` guard).
+  DELETED `checkProgram`, the flat `elaborate` wrapper, `evalProgram`,
+  `evalOutput`, plus `flat_vs_one_probe.mdk` + `diff_flat_vs_onemodule.sh`. KEPT
+  shared helpers (`checkProgramSeeded`, `resetState`, `coalesceImpls`,
+  `cellResult`/`installGroups`/…, `evalModules*`, `cevalProgram`). **`elaborateDict`
+  + its `discover*` fixpoint are KEPT (not deleted as the original draft said):
+  the EMIT path (`core_ir_dict_pp_main` / `llvm_emit_*_main`, argStamp/`preludeArgPosDictNames`
+  mode) still uses them — out of the eval/check collapse scope (documented partial).**
+  Full gate matrix + fixpoint green without the deleted flat fns proves redundancy.
 
 ## Risk register
 - **Eval install/binding/thunk-force order (Phase 3)** — the recurring locus.

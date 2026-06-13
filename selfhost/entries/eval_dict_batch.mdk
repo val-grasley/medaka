@@ -6,8 +6,8 @@
 import frontend.ast.{Decl}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
-import types.typecheck.{elaborateDict, constrainedSigNames, preludeReturnPosDictNames}
-import eval.eval.{evalOutput, funNamesOf, dropShadowedExp}
+import types.typecheck.{elaborateOne}
+import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
   (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets
@@ -33,6 +33,4 @@ runDict : List Decl -> List Decl -> List Decl -> <Mut> String
 runDict runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = dropShadowedExp userNames preludeDecls
-  let combined = livePrelude ++ userDecls
-  let dictNames = preludeReturnPosDictNames livePrelude combined ++ constrainedSigNames userDecls
-  evalOutput (elaborateDict runtimeDecls dictNames userNames combined)
+  evalOneOutput [] ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
