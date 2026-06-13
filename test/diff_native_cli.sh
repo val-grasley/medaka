@@ -159,7 +159,7 @@ if [ "$TEST_WIRED" = 1 ]; then
     golden="$GOLD/test/$base.golden"
     [ -f "$golden" ] || { fail=$((fail+1)); printf 'FAIL test/%s (no golden)\n' "$base"; continue; }
     want="$(cat "$golden")"
-    got="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" test "$f" 2>/dev/null | strip_unit)"
+    got="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" test "$f" 2>/dev/null | sed "s#$ROOT/##g" | strip_unit)"
     if [ "$got" = "$want" ]; then pass=$((pass+1)); printf 'ok   test/%s\n' "$base"
     else fail=$((fail+1)); printf 'FAIL test/%s\n' "$base"
       printf '  want: [%s]\n  got:  [%s]\n' "$want" "$got"; fi

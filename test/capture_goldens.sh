@@ -543,7 +543,9 @@ if want native_cli; then
   for f in "$ROOT"/test/native_cli_fixtures/test/*.mdk; do
     [ -f "$f" ] || continue
     n="$(basename "$f" .mdk)"
-    out="$TMP/nc"; "$MAIN" test "$f" 2>/dev/null > "$out" || true
+    # `medaka test` echoes the fixture path; strip the worktree-root prefix so
+    # the golden is path-stable across worktrees (gate strips the same).
+    out="$TMP/nc"; "$MAIN" test "$f" 2>/dev/null | sed "s#$ROOT/##g" > "$out" || true
     emit_to "$NC_GOLD/test/$n.golden" "$out"
   done
   # build: program runtime stdout from the OCaml-built binary

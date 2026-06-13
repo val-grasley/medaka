@@ -1,7 +1,7 @@
-running doctests in /Users/val/medaka/.claude/worktrees/agent-a9dcd4f80013f92ac/test/native_cli_fixtures/test/prop.mdk
-  ok   /Users/val/medaka/.claude/worktrees/agent-a9dcd4f80013f92ac/test/native_cli_fixtures/test/prop.mdk:1: triple 2
+running doctests in test/native_cli_fixtures/test/prop.mdk
+  ok   test/native_cli_fixtures/test/prop.mdk:1: triple 2
 
-/Users/val/medaka/.claude/worktrees/agent-a9dcd4f80013f92ac/test/native_cli_fixtures/test/prop.mdk: 1/1 passed
+test/native_cli_fixtures/test/prop.mdk: 1/1 passed
 Testing "triple is add-thrice" ... OK (100 tests)
 
 1 passed, 0 failed
