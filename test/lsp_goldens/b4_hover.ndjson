@@ -1,0 +1,3 @@
+{"id": 1, "jsonrpc": "2.0", "result": {"capabilities": {"completionProvider": {}, "definitionProvider": true, "documentFormattingProvider": true, "documentHighlightProvider": true, "documentSymbolProvider": true, "hoverProvider": true, "inlayHintProvider": true, "textDocumentSync": 1}, "serverInfo": {"name": "medaka-lsp", "version": "0.1.0"}}}
+{"jsonrpc": "2.0", "method": "textDocument/publishDiagnostics", "params": {"diagnostics": [], "uri": "file:///b4.mdk"}}
+{"id": 2, "jsonrpc": "2.0", "result": {"contents": {"kind": "markdown", "value": "```medaka\ndouble : a -> a\n```"}}}

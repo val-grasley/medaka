@@ -35,11 +35,12 @@
 # Usage: sh test/diff_selfhost_lsp.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-LSP_MAIN="$ROOT/selfhost/entries/lsp_main.mdk"
-RT="$ROOT/stdlib/runtime.mdk"
-CORE="$ROOT/stdlib/core.mdk"
-[ -x "$MAIN" ] || { echo "build first: dune build --root ."; exit 2; }
+# OCaml-free: drive the CANONICAL native LSP (the shipped binary, same one Cursor
+# uses) and diff vs committed goldens captured from the OCaml `check --json`
+# oracle (test/capture_goldens.sh, OCaml trusted at capture time).
+MEDAKA="$ROOT/medaka"
+GOLD="$ROOT/test/lsp_goldens"
+[ -x "$MEDAKA" ] || { echo "build native first: make medaka (missing $MEDAKA)"; exit 2; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
@@ -62,7 +63,7 @@ drive_lsp() {
   : > "$TMP/in.bin"
   for msg in "$@"; do frame "$msg" >> "$TMP/in.bin"; done
   perl -e 'alarm 180; exec @ARGV' \
-    "$MAIN" run "$LSP_MAIN" "$RT" "$CORE" < "$TMP/in.bin" > "$TMP/out.bin" 2>/dev/null
+    env MEDAKA_ROOT="$ROOT" "$MEDAKA" lsp < "$TMP/in.bin" > "$TMP/out.bin" 2>/dev/null
   python3 - "$TMP/out.bin" > "$TMP/out.json" <<'PY'
 import sys, re, json
 data = open(sys.argv[1], "rb").read()
@@ -81,8 +82,14 @@ for p in parts:
         s2 = s[idx:].lstrip()
         if not s2:
             break
-        obj, end = dec.raw_decode(s2)
-        print(json.dumps(obj))
+        try:
+            obj, end = dec.raw_decode(s2)
+        except ValueError:
+            break
+        # Skip non-object tokens (the native CLI prints a trailing Unit `0` after
+        # the framed responses; LSP messages are always JSON objects).
+        if isinstance(obj, dict):
+            print(json.dumps(obj))
         idx += len(s[idx:]) - len(s2) + end
 PY
 }
@@ -112,7 +119,7 @@ check "initialize → jsonrpc result with textDocumentSync capability" "$?"
 # ── 2. didOpen a CLEAN file → empty diagnostics (matches check --json) ───────
 CLEAN='main = println "hi"\n'
 printf 'main = println "hi"\n' > "$TMP/clean.mdk"
-ORACLE_CLEAN="$("$MAIN" check --json "$TMP/clean.mdk" 2>/dev/null)"
+ORACLE_CLEAN="$(cat "$GOLD/check_clean.json")"
 drive_lsp \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///clean.mdk","text":"main = println \"hi\"\n"}}}' \
@@ -132,7 +139,7 @@ check "didOpen clean → publishDiagnostics [] (== check --json)" "$?"
 
 # ── 3. didOpen a TYPE-ERROR file → one Error diagnostic ─────────────────────
 printf 'main = 1 + "x"\n' > "$TMP/err.mdk"
-ORACLE_ERR="$("$MAIN" check --json "$TMP/err.mdk" 2>/dev/null)"
+ORACLE_ERR="$(cat "$GOLD/check_err.json")"
 drive_lsp \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///err.mdk","text":"main = 1 + \"x\"\n"}}}' \
@@ -202,7 +209,7 @@ printf 'import lib_clean.{double}\n\nexport oops : Int\noops = double "no"\n' > 
 printf 'import lib_clean.{double}\nimport lib_bad.{oops}\n\nmain = println (double 21)\n' > "$PROJ/main_app.mdk"
 ENTRY_TXT="$(python3 -c 'import json,sys;print(json.dumps(open(sys.argv[1]).read()))' "$PROJ/main_app.mdk")"
 # Oracle: medaka check --json over the same entry (the real analyze_project).
-ORACLE_PROJ="$("$MAIN" check --json "$PROJ/main_app.mdk" 2>/dev/null)"
+ORACLE_PROJ="$(cat "$GOLD/check_project.json")"
 drive_lsp \
   '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
   "{\"jsonrpc\":\"2.0\",\"method\":\"textDocument/didOpen\",\"params\":{\"textDocument\":{\"uri\":\"file://$PROJ/main_app.mdk\",\"text\":$ENTRY_TXT}}}" \

@@ -1,0 +1,1 @@
+{"files": [{"diagnostics": [{"message": "Type mismatch: String vs Int", "range": {"end": {"character": 14, "line": 0}, "start": {"character": 13, "line": 0}}, "severity": 1, "source": "medaka"}], "file": "err.mdk"}]}

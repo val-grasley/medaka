@@ -591,6 +591,169 @@ if want native_cli; then
     n="$(basename "$f" .mdk)"
     capture_build_golden "$f" "$NC_GOLD/build/$n.golden"
   done
+
+  # lsp/session golden: the CANONICAL native ./medaka lsp (not OCaml) — the
+  # native LSP is canonical, so its decoded responses ARE the golden.  Path-stable
+  # (file:// → basename).  Requires the built native binary.
+  NMED="$ROOT/medaka"
+  if [ -x "$NMED" ]; then
+    mkdir -p "$NC_GOLD/lsp"
+    nlframe() { python3 - "$1" <<'PY'
+import sys
+b=sys.argv[1].encode("utf-8")
+sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n"%len(b)); sys.stdout.buffer.write(b)
+PY
+    }
+    NLIN="$TMP/nl_in.bin"; : > "$NLIN"
+    NLSRC='greet x = x + 1\nmain = println (greet 41)\n'
+    for m in \
+      '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' \
+      '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///lsp_sess.mdk","languageId":"medaka","version":1,"text":"'"$NLSRC"'"}}}' \
+      '{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///lsp_sess.mdk"}}}' \
+      '{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///lsp_sess.mdk"},"position":{"line":0,"character":1}}}' \
+      '{"jsonrpc":"2.0","method":"exit","params":{}}'; do nlframe "$m" >> "$NLIN"; done
+    MEDAKA_ROOT="$ROOT" perl -e 'alarm 120; exec @ARGV' "$NMED" lsp < "$NLIN" > "$TMP/nl_out.bin" 2>/dev/null || true
+    python3 - "$TMP/nl_out.bin" <<'PY' > "$TMP/nl_out.ndjson" 2>/dev/null || true
+import sys,re,json,os
+data=open(sys.argv[1],"rb").read()
+def stab(o):
+    if isinstance(o,dict): return {k:stab(v) for k,v in o.items()}
+    if isinstance(o,list): return [stab(x) for x in o]
+    if isinstance(o,str) and o.startswith("file://"): return "file:///"+os.path.basename(o)
+    return o
+for p in re.split(rb"Content-Length: \d+\r\n", data):
+    s=p.decode("utf-8","replace"); i=s.find("{")
+    if i<0: continue
+    s=s[i:].strip()
+    try: obj,_=json.JSONDecoder().raw_decode(s)
+    except Exception: continue
+    print(json.dumps(stab(obj),sort_keys=True))
+PY
+    emit_to "$NC_GOLD/lsp/session.ndjson" "$TMP/nl_out.ndjson"
+  fi
+fi
+
+# ── self-hosted LSP differential goldens (REROOT-PLAN §3b) ───────────────────
+# The OCaml reference server ($MAIN lsp) and OCaml `check --json` are the LSP
+# oracle for the OCaml-free gates diff_selfhost_lsp{,_b3,_b4}.sh.  We capture
+# their NDJSON responses HERE (OCaml still trusted) into committed goldens under
+# test/lsp_goldens/.  The gates then drive the *canonical native* `medaka lsp`
+# and diff the SAME normalized projection (skel/sorted/path-stable) vs golden.
+#
+# Path-stability: every `file://` URI and absolute path is reduced to a basename
+# in BOTH capture and gate, so goldens carry no build path.
+LSP_GOLD="$ROOT/test/lsp_goldens"
+if want lsp; then
+  total=$((total+1))
+  mkdir -p "$LSP_GOLD"
+  LTMP="$TMP/lsp"; mkdir -p "$LTMP"
+
+  lsp_frame() {  # $1 = json text  ->  Content-Length frame on stdout
+    python3 - "$1" <<'PY'
+import sys
+b=sys.argv[1].encode("utf-8")
+sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n"%len(b))
+sys.stdout.buffer.write(b)
+PY
+  }
+  # decode a raw LSP byte stream -> one JSON obj per line (path-stable basenames)
+  lsp_decode() {  # $1 = raw .bin
+    python3 - "$1" <<'PY'
+import sys,re,json,os
+data=open(sys.argv[1],"rb").read()
+def stab(o):
+    if isinstance(o,dict):
+        return {k:stab(v) for k,v in o.items()}
+    if isinstance(o,list):
+        return [stab(x) for x in o]
+    if isinstance(o,str) and o.startswith("file://"):
+        return "file:///"+os.path.basename(o)
+    return o
+for p in re.split(rb"Content-Length: \d+\r\n", data):
+    s=p.decode("utf-8","replace"); i=s.find("{")
+    if i<0: continue
+    s=s[i:].strip()
+    try: obj,_=json.JSONDecoder().raw_decode(s)
+    except Exception: continue
+    print(json.dumps(stab(obj),sort_keys=True))
+PY
+  }
+  # run the OCaml reference server on a built input file -> decoded NDJSON golden
+  lsp_capture_ocaml() {  # $1=golden  $2=in.bin
+    out="$LTMP/oc.bin"
+    perl -e 'alarm 120; exec @ARGV' "$MAIN" lsp < "$2" > "$out" 2>/dev/null || true
+    lsp_decode "$out" > "$LTMP/oc.json" 2>/dev/null || true
+    emit_to "$1" "$LTMP/oc.json"
+  }
+
+  # ---- gate-1 oracle: OCaml `check --json` for clean / err / project ----------
+  printf 'main = println "hi"\n'  > "$LTMP/clean.mdk"
+  printf 'main = 1 + "x"\n'        > "$LTMP/err.mdk"
+  # check --json golden: reduce "file" to basename (path-stable).
+  cj_stable() {  # $1=src  $2=golden
+    "$MAIN" check --json "$1" 2>/dev/null \
+      | python3 -c 'import sys,json,os
+o=json.load(sys.stdin)
+for f in o.get("files",[]): f["file"]=os.path.basename(f["file"])
+# Sort files by basename: the OCaml check --json files[] order is traversal-
+# dependent (non-deterministic); the gate reads it into a by-basename dict, so
+# order is irrelevant to the comparison but must be stable in the golden.
+o["files"]=sorted(o.get("files",[]), key=lambda f: f.get("file",""))
+print(json.dumps(o,sort_keys=True))' > "$LTMP/cj" 2>/dev/null || true
+    emit_to "$2" "$LTMP/cj"
+  }
+  cj_stable "$LTMP/clean.mdk" "$LSP_GOLD/check_clean.json"
+  cj_stable "$LTMP/err.mdk"   "$LSP_GOLD/check_err.json"
+
+  # project fixture (3 siblings: a bad import must not blank the clean files).
+  PJ="$LTMP/proj"; mkdir -p "$PJ"
+  printf 'export double : Int -> Int\ndouble x = x + x\n' > "$PJ/lib_clean.mdk"
+  printf 'import lib_clean.{double}\n\nexport oops : Int\noops = double "no"\n' > "$PJ/lib_bad.mdk"
+  printf 'import lib_clean.{double}\nimport lib_bad.{oops}\n\nmain = println (double 21)\n' > "$PJ/main_app.mdk"
+  cj_stable "$PJ/main_app.mdk" "$LSP_GOLD/check_project.json"
+
+  # ---- gate b3 oracle: OCaml LSP symbol/definition/highlight + fmt -----------
+  INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{},"processId":null,"rootUri":null}}'
+  INITED='{"jsonrpc":"2.0","method":"initialized","params":{}}'
+  SHUT='{"jsonrpc":"2.0","id":9,"method":"shutdown","params":{}}'
+  EXIT='{"jsonrpc":"2.0","method":"exit","params":{}}'
+  SRC_JSON='record Point\n  x : Int\n  y : Int\n\ndata Shape = Circle Int | Square Int\n\narea s = match s\n  Circle r => r * r\n  Square w => w * w\n'
+  DIDOPEN='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///s.mdk","languageId":"medaka","version":1,"text":"'"$SRC_JSON"'"}}}'
+  SYM='{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///s.mdk"}}}'
+  DEF='{"jsonrpc":"2.0","id":3,"method":"textDocument/definition","params":{"textDocument":{"uri":"file:///s.mdk"},"position":{"line":6,"character":0}}}'
+  HL='{"jsonrpc":"2.0","id":4,"method":"textDocument/documentHighlight","params":{"textDocument":{"uri":"file:///s.mdk"},"position":{"line":6,"character":0}}}'
+  : > "$LTMP/in.bin"
+  for m in "$INIT" "$INITED" "$DIDOPEN" "$SYM" "$DEF" "$HL" "$SHUT" "$EXIT"; do lsp_frame "$m" >> "$LTMP/in.bin"; done
+  lsp_capture_ocaml "$LSP_GOLD/b3_sym_def_hl.ndjson" "$LTMP/in.bin"
+
+  # b3 fmt oracle: the OCaml formatter output for the unformatted fixture.
+  printf 'main   =   println    "hi"\n\n\n' > "$LTMP/unfmt.mdk"
+  "$MAIN" fmt --stdout "$LTMP/unfmt.mdk" 2>/dev/null > "$LTMP/fmt.txt" || true
+  emit_to "$LSP_GOLD/b3_fmt.txt" "$LTMP/fmt.txt"
+
+  # ---- gate b4 oracle: OCaml LSP hover/completion/inlayHint ------------------
+  INIT4='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}'
+  DOC_TEXT='double x = x + x\ntriple : Int -> Int\ntriple x = x * 3\nresult = double 5\n'
+  DIDOPEN4='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///b4.mdk","languageId":"medaka","version":1,"text":"'"$DOC_TEXT"'"}}}'
+  HOVER='{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///b4.mdk"},"position":{"line":0,"character":2}}}'
+  HOVOFF='{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///b4.mdk"},"position":{"line":0,"character":9}}}'
+  COMPL='{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///b4.mdk"},"position":{"line":3,"character":13}}}'
+  INLAY='{"jsonrpc":"2.0","id":4,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"file:///b4.mdk"},"range":{"start":{"line":0,"character":0},"end":{"line":10,"character":0}}}}'
+  DOC2='alpha = 1\nbeta = 2\n\n'
+  DIDOPEN4B='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///b4b.mdk","languageId":"medaka","version":1,"text":"'"$DOC2"'"}}}'
+  COMPL2='{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///b4b.mdk"},"position":{"line":2,"character":0}}}'
+  EXIT4='{"jsonrpc":"2.0","method":"exit","params":{}}'
+  cap_b4() {  # $1=golden  $2..=messages
+    golden="$1"; shift
+    : > "$LTMP/in.bin"
+    for m in "$@"; do lsp_frame "$m" >> "$LTMP/in.bin"; done
+    lsp_capture_ocaml "$golden" "$LTMP/in.bin"
+  }
+  cap_b4 "$LSP_GOLD/b4_hover.ndjson"   "$INIT4" "$DIDOPEN4" "$HOVER" "$EXIT4"
+  cap_b4 "$LSP_GOLD/b4_hover_off.ndjson" "$INIT4" "$DIDOPEN4" "$HOVOFF" "$EXIT4"
+  cap_b4 "$LSP_GOLD/b4_compl.ndjson"   "$INIT4" "$DIDOPEN4" "$COMPL" "$EXIT4"
+  cap_b4 "$LSP_GOLD/b4_compl_full.ndjson" "$INIT4" "$DIDOPEN4B" "$COMPL2" "$EXIT4"
+  cap_b4 "$LSP_GOLD/b4_inlay.ndjson"   "$INIT4" "$DIDOPEN4" "$INLAY" "$EXIT4"
 fi
 
 echo

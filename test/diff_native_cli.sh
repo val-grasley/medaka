@@ -24,10 +24,11 @@
 #     post-error prompt behaviour (see diff_selfhost_repl.sh header).  The native
 #     repl is CANONICAL, so this subtest diffs native `./medaka repl` against the
 #     SAME canonical native golden (test/repl_fixtures/session.golden), NOT OCaml.
-#   lsp/session — the native lsp host cannot be built (`medaka build lsp_main.mdk`
-#     fails the native G1 typecheck gate — medaka_cli typecheckGate roots omit
-#     `selfhost`).  This is the ONE leg still on the OCaml oracle; it is SKIPPED
-#     here (left as a documented exception, task #30).
+#   lsp/session — the native `./medaka lsp` host is now buildable (import-scoped
+#     multi-module typecheck seeding, commit d2d12a4), so this leg drives the
+#     CANONICAL native LSP through an initialize/didOpen/documentSymbol/hover
+#     session and diffs the decoded responses against a committed native golden
+#     (test/native_cli_goldens/lsp/session.ndjson).  OCaml-free.
 #
 # The native runtime auto-prints main's Unit value as a trailing "0"; strip it
 # (strip_unit) before comparing.  Every invocation is bounded by perl alarm.
@@ -122,7 +123,51 @@ else
 fi
 
 # ── lsp (DOCUMENTED EXCEPTION — native lsp host unbuildable; SKIPPED) ─────────
-printf 'skip lsp/session (native lsp host unbuildable — REROOT-PLAN exception, task #30)\n'
+# ── lsp (CANONICAL native LSP — initialize/didOpen/documentSymbol/hover) ──────
+LSP_GOLDEN="$GOLD/lsp/session.ndjson"
+if [ -f "$LSP_GOLDEN" ]; then
+  lframe() { python3 - "$1" <<'PY'
+import sys
+b=sys.argv[1].encode("utf-8")
+sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n"%len(b)); sys.stdout.buffer.write(b)
+PY
+  }
+  ldecode() { python3 - "$1" <<'PY'
+import sys,re,json,os
+data=open(sys.argv[1],"rb").read()
+def stab(o):
+    if isinstance(o,dict): return {k:stab(v) for k,v in o.items()}
+    if isinstance(o,list): return [stab(x) for x in o]
+    if isinstance(o,str) and o.startswith("file://"): return "file:///"+os.path.basename(o)
+    return o
+for p in re.split(rb"Content-Length: \d+\r\n", data):
+    s=p.decode("utf-8","replace"); i=s.find("{")
+    if i<0: continue
+    s=s[i:].strip()
+    try: obj,_=json.JSONDecoder().raw_decode(s)
+    except Exception: continue
+    print(json.dumps(stab(obj),sort_keys=True))
+PY
+  }
+  LIN="$TMP/lsp_in.bin"; : > "$LIN"
+  LSRC='greet x = x + 1\nmain = println (greet 41)\n'
+  for m in \
+    '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}' \
+    '{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///lsp_sess.mdk","languageId":"medaka","version":1,"text":"'"$LSRC"'"}}}' \
+    '{"jsonrpc":"2.0","id":2,"method":"textDocument/documentSymbol","params":{"textDocument":{"uri":"file:///lsp_sess.mdk"}}}' \
+    '{"jsonrpc":"2.0","id":3,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///lsp_sess.mdk"},"position":{"line":0,"character":1}}}' \
+    '{"jsonrpc":"2.0","method":"exit","params":{}}'; do lframe "$m" >> "$LIN"; done
+  MEDAKA_ROOT="$ROOT" bound "$MEDAKA" lsp < "$LIN" > "$TMP/lsp_out.bin" 2>/dev/null
+  ldecode "$TMP/lsp_out.bin" > "$TMP/lsp_out.ndjson"
+  if cmp -s "$TMP/lsp_out.ndjson" "$LSP_GOLDEN"; then
+    pass=$((pass+1)); printf 'ok   lsp/session (vs canonical native golden)\n'
+  else
+    fail=$((fail+1)); printf 'FAIL lsp/session\n'
+    diff "$LSP_GOLDEN" "$TMP/lsp_out.ndjson" | head -8 | sed 's/^/  /'
+  fi
+else
+  printf 'skip lsp/session (golden missing — run sh test/capture_goldens.sh native_cli)\n'
+fi
 
 # ── run ───────────────────────────────────────────────────────────────────────
 RUN_FIXTURES="hello arith recur adt listsum strcat"

@@ -27,11 +27,11 @@
 
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-LSP_MAIN="$ROOT/selfhost/entries/lsp_main.mdk"
-RT="$ROOT/stdlib/runtime.mdk"
-CORE="$ROOT/stdlib/core.mdk"
-[ -x "$MAIN" ] || { echo "build first: dune build --root ."; exit 2; }
+# OCaml-free: drive the CANONICAL native LSP and diff vs committed goldens
+# captured from the OCaml reference server (test/capture_goldens.sh).
+MEDAKA="$ROOT/medaka"
+GOLD="$ROOT/test/lsp_goldens"
+[ -x "$MEDAKA" ] || { echo "build native first: make medaka (missing $MEDAKA)"; exit 2; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
@@ -53,20 +53,26 @@ build_in() {
 
 drive_self() {
   perl -e 'alarm 180; exec @ARGV' \
-    "$MAIN" run "$LSP_MAIN" "$RT" "$CORE" < "$TMP/in.bin" > "$TMP/self.bin" 2>/dev/null
+    env MEDAKA_ROOT="$ROOT" "$MEDAKA" lsp < "$TMP/in.bin" > "$TMP/self.bin" 2>/dev/null
   decode "$TMP/self.bin" > "$TMP/self.json"
 }
 
-drive_ocaml() {
-  perl -e 'alarm 180; exec @ARGV' \
-    "$MAIN" lsp < "$TMP/in.bin" > "$TMP/ocaml.bin" 2>/dev/null
-  decode "$TMP/ocaml.bin" > "$TMP/ocaml.json"
+# OCAML reference responses are committed goldens (captured by capture_goldens.sh
+# while OCaml was trusted).  $1 = golden basename under $GOLD.
+load_golden() {
+  cp "$GOLD/$1" "$TMP/ocaml.json"
 }
 
 decode() {
   python3 - "$1" <<'PY'
-import sys, re, json
+import sys, re, json, os
 data = open(sys.argv[1], "rb").read()
+def stab(o):
+    if isinstance(o, dict): return {k: stab(v) for k, v in o.items()}
+    if isinstance(o, list): return [stab(x) for x in o]
+    if isinstance(o, str) and o.startswith("file://"):
+        return "file:///" + os.path.basename(o)
+    return o
 parts = re.split(rb"Content-Length: \d+\r\n", data)
 for p in parts:
     s = p.decode("utf-8", "replace")
@@ -78,7 +84,7 @@ for p in parts:
         obj, _ = json.JSONDecoder().raw_decode(s)
     except Exception:
         continue
-    print(json.dumps(obj))
+    print(json.dumps(stab(obj), sort_keys=True))
 PY
 }
 
@@ -116,7 +122,7 @@ check "initialize advertises hover/completion/inlayHint" "$?"
 # ── hover: identifier-at-cursor → markdown name:type, byte-identical ────────
 HOVER='{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///b4.mdk"},"position":{"line":0,"character":2}}}'
 build_in "$INIT" "$DIDOPEN" "$HOVER" "$EXIT"
-drive_self; drive_ocaml
+drive_self; load_golden b4_hover.ndjson
 python3 - "$TMP/self.json" "$TMP/ocaml.json" <<'PY'
 import sys, json
 def res(fn, i):
@@ -138,7 +144,7 @@ check "hover double → markdown 'double : <ty>' == OCaml" "$?"
 # ── hover off an identifier → null on both ─────────────────────────────────
 HOVOFF='{"jsonrpc":"2.0","id":2,"method":"textDocument/hover","params":{"textDocument":{"uri":"file:///b4.mdk"},"position":{"line":0,"character":9}}}'
 build_in "$INIT" "$DIDOPEN" "$HOVOFF" "$EXIT"
-drive_self; drive_ocaml
+drive_self; load_golden b4_hover_off.ndjson
 python3 - "$TMP/self.json" "$TMP/ocaml.json" <<'PY'
 import sys, json
 def res(fn, i):
@@ -157,7 +163,7 @@ check "hover off-identifier → null == OCaml" "$?"
 # Line 3 "result = double 5": col 13 = after "result = doub" (prefix "doub").
 COMPL='{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///b4.mdk"},"position":{"line":3,"character":13}}}'
 build_in "$INIT" "$DIDOPEN" "$COMPL" "$EXIT"
-drive_self; drive_ocaml
+drive_self; load_golden b4_compl.ndjson
 python3 - "$TMP/self.json" "$TMP/ocaml.json" <<'PY'
 import sys, json
 def res(fn, i):
@@ -189,7 +195,7 @@ DOC2='alpha = 1\nbeta = 2\n\n'
 DIDOPEN2='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///b4b.mdk","languageId":"medaka","version":1,"text":"'"$DOC2"'"}}}'
 COMPL2='{"jsonrpc":"2.0","id":3,"method":"textDocument/completion","params":{"textDocument":{"uri":"file:///b4b.mdk"},"position":{"line":2,"character":0}}}'
 build_in "$INIT" "$DIDOPEN2" "$COMPL2" "$EXIT"
-drive_self; drive_ocaml
+drive_self; load_golden b4_compl_full.ndjson
 python3 - "$TMP/self.json" "$TMP/ocaml.json" <<'PY'
 import sys, json
 def res(fn, i):
@@ -220,7 +226,7 @@ check "completion empty prefix → full env == OCaml (incl alpha,beta)" "$?"
 # ── inlayHint: unsignatured top-level bindings get a ': <ty>' hint, == OCaml ─
 INLAY='{"jsonrpc":"2.0","id":4,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"file:///b4.mdk"},"range":{"start":{"line":0,"character":0},"end":{"line":10,"character":0}}}}'
 build_in "$INIT" "$DIDOPEN" "$INLAY" "$EXIT"
-drive_self; drive_ocaml
+drive_self; load_golden b4_inlay.ndjson
 python3 - "$TMP/self.json" "$TMP/ocaml.json" <<'PY'
 import sys, json
 def res(fn, i):

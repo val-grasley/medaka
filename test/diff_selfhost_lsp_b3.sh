@@ -31,11 +31,12 @@
 # Usage: sh test/diff_selfhost_lsp_b3.sh
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
-LSP_MAIN="$ROOT/selfhost/entries/lsp_main.mdk"
-RT="$ROOT/stdlib/runtime.mdk"
-CORE="$ROOT/stdlib/core.mdk"
-[ -x "$MAIN" ] || { echo "build first: dune build --root ."; exit 2; }
+# OCaml-free: drive the CANONICAL native LSP and diff vs committed goldens
+# captured from the OCaml reference server (test/capture_goldens.sh, trusted at
+# capture time).  See test/lsp_goldens/.
+MEDAKA="$ROOT/medaka"
+GOLD="$ROOT/test/lsp_goldens"
+[ -x "$MEDAKA" ] || { echo "build native first: make medaka (missing $MEDAKA)"; exit 2; }
 
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT INT TERM
@@ -56,26 +57,32 @@ build_in() {
   for msg in "$@"; do frame "$msg" >> "$TMP/in.bin"; done
 }
 
-# Run the SELFHOST server; decode framed responses to NDJSON in $TMP/self.json.
+# Run the canonical NATIVE server; decode framed responses to NDJSON in $TMP/self.json.
 drive_self() {
   perl -e 'alarm 180; exec @ARGV' \
-    "$MAIN" run "$LSP_MAIN" "$RT" "$CORE" < "$TMP/in.bin" > "$TMP/self.bin" 2>/dev/null
+    env MEDAKA_ROOT="$ROOT" "$MEDAKA" lsp < "$TMP/in.bin" > "$TMP/self.bin" 2>/dev/null
   decode "$TMP/self.bin" > "$TMP/self.json"
 }
 
-# Run the OCAML reference server; decode to NDJSON in $TMP/ocaml.json.
-drive_ocaml() {
-  perl -e 'alarm 180; exec @ARGV' \
-    "$MAIN" lsp < "$TMP/in.bin" > "$TMP/ocaml.bin" 2>/dev/null
-  decode "$TMP/ocaml.bin" > "$TMP/ocaml.json"
+# OCAML reference responses are committed goldens (captured by capture_goldens.sh
+# while OCaml was trusted).  $1 = golden basename under $GOLD.
+load_golden() {
+  cp "$GOLD/$1" "$TMP/ocaml.json"
 }
 
 decode() {
   python3 - "$1" <<'PY'
-import sys, re, json
+import sys, re, json, os
 data = open(sys.argv[1], "rb").read()
-# Split on the Content-Length header line; the OCaml server adds a second
-# Content-Type header line, so strip everything up to the first '{' per chunk.
+# Split on the Content-Length header line; strip up to the first '{' per chunk.
+# Stabilize file:// URIs to a basename so goldens carry no build path; sort keys
+# to match the captured goldens' canonicalization.
+def stab(o):
+    if isinstance(o, dict): return {k: stab(v) for k, v in o.items()}
+    if isinstance(o, list): return [stab(x) for x in o]
+    if isinstance(o, str) and o.startswith("file://"):
+        return "file:///" + os.path.basename(o)
+    return o
 parts = re.split(rb"Content-Length: \d+\r\n", data)
 for p in parts:
     s = p.decode("utf-8", "replace")
@@ -87,7 +94,7 @@ for p in parts:
         obj, _ = json.JSONDecoder().raw_decode(s)
     except Exception:
         continue
-    print(json.dumps(obj))
+    print(json.dumps(stab(obj), sort_keys=True))
 PY
 }
 
@@ -133,7 +140,7 @@ EXIT='{"jsonrpc":"2.0","method":"exit","params":{}}'
 
 build_in "$INIT" "$INITED" "$DIDOPEN" "$SYM" "$DEF" "$HL" "$SHUT" "$EXIT"
 drive_self
-drive_ocaml
+load_golden b3_sym_def_hl.ndjson
 
 # documentSymbol: name + kind + start-line parity (recursively, incl children).
 python3 - "$TMP/self.json" "$TMP/ocaml.json" <<'PY'
@@ -194,7 +201,7 @@ check "documentHighlight full-range parity vs OCaml (textual, byte-identical)" "
 USRC='main   =   println    "hi"\n\n\n'
 USRC_JSON='main   =   println    \"hi\"\n\n\n'
 printf "$USRC" > "$TMP/unfmt.mdk"
-ORACLE_FMT="$("$MAIN" fmt --stdout "$TMP/unfmt.mdk" 2>/dev/null)"
+ORACLE_FMT="$(cat "$GOLD/b3_fmt.txt")"
 FMT='{"jsonrpc":"2.0","id":2,"method":"textDocument/formatting","params":{"textDocument":{"uri":"file:///u.mdk"}}}'
 DIDOPEN_U='{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"file:///u.mdk","languageId":"medaka","version":1,"text":"'"$USRC_JSON"'"}}}'
 build_in "$INIT" "$INITED" "$DIDOPEN_U" "$FMT" "$SHUT" "$EXIT"
