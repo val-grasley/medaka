@@ -1563,6 +1563,26 @@ emitRngExtern e env "setSeed" args = match emitArgs e env args
   _ => panic "llvm spike: setSeed takes one argument (Tier D)"
 emitRngExtern _ _ name _ = gapE ("unsupported rng extern " ++ name)
 
+-- wallTimeSec / allocBytes: both take Unit and return a boxed Float (same ABI
+-- as randomFloat).  C: mdk_wall_time_sec / mdk_alloc_bytes in medaka_rt.c.
+isPerfExtern : String -> Bool
+isPerfExtern name = containsStr name ["wallTimeSec", "allocBytes"]
+
+emitPerfExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
+emitPerfExtern e env "wallTimeSec" args = match emitArgs e env args
+  [u] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_wall_time_sec(i64 " ++ u ++ ")")
+    (r, LTFloat)
+  _ => panic "llvm spike: wallTimeSec takes one (Unit) argument"
+emitPerfExtern e env "allocBytes" args = match emitArgs e env args
+  [u] =>
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = call i64 @mdk_alloc_bytes(i64 " ++ u ++ ")")
+    (r, LTFloat)
+  _ => panic "llvm spike: allocBytes takes one (Unit) argument"
+emitPerfExtern _ _ name _ = gapE ("unsupported perf extern " ++ name)
+
 -- Hashable per-type hashers (specified, byte-identical to lib/eval.ml hash_*).
 -- Each unpacks the native arg the C helper wants (untagged int / codepoint /
 -- unboxed double / String cell pointer) and tags the RAW Int result.  hashBool
@@ -1644,6 +1664,7 @@ isAnyExtern name =
   || isCharExtern name || isStrCharExtern name || isUnicodeExtern name
   || isAdtExtern name || isEnvExtern name || isFileExtern name
   || isRngExtern name || isHashExtern name || isDebugLitExtern name
+  || isPerfExtern name
 
 -- SATURATED extern application: route a known extern + its (non-empty) argument
 -- list to the right family emitter.  Factored out of emitApp's CVar-head ladder
@@ -1669,6 +1690,7 @@ emitExternApplied e env fname args =
   else if isFileExtern fname then emitFileExtern e env fname args
   else if isRngExtern fname then emitRngExtern e env fname args
   else if isHashExtern fname then emitHashExtern e env fname args
+  else if isPerfExtern fname then emitPerfExtern e env fname args
   else emitDebugLitExtern e env fname args
 
 emitBin : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
@@ -7082,6 +7104,8 @@ emitPreamble e =
   let _ = emit e "declare i64 @mdk_hash_string(i64)"
   let _ = emit e "declare i64 @mdk_debug_string_lit(i64)"
   let _ = emit e "declare i64 @mdk_debug_char_lit(i64)"
+  let _ = emit e "declare i64 @mdk_wall_time_sec(i64)"
+  let _ = emit e "declare i64 @mdk_alloc_bytes(i64)"
   emit e ""
 
 -- the `@main` init prologue (slice E1b): compute each top-level value/`Ref`

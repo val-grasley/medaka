@@ -1658,6 +1658,17 @@ pSetSeed (VInt seed) =
   VUnit
 pSetSeed _ = panic "setSeed: expected Int"
 
+-- wallTimeSec / allocBytes: real-IO externs (gettimeofday / GC bytes) in the
+-- native backend.  The interpreter is a buffered-output oracle with no FFI to
+-- the clock or GC, so — like randomFloat (deterministic LCG, not OCaml's
+-- entropy) — it returns a fixed plausible value rather than crashing.  These
+-- are nondeterministic externs, so the output diff gates don't compare them.
+pWallTimeSec : Value -> <Mut> Value
+pWallTimeSec _ = VFloat 1700000000.0
+
+pAllocBytes : Value -> <Mut> Value
+pAllocBytes _ = VFloat 0.0
+
 export
 externBindings : List (String, Value)
 externBindings = [
@@ -1666,6 +1677,8 @@ externBindings = [
   ("randomFloat", prim1M pRandomFloat),
   ("randomChar", prim1M pRandomChar),
   ("setSeed", prim1M pSetSeed),
+  ("wallTimeSec", prim1M pWallTimeSec),
+  ("allocBytes", prim1M pAllocBytes),
   ("intToString", prim1 pIntToString),
   ("intToFloat", prim1 pIntToFloat),
   ("floatToInt", prim1 pFloatToInt),

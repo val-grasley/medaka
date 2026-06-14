@@ -44,6 +44,7 @@
 #include <string.h>
 #include <stdnoreturn.h>
 #include <sys/stat.h>
+#include <sys/time.h>
 #include <unistd.h>
 #include <sys/wait.h>
 #include <gc.h>
@@ -1019,4 +1020,19 @@ long long mdk_debug_char_lit(long long cp) {
   else for (int i = 0; i < n; i++) buf[off++] = enc[i];
   buf[off++] = '\'';
   return mdk_str_lit(buf, off);
+}
+
+/* ── perf / instrumentation externs ────────────────────────────────────────────
+ * wallTimeSec : Unit -> <IO> Float   — wall-clock seconds (gettimeofday).
+ * allocBytes  : Unit -> <IO> Float   — total GC-heap bytes allocated since start.
+ * Both return a boxed Float word (mdk_box_float), identical ABI to randomFloat. */
+
+long long mdk_wall_time_sec(long long u) { (void)u;
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+  return mdk_box_float((double)tv.tv_sec + (double)tv.tv_usec * 1e-6);
+}
+
+long long mdk_alloc_bytes(long long u) { (void)u;
+  return mdk_box_float((double)GC_get_total_bytes());
 }
