@@ -69,8 +69,13 @@ marked-closed-but-actually-broken (this is how the pre-flip soundness gaps surfa
 Every delegated task prompt should contain, in order:
 
 1. **One-line project framing** + what the task is.
-2. **STEP 0 — sync:** `git merge main --no-edit` as the agent's first action
-   (orchestrator work is ahead of origin on LOCAL main). NEVER fetch/origin/push.
+2. **STEP 0 — sync + VERIFY BASE:** `git merge main --no-edit` as the agent's first
+   action (orchestrator work is ahead of origin on LOCAL main), THEN a base assert:
+   `git merge-base --is-ancestor <expected-tip-SHA> HEAD && echo BASE_OK || echo BASE_STALE`
+   — must print `BASE_OK`, else STOP+report. (This session an agent silently built Phase 5
+   on a base missing two prior phases because local `main` was behind the real tip and its
+   merge pulled the stale `main`; a redo was needed. The base-check makes this impossible.)
+   NEVER fetch/origin/push.
 3. **Environment rules:** how to build (e.g. worktree `--root .`), the no-`eval`
    /PATH quirks, no-`dune test`, the `perl -e 'alarm N; exec @ARGV'` timeout shim.
 4. **Context (verified facts):** the root cause + file:line pointers you already
@@ -79,7 +84,11 @@ Every delegated task prompt should contain, in order:
 5. **The task**, with latitude on implementation where the approach is uncertain.
 6. **Gates:** the exact commands + expected numbers that prove correctness
    (differential suites, fixpoint, a minimal repro). Be explicit — "byte-identical"
-   with counts.
+   with counts. **For any gate that reads `test/bin/*` oracle binaries (`diff_selfhost_test`,
+   `diff_selfhost_eval_*`, …), prefix it with `FORCE=1 bash test/build_oracles.sh`** — that
+   builder *mtime-skips* rebuilds, so after a `typecheck.mdk`/`eval.mdk` change the gate
+   otherwise silently runs a STALE oracle (see Failure modes). Tell the agent to rebuild
+   `./medaka` (`make medaka`) AND force-rebuild oracles after every source change before gating.
 7. **STOP guardrail:** "if the probe disproves the hypothesis / the fix balloons /
    a design decision appears, STOP and report with options — do NOT force the
    prescribed fix." Scope hypotheses are often wrong; make stopping safe and cheap.
@@ -114,7 +123,15 @@ to the decisive checks:
 - Watch for the **empty-report failure mode**: an agent that committed but left
   gates running in the background and ended with "waiting on the monitor…". Treat
   the commit as unverified and gate it yourself.
-- Only after green: `git merge <branch> --no-edit` into local main, then reconcile.
+- **Force-rebuild the oracle binaries before you re-run a `test/bin/*` gate yourself.**
+  `test/build_oracles.sh` mtime-skips, so your own "re-verify" can read a stale binary too —
+  `FORCE=1 bash test/build_oracles.sh` first. A green/red on a stale oracle means nothing
+  (this masked a real prop regression as "9/0 unchanged" until a forced rebuild showed 5/4).
+- Only after green: `git merge <branch> --no-edit` into local main **in the primary checkout**
+  (`git -C /Users/val/medaka merge`), then **confirm the integration branch actually advanced**:
+  `git rev-parse main` == the new tip (and `git reflog main` shows the merge). A "Fast-forward"
+  printed on a *detached HEAD* is indistinguishable from one on the branch — this session that
+  silently stranded two phases (see Failure modes). Then reconcile docs/tasks/memory.
 
 ---
 
@@ -195,6 +212,20 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
 - Agent commits then ends with an empty/"waiting" report → verify from git + gates.
 - **A returned agent with ≈0 tool uses + a boilerplate/empty result = a failed run, not a
   completed one.** Don't act on it; re-spawn (sometimes a different agent type helps).
+- **Garbled or stale-verified report.** Beyond the empty report: an agent can return a stray
+  monitor/tool echo as its "result" (garbled), OR report "all gates green / no regression"
+  computed against STALE `test/bin/*` oracles or a stale `./medaka`. Both are unverified.
+  Inspect the branch from git and independently re-run the decisive gate with FORCE-rebuilt
+  oracles (`FORCE=1 build_oracles`) + a fresh `make medaka`. This session a "5/4 unchanged vs
+  HEAD" claim was actually a real regression masked by a stale oracle.
+- **Stranded commits from a detached HEAD.** `git checkout <sha>` in a worktree DETACHES HEAD;
+  a later `git merge --ff-only <branch>` then advances the *detached HEAD*, not the branch —
+  the work lands on a dangling line and the branch stays put. This stranded two verified
+  phases this session (recovered via `git cat-file -t <sha>` + `git reflog <branch>` → FF the
+  dangling tip onto main). **Never `git checkout <sha>` in a worktree** (to drop commits use
+  `git reset --hard <sha>` ON the branch; to inspect an old commit use a throwaway
+  `git worktree add`). After any checkout, assert `git rev-parse --abbrev-ref HEAD` is a branch
+  name, not `HEAD`; after any merge, assert the integration branch advanced.
 - Agent leaves detached background gate processes → reap with `ps`/`pkill`.
 - A "surgical one-node" scope hypothesis turns out coupled to a deeper issue → the
   STOP guardrail catches it; re-scope rather than ship "panic-gone but output-wrong."
@@ -238,6 +269,15 @@ per sub-part. A *comment-only* edit to an emitter-graph file does NOT invalidate
   suite vs the OCaml oracle: `diff_selfhost_llvm` (172) / `_modules` (8) / `_typed`
   (37) / `diff_selfhost_build` (9), and the front-end/typecheck/eval `diff_selfhost_*`
   gates for those stages.
+- **The OTHER stale-binary footgun: the `test/bin/*` oracle binaries.** Gates like
+  `diff_selfhost_test` / `diff_selfhost_eval_*` run a committed native oracle binary built from
+  `selfhost/` source by `test/build_oracles.sh` — which **mtime-skips rebuilds** ("N up-to-date").
+  After a `typecheck.mdk`/`eval.mdk` change the oracle is often NOT rebuilt → the gate silently
+  runs OLD source. This bit **three times in one session** (two agents reached opposite
+  conclusions; a real prop regression read as "unchanged"). **RULE: `FORCE=1 bash test/build_oracles.sh`
+  before trusting ANY `test/bin/*` gate** (FORCE overrides the mtime skip) — bake it into agent
+  prompts touching typecheck/eval and into your own re-verification. Same shape as the `./medaka`
+  stale-binary footgun; a green/red on a stale binary means nothing.
 - **Decided invariants — do not relitigate** (see memory): retirement ≠ removal
   (lib/ stays frozen until a confidence gate); lazy top-level nullary canonical;
   no catchable panics.
