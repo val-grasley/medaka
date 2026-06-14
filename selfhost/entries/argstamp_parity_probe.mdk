@@ -1,0 +1,66 @@
+-- ARGSTAMP-UNIFY-PLAN.md Phase 0 — TEMP parity probe (delete at unification end).
+--
+-- Identical to eval_dict_main.mdk EXCEPT it reads a leading mode arg that toggles
+-- `argStampEnabled` before elaboration, so the SAME eval-dict corpus can be run
+-- under BOTH dispatch-elaboration modes (EMIT/True vs EVAL/False) and its PROGRAM
+-- OUTPUT diffed.  Establishes the Phase-0 baseline: which fixtures' output is
+-- already byte-identical under both flags (the plan predicts most are, the fork
+-- being elaboration-internal).
+--
+--   medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>
+--
+-- ON  => enableArgStamp () first  (full static dict-threading, the EMIT mode)
+-- OFF => leave argStampEnabled False (reduced dict layer + runtime arg-tag, EVAL mode)
+--
+-- Probe-only entry: NOT in the emitter graph (selfcompile_fixpoint must stay green).
+
+import frontend.ast.{Decl}
+import frontend.parser.{parse}
+import frontend.desugar.{desugar}
+import types.typecheck.{elaborateOne, enableArgStamp}
+import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
+
+main = match args ()
+  (mode :: runtimePath :: rest) => withMode mode runtimePath rest
+  _ => ePutStrLn "usage: medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+withMode mode runtimePath rest =
+  let _ = if mode == "ON" then enableArgStamp () else ()
+  withRuntime runtimePath rest
+
+withRuntime runtimePath rest = match splitLast rest
+  Some (preludePaths, targetPath) => withFiles runtimePath preludePaths targetPath
+  None => ePutStrLn "usage: (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
+
+splitLast : List a -> Option (List a, a)
+splitLast [] = None
+splitLast [x] = Some ([], x)
+splitLast (x :: rest) = match splitLast rest
+  Some (init, lst) => Some (x :: init, lst)
+  None => None
+
+withFiles runtimePath preludePaths targetPath = match readFile runtimePath
+  Ok rsrc => withPreludes rsrc preludePaths targetPath
+  Err msg => ePutStrLn msg
+
+withPreludes rsrc preludePaths targetPath = match readAllDecls preludePaths
+  Ok preludeDecls => withTarget rsrc preludeDecls targetPath
+  Err msg => ePutStrLn msg
+
+withTarget rsrc preludeDecls targetPath = match readFile targetPath
+  Ok tsrc => putStr (runDict (desugar (parse rsrc)) preludeDecls (desugar (parse tsrc)))
+  Err msg => ePutStrLn msg
+
+runDict : List Decl -> List Decl -> List Decl -> <Mut> String
+runDict runtimeDecls preludeDecls userDecls =
+  let userNames = funNamesOf userDecls
+  let livePrelude = dropShadowedExp userNames preludeDecls
+  evalOneOutput [] ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
+
+readAllDecls : List String -> <IO> Result String (List Decl)
+readAllDecls [] = Ok []
+readAllDecls (p :: rest) = match readFile p
+  Err msg => Err msg
+  Ok src => match readAllDecls rest
+    Err msg => Err msg
+    Ok more => Ok (desugar (parse src) ++ more)
