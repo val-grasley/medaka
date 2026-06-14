@@ -192,6 +192,30 @@ sepBy1 p sep = do
   xs <- many (sepThen sep p)
   pure (x :: xs)
 
+-- Consume an OPTIONAL trailing comma that `sepBy1` left positioned at (a
+-- trailing comma backtracks the failed element parse, leaving the parser AT the
+-- comma).  Additive: a non-comma token is left untouched, so existing
+-- (comma-free) input parses identically.  Insert between `sepBy1` and the
+-- closing-delimiter `expectTok` to accept the trailing-comma-on-break form the
+-- formatter emits.
+optTrailingComma : Parser Unit
+optTrailingComma = do
+  t <- peekP
+  optTrailingCommaFor t
+
+optTrailingCommaFor : Token -> Parser Unit
+optTrailingCommaFor TComma = do
+  advance
+  pure ()
+optTrailingCommaFor _ = pure ()
+
+-- Like `optTrailingComma`, but a no-op for a single-element paren group — a
+-- trailing comma after one element (`(x,)`) is NOT accepted, so `(x)` keeps its
+-- "parenthesized x" meaning (no 1-tuple ambiguity).
+optTrailingCommaTuple : List a -> Parser Unit
+optTrailingCommaTuple [_] = pure ()
+optTrailingCommaTuple _ = optTrailingComma
+
 chainl1 : Parser a -> Parser (a -> a -> a) -> Parser a
 chainl1 p op = do
   x <- p
@@ -600,6 +624,7 @@ variantUpdateTail x = do
   e <- parseExpr
   expectTok TPipe
   fields <- sepBy1 recordFieldExpr (expectTok TComma)
+  optTrailingComma
   expectTok TRBrace
   pure (EVariantUpdate x e (map (desugarDottedField e) fields))
 
@@ -618,6 +643,7 @@ braceItemsFor x TRBrace = do
   pure (classifyBrace x [])
 braceItemsFor x _ = do
   items <- sepBy1 parseKvOrE (expectTok TComma)
+  optTrailingComma
   expectTok TRBrace
   pure (classifyBrace x items)
 
@@ -694,6 +720,7 @@ parseRecordUpdate = do
   e <- parseExpr
   expectTok TPipe
   fields <- sepBy1 recordFieldExpr (expectTok TComma)
+  optTrailingComma
   expectTok TRBrace
   pure (ERecordUpdate e (map (desugarDottedField e) fields))
 
@@ -809,6 +836,7 @@ sectionTail op _ = do
 parseParenExpr : Parser Expr
 parseParenExpr = do
   es <- sepBy1 parseExpr (expectTok TComma)
+  optTrailingCommaTuple es
   expectTok TRParen
   pure (parenResult es)
 
@@ -872,13 +900,25 @@ listRest first TDotDotEq = rangeAfter first True
 listRest first TPipe = listCompAfter first
 listRest first TComma = do
   advance
-  rest <- sepBy1 parseExpr (expectTok TComma)
-  expectTok TRBracket
-  pure (EListLit (first :: rest))
+  t <- peekP
+  listAfterComma first t
 listRest first TRBracket = do
   advance
   pure (EListLit [first])
 listRest _ _ = failP "expected , .. ..= | or ]"
+
+-- after the first element and a comma: a `]` here is a trailing comma on a
+-- single-element list (`[x,]`); otherwise parse the remaining elements (and
+-- accept a trailing comma after them too).
+listAfterComma : Expr -> Token -> Parser Expr
+listAfterComma first TRBracket = do
+  advance
+  pure (EListLit [first])
+listAfterComma first _ = do
+  rest <- sepBy1 parseExpr (expectTok TComma)
+  optTrailingComma
+  expectTok TRBracket
+  pure (EListLit (first :: rest))
 
 rangeAfter : Expr -> Bool -> Parser Expr
 rangeAfter lo incl = do
@@ -957,13 +997,23 @@ arrayRest first TDotDot = arrayRangeAfter first False
 arrayRest first TDotDotEq = arrayRangeAfter first True
 arrayRest first TComma = do
   advance
-  rest <- sepBy1 parseExpr (expectTok TComma)
-  expectTok TRArray
-  pure (EArrayLit (first :: rest))
+  t <- peekP
+  arrayAfterComma first t
 arrayRest first TRArray = do
   advance
   pure (EArrayLit [first])
 arrayRest _ _ = failP "expected , .. ..= or |]"
+
+-- single-element trailing comma `[|x,|]`: a `|]` after the comma closes it.
+arrayAfterComma : Expr -> Token -> Parser Expr
+arrayAfterComma first TRArray = do
+  advance
+  pure (EArrayLit [first])
+arrayAfterComma first _ = do
+  rest <- sepBy1 parseExpr (expectTok TComma)
+  optTrailingComma
+  expectTok TRArray
+  pure (EArrayLit (first :: rest))
 
 arrayRangeAfter : Expr -> Bool -> Parser Expr
 arrayRangeAfter lo incl = do
@@ -1252,6 +1302,9 @@ recordPatFieldsFor : Token -> Parser (List RecPatField, Bool)
 recordPatFieldsFor TEllipsis = do
   advance
   pure ([], True)
+-- trailing comma: a `}` directly after a comma closes the field list (also
+-- accepts an empty `C {}` record pattern, which is harmless and additive)
+recordPatFieldsFor TRBrace = pure ([], False)
 recordPatFieldsFor _ = do
   f <- recordPatField
   t <- peekP
@@ -1411,6 +1464,7 @@ patParenFor : Token -> Parser Pat
 patParenFor TRParen = emit (PLit LUnit)
 patParenFor _ = do
   ps <- sepBy1 parsePat (expectTok TComma)
+  optTrailingCommaTuple ps
   expectTok TRParen
   pure (tuplePatOrSingle ps)
 
@@ -1424,6 +1478,7 @@ patListFor : Token -> Parser Pat
 patListFor TRBracket = emit (PList [])
 patListFor _ = do
   ps <- sepBy1 parsePat (expectTok TComma)
+  optTrailingComma
   expectTok TRBracket
   pure (PList ps)
 
@@ -1545,6 +1600,7 @@ parseTyParen : Parser Ty
 parseTyParen = do
   expectTok TLParen
   ts <- sepBy1 parseTy (expectTok TComma)
+  optTrailingCommaTuple ts
   expectTok TRParen
   pure (tyTupleOrSingle ts)
 
@@ -1805,6 +1861,7 @@ importPathForT : List String -> Token -> Parser UsePath
 importPathForT quals TDotLBrace = do
   advance
   ms <- sepBy1 importMember (expectTok TComma)
+  optTrailingComma
   expectTok TRBrace
   pure (UseGroup quals ms)
 importPathForT quals TDotStar = do
@@ -2250,6 +2307,7 @@ parseNamedPayload : Parser ConPayload
 parseNamedPayload = do
   expectTok TLBrace
   fields <- sepBy1 parseField (expectTok TComma)
+  optTrailingComma
   expectTok TRBrace
   pure (ConNamed fields)
 

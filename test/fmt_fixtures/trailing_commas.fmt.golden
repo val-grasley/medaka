@@ -1,0 +1,13 @@
+import support.util.{joinWith, listLen}
+
+data Pt = MkPt { x : Int, y : Int }
+
+lst = [1, 2, 3]
+arr = [|10, 20, 30|]
+tup = (1, 2, 3)
+
+unpack (a, b) = a
+
+field MkPt { x, y } = x
+
+main = println lst

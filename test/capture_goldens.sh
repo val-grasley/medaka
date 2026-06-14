@@ -42,6 +42,13 @@ LEXTOK="$ROOT/_build/default/dev/lextok.exe"
 PRINTPROBE="$ROOT/_build/default/dev/print_probe.exe"
 POSDUMP="$ROOT/_build/default/dev/positions_dump.exe"
 CMTDUMP="$ROOT/_build/default/dev/comment_dump.exe"
+# NATIVE Stage-4 oracles (OCaml-free).  fmt/printer goldens are re-rooted onto
+# these: the native formatter is canonical (trailing-comma-on-break style), so
+# its output — not the frozen OCaml main.exe's — is the source of truth.  These
+# are the SAME binaries the diff_selfhost_fmt / diff_selfhost_printer gates run,
+# so capture-from-native makes those gates native-vs-native (no OCaml leg).
+FMT_NATIVE="$ROOT/test/bin/fmt_main"
+PRINTER_NATIVE="$ROOT/test/bin/printer_main"
 # §2b typecheck/check/diagnostics oracles (location-free dumps).
 TCPROBE="$ROOT/_build/default/dev/tc_probe.exe"
 TCMODPROBE="$ROOT/_build/default/dev/tc_module_probe.exe"
@@ -73,7 +80,7 @@ oracle_lextok()          { "$LEXTOK" "$1"; }                           # lex_fil
 oracle_astdump()         { "$ASTDUMP" "$1"; }                          # parse AST S-expr
 oracle_astdump_desugar() { "$ASTDUMP" --desugar "$1"; }               # desugar / desugar_batch
 oracle_astdump_mark()    { "$ASTDUMP" --mark "$1"; }                  # mark / mark_batch
-oracle_print_probe()     { "$PRINTPROBE" "$1"; }                       # printer reprint
+oracle_print_probe()     { "$PRINTER_NATIVE" "$1" 2>/dev/null | sed '$ s/()$//; ${/^$/d;}'; }  # printer reprint (NATIVE — re-rooted; strip_unit to match the gate)
 oracle_positions_dump()  { "$POSDUMP" "$1"; }                          # parser position channel
 oracle_comment_dump()    { "$CMTDUMP" "$1"; }                          # lexer comment channel
 # parse_result : the OCaml oracle only confirms the fixture is a genuine parse
@@ -397,14 +404,19 @@ capture_boot boot_mark      "$ROOT/test/parse_fixtures"      boot_mark.golden   
 capture_boot boot_typecheck "$ROOT/test/typecheck_fixtures"  boot_typecheck.golden typecheck_main
 capture_boot boot_eval      "$ROOT/test/eval_fixtures"       boot_eval.golden      eval_main
 
-# ── §2c TOOLING goldens (fmt / test) — captured from the OCaml subcommand ──────
-# fmt : golden = `main.exe fmt --stdout <f>` RAW; the gate applies `norm` (float
-# text) to BOTH golden and native output, so capture raw here.  Sibling .fmt.golden.
+# ── §2c TOOLING goldens (fmt / test) ──────────────────────────────────────────
+# fmt : golden RE-ROOTED onto the NATIVE formatter (test/bin/fmt_main) — it is
+# canonical (trailing-comma-on-break) and is the very binary the
+# diff_selfhost_fmt gate runs, so this makes that gate native-vs-native.  The
+# gate compares `golden` (norm'd) against `fmt_main | strip_unit | norm`, so we
+# apply the SAME strip_unit here (drop the native CLI's trailing unit/`0` echo)
+# — otherwise the golden would carry an artifact the gate strips from actual.
+fmt_native_stripped() { "$FMT_NATIVE" "$1" 2>/dev/null | sed '$ s/()$//; ${/^$/d;}' | sed '$ { /^0$/d; }'; }
 if want fmt; then
   total=$((total+1))
   for f in "$ROOT"/test/fmt_fixtures/*.mdk "$ROOT"/test/parse_fixtures/*.mdk; do
     [ -f "$f" ] || continue
-    emit_golden "${f%.mdk}.fmt.golden" "$MAIN" fmt --stdout "$f"
+    emit_golden "${f%.mdk}.fmt.golden" fmt_native_stripped "$f"
   done
 fi
 # test : golden = `main.exe test <f>` (doctest/prop report).  Fixtures = the
@@ -556,11 +568,13 @@ if want native_cli; then
     out="$TMP/nc"; "$MAIN" run "$CHECK_MAIN" "$RUNTIME" "$CORE" "$f" 2>/dev/null | LC_ALL=C sort > "$out" || true
     emit_to "$NC_GOLD/check/$n.golden" "$out"
   done
-  # fmt: medaka fmt --stdout (raw)
+  # fmt: native `medaka fmt --stdout` RE-ROOTED off OCaml (the native formatter
+  # is canonical; trailing-comma-on-break).  The diff_native_cli fmt subtest
+  # strips the trailing-unit `0` from the native side, so strip it here too.
   for f in "$ROOT"/test/fmt_fixtures/*.mdk; do
     [ -f "$f" ] || continue
     n="$(basename "$f" .mdk)"
-    out="$TMP/nc"; "$MAIN" fmt --stdout "$f" 2>/dev/null > "$out" || true
+    out="$TMP/nc"; "$ROOT/medaka" fmt --stdout "$f" 2>/dev/null | sed '$ s/0$//' > "$out" || true
     emit_to "$NC_GOLD/fmt/$n.golden" "$out"
   done
   # new: scaffold tree from `medaka new proj`
