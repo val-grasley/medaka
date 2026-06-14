@@ -552,7 +552,7 @@ recordsRef = Ref []
 -- constrained function's constraint variable, that function's dict parameter
 -- (RDict).  The impl-dicts ref is filled (single-module elaborate path only) when
 -- the route is a parametric impl with a `requires` — one route per requires.
-pendingSites : Ref (List (String, Ref Route, Ref (List Route), Mono))
+pendingSites : Ref (List (String, Ref Route, Ref (List Route), Mono, Mono, String))
 pendingSites = Ref []
 
 -- Phase 151 / Gap G: comparison/equality OPERATOR sites discovered during
@@ -1906,7 +1906,7 @@ recordMethodDicts name methodRef subst = match lookupAssocSL2 name methodConstra
 recordSite : String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Mono
 recordSite name tagRef implRef methodType =
   let stripped = stripArrows methodType
-  let _ = set_ref pendingSites ((name, tagRef, implRef, stripped) :: pendingSites.value)
+  let _ = set_ref pendingSites ((name, tagRef, implRef, stripped, methodType, currentFn.value) :: pendingSites.value)
   let _ = set_ref methodSiteFns ((currentFn.value, stripped) :: methodSiteFns.value)
   methodType
 
@@ -3408,10 +3408,10 @@ isEmptyL : List a -> Bool
 isEmptyL [] = True
 isEmptyL _ = False
 
-resolveSites : List ImplEntry -> List KeyEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono) -> <Mut> Unit
+resolveSites : List ImplEntry -> List KeyEntry -> List String -> List (String, Ref Route, Ref (List Route), Mono, Mono, String) -> <Mut> Unit
 resolveSites _ _ _ [] = ()
-resolveSites implTable keyTable rpNames ((name, tagRef, implRef, resultMono) :: rest) =
-  let _ = resolveSite implTable keyTable rpNames name tagRef implRef resultMono
+resolveSites implTable keyTable rpNames ((name, tagRef, implRef, resultMono, fullMono, encl) :: rest) =
+  let _ = resolveSite implTable keyTable rpNames name tagRef implRef resultMono fullMono encl
   resolveSites implTable keyTable rpNames rest
 
 -- a method occurrence's route: if its discriminating type is a constrained
@@ -3435,16 +3435,36 @@ resolveSites implTable keyTable rpNames ((name, tagRef, implRef, resultMono) :: 
 -- site keys off the RESULT mono (`isEmpty`'s `Bool`), which never names the receiver's
 -- impl, so this gate would mis-route every shadow method.  RLocal is stamped by the
 -- arg-position resolveRLocalSites (keyed on the RECEIVER mono) AFTER resolveSites.
-resolveSite : List ImplEntry -> List KeyEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Unit
-resolveSite implTable keyTable rpNames name tagRef implRef resultMono = match activeDictVarOf resultMono
+resolveSite : List ImplEntry -> List KeyEntry -> List String -> String -> Ref Route -> Ref (List Route) -> Mono -> Mono -> String -> <Mut> Unit
+resolveSite implTable keyTable rpNames name tagRef implRef resultMono fullMono encl = match activeDictVarOfEncl resultMono encl
   Some dname =>
     set_ref tagRef (if containsName name rpNames then RDictFwd dname else RDict dname)
   None => match headTyconMono resultMono
     Some tag =>
       let routeKey = fromOption tag (keyForSite keyTable name resultMono)
       let _ = set_ref tagRef (RKey routeKey [])
-      set_ref implRef (implDictRoutesFor implTable name tag resultMono)
+      let paramMonos = fromOption [resultMono] (ifaceParamMonos name fullMono)
+      set_ref implRef (implDictRoutesForFull implTable name tag resultMono paramMonos)
     None => ()
+
+-- Recover the FULL list of interface-type-parameter monos for a method occurrence,
+-- ordered by the interface's typaram declaration.  Look up the method's interface
+-- (methodIfaceParamsRef: iface, typarams, declared method Ty), match the declared Ty
+-- against the occurrence's full mono to bind each typaram → its inferred mono, then
+-- read them out in typaram order.  For `fromEntries : List e -> c` matched against the
+-- occurrence `List Int -> Set _a`, this yields [Set _a, Int] (c then e) — the element
+-- grounding (`e ↦ Int`) the result-only `resultMono` (= c = Set _a) had lost.  None
+-- when the method has no registered interface (a plain `=>`-constrained fn) or the
+-- declared/occurrence shapes do not match — resolveSite falls back to [resultMono].
+ifaceParamMonos : String -> Mono -> <Mut> Option (List Mono)
+ifaceParamMonos name fullMono = match lookupAssocS name methodIfaceParamsRef.value
+  None => None
+  Some (_, typarams, mty) => match matchTyMono mty fullMono
+    None => None
+    Some subst => Some (map (paramMonoOf subst) typarams)
+
+paramMonoOf : List (String, Mono) -> String -> Mono
+paramMonoOf subst tp = fromOption (TCon tp) (lookupAssocS tp subst)
 
 -- C5: does some impl in [keyTable] define method [name] at head tycon [tag]?  The
 -- static analogue of eval's narrowMethod finding a VTypedImpl tagged [tag] in the
@@ -3612,13 +3632,13 @@ innerDefaultMethod m = if containsName m ["lt", "gt", "lte", "gte", "min", "max"
 
 implDefinesMethodAt : List ImplEntry -> String -> String -> Bool
 implDefinesMethodAt [] _ _ = False
-implDefinesMethodAt (ImplEntry tag2 methodNames _ _ :: rest) method tag
+implDefinesMethodAt (ImplEntry tag2 methodNames _ _ _ :: rest) method tag
   | tag2 == tag && containsName method methodNames = True
   | otherwise = implDefinesMethodAt rest method tag
 
 headHasRequires : List ImplEntry -> String -> Bool
 headHasRequires [] _ = False
-headHasRequires (ImplEntry tag2 _ _ reqs :: rest) tag
+headHasRequires (ImplEntry tag2 _ _ reqs _ :: rest) tag
   | tag2 == tag && not (isEmptyList reqs) = True
   | otherwise = headHasRequires rest tag
 
@@ -3850,7 +3870,7 @@ setCoherenceUserDecls ds = set_ref coherenceUserDecls ds
 -- narrows by), the methods it defines (to disambiguate which impl a method site
 -- picked), the head type pattern (matched against the call's concrete result mono
 -- to recover the element type), and its requires constraints.
-public export data ImplEntry = ImplEntry String (List String) Ty (List Require)
+public export data ImplEntry = ImplEntry String (List String) Ty (List Require) (List Ty)
 
 -- build the table from the program's impls-with-requires (others need no dicts)
 buildImplTable : List Decl -> List ImplEntry
@@ -3865,8 +3885,8 @@ implEntryOf _ = []
 
 implEntryFromTys : List Ty -> List Require -> List ImplMethod -> List ImplEntry
 implEntryFromTys [] _ _ = []
-implEntryFromTys (headTy :: _) reqs methods = match headTyconTy headTy
-  Some tag => [ImplEntry tag (map implMethodNameTc methods) headTy reqs]
+implEntryFromTys (headTy :: rest) reqs methods = match headTyconTy headTy
+  Some tag => [ImplEntry tag (map implMethodNameTc methods) headTy reqs (headTy :: rest)]
   None => []
 
 implMethodNameTc : ImplMethod -> String
@@ -3950,15 +3970,93 @@ headTyconTy _ = None
 -- (List (List Int)) can re-match the same "List" entry.
 implDictRoutesFor : List ImplEntry -> String -> String -> Mono -> <Mut> List Route
 implDictRoutesFor implTable name tag resultMono =
-  implDictRoutesIn implTable implTable name tag resultMono
+  implDictRoutesIn implTable implTable name tag resultMono [resultMono]
 
-implDictRoutesIn : List ImplEntry -> List ImplEntry -> String -> String -> Mono -> <Mut> List Route
-implDictRoutesIn _ [] _ _ _ = []
-implDictRoutesIn fullTable (ImplEntry tag2 methodNames headTy reqs :: rest) name tag resultMono
-  | tag2 == tag && containsName name methodNames = match matchTyMono headTy resultMono
+-- Multi-param-interface variant: [paramMonos] is the FULL list of the interface's
+-- type-parameter monos at this occurrence (recovered by ifaceParamMonos), e.g. for
+-- `Set { 3,1,2 } : Set _a` the `FromEntries c e` occurrence has c↦Set _a, e↦Int.
+-- The single-param result-only path lost the element grounding (`e`): matching the
+-- impl head `Set a` against the result `Set _a` only binds a↦_a (a free var), so the
+-- `requires Ord a` route fell to RNone → a null Ord dict → SIGSEGV.  Matching the
+-- impl's FULL `implTys` (`[Set a, a]`) against ALL the param monos recovers a↦Int from
+-- the second param, exactly as the OCaml oracle's impl_head_subst keys off the full
+-- concrete_args (the interface's param_vars), not just the result.
+implDictRoutesForFull : List ImplEntry -> String -> String -> Mono -> List Mono -> <Mut> List Route
+implDictRoutesForFull implTable name tag resultMono paramMonos =
+  implDictRoutesIn implTable implTable name tag resultMono paramMonos
+
+implDictRoutesIn : List ImplEntry -> List ImplEntry -> String -> String -> Mono -> List Mono -> <Mut> List Route
+implDictRoutesIn _ [] _ _ _ _ = []
+implDictRoutesIn fullTable (ImplEntry tag2 methodNames headTy reqs implTys :: rest) name tag resultMono paramMonos
+  | tag2 == tag && containsName name methodNames = match headSubstWithParams headTy implTys resultMono paramMonos
       Some subst => implReqRoutes fullTable subst reqs
-      None => implDictRoutesIn fullTable rest name tag resultMono
-  | otherwise = implDictRoutesIn fullTable rest name tag resultMono
+      None => implDictRoutesIn fullTable rest name tag resultMono paramMonos
+  | otherwise = implDictRoutesIn fullTable rest name tag resultMono paramMonos
+
+-- Build the impl head substitution.  Always match the impl HEAD (`Set a`) against
+-- the result mono (the historical single-param behaviour, byte-identical when no
+-- extra param info is supplied).  THEN, when the caller has the interface's FULL
+-- param monos (`[Set _a, Int]` for a multi-param interface) and they line up with
+-- the impl's full type-arg patterns (`[Set a, a]`), additionally match the trailing
+-- patterns against the trailing param monos and merge — preferring a concrete head
+-- (Int) over a free var (_a) on a key collision.  This recovers the element grounding
+-- (`a ↦ Int`) the head-only match lost.  When the param monos don't line up (a plain
+-- result-only call, or a shape mismatch) the head match alone stands.
+headSubstWithParams : Ty -> List Ty -> Mono -> List Mono -> Option (List (String, Mono))
+headSubstWithParams headTy implTys resultMono paramMonos = match matchTyMono headTy resultMono
+  None => None
+  Some headSub => Some (augmentWithParams headSub implTys paramMonos)
+
+-- When the impl's full type-arg patterns line up with the interface's full param
+-- monos (a multi-param interface), fold the trailing element groundings into the
+-- head subst (concrete-wins); otherwise return the head subst unchanged.
+augmentWithParams : List (String, Mono) -> List Ty -> List Mono -> List (String, Mono)
+augmentWithParams headSub implTys paramMonos
+  | lengthL implTys == lengthL paramMonos && lengthL paramMonos > 1 =
+      match implHeadSubst implTys paramMonos
+        Some full => mergeSubstPreferConcrete headSub full
+        None => headSub
+  | otherwise = headSub
+
+-- Match the impl's full type-arg patterns [pats] (`[Set a, a]`) against the
+-- interface's concrete param monos [concretes] (`[Set _a, Int]`), accumulating a
+-- name→mono subst.  When the SAME impl var appears in several positions (here `a`
+-- is both the head element and the standalone element param), prefer the binding
+-- whose mono has a CONCRETE head tycon (Int) over a still-free var (_a) — that is
+-- what recovers the element grounding the result-only match missed.  Mirrors the
+-- oracle's impl_head_subst (Hashtbl.replace last-wins, with concrete winning here).
+-- A length mismatch / structural failure → None (no match, try the next impl), so a
+-- single-param interface ([resultMono] only) behaves exactly as the old matchTyMono.
+implHeadSubst : List Ty -> List Mono -> Option (List (String, Mono))
+implHeadSubst pats concretes
+  | lengthL pats != lengthL concretes = None
+  | otherwise = implHeadSubstGo pats concretes (Some [])
+
+implHeadSubstGo : List Ty -> List Mono -> Option (List (String, Mono)) -> Option (List (String, Mono))
+implHeadSubstGo [] [] acc = acc
+implHeadSubstGo (p :: ps) (c :: cs) acc = match acc
+  None => None
+  Some sofar => match matchTyMono p c
+    None => None
+    Some s => implHeadSubstGo ps cs (Some (mergeSubstPreferConcrete sofar s))
+implHeadSubstGo _ _ _ = None
+
+-- Merge two name→mono substs; on a key collision keep whichever value has a
+-- concrete head tycon (so the grounded element wins over a free result var).
+mergeSubstPreferConcrete : List (String, Mono) -> List (String, Mono) -> List (String, Mono)
+mergeSubstPreferConcrete acc [] = acc
+mergeSubstPreferConcrete acc ((k, v) :: rest) = mergeSubstPreferConcrete (mergeOne acc k v) rest
+
+mergeOne : List (String, Mono) -> String -> Mono -> List (String, Mono)
+mergeOne [] k v = [(k, v)]
+mergeOne ((k2, v2) :: rest) k v
+  | k2 == k = (k2, preferConcrete v2 v) :: rest
+  | otherwise = (k2, v2) :: mergeOne rest k v
+
+preferConcrete : Mono -> Mono -> Mono
+preferConcrete a b = match headTyconMono a
+  Some _ => a
+  None => b
 
 -- match an impl-head type PATTERN against a concrete mono, binding the impl's
 -- type-variable names to monos (single-level: the pattern's args are bare vars).
@@ -3977,6 +4075,15 @@ matchTyMono (TyApp a b) m = match normalize m
 matchTyMono (TyTuple ts) m = match normalize m
   TTuple ms => if lengthL ts == lengthL ms then matchTyMonoList ts ms else None
   _ => None
+-- Function-type arm: recover typaram bindings from BOTH a method's argument and
+-- result positions (used by ifaceParamMonos to ground a multi-param interface's
+-- element param `e` from the argument `List e`).  Effects are ignored.  Wrapper
+-- nodes (effect/constrained annotations on the declared Ty) are stripped first.
+matchTyMono (TyFun a b) m = match normalize m
+  TFun ma _ mb => combineSubst (matchTyMono a ma) (matchTyMono (stripEff b) mb)
+  _ => None
+matchTyMono (TyEffect _ _ t) m = matchTyMono t m
+matchTyMono (TyConstrained _ t) m = matchTyMono t m
 matchTyMono _ _ = None
 
 -- zip-match element-type patterns against element monos, combining the substs.
@@ -4011,7 +4118,7 @@ reqRoute implTable subst (arg :: _) =
 -- nesting.  Terminates because each step structurally shrinks the requirement type.
 implRequiresRoutesRec : List ImplEntry -> String -> Mono -> <Mut> List Route
 implRequiresRoutesRec implTable tag m = match findImplEntry implTable tag m
-  Some (ImplEntry _ _ headTy reqs) => match matchTyMono headTy m
+  Some (ImplEntry _ _ headTy reqs _) => match matchTyMono headTy m
     Some subst => implReqRoutes implTable subst reqs
     None => []
   None => []
@@ -4020,8 +4127,8 @@ implRequiresRoutesRec implTable tag m = match findImplEntry implTable tag m
 -- most one parametric impl per head tycon in well-formed programs).
 findImplEntry : List ImplEntry -> String -> Mono -> Option ImplEntry
 findImplEntry [] _ _ = None
-findImplEntry (ImplEntry tag2 ms hty reqs :: rest) tag m
-  | tag2 == tag = Some (ImplEntry tag2 ms hty reqs)
+findImplEntry (ImplEntry tag2 ms hty reqs itys :: rest) tag m
+  | tag2 == tag = Some (ImplEntry tag2 ms hty reqs itys)
   | otherwise = findImplEntry rest tag m
 
 -- fill each constrained-fn call site's routes: one route per constraint mono.  A
@@ -4060,7 +4167,7 @@ routeOfMono implTable m = match activeDictVarOf m
 -- return-position routing stays byte-identical.
 argImplRequiresRoutesRec : List ImplEntry -> String -> Mono -> <Mut> List Route
 argImplRequiresRoutesRec implTable tag m = match findImplEntry implTable tag m
-  Some (ImplEntry _ _ headTy reqs) => match matchTyMono headTy m
+  Some (ImplEntry _ _ headTy reqs _) => match matchTyMono headTy m
     Some subst => argImplReqRoutes implTable subst reqs
     None => []
   None => []
@@ -4087,7 +4194,7 @@ argImplDictRoutesFor implTable name tag mono = argImplDictRoutesForGo implTable 
 -- whole table for the nested routeOfMono recursion; [scan] walks to find the head.
 argImplDictRoutesForGo : List ImplEntry -> List ImplEntry -> String -> String -> Mono -> <Mut> List Route
 argImplDictRoutesForGo _ [] _ _ _ = []
-argImplDictRoutesForGo full (ImplEntry tag2 methodNames headTy reqs :: rest) name tag mono
+argImplDictRoutesForGo full (ImplEntry tag2 methodNames headTy reqs _ :: rest) name tag mono
   | tag2 == tag && containsName name methodNames = match matchTyMono headTy mono
       Some subst => argImplReqRoutes full subst reqs
       None => argImplDictRoutesForGo full rest name tag mono
@@ -4540,6 +4647,9 @@ checkProgramSeeded seed prog =
   -- typechecker previously skipped props entirely (funDefs ignores DProp), so this
   -- gap was latent until Phase 2's promotion exposed it.
   let _ = inferPropBodies (extendVars env1 topSchemes) prog
+  -- Shape A (gap #44): ground a container literal's free result-element var THROUGH
+  -- the impl's method type, BEFORE the resolve* passes read the cells.
+  let _ = groundMultiParamObligations prog pendingImplObligations.value
   -- Error-path B4: now every method occurrence's dispatch type is fully resolved;
   -- reject any whose concrete head type has no matching impl (mirrors the oracle's
   -- check_method_usages, lib/typecheck.ml:3845).
@@ -4687,6 +4797,78 @@ inferDefaultMethodBody env expectedTy pats body =
 -- NO impl is rejected — both matching the oracle.
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono) -> <Mut> Unit
 checkImplObligations prog obligations = checkImplObligationsGo (implHeadsOf prog) obligations
+
+-- ── Multi-param-interface element grounding (Shape A / gap #44) ─────────────
+-- A container LITERAL (`Set { 3,1,2 }` / `Map { 1 => "a" }`) desugars to a
+-- return-position `fromEntries [..] :~ Set _a`.  The head-pin fixes the RESULT to
+-- `Set _a`, and the list arg grounds the interface's ELEMENT param `e` (= Int),
+-- but nothing ties the result's element var `_a` to `e` — HM does not propagate the
+-- impl's `FromEntries (Set a) a` variable-sharing.  So `_a` stays free, and BOTH the
+-- return-position `requires Ord a` route AND the enclosing `display`/`debug`'s
+-- arg-position element dict drop their dictionaries (null dict → SIGSEGV on the build
+-- path; eval recovers via runtime arg-tag fallback, which is why `medaka run` worked).
+-- Fix: for each multi-param-interface method occurrence whose dispatch type heads a
+-- UNIQUE impl, instantiate that impl's method type (interface typarams ↦ the impl's
+-- own type args, freshened) and unify it with the occurrence mono.  This grounds `_a`
+-- := Int THROUGH THE SHARED CELL, so every downstream site reading that cell (the
+-- `display` arg-stamp) and the return-position route both see `Set Int`.  Runs after
+-- inference, before the resolve* passes read the cells.  Single-param interfaces and
+-- already-ground occurrences are no-ops.  Mirrors the intent of the oracle's
+-- impl_head_subst keying off the FULL concrete_args (the interface's param_vars).
+groundMultiParamObligations : List Decl -> List (String, List String, Ty, Mono) -> <Mut> Unit
+groundMultiParamObligations _ [] = ()
+groundMultiParamObligations prog ((iface, typarams, mty, occ) :: rest) =
+  let _ = groundOneObligation prog iface typarams mty occ
+  groundMultiParamObligations prog rest
+
+groundOneObligation : List Decl -> String -> List String -> Ty -> Mono -> <Mut> Unit
+groundOneObligation prog iface typarams mty occ
+  | lengthL typarams <= 1 = ()
+  | otherwise = match dispatchMonosOf typarams mty occ
+      [] => ()
+      (dispMono :: _) => match headTyconMono dispMono
+        None => ()
+        Some tag => match uniqueImplTysFor prog iface tag
+          None => ()
+          Some implTys =>
+            -- build impl method type: interface typaram ↦ impl ty, then freshen the
+            -- impl's own vars, then unify with the occurrence.
+            let baseMap = zipL typarams implTys
+            let implMethodTy = substTyVars baseMap mty
+            let inst = fst (astTypeFreshTbl implMethodTy)
+            unify occ inst
+
+-- the type args of the UNIQUE impl of [iface] whose head tycon is [tag]; None when
+-- absent or ambiguous (more than one), so an over-determined case is left untouched.
+uniqueImplTysFor : List Decl -> String -> String -> Option (List Ty)
+uniqueImplTysFor prog iface tag = match filterImplTysFor prog iface tag
+  [tys] => Some tys
+  _ => None
+
+filterImplTysFor : List Decl -> String -> String -> List (List Ty)
+filterImplTysFor prog iface tag = concatMapL (implTysIfMatch iface tag) prog
+
+implTysIfMatch : String -> String -> Decl -> List (List Ty)
+implTysIfMatch iface tag (DAttrib _ d) = implTysIfMatch iface tag d
+implTysIfMatch iface tag (DImpl { iface = ifn, tys, ... })
+  | ifn == iface = match tys
+      (headTy :: _) => match headTyconTy headTy
+        Some t => if t == tag then [tys] else []
+        None => []
+      [] => []
+  | otherwise = []
+implTysIfMatch _ _ _ = []
+
+-- substitute interface-typaram NAMES → impl type PATTERNS inside a declared Ty.
+substTyVars : List (String, Ty) -> Ty -> Ty
+substTyVars sub (TyVar n) = fromOption (TyVar n) (lookupAssocS n sub)
+substTyVars _ (TyCon n) = TyCon n
+substTyVars sub (TyApp a b) = TyApp (substTyVars sub a) (substTyVars sub b)
+substTyVars sub (TyFun a b) = TyFun (substTyVars sub a) (substTyVars sub b)
+substTyVars sub (TyTuple ts) = TyTuple (map (substTyVars sub) ts)
+substTyVars sub (TyEffect es eff t) = TyEffect es eff (substTyVars sub t)
+substTyVars sub (TyConstrained cs t) = TyConstrained cs (substTyVars sub t)
+
 
 checkImplObligationsGo : List (String, List Ty) -> List (String, List String, Ty, Mono) -> <Mut> Unit
 checkImplObligationsGo _ [] = ()
@@ -5867,6 +6049,14 @@ checkModuleFullImpl seedVars accData implDecls prog =
   -- UNCONDITIONALLY on both paths (was `argStampEnabled || evalDictLayerActive`, an
   -- always-True tautology since evalDictLayerActive = not argStampEnabled).
   let _ = set_ref funConstraintsRef crossModuleFunConstraintsRef.value
+  -- resetState wiped methodIfaceParamsRef; re-register it from the FULL impl
+  -- universe [implDecls] (core/earlier modules ++ this prog) so resolveSite's
+  -- ifaceParamMonos can recover a multi-param interface's full param monos (the
+  -- element grounding `e` for `FromEntries c e`).  The flat checkProgramSeeded does
+  -- the same against its whole-program [prog].  Without it the module path leaves the
+  -- table empty → ifaceParamMonos returns None → a Set/Map-literal return-position
+  -- `fromEntries` route drops its `Ord` element dict → null dict → SIGSEGV.
+  let _ = registerMethodIfaceParamsAll implDecls
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   -- C5: a standalone-shadow method name (box's `toList`/`isEmpty`) is bound in
@@ -5908,6 +6098,11 @@ checkModuleFullImpl seedVars accData implDecls prog =
   -- Post-ARGSTAMP-UNIFY (Phase 4): unconditional on both paths (was the always-True
   -- `argStampEnabled || evalDictLayerActive`).
   let _ = set_ref crossModuleFunConstraintsRef funConstraintsRef.value
+  -- Shape A (gap #44): ground a container literal's free result-element var THROUGH
+  -- the unique impl's method type, so this module's pending sites/arg-stamps resolve
+  -- against the GROUNDED element (Set Int, not Set _a).  [implDecls] is the full impl
+  -- universe (core ++ earlier modules ++ prog), so the Set/Map impls are visible.
+  let _ = groundMultiParamObligations implDecls pendingImplObligations.value
   globalS ++ topSchemes
 
 -- gate: per-module impl-body inference runs only on the emit path (implInferEnabled).
