@@ -1,0 +1,14 @@
+-- Cross-module CTOR-NAME COLLISION, ARITY 1 vs ARITY 2.  lib.mdk DECLARES
+-- `Pair.Box Int Int` (arity 2); this entry declares `Single.Box Int` (arity 1) and
+-- imports only `mark` (never naming lib's `Box`).  A bare-name ctor table conflates
+-- the two arities: entry's `Box 7` is laid out / matched as if it had 2 fields →
+-- wrong value.  Owning-type mangling keeps `Single.Box`/`Pair.Box` distinct.
+-- single (Box 7) = 7; mark 0 = 0; 7 + 0 = 7.
+import lib.{mark}
+
+data Single = Box Int
+
+single : Single -> Int
+single (Box n) = n
+
+main = putStrLn (intToString (single (Box 7) + mark 0))

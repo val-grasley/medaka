@@ -1,0 +1,8 @@
+-- Dependency that DECLARES a ctor `Pair.Box` of ARITY 2 (`Box Int Int`).  The
+-- emitter registers its arity from the DData alone; entry's `Single.Box` (arity 1)
+-- collides by bare name.  `mark` keeps lib reachable without constructing Box (so the
+-- oracle never has to resolve the clashing name).
+public export data Pair = Box Int Int
+
+export mark : Int -> Int
+mark n = n + 0

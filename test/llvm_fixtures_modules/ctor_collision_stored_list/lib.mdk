@@ -1,0 +1,7 @@
+-- Dependency that DECLARES a PAYLOAD `Treeish.Tip Int` (arity 1).  The emitter
+-- registers its arity from the DData alone; entry's NULLARY `Tag.Tip` collides by
+-- bare name.  `mark` keeps lib reachable without constructing Tip.
+public export data Treeish = Tip Int | Branch Int
+
+export mark : Int -> Int
+mark n = n + 0

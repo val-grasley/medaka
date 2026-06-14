@@ -1,0 +1,17 @@
+-- Cross-module CTOR-NAME COLLISION, BOTH NULLARY, different owning types.  lib.mdk
+-- DECLARES `Hue.Red` (nullary); this entry declares `Color.Red` (also nullary) and
+-- imports only `mark` (never naming lib's `Red`).  Arity is equal (0), so this
+-- exercises the TAG/typeId/ordinal mis-route specifically (not arity inheritance): a
+-- bare-name ctor table gives both `Red`s the same composite tag, so a `Color.Red`
+-- value could match the wrong arm or read the wrong ordinal.  Owning-type mangling
+-- keeps the tags distinct.  colorCode Red = 1, colorCode Blue = 2 ⇒ Red→1; mark 10
+-- = 10; 1 + 10 = 11.
+import lib.{mark}
+
+data Color = Red | Blue
+
+colorCode : Color -> Int
+colorCode Red = 1
+colorCode Blue = 2
+
+main = putStrLn (intToString (colorCode Red + mark 10))

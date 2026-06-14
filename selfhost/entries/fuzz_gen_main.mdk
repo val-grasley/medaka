@@ -25,23 +25,21 @@
 --   maps to ONE program here, fully replayable, but a DIFFERENT one than OCaml's seed.
 --   The native generator is the new baseline.  See test/fuzz_diff.sh header.
 --
--- KNOWN NATIVE-GENERATOR GAP (open native-backend codegen bug, NOT a generator
--- logic bug — the interpreter `medaka run` of this entry is perfect for every
--- seed/tier):
---   The native LLVM backend intermittently corrupts a constructed AST node's field
---   (a mixed nullary/payload ADT match mis-routes / mis-extracts a field), so for
---   SOME generated programs the compiled `fuzz_gen_main` faults (EXC_BAD_ACCESS:
---   either a tagged value deref in genByType, or a NULL string in the printer's
---   declLine).  Reproduces deterministically per seed.  Empirically:
---     - TIER=2 (the fuzzer default) and TIER=0: STABLE — 0 crashes over 100 seeds.
---     - TIER=1 (Debug-only-deriving ADTs): FRAGILE — most seeds crash.
---   Worked around here by peeling payload constructors (GTup/GData) off Gty matches
---   with projector helpers (gtyTupElems/gtyDataName) before the nullary dispatch and
---   replacing inline ctx-capturing map/listInit closures with named recursion, which
---   made TIER 0/2 stable; the residual TIER=1 fault is a genuine emitter gap to fix
---   separately (emitter match-lowering of mixed nullary/payload ADTs).  test/fuzz_diff.sh
---   detects an empty generator output and counts it as a known native gap (not a
---   compiler-under-test finding), so the gate stays green on the default TIER=2.
+-- CLOSED NATIVE-GENERATOR GAP (was: open native-backend codegen bug; FIXED 2026-06-13).
+--   Symptom was: the native LLVM backend intermittently corrupted a constructed AST
+--   node's field for SOME generated programs (EXC_BAD_ACCESS in genByType / printer
+--   declLine), reproducible per seed; TIER=1 (Debug-only-deriving ADTs) was fragile
+--   (most seeds crashed) while TIER 0/2 were stable.
+--   ROOT CAUSE: a cross-module CONSTRUCTOR-NAME collision, NOT a match-lowering gap.
+--   This module's nullary `Gty.GBool` collided with the IMPORTED payload `Guard.GBool`
+--   (frontend/ast.mdk) in the emitter's bare-name-keyed ctor table (arity/tag), so the
+--   nullary ctor inherited the payload arity → boxed cell instead of immediate → NULL
+--   field deref.  The interpreter is immune (structural VCon, no arity table).
+--   FIX: constructors are now universally per-module mangled (backend/private_mangle.mdk),
+--   so two modules may reuse a ctor name (matching the interpreter/oracle).  The former
+--   projector-helper + named-recursion workaround has been removed; the direct mixed
+--   nullary/payload Gty match below is correct, and TIER=1 native fuzzing is restored
+--   (30/30 seeds build crash-free).
 
 import frontend.ast.{Lit(..), Ty(..), Pat(..), Arm(..), DoStmt(..), Route(..), Expr(..), DataVis(..), ConPayload(..), Variant(..), Decl(..)}
 import tools.printer.{programToString}
@@ -220,17 +218,13 @@ genLeafElems ctx (ti :: rest) = genLeaf ctx ti :: genLeafElems ctx rest
 -- mis-lowers a `match` over Gty whose arms mix nullary constructors (GInt..GChar)
 -- with payload constructors (GTup/GData) AS TAIL-CALLS — it can route a nullary
 -- value (e.g. GBool) into the GData arm and dereference its absent payload
--- (EXC_BAD_ACCESS on a tagged value; interpreter is correct).  Work around it by
--- peeling the payload constructors off FIRST with explicit projector helpers, so
--- the remaining nullary-only match has a uniform (immediate) layout.
-gtyTupElems : Gty -> Option (List Gty)
-gtyTupElems (GTup ts) = Some ts
-gtyTupElems _ = None
-
-gtyDataName : Gty -> Option String
-gtyDataName (GData n) = Some n
-gtyDataName _ = None
-
+-- (EXC_BAD_ACCESS on a tagged value; interpreter is correct).  ROOT CAUSE FIXED
+-- (2026-06-13): the fault was a cross-module ctor-name collision — this module's
+-- nullary `Gty.GBool` collided with the imported payload `Guard.GBool` (ast.mdk) in
+-- the emitter's bare-name-keyed ctor table, so `GBool` inherited the wrong arity.
+-- Constructors are now universally per-module mangled (backend/private_mangle.mdk),
+-- so the direct mixed match below lowers correctly.  The former projector-helper
+-- workaround (gtyTupElems/gtyDataName peel) has been removed.
 genScalar : Ctx -> Gty -> Int -> <Rand, Mut> Expr
 genScalar ctx t depth = match t
   GInt => genNum ctx t depth
@@ -240,11 +234,10 @@ genScalar ctx t depth = match t
   _ => genLeaf ctx t
 
 genByType : Ctx -> Gty -> Int -> <Rand, Mut> Expr
-genByType ctx t depth = match gtyTupElems t
-  Some ts => ETuple (genTupElems ctx ts depth)
-  None => match gtyDataName t
-    Some name => genData ctx name depth
-    None => genScalar ctx t depth
+genByType ctx t depth = match t
+  GTup ts => ETuple (genTupElems ctx ts depth)
+  GData name => genData ctx name depth
+  _ => genScalar ctx t depth
 
 genExpr : Ctx -> Gty -> Int -> <Rand, Mut> Expr
 genExpr ctx t depth =
@@ -256,11 +249,10 @@ genExpr ctx t depth =
       None => genByType ctx t depth
 
 genLeaf : Ctx -> Gty -> <Rand, Mut> Expr
-genLeaf ctx t = match gtyTupElems t
-  Some ts => ETuple (genLeafElems ctx ts)
-  None => match gtyDataName t
-    Some name => genData ctx name 0
-    None => litOf t
+genLeaf ctx t = match t
+  GTup ts => ETuple (genLeafElems ctx ts)
+  GData name => genData ctx name 0
+  _ => litOf t
 
 -- numeric expression (Int or Float): literals, arithmetic, if, let.
 genNum : Ctx -> Gty -> Int -> <Rand, Mut> Expr

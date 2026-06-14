@@ -1,0 +1,9 @@
+-- Dependency that DECLARES a NULLARY ctor `Hue.Red` (plus `Green`).  Its `Red` has a
+-- different owning type than entry's `Color.Red`, so a different composite tag
+-- (typeId/ordinal).  The emitter registers it from the DData alone; entry's `Color.Red`
+-- collides by bare name.  `mark` keeps lib reachable without naming `Red`
+-- ambiguously across the boundary.
+public export data Hue = Red | Green
+
+export mark : Int -> Int
+mark n = n + 0

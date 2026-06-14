@@ -1,0 +1,23 @@
+-- Cross-module CTOR-NAME COLLISION exercised through a STORED-IN-LIST round-trip.
+-- lib.mdk DECLARES a PAYLOAD `Treeish.Tip Int` (arity 1); this entry declares a
+-- NULLARY `Tag.Tip` and imports only `mark` (never naming lib's `Tip`).  The
+-- colliding nullary value is CONSTRUCTED, stored in a list with its siblings, then
+-- matched out — so if the nullary `Tip` inherits lib's arity 1 it is corrupted while
+-- boxed in the list, surfacing on the match.  Tip=1, On=2, Off=3 ⇒
+-- [Tip, On, Tip, Off] = 1+2+1+3 = 7, plus mark 40 = 40 ⇒ 47.
+import lib.{mark}
+
+data Tag = Tip | On | Off
+
+code : Tag -> Int
+code Tip = 1
+code On = 2
+code Off = 3
+
+sumCodes : List Tag -> Int
+sumCodes [] = 0
+sumCodes (t :: rest) = code t + sumCodes rest
+
+main =
+  let xs = [Tip, On, Tip, Off]
+  putStrLn (intToString (sumCodes xs + mark 40))

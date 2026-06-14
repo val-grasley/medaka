@@ -1,0 +1,29 @@
+-- Cross-module CTOR-NAME COLLISION (nullary vs payload) — the minimal repro of the
+-- native SIGSEGV the constructor-mangling fix closes.  lib.mdk merely DECLARES a
+-- PAYLOAD `Guardy.GBool Int` (arity 1); this entry declares a NULLARY `Gty.GBool`
+-- and only imports `Other(..)` from lib (it never names lib's GBool — resolve sees
+-- no clash).  Pre-fix the emitter's bare-name ctor table (built over ALL modules'
+-- DData) folds both `GBool`s into one entry: the nullary one inherits arity 1 →
+-- emitted as a boxed cell instead of an immediate → corrupted value → NULL field →
+-- SIGSEGV in stringConcat.  The interpreter is structural (no arity table) and is
+-- correct, so the golden is the oracle output.  Universal per-module ctor mangling
+-- makes the two `GBool`s distinct, matching the oracle.  Expected: "Int Bool x
+-- Float", then useOther 5 = 5.
+import lib.{Other(..), useOther}
+
+data Gty = GInt | GFloat | GBool | GStr String
+
+nameG : Gty -> String
+nameG GInt = "Int"
+nameG GFloat = "Float"
+nameG GBool = "Bool"
+nameG (GStr s) = s
+
+render : List Gty -> String
+render [] = ""
+render (g :: []) = nameG g
+render (g :: rest) = stringConcat [nameG g, " ", render rest]
+
+main =
+  let _ = putStrLn (render [GInt, GBool, GStr "x", GFloat])
+  putStrLn (intToString (useOther (Wrap 5)))

@@ -1,0 +1,12 @@
+-- Dependency that merely DECLARES a PAYLOAD ctor `Guardy.GBool Int` (arity 1).  The
+-- emitter folds ALL modules' DData into one bare-name ctor table (`ctorArities`
+-- over every DData), so this declaration alone makes lib's payload `GBool` collide
+-- with entry's NULLARY `Gty.GBool` — no construction of it is needed.  The oracle
+-- (structural, no arity table) never constructs `Guardy`, so it stays correct; the
+-- collision is purely in the emitter's table.  `useOther` is the only thing entry
+-- imports, keeping lib in the module graph.
+public export data Other = Wrap Int
+public export data Guardy = GBool Int | GBind Int
+
+export useOther : Other -> Int
+useOther (Wrap n) = n

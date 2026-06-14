@@ -39,9 +39,26 @@
 --     they are declared in runtime.mdk (NOT in core/modules), so they never appear
 --     as a definition here; a reference to one is excluded by rule 4 (not in any
 --     unit's defined-fn set nor import scope).
---   • constructors, interface methods, impl methods, dict names — they have their
---     own naming in the emitter (impl keys, tags) and are NOT top-level DFunDef /
---     DLetGroup binders, so they are outside the name class this pass touches.
+--   • interface/impl method names, dict names — they have their own naming in the
+--     emitter (impl keys), and are not DFunDef/DData binders this pass touches.
+--   • RESERVED constructors (Cons/Nil/Some/None/Ok/Err/Lt/Eq/Gt/True/False) — the
+--     emitter gives these fixed reserved tags (llvm_emit.mdk `reservedTag`); mangling
+--     would lose the tag.  Excluded at the ctor-export step (`isReservedCtor`).
+--
+-- CONSTRUCTOR MANGLING (the cross-module ctor-name-collision fix).  The flat emit
+-- path also folds EVERY module's `DData`/`DRecord`/`DNewtype` ctors into ONE global
+-- bare-name-keyed ctor table (arity / tag / type-id / ordinal in llvm_emit.mdk).
+-- Two ADTs in different modules declaring a same-named ctor with DIFFERENT arity
+-- therefore COLLAPSE into one entry — a nullary ctor inheriting a payload ctor's
+-- arity is emitted as a boxed cell instead of an immediate → corrupted value →
+-- SIGSEGV (the interpreter is immune: it is structural, no arity table).  Fix: the
+-- SAME universal per-module mangling, extended to constructors — every NON-reserved
+-- ctor is renamed `<owningMid>__<ctor>` at its DEFINITION (DData variant / DRecord
+-- name / DNewtype con) AND at every USE site (EVar construct, PCon / PRec match,
+-- ERecordCreate, EVariantUpdate), import-aware (a `import M.{T(..)}` maps T's ctors
+-- to `<M>__<ctor>`).  Collisions are then impossible by construction; the per-site
+-- owning module comes from the importing unit's scope, so construct and match always
+-- agree.  The gates diff OUTPUT, so a consistent ctor rename is invisible.
 --
 -- This runs PER UNIT, BEFORE elaborateModules flattens the boundaries away.  It
 -- lives ONLY in the emit drivers (never the oracle/golden drivers), so every
@@ -58,7 +75,7 @@ import frontend.ast.{Decl(..), Expr(..), Pat(..), Arm(..), Guard(..), GuardArm(.
             DoStmt(..), LcQual(..), Section(..), InterpPart(..), FieldAssign(..),
             RecPatField(..), LetBind(..), FunClause(..), IfaceMethod(..),
             MethodDefault(..), ImplMethod(..), PropParam(..),
-            UsePath(..), UseMember(..)}
+            UsePath(..), UseMember(..), Variant(..)}
 
 -- ── entry point ───────────────────────────────────────────────────────────────
 -- Given the core unit and every (mid, decls) module, module-qualify EVERY
@@ -71,8 +88,12 @@ mangleUnits : List Decl -> List (String, List Decl) -> (List Decl, List (String,
 mangleUnits coreDecls modules =
   let allUnits = ("core", coreDecls) :: modules
   let exportsPerUnit = map unitExportEntry allUnits
-  let coreOut = mangleUnitU exportsPerUnit ("core", coreDecls)
-  let modsOut = map (mangleModule exportsPerUnit) modules
+  -- Per-unit CONSTRUCTOR exports: (mid, [(typeName, [ctorName])]).  Mirrors
+  -- exportsPerUnit but for data/record/newtype ctors, so an importing unit can map
+  -- `import M.{T(..)}` / `import M.{Ctor}` to `<M>__<Ctor>` (see ctorImportEntries).
+  let ctorExportsPerUnit = map unitCtorExportEntry allUnits
+  let coreOut = mangleUnitU exportsPerUnit ctorExportsPerUnit ("core", coreDecls)
+  let modsOut = map (mangleModule exportsPerUnit ctorExportsPerUnit) modules
   (coreOut, modsOut)
 
 -- exported (pub) top-level function names of a unit: the cross-module-importable
@@ -80,17 +101,147 @@ mangleUnits coreDecls modules =
 unitExportEntry : (String, List Decl) -> (String, List String)
 unitExportEntry (mid, decls) = (mid, dedupPM (pubFnNames decls))
 
+-- ── per-unit CONSTRUCTOR exports ──────────────────────────────────────────────
+-- (mid, [(typeName, [ctorName])]) for every data/record/newtype the unit declares.
+-- A reserved constructor (Cons/Nil/Some/None/Ok/Err/Lt/Eq/Gt/True/False — the
+-- emitter's fixed-tag set) is OMITTED so it is never mangled (mangling would lose
+-- its reserved tag).  Visibility is not gated here: the import side only resolves
+-- what the importing unit actually brings into scope, and unmangled-because-private
+-- is harmless (an unimported ctor is never referenced cross-unit).
+unitCtorExportEntry : (String, List Decl) -> (String, List (String, List String))
+unitCtorExportEntry (mid, decls) = (mid, concatMapPM ctorExportEntries decls)
+
+ctorExportEntries : Decl -> List (String, List String)
+ctorExportEntries (DData _ tyname _ variants _) =
+  [(tyname, filterStr nonReservedCtor (map variantCtorName variants))]
+ctorExportEntries (DRecord _ name _ _ _) =
+  if nonReservedCtor name then [(name, [name])] else []
+ctorExportEntries (DNewtype _ tyname _ con _ _) =
+  if nonReservedCtor con then [(tyname, [con])] else []
+ctorExportEntries (DAttrib _ d) = ctorExportEntries d
+ctorExportEntries _ = []
+
+variantCtorName : Variant -> String
+variantCtorName (Variant n _) = n
+
+-- The emitter's fixed-tag constructors (reservedTag + True/False immediates in
+-- llvm_emit.mdk).  Mangling any of these would break the reserved-tag match.
+nonReservedCtor : String -> Bool
+nonReservedCtor n = not (isReservedCtor n)
+
+isReservedCtor : String -> Bool
+isReservedCtor n =
+  n == "Cons" || n == "Nil" || n == "Some" || n == "None"
+    || n == "Ok" || n == "Err" || n == "Lt" || n == "Eq" || n == "Gt"
+    || n == "True" || n == "False"
+
+-- ── the unit's CONSTRUCTOR rename map ─────────────────────────────────────────
+-- local ctors → `<mid>__<ctor>` (local shadows imports), then imported ctors →
+-- `<originMid>__<ctor>`, then core's ctors as implicit-prelude entries.  Keyed by
+-- bare ctor name; reserved ctors are excluded at the export step so they never
+-- enter the map.
+buildUnitCtorRenameMap : String -> List (String, List (String, List String)) -> List Decl -> List (String, String)
+buildUnitCtorRenameMap mid ctorExportsPerUnit decls =
+  let localCtors = dedupPM (unitLocalCtorNames decls)
+  let localEntries = concatMapPM (localCtorRenameEntry mid) localCtors
+  let importEntries = ctorImportEntries mid ctorExportsPerUnit decls
+  localEntries ++ importEntries
+
+-- local (this-unit-declared) constructor names, reserved ones excluded.
+unitLocalCtorNames : List Decl -> List String
+unitLocalCtorNames decls = filterStr nonReservedCtor (concatMapPM localCtorNames decls)
+
+localCtorNames : Decl -> List String
+localCtorNames (DData _ _ _ variants _) = map variantCtorName variants
+localCtorNames (DRecord _ name _ _ _) = [name]
+localCtorNames (DNewtype _ _ _ con _ _) = [con]
+localCtorNames (DAttrib _ d) = localCtorNames d
+localCtorNames _ = []
+
+localCtorRenameEntry : String -> String -> List (String, String)
+localCtorRenameEntry mid n = [(n, mangledName mid n)]
+
+-- imported ctors: for each `DUse` of a non-core module M, the ctor names it brings
+-- in (a `T(..)` member expands to all of M's ctors of type T; a bare `Ctor` member
+-- maps that single name if M exports it) → `<M>__<ctor>`.  Plus core's exported
+-- ctors as implicit prelude (`Rep`'s RCon/RInt/… — Ordering/Option/Result ctors are
+-- reserved and were never entered).  Local-first ordering already shadows these.
+ctorImportEntries : String -> List (String, List (String, List String)) -> List Decl -> List (String, String)
+ctorImportEntries _ ctorExportsPerUnit decls =
+  concatMapPM (declCtorImportEntries ctorExportsPerUnit) decls
+    ++ coreCtorImportEntries ctorExportsPerUnit
+
+coreCtorImportEntries : List (String, List (String, List String)) -> List (String, String)
+coreCtorImportEntries ctorExportsPerUnit = match lookupCtorExports "core" ctorExportsPerUnit
+  Some entries => concatMapPM (coreCtorEntry) entries
+  None => []
+
+coreCtorEntry : (String, List String) -> List (String, String)
+coreCtorEntry (_, ctors) = concatMapPM (n => [(n, mangledName "core" n)]) ctors
+
+declCtorImportEntries : List (String, List (String, List String)) -> Decl -> List (String, String)
+declCtorImportEntries ctorExportsPerUnit (DUse _ path) = useCtorPathEntries ctorExportsPerUnit path
+declCtorImportEntries ctorExportsPerUnit (DAttrib _ d) = declCtorImportEntries ctorExportsPerUnit d
+declCtorImportEntries _ _ = []
+
+useCtorPathEntries : List (String, List (String, List String)) -> UsePath -> List (String, String)
+useCtorPathEntries ctorExportsPerUnit path =
+  let mid = useModIdU path
+  if mid == "core" then []
+  else match lookupCtorExports mid ctorExportsPerUnit
+    None => []
+    Some typeEntries => match path
+      -- `import M.{T(..), Ctor, …}`: a `(..)` member is a TYPE whose ctors all come
+      -- in; a bare member may be either a ctor name or a type — entered if it names
+      -- a ctor M exports (a type-only member contributes nothing here).
+      UseGroup _ members => concatMapPM (ctorMemberEntry mid typeEntries) members
+      -- `import M.*`: every ctor M exports comes into scope.
+      UseWild _ => concatMapPM (typeCtorEntries mid) typeEntries
+      UseName _ => []
+      UseAlias _ _ => []
+
+-- a UseGroup member → ctor entries.  `UseMember name True` (`name(..)`) expands to
+-- all of type `name`'s ctors; `UseMember name False` enters `name` itself iff it is
+-- one of M's exported ctors.
+ctorMemberEntry : String -> List (String, List String) -> UseMember -> List (String, String)
+ctorMemberEntry mid typeEntries (UseMember name wild) =
+  if wild then match lookupCtorTypeEntry name typeEntries
+      Some ctors => concatMapPM (originCtorEntry mid) ctors
+      None => []
+  else if containsPM name (concatMapPM snd typeEntries) then originCtorEntry mid name
+  else []
+
+typeCtorEntries : String -> (String, List String) -> List (String, String)
+typeCtorEntries mid (_, ctors) = concatMapPM (originCtorEntry mid) ctors
+
+originCtorEntry : String -> String -> List (String, String)
+originCtorEntry mid n = [(n, mangledName mid n)]
+
+lookupCtorTypeEntry : String -> List (String, List String) -> Option (List String)
+lookupCtorTypeEntry _ [] = None
+lookupCtorTypeEntry k ((t, cs) :: rest) = if k == t then Some cs else lookupCtorTypeEntry k rest
+
+lookupCtorExports : String -> List (String, List (String, List String)) -> Option (List (String, List String))
+lookupCtorExports _ [] = None
+lookupCtorExports k ((m, es) :: rest) = if k == m then Some es else lookupCtorExports k rest
+
 -- a module keeps its mid in the output pair.
-mangleModule : List (String, List String) -> (String, List Decl) -> (String, List Decl)
-mangleModule exportsPerUnit (mid, decls) = (mid, mangleUnitU exportsPerUnit (mid, decls))
+mangleModule : List (String, List String) -> List (String, List (String, List String)) -> (String, List Decl) -> (String, List Decl)
+mangleModule exportsPerUnit ctorExportsPerUnit (mid, decls) = (mid, mangleUnitU exportsPerUnit ctorExportsPerUnit (mid, decls))
 
 -- ── per-unit universal rename ────────────────────────────────────────────────
 -- For one unit: build the combined rename map (own top-level fns → `<mid>__<name>`,
 -- PLUS each imported bare name → its origin module's mangled symbol), then rewrite
 -- the unit's decls (definition names + all in-scope references).
-mangleUnitU : List (String, List String) -> (String, List Decl) -> List Decl
-mangleUnitU exportsPerUnit (mid, decls) =
-  let rm = buildUnitRenameMap mid exportsPerUnit decls
+mangleUnitU : List (String, List String) -> List (String, List (String, List String)) -> (String, List Decl) -> List Decl
+mangleUnitU exportsPerUnit ctorExportsPerUnit (mid, decls) =
+  let rmFn = buildUnitRenameMap mid exportsPerUnit decls
+  let rmCtor = buildUnitCtorRenameMap mid ctorExportsPerUnit decls
+  -- Function and constructor names occupy disjoint namespaces (ctors Capitalized,
+  -- fns lowercase), so the two bare-name maps merge without key conflict.  A merged
+  -- single map lets renameScoped's existing EVar arm rewrite a nullary/partial ctor
+  -- reference, and renameDecl/renamePat add the def-site + pattern ctor rewrites.
+  let rm = rmFn ++ rmCtor
   if isEmptyPM rm then decls
   else map (renameDecl rm) decls
 
@@ -316,7 +467,7 @@ safeChar c =
 -- ── decl rewrite (rename both the DEFINITION name and all references) ─────────
 renameDecl : List (String, String) -> Decl -> Decl
 renameDecl rm (DFunDef pub n ps e) =
-  DFunDef pub (renameDefName rm n) ps (renameScoped rm (patVarsListPM ps) e)
+  DFunDef pub (renameDefName rm n) (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps) e)
 -- a top-level signature (`f : …` / `export f : …`) shares the function's name; it
 -- MUST be renamed in lockstep with its DFunDef so the typechecker keys f's scheme
 -- under the SAME mangled name the call sites + def now use (else dictPass /
@@ -331,8 +482,24 @@ renameDecl rm (DProp pub name params body) =
 renameDecl rm (DTest pub name body) = DTest pub name (renameScoped rm [] body)
 renameDecl rm (DBench pub name body) = DBench pub name (renameScoped rm [] body)
 renameDecl rm (DLetGroup pub binds) = DLetGroup pub (map (renameLetBindDef rm) binds)
+-- DATA / RECORD / NEWTYPE definition sites: rename the constructor names (which the
+-- emitter's ctor tables key on) in lockstep with the use-site rewrites below.  The
+-- DData TYPE name is left as-is (it is only the VALUE in buildCtorToType — ctorsOf-
+-- Type groups by it but never emits it as a symbol); a DRecord's name IS its ctor,
+-- so it is renamed; a DNewtype's con is its ctor.  Reserved ctors are not in `rm`
+-- (excluded at export), so renameDefName leaves them unchanged.
+renameDecl rm (DData vis tyname tps variants derives) =
+  DData vis tyname tps (map (renameVariant rm) variants) derives
+renameDecl rm (DRecord vis name tps fields derives) =
+  DRecord vis (renameDefName rm name) tps fields derives
+renameDecl rm (DNewtype pub tyname tps con fty derives) =
+  DNewtype pub tyname tps (renameDefName rm con) fty derives
 renameDecl rm (DAttrib attrs d) = DAttrib attrs (renameDecl rm d)
 renameDecl _ d = d
+
+-- rename a data variant's constructor name (payload types are unaffected).
+renameVariant : List (String, String) -> Variant -> Variant
+renameVariant rm (Variant n payload) = Variant (renameDefName rm n) payload
 
 -- top-level LetBind in a DLetGroup: rename the binder name (if in map) AND its
 -- clause bodies.  The group's own names are in scope across all clauses.
@@ -348,11 +515,11 @@ renameDefName rm n = match lookupPM n rm
 renameIfaceMethod : List (String, String) -> IfaceMethod -> IfaceMethod
 renameIfaceMethod _ (IfaceMethod n ty None) = IfaceMethod n ty None
 renameIfaceMethod rm (IfaceMethod n ty (Some (MethodDefault ps e))) =
-  IfaceMethod n ty (Some (MethodDefault ps (renameScoped rm (patVarsListPM ps) e)))
+  IfaceMethod n ty (Some (MethodDefault (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps) e)))
 
 renameImplMethod : List (String, String) -> ImplMethod -> ImplMethod
 renameImplMethod rm (ImplMethod n ps e) =
-  ImplMethod n ps (renameScoped rm (patVarsListPM ps) e)
+  ImplMethod n (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps) e)
 
 propParamNamesPM : List PropParam -> List String
 propParamNamesPM ps = map propParamNamePM ps
@@ -372,11 +539,11 @@ renameScoped rm bound (EVar n)
   | otherwise = EVar n
 -- binders
 renameScoped rm bound (ELam ps body) =
-  ELam ps (renameScoped rm (patVarsListPM ps ++ bound) body)
+  ELam (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps ++ bound) body)
 renameScoped rm bound (ELet m r p e1 e2) =
   let pv = patVarsPM p
   let b1 = if r then pv ++ bound else bound
-  ELet m r p (renameScoped rm b1 e1) (renameScoped rm (pv ++ bound) e2)
+  ELet m r (renamePat rm p) (renameScoped rm b1 e1) (renameScoped rm (pv ++ bound) e2)
 renameScoped rm bound (ELetGroup binds e2) =
   let bnd = letBindNamesPM binds ++ bound
   ELetGroup (map (renameLetBind rm bnd) binds) (renameScoped rm bnd e2)
@@ -413,11 +580,11 @@ renameScoped rm bound (EIndex e0 i) =
 renameScoped rm bound (EAnnot e0 t) = EAnnot (renameScoped rm bound e0) t
 renameScoped rm bound (EHeadAnnot e0 t) = EHeadAnnot (renameScoped rm bound e0) t
 renameScoped rm bound (EQuestion e0) = EQuestion (renameScoped rm bound e0)
-renameScoped rm bound (ERecordCreate n fs) = ERecordCreate n (map (renameField rm bound) fs)
+renameScoped rm bound (ERecordCreate n fs) = ERecordCreate (renameDefName rm n) (map (renameField rm bound) fs)
 renameScoped rm bound (ERecordUpdate e0 fs) =
   ERecordUpdate (renameScoped rm bound e0) (map (renameField rm bound) fs)
 renameScoped rm bound (EVariantUpdate c e0 fs) =
-  EVariantUpdate c (renameScoped rm bound e0) (map (renameField rm bound) fs)
+  EVariantUpdate (renameDefName rm c) (renameScoped rm bound e0) (map (renameField rm bound) fs)
 renameScoped rm bound (EStringInterp parts) = EStringInterp (map (renameInterp rm bound) parts)
 renameScoped rm bound (EGuards arms) = EGuards (map (renameGuardArm rm bound) arms)
 renameScoped rm bound (EFunction arms) = EFunction (map (renameArm rm bound) arms)
@@ -445,13 +612,13 @@ renameLetBind rm bound (LetBind n clauses) =
 
 renameFunClause : List (String, String) -> List String -> FunClause -> FunClause
 renameFunClause rm bound (FunClause ps body) =
-  FunClause ps (renameScoped rm (patVarsListPM ps ++ bound) body)
+  FunClause (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps ++ bound) body)
 
 renameArm : List (String, String) -> List String -> Arm -> Arm
 renameArm rm bound (Arm p gs body) =
   let b0 = patVarsPM p ++ bound
   let (gs2, bnd) = renameGuards rm b0 gs
-  Arm p gs2 (renameScoped rm bnd body)
+  Arm (renamePat rm p) gs2 (renameScoped rm bnd body)
 
 renameGuardArm : List (String, String) -> List String -> GuardArm -> GuardArm
 renameGuardArm rm bound (GuardArm gs body) =
@@ -467,23 +634,23 @@ renameGuards rm bound (GBool e :: rest) =
 renameGuards rm bound (GBind p e :: rest) =
   let e2 = renameScoped rm bound e
   let (rest2, bnd) = renameGuards rm (patVarsPM p ++ bound) rest
-  (GBind p e2 :: rest2, bnd)
+  (GBind (renamePat rm p) e2 :: rest2, bnd)
 
 renameStmts : List (String, String) -> List String -> List DoStmt -> List DoStmt
 renameStmts _ _ [] = []
 renameStmts rm bound (DoExpr e :: rest) =
   DoExpr (renameScoped rm bound e) :: renameStmts rm bound rest
 renameStmts rm bound (DoBind p e :: rest) =
-  DoBind p (renameScoped rm bound e) :: renameStmts rm (patVarsPM p ++ bound) rest
+  DoBind (renamePat rm p) (renameScoped rm bound e) :: renameStmts rm (patVarsPM p ++ bound) rest
 renameStmts rm bound (DoLet m r p e :: rest) =
   let b1 = if r then patVarsPM p ++ bound else bound
-  DoLet m r p (renameScoped rm b1 e) :: renameStmts rm (patVarsPM p ++ bound) rest
+  DoLet m r (renamePat rm p) (renameScoped rm b1 e) :: renameStmts rm (patVarsPM p ++ bound) rest
 renameStmts rm bound (DoAssign x e :: rest) =
   DoAssign x (renameScoped rm bound e) :: renameStmts rm bound rest
 renameStmts rm bound (DoFieldAssign x fs e :: rest) =
   DoFieldAssign x fs (renameScoped rm bound e) :: renameStmts rm bound rest
 renameStmts rm bound (DoLetElse p e alt :: rest) =
-  DoLetElse p (renameScoped rm bound e) (renameScoped rm bound alt)
+  DoLetElse (renamePat rm p) (renameScoped rm bound e) (renameScoped rm bound alt)
     :: renameStmts rm (patVarsPM p ++ bound) rest
 
 renameQuals : List (String, String) -> List String -> List LcQual -> (List LcQual, List String)
@@ -491,7 +658,7 @@ renameQuals _ bound [] = ([], bound)
 renameQuals rm bound (LCGen p e :: rest) =
   let e2 = renameScoped rm bound e
   let (rest2, bnd) = renameQuals rm (patVarsPM p ++ bound) rest
-  (LCGen p e2 :: rest2, bnd)
+  (LCGen (renamePat rm p) e2 :: rest2, bnd)
 renameQuals rm bound (LCGuard e :: rest) =
   let e2 = renameScoped rm bound e
   let (rest2, bnd) = renameQuals rm bound rest
@@ -499,7 +666,7 @@ renameQuals rm bound (LCGuard e :: rest) =
 renameQuals rm bound (LCLet m p e :: rest) =
   let e2 = renameScoped rm bound e
   let (rest2, bnd) = renameQuals rm (patVarsPM p ++ bound) rest
-  (LCLet m p e2 :: rest2, bnd)
+  (LCLet m (renamePat rm p) e2 :: rest2, bnd)
 
 letBindNamesPM : List LetBind -> List String
 letBindNamesPM binds = map letBindName binds
@@ -517,6 +684,27 @@ patVarsPM _ = []
 
 patVarsListPM : List Pat -> List String
 patVarsListPM ps = concatMapPM patVarsPM ps
+
+-- ── pattern CONSTRUCTOR rewrite ───────────────────────────────────────────────
+-- Rewrite the constructor name of every PCon / PRec in a pattern to its mangled
+-- form (reserved ctors are not in `rm`, so renameDefName leaves them).  Pattern
+-- VARIABLE binders are untouched — they are lowercase value names, never in the
+-- ctor/fn map.  Recurses through all sub-patterns so nested ctors are rewritten.
+renamePat : List (String, String) -> Pat -> Pat
+renamePat rm (PCon n args) = PCon (renameDefName rm n) (map (renamePat rm) args)
+renamePat rm (PCons h t) = PCons (renamePat rm h) (renamePat rm t)
+renamePat rm (PTuple ps) = PTuple (map (renamePat rm) ps)
+renamePat rm (PList ps) = PList (map (renamePat rm) ps)
+renamePat rm (PAs x p) = PAs x (renamePat rm p)
+renamePat rm (PRec n fields open) = PRec (renameDefName rm n) (map (renameRecPatField rm) fields) open
+renamePat _ p = p
+
+renameRecPatField : List (String, String) -> RecPatField -> RecPatField
+renameRecPatField _ (RecPatField label None) = RecPatField label None
+renameRecPatField rm (RecPatField label (Some p)) = RecPatField label (Some (renamePat rm p))
+
+renamePatsPM : List (String, String) -> List Pat -> List Pat
+renamePatsPM rm ps = map (renamePat rm) ps
 
 recPatFieldVarsPM : RecPatField -> List String
 recPatFieldVarsPM (RecPatField label None) = [label]
