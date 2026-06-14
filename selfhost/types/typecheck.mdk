@@ -18,6 +18,7 @@ import frontend.desugar.{mapProg}
 -- difference from the guard-coverage pass is the ctor oracle (here it comes from
 -- the typechecked program's data decls + the inferred scrutinee type).
 import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat, tupleCtorName}
+import support.ordmap.{OrdMap(..), omEmpty, omInsert, omLookup, omHasKey}
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
 public export data Mono
@@ -719,8 +720,8 @@ dictEligibleRef = Ref []
 -- O(log n) membership mirror of dictEligibleRef (set in lockstep at both set
 -- sites).  maybeInferConstraint tests it per SCC member per discovery pass — an
 -- O(members × eligible) scan over the whole program when it was a list.
-dictEligibleSetRef : Ref (SMap Unit)
-dictEligibleSetRef = Ref STip
+dictEligibleSetRef : Ref (OrdMap Unit)
+dictEligibleSetRef = Ref OTip
 
 -- Whether checkProgramSeeded ALSO infers each parametric impl's return-position
 -- method bodies (instance-`requires` dict-passing, Phase 83/84 single-level).  ON
@@ -1320,17 +1321,17 @@ tyVarNames (TyEffect _ _ t) = tyVarNames t
 tyVarNames (TyConstrained _ t) = tyVarNames t
 
 dedupS : List String -> List String
-dedupS xs = dedupSGo xs STip
+dedupS xs = dedupSGo xs OTip
 
 -- keep first occurrence, in first-occurrence order (unchanged semantics), but use
--- an SMap `seen` for O(log n) membership instead of the old O(n) `containsName`
--- scan → dedup is O(n·log n) not O(n²). (SMap is defined below; top-level refs
--- are order-independent.)
-dedupSGo : List String -> SMap Unit -> List String
+-- an OrdMap `seen` for O(log n) membership instead of the old O(n) `containsName`
+-- scan → dedup is O(n·log n) not O(n²). (OrdMap is the shared support.ordmap
+-- tree; top-level refs are order-independent.)
+dedupSGo : List String -> OrdMap Unit -> List String
 dedupSGo [] _ = []
-dedupSGo (x :: xs) seen = match smLookup x seen
+dedupSGo (x :: xs) seen = match omLookup x seen
   Some _ => dedupSGo xs seen
-  None => x :: dedupSGo xs (smInsert x () seen)
+  None => x :: dedupSGo xs (omInsert x () seen)
 
 -- an annotation / signature mono with free tyvars realized as fresh vars
 astTypeFresh : Ty -> <Mut> Mono
@@ -1412,97 +1413,32 @@ fromAstTypeE etbl tvs (TyEffect _ _ t) = fromAstTypeE etbl tvs t
 fromAstTypeE etbl tvs (TyConstrained _ t) = fromAstTypeE etbl tvs t
 
 -- ── environment ───────────────────────────────────────────────────────────
--- SMap: persistent String-keyed weight-balanced tree.  The type environment is
--- looked up on EVERY variable occurrence and carries the whole prelude + every
--- imported module's public bindings, so an assoc-list env made inference O(n^2).
--- This is a monomorphic (String key) port of stdlib/map.mdk — O(log n) lookup,
--- persistent (each insert shares structure, so the branching/backtracking
--- inference env stays valid).  Insert OVERWRITES on equal keys, matching the old
--- assoc-list "newest binding shadows older" semantics (prepend + first-match).
-data SMap a = STip | SBin Int String a (SMap a) (SMap a)
-
-smEmpty : SMap a
-smEmpty = STip
-
-smSize : SMap a -> Int
-smSize STip = 0
-smSize (SBin n _ _ _ _) = n
-
-smBin : String -> a -> SMap a -> SMap a -> SMap a
-smBin k v l r = SBin (smSize l + smSize r + 1) k v l r
-
-smBalance : String -> a -> SMap a -> SMap a -> SMap a
-smBalance k v l r
-  | smSize l + smSize r <= 1 = smBin k v l r
-  | smSize r > 3 * smSize l = smRotateL k v l r
-  | smSize l > 3 * smSize r = smRotateR k v l r
-  | otherwise = smBin k v l r
-
-smRotateL : String -> a -> SMap a -> SMap a -> SMap a
-smRotateL k v l r = match r
-  SBin _ _ _ rl rr =>
-    if smSize rl < 2 * smSize rr then smSingleL k v l r else smDoubleL k v l r
-  STip => panic "SMap.rotateL: empty right subtree"
-
-smRotateR : String -> a -> SMap a -> SMap a -> SMap a
-smRotateR k v l r = match l
-  SBin _ _ _ ll lr =>
-    if smSize lr < 2 * smSize ll then smSingleR k v l r else smDoubleR k v l r
-  STip => panic "SMap.rotateR: empty left subtree"
-
-smSingleL : String -> a -> SMap a -> SMap a -> SMap a
-smSingleL k1 v1 t1 r = match r
-  SBin _ k2 v2 t2 t3 => smBin k2 v2 (smBin k1 v1 t1 t2) t3
-  STip => panic "SMap.singleL: empty right subtree"
-
-smSingleR : String -> a -> SMap a -> SMap a -> SMap a
-smSingleR k1 v1 l t3 = match l
-  SBin _ k2 v2 t1 t2 => smBin k2 v2 t1 (smBin k1 v1 t2 t3)
-  STip => panic "SMap.singleR: empty left subtree"
-
-smDoubleL : String -> a -> SMap a -> SMap a -> SMap a
-smDoubleL k1 v1 t1 r = match r
-  SBin _ k2 v2 (SBin _ k3 v3 t2 t3) t4 => smBin k3 v3 (smBin k1 v1 t1 t2) (smBin k2 v2 t3 t4)
-  _ => panic "SMap.doubleL: malformed right subtree"
-
-smDoubleR : String -> a -> SMap a -> SMap a -> SMap a
-smDoubleR k1 v1 l t4 = match l
-  SBin _ k2 v2 t1 (SBin _ k3 v3 t2 t3) => smBin k3 v3 (smBin k2 v2 t1 t2) (smBin k1 v1 t3 t4)
-  _ => panic "SMap.doubleR: malformed left subtree"
-
-smInsert : String -> a -> SMap a -> SMap a
-smInsert k v STip = SBin 1 k v STip STip
-smInsert k v (SBin n k2 v2 l r) = match stringCompare k k2
-  Lt => smBalance k2 v2 (smInsert k v l) r
-  Gt => smBalance k2 v2 l (smInsert k v r)
-  Eq => SBin n k v l r
-
-smLookup : String -> SMap a -> Option a
-smLookup k STip = None
-smLookup k (SBin _ k2 v l r) = match stringCompare k k2
-  Lt => smLookup k l
-  Gt => smLookup k r
-  Eq => Some v
-
-public export data TcEnv = TcEnv (SMap Scheme) (SMap Scheme)   -- vars, ctors
+-- The type environment uses the shared `OrdMap` (support.ordmap): a persistent
+-- String-keyed weight-balanced tree.  The env is looked up on EVERY variable
+-- occurrence and carries the whole prelude + every imported module's public
+-- bindings, so an assoc-list env made inference O(n^2); OrdMap gives O(log n)
+-- lookup and structure-sharing inserts (the branching/backtracking inference env
+-- stays valid).  Insert OVERWRITES on equal keys, matching the old assoc-list
+-- "newest binding shadows older" semantics (prepend + first-match).
+public export data TcEnv = TcEnv (OrdMap Scheme) (OrdMap Scheme)   -- vars, ctors
 
 lookupVar : TcEnv -> String -> Option Scheme
-lookupVar (TcEnv vs cs) n = match smLookup n vs
+lookupVar (TcEnv vs cs) n = match omLookup n vs
   Some s => Some s
-  None => smLookup n cs
+  None => omLookup n cs
 
 lookupCtor : TcEnv -> String -> Option Scheme
-lookupCtor (TcEnv _ cs) n = smLookup n cs
+lookupCtor (TcEnv _ cs) n = omLookup n cs
 
 extendVar : TcEnv -> String -> Scheme -> TcEnv
-extendVar (TcEnv vs cs) n s = TcEnv (smInsert n s vs) cs
+extendVar (TcEnv vs cs) n s = TcEnv (omInsert n s vs) cs
 
 extendVars : TcEnv -> List (String, Scheme) -> TcEnv
 extendVars env [] = env
 extendVars env ((n, s) :: rest) = extendVars (extendVar env n s) rest
 
 addCtor : TcEnv -> String -> Scheme -> TcEnv
-addCtor (TcEnv vs cs) n s = TcEnv vs (smInsert n s cs)
+addCtor (TcEnv vs cs) n s = TcEnv vs (omInsert n s cs)
 
 monoScheme : Mono -> Scheme
 monoScheme t = Forall [] [] t
@@ -2621,11 +2557,11 @@ letRecNonFunctionMsg : String -> String
 letRecNonFunctionMsg name =
   "'" ++ name ++ "' is bound by 'let rec' but its right-hand side is not a function. Recursive value bindings must have a lambda right-hand side; cyclic data structures are not supported."
 
-groupNames : List (String, (List Pat, Expr)) -> SMap Unit -> List String
+groupNames : List (String, (List Pat, Expr)) -> OrdMap Unit -> List String
 groupNames [] _ = []
-groupNames ((n, _) :: rest) seen = match smLookup n seen
+groupNames ((n, _) :: rest) seen = match omLookup n seen
   Some _ => groupNames rest seen
-  None => n :: groupNames rest (smInsert n () seen)
+  None => n :: groupNames rest (omInsert n () seen)
 
 containsName : String -> List String -> Bool
 containsName _ [] = False
@@ -2775,7 +2711,7 @@ export
 elaborateDict : List Decl -> List String -> List String -> List Decl -> <Mut> List Decl
 elaborateDict runtimeDecls dictNames eligibleNames prog =
   let _ = set_ref dictEligibleRef eligibleNames
-  let _ = set_ref dictEligibleSetRef (namesToSet eligibleNames STip)
+  let _ = set_ref dictEligibleSetRef (namesToSet eligibleNames OTip)
   let _ = set_ref implInferEnabled True
   let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
   let _ = set_ref argDispatchIdxRef (argDispatchIndices prog)
@@ -4519,7 +4455,7 @@ checkProgramSeeded seed prog =
   let env1 = extendVars (extendVars dataEnv seed) globalS
   let defs = funDefs prog
   let sigs = sigsOf prog
-  let topSchemes = processTopGroups env1 sigs defs (groupNames defs STip)
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs OTip)
   -- Phase 83/84 single-level: AFTER top-level inference (so the scheme output is
   -- unchanged), and ONLY on the elaborate/dict path, infer each parametric impl's
   -- return-position method bodies, registering the requires' element dict so the
@@ -5201,7 +5137,7 @@ fieldAssignEVars (FieldAssign _ e) = allEVars e
 
 -- builtin constructors available without the prelude (mirrors initial_env)
 initialEnv : TcEnv
-initialEnv = TcEnv smEmpty (smInsert "True" (monoScheme (TCon "Bool")) (smInsert "False" (monoScheme (TCon "Bool")) smEmpty))
+initialEnv = TcEnv omEmpty (omInsert "True" (monoScheme (TCon "Bool")) (omInsert "False" (monoScheme (TCon "Bool")) omEmpty))
 
 registerAllData : TcEnv -> List Decl -> <Mut> TcEnv
 registerAllData env [] = env
@@ -5231,117 +5167,117 @@ revLLGo : List a -> List a -> List a
 revLLGo [] acc = acc
 revLLGo (x :: xs) acc = revLLGo xs (x :: acc)
 
-depGraphMap : List String -> SMap (List (List Pat, Expr)) -> SMap (List String)
+depGraphMap : List String -> OrdMap (List (List Pat, Expr)) -> OrdMap (List String)
 depGraphMap names grouped =
-  buildAdj names (namesToSet names STip) grouped STip
+  buildAdj names (namesToSet names OTip) grouped OTip
 
 -- name-membership set, built ONCE, so `keepGroupNames` is O(log n)/ref instead of
 -- O(names)/ref (the dep-graph build was O(names²·refs)). Output-order-preserving:
 -- `keepGroupNames`'s `filterList` is unchanged, only its membership test is faster.
-namesToSet : List String -> SMap Unit -> SMap Unit
+namesToSet : List String -> OrdMap Unit -> OrdMap Unit
 namesToSet [] m = m
-namesToSet (n :: rest) m = namesToSet rest (smInsert n () m)
+namesToSet (n :: rest) m = namesToSet rest (omInsert n () m)
 
 -- defs grouped by name ONCE (name -> its clauses, in defs order), so `depsOf`
 -- does an O(log n) lookup instead of re-scanning all defs per name (was
 -- O(names·defs)). Built by prepend (O(1)); `clausesOf` reverses on read to
 -- restore defs order — so the per-name clause list is identical to the old
 -- `clausesFor name defs`, keeping dep lists / SCC order / output byte-identical.
-groupClauses : List (String, (List Pat, Expr)) -> SMap (List (List Pat, Expr))
-groupClauses defs = groupClausesGo defs STip
-groupClausesGo : List (String, (List Pat, Expr)) -> SMap (List (List Pat, Expr)) -> SMap (List (List Pat, Expr))
+groupClauses : List (String, (List Pat, Expr)) -> OrdMap (List (List Pat, Expr))
+groupClauses defs = groupClausesGo defs OTip
+groupClausesGo : List (String, (List Pat, Expr)) -> OrdMap (List (List Pat, Expr)) -> OrdMap (List (List Pat, Expr))
 groupClausesGo [] m = m
-groupClausesGo ((n, c) :: rest) m = groupClausesGo rest (smInsert n (c :: clausesAt n m) m)
+groupClausesGo ((n, c) :: rest) m = groupClausesGo rest (omInsert n (c :: clausesAt n m) m)
 
-clausesAt : String -> SMap (List (List Pat, Expr)) -> List (List Pat, Expr)
-clausesAt n m = match smLookup n m
+clausesAt : String -> OrdMap (List (List Pat, Expr)) -> List (List Pat, Expr)
+clausesAt n m = match omLookup n m
   Some xs => xs
   None => []
 
-clausesOf : String -> SMap (List (List Pat, Expr)) -> List (List Pat, Expr)
+clausesOf : String -> OrdMap (List (List Pat, Expr)) -> List (List Pat, Expr)
 clausesOf n m = revClauses (clausesAt n m) []
 
 revClauses : List (List Pat, Expr) -> List (List Pat, Expr) -> List (List Pat, Expr)
 revClauses [] acc = acc
 revClauses (x :: xs) acc = revClauses xs (x :: acc)
 
-buildAdj : List String -> SMap Unit -> SMap (List (List Pat, Expr)) -> SMap (List String) -> SMap (List String)
+buildAdj : List String -> OrdMap Unit -> OrdMap (List (List Pat, Expr)) -> OrdMap (List String) -> OrdMap (List String)
 buildAdj [] _ _ m = m
-buildAdj (n :: rest) nameSet cbn m = buildAdj rest nameSet cbn (smInsert n (depsOf n nameSet cbn) m)
+buildAdj (n :: rest) nameSet cbn m = buildAdj rest nameSet cbn (omInsert n (depsOf n nameSet cbn) m)
 
 tjCounter : Ref Int
 tjCounter = Ref 0
 tjStack : Ref (List String)
 tjStack = Ref []
-tjIndex : Ref (SMap Int)
-tjIndex = Ref STip
-tjLow : Ref (SMap Int)
-tjLow = Ref STip
-tjOn : Ref (SMap Bool)
-tjOn = Ref STip
+tjIndex : Ref (OrdMap Int)
+tjIndex = Ref OTip
+tjLow : Ref (OrdMap Int)
+tjLow = Ref OTip
+tjOn : Ref (OrdMap Bool)
+tjOn = Ref OTip
 tjOut : Ref (List (List String))
 tjOut = Ref []
 
 tjLowOf : String -> Int
-tjLowOf x = fromOption 0 (smLookup x tjLow.value)
+tjLowOf x = fromOption 0 (omLookup x tjLow.value)
 tjIndexOf : String -> Int
-tjIndexOf x = fromOption 0 (smLookup x tjIndex.value)
+tjIndexOf x = fromOption 0 (omLookup x tjIndex.value)
 tjOnStack : String -> Bool
-tjOnStack x = fromOption False (smLookup x tjOn.value)
+tjOnStack x = fromOption False (omLookup x tjOn.value)
 
-tarjanSCCs : List String -> SMap (List String) -> <Mut> List (List String)
+tarjanSCCs : List String -> OrdMap (List String) -> <Mut> List (List String)
 tarjanSCCs names adj =
   let _ = set_ref tjCounter 0
   let _ = set_ref tjStack []
-  let _ = set_ref tjIndex STip
-  let _ = set_ref tjLow STip
-  let _ = set_ref tjOn STip
+  let _ = set_ref tjIndex OTip
+  let _ = set_ref tjLow OTip
+  let _ = set_ref tjOn OTip
   let _ = set_ref tjOut []
   let _ = tarjanAll names adj
   revLL tjOut.value
 
-tarjanAll : List String -> SMap (List String) -> <Mut> Unit
+tarjanAll : List String -> OrdMap (List String) -> <Mut> Unit
 tarjanAll [] _ = ()
 tarjanAll (v :: rest) adj =
   let _ = tjVisit v adj
   tarjanAll rest adj
 
-tjVisit : String -> SMap (List String) -> <Mut> Unit
-tjVisit v adj = match smLookup v tjIndex.value
+tjVisit : String -> OrdMap (List String) -> <Mut> Unit
+tjVisit v adj = match omLookup v tjIndex.value
   Some _ => ()
   None => strongconnect v adj
 
-strongconnect : String -> SMap (List String) -> <Mut> Unit
+strongconnect : String -> OrdMap (List String) -> <Mut> Unit
 strongconnect v adj =
   let idx = tjCounter.value
-  let _ = set_ref tjIndex (smInsert v idx tjIndex.value)
-  let _ = set_ref tjLow (smInsert v idx tjLow.value)
+  let _ = set_ref tjIndex (omInsert v idx tjIndex.value)
+  let _ = set_ref tjLow (omInsert v idx tjLow.value)
   let _ = set_ref tjCounter (idx + 1)
   let _ = set_ref tjStack (v :: tjStack.value)
-  let _ = set_ref tjOn (smInsert v True tjOn.value)
-  let _ = scEdges v (fromOption [] (smLookup v adj)) adj
+  let _ = set_ref tjOn (omInsert v True tjOn.value)
+  let _ = scEdges v (fromOption [] (omLookup v adj)) adj
   if tjLowOf v == idx then tjPop v [] else ()
 
-scEdges : String -> List String -> SMap (List String) -> <Mut> Unit
+scEdges : String -> List String -> OrdMap (List String) -> <Mut> Unit
 scEdges v [] adj = ()
 scEdges v (w :: ws) adj =
   let _ = scEdge v w adj
   scEdges v ws adj
 
-scEdge : String -> String -> SMap (List String) -> <Mut> Unit
-scEdge v w adj = match smLookup w tjIndex.value
+scEdge : String -> String -> OrdMap (List String) -> <Mut> Unit
+scEdge v w adj = match omLookup w tjIndex.value
   None =>
     let _ = strongconnect w adj
-    set_ref tjLow (smInsert v (minI (tjLowOf v) (tjLowOf w)) tjLow.value)
+    set_ref tjLow (omInsert v (minI (tjLowOf v) (tjLowOf w)) tjLow.value)
   Some iw =>
-    if tjOnStack w then set_ref tjLow (smInsert v (minI (tjLowOf v) iw) tjLow.value) else ()
+    if tjOnStack w then set_ref tjLow (omInsert v (minI (tjLowOf v) iw) tjLow.value) else ()
 
 tjPop : String -> List String -> <Mut> Unit
 tjPop v acc = match tjStack.value
   [] => set_ref tjOut (acc :: tjOut.value)
   (w :: rest) =>
     let _ = set_ref tjStack rest
-    let _ = set_ref tjOn (smInsert w False tjOn.value)
+    let _ = set_ref tjOn (omInsert w False tjOn.value)
     if w == v then set_ref tjOut ((w :: acc) :: tjOut.value) else tjPop v (w :: acc)
 
 -- sig-name presence set (which top-level names carry a type signature), set once
@@ -5349,16 +5285,16 @@ tjPop v acc = match tjStack.value
 -- O(log n) presence check instead of an O(sigs) `lookupAssocS` scan per SCC member
 -- (was O(members·sigs) over the whole compiler). Module-level ref, matching the
 -- `currentFn`/`curEffect` idiom; processing is sequential per module.
-sigNameSetRef : Ref (SMap Unit)
-sigNameSetRef = Ref STip
+sigNameSetRef : Ref (OrdMap Unit)
+sigNameSetRef = Ref OTip
 
-sigNamesToSet : List (String, Ty) -> SMap Unit -> SMap Unit
+sigNamesToSet : List (String, Ty) -> OrdMap Unit -> OrdMap Unit
 sigNamesToSet [] m = m
-sigNamesToSet ((n, _) :: rest) m = sigNamesToSet rest (smInsert n () m)
+sigNamesToSet ((n, _) :: rest) m = sigNamesToSet rest (omInsert n () m)
 
 processTopGroups : TcEnv -> List (String, Ty) -> List (String, (List Pat, Expr)) -> List String -> <Mut> List (String, Scheme)
 processTopGroups env sigs defs names =
-  let _ = set_ref sigNameSetRef (sigNamesToSet sigs STip)
+  let _ = set_ref sigNameSetRef (sigNamesToSet sigs OTip)
   let grouped = groupClauses defs
   let ordered = tarjanSCCs names (depGraphMap names grouped)
   processSCCs env sigs grouped ordered
@@ -5366,7 +5302,7 @@ processTopGroups env sigs defs names =
 -- per-name dependencies: the other top-level names a binding's bodies reference
 -- (a conservative over-approximation via all free EVars is fine — only names
 -- that are themselves groups matter).  Consumed by depGraphMap → Tarjan.
-depsOf : String -> SMap Unit -> SMap (List (List Pat, Expr)) -> List String
+depsOf : String -> OrdMap Unit -> OrdMap (List (List Pat, Expr)) -> List String
 depsOf name nameSet cbn =
   filterNonSelf name (keepGroupNames nameSet (dedupS (groupRefs (clausesOf name cbn))))
 
@@ -5376,13 +5312,8 @@ groupRefs clauses = concatMapL clauseRefs clauses
 clauseRefs : (List Pat, Expr) -> List String
 clauseRefs (_, body) = allEVars body
 
-keepGroupNames : SMap Unit -> List String -> List String
-keepGroupNames nameSet refs = filterList (r => smHasKey r nameSet) refs
-
-smHasKey : String -> SMap Unit -> Bool
-smHasKey r m = match smLookup r m
-  Some _ => True
-  None => False
+keepGroupNames : OrdMap Unit -> List String -> List String
+keepGroupNames nameSet refs = filterList (r => omHasKey r nameSet) refs
 
 filterNonSelf : String -> List String -> List String
 filterNonSelf name xs = filterList (x => x != name) xs
@@ -5394,13 +5325,13 @@ filterList p (x :: xs)
   | otherwise = filterList p xs
 
 -- process each SCC as a letrec group in topological order
-processSCCs : TcEnv -> List (String, Ty) -> SMap (List (List Pat, Expr)) -> List (List String) -> <Mut> List (String, Scheme)
+processSCCs : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> List (List String) -> <Mut> List (String, Scheme)
 processSCCs _ _ _ [] = []
 processSCCs env sigs grouped (scc :: rest) =
   let er = processSCC env sigs grouped scc
   snd er ++ processSCCs (fst er) sigs grouped rest
 
-processSCC : TcEnv -> List (String, Ty) -> SMap (List (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
+processSCC : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
 processSCC env sigs grouped members =
   let _ = enterLevel ()
   let placeholders = map (m => (m, freshVar ())) members
@@ -5530,7 +5461,7 @@ registerMemberSlots m kept (mono :: rest) = match normalize mono
 -- (preunifySigsEx unified it), and its shared tyvars accumulate unifications
 -- across clauses exactly as the oracle's `sig_t` does.  Purely additive: the
 -- per-clause `unify v arrow` below imposes the same equalities anyway.
-inferMembers : TcEnv -> List (String, Ty) -> SMap (List (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
+inferMembers : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> List (String, Mono) -> <Mut> Unit
 inferMembers _ _ _ [] = ()
 inferMembers env sigs grouped ((m, v) :: rest) =
   let _ = set_ref currentFn m
@@ -5543,7 +5474,7 @@ inferMembers env sigs grouped ((m, v) :: rest) =
 -- the peel source for a member: Some placeholder if it has a signature (peel the
 -- declared arrow domains onto the clause params), None otherwise
 memberPeelSource : List (String, Ty) -> String -> Mono -> Option Mono
-memberPeelSource sigs m v = match smLookup m sigNameSetRef.value
+memberPeelSource sigs m v = match omLookup m sigNameSetRef.value
   Some _ => Some v
   None => None
 
@@ -5629,7 +5560,7 @@ effectEscapeMsg name declared extras =
 --   isVal    = plainVal || sigIsFun.
 -- A non-function expansive unsigned binding (`r = Ref []`) is value-restricted and
 -- stays monomorphic.  Mirrors oracle lib/typecheck.ml:2705-2710 + 2756.
-sccSchemes : List (String, Ty) -> SMap (List (List Pat, Expr)) -> Bool -> List (String, Mono) -> <Mut> List (String, Scheme)
+sccSchemes : List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> Bool -> List (String, Mono) -> <Mut> List (String, Scheme)
 sccSchemes _ _ _ [] = []
 sccSchemes sigs grouped isLetrec ((m, v) :: rest) =
   let plainVal = isLetrec || allList memberClauseIsValue (clausesOf m grouped)
@@ -5644,7 +5575,7 @@ memberClauseIsValue (_, _) = True
 
 -- Phase 89: a signed binding whose (post-unify) type is an arrow is generalizable
 memberSigIsFun : List (String, Ty) -> String -> Mono -> Bool
-memberSigIsFun sigs m v = match smLookup m sigNameSetRef.value
+memberSigIsFun sigs m v = match omLookup m sigNameSetRef.value
   None => False
   Some _ => match normalize v
     TFun _ _ _ => True
@@ -5744,8 +5675,8 @@ registerInferredConstraints sigs ((m, sch) :: rest) =
 
 maybeInferConstraint : List (String, Ty) -> String -> Scheme -> <Mut> Unit
 maybeInferConstraint sigs m sch
-  | not (smHasKey m dictEligibleSetRef.value) = ()
-  | smHasKey m sigNameSetRef.value = ()
+  | not (omHasKey m dictEligibleSetRef.value) = ()
+  | omHasKey m sigNameSetRef.value = ()
   | otherwise = registerInferredFor m (inferredConstraintIds m (schemeIds sch))
 
 hasSig : List (String, Ty) -> String -> Bool
@@ -5967,7 +5898,7 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let env1 = extendVars (extendVars (extendVars dataEnv seedVars) globalS) shadowMethodSchemes
   let defs = funDefs prog
   let sigs = sigsOf prog
-  let topSchemes = processTopGroups env1 sigs defs (groupNames defs STip)
+  let topSchemes = processTopGroups env1 sigs defs (groupNames defs OTip)
   -- E5: infer this module's parametric impl bodies (gated, emit path only), seeing
   -- [implDecls] for interface method types + cross-module impl dispatch.  The sites
   -- it records stay in pendingArgStamps/pendingSites for elabModuleStamp to resolve.
@@ -6083,7 +6014,7 @@ pickSchemes (n :: ns) table = match lookupAssocS n table
 
 -- ── IMPORT-SCOPED per-module seeding (mirrors lib/typecheck.ml:4513-4543) ────
 -- The multi-module drivers must NOT flat-seed the cumulative UNION of every
--- dependency's public schemes into each module's env: smInsert is last-write-wins,
+-- dependency's public schemes into each module's env: omInsert is last-write-wins,
 -- so a later-loaded dependency's same-named binding (e.g. `string.reverse :
 -- String -> String`) silently overwrites an earlier one (`list.reverse :
 -- List a -> List a`) — mis-typing a module that explicitly `import list.{reverse}`.
@@ -6354,7 +6285,7 @@ elaborateModules runtimeDecls coreDecls modules =
   -- run, which dict-passes prelude+modules unconditionally — so promotion-on-eval
   -- matches them.  Mirrors elaborateDict's dictEligibleRef seed.
   let _ = set_ref dictEligibleRef (moduleUserFnNames modules)
-  let _ = set_ref dictEligibleSetRef (namesToSet (moduleUserFnNames modules) STip)
+  let _ = set_ref dictEligibleSetRef (namesToSet (moduleUserFnNames modules) OTip)
   -- Cause A / Phase 2: run a JOINT-flattened promotion fixpoint over runtime ++ core
   -- ++ all modules (mirror discoverPromoted) so an unsignatured fn whose body
   -- dispatches a method in ARG position (`f s = println s` → inferred `Display a => …`)
@@ -6496,10 +6427,10 @@ scopeArities : List (String, List Int) -> List Decl -> List (String, List Int)
 scopeArities promotedC scope =
   -- membership-only sets (built once) instead of O(N) containsName scans per entry:
   -- scopeNames (~all top-level fn names) was scanned per promotedC entry → O(N²).
-  let scopeNames = namesToSet (declTopFnNames scope) STip
-  let inferred = filterList (e => smHasKey (fst e) scopeNames) promotedC
-  let inferredNames = namesToSet (map fst inferred) STip
-  let sigEntries = filterList (e => not (smHasKey (fst e) inferredNames)) (concatMapL constrainedSigArity scope)
+  let scopeNames = namesToSet (declTopFnNames scope) OTip
+  let inferred = filterList (e => omHasKey (fst e) scopeNames) promotedC
+  let inferredNames = namesToSet (map fst inferred) OTip
+  let sigEntries = filterList (e => not (omHasKey (fst e) inferredNames)) (concatMapL constrainedSigArity scope)
   inferred ++ sigEntries
 
 declTopFnNames : List Decl -> List String
