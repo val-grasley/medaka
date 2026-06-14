@@ -1,7 +1,17 @@
 # DISPATCH-GAPS-SCOPE.md
-## Scoping Audit — Four Parked Native-Backend Dispatch Gaps
-**Date:** 2026-06-10  
-**Status:** READ-ONLY audit — no source edits.  
+## Scoping Audit — Four Native-Backend Dispatch Gaps
+**Date:** 2026-06-10 (audit) · **Updated 2026-06-14**
+
+> **✅ ALL FOUR GAPS NOW CLOSED.** #54 (Map `toList`) closed 2026-06-11; #50
+> (parametric-Ord `max`/`min`) closed; #55 (sum/product two-constraint) closed
+> 2026-06-11 (build path) + 2026-06-13 (eval path, commit c1f31ce — the
+> `argStampEnabled`-gated eval dict layer was the residual); #21 (nested-route /
+> binop over-application) closed 2026-06-14 (commit 5ee7eef — gated binop element
+> reqs on `argStampEnabled`, removed the `suppressBinopStamp` workaround). The
+> shared deeper root — the `argStampEnabled` eval-vs-emit elaboration fork — is
+> being retired by `selfhost/ARGSTAMP-UNIFY-PLAN.md`. The audit below is the
+> original (2026-06-10) scope; kept for the repro/root-cause record.
+
 **Gaps audited:** #54 (Map `toList` H-b1), #55 (sum/product two-constraint), #50 (parametric-Ord `max`/`min`), #21 (2-level multi-module route flattening).
 
 ---
