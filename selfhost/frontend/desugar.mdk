@@ -160,6 +160,39 @@ export
 mapProg : (Expr -> Expr) -> List Decl -> List Decl
 mapProg f prog = map (mapDecl f) prog
 
+-- ── AST smart constructors (shared by the sugar + derive passes) ──────────
+-- Tiny builders for the AST shapes that recur across this file's passes, so a
+-- pass body reads as its intent rather than nested constructor boilerplate.
+
+-- binary application of a named function: `f a b`
+callBin : String -> Expr -> Expr -> Expr
+callBin fn a b = EApp (EApp (EVar fn) a) b
+
+-- binary operator, not yet resolved: `a <op> b`
+binOp : String -> Expr -> Expr -> Expr
+binOp op a b = EBinOp op a b (Ref RNone)
+
+-- field read off a named variable: `v.n`
+fieldOf : String -> String -> Expr
+fieldOf v n = EFieldAccess (EVar v) n
+
+-- a derived impl head with the fixed pub / non-default / no-name shape;
+-- applyDeriveParams rewrites tys + reqs afterwards for the type's params.
+derivedImpl : String -> String -> List ImplMethod -> Decl
+derivedImpl iface tyName methods = DImpl {
+  pub = True,
+  def = False,
+  iface = iface,
+  tys = [TyCon tyName],
+  name = None,
+  reqs = [],
+  methods = methods,
+}
+
+-- two-parameter impl method: `m a b = body`
+binMethod : String -> String -> String -> Expr -> ImplMethod
+binMethod m a b body = ImplMethod m [PVar a, PVar b] body
+
 -- ── Pass: desugar_sugar (guards / function / sections / interpolation) ────
 -- Mirror of lib/desugar.ml's rewrite_sugar, applied bottom-up by mapProg.
 rewriteSugar : Expr -> Expr
@@ -188,11 +221,9 @@ armChain ((GBind p e)::qs) body els =
 -- operator sections → lambdas
 sectionToCore : Section -> Expr
 sectionToCore (SecBare op) =
-  ELam [PVar "_a", PVar "_b"] (EBinOp op (EVar "_a") (EVar "_b") (Ref RNone))
-sectionToCore (SecRight op e) =
-  ELam [PVar "_s"] (EBinOp op (EVar "_s") e (Ref RNone))
-sectionToCore (SecLeft e op) =
-  ELam [PVar "_s"] (EBinOp op e (EVar "_s") (Ref RNone))
+  ELam [PVar "_a", PVar "_b"] (binOp op (EVar "_a") (EVar "_b"))
+sectionToCore (SecRight op e) = ELam [PVar "_s"] (binOp op (EVar "_s") e)
+sectionToCore (SecLeft e op) = ELam [PVar "_s"] (binOp op e (EVar "_s"))
 
 -- `"a\{e}b"` → `"a" ++ display e ++ "b"` (left-associated `++`)
 interpToCore : List InterpPart -> Expr
@@ -209,7 +240,7 @@ concatStrings (first::rest) = concatLeft first rest
 
 concatLeft : Expr -> List Expr -> Expr
 concatLeft acc [] = acc
-concatLeft acc (e::rest) = concatLeft (EBinOp "++" acc e (Ref RNone)) rest
+concatLeft acc (e::rest) = concatLeft (binOp "++" acc e) rest
 
 -- ── Pass: desugar_questions (`let p = e ? in rest` → andThen) ────────────
 -- Mirror of lib/desugar.ml's rewrite_question_expr.  A `let`-bound `?` lowers to
@@ -223,7 +254,7 @@ rewriteQuestion e = e
 
 questionLet : Bool -> Bool -> Pat -> Expr -> Expr -> Expr
 questionLet m isFun pat (EQuestion inner) e2 =
-  EApp (EApp (EVar "andThen") inner) (ELam [pat] e2)
+  callBin "andThen" inner (ELam [pat] e2)
 questionLet m isFun pat e1 e2 = ELet m isFun pat e1 e2
 
 rewriteQStmt : DoStmt -> DoStmt
@@ -257,11 +288,9 @@ rewriteDo e = e
 lowerDo : List DoStmt -> Expr
 lowerDo [(DoExpr e)] = e
 lowerDo [(DoBind pat e)] =
-  EApp (EApp (EVar "andThen") e) (doCont pat (EApp (EVar "pure") (ELit LUnit)))
-lowerDo ((DoExpr e)::rest) =
-  EApp (EApp (EVar "andThen") e) (ELam [PWild] (lowerDo rest))
-lowerDo ((DoBind pat e)::rest) =
-  EApp (EApp (EVar "andThen") e) (doCont pat (lowerDo rest))
+  callBin "andThen" e (doCont pat (EApp (EVar "pure") (ELit LUnit)))
+lowerDo ((DoExpr e)::rest) = callBin "andThen" e (ELam [PWild] (lowerDo rest))
+lowerDo ((DoBind pat e)::rest) = callBin "andThen" e (doCont pat (lowerDo rest))
 lowerDo ((DoLet _ isFun pat e)::rest) = ELet False isFun pat e (lowerDo rest)
 lowerDo ((DoLetElse pat e alt)::rest) =
   EMatch e [Arm pat [] (lowerDo rest), Arm PWild [] alt]
@@ -305,7 +334,7 @@ foldRightLc [] acc = acc
 foldRightLc (q::rest) acc = lcStep q (foldRightLc rest acc)
 
 lcStep : LcQual -> Expr -> Expr
-lcStep (LCGen pat xs) acc = EApp (EApp (EVar "andThen") xs) (lcLam pat acc)
+lcStep (LCGen pat xs) acc = callBin "andThen" xs (lcLam pat acc)
 lcStep (LCGuard cond) acc = EIf cond acc (EListLit [])
 lcStep (LCLet m pat e) acc = ELet m False pat e acc
 
@@ -380,56 +409,42 @@ fieldName (Field n _) = n
 
 -- Eq: AND-fold `eq __a.f __b.f` over the declared fields (True if none).
 deriveEqRecord : String -> List Field -> Decl
-deriveEqRecord name fields = DImpl {
-  pub = True,
-  def = False,
-  iface = "Eq",
-  tys = [TyCon name],
-  name = None,
-  reqs = [],
-  methods = [ImplMethod "eq" [PVar "__a", PVar "__b"] (andAll (map eqFieldCall fields))],
-}
+deriveEqRecord name fields =
+  derivedImpl
+    "Eq"
+    name
+    [binMethod "eq" "__a" "__b" (andAll (map eqFieldCall fields))]
 
 eqFieldCall : Field -> Expr
 eqFieldCall f =
   let n = fieldName f
-  EApp
-    (EApp (EVar "eq") (EFieldAccess (EVar "__a") n))
-    (EFieldAccess (EVar "__b") n)
+  callBin "eq" (fieldOf "__a" n) (fieldOf "__b" n)
 
 -- Ord: lexicographic compare over the declared fields in order.
 deriveOrdRecord : String -> List Field -> Decl
-deriveOrdRecord name fields = DImpl {
-  pub = True,
-  def = False,
-  iface = "Ord",
-  tys = [TyCon name],
-  name = None,
-  reqs = [],
-  methods = [
-    ImplMethod "compare" [PVar "__a", PVar "__b"] (lexCompareExprs (map ordFieldPair fields))
-  ],
-}
+deriveOrdRecord name fields =
+  derivedImpl
+    "Ord"
+    name
+    [
+      binMethod "compare" "__a" "__b" (lexCompareExprs (map ordFieldPair fields))
+    ]
 
 ordFieldPair : Field -> (Expr, Expr)
 ordFieldPair f =
   let n = fieldName f
-  (EFieldAccess (EVar "__a") n, EFieldAccess (EVar "__b") n)
+  (fieldOf "__a" n, fieldOf "__b" n)
 
 -- Debug/Display: `"Name {" ++ " f = " ++ <call> __r.f ++ ", g = " ++ … ++ " }"`.
 -- The first field is prefixed " ", later fields ", " (lib/desugar.ml).
 deriveShowRecord : String -> String -> String -> List Field -> Decl
-deriveShowRecord iface callName name fields = DImpl {
-  pub = True,
-  def = False,
-  iface = iface,
-  tys = [TyCon name],
-  name = None,
-  reqs = [],
-  methods = [
-    ImplMethod callName [PVar "__r"] (concatStrings (showRecordParts callName name fields))
-  ],
-}
+deriveShowRecord iface callName name fields =
+  derivedImpl
+    iface
+    name
+    [
+      ImplMethod callName [PVar "__r"] (concatStrings (showRecordParts callName name fields))
+    ]
 
 showRecordParts : String -> String -> List Field -> List Expr
 showRecordParts callName name fields = ELit (LString (name ++ " {")) :: showRecordFields callName 0 fields ++ [ELit (LString " }")]
@@ -444,7 +459,7 @@ showRecordField callName i f =
   let n = fieldName f
   [
     ELit (LString (recordFieldPrefix i ++ n ++ " = ")),
-    EApp (EVar callName) (EFieldAccess (EVar "__r") n),
+    EApp (EVar callName) (fieldOf "__r" n),
   ]
 
 recordFieldPrefix : Int -> String
@@ -453,17 +468,13 @@ recordFieldPrefix _ = ", "
 
 -- Generic: `RRecord "Name" [RField { fld_name = "f", fld_rep = to_rep __r.f }, …]`.
 deriveGenericRecord : String -> List Field -> Decl
-deriveGenericRecord name fields = DImpl {
-  pub = True,
-  def = False,
-  iface = "Generic",
-  tys = [TyCon name],
-  name = None,
-  reqs = [],
-  methods = [
-    ImplMethod "to_rep" [PVar "__r"] (EApp (EApp (EVar "RRecord") (ELit (LString name))) (EListLit (map genericRField fields)))
-  ],
-}
+deriveGenericRecord name fields =
+  derivedImpl
+    "Generic"
+    name
+    [
+      ImplMethod "to_rep" [PVar "__r"] (callBin "RRecord" (ELit (LString name)) (EListLit (map genericRField fields)))
+    ]
 
 genericRField : Field -> Expr
 genericRField f =
@@ -472,7 +483,7 @@ genericRField f =
     "RField"
     [
       FieldAssign "fld_name" (ELit (LString n)),
-      FieldAssign "fld_rep" (EApp (EVar "to_rep") (EFieldAccess (EVar "__r") n)),
+      FieldAssign "fld_rep" (EApp (EVar "to_rep") (fieldOf "__r" n)),
     ]
 
 -- A newtype is structurally a single-constructor, single-field data type, so the
@@ -527,17 +538,13 @@ conPatVars cname vars = PCon cname (map PVar vars)
 -- Debug and Display share the rendering ("Con " ++ <call> a0 ++ " " ++ …);
 -- only the interface + method-call name differ.
 deriveShowData : String -> String -> String -> List Variant -> Decl
-deriveShowData iface callName name variants = DImpl {
-  pub = True,
-  def = False,
-  iface = iface,
-  tys = [TyCon name],
-  name = None,
-  reqs = [],
-  methods = [
-    ImplMethod callName [PVar "__x"] (EMatch (EVar "__x") (map (showArm callName) variants))
-  ],
-}
+deriveShowData iface callName name variants =
+  derivedImpl
+    iface
+    name
+    [
+      ImplMethod callName [PVar "__x"] (EMatch (EVar "__x") (map (showArm callName) variants))
+    ]
 
 showArm : String -> Variant -> Arm
 showArm callName (v@(Variant cname _)) =
@@ -562,17 +569,13 @@ showFieldPart callName _ v = [ELit (LString " "), EApp (EVar callName) (EVar v)]
 -- Eq: same-constructor arms compare fields pairwise; a cross-constructor
 -- wildcard arm (only with ≥2 variants) returns False.
 deriveEqData : String -> List Variant -> Decl
-deriveEqData name variants = DImpl {
-  pub = True,
-  def = False,
-  iface = "Eq",
-  tys = [TyCon name],
-  name = None,
-  reqs = [],
-  methods = [
-    ImplMethod "eq" [PVar "__x", PVar "__y"] (EMatch (ETuple [EVar "__x", EVar "__y"]) (eqArms variants))
-  ],
-}
+deriveEqData name variants =
+  derivedImpl
+    "Eq"
+    name
+    [
+      binMethod "eq" "__x" "__y" (EMatch (ETuple [EVar "__x", EVar "__y"]) (eqArms variants))
+    ]
 
 eqArms : List Variant -> List Arm
 eqArms variants
@@ -595,7 +598,7 @@ eqBody _ avars bvars = andAll (zipEqCalls avars bvars)
 zipEqCalls : List String -> List String -> List Expr
 zipEqCalls [] _ = []
 zipEqCalls _ [] = []
-zipEqCalls (a::arest) (b::brest) = EApp (EApp (EVar "eq") (EVar a)) (EVar b) :: zipEqCalls arest brest
+zipEqCalls (a::arest) (b::brest) = callBin "eq" (EVar a) (EVar b) :: zipEqCalls arest brest
 
 andAll : List Expr -> Expr
 andAll [] = EVar "True"
@@ -603,23 +606,19 @@ andAll (first::rest) = andLeft first rest
 
 andLeft : Expr -> List Expr -> Expr
 andLeft acc [] = acc
-andLeft acc (e::rest) = andLeft (EBinOp "&&" acc e (Ref RNone)) rest
+andLeft acc (e::rest) = andLeft (binOp "&&" acc e) rest
 
 -- Ord: one arm per (i, vi)×(j, vj) constructor pair.  Different constructors
 -- compare by declaration order (Lt/Gt); same constructor compares fields
 -- lexicographically.  Mirror of lib/desugar.ml's derive_ord_data.
 deriveOrdData : String -> List Variant -> Decl
-deriveOrdData name variants = DImpl {
-  pub = True,
-  def = False,
-  iface = "Ord",
-  tys = [TyCon name],
-  name = None,
-  reqs = [],
-  methods = [
-    ImplMethod "compare" [PVar "__x", PVar "__y"] (EMatch (ETuple [EVar "__x", EVar "__y"]) (ordArms variants))
-  ],
-}
+deriveOrdData name variants =
+  derivedImpl
+    "Ord"
+    name
+    [
+      binMethod "compare" "__x" "__y" (EMatch (ETuple [EVar "__x", EVar "__y"]) (ordArms variants))
+    ]
 
 ordArms : List Variant -> List Arm
 ordArms variants =
@@ -660,10 +659,10 @@ zipExprPairs (a::arest) (b::brest) = (EVar a, EVar b) :: zipExprPairs arest bres
 -- non-Eq result.  Mirror of lib/desugar.ml's lex_compare_exprs.
 lexCompareExprs : List (Expr, Expr) -> Expr
 lexCompareExprs [] = EVar "Eq"
-lexCompareExprs [(ea, eb)] = EApp (EApp (EVar "compare") ea) eb
+lexCompareExprs [(ea, eb)] = callBin "compare" ea eb
 lexCompareExprs ((ea, eb)::rest) =
   EMatch
-    (EApp (EApp (EVar "compare") ea) eb)
+    (callBin "compare" ea eb)
     [
       Arm (PCon "Eq" []) [] (lexCompareExprs rest),
       Arm (PVar "__c") [] (EVar "__c"),
@@ -671,17 +670,13 @@ lexCompareExprs ((ea, eb)::rest) =
 
 -- Generic: one arm per constructor → RCon name [to_rep a0, …]
 deriveGenericData : String -> List Variant -> Decl
-deriveGenericData name variants = DImpl {
-  pub = True,
-  def = False,
-  iface = "Generic",
-  tys = [TyCon name],
-  name = None,
-  reqs = [],
-  methods = [
-    ImplMethod "to_rep" [PVar "__x"] (EMatch (EVar "__x") (map genericArm variants))
-  ],
-}
+deriveGenericData name variants =
+  derivedImpl
+    "Generic"
+    name
+    [
+      ImplMethod "to_rep" [PVar "__x"] (EMatch (EVar "__x") (map genericArm variants))
+    ]
 
 genericArm : Variant -> Arm
 genericArm (v@(Variant cname _)) =
@@ -690,7 +685,7 @@ genericArm (v@(Variant cname _)) =
 
 genericRcon : String -> List String -> Expr
 genericRcon cname vars =
-  EApp (EApp (EVar "RCon") (ELit (LString cname))) (EListLit (map toRep vars))
+  callBin "RCon" (ELit (LString cname)) (EListLit (map toRep vars))
 
 toRep : String -> Expr
 toRep x = EApp (EVar "to_rep") (EVar x)
