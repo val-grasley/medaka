@@ -929,3 +929,18 @@ genuinely supervised). Smaller (<2%, call-volume, not actionable): `lookupAssocS
 (now ~57 after Win 3), `tyVarNames`, `concatMapL`, `dedupS`, `rewriteArgScoped`
 (ArgRw already proven a no-op above). The emitter output buffer is already O(N)
 (Entry 4). No safe unattended O(N²) remains in this profile.
+
+## Dead-end — segment-emit (`emitS`/`stringConcat`) to cut emitter string churn (2026-06-14)
+Hypothesis (PERF-SCOPE "GC density"): the emitter builds every IR line via a left-
+associated `++` chain (`emit e ("  " ++ r ++ " = ashr i64 " ++ v ++ ", 1")`), ~270k
+lines × k segments → k-1 `mdk_string_append` allocs + O(k²) prefix re-copy per line.
+Tried `emitS e segs = emit e (stringConcat segs)` (one `mdk_string_concat`, one
+alloc) across the 275 high-`++` sites. Output **byte-identical**, fixpoint C3a/C3b
+YES — but **NOT faster** (min 1.72→1.74 s, 3/10 rounds; slightly slower on average).
+Why: `stringConcat segs` must first build the segment **list literal** (k `mdk_cons`
+cells) before concatenating — the cons-cell allocation cancels the saved intermediate-
+string allocation, and the emitter's own source grows (+0.36 MB IR). The `++` chains
+are simply not the bottleneck; the GC cost is ADT/cons/closure allocation throughput,
+not string-intermediate churn. Reverted. (Tooling note: a naive ` ++ ` split mis-
+handles nested `argDecls (a ++ b)` → tuple-as-list trap; use a paren-aware split.
+A separate cheaper-`freshReg` C-extern idea was not pursued.)
