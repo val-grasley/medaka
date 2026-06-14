@@ -6462,7 +6462,15 @@ moduleDictNames coreDecls allDecls modules
   -- per-module typecheck (registerConstraintRegs ungated); with no leading dict PARAM
   -- the witness is unbound.  The OCaml oracle's eval_modules dict-passes
   -- prelude+modules unconditionally; this mirrors that.
+  -- ARGSTAMP-UNIFY Phase 1 (F10 dict-set convergence): the eval branch now ALSO
+  -- includes preludeArgPosDictNames, matching the emit branch's dict-name set.
+  -- First convergence step toward flipping eval to full dict-threading.  By itself
+  -- OUTPUT-invariant: an arg-position prelude fn that is ALSO arg-tag-dispatchable
+  -- gets a redundant (not wrong) dict pass.  NOTE the historical neq-hang risk
+  -- (prop-shrinker oscillation when neq/elem/any/… were swept into the eval dict
+  -- set); guarded by the `medaka test stdlib/core.mdk` canary.
   | otherwise = preludeReturnPosDictNames coreDecls allDecls
+                ++ preludeArgPosDictNames coreDecls allDecls
                 ++ constrainedSigNames (concatMapL snd modules)
 
 -- E6: register a constraint-arity entry (placeholder ids of the right length) for
