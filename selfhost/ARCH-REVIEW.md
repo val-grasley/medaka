@@ -265,3 +265,74 @@ consolidation is their prerequisite. Revised priority: (1) dead-probe ✓ → (2
 `argStampEnabled` retirement [real value, no extraction needed] → (3) `DispatchState`
 bundle → (ordered-map consolidation + the now-unblocked Tarjan extraction as an optional
 later tidy-up). The pretty-printer extraction is dropped.
+
+---
+
+## PASS 3 — `selfhost/backend/llvm_emit.mdk` (native LLVM emitter) — 2026-06-14
+
+Read-only review of the OTHER 7k-line giant (7,212 lines). The key question: is it
+more decomposable than the typechecker (pass 2 found that irreducible)?
+
+### Executive judgment
+**Healthier and MORE decomposable than `typecheck.mdk` — the headline.** Where `infer`
+is irreducibly coupled (mutual recursion sharing live mutable state), the emitter's core
+is **structural tree-recursion**: `emitExpr` (923) is a clean 25-arm node dispatch, each
+arm a self-contained lowering, with special cases (TRMC, default-methods) isolated into
+their own functions rather than woven in. There IS a real ~2,000–3,000-line core-file
+reduction available here that the typechecker could not offer. Biggest concrete issue:
+the `Emit` 10-field POSITIONAL record (cheap, high-value fix).
+
+### Prioritized findings
+1. **`Emit` 10-field positional record (`llvm_emit.mdk:605`) — HIGH value / LOW effort.**
+   Ten same-shaped `Ref (List …)` fields disambiguated only by underscore-position across
+   ~11 hand-written accessors (`freshId`/`emit`/`bufRef`/`lamsRef`/`fnNames`/`ctorTable`/
+   `recFieldTable`/`implEntriesOf`/`ctorTypeTable`/`sigTable`/`globalsRegRef`) + 2
+   construction sites (6970, 7173). A buf/fns swap wouldn't typecheck (all same shape).
+   **Fix = named-field record** — mechanical, byte-identical, fixpoint-safe. The clearest
+   fixable defect in the file.
+2. **Mutable-state split (Emit vs ~18 module globals) is PRINCIPLED, not accidental.** The
+   module globals (`returnsSelfTableRef`/`methodIfaceTableRef`/…, 181–486) are install-once
+   read-only config pushed in by the entries from `core_ir_lower.mdk` BEFORE `emitProgram` —
+   a deliberate interface seam. The Emit record is per-emission threaded state. Correct
+   split. The one genuinely-redundant bit: memoization refs (`knownFnMapRef`/`ctorMapRef`/
+   `sigMapRef`, 680–700) shadow Emit fields for perf — justified, minor.
+3. **Emit dispatch core is CLEAN (cleaner than `infer`) — GOOD, preserve.** 25-arm
+   structural dispatch, no shared accumulator, no fixpoint; route lowering `emitMethod`
+   (2436) is a clean 5-way `match route` mirroring the interpreter's arms. The one
+   intricate spot (`emitTree`/`emitLeaf`, the decision-tree match compiler) is essential +
+   contained.
+4. **TRMC is the BEST-architected subsystem — GOOD.** Entangles the main path via exactly
+   one ref (`trmcCtxRef`) + one branch point; the eligibility analysis is pure `CExpr`
+   analysis (no LLVM), genuinely WasmGC-portable as the design claims. Only `emitTrmcCtor`
+   is backend-specific.
+5. **String-building coherent — leave it.** O(1)-prepend buffer; the `stringConcat`
+   segment-emit was tried + reverted (no win — see PERF-RESULTS).
+6. **Gap-tolerance (46 `gapE`/`gapU`) — LOW.** Deliberate self-compile crutch (record-and-
+   skip), not dead code; flag so a reviewer doesn't mistake a `gapE` for a defect.
+
+### Decomposability verdict — MORE decomposable than typecheck; real splits exist
+- **Preamble + runtime-decls (`emitPreamble`, ~7002–7094) → `backend/llvm_preamble.mdk`** —
+  pure constant output, zero coupling beyond the buffer. Trivial, ~100 lines.
+- **TRMC eligibility analysis → shared Core-IR module** — pure `CExpr` analysis; but GATE
+  on WasmGC (one consumer today; the design already plans this).
+- **Type-lowering (`typeOf`/`tagToLTy`/`LTy`/`FnSig`) → `backend/llvm_lty.mdk`** —
+  self-contained; modest shrink.
+- NOT separable: `emitExpr`/`emitApp`/`emitMethod`/`emitTree` (the value+decision-tree
+  compiler core) — but smaller/more structural than typecheck's `infer`.
+
+### Duplication with the interpreter — CLEAN split
+The route re-emission realizes-as-LLVM what the interpreter executes; the *decision* is
+shared (computed by typecheck/dict-pass), only the *realization* differs. Irreducible
+codegen-vs-interpret boundary; unifying it is a large speculative refactor with no payoff.
+The one real shared candidate is the TRMC eligibility analysis (above).
+
+### Recommended next actions (ranked)
+1. **`Emit` → named-field record** (footgun-killer; byte-identical, fixpoint-gated).
+2. **Lift `emitPreamble` → `backend/llvm_preamble.mdk`** (~100 lines, zero risk).
+3. Lift TRMC analysis to shared Core-IR — **gate on WasmGC** (not now).
+4. Lift `typeOf`/`LTy` → `backend/llvm_lty.mdk` (modest).
+5. **Leave** the dispatch core, decision-tree compiler, string buffer, install tables, and
+   the codegen/interpret split — essential or correctly factored.
+
+Net: unlike the typechecker, the emitter's size is PARTLY incidental — a real ~30%
+core-file reduction is available at low risk. Do 1 + 2 now; gate 3 on WasmGC.
