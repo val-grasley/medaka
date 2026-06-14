@@ -42,7 +42,7 @@ import frontend.ast.{
   Decl(..),
   Route(..),
 }
-import support.util.{listLen, contains, allList, concatMapList}
+import support.util.{listLen, contains, allList, concatMapList, fallthroughName}
 
 -- ── Bottom-up traversal engine (mirror of map_expr / map_decl) ────────────
 -- `mapExpr f e` rewrites every subexpression of `e` with `f`, post-order: the
@@ -210,7 +210,7 @@ guardsToCore ((GuardArm quals body)::rest) =
   armChain quals body (guardsToCore rest)
 
 fallthrough : Expr
-fallthrough = EApp (EVar "__fallthrough__") (ELit LUnit)
+fallthrough = EApp (EVar fallthroughName) (ELit LUnit)
 
 armChain : List Guard -> Expr -> Expr -> Expr
 armChain [] body _ = body

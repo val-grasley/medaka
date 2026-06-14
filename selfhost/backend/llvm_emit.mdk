@@ -180,7 +180,7 @@ import ir.core_ir.{
   CImplBody(..),
 }
 import ir.core_ir_lower.{compileTree, canonPat}
-import support.util.{reverseL, joinNl, lookupAssoc, listLen}
+import support.util.{reverseL, joinNl, lookupAssoc, listLen, fallthroughName}
 import backend.llvm_preamble.{preambleLines}
 import support.ordmap.{OrdMap(..), omInsert, omLookup, omFromNames, omFromPairs}
 
@@ -2409,7 +2409,7 @@ emitApp e env app =
               if isImplMethod e fname && hasArgs args then
                 let argOps = emitArgs e env args
                 emitMethodArgDispatch e fname argOps
-              else if fname == "__fallthrough__" then emitFallthrough e else emitIndirect e env hd args
+              else if fname == fallthroughName then emitFallthrough e else emitIndirect e env hd args
     CMethod name route implRoutes methRoutes =>
       let argOps = emitArgs e env args
       emitMethod e env name route implRoutes methRoutes argOps

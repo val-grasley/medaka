@@ -85,3 +85,21 @@ escOne c
   | c == '\t' = "\\t"
   | c == '\r' = "\\r"
   | otherwise = charToStr c
+
+-- ── Canonical compiler-internal names ─────────────────────────────────────
+-- Names produced in one stage and consumed in another (cross-module contract);
+-- defined once here so the stages can't silently drift out of agreement.
+
+-- The guard-desugar fallthrough sentinel: desugar emits `EVar fallthroughName`
+-- as a non-exhaustive-match trap, eval binds it to a VFallthrough prim, and the
+-- emitter intercepts it in emitApp.  All three MUST use the same string.
+export
+fallthroughName : String
+fallthroughName = "__fallthrough__"
+
+-- Default head-tag for a None with no resolved type-constructor head; both the
+-- interpreter (eval) and the IR lowering compute dispatch off it, so they must
+-- agree on the literal.
+export
+noneHeadTag : String
+noneHeadTag = "__none__"

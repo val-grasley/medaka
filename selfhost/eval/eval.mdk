@@ -42,6 +42,8 @@ import support.util.{
   reverseL,
   anyList,
   lookupAssoc,
+  fallthroughName,
+  noneHeadTag,
 }
 
 -- ── values & environment (mutually recursive) ─────────────────────────────
@@ -1480,7 +1482,7 @@ declImplEntries _ _ _ = []
 
 implMethodEntry : EvalEnv -> List ((String, String), List Int) -> String -> List Ty -> Option String -> ImplMethod -> (String, (Int, Value))
 implMethodEntry env disp ifaceName typeArgs implNm (ImplMethod mname pats body) =
-  let tag = fromOption "__none__" (headTyconHead typeArgs)
+  let tag = fromOption noneHeadTag (headTyconHead typeArgs)
   let key = implKeyOf ifaceName typeArgs implNm
   let positions = lookupPositions ifaceName mname disp
   let inner = implMethodValue env positions pats body
@@ -1761,7 +1763,7 @@ externBindings = [
   ("charMaxBound", VChar (charToStr charMaxBound)),
   ("pi", VFloat pi),
   ("e", VFloat e),
-  ("__fallthrough__", VPrim (_ => VFallthrough)),
+  (fallthroughName, VPrim (_ => VFallthrough)),
 ]
 
 pDebugStringLit : Value -> Value

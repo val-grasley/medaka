@@ -63,6 +63,7 @@ import support.util.{
   allList,
   anyList,
   lookupAssoc,
+  noneHeadTag,
 }
 
 -- a synthetic binder for the lowered composition operators; constructed
@@ -741,7 +742,7 @@ lowerDeclImpl _ _ = []
 
 lowerImplMethod : List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> CImplEntry
 lowerImplMethod disp ifaceName typeArgs (ImplMethod mname pats body) =
-  let tag = fromOption "__none__" (headTyconHead typeArgs)
+  let tag = fromOption noneHeadTag (headTyconHead typeArgs)
   let positions = lookupPositions ifaceName mname disp
   CImplEntry
     mname
