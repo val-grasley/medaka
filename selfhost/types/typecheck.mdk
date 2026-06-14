@@ -786,7 +786,7 @@ evalDictLayerActive = Ref False
 -- concrete site whose head names a parametric `requires` impl can thread the
 -- element dict (resolveArgStamp → argImplDictRoutesFor), exactly as the
 -- return-position pendingSites carry implRef for resolveSite.
-pendingArgStamps : Ref (List (String, Ref Route, Ref (List Route), Mono))
+pendingArgStamps : Ref (List (String, Ref Route, Ref (List Route), Mono, String))
 pendingArgStamps = Ref []
 
 -- per-module captures (reset by resetState, like pendingSites): one entry per
@@ -837,9 +837,20 @@ argDispatchOfDecl (DInterface { typarams, methods, ... }) = concatMapL (argDispa
 argDispatchOfDecl _ = []
 
 argDispatchOfMethod : List String -> IfaceMethod -> List (String, Int)
-argDispatchOfMethod typarams (IfaceMethod mname mty _) = match firstDispatchIdx typarams 0 (methodArgs mty)
+argDispatchOfMethod typarams (IfaceMethod mname mty _) = match firstDispatchIdx (dispatchTyparams typarams) 0 (methodArgs mty)
   Some i => [(mname, i)]
   None => []
+
+-- The DISCRIMINATING (receiver) typaram(s) of an interface — its FIRST typaram.
+-- A multi-param interface (`FromEntries c e`) dispatches on its head/receiver
+-- param `c`; the trailing `e` is a phantom element param that may appear in
+-- argument types (`List e`) WITHOUT making the method arg-position dispatched.
+-- Classifying by ALL typarams mis-routes `fromEntries : List e -> c` to its `List`
+-- argument (an arg-tag site that has no `List` impl) instead of return-position
+-- dispatch on `c`.  Single-param interfaces are unaffected (`take 1` is identity).
+dispatchTyparams : List String -> List String
+dispatchTyparams [] = []
+dispatchTyparams (p :: _) = [p]
 
 firstDispatchIdx : List String -> Int -> List Ty -> Option Int
 firstDispatchIdx _ _ [] = None
@@ -870,7 +881,7 @@ nthArgMono n m = match normalize m
 -- element dict for a parametric `requires` impl.
 recordArgStamp : String -> Ref Route -> Ref (List Route) -> Int -> Mono -> <Mut> Unit
 recordArgStamp name tagRef implRef idx mono = match nthArgMono idx mono
-  Some am => set_ref pendingArgStamps ((name, tagRef, implRef, am) :: pendingArgStamps.value)
+  Some am => set_ref pendingArgStamps ((name, tagRef, implRef, am, currentFn.value) :: pendingArgStamps.value)
   None => ()
 
 -- Cause-A prerequisite: an ARG-position method occurrence's discriminating-arg
@@ -895,14 +906,14 @@ recordArgSiteFn _ idx mono = match nthArgMono idx mono
 -- call threads the element dict (concrete element → RKey Int; a recursive element
 -- of the SAME parametric type → RDict forwarding the in-scope dict param).  A
 -- still-unsolved free type variable → left RNone (the emitter arg-tag-dispatches).
-resolveArgStamps : List ImplEntry -> List (String, Ref Route, Ref (List Route), Mono) -> <Mut> Unit
+resolveArgStamps : List ImplEntry -> List (String, Ref Route, Ref (List Route), Mono, String) -> <Mut> Unit
 resolveArgStamps _ [] = ()
-resolveArgStamps implTable ((name, tagRef, implRef, am) :: rest) =
-  let _ = resolveArgStamp implTable name tagRef implRef am
+resolveArgStamps implTable ((name, tagRef, implRef, am, encl) :: rest) =
+  let _ = resolveArgStamp implTable name tagRef implRef am encl
   resolveArgStamps implTable rest
 
-resolveArgStamp : List ImplEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> <Mut> Unit
-resolveArgStamp implTable name tagRef implRef am = match activeDictVarOf am
+resolveArgStamp : List ImplEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> <Mut> Unit
+resolveArgStamp implTable name tagRef implRef am encl = match activeDictVarOfEncl am encl
   Some dname => set_ref tagRef (RDict dname)
   None => match headTyconMono am
     Some tag =>
@@ -1879,9 +1890,7 @@ methodDispatchIdx name = lookupAssocS name methodDispatchIdxRef.value
 -- the dispatch-arg index of an arg-position method, but only when stamping is
 -- enabled (the emit path) — off, every EMethodAt is a return-position site.
 argDispatchOf : String -> <Mut> Option Int
-argDispatchOf name
-  | argStampEnabled.value = lookupAssocS name argDispatchIdxRef.value
-  | otherwise = None
+argDispatchOf name = lookupAssocS name argDispatchIdxRef.value
 
 -- Phase 69.x-e: if [name] is a method with method-level constraints (foldMap's
 -- `Monoid m`), map each constraint's scheme id through this occurrence's
@@ -2775,8 +2784,8 @@ schemeMono (Forall _ _ t) = t
 methodConstrainedIds : Unit -> List Int
 methodConstrainedIds _ = concatMapL (s => monoUnboundIds (argStampMono s)) pendingArgStamps.value
 
-argStampMono : (String, Ref Route, Ref (List Route), Mono) -> Mono
-argStampMono (_, _, _, am) = am
+argStampMono : (String, Ref Route, Ref (List Route), Mono, String) -> Mono
+argStampMono (_, _, _, am, _) = am
 
 monoUnboundIds : Mono -> List Int
 monoUnboundIds t = match normalize t
@@ -2876,8 +2885,8 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let _ = set_ref dictEligibleRef eligibleNames
   let _ = set_ref implInferEnabled True
   let allNames = discoverAll runtimeDecls prog dictNames eligibleNames
-  let _ = if argStampEnabled.value then set_ref argDispatchIdxRef (argDispatchIndices prog) else ()
-  let argNames = if argStampEnabled.value then map fst argDispatchIdxRef.value else []
+  let _ = set_ref argDispatchIdxRef (argDispatchIndices prog)
+  let argNames = map fst argDispatchIdxRef.value
   let prog2 = prePassDictArg (returnPosMethodNames prog ++ methodConstraintNames prog) allNames argNames prog
   let _ = checkProgramSeeded (externSchemes runtimeDecls) prog2
   let implTable = buildImplTable prog2
@@ -3072,7 +3081,7 @@ returnPosOfDecl _ = []
 
 returnPosMethod : List String -> IfaceMethod -> List String
 returnPosMethod typarams (IfaceMethod mname mty _)
-  | not (anyArgMentions typarams (methodArgs mty)) = [mname]
+  | not (anyArgMentions (dispatchTyparams typarams) (methodArgs mty)) = [mname]
   | otherwise = []
 
 -- argument types of a method (strip leading constraint/effect wrappers + arrows)
@@ -3492,6 +3501,30 @@ activeDictVarOf m = match normalize m
   TApp a _ => activeDictVarOf a
   _ => None
 
+-- activeDictVarOf, but for a constraint var that is the ENCLOSING fn's OWN constraint
+-- var, return [encl]'s in-scope dict param (the slot it sits at) rather than the
+-- GLOBAL activeDictVars entry.  In a mutually-recursive group the constraint vars of
+-- the siblings unify to one id; activeDictVars (global, uncleared) maps that id to
+-- whichever sibling registered it LAST — so an arg-stamp inside `evenCat` would
+-- forward `$dict_oddCat_0` (out of scope in evenCat's body).  Preferring encl's own
+-- slot keeps the forwarded dict the one actually bound in the body.  Falls back to
+-- the global lookup when the var is not one of encl's (a genuine element dict from a
+-- different in-scope impl).
+activeDictVarOfEncl : Mono -> String -> <Mut> Option String
+activeDictVarOfEncl m encl = match enclDictVarOf m encl
+  Some dname => Some dname
+  None => activeDictVarOf m
+
+enclDictVarOf : Mono -> String -> <Mut> Option String
+enclDictVarOf m encl
+  | encl == "" = None
+  | otherwise = match normalize m
+      TVar cell => match indexOfId (tyvarId cell) (fromOption [] (lookupAssocSL2 encl funConstraintsRef.value))
+        Some slot => Some (dictParamName encl slot)
+        None => None
+      TApp a _ => enclDictVarOf a encl
+      _ => None
+
 -- Phase 151 / Gap G: stamp each comparison/equality OPERATOR site's EBinOp route
 -- ref with the resolved Eq/Ord impl key (RKey) — but ONLY when the operand type
 -- grounds to a NON-primitive head tycon.  Primitive (Int/Float/String/Bool/Char)
@@ -3566,7 +3599,7 @@ stampBinopRoute implTable keyTable method tagRef operandMono tag
       -- []` instead: it still narrows the method VMulti to the right impl, applies
       -- ZERO dicts, and lets the rewritten body dispatch inner operands by runtime
       -- arg-tag (the working direct-method path).  Emit stays byte-identical.
-      let reqs = if argStampEnabled.value then argImplDictRoutesFor implTable dictMethod tag operandMono else []
+      let reqs = argImplDictRoutesFor implTable dictMethod tag operandMono
       set_ref tagRef (RKey key reqs)
 
 -- The inner same-interface method an interface DEFAULT reduces to, supplying the
@@ -4803,7 +4836,7 @@ inferImplBodies env allProg rpNames (d :: rest) =
 inferOneImpl : TcEnv -> List Decl -> List String -> Decl -> <Mut> Unit
 inferOneImpl env allProg rpNames (DAttrib _ d) = inferOneImpl env allProg rpNames d
 inferOneImpl env allProg rpNames (DImpl { iface, tys, reqs, methods, ... }) = match reqs
-  [] => if argStampEnabled.value then inferPlainImpl env allProg iface tys methods else ()
+  [] => inferPlainImpl env allProg iface tys methods
   _ => inferRequiresImpl env allProg rpNames iface tys reqs methods
 inferOneImpl _ _ _ _ = ()
 
@@ -6210,8 +6243,8 @@ elaborateModules runtimeDecls coreDecls modules =
   let rpNames = returnPosMethodNames allDecls
   -- arg-position interface-method names whose route resolveArgStamps may stamp
   -- (empty when OFF → prePassDictArg degenerates to prePassDict, goldens unchanged)
-  let _ = if argStampEnabled.value then set_ref argDispatchIdxRef (argDispatchIndices allDecls) else ()
-  let argNames = if argStampEnabled.value then map fst argDispatchIdxRef.value else []
+  let _ = set_ref argDispatchIdxRef (argDispatchIndices allDecls)
+  let argNames = map fst argDispatchIdxRef.value
   -- DRIVER-COLLAPSE Phase 2 (global): seed the promotion-eligible set with the USER
   -- modules' top-level fn names (NOT core/prelude — those keep arg-tag / RKey
   -- dispatch, which type-checks the goldens).  Previously gated on argStampEnabled
@@ -6555,7 +6588,7 @@ elabModuleStamp seedVars accData implDecls prog =
   -- so even a RECURSIVE user Eq impl (json's `impl Eq Json`) dispatches inner
   -- operands by arg-tag without over-applying — no suppression needed.
   let _ = resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value
-  let _ = if argStampEnabled.value then resolveArgStamps stampImplTable pendingArgStamps.value else ()
+  let _ = resolveArgStamps stampImplTable pendingArgStamps.value
   -- C5: LAST among the route-stampers (after resolveSites AND resolveArgStamps) so the
   -- receiver-grounded RLocal/RNone overrides whatever those stamped on the SAME ref —
   -- resolveSites mis-stamps RKey<resultType> (eval path) and resolveArgStamps stamps

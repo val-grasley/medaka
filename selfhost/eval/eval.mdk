@@ -179,6 +179,67 @@ export
 ctorFieldOrdersRef : Ref (List (String, List String))
 ctorFieldOrdersRef = Ref []
 
+-- ARGSTAMP-UNIFY / genuine #21: per (impl-method-name, head-tag) the number of
+-- LEADING element-dict params the impl method consumes = (elaborated impl pattern
+-- count) - (declared method arity from the interface).  An arg-position RDict site
+-- forwards the dispatch dict's nested reqs, but the dict can be OVER-provisioned
+-- (the structural dict route + the requires-only impl table can attribute an
+-- element req to a List-tagged dict even when THIS method's List impl has no
+-- `requires` — two interfaces sharing the head tag).  Emit tolerates this (its
+-- dispatch chain loads only reqCount of the matched impl); eval must too: forward
+-- only the first reqCount of the dict's reqs.  None ⇒ no entry ⇒ method takes 0
+-- leading dicts (forward none).
+methodReqCountRef : Ref (List ((String, String), Int))
+methodReqCountRef = Ref []
+
+export
+buildMethodReqCounts : List Decl -> List ((String, String), Int)
+buildMethodReqCounts prog =
+  let arities = concatMapList methodDeclArities prog
+  concatMapList (implMethodReqCounts arities) prog
+
+-- declared arity of each interface method = number of value args in its signature.
+methodDeclArities : Decl -> List (String, Int)
+methodDeclArities (DAttrib _ d) = methodDeclArities d
+methodDeclArities DInterface { methods, ... } = map ifaceMethodArity methods
+methodDeclArities _ = []
+
+ifaceMethodArity : IfaceMethod -> (String, Int)
+ifaceMethodArity (IfaceMethod mname mty _) = (mname, listLen (argsOfTy mty))
+
+-- one ((method, tag), reqCount) per impl method; reqCount = impl pats - declared arity.
+implMethodReqCounts : List (String, Int) -> Decl -> List ((String, String), Int)
+implMethodReqCounts arities (DAttrib _ d) = implMethodReqCounts arities d
+implMethodReqCounts arities DImpl { tys = typeArgs, methods, ... } =
+  match headTyconHead typeArgs
+    Some tag => concatMapList (implMethodReqCountEntry arities tag) methods
+    None => []
+implMethodReqCounts _ _ = []
+
+implMethodReqCountEntry : List (String, Int) -> String -> ImplMethod -> List ((String, String), Int)
+implMethodReqCountEntry arities tag (ImplMethod mname pats _) =
+  let declArity = fromOption (listLen pats) (lookupAssoc mname arities)
+  let reqCount = subClampZero (listLen pats) declArity
+  [((mname, tag), reqCount)]
+
+subClampZero : Int -> Int -> Int
+subClampZero a b = if a - b < 0 then 0 else a - b
+
+takeN : Int -> List a -> List a
+takeN n _ | n <= 0 = []
+takeN _ [] = []
+takeN n (x :: rest) = x :: takeN (n - 1) rest
+
+lookupMethodReqCount : String -> String -> Int
+lookupMethodReqCount mname tag = lookupReqCount mname tag methodReqCountRef.value
+
+lookupReqCount : String -> String -> List ((String, String), Int) -> Int
+lookupReqCount _ _ [] = 0
+lookupReqCount mname tag (((m, t), c) :: rest)
+  | m == mname && t == tag = c
+  | otherwise = lookupReqCount mname tag rest
+
+
 export
 buildCtorFieldOrders : List Decl -> List (String, List String)
 buildCtorFieldOrders prog = concatMapList ctorFieldOrderEntries prog
@@ -759,8 +820,16 @@ export
 methodAtNarrow : EvalEnv -> Value -> Route -> <Mut> (Value, List Value)
 methodAtNarrow _ v RNone = (v, [])
 methodAtNarrow _ v (RKey key _) = (narrowMethod v key, [])
+-- ARGSTAMP-UNIFY Phase 2+3 / genuine #21: under eval dict-threading an arg-position
+-- RDict site's narrowed impl method ALSO carries leading element-dict params
+-- (resolveArgStamps ran on eval too), so forward the dict's nested `reqs` exactly as
+-- RDictFwd does — this is what emit's emitDispatchChain does (load fields 1..n, prepend
+-- to argOps).  2-level nesting (`debug (List (List a))`) composes through this: the
+-- forwarded inner dict (`Debug (List Int)` = VDict "List" [VDict "Int"]) supplies the
+-- List impl method's leading `Debug Int` param.  Pre-unify RDict impl methods had NO
+-- dict slot (arg-tag), so reqs were discarded; now they need them.
 methodAtNarrow env v (RDict d) = match lookupEnv env d
-  VDict key _ => (narrowMethod v key, [])
+  VDict key reqs => (narrowMethod v key, reqs)
   _ => (v, [])
 methodAtNarrow env v (RDictFwd d) = match lookupEnv env d
   VDict key reqs => (narrowMethod v key, reqs)
@@ -875,7 +944,13 @@ evalMethodAt : EvalEnv -> String -> Route -> List Route -> List Route -> <Mut> V
 evalMethodAt env name RLocal _ _ = lookupEnv env name
 evalMethodAt env name route implRoutes methodRoutes =
   let lm = lookupMethod env name
-  let (narrowed, fwdReqs) = methodAtNarrow env lm route
+  let (narrowed, fwdReqs0) = methodAtNarrow env lm route
+  -- ARGSTAMP-UNIFY / genuine #21: the forwarding dict can be OVER-provisioned (a
+  -- List-tagged dict may carry an element req that THIS method's List impl does not
+  -- consume — two interfaces sharing the head tag, only one with `requires`).  Emit
+  -- tolerates this by loading only the matched impl's reqCount dicts; mirror that —
+  -- forward only the first reqCount of the dict's reqs (reqCount=0 ⇒ none).
+  let fwdReqs = takeN (lookupMethodReqCount name (routeTag env route)) fwdReqs0
   -- Mirror lib/eval.ml:869-873 (Phase 103): only fold method-/impl-dicts and
   -- forwarded requires onto a value still awaiting application. A terminal
   -- nullary return-position impl body (`def = []`, stripped to a bare value by
@@ -1290,8 +1365,16 @@ ifaceDispatchEntries _ = []
 ifaceMethodEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
 ifaceMethodEntry ifaceName typeParams (IfaceMethod mname mty _) = (
   (ifaceName, mname),
-  dispatchPositionsOf mty typeParams
+  dispatchPositionsOf mty (receiverParam typeParams)
 )
+
+-- The receiver (dispatch) typaram is the FIRST interface param.  A multi-param
+-- interface (`FromEntries c e`) dispatches on `c`; a trailing element param `e`
+-- in an argument type (`List e`) must NOT mark that argument as a dispatch
+-- position (mirror typecheck.mdk's dispatchTyparams).  Single-param: identity.
+receiverParam : List String -> List String
+receiverParam [] = []
+receiverParam (p :: _) = [p]
 
 export
 lookupPositions : String -> String -> List ((String, String), List Int) -> List Int
@@ -1848,6 +1931,7 @@ evalModules preludeDecls modules =
   let moduleDecls = concatMapList snd modules
   let allDecls = preludeDecls ++ moduleDecls
   let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
+  let _ = set_ref methodReqCountRef (buildMethodReqCounts allDecls)
   let disp = buildIfaceDispatch allDecls
   let ctors = collectCtors allDecls
   let preludeGroups = groupsOf preludeDecls
@@ -1906,6 +1990,7 @@ evalModulesRootEnv preludeDecls modules =
   let moduleDecls = concatMapList snd modules
   let allDecls = preludeDecls ++ moduleDecls
   let _ = set_ref ctorToTypeRef (buildCtorToType allDecls)
+  let _ = set_ref methodReqCountRef (buildMethodReqCounts allDecls)
   let disp = buildIfaceDispatch allDecls
   let ctors = collectCtors allDecls
   let preludeGroups = groupsOf preludeDecls
