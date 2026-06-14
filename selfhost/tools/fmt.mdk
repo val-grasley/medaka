@@ -27,9 +27,7 @@
 import frontend.ast.{DataVis(..), Variant(..), Decl(..)}
 import tools.printer.{render, printDecl, printDataDeclCommented, Doc}
 import frontend.lexer.{Comment, commentLine, commentText, collectComments}
-import frontend.parser.{parseWithPositions, Positions, DeclPos,
-  positionsDecls, positionsVariantLines, positionsLastContentLine,
-  declPosLine, declPosEndLine}
+import frontend.parser.{parseWithPositions, Positions, DeclPos, positionsDecls, positionsVariantLines, positionsLastContentLine, declPosLine, declPosEndLine}
 
 -- ── State ─────────────────────────────────────────
 -- pieces : output fragments, REVERSED (cons-prepend, reverse+concat at end)
@@ -70,7 +68,10 @@ isSingleLine s = countNl s == 0
 -- (OCaml `blank_line_if_needed`).  Returns the (possibly extended) pieces.
 blankLineIfNeeded : List String -> Int -> Int -> Bool -> List String
 blankLineIfNeeded pieces targetLine cursor started =
-  if started && targetLine - cursor >= 2 then "\n" :: pieces else pieces
+  if started && targetLine - cursor >= 2 then
+    "\n" :: pieces
+  else
+    pieces
 
 -- Emit one standalone comment (OCaml `emit_comment`): blank-line gate, then
 -- the lexeme + newline; advance cursor past any embedded newlines; mark started.
@@ -88,7 +89,8 @@ flushBefore (FmtState pieces [] vlines cursor started) _ =
 flushBefore (FmtState pieces (c::rest) vlines cursor started) line =
   if commentLine c < line then
     flushBefore (emitComment (FmtState pieces rest vlines cursor started) c) line
-  else FmtState pieces (c::rest) vlines cursor started
+  else
+    FmtState pieces (c :: rest) vlines cursor started
 
 -- ── Variant-line + interior-comment bucketing (DData) ─────
 
@@ -100,8 +102,8 @@ takeNVarGo : List Int -> Int -> List Int -> (List Int, List Int)
 takeNVarGo vlines k acc
   | k <= 0 = (vlines, reverseList acc)
   | otherwise = match vlines
-      [] => (vlines, reverseList acc)
-      (x::rest) => takeNVarGo rest (k - 1) (x :: acc)
+    [] => (vlines, reverseList acc)
+    x::rest => takeNVarGo rest (k - 1) (x :: acc)
 
 reverseList : List a -> List a
 reverseList xs = reverseListGo xs []
@@ -120,17 +122,16 @@ takeBeforeGo [] _ acc = (reverseList acc, [])
 takeBeforeGo (c::rest) line acc =
   if commentLine c < line then
     takeBeforeGo rest line (commentText c :: acc)
-  else (reverseList acc, c::rest)
+  else
+    (reverseList acc, c :: rest)
 
 -- For each variant line, pop its preceding interior comments.  Returns the
 -- per-variant comment lexeme lists (parallel to vls) and the leftover stream.
 vcommentsFor : List Comment -> List Int -> (List (List String), List Comment)
 vcommentsFor cs [] = ([], cs)
-vcommentsFor cs (l::ls) =
-  match takeBefore cs l
-    (these, rest) =>
-      match vcommentsFor rest ls
-        (more, leftover) => (these :: more, leftover)
+vcommentsFor cs (l::ls) = match takeBefore cs l
+  (these, rest) => match vcommentsFor rest ls
+    (more, leftover) => (these :: more, leftover)
 
 allEmpty : List (List String) -> Bool
 allEmpty [] = True
@@ -148,17 +149,19 @@ lenL (_::xs) = 1 + lenL xs
 -- Returns (renderedString, newState) — the Doc is rendered here so the comment
 -- pops are threaded back into the state.
 declDoc : FmtState -> Decl -> (String, FmtState)
-declDoc (FmtState pieces cs vlines cursor started) (DData vis n params variants derives) =
-  match takeNVariantLines vlines (lenL variants)
-    (vlinesRest, vls) =>
-      match vcommentsFor cs vls
-        (vcomments, csRest) =>
-          if lenL vcomments == lenL variants && not (allEmpty vcomments) then
-            (render (printDataDeclCommented vis n params variants derives vcomments),
-             FmtState pieces csRest vlinesRest cursor started)
-          else
-            (render (printDecl (DData vis n params variants derives)),
-             FmtState pieces cs vlinesRest cursor started)
+declDoc (FmtState pieces cs vlines cursor started) (DData vis n params variants derives) = match takeNVariantLines vlines (lenL variants)
+  (vlinesRest, vls) => match vcommentsFor cs vls
+    (vcomments, csRest) =>
+      if lenL vcomments == lenL variants && not (allEmpty vcomments) then
+        (
+          render (printDataDeclCommented vis n params variants derives vcomments),
+          FmtState pieces csRest vlinesRest cursor started
+        )
+      else
+        (
+          render (printDecl (DData vis n params variants derives)),
+          FmtState pieces cs vlinesRest cursor started
+        )
 declDoc st decl = (render (printDecl decl), st)
 
 -- ── Trailing comments ─────────────────────────────
@@ -170,8 +173,7 @@ isTrailing : Int -> Comment -> Bool
 isTrailing endLine c = commentLine c == endLine && isSingleLine (commentText c)
 
 takeTrailing : List Comment -> Int -> (List Comment, List Comment)
-takeTrailing cs endLine =
-  (filterL (isTrailing endLine) cs, filterL (c => not (isTrailing endLine c)) cs)
+takeTrailing cs endLine = (filterL (isTrailing endLine) cs, filterL (c => not (isTrailing endLine c)) cs)
 
 filterL : (a -> Bool) -> List a -> List a
 filterL _ [] = []
@@ -190,19 +192,18 @@ stepDecl : FmtState -> Decl -> DeclPos -> FmtState
 stepDecl st decl dp =
   let line = declPosLine dp
   let endLine = declPosEndLine dp
-  -- (1) flush_before loc.line, (2) blank-line gate, (3) render decl (consumes
-  -- variant lines + interior comments), (4) inline trailing comments,
-  -- (5) newline + advance cursor to end_line + started := true.
   let st1 = flushBefore st line
   match st1
     FmtState pieces1 cs1 vlines1 cursor1 started1 =>
       let pieces2 = blankLineIfNeeded pieces1 line cursor1 started1
       match declDoc (FmtState pieces2 cs1 vlines1 cursor1 started1) decl
-        (declStr, FmtState pieces3 cs3 vlines3 _cursor3 _started3) =>
-          match takeTrailing cs3 endLine
-            (trailing, csRest) =>
-              let pieces4 = appendTrailing (declStr :: pieces3) trailing
-              FmtState ("\n" :: pieces4) csRest vlines3 endLine True
+        (declStr, (FmtState pieces3 cs3 vlines3 _cursor3 _started3)) => match takeTrailing cs3 endLine
+          (trailing, csRest) =>
+            let pieces4 = appendTrailing (declStr :: pieces3) trailing
+            FmtState ("\n" :: pieces4) csRest vlines3 endLine True
+-- (1) flush_before loc.line, (2) blank-line gate, (3) render decl (consumes
+-- variant lines + interior comments), (4) inline trailing comments,
+-- (5) newline + advance cursor to end_line + started := true.
 
 walkDecls : FmtState -> List Decl -> List DeclPos -> FmtState
 walkDecls st [] _ = st
@@ -218,15 +219,13 @@ walkDecls st (d::ds) (p::ps) = walkDecls (stepDecl st d p) ds ps
 export
 formatProgram : List Decl -> List DeclPos -> List Int -> List Comment -> Int -> String
 formatProgram decls declPositions variantLines comments _lastContentLine =
-  if lenL declPositions != lenL decls then
-    stringConcat (map (d => render (printDecl d) ++ "\n") decls)
+  if lenL declPositions != lenL decls then stringConcat (map (d => render (printDecl d) ++ "\n") decls)
   else
     let st0 = FmtState [] comments variantLines 0 False
-    -- After the walk, the final `flush_before max_int` drains EVERY remaining
-    -- comment; `drainAll` does that unconditionally (no max_int literal needed).
     match drainAll (walkDecls st0 decls declPositions)
-      FmtState finalPieces _ _ _ _ =>
-        stringConcat (reverseList finalPieces)
+      FmtState finalPieces _ _ _ _ => stringConcat (reverseList finalPieces)
+-- After the walk, the final `flush_before max_int` drains EVERY remaining
+-- comment; `drainAll` does that unconditionally (no max_int literal needed).
 
 -- Drain every remaining comment (final `flush_before max_int`).
 drainAll : FmtState -> FmtState
@@ -238,8 +237,5 @@ drainAll (FmtState pieces (c::rest) vlines cursor started) =
 -- Convenience: parse + collect comments + format, from source text.
 export
 formatSource : String -> String
-formatSource src =
-  match parseWithPositions src
-    (decls, pos) =>
-      formatProgram decls (positionsDecls pos) (positionsVariantLines pos)
-        (collectComments src) (positionsLastContentLine pos)
+formatSource src = match parseWithPositions src
+  (decls, pos) => formatProgram decls (positionsDecls pos) (positionsVariantLines pos) (collectComments src) (positionsLastContentLine pos)

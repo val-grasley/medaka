@@ -824,7 +824,8 @@ leftSectionOrExpr : Expr -> Expr
 leftSectionOrExpr e = leftSectionGo e (stripLoc e)
 
 leftSectionGo : Expr -> Expr -> Expr
-leftSectionGo orig (EBinOp op lhs rhs _) = leftSectionRhs orig op lhs (stripLoc rhs)
+leftSectionGo orig (EBinOp op lhs rhs _) =
+  leftSectionRhs orig op lhs (stripLoc rhs)
 leftSectionGo orig _ = orig
 
 leftSectionRhs : Expr -> String -> Expr -> Expr -> Expr
@@ -1331,16 +1332,17 @@ intPatRest lo = do
 -- a bare `-1` literal pattern is not accepted (consistent with OCaml parser).
 negIntPat : Parser Pat
 negIntPat = do
-  advance                        -- consume MINUS
+  advance
   t <- peekP
   match t
     TInt n => negIntRng (LInt (negate n))
     _ => failP "expected integer after -"
+-- consume MINUS
 
 -- After parsing MINUS INT, require a `..` or `..=` (range is mandatory).
 negIntRng : Lit -> Parser Pat
 negIntRng lo = do
-  advance                        -- consume INT
+  advance
   t <- peekP
   match t
     TDotDot => do
@@ -1352,6 +1354,7 @@ negIntRng lo = do
       hi <- intBound
       pure (PRng lo hi True)
     _ => failP "expected .. or ..= after negative range bound"
+-- consume INT
 
 charPatRest : Lit -> Parser Pat
 charPatRest lo = do
@@ -2476,7 +2479,8 @@ letFunTailFor name pats e1 TIn = do
   advance
   e2 <- parseExpr
   pure (DoExpr (ELet False True (PVar name) (curryLam pats e1) e2))
-letFunTailFor name pats e1 _ = pure (DoLet False True (PVar name) (curryLam pats e1))
+letFunTailFor name pats e1 _ =
+  pure (DoLet False True (PVar name) (curryLam pats e1))
 
 -- non-IDENT-led pattern: `let (a, b) = e`, `let Some v = e else alt`, …
 letPat : Parser DoStmt
@@ -2584,9 +2588,9 @@ parseProgram = do
 -- decl is parsed with its start/end token index captured via `getPos`; lines
 -- come from the parallel line array; variant start lines are re-derived from the
 -- decl's token span (the data-body's depth-0 `=`/`|` separators).
-public export data DeclPos = DeclPos Int Int     -- (line, end_line), 1-based
+public export data DeclPos = DeclPos Int Int  -- (line, end_line), 1-based
 public export data Positions = Positions (List DeclPos) (List Int) Int
-  -- decl positions, variant start lines, last_content_line
+-- decl positions, variant start lines, last_content_line
 
 export
 positionsDecls : Positions -> List DeclPos
@@ -2706,7 +2710,8 @@ isDataDecl _ = False
 allVariantLines : Array Token -> Array Int -> List (Decl, Int, Int) -> List Int
 allVariantLines toks lines [] = []
 allVariantLines toks lines ((d, s, e)::rest)
-  | isDataDecl d = variantStartsIn toks lines s e ++ allVariantLines toks lines rest
+  | isDataDecl d = variantStartsIn toks lines s e
+    ++ allVariantLines toks lines rest
   | otherwise = allVariantLines toks lines rest
 
 -- last_content_line: line of the last content token across the whole file.
@@ -2716,7 +2721,11 @@ lastContentLineOf toks lines spans = lastContentLineGo toks lines spans 0
 lastContentLineGo : Array Token -> Array Int -> List (Decl, Int, Int) -> Int -> Int
 lastContentLineGo toks lines [] acc = acc
 lastContentLineGo toks lines ((_, s, e)::rest) acc =
-  lastContentLineGo toks lines rest (lineAt lines (lastContentIdx toks s (e - 1)))
+  lastContentLineGo
+    toks
+    lines
+    rest
+    (lineAt lines (lastContentIdx toks s (e - 1)))
 
 resultSpans : Array Token -> PR (List (Decl, Int, Int)) -> List (Decl, Int, Int)
 resultSpans _ (PErr _ _) = panic "parse error"
@@ -2727,17 +2736,16 @@ resultSpans toks (POk ds pos)
 -- Parse `src` and return the position side-channel alongside the decls.
 export
 parseWithPositions : String -> (List Decl, Positions)
-parseWithPositions src =
-  match tokenizeWithLines src
-    (tokList, lineList) =>
-      let toks = arrayFromList tokList
-      let lines = arrayFromList lineList
-      let spans = resultSpans toks (runP programWithSpans toks 0)
-      let decls = map (((d, _s, _e)) => d) spans
-      let dps = map (declPosOf toks lines) spans
-      let vls = allVariantLines toks lines spans
-      let lcl = lastContentLineOf toks lines spans
-      (decls, Positions dps vls lcl)
+parseWithPositions src = match tokenizeWithLines src
+  (tokList, lineList) =>
+    let toks = arrayFromList tokList
+    let lines = arrayFromList lineList
+    let spans = resultSpans toks (runP programWithSpans toks 0)
+    let decls = map ((d, _s, _e) => d) spans
+    let dps = map (declPosOf toks lines) spans
+    let vls = allVariantLines toks lines spans
+    let lcl = lastContentLineOf toks lines spans
+    (decls, Positions dps vls lcl)
 
 -- Check that the parse consumed all tokens (no trailing garbage), panic on error.
 -- Mirrors lib/loader.ml: raises Failure "Parse error" on Parser.Error or Failure.
@@ -2760,12 +2768,11 @@ parse src =
 -- token stream is byte-identical (`tokenizeWithOffsets` vs `tokenize`).
 export
 parseLocated : String -> <Mut> List Decl
-parseLocated src =
-  match tokenizeWithOffsetPairs src
-    (tokList, offPairs) =>
-      let _ = setLocState src (arrayFromList offPairs)
-      let toks = arrayFromList tokList
-      resultDecls toks (runP parseProgram toks 0)
+parseLocated src = match tokenizeWithOffsetPairs src
+  (tokList, offPairs) =>
+    let _ = setLocState src (arrayFromList offPairs)
+    let toks = arrayFromList tokList
+    resultDecls toks (runP parseProgram toks 0)
 
 -- ── Structured parse errors (non-panicking entry) ───────────────────────────
 -- The LSP prerequisite (Stage 4 task #24): a parser should yield errors as
@@ -2827,19 +2834,17 @@ resultDeclsResult src toks offs srcLen (POk ds pos)
 
 -- offset(idx) → (line,col) → ParseError, single place so both arms agree.
 mkLocated : String -> Array Token -> Array Int -> Int -> String -> Int -> ParseError
-mkLocated src toks offs srcLen msg pos =
-  match offsetToLineCol src (locateOffset toks offs srcLen pos)
-    (line, col) => ParseError line col msg
+mkLocated src toks offs srcLen msg pos = match offsetToLineCol src (locateOffset toks offs srcLen pos)
+  (line, col) => ParseError line col msg
 
 -- Parse `src`, returning `Ok decls` or a structured, located `Err ParseError`.
 -- Purely additive: does NOT touch the panicking `parse` path the happy-path
 -- drivers (check / eval / fmt) rely on.
 export
 parseResult : String -> Result ParseError (List Decl)
-parseResult src =
-  match tokenizeWithOffsets src
-    (tokList, offList) =>
-      let toks = arrayFromList tokList
-      let offs = arrayFromList offList
-      let srcLen = stringLength src
-      resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)
+parseResult src = match tokenizeWithOffsets src
+  (tokList, offList) =>
+    let toks = arrayFromList tokList
+    let offs = arrayFromList offList
+    let srcLen = stringLength src
+    resultDeclsResult src toks offs srcLen (runP parseProgram toks 0)

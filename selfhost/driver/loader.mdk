@@ -17,26 +17,26 @@ import frontend.parser.{parse, parseLocated}
 
 memStr : String -> List String -> Bool
 memStr _ [] = False
-memStr x (y :: ys) = x == y || memStr x ys
+memStr x (y::ys) = x == y || memStr x ys
 
 lenL : List a -> Int
 lenL [] = 0
-lenL (_ :: xs) = 1 + lenL xs
+lenL (_::xs) = 1 + lenL xs
 
 initL : List a -> List a
 initL [] = []
 initL [_] = []
-initL (x :: xs) = x :: initL xs
+initL (x::xs) = x :: initL xs
 
 lastOr : a -> List a -> a
 lastOr d [] = d
 lastOr _ [x] = x
-lastOr d (_ :: xs) = lastOr d xs
+lastOr d (_::xs) = lastOr d xs
 
 joinDot : List String -> String
 joinDot [] = ""
 joinDot [x] = x
-joinDot (x :: xs) = stringConcat [x, ".", joinDot xs]
+joinDot (x::xs) = stringConcat [x, ".", joinDot xs]
 
 -- split a String on a single-char separator (mirrors String.split_on_char).
 -- Always returns ≥1 segment; empty input → [""].  No-sep input → [s].
@@ -48,14 +48,13 @@ splitGo sep s i len acc =
   if i >= len then [acc]
   else
     let c = stringSlice i (i + 1) s
-    if c == sep then acc :: splitGo sep s (i + 1) len ""
-    else splitGo sep s (i + 1) len (acc ++ c)
+    if c == sep then acc :: splitGo sep s (i + 1) len "" else splitGo sep s (i + 1) len (acc ++ c)
 
 -- join segments with "/" (mirrors String.concat "/")
 joinSlash : List String -> String
 joinSlash [] = ""
 joinSlash [x] = x
-joinSlash (x :: xs) = stringConcat [x, "/", joinSlash xs]
+joinSlash (x::xs) = stringConcat [x, "/", joinSlash xs]
 
 -- replace every "/" with "." in a path (mirrors loader.ml module_id_of_path's
 -- `String.map (fun c -> if c = '/' then '.' else c)`)
@@ -80,7 +79,10 @@ dropPrefix k s = stringSlice k (stringLength s) s
 
 stripSuffixStr : String -> String -> String
 stripSuffixStr suf s =
-  if endsWith suf s then stringSlice 0 (stringLength s - stringLength suf) s else s
+  if endsWith suf s then
+    stringSlice 0 (stringLength s - stringLength suf) s
+  else
+    s
 
 -- the file path a module ID maps to under a single root (no existence check).
 -- A dotted module ID maps to a nested path: split on `.`, join with `/`, append
@@ -96,13 +98,13 @@ fileOfModuleId root modId =
 -- no-op, so flat behaviour is unchanged.
 relUnderRoots : List String -> String -> String
 relUnderRoots [] path = path
-relUnderRoots (r :: rs) path =
+relUnderRoots (r::rs) path =
   let pre = stringConcat [r, "/"]
-  if startsWith pre path then dropPrefix (stringLength pre) path
-  else relUnderRoots rs path
+  if startsWith pre path then dropPrefix (stringLength pre) path else relUnderRoots rs path
 
 moduleIdOfPath : List String -> String -> String
-moduleIdOfPath roots path = slashToDot (stripSuffixStr ".mdk" (relUnderRoots roots path))
+moduleIdOfPath roots path =
+  slashToDot (stripSuffixStr ".mdk" (relUnderRoots roots path))
 
 -- Walk up from `startDir` to the nearest directory containing `medaka.toml` (the
 -- project / module root), mirroring lib/project_config.ml's root discovery.  This
@@ -120,8 +122,7 @@ findRootGo cur fallback =
   if fileExists (stringConcat [cur, "/medaka.toml"]) then cur
   else
     let p = parentDir cur
-    if p == cur || stringLength p == 0 then fallback
-    else findRootGo p fallback
+    if p == cur || stringLength p == 0 then fallback else findRootGo p fallback
 
 -- parent directory: strip the last `/`-component (mirrors the loader's dir logic).
 parentDir : String -> String
@@ -130,8 +131,10 @@ parentDir path = parentGo path (stringLength path)
 parentGo : String -> Int -> String
 parentGo path 0 = ""
 parentGo path i =
-  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
-  else parentGo path (i - 1)
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice 0 (i - 1) path
+  else
+    parentGo path (i - 1)
 
 -- ── dependency extraction (mirrors loader.ml's direct_imports) ──
 
@@ -139,23 +142,26 @@ parentGo path i =
 -- `import core.{…}` is a no-op the loader must skip (else it duplicates).
 importModId : UsePath -> String
 importModId (UseName ns) =
-  if lenL ns > 1 then joinDot (initL ns) else lastOr "" ns
+  if lenL ns > 1 then
+    joinDot (initL ns)
+  else
+    lastOr "" ns
 importModId (UseGroup ns _) = joinDot ns
 importModId (UseWild ns) = joinDot ns
 importModId (UseAlias ns _) = joinDot ns
 
 directImports : List Decl -> List String
 directImports [] = []
-directImports (DUse _ path :: rest) =
+directImports ((DUse _ path)::rest) =
   let m = importModId path
   if m == "core" then directImports rest else m :: directImports rest
-directImports (_ :: rest) = directImports rest
+directImports (_::rest) = directImports rest
 
 -- ── file resolution + parsing ──
 
 findModuleFile : List String -> String -> <IO> Option String
 findModuleFile [] _ = None
-findModuleFile (r :: rs) modId =
+findModuleFile (r::rs) modId =
   let path = fileOfModuleId r modId
   if fileExists path then Some path else findModuleFile rs modId
 
@@ -186,10 +192,11 @@ readModuleProgF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String)
 readModuleProgF parseFn read roots modId = match findModuleFile roots modId
   None => Err (stringConcat ["unknown module: ", modId])
   Some path => match read path
-    Some src => Ok (path, parseFn src)      -- unsaved editor buffer shadows disk
+    Some src => Ok (path, parseFn src)
     None => match readFile path
       Err e => Err e
       Ok src => Ok (path, parseFn src)
+-- unsaved editor buffer shadows disk
 
 -- ── DFS topological sort (dependency-first; leaves before roots) ──
 --
@@ -207,38 +214,39 @@ cycleChain modId stack = reverseL (takeTo modId stack) ++ [modId]
 
 takeTo : String -> List String -> List String
 takeTo _ [] = []
-takeTo target (x :: xs) =
-  if x == target then [x]
-  else x :: takeTo target xs
+takeTo target (x::xs) = if x == target then [x] else x :: takeTo target xs
 
 reverseL : List a -> List a
 reverseL [] = []
-reverseL (x :: xs) = reverseL xs ++ [x]
+reverseL (x::xs) = reverseL xs ++ [x]
 
 joinArrow : List String -> String
 joinArrow [] = ""
 joinArrow [x] = x
-joinArrow (x :: xs) = stringConcat [x, " → ", joinArrow xs]
+joinArrow (x::xs) = stringConcat [x, " → ", joinArrow xs]
 
 visitMod : List String -> List String -> List String -> List (String, List Decl) -> String -> <IO> Result String (List String, List (String, List Decl))
 visitMod roots stack visited acc modId =
   if memStr modId visited then Ok (visited, acc)
-  else if memStr modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
-  else match readModuleProg roots modId
-    Err e => Err e
-    Ok prog => match visitMods roots (modId :: stack) visited acc (directImports prog)
-      Err e => Err e
-      Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, prog)])
+  else
+    if memStr modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
+    else
+      match readModuleProg roots modId
+        Err e => Err e
+        Ok prog => match visitMods roots (modId :: stack) visited acc (directImports prog)
+          Err e => Err e
+          Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, prog)])
 
 visitMods : List String -> List String -> List String -> List (String, List Decl) -> List String -> <IO> Result String (List String, List (String, List Decl))
 visitMods _ _ visited acc [] = Ok (visited, acc)
-visitMods roots stack visited acc (d :: ds) = match visitMod roots stack visited acc d
+visitMods roots stack visited acc (d::ds) = match visitMod roots stack visited acc d
   Err e => Err e
   Ok (v2, a2) => visitMods roots stack v2 a2 ds
 
 -- Load a root file + all transitive deps, dependency-first.  roots resolves
 -- module IDs to file paths (selfhost: a single project dir).
-export loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
+export
+loadProgram : String -> List String -> <IO> Result String (List (String, List Decl))
 loadProgram entry roots = match visitMod roots [] [] [] (moduleIdOfPath roots entry)
   Err e => Err e
   Ok (_, acc) => Ok acc
@@ -255,16 +263,18 @@ loadProgram entry roots = match visitMod roots [] [] [] (moduleIdOfPath roots en
 visitModF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> List String -> List String -> List (String, String, List Decl) -> String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
 visitModF parseFn read roots stack visited acc modId =
   if memStr modId visited then Ok (visited, acc)
-  else if memStr modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
-  else match readModuleProgF parseFn read roots modId
-    Err e => Err e
-    Ok (path, prog) => match visitModsF parseFn read roots (modId :: stack) visited acc (directImports prog)
-      Err e => Err e
-      Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, path, prog)])
+  else
+    if memStr modId stack then Err (stringConcat ["cyclic dependency: ", joinArrow (cycleChain modId stack)])
+    else
+      match readModuleProgF parseFn read roots modId
+        Err e => Err e
+        Ok (path, prog) => match visitModsF parseFn read roots (modId :: stack) visited acc (directImports prog)
+          Err e => Err e
+          Ok (visited2, acc2) => Ok (modId :: visited2, acc2 ++ [(modId, path, prog)])
 
 visitModsF : (String -> <Mut> List Decl) -> (String -> <Mut> Option String) -> List String -> List String -> List String -> List (String, String, List Decl) -> List String -> <IO, Mut> Result String (List String, List (String, String, List Decl))
 visitModsF _ _ _ _ visited acc [] = Ok (visited, acc)
-visitModsF parseFn read roots stack visited acc (d :: ds) = match visitModF parseFn read roots stack visited acc d
+visitModsF parseFn read roots stack visited acc (d::ds) = match visitModF parseFn read roots stack visited acc d
   Err e => Err e
   Ok (v2, a2) => visitModsF parseFn read roots stack v2 a2 ds
 
@@ -273,7 +283,8 @@ visitModsF parseFn read roots stack visited acc (d :: ds) = match visitModF pars
 -- `Loader.load_program ~read` returning `(mod_id, file_path, prog)` triples.
 -- A `read` of `(_ => None)` is exactly `loadProgram` (disk-only) plus paths.
 -- Uses placeholder-loc `parse`.
-export loadProgramFiles : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+export
+loadProgramFiles : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
 loadProgramFiles read entry roots = match visitModF parse read roots [] [] [] (moduleIdOfPath roots entry)
   Err e => Err e
   Ok (_, acc) => Ok acc
@@ -282,7 +293,8 @@ loadProgramFiles read entry roots = match visitModF parse read roots [] [] [] (m
 -- resulting decls carry REAL ELoc spans (B.10.2b) — the LSP project path uses
 -- this so type-error diagnostics get expr-level ranges, mirroring the single-doc
 -- `analyzeLocated`.
-export loadProgramFilesLocated : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+export
+loadProgramFilesLocated : (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
 loadProgramFilesLocated read entry roots = match visitModF parseLocated read roots [] [] [] (moduleIdOfPath roots entry)
   Err e => Err e
   Ok (_, acc) => Ok acc

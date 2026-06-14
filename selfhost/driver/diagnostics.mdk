@@ -81,29 +81,35 @@ analyzeFrom runtimeSrc coreSrc raw =
   let desugared = desugar raw
   let runtimeP = desugar (parse runtimeSrc)
   let coreP = desugar (parse coreSrc)
-  -- resolve over runtime + core (prelude) + target
   let resErrs = resolveProgram runtimeP coreP desugared
-  -- resolve has no per-error loc in the selfhost pipeline → None.
   let resDiags = map (e => Diag SevError (ppResError e) None) resErrs
-  -- Stage the user decls for coherence (mirrors check.mdk's setCoherenceUserDecls).
   let _ = setCoherenceUserDecls desugared
-  -- Only run typecheck when resolve found no errors (same gate as diagnostics.ml).
   let tcDiags = match resErrs
     [] =>
       let (tcErrs, tcWarns) = checkProgramDiags runtimeP (coreP ++ desugared)
-      -- each tcErr is (msg, Option Loc): carry the captured span (B.10.2b).
-      map (((msg, loc)) => Diag SevError msg loc) tcErrs
+      map ((msg, loc) => Diag SevError msg loc) tcErrs
         ++ map (w => Diag SevWarning (stripWarnPrefix w) None) tcWarns
     _ => []
   let guardDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) guardWarns
   guardDiags ++ resDiags ++ tcDiags
+-- resolve over runtime + core (prelude) + target
+
+-- resolve has no per-error loc in the selfhost pipeline → None.
+
+-- Stage the user decls for coherence (mirrors check.mdk's setCoherenceUserDecls).
+
+-- Only run typecheck when resolve found no errors (same gate as diagnostics.ml).
+
+-- each tcErr is (msg, Option Loc): carry the captured span (B.10.2b).
 
 -- Strip the leading "Warning: " prefix that exhaust/typecheck include in their
 -- warning strings, so ppDiag emits "warning: <msg>" not "warning: Warning: <msg>".
 stripWarnPrefix : String -> String
 stripWarnPrefix s =
-  if stringSlice 0 9 s == "Warning: " then stringSlice 9 (stringLength s) s
-  else s
+  if stringSlice 0 9 s == "Warning: " then
+    stringSlice 9 (stringLength s) s
+  else
+    s
 
 -- ── text entry point (for diff gate) ──────────────────────────────────────
 
@@ -117,7 +123,7 @@ analyzeToLines runtimeSrc coreSrc progSrc =
 joinNl : List String -> String
 joinNl [] = ""
 joinNl [x] = x
-joinNl (x :: xs) = x ++ "\n" ++ joinNl xs
+joinNl (x::xs) = x ++ "\n" ++ joinNl xs
 
 -- ── multi-file / project-wide analysis (B.10.5) ─────────────────────────────
 --
@@ -151,7 +157,7 @@ joinNl (x :: xs) = x ++ "\n" ++ joinNl xs
 -- Look a file's bucket up in the assoc list (None = not seeded yet).
 lookupBucket : String -> List (String, List Diag) -> Option (List Diag)
 lookupBucket _ [] = None
-lookupBucket f ((k, v) :: rest)
+lookupBucket f ((k, v)::rest)
   | k == f = Some v
   | otherwise = lookupBucket f rest
 
@@ -159,7 +165,7 @@ lookupBucket f ((k, v) :: rest)
 -- its position; a new key is appended at the end (so files appear in load order).
 putBucket : String -> List Diag -> List (String, List Diag) -> List (String, List Diag)
 putBucket f v [] = [(f, v)]
-putBucket f v ((k, old) :: rest)
+putBucket f v ((k, old)::rest)
   | k == f = (f, v) :: rest
   | otherwise = (k, old) :: putBucket f v rest
 
@@ -179,7 +185,7 @@ seedBucket f buckets = match lookupBucket f buckets
 -- Append a whole list of diagnostics to one file's bucket.
 pushDiags : String -> List Diag -> List (String, List Diag) -> List (String, List Diag)
 pushDiags _ [] buckets = buckets
-pushDiags f (d :: ds) buckets = pushDiags f ds (pushDiag f d buckets)
+pushDiags f (d::ds) buckets = pushDiags f ds (pushDiag f d buckets)
 
 -- ── last-good-source cache + wrapped read (mirror wrapped_read) ─────────────
 --
@@ -192,7 +198,7 @@ pushDiags f (d :: ds) buckets = pushDiags f ds (pushDiag f d buckets)
 
 cacheLookup : String -> List (String, String) -> Option String
 cacheLookup _ [] = None
-cacheLookup f ((k, v) :: rest)
+cacheLookup f ((k, v)::rest)
   | k == f = Some v
   | otherwise = cacheLookup f rest
 
@@ -201,7 +207,7 @@ cachePut f v xs = (f, v) :: cacheRemove f xs
 
 cacheRemove : String -> List (String, String) -> List (String, String)
 cacheRemove _ [] = []
-cacheRemove f ((k, v) :: rest)
+cacheRemove f ((k, v)::rest)
   | k == f = cacheRemove f rest
   | otherwise = (k, v) :: cacheRemove f rest
 
@@ -219,8 +225,9 @@ wrappedRead cacheRef staleRef read path = match read path
       let diag = Diag SevError (parseErrorMessage e) (Some (parseErrLoc path e))
       let _ = set_ref staleRef ((path, diag) :: staleRef.value)
       match cacheLookup path cacheRef.value
-        Some good => Some good        -- fall back to the last source that parsed
-        None => Some src              -- no cached version → use the broken one
+        Some good => Some good
+        None => Some src  -- no cached version → use the broken one
+-- fall back to the last source that parsed
 
 -- A parse-error `Loc` for the editing buffer (1-based line, 0-based col), so the
 -- LSP can squiggle the offending token (mirror parseResult's located line/col).
@@ -239,24 +246,26 @@ export
 analyzeProject : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> List (String, List Diag)
 analyzeProject cacheRef read entry roots runtimeSrc coreSrc =
   let staleRef = newStale ()
-  let wread = (p => wrappedRead cacheRef staleRef read p)
+  let wread = p => wrappedRead cacheRef staleRef read p
   let runtimeP = desugar (parse runtimeSrc)
   let coreP = desugar (parse coreSrc)
-  -- A load error (cycle / unknown module / unreadable file) is attributed to the
-  -- entry file (the selfhost loader returns a single Err string without a per-file
-  -- split, unlike the OCaml attribute_load_error; entry is the conservative
-  -- fallback there too for cycle/ambiguous).
   match loadProgramFilesLocated wread entry roots
-    Err e =>
-      appendStale staleRef [(entry, [Diag SevError e None])]
+    Err e => appendStale staleRef [(entry, [Diag SevError e None])]
     Ok mods =>
       let seeded = seedAll (map midPath mods) []
-      -- resolve per module (threading exports), bucketing by file.
       let afterRes = resolvePass runtimeP coreP [] mods seeded
-      -- typecheck per module via prefix-diff, bucketing by file.
       let afterTc = typecheckPass runtimeP coreP [] mods afterRes
-      -- finally fold in the stale parse-error diagnostics (and seed their files).
       appendStale staleRef afterTc
+-- A load error (cycle / unknown module / unreadable file) is attributed to the
+-- entry file (the selfhost loader returns a single Err string without a per-file
+-- split, unlike the OCaml attribute_load_error; entry is the conservative
+-- fallback there too for cycle/ambiguous).
+
+-- resolve per module (threading exports), bucketing by file.
+
+-- typecheck per module via prefix-diff, bucketing by file.
+
+-- finally fold in the stale parse-error diagnostics (and seed their files).
 
 -- newStale: a fresh per-call stale-collection Ref.
 newStale : Unit -> <Mut> Ref (List (String, Diag))
@@ -268,7 +277,7 @@ midPath (_, p, _) = p
 
 seedAll : List String -> List (String, List Diag) -> List (String, List Diag)
 seedAll [] buckets = buckets
-seedAll (f :: fs) buckets = seedAll fs (seedBucket f buckets)
+seedAll (f::fs) buckets = seedAll fs (seedBucket f buckets)
 
 -- Append the collected stale parse-error diagnostics into their files' buckets
 -- (seeding the bucket first so the file appears even if it produced nothing else).
@@ -277,7 +286,8 @@ appendStale staleRef buckets = foldStale staleRef.value buckets
 
 foldStale : List (String, Diag) -> List (String, List Diag) -> List (String, List Diag)
 foldStale [] buckets = buckets
-foldStale ((path, d) :: rest) buckets = foldStale rest (pushDiag path d (seedBucket path buckets))
+foldStale ((path, d)::rest) buckets =
+  foldStale rest (pushDiag path d (seedBucket path buckets))
 
 -- ── resolve pass (per module, threading exports) ────────────────────────────
 -- Mirror analyze_project's resolve loop: resolveModule per module in dependency
@@ -285,7 +295,7 @@ foldStale ((path, d) :: rest) buckets = foldStale rest (pushDiag path d (seedBuc
 -- Resolve errors have no per-error loc in the selfhost pipeline → None.
 resolvePass : List Decl -> List Decl -> List ModuleExports -> List (String, String, List Decl) -> List (String, List Diag) -> List (String, List Diag)
 resolvePass _ _ _ [] buckets = buckets
-resolvePass rt core known ((mid, path, prog) :: rest) buckets =
+resolvePass rt core known ((mid, path, prog)::rest) buckets =
   let desugared = desugar prog
   let (exp, errs) = resolveModule rt core known mid desugared
   let diags = map (e => Diag SevError (ppResError e) None) errs
@@ -316,9 +326,9 @@ midToDesugaredPair (mid, _, prog) = (mid, desugar prog)
 -- guard-exhaustiveness warnings from the raw decls, and bucket by path.
 foldModuleTc : List (String, String, List Decl) -> List (String, (List (String, Option Loc), List String)) -> List (String, List Diag) -> <Mut> List (String, List Diag)
 foldModuleTc [] _ buckets = buckets
-foldModuleTc ((mid, path, prog) :: rest) tcByMid buckets =
+foldModuleTc ((mid, path, prog)::rest) tcByMid buckets =
   let (tcErrs, tcWarns) = lookupTcDiags mid tcByMid
-  let errDiags = map (((msg, loc)) => Diag SevError msg loc) tcErrs
+  let errDiags = map ((msg, loc) => Diag SevError msg loc) tcErrs
   let warnDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) tcWarns
   let guardWarns = checkGuardExhaustiveness prog
   let guardDiags = map (w => Diag SevWarning (stripWarnPrefix w) None) guardWarns
@@ -327,7 +337,7 @@ foldModuleTc ((mid, path, prog) :: rest) tcByMid buckets =
 
 lookupTcDiags : String -> List (String, (List (String, Option Loc), List String)) -> (List (String, Option Loc), List String)
 lookupTcDiags _ [] = ([], [])
-lookupTcDiags mid ((m, d) :: rest)
+lookupTcDiags mid ((m, d)::rest)
   | m == mid = d
   | otherwise = lookupTcDiags mid rest
 
@@ -339,12 +349,12 @@ lookupTcDiags mid ((m, d) :: rest)
 export
 analyzeProjectToLines : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> String
 analyzeProjectToLines cacheRef read entry roots runtimeSrc coreSrc =
-  joinNl (projectLines (analyzeProject cacheRef read entry roots runtimeSrc coreSrc))
+  joinNl
+    (projectLines (analyzeProject cacheRef read entry roots runtimeSrc coreSrc))
 
 projectLines : List (String, List Diag) -> List String
 projectLines [] = []
-projectLines ((file, ds) :: rest) =
-  ("## FILE " ++ file) :: (map ppDiagLoc ds ++ projectLines rest)
+projectLines ((file, ds)::rest) = "## FILE " ++ file :: map ppDiagLoc ds ++ projectLines rest
 
 -- Render a diagnostic for the project gate WITH its start position, so the diff
 -- can assert positions (the loc is otherwise consumed only by the LSP JSON).
@@ -354,5 +364,10 @@ projectLines ((file, ds) :: rest) =
 --   whole-document range in the LSP; positionless here).
 ppDiagLoc : Diag -> String
 ppDiagLoc (Diag sev msg None) = ppSeverity sev ++ ": " ++ msg
-ppDiagLoc (Diag sev msg (Some (Loc _ sl sc _ _))) =
-  ppSeverity sev ++ "@" ++ intToString (sl - 1) ++ ":" ++ intToString sc ++ ": " ++ msg
+ppDiagLoc (Diag sev msg (Some (Loc _ sl sc _ _))) = ppSeverity sev
+  ++ "@"
+  ++ intToString (sl - 1)
+  ++ ":"
+  ++ intToString sc
+  ++ ": "
+  ++ msg

@@ -38,8 +38,7 @@ withPreludes preludePaths targetPath = match readAllDecls preludePaths
 
 withTarget : List Decl -> String -> <IO, Mut> Unit
 withTarget preludeDecls targetPath = match readFile targetPath
-  Ok targetSrc =>
-    putStrLn (cevalMain (lowerProgram (annotateProgram (preludeDecls ++ desugar (parse targetSrc)))))
+  Ok targetSrc => putStrLn (cevalMain (lowerProgram (annotateProgram (preludeDecls ++ desugar (parse targetSrc)))))
   Err msg => ePutStrLn msg
 
 -- parse + desugar each prelude file in order, concatenating their decls

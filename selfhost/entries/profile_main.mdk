@@ -30,7 +30,7 @@ import support.timer.{perfEnabled, now, emitPhaseA, emitTotalA, allocSnap}
 import support.util.{listLen}
 
 main = match args ()
-  (runtimePath :: corePath :: targetPath :: _) => run runtimePath corePath targetPath
+  runtimePath::corePath::targetPath::_ => run runtimePath corePath targetPath
   _ => ePutStrLn "usage: MEDAKA_PERF=1 medaka run selfhost/entries/profile_main.mdk <runtime.mdk> <core.mdk> <target.mdk>"
 
 run : String -> String -> String -> <IO, Mut> Unit
@@ -51,26 +51,19 @@ runStaged : Bool -> String -> String -> String -> <IO, Mut> Unit
 runStaged on rsrc csrc tsrc =
   let tTotal = now ()
   let aTotal = allocSnap ()
-
-  -- parse-prelude: parse + desugar runtime.mdk and core.mdk.
-  -- rRaw/cRaw (raw) go to resolve; rDecls/cDecls (desugared) go to mark+typecheck.
   let tPP0 = now ()
   let aPP0 = allocSnap ()
-  let rRaw   = parse rsrc
-  let cRaw   = parse csrc
+  let rRaw = parse rsrc
+  let cRaw = parse csrc
   let rDecls = desugar rRaw
   let cDecls = desugar cRaw
   let tPP1 = now ()
   let _ = emitPhaseA on "parse-prelude" (tPP1 - tPP0) (allocSnap () - aPP0) "runtime+core"
-
-  -- parse: lex + parse the target file (tokenize is called inside `parse`)
   let tP0 = now ()
   let aP0 = allocSnap ()
   let raw = parse tsrc
   let tP1 = now ()
   let _ = emitPhaseA on "parse" (tP1 - tP0) (allocSnap () - aP0) (intToString (listLen raw) ++ " decls")
-
-  -- desugar: lower surface sugar in the target AST
   let tD0 = now ()
   let aD0 = allocSnap ()
   let desugared = desugar raw
@@ -78,26 +71,31 @@ runStaged on rsrc csrc tsrc =
   let nDecls = listLen desugared
   let declsOp = intToString nDecls ++ " decls"
   let _ = emitPhaseA on "desugar" (tD1 - tD0) (allocSnap () - aD0) declsOp
-
-  -- resolve: name resolution (mirrors check.mdk: raw prelude, desugared target)
   let tR0 = now ()
   let aR0 = allocSnap ()
   let _ = resolveToLines rRaw cRaw desugared
   let tR1 = now ()
   let _ = emitPhaseA on "resolve" (tR1 - tR0) (allocSnap () - aR0) declsOp
-
-  -- mark: method-reference marking (desugared core as the prelude)
   let tM0 = now ()
   let aM0 = allocSnap ()
   let _ = markWithPrelude cDecls desugared
   let tM1 = now ()
   let _ = emitPhaseA on "mark" (tM1 - tM0) (allocSnap () - aM0) declsOp
-
-  -- typecheck: HM inference over desugared runtime + core ++ target
   let tT0 = now ()
   let aT0 = allocSnap ()
   let _ = checkToLinesWithRuntime rDecls (cDecls ++ desugared)
   let tT1 = now ()
   let _ = emitPhaseA on "typecheck" (tT1 - tT0) (allocSnap () - aT0) declsOp
-
   emitTotalA on (tT1 - tTotal) (allocSnap () - aTotal)
+-- parse-prelude: parse + desugar runtime.mdk and core.mdk.
+-- rRaw/cRaw (raw) go to resolve; rDecls/cDecls (desugared) go to mark+typecheck.
+
+-- parse: lex + parse the target file (tokenize is called inside `parse`)
+
+-- desugar: lower surface sugar in the target AST
+
+-- resolve: name resolution (mirrors check.mdk: raw prelude, desugared target)
+
+-- mark: method-reference marking (desugared core as the prelude)
+
+-- typecheck: HM inference over desugared runtime + core ++ target

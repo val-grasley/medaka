@@ -32,39 +32,42 @@ import tools.lsp.{runServer}
 main : <IO, Mut, Panic> Unit
 main = match args ()
   [] => runReplCmd []
-  ("help" :: _) => usage ()
-  ("--help" :: _) => usage ()
-  ("-h" :: _) => usage ()
-  ("check" :: rest) => runCheckCmd rest
-  ("fmt" :: rest) => runFmtCmd rest
-  ("new" :: rest) => runNewCmd rest
-  ("build" :: rest) => runBuildCmd rest
-  ("run" :: rest) => runRunCmd rest
-  ("test" :: rest) => runTestCmd rest
-  ("repl" :: rest) => runReplCmd rest
-  ("lsp" :: rest) => runLspCmd rest
-  (sub :: _) => notYet sub
+  "help"::_ => usage ()
+  "--help"::_ => usage ()
+  "-h"::_ => usage ()
+  "check"::rest => runCheckCmd rest
+  "fmt"::rest => runFmtCmd rest
+  "new"::rest => runNewCmd rest
+  "build"::rest => runBuildCmd rest
+  "run"::rest => runRunCmd rest
+  "test"::rest => runTestCmd rest
+  "repl"::rest => runReplCmd rest
+  "lsp"::rest => runLspCmd rest
+  sub::_ => notYet sub
 
 -- ── usage (mirrors bin/main.ml print_usage) ───────────────────────────────
 -- Takes Unit so the interpreter's top-level-value evaluation doesn't fire its
 -- IO eagerly (native build only runs main); native CLI prints it on demand.
 usage : Unit -> <IO> Unit
-usage _ = putStrLn (stringConcat
-  [ "medaka — language for thinking out loud\n"
-  , "\n"
-  , "Usage:\n"
-  , "  medaka                    Start the REPL.\n"
-  , "  medaka repl               Start the REPL.\n"
-  , "  medaka run [--release] <file.mdk>   Type-check and run a program.\n"
-  , "  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang).\n"
-  , "  medaka check [--json] <file.mdk>    Type-check without running.\n"
-  , "  medaka test [file.mdk]    Run doctests + prop tests.\n"
-  , "  medaka bench [file.mdk]   Run bench declarations.\n"
-  , "  medaka doc [file.mdk]     Generate Markdown documentation.\n"
-  , "  medaka fmt [paths...]     Format .mdk files in place (or --check).\n"
-  , "  medaka new <name>         Scaffold a new project directory.\n"
-  , "  medaka lsp                Run the language server over stdio.\n"
-  , "  medaka help               Show this message.\n" ])
+usage _ =
+  putStrLn
+    (stringConcat [
+      "medaka — language for thinking out loud\n",
+      "\n",
+      "Usage:\n",
+      "  medaka                    Start the REPL.\n",
+      "  medaka repl               Start the REPL.\n",
+      "  medaka run [--release] <file.mdk>   Type-check and run a program.\n",
+      "  medaka build <file.mdk> [-o <out>]  Compile to a native binary (LLVM + clang).\n",
+      "  medaka check [--json] <file.mdk>    Type-check without running.\n",
+      "  medaka test [file.mdk]    Run doctests + prop tests.\n",
+      "  medaka bench [file.mdk]   Run bench declarations.\n",
+      "  medaka doc [file.mdk]     Generate Markdown documentation.\n",
+      "  medaka fmt [paths...]     Format .mdk files in place (or --check).\n",
+      "  medaka new <name>         Scaffold a new project directory.\n",
+      "  medaka lsp                Run the language server over stdio.\n",
+      "  medaka help               Show this message.\n"
+    ])
 
 -- ── deferred subcommands ──────────────────────────────────────────────────
 notYet : String -> <IO, Panic> Unit
@@ -104,12 +107,7 @@ runCheckCmd argv = match dropFlags argv
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
-          -- G1: print the report (byte-identical stdout for no-import files:
-          -- diff_native_cli gate), then gate the EXIT CODE on the error predicate
-          -- so CI `$?` matches OCaml `check` (exit 1 on any error).
           Ok tsrc => match loadProgram target roots
-            -- A load error (missing/cyclic import) is reported verbatim, like
-            -- build/run; exit 1.  No-fixture single-file files never error here.
             Err lmsg =>
               let _ = ePutStrLn lmsg
               exit 1
@@ -117,6 +115,12 @@ runCheckCmd argv = match dropFlags argv
   _ =>
     let _ = ePutStrLn "usage: medaka check [--json] <file.mdk>"
     exit 1
+-- G1: print the report (byte-identical stdout for no-import files:
+-- diff_native_cli gate), then gate the EXIT CODE on the error predicate
+-- so CI `$?` matches OCaml `check` (exit 1 on any error).
+
+-- A load error (missing/cyclic import) is reported verbatim, like
+-- build/run; exit 1.  No-fixture single-file files never error here.
 
 -- Route by module count: a single loaded module (no non-core imports) ⇒ the
 -- single-file runCheck (byte-identical full dump); >1 module ⇒ the multi-module
@@ -140,9 +144,9 @@ checkRoute rsrc csrc tsrc mods =
 -- the native MVP type-checks identically regardless).
 dropFlags : List String -> List String
 dropFlags [] = []
-dropFlags ("--json" :: rest) = dropFlags rest
-dropFlags ("--release" :: rest) = dropFlags rest
-dropFlags (x :: rest) = x :: dropFlags rest
+dropFlags ("--json"::rest) = dropFlags rest
+dropFlags ("--release"::rest) = dropFlags rest
+dropFlags (x::rest) = x :: dropFlags rest
 
 -- ── fmt ───────────────────────────────────────────────────────────────────
 -- Mirrors lib/fmt.ml's single-file dispatch: default --write (in place),
@@ -164,13 +168,15 @@ runFmtCmd argv = match parseFmtArgs argv FmtWrite []
 
 parseFmtArgs : List String -> FmtMode -> List String -> Result String (FmtMode, List String)
 parseFmtArgs [] mode acc = Ok (mode, reverseL acc)
-parseFmtArgs ("--check" :: rest) _ acc = parseFmtArgs rest FmtCheck acc
-parseFmtArgs ("--stdout" :: rest) _ acc = parseFmtArgs rest FmtStdout acc
-parseFmtArgs ("--write" :: rest) _ acc = parseFmtArgs rest FmtWrite acc
-parseFmtArgs ("-w" :: rest) _ acc = parseFmtArgs rest FmtWrite acc
-parseFmtArgs (x :: rest) mode acc =
-  if stringLength x > 0 && stringSlice 0 1 x == "-" then Err ("medaka fmt: unknown flag: " ++ x)
-  else parseFmtArgs rest mode (x :: acc)
+parseFmtArgs ("--check"::rest) _ acc = parseFmtArgs rest FmtCheck acc
+parseFmtArgs ("--stdout"::rest) _ acc = parseFmtArgs rest FmtStdout acc
+parseFmtArgs ("--write"::rest) _ acc = parseFmtArgs rest FmtWrite acc
+parseFmtArgs ("-w"::rest) _ acc = parseFmtArgs rest FmtWrite acc
+parseFmtArgs (x::rest) mode acc =
+  if stringLength x > 0 && stringSlice 0 1 x == "-" then
+    Err ("medaka fmt: unknown flag: " ++ x)
+  else
+    parseFmtArgs rest mode (x :: acc)
 
 fmtOne : FmtMode -> String -> <IO, Mut, Panic> Unit
 fmtOne mode file = match readFile file
@@ -182,9 +188,9 @@ fmtOne mode file = match readFile file
     match mode
       FmtStdout => putStr formatted
       FmtCheck => ()
-      FmtWrite =>
-        if formatted == src then ()
-        else match writeFile file formatted
+      FmtWrite => if formatted == src then ()
+      else
+        match writeFile file formatted
           Err msg =>
             let _ = ePutStrLn (file ++ ": " ++ msg)
             exit 2
@@ -195,8 +201,7 @@ runNewCmd : List String -> <IO, Panic> Unit
 runNewCmd argv = match argv
   [name] =>
     let code = newProject name
-    if code == 0 then ()
-    else exit code
+    if code == 0 then () else exit code
   _ =>
     let _ = ePutStrLn "Usage: medaka new <name>"
     exit 2
@@ -213,35 +218,33 @@ runBuildCmd argv = match parseBuildArgs argv
   Err msg =>
     let _ = ePutStrLn msg
     exit 1
-  Ok (input, outOpt) =>
-    if not (fileExists input) then
-      let _ = ePutStrLn ("error: no such file: " ++ input)
-      exit 1
-    else
-      let root = envOr "MEDAKA_ROOT" "."
-      let medaka = envOr "MEDAKA" "medaka"
-      let cc = envOr "CC" "clang"
-      let inputAbs = input
-      let outPath = match outOpt
-        Some o => o
-        None => chopExt (baseOf input)
-      -- G1 (SOUNDNESS): typecheck the whole module graph BEFORE shelling out to
-      -- the emitter.  runBuild emits/clangs whatever the emitter produces — for
-      -- an ill-typed program that is garbage (the G1 bug), so we abort here on any
-      -- type error.  Mirrors the OCaml driver's STEP-0 check gate.
-      match typecheckGate root inputAbs
-        TGErr msg =>
+  Ok (input, outOpt) => if not (fileExists input) then
+    let _ = ePutStrLn ("error: no such file: " ++ input)
+    exit 1
+  else
+    let root = envOr "MEDAKA_ROOT" "."
+    let medaka = envOr "MEDAKA" "medaka"
+    let cc = envOr "CC" "clang"
+    let inputAbs = input
+    let outPath = match outOpt
+      Some o => o
+      None => chopExt (baseOf input)
+    match typecheckGate root inputAbs
+      TGErr msg =>
+        let _ = ePutStrLn msg
+        exit 1
+      TGFail =>
+        let _ = ePutStrLn ("error: type error in " ++ input ++ " — run `medaka check` for details")
+        exit 1
+      TGOk => match runBuild root medaka cc inputAbs outPath
+        BuildOk msg => println msg
+        BuildErr msg =>
           let _ = ePutStrLn msg
           exit 1
-        TGFail =>
-          let _ = ePutStrLn ("error: type error in " ++ input ++ " — run `medaka check` for details")
-          exit 1
-        TGOk =>
-          match runBuild root medaka cc inputAbs outPath
-            BuildOk msg => println msg
-            BuildErr msg =>
-              let _ = ePutStrLn msg
-              exit 1
+-- G1 (SOUNDNESS): typecheck the whole module graph BEFORE shelling out to
+-- the emitter.  runBuild emits/clangs whatever the emitter produces — for
+-- an ill-typed program that is garbage (the G1 bug), so we abort here on any
+-- type error.  Mirrors the OCaml driver's STEP-0 check gate.
 
 -- G1 typecheck gate result: clean / type error in some module / a pre-typecheck
 -- failure (bad read or load) whose message we surface verbatim.
@@ -277,9 +280,9 @@ parseBuildArgs argv = parseBuildGo argv [] None
 
 parseBuildGo : List String -> List String -> Option String -> Result String (String, Option String)
 parseBuildGo [] acc out = finishBuildArgs (reverseL acc) out
-parseBuildGo ("-o" :: v :: rest) acc out = parseBuildGo rest acc (Some v)
+parseBuildGo ("-o"::v::rest) acc out = parseBuildGo rest acc (Some v)
 parseBuildGo ["-o"] _ _ = Err "error: -o requires an argument"
-parseBuildGo (x :: rest) acc out = parseBuildGo rest (x :: acc) out
+parseBuildGo (x::rest) acc out = parseBuildGo rest (x :: acc) out
 
 finishBuildArgs : List String -> Option String -> Result String (String, Option String)
 finishBuildArgs [] _ = Err "usage: medaka build <file.mdk> [-o <out>]"
@@ -308,7 +311,7 @@ runRunCmd argv = match dropFlags argv
   [] =>
     let _ = ePutStrLn "usage: medaka run [--release] <file.mdk>"
     exit 1
-  (target :: _) =>
+  target::_ =>
     let root = envOr "MEDAKA_ROOT" "."
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
@@ -326,12 +329,6 @@ runRunCmd argv = match dropFlags argv
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
-          -- G1 (SOUNDNESS): typecheck the WHOLE module graph and abort before
-          -- eval on ANY type error.  elaborateModules route-stamps via the
-          -- per-module typecheck (checkModuleFullImpl), which pushes into the
-          -- sticky error accumulator; resetTypeErrorsSticky clears it first so
-          -- hadTypeErrors reflects THIS run only.  A type error makes
-          -- evalModulesOutput miscompile (the G1 bug), so we never reach it.
           Ok mods =>
             let _ = resetTypeErrorsSticky ()
             let elaborated = elaborateModules (desugar (parse rsrc)) (desugar (parse csrc)) (map desugarPair mods)
@@ -340,6 +337,12 @@ runRunCmd argv = match dropFlags argv
                 let _ = ePutStrLn ("error: type error in " ++ target ++ " — run `medaka check` for details")
                 exit 1
               False => putStr (evalModulesOutput (fst elaborated) (snd elaborated))
+-- G1 (SOUNDNESS): typecheck the WHOLE module graph and abort before
+-- eval on ANY type error.  elaborateModules route-stamps via the
+-- per-module typecheck (checkModuleFullImpl), which pushes into the
+-- sticky error accumulator; resetTypeErrorsSticky clears it first so
+-- hadTypeErrors reflects THIS run only.  A type error makes
+-- evalModulesOutput miscompile (the G1 bug), so we never reach it.
 
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
@@ -356,7 +359,7 @@ runTestCmd argv = match dropFlags argv
   [] =>
     let _ = ePutStrLn "usage: medaka test [file.mdk]"
     exit 1
-  (target :: _) =>
+  target::_ =>
     let root = envOr "MEDAKA_ROOT" "."
     let rtPath = root ++ "/stdlib/runtime.mdk"
     let corePath = root ++ "/stdlib/core.mdk"
@@ -372,8 +375,10 @@ dirOf2 path = dirGo2 path (stringLength path)
 dirGo2 : String -> Int -> String
 dirGo2 path 0 = "."
 dirGo2 path i =
-  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
-  else dirGo2 path (i - 1)
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice 0 (i - 1) path
+  else
+    dirGo2 path (i - 1)
 
 -- ── repl ──────────────────────────────────────────────────────────────────
 -- Mirrors bin/main.ml's `repl` arm (Repl.run) + repl_main.mdk: read

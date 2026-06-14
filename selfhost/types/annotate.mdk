@@ -150,7 +150,11 @@ annotateLet fr m True (PVar f) e1 e2 =
   let inner = [f] :: fr
   ELet m True (PVar f) (annotateExpr inner e1) (annotateExpr inner e2)
 annotateLet fr m isRec pat e1 e2 =
-  ELet m isRec pat (annotateExpr fr e1)
+  ELet
+    m
+    isRec
+    pat
+    (annotateExpr fr e1)
     (annotateExpr (patBindings pat :: fr) e2)
 
 -- where-group: one frame holds all the group names, in scope for every clause
@@ -158,7 +162,9 @@ annotateLet fr m isRec pat e1 e2 =
 annotateLetGroup : List (List String) -> List LetBind -> Expr -> Expr
 annotateLetGroup fr binds body =
   let groupScope = map letBindName binds :: fr
-  ELetGroup (map (annotateLetBind groupScope) binds) (annotateExpr groupScope body)
+  ELetGroup
+    (map (annotateLetBind groupScope) binds)
+    (annotateExpr groupScope body)
 
 annotateLetBind : List (List String) -> LetBind -> LetBind
 annotateLetBind groupScope (LetBind name clauses) =
@@ -196,19 +202,14 @@ annotateGuardArm fr (GuardArm gs body) =
 -- a bare block / do-block: each binding statement pushes a frame for the rest
 annotateStmts : List (List String) -> List DoStmt -> List DoStmt
 annotateStmts _ [] = []
-annotateStmts fr ((DoExpr e)::rest) =
-  DoExpr (annotateExpr fr e) :: annotateStmts fr rest
-annotateStmts fr ((DoLet m r p e)::rest) =
-  DoLet m r p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
-annotateStmts fr ((DoBind p e)::rest) =
-  DoBind p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
+annotateStmts fr ((DoExpr e)::rest) = DoExpr (annotateExpr fr e) :: annotateStmts fr rest
+annotateStmts fr ((DoLet m r p e)::rest) = DoLet m r p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
+annotateStmts fr ((DoBind p e)::rest) = DoBind p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
 annotateStmts fr ((DoLetElse p e alt)::rest) =
   let s2 = DoLetElse p (annotateExpr fr e) (annotateExpr fr alt)
   s2 :: annotateStmts (patBindings p :: fr) rest
-annotateStmts fr ((DoAssign x e)::rest) =
-  DoAssign x (annotateExpr fr e) :: annotateStmts ([x] :: fr) rest
-annotateStmts fr ((DoFieldAssign x fs e)::rest) =
-  DoFieldAssign x fs (annotateExpr fr e) :: annotateStmts fr rest
+annotateStmts fr ((DoAssign x e)::rest) = DoAssign x (annotateExpr fr e) :: annotateStmts ([x] :: fr) rest
+annotateStmts fr ((DoFieldAssign x fs e)::rest) = DoFieldAssign x fs (annotateExpr fr e) :: annotateStmts fr rest
 
 annotateInterp : List (List String) -> InterpPart -> InterpPart
 annotateInterp _ (InterpStr s) = InterpStr s
@@ -258,32 +259,26 @@ annotateDecl (DTest p n body) = DTest p n (annotateExpr [] body)
 annotateDecl (DBench p n body) = DBench p n (annotateExpr [] body)
 annotateDecl (DLetGroup p binds) =
   DLetGroup p (map (annotateLetBind (map letBindName binds :: [])) binds)
-annotateDecl DInterface { pub, def, name, typarams, supers, methods } =
-  DInterface {
-    pub = pub,
-    def = def,
-    name = name,
-    typarams = typarams,
-    supers = supers,
-    methods = map annotateIfaceMethod methods
-  }
-annotateDecl DImpl { pub, def, iface, tys, name, reqs, methods } =
-  DImpl {
-    pub = pub,
-    def = def,
-    iface = iface,
-    tys = tys,
-    name = name,
-    reqs = reqs,
-    methods = map annotateImplMethod methods
-  }
+annotateDecl DInterface { pub, def, name, typarams, supers, methods } = DInterface { pub = pub, def = def, name = name, typarams = typarams, supers = supers, methods = map annotateIfaceMethod methods }
+annotateDecl DImpl { pub, def, iface, tys, name, reqs, methods } = DImpl {
+  pub = pub,
+  def = def,
+  iface = iface,
+  tys = tys,
+  name = name,
+  reqs = reqs,
+  methods = map annotateImplMethod methods
+}
 annotateDecl (DAttrib attrs inner) = DAttrib attrs (annotateDecl inner)
 annotateDecl d = d
 
 annotateIfaceMethod : IfaceMethod -> IfaceMethod
 annotateIfaceMethod (IfaceMethod nm ty None) = IfaceMethod nm ty None
 annotateIfaceMethod (IfaceMethod nm ty (Some (MethodDefault pats body))) =
-  IfaceMethod nm ty (Some (MethodDefault pats (annotateExpr (paramFrames pats) body)))
+  IfaceMethod
+    nm
+    ty
+    (Some (MethodDefault pats (annotateExpr (paramFrames pats) body)))
 
 annotateImplMethod : ImplMethod -> ImplMethod
 annotateImplMethod (ImplMethod nm pats body) =

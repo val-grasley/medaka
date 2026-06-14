@@ -93,8 +93,8 @@ emittingRoots (d::rest)
 
 -- Only DImpl / DInterface lower to emitted code among the non-DFunDef decls.
 isEmittingDecl : Decl -> Bool
-isEmittingDecl (DImpl { ... }) = True
-isEmittingDecl (DInterface { ... }) = True
+isEmittingDecl DImpl { ... } = True
+isEmittingDecl DInterface { ... } = True
 isEmittingDecl _ = False
 
 -- ── worklist closure ───────────────────────────────────────────────────────
@@ -107,8 +107,8 @@ closure _ _ [] = ()
 closure graph seen (w::work)
   | member w seen = closure graph seen work
   | otherwise =
-      let _ = insert w () seen
-      closure graph seen (refsOf graph w ++ work)
+    let _ = insert w () seen
+    closure graph seen (refsOf graph w ++ work)
 
 refsOf : HashMap String (List String) -> String -> List String
 refsOf graph n = findWithDefault [] n graph

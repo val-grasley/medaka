@@ -24,7 +24,7 @@ desugarFiles targets = match readAllSources targets
 
 readAllSources : List String -> <IO> Result String (List (String, String))
 readAllSources [] = Ok []
-readAllSources (p :: rest) = match readFile p
+readAllSources (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllSources rest
     Err msg => Err msg
@@ -32,7 +32,9 @@ readAllSources (p :: rest) = match readFile p
 
 renderAll : List (String, String) -> String
 renderAll [] = ""
-renderAll ((path, src) :: rest) =
-  "===SELFHOST-DESUGAR=== " ++ path ++ "\n"
-    ++ programToSexp (desugar (parse src))
-    ++ "\n" ++ renderAll rest
+renderAll ((path, src)::rest) = "===SELFHOST-DESUGAR=== "
+  ++ path
+  ++ "\n"
+  ++ programToSexp (desugar (parse src))
+  ++ "\n"
+  ++ renderAll rest

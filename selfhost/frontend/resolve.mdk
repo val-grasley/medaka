@@ -28,13 +28,18 @@ public export data ResError
   | MethodNotInInterface String String
   | ExternWithBody String
   -- multi-module path (resolve_module): import validation against real exports
-  | PrivateNameAccess String String       -- name, owning module
-  | NoExportedConstructors String String   -- type, owning module (exported abstractly)
-  | UnknownModule String                   -- `import` of a module not among known exports
+  | PrivateNameAccess String String
+  -- name, owning module
+  | NoExportedConstructors String String
+  -- type, owning module (exported abstractly)
+  | UnknownModule String
+  -- `import` of a module not among known exports
   -- misplaced surface constructs that survive desugar
-  | QuestionMisplaced                      -- `?` outside a `let` RHS
-  | NonRecursiveValueLet String            -- `let x = … x …` (no `rec`) referencing itself
-  | AsPatternMisplaced                      -- `x@..` outside a binding LHS
+  | QuestionMisplaced
+  -- `?` outside a `let` RHS
+  | NonRecursiveValueLet String
+  -- `let x = … x …` (no `rec`) referencing itself
+  | AsPatternMisplaced  -- `x@..` outside a binding LHS
 
 -- ── The name environment ──────────────────────────────────────────────────
 -- Name-category sets, as plain lists (the self-host is prelude-only, so no
@@ -98,7 +103,11 @@ builtInEffects : List String
 builtInEffects = ["IO", "Mut", "Async", "Panic", "Rand", "Time"]
 
 checkEffect : Env -> String -> List ResError
-checkEffect env e = if contains e builtInEffects || contains e env.effects then [] else [UnknownEffect e]
+checkEffect env e =
+  if contains e builtInEffects || contains e env.effects then
+    []
+  else
+    [UnknownEffect e]
 
 checkConstraint : Env -> Constraint -> List ResError
 checkConstraint env (Constraint iface args) = (if contains iface env.interfaces then [] else [UnknownInterface iface])
@@ -239,7 +248,10 @@ checkLet env scope _ pat e1 e2 =
 
 rewriteNonRec : List String -> ResError -> ResError
 rewriteNonRec bound (UnboundVariable n) =
-  if contains n bound then NonRecursiveValueLet n else UnboundVariable n
+  if contains n bound then
+    NonRecursiveValueLet n
+  else
+    UnboundVariable n
 rewriteNonRec _ e = e
 
 -- where-group: all group names are in scope for every clause body + the result
@@ -282,14 +294,8 @@ checkStmts env scope (s::rest) =
 
 checkStmt : Env -> List String -> DoStmt -> (List ResError, List String)
 checkStmt env scope (DoExpr e) = (checkExpr env scope e, scope)
-checkStmt env scope (DoBind p e) = (
-  checkPat env p ++ checkExpr env scope e,
-  patBindings p ++ scope
-)
-checkStmt env scope (DoLet _ False p e) = (
-  checkPat env p ++ checkExpr env scope e,
-  patBindings p ++ scope
-)
+checkStmt env scope (DoBind p e) = (checkPat env p ++ checkExpr env scope e, patBindings p ++ scope)
+checkStmt env scope (DoLet _ False p e) = (checkPat env p ++ checkExpr env scope e, patBindings p ++ scope)
 checkStmt env scope (DoLet _ True p e) = (
   checkPat env p ++ checkExpr env (patBindings p ++ scope) e,
   patBindings p ++ scope
@@ -359,15 +365,9 @@ checkQuals env scope (q::rest) =
   (errs ++ restErrs, scope3)
 
 checkQual : Env -> List String -> LcQual -> (List ResError, List String)
-checkQual env scope (LCGen p e) = (
-  checkPat env p ++ checkExpr env scope e,
-  patBindings p ++ scope
-)
+checkQual env scope (LCGen p e) = (checkPat env p ++ checkExpr env scope e, patBindings p ++ scope)
 checkQual env scope (LCGuard e) = (checkExpr env scope e, scope)
-checkQual env scope (LCLet _ p e) = (
-  checkPat env p ++ checkExpr env scope e,
-  patBindings p ++ scope
-)
+checkQual env scope (LCLet _ p e) = (checkPat env p ++ checkExpr env scope e, patBindings p ++ scope)
 
 -- ── check_decl ────────────────────────────────────────────────────────────
 checkDecl : Env -> Decl -> List ResError
@@ -458,17 +458,7 @@ checkMethodMember iface known (ImplMethod mname _ _) =
 
 -- ── Primitives (hardcoded, mirror lib/resolve.ml) ────────────────────────
 primitiveTypes : List String
-primitiveTypes = [
-  "Int",
-  "Float",
-  "String",
-  "Char",
-  "Bool",
-  "Unit",
-  "List",
-  "Ref",
-  "Array"
-]
+primitiveTypes = ["Int", "Float", "String", "Char", "Bool", "Unit", "List", "Ref", "Array"]
 
 primitiveConstructors : List String
 primitiveConstructors = ["True", "False"]
@@ -513,10 +503,7 @@ implMethodNm (ImplMethod n _ _) = n
 
 interfaceList : List Decl -> List (String, List String)
 interfaceList [] = []
-interfaceList (DInterface { name = n, methods, ... }::rest) = (
-  n,
-  map ifaceMethodNm methods
-) :: interfaceList rest
+interfaceList (DInterface { name = n, methods, ... }::rest) = (n, map ifaceMethodNm methods) :: interfaceList rest
 interfaceList (_::rest) = interfaceList rest
 
 -- prelude value names (DFunDef/DTypeSig + DImpl & DInterface method names)
@@ -711,7 +698,9 @@ resErrorSexp (NoExportedConstructors n m) = "(NoExportedConstructors "
   ++ ")"
 resErrorSexp (UnknownModule n) = "(UnknownModule " ++ escStr n ++ ")"
 resErrorSexp QuestionMisplaced = "QuestionMisplaced"
-resErrorSexp (NonRecursiveValueLet n) = "(NonRecursiveValueLet " ++ escStr n ++ ")"
+resErrorSexp (NonRecursiveValueLet n) = "(NonRecursiveValueLet "
+  ++ escStr n
+  ++ ")"
 resErrorSexp AsPatternMisplaced = "AsPatternMisplaced"
 
 -- ── resolve_program ───────────────────────────────────────────────────────
@@ -731,17 +720,33 @@ ppResError (UnknownConstructor n) = "Unknown constructor: " ++ n
 ppResError (UnknownType n) = "Unknown type: " ++ n
 ppResError (UnknownEffect n) = "Unknown effect: " ++ n
 ppResError (UnknownField n) = "Unknown field: " ++ n
-ppResError (FieldNotInRecord f r) = "Field " ++ f ++ " does not belong to record " ++ r
+ppResError (FieldNotInRecord f r) = "Field "
+  ++ f
+  ++ " does not belong to record "
+  ++ r
 ppResError (DuplicateDefinition k n) = "Duplicate " ++ k ++ ": " ++ n
 ppResError (UnknownInterface n) = "Unknown interface: " ++ n
-ppResError (MethodNotInInterface m i) = "Method '" ++ m ++ "' is not part of interface " ++ i
-ppResError (ExternWithBody n) = "extern '" ++ n ++ "' must not have a definition body"
+ppResError (MethodNotInInterface m i) = "Method '"
+  ++ m
+  ++ "' is not part of interface "
+  ++ i
+ppResError (ExternWithBody n) = "extern '"
+  ++ n
+  ++ "' must not have a definition body"
 ppResError (PrivateNameAccess n m) = "'" ++ n ++ "' is private to module " ++ m
-ppResError (NoExportedConstructors n m) = "'" ++ n ++ "' exports no constructors from module " ++ m ++ " (it is exported abstractly); remove the `(..)` or export it with `public export`."
+ppResError (NoExportedConstructors n m) = "'"
+  ++ n
+  ++ "' exports no constructors from module "
+  ++ m
+  ++ " (it is exported abstractly); remove the `(..)` or export it with `public export`."
 ppResError (UnknownModule n) = "Unknown module: " ++ n
 ppResError QuestionMisplaced = "`?` is only allowed as the right-hand side of a `let` binding, e.g. `let x = expr ?`. Use `<-` inside do-blocks."
 ppResError AsPatternMisplaced = "`@` as-patterns are only allowed in a binding position (a lambda parameter, a do-block bind, or a match pattern)."
-ppResError (NonRecursiveValueLet n) = "'" ++ n ++ "' is not in scope on the right-hand side of its own binding. Non-function `let` bindings are not recursive — write `let rec " ++ n ++ " = ...` to opt in to recursion (the RHS must be a lambda)."
+ppResError (NonRecursiveValueLet n) = "'"
+  ++ n
+  ++ "' is not in scope on the right-hand side of its own binding. Non-function `let` bindings are not recursive — write `let rec "
+  ++ n
+  ++ " = ...` to opt in to recursion (the RHS must be a lambda)."
 
 -- one S-expression per line (the harness sorts); matches diagdump output set
 export
@@ -761,8 +766,7 @@ singleFileImportErrors : List Decl -> List ResError
 singleFileImportErrors [] = []
 singleFileImportErrors ((DUse _ path)::rest) =
   let mid = useModId path
-  if mid == "core" || mid == "" then singleFileImportErrors rest
-  else UnknownModule mid :: singleFileImportErrors rest
+  if mid == "core" || mid == "" then singleFileImportErrors rest else UnknownModule mid :: singleFileImportErrors rest
 singleFileImportErrors (_::rest) = singleFileImportErrors rest
 
 -- ══════════════════════════════════════════════════════════════════════════
@@ -783,11 +787,15 @@ public export record ModuleExports
   expValues : List String
   expTypes : List String
   expCtors : List String
-  expTypeCtors : List (String, List String)    -- public type → its exported ctors
-  expFieldOwners : List (String, String)         -- (field, owner type/ctor)
+  expTypeCtors : List (String, List String)
+  expFieldOwners : List (String, String)
   expInterfaces : List String
-  expIfaceMethods : List (String, List String)   -- iface → method names
-  expEffects : List String                       -- exported effect labels (Phase 146)
+  expIfaceMethods : List (String, List String)
+  expEffects : List String  -- exported effect labels (Phase 146)
+-- public type → its exported ctors
+-- (field, owner type/ctor)
+
+-- iface → method names
 
 -- ── small generic helpers ──────────────────────────────────────────────────
 isNonEmpty : List a -> Bool
@@ -835,14 +843,12 @@ importedNamesMM (UseName ns) exp =
   if listLen ns > 1 then
     let nm = lastOf ns
     ([nm], pubErr exp nm)
-  else
-    ([], [])
+  else ([], [])
 importedNamesMM (UseGroup _ members) exp =
   let names = concatMapList (expandMemberNames exp) members
   let expandErrs = concatMapList (expandMemberErrs exp) members
   (names, expandErrs ++ concatMapList (pubErr exp) names)
-importedNamesMM (UseWild _) exp =
-  (exp.expValues ++ exp.expTypes ++ exp.expCtors, [])
+importedNamesMM (UseWild _) exp = (exp.expValues ++ exp.expTypes ++ exp.expCtors, [])
 importedNamesMM (UseAlias _ a) exp = ([a], [])
 
 pubErr : ModuleExports -> String -> List ResError
@@ -860,7 +866,11 @@ expandMemberErrs : ModuleExports -> UseMember -> List ResError
 expandMemberErrs _ (UseMember _ False) = []
 expandMemberErrs exp (UseMember name True) = match typeCtorsOf name exp
   Some _ => []
-  None => if contains name exp.expTypes then [NoExportedConstructors name exp.modId] else []
+  None =>
+    if contains name exp.expTypes then
+      [NoExportedConstructors name exp.modId]
+    else
+      []
 
 -- ── import contributions to the env ────────────────────────────────────────
 public export record ImportAdds
@@ -899,13 +909,13 @@ collectImports known prog = foldImports known (usePathsOf prog)
 
 foldImports : List ModuleExports -> List UsePath -> ImportAdds
 foldImports _ [] = emptyAdds
-foldImports known (p::rest) = mergeAdds (oneImport known p) (foldImports known rest)
+foldImports known (p::rest) =
+  mergeAdds (oneImport known p) (foldImports known rest)
 
 oneImport : List ModuleExports -> UsePath -> ImportAdds
 oneImport known path =
   let mid = useModId path
-  if mid == "core" then
-    emptyAdds
+  if mid == "core" then emptyAdds
   else
     match findExports mid known
       None => stubOrUnknown known path mid
@@ -915,16 +925,15 @@ oneImport known path =
 -- UnknownModule; the first module (known empty) keeps the single-file stub.
 stubOrUnknown : List ModuleExports -> UsePath -> String -> ImportAdds
 stubOrUnknown known path mid =
-  if isNonEmpty known then
-    ImportAdds {
-      iaImported = [],
-      iaValues = [],
-      iaTypes = [],
-      iaCtors = [],
-      iaIfaces = [],
-      iaFieldOwners = [],
-      iaErrors = [UnknownModule mid]
-    }
+  if isNonEmpty known then ImportAdds {
+    iaImported = [],
+    iaValues = [],
+    iaTypes = [],
+    iaCtors = [],
+    iaIfaces = [],
+    iaFieldOwners = [],
+    iaErrors = [UnknownModule mid]
+  }
   else
     let names = useStubNames path
     ImportAdds {
@@ -968,8 +977,7 @@ importedIfaceMethods known prog baseIfaces =
 oneImportIfaceMethods : List ModuleExports -> List String -> UsePath -> List (String, List String)
 oneImportIfaceMethods known baseIfaces path =
   let mid = useModId path
-  if mid == "core" then
-    []
+  if mid == "core" then []
   else
     match findExports mid known
       None => []
@@ -983,13 +991,13 @@ filterIfaceMethods baseIfaces ((iface, ms)::rest)
 
 -- Install exported effect labels from all imported modules (Phase 146).
 importedEffects : List ModuleExports -> List Decl -> List String
-importedEffects known prog = concatMapList (oneImportEffects known) (usePathsOf prog)
+importedEffects known prog =
+  concatMapList (oneImportEffects known) (usePathsOf prog)
 
 oneImportEffects : List ModuleExports -> UsePath -> List String
 oneImportEffects known path =
   let mid = useModId path
-  if mid == "core" then
-    []
+  if mid == "core" then []
   else
     match findExports mid known
       None => []
@@ -1054,8 +1062,7 @@ keepBoundMethods env ms = filterContains env.values ms
 
 pubIfaceMethodSets : List Decl -> List (List String)
 pubIfaceMethodSets [] = []
-pubIfaceMethodSets (DInterface { pub = True, methods, ... }::rest) =
-  map ifaceMethodNm methods :: pubIfaceMethodSets rest
+pubIfaceMethodSets (DInterface { pub = True, methods, ... }::rest) = map ifaceMethodNm methods :: pubIfaceMethodSets rest
 pubIfaceMethodSets (_::rest) = pubIfaceMethodSets rest
 
 -- pub newtype + VisPublic/VisAbstract data & record (the type name only)
@@ -1072,7 +1079,8 @@ expTypesDirect (_::rest) = expTypesDirect rest
 expCtorsDirect : List Decl -> List String
 expCtorsDirect [] = []
 expCtorsDirect ((DNewtype True _ _ con _ _)::rest) = con :: expCtorsDirect rest
-expCtorsDirect ((DData VisPublic _ _ vs _)::rest) = map variantName vs ++ expCtorsDirect rest
+expCtorsDirect ((DData VisPublic _ _ vs _)::rest) = map variantName vs
+  ++ expCtorsDirect rest
 expCtorsDirect (_::rest) = expCtorsDirect rest
 
 expTypeCtorsDirect : List Decl -> List (String, List String)
@@ -1097,8 +1105,7 @@ expInterfacesDirect (_::rest) = expInterfacesDirect rest
 
 expIfaceMethodsDirect : List Decl -> List (String, List String)
 expIfaceMethodsDirect [] = []
-expIfaceMethodsDirect (DInterface { pub = True, name = n, methods, ... }::rest) =
-  (n, map ifaceMethodNm methods) :: expIfaceMethodsDirect rest
+expIfaceMethodsDirect (DInterface { pub = True, name = n, methods, ... }::rest) = (n, map ifaceMethodNm methods) :: expIfaceMethodsDirect rest
 expIfaceMethodsDirect (_::rest) = expIfaceMethodsDirect rest
 
 expEffectsDirect : List Decl -> List String
@@ -1107,7 +1114,8 @@ expEffectsDirect ((DEffect True n)::rest) = n :: expEffectsDirect rest
 expEffectsDirect (_::rest) = expEffectsDirect rest
 
 reExpEffects : List ModuleExports -> List Decl -> List String
-reExpEffects known prog = concatMapList (overPubUse known reExpEffectsFrom) (pubUsePaths prog)
+reExpEffects known prog =
+  concatMapList (overPubUse known reExpEffectsFrom) (pubUsePaths prog)
 
 reExpEffectsFrom : UsePath -> ModuleExports -> List String
 reExpEffectsFrom (UseWild _) src = src.expEffects
@@ -1118,12 +1126,17 @@ reExpEffectsFrom _ _ = []
 -- here — they were already reported when the module imported them).
 reexportNamesOf : UsePath -> ModuleExports -> List String
 reexportNamesOf (UseName ns) _ = if listLen ns > 1 then [lastOf ns] else []
-reexportNamesOf (UseGroup _ members) src = concatMapList (expandMemberNames src) members
-reexportNamesOf (UseWild _) src = src.expValues ++ src.expTypes ++ src.expCtors ++ src.expInterfaces
+reexportNamesOf (UseGroup _ members) src =
+  concatMapList (expandMemberNames src) members
+reexportNamesOf (UseWild _) src = src.expValues
+  ++ src.expTypes
+  ++ src.expCtors
+  ++ src.expInterfaces
 reexportNamesOf (UseAlias _ _) _ = []
 
 reExpValues : List ModuleExports -> List Decl -> List String
-reExpValues known prog = concatMapList (overPubUse known reExpValuesFrom) (pubUsePaths prog)
+reExpValues known prog =
+  concatMapList (overPubUse known reExpValuesFrom) (pubUsePaths prog)
 
 reExpValuesFrom : UsePath -> ModuleExports -> List String
 reExpValuesFrom path src =
@@ -1138,40 +1151,50 @@ ifaceValsOf src n =
     []
 
 reExpTypes : List ModuleExports -> List Decl -> List String
-reExpTypes known prog = concatMapList (overPubUse known reExpTypesFrom) (pubUsePaths prog)
+reExpTypes known prog =
+  concatMapList (overPubUse known reExpTypesFrom) (pubUsePaths prog)
 
 reExpTypesFrom : UsePath -> ModuleExports -> List String
 reExpTypesFrom path src = filterContains src.expTypes (reexportNamesOf path src)
 
 reExpCtors : List ModuleExports -> List Decl -> List String
-reExpCtors known prog = concatMapList (overPubUse known reExpCtorsFrom) (pubUsePaths prog)
+reExpCtors known prog =
+  concatMapList (overPubUse known reExpCtorsFrom) (pubUsePaths prog)
 
 reExpCtorsFrom : UsePath -> ModuleExports -> List String
 reExpCtorsFrom path src = filterContains src.expCtors (reexportNamesOf path src)
 
 reExpInterfaces : List ModuleExports -> List Decl -> List String
-reExpInterfaces known prog = concatMapList (overPubUse known reExpInterfacesFrom) (pubUsePaths prog)
+reExpInterfaces known prog =
+  concatMapList (overPubUse known reExpInterfacesFrom) (pubUsePaths prog)
 
 reExpInterfacesFrom : UsePath -> ModuleExports -> List String
-reExpInterfacesFrom path src = filterContains src.expInterfaces (reexportNamesOf path src)
+reExpInterfacesFrom path src =
+  filterContains src.expInterfaces (reexportNamesOf path src)
 
 reExpIfaceMethods : List ModuleExports -> List Decl -> List (String, List String)
-reExpIfaceMethods known prog = concatMapList (overPubUse known reExpIfaceMethodsFrom) (pubUsePaths prog)
+reExpIfaceMethods known prog =
+  concatMapList (overPubUse known reExpIfaceMethodsFrom) (pubUsePaths prog)
 
 reExpIfaceMethodsFrom : UsePath -> ModuleExports -> List (String, List String)
 reExpIfaceMethodsFrom path src =
-  ifaceMethodPairs src (filterContains src.expInterfaces (reexportNamesOf path src))
+  ifaceMethodPairs
+    src
+    (filterContains src.expInterfaces (reexportNamesOf path src))
 
 ifaceMethodPairs : ModuleExports -> List String -> List (String, List String)
 ifaceMethodPairs _ [] = []
 ifaceMethodPairs src (i::rest) = (i, ifaceMethodsOf i src.expIfaceMethods) :: ifaceMethodPairs src rest
 
 reExpFieldOwners : List ModuleExports -> List Decl -> List (String, String)
-reExpFieldOwners known prog = concatMapList (overPubUse known reExpFieldOwnersFrom) (pubUsePaths prog)
+reExpFieldOwners known prog =
+  concatMapList (overPubUse known reExpFieldOwnersFrom) (pubUsePaths prog)
 
 reExpFieldOwnersFrom : UsePath -> ModuleExports -> List (String, String)
 reExpFieldOwnersFrom path src =
-  ownersForTypes (filterContains src.expTypes (reexportNamesOf path src)) src.expFieldOwners
+  ownersForTypes
+    (filterContains src.expTypes (reexportNamesOf path src))
+    src.expFieldOwners
 
 ownersForTypes : List String -> List (String, String) -> List (String, String)
 ownersForTypes _ [] = []
@@ -1183,8 +1206,7 @@ ownersForTypes types ((f, o)::rest)
 overPubUse : List ModuleExports -> (UsePath -> ModuleExports -> List b) -> UsePath -> List b
 overPubUse known f path =
   let mid = useModId path
-  if mid == "core" then
-    []
+  if mid == "core" then []
   else
     match findExports mid known
       None => []
@@ -1212,4 +1234,5 @@ resolveModulesErrors rt pre known ((mid, prog)::rest) =
 export
 resolveModulesToLines : List Decl -> List Decl -> List (String, List Decl) -> String
 resolveModulesToLines runtimeDecls preludeDecls mods =
-  joinNl (map resErrorSexp (resolveModulesErrors runtimeDecls preludeDecls [] mods))
+  joinNl
+    (map resErrorSexp (resolveModulesErrors runtimeDecls preludeDecls [] mods))

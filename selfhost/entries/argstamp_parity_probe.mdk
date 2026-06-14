@@ -21,7 +21,7 @@ import types.typecheck.{elaborateOne, enableArgStamp}
 import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
-  (mode :: runtimePath :: rest) => withMode mode runtimePath rest
+  mode::runtimePath::rest => withMode mode runtimePath rest
   _ => ePutStrLn "usage: medaka run argstamp_parity_probe.mdk (ON|OFF) <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withMode mode runtimePath rest =
@@ -35,7 +35,7 @@ withRuntime runtimePath rest = match splitLast rest
 splitLast : List a -> Option (List a, a)
 splitLast [] = None
 splitLast [x] = Some ([], x)
-splitLast (x :: rest) = match splitLast rest
+splitLast (x::rest) = match splitLast rest
   Some (init, lst) => Some (x :: init, lst)
   None => None
 
@@ -55,11 +55,13 @@ runDict : List Decl -> List Decl -> List Decl -> <Mut> String
 runDict runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = dropShadowedExp userNames preludeDecls
-  evalOneOutput [] ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
+  evalOneOutput
+    []
+    ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []
-readAllDecls (p :: rest) = match readFile p
+readAllDecls (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllDecls rest
     Err msg => Err msg

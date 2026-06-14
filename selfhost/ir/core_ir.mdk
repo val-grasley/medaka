@@ -149,12 +149,17 @@ public export data CTBranch = CTBranch CHead CTree
 -- evaluator needs NO new value-decomposition code (lists are VList, tuples are
 -- VTuple, bools VBool, unit VUnit — `matchPat` already knows each).
 public export data CHead
-  = HCon String Int  -- a named constructor (incl. True/False), with its arity
-  | HTuple Int       -- a tuple of the given arity
-  | HCons            -- list cons (arity 2: head element, tail list)
-  | HNil             -- empty list
-  | HUnit            -- the unit value
-  | HLit Lit         -- a literal (Int/Float/String/Char), arity 0
+  = HCon String Int
+  -- a named constructor (incl. True/False), with its arity
+  | HTuple Int
+  -- a tuple of the given arity
+  | HCons
+  -- list cons (arity 2: head element, tail list)
+  | HNil
+  -- empty list
+  | HUnit
+  -- the unit value
+  | HLit Lit  -- a literal (Int/Float/String/Char), arity 0
 
 -- one block statement (mirrors ast.DoStmt, post-desugar core subset)
 public export data CStmt

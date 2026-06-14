@@ -30,7 +30,7 @@ main = match splitLast (args ())
 splitLast : List a -> Option (List a, a)
 splitLast [] = None
 splitLast [x] = Some ([], x)
-splitLast (x :: rest) = match splitLast rest
+splitLast (x::rest) = match splitLast rest
   Some (init, lst) => Some (x :: init, lst)
   None => None
 
@@ -43,13 +43,14 @@ withTarget : List Decl -> String -> <IO, Mut> Unit
 withTarget preludeDecls targetPath = match readFile targetPath
   Ok targetSrc =>
     let user = desugar (parse targetSrc)
-    putStr (cevalOutput (lowerProgram (annotateProgram (dropShadowedExp (funNamesOf user) preludeDecls ++ user))))
+    putStr
+      (cevalOutput (lowerProgram (annotateProgram (dropShadowedExp (funNamesOf user) preludeDecls ++ user))))
   Err msg => ePutStrLn msg
 
 -- parse + desugar each prelude file in order, concatenating their decls
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []
-readAllDecls (p :: rest) = match readFile p
+readAllDecls (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllDecls rest
     Err msg => Err msg

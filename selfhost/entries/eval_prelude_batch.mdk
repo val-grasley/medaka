@@ -14,7 +14,7 @@ import frontend.desugar.{desugar}
 import eval.eval.{evalMain}
 
 main = match args ()
-  (corePath :: targets) => withCore corePath targets
+  corePath::targets => withCore corePath targets
   _ => ePutStrLn "usage: medaka run selfhost/entries/eval_prelude_batch.mdk <core.mdk> <file.mdk>..."
 
 withCore corePath targets = match readFile corePath
@@ -23,7 +23,7 @@ withCore corePath targets = match readFile corePath
 
 emitAll : List Decl -> List String -> <IO, Mut> Unit
 emitAll preludeDecls [] = putStr ""
-emitAll preludeDecls (path :: rest) = match readFile path
+emitAll preludeDecls (path::rest) = match readFile path
   Err msg =>
     let _ = ePutStrLn msg
     emitAll preludeDecls rest

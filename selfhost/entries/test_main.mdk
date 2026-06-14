@@ -10,6 +10,5 @@
 import tools.test_cmd.{runTest, rootsOrDefault}
 
 main = match args ()
-  (runtimeP :: coreP :: target :: roots) =>
-    runTest runtimeP coreP target (rootsOrDefault target roots)
+  runtimeP::coreP::target::roots => runTest runtimeP coreP target (rootsOrDefault target roots)
   _ => ePutStrLn "usage: medaka run selfhost/entries/test_main.mdk <runtime.mdk> <core.mdk> <file.mdk> [root ...]"

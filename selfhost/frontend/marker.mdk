@@ -316,8 +316,11 @@ markWith preludeMethods preludeDroppable preludeConstrained prog =
 export
 markWithPrelude : List Decl -> List Decl -> List Decl
 markWithPrelude preludeProg prog =
-  markWith (interfaceMethodNames preludeProg) (droppablePreludeFns preludeProg)
-    (constrainedFnNames preludeProg) prog
+  markWith
+    (interfaceMethodNames preludeProg)
+    (droppablePreludeFns preludeProg)
+    (constrainedFnNames preludeProg)
+    prog
 
 -- Curried marker: scans the (fixed) prelude ONCE and returns a closure that
 -- marks each target file.  A batch harness that marks many files against one
@@ -330,4 +333,4 @@ markerFor preludeProg =
   let preludeMethods = interfaceMethodNames preludeProg
   let preludeDroppable = droppablePreludeFns preludeProg
   let preludeConstrained = constrainedFnNames preludeProg
-  (prog => markWith preludeMethods preludeDroppable preludeConstrained prog)
+  prog => markWith preludeMethods preludeDroppable preludeConstrained prog

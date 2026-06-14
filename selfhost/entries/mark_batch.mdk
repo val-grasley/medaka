@@ -15,7 +15,7 @@ import frontend.marker.{markerFor}
 import ir.sexp.{programToSexp}
 
 main = match args ()
-  (preludePath :: targets) => markFiles preludePath targets
+  preludePath::targets => markFiles preludePath targets
   _ => ePutStrLn "usage: medaka run selfhost/entries/mark_batch.mdk <prelude.mdk> <file.mdk>..."
 
 markFiles : String -> List String -> <IO> Unit
@@ -27,7 +27,7 @@ markFiles preludePath targets = match readFile preludePath
 
 readAllSources : List String -> <IO> Result String (List (String, String))
 readAllSources [] = Ok []
-readAllSources (p :: rest) = match readFile p
+readAllSources (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllSources rest
     Err msg => Err msg
@@ -35,7 +35,9 @@ readAllSources (p :: rest) = match readFile p
 
 renderAll : (List Decl -> List Decl) -> List (String, String) -> String
 renderAll mark [] = ""
-renderAll mark ((path, src) :: rest) =
-  "===SELFHOST-FIX=== " ++ path ++ "\n"
-    ++ programToSexp (mark (desugar (parse src)))
-    ++ "\n" ++ renderAll mark rest
+renderAll mark ((path, src)::rest) = "===SELFHOST-FIX=== "
+  ++ path
+  ++ "\n"
+  ++ programToSexp (mark (desugar (parse src)))
+  ++ "\n"
+  ++ renderAll mark rest

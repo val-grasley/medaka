@@ -19,7 +19,7 @@ import frontend.desugar.{desugar}
 import frontend.resolve.{resolveModulesToLines}
 
 main = match args ()
-  (runtimeP :: coreP :: f :: rest) => run runtimeP coreP (f :: rest)
+  runtimeP::coreP::f::rest => run runtimeP coreP (f :: rest)
   _ => ePutStrLn "usage: medaka run selfhost/entries/resolve_modules_main.mdk <runtime.mdk> <core.mdk> <mod1.mdk> [mod2.mdk ...]"
 
 -- last path component, with the `.mdk` suffix stripped (flat module IDs)
@@ -32,19 +32,20 @@ baseName path = baseGo path (stringLength path)
 baseGo : String -> Int -> String
 baseGo path 0 = path
 baseGo path i =
-  if stringSlice (i - 1) i path == "/" then stringSlice i (stringLength path) path
-  else baseGo path (i - 1)
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice i (stringLength path) path
+  else
+    baseGo path (i - 1)
 
 stripMdk : String -> String
 stripMdk s =
   let n = stringLength s
-  if n >= 4 && stringSlice (n - 4) n s == ".mdk" then stringSlice 0 (n - 4) s
-  else s
+  if n >= 4 && stringSlice (n - 4) n s == ".mdk" then stringSlice 0 (n - 4) s else s
 
 -- read + parse + desugar each module into a (modId, decls) pair, in order
 readModules : List String -> <IO> Result String (List (String, List Decl))
 readModules [] = Ok []
-readModules (f :: rest) = match readFile f
+readModules (f::rest) = match readFile f
   Err e => Err e
   Ok src => match readModules rest
     Err e => Err e

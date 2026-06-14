@@ -18,14 +18,15 @@
 import frontend.parser.{parseResult, ParseError(..), parseErrorLine, parseErrorCol, parseErrorMessage}
 
 renderErr : ParseError -> String
-renderErr pe =
-  "parse error " ++ intToString (parseErrorLine pe)
-                 ++ ":" ++ intToString (parseErrorCol pe)
+renderErr pe = "parse error "
+  ++ intToString (parseErrorLine pe)
+  ++ ":"
+  ++ intToString (parseErrorCol pe)
 
 main = match args ()
   [path] => match readFile path
     Ok src => match parseResult src
-      Ok _   => putStrLn "ok"
+      Ok _ => putStrLn "ok"
       Err pe => putStrLn (renderErr pe)
     Err msg => ePutStrLn msg
   _ => ePutStrLn "usage: medaka run selfhost/entries/parse_result_main.mdk <file>"

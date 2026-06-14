@@ -31,9 +31,11 @@ escNlFrom cs i
   | otherwise = charToStr (arrayGetUnsafe i cs) :: escNlFrom cs (i + 1)
 
 renderComment : Comment -> String
-renderComment c =
-  intToString (commentLine c) ++ ":" ++ intToString (commentCol c) ++ ":"
-    ++ escNl (commentText c)
+renderComment c = intToString (commentLine c)
+  ++ ":"
+  ++ intToString (commentCol c)
+  ++ ":"
+  ++ escNl (commentText c)
 
 renderComments : List Comment -> String
 renderComments cs = joinNl (map renderComment cs)

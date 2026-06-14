@@ -47,12 +47,12 @@ import string.{toInt}
 
 -- ── small list helpers (no nth/listInit in prelude) ─────────────────────────
 nthL : Int -> List a -> a
-nthL _ (x :: []) = x
-nthL n (x :: xs) = if n <= 0 then x else nthL (n - 1) xs
+nthL _ (x::[]) = x
+nthL n (x::xs) = if n <= 0 then x else nthL (n - 1) xs
 
 lenL : List a -> Int
 lenL [] = 0
-lenL (_ :: xs) = 1 + lenL xs
+lenL (_::xs) = 1 + lenL xs
 
 -- build [f 0, f 1, …, f (n-1)]  (effectful f: each call may draw from the RNG)
 listInitGo : Int -> Int -> (Int -> <e> a) -> <e> List a
@@ -87,7 +87,14 @@ chance : Int -> Int -> <Rand> Bool
 chance num den = randBelow den < num
 
 -- ── target types we generate at ────────────────────────────────────────────
-data Gty = GInt | GFloat | GBool | GString | GChar | GTup (List Gty) | GData String
+data Gty
+  = GInt
+  | GFloat
+  | GBool
+  | GString
+  | GChar
+  | GTup (List Gty)
+  | GData String
 
 gtyEq : Gty -> Gty -> Bool
 gtyEq GInt GInt = True
@@ -139,16 +146,21 @@ baseGtys = [GInt, GFloat, GBool, GString, GChar]
 randGty : Ctx -> Int -> <Rand, Mut> Gty
 randGty ctx depth =
   if depth <= 0 then pick baseGtys
-  else if ctxTier ctx >= 1 && not (listEmpty (ctxAdts ctx)) && chance 1 4 then
-    GData (adtName (pick (ctxAdts ctx)))
-  else if ctxTier ctx >= 1 && not (ctxNoTuple ctx) && chance 1 6 then
-    let k = 2 + randBelow 2
-    GTup (randGtyList ctx (depth - 1) k)
-  else pick baseGtys
+  else
+    if ctxTier ctx >= 1 && not (listEmpty (ctxAdts ctx)) && chance 1 4 then GData (adtName (pick (ctxAdts ctx)))
+    else
+      if ctxTier ctx >= 1 && not (ctxNoTuple ctx) && chance 1 6 then
+        let k = 2 + randBelow 2
+        GTup (randGtyList ctx (depth - 1) k)
+      else pick baseGtys
 
 -- k random element types (named recursion, not an inline ctx-closure)
 randGtyList : Ctx -> Int -> Int -> <Rand, Mut> List Gty
-randGtyList ctx depth k = if k <= 0 then [] else randGty ctx depth :: randGtyList ctx depth (k - 1)
+randGtyList ctx depth k =
+  if k <= 0 then
+    []
+  else
+    randGty ctx depth :: randGtyList ctx depth (k - 1)
 
 listEmpty : List a -> Bool
 listEmpty [] = True
@@ -156,17 +168,21 @@ listEmpty _ = False
 
 -- ── leaf literals ───────────────────────────────────────────────────────────
 randCharLit : Unit -> <Rand> Lit
-randCharLit _ = LChar (pick ["a","b","c","x","y","z","A","M","0","9","!"," "])
+randCharLit _ =
+  LChar (pick ["a", "b", "c", "x", "y", "z", "A", "M", "0", "9", "!", " "])
 
 randStringLit : Unit -> <Rand> Lit
-randStringLit _ = LString (pick ["", "ab", "hello", "x", "Medaka", "a b", "12", "::"])
+randStringLit _ =
+  LString (pick ["", "ab", "hello", "x", "Medaka", "a b", "12", "::"])
 
 litOf : Gty -> <Rand> Expr
 litOf GInt = ELit (LInt (randSmallInt ()))
 -- Float literal with a GUARANTEED non-zero fraction in {0.25, 0.5, 0.75}: the
 -- selfhost printer's floatToString renders a whole float `N.0` as `N.` (trailing
 -- dot, no digit), which the parser rejects — so never emit a whole-valued float.
-litOf GFloat = ELit (LFloat (intToFloat (randBelow 11) + (intToFloat (randBelow 3 + 1) / intToFloat 4)))
+litOf GFloat =
+  ELit
+    (LFloat (intToFloat (randBelow 11) + intToFloat (randBelow 3 + 1) / intToFloat 4))
 litOf GBool = ELit (LBool (chance 1 2))
 litOf GString = ELit (randStringLit ())
 litOf GChar = ELit (randCharLit ())
@@ -187,17 +203,19 @@ binop op l r = EBinOp op l r (Ref RNone)
 
 filterScopeTy : Gty -> List (String, Gty) -> List (String, Gty)
 filterScopeTy _ [] = []
-filterScopeTy ty ((nm, ty2) :: rest) =
-  if gtyEq ty ty2 then (nm, ty2) :: filterScopeTy ty rest else filterScopeTy ty rest
+filterScopeTy ty ((nm, ty2)::rest) =
+  if gtyEq ty ty2 then
+    (nm, ty2) :: filterScopeTy ty rest
+  else
+    filterScopeTy ty rest
 
 lookupInScope : Ctx -> Gty -> <Mut> Option String
-lookupInScope ctx t =
-  match filterScopeTy t (ctxScope ctx)
-    [] => None
-    (x :: _) => Some (fst x)
+lookupInScope ctx t = match filterScopeTy t (ctxScope ctx)
+  [] => None
+  x::_ => Some (fst x)
 
 findAdtGo : String -> List Gadt -> Gadt
-findAdtGo name (a :: rest) = if adtName a == name then a else findAdtGo name rest
+findAdtGo name (a::rest) = if adtName a == name then a else findAdtGo name rest
 
 findAdt : Ctx -> String -> Gadt
 findAdt ctx name = findAdtGo name (ctxAdts ctx)
@@ -208,11 +226,11 @@ findAdt ctx name = findAdtGo name (ctxAdts ctx)
 -- the LLVM backend faults on the captured-ctx map closure inside ETuple).
 genTupElems : Ctx -> List Gty -> Int -> <Rand, Mut> List Expr
 genTupElems _ [] _ = []
-genTupElems ctx (ti :: rest) depth = genExpr ctx ti (depth - 1) :: genTupElems ctx rest depth
+genTupElems ctx (ti::rest) depth = genExpr ctx ti (depth - 1) :: genTupElems ctx rest depth
 
 genLeafElems : Ctx -> List Gty -> <Rand, Mut> List Expr
 genLeafElems _ [] = []
-genLeafElems ctx (ti :: rest) = genLeaf ctx ti :: genLeafElems ctx rest
+genLeafElems ctx (ti::rest) = genLeaf ctx ti :: genLeafElems ctx rest
 
 -- dispatch on the target type (no scope-reuse).  NOTE: the native backend
 -- mis-lowers a `match` over Gty whose arms mix nullary constructors (GInt..GChar)
@@ -259,36 +277,35 @@ genNum : Ctx -> Gty -> Int -> <Rand, Mut> Expr
 genNum ctx t depth =
   let r = randBelow 10
   if r < 3 then litOf t
-  else if r < 7 then
-    let ops = if gtyEq t GInt then numArithOps ++ intOnlyOps else numArithOps
-    let op = pick ops
-    let l = genExpr ctx t (depth - 1)
-    let rhs = if op == "/" || op == "%" then
-                ELit (LInt (let v = randSmallInt () in if v == 0 then 1 else v))
-              else genExpr ctx t (depth - 1)
-    binop op l rhs
-  else if r < 9 then
-    EIf (genCond ctx (depth - 1)) (genExpr ctx t (depth - 1)) (genExpr ctx t (depth - 1))
-  else genLet ctx t depth
+  else
+    if r < 7 then
+      let ops = if gtyEq t GInt then numArithOps ++ intOnlyOps else numArithOps
+      let op = pick ops
+      let l = genExpr ctx t (depth - 1)
+      let rhs = if op == "/" || op == "%" then ELit (LInt (let v = randSmallInt () in if v == 0 then 1 else v)) else genExpr ctx t (depth - 1)
+      binop op l rhs
+    else if r < 9 then EIf (genCond ctx (depth - 1)) (genExpr ctx t (depth - 1)) (genExpr ctx t (depth - 1)) else genLet ctx t depth
 
 -- a boolean usable as an `if` condition: NEVER a bare EIf.
 genCond : Ctx -> Int -> <Rand, Mut> Expr
 genCond ctx depth =
   let r = randBelow 10
-  if r < 3 || depth <= 0 then ELit (LBool (chance 1 2))
-  else if r < 8 then genCompare ctx (depth - 1)
-  else binop (pick ["&&", "||"]) (genCond ctx (depth - 1)) (genCond ctx (depth - 1))
+  if r < 3 || depth <= 0 then ELit (LBool (chance 1 2)) else if r < 8 then genCompare ctx (depth - 1) else binop (pick ["&&", "||"]) (genCond ctx (depth - 1)) (genCond ctx (depth - 1))
 
 filterDerived : List Gadt -> List Gadt
 filterDerived [] = []
-filterDerived (a :: rest) = if adtDerives a then a :: filterDerived rest else filterDerived rest
+filterDerived (a::rest) =
+  if adtDerives a then
+    a :: filterDerived rest
+  else
+    filterDerived rest
 
 pickOptype : Ctx -> Bool -> List Gadt -> List Gty -> <Rand, Mut> Gty
 pickOptype ctx wantOrd derived ordScalars =
-  if not (listEmpty derived) && chance 1 3 then GData (adtName (pick derived))
+  if not (listEmpty derived) && chance 1 3 then
+    GData (adtName (pick derived))
   else
-    if wantOrd then pick ordScalars
-    else pick (GBool :: ordScalars)
+    if wantOrd then pick ordScalars else pick (GBool :: ordScalars)
 
 -- a comparison/equality expression with a well-typed operand pair.
 genCompare : Ctx -> Int -> <Rand, Mut> Expr
@@ -304,15 +321,14 @@ genCompare ctx depth =
 genBool : Ctx -> Int -> <Rand, Mut> Expr
 genBool ctx depth =
   let r = randBelow 10
-  if r < 2 then ELit (LBool (chance 1 2))
-  else if r < 6 then genCompare ctx (depth - 1)
-  else if r < 8 then binop (pick ["&&", "||"]) (genBool ctx (depth - 1)) (genBool ctx (depth - 1))
-  else EIf (genCond ctx (depth - 1)) (genBool ctx (depth - 1)) (genBool ctx (depth - 1))
+  if r < 2 then ELit (LBool (chance 1 2)) else if r < 6 then genCompare ctx (depth - 1) else if r < 8 then binop (pick ["&&", "||"]) (genBool ctx (depth - 1)) (genBool ctx (depth - 1)) else EIf (genCond ctx (depth - 1)) (genBool ctx (depth - 1)) (genBool ctx (depth - 1))
 
 genString : Ctx -> Int -> <Rand, Mut> Expr
 genString ctx depth =
-  if depth <= 0 || chance 1 2 then ELit (randStringLit ())
-  else binop "++" (genString ctx (depth - 1)) (genString ctx (depth - 1))
+  if depth <= 0 || chance 1 2 then
+    ELit (randStringLit ())
+  else
+    binop "++" (genString ctx (depth - 1)) (genString ctx (depth - 1))
 
 -- let x = e1 in e2 (single binding; x typed at a fresh scalar type)
 genLet : Ctx -> Gty -> Int -> <Rand, Mut> Expr
@@ -329,7 +345,7 @@ genLet ctx t depth =
 -- construct an ADT value: pick a variant, fill positional fields.
 applyFields : Ctx -> Int -> Expr -> List Gty -> <Rand, Mut> Expr
 applyFields ctx depth acc [] = acc
-applyFields ctx depth acc (fty :: rest) =
+applyFields ctx depth acc (fty::rest) =
   applyFields ctx depth (EApp acc (genExpr ctx fty (maxI 0 (depth - 1)))) rest
 
 genData : Ctx -> String -> Int -> <Rand, Mut> Expr
@@ -344,10 +360,10 @@ maxI a b = if a >= b then a else b
 -- mapM-style: like map but threads the Mut effect (fresh-name side effects)
 mapMut : (a -> <e> b) -> List a -> <e> List b
 mapMut _ [] = []
-mapMut f (y :: ys) = f y :: mapMut f ys
+mapMut f (y::ys) = f y :: mapMut f ys
 
 zipScope : List String -> List Gty -> List (String, Gty)
-zipScope (n :: nr) (ty :: tr) = (n, ty) :: zipScope nr tr
+zipScope (n::nr) (ty::tr) = (n, ty) :: zipScope nr tr
 zipScope _ _ = []
 
 pvarOf : String -> Pat
@@ -357,7 +373,7 @@ pvarOf n = PVar n
 -- the native backend mis-lowers a closure capturing ctx in some recursive sites).
 freshPVars : Ctx -> List Gty -> <Mut> List String
 freshPVars _ [] = []
-freshPVars ctx (_ :: rest) = freshName ctx "p" :: freshPVars ctx rest
+freshPVars ctx (_::rest) = freshName ctx "p" :: freshPVars ctx rest
 
 -- ── match: exhaustive arms over one ADT scrutinee, body of type t ───────────
 genArm : Ctx -> Gty -> Int -> (String, List Gty) -> <Rand, Mut> Arm
@@ -390,10 +406,10 @@ genAdtDecl ctx =
   let tname = freshName ctx "T"
   let nvariants = 1 + randBelow 3
   let derives = ctxTier ctx >= 2
-  -- deriving Ord requires Ord-able field types (Bool has Eq but no Ord).
   let fieldTys = if derives then [GInt, GFloat, GString, GChar] else baseGtys
   let variants = listInit nvariants (genVariant ctx fieldTys)
   Gadt tname variants derives
+-- deriving Ord requires Ord-able field types (Bool has Eq but no Ord).
 
 gtyToTy : Gty -> Ty
 gtyToTy GInt = TyCon "Int"
@@ -431,32 +447,39 @@ invArith : Ctx -> <Rand, Mut> List Expr
 invArith ctx =
   let a = genExpr ctx GInt 2
   let b = genExpr ctx GInt 2
-  [ binop "==" (binop "+" a (ELit (LInt 0))) a
-  , binop "==" (binop "*" a (ELit (LInt 1))) a
-  , binop "==" (binop "-" (binop "+" a b) b) a ]
+  [
+    binop "==" (binop "+" a (ELit (LInt 0))) a,
+    binop "==" (binop "*" a (ELit (LInt 1))) a,
+    binop "==" (binop "-" (binop "+" a b) b) a
+  ]
 
 invEq : Ctx -> Gadt -> <Rand, Mut> List Expr
 invEq ctx a =
   let x = genData ctx (adtName a) 2
   let y = genData ctx (adtName a) 2
-  [ binop "==" x x
-  , binop "==" (binop "==" x y) (EApp (EApp (EVar "eq") x) y)
-  , binop "==" (binop "==" x y) (binop "==" y x) ]
+  [
+    binop "==" x x,
+    binop "==" (binop "==" x y) (EApp (EApp (EVar "eq") x) y),
+    binop "==" (binop "==" x y) (binop "==" y x)
+  ]
 
 invOrd : Ctx -> Gadt -> <Rand, Mut> List Expr
 invOrd ctx a =
   let x = genData ctx (adtName a) 2
   let y = genData ctx (adtName a) 2
-  [ binop "==" (binop "<" x y) (EApp (EApp (EVar "lt") x) y)
-  , EUnOp "not" (binop "&&" (binop "<" x y) (binop "<" y x))
-  , binop "<=" x x ]
+  [
+    binop "==" (binop "<" x y) (EApp (EApp (EVar "lt") x) y),
+    EUnOp "not" (binop "&&" (binop "<" x y) (binop "<" y x)),
+    binop "<=" x x
+  ]
 
 invOrdTrans : Ctx -> <Rand, Mut> Expr
 invOrdTrans ctx =
   let a = genExpr ctx GInt 1
   let b = genExpr ctx GInt 1
   let c = genExpr ctx GInt 1
-  binop "||"
+  binop
+    "||"
     (EUnOp "not" (binop "&&" (binop "<=" a b) (binop "<=" b c)))
     (binop "<=" a c)
 
@@ -469,11 +492,11 @@ data Out = Out String Decl Bool
 
 iterAdts : List Gadt -> (Gadt -> <e> Unit) -> <e> Unit
 iterAdts [] _ = ()
-iterAdts (a :: rest) f = let _ = f a in iterAdts rest f
+iterAdts (a::rest) f = let _ = f a in iterAdts rest f
 
 iterExprs : List Expr -> (Expr -> <e> Unit) -> <e> Unit
 iterExprs [] _ = ()
-iterExprs (e :: rest) f = let _ = f e in iterExprs rest f
+iterExprs (e::rest) f = let _ = f e in iterExprs rest f
 
 -- Generate one independent block: decls + main-body statements that print them.
 -- Shares ctx (and the global fresh-name counter) with siblings so names never
@@ -512,10 +535,9 @@ hoistAdtInvs ctx outsRef a =
 outToStmt : Out -> DoStmt
 outToStmt (Out name _ isInv) =
   if isInv then
-    DoExpr (EApp (EVar "println")
-              (binop "++" (ELit (LString "INV "))
-                (EApp (EVar "debug") (EVar name))))
-  else printStmt (EVar name)
+    DoExpr (EApp (EVar "println") (binop "++" (ELit (LString "INV ")) (EApp (EVar "debug") (EVar name))))
+  else
+    printStmt (EVar name)
 
 outDecl : Out -> Decl
 outDecl (Out _ d _) = d
@@ -524,46 +546,48 @@ genBlock : Ctx -> <Rand, Mut> (List Decl, List DoStmt)
 genBlock ctx =
   let _ = setAdts ctx []
   let _ = setScope ctx []
-  -- 1. declare a few ADTs (Tier >= 1)
   let nAdts = if ctxTier ctx >= 1 then 1 + randBelow 2 else 0
   let _ = times nAdts (addAdt ctx)
   let adtDecls = map adtToDecl (ctxAdts ctx)
-  -- 2. a couple of monomorphic helper fns
   let nFns = randBelow 3
   let fnDecls = listInit nFns (i => genFunDecl ctx)
-  -- 3. some top-level value bindings to populate scope for reuse
   let nVals = 2 + randBelow 3
   let valDecls = listInit nVals (genValDecl ctx)
-  -- 4. printed expressions, each HOISTED into its own top-level `oN = <expr>`.
   let outsRef = Ref []
-  -- general printed expressions
   let _ = times 4 (i => hoistOut ctx outsRef False (genExpr ctx (randGty ctx 2) 3))
-  -- match expressions (Tier >= 1) over each ADT
-  let _ = if ctxTier ctx >= 1 then
-            iterAdts (ctxAdts ctx) (a => hoistOut ctx outsRef False (genMatch ctx a (pick baseGtys) 3))
-          else ()
-  -- Tier-A invariants — always present
+  let _ = if ctxTier ctx >= 1 then iterAdts (ctxAdts ctx) (a => hoistOut ctx outsRef False (genMatch ctx a (pick baseGtys) 3)) else ()
   let _ = iterExprs (invArith ctx) (e => hoistOut ctx outsRef True e)
   let _ = hoistOut ctx outsRef True (invOrdTrans ctx)
-  -- Tier-2 Eq/Ord invariants over each derived ADT
-  let _ = if ctxTier ctx >= 2 then
-            iterAdts (ctxAdts ctx) (hoistAdtInvs ctx outsRef)
-          else ()
+  let _ = if ctxTier ctx >= 2 then iterAdts (ctxAdts ctx) (hoistAdtInvs ctx outsRef) else ()
   let outs = outsRef.value
   let body = map outToStmt outs
   let outDecls = map outDecl outs
   (adtDecls ++ fnDecls ++ valDecls ++ outDecls, body)
+-- 1. declare a few ADTs (Tier >= 1)
+
+-- 2. a couple of monomorphic helper fns
+
+-- 3. some top-level value bindings to populate scope for reuse
+
+-- 4. printed expressions, each HOISTED into its own top-level `oN = <expr>`.
+
+-- general printed expressions
+
+-- match expressions (Tier >= 1) over each ADT
+
+-- Tier-A invariants — always present
+
+-- Tier-2 Eq/Ord invariants over each derived ADT
 
 -- Assemble a full program from K independent blocks, sharing one ctx so names
 -- stay unique.  One combined `main` runs every block's statements in order,
 -- with a `--BLOCK--` marker between blocks.
 appendBlock : Ctx -> Ref (List Decl) -> Ref (List DoStmt) -> Int -> <Rand, Mut> Unit
-appendBlock ctx allDeclsRef allBodyRef i =
-  match genBlock ctx
-    (decls, body) =>
-      let _ = set_ref allDeclsRef (allDeclsRef.value ++ decls)
-      let sep = if i > 0 then [DoExpr (EApp (EVar "println") (ELit (LString "--BLOCK--")))] else []
-      set_ref allBodyRef (allBodyRef.value ++ sep ++ body)
+appendBlock ctx allDeclsRef allBodyRef i = match genBlock ctx
+  (decls, body) =>
+    let _ = set_ref allDeclsRef (allDeclsRef.value ++ decls)
+    let sep = if i > 0 then [DoExpr (EApp (EVar "println") (ELit (LString "--BLOCK--")))] else []
+    set_ref allBodyRef (allBodyRef.value ++ sep ++ body)
 
 genProgram : Ctx -> Int -> <Rand, Mut> List Decl
 genProgram ctx nblocks =
@@ -580,16 +604,16 @@ data Opts = Opts Int Int Int Bool
 
 parseOpts : List String -> Opts -> Opts
 parseOpts [] o = o
-parseOpts ("--seed" :: v :: rest) o = match o
+parseOpts ("--seed"::v::rest) o = match o
   Opts _ t b nt => parseOpts rest (Opts (intOr v 0) t b nt)
-parseOpts ("--tier" :: v :: rest) o = match o
+parseOpts ("--tier"::v::rest) o = match o
   Opts s _ b nt => parseOpts rest (Opts s (intOr v 2) b nt)
-parseOpts ("--batch" :: v :: rest) o = match o
+parseOpts ("--batch"::v::rest) o = match o
   Opts s t _ nt => parseOpts rest (Opts s t (intOr v 1) nt)
-parseOpts ("--width" :: _ :: rest) o = parseOpts rest o
-parseOpts ("--no-tuple" :: rest) o = match o
+parseOpts ("--width"::_::rest) o = parseOpts rest o
+parseOpts ("--no-tuple"::rest) o = match o
   Opts s t b _ => parseOpts rest (Opts s t b True)
-parseOpts (_ :: rest) o = parseOpts rest o
+parseOpts (_::rest) o = parseOpts rest o
 
 intOr : String -> Int -> Int
 intOr s d = match toInt s
@@ -597,10 +621,9 @@ intOr s d = match toInt s
   None => d
 
 main : <IO, Rand, Mut, Panic> Unit
-main =
-  match parseOpts (args ()) (Opts 0 2 1 False)
-    Opts seedVal tier batch noTuple =>
-      let _ = setSeed seedVal
-      let ctx = Ctx tier noTuple (Ref []) (Ref []) (Ref 0)
-      let prog = genProgram ctx (maxI 1 batch)
-      putStr (programToString prog)
+main = match parseOpts (args ()) (Opts 0 2 1 False)
+  Opts seedVal tier batch noTuple =>
+    let _ = setSeed seedVal
+    let ctx = Ctx tier noTuple (Ref []) (Ref []) (Ref 0)
+    let prog = genProgram ctx (maxI 1 batch)
+    putStr (programToString prog)

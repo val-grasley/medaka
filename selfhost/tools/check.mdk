@@ -39,18 +39,18 @@ runCheck rsrc csrc tsrc =
   let raw = parse tsrc
   let doErrs = collectDoWellformedErrors raw
   match doErrs
-    (e :: _) => e ++ "\n"
+    e::_ => e ++ "\n"
     [] =>
       let desugared = desugar raw
       let runtimeP = parse rsrc
       let coreP = parse csrc
-      -- R3: check for imports of unknown modules before resolve so we emit
-      -- UnknownModule (right category) rather than falling through to a
-      -- spurious typecheck "Unbound variable".  In single-file mode there is
-      -- no loader, so any non-core import is by definition unknown.
       let importErrs = singleFileImportErrors desugared
       let importDiags = joinNl (map resErrorSexp importErrs)
       routeImportCheck importDiags runtimeP coreP raw desugared
+-- R3: check for imports of unknown modules before resolve so we emit
+-- UnknownModule (right category) rather than falling through to a
+-- spurious typecheck "Unbound variable".  In single-file mode there is
+-- no loader, so any non-core import is by definition unknown.
 
 routeImportCheck : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
 routeImportCheck "" runtimeP coreP raw desugared =
@@ -59,17 +59,18 @@ routeImportCheck "" runtimeP coreP raw desugared =
 routeImportCheck diags _ _ _ _ = diags
 
 reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
-reportFor "" runtimeP coreP raw desugared = cleanReport runtimeP coreP raw desugared
+reportFor "" runtimeP coreP raw desugared =
+  cleanReport runtimeP coreP raw desugared
 reportFor resDiags _ _ _ _ = resDiags
 
 cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
 cleanReport runtimeP coreP raw desugared =
   let exWarns = exhaustToLines raw
-  -- TYPECHECK-AUDIT S3: stage the USER decls (NO prelude) for the coherence check
-  -- so a user impl overriding a prelude impl is not flagged as overlapping.
   let _ = setCoherenceUserDecls desugared
   let schemes = checkToLinesWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
   joinNonEmpty exWarns schemes
+-- TYPECHECK-AUDIT S3: stage the USER decls (NO prelude) for the coherence check
+-- so a user impl overriding a prelude impl is not flagged as overlapping.
 
 joinNonEmpty : String -> String -> String
 joinNonEmpty "" b = b
@@ -91,20 +92,22 @@ checkHasErrors rsrc csrc tsrc =
   let raw = parse tsrc
   let doErrs = collectDoWellformedErrors raw
   match doErrs
-    (_ :: _) => True
+    _::_ => True
     [] =>
       let desugared = desugar raw
       let runtimeP = parse rsrc
       let coreP = parse csrc
       let importErrs = singleFileImportErrors desugared
       match importErrs
-        (_ :: _) => True
+        _::_ => True
         [] =>
           let resDiags = resolveToLines runtimeP coreP desugared
           match resDiags
             "" =>
               let _ = setCoherenceUserDecls desugared
-              checkErrorsWithRuntime (desugar runtimeP) (desugar coreP ++ desugared)
+              checkErrorsWithRuntime
+                (desugar runtimeP)
+                (desugar coreP ++ desugared)
             _ => True
 
 -- ── multi-module `check` (DRIVER-COLLAPSE Phase 4, OPTION A) ───────────────
@@ -146,5 +149,4 @@ checkModulesHasErrors rtD coreD mods =
 entryExhaust : List (String, List Decl) -> String
 entryExhaust [] = ""
 entryExhaust [(_, prog)] = exhaustToLines prog
-entryExhaust (_ :: rest) = entryExhaust rest
-
+entryExhaust (_::rest) = entryExhaust rest

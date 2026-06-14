@@ -16,46 +16,74 @@
 -- utf8CharWidth).  A Content-Length that doesn't match the real body byte length
 -- (the bug that crashed Cursor) shows up as a non-byteValid frame or a desync.
 
-import json.{Json, JNull, JBool, JInt, JString, JArray, JObject,
-             jObject, jArray, stringify, parse, lookup, asString, asInt}
+import json.{Json, JNull, JBool, JInt, JString, JArray, JObject, jObject, jArray, stringify, parse, lookup, asString, asInt}
 
 -- ── JSON-RPC message builders ───────────────────────────────────────────────
 
 export
 initializeMsg : Int -> Json
-initializeMsg idn = jObject
-  [ ("jsonrpc", JString "2.0")
-  , ("id", JInt idn)
-  , ("method", JString "initialize")
-  , ("params", jObject [("capabilities", jObject [])]) ]
+initializeMsg idn =
+  jObject
+    [
+      ("jsonrpc", JString "2.0"),
+      ("id", JInt idn),
+      ("method", JString "initialize"),
+      ("params", jObject [("capabilities", jObject [])])
+    ]
 
 export
 initializedMsg : Json
-initializedMsg = jObject
-  [ ("jsonrpc", JString "2.0"), ("method", JString "initialized")
-  , ("params", jObject []) ]
+initializedMsg =
+  jObject
+    [
+      ("jsonrpc", JString "2.0"),
+      ("method", JString "initialized"),
+      ("params", jObject [])
+    ]
 
 export
 didOpenMsg : String -> String -> Json
-didOpenMsg uri text = jObject
-  [ ("jsonrpc", JString "2.0")
-  , ("method", JString "textDocument/didOpen")
-  , ("params", jObject [("textDocument", jObject
-      [ ("uri", JString uri), ("languageId", JString "medaka")
-      , ("version", JInt 1), ("text", JString text) ])]) ]
+didOpenMsg uri text =
+  jObject
+    [
+      ("jsonrpc", JString "2.0"),
+      ("method", JString "textDocument/didOpen"),
+      (
+        "params",
+        jObject [
+          (
+            "textDocument",
+            jObject [
+              ("uri", JString uri),
+              ("languageId", JString "medaka"),
+              ("version", JInt 1),
+              ("text", JString text)
+            ]
+          )
+        ]
+      )
+    ]
 
 export
 requestMsg : Int -> String -> Json -> Json
-requestMsg idn method params = jObject
-  [ ("jsonrpc", JString "2.0"), ("id", JInt idn)
-  , ("method", JString method), ("params", params) ]
+requestMsg idn method params =
+  jObject
+    [
+      ("jsonrpc", JString "2.0"),
+      ("id", JInt idn),
+      ("method", JString method),
+      ("params", params)
+    ]
 
 -- params for a text-document request carrying a cursor position (hover etc.).
 export
 docPosParams : String -> Int -> Int -> Json
-docPosParams uri line ch = jObject
-  [ ("textDocument", jObject [("uri", JString uri)])
-  , ("position", jObject [("line", JInt line), ("character", JInt ch)]) ]
+docPosParams uri line ch =
+  jObject
+    [
+      ("textDocument", jObject [("uri", JString uri)]),
+      ("position", jObject [("line", JInt line), ("character", JInt ch)])
+    ]
 
 -- params for a whole-document request (documentSymbol etc.).
 export
@@ -64,12 +92,17 @@ docParams uri = jObject [("textDocument", jObject [("uri", JString uri)])]
 
 export
 shutdownMsg : Int -> Json
-shutdownMsg idn = jObject
-  [ ("jsonrpc", JString "2.0"), ("id", JInt idn), ("method", JString "shutdown") ]
+shutdownMsg idn =
+  jObject
+    [
+      ("jsonrpc", JString "2.0"),
+      ("id", JInt idn),
+      ("method", JString "shutdown")
+    ]
 
 export
 exitMsg : Json
-exitMsg = jObject [ ("jsonrpc", JString "2.0"), ("method", JString "exit") ]
+exitMsg = jObject [("jsonrpc", JString "2.0"), ("method", JString "exit")]
 
 -- ── framing (byte-counted Content-Length) ──────────────────────────────────
 
@@ -98,7 +131,8 @@ export
 frame : Json -> String
 frame j =
   let body = stringify j
-  stringConcat ["Content-Length: ", intToString (utf8Len body), "\r\n\r\n", body]
+  stringConcat
+    ["Content-Length: ", intToString (utf8Len body), "\r\n\r\n", body]
 
 -- ── session runner (batch over a temp file) ─────────────────────────────────
 
@@ -134,18 +168,19 @@ clLabel = "Content-Length:"
 pfGo : String -> Array Char -> Int -> Int -> (List Frame, Bool)
 pfGo s arr len i =
   if i >= len then ([], True)
-  else if isTrailingJunk arr len i then ([], True)
-  else if matchesAt arr len i clLabel then
-    match parseHeader arr len i
-      None => ([], False)
-      Some (n, bodyStart) =>
-        match takeBytes arr len bodyStart n
-          None => ([Frame n "" False], False)
-          Some bodyEnd =>
-            let body = stringSlice bodyStart bodyEnd s
-            match pfGo s arr len bodyEnd
-              (rest, clean) => (Frame n body True :: rest, clean)
-  else ([], False)
+  else
+    if isTrailingJunk arr len i then ([], True)
+    else
+      if matchesAt arr len i clLabel then
+        match parseHeader arr len i
+          None => ([], False)
+          Some (n, bodyStart) => match takeBytes arr len bodyStart n
+            None => ([Frame n "" False], False)
+            Some bodyEnd =>
+              let body = stringSlice bodyStart bodyEnd s
+              match pfGo s arr len bodyEnd
+                (rest, clean) => (Frame n body True :: rest, clean)
+      else ([], False)
 
 -- Everything from i to end is trailing junk (the LSP's `0` unit-print + ws).
 isTrailingJunk : Array Char -> Int -> Int -> Bool
@@ -155,7 +190,12 @@ isTrailingJunk arr len i
   | otherwise = False
 
 isJunkChar : Char -> Bool
-isJunkChar c = c == '0' || c == '\n' || c == '\r' || c == ' ' || c == '(' || c == ')'
+isJunkChar c = c == '0'
+  || c == '\n'
+  || c == '\r'
+  || c == ' '
+  || c == '('
+  || c == ')'
 
 -- Does the codepoint run at `i` equal the literal `lit`?
 matchesAt : Array Char -> Int -> Int -> String -> Bool
@@ -180,8 +220,10 @@ parseHeader arr len i =
   match parseDigits arr len numStart 0 False
     None => None
     Some (n, afterNum) =>
-      if matchesAt arr len afterNum "\r\n\r\n" then Some (n, afterNum + 4)
-      else None
+      if matchesAt arr len afterNum "\r\n\r\n" then
+        Some (n, afterNum + 4)
+      else
+        None
 
 skipSpaces : Array Char -> Int -> Int -> Int
 skipSpaces arr len i
@@ -192,8 +234,7 @@ skipSpaces arr len i
 parseDigits : Array Char -> Int -> Int -> Int -> Bool -> Option (Int, Int)
 parseDigits arr len i acc seen
   | i >= len = if seen then Some (acc, i) else None
-  | isDigit (arrayGetUnsafe i arr) =
-      parseDigits arr len (i + 1) (acc * 10 + (charCode (arrayGetUnsafe i arr) - 48)) True
+  | isDigit (arrayGetUnsafe i arr) = parseDigits arr len (i + 1) (acc * 10 + (charCode (arrayGetUnsafe i arr) - 48)) True
   | otherwise = if seen then Some (acc, i) else None
 
 isDigit : Char -> Bool
@@ -206,9 +247,8 @@ takeBytes arr len i remaining
   | remaining == 0 = Some i
   | i >= len = None
   | otherwise =
-      let w = utf8CharWidth (charCode (arrayGetUnsafe i arr))
-      if w > remaining then None
-      else takeBytes arr len (i + 1) (remaining - w)
+    let w = utf8CharWidth (charCode (arrayGetUnsafe i arr))
+    if w > remaining then None else takeBytes arr len (i + 1) (remaining - w)
 
 -- ── response accessors ──────────────────────────────────────────────────────
 
@@ -216,13 +256,13 @@ takeBytes arr len i remaining
 export
 allByteValid : List Frame -> Bool
 allByteValid [] = True
-allByteValid (Frame _ _ ok :: rest) = ok && allByteValid rest
+allByteValid ((Frame _ _ ok)::rest) = ok && allByteValid rest
 
 -- The response frame whose "id" == idn, parsed.
 export
 responseById : Int -> List Frame -> Option Json
 responseById _ [] = None
-responseById idn (Frame _ body _ :: rest) = match parse body
+responseById idn ((Frame _ body _)::rest) = match parse body
   Ok j => match lookup "id" j
     Some v => match asInt v
       Some k => if k == idn then Some j else responseById idn rest
@@ -235,22 +275,24 @@ responseById idn (Frame _ body _ :: rest) = match parse body
 export
 diagCountFor : String -> List Frame -> Int
 diagCountFor _ [] = 0
-diagCountFor uri (Frame _ body _ :: rest) = match parse body
+diagCountFor uri ((Frame _ body _)::rest) = match parse body
   Ok j =>
-    if isPublishFor uri j then jDiagLen j + diagCountFor uri rest
-    else diagCountFor uri rest
+    if isPublishFor uri j then
+      jDiagLen j + diagCountFor uri rest
+    else
+      diagCountFor uri rest
   Err _ => diagCountFor uri rest
 
 isPublishFor : String -> Json -> Bool
-isPublishFor uri j =
-  methodEq j "textDocument/publishDiagnostics" && paramUriEq j uri
+isPublishFor uri j = methodEq j "textDocument/publishDiagnostics"
+  && paramUriEq j uri
 
 -- Was a publishDiagnostics notification emitted at all for `uri`?  Guards against
 -- a vacuous `diagCountFor … == 0` when the LSP never published for that file.
 export
 diagPublishedFor : String -> List Frame -> Bool
 diagPublishedFor _ [] = False
-diagPublishedFor uri (Frame _ body _ :: rest) = match parse body
+diagPublishedFor uri ((Frame _ body _)::rest) = match parse body
   Ok j => if isPublishFor uri j then True else diagPublishedFor uri rest
   Err _ => diagPublishedFor uri rest
 
@@ -296,6 +338,11 @@ export
 summary : Int -> <IO> Unit
 summary total =
   let failed = failCount.value
-  println (stringConcat
-    [ "HARNESS: ", intToString (total - failed), " passed, "
-    , intToString failed, " failed" ])
+  println
+    (stringConcat [
+      "HARNESS: ",
+      intToString (total - failed),
+      " passed, ",
+      intToString failed,
+      " failed"
+    ])

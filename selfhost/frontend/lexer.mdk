@@ -363,11 +363,11 @@ scanAt src len pos depth id c
   | isSpace c = scan src len (pos + 1) depth id
   | isNL c || isCR c = handleNewline src len pos depth id
   | c == '-' && pos + 1 < len && at src (pos + 1) == '-' =
-      let e = skipLineComment src len pos
-      RComment pos (substr src pos e) :: scan src len e depth id
+    let e = skipLineComment src len pos
+    RComment pos (substr src pos e) :: scan src len e depth id
   | c == '{' && pos + 1 < len && at src (pos + 1) == '-' =
-      let e = skipBlockComment src len (pos + 2) 1
-      RComment pos (substr src pos e) :: scan src len e depth id
+    let e = skipBlockComment src len (pos + 2) 1
+    RComment pos (substr src pos e) :: scan src len e depth id
   | isDigit c = scanNumber src len pos depth id
   | isQuote c && isTripleAt src len pos = scanTriple src len (pos + 3) depth id False ""
   | isQuote c = scanStr src len (pos + 1) depth id ""
@@ -731,7 +731,8 @@ isUnicodeEsc src len p e = e == 'u' && p + 2 < len && at src (p + 2) == '{'
 
 uniEscStr : Array Char -> Int -> Int -> String
 uniEscStr src len p =
-  charToStr (fromOption ' ' (charFromCode (parseRadix src (p + 3) (uHexEnd src len (p + 3)) 16 0)))
+  charToStr
+    (fromOption ' ' (charFromCode (parseRadix src (p + 3) (uHexEnd src len (p + 3)) 16 0)))
 
 uniEscEnd : Array Char -> Int -> Int -> Int
 uniEscEnd src len p = uHexEnd src len (p + 3) + 1
@@ -789,7 +790,8 @@ singleOp src len pos depth id '?' = emit src len pos depth id TQuestion 1 0
 singleOp src len pos depth id '%' = emit src len pos depth id TMod 1 0
 singleOp src len pos depth id '@' =
   emit src len pos depth id (atToken src pos) 1 0
-singleOp src len pos depth id c = panic ("Unexpected character: " ++ charToStr c)
+singleOp src len pos depth id c =
+  panic ("Unexpected character: " ++ charToStr c)
 
 -- `@` is the as-pattern operator (AS_AT) when it immediately follows an
 -- identifier (no intervening space), else the impl-hint prefix (AT).  Mirrors
@@ -1002,7 +1004,8 @@ layoutWithOffsets src len =
 layoutPairs : List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int, Int)
 layoutPairs [] stack prev opener = closeAllPairs stack 0
 layoutPairs ((RTok t s e)::rest) stack prev opener = (t, s, e) :: layoutPairs rest stack (Some t) (opener || isOpener t)
-layoutPairs ((RComment _ _)::rest) stack prev opener = layoutPairs rest stack prev opener
+layoutPairs ((RComment _ _)::rest) stack prev opener =
+  layoutPairs rest stack prev opener
 layoutPairs ((RNewline col off)::rest) stack prev opener =
   applyNlPairs col off rest stack prev opener
 
@@ -1026,7 +1029,8 @@ resolveContPairs : Int -> Int -> List Int -> List RawTok -> Option Token -> Bool
 resolveContPairs col off stack ((RTok t toff tend)::more) prev opener
   | canStartAtom t = layoutPairs (RTok t toff tend :: more) stack prev opener
   | otherwise = (TIndent, off, off) :: layoutPairs (RTok t toff tend :: more) (col :: stack) None False
-resolveContPairs col off stack rest prev opener = layoutPairs rest stack None False
+resolveContPairs col off stack rest prev opener =
+  layoutPairs rest stack None False
 
 popDedentsPairs : Int -> Int -> List Int -> List RawTok -> List (Token, Int, Int)
 popDedentsPairs col off [] rest = layoutPairs rest [] None False
@@ -1049,7 +1053,8 @@ elseFilterPairs [] = []
 
 layoutWithOffsetPairs : Array Char -> Int -> List (Token, Int, Int)
 layoutWithOffsetPairs src len =
-  elseFilterPairs (layoutPairs (stripComments (scan src len 0 0 0)) [0] None False)
+  elseFilterPairs
+    (layoutPairs (stripComments (scan src len 0 0 0)) [0] None False)
 
 export
 tokenize : String -> List Token
@@ -1100,8 +1105,8 @@ tokenizeWithOffsetPairs s =
   let src = stringToChars s
   let len = arrayLength src
   let triples = layoutWithOffsetPairs src len
-  let toks = map (((t, _s, _e)) => t) triples
-  let pairs = map (((t, s, e)) => (s, e)) triples
+  let toks = map ((t, _s, _e) => t) triples
+  let pairs = map ((t, s, e) => (s, e)) triples
   (toks, pairs)
 
 -- Convert a 0-based char offset into `s` to a (1-based line, 0-based column)
@@ -1121,9 +1126,8 @@ offsetsToLines src offs = offsetsToLinesGo src offs 0 1
 
 offsetsToLinesGo : Array Char -> List Int -> Int -> Int -> List Int
 offsetsToLinesGo src [] p line = []
-offsetsToLinesGo src (off::rest) p line =
-  match advanceLine src off p line
-    (line2, p2) => line2 :: offsetsToLinesGo src rest p2 line2
+offsetsToLinesGo src (off::rest) p line = match advanceLine src off p line
+  (line2, p2) => line2 :: offsetsToLinesGo src rest p2 line2
 
 -- Walk forward from char `p` (1-based `line`) to `target`, counting newlines.
 -- Offsets arrive in non-decreasing order so each call resumes from the last.
@@ -1142,8 +1146,7 @@ advanceLine src target p line
 -- accumulator).  `format_program`/the comment-preserving printer consume this
 -- list keyed by position; the parser is unaffected (comments are stripped
 -- before layout — see `stripComments`).
-export
-data Comment = Comment Int Int String
+export data Comment = Comment Int Int String
 
 export
 commentLine : Comment -> Int
@@ -1170,9 +1173,8 @@ posLineColFrom src target p line lineStart
 -- Turn each `RComment startPos text` into a `Comment line col text`.
 rawToComments : Array Char -> List RawTok -> List Comment
 rawToComments src [] = []
-rawToComments src ((RComment startPos text)::rest) =
-  match posLineColFrom src startPos 0 1 0
-    (line, col) => Comment line col text :: rawToComments src rest
+rawToComments src ((RComment startPos text)::rest) = match posLineColFrom src startPos 0 1 0
+  (line, col) => Comment line col text :: rawToComments src rest
 rawToComments src (_::rest) = rawToComments src rest
 
 -- Tokenize-and-collect the comment side channel, in source order.
@@ -1182,4 +1184,3 @@ collectComments s =
   let src = stringToChars s
   let len = arrayLength src
   rawToComments src (scan src len 0 0 0)
-

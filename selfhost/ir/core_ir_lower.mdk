@@ -44,8 +44,10 @@ lower (EIndex a i) = CIndex (lower a) (lower i)
 lower (ESlice a lo hi incl) = CSlice (lower a) (lower lo) (lower hi) incl
 lower (EFieldAccess e f) = CFieldAccess (lower e) f
 lower (ERecordCreate name fields) = CRecord name (map lowerField fields)
-lower (ERecordUpdate base fields) = CRecordUpdate (lower base) (map lowerField fields)
-lower (EVariantUpdate con base fields) = CVariantUpdate con (lower base) (map lowerField fields)
+lower (ERecordUpdate base fields) =
+  CRecordUpdate (lower base) (map lowerField fields)
+lower (EVariantUpdate con base fields) =
+  CVariantUpdate con (lower base) (map lowerField fields)
 lower (EBlock stmts) = CBlock (map lowerStmt stmts)
 lower (EAnnot e _) = lower e
 lower (EHeadAnnot e _) = lower e
@@ -53,7 +55,8 @@ lower (EHeadAnnot e _) = lower e
 -- structural + immutable in the IR (slice 5; present so the lowering is total).
 -- (instance-`requires` impl dicts — the second ref — are unsupported in the Core
 -- IR experiment; drop them, the core_ir fixtures carry no requires-impls)
-lower (EMethodAt name routeRef implRef methodRef) = CMethod name routeRef.value implRef.value methodRef.value
+lower (EMethodAt name routeRef implRef methodRef) =
+  CMethod name routeRef.value implRef.value methodRef.value
 lower (EDictAt name routesRef) = CDict name routesRef.value
 -- ELoc is STRIPPED here: no source-location wrapper reaches the Core IR, so the
 -- emitted IR for any program is byte-identical to the un-wrapped tree.  This is
@@ -152,7 +155,7 @@ initialRows ((Arm pat _ _)::rest) i = ([canonPat pat], i) :: initialRows rest (i
 export
 compileTree : List Bool -> List (List Pat, Int) -> CTree
 compileTree _ [] = CTFail
-compileTree guards (row::rest) = compileRows guards row rest (row::rest)
+compileTree guards (row::rest) = compileRows guards row rest (row :: rest)
 
 compileRows : List Bool -> (List Pat, Int) -> List (List Pat, Int) -> List (List Pat, Int) -> CTree
 compileRows guards (pats, i) rest rows
@@ -171,7 +174,8 @@ leafOrGuard guards i rest
 
 buildConSwitch : List Bool -> List (List Pat, Int) -> CTree
 buildConSwitch guards rows =
-  CTSwitch (map (conBranch guards rows) (distinctConHeads rows))
+  CTSwitch
+    (map (conBranch guards rows) (distinctConHeads rows))
     (compileTree guards (defaultMatrix rows))
 
 conBranch : List Bool -> List (List Pat, Int) -> (String, Int) -> CTBranch
@@ -180,11 +184,13 @@ conBranch guards rows (c, a) =
 
 buildLitSwitch : List Bool -> List (List Pat, Int) -> CTree
 buildLitSwitch guards rows =
-  CTSwitch (map (litBranch guards rows) (distinctLits rows))
+  CTSwitch
+    (map (litBranch guards rows) (distinctLits rows))
     (compileTree guards (defaultMatrix rows))
 
 litBranch : List Bool -> List (List Pat, Int) -> Lit -> CTBranch
-litBranch guards rows l = CTBranch (HLit l) (compileTree guards (specializeLit l rows))
+litBranch guards rows l =
+  CTBranch (HLit l) (compileTree guards (specializeLit l rows))
 
 -- map a canonical constructor name + arity to the runtime head the evaluator
 -- tests with (the synthetic list/tuple/unit names canonPat introduced map back
@@ -270,7 +276,7 @@ distinctConHeads rows = dedupHeads (colHeads rows) []
 
 colHeads : List (List Pat, Int) -> List (String, Int)
 colHeads [] = []
-colHeads ((PCon c args::_, _)::rest) = (c, listLen args) :: colHeads rest
+colHeads (((PCon c args)::_, _)::rest) = (c, listLen args) :: colHeads rest
 colHeads (_::rest) = colHeads rest
 
 dedupHeads : List (String, Int) -> List String -> List (String, Int)
@@ -284,7 +290,7 @@ distinctLits rows = dedupLits (colLits rows) []
 
 colLits : List (List Pat, Int) -> List Lit
 colLits [] = []
-colLits ((PLit l::_, _)::rest) = l :: colLits rest
+colLits (((PLit l)::_, _)::rest) = l :: colLits rest
 colLits (_::rest) = colLits rest
 
 dedupLits : List Lit -> List Lit -> List Lit
@@ -306,7 +312,11 @@ specializeCon : String -> Int -> List (List Pat, Int) -> List (List Pat, Int)
 specializeCon c arity rows = filterMapRows (specConRow c arity) rows
 
 specConRow : String -> Int -> (List Pat, Int) -> Option (List Pat, Int)
-specConRow c _ (PCon c2 args::rest, i) = if c2 == c then Some (args ++ rest, i) else None
+specConRow c _ ((PCon c2 args)::rest, i) =
+  if c2 == c then
+    Some (args ++ rest, i)
+  else
+    None
 specConRow _ arity (PWild::rest, i) = Some (replicateWild arity ++ rest, i)
 specConRow _ _ _ = None
 
@@ -315,7 +325,7 @@ specializeLit : Lit -> List (List Pat, Int) -> List (List Pat, Int)
 specializeLit l rows = filterMapRows (specLitRow l) rows
 
 specLitRow : Lit -> (List Pat, Int) -> Option (List Pat, Int)
-specLitRow l (PLit l2::rest, i) = if litEq l2 l then Some (rest, i) else None
+specLitRow l ((PLit l2)::rest, i) = if litEq l2 l then Some (rest, i) else None
 specLitRow _ (PWild::rest, i) = Some (rest, i)
 specLitRow _ _ = None
 
@@ -376,7 +386,11 @@ export
 lowerProgram : List Decl -> <Mut> CProgram
 lowerProgram prog =
   let _ = set_ref ctorFieldOrdersRef (buildCtorFieldOrders prog)
-  CProgram (lowerGroups prog) (ctorArities prog) (buildCtorToType prog) (lowerImpls prog)
+  CProgram
+    (lowerGroups prog)
+    (ctorArities prog)
+    (buildCtorToType prog)
+    (lowerImpls prog)
 
 -- ── record-pattern → positional-constructor-pattern rewrite (native backend) ──
 -- The LLVM emitter has no record-pattern path: records / named-field variants are
@@ -413,7 +427,8 @@ buildRecPatFieldOrders prog = concatMapList recPatFieldOrderEntries prog
 
 recPatFieldOrderEntries : Decl -> List (String, List String)
 recPatFieldOrderEntries (DRecord _ name _ fields _) = [(name, map fieldLabel fields)]
-recPatFieldOrderEntries (DData _ _ _ variants _) = concatMapList variantNamedOrder variants
+recPatFieldOrderEntries (DData _ _ _ variants _) =
+  concatMapList variantNamedOrder variants
 recPatFieldOrderEntries (DAttrib _ inner) = recPatFieldOrderEntries inner
 recPatFieldOrderEntries _ = []
 
@@ -429,9 +444,10 @@ fieldLabel (Field n _) = n
 rewritePat : List (String, List String) -> Pat -> Pat
 rewritePat fo (PRec name recFields _) = match lookupAssoc name fo
   Some labels => PCon name (map (recPatForLabel fo recFields) labels)
-  -- no declared order found (e.g. an anonymous record with no `data`): leave the
-  -- PRec untouched — the emitter's existing gap-path reports it, no silent miscompile.
   None => PRec name (map (rewriteRecPatField fo) recFields) False
+-- no declared order found (e.g. an anonymous record with no `data`): leave the
+-- PRec untouched — the emitter's existing gap-path reports it, no silent miscompile.
+
 rewritePat fo (PCon c args) = PCon c (map (rewritePat fo) args)
 rewritePat fo (PCons h t) = PCons (rewritePat fo h) (rewritePat fo t)
 rewritePat fo (PTuple ps) = PTuple (map (rewritePat fo) ps)
@@ -455,7 +471,8 @@ findRecField label ((RecPatField l sub)::rest)
   | otherwise = findRecField label rest
 
 rewriteRecPatField : List (String, List String) -> RecPatField -> RecPatField
-rewriteRecPatField fo (RecPatField l (Some sub)) = RecPatField l (Some (rewritePat fo sub))
+rewriteRecPatField fo (RecPatField l (Some sub)) =
+  RecPatField l (Some (rewritePat fo sub))
 rewriteRecPatField _ (RecPatField l None) = RecPatField l None
 
 -- ── apply the rewrite to every pattern position the lowered Core IR carries ───
@@ -465,7 +482,11 @@ rewriteRecPatField _ (RecPatField l None) = RecPatField l None
 -- arms compile to a proper constructor switch with no needs-guard fall-through).
 rewriteProgramRecPats : List (String, List String) -> CProgram -> CProgram
 rewriteProgramRecPats fo (CProgram groups ctorArs ctorTypes implEntries) =
-  CProgram (map (rewriteBindRP fo) groups) ctorArs ctorTypes (map (rewriteImplRP fo) implEntries)
+  CProgram
+    (map (rewriteBindRP fo) groups)
+    ctorArs
+    ctorTypes
+    (map (rewriteImplRP fo) implEntries)
 
 rewriteBindRP : List (String, List String) -> CBind -> CBind
 rewriteBindRP fo (CBind n clauses) = CBind n (map (rewriteClauseRP fo) clauses)
@@ -476,15 +497,22 @@ rewriteClauseRP fo (CClause pats body) =
 
 rewriteImplRP : List (String, List String) -> CImplEntry -> CImplEntry
 rewriteImplRP fo (CImplEntry n s (CImplTagged tag iface ps pats body)) =
-  CImplEntry n s (CImplTagged tag iface ps (map (rewritePat fo) pats) (rewriteExprRP fo body))
+  CImplEntry
+    n
+    s
+    (CImplTagged tag iface ps (map (rewritePat fo) pats) (rewriteExprRP fo body))
 rewriteImplRP fo (CImplEntry n s (CImplDefault pats body)) =
-  CImplEntry n s (CImplDefault (map (rewritePat fo) pats) (rewriteExprRP fo body))
+  CImplEntry
+    n
+    s
+    (CImplDefault (map (rewritePat fo) pats) (rewriteExprRP fo body))
 
 rewriteExprRP : List (String, List String) -> CExpr -> CExpr
 rewriteExprRP _ (CLit l) = CLit l
 rewriteExprRP _ (CVar x addr) = CVar x addr
 rewriteExprRP fo (CApp f x) = CApp (rewriteExprRP fo f) (rewriteExprRP fo x)
-rewriteExprRP fo (CLam pats body) = CLam (map (rewritePat fo) pats) (rewriteExprRP fo body)
+rewriteExprRP fo (CLam pats body) =
+  CLam (map (rewritePat fo) pats) (rewriteExprRP fo body)
 rewriteExprRP fo (CLet r pat e1 e2) =
   CLet r (rewritePat fo pat) (rewriteExprRP fo e1) (rewriteExprRP fo e2)
 rewriteExprRP fo (CLetGroup binds body) =
@@ -496,19 +524,23 @@ rewriteExprRP fo (CDecision scrut arms _) =
   CDecision (rewriteExprRP fo scrut) arms2 (compileArmsC arms2)
 rewriteExprRP fo (CIf c t e) =
   CIf (rewriteExprRP fo c) (rewriteExprRP fo t) (rewriteExprRP fo e)
-rewriteExprRP fo (CBinPrim op l r) = CBinPrim op (rewriteExprRP fo l) (rewriteExprRP fo r)
+rewriteExprRP fo (CBinPrim op l r) =
+  CBinPrim op (rewriteExprRP fo l) (rewriteExprRP fo r)
 rewriteExprRP fo (CUnOp op x) = CUnOp op (rewriteExprRP fo x)
 rewriteExprRP fo (CTuple es) = CTuple (map (rewriteExprRP fo) es)
 rewriteExprRP fo (CList es) = CList (map (rewriteExprRP fo) es)
-rewriteExprRP fo (CRecord name fields) = CRecord name (map (rewriteFieldRP fo) fields)
+rewriteExprRP fo (CRecord name fields) =
+  CRecord name (map (rewriteFieldRP fo) fields)
 rewriteExprRP fo (CFieldAccess ex f) = CFieldAccess (rewriteExprRP fo ex) f
 rewriteExprRP fo (CRecordUpdate base fields) =
   CRecordUpdate (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
 rewriteExprRP fo (CVariantUpdate con base fields) =
   CVariantUpdate con (rewriteExprRP fo base) (map (rewriteFieldRP fo) fields)
 rewriteExprRP fo (CArray es) = CArray (map (rewriteExprRP fo) es)
-rewriteExprRP fo (CRangeList lo hi incl) = CRangeList (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
-rewriteExprRP fo (CRangeArray lo hi incl) = CRangeArray (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
+rewriteExprRP fo (CRangeList lo hi incl) =
+  CRangeList (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
+rewriteExprRP fo (CRangeArray lo hi incl) =
+  CRangeArray (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
 rewriteExprRP fo (CIndex a i) = CIndex (rewriteExprRP fo a) (rewriteExprRP fo i)
 rewriteExprRP fo (CSlice a lo hi incl) =
   CSlice (rewriteExprRP fo a) (rewriteExprRP fo lo) (rewriteExprRP fo hi) incl
@@ -518,7 +550,10 @@ rewriteExprRP _ (CDict name rs) = CDict name rs
 
 rewriteArmRP : List (String, List String) -> CArm -> CArm
 rewriteArmRP fo (CArm pat guards body) =
-  CArm (rewritePat fo pat) (map (rewriteGuardRP fo) guards) (rewriteExprRP fo body)
+  CArm
+    (rewritePat fo pat)
+    (map (rewriteGuardRP fo) guards)
+    (rewriteExprRP fo body)
 
 rewriteGuardRP : List (String, List String) -> CGuard -> CGuard
 rewriteGuardRP fo (CGBool e) = CGBool (rewriteExprRP fo e)
@@ -526,7 +561,8 @@ rewriteGuardRP fo (CGBind p e) = CGBind (rewritePat fo p) (rewriteExprRP fo e)
 
 rewriteStmtRP : List (String, List String) -> CStmt -> CStmt
 rewriteStmtRP fo (CSExpr e) = CSExpr (rewriteExprRP fo e)
-rewriteStmtRP fo (CSLet r pat e) = CSLet r (rewritePat fo pat) (rewriteExprRP fo e)
+rewriteStmtRP fo (CSLet r pat e) =
+  CSLet r (rewritePat fo pat) (rewriteExprRP fo e)
 rewriteStmtRP fo (CSLetElse pat e alt) =
   CSLetElse (rewritePat fo pat) (rewriteExprRP fo e) (rewriteExprRP fo alt)
 rewriteStmtRP fo (CSAssign x e) = CSAssign x (rewriteExprRP fo e)
@@ -544,7 +580,6 @@ carmHasGuard (CArm pat gs _) = not (nullL gs) || patNeedsGuard pat
 cInitialRows : List CArm -> Int -> List (List Pat, Int)
 cInitialRows [] _ = []
 cInitialRows ((CArm pat _ _)::rest) i = ([canonPat pat], i) :: cInitialRows rest (i + 1)
-
 
 -- the top-level function-group half of lowerProgram, exposed for the multi-module
 -- driver (core_ir_eval.cevalModules), which lowers each module's groups separately
@@ -565,12 +600,12 @@ lgGroup clauses =
 
 lgTag : List (String, CClause) -> Int -> List ((String, Int), CClause)
 lgTag [] _ = []
-lgTag ((n, c) :: rest) i = ((n, i), c) :: lgTag rest (i + 1)
+lgTag ((n, c)::rest) i = ((n, i), c) :: lgTag rest (i + 1)
 
 lgSplit : List a -> (List a, List a)
 lgSplit [] = ([], [])
 lgSplit [x] = ([x], [])
-lgSplit (x :: y :: rest) =
+lgSplit (x::y::rest) =
   let (a, b) = lgSplit rest
   (x :: a, y :: b)
 
@@ -585,24 +620,26 @@ lgSortName xs =
 lgMergeName : List ((String, Int), CClause) -> List ((String, Int), CClause) -> List ((String, Int), CClause)
 lgMergeName [] ys = ys
 lgMergeName xs [] = xs
-lgMergeName (((n1, i1), c1) :: xs) (((n2, i2), c2) :: ys) = match stringCompare n1 n2
+lgMergeName (((n1, i1), c1)::xs) (((n2, i2), c2)::ys) = match stringCompare n1 n2
   Lt => ((n1, i1), c1) :: lgMergeName xs (((n2, i2), c2) :: ys)
   Gt => ((n2, i2), c2) :: lgMergeName (((n1, i1), c1) :: xs) ys
   Eq =>
-    if i1 <= i2 then ((n1, i1), c1) :: lgMergeName xs (((n2, i2), c2) :: ys)
-    else ((n2, i2), c2) :: lgMergeName (((n1, i1), c1) :: xs) ys
+    if i1 <= i2 then
+      ((n1, i1), c1) :: lgMergeName xs (((n2, i2), c2) :: ys)
+    else
+      ((n2, i2), c2) :: lgMergeName (((n1, i1), c1) :: xs) ys
 
 -- collapse runs of equal name (now contiguous, index-ascending) into
 -- ((name, firstIdx), clausesInOrder).
 lgRuns : List ((String, Int), CClause) -> List ((String, Int), List CClause)
 lgRuns [] = []
-lgRuns (((n, i), c) :: rest) =
+lgRuns (((n, i), c)::rest) =
   let (cs, others) = lgSpan n rest
   ((n, i), c :: cs) :: lgRuns others
 
 lgSpan : String -> List ((String, Int), CClause) -> (List CClause, List ((String, Int), CClause))
 lgSpan _ [] = ([], [])
-lgSpan n (((m, j), c) :: rest) =
+lgSpan n (((m, j), c)::rest) =
   if m == n then
     let (cs, o) = lgSpan n rest
     (c :: cs, o)
@@ -619,9 +656,11 @@ lgSortIdx xs =
 lgMergeIdx : List ((String, Int), List CClause) -> List ((String, Int), List CClause) -> List ((String, Int), List CClause)
 lgMergeIdx [] ys = ys
 lgMergeIdx xs [] = xs
-lgMergeIdx (((n1, i1), cs1) :: xs) (((n2, i2), cs2) :: ys) =
-  if i1 <= i2 then ((n1, i1), cs1) :: lgMergeIdx xs (((n2, i2), cs2) :: ys)
-  else ((n2, i2), cs2) :: lgMergeIdx (((n1, i1), cs1) :: xs) ys
+lgMergeIdx (((n1, i1), cs1)::xs) (((n2, i2), cs2)::ys) =
+  if i1 <= i2 then
+    ((n1, i1), cs1) :: lgMergeIdx xs (((n2, i2), cs2) :: ys)
+  else
+    ((n2, i2), cs2) :: lgMergeIdx (((n1, i1), cs1) :: xs) ys
 
 lgToBind : ((String, Int), List CClause) -> CBind
 lgToBind ((n, _), cs) = CBind n cs
@@ -654,12 +693,14 @@ lowerImplMethod : List ((String, String), List Int) -> String -> List Ty -> Impl
 lowerImplMethod disp ifaceName typeArgs (ImplMethod mname pats body) =
   let tag = fromOption "__none__" (headTyconHead typeArgs)
   let positions = lookupPositions ifaceName mname disp
-  CImplEntry mname (tyvarsInArgs typeArgs) (CImplTagged tag ifaceName positions pats (lower body))
+  CImplEntry
+    mname
+    (tyvarsInArgs typeArgs)
+    (CImplTagged tag ifaceName positions pats (lower body))
 
 lowerDefault : List String -> IfaceMethod -> List CImplEntry
 lowerDefault _ (IfaceMethod _ _ None) = []
-lowerDefault typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) =
-  [CImplEntry mname (listLen typeParams) (CImplDefault pats (lower body))]
+lowerDefault typeParams (IfaceMethod mname _ (Some (MethodDefault pats body))) = [CImplEntry mname (listLen typeParams) (CImplDefault pats (lower body))]
 
 -- ── returns-self table (native backend: method-call RESULT-type inference) ───
 -- Per (interface, method): does the method's RESULT type mention an interface
@@ -678,13 +719,11 @@ returnsSelfTable : List Decl -> List ((String, String), Bool)
 returnsSelfTable prog = concatMapList ifaceReturnsSelfEntries prog
 
 ifaceReturnsSelfEntries : Decl -> List ((String, String), Bool)
-ifaceReturnsSelfEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } =
-  map (m => ifaceReturnsSelfEntry ifaceName typeParams m) methods
+ifaceReturnsSelfEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } = map (m => ifaceReturnsSelfEntry ifaceName typeParams m) methods
 ifaceReturnsSelfEntries _ = []
 
 ifaceReturnsSelfEntry : String -> List String -> IfaceMethod -> ((String, String), Bool)
-ifaceReturnsSelfEntry ifaceName typeParams (IfaceMethod mname mty _) =
-  ((ifaceName, mname), tyMentionsParams (methodResultTy mty) typeParams)
+ifaceReturnsSelfEntry ifaceName typeParams (IfaceMethod mname mty _) = ((ifaceName, mname), tyMentionsParams (methodResultTy mty) typeParams)
 
 -- the RESULT type of a method type: the final tail after stripping the TyFun
 -- argument chain (and any leading constraint/effect wrappers).
@@ -699,9 +738,12 @@ methodResultTy t = t
 tyMentionsParams : Ty -> List String -> Bool
 tyMentionsParams (TyVar n) params = contains n params
 tyMentionsParams (TyCon _) _ = False
-tyMentionsParams (TyApp a b) params = tyMentionsParams a params || tyMentionsParams b params
-tyMentionsParams (TyFun a b) params = tyMentionsParams a params || tyMentionsParams b params
-tyMentionsParams (TyTuple ts) params = anyList (t => tyMentionsParams t params) ts
+tyMentionsParams (TyApp a b) params = tyMentionsParams a params
+  || tyMentionsParams b params
+tyMentionsParams (TyFun a b) params = tyMentionsParams a params
+  || tyMentionsParams b params
+tyMentionsParams (TyTuple ts) params =
+  anyList (t => tyMentionsParams t params) ts
 tyMentionsParams (TyEffect _ _ t) params = tyMentionsParams t params
 tyMentionsParams (TyConstrained _ t) params = tyMentionsParams t params
 
@@ -719,13 +761,11 @@ selfFnParamTable : List Decl -> List ((String, String), List Int)
 selfFnParamTable prog = concatMapList ifaceSelfFnParamEntries prog
 
 ifaceSelfFnParamEntries : Decl -> List ((String, String), List Int)
-ifaceSelfFnParamEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } =
-  map (m => ifaceSelfFnParamEntry ifaceName typeParams m) methods
+ifaceSelfFnParamEntries DInterface { name = ifaceName, typarams = typeParams, methods, ... } = map (m => ifaceSelfFnParamEntry ifaceName typeParams m) methods
 ifaceSelfFnParamEntries _ = []
 
 ifaceSelfFnParamEntry : String -> List String -> IfaceMethod -> ((String, String), List Int)
-ifaceSelfFnParamEntry ifaceName typeParams (IfaceMethod mname mty _) =
-  ((ifaceName, mname), selfFnPositions 0 (methodArgTys mty) typeParams)
+ifaceSelfFnParamEntry ifaceName typeParams (IfaceMethod mname mty _) = ((ifaceName, mname), selfFnPositions 0 (methodArgTys mty) typeParams)
 
 -- the argument types of a method type (the a's of `a -> a -> … -> r`).
 methodArgTys : Ty -> List Ty
@@ -755,8 +795,7 @@ ifaceMethodArityEntries DInterface { name = ifaceName, methods, ... } =
 ifaceMethodArityEntries _ = []
 
 ifaceMethodArityEntry : String -> IfaceMethod -> (String, (String, Int))
-ifaceMethodArityEntry ifaceName (IfaceMethod mname mty _) =
-  (mname, (ifaceName, listLen (methodArgTys mty)))
+ifaceMethodArityEntry ifaceName (IfaceMethod mname mty _) = (mname, (ifaceName, listLen (methodArgTys mty)))
 
 -- ── method → method-level constraint INTERFACE names (native backend, G7) ────
 -- Per interface method that carries a method-level `=>` constraint (foldMap's
@@ -786,9 +825,10 @@ methodConstraintIfaceEntry typarams (IfaceMethod mname mty _) =
 -- the interface name of each method-level constraint in [ty], in declaration
 -- order (peels TyConstrained/TyEffect like methodConstraintSlotIds).
 methodLevelConstraintIfaces : List String -> Ty -> List String
-methodLevelConstraintIfaces typarams (TyConstrained cs t) =
-  concatMapList (c => constraintIfaceIfMethodLevel typarams c) cs ++ methodLevelConstraintIfaces typarams t
-methodLevelConstraintIfaces typarams (TyEffect _ _ t) = methodLevelConstraintIfaces typarams t
+methodLevelConstraintIfaces typarams (TyConstrained cs t) = concatMapList (c => constraintIfaceIfMethodLevel typarams c) cs
+  ++ methodLevelConstraintIfaces typarams t
+methodLevelConstraintIfaces typarams (TyEffect _ _ t) =
+  methodLevelConstraintIfaces typarams t
 methodLevelConstraintIfaces _ _ = []
 
 constraintIfaceIfMethodLevel : List String -> Constraint -> List String
@@ -799,14 +839,18 @@ constraintIfaceIfMethodLevel typarams (Constraint ifaceName args)
 -- a constraint is method-level iff one of its argument types mentions a tyvar
 -- that is NOT an interface param (so the dict is supplied per-call).
 constraintArgsMentionNonParam : List String -> List Ty -> Bool
-constraintArgsMentionNonParam typarams args = anyList (t => tyMentionsNonParam t typarams) args
+constraintArgsMentionNonParam typarams args =
+  anyList (t => tyMentionsNonParam t typarams) args
 
 tyMentionsNonParam : Ty -> List String -> Bool
 tyMentionsNonParam (TyVar n) params = not (contains n params)
 tyMentionsNonParam (TyCon _) _ = False
-tyMentionsNonParam (TyApp a b) params = tyMentionsNonParam a params || tyMentionsNonParam b params
-tyMentionsNonParam (TyFun a b) params = tyMentionsNonParam a params || tyMentionsNonParam b params
-tyMentionsNonParam (TyTuple ts) params = anyList (t => tyMentionsNonParam t params) ts
+tyMentionsNonParam (TyApp a b) params = tyMentionsNonParam a params
+  || tyMentionsNonParam b params
+tyMentionsNonParam (TyFun a b) params = tyMentionsNonParam a params
+  || tyMentionsNonParam b params
+tyMentionsNonParam (TyTuple ts) params =
+  anyList (t => tyMentionsNonParam t params) ts
 tyMentionsNonParam (TyEffect _ _ t) params = tyMentionsNonParam t params
 tyMentionsNonParam (TyConstrained _ t) params = tyMentionsNonParam t params
 
@@ -831,7 +875,8 @@ ctorFieldTypeNames : List Decl -> List (String, List String)
 ctorFieldTypeNames prog = concatMapList ctorFieldTypeEntries prog
 
 ctorFieldTypeEntries : Decl -> List (String, List String)
-ctorFieldTypeEntries (DData _ _ _ variants _) = map variantFieldTypeEntry variants
+ctorFieldTypeEntries (DData _ _ _ variants _) =
+  map variantFieldTypeEntry variants
 ctorFieldTypeEntries (DNewtype _ _ _ con fieldTy _) = [(con, [tyHeadName fieldTy])]
 ctorFieldTypeEntries _ = []
 
@@ -875,10 +920,8 @@ declSigTypeNames : List Decl -> List (String, (List String, String))
 declSigTypeNames prog = concatMapList declSigTypeEntries prog
 
 declSigTypeEntries : Decl -> List (String, (List String, String))
-declSigTypeEntries (DTypeSig _ name ty) =
-  [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]
-declSigTypeEntries (DExtern _ name ty) =
-  [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]
+declSigTypeEntries (DTypeSig _ name ty) = [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]
+declSigTypeEntries (DExtern _ name ty) = [(name, (map tyHeadName (methodArgTys ty), tyHeadName (methodRetTy ty)))]
 declSigTypeEntries (DAttrib _ inner) = declSigTypeEntries inner
 declSigTypeEntries _ = []
 
@@ -898,15 +941,15 @@ selfFnPositions i (t::ts) params
   | otherwise = selfFnPositions (i + 1) ts params
 
 tyIsFunReturningSelf : Ty -> List String -> Bool
-tyIsFunReturningSelf (TyFun _ b) params = tyMentionsParams (methodResultTy b) params
+tyIsFunReturningSelf (TyFun _ b) params =
+  tyMentionsParams (methodResultTy b) params
 tyIsFunReturningSelf (TyConstrained _ t) params = tyIsFunReturningSelf t params
 tyIsFunReturningSelf (TyEffect _ _ t) params = tyIsFunReturningSelf t params
 tyIsFunReturningSelf _ _ = False
 
 funClausesOf : List Decl -> List (String, CClause)
 funClausesOf [] = []
-funClausesOf ((DFunDef _ n pats body)::rest) =
-  (n, CClause pats (lower body)) :: funClausesOf rest
+funClausesOf ((DFunDef _ n pats body)::rest) = (n, CClause pats (lower body)) :: funClausesOf rest
 funClausesOf (_::rest) = funClausesOf rest
 
 groupNames : List (String, CClause) -> List String -> List String
@@ -923,13 +966,12 @@ clausesFor name ((n, c)::rest)
 
 ctorArities : List Decl -> List (String, Int)
 ctorArities [] = []
-ctorArities ((DData _ _ _ variants _)::rest) =
-  map variantArity variants ++ ctorArities rest
+ctorArities ((DData _ _ _ variants _)::rest) = map variantArity variants
+  ++ ctorArities rest
 -- A newtype is structurally a single-constructor, single-field data type, so its
 -- constructor is a callable arity-1 ctor (matches the oracle's `make_ctor con 1`).
 -- Without this the emitter sees `UserId 42` as an unbound variable.
-ctorArities ((DNewtype _ _ _ con _ _)::rest) =
-  (con, 1) :: ctorArities rest
+ctorArities ((DNewtype _ _ _ con _ _)::rest) = (con, 1) :: ctorArities rest
 ctorArities (_::rest) = ctorArities rest
 
 variantArity : Variant -> (String, Int)

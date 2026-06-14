@@ -71,11 +71,7 @@
 -- let / lambda arg / match-pattern var) named `f` shadows it.  Mirrors the
 -- binder-threading of typecheck.mdk's `rewriteArgScoped`.
 
-import frontend.ast.{Decl(..), Expr(..), Pat(..), Arm(..), Guard(..), GuardArm(..),
-            DoStmt(..), LcQual(..), Section(..), InterpPart(..), FieldAssign(..),
-            RecPatField(..), LetBind(..), FunClause(..), IfaceMethod(..),
-            MethodDefault(..), ImplMethod(..), PropParam(..),
-            UsePath(..), UseMember(..), Variant(..)}
+import frontend.ast.{Decl(..), Expr(..), Pat(..), Arm(..), Guard(..), GuardArm(..), DoStmt(..), LcQual(..), Section(..), InterpPart(..), FieldAssign(..), RecPatField(..), LetBind(..), FunClause(..), IfaceMethod(..), MethodDefault(..), ImplMethod(..), PropParam(..), UsePath(..), UseMember(..), Variant(..)}
 
 -- ── entry point ───────────────────────────────────────────────────────────────
 -- Given the core unit and every (mid, decls) module, module-qualify EVERY
@@ -88,13 +84,13 @@ mangleUnits : List Decl -> List (String, List Decl) -> (List Decl, List (String,
 mangleUnits coreDecls modules =
   let allUnits = ("core", coreDecls) :: modules
   let exportsPerUnit = map unitExportEntry allUnits
-  -- Per-unit CONSTRUCTOR exports: (mid, [(typeName, [ctorName])]).  Mirrors
-  -- exportsPerUnit but for data/record/newtype ctors, so an importing unit can map
-  -- `import M.{T(..)}` / `import M.{Ctor}` to `<M>__<Ctor>` (see ctorImportEntries).
   let ctorExportsPerUnit = map unitCtorExportEntry allUnits
   let coreOut = mangleUnitU exportsPerUnit ctorExportsPerUnit ("core", coreDecls)
   let modsOut = map (mangleModule exportsPerUnit ctorExportsPerUnit) modules
   (coreOut, modsOut)
+-- Per-unit CONSTRUCTOR exports: (mid, [(typeName, [ctorName])]).  Mirrors
+-- exportsPerUnit but for data/record/newtype ctors, so an importing unit can map
+-- `import M.{T(..)}` / `import M.{Ctor}` to `<M>__<Ctor>` (see ctorImportEntries).
 
 -- exported (pub) top-level function names of a unit: the cross-module-importable
 -- definitions another unit's reference can resolve to.
@@ -112,12 +108,17 @@ unitCtorExportEntry : (String, List Decl) -> (String, List (String, List String)
 unitCtorExportEntry (mid, decls) = (mid, concatMapPM ctorExportEntries decls)
 
 ctorExportEntries : Decl -> List (String, List String)
-ctorExportEntries (DData _ tyname _ variants _) =
-  [(tyname, filterStr nonReservedCtor (map variantCtorName variants))]
+ctorExportEntries (DData _ tyname _ variants _) = [(tyname, filterStr nonReservedCtor (map variantCtorName variants))]
 ctorExportEntries (DRecord _ name _ _ _) =
-  if nonReservedCtor name then [(name, [name])] else []
+  if nonReservedCtor name then
+    [(name, [name])]
+  else
+    []
 ctorExportEntries (DNewtype _ tyname _ con _ _) =
-  if nonReservedCtor con then [(tyname, [con])] else []
+  if nonReservedCtor con then
+    [(tyname, [con])]
+  else
+    []
 ctorExportEntries (DAttrib _ d) = ctorExportEntries d
 ctorExportEntries _ = []
 
@@ -130,10 +131,17 @@ nonReservedCtor : String -> Bool
 nonReservedCtor n = not (isReservedCtor n)
 
 isReservedCtor : String -> Bool
-isReservedCtor n =
-  n == "Cons" || n == "Nil" || n == "Some" || n == "None"
-    || n == "Ok" || n == "Err" || n == "Lt" || n == "Eq" || n == "Gt"
-    || n == "True" || n == "False"
+isReservedCtor n = n == "Cons"
+  || n == "Nil"
+  || n == "Some"
+  || n == "None"
+  || n == "Ok"
+  || n == "Err"
+  || n == "Lt"
+  || n == "Eq"
+  || n == "Gt"
+  || n == "True"
+  || n == "False"
 
 -- ── the unit's CONSTRUCTOR rename map ─────────────────────────────────────────
 -- local ctors → `<mid>__<ctor>` (local shadows imports), then imported ctors →
@@ -149,7 +157,8 @@ buildUnitCtorRenameMap mid ctorExportsPerUnit decls =
 
 -- local (this-unit-declared) constructor names, reserved ones excluded.
 unitLocalCtorNames : List Decl -> List String
-unitLocalCtorNames decls = filterStr nonReservedCtor (concatMapPM localCtorNames decls)
+unitLocalCtorNames decls =
+  filterStr nonReservedCtor (concatMapPM localCtorNames decls)
 
 localCtorNames : Decl -> List String
 localCtorNames (DData _ _ _ variants _) = map variantCtorName variants
@@ -167,49 +176,52 @@ localCtorRenameEntry mid n = [(n, mangledName mid n)]
 -- ctors as implicit prelude (`Rep`'s RCon/RInt/… — Ordering/Option/Result ctors are
 -- reserved and were never entered).  Local-first ordering already shadows these.
 ctorImportEntries : String -> List (String, List (String, List String)) -> List Decl -> List (String, String)
-ctorImportEntries _ ctorExportsPerUnit decls =
-  concatMapPM (declCtorImportEntries ctorExportsPerUnit) decls
-    ++ coreCtorImportEntries ctorExportsPerUnit
+ctorImportEntries _ ctorExportsPerUnit decls = concatMapPM (declCtorImportEntries ctorExportsPerUnit) decls
+  ++ coreCtorImportEntries ctorExportsPerUnit
 
 coreCtorImportEntries : List (String, List (String, List String)) -> List (String, String)
 coreCtorImportEntries ctorExportsPerUnit = match lookupCtorExports "core" ctorExportsPerUnit
-  Some entries => concatMapPM (coreCtorEntry) entries
+  Some entries => concatMapPM coreCtorEntry entries
   None => []
 
 coreCtorEntry : (String, List String) -> List (String, String)
 coreCtorEntry (_, ctors) = concatMapPM (n => [(n, mangledName "core" n)]) ctors
 
 declCtorImportEntries : List (String, List (String, List String)) -> Decl -> List (String, String)
-declCtorImportEntries ctorExportsPerUnit (DUse _ path) = useCtorPathEntries ctorExportsPerUnit path
-declCtorImportEntries ctorExportsPerUnit (DAttrib _ d) = declCtorImportEntries ctorExportsPerUnit d
+declCtorImportEntries ctorExportsPerUnit (DUse _ path) =
+  useCtorPathEntries ctorExportsPerUnit path
+declCtorImportEntries ctorExportsPerUnit (DAttrib _ d) =
+  declCtorImportEntries ctorExportsPerUnit d
 declCtorImportEntries _ _ = []
 
 useCtorPathEntries : List (String, List (String, List String)) -> UsePath -> List (String, String)
 useCtorPathEntries ctorExportsPerUnit path =
   let mid = useModIdU path
   if mid == "core" then []
-  else match lookupCtorExports mid ctorExportsPerUnit
-    None => []
-    Some typeEntries => match path
-      -- `import M.{T(..), Ctor, …}`: a `(..)` member is a TYPE whose ctors all come
-      -- in; a bare member may be either a ctor name or a type — entered if it names
-      -- a ctor M exports (a type-only member contributes nothing here).
-      UseGroup _ members => concatMapPM (ctorMemberEntry mid typeEntries) members
-      -- `import M.*`: every ctor M exports comes into scope.
-      UseWild _ => concatMapPM (typeCtorEntries mid) typeEntries
-      UseName _ => []
-      UseAlias _ _ => []
+  else
+    match lookupCtorExports mid ctorExportsPerUnit
+      None => []
+      Some typeEntries => match path
+        UseGroup _ members => concatMapPM (ctorMemberEntry mid typeEntries) members
+        UseWild _ => concatMapPM (typeCtorEntries mid) typeEntries
+        UseName _ => []
+        UseAlias _ _ => []
+-- `import M.{T(..), Ctor, …}`: a `(..)` member is a TYPE whose ctors all come
+-- in; a bare member may be either a ctor name or a type — entered if it names
+-- a ctor M exports (a type-only member contributes nothing here).
+
+-- `import M.*`: every ctor M exports comes into scope.
 
 -- a UseGroup member → ctor entries.  `UseMember name True` (`name(..)`) expands to
 -- all of type `name`'s ctors; `UseMember name False` enters `name` itself iff it is
 -- one of M's exported ctors.
 ctorMemberEntry : String -> List (String, List String) -> UseMember -> List (String, String)
 ctorMemberEntry mid typeEntries (UseMember name wild) =
-  if wild then match lookupCtorTypeEntry name typeEntries
+  if wild then
+    match lookupCtorTypeEntry name typeEntries
       Some ctors => concatMapPM (originCtorEntry mid) ctors
       None => []
-  else if containsPM name (concatMapPM snd typeEntries) then originCtorEntry mid name
-  else []
+  else if containsPM name (concatMapPM snd typeEntries) then originCtorEntry mid name else []
 
 typeCtorEntries : String -> (String, List String) -> List (String, String)
 typeCtorEntries mid (_, ctors) = concatMapPM (originCtorEntry mid) ctors
@@ -219,11 +231,19 @@ originCtorEntry mid n = [(n, mangledName mid n)]
 
 lookupCtorTypeEntry : String -> List (String, List String) -> Option (List String)
 lookupCtorTypeEntry _ [] = None
-lookupCtorTypeEntry k ((t, cs) :: rest) = if k == t then Some cs else lookupCtorTypeEntry k rest
+lookupCtorTypeEntry k ((t, cs)::rest) =
+  if k == t then
+    Some cs
+  else
+    lookupCtorTypeEntry k rest
 
 lookupCtorExports : String -> List (String, List (String, List String)) -> Option (List (String, List String))
 lookupCtorExports _ [] = None
-lookupCtorExports k ((m, es) :: rest) = if k == m then Some es else lookupCtorExports k rest
+lookupCtorExports k ((m, es)::rest) =
+  if k == m then
+    Some es
+  else
+    lookupCtorExports k rest
 
 -- a module keeps its mid in the output pair.
 mangleModule : List (String, List String) -> List (String, List (String, List String)) -> (String, List Decl) -> (String, List Decl)
@@ -237,13 +257,12 @@ mangleUnitU : List (String, List String) -> List (String, List (String, List Str
 mangleUnitU exportsPerUnit ctorExportsPerUnit (mid, decls) =
   let rmFn = buildUnitRenameMap mid exportsPerUnit decls
   let rmCtor = buildUnitCtorRenameMap mid ctorExportsPerUnit decls
-  -- Function and constructor names occupy disjoint namespaces (ctors Capitalized,
-  -- fns lowercase), so the two bare-name maps merge without key conflict.  A merged
-  -- single map lets renameScoped's existing EVar arm rewrite a nullary/partial ctor
-  -- reference, and renameDecl/renamePat add the def-site + pattern ctor rewrites.
   let rm = rmFn ++ rmCtor
-  if isEmptyPM rm then decls
-  else map (renameDecl rm) decls
+  if isEmptyPM rm then decls else map (renameDecl rm) decls
+-- Function and constructor names occupy disjoint namespaces (ctors Capitalized,
+-- fns lowercase), so the two bare-name maps merge without key conflict.  A merged
+-- single map lets renameScoped's existing EVar arm rewrite a nullary/partial ctor
+-- reference, and renameDecl/renamePat add the def-site + pattern ctor rewrites.
 
 -- The unit's rename map.  Order matters: LOCAL definitions are prepended LAST so a
 -- local def shadows an imported same-named binding (lookupPM is first-match).
@@ -252,8 +271,8 @@ buildUnitRenameMap mid exportsPerUnit decls =
   let localFns = dedupPM (unitDefNames (mid, decls))
   let localEntries = concatMapPM (localRenameEntry mid) localFns
   let importEntries = importRenameEntries mid exportsPerUnit decls
-  -- local first ⇒ shadows any imported entry with the same key under lookupPM.
   localEntries ++ importEntries
+-- local first ⇒ shadows any imported entry with the same key under lookupPM.
 
 -- a local top-level fn → its module-qualified symbol, UNLESS excluded (`main`).
 localRenameEntry : String -> String -> List (String, String)
@@ -273,15 +292,14 @@ isExcludedName n = n == "main"
 -- import-entry ordering below).
 -- explicit sibling imports first (they shadow the implicit prelude), prelude last.
 importRenameEntries : String -> List (String, List String) -> List Decl -> List (String, String)
-importRenameEntries _ exportsPerUnit decls =
-  concatMapPM (declImportEntries exportsPerUnit) decls
-    ++ coreImportEntries exportsPerUnit
+importRenameEntries _ exportsPerUnit decls = concatMapPM (declImportEntries exportsPerUnit) decls
+  ++ coreImportEntries exportsPerUnit
 
 -- core's exports as implicit-prelude entries (`name → core__name`), excluding
 -- `main` (core has none, but be safe).
 coreImportEntries : List (String, List String) -> List (String, String)
 coreImportEntries exportsPerUnit = match lookupExports "core" exportsPerUnit
-  Some names => concatMapPM (coreEntry) names
+  Some names => concatMapPM coreEntry names
   None => []
 
 coreEntry : String -> List (String, String)
@@ -291,8 +309,10 @@ coreEntry n
 
 -- a single `DUse path` → the (bareName, originMangled) entries it introduces.
 declImportEntries : List (String, List String) -> Decl -> List (String, String)
-declImportEntries exportsPerUnit (DUse _ path) = usePathEntries exportsPerUnit path
-declImportEntries exportsPerUnit (DAttrib _ d) = declImportEntries exportsPerUnit d
+declImportEntries exportsPerUnit (DUse _ path) =
+  usePathEntries exportsPerUnit path
+declImportEntries exportsPerUnit (DAttrib _ d) =
+  declImportEntries exportsPerUnit d
 declImportEntries _ _ = []
 
 -- the bare names a UsePath brings in, each mapped to `<originMid>__<name>`.
@@ -306,13 +326,14 @@ usePathEntries : List (String, List String) -> UsePath -> List (String, String)
 usePathEntries exportsPerUnit path =
   let mid = useModIdU path
   if mid == "core" then []
-  else match lookupExports mid exportsPerUnit
-    None => []
-    Some exports => match path
-      UseGroup _ members => concatMapPM (memberEntry mid exports) members
-      UseWild _ => concatMapPM (originEntry mid exports) exports
-      UseName ns => originEntry mid exports (lastOfPM ns)
-      UseAlias _ _ => []
+  else
+    match lookupExports mid exportsPerUnit
+      None => []
+      Some exports => match path
+        UseGroup _ members => concatMapPM (memberEntry mid exports) members
+        UseWild _ => concatMapPM (originEntry mid exports) exports
+        UseName ns => originEntry mid exports (lastOfPM ns)
+        UseAlias _ _ => []
 
 -- a UseGroup member → entry if it names an exported fn of the origin module.
 memberEntry : String -> List String -> UseMember -> List (String, String)
@@ -326,37 +347,45 @@ originEntry mid exports n
   | otherwise = []
 
 useModIdU : UsePath -> String
-useModIdU (UseName ns) = if lenGt1 ns then joinDotU (initListU ns) else firstOrU "" ns
+useModIdU (UseName ns) =
+  if lenGt1 ns then
+    joinDotU (initListU ns)
+  else
+    firstOrU "" ns
 useModIdU (UseGroup ns _) = joinDotU ns
 useModIdU (UseWild ns) = joinDotU ns
 useModIdU (UseAlias ns _) = joinDotU ns
 
 lenGt1 : List a -> Bool
-lenGt1 (_ :: _ :: _) = True
+lenGt1 (_::_::_) = True
 lenGt1 _ = False
 
 initListU : List a -> List a
 initListU [] = []
 initListU [_] = []
-initListU (x :: rest) = x :: initListU rest
+initListU (x::rest) = x :: initListU rest
 
 firstOrU : String -> List String -> String
 firstOrU d [] = d
-firstOrU _ (x :: _) = x
+firstOrU _ (x::_) = x
 
 lastOfPM : List String -> String
 lastOfPM [] = ""
 lastOfPM [x] = x
-lastOfPM (_ :: rest) = lastOfPM rest
+lastOfPM (_::rest) = lastOfPM rest
 
 joinDotU : List String -> String
 joinDotU [] = ""
 joinDotU [x] = x
-joinDotU (x :: rest) = x ++ "." ++ joinDotU rest
+joinDotU (x::rest) = x ++ "." ++ joinDotU rest
 
 lookupExports : String -> List (String, List String) -> Option (List String)
 lookupExports _ [] = None
-lookupExports k ((m, ns) :: rest) = if k == m then Some ns else lookupExports k rest
+lookupExports k ((m, ns)::rest) =
+  if k == m then
+    Some ns
+  else
+    lookupExports k rest
 
 -- ── exported (pub) function names of a unit ──────────────────────────────────
 -- A name is an exported function symbol if EITHER its DFunDef clause carries
@@ -375,14 +404,15 @@ pubFnNames decls =
 -- names whose DFunDef / DLetGroup binder is itself `pub = True`.
 pubDefNames : List Decl -> List String
 pubDefNames [] = []
-pubDefNames ((DFunDef True n _ _) :: rest) = n :: pubDefNames rest
-pubDefNames ((DLetGroup True binds) :: rest) = map letBindName binds ++ pubDefNames rest
-pubDefNames ((DAttrib _ d) :: rest) = pubDefNames [d] ++ pubDefNames rest
-pubDefNames (_ :: rest) = pubDefNames rest
+pubDefNames ((DFunDef True n _ _)::rest) = n :: pubDefNames rest
+pubDefNames ((DLetGroup True binds)::rest) = map letBindName binds
+  ++ pubDefNames rest
+pubDefNames ((DAttrib _ d)::rest) = pubDefNames [d] ++ pubDefNames rest
+pubDefNames (_::rest) = pubDefNames rest
 
 filterStr : (String -> Bool) -> List String -> List String
 filterStr _ [] = []
-filterStr p (x :: xs) = if p x then x :: filterStr p xs else filterStr p xs
+filterStr p (x::xs) = if p x then x :: filterStr p xs else filterStr p xs
 
 -- ── collision-name detection (RETAINED — kept available, no longer the trigger) ──
 -- all top-level FUNCTION names defined in a unit (DFunDef + DLetGroup binders),
@@ -416,23 +446,25 @@ msortPM xs =
 splitAltPM : List String -> (List String, List String)
 splitAltPM [] = ([], [])
 splitAltPM [x] = ([x], [])
-splitAltPM (x :: y :: rest) =
+splitAltPM (x::y::rest) =
   let (a, b) = splitAltPM rest
   (x :: a, y :: b)
 
 mergePM : List String -> List String -> List String
 mergePM [] ys = ys
 mergePM xs [] = xs
-mergePM (x :: xs) (y :: ys) = match stringCompare x y
+mergePM (x::xs) (y::ys) = match stringCompare x y
   Gt => y :: mergePM (x :: xs) ys
   _ => x :: mergePM xs (y :: ys)
 
 adjDupsPM : List String -> List String
 adjDupsPM [] = []
 adjDupsPM [_] = []
-adjDupsPM (x :: y :: rest) =
-  if x == y then x :: adjDupsPM (y :: rest)
-  else adjDupsPM (y :: rest)
+adjDupsPM (x::y::rest) =
+  if x == y then
+    x :: adjDupsPM (y :: rest)
+  else
+    adjDupsPM (y :: rest)
 
 -- names exported via a `pub` DTypeSig/DExtern in this unit (so their DFunDef
 -- clauses, which parse private, still count as exported function symbols).
@@ -460,28 +492,32 @@ sanitizeGo s i len acc =
     sanitizeGo s (i + 1) len (acc ++ c2)
 
 safeChar : String -> Bool
-safeChar c =
-  (c >= "a" && c <= "z") || (c >= "A" && c <= "Z")
-    || (c >= "0" && c <= "9") || c == "_"
+safeChar c = c >= "a" && c <= "z"
+  || c >= "A" && c <= "Z"
+  || c >= "0" && c <= "9"
+  || c == "_"
 
 -- ── decl rewrite (rename both the DEFINITION name and all references) ─────────
 renameDecl : List (String, String) -> Decl -> Decl
 renameDecl rm (DFunDef pub n ps e) =
-  DFunDef pub (renameDefName rm n) (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps) e)
+  DFunDef
+    pub
+    (renameDefName rm n)
+    (renamePatsPM rm ps)
+    (renameScoped rm (patVarsListPM ps) e)
 -- a top-level signature (`f : …` / `export f : …`) shares the function's name; it
 -- MUST be renamed in lockstep with its DFunDef so the typechecker keys f's scheme
 -- under the SAME mangled name the call sites + def now use (else dictPass /
 -- publicValNames see `clampU` while the def is `<mid>__clampU` → unbound).
 renameDecl rm (DTypeSig pub n ty) = DTypeSig pub (renameDefName rm n) ty
-renameDecl rm (d@DInterface { methods, ... }) =
-  DInterface { d | methods = map (renameIfaceMethod rm) methods }
-renameDecl rm (d@DImpl { methods, ... }) =
-  DImpl { d | methods = map (renameImplMethod rm) methods }
+renameDecl rm (d@DInterface { methods, ... }) = DInterface { d | methods = map (renameIfaceMethod rm) methods }
+renameDecl rm (d@DImpl { methods, ... }) = DImpl { d | methods = map (renameImplMethod rm) methods }
 renameDecl rm (DProp pub name params body) =
   DProp pub name params (renameScoped rm (propParamNamesPM params) body)
 renameDecl rm (DTest pub name body) = DTest pub name (renameScoped rm [] body)
 renameDecl rm (DBench pub name body) = DBench pub name (renameScoped rm [] body)
-renameDecl rm (DLetGroup pub binds) = DLetGroup pub (map (renameLetBindDef rm) binds)
+renameDecl rm (DLetGroup pub binds) =
+  DLetGroup pub (map (renameLetBindDef rm) binds)
 -- DATA / RECORD / NEWTYPE definition sites: rename the constructor names (which the
 -- emitter's ctor tables key on) in lockstep with the use-site rewrites below.  The
 -- DData TYPE name is left as-is (it is only the VALUE in buildCtorToType — ctorsOf-
@@ -515,7 +551,10 @@ renameDefName rm n = match lookupPM n rm
 renameIfaceMethod : List (String, String) -> IfaceMethod -> IfaceMethod
 renameIfaceMethod _ (IfaceMethod n ty None) = IfaceMethod n ty None
 renameIfaceMethod rm (IfaceMethod n ty (Some (MethodDefault ps e))) =
-  IfaceMethod n ty (Some (MethodDefault (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps) e)))
+  IfaceMethod
+    n
+    ty
+    (Some (MethodDefault (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps) e)))
 
 renameImplMethod : List (String, String) -> ImplMethod -> ImplMethod
 renameImplMethod rm (ImplMethod n ps e) =
@@ -534,8 +573,8 @@ propParamNamePM (PropParam n _) = n
 renameScoped : List (String, String) -> List String -> Expr -> Expr
 renameScoped rm bound (EVar n)
   | not (containsPM n bound) = match lookupPM n rm
-      Some n2 => EVar n2
-      None => EVar n
+    Some n2 => EVar n2
+    None => EVar n
   | otherwise = EVar n
 -- binders
 renameScoped rm bound (ELam ps body) =
@@ -543,7 +582,12 @@ renameScoped rm bound (ELam ps body) =
 renameScoped rm bound (ELet m r p e1 e2) =
   let pv = patVarsPM p
   let b1 = if r then pv ++ bound else bound
-  ELet m r (renamePat rm p) (renameScoped rm b1 e1) (renameScoped rm (pv ++ bound) e2)
+  ELet
+    m
+    r
+    (renamePat rm p)
+    (renameScoped rm b1 e1)
+    (renameScoped rm (pv ++ bound) e2)
 renameScoped rm bound (ELetGroup binds e2) =
   let bnd = letBindNamesPM binds ++ bound
   ELetGroup (map (renameLetBind rm bnd) binds) (renameScoped rm bnd e2)
@@ -559,39 +603,59 @@ renameScoped rm bound (ELoc l e) = ELoc l (renameScoped rm bound e)
 renameScoped rm bound (EApp f x) =
   EApp (renameScoped rm bound f) (renameScoped rm bound x)
 renameScoped rm bound (EIf c t e) =
-  EIf (renameScoped rm bound c) (renameScoped rm bound t) (renameScoped rm bound e)
+  EIf
+    (renameScoped rm bound c)
+    (renameScoped rm bound t)
+    (renameScoped rm bound e)
 renameScoped rm bound (EBinOp op l r dr) =
   EBinOp op (renameScoped rm bound l) (renameScoped rm bound r) dr
 renameScoped rm bound (EUnOp op x) = EUnOp op (renameScoped rm bound x)
 renameScoped rm bound (EInfix op l r) =
   EInfix op (renameScoped rm bound l) (renameScoped rm bound r)
-renameScoped rm bound (EFieldAccess e0 n) = EFieldAccess (renameScoped rm bound e0) n
+renameScoped rm bound (EFieldAccess e0 n) =
+  EFieldAccess (renameScoped rm bound e0) n
 renameScoped rm bound (ETuple es) = ETuple (map (renameScoped rm bound) es)
 renameScoped rm bound (EListLit es) = EListLit (map (renameScoped rm bound) es)
-renameScoped rm bound (EArrayLit es) = EArrayLit (map (renameScoped rm bound) es)
+renameScoped rm bound (EArrayLit es) =
+  EArrayLit (map (renameScoped rm bound) es)
 renameScoped rm bound (ERangeList lo hi i) =
   ERangeList (renameScoped rm bound lo) (renameScoped rm bound hi) i
 renameScoped rm bound (ERangeArray lo hi i) =
   ERangeArray (renameScoped rm bound lo) (renameScoped rm bound hi) i
 renameScoped rm bound (ESlice e0 lo hi i) =
-  ESlice (renameScoped rm bound e0) (renameScoped rm bound lo) (renameScoped rm bound hi) i
+  ESlice
+    (renameScoped rm bound e0)
+    (renameScoped rm bound lo)
+    (renameScoped rm bound hi)
+    i
 renameScoped rm bound (EIndex e0 i) =
   EIndex (renameScoped rm bound e0) (renameScoped rm bound i)
 renameScoped rm bound (EAnnot e0 t) = EAnnot (renameScoped rm bound e0) t
-renameScoped rm bound (EHeadAnnot e0 t) = EHeadAnnot (renameScoped rm bound e0) t
+renameScoped rm bound (EHeadAnnot e0 t) =
+  EHeadAnnot (renameScoped rm bound e0) t
 renameScoped rm bound (EQuestion e0) = EQuestion (renameScoped rm bound e0)
-renameScoped rm bound (ERecordCreate n fs) = ERecordCreate (renameDefName rm n) (map (renameField rm bound) fs)
+renameScoped rm bound (ERecordCreate n fs) =
+  ERecordCreate (renameDefName rm n) (map (renameField rm bound) fs)
 renameScoped rm bound (ERecordUpdate e0 fs) =
   ERecordUpdate (renameScoped rm bound e0) (map (renameField rm bound) fs)
 renameScoped rm bound (EVariantUpdate c e0 fs) =
-  EVariantUpdate (renameDefName rm c) (renameScoped rm bound e0) (map (renameField rm bound) fs)
-renameScoped rm bound (EStringInterp parts) = EStringInterp (map (renameInterp rm bound) parts)
-renameScoped rm bound (EGuards arms) = EGuards (map (renameGuardArm rm bound) arms)
-renameScoped rm bound (EFunction arms) = EFunction (map (renameArm rm bound) arms)
-renameScoped rm bound (ESection (SecRight op e0)) = ESection (SecRight op (renameScoped rm bound e0))
-renameScoped rm bound (ESection (SecLeft e0 op)) = ESection (SecLeft (renameScoped rm bound e0) op)
+  EVariantUpdate
+    (renameDefName rm c)
+    (renameScoped rm bound e0)
+    (map (renameField rm bound) fs)
+renameScoped rm bound (EStringInterp parts) =
+  EStringInterp (map (renameInterp rm bound) parts)
+renameScoped rm bound (EGuards arms) =
+  EGuards (map (renameGuardArm rm bound) arms)
+renameScoped rm bound (EFunction arms) =
+  EFunction (map (renameArm rm bound) arms)
+renameScoped rm bound (ESection (SecRight op e0)) =
+  ESection (SecRight op (renameScoped rm bound e0))
+renameScoped rm bound (ESection (SecLeft e0 op)) =
+  ESection (SecLeft (renameScoped rm bound e0) op)
 renameScoped rm bound (EMapLit n kvs) = EMapLit n (map (renameKv rm bound) kvs)
-renameScoped rm bound (ESetLit n es) = ESetLit n (map (renameScoped rm bound) es)
+renameScoped rm bound (ESetLit n es) =
+  ESetLit n (map (renameScoped rm bound) es)
 renameScoped rm bound (EAsPat x sub) = EAsPat x (renameScoped rm bound sub)
 -- leaves (ELit / EMethodRef / EDictApp / EVarAt / EMethodAt / EDictAt / SecBare)
 renameScoped _ _ e = e
@@ -612,7 +676,9 @@ renameLetBind rm bound (LetBind n clauses) =
 
 renameFunClause : List (String, String) -> List String -> FunClause -> FunClause
 renameFunClause rm bound (FunClause ps body) =
-  FunClause (renamePatsPM rm ps) (renameScoped rm (patVarsListPM ps ++ bound) body)
+  FunClause
+    (renamePatsPM rm ps)
+    (renameScoped rm (patVarsListPM ps ++ bound) body)
 
 renameArm : List (String, String) -> List String -> Arm -> Arm
 renameArm rm bound (Arm p gs body) =
@@ -627,43 +693,37 @@ renameGuardArm rm bound (GuardArm gs body) =
 
 renameGuards : List (String, String) -> List String -> List Guard -> (List Guard, List String)
 renameGuards _ bound [] = ([], bound)
-renameGuards rm bound (GBool e :: rest) =
+renameGuards rm bound ((GBool e)::rest) =
   let e2 = renameScoped rm bound e
   let (rest2, bnd) = renameGuards rm bound rest
   (GBool e2 :: rest2, bnd)
-renameGuards rm bound (GBind p e :: rest) =
+renameGuards rm bound ((GBind p e)::rest) =
   let e2 = renameScoped rm bound e
   let (rest2, bnd) = renameGuards rm (patVarsPM p ++ bound) rest
   (GBind (renamePat rm p) e2 :: rest2, bnd)
 
 renameStmts : List (String, String) -> List String -> List DoStmt -> List DoStmt
 renameStmts _ _ [] = []
-renameStmts rm bound (DoExpr e :: rest) =
-  DoExpr (renameScoped rm bound e) :: renameStmts rm bound rest
-renameStmts rm bound (DoBind p e :: rest) =
-  DoBind (renamePat rm p) (renameScoped rm bound e) :: renameStmts rm (patVarsPM p ++ bound) rest
-renameStmts rm bound (DoLet m r p e :: rest) =
+renameStmts rm bound ((DoExpr e)::rest) = DoExpr (renameScoped rm bound e) :: renameStmts rm bound rest
+renameStmts rm bound ((DoBind p e)::rest) = DoBind (renamePat rm p) (renameScoped rm bound e) :: renameStmts rm (patVarsPM p ++ bound) rest
+renameStmts rm bound ((DoLet m r p e)::rest) =
   let b1 = if r then patVarsPM p ++ bound else bound
   DoLet m r (renamePat rm p) (renameScoped rm b1 e) :: renameStmts rm (patVarsPM p ++ bound) rest
-renameStmts rm bound (DoAssign x e :: rest) =
-  DoAssign x (renameScoped rm bound e) :: renameStmts rm bound rest
-renameStmts rm bound (DoFieldAssign x fs e :: rest) =
-  DoFieldAssign x fs (renameScoped rm bound e) :: renameStmts rm bound rest
-renameStmts rm bound (DoLetElse p e alt :: rest) =
-  DoLetElse (renamePat rm p) (renameScoped rm bound e) (renameScoped rm bound alt)
-    :: renameStmts rm (patVarsPM p ++ bound) rest
+renameStmts rm bound ((DoAssign x e)::rest) = DoAssign x (renameScoped rm bound e) :: renameStmts rm bound rest
+renameStmts rm bound ((DoFieldAssign x fs e)::rest) = DoFieldAssign x fs (renameScoped rm bound e) :: renameStmts rm bound rest
+renameStmts rm bound ((DoLetElse p e alt)::rest) = DoLetElse (renamePat rm p) (renameScoped rm bound e) (renameScoped rm bound alt) :: renameStmts rm (patVarsPM p ++ bound) rest
 
 renameQuals : List (String, String) -> List String -> List LcQual -> (List LcQual, List String)
 renameQuals _ bound [] = ([], bound)
-renameQuals rm bound (LCGen p e :: rest) =
+renameQuals rm bound ((LCGen p e)::rest) =
   let e2 = renameScoped rm bound e
   let (rest2, bnd) = renameQuals rm (patVarsPM p ++ bound) rest
   (LCGen (renamePat rm p) e2 :: rest2, bnd)
-renameQuals rm bound (LCGuard e :: rest) =
+renameQuals rm bound ((LCGuard e)::rest) =
   let e2 = renameScoped rm bound e
   let (rest2, bnd) = renameQuals rm bound rest
   (LCGuard e2 :: rest2, bnd)
-renameQuals rm bound (LCLet m p e :: rest) =
+renameQuals rm bound ((LCLet m p e)::rest) =
   let e2 = renameScoped rm bound e
   let (rest2, bnd) = renameQuals rm (patVarsPM p ++ bound) rest
   (LCLet m (renamePat rm p) e2 :: rest2, bnd)
@@ -696,12 +756,14 @@ renamePat rm (PCons h t) = PCons (renamePat rm h) (renamePat rm t)
 renamePat rm (PTuple ps) = PTuple (map (renamePat rm) ps)
 renamePat rm (PList ps) = PList (map (renamePat rm) ps)
 renamePat rm (PAs x p) = PAs x (renamePat rm p)
-renamePat rm (PRec n fields open) = PRec (renameDefName rm n) (map (renameRecPatField rm) fields) open
+renamePat rm (PRec n fields open) =
+  PRec (renameDefName rm n) (map (renameRecPatField rm) fields) open
 renamePat _ p = p
 
 renameRecPatField : List (String, String) -> RecPatField -> RecPatField
 renameRecPatField _ (RecPatField label None) = RecPatField label None
-renameRecPatField rm (RecPatField label (Some p)) = RecPatField label (Some (renamePat rm p))
+renameRecPatField rm (RecPatField label (Some p)) =
+  RecPatField label (Some (renamePat rm p))
 
 renamePatsPM : List (String, String) -> List Pat -> List Pat
 renamePatsPM rm ps = map (renamePat rm) ps
@@ -713,31 +775,33 @@ recPatFieldVarsPM (RecPatField _ (Some p)) = patVarsPM p
 -- ── small list helpers (local; keep this module self-contained) ───────────────
 concatMapPM : (a -> List b) -> List a -> List b
 concatMapPM _ [] = []
-concatMapPM f (x :: xs) = f x ++ concatMapPM f xs
+concatMapPM f (x::xs) = f x ++ concatMapPM f xs
 
 containsPM : String -> List String -> Bool
 containsPM _ [] = False
-containsPM x (y :: ys) = x == y || containsPM x ys
+containsPM x (y::ys) = x == y || containsPM x ys
 
 lookupPM : String -> List (String, String) -> Option String
 lookupPM _ [] = None
-lookupPM x ((k, v) :: rest) = if x == k then Some v else lookupPM x rest
+lookupPM x ((k, v)::rest) = if x == k then Some v else lookupPM x rest
 
 dedupPM : List String -> List String
 dedupPM xs = dedupGoPM xs []
 
 dedupGoPM : List String -> List String -> List String
 dedupGoPM [] seen = reverseLPM seen
-dedupGoPM (x :: xs) seen =
-  if containsPM x seen then dedupGoPM xs seen
-  else dedupGoPM xs (x :: seen)
+dedupGoPM (x::xs) seen =
+  if containsPM x seen then
+    dedupGoPM xs seen
+  else
+    dedupGoPM xs (x :: seen)
 
 reverseLPM : List a -> List a
 reverseLPM xs = reverseGoPM xs []
 
 reverseGoPM : List a -> List a -> List a
 reverseGoPM [] acc = acc
-reverseGoPM (x :: xs) acc = reverseGoPM xs (x :: acc)
+reverseGoPM (x::xs) acc = reverseGoPM xs (x :: acc)
 
 isEmptyPM : List a -> Bool
 isEmptyPM [] = True

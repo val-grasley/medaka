@@ -19,7 +19,7 @@ import frontend.exhaust.{exhaustToLines}
 import types.typecheck.{checkToLinesWithRuntime, setCoherenceUserDecls}
 
 main = match args ()
-  (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets
+  runtimePath::corePath::targets => withFiles runtimePath corePath targets
   _ => ePutStrLn "usage: medaka run selfhost/entries/check_batch.mdk <runtime.mdk> <core.mdk> <file.mdk>..."
 
 withFiles : String -> String -> List String -> <IO, Mut> Unit
@@ -33,7 +33,7 @@ withFiles runtimePath corePath targets = match readFile runtimePath
 
 readAllSources : List String -> <IO> Result String (List (String, String))
 readAllSources [] = Ok []
-readAllSources (p :: rest) = match readFile p
+readAllSources (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllSources rest
     Err msg => Err msg
@@ -41,12 +41,15 @@ readAllSources (p :: rest) = match readFile p
 
 renderAll : List Decl -> List Decl -> List (String, String) -> <Mut> String
 renderAll runtimeP coreP [] = ""
-renderAll runtimeP coreP (pr :: rest) =
-  renderOne runtimeP coreP pr ++ renderAll runtimeP coreP rest
+renderAll runtimeP coreP (pr::rest) = renderOne runtimeP coreP pr
+  ++ renderAll runtimeP coreP rest
 
 renderOne : List Decl -> List Decl -> (String, String) -> <Mut> String
-renderOne runtimeP coreP (path, tsrc) =
-  "===SELFHOST-FIX=== " ++ path ++ "\n" ++ runCheckCached runtimeP coreP tsrc ++ "\n"
+renderOne runtimeP coreP (path, tsrc) = "===SELFHOST-FIX=== "
+  ++ path
+  ++ "\n"
+  ++ runCheckCached runtimeP coreP tsrc
+  ++ "\n"
 
 runCheckCached : List Decl -> List Decl -> String -> <Mut> String
 runCheckCached runtimeP coreP tsrc =
@@ -56,7 +59,8 @@ runCheckCached runtimeP coreP tsrc =
   reportFor resDiags runtimeP coreP raw desugared
 
 reportFor : String -> List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String
-reportFor "" runtimeP coreP raw desugared = cleanReport runtimeP coreP raw desugared
+reportFor "" runtimeP coreP raw desugared =
+  cleanReport runtimeP coreP raw desugared
 reportFor resDiags _ _ _ _ = resDiags
 
 cleanReport : List Decl -> List Decl -> List Decl -> List Decl -> <Mut> String

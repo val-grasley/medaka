@@ -23,6 +23,5 @@ main = match args ()
 
 withTarget : String -> <IO, Mut> Unit
 withTarget targetPath = match readFile targetPath
-  Ok src =>
-    putStrLn (cprogramToSexp (lowerProgram (annotateProgram (desugar (parse src)))))
+  Ok src => putStrLn (cprogramToSexp (lowerProgram (annotateProgram (desugar (parse src)))))
   Err msg => ePutStrLn msg

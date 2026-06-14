@@ -14,7 +14,7 @@ import driver.loader.{loadProgram}
 import types.typecheck.{checkModulesEntryLines}
 
 main = match args ()
-  (runtimeP :: coreP :: entry :: roots) => run runtimeP coreP entry (rootsOrDefault entry roots)
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
   _ => ePutStrLn "usage: medaka run selfhost/entries/check_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
 
 rootsOrDefault : String -> List String -> List String
@@ -27,8 +27,10 @@ dirOf path = dirGo path (stringLength path)
 dirGo : String -> Int -> String
 dirGo path 0 = "."
 dirGo path i =
-  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
-  else dirGo path (i - 1)
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice 0 (i - 1) path
+  else
+    dirGo path (i - 1)
 
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)

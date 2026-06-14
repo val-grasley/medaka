@@ -37,8 +37,7 @@ import ir.dce.{dceFilter}
 
 main : <IO, Mut> Unit
 main = match args ()
-  (runtimeP :: coreP :: entry :: roots) =>
-    run runtimeP coreP entry (rootsOrDefault entry roots)
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
   _ => ePutStrLn "usage: medaka run selfhost/entries/llvm_emit_modules_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
 
 rootsOrDefault : String -> List String -> List String
@@ -51,8 +50,10 @@ dirOf path = dirGo path (stringLength path)
 dirGo : String -> Int -> String
 dirGo _ 0 = "."
 dirGo path i =
-  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
-  else dirGo path (i - 1)
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice 0 (i - 1) path
+  else
+    dirGo path (i - 1)
 
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
@@ -69,29 +70,11 @@ run runtimeP coreP entry roots = match readFile runtimeP
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 runEmit runtimeDecls coreDecls modules =
   let _ = enableArgStamp ()
-  -- Module-qualify module-PRIVATE top-level functions whose bare name collides
-  -- across units, BEFORE elaborateModules flattens the boundaries away (same
-  -- flat-emit @mdk_<name> collision risk the bootstrap driver fixes).  The gate
-  -- diffs OUTPUT, not symbols, so renaming uncollided privates is a no-op and the
-  -- gate stays byte-identical; it only matters when two units share a private name.
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
   let allDecls0 = coreD ++ concatMapList snd modules2
-  -- DEAD-CODE ELIMINATION (Stage 3 #2a): drop plain top-level functions unreached
-  -- from main + impl/interface bodies, so an unreached-but-gapped prelude binding
-  -- (core.mdk's maximum/minimum/clamp → the open max/min gap) no longer aborts the
-  -- whole build.  CONSERVATIVE + SOUND: all impls/interfaces (dynamic-dispatch
-  -- targets) are retained whole; only unreachable DFunDefs are removed.  Order-
-  -- preserving ⇒ IR stays byte-stable.  See selfhost/dce.mdk.
   let allDecls = dceFilter allDecls0
-  -- Dict-name wiring mirrored from llvm_emit_typed_main.mdk: coreD is the
-  -- elaborated prelude, allDecls the whole program.  THIS `let _` is itself inert
-  -- (the result is discarded) — the real arg-/return-position dict-passing happens
-  -- INSIDE elaborateModules above (E4 landed; enableArgStamp drives it).  Kept for
-  -- parity with the single-file typed driver.
-  let _ = preludeReturnPosDictNames coreD allDecls
-          ++ preludeArgPosDictNames coreD allDecls
-          ++ constrainedSigNames allDecls
+  let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
   let _ = installReturnsSelf (returnsSelfTable allDecls)
   let _ = installSelfFnParams (selfFnParamTable allDecls)
   let _ = installMethodIface (methodIfaceTable allDecls)
@@ -99,3 +82,21 @@ runEmit runtimeDecls coreDecls modules =
   let _ = installCtorFieldTypes (ctorFieldTypeNames allDecls)
   let _ = installDeclSigTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
   putStr (emitProgram (lowerProgramEmit allDecls))
+-- Module-qualify module-PRIVATE top-level functions whose bare name collides
+-- across units, BEFORE elaborateModules flattens the boundaries away (same
+-- flat-emit @mdk_<name> collision risk the bootstrap driver fixes).  The gate
+-- diffs OUTPUT, not symbols, so renaming uncollided privates is a no-op and the
+-- gate stays byte-identical; it only matters when two units share a private name.
+
+-- DEAD-CODE ELIMINATION (Stage 3 #2a): drop plain top-level functions unreached
+-- from main + impl/interface bodies, so an unreached-but-gapped prelude binding
+-- (core.mdk's maximum/minimum/clamp → the open max/min gap) no longer aborts the
+-- whole build.  CONSERVATIVE + SOUND: all impls/interfaces (dynamic-dispatch
+-- targets) are retained whole; only unreachable DFunDefs are removed.  Order-
+-- preserving ⇒ IR stays byte-stable.  See selfhost/dce.mdk.
+
+-- Dict-name wiring mirrored from llvm_emit_typed_main.mdk: coreD is the
+-- elaborated prelude, allDecls the whole program.  THIS `let _` is itself inert
+-- (the result is discarded) — the real arg-/return-position dict-passing happens
+-- INSIDE elaborateModules above (E4 landed; enableArgStamp drives it).  Kept for
+-- parity with the single-file typed driver.

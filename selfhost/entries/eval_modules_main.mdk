@@ -17,7 +17,7 @@ import driver.loader.{loadProgram}
 import eval.eval.{evalModulesOutput}
 
 main = match args ()
-  (coreP :: entry :: roots) => run coreP entry (rootsOrDefault entry roots)
+  coreP::entry::roots => run coreP entry (rootsOrDefault entry roots)
   _ => ePutStrLn "usage: medaka run selfhost/entries/eval_modules_main.mdk <core.mdk> <entry.mdk> [root ...]"
 
 rootsOrDefault : String -> List String -> List String
@@ -30,8 +30,10 @@ dirOf path = dirGo path (stringLength path)
 dirGo : String -> Int -> String
 dirGo path 0 = "."
 dirGo path i =
-  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
-  else dirGo path (i - 1)
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice 0 (i - 1) path
+  else
+    dirGo path (i - 1)
 
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)

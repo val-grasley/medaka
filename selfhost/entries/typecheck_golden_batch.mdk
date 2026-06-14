@@ -10,7 +10,7 @@ import frontend.desugar.{desugar}
 import types.typecheck.{checkToLinesWithRuntime}
 
 main = match args ()
-  (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets
+  runtimePath::corePath::targets => withFiles runtimePath corePath targets
   _ => ePutStrLn "usage: medaka run selfhost/entries/typecheck_golden_batch.mdk <runtime.mdk> <core.mdk> <file.mdk>..."
 
 withFiles runtimePath corePath targets = match readFile runtimePath
@@ -23,7 +23,7 @@ withFiles runtimePath corePath targets = match readFile runtimePath
 
 readAllSources : List String -> <IO> Result String (List (String, String))
 readAllSources [] = Ok []
-readAllSources (p :: rest) = match readFile p
+readAllSources (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllSources rest
     Err msg => Err msg
@@ -31,7 +31,9 @@ readAllSources (p :: rest) = match readFile p
 
 renderAll : List Decl -> List Decl -> List (String, String) -> <Mut> String
 renderAll runtimeDecls coreDecls [] = ""
-renderAll runtimeDecls coreDecls ((path, src) :: rest) =
-  "===SELFHOST-FIX=== " ++ path ++ "\n"
-    ++ checkToLinesWithRuntime runtimeDecls (coreDecls ++ desugar (parse src))
-    ++ "\n" ++ renderAll runtimeDecls coreDecls rest
+renderAll runtimeDecls coreDecls ((path, src)::rest) = "===SELFHOST-FIX=== "
+  ++ path
+  ++ "\n"
+  ++ checkToLinesWithRuntime runtimeDecls (coreDecls ++ desugar (parse src))
+  ++ "\n"
+  ++ renderAll runtimeDecls coreDecls rest

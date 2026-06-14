@@ -84,38 +84,37 @@ isDeclStartToken _ = False
 
 skipNoiseToks : List Token -> List Token
 skipNoiseToks [] = []
-skipNoiseToks (TNewline :: rest) = skipNoiseToks rest
-skipNoiseToks (TIndent :: rest) = skipNoiseToks rest
-skipNoiseToks (TDedent :: rest) = skipNoiseToks rest
+skipNoiseToks (TNewline::rest) = skipNoiseToks rest
+skipNoiseToks (TIndent::rest) = skipNoiseToks rest
+skipNoiseToks (TDedent::rest) = skipNoiseToks rest
 skipNoiseToks ts = ts
 
 -- Heuristic: does the token stream look like a declaration?
 looksLikeDecl : List Token -> Bool
-looksLikeDecl toks =
-  match skipNoiseToks toks
-    [] => False
-    (first :: rest) =>
-      if isDeclStartToken first then True
-      else match first
-        TIdent _ => afterIdentToks (skipNoiseToks rest)
-        TUpper _ => afterIdentToks (skipNoiseToks rest)
-        _ => False
+looksLikeDecl toks = match skipNoiseToks toks
+  [] => False
+  first::rest => if isDeclStartToken first then True
+  else
+    match first
+      TIdent _ => afterIdentToks (skipNoiseToks rest)
+      TUpper _ => afterIdentToks (skipNoiseToks rest)
+      _ => False
 
 -- After an identifier on the LHS: skip more LHS tokens, look for `=` not `==`.
 afterIdentToks : List Token -> Bool
 afterIdentToks [] = False
-afterIdentToks (TEqual :: _) = True
-afterIdentToks (TEqEq :: _) = False
-afterIdentToks (TIdent _ :: rest) = afterIdentToks (skipNoiseToks rest)
-afterIdentToks (TUpper _ :: rest) = afterIdentToks (skipNoiseToks rest)
-afterIdentToks (TLParen :: rest) = afterParenToks (skipNoiseToks rest)
-afterIdentToks (TUnderscore :: rest) = afterIdentToks (skipNoiseToks rest)
+afterIdentToks (TEqual::_) = True
+afterIdentToks (TEqEq::_) = False
+afterIdentToks ((TIdent _)::rest) = afterIdentToks (skipNoiseToks rest)
+afterIdentToks ((TUpper _)::rest) = afterIdentToks (skipNoiseToks rest)
+afterIdentToks (TLParen::rest) = afterParenToks (skipNoiseToks rest)
+afterIdentToks (TUnderscore::rest) = afterIdentToks (skipNoiseToks rest)
 afterIdentToks _ = False
 
 afterParenToks : List Token -> Bool
 afterParenToks [] = False
-afterParenToks (TRParen :: rest) = afterIdentToks (skipNoiseToks rest)
-afterParenToks (_ :: rest) = afterParenToks rest
+afterParenToks (TRParen::rest) = afterIdentToks (skipNoiseToks rest)
+afterParenToks (_::rest) = afterParenToks rest
 
 export
 isDecl : String -> Bool
@@ -125,8 +124,10 @@ isDecl src = looksLikeDecl (tokenize src)
 isIdentChar : String -> Bool
 isIdentChar s =
   let c = if stringLength s > 0 then stringSlice 0 1 s else ""
-  (c >= "a" && c <= "z") || (c >= "A" && c <= "Z")
-  || (c >= "0" && c <= "9") || c == "_"
+  c >= "a" && c <= "z"
+    || c >= "A" && c <= "Z"
+    || c >= "0" && c <= "9"
+    || c == "_"
 
 endsWithKeyword : String -> String -> Bool
 endsWithKeyword line kw =
@@ -136,27 +137,23 @@ endsWithKeyword line kw =
   if ls < lk then False
   else
     let suffix = stringSlice (ls - lk) ls s
-    if suffix == kw then
-      if ls == lk then True
-      else not (isIdentChar (stringSlice (ls - lk - 1) (ls - lk) s))
-    else False
+    if suffix == kw then if ls == lk then True else not (isIdentChar (stringSlice (ls - lk - 1) (ls - lk) s)) else False
 
 filterEmpty : List String -> List String
 filterEmpty [] = []
-filterEmpty (x :: rest)
+filterEmpty (x::rest)
   | stringTrim x == "" = filterEmpty rest
   | otherwise = x :: filterEmpty rest
 
 lastLine : List String -> Option String
 lastLine [] = None
 lastLine [x] = Some x
-lastLine (_ :: rest) = lastLine rest
+lastLine (_::rest) = lastLine rest
 
 endsWithBlankLine : String -> Bool
 endsWithBlankLine src =
   let len = stringLength src
-  if len >= 2 then stringSlice (len - 2) len src == "\n\n"
-  else False
+  if len >= 2 then stringSlice (len - 2) len src == "\n\n" else False
 
 export
 needsMore : String -> Bool
@@ -169,24 +166,24 @@ needsMore source =
       None => False
       Some last =>
         let first = if stringLength last > 0 then stringSlice 0 1 last else ""
-        (first == " " || first == "\t") || endsWithKeyword last "where"
+        first == " " || first == "\t" || endsWithKeyword last "where"
 
 -- ── Pipeline helpers ──────────────────────────────────────────────────────
 declValueNames : List Decl -> List String
 declValueNames [] = []
-declValueNames (DFunDef _ n _ _ :: rest) = n :: declValueNames rest
-declValueNames (_ :: rest) = declValueNames rest
+declValueNames ((DFunDef _ n _ _)::rest) = n :: declValueNames rest
+declValueNames (_::rest) = declValueNames rest
 
 declTypeAnnotations : List Decl -> List (String, String)
 declTypeAnnotations [] = []
-declTypeAnnotations (DData _ n _ _ _ :: rest) = ("type", n) :: declTypeAnnotations rest
-declTypeAnnotations (DRecord _ n _ _ _ :: rest) = ("record", n) :: declTypeAnnotations rest
-declTypeAnnotations (DInterface { name = n, ... } :: rest) = ("interface", n) :: declTypeAnnotations rest
-declTypeAnnotations (_ :: rest) = declTypeAnnotations rest
+declTypeAnnotations ((DData _ n _ _ _)::rest) = ("type", n) :: declTypeAnnotations rest
+declTypeAnnotations ((DRecord _ n _ _ _)::rest) = ("record", n) :: declTypeAnnotations rest
+declTypeAnnotations (DInterface { name = n, ... }::rest) = ("interface", n) :: declTypeAnnotations rest
+declTypeAnnotations (_::rest) = declTypeAnnotations rest
 
 containsName : String -> List String -> Bool
 containsName _ [] = False
-containsName x (y :: rest) = x == y || containsName x rest
+containsName x (y::rest) = x == y || containsName x rest
 
 startsWithAt : String -> Bool
 startsWithAt s = stringLength s > 0 && stringSlice 0 1 s == "@"
@@ -194,14 +191,14 @@ startsWithAt s = stringLength s > 0 && stringSlice 0 1 s == "@"
 -- Filter scheme list to only new user-visible names.
 userSchemes : List (String, Scheme) -> List String -> List (String, Scheme)
 userSchemes [] _ = []
-userSchemes ((n, s) :: rest) known
+userSchemes ((n, s)::rest) known
   | containsName n known = userSchemes rest known
   | startsWithAt n = userSchemes rest known
   | otherwise = (n, s) :: userSchemes rest known
 
 lookupScheme : String -> List (String, Scheme) -> Option Scheme
 lookupScheme _ [] = None
-lookupScheme name ((n, s) :: rest)
+lookupScheme name ((n, s)::rest)
   | name == n = Some s
   | otherwise = lookupScheme name rest
 
@@ -211,22 +208,21 @@ runPipeline combined =
   let preludeDecls = preludeDeclsRef.value
   let resErrs = resolveProgram runtimeDecls preludeDecls combined
   match resErrs
-    (e :: _) =>
-      (map ppResError resErrs, [], [])
+    e::_ => (map ppResError resErrs, [], [])
     [] =>
       let (tcErrs, _) = checkProgramDiags runtimeDecls (preludeDecls ++ combined)
       match tcErrs
-        (e :: _) => (map fst tcErrs, [], [])
+        e::_ => (map fst tcErrs, [], [])
         [] =>
           let allSchemes = checkProgramSchemes (preludeDecls ++ combined)
-          -- DRIVER-COLLAPSE Phase 3/4: eval via the 1-module wrapper (evalOneRootEnv
-          -- = evalModulesRootEnv over [("__repl__", combined)]) instead of the flat
-          -- evalProgram (preludeDecls ++ combined).  The prelude is installed
-          -- GLOBALLY and the session decls as the root module's LOCALS; the returned
-          -- frame is local ∪ imports ∪ globals — the same by-name surface evalProgram
-          -- exposed (so the `__repl__` lookup + `:browse`/`:env` are unchanged).
           let bindings = evalOneRootEnv preludeDecls ("__repl__", combined)
           ([], allSchemes, bindings)
+-- DRIVER-COLLAPSE Phase 3/4: eval via the 1-module wrapper (evalOneRootEnv
+-- = evalModulesRootEnv over [("__repl__", combined)]) instead of the flat
+-- evalProgram (preludeDecls ++ combined).  The prelude is installed
+-- GLOBALLY and the session decls as the root module's LOCALS; the returned
+-- frame is local ∪ imports ∪ globals — the same by-name surface evalProgram
+-- exposed (so the `__repl__` lookup + `:browse`/`:env` are unchanged).
 
 combinedDecls : List Decl -> List Decl
 combinedDecls newDecls = accumulatedRef.value ++ newDecls
@@ -237,19 +233,19 @@ printErr msg = ePutStrLn ("<repl>: " ++ msg)
 
 mapIO : (a -> <IO, Mut> Unit) -> List a -> <IO, Mut> Unit
 mapIO _ [] = ()
-mapIO f (x :: rest) =
+mapIO f (x::rest) =
   let _ = f x
   mapIO f rest
 
 mapIO_ : (a -> <IO> Unit) -> List a -> <IO> Unit
 mapIO_ _ [] = ()
-mapIO_ f (x :: rest) =
+mapIO_ f (x::rest) =
   let _ = f x
   mapIO_ f rest
 
 mapMut : (a -> <Mut> b) -> List a -> <Mut> List b
 mapMut _ [] = []
-mapMut f (x :: rest) = f x :: mapMut f rest
+mapMut f (x::rest) = f x :: mapMut f rest
 
 -- ── Process a declaration input ───────────────────────────────────────────
 processDeclInput : String -> <IO, Mut> Unit
@@ -258,8 +254,7 @@ processDeclInput src =
   let combined = combinedDecls newDecls
   let (errs, allSchemes, _bindings) = runPipeline combined
   match errs
-    (e :: _) =>
-      mapIO_ printErr errs
+    e::_ => mapIO_ printErr errs
     [] =>
       let known = knownNamesRef.value
       let newSchemes = userSchemes allSchemes known
@@ -289,13 +284,12 @@ processExprInput src =
   let combined = combinedDecls newDecls
   let (errs, allSchemes, bindings) = runPipeline combined
   match errs
-    (e :: _) =>
-      mapIO_ printErr errs
+    e::_ => mapIO_ printErr errs
     [] =>
       let valOpt = lookupBinding "__repl__" bindings
       let schemeOpt = lookupScheme "__repl__" allSchemes
       match (valOpt, schemeOpt)
-        (Some v, Some scheme) =>
+        ((Some v), (Some scheme)) =>
           let vStr = ppValue (force v)
           let tStr = ppScheme scheme
           putStrLn (vStr ++ " : " ++ tStr)
@@ -312,11 +306,10 @@ processTypeCmd exprSrc =
     let combined = combinedDecls newDecls
     let (errs, allSchemes, _) = runPipeline combined
     match errs
-      (e :: _) => mapIO_ printErr errs
-      [] =>
-        match lookupScheme "__repl__" allSchemes
-          Some scheme => putStrLn (ppScheme scheme)
-          None => ()
+      e::_ => mapIO_ printErr errs
+      [] => match lookupScheme "__repl__" allSchemes
+        Some scheme => putStrLn (ppScheme scheme)
+        None => ()
 
 -- ── Process :browse / :env command ───────────────────────────────────────
 processBrowse : Unit -> <IO, Mut> Unit
@@ -336,11 +329,11 @@ listNull _ = False
 
 sortByKey : List (String, String) -> List (String, String)
 sortByKey [] = []
-sortByKey (x :: rest) = insertSorted x (sortByKey rest)
+sortByKey (x::rest) = insertSorted x (sortByKey rest)
 
 insertSorted : (String, String) -> List (String, String) -> List (String, String)
 insertSorted x [] = [x]
-insertSorted (k, v) ((k2, v2) :: rest)
+insertSorted (k, v) ((k2, v2)::rest)
   | k <= k2 = (k, v) :: (k2, v2) :: rest
   | otherwise = (k2, v2) :: insertSorted (k, v) rest
 
@@ -363,23 +356,27 @@ startsWith prefix s =
 processCommand : String -> <IO, Mut> Bool
 processCommand cmd =
   if cmd == ":quit" || cmd == ":q" then False
-  else if cmd == ":reset" then
-    let _ = processReset ()
-    True
-  else if cmd == ":browse" || cmd == ":env" then
-    let _ = processBrowse ()
-    True
-  else if startsWith ":type" cmd then
-    let rest = stringSlice 5 (stringLength cmd) cmd
-    let _ = processTypeCmd rest
-    True
-  else if startsWith ":t " cmd then
-    let rest = stringSlice 3 (stringLength cmd) cmd
-    let _ = processTypeCmd rest
-    True
   else
-    let _ = ePutStrLn ("Unknown command: " ++ cmd ++ "  (try :browse, :type, :reset, :quit)")
-    True
+    if cmd == ":reset" then
+      let _ = processReset ()
+      True
+    else
+      if cmd == ":browse" || cmd == ":env" then
+        let _ = processBrowse ()
+        True
+      else
+        if startsWith ":type" cmd then
+          let rest = stringSlice 5 (stringLength cmd) cmd
+          let _ = processTypeCmd rest
+          True
+        else
+          if startsWith ":t " cmd then
+            let rest = stringSlice 3 (stringLength cmd) cmd
+            let _ = processTypeCmd rest
+            True
+          else
+            let _ = ePutStrLn ("Unknown command: " ++ cmd ++ "  (try :browse, :type, :reset, :quit)")
+            True
 
 -- ── Main REPL loop ────────────────────────────────────────────────────────
 export
@@ -414,9 +411,7 @@ replLoopGo buf cont =
 dispatchInput : String -> <IO, Mut> Unit
 dispatchInput src =
   let trimmed = stringTrim src
-  if trimmed == "" then ()
-  else if isDecl src then processDeclInput src
-  else processExprInput src
+  if trimmed == "" then () else if isDecl src then processDeclInput src else processExprInput src
 
 -- ── String utilities ──────────────────────────────────────────────────────
 stringTrim : String -> String
@@ -448,7 +443,8 @@ trimRightGo chars end
 
 -- Build a sub-array of chars from lo..hi (exclusive hi).
 arraySubChars : Array Char -> Int -> Int -> Array Char
-arraySubChars chars lo hi = arrayMakeWith (hi - lo) (i => arrayGetUnsafe (lo + i) chars)
+arraySubChars chars lo hi =
+  arrayMakeWith (hi - lo) (i => arrayGetUnsafe (lo + i) chars)
 
 isWs : String -> Bool
 isWs " " = True
@@ -467,6 +463,5 @@ stringSplitNewlines s = stringSplitOn "\n" s 0 0 (stringLength s)
 stringSplitOn : String -> String -> Int -> Int -> Int -> List String
 stringSplitOn sep s start cur len
   | cur >= len = [stringSlice start len s]
-  | stringSlice cur (cur + 1) s == sep =
-    stringSlice start cur s :: stringSplitOn sep s (cur + 1) (cur + 1) len
+  | stringSlice cur (cur + 1) s == sep = stringSlice start cur s :: stringSplitOn sep s (cur + 1) (cur + 1) len
   | otherwise = stringSplitOn sep s start (cur + 1) len

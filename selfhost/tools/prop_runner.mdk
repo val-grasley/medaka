@@ -31,7 +31,7 @@ rngNextLocal _ =
 randIntRange : Int -> Int -> <Mut> Int
 randIntRange lo hi =
   let range = hi - lo + 1
-  if range <= 0 then lo else lo + (rngNextLocal () % range)
+  if range <= 0 then lo else lo + rngNextLocal () % range
 
 randBoolL : Unit -> <Mut> Bool
 randBoolL _ = rngNextLocal () % 2 == 1
@@ -44,11 +44,10 @@ public export data TyDef
 
 buildTyDefs : List Decl -> List (String, TyDef)
 buildTyDefs [] = []
-buildTyDefs (d :: rest) = match d
+buildTyDefs (d::rest) = match d
   DData _ name params variants _ => (name, TDData params variants) :: buildTyDefs rest
   DRecord _ name params fields _ => (name, TDRecord params fields) :: buildTyDefs rest
-  DNewtype _ name params con fty _ =>
-    (name, TDData params [Variant con (ConPos [fty])]) :: buildTyDefs rest
+  DNewtype _ name params con fty _ => (name, TDData params [Variant con (ConPos [fty])]) :: buildTyDefs rest
   _ => buildTyDefs rest
 
 -- ── type substitution + spine peeling (mirror lib/prop_runner.ml) ────────────
@@ -87,16 +86,21 @@ genForType tydefs subst ty = match ty
   TyApp (TyCon "List") t => VList (genList tydefs subst t (randIntRange 0 7))
   TyApp (TyCon "Array") t => VArray (arrayFromList (genList tydefs subst t (randIntRange 0 7)))
   TyApp (TyCon "Option") t =>
-    if randBoolL () then VCon "None" [] else VCon "Some" [genForType tydefs subst t]
+    if randBoolL () then
+      VCon "None" []
+    else
+      VCon "Some" [genForType tydefs subst t]
   TyApp (TyApp (TyCon "Result") e) a =>
-    if randBoolL () then VCon "Ok" [genForType tydefs subst a]
-    else VCon "Err" [genForType tydefs subst e]
+    if randBoolL () then
+      VCon "Ok" [genForType tydefs subst a]
+    else
+      VCon "Err" [genForType tydefs subst e]
   TyTuple ts => VTuple (genTuple tydefs subst ts)
   _ => genUserOrFail tydefs subst ty
 
 genTuple : List (String, TyDef) -> List (String, Ty) -> List Ty -> <Mut> List Value
 genTuple _ _ [] = []
-genTuple tydefs subst (t :: rest) = genForType tydefs subst t :: genTuple tydefs subst rest
+genTuple tydefs subst (t::rest) = genForType tydefs subst t :: genTuple tydefs subst rest
 
 genList : List (String, TyDef) -> List (String, Ty) -> Ty -> Int -> <Mut> List Value
 genList _ _ _ 0 = []
@@ -108,7 +112,7 @@ genFloat _ =
   VFloat (intToFloat r * (1.0 / 1000000.0) - 1.0)
 
 genCharStr : Unit -> <Mut> String
-genCharStr _ = charToStr (charFromCodeU (32 + (rngNextLocal () % 95)))
+genCharStr _ = charToStr (charFromCodeU (32 + rngNextLocal () % 95))
 
 charFromCodeU : Int -> Char
 charFromCodeU n = match charFromCode n
@@ -156,37 +160,44 @@ genFieldTy tydefs subst (Field _ fty) = genForType tydefs subst fty
 zipL : List a -> List b -> List (a, b)
 zipL [] _ = []
 zipL _ [] = []
-zipL (x :: xs) (y :: ys) = (x, y) :: zipL xs ys
+zipL (x::xs) (y::ys) = (x, y) :: zipL xs ys
 
 nthList : List a -> Int -> a
-nthList (x :: _) 0 = x
-nthList (_ :: xs) n = nthList xs (n - 1)
+nthList (x::_) 0 = x
+nthList (_::xs) n = nthList xs (n - 1)
 nthList [] _ = panic "nthList: index out of range"
 
 -- ── shrinking (native; mirror lib/prop_runner.ml shrink_native) ──────────────
 
 shrinkValue : Ty -> Value -> List Value
 shrinkValue ty v = match (ty, v)
-  (TyCon "Int", VInt n) => shrinkInt n
-  (TyCon "Bool", VBool True) => [VBool False]
-  (TyCon "Bool", VBool False) => []
-  (TyCon "Float", VFloat x) => if x == 0.0 then [] else [VFloat 0.0, VFloat (x / 2.0)]
-  (TyCon "String", VString s) =>
-    if s == "" then [] else [VString (stringSlice 0 (stringLength s / 2) s)]
-  (TyApp (TyCon "List") _, VList []) => []
-  (TyApp (TyCon "List") _, VList (_ :: rest)) => [VList rest]
-  (TyApp (TyCon "Option") _, VCon "None" []) => []
-  (TyApp (TyCon "Option") _, VCon "Some" _) => [VCon "None" []]
+  ((TyCon "Int"), (VInt n)) => shrinkInt n
+  ((TyCon "Bool"), (VBool True)) => [VBool False]
+  ((TyCon "Bool"), (VBool False)) => []
+  ((TyCon "Float"), (VFloat x)) =>
+    if x == 0.0 then
+      []
+    else
+      [VFloat 0.0, VFloat (x / 2.0)]
+  ((TyCon "String"), (VString s)) =>
+    if s == "" then
+      []
+    else
+      [VString (stringSlice 0 (stringLength s / 2) s)]
+  ((TyApp (TyCon "List") _), (VList [])) => []
+  ((TyApp (TyCon "List") _), (VList (_::rest))) => [VList rest]
+  ((TyApp (TyCon "Option") _), (VCon "None" [])) => []
+  ((TyApp (TyCon "Option") _), (VCon "Some" _)) => [VCon "None" []]
   _ => []
 
 shrinkInt : Int -> List Value
 shrinkInt n =
-  let cands = [0, n / 2, n + (if n > 0 then (-1) else 1)]
+  let cands = [0, n / 2, n + (if n > 0 then -1 else 1)]
   map VInt (filterList (x => x != n) cands)
 
 filterList : (a -> Bool) -> List a -> List a
 filterList _ [] = []
-filterList p (x :: xs)
+filterList p (x::xs)
   | p x = x :: filterList p xs
   | otherwise = filterList p xs
 
@@ -203,30 +214,39 @@ checkProp evalEnv body inputs =
 
 -- ── one prop run ─────────────────────────────────────────────────────────────
 
-public export data PropOutcome = PropPassed | PropFailed Int (List (String, Value))
+public export data PropOutcome
+  = PropPassed
+  | PropFailed Int (List (String, Value))
 
 runProp : List (String, TyDef) -> List (String, Value) -> Decl -> Int -> <IO, Mut> Bool
-runProp tydefs evalEnv propDecl maxTests =
-  match propDecl
-    DProp _ name params body =>
-      let _ = putStr ("Testing " ++ escStrLocal name ++ " ... ")
-      match findFailure tydefs evalEnv params body maxTests 1
-        PropPassed =>
-          let _ = putStrLn ("OK (" ++ intToString maxTests ++ " tests)")
-          True
-        PropFailed run shrunk =>
-          let _ = putStrLn ("FAILED after " ++ intToString run ++ (if run == 1 then " test" else " tests"))
-          let _ = putStrLn "  Counterexample:"
-          let _ = printCounterexample shrunk
-          False
-    _ => True
+runProp tydefs evalEnv propDecl maxTests = match propDecl
+  DProp _ name params body =>
+    let _ = putStr ("Testing " ++ escStrLocal name ++ " ... ")
+    match findFailure tydefs evalEnv params body maxTests 1
+      PropPassed =>
+        let _ = putStrLn ("OK (" ++ intToString maxTests ++ " tests)")
+        True
+      PropFailed run shrunk =>
+        let _ = putStrLn ("FAILED after " ++ intToString run ++ (if run == 1 then " test" else " tests"))
+        let _ = putStrLn "  Counterexample:"
+        let _ = printCounterexample shrunk
+        False
+  _ => True
 
 findFailure : List (String, TyDef) -> List (String, Value) -> List PropParam -> Expr -> Int -> Int -> <Mut> PropOutcome
 findFailure tydefs evalEnv params body maxTests run
   | run > maxTests = PropPassed
   | otherwise =
     let inputs = genInputs tydefs params
-    findFailureStep tydefs evalEnv params body maxTests run inputs (checkProp evalEnv body inputs)
+    findFailureStep
+      tydefs
+      evalEnv
+      params
+      body
+      maxTests
+      run
+      inputs
+      (checkProp evalEnv body inputs)
 
 findFailureStep : List (String, TyDef) -> List (String, Value) -> List PropParam -> Expr -> Int -> Int -> List (String, Value) -> Bool -> <Mut> PropOutcome
 findFailureStep tydefs evalEnv params body maxTests run _ True =
@@ -236,12 +256,11 @@ findFailureStep _ evalEnv params body _ run inputs False =
 
 genInputs : List (String, TyDef) -> List PropParam -> <Mut> List (String, Value)
 genInputs _ [] = []
-genInputs tydefs (PropParam x ty :: rest) =
-  (x, genForType tydefs [] ty) :: genInputs tydefs rest
+genInputs tydefs ((PropParam x ty)::rest) = (x, genForType tydefs [] ty) :: genInputs tydefs rest
 
 printCounterexample : List (String, Value) -> <IO> Unit
 printCounterexample [] = ()
-printCounterexample ((x, v) :: rest) =
+printCounterexample ((x, v)::rest) =
   let _ = putStrLn ("    " ++ x ++ " = " ++ ppValue v)
   printCounterexample rest
 
@@ -251,10 +270,9 @@ escStrLocal s = "\"" ++ s ++ "\""
 -- ── greedy shrink (mirror lib/prop_runner.ml shrink_loop) ────────────────────
 
 shrinkLoop : List (String, Value) -> List PropParam -> Expr -> List (String, Value) -> <Mut> List (String, Value)
-shrinkLoop evalEnv params body candidate =
-  match tryShrinkOne evalEnv params body candidate 0
-    Some better => shrinkLoop evalEnv params body better
-    None => candidate
+shrinkLoop evalEnv params body candidate = match tryShrinkOne evalEnv params body candidate 0
+  Some better => shrinkLoop evalEnv params body better
+  None => candidate
 
 -- Try each param in order; return the first candidate where some smaller value
 -- still fails the prop.
@@ -262,7 +280,7 @@ tryShrinkOne : List (String, Value) -> List PropParam -> Expr -> List (String, V
 tryShrinkOne evalEnv params body candidate i
   | i >= listLen params = None
   | otherwise =
-    let PropParam x ty = nthList params i
+    let (PropParam x ty) = nthList params i
     let currentV = assocVal x candidate
     let smaller = shrinkValue ty currentV
     match findSmaller evalEnv params body candidate x smaller
@@ -271,10 +289,9 @@ tryShrinkOne evalEnv params body candidate i
 
 findSmaller : List (String, Value) -> List PropParam -> Expr -> List (String, Value) -> String -> List Value -> <Mut> Option (List (String, Value))
 findSmaller _ _ _ _ _ [] = None
-findSmaller evalEnv params body candidate x (sv :: rest) =
+findSmaller evalEnv params body candidate x (sv::rest) =
   let candidate2 = replaceVal x sv candidate
-  if checkProp evalEnv body candidate2 then findSmaller evalEnv params body candidate x rest
-  else Some candidate2
+  if checkProp evalEnv body candidate2 then findSmaller evalEnv params body candidate x rest else Some candidate2
 
 assocVal : String -> List (String, Value) -> Value
 assocVal x kvs = match lookupAssoc x kvs
@@ -283,7 +300,7 @@ assocVal x kvs = match lookupAssoc x kvs
 
 replaceVal : String -> Value -> List (String, Value) -> List (String, Value)
 replaceVal _ _ [] = []
-replaceVal x sv ((k, v) :: rest)
+replaceVal x sv ((k, v)::rest)
   | k == x = (k, sv) :: replaceVal x sv rest
   | otherwise = (k, v) :: replaceVal x sv rest
 
@@ -298,7 +315,7 @@ filterProps decls = filterDecls isProp decls
 
 filterDecls : (Decl -> Bool) -> List Decl -> List Decl
 filterDecls _ [] = []
-filterDecls p (d :: rest)
+filterDecls p (d::rest)
   | p d = d :: filterDecls p rest
   | otherwise = filterDecls p rest
 
@@ -320,13 +337,12 @@ runAllProps evalEnv program =
 
 runEach : List (String, TyDef) -> List (String, Value) -> List Decl -> <IO, Mut> List Bool
 runEach _ _ [] = []
-runEach tydefs evalEnv (p :: rest) =
-  runProp tydefs evalEnv p 100 :: runEach tydefs evalEnv rest
+runEach tydefs evalEnv (p::rest) = runProp tydefs evalEnv p 100 :: runEach tydefs evalEnv rest
 
 countTrue : List Bool -> Int
 countTrue [] = 0
-countTrue (True :: rest) = 1 + countTrue rest
-countTrue (False :: rest) = countTrue rest
+countTrue (True::rest) = 1 + countTrue rest
+countTrue (False::rest) = countTrue rest
 
 isEmpty : List a -> Bool
 isEmpty [] = True
@@ -338,4 +354,4 @@ hasProps decls = anyDecl isProp decls
 
 anyDecl : (Decl -> Bool) -> List Decl -> Bool
 anyDecl _ [] = False
-anyDecl p (d :: rest) = p d || anyDecl p rest
+anyDecl p (d::rest) = p d || anyDecl p rest

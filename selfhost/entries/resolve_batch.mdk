@@ -7,7 +7,7 @@ import frontend.desugar.{desugar}
 import frontend.resolve.{resolveToLines}
 
 main = match args ()
-  (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets
+  runtimePath::corePath::targets => withFiles runtimePath corePath targets
   _ => ePutStrLn "usage: medaka run selfhost/entries/resolve_batch.mdk <runtime.mdk> <core.mdk> <file.mdk>..."
 
 withFiles runtimePath corePath targets = match readFile runtimePath
@@ -20,14 +20,16 @@ withFiles runtimePath corePath targets = match readFile runtimePath
 
 readAllSources : List String -> <IO> Result String (List (String, String))
 readAllSources [] = Ok []
-readAllSources (p :: rest) = match readFile p
+readAllSources (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllSources rest
     Err msg => Err msg
     Ok more => Ok ((p, src) :: more)
 
 renderAll runtimeP coreP [] = ""
-renderAll runtimeP coreP ((path, src) :: rest) =
-  "===SELFHOST-FIX=== " ++ path ++ "\n"
-    ++ resolveToLines runtimeP coreP (desugar (parse src))
-    ++ "\n" ++ renderAll runtimeP coreP rest
+renderAll runtimeP coreP ((path, src)::rest) = "===SELFHOST-FIX=== "
+  ++ path
+  ++ "\n"
+  ++ resolveToLines runtimeP coreP (desugar (parse src))
+  ++ "\n"
+  ++ renderAll runtimeP coreP rest

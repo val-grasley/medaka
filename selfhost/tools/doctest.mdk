@@ -45,10 +45,12 @@ exampleLine (Example _ _ l) = l
 -- The outcome of running one example.
 public export data ExResult
   = Pass
-  | Fail String String        -- expected, actual
-  | Errored String            -- message
+  | Fail String String
+  -- expected, actual
+  | Errored String  -- message
 
-public export data RunResult = RunResult Int Int Int Int (List (Example, ExResult))
+public export data RunResult
+  = RunResult Int Int Int Int (List (Example, ExResult))
 -- total passed failed errors details
 
 runTotal : RunResult -> Int
@@ -84,8 +86,7 @@ substr3 a b s = stringSlice a b s
 startsWithStr : String -> String -> Bool
 startsWithStr p s =
   let lp = slen p
-  if slen s < lp then False
-  else substr3 0 lp s == p
+  if slen s < lp then False else substr3 0 lp s == p
 
 -- Trim leading/trailing ASCII whitespace (space, tab, CR, NL).
 trimStr : String -> String
@@ -185,7 +186,7 @@ expandBlock c =
 
 expandLines : Int -> Int -> List String -> List (Int, String)
 expandLines _ _ [] = []
-expandLines baseLine i (line :: rest) =
+expandLines baseLine i (line::rest) =
   let trimmed = trimStr line
   let text = if trimmed == "" then "--" else "-- " ++ trimmed
   (baseLine + i, text) :: expandLines baseLine (i + 1) rest
@@ -198,15 +199,16 @@ splitIntoBlocks comments = reverseL (blocksGo [] [] 0 comments)
 
 blocksGo : List (List (Int, String)) -> List (Int, String) -> Int -> List (Int, String) -> List (List (Int, String))
 blocksGo acc current _ [] =
-  if isEmptyL current then acc else reverseL current :: acc
-blocksGo acc current lastLine (c :: rest)
+  if isEmptyL current then
+    acc
+  else
+    reverseL current :: acc
+blocksGo acc current lastLine (c::rest)
   | isBlankComment c =
     let acc2 = if isEmptyL current then acc else reverseL current :: acc
     blocksGo acc2 [] (clLine c) rest
-  | isEmptyL current || clLine c == lastLine + 1 =
-    blocksGo acc (c :: current) (clLine c) rest
-  | otherwise =
-    blocksGo (reverseL current :: acc) [c] (clLine c) rest
+  | isEmptyL current || clLine c == lastLine + 1 = blocksGo acc (c :: current) (clLine c) rest
+  | otherwise = blocksGo (reverseL current :: acc) [c] (clLine c) rest
 
 isEmptyL : List a -> Bool
 isEmptyL [] = True
@@ -230,26 +232,24 @@ joinNlLocal xs = joinWithLocal "\n" xs
 joinWithLocal : String -> List String -> String
 joinWithLocal _ [] = ""
 joinWithLocal _ [x] = x
-joinWithLocal sep (x :: rest) = x ++ sep ++ joinWithLocal sep rest
+joinWithLocal sep (x::rest) = x ++ sep ++ joinWithLocal sep rest
 
 extractFromBlock : List (Int, String) -> List Example
 extractFromBlock block = reverseL (extractGo [] None [] block)
 
 extractGo : List Example -> Option (String, Int) -> List String -> List (Int, String) -> List Example
-extractGo examples curInput expectedRev [] =
-  match sealExample curInput expectedRev
-    None => examples
-    Some ex => ex :: examples
-extractGo examples curInput expectedRev (c :: rest)
+extractGo examples curInput expectedRev [] = match sealExample curInput expectedRev
+  None => examples
+  Some ex => ex :: examples
+extractGo examples curInput expectedRev (c::rest)
   | isInputLine c =
     let examples2 = match sealExample curInput expectedRev
       None => examples
       Some ex => ex :: examples
     extractGo examples2 (Some (inputBody c, clLine c)) [] rest
-  | isExpectedLine c =
-    match curInput
-      None => extractGo examples None [] rest
-      Some _ => extractGo examples curInput (expectedBody c :: expectedRev) rest
+  | isExpectedLine c = match curInput
+    None => extractGo examples None [] rest
+    Some _ => extractGo examples curInput (expectedBody c :: expectedRev) rest
   | otherwise =
     let examples2 = match sealExample curInput expectedRev
       None => examples
@@ -270,12 +270,12 @@ commentToPair c = (commentLine c, commentText c)
 
 concatMapC : List (Int, String) -> List (Int, String)
 concatMapC [] = []
-concatMapC (c :: rest) =
-  (if isBlockComment c then expandBlock c else [c]) ++ concatMapC rest
+concatMapC (c::rest) = (if isBlockComment c then expandBlock c else [c])
+  ++ concatMapC rest
 
 concatMapL : (a -> List b) -> List a -> List b
 concatMapL _ [] = []
-concatMapL f (x :: xs) = f x ++ concatMapL f xs
+concatMapL f (x::xs) = f x ++ concatMapL f xs
 
 -- ── Synthesizing the per-example binding ────────────────────────────────────
 -- An example with an expected line is rendered through the user-facing `debug`
@@ -303,8 +303,8 @@ buildSynthDecls examples = buildSynthGo 0 examples
 
 buildSynthGo : Int -> List Example -> List Decl
 buildSynthGo _ [] = []
-buildSynthGo i (ex :: rest) =
-  desugar (parse (synthSrc i ex)) ++ buildSynthGo (i + 1) rest
+buildSynthGo i (ex::rest) = desugar (parse (synthSrc i ex))
+  ++ buildSynthGo (i + 1) rest
 
 -- ── Compare evaluated bindings against expected ──────────────────────────────
 -- env is the post-run binding environment (Ok env) or a single whole-program
@@ -321,8 +321,7 @@ buildDetails envResult examples =
 
 detailsGo : Result String (List (String, Value)) -> Int -> List Example -> <Mut> List (Example, ExResult)
 detailsGo _ _ [] = []
-detailsGo envResult i (ex :: rest) =
-  (ex, oneResult envResult i ex) :: detailsGo envResult (i + 1) rest
+detailsGo envResult i (ex::rest) = (ex, oneResult envResult i ex) :: detailsGo envResult (i + 1) rest
 
 oneResult : Result String (List (String, Value)) -> Int -> Example -> <Mut> ExResult
 oneResult envResult i ex = match envResult
@@ -350,7 +349,7 @@ isErr _ = False
 
 countResult : (ExResult -> Bool) -> List (Example, ExResult) -> Int
 countResult _ [] = 0
-countResult p ((_, r) :: rest)
+countResult p ((_, r)::rest)
   | p r = 1 + countResult p rest
   | otherwise = countResult p rest
 
@@ -360,7 +359,7 @@ hasUseDecls decls = anyUse decls
 
 anyUse : List Decl -> Bool
 anyUse [] = False
-anyUse (d :: rest) = isUse d || anyUse rest
+anyUse (d::rest) = isUse d || anyUse rest
 
 isUse : Decl -> Bool
 isUse (DUse _ _) = True

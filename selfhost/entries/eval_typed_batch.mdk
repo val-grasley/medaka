@@ -10,7 +10,7 @@ import types.typecheck.{elaborateOne}
 import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
-  (runtimePath :: corePath :: targets) => withFiles runtimePath corePath targets
+  runtimePath::corePath::targets => withFiles runtimePath corePath targets
   _ => ePutStrLn "usage: medaka run selfhost/entries/eval_typed_batch.mdk <runtime.mdk> <core.mdk> <file.mdk>..."
 
 withFiles runtimePath corePath targets = match readFile runtimePath
@@ -21,7 +21,7 @@ withFiles runtimePath corePath targets = match readFile runtimePath
 
 emitAll : List Decl -> List Decl -> List String -> <IO, Mut> Unit
 emitAll runtimeDecls preludeDecls [] = putStr ""
-emitAll runtimeDecls preludeDecls (path :: rest) = match readFile path
+emitAll runtimeDecls preludeDecls (path::rest) = match readFile path
   Err msg =>
     let _ = ePutStrLn msg
     emitAll runtimeDecls preludeDecls rest
@@ -32,4 +32,6 @@ emitAll runtimeDecls preludeDecls (path :: rest) = match readFile path
 runTyped : List Decl -> List Decl -> List Decl -> <Mut> String
 runTyped runtimeDecls preludeDecls userDecls =
   let livePrelude = dropShadowedExp (funNamesOf userDecls) preludeDecls
-  evalOneOutput [] ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
+  evalOneOutput
+    []
+    ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))

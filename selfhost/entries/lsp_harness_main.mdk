@@ -7,9 +7,7 @@
 -- Prints PASS/FAIL per fixture + a `HARNESS: N passed, M failed` summary.
 -- (The gate test/lsp_harness.sh wires this up.)
 
-import tools.lsp_harness.{ initializeMsg, initializedMsg, didOpenMsg, requestMsg,
-  docParams, docPosParams, shutdownMsg, exitMsg, runSession, parseFrames,
-  allByteValid, diagCountFor, diagPublishedFor, check, summary }
+import tools.lsp_harness.{initializeMsg, initializedMsg, didOpenMsg, requestMsg, docParams, docPosParams, shutdownMsg, exitMsg, runSession, parseFrames, allByteValid, diagCountFor, diagPublishedFor, check, summary}
 
 envOr : String -> String -> <IO> String
 envOr name dflt = match getEnv name
@@ -31,15 +29,19 @@ fixtureFrameIntegrity medaka fixDir =
     Err _ => check "frame-integrity (multibyte)" False
     Ok src =>
       let uri = fileUri path
-      let msgs = [ initializeMsg 1, initializedMsg, didOpenMsg uri src
-                 , requestMsg 2 "textDocument/documentSymbol" (docParams uri)
-                 , requestMsg 3 "textDocument/hover" (docPosParams uri 7 0)
-                 , shutdownMsg 4, exitMsg ]
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/documentSymbol" (docParams uri),
+        requestMsg 3 "textDocument/hover" (docPosParams uri 7 0),
+        shutdownMsg 4,
+        exitMsg
+      ]
       match runSession medaka msgs
         Err _ => check "frame-integrity (multibyte)" False
         Ok out => match parseFrames out
-          (frames, clean) =>
-            check "frame-integrity (multibyte)" (clean && allByteValid frames && nonEmpty frames)
+          (frames, clean) => check "frame-integrity (multibyte)" (clean && allByteValid frames && nonEmpty frames)
 
 -- Fixture 2: opening proj/main.mdk drives the multi-module path, which checks the
 -- sibling helper.mdk's exhaustive Option match.  helper.mdk must be published AND
@@ -52,13 +54,11 @@ fixtureMultiModuleClean medaka fixDir =
     Err _ => check "multi-module clean (0 diagnostics)" False
     Ok src =>
       let uri = fileUri mainPath
-      let msgs = [ initializeMsg 1, initializedMsg, didOpenMsg uri src, exitMsg ]
+      let msgs = [initializeMsg 1, initializedMsg, didOpenMsg uri src, exitMsg]
       match runSession medaka msgs
         Err _ => check "multi-module clean (0 diagnostics)" False
         Ok out => match parseFrames out
-          (frames, _) =>
-            check "multi-module clean (0 diagnostics)"
-              (diagPublishedFor helperUri frames && diagCountFor helperUri frames == 0)
+          (frames, _) => check "multi-module clean (0 diagnostics)" (diagPublishedFor helperUri frames && diagCountFor helperUri frames == 0)
 
 -- Fixture 3: a genuine type error must surface ≥1 diagnostic.
 fixtureTypeError : String -> String -> <IO, Mut> Unit
@@ -68,12 +68,11 @@ fixtureTypeError medaka fixDir =
     Err _ => check "type-error surfaces (>=1 diagnostic)" False
     Ok src =>
       let uri = fileUri path
-      let msgs = [ initializeMsg 1, initializedMsg, didOpenMsg uri src, exitMsg ]
+      let msgs = [initializeMsg 1, initializedMsg, didOpenMsg uri src, exitMsg]
       match runSession medaka msgs
         Err _ => check "type-error surfaces (>=1 diagnostic)" False
         Ok out => match parseFrames out
-          (frames, _) =>
-            check "type-error surfaces (>=1 diagnostic)" (diagCountFor uri frames >= 1)
+          (frames, _) => check "type-error surfaces (>=1 diagnostic)" (diagCountFor uri frames >= 1)
 
 main =
   let medaka = envOr "MEDAKA" "./medaka"

@@ -17,7 +17,7 @@ import types.typecheck.{elaborateOne}
 import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
-  (runtimePath :: rest) => withRuntime runtimePath rest
+  runtimePath::rest => withRuntime runtimePath rest
   _ => ePutStrLn "usage: medaka run selfhost/entries/eval_dict_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withRuntime runtimePath rest = match splitLast rest
@@ -27,7 +27,7 @@ withRuntime runtimePath rest = match splitLast rest
 splitLast : List a -> Option (List a, a)
 splitLast [] = None
 splitLast [x] = Some ([], x)
-splitLast (x :: rest) = match splitLast rest
+splitLast (x::rest) = match splitLast rest
   Some (init, lst) => Some (x :: init, lst)
   None => None
 
@@ -47,14 +47,16 @@ runDict : List Decl -> List Decl -> List Decl -> <Mut> String
 runDict runtimeDecls preludeDecls userDecls =
   let userNames = funNamesOf userDecls
   let livePrelude = dropShadowedExp userNames preludeDecls
-  -- DRIVER-COLLAPSE Phase 5: route through the 1-module case of the multi-module
-  -- path (elaborateOne owns the dict-set + per-module eval).  Byte-identical to the
-  -- old flat elaborateDict→evalOutput by diff_flat_vs_onemodule.sh.
-  evalOneOutput [] ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
+  evalOneOutput
+    []
+    ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
+-- DRIVER-COLLAPSE Phase 5: route through the 1-module case of the multi-module
+-- path (elaborateOne owns the dict-set + per-module eval).  Byte-identical to the
+-- old flat elaborateDict→evalOutput by diff_flat_vs_onemodule.sh.
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []
-readAllDecls (p :: rest) = match readFile p
+readAllDecls (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllDecls rest
     Err msg => Err msg

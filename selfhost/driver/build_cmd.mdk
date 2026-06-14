@@ -36,8 +36,7 @@ public export data BuildResult = BuildOk String | BuildErr String
 trimNL : String -> String
 trimNL s =
   let n = stringLength s
-  if n > 0 && stringSlice (n - 1) n s == "\n" then stringSlice 0 (n - 1) s
-  else s
+  if n > 0 && stringSlice (n - 1) n s == "\n" then stringSlice 0 (n - 1) s else s
 
 -- Strip leading/trailing ASCII whitespace.
 trimWS : String -> String
@@ -46,16 +45,12 @@ trimWS s = trimLeft (trimRight s)
 trimRight : String -> String
 trimRight s =
   let n = stringLength s
-  if n == 0 then s
-  else if isWS (stringSlice (n - 1) n s) then trimRight (stringSlice 0 (n - 1) s)
-  else s
+  if n == 0 then s else if isWS (stringSlice (n - 1) n s) then trimRight (stringSlice 0 (n - 1) s) else s
 
 trimLeft : String -> String
 trimLeft s =
   let n = stringLength s
-  if n == 0 then s
-  else if isWS (stringSlice 0 1 s) then trimLeft (stringSlice 1 n s)
-  else s
+  if n == 0 then s else if isWS (stringSlice 0 1 s) then trimLeft (stringSlice 1 n s) else s
 
 isWS : String -> Bool
 isWS c = c == " " || c == "\n" || c == "\t" || c == "\r"
@@ -67,13 +62,12 @@ splitWS s = splitWSGo (trimWS s) 0 0 []
 splitWSGo : String -> Int -> Int -> List String -> List String
 splitWSGo s i start acc =
   let n = stringLength s
-  if i >= n then
-    if i > start then reverseL (stringSlice start i s :: acc) else reverseL acc
-  else if isWS (stringSlice i (i + 1) s) then
-    let acc2 = if i > start then stringSlice start i s :: acc else acc
-    splitWSGo s (i + 1) (i + 1) acc2
+  if i >= n then if i > start then reverseL (stringSlice start i s :: acc) else reverseL acc
   else
-    splitWSGo s (i + 1) start acc
+    if isWS (stringSlice i (i + 1) s) then
+      let acc2 = if i > start then stringSlice start i s :: acc else acc
+      splitWSGo s (i + 1) (i + 1) acc2
+    else splitWSGo s (i + 1) start acc
 
 -- dirname / basename / chop-extension on a path (POSIX "/").
 dirOf : String -> String
@@ -82,8 +76,10 @@ dirOf path = dirGo path (stringLength path)
 dirGo : String -> Int -> String
 dirGo _ 0 = "."
 dirGo path i =
-  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
-  else dirGo path (i - 1)
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice 0 (i - 1) path
+  else
+    dirGo path (i - 1)
 
 export
 baseOf : String -> String
@@ -92,8 +88,10 @@ baseOf path = baseGo path (stringLength path) (stringLength path)
 baseGo : String -> Int -> Int -> String
 baseGo path end 0 = stringSlice 0 end path
 baseGo path end i =
-  if stringSlice (i - 1) i path == "/" then stringSlice i end path
-  else baseGo path end (i - 1)
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice i end path
+  else
+    baseGo path end (i - 1)
 
 -- Drop a trailing ".mdk" (or any final ".ext").
 export
@@ -104,9 +102,8 @@ chopGo : String -> Int -> String
 chopGo path 0 = path
 chopGo path i =
   let c = stringSlice (i - 1) i path
-  if c == "/" then path        -- no extension in the basename
-  else if c == "." then stringSlice 0 (i - 1) path
-  else chopGo path (i - 1)
+  if c == "/" then path else if c == "." then stringSlice 0 (i - 1) path else chopGo path (i - 1)
+-- no extension in the basename
 
 joinPath : String -> String -> String
 joinPath a b = a ++ "/" ++ b
@@ -126,8 +123,7 @@ envOr name dflt = match getEnv name
 stripTrailingUnit : String -> String
 stripTrailingUnit s =
   let n = stringLength s
-  if n >= 3 && stringSlice (n - 3) n s == "()\n" then stringSlice 0 (n - 3) s
-  else s
+  if n >= 3 && stringSlice (n - 3) n s == "()\n" then stringSlice 0 (n - 3) s else s
 
 -- ---- Boehm GC flag detection (pkg-config → brew → bare -lgc) ----
 -- Returns Some (cflags, libs) or None.  Mirrors detect_gc in build_cmd.ml and
@@ -149,10 +145,10 @@ detectGCBrew : String -> <IO> Option (List String, List String)
 detectGCBrew cc = match runCommand "brew" ["--prefix", "bdw-gc"]
   Ok (0, out, _) =>
     let prefix = trimWS out
-    if prefix != "" && fileExists (joinPath prefix "include/gc.h") then
-      Some ([("-I" ++ joinPath prefix "include")],
-            [("-L" ++ joinPath prefix "lib"), "-lgc"])
-    else detectGCBare cc
+    if prefix != "" && fileExists (joinPath prefix "include/gc.h") then Some (
+      ["-I" ++ joinPath prefix "include"],
+      ["-L" ++ joinPath prefix "lib", "-lgc"]
+    ) else detectGCBare cc
   _ => detectGCBare cc
 
 -- Bare -lgc probe: compile a trivial gc.h program from a temp source.
@@ -181,47 +177,41 @@ runBuild root medaka cc inputAbs outPath =
   let stdlibDir = joinPath root "stdlib"
   let inputDir = findProjectRoot (dirOf inputAbs)
   let llPath = "/tmp/medaka_build_" ++ baseOf (chopExt inputAbs) ++ ".ll"
-  -- EMIT STEP.  Two paths, selected by the MEDAKA_EMITTER env var:
-  --   * set   → invoke that NATIVE EMITTER BINARY directly (OCaml-free path — the
-  --             clang(seed) binary from test/bootstrap_from_seed.sh).  Args are the
-  --             emitter's positional inputs WITHOUT the "run <emitter>" prefix.
-  --   * unset → fall back to a fresh `medaka run <emitter> …` subprocess (the
-  --             original OCaml-interpreter path; nothing regresses).
-  -- Both receive identical <runtime> <prelude> <input> <inputDir> <selfhost> <stdlib>
-  -- args and produce identical IR (the native emitter is the clang-compiled seed,
-  -- byte-fixpoint with the interpreter — selfcompile_build_fixpoint.sh C3a/C3b).
   let emitArgsBase = [runtimeP, preludeP, inputAbs, inputDir, selfhostDir, stdlibDir]
   let emitter2 = envOr "MEDAKA_EMITTER" ""
   let useNative = emitter2 != ""
   let emitProg = if useNative then emitter2 else medaka
   let emitArgs = if useNative then emitArgsBase else "run" :: emitter :: emitArgsBase
-  -- STEP 1: emit LLVM IR via a FRESH subprocess (Ref-state isolation).
-  -- Roots: inputDir (user modules shadow stdlib), selfhost, stdlib — mirrors
-  -- the loader's root-ordered search and build_cmd.ml's emit_argv.
   match runCommand emitProg emitArgs
     Err e => BuildErr ("error: could not run emitter (" ++ emitProg ++ "): " ++ e)
-    Ok (code, irRaw, emitErr) =>
-      if code != 0 then
-        BuildErr ("error: emitter failed compiling " ++ inputAbs ++ "\n" ++ emitErr)
+    Ok (code, irRaw, emitErr) => if code != 0 then BuildErr ("error: emitter failed compiling " ++ inputAbs ++ "\n" ++ emitErr)
+    else
+      let ir = stripTrailingUnit irRaw
+      if stringLength ir == 0 then BuildErr ("error: emitter produced empty IR for " ++ inputAbs ++ "\n" ++ emitErr)
       else
-        let ir = stripTrailingUnit irRaw
-        if stringLength ir == 0 then
-          BuildErr ("error: emitter produced empty IR for " ++ inputAbs ++ "\n" ++ emitErr)
-        else
-          match writeFile llPath ir
-            Err e => BuildErr ("error: could not write IR: " ++ e)
-            Ok _ => clangLink cc rtC llPath outPath inputAbs
+        match writeFile llPath ir
+          Err e => BuildErr ("error: could not write IR: " ++ e)
+          Ok _ => clangLink cc rtC llPath outPath inputAbs
+-- EMIT STEP.  Two paths, selected by the MEDAKA_EMITTER env var:
+--   * set   → invoke that NATIVE EMITTER BINARY directly (OCaml-free path — the
+--             clang(seed) binary from test/bootstrap_from_seed.sh).  Args are the
+--             emitter's positional inputs WITHOUT the "run <emitter>" prefix.
+--   * unset → fall back to a fresh `medaka run <emitter> …` subprocess (the
+--             original OCaml-interpreter path; nothing regresses).
+-- Both receive identical <runtime> <prelude> <input> <inputDir> <selfhost> <stdlib>
+-- args and produce identical IR (the native emitter is the clang-compiled seed,
+-- byte-fixpoint with the interpreter — selfcompile_build_fixpoint.sh C3a/C3b).
+
+-- STEP 1: emit LLVM IR via a FRESH subprocess (Ref-state isolation).
+-- Roots: inputDir (user modules shadow stdlib), selfhost, stdlib — mirrors
+-- the loader's root-ordered search and build_cmd.ml's emit_argv.
 
 -- STEP 2: clang the IR + C runtime + Boehm GC into a native binary.
 clangLink : String -> String -> String -> String -> String -> <IO> BuildResult
 clangLink cc rtC llPath outPath inputAbs = match detectGC cc
   None => BuildErr "error: libgc (bdw-gc) not found — install bdw-gc (brew install bdw-gc) or set GC_PREFIX/pkg-config."
   Some (gcCflags, gcLibs) =>
-    let clangArgs = ["-Wl,-stack_size,0x20000000", "-O2"]
-                    ++ gcCflags
-                    ++ [llPath, rtC]
-                    ++ gcLibs
-                    ++ ["-o", outPath]
+    let clangArgs = ["-Wl,-stack_size,0x20000000", "-O2"] ++ gcCflags ++ [llPath, rtC] ++ gcLibs ++ ["-o", outPath]
     match runCommand cc clangArgs
       Err e => BuildErr ("error: could not run clang (" ++ cc ++ "): " ++ e)
       Ok (0, _, _) => BuildOk ("built " ++ inputAbs ++ " -> " ++ outPath)

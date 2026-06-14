@@ -19,7 +19,7 @@ main = match splitLast (args ())
 splitLast : List a -> Option (List a, a)
 splitLast [] = None
 splitLast [x] = Some ([], x)
-splitLast (x :: rest) = match splitLast rest
+splitLast (x::rest) = match splitLast rest
   Some (init, lst) => Some (x :: init, lst)
   None => None
 
@@ -33,7 +33,7 @@ withTarget preludeDecls targetPath = match readFile targetPath
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []
-readAllDecls (p :: rest) = match readFile p
+readAllDecls (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllDecls rest
     Err msg => Err msg

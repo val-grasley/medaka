@@ -14,90 +14,90 @@
 
 export
 preambleLines : List String
-preambleLines =
-  [ "; Medaka native spike (Stage 2.4) — emitted textual LLVM IR."
-  , "; Value rep is PROVISIONAL (uniform 64-bit tagged word); see RUNTIME-DESIGN.md."
-  , "declare ptr @mdk_alloc(i64)"
-  , "declare void @mdk_oob() noreturn"
-  , "declare void @mdk_print_int(i64)"
-  , "declare void @mdk_print_bool(i64)"
-  , "declare void @mdk_print_float(double)"
-  , "declare i64 @mdk_num_add(i64, i64)"
-  , "declare i64 @mdk_num_sub(i64, i64)"
-  , "declare i64 @mdk_num_mul(i64, i64)"
-  , "declare i64 @mdk_num_div(i64, i64)"
-  , "declare i64 @mdk_num_mod(i64, i64)"
-  , "declare void @mdk_print_num(i64)"
-  , "declare i64 @mdk_str_lit(ptr, i64)"
-  , "declare void @mdk_print_str(i64)"
-  , "declare i64 @mdk_int_to_string(i64)"
-  , "declare i64 @mdk_float_to_string(double)"
-  , "declare i64 @mdk_string_concat(i64)"
-  , "declare i64 @mdk_string_append(i64, i64)"
-  , "declare i64 @mdk_string_eq(i64, i64)"
-  , "declare i64 @mdk_value_eq(i64, i64)"
-  , "declare i64 @mdk_list_append(i64, i64)"
-  , "declare i64 @mdk_append(i64, i64)"
-  , "declare void @mdk_putstr(i64)"
-  , "declare void @mdk_putstrln(i64)"
-  , "declare void @mdk_eputstr(i64)"
-  , "declare void @mdk_eputstrln(i64)"
-  , "declare void @mdk_flushstdout(i64)"
-  , "declare void @mdk_print_unit()"
-  , "declare void @mdk_panic(i64)"
-  , "declare void @mdk_exit(i64)"
-  , "declare i64 @mdk_array_make(i64, i64)"
-  , "declare i64 @mdk_array_copy(i64)"
-  , "declare void @mdk_array_blit(i64, i64, i64, i64, i64)"
-  , "declare void @mdk_array_fill(i64, i64)"
-  , "declare i64 @mdk_array_from_list(i64)"
-  , "declare void @mdk_print_char(i64)"
-  , "declare i64 @mdk_char_to_str(i64)"
-  , "declare i64 @mdk_string_to_chars(i64)"
-  , "declare i64 @mdk_string_from_chars(i64)"
-  , "declare i64 @mdk_string_slice(i64, i64, i64)"
-  , "declare i64 @mdk_char_is_alpha(i64)"
-  , "declare i64 @mdk_char_is_space(i64)"
-  , "declare i64 @mdk_char_is_upper(i64)"
-  , "declare i64 @mdk_char_is_lower(i64)"
-  , "declare i64 @mdk_char_is_punct(i64)"
-  , "declare i64 @mdk_char_to_upper(i64)"
-  , "declare i64 @mdk_char_to_lower(i64)"
-  , "declare i64 @mdk_string_to_upper(i64)"
-  , "declare i64 @mdk_string_to_lower(i64)"
-  , "declare i64 @mdk_char_from_code(i64)"
-  , "declare i64 @mdk_string_to_float(i64)"
-  , "declare i64 @mdk_string_index_of(i64, i64)"
-  , "declare i64 @mdk_string_compare(i64, i64)"
-  , "declare i64 @mdk_string_compare_raw(i64, i64)"
-  , "declare i64 @mdk_value_cmp_raw(i64, i64)"
-  , "declare void @mdk_set_args(i32, ptr)"
-  , "declare i64 @mdk_args(i64)"
-  , "declare i64 @mdk_get_env(i64)"
-  , "declare i64 @mdk_read_file(i64)"
-  , "declare i64 @mdk_write_file(i64, i64)"
-  , "declare i64 @mdk_append_file(i64, i64)"
-  , "declare i64 @mdk_file_exists(i64)"
-  , "declare i64 @mdk_list_dir(i64)"
-  , "declare i64 @mdk_read_line(i64)"
-  , "declare i64 @mdk_read_line_opt(i64)"
-  , "declare i64 @mdk_read_all(i64)"
-  , "declare i64 @mdk_read_exactly(i64)"
-  , "declare i64 @mdk_make_dir(i64)"
-  , "declare i64 @mdk_run_command(i64, i64)"
-  , "declare void @mdk_set_seed(i64)"
-  , "declare i64 @mdk_random_int(i64, i64)"
-  , "declare i64 @mdk_random_bool(i64)"
-  , "declare i64 @mdk_random_float(i64)"
-  , "declare i64 @mdk_random_char(i64)"
-  , "declare i64 @mdk_hash_int(i64)"
-  , "declare i64 @mdk_hash_char(i64)"
-  , "declare i64 @mdk_hash_bool(i64)"
-  , "declare i64 @mdk_hash_float(double)"
-  , "declare i64 @mdk_hash_string(i64)"
-  , "declare i64 @mdk_debug_string_lit(i64)"
-  , "declare i64 @mdk_debug_char_lit(i64)"
-  , "declare i64 @mdk_wall_time_sec(i64)"
-  , "declare i64 @mdk_alloc_bytes(i64)"
-  , ""
-  ]
+preambleLines = [
+  "; Medaka native spike (Stage 2.4) — emitted textual LLVM IR.",
+  "; Value rep is PROVISIONAL (uniform 64-bit tagged word); see RUNTIME-DESIGN.md.",
+  "declare ptr @mdk_alloc(i64)",
+  "declare void @mdk_oob() noreturn",
+  "declare void @mdk_print_int(i64)",
+  "declare void @mdk_print_bool(i64)",
+  "declare void @mdk_print_float(double)",
+  "declare i64 @mdk_num_add(i64, i64)",
+  "declare i64 @mdk_num_sub(i64, i64)",
+  "declare i64 @mdk_num_mul(i64, i64)",
+  "declare i64 @mdk_num_div(i64, i64)",
+  "declare i64 @mdk_num_mod(i64, i64)",
+  "declare void @mdk_print_num(i64)",
+  "declare i64 @mdk_str_lit(ptr, i64)",
+  "declare void @mdk_print_str(i64)",
+  "declare i64 @mdk_int_to_string(i64)",
+  "declare i64 @mdk_float_to_string(double)",
+  "declare i64 @mdk_string_concat(i64)",
+  "declare i64 @mdk_string_append(i64, i64)",
+  "declare i64 @mdk_string_eq(i64, i64)",
+  "declare i64 @mdk_value_eq(i64, i64)",
+  "declare i64 @mdk_list_append(i64, i64)",
+  "declare i64 @mdk_append(i64, i64)",
+  "declare void @mdk_putstr(i64)",
+  "declare void @mdk_putstrln(i64)",
+  "declare void @mdk_eputstr(i64)",
+  "declare void @mdk_eputstrln(i64)",
+  "declare void @mdk_flushstdout(i64)",
+  "declare void @mdk_print_unit()",
+  "declare void @mdk_panic(i64)",
+  "declare void @mdk_exit(i64)",
+  "declare i64 @mdk_array_make(i64, i64)",
+  "declare i64 @mdk_array_copy(i64)",
+  "declare void @mdk_array_blit(i64, i64, i64, i64, i64)",
+  "declare void @mdk_array_fill(i64, i64)",
+  "declare i64 @mdk_array_from_list(i64)",
+  "declare void @mdk_print_char(i64)",
+  "declare i64 @mdk_char_to_str(i64)",
+  "declare i64 @mdk_string_to_chars(i64)",
+  "declare i64 @mdk_string_from_chars(i64)",
+  "declare i64 @mdk_string_slice(i64, i64, i64)",
+  "declare i64 @mdk_char_is_alpha(i64)",
+  "declare i64 @mdk_char_is_space(i64)",
+  "declare i64 @mdk_char_is_upper(i64)",
+  "declare i64 @mdk_char_is_lower(i64)",
+  "declare i64 @mdk_char_is_punct(i64)",
+  "declare i64 @mdk_char_to_upper(i64)",
+  "declare i64 @mdk_char_to_lower(i64)",
+  "declare i64 @mdk_string_to_upper(i64)",
+  "declare i64 @mdk_string_to_lower(i64)",
+  "declare i64 @mdk_char_from_code(i64)",
+  "declare i64 @mdk_string_to_float(i64)",
+  "declare i64 @mdk_string_index_of(i64, i64)",
+  "declare i64 @mdk_string_compare(i64, i64)",
+  "declare i64 @mdk_string_compare_raw(i64, i64)",
+  "declare i64 @mdk_value_cmp_raw(i64, i64)",
+  "declare void @mdk_set_args(i32, ptr)",
+  "declare i64 @mdk_args(i64)",
+  "declare i64 @mdk_get_env(i64)",
+  "declare i64 @mdk_read_file(i64)",
+  "declare i64 @mdk_write_file(i64, i64)",
+  "declare i64 @mdk_append_file(i64, i64)",
+  "declare i64 @mdk_file_exists(i64)",
+  "declare i64 @mdk_list_dir(i64)",
+  "declare i64 @mdk_read_line(i64)",
+  "declare i64 @mdk_read_line_opt(i64)",
+  "declare i64 @mdk_read_all(i64)",
+  "declare i64 @mdk_read_exactly(i64)",
+  "declare i64 @mdk_make_dir(i64)",
+  "declare i64 @mdk_run_command(i64, i64)",
+  "declare void @mdk_set_seed(i64)",
+  "declare i64 @mdk_random_int(i64, i64)",
+  "declare i64 @mdk_random_bool(i64)",
+  "declare i64 @mdk_random_float(i64)",
+  "declare i64 @mdk_random_char(i64)",
+  "declare i64 @mdk_hash_int(i64)",
+  "declare i64 @mdk_hash_char(i64)",
+  "declare i64 @mdk_hash_bool(i64)",
+  "declare i64 @mdk_hash_float(double)",
+  "declare i64 @mdk_hash_string(i64)",
+  "declare i64 @mdk_debug_string_lit(i64)",
+  "declare i64 @mdk_debug_char_lit(i64)",
+  "declare i64 @mdk_wall_time_sec(i64)",
+  "declare i64 @mdk_alloc_bytes(i64)",
+  ""
+]

@@ -15,7 +15,7 @@ import types.typecheck.{elaborateOne}
 import eval.eval.{evalOneOutput, funNamesOf, dropShadowedExp}
 
 main = match args ()
-  (runtimePath :: rest) => withRuntime runtimePath rest
+  runtimePath::rest => withRuntime runtimePath rest
   _ => ePutStrLn "usage: medaka run selfhost/entries/eval_typed_main.mdk <runtime.mdk> <prelude.mdk>... <file.mdk>"
 
 withRuntime runtimePath rest = match splitLast rest
@@ -25,7 +25,7 @@ withRuntime runtimePath rest = match splitLast rest
 splitLast : List a -> Option (List a, a)
 splitLast [] = None
 splitLast [x] = Some ([], x)
-splitLast (x :: rest) = match splitLast rest
+splitLast (x::rest) = match splitLast rest
   Some (init, lst) => Some (x :: init, lst)
   None => None
 
@@ -44,11 +44,13 @@ withTarget rsrc preludeDecls targetPath = match readFile targetPath
 runTyped : List Decl -> List Decl -> List Decl -> <Mut> String
 runTyped runtimeDecls preludeDecls userDecls =
   let livePrelude = dropShadowedExp (funNamesOf userDecls) preludeDecls
-  evalOneOutput [] ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
+  evalOneOutput
+    []
+    ("__main__", elaborateOne runtimeDecls livePrelude ("__user__", userDecls))
 
 readAllDecls : List String -> <IO> Result String (List Decl)
 readAllDecls [] = Ok []
-readAllDecls (p :: rest) = match readFile p
+readAllDecls (p::rest) = match readFile p
   Err msg => Err msg
   Ok src => match readAllDecls rest
     Err msg => Err msg

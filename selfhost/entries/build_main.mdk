@@ -21,23 +21,22 @@ main = match parseArgs (args ())
   Err msg =>
     let _ = ePutStrLn msg
     exit 1
-  Ok (input, outOpt) =>
-    if not (fileExists input) then
-      let _ = ePutStrLn ("error: no such file: " ++ input)
-      exit 1
-    else
-      let root = envOr "MEDAKA_ROOT" "."
-      let medaka = envOr "MEDAKA" "medaka"
-      let cc = envOr "CC" "clang"
-      let inputAbs = absPath root input
-      let outPath = match outOpt
-        Some o => o
-        None => chopExt (baseOf input)
-      match runBuild root medaka cc inputAbs outPath
-        BuildOk msg => println msg
-        BuildErr msg =>
-          let _ = ePutStrLn msg
-          exit 1
+  Ok (input, outOpt) => if not (fileExists input) then
+    let _ = ePutStrLn ("error: no such file: " ++ input)
+    exit 1
+  else
+    let root = envOr "MEDAKA_ROOT" "."
+    let medaka = envOr "MEDAKA" "medaka"
+    let cc = envOr "CC" "clang"
+    let inputAbs = absPath root input
+    let outPath = match outOpt
+      Some o => o
+      None => chopExt (baseOf input)
+    match runBuild root medaka cc inputAbs outPath
+      BuildOk msg => println msg
+      BuildErr msg =>
+        let _ = ePutStrLn msg
+        exit 1
 
 -- Make a relative input absolute against the repo root's parent is wrong; the
 -- emitter needs a path it can readFile.  build_cmd.ml joins relatives against
@@ -45,8 +44,10 @@ main = match parseArgs (args ())
 -- the process cwd by readFile) and only absolutize when already absolute.
 absPath : String -> String -> String
 absPath _ input =
-  if stringLength input > 0 && stringSlice 0 1 input == "/" then input
-  else input
+  if stringLength input > 0 && stringSlice 0 1 input == "/" then
+    input
+  else
+    input
 
 -- Parse a single optional `-o <out>`; the first remaining positional is input.
 parseArgs : List String -> Result String (String, Option String)
@@ -54,11 +55,12 @@ parseArgs argv = parseGo argv [] None
 
 parseGo : List String -> List String -> Option String -> Result String (String, Option String)
 parseGo [] acc out = finishArgs (reverseL acc) out
-parseGo ("-o" :: v :: rest) acc out = parseGo rest acc (Some v)
+parseGo ("-o"::v::rest) acc out = parseGo rest acc (Some v)
 parseGo ["-o"] _ _ = Err "error: -o requires an argument"
-parseGo (x :: rest) acc out = parseGo rest (x :: acc) out
+parseGo (x::rest) acc out = parseGo rest (x :: acc) out
 
 finishArgs : List String -> Option String -> Result String (String, Option String)
-finishArgs [] _ = Err "usage: medaka run selfhost/entries/build_main.mdk <file.mdk> [-o <out>]"
+finishArgs [] _ =
+  Err "usage: medaka run selfhost/entries/build_main.mdk <file.mdk> [-o <out>]"
 finishArgs [input] out = Ok (input, out)
 finishArgs _ _ = Err "error: medaka build takes exactly one input file"

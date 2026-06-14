@@ -34,8 +34,7 @@ import backend.private_mangle.{mangleUnits}
 
 main : <IO, Mut> Unit
 main = match args ()
-  (runtimeP :: coreP :: entry :: roots) =>
-    run runtimeP coreP entry (rootsOrDefault entry roots)
+  runtimeP::coreP::entry::roots => run runtimeP coreP entry (rootsOrDefault entry roots)
   _ => ePutStrLn "usage: medaka run selfhost/entries/llvm_bootstrap_lex_main.mdk <runtime.mdk> <core.mdk> <entry.mdk> [root ...]"
 
 rootsOrDefault : String -> List String -> List String
@@ -48,8 +47,10 @@ dirOf path = dirGo path (stringLength path)
 dirGo : String -> Int -> String
 dirGo _ 0 = "."
 dirGo path i =
-  if stringSlice (i - 1) i path == "/" then stringSlice 0 (i - 1) path
-  else dirGo path (i - 1)
+  if stringSlice (i - 1) i path == "/" then
+    stringSlice 0 (i - 1) path
+  else
+    dirGo path (i - 1)
 
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
@@ -66,23 +67,22 @@ run runtimeP coreP entry roots = match readFile runtimeP
 runEmit : List Decl -> List Decl -> List (String, List Decl) -> <IO, Mut> Unit
 runEmit runtimeDecls coreDecls modules =
   let _ = enableArgStamp ()
-  -- Module-qualify module-PRIVATE top-level functions whose bare name collides
-  -- across units, BEFORE elaborateModules flattens the boundaries away.  Without
-  -- this, two modules' same-named privates (e.g. lex_main.emit vs lexer.emit) both
-  -- mangle to @mdk_emit and only one survives → @main calls the wrong arity.
   let (coreMangled, modulesMangled) = mangleUnits coreDecls modules
   let (coreD, modules2) = elaborateModules runtimeDecls coreMangled modulesMangled
   let allDecls = coreD ++ concatMapList snd modules2
-  let _ = preludeReturnPosDictNames coreD allDecls
-          ++ preludeArgPosDictNames coreD allDecls
-          ++ constrainedSigNames allDecls
+  let _ = preludeReturnPosDictNames coreD allDecls ++ preludeArgPosDictNames coreD allDecls ++ constrainedSigNames allDecls
   let _ = installReturnsSelf (returnsSelfTable allDecls)
   let _ = installSelfFnParams (selfFnParamTable allDecls)
   let _ = installMethodIface (methodIfaceTable allDecls)
   let _ = installMethodConstraintIfaces (methodConstraintIfaces allDecls)
   let _ = installCtorFieldTypes (ctorFieldTypeNames allDecls)
   let _ = installDeclSigTypes (declSigTypeNames runtimeDecls ++ declSigTypeNames allDecls)
-  -- gap-TOLERANT: unreachable dead-code gaps in core.mdk become "0" placeholders
-  -- instead of aborting.  The harness byte-diff is the safety net.
   let _ = enableGapRecord ()
   putStr (emitProgram (lowerProgramEmit allDecls))
+-- Module-qualify module-PRIVATE top-level functions whose bare name collides
+-- across units, BEFORE elaborateModules flattens the boundaries away.  Without
+-- this, two modules' same-named privates (e.g. lex_main.emit vs lexer.emit) both
+-- mangle to @mdk_emit and only one survives → @main calls the wrong arity.
+
+-- gap-TOLERANT: unreachable dead-code gaps in core.mdk become "0" placeholders
+-- instead of aborting.  The harness byte-diff is the safety net.

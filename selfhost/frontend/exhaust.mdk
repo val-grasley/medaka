@@ -94,11 +94,7 @@ buildOracle prog = Oracle {
 }
 
 builtinTypeCtors : List (String, List String)
-builtinTypeCtors = [
-  ("Bool", ["True", "False"]),
-  ("List", ["Cons", "Nil"]),
-  ("Unit", ["Unit"])
-]
+builtinTypeCtors = [("Bool", ["True", "False"]), ("List", ["Cons", "Nil"]), ("Unit", ["Unit"])]
 
 builtinArity : List (String, Int)
 builtinArity = [("True", 0), ("False", 0), ("Cons", 2), ("Nil", 0), ("Unit", 0)]
@@ -113,9 +109,7 @@ builtinCtorType = [
 ]
 
 dataTypeCtors : Decl -> List (String, List String)
-dataTypeCtors (DData _ tyname _ variants _) = [
-  (tyname, map variantName variants)
-]
+dataTypeCtors (DData _ tyname _ variants _) = [(tyname, map variantName variants)]
 dataTypeCtors (DRecord _ tyname _ _ _) = [(tyname, [tyname])]
 dataTypeCtors _ = []
 
@@ -334,9 +328,7 @@ checkGroupCovered oracle clauses =
   let arity = groupArity clauses
   let rows = totalClauseRows clauses
   let query = [desugarPat (PTuple (replicateWild arity))]
-  if useful oracle (Some (tupleCtorName arity)) rows query then [
-    guardWarning
-  ] else []
+  if useful oracle (Some (tupleCtorName arity)) rows query then [guardWarning] else []
 
 groupArity : List (List Pat, Expr) -> Int
 groupArity [] = 0
@@ -346,9 +338,7 @@ groupArity (c::_) = listLen (clausePats c)
 totalClauseRows : List (List Pat, Expr) -> List (List Pat)
 totalClauseRows [] = []
 totalClauseRows (c::rest)
-  | clauseGuardsTotal c = [
-    desugarPat (PTuple (clausePats c))
-  ] :: totalClauseRows rest
+  | clauseGuardsTotal c = [desugarPat (PTuple (clausePats c))] :: totalClauseRows rest
   | otherwise = totalClauseRows rest
 
 -- ── group same-name (name, clause) pairs, first-seen order ────────────────
@@ -474,10 +464,7 @@ checkGuardExhaustiveness prog =
 
 topFunDefClauses : List Decl -> List (String, (List Pat, Expr))
 topFunDefClauses [] = []
-topFunDefClauses ((DFunDef _ n pats body)::rest) = (
-  n,
-  (pats, body)
-) :: topFunDefClauses rest
+topFunDefClauses ((DFunDef _ n pats body)::rest) = (n, (pats, body)) :: topFunDefClauses rest
 topFunDefClauses (_::rest) = topFunDefClauses rest
 
 declBodyWarnings : Oracle -> Decl -> List String
@@ -493,10 +480,7 @@ declBodyWarnings _ _ = []
 
 implClauses : List ImplMethod -> List (String, (List Pat, Expr))
 implClauses [] = []
-implClauses ((ImplMethod n pats body)::rest) = (
-  n,
-  (pats, body)
-) :: implClauses rest
+implClauses ((ImplMethod n pats body)::rest) = (n, (pats, body)) :: implClauses rest
 
 implMethodBodyWarnings : Oracle -> ImplMethod -> List String
 implMethodBodyWarnings oracle (ImplMethod _ _ body) =
