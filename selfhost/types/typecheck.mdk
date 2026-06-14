@@ -6186,7 +6186,15 @@ checkModuleFullDiags : List (String, Scheme) -> List Decl -> List Decl -> <Mut> 
 checkModuleFullDiags seedVars accData prog =
   let _ = set_ref implInferEnabled False
   let _ = set_ref matchWarnings []
-  let _ = set_ref matchOracle (buildOracle prog)
+  -- Seed the ctor oracle over ALL data decls in scope (prelude + every imported
+  -- module via accData, plus this module's own prog), NOT just `prog`.  The
+  -- single-file path (checkProgramDiags:5826) sees a flat prelude+user dump, so
+  -- its `buildOracle prog` already includes Option/Result; the multi-module path
+  -- keeps modules separate, so prelude ADTs live in accData.  Seeding with only
+  -- `prog` left the oracle missing Some/None|Ok/Err → exhaustive matches on
+  -- Option/Result false-warned "non-exhaustive".  buildOracle reads only DData/
+  -- DRecord and is duplicate-tolerant, so accData ++ prog is safe.
+  let _ = set_ref matchOracle (buildOracle (accData ++ prog))
   -- checkModuleFull → checkModuleFullImpl runs resetState () first (clears
   -- typeErrors + currentLevel), so the snapshot below is this module's own errors.
   let schemes = checkModuleFull seedVars accData prog
