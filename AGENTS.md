@@ -26,13 +26,22 @@ linear pipeline; each stage is one file.
 > gzipped checked-in IR seed (`selfhost/seed/emitter.ll.gz` → `bootstrap_from_seed.sh` →
 > `build_native_medaka.sh`). The OCaml compiler (`lib/`+`bin/`) is now
 > the **frozen soak-period differential oracle** — **retired (≠ removed; see PLAN.md "Retirement ≠
-> removal" + [[retirement-is-not-removal]])**. **Current focus = the post-flip soak: keep native
-> canonical, then [PLAN.md Stage 3](./PLAN.md#stage-3--make-the-llvm-backend-canonical-retire-ocaml)
-> tail — re-root the differential gates off the OCaml oracle, then the confidence-gated `lib/`
-> removal.** Native-backend docs: `selfhost/BOOTSTRAP.md` (the B1–B7 + C1–C3 log), `selfhost/PRE-FLIP-GAPS.md`
+> removal" + [[retirement-is-not-removal]])**. **Current focus (2026-06-14) = the soak tail.
+> DONE: gate re-rooting (all correctness gates now OCaml-free — `selfhost/REROOT-PLAN.md`);
+> the DRIVER COLLAPSE (single-file typecheck+eval folded into the 1-module case of the
+> multi-module path — `selfhost/DRIVER-COLLAPSE-PLAN.md`, closes audit §6's recurring
+> single-vs-multi defect; `medaka check` now resolves imports); native dispatch fixes #55
+> (sum/product, both build AND eval paths), #21 (binop over-application on parametric user
+> impls), and the map `Foldable (Map a)` typecheck false-positive + `medaka test` SIGBUS;
+> expanded native stdlib test coverage (json/toml/list/set); fuzzer ported to native
+> (`fuzz_diff.sh` OCaml-free). IN PROGRESS: fixing a native-emitter mixed-nullary/payload-ADT
+> `match` field mis-extraction (surfaced by the now-native fuzzer), then the `argStampEnabled`
+> eval-vs-emit dispatch unification (`selfhost/ARGSTAMP-UNIFY-PLAN.md` — retires the finer
+> dispatch fork the driver collapse left; root of #55/#21). Both de-risk the final
+> confidence-gated `lib/` removal.** Native-backend docs: `selfhost/BOOTSTRAP.md` (the B1–B7 + C1–C3 log), `selfhost/PRE-FLIP-GAPS.md`
 > (the closed pre-flip punch list), `selfhost/EMITTER-GAPS.md`
 > (closed/residual emitter gaps), `selfhost/DISPATCH-GAPS-SCOPE.md` (repro-verified scope of
-> the parked native dispatch gaps #54/#55/#50/#21), `selfhost/PERF-SCOPE.md` (bar-4 `-O2`/benchmark
+> the now-CLOSED native dispatch gaps #54/#55/#50/#21 — all four resolved as of 2026-06-14), `selfhost/PERF-SCOPE.md` (bar-4 `-O2`/benchmark
 > scoping) + `selfhost/PERF-RESULTS.md` (**bar-4 EXECUTED 2026-06-11: self-compile 5.68× / ~59× vs
 > the OCaml interpreter, 18 fixpoint-gated wins; harness `test/bench.sh`**),
 > `selfhost/STAGE2-DESIGN.md` + `selfhost/RUNTIME-DESIGN.md`
@@ -322,9 +331,12 @@ fix lands, then load. (A `UserPromptSubmit` hook,
 | `STDLIB.md` | Stdlib module plan |
 | `stdlib/README.md` | Conventions for adding extern primitives |
 | `selfhost/BOOTSTRAP.md` | Native self-compile log: B1–B7 (each stage native==interpreter) + C1–C3 (emitter self-compile fixpoint), with the emitter bugs fixed per slice |
-| `selfhost/EMITTER-GAPS.md` | Native emitter gap census — closed gaps (E-series) + the open capability gaps (`max`/`min`, refutable pattern-guards) |
-| `selfhost/DISPATCH-GAPS-SCOPE.md` | Repro-verified scope of the 4 parked native dispatch gaps (#54 Map `toList` / #55 sum-product / #50 parametric-Ord / #21 nested route flattening): minimal repro + root cause + fix-location + spawn-readiness per gap. **#54 is coupled to #21** (panic-fix exposes the nested-element-dict route bug) |
+| `selfhost/EMITTER-GAPS.md` | Native emitter gap census — closed gaps (E-series) + residual capability gaps (refutable pattern-guards). **IN PROGRESS 2026-06-14:** a mixed-nullary/payload-ADT `match` field mis-extraction (compiled output faults where `medaka run` is correct) — surfaced by the now-native fuzzer (`fuzz_diff.sh` Tier-1), being root-caused + fixed. |
+| `selfhost/DISPATCH-GAPS-SCOPE.md` | Repro-verified scope of the 4 native dispatch gaps (#54 Map `toList` / #55 sum-product / #50 parametric-Ord / #21 nested route flattening): minimal repro + root cause + fix-location per gap. **ALL FOUR NOW CLOSED** (#54 2026-06-11; #50; #55 2026-06-11 build + 2026-06-13 eval path; #21 2026-06-14 — gated binop element-reqs on `argStampEnabled`, removed the `suppressBinopStamp` workaround). The deeper root — the `argStampEnabled` eval-vs-emit fork these shared — is being retired by `selfhost/ARGSTAMP-UNIFY-PLAN.md`. |
 | `selfhost/PERF-SCOPE.md` | Bar-4 performance scoping: every `clang` invocation + the one-line `-O2` enable, why `-O2` is fixpoint-safe (text IR is pre-clang), benchmark-harness plan, ranked hot paths (2234 `alloca`→`mem2reg`, GC alloc density), sequenced session steps |
 | `selfhost/PERF-RESULTS.md` | **Bar-4 EXECUTED (2026-06-11).** Measured log of the 18 fixpoint-gated perf wins: self-compile **12.04 s → 2.12 s (5.68×); ~59× vs the OCaml interpreter**. `-O2` + GC `free_space_divisor=1` + O(N²)→O(N·log N) SMap/EMap membership/index fixes across DCE/typecheck/emit. Reusable patterns, every dead-end, and the supervised-only remaining levers (dict-passing membership, threaded-sig tree, TRMC). Harness: `test/bench.sh` |
 | `selfhost/STAGE2-DESIGN.md` / `selfhost/RUNTIME-DESIGN.md` | Native backend design: Core IR seam, value rep, GC, per-extern disposition |
 | `selfhost/README.md` | Self-host port slice log + roadmap |
+| `selfhost/REROOT-PLAN.md` | The plan that took every differential gate OCaml-free (DONE 2026-06-13): gate categories (HOST/eval-probe-oracle/front-end/build), golden-capture infra, native-interp oracle, phasing. |
+| `selfhost/DRIVER-COLLAPSE-PLAN.md` | The plan that folded single-file typecheck+eval into the 1-module case of the multi-module path (DONE 2026-06-13, closes audit §6): 5 phases (scaffold→test→dict→eval→check→delete), `check`-option-A (resolves imports), risk register. |
+| `selfhost/ARGSTAMP-UNIFY-PLAN.md` | The approved plan (2026-06-14, IN PROGRESS) to retire the `argStampEnabled` eval-vs-emit dispatch fork (the finer split the driver collapse left; shared root of #55/#21): flip eval to full dict-threading, arg-tag survives only for the irreducible primitive residual; 6 phases, fork inventory, arg-tag dependency map. |

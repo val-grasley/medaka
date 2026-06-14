@@ -8,7 +8,26 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`selfhost/README.md`](./selfhost/README.md).
 
-## Current status (2026-06-10)
+## Current status (2026-06-14)
+
+**Post-flip soak progress (since the 2026-06-12 native-canonical flip):** the
+**gate suite is fully re-rooted off the OCaml oracle** — every correctness gate is
+OCaml-free (`selfhost/REROOT-PLAN.md`); capture/mint tooling and the perf-baseline
+gates keep OCaml at capture time by design until `lib/` removal. The **driver
+collapse** is done (`selfhost/DRIVER-COLLAPSE-PLAN.md`): single-file typecheck+eval
+now run as the 1-module case of the multi-module path (closes audit §6's recurring
+single-vs-multi defect), and `medaka check` resolves imports. Native dispatch fixes
+landed: **#55** (sum/product two-constraint, on both the build AND eval paths),
+**#21** (binop over-application on parametric user `impl`s — removed the
+`suppressBinopStamp` workaround), and the map **`Foldable (Map a)`** typecheck
+false-positive + `medaka test` SIGBUS. Native stdlib test coverage expanded
+(json/toml/list/set doctests+props), and the **fuzzer is ported to native**
+(`fuzz_diff.sh` OCaml-free). **In progress:** fixing a native-emitter
+mixed-nullary/payload-ADT `match` field mis-extraction (surfaced by the now-native
+fuzzer), then the **`argStampEnabled` eval-vs-emit dispatch unification**
+(`selfhost/ARGSTAMP-UNIFY-PLAN.md` — retires the finer dispatch fork the driver
+collapse left behind, the shared root of #55/#21). Both precede the
+confidence-gated `lib/` removal.
 
 **🏁 Medaka is a native self-hosting compiler.** The compiler is written in
 Medaka (`selfhost/`), and the native **LLVM backend now compiles it**: all seven
@@ -616,9 +635,13 @@ bootstrap pattern) **+** frozen GOLDEN snapshots for structural dumps
 
 **Gated milestone — retire `lib/*.ml`.** ✅ **Native is now the default build (2026-06-12
 flip):** `make medaka` builds the canonical native compiler OCaml-free from the seed; docs
-updated; OCaml frozen as the soak oracle. **Remaining gated steps (post-soak):** re-root the
-remaining differential gates on the hybrid oracle (off the OCaml `eval_probe`), then
-archive/delete the OCaml compiler. Sequenced toward, not dated.
+updated; OCaml frozen as the soak oracle. **Re-rooting ✅ DONE (2026-06-13):** every
+correctness gate runs OCaml-free (`selfhost/REROOT-PLAN.md`); only the capture/mint tooling
+(`capture_goldens.sh`/`refresh_seed.sh`) and the perf-baseline gates (`bench.sh`/`profile_selfhost.sh`)
+still invoke OCaml — by design, deleted with `lib/`. **Remaining gated steps (post-soak):**
+the `argStampEnabled` eval-vs-emit dispatch unification (`selfhost/ARGSTAMP-UNIFY-PLAN.md`)
++ the in-flight native-emitter mixed-ADT-match fix (both de-risk the soak), a clean
+bug-free soak stretch, then archive/delete the OCaml compiler. Sequenced toward, not dated.
 
 After Stage 3, the **capability-effects wedge** (Phase 146) + the **WasmGC
 backend** are the product horizon (see the Workstreams table).
