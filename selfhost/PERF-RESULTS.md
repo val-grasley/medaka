@@ -849,3 +849,83 @@ The earlier per-entry figures (2.17–2.40 s) were under variable daytime/evenin
 load; this min-of-10 at ~04:00 is the cleanest measurement. Result: the native
 backend self-compiles in ~2.1 s and is **~59× faster than the OCaml interpreter**,
 meeting the OCaml-retirement performance bar with very wide margin.
+
+---
+
+# Overnight session 2 (2026-06-14) — 3 fixpoint-gated wins, 2.57 s → 1.72 s (1.49×)
+
+Picks up where session 1 left off (~2.1 s, "safe unattended wins exhausted"). That
+conclusion was **partly wrong**: two of session 1's top sample symbols were
+MISATTRIBUTED, hiding genuine O(N²) sites. Method that found them: map each hot
+`sample` symbol to its SOURCE (grep the address/lam-id in the emitter's own emitted
+IR → enclosing `define`), THEN convert + verify by **wall-clock**, not sample count.
+
+**Headline: self-compile 2.57 s → 1.72 s (1.49× this session); ~73× vs the OCaml
+interpreter.** All three wins: (a) byte-identical emitted IR (proven by running the
+BASE emitter and the EDITED emitter on the SAME source and `cmp`-ing — the cleanest
+semantics-preservation check, since the diff gates can be blind to a same-direction
+change in two same-source modes); (b) full differential suite byte-identical to base
+(llvm 180/0, modules 13/0, typed 37/0, build 25/0, native_cli 54/0, eval_run 25/0 +
+batch 25/0, eval_dict 22/3 + batch 7/18, bootstrap_eval 20/0, test 9/0; check_batch
+14/25 + typecheck_golden 0/25 = pre-existing #55); (c) `selfcompile_fixpoint`
+C3a/C3b YES; (d) measured faster, interleaved min-of-N pairwise.
+
+## Win 1 — scopeArities containsName O(N²) → SMap (typecheck.mdk) — 2.49→1.92 s (~23%)
+**The big one, and session 1 MISSED it.** The dominant `sample` symbol `mdk_lam90913`
+(~289 ms ≈ 11%) was assumed to be `promotedConstraints` (session 1's filed
+hotspot). Mapping the lam-id in the emitted IR showed it is actually
+`e => containsName (fst e) scopeNames` inside **`scopeArities`** — a filter of
+`promotedC` against `scopeNames` (~2800 top-level names), run ~100× during
+elaboration ≈ 29M string compares. Build `SMap Unit` sets once (`scopeNames`,
+`inferredNames`), test `smHasKey`. Both lists are membership-only → filter order +
+result set unchanged. Lesson: **map the lam-id before trusting a filed hotspot name.**
+Commit 135b61b.
+
+## Win 2 — string cells via GC_malloc_atomic (runtime/medaka_rt.c) — 1.91→1.85 s (~3%)
+String cells are tag + byte_len + cp_count + raw UTF-8 bytes — POINTER-FREE — yet
+allocated with `GC_malloc` (conservatively scanned). New `mdk_alloc_atomic`
+(`GC_malloc_atomic`) backs `mdk_str_lit`'s cell + the transient buffers in
+`mdk_string_append`/`concat`. Boehm no longer scans string contents for pointers
+during mark. Modest (~3%) because at `free_space_divisor=1` GC cost is dominated by
+allocation THROUGHPUT, not marking — but free + sound (each block fully initialised
+before read; atomic memory is not zeroed). Runtime-only → text-IR fixpoint unaffected
+by construction (same class as session 1's GC-divisor win). Commit 947ccdd.
+
+## Win 3 — maybeInferConstraint membership O(N²) → SMap (typecheck.mdk) — 1.88→1.74 s (~7.5%, 10/10 rounds)
+Same class as Win 1, also hidden. `maybeInferConstraint` runs per SCC member per
+discovery pass and did `containsName m dictEligibleRef.value` (O(all user fn names))
++ `hasSig sigs m` = `lookupAssocS m sigs` (O(whole-program sig list)) →
+O(members × (eligible + sigs)) over the whole compiler — feeding BOTH the
+`maybeInferConstraint` (73) AND part of the `lookupAssocS` (171) sample symbols.
+Fix: add `dictEligibleSetRef` (SMap mirror of `dictEligibleRef`, set in lockstep at
+both set sites) + reuse the EXISTING `sigNameSetRef` (already the presence set of the
+same threaded `sigs`, built once in `processTopGroups`). `hasSig` becomes unused
+(DCE-dropped). Commit f814c77. Seed re-minted (77ac76a).
+
+## Dead-ends this session (do NOT re-attempt unattended)
+- **dict-passing `promotedConstraints` + `ArgRw` (rp/dn/an) membership → SMap**
+  (typecheck.mdk): fixpoint-clean (byte-identical) but **no measurable wall-clock
+  change** (within noise across min-of-7..12, both directions). Session 1's filed
+  "~25-40% dict-passing membership" hotspot does NOT reproduce in wall-clock — those
+  name-set lists are small enough that O(N²)→O(log n) is in the noise floor. The real
+  cost under that symbol was `scopeArities` (Win 1), not `promotedConstraints`.
+- **per-define sig-table reads → `sigMapRef` EMap** (`emitFn`/`emitMultiClauseFn`/
+  `emitFnClause` at llvm_emit.mdk:4917/5082/5690, the Entry-20-safe constant-`sigTable`
+  pattern, new helper `fnParamTys`): byte-identical + fixpoint YES but only ~1.7%,
+  6/10 rounds — noise-level. The per-define O(defines × sigs) is real but a tiny
+  wall-clock fraction; the `support_util.lookupAssoc` (~225 samples, now the #1
+  symbol) is NOT these sites — it is the local `env` lookups (per-CVar, small list →
+  pure call-volume) and the THREADED float-augmented `sigs` (callRetTy/nthParamTy).
+  Reverted (not committed).
+
+## Remaining levers (supervised-only — the genuine ceiling for unattended work)
+After 3 wins the profile is: GC ~35% at real heap (allocation throughput + collection
+of ADT/cons/closure cells — structural, the ~26GB-transient-garbage density of
+Entry 3); `support_util.lookupAssoc` ~13% (split between per-CVar `env` lookups =
+call-volume dead-end, and the THREADED float-augmented `sigs` in callRetTy/nthParamTy
+= the route-fragile float-sensitive refactor session 1 also flagged + reverted —
+docs are even contradictory on whether the Emit `sigs` field is mutated, so this is
+genuinely supervised). Smaller (<2%, call-volume, not actionable): `lookupAssocS`
+(now ~57 after Win 3), `tyVarNames`, `concatMapL`, `dedupS`, `rewriteArgScoped`
+(ArgRw already proven a no-op above). The emitter output buffer is already O(N)
+(Entry 4). No safe unattended O(N²) remains in this profile.
