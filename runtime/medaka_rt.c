@@ -70,6 +70,16 @@ __attribute__((constructor)) static void mdk_gc_init(void) {
  * alignment contract the value rep relies on. */
 void *mdk_alloc(long long n) { return GC_malloc((size_t)n); }
 
+/* Allocate `n` bytes of POINTER-FREE memory (raw bytes / string cells).  Routes to
+ * Boehm's GC_malloc_atomic: the block is never scanned for pointers during mark, so
+ * the GC does not waste mark time walking string contents (the emitter produces an
+ * enormous volume of transient string garbage).  Callers MUST fully initialise the
+ * block before any read — GC_malloc_atomic does not zero — and the block MUST contain
+ * no pointers the collector needs to follow.  String cells qualify: their header is
+ * three integer words (tag, byte_len, cp_count) followed by raw UTF-8 bytes, all
+ * written by mdk_str_lit; no field is a heap pointer. */
+void *mdk_alloc_atomic(long long n) { return GC_malloc_atomic((size_t)n); }
+
 noreturn void mdk_oob(void) {
   fprintf(stderr, "array index out of bounds\n");
   exit(1);
@@ -131,7 +141,7 @@ static long long mdk_utf8_cp_count(const char *p, long long n) {
  * word (cell pointer as i64, low bit 0).  The single GC allocation every
  * String-returning extern (and the emitter's string literals) routes through. */
 long long mdk_str_lit(const char *bytes, long long byte_len) {
-  char *cell = (char *)mdk_alloc(24 + byte_len + 1);
+  char *cell = (char *)mdk_alloc_atomic(24 + byte_len + 1);
   ((long long *)cell)[0] = MDK_STR_TAG;
   ((long long *)cell)[1] = byte_len;
   ((long long *)cell)[2] = mdk_utf8_cp_count(bytes, byte_len);
@@ -227,7 +237,7 @@ long long mdk_string_concat(long long list) {
   long long total = 0;
   for (long long w = list; (w & 1) == 0; w = ((const long long *)w)[2])
     total += ((const long long *)(((const long long *)w)[1]))[1];
-  char *buf = (char *)mdk_alloc(total + 1);
+  char *buf = (char *)mdk_alloc_atomic(total + 1);
   long long off = 0;
   for (long long w = list; (w & 1) == 0; w = ((const long long *)w)[2]) {
     long long s = ((const long long *)w)[1];
@@ -245,7 +255,7 @@ long long mdk_string_append(long long a, long long b) {
   long long al = ((const long long *)a)[1];
   long long bl = ((const long long *)b)[1];
   long long total = al + bl;
-  char *buf = (char *)mdk_alloc(total + 1);
+  char *buf = (char *)mdk_alloc_atomic(total + 1);
   memcpy(buf,      (const char *)a + 24, (size_t)al);
   memcpy(buf + al, (const char *)b + 24, (size_t)bl);
   return mdk_str_lit(buf, total);
