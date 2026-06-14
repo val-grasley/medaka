@@ -1,0 +1,5 @@
+-- typeerror.mdk — positive-diagnostic fixture: a genuine type error the LSP must
+-- surface as at least one diagnostic.  `bad` is annotated Int but bound to a
+-- String.
+bad : Int
+bad = "not an int"

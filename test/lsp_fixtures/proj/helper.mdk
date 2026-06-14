@@ -1,0 +1,9 @@
+-- helper.mdk — sibling dependency carrying an EXHAUSTIVE Option match.  When
+-- proj/main.mdk is opened, the LSP checks this module via the multi-module path;
+-- the native multi-module exhaustiveness-oracle bug would false-warn here.  This
+-- module must report ZERO diagnostics.
+export
+describe : Option String -> String
+describe o = match o
+  Some v => v
+  None => "none"

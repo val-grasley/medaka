@@ -1,0 +1,85 @@
+-- selfhost/entries/lsp_harness_main.mdk — runs the v1 LSP harness fixtures.
+--
+-- Compile + run (the harness uses writeFile/runCommand, which the native
+-- interpreter doesn't bind — it must be BUILT):
+--   medaka build selfhost/entries/lsp_harness_main.mdk -o /tmp/lsp_harness
+--   MEDAKA=<medaka-bin> MEDAKA_ROOT=<repo> /tmp/lsp_harness
+-- Prints PASS/FAIL per fixture + a `HARNESS: N passed, M failed` summary.
+-- (The gate test/lsp_harness.sh wires this up.)
+
+import tools.lsp_harness.{ initializeMsg, initializedMsg, didOpenMsg, requestMsg,
+  docParams, docPosParams, shutdownMsg, exitMsg, runSession, parseFrames,
+  allByteValid, diagCountFor, diagPublishedFor, check, summary }
+
+envOr : String -> String -> <IO> String
+envOr name dflt = match getEnv name
+  Some v => if v == "" then dflt else v
+  None => dflt
+
+fileUri : String -> String
+fileUri path = stringConcat ["file://", path]
+
+nonEmpty : List a -> Bool
+nonEmpty [] = False
+nonEmpty _ = True
+
+-- Fixture 1: frame integrity over a file whose diagnostic carries an em-dash.
+fixtureFrameIntegrity : String -> String -> <IO, Mut> Unit
+fixtureFrameIntegrity medaka fixDir =
+  let path = stringConcat [fixDir, "/multibyte.mdk"]
+  match readFile path
+    Err _ => check "frame-integrity (multibyte)" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [ initializeMsg 1, initializedMsg, didOpenMsg uri src
+                 , requestMsg 2 "textDocument/documentSymbol" (docParams uri)
+                 , requestMsg 3 "textDocument/hover" (docPosParams uri 7 0)
+                 , shutdownMsg 4, exitMsg ]
+      match runSession medaka msgs
+        Err _ => check "frame-integrity (multibyte)" False
+        Ok out => match parseFrames out
+          (frames, clean) =>
+            check "frame-integrity (multibyte)" (clean && allByteValid frames && nonEmpty frames)
+
+-- Fixture 2: opening proj/main.mdk drives the multi-module path, which checks the
+-- sibling helper.mdk's exhaustive Option match.  helper.mdk must be published AND
+-- carry 0 diagnostics (the multi-module exhaustiveness-oracle regression guard).
+fixtureMultiModuleClean : String -> String -> <IO, Mut> Unit
+fixtureMultiModuleClean medaka fixDir =
+  let mainPath = stringConcat [fixDir, "/proj/main.mdk"]
+  let helperUri = fileUri (stringConcat [fixDir, "/proj/helper.mdk"])
+  match readFile mainPath
+    Err _ => check "multi-module clean (0 diagnostics)" False
+    Ok src =>
+      let uri = fileUri mainPath
+      let msgs = [ initializeMsg 1, initializedMsg, didOpenMsg uri src, exitMsg ]
+      match runSession medaka msgs
+        Err _ => check "multi-module clean (0 diagnostics)" False
+        Ok out => match parseFrames out
+          (frames, _) =>
+            check "multi-module clean (0 diagnostics)"
+              (diagPublishedFor helperUri frames && diagCountFor helperUri frames == 0)
+
+-- Fixture 3: a genuine type error must surface ≥1 diagnostic.
+fixtureTypeError : String -> String -> <IO, Mut> Unit
+fixtureTypeError medaka fixDir =
+  let path = stringConcat [fixDir, "/typeerror.mdk"]
+  match readFile path
+    Err _ => check "type-error surfaces (>=1 diagnostic)" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [ initializeMsg 1, initializedMsg, didOpenMsg uri src, exitMsg ]
+      match runSession medaka msgs
+        Err _ => check "type-error surfaces (>=1 diagnostic)" False
+        Ok out => match parseFrames out
+          (frames, _) =>
+            check "type-error surfaces (>=1 diagnostic)" (diagCountFor uri frames >= 1)
+
+main =
+  let medaka = envOr "MEDAKA" "./medaka"
+  let root = envOr "MEDAKA_ROOT" "."
+  let fixDir = stringConcat [root, "/test/lsp_fixtures"]
+  let _ = fixtureFrameIntegrity medaka fixDir
+  let _ = fixtureMultiModuleClean medaka fixDir
+  let _ = fixtureTypeError medaka fixDir
+  summary 3

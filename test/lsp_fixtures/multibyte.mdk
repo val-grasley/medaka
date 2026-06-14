@@ -1,0 +1,16 @@
+-- multibyte.mdk — LSP frame-integrity fixture.
+--
+-- The em-dash (—) in this comment, AND the em-dash the compiler emits inside the
+-- "non-exhaustive match — some values may not be covered" warning, put multibyte
+-- UTF-8 into the publishDiagnostics response body.  Content-Length must count
+-- BYTES (not codepoints), or the frame desyncs and the client drops the server.
+-- This file produces exactly that warning via the partial `classify` match.
+
+greet : String -> String
+greet name = stringConcat ["hello — ", name]
+
+-- Genuine non-exhaustive match (no case for non-zero) → emits the em-dash-bearing
+-- warning, which is what exercises multibyte UTF-8 in a response frame.
+classify : Int -> String
+classify n = match n
+  0 => "zero"

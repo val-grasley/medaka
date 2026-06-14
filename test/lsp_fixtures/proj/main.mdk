@@ -1,0 +1,6 @@
+-- main.mdk — entry that imports the sibling `helper` (so opening it drives the
+-- LSP's multi-module project-diagnostics path, which checks helper.mdk's
+-- exhaustive Option match — the multi-module exhaustiveness regression guard).
+import helper.{describe}
+
+main = println (describe (Some "x"))
