@@ -1,0 +1,104 @@
+-- Shared ordered-map for the self-hosted compiler.  A String-keyed
+-- weight-balanced tree (Adams' 3:1 balance factor) giving O(log n) insert and
+-- lookup.  This is the bottom (`support`) layer — it depends only on the
+-- `stringCompare` extern and basic list operations, so any stage may import it
+-- without creating an upward layer dependency.
+--
+-- History: this consolidates the two near-identical inline ordered-maps that
+-- used to live in the stages — `SMap` (types/typecheck.mdk, backing `TcEnv` +
+-- the dep-graph / dispatch membership sets) and `EMap` (backend/llvm_emit.mdk,
+-- backing the constant-table indexes `sigMapRef`/`knownFnMapRef`/`ctorMapRef`).
+-- Both were O(N²)→O(N·log N) self-compile fixes; SMap was already
+-- weight-balanced, EMap was a plain unbalanced BST.  The canonical shape kept
+-- here is the *balanced* one (a strict perf superset), so EMap's constant-table
+-- lookups are now guaranteed O(log n) regardless of insertion order.
+
+public export data OrdMap a = OTip | OBin Int String a (OrdMap a) (OrdMap a)
+
+export
+omEmpty : OrdMap a
+omEmpty = OTip
+
+export
+omSize : OrdMap a -> Int
+omSize OTip = 0
+omSize (OBin n _ _ _ _) = n
+
+omBin : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
+omBin k v l r = OBin (omSize l + omSize r + 1) k v l r
+
+omBalance : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
+omBalance k v l r
+  | omSize l + omSize r <= 1 = omBin k v l r
+  | omSize r > 3 * omSize l = omRotateL k v l r
+  | omSize l > 3 * omSize r = omRotateR k v l r
+  | otherwise = omBin k v l r
+
+omRotateL : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
+omRotateL k v l r = match r
+  OBin _ _ _ rl rr =>
+    if omSize rl < 2 * omSize rr then omSingleL k v l r else omDoubleL k v l r
+  OTip => panic "OrdMap.rotateL: empty right subtree"
+
+omRotateR : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
+omRotateR k v l r = match l
+  OBin _ _ _ ll lr =>
+    if omSize lr < 2 * omSize ll then omSingleR k v l r else omDoubleR k v l r
+  OTip => panic "OrdMap.rotateR: empty left subtree"
+
+omSingleL : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
+omSingleL k1 v1 t1 r = match r
+  OBin _ k2 v2 t2 t3 => omBin k2 v2 (omBin k1 v1 t1 t2) t3
+  OTip => panic "OrdMap.singleL: empty right subtree"
+
+omSingleR : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
+omSingleR k1 v1 l t3 = match l
+  OBin _ k2 v2 t1 t2 => omBin k2 v2 t1 (omBin k1 v1 t2 t3)
+  OTip => panic "OrdMap.singleR: empty left subtree"
+
+omDoubleL : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
+omDoubleL k1 v1 t1 r = match r
+  OBin _ k2 v2 (OBin _ k3 v3 t2 t3) t4 => omBin k3 v3 (omBin k1 v1 t1 t2) (omBin k2 v2 t3 t4)
+  _ => panic "OrdMap.doubleL: malformed right subtree"
+
+omDoubleR : String -> a -> OrdMap a -> OrdMap a -> OrdMap a
+omDoubleR k1 v1 l t4 = match l
+  OBin _ k2 v2 t1 (OBin _ k3 v3 t2 t3) => omBin k3 v3 (omBin k2 v2 t1 t2) (omBin k1 v1 t3 t4)
+  _ => panic "OrdMap.doubleR: malformed left subtree"
+
+export
+omInsert : String -> a -> OrdMap a -> OrdMap a
+omInsert k v OTip = OBin 1 k v OTip OTip
+omInsert k v (OBin n k2 v2 l r) = match stringCompare k k2
+  Lt => omBalance k2 v2 (omInsert k v l) r
+  Gt => omBalance k2 v2 l (omInsert k v r)
+  Eq => OBin n k v l r
+
+export
+omLookup : String -> OrdMap a -> Option a
+omLookup k OTip = None
+omLookup k (OBin _ k2 v l r) = match stringCompare k k2
+  Lt => omLookup k l
+  Gt => omLookup k r
+  Eq => Some v
+
+export
+omHasKey : String -> OrdMap a -> Bool
+omHasKey k m = match omLookup k m
+  Some _ => True
+  None => False
+
+-- Build a membership set from a name list.
+export
+omFromNames : List String -> OrdMap Unit -> OrdMap Unit
+omFromNames [] m = m
+omFromNames (x :: rest) m = omFromNames rest (omInsert x () m)
+
+-- Generic key-value index.  NOTE: when used to memoise an assoc list whose
+-- first-match semantics matter, insert the list REVERSED so the first list
+-- entry wins on a duplicate key (the caller does the reverse, matching the old
+-- `emFromPairs (reverseL t)` convention).
+export
+omFromPairs : List (String, a) -> OrdMap a -> OrdMap a
+omFromPairs [] m = m
+omFromPairs ((k, v) :: rest) m = omFromPairs rest (omInsert k v m)

@@ -167,6 +167,7 @@ import frontend.ast.{Lit(..), Pat(..), Addr(..), Route(..)}
 import ir.core_ir.{CExpr(..), CField(..), CBind(..), CClause(..), CStmt(..), CProgram(..), CArm(..), CGuard(..), CTree(..), CTBranch(..), CHead(..), CImplEntry(..), CImplBody(..)}
 import ir.core_ir_lower.{compileTree, canonPat}
 import support.util.{reverseL, joinNl, lookupAssoc, listLen}
+import support.ordmap.{OrdMap(..), omInsert, omLookup, omFromNames, omFromPairs}
 
 -- ── D4 emitter-completeness inventory (record-and-skip) ──────────────────────
 -- A MEASUREMENT scaffold for STAGE D4 (selfhost/EMITTER-GAPS.md).  OFF by default:
@@ -648,47 +649,25 @@ fnNames (Emit _ _ fns _ _ _ _ _ _ _) = fns.value
 -- ── known-function index (perf) ─────────────────────────────────────────────
 -- `fnNames` is set ONCE at Emit construction and never mutated (unlike `sigs`,
 -- which the two-pass float propagation rewrites — that is why only THIS table,
--- not the sig table, is safely indexable). Index it into a BST (EMap, a plain ADT
--- → self-compiles in llvm_emit's own graph) installed at emitProgram, so the
--- per-CApp/CVar `isKnownFn` membership test is O(log n) not O(fns).
-data EMap a = ETip | EBin String a (EMap a) (EMap a)
-
-emInsert : String -> a -> EMap a -> EMap a
-emInsert k v ETip = EBin k v ETip ETip
-emInsert k v (EBin k2 v2 l r) = match stringCompare k k2
-  Lt => EBin k2 v2 (emInsert k v l) r
-  Gt => EBin k2 v2 l (emInsert k v r)
-  Eq => EBin k2 v l r
-
-emLookup : String -> EMap a -> Option a
-emLookup k ETip = None
-emLookup k (EBin k2 v l r) = match stringCompare k k2
-  Lt => emLookup k l
-  Gt => emLookup k r
-  Eq => Some v
-
-emFromNames : List String -> EMap Unit -> EMap Unit
-emFromNames [] m = m
-emFromNames (x :: rest) m = emFromNames rest (emInsert x () m)
-
--- generic key-value index; insert REVERSED so the FIRST list entry wins on a
+-- not the sig table, is safely indexable). Index it into the shared `OrdMap`
+-- (support.ordmap, a String-keyed weight-balanced tree → self-compiles in
+-- llvm_emit's own graph) installed at emitProgram, so the per-CApp/CVar
+-- `isKnownFn` membership test is O(log n) not O(fns).  `omFromPairs` inserts the
+-- list REVERSED at the call sites below so the FIRST list entry wins on a
 -- duplicate key (matches lookupAssoc's first-match). For CONSTANT tables only.
-emFromPairs : List (String, a) -> EMap a -> EMap a
-emFromPairs [] m = m
-emFromPairs ((k, v) :: rest) m = emFromPairs rest (emInsert k v m)
 
-knownFnMapRef : Ref (Option (EMap Unit))
+knownFnMapRef : Ref (Option (OrdMap Unit))
 knownFnMapRef = Ref None
 
 installKnownFnMap : List String -> <Mut> Unit
-installKnownFnMap fns = set_ref knownFnMapRef (Some (emFromNames fns ETip))
+installKnownFnMap fns = set_ref knownFnMapRef (Some (omFromNames fns OTip))
 
 -- ctor-arity table index (ct field is set once at Emit construction, constant).
-ctorMapRef : Ref (Option (EMap Int))
+ctorMapRef : Ref (Option (OrdMap Int))
 ctorMapRef = Ref None
 
 installCtorMap : List (String, Int) -> <Mut> Unit
-installCtorMap t = set_ref ctorMapRef (Some (emFromPairs (reverseL t) ETip))
+installCtorMap t = set_ref ctorMapRef (Some (omFromPairs (reverseL t) OTip))
 
 -- sig table index — ONLY for the GLOBAL-`sigs` users (fnRetTy/fnArity), which read
 -- the Emit's `sigs` field. That field is set once at construction and never
@@ -696,15 +675,15 @@ installCtorMap t = set_ref ctorMapRef (Some (emFromPairs (reverseL t) ETip))
 -- old `lookupAssoc name sigs.value`. NOTE: callRetTy/nthParamTy use a DIFFERENT,
 -- THREADED `sigs` augmented with locally-inferred Float-propagation types — those
 -- are NOT covered here (see the reverted sig-table attempt + fn_float_chain).
-sigMapRef : Ref (Option (EMap FnSig))
+sigMapRef : Ref (Option (OrdMap FnSig))
 sigMapRef = Ref None
 
 installSigMap : List (String, FnSig) -> <Mut> Unit
-installSigMap t = set_ref sigMapRef (Some (emFromPairs (reverseL t) ETip))
+installSigMap t = set_ref sigMapRef (Some (omFromPairs (reverseL t) OTip))
 
 isKnownFn : Emit -> String -> <Mut> Bool
 isKnownFn e name = match knownFnMapRef.value
-  Some m => match emLookup name m
+  Some m => match omLookup name m
     Some _ => True
     None => False
   None => containsStr name (fnNames e)
@@ -713,7 +692,7 @@ isKnownFn e name = match knownFnMapRef.value
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
 fnRetTy e name = match sigMapRef.value
-  Some m => match emLookup name m
+  Some m => match omLookup name m
     Some (FnSig _ rty) => rty
     None => LTInt
   None => match lookupAssoc name (sigTable e)
@@ -728,7 +707,7 @@ ctorTable (Emit _ _ _ _ ct _ _ _ _ _) = ct.value
 
 isCtor : Emit -> String -> <Mut> Bool
 isCtor e name = match ctorMapRef.value
-  Some m => match emLookup name m
+  Some m => match omLookup name m
     Some _ => True
     None => False
   None => match lookupAssoc name (ctorTable e)
@@ -3753,7 +3732,7 @@ emitEtaClosure e fname =
 -- the inferred arity of a known top-level function (its signature's param count).
 fnArity : Emit -> String -> <Mut> Int
 fnArity e fname = match sigMapRef.value
-  Some m => match emLookup fname m
+  Some m => match omLookup fname m
     Some (FnSig ptys _) => lengthS ptys
     None => 0
   None => match lookupAssoc fname (sigTable e)
@@ -3763,7 +3742,7 @@ fnArity e fname = match sigMapRef.value
 -- the declared arity of constructor `name` (its field count, from the ctor table).
 ctorArity : Emit -> String -> <Mut> Int
 ctorArity e name = match ctorMapRef.value
-  Some m => match emLookup name m
+  Some m => match omLookup name m
     Some n => n
     None => 0
   None => match lookupAssoc name (ctorTable e)
