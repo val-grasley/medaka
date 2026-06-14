@@ -1,0 +1,2 @@
+f : List (Expr, Expr) -> Expr
+f x = x

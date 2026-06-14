@@ -9,6 +9,10 @@
 #   2. multi-module clean — a sibling module's exhaustive Option match reports 0
 #      diagnostics via the project path (guards the exhaustiveness-oracle bug).
 #   3. type-error surfaces — a genuine error yields >=1 diagnostic.
+#   4. unparseable no-crash — documentSymbol on an unparseable file still responds.
+#   5. semantic tokens — semanticTokens/full over `List (Expr, Expr) -> Expr`; the
+#      three length-4 `Expr` type names all decode to the SAME tokenType (the
+#      `type` legend index), the fix for the regex-grammar mis-scope.
 #
 # Requires ./medaka + ./medaka_emitter pre-built (run `make medaka`).  Exits 0 iff
 # every fixture passes.

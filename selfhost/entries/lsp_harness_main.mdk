@@ -22,6 +22,9 @@ import tools.lsp_harness.{
   diagCountFor,
   diagPublishedFor,
   responseById,
+  semanticData,
+  decodeSemToks,
+  lenTokensShareType,
   check,
   summary,
 }
@@ -118,6 +121,33 @@ fixtureUnparseableNoCrash medaka fixDir =
               None => False
             check "unparseable file: server survives documentSymbol" responded
 
+{- Fixture 5: semanticTokens/full over `f : List (Expr, Expr) -> Expr`.  The three
+   `Expr` type names (each 4 chars) must all classify to the SAME tokenType — the
+   `type` index in the legend.  The regex TextMate grammar mis-scopes the
+   comma-followed `Expr` differently from the trailing one; the lexer-driven
+   semantic tokens fix it.  We decode the delta-encoded `data` array back to
+   absolute tokens and assert the length-4 tokens (>=3 of them) share a type. -}
+fixtureSemanticTokens : String -> String -> <IO, Mut> Unit
+fixtureSemanticTokens medaka fixDir =
+  let path = stringConcat [fixDir, "/semantic.mdk"]
+  match readFile path
+    Err _ => check "semantic tokens: Expr names share one type" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/semanticTokens/full" (docParams uri),
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => check "semantic tokens: Expr names share one type" False
+        Ok out => match parseFrames out
+          (frames, _) => match semanticData 2 frames
+            None => check "semantic tokens: Expr names share one type" False
+            Some ints => check "semantic tokens: Expr names share one type" (lenTokensShareType 4 3 (decodeSemToks ints))
+
 main =
   let medaka = envOr "MEDAKA" "./medaka"
   let root = envOr "MEDAKA_ROOT" "."
@@ -126,4 +156,5 @@ main =
   let _ = fixtureMultiModuleClean medaka fixDir
   let _ = fixtureTypeError medaka fixDir
   let _ = fixtureUnparseableNoCrash medaka fixDir
-  summary 4
+  let _ = fixtureSemanticTokens medaka fixDir
+  summary 5

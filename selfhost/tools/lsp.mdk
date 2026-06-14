@@ -56,6 +56,7 @@ import frontend.parser.{
   declPosLine,
   declPosEndLine,
 }
+import frontend.lexer.{Token(..), tokenizeWithOffsetPairs}
 import frontend.desugar.{desugar}
 import types.typecheck.{checkProgramSchemes, ppScheme, Scheme(..)}
 import tools.fmt.{formatSource}
@@ -855,6 +856,169 @@ parseDigits arr i n acc seen
 isDigit : Char -> Bool
 isDigit c = charCode c >= 48 && charCode c <= 57
 
+{- ── textDocument/semanticTokens/full ────────────────────────────────────────
+
+   Lexer-driven semantic highlighting.  The TextMate grammar in the VSCode
+   extension is regex and can't parse, so the SAME type name colors
+   inconsistently (e.g. in `f : List (Expr, Expr) -> Expr` the comma-followed
+   `Expr` is mis-scoped vs the trailing one).  The lexer already disambiguates
+   `TUpper` (type) from `TIdent` (variable), so server-emitted semantic tokens
+   fix it deterministically.
+
+   Legend (index = the `tokenType` int on the wire — keep in lockstep with
+   `semanticLegend` / `semanticTokensOptions`):
+     0 keyword  1 type  2 function  3 variable  4 string  5 number  6 operator
+
+   Positions: `tokenizeWithOffsetPairs` gives each token a (startByte, endByte)
+   char-offset pair; synthetic layout tokens (NEWLINE/INDENT/DEDENT/EOF) carry an
+   EMPTY span (start == end) and are filtered.  `posOfOffset` turns an offset into
+   a 0-based (line, char) — codepoint-based, which equals UTF-16 for BMP chars
+   (incl. em-dashes); only astral/emoji positions would differ (DEFERRED — see
+   the multiline/astral note in `semTokenLen`).  The wire format is delta-encoded:
+   5 ints per token `[deltaLine, deltaChar, length, tokenType, tokenModifiers]`,
+   tokens in start order (the lexer stream already is). -}
+
+-- The legend, in index order.  These names match standard theme scopes so
+-- default themes color them without per-theme config.
+semanticLegend : List String
+semanticLegend =
+  ["keyword", "type", "function", "variable", "string", "number", "operator"]
+
+semanticTokensOptions : Json
+semanticTokensOptions =
+  jObject
+    [
+      (
+        "legend",
+        jObject [
+          ("tokenTypes", jArray (map JString semanticLegend)),
+          ("tokenModifiers", jArray []),
+        ],
+      ),
+      ("full", JBool True),
+    ]
+
+{- The semantic token type index (into `semanticLegend`) for a token, or None to
+   SKIP it (synthetic/layout tokens and punctuation we leave to TextMate).  The
+   span is supplied separately; classification is purely by token shape. -}
+semTokenType : Token -> Option Int
+semTokenType (TUpper _) = Some 1
+semTokenType (TIdent _) = Some 3
+semTokenType (TBacktickIdent _) = Some 2
+semTokenType (TString _) = Some 4
+semTokenType (TChar _) = Some 4
+semTokenType (TInterpOpen _) = Some 4
+semTokenType (TInterpMid _) = Some 4
+semTokenType (TInterpEnd _) = Some 4
+semTokenType (TInt _) = Some 5
+semTokenType (TFloat _) = Some 5
+semTokenType (TBool _) = Some 0
+-- keywords → keyword
+semTokenType TLet = Some 0
+semTokenType TRec = Some 0
+semTokenType TWith = Some 0
+semTokenType TMut = Some 0
+semTokenType TIn = Some 0
+semTokenType TIf = Some 0
+semTokenType TThen = Some 0
+semTokenType TElse = Some 0
+semTokenType TMatch = Some 0
+semTokenType TData = Some 0
+semTokenType TRecord = Some 0
+semTokenType TInterface = Some 0
+semTokenType TDefault = Some 0
+semTokenType TImpl = Some 0
+semTokenType TImport = Some 0
+semTokenType TExport = Some 0
+semTokenType TPublic = Some 0
+semTokenType TWhere = Some 0
+semTokenType TOf = Some 0
+semTokenType TRequires = Some 0
+semTokenType TDo = Some 0
+semTokenType TAs = Some 0
+semTokenType TExtern = Some 0
+semTokenType TDeriving = Some 0
+semTokenType TType = Some 0
+semTokenType TNewtype = Some 0
+semTokenType TProp = Some 0
+semTokenType TTest = Some 0
+semTokenType TBench = Some 0
+semTokenType TEffect = Some 0
+semTokenType TFunction = Some 0
+-- operators / punctuation → operator
+semTokenType TPlus = Some 6
+semTokenType TMinus = Some 6
+semTokenType TStar = Some 6
+semTokenType TSlash = Some 6
+semTokenType TMod = Some 6
+semTokenType TEqEq = Some 6
+semTokenType TNeq = Some 6
+semTokenType TLt = Some 6
+semTokenType TGt = Some 6
+semTokenType TLeq = Some 6
+semTokenType TGeq = Some 6
+semTokenType TAnd = Some 6
+semTokenType TOr = Some 6
+semTokenType TCons = Some 6
+semTokenType TPlusPlus = Some 6
+semTokenType TPipeRight = Some 6
+semTokenType TRCompose = Some 6
+semTokenType TLCompose = Some 6
+semTokenType TFatArrow = Some 6
+semTokenType TArrow = Some 6
+semTokenType TLArrow = Some 6
+semTokenType TBang = Some 6
+semTokenType TQuestion = Some 6
+semTokenType TEqual = Some 6
+semTokenType TColon = Some 6
+semTokenType TPipe = Some 6
+semTokenType TDotStar = Some 6
+semTokenType TDotDot = Some 6
+semTokenType TDotDotEq = Some 6
+-- bare delimiters / layout / adjacency markers → SKIP (leave to TextMate)
+semTokenType _ = None
+
+{- A classified token ready for delta-encoding: absolute 0-based line + char,
+   UTF-16 length, and the legend index. -}
+public export data SemTok = SemTok Int Int Int Int
+
+{- Build the absolute SemTok list from the offset-paired token stream.  `arr` is
+   the source as a char array (for offset→line/col).  Filters: synthetic tokens
+   (empty span, start == end), unclassified tokens (None), and any token that
+   straddles a line boundary (LSP semantic tokens may not span lines — only a
+   triple-quoted string would, and those stay with TextMate; DEFERRED). -}
+semToksOf : Array Char -> List Token -> List (Int, Int) -> List SemTok
+semToksOf _ [] _ = []
+semToksOf _ _ [] = []
+semToksOf arr (t::ts) ((s, e)::ps)
+  | s >= e = semToksOf arr ts ps
+  | otherwise = match semTokenType t
+    None => semToksOf arr ts ps
+    Some ty => match (posOfOffset arr s, posOfOffset arr e)
+      ((sl, sc), (el, ec)) =>
+        if sl == el then
+          SemTok sl sc (ec - sc) ty :: semToksOf arr ts ps
+        else
+          semToksOf arr ts ps
+
+{- Delta-encode the (start-ordered) SemTok list into the flat 5-int LSP array.
+   prevLine/prevChar start at 0, so the first token's deltaLine is its absolute
+   line; deltaChar is relative to prevChar only when deltaLine == 0. -}
+encodeSemToks : Int -> Int -> List SemTok -> List Int
+encodeSemToks _ _ [] = []
+encodeSemToks prevLine prevChar ((SemTok line ch len ty)::rest) =
+  let dLine = line - prevLine
+  let dChar = if dLine == 0 then ch - prevChar else ch
+  dLine :: dChar :: len :: ty :: 0 :: encodeSemToks line ch rest
+
+-- The full semantic-tokens `data` array (flat ints) for a source string.
+semanticTokensData : String -> List Int
+semanticTokensData src =
+  let arr = stringToChars src
+  match tokenizeWithOffsetPairs src
+    (toks, pairs) => encodeSemToks 0 0 (semToksOf arr toks pairs)
+
+
 -- ── request dispatch ────────────────────────────────────────────────────────
 --
 -- The driver loops: read headers → read body → parse JSON → dispatch.  The
@@ -881,6 +1045,7 @@ initializeResult =
           ("hoverProvider", JBool True),
           ("completionProvider", jObject []),
           ("inlayHintProvider", JBool True),
+          ("semanticTokensProvider", semanticTokensOptions),
         ],
       ),
       (
@@ -1103,6 +1268,17 @@ highlightResult src params = match (positionLine params, positionChar params)
     Some name => jArray (highlightRanges src name)
   _ => JNull
 
+-- textDocument/semanticTokens/full → { data: [int] } (delta-encoded).
+handleSemanticTokens : Json -> Json -> Docs -> <IO, Mut> Unit
+handleSemanticTokens idJson params docs =
+  let result = match requestUri params
+    None => JNull
+    Some uri => match docsGet uri docs
+      None => JNull
+      Some src =>
+        jObject [("data", jArray (map JInt (semanticTokensData src)))]
+  writeMessage (responseMsg idJson result)
+
 -- The `.text` of the LAST element of a contentChanges JArray (Full sync).
 lastChangeText : Json -> Option String
 lastChangeText (JArray arr)
@@ -1178,14 +1354,18 @@ dispatch runtimeSrc coreSrc msg docs = match methodOf msg
                         let _ = handleInlayHint coreSrc (requestId msg) (fieldOr "params" msg) docs
                         Step docs True
                       else
-                        if meth == "shutdown" then
-                          let _ = writeMessage (responseMsg (requestId msg) JNull)
+                        if meth == "textDocument/semanticTokens/full" then
+                          let _ = handleSemanticTokens (requestId msg) (fieldOr "params" msg) docs
                           Step docs True
                         else
-                          if meth == "exit" then
-                            let _ = logLine "exit (clean shutdown)"
-                            Step docs False
-                          else Step docs True  -- unrecognized method — ignore
+                          if meth == "shutdown" then
+                            let _ = writeMessage (responseMsg (requestId msg) JNull)
+                            Step docs True
+                          else
+                            if meth == "exit" then
+                              let _ = logLine "exit (clean shutdown)"
+                              Step docs False
+                            else Step docs True  -- unrecognized method — ignore
 -- a response/unknown — ignore, keep going
 
 -- stop the loop
