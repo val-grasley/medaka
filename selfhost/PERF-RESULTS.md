@@ -944,3 +944,23 @@ are simply not the bottleneck; the GC cost is ADT/cons/closure allocation throug
 not string-intermediate churn. Reverted. (Tooling note: a naive ` ++ ` split mis-
 handles nested `argDecls (a ++ b)` → tuple-as-list trap; use a paren-aware split.
 A separate cheaper-`freshReg` C-extern idea was not pursued.)
+
+## Dead-end — LLVM function attributes (nounwind / malloc-noalias / pure) (2026-06-14)
+Hypothesis: the emitter emits ZERO optimization attributes (bare `define`s, bare runtime
+`declare`s), so clang `-O2` assumes worst-case (may-unwind, clobbers-all-memory) across
+~18.8k call sites. Implemented + FULLY gate-verified (all differential gates byte-identical,
+`selfcompile_fixpoint` C3a/C3b YES, `diff_native_stack` 7/0): **Stage 1** `attributes #0 =
+{ nounwind }` on all 3156 emitted defines + `__attribute__((nothrow))` on all 103
+`medaka_rt.c` functions; **Stage 2** `malloc`/`alloc_size(1)` on `mdk_alloc`/`mdk_alloc_atomic`.
+The attributes are SOUND (Medaka never unwinds; GC_malloc returns fresh noalias memory).
+**But NO measurable speedup** (pairwise min-of-N): self-compile 1.63→1.66s (noise), fib 40
+0.23→0.24s, ack 3 10 flat, alloc-micro flat. Reverted both; Stage 3 (`pure` on
+string_eq/value_eq/hashes) not attempted (targets cold + same ceiling).
+**Why:** (1) unwind tables cost nothing at *execution* time on ARM64/-O2, and clang already
+infers nounwind intra-module; (2) `malloc`/noalias only helps an alloc's immediate callers,
+but every cell is fully `store`d before any read (nothing to load-forward), and the opaque
+`GC_malloc` itself is the hot cost an attr on the thin wrapper can't touch. Lone artifact:
+Stage 1 shrank the emitter binary ~11% (dropped unwind scaffolding) — size, not speed.
+**Conclusion: clang attribute hints are not a lever here.** The bottleneck is GC alloc
+density (transient-cell rate) + string/IO churn, NOT call-overhead / unwind / aliasing.
+Future perf work must reduce ALLOCATION RATE (fewer transient cells), not annotate IR.
