@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 # fuzz_diff.sh — differential fuzzer driver for the Medaka compiler (Stage-0/1 MVP).
 #
-# Generates well-typed Medaka programs with dev/fuzz_gen.exe (the random input
-# source — an OCaml dev tool; not an oracle) and checks them two ways:
+# Generates well-typed Medaka programs with the NATIVE selfhost generator
+# (test/bin/fuzz_gen_main, compiled from selfhost/entries/fuzz_gen_main.mdk by
+# test/build_oracles.sh — the OCaml-free port of the former OCaml dev generator, #36).
+# The whole gate is now OCaml-free (the value oracle was already native, REROOT
+# Phase 3).  The generator emits the SAME kind of program (type-directed,
+# well-typed-by-construction; the random input source, not an oracle) and checks
+# them two ways:
 #   Tier-A (oracle + invariants): run each program through the native-interp ORACLE
 #     (test/bin/eval_dict_main, the self-hosted dict-passing tree-walker compiled to
 #     a standalone native binary by test/build_oracles.sh — REROOT-PLAN Phase 3).
@@ -42,6 +47,17 @@
 #     arity-distinguished tuple-head fix — former Gap C1/C5.  The generator never
 #     emits `<`/`>` on a tuple, so the deferred parametric-default-`<` gap is unreached.)
 #
+# RE-BASELINE (native generator is the new baseline, NOT byte-identical to the old
+# OCaml dev generator).  The fuzzer checks output INVARIANTS, never a fixed
+# golden, so the generator only needs to emit valid, varied, DETERMINISTIC programs
+# per seed.  Exact byte-parity with the retired OCaml generator is impractical and
+# unnecessary: (1) the RNG DRAW differs (OCaml masked a raw next64() and took `rem
+# n`; the native port draws via the shared SplitMix64 `randomInt 0 (n-1)` extern —
+# same algorithm + seed, different consumption), and (2) the printer differs
+# (selfhost width-80 / string_of_float vs OCaml width-200 %g) — layout/float-digit
+# only, never validity.  So a given seed still maps to ONE program (replayable), but
+# a DIFFERENT program than the old OCaml seed.  See selfhost/entries/fuzz_gen_main.mdk.
+#
 # Usage: test/fuzz_diff.sh [START_SEED] [COUNT] [TIER] [BATCH] [NATIVE] [NATIVE_COUNT]
 #   defaults: START_SEED=1 COUNT=200 TIER=2 BATCH=12 NATIVE=0 NATIVE_COUNT=40
 #
@@ -51,7 +67,16 @@ set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 2
 
-GEN="$ROOT/_build/default/dev/fuzz_gen.exe"
+GEN="$ROOT/test/bin/fuzz_gen_main"
+# The native generator's `main : <…> Unit` ends with `putStr (programToString …)`,
+# after which the native runtime auto-prints `main`'s Unit as a trailing "()" line.
+# gen() writes the program to $1 and drops that one trailing "()" so the emitted
+# .mdk parses (a bare top-level "()" is a parse error).  MEDAKA_ROOT lets the
+# generator read stdlib (string.toInt, the printer's float/char helpers) from disk.
+gen() {  # gen <outfile> <seed>
+  MEDAKA_ROOT="$ROOT" "$GEN" --seed "$2" --tier "$TIER" --batch "$BATCH" 2>/dev/null \
+    | sed -e '${/^()$/d;}' > "$1"
+}
 # Native-interp ORACLE (REROOT-PLAN.md Phase 3 / §2g): the self-hosted dict-passing
 # tree-walker compiled to a standalone native binary (test/bin/eval_dict_main, built
 # by test/build_oracles.sh) replaces the OCaml interpreter oracle.  Random inputs
@@ -71,7 +96,7 @@ BATCH="${4:-12}"
 NATIVE="${5:-0}"
 NATIVE_COUNT="${6:-40}"
 
-[ -x "$GEN" ] || { echo "missing $GEN — the fuzz generator (an OCaml dev tool) must be built"; exit 2; }
+[ -x "$GEN" ] || { echo "missing $GEN — the fuzz generator (native selfhost entry) must be built: sh test/build_oracles.sh"; exit 2; }
 [ -x "$ORACLE" ] || { echo "missing $ORACLE — run: sh test/build_oracles.sh"; exit 2; }
 if [ "$NATIVE" = "1" ]; then
   [ -x "$MEDAKA" ] && [ -x "$EMITTER" ] || { echo "missing $MEDAKA / $EMITTER — run: make medaka"; exit 2; }
@@ -145,7 +170,17 @@ echo "fuzz_diff: seeds $START..$end  tier=$TIER  batch=$BATCH  native=$NATIVE"
 
 for seed in $(seq "$START" "$end"); do
   ran=$((ran + 1))
-  "$GEN" --seed "$seed" --tier "$TIER" --batch "$BATCH" > "$SRC" 2>/dev/null
+  gen "$SRC" "$seed"
+
+  # The native generator itself can hit an open native-backend codegen gap on
+  # certain programs (intermittent mixed nullary/payload ADT field corruption —
+  # surfaces as a printer NULL-deref / empty output; most prevalent at TIER=1,
+  # absent at the default TIER=2).  Empty output ⇒ generator crashed, NOT a
+  # compiler-under-test finding: count as a known native gap and skip.  See
+  # selfhost/entries/fuzz_gen_main.mdk ("native-generator gap").
+  if [ ! -s "$SRC" ]; then
+    known=$((known + 1)); continue
+  fi
 
   # ----- Tier-A: native-interp oracle run + invariant check -----
   if ! "$ORACLE" "$RUNTIME" "$CORE" "$SRC" > "$ORA" 2>&1; then
@@ -178,7 +213,9 @@ if [ "$NATIVE" = "1" ]; then
   for seed in $(seq "$START" "$nend"); do
     nat_ran=$((nat_ran + 1))
     : > "$NERR"; rm -f "$NATSTRIP"
-    "$GEN" --seed "$seed" --tier "$TIER" --batch "$BATCH" > "$NSRC" 2>/dev/null
+    gen "$NSRC" "$seed"
+    # generator hit the open native gap (empty output) — known, skip (see Tier-A)
+    if [ ! -s "$NSRC" ]; then nat_known=$((nat_known + 1)); continue; fi
     # oracle for THIS program — skip seeds the oracle itself rejects
     # (those are Tier-A's job on the normal program; here we only compare native
     # against a known-good oracle baseline).  The native-interp oracle auto-prints
