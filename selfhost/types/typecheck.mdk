@@ -6589,10 +6589,12 @@ dictPassModulesScoped dictNames promotedC core2 allModules ((mid, prog) :: rest)
 -- its `Eq a` and `Foldable t` vars survive (no literal pins them) → inferred == sig == 2.
 scopeArities : List (String, List Int) -> List Decl -> List (String, List Int)
 scopeArities promotedC scope =
-  let scopeNames = declTopFnNames scope
-  let inferred = filterList (e => containsName (fst e) scopeNames) promotedC
-  let inferredNames = map fst inferred
-  let sigEntries = filterList (e => not (containsName (fst e) inferredNames)) (concatMapL constrainedSigArity scope)
+  -- membership-only sets (built once) instead of O(N) containsName scans per entry:
+  -- scopeNames (~all top-level fn names) was scanned per promotedC entry → O(N²).
+  let scopeNames = namesToSet (declTopFnNames scope) STip
+  let inferred = filterList (e => smHasKey (fst e) scopeNames) promotedC
+  let inferredNames = namesToSet (map fst inferred) STip
+  let sigEntries = filterList (e => not (smHasKey (fst e) inferredNames)) (concatMapL constrainedSigArity scope)
   inferred ++ sigEntries
 
 declTopFnNames : List Decl -> List String
