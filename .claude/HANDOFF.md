@@ -15,7 +15,7 @@ Soak bug-hunt session. Worktrees/branches were pruned to 4 (housekeeping). THREE
 
 **Capability-effects research pass DONE:** `CAPABILITY-EFFECTS-RESEARCH.md` committed to main. Recommendation: dual-layer manifest (TOML `[package.capabilities]` now + WIT world later); target Spin/Fermyon first; 5 forks identified (extern-namespace sealing on native is the sharp one).
 
-**BOOKKEEPING CLEARED THIS CHECKPOINT:** EMITTER-GAPS.md entry for scale-bug added; PLAN.md / HANDOFF / eval_dict header updated. **Seed re-mint still pending** (stale since emitter-graph changes — `bootstrap_from_seed` red is expected; fixpoint green; re-mint via `CHECK_OCAML=0 bash test/refresh_seed.sh` then verify `bootstrap_from_seed.sh`).
+**BOOKKEEPING CLEARED THIS CHECKPOINT:** EMITTER-GAPS.md entry for scale-bug added; PLAN.md / HANDOFF / eval_dict header updated. **Seed RE-MINTED** (commit 8718b05, `bootstrap_from_seed` PASS C3a byte-for-byte) — fresh as of this checkpoint.
 
 **New minor finding (logged, deferred):** `-0.0` literal renders `0.0` interp vs `-0.0` native (sign-of-zero lost in interp) — pre-existing, esoteric, uncovered by gates.
 
