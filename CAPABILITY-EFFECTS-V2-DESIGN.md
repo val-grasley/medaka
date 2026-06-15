@@ -15,6 +15,23 @@ implementation, works out the mechanics, and surfaces the remaining forks (§7).
 
 ---
 
+## 0. LOCKED DECISIONS (2026-06-15 — fork sign-off; supersede §7 leans)
+
+All §7 forks are resolved as follows (authoritative for implementation):
+
+- **Atom cardinality (overrides the §2 ≤1-atom recommendation): a row carries a SET of atoms per label**, deduped by domain `⊑`. `<Net "a.com/*", Net "b.com/*">` is preserved as two atoms — NOT joined to `Net ⊤`. Rationale: joining same-label params loses the disjunctive multi-host/multi-path allow-list, which is the core capability grant. Unification = set-union of atoms then `⊑`-dedup (drop an atom subsumed by another of the same label).
+- **(b) Prefix footgun:** patterns must carry a delimiter / trailing-`*`; raw-string prefix only with the boundary explicit in v2. Structure-aware (URL/path) matching deferred to a later `Product` domain.
+- **(e) v2 parameterized labels:** `Net`, `FileRead`, `FileWrite` only (the real enforcement points). All other labels atomic in v2; more can be added later with no rewrite.
+- **(g) Declaration syntax:** `effect Net Prefix` — space-separated, mirrors data-constructor fields ("the Net effect carries a Prefix"); NOT `effect Net : Prefix` (the `:` misreads as type ascription). Atomic security capability: `effect Log`. Internal/purity class: `internal effect Mut`. Security-capability is the default; `internal` is the explicit opt-out (not manifest-emitted, never granted, never parameterized).
+- **Domain representation:** general `RefinementDomain` interface (`dtop/dsub/djoin/dmeet/drender`); implement only the **`Prefix`** domain in v2 (`PPrefix of string option`, ⊤ = `None`). `Set`/`Product` are later instances with no `unify_row`/escape/manifest rewrite. Known-prefix analysis is **intraprocedural** (literal / `lit ++ x` / interpolation / let-propagation; fn-call result ⇒ Unknown ⇒ widen to ⊤).
+- **IO decomposition:** narrow leaf labels (Stdout/Stderr/Stdin/FileRead/FileWrite/Env/Exec/Clock/Net), `IO` retained as a **widening union alias** → re-annotate ~21 leaf externs only; zero forced changes to existing `<IO>` annotations.
+- **(i) `check-policy`/manifest → native CLI:** port to the canonical native toolchain (the headline feature must run on the canonical binary), in the Stage-3 manifest work.
+- **NON-GOAL (firm):** `Throws`/typed-error effects. `Result` is the canonical error representation; `panic` is the sole uncatchable/unrecoverable escape hatch (honors `no-catchable-panics-isolation`). Param representation stays DATA-shaped — no type-parameter domain.
+
+**Both typecheckers (selfhost `typecheck.mdk` + OCaml `lib/typecheck.ml`) must change in lockstep; every stage is fixpoint-gated.**
+
+---
+
 ## 1. Current-state grounding (probed, not assumed)
 
 ### 1.1 The parse/typecheck probe — ground truth
