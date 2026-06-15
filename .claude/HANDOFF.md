@@ -7,6 +7,19 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
+## RESUME — session 2026-06-15 PM (ended at usage max). local `main` = ed83a6d
+Soak bug-hunt session. Worktrees/branches were pruned to 4 (housekeeping). Two soak bugs found+fixed+MERGED+verified (fixpoint C3a/C3b YES each):
+- **Native-emit scale failure** (`unbound 'not'`, ~5% build rate): post-mangle synthesized-prelude-ref reconciliation in `selfhost/ir/dce.mdk` + `selfhost/backend/llvm_emit.mdk`. Fuzzer now 900/900 clean (`test/fuzz_diff.sh START COUNT 2 12 1 COUNT`, native tier).
+- **Whole-float rendering → canonical `1.0`** (was `1.`): `runtime/medaka_rt.c` (×2) + `lib/eval.ml` (×2, deliberate oracle edit) + `dev/astdump.ml`/`lib/ast.ml` cosmetic; 14 goldens re-captured. nan/inf now bare. Decided change — memory `project_float_tostring_trailing_dot` (RESOLVED).
+
+**IN FLIGHT / TO RESUME (NOT merged):**
+1. **foldMap method-level-constraint gap** (eval_dict 3/18 → target 25/0) — branch `fix/method-constraint-cross-module-accumulator`, 2 commits NOT gated: `ac6604f` (accumulator S1-S3) + `1608287` (S4 WIP). **S4 root cause FOUND** (see that commit msg + comment): constraint-slot ids vs default-body instantiation used DIFFERENT fresh tyvar ids → `lookupAssocI`=None → `activeDictVars` empty → in-body `empty` routed RNone → `'++'` panic. Fix = one `sigToSchemeTvs` build for both (mirrors oracle `lib/typecheck.ml:3067-3093,3126-3142`). **TO FINISH:** remove leftover `dbgROMD` debug probes (panic on `'crush'`) still in `typecheck.mdk`; rebase on ed83a6d; `make medaka`+`FORCE=1 build_oracles`; gate `diff_selfhost_eval_dict` 25/0 + fixpoint + no-regression. Task list #2 has the detail.
+2. **Capability-effects research pass** (Phase 146 #1) — agent was cut off BEFORE writing `CAPABILITY-EFFECTS-RESEARCH.md`; **nothing salvaged, re-run from scratch**. Next big direction the user wants: pivot to capability effects after foldMap + a checkpoint. Sequence: research pass → design note + manifest format (`add-language-feature`) → manifest emission (PLAN.md "Capability-effects wedge — near-term sequence").
+
+**DEFERRED BOOKKEEPING (do at next checkpoint):** EMITTER-GAPS.md entry for the scale-bug fix; **seed re-mint** (stale since the scale-bug emitter-graph change — `bootstrap_from_seed` red is expected; fixpoint green; re-mint via `CHECK_OCAML=0 bash test/refresh_seed.sh` then verify `bootstrap_from_seed.sh`).
+
+**New minor finding (logged, deferred):** `-0.0` literal renders `0.0` interp vs `-0.0` native (sign-of-zero lost in interp) — pre-existing, esoteric, uncovered by gates. Memory `project_negzero_interp_native_divergence`.
+
 ## Where things stand (local `main` = 6dd74dc; nothing pushed — work lives on LOCAL main)
 The big multi-session arc is essentially done. Verify current state, don't trust this verbatim:
 - `cd /Users/val/medaka && git log --oneline -20 main` (the recent landings).
