@@ -1,4 +1,4 @@
-# Next-orchestrator handoff — Medaka, soak tail (2026-06-14)
+# Next-orchestrator handoff — Medaka, soak tail (2026-06-15)
 
 You are the **orchestrator** for Medaka, a self-hosting functional language whose native
 LLVM backend is now CANONICAL (compiles itself + all user code OCaml-free). You design and
@@ -7,10 +7,10 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
-## Where things stand (local `main` = 869f156; nothing pushed — work lives on LOCAL main)
+## Where things stand (local `main` = 6dd74dc; nothing pushed — work lives on LOCAL main)
 The big multi-session arc is essentially done. Verify current state, don't trust this verbatim:
-- `cd /Users/val/medaka && git log --oneline -15 main` (the recent landings).
-- `cd .claude/worktrees/imperative-wandering-cocke && export PATH="$HOME/.opam/5.4.1/bin:$PATH" && export MEDAKA_EMITTER=$PWD/medaka_emitter && make medaka && FORCE=1 bash test/build_oracles.sh && bash test/selfcompile_fixpoint.sh` (should print C3a YES / C3b YES — the decisive emitter gate).
+- `cd /Users/val/medaka && git log --oneline -20 main` (the recent landings).
+- In a worktree: `export PATH="$HOME/.opam/5.4.1/bin:$PATH" && export MEDAKA_EMITTER=$PWD/medaka_emitter && make medaka && FORCE=1 bash test/build_oracles.sh && bash test/selfcompile_fixpoint.sh` (should print C3a YES / C3b YES — the decisive emitter gate).
 
 DONE (don't re-do; full record in `PLAN.md` "Current status" + `PLAN-ARCHIVE.md` Stage-3/4 logs):
 gate re-rooting (every correctness gate OCaml-free, `selfhost/REROOT-PLAN.md`); the
@@ -21,11 +21,32 @@ fuzz_gen ported native; the cross-module **ctor-name collision** emitter fix (un
 mangling); the **`argStampEnabled` eval-vs-emit dispatch unification** COMPLETE (eval now threads
 dicts like emit — `selfhost/ARGSTAMP-UNIFY-PLAN.md`); emit-path Set-literal/mutual-rec dict fixes (#44).
 
+DONE this session (2026-06-15) — a style-audit + hygiene arc, all on local main, every merge
+fixpoint-gated byte-identical:
+- **Style audit** of selfhost: trailing-comma-on-break + width-triggered import wrapping (#18);
+  trailing-operator line continuation (both lexers) + Option-B binop width-breaking (both formatters)
+  (#19); derive smart-constructors in `desugar.mdk` (#21); cross-module protocol-name constants in
+  `support/util` (#22); block-form `data`/`record` + `deriving` parser fix, both parsers (#23).
+  New `STYLE.md` (5 hand-source conventions). AGENTS.md: the no-stdlib rule + *why* (instance
+  surface / compile-time / isolation — DCE already shakes plain fns; not just binary size).
+- **Helper centralization** (#25, `selfhost/HELPER-CENSUS.md` is the audit): the compiler's
+  hand-rolled generic helpers consolidated into `support/{util,char,path}.mdk` (2 new themed
+  modules); ~23 duplicate clusters collapsed, ~6 O(n²) impls dropped (drifted `joinWith`/`reverseL`/
+  `joinNl`/`joinDot`), dedup promoted to OrdMap O(n·log n). typecheck.mdk included. Net ~−365 lines.
+- **#24 correctness fix:** match-arm refutable pattern-guard binders (`x if Some v <- e => …`) now
+  scope into later guard qualifiers AND the arm body in the native pipeline — was a NATIVE-only
+  divergence (`frontend/resolve.mdk` `checkArm` + `types/typecheck.mdk` `inferArms` didn't thread
+  the binders; OCaml always did; `medaka run` evaluated correctly, only `check` rejected). Fixed both
+  passes; AGENTS.md guard note corrected (the prior "fails in both backends" was wrong).
+- Fixed an inherited stale lsp/session golden (the semanticTokensProvider capability) + re-fmt'd the
+  import lines the centralization batches left unwrapped.
+
 ## The standing goal: the SOAK, then gated `lib/` removal
 Native is canonical; OCaml `lib/`+`bin/` is FROZEN in-tree as the differential oracle. **The
 user's gate to delete `lib/` (memory `[[retirement-is-not-removal]]`): a clean day-or-two stretch
-of native-only dev where we STOP hitting bugs/gaps.** We kept finding+fixing real bugs through
-2026-06-14, so the clock effectively restarts from this checkpoint. Do NOT `rm lib/` until the
+of native-only dev where we STOP hitting bugs/gaps.** This session (2026-06-15) surfaced+fixed a
+real native-only correctness bug (#24 guard-binder scoping), latent helper drift, and an inherited
+golden break — so the soak clock **restarts again from this checkpoint**. Do NOT `rm lib/` until the
 user explicitly calls the soak. Until then: keep native canonical, fix what real use surfaces,
 keep all gates + fixpoint green.
 
@@ -69,7 +90,7 @@ keep all gates + fixpoint green.
 - **Seed:** emitter-graph changes leave the gz seed (`selfhost/seed/emitter.ll.gz`) stale; agents
   do NOT re-mint (they rely on the fixpoint). The ORCHESTRATOR re-mints
   (`CHECK_OCAML=0 bash test/refresh_seed.sh` → verify `bootstrap_from_seed.sh`) only at real
-  checkpoints. Currently FRESH (re-minted at 73a1958).
+  checkpoints. Currently FRESH (re-minted at 6dd74dc).
 - Build in the worktree with `dune build --root .`; never `dune test` (hangs); opam env is pre-set
   (no `eval $(opam env)`). The task list is SESSION-LOCAL — durable items go in PLAN.md/docs/memory.
 
