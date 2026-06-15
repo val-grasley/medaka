@@ -844,12 +844,16 @@ parseDigits arr i n acc seen
    5 ints per token `[deltaLine, deltaChar, length, tokenType, tokenModifiers]`,
    tokens in start order (the lexer stream already is). -}
 
--- The legend, in index order.  These names match standard theme scopes so
--- default themes color them without per-theme config.
---   0 keyword  1 type  2 enumMember(constructor)  3 function  4 property(field)
+-- The legend, in index order.  These are standard semantic-token scope names;
+-- the THEME maps them to colors.  Note: we use `class` (not `type`) for type
+-- names — in Cursor Dark (and most themes) `class`→entity.name.type.class is a
+-- cool/blue hue, while the plain `type` scope shares the warm hue of `function`,
+-- so `type` would be indistinguishable from function names.  `class` gives types
+-- vs functions real contrast.
+--   0 keyword  1 class(type)  2 enumMember(constructor)  3 function  4 property(field)
 --   5 string   6 number
 semanticLegend : List String
-semanticLegend = ["keyword", "type", "enumMember", "function", "property", "string", "number"]
+semanticLegend = ["keyword", "class", "enumMember", "function", "property", "string", "number"]
 
 semanticTokensOptions : Json
 semanticTokensOptions =
