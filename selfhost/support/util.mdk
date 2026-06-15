@@ -1,7 +1,10 @@
 -- Shared internal helpers for the self-hosted compiler stages.  selfhost
--- deliberately avoids the standard library, so the small list/string utilities
--- every stage needs live here once instead of being re-implemented per file.
--- (typecheck.mdk is still being ported and keeps its own local copies for now.)
+-- deliberately avoids the standard library (see AGENTS.md for why), so the small
+-- list/string/option utilities every stage needs live here once instead of being
+-- re-implemented per file.  All stages — typecheck.mdk included — import from here;
+-- when you need a generic helper, add it here rather than hand-rolling a local copy.
+-- Companion themed modules: support/char.mdk (ASCII char predicates),
+-- support/path.mdk (filesystem path string ops), support/ordmap.mdk (OrdMap).
 
 import support.ordmap.{OrdMap(..), omLookup, omInsert}
 
