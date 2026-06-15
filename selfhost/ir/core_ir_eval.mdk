@@ -423,7 +423,6 @@ cImplMethodValue env positions [] body
   | otherwise = VClosureF env [PVar "$eta"] (e => ceval e (CApp body (CVar "$eta" AGlobal)))
 cImplMethodValue env _ pats body = VClosureF env pats (e => ceval e body)
 
-
 cBindName : CBind -> String
 cBindName (CBind n _) = n
 

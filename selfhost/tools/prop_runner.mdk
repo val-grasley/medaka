@@ -179,7 +179,6 @@ genField tydefs subst (Field fname fty) = (fname, genForType tydefs subst fty)
 genFieldTy : List (String, TyDef) -> List (String, Ty) -> Field -> <Mut> Value
 genFieldTy tydefs subst (Field _ fty) = genForType tydefs subst fty
 
-
 nthList : List a -> Int -> a
 nthList (x::_) 0 = x
 nthList (_::xs) n = nthList xs (n - 1)
@@ -212,7 +211,6 @@ shrinkInt : Int -> List Value
 shrinkInt n =
   let cands = [0, n / 2, n + (if n > 0 then -1 else 1)]
   map VInt (filterList (x => x != n) cands)
-
 
 -- ── prop evaluation ──────────────────────────────────────────────────────────
 -- evalEnv is the program's binding environment (List (String, Value)); each
@@ -358,7 +356,6 @@ countTrue : List Bool -> Int
 countTrue [] = 0
 countTrue (True::rest) = 1 + countTrue rest
 countTrue (False::rest) = countTrue rest
-
 
 export
 hasProps : List Decl -> Bool

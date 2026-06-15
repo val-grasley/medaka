@@ -276,7 +276,6 @@ usefulWild oracle col0 pmat restQ =
   let col0t = orElseOpt col0 (inferCol0Type oracle pmat)
   usefulWildCtors oracle (bindCtors oracle col0t) pmat restQ
 
-
 bindCtors : Oracle -> Option String -> Option (List String)
 bindCtors _ None = None
 bindCtors oracle (Some t) = oGetCtors oracle t

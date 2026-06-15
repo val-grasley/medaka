@@ -50,7 +50,26 @@ import frontend.desugar.{mapProg}
 -- the typechecked program's data decls + the inferred scrutinee type).
 import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat, tupleCtorName}
 import support.ordmap.{OrdMap(..), omEmpty, omInsert, omLookup, omHasKey}
-import support.util.{listLen, concatMapList, lookupAssoc, contains, reverseL, joinWith, joinNl, joinDot, filterList, anyList, allList, initList, isEmptyL, minI, isSome, zipL, dedup, sortUniqS}
+import support.util.{
+  listLen,
+  concatMapList,
+  lookupAssoc,
+  contains,
+  reverseL,
+  joinWith,
+  joinNl,
+  joinDot,
+  filterList,
+  anyList,
+  allList,
+  initList,
+  isEmptyL,
+  minI,
+  isSome,
+  zipL,
+  dedup,
+  sortUniqS,
+}
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
 public export data Mono
@@ -2441,8 +2460,7 @@ lookupRecordByName : String -> Option RecordInfo
 lookupRecordByName name = lookupAssoc name recordsRef.value
 
 recordHasField : String -> RecordInfo -> Bool
-recordHasField fname (RecordInfo _ _ fields) =
-  isSome (lookupAssoc fname fields)
+recordHasField fname (RecordInfo _ _ fields) = isSome (lookupAssoc fname fields)
 
 -- instantiate a record's quantified params with fresh vars
 instantiateRecord : RecordInfo -> <Mut> (Mono, List (String, Mono))
@@ -2890,9 +2908,7 @@ export
 preludeArgPosDictNames : List Decl -> List Decl -> List String
 preludeArgPosDictNames preludeDecls allDecls =
   let rpSet = preludeReturnPosDictNames preludeDecls allDecls
-  filterList
-    (n => not (contains n rpSet))
-    (constrainedSigNames preludeDecls)
+  filterList (n => not (contains n rpSet)) (constrainedSigNames preludeDecls)
 
 -- the EVars referenced anywhere in [n]'s definition body (multi-clause: union)
 declBodyVars : String -> List Decl -> List String
@@ -5199,7 +5215,8 @@ allEVars (ELit _) = []
 allEVars (EApp f x) = allEVars f ++ allEVars x
 allEVars (ELam _ b) = allEVars b
 allEVars (ELet _ _ _ e1 e2) = allEVars e1 ++ allEVars e2
-allEVars (ELetGroup binds body) = concatMapList letBindEVars binds ++ allEVars body
+allEVars (ELetGroup binds body) = concatMapList letBindEVars binds
+  ++ allEVars body
 allEVars (EMatch e arms) = allEVars e ++ concatMapList armEVars arms
 allEVars (EIf c t e) = allEVars c ++ allEVars t ++ allEVars e
 allEVars (EBinOp _ l r _) = allEVars l ++ allEVars r
@@ -5217,7 +5234,8 @@ allEVars (EAnnot e _) = allEVars e
 allEVars (EBlock stmts) = concatMapList doStmtEVars stmts
 allEVars (ERecordCreate _ fs) = concatMapList fieldAssignEVars fs
 allEVars (ERecordUpdate e fs) = allEVars e ++ concatMapList fieldAssignEVars fs
-allEVars (EVariantUpdate _ e fs) = allEVars e ++ concatMapList fieldAssignEVars fs
+allEVars (EVariantUpdate _ e fs) = allEVars e
+  ++ concatMapList fieldAssignEVars fs
 allEVars (ELoc _ e) = allEVars e
 allEVars _ = []
 

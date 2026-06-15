@@ -17,7 +17,6 @@ main = match splitLast (args ())
   Some (preludePaths, targetPath) => withPreludes preludePaths targetPath
   None => ePutStrLn "usage: medaka run selfhost/entries/eval_run_main.mdk <prelude.mdk>... <file.mdk>"
 
-
 withPreludes preludePaths targetPath = match readAllDecls preludePaths
   Ok preludeDecls => withTarget preludeDecls targetPath
   Err msg => ePutStrLn msg

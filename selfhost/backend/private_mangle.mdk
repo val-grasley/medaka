@@ -94,7 +94,17 @@ import frontend.ast.{
   UseMember(..),
   Variant(..),
 }
-import support.util.{contains, concatMapList, reverseL, lookupAssoc, isEmptyL, filterList, initList, joinDot, dedup}
+import support.util.{
+  contains,
+  concatMapList,
+  reverseL,
+  lookupAssoc,
+  isEmptyL,
+  filterList,
+  initList,
+  joinDot,
+  dedup,
+}
 
 -- ── entry point ───────────────────────────────────────────────────────────────
 -- Given the core unit and every (mid, decls) module, module-qualify EVERY
@@ -208,7 +218,8 @@ coreCtorImportEntries ctorExportsPerUnit = match lookupCtorExports "core" ctorEx
   None => []
 
 coreCtorEntry : (String, List String) -> List (String, String)
-coreCtorEntry (_, ctors) = concatMapList (n => [(n, mangledName "core" n)]) ctors
+coreCtorEntry (_, ctors) =
+  concatMapList (n => [(n, mangledName "core" n)]) ctors
 
 declCtorImportEntries : List (String, List (String, List String)) -> Decl -> List (String, String)
 declCtorImportEntries ctorExportsPerUnit (DUse _ path) =
@@ -383,7 +394,6 @@ lenGt1 : List a -> Bool
 lenGt1 (_::_::_) = True
 lenGt1 _ = False
 
-
 firstOrU : String -> List String -> String
 firstOrU d [] = d
 firstOrU _ (x::_) = x
@@ -423,7 +433,6 @@ pubDefNames ((DLetGroup True binds)::rest) = map letBindName binds
   ++ pubDefNames rest
 pubDefNames ((DAttrib _ d)::rest) = pubDefNames [d] ++ pubDefNames rest
 pubDefNames (_::rest) = pubDefNames rest
-
 
 -- ── collision-name detection (RETAINED — kept available, no longer the trigger) ──
 -- all top-level FUNCTION names defined in a unit (DFunDef + DLetGroup binders),

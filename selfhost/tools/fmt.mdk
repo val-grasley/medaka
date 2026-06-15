@@ -63,7 +63,6 @@ countNlChars src i n acc
 charAt : Array Char -> Int -> Char
 charAt src i = arrayGetUnsafe i src
 
-
 -- True iff the lexeme is single-line (no embedded '\n'); a trailing comment
 -- must be single-line (OCaml: `not (String.contains c.c_text '\n')`).
 isSingleLine : String -> Bool
@@ -170,8 +169,10 @@ isTrailing : Int -> Comment -> Bool
 isTrailing endLine c = commentLine c == endLine && isSingleLine (commentText c)
 
 takeTrailing : List Comment -> Int -> (List Comment, List Comment)
-takeTrailing cs endLine = (filterList (isTrailing endLine) cs, filterList (c => not (isTrailing endLine c)) cs)
-
+takeTrailing cs endLine = (
+  filterList (isTrailing endLine) cs,
+  filterList (c => not (isTrailing endLine c)) cs,
+)
 
 -- Append the inline trailing comments after the decl text.
 appendTrailing : List String -> List Comment -> List String

@@ -23,7 +23,14 @@ import frontend.ast.{Decl, DUse}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import eval.eval.{Value(..), lookupBinding, force, ppValue}
-import support.util.{listLen, reverseL, concatMapList, joinNl, startsWith, stringTrim}
+import support.util.{
+  listLen,
+  reverseL,
+  concatMapList,
+  joinNl,
+  startsWith,
+  stringTrim,
+}
 
 -- ── Data ──────────────────────────────────────────────────────────────────
 

@@ -1036,7 +1036,6 @@ printDecl (DBench pub benchName benchBody) =
 printDecl (DAttrib attrs inner) =
   Cat (concatD (map attrDoc attrs)) (printDecl inner)
 
-
 -- prop param: ` (name : ppTy ty)` — mirrors lib/ast.ml's pp_ty (a precedence
 -- type printer distinct from printType — see ppTy below).
 propParamDoc : PropParam -> Doc

@@ -12,10 +12,17 @@
 
 import frontend.ast.{Decl, DUse, UsePath, UseName, UseGroup, UseWild, UseAlias}
 import frontend.parser.{parse, parseLocated}
-import support.util.{contains, listLen, reverseL, initList, startsWith, endsWith, joinDot}
+import support.util.{
+  contains,
+  listLen,
+  reverseL,
+  initList,
+  startsWith,
+  endsWith,
+  joinDot,
+}
 
 -- ── small list helpers (no stdlib import — selfhost is single-root) ──
-
 
 lastOr : a -> List a -> a
 lastOr d [] = d

@@ -364,7 +364,6 @@ genData ctx name depth =
   match pick (adtVariants a)
     (con, ftys) => applyFields ctx depth (EVar con) ftys
 
-
 -- mapM-style: like map but threads the Mut effect (fresh-name side effects)
 mapMut : (a -> <e> b) -> List a -> <e> List b
 mapMut _ [] = []

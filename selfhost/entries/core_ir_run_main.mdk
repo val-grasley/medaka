@@ -28,7 +28,6 @@ main = match splitLast (args ())
   Some (preludePaths, targetPath) => withPreludes preludePaths targetPath
   None => ePutStrLn "usage: medaka run selfhost/entries/core_ir_run_main.mdk <prelude.mdk>... <file.mdk>"
 
-
 withPreludes : List String -> String -> <IO, Mut> Unit
 withPreludes preludePaths targetPath = match readAllDecls preludePaths
   Ok preludeDecls => withTarget preludeDecls targetPath

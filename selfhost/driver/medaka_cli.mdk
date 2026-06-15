@@ -22,13 +22,7 @@ import tools.check.{
 }
 import tools.fmt.{formatSource}
 import tools.new_cmd.{newProject}
-import driver.build_cmd.{
-  BuildResult,
-  BuildOk,
-  BuildErr,
-  runBuild,
-  envOr,
-}
+import driver.build_cmd.{BuildResult, BuildOk, BuildErr, runBuild, envOr}
 import support.util.{reverseL}
 import support.path.{baseOf, chopExt}
 import frontend.ast.{Decl}

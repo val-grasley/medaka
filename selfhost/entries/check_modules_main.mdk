@@ -22,7 +22,6 @@ rootsOrDefault : String -> List String -> List String
 rootsOrDefault entry [] = [dirOf entry]
 rootsOrDefault _ roots = roots
 
-
 desugarPair : (String, List Decl) -> (String, List Decl)
 desugarPair (mid, p) = (mid, desugar p)
 

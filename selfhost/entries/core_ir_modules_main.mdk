@@ -30,7 +30,6 @@ rootsOrDefault : String -> List String -> List String
 rootsOrDefault entry [] = [dirOf entry]
 rootsOrDefault _ roots = roots
 
-
 -- desugar + annotate each loaded module (the loader returns parsed-not-desugared
 -- decls); annotateProgram is the §2.0 EMIT pass, run per-module so each module's
 -- Core IR is born lexically addressed (the address is unconsumed by ceval, so it

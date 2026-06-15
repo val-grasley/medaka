@@ -191,7 +191,6 @@ diagnosticsFor runtimeSrc coreSrc src = match parseResult src
 -- parseResult line is 1-based, col 0-based (matches the OCaml loader); LSP
 -- wants 0-based lines, so subtract 1 from the line.
 
-
 -- ── document store accessor (request handlers) ──────────────────────────────
 -- Look up an open document's source by uri.  Request handlers (formatting/
 -- documentSymbol/definition/highlight) read the buffer the client last sent.

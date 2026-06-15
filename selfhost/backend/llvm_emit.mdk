@@ -180,7 +180,14 @@ import ir.core_ir.{
   CImplBody(..),
 }
 import ir.core_ir_lower.{compileTree, canonPat}
-import support.util.{reverseL, joinNl, lookupAssoc, listLen, contains, fallthroughName}
+import support.util.{
+  reverseL,
+  joinNl,
+  lookupAssoc,
+  listLen,
+  contains,
+  fallthroughName,
+}
 import backend.llvm_preamble.{preambleLines}
 import support.ordmap.{OrdMap(..), omInsert, omLookup, omFromNames, omFromPairs}
 
@@ -1114,8 +1121,7 @@ hexDigit d
 -- (mdk_int_to_string -> mdk_str_lit -> mdk_alloc).  charToStr/stringConcat/putStr
 -- are the obvious next additions (a follow-on slice).
 isStrExtern : String -> Bool
-isStrExtern name =
-  contains name ["intToString", "stringConcat", "stringLength"]
+isStrExtern name = contains name ["intToString", "stringConcat", "stringLength"]
 
 emitStrExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitStrExtern e env "intToString" args = match emitArgs e env args
@@ -1149,8 +1155,7 @@ emitStrExtern _ _ name _ = gapE ("unsupported string extern " ++ name)
 -- floatToString is a LEAF: delegates to mdk_float_to_string (mirrors mdk_print_float's
 -- %.12g+dot logic but returns a mdk_str_lit box instead of printf-ing).
 isNumExtern : String -> Bool
-isNumExtern name =
-  contains name ["intToFloat", "floatToInt", "floatToString"]
+isNumExtern name = contains name ["intToFloat", "floatToInt", "floatToString"]
 
 emitNumExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitNumExtern e env "intToFloat" args = match emitArgs e env args
@@ -1634,9 +1639,7 @@ emitPerfExtern _ _ name _ = gapE ("unsupported perf extern " ++ name)
 -- untags the 0/1 bool word.  See runtime/medaka_rt.c mdk_hash_*.
 isHashExtern : String -> Bool
 isHashExtern name =
-  contains
-    name
-    ["hashInt", "hashChar", "hashBool", "hashFloat", "hashString"]
+  contains name ["hashInt", "hashChar", "hashBool", "hashFloat", "hashString"]
 
 emitHashExtern : Emit -> List (String, (String, LTy)) -> String -> List CExpr -> <Mut> (String, LTy)
 emitHashExtern e env "hashInt" args = match emitArgs e env args

@@ -148,7 +148,6 @@ joinComma xs = joinWith ", " xs
 joinSp : List String -> String
 joinSp xs = joinWith " " xs
 
-
 -- ── small helpers ─────────────────────────────────────────────────────────
 arrayToListG : Array a -> List a
 arrayToListG arr = arrayToListGo arr 0 (arrayLength arr)
@@ -900,7 +899,6 @@ hasTag : String -> Value -> Bool
 hasTag tag (VTypedImpl t k _ _ _) = t == tag || k == tag
 hasTag _ _ = False
 
-
 matchesTag : String -> Value -> Bool
 matchesTag tag (VTypedImpl t k _ _ _) = t == tag || k == tag
 matchesTag _ _ = True
@@ -1468,7 +1466,6 @@ storeMemo cell v = seqV (set_ref cell (Some v)) v
 seqV : Unit -> Value -> Value
 seqV _ v = v
 
-
 -- one (methodName, (specificity-score, taggedValue)) per impl method / default
 declImplEntries : EvalEnv -> List ((String, String), List Int) -> Decl -> List (String, (Int, Value))
 declImplEntries env disp DImpl { iface = ifaceName, tys = typeArgs, name = implNm, methods, ... } = map (implMethodEntry env disp ifaceName typeArgs implNm) methods
@@ -1619,7 +1616,6 @@ unString _ = panic "expected a String"
 unChar : Value -> Char
 unChar (VChar s) = arrayGetUnsafe 0 (stringToChars s)
 unChar _ = panic "expected a Char"
-
 
 orderingToValue : Ordering -> Value
 orderingToValue Lt = VCon "Lt" []

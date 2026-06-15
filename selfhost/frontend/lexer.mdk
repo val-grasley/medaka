@@ -23,7 +23,22 @@
 -- reference rejects that too ("Unterminated string literal"), so it isn't valid
 -- Medaka; there is nothing to mirror.
 
-import support.char.{isSp, isTab, isNL, isCR, isQuote, isApos, isBackslash, isBacktick, isSpace, isDigit, isLower, isUpper, isAlnum, isHexDigit}
+import support.char.{
+  isSp,
+  isTab,
+  isNL,
+  isCR,
+  isQuote,
+  isApos,
+  isBackslash,
+  isBacktick,
+  isSpace,
+  isDigit,
+  isLower,
+  isUpper,
+  isAlnum,
+  isHexDigit,
+}
 
 public export data Token
   = TInt Int

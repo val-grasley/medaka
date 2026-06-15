@@ -316,9 +316,7 @@ checkArm : Env -> List String -> Arm -> List ResError
 checkArm env scope (Arm pat gs body) =
   let scope0 = patBindings pat ++ scope
   let (gErrs, scope2) = checkArmGuards env scope0 gs
-  checkPat env pat
-    ++ gErrs
-    ++ checkExpr env scope2 body
+  checkPat env pat ++ gErrs ++ checkExpr env scope2 body
 
 -- Resolve an arm's guard qualifiers left-to-right, threading each pattern-bind's
 -- binders into the LATER qualifiers AND the arm body (mirror of lib/resolve.ml's
@@ -627,7 +625,6 @@ useModId (UseName ns) =
 useModId (UseGroup ns _) = joinDot ns
 useModId (UseWild ns) = joinDot ns
 useModId (UseAlias ns _) = joinDot ns
-
 
 lastOf : List String -> String
 lastOf [] = ""

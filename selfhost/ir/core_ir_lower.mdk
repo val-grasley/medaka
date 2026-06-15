@@ -411,7 +411,6 @@ nthBool (b::_) 0 = b
 nthBool (_::rest) n = nthBool rest (n - 1)
 nthBool [] _ = False
 
-
 lowerField : FieldAssign -> CField
 lowerField (FieldAssign k e) = CField k (lower e)
 
@@ -904,7 +903,6 @@ tyMentionsNonParam (TyTuple ts) params =
   anyList (t => tyMentionsNonParam t params) ts
 tyMentionsNonParam (TyEffect _ _ t) params = tyMentionsNonParam t params
 tyMentionsNonParam (TyConstrained _ t) params = tyMentionsNonParam t params
-
 
 -- ── constructor → DECLARED field type-head names (native backend, Gap E2) ────
 -- Per data-constructor name: the head type-name of each declared field, IN

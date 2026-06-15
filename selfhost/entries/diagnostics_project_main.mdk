@@ -27,7 +27,6 @@ rootsOrDefault : String -> List String -> List String
 rootsOrDefault entry [] = [dirOf entry]
 rootsOrDefault _ roots = roots
 
-
 -- disk-only read callback (no editor-buffer overrides on the CLI path).
 noOverride : String -> Option String
 noOverride _ = None
