@@ -69,6 +69,7 @@ import support.util.{
   zipL,
   dedup,
   sortUniqS,
+  startsWith,
 }
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
@@ -88,8 +89,115 @@ public export data Tyvar = Unbound Int Int | Link Mono  -- Unbound id level | Li
 --   tail = Some v  ⇒ open row <labels | v>: v can absorb further effects.
 -- Inference-synthesized arrows use open rows so effect-subsumption survives
 -- equality unification; user annotations are closed unless they name a tail.
-public export data EffRow = EffRow (List String) (Option (Ref Effvar))
+public export data EffRow = EffRow (List Atom) (Option (Ref Effvar))
 public export data Effvar = EUnbound Int Int | ELink EffRow  -- EUnbound id level | link
+
+-- ── Effect refinement domains (capability-effects v2, Stage 1) ─────────────
+-- An effect label may carry a PARAMETER drawn from its declared refinement
+-- DOMAIN — a small lattice of data-shaped values with a top ⊤ (unconstrained).
+-- Stage 1 is the REPRESENTATION only: every param is built at ⊤, so the row is
+-- byte-identical to the v1 set-of-bare-labels.  Stage 2 adds the Prefix domain's
+-- analysis with NO change to this row code.  (Mirror of lib/typecheck.ml.)
+public export data Param = PUnit | PPrefix (Option String)
+-- an atom = a label applied to a domain parameter.  A v1 atomic label `Foo` is
+-- exactly `Atom "Foo" (dtopFor "Foo")` (= PUnit in Stage 1).
+public export data Atom = Atom String Param
+
+atomLabel : Atom -> String
+atomLabel (Atom l _) = l
+
+atomParam : Atom -> Param
+atomParam (Atom _ p) = p
+
+-- ── RefinementDomain interface (design §2.1): dtop/dsub/djoin/dmeet/drender ──
+-- Stage 1: only ⊤ params (PUnit / PPrefix None) ever occur; the STRUCTURE is
+-- what Stage 2's Prefix analysis plugs into.  A label's domain is fixed by its
+-- declaration; dtopFor picks the ⊤ of the label's domain (all PUnit in Stage 1).
+dtopFor : String -> Param
+dtopFor _ = PUnit
+
+-- p1 ⊑ p2 : is p1 at least as constrained (more specific) as p2?
+dsub : Param -> Param -> Bool
+dsub PUnit PUnit = True
+dsub _ (PPrefix None) = True                  -- anything ⊑ ⊤
+dsub (PPrefix (Some a)) (PPrefix (Some b)) = startsWith b a
+dsub (PPrefix None) (PPrefix (Some _)) = False
+dsub _ _ = False                              -- domain mismatch — never happens (one domain per label)
+
+-- least upper bound (over-approximation)
+djoin : Param -> Param -> Param
+djoin PUnit PUnit = PUnit
+djoin (PPrefix None) _ = PPrefix None
+djoin _ (PPrefix None) = PPrefix None
+djoin (PPrefix (Some a)) (PPrefix (Some b)) =
+  let k = commonPrefixLen a b 0
+  if k == 0 then PPrefix None else PPrefix (Some (stringSlice 0 k a))
+djoin p _ = p                                 -- domain mismatch — never happens
+
+-- length of the longest common prefix of two strings (Stage-2 djoin support)
+commonPrefixLen : String -> String -> Int -> Int
+commonPrefixLen a b i =
+  if i >= stringLength a || i >= stringLength b then i
+  else if stringSlice i (i + 1) a == stringSlice i (i + 1) b then commonPrefixLen a b (i + 1)
+  else i
+
+-- manifest / error text for a param.  ⊤ renders as empty so a ⊤-param atom
+-- renders as JUST its label — byte-identical to v1.
+drender : Param -> String
+drender PUnit = ""
+drender (PPrefix None) = ""
+drender (PPrefix (Some s)) = " \"" ++ s ++ "\""
+
+-- ── atom-set helpers (replace the v1 String-set ops) ───────────────────────
+-- render one atom: label + domain refinement text (⊤ ⇒ just the label)
+renderAtom : Atom -> String
+renderAtom a = atomLabel a ++ drender (atomParam a)
+
+-- render a set of atoms as the comma-separated body of a `<…>`, label-sorted —
+-- byte-identical to v1 when all params are ⊤.
+renderAtoms : List Atom -> String
+renderAtoms atoms = joinWith ", " (map renderAtom (atomsNorm atoms))
+
+-- insert an atom into a label-sorted set, joining same-label params (djoin).
+-- With all-⊤ params this is exactly v1's sortInsertS over labels.
+atomInsert : Atom -> List Atom -> List Atom
+atomInsert x [] = [x]
+atomInsert x (y::ys) = match stringCompare (atomLabel x) (atomLabel y)
+  Lt => x :: y :: ys
+  Eq => Atom (atomLabel y) (djoin (atomParam x) (atomParam y)) :: ys
+  Gt => y :: atomInsert x ys
+
+-- canonical form: ≤ one atom per label (same-label params joined), label-sorted.
+atomsNorm : List Atom -> List Atom
+atomsNorm xs = atomsNormGo xs []
+
+atomsNormGo : List Atom -> List Atom -> List Atom
+atomsNormGo [] acc = acc
+atomsNormGo (x::xs) acc = atomsNormGo xs (atomInsert x acc)
+
+-- union of two atom sets, joining same-label params
+atomsUnion : List Atom -> List Atom -> List Atom
+atomsUnion a b = atomsNorm (a ++ b)
+
+-- set difference: atoms of [a] whose label is absent from [b], OR present but
+-- NOT subsumed (`not (dsub pa pb)`) — the Stage-2 escape direction.  In Stage 1
+-- (all ⊤) "present" always means subsumed ⇒ pure label-set diff.
+atomsDiff : List Atom -> List Atom -> List Atom
+atomsDiff [] _ = []
+atomsDiff (x::xs) ys = match findAtom (atomLabel x) ys
+  None => x :: atomsDiff xs ys
+  Some y => if dsub (atomParam x) (atomParam y) then atomsDiff xs ys else x :: atomsDiff xs ys
+
+findAtom : String -> List Atom -> Option Atom
+findAtom _ [] = None
+findAtom l (y::ys) = if l == atomLabel y then Some y else findAtom l ys
+
+-- lift a bare AST label to a ⊤-param atom (Stage 1: every annotation atomic)
+atomOfLabel : String -> Atom
+atomOfLabel l = Atom l (dtopFor l)
+
+atomsOfLabels : List String -> List Atom
+atomsOfLabels ls = atomsNorm (map atomOfLabel ls)
 
 -- forall <quantified tyvar ids> <quantified effvar ids>. mono
 public export data Scheme = Forall (List Int) (List Int) Mono
@@ -126,7 +234,7 @@ pureRow = EffRow [] None
 
 -- a closed row over the given concrete labels
 closedRow : List String -> EffRow
-closedRow labels = EffRow (sortUniqS labels) None
+closedRow labels = EffRow (atomsOfLabels labels) None
 
 freshEffvar : Unit -> <Mut> Ref Effvar
 freshEffvar _ = Ref (EUnbound (newEffvarId ()) currentLevel.value)
@@ -146,12 +254,12 @@ effrowNorm (EffRow labels tail) = match tail
     ELink r2 =>
       let nr = effrowNorm r2
       match nr
-        EffRow ls2 t2 => EffRow (sortUniqS (labels ++ ls2)) t2
+        EffRow ls2 t2 => EffRow (atomsUnion labels ls2) t2
     EUnbound _ _ => EffRow labels tail
   None => EffRow labels tail
 
--- the concrete labels currently known for a row (ignores the open tail)
-effrowLabels : EffRow -> List String
+-- the concrete labels (atoms) currently known for a row (ignores the open tail)
+effrowLabels : EffRow -> List Atom
 effrowLabels r = match effrowNorm r
   EffRow labels _ => labels
 
@@ -185,13 +293,6 @@ effvarId cell = match cell.value
   EUnbound id _ => id
   ELink _ => 0 - 1
 
--- string set difference: elements of a not present in b
-diffS : List String -> List String -> List String
-diffS [] _ = []
-diffS (x::xs) ys
-  | contains x ys = diffS xs ys
-  | otherwise = x :: diffS xs ys
-
 -- record that the current context performs row [eff]'s effects, widening ambient
 -- [cur] WITHOUT closing its tail (so the next performed effect can still be
 -- absorbed).  A closed ambient is a sink and discards.  An open [eff] is tied to
@@ -201,7 +302,7 @@ performEffect cur eff = match effrowNorm cur.value
   EffRow _ None => ()
   EffRow curLabels (Some ct) => match effrowNorm eff
     EffRow effLabels effTail =>
-      let _ = set_ref cur (EffRow (sortUniqS (curLabels ++ effLabels)) (Some ct))
+      let _ = set_ref cur (EffRow (atomsUnion curLabels effLabels) (Some ct))
       match effTail
         Some et => if effvarId et == effvarId ct then () else performLink ct et
         None => ()
@@ -224,29 +325,29 @@ unifyRowN (EffRow l1 (Some v1)) (EffRow l2 (Some v2))
   | effvarId v1 == effvarId v2 = ()
   | otherwise =
     let v3 = freshEffvarAt (minI (effvarLevel v1) (effvarLevel v2))
-    let _ = set_ref v1 (ELink (EffRow (diffS l2 l1) (Some v3)))
-    set_ref v2 (ELink (EffRow (diffS l1 l2) (Some v3)))
+    let _ = set_ref v1 (ELink (EffRow (atomsDiff l2 l1) (Some v3)))
+    set_ref v2 (ELink (EffRow (atomsDiff l1 l2) (Some v3)))
 unifyRowN (EffRow l1 (Some v1)) (EffRow l2 None) =
-  let _ = effectLeakCheck (diffS l1 l2) l2
-  set_ref v1 (ELink (EffRow (diffS l2 l1) None))
+  let _ = effectLeakCheck (atomsDiff l1 l2) l2
+  set_ref v1 (ELink (EffRow (atomsDiff l2 l1) None))
 unifyRowN (EffRow l1 None) (EffRow l2 (Some v2)) =
-  let _ = effectLeakCheck (diffS l2 l1) l1
-  set_ref v2 (ELink (EffRow (diffS l1 l2) None))
+  let _ = effectLeakCheck (atomsDiff l2 l1) l1
+  set_ref v2 (ELink (EffRow (atomsDiff l1 l2) None))
 unifyRowN (EffRow _ None) (EffRow _ None) = ()
 
 -- SOUNDNESS (Phase 146): an open row (an inference-synthesized arrow, i.e. a
 -- concrete value's latent effect) meeting a closed bound — its own labels must
 -- not exceed the bound, else they escape.  [escaping] = open labels \ bound.
-effectLeakCheck : List String -> List String -> <Mut> Unit
+effectLeakCheck : List Atom -> List Atom -> <Mut> Unit
 effectLeakCheck escaping bound = match escaping
   [] => ()
   _ => pushTypeError (effectLeakMsg bound escaping)
 
-effectLeakMsg : List String -> List String -> String
+effectLeakMsg : List Atom -> List Atom -> String
 effectLeakMsg bound extras = "Effectful value used where <"
-  ++ joinWith ", " bound
+  ++ renderAtoms bound
   ++ "> is allowed, but it performs <"
-  ++ joinWith ", " extras
+  ++ renderAtoms extras
   ++ ">"
 
 -- T2: oracle `MutLetRequiresBlock` message (lib/typecheck.ml:788-789) — must be
@@ -542,9 +643,9 @@ rowFreeEffvars r = match effrowNorm r
 
 -- the declared concrete effect set of a signature: labels on the first `<…>`
 -- reached walking down the return side (Phase 79e escape check)
-declaredEffects : Ty -> List String
+declaredEffects : Ty -> List Atom
 declaredEffects (TyFun _ ret) = declaredEffects ret
-declaredEffects (TyEffect effs _ _) = sortUniqS effs
+declaredEffects (TyEffect effs _ _) = atomsOfLabels effs
 declaredEffects (TyConstrained _ t) = declaredEffects t
 declaredEffects _ = []
 
@@ -1280,9 +1381,9 @@ ppFun ctx cnt prec a eff b =
   let sb = ppGo ctx cnt 1 b
   wrapIf (prec > 1) (sa ++ " -> " ++ effStr (effrowLabels eff) ++ sb)
 
-effStr : List String -> String
+effStr : List Atom -> String
 effStr [] = ""
-effStr labels = "<" ++ joinWith ", " labels ++ "> "
+effStr labels = "<" ++ renderAtoms labels ++ "> "
 
 effLabelsOf : Ty -> List String
 effLabelsOf (TyEffect labels _ _) = labels
@@ -1378,7 +1479,7 @@ effvarIdOf (_, cell) = effvarId cell
 -- through [etbl] for sharing, an absent/anonymous one is closed
 astEffrowE : List (String, Ref Effvar) -> Ty -> EffRow
 astEffrowE etbl (TyEffect labels tail _) =
-  EffRow (sortUniqS labels) (tailCell etbl tail)
+  EffRow (atomsOfLabels labels) (tailCell etbl tail)
 astEffrowE _ _ = pureRow
 
 tailCell : List (String, Ref Effvar) -> Option String -> Option (Ref Effvar)
@@ -5638,12 +5739,12 @@ zipUnify _ _ = ()
 -- infer each clause, unifying it to the member placeholder [v] and collecting the
 -- concrete effect labels the bodies perform (Phase 79e binding-boundary check).
 -- [peel] threads the Phase-73 sig peel source (Some placeholder when signed).
-inferMemberClauses : TcEnv -> Option Mono -> Mono -> List (List Pat, Expr) -> <Mut> List String
+inferMemberClauses : TcEnv -> Option Mono -> Mono -> List (List Pat, Expr) -> <Mut> List Atom
 inferMemberClauses _ _ _ [] = []
 inferMemberClauses env peel v (cl::rest) =
   let ce = inferClauseEff env peel cl
   let _ = unify v (fst ce)
-  sortUniqS (snd ce ++ inferMemberClauses env peel v rest)
+  atomsUnion (snd ce) (inferMemberClauses env peel v rest)
 
 -- infer one clause, returning its arrow type AND the concrete effect labels its
 -- body performs (captured under a fresh open ambient, then the ambient restored —
@@ -5651,7 +5752,7 @@ inferMemberClauses env peel v (cl::rest) =
 -- Phase 73: when [peel] is Some(sig source) and the clause has params, peel the
 -- signature's arrow domains and zip-unify them onto the clause param types BEFORE
 -- inferring the body (bidirectional checking mode).
-inferClauseEff : TcEnv -> Option Mono -> (List Pat, Expr) -> <Mut> (Mono, List String)
+inferClauseEff : TcEnv -> Option Mono -> (List Pat, Expr) -> <Mut> (Mono, List Atom)
 inferClauseEff env peel (pats, body) =
   let pr = inferPats env pats
   let _ = peelOntoParams peel (fst pr) pats
@@ -5674,20 +5775,20 @@ peelOntoParams (Some src) patTypes pats =
 -- a signatured binding's body must not perform a concrete effect its signature
 -- doesn't declare; effect *variables* (polymorphic `<e>`) carry no labels and so
 -- never escape (Phase 79e)
-checkEffectEscape : List (String, Ty) -> String -> List String -> <Mut> Unit
+checkEffectEscape : List (String, Ty) -> String -> List Atom -> <Mut> Unit
 checkEffectEscape sigs m effs = match lookupAssoc m sigs
   None => ()
-  Some ty => match diffS effs (declaredEffects ty)
+  Some ty => match atomsDiff effs (declaredEffects ty)
     [] => ()
     extras => pushTypeError (effectEscapeMsg m (declaredEffects ty) extras)
 
-effectEscapeMsg : String -> List String -> List String -> String
+effectEscapeMsg : String -> List Atom -> List Atom -> String
 effectEscapeMsg name declared extras = "Function '"
   ++ name
   ++ "' declared with <"
-  ++ joinWith ", " declared
+  ++ renderAtoms declared
   ++ "> but also performs <"
-  ++ joinWith ", " extras
+  ++ renderAtoms extras
   ++ ">"
 
 -- generalize each member's (sig-and-body-unified) placeholder.  A signature was

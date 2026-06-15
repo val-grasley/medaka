@@ -1116,7 +1116,7 @@ let e_eff_user_label_escape = assert_err
    `<IO | _>`) unified against a closed bound that lacks it must raise — the
    escape the laundering fix adds. *)
 let e_unify_row_escape () =
-  let r = { labels = ["IO"]; tail = Some (fresh_effvar ()) } in
+  let r = { labels = atoms_of_labels ["IO"]; tail = Some (fresh_effvar ()) } in
   (try
      unify_row r (closed_row []);
      failwith "expected EffectLeak when closing <IO|_> against <>"
@@ -1181,7 +1181,7 @@ let t_effrow_shares_tail () =
 let t_unify_row_open_closed () =
   let r = open_row () in
   unify_row r (closed_row ["IO"]);
-  match effrow_labels r with
+  match List.map (fun (a : atom) -> a.label) (effrow_labels r) with
   | ["IO"] -> ()
   | ls -> failwith ("expected [IO], got [" ^ String.concat "; " ls ^ "]")
 
@@ -1191,7 +1191,7 @@ let t_unify_row_open_open_link () =
   let r1 = open_row () and r2 = open_row () in
   unify_row r1 r2;
   unify_row r2 (closed_row ["Mut"]);
-  match effrow_labels r1 with
+  match List.map (fun (a : atom) -> a.label) (effrow_labels r1) with
   | ["Mut"] -> ()
   | ls -> failwith ("expected [Mut] to flow to r1, got [" ^ String.concat "; " ls ^ "]")
 
