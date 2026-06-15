@@ -668,6 +668,18 @@ pendingDictApps = Ref []
 methodConstraintsRef : Ref (List (String, List Int))
 methodConstraintsRef = Ref []
 
+-- Cross-module analog of methodConstraintsRef, mirroring crossModuleFunConstraintsRef
+-- exactly.  resetState wipes methodConstraintsRef at each module start, then
+-- checkModuleFullImpl re-registers via `ifaceMethodSchemes prog` over the CURRENT
+-- module's decls only — so a method declared in an imported module (canonically
+-- core's `foldMap : Monoid m =>` on `Foldable`) is absent during a later USER
+-- module's pass, and its dict never gets recorded.  This ref ACCUMULATES every
+-- module's registered method-constraints across the graph and is NOT cleared by
+-- resetState; checkModuleFullImpl re-seeds methodConstraintsRef from it after the
+-- per-module reset+registration (MERGE, the per-module entry wins first-match).
+crossModuleMethodConstraintsRef : Ref (List (String, List Int))
+crossModuleMethodConstraintsRef = Ref []
+
 pendingMethodDicts : Ref (List (Ref (List Route), List Mono))
 pendingMethodDicts = Ref []
 
@@ -5983,6 +5995,7 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   let shadowMethodSchemes = pickSchemes importerShadows (ifaceMethodSchemes implDecls)
+  let _ = set_ref methodConstraintsRef (methodConstraintsRef.value ++ crossModuleMethodConstraintsRef.value)
   let env1 = extendVars (extendVars (extendVars dataEnv seedVars) globalS) shadowMethodSchemes
   let defs = funDefs prog
   let sigs = sigsOf prog
@@ -5991,6 +6004,7 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
   let _ = inferPropBodies (extendVars env1 topSchemes) prog
   let _ = set_ref crossModuleFunConstraintsRef funConstraintsRef.value
+  let _ = set_ref crossModuleMethodConstraintsRef methodConstraintsRef.value
   let _ = groundMultiParamObligations implDecls pendingImplObligations.value
   globalS ++ topSchemes
 -- C5: compute this module's standalone-shadow set BEFORE inference, so the
@@ -6430,6 +6444,7 @@ elaborateModules : List Decl -> List Decl -> List (String, List Decl) -> <Mut> (
 elaborateModules runtimeDecls coreDecls modules =
   let _ = set_ref implInferEnabled True
   let _ = set_ref crossModuleFunConstraintsRef []
+  let _ = set_ref crossModuleMethodConstraintsRef []
   let allDecls = coreDecls ++ concatMapList snd modules
   let rpNames = returnPosMethodNames allDecls
   let _ = set_ref argDispatchIdxRef (argDispatchIndices allDecls)
