@@ -845,15 +845,16 @@ parseDigits arr i n acc seen
    tokens in start order (the lexer stream already is). -}
 
 -- The legend, in index order.  These are standard semantic-token scope names;
--- the THEME maps them to colors.  Note: we use `class` (not `type`) for type
--- names — in Cursor Dark (and most themes) `class`→entity.name.type.class is a
--- cool/blue hue, while the plain `type` scope shares the warm hue of `function`,
--- so `type` would be indistinguishable from function names.  `class` gives types
--- vs functions real contrast.
---   0 keyword  1 class(type)  2 enumMember(constructor)  3 function  4 property(field)
+-- the THEME maps them to colors.  Two are chosen for hue, not literal meaning, so
+-- roles get real contrast in Cursor Dark (the most common case):
+--   * type names → `class` (entity.name.type.class = blue #87c3ff), since plain
+--     `type` shares the warm hue of `function` and would be indistinguishable.
+--   * constructors → `macro` (#a8cc7c green), since `enumMember` is a near-default
+--     light grey (#d6d6dd) that reads as plain text.
+--   0 keyword  1 class(type)  2 macro(constructor)  3 function  4 property(field)
 --   5 string   6 number
 semanticLegend : List String
-semanticLegend = ["keyword", "class", "enumMember", "function", "property", "string", "number"]
+semanticLegend = ["keyword", "class", "macro", "function", "property", "string", "number"]
 
 semanticTokensOptions : Json
 semanticTokensOptions =
