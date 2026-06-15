@@ -88,7 +88,7 @@ state changes.
 |------------|----------------|--------|-----------------|
 | **Self-hosting (Stage 1)** | [`selfhost/README.md`](./selfhost/README.md) §Roadmap | ✅ complete | perf-lever tail only (all closed) |
 | **Native backend (Stage 2)** | [`selfhost/STAGE2-DESIGN.md`](./selfhost/STAGE2-DESIGN.md) + [`selfhost/BOOTSTRAP.md`](./selfhost/BOOTSTRAP.md) | ✅ **complete** | Core IR + bytecode VM (§2.1–2.2) done (bytecode VM removed 2026-06-10 — off canonical path); LLVM backend promoted from spike to a **native self-hosting compiler** — all 7 stages native==interpreter (141 fixtures), self-compile **fixpoint reached** (C1 emitter-IR reproduction · C2 native compiles the real lexer · C3 `IR1==IR2`). Runtime dict-passing dispatch (D3a/D3b done); Boehm GC; CTGuard lowered. Residual: `max`/`min` over primitive `Ord` (dead code). |
-| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟢 **essentially complete** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE (full log: PLAN-ARCHIVE.md → Stage 3 completion log). **Soak tail remaining:** the native-emitter cross-module ctor-collision fix (in flight) + the `argStampEnabled` eval-vs-emit dispatch unification ([`ARGSTAMP-UNIFY-PLAN.md`](./selfhost/ARGSTAMP-UNIFY-PLAN.md)), then confidence-gated `lib/` removal. |
+| **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟢 **essentially complete** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE (full log: PLAN-ARCHIVE.md → Stage 3 completion log). Soak fixes (2026-06-15): native-emit scale failure (`unbound 'not'`, fuzzer 5%→100%) ✅ DONE; foldMap method-level-constraint dict gap ✅ DONE (eval_dict 25/0). **Soak tail remaining:** the `argStampEnabled` eval-vs-emit dispatch unification ([`ARGSTAMP-UNIFY-PLAN.md`](./selfhost/ARGSTAMP-UNIFY-PLAN.md)), then confidence-gated `lib/` removal. |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
@@ -153,11 +153,12 @@ the Phase-C native-CLI capstone + Stage-4 tooling port (fmt/test/new/repl/build/
 the **single-file/multi-module driver collapse done** (`selfhost/DRIVER-COLLAPSE-PLAN.md`,
 closes audit §6; `medaka check` now resolves imports).
 
-**Soak tail (remaining, see "Current status" above for live state):** the in-flight
-native-emitter cross-module constructor-name-collision fix, then the `argStampEnabled`
+**Soak tail (remaining, see "Current status" above for live state):** the `argStampEnabled`
 eval-vs-emit dispatch unification (`selfhost/ARGSTAMP-UNIFY-PLAN.md` — retires the finer
 dispatch fork the driver collapse left, the shared root of #55/#21); then a clean bug-free
-soak stretch and the confidence-gated `lib/` removal (next).
+soak stretch and the confidence-gated `lib/` removal (next). (Closed 2026-06-15: native-emit
+scale failure `unbound 'not'` — fuzzer 5%→100%; foldMap method-level-constraint dict gap —
+eval_dict 25/0; whole-float rendering canonical `1.0`.)
 
 **Gated milestone — retire `lib/*.ml`.** ✅ **Native is now the default build (2026-06-12
 flip):** `make medaka` builds the canonical native compiler OCaml-free from the seed; docs
@@ -165,9 +166,8 @@ updated; OCaml frozen as the soak oracle. **Re-rooting ✅ DONE (2026-06-13):** 
 correctness gate runs OCaml-free (`selfhost/REROOT-PLAN.md`); only the capture/mint tooling
 (`capture_goldens.sh`/`refresh_seed.sh`) and the perf-baseline gates (`bench.sh`/`profile_selfhost.sh`)
 still invoke OCaml — by design, deleted with `lib/`. **Remaining gated steps (post-soak):**
-the `argStampEnabled` eval-vs-emit dispatch unification (`selfhost/ARGSTAMP-UNIFY-PLAN.md`)
-+ the in-flight native-emitter mixed-ADT-match fix (both de-risk the soak), a clean
-bug-free soak stretch, then archive/delete the OCaml compiler. Sequenced toward, not dated.
+the `argStampEnabled` eval-vs-emit dispatch unification (`selfhost/ARGSTAMP-UNIFY-PLAN.md`),
+a clean bug-free soak stretch, then archive/delete the OCaml compiler. Sequenced toward, not dated.
 
 After Stage 3, the **capability-effects wedge** (Phase 146) + the **WasmGC
 backend** are the product horizon (see the Workstreams table).

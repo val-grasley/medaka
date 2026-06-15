@@ -9,16 +9,12 @@
 # (test/capture_goldens.sh) from the reference `main.exe run <file>` (which
 # dict-passes the whole program) while OCaml was trusted.
 #
-# DOCUMENTED BASELINE: this gate is "22 ok, 3 failing" (+batch "7 ok, 18 failing")
-# and that IS the correct/expected state — do NOT treat the 3 (+18) as a regression.
-# The failing fixtures are `method_constraint_foldmap_list`, `method_constraint_foldmap_string`,
-# and `method_constraint_user_iface`: a pre-existing **method-level-constraint gap** —
-# `foldMap : Monoid m => (a -> m) -> t a -> m` (a constraint on a METHOD's own tyvar,
-# distinct from the function-level `=>` this gate's name describes). It is the residual
-# #55-adjacent gap; verified failing-identically on baseline across the 2026-06-14
-# dispatch work (driver collapse, #21, the argStampEnabled unification, #44) — none of
-# which touched it. A real fix belongs in the method-level-constraint dict threading.
-# Until then, 22/3 (+ batch 7/18) is GREEN.
+# BASELINE: this gate is "25 ok, 0 failing" (+batch "25 ok, 0 failing") — ALL PASS.
+# The previously-failing fixtures (`method_constraint_foldmap_list`,
+# `method_constraint_foldmap_string`, `method_constraint_user_iface`) are now GREEN:
+# the method-level-constraint `foldMap : Monoid m =>` gap was CLOSED 2026-06-15 via
+# a `crossModuleMethodConstraintsRef` accumulator + registering method dict slots AFTER
+# body inference (surviving union-find root), in `selfhost/types/typecheck.mdk`.
 # Self-host (OCaml-free, REROOT-PLAN.md Phase 2): the pre-compiled native binary
 # test/bin/eval_dict_main (built by test/build_oracles.sh) runs the self-hosted dict
 # elaboration + eval; its stdout must match the golden.
