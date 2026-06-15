@@ -735,6 +735,25 @@ isKnownFn e name = match knownFnMapRef.value
     None => False
   None => contains name (fnNames e)
 
+-- Canonicalize a referenced function name to the actual emitted symbol.  The emit
+-- drivers run `mangleUnits` BEFORE `elaborateModules`, so every prelude definition
+-- is renamed `core__<name>` (and uses present at mangle time are rewritten to
+-- match).  But `elaborateModules` SYNTHESIZES bare references that never passed
+-- through mangling — notably the `!=` rewrite (`typecheck.mdk` binopMethodApp)
+-- which builds `EApp (EVar "not") …`.  Such a bare prelude name is absent from the
+-- `core__`-keyed known-fn table → it would fall through to a closure-load and the
+-- emitter aborts `unbound variable 'not'`.  GENERAL FIX: when a bare name is not a
+-- known fn but its `core__`-mangled form IS, resolve to the mangled symbol.  This
+-- covers ANY post-mangle-synthesized prelude reference, not just `not`.  A name
+-- already known (incl. a user `core__`-collision) is returned unchanged, and a
+-- genuinely-unbound name still falls through to the original gap.
+canonFnName : Emit -> String -> <Mut> String
+canonFnName e name =
+  if isKnownFn e name then name
+  else
+    let mangled = "core__" ++ name
+    if isKnownFn e mangled then mangled else name
+
 -- the inferred return type of a known function (Int if unknown — keeps the
 -- pre-signature behaviour for any head the table somehow misses).
 fnRetTy : Emit -> String -> <Mut> LTy
@@ -988,7 +1007,7 @@ emitVar e env x =
   if x == "True" then
     ("3", LTBool)
   else
-    if x == "False" then ("1", LTBool) else if x == "otherwise" then ("3", LTBool) else if isLocal env x then lookupVarG e env x else if x == "pi" then (boxFloat e "3.141592653589793", LTFloat) else if x == "e" then (boxFloat e "2.718281828459045", LTFloat) else if x == "intMaxBound" then ("9223372036854775807", LTInt) else if x == "intMinBound" then ("-9223372036854775807", LTInt) else if x == "charMinBound" then ("1", LTChar) else if x == "charMaxBound" then ("2228223", LTChar) else if isCtor e x then if ctorArity e x == 0 then emitCtorAlloc e x [] else emitCtorEtaClosure e x else if isKnownFn e x then emitEtaClosure e x else if isAnyExtern x then emitExternEtaClosure e x else if isImplMethod e x then emitMethodEtaClosure e x else lookupVarG e env x
+    if x == "False" then ("1", LTBool) else if x == "otherwise" then ("3", LTBool) else if isLocal env x then lookupVarG e env x else if x == "pi" then (boxFloat e "3.141592653589793", LTFloat) else if x == "e" then (boxFloat e "2.718281828459045", LTFloat) else if x == "intMaxBound" then ("9223372036854775807", LTInt) else if x == "intMinBound" then ("-9223372036854775807", LTInt) else if x == "charMinBound" then ("1", LTChar) else if x == "charMaxBound" then ("2228223", LTChar) else if isCtor e x then if ctorArity e x == 0 then emitCtorAlloc e x [] else emitCtorEtaClosure e x else if isKnownFn e x then emitEtaClosure e x else if isKnownFn e (canonFnName e x) then emitEtaClosure e (canonFnName e x) else if isAnyExtern x then emitExternEtaClosure e x else if isImplMethod e x then emitMethodEtaClosure e x else lookupVarG e env x
 
 -- is `x` a local (let/param) binding in the current emit env?  Used to let a local
 -- shadow the prelude math/bound constants (pi/e/intMaxBound/…) above.
@@ -2397,14 +2416,15 @@ emitApp e env app =
             let argOps = emitArgs e env args
             emitCtorAlloc e fname argOps
           else
-            if isKnownFn e fname && hasArgs args then
+            let fname2 = canonFnName e fname
+            if isKnownFn e fname2 && hasArgs args then
               let argOps = emitArgs e env args
               emitKnownFnSat
                 e
-                ("mdk_" ++ fname)
+                ("mdk_" ++ fname2)
                 argOps
-                (fnArity e fname)
-                (fnRetTy e fname)
+                (fnArity e fname2)
+                (fnRetTy e fname2)
             else
               if isImplMethod e fname && hasArgs args then
                 let argOps = emitArgs e env args
@@ -5990,13 +6010,15 @@ emitFnBody e env self (CIf c t f) =
 emitFnBody e env self other =
   let (hd, args) = flattenApp other []
   match hd
-    CVar fname _ => if isKnownFn e fname && hasArgs args then
-      let argOps = emitArgs e env args
-      let r = freshReg e
-      let kw = if fname == self then "musttail call" else "call"
-      let _ = emit e ("  " ++ r ++ " = " ++ kw ++ " i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
-      emit e ("  ret i64 " ++ r)
-    else emitValueRet e env other
+    CVar fname0 _ =>
+      let fname = canonFnName e fname0
+      if isKnownFn e fname && hasArgs args then
+        let argOps = emitArgs e env args
+        let r = freshReg e
+        let kw = if fname == self then "musttail call" else "call"
+        let _ = emit e ("  " ++ r ++ " = " ++ kw ++ " i64 @mdk_" ++ fname ++ "(" ++ argDecls argOps ++ ")")
+        emit e ("  ret i64 " ++ r)
+      else emitValueRet e env other
     _ => emitValueRet e env other
 
 emitValueRet : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> Unit
