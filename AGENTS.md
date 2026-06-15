@@ -162,15 +162,29 @@ Dev probes (build to `_build/default/dev/`):
 ## Gotchas
 
 - **The compiler (`selfhost/*.mdk`) must NEVER import `stdlib/`.** The native
-  `medaka` binary bootstraps from its own source only — pulling in `stdlib/`
-  (list/string/map/…) would bloat the binary and the cold-bootstrap seed. So
-  `selfhost/` carries its own small helpers: `support/util.mdk`,
-  `support/ordmap.mdk`, or inline duplications (this is *why* SMap/EMap were
-  hand-rolled rather than reusing `stdlib/map.mdk`). When you need a stdlib-shaped
-  function (`intercalate`, `intersperse`, etc.) in compiler code, add it to
-  `support/` or inline it — do **not** `import list`/`import string`. Enforced by
-  convention, not the build; check `grep -rn 'import ' selfhost/ | grep -v support`
-  stays clean of stdlib module names.
+  `medaka` binary bootstraps from its own source only. So `selfhost/` carries its
+  own small helpers: `support/util.mdk`, `support/ordmap.mdk`, or inline
+  duplications (this is *why* SMap/EMap were hand-rolled rather than reusing
+  `stdlib/map.mdk`). When you need a stdlib-shaped function (`intercalate`,
+  `intersperse`, etc.) in compiler code, add it to `support/` or inline it — do
+  **not** `import list`/`import string`. Enforced by convention, not the build;
+  check `grep -rn 'import ' selfhost/ | grep -v support` stays clean of stdlib
+  module names.
+  - **Why (the real reasons — *not* just binary size).** The emit-path DCE
+    (`ir/dce.mdk`) already tree-shakes unreached plain top-level functions, so the
+    *unused-function* bloat argument is weak on its own. What DCE can **not** do is
+    the load-bearing part: (1) **un-prunable instance surface** — DCE retains every
+    `DImpl`/`DInterface` *whole* (dispatch is runtime dict-passing, so pruning an
+    impl would be a silent miscompile), and the stdlib is interface-heavy
+    (`core`'s Eq/Ord/Debug/Num/Foldable/… × every type), so `import list` drags in
+    that entire instance surface just to reach one plain function; (2) **compile-time
+    tax** — DCE runs *after* lex/parse/typecheck, so importing stdlib taxes every
+    compile (and the self-compile/fixpoint loop) regardless of what's later dropped;
+    (3) **isolation + bootstrap** — the compiler stays independent of the thing it
+    compiles, and the cold-bootstrap seed's provenance stays small. This becomes
+    cheap to revisit only if/when the backend gains **instance-level DCE via
+    monomorphization** (the deferred backend item). Until then: keep selfhost
+    stdlib-free; `support/` is the compiler's private mini-stdlib.
 - **Environment is pre-set.** opam env vars (switch `5.4.1`, PATH) are already
   exported via `.claude/settings.local.json`. **Never** prefix commands with
   `eval $(opam env)` — it's redundant. *Exception:* a sandboxed shell sometimes
