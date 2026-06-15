@@ -4690,49 +4690,45 @@ inferOneIfaceDefaults env (DAttrib _ d) = inferOneIfaceDefaults env d
 -- `No impl of Foldable for Map` obligation.  The interface scheme is shadow-free.
 -- Also extend env with these schemes so PEER-method refs in a default body
 -- resolve to the interface methods (oracle's env_with_methods), not user shadows.
-inferOneIfaceDefaults env DInterface { methods, ... } =
+inferOneIfaceDefaults env DInterface { typarams, methods, ... } =
   let ifaceSchemes = methodSchemesPure methods
-  inferDefaultMethods (extendVars env ifaceSchemes) ifaceSchemes methods
+  inferDefaultMethods (extendVars env ifaceSchemes) typarams methods
 inferOneIfaceDefaults _ _ = ()
 
-inferDefaultMethods : TcEnv -> List (String, Scheme) -> List IfaceMethod -> <Mut> Unit
+inferDefaultMethods : TcEnv -> List String -> List IfaceMethod -> <Mut> Unit
 inferDefaultMethods _ _ [] = ()
-inferDefaultMethods env ifaceSchemes (m::rest) =
-  let _ = inferDefaultMethod env ifaceSchemes m
-  inferDefaultMethods env ifaceSchemes rest
+inferDefaultMethods env typarams (m::rest) =
+  let _ = inferDefaultMethod env typarams m
+  inferDefaultMethods env typarams rest
 
 -- C8b: type-check ALL interface default bodies, unconditionally.
 --
--- Constrained arm (Some ids): method has method-level constraints (e.g. foldMap : Monoid m =>):
+-- Constrained arm (non-empty ids): method has method-level constraints (e.g. foldMap : Monoid m =>):
 --   Instantiate scheme, register constraint vars → dict param names (for dict-passing
 --   emit path), infer body, unify.  Mirrors lib/typecheck.ml:3132-3142 + 3143-3150.
+--   CRITICAL: the constraint slot ids AND the default-body instantiation MUST come
+--   from the SAME sigToSchemeTvs build of THIS method's type.  Reading the ids from
+--   methodConstraintsRef (filled by a SEPARATE ifaceMethodSchemes build with its own
+--   fresh tyvar ids) and instantiating an unrelated methodSchemesPure scheme gave ids
+--   that did not appear in the instantiation subst → registerOneMethodDict's
+--   `lookupAssocI id subst` returned None → activeDictVars got no entry → the in-body
+--   `empty`/`++` routed RNone → eval's `++` saw a non-monoid acc and panicked
+--   ('++' requires Semigroup).  The oracle (lib/typecheck.ml:3067-3093 + 3126-3142)
+--   uses ONE method_schemes build for both, which is mirrored here.
 --
--- Unconstrained arm (None): method has no method-level constraints (e.g. Ord.lt, Foldable.length):
+-- Unconstrained arm (empty ids): method has no method-level constraints (e.g. Ord.lt):
 --   Instantiate scheme, infer body, unify — same but no dict registration.
---   This was the missing branch: the oracle checks these unconditionally
---   (lib/typecheck.ml:3122-3160 iterates ALL methods with a default body);
---   selfhost previously skipped them via `None => ()`.
 --
--- Double-error guard (both arms): the oracle raises on first error, so a mismatch
--- inside the body (e.g. a bad annotation) never reaches the outer unify.  The
--- selfhost accumulates, so the body's inner error AND the outer unify both fire,
--- producing duplicates.  Fix: snapshot typeErrors length before body inference;
--- skip the outer unify if new errors were added (matches oracle single-error).
---
--- Methods without a default body (third pattern arm) are skipped by both oracle and selfhost.
-inferDefaultMethod : TcEnv -> List (String, Scheme) -> IfaceMethod -> <Mut> Unit
-inferDefaultMethod env ifaceSchemes (IfaceMethod mname _ (Some (MethodDefault pats body))) = match lookupAssoc mname ifaceSchemes
-  None => ()
-  Some scheme => match lookupAssocSL2 mname methodConstraintsRef.value
-    Some ids =>
-      let _ = set_ref currentFn ""
-      let inst = instantiateTracked scheme
-      let _ = inferDefaultMethodBody env (fst inst) pats body
-      registerMethodDictSlots mname 0 ids (snd inst)
-    None =>
-      let _ = set_ref currentFn ""
-      let inst = instantiateTracked scheme
-      inferDefaultMethodBody env (fst inst) pats body
+-- Double-error guard: snapshot typeErrors length before body inference; skip the
+-- outer unify if new errors were added (matches the oracle's single-error raise).
+inferDefaultMethod : TcEnv -> List String -> IfaceMethod -> <Mut> Unit
+inferDefaultMethod env typarams (IfaceMethod mname mty (Some (MethodDefault pats body))) =
+  let st = sigToSchemeTvs mty
+  let ids = methodConstraintSlotIds typarams mty (snd st)
+  let _ = set_ref currentFn ""
+  let inst = instantiateTracked (fst st)
+  let _ = registerMethodDictSlots mname 0 ids (snd inst)
+  inferDefaultMethodBody env (fst inst) pats body
 inferDefaultMethod _ _ _ = ()
 
 -- Infer a default method body against [expectedTy], suppressing the outer
@@ -4966,10 +4962,17 @@ registerMethodDictSlots mname slot (id::rest) subst =
 
 registerOneMethodDict : String -> Int -> Int -> List (Int, Mono) -> <Mut> Unit
 registerOneMethodDict mname slot id subst = match lookupAssocI id subst
-  None => ()
+  None => dbgROMD mname "noSubst"
   Some m => match normalize m
-    TVar cell => set_ref activeDictVars ((tyvarId cell, dictParamName mname slot) :: activeDictVars.value)
-    _ => ()
+    TVar cell =>
+      let _ = dbgROMD mname ("TVar:" ++ intToString (tyvarId cell))
+      set_ref activeDictVars ((tyvarId cell, dictParamName mname slot) :: activeDictVars.value)
+    _ => dbgROMD mname "notTVar"
+
+dbgROMD : String -> String -> <Mut> Unit
+dbgROMD mname tag
+  | mname == "crush" = panic ("DBG ROMD crush=" ++ tag)
+  | otherwise = ()
 
 -- infer each impl-with-`requires`' return-position method bodies; the interface
 -- declarations live in [allProg] (method types + typarams).
