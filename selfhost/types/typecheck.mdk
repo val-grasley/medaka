@@ -50,7 +50,7 @@ import frontend.desugar.{mapProg}
 -- the typechecked program's data decls + the inferred scrutinee type).
 import frontend.exhaust.{Oracle, buildOracle, useful, desugarPat, tupleCtorName}
 import support.ordmap.{OrdMap(..), omEmpty, omInsert, omLookup, omHasKey}
-import support.util.{listLen, concatMapList, lookupAssoc, contains, reverseL, joinWith, joinNl, joinDot, filterList, anyList, allList, initList, isEmptyL, minI, isSome, zipL, dedup}
+import support.util.{listLen, concatMapList, lookupAssoc, contains, reverseL, joinWith, joinNl, joinDot, filterList, anyList, allList, initList, isEmptyL, minI, isSome, zipL, dedup, sortUniqS}
 
 -- ── monotypes & schemes ───────────────────────────────────────────────────
 public export data Mono
@@ -143,19 +143,7 @@ effvarLevel cell = match cell.value
 
 -- sorted + deduplicated string set (canonical effect-label order, matching the
 -- OCaml `List.sort_uniq String.compare` so multi-label rows render identically)
-sortUniqS : List String -> List String
-sortUniqS xs = sortUniqSGo xs []
-
-sortUniqSGo : List String -> List String -> List String
-sortUniqSGo [] acc = acc
-sortUniqSGo (x::xs) acc = sortUniqSGo xs (sortInsertS x acc)
-
-sortInsertS : String -> List String -> List String
-sortInsertS x [] = [x]
-sortInsertS x (y::ys) = match stringCompare x y
-  Lt => x :: y :: ys
-  Eq => y :: ys
-  Gt => y :: sortInsertS x ys
+-- sortUniqS / sortUniqSGo / sortInsertS moved to support/util.mdk (imported above).
 
 enterLevel : Unit -> <Mut> Unit
 enterLevel _ = set_ref currentLevel (currentLevel.value + 1)

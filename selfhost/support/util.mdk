@@ -184,6 +184,90 @@ orElseOpt : Option a -> Option a -> Option a
 orElseOpt (Some x) _ = Some x
 orElseOpt None y = y
 
+-- ── Whitespace trim (O(n) char-array scan) ────────────────────────────────
+-- Strip leading + trailing ASCII whitespace (space/tab/newline/CR).  Scans the
+-- backing char array once per side rather than recursing on stringSlice (which
+-- re-copies the shrinking string each step, O(n^2)).
+
+isWs : String -> Bool
+isWs " " = True
+isWs "\t" = True
+isWs "\n" = True
+isWs "\r" = True
+isWs _ = False
+
+arraySubChars : Array Char -> Int -> Int -> Array Char
+arraySubChars chars lo hi =
+  arrayMakeWith (hi - lo) (i => arrayGetUnsafe (lo + i) chars)
+
+trimLeftGo : Array Char -> Int -> Int -> String
+trimLeftGo chars i len
+  | i >= len = ""
+  | isWs (charToStr (arrayGetUnsafe i chars)) = trimLeftGo chars (i + 1) len
+  | otherwise = stringFromChars (arraySubChars chars i len)
+
+trimRightGo : Array Char -> Int -> String
+trimRightGo chars end
+  | end <= 0 = ""
+  | isWs (charToStr (arrayGetUnsafe (end - 1) chars)) = trimRightGo chars (end - 1)
+  | otherwise = stringFromChars (arraySubChars chars 0 end)
+
+export
+stringTrimLeft : String -> String
+stringTrimLeft s =
+  let chars = stringToChars s
+  let len = arrayLength chars
+  trimLeftGo chars 0 len
+
+export
+stringTrimRight : String -> String
+stringTrimRight s =
+  let chars = stringToChars s
+  let len = arrayLength chars
+  trimRightGo chars len
+
+export
+stringTrim : String -> String
+stringTrim s = stringTrimRight (stringTrimLeft s)
+
+-- ── sorted-unique String list (insertion sort, dedups equal keys) ─────────
+export
+sortUniqS : List String -> List String
+sortUniqS xs = sortUniqSGo xs []
+
+sortUniqSGo : List String -> List String -> List String
+sortUniqSGo [] acc = acc
+sortUniqSGo (x::xs) acc = sortUniqSGo xs (sortInsertS x acc)
+
+sortInsertS : String -> List String -> List String
+sortInsertS x [] = [x]
+sortInsertS x (y::ys) = match stringCompare x y
+  Lt => x :: y :: ys
+  Eq => y :: ys
+  Gt => y :: sortInsertS x ys
+
+-- ── UTF-8 byte width ──────────────────────────────────────────────────────
+-- Content-Length frames count bytes; strings count codepoints — sum each
+-- codepoint's encoded width.
+export
+utf8CharWidth : Int -> Int
+utf8CharWidth cp
+  | cp < 128 = 1
+  | cp < 2048 = 2
+  | cp < 65536 = 3
+  | otherwise = 4
+
+utf8LenGo : Array Char -> Int -> Int -> Int -> Int
+utf8LenGo arr len i acc
+  | i >= len = acc
+  | otherwise = utf8LenGo arr len (i + 1) (acc + utf8CharWidth (charCode (arrayGetUnsafe i arr)))
+
+export
+utf8Len : String -> Int
+utf8Len s =
+  let arr = stringToChars s
+  utf8LenGo arr (arrayLength arr) 0 0
+
 -- ── Canonical compiler-internal names ─────────────────────────────────────
 -- Names produced in one stage and consumed in another (cross-module contract);
 -- defined once here so the stages can't silently drift out of agreement.

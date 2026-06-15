@@ -24,7 +24,7 @@
 -- unemittable construct → `panic: … gap …`) or empty IR aborts the build with
 -- the emitter's own diagnostic surfaced.
 
-import support.util.{reverseL}
+import support.util.{reverseL, stringTrim}
 import driver.loader.{findProjectRoot}
 import support.path.{dirOf, baseOf, chopExt, joinPath}
 
@@ -39,26 +39,14 @@ trimNL s =
   let n = stringLength s
   if n > 0 && stringSlice (n - 1) n s == "\n" then stringSlice 0 (n - 1) s else s
 
--- Strip leading/trailing ASCII whitespace.
-trimWS : String -> String
-trimWS s = trimLeft (trimRight s)
-
-trimRight : String -> String
-trimRight s =
-  let n = stringLength s
-  if n == 0 then s else if isWS (stringSlice (n - 1) n s) then trimRight (stringSlice 0 (n - 1) s) else s
-
-trimLeft : String -> String
-trimLeft s =
-  let n = stringLength s
-  if n == 0 then s else if isWS (stringSlice 0 1 s) then trimLeft (stringSlice 1 n s) else s
+-- Strip leading/trailing ASCII whitespace: stringTrim (from support/util.mdk).
 
 isWS : String -> Bool
 isWS c = c == " " || c == "\n" || c == "\t" || c == "\r"
 
 -- Split a whitespace-separated flag string into a list of non-empty tokens.
 splitWS : String -> List String
-splitWS s = splitWSGo (trimWS s) 0 0 []
+splitWS s = splitWSGo (stringTrim s) 0 0 []
 
 splitWSGo : String -> Int -> Int -> List String -> List String
 splitWSGo s i start acc =
@@ -102,13 +90,13 @@ detectGC cc = match runCommand "pkg-config" ["--exists", "bdw-gc"]
 
 gcQuery : String -> List String -> <IO> String
 gcQuery prog args = match runCommand prog args
-  Ok (_, out, _) => trimWS out
+  Ok (_, out, _) => stringTrim out
   Err _ => ""
 
 detectGCBrew : String -> <IO> Option (List String, List String)
 detectGCBrew cc = match runCommand "brew" ["--prefix", "bdw-gc"]
   Ok (0, out, _) =>
-    let prefix = trimWS out
+    let prefix = stringTrim out
     if prefix != "" && fileExists (joinPath prefix "include/gc.h") then Some (
       ["-I" ++ joinPath prefix "include"],
       ["-L" ++ joinPath prefix "lib", "-lgc"],

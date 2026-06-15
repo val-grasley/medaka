@@ -58,7 +58,7 @@ import frontend.parser.{
 }
 import frontend.lexer.{Token(..), tokenizeWithOffsetPairs}
 import support.char.{isIdentChar, isDigit}
-import support.util.{maxI}
+import support.util.{maxI, utf8Len}
 import frontend.desugar.{desugar}
 import types.typecheck.{checkProgramSchemes, ppScheme, Scheme(..)}
 import tools.fmt.{formatSource}
@@ -762,26 +762,8 @@ writeMessage j =
 -- arrows, box-drawing in comments), and any response embedding that text (a
 -- diagnostic, a documentSymbol body) would otherwise under-declare its length —
 -- the client then reads too few bytes and the frame boundary slips ("Header must
--- provide a Content-Length property", server shutdown).  So sum each codepoint's
--- UTF-8 byte width (`putStr` emits the body as UTF-8, so this matches the wire).
-utf8Len : String -> Int
-utf8Len s =
-  let arr = stringToChars s
-  utf8LenGo arr (arrayLength arr) 0 0
-
-utf8LenGo : Array Char -> Int -> Int -> Int -> Int
-utf8LenGo arr len i acc
-  | i >= len = acc
-  | otherwise = utf8LenGo arr len (i + 1) (acc + utf8CharWidth (charCode (arrayGetUnsafe i arr)))
-
--- UTF-8 encoded width of a Unicode codepoint: 1 byte < U+0080, 2 < U+0800,
--- 3 < U+10000, else 4 (matches the standard UTF-8 length table).
-utf8CharWidth : Int -> Int
-utf8CharWidth cp
-  | cp < 128 = 1
-  | cp < 2048 = 2
-  | cp < 65536 = 3
-  | otherwise = 4
+-- provide a Content-Length property", server shutdown).  utf8Len / utf8CharWidth
+-- moved to support/util.mdk (imported above).
 
 -- A JSON-RPC response envelope: { jsonrpc, id, result }.
 responseMsg : Json -> Json -> Json

@@ -37,7 +37,7 @@ import types.typecheck.{
   Scheme(..),
 }
 import eval.eval.{Value(..), evalOneRootEnv, ppValue, lookupBinding, force}
-import support.util.{contains, startsWith}
+import support.util.{contains, startsWith, stringTrim}
 
 -- ── Session state ─────────────────────────────────────────────────────────
 accumulatedRef : Ref (List Decl)
@@ -413,44 +413,7 @@ dispatchInput src =
   if trimmed == "" then () else if isDecl src then processDeclInput src else processExprInput src
 
 -- ── String utilities ──────────────────────────────────────────────────────
-stringTrim : String -> String
-stringTrim s = stringTrimRight (stringTrimLeft s)
-
-stringTrimLeft : String -> String
-stringTrimLeft s =
-  let chars = stringToChars s
-  let len = arrayLength chars
-  trimLeftGo chars 0 len
-
-trimLeftGo : Array Char -> Int -> Int -> String
-trimLeftGo chars i len
-  | i >= len = ""
-  | isWs (charToStr (arrayGetUnsafe i chars)) = trimLeftGo chars (i + 1) len
-  | otherwise = stringFromChars (arraySubChars chars i len)
-
-stringTrimRight : String -> String
-stringTrimRight s =
-  let chars = stringToChars s
-  let len = arrayLength chars
-  trimRightGo chars len
-
-trimRightGo : Array Char -> Int -> String
-trimRightGo chars end
-  | end <= 0 = ""
-  | isWs (charToStr (arrayGetUnsafe (end - 1) chars)) = trimRightGo chars (end - 1)
-  | otherwise = stringFromChars (arraySubChars chars 0 end)
-
--- Build a sub-array of chars from lo..hi (exclusive hi).
-arraySubChars : Array Char -> Int -> Int -> Array Char
-arraySubChars chars lo hi =
-  arrayMakeWith (hi - lo) (i => arrayGetUnsafe (lo + i) chars)
-
-isWs : String -> Bool
-isWs " " = True
-isWs "\t" = True
-isWs "\n" = True
-isWs "\r" = True
-isWs _ = False
+-- stringTrim moved to support/util.mdk (imported above).
 
 charToStr : Char -> String
 charToStr c = stringFromChars (arrayMakeWith 1 (_ => c))

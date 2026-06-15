@@ -32,6 +32,7 @@ import json.{
   asString,
   asInt,
 }
+import support.util.{utf8Len, utf8CharWidth}
 
 -- ── JSON-RPC message builders ───────────────────────────────────────────────
 
@@ -120,26 +121,7 @@ exitMsg : Json
 exitMsg = jObject [("jsonrpc", JString "2.0"), ("method", JString "exit")]
 
 -- ── framing (byte-counted Content-Length) ──────────────────────────────────
-
-utf8CharWidth : Int -> Int
-utf8CharWidth cp
-  | cp < 128 = 1
-  | cp < 2048 = 2
-  | cp < 65536 = 3
-  | otherwise = 4
-
--- UTF-8 byte length of a string (Content-Length counts bytes, strings count
--- codepoints — sum each codepoint's encoded width).
-export
-utf8Len : String -> Int
-utf8Len s =
-  let arr = stringToChars s
-  utf8LenGo arr (arrayLength arr) 0 0
-
-utf8LenGo : Array Char -> Int -> Int -> Int -> Int
-utf8LenGo arr len i acc
-  | i >= len = acc
-  | otherwise = utf8LenGo arr len (i + 1) (acc + utf8CharWidth (charCode (arrayGetUnsafe i arr)))
+-- utf8Len / utf8CharWidth moved to support/util.mdk (imported above).
 
 -- One Content-Length-framed packet.
 export

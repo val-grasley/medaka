@@ -23,7 +23,7 @@ import frontend.ast.{Decl, DUse}
 import frontend.parser.{parse}
 import frontend.desugar.{desugar}
 import eval.eval.{Value(..), lookupBinding, force, ppValue}
-import support.util.{listLen, reverseL, concatMapList, joinNl, startsWith}
+import support.util.{listLen, reverseL, concatMapList, joinNl, startsWith, stringTrim}
 
 -- ── Data ──────────────────────────────────────────────────────────────────
 
@@ -88,29 +88,7 @@ startsWith p s =
   let lp = slen p
   if slen s < lp then False else substr3 0 lp s == p
 
--- Trim leading/trailing ASCII whitespace (space, tab, CR, NL).
-trimStr : String -> String
-trimStr s =
-  let cs = stringToChars s
-  let n = arrayLength cs
-  let lo = trimLeft cs n 0
-  let hi = trimRight cs (n - 1)
-  if lo > hi then "" else substr3 lo (hi + 1) s
-
-isWs : Char -> Bool
-isWs c = c == ' ' || c == '\t' || c == '\r' || c == '\n'
-
-trimLeft : Array Char -> Int -> Int -> Int
-trimLeft cs n i
-  | i >= n = i
-  | isWs (arrayGetUnsafe i cs) = trimLeft cs n (i + 1)
-  | otherwise = i
-
-trimRight : Array Char -> Int -> Int
-trimRight cs i
-  | i < 0 = i
-  | isWs (arrayGetUnsafe i cs) = trimRight cs (i - 1)
-  | otherwise = i
+-- trim → stringTrim (support/util.mdk, imported above).
 
 -- Split a string on '\n' into its lines (no trailing empty unless present).
 splitNl : String -> List String
@@ -187,7 +165,7 @@ expandBlock c =
 expandLines : Int -> Int -> List String -> List (Int, String)
 expandLines _ _ [] = []
 expandLines baseLine i (line::rest) =
-  let trimmed = trimStr line
+  let trimmed = stringTrim line
   let text = if trimmed == "" then "--" else "-- " ++ trimmed
   (baseLine + i, text) :: expandLines baseLine (i + 1) rest
 
