@@ -52,6 +52,39 @@ filterReachable reach ((DFunDef pub n ps body)::rest)
   | otherwise = filterReachable reach rest
 filterReachable reach (d::rest) = d :: filterReachable reach rest
 
+-- ── prelude-reference canonicalization (post-mangle synthesized refs) ────────
+-- The emit drivers run `mangleUnits` BEFORE `elaborateModules`, renaming every
+-- prelude definition to `core__<name>`.  But `elaborateModules` SYNTHESIZES bare
+-- references that never passed through mangling — notably the `!=` rewrite
+-- (typecheck.mdk binopMethodApp builds `EApp (EVar "not") …`).  Such a bare name
+-- (`not`) does NOT match its mangled definition (`core__not`) by string equality,
+-- so a naive reachability walk treats the def as unreached and DCE DROPS it →
+-- the emitter then aborts `unbound variable 'not'` (and `canonFnName` in the
+-- emitter can't recover a def that was never emitted).  GENERAL FIX: when a
+-- referenced bare name is NOT itself a defined fn but its `core__`-mangled form
+-- IS, the reference resolves to the mangled def.  This mirrors the emitter's
+-- `canonFnName` exactly, so reachability and emission agree, and it covers ANY
+-- post-mangle-synthesized prelude reference, not just `not`.
+canonRef : HashMap String Unit -> String -> String
+canonRef defined n
+  | member n defined = n
+  | member ("core__" ++ n) defined = "core__" ++ n
+  | otherwise = n
+
+-- set of all DFunDef names defined in the program (the only DCE-droppable decls).
+definedFnNames : List Decl -> <Mut> HashMap String Unit
+definedFnNames decls =
+  let s = new ()
+  let _ = definedFnNamesInto decls s
+  s
+
+definedFnNamesInto : List Decl -> HashMap String Unit -> <Mut> Unit
+definedFnNamesInto [] _ = ()
+definedFnNamesInto ((DFunDef _ n _ _)::rest) s =
+  let _ = insert n () s
+  definedFnNamesInto rest s
+definedFnNamesInto (_::rest) s = definedFnNamesInto rest s
+
 -- ── reachability ───────────────────────────────────────────────────────────
 -- Transitive closure of the roots over the DFunDef call graph, collected into a
 -- HashMap-as-set (consumed only by `filterReachable`'s membership test — order
@@ -59,26 +92,28 @@ filterReachable reach (d::rest) = d :: filterReachable reach rest
 -- turn the old O(N²) list dedup/closure/scan into ~O(reachable + edges).
 reachableNames : List Decl -> <Mut> HashMap String Unit
 reachableNames decls =
-  let graph = funGraph decls
+  let defined = definedFnNames decls
+  let graph = funGraph defined decls
   let seen = new ()
-  let _ = closure graph seen ("main" :: emittingRoots decls)
+  let _ = closure graph seen (map (canonRef defined) ("main" :: emittingRoots decls))
   seen
 
 -- name -> refs(body) as a HashMap (multi-clause defs merged). O(1) insert/lookup;
 -- replaces the old O(N²) assoc-list `addRefs`. Ref-list order is irrelevant (fed
--- to the membership-only closure).
-funGraph : List Decl -> <Mut> HashMap String (List String)
-funGraph decls =
+-- to the membership-only closure).  Each ref is canonicalized against the defined
+-- set so a post-mangle bare prelude reference (`not`) resolves to `core__not`.
+funGraph : HashMap String Unit -> List Decl -> <Mut> HashMap String (List String)
+funGraph defined decls =
   let g = new ()
-  let _ = funGraphInto decls g
+  let _ = funGraphInto defined decls g
   g
 
-funGraphInto : List Decl -> HashMap String (List String) -> <Mut> Unit
-funGraphInto [] _ = ()
-funGraphInto ((DFunDef _ n ps body)::rest) g =
-  let _ = insert n (declRefs (DFunDef False n ps body) ++ findWithDefault [] n g) g
-  funGraphInto rest g
-funGraphInto (_::rest) g = funGraphInto rest g
+funGraphInto : HashMap String Unit -> List Decl -> HashMap String (List String) -> <Mut> Unit
+funGraphInto _ [] _ = ()
+funGraphInto defined ((DFunDef _ n ps body)::rest) g =
+  let _ = insert n (map (canonRef defined) (declRefs (DFunDef False n ps body)) ++ findWithDefault [] n g) g
+  funGraphInto defined rest g
+funGraphInto defined (_::rest) g = funGraphInto defined rest g
 
 -- roots from emitting non-DFunDef decls: impl-method + interface-default bodies.
 -- (declRefs walks an impl's method bodies / an interface's default bodies; it is
