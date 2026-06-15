@@ -93,17 +93,18 @@ void mdk_print_int(long long v) { printf("%lld\n", v); }
 /* Print a Bool.  Matches Eval.pp_value (VBool b) = string_of_bool b. */
 void mdk_print_bool(long long v) { printf(v ? "true\n" : "false\n"); }
 
-/* Print a Float.  Must reproduce Eval.pp_value (VFloat f) byte-for-byte:
- * OCaml string_of_float is valid_float_lexem (sprintf "%.12g" f) — i.e. "%.12g"
- * then a trailing "." appended when the lexeme would otherwise read as an int
- * (no '.'/'e').  pp_value then appends ".0" only if still no '.'/'e', which the
- * trailing-"." already prevents.  So: "%.12g", and append one "." if integral. */
+/* Print a Float.  Renders the canonical Medaka float lexeme (DECIDED 2026-06-15,
+ * a deliberate divergence from OCaml string_of_float — the same rule is mirrored
+ * into the oracle Eval.pp_value to keep differentials byte-identical):
+ * "%.12g" (precision unchanged), then append ".0" when the lexeme would otherwise
+ * read as an int (no '.'/'e'/'E') — so 1.0 prints "1.0", not the old "1.".  The
+ * 'n'/'i' guard leaves nan/inf untouched ("nan"/"inf", never "nan.0"/"inf.0"). */
 void mdk_print_float(double d) {
   char buf[64];
   snprintf(buf, sizeof buf, "%.12g", d);
-  if (!strchr(buf, '.') && !strchr(buf, 'e') &&
+  if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'E') &&
       !strchr(buf, 'n') && !strchr(buf, 'i')) /* skip nan/inf */
-    strcat(buf, ".");
+    strcat(buf, ".0");
   printf("%s\n", buf);
 }
 
@@ -204,9 +205,9 @@ long long mdk_int_to_string(long long tagged) {
 long long mdk_float_to_string(double d) {
   char buf[64];
   snprintf(buf, sizeof buf, "%.12g", d);
-  if (!strchr(buf, '.') && !strchr(buf, 'e') &&
+  if (!strchr(buf, '.') && !strchr(buf, 'e') && !strchr(buf, 'E') &&
       !strchr(buf, 'n') && !strchr(buf, 'i')) /* skip nan/inf */
-    strcat(buf, ".");
+    strcat(buf, ".0");
   return mdk_str_lit(buf, (long long)strlen(buf));
 }
 

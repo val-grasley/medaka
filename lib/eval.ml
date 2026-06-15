@@ -241,8 +241,12 @@ let extend env binds =
 let rec pp_value = function
   | VInt n    -> string_of_int n
   | VFloat f  ->
-    let s = string_of_float f in
-    if String.contains s '.' || String.contains s 'e' then s else s ^ ".0"
+    (* Canonical Medaka float lexeme (DECIDED 2026-06-15): "%.12g" then ".0" when
+       integral.  Deliberate divergence from string_of_float, mirrored in
+       runtime/medaka_rt.c so native and oracle stay byte-identical.  The
+       'n'/'i' guard leaves nan/inf untouched (no "nan.0"/"inf.0"). *)
+    let s = Printf.sprintf "%.12g" f in
+    if String.exists (fun c -> c='.'||c='e'||c='E'||c='n'||c='i') s then s else s ^ ".0"
   | VString s -> s
   | VChar c   -> c
   | VBool b   -> string_of_bool b
@@ -1594,8 +1598,8 @@ let primitives : (string * value) list =
       match v with
       | VFloat f ->
         (* Mirror pp_value's Float case exactly so debug == println for floats. *)
-        let s = string_of_float f in
-        VString (if String.contains s '.' || String.contains s 'e' then s else s ^ ".0")
+        let s = Printf.sprintf "%.12g" f in
+        VString (if String.exists (fun c -> c='.'||c='e'||c='E'||c='n'||c='i') s then s else s ^ ".0")
       | _ -> raise (Eval_error ("floatToString: expected Float", None))));
     ("debugStringLit", VPrim (fun v ->
       match v with
