@@ -1038,6 +1038,7 @@ applyNlTopPairs col off top stack rest prev opener
 
 wouldIndentPairs : Int -> Int -> List Int -> List RawTok -> Option Token -> Bool -> List (Token, Int, Int)
 wouldIndentPairs col off stack rest prev opener
+  | prevIsTrailingOp prev = layoutPairs rest stack prev opener
   | opener || not (prevCanEnd prev) = (TIndent, off, off) :: layoutPairs rest (col :: stack) None False
   | otherwise = resolveContPairs col off stack rest prev opener
 
