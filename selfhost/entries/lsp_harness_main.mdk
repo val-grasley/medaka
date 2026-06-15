@@ -149,15 +149,15 @@ fixtureSemanticTokens medaka fixDir =
             None => check "semantic tokens: Expr names share one type" False
             Some ints => check "semantic tokens: Expr names share one type" (lenTokensShareType 4 3 (decodeSemToks ints))
 
-{- Fixture 6: semanticTokens/full over roles.mdk — `Color` (type) + `Red`
-   (constructor) must classify to DIFFERENT legend types: type=1 AND enumMember=2
-   both present.  Guards the type-vs-constructor split the context classifier adds
-   over v1 (which colored every uppercase name `type`). -}
+{- Fixture 6: semanticTokens/full over roles.mdk — type (`Color`→legend 1),
+   constructor (`Red`→2), and typeclass (`Show`→7) must ALL be emitted, i.e. the
+   classifier separates type / constructor / interface (v1 colored all uppercase
+   the same). -}
 fixtureSemanticRoles : String -> String -> <IO, Mut> Unit
 fixtureSemanticRoles medaka fixDir =
   let path = stringConcat [fixDir, "/roles.mdk"]
   match readFile path
-    Err _ => check "semantic tokens: type != constructor" False
+    Err _ => check "semantic tokens: type/ctor/typeclass distinct" False
     Ok src =>
       let uri = fileUri path
       let msgs = [
@@ -168,14 +168,14 @@ fixtureSemanticRoles medaka fixDir =
         exitMsg,
       ]
       match runSession medaka msgs
-        Err _ => check "semantic tokens: type != constructor" False
+        Err _ => check "semantic tokens: type/ctor/typeclass distinct" False
         Ok out => match parseFrames out
           (frames, _) => match semanticData 2 frames
-            None => check "semantic tokens: type != constructor" False
+            None => check "semantic tokens: type/ctor/typeclass distinct" False
             Some ints =>
               let toks = decodeSemToks ints
-              check "semantic tokens: type != constructor"
-                (hasTokenType 1 toks && hasTokenType 2 toks)
+              check "semantic tokens: type/ctor/typeclass distinct"
+                (hasTokenType 1 toks && hasTokenType 2 toks && hasTokenType 7 toks)
 
 main =
   let medaka = envOr "MEDAKA" "./medaka"

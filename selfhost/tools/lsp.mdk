@@ -851,10 +851,12 @@ parseDigits arr i n acc seen
 --     `type` shares the warm hue of `function` and would be indistinguishable.
 --   * constructors → `macro` (#a8cc7c green), since `enumMember` is a near-default
 --     light grey (#d6d6dd) that reads as plain text.
+--   * typeclasses (interfaces) → `selfParameter` (#cc7c8a rose), so they read apart
+--     from plain types (blue); `interface`/`enum` fall back to the warm `type` hue.
 --   0 keyword  1 class(type)  2 macro(constructor)  3 function  4 property(field)
---   5 string   6 number
+--   5 string   6 number  7 selfParameter(typeclass/interface)
 semanticLegend : List String
-semanticLegend = ["keyword", "class", "macro", "function", "property", "string", "number"]
+semanticLegend = ["keyword", "class", "macro", "function", "property", "string", "number", "selfParameter"]
 
 semanticTokensOptions : Json
 semanticTokensOptions =
@@ -881,7 +883,7 @@ semanticTokensOptions =
    no token.  Robust on unparseable buffers (pure token walk). -}
 
 -- Decides how an uppercase name (and record fields) is colored at this point.
-data SMode = MExpr | MType | MDataHead | MDataVariant | MDataPayload | MRecord
+data SMode = MExpr | MType | MDataHead | MDataVariant | MDataPayload | MRecord | MIfaceOne | MIfaceMany
 
 -- depth (indent nesting; 0 = top level), lineStart (next token begins a logical
 -- line), mode.
@@ -930,6 +932,8 @@ upperRole _ = 1
 
 -- The legend index for a token (None = leave default fg), given depth/lineStart/mode.
 roleOf : Token -> Int -> Bool -> SMode -> Option Int
+roleOf (TUpper _) _ _ MIfaceOne = Some 7         -- interface/impl name → typeclass
+roleOf (TUpper _) _ _ MIfaceMany = Some 7        -- requires/deriving names → typeclass
 roleOf (TUpper _) _ _ mode = Some (upperRole mode)
 roleOf (TIdent _) depth lineStart mode =
   if lineStart && (depth == 0) then Some 3      -- top-level definition head
@@ -952,12 +956,15 @@ nextMode : Token -> SMode -> SMode
 nextMode TData _ = MDataHead
 nextMode TNewtype _ = MDataHead
 nextMode TRecord _ = MRecord
-nextMode TInterface _ = MType
+nextMode TInterface _ = MIfaceOne
+nextMode TImpl _ = MIfaceOne
+nextMode TRequires _ = MIfaceMany
+nextMode TDeriving _ = MIfaceMany
 nextMode TExtern _ = MType
 nextMode TType _ = MType
-nextMode TDeriving _ = MType
-nextMode TRequires _ = MType
 nextMode TOf _ = MType
+nextMode TWhere _ = MExpr
+nextMode (TUpper _) MIfaceOne = MType
 nextMode TColon MRecord = MRecord
 nextMode TColon _ = MType
 nextMode TEqual MDataHead = MDataVariant

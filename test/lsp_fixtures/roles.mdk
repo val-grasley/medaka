@@ -1,8 +1,12 @@
--- roles.mdk — semantic-token role fixture.  `Color` appears in TYPE position
--- (data head + signature) and `Red` in CONSTRUCTOR position (variant + expr); the
--- classifier must emit type (legend 1) AND enumMember (legend 2) — i.e. it
--- separates types from constructors (the v1 lexer-only version colored both blue).
+-- roles.mdk — semantic-token role fixture.  Exercises the distinct roles the
+-- context classifier separates (and the v1 lexer-only version conflated):
+--   Color  → type/`class`     (legend 1)
+--   Red    → constructor/`macro` (legend 2)
+--   Show   → typeclass/`selfParameter` (legend 7)  — interface, distinct from types
 data Color = Red
+
+interface Show a where
+  show : a -> Color
 
 paint : Color -> Color
 paint c = Red
