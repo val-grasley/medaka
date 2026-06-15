@@ -21,7 +21,27 @@ module StringSet = Set.Make(String)
 
 type level = int
 
-type effect_set = string list  (* sorted, deduplicated set of concrete effect labels *)
+(* ── Effect refinement domains (capability-effects v2, Stage 1) ───
+   An effect label may carry a *parameter* drawn from its declared refinement
+   DOMAIN — a small lattice of data-shaped values with a top ⊤ (unconstrained).
+   Stage 1 introduces the representation only: EVERY param is constructed at ⊤,
+   so the row behaves byte-identically to the v1 set-of-bare-labels.  Stage 2
+   will add the Prefix domain's analysis without re-touching this row code.
+
+   The domain interface (design §2.1) — dtop / dsub / djoin / dmeet / drender —
+   is realized here as ordinary functions over the [param] variant.  Adding the
+   Set/Product domains later is a new [param] arm + new match cases in these
+   five functions; unify_row / the escape check / rendering call only the
+   interface, never a concrete domain. *)
+type param =
+  | PUnit                       (* the trivial domain: () only — today's atomic label *)
+  | PPrefix of string option    (* Prefix domain: None = ⊤; Some p = the prefix pattern (Stage 2) *)
+
+(* An atom = a label applied to a domain parameter.  A v1 atomic label `Foo` is
+   exactly { label = "Foo"; param = dtop_for "Foo" } (= PUnit in Stage 1). *)
+type atom = { label : string; param : param }
+
+type effect_set = atom list  (* set of atoms, ≤ one per label (⊑-deduped); sorted by label *)
 
 type tyvar_info =
   | Unbound of int * level
@@ -232,11 +252,111 @@ let exit_level  () = decr current_level
 
 (* ── Effect rows (Phase 79) ─────────────────────── *)
 
+(* ── RefinementDomain interface (design §2.1) ─────
+   Five operations parameterized over the domain.  Stage 1: only the ⊤ params
+   PUnit / PPrefix None occur, so dsub is reflexive-at-⊤ and djoin/dmeet are
+   trivial; the *structure* is what Stage 2's Prefix analysis plugs into.
+   A label's domain is fixed by its declaration; [dtop_for] picks the ⊤ of the
+   label's domain.  In Stage 1 every label's domain is PUnit. *)
+
+(* ⊤ parameter for a label's domain.  Stage 1: all labels are atomic ⇒ PUnit.
+   Stage 2 maps Net/FileRead/FileWrite to PPrefix None here. *)
+let dtop_for (_label : string) : param = PUnit
+
+(* p1 ⊑ p2 : is p1 at least as constrained (more specific) as p2?  *)
+let dsub (p1 : param) (p2 : param) : bool =
+  match p1, p2 with
+  | PUnit, PUnit -> true
+  | _, PPrefix None -> true               (* anything ⊑ ⊤ *)
+  | PPrefix (Some a), PPrefix (Some b) ->
+    (* Stage-2 placeholder: literal-prefix containment; in Stage 1 no Some
+       param is ever built, so this arm is unreachable until the Prefix
+       analysis lands.  Defined now so the interface is complete. *)
+    String.length a >= String.length b && String.sub a 0 (String.length b) = b
+  | PPrefix None, PPrefix (Some _) -> false
+  | PUnit, _ | _, PUnit -> false          (* domain mismatch — never happens (one domain per label) *)
+
+(* least upper bound (over-approximation) *)
+let djoin (p1 : param) (p2 : param) : param =
+  match p1, p2 with
+  | PUnit, PUnit -> PUnit
+  | PPrefix None, _ | _, PPrefix None -> PPrefix None
+  | PPrefix (Some a), PPrefix (Some b) ->
+    (* longest common prefix, saturating to ⊤ (Stage 2 path) *)
+    let n = min (String.length a) (String.length b) in
+    let rec lcp i = if i < n && a.[i] = b.[i] then lcp (i + 1) else i in
+    let k = lcp 0 in
+    if k = 0 then PPrefix None else PPrefix (Some (String.sub a 0 k))
+  | PUnit, p | p, PUnit -> p              (* domain mismatch — never happens *)
+
+(* greatest lower bound; None = ⊥ / disjoint *)
+let dmeet (p1 : param) (p2 : param) : param option =
+  match p1, p2 with
+  | PUnit, PUnit -> Some PUnit
+  | PPrefix None, p | p, PPrefix None -> Some p
+  | PPrefix (Some _), PPrefix (Some _) ->
+    if dsub p1 p2 then Some p1 else if dsub p2 p1 then Some p2 else None
+  | _ -> None
+
+(* manifest / error text for a param.  ⊤ renders as the empty refinement so a
+   ⊤-param atom renders as JUST its label — byte-identical to v1. *)
+let drender (p : param) : string =
+  match p with
+  | PUnit -> ""
+  | PPrefix None -> ""
+  | PPrefix (Some s) -> Printf.sprintf " %S" s
+
+(* ── Atom-set helpers (replace the v1 string-set ops) ─────
+   The row is a set of atoms with ≤ one atom per label, keyed by label.  These
+   keep the exact observable behavior of the old string-set operations when
+   every param is ⊤, and are already ⊑-aware for Stage 2. *)
+
+(* render one atom: label + the domain's refinement text (⊤ ⇒ just the label) *)
+let render_atom (a : atom) : string = a.label ^ drender a.param
+
+(* render a set of atoms as the comma-separated body of a `<…>` (no angle
+   brackets), label-sorted — byte-identical to v1 when all params are ⊤. *)
+let render_atoms (atoms : effect_set) : string =
+  String.concat ", "
+    (List.map render_atom (List.sort (fun x y -> String.compare x.label y.label) atoms))
+
+(* canonical form: ≤ one atom per label, joining same-label params (djoin), then
+   ⊑-dedup is implicit (the join of equal ⊤ params is the same ⊤).  Sorted by
+   label.  With all-⊤ params this is exactly v1's List.sort_uniq String.compare. *)
+let atoms_norm (atoms : effect_set) : effect_set =
+  let tbl = Hashtbl.create 8 in
+  let order = ref [] in
+  List.iter (fun a ->
+    match Hashtbl.find_opt tbl a.label with
+    | Some p -> Hashtbl.replace tbl a.label (djoin p a.param)
+    | None -> Hashtbl.add tbl a.label a.param; order := a.label :: !order)
+    atoms;
+  List.sort (fun x y -> String.compare x.label y.label)
+    (List.rev_map (fun l -> { label = l; param = Hashtbl.find tbl l }) !order)
+
+(* union of two atom sets, joining same-label params *)
+let atoms_union (a : effect_set) (b : effect_set) : effect_set = atoms_norm (a @ b)
+
+(* set difference: atoms of [a] whose label is absent from [b], OR present in
+   [b] but NOT subsumed (`not (dsub p_a p_b)`) — the Stage-2 escape direction.
+   In Stage 1 (all ⊤) "present" always means subsumed ⇒ pure label-set diff. *)
+let atoms_diff (a : effect_set) (b : effect_set) : effect_set =
+  List.filter (fun x ->
+    match List.find_opt (fun y -> y.label = x.label) b with
+    | None -> true
+    | Some y -> not (dsub x.param y.param))
+    a
+
+(* lift a bare AST label to a ⊤-param atom (Stage 1: every annotation atomic) *)
+let atom_of_label (l : string) : atom = { label = l; param = dtop_for l }
+let atoms_of_labels (ls : string list) : effect_set = atoms_norm (List.map atom_of_label ls)
+
+
 (* The empty closed row — a pure arrow. *)
 let pure_row = { labels = []; tail = None }
 
 (* A closed row over the given concrete labels. *)
-let closed_row labels = { labels = List.sort_uniq String.compare labels; tail = None }
+let closed_row labels = { labels = atoms_of_labels labels; tail = None }
 
 (* Follow ELink tails (merging labels along the way) to a canonical row whose
    tail, if present, is an unbound effvar. *)
@@ -244,7 +364,7 @@ let rec effrow_norm r =
   match r.tail with
   | Some { contents = ELink r' } ->
     let r' = effrow_norm r' in
-    { labels = List.sort_uniq String.compare (r.labels @ r'.labels); tail = r'.tail }
+    { labels = atoms_union r.labels r'.labels; tail = r'.tail }
   | _ -> r
 
 (* The concrete labels currently known for a row (ignores the open tail). *)
@@ -290,7 +410,7 @@ let perform_effect cur eff =
   | None -> ()                       (* sink: discard *)
   | Some ct ->
     let eff_r = effrow_norm eff in
-    cur := { labels = List.sort_uniq String.compare (cur_r.labels @ eff_r.labels);
+    cur := { labels = atoms_union cur_r.labels eff_r.labels;
              tail = Some ct };
     (match eff_r.tail with
      | Some et when et != ct ->
@@ -313,7 +433,7 @@ let rec arrows_with_last_effect pats eff ret = match pats with
    binding-boundary escape check compares the inferred body effects against this. *)
 let rec declared_effects : Ast.ty -> effect_set = function
   | Ast.TyFun (_, ret) -> declared_effects ret
-  | Ast.TyEffect (effs, _, _) -> List.sort_uniq String.compare effs
+  | Ast.TyEffect (effs, _, _) -> atoms_of_labels effs
   | Ast.TyConstrained (_, t) -> declared_effects t
   | _ -> []
 
@@ -328,7 +448,7 @@ let ast_effrow etbl = function
       | Some v -> v
       | None -> let v = fresh_effvar () in Hashtbl.add etbl name v; v) tl
     in
-    { labels = List.sort_uniq String.compare es; tail }
+    { labels = atoms_of_labels es; tail }
   | _ -> pure_row
 
 (* ── Following links and union-find compaction ──── *)
@@ -374,7 +494,7 @@ let rec occurs_adjust id level = function
    double-reporting and any new errors on existing code. *)
 let unify_row r1 r2 =
   let r1 = effrow_norm r1 and r2 = effrow_norm r2 in
-  let diff a b = List.filter (fun x -> not (List.mem x b)) a in
+  let diff a b = atoms_diff a b in
   match r1.tail, r2.tail with
   | Some v1, Some v2 when v1 == v2 -> ()
   | Some v1, Some v2 ->
@@ -657,7 +777,7 @@ let pp_mono_in (names, counter) t =
          existing golden type string. *)
       let labels = effrow_labels effs in
       let eff_str = if labels = [] then ""
-                    else Printf.sprintf "<%s> " (String.concat ", " labels) in
+                    else Printf.sprintf "<%s> " (render_atoms labels) in
       let sa = go 2 a in
       let sb = go 1 b in
       let s = sa ^ " -> " ^ eff_str ^ sb in
@@ -718,10 +838,10 @@ let pp_error = function
     Printf.sprintf "Missing field %s in construction of record %s" f r
   | EffectEscape (name, declared, extras) ->
     Printf.sprintf "Function '%s' declared with <%s> but also performs <%s>"
-      name (String.concat ", " declared) (String.concat ", " extras)
+      name (render_atoms declared) (render_atoms extras)
   | EffectLeak (bound, extras) ->
     Printf.sprintf "Effectful value used where <%s> is allowed, but it performs <%s>"
-      (String.concat ", " bound) (String.concat ", " extras)
+      (render_atoms bound) (render_atoms extras)
   | UnknownInterface n ->
     Printf.sprintf "Unknown interface: %s" n
   | ExtraMethod (iface, m) ->
@@ -2623,7 +2743,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
        clauses), for the binding-boundary escape check below. *)
     let inferred_eff = ref [] in
     let add_eff row =
-      inferred_eff := List.sort_uniq String.compare (!inferred_eff @ effrow_labels row)
+      inferred_eff := atoms_union !inferred_eff (effrow_labels row)
     in
     List.iter (fun (pats, body) ->
       let t =
@@ -2688,7 +2808,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     (match sig_opt with
      | Some sig_ast ->
        let declared = declared_effects sig_ast in
-       let extras = List.filter (fun e -> not (List.mem e declared)) !inferred_eff in
+       let extras = atoms_diff !inferred_eff declared in
        if extras <> [] then fail (EffectEscape (name, declared, extras))
      | None -> ());
     (* Signature-too-general check: after body inference, each declared type variable

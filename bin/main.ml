@@ -560,7 +560,8 @@ let () =
     let rec mono_effects mono =
       match Medaka_lib.Typecheck.normalize mono with
       | Medaka_lib.Typecheck.TFun (_, row, result) ->
-        let labels = Medaka_lib.Typecheck.effrow_labels row in
+        let labels = List.map (fun (a : Medaka_lib.Typecheck.atom) -> a.label)
+                       (Medaka_lib.Typecheck.effrow_labels row) in
         List.sort_uniq String.compare (labels @ mono_effects result)
       | Medaka_lib.Typecheck.TApp (a, b) ->
         List.sort_uniq String.compare (mono_effects a @ mono_effects b)
