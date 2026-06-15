@@ -1,0 +1,20 @@
+-- Capability-effects v2 Stage 2a: PARAMETERIZED effect surface syntax.
+-- This fixture is the CLI-level guard that the unit-test bypass (raw
+-- Parser.program in test_typecheck.ml) failed to provide: it must parse +
+-- typecheck through the REAL indentation-aware `check` pipeline on both the
+-- OCaml oracle and the native self-host, exercising every Stage-2a form:
+--   * `effect Net Prefix`     — domain-carrying effect decl (Prefix refinement)
+--   * `internal effect Mut`   — non-public effect decl
+--   * `effect Stdout`         — plain (domainless) effect decl
+--   * `<Net "a.com/foo">`      — effect-row atom with a Prefix-pattern argument
+effect Net Prefix
+internal effect Mut
+effect Stdout
+
+extern netGet : String -> <Net "a.com/foo"> String
+
+fetch : String -> <Net "a.com/foo"> String
+fetch path = netGet path
+
+main : <IO> Unit
+main = println "effect param ok"

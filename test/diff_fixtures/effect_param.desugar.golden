@@ -1,0 +1,8 @@
+(DEffect false "Net" (Some "Prefix") false)
+(DEffect false "Mut" None true)
+(DEffect false "Stdout" None false)
+(DExtern false "netGet" (TyFun (TyCon "String") (TyEffect ((atom "Net" "a.com/foo")) None (TyCon "String"))))
+(DTypeSig false "fetch" (TyFun (TyCon "String") (TyEffect ((atom "Net" "a.com/foo")) None (TyCon "String"))))
+(DFunDef false "fetch" ((PVar "path")) (EApp (EVar "netGet") (EVar "path")))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EApp (EVar "println") (ELit (LString "effect param ok"))))
