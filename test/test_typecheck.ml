@@ -1112,6 +1112,41 @@ let e_eff_user_label_escape = assert_err
   "effect KV\neffect Fetch\nextern fetch : String -> <Fetch> String\n\
    handler : String -> <KV> String\nhandler k = fetch k\n"
 
+(* v2 Stage 2a: parameterized Prefix effect — `effect Net Prefix` + a bound
+   `<Net "a.com/*">` body that performs `<Net "a.com/foo">` is prefix-contained
+   ⇒ ACCEPT. *)
+let t_eff_prefix_subsume_accept = assert_type
+  "effect Net Prefix\nextern netGet : String -> <Net \"a.com/foo\"> String\n\
+   transform : String -> <Net \"a.com/*\"> String\ntransform s = netGet s\n"
+  "transform" "String -> <Net \"a.com/*\"> String"
+
+(* v2 Stage 2a: a sibling-host op Net b.com/x under bound Net a.com/*
+   is NOT prefix-contained ⇒ EffectLeak naming the offending atom. *)
+let e_eff_prefix_sibling_reject = assert_err
+  "effect Net Prefix\nextern netGet : String -> <Net \"b.com/x\"> String\n\
+   transform : String -> <Net \"a.com/*\"> String\ntransform s = netGet s\n"
+
+(* v2 Stage 2a: a more-specific bound cannot satisfy a less-specific op
+   (top-vs-specific direction): bound Net a.com/foo, op Net a.com/* ⇒ REJECT. *)
+let e_eff_prefix_widen_reject = assert_err
+  "effect Net Prefix\nextern netGet : String -> <Net \"a.com/*\"> String\n\
+   transform : String -> <Net \"a.com/foo\"> String\ntransform s = netGet s\n"
+
+(* v2 Stage 2a / fork (b): an ambiguous bare prefix Net a.com (no
+   delimiter, no trailing star) is rejected — it would admit a sibling host. *)
+let e_eff_prefix_ambiguous_reject = assert_err
+  "effect Net Prefix\nextern netGet : String -> <Net \"a.com\"> String\n"
+
+(* v2 Stage 2a: a written param on an atomic (Unit-domain) label is rejected. *)
+let e_eff_param_on_atomic_reject = assert_err
+  "effect Log\nextern logGet : String -> <Log \"x/*\"> String\n"
+
+(* v2 Stage 2a: `internal effect Mut2` parses + typechecks as an atomic label. *)
+let t_eff_internal_decl = assert_type
+  "internal effect Mut2\nextern m : String -> <Mut2> String\n\
+   g : String -> <Mut2> String\ng s = m s\n"
+  "g" "String -> <Mut2> String"
+
 (* Unit-level: an OPEN row that already carries a label (an inference arrow
    `<IO | _>`) unified against a closed bound that lacks it must raise — the
    escape the laundering fix adds. *)
@@ -4270,6 +4305,12 @@ let () =
       test_case "user label accept"              `Quick t_eff_user_label_accept;
       test_case "user label subsume accept"      `Quick t_eff_user_label_subsume;
       test_case "err: user label escape"         `Quick e_eff_user_label_escape;
+      test_case "prefix subsume accept"          `Quick t_eff_prefix_subsume_accept;
+      test_case "err: prefix sibling host"       `Quick e_eff_prefix_sibling_reject;
+      test_case "err: prefix widen"              `Quick e_eff_prefix_widen_reject;
+      test_case "err: prefix ambiguous"          `Quick e_eff_prefix_ambiguous_reject;
+      test_case "err: param on atomic"           `Quick e_eff_param_on_atomic_reject;
+      test_case "internal effect decl"           `Quick t_eff_internal_decl;
       test_case "unify_row escape raises"        `Quick e_unify_row_escape;
     ];
     "pipe and compose", [

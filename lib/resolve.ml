@@ -376,7 +376,7 @@ let build_env ?(known_modules : module_exports list = [])
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.method_name) methods)
     | DImpl _ -> ()
-    | DEffect (_, name) ->
+    | DEffect (_, name, _, _) ->
       (* Register the user/platform effect label so `<name>` resolves in rows.
          No DuplicateDefinition: redeclaring a builtin or repeating is harmless. *)
       Hashtbl.replace env.effects name ()
@@ -506,7 +506,7 @@ let rec check_type env errors t =
   | TyEffect (es, _tail, t) ->
     (* labels are validated against the known effects; the optional tail is a
        lowercase effect *variable* (Phase 79) and needs no such check. *)
-    List.iter (fun e ->
+    List.iter (fun (e, _param) ->
       if not (Hashtbl.mem env.effects e) then
         emit errors (UnknownEffect e)
     ) es;
@@ -899,7 +899,7 @@ let build_exports ?(known_modules : module_exports list = [])
         (List.map (fun m -> m.method_name) methods)
     | DImpl { is_pub = true; _ } ->
       ()
-    | DEffect (true, name) ->
+    | DEffect (true, name, _, _) ->
       Hashtbl.replace exp.exp_effects name ()
     | DUse (true, path) ->
       let src_mod_id = use_path_module_id path in
@@ -1017,7 +1017,7 @@ let resolve_repl_item (env : module_env) (item : Ast.repl_item)
       List.iter (fun m -> add_or_skip env.values m.Ast.method_name) methods;
       Hashtbl.replace env.iface_methods iface_name
         (List.map (fun m -> m.Ast.method_name) methods)
-    | Ast.DEffect (_, name) -> Hashtbl.replace env.effects name ()
+    | Ast.DEffect (_, name, _, _) -> Hashtbl.replace env.effects name ()
     | Ast.DImpl _ | Ast.DUse _ | Ast.DTypeAlias _ | Ast.DNewtype _ | Ast.DProp _ | Ast.DTest _
     | Ast.DBench _ | Ast.DAttrib _ -> ()
   ) decls;

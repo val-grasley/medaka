@@ -135,7 +135,7 @@ checkType _ (TyVar _) = []
 checkType env (TyApp a b) = checkType env a ++ checkType env b
 checkType env (TyFun a b) = checkType env a ++ checkType env b
 checkType env (TyTuple ts) = concatMapList (checkType env) ts
-checkType env (TyEffect labels _ t) = concatMapList (checkEffect env) labels
+checkType env (TyEffect labels _ t) = concatMapList (checkEffect env) (map fst labels)
   ++ checkType env t
 checkType env (TyConstrained cs t) = concatMapList (checkConstraint env) cs
   ++ checkType env t
@@ -535,7 +535,7 @@ dataRecordNames (_::rest) = dataRecordNames rest
 -- user/platform effect labels declared with `effect Foo` (Phase 146 gap 2)
 effectNames : List Decl -> List String
 effectNames [] = []
-effectNames ((DEffect _ n)::rest) = n :: effectNames rest
+effectNames ((DEffect _ n _ _)::rest) = n :: effectNames rest
 effectNames ((DAttrib _ d)::rest) = effectNames (d :: rest)
 effectNames (_::rest) = effectNames rest
 
@@ -1159,7 +1159,7 @@ expIfaceMethodsDirect (_::rest) = expIfaceMethodsDirect rest
 
 expEffectsDirect : List Decl -> List String
 expEffectsDirect [] = []
-expEffectsDirect ((DEffect True n)::rest) = n :: expEffectsDirect rest
+expEffectsDirect ((DEffect True n _ _)::rest) = n :: expEffectsDirect rest
 expEffectsDirect (_::rest) = expEffectsDirect rest
 
 reExpEffects : List ModuleExports -> List Decl -> List String

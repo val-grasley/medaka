@@ -89,7 +89,7 @@ tySexp (TyApp a b) = node "TyApp" [tySexp a, tySexp b]
 tySexp (TyFun a b) = node "TyFun" [tySexp a, tySexp b]
 tySexp (TyTuple ts) = node "TyTuple" (map tySexp ts)
 tySexp (TyEffect labels tail t) =
-  node "TyEffect" [slist (map escStr labels), optStrSexp tail, tySexp t]
+  node "TyEffect" [slist (map effAtomSexp labels), optStrSexp tail, tySexp t]
 tySexp (TyConstrained cs t) =
   node "TyConstrained" [slist (map constraintSexp cs), tySexp t]
 
@@ -101,6 +101,11 @@ export
 optStrSexp : Option String -> String
 optStrSexp (Some s) = node "Some" [escStr s]
 optStrSexp None = "None"
+
+-- a row atom: a bare label, or `(atom Net "pat")` when parameterized.
+effAtomSexp : (String, Option String) -> String
+effAtomSexp (l, None) = escStr l
+effAtomSexp (l, Some s) = node "atom" [escStr l, escStr s]
 
 guardSexp : Guard -> String
 guardSexp (GBool e) = node "GBool" [exprSexp e]
@@ -246,7 +251,8 @@ declSexp (DRecord vis n ps fs ds) =
       slist (map escStr ds),
     ]
 declSexp (DUse pub path) = node "DUse" [boolStr pub, usePathSexp path]
-declSexp (DEffect pub n) = node "DEffect" [boolStr pub, escStr n]
+declSexp (DEffect pub n dom isInternal) =
+  node "DEffect" [boolStr pub, escStr n, optStrSexp dom, boolStr isInternal]
 declSexp (DProp pub name params body) =
   node
     "DProp"

@@ -181,10 +181,13 @@ let rec print_type t = match t with
   | TyTuple ts ->
     text "(" ^^ sep_by (text ", ") (List.map print_type ts) ^^ text ")"
   | TyEffect (es, tail, t) ->
+    let atom (l, p) = match p with
+      | None -> text l
+      | Some s -> text (Printf.sprintf "%s %s" l (Printf.sprintf "%S" s)) in
     let inside = match es, tail with
-      | _, None    -> sep_by (text ", ") (List.map text es)
+      | _, None    -> sep_by (text ", ") (List.map atom es)
       | [], Some v -> text v
-      | _,  Some v -> sep_by (text ", ") (List.map text es) ^^ text " | " ^^ text v
+      | _,  Some v -> sep_by (text ", ") (List.map atom es) ^^ text " | " ^^ text v
     in
     (* The annotated type binds tighter than `->` but looser than nothing:
        `<e> Array c` is unambiguous and needs no parens, whereas `<e> a -> b`
@@ -926,8 +929,11 @@ let rec print_decl = function
   | DUse (pub, path) ->
     (if pub then text "export " else Nil) ^^ text "import " ^^ print_use_path path
 
-  | DEffect (pub, name) ->
-    (if pub then text "export " else Nil) ^^ text "effect " ^^ text name
+  | DEffect (pub, name, domain, internal) ->
+    let head = if internal then text "internal effect "
+               else (if pub then text "export " else Nil) ^^ text "effect " in
+    let dom = match domain with Some d -> text " " ^^ text d | None -> Nil in
+    head ^^ text name ^^ dom
 
   | DProp { is_pub; prop_name; prop_params; prop_body } ->
     (if is_pub then text "export " else Nil)

@@ -41,7 +41,9 @@ let rec pp_decl d =
   | DProp { prop_name; _ } -> Printf.sprintf "DProp(%S, ...)" prop_name
   | DTest { test_name; _ } -> Printf.sprintf "DTest(%S, ...)" test_name
   | DBench { bench_name; _ } -> Printf.sprintf "DBench(%S, ...)" bench_name
-  | DEffect (_, n) -> Printf.sprintf "DEffect(%s)" n
+  | DEffect (_, n, dom, internal) ->
+    Printf.sprintf "DEffect(%s%s%s)" (if internal then "internal " else "") n
+      (match dom with Some d -> " " ^ d | None -> "")
   | DAttrib (_, d) -> Printf.sprintf "DAttrib(..., %s)" (pp_decl d)
 
 let parse_one src =
@@ -73,12 +75,12 @@ let test_typesig_typevar () =
 
 let test_typesig_effect () =
   match parse_one "readFile : String -> <IO> String\n" with
-  | DTypeSig (false, "readFile", TyFun (TyCon "String", TyEffect (["IO"], None, TyCon "String"))) -> ()
+  | DTypeSig (false, "readFile", TyFun (TyCon "String", TyEffect ([("IO", None)], None, TyCon "String"))) -> ()
   | _ -> failwith "wrong"
 
 let test_typesig_multieffect () =
   match parse_one "fetch : String -> <Async, IO> String\n" with
-  | DTypeSig (false, "fetch", TyFun (TyCon "String", TyEffect (["Async"; "IO"], None, TyCon "String"))) -> ()
+  | DTypeSig (false, "fetch", TyFun (TyCon "String", TyEffect ([("Async", None); ("IO", None)], None, TyCon "String"))) -> ()
   | _ -> failwith "wrong"
 
 (* Phase 79: a bare effect variable `<e>` is a pure-but-open row (no labels). *)
@@ -95,7 +97,7 @@ let test_typesig_effect_multiatom () =
   match parse_one "readAll : Unit -> <IO> Result String Int\n" with
   | DTypeSig (false, "readAll",
       TyFun (TyCon "Unit",
-             TyEffect (["IO"], None,
+             TyEffect ([("IO", None)], None,
                        TyApp (TyApp (TyCon "Result", TyCon "String"), TyCon "Int")))) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
@@ -103,8 +105,8 @@ let test_typesig_effect_multiatom () =
 let test_typesig_effrow () =
   match parse_one "run : (Unit -> <IO | e> a) -> <IO | e> a\n" with
   | DTypeSig (false, "run",
-      TyFun (TyFun (TyCon "Unit", TyEffect (["IO"], Some "e", TyVar "a")),
-             TyEffect (["IO"], Some "e", TyVar "a"))) -> ()
+      TyFun (TyFun (TyCon "Unit", TyEffect ([("IO", None)], Some "e", TyVar "a")),
+             TyEffect ([("IO", None)], Some "e", TyVar "a"))) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 let test_typesig_typeapp () =
@@ -1163,13 +1165,32 @@ let test_use_pub () =
 (* Phase 146 gap 2: `effect Foo` / `export effect Foo` declarations *)
 let test_effect_decl () =
   match parse_one "effect KV\n" with
-  | DEffect (false, "KV") -> ()
+  | DEffect (false, "KV", None, false) -> ()
   | _ -> failwith "wrong"
 
 let test_effect_decl_export () =
   match parse_one "export effect Fetch\n" with
-  | DEffect (true, "Fetch") -> ()
+  | DEffect (true, "Fetch", None, false) -> ()
   | _ -> failwith "wrong"
+
+(* v2 Stage 2a: `effect Net Prefix` carries a domain name. *)
+let test_effect_decl_domain () =
+  match parse_one "effect Net Prefix\n" with
+  | DEffect (false, "Net", Some "Prefix", false) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
+(* v2 Stage 2a: `internal effect Mut` marks an internal (purity) label. *)
+let test_effect_decl_internal () =
+  match parse_one "internal effect Mut\n" with
+  | DEffect (false, "Mut", None, true) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
+
+(* v2 Stage 2a: a parameterized row atom `<Net "a.com/*">`. *)
+let test_effect_row_param () =
+  match parse_one "fetch : String -> <Net \"a.com/*\"> String\n" with
+  | DTypeSig (false, "fetch",
+      TyFun (TyCon "String", TyEffect ([("Net", Some "a.com/*")], None, TyCon "String"))) -> ()
+  | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 (* Phase 100: `T(..)` group member — type + all exported constructors *)
 let test_use_group_ctors () =
@@ -1410,7 +1431,7 @@ let test_extern_typevar () =
 
 let test_extern_effect () =
   match parse_one "extern print : a -> <IO> Unit\n" with
-  | DExtern (false, "print", TyFun (TyVar "a", TyEffect (["IO"], None, TyCon "Unit"))) -> ()
+  | DExtern (false, "print", TyFun (TyVar "a", TyEffect ([("IO", None)], None, TyCon "Unit"))) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 let test_extern_constant () =
@@ -1421,7 +1442,7 @@ let test_extern_constant () =
 let test_extern_multiarg () =
   match parse_one "extern set_ref : Ref a -> a -> <Mut> Unit\n" with
   | DExtern (false, "set_ref", TyFun (TyApp (TyCon "Ref", TyVar "a"),
-                                 TyFun (TyVar "a", TyEffect (["Mut"], None, TyCon "Unit")))) -> ()
+                                 TyFun (TyVar "a", TyEffect ([("Mut", None)], None, TyCon "Unit")))) -> ()
   | d -> failwith (Printf.sprintf "wrong: %s" (pp_decl d))
 
 (* ── Constraint type signature tests ────────────────── *)
@@ -2177,6 +2198,9 @@ let () =
       test_case "export import (re-export)" `Quick test_use_pub;
       test_case "effect decl"               `Quick test_effect_decl;
       test_case "export effect decl"        `Quick test_effect_decl_export;
+      test_case "effect decl domain"        `Quick test_effect_decl_domain;
+      test_case "internal effect decl"      `Quick test_effect_decl_internal;
+      test_case "effect row param"          `Quick test_effect_row_param;
       test_case "alias"                    `Quick test_use_alias;
       test_case "wildcard"                 `Quick test_use_wildcard;
       test_case "export standalone type sig" `Quick test_export_standalone_type_sig;

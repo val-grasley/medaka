@@ -1566,23 +1566,42 @@ parseEffectTy = do
   inner <- parseTy
   pure (mkEffect body inner)
 
-mkEffect : (List String, Option String) -> Ty -> Ty
+mkEffect : (List (String, Option String), Option String) -> Ty -> Ty
 mkEffect (labels, tail) inner = TyEffect labels tail inner
 
-effectBody : Parser (List String, Option String)
+effectBody : Parser (List (String, Option String), Option String)
 effectBody = do
   t <- peekP
   effectBodyFor t
 
-effectBodyFor : Token -> Parser (List String, Option String)
+effectBodyFor : Token -> Parser (List (String, Option String), Option String)
 effectBodyFor (TUpper _) = do
-  labels <- sepBy1 upperNameP (expectTok TComma)
+  labels <- sepBy1 effAtomP (expectTok TComma)
   tail <- pipeTail
   pure (labels, tail)
 effectBodyFor (TIdent _) = do
   v <- identNameP
   pure ([], Some v)
 effectBodyFor _ = pure ([], None)
+
+-- a row atom is a label with an optional Prefix-pattern param:
+-- `Foo` (atomic) or `Net "a.com/*"` (parameterized).  v2 Stage 2a.
+effAtomP : Parser (String, Option String)
+effAtomP = do
+  l <- upperNameP
+  p <- effParamP
+  pure (l, p)
+
+effParamP : Parser (Option String)
+effParamP = do
+  t <- peekP
+  effParamFor t
+
+effParamFor : Token -> Parser (Option String)
+effParamFor (TString s) = do
+  advance
+  pure (Some s)
+effParamFor _ = pure None
 
 pipeTail : Parser (Option String)
 pipeTail = do
@@ -1660,6 +1679,7 @@ parseDecl = do
     TTest => parseTest False
     TBench => parseBench False
     TEffect => parseEffect False
+    TInternal => parseInternalEffect
     TInterface => parseInterface False False
     TImpl => parseImpl False False
     TDefault => afterDefault False
@@ -1994,12 +2014,35 @@ parseBench pub = do
   pure (DBench pub name body)
 
 -- `effect Foo` declares a user/platform effect label (Phase 146 gap 2).
+-- `effect Foo` (atomic), `effect Net Prefix` (domain-carrying).  The optional
+-- domain is a bare UPPER after the label; only `Prefix` is accepted in v2.
 parseEffect : Bool -> Parser Decl
 parseEffect pub = do
   expectTok TEffect
   name <- upperNameP
+  dom <- effDomainP
   skipNewlines
-  pure (DEffect pub name)
+  pure (DEffect pub name dom False)
+
+effDomainP : Parser (Option String)
+effDomainP = do
+  t <- peekP
+  effDomainFor t
+
+effDomainFor : Token -> Parser (Option String)
+effDomainFor (TUpper d) = do
+  advance
+  pure (Some d)
+effDomainFor _ = pure None
+
+-- `internal effect Mut` — purity/discipline label; never granted/parameterized.
+parseInternalEffect : Parser Decl
+parseInternalEffect = do
+  expectTok TInternal
+  expectTok TEffect
+  name <- upperNameP
+  skipNewlines
+  pure (DEffect False name None True)
 
 -- ── interface declarations ───────────────────────────────────────────────
 parseInterface : Bool -> Bool -> Parser Decl

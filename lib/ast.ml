@@ -23,7 +23,9 @@ type ty =
   | TyApp    of ty * ty          (* List a, Option a *)
   | TyFun    of ty * ty          (* a -> b *)
   | TyTuple  of ty list          (* (Int, String) *)
-  | TyEffect      of ident list * ident option * ty  (* <IO, Mut | e> t — labels + optional tail var *)
+  | TyEffect      of (ident * string option) list * ident option * ty
+      (* <IO, Mut | e> t — labels (each w/ optional param pattern, e.g.
+         <Net "a.com/*">) + optional tail var.  param=None ⇒ atomic/⊤ label. *)
   | TyConstrained of (ident * ty list) list * ty  (* [(Iface, args); ...] => ty *)
 
 (* Patterns *)
@@ -273,9 +275,11 @@ type decl =
   | DTypeAlias of bool * ident * ident list * ty  (* pub? name params rhs *)
   | DNewtype   of bool * ident * ident list * ident * ty * ident list  (* pub? tyname typarams conname fty derives *)
   | DUse of bool * use_path  (* pub? use path *)
-  | DEffect of bool * ident  (* pub? `effect Foo` — declares a user/platform
-                                effect label (Phase 146 gap 2).  Bare label only;
-                                the parameterized form is Phase 146b. *)
+  | DEffect of bool * ident * ident option * bool
+      (* pub? name domain? internal?  `effect Foo` (atomic security capability),
+         `effect Net Prefix` (domain-carrying), `internal effect Mut`
+         (purity-tracking, never granted/parameterized).  v2 Stage 2a:
+         domain is Some "Prefix" or None (atomic = Unit). *)
   | DProp of {
       is_pub      : bool;
       prop_name   : string;
@@ -319,10 +323,14 @@ let rec pp_ty_prec p = function
     let s = Printf.sprintf "%s -> %s" (pp_ty_prec 1 a) (pp_ty_prec 0 b) in
     if p >= 1 then "(" ^ s ^ ")" else s
   | TyEffect (effs, tail, t) ->
+    let pp_atom (l, p) = match p with
+      | None -> l
+      | Some s -> Printf.sprintf "%s %S" l s in
+    let labs = List.map pp_atom effs in
     let inside = match effs, tail with
-      | _, None        -> String.concat ", " effs
+      | _, None        -> String.concat ", " labs
       | [], Some v     -> v
-      | _,  Some v     -> String.concat ", " effs ^ " | " ^ v
+      | _,  Some v     -> String.concat ", " labs ^ " | " ^ v
     in
     let s = Printf.sprintf "<%s> %s" inside (pp_ty_prec 0 t) in
     if p >= 1 then "(" ^ s ^ ")" else s

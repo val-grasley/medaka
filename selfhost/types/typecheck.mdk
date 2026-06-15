@@ -109,18 +109,75 @@ atomLabel (Atom l _) = l
 atomParam : Atom -> Param
 atomParam (Atom _ p) = p
 
+-- ── effect-label DOMAIN registry (v2 Stage 2a) ─────────────────────────────
+-- Maps a label to the ⊤-param of its declared domain.  A `PPrefix None` entry
+-- means "Prefix-domain (carries a pattern)"; absence ⇒ atomic (Unit).  Seeded
+-- with the builtin Prefix labels (Net/FileRead/FileWrite) and extended per
+-- program from `effect Net Prefix` decls.  An assoc-list Ref (the label set is
+-- tiny).  (Mirror of lib/typecheck.ml's effect_domains Hashtbl.)
+effectDomains : Ref (List (String, Param))
+effectDomains = Ref []
+
+seedEffectDomains : Unit -> <Mut> Unit
+seedEffectDomains _ =
+  set_ref effectDomains
+    [ ("Net", PPrefix None)
+    , ("FileRead", PPrefix None)
+    , ("FileWrite", PPrefix None) ]
+
+-- register a label's domain from its `effect` decl: Some "Prefix" ⇒ Prefix;
+-- None/internal ⇒ atomic.  Internal labels are never parameterized (forced PUnit).
+registerEffectDomain : String -> Option String -> Bool -> <Mut> Unit
+registerEffectDomain name domain isInternal =
+  set_ref effectDomains ((name, domainParam domain isInternal) :: effectDomains.value)
+
+-- the ⊤-param a declared label carries: internal/atomic ⇒ PUnit; Prefix ⇒ PPrefix None.
+domainParam : Option String -> Bool -> Param
+domainParam _ True = PUnit
+domainParam (Some "Prefix") False = PPrefix None
+domainParam _ False = PUnit
+
+-- re-seed to the builtins, then register every `effect …` decl in the program.
+populateEffectDomains : List Decl -> <Mut> Unit
+populateEffectDomains decls =
+  let _ = seedEffectDomains ()
+  populateGo decls
+
+populateGo : List Decl -> <Mut> Unit
+populateGo [] = ()
+populateGo ((DEffect _ name domain isInternal)::rest) =
+  let _ = registerEffectDomain name domain isInternal
+  populateGo rest
+populateGo (_::rest) = populateGo rest
+
+lookupDomain : String -> List (String, Param) -> Param
+lookupDomain _ [] = PUnit
+lookupDomain l ((k, p)::rest) = if l == k then p else lookupDomain l rest
+
 -- ── RefinementDomain interface (design §2.1): dtop/dsub/djoin/dmeet/drender ──
 -- Stage 1: only ⊤ params (PUnit / PPrefix None) ever occur; the STRUCTURE is
 -- what Stage 2's Prefix analysis plugs into.  A label's domain is fixed by its
 -- declaration; dtopFor picks the ⊤ of the label's domain (all PUnit in Stage 1).
+-- ⊤ parameter for a label's domain (design §2.1): consults the registry;
+-- labels with no Prefix entry are atomic ⇒ PUnit.
 dtopFor : String -> Param
-dtopFor _ = PUnit
+dtopFor label = match lookupDomain label effectDomains.value
+  PPrefix None => PPrefix None
+  _ => PUnit
 
--- p1 ⊑ p2 : is p1 at least as constrained (more specific) as p2?
+-- the concrete (literal) part of a Prefix pattern: drop a single trailing `*`
+-- wildcard ("a.com/*" → "a.com/"); a pattern with no `*` is concrete as-is.
+prefixConcrete : String -> String
+prefixConcrete s =
+  let n = stringLength s
+  if n > 0 && stringSlice (n - 1) n s == "*" then stringSlice 0 (n - 1) s else s
+
+-- p1 ⊑ p2 : is p1 at least as constrained (more specific) as p2?  In the Prefix
+-- domain, p1 ⊑ p2 iff p1's concrete part starts with p2's concrete part.
 dsub : Param -> Param -> Bool
 dsub PUnit PUnit = True
 dsub _ (PPrefix None) = True                  -- anything ⊑ ⊤
-dsub (PPrefix (Some a)) (PPrefix (Some b)) = startsWith b a
+dsub (PPrefix (Some a)) (PPrefix (Some b)) = startsWith (prefixConcrete b) (prefixConcrete a)
 dsub (PPrefix None) (PPrefix (Some _)) = False
 dsub _ _ = False                              -- domain mismatch — never happens (one domain per label)
 
@@ -198,6 +255,35 @@ atomOfLabel l = Atom l (dtopFor l)
 
 atomsOfLabels : List String -> List Atom
 atomsOfLabels ls = atomsNorm (map atomOfLabel ls)
+
+-- build an atom from a WRITTEN annotation label, threading its optional param.
+-- A bare label takes the domain ⊤; a written param becomes PPrefix (Some pat)
+-- when the label's domain is Prefix, else (atomic label) stays ⊤ (the param is
+-- diagnosed + dropped by checkEffectParams).  Pure: validation is a separate pass.
+atomOfWritten : (String, Option String) -> Atom
+atomOfWritten (l, None) = Atom l (dtopFor l)
+atomOfWritten (l, Some pat) = match dtopFor l
+  PPrefix None => Atom l (PPrefix (Some pat))
+  _ => Atom l (dtopFor l)
+
+atomsOfWritten : List (String, Option String) -> List Atom
+atomsOfWritten ls = atomsNorm (map atomOfWritten ls)
+
+-- the delimiter footgun guard (design §2.5 / fork (b)): a written Prefix pattern
+-- must end in `*` or contain a `/` delimiter; a bare prefix is ambiguous.
+prefixPatternOk : String -> Bool
+prefixPatternOk s =
+  let n = stringLength s
+  n > 0 && (stringSlice (n - 1) n s == "*" || strHasSlash s)
+
+strHasSlash : String -> Bool
+strHasSlash s = strHasSlashGo s 0 (stringLength s)
+
+strHasSlashGo : String -> Int -> Int -> Bool
+strHasSlashGo s i n =
+  if i >= n then False
+  else if stringSlice i (i + 1) s == "/" then True
+  else strHasSlashGo s (i + 1) n
 
 -- forall <quantified tyvar ids> <quantified effvar ids>. mono
 public export data Scheme = Forall (List Int) (List Int) Mono
@@ -349,6 +435,64 @@ effectLeakMsg bound extras = "Effectful value used where <"
   ++ "> is allowed, but it performs <"
   ++ renderAtoms extras
   ++ ">"
+
+-- v2 Stage 2a: diagnostic for a rejected written effect param (mirror of
+-- lib/typecheck.ml's EffectParam message).
+effectParamMsg : String -> String -> String
+effectParamMsg label why = "Invalid effect parameter on <" ++ label ++ ">: " ++ why
+
+-- validate every written effect param in a program's type annotations against
+-- the registry: a Prefix label's pattern must pass prefixPatternOk; an atomic
+-- label rejects a param outright.  Runs as a <Mut> pass (errors via
+-- pushTypeError) — the OCaml side does this inline in atom_of_written.
+checkEffectParams : List Decl -> <Mut> Unit
+checkEffectParams [] = ()
+checkEffectParams (d::rest) =
+  let _ = checkEffectParamsDecl d
+  checkEffectParams rest
+
+checkEffectParamsDecl : Decl -> <Mut> Unit
+checkEffectParamsDecl (DTypeSig _ _ t) = checkEffectParamsTy t
+checkEffectParamsDecl (DExtern _ _ t) = checkEffectParamsTy t
+checkEffectParamsDecl (DAttrib _ d) = checkEffectParamsDecl d
+checkEffectParamsDecl _ = ()
+
+checkEffectParamsTy : Ty -> <Mut> Unit
+checkEffectParamsTy (TyFun a b) =
+  let _ = checkEffectParamsTy a
+  checkEffectParamsTy b
+checkEffectParamsTy (TyApp a b) =
+  let _ = checkEffectParamsTy a
+  checkEffectParamsTy b
+checkEffectParamsTy (TyTuple ts) = checkEffectParamsTys ts
+checkEffectParamsTy (TyEffect labels _ t) =
+  let _ = checkEffectAtoms labels
+  checkEffectParamsTy t
+checkEffectParamsTy (TyConstrained _ t) = checkEffectParamsTy t
+checkEffectParamsTy _ = ()
+
+checkEffectParamsTys : List Ty -> <Mut> Unit
+checkEffectParamsTys [] = ()
+checkEffectParamsTys (t::ts) =
+  let _ = checkEffectParamsTy t
+  checkEffectParamsTys ts
+
+checkEffectAtoms : List (String, Option String) -> <Mut> Unit
+checkEffectAtoms [] = ()
+checkEffectAtoms ((_, None)::rest) = checkEffectAtoms rest
+checkEffectAtoms ((l, Some pat)::rest) =
+  let _ = checkOneEffectParam l pat
+  checkEffectAtoms rest
+
+checkOneEffectParam : String -> String -> <Mut> Unit
+checkOneEffectParam l pat = match dtopFor l
+  PPrefix None =>
+    if prefixPatternOk pat then ()
+    else pushTypeError (effectParamMsg l
+      ("pattern \"" ++ pat ++ "\" must end in '*' or contain a '/' delimiter (a bare prefix would admit a sibling host/path)"))
+  _ => pushTypeError (effectParamMsg l
+    ("label '" ++ l ++ "' is atomic and takes no parameter (declare it `effect " ++ l ++ " Prefix` to parameterize)"))
+
 
 -- T2: oracle `MutLetRequiresBlock` message (lib/typecheck.ml:788-789) — must be
 -- byte-identical so the typecheck-error gate matches.
@@ -645,7 +789,7 @@ rowFreeEffvars r = match effrowNorm r
 -- reached walking down the return side (Phase 79e escape check)
 declaredEffects : Ty -> List Atom
 declaredEffects (TyFun _ ret) = declaredEffects ret
-declaredEffects (TyEffect effs _ _) = atomsOfLabels effs
+declaredEffects (TyEffect effs _ _) = atomsOfWritten effs
 declaredEffects (TyConstrained _ t) = declaredEffects t
 declaredEffects _ = []
 
@@ -1076,6 +1220,7 @@ matchOracle = Ref (buildOracle [])
 resetState : Unit -> <Mut> Unit
 resetState _ =
   let _ = set_ref tyvarCounter 0
+  let _ = seedEffectDomains ()
   let _ = set_ref effvarCounter 0
   let _ = set_ref curEffect (EffRow [] None)
   let _ = set_ref recordsRef []
@@ -1386,7 +1531,7 @@ effStr [] = ""
 effStr labels = "<" ++ renderAtoms labels ++ "> "
 
 effLabelsOf : Ty -> List String
-effLabelsOf (TyEffect labels _ _) = labels
+effLabelsOf (TyEffect labels _ _) = map fst labels
 effLabelsOf _ = []
 
 stripEff : Ty -> Ty
@@ -1479,7 +1624,7 @@ effvarIdOf (_, cell) = effvarId cell
 -- through [etbl] for sharing, an absent/anonymous one is closed
 astEffrowE : List (String, Ref Effvar) -> Ty -> EffRow
 astEffrowE etbl (TyEffect labels tail _) =
-  EffRow (atomsOfLabels labels) (tailCell etbl tail)
+  EffRow (atomsOfWritten labels) (tailCell etbl tail)
 astEffrowE _ _ = pureRow
 
 tailCell : List (String, Ref Effvar) -> Option String -> Option (Ref Effvar)
@@ -4675,6 +4820,8 @@ checkProgramSchemes prog =
 checkProgramSeeded : List (String, Scheme) -> List Decl -> <Mut> List (String, Scheme)
 checkProgramSeeded seed prog =
   let _ = resetState ()
+  let _ = populateEffectDomains prog
+  let _ = checkEffectParams prog
   let _ = checkLetRecDecls prog
   let dataEnv = registerAllData initialEnv prog
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
