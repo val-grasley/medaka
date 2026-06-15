@@ -1146,7 +1146,8 @@ ctorFieldOrderFor con = match lookupAssoc con ctorFieldOrdersRef.value
 applyVariantUpdates : List (String, Value) -> List String -> List Value -> List Value
 applyVariantUpdates _ [] _ = []
 applyVariantUpdates _ _ [] = []
-applyVariantUpdates updates (f::fs) (v::vs) = applyFieldUpdate updates f v :: applyVariantUpdates updates fs vs
+applyVariantUpdates updates (f::fs) (v::vs) =
+  applyFieldUpdate updates f v :: applyVariantUpdates updates fs vs
 
 applyFieldUpdate : List (String, Value) -> String -> Value -> Value
 applyFieldUpdate updates field old = match lookupAssoc field updates

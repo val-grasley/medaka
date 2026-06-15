@@ -502,7 +502,8 @@ checkGuardExhaustiveness prog =
 
 topFunDefClauses : List Decl -> List (String, (List Pat, Expr))
 topFunDefClauses [] = []
-topFunDefClauses ((DFunDef _ n pats body)::rest) = (n, (pats, body)) :: topFunDefClauses rest
+topFunDefClauses ((DFunDef _ n pats body)::rest) =
+  (n, (pats, body)) :: topFunDefClauses rest
 topFunDefClauses (_::rest) = topFunDefClauses rest
 
 declBodyWarnings : Oracle -> Decl -> List String
@@ -518,7 +519,8 @@ declBodyWarnings _ _ = []
 
 implClauses : List ImplMethod -> List (String, (List Pat, Expr))
 implClauses [] = []
-implClauses ((ImplMethod n pats body)::rest) = (n, (pats, body)) :: implClauses rest
+implClauses ((ImplMethod n pats body)::rest) =
+  (n, (pats, body)) :: implClauses rest
 
 implMethodBodyWarnings : Oracle -> ImplMethod -> List String
 implMethodBodyWarnings oracle (ImplMethod _ _ body) =

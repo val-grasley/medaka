@@ -739,7 +739,8 @@ uniEscEnd src len p = uHexEnd src len (p + 3) + 1
 
 -- operators + punctuation
 emit : Array Char -> Int -> Int -> Int -> Int -> Token -> Int -> Int -> List RawTok
-emit src len pos depth id tok length ddelta = RTok tok pos (pos + length) :: scan src len (pos + length) (depth + ddelta) id
+emit src len pos depth id tok length ddelta =
+  RTok tok pos (pos + length) :: scan src len (pos + length) (depth + ddelta) id
 
 scanOp : Array Char -> Int -> Int -> Int -> Int -> Char -> List RawTok
 scanOp src len pos depth id c
@@ -887,7 +888,8 @@ continuationTok src len np
 -- stream the parser matches on is byte-identical regardless of this threading.
 layout : List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)
 layout [] stack prev opener = closeAll stack 0
-layout ((RTok t off _)::rest) stack prev opener = (t, off) :: layout rest stack (Some t) (opener || isOpener t)
+layout ((RTok t off _)::rest) stack prev opener =
+  (t, off) :: layout rest stack (Some t) (opener || isOpener t)
 layout ((RComment _ _)::rest) stack prev opener = layout rest stack prev opener
 layout ((RNewline col off)::rest) stack prev opener =
   applyNl col off rest stack prev opener
@@ -969,7 +971,8 @@ canStartAtom (TInterpOpen _) = True
 canStartAtom _ = False
 
 applyNl : Int -> Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int)
-applyNl col off rest [] prev opener = (TNewline, off) :: layout rest [] None False
+applyNl col off rest [] prev opener =
+  (TNewline, off) :: layout rest [] None False
 applyNl col off rest (top::tl) prev opener =
   applyNlTop col off top (top :: tl) rest prev opener
 
@@ -1008,11 +1011,13 @@ closeAll stack off = (TNewline, off) :: closeDedents stack off
 closeDedents : List Int -> Int -> List (Token, Int)
 closeDedents [] off = [(TEof, off)]
 closeDedents [_] off = [(TEof, off)]
-closeDedents (_::tl) off = (TDedent, off) :: (TNewline, off) :: closeDedents tl off
+closeDedents (_::tl) off =
+  (TDedent, off) :: (TNewline, off) :: closeDedents tl off
 
 -- Phase 122 else-continuation filter: drop a NEWLINE immediately before ELSE.
 elseFilter : List (Token, Int) -> List (Token, Int)
-elseFilter ((TNewline, _)::(TElse, eoff)::rest) = (TElse, eoff) :: elseFilter rest
+elseFilter ((TNewline, _)::(TElse, eoff)::rest) =
+  (TElse, eoff) :: elseFilter rest
 elseFilter (t::rest) = t :: elseFilter rest
 elseFilter [] = []
 
@@ -1035,14 +1040,16 @@ layoutWithOffsets src len =
 -- (empty span, matching OCaml's zero-width synthetic positions).
 layoutPairs : List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int, Int)
 layoutPairs [] stack prev opener = closeAllPairs stack 0
-layoutPairs ((RTok t s e)::rest) stack prev opener = (t, s, e) :: layoutPairs rest stack (Some t) (opener || isOpener t)
+layoutPairs ((RTok t s e)::rest) stack prev opener =
+  (t, s, e) :: layoutPairs rest stack (Some t) (opener || isOpener t)
 layoutPairs ((RComment _ _)::rest) stack prev opener =
   layoutPairs rest stack prev opener
 layoutPairs ((RNewline col off)::rest) stack prev opener =
   applyNlPairs col off rest stack prev opener
 
 applyNlPairs : Int -> Int -> List RawTok -> List Int -> Option Token -> Bool -> List (Token, Int, Int)
-applyNlPairs col off rest [] prev opener = (TNewline, off, off) :: layoutPairs rest [] None False
+applyNlPairs col off rest [] prev opener =
+  (TNewline, off, off) :: layoutPairs rest [] None False
 applyNlPairs col off rest (top::tl) prev opener =
   applyNlTopPairs col off top (top :: tl) rest prev opener
 
@@ -1076,10 +1083,12 @@ closeAllPairs stack off = (TNewline, off, off) :: closeDedentsPairs stack off
 closeDedentsPairs : List Int -> Int -> List (Token, Int, Int)
 closeDedentsPairs [] off = [(TEof, off, off)]
 closeDedentsPairs [_] off = [(TEof, off, off)]
-closeDedentsPairs (_::tl) off = (TDedent, off, off) :: (TNewline, off, off) :: closeDedentsPairs tl off
+closeDedentsPairs (_::tl) off =
+  (TDedent, off, off) :: (TNewline, off, off) :: closeDedentsPairs tl off
 
 elseFilterPairs : List (Token, Int, Int) -> List (Token, Int, Int)
-elseFilterPairs ((TNewline, _, _)::(TElse, es, ee)::rest) = (TElse, es, ee) :: elseFilterPairs rest
+elseFilterPairs ((TNewline, _, _)::(TElse, es, ee)::rest) =
+  (TElse, es, ee) :: elseFilterPairs rest
 elseFilterPairs (t::rest) = t :: elseFilterPairs rest
 elseFilterPairs [] = []
 

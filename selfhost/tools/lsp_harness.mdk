@@ -319,7 +319,7 @@ decodeSemToks : List Int -> List DecTok
 decodeSemToks ints = decodeGo 0 0 ints
 
 decodeGo : Int -> Int -> List Int -> List DecTok
-decodeGo prevLine prevChar (dl :: dc :: len :: ty :: _mod :: rest) =
+decodeGo prevLine prevChar (dl::dc::len::ty::_mod::rest) =
   let line = prevLine + dl
   let ch = if dl == 0 then prevChar + dc else dc
   DecTok line ch len ty :: decodeGo line ch rest
@@ -333,23 +333,22 @@ lenTokensShareType len minCount toks =
   let matching = filterLen len toks
   match matching
     [] => False
-    (DecTok _ _ _ ty0 :: _) =>
-      countToks matching >= minCount && allSameType ty0 matching
+    (DecTok _ _ _ ty0)::_ => countToks matching >= minCount
+      && allSameType ty0 matching
 
 filterLen : Int -> List DecTok -> List DecTok
 filterLen _ [] = []
-filterLen len ((DecTok l c ln ty) :: rest)
+filterLen len ((DecTok l c ln ty)::rest)
   | ln == len = DecTok l c ln ty :: filterLen len rest
   | otherwise = filterLen len rest
 
 countToks : List DecTok -> Int
 countToks [] = 0
-countToks (_ :: rest) = 1 + countToks rest
+countToks (_::rest) = 1 + countToks rest
 
 allSameType : Int -> List DecTok -> Bool
 allSameType _ [] = True
-allSameType ty0 ((DecTok _ _ _ ty) :: rest) = ty == ty0 && allSameType ty0 rest
-
+allSameType ty0 ((DecTok _ _ _ ty)::rest) = ty == ty0 && allSameType ty0 rest
 
 -- Total diagnostics across every publishDiagnostics notification for `uri`.
 -- (Threshold checks — ==0 / >=1 — so summing across republishes is fine.)

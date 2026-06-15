@@ -238,7 +238,8 @@ findAdt ctx name = findAdtGo name (ctxAdts ctx)
 -- the LLVM backend faults on the captured-ctx map closure inside ETuple).
 genTupElems : Ctx -> List Gty -> Int -> <Rand, Mut> List Expr
 genTupElems _ [] _ = []
-genTupElems ctx (ti::rest) depth = genExpr ctx ti (depth - 1) :: genTupElems ctx rest depth
+genTupElems ctx (ti::rest) depth =
+  genExpr ctx ti (depth - 1) :: genTupElems ctx rest depth
 
 genLeafElems : Ctx -> List Gty -> <Rand, Mut> List Expr
 genLeafElems _ [] = []

@@ -233,14 +233,19 @@ annotateGuardArm fr (GuardArm gs body) =
 -- a bare block / do-block: each binding statement pushes a frame for the rest
 annotateStmts : List (List String) -> List DoStmt -> List DoStmt
 annotateStmts _ [] = []
-annotateStmts fr ((DoExpr e)::rest) = DoExpr (annotateExpr fr e) :: annotateStmts fr rest
-annotateStmts fr ((DoLet m r p e)::rest) = DoLet m r p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
-annotateStmts fr ((DoBind p e)::rest) = DoBind p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
+annotateStmts fr ((DoExpr e)::rest) =
+  DoExpr (annotateExpr fr e) :: annotateStmts fr rest
+annotateStmts fr ((DoLet m r p e)::rest) =
+  DoLet m r p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
+annotateStmts fr ((DoBind p e)::rest) =
+  DoBind p (annotateExpr fr e) :: annotateStmts (patBindings p :: fr) rest
 annotateStmts fr ((DoLetElse p e alt)::rest) =
   let s2 = DoLetElse p (annotateExpr fr e) (annotateExpr fr alt)
   s2 :: annotateStmts (patBindings p :: fr) rest
-annotateStmts fr ((DoAssign x e)::rest) = DoAssign x (annotateExpr fr e) :: annotateStmts ([x] :: fr) rest
-annotateStmts fr ((DoFieldAssign x fs e)::rest) = DoFieldAssign x fs (annotateExpr fr e) :: annotateStmts fr rest
+annotateStmts fr ((DoAssign x e)::rest) =
+  DoAssign x (annotateExpr fr e) :: annotateStmts ([x] :: fr) rest
+annotateStmts fr ((DoFieldAssign x fs e)::rest) =
+  DoFieldAssign x fs (annotateExpr fr e) :: annotateStmts fr rest
 
 annotateInterp : List (List String) -> InterpPart -> InterpPart
 annotateInterp _ (InterpStr s) = InterpStr s

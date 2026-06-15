@@ -353,9 +353,15 @@ lcLam pat acc
 -- (Record derives, Arbitrary, and newtype Num/Generic are not exercised by the
 -- corpus → deferred.)
 expandDecl : Decl -> List Decl
-expandDecl (DData vis name params variants derives) = DData vis name params variants [] :: deriveImpls (deriveForData name params variants) derives
-expandDecl (DRecord vis name params fields derives) = DRecord vis name params fields [] :: deriveImpls (deriveForRecord name params fields) derives
-expandDecl (DNewtype vis name params con fty derives) = DNewtype vis name params con fty [] :: deriveImpls (deriveForNewtype name params con fty) derives
+expandDecl (DData vis name params variants derives) =
+  DData vis name params variants [] ::
+    deriveImpls (deriveForData name params variants) derives
+expandDecl (DRecord vis name params fields derives) =
+  DRecord vis name params fields [] ::
+    deriveImpls (deriveForRecord name params fields) derives
+expandDecl (DNewtype vis name params con fty derives) =
+  DNewtype vis name params con fty [] ::
+    deriveImpls (deriveForNewtype name params con fty) derives
 expandDecl (DAttrib attrs d) = attribHead attrs (expandDecl d)
 expandDecl d = [d]
 
@@ -447,7 +453,9 @@ deriveShowRecord iface callName name fields =
     ]
 
 showRecordParts : String -> String -> List Field -> List Expr
-showRecordParts callName name fields = ELit (LString (name ++ " {")) :: showRecordFields callName 0 fields ++ [ELit (LString " }")]
+showRecordParts callName name fields =
+  ELit (LString (name ++ " {")) ::
+    showRecordFields callName 0 fields ++ [ELit (LString " }")]
 
 showRecordFields : String -> Int -> List Field -> List Expr
 showRecordFields _ _ [] = []
@@ -598,7 +606,8 @@ eqBody _ avars bvars = andAll (zipEqCalls avars bvars)
 zipEqCalls : List String -> List String -> List Expr
 zipEqCalls [] _ = []
 zipEqCalls _ [] = []
-zipEqCalls (a::arest) (b::brest) = callBin "eq" (EVar a) (EVar b) :: zipEqCalls arest brest
+zipEqCalls (a::arest) (b::brest) =
+  callBin "eq" (EVar a) (EVar b) :: zipEqCalls arest brest
 
 andAll : List Expr -> Expr
 andAll [] = EVar "True"
@@ -653,7 +662,8 @@ variantName (Variant n _) = n
 zipExprPairs : List String -> List String -> List (Expr, Expr)
 zipExprPairs [] _ = []
 zipExprPairs _ [] = []
-zipExprPairs (a::arest) (b::brest) = (EVar a, EVar b) :: zipExprPairs arest brest
+zipExprPairs (a::arest) (b::brest) =
+  (EVar a, EVar b) :: zipExprPairs arest brest
 
 -- Lexicographic chain: `compare a b` per pair, short-circuiting on the first
 -- non-Eq result.  Mirror of lib/desugar.ml's lex_compare_exprs.
@@ -757,7 +767,8 @@ desugarRecordPuns prog =
 
 collectRecordNames : List Decl -> List String
 collectRecordNames [] = []
-collectRecordNames ((DRecord _ name _ _ _)::rest) = name :: collectRecordNames rest
+collectRecordNames ((DRecord _ name _ _ _)::rest) =
+  name :: collectRecordNames rest
 collectRecordNames (_::rest) = collectRecordNames rest
 
 rewriteRecordPun : List String -> Expr -> Expr

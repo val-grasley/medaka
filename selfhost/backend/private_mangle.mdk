@@ -726,14 +726,24 @@ renameGuards rm bound ((GBind p e)::rest) =
 
 renameStmts : List (String, String) -> List String -> List DoStmt -> List DoStmt
 renameStmts _ _ [] = []
-renameStmts rm bound ((DoExpr e)::rest) = DoExpr (renameScoped rm bound e) :: renameStmts rm bound rest
-renameStmts rm bound ((DoBind p e)::rest) = DoBind (renamePat rm p) (renameScoped rm bound e) :: renameStmts rm (patVarsPM p ++ bound) rest
+renameStmts rm bound ((DoExpr e)::rest) =
+  DoExpr (renameScoped rm bound e) :: renameStmts rm bound rest
+renameStmts rm bound ((DoBind p e)::rest) =
+  DoBind (renamePat rm p) (renameScoped rm bound e) ::
+    renameStmts rm (patVarsPM p ++ bound) rest
 renameStmts rm bound ((DoLet m r p e)::rest) =
   let b1 = if r then patVarsPM p ++ bound else bound
   DoLet m r (renamePat rm p) (renameScoped rm b1 e) :: renameStmts rm (patVarsPM p ++ bound) rest
-renameStmts rm bound ((DoAssign x e)::rest) = DoAssign x (renameScoped rm bound e) :: renameStmts rm bound rest
-renameStmts rm bound ((DoFieldAssign x fs e)::rest) = DoFieldAssign x fs (renameScoped rm bound e) :: renameStmts rm bound rest
-renameStmts rm bound ((DoLetElse p e alt)::rest) = DoLetElse (renamePat rm p) (renameScoped rm bound e) (renameScoped rm bound alt) :: renameStmts rm (patVarsPM p ++ bound) rest
+renameStmts rm bound ((DoAssign x e)::rest) =
+  DoAssign x (renameScoped rm bound e) :: renameStmts rm bound rest
+renameStmts rm bound ((DoFieldAssign x fs e)::rest) =
+  DoFieldAssign x fs (renameScoped rm bound e) :: renameStmts rm bound rest
+renameStmts rm bound ((DoLetElse p e alt)::rest) =
+  DoLetElse
+      (renamePat rm p)
+      (renameScoped rm bound e)
+      (renameScoped rm bound alt) ::
+    renameStmts rm (patVarsPM p ++ bound) rest
 
 renameQuals : List (String, String) -> List String -> List LcQual -> (List LcQual, List String)
 renameQuals _ bound [] = ([], bound)

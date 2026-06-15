@@ -830,7 +830,8 @@ implMethodNames e = dedupS (taggedMethodNames (implEntriesOf e))
 
 taggedMethodNames : List CImplEntry -> List String
 taggedMethodNames [] = []
-taggedMethodNames ((CImplEntry m _ (CImplTagged _ _ _ _ _))::rest) = m :: taggedMethodNames rest
+taggedMethodNames ((CImplEntry m _ (CImplTagged _ _ _ _ _))::rest) =
+  m :: taggedMethodNames rest
 taggedMethodNames (_::rest) = taggedMethodNames rest
 
 isImplMethod : Emit -> String -> <Mut> Bool
@@ -3587,8 +3588,10 @@ patPosTys tag positions n i =
 -- bind PVar params to their %argK operands at the given LTy list.
 paramEnvByPos : List Pat -> List LTy -> Int -> List (String, (String, LTy))
 paramEnvByPos [] _ _ = []
-paramEnvByPos ((PVar x)::rest) (ty::tys) i = (x, ("%arg" ++ intToString i, ty)) :: paramEnvByPos rest tys (i + 1)
-paramEnvByPos ((PVar x)::rest) [] i = (x, ("%arg" ++ intToString i, LTInt)) :: paramEnvByPos rest [] (i + 1)
+paramEnvByPos ((PVar x)::rest) (ty::tys) i =
+  (x, ("%arg" ++ intToString i, ty)) :: paramEnvByPos rest tys (i + 1)
+paramEnvByPos ((PVar x)::rest) [] i =
+  (x, ("%arg" ++ intToString i, LTInt)) :: paramEnvByPos rest [] (i + 1)
 paramEnvByPos _ _ _ = []
 
 -- the shared decision-tree body for a coalesced multi-clause group (impl methods
@@ -3668,8 +3671,10 @@ clauseArm _ (pats, body) = CArm (PTuple pats) [] body
 -- the RAW pattern (clauseArm) — bindPattern re-matches that to bind variables.
 implRows : Int -> List (List Pat, CExpr) -> Int -> List (List Pat, Int)
 implRows _ [] _ = []
-implRows 1 ((pats, _)::rest) i = ([canonPat (headPat pats)], i) :: implRows 1 rest (i + 1)
-implRows arity ((pats, _)::rest) i = ([canonPat (PTuple pats)], i) :: implRows arity rest (i + 1)
+implRows 1 ((pats, _)::rest) i =
+  ([canonPat (headPat pats)], i) :: implRows 1 rest (i + 1)
+implRows arity ((pats, _)::rest) i =
+  ([canonPat (PTuple pats)], i) :: implRows arity rest (i + 1)
 
 headPat : List Pat -> Pat
 headPat (p::_) = p
@@ -5256,7 +5261,8 @@ methodBodyDeficit e app =
 -- params so paramEnv/paramDecls index them positionally without clashing.
 etaFreshPats : Int -> Int -> List Pat
 etaFreshPats 0 _ = []
-etaFreshPats n start = PVar ("__eta_" ++ intToString start) :: etaFreshPats (n - 1) (start + 1)
+etaFreshPats n start =
+  PVar ("__eta_" ++ intToString start) :: etaFreshPats (n - 1) (start + 1)
 
 -- apply the fresh eta params at the body's TAIL position, threading THROUGH any
 -- enclosing `where`/`let` wrappers so the let bindings (e.g. `maximum`'s `step`
@@ -5909,8 +5915,12 @@ emitTrmcBase e env ex destSlot exitL =
 implParamEnvTyped : Int -> List LTy -> Int -> List (String, (String, LTy))
 implParamEnvTyped n _ i
   | i >= n = []
-implParamEnvTyped n (ty::tys) i = ("a" ++ intToString i, ("%arg" ++ intToString i, ty)) :: implParamEnvTyped n tys (i + 1)
-implParamEnvTyped n [] i = ("a" ++ intToString i, ("%arg" ++ intToString i, LTInt)) :: implParamEnvTyped n [] (i + 1)
+implParamEnvTyped n (ty::tys) i =
+  ("a" ++ intToString i, ("%arg" ++ intToString i, ty)) ::
+    implParamEnvTyped n tys (i + 1)
+implParamEnvTyped n [] i =
+  ("a" ++ intToString i, ("%arg" ++ intToString i, LTInt)) ::
+    implParamEnvTyped n [] (i + 1)
 
 -- emit one variable-pattern function clause (the slice-2 path).
 emitFnClause : Emit -> String -> List Pat -> CExpr -> <Mut> Unit
@@ -5953,8 +5963,10 @@ paramDecls _ _ =
 -- word at the ABI; the type only drives int-vs-float instruction selection).
 paramEnv : List Pat -> List LTy -> Int -> List (String, (String, LTy))
 paramEnv [] _ _ = []
-paramEnv ((PVar x)::rest) (ty::tys) i = (x, ("%arg" ++ intToString i, ty)) :: paramEnv rest tys (i + 1)
-paramEnv ((PVar x)::rest) [] i = (x, ("%arg" ++ intToString i, LTInt)) :: paramEnv rest [] (i + 1)
+paramEnv ((PVar x)::rest) (ty::tys) i =
+  (x, ("%arg" ++ intToString i, ty)) :: paramEnv rest tys (i + 1)
+paramEnv ((PVar x)::rest) [] i =
+  (x, ("%arg" ++ intToString i, LTInt)) :: paramEnv rest [] (i + 1)
 paramEnv _ _ _ =
   panic "llvm spike: function parameters must be plain variables in slice 2"
 
@@ -6175,7 +6187,8 @@ initGlobalsReg (b::rest) = (bindName b, (False, LTInt)) :: initGlobalsReg rest
 -- discards the emitted text, so the placeholder LTy is immaterial.
 initGlobalsRegReady : List CBind -> List (String, (Bool, LTy))
 initGlobalsRegReady [] = []
-initGlobalsRegReady (b::rest) = (bindName b, (True, LTInt)) :: initGlobalsRegReady rest
+initGlobalsRegReady (b::rest) =
+  (bindName b, (True, LTInt)) :: initGlobalsRegReady rest
 
 -- emit a zero-initialised module global `@mdk_g_<name> = global i64 0` for each
 -- value binding (into the side buffer, like string-literal globals — LLVM module
@@ -6551,7 +6564,9 @@ inferParamTysSeedD sigs dsig ((PVar x)::rest) body i di
 -- declared scalar (Int/Float/…) still wins via seedParamTy; a type-var param
 -- NOT used in arithmetic (e.g. `id : a -> a`) keeps its guess (no LTNum).
 
-inferParamTysSeedD sigs dsig (_::rest) body i di = seedParamTy dsig di LTInt :: inferParamTysSeedD sigs dsig rest body (i + 1) (di + 1)
+inferParamTysSeedD sigs dsig (_::rest) body i di =
+  seedParamTy dsig di LTInt ::
+    inferParamTysSeedD sigs dsig rest body (i + 1) (di + 1)
 
 -- a dict-passing parameter synthesized by elaborateModules carries the
 -- `$dict_<fn>_<slot>` naming (typecheck.mdk `dictParamName`).
@@ -6630,7 +6645,9 @@ zipParamEnv _ _ = []
 -- `declSigTypesRef` table, seeds its param/return types over the body-use guess.)
 inferPass : List (String, FnSig) -> List CBind -> <Mut> List (String, FnSig)
 inferPass _ [] = []
-inferPass sigs (b::rest) = (bindName b, inferOneSig sigs (declSigOf (bindName b)) b) :: inferPass sigs rest
+inferPass sigs (b::rest) =
+  (bindName b, inferOneSig sigs (declSigOf (bindName b)) b) ::
+    inferPass sigs rest
 
 -- fixpoint to two passes: pass 1 seeds signatures (callees defined earlier are
 -- already typed); pass 2 lets a caller see a callee defined later / mutual
@@ -6825,7 +6842,8 @@ collectRecordsClauses ((CClause _ body)::rest) = scanExprRecords body
   ++ collectRecordsClauses rest
 
 scanExprRecords : CExpr -> List (String, List String)
-scanExprRecords (CRecord name fields) = (name, cFieldLabels fields) :: scanExprsRecords (cFieldExprs fields)
+scanExprRecords (CRecord name fields) =
+  (name, cFieldLabels fields) :: scanExprsRecords (cFieldExprs fields)
 scanExprRecords (CFieldAccess ex _) = scanExprRecords ex
 scanExprRecords (CRecordUpdate base updates) = scanExprRecords base
   ++ scanExprsRecords (cFieldExprs updates)

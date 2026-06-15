@@ -371,7 +371,8 @@ analyzeProjectToLines cacheRef read entry roots runtimeSrc coreSrc =
 
 projectLines : List (String, List Diag) -> List String
 projectLines [] = []
-projectLines ((file, ds)::rest) = "## FILE " ++ file :: map ppDiagLoc ds ++ projectLines rest
+projectLines ((file, ds)::rest) =
+  "## FILE " ++ file :: map ppDiagLoc ds ++ projectLines rest
 
 -- Render a diagnostic for the project gate WITH its start position, so the diff
 -- can assert positions (the loc is otherwise consumed only by the LSP JSON).

@@ -3235,14 +3235,22 @@ rewriteArgGuards rw bound ((GBind p e)::rest) =
 -- statements (a recursive DoLet also for its own RHS).
 rewriteArgStmts : ArgRw -> List String -> List DoStmt -> List DoStmt
 rewriteArgStmts _ _ [] = []
-rewriteArgStmts rw bound ((DoExpr e)::rest) = DoExpr (rewriteArgScoped rw bound e) :: rewriteArgStmts rw bound rest
-rewriteArgStmts rw bound ((DoBind p e)::rest) = DoBind p (rewriteArgScoped rw bound e) :: rewriteArgStmts rw (patVarsTc p ++ bound) rest
+rewriteArgStmts rw bound ((DoExpr e)::rest) =
+  DoExpr (rewriteArgScoped rw bound e) :: rewriteArgStmts rw bound rest
+rewriteArgStmts rw bound ((DoBind p e)::rest) =
+  DoBind p (rewriteArgScoped rw bound e) ::
+    rewriteArgStmts rw (patVarsTc p ++ bound) rest
 rewriteArgStmts rw bound ((DoLet m r p e)::rest) =
   let b1 = if r then patVarsTc p ++ bound else bound
   DoLet m r p (rewriteArgScoped rw b1 e) :: rewriteArgStmts rw (patVarsTc p ++ bound) rest
-rewriteArgStmts rw bound ((DoAssign x e)::rest) = DoAssign x (rewriteArgScoped rw bound e) :: rewriteArgStmts rw bound rest
-rewriteArgStmts rw bound ((DoFieldAssign x fs e)::rest) = DoFieldAssign x fs (rewriteArgScoped rw bound e) :: rewriteArgStmts rw bound rest
-rewriteArgStmts rw bound ((DoLetElse p e alt)::rest) = DoLetElse p (rewriteArgScoped rw bound e) (rewriteArgScoped rw bound alt) :: rewriteArgStmts rw (patVarsTc p ++ bound) rest
+rewriteArgStmts rw bound ((DoAssign x e)::rest) =
+  DoAssign x (rewriteArgScoped rw bound e) :: rewriteArgStmts rw bound rest
+rewriteArgStmts rw bound ((DoFieldAssign x fs e)::rest) =
+  DoFieldAssign x fs (rewriteArgScoped rw bound e) ::
+    rewriteArgStmts rw bound rest
+rewriteArgStmts rw bound ((DoLetElse p e alt)::rest) =
+  DoLetElse p (rewriteArgScoped rw bound e) (rewriteArgScoped rw bound alt) ::
+    rewriteArgStmts rw (patVarsTc p ++ bound) rest
 
 -- list-comprehension qualifiers: a generator/let binds for later qualifiers + the
 -- body (the LCLet Bool is a mut flag, never recursive, so its RHS sees no binding).
@@ -4051,7 +4059,8 @@ combineSubst _ _ = None
 -- and recursively compute that impl's own requires routes (Phase 83/84 #5).
 implReqRoutes : List ImplEntry -> List (String, Mono) -> List Require -> <Mut> List Route
 implReqRoutes _ _ [] = []
-implReqRoutes implTable subst ((Require _ rargs)::rest) = reqRoute implTable subst rargs :: implReqRoutes implTable subst rest
+implReqRoutes implTable subst ((Require _ rargs)::rest) =
+  reqRoute implTable subst rargs :: implReqRoutes implTable subst rest
 
 reqRoute : List ImplEntry -> List (String, Mono) -> List Ty -> <Mut> Route
 reqRoute _ _ [] = RNone
@@ -4091,7 +4100,8 @@ resolveDictApps implTable ((routesRef, monos)::rest) =
 
 routesOfMonos : List ImplEntry -> List Mono -> <Mut> List Route
 routesOfMonos _ [] = []
-routesOfMonos implTable (m::rest) = routeOfMono implTable m :: routesOfMonos implTable rest
+routesOfMonos implTable (m::rest) =
+  routeOfMono implTable m :: routesOfMonos implTable rest
 
 routeOfMono : List ImplEntry -> Mono -> <Mut> Route
 routeOfMono implTable m = match activeDictVarOf m
@@ -4152,7 +4162,8 @@ argImplDictRoutesForGo full ((ImplEntry tag2 methodNames headTy reqs _)::rest) n
 
 argImplReqRoutes : List ImplEntry -> List (String, Mono) -> List Require -> <Mut> List Route
 argImplReqRoutes _ _ [] = []
-argImplReqRoutes implTable subst ((Require _ rargs)::rest) = argReqRoute implTable subst rargs :: argImplReqRoutes implTable subst rest
+argImplReqRoutes implTable subst ((Require _ rargs)::rest) =
+  argReqRoute implTable subst rargs :: argImplReqRoutes implTable subst rest
 
 argReqRoute : List ImplEntry -> List (String, Mono) -> List Ty -> <Mut> Route
 argReqRoute _ _ [] = RNone
@@ -4184,7 +4195,8 @@ realizeRecDictApps ((RecDictApp routesRef callee encl mono)::rest) =
 
 recRoutes : String -> Mono -> List Int -> <Mut> List Route
 recRoutes _ _ [] = []
-recRoutes encl mono (id::rest) = recRoute encl mono id :: recRoutes encl mono rest
+recRoutes encl mono (id::rest) =
+  recRoute encl mono id :: recRoutes encl mono rest
 
 -- For one of the callee's constraint ids, recover the live occurrence type from
 -- [mono] (the var the body unified it to).  Concrete head → RKey; still a
@@ -5133,7 +5145,8 @@ monoTyvarIds m = match normalize m
 -- extern declarations become top-level schemes (like interface methods)
 externSchemes : List Decl -> <Mut> List (String, Scheme)
 externSchemes [] = []
-externSchemes ((DExtern _ n ty)::rest) = (n, sigToScheme ty) :: externSchemes rest
+externSchemes ((DExtern _ n ty)::rest) =
+  (n, sigToScheme ty) :: externSchemes rest
 externSchemes (_::rest) = externSchemes rest
 
 -- interface method schemes: each method's declared type, free tyvars (incl. the
@@ -5187,7 +5200,8 @@ methodSchemes typarams ((IfaceMethod mname mty _)::rest) =
 -- registered once during ifaceMethodSchemes at env setup).
 methodSchemesPure : List IfaceMethod -> <Mut> List (String, Scheme)
 methodSchemesPure [] = []
-methodSchemesPure ((IfaceMethod mname mty _)::rest) = (mname, sigToScheme mty) :: methodSchemesPure rest
+methodSchemesPure ((IfaceMethod mname mty _)::rest) =
+  (mname, sigToScheme mty) :: methodSchemesPure rest
 
 -- the method-level-constraint slot ids of [mname]: one id per `=>` constraint over
 -- a non-interface-param tyvar, looked up in the scheme's tvs map.  Registered only
@@ -6195,8 +6209,10 @@ buildStandaloneShadowsGraph allDecls userDecls =
 -- importing module so their constructors + field layout are in scope.
 publicDataDecls : List Decl -> List Decl
 publicDataDecls [] = []
-publicDataDecls ((DData VisPublic n ps vs ds)::rest) = DData VisPublic n ps vs ds :: publicDataDecls rest
-publicDataDecls ((DRecord VisPublic n ps fs ds)::rest) = DRecord VisPublic n ps fs ds :: publicDataDecls rest
+publicDataDecls ((DData VisPublic n ps vs ds)::rest) =
+  DData VisPublic n ps vs ds :: publicDataDecls rest
+publicDataDecls ((DRecord VisPublic n ps fs ds)::rest) =
+  DRecord VisPublic n ps fs ds :: publicDataDecls rest
 publicDataDecls (_::rest) = publicDataDecls rest
 
 pickSchemes : List String -> List (String, Scheme) -> List (String, Scheme)
@@ -6442,7 +6458,8 @@ checkModulesAllLines runtimeDecls coreDecls modules =
 
 allModuleLines : List (String, List (String, Scheme)) -> <Mut> List String
 allModuleLines [] = []
-allModuleLines ((mid, ss)::rest) = "## MODULE " ++ mid :: schemeLines ss ++ allModuleLines rest
+allModuleLines ((mid, ss)::rest) =
+  "## MODULE " ++ mid :: schemeLines ss ++ allModuleLines rest
 
 -- ── TYPED multi-module elaboration (bootstrap eval front-end) ──────────────
 -- The multi-module analog of `elaborate`: the composition of `checkModules`

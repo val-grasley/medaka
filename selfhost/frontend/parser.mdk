@@ -2284,14 +2284,15 @@ parseData vis = do
   name <- upperNameP
   params <- many lowerNameP
   bodyAndDerives <- dataBody
-  -- block form may carry `deriving (…)` INSIDE the INDENT span (own line or
-  -- trailing the last constructor); that is captured by dataBody.  The inline
-  -- form leaves derives empty here and the trailing derivingClause picks it up.
   let variants = fst bodyAndDerives
   let blockDerives = snd bodyAndDerives
   outerDerives <- derivingClause
   skipNewlines
-  pure (DData vis name params variants (combineDerives blockDerives outerDerives))
+  pure
+    (DData vis name params variants (combineDerives blockDerives outerDerives))
+-- block form may carry `deriving (…)` INSIDE the INDENT span (own line or
+-- trailing the last constructor); that is captured by dataBody.  The inline
+-- form leaves derives empty here and the trailing derivingClause picks it up.
 
 -- block-form deriving (inside the INDENT) and inline-form deriving (after the
 -- DEDENT) are mutually exclusive in practice; prefer whichever is non-empty.
@@ -2316,14 +2317,15 @@ dataBodyFor TIndent = do
   advance
   expectTok TEqual
   vs <- dataVariants
-  -- `deriving (…)` may sit INSIDE the block (the lexer keeps the indented
-  -- deriving line within the INDENT/DEDENT), so consume it before the DEDENT.
-  -- derivingClause stops at the RPAREN; skip its trailing NEWLINE so the DEDENT
-  -- is the next token.
   derives <- derivingClause
   skipNewlines
   expectTok TDedent
   pure (vs, derives)
+-- `deriving (…)` may sit INSIDE the block (the lexer keeps the indented
+-- deriving line within the INDENT/DEDENT), so consume it before the DEDENT.
+-- derivingClause stops at the RPAREN; skip its trailing NEWLINE so the DEDENT
+-- is the next token.
+
 dataBodyFor _ = pure ([], [])
 
 dataVariants : Parser (List Variant)
@@ -2401,16 +2403,17 @@ parseRecord vis = do
   params <- many lowerNameP
   expectTok TIndent
   fields <- recordFields
-  -- `deriving (…)` may sit INSIDE the block (indented line kept within the
-  -- INDENT/DEDENT span), so consume it before the DEDENT; otherwise the inline
-  -- form after the DEDENT is picked up below.  derivingClause stops at the
-  -- RPAREN; skip its trailing NEWLINE so the DEDENT is next.
   blockDerives <- derivingClause
   skipNewlines
   expectTok TDedent
   outerDerives <- derivingClause
   skipNewlines
-  pure (DRecord vis name params fields (combineDerives blockDerives outerDerives))
+  pure
+    (DRecord vis name params fields (combineDerives blockDerives outerDerives))
+-- `deriving (…)` may sit INSIDE the block (indented line kept within the
+-- INDENT/DEDENT span), so consume it before the DEDENT; otherwise the inline
+-- form after the DEDENT is picked up below.  derivingClause stops at the
+-- RPAREN; skip its trailing NEWLINE so the DEDENT is next.
 
 recordFields : Parser (List Field)
 recordFields = do
@@ -2878,14 +2881,13 @@ parseWithPositionsOpt src = match tokenizeWithLines src
     let lines = arrayFromList lineList
     match runP programWithSpans toks 0
       PErr _ _ => None
-      POk spans pos =>
-        if peekTok toks pos == TEof then
-          let decls = map ((d, _s, _e) => d) spans
-          let dps = map (declPosOf toks lines) spans
-          let vls = allVariantLines toks lines spans
-          let lcl = lastContentLineOf toks lines spans
-          Some (decls, Positions dps vls lcl)
-        else None
+      POk spans pos => if peekTok toks pos == TEof then
+        let decls = map ((d, _s, _e) => d) spans
+        let dps = map (declPosOf toks lines) spans
+        let vls = allVariantLines toks lines spans
+        let lcl = lastContentLineOf toks lines spans
+        Some (decls, Positions dps vls lcl)
+      else None
 
 -- Check that the parse consumed all tokens (no trailing garbage), panic on error.
 -- Mirrors lib/loader.ml: raises Failure "Parse error" on Parser.Error or Failure.

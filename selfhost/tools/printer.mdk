@@ -858,17 +858,17 @@ printDefRhsGeneral body = match printIfRhs body
       if isContinuationOp op then
         Cat (text " = ") (printExprBody (EBinOp op l r rf))
       else
-        -- Width cascade for a too-wide `=` binding RHS (Option B):
-        --   1. hang the RHS one line below `=` (the outer `group`/`Line`);
-        --   2. if still over width, break the OUTERMOST binop with the operator
-        --      TRAILING (`a ::` then the indented `b`) — relies on the lexer's
-        --      trailing-operator line continuation to re-parse.
         Cat (text " =") (group (nest (Cat Line (printBinOpTrailing op l r))))
     _ =>
       if isBlockBody body then
         Cat (text " =") (indentBlock (printExprBody body))
       else
         Cat (text " = ") (printExprBody body)
+-- Width cascade for a too-wide `=` binding RHS (Option B):
+--   1. hang the RHS one line below `=` (the outer `group`/`Line`);
+--   2. if still over width, break the OUTERMOST binop with the operator
+--      TRAILING (`a ::` then the indented `b`) — relies on the lexer's
+--      trailing-operator line continuation to re-parse.
 
 -- Render `l op r` with the operator TRAILING when it must break: flat `l op r`,
 -- broken `l op⏎  r` (the operator stays on the left line, the right operand
@@ -881,14 +881,18 @@ printBinOpTrailing op l r =
   let ra = isRightAssoc op
   let lp = if ra then prec + 1 else prec
   let rp = if ra then prec else prec + 1
-  group (nest (Cat (printOperand lp l) (Cat (text " ") (Cat (text op) (Cat Line (printOperand rp r))))))
+  group
+    (nest (Cat (printOperand lp l) (Cat (text " ") (Cat (text op) (Cat Line (printOperand rp r))))))
 
 -- An operand of a trailing-break binop: an application breaks its own spine
 -- (cascade step 3) when over-width; anything else renders at the given prec.
 printOperand : Int -> Expr -> Doc
 printOperand prec (ELoc _ e) = printOperand prec e
 printOperand prec (EApp f x) =
-  if exprPrec (EApp f x) < prec then Cat (text "(") (Cat (printAppSpine (EApp f x)) (text ")")) else printAppSpine (EApp f x)
+  if exprPrec (EApp f x) < prec then
+    Cat (text "(") (Cat (printAppSpine (EApp f x)) (text ")"))
+  else
+    printAppSpine (EApp f x)
 printOperand prec e = printExpr prec e
 
 printUsePath : UsePath -> Doc
@@ -967,7 +971,9 @@ dataVariantDocsCommented (v::vs) (vc::vcs) =
 map2VariantComment : List Variant -> List (List String) -> List Doc
 map2VariantComment [] _ = []
 map2VariantComment _ [] = []
-map2VariantComment (v::vs) (vc::vcs) = Cat (commentLinesDoc vc) (Cat Hardline (Cat (text "| ") (printVariant v))) :: map2VariantComment vs vcs
+map2VariantComment (v::vs) (vc::vcs) =
+  Cat (commentLinesDoc vc) (Cat Hardline (Cat (text "| ") (printVariant v))) ::
+    map2VariantComment vs vcs
 
 export
 printDecl : Decl -> Doc

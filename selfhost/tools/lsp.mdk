@@ -881,8 +881,7 @@ isDigit c = charCode c >= 48 && charCode c <= 57
 -- The legend, in index order.  These names match standard theme scopes so
 -- default themes color them without per-theme config.
 semanticLegend : List String
-semanticLegend =
-  ["keyword", "type", "function", "variable", "string", "number", "operator"]
+semanticLegend = ["keyword", "type", "function", "variable", "string", "number", "operator"]
 
 semanticTokensOptions : Json
 semanticTokensOptions =
@@ -1017,7 +1016,6 @@ semanticTokensData src =
   let arr = stringToChars src
   match tokenizeWithOffsetPairs src
     (toks, pairs) => encodeSemToks 0 0 (semToksOf arr toks pairs)
-
 
 -- ── request dispatch ────────────────────────────────────────────────────────
 --
@@ -1275,8 +1273,7 @@ handleSemanticTokens idJson params docs =
     None => JNull
     Some uri => match docsGet uri docs
       None => JNull
-      Some src =>
-        jObject [("data", jArray (map JInt (semanticTokensData src)))]
+      Some src => jObject [("data", jArray (map JInt (semanticTokensData src)))]
   writeMessage (responseMsg idJson result)
 
 -- The `.text` of the LAST element of a contentChanges JArray (Full sync).

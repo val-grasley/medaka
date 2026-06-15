@@ -120,11 +120,13 @@ genForType tydefs subst ty = match ty
 
 genTuple : List (String, TyDef) -> List (String, Ty) -> List Ty -> <Mut> List Value
 genTuple _ _ [] = []
-genTuple tydefs subst (t::rest) = genForType tydefs subst t :: genTuple tydefs subst rest
+genTuple tydefs subst (t::rest) =
+  genForType tydefs subst t :: genTuple tydefs subst rest
 
 genList : List (String, TyDef) -> List (String, Ty) -> Ty -> Int -> <Mut> List Value
 genList _ _ _ 0 = []
-genList tydefs subst t n = genForType tydefs subst t :: genList tydefs subst t (n - 1)
+genList tydefs subst t n =
+  genForType tydefs subst t :: genList tydefs subst t (n - 1)
 
 genFloat : Unit -> <Mut> Value
 genFloat _ =
@@ -276,7 +278,8 @@ findFailureStep _ evalEnv params body _ run inputs False =
 
 genInputs : List (String, TyDef) -> List PropParam -> <Mut> List (String, Value)
 genInputs _ [] = []
-genInputs tydefs ((PropParam x ty)::rest) = (x, genForType tydefs [] ty) :: genInputs tydefs rest
+genInputs tydefs ((PropParam x ty)::rest) =
+  (x, genForType tydefs [] ty) :: genInputs tydefs rest
 
 printCounterexample : List (String, Value) -> <IO> Unit
 printCounterexample [] = ()
@@ -357,7 +360,8 @@ runAllProps evalEnv program =
 
 runEach : List (String, TyDef) -> List (String, Value) -> List Decl -> <IO, Mut> List Bool
 runEach _ _ [] = []
-runEach tydefs evalEnv (p::rest) = runProp tydefs evalEnv p 100 :: runEach tydefs evalEnv rest
+runEach tydefs evalEnv (p::rest) =
+  runProp tydefs evalEnv p 100 :: runEach tydefs evalEnv rest
 
 countTrue : List Bool -> Int
 countTrue [] = 0

@@ -193,7 +193,8 @@ patNeedsGuard _ = False
 -- with the arm's index (the leaves carry it back to the original CArm).
 initialRows : List Arm -> Int -> List (List Pat, Int)
 initialRows [] _ = []
-initialRows ((Arm pat _ _)::rest) i = ([canonPat pat], i) :: initialRows rest (i + 1)
+initialRows ((Arm pat _ _)::rest) i =
+  ([canonPat pat], i) :: initialRows rest (i + 1)
 
 -- ── the Maranget recursion, emitting a tree (mirrors exhaust.mdk's matrix ops,
 -- re-implemented here over index-carrying rows since exhaust's are stage-local).
@@ -630,7 +631,8 @@ carmHasGuard (CArm pat gs _) = not (nullL gs) || patNeedsGuard pat
 
 cInitialRows : List CArm -> Int -> List (List Pat, Int)
 cInitialRows [] _ = []
-cInitialRows ((CArm pat _ _)::rest) i = ([canonPat pat], i) :: cInitialRows rest (i + 1)
+cInitialRows ((CArm pat _ _)::rest) i =
+  ([canonPat pat], i) :: cInitialRows rest (i + 1)
 
 -- the top-level function-group half of lowerProgram, exposed for the multi-module
 -- driver (core_ir_eval.cevalModules), which lowers each module's groups separately
@@ -1000,7 +1002,8 @@ tyIsFunReturningSelf _ _ = False
 
 funClausesOf : List Decl -> List (String, CClause)
 funClausesOf [] = []
-funClausesOf ((DFunDef _ n pats body)::rest) = (n, CClause pats (lower body)) :: funClausesOf rest
+funClausesOf ((DFunDef _ n pats body)::rest) =
+  (n, CClause pats (lower body)) :: funClausesOf rest
 funClausesOf (_::rest) = funClausesOf rest
 
 groupNames : List (String, CClause) -> List String -> List String

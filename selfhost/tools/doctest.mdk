@@ -321,7 +321,8 @@ buildDetails envResult examples =
 
 detailsGo : Result String (List (String, Value)) -> Int -> List Example -> <Mut> List (Example, ExResult)
 detailsGo _ _ [] = []
-detailsGo envResult i (ex::rest) = (ex, oneResult envResult i ex) :: detailsGo envResult (i + 1) rest
+detailsGo envResult i (ex::rest) =
+  (ex, oneResult envResult i ex) :: detailsGo envResult (i + 1) rest
 
 oneResult : Result String (List (String, Value)) -> Int -> Example -> <Mut> ExResult
 oneResult envResult i ex = match envResult

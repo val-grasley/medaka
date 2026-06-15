@@ -542,7 +542,8 @@ implMethodNm (ImplMethod n _ _) = n
 
 interfaceList : List Decl -> List (String, List String)
 interfaceList [] = []
-interfaceList (DInterface { name = n, methods, ... }::rest) = (n, map ifaceMethodNm methods) :: interfaceList rest
+interfaceList (DInterface { name = n, methods, ... }::rest) =
+  (n, map ifaceMethodNm methods) :: interfaceList rest
 interfaceList (_::rest) = interfaceList rest
 
 -- prelude value names (DFunDef/DTypeSig + DImpl & DInterface method names)
@@ -1101,7 +1102,8 @@ keepBoundMethods env ms = filterContains env.values ms
 
 pubIfaceMethodSets : List Decl -> List (List String)
 pubIfaceMethodSets [] = []
-pubIfaceMethodSets (DInterface { pub = True, methods, ... }::rest) = map ifaceMethodNm methods :: pubIfaceMethodSets rest
+pubIfaceMethodSets (DInterface { pub = True, methods, ... }::rest) =
+  map ifaceMethodNm methods :: pubIfaceMethodSets rest
 pubIfaceMethodSets (_::rest) = pubIfaceMethodSets rest
 
 -- pub newtype + VisPublic/VisAbstract data & record (the type name only)
@@ -1124,8 +1126,10 @@ expCtorsDirect (_::rest) = expCtorsDirect rest
 
 expTypeCtorsDirect : List Decl -> List (String, List String)
 expTypeCtorsDirect [] = []
-expTypeCtorsDirect ((DNewtype True n _ con _ _)::rest) = (n, [con]) :: expTypeCtorsDirect rest
-expTypeCtorsDirect ((DData VisPublic n _ vs _)::rest) = (n, map variantName vs) :: expTypeCtorsDirect rest
+expTypeCtorsDirect ((DNewtype True n _ con _ _)::rest) =
+  (n, [con]) :: expTypeCtorsDirect rest
+expTypeCtorsDirect ((DData VisPublic n _ vs _)::rest) =
+  (n, map variantName vs) :: expTypeCtorsDirect rest
 expTypeCtorsDirect (_::rest) = expTypeCtorsDirect rest
 
 -- field owners for PUBLIC data (named-field variants) + record
@@ -1139,7 +1143,8 @@ expFieldOwnersDirect (_::rest) = expFieldOwnersDirect rest
 
 expInterfacesDirect : List Decl -> List String
 expInterfacesDirect [] = []
-expInterfacesDirect (DInterface { pub = True, name = n, ... }::rest) = n :: expInterfacesDirect rest
+expInterfacesDirect (DInterface { pub = True, name = n, ... }::rest) =
+  n :: expInterfacesDirect rest
 expInterfacesDirect (_::rest) = expInterfacesDirect rest
 
 expIfaceMethodsDirect : List Decl -> List (String, List String)
@@ -1223,7 +1228,8 @@ reExpIfaceMethodsFrom path src =
 
 ifaceMethodPairs : ModuleExports -> List String -> List (String, List String)
 ifaceMethodPairs _ [] = []
-ifaceMethodPairs src (i::rest) = (i, ifaceMethodsOf i src.expIfaceMethods) :: ifaceMethodPairs src rest
+ifaceMethodPairs src (i::rest) =
+  (i, ifaceMethodsOf i src.expIfaceMethods) :: ifaceMethodPairs src rest
 
 reExpFieldOwners : List ModuleExports -> List Decl -> List (String, String)
 reExpFieldOwners known prog =
