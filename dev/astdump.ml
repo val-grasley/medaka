@@ -155,7 +155,10 @@ and sexp_ty = function
   | TyTuple ts     -> node "TyTuple" (List.map sexp_ty ts)
   | TyEffect (labels, tail, t) ->
       let tl = (match tail with Some s -> node "Some" [esc_str s] | None -> "None") in
-      node "TyEffect" [slist (List.map esc_str labels); tl; sexp_ty t]
+      let lab (l, p) = match p with
+        | None -> esc_str l
+        | Some s -> node "atom" [esc_str l; esc_str s] in
+      node "TyEffect" [slist (List.map lab labels); tl; sexp_ty t]
   | TyConstrained (cs, t) ->
       node "TyConstrained" [slist (List.map sexp_constraint cs); sexp_ty t]
 
@@ -215,7 +218,10 @@ let rec sexp_decl = function
       node "DRecord" [sexp_vis vis; esc_str n; slist (List.map esc_str ps);
                       slist (List.map sexp_field fields); slist (List.map esc_str derives)]
   | DUse (p, path)          -> node "DUse" [string_of_bool p; sexp_use_path path]
-  | DEffect (p, n)          -> node "DEffect" [string_of_bool p; esc_str n]
+  | DEffect (p, n, dom, internal) ->
+      node "DEffect" [string_of_bool p; esc_str n;
+        (match dom with Some d -> node "Some" [esc_str d] | None -> "None");
+        string_of_bool internal]
   | DTypeAlias (p, n, ps, t) ->
       node "DTypeAlias" [string_of_bool p; esc_str n; slist (List.map esc_str ps); sexp_ty t]
   | DNewtype (p, n, ps, con, fty, derives) ->

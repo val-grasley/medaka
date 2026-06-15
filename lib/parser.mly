@@ -186,7 +186,7 @@ let parse_attr name msg_opt =
 
 (* Keywords *)
 %token LET REC WITH MUT IN IF THEN ELSE MATCH DATA RECORD INTERFACE DEFAULT IMPL
-%token IMPORT EXPORT PUBLIC WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP TEST BENCH FUNCTION EFFECT
+%token IMPORT EXPORT PUBLIC WHERE OF REQUIRES DO AS EXTERN DERIVING TYPE NEWTYPE PROP TEST BENCH FUNCTION EFFECT INTERNAL
 
 (* Operators *)
 %token PLUS MINUS STAR SLASH MOD
@@ -362,10 +362,19 @@ inner_non_data_decl:
 (* ── Effect-label declarations (Phase 146 gap 2) ─────── *)
 
 (* `effect Foo` declares a user/platform effect label usable in rows (`<Foo>`).
-   Bare label only; the parameterized form (`effect Fetch (Str)`) is Phase 146b. *)
+   v2 Stage 2a:
+     `effect Foo`         — atomic security capability (domain Unit).
+     `effect Net Prefix`  — domain-carrying (the label's params are Prefix patterns).
+     `internal effect Mut`— purity/discipline only; never granted/parameterized.
+   The optional domain name is a bare `UPPER` after the label (space-separated,
+   mirrors data-ctor fields); only `Prefix` is accepted in v2 (validated later). *)
 inner_effect_decl:
   | EFFECT UPPER newlines
-    { fun is_pub -> DEffect (is_pub, $2) }
+    { fun is_pub -> DEffect (is_pub, $2, None, false) }
+  | EFFECT UPPER UPPER newlines
+    { fun is_pub -> DEffect (is_pub, $2, Some $3, false) }
+  | INTERNAL EFFECT UPPER newlines
+    { fun _is_pub -> DEffect (false, $3, None, true) }
 
 (* ── Property declarations ───────────────────────────── *)
 
@@ -506,9 +515,15 @@ ty_atom:
    lowercase tail variable after `|` (`<IO | e>`), or a bare tail variable
    (`<e>`) for a pure-but-open row.  Phase 79. *)
 eff_row:
-  | separated_nonempty_list(COMMA, UPPER)               { ($1, None) }
-  | separated_nonempty_list(COMMA, UPPER) PIPE IDENT    { ($1, Some $3) }
-  | IDENT                                               { ([], Some $1) }
+  | separated_nonempty_list(COMMA, eff_atom)               { ($1, None) }
+  | separated_nonempty_list(COMMA, eff_atom) PIPE IDENT    { ($1, Some $3) }
+  | IDENT                                                  { ([], Some $1) }
+
+(* a row atom is a label with an optional Prefix-pattern param:
+   `Foo` (atomic) or `Net "a.com/*"` (parameterized).  v2 Stage 2a. *)
+eff_atom:
+  | UPPER         { ($1, None) }
+  | UPPER STRING  { ($1, Some $2) }
 
 (* ── Patterns ────────────────────────────────────────── *)
 

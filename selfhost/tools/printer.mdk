@@ -278,11 +278,16 @@ printType (TyConstrained cs t) =
     _ => Cat (text "(") (Cat (sepBy (text ", ") (map printConstraint cs)) (text ")"))
   Cat csDoc (Cat (text " => ") (printType t))
 
-effectInside : List String -> Option String -> Doc
-effectInside es None = sepBy (text ", ") (map text es)
+effectInside : List (String, Option String) -> Option String -> Doc
+effectInside es None = sepBy (text ", ") (map effAtomDoc es)
 effectInside [] (Some v) = text v
 effectInside es (Some v) =
-  Cat (sepBy (text ", ") (map text es)) (Cat (text " | ") (text v))
+  Cat (sepBy (text ", ") (map effAtomDoc es)) (Cat (text " | ") (text v))
+
+-- one row atom as a Doc: the label, or label + space + quoted param.
+effAtomDoc : (String, Option String) -> Doc
+effAtomDoc (l, None) = text l
+effAtomDoc (l, Some s) = text (l ++ " " ++ escStringLit s)
 
 printConstraint : Constraint -> Doc
 printConstraint (Constraint iface args) =
@@ -1019,8 +1024,8 @@ printDecl (DUse pub path) =
   Cat
     (if pub then text "export " else Nil)
     (Cat (text "import ") (printUsePath path))
-printDecl (DEffect pub name) =
-  Cat (if pub then text "export " else Nil) (Cat (text "effect ") (text name))
+printDecl (DEffect pub name domain isInternal) =
+  Cat (effDeclHead pub isInternal) (Cat (text name) (effDomainDoc domain))
 printDecl (DProp pub propName propParams propBody) =
   Cat
     (if pub then text "export " else Nil)
@@ -1148,10 +1153,27 @@ ppTyPrec _ (TyConstrained cs t) =
     _ => "(" ++ joinWith ", " (map ppConstr cs) ++ ")"
   csStr ++ " => " ++ ppTyPrec 0 t
 
-ppEffInside : List String -> Option String -> String
-ppEffInside effs None = joinWith ", " effs
+ppEffInside : List (String, Option String) -> Option String -> String
+ppEffInside effs None = joinWith ", " (map ppEffAtom effs)
 ppEffInside [] (Some v) = v
-ppEffInside effs (Some v) = joinWith ", " effs ++ " | " ++ v
+ppEffInside effs (Some v) = joinWith ", " (map ppEffAtom effs) ++ " | " ++ v
+
+-- a row atom renders as the label, or label + space + quoted param,
+-- byte-identical to lib/printer.ml TyEffect atom rendering.
+ppEffAtom : (String, Option String) -> String
+ppEffAtom (l, None) = l
+ppEffAtom (l, Some s) = l ++ " " ++ escStringLit s
+
+-- domain suffix for an effect declaration: space + name, or empty.
+effDomainDoc : Option String -> Doc
+effDomainDoc None = Nil
+effDomainDoc (Some d) = Cat (text " ") (text d)
+
+-- header for an effect declaration: internal/export/plain effect keyword.
+effDeclHead : Bool -> Bool -> Doc
+effDeclHead _ True = text "internal effect "
+effDeclHead True False = text "export effect "
+effDeclHead False False = text "effect "
 
 ppConstr : Constraint -> String
 ppConstr (Constraint iface args) =

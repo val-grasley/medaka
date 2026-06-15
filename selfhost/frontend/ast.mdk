@@ -30,7 +30,7 @@ public export data Ty
   | TyApp Ty Ty
   | TyFun Ty Ty
   | TyTuple (List Ty)
-  | TyEffect (List String) (Option String) Ty
+  | TyEffect (List (String, Option String)) (Option String) Ty
   | TyConstrained (List Constraint) Ty
 
 -- an interface constraint `Iface arg…` on the LHS of a `=>` in a type
@@ -259,8 +259,10 @@ public export data Decl
   | DData DataVis String (List String) (List Variant) (List String)
   | DRecord DataVis String (List String) (List Field) (List String)
   | DUse Bool UsePath
-  -- pub? `effect Foo` — user/platform effect-label declaration (Phase 146 gap 2)
-  | DEffect Bool String
+  -- pub? name domain? internal?  `effect Foo` (atomic security capability),
+  -- `effect Net Prefix` (domain-carrying), `internal effect Mut` (purity-only,
+  -- never granted/parameterized).  v2 Stage 2a: domain = Some "Prefix" or None.
+  | DEffect Bool String (Option String) Bool
   | DProp Bool String (List PropParam) Expr
   | DTest Bool String Expr
   | DBench Bool String Expr

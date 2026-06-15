@@ -385,7 +385,7 @@ symbolOfDecl d dp =
     DProp _ name _ _ => Some (jSymbol name 12 range [])
     DTest _ name _ => Some (jSymbol name 12 range [])
     DBench _ name _ => Some (jSymbol name 12 range [])
-    DEffect _ name => Some (jSymbol name 24 range [])
+    DEffect _ name _ _ => Some (jSymbol name 24 range [])
     DAttrib _ _ => None  -- unreachable post innerDecl
 -- Variable
 -- Function
@@ -444,7 +444,7 @@ declDefines d name = match innerDecl d
   DProp _ n _ _ => n == name
   DTest _ n _ => n == name
   DBench _ n _ => n == name
-  DEffect _ n => n == name
+  DEffect _ n _ _ => n == name
   DAttrib _ _ => False
 
 anyName : List String -> String -> Bool

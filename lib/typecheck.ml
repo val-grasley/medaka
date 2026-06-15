@@ -157,6 +157,7 @@ type type_error =
   | MissingField   of ident * ident       (* field, record *)
   | EffectEscape   of ident * effect_set * effect_set  (* fn, declared, undeclared extras *)
   | EffectLeak     of effect_set * effect_set  (* closed bound labels, escaping extras *)
+  | EffectParam    of ident * string  (* label, why a written effect param is rejected *)
   | UnknownInterface   of ident               (* impl references unknown interface *)
   | ExtraMethod        of ident * ident       (* iface_name, method not in interface *)
   | MissingMethod      of ident * ident       (* iface_name, missing required method *)
@@ -259,20 +260,80 @@ let exit_level  () = decr current_level
    A label's domain is fixed by its declaration; [dtop_for] picks the ⊤ of the
    label's domain.  In Stage 1 every label's domain is PUnit. *)
 
-(* ⊤ parameter for a label's domain.  Stage 1: all labels are atomic ⇒ PUnit.
-   Stage 2 maps Net/FileRead/FileWrite to PPrefix None here. *)
-let dtop_for (_label : string) : param = PUnit
+(* ── Effect-label DOMAIN registry (v2 Stage 2a) ────────────
+   Maps a label to the ⊤-param of its declared domain.  An entry of
+   [PPrefix None] means "this label carries a Prefix pattern"; absence (or a
+   PUnit entry) means atomic (Unit domain).  Seeded with the builtin
+   classifications (design §0/§4: Net/FileRead/FileWrite = Prefix, the rest
+   atomic) and extended per program from the `effect Net Prefix` declarations.
+   [dtop_for] consults it so a written `<Net "p">` resolves its param to the
+   Prefix domain while a bare label stays PUnit. *)
+let effect_domains : (string, param) Hashtbl.t = Hashtbl.create 16
 
-(* p1 ⊑ p2 : is p1 at least as constrained (more specific) as p2?  *)
+let seed_effect_domains () =
+  Hashtbl.reset effect_domains;
+  (* The builtin Prefix-domain security labels (v2 fork (e)).  These are the
+     real host enforcement points; if/when declared or minted they carry a
+     Prefix pattern.  Other builtins (IO/Mut/Rand/…) stay atomic = absent. *)
+  List.iter (fun l -> Hashtbl.replace effect_domains l (PPrefix None))
+    ["Net"; "FileRead"; "FileWrite"]
+
+let () = seed_effect_domains ()
+
+(* Register a label's domain from its `effect` declaration.  `Some "Prefix"`
+   ⇒ Prefix domain; `None` (bare `effect Foo`) and `internal` ⇒ atomic (Unit).
+   An internal label is never parameterized (design §4), so it is forced atomic
+   even if a domain were written. *)
+let register_effect_domain (name : string) (domain : string option) (internal : bool) : unit =
+  let p = match internal, domain with
+    | true, _ -> PUnit
+    | false, Some "Prefix" -> PPrefix None
+    | false, _ -> PUnit
+  in
+  Hashtbl.replace effect_domains name p
+
+(* ⊤ parameter for a label's domain (design §2.1).  Consults the registry;
+   labels with no Prefix entry are atomic ⇒ PUnit. *)
+let dtop_for (label : string) : param =
+  match Hashtbl.find_opt effect_domains label with
+  | Some (PPrefix None) -> PPrefix None
+  | _ -> PUnit
+
+(* Re-seed the registry to the builtins, then register every `effect …` decl in
+   the program.  Called at each typecheck entry point before atoms are built, so
+   a written `<Net "p">` (and the escape/leak checks) sees the right domain.
+   Reads only the program's top-level decls — the param representation is inert
+   data on the row, so this never touches dict-passing or method machinery. *)
+let populate_effect_domains (decls : Ast.decl list) : unit =
+  seed_effect_domains ();
+  List.iter (function
+    | Ast.DEffect (_, name, domain, internal) ->
+      register_effect_domain name domain internal
+    | _ -> ()) decls
+
+(* The concrete (literal) part of a Prefix pattern: drop a single trailing `*`
+   wildcard (`"a.com/*"` → `"a.com/"`); a pattern with no `*` is concrete as-is
+   (an exact authority).  `\*` is reserved as a literal-star escape (rare; the
+   trailing `*` is the only wildcard position — design fork (d)). *)
+let prefix_concrete (s : string) : string =
+  let n = String.length s in
+  if n > 0 && s.[n - 1] = '*' then String.sub s 0 (n - 1) else s
+
+let str_starts_with ~(prefix : string) (s : string) : bool =
+  let lp = String.length prefix in
+  String.length s >= lp && String.sub s 0 lp = prefix
+
+(* p1 ⊑ p2 : is p1 at least as constrained (more specific) as p2?  In the Prefix
+   domain, p1 ⊑ p2 iff every authority p1 admits is admitted by p2 — i.e. p1's
+   concrete part starts with p2's concrete part.  `"a.com/api/*" ⊑ "a.com/*"`,
+   `"a.com/foo" ⊑ "a.com/*"`, but NOT `"a.com/*" ⊑ "a.com/foo"` (⊤-vs-specific
+   direction the manifest needs) nor `"b.com/x" ⊑ "a.com/*"`. *)
 let dsub (p1 : param) (p2 : param) : bool =
   match p1, p2 with
   | PUnit, PUnit -> true
   | _, PPrefix None -> true               (* anything ⊑ ⊤ *)
   | PPrefix (Some a), PPrefix (Some b) ->
-    (* Stage-2 placeholder: literal-prefix containment; in Stage 1 no Some
-       param is ever built, so this arm is unreachable until the Prefix
-       analysis lands.  Defined now so the interface is complete. *)
-    String.length a >= String.length b && String.sub a 0 (String.length b) = b
+    str_starts_with ~prefix:(prefix_concrete b) (prefix_concrete a)
   | PPrefix None, PPrefix (Some _) -> false
   | PUnit, _ | _, PUnit -> false          (* domain mismatch — never happens (one domain per label) *)
 
@@ -347,9 +408,40 @@ let atoms_diff (a : effect_set) (b : effect_set) : effect_set =
     | Some y -> not (dsub x.param y.param))
     a
 
-(* lift a bare AST label to a ⊤-param atom (Stage 1: every annotation atomic) *)
+(* lift a bare AST label to a ⊤-param atom (no written param) *)
 let atom_of_label (l : string) : atom = { label = l; param = dtop_for l }
 let atoms_of_labels (ls : string list) : effect_set = atoms_norm (List.map atom_of_label ls)
+
+(* The delimiter footgun guard (design §2.5 / fork (b)).  A written Prefix
+   pattern must pin its boundary: either a trailing `*` (the wildcard) or an
+   explicit path/host delimiter `/`.  A bare `<Net "a.com">` is ambiguous — it
+   would admit the sibling host `a.com.evil.com` — so it is rejected.  (Trailing
+   `*` is the wildcard; structure-aware host/path matching is the later Product
+   domain.) *)
+let prefix_pattern_ok (s : string) : bool =
+  let n = String.length s in
+  n > 0 && (s.[n - 1] = '*' || String.contains s '/')
+
+(* Build an atom from a written annotation label, threading + validating its
+   param.  A written string param requires the label's domain to be Prefix and
+   the pattern to pass [prefix_pattern_ok]; a bare label takes the domain ⊤. *)
+let atom_of_written ((l, p) : string * string option) : atom =
+  match p with
+  | None -> { label = l; param = dtop_for l }
+  | Some pat ->
+    (match dtop_for l with
+     | PPrefix None ->
+       if not (prefix_pattern_ok pat) then
+         fail (EffectParam (l,
+           Printf.sprintf "pattern %S must end in '*' or contain a '/' delimiter \
+                           (a bare prefix would admit a sibling host/path)" pat));
+       { label = l; param = PPrefix (Some pat) }
+     | _ ->
+       fail (EffectParam (l,
+         Printf.sprintf "label '%s' is atomic and takes no parameter \
+                         (declare it `effect %s Prefix` to parameterize)" l l)))
+let atoms_of_written (ls : (string * string option) list) : effect_set =
+  atoms_norm (List.map atom_of_written ls)
 
 
 (* The empty closed row — a pure arrow. *)
@@ -433,7 +525,7 @@ let rec arrows_with_last_effect pats eff ret = match pats with
    binding-boundary escape check compares the inferred body effects against this. *)
 let rec declared_effects : Ast.ty -> effect_set = function
   | Ast.TyFun (_, ret) -> declared_effects ret
-  | Ast.TyEffect (effs, _, _) -> atoms_of_labels effs
+  | Ast.TyEffect (effs, _, _) -> atoms_of_written effs
   | Ast.TyConstrained (_, t) -> declared_effects t
   | _ -> []
 
@@ -448,7 +540,7 @@ let ast_effrow etbl = function
       | Some v -> v
       | None -> let v = fresh_effvar () in Hashtbl.add etbl name v; v) tl
     in
-    { labels = atoms_of_labels es; tail }
+    { labels = atoms_of_written es; tail }
   | _ -> pure_row
 
 (* ── Following links and union-find compaction ──── *)
@@ -842,6 +934,8 @@ let pp_error = function
   | EffectLeak (bound, extras) ->
     Printf.sprintf "Effectful value used where <%s> is allowed, but it performs <%s>"
       (render_atoms bound) (render_atoms extras)
+  | EffectParam (label, why) ->
+    Printf.sprintf "Invalid effect parameter on <%s>: %s" label why
   | UnknownInterface n ->
     Printf.sprintf "Unknown interface: %s" n
   | ExtraMethod (iface, m) ->
@@ -4296,6 +4390,9 @@ let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
   let prog = if program_is_core prog || not prepend_prelude then prog else Method_marker.prelude_for user_prog @ prog in
 
   register_attrs env prog;
+  (* v2 Stage 2a: seed the effect-domain registry from this program's `effect`
+     declarations before any atom is built. *)
+  populate_effect_domains (List.map Ast.inner_decl prog);
 
   (* Phase 1: register data, record, interface, impl, and extern declarations *)
   (* First sub-pass: collect all type aliases so they are available for expansion *)
@@ -4569,6 +4666,9 @@ let typecheck_module
     else Method_marker.prelude_for_with_imports user_prog use_import_names @ prog in
 
   register_attrs env prog;
+  (* v2 Stage 2a: seed the effect-domain registry from this module's `effect`
+     declarations before any atom is built. *)
+  populate_effect_domains (List.map Ast.inner_decl prog);
 
   (* Seed env with all known module exports *)
   List.iter (fun te ->

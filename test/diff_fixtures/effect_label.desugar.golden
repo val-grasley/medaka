@@ -1,5 +1,5 @@
-(DEffect false "KV")
-(DEffect false "Log")
+(DEffect false "KV" None false)
+(DEffect false "Log" None false)
 (DExtern false "kvGet" (TyFun (TyCon "String") (TyEffect ("KV") None (TyCon "String"))))
 (DTypeSig false "get" (TyFun (TyCon "String") (TyEffect ("KV") None (TyCon "String"))))
 (DFunDef false "get" ((PVar "k")) (EApp (EVar "kvGet") (EVar "k")))
