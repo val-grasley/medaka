@@ -40,9 +40,13 @@ let esc_str s =
 let node tag parts = "(" ^ String.concat " " (tag :: parts) ^ ")"
 let slist xs = "(" ^ String.concat " " xs ^ ")"
 
+let canon_float f =
+  let s = Printf.sprintf "%.12g" f in
+  if String.exists (fun c -> c='.'||c='e'||c='E'||c='n'||c='i') s then s else s ^ ".0"
+
 let sexp_lit = function
   | LInt n    -> node "LInt" [string_of_int n]
-  | LFloat f  -> node "LFloat" [Printf.sprintf "%g" f]
+  | LFloat f  -> node "LFloat" [canon_float f]
   | LString s -> node "LString" [esc_str s]
   | LChar s   -> node "LChar" [esc_str s]
   | LBool b   -> node "LBool" [string_of_bool b]

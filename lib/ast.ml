@@ -360,7 +360,9 @@ let dict_param_name (fname : ident) (slot : int) : string =
 
 let pp_lit = function
   | LInt n    -> string_of_int n
-  | LFloat f  -> string_of_float f
+  | LFloat f  ->
+    let s = Printf.sprintf "%.12g" f in
+    if String.exists (fun c -> c='.'||c='e'||c='E'||c='n'||c='i') s then s else s ^ ".0"
   | LString s -> Printf.sprintf "%S" s
   | LChar c   -> Printf.sprintf "'%s'" c
   | LBool b   -> string_of_bool b
