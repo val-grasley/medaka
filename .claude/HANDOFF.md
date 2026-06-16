@@ -1,4 +1,4 @@
-# Next-orchestrator handoff — Medaka, soak tail (2026-06-15)
+# Next-orchestrator handoff — Medaka, soak tail (2026-06-16)
 
 You are the **orchestrator** for Medaka, a self-hosting functional language whose native
 LLVM backend is now CANONICAL (compiles itself + all user code OCaml-free). You design and
@@ -7,7 +7,19 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
-## RESUME — capability-effects v2 in progress. local `main` = 4e4e5ce (Stage 1/2a/2b/3a all landed + verified)
+## RESUME — Async monad COMPLETE through ASYNC-DESIGN §7. local `main` = 463daaa
+**ASYNC FEATURE SHIPPED (2026-06-16).** Value-level effect-poly `Async e a` monad, both backends, fixpoint-clean. `ASYNC-DESIGN.md` §0 = LOCKED decisions (authoritative); §7 staging all DONE. Memory: `project_async_design.md`. The stages, in order:
+- **Stage 1** (`stdlib/async.mdk`): effect-poly `data Async e a = Done a | Suspend (Unit -> <e> Async e a)`; Mappable/Applicative/Thenable; liftIO/yield/runAsync/stepAsync/concurrent; 7 doctests both backends. §2.1 encoding validated on the binary → CPS fallback NOT needed; trampoline stack-safe for COMPILED programs (`-O2` TCO), interpreter caps deep chains ~100–500k.
+- **Effect-row params on data decls** (2c1353a / native fix 85a9cb7): new `Mono` arm `TEff EffRow` / OCaml `TEff of effrow` in type-app arg slot; KRow kind-inferred from `<e>` field tails. Native gotcha: `instantiateSigTracked` seeds etbl from `effTailNames ++ rowArgNames` else bare KRow arg collapses to pureRow → spurious `<IO>` leak. Guard: `test/diff_fixtures/effect_param.mdk`.
+- **Stage 2** (26784fb): `main : Async _` driver dispatch BOTH backends, type-directed (main head tycon == "Async"). OCaml `bin/main.ml` Run → apply root_env `runAsync` to forced main. Native: `mainSchemeRef`+`mainTypeIsAsync` (typecheck.mdk), `evalModulesOutputAsync` over root FULL env (eval.mdk), `medaka_cli` run arm picks path. Type-level only → fixpoint-safe. **PARSER LIMITATION:** `<IO>` row literal won't parse in type-app arg position → annotate `main` unannotated OR `import async.*` + `main : Async e Unit`.
+- **Stage 3 / D7** (463daaa): dropped vestigial `Async`/`Time` from `builtInEffects`/`builtin_effects` both backends; `<Async>`/`<Time>` → `UnknownEffect`. Vocabulary-only → IR unchanged, fixpoint C3a/C3b green, **no seed re-mint**. `language-design.md` `<Async>`/`<Time>` prose deliberately left (intent doc for superseded design; SYNTAX.md = binary ground truth).
+
+**Known non-regression:** `@thorough` shows 25 failures = pre-existing #55 sum/product TYPES drift (`a Int -> Int` golden vs `a b -> b` actual, task #11) — NOT async-related (failure outputs grep-clean of `Async|Time|UnknownEffect`).
+
+**Deferred async (per ASYNC-DESIGN non-goals):** `await`/`sleep`, real parallelism/threads, non-blocking syscalls, `spawn`/`Task` handles, cancellation/timeouts/select/race/streams. The robust-runtime swap (§5) replaces scheduler internals only — `Async`'s public face + laws + `concurrent` contract + `main : Async` must stay fixed.
+
+---
+## PRIOR — capability-effects v2 in progress (paused, resumable). `main` was 4e4e5ce → Stage 1/2a/2b/3a landed
 Soak bug-hunt session. Worktrees/branches were pruned to 4 (housekeeping). THREE soak fixes found+fixed+MERGED+verified (fixpoint C3a/C3b YES each):
 - **Native-emit scale failure** (`unbound 'not'`, ~5% build rate): post-mangle synthesized-prelude-ref reconciliation in `selfhost/ir/dce.mdk` + `selfhost/backend/llvm_emit.mdk`. Fuzzer now 900/900 clean (`test/fuzz_diff.sh` TIER=1 native).
 - **Whole-float rendering → canonical `1.0`** (was `1.`): `runtime/medaka_rt.c` (×2) + `lib/eval.ml` (×2, deliberate oracle edit) + `dev/astdump.ml`/`lib/ast.ml` cosmetic; 14 goldens re-captured. nan/inf now bare. Decided change — memory `project_float_tostring_trailing_dot` (RESOLVED).
