@@ -366,7 +366,7 @@ exprToPat (EVar x) = ctorOrVar x
 exprToPat (ELit l) = PLit l
 -- PLAN.md #11 §0.4: an integer in pattern (binding-LHS) position stays a
 -- monomorphic `Int` pattern; only EXPRESSION-position integers go polymorphic.
-exprToPat (ENumLit n _) = PLit (LInt n)
+exprToPat (ENumLit n _ _) = PLit (LInt n)
 exprToPat (ETuple es) = PTuple (map exprToPat es)
 exprToPat (EListLit es) = PList (map exprToPat es)
 exprToPat (EBinOp "::" a b _) = PCons (exprToPat a) (exprToPat b)
@@ -600,7 +600,7 @@ parseAtomRaw : Parser Expr
 parseAtomRaw = do
   t <- peekP
   match t
-    TInt n => emit (ENumLit n (Ref None))
+    TInt n => emit (ENumLit n (Ref None) (Ref RNone))
     TFloat f => emit (ELit (LFloat f))
     TString s => emit (ELit (LString s))
     TChar s => emit (ELit (LChar s))

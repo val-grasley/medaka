@@ -1045,12 +1045,17 @@ pendingRLocalSites = Ref []
 pendingImplObligations : Ref (List (String, List String, Ty, Mono))
 pendingImplObligations = Ref []
 
--- PLAN.md #11: one entry per source integer literal (ENumLit): (litVar, fref, n).
--- [litVar] is the literal's fresh Num-obligated type var; [fref] is the node's own
--- Option Float cell; [n] the int value.  After defaulting + grounding, the post-HM
--- pass setNumlitFloats stamps [fref := Some (float n)] iff [litVar] ground to Float,
--- and dictPass rewrites the node to ELit (LFloat f) / ELit (LInt n) accordingly.
-numlitRefs : Ref (List (Mono, Ref (Option Float), Int))
+-- PLAN.md #11: one entry per source integer literal (ENumLit):
+-- (litVar, fref, n, dref).  [litVar] is the literal's fresh Num-obligated type var;
+-- [fref] is the node's own Option Float cell; [n] the int value; [dref] is the
+-- node's `fromInt`-route cell (filled by resolveSites — the literal is modelled as a
+-- `fromInt n` method occurrence).  After defaulting + grounding, the post-HM pass
+-- setNumlitFloats decides the runtime rep (mirror of lib/typecheck.ml's
+-- set_numlit_floats): litVar ground Float ⇒ fref Some, dref cleared ⇒ ELit (LFloat f);
+-- litVar ground Int ⇒ both cleared ⇒ ELit (LInt n); litVar still polymorphic `Num a`
+-- (the soundness case — `1` in `inc x = x + 1`) ⇒ dref KEPT (RDictFwd onto the
+-- enclosing Num dict) ⇒ dictPass emits `EApp (EMethodAt "fromInt" …) (ELit (LInt n))`.
+numlitRefs : Ref (List (Mono, Ref (Option Float), Int, Ref Route))
 numlitRefs = Ref []
 
 -- dict-passing state (the typed pipeline's `=>`-constraint layer):
@@ -2128,17 +2133,21 @@ unifyAll t (x::xs) =
 -- ── expression inference ──────────────────────────────────────────────────
 infer : TcEnv -> Expr -> <Mut> Mono
 infer _ (ELit l) = litType l
--- PLAN.md #11: a source integer literal is `Num a` for a fresh `a`.  Mirror the
--- operator path (recordNumObligation): the same checkImplObligations verifies a
--- `Num` impl once `a` grounds, and the post-HM defaulting pass grounds an
--- ambiguous Num-only `a` to Int.  Stash the var + the node's float cell in
--- numlitRefs for the later Float re-tag.  Recording here AND (when under `+`) in
--- numArithOp is harmless: both unify the same var and both demand `Num`.
-infer _ (ENumLit n fref) =
-  let a = freshVar ()
-  let _ = recordNumObligation a
-  let _ = set_ref numlitRefs ((a, fref, n) :: numlitRefs.value)
-  a
+-- PLAN.md #11: a source integer literal is `Num a` for a fresh `a`.  With the
+-- prelude loaded (Num registered + `fromInt` in scope), model the literal exactly
+-- as `fromInt n` — mirror of lib/typecheck.ml's e7031e6 ENumLit arm.  inferMethodAt
+-- "fromInt" records the Num impl obligation AND a pendingSite keyed on [dref] (the
+-- node's route cell), so resolveSites later stamps [dref]: RKey when the literal's
+-- type grounds to a concrete Num head, RDictFwd onto the enclosing `Num a` dict when
+-- it stays polymorphic (the soundness case, `1` in `inc x = x + 1` — exactly the
+-- route `fromInt 0` in `sum` gets).  Apply the `Int -> a` method type to an Int arg
+-- (mirror OCaml's `unify from_int_ty (TFun t_int … a)`) to recover the result var
+-- [a], and stash (a, fref, n, dref) in numlitRefs so the post-HM setNumlitFloats can
+-- decide concrete-Float / concrete-Int / still-poly.  Recording the obligation here
+-- AND (when under `+`) in numArithOp is harmless: both unify the same var, both
+-- demand `Num`.  Without the prelude (bare-HM oracle, `numIfaceRegistered` False)
+-- `fromInt` is unbound: fall back to a plain fresh var, dref stays RNone (⇒ Int).
+infer env (ENumLit n fref dref) = inferNumLit env n fref dref
 infer env (EVar x) = inferVar env x
 infer env (EApp f x) = inferApp (EApp f x) (infer env f) (infer env x)
 infer env (ELam pats body) = inferLam env pats body
@@ -2739,6 +2748,33 @@ numIfaceRegistered _ = anyList numEntry methodIfaceParamsRef.value
 
 numEntry : (String, (String, List String, Ty)) -> Bool
 numEntry (_, (iface, _, _)) = iface == "Num"
+
+-- PLAN.md #11 soundness arm: model an integer literal as a `fromInt n` method
+-- occurrence so its route cell [dref] gets stamped (RKey ground / RDictFwd poly) by
+-- resolveSites — exactly like core.mdk's `fromInt 0` in `sum`.  Direct mirror of
+-- lib/typecheck.ml's ENumLit infer arm.  Gated on the prelude (`Num` registered AND
+-- `fromInt` bound): with no prelude (bare-HM oracle) fall back to a plain fresh
+-- Num-obligated var, leaving [dref] RNone (⇒ a static Int literal at rewrite time).
+inferNumLit : TcEnv -> Int -> Ref (Option Float) -> Ref Route -> <Mut> Mono
+inferNumLit env n fref dref
+  | numIfaceRegistered () = match lookupVar env "fromInt"
+    None => inferNumLitBare n fref
+    Some _ =>
+      -- inferMethodAt records the Num impl obligation + a pendingSite on [dref].
+      let fromIntTy = inferMethodAt env "fromInt" dref (Ref []) (Ref [])
+      let a = freshVar ()
+      let _ = unify fromIntTy (TFun (TCon "Int") (openRow ()) a)
+      let _ = set_ref numlitRefs ((a, fref, n, dref) :: numlitRefs.value)
+      a
+  | otherwise = inferNumLitBare n fref
+
+-- no-prelude fallback: a fresh var, no route (dref untouched ⇒ stays RNone ⇒ Int).
+inferNumLitBare : Int -> Ref (Option Float) -> <Mut> Mono
+inferNumLitBare n fref =
+  let a = freshVar ()
+  let _ = recordNumObligation a
+  let _ = set_ref numlitRefs ((a, fref, n, Ref RNone) :: numlitRefs.value)
+  a
 
 compareOp : Mono -> Mono -> <Mut> Mono
 compareOp lt rt =
@@ -4973,13 +5009,22 @@ rewriteBinopExpr : Expr -> Expr
 rewriteBinopExpr (EBinOp op l r routeRef) = match routeRef.value
   RNone => EBinOp op l r routeRef
   _ => binopMethodApp op l r routeRef
--- PLAN.md #11: re-tag a source integer literal to its inferred runtime rep.
--- setNumlitFloats stamped the cell Some f for a Float-typed literal; otherwise it
--- stays an Int.  Done in the same mapProg walk that rewrites binops, so eval/lower
--- never see ENumLit and eval_arith / the emitter get matching tags.
-rewriteBinopExpr (ENumLit n fref) = match fref.value
+-- PLAN.md #11: re-tag a source integer literal to its inferred runtime rep, a 3-way
+-- decision mirroring lib/dict_pass.ml's e7031e6 ENumLit arm.  setNumlitFloats already
+-- decided: float cell `Some f` ⇒ concrete Float ⇒ `ELit (LFloat f)`; otherwise the
+-- route cell [dref] distinguishes concrete-Int (RNone, cleared) from a surviving
+-- polymorphic `Num a` (a non-RNone RDictFwd/RKey route, the soundness case) — the
+-- latter dispatches through the runtime Num dict via `fromInt n` (the SAME dict the
+-- enclosing `Num a => …` function threads), closing the hole where `inc x = x + 1`
+-- instantiated at Float crashed `VFloat + VInt`.  The constructed EMethodAt carries
+-- [dref]'s route on its tag ref; impl-dicts/method-dicts refs are empty (`Num` has no
+-- element `requires`).  Done in the same mapProg walk that rewrites binops, so
+-- eval/lower never see ENumLit and eval_arith / the emitter get matching tags.
+rewriteBinopExpr (ENumLit n fref dref) = match fref.value
   Some f => ELit (LFloat f)
-  None => ELit (LInt n)
+  None => match dref.value
+    RNone => ELit (LInt n)
+    route => EApp (EMethodAt "fromInt" (Ref route) (Ref []) (Ref [])) (ELit (LInt n))
 rewriteBinopExpr e = e
 
 -- split the stamped RKey route into a bare-tag route (reqs dropped) + the element
@@ -5501,20 +5546,31 @@ checkImplObligations prog obligations =
   checkImplObligationsGo (implHeadsOf prog) obligations
 
 -- PLAN.md #11: after HM + defaulting every source integer literal's type var is
--- ground.  Stamp each ENumLit's float cell `Some (float n)` iff it ground to
--- Float, so dictPass / lower / eval can re-tag it to a runtime float (eval is
--- value-tagged and eval_arith rejects mixed int/float tags).  All other cases
--- (Int, or an exotic user Num type) leave the cell None ⇒ stays `ELit (LInt n)`.
--- Mirror of lib/typecheck.ml's set_numlit_floats.  Reads numlitRefs (populated by
--- the ENumLit infer arm during THIS run/module's inference).
+-- ground (or a genuine `Num a` survivor).  Decide each literal's runtime rep
+-- (3-way, mirror of lib/typecheck.ml's set_numlit_floats):
+--   • ground Float ⇒ stamp the float cell + CLEAR the fromInt route (dref RNone) ⇒
+--     dictPass emits `ELit (LFloat f)` (eval is value-tagged; eval_arith rejects
+--     mixed int/float tags, so a Float literal must carry a real float).
+--   • ground Int (incl. via ambiguous→Int defaulting) ⇒ clear both cells ⇒
+--     `ELit (LInt n)`, no dict dispatch.
+--   • NOT a primitive head (a still-polymorphic `Num a` — the soundness case, `1`
+--     in `inc x = x + 1` — or an exotic user numeric type) ⇒ leave [dref]'s
+--     resolveSites-stamped route in place ⇒ dictPass emits
+--     `EApp (EMethodAt "fromInt" …) (ELit (LInt n))` so the literal dispatches
+--     through the runtime Num dict (Int→identity, Float→intToFloat).  A dref left
+--     RNone (route never filled, e.g. unreachable position) falls to Int below.
+-- Reads numlitRefs (populated by inferNumLit during THIS run/module's inference).
 setNumlitFloats : Unit -> <Mut> Unit
 setNumlitFloats _ = setNumlitFloatsGo numlitRefs.value
 
-setNumlitFloatsGo : List (Mono, Ref (Option Float), Int) -> <Mut> Unit
+setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> <Mut> Unit
 setNumlitFloatsGo [] = ()
-setNumlitFloatsGo ((var, fref, n)::rest) =
+setNumlitFloatsGo ((var, fref, n, dref)::rest) =
   let _ = match normalize var
-    TCon "Float" => set_ref fref (Some (intToFloat n))
+    TCon "Float" =>
+      let _ = set_ref fref (Some (intToFloat n))
+      set_ref dref RNone
+    TCon "Int" => set_ref dref RNone
     _ => ()
   setNumlitFloatsGo rest
 

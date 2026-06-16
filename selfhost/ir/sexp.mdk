@@ -125,7 +125,7 @@ exprSexp (ELit l) = node "ELit" [litSexp l]
 -- PLAN.md #11: render an `ENumLit` exactly as `(ELit (LInt n))` so the selfhost
 -- sexp/astdump stays byte-identical to the OCaml side (whose astdump does the
 -- same) and the parse-fixture / OCaml↔selfhost sexp diff gates keep passing.
-exprSexp (ENumLit n _) = node "ELit" [node "LInt" [intToString n]]
+exprSexp (ENumLit n _ _) = node "ELit" [node "LInt" [intToString n]]
 exprSexp (EVar x) = node "EVar" [escStr x]
 exprSexp (EApp f x) = node "EApp" [exprSexp f, exprSexp x]
 exprSexp (ELam ps b) = node "ELam" [slist (map patSexp ps), exprSexp b]

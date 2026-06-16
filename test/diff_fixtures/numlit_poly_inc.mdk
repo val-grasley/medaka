@@ -1,0 +1,11 @@
+-- PLAN.md #11 soundness (e7031e6 mirror): a polymorphic-`Num` integer literal in a
+-- generic function body must route through `fromInt` at runtime, not stamp a static
+-- VInt.  `inc : Num a => a -> a`; the `1` stays a `Num a` survivor (not defaulted),
+-- so it dispatches through inc's Num dict — `inc 2.5` ⇒ 3.5 (Float), `inc 5` ⇒ 6
+-- (Int).  Pre-fix this crashed `unknown op '+' for 2.5, 1`.
+inc x = x + 1
+
+main : <IO> Unit
+main =
+  println (inc 2.5)
+  println (inc 5)
