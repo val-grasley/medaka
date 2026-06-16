@@ -294,9 +294,9 @@ atomsOfLabels ls = atomsNorm (map atomOfLabel ls)
 -- ── v2 Stage 3: the `IO` widening union alias (design §3.2) ─────────────────
 -- `IO` is the coarse security alias: in a BOUND/annotation row it stands for
 -- the join of every narrow security label at ⊤.  ioAliasLabels lists them
--- (every minted security label EXCEPT IO itself + the reserved Async/Time);
--- internal labels (Mut/Panic) are NOT members, so they are tracked
--- independently of IO.  (Mirror of lib/typecheck.ml's io_alias_labels.)
+-- (every minted security label EXCEPT IO itself); internal labels (Mut/Panic)
+-- are NOT members, so they are tracked independently of IO.  (Mirror of
+-- lib/typecheck.ml's io_alias_labels.)
 ioAliasLabels : List String
 ioAliasLabels =
   [ "Stdout", "Stderr", "Stdin", "Clock", "Env", "Exec", "Rand"

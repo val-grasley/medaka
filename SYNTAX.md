@@ -62,13 +62,14 @@ Effect rows in signatures (see Effects):
 
 ```
 readFile : String -> <IO> String
-fetch    : String -> <Async, IO> String
+fetch    : String -> <Clock, IO> String
 applyTo  : (a -> <e> b) -> a -> b           -- effect variable
 run      : (Unit -> <IO | e> a) -> <IO | e> a  -- open tail row
 ```
 
 Effect-label declarations (Phase 146 gap 2 — builtins are
-`IO, Mut, Async, Panic, Rand, Time`; declare more):
+`IO, Mut, Panic, Rand, Stdout, Stderr, Stdin, Clock, Env, Exec, Net,
+FileRead, FileWrite`; declare more):
 
 ```
 effect KV                  -- a user/platform effect label, usable as <KV> in rows

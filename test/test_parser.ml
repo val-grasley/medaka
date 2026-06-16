@@ -79,8 +79,8 @@ let test_typesig_effect () =
   | _ -> failwith "wrong"
 
 let test_typesig_multieffect () =
-  match parse_one "fetch : String -> <Async, IO> String\n" with
-  | DTypeSig (false, "fetch", TyFun (TyCon "String", TyEffect ([("Async", None); ("IO", None)], None, TyCon "String"))) -> ()
+  match parse_one "fetch : String -> <Clock, IO> String\n" with
+  | DTypeSig (false, "fetch", TyFun (TyCon "String", TyEffect ([("Clock", None); ("IO", None)], None, TyCon "String"))) -> ()
   | _ -> failwith "wrong"
 
 (* Phase 79: a bare effect variable `<e>` is a pure-but-open row (no labels). *)

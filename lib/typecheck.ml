@@ -314,16 +314,16 @@ let data_param_kinds : (string, kind list) Hashtbl.t = Hashtbl.create 16
    - internal labels (Mut/Panic) are purity/discipline tracking only — never
      granted, never parameterized (domain fixed to Unit), never in the IO
      alias or a future manifest.
-   - `IO` itself is the coarse alias (security, atomic); `Async`/`Time` are
-     reserved (security, atomic, not yet minted as narrow labels). *)
+   - `IO` itself is the coarse alias (security, atomic).  (The once-reserved
+     `Async`/`Time` labels were removed once `Async` became a value-level monad
+     carrying its row in the type — ASYNC-DESIGN D2/D7 — and `Time`'s capability
+     folded into `Clock`.) *)
 type effect_class = ESecurity | EInternal
 
 (* (label, ⊤-param domain, classification).  Order is irrelevant. *)
 let builtin_effects : (string * param * effect_class) list =
-  [ (* coarse alias + reserved *)
+  [ (* coarse alias *)
     "IO",        PUnit,          ESecurity;
-    "Async",     PUnit,          ESecurity;
-    "Time",      PUnit,          ESecurity;
     (* narrow security labels — atomic *)
     "Stdout",    PUnit,          ESecurity;
     "Stderr",    PUnit,          ESecurity;
@@ -346,13 +346,12 @@ let builtin_effect_names : string list =
   List.map (fun (n, _, _) -> n) builtin_effects
 
 (* The security-capability labels that `IO` widens to (design §3.2): every
-   narrow security label EXCEPT `IO` itself (and the reserved `Async`/`Time`,
-   which are not part of the host IO surface).  Internal labels are excluded
+   narrow security label EXCEPT `IO` itself.  Internal labels are excluded
    by construction. *)
 let io_alias_labels : string list =
   List.filter_map (fun (n, _, c) ->
     match c with
-    | ESecurity when n <> "IO" && n <> "Async" && n <> "Time" -> Some n
+    | ESecurity when n <> "IO" -> Some n
     | _ -> None) builtin_effects
 
 let seed_effect_domains () =

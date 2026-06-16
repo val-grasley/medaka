@@ -94,11 +94,13 @@ let primitive_values = Runtime.names
 (* Builtin-effect vocabulary (v2 Stage 3, design §3.1/§4).  The narrow
    security labels Stdout/Stderr/Stdin/Clock/Env/Exec/Net/FileRead/FileWrite
    decompose the coarse `IO`; Rand was already its own label.  `IO` stays the
-   widening alias; `Mut`/`Panic` are internal; `Async`/`Time` reserved.  This
-   list is the vocabulary GATE only — domains + security/internal
-   classification live alongside [Typecheck.builtin_effects]. *)
+   widening alias; `Mut`/`Panic` are internal.  (`Async`/`Time` were removed —
+   `Async` is now a value-level monad carrying its row in the type, ASYNC-DESIGN
+   D2/D7; `Time`'s capability is `Clock`.)  This list is the vocabulary GATE
+   only — domains + security/internal classification live alongside
+   [Typecheck.builtin_effects]. *)
 let built_in_effects = [
-  "IO"; "Mut"; "Async"; "Panic"; "Rand"; "Time";
+  "IO"; "Mut"; "Panic"; "Rand";
   "Stdout"; "Stderr"; "Stdin"; "Clock"; "Env"; "Exec";
   "Net"; "FileRead"; "FileWrite";
 ]

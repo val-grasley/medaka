@@ -18,7 +18,7 @@ Status: **DESIGN LOCKED** (2026-06-16, collaborative). Decisions in §0 are auth
 | **D4** | Errors ride **`Result`** inside `Async` (`Async (Result e a)`). **No rejected-promise / throw channel.** `panic` inside a task still aborts the whole process (uncatchable). | Honors Result-canonical + [[no-catchable-panics-isolation]]. |
 | **D5** | **`main : Async Unit`** is a first-class entrypoint alongside `main : Unit`. The `run` driver dispatches on `main`'s type and drives the scheduler at the boundary. | Nicer DX than a mandatory explicit `runAsync` wrapper. |
 | **D6** | The whole layer lives in **`stdlib/async.mdk`** as **pure Medaka** — no `eval.ml` / `runtime/medaka_rt.c` changes for v1. The scheduler is a pure interpreter of a trampolined `Async a` description. | Maximum swappability + zero backend coupling; the v1 runtime is *replaceable stdlib code*, not baked-in primitives. |
-| **D7** | Remove the now-vestigial reserved builtin effect labels **`Async`** and **`Time`** from `builtInEffects` (both backends) when this lands. `Time`'s capability is `Clock` (minted in capability-effects Stage 3); `Async` is gone by D2. | Keep the effect vocabulary honest — it shouldn't advertise labels nothing uses. |
+| **D7** | Remove the now-vestigial reserved builtin effect labels **`Async`** and **`Time`** from `builtInEffects` (both backends) when this lands. `Time`'s capability is `Clock` (minted in capability-effects Stage 3); `Async` is gone by D2. **(LANDED — see §7 step 3.)** | Keep the effect vocabulary honest — it shouldn't advertise labels nothing uses. |
 | **D8** | v1 ships **structured concurrency first**: `concurrent : List (Async a) -> Async (List a)`. A `spawn`/`Task a` handle API is deferred (avoids dangling-handle lifecycle in v1). | Smaller surface; the common case (fan-out/join) without handle bookkeeping. |
 
 Non-goals (v1): real parallelism / OS threads, non-blocking syscalls (epoll/kqueue),
@@ -174,12 +174,17 @@ preserving.
 
 A single language-level stage, fixpoint-gated like the capability-effects stages:
 
-1. `stdlib/async.mdk`: `Async a` type, Monad/Mappable instances, `pure`/`map`/`andThen`/`await`/
-   `runAsync`/`concurrent`/`yield`/`sleep`. Doctests + the §2.1 validation gate.
-2. Driver: `main : Async Unit` dispatch in both `run` paths (OCaml + native).
-3. Vocabulary cleanup (D7): drop `Async`/`Time` from `builtInEffects` (both backends).
-4. Gates: fixpoint C3a/C3b; new `async` doctests; the full diff_selfhost battery byte-identical
-   (async is additive — only `builtInEffects` removal + any golden printing those labels should
-   move); `medaka test stdlib/async.mdk` green on both backends.
+1. **[DONE]** `stdlib/async.mdk`: effect-poly `data Async e a = Done a | Suspend (Unit -> <e> Async e a)`,
+   Mappable/Applicative/Thenable instances, `liftIO`/`yield`/`runAsync`/`stepAsync`/`concurrent`.
+   Doctests + the §2.1 validation gate. (Required the new type-system capability **effect-row
+   parameters on data declarations** — `TEff` mono arm, kind-inferred KRow — committed 2c1353a /
+   85a9cb7, so `Suspend`'s thunk can carry `<e>` and `liftIO` lift IO. `await`/`sleep` deferred.)
+2. **[DONE]** Driver: `main : Async _` dispatch in both `run` paths (OCaml + native), commit 26784fb.
+   Type-directed (main's inferred head tycon == `Async` → drive through the program's `runAsync`).
+3. **[DONE]** Vocabulary cleanup (D7): dropped `Async`/`Time` from `builtInEffects` / `builtin_effects`
+   (both backends); `<Async>`/`<Time>` now resolve to `UnknownEffect`. SYNTAX.md de-staled.
+4. **[DONE]** Gates: fixpoint C3a/C3b green (no re-mint); new `async` doctests 7/7 both backends; the
+   diff_selfhost battery byte-identical (async is additive — only `builtInEffects` removal moved, no
+   golden printed those labels); `medaka test stdlib/async.mdk` green on both backends.
 
 No backend (eval.ml / runtime.c) changes in this stage — that's the deferred robust-runtime swap.
