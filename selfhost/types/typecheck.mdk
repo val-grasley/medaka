@@ -99,6 +99,26 @@ public export data Effvar = EUnbound Int Int | ELink EffRow  -- EUnbound id leve
 -- byte-identical to the v1 set-of-bare-labels.  Stage 2 adds the Prefix domain's
 -- analysis with NO change to this row code.  (Mirror of lib/typecheck.ml.)
 public export data Param = PUnit | PPrefix (Option String)
+
+-- v2 Stage 2b inferred-hole marker (mirror of lib/typecheck.ml).  A leaf
+-- extern's `<Net _>` parses to the param string "_" (`effHoleSrc`), which
+-- `atomOfWritten` keeps as `PPrefix (Some "_")` — the hole the call-site α
+-- overwrites.  "_" is unambiguous: it can never be a valid written pattern
+-- (fails `prefixPatternOk`).  An un-filled hole degrades to ⊤ for all domain
+-- ops (sound over-approximation), so a surviving hole never leaks.
+effHoleSrc : String
+effHoleSrc = "_"
+
+isHoleStr : String -> Bool
+isHoleStr s = s == effHoleSrc
+
+isHoleParam : Param -> Bool
+isHoleParam (PPrefix (Some s)) = isHoleStr s
+isHoleParam _ = False
+
+normHole : Param -> Param
+normHole (PPrefix (Some s)) = if isHoleStr s then PPrefix None else PPrefix (Some s)
+normHole p = p
 -- an atom = a label applied to a domain parameter.  A v1 atomic label `Foo` is
 -- exactly `Atom "Foo" (dtopFor "Foo")` (= PUnit in Stage 1).
 public export data Atom = Atom String Param
@@ -175,21 +195,27 @@ prefixConcrete s =
 -- p1 ⊑ p2 : is p1 at least as constrained (more specific) as p2?  In the Prefix
 -- domain, p1 ⊑ p2 iff p1's concrete part starts with p2's concrete part.
 dsub : Param -> Param -> Bool
-dsub PUnit PUnit = True
-dsub _ (PPrefix None) = True                  -- anything ⊑ ⊤
-dsub (PPrefix (Some a)) (PPrefix (Some b)) = startsWith (prefixConcrete b) (prefixConcrete a)
-dsub (PPrefix None) (PPrefix (Some _)) = False
-dsub _ _ = False                              -- domain mismatch — never happens (one domain per label)
+dsub p1 p2 = dsubN (normHole p1) (normHole p2)
+
+dsubN : Param -> Param -> Bool
+dsubN PUnit PUnit = True
+dsubN _ (PPrefix None) = True                  -- anything ⊑ ⊤
+dsubN (PPrefix (Some a)) (PPrefix (Some b)) = startsWith (prefixConcrete b) (prefixConcrete a)
+dsubN (PPrefix None) (PPrefix (Some _)) = False
+dsubN _ _ = False                              -- domain mismatch — never happens (one domain per label)
 
 -- least upper bound (over-approximation)
 djoin : Param -> Param -> Param
-djoin PUnit PUnit = PUnit
-djoin (PPrefix None) _ = PPrefix None
-djoin _ (PPrefix None) = PPrefix None
-djoin (PPrefix (Some a)) (PPrefix (Some b)) =
+djoin p1 p2 = djoinN (normHole p1) (normHole p2)
+
+djoinN : Param -> Param -> Param
+djoinN PUnit PUnit = PUnit
+djoinN (PPrefix None) _ = PPrefix None
+djoinN _ (PPrefix None) = PPrefix None
+djoinN (PPrefix (Some a)) (PPrefix (Some b)) =
   let k = commonPrefixLen a b 0
   if k == 0 then PPrefix None else PPrefix (Some (stringSlice 0 k a))
-djoin p _ = p                                 -- domain mismatch — never happens
+djoinN p _ = p                                 -- domain mismatch — never happens
 
 -- length of the longest common prefix of two strings (Stage-2 djoin support)
 commonPrefixLen : String -> String -> Int -> Int
@@ -201,9 +227,12 @@ commonPrefixLen a b i =
 -- manifest / error text for a param.  ⊤ renders as empty so a ⊤-param atom
 -- renders as JUST its label — byte-identical to v1.
 drender : Param -> String
-drender PUnit = ""
-drender (PPrefix None) = ""
-drender (PPrefix (Some s)) = " \"" ++ s ++ "\""
+drender p = drenderN (normHole p)
+
+drenderN : Param -> String
+drenderN PUnit = ""
+drenderN (PPrefix None) = ""
+drenderN (PPrefix (Some s)) = " \"" ++ s ++ "\""
 
 -- ── atom-set helpers (replace the v1 String-set ops) ───────────────────────
 -- render one atom: label + domain refinement text (⊤ ⇒ just the label)
@@ -268,6 +297,86 @@ atomOfWritten (l, Some pat) = match dtopFor l
 
 atomsOfWritten : List (String, Option String) -> List Atom
 atomsOfWritten ls = atomsNorm (map atomOfWritten ls)
+
+-- ── v2 Stage 2b: known-literal-prefix abstract analysis α (design §2.4) ─────
+-- Abstract a DESUGARED core string-producing expr to a known literal prefix or
+-- Unknown.  Intraprocedural (fork (c)): EApp results, fn-parameter EVars, field
+-- access ⇒ Unknown ⇒ ⊤.  `lets` carries let-bound RHSs in scope for the EVar
+-- rule.  (Mirror of lib/typecheck.ml's `alpha`.)
+data KP = Known String | Unknown
+
+-- longest common prefix as a KP (Unknown if empty)
+kpLcp : String -> String -> KP
+kpLcp a b =
+  let k = commonPrefixLen a b 0
+  if k == 0 then Unknown else Known (stringSlice 0 k a)
+
+-- `++`: the left operand's known prefix is fixed regardless of the right (§2.4)
+alphaLeftPrefix : KP -> KP
+alphaLeftPrefix (Known pa) = Known pa
+alphaLeftPrefix Unknown = Unknown
+
+alpha : List (String, Expr) -> Expr -> KP
+alpha lets (ELoc _ e) = alpha lets e
+alpha lets (EAnnot e _) = alpha lets e
+alpha lets (EHeadAnnot e _) = alpha lets e
+alpha _ (ELit (LString s)) = Known s
+alpha lets (EBinOp op a _ _) | op == "++" = alphaLeftPrefix (alpha lets a)
+alpha _ (EBinOp _ _ _ _) = Unknown
+alpha lets (EVar x) = match lookupAssoc x lets
+  Some rhs => alpha lets rhs
+  None => Unknown
+alpha lets (ELet _ _ (PVar x) e1 e2) = alpha ((x, e1) :: lets) e2
+alpha lets (ELet _ _ _ _ e2) = alpha lets e2
+alpha lets (ELetGroup binds body) = alpha (alphaCollectBinds binds lets) body
+alpha lets (EIf _ t f) = match alpha lets t
+  Known a => match alpha lets f
+    Known b => kpLcp a b
+    Unknown => Unknown
+  Unknown => Unknown
+alpha lets (EMatch _ arms) = alphaArms lets None arms
+alpha _ _ = Unknown
+
+-- propagate single-clause zero-param where-bindings (`x = e`) into scope
+alphaCollectBinds : List LetBind -> List (String, Expr) -> List (String, Expr)
+alphaCollectBinds [] acc = acc
+alphaCollectBinds ((LetBind n clauses)::rest) acc = match clauses
+  [FunClause [] rhs] => alphaCollectBinds rest ((n, rhs) :: acc)
+  _ => alphaCollectBinds rest acc
+
+-- LCP of all arm results if every arm is Known; else Unknown
+alphaArms : List (String, Expr) -> Option String -> List Arm -> KP
+alphaArms _ acc [] = match acc
+  Some s => Known s
+  None => Unknown
+alphaArms lets acc ((Arm _ _ rhs)::rest) = match alpha lets rhs
+  Unknown => Unknown
+  Known s => match acc
+    None => alphaArms lets (Some s) rest
+    Some a => match kpLcp a s
+      Known c => alphaArms lets (Some c) rest
+      Unknown => Unknown
+
+-- lift α's result to a param (§2.4): Known s ⇒ PPrefix (Some s); Unknown ⇒ ⊤
+paramOfKp : KP -> Param
+paramOfKp (Known s) = PPrefix (Some s)
+paramOfKp Unknown = PPrefix None
+
+-- the FIRST argument of an application spine: `f a b c` ⇒ Some a (locked dec 1)
+spineFirstArg : Expr -> Option Expr
+spineFirstArg (ELoc _ e) = spineFirstArg e
+spineFirstArg (EApp f x) = match spineHeadIsApp f
+  True => spineFirstArg f
+  False => Some x
+spineFirstArg _ = None
+
+-- is the application head itself a (curried) application?  `EApp (EApp ..) _`
+-- ⇒ recurse left; `EApp (EVar/leaf) x` ⇒ x is the first arg.
+spineHeadIsApp : Expr -> Bool
+spineHeadIsApp (ELoc _ e) = spineHeadIsApp e
+spineHeadIsApp (EApp _ _) = True
+spineHeadIsApp _ = False
+
 
 -- the delimiter footgun guard (design §2.5 / fork (b)): a written Prefix pattern
 -- must end in `*` or contain a `/` delimiter; a bare prefix is ambiguous.
@@ -348,6 +457,28 @@ effrowNorm (EffRow labels tail) = match tail
 effrowLabels : EffRow -> List Atom
 effrowLabels r = match effrowNorm r
   EffRow labels _ => labels
+
+-- v2 Stage 2b: fill inferred-hole atoms in a freshly-incurred call effect row.
+-- Returns a row whose head labels have every hole atom replaced by α of the
+-- call's first spine argument (Unknown / no-arg ⇒ ⊤); non-hole atoms and the
+-- open tail are preserved.  When no hole is present the row is unchanged.
+-- (Mirror of lib/typecheck.ml's fill_holes_in_row.)
+fillHolesInRow : EffRow -> Option Expr -> EffRow
+fillHolesInRow eff firstArg = match effrowNorm eff
+  EffRow labels tail =>
+    if anyHoleAtom labels then EffRow (map (fillHoleAtom firstArg) labels) tail else eff
+
+anyHoleAtom : List Atom -> Bool
+anyHoleAtom [] = False
+anyHoleAtom (a::rest) = if isHoleParam (atomParam a) then True else anyHoleAtom rest
+
+fillHoleAtom : Option Expr -> Atom -> Atom
+fillHoleAtom firstArg a =
+  if isHoleParam (atomParam a) then Atom (atomLabel a) (holeFillParam firstArg) else a
+
+holeFillParam : Option Expr -> Param
+holeFillParam (Some e) = paramOfKp (alpha [] e)
+holeFillParam None = PPrefix None
 
 effvarLevel : Ref Effvar -> Int
 effvarLevel cell = match cell.value
@@ -487,7 +618,9 @@ checkEffectAtoms ((l, Some pat)::rest) =
 checkOneEffectParam : String -> String -> <Mut> Unit
 checkOneEffectParam l pat = match dtopFor l
   PPrefix None =>
-    if prefixPatternOk pat then ()
+    -- v2 Stage 2b: the inferred hole "_" carries no written pattern to validate.
+    if isHoleStr pat then ()
+    else if prefixPatternOk pat then ()
     else pushTypeError (effectParamMsg l
       ("pattern \"" ++ pat ++ "\" must end in '*' or contain a '/' delimiter (a bare prefix would admit a sibling host/path)"))
   _ => pushTypeError (effectParamMsg l
@@ -1821,7 +1954,7 @@ unifyAll t (x::xs) =
 infer : TcEnv -> Expr -> <Mut> Mono
 infer _ (ELit l) = litType l
 infer env (EVar x) = inferVar env x
-infer env (EApp f x) = inferApp (infer env f) (infer env x)
+infer env (EApp f x) = inferApp (EApp f x) (infer env f) (infer env x)
 infer env (ELam pats body) = inferLam env pats body
 infer env (ELet isMut isFun pat e1 e2) = inferLet env isMut isFun pat e1 e2
 infer env (ELetGroup binds body) = inferLetGroup env binds body
@@ -2471,7 +2604,10 @@ inferInfix env op l r =
   let ft = inferVar env op
   let lt = infer env l
   let rt = infer env r
-  inferApp (inferApp ft lt) rt
+  -- reconstruct the equivalent app spine so a hole-bearing extern fills from
+  -- its FIRST arg (l) — mirror of the EApp path (v2 Stage 2b).
+  let inner = EApp (EVar op) l
+  inferApp (EApp inner r) (inferApp inner ft lt) rt
 
 inferVar : TcEnv -> String -> <Mut> Mono
 inferVar env x = match lookupVar env x
@@ -2490,12 +2626,16 @@ recordImplObligation x mono = match lookupAssoc x methodIfaceParamsRef.value
     let _ = set_ref pendingImplObligations ((iface, typarams, mty, mono) :: pendingImplObligations.value)
     mono
 
-inferApp : Mono -> Mono -> <Mut> Mono
-inferApp ft xt =
+inferApp : Expr -> Mono -> Mono -> <Mut> Mono
+inferApp appExpr ft xt =
   let r = freshVar ()
   let eff = openRow ()
   let _ = unify ft (TFun xt eff r)
-  let _ = performEffect curEffect eff
+  -- v2 Stage 2b: if f resolves to a leaf extern carrying an inferred-hole
+  -- Prefix atom (`<Net _>`), fill it by α of the application spine's FIRST
+  -- argument before the row propagates / is checked against any bound.
+  let eff2 = fillHolesInRow eff (spineFirstArg appExpr)
+  let _ = performEffect curEffect eff2
   r
 
 inferLam : TcEnv -> List Pat -> Expr -> <Mut> Mono

@@ -325,6 +325,7 @@ let rec pp_ty_prec p = function
   | TyEffect (effs, tail, t) ->
     let pp_atom (l, p) = match p with
       | None -> l
+      | Some "_" -> Printf.sprintf "%s _" l   (* v2 Stage 2b inferred hole *)
       | Some s -> Printf.sprintf "%s %S" l s in
     let labs = List.map pp_atom effs in
     let inside = match effs, tail with

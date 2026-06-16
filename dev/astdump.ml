@@ -157,6 +157,7 @@ and sexp_ty = function
       let tl = (match tail with Some s -> node "Some" [esc_str s] | None -> "None") in
       let lab (l, p) = match p with
         | None -> esc_str l
+        | Some "_" -> node "hole" [esc_str l]   (* v2 Stage 2b inferred hole *)
         | Some s -> node "atom" [esc_str l; esc_str s] in
       node "TyEffect" [slist (List.map lab labels); tl; sexp_ty t]
   | TyConstrained (cs, t) ->

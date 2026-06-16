@@ -520,10 +520,12 @@ eff_row:
   | IDENT                                                  { ([], Some $1) }
 
 (* a row atom is a label with an optional Prefix-pattern param:
-   `Foo` (atomic) or `Net "a.com/*"` (parameterized).  v2 Stage 2a. *)
+   `Foo` (atomic), `Net "a.com/*"` (written param), or `Net _` (an inferred
+   hole — filled at each call site by the known-prefix analysis, v2 Stage 2b). *)
 eff_atom:
-  | UPPER         { ($1, None) }
-  | UPPER STRING  { ($1, Some $2) }
+  | UPPER             { ($1, None) }
+  | UPPER STRING      { ($1, Some $2) }
+  | UPPER UNDERSCORE  { ($1, Some "_") }
 
 (* ── Patterns ────────────────────────────────────────── *)
 

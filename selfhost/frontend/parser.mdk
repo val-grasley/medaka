@@ -1585,7 +1585,8 @@ effectBodyFor (TIdent _) = do
 effectBodyFor _ = pure ([], None)
 
 -- a row atom is a label with an optional Prefix-pattern param:
--- `Foo` (atomic) or `Net "a.com/*"` (parameterized).  v2 Stage 2a.
+-- `Foo` (atomic), `Net "a.com/*"` (written param), or `Net _` (an inferred
+-- hole — filled at each call site by the known-prefix analysis, v2 Stage 2b).
 effAtomP : Parser (String, Option String)
 effAtomP = do
   l <- upperNameP
@@ -1601,6 +1602,9 @@ effParamFor : Token -> Parser (Option String)
 effParamFor (TString s) = do
   advance
   pure (Some s)
+effParamFor TUnderscore = do
+  advance
+  pure (Some "_")           -- v2 Stage 2b inferred hole (`<Net _>`)
 effParamFor _ = pure None
 
 pipeTail : Parser (Option String)

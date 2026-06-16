@@ -37,6 +37,19 @@ type param =
   | PUnit                       (* the trivial domain: () only — today's atomic label *)
   | PPrefix of string option    (* Prefix domain: None = ⊤; Some p = the prefix pattern (Stage 2) *)
 
+(* v2 Stage 2b inferred-hole marker.  A leaf extern's `<Net _>` parses to the
+   param string [eff_hole_src] ("_"), which [atom_of_written] keeps as
+   [PPrefix (Some "_")] — the hole the call-site α overwrites.  "_" is
+   unambiguous: it can never be a valid written pattern (fails
+   [prefix_pattern_ok]).  An un-filled hole degrades to ⊤ for all domain ops
+   (sound over-approximation), so a surviving hole never leaks. *)
+let eff_hole_src = "_"
+let is_hole_str (s : string) : bool = s = eff_hole_src
+(* An un-filled hole degrades to ⊤ for all domain ops (sound over-approx). *)
+let norm_hole (p : param) : param = match p with
+  | PPrefix (Some s) when is_hole_str s -> PPrefix None
+  | p -> p
+
 (* An atom = a label applied to a domain parameter.  A v1 atomic label `Foo` is
    exactly { label = "Foo"; param = dtop_for "Foo" } (= PUnit in Stage 1). *)
 type atom = { label : string; param : param }
@@ -329,7 +342,7 @@ let str_starts_with ~(prefix : string) (s : string) : bool =
    `"a.com/foo" ⊑ "a.com/*"`, but NOT `"a.com/*" ⊑ "a.com/foo"` (⊤-vs-specific
    direction the manifest needs) nor `"b.com/x" ⊑ "a.com/*"`. *)
 let dsub (p1 : param) (p2 : param) : bool =
-  match p1, p2 with
+  match norm_hole p1, norm_hole p2 with
   | PUnit, PUnit -> true
   | _, PPrefix None -> true               (* anything ⊑ ⊤ *)
   | PPrefix (Some a), PPrefix (Some b) ->
@@ -339,7 +352,7 @@ let dsub (p1 : param) (p2 : param) : bool =
 
 (* least upper bound (over-approximation) *)
 let djoin (p1 : param) (p2 : param) : param =
-  match p1, p2 with
+  match norm_hole p1, norm_hole p2 with
   | PUnit, PUnit -> PUnit
   | PPrefix None, _ | _, PPrefix None -> PPrefix None
   | PPrefix (Some a), PPrefix (Some b) ->
@@ -362,7 +375,7 @@ let dmeet (p1 : param) (p2 : param) : param option =
 (* manifest / error text for a param.  ⊤ renders as the empty refinement so a
    ⊤-param atom renders as JUST its label — byte-identical to v1. *)
 let drender (p : param) : string =
-  match p with
+  match norm_hole p with
   | PUnit -> ""
   | PPrefix None -> ""
   | PPrefix (Some s) -> Printf.sprintf " %S" s
@@ -424,10 +437,19 @@ let prefix_pattern_ok (s : string) : bool =
 
 (* Build an atom from a written annotation label, threading + validating its
    param.  A written string param requires the label's domain to be Prefix and
-   the pattern to pass [prefix_pattern_ok]; a bare label takes the domain ⊤. *)
+   the pattern to pass [prefix_pattern_ok]; a bare label takes the domain ⊤.
+   The hole source text `_` (`<Net _>`) is KEPT as [PPrefix (Some "_")] — NOT
+   validated as a pattern; it is filled at the call site by α. *)
 let atom_of_written ((l, p) : string * string option) : atom =
   match p with
   | None -> { label = l; param = dtop_for l }
+  | Some pat when pat = eff_hole_src ->
+    (match dtop_for l with
+     | PPrefix None -> { label = l; param = PPrefix (Some eff_hole_src) }
+     | _ ->
+       fail (EffectParam (l,
+         Printf.sprintf "label '%s' is atomic and takes no parameter \
+                         (declare it `effect %s Prefix` to parameterize)" l l)))
   | Some pat ->
     (match dtop_for l with
      | PPrefix None ->
@@ -443,6 +465,85 @@ let atom_of_written ((l, p) : string * string option) : atom =
 let atoms_of_written (ls : (string * string option) list) : effect_set =
   atoms_norm (List.map atom_of_written ls)
 
+(* ── v2 Stage 2b: the INFERRED-HOLE param + the known-prefix analysis α ──────
+   A leaf extern's signature can carry an *inferred hole* written `<Net _>`
+   (and `<FileRead _>`, `<FileWrite _>`) — distinct from a written ⊤ (a bare
+   `<Net>`).  The hole means "fill my param by analysing this call's first
+   argument" (§2.4).  AST encoding: the parser emits the hole as the param
+   string [eff_hole_src] ("_"), which `atom_of_written` keeps as the param
+   [PPrefix (Some "_")].  No structural AST change: a written literal "_" can
+   never be a valid pattern (fails [prefix_pattern_ok]), so the "_" string is
+   unambiguous as the hole marker.
+
+   At a call site the sentinel is recognised by [is_hole_param] and overwritten
+   by [alpha] of the first spine argument; if it ever survives un-filled it
+   renders/subsumes exactly as ⊤ ([drender]/[dsub] strip it via [norm_hole]),
+   so the no-exfiltration guarantee holds by construction. *)
+let is_hole_param (p : param) : bool = match p with
+  | PPrefix (Some s) -> is_hole_str s
+  | _ -> false
+
+(* α (design §2.4): abstract a desugared core string-producing expr to a known
+   literal prefix or Unknown.  Intraprocedural (fork (c)): EApp results,
+   fn-parameter EVars, field access ⇒ Unknown ⇒ ⊤.  [env_lets] carries the
+   let-bound RHSs in scope for the EVar-propagation rule. *)
+type kp = Known of string | Unknown
+
+let kp_lcp (a : string) (b : string) : kp =
+  let n = min (String.length a) (String.length b) in
+  let rec lcp i = if i < n && a.[i] = b.[i] then lcp (i + 1) else i in
+  let k = lcp 0 in
+  if k = 0 then Unknown else Known (String.sub a 0 k)
+
+let rec alpha (lets : (string * Ast.expr) list) (e : Ast.expr) : kp =
+  match e with
+  | Ast.ELoc (_, e) -> alpha lets e
+  | Ast.EAnnot (e, _) | Ast.EHeadAnnot (e, _) -> alpha lets e
+  | Ast.ELit (Ast.LString s) -> Known s
+  | Ast.EBinOp ("++", a, _b, _) ->
+    (* left prefix is fixed regardless of b *)
+    (match alpha lets a with Known pa -> Known pa | Unknown -> Unknown)
+  | Ast.EVar x ->
+    (match List.assoc_opt x lets with Some rhs -> alpha lets rhs | None -> Unknown)
+  | Ast.ELet (_, _, Ast.PVar x, e1, e2) -> alpha ((x, e1) :: lets) e2
+  | Ast.ELet (_, _, _, _, e2) -> alpha lets e2
+  | Ast.ELetGroup (bindings, body) ->
+    (* propagate single-clause zero-param bindings (`x = e`) into scope *)
+    let lets' = List.fold_left (fun acc (n, clauses) ->
+      match clauses with [([], rhs)] -> (n, rhs) :: acc | _ -> acc) lets bindings in
+    alpha lets' body
+  | Ast.EIf (_, t, f) ->
+    (match alpha lets t, alpha lets f with
+     | Known a, Known b -> kp_lcp a b
+     | _ -> Unknown)
+  | Ast.EMatch (_, arms) ->
+    (* LCP of all arm results if every arm is Known; else Unknown. *)
+    let rec go (acc : string option) = function
+      | [] -> (match acc with Some s -> Known s | None -> Unknown)
+      | (_, _, rhs) :: rest ->
+        (match alpha lets rhs with
+         | Unknown -> Unknown
+         | Known s ->
+           (match acc with
+            | None -> go (Some s) rest
+            | Some a -> (match kp_lcp a s with Known c -> go (Some c) rest | Unknown -> Unknown)))
+    in
+    go None arms
+  | _ -> Unknown
+
+(* Lift α's result to a param (§2.4): Known s ⇒ PPrefix (Some s); Unknown ⇒ ⊤. *)
+let param_of_kp = function Known s -> PPrefix (Some s) | Unknown -> PPrefix None
+
+(* The first argument of an application spine: `f a b c` ⇒ Some a.  The
+   capability-bearing arg is the FIRST (locked decision 1). *)
+let rec spine_first_arg (e : Ast.expr) : Ast.expr option =
+  match e with
+  | Ast.ELoc (_, e) -> spine_first_arg e
+  | Ast.EApp (Ast.ELoc (_, Ast.EVar _), x)
+  | Ast.EApp (Ast.EVar _, x) -> Some x
+  | Ast.EApp ((Ast.EApp _ as f), _) -> spine_first_arg f
+  | Ast.EApp ((Ast.ELoc (_, (Ast.EApp _)) as f), _) -> spine_first_arg f
+  | _ -> None
 
 (* The empty closed row — a pure arrow. *)
 let pure_row = { labels = []; tail = None }
@@ -461,6 +562,23 @@ let rec effrow_norm r =
 
 (* The concrete labels currently known for a row (ignores the open tail). *)
 let effrow_labels r = (effrow_norm r).labels
+
+(* v2 Stage 2b: fill inferred-hole atoms in a freshly-incurred call effect row.
+   Returns a row whose head labels have every hole atom replaced by α of the
+   call's first spine argument (Unknown / no-arg ⇒ ⊤).  Non-hole atoms and the
+   open tail are preserved, so the filled row performs exactly the extern's row
+   with its Net/FileRead/FileWrite param resolved.  When no hole is present the
+   row is returned unchanged (the common case — zero overhead). *)
+let fill_holes_in_row (eff : effrow) (first_arg : Ast.expr option) : effrow =
+  let r = effrow_norm eff in
+  if not (List.exists (fun a -> is_hole_param a.param) r.labels) then eff
+  else
+    let fill_param () = match first_arg with
+      | Some e -> param_of_kp (alpha [] e)
+      | None -> PPrefix None in
+    let labels' = List.map (fun a ->
+      if is_hole_param a.param then { a with param = fill_param () } else a) r.labels in
+    { labels = labels'; tail = r.tail }
 
 let fresh_effvar () =
   incr effvar_counter;
@@ -1867,7 +1985,11 @@ let rec infer env = function
     let tr = fresh_var () in
     let eff = open_row () in
     unify tf (TFun (tx, eff, tr));
-    (* applying f to x performs f's latent (arrow) effect in the current context *)
+    (* applying f to x performs f's latent (arrow) effect in the current context.
+       v2 Stage 2b: if f resolves to a leaf extern carrying an inferred-hole
+       Prefix atom (`<Net _>`), fill it by α of the application spine's FIRST
+       argument before the row propagates / is checked against any bound. *)
+    let eff = fill_holes_in_row eff (spine_first_arg (EApp (f, x))) in
     perform_effect cur_effect eff;
     tr
 
@@ -2127,8 +2249,10 @@ let rec infer env = function
     let eff2 = open_row () in
     unify tf (TFun (tl, eff1, TFun (tr, eff2, result)));
     (* `a `f` b` is `f a b`: applying op to both args performs each arrow's
-       latent effect in the current context, mirroring the EApp arm. *)
+       latent effect in the current context, mirroring the EApp arm.  v2 Stage
+       2b: a hole on the extern's last arrow (eff2) fills from the FIRST arg l. *)
     perform_effect cur_effect eff1;
+    let eff2 = fill_holes_in_row eff2 (Some l) in
     perform_effect cur_effect eff2;
     result
 

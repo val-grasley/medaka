@@ -183,6 +183,7 @@ let rec print_type t = match t with
   | TyEffect (es, tail, t) ->
     let atom (l, p) = match p with
       | None -> text l
+      | Some "_" -> text (Printf.sprintf "%s _" l)   (* v2 Stage 2b inferred hole *)
       | Some s -> text (Printf.sprintf "%s %s" l (Printf.sprintf "%S" s)) in
     let inside = match es, tail with
       | _, None    -> sep_by (text ", ") (List.map atom es)

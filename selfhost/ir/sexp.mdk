@@ -105,6 +105,7 @@ optStrSexp None = "None"
 -- a row atom: a bare label, or `(atom Net "pat")` when parameterized.
 effAtomSexp : (String, Option String) -> String
 effAtomSexp (l, None) = escStr l
+effAtomSexp (l, Some "_") = node "hole" [escStr l]   -- v2 Stage 2b inferred hole
 effAtomSexp (l, Some s) = node "atom" [escStr l, escStr s]
 
 guardSexp : Guard -> String
