@@ -13,6 +13,13 @@
    revert `sum`/`product` `fromInt 0/1`→`0/1` only as a separate gated follow-up.
 4. **`PLit (LInt)` patterns stay `Int`** (fork 4). Only `ELit` goes polymorphic.
 
+**Landing status:** Stages 0-2 (OCaml oracle) DONE `eac278b`; Stages 3-4 (selfhost + native)
+DONE `7424b64` — both verified independently (fixpoint C3a/C3b YES, 5 `numlit_*` fixtures
+oracle==run==build, `diff_selfhost_typecheck_golden` 23/5→33/0). Mechanism landed: transparent
+`ENumLit` node in BOTH compilers (selfhost chose the same node, not in-typecheck-only, because
+the Float re-tag needs a per-occurrence stamp surviving into the emit rewrite). Stage 5 (revert
+the `fromInt` workaround) optional/remaining.
+
 ## 1. Empirical problem statement
 
 All transcripts from `./_build/default/bin/main.exe` (OCaml oracle).

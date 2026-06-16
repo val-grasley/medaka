@@ -323,17 +323,23 @@ cover the corpus; these are known holes outside it.
 
 ### Compiler / language
 
-- **Num-polymorphic numeric literals (deferred from the 2026-06-12 flip; not a flip gate).**
-  Today `litType (LInt _) = TCon "Int"` monomorphizes integer literals, so a bare `0`/`1`
-  can't be a `Float` by context. G9 closed the *practical* Float-numeric gap by seeding
-  stdlib `sum`/`product` via `fromInt` (point-ful), but the general feature — `litType (LInt)
-  → Num a` with Haskell-style defaulting (unconstrained `Num` → `Int`), threaded through **both**
-  the OCaml and selfhost typecheckers — remains. Broad differential-gate blast radius +
-  two-compiler defaulting-parity risk; do it as its own effort. Sub-item surfaced during G9:
-  a return-position `fromInt`/operator-section in an **unconstrained** fn (no `Num a =>` sig →
-  RNone) still hits the native arg-tag gap, and auto-printing a polymorphic-`a` indirect-call
-  result mistypes the print routine — narrow, non-soundness, dodged by the `Num a =>` sig on
-  `sum`/`product`. Skill: cross-cutting → **add-language-feature**.
+- **Num-polymorphic numeric literals — ✅ Stages 0-4 DONE (2026-06-16, both compilers).**
+  Integer literals in expression position are now `Num a`-polymorphic in BOTH the OCaml oracle
+  (`eac278b`) and the selfhost/native compiler (`7424b64`); `x : Float; x = 0`, `1.0 + 2`,
+  `g : Float -> Float; g x = x + 1` all typecheck and run (oracle == `medaka run` == `medaka
+  build`). Full design + locked decisions: [`NUMLIT-DESIGN.md`](./NUMLIT-DESIGN.md). Mechanism:
+  a transparent `ENumLit` AST node (renders identically to `ELit (LInt n)` so sexp/round-trip
+  unaffected) carries a `Num` obligation; a **defaulting pass** at every generalization boundary
+  grounds an *ambiguous* Num-constrained var (not arg-reachable) to `Int` (MR-for-Num, locked
+  §0.2); a post-HM Float stamp re-tags the literal to `LFloat`/`LInt` before value-tagged eval.
+  Locked scope (§0): **integer literals only** (no `Fractional`; `1.0` stays `Float`), patterns
+  stay `Int`. Both PLAN sub-gaps (RNone arg-tag fn, poly-`a` auto-print) are subsumed by the
+  defaulting pass. Soundness preserved (`Num` constraint enforced under the constraint-dropping
+  type renderer: `double "hi"` rejected). Fixpoint C3a/C3b YES; 25 OCaml type-dump goldens +
+  5 new `numlit_*` fixtures recaptured. **Remaining (optional, Stage 5):** revert the
+  `sum`/`product` `fromInt 0/1` workaround in `core.mdk` back to literal `0/1` (now safe — the
+  literal is polymorphic, so no `scopeArities` arity skew; gated on a clean `-O2` `sum`/`product`
+  native run). Skill: cross-cutting → **add-language-feature**.
 
 - ⭐ **Phase 146 — Capability-safe effects (the headline wedge). IN PROGRESS.**
   Make Medaka's existing effect rows **sound + fine-grained** so a function's type
