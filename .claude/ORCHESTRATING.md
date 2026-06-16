@@ -105,6 +105,18 @@ Every delegated task prompt should contain, in order:
 An agent saying "done, all gates green" is a claim, not evidence. Verify, bounded
 to the decisive checks:
 
+- **For a feature that EXPANDS the set of accepted programs (a type-system change), the decisive
+  check is probing the newly-accepted FRONTIER yourself — not the agent's fixtures.** Agents'
+  fixtures cluster on the happy path and on shapes the stdlib already exercises. This session,
+  #11 (Num-polymorphic literals) shipped Stages 0-4 "all gates green," but the agents never tested
+  a *user* polymorphic-literal fn applied to Float (`inc x = x + 1; inc 2.5`) — which typechecked
+  but **panicked at runtime** (a soundness hole), and separately built to **silent garbage** (a
+  pre-existing emitter gap the feature newly exposed). Both were found by a 60-second hand-probe of
+  the frontier the feature opened, AFTER the agents reported green. Ask: "what programs does this
+  newly accept, and do they actually RUN/BUILD correctly across every instantiation (Int *and*
+  Float)?" — then run those, on `run` AND `build`, vs the oracle. A clean fixpoint + green
+  differentials do NOT cover behavior the existing corpus never had.
+
 - `git log main..<branch>` — the commits actually exist; `git diff --stat` — the
   change surface matches the report (additive where it should be).
 - Re-run the **critical** gate(s) yourself — for an emitter/codegen change, the
