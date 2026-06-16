@@ -5,10 +5,10 @@
 # OCaml-free (REROOT-PLAN §2b): native host test/bin/typecheck_golden_batch vs the
 # FROZEN === TYPES === section of diff_fixtures/*.golden.
 #
-# KNOWN PRE-EXISTING DIVERGENCE (#55, tracked by task #11): native infers
-# `sum`/`product : a b -> b` vs the golden's `a Int -> Int`.  Present in every
-# fixture's whole-prelude dump → 0 ok, 25 failing is the CORRECT documented state
-# (identical to the OCaml-host pre-re-root behavior).  Do NOT edit goldens/fixtures.
+# #55 / task #11 (Num-polymorphic integer literals) CLOSED 2026-06-16: both the
+# OCaml oracle (eac278b) and the selfhost typecheck now infer `sum`/`product :
+# a b -> b` via Num-polymorphic literals + ambiguous-Num defaulting, so the
+# goldens and the native typecheck agree — this gate is now all-pass.
 set -u
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 BATCH="$ROOT/test/bin/typecheck_golden_batch"
@@ -40,5 +40,4 @@ for g in "$FIXDIR"/*.golden; do
   else fail=$((fail+1)); printf 'FAIL %s\n' "$fix"; fi
 done
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
-printf '(NOTE: all-fail is the documented #55 sum/product drift, task #11 — not a regression)\n'
 [ "$fail" -eq 0 ]

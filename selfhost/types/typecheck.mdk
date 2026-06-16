@@ -1045,6 +1045,14 @@ pendingRLocalSites = Ref []
 pendingImplObligations : Ref (List (String, List String, Ty, Mono))
 pendingImplObligations = Ref []
 
+-- PLAN.md #11: one entry per source integer literal (ENumLit): (litVar, fref, n).
+-- [litVar] is the literal's fresh Num-obligated type var; [fref] is the node's own
+-- Option Float cell; [n] the int value.  After defaulting + grounding, the post-HM
+-- pass setNumlitFloats stamps [fref := Some (float n)] iff [litVar] ground to Float,
+-- and dictPass rewrites the node to ELit (LFloat f) / ELit (LInt n) accordingly.
+numlitRefs : Ref (List (Mono, Ref (Option Float), Int))
+numlitRefs = Ref []
+
 -- dict-passing state (the typed pipeline's `=>`-constraint layer):
 --   activeDictVars   : constraint tyvar id → the dict parameter name a method
 --                      occurrence at that variable's type reads (RDict).
@@ -1430,6 +1438,7 @@ resetState _ =
   let _ = set_ref pendingBinopSites []
   let _ = set_ref methodIfaceParamsRef []
   let _ = set_ref pendingImplObligations []
+  let _ = set_ref numlitRefs []   -- PLAN.md #11
   let _ = set_ref pendingArgStamps []
   let _ = set_ref activeDictVars []
   let _ = set_ref funConstraintsRef []
@@ -2119,6 +2128,17 @@ unifyAll t (x::xs) =
 -- ── expression inference ──────────────────────────────────────────────────
 infer : TcEnv -> Expr -> <Mut> Mono
 infer _ (ELit l) = litType l
+-- PLAN.md #11: a source integer literal is `Num a` for a fresh `a`.  Mirror the
+-- operator path (recordNumObligation): the same checkImplObligations verifies a
+-- `Num` impl once `a` grounds, and the post-HM defaulting pass grounds an
+-- ambiguous Num-only `a` to Int.  Stash the var + the node's float cell in
+-- numlitRefs for the later Float re-tag.  Recording here AND (when under `+`) in
+-- numArithOp is harmless: both unify the same var and both demand `Num`.
+infer _ (ENumLit n fref) =
+  let a = freshVar ()
+  let _ = recordNumObligation a
+  let _ = set_ref numlitRefs ((a, fref, n) :: numlitRefs.value)
+  a
 infer env (EVar x) = inferVar env x
 infer env (EApp f x) = inferApp (EApp f x) (infer env f) (infer env x)
 infer env (ELam pats body) = inferLam env pats body
@@ -2358,18 +2378,24 @@ inferStmt _ _ = panic "typecheck: unsupported block statement"
 blockRecLet : TcEnv -> String -> Expr -> <Mut> TcEnv
 blockRecLet env x e =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let placeholder = freshVar ()
   let envSelf = extendVar env x (monoScheme placeholder)
   let t1 = infer envSelf e
   let _ = unify placeholder t1
   let _ = exitLevel ()
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultAmbiguousNum addedObls t1   -- PLAN.md #11
   extendVar env x (generalize t1)
 
 blockLet : TcEnv -> Bool -> Pat -> Expr -> <Mut> TcEnv
 blockLet env isMut (PVar x) e =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let t = infer env e
   let _ = exitLevel ()
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultAmbiguousNum addedObls t   -- PLAN.md #11
   extendVar env x (genRestricted (not isMut && isNonexpansive e) t)
 -- T1b: a `mut` binding must be monomorphic — generalizing it (when the RHS is
 -- nonexpansive, e.g. `let mut x = []`) lets later assignments re-instantiate,
@@ -2841,18 +2867,27 @@ inferLet env isMut isFun pat e1 e2
 inferRecLet : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
 inferRecLet env x e1 e2 =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let placeholder = freshVar ()
   let envSelf = extendVar env x (monoScheme placeholder)
   let t1 = infer envSelf e1
   let _ = unify placeholder t1
   let _ = exitLevel ()
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultAmbiguousNum addedObls t1   -- PLAN.md #11
   infer (extendVar env x (generalize t1)) e2
 
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> <Mut> Mono
 inferLetSimple env pat e1 e2 =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let t1 = infer env e1
   let _ = exitLevel ()
+  -- PLAN.md #11: ground an ambiguous Num-only var before this inner let
+  -- generalizes, so `let z = 2 in y + z` (y:Float) is a clean type error and
+  -- never leaks an unbound Num var.  Scoped to this binding's new obligations.
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultAmbiguousNum addedObls t1
   inferLetBody env pat t1 e1 e2
 
 inferLetBody : TcEnv -> Pat -> Mono -> Expr -> Expr -> <Mut> Mono
@@ -3197,10 +3232,16 @@ clausesFor name ((n, c)::rest)
 processLetGroup : TcEnv -> List LetBind -> <Mut> TcEnv
 processLetGroup env binds =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let placeholders = map letBindPlaceholder binds
   let env2 = extendVars env placeholders
   let _ = inferLetBinds env2 (zipL binds placeholders)
   let _ = exitLevel ()
+  -- PLAN.md #11: ground ambiguous Num-only vars (not arg-reachable from any
+  -- where-binding's type) before this group generalizes.  Scoped to this group's
+  -- newly added obligations.
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultGroupNum addedObls (map (p => schemeMono (snd p)) placeholders)
   generalizeGroup env (zipL binds placeholders)
 
 letBindPlaceholder : LetBind -> <Mut> (String, Scheme)
@@ -3247,6 +3288,84 @@ monoUnboundIds t = match normalize t
 
 anyIn : List Int -> List Int -> Bool
 anyIn xs ys = anyList (x => containsI x ys) xs
+
+-- PLAN.md #11 (locked §0.2): monomorphism-for-Num defaulting.  Before a type [t]
+-- is generalized at a let-binding boundary, ground every *ambiguous* tyvar carrying
+-- a `Num` constraint to `Int`.  "Ambiguous" = the var is NOT reachable from an
+-- ARGUMENT position of [t] (a caller can't fix it).  This stops a bare `n = 1` (or
+-- an inner `let z = 2`) from generalizing to `Num a => a` / leaking an unbound
+-- `Num a` to eval, while leaving a genuinely polymorphic var live: `sum`'s element
+-- var in `t a -> a` is reachable from the argument `t a`, so it stays polymorphic
+-- (`sum [1.0,…]` still works); `x : Float; x = 0`'s var is already concrete Float
+-- (not a generalizable var), so it is untouched.  Mirrors lib/typecheck.ml's
+-- default_ambiguous_num: a Num-constrained var (alone OR with another class) that is
+-- ambiguous is grounded to Int — the literal's `Num`/`fromInt` representation IS
+-- Int, so grounding keeps impl selection deterministic.
+monoArgUnboundIds : Mono -> List Int
+monoArgUnboundIds t = match normalize t
+  TFun a _ b => monoUnboundIds a ++ monoArgUnboundIds b
+  _ => []
+
+-- the unbound var ids that any pending `Num` obligation in [obls] constrains (the
+-- operand monos recorded by recordNumObligation / the literal infer arm)
+numConstrainedIds : List (String, List String, Ty, Mono) -> <Mut> List Int
+numConstrainedIds obls = concatMapList numObligIds obls
+
+numObligIds : (String, List String, Ty, Mono) -> List Int
+numObligIds (iface, _, _, occ)
+  | iface == "Num" = monoUnboundIds occ
+  | otherwise = []
+
+defaultAmbiguousNum : List (String, List String, Ty, Mono) -> Mono -> <Mut> Unit
+defaultAmbiguousNum obls t =
+  let argIds = monoArgUnboundIds t
+  let inT = monoUnboundIds t
+  let candidates = dedupI (numConstrainedIds obls)
+  groundNumVars obls (filterList (id => containsI id inT && not (containsI id argIds)) candidates)
+
+-- group-level defaulting: ground every Num-constrained var NOT reachable from an
+-- ARGUMENT position of ANY member's type.  [monos] = the group's member placeholder
+-- monos; [obls] = ONLY this group's newly-added obligations (an earlier group's
+-- already-generalized var must not be touched).  Unlike defaultAmbiguousNum this
+-- does NOT require the var to appear in a member's type (a var consumed inside a
+-- body surfaces in no type but must still ground — `let n = tag [1,2,3]`).  Mirrors
+-- process_letrec_group's group_arg_ids over added_obligs/added_methods.
+defaultGroupNum : List (String, List String, Ty, Mono) -> List Mono -> <Mut> Unit
+defaultGroupNum obls monos =
+  let argIds = concatMapList monoArgUnboundIds monos
+  let candidates = dedupI (numConstrainedIds obls)
+  groundNumVars obls (filterList (id => not (containsI id argIds)) candidates)
+
+-- per-binding defaulting: run defaultAmbiguousNum on each member's placeholder mono
+defaultEachMember : List (String, List String, Ty, Mono) -> List (String, Mono) -> <Mut> Unit
+defaultEachMember _ [] = ()
+defaultEachMember obls ((_, m)::rest) =
+  let _ = defaultAmbiguousNum obls m
+  defaultEachMember obls rest
+
+-- ground each id to Int by unifying the live var carrying it (found among [obls]'
+-- Num operand monos — refs alias post-unify, grounding any grounds all)
+groundNumVars : List (String, List String, Ty, Mono) -> List Int -> <Mut> Unit
+groundNumVars _ [] = ()
+groundNumVars obls (id::rest) =
+  let _ = match liveNumVarGo id obls
+    Some m => unify m (TCon "Int")
+    None => ()
+  groundNumVars obls rest
+
+liveNumVarGo : Int -> List (String, List String, Ty, Mono) -> <Mut> Option Mono
+liveNumVarGo _ [] = None
+liveNumVarGo id ((iface, _, _, occ)::rest)
+  | iface == "Num" = match findTvarInMono occ id
+    Some m => Some m
+    None => liveNumVarGo id rest
+  | otherwise = liveNumVarGo id rest
+
+-- the first [n] entries of a list (the newly-prepended obligations of a group)
+takeFirst : Int -> List a -> List a
+takeFirst n _ | n <= 0 = []
+takeFirst _ [] = []
+takeFirst n (x::xs) = x :: takeFirst (n - 1) xs
 
 generalizeGroup : TcEnv -> List (LetBind, (String, Scheme)) -> <Mut> TcEnv
 generalizeGroup env [] = env
@@ -4854,6 +4973,13 @@ rewriteBinopExpr : Expr -> Expr
 rewriteBinopExpr (EBinOp op l r routeRef) = match routeRef.value
   RNone => EBinOp op l r routeRef
   _ => binopMethodApp op l r routeRef
+-- PLAN.md #11: re-tag a source integer literal to its inferred runtime rep.
+-- setNumlitFloats stamped the cell Some f for a Float-typed literal; otherwise it
+-- stays an Int.  Done in the same mapProg walk that rewrites binops, so eval/lower
+-- never see ENumLit and eval_arith / the emitter get matching tags.
+rewriteBinopExpr (ENumLit n fref) = match fref.value
+  Some f => ELit (LFloat f)
+  None => ELit (LInt n)
 rewriteBinopExpr e = e
 
 -- split the stamped RKey route into a bare-tag route (reqs dropped) + the element
@@ -5196,6 +5322,7 @@ checkProgramSeeded seed prog =
   let _ = inferPropBodies (extendVars env1 topSchemes) prog
   let _ = groundMultiParamObligations prog pendingImplObligations.value
   let _ = checkImplObligations prog pendingImplObligations.value
+  let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals
   globalS ++ topSchemes
 -- D2: check top-level `let rec` bindings for non-function members before
 -- type-checking the DFunDef groups (mirrors oracle's LetRecNonFunction guard,
@@ -5373,6 +5500,24 @@ checkImplObligations : List Decl -> List (String, List String, Ty, Mono) -> <Mut
 checkImplObligations prog obligations =
   checkImplObligationsGo (implHeadsOf prog) obligations
 
+-- PLAN.md #11: after HM + defaulting every source integer literal's type var is
+-- ground.  Stamp each ENumLit's float cell `Some (float n)` iff it ground to
+-- Float, so dictPass / lower / eval can re-tag it to a runtime float (eval is
+-- value-tagged and eval_arith rejects mixed int/float tags).  All other cases
+-- (Int, or an exotic user Num type) leave the cell None ⇒ stays `ELit (LInt n)`.
+-- Mirror of lib/typecheck.ml's set_numlit_floats.  Reads numlitRefs (populated by
+-- the ENumLit infer arm during THIS run/module's inference).
+setNumlitFloats : Unit -> <Mut> Unit
+setNumlitFloats _ = setNumlitFloatsGo numlitRefs.value
+
+setNumlitFloatsGo : List (Mono, Ref (Option Float), Int) -> <Mut> Unit
+setNumlitFloatsGo [] = ()
+setNumlitFloatsGo ((var, fref, n)::rest) =
+  let _ = match normalize var
+    TCon "Float" => set_ref fref (Some (intToFloat n))
+    _ => ()
+  setNumlitFloatsGo rest
+
 -- ── Multi-param-interface element grounding (Shape A / gap #44) ─────────────
 -- A container LITERAL (`Set { 3,1,2 }` / `Map { 1 => "a" }`) desugars to a
 -- return-position `fromEntries [..] :~ Set _a`.  The head-pin fixes the RESULT to
@@ -5453,7 +5598,34 @@ checkImplObligationsGo heads ((iface, typarams, mty, occ)::rest) =
 checkOneImplObligation : List (String, List Ty) -> String -> List String -> Ty -> Mono -> <Mut> Unit
 checkOneImplObligation heads iface typarams mty occ =
   let args = dispatchMonosOf typarams mty occ
-  if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeError (noImplFoundMsg iface args)
+  -- PLAN.md #11 soundness: under Num-polymorphic literals a literal's var can unify
+  -- with a *function* type (`5 1` ⇒ the `5` var becomes `Int -> b`) or be forced
+  -- into an abstract HKT position (`do x <- 42` ⇒ `Num (m a)` with an unbound head
+  -- `m`).  Pre-#11 these failed at unification (the literal was concretely Int); now
+  -- the obligation is non-concrete and would be deferred-then-DROPPED → a silent
+  -- accept.  A function / unbound-headed application can never have a `Num` impl, so
+  -- REJECT here even though inner vars are still free, restoring the structural error.
+  -- Mirror of lib/typecheck.ml's check_method_usages Num guards.
+  if iface == "Num" && anyList numUnimplementableHead args then pushTypeError (noImplFoundMsg iface args) else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeError (noImplFoundMsg iface args)
+
+-- a mono no `Num` impl can ever match: a function type, or an application whose
+-- spine head is still an unbound tyvar (a literal forced into `m a` monad position)
+numUnimplementableHead : Mono -> Bool
+numUnimplementableHead m = match normalize m
+  TFun _ _ _ => True
+  TApp a b => unboundSpineHead (spineHeadMono (TApp a b))
+  _ => False
+
+-- True iff [m] normalizes to an unbound tyvar (the spine head of `m a`)
+unboundSpineHead : Mono -> Bool
+unboundSpineHead m = match normalize m
+  TVar _ => True
+  _ => False
+
+spineHeadMono : Mono -> Mono
+spineHeadMono t = match normalize t
+  TApp f _ => spineHeadMono f
+  other => other
 
 noImplFoundMsg : String -> List Mono -> <Mut> String
 noImplFoundMsg iface args = "No impl of "
@@ -6080,6 +6252,7 @@ processSCCs env sigs grouped (scc::rest) =
 processSCC : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
 processSCC env sigs grouped members =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
   let (regs, sigTvMaps) = preunifySigsEx sigs placeholders
@@ -6087,6 +6260,18 @@ processSCC env sigs grouped members =
   let _ = checkSigsTooGeneral sigTvMaps
   let _ = registerConstraintRegs regs
   let _ = exitLevel ()
+  -- PLAN.md #11 (locked §0.2): GROUP-LEVEL + per-binding Num defaulting.  Ground
+  -- every ambiguous Num-only var (one not reachable from an ARGUMENT position of
+  -- ANY member's type) to Int before this group generalizes.  Covers both a var
+  -- that surfaces in a member's type (`n = 1`) and one consumed entirely inside a
+  -- body (`n = tag [1,2,3]`, element var in no member type).  An arg-reachable var
+  -- (`sum`'s/`inc`'s element var) stays polymorphic.  Scoped to THIS group's newly
+  -- added obligations (prepended at the front) so an earlier group's already-
+  -- generalized var is never touched.  Mirrors lib/typecheck.ml's
+  -- process_letrec_group group-level pass + per-binding default_ambiguous_num.
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultGroupNum addedObls (map snd placeholders)
+  let _ = defaultEachMember addedObls placeholders
   let schemes = sccSchemes sigs grouped (isLetrecGroup members) placeholders
   let _ = registerInferredConstraints sigs schemes
   (extendVars env schemes, schemes)
@@ -7381,6 +7566,7 @@ markModules coreDecls modules =
 elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 elabModuleStamp seedVars accData implDecls prog =
   let schemes = checkModuleFullImpl seedVars accData implDecls prog
+  let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals (per module, before dictPass)
   let stampImplTable = buildImplTable implDecls
   let _ = resolveSites stampImplTable (buildKeyTable implDecls) (returnPosMethodNames implDecls) pendingSites.value
   let _ = resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value

@@ -202,6 +202,7 @@ recFieldSub env (Some p) = checkPat env p
 -- ── check_expr (scope = locally-bound names) ──────────────────────────────
 checkExpr : Env -> List String -> Expr -> List ResError
 checkExpr _ _ (ELit _) = []
+checkExpr _ _ (ENumLit _ _) = []   -- PLAN.md #11: a literal, nothing to bind
 checkExpr _ _ (EMethodRef _) = []
 checkExpr _ _ (EDictApp _) = []
 checkExpr env scope (EVar n) = checkVar env scope n

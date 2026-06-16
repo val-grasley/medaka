@@ -76,6 +76,12 @@ composeVar = "$cf"
 export
 lower : Expr -> CExpr
 lower (ELit l) = CLit l
+-- PLAN.md #11: dictPass rewrites every ENumLit to ELit before lowering; this
+-- arm is defensive (a non-rewritten path) — a Float-stamped ref lowers to a
+-- float constant, else an int.
+lower (ENumLit n r) = match r.value
+  Some f => CLit (LFloat f)
+  None => CLit (LInt n)
 lower (EVar x) = CVar x AGlobal
 lower (EVarAt x addr) = CVar x addr
 lower (EApp f x) = CApp (lower f) (lower x)

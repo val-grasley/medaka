@@ -29,11 +29,10 @@
 # The import_error_fixtures below remain SINGLE-FILE (the loader cannot resolve a
 # module that does not exist), so check_main still emits UnknownModule for them.
 #
-# KNOWN PRE-EXISTING DIVERGENCE (#55, tracked by task #11): the TYPES leg's golden
-# prelude has `sum`/`product : a Int -> Int`; the native check infers `a b -> b`,
-# so all 25 diff_fixtures TYPES checks MISMATCH — the resolve (14) + import_error (1)
-# legs pass.  Expected ~15 ok, 25 failing, identical to the pre-re-root behavior.
-# Do NOT alter goldens/fixtures to make the 25 pass.
+# #55 / task #11 (Num-polymorphic integer literals) CLOSED 2026-06-16: the OCaml
+# oracle (eac278b) and the selfhost typecheck now both infer `sum`/`product :
+# a b -> b` via Num-polymorphic literals + ambiguous-Num defaulting, so the TYPES
+# leg agrees with the golden — this gate is now all-pass.
 #
 # Usage:  sh test/diff_selfhost_check.sh
 set -u
@@ -80,5 +79,4 @@ for f in "$ROOT"/test/import_error_fixtures/*.mdk; do
 done
 
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
-printf '(NOTE: the 25 types/* fails are the documented #55 sum/product drift, task #11)\n'
 [ "$fail" -eq 0 ]

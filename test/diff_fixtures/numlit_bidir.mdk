@@ -1,0 +1,5 @@
+g : Float -> Float
+g x = x + 1
+
+main : <IO> Unit
+main = println (g 2.0)

@@ -117,6 +117,7 @@ addrOfGo (frame::rest) n depth = match slotIn frame n 0
 -- ── annotateExpr (scope = framed lexical environment) ─────────────────────
 annotateExpr : List (List String) -> Expr -> Expr
 annotateExpr _ (ELit l) = ELit l
+annotateExpr _ (ENumLit n r) = ENumLit n r   -- PLAN.md #11: leaf, passthrough
 annotateExpr _ (EMethodRef m) = EMethodRef m
 annotateExpr _ (EDictApp d) = EDictApp d
 annotateExpr _ (EMethodAt name r ir mr) = EMethodAt name r ir mr

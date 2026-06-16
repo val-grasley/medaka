@@ -9,12 +9,12 @@
 # to the FROZEN === TYPES === section of the committed diff_fixtures/*.golden
 # (no live OCaml re-derivation).  Both sides sorted.
 #
-# KNOWN PRE-EXISTING DIVERGENCE (#55, tracked by task #11 / Num-poly-literals):
-# the native typecheck infers `sum`/`product : a b -> b` where the golden (OCaml)
-# has `a Int -> Int`.  That prelude scheme appears in EVERY fixture's whole-prelude
-# TYPES dump, so ALL 25 fixtures MISMATCH on those two lines — 0 ok, 25 failing
-# is the CORRECT, documented state, identical to the pre-re-root behavior (the
-# OCaml-host leg failed the same 25).  Do NOT "fix" by editing goldens/fixtures.
+# #55 / task #11 (Num-polymorphic integer literals) CLOSED 2026-06-16: previously
+# the native typecheck inferred `sum`/`product : a b -> b` where the OCaml golden
+# had `a Int -> Int`, mismatching every fixture's whole-prelude TYPES dump.  Both
+# the OCaml oracle (commit eac278b) and the selfhost typecheck now infer the
+# polymorphic `a b -> b` via Num-polymorphic literals + ambiguous-Num defaulting,
+# so the goldens and the native typecheck agree — this gate is now all-pass.
 #
 # Usage:  sh test/diff_selfhost_typecheck_golden.sh
 set -u
@@ -41,5 +41,4 @@ for g in "$FIXDIR"/*.golden; do
 done
 rm -f "$tmp"
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
-printf '(NOTE: all-fail is the documented #55 sum/product drift, task #11 — not a regression)\n'
 [ "$fail" -eq 0 ]

@@ -224,6 +224,18 @@ public export data Expr
   -- byte-identical.  The parser never builds nested binop/app wrappers (it
   -- wraps leaves + statement forms only, exactly like parser.mly).
   | ELoc Loc Expr
+  -- PLAN.md #11: a *source* integer literal in EXPRESSION position, polymorphic
+  -- over `Num a` (mirror of lib/ast.ml's `ENumLit of int * float option ref`).
+  -- The parser emits this (never `ELit (LInt)`) for an integer in expression
+  -- position; pattern-position int literals stay `PLit (LInt)` Int (locked §0.4).
+  -- typecheck infers a fresh `Num`-obligated var; the post-HM defaulting pass
+  -- grounds an ambiguous Num-only var to Int; then a final pass stamps the ref
+  -- `Some f` iff the literal's inferred type ground to Float.  dictPass rewrites
+  -- the node to `ELit (LFloat f)` (ref = Some f) or `ELit (LInt n)` (ref = None)
+  -- before eval/emit, so eval/emit never see `ENumLit`.  sexp/astdump render it
+  -- identically to `(ELit (LInt n))` so the OCaml↔selfhost sexp diff is unchanged
+  -- (the selfhost AST node is new but renders to the same S-expression).
+  | ENumLit Int (Ref (Option Float))
 
 -- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
 public export data UseMember = UseMember String Bool
