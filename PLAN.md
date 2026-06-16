@@ -323,23 +323,33 @@ cover the corpus; these are known holes outside it.
 
 ### Compiler / language
 
-- **Num-polymorphic numeric literals — ✅ Stages 0-4 DONE (2026-06-16, both compilers).**
-  Integer literals in expression position are now `Num a`-polymorphic in BOTH the OCaml oracle
-  (`eac278b`) and the selfhost/native compiler (`7424b64`); `x : Float; x = 0`, `1.0 + 2`,
-  `g : Float -> Float; g x = x + 1` all typecheck and run (oracle == `medaka run` == `medaka
-  build`). Full design + locked decisions: [`NUMLIT-DESIGN.md`](./NUMLIT-DESIGN.md). Mechanism:
-  a transparent `ENumLit` AST node (renders identically to `ELit (LInt n)` so sexp/round-trip
-  unaffected) carries a `Num` obligation; a **defaulting pass** at every generalization boundary
-  grounds an *ambiguous* Num-constrained var (not arg-reachable) to `Int` (MR-for-Num, locked
-  §0.2); a post-HM Float stamp re-tags the literal to `LFloat`/`LInt` before value-tagged eval.
-  Locked scope (§0): **integer literals only** (no `Fractional`; `1.0` stays `Float`), patterns
-  stay `Int`. Both PLAN sub-gaps (RNone arg-tag fn, poly-`a` auto-print) are subsumed by the
-  defaulting pass. Soundness preserved (`Num` constraint enforced under the constraint-dropping
-  type renderer: `double "hi"` rejected). Fixpoint C3a/C3b YES; 25 OCaml type-dump goldens +
-  5 new `numlit_*` fixtures recaptured. **Remaining (optional, Stage 5):** revert the
-  `sum`/`product` `fromInt 0/1` workaround in `core.mdk` back to literal `0/1` (now safe — the
-  literal is polymorphic, so no `scopeArities` arity skew; gated on a clean `-O2` `sum`/`product`
-  native run). Skill: cross-cutting → **add-language-feature**.
+- **Num-polymorphic numeric literals — ✅ DONE (2026-06-16, both compilers, run + build).**
+  Integer literals in expression position are `Num a`-polymorphic in BOTH the OCaml oracle and
+  the selfhost/native compiler; `x : Float; x = 0`, `1.0 + 2`, `g : Float -> Float; g x = x + 1`,
+  and **polymorphic literal-bearing fns** (`inc x = x + 1` applied to `2.5` → `3.5`) all typecheck,
+  `run`, AND `build` correctly (oracle == `medaka run` == `medaka build`). Full design + locked
+  decisions: [`NUMLIT-DESIGN.md`](./NUMLIT-DESIGN.md). **Landing log:** Stages 0-2 OCaml (`eac278b`);
+  Stages 3-4 selfhost+native (`7424b64`); **soundness fix** OCaml (`e7031e6`) + selfhost (`183b7b4`);
+  **emitter Gap E/C4 closure** (`a8b95d7`). Mechanism: a transparent `ENumLit` AST node (renders
+  identically to `ELit (LInt n)` so sexp/round-trip unaffected) carries a `Num` obligation; a
+  **defaulting pass** at every generalization boundary grounds an *ambiguous* Num-constrained var
+  (not arg-reachable) to `Int` (MR-for-Num, locked §0.2); a post-HM stamp elaborates the literal —
+  concrete-Int → `LInt`, concrete-Float → `LFloat`, **still-polymorphic `Num a` → `fromInt n`
+  (dict-dispatched)** so it honors Float at runtime. Locked scope (§0): **integer literals only**
+  (no `Fractional`; `1.0` stays `Float`), patterns stay `Int`.
+  - **Soundness hole found by verification + closed:** an interim version elaborated a polymorphic
+    literal to a static `VInt`, so `inc 2.5` typechecked but panicked at runtime; the `fromInt`-routing
+    fix (`e7031e6`/`183b7b4`) makes a surviving-polymorphic `Num` literal dispatch through the
+    enclosing `Num` dict, like `core.mdk`'s `fromInt 0`.
+  - **Pre-existing emitter gap #11 EXPOSED + closed (Gap E / C4 residual, `a8b95d7`):** the native
+    emitter seeded a poly-`Num` param as `LTNum` (→ runtime `@mdk_num_*`) only when the fn had an
+    explicit signature; an *unannotated* poly-`Num` fn at Float (`dbl x = x + x`) defaulted to
+    `LTInt` → integer `add` on the Float box → silent garbage on `medaka build`. Fixed by seeding
+    `LTNum` for any unannotated arith-used param + a `reservedCtorsOfType` fallback for the
+    List/Option/Result/Ordering Foldable-dispatch sibling. Fixpoint C3a/C3b held byte-for-byte.
+  - **Remaining (optional cleanup):** revert the `sum`/`product` `fromInt 0/1` workaround in
+    `core.mdk` to literal `0/1` (now trivially safe — the bare literal routes through `fromInt`
+    automatically). Cosmetic only. Skill: cross-cutting → **add-language-feature**.
 
 - ⭐ **Phase 146 — Capability-safe effects (the headline wedge). IN PROGRESS.**
   Make Medaka's existing effect rows **sound + fine-grained** so a function's type
