@@ -10,8 +10,8 @@
 
 -- Raw string output (Phase 111).  `print`/`println` are *not* externs anymore:
 -- they're Medaka functions in core.mdk that render via `Display` and call these.
-extern putStr : String -> <IO> Unit
-extern putStrLn : String -> <IO> Unit
+extern putStr : String -> <Stdout> Unit
+extern putStrLn : String -> <Stdout> Unit
 extern Ref : a -> Ref a
 extern set_ref : Ref a -> a -> <Mut> Unit
 -- Per-type Hashable hashers — SPECIFIED deterministic algorithms, byte-identical
@@ -27,33 +27,33 @@ extern hashChar : Char -> Int
 extern hashBool : Bool -> Int
 extern pi : Float
 extern e : Float
-extern readLine : Unit -> <IO> String
-extern readFile : String -> <IO> Result String String
-extern writeFile : String -> String -> <IO> Result String Unit
+extern readLine : Unit -> <Stdin> String
+extern readFile : String -> <FileRead> Result String String
+extern writeFile : String -> String -> <FileWrite> Result String Unit
 -- Run a subprocess: prog args -> Ok (exitCode, stdout, stderr) | Err osError.
 -- Return type: Result String (Int, String, String) (Result e a: e=error, a=ok).
 -- stdout and stderr are captured as strings.  On spawn failure (e.g. ENOENT)
 -- returns Err with the OS error message; exit-code non-zero is still Ok.
 -- Used by a Medaka-hosted medaka build to invoke clang and the emitter.
-extern runCommand : String -> List String -> <IO> Result String (Int, String, String)
+extern runCommand : String -> List String -> <Exec> Result String (Int, String, String)
 extern exit : Int -> <Panic> Unit
 extern panic : String -> a
 
 -- io Module 7.  Higher-level ergonomics (eprint/eprintln/readLines) live in
 -- stdlib/io.mdk; these are the irreducible host primitives.
-extern args : Unit -> <IO> List String  -- program args after the script name
-extern getEnv : String -> <IO> Option String  -- environment variable, or None
-extern fileExists : String -> <IO> Bool
-extern appendFile : String -> String -> <IO> Result String Unit
-extern listDir : String -> <IO> Result String (List String)  -- directory entries (names)
-extern makeDir : String -> <IO> Result String Unit            -- create directory (mkdir 0o755)
-extern ePutStr : String -> <IO> Unit  -- raw stderr output
-extern ePutStrLn : String -> <IO> Unit
-extern readLineOpt : Unit -> <IO> Option String  -- one stdin line, None at EOF
-extern readAll : Unit -> <IO> String  -- all of stdin
-extern readExactly : Int -> <IO> Option String  -- read exactly N bytes; None at EOF or short read
-extern flushStdout : Unit -> <IO> Unit  -- flush buffered stdout (LSP stdio framing)
-extern wallTimeSec : Unit -> <IO> Float  -- wall-clock time in seconds (gettimeofday)
+extern args : Unit -> <Env> List String  -- program args after the script name
+extern getEnv : String -> <Env> Option String  -- environment variable, or None
+extern fileExists : String -> <FileRead> Bool
+extern appendFile : String -> String -> <FileWrite> Result String Unit
+extern listDir : String -> <FileRead> Result String (List String)  -- directory entries (names)
+extern makeDir : String -> <FileWrite> Result String Unit            -- create directory (mkdir 0o755)
+extern ePutStr : String -> <Stderr> Unit  -- raw stderr output
+extern ePutStrLn : String -> <Stderr> Unit
+extern readLineOpt : Unit -> <Stdin> Option String  -- one stdin line, None at EOF
+extern readAll : Unit -> <Stdin> String  -- all of stdin
+extern readExactly : Int -> <Stdin> Option String  -- read exactly N bytes; None at EOF or short read
+extern flushStdout : Unit -> <Stdout> Unit  -- flush buffered stdout (LSP stdio framing)
+extern wallTimeSec : Unit -> <Clock> Float  -- wall-clock time in seconds (gettimeofday)
 extern allocBytes : Unit -> <IO> Float   -- total GC-allocated bytes since process start (Gc.allocated_bytes proxy)
 -- Internal: the terminator of a desugared guard chain (Phase 91).  Raises the
 -- same "no clause matched" signal as a failed pattern, so when a function

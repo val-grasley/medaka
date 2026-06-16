@@ -2778,9 +2778,11 @@ let t_readFile_type = assert_type
   "f" "String -> <IO> Result String String"
 
 (* effect propagation (Phase 79d): an unannotated function calling readFile now
-   carries the inferred <IO> in its type, not just in the separate effects pass *)
+   carries the inferred narrow <FileRead> in its type (v2 Stage 3 IO
+   decomposition — readFile re-annotated <IO> → <FileRead>), not just in the
+   separate effects pass *)
 let t_readFile_infer = assert_type
-  "bad p = readFile p\n" "bad" "String -> <IO> Result String String"
+  "bad p = readFile p\n" "bad" "String -> <FileRead> Result String String"
 
 (* extern with uppercase name (Ref constructor) accepted by parser *)
 let t_extern_upper = assert_type

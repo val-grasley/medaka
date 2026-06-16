@@ -141,7 +141,9 @@ checkType env (TyConstrained cs t) = concatMapList (checkConstraint env) cs
   ++ checkType env t
 
 builtInEffects : List String
-builtInEffects = ["IO", "Mut", "Async", "Panic", "Rand", "Time"]
+builtInEffects = ["IO", "Mut", "Async", "Panic", "Rand", "Time",
+  "Stdout", "Stderr", "Stdin", "Clock", "Env", "Exec",
+  "Net", "FileRead", "FileWrite"]
 
 checkEffect : Env -> String -> List ResError
 checkEffect env e =

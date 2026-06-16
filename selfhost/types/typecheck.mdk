@@ -285,6 +285,32 @@ atomOfLabel l = Atom l (dtopFor l)
 atomsOfLabels : List String -> List Atom
 atomsOfLabels ls = atomsNorm (map atomOfLabel ls)
 
+-- ── v2 Stage 3: the `IO` widening union alias (design §3.2) ─────────────────
+-- `IO` is the coarse security alias: in a BOUND/annotation row it stands for
+-- the join of every narrow security label at ⊤.  ioAliasLabels lists them
+-- (every minted security label EXCEPT IO itself + the reserved Async/Time);
+-- internal labels (Mut/Panic) are NOT members, so they are tracked
+-- independently of IO.  (Mirror of lib/typecheck.ml's io_alias_labels.)
+ioAliasLabels : List String
+ioAliasLabels =
+  [ "Stdout", "Stderr", "Stdin", "Clock", "Env", "Exec", "Rand"
+  , "Net", "FileRead", "FileWrite" ]
+
+-- expand a bound `IO` atom into the security-label alias before an escape
+-- check, so a NARROW inferred row is subsumed by an `<IO>` bound (narrow ⊑ IO
+-- accepts).  Sound in reverse: an inferred raw `IO` against a NARROW bound is
+-- never expanded (the bound has no IO) ⇒ escapes (IO ⊑ narrow rejects).  `IO`
+-- stays in the expansion (atomsNorm keeps it) so inferred IO-vs-IO matches.
+expandIoInBound : List Atom -> List Atom
+expandIoInBound b = match findAtom "IO" b
+  None => b
+  Some _ => atomsNorm (b ++ map atomOfLabel ioAliasLabels)
+
+-- escape-direction difference: inferred [a] not permitted by bound [b], with
+-- the bound's `IO` widened to its security-label alias first.
+atomsEscape : List Atom -> List Atom -> List Atom
+atomsEscape a b = atomsDiff a (expandIoInBound b)
+
 -- build an atom from a WRITTEN annotation label, threading its optional param.
 -- A bare label takes the domain ⊤; a written param becomes PPrefix (Some pat)
 -- when the label's domain is Prefix, else (atomic label) stays ⊤ (the param is
@@ -545,10 +571,10 @@ unifyRowN (EffRow l1 (Some v1)) (EffRow l2 (Some v2))
     let _ = set_ref v1 (ELink (EffRow (atomsDiff l2 l1) (Some v3)))
     set_ref v2 (ELink (EffRow (atomsDiff l1 l2) (Some v3)))
 unifyRowN (EffRow l1 (Some v1)) (EffRow l2 None) =
-  let _ = effectLeakCheck (atomsDiff l1 l2) l2
+  let _ = effectLeakCheck (atomsEscape l1 l2) l2
   set_ref v1 (ELink (EffRow (atomsDiff l2 l1) None))
 unifyRowN (EffRow l1 None) (EffRow l2 (Some v2)) =
-  let _ = effectLeakCheck (atomsDiff l2 l1) l1
+  let _ = effectLeakCheck (atomsEscape l2 l1) l1
   set_ref v2 (ELink (EffRow (atomsDiff l1 l2) None))
 unifyRowN (EffRow _ None) (EffRow _ None) = ()
 
@@ -6065,7 +6091,7 @@ peelOntoParams (Some src) patTypes pats =
 checkEffectEscape : List (String, Ty) -> String -> List Atom -> <Mut> Unit
 checkEffectEscape sigs m effs = match lookupAssoc m sigs
   None => ()
-  Some ty => match atomsDiff effs (declaredEffects ty)
+  Some ty => match atomsEscape effs (declaredEffects ty)
     [] => ()
     extras => pushTypeError (effectEscapeMsg m (declaredEffects ty) extras)
 

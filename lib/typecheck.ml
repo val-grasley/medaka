@@ -283,13 +283,66 @@ let exit_level  () = decr current_level
    Prefix domain while a bare label stays PUnit. *)
 let effect_domains : (string, param) Hashtbl.t = Hashtbl.create 16
 
+(* ── v2 Stage 3: the builtin-effect taxonomy (design §3.1/§4) ───────────────
+   The single source of truth for every minted builtin label: its domain (the
+   ⊤ param it carries) and its security-vs-internal classification.  The
+   resolver vocabulary, the [effect_domains] seed, and the IO-alias security
+   set are all DERIVED from this so they cannot drift.
+
+   - security-capability labels are host-granted, parameterizable, and members
+     of the `IO` widening alias; the three with real host enforcement points
+     (Net/FileRead/FileWrite) carry the Prefix domain, the rest are atomic.
+   - internal labels (Mut/Panic) are purity/discipline tracking only — never
+     granted, never parameterized (domain fixed to Unit), never in the IO
+     alias or a future manifest.
+   - `IO` itself is the coarse alias (security, atomic); `Async`/`Time` are
+     reserved (security, atomic, not yet minted as narrow labels). *)
+type effect_class = ESecurity | EInternal
+
+(* (label, ⊤-param domain, classification).  Order is irrelevant. *)
+let builtin_effects : (string * param * effect_class) list =
+  [ (* coarse alias + reserved *)
+    "IO",        PUnit,          ESecurity;
+    "Async",     PUnit,          ESecurity;
+    "Time",      PUnit,          ESecurity;
+    (* narrow security labels — atomic *)
+    "Stdout",    PUnit,          ESecurity;
+    "Stderr",    PUnit,          ESecurity;
+    "Stdin",     PUnit,          ESecurity;
+    "Clock",     PUnit,          ESecurity;
+    "Env",       PUnit,          ESecurity;
+    "Exec",      PUnit,          ESecurity;
+    "Rand",      PUnit,          ESecurity;
+    (* narrow security labels — Prefix domain (host enforcement points) *)
+    "Net",       PPrefix None,   ESecurity;
+    "FileRead",  PPrefix None,   ESecurity;
+    "FileWrite", PPrefix None,   ESecurity;
+    (* internal — never granted, never parameterized, never in IO/manifest *)
+    "Mut",       PUnit,          EInternal;
+    "Panic",     PUnit,          EInternal;
+  ]
+
+(* The resolver-vocabulary view: every minted builtin name. *)
+let builtin_effect_names : string list =
+  List.map (fun (n, _, _) -> n) builtin_effects
+
+(* The security-capability labels that `IO` widens to (design §3.2): every
+   narrow security label EXCEPT `IO` itself (and the reserved `Async`/`Time`,
+   which are not part of the host IO surface).  Internal labels are excluded
+   by construction. *)
+let io_alias_labels : string list =
+  List.filter_map (fun (n, _, c) ->
+    match c with
+    | ESecurity when n <> "IO" && n <> "Async" && n <> "Time" -> Some n
+    | _ -> None) builtin_effects
+
 let seed_effect_domains () =
   Hashtbl.reset effect_domains;
-  (* The builtin Prefix-domain security labels (v2 fork (e)).  These are the
-     real host enforcement points; if/when declared or minted they carry a
-     Prefix pattern.  Other builtins (IO/Mut/Rand/…) stay atomic = absent. *)
-  List.iter (fun l -> Hashtbl.replace effect_domains l (PPrefix None))
-    ["Net"; "FileRead"; "FileWrite"]
+  (* Seed every builtin's ⊤ domain from the taxonomy (only Prefix-domain
+     labels carry a non-PUnit entry; atomic labels are absent ⇒ PUnit). *)
+  List.iter (fun (l, p, _) ->
+    match p with PPrefix _ -> Hashtbl.replace effect_domains l p | PUnit -> ())
+    builtin_effects
 
 let () = seed_effect_domains ()
 
@@ -420,6 +473,28 @@ let atoms_diff (a : effect_set) (b : effect_set) : effect_set =
     | None -> true
     | Some y -> not (dsub x.param y.param))
     a
+
+(* v2 Stage 3 IO-alias expansion (design §3.2).  An `IO` atom in a BOUND /
+   annotation row is the widening union alias: it stands for the join of every
+   security label at ⊤ {Stdout, Stderr, Stdin, FileRead⊤, …, Net⊤, Rand}.
+   [expand_io_in_bound] rewrites such a bound so an [atoms_diff inferred bound]
+   escape check treats any inferred NARROW security row as subsumed (narrow ⊑
+   IO accepts).  Applied ONLY on the bound side of an escape/leak check — NOT
+   in the both-open tail-routing of [unify_row], which is set plumbing, not a
+   subset test.  Soundness of the reverse direction: an inferred raw `IO`
+   against a NARROW bound is never expanded (the bound has no `IO`), so it
+   escapes (IO ⊑ narrow rejects).  `IO` itself stays in the expansion so an
+   inferred `IO`-vs-`IO` matches.  Internal labels (Mut/Panic) are excluded
+   from [io_alias_labels] ⇒ tracked independently of `IO`. *)
+let expand_io_in_bound (b : effect_set) : effect_set =
+  if List.exists (fun y -> y.label = "IO") b then
+    atoms_norm (b @ List.map (fun l -> { label = l; param = dtop_for l }) io_alias_labels)
+  else b
+
+(* Escape-direction difference: inferred atoms [a] not permitted by bound [b],
+   with the bound's `IO` widened to its security-label alias first. *)
+let atoms_escape (a : effect_set) (b : effect_set) : effect_set =
+  atoms_diff a (expand_io_in_bound b)
 
 (* lift a bare AST label to a ⊤-param atom (no written param) *)
 let atom_of_label (l : string) : atom = { label = l; param = dtop_for l }
@@ -719,11 +794,11 @@ let unify_row r1 r2 =
        open value's own labels must not exceed the closed bound, else they
        escape — e.g. an <IO> closure stored in / annotated as a pure arrow.
        The closed side's extra labels flow into the open sink as before. *)
-    let escaping = diff r1.labels r2.labels in
+    let escaping = atoms_escape r1.labels r2.labels in
     if escaping <> [] then fail (EffectLeak (r2.labels, escaping));
     v1 := ELink { labels = diff r2.labels r1.labels; tail = None }
   | None, Some v2 ->
-    let escaping = diff r2.labels r1.labels in
+    let escaping = atoms_escape r2.labels r1.labels in
     if escaping <> [] then fail (EffectLeak (r1.labels, escaping));
     v2 := ELink { labels = diff r1.labels r2.labels; tail = None }
   | None, None -> ()
@@ -3026,7 +3101,7 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
     (match sig_opt with
      | Some sig_ast ->
        let declared = declared_effects sig_ast in
-       let extras = atoms_diff !inferred_eff declared in
+       let extras = atoms_escape !inferred_eff declared in
        if extras <> [] then fail (EffectEscape (name, declared, extras))
      | None -> ());
     (* Signature-too-general check: after body inference, each declared type variable
