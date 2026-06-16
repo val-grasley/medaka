@@ -908,9 +908,27 @@ dropAssoc : String -> List (String, (Bool, LTy)) -> List (String, (Bool, LTy))
 dropAssoc _ [] = []
 dropAssoc k ((n, v)::rest) = if n == k then rest else (n, v) :: dropAssoc k rest
 
--- the constructor names owned by a type, in program order.
+-- the constructor names owned by a type, in program order.  The runtime ADTs
+-- (List/Option/Result/Ordering) carry RESERVED built-in constructors that are not
+-- user-declared, so they are absent from the ctor→type table (`ctorTypeTable`); an
+-- arg-tag dispatch over such a type (e.g. an UNANNOTATED `fold`/`Foldable List`
+-- caller whose route stays RNone — `total xs = fold (+) 0 xs`) would otherwise see
+-- an empty ctor list and hit the "owns no constructors" gap.  Fall back to the
+-- reserved ctors so the tag-match discriminates on the built-in cell tags.
 ctorsOfType : Emit -> String -> <Mut> List String
-ctorsOfType e ty = ctorsOfTypeIn ty (ctorTypeTable e)
+ctorsOfType e ty = match ctorsOfTypeIn ty (ctorTypeTable e)
+  [] => reservedCtorsOfType ty
+  cs => cs
+
+-- the reserved built-in constructors of a runtime ADT, mirroring `reservedTag`'s
+-- ordinal layout (List = Cons|Nil, Option = Some|None, Result = Ok|Err,
+-- Ordering = Lt|Eq|Gt).  Empty for any other (user) type.
+reservedCtorsOfType : String -> List String
+reservedCtorsOfType "List" = ["Cons", "Nil"]
+reservedCtorsOfType "Option" = ["Some", "None"]
+reservedCtorsOfType "Result" = ["Ok", "Err"]
+reservedCtorsOfType "Ordering" = ["Lt", "Eq", "Gt"]
+reservedCtorsOfType _ = []
 
 ctorsOfTypeIn : String -> List (String, String) -> List String
 ctorsOfTypeIn _ [] = []
@@ -6616,7 +6634,7 @@ isNumPolyParam dsig i seeded = match seeded
     Some (ptyNames, _) => match nthName ptyNames i
       Some n => isTypeVarName n
       None => False
-    None => False
+    None => True
   _ => False
 
 -- a type-variable head name is lowercase-initial (`a`, `elem`); a concrete type
