@@ -126,7 +126,7 @@ debugListItems : List a -> String
 display : a -> String
 displayListItems : List a -> String
 div : a -> a -> a
-double : Int -> Int
+double : a -> a
 elem : a -> b a -> Bool
 empty : a
 eq : a -> a -> Bool
@@ -151,7 +151,7 @@ gte : a -> a -> Bool
 hash : a -> Int
 hashListItems : Int -> List a -> Int
 identity : a -> a
-inc : Int -> Int
+inc : a -> a
 isEmpty : a b -> Bool
 isErr : Result a b -> Bool
 isNone : Option a -> Bool
@@ -180,13 +180,13 @@ pair : a -> b -> (a, b)
 pipe : (a -> b) -> (b -> c) -> a -> c
 print : a -> <IO> Unit
 println : a -> <IO> Unit
-product : a Int -> Int
+product : a b -> b
 pure : a -> b a
 shrink : a -> List a
 signum : a -> a
 snd : (a, b) -> b
 sub : a -> a -> a
-sum : a Int -> Int
+sum : a b -> b
 thenCmp : Ordering -> Ordering -> Ordering
 toList : a b -> List b
 toResult : a -> Option b -> Result a b

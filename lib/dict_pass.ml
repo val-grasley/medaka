@@ -148,6 +148,13 @@ let rewrite_binop e = match e with
     let m = operator_method op in
     let call = EApp (EApp (EMethodRef (dref, m), l), r) in
     if op = "!=" then EApp (EVar "not", call) else call
+  (* PLAN.md #11: re-tag a source integer literal to its inferred runtime rep.
+     typecheck's set_numlit_floats stamped the cell Some f for a Float-typed
+     literal; otherwise it stays an Int.  Done here (the single rewrite shared by
+     every eval driver: single-file Elaborate.elaborate, eval_modules_ex, doctest)
+     so eval never sees ENumLit and eval_arith gets matching tags. *)
+  | ENumLit (_, { contents = Some f }) -> ELit (LFloat f)
+  | ENumLit (n, { contents = None })   -> ELit (LInt n)
   | _ -> e
 
 let rewrite_binops (prog : program) : program =

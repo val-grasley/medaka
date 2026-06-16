@@ -147,6 +147,19 @@ and do_stmt =
 
 and expr =
   | ELit          of literal
+  | ENumLit       of int * float option ref
+                     (* PLAN.md #11: a *source* integer literal, polymorphic over
+                        `Num a`.  The parser emits this (never `ELit (LInt)`) for
+                        an integer in expression position.  typecheck infers a
+                        fresh `Num`-obligated var; the post-HM defaulting pass
+                        grounds an ambiguous Num-only var to Int; then a side-pass
+                        stamps the ref `Some f` iff the literal's inferred type
+                        ground to Float.  `Elaborate`/`Dict_pass` rewrite the node
+                        to `ELit (LFloat f)` (ref = Some f) or `ELit (LInt n)`
+                        (ref = None) before eval, so eval never sees `ENumLit`.
+                        Rendered identically to `ELit (LInt n)` by printer/astdump
+                        so it is invisible to the round-trip and the
+                        OCaml↔selfhost sexp diff. *)
   | EVar          of ident
   | EApp          of expr * expr
   | ELam          of pat list * expr                    (* pat+ => body *)
@@ -399,6 +412,7 @@ let rec pp_pat = function
 
 let rec pp_expr = function
   | ELit l              -> pp_lit l
+  | ENumLit (n, _)      -> string_of_int n
   | EVar x              -> x
   | EApp (f, x)         -> Printf.sprintf "(%s %s)" (pp_expr f) (pp_expr x)
   | ELam (ps, e)        -> Printf.sprintf "(%s => %s)" (String.concat " " (List.map pp_pat ps)) (pp_expr e)

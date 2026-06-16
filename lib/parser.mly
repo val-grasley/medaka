@@ -90,6 +90,7 @@ let rec expr_to_pat = function
   | EVar x when is_ctor_name x -> PCon (x, [])  (* bare nullary constructor, e.g. `None` *)
   | EVar x       -> PVar x
   | ELit l       -> PLit l
+  | ENumLit (n, _) -> PLit (LInt n)   (* PLAN.md #11 §0.4: int patterns stay Int *)
   | ETuple es    -> PTuple (List.map expr_to_pat es)
   | EListLit es  -> PList  (List.map expr_to_pat es)
   | EBinOp ("::", a, b, _) -> PCons (expr_to_pat a, expr_to_pat b)
@@ -786,7 +787,8 @@ section_op_bare:
   | MINUS      { "-" }
 
 expr_atom:
-  | lit                                              { ELoc (of_pos $startpos $endpos, ELit $1) }
+  | INT                                              { ELoc (of_pos $startpos $endpos, ENumLit ($1, ref None)) }
+  | nonint_lit                                       { ELoc (of_pos $startpos $endpos, ELit $1) }
   | IDENT                                            { ELoc (of_pos $startpos $endpos, EVar $1) }
   | UPPER                                            { ELoc (of_pos $startpos $endpos, EVar $1) }
   | UNDERSCORE                                       { ELoc (of_pos $startpos $endpos, EVar "_") }
@@ -1242,6 +1244,12 @@ interp_tail:
 
 lit:
   | INT    { LInt $1 }
+  | nonint_lit { $1 }
+
+(* Non-integer literals: used in *expression* position where an integer instead
+   becomes a Num-polymorphic `ENumLit` (PLAN.md #11).  `lit` (incl. INT) is kept
+   for *pattern* position, where integer literals stay monomorphic `Int`. *)
+nonint_lit:
   | FLOAT  { LFloat $1 }
   | STRING { LString $1 }
   | CHAR   { LChar $1 }

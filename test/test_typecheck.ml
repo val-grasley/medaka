@@ -161,24 +161,24 @@ let t_identity   = assert_type "id x = x\n"           "id"   "a -> a"
 let t_const_fn   = assert_type "const x _ = x\n"      "const" "a -> b -> a"
 let t_multi_param_lam = assert_type "f = x y => x + y\n" "f" "a -> a -> a"
 let t_double     = assert_type "double x = x + x\n"   "double" "a -> a"
-let t_inc        = assert_type "inc x = x + 1\n"      "inc"  "Int -> Int"
+let t_inc        = assert_type "inc x = x + 1\n"      "inc"  "a -> a"
 let t_apply      = assert_type "apply f x = f x\n"    "apply" "(a -> b) -> a -> b"
 let t_compose    = assert_type "compose f g x = f (g x)\n"  "compose"
                      "(a -> b) -> (c -> a) -> c -> b"
 
 (* ── Operator sections ──────────────────────────── *)
 
-let t_section_add  = assert_type "f = (+1)\n"      "f"  "Int -> Int"
-let t_section_mul  = assert_type "f = (*2)\n"      "f"  "Int -> Int"
-let t_section_cmp  = assert_type "f = (>0)\n"      "f"  "Int -> Bool"
+let t_section_add  = assert_type "f = (+1)\n"      "f"  "a -> a"
+let t_section_mul  = assert_type "f = (*2)\n"      "f"  "a -> a"
+let t_section_cmp  = assert_type "f = (>0)\n"      "f"  "a -> Bool"
 let t_section_map  = assert_type
   "result = map (+5) [1, 2, 3]\n" "result" "List Int"
 
 (* ── Left operator sections ─────────────────────── *)
 
-let t_left_section_mul    = assert_type "f = (2 * _)\n"   "f" "Int -> Int"
-let t_left_section_sub    = assert_type "f = (10 - _)\n"  "f" "Int -> Int"
-let t_left_section_cmp    = assert_type "f = (0 < _)\n"   "f" "Int -> Bool"
+let t_left_section_mul    = assert_type "f = (2 * _)\n"   "f" "a -> a"
+let t_left_section_sub    = assert_type "f = (10 - _)\n"  "f" "a -> a"
+let t_left_section_cmp    = assert_type "f = (0 < _)\n"   "f" "a -> Bool"
 let t_left_section_map    = assert_type
   "result = map (2 * _) [1, 2, 3]\n" "result" "List Int"
 let t_left_section_filter = assert_type
@@ -217,7 +217,7 @@ b = id "hi"
 (* ── If-then-else ───────────────────────────────── *)
 
 let t_if = assert_type
-  "abs x = if x < 0 then -x else x\n" "abs" "Int -> Int"
+  "abs x = if x < 0 then -x else x\n" "abs" "a -> a"
 
 (* ── Type signatures ────────────────────────────── *)
 
@@ -231,12 +231,12 @@ let t_sig_poly = assert_type
 
 let t_factorial = assert_type
   "fact n = if n == 0 then 1 else n * fact (n - 1)\n"
-  "fact" "Int -> Int"
+  "fact" "a -> a"
 
 let t_mutual_rec = assert_type
   {|isEven n = if n == 0 then True else isOdd (n - 1)
 isOdd n = if n == 0 then False else isEven (n - 1)
-|} "isEven" "Int -> Bool"
+|} "isEven" "a -> Bool"
 
 (* Phase 136: a top-level mutual-recursion group must generalize *every* member,
    not just the second-processed one.  These DFunDef cycles used to monomorphize
@@ -787,7 +787,7 @@ let t_do_single_expr = assert_type
 (* DoBind then pure: monad is left abstract (works for any monad) *)
 let t_do_bind_pure = assert_type
   "addOne opt =\n  do\n    x <- opt\n    pure (x + 1)\n"
-  "addOne" "a Int -> a Int"
+  "addOne" "a b -> a b"
 
 (* Two binds then pure *)
 let t_do_two_binds = assert_type
@@ -797,7 +797,7 @@ let t_do_two_binds = assert_type
 (* DoLet: plain binding inside a do block, no monadic wrapping *)
 let t_do_let = assert_type
   "f opt =\n  do\n    x <- opt\n    let y = x + 1\n    pure y\n"
-  "f" "a Int -> a Int"
+  "f" "a b -> a b"
 
 (* pure alone: wrap any value in any monad *)
 let t_do_pure = assert_type
@@ -859,7 +859,7 @@ let t_indented_body_lets = assert_type
   let b = a + 1
   b
 |}
-  "f" "Int -> Int"
+  "f" "a -> a"
 
 (* Single let in an indented body. *)
 let t_indented_body_single_let = assert_type
@@ -867,7 +867,7 @@ let t_indented_body_single_let = assert_type
   let a = x + 1
   a
 |}
-  "f" "Int -> Int"
+  "f" "a -> a"
 
 (* Top-level `x = (let a = ..; let b = ..; expr)` indented. *)
 let t_indented_toplevel_lets = assert_type
@@ -903,7 +903,7 @@ let t_block_let_nonrec_value = assert_type
   let a = x + 1
   a
 |}
-  "f" "Int -> Int"
+  "f" "a -> a"
 
 (* `do { println; println }` is NOT valid under the EBlock/EDo split.  `do`
    is now monad-only: every DoExpr must unify with `m a`.  `println` returns
@@ -941,18 +941,18 @@ let t_pipe_chain = assert_type
 
 (* f >> g  :  (a -> b) -> (b -> c) -> (a -> c) *)
 let t_compose_right = assert_type
-  "inc x = x + 1\ndbl x = x * 2\nf = inc >> dbl\n" "f" "Int -> Int"
+  "inc x = x + 1\ndbl x = x * 2\nf = inc >> dbl\n" "f" "a -> a"
 
 (* f << g  :  (b -> c) -> (a -> b) -> (a -> c) *)
 let t_compose_left = assert_type
-  "inc x = x + 1\ndbl x = x * 2\nf = dbl << inc\n" "f" "Int -> Int"
+  "inc x = x + 1\ndbl x = x * 2\nf = dbl << inc\n" "f" "a -> a"
 
 let t_compose_chain = assert_type
-  "inc x = x + 1\ndbl x = x * 2\nneg x = 0 - x\nf = inc >> dbl >> neg\n" "f" "Int -> Int"
+  "inc x = x + 1\ndbl x = x * 2\nneg x = 0 - x\nf = inc >> dbl >> neg\n" "f" "a -> a"
 
 (* polymorphic compose: id >> inc should give Int -> Int *)
 let t_compose_poly = assert_type
-  "inc x = x + 1\nf = (x => x) >> inc\n" "f" "Int -> Int"
+  "inc x = x + 1\nf = (x => x) >> inc\n" "f" "a -> a"
 
 (* error: pipe type mismatch — Int |> (String -> Bool) *)
 let e_pipe_type_mismatch = assert_err
@@ -989,7 +989,7 @@ let t_eff_pipe_io = assert_type
 
 (* Compose of two pure functions — composed result is also pure *)
 let t_eff_compose_pure = assert_type
-  "inc x = x + 1\ndbl x = x * 2\nf = inc >> dbl\n" "f" "Int -> Int"
+  "inc x = x + 1\ndbl x = x * 2\nf = inc >> dbl\n" "f" "a -> a"
 
 (* Unannotated function calls print → effect inferred, no error *)
 let t_eff_infer_io = assert_type
@@ -2046,7 +2046,7 @@ check = myEq 1 2
 let t_infer_concrete_no_constraint = assert_type
   {|f x = eq x 1
 |}
-  "f" "Int -> Bool"
+  "f" "a -> Bool"
 
 (* A signature with an empty constraint context whose body needs one is rejected
    (the context is a contract). *)
@@ -2789,7 +2789,9 @@ let t_float_mod = assert_type "x = 5.0 % 2.0\n" "x" "Float"
 
 (* Errors *)
 let e_string_num = assert_err "x = \"a\" + \"b\"\n"
-let e_int_float_mismatch = assert_err "x = 1 + 1.5\n"
+(* PLAN.md #11 (§1b): a mixed int/float literal sum now type-checks — the int
+   literal `1` is Num-polymorphic and unifies to Float against `1.5`. *)
+let e_int_float_mismatch = assert_type "x = 1 + 1.5\n" "x" "Float"
 (* `%` still rejects non-Num operands (no `Num String` impl). *)
 let e_string_mod = assert_err "x = \"a\" % \"b\"\n"
 (* G2: `- * /` likewise impose Num — reject String/Bool operands (no impl).
@@ -3232,7 +3234,7 @@ let t_if_let_match =
     {|f opt =
   if let Some x = opt then x + 1 else 0
 |}
-    "f" "Option Int -> Int"
+    "f" "Option a -> a"
 
 let t_if_let_no_match =
   assert_type
@@ -3255,7 +3257,7 @@ let t_let_else_bind =
     let Some x = opt else pure 0
     pure (x + 1)
 |}
-    "f" "Option Int -> Option Int"
+    "f" "Option a -> Option a"
 
 let e_let_else_last_stmt =
   assert_err
@@ -3352,7 +3354,7 @@ let t_function_option =
     None => 0
     Some x => x
 |}
-    "f" "Option Int -> Int"
+    "f" "Option a -> a"
 
 let t_function_bool =
   assert_type
@@ -3473,12 +3475,12 @@ f = Blob != Blob
 
 let t_letrec_fact = assert_type
   "let rec fact = n => if n == 0 then 1 else n * fact (n - 1)\n"
-  "fact" "Int -> Int"
+  "fact" "a -> a"
 
 let t_letrec_mutual = assert_type
   "let rec is_even = n => if n == 0 then True else is_odd (n - 1)\n\
    with is_odd = n => if n == 0 then False else is_even (n - 1)\n"
-  "is_even" "Int -> Bool"
+  "is_even" "a -> Bool"
 
 (* `let rec` value with non-lambda RHS is rejected. *)
 let e_letrec_nonfn_arith = assert_err

@@ -535,6 +535,7 @@ let rec check_expr env scope errors e =
     current_loc := Some l;
     check_expr env scope errors e'
   | ELit _ -> ()
+  | ENumLit _ -> ()   (* PLAN.md #11: a plain integer literal, nothing to bind *)
   | EMethodRef _ -> ()  (* marker pass runs after resolve; method already bound *)
   | EDictApp _ -> ()    (* marker pass runs after resolve; name already bound *)
   | EVar n when String.length n > 0 && n.[0] = '@' ->

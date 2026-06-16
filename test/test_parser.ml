@@ -16,7 +16,16 @@ let parse src =
                   (pos.Lexing.pos_cnum - pos.Lexing.pos_bol)
                   src)
   in
+  (* PLAN.md #11: integer literals now parse to the transparent `ENumLit` node.
+     These structural parser tests assert against `ELit (LInt n)` (the node's
+     Int meaning), so normalize `ENumLit (n, _)` back to `ELit (LInt n)` — the
+     `float option ref` is type-inference scratch, irrelevant to parse structure. *)
+  let denumlit = function
+    | ENumLit (n, _) -> ELit (LInt n)
+    | e -> e
+  in
   Ast.strip_locs_program prog
+  |> List.map (Desugar.map_decl denumlit)
 
 let rec pp_decl d =
   match d with
@@ -1922,7 +1931,9 @@ let test_bench_basic () =
 let test_bench_expr () =
   match parse_one {|bench "add" = 1 + 2
 |} with
-  | DBench { bench_name = "add"; bench_body = EBinOp ("+", ELit (LInt 1), ELit (LInt 2), _); _ } -> ()
+  (* PLAN.md #11: bench bodies aren't reached by the `denumlit` normalization in
+     `parse` (map_decl doesn't recurse into DBench), so int lits stay ENumLit. *)
+  | DBench { bench_name = "add"; bench_body = EBinOp ("+", ENumLit (1, _), ENumLit (2, _), _); _ } -> ()
   | d -> failwith ("wrong: " ^ pp_decl d)
 
 let test_bench_export () =

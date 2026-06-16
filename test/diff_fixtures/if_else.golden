@@ -92,7 +92,7 @@ main =
   println (classify 3)
   println (abs (-7))
 === TYPES ===
-abs : Int -> Int
+abs : a -> a
 abs : a -> a
 add : a -> a -> a
 all : (a -> Bool) -> b a -> Bool
@@ -106,7 +106,7 @@ arbitrary : Unit -> <Rand> a
 arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> List a
 arbitraryString : Unit -> <Rand> String
 clamp : a -> a -> a -> a
-classify : Int -> String
+classify : a -> String
 compare : a -> a -> Ordering
 compose : (a -> b) -> (c -> a) -> c -> b
 const : a -> b -> a
@@ -167,13 +167,13 @@ otherwise : Bool
 pipe : (a -> b) -> (b -> c) -> a -> c
 print : a -> <IO> Unit
 println : a -> <IO> Unit
-product : a Int -> Int
+product : a b -> b
 pure : a -> b a
 shrink : a -> List a
 signum : a -> a
 snd : (a, b) -> b
 sub : a -> a -> a
-sum : a Int -> Int
+sum : a b -> b
 thenCmp : Ordering -> Ordering -> Ordering
 toList : a b -> List b
 toResult : a -> Option b -> Result a b
