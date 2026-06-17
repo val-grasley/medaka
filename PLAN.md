@@ -388,7 +388,7 @@ cover the corpus; these are known holes outside it.
   `claude/suspicious-sammet-21d73e` (commit `860ba12`). Skill:
   **add-language-feature** (cross-cutting).
 
-- **Phase 148 (proposed) — diagnose duplicate / non-contiguous top-level bindings.**
+- **Phase 148 — ✅ DONE (2026-06-16, `7d755a9`, both compilers) — diagnose duplicate / non-contiguous top-level bindings.**
   Two same-named top-level bindings separated by other declarations are silently
   **coalesced into one multi-clause function** instead of being flagged. Symptoms,
   verified on the binary:
@@ -450,7 +450,7 @@ cover the corpus; these are known holes outside it.
   - Estimate: ~a day (Full scope). Skill: **add-language-feature** (cross-cutting —
     new pattern + construction syntax through parser/ast/typecheck/eval + selfhost).
 
-- **Phase 150 (proposed) — better error for `do` used on a non-monad.** Using `do`
+- **Phase 150 — ✅ DONE (2026-06-16, `5d11e77`, both compilers) — better error for `do` used on a non-monad.** Implemented via a transparent `EDoOrigin loc expr` node (desugar wraps the lowered do-chain; typecheck raises `DoRequiresMonad` on a non-monad shape). Using `do`
   to sequence IO (a common newcomer mistake, since Medaka IO is **not** a monad —
   imperative IO is a bare indented block, see [[medaka-io-not-a-monad]] / SYNTAX.md
   §"do notation") produces a baffling diagnostic. Verified on the binary:
