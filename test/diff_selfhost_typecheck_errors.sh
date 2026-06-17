@@ -1,15 +1,28 @@
 #!/bin/sh
 # Differential validation for self-hosted TYPE ERROR accumulation.
 #
-# OCaml-free (REROOT-PLAN §2b): both self-hosted drivers run as native binaries
-# and are diffed against a committed golden captured from dev/tc_probe.exe
-# (parse → Desugar → check_program_no_prelude, first Type_error → "TYPE ERROR: …")
-# by test/capture_goldens.sh.  Both sides sorted (order irrelevant for the
-# single-error fixtures).
+# OCaml-free (REROOT-PLAN §2b): the self-hosted drivers run as native binaries
+# and are diffed against a committed golden.  Both sides sorted (order irrelevant
+# for the single-error fixtures).
 #
 # Two drivers tested:
-#   A. test/bin/typecheck_main  — bare HM engine, no prelude, matches tc_probe
-#   B. test/bin/check_main      — full composed front-end with prelude; same error
+#   A. test/bin/typecheck_main  — bare HM engine, NO prelude
+#   B. test/bin/check_main      — full composed front-end WITH prelude
+#
+# GATE RE-ROOTING (feature #11 — Num-polymorphic literals).  #11 desugars an
+# integer literal `1` → `fromInt 1`.  A no-prelude driver (A) cannot resolve
+# `fromInt`/`Num`, so for fixtures whose *documented* error depends on the prelude
+# (`No impl of Num for …` from a numeric literal at a non-Num type) Driver A
+# structurally cannot produce the right answer — it wrongly ACCEPTS and prints
+# schemes.  Only the prelude-aware Driver B yields the semantically-correct error
+# (verified == the OCaml oracle `main.exe check` / `dev/tc_module_probe.exe`).
+#
+# Mechanism: PRELUDE_DEP lists, by basename, the prelude-dependent fixtures.  For
+# those we run ONLY Driver B and the golden is captured from the prelude-aware
+# OCaml probe (dev/tc_module_probe.exe) by test/capture_goldens.sh.  All OTHER
+# fixtures keep BOTH drivers + a no-prelude golden, unchanged.  (Capture may use
+# OCaml by design; the gate stays OCaml-free at RUN time.)
+PRELUDE_DEP="int_vs_string.mdk mut_generalization.mdk value_restriction.mdk"
 #
 # Usage:  sh test/diff_selfhost_typecheck_errors.sh
 set -u
@@ -35,6 +48,19 @@ for f in "$FIXDIR"/*.mdk; do
   golden="${f%.mdk}.tc.golden"
   [ -f "$golden" ] || { echo "no golden for $name (run sh test/capture_goldens.sh tc)"; fail=$((fail+2)); continue; }
   ref="$(LC_ALL=C sort < "$golden")"
+
+  # Prelude-dependent fixtures (#11): Driver A structurally can't reject — run
+  # ONLY Driver B (prelude-aware).
+  case " $PRELUDE_DEP " in
+    *" $name "*)
+      selfB="$("$CHECK" "$RT" "$CORE" "$f" 2>/dev/null | strip_unit | LC_ALL=C sort)"
+      if [ "$selfB" = "$ref" ]; then
+        pass=$((pass+1)); printf 'ok   check/%s (prelude-dep)\n' "$name"
+      else
+        fail=$((fail+1)); printf 'FAIL check/%s\n  self: %s\n   ref: %s\n' "$name" "$selfB" "$ref"
+      fi
+      continue ;;
+  esac
 
   # Driver A: typecheck_main (bare HM, no prelude)
   selfA="$("$TC_MAIN" "$f" 2>/dev/null | strip_unit | LC_ALL=C sort)"
