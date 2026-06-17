@@ -347,9 +347,27 @@ cover the corpus; these are known holes outside it.
     `LTInt` → integer `add` on the Float box → silent garbage on `medaka build`. Fixed by seeding
     `LTNum` for any unannotated arith-used param + a `reservedCtorsOfType` fallback for the
     List/Option/Result/Ordering Foldable-dispatch sibling. Fixpoint C3a/C3b held byte-for-byte.
+  - **Soak found 3 more native/oracle divergences (all closed) — #11 was bug-dense:** (3) native
+    `check` accepted `g = f "hello"` (`f : Num a => a -> a`, a concrete `Num String` obligation at a
+    let-binding) → typechecked then crashed; the selfhost constraint tracking was fused with the
+    dict/emit machinery and empty on the plain check path — fixed with always-on
+    `schemeObligationsRef`/`checkCallObligations` mirroring the oracle's `is_concrete` (`68d9da1`).
+    (4) two typecheck differential gates went blind (goldens from a no-prelude probe that #11's
+    `1`→`fromInt 1` breaks) — re-rooted onto the prelude-aware oracle (`bee51ba`, test-only).
+    (5) native didn't apply **value-level** `Num` defaulting (`nums = [1,2,3]` → native `List a`
+    vs oracle/§0.2 `List Int`) — the no-prelude driver wasn't recording the literal's `Num`
+    obligation at all; fixed + a specialized default-method-body type error (`4fc5f47`/`18176ea`).
+    **Native and the OCaml oracle now fully agree; all diff gates 0-failing, fixpoint C3a/C3b YES.**
+  - **Tracked follow-up (capture-infra footgun):** `capture_goldens.sh tc` corrupts literal-bearing
+    fixtures NOT in `PRELUDE_DEP_TC` (poly_let, index_default, effects, records, signatures,
+    missing_field, unknown_field_create) to `Unbound variable: fromInt` (sourced from the no-prelude
+    `tc_probe`). Goldens are currently correct; the trap only bites on recapture. Fix = widen
+    `PRELUDE_DEP_TC` to all prelude-dependent literal fixtures. Low urgency, do before the next bulk
+    `tc` recapture.
   - **Remaining (optional cleanup):** revert the `sum`/`product` `fromInt 0/1` workaround in
-    `core.mdk` to literal `0/1` (now trivially safe — the bare literal routes through `fromInt`
-    automatically). Cosmetic only. Skill: cross-cutting → **add-language-feature**.
+    `core.mdk` to literal `0/1` — **NOT safe** (the OCaml oracle's `fromInt`-routing misses the
+    point-free seed position → it panics on Float while native is correct; see memory
+    `project_oracle_fromint_pointfree_gap`). Keep the `fromInt` form. Closed as won't-do.
 
 - ⭐ **Phase 146 — Capability-safe effects (the headline wedge). IN PROGRESS.**
   Make Medaka's existing effect rows **sound + fine-grained** so a function's type
