@@ -1,0 +1,5 @@
+data Token =
+  -- a leading comment before the first variant
+  | Plus  -- the + operator
+  | Minus  -- the - operator
+  | Num Int  -- a literal
