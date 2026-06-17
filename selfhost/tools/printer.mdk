@@ -425,6 +425,7 @@ isContinuationOp op = op == "|>"
 
 exprPrec : Expr -> Int
 exprPrec (ELit _) = precAtom
+exprPrec (ENumLit _ _ _) = precAtom
 exprPrec (EVar _) = precAtom
 exprPrec (EMethodRef _) = precAtom
 exprPrec (EDictApp _) = precAtom
@@ -494,6 +495,10 @@ printExpr minPrec e =
 
 printExprRaw : Expr -> Doc
 printExprRaw (ELit l) = printLit l
+-- ENumLit (a `Num a` expression-position integer; desugar lowers it before
+-- eval/emit, but the formatter runs pre-desugar so it reaches the printer).
+-- Renders as the bare integer, mirroring lib/printer.ml's `ENumLit (n,_,_)`.
+printExprRaw (ENumLit n _ _) = text (intToString n)
 printExprRaw (EVar n) = text n
 printExprRaw (EMethodRef n) = text n
 printExprRaw (EDictApp n) = text n

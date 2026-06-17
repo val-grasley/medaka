@@ -1,0 +1,5 @@
+(DFunDef false "joined" () (EBinOp "++" (EBinOp "++" (ELit (LInt 1)) (ELit (LInt 2))) (ELit (LInt 3))))
+(DFunDef false "trailing" () (EBinOp "++" (EBinOp "++" (ELit (LInt 1)) (ELit (LInt 2))) (ELit (LInt 3))))
+(DFunDef false "consJoined" () (EBinOp "::" (ELit (LInt 1)) (EBinOp "::" (ELit (LInt 2)) (EVar "rest"))))
+(DFunDef false "consTrailing" () (EBinOp "::" (ELit (LInt 1)) (EBinOp "::" (ELit (LInt 2)) (EVar "rest"))))
+(DFunDef false "rest" () (EListLit))

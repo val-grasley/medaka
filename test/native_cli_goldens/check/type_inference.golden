@@ -21,7 +21,7 @@ debugListItems : List a -> String
 display : a -> String
 displayListItems : List a -> String
 div : a -> a -> a
-double : Int -> Int
+double : a -> a
 elem : a -> b a -> Bool
 empty : a
 eq : a -> a -> Bool
@@ -46,7 +46,7 @@ gte : a -> a -> Bool
 hash : a -> Int
 hashListItems : Int -> List a -> Int
 identity : a -> a
-inc : Int -> Int
+inc : a -> a
 isEmpty : a b -> Bool
 isErr : Result a b -> Bool
 isNone : Option a -> Bool

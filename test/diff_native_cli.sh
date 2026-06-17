@@ -49,8 +49,11 @@ FIX="$ROOT/test/native_cli_fixtures"
 
 bound() { perl -e 'alarm 120; exec @ARGV' "$@"; }
 
-# native runtime auto-prints main's Unit as a trailing "0" the OCaml goldens omit.
-strip_unit() { sed '$ s/0$//'; }
+# A Unit-returning `main` no longer auto-prints (gated in llvm_emit.mdk), so the
+# native CLI emits no trailing "0" line.  This delete-if-bare-"0" form is a no-op
+# now, but stays as a safety net; the old `s/0$//` suffix-strip corrupted any
+# real last line ending in 0 (e.g. "10" -> "1") once the trailing line vanished.
+strip_unit() { sed '${/^0$/d;}'; }
 
 pass=0; fail=0
 

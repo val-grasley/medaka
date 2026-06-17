@@ -34,7 +34,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROBE="$ROOT/_build/default/dev/eval_probe.exe"
-MAIN="$ROOT/_build/default/bin/main.exe"
+MAIN="${MAIN:-$ROOT/_build/default/bin/main.exe}"
 CORE="$ROOT/stdlib/core.mdk"; LIST="$ROOT/stdlib/list.mdk"; RUNTIME="$ROOT/stdlib/runtime.mdk"
 # §2b front-end dev probes (location-free dumps, the OCaml leg of the front-end gates).
 ASTDUMP="$ROOT/_build/default/dev/astdump.exe"
