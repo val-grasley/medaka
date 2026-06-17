@@ -2884,10 +2884,20 @@ inferNumLit env n fref dref
   | otherwise = inferNumLitBare n fref
 
 -- no-prelude fallback: a fresh var, no route (dref untouched ⇒ stays RNone ⇒ Int).
+-- PLAN.md #11 (locked §0.2): a numeric literal is ALWAYS a `fromInt n` occurrence,
+-- so it carries a `Num` obligation on its var unconditionally — exactly the OCaml
+-- oracle, whose ENumLit infer arm `infer env (EVar "fromInt")` records the Num
+-- usage even no-prelude (`initial_env` seeds `fromInt`/`Num`).  Recording it here
+-- (vs. the prelude-gated `recordNumObligation`) lets value-level defaulting ground
+-- an AMBIGUOUS literal var to Int (`nums = [1,2,3] : List Int`) so the no-prelude
+-- `typecheck_main` matches the prelude-aware oracle golden.  The matching reject is
+-- SUPPRESSED no-prelude in checkOneImplObligation (no-prelude imposes no Num impl
+-- constraint — see its `numIfaceRegistered` guard), so a literal still types Int
+-- without a spurious `No impl of Num for Int`.
 inferNumLitBare : Int -> Ref (Option Float) -> <Mut> Mono
 inferNumLitBare n fref =
   let a = freshVar ()
-  let _ = recordNumObligation a
+  let _ = set_ref pendingImplObligations (("Num", ["a"], TyVar "a", a) :: pendingImplObligations.value)
   let _ = set_ref numlitRefs ((a, fref, n, Ref RNone) :: numlitRefs.value)
   a
 
@@ -5850,7 +5860,16 @@ checkOneImplObligation heads iface typarams mty occ =
   -- accept.  A function / unbound-headed application can never have a `Num` impl, so
   -- REJECT here even though inner vars are still free, restoring the structural error.
   -- Mirror of lib/typecheck.ml's check_method_usages Num guards.
-  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnce (noImplFoundMsg iface args) else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnce (noImplFoundMsg iface args)
+  --
+  -- No-prelude (`Num` unregistered): a numeric literal still records a Num obligation
+  -- (inferNumLitBare) so value-level defaulting can ground it to Int, but the bare-HM
+  -- oracle imposes NO `impl Num` constraint — so SKIP the reject here (there is no
+  -- `impl Num Int` to match in the prelude-free program).  This keeps the no-prelude
+  -- `typecheck_main`/tc_probe oracle parity: a grounded `Num Int` literal types Int
+  -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
+  -- (function/unbound `m`) stays even no-prelude — it is a structural unification
+  -- error, not a missing-impl one.
+  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnce (noImplFoundMsg iface args) else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnce (noImplFoundMsg iface args)
 
 -- a mono no `Num` impl can ever match: a function type, or an application whose
 -- spine head is still an unbound tyvar (a literal forced into `m a` monad position)
