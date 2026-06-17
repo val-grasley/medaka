@@ -110,7 +110,7 @@ oracle_tc_module()      { "$TCMODPROBE" "$1" 2>/dev/null | LC_ALL=C sort | uniq;
 # golden in typecheck_fixtures (whose function-clause Num vars stay polymorphic
 # under #11 — the new schemes only differ from the stale ones, not prelude-needy,
 # but tc_probe still errors on `fromInt` so it too must source from tc_module).
-PRELUDE_DEP_TC="int_vs_string mut_generalization value_restriction tuple_arity operators"
+PRELUDE_DEP_TC="int_vs_string mut_generalization value_restriction tuple_arity operators default_body_type_error"
 # diagdump --analyze : structured per-fixture diagnostics (human message, no loc),
 # sorted — the OCaml leg of diff_selfhost_diagnostics.sh.
 oracle_diag_analyze()   { "$DIAGDUMP" --analyze "$1" 2>/dev/null | LC_ALL=C sort; }

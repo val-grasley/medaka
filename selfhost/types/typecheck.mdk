@@ -1443,6 +1443,14 @@ currentLoc = Ref None
 currentDoOrigin : Ref (Option Loc)
 currentDoOrigin = Ref None
 
+-- C8b Gap 2 (diagnostic-quality parity): set to `Some methodName` around the
+-- OUTER unify of an interface default body against its declared return type, so a
+-- leaf TypeMismatch is reported as the oracle's specialized single line
+-- `Method '<name>': expected type <e> but got <a>` (lib/typecheck.ml's
+-- MethodTypeMismatch catch, :3904-3907) instead of a bare `Type mismatch: …`.
+currentMethodMismatch : Ref (Option String)
+currentMethodMismatch = Ref None
+
 occursCheckFailed : Ref Bool
 occursCheckFailed = Ref False
 
@@ -1619,9 +1627,11 @@ unifyList (x::xs) (y::ys) =
 unifyList _ _ = panic "unify: tuple arity mismatch"
 
 typeMismatch : Mono -> Mono -> <Mut> Unit
-typeMismatch a b = match currentDoOrigin.value
-  Some doLoc => typeMismatchInDo a b doLoc
-  None => pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+typeMismatch a b = match currentMethodMismatch.value
+  Some mname => pushTypeError ("Method '" ++ mname ++ "': expected type " ++ ppMono a ++ " but got " ++ ppMono b)
+  None => match currentDoOrigin.value
+    Some doLoc => typeMismatchInDo a b doLoc
+    None => pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
 
 -- a mismatch inside a do-lowered chain: if it is the monad-shape (`m b`) vs
 -- non-monad obligation, retarget to the tailored "do requires a monad" error;
@@ -5677,7 +5687,7 @@ inferDefaultMethod env typarams (IfaceMethod mname mty (Some (MethodDefault pats
   let ids = methodConstraintSlotIds typarams mty (snd st)
   let _ = set_ref currentFn ""
   let inst = instantiateTracked (fst st)
-  let _ = inferDefaultMethodBody env (fst inst) pats body
+  let _ = inferDefaultMethodBody mname env (fst inst) pats body
   -- register AFTER body inference, so each constraint var's id in [snd inst] is
   -- its SURVIVING (normalized) union-find root — the same id the in-body return-
   -- position `empty`/`++` site normalizes to (activeDictVarOf reads that root).
@@ -5692,12 +5702,31 @@ inferDefaultMethod _ _ _ = ()
 -- that would arise when the accumulating selfhost differs from the oracle's
 -- raise-on-first behaviour: oracle's TypeMismatch from inside `infer` never
 -- reaches the outer `unify`, whereas selfhost would report both).
-inferDefaultMethodBody : TcEnv -> Mono -> List Pat -> Expr -> <Mut> Unit
-inferDefaultMethodBody env expectedTy pats body =
+--
+-- C8b Gap 2: the outer unify runs with `currentMethodMismatch = Some mname` so a
+-- leaf TypeMismatch reports the oracle's single specialized line
+-- `Method '<mname>': expected type <e> but got <a>` rather than a bare
+-- `Type mismatch`.  When that unify pushed a mismatch, the body's own added
+-- impl obligations are TRUNCATED back to the pre-body snapshot — the oracle's
+-- `fail (MethodTypeMismatch …)` RAISES, so its later check_method_usages never
+-- sees the body's `Num <wrong-type>` usage (e.g. `(5 : Bool)` ⇒ `Num Bool`);
+-- dropping them here mirrors that single-error outcome instead of cascading a
+-- spurious `No impl of Num for Bool`.
+inferDefaultMethodBody : String -> TcEnv -> Mono -> List Pat -> Expr -> <Mut> Unit
+inferDefaultMethodBody mname env expectedTy pats body =
+  let oblSnapshot = pendingImplObligations.value
   let errsBefore = listLen typeErrors.value
   let actualTy = inferClauses env [(pats, body)]
   let errsAfter = listLen typeErrors.value
-  if errsAfter == errsBefore then unify expectedTy actualTy else ()
+  if errsAfter != errsBefore then ()
+  else
+    let errsPreUnify = listLen typeErrors.value
+    let _ = set_ref currentMethodMismatch (Some mname)
+    let _ = unify expectedTy actualTy
+    let _ = set_ref currentMethodMismatch None
+    -- mismatch reported ⇒ restore the pre-body obligation list (drop the body's
+    -- own added `Num <wrong-type>` cascade, prepended at the front)
+    if listLen typeErrors.value != errsPreUnify then set_ref pendingImplObligations oblSnapshot else ()
 
 -- ── Error-path B4: missing-impl dispatch-obligation check ──────────────────
 -- Mirror lib/typecheck.ml's check_method_usages (the `No impl of … for …` reject,
