@@ -378,6 +378,43 @@ let e_let_value_self_ref =
   assert_err (nonrec_value_let "x")
     "f = let x = x + 1 in x\n"
 
+(* ── Phase 148: non-contiguous top-level binding clauses ─── *)
+
+let dup_binding n = function DuplicateBinding x -> x = n | _ -> false
+
+(* conflicting sigs separated by an intervening decl → DuplicateBinding *)
+let e_dup_binding_sig =
+  assert_err (dup_binding "foo")
+    "foo : Int -> Int\n\
+     foo x = x + 1\n\
+     bar = 5\n\
+     foo : Option Int -> Int\n\
+     foo y = y\n"
+
+(* matching sigs / dead clauses separated by an intervening decl → flagged *)
+let e_dup_binding_match =
+  assert_err (dup_binding "foo")
+    "foo x = x + 1\n\
+     bar = 5\n\
+     foo x = x + 99\n"
+
+(* adjacent multi-clause is fine *)
+let v_adjacent_multiclause =
+  assert_ok "f 0 = \"z\"\nf n = \"s\"\nmain = f 0\n"
+
+(* sig immediately followed by its def, then unrelated decl: fine *)
+let v_sig_then_def =
+  assert_ok "foo : Int -> Int\nfoo x = x + 1\nbar = 5\n"
+
+(* sigs-then-defs grouping of a mutually-recursive pair is fine: the type
+   signatures are transparent to contiguity, and each def-run is contiguous *)
+let v_sig_grouped_mutual =
+  assert_ok
+    "pingEq : Int -> Bool\n\
+     pongEq : Int -> Bool\n\
+     pingEq n = pongEq n\n\
+     pongEq n = pingEq n\n"
+
 (* ── Cross-module effect export (Phase 146) ─── *)
 
 let resolve_module_chain srcs =
@@ -467,6 +504,11 @@ let () =
       test_case "? in arith"           `Quick e_question_in_arith;
       test_case "? in fn arg"          `Quick e_question_in_arg;
       test_case "let value self-ref"   `Quick e_let_value_self_ref;
+      test_case "dup binding (sig)"     `Quick e_dup_binding_sig;
+      test_case "dup binding (match)"   `Quick e_dup_binding_match;
+      test_case "adjacent multiclause ok" `Quick v_adjacent_multiclause;
+      test_case "sig then def ok"       `Quick v_sig_then_def;
+      test_case "sig-grouped mutual ok"  `Quick v_sig_grouped_mutual;
     ];
     "extern declarations", [
       test_case "basic ok"            `Quick v_extern_basic;

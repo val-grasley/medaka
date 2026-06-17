@@ -1,0 +1,8 @@
+-- DuplicateBinding (Phase 148): same-named top-level clauses separated by an
+-- intervening declaration are non-contiguous; resolve flags them instead of
+-- silently coalescing into one multi-clause function.
+foo : Int -> Int
+foo x = x + 1
+bar = 5
+foo : Option Int -> Int
+foo y = y

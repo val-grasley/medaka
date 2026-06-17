@@ -23,6 +23,7 @@ type error =
   | QuestionMisplaced                       (* `?` outside `let pat = e ?` position *)
   | AsPatternMisplaced                       (* `x@..` outside a binding LHS (lambda param / do-bind / match) *)
   | NonRecursiveValueLet of ident           (* `let x = ... x ...` (no `rec`) where x is in scope on RHS *)
+  | DuplicateBinding     of ident           (* non-contiguous clauses of a top-level binding (Phase 148) *)
 
 let current_loc : Ast.loc option ref = ref None
 
@@ -60,8 +61,12 @@ let pp_error = function
        Non-function `let` bindings are not recursive — write `let rec %s = ...` \
        to opt in to recursion (the RHS must be a lambda)."
       n n
-
-(* ── Built-ins ─────────────────────────────────── *)
+  | DuplicateBinding n ->
+    Printf.sprintf
+      "the clauses of '%s' must be contiguous: a same-named top-level binding \
+       already appears earlier, separated by an intervening declaration. \
+       Move all clauses of '%s' (and its type signature) together, or rename one."
+      n n
 
 (* Until the stdlib exists, these are baked in. *)
 
@@ -957,10 +962,69 @@ let build_exports ?(known_modules : module_exports list = [])
 
 (* ── Public entry points ──────────────────────── *)
 
+(* Phase 148: the clauses (and type signature) of a top-level value binding must
+   be contiguous. Two same-named DFunDef/DTypeSig/DLetGroup decls separated by an
+   intervening declaration are silently coalesced into one multi-clause function
+   by typecheck/eval (later clauses become dead, or — with conflicting sigs — fail
+   deep in unification with no provenance). We detect the non-contiguity here and
+   emit a clear DuplicateBinding error.
+
+   Algorithm: walk decls in order, tracking each value name as Open (currently in
+   its contiguous run of clause bodies) or Closed (its run ended). A clause-body
+   decl (DFunDef/DLetGroup) for name n continues n's run (or opens it); reaching
+   it while n is Closed is the error. A clause-body decl closes the runs of every
+   Open name it does NOT itself bind. Type signatures (DTypeSig) are TRANSPARENT:
+   they neither open nor close a run, so the conventional "all sigs, then all
+   defs" grouping of a mutually-recursive pair (sig A, sig B, defs A, defs B) is
+   accepted (the def-runs of A and of B are each internally contiguous). *)
+let check_contiguous_bindings (prog : program) : (error * Ast.loc option) list =
+  (* names whose clause-bodies this decl contributes (value namespace); a type
+     signature contributes none, so it does not close other open runs *)
+  let bound_names d = match Ast.inner_decl d with
+    | DFunDef (_, n, _, _) -> [n]
+    | DLetGroup (_, bs) -> List.map fst bs
+    | _ -> []
+  in
+  (* a transparent decl participates in neither opening nor closing (DTypeSig) *)
+  let is_transparent d = match Ast.inner_decl d with
+    | DTypeSig _ -> true
+    | _ -> false
+  in
+  let decl_loc d = match Ast.inner_decl d with
+    | DFunDef (_, _, _, body) ->
+      let r = ref None in
+      let _ = Desugar.map_expr
+          (fun e' -> (match e' with Ast.ELoc (l, _) when !r = None -> r := Some l | _ -> ()); e') body in
+      !r
+    | _ -> None
+  in
+  let state : (ident, bool) Hashtbl.t = Hashtbl.create 16 in  (* name -> open? *)
+  let errors = ref [] in
+  List.iter (fun d ->
+    if is_transparent d then ()   (* signatures don't affect contiguity runs *)
+    else begin
+      let names = bound_names d in
+      (* close every Open name not bound by this decl *)
+      Hashtbl.iter (fun n is_open ->
+        if is_open && not (List.mem n names) then Hashtbl.replace state n false
+      ) (Hashtbl.copy state);
+      (* process this decl's bound names *)
+      List.iter (fun n ->
+        match Hashtbl.find_opt state n with
+        | Some true  -> ()                              (* continues its run *)
+        | Some false ->                                 (* re-opened after a gap *)
+          errors := (DuplicateBinding n, decl_loc d) :: !errors;
+          Hashtbl.replace state n true
+        | None -> Hashtbl.replace state n true          (* first appearance *)
+      ) names
+    end
+  ) prog;
+  List.rev !errors
+
 let resolve_program (prog : program) : (error * Ast.loc option) list =
   current_loc := None;
   let env, build_errors = build_env prog in
-  let errors = ref build_errors in
+  let errors = ref (build_errors @ check_contiguous_bindings prog) in
   List.iter (check_decl env errors) prog;
   List.rev !errors
 
@@ -973,7 +1037,7 @@ let resolve_module
     : module_exports * (error * Ast.loc option) list =
   current_loc := None;
   let env, build_errors = build_env ~known_modules prog in
-  let errors = ref build_errors in
+  let errors = ref (build_errors @ check_contiguous_bindings prog) in
   List.iter (check_decl env errors) prog;
   let exports = build_exports ~known_modules mod_id prog env in
   (exports, List.rev !errors)
