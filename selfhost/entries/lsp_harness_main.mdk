@@ -26,6 +26,8 @@ import tools.lsp_harness.{
   decodeSemToks,
   lenTokensShareType,
   hasTokenType,
+  hoverValue,
+  strContains,
   check,
   summary,
 }
@@ -177,6 +179,58 @@ fixtureSemanticRoles medaka fixDir =
               check "semantic tokens: type/ctor/typeclass distinct"
                 (hasTokenType 1 toks && hasTokenType 2 toks && hasTokenType 7 toks)
 
+-- Fixture 7: hover type resolution over hover_local.mdk's `let input = readLine
+-- ()` / `putStrLn input` buffer.  Regression for the top-level-only hover env:
+--   • LOCAL binders (let/param/match) were invisible — assert `input` at its USE
+--     (line 3) and BINDER (line 2) sites → `input : String` (also proves runtime
+--     externs are seeded, else `input` types as a free `a`).
+--   • EXTERNS (seed schemes, excluded from the returned env) were invisible —
+--     assert `putStrLn` / `readLine` hover their full signatures incl. effects.
+fixtureHoverLocal : String -> String -> <IO, Mut> Unit
+fixtureHoverLocal medaka fixDir =
+  let path = stringConcat [fixDir, "/hover_local.mdk"]
+  match readFile path
+    Err _ => hoverFail ()
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/hover" (docPosParams uri 3 12),
+        requestMsg 3 "textDocument/hover" (docPosParams uri 2 7),
+        requestMsg 4 "textDocument/hover" (docPosParams uri 3 4),
+        requestMsg 5 "textDocument/hover" (docPosParams uri 2 16),
+        requestMsg 6 "textDocument/hover" (docPosParams uri 0 0),
+        shutdownMsg 7,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => hoverFail ()
+        Ok out => match parseFrames out
+          (frames, _) =>
+            let _ = check "hover local: use site → input : String" (hoverContains 2 frames "input : String")
+            let _ = check "hover local: binder site → input : String" (hoverContains 3 frames "input : String")
+            let _ = check "hover extern: putStrLn full signature" (hoverContains 4 frames "putStrLn : String -> <Stdout> Unit")
+            let _ = check "hover extern: readLine full signature" (hoverContains 5 frames "readLine : Unit -> <Stdin> String")
+            check "hover leading-effect: main : <IO> Unit" (hoverContains 6 frames "main : <IO> Unit")
+
+-- All four hover checks fail (file unreadable / session error).  Arity-1 (NOT a
+-- nullary CAF — a top-level nullary effectful binding is lazy + force-once, which
+-- would fire these checks at startup regardless of the branch taken).
+hoverFail : Unit -> <IO, Mut> Unit
+hoverFail _ =
+  let _ = check "hover local: use site → input : String" False
+  let _ = check "hover local: binder site → input : String" False
+  let _ = check "hover extern: putStrLn full signature" False
+  let _ = check "hover extern: readLine full signature" False
+  check "hover leading-effect: main : <IO> Unit" False
+
+hoverContains : Int -> List Frame -> String -> Bool
+hoverContains idn frames needle = match hoverValue idn frames
+  Some v => strContains v needle
+  None => False
+
 main =
   let medaka = envOr "MEDAKA" "./medaka"
   let root = envOr "MEDAKA_ROOT" "."
@@ -187,4 +241,5 @@ main =
   let _ = fixtureUnparseableNoCrash medaka fixDir
   let _ = fixtureSemanticTokens medaka fixDir
   let _ = fixtureSemanticRoles medaka fixDir
-  summary 6
+  let _ = fixtureHoverLocal medaka fixDir
+  summary 11

@@ -58,9 +58,9 @@ import frontend.parser.{
 }
 import frontend.lexer.{Token(..), tokenizeWithOffsetPairs}
 import support.char.{isIdentChar, isDigit}
-import support.util.{maxI, utf8Len}
+import support.util.{maxI, utf8Len, joinWith}
 import frontend.desugar.{desugar}
-import types.typecheck.{checkProgramSchemes, ppScheme, Scheme(..)}
+import types.typecheck.{checkProgramSchemes, checkProgramSchemesWithRuntime, ppScheme, Scheme(..), currentLocalSchemes, currentSeedSchemes}
 import tools.fmt.{formatSource}
 import frontend.ast.{
   Decl,
@@ -80,6 +80,8 @@ import frontend.ast.{
   DNewtype,
   DLetGroup,
   DAttrib,
+  Ty,
+  TyEffect,
   Loc(..),
   Variant,
   Field,
@@ -473,13 +475,14 @@ defZip _ _ _ = None
 -- in repl (whose `checkProgram (preludeDecls ++ combined)` likewise omits a
 -- separate runtime seed).  Returns None when the buffer doesn't parse (the
 -- OCaml handlers bail the same way on a parse failure).
-docSchemes : String -> String -> <Mut> Option (List (String, Scheme))
-docSchemes coreSrc src = match parseResult src
+docSchemes : String -> String -> String -> <Mut> Option (List (String, Scheme))
+docSchemes runtimeSrc coreSrc src = match parseResult src
   Err _ => None
   Ok userRaw =>
+    let runtimeDecls = desugar (unwrapDecls (parseResult runtimeSrc))
     let coreDecls = desugar (unwrapDecls (parseResult coreSrc))
     let userDecls = desugar userRaw
-    Some (checkProgramSchemes (coreDecls ++ userDecls))
+    Some (checkProgramSchemesWithRuntime runtimeDecls (coreDecls ++ userDecls))
 
 -- core.mdk always parses; unwrap its parseResult (defensive None → []).
 unwrapDecls : Result ParseError (List Decl) -> List Decl
@@ -501,16 +504,70 @@ lookupSchemeL name ((n, s)::rest)
 --   <name> : <type>
 --   ```
 -- (exactly the OCaml format string).  Null when off an identifier or not in env.
-hoverResult : String -> String -> Json -> <Mut> Json
-hoverResult coreSrc src params = match (positionLine params, positionChar params)
+-- Extension over the OCaml oracle: when the name isn't a top-level/global binding,
+-- fall back to `localSchemesOut` (let-bound names, lambda/clause params, match
+-- binders captured during the typecheck docSchemes just ran), so local variables
+-- also show their inferred type on hover.
+hoverResult : String -> String -> String -> Json -> <Mut> Json
+hoverResult runtimeSrc coreSrc src params = match (positionLine params, positionChar params)
   ((Some line), (Some col)) => match identifierAt src line col
     None => JNull
-    Some name => match docSchemes coreSrc src
+    Some name => match docSchemes runtimeSrc coreSrc src
       None => JNull
-      Some env => match lookupSchemeL name env
+      Some env => match hoverScheme name env
         None => JNull
-        Some sch => jHover name (ppScheme sch)
+        Some sch =>
+          let pfx = sigLeadingEff name (unwrapDecls (parseResult src))
+          jHover name (stringConcat [pfx, ppScheme sch])
   _ => JNull
+
+-- Resolve a hovered name's scheme: the returned typecheck env (globals +
+-- top-level) first, then the hover-only side-channels — locals (let/param/match
+-- binders) and the seed (runtime.mdk externs) — neither of which the env carries.
+hoverScheme : String -> List (String, Scheme) -> <Mut> Option Scheme
+hoverScheme name env = match lookupSchemeL name env
+  Some s => Some s
+  None => match lookupSchemeL name (currentLocalSchemes ())
+    Some s => Some s
+    None => lookupSchemeL name (currentSeedSchemes ())
+
+-- The leading effect annotation of NAME's top-level signature, rendered as a
+-- `<IO> ` prefix (trailing space), or "" if none.  `from_ast_type` drops a
+-- leading `TyEffect` when building the Mono (both compilers do — it's a latent
+-- computation effect, not part of the value's type), so `main : <IO> Unit`
+-- otherwise renders as bare `Unit`.  Recover it from the written sig for display.
+sigLeadingEff : String -> List Decl -> String
+sigLeadingEff _ [] = ""
+sigLeadingEff name (d::ds) = match sigLeadingEffOne name d
+  Some pfx => pfx
+  None => sigLeadingEff name ds
+
+sigLeadingEffOne : String -> Decl -> Option String
+sigLeadingEffOne name (DAttrib _ d) = sigLeadingEffOne name d
+sigLeadingEffOne name (DTypeSig _ n ty)
+  | n == name = leadingEffOf ty
+  | otherwise = None
+sigLeadingEffOne _ _ = None
+
+leadingEffOf : Ty -> Option String
+leadingEffOf (TyEffect labels tail _) = Some (stringConcat [renderEffRow labels tail, " "])
+leadingEffOf _ = None
+
+-- Render a written effect row to surface syntax: `<IO>`, `<IO, State>`,
+-- `<IO | e>`, `<e>` (mirrors parser.mdk effectBody: comma-separated labels, an
+-- optional `| tail` var).
+renderEffRow : List (String, Option String) -> Option String -> String
+renderEffRow labels tail =
+  let lbls = joinWith ", " (map renderEffAtom labels)
+  let body = match tail
+    None => lbls
+    Some v => if lbls == "" then v else stringConcat [lbls, " | ", v]
+  stringConcat ["<", body, ">"]
+
+renderEffAtom : (String, Option String) -> String
+renderEffAtom (nm, None) = nm
+renderEffAtom (nm, Some "_") = stringConcat [nm, " _"]
+renderEffAtom (nm, Some p) = stringConcat [nm, " \"", p, "\""]
 
 -- Build the Hover { contents: MarkupContent{ kind:"markdown", value } } object.
 jHover : String -> String -> Json
@@ -524,13 +581,13 @@ jHover name ty =
       )
     ]
 
-handleHover : String -> Json -> Json -> Docs -> <IO, Mut> Unit
-handleHover coreSrc idJson params docs =
+handleHover : String -> String -> Json -> Json -> Docs -> <IO, Mut> Unit
+handleHover runtimeSrc coreSrc idJson params docs =
   let result = match requestUri params
     None => JNull
     Some uri => match docsGet uri docs
       None => JNull
-      Some src => hoverResult coreSrc src params
+      Some src => hoverResult runtimeSrc coreSrc src params
   writeMessage (responseMsg idJson result)
 
 -- ── textDocument/completion ─────────────────────────────────────────────────
@@ -595,22 +652,22 @@ jCompletionItem label detail =
   jObject
     [("label", JString label), ("kind", JInt 3), ("detail", JString detail)]
 
-completionResult : String -> String -> Json -> <Mut> Json
-completionResult coreSrc src params = match (positionLine params, positionChar params)
-  ((Some line), (Some col)) => match docSchemes coreSrc src
+completionResult : String -> String -> String -> Json -> <Mut> Json
+completionResult runtimeSrc coreSrc src params = match (positionLine params, positionChar params)
+  ((Some line), (Some col)) => match docSchemes runtimeSrc coreSrc src
     None => JNull
     Some env =>
       let prefix = prefixBefore src line col
       jArray (filterCompletions prefix [] env)
   _ => JNull
 
-handleCompletion : String -> Json -> Json -> Docs -> <IO, Mut> Unit
-handleCompletion coreSrc idJson params docs =
+handleCompletion : String -> String -> Json -> Json -> Docs -> <IO, Mut> Unit
+handleCompletion runtimeSrc coreSrc idJson params docs =
   let result = match requestUri params
     None => JNull
     Some uri => match docsGet uri docs
       None => JNull
-      Some src => completionResult coreSrc src params
+      Some src => completionResult runtimeSrc coreSrc src params
   writeMessage (responseMsg idJson result)
 
 -- ── textDocument/inlayHint ──────────────────────────────────────────────────
@@ -662,8 +719,8 @@ identRunLen arr len i acc
 
 -- inlay hints for a buffer: zip parse decls with positions, filter to
 -- unsignatured value bindings present in the env, place one hint each.
-inlayHints : String -> String -> <Mut> List Json
-inlayHints coreSrc src = match docSchemes coreSrc src
+inlayHints : String -> String -> String -> <Mut> List Json
+inlayHints runtimeSrc coreSrc src = match docSchemes runtimeSrc coreSrc src
   None => []
   Some env => match parseWithPositionsOpt src
     None => []
@@ -692,13 +749,13 @@ jInlayHint line col label =
       ("paddingLeft", JBool True),
     ]
 
-handleInlayHint : String -> Json -> Json -> Docs -> <IO, Mut> Unit
-handleInlayHint coreSrc idJson params docs =
+handleInlayHint : String -> String -> Json -> Json -> Docs -> <IO, Mut> Unit
+handleInlayHint runtimeSrc coreSrc idJson params docs =
   let result = match requestUri params
     None => JNull
     Some uri => match docsGet uri docs
       None => JNull
-      Some src => jArray (inlayHints coreSrc src)
+      Some src => jArray (inlayHints runtimeSrc coreSrc src)
   writeMessage (responseMsg idJson result)
 
 -- ── request-position helpers ────────────────────────────────────────────────
@@ -1348,15 +1405,15 @@ dispatch runtimeSrc coreSrc msg docs = match methodOf msg
                   Step docs True
                 else
                   if meth == "textDocument/hover" then
-                    let _ = handleHover coreSrc (requestId msg) (fieldOr "params" msg) docs
+                    let _ = handleHover runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
                     Step docs True
                   else
                     if meth == "textDocument/completion" then
-                      let _ = handleCompletion coreSrc (requestId msg) (fieldOr "params" msg) docs
+                      let _ = handleCompletion runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
                       Step docs True
                     else
                       if meth == "textDocument/inlayHint" then
-                        let _ = handleInlayHint coreSrc (requestId msg) (fieldOr "params" msg) docs
+                        let _ = handleInlayHint runtimeSrc coreSrc (requestId msg) (fieldOr "params" msg) docs
                         Step docs True
                       else
                         if meth == "textDocument/semanticTokens/full" then

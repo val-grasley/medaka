@@ -267,6 +267,33 @@ responseById idn ((Frame _ body _)::rest) = match parse body
     None => responseById idn rest
   Err _ => responseById idn rest
 
+-- result.contents.value of hover response `idn` (the markdown ```medaka\n<name> :
+-- <ty>\n``` string), or None.
+export
+hoverValue : Int -> List Frame -> Option String
+hoverValue idn frames = match responseById idn frames
+  None => None
+  Some j => match lookup "result" j
+    None => None
+    Some res => match lookup "contents" res
+      None => None
+      Some c => match lookup "value" c
+        Some v => asString v
+        None => None
+
+-- Does `hay` contain `needle` as a substring? (reuses the module's matchesAt).
+export
+strContains : String -> String -> Bool
+strContains hay needle =
+  let h = stringToChars hay
+  strContainsGo h (arrayLength h) needle 0
+
+strContainsGo : Array Char -> Int -> String -> Int -> Bool
+strContainsGo h hlen needle i
+  | i >= hlen = False
+  | matchesAt h hlen i needle = True
+  | otherwise = strContainsGo h hlen needle (i + 1)
+
 {- ── semanticTokens/full decode ──────────────────────────────────────────────
    The response carries `result.data`: a flat int array, 5 ints per token
    (`deltaLine, deltaChar, length, tokenType, modifiers`).  We pull it out, undo
