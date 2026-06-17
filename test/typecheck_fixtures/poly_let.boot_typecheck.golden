@@ -1,9 +1,9 @@
 idLet : (a -> a, b -> b)
-nums : List Int
+nums : List a
 strs : List String
-mixed : (String, Bool, List Int)
+mixed : (String, Bool, List a)
 pick : Bool -> a -> a -> a
 nil : List a
 cons2 : a -> a -> List a
 firstOr : a -> List a -> a
-len : List a -> Int
+len : List a -> b

@@ -7321,7 +7321,14 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = emit e "  call void @mdk_set_args(i32 %argc, ptr %argv)"
   let _ = emitTopGlobals e (orderedValBinds (valBinds groups))
   let (mv, mty) = emitExpr e [] (mainBody groups)
-  let _ = emitPrint e mv mty
+  -- A Unit-returning `main` produces output ONLY through explicit print calls (or
+  -- a panic); never auto-print its `()` result.  Detected by the DECLARED return
+  -- type (`declSigOf "main"` → "Unit", robust even when the body LTy is
+  -- mis-inferred — e.g. the medaka CLI's own `match`-bodied main, which otherwise
+  -- printed a stray `0`) OR a body LTy that is already LTUnit (an unannotated IO
+  -- `main = putStrLn …`).  Value-returning mains keep auto-printing (the pp_value
+  -- differential-test contract).
+  let _ = if mainIsUnit e mty then () else emitPrint e mv mty
   let _ = emit e "  ret i32 0"
   let _ = emit e "}"
   let _ = emitFns e (fnBinds groups)
@@ -7371,6 +7378,17 @@ emitTopGlobals e ((CBind name [(CClause [] body)])::rest) =
 emitTopGlobals _ ((CBind name _)::_) =
   panic
     ("llvm spike: top-level function '" ++ name ++ "' unsupported in slice 1 (value bindings only)")
+
+-- Is `main` Unit-returning (→ suppress the auto-print of its result)?  Prefers
+-- the DECLARED return type (effects already stripped to the head by
+-- core_ir_lower.methodRetTy, so `<IO> Unit` → "Unit"); falls back to the body's
+-- emit-time LTy for an unannotated main.
+mainIsUnit : Emit -> LTy -> <Mut> Bool
+mainIsUnit e mty = match declSigOf "main"
+  Some (_, "Unit") => True
+  _ => match mty
+    LTUnit => True
+    _ => False
 
 emitPrint : Emit -> String -> LTy -> <Mut> Unit
 emitPrint e v LTInt =

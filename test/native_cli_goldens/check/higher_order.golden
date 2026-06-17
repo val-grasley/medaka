@@ -20,7 +20,7 @@ debugListItems : List a -> String
 display : a -> String
 displayListItems : List a -> String
 div : a -> a -> a
-double : Int -> Int
+double : a -> a
 elem : a -> b a -> Bool
 empty : a
 eq : a -> a -> Bool
@@ -47,7 +47,7 @@ hashListItems : Int -> List a -> Int
 identity : a -> a
 isEmpty : a b -> Bool
 isErr : Result a b -> Bool
-isEven : Int -> Bool
+isEven : a -> Bool
 isNone : Option a -> Bool
 isOk : Result a b -> Bool
 isSome : Option a -> Bool
@@ -80,7 +80,7 @@ signum : a -> a
 snd : (a, b) -> b
 sub : a -> a -> a
 sum : a b -> b
-sumList : a Int -> Int
+sumList : a b -> b
 thenCmp : Ordering -> Ordering -> Ordering
 toList : a b -> List b
 toResult : a -> Option b -> Result a b

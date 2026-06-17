@@ -51,6 +51,7 @@ isNone : Option a -> Bool
 isOk : Result a b -> Bool
 isSome : Option a -> Bool
 length : a b -> Int
+liftIO : (Unit -> a) -> Async b a
 lt : a -> a -> Bool
 lte : a -> a -> Bool
 main : Unit
@@ -75,6 +76,8 @@ print : a -> <IO> Unit
 println : a -> <IO> Unit
 product : a b -> b
 pure : a -> b a
+runAsync : Async a b -> b
+seqIO : Async a b -> (b -> Async a c) -> Async a c
 shrink : a -> List a
 signum : a -> a
 snd : (a, b) -> b
@@ -87,3 +90,4 @@ to_rep : a -> Rep
 unless : Bool -> a Unit -> a Unit
 when : Bool -> a Unit -> a Unit
 xor : Bool -> Bool -> Bool
+yld : Async <IO | a> Unit

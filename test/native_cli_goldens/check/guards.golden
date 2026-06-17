@@ -74,7 +74,7 @@ println : a -> <IO> Unit
 product : a b -> b
 pure : a -> b a
 shrink : a -> List a
-sign : Int -> String
+sign : a -> String
 signum : a -> a
 snd : (a, b) -> b
 sub : a -> a -> a

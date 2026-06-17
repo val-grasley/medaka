@@ -31,6 +31,25 @@ dicts — the GENUINE #21 nested-element-dict flattening solved, not contained;
 Set-literal / mutual-rec-Monoid dict gaps** are fixed. **Remaining = the soak itself:**
 a clean bug-free stretch of native-only dev, then the confidence-gated `lib/` removal.
 
+**Open soak findings (2026-06-16 — surfaced fixing the Unit-`main` auto-print + fmt
+regressions; pick up next):**
+- **Native under-defaults ambiguous `Num` bindings** (`diff_selfhost_typecheck`:
+  `index_default`, `poly_let`). `fa = [10, 20, 30].[1]` infers `fa : a` natively but
+  `fa : Int` on the OCaml oracle (confirmed against a freshly-rebuilt dev probe — a
+  live divergence, NOT a stale golden). Design intent is "ground ambiguous `Num` → Int",
+  so native is the likely culprit — a defaulting residual in array-index / `let`-bound
+  positions (cf. the #11 "value-level defaulting" item). Do **not** recapture the goldens;
+  fix the native defaulting, then they go green.
+- **Native type-error wording diverges** (`diff_selfhost_typecheck_errors`:
+  `default_body_type_error`). Native reports `Type mismatch: Int vs Bool`; the oracle
+  reports `Method 'greetDefault': expected type Int but got Bool` (method-context-aware).
+  Native loses the method context — tighten the native diagnostic to match, or accept and
+  recapture once the wording is settled.
+- Both are genuine native/OCaml behavioral divergences (soak material), distinct from the
+  stale/missing Num-poly goldens that WERE recaptured this session (bootstrap_lex/parse/
+  desugar/mark/typecheck, diff_native_cli). The native printer's missing `ENumLit` arm
+  (fmt SIGTRAP on every int literal) was also fixed.
+
 **🏁 Medaka is a native self-hosting compiler.** The compiler is written in
 Medaka (`selfhost/`), and the native **LLVM backend now compiles it**: all seven
 pipeline stages (lex → parse → desugar → resolve → mark → typecheck → eval) are

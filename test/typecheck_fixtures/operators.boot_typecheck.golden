@@ -1,6 +1,6 @@
 add : a -> a -> a
-poly : Int -> Int -> Int -> Int
-negI : Int -> Int
+poly : a -> a -> a -> a
+negI : a -> a
 negP : a -> a
 eqp : a -> a -> Bool
 ltp : a -> a -> Bool
@@ -14,4 +14,4 @@ pipeIt : a -> (a -> b) -> b
 fwd : (a -> b) -> (b -> c) -> a -> c
 bwd : (a -> b) -> (c -> a) -> c -> b
 backtick : (a -> b -> c) -> a -> b -> c
-total : L Int -> Int
+total : L a -> a
