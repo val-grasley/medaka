@@ -1051,6 +1051,7 @@ eval env (ERangeArray lo hi incl) =
 -- current_loc there; the self-hosted eval surfaces errors via panic, so we just
 -- recurse into the wrapped expr).
 eval env (ELoc _ e) = eval env e
+eval env (EDoOrigin _ e) = eval env e
 eval _ _ = panic "eval: unsupported node (slice 2)"
 
 export

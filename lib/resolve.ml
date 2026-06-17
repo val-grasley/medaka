@@ -539,6 +539,7 @@ let rec check_expr env scope errors e =
   | ELoc (l, e') ->
     current_loc := Some l;
     check_expr env scope errors e'
+  | EDoOrigin (_, e') -> check_expr env scope errors e'
   | ELit _ -> ()
   | ENumLit _ -> ()   (* PLAN.md #11: a plain integer literal, nothing to bind *)
   | EMethodRef _ -> ()  (* marker pass runs after resolve; method already bound *)

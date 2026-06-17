@@ -71,6 +71,7 @@ and sexp_recpatfield (f, popt) =
 let rec sexp_expr e =
   match e with
   | ELoc (_, e)        -> sexp_expr e
+  | EDoOrigin (_, e)   -> sexp_expr e
   | ELit l             -> node "ELit" [sexp_lit l]
   (* PLAN.md #11: render an `ENumLit` exactly as `(ELit (LInt n))` so the
      OCaml astdump stays byte-identical to the selfhost sexp (which has no

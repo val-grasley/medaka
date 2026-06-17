@@ -211,6 +211,7 @@ type type_error =
   | LetRecNonFunction   of ident                   (* `let rec x = ...` where RHS isn't a lambda *)
   | InternalError       of string                   (* a broken compiler invariant, surfaced as a diagnostic *)
   | CannotShadowPrelude of ident                    (* Phase 78a: redefining a prelude fn the stdlib uses internally *)
+  | DoRequiresMonad                                 (* Phase 150: `do` used on a non-monad (e.g. sequencing IO) *)
   | Other              of string
 
 exception Type_error of type_error * Ast.loc option
@@ -1324,6 +1325,10 @@ let pp_error = function
        internally, so it cannot be shadowed. Rename your definition to a \
        different name."
       n
+  | DoRequiresMonad ->
+    "`do` requires a monad (e.g. `Option` or `Result`). For imperative IO \
+     sequencing, use a bare indented block instead of `do` (IO is not a monad \
+     in Medaka)."
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -2051,6 +2056,26 @@ let rec infer env = function
   | ELoc (l, e) ->
     current_loc := Some l;
     infer env e
+
+  (* Phase 150: a `do`-lowered chain. If inference fails with a Type mismatch
+     between the monad shape (`m b`, a type application) the lowered `andThen`/
+     `pure` demand and a non-monad concrete type (e.g. `Unit` from sequencing
+     IO), retarget the baffling deep error to a tailored "do requires a monad"
+     diagnostic carrying the do-block's loc. A valid do (over Option/Result/…)
+     never raises here, so it passes through untouched. *)
+  | EDoOrigin (do_loc, e) ->
+    let rec follow t = match t with
+      | TVar v -> (match !v with Link t' -> follow t' | _ -> t)
+      | _ -> t
+    in
+    (* a type application `m b` (the monad shape andThen wants) vs anything
+       that is not itself an application — the signature of the IO/non-monad
+       sequencing mistake *)
+    let is_app t = match follow t with TApp _ -> true | _ -> false in
+    (try infer env e
+     with Type_error (TypeMismatch (a, b), _)
+            when is_app a <> is_app b ->
+       raise (Type_error (DoRequiresMonad, Some do_loc)))
 
   (* Phase 69: resolved method occurrence.  Stash the ref so the EVar method
      branch records it in method_usages; check_method_usages fills it with the

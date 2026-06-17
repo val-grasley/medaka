@@ -120,6 +120,7 @@ lower (EDictAt name routesRef) = CDict name routesRef.value
 -- emitted IR for any program is byte-identical to the un-wrapped tree.  This is
 -- the fixpoint guarantee (the transparent strip that keeps the C3 IR stable).
 lower (ELoc _ e) = lower e
+lower (EDoOrigin _ e) = lower e
 lower other = panic ("core_ir lower: unsupported node " ++ nodeTag other)
 
 -- surface binops that are really sugar are lowered to primitive control flow /

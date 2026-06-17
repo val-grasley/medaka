@@ -224,6 +224,10 @@ public export data Expr
   -- byte-identical.  The parser never builds nested binop/app wrappers (it
   -- wraps leaves + statement forms only, exactly like parser.mly).
   | ELoc Loc Expr
+  -- Phase 150: transparent marker wrapping a do-lowered andThen/pure chain;
+  -- carries the do-block's loc so typecheck can emit a tailored "do requires a
+  -- monad" error.  Desugar-introduced, never parsed/round-tripped.
+  | EDoOrigin Loc Expr
   -- PLAN.md #11: a *source* integer literal in EXPRESSION position, polymorphic
   -- over `Num a` (mirror of lib/ast.ml's `ENumLit of int * float option ref`).
   -- The parser emits this (never `ELit (LInt)`) for an integer in expression

@@ -4172,6 +4172,34 @@ let e_pf_non_fun_still_restricted = assert_err
    bad1 = set_ref r [1]\n\
    bad2 = set_ref r [\"x\"]\n"
 
+(* ── Phase 150: tailored "do requires a monad" error ─── *)
+
+let is_do_requires_monad = function DoRequiresMonad -> true | _ -> false
+
+(* assert_err_kind src pred — src fails AND the error matches pred *)
+let assert_err_kind pred src () =
+  match check src with
+  | Error e when pred e -> ()
+  | Error e -> failwith (Printf.sprintf
+      "Expected DoRequiresMonad, got:\n  %s\n\nSource:\n%s" (pp_error e) src)
+  | Ok _ -> failwith (Printf.sprintf
+      "Expected DoRequiresMonad, but program type-checked.\n\nSource:\n%s" src)
+
+(* `do` used to sequence IO (a non-monad) → the tailored monad error, not a
+   baffling deep `Type mismatch`. *)
+let e_do_on_io = assert_err_kind is_do_requires_monad
+  "main = do\n\
+  \  println \"one\"\n\
+  \  println \"two\"\n"
+
+(* a valid `do` over Option still type-checks (no over-rejection) *)
+let v_do_option = assert_type
+  "compute : Option Int\n\
+   compute = do\n\
+  \  x <- Some 1\n\
+  \  pure (x + 1)\n"
+  "compute" "Option Int"
+
 (* ── Runner ─────────────────────────────────────── *)
 
 let () =
@@ -4372,6 +4400,8 @@ let () =
       test_case "block-let recursive fn"  `Quick t_block_let_recursive;
       test_case "block-let value nonrec"  `Quick t_block_let_nonrec_value;
       test_case "do seq, no bind (now errors)"  `Quick e_do_seq_no_bind_now_fails;
+      test_case "do on IO → monad error" `Quick e_do_on_io;
+      test_case "do over Option ok"      `Quick v_do_option;
       test_case "indented effectful seq"  `Quick t_indented_body_effectful_seq;
       test_case "bind + pure"            `Quick t_do_bind_pure;
       test_case "two binds"              `Quick t_do_two_binds;

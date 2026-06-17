@@ -350,6 +350,7 @@ alphaLeftPrefix Unknown = Unknown
 
 alpha : List (String, Expr) -> Expr -> KP
 alpha lets (ELoc _ e) = alpha lets e
+alpha lets (EDoOrigin _ e) = alpha lets e
 alpha lets (EAnnot e _) = alpha lets e
 alpha lets (EHeadAnnot e _) = alpha lets e
 alpha _ (ELit (LString s)) = Known s
@@ -397,6 +398,7 @@ paramOfKp Unknown = PPrefix None
 -- the FIRST argument of an application spine: `f a b c` ⇒ Some a (locked dec 1)
 spineFirstArg : Expr -> Option Expr
 spineFirstArg (ELoc _ e) = spineFirstArg e
+spineFirstArg (EDoOrigin _ e) = spineFirstArg e
 spineFirstArg (EApp f x) = match spineHeadIsApp f
   True => spineFirstArg f
   False => Some x
@@ -406,6 +408,7 @@ spineFirstArg _ = None
 -- ⇒ recurse left; `EApp (EVar/leaf) x` ⇒ x is the first arg.
 spineHeadIsApp : Expr -> Bool
 spineHeadIsApp (ELoc _ e) = spineHeadIsApp e
+spineHeadIsApp (EDoOrigin _ e) = spineHeadIsApp e
 spineHeadIsApp (EApp _ _) = True
 spineHeadIsApp _ = False
 
@@ -734,6 +737,7 @@ collectDoStmtErrors (_::rest) = collectDoStmtErrors rest
 -- Recurse into an expr, collecting the FIRST do-wellformed error found.
 collectExprErrors : Expr -> List String
 collectExprErrors (ELoc _ e) = collectExprErrors e
+collectExprErrors (EDoOrigin _ e) = collectExprErrors e
 collectExprErrors (EApp a b) = match collectExprErrors a
   [] => collectExprErrors b
   errs => errs
@@ -1388,6 +1392,9 @@ pushTypeError msg =
 currentLoc : Ref (Option Loc)
 currentLoc = Ref None
 
+currentDoOrigin : Ref (Option Loc)
+currentDoOrigin = Ref None
+
 occursCheckFailed : Ref Bool
 occursCheckFailed = Ref False
 
@@ -1561,8 +1568,30 @@ unifyList (x::xs) (y::ys) =
 unifyList _ _ = panic "unify: tuple arity mismatch"
 
 typeMismatch : Mono -> Mono -> <Mut> Unit
-typeMismatch a b =
-  pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+typeMismatch a b = match currentDoOrigin.value
+  Some doLoc => typeMismatchInDo a b doLoc
+  None => pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+
+-- a mismatch inside a do-lowered chain: if it is the monad-shape (`m b`) vs
+-- non-monad obligation, retarget to the tailored "do requires a monad" error;
+-- otherwise fall back to the plain mismatch (the loc stays the do-block's).
+typeMismatchInDo : Mono -> Mono -> Loc -> <Mut> Unit
+typeMismatchInDo a b doLoc
+  | monoIsApp (normalize a) != monoIsApp (normalize b) = recordDoMonadError doLoc
+  | otherwise = pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+
+recordDoMonadError : Loc -> <Mut> Unit
+recordDoMonadError doLoc =
+  let _ = set_ref currentDoOrigin None
+  let _ = set_ref typeErrorsSticky True
+  set_ref typeErrors ((doRequiresMonadMsg, Some doLoc) :: typeErrors.value)
+
+monoIsApp : Mono -> Bool
+monoIsApp (TApp _ _) = True
+monoIsApp _ = False
+
+doRequiresMonadMsg : String
+doRequiresMonadMsg = "`do` requires a monad (e.g. `Option` or `Result`). For imperative IO sequencing, use a bare indented block instead of `do` (IO is not a monad in Medaka)."
 
 -- ── generalization & instantiation ────────────────────────────────────────
 generalize : Mono -> <Mut> Scheme
@@ -1580,6 +1609,7 @@ generalize t =
 -- a both-sides follow-up (T1b), deliberately not handled here.
 isNonexpansive : Expr -> Bool
 isNonexpansive (ELoc _ e) = isNonexpansive e
+isNonexpansive (EDoOrigin _ e) = isNonexpansive e
 isNonexpansive (ELit _) = True
 isNonexpansive (EVar _) = True
 isNonexpansive (ELam _ _) = True
@@ -2182,6 +2212,14 @@ infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty
 infer env (ELoc l e) =
   let _ = set_ref currentLoc (Some l)
   infer env e
+-- Phase 150: a do-lowered chain.  Record the do-block loc so a monad-shape
+-- mismatch during inference is retargeted to the tailored "do requires a monad"
+-- error (see typeMismatch); clear it afterwards so sibling code isn't mis-blamed.
+infer env (EDoOrigin l e) =
+  let _ = set_ref currentDoOrigin (Some l)
+  let t = infer env e
+  let _ = set_ref currentDoOrigin None
+  t
 infer _ _ = panic "typecheck: unsupported expression (slice 1)"
 
 inferArrayLit : TcEnv -> List Expr -> <Mut> Mono
@@ -3854,6 +3892,7 @@ rewriteArgScoped rw bound (EListComp body quals) =
   EListComp (rewriteArgScoped rw bnd body) quals2
 -- non-binder composites: recurse children with the same bound
 rewriteArgScoped rw bound (ELoc l e) = ELoc l (rewriteArgScoped rw bound e)
+rewriteArgScoped rw bound (EDoOrigin l e) = EDoOrigin l (rewriteArgScoped rw bound e)
 rewriteArgScoped rw bound (EApp f x) =
   EApp (rewriteArgScoped rw bound f) (rewriteArgScoped rw bound x)
 rewriteArgScoped rw bound (EIf c t e) =
@@ -5165,6 +5204,7 @@ routeRDictName _ = []
 collectMethodSites : Expr -> List (Ref Route)
 collectMethodSites (EMethodAt _ r _ _) = [r]
 collectMethodSites (ELoc _ e) = collectMethodSites e
+collectMethodSites (EDoOrigin _ e) = collectMethodSites e
 collectMethodSites (EApp f x) = collectMethodSites f ++ collectMethodSites x
 collectMethodSites (ELam _ b) = collectMethodSites b
 collectMethodSites (ELet _ _ _ e1 e2) = collectMethodSites e1
@@ -5237,6 +5277,7 @@ collectDictSites (EDictAt _ rs) = [rs]
 -- the matching param.  [] on the golden path (resolveArgStamp never runs).
 collectDictSites (EMethodAt _ _ implR methR) = [implR, methR]
 collectDictSites (ELoc _ e) = collectDictSites e
+collectDictSites (EDoOrigin _ e) = collectDictSites e
 collectDictSites (EApp f x) = collectDictSites f ++ collectDictSites x
 collectDictSites (ELam _ b) = collectDictSites b
 collectDictSites (ELet _ _ _ e1 e2) = collectDictSites e1 ++ collectDictSites e2
@@ -6089,6 +6130,7 @@ allEVars (ERecordUpdate e fs) = allEVars e ++ concatMapList fieldAssignEVars fs
 allEVars (EVariantUpdate _ e fs) = allEVars e
   ++ concatMapList fieldAssignEVars fs
 allEVars (ELoc _ e) = allEVars e
+allEVars (EDoOrigin _ e) = allEVars e
 allEVars _ = []
 
 letBindEVars : LetBind -> List String

@@ -19,6 +19,7 @@ let rec collect_expr acc = function
     let key = (loc.Ast.file, loc.Ast.line) in
     let acc' = if List.mem key acc then acc else key :: acc in
     collect_expr acc' e
+  | Ast.EDoOrigin (_, e) -> collect_expr acc e
   | Ast.ELit _ | Ast.EVar _ | Ast.EMethodRef _ | Ast.EDictApp _ -> acc
   | Ast.ENumLit _ -> acc
   | Ast.EApp (f, x) -> collect_expr (collect_expr acc f) x

@@ -260,6 +260,7 @@ checkExpr env scope (ESection s) = checkSection env scope s
 -- checkExpr stays pure to avoid threading <Mut> through the whole walk — a
 -- resolve-side currentLoc is a B.10.2b refinement if the LSP needs it.)
 checkExpr env scope (ELoc _ e) = checkExpr env scope e
+checkExpr env scope (EDoOrigin _ e) = checkExpr env scope e
 
 -- an `@Name` impl hint is not a value reference (resolve must not flag it)
 checkVar : Env -> List String -> String -> List ResError
