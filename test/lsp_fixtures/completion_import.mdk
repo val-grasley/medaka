@@ -1,0 +1,4 @@
+import list.{reverse}
+
+f : List Int -> List Int
+f xs = rev

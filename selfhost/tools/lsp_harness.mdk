@@ -281,6 +281,28 @@ hoverValue idn frames = match responseById idn frames
         Some v => asString v
         None => None
 
+-- Does completion response `idn` include a CompletionItem whose label == needle?
+export
+completionHasLabel : Int -> List Frame -> String -> Bool
+completionHasLabel idn frames needle = match responseById idn frames
+  None => False
+  Some j => match lookup "result" j
+    Some (JArray items) => anyLabelEq items 0 (arrayLength items) needle
+    _ => False
+
+anyLabelEq : Array Json -> Int -> Int -> String -> Bool
+anyLabelEq items i n needle
+  | i >= n = False
+  | labelEq (arrayGetUnsafe i items) needle = True
+  | otherwise = anyLabelEq items (i + 1) n needle
+
+labelEq : Json -> String -> Bool
+labelEq it needle = match lookup "label" it
+  Some v => match asString v
+    Some s => s == needle
+    None => False
+  None => False
+
 -- Does `hay` contain `needle` as a substring? (reuses the module's matchesAt).
 export
 strContains : String -> String -> Bool

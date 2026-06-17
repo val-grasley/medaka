@@ -38,6 +38,9 @@ import frontend.exhaust.{checkGuardExhaustiveness}
 import types.typecheck.{
   checkProgramDiags,
   checkModulesDiags,
+  checkModules,
+  entryOwnSchemes,
+  Scheme(..),
   setCoherenceUserDecls,
 }
 import driver.loader.{loadProgramFilesLocated}
@@ -267,6 +270,24 @@ analyzeProject cacheRef read entry roots runtimeSrc coreSrc =
 -- entry file (the selfhost loader returns a single Err string without a per-file
 -- split, unlike the OCaml attribute_load_error; entry is the conservative
 -- fallback there too for cycle/ambiguous).
+
+-- LSP project-aware hover/completion: load the graph rooted at `entry` (the same
+-- loader + cache + read disk-fallback analyzeProject uses) and return the ENTRY
+-- module's own top-level schemes.  Running `checkModules` ALSO populates the
+-- typecheck hover side-channels (localSchemesOut/seedSchemesOut) for the entry
+-- module (checked last), so its locals and its import-scoped seed (runtime + core
+-- + imported names) are available to the hover lookup fallback chain.  None on a
+-- load error (a buffer with an unresolved import) — hover then degrades to null.
+export
+projectEntrySchemes : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> Option (List (String, Scheme))
+projectEntrySchemes cacheRef read entry roots runtimeSrc coreSrc =
+  let staleRef = newStale ()
+  let wread = p => wrappedRead cacheRef staleRef read p
+  let runtimeP = desugar (parse runtimeSrc)
+  let coreP = desugar (parse coreSrc)
+  match loadProgramFilesLocated wread entry roots
+    Err _ => None
+    Ok mods => Some (entryOwnSchemes (checkModules runtimeP coreP (map midToDesugaredPair mods)))
 
 -- resolve per module (threading exports), bucketing by file.
 

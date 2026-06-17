@@ -7240,6 +7240,12 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let _ = set_ref crossModuleMethodConstraintsRef methodConstraintsRef.value
   let _ = groundMultiParamObligations implDecls pendingImplObligations.value
   let _ = checkCallObligations (implDecls ++ prog) pendingCallObligations.value
+  -- LSP hover: leave THIS module's locals + seed (runtime+core+imports) in the
+  -- side-channels, mirroring checkProgramSeeded.  The entry module is checked
+  -- LAST in the multi-module path, so the channels end holding ITS values, which
+  -- is what project-aware hover reads (imported names live in seedVars).
+  let _ = set_ref localSchemesOut (mapLocalSchemes localBindRefs.value)
+  let _ = set_ref seedSchemesOut seedVars
   globalS ++ topSchemes
 -- C5: compute this module's standalone-shadow set BEFORE inference, so the
 -- inferMethodAt arg-position record can gate on it (resetState cleared it via
@@ -7565,6 +7571,7 @@ checkModulesDiags runtimeDecls coreDecls modules =
     modules
 
 -- the entry module is last in dependency-first order
+export
 entryOwnSchemes : List (String, List (String, Scheme)) -> List (String, Scheme)
 entryOwnSchemes [] = []
 entryOwnSchemes [(_, ss)] = ss

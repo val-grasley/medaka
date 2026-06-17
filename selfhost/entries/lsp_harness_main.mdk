@@ -28,6 +28,7 @@ import tools.lsp_harness.{
   hasTokenType,
   hoverValue,
   strContains,
+  completionHasLabel,
   check,
   summary,
 }
@@ -231,6 +232,53 @@ hoverContains idn frames needle = match hoverValue idn frames
   Some v => strContains v needle
   None => False
 
+-- Fixture 8: hover over an IMPORTED name resolves its type via the multi-module
+-- project pipeline (regression for the single-file hover env, which never loaded
+-- sibling/stdlib imports).  hover_import.mdk imports `list.{reverse}` and uses it;
+-- hovering the use site must report `reverse : List a -> List a`.
+fixtureHoverImport : String -> String -> <IO, Mut> Unit
+fixtureHoverImport medaka fixDir =
+  let path = stringConcat [fixDir, "/hover_import.mdk"]
+  match readFile path
+    Err _ => check "hover import: reverse : List a -> List a" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/hover" (docPosParams uri 3 9),
+        shutdownMsg 3,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => check "hover import: reverse : List a -> List a" False
+        Ok out => match parseFrames out
+          (frames, _) => check "hover import: reverse : List a -> List a" (hoverContains 2 frames "reverse : List a -> List a")
+
+-- Fixture 9: completion over a project buffer suggests IMPORTED names (and core/
+-- runtime), not just the buffer's own.  completion_import.mdk imports
+-- `list.{reverse}` and types `rev`; the completion list must include `reverse`.
+fixtureCompletionImport : String -> String -> <IO, Mut> Unit
+fixtureCompletionImport medaka fixDir =
+  let path = stringConcat [fixDir, "/completion_import.mdk"]
+  match readFile path
+    Err _ => check "completion import: reverse suggested" False
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/completion" (docPosParams uri 3 10),
+        shutdownMsg 3,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => check "completion import: reverse suggested" False
+        Ok out => match parseFrames out
+          (frames, _) => check "completion import: reverse suggested" (completionHasLabel 2 frames "reverse")
+
 main =
   let medaka = envOr "MEDAKA" "./medaka"
   let root = envOr "MEDAKA_ROOT" "."
@@ -242,4 +290,6 @@ main =
   let _ = fixtureSemanticTokens medaka fixDir
   let _ = fixtureSemanticRoles medaka fixDir
   let _ = fixtureHoverLocal medaka fixDir
-  summary 11
+  let _ = fixtureHoverImport medaka fixDir
+  let _ = fixtureCompletionImport medaka fixDir
+  summary 13

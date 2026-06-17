@@ -41,6 +41,7 @@ import driver.diagnostics.{
   SevWarning,
   analyzeLocated,
   analyzeProject,
+  projectEntrySchemes,
 }
 import driver.loader.{findProjectRoot}
 import frontend.parser.{
@@ -508,11 +509,14 @@ lookupSchemeL name ((n, s)::rest)
 -- fall back to `localSchemesOut` (let-bound names, lambda/clause params, match
 -- binders captured during the typecheck docSchemes just ran), so local variables
 -- also show their inferred type on hover.
-hoverResult : String -> String -> String -> Json -> <Mut> Json
-hoverResult runtimeSrc coreSrc src params = match (positionLine params, positionChar params)
+-- Produce the hover Json for the cursor position.  Resolve the identifier FIRST
+-- (cheap), then build the env (potentially loading the project graph), so an
+-- off-identifier hover never pays for a typecheck/load.
+hoverFor : String -> String -> String -> String -> Json -> Docs -> <IO, Mut> Json
+hoverFor runtimeSrc coreSrc uri src params docs = match (positionLine params, positionChar params)
   ((Some line), (Some col)) => match identifierAt src line col
     None => JNull
-    Some name => match docSchemes runtimeSrc coreSrc src
+    Some name => match hoverEnvFor runtimeSrc coreSrc uri src docs
       None => JNull
       Some env => match hoverScheme name env
         None => JNull
@@ -520,6 +524,28 @@ hoverResult runtimeSrc coreSrc src params = match (positionLine params, position
           let pfx = sigLeadingEff name (unwrapDecls (parseResult src))
           jHover name (stringConcat [pfx, ppScheme sch])
   _ => JNull
+
+-- The hover lookup env for the buffer.  A buffer with a non-core sibling import
+-- goes through the multi-module project pipeline (loads the import graph; the
+-- entry's own schemes are returned and its locals + import-scoped seed land in the
+-- hover side-channels), so imported names resolve.  A single-file buffer keeps the
+-- fast `docSchemes` path (core + runtime + this buffer only).
+hoverEnvFor : String -> String -> String -> String -> Docs -> <IO, Mut> Option (List (String, Scheme))
+hoverEnvFor runtimeSrc coreSrc uri src docs
+  | bufferHasImports src = projectEntryEnv runtimeSrc coreSrc uri docs
+  | otherwise = docSchemes runtimeSrc coreSrc src
+
+-- Load the import graph rooted at this buffer (same loader/cache/read disk-
+-- fallback as publishProjectDiagnostics) and return the ENTRY module's own
+-- schemes.  Side effect: the entry's locals + import-scoped seed (runtime + core
+-- + imported names) are left in the typecheck hover side-channels.
+projectEntryEnv : String -> String -> String -> Docs -> <IO, Mut> Option (List (String, Scheme))
+projectEntryEnv runtimeSrc coreSrc uri docs =
+  let rootFile = pathOfUri uri
+  let projectDir = findProjectRoot (dirOfPath rootFile)
+  let stdlibDir = lspMedakaRoot "." ++ "/stdlib"
+  let read = path => docsGet (uriOfPath path) docs
+  projectEntrySchemes projectCache read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
 
 -- Resolve a hovered name's scheme: the returned typecheck env (globals +
 -- top-level) first, then the hover-only side-channels — locals (let/param/match
@@ -587,7 +613,7 @@ handleHover runtimeSrc coreSrc idJson params docs =
     None => JNull
     Some uri => match docsGet uri docs
       None => JNull
-      Some src => hoverResult runtimeSrc coreSrc src params
+      Some src => hoverFor runtimeSrc coreSrc uri src params docs
   writeMessage (responseMsg idJson result)
 
 -- ── textDocument/completion ─────────────────────────────────────────────────
@@ -652,14 +678,26 @@ jCompletionItem label detail =
   jObject
     [("label", JString label), ("kind", JInt 3), ("detail", JString detail)]
 
-completionResult : String -> String -> String -> Json -> <Mut> Json
-completionResult runtimeSrc coreSrc src params = match (positionLine params, positionChar params)
-  ((Some line), (Some col)) => match docSchemes runtimeSrc coreSrc src
+completionFor : String -> String -> String -> String -> Json -> Docs -> <IO, Mut> Json
+completionFor runtimeSrc coreSrc uri src params docs = match (positionLine params, positionChar params)
+  ((Some line), (Some col)) => match completionEnvFor runtimeSrc coreSrc uri src docs
     None => JNull
     Some env =>
       let prefix = prefixBefore src line col
       jArray (filterCompletions prefix [] env)
   _ => JNull
+
+-- Completion suggests names from the env directly (no side-channel fallback like
+-- hover), so for a project buffer the env must be the FULL visible set: the
+-- entry's own schemes + its locals + its import-scoped seed (core + runtime +
+-- imported names).  A single-file buffer keeps `docSchemes` unchanged — adding
+-- the seed/locals there would change the single-file completion golden.
+completionEnvFor : String -> String -> String -> String -> Docs -> <IO, Mut> Option (List (String, Scheme))
+completionEnvFor runtimeSrc coreSrc uri src docs
+  | bufferHasImports src = match projectEntryEnv runtimeSrc coreSrc uri docs
+    None => None
+    Some own => Some (own ++ currentLocalSchemes () ++ currentSeedSchemes ())
+  | otherwise = docSchemes runtimeSrc coreSrc src
 
 handleCompletion : String -> String -> Json -> Json -> Docs -> <IO, Mut> Unit
 handleCompletion runtimeSrc coreSrc idJson params docs =
@@ -667,7 +705,7 @@ handleCompletion runtimeSrc coreSrc idJson params docs =
     None => JNull
     Some uri => match docsGet uri docs
       None => JNull
-      Some src => completionResult runtimeSrc coreSrc src params
+      Some src => completionFor runtimeSrc coreSrc uri src params docs
   writeMessage (responseMsg idJson result)
 
 -- ── textDocument/inlayHint ──────────────────────────────────────────────────
