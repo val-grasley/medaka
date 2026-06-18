@@ -6741,6 +6741,17 @@ registerConstraintRegs ((m, ifaceMonos)::rest) =
 -- body-forced-concrete constraint takes no dict slot); the iface list is filtered the
 -- same way so it stays parallel to the id list.
 registerMember : String -> List (String, Mono) -> <Mut> Unit
+-- An UNCONSTRAINED member (empty constraint list) gets NO funConstraintsRef /
+-- funConstraintIfacesRef entry.  These refs are keyed by BARE NAME and accumulate
+-- across the per-module elaboration; an unconstrained top-level fn that shares a
+-- name with a constrained one in another module (e.g. array.mdk's `find : (a ->
+-- Bool) -> Array a -> Option a` vs core.mdk's `find : Foldable t => …`) would
+-- otherwise register a `(find, [])` entry that, prepended later, wins the
+-- first-match lookup over core's `(find, [foldableId])`.  inferDictAt then reads 0
+-- constraint ids → 0 dict args at the call site → `unbound identifier:
+-- $dict_find_0` at eval.  An unconstrained fn is never marked EDictAt, so it needs
+-- no entry (mirrors registerInferredFor's empty-ids guard).
+registerMember _ [] = ()
 registerMember m ifaceMonos =
   let ids = registerMemberSlots m 0 (map snd ifaceMonos)
   let keptIfaces = keptConstraintIfaces ifaceMonos
