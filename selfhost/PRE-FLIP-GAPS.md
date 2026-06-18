@@ -1,3 +1,5 @@
+STATUS: COMPLETE — all 9 items closed 2026-06-12; milestone flip done.
+
 # PRE-FLIP-GAPS.md — outstanding native-compiler items to close before the canonicalization milestone flip
 
 **Status: ✅ ALL 9 ITEMS CLOSED (2026-06-12).** The punch-list gate on the milestone flip

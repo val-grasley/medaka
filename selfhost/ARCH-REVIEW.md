@@ -71,6 +71,14 @@ lines, 8 subcommands). Only **6 entries are unreferenced** by any gate
 `_batch` (single-file vs corpus) is a real harness distinction. Trim the 6 strays at
 most.
 
+**Note (2026-06-18):** the gap-census and dispatch-inventory entry points (`dispatch_argclass_main`,
+`dispatch_inventory_main`, `llvm_emit_gaps_main`) were debugging/gap-hunting probes created
+during the Stage-3 gap-closure arc. The dispatch gaps they inventoried are all closed
+(#54/#55/#50/#21 — see `selfhost/DISPATCH-GAPS-SCOPE.md`). These entries are
+**consumed only by the dead sections they were built to diagnose** — they are safe to
+prune and any sections in this review that reference them as investigation entry points
+are historical (the gaps they pointed at no longer exist).
+
 **5. Multiple map/set implementations — Medium / Medium (contained duplication).**
 `SMap` (weight-balanced tree, inline in `typecheck.mdk:1536`), `EMap` (inline in
 `llvm_emit.mdk:654`), plus stdlib `map`/`set`/`hash_map`/`hash_set`, plus pervasive

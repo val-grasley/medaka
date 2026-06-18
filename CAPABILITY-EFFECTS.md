@@ -415,9 +415,7 @@ core) first; this is **Phase 146b**.
   tracking for ergonomics, host-as-grantor at the boundary — looks best, but the
   attenuation story (a function *removing* a capability before calling another)
   needs design.
-- **Effect-label declaration syntax** — **pinned & shipped**: top-level `effect Foo`
-  (`export effect Foo` to mark it public). See §3a. Module/visibility rules across the
-  loader boundary remain (labels currently register within their compilation unit).
+- **Effect-label declaration syntax** — **pinned & shipped** (gap 2 + gap 3 DONE): top-level `effect Foo` (gap 2, 2026-06-06) + cross-module `export effect Foo` visibility (gap 3, 2026-06-07). Both reference + selfhost. See §3a and §5a.
 - **Parameterized effects** — now designed; see **§6a** (the pinned-domain /
   scoped-KV layer, Phase 146b). Two sub-questions deferred there: precision through
   wrappers (singleton-typed args) and param-aware row unification × typeclass/dict.
@@ -439,7 +437,7 @@ shipped this phase (§5a) — gap 1 is now sound, and the **selfhost mirror is d
 1. **Fine-grained labels** (gap 2): **shipped 2026-06-06** — the `effect Foo`
    declaration form + resolve registration (reference + selfhost mirror), so the
    manifest vocabulary is user/platform-definable. §3a / §5a. (Cross-module label
-   export still open.)
+   export: ✅ **DONE** as gap 3, 2026-06-07 — see §5a and PLAN.md.)
 2. **Research** (for the manifest layer): WasmGC status + who targets it and how;
    WASI Preview 2 / component-model capability model; Cloudflare/Fastly/Fermyon
    isolation models; object-capability & effects-as-security literature; Roc's

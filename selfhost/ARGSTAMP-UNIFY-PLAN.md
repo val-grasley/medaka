@@ -1,3 +1,5 @@
+STATUS: COMPLETE — all phases (0–5) done 2026-06-14; eval-vs-emit dispatch fork retired.
+
 # ARGSTAMP-UNIFY-PLAN.md — retire the `argStampEnabled` eval-vs-emit dispatch fork
 
 Status: **COMPLETE 2026-06-14.** All phases (0/1/2+3/4/5) DONE. Eval and emit now run

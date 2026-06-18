@@ -1,3 +1,5 @@
+STATUS: COMPLETE — bar-4 executed 2026-06-11; results in PERF-RESULTS.md.
+
 # PERF-SCOPE.md — Stage-3 bar-item-4 performance scoping
 
 > ✅ **EXECUTED 2026-06-11 — see [`PERF-RESULTS.md`](./PERF-RESULTS.md).** This was the

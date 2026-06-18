@@ -1,3 +1,5 @@
+STATUS: COMPLETE — all phases done 2026-06-13; single-file/multi-module drivers collapsed; `medaka check` resolves imports.
+
 # DRIVER-COLLAPSE-PLAN.md — collapse the dual single-file / multi-module drivers
 
 Status: APPROVED 2026-06-13 (user). Implements `selfhost/TYPECHECK-AUDIT.md §6`

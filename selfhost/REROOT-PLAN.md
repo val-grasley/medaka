@@ -1,3 +1,5 @@
+STATUS: COMPLETE — all gates re-rooted off the OCaml oracle 2026-06-13; every correctness gate is OCaml-free.
+
 # REROOT-PLAN — taking the gate suite OFF the OCaml oracle
 
 **Status:** PLAN (read-only analysis, 2026-06-12). Change no gates until reviewed.

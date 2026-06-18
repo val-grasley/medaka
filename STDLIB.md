@@ -53,9 +53,11 @@ existing modules, not new modules. PLAN.md's "Standard library" workstream point
 here. In rough priority order:
 
 - **`List` zipping** — `zip` / `zip3` / `zipWith` / `unzip` (Module 2 §"Zipping
-  and combining", ⏳).
-- **Explicit `Semigroup (List a)` impl** (Module 2 §Instances, ⏳) — currently
-  driven by the `++` dispatch path.
+  and combining", ⏳ — genuinely not yet in `list.mdk`, verified 2026-06-18).
+- **`<>` Semigroup operator** — not lexed at all; `a <> b` fails at the lexer. The
+  `Semigroup` interface and `++` dispatch work; only the `<>` operator token is missing.
+- **`impl Semigroup (List a)`** — ✅ present in `core.mdk`; cosmetic gap that it doesn't
+  also live in `list.mdk`. Not a functional gap.
 - **JSON follow-ups** (Module 9, deferred from v1): indented pretty-printer;
   `ToJson`/`FromJson` codec interfaces for user types (a strong `deriving`
   exercise).
@@ -352,7 +354,7 @@ implementations here — use the dispatch path instead:
 - ✅ `impl Filterable List` — *(in `core.mdk`)*
 - ✅ `impl Applicative List` — *(in `core.mdk`)*
 - ✅ `impl Thenable List` — *(in `core.mdk`)*
-- ⏳ `impl Semigroup (List a)` — concatenation (currently driven by the `++` dispatch path)
+- ✅ `impl Semigroup (List a)` — concatenation via `++`; lives in `core.mdk` (not `list.mdk` — cosmetic only, works)
 - ✅ `impl Monoid (List a)` — *(in `core.mdk`)*
 
 ---
@@ -764,9 +766,9 @@ over `HashMap a Unit`, same reasoning as `set` over `Map a Unit`).
 - **Instances:** `Foldable`, `Eq` (order-independent), `Debug`.
 - 7 doctests.
 
-### `mut_array` ⏳ unstarted
+### `mut_array` ✅ implemented — see Module 8 below
 
-A growable mutable array (vector) over the fixed-size `Array`. Not yet built.
+A growable mutable array (vector) over the fixed-size `Array` — `stdlib/mut_array.mdk`. See **Module 8** for the full API. (This `⏳ unstarted` note was stale; corrected 2026-06-18.)
 
 ### Compiler notes
 

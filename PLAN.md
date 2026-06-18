@@ -8,7 +8,7 @@ write-up to the archive and leave only what remains. For how to build/test and
 the codebase's non-obvious gotchas, see [`AGENTS.md`](./AGENTS.md). The detailed,
 living record of the self-host port is [`selfhost/README.md`](./selfhost/README.md).
 
-## Current status (2026-06-14)
+## Current status (2026-06-18)
 
 **Post-flip soak progress (since the 2026-06-12 native-canonical flip):** the
 **gate suite is fully re-rooted off the OCaml oracle** — every correctness gate is
@@ -31,8 +31,7 @@ dicts — the GENUINE #21 nested-element-dict flattening solved, not contained;
 Set-literal / mutual-rec-Monoid dict gaps** are fixed. **Remaining = the soak itself:**
 a clean bug-free stretch of native-only dev, then the confidence-gated `lib/` removal.
 
-**Soak findings from the Unit-`main` auto-print + fmt work (2026-06-16/17) — ALL CLOSED:**
-- **Native under-defaulted ambiguous `Num` bindings** (`fa = [10,20,30].[1]` → native `fa : a` vs
+**Soak findings from the Unit-`main` auto-print + fmt work (2026-06-16/17) — ALL CLOSED:**- **Native under-defaulted ambiguous `Num` bindings** (`fa = [10,20,30].[1]` → native `fa : a` vs
   oracle `fa : Int`; `poly_let`/`index_default`) — ✅ CLOSED by the #11 value-level-defaulting fix
   (`4fc5f47`/`18176ea`): the no-prelude HM driver wasn't recording the literal's `Num` obligation, so
   nothing to default; now recorded unconditionally. `diff_selfhost_typecheck` 12/0.
@@ -43,6 +42,25 @@ a clean bug-free stretch of native-only dev, then the confidence-gated `lib/` re
   suppression** — ✅ CLOSED in `d0a99a9` (merged); the interp-side `dev/eval_probe` lag (5
   `diff_selfhost_llvm` failures) closed in `7540a7e`. `diff_selfhost_llvm` 180/0. Native, interp,
   and CLI now all consistent: a Unit `main` prints nothing; value `main`s print their result.
+
+**Verified open-set — 2026-06-18 gap audit (reproduced on the binary; these are the REAL remaining gaps):**
+
+*Soundness:*
+1. **Num-literal over-accept** — native `check` ACCEPTS a program where a `Num` literal unifies with a non-`Num` type (e.g. `member s 3` with `s : Set Int` — wrong arg order); OCaml correctly REJECTS; native `build` then fails `no impl of fromInt for Set`. Lands in `selfhost/types/typecheck.mdk`. (#11-defaulting-adjacent.)
+
+*Correctness:*
+2. **A7 / D10 `let rec … with …` top-level mutual recursion** — native parser accepts but `selfhost/frontend/resolve.mdk` (and eval) drops the `with`-clause binding → `UnboundVariable`; oracle correct. RESOLVE/EVAL gap (mis-filed as parser/emitter in CONSTRUCT-COVERAGE.md — corrected there).
+3. **D5 marker shadow-rename** — a local binder shadowing a same-named top-level redef of a prelude method gets misrenamed past its scope → native runtime error; oracle correct. Lands in `selfhost/frontend/marker.mdk`.
+4. **C7-native emitter same-head dispatch** — `medaka build` fails on two `impl`s of one interface sharing a head tycon with different type args (`impl Def (MyPair Int Bool)` + `impl Def (MyPair Bool Int)`): `error: emitter failed — no impl of method … (slice 6)`. Interpreter (`run`) is correct.
+5. **Overlapping tuple-impl dispatch (both backends)** — with `impl Foo (Int,Int)` AND `impl Foo ((Int,Int),(Int,Int))`, a pair-of-pairs arg dispatches to the `(Int,Int)` impl (wrong) in BOTH `run` and `build`. Most-specific-resolution bug.
+
+*Tooling:*
+6. **`medaka doc` not ported to native CLI** — exits "subcommand 'doc' not yet in native CLI" (exit 1); OCaml oracle has it. Relevant to `lib/` removal gate.
+7. **LSP parse-error in imported sibling → silent no-publish** — `didOpen` an entry importing a parse-broken sibling: server does NOT crash (the earlier "panics" claim was a shifted symptom) but emits zero `publishDiagnostics`.
+8. **Interp-behind-`build` externs** — `medaka run` (tree-walker) lacks externs the compiled `build` has: `hashString` (so `import hash_map` crashes under `run`, works under `build`), the `toList`-of-Map display path, `arrayBlit`/IO. Build is canonical so lower-severity.
+
+*Stdlib:*
+9. **Stdlib genuinely missing**: `<>` Semigroup operator (not lexed at all); JSON pretty-printer (`json.mdk` has compact `stringify` only); `ToJson`/`FromJson` codec interfaces; `zip`/`zip3`/`zipWith`/`unzip` (not in `list.mdk`); single-codepoint string indexing (deliberately deferred).
 
 **🏁 Medaka is a native self-hosting compiler.** The compiler is written in
 Medaka (`selfhost/`), and the native **LLVM backend now compiles it**: all seven
@@ -104,8 +122,8 @@ state changes.
 | **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟢 **essentially complete** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE (full log: PLAN-ARCHIVE.md → Stage 3 completion log). Soak fixes (2026-06-15): native-emit scale failure (`unbound 'not'`, fuzzer 5%→100%) ✅ DONE; foldMap method-level-constraint dict gap ✅ DONE (eval_dict 25/0). **Soak tail remaining:** the `argStampEnabled` eval-vs-emit dispatch unification ([`ARGSTAMP-UNIFY-PLAN.md`](./selfhost/ARGSTAMP-UNIFY-PLAN.md)), then confidence-gated `lib/` removal. |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
-| **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`unzip`, `Semigroup List`, JSON pretty/codecs, effect-label refinement |
-| **CLI surface (Phase 82)** | **this file** → [CLI surface](#cli-surface-phase-82-continued) | 🟡 gaps | `medaka build` ✅ MVP (empty-prelude; cache deferred), `doc` multi-module, `--json` multi-file |
+| **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`zip3`/`zipWith`/`unzip` (⏳ genuinely missing); `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint indexing; effect-label refinement |
+| **CLI surface (Phase 82)** | **this file** → [CLI surface](#cli-surface-phase-82-continued) | 🟡 gaps | `medaka build` ✅ full-prelude (H closed, 2026-06-18 audit); `check --json` multi-file ✅ CLOSED; `medaka doc` not yet ported to native CLI |
 
 ---
 
@@ -573,8 +591,8 @@ non-package-manager gaps:
   self-hosted emitter (`selfhost/entries/llvm_emit_modules_main.mdk`, run as a subprocess
   capturing IR) → `clang` + `runtime/medaka_rt.c` + libgc → binary.
   `lib/build_cmd.ml`, `test/build_cmd.sh` (build+run+diff vs interpreter oracle).
-  Empty-prelude subset only (full `core.mdk` blocked on the `max`/`min` gap + no
-  DCE — see [Stage 3 #2](#stage-3--make-the-llvm-backend-canonical-retire-ocaml)).
+  Full `core.mdk` prelude supported (the old `max`/`min` + no-DCE block is LIFTED,
+  verified 2026-06-18 audit). `import map/set/array/list/string` all work in `medaka build`.
   **Deferred:** a build-artifact CACHE — the serialized Core IR exists
   (`selfhost/core_ir_sexp.mdk` — `cprogramToSexp`/`parseCProgram`, round-trip
   proven; `test/diff_selfhost_core_ir_roundtrip.sh`) but a cache-key strategy
@@ -585,9 +603,12 @@ non-package-manager gaps:
   signature renderer via `Typecheck.pp_scheme` for values / AST renderers for
   types, Markdown output (one `## name` section per public decl).  Single-file
   typecheck path; multi-module follow-up tracked separately.
-- **`medaka check --json` multi-file** — currently single-file (`Diagnostics.
-  analyze` doesn't invoke the `Loader`), so a file with `import`s can
-  resolve-error in the JSON output. Multi-file `--json` is the follow-up.
+  **NOT yet ported to native CLI** — `medaka doc` exits with "subcommand 'doc' not
+  yet in native CLI" (verified 2026-06-18 audit). Relevant to the `lib/` removal gate.
+- **`medaka check --json` multi-file** ✅ **CLOSED** (2026-06-17/18) — `analyzeProject`
+  now resolves imports via the loader; a file with `import`s no longer produces
+  spurious resolve errors in the JSON output. Single-file path remained as the
+  fast-path fallback.
 - Skill: none specific (lands in `bin/main.ml` + `lib/lsp_server.ml`).
 
 ### Standard library (Phase 19)
@@ -598,10 +619,11 @@ refinement roadmap" (the effect-label half is shared with the capability wedge).
 Core modules 1–9 are **complete** (`core`/`list`/`array`/`string` + `map`/`set`,
 hash containers, `io`, `mut_array`, `json`) — see PLAN-ARCHIVE.md. `stdlib/string.mdk`
 API frozen 2026-06-03 (Phase 128). Remaining work is incremental additions tracked in
-STDLIB.md: `List` `zip`/`zip3`/`zipWith`/`unzip`, an explicit `Semigroup List` impl,
-JSON pretty-printer + `ToJson`/`FromJson` codecs, and the effect-label refinement
-steps (`wallTimeSec`→`<Time>`, `<IO>` split, `panic`/`exit` split). Skill:
-**extend-stdlib** (user-reserved unless asked).
+STDLIB.md (verified 2026-06-18 audit): `List` `zip`/`zip3`/`zipWith`/`unzip` (⏳ genuinely
+not yet in `list.mdk`), the `<>` Semigroup operator (not lexed at all),
+JSON pretty-printer + `ToJson`/`FromJson` codecs, single-codepoint string indexing
+(deliberately deferred), and the effect-label refinement steps (`wallTimeSec`→`<Time>`,
+`<IO>` split, `panic`/`exit` split). Skill: **extend-stdlib** (user-reserved unless asked).
 
 ### Blocked on a package manager (out of scope until one exists)
 

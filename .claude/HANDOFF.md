@@ -1,4 +1,4 @@
-# Next-orchestrator handoff — Medaka, soak tail (2026-06-17)
+# Next-orchestrator handoff — Medaka, soak tail (2026-06-18)
 
 You are the **orchestrator** for Medaka, a self-hosting functional language whose native
 LLVM backend is now CANONICAL (compiles itself + all user code OCaml-free). You design and
@@ -116,11 +116,56 @@ Then the manifest/platform layer (the earlier `CAPABILITY-EFFECTS-RESEARCH.md` d
 
 **Prior (superseded) NEXT note — manifest-format design — is deferred until the v2 language features land.**
 
-## Where things stand (`main` branch = 76177ca; concurrent d0a99a9 MERGED — see top; nothing pushed)
+## Where things stand (`main` branch = 7f016c0; all failing gates fixed — see below)
 The big multi-session arc is essentially done. Verify current state, don't trust this verbatim:
 - `cd /Users/val/medaka && git log --oneline -20 main` (the recent landings) AND `git worktree list`
-  (check for the concurrent `fix/unit-main-autoprint-fmt-numlit` branch + agent worktrees still live).
+  (check for any agent worktrees still live).
 - In a worktree: `export PATH="$HOME/.opam/5.4.1/bin:$PATH" && export MEDAKA_EMITTER=$PWD/medaka_emitter && make medaka && FORCE=1 bash test/build_oracles.sh && bash test/selfcompile_fixpoint.sh` (should print C3a YES / C3b YES — the decisive emitter gate).
+
+**2026-06-18 SESSION — verified gap audit + stale-golden fixes.** A deep reproduced-on-binary audit
+identified which previously-doc-claimed-open gaps are actually CLOSED and which are genuinely open.
+Key closures confirmed by this session:
+- **Gap C (all residuals)** — tuple-as-dispatch-tag incl. user `impl` method on a tuple (C1/C5b);
+  nested element dicts (`debug` on `List a`, `List (Int,Int)`, up to 3-level `List(List(List Int))`);
+  lambda-bound constraint (`g = x => debug x`); unannotated generic `f x = println x`. Closed
+  incidentally by the float-soundness arc reworking the emitter dict paths.
+- **Gap H** — `import map/set/array/list/string` all work in `medaka build`.
+- **`check --json` multi-file** — `analyzeProject` resolves imports, landed this session.
+- **LSP entry-file diagnostics with a clean sibling** — CLOSED; "panics" was a shifted symptom.
+- **`medaka build` full-prelude** — the old "empty-prelude subset only" limit is LIFTED.
+- **`hadTypeErrors` guard** — `build` refuses type-error programs correctly.
+- **Parser A-series**: A2/A3 range patterns CLOSED; A5 `where` block form CLOSED; A8/A9/A11 ALL
+  CLOSED or by-design; `let … in` indented clause T2 CLOSED.
+- **Typechecker D-series**: D7/D8/D9/D11 closed/dead/by-design; most-specific-wins correct;
+  two-level nested `Eq (Box (List (List Int)))` CLOSED.
+
+**Also fixed this session:** recaptured stale goldens (numlit skip-list + lexer float-norm); native
+LSP no-impl diagnostic range fix.
+
+## VERIFIED OPEN SET — 9 real gaps (2026-06-18 audit, reproduced on the binary)
+
+These are the REAL remaining soak items. Treat as the authoritative gap list; PLAN.md §"Current status" has the same list with more detail.
+
+*Soundness (soak-critical):*
+1. **Num-literal over-accept** — native `check` ACCEPTS `member s 3` (wrong arg type) where `s : Set Int`; OCaml REJECTS; `build` then fails `no impl of fromInt for Set`. Lands in `selfhost/types/typecheck.mdk`. #11-adjacent.
+
+*Correctness:*
+2. **A7 `let rec … with …` top-level mutual recursion** — parser accepts, `selfhost/frontend/resolve.mdk` drops the `with` binding → `UnboundVariable`. Resolve/eval gap (NOT parser/emitter as previously mis-filed).
+3. **D5 marker shadow-rename** — local binder shadowing a same-named top-level prelude-method redef gets misrenamed past its scope → native runtime error; oracle correct. Lands in `selfhost/frontend/marker.mdk`.
+4. **C7-native same-head dispatch** — `medaka build` fails on two `impl`s sharing a head tycon but with different type args; emitter dispatch is head-tag-keyed, can't disambiguate type args. `run` is correct.
+5. **Overlapping tuple-impl dispatch (both backends)** — `impl Foo (Int,Int)` + `impl Foo ((Int,Int),(Int,Int))` dispatches to the wrong impl for pair-of-pairs. Both `run` and `build` wrong.
+
+*Tooling:*
+6. **`medaka doc` not ported to native CLI** — exit 1 "subcommand 'doc' not yet in native CLI". Blocks `lib/` removal gate.
+7. **LSP parse-error in imported sibling → silent no-publish** — `didOpen` on an entry with a parse-broken sibling: no crash but zero `publishDiagnostics`. (Server does NOT panic — the "panics" claim was a shifted symptom, now corrected in docs.)
+8. **Interp-behind-`build` externs** — `medaka run` lacks `hashString`/`arrayBlit`/`toList`-of-Map; `import hash_map` crashes under `run`, works under `build`. Build is canonical; lower-severity.
+
+*Stdlib:*
+9. **Genuinely missing**: `<>` Semigroup operator (not lexed); JSON pretty-printer; `ToJson`/`FromJson`; `zip`/`zip3`/`zipWith`/`unzip`; single-codepoint string indexing (deferred by design).
+
+## Soak clock
+
+The 2026-06-18 gap audit found 9 genuine open items (listed above). The soak clock RESTARTS from this checkpoint — these are verified bugs on the canonical compiler. The audit also closed a large set of stale "open" items; docs updated. `lib/` stays until a clean stretch.
 
 DONE (don't re-do; full record in `PLAN.md` "Current status" + `PLAN-ARCHIVE.md` Stage-3/4 logs):
 gate re-rooting (every correctness gate OCaml-free, `selfhost/REROOT-PLAN.md`); the
@@ -154,28 +199,24 @@ fixpoint-gated byte-identical:
 ## The standing goal: the SOAK, then gated `lib/` removal
 Native is canonical; OCaml `lib/`+`bin/` is FROZEN in-tree as the differential oracle. **The
 user's gate to delete `lib/` (memory `[[retirement-is-not-removal]]`): a clean day-or-two stretch
-of native-only dev where we STOP hitting bugs/gaps.** **The 2026-06-16/17 #11 arc surfaced+fixed
-SIX real native/oracle divergences (run-path soundness, emitter Gap E/C4, obligation hole,
-gate-blindness, value-level defaulting, fmt-printer ENumLit) — so the soak clock RESTARTS HARD from
-this checkpoint.** #11 was a bug-dense feature and the frozen oracle caught every divergence; that is
-strong evidence the soak is NOT yet clean and `lib/` must stay. Do NOT `rm lib/` until the user
-explicitly calls the soak. Until then: keep native canonical, fix what real use surfaces, keep all
-gates + fixpoint green. **Best next soak activity = real-program use (dogfood `mq`, the jq-in-Medaka
-project) — that is exactly what surfaces these bugs and satisfies the "tooling exercised end-to-end"
-removal gate.**
+of native-only dev where we STOP hitting bugs/gaps.** The 2026-06-18 audit found 9 verified open
+items (listed in "VERIFIED OPEN SET" above) — the soak clock restarts from this checkpoint. The
+frozen oracle is still earning its keep; `lib/` must stay. Do NOT `rm lib/` until the user
+explicitly calls the soak. Best next soak activity = real-program use (dogfood `mq`, the
+jq-in-Medaka project) — surfaces bugs + satisfies "tooling exercised end-to-end" removal gate.
 
-## Open items (all durably documented — verify before acting; docs drift)
-- **`lib/` removal** — soak-gated (above). The endgame.
-- `eval_dict` 25/0 + batch 25/0 is the current baseline (`diff_selfhost_eval_dict.sh` header updated): foldMap method-level-constraint gap CLOSED 2026-06-15. All 25 fixtures pass.
+## Open items (durably documented — verify before acting; docs drift)
+- **9 verified open gaps** — see "VERIFIED OPEN SET" above + PLAN.md §"Current status" (authoritative).
+- **`lib/` removal** — soak-gated. The endgame.
+- `eval_dict` 25/0 + batch 25/0 is the baseline (`diff_selfhost_eval_dict.sh` header updated).
 - Deferred native-test modules: string (2 Unicode case-fold doctests), hash_map/hash_set
   (need byte-identical Int64-wrapping `hashInt`) — `diff_selfhost_test.sh` DEFERRED header.
 - Stage-4 minor remainders: diagnostics-surfacing layer, coverage.ml/bench_runner.ml port — `PLAN.md`.
-- `argStampEnabled` itself still has ~3 emit-only readers — a possible further-simplification
-  follow-up (`ARGSTAMP-UNIFY-PLAN.md` §vestigiality). Not urgent.
-- #11 full Num-polymorphic integer literals — `PLAN.md` (deferred, post-flip; not a gate).
+- `argStampEnabled` itself still has ~3 emit-only readers — possible further simplification
+  (`ARGSTAMP-UNIFY-PLAN.md` §vestigiality). Not urgent.
+- `capture_goldens.sh tc` footgun — corrupts literal-bearing fixtures not in `PRELUDE_DEP_TC` on recapture. Goldens correct now; widen before next bulk `tc` recapture.
 - Memory holds the rest (`/Users/val/.claude/projects/-Users-val-medaka/memory/MEMORY.md` index):
-  dispatch-gap history, the "parity probe is BLIND to equal-ON/OFF regressions → use
-  diff_selfhost_eval_dict golden-diff" methodology, decided invariants.
+  dispatch-gap history, methodology, decided invariants.
 
 ## Non-negotiable operating rules (these cost real time this session — see ORCHESTRATING.md)
 - **FORCE the oracle binaries:** `FORCE=1 bash test/build_oracles.sh` before ANY gate reading

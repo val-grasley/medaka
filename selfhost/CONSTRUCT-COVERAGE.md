@@ -13,7 +13,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 
 ## Summary
 
-**123 PASS fixtures** (gate `build_construct_coverage.sh` is the authoritative PASS list; the per-row matrix below may lag — the **§Gaps** sections are authoritative for each gap's closed/open status). Started 114 PASS / 15 GAP; closed F1·H-a·D1·D2·B1·B2 overnight. Confirmed NOT gaps: A1 (inline `|` match — ref rejects too), A4 (negative literal pattern — ref rejects too). Re-scoped: A2/A3 range patterns = selfhost typecheck (`PRng` in `inferPat`), not parser.
+**123+ PASS fixtures** (gate `build_construct_coverage.sh` is the authoritative PASS list; the per-row matrix below may lag — the **§Gaps** sections are authoritative for each gap's closed/open status). Started 114 PASS / 15 GAP; closed F1·H-a·D1·D2·B1·B2 overnight. **2026-06-18 audit** confirmed additional closures: Gap C all residuals (C1/C2/C3/C4/C5b/C6/C7/C8), Gap H entirely (map+set now PASS in `medaka build`), A1/A4/A5/A8/A9/A11 reclassified as by-design or closed. Genuine remaining emitter gaps: same-head-tycon dispatch (C7-native) + overlapping-tuple-impl. A7 re-classified as a resolve/eval gap. Re-scoped: A2/A3 range patterns = selfhost typecheck (`PRng` in `inferPat`), not parser.
 
 ---
 
@@ -55,9 +55,9 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | Unary minus `-(5)` | PASS | `unary_minus.mdk` |
 | Boolean `&& \|\| !x` (separate bindings) | PASS | `bool_ops.mdk` |
 | Comparison `< > <= >= == !=` | PASS | `comparison_ops.mdk` |
-| `debug` on tuple (direct) | GAP | see §Gaps below |
+| `debug` on tuple (direct) | PASS (Gap C closed 2026-06-18 audit) | see §Gap C |
 | Float arithmetic (let-binding, literal anchored) | PASS | `float_arith.mdk`, `float_compute.mdk` |
-| Float arithmetic (named fn, `+` via Num dispatch on Float params) | GAP | see §Gaps below |
+| Float arithmetic (named fn, `+` via Num dispatch on Float params) | PASS (Gap C/E closed 2026-06-18 audit) | see §Gap C / §Gap E |
 | Float `floatToInt` / `intToFloat` | PASS | `float_to_int.mdk`, `int_to_float.mdk` |
 | Cons `::` | PASS | `cons_op.mdk` |
 | Append `++` (List and String) | PASS | `list_append.mdk` |
@@ -109,7 +109,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | Match char range pattern `'a'..='z'` | TYPECHECK-CLOSED, EMIT-OPEN | typecheck `range_pat.mdk`; see §Gaps A2/A3 |
 | Match negative literal `-1` | GAP | see §Gaps below |
 | Match inline `\|` form (`match x \| p => e \| _ => e`) | GAP | see §Gaps below |
-| Refutable match-arm pattern-guard `x if Some y <- f x` | GAP | see §Gaps below |
+| Refutable match-arm pattern-guard `x if Some y <- f x` | PASS (CLOSED 2026-06-15) | `test/llvm_fixtures/guard_match_*.mdk` |
 
 ### `let` / mutation
 
@@ -194,7 +194,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 |-----------|--------|---------|
 | Tuple construction `(1, "hi")` | PASS | `tuple_fst.mdk` |
 | Tuple pattern match `(a,b)` | PASS | `match_tuple_pat.mdk` |
-| `debug` on tuple | GAP | see §Gaps below |
+| `debug` on tuple | PASS (Gap C closed 2026-06-18 audit) | see §Gap C |
 
 ### Lists and comprehensions
 
@@ -206,7 +206,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | List comprehension with generator + filter | PASS | `list_comp_basic.mdk` |
 | List comprehension with `let` qualifier | PASS | `list_comp_let.mdk` |
 | Multi-generator comprehension (result not debugged as tuple) | PASS | `list_comp_multi_fst.mdk` |
-| Multi-generator comprehension with `debug` on tuple result | GAP | see §Gaps below |
+| Multi-generator comprehension with `debug` on tuple result | PASS (Gap C closed 2026-06-18 audit) | see §Gap C |
 
 ### Arrays
 
@@ -270,7 +270,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | Cross-module import + entry-point build | PASS | (build_cmd.sh `multimodule`) |
 | `export fn` | PASS | `export_fn.mdk` |
 | `public export data` | PASS | `pub_export_debug.mdk` |
-| `import map.*` / stdlib module imports | GAP-H (path fixed; `map`/`set` hit emitter gap) | `stdlib_list.mdk`, `stdlib_array.mdk`, `stdlib_string.mdk`, `stdlib_io.mdk` |
+| `import map.*` / stdlib module imports | PASS (Gap H CLOSED 2026-06-18 audit) | `stdlib_list.mdk`, `stdlib_array.mdk`, `stdlib_string.mdk`, `stdlib_io.mdk`, `stdlib_map.mdk`, `stdlib_set.mdk` |
 
 ### IO and effects
 
@@ -278,7 +278,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 |-----------|--------|---------|
 | `putStr` / `putStrLn` | PASS | `put_str.mdk` |
 | `println` in `main` directly | PASS | (all IO fixtures) |
-| `println` in parameterized `<IO>` named fn (unannotated, generic `Display a`) | GAP | see §Gap F (Layer 2 dict routing) |
+| `println` in parameterized `<IO>` named fn (unannotated, generic `Display a`) | PASS (Gap C closed 2026-06-18 audit) | see §Gap C / §Gap F |
 | `println` in parameterized `<IO>` named fn (concrete-typed) | PASS | `println_param_fn_typed.mdk` |
 | `putStrLn` in parameterized `<IO>` named fn | PASS | (tested) |
 | Bare indented IO block (multi-statement `main`) | PASS | `bare_io_block.mdk` |
@@ -302,13 +302,13 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 
 ## Gaps (actionable follow-up tasks)
 
-### Gap Group A: Selfhost parser gaps
-These constructs parse correctly in the OCaml reference compiler but produce
-`selfhost/parser.mdk: panic: parse error` in `medaka build`.
+### Gap Group A: Selfhost parser / resolve-eval gaps
+These constructs either parse correctly in the OCaml reference compiler but produce
+errors in `medaka build`, or have been re-classified after the 2026-06-18 audit.
 
 | # | Construct | Error | Repro |
 |---|-----------|-------|-------|
-| A1 | Match inline `\|` form: `match x \| 0 => "z" \| _ => "o"` | `parser.mdk:2428:32: panic: parse error` | `let r = match 0 \| 0 => "zero" \| _ => "other"` |
+| A1 | Match inline `\|` form: `match x \| 0 => "z" \| _ => "o"` | **BY DESIGN** — OCaml reference ALSO rejects this (verified); indentation-based match grammar only. Adding it to selfhost would DIVERGE from the oracle. Not a gap. | `let r = match 0 \| 0 => "zero" \| _ => "other"` |
 | A2 | Match int range pattern `1..9` | TYPECHECK-CLOSED (2026-06-10); EMIT-OPEN | `match n` / `  1..9 => "digit"` / `  _ => "other"` |
 | A3 | Match char range pattern `'a'..='z'` | TYPECHECK-CLOSED (2026-06-10); EMIT-OPEN | `match c` / `  'a'..='z' => True` / `  _ => False` |
 | A4 | Match negative literal pattern `-1` | NOT A GAP — ref REJECTS it too | `match n` / `  -1 => "minus"` / `  _ => "other"` |
@@ -364,15 +364,15 @@ repros all hit A1 first, masking the real downstream behavior):**
   accept what the reference rejects → diverge from the differential oracle.
   The task premise ("the OCaml reference parser accepts it") does not hold.
   **No selfhost change made.**
-| A5 | `where` clause inline (at end-of-body-line) | `parser.mdk:2428:32: panic: parse error` | `f x = x where g = 1` |
+| A5 | `where` clause inline (at end-of-body-line) | ✅ CLOSED (2026-06-18 audit) — both ref and selfhost handle inline `where`; the block form may still differ; by-design | `f x = x where g = 1` |
 | A6 | `let rec fib = n => ...` in block (block form) | Both ref and selfhost fail; ref: `Parse error` at col 0 | N/A — both parsers reject this |
-| A7 | `let rec ... with ...` at top-level | `emitter: unbound variable 'isEven'` (compiles but emitter can't resolve mutual refs) | `let rec isEven = n => ... with isOdd = n => ...` |
-| A8 | `do` inside a named function body when function has `<IO>` effect type | `parser.mdk: parse error` | `printTwo : <IO> Unit \n printTwo = do \n  putStrLn "x"` |
-| A9 | Record `deriving (Debug)` (block form, indent) | `parser.mdk: parse error` | `record Point \n  x : Int \n  y : Int \n  deriving (Debug)` |
+| A7 | `let rec ... with ...` at top-level | **RESOLVE/EVAL GAP (re-classified 2026-06-18 audit — NOT a parser/emitter gap).** Native parser accepts the syntax; `selfhost/frontend/resolve.mdk` (and eval) drops the `with`-clause binding → `UnboundVariable`. Oracle runs it correctly. Fix target: `selfhost/frontend/resolve.mdk`. | `let rec isEven = n => ... with isOdd = n => ...` |
+| A8 | `do` inside a named function body when function has `<IO>` effect type | ✅ CLOSED (2026-06-18 audit) — both compilers reject `do` on IO (IO is not a monad by design; use bare indented blocks); by-design | `printTwo : <IO> Unit \n printTwo = do \n  putStrLn "x"` |
+| A9 | Record `deriving (Debug)` (block form, indent) | ✅ CLOSED (2026-06-18 audit) — works in both compilers | `record Point \n  x : Int \n  y : Int \n  deriving (Debug)` |
 | A10 | Annotated `let x : T = e` in block (block form) | Both ref and selfhost fail; ref: `Parse error` | N/A — both parsers reject this |
-| A11 | `@`-pattern in lambda / function param (e.g. `setX v p@(Pt {x,y}) = ...`) | `parser.mdk: parse error` | `f p@{x,y} = x` |
+| A11 | `@`-pattern in lambda / function param (e.g. `setX v p@(Pt {x,y}) = ...`) | ✅ CLOSED (2026-06-18 audit) — works in both fn params AND lambda | `f p@{x,y} = x` |
 
-**Fix target:** `selfhost/parser.mdk` — add these pattern/statement/expression forms.
+**Fix target:** `selfhost/parser.mdk` for A2/A3 emit; `selfhost/frontend/resolve.mdk` for A7.
 
 ---
 
@@ -419,23 +419,28 @@ not produced by current `selfhost/` source.
 
 ---
 
-### Gap C: Arg-tag dispatch on constructorless types (tuples, polymorphic)
-Dispatch via interface method when receiver is a tuple or polymorphic type variable
-(which has no ADT constructors) panics with
-`arg-tag dispatch on impl type that owns no constructors (slice 7: primitive receiver carries no cell tag)`.
+### Gap C: Arg-tag dispatch on constructorless types (tuples, polymorphic) — MOSTLY CLOSED (2026-06-18 audit)
 
-| # | Construct | Trigger | Error |
-|---|-----------|---------|-------|
-| C1 | `debug` on tuple `(1,2)` | `Debug (Int,Int)` impl | arg-tag dispatch |
-| C2 | `debug` on any type inside a generic lambda `xs => debug xs` | polymorphic `xs : a` | arg-tag dispatch |
-| C3 | Multi-param lambda as local let without type annotation: `let add = x y => x+y` | `Num a` on polymorphic `x` | arg-tag dispatch |
-| C4 | Polymorphic constrained fn `double : Num a => a -> a; double x = x+x` at Float | `Num Float` via arg-tag | arg-tag dispatch |
-| C5 | Multi-generator list comprehension `[(x,y) \| ...]` with `debug` on tuple result | `Debug (Int,Int)` | arg-tag dispatch |
-| C6 | `length` on Array via Foldable | `Foldable Array` via arg-tag | arg-tag dispatch |
-| C7 | Array `[|1..=5|]` with `debug` | `Debug (Array Int)` | `no impl of method 'debug' for type 'Array'` |
-| C8 | Array slice `arr.[1..3]` with `debug` on result | `Debug (Array Int)` | `no impl of method 'debug' for type 'Array'` |
+**Verification (2026-06-18 audit):** C1/C5b (tuple-as-dispatch-tag), nested element dicts (`debug` on `List a`, `List (Int,Int)`, up to 3-level `List(List(List Int))`), lambda-bound constraint (`g = x => debug x`), and unannotated generic `f x = println x`/`debug x`/`display x` — ALL CLOSED, incidentally by the float-soundness arc reworking the emitter dict paths.
 
-**Fix target:** `selfhost/llvm_emit.mdk` — implement direct-dispatch fallback for primitive types (Int, Float, Bool, Char, Tuple, Array) in the arg-tag dispatch path so that `Debug`/`Num`/`Foldable` method calls on known primitive receivers don't attempt tag-based dispatch.
+**Genuine emitter dispatch residuals (2026-06-18 audit, both reproduced as open):**
+- **C7-native same-head dispatch** — `medaka build` fails on two `impl`s of one interface sharing a head tycon with different type args (e.g. `impl Def (MyPair Int Bool)` + `impl Def (MyPair Bool Int)`): `error: emitter failed — no impl of method … (slice 6)`. Interpreter (`run`) is correct. Emitter dispatch is head-tag-keyed; can't disambiguate type args.
+- **Overlapping tuple-impl dispatch (both backends)** — with `impl Foo (Int,Int)` AND `impl Foo ((Int,Int),(Int,Int))`, a pair-of-pairs arg dispatches to the `(Int,Int)` impl (wrong) in BOTH `run` and `build`. Most-specific-resolution bug.
+
+Historical table (as of 2026-06-10; statuses updated below):
+
+| # | Construct | Trigger | Status (2026-06-18) |
+|---|-----------|---------|---------------------|
+| C1 | `debug` on tuple `(1,2)` | `Debug (Int,Int)` impl | ✅ CLOSED |
+| C2 | `debug` on any type inside a generic lambda `xs => debug xs` | polymorphic `xs : a` | ✅ CLOSED |
+| C3 | Multi-param lambda as local let without type annotation: `let add = x y => x+y` | `Num a` on polymorphic `x` | ✅ CLOSED |
+| C4 | Polymorphic constrained fn `double : Num a => a -> a; double x = x+x` at Float | `Num Float` via arg-tag | ✅ CLOSED (→Gap E, `a8b95d7`) |
+| C5 | Multi-generator list comprehension `[(x,y) \| ...]` with `debug` on tuple result | `Debug (Int,Int)` | ✅ CLOSED |
+| C6 | `length` on Array via Foldable | `Foldable Array` via arg-tag | ✅ CLOSED (requires `import array`) |
+| C7 | Array `[|1..=5|]` with `debug` (requires `import array`) | `Debug (Array Int)` | ✅ CLOSED (requires `import array`) |
+| C8 | Array slice `arr.[1..3]` with `debug` on result (requires `import array`) | `Debug (Array Int)` | ✅ CLOSED (requires `import array`) |
+
+**Remaining genuine emitter dispatch gap:** same-head-tycon dispatch + overlapping-tuple-impl (see above).
 
 ---
 
@@ -703,35 +708,18 @@ Zebra))` → should be `False`; all three backends give `True`.
 
 ---
 
-### Gap H: Stdlib module imports — path + emitter gaps
+### Gap H: Stdlib module imports — ✅ CLOSED (2026-06-18 audit)
 
-**H-a CLOSED** (`lib/build_cmd.ml` + `bin/main.ml`): `stdlib/` is now added as a
-trailing root for both `medaka run` (multi-file loader) and `medaka build` (emitter
-subprocess). User `input_dir` comes first so user-side modules shadow stdlib names.
-`medaka run` / `medaka build` for a single-file program can now resolve `import list.{…}`,
-`import array.{…}`, `import string.{…}`, `import io.{…}`, etc.
+**Verification (2026-06-18 audit):** `import map/set/array/list/string` all work in `medaka build`. H-b1 (map `toList` dispatch) and H-b2 (set `Eq` dict threading) were closed by the float-soundness arc / emitter dict-pass rework. All six stdlib modules pass both `medaka run` and `medaka build`.
 
-**H-b OPEN** (emitter gaps): `map.mdk` and `set.mdk` hit emitter gaps even after the
-path fix — they build and run fine under `medaka run` (interpreter) but fail at `medaka build`:
-
-| # | Module | Error (medaka build) | Root cause |
-|---|--------|----------------------|------------|
-| H-b1 | `map` | `llvm_emit.mdk:375: panic: no impl of method 'toList' for type 'Map'` | `impl Foldable (Map k v)` uses `toList` dispatch the emitter can't resolve for Map |
-| H-b2 | `set` | `llvm_emit.mdk:386: panic: unbound dict witness '$dict_eq_0' in emit env` | Constrained `Eq` dict not threaded to Set comparison sites |
-
-**Path fix results per module:**
-
-| Module | medaka run | medaka build | Fixture |
-|--------|-----------|--------------|---------|
-| `list`   | PASS | PASS | `stdlib_list.mdk` |
-| `array`  | PASS | PASS | `stdlib_array.mdk` |
-| `string` | PASS | PASS | `stdlib_string.mdk` |
-| `io`     | PASS | PASS | `stdlib_io.mdk` |
-| `map`    | PASS | GAP (H-b1 emitter) | — |
-| `set`    | PASS | GAP (H-b2 emitter) | — |
-
-**Fix target for H-b:** emitter dict-threading for constrained impls over `Map`/`Set` types.
-Not touched here (emitter change, out of scope for this patch).
+| Module | medaka run | medaka build | Status |
+|--------|-----------|--------------|--------|
+| `list`   | PASS | PASS | ✅ |
+| `array`  | PASS | PASS | ✅ |
+| `string` | PASS | PASS | ✅ |
+| `io`     | PASS | PASS | ✅ |
+| `map`    | PASS | PASS | ✅ CLOSED (was H-b1) |
+| `set`    | PASS | PASS | ✅ CLOSED (was H-b2) |
 
 ---
 
