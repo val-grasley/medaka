@@ -1,0 +1,15 @@
+-- Tuple-destructured FLOAT arithmetic through the TYPED emit path.  Pattern-bound
+-- vars have no declared type, so `a + b` over a (Float,Float) used to default to
+-- integer arith on boxed-float pointers -> garbage; now an arith operand with no
+-- concrete-typed sibling is LTNum (runtime int/float dispatch).  Pins typed
+-- native == typed-ceval.
+addP : (Float, Float) -> Float
+addP p = match p
+  (a, b) => a + b
+
+letDes : Float
+letDes =
+  let (a, b) = (1.0, 2.0)
+  a + b * a
+
+main = addP (1.5, 2.5) + letDes
