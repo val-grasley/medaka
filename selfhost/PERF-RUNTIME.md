@@ -14,23 +14,22 @@ interpreter can no longer parse the selfhost emitter source).
 
 Beyond the micro-benches, a realistic mixed-float kernel — `taylor.mdk`: exp(x) via a
 12-term Taylor series summed over 1M x-values (12M float iterations; let-bound terms,
-a float accumulator, `fromInt` division) — measured **0.20s (main baseline) → 0.12s
-(~1.7×)** with all 7 wins. The realistic factor is smaller than the pure-float
-micro-benches (mandel 6×, floatsum 12×) because `taylor`'s `term` has a CBlock body
-(not worker-wrapped) and `fromInt k` boxes — but fusion + let-unboxing + atomic cells
-still cut it 1.7×. Honest takeaway: dense pure-float kernels get 6–12×; realistic mixed
-code with calls/blocks gets ~1.5–2×.
+a float accumulator, `fromInt` division) — measured **0.20s (main baseline) → 0.07s
+(~2.9×)** with all 9 wins. (It was 0.12s/1.7× through Win 8; Win 9's CBlock worker
+support unboxed `term`'s accumulator for the rest.) Honest takeaway: dense pure-float
+kernels get 6–12×; realistic mixed code with let-blocks/calls gets ~2–3×.
 
 ## TL;DR (overnight session 3, 2026-06-17/18)
 
-**8 fixpoint-gated native-codegen wins.** Two themes: (a) **float unboxing** — floats
+**9 fixpoint-gated native-codegen wins.** Two themes: (a) **float unboxing** — floats
 were heap-boxed on every op (~18× tax); fusion + let-unboxing + atomic cells +
-worker-wrapper take **floatsum 0.38→0.03 (~12×)** and **mandel 0.18→0.03 (6×)**.
+worker-wrapper (incl. CBlock let-block bodies) take **floatsum 0.38→0.03 (~12×)**,
+**mandel 0.18→0.03 (6×)**, realistic `taylor` 0.20→0.07 (~2.9×).
 (b) **constant-cell hoisting** — dict witnesses, string/list/tuple/record literals that
 are compile-time constants were heap-allocated at every evaluation; hoisting them to
 `internal constant` module globals takes **dispatch 0.16→~0.03 (~5–8×)** and eliminates
 the per-eval alloc for constant strings/lists/tuples/records. Every win is on an
-isolated branch (5-branch stack), output-gated (`diff_selfhost_*` byte-identical to the
+isolated branch (7-branch stack), output-gated (`diff_selfhost_*` byte-identical to the
 interpreter oracle) and `selfcompile_fixpoint` C3a/C3b YES. Also corrected a stale doc
 claim: clang `-O2` of the emitter is ~3.3s and a full rebuild ~8s (not the ~127s in
 PERF-RESULTS), so the build-caching lever is moot. Found + recorded one pre-existing
@@ -79,22 +78,23 @@ currently: unbox operands (load), op, **box result** (`mdk_alloc(16)` + 2 stores
 
 ## Levers (ranked)
 
-**8 wins banked** (all fixpoint-gated, on a 6-branch stack
-`perf/float-unbox`→`float-param-unbox`→`dict-const`→`str-const`→`list-const`→`compound-const`):
+**9 wins banked** (all fixpoint-gated, on a 7-branch stack
+`…→list-const→compound-const→float-worker-block`):
 
 1. **Float-expression fusion** — ✅ Win 1. mandel 6×.
 2. **Let-bound float unboxing** (`LTFloatU`) — ✅ Win 2. mandel_let 2.3×.
 3. **Atomic float cells** — ✅ Win 3. floatsum ~16%.
-4. **Worker-wrapper float-param unboxing** (CIf/guard + 2-arm match via `decisionToIf`)
-   — ✅ Win 4. floatsum 0.16→0.03 (cumulative 0.38→0.03 ≈ 12×).
+4. **Worker-wrapper float-param unboxing** (CIf/guard + 2-arm match) — ✅ Win 4.
+   floatsum 0.16→0.03 (cumulative 0.38→0.03 ≈ 12×).
 5. **Constant dict-witness hoisting** — ✅ Win 5. dispatch ~5–8× (≈ monomorphic — so it
    captured most of the dispatch/monomorphization win for constant dicts).
 6. **Constant string-literal cells** — ✅ Win 6. strlit ~elim.
 7. **Constant list-literal cells** — ✅ Win 7. listlit alloc elim.
 8. **Constant tuple/record cells** — ✅ Win 8. tuplit alloc elim.
+9. **Worker-wrapper CBlock (let-block) bodies** — ✅ Win 9. taylor 0.12→0.07 (cumulative 2.9×).
 
-Constant-cell hoisting now covers every safe cell type (dicts, strings, lists, tuples,
-records); float boxing is comprehensively addressed.
+Constant-cell hoisting covers every safe cell type; float boxing comprehensively
+addressed across CIf/match/let-block accumulator shapes.
 
 **Remaining (structural / risky — not done):**
 - **Monomorphization** — mostly captured by Win 5 for constant dicts; would still help
