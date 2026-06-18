@@ -1,0 +1,7 @@
+-- Things that have a size.
+export interface Sized a where
+  size : a -> Int
+
+-- An effectful emitter.
+export interface Emitter a where
+  emit : a -> <IO> Unit

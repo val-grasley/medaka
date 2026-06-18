@@ -1,0 +1,5 @@
+-- A readability alias.
+export type Name = String
+
+-- A wrapped int.
+export newtype Age = Age Int

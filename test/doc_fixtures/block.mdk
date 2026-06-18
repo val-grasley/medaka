@@ -1,0 +1,4 @@
+{- A block-comment documented function.
+   Spanning two lines. -}
+export blockFn : Int -> Int
+blockFn x = x

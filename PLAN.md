@@ -55,7 +55,7 @@ a clean bug-free stretch of native-only dev, then the confidence-gated `lib/` re
 5. **Overlapping tuple-impl dispatch (both backends)** — with `impl Foo (Int,Int)` AND `impl Foo ((Int,Int),(Int,Int))`, a pair-of-pairs arg dispatches to the `(Int,Int)` impl (wrong) in BOTH `run` and `build`. Most-specific-resolution bug.
 
 *Tooling:*
-6. **`medaka doc` not ported to native CLI** — exits "subcommand 'doc' not yet in native CLI" (exit 1); OCaml oracle has it. Relevant to `lib/` removal gate.
+6. **`medaka doc` ported to native CLI** ✅ (2026-06-18, single-file) — `selfhost/tools/doc.mdk` + medaka_cli wiring; byte-identical to the OCaml oracle over `test/doc_fixtures` (`test/diff_selfhost_doc.sh`, 13/0). Multi-module doc is a separate follow-up.
 7. **LSP parse-error in imported sibling → silent no-publish** — `didOpen` an entry importing a parse-broken sibling: server does NOT crash (the earlier "panics" claim was a shifted symptom) but emits zero `publishDiagnostics`.
 8. **Interp-behind-`build` externs** — `medaka run` (tree-walker) lacks externs the compiled `build` has: `hashString` (so `import hash_map` crashes under `run`, works under `build`), the `toList`-of-Map display path, `arrayBlit`/IO. Build is canonical so lower-severity.
 
@@ -123,7 +123,7 @@ state changes.
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
 | **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint indexing; effect-label refinement |
-| **CLI surface (Phase 82)** | **this file** → [CLI surface](#cli-surface-phase-82-continued) | 🟡 gaps | `medaka build` ✅ full-prelude (H closed, 2026-06-18 audit); `check --json` multi-file ✅ CLOSED; `medaka doc` not yet ported to native CLI |
+| **CLI surface (Phase 82)** | **this file** → [CLI surface](#cli-surface-phase-82-continued) | 🟡 gaps | `medaka build` ✅ full-prelude (H closed, 2026-06-18 audit); `check --json` multi-file ✅ CLOSED; `medaka doc` ✅ ported to native CLI (single-file, 2026-06-18) |
 
 ---
 
@@ -603,8 +603,17 @@ non-package-manager gaps:
   signature renderer via `Typecheck.pp_scheme` for values / AST renderers for
   types, Markdown output (one `## name` section per public decl).  Single-file
   typecheck path; multi-module follow-up tracked separately.
-  **NOT yet ported to native CLI** — `medaka doc` exits with "subcommand 'doc' not
-  yet in native CLI" (verified 2026-06-18 audit). Relevant to the `lib/` removal gate.
+  **PORTED TO NATIVE CLI** ✅ (2026-06-18, single-file) — `selfhost/tools/doc.mdk`
+  (a faithful port of `lib/doc.ml`: `commentBody`/`expandComment`/`findDocForLine`,
+  `renderSig`/`ppDataVariant`/`ppRecordFields`/`ppRequiresDoc`, a precise pre-desugar
+  `ppTyP` mirroring `Ast.pp_ty_prec` since selfhost `ppTy` drops effect rows) +
+  `runDocCmd` in `medaka_cli.mdk`.  Schemes via the single-file
+  `checkProgramSchemesWithRuntime` path (like lsp/repl).  Byte-identical to the
+  OCaml oracle over `test/doc_fixtures` — gate `test/diff_selfhost_doc.sh` (13/0).
+  Known scoped divergence: a value whose inferred scheme hits the native-vs-OCaml
+  ambiguous-Num/var-naming defaulting fork renders different type-var names — a
+  pre-existing typechecker soak-tail issue, NOT a doc bug (doc renders whatever
+  scheme the checker produced); such files are out of the doc corpus.
 - **`medaka check --json` multi-file** ✅ **CLOSED** (2026-06-17/18) — `analyzeProject`
   now resolves imports via the loader; a file with `import`s no longer produces
   spurious resolve errors in the JSON output. Single-file path remained as the

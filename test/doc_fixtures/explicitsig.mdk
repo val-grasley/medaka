@@ -1,0 +1,3 @@
+-- Maps with an index.
+export indexed : List a -> List (Int, a)
+indexed xs = zip (rangeList 0 (length xs)) xs

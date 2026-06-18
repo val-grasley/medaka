@@ -36,6 +36,7 @@ import eval.eval.{evalModulesOutput, evalModulesOutputAsync}
 import tools.test_cmd.{runTest}
 import tools.repl.{initSession, replLoop}
 import tools.lsp.{runServer}
+import tools.doc.{runDoc}
 
 main : <IO, Mut, Panic> Unit
 main = match args ()
@@ -49,6 +50,7 @@ main = match args ()
   "build"::rest => runBuildCmd rest
   "run"::rest => runRunCmd rest
   "test"::rest => runTestCmd rest
+  "doc"::rest => runDocCmd rest
   "repl"::rest => runReplCmd rest
   "lsp"::rest => runLspCmd rest
   sub::_ => notYet sub
@@ -540,6 +542,36 @@ runTestCmd argv = match dropFlags argv
     let stdlibDir = root ++ "/stdlib"
     let roots = [findProjectRoot (dirOf2 target), stdlibDir]
     runTest rtPath corePath target roots
+
+-- ── doc ───────────────────────────────────────────────────────────────────
+-- Mirrors bin/main.ml's `doc` arm + lib/doc.ml: read the target file, parse
+-- (capturing decl positions + comments), typecheck a desugared copy through the
+-- single-file path for inferred schemes, extract PUBLIC-decl doc entries, and
+-- print Markdown to stdout.  Single-file only (OCaml `doc` is single-file too).
+-- Prelude sources (runtime.mdk/core.mdk) come from MEDAKA_ROOT for scheme
+-- inference, exactly as check/run/test do.
+runDocCmd : List String -> <IO, Mut, Panic> Unit
+runDocCmd argv = match dropFlags argv
+  [] =>
+    let _ = ePutStrLn "usage: medaka doc [file.mdk]"
+    exit 1
+  target::_ =>
+    let root = envOr "MEDAKA_ROOT" "."
+    let rtPath = root ++ "/stdlib/runtime.mdk"
+    let corePath = root ++ "/stdlib/core.mdk"
+    match readFile rtPath
+      Err msg =>
+        let _ = ePutStrLn msg
+        exit 1
+      Ok rsrc => match readFile corePath
+        Err msg =>
+          let _ = ePutStrLn msg
+          exit 1
+        Ok csrc => match readFile target
+          Err msg =>
+            let _ = ePutStrLn msg
+            exit 1
+          Ok tsrc => putStr (runDoc rsrc csrc tsrc target)
 
 -- dirname on a POSIX path (mirrors build_cmd.dirOf, kept local to avoid an extra
 -- import of a non-exported helper).

@@ -1,0 +1,390 @@
+-- selfhost/tools/doc.mdk — the native `medaka doc` documentation extractor.
+--
+-- A faithful port of lib/doc.ml (the OCaml oracle), byte-identical output.
+-- Harvests doc comments from the lexer's side-channel (collectComments),
+-- matches them to top-level PUBLIC declarations by source position, looks up
+-- inferred types from the typechecker (checkProgramSchemesWithRuntime, the same
+-- single-file path lsp.mdk uses), and renders Markdown.
+--
+-- Mirrors lib/doc.ml exactly:
+--   • comment_body / expand_comment / build_comment_tbl / find_doc_for_line
+--   • value_sig / pp_data_variant / pp_record_fields / pp_requires / render_sig
+--   • all_letgroup_entries / extract_entries / render_markdown
+-- and the pre-desugar `pp_ty_prec` (lib/ast.ml) used for AST-rendered sigs —
+-- selfhost's types/typecheck.ppTy DROPS effect rows, so doc carries its own
+-- precise ppTyP that renders <eff> like OCaml's pp_ty_prec.
+
+import frontend.lexer.{Comment, collectComments, commentLine, commentText}
+import frontend.parser.{parseWithPositions, Positions, DeclPos, positionsDecls, declPosLine}
+import frontend.ast.{
+  Decl(..),
+  Ty(..),
+  Constraint(..),
+  DataVis(..),
+  Variant(..),
+  ConPayload(..),
+  Field(..),
+  IfaceMethod(..),
+  Require(..),
+  LetBind(..),
+}
+import frontend.desugar.{desugar}
+import types.typecheck.{Scheme(..), ppScheme, checkProgramSchemesWithRuntime}
+import support.util.{joinWith, reverseL, escStr, stringTrim}
+import support.path.{baseOf, chopExt}
+
+-- ── doc_entry ──────────────────────────────────────────────────────────────
+-- de_name / de_sig (never empty) / de_doc (stripped doc prose, may be "").
+data DocEntry = DocEntry String String String
+
+docName : DocEntry -> String
+docName (DocEntry n _ _) = n
+
+docSig : DocEntry -> String
+docSig (DocEntry _ s _) = s
+
+docDoc : DocEntry -> String
+docDoc (DocEntry _ _ d) = d
+
+-- ── small string helpers (builtins; mirror doctest's local wrappers) ────────
+dlen : String -> Int
+dlen s = stringLength s
+
+-- stringSlice a b = chars [a, b)
+dsub : Int -> Int -> String -> String
+dsub a b s = stringSlice a b s
+
+-- ── pre-desugar type rendering (mirror lib/ast.ml pp_ty_prec) ───────────────
+-- NOTE: types/typecheck.ppTy drops `TyEffect` rows; OCaml pp_ty_prec renders
+-- them, and interface method types carry effect rows.  So we mirror pp_ty_prec
+-- here directly, precedence-passing.
+
+ppTyP : Int -> Ty -> String
+ppTyP _ (TyCon s) = s
+ppTyP _ (TyVar s) = s
+ppTyP _ (TyTuple ts) = "(" ++ joinWith ", " (map (ppTyP 0) ts) ++ ")"
+ppTyP p (TyApp f x) =
+  let s = ppTyP 1 f ++ " " ++ ppTyP 2 x
+  if p >= 2 then "(" ++ s ++ ")" else s
+ppTyP p (TyFun a b) =
+  let s = ppTyP 1 a ++ " -> " ++ ppTyP 0 b
+  if p >= 1 then "(" ++ s ++ ")" else s
+ppTyP p (TyEffect effs tail t) =
+  let labs = map ppEffAtomDoc effs
+  let inside = match tail
+    None => joinWith ", " labs
+    Some v => match effs
+      [] => v
+      _ => joinWith ", " labs ++ " | " ++ v
+  let s = "<" ++ inside ++ "> " ++ ppTyP 0 t
+  if p >= 1 then "(" ++ s ++ ")" else s
+ppTyP _ (TyConstrained cs t) =
+  let csStr = match cs
+    [c] => ppConstrDoc c
+    _ => "(" ++ joinWith ", " (map ppConstrDoc cs) ++ ")"
+  csStr ++ " => " ++ ppTyP 0 t
+
+-- effect atom: `l` | `l _` (inferred hole) | `l "dom"` (domain-carrying).
+-- Mirror pp_atom in pp_ty_prec: None=>l, Some "_" => l ++ " _", Some s => l ++ " " ++ %S
+ppEffAtomDoc : (String, Option String) -> String
+ppEffAtomDoc (l, None) = l
+ppEffAtomDoc (l, Some s) = if s == "_" then l ++ " _" else l ++ " " ++ escStr s
+
+-- a constraint `Iface arg…` (mirror pp_c inside TyConstrained / pp_requires).
+ppConstrDoc : Constraint -> String
+ppConstrDoc (Constraint iface args) = match args
+  [] => iface
+  _ => iface ++ " " ++ joinWith " " (map (ppTyP 2) args)
+
+ppTyDoc : Ty -> String
+ppTyDoc t = ppTyP 0 t
+
+-- ── Comment-text extraction (mirror lib/doc.ml) ─────────────────────────────
+
+-- Strip the `-- ` prefix from a line-comment text, returning the bare prose.
+--   "--"            -> ""
+--   "-- foo"        -> "foo"   (3-char `-- ` prefix)
+--   "--foo"         -> "foo"   (len>2, drop first 2)
+commentBody : String -> String
+commentBody t =
+  if t == "--" then ""
+  else if dlen t >= 3 && dsub 0 3 t == "-- " then dsub 3 (dlen t) t
+  else if dlen t > 2 then dsub 2 (dlen t) t
+  else ""
+
+-- Expand a comment into (line, text) pairs.  Block comments expand to one entry
+-- per inner line (bare trimmed, like lib/doc.ml expand_comment — NOT the
+-- doctest `-- ` reshape).  Line comments → [(line, commentBody text)].
+expandComment : Comment -> List (Int, String)
+expandComment c =
+  let t = commentText c
+  if dlen t >= 2 && dsub 0 2 t == "{-" then
+    let n = dlen t
+    -- OCaml String.sub t 2 (n-4): start 2, LENGTH n-4 → end index n-2.
+    -- stringSlice takes (start, end), so end = n-2 (drops the 2-char `-}`).
+    let inner = if n >= 4 then dsub 2 (n - 2) t else ""
+    expandBlockLines (commentLine c) 0 (splitNlDoc inner)
+  else
+    [(commentLine c, commentBody t)]
+
+expandBlockLines : Int -> Int -> List String -> List (Int, String)
+expandBlockLines _ _ [] = []
+expandBlockLines baseLine i (line::rest) =
+  (baseLine + i, stringTrim line) :: expandBlockLines baseLine (i + 1) rest
+
+-- Split a string on '\n' (mirror doctest splitNl; String.split_on_char '\n').
+splitNlDoc : String -> List String
+splitNlDoc s =
+  let cs = stringToChars s
+  splitNlGoDoc cs (arrayLength cs) 0 0
+
+splitNlGoDoc : Array Char -> Int -> Int -> Int -> List String
+splitNlGoDoc cs n start i
+  | i >= n = [charsSliceDoc cs start n]
+  | arrayGetUnsafe i cs == '\n' = charsSliceDoc cs start i :: splitNlGoDoc cs n (i + 1) (i + 1)
+  | otherwise = splitNlGoDoc cs n start (i + 1)
+
+charsSliceDoc : Array Char -> Int -> Int -> String
+charsSliceDoc cs a b = stringFromChars (arrayFromList (charsSliceGoDoc cs a b))
+
+charsSliceGoDoc : Array Char -> Int -> Int -> List Char
+charsSliceGoDoc cs a b
+  | a >= b = []
+  | otherwise = arrayGetUnsafe a cs :: charsSliceGoDoc cs (a + 1) b
+
+-- ── comment table: line -> text (assoc list; later entries win, like
+-- Hashtbl.replace which keeps the last inserted for a key) ──────────────────
+-- We build an assoc list, then look up by line.  build_comment_tbl iterates
+-- comments in order, replacing per line; for lookup we want the LAST text set
+-- for a line.  We keep insertion order and `lookupLast` returns the last match.
+
+buildCommentTbl : List Comment -> List (Int, String)
+buildCommentTbl comments = concatMapDoc expandComment comments
+
+concatMapDoc : (a -> List b) -> List a -> List b
+concatMapDoc _ [] = []
+concatMapDoc f (x::xs) = f x ++ concatMapDoc f xs
+
+-- Find the LAST (line,text) pair whose line matches (mirrors Hashtbl.replace
+-- semantics: the last insertion for a key wins).
+lookupLineLast : List (Int, String) -> Int -> Option String
+lookupLineLast tbl line = lookupLineLastGo tbl line None
+
+lookupLineLastGo : List (Int, String) -> Int -> Option String -> Option String
+lookupLineLastGo [] _ acc = acc
+lookupLineLastGo ((l, t)::rest) line acc =
+  if l == line then lookupLineLastGo rest line (Some t)
+  else lookupLineLastGo rest line acc
+
+-- Return doc prose for the decl at [startLine]: the maximal consecutive block
+-- of comments immediately above it (no line gap).  Newline-joined + trimmed.
+findDocForLine : List (Int, String) -> Int -> String
+findDocForLine tbl startLine =
+  stringTrim (joinWith "\n" (collectDocLines tbl (startLine - 1) []))
+
+-- Collect backwards; accumulator ends up in ascending line order.
+collectDocLines : List (Int, String) -> Int -> List String -> List String
+collectDocLines tbl line acc = match lookupLineLast tbl line
+  None => acc
+  Some text => collectDocLines tbl (line - 1) (text :: acc)
+
+-- ── signature rendering (mirror lib/doc.ml) ─────────────────────────────────
+
+ppDataVariant : Variant -> String
+ppDataVariant (Variant name (ConPos [])) = name
+ppDataVariant (Variant name (ConPos tys)) =
+  name ++ " " ++ joinWith " " (map (ppTyP 2) tys)
+ppDataVariant (Variant name (ConNamed fs)) =
+  name ++ " { " ++ joinWith ", " (map ppFieldDoc fs) ++ " }"
+
+ppFieldDoc : Field -> String
+ppFieldDoc (Field fn ft) = fn ++ " : " ++ ppTyDoc ft
+
+ppRecordFields : List Field -> String
+ppRecordFields fields = "{ " ++ joinWith ", " (map ppFieldDoc fields) ++ " }"
+
+ppRequiresDoc : List Require -> String
+ppRequiresDoc [] = ""
+ppRequiresDoc rs = " requires " ++ joinWith ", " (map ppRequireOne rs)
+
+ppRequireOne : Require -> String
+ppRequireOne (Require iface tys) = match tys
+  [] => iface
+  _ => iface ++ " " ++ joinWith " " (map (ppTyP 2) tys)
+
+-- Look up the inferred scheme for [name]; fall back to the AST annotation when
+-- typecheck produced no scheme (partial results).  Mirror value_sig.
+valueSig : String -> List (String, Scheme) -> Option Ty -> <Mut> String
+valueSig name schemes fallbackTy = match lookupScheme name schemes
+  Some s => name ++ " : " ++ ppScheme s
+  None => match fallbackTy
+    Some ty => name ++ " : " ++ ppTyDoc ty
+    None => name
+
+lookupScheme : String -> List (String, Scheme) -> Option Scheme
+lookupScheme _ [] = None
+lookupScheme name ((n, s)::rest)
+  | name == n = Some s
+  | otherwise = lookupScheme name rest
+
+-- A rendered interface method line: `  name : ty`.
+ppIfaceMethod : IfaceMethod -> String
+ppIfaceMethod (IfaceMethod mname mty _) = "  " ++ mname ++ " : " ++ ppTyDoc mty
+
+-- Compute (name, sig) for a public decl, or None to skip it.  Mirror render_sig.
+renderSig : Decl -> List (String, Scheme) -> <Mut> Option (String, String)
+renderSig (DTypeSig True name ty) schemes =
+  Some (name, valueSig name schemes (Some ty))
+renderSig (DFunDef True name _ _) schemes =
+  Some (name, valueSig name schemes None)
+renderSig (DExtern True name ty) schemes =
+  Some (name, valueSig name schemes (Some ty))
+renderSig (DLetGroup True bindings) schemes = match bindings
+  (LetBind name _)::_ => Some (name, valueSig name schemes None)
+  [] => None
+renderSig (DData vis name params variants _) _
+  | not (dataVisPrivate vis) =
+    let head = joinWith " " (name :: params)
+    let body = match variants
+      [] => ""
+      _ => "\n  = " ++ joinWith "\n  | " (map ppDataVariant variants)
+    Some (name, "data " ++ head ++ body)
+renderSig (DRecord vis name params fields _) _
+  | not (dataVisPrivate vis) =
+    let head = joinWith " " (name :: params)
+    Some (name, "record " ++ head ++ " " ++ ppRecordFields fields)
+renderSig DInterface { pub = True, name, typarams, methods } _ =
+  let head = joinWith " " (name :: typarams)
+  let ms = map ppIfaceMethod methods
+  let body = match ms
+    [] => ""
+    _ => "\n" ++ joinWith "\n" ms
+  Some (name, "interface " ++ head ++ body)
+renderSig (DTypeAlias True name params ty) _ =
+  let head = joinWith " " (name :: params)
+  Some (name, "type " ++ head ++ " = " ++ ppTyDoc ty)
+renderSig (DNewtype True name params ctor ty _) _ =
+  let head = joinWith " " (name :: params)
+  Some (name, "newtype " ++ head ++ " = " ++ ctor ++ " " ++ ppTyP 2 ty)
+renderSig DImpl { pub = True, iface, tys, reqs } _ =
+  let args = match tys
+    [] => ""
+    _ => " " ++ joinWith " " (map (ppTyP 2) tys)
+  Some (iface ++ args, "impl " ++ iface ++ args ++ ppRequiresDoc reqs)
+renderSig _ _ = None
+
+dataVisPrivate : DataVis -> Bool
+dataVisPrivate VisPrivate = True
+dataVisPrivate _ = False
+
+-- ── entry extraction (mirror lib/doc.ml) ────────────────────────────────────
+
+-- Expand a public DLetGroup into one (name, DocEntry) per binding.
+allLetgroupEntries : Bool -> List LetBind -> Int -> List (String, Scheme) -> List (Int, String) -> <Mut> List (String, DocEntry)
+allLetgroupEntries False _ _ _ _ = []
+allLetgroupEntries True bindings line schemes tbl =
+  let doc = findDocForLine tbl line
+  letgroupEntriesGo bindings schemes doc
+
+letgroupEntriesGo : List LetBind -> List (String, Scheme) -> String -> <Mut> List (String, DocEntry)
+letgroupEntriesGo [] _ _ = []
+letgroupEntriesGo ((LetBind name _)::rest) schemes doc =
+  let sigStr = valueSig name schemes None
+  (name, DocEntry name sigStr doc) :: letgroupEntriesGo rest schemes doc
+
+-- The driver: zip decls with their positions, fold collecting entries, dedup by
+-- name (first wins), emit in source order.  Mirror extract_entries.
+extractEntries : List Decl -> List DeclPos -> List (String, Scheme) -> List Comment -> <Mut> List DocEntry
+extractEntries decls positions schemes comments =
+  let tbl = buildCommentTbl comments
+  let pairs = zipDoc decls positions
+  let result = extractFold pairs schemes tbl [] []
+  reverseL (fst result)
+
+-- Fold over (decl, pos) pairs.  State: (revEntries, seenNames).  Returns it.
+extractFold : List (Decl, DeclPos) -> List (String, Scheme) -> List (Int, String) -> List DocEntry -> List String -> <Mut> (List DocEntry, List String)
+extractFold [] _ _ revEntries seen = (revEntries, seen)
+extractFold ((decl, dp)::rest) schemes tbl revEntries seen =
+  let line = declPosLine dp
+  match letgroupOf decl
+    Some (isPub, bindings) =>
+      let extras = allLetgroupEntries isPub bindings line schemes tbl
+      let acc = foldExtras extras revEntries seen
+      extractFold rest schemes tbl (fst acc) (snd acc)
+    None => match renderSig decl schemes
+      None => extractFold rest schemes tbl revEntries seen
+      Some (name, sigStr) =>
+        if memberStr name seen then extractFold rest schemes tbl revEntries seen
+        else
+          let doc = findDocForLine tbl line
+          extractFold rest schemes tbl (DocEntry name sigStr doc :: revEntries) (name :: seen)
+
+-- Add each letgroup extra if its name is unseen (first wins).
+foldExtras : List (String, DocEntry) -> List DocEntry -> List String -> (List DocEntry, List String)
+foldExtras [] revEntries seen = (revEntries, seen)
+foldExtras ((name, e)::rest) revEntries seen =
+  if memberStr name seen then foldExtras rest revEntries seen
+  else foldExtras rest (e :: revEntries) (name :: seen)
+
+-- Match a DLetGroup, returning (is_pub, bindings) or None.
+letgroupOf : Decl -> Option (Bool, List LetBind)
+letgroupOf (DLetGroup isPub bindings) = Some (isPub, bindings)
+letgroupOf _ = None
+
+memberStr : String -> List String -> Bool
+memberStr _ [] = False
+memberStr x (y::ys)
+  | x == y = True
+  | otherwise = memberStr x ys
+
+zipDoc : List a -> List b -> List (a, b)
+zipDoc [] _ = []
+zipDoc _ [] = []
+zipDoc (x::xs) (y::ys) = (x, y) :: zipDoc xs ys
+
+-- ── Markdown rendering (mirror render_markdown) ─────────────────────────────
+
+renderMarkdown : String -> List DocEntry -> String
+renderMarkdown moduleName entries =
+  stringConcat (("# " ++ moduleName ++ "\n\n") :: map renderEntry entries)
+
+renderEntry : DocEntry -> String
+renderEntry (DocEntry name sig doc) =
+  let header = "## `" ++ name ++ "`\n\n"
+  let sigBlock = "```\n" ++ sig ++ "\n```\n"
+  let docBlock = if doc == "" then "" else "\n" ++ doc ++ "\n"
+  header ++ sigBlock ++ docBlock ++ "\n"
+
+-- ── top-level driver ────────────────────────────────────────────────────────
+-- Mirror bin/main.ml's `doc` arm: parse (capturing positions + comments),
+-- typecheck a desugared copy for schemes ([] on type error), extract entries
+-- from the RAW (pre-desugar) program + positions, render Markdown.
+--
+-- runtimeSrc / coreSrc are the prelude sources (runtime.mdk + core.mdk), read
+-- by the caller from MEDAKA_ROOT; src is the target file; filename gives the
+-- module-name basename.
+export
+runDoc : String -> String -> String -> String -> <Mut> String
+runDoc runtimeSrc coreSrc src filename =
+  let parsed = parseWithPositions src
+  let rawDecls = fst parsed
+  let positions = positionsDecls (snd parsed)
+  let comments = collectComments src
+  let schemes = docSchemesFor runtimeSrc coreSrc rawDecls
+  let moduleName = chopExt (baseOf filename)
+  let entries = extractEntries rawDecls positions schemes comments
+  renderMarkdown moduleName entries
+
+-- Inferred schemes via the single-file typecheck path (mirror lsp.docSchemes /
+-- bin/main.ml: desugar prelude + user, checkProgramSchemesWithRuntime).  The
+-- typechecker reports errors in-band rather than raising; selfhost
+-- checkProgramSchemesWithRuntime still returns the schemes it inferred, so doc
+-- gets inferred types for the names that DID typecheck (OCaml falls to [] on a
+-- hard error — divergence only for files with type errors, which are not the
+-- doc happy path).
+docSchemesFor : String -> String -> List Decl -> <Mut> List (String, Scheme)
+docSchemesFor runtimeSrc coreSrc rawUser =
+  let runtimeDecls = desugar (fst (parseWithPositions runtimeSrc))
+  let coreDecls = desugar (fst (parseWithPositions coreSrc))
+  let userDecls = desugar rawUser
+  checkProgramSchemesWithRuntime runtimeDecls (coreDecls ++ userDecls)

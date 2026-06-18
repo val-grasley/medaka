@@ -1,0 +1,5 @@
+export bare : Int
+bare = 42
+
+export other : Bool
+other = True

@@ -1,0 +1,4 @@
+-- Classifies an int.
+export classify : Int -> String
+classify 0 = "zero"
+classify n = "nonzero"

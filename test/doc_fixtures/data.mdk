@@ -1,0 +1,7 @@
+-- A binary tree of values.
+public export data Tree a = Leaf | Node a (Tree a) (Tree a)
+
+-- A simple enum.
+public export data Color = Red | Green | Blue
+
+data Hidden = A | B

@@ -1,0 +1,10 @@
+-- The identity function.
+export id : a -> a
+id x = x
+
+-- Adds one to its argument.
+export addOne : Int -> Int
+addOne x = x + 1
+
+priv : Int -> Int
+priv x = x

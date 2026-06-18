@@ -1,0 +1,9 @@
+-- A container interface.
+export interface Box a where
+  unbox : a -> Int
+
+-- Boxing for pairs requires Box on the element.
+export impl Box (Pair a) requires Box a where
+  unbox p = 0
+
+public export data Pair a = Pair a a
