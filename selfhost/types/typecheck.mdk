@@ -3532,7 +3532,20 @@ funClausePair (FunClause pats body) = (pats, body)
 funDefs : List Decl -> List (String, (List Pat, Expr))
 funDefs [] = []
 funDefs ((DFunDef _ n pats body)::rest) = (n, (pats, body)) :: funDefs rest
+-- Top-level `let rec … with …` (DLetGroup): flatten each binding's clauses to
+-- (name, (pats, body)) entries, exactly like a multi-clause DFunDef, so the SCC
+-- builder groups the mutually-recursive members and assigns them schemes.  Mirrors
+-- lib/typecheck.ml, which feeds DLetGroup bindings into the same letrec-group path.
+funDefs ((DLetGroup _ binds)::rest) = letGroupDefs binds ++ funDefs rest
 funDefs (_::rest) = funDefs rest
+
+letGroupDefs : List LetBind -> List (String, (List Pat, Expr))
+letGroupDefs [] = []
+letGroupDefs ((LetBind n clauses)::rest) =
+  map (tcClauseDef n) clauses ++ letGroupDefs rest
+
+tcClauseDef : String -> FunClause -> (String, (List Pat, Expr))
+tcClauseDef n c = (n, funClausePair c)
 
 -- D2 fix: mirrors oracle is_syntactic_lambda (lib/typecheck.ml:2518-2521).
 -- True iff the expression is an explicit lambda at the top level.
@@ -4128,7 +4141,22 @@ prePassDeclScoped rw (DTest pub name body) =
 prePassDeclScoped rw (DBench pub name body) =
   DBench pub name (rewriteArgScoped rw [] body)
 prePassDeclScoped rw (DAttrib attrs d) = DAttrib attrs (prePassDeclScoped rw d)
+-- Top-level `let rec … with …` (DLetGroup): mapDecl/the catch-all skip its bodies,
+-- so a constrained-fn occurrence inside a group body would never be rewritten to
+-- EDictAt/EMethodAt → its call site gets no dict route → the dict-passed callee is
+-- under-applied at eval.  Rewrite each clause body with that clause's params scoped
+-- in, exactly like the DFunDef arm.
+prePassDeclScoped rw (DLetGroup pub binds) =
+  DLetGroup pub (map (prePassLetBindScoped rw) binds)
 prePassDeclScoped _ d = d
+
+prePassLetBindScoped : ArgRw -> LetBind -> LetBind
+prePassLetBindScoped rw (LetBind n clauses) =
+  LetBind n (map (prePassFunClauseScoped rw) clauses)
+
+prePassFunClauseScoped : ArgRw -> FunClause -> FunClause
+prePassFunClauseScoped rw (FunClause ps e) =
+  FunClause ps (rewriteArgScoped rw (patVarsListTc ps) e)
 
 prePassIfaceMethodScoped : ArgRw -> IfaceMethod -> IfaceMethod
 prePassIfaceMethodScoped _ (IfaceMethod n ty None) = IfaceMethod n ty None
@@ -5374,6 +5402,15 @@ dictPassDecl : List String -> List String -> Decl -> Decl
 dictPassDecl names _ (DFunDef pub n pats body)
   | contains n names = DFunDef pub n (dictParams n (dictArityOf n) ++ pats) body
   | otherwise = DFunDef pub n pats body
+-- Top-level `let rec … with …` (DLetGroup): each binding is dict-passed exactly
+-- like a DFunDef — a constrained member gets `dictParams n (dictArityOf n)`
+-- prepended to every clause's params, so the dict-passed call sites (which DO get
+-- rewritten) line up with the definition.  Mirror of lib/dict_pass.ml's DLetGroup
+-- run_decl arm.  (Without this, a `Num a => a -> a` group member's call site
+-- supplies a leading dict the body never binds → the dict lands in the first user
+-- param → arithmetic over a dict value panics `unknown op`.)
+dictPassDecl names _ (DLetGroup pub binds) =
+  DLetGroup pub (map (dictPassLetBind names) binds)
 -- Phase 83/84 single-level + D3b-1: a parametric impl with `requires` gets one
 -- leading `$dict_<method>_<slot>` param on each method (return- OR argument-
 -- position) whose body actually reads an impl dict (so a terminal body like
@@ -5388,6 +5425,18 @@ dictPassDecl _ _ (d@DImpl { reqs, methods, ... }) = DImpl { d | methods = implDi
 -- inferDefaultMethod).  Mirror of lib/dict_pass.ml's DInterface arm.
 dictPassDecl _ _ (d@DInterface { methods, ... }) = DInterface { d | methods = map ifaceDictPassMethod methods }
 dictPassDecl _ _ d = d
+
+-- DLetGroup binding dict-pass: prepend the member's dict params to every clause.
+-- `dictArityOf n` is 0 for an unconstrained member (no change), matching the
+-- oracle's `if k = 0 then (n, clauses)` guard.  Gated on `names` (the constrained
+-- set) so an unconstrained member with a coincidental arity entry is untouched.
+dictPassLetBind : List String -> LetBind -> LetBind
+dictPassLetBind names (LetBind n clauses)
+  | contains n names = LetBind n (map (prependDictClause n (dictArityOf n)) clauses)
+  | otherwise = LetBind n clauses
+
+prependDictClause : String -> Int -> FunClause -> FunClause
+prependDictClause n k (FunClause pats body) = FunClause (dictParams n k ++ pats) body
 
 ifaceDictPassMethod : IfaceMethod -> IfaceMethod
 ifaceDictPassMethod (IfaceMethod n ty (Some (MethodDefault pats body))) =

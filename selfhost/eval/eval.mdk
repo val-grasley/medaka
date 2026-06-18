@@ -1391,7 +1391,20 @@ payloadArity (ConNamed fs) = listLen fs
 funDefs : List Decl -> List (String, (List Pat, Expr))
 funDefs [] = []
 funDefs ((DFunDef _ n pats body)::rest) = (n, (pats, body)) :: funDefs rest
+-- Top-level `let rec … with …` (DLetGroup): each binding behaves exactly like a
+-- multi-clause DFunDef — flatten to (name, (pats, body)) entries so installGroups
+-- coalesces its clauses into a VMulti and the names enter the eval frame.  Mirrors
+-- lib/eval.ml's DLetGroup install arm.
+funDefs ((DLetGroup _ binds)::rest) = letGroupDefs binds ++ funDefs rest
 funDefs (_::rest) = funDefs rest
+
+letGroupDefs : List LetBind -> List (String, (List Pat, Expr))
+letGroupDefs [] = []
+letGroupDefs ((LetBind n clauses)::rest) =
+  map (clauseDef n) clauses ++ letGroupDefs rest
+
+clauseDef : String -> FunClause -> (String, (List Pat, Expr))
+clauseDef n (FunClause pats body) = (n, (pats, body))
 
 funGroupNames : List (String, (List Pat, Expr)) -> List String -> List String
 funGroupNames [] _ = []

@@ -92,7 +92,27 @@ markInfix methods constrained op l r
 
 markProgram : List String -> List String -> List Decl -> List Decl
 markProgram methods constrained prog =
-  mapProg (markNode methods constrained) prog
+  map (markDecl methods constrained) prog
+
+-- desugar.mapDecl's catch-all SKIPS DLetGroup (and DBench) bodies, so a
+-- constrained-fn reference or interface-method occurrence inside a top-level
+-- `let rec … with …` body would never be marked → its call site never gets a
+-- dict route → the dict-passed callee is under-applied.  Mirror lib/method_marker.ml's
+-- dedicated mark_decl: handle DLetGroup/DAttrib here, delegate everything else to
+-- mapDecl (whose expr recursion is complete).
+markDecl : List String -> List String -> Decl -> Decl
+markDecl methods constrained (DLetGroup pub binds) =
+  let f = markNode methods constrained
+  DLetGroup pub (map (markLetBind f) binds)
+markDecl methods constrained (DAttrib attrs inner) =
+  DAttrib attrs (markDecl methods constrained inner)
+markDecl methods constrained d = mapDecl (markNode methods constrained) d
+
+markLetBind : (Expr -> Expr) -> LetBind -> LetBind
+markLetBind f (LetBind n clauses) = LetBind n (map (markFunClause f) clauses)
+
+markFunClause : (Expr -> Expr) -> FunClause -> FunClause
+markFunClause f (FunClause pats body) = FunClause pats (mapExpr f body)
 
 -- ── Phase 78b: shadow_rename ──────────────────────────────────────────────
 -- A user top-level function whose name collides with a prelude interface method

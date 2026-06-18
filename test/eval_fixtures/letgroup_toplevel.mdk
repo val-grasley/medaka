@@ -1,0 +1,9 @@
+-- Top-level `let rec … with …` (DLetGroup): the group's bound names are in scope
+-- for all its bodies and for the rest of the program.  Covers a 3-way chained
+-- function group, intra-group calls forwarding a Num dict, and a sibling call
+-- threading a literal through a constrained member.
+let rec step a n = bump n
+with bump n = down (n + 2)
+with down n = n - 1
+caller x = step True x
+main = (step True 5, bump 10, down 4, caller 100)

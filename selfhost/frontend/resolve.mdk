@@ -431,8 +431,11 @@ checkQual env scope (LCLet _ p e) = (checkPat env p ++ checkExpr env scope e, pa
 
 -- ── check_decl ────────────────────────────────────────────────────────────
 checkDecl : Env -> Decl -> List ResError
-checkDecl env (DFunDef _ _ pats body) = concatMapList (checkPat env) pats
-  ++ checkExpr env (patsBindings pats) body
+checkDecl env (DFunDef _ _ pats body) = concatMapList (checkPat env) pats  ++ checkExpr env (patsBindings pats) body
+checkDecl env (DLetGroup _ binds) =
+  -- top-level where-group: all group names are in scope for every clause body
+  -- (mutual recursion), mirroring lib/resolve.ml's DLetGroup arm.
+  concatMapList (checkLetBind env (map letBindName binds)) binds
 checkDecl env (DTypeSig _ _ t) = checkType env t
 checkDecl env (DExtern _ _ t) = checkType env t
 checkDecl env (DData _ _ _ vs _) = concatMapList (checkVariant env) vs
@@ -584,6 +587,7 @@ userValueNames [] = []
 userValueNames ((DFunDef _ n _ _)::rest) = n :: userValueNames rest
 userValueNames ((DTypeSig _ n _)::rest) = n :: userValueNames rest
 userValueNames ((DExtern _ n _)::rest) = n :: userValueNames rest
+userValueNames ((DLetGroup _ bs)::rest) = map letBindName bs ++ userValueNames rest
 userValueNames (DInterface { methods, ... }::rest) = map ifaceMethodNm methods
   ++ userValueNames rest
 userValueNames (_::rest) = userValueNames rest
