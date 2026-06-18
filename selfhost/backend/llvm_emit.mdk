@@ -2295,7 +2295,7 @@ emitGroupBind e env (CBind name clauses) =
   let arity = clauseArity (clauseList clauses)
   let captured = keepInEnv env (removeStr name (dedupS (clausesFreeVars name clauses)))
   let captureWords = capWords e env captured
-  let _ = emitGroupBindDefine e lamName name arity clauses captured
+  let _ = emitGroupBindDefine e env lamName name arity clauses captured
   emitClosureAlloc e lamName captureWords
 
 -- emit the lifted multi-clause `define` for a let-group local function into the
@@ -2303,15 +2303,15 @@ emitGroupBind e env (CBind name clauses) =
 -- `%clos` fields 1.., the self name binds to `%clos` (recursive self-call
 -- re-enters the same cell), and `emitClauseTree` lowers the clauses over the
 -- `%argK` words (arity ≥1 here — nullary values take the fast path above).
-emitGroupBindDefine : Emit -> String -> String -> Int -> List CClause -> List String -> <Mut> Unit
-emitGroupBindDefine e lamName name arity clauses captured =
+emitGroupBindDefine : Emit -> List (String, (String, LTy)) -> String -> String -> Int -> List CClause -> List String -> <Mut> Unit
+emitGroupBindDefine e env lamName name arity clauses captured =
   let saved = (bufRef e).value
   let _ = set_ref (bufRef e) []
   let savedFt = fallthroughLabelRef.value
   let _ = set_ref fallthroughLabelRef ""
   let _ = emit e ("define i64 @" ++ lamName ++ "(i64 %clos, " ++ implParamDecls arity 0 ++ ") {")
   let _ = emit e "entry:"
-  let cenv = loadCaptures e captured 0
+  let cenv = loadCaptures e env captured 0
   let _ = emitClauseTree e (((name, ("%clos", LTClosure)) :: cenv) ++ implParamEnv arity 0) arity (clauseList clauses)
   let _ = emit e "}"
   let _ = emit e ""
@@ -2373,7 +2373,7 @@ knotAlloc e env cellEnv ((CBind name clauses)::rest) =
   let lamName = "mdk_lam" ++ intToString (freshId e)
   let arity = clauseArity (clauseList clauses)
   let captured = keepInEnv cellEnv (removeStr name (dedupS (clausesFreeVars name clauses)))
-  let _ = emitGroupBindDefine e lamName name arity clauses captured
+  let _ = emitGroupBindDefine e cellEnv lamName name arity clauses captured
   let (cellPtr, cellWord) = emitClosureAllocPatch e lamName (lengthS captured)
   let (cells, env2) = knotAlloc e ((name, (cellWord, LTClosure)) :: env) cellEnv rest
   (KnotCell name cellPtr captured :: cells, env2)
@@ -2743,7 +2743,7 @@ emitMethodValue e env name route implRoutes methRoutes =
     let capNames = methValDictNames route
     let capWords = capDictWords env capNames
     let lamName = "mdk_methval_" ++ name ++ "_" ++ intToString (freshId e)
-    let _ = emitMethodValDefine e lamName name route implRoutes methRoutes arity capNames
+    let _ = emitMethodValDefine e env lamName name route implRoutes methRoutes arity capNames
     emitClosureAlloc e lamName capWords
 
 -- the dict-witness param name(s) a route reads at runtime (the names whose words the
@@ -2763,13 +2763,13 @@ capDictWords env (d::rest) = dictOperand env d :: capDictWords env rest
 -- emit the lifted method-value forwarder.  Captures (the dict words) load from
 -- `%clos` fields 1.. and rebind the route's dict name(s); the body re-emits the
 -- SATURATED method dispatch over the `%argK` value operands.
-emitMethodValDefine : Emit -> String -> String -> Route -> List Route -> List Route -> Int -> List String -> <Mut> Unit
-emitMethodValDefine e lamName name route implRoutes methRoutes arity capNames =
+emitMethodValDefine : Emit -> List (String, (String, LTy)) -> String -> String -> Route -> List Route -> List Route -> Int -> List String -> <Mut> Unit
+emitMethodValDefine e env lamName name route implRoutes methRoutes arity capNames =
   let saved = (bufRef e).value
   let _ = set_ref (bufRef e) []
   let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ etaParamDecls arity ++ ") {")
   let _ = emit e "entry:"
-  let cenv = loadCaptures e capNames 0
+  let cenv = loadCaptures e env capNames 0
   let synArgs = etaArgOps arity 0
   let (r, _) = emitMethod e cenv name route implRoutes methRoutes synArgs
   let _ = emit e ("  ret i64 " ++ r)
@@ -4021,7 +4021,7 @@ emitLamGo e env pats body =
   let pnames = patVarNames pats
   let captured = keepInEnv env (dedupS (freeVars pnames body))
   let captureWords = capWords e env captured
-  let _ = emitLamDefine e lamName pats captured body
+  let _ = emitLamDefine e env lamName pats captured body
   emitClosureAlloc e lamName captureWords
 
 emitLamPat : Emit -> List (String, (String, LTy)) -> List Pat -> CExpr -> <Mut> (String, LTy)
@@ -4030,7 +4030,7 @@ emitLamPat e env pats body =
   let pnames = patVarNames pats
   let captured = keepInEnv env (dedupS (freeVars pnames body))
   let captureWords = capWords e env captured
-  let _ = emitPatLamDefine e lamName [] pats captured body
+  let _ = emitPatLamDefine e env lamName [] pats captured body
   emitClosureAlloc e lamName captureWords
 
 -- emit a RECURSIVE function-`let` closure (slice 5b): lambda-lift exactly like
@@ -4050,7 +4050,7 @@ emitRecLamGo e env f pats body =
   let pnames = patVarNames pats
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
   let captureWords = capWords e env captured
-  let _ = emitRecLamDefine e lamName f pats captured body
+  let _ = emitRecLamDefine e env lamName f pats captured body
   emitClosureAlloc e lamName captureWords
 
 -- E2b — recursive-`let` lambda with non-`PVar` params: same patterned-frame body
@@ -4063,7 +4063,7 @@ emitRecLamPat e env f pats body =
   let pnames = patVarNames pats
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
   let captureWords = capWords e env captured
-  let _ = emitPatLamDefine e lamName [(f, ("%clos", LTClosure))] pats captured body
+  let _ = emitPatLamDefine e env lamName [(f, ("%clos", LTClosure))] pats captured body
   emitClosureAlloc e lamName captureWords
 
 -- like emitLamDefine, but prepends `f -> %clos` to the body's env so the lifted
@@ -4071,13 +4071,13 @@ emitRecLamPat e env f pats body =
 -- (Gap E3: lambda params are per-param inferred from the body via `inferParamTys`/
 -- `paramUseTy`, so a Float-param lambda gets float instruction selection; params
 -- `paramUseTy` can't resolve default to LTInt as before.)
-emitRecLamDefine : Emit -> String -> String -> List Pat -> List String -> CExpr -> <Mut> Unit
-emitRecLamDefine e lamName f pats captured body =
+emitRecLamDefine : Emit -> List (String, (String, LTy)) -> String -> String -> List Pat -> List String -> CExpr -> <Mut> Unit
+emitRecLamDefine e env lamName f pats captured body =
   let saved = (bufRef e).value
   let _ = set_ref (bufRef e) []
   let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ closureParamDecls pats ++ ") {")
   let _ = emit e "entry:"
-  let cenv = loadCaptures e captured 0
+  let cenv = loadCaptures e env captured 0
   let penv = paramEnv pats (inferParamTys (sigTable e) pats body) 0
   let _ = emitFnBody e (((f, ("%clos", LTClosure)) :: cenv) ++ penv) lamName body
   let _ = emit e "}"
@@ -4096,8 +4096,8 @@ emitRecLamDefine e lamName f pats captured body =
 -- (`f -> %clos`); the non-recursive case passes `[]`.  Lambda params/captures
 -- default to Int (`implParamEnv`) — the documented slice-4 scope limit, identical
 -- to emitLamDefine's `paramEnv … (allInt pats)`.
-emitPatLamDefine : Emit -> String -> List (String, (String, LTy)) -> List Pat -> List String -> CExpr -> <Mut> Unit
-emitPatLamDefine e lamName extra pats captured body =
+emitPatLamDefine : Emit -> List (String, (String, LTy)) -> String -> List (String, (String, LTy)) -> List Pat -> List String -> CExpr -> <Mut> Unit
+emitPatLamDefine e env lamName extra pats captured body =
   let saved = (bufRef e).value
   let _ = set_ref (bufRef e) []
   let savedFt = fallthroughLabelRef.value
@@ -4105,7 +4105,7 @@ emitPatLamDefine e lamName extra pats captured body =
   let arity = listLen pats
   let _ = emit e ("define i64 @" ++ lamName ++ "(i64 %clos, " ++ implParamDecls arity 0 ++ ") {")
   let _ = emit e "entry:"
-  let cenv = loadCaptures e captured 0
+  let cenv = loadCaptures e env captured 0
   let _ = emitClauseTree e (extra ++ cenv ++ implParamEnv arity 0) arity [(pats, body)]
   let _ = emit e "}"
   let _ = emit e ""
@@ -4188,13 +4188,13 @@ emitCtorEtaDefine e lamName name arity =
 -- 1.., params bind to `%argK`; the body is emitted in TAIL position (it `ret`s).
 -- (Gap E3: param types are per-param inferred from the body via `inferParamTys`/
 -- `paramUseTy` — a Float-param lambda gets float ops; unresolved params → LTInt.)
-emitLamDefine : Emit -> String -> List Pat -> List String -> CExpr -> <Mut> Unit
-emitLamDefine e lamName pats captured body =
+emitLamDefine : Emit -> List (String, (String, LTy)) -> String -> List Pat -> List String -> CExpr -> <Mut> Unit
+emitLamDefine e env lamName pats captured body =
   let saved = (bufRef e).value
   let _ = set_ref (bufRef e) []
   let _ = emit e ("define i64 @" ++ lamName ++ "(" ++ closureParamDecls pats ++ ") {")
   let _ = emit e "entry:"
-  let cenv = loadCaptures e captured 0
+  let cenv = loadCaptures e env captured 0
   let penv = paramEnv pats (inferParamTys (sigTable e) pats body) 0
   let _ = emitFnBody e (cenv ++ penv) lamName body
   let _ = emit e "}"
@@ -4395,11 +4395,25 @@ argNames n i =
     "%arg" ++ intToString i :: argNames n (i + 1)
 
 -- bind each captured variable by loading `%clos` field i+1 (field 0 is code_ptr).
-loadCaptures : Emit -> List String -> Int -> <Mut> List (String, (String, LTy))
-loadCaptures _ [] _ = []
-loadCaptures e (c::rest) i =
+loadCaptures : Emit -> List (String, (String, LTy)) -> List String -> Int -> <Mut> List (String, (String, LTy))
+loadCaptures _ _ [] _ = []
+loadCaptures e env (c::rest) i =
   let r = loadField e "%clos" (i + 1)
-  (c, (r, LTInt)) :: loadCaptures e rest (i + 1)
+  (c, (r, capTypeOf env c)) :: loadCaptures e env rest (i + 1)
+
+-- a captured FLOAT is stored BOXED in the closure cell (capWords/lookupVarG boxes
+-- an unboxed LTFloatU on escape), so bind it LTFloat inside the lifted body —
+-- matching emitLit's boxed-float convention, so arith (the Win-12 one-float-operand
+-- path), print, and list ops all unbox it correctly.  Every OTHER capture stays
+-- LTInt (the uniform-i64 default), so non-float captures are unaffected → zero
+-- regression surface.  Fixes the closure-float-capture arith soundness bug
+-- (`map (x => x * scale)` with a captured float `scale`, `(z => z + k)` etc., which
+-- previously did INTEGER arith on boxed-float pointers → garbage).
+capTypeOf : List (String, (String, LTy)) -> String -> LTy
+capTypeOf env c = match lookupAssoc c env
+  Some (_, LTFloat) => LTFloat
+  Some (_, LTFloatU) => LTFloat
+  _ => LTInt
 
 -- the live operand words for a captured-name list (looked up in the emit env).
 -- Routed through lookupVarG (Mut) so an LTFloatU let-bound float is BOXED to an
