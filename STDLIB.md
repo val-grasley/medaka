@@ -52,8 +52,6 @@ Modules 1–10 are implemented (✅). What's left is incremental — additions t
 existing modules, not new modules. PLAN.md's "Standard library" workstream points
 here. In rough priority order:
 
-- **`List` zipping** — `zip` / `zip3` / `zipWith` / `unzip` (Module 2 §"Zipping
-  and combining", ⏳ — genuinely not yet in `list.mdk`, verified 2026-06-18).
 - **`<>` Semigroup operator** — not lexed at all; `a <> b` fails at the lexer. The
   `Semigroup` interface and `++` dispatch work; only the `<>` operator token is missing.
 - **`impl Semigroup (List a)`** — ✅ present in `core.mdk`; cosmetic gap that it doesn't
@@ -324,10 +322,10 @@ implementations here — use the dispatch path instead:
 
 ### Zipping and combining
 
-- ⏳ `zip : List a -> List b -> List (a, b)` — pair up elements; result length is the shorter input
-- ⏳ `zip3 : List a -> List b -> List c -> List (a, b, c)` — triple-up version of `zip`
-- ⏳ `zipWith : (a -> b -> c) -> List a -> List b -> List c` — generalised `zip`; result length is the shorter input
-- ⏳ `unzip : List (a, b) -> (List a, List b)` — split a list of pairs into two parallel lists
+- ✅ `zip : List a -> List b -> List (a, b)` — pair up elements; result length is the shorter input (`list.mdk:494`)
+- ✅ `zip3 : List a -> List b -> List c -> List (a, b, c)` — triple-up version of `zip` (`list.mdk:507`)
+- ✅ `zipWith : (a -> b -> <e> c) -> List a -> List b -> <e> List c` — generalised `zip`; result length is the shorter input (`list.mdk:521`)
+- ✅ `unzip : List (a, b) -> (List a, List b)` — split a list of pairs into two parallel lists (`list.mdk:533`)
 
 ### Sorting
 

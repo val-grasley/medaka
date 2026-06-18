@@ -161,7 +161,7 @@ These are the REAL remaining soak items. Treat as the authoritative gap list; PL
 8. **Interp-behind-`build` externs** — `medaka run` lacks `hashString`/`arrayBlit`/`toList`-of-Map; `import hash_map` crashes under `run`, works under `build`. Build is canonical; lower-severity.
 
 *Stdlib:*
-9. **Genuinely missing**: `<>` Semigroup operator (not lexed); JSON pretty-printer; `ToJson`/`FromJson`; `zip`/`zip3`/`zipWith`/`unzip`; single-codepoint string indexing (deferred by design).
+9. **Genuinely missing**: `<>` Semigroup operator (not lexed); JSON pretty-printer; `ToJson`/`FromJson`; single-codepoint string indexing (deferred by design). (NOTE: `List` `zip`/`zip3`/`zipWith`/`unzip` are PRESENT — `list.mdk:494-533`, verified on the binary.)
 
 ## Soak clock
 

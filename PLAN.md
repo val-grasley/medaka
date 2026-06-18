@@ -60,7 +60,7 @@ a clean bug-free stretch of native-only dev, then the confidence-gated `lib/` re
 8. **Interp-behind-`build` externs** — `medaka run` (tree-walker) lacks externs the compiled `build` has: `hashString` (so `import hash_map` crashes under `run`, works under `build`), the `toList`-of-Map display path, `arrayBlit`/IO. Build is canonical so lower-severity.
 
 *Stdlib:*
-9. **Stdlib genuinely missing**: `<>` Semigroup operator (not lexed at all); JSON pretty-printer (`json.mdk` has compact `stringify` only); `ToJson`/`FromJson` codec interfaces; `zip`/`zip3`/`zipWith`/`unzip` (not in `list.mdk`); single-codepoint string indexing (deliberately deferred).
+9. **Stdlib genuinely missing**: `<>` Semigroup operator (not lexed at all); JSON pretty-printer (`json.mdk` has compact `stringify` only); `ToJson`/`FromJson` codec interfaces; single-codepoint string indexing (deliberately deferred). (`List` `zip`/`zip3`/`zipWith`/`unzip` ARE present — `list.mdk:494-533`.)
 
 **🏁 Medaka is a native self-hosting compiler.** The compiler is written in
 Medaka (`selfhost/`), and the native **LLVM backend now compiles it**: all seven
@@ -122,7 +122,7 @@ state changes.
 | **Make LLVM canonical (Stage 3)** | **this file** → [Stage 3](#stage-3--make-the-llvm-backend-canonical-retire-ocaml) | 🟢 **essentially complete** | Native canonical (2026-06-12 flip); TYPECHECK-AUDIT (16 findings) + all 4 dispatch gaps (#54/#55/#50/#21) + perf bar-4 + Phase-C CLI capstone + gate re-rooting + the driver collapse all ✅ DONE (full log: PLAN-ARCHIVE.md → Stage 3 completion log). Soak fixes (2026-06-15): native-emit scale failure (`unbound 'not'`, fuzzer 5%→100%) ✅ DONE; foldMap method-level-constraint dict gap ✅ DONE (eval_dict 25/0). **Soak tail remaining:** the `argStampEnabled` eval-vs-emit dispatch unification ([`ARGSTAMP-UNIFY-PLAN.md`](./selfhost/ARGSTAMP-UNIFY-PLAN.md)), then confidence-gated `lib/` removal. |
 | **Capability-effects wedge (Phase 146)** | [`CAPABILITY-EFFECTS.md`](./CAPABILITY-EFFECTS.md) §9 (lang) + [`CAPABILITY-PLATFORM.md`](./CAPABILITY-PLATFORM.md) §10 (product) | 🟡 in progress | gap-1 sound + gap-2 labels + wow-demo done; next = research pass, manifest format/emission, cross-module label export, Phase 146b |
 | **Compiler / language correctness** | **this file** → [Compiler / language](#compiler--language) | 🟡 open items | Phase 101b (deferred) |
-| **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `zip`/`zip3`/`zipWith`/`unzip` (⏳ genuinely missing); `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint indexing; effect-label refinement |
+| **Standard library** | [`STDLIB.md`](./STDLIB.md) §"Remaining work" + §"Label refinement roadmap" | 🟡 modules done, extras open | `<>` Semigroup operator (not lexed); JSON pretty-printer + `ToJson`/`FromJson`; single-codepoint indexing; effect-label refinement |
 | **CLI surface (Phase 82)** | **this file** → [CLI surface](#cli-surface-phase-82-continued) | 🟡 gaps | `medaka build` ✅ full-prelude (H closed, 2026-06-18 audit); `check --json` multi-file ✅ CLOSED; `medaka doc` not yet ported to native CLI |
 
 ---
@@ -619,8 +619,7 @@ refinement roadmap" (the effect-label half is shared with the capability wedge).
 Core modules 1–9 are **complete** (`core`/`list`/`array`/`string` + `map`/`set`,
 hash containers, `io`, `mut_array`, `json`) — see PLAN-ARCHIVE.md. `stdlib/string.mdk`
 API frozen 2026-06-03 (Phase 128). Remaining work is incremental additions tracked in
-STDLIB.md (verified 2026-06-18 audit): `List` `zip`/`zip3`/`zipWith`/`unzip` (⏳ genuinely
-not yet in `list.mdk`), the `<>` Semigroup operator (not lexed at all),
+STDLIB.md (verified 2026-06-18 audit): the `<>` Semigroup operator (not lexed at all),
 JSON pretty-printer + `ToJson`/`FromJson` codecs, single-codepoint string indexing
 (deliberately deferred), and the effect-label refinement steps (`wallTimeSec`→`<Time>`,
 `<IO>` split, `panic`/`exit` split). Skill: **extend-stdlib** (user-reserved unless asked).
