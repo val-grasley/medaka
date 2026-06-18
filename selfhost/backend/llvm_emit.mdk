@@ -2439,7 +2439,7 @@ emitBlock e env ((CSLet _ PWild ex)::rest) =
   emitBlock e env rest
 emitBlock e env ((CSLet _ (PTuple ps) ex)::rest) =
   let (v, _) = emitExpr e env ex
-  let env2 = bindPattern e env (PTuple ps) v (CLit (LInt 0))
+  let env2 = bindPattern e env (PTuple ps) v (CBlock rest)
   emitBlock e env2 rest
 -- General irrefutable block-let `let pat = e` for an ARBITRARY pattern (PCon,
 -- PCons, PList, PAs, nested).  A bare `CSLet _ pat` is irrefutable by
@@ -2451,7 +2451,7 @@ emitBlock e env ((CSLet _ (PTuple ps) ex)::rest) =
 -- those stay byte-identical.
 emitBlock e env ((CSLet _ pat ex)::rest) =
   let (v, _) = emitExpr e env ex
-  let env2 = bindPattern e env pat v (CLit (LInt 0))
+  let env2 = bindPattern e env pat v (CBlock rest)
   emitBlock e env2 rest
 -- last-position block-let `[let pat = e]`: mirror cevalBlock's cBlockLetLast
 -- (core_ir_eval :265/:277) — evaluate `e` (for effect + to honour the binding),
@@ -6893,6 +6893,40 @@ mapVarLTInt (x::rest) = (x, LTInt) :: mapVarLTInt rest
 -- comparison binop shares its SIBLING's type; an argument to a known function
 -- takes that function's parameter type.  None ⇒ no determining use found (the
 -- caller defaults it to Int).
+
+-- infer the type of `p` given the OTHER operand of a binop.  For ARITHMETIC ops the
+-- operand is provably numeric (`+`/`-`/`*`/`/`/`%`, not the String `++`/`::`), so
+-- when the other operand does NOT pin a concrete Int/Float (e.g. `a + b` where both
+-- are tuple-destructured vars with no type source — typeOf DEFAULTS them to LTInt and
+-- emits INTEGER arith on boxed-float pointers → garbage) fall back to LTNum, whose
+-- arith/print route through the runtime tag-dispatched @mdk_num_* helpers (correct
+-- for Int AND Float).  When the other operand DOES pin a concrete numeric type (a
+-- literal, an env-typed var) use it — so int-literal-anchored arith (`a + 1`) keeps
+-- its inline fast path.  Non-arith ops keep the historical `typeOf other` (a
+-- comparison var has the same type as what it is compared to).
+binOperandTy : List (String, FnSig) -> List (String, LTy) -> String -> CExpr -> LTy
+binOperandTy sigs env op other =
+  if isArithOp op then
+    match concreteNumTy sigs env other
+      Some t => t
+      None => LTNum
+  else typeOf sigs env other
+
+-- Some (concrete numeric LTy) when `e` is DEFINITELY typed; None when its type would
+-- only be a guess (a bare var absent from env, a call result) — mirrors typeOf but
+-- treats typeOf's LTInt-default as "unknown" so binOperandTy can pick LTNum instead.
+concreteNumTy : List (String, FnSig) -> List (String, LTy) -> CExpr -> Option LTy
+concreteNumTy _ _ (CLit (LInt _)) = Some LTInt
+concreteNumTy _ _ (CLit (LFloat _)) = Some LTFloat
+concreteNumTy sigs env (CUnOp "-" x) = concreteNumTy sigs env x
+concreteNumTy _ env (CVar x _) = match lookupAssoc x env
+  Some LTFloatU => Some LTFloat
+  Some t => Some t
+  None => None
+concreteNumTy sigs env (CBinPrim op l r) =
+  if isArithOp op then firstSome (concreteNumTy sigs env l) (concreteNumTy sigs env r) else None
+concreteNumTy _ _ _ = None
+
 paramUseTy : List (String, FnSig) -> List (String, LTy) -> String -> CExpr -> Option LTy
 paramUseTy sigs env p (CIf c t f) =
   if isVarNamed p c then
@@ -6912,13 +6946,17 @@ paramUseTy sigs env p (CBinPrim "::" l r) =
     Some LTCon
   else
     firstSome (paramUseTy sigs env p l) (paramUseTy sigs env p r)
-paramUseTy sigs env p (CBinPrim _ l r) =
+paramUseTy sigs env p (CBinPrim op l r) =
   if isVarNamed p l then
-    Some (typeOf sigs env r)
+    Some (binOperandTy sigs env op r)
   else
-    if isVarNamed p r then Some (typeOf sigs env l) else firstSome (paramUseTy sigs env p l) (paramUseTy sigs env p r)
+    if isVarNamed p r then Some (binOperandTy sigs env op l) else firstSome (paramUseTy sigs env p l) (paramUseTy sigs env p r)
 paramUseTy sigs env p (CLet _ _ e1 e2) =
   firstSome (paramUseTy sigs env p e1) (paramUseTy sigs env p e2)
+-- scan a block's statements for a determining use of `p` (a tuple/pattern-destructure
+-- in a block passes its continuation here as `CBlock rest` so the bound var's type
+-- can be inferred from later uses, not a dummy `0`).
+paramUseTy sigs env p (CBlock stmts) = paramUseStmts sigs env p stmts
 paramUseTy sigs env p app =
   let (hd, args) = flattenApp app []
   match hd
@@ -6954,6 +6992,16 @@ paramUseArgs : List (String, FnSig) -> List (String, LTy) -> String -> List CExp
 paramUseArgs _ _ _ [] = None
 paramUseArgs sigs env p (a::rest) =
   firstSome (paramUseTy sigs env p a) (paramUseArgs sigs env p rest)
+
+-- scan block statements for a determining use of `p` in any statement's expression
+-- (CSExpr / CSLet rhs); unknown statement shapes are skipped.
+paramUseStmts : List (String, FnSig) -> List (String, LTy) -> String -> List CStmt -> Option LTy
+paramUseStmts _ _ _ [] = None
+paramUseStmts sigs env p ((CSExpr ex)::rest) =
+  firstSome (paramUseTy sigs env p ex) (paramUseStmts sigs env p rest)
+paramUseStmts sigs env p ((CSLet _ _ ex)::rest) =
+  firstSome (paramUseTy sigs env p ex) (paramUseStmts sigs env p rest)
+paramUseStmts sigs env p (_::rest) = paramUseStmts sigs env p rest
 
 isVarNamed : String -> CExpr -> Bool
 isVarNamed p (CVar x _) = p == x
