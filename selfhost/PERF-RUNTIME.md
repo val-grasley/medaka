@@ -411,7 +411,11 @@ to no other cell: strings are already atomic; cons/ADT/tuple/closure carry point
   conservative) records LTFloat in `closureRetTyRef`, and `indirectRetTy` types the
   saturated call result LTFloat. The returned-from-fn case misses (f's reg is the
   call-result reg, not the lambda alloc reg) → needs ret-ty propagation through
-  fnRetTy. Typed gate `closure_ret_float.mdk` 39/0.
+  fnRetTy. Typed gate `closure_ret_float.mdk` 39/0. **The returned-from-fn form is
+  ALSO FIXED** (2026-06-18, commit 2a3beeb): `collectFloatClosureFns` marks top-level
+  fns returning a float closure; a saturated call records its result word in
+  closureRetTyRef. `returned_float_closure.mdk` 41/0. The arith-on-type-lost-floats
+  family is now FULLY CLOSED (7 fixes).
 
 - **FIXED 2026-06-18 (branch perf/float-field-access, commit 7ea85d2) — record FLOAT
   field-ACCESS arith.** `v.dx + v.dy` / `v.dx*v.dx + v.dy*v.dy` over Float record
