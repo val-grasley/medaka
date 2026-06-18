@@ -223,6 +223,19 @@ curGapBind = Ref "?"
 fallthroughLabelRef : Ref String
 fallthroughLabelRef = Ref ""
 
+-- compile-time closure-arity table, keyed by the closure cell's SSA register
+-- (`%tN`, globally unique via the shared freshId counter — no cross-function
+-- collision).  Recorded when a user lambda's closure cell is allocated
+-- (emitClosureAllocA); read at an INDIRECT call site (emitIndirect) so a let-bound
+-- closure applied to MORE args than its arity (`(g 7) 9` where `g = (x => (y => …))`)
+-- saturates with the first `arity` args then applies the surplus to the returned
+-- closure (emitApplyExtra) — mirroring emitOverApp for known fns.  Without this the
+-- indirect call passed ALL args to the arity-1 lifted code → arity mismatch →
+-- garbage.  A miss (closure word not a recorded `%tN` — e.g. a captured/param
+-- closure) falls back to the raw all-args call (unchanged behaviour).
+closureArityRef : Ref (List (String, Int))
+closureArityRef = Ref []
+
 -- emit a branch to the current next-clause fallthrough target, or the historical
 -- @mdk_oob abort when there is none (single-clause / exhausted chains).
 emitFallthrough : Emit -> <Mut> (String, LTy)
@@ -2296,7 +2309,7 @@ emitGroupBind e env (CBind name clauses) =
   let captured = keepInEnv env (removeStr name (dedupS (clausesFreeVars name clauses)))
   let captureWords = capWords e env captured
   let _ = emitGroupBindDefine e env lamName name arity clauses captured
-  emitClosureAlloc e lamName captureWords
+  emitClosureAllocA e lamName arity captureWords
 
 -- emit the lifted multi-clause `define` for a let-group local function into the
 -- SIDE buffer (same swap discipline as emitPatLamDefine).  Captures load from
@@ -2606,12 +2619,27 @@ emitIndirect : Emit -> List (String, (String, LTy)) -> CExpr -> List CExpr -> <M
 emitIndirect e env hd args =
   let (cw, _) = emitExpr e env hd
   let argOps = emitArgs e env args
+  match lookupAssoc cw closureArityRef.value
+    Some n =>
+      if n > 0 && lengthS argOps > n then
+        -- OVER-APPLICATION of a let-bound closure (`(g 7) 9`): saturate with the
+        -- first `n` args, then apply the surplus to the returned closure value.
+        let r0 = emitIndirectCallWords e cw (takeS n argOps)
+        (emitApplyExtra e r0 (dropS n argOps), LTInt)
+      else
+        (emitIndirectCallWords e cw argOps, indirectResultTy hd)
+    None => (emitIndirectCallWords e cw argOps, indirectResultTy hd)
+
+-- the raw indirect call: load the closure's code_ptr (cell field 0) and `call` it
+-- with the closure word as the leading argument followed by `argOps`.
+emitIndirectCallWords : Emit -> String -> List String -> <Mut> String
+emitIndirectCallWords e cw argOps =
   let cp = loadField e cw 0
   let fp = freshReg e
   let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
   let r = freshReg e
   let _ = emit e ("  " ++ r ++ " = call i64 " ++ fp ++ "(" ++ argDecls (cw :: argOps) ++ ")")
-  (r, indirectResultTy hd)
+  r
 
 -- the static result type of an indirect call: container when the head is a
 -- self-returning function param of the current impl, else LTInt (unchanged).
@@ -2744,7 +2772,7 @@ emitMethodValue e env name route implRoutes methRoutes =
     let capWords = capDictWords env capNames
     let lamName = "mdk_methval_" ++ name ++ "_" ++ intToString (freshId e)
     let _ = emitMethodValDefine e env lamName name route implRoutes methRoutes arity capNames
-    emitClosureAlloc e lamName capWords
+    emitClosureAllocA e lamName arity capWords
 
 -- the dict-witness param name(s) a route reads at runtime (the names whose words the
 -- value-closure must capture so the lifted body can rebind them).  Only RDict/
@@ -3999,6 +4027,16 @@ emitClosureAlloc e lamName captureWords =
   let (w, _) = emitCtorAlloc e closureHeaderName (codePtr :: captureWords)
   (w, LTClosure)
 
+-- emitClosureAlloc + record the closure's compile-time arity in closureArityRef
+-- (keyed by its SSA word) so an indirect over-application of this closure value can
+-- split saturate+apply-extra.  Used for user lambdas and let-group/method-value
+-- closures whose arity is statically known.
+emitClosureAllocA : Emit -> String -> Int -> List String -> <Mut> (String, LTy)
+emitClosureAllocA e lamName arity captureWords =
+  let (w, lty) = emitClosureAlloc e lamName captureWords
+  let _ = set_ref closureArityRef ((w, arity) :: closureArityRef.value)
+  (w, lty)
+
 -- emit a CLam: compute its captured set, lift its body to a top-level define, and
 -- allocate the closure cell capturing the live operand words.
 -- E2b — a CLam whose params are NOT all plain `PVar` (a tuple/constructor
@@ -4022,7 +4060,7 @@ emitLamGo e env pats body =
   let captured = keepInEnv env (dedupS (freeVars pnames body))
   let captureWords = capWords e env captured
   let _ = emitLamDefine e env lamName pats captured body
-  emitClosureAlloc e lamName captureWords
+  emitClosureAllocA e lamName (listLen pats) captureWords
 
 emitLamPat : Emit -> List (String, (String, LTy)) -> List Pat -> CExpr -> <Mut> (String, LTy)
 emitLamPat e env pats body =
@@ -4031,7 +4069,7 @@ emitLamPat e env pats body =
   let captured = keepInEnv env (dedupS (freeVars pnames body))
   let captureWords = capWords e env captured
   let _ = emitPatLamDefine e env lamName [] pats captured body
-  emitClosureAlloc e lamName captureWords
+  emitClosureAllocA e lamName (listLen pats) captureWords
 
 -- emit a RECURSIVE function-`let` closure (slice 5b): lambda-lift exactly like
 -- emitLam, but EXCLUDE the binding's own name `f` from the captured set (it is the
@@ -4051,7 +4089,7 @@ emitRecLamGo e env f pats body =
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
   let captureWords = capWords e env captured
   let _ = emitRecLamDefine e env lamName f pats captured body
-  emitClosureAlloc e lamName captureWords
+  emitClosureAllocA e lamName (listLen pats) captureWords
 
 -- E2b — recursive-`let` lambda with non-`PVar` params: same patterned-frame body
 -- as `emitLamPat`, but binds `f -> %clos` ahead of captures so a self-call
@@ -4064,7 +4102,7 @@ emitRecLamPat e env f pats body =
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
   let captureWords = capWords e env captured
   let _ = emitPatLamDefine e env lamName [(f, ("%clos", LTClosure))] pats captured body
-  emitClosureAlloc e lamName captureWords
+  emitClosureAllocA e lamName (listLen pats) captureWords
 
 -- like emitLamDefine, but prepends `f -> %clos` to the body's env so the lifted
 -- body's recursive references resolve to the closure pointer (the leading param).
