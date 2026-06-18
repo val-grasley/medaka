@@ -6073,16 +6073,30 @@ hasFloatPty [] = False
 hasFloatPty (LTFloat::_) = True
 hasFloatPty (_::rest) = hasFloatPty rest
 
+-- a 2-arm `match scrut { lit => A ; _ => B }` (literal pattern then wildcard, no
+-- guards) as the equivalent `if scrut == lit then A else B`, so a match-bodied float
+-- accumulator (the idiomatic floatsum form) reuses the CIf worker machinery. None for
+-- any other shape → the function stays ineligible / falls back. == on a scalar literal
+-- is value-equality (emitCmp routes Int/Char/Bool/String), matching match semantics.
+decisionToIf : CExpr -> List CArm -> Option CExpr
+decisionToIf scrut (CArm (PLit l) [] a :: CArm PWild [] b :: []) =
+  Some (CIf (CBinPrim "==" scrut (CLit l)) a b)
+decisionToIf _ _ = None
+
 -- `self` does not occur free in `ex` (so the leaf is an ordinary value, safe to
 -- compute via the wrapper-ABI path).
 selfFreeW : String -> CExpr -> Bool
 selfFreeW self ex = not (contains self (freeVars [] ex))
 
 -- every leaf of the body is either a full-arity tail self-call or a self-free value;
--- descends CIf only. Any self occurrence outside a tail self-call ⇒ ineligible.
+-- descends CIf and a desugarable 2-arm match. Any self outside a tail self-call ⇒
+-- ineligible.
 floatWorkerOk : String -> Int -> CExpr -> Bool
 floatWorkerOk self arity (CIf c t f) =
   selfFreeW self c && floatWorkerOk self arity t && floatWorkerOk self arity f
+floatWorkerOk self arity (CDecision scrut arms tree) = match decisionToIf scrut arms
+  Some cif => floatWorkerOk self arity cif
+  None => selfFreeW self (CDecision scrut arms tree)
 floatWorkerOk self arity ex = match flattenApp ex []
   (CVar f _, args) => if f == self then lengthS args == arity else selfFreeW self ex
   _ => selfFreeW self ex
@@ -6151,6 +6165,11 @@ emitFnBodyD e env self worker fp arity (CIf c t f) =
   let _ = emitFnBodyD e env self worker fp arity t
   let _ = emit e (elseL ++ ":")
   emitFnBodyD e env self worker fp arity f
+emitFnBodyD e env self worker fp arity (CDecision scrut arms tree) = match decisionToIf scrut arms
+  Some cif => emitFnBodyD e env self worker fp arity cif
+  None =>
+    let d = emitFloatD e env (CDecision scrut arms tree)
+    emit e ("  ret double " ++ d)
 emitFnBodyD e env self worker fp arity other =
   emitTailLeafD e env self worker fp arity other (flattenApp other [])
 

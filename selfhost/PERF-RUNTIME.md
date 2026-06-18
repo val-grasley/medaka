@@ -146,25 +146,24 @@ WRAPPER `@mdk_<name>(i64 …)` (original ABI) that unboxes float params, calls t
 worker, boxes the result. External callers + eta/dispatch hit the unchanged wrapper.
 
 Scope (conservative, safe fallback): single-clause, all-PVar, non-dict, ≥1 `Float`
-param, `Float` return, self-recursive, body is CIf/value only — every leaf is a
-full-arity tail self-call OR a self-free value (`floatWorkerOk`). Guards desugar to
-CIf → eligible; a **`match`-bodied** float accumulator (CDecision, e.g. the original
-`floatsum.mdk`) is NOT eligible and falls back to normal codegen (the CDecision-double
-extension is future work). Reuses the Win-2 `LTFloatU` machinery for the worker's
-double params.
+param, `Float` return, self-recursive, body is CIf/value, OR a desugarable 2-arm
+`match scrut { lit => A ; _ => B }` (handled via `decisionToIf` → CIf, so the
+idiomatic `match`-style floatsum.mdk also qualifies). Any other shape (constructor
+patterns, >2 arms, guards, `let`-bodies with self) falls back to normal codegen.
+Reuses the Win-2 `LTFloatU` machinery for the worker's double params.
 
-**Numbers:** `floatsum_guard` (guard-style 50M accumulator) **0.16s → 0.04s (~4×)**,
-approaching the intsum 0.02s zero-alloc floor. Worker body verified to contain **zero
-`mdk_alloc`** (accumulator stays a `double`; base case `ret double %arg0`). Correct:
-small-N (1500.0) == interpreter; the 50M bench's interpreter oracle is just too slow.
+**Numbers:** `floatsum` (match-style 50M) **0.16s → 0.03s (~5×)**; cumulative across
+the session **0.38s → 0.03s (~12×)**, at the intsum 0.02s zero-alloc floor. Worker
+body has **zero `mdk_alloc`** (accumulator stays a `double`; base case `ret double
+%arg0`). Correct: small-N (1500.0) == interpreter.
 
 **Gates:** `diff_selfhost_llvm` **180/0**; `selfcompile_fixpoint` **C3a/C3b YES**
 (+ typed/modules/build/stack — see commit). The emitter has no float-accumulator guard
 fns of its own, so its IR is unchanged → fixpoint holds trivially.
 
-**Follow-on:** extend `emitFnBodyD` with a CDecision arm (descend match arms in
-double-return mode, reusing the decision tree with double leaves) so `match`-style
-float accumulators (floatsum.mdk) also benefit. Bounded; same technique.
+**Follow-on:** the desugar covers 2-arm literal matches; a true CDecision-double
+descent (multi-arm matches, `let`-bodied accumulators) via a `floatWorkerCtxRef`
+mirror of `trmcCtxRef` would generalize further. Bounded; same technique.
 
 ### Win 3 — atomic float cells (2026-06-17, `llvm_emit.mdk` + `llvm_preamble.mdk`)
 
