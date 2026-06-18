@@ -1,0 +1,13 @@
+-- Arith over record FLOAT field accesses.  `v.dx + v.dy` / `v.dx*v.dx + v.dy*v.dy`
+-- used to do INTEGER arith on boxed-float field words -> garbage (emitFieldAccess
+-- returns LTInt; emitArith only checked the LEFT operand for float-ness).  emitArith
+-- now routes to the float path when either operand is a Float field access.
+data V = V { dx : Float, dy : Float }
+
+mag2 : V -> Float
+mag2 v = v.dx * v.dx + v.dy * v.dy
+
+addF : V -> Float
+addF v = v.dx + v.dy
+
+main = mag2 (V { dx = 3.0, dy = 4.0 }) + addF (V { dx = 1.0, dy = 2.0 })
