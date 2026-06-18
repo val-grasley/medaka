@@ -35,8 +35,10 @@ strings/lists/tuples/records. Every win is on an isolated branch (8-branch stack
 output-gated (`diff_selfhost_*` byte-identical to the interpreter oracle) and
 `selfcompile_fixpoint` C3a/C3b YES. Also corrected a stale doc claim: clang `-O2` of
 the emitter is ~3.3s and a full rebuild ~8s (not the ~127s in PERF-RESULTS), so the
-build-caching lever is moot. Found + recorded 2 pre-existing bugs (arith on type-lost
-floats; unbound constrained fn on imported stdlib).
+build-caching lever is moot. Plus a SOUNDNESS FIX (Win 12): the common `<type-lost-float> + <float>` arith case (e.g.
+`f x + 1.0` with a closure-call result) was miscompiling to integer arith → now fixed.
+Found + recorded 2 pre-existing bugs (arith on type-lost floats [now partially fixed];
+unbound constrained fn on imported stdlib).
 
 ## Benchmark suite (`test/bench_fixtures/`)
 
@@ -106,8 +108,11 @@ call boundaries.
   RDict-forwarded dicts inside polymorphic fns + polymorphic-`fold` float unboxing. Big. Design (C).
 - **GC allocation density** — bintrees ~50% GC_malloc, listsum/cons churn, the emitter's
   `++`/`mdk_string_append` result allocs (segment-emit was a session-2 dead-end). Structural.
-- **arith-on-type-lost-floats fix** — correctness, design (B). **Separate compilation** —
-  MOOT (build is ~8s, design D). Constant ADT/tuple cell hoisting — risky (`==` identity).
+- **arith-on-type-lost-floats fix** — PARTIALLY DONE (Win 12: `<type-lost-float> +
+  <statically-float>` now uses the float path, soundly; fixes comp/shadow). REMAINING:
+  both-operands-type-lost (`a+b`, both destructured floats → both LTInt) needs
+  field/component-type threading (design B). **Separate compilation** — MOOT (build is
+  ~8s, design D). Constant ADT/tuple cell hoisting — risky (`==` identity).
 
 ## Wins banked
 
