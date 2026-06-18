@@ -191,21 +191,23 @@ stack-allocation (bintrees ~50% `GC_malloc`). No cheap safe win in the profile.
 
 ## Compile-time breakdown & the caching question (2026-06-17)
 
-For the heavy compiler workload (self-compile graph, ~10MB IR):
+**CORRECTION (measured this session, M5 + clang 21):** `clang -O2` of the 12MB
+emitter IR is **~3.3s**, and a **full native compiler rebuild (emit+clang emitter +
+emit+clang CLI) is ~8s** — NOT the ~127s in `PERF-RESULTS.md` Entry 1 (stale: older
+machine/clang, or measured differently). Build latency is therefore a **non-issue**,
+and the user-suggested **caching / separate-compilation lever is MOOT** — there is no
+large clang cost to cache or split. `-O1` ≈ `-O2` runtime (self-emit 2.22s vs 2.17s)
+at slightly lower compile (2.5s vs 3.3s); not worth changing the default.
 
-| stage | time |
+| stage (self-compile graph, ~12MB IR) | time |
 |---|---|
 | `check` (parse+resolve+typecheck) | 1.7s |
-| emit (native emitter → 317k-line IR) | 3.0s |
-| **clang `-O2` of the IR** | **~127s** (PERF-RESULTS Entry 1; `-O0` ≈ few s) |
+| emit (native emitter → 317k-line IR) | ~3s |
+| clang `-O2` of the IR | **~3.3s** (was mis-recorded as ~127s) |
+| **full `build_native_medaka.sh` rebuild** | **~8s** |
 
-**clang `-O2` dominates build latency ~20–25× over the entire Medaka frontend+emit.**
-So the user-suggested *caching* lever, for BUILD latency, points at **separate
-compilation** (emit per-module IR → cache each module's `.o`, link; re-clang only
-changed modules), NOT frontend caching. Frontend caching helps the `check`/LSP loop
-(1.7s) but is small next to clang. Both are sizable architectural changes; separate
-compilation is the higher-value compiler-perf lever and is recorded for a supervised
-session (it changes emit linkage + the build driver).
+The real performance opportunity is RUNTIME (compiled-program speed), not build
+latency — see the float wins above and the remaining runtime levers below.
 
 ## Branch certification (perf/float-unbox, 2026-06-17)
 
@@ -269,12 +271,8 @@ touches typecheck (collect instantiations) + emit (emit specialized copies) +
 dispatch. Stage it: start with monomorphizing `Num`-instantiated functions to unbox
 float/int, measured against `fold`-over-floats and dict-heavy benches.
 
-### D. Separate compilation (the BUILD-latency caching lever — user-suggested)
-clang `-O2` of the monolithic ~10MB IR dominates build latency (~127s, ~20-25× the
-Medaka frontend+emit). Emit per-MODULE `.ll` (with cross-module `declare`s), clang
-each to `.o` CACHED by module-IR hash, link the `.o`s. Incremental rebuild (one
-module changed) → re-clang only that module + link ≈ seconds instead of ~127s.
-Requires emitter restructure (per-module emission + linkage/init-order) + build-driver
-rewrite (`selfhost/build_cmd.mdk`). A cheaper interim: cache the whole binary by
-full-IR hash (helps only no-op rebuilds / repeated gate runs; fixpoint- & gate-safe
-since it changes neither emitted IR nor program output).
+### D. Separate compilation (the BUILD-latency caching lever) — ❌ MOOT
+**Measured this session: a full native compiler rebuild is ~8s (clang ~3.3s).** The
+~127s clang figure in PERF-RESULTS that motivated this lever is stale/wrong. There is
+no large clang cost to cache or split, so separate compilation / build caching has
+~nothing to gain. Build latency is not a performance problem; runtime is the target.
