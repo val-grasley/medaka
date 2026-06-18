@@ -1046,7 +1046,13 @@ pendingRLocalSites = Ref []
 
 -- one entry per occurrence of a registered interface method: (iface, typarams,
 -- declared method Ty, the occurrence's instantiated mono).  Resolved post-inference.
-pendingImplObligations : Ref (List (String, List String, Ty, Mono))
+-- B.10.2c: the 5th element is the `currentLoc` span snapshotted at the RECORD
+-- site (during inference, when the ELoc context is live), so the post-HM
+-- obligation check (checkImplObligations) can pair a `No impl of …` reject with
+-- the offending expression's range — mirror of lib/typecheck.ml capturing
+-- `!current_loc` into method_usages / constraint_obligations at record time
+-- rather than reading the stale global at the post-HM raise.
+pendingImplObligations : Ref (List (String, List String, Ty, Mono, Option Loc))
 pendingImplObligations = Ref []
 
 -- PLAN.md #11: one entry per source integer literal (ENumLit):
@@ -1129,7 +1135,7 @@ funConstraintIfacesRef = Ref []
 -- ERROR; a still-polymorphic head is DEFERRED (left to a further-out caller).  This
 -- is the selfhost analog of the oracle's constraint_obligations + check_constraint_
 -- obligations: pendingDictApps routes the dict, this list checks the impl exists.
-pendingCallObligations : Ref (List (String, Mono))
+pendingCallObligations : Ref (List (String, Mono, Option Loc))
 pendingCallObligations = Ref []
 
 -- #11 soundness (native obligation hole, ALWAYS-ON, independent of the dict-
@@ -1465,6 +1471,25 @@ pushTypeError msg =
 pushTypeErrorOnce : String -> <Mut> Unit
 pushTypeErrorOnce msg =
   if anyList (e => fst e == msg) typeErrors.value then () else pushTypeError msg
+
+-- B.10.2c: push a deduped type error attributing it to the supplied loc rather
+-- than the live `currentLoc` (which is stale during the post-HM obligation
+-- check — inference has long since left the offending ELoc).  The loc was
+-- snapshotted into the obligation tuple at the record site.  `None` falls back
+-- to the live `currentLoc` (the old behaviour) so an obligation that never
+-- captured a span is unchanged.
+pushTypeErrorOnceAt : Option Loc -> String -> <Mut> Unit
+pushTypeErrorOnceAt loc msg =
+  if anyList (e => fst e == msg) typeErrors.value then ()
+  else
+    let _ = set_ref typeErrorsSticky True
+    set_ref typeErrors ((msg, orElseLoc loc currentLoc.value) :: typeErrors.value)
+
+-- the first `Some` loc, else the second (so a captured record-site span wins,
+-- and a `None` capture still degrades to the live currentLoc).
+orElseLoc : Option Loc -> Option Loc -> Option Loc
+orElseLoc (Some l) _ = Some l
+orElseLoc None fallback = fallback
 
 -- Source-location attribution (Phase B.10.2): the innermost ELoc span the
 -- `infer` walk has entered.  Set by infer's transparent ELoc arm before
@@ -2493,7 +2518,7 @@ recordCallObligations _ [] = ()
 recordCallObligations (iface::ifs) (mono::ms)
   | iface == "" = recordCallObligations ifs ms
   | otherwise =
-    let _ = set_ref pendingCallObligations ((iface, mono) :: pendingCallObligations.value)
+    let _ = set_ref pendingCallObligations ((iface, mono, currentLoc.value) :: pendingCallObligations.value)
     recordCallObligations ifs ms
 
 -- String-keyed assoc lookup over funConstraintIfacesRef (returns the iface name list).
@@ -2913,7 +2938,7 @@ numArithOp lt rt =
 -- constraint on `+`, so gating here keeps the no-prelude drivers byte-identical.
 recordNumObligation : Mono -> <Mut> Unit
 recordNumObligation lt
-  | numIfaceRegistered () = set_ref pendingImplObligations (("Num", ["a"], TyVar "a", lt) :: pendingImplObligations.value)
+  | numIfaceRegistered () = set_ref pendingImplObligations (("Num", ["a"], TyVar "a", lt, currentLoc.value) :: pendingImplObligations.value)
   | otherwise = ()
 
 -- True iff a `Num` interface is registered (its methods are in methodIfaceParamsRef,
@@ -2957,7 +2982,7 @@ inferNumLit env n fref dref
 inferNumLitBare : Int -> Ref (Option Float) -> <Mut> Mono
 inferNumLitBare n fref =
   let a = freshVar ()
-  let _ = set_ref pendingImplObligations (("Num", ["a"], TyVar "a", a) :: pendingImplObligations.value)
+  let _ = set_ref pendingImplObligations (("Num", ["a"], TyVar "a", a, currentLoc.value) :: pendingImplObligations.value)
   let _ = set_ref numlitRefs ((a, fref, n, Ref RNone) :: numlitRefs.value)
   a
 
@@ -3049,7 +3074,7 @@ recordSchemeCallObligations : List (String, Int) -> List (Int, Mono) -> <Mut> Un
 recordSchemeCallObligations [] _ = ()
 recordSchemeCallObligations ((iface, id)::rest) subst = match lookupAssocI id subst
   Some mono =>
-    let _ = set_ref pendingCallObligations ((iface, mono) :: pendingCallObligations.value)
+    let _ = set_ref pendingCallObligations ((iface, mono, currentLoc.value) :: pendingCallObligations.value)
     recordSchemeCallObligations rest subst
   None => recordSchemeCallObligations rest subst
 
@@ -3069,7 +3094,7 @@ recordImplObligation : String -> Mono -> <Mut> Mono
 recordImplObligation x mono = match lookupAssoc x methodIfaceParamsRef.value
   None => mono
   Some (iface, typarams, mty) =>
-    let _ = set_ref pendingImplObligations ((iface, typarams, mty, mono) :: pendingImplObligations.value)
+    let _ = set_ref pendingImplObligations ((iface, typarams, mty, mono, currentLoc.value) :: pendingImplObligations.value)
     mono
 
 -- Expected-type propagation for an application whose argument is a lambda.
@@ -3639,15 +3664,15 @@ monoArgUnboundIds t = match normalize t
 
 -- the unbound var ids that any pending `Num` obligation in [obls] constrains (the
 -- operand monos recorded by recordNumObligation / the literal infer arm)
-numConstrainedIds : List (String, List String, Ty, Mono) -> <Mut> List Int
+numConstrainedIds : List (String, List String, Ty, Mono, Option Loc) -> <Mut> List Int
 numConstrainedIds obls = concatMapList numObligIds obls
 
-numObligIds : (String, List String, Ty, Mono) -> List Int
-numObligIds (iface, _, _, occ)
+numObligIds : (String, List String, Ty, Mono, Option Loc) -> List Int
+numObligIds (iface, _, _, occ, _)
   | iface == "Num" = monoUnboundIds occ
   | otherwise = []
 
-defaultAmbiguousNum : List (String, List String, Ty, Mono) -> Mono -> <Mut> Unit
+defaultAmbiguousNum : List (String, List String, Ty, Mono, Option Loc) -> Mono -> <Mut> Unit
 defaultAmbiguousNum obls t =
   let argIds = monoArgUnboundIds t
   let inT = monoUnboundIds t
@@ -3661,14 +3686,14 @@ defaultAmbiguousNum obls t =
 -- does NOT require the var to appear in a member's type (a var consumed inside a
 -- body surfaces in no type but must still ground — `let n = tag [1,2,3]`).  Mirrors
 -- process_letrec_group's group_arg_ids over added_obligs/added_methods.
-defaultGroupNum : List (String, List String, Ty, Mono) -> List Mono -> <Mut> Unit
+defaultGroupNum : List (String, List String, Ty, Mono, Option Loc) -> List Mono -> <Mut> Unit
 defaultGroupNum obls monos =
   let argIds = concatMapList monoArgUnboundIds monos
   let candidates = dedupI (numConstrainedIds obls)
   groundNumVars obls (filterList (id => not (containsI id argIds)) candidates)
 
 -- per-binding defaulting: run defaultAmbiguousNum on each member's placeholder mono
-defaultEachMember : List (String, List String, Ty, Mono) -> List (String, Mono) -> <Mut> Unit
+defaultEachMember : List (String, List String, Ty, Mono, Option Loc) -> List (String, Mono) -> <Mut> Unit
 defaultEachMember _ [] = ()
 defaultEachMember obls ((_, m)::rest) =
   let _ = defaultAmbiguousNum obls m
@@ -3676,7 +3701,7 @@ defaultEachMember obls ((_, m)::rest) =
 
 -- ground each id to Int by unifying the live var carrying it (found among [obls]'
 -- Num operand monos — refs alias post-unify, grounding any grounds all)
-groundNumVars : List (String, List String, Ty, Mono) -> List Int -> <Mut> Unit
+groundNumVars : List (String, List String, Ty, Mono, Option Loc) -> List Int -> <Mut> Unit
 groundNumVars _ [] = ()
 groundNumVars obls (id::rest) =
   let _ = match liveNumVarGo id obls
@@ -3684,9 +3709,9 @@ groundNumVars obls (id::rest) =
     None => ()
   groundNumVars obls rest
 
-liveNumVarGo : Int -> List (String, List String, Ty, Mono) -> <Mut> Option Mono
+liveNumVarGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Option Mono
 liveNumVarGo _ [] = None
-liveNumVarGo id ((iface, _, _, occ)::rest)
+liveNumVarGo id ((iface, _, _, occ, _)::rest)
   | iface == "Num" = match findTvarInMono occ id
     Some m => Some m
     None => liveNumVarGo id rest
@@ -5880,7 +5905,7 @@ inferDefaultMethodBody mname env expectedTy pats body =
 -- method to its interface default body) creates a head entry, so a default-method
 -- call on a type WITH an impl is satisfied; a default-method call on a type with
 -- NO impl is rejected — both matching the oracle.
-checkImplObligations : List Decl -> List (String, List String, Ty, Mono) -> <Mut> Unit
+checkImplObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 checkImplObligations prog obligations =
   checkImplObligationsGo (implHeadsOf prog) obligations
 
@@ -5892,26 +5917,26 @@ checkImplObligations prog obligations =
 -- out caller — `id x = x; y = id 5`) is DEFERRED.  Exactly the accept/reject decision
 -- of checkOneImplObligation's tail, and the mirror of lib/typecheck.ml's
 -- check_constraint_obligations (which checks fun_constraints instantiated at the call).
-checkCallObligations : List Decl -> List (String, Mono) -> <Mut> Unit
+checkCallObligations : List Decl -> List (String, Mono, Option Loc) -> <Mut> Unit
 checkCallObligations prog obligations =
   checkCallObligationsGo (implHeadsOf prog) [] obligations
 
 -- [seen] dedups by (iface, concrete-head-tycon): the SAME unsatisfiable obligation can
 -- be recorded by more than one path (a use marked both EVar and, on the emit path,
 -- EDictAt) or by repeated call sites, but the oracle raises ONE error per missing impl.
-checkCallObligationsGo : List (String, List Ty) -> List String -> List (String, Mono) -> <Mut> Unit
+checkCallObligationsGo : List (String, List Ty) -> List String -> List (String, Mono, Option Loc) -> <Mut> Unit
 checkCallObligationsGo _ _ [] = ()
-checkCallObligationsGo heads seen ((iface, occ)::rest) =
+checkCallObligationsGo heads seen ((iface, occ, loc)::rest) =
   let key = iface ++ "|" ++ fromOption "" (headTyconMono occ)
   if contains key seen then checkCallObligationsGo heads seen rest
   else
-    let _ = checkOneCallObligation heads iface occ
+    let _ = checkOneCallObligation heads iface occ loc
     checkCallObligationsGo heads (key :: seen) rest
 
-checkOneCallObligation : List (String, List Ty) -> String -> Mono -> <Mut> Unit
-checkOneCallObligation heads iface occ =
+checkOneCallObligation : List (String, List Ty) -> String -> Mono -> Option Loc -> <Mut> Unit
+checkOneCallObligation heads iface occ loc =
   let args = [normalize occ]
-  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnce (noImplFoundMsg iface args) else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnce (noImplFoundMsg iface args)
+  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnceAt loc (noImplFoundMsg iface args)
 
 -- PLAN.md #11: after HM + defaulting every source integer literal's type var is
 -- ground (or a genuine `Num a` survivor).  Decide each literal's runtime rep
@@ -5959,9 +5984,9 @@ setNumlitFloatsGo ((var, fref, n, dref)::rest) =
 -- inference, before the resolve* passes read the cells.  Single-param interfaces and
 -- already-ground occurrences are no-ops.  Mirrors the intent of the oracle's
 -- impl_head_subst keying off the FULL concrete_args (the interface's param_vars).
-groundMultiParamObligations : List Decl -> List (String, List String, Ty, Mono) -> <Mut> Unit
+groundMultiParamObligations : List Decl -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 groundMultiParamObligations _ [] = ()
-groundMultiParamObligations prog ((iface, typarams, mty, occ)::rest) =
+groundMultiParamObligations prog ((iface, typarams, mty, occ, _)::rest) =
   let _ = groundOneObligation prog iface typarams mty occ
   groundMultiParamObligations prog rest
 
@@ -6013,14 +6038,14 @@ substTyVars sub (TyTuple ts) = TyTuple (map (substTyVars sub) ts)
 substTyVars sub (TyEffect es eff t) = TyEffect es eff (substTyVars sub t)
 substTyVars sub (TyConstrained cs t) = TyConstrained cs (substTyVars sub t)
 
-checkImplObligationsGo : List (String, List Ty) -> List (String, List String, Ty, Mono) -> <Mut> Unit
+checkImplObligationsGo : List (String, List Ty) -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> Unit
 checkImplObligationsGo _ [] = ()
-checkImplObligationsGo heads ((iface, typarams, mty, occ)::rest) =
-  let _ = checkOneImplObligation heads iface typarams mty occ
+checkImplObligationsGo heads ((iface, typarams, mty, occ, loc)::rest) =
+  let _ = checkOneImplObligation heads iface typarams mty occ loc
   checkImplObligationsGo heads rest
 
-checkOneImplObligation : List (String, List Ty) -> String -> List String -> Ty -> Mono -> <Mut> Unit
-checkOneImplObligation heads iface typarams mty occ =
+checkOneImplObligation : List (String, List Ty) -> String -> List String -> Ty -> Mono -> Option Loc -> <Mut> Unit
+checkOneImplObligation heads iface typarams mty occ loc =
   let args = dispatchMonosOf typarams mty occ
   -- PLAN.md #11 soundness: under Num-polymorphic literals a literal's var can unify
   -- with a *function* type (`5 1` ⇒ the `5` var becomes `Int -> b`) or be forced
@@ -6039,7 +6064,7 @@ checkOneImplObligation heads iface typarams mty occ =
   -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
   -- (function/unbound `m`) stays even no-prelude — it is a structural unification
   -- error, not a missing-impl one.
-  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnce (noImplFoundMsg iface args) else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnce (noImplFoundMsg iface args)
+  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnceAt loc (noImplFoundMsg iface args) else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnceAt loc (noImplFoundMsg iface args)
 
 -- a mono no `Num` impl can ever match: a function type, or an application whose
 -- spine head is still an unbound tyvar (a literal forced into `m a` monad position)
@@ -7092,7 +7117,7 @@ maybeInferConstraint sigs m sch
 -- but recording the inferred obligation list here too is harmless (a satisfiable
 -- concrete instantiation passes; an unsatisfiable one SHOULD error).  Runs on every
 -- path (NOT gated on dictEligibleSetRef), so the plain check path catches the hole.
-registerSchemeObligations : List (String, List String, Ty, Mono) -> List (String, Scheme) -> <Mut> Unit
+registerSchemeObligations : List (String, List String, Ty, Mono, Option Loc) -> List (String, Scheme) -> <Mut> Unit
 registerSchemeObligations _ [] = ()
 registerSchemeObligations addedObls ((m, sch)::rest) =
   let obs = schemeObligationsOf (schemeIds sch) addedObls
@@ -7102,9 +7127,9 @@ registerSchemeObligations addedObls ((m, sch)::rest) =
 -- the (iface, var-id) pairs of the obligations whose discriminating mono is one of
 -- this scheme's quantified ids (single-param interfaces only — the obligation's first
 -- dispatch arg is the constraint var).  Deduped on (iface, id).
-schemeObligationsOf : List Int -> List (String, List String, Ty, Mono) -> <Mut> List (String, Int)
+schemeObligationsOf : List Int -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> List (String, Int)
 schemeObligationsOf _ [] = []
-schemeObligationsOf boundIds ((iface, typarams, mty, occ)::rest) =
+schemeObligationsOf boundIds ((iface, typarams, mty, occ, _)::rest) =
   schemeObligationOne boundIds iface typarams mty occ ++ schemeObligationsOf boundIds rest
 
 -- a single obligation contributes (iface, id) iff its (single) dispatch mono is a
@@ -7173,9 +7198,9 @@ registerInferredFor m ids =
 ifaceForConstraintId : Int -> <Mut> String
 ifaceForConstraintId id = ifaceForConstraintIdGo id pendingImplObligations.value
 
-ifaceForConstraintIdGo : Int -> List (String, List String, Ty, Mono) -> <Mut> String
+ifaceForConstraintIdGo : Int -> List (String, List String, Ty, Mono, Option Loc) -> <Mut> String
 ifaceForConstraintIdGo _ [] = ""
-ifaceForConstraintIdGo id ((iface, _, _, occ)::rest) = match normalize occ
+ifaceForConstraintIdGo id ((iface, _, _, occ, _)::rest) = match normalize occ
   TVar cell => if tyvarId cell == id then iface else ifaceForConstraintIdGo id rest
   _ => ifaceForConstraintIdGo id rest
 
