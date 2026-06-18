@@ -27,7 +27,15 @@
 set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-MAIN="$ROOT/_build/default/bin/main.exe"
+# Prefer the native `medaka` (the OCaml `medaka build` path is dead — its
+# interpreter can no longer parse the selfhost emitter source). Builds shell out
+# to an emitter, so point MEDAKA_EMITTER at the native emitter for OCaml-free builds.
+if [ -x "$ROOT/medaka" ]; then
+  MAIN="$ROOT/medaka"
+  [ -x "$ROOT/medaka_emitter" ] && export MEDAKA_EMITTER="$ROOT/medaka_emitter"
+else
+  MAIN="$ROOT/_build/default/bin/main.exe"
+fi
 EMIT_DRIVER="selfhost/entries/llvm_emit_modules_main.mdk"
 RUNTIME="stdlib/runtime.mdk"
 CORE="stdlib/core.mdk"
@@ -85,6 +93,20 @@ echo "building listsum..."; "$MAIN" build test/bench_fixtures/listsum.mdk -o /tm
   || { echo "listsum build FAILED"; exit 2; }
 "/tmp/_bench_ls" >/dev/null 2>&1 # warm
 printf 'listsum      %s\n' "$(time_min /tmp/_bench_ls)"
+
+# ── runtime micro-suite (float/ADT/list/closure/string) ──────────────────────
+# See selfhost/PERF-RUNTIME.md. floatsum/mandel isolate float boxing (Win 1/2:
+# fusion + let-unboxing); bintrees = ADT/GC; listops/closures = cons/closure churn.
+for b in intsum floatsum mandel mandel_let bintrees closures strbuild; do
+  src="test/bench_fixtures/$b.mdk"
+  [ -f "$src" ] || continue
+  if "$MAIN" build "$src" -o "/tmp/_bench_$b" >/dev/null 2>&1; then
+    "/tmp/_bench_$b" >/dev/null 2>&1 # warm
+    printf '%-12s %s\n' "$b" "$(time_min "/tmp/_bench_$b")"
+  else
+    printf '%-12s BUILD FAILED\n' "$b"
+  fi
+done
 
 # ── selfcompile (representative heavy workload) ──────────────────────────────
 if [ "$DO_SELFCOMPILE" -eq 1 ]; then
