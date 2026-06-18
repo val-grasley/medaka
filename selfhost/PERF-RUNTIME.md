@@ -262,6 +262,25 @@ composes (a constant tuple of constant strings/lists fully hoists).
 `diff_selfhost_eval_run` **28/0**. Correctness: tuple `==`/destructure, record access
 == interpreter.
 
+### Win 9 — worker-wrapper covers CBlock (let-block) bodies (2026-06-18, `perf/float-worker-block`)
+
+Win 4's worker-wrapper handled CIf/value/2-arm-match bodies but NOT `let`-block bodies
+— so the idiomatic float accumulator `f acc … = … let a = …; let b = …; f (acc+t) …`
+(a CBlock) stayed ineligible and boxed its accumulator per iteration. Extended
+`floatWorkerOk`/`emitFnBodyD` with a CBlock arm (`floatWorkerBlockOk`/`emitFnBodyDBlock`):
+eligible iff every leading `CSLet` binds a plain var with a self-free RHS and the final
+stmt is a worker-eligible CSExpr (the tail); the worker emits the lets (float RHS →
+unboxed `LTFloatU`, reusing Win 2) then the tail in double-return mode. Any other stmt
+(assign / let-else / non-PVar / non-CSExpr final) falls back.
+
+**Numbers:** `taylor` (realistic 12-term Taylor exp, `term` has a let-block body) 0.12s →
+**0.07s** — cumulative vs baseline **0.20→0.07 (~2.9×)**. CBlock-with-lets-before-the-
+recursive-call is the common realistic float-accumulator shape, so this materially widens
+worker-wrapper coverage.
+
+**Gates:** `diff_selfhost_llvm` **180/0**, `selfcompile_fixpoint` **C3a/C3b YES**; worker
+sweep (w1–w8) + small-N == interpreter.
+
 ## Dead-ends
 
 (none yet)
@@ -429,6 +448,13 @@ See bug log above. Fix: bind tuple-destructure / closure-capture vars `LTUnknown
 runtime-discriminator. Keeps genuine `LTInt` arith inline-fast. Broad (LTUnknown is
 handled in many emit sites) → needs a fixture (arith over a destructured/captured
 float) + full gates. Correctness > perf; do supervised.
+**Blocker found (2026-06-18):** record/tuple field TYPES are NOT available at emit time
+— the emitter's `recFields` table (`collectRecords`) captures field NAMES only, and
+Core IR `CRecord`/destructure nodes carry no types (erased after typecheck). So the
+proper fix (give a destructured/field-accessed float the `LTFloat` it deserves) needs
+field types threaded through Core IR lowering into a new `recFieldType` table — a
+lowering+emit change, not a localized emit patch. The `LTNum`/`LTUnknown` routing above
+is the emit-side half; the type-source threading is the prerequisite.
 
 ### C. Monomorphization (the meta-lever — user-suggested)
 **Measured this session: dict-passing/dispatch overhead is ~4×** — a polymorphic

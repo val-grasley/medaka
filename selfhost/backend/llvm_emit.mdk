@@ -6134,9 +6134,20 @@ floatWorkerOk self arity (CIf c t f) =
 floatWorkerOk self arity (CDecision scrut arms tree) = match decisionToIf scrut arms
   Some cif => floatWorkerOk self arity cif
   None => selfFreeW self (CDecision scrut arms tree)
+floatWorkerOk self arity (CBlock stmts) = floatWorkerBlockOk self arity stmts
 floatWorkerOk self arity ex = match flattenApp ex []
   (CVar f _, args) => if f == self then lengthS args == arity else selfFreeW self ex
   _ => selfFreeW self ex
+
+-- a let-block body is worker-eligible if every leading CSLet binds a plain var with a
+-- self-free RHS (the lets are evaluated before the tail) and the final stmt is a
+-- CSExpr that is itself worker-eligible (the tail). Any other stmt shape (assign,
+-- let-else, non-PVar pattern, non-CSExpr final) disqualifies → fall back.
+floatWorkerBlockOk : String -> Int -> List CStmt -> Bool
+floatWorkerBlockOk self arity (CSExpr ex :: []) = floatWorkerOk self arity ex
+floatWorkerBlockOk self arity (CSLet _ (PVar _) rhs :: rest) =
+  selfFreeW self rhs && floatWorkerBlockOk self arity rest
+floatWorkerBlockOk _ _ _ = False
 
 floatWorkerEligible : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Bool
 floatWorkerEligible e name pats ptys body =
@@ -6207,8 +6218,26 @@ emitFnBodyD e env self worker fp arity (CDecision scrut arms tree) = match decis
   None =>
     let d = emitFloatD e env (CDecision scrut arms tree)
     emit e ("  ret double " ++ d)
+emitFnBodyD e env self worker fp arity (CBlock stmts) =
+  emitFnBodyDBlock e env self worker fp arity stmts
 emitFnBodyD e env self worker fp arity other =
   emitTailLeafD e env self worker fp arity other (flattenApp other [])
+
+-- emit a worker-mode let-block: bind each leading CSLet (float RHS → unboxed double
+-- LTFloatU, same as emitBlock; else normal), then emit the final CSExpr in tail
+-- (double-return) mode. Gated by floatWorkerBlockOk, so the shape is guaranteed.
+emitFnBodyDBlock : Emit -> List (String, (String, LTy)) -> String -> String -> List Int -> Int -> List CStmt -> <Mut> Unit
+emitFnBodyDBlock e env self worker fp arity (CSExpr ex :: []) =
+  emitFnBodyD e env self worker fp arity ex
+emitFnBodyDBlock e env self worker fp arity (CSLet _ (PVar x) rhs :: rest) =
+  if staticIsFloat env rhs then
+    let d = emitFloatD e env rhs
+    emitFnBodyDBlock e ((x, (d, LTFloatU)) :: env) self worker fp arity rest
+  else
+    let (v, ty) = emitExpr e env rhs
+    emitFnBodyDBlock e ((x, (v, ty)) :: env) self worker fp arity rest
+emitFnBodyDBlock e env _ _ _ _ _ =
+  gapU "float-worker block: unexpected statement shape (should be gated by floatWorkerBlockOk)"
 
 emitTailLeafD : Emit -> List (String, (String, LTy)) -> String -> String -> List Int -> Int -> CExpr -> (CExpr, List CExpr) -> <Mut> Unit
 emitTailLeafD e env self worker fp arity _ (CVar f0 _, args)
