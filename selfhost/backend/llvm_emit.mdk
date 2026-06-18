@@ -1870,11 +1870,38 @@ emitFloatLeaf e env ex = match floatFromIntArg ex
     let r = freshReg e
     let _ = emit e ("  " ++ r ++ " = sitofp i64 " ++ i ++ " to double")
     r
-  None => match floatVarReg env ex
-    Some reg => reg
-    None =>
-      let (w, _) = emitExpr e env ex
-      unboxFloat e w
+  None => emitFloatLeafN e env ex
+
+-- a saturated call to a float-fw fn → call its `$fw` (double-ABI) directly (float-pos
+-- args as doubles, others i64) and use the returned double — no box/unbox round-trip.
+emitFloatLeafN : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> String
+emitFloatLeafN e env ex = match flattenApp ex []
+  (CVar f _, args) => match floatFwHas f (lengthS args) && not (isLocal env f)
+    True =>
+      let ops = emitWorkerArgs e env (floatFwFp f) 0 args
+      let r = freshReg e
+      let _ = emit e ("  " ++ r ++ " = call double @mdk_" ++ f ++ "__fw(" ++ ops ++ ")")
+      r
+    False => emitFloatLeafVar e env ex
+  _ => emitFloatLeafVar e env ex
+
+emitFloatLeafVar : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> String
+emitFloatLeafVar e env ex = match floatVarReg env ex
+  Some reg => reg
+  None =>
+    let (w, _) = emitExpr e env ex
+    unboxFloat e w
+
+-- floatFwSetRef accessors: does `f` have a `$fw` of arity `n`, and its float positions.
+floatFwHas : String -> Int -> <Mut> Bool
+floatFwHas f n = match lookupAssoc f floatFwSetRef.value
+  Some (ar, _) => ar == n
+  None => False
+
+floatFwFp : String -> <Mut> List Int
+floatFwFp f = match lookupAssoc f floatFwSetRef.value
+  Some (_, fp) => fp
+  None => []
 
 -- in a statically-Float context, `intToFloat x` / `fromInt x` (@ Float) is just an
 -- int→double conversion: emit `sitofp` directly instead of the extern/impl call's
@@ -6180,6 +6207,38 @@ floatWorkerEligible e name pats ptys body =
   allPVar pats && leadingDictPats pats == 0 && hasFloatPty ptys && isFloatRet
     && contains name (freeVars [] body) && floatWorkerOk name (lengthS pats) body
 
+-- a float-RETURNING fn that gets a `$fw` double-ABI variant for float-context callers
+-- (no self-recursive / float-param requirement — return-unboxing alone is a win).
+-- Single-clause, all-PVar, non-dict, float return, body shape `emitFnBodyD` handles.
+floatFwEligible : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Bool
+floatFwEligible e name pats ptys body =
+  let rty = match lookupAssoc name (sigTable e)
+    Some (FnSig _ r) => r
+    None => LTInt
+  let isFloatRet = match rty
+    LTFloat => True
+    _ => False
+  allPVar pats && leadingDictPats pats == 0 && isFloatRet
+    && floatWorkerOk name (lengthS pats) body
+
+-- module set of fns that have an emitted `@mdk_<name>__fw` (name → (arity, float
+-- param positions)), for emitFloatLeaf to reroute float-context calls. Built once
+-- per program (call sites may precede the callee's emission).
+floatFwSetRef : Ref (List (String, (Int, List Int)))
+floatFwSetRef = Ref []
+
+-- collect the float-fw set from the program's single-clause function binds.
+collectFloatFw : Emit -> List CBind -> <Mut> List (String, (Int, List Int))
+collectFloatFw _ [] = []
+collectFloatFw e (CBind name (CClause pats body :: []) :: rest) =
+  let ptys = match lookupAssoc name (sigTable e)
+    Some (FnSig ts _) => ts
+    None => allInt pats
+  if floatFwEligible e name pats ptys body then
+    (name, (lengthS pats, floatPositions ptys 0)) :: collectFloatFw e rest
+  else collectFloatFw e rest
+collectFloatFw e (_ :: rest) = collectFloatFw e rest
+
 -- param decls with `double` at the float positions, `i64` elsewhere.
 paramDeclsD : List Pat -> List Int -> Int -> String
 paramDeclsD [] _ _ = ""
@@ -6282,18 +6341,27 @@ wrapperCallArgs e fp i (_::rest) =
     _ => ", "
   op ++ sep ++ wrapperCallArgs e fp (i + 1) rest
 
-emitFloatWorkerFn : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Unit
-emitFloatWorkerFn e name pats ptys body =
+-- emit ONLY the double-ABI `$fw` variant of a float fn (no wrapper) — used both by
+-- emitFloatWorkerFn (self-recursive: wrapper added separately) and for non-recursive
+-- float fns emitted alongside their original i64-ABI definition.
+emitFloatFwOnly : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Unit
+emitFloatFwOnly e name pats ptys body =
   let fp = floatPositions ptys 0
   let arity = lengthS pats
   let worker = name ++ "__fw"
-  -- worker: float params as doubles, body emitted double-returning
   let wenv = paramEnvD pats ptys fp 0
   let _ = emit e ("define double @mdk_" ++ worker ++ "(" ++ paramDeclsD pats fp 0 ++ ") {")
   let _ = emit e "entry:"
   let _ = emitFnBodyD e wenv name worker fp arity body
   let _ = emit e "}"
-  let _ = emit e ""
+  emit e ""
+
+emitFloatWorkerFn : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Unit
+emitFloatWorkerFn e name pats ptys body =
+  let fp = floatPositions ptys 0
+  let worker = name ++ "__fw"
+  -- worker ($fw): float params as doubles, body emitted double-returning
+  let _ = emitFloatFwOnly e name pats ptys body
   -- wrapper: original i64 ABI; unbox float params, call worker, box the result
   let _ = emit e ("define i64 @mdk_" ++ name ++ "(" ++ paramDecls pats 0 ++ ") {")
   let _ = emit e "entry:"
@@ -6310,7 +6378,15 @@ emitFnClause e name pats body =
   let ptys = match lookupAssoc name (sigTable e)
     Some (FnSig ts _) => ts
     None => allInt pats
-  if floatWorkerEligible e name pats ptys body then emitFloatWorkerFn e name pats ptys body else emitFnClauseW e name pats ptys body
+  if floatWorkerEligible e name pats ptys body then emitFloatWorkerFn e name pats ptys body else emitFnClauseStd e name pats ptys body
+
+-- non-worker single-clause fn: emit the original i64-ABI define; if it is a
+-- float-returning fn `emitFnBodyD` can handle, ALSO emit a standalone `$fw` variant
+-- (the original stays for i64-ABI callers; float-context callers use `$fw`).
+emitFnClauseStd : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Unit
+emitFnClauseStd e name pats ptys body =
+  let _ = emitFnClauseW e name pats ptys body
+  if floatFwEligible e name pats ptys body then emitFloatFwOnly e name pats ptys body else ()
 
 emitFnClauseW : Emit -> String -> List Pat -> List LTy -> CExpr -> <Mut> Unit
 emitFnClauseW e name pats ptys body =
@@ -7696,6 +7772,7 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
+  let _ = set_ref floatFwSetRef (collectFloatFw e (fnBinds groups))
   let _ = resetEmittedDefaults ()
   let _ = emitPreamble e
   let _ = emitGlobalDecls e (valBinds groups)
@@ -7838,6 +7915,7 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
+  let _ = set_ref floatFwSetRef (collectFloatFw e (fnBinds groups))
   let _ = resetGaps ()
   let _ = enableGapRecord ()
   let _ = emitPreamble e
