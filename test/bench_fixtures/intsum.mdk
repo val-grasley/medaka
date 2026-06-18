@@ -1,0 +1,10 @@
+-- Perf microbenchmark: CONTROL for floatsum.mdk. Same loop shape, Int instead of
+-- Float => zero heap allocation (Int is immediate-tagged). The wall-clock delta
+-- floatsum - intsum is the float-boxing tax.
+sumI : Int -> Int -> Int
+sumI acc n = match n
+  0 => acc
+  _ => sumI (acc + 1) (n - 1)
+
+main : <IO> Unit
+main = putStrLn (intToString (sumI 0 50000000))

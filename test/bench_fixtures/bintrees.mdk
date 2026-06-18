@@ -1,0 +1,22 @@
+-- Perf microbenchmark: ADT allocation + GC (binary-trees style).
+-- Builds and walks many full binary trees: heavy short-lived Node-cell churn,
+-- exercises the GC mark/collect path. Each Node = 24B heap cell.
+data Tree = Leaf | Node Tree Tree
+
+make : Int -> Tree
+make d = match d
+  0 => Node Leaf Leaf
+  _ => Node (make (d - 1)) (make (d - 1))
+
+check : Tree -> Int
+check t = match t
+  Leaf => 0
+  Node l r => 1 + check l + check r
+
+loop : Int -> Int -> Int -> Int
+loop d n acc = match n
+  0 => acc
+  _ => loop d (n - 1) (acc + check (make d))
+
+main : <IO> Unit
+main = putStrLn (intToString (loop 15 200 0))

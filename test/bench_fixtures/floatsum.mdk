@@ -1,0 +1,11 @@
+-- Perf microbenchmark: isolates FLOAT BOXING cost.
+-- Tail-recursive float accumulator: every `acc + 1.5` boxes a 16B Float cell.
+-- 50M iterations => 50M transient float boxes. Direct tail recursion (musttail),
+-- so the ONLY heap traffic is the float boxing. Compare to intsum.mdk (no alloc).
+sumF : Float -> Int -> Float
+sumF acc n = match n
+  0 => acc
+  _ => sumF (acc + 1.5) (n - 1)
+
+main : <IO> Unit
+main = putStrLn (floatToString (sumF 0.0 50000000))
