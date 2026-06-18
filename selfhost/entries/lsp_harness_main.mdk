@@ -11,6 +11,7 @@ import tools.lsp_harness.{
   initializeMsg,
   initializedMsg,
   didOpenMsg,
+  didChangeMsg,
   requestMsg,
   docParams,
   docPosParams,
@@ -21,6 +22,7 @@ import tools.lsp_harness.{
   allByteValid,
   diagCountFor,
   diagPublishedFor,
+  lastDiagCountFor,
   responseById,
   semanticData,
   decodeSemToks,
@@ -279,6 +281,53 @@ fixtureCompletionImport medaka fixDir =
         Ok out => match parseFrames out
           (frames, _) => check "completion import: reverse suggested" (completionHasLabel 2 frames "reverse")
 
+-- Fixture 10: parse-cache correctness across a didChange burst (LSP latency win).
+-- The per-keystroke parse-cache must NOT serve stale diagnostics: a buffer's
+-- import graph is reused across edits, but the (changed) ENTRY buffer is always
+-- re-analyzed.  Drive proj/main.mdk (imports the sibling `helper`) through a burst
+-- good → BAD → good → BAD → good, all keeping the `import helper` (so the
+-- multi-module project path + parse-cache stay engaged across every edit).  Assert:
+--   (a) a BAD edit surfaces ≥1 diagnostic for the entry (the cache didn't suppress
+--       the freshly-introduced error by reusing an earlier clean parse), AND
+--   (b) the FINAL (good) edit CONVERGES to 0 diagnostics (the last publish reflects
+--       the final text, not a stale cached one).
+-- The bad variant adds an entry-module function whose body mis-applies the
+-- imported `describe` (Option String -> String) to an Int and returns it as Int —
+-- a clear entry-module type error, while helper.mdk (the reused dep) is unchanged.
+fixtureDidChangeConverges : String -> String -> <IO, Mut> Unit
+fixtureDidChangeConverges medaka fixDir =
+  let mainPath = stringConcat [fixDir, "/proj/main.mdk"]
+  match readFile mainPath
+    Err _ => didChangeFail ()
+    Ok good =>
+      let uri = fileUri mainPath
+      let bad = "import helper.{describe}\n\ng : Int -> Int\ng x = describe x\n\nmain = println (describe (Some \"x\"))\n"
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri good,
+        didChangeMsg uri bad,
+        didChangeMsg uri good,
+        didChangeMsg uri bad,
+        didChangeMsg uri good,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => didChangeFail ()
+        Ok out => match parseFrames out
+          (frames, _) =>
+            let sawError = diagCountFor uri frames >= 1
+            let converged = match lastDiagCountFor uri frames
+              Some n => n == 0
+              None => False
+            let _ = check "didChange burst: BAD edit surfaces error (no stale cache hit)" sawError
+            check "didChange burst: converges to clean on final edit" converged
+
+didChangeFail : Unit -> <IO, Mut> Unit
+didChangeFail _ =
+  let _ = check "didChange burst: BAD edit surfaces error (no stale cache hit)" False
+  check "didChange burst: converges to clean on final edit" False
+
 main =
   let medaka = envOr "MEDAKA" "./medaka"
   let root = envOr "MEDAKA_ROOT" "."
@@ -292,4 +341,5 @@ main =
   let _ = fixtureHoverLocal medaka fixDir
   let _ = fixtureHoverImport medaka fixDir
   let _ = fixtureCompletionImport medaka fixDir
-  summary 13
+  let _ = fixtureDidChangeConverges medaka fixDir
+  summary 15

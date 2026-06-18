@@ -91,6 +91,24 @@ requestMsg idn method params =
       ("params", params),
     ]
 
+-- textDocument/didChange (Full sync): the whole document is replaced by `text`.
+-- Drives the per-keystroke diagnostics path the parse-cache optimizes.
+export
+didChangeMsg : String -> String -> Json
+didChangeMsg uri text =
+  jObject
+    [
+      ("jsonrpc", JString "2.0"),
+      ("method", JString "textDocument/didChange"),
+      (
+        "params",
+        jObject [
+          ("textDocument", jObject [("uri", JString uri), ("version", JInt 2)]),
+          ("contentChanges", jArray [jObject [("text", JString text)]]),
+        ],
+      ),
+    ]
+
 -- params for a text-document request carrying a cursor position (hover etc.).
 export
 docPosParams : String -> Int -> Int -> Json
@@ -414,6 +432,21 @@ diagPublishedFor _ [] = False
 diagPublishedFor uri ((Frame _ body _)::rest) = match parse body
   Ok j => if isPublishFor uri j then True else diagPublishedFor uri rest
   Err _ => diagPublishedFor uri rest
+
+-- The diagnostic count of the LAST publishDiagnostics for `uri` (its CONVERGED
+-- state after a burst of edits).  Proves the parse-cache re-analyzed the changed
+-- entry buffer each keystroke rather than serving a stale parse: the final publish
+-- must reflect the final text, not an earlier cached one.  None means "never
+-- published" (the caller pairs this with diagPublishedFor to reject that).
+export
+lastDiagCountFor : String -> List Frame -> Option Int
+lastDiagCountFor uri frames = lastDiagGo uri frames None
+
+lastDiagGo : String -> List Frame -> Option Int -> Option Int
+lastDiagGo _ [] acc = acc
+lastDiagGo uri ((Frame _ body _)::rest) acc = match parse body
+  Ok j => if isPublishFor uri j then lastDiagGo uri rest (Some (jDiagLen j)) else lastDiagGo uri rest acc
+  Err _ => lastDiagGo uri rest acc
 
 methodEq : Json -> String -> Bool
 methodEq j m = match lookup "method" j

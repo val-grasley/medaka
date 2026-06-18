@@ -545,7 +545,7 @@ projectEntryEnv runtimeSrc coreSrc uri docs =
   let projectDir = findProjectRoot (dirOfPath rootFile)
   let stdlibDir = lspMedakaRoot "." ++ "/stdlib"
   let read = path => docsGet (uriOfPath path) docs
-  projectEntrySchemes projectCache read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
+  projectEntrySchemes projectCache projectParseCache read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
 
 -- Resolve a hovered name's scheme: the returned typecheck env (globals +
 -- top-level) first, then the hover-only side-channels — locals (let/param/match
@@ -1183,6 +1183,15 @@ publishDiagnostics runtimeSrc coreSrc uri src =
 projectCache : Ref (List (String, String))
 projectCache = Ref []
 
+-- session-lived parse memo (source string → located decls): lets an import-bearing
+-- buffer's UNCHANGED dependency modules skip re-parsing on every didChange (the
+-- ~80% cost of an import-bearing keystroke — see driver.loader.parseCachedLocated).
+-- Shared by the diagnostics path AND the project-aware hover/completion path so
+-- both reuse the same parsed deps.  Source-keyed (pure parse ⇒ equal source ⇒ equal
+-- decls), bounded inside loadProgramFilesLocatedCached.
+projectParseCache : Ref (List (String, List Decl))
+projectParseCache = Ref []
+
 -- file:// URI ↔ filesystem path.  LSP clients send `file://<abs-path>`; the
 -- loader works in plain paths.  pathOfUri strips the scheme; uriOfPath re-adds
 -- it (so a loader file path maps back to the Docs key for the read override).
@@ -1253,7 +1262,7 @@ publishProjectDiagnostics runtimeSrc coreSrc uri docs =
   let projectDir = findProjectRoot (dirOfPath rootFile)
   let stdlibDir = lspMedakaRoot "." ++ "/stdlib"
   let read = path => docsGet (uriOfPath path) docs
-  let results = analyzeProject projectCache read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
+  let results = analyzeProject projectCache projectParseCache read rootFile [projectDir, stdlibDir] runtimeSrc coreSrc
   publishEach results
 -- Module root = nearest ancestor with medaka.toml (NOT the file's own dir), so
 -- a nested module's imports (rooted at the project dir) resolve.  Falls back to

@@ -43,7 +43,7 @@ import types.typecheck.{
   Scheme(..),
   setCoherenceUserDecls,
 }
-import driver.loader.{loadProgramFilesLocated}
+import driver.loader.{loadProgramFilesLocated, loadProgramFilesLocatedCached}
 import support.util.{joinNl, lookupAssoc}
 
 -- ── types ──────────────────────────────────────────────────────────────────
@@ -252,14 +252,34 @@ parseErrLoc path e =
 -- runtimeSrc / coreSrc seed the extern + prelude scope (as in `analyze`); `read`
 -- supplies open-buffer overrides; entry + roots drive the loader.  Returns one
 -- (file, List Diag) per file in the graph (clean files → []).
+--
+-- LSP latency (parse-cache): the LSP runs this on EVERY didChange.  `parseCacheRef`
+-- is a session-lived source→decls memo threaded by the caller; the import graph is
+-- loaded via loadProgramFilesLocatedCached so an UNCHANGED dependency module skips
+-- re-parsing (only the edited entry buffer's new source misses).  The runtime/core
+-- prelude desugar is memoized in the SAME cache (keyed by its source) — constant
+-- across the session.  Passing a fresh `Ref []` reproduces the old uncached cost
+-- exactly (correctness is identical; only the wall-clock per keystroke drops).
+
+-- Memoized prelude desugar: parse+desugar the runtime/core source once per session,
+-- keyed by source in the shared parse cache (its keys never collide with a module's
+-- source).  A miss parses+desugars and inserts; a hit returns the cached decls.
+preludeDesugared : Ref (List (String, List Decl)) -> String -> <Mut> List Decl
+preludeDesugared parseCacheRef src = match lookupAssoc src parseCacheRef.value
+  Some decls => decls
+  None =>
+    let decls = desugar (parse src)
+    let _ = set_ref parseCacheRef ((src, decls) :: parseCacheRef.value)
+    decls
+
 export
-analyzeProject : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> List (String, List Diag)
-analyzeProject cacheRef read entry roots runtimeSrc coreSrc =
+analyzeProject : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> List (String, List Diag)
+analyzeProject cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
   let staleRef = newStale ()
   let wread = p => wrappedRead cacheRef staleRef read p
-  let runtimeP = desugar (parse runtimeSrc)
-  let coreP = desugar (parse coreSrc)
-  match loadProgramFilesLocated wread entry roots
+  let runtimeP = preludeDesugared parseCacheRef runtimeSrc
+  let coreP = preludeDesugared parseCacheRef coreSrc
+  match loadProgramFilesLocatedCached parseCacheRef wread entry roots
     Err e => appendStale staleRef [(entry, [Diag SevError e None])]
     Ok mods =>
       let seeded = seedAll (map midPath mods) []
@@ -279,13 +299,13 @@ analyzeProject cacheRef read entry roots runtimeSrc coreSrc =
 -- + imported names) are available to the hover lookup fallback chain.  None on a
 -- load error (a buffer with an unresolved import) — hover then degrades to null.
 export
-projectEntrySchemes : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> Option (List (String, Scheme))
-projectEntrySchemes cacheRef read entry roots runtimeSrc coreSrc =
+projectEntrySchemes : Ref (List (String, String)) -> Ref (List (String, List Decl)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> Option (List (String, Scheme))
+projectEntrySchemes cacheRef parseCacheRef read entry roots runtimeSrc coreSrc =
   let staleRef = newStale ()
   let wread = p => wrappedRead cacheRef staleRef read p
-  let runtimeP = desugar (parse runtimeSrc)
-  let coreP = desugar (parse coreSrc)
-  match loadProgramFilesLocated wread entry roots
+  let runtimeP = preludeDesugared parseCacheRef runtimeSrc
+  let coreP = preludeDesugared parseCacheRef coreSrc
+  match loadProgramFilesLocatedCached parseCacheRef wread entry roots
     Err _ => None
     Ok mods => Some (entryOwnSchemes (checkModules runtimeP coreP (map midToDesugaredPair mods)))
 
@@ -377,8 +397,9 @@ lookupTcDiags mid ((m, d)::rest)
 export
 analyzeProjectToLines : Ref (List (String, String)) -> (String -> Option String) -> String -> List String -> String -> String -> <IO, Mut> String
 analyzeProjectToLines cacheRef read entry roots runtimeSrc coreSrc =
+  let parseCacheRef = Ref []
   joinNl
-    (projectLines (analyzeProject cacheRef read entry roots runtimeSrc coreSrc))
+    (projectLines (analyzeProject cacheRef parseCacheRef read entry roots runtimeSrc coreSrc))
 
 projectLines : List (String, List Diag) -> List String
 projectLines [] = []
