@@ -10,6 +10,21 @@ min-of-3, production build flags (`-O2 -Wl,-stack_size,0x20000000`, GC
 `MEDAKA_EMITTER=./medaka_emitter` (the OCaml `medaka build` path is dead — its
 interpreter can no longer parse the selfhost emitter source).
 
+## TL;DR (overnight session 3, 2026-06-17/18)
+
+**7 fixpoint-gated native-codegen wins.** Two themes: (a) **float unboxing** — floats
+were heap-boxed on every op (~18× tax); fusion + let-unboxing + atomic cells +
+worker-wrapper take **floatsum 0.38→0.03 (~12×)** and **mandel 0.18→0.03 (6×)**.
+(b) **constant-cell hoisting** — dict witnesses, string literals, and list literals
+that are compile-time constants were heap-allocated at every evaluation; hoisting them
+to `internal constant` module globals takes **dispatch 0.16→~0.03 (~5–8×)**, **strlit
+~elim**, **listlit alloc elim**. Every win is on an isolated branch, output-gated
+(`diff_selfhost_*` byte-identical to the interpreter oracle) and `selfcompile_fixpoint`
+C3a/C3b YES. Also corrected a stale doc claim: clang `-O2` of the emitter is ~3.3s and a
+full rebuild ~8s (not the ~127s in PERF-RESULTS), so the build-caching lever is moot.
+Found + recorded one pre-existing soundness bug (arith on type-lost floats) and one
+pre-existing usability bug (unbound constrained fn on imported stdlib).
+
 ## Benchmark suite (`test/bench_fixtures/`)
 
 Self-contained (no stdlib import) so they build via `medaka build` and isolate one
@@ -52,14 +67,26 @@ currently: unbox operands (load), op, **box result** (`mdk_alloc(16)` + 2 stores
 
 ## Levers (ranked)
 
-1. **Float-expression fusion** — ✅ DONE (Win 1). mandel 6×.
-2. **Let-bound float unboxing** — ✅ DONE (Win 2). mandel_let 2.3×.
-3. **Worker-wrapper float-param unboxing** — ✅ DONE (Win 4, CIf/guard bodies).
-   floatsum_guard 4×. `match`-body extension remains (design A).
-4. **Monomorphization** (user-suggested) — remaining; the meta-lever. Design (C).
-5. **Separate compilation** (user-suggested caching) — remaining; build latency. Design (D).
-6. **arith-on-type-lost-floats fix** — remaining; correctness. Design (B).
-7. **GC allocation density** — structural; fewer transient cells (bintrees ~50% GC_malloc).
+**7 wins banked** (all fixpoint-gated, on a 5-branch stack
+`perf/float-unbox`→`float-param-unbox`→`dict-const`→`str-const`→`list-const`):
+
+1. **Float-expression fusion** — ✅ Win 1. mandel 6×.
+2. **Let-bound float unboxing** (`LTFloatU`) — ✅ Win 2. mandel_let 2.3×.
+3. **Atomic float cells** — ✅ Win 3. floatsum ~16%.
+4. **Worker-wrapper float-param unboxing** (CIf/guard + 2-arm match via `decisionToIf`)
+   — ✅ Win 4. floatsum 0.16→0.03 (cumulative 0.38→0.03 ≈ 12×).
+5. **Constant dict-witness hoisting** — ✅ Win 5. dispatch ~5–8× (≈ monomorphic — so it
+   captured most of the dispatch/monomorphization win for constant dicts).
+6. **Constant string-literal cells** — ✅ Win 6. strlit ~elim.
+7. **Constant list-literal cells** — ✅ Win 7. listlit alloc elim.
+
+**Remaining (structural / risky — not done):**
+- **Monomorphization** — mostly captured by Win 5 for constant dicts; would still help
+  RDict-forwarded dicts inside polymorphic fns + polymorphic-`fold` float unboxing. Big. Design (C).
+- **GC allocation density** — bintrees ~50% GC_malloc, listsum/cons churn, the emitter's
+  `++`/`mdk_string_append` result allocs (segment-emit was a session-2 dead-end). Structural.
+- **arith-on-type-lost-floats fix** — correctness, design (B). **Separate compilation** —
+  MOOT (build is ~8s, design D). Constant ADT/tuple cell hoisting — risky (`==` identity).
 
 ## Wins banked
 
