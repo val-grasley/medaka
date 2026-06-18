@@ -25,10 +25,12 @@ import tools.new_cmd.{newProject}
 import driver.build_cmd.{BuildResult, BuildOk, BuildErr, runBuild, envOr}
 import support.util.{reverseL}
 import support.path.{baseOf, chopExt}
-import frontend.ast.{Decl}
-import frontend.parser.{parse}
+import frontend.ast.{Decl, Loc(..)}
+import frontend.parser.{parse, parseResult, ParseError, parseErrorLine, parseErrorCol, parseErrorMessage}
 import frontend.desugar.{desugar}
 import driver.loader.{loadProgram, findProjectRoot}
+import driver.diagnostics.{analyzeProject, analyzeLocated, Diag(..), Severity(..), SevError}
+import json.{Json, JInt, JString, JArray, JObject, jObject, jArray, stringify}
 import types.typecheck.{elaborateModules, resetTypeErrorsSticky, hadTypeErrors, mainTypeIsAsync}
 import eval.eval.{evalModulesOutput, evalModulesOutputAsync}
 import tools.test_cmd.{runTest}
@@ -94,33 +96,39 @@ notYet sub =
 -- runCheckModules (multi-module resolve + per-module-frame typecheck), so a valid
 -- cross-module reference reports import-aware diagnostics instead of `UnknownModule`.
 runCheckCmd : List String -> <IO, Mut, Panic> Unit
-runCheckCmd argv = match dropFlags argv
-  [target] =>
-    let root = envOr "MEDAKA_ROOT" "."
-    let rtPath = root ++ "/stdlib/runtime.mdk"
-    let corePath = root ++ "/stdlib/core.mdk"
-    let stdlibDir = root ++ "/stdlib"
-    let roots = [findProjectRoot (dirOf2 target), stdlibDir]
-    match readFile rtPath
-      Err msg =>
-        let _ = ePutStrLn msg
-        exit 1
-      Ok rsrc => match readFile corePath
+runCheckCmd argv =
+  let jsonMode = hasFlag "--json" argv
+  let argv2 = dropFlags argv
+  match argv2
+    [target] =>
+      let root = envOr "MEDAKA_ROOT" "."
+      let rtPath = root ++ "/stdlib/runtime.mdk"
+      let corePath = root ++ "/stdlib/core.mdk"
+      let stdlibDir = root ++ "/stdlib"
+      let roots = [findProjectRoot (dirOf2 target), stdlibDir]
+      match readFile rtPath
         Err msg =>
           let _ = ePutStrLn msg
           exit 1
-        Ok csrc => match readFile target
+        Ok rsrc => match readFile corePath
           Err msg =>
             let _ = ePutStrLn msg
             exit 1
-          Ok tsrc => match loadProgram target roots
-            Err lmsg =>
-              let _ = ePutStrLn lmsg
-              exit 1
-            Ok mods => checkRoute rsrc csrc tsrc mods
-  _ =>
-    let _ = ePutStrLn "usage: medaka check [--json] <file.mdk>"
-    exit 1
+          Ok csrc =>
+            if jsonMode then runCheckJsonCmd rsrc csrc target roots
+            else
+              match readFile target
+                Err msg =>
+                  let _ = ePutStrLn msg
+                  exit 1
+                Ok tsrc => match loadProgram target roots
+                  Err lmsg =>
+                    let _ = ePutStrLn lmsg
+                    exit 1
+                  Ok mods => checkRoute rsrc csrc tsrc mods
+    _ =>
+      let _ = ePutStrLn "usage: medaka check [--json] <file.mdk>"
+      exit 1
 -- G1: print the report (byte-identical stdout for no-import files:
 -- diff_native_cli gate), then gate the EXIT CODE on the error predicate
 -- so CI `$?` matches OCaml `check` (exit 1 on any error).
@@ -146,15 +154,166 @@ checkRoute rsrc csrc tsrc mods =
     True => exit 1
     False => ()
 
--- Drop check's accepted-but-ignored flags (--json/--release are OCaml-only;
--- the native MVP type-checks identically regardless).
+-- Drop check's non-positional flags (--release is silently ignored; --json is
+-- handled by the caller via hasFlag before dropFlags strips it).
 dropFlags : List String -> List String
 dropFlags [] = []
 dropFlags ("--json"::rest) = dropFlags rest
 dropFlags ("--release"::rest) = dropFlags rest
 dropFlags (x::rest) = x :: dropFlags rest
 
--- ── fmt ───────────────────────────────────────────────────────────────────
+-- True if the flag appears anywhere in argv.
+hasFlag : String -> List String -> Bool
+hasFlag _ [] = False
+hasFlag flag (x::rest)
+  | x == flag = True
+  | otherwise = hasFlag flag rest
+
+-- ── check --json ───────────────────────────────────────────────────────────
+-- Mirrors OCaml's `check --json` (bin/main.ml line ~863):
+--   analyze_project → all_diagnostics_to_json → print_endline → exit
+-- Key ordering matches OCaml/Yojson alphabetical insertion:
+--   file entry:   file, diagnostics
+--   diagnostic:   message, range, severity, source
+--   range:        end, start
+--   position:     character, line
+
+-- Build a 0-based LSP Position JSON: { "character": ch, "line": line }
+-- (alphabetical: character < line)
+cjPosition : Int -> Int -> Json
+cjPosition line ch = jObject [("character", JInt ch), ("line", JInt line)]
+
+-- Build an LSP Range JSON: { "end": ..., "start": ... }
+-- (alphabetical: end < start)
+cjRange : Int -> Int -> Int -> Int -> Json
+cjRange sl sc el ec =
+  jObject [("end", cjPosition el ec), ("start", cjPosition sl sc)]
+
+-- Count newlines in src (for whole-document fallback range).
+cjCountLines : String -> Int
+cjCountLines src = cjCountLinesGo (stringToChars src) 0 0
+
+cjCountLinesGo : Array Char -> Int -> Int -> Int
+cjCountLinesGo arr i acc
+  | i >= arrayLength arr = acc
+  | arrayGetUnsafe i arr == '\n' = cjCountLinesGo arr (i + 1) (acc + 1)
+  | otherwise = cjCountLinesGo arr (i + 1) acc
+
+-- Whole-document range (0,0)..(lineCount,0) for diagnostics without a span.
+cjWholeDocRange : String -> Json
+cjWholeDocRange src = cjRange 0 0 (cjCountLines src) 0
+
+-- Map an Option Loc to a range (mirror of rangeOfLoc in lsp.mdk).
+cjRangeOfLoc : String -> Option Loc -> Json
+cjRangeOfLoc src (Some (Loc _ sl sc el ec)) = cjRange (sl - 1) sc (el - 1) ec
+cjRangeOfLoc src None = cjWholeDocRange src
+
+-- Severity code: Error=1, Warning=2.
+cjSevCode : Severity -> Int
+cjSevCode SevError = 1
+cjSevCode _ = 2
+
+-- Build one diagnostic JSON object with OCaml-compatible field order:
+-- { "message": ..., "range": ..., "severity": ..., "source": "medaka" }
+cjDiagnostic : String -> Diag -> Json
+cjDiagnostic src (Diag sev msg loc) =
+  jObject
+    [
+      ("message", JString msg),
+      ("range", cjRangeOfLoc src loc),
+      ("severity", JInt (cjSevCode sev)),
+      ("source", JString "medaka"),
+    ]
+
+-- Build the per-file entry: { "file": path, "diagnostics": [...] }.
+-- `src` is the file's source text (for whole-doc range fallback).
+-- `diags` is the List Diag from analyzeProject.
+cjFileEntry : String -> String -> List Diag -> Json
+cjFileEntry path src diags =
+  jObject
+    [
+      ("file", JString path),
+      ("diagnostics", JArray (arrayFromList (map (cjDiagnostic src) diags))),
+    ]
+
+-- Serialize the analyzeProject result as the top-level JSON object:
+-- { "files": [ { "file": ..., "diagnostics": [...] }, ... ] }
+-- Needs sources for whole-doc range fallback.
+cjAllToJson : List (String, String, List Diag) -> String
+cjAllToJson triples =
+  stringify (jObject [("files", JArray (arrayFromList (map cjTriple triples)))])
+
+cjTriple : (String, String, List Diag) -> Json
+cjTriple (path, src, diags) = cjFileEntry path src diags
+
+-- Run check --json: mirrors OCaml's check --json (analyze_project → JSON).
+-- Routes by module count (mirrors checkRoute) because the selfhost analyzeProject
+-- multi-module path has a known limitation for single-file type errors:
+--   single module (no non-core imports) → analyzeLocated (single-file path)
+--   multi-module → analyzeProject (loader path)
+-- Parse errors are detected FIRST (before loadProgram panics) via parseResult.
+-- Output: {"files":[{"file":<path>,"diagnostics":[...]}]}
+-- Exits 1 if any error diagnostic; 0 otherwise.
+runCheckJsonCmd : String -> String -> String -> List String -> <IO, Mut, Panic> Unit
+runCheckJsonCmd rsrc csrc target roots =
+  let src = readFileSafe target
+  match parseResult src
+    Err e =>
+      -- Parse error: emit a single located diagnostic, matching LSP format.
+      let ln = if parseErrorLine e > 0 then parseErrorLine e - 1 else 0
+      let col = parseErrorCol e
+      let r = cjRange ln col ln (col + 1)
+      let diag = Diag SevError (parseErrorMessage e) None
+      let diagJson = jObject [("message", JString (parseErrorMessage e)), ("range", r), ("severity", JInt 1), ("source", JString "medaka")]
+      let filesJson = jObject [("file", JString target), ("diagnostics", JArray (arrayFromList [diagJson]))]
+      let _ = println (stringify (jObject [("files", JArray (arrayFromList [filesJson]))]))
+      exit 1
+    Ok _ =>
+      match loadProgram target roots
+        Err lmsg =>
+          -- Load error (missing import etc.): report as single diagnostic.
+          let triples = [(target, src, [Diag SevError lmsg None])]
+          let _ = println (cjAllToJson triples)
+          exit 1
+        Ok mods => match mods
+          [_] =>
+            -- Single module: analyzeLocated (single-file path, correct for type errors).
+            let diags = analyzeLocated rsrc csrc src
+            let _ = println (cjAllToJson [(target, src, diags)])
+            let hasErr = any isDiagError diags
+            if hasErr then exit 1 else ()
+          _ =>
+            -- Multi-module: analyzeProject.
+            let cacheRef = Ref []
+            let parseCacheRef = Ref []
+            let results = analyzeProject cacheRef parseCacheRef (_ => None) target roots rsrc csrc
+            let triples = map readDiagSrc results
+            let _ = println (cjAllToJson triples)
+            let hasErr = any cjHasErr results
+            if hasErr then exit 1 else ()
+
+readFileSafe : String -> <IO> String
+readFileSafe path =
+  match readFile path
+    Ok src => src
+    Err _ => ""
+
+-- Read each file's source for the range fallback.  On read error, use "" so
+-- diagnostics still serialize (the error itself is in the diag list).
+readDiagSrc : (String, List Diag) -> <IO> (String, String, List Diag)
+readDiagSrc (path, diags) =
+  match readFile path
+    Ok src => (path, src, diags)
+    Err _ => (path, "", diags)
+
+cjHasErr : (String, List Diag) -> Bool
+cjHasErr (_, diags) = any isDiagError diags
+
+isDiagError : Diag -> Bool
+isDiagError (Diag SevError _ _) = True
+isDiagError _ = False
+
+
 -- Mirrors lib/fmt.ml's single-file dispatch: default --write (in place),
 -- --stdout prints, --check reports.  MVP handles exactly one file.
 data FmtMode = FmtWrite | FmtStdout | FmtCheck

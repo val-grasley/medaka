@@ -1,0 +1,4 @@
+f : Int -> String
+f x = x
+
+main = println (f 42)

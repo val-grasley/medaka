@@ -1,0 +1,7 @@
+data Shape = Circle | Square
+
+showShape : Shape -> String
+showShape Circle = "circle"
+showShape Square = "square"
+
+main = println (debug Circle)
