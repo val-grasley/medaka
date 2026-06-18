@@ -221,11 +221,19 @@ valueSig name schemes fallbackTy = match lookupScheme name schemes
     Some ty => name ++ " : " ++ ppTyDoc ty
     None => name
 
+-- Last match wins: checkProgramSeeded returns globalS ++ topSchemes, so the
+-- user's top-level binding appears LAST (after any same-named interface method
+-- scheme from the prelude).  OCaml check_program_impl returns results first
+-- and uses List.assoc_opt (first match on a user-first list), so the two
+-- are equivalent.  A last-match here mirrors OCaml's user-binding preference.
 lookupScheme : String -> List (String, Scheme) -> Option Scheme
-lookupScheme _ [] = None
-lookupScheme name ((n, s)::rest)
-  | name == n = Some s
-  | otherwise = lookupScheme name rest
+lookupScheme name schemes = lookupSchemeGo name schemes None
+
+lookupSchemeGo : String -> List (String, Scheme) -> Option Scheme -> Option Scheme
+lookupSchemeGo _ [] acc = acc
+lookupSchemeGo name ((n, s)::rest) acc =
+  if name == n then lookupSchemeGo name rest (Some s)
+  else lookupSchemeGo name rest acc
 
 -- A rendered interface method line: `  name : ty`.
 ppIfaceMethod : IfaceMethod -> String

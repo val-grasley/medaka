@@ -1,0 +1,12 @@
+-- | A greeting function (non-colliding name).
+export greet : String -> String
+greet name = "hi " ++ name
+
+-- | Add two numbers — name collides with the Num interface method `add`.
+export add : Int -> Int -> Int
+add x y = x + y
+
+-- | Map a function over a list — name collides with Foldable/Mappable `map`.
+export map : (a -> b) -> List a -> List b
+map f [] = []
+map f (x::xs) = f x :: map f xs
