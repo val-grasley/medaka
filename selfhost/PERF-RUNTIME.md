@@ -387,16 +387,19 @@ to no other cell: strings are already atomic; cons/ADT/tuple/closure carry point
   closure-call-RESULT arith `f 1.0 + f 2.0` (closure ABI returns erased i64). Both
   need type provenance the Core IR erased.
 
-- **PRE-EXISTING SOUNDNESS BUG — over/partial-application of a LET-BOUND multi-level
-  lambda** (found 2026-06-18). `let g=(x => (y => x + a)); (g 1) 9` → compiled prints
-  garbage/empty, interp correct. **Idiomatic paths all WORK:** 2-param `(x y => …)`,
-  top-level curried fns (`makeAdder n = (m => m+n)`), HOF application (`map (mk 100) xs`).
-  **Only FAILS** for DIRECT double-application `(g a) b` or let-partial `let h=g a; h b`
-  of a LET-BOUND lambda. NO floats — independent of the capture fix above (inert with no
-  floats; fixpoint over the nested-closure-heavy emitter unchanged). Compiled-only.
-  Hypothesis: emitter compiles the let-bound-closure application as a wrong-arity DIRECT
-  call (over-application) instead of generic apply (the EApp saturation-decision path).
-  See memory `project_nested_closure_param_capture_bug`. No fixture yet; not root-caused.
+- **FIXED 2026-06-18 (branch perf/closure-overapp) — over/partial-application of a
+  LET-BOUND multi-level lambda.** `let g=(x => (y => x + y)); (g 7) 9` and
+  `let h = g 7; h 9` miscompiled (garbage/empty): `flattenApp` collapses `(g 7) 9` to
+  `g[7,9]` and the old `emitIndirect` passed BOTH args to g's arity-1 lifted code.
+  Fix: a reg-keyed compile-time arity table (`closureArityRef`, recorded by
+  `emitClosureAllocA`) makes `emitIndirect` arity-aware — OVER-app saturates then
+  `emitApplyExtra`s the surplus; UNDER-app builds an indirect partial-application
+  closure (`emitPapClosureIndirect`/`emitPapDefineIndirect`); saturated is the raw
+  call. Verified compiled==interp (over, 3-level, partial-by-1, partial-by-2);
+  diff_selfhost_llvm 181/0 (+ fixture `closure_apply_arity.mdk`), full suite green,
+  fixpoint C3a/C3b YES. Residual (rare, no regression): a closure reached through a
+  table MISS (captured into another closure, then over-applied) — general cure is
+  arity-in-cell at runtime, deferred.
 
 - `then`/`else` may not start a continuation line (layout) — forces inline
   if-then-else in float fixtures. Known, pre-existing; recorded in memory
