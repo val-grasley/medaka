@@ -113,3 +113,38 @@ Seed goes stale (emitter graph changed); not re-minted (fixpoint-verified per po
 - `then`/`else` may not start a continuation line (layout) — forces inline
   if-then-else in float fixtures. Known, pre-existing; recorded in memory
   (`project_mdk_layout_continuation`). Not blocking.
+- The native `medaka_emitter` binary, invoked DIRECTLY (not via `medaka build`),
+  prints a trailing `()` (Unit) glued to the last IR line on stdout → the raw dump
+  is not valid LLVM IR (`strip with sed '$ s/()$//'`). `medaka build` handles it, so
+  not blocking; minor. Likely a Unit-main print on the emitter entry.
+
+## Broad-suite baseline (2026-06-17, post-fusion)
+
+| bench | time | RSS | GC colls | bottleneck |
+|---|---|---|---|---|
+| listops 2M (map/filter/fold) | 0.12s | 229MB | 7 | cons-cell density (3 live 2M lists) |
+| closures 10M | 0.04s | 3MB | 292 | per-iter closure allocation |
+| strbuild 20k `++` | 0.03s | 4MB | — | string append churn |
+| bintrees d15×200 | 0.09s | 7MB | 101 | ADT Node alloc (~50% `GC_malloc`, sampled) |
+
+These remaining levers are all **structural/large**: deforestation (listops cons
+density), escape-analysis/inlining (closures), bump/generational GC or
+stack-allocation (bintrees ~50% `GC_malloc`). No cheap safe win in the profile.
+
+## Compile-time breakdown & the caching question (2026-06-17)
+
+For the heavy compiler workload (self-compile graph, ~10MB IR):
+
+| stage | time |
+|---|---|
+| `check` (parse+resolve+typecheck) | 1.7s |
+| emit (native emitter → 317k-line IR) | 3.0s |
+| **clang `-O2` of the IR** | **~127s** (PERF-RESULTS Entry 1; `-O0` ≈ few s) |
+
+**clang `-O2` dominates build latency ~20–25× over the entire Medaka frontend+emit.**
+So the user-suggested *caching* lever, for BUILD latency, points at **separate
+compilation** (emit per-module IR → cache each module's `.o`, link; re-clang only
+changed modules), NOT frontend caching. Frontend caching helps the `check`/LSP loop
+(1.7s) but is small next to clang. Both are sizable architectural changes; separate
+compilation is the higher-value compiler-perf lever and is recorded for a supervised
+session (it changes emit linkage + the build driver).

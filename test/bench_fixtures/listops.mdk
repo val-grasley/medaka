@@ -1,0 +1,6 @@
+-- Perf microbenchmark: stdlib list pipeline — map/filter/fold over a 2M list.
+-- Exercises cons-cell churn + per-element closures + typeclass dispatch (Foldable).
+import list
+
+main : <IO> Unit
+main = println (fold (x y => x + y) 0 (filter (x => x % 2 == 0) (map (x => x * 3) [1..=2000000])))

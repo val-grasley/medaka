@@ -1,0 +1,9 @@
+-- Perf microbenchmark: string append churn. Repeated `++` (each allocates a fresh
+-- cell + memcpy). O(n^2) in total bytes — characteristic of naive string building.
+go : Int -> String -> String
+go n acc = match n
+  0 => acc
+  _ => go (n - 1) (acc ++ "x")
+
+main : <IO> Unit
+main = putStrLn (intToString (stringLength (go 20000 "")))

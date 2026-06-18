@@ -1,0 +1,12 @@
+-- Perf microbenchmark: closure allocation. Each iteration builds a fresh closure
+-- capturing `n`, applied through a higher-order function.
+apply : (Int -> Int) -> Int -> Int
+apply f x = f x
+
+go : Int -> Int -> Int
+go n acc = match n
+  0 => acc
+  _ => go (n - 1) (apply (y => y + n) acc)
+
+main : <IO> Unit
+main = putStrLn (intToString (go 10000000 0))
