@@ -1813,9 +1813,70 @@ emitBin e env op l r
 isArithOp : String -> Bool
 isArithOp op = op == "+" || op == "-" || op == "*" || op == "/" || op == "%"
 
+-- ── float-expression fusion (unboxed double arithmetic) ─────────────────────
+-- Float arith/compare otherwise boxes a 16B cell at EVERY intermediate node and
+-- round-trips each result through a box even when the parent immediately
+-- re-consumes it.  Fusion computes a maximal float-arith subtree in unboxed
+-- `double` SSA registers and boxes ONCE at the boundary (and ZERO times when the
+-- consumer is a comparison).  Bit-identical results — box/unbox is a pure memory
+-- round-trip of the same double.  No ABI change; only the statically-Float path
+-- (the polymorphic LTNum path is untouched).
+
+-- Statically Float?  CONSERVATIVE (no false positives vs emitExpr's emitted LTy):
+-- a float literal; a local typed LTFloat; an arith node whose left operand is
+-- statically float (arith preserves operand type).  A false negative only loses
+-- the optimization (falls to the boxing path); it can never miscompile.
+staticIsFloat : List (String, (String, LTy)) -> CExpr -> Bool
+staticIsFloat env ex = match ex
+  CLit (LFloat _) => True
+  CVar x _ => match lookupAssoc x env
+    Some (_, LTFloat) => True
+    _ => False
+  CBinPrim op l _ => isArithOp op && staticIsFloat env l
+  _ => False
+
+-- Emit `ex` as an UNBOXED double register (no heap box).  Recurses through float
+-- arith nodes; a non-arith leaf is emitted normally to a word then unboxed once
+-- (matching emitArith's existing LTFloat branch, which already unboxes operands on
+-- the strength of the left's type).  Only called in statically-Float context.
+emitFloatD : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> String
+emitFloatD e env ex = match ex
+  CLit (LFloat f) => floatToString f
+  CBinPrim op l r =>
+    if isArithOp op then
+      let ld = emitFloatD e env l
+      let rd = emitFloatD e env r
+      let res = freshReg e
+      let _ = emit e ("  " ++ res ++ " = " ++ floatOp op ++ " double " ++ ld ++ ", " ++ rd)
+      res
+    else emitFloatLeaf e env ex
+  _ => emitFloatLeaf e env ex
+
+emitFloatLeaf : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> String
+emitFloatLeaf e env ex =
+  let (w, _) = emitExpr e env ex
+  unboxFloat e w
+
 -- arithmetic preserves operand type (well-typed: both operands share a type).
 emitArith : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitArith e env op l r =
+  if staticIsFloat env l then emitFloatArith e env op l r else emitArithW e env op l r
+
+-- fused statically-Float arithmetic: both operands as unboxed doubles, one float
+-- op, box ONCE (replaces N intermediate boxes with 1).
+emitFloatArith : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
+emitFloatArith e env op l r =
+  let ld = emitFloatD e env l
+  let rd = emitFloatD e env r
+  let res = freshReg e
+  let _ = emit e ("  " ++ res ++ " = " ++ floatOp op ++ " double " ++ ld ++ ", " ++ rd)
+  (boxFloat e res, LTFloat)
+
+-- the boxing fallback path (left operand not statically float): unchanged from the
+-- original emitArith.  Still reached for float values the static check misses (e.g.
+-- a float-returning CALL on the left) — its LTFloat branch boxes as before.
+emitArithW : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
+emitArithW e env op l r =
   let (lv, lty) = emitExpr e env l
   let (rv, rty) = emitExpr e env r
   match lty
@@ -1849,6 +1910,19 @@ emitArith e env op l r =
 -- comparison always yields a Bool word; dispatch the compare on operand type.
 emitCmp : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitCmp e env op l r =
+  if staticIsFloat env l then emitFloatCmp e env op l r else emitCmpW e env op l r
+
+-- fused statically-Float comparison: operands as unboxed doubles, fcmp, NO box.
+emitFloatCmp : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
+emitFloatCmp e env op l r =
+  let ld = emitFloatD e env l
+  let rd = emitFloatD e env r
+  let c = freshReg e
+  let _ = emit e ("  " ++ c ++ " = fcmp " ++ floatPred op ++ " double " ++ ld ++ ", " ++ rd)
+  boolFromI1 e c
+
+emitCmpW : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
+emitCmpW e env op l r =
   let (lv, lty) = emitExpr e env l
   let (rv, rty) = emitExpr e env r
   if (isLTUnknown lty || isLTUnknown rty) && isEqOp op then emitValueEq e op lv rv

@@ -68,8 +68,48 @@ currently: unbox operands (load), op, **box result** (`mdk_alloc(16)` + 2 stores
 
 ## Wins banked
 
-(none yet — baseline only)
+### Win 1 — float-expression fusion (2026-06-17, `selfhost/backend/llvm_emit.mdk`)
+
+Compute a maximal statically-Float arith subtree in unboxed `double` SSA registers,
+box ONCE at the boundary; a float comparison boxes ZERO times (operands go straight
+to `fcmp`). Before, `emitArith`/`emitCmp` boxed every intermediate node AND boxed
+float literals inline, round-tripping each result through a heap cell even when the
+parent immediately re-consumed it.
+
+Implementation: `staticIsFloat` (pure, conservative — no false positives vs the
+emitted LTy, so it can only lose the optimization, never miscompile) routes the
+float path to `emitFloatArith`/`emitFloatCmp`, which call `emitFloatD` — a
+double-returning emitter that recurses through arith nodes (`fadd`/… on doubles),
+emits float literals as inline `double` constants, and unboxes a non-arith leaf
+once. The boxing fallback (`emitArithW`/`emitCmpW`) is the original code, still
+reached for float values the static check misses (e.g. a float-returning call on the
+left). Bit-identical results: box/unbox is a pure memory round-trip of the same
+double; LLVM `fadd`/`fmul`/`fcmp` are the same ops the runtime helpers ran.
+
+**Numbers (min-of-3, production flags):**
+
+| bench | before | after | speedup |
+|---|---|---|---|
+| mandel 300² | 0.18s | **0.03s** | **6×** |
+| floatsum 50M | 0.38s | **0.19s** | **2×** (literal `1.5` no longer boxes/iter) |
+| fib / intsum / bintrees | — | unchanged | no float, no impact |
+
+mandel emitted IR: float boxes in the hot `escape` loop collapse; whole-program
+`alloc(i64 16)` = 36, with 21 fused float ops + 7 zero-box `fcmp`. floatsum still
+boxes 1×/iter (single-op accumulator, no fusion depth) — addressed by the
+loop-carried-unboxing lever (next).
+
+**Gates (all green):** 24/24 float `llvm_fixtures` match their `.eval.golden`;
+`diff_selfhost_llvm` **180/0**; `selfcompile_fixpoint` **C3a YES / C3b YES** (the
+emitter's own float sites changed deterministically → reproduces byte-for-byte).
+Seed goes stale (emitter graph changed); not re-minted (fixpoint-verified per policy).
 
 ## Dead-ends
 
 (none yet)
+
+## Bugs / language gaps observed
+
+- `then`/`else` may not start a continuation line (layout) — forces inline
+  if-then-else in float fixtures. Known, pre-existing; recorded in memory
+  (`project_mdk_layout_continuation`). Not blocking.
