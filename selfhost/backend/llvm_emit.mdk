@@ -7529,10 +7529,42 @@ emitArrayMakeWith e env args = match args
 -- CList [e0, e1, …, en]: right-fold to Cons cells, innermost first.
 emitList : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
 emitList e _ [] = emitCtorAlloc e "Nil" []
-emitList e env (x::xs) =
-  let (xw, _) = emitExpr e env x
-  let (tw, _) = emitList e env xs
-  emitCtorAlloc e "Cons" [xw, tw]
+emitList e env xs =
+  let words = emitListWords e env xs
+  if allConstWords words then emitConstList e words else emitRtList e words
+
+-- emit every element to its operand word, head-to-tail (same order as the original
+-- recursive emitList's element emission).
+emitListWords : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> List String
+emitListWords _ _ [] = []
+emitListWords e env (x::xs) =
+  let (w, _) = emitExpr e env x
+  w :: emitListWords e env xs
+
+-- runtime cons chain from already-emitted element words (back-to-front), IR-identical
+-- to the original recursive emitList for the non-constant case.
+emitRtList : Emit -> List String -> <Mut> (String, LTy)
+emitRtList e [] = emitCtorAlloc e "Nil" []
+emitRtList e (w::rest) =
+  let (tw, _) = emitRtList e rest
+  emitCtorAlloc e "Cons" [w, tw]
+
+-- a list literal whose elements are ALL compile-time constants: build the cons spine
+-- as a chain of `internal constant` module globals (one cell per element, tail = the
+-- next cell's pointer-constant; the base is the Nil immediate) instead of allocating
+-- N cons cells at every evaluation. `==` on lists is structural, so sharing/dedup is
+-- value-safe. Deduped via the same constant-cell cache as dict witnesses.
+emitConstList : Emit -> List String -> <Mut> (String, LTy)
+emitConstList e words =
+  let nilImm = intToString (cellTag e "Nil" * 2 + 1)
+  let head = emitConstListGo e (cellTag e "Cons") (reverseL words) nilImm
+  (head, LTCon)
+
+emitConstListGo : Emit -> Int -> List String -> String -> <Mut> String
+emitConstListGo _ _ [] tl = tl
+emitConstListGo e consTag (w::rest) tl =
+  let cell = emitConstDictCell e consTag [w, tl]
+  emitConstListGo e consTag rest cell
 
 -- CRangeList lo hi incl: build an ascending list [lo…hi] (or [lo…<hi]) via a
 -- back-to-front alloca-counter loop.  An alloca i64 `acc` holds the current

@@ -97,7 +97,7 @@ printf 'listsum      %s\n' "$(time_min /tmp/_bench_ls)"
 # ── runtime micro-suite (float/ADT/list/closure/string) ──────────────────────
 # See selfhost/PERF-RUNTIME.md. floatsum/mandel isolate float boxing (Win 1/2:
 # fusion + let-unboxing); bintrees = ADT/GC; listops/closures = cons/closure churn.
-for b in intsum floatsum floatsum_guard mandel mandel_let bintrees closures strbuild dispatch strlit; do
+for b in intsum floatsum floatsum_guard mandel mandel_let bintrees closures strbuild dispatch strlit listlit; do
   src="test/bench_fixtures/$b.mdk"
   [ -f "$src" ] || continue
   if "$MAIN" build "$src" -o "/tmp/_bench_$b" >/dev/null 2>&1; then

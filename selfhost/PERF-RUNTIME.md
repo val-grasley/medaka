@@ -183,6 +183,25 @@ Self-emit unchanged (~3.1s — the emitter's string churn is dominated by `++`/
 reproduces byte-for-byte), `diff_selfhost_build` **25/0**, `diff_selfhost_eval_run`
 **28/0**. Correctness: concat/==/length literals == interpreter.
 
+### Win 7 — constant list-literal cells hoisted to globals (2026-06-18, `perf/list-const`)
+
+A list literal `[10,20,30]` allocated N cons cells at every evaluation (3 cons/iter in
+a loop). When every element emits to a compile-time constant, `emitList` now builds the
+cons spine as a chain of `internal constant` globals (each cell `[CONS, elem, tail-ptr]`,
+base = Nil immediate) via `emitConstList` — no per-eval allocation. Restricted to
+**lists** (where `==` is structural, verified — so sharing/dedup is value-safe);
+**user-ADT cells are NOT hoisted** (their `==` is pointer-ish / already broken in the
+compiled backend — out of scope). The non-constant path (`emitRtList` from pre-emitted
+element words) is IR-identical to the original recursive `emitList`.
+
+**Numbers:** listlit (`length [10,20,30]` 10M loop) 0.46s → **0.34s** (the 30M cons
+allocs gone; residual is `length`'s O(n) traversal). Bigger for construct-only literals.
+Also hoists constant **string** lists (str-const elements are constant ptrtoints).
+
+**Gates:** `diff_selfhost_llvm` **180/0**, `selfcompile_fixpoint` **C3a/C3b YES**,
+`diff_selfhost_eval_run` **28/0**, `diff_selfhost_eval_list` **2/0**. Correctness:
+`[1,2,3]==[1,2,3]` True, `map (*2) [10,20,30]` == interpreter.
+
 ## Dead-ends
 
 (none yet)
