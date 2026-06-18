@@ -236,6 +236,17 @@ fallthroughLabelRef = Ref ""
 closureArityRef : Ref (List (String, Int))
 closureArityRef = Ref []
 
+-- compile-time closure RETURN-TYPE table, keyed by the closure cell's SSA register.
+-- Records LTFloat for a user lambda whose body EVIDENTLY returns a Float (a float
+-- literal or known-float capture flows to the result through arith/if/block — see
+-- bodyFloatRet, conservative).  Read at an indirect call site (indirectRetTy) so a
+-- saturated call to a float-returning closure types its result LTFloat — fixing
+-- `f 1.0 + f 2.0` (each `f _` result was LTInt → integer arith on boxed-float
+-- pointers → garbage).  Only LTFloat is ever recorded, so non-float closures keep
+-- the historical LTInt default → zero blast radius for them.
+closureRetTyRef : Ref (List (String, LTy))
+closureRetTyRef = Ref []
+
 -- emit a branch to the current next-clause fallthrough target, or the historical
 -- @mdk_oob abort when there is none (single-clause / exhausted chains).
 emitFallthrough : Emit -> <Mut> (String, LTy)
@@ -1858,6 +1869,41 @@ staticIsFloat env ex = match ex
   CBinPrim op l _ => isArithOp op && staticIsFloat env l
   _ => False
 
+-- CONSERVATIVE "does this expression evidently evaluate to a Float?" check, used to
+-- record a lambda's return type.  Unlike staticIsFloat (which checks only the LEFT
+-- arith operand, for the unbox-fusion fast path) this is SYMMETRIC over arith (a
+-- float on EITHER side ⇒ the homogeneous `+`/`-`/`*`/`/` result is float) and
+-- descends if/let/block tails.  Only a float LITERAL or a known-float var (capture)
+-- makes it True, so it never false-positives a non-float body.
+bodyFloatRet : List (String, (String, LTy)) -> CExpr -> Bool
+bodyFloatRet env ex = match ex
+  CLit (LFloat _) => True
+  CVar x _ => match lookupAssoc x env
+    Some (_, LTFloat) => True
+    Some (_, LTFloatU) => True
+    _ => False
+  CBinPrim op l r => isArithOp op && (bodyFloatRet env l || bodyFloatRet env r)
+  CIf _ t f => bodyFloatRet env t || bodyFloatRet env f
+  CLet _ _ _ b => bodyFloatRet env b
+  CBlock stmts => blockFloatRet env stmts
+  _ => False
+
+-- a block evaluates to its LAST statement's value (a trailing CSLet yields Unit).
+blockFloatRet : List (String, (String, LTy)) -> List CStmt -> Bool
+blockFloatRet _ [] = False
+blockFloatRet env [(CSExpr e)] = bodyFloatRet env e
+blockFloatRet _ [_] = False
+blockFloatRet env (_::rest) = blockFloatRet env rest
+
+-- record a closure word's return type as LTFloat when its body evidently returns a
+-- Float (so a saturated indirect call to it types its result LTFloat).
+recordFloatRet : Emit -> List (String, (String, LTy)) -> String -> CExpr -> <Mut> Unit
+recordFloatRet e env w body =
+  if bodyFloatRet env body then
+    set_ref closureRetTyRef ((w, LTFloat) :: closureRetTyRef.value)
+  else
+    ()
+
 -- Emit `ex` as an UNBOXED double register (no heap box).  Recurses through float
 -- arith nodes; a non-arith leaf is emitted normally to a word then unboxed once
 -- (matching emitArith's existing LTFloat branch, which already unboxes operands on
@@ -2631,8 +2677,8 @@ emitIndirect e env hd args =
         -- partial-application closure over the inner closure value + supplied args.
         emitPapClosureIndirect e cw argOps n
       else
-        (emitIndirectCallWords e cw argOps, indirectResultTy hd)
-    None => (emitIndirectCallWords e cw argOps, indirectResultTy hd)
+        (emitIndirectCallWords e cw argOps, indirectRetTy cw hd)
+    None => (emitIndirectCallWords e cw argOps, indirectRetTy cw hd)
 
 -- the raw indirect call: load the closure's code_ptr (cell field 0) and `call` it
 -- with the closure word as the leading argument followed by `argOps`.
@@ -2654,6 +2700,14 @@ indirectResultTy (CVar f _) =
   else
     LTInt
 indirectResultTy _ = LTInt
+
+-- the result type of an indirect call: a recorded float-returning closure (keyed by
+-- the closure word `cw`) types its result LTFloat; otherwise the historical
+-- indirectResultTy (self-fn-param container, else LTInt).
+indirectRetTy : String -> CExpr -> <Mut> LTy
+indirectRetTy cw hd = match lookupAssoc cw closureRetTyRef.value
+  Some t => t
+  None => indirectResultTy hd
 
 hasArgs : List CExpr -> Bool
 hasArgs [] = False
@@ -4104,7 +4158,9 @@ emitLamGo e env pats body =
   let captured = keepInEnv env (dedupS (freeVars pnames body))
   let captureWords = capWords e env captured
   let _ = emitLamDefine e env lamName pats captured body
-  emitClosureAllocA e lamName (listLen pats) captureWords
+  let (cw, clty) = emitClosureAllocA e lamName (listLen pats) captureWords
+  let _ = recordFloatRet e env cw body
+  (cw, clty)
 
 emitLamPat : Emit -> List (String, (String, LTy)) -> List Pat -> CExpr -> <Mut> (String, LTy)
 emitLamPat e env pats body =
@@ -4113,7 +4169,9 @@ emitLamPat e env pats body =
   let captured = keepInEnv env (dedupS (freeVars pnames body))
   let captureWords = capWords e env captured
   let _ = emitPatLamDefine e env lamName [] pats captured body
-  emitClosureAllocA e lamName (listLen pats) captureWords
+  let (cw, clty) = emitClosureAllocA e lamName (listLen pats) captureWords
+  let _ = recordFloatRet e env cw body
+  (cw, clty)
 
 -- emit a RECURSIVE function-`let` closure (slice 5b): lambda-lift exactly like
 -- emitLam, but EXCLUDE the binding's own name `f` from the captured set (it is the
@@ -4133,7 +4191,9 @@ emitRecLamGo e env f pats body =
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
   let captureWords = capWords e env captured
   let _ = emitRecLamDefine e env lamName f pats captured body
-  emitClosureAllocA e lamName (listLen pats) captureWords
+  let (cw, clty) = emitClosureAllocA e lamName (listLen pats) captureWords
+  let _ = recordFloatRet e env cw body
+  (cw, clty)
 
 -- E2b — recursive-`let` lambda with non-`PVar` params: same patterned-frame body
 -- as `emitLamPat`, but binds `f -> %clos` ahead of captures so a self-call
@@ -4146,7 +4206,9 @@ emitRecLamPat e env f pats body =
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
   let captureWords = capWords e env captured
   let _ = emitPatLamDefine e env lamName [(f, ("%clos", LTClosure))] pats captured body
-  emitClosureAllocA e lamName (listLen pats) captureWords
+  let (cw, clty) = emitClosureAllocA e lamName (listLen pats) captureWords
+  let _ = recordFloatRet e env cw body
+  (cw, clty)
 
 -- like emitLamDefine, but prepends `f -> %clos` to the body's env so the lifted
 -- body's recursive references resolve to the closure pointer (the leading param).
