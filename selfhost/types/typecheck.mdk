@@ -7334,7 +7334,14 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let _ = set_ref methodDispatchIdxRef (argDispatchIndices implDecls)
   let _ = set_ref funConstraintsRef crossModuleFunConstraintsRef.value
   let _ = set_ref funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value
-  let _ = registerMethodIfaceParamsAll implDecls
+  -- #11 soundness: register the interface method→iface-param map over the FULL
+  -- visible universe (accData carries core's + earlier modules' PUBLIC interfaces,
+  -- implDecls the emit-path impl universe, prog this module).  The check path passes
+  -- implDecls=[] (checkModuleFull), so registering only [implDecls] left
+  -- methodIfaceParamsRef EMPTY → `Num`/`fromInt` unregistered → a numeric literal's
+  -- Num obligation (recordImplObligation) was silently dropped and the reject
+  -- suppressed (numIfaceRegistered False) → cross-module `g [1,2] 5` over-accepted.
+  let _ = registerMethodIfaceParamsAll (accData ++ implDecls ++ prog)
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
   let shadowMethodSchemes = pickSchemes importerShadows (ifaceMethodSchemes implDecls)
@@ -7350,6 +7357,19 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let _ = set_ref crossModuleFunConstraintIfacesRef funConstraintIfacesRef.value
   let _ = set_ref crossModuleMethodConstraintsRef methodConstraintsRef.value
   let _ = groundMultiParamObligations implDecls pendingImplObligations.value
+  -- #11 soundness: on the TYPECHECK path (implInferEnabled OFF — `medaka check`,
+  -- the diagnostics/golden drivers) validate each call site's instantiated impl
+  -- obligations (incl. a numeric literal's `Num` obligation forced to a non-Num
+  -- type) and stamp Float-typed literals, mirroring the single-file checkProgramSeeded
+  -- and the oracle's typecheck_module finalize.  Without this the cross-module check
+  -- path silently dropped a literal's `Num` obligation (`g [1,2] 5` forcing
+  -- `5 : List (List Int)`).  Gated OFF on the EMIT path: elabModuleStamp runs its own
+  -- setNumlitFloats AFTER arg-stamp resolution (calling it here would double-stamp),
+  -- and checkImplObligations is a check-only diagnostic the emit driver doesn't want.
+  let _ = if not implInferEnabled.value then
+            let _ = checkImplObligations (accData ++ implDecls ++ prog) pendingImplObligations.value
+            setNumlitFloats ()
+          else ()
   let _ = checkCallObligations (implDecls ++ prog) pendingCallObligations.value
   -- LSP hover: leave THIS module's locals + seed (runtime+core+imports) in the
   -- side-channels, mirroring checkProgramSeeded.  The entry module is checked
@@ -7510,12 +7530,24 @@ buildStandaloneShadowsGraph allDecls userDecls =
 
 -- `public export data` / `public export record` decls — re-registered in every
 -- importing module so their constructors + field layout are in scope.
+-- ALSO carries public DInterface (so the multi-module path can register the
+-- interface's method→iface-param map for #11 obligation checking — a numeric
+-- literal's `fromInt`/`Num` obligation, recorded via recordImplObligation, needs
+-- `Num`'s entry in methodIfaceParamsRef), AND public DImpl (so checkImplObligations'
+-- implHeadsOf sees core's `impl Num Int` etc. — without it a legitimately Int-typed
+-- literal's Num obligation finds no matching impl head and is spuriously rejected).
+-- registerAllData and buildOracle read only DData/DRecord, so the extra DInterface/
+-- DImpl entries are inert for them.
 publicDataDecls : List Decl -> List Decl
 publicDataDecls [] = []
 publicDataDecls ((DData VisPublic n ps vs ds)::rest) =
   DData VisPublic n ps vs ds :: publicDataDecls rest
 publicDataDecls ((DRecord VisPublic n ps fs ds)::rest) =
   DRecord VisPublic n ps fs ds :: publicDataDecls rest
+publicDataDecls ((d@DInterface { pub = True, ... })::rest) =
+  d :: publicDataDecls rest
+publicDataDecls ((d@DImpl { pub = True, ... })::rest) =
+  d :: publicDataDecls rest
 publicDataDecls (_::rest) = publicDataDecls rest
 
 pickSchemes : List String -> List (String, Scheme) -> List (String, Scheme)

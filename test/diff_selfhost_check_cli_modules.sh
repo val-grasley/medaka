@@ -85,5 +85,27 @@ else
   fail=$((fail+1)); printf 'FAIL agree/build-rejects (build exit %d, binary present=%s)\n' "$build_code" "$([ -x "$TMP/bad.out" ] && echo yes || echo no)"
 fi
 
+# 5. numlit-soundness (#11 cross-module hole): a numeric-literal arg to an IMPORTED
+#    function, unified through a polymorphic param with a NON-Num type, MUST be
+#    rejected with `No impl of Num for …` (the literal's Num obligation was being
+#    silently dropped on the cross-module path → over-accept).  Mirror of the OCaml
+#    oracle, which rejects it.  Legs 1–2 (a legit Int-defaulting cross-module call)
+#    still pass, guarding against an over-strict regression.
+cat > "$TMP/numlib.mdk" <<'EOF'
+export g : Ord a => a -> List a -> Bool
+g x ys = True
+EOF
+cat > "$TMP/numbad.mdk" <<'EOF'
+import numlib.{g}
+main = println (g [1, 2] 5)
+EOF
+num_out="$(MEDAKA_ROOT="$ROOT" bound "$MEDAKA" check "$TMP/numbad.mdk" 2>/dev/null)"
+num_code=$?
+case "$num_out" in
+  *"No impl of Num for List (List Int)"*) if [ "$num_code" -eq 1 ]; then pass=$((pass+1)); printf 'ok   numlit-soundness (cross-module literal Num obligation enforced)\n'
+                  else fail=$((fail+1)); printf 'FAIL numlit-soundness (rejected but exit %d)\n' "$num_code"; fi ;;
+  *) fail=$((fail+1)); printf 'FAIL numlit-soundness (cross-module Num literal hole: [%s])\n' "$num_out" ;;
+esac
+
 printf '\n%d ok, %d failing\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
