@@ -2626,6 +2626,10 @@ emitIndirect e env hd args =
         -- first `n` args, then apply the surplus to the returned closure value.
         let r0 = emitIndirectCallWords e cw (takeS n argOps)
         (emitApplyExtra e r0 (dropS n argOps), LTInt)
+      else if n > 0 && lengthS argOps < n then
+        -- UNDER-APPLICATION (`let h = g 7` for arity-2 g): build a residual
+        -- partial-application closure over the inner closure value + supplied args.
+        emitPapClosureIndirect e cw argOps n
       else
         (emitIndirectCallWords e cw argOps, indirectResultTy hd)
     None => (emitIndirectCallWords e cw argOps, indirectResultTy hd)
@@ -2946,6 +2950,46 @@ loadPapCaptures : Emit -> Int -> Int -> <Mut> List String
 loadPapCaptures e k i
   | i >= k = []
   | otherwise = loadField e "%clos" (i + 1) :: loadPapCaptures e k (i + 1)
+
+-- UNDER-APPLICATION of an INDIRECT closure VALUE `cw` of arity `arity`, given
+-- `argOps` supplied (1..arity-1).  Unlike emitPapClosure (which closes over a known
+-- @fname symbol), here the callee is a runtime closure word, so the cell captures
+-- BOTH the inner closure word and the supplied args: field 1 = inner closure, fields
+-- 2.. = supplied args.  The forwarder loads them and does an INDIRECT call of the
+-- inner closure with (supplied.. ++ remaining..) — now saturated.  Recorded with its
+-- residual arity so a further over-application of the PAP also splits correctly.
+emitPapClosureIndirect : Emit -> String -> List String -> Int -> <Mut> (String, LTy)
+emitPapClosureIndirect e cw argOps arity =
+  let supplied = lengthS argOps
+  let remaining = arity - supplied
+  let papName = "mdk_pap_ind_" ++ intToString (freshId e)
+  let _ = emitPapDefineIndirect e papName supplied remaining
+  emitClosureAllocA e papName remaining (cw :: argOps)
+
+-- emit the indirect-PAP forwarder define into the side buffer.  field 1 = the
+-- captured inner closure word; fields 2.. = `supplied` captured arg words; then
+-- `remaining` fresh %argK params.  Body: load the inner closure's code_ptr (its
+-- field 0) and `call` it with (innerClosure, supplied.., remaining..).
+emitPapDefineIndirect : Emit -> String -> Int -> Int -> <Mut> Unit
+emitPapDefineIndirect e papName supplied remaining =
+  let saved = (bufRef e).value
+  let _ = set_ref (bufRef e) []
+  let _ = emit e ("define i64 @" ++ papName ++ "(" ++ etaParamDecls remaining ++ ") {")
+  let _ = emit e "entry:"
+  let innerCw = loadField e "%clos" 1
+  let capOps = loadPapCaptures e (supplied + 1) 1
+  let allArgs = capOps ++ argNames remaining 0
+  let cp = loadField e innerCw 0
+  let fp = freshReg e
+  let _ = emit e ("  " ++ fp ++ " = inttoptr i64 " ++ cp ++ " to ptr")
+  let r = freshReg e
+  let _ = emit e ("  " ++ r ++ " = call i64 " ++ fp ++ "(" ++ argDecls (innerCw :: allArgs) ++ ")")
+  let _ = emit e ("  ret i64 " ++ r)
+  let _ = emit e "}"
+  let _ = emit e ""
+  let lamLines = (bufRef e).value
+  let _ = set_ref (lamsRef e) (lamLines ++ (lamsRef e).value)
+  set_ref (bufRef e) saved
 
 -- the interface name a resolved impl entry belongs to (for the returns-self
 -- lookup); "" for a default entry (it carries no tag/iface — never RKey-reached).
