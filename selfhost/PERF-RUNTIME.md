@@ -35,10 +35,25 @@ strings/lists/tuples/records. Every win is on an isolated branch (8-branch stack
 output-gated (`diff_selfhost_*` byte-identical to the interpreter oracle) and
 `selfcompile_fixpoint` C3a/C3b YES. Also corrected a stale doc claim: clang `-O2` of
 the emitter is ~3.3s and a full rebuild ~8s (not the ~127s in PERF-RESULTS), so the
-build-caching lever is moot. Plus a SOUNDNESS FIX (Win 12): the common `<type-lost-float> + <float>` arith case (e.g.
-`f x + 1.0` with a closure-call result) was miscompiling to integer arith → now fixed.
-Found + recorded 2 pre-existing bugs (arith on type-lost floats [now partially fixed];
-unbound constrained fn on imported stdlib).
+build-caching lever is moot.
+
+**SOUNDNESS (overnight session, 2026-06-18) — 8 native-codegen fixes closing two whole
+bug families, all compiled==interp, every `diff_selfhost_*` gate + `selfcompile_fixpoint`
+C3a/C3b green, zero perf regression:**
+- *arith-on-type-lost-floats — FULLY CLOSED* (Float arith whose static LTy was lost →
+  integer arith on boxed-float pointers → garbage): one-operand-Float (Win 12, `748bf5d`),
+  closure float-capture `map (x=>x*scale)` (`03c432e`), tuple/record-destructure
+  `(a,b)=>a+b` (`60522ef`), closure-call-result `f 1.0+f 2.0` (`e344efc`), record
+  float-field-access `v.dx+v.dy` (`7ea85d2`), returned-from-fn closures
+  `let f=mkAdd 100.0; f 1.0+f 2.0` (`2a3beeb`).
+- *closure-application — CLOSED*: over-application `(g 7) 9` (`b4c1c44`),
+  under-application/PAP `let h=g 7; h 9` (`2eacc61`).
+- 6 regression fixtures (`closure_apply_arity` in llvm_fixtures; `tuple_float_arith`,
+  `closure_ret_float`, `float_field_arith`, `returned_float_closure` in
+  llvm_fixtures_typed). A post-fix soundness sweep over ADTs/comprehensions/
+  nested-records/arrays/folds found NO further codegen divergences.
+- Other recorded pre-existing item (NOT a codegen divergence): "unbound constrained fn"
+  on some imported stdlib constrained fns (typecheck-side).
 
 ## Benchmark suite (`test/bench_fixtures/`)
 
