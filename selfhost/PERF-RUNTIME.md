@@ -50,21 +50,16 @@ currently: unbox operands (load), op, **box result** (`mdk_alloc(16)` + 2 stores
   dispatched impls (`map`), match-arm descent (`filter`/`filterMap`), stack-safe to
   2M+. Not an available lever; only deferred seams F1(b)/F2(b) (no real targets).
 
-## Levers (ranked, to be measured)
+## Levers (ranked)
 
-1. **Float-expression fusion** (IN PROGRESS) — compute maximal float-arith subtrees
-   in unboxed `double` SSA, box once at boundary, zero boxes when consumed by a
-   comparison. Contained emitter change, bit-identical output. Targets mandel/dense
-   float. Will NOT help floatsum (single-op accumulator, already 1 box/iter).
-2. **Loop-carried float unboxing** — carry a statically-Float musttail/loop
-   accumulator param as native `double`, killing floatsum-style per-iter boxes.
-   Deeper (touches the tail-loop param representation).
-3. **Monomorphization** (user-suggested) — specialize polymorphic fns per type →
-   unboxed floats generally, devirtualize dict-passing, enable instance-level DCE.
-   Largest swing; would subsume much of 1/2 and the dict-passing overhead.
-4. **GC allocation density** — structural; fewer transient cells everywhere.
-5. **Compiler caching** (user-suggested, compiler-side) — incremental/cross-run
-   caching of parse/typecheck. Measure where compile latency actually goes first.
+1. **Float-expression fusion** — ✅ DONE (Win 1). mandel 6×.
+2. **Let-bound float unboxing** — ✅ DONE (Win 2). mandel_let 2.3×.
+3. **Worker-wrapper float-param unboxing** — remaining; floatsum-class. See
+   "Remaining levers — concrete designs (A)".
+4. **Monomorphization** (user-suggested) — remaining; the meta-lever. Design (C).
+5. **Separate compilation** (user-suggested caching) — remaining; build latency. Design (D).
+6. **arith-on-type-lost-floats fix** — remaining; correctness. Design (B).
+7. **GC allocation density** — structural; fewer transient cells (bintrees ~50% GC_malloc).
 
 ## Wins banked
 
@@ -196,3 +191,75 @@ changed modules), NOT frontend caching. Frontend caching helps the `check`/LSP l
 (1.7s) but is small next to clang. Both are sizable architectural changes; separate
 compilation is the higher-value compiler-perf lever and is recorded for a supervised
 session (it changes emit linkage + the build driver).
+
+## Branch certification (perf/float-unbox, 2026-06-17)
+
+All EMIT-path gates byte-identical / green after both float wins:
+
+| gate | result |
+|---|---|
+| `selfcompile_fixpoint` | C3a YES / C3b YES |
+| `diff_selfhost_llvm` | 180 / 0 |
+| `diff_selfhost_llvm_modules` | 13 / 0 |
+| `diff_selfhost_llvm_typed` | 37 / 0 |
+| `diff_selfhost_build` | 25 / 0 |
+| `diff_native_stack` (TRMC) | 7 / 0 |
+| `diff_native_cli` | 58 / 3 |
+
+The 3 `native_cli` failures are `check/effect_param`, `check/effect_param_hole`
+(no golden), and `lsp/session` — all `check`/`lsp` path, which the emit-only change
+cannot touch (pre-existing; effect_param ties to the recent Async/effect-row commits,
+lsp/session is a documented flake). Every gate that exercises codegen is green.
+
+## Final measured numbers (min-of-3, native, production flags)
+
+| bench | baseline | after fusion+let-unbox | speedup |
+|---|---|---|---|
+| mandel (inline float) | 0.18s | **0.03s** | **6×** |
+| mandel_let (let-style float) | 0.07s | **0.03s** | **2.3×** |
+| floatsum (param accumulator) | 0.38s | **0.19s** | 2× (literal box removed) |
+| fib / intsum / bintrees / closures / strbuild | — | unchanged | no float |
+
+## Remaining levers — concrete designs (for a supervised session)
+
+### A. Worker-wrapper unboxing for float PARAMS (floatsum-class, ~5–10×)
+floatsum's remaining cost is the accumulator boxed at the self-call (i64 ABI), then
+unboxed next iteration; clang already TCO-loops it, so killing the box ≈ intsum speed.
+Design: for a top-level non-dict self-recursive fn with ≥1 `LTFloat` param, emit a
+WORKER `@f$fw(double …, i64 …)` (float params `double`) + a WRAPPER `@f(i64…)` that
+unboxes float params and calls the worker. Bind worker float-params `LTFloatU` (reuse
+the Win-2 escape machinery) and reroute self-calls to `@f$fw` passing float args via
+`emitFloatD`. **Why deferred:** the self-call is emitted in TWO places —
+`emitFnBody` (the `musttail`/CIf-guarded path) AND inside `emitDecision` (a `match`-bodied
+fn like floatsum emits its self-call as a value inside the decision tree, NOT musttail).
+Both must learn the worker reroute (a threaded `workerCtxRef`, mirror of `trmcCtxRef`),
+plus signature/wrapper emission. Multi-path, route-fragile — supervised + fixpoint-gated.
+Note: most float reductions go through polymorphic `fold` (won't benefit) — see C.
+
+### B. The arith-on-type-lost-floats soundness fix (correctness)
+See bug log above. Fix: bind tuple-destructure / closure-capture vars `LTUnknown`
+(not `LTInt`) and add an `LTUnknown` arm to `emitArith` routing through `@mdk_num_*`
+(tag-dispatch, correct for int-immediate AND float-box), mirroring `emitCmp`'s
+runtime-discriminator. Keeps genuine `LTInt` arith inline-fast. Broad (LTUnknown is
+handled in many emit sites) → needs a fixture (arith over a destructured/captured
+float) + full gates. Correctness > perf; do supervised.
+
+### C. Monomorphization (the meta-lever — user-suggested)
+Specialize polymorphic functions per concrete type instantiation. Subsumes float
+unboxing GENERALLY (a `fold (+) 0.0 floats` gets an unboxed-`double` accumulator —
+which A cannot reach), devirtualizes dict-passing (turns runtime dict lookups into
+direct calls), and enables instance-level DCE (the deferred backend item — see
+AGENTS.md "Why selfhost stays stdlib-free"). Largest ceiling, largest effort/risk;
+touches typecheck (collect instantiations) + emit (emit specialized copies) +
+dispatch. Stage it: start with monomorphizing `Num`-instantiated functions to unbox
+float/int, measured against `fold`-over-floats and dict-heavy benches.
+
+### D. Separate compilation (the BUILD-latency caching lever — user-suggested)
+clang `-O2` of the monolithic ~10MB IR dominates build latency (~127s, ~20-25× the
+Medaka frontend+emit). Emit per-MODULE `.ll` (with cross-module `declare`s), clang
+each to `.o` CACHED by module-IR hash, link the `.o`s. Incremental rebuild (one
+module changed) → re-clang only that module + link ≈ seconds instead of ~127s.
+Requires emitter restructure (per-module emission + linkage/init-order) + build-driver
+rewrite (`selfhost/build_cmd.mdk`). A cheaper interim: cache the whole binary by
+full-IR hash (helps only no-op rebuilds / repeated gate runs; fixpoint- & gate-safe
+since it changes neither emitted IR nor program output).
