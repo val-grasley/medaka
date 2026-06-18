@@ -399,6 +399,16 @@ to no other cell: strings are already atomic; cons/ADT/tuple/closure carry point
   call-result reg, not the lambda alloc reg) → needs ret-ty propagation through
   fnRetTy. Typed gate `closure_ret_float.mdk` 39/0.
 
+- **FIXED 2026-06-18 (branch perf/float-field-access, commit 7ea85d2) — record FLOAT
+  field-ACCESS arith.** `v.dx + v.dy` / `v.dx*v.dx + v.dy*v.dy` over Float record
+  fields did INTEGER arith on the boxed-float field words → garbage: emitFieldAccess
+  returns LTInt and emitArith only checked staticIsFloat on the LEFT operand. Fix:
+  emitArith routes to emitFloatArith when EITHER operand `isFloatFieldAccess`; the LTy
+  of emitFieldAccess is UNCHANGED (localized to arith routing → no slice-7-dispatch
+  blast radius). LESSON: an earlier attempt "broke slice-7" — real culprit was a
+  DUPLICATE `nthStr` (grep before adding a helper). Typed gate `float_field_arith.mdk`
+  40/0; zero perf regression.
+
 - **FIXED 2026-06-18 (branch perf/closure-overapp) — over/partial-application of a
   LET-BOUND multi-level lambda.** `let g=(x => (y => x + y)); (g 7) 9` and
   `let h = g 7; h 9` miscompiled (garbage/empty): `flattenApp` collapses `(g 7) 9` to
