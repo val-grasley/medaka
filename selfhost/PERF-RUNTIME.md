@@ -132,6 +132,35 @@ arith escape stress, and clean-stress all == interpreter oracle.
 **Gates:** clean-stress + mandel_let == `medaka run` oracle; `diff_selfhost_llvm`
 **180/0**; `selfcompile_fixpoint` **C3a/C3b YES**.
 
+### Win 5 — constant dict-witness hoisting (2026-06-18, `perf/dict-const`)
+
+A dict witness whose head tag + every requirement word are compile-time constants
+(a one-level `RKey k []` → `[hashName k]`, or a nested RKey with constant reqs) was
+heap-allocated by `emitDictCell` at **every call-site invocation** — e.g. a tight
+`gmax : Ord a => …` loop allocated an 8-byte dict cell 50M times just to pass the
+(constant, often unused) Ord dict. Now `dictWordOfRoute` routes constant dicts to
+`emitConstDictCell`, which emits the cell ONCE as an `internal constant` module global
+(deduped by initializer content) and passes `ptrtoint (ptr @g to i64)`. Layout is
+byte-identical to the heap cell, so every consumer (RKey dispatch `loadField`,
+nested-dict store, call arg) reads it unchanged. GC-safe: globals hold int tags +
+ptrtoint-of-other-static-globals, no heap pointers.
+
+**Numbers:** dispatch bench (polymorphic `Ord` 50M loop) **0.16s → 0.03s (~5×)**; the
+loop's per-iteration `mdk_alloc` is gone, one shared `@mdk_dc_*` global remains. Broad:
+every constant dict at a concrete→polymorphic call boundary (idiomatic — concrete code
+calling generic stdlib) across all programs. The self-compile barely changes (the
+emitter mostly forwards dicts via RDict params, not RKey constants) so no self-emit
+regression (~3.0→3.3s, noise).
+
+**Gates:** `diff_selfhost_llvm` **180/0**, `diff_selfhost_eval_dict` **25/0**,
+`selfcompile_fixpoint` **C3a/C3b YES**, `diff_selfhost_build` **25/0**,
+`diff_native_cli` 58/3 (the 3 are pre-existing check/lsp, not emit).
+
+**Follow-on:** RDict-forwarded dicts inside polymorphic fns stay heap-allocated (their
+witness is a runtime param). Monomorphization (design C) would turn those into
+constants too. The `lookupAssoc` dedup is linear; distinct-dict count is tiny so it's
+fine, but an SMap/OrdMap would harden it if a program has many distinct dicts.
+
 ## Dead-ends
 
 (none yet)

@@ -186,6 +186,7 @@ import support.util.{
   lookupAssoc,
   listLen,
   contains,
+  startsWith,
   fallthroughName,
 }
 import backend.llvm_preamble.{preambleLines}
@@ -3153,7 +3154,7 @@ dictWordsOf e env (r::rest) = dictWordOfRoute e env r :: dictWordsOf e env rest
 dictWordOfRoute : Emit -> List (String, (String, LTy)) -> Route -> <Mut> String
 dictWordOfRoute e env (RKey key reqs) =
   let reqWords = dictWordsOf e env reqs
-  emitDictCell e (hashName key) reqWords
+  if allConstWords reqWords then emitConstDictCell e (hashName key) reqWords else emitDictCell e (hashName key) reqWords
 dictWordOfRoute _ env (RDict d) = dictOperand env d
 dictWordOfRoute _ env (RDictFwd d) = dictOperand env d
 dictWordOfRoute _ _ RNone = "0"
@@ -3174,6 +3175,43 @@ emitDictCell e headTag reqWords =
   let w = freshReg e
   let _ = emit e ("  " ++ w ++ " = ptrtoint ptr " ++ p ++ " to i64")
   w
+
+-- ── constant dict-witness hoisting (perf/dict-const) ────────────────────────
+-- A dict witness whose head tag and every requirement word are compile-time
+-- constants (a one-level `RKey k []` → `[hashName k]`, or a nested RKey whose reqs
+-- are themselves constant) does NOT need a per-call `@mdk_alloc`: the cell is
+-- immutable and identical at every invocation. Emit it ONCE as an `internal
+-- constant` module global and pass `ptrtoint (ptr @g to i64)` — eliminating the
+-- per-invocation allocation that dominated dispatch-heavy polymorphic loops (~4×
+-- on a tight `Ord` loop; broad — every constant dict across stdlib/compiler/user
+-- code). Deduped by initializer content so identical dicts share one global.
+dictConstCacheRef : Ref (List (String, String))
+dictConstCacheRef = Ref []
+
+-- every dict word is a compile-time constant (not a runtime %register): a literal
+-- tag, "0" (RNone), or a `ptrtoint`-of-global constant-expr (a nested const dict).
+allConstWords : List String -> Bool
+allConstWords [] = True
+allConstWords (w::rest) = not (startsWith "%" w) && allConstWords rest
+
+constDictReqInits : List String -> String
+constDictReqInits [] = ""
+constDictReqInits (w::rest) = ", i64 " ++ w ++ constDictReqInits rest
+
+-- emit (or reuse) a module-global constant dict cell; return its pointer-as-i64
+-- constant-expr. Layout byte-identical to emitDictCell's heap cell, so every
+-- consumer (RKey dispatch loadField, nested-dict store, call arg) reads it the same.
+emitConstDictCell : Emit -> Int -> List String -> <Mut> String
+emitConstDictCell e headTag reqWords =
+  let n = lengthS reqWords
+  let initBody = "[" ++ intToString (n + 1) ++ " x i64] [i64 " ++ intToString headTag ++ constDictReqInits reqWords ++ "]"
+  match lookupAssoc initBody dictConstCacheRef.value
+    Some gname => "ptrtoint (ptr @" ++ gname ++ " to i64)"
+    None =>
+      let gname = "mdk_dc_" ++ intToString (freshId e)
+      let _ = emitGlobal e ("@" ++ gname ++ " = internal constant " ++ initBody)
+      let _ = set_ref dictConstCacheRef ((initBody, gname) :: dictConstCacheRef.value)
+      "ptrtoint (ptr @" ++ gname ++ " to i64)"
 
 -- the operand word a dict parameter name is bound to in the emit env.
 dictOperand : List (String, (String, LTy)) -> String -> <Mut> String
@@ -7574,6 +7612,7 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
     globalsReg = Ref (initGlobalsReg (valBinds groups)),
   }
   let _ = resetDistinctTypeNames ()
+  let _ = set_ref dictConstCacheRef []
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
@@ -7715,6 +7754,7 @@ emitProgramGaps (CProgram groups ctorArs ctorTypes implEntries) =
     globalsReg = Ref (initGlobalsRegReady (valBinds groups)),
   }
   let _ = resetDistinctTypeNames ()
+  let _ = set_ref dictConstCacheRef []
   let _ = installKnownFnMap (collectFns groups)
   let _ = installCtorMap ctorArs
   let _ = installSigMap (sigTable e)
