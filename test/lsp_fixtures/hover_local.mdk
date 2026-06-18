@@ -1,0 +1,4 @@
+main : <IO> Unit
+main =
+  let input = readLine ()
+  putStrLn input

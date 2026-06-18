@@ -1,3 +1,3 @@
 -- native extern catalog slice 3: putStrLn — writes string to stdout with newline.
--- Returns Unit; auto-print adds "()" as the result.  Oracle stdout: "hi\n()".
+-- Returns Unit; a Unit main suppresses the auto-print (d0a99a9).  Oracle stdout: "hi\n".
 main = putStrLn "hi"

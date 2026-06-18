@@ -31,6 +31,19 @@ dicts — the GENUINE #21 nested-element-dict flattening solved, not contained;
 Set-literal / mutual-rec-Monoid dict gaps** are fixed. **Remaining = the soak itself:**
 a clean bug-free stretch of native-only dev, then the confidence-gated `lib/` removal.
 
+**Soak findings from the Unit-`main` auto-print + fmt work (2026-06-16/17) — ALL CLOSED:**
+- **Native under-defaulted ambiguous `Num` bindings** (`fa = [10,20,30].[1]` → native `fa : a` vs
+  oracle `fa : Int`; `poly_let`/`index_default`) — ✅ CLOSED by the #11 value-level-defaulting fix
+  (`4fc5f47`/`18176ea`): the no-prelude HM driver wasn't recording the literal's `Num` obligation, so
+  nothing to default; now recorded unconditionally. `diff_selfhost_typecheck` 12/0.
+- **Native type-error wording** (`default_body_type_error`: native `Type mismatch: Int vs Bool` vs
+  oracle `Method 'greetDefault': expected type Int but got Bool`) — ✅ CLOSED (`18176ea`): specialized
+  default-method-body error. `diff_selfhost_typecheck_errors` 35/0.
+- **Native printer missing `ENumLit` arm** (fmt SIGTRAP on int literals) + **Unit-`main` auto-print
+  suppression** — ✅ CLOSED in `d0a99a9` (merged); the interp-side `dev/eval_probe` lag (5
+  `diff_selfhost_llvm` failures) closed in `7540a7e`. `diff_selfhost_llvm` 180/0. Native, interp,
+  and CLI now all consistent: a Unit `main` prints nothing; value `main`s print their result.
+
 **🏁 Medaka is a native self-hosting compiler.** The compiler is written in
 Medaka (`selfhost/`), and the native **LLVM backend now compiles it**: all seven
 pipeline stages (lex → parse → desugar → resolve → mark → typecheck → eval) are
@@ -323,17 +336,51 @@ cover the corpus; these are known holes outside it.
 
 ### Compiler / language
 
-- **Num-polymorphic numeric literals (deferred from the 2026-06-12 flip; not a flip gate).**
-  Today `litType (LInt _) = TCon "Int"` monomorphizes integer literals, so a bare `0`/`1`
-  can't be a `Float` by context. G9 closed the *practical* Float-numeric gap by seeding
-  stdlib `sum`/`product` via `fromInt` (point-ful), but the general feature — `litType (LInt)
-  → Num a` with Haskell-style defaulting (unconstrained `Num` → `Int`), threaded through **both**
-  the OCaml and selfhost typecheckers — remains. Broad differential-gate blast radius +
-  two-compiler defaulting-parity risk; do it as its own effort. Sub-item surfaced during G9:
-  a return-position `fromInt`/operator-section in an **unconstrained** fn (no `Num a =>` sig →
-  RNone) still hits the native arg-tag gap, and auto-printing a polymorphic-`a` indirect-call
-  result mistypes the print routine — narrow, non-soundness, dodged by the `Num a =>` sig on
-  `sum`/`product`. Skill: cross-cutting → **add-language-feature**.
+- **Num-polymorphic numeric literals — ✅ DONE (2026-06-16, both compilers, run + build).**
+  Integer literals in expression position are `Num a`-polymorphic in BOTH the OCaml oracle and
+  the selfhost/native compiler; `x : Float; x = 0`, `1.0 + 2`, `g : Float -> Float; g x = x + 1`,
+  and **polymorphic literal-bearing fns** (`inc x = x + 1` applied to `2.5` → `3.5`) all typecheck,
+  `run`, AND `build` correctly (oracle == `medaka run` == `medaka build`). Full design + locked
+  decisions: [`NUMLIT-DESIGN.md`](./NUMLIT-DESIGN.md). **Landing log:** Stages 0-2 OCaml (`eac278b`);
+  Stages 3-4 selfhost+native (`7424b64`); **soundness fix** OCaml (`e7031e6`) + selfhost (`183b7b4`);
+  **emitter Gap E/C4 closure** (`a8b95d7`). Mechanism: a transparent `ENumLit` AST node (renders
+  identically to `ELit (LInt n)` so sexp/round-trip unaffected) carries a `Num` obligation; a
+  **defaulting pass** at every generalization boundary grounds an *ambiguous* Num-constrained var
+  (not arg-reachable) to `Int` (MR-for-Num, locked §0.2); a post-HM stamp elaborates the literal —
+  concrete-Int → `LInt`, concrete-Float → `LFloat`, **still-polymorphic `Num a` → `fromInt n`
+  (dict-dispatched)** so it honors Float at runtime. Locked scope (§0): **integer literals only**
+  (no `Fractional`; `1.0` stays `Float`), patterns stay `Int`.
+  - **Soundness hole found by verification + closed:** an interim version elaborated a polymorphic
+    literal to a static `VInt`, so `inc 2.5` typechecked but panicked at runtime; the `fromInt`-routing
+    fix (`e7031e6`/`183b7b4`) makes a surviving-polymorphic `Num` literal dispatch through the
+    enclosing `Num` dict, like `core.mdk`'s `fromInt 0`.
+  - **Pre-existing emitter gap #11 EXPOSED + closed (Gap E / C4 residual, `a8b95d7`):** the native
+    emitter seeded a poly-`Num` param as `LTNum` (→ runtime `@mdk_num_*`) only when the fn had an
+    explicit signature; an *unannotated* poly-`Num` fn at Float (`dbl x = x + x`) defaulted to
+    `LTInt` → integer `add` on the Float box → silent garbage on `medaka build`. Fixed by seeding
+    `LTNum` for any unannotated arith-used param + a `reservedCtorsOfType` fallback for the
+    List/Option/Result/Ordering Foldable-dispatch sibling. Fixpoint C3a/C3b held byte-for-byte.
+  - **Soak found 3 more native/oracle divergences (all closed) — #11 was bug-dense:** (3) native
+    `check` accepted `g = f "hello"` (`f : Num a => a -> a`, a concrete `Num String` obligation at a
+    let-binding) → typechecked then crashed; the selfhost constraint tracking was fused with the
+    dict/emit machinery and empty on the plain check path — fixed with always-on
+    `schemeObligationsRef`/`checkCallObligations` mirroring the oracle's `is_concrete` (`68d9da1`).
+    (4) two typecheck differential gates went blind (goldens from a no-prelude probe that #11's
+    `1`→`fromInt 1` breaks) — re-rooted onto the prelude-aware oracle (`bee51ba`, test-only).
+    (5) native didn't apply **value-level** `Num` defaulting (`nums = [1,2,3]` → native `List a`
+    vs oracle/§0.2 `List Int`) — the no-prelude driver wasn't recording the literal's `Num`
+    obligation at all; fixed + a specialized default-method-body type error (`4fc5f47`/`18176ea`).
+    **Native and the OCaml oracle now fully agree; all diff gates 0-failing, fixpoint C3a/C3b YES.**
+  - **Tracked follow-up (capture-infra footgun):** `capture_goldens.sh tc` corrupts literal-bearing
+    fixtures NOT in `PRELUDE_DEP_TC` (poly_let, index_default, effects, records, signatures,
+    missing_field, unknown_field_create) to `Unbound variable: fromInt` (sourced from the no-prelude
+    `tc_probe`). Goldens are currently correct; the trap only bites on recapture. Fix = widen
+    `PRELUDE_DEP_TC` to all prelude-dependent literal fixtures. Low urgency, do before the next bulk
+    `tc` recapture.
+  - **Remaining (optional cleanup):** revert the `sum`/`product` `fromInt 0/1` workaround in
+    `core.mdk` to literal `0/1` — **NOT safe** (the OCaml oracle's `fromInt`-routing misses the
+    point-free seed position → it panics on Float while native is correct; see memory
+    `project_oracle_fromint_pointfree_gap`). Keep the `fromInt` form. Closed as won't-do.
 
 - ⭐ **Phase 146 — Capability-safe effects (the headline wedge). IN PROGRESS.**
   Make Medaka's existing effect rows **sound + fine-grained** so a function's type
@@ -372,7 +419,7 @@ cover the corpus; these are known holes outside it.
   `claude/suspicious-sammet-21d73e` (commit `860ba12`). Skill:
   **add-language-feature** (cross-cutting).
 
-- **Phase 148 (proposed) — diagnose duplicate / non-contiguous top-level bindings.**
+- **Phase 148 — ✅ DONE (2026-06-16, `7d755a9`, both compilers) — diagnose duplicate / non-contiguous top-level bindings.**
   Two same-named top-level bindings separated by other declarations are silently
   **coalesced into one multi-clause function** instead of being flagged. Symptoms,
   verified on the binary:
@@ -434,7 +481,7 @@ cover the corpus; these are known holes outside it.
   - Estimate: ~a day (Full scope). Skill: **add-language-feature** (cross-cutting —
     new pattern + construction syntax through parser/ast/typecheck/eval + selfhost).
 
-- **Phase 150 (proposed) — better error for `do` used on a non-monad.** Using `do`
+- **Phase 150 — ✅ DONE (2026-06-16, `5d11e77`, both compilers) — better error for `do` used on a non-monad.** Implemented via a transparent `EDoOrigin loc expr` node (desugar wraps the lowered do-chain; typecheck raises `DoRequiresMonad` on a non-monad shape). Using `do`
   to sequence IO (a common newcomer mistake, since Medaka IO is **not** a monad —
   imperative IO is a bare indented block, see [[medaka-io-not-a-monad]] / SYNTAX.md
   §"do notation") produces a baffling diagnostic. Verified on the binary:

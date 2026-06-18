@@ -20,6 +20,7 @@ import support.util.{
   startsWith,
   endsWith,
   joinDot,
+  lookupAssoc,
 }
 
 -- ── small list helpers (no stdlib import — selfhost is single-root) ──
@@ -274,3 +275,58 @@ loadProgramFilesLocated : (String -> <Mut> Option String) -> String -> List Stri
 loadProgramFilesLocated read entry roots = match visitModF parseLocated read roots [] [] [] (moduleIdOfPath roots entry)
   Err e => Err e
   Ok (_, acc) => Ok acc
+
+-- ── LSP latency: source-keyed parse memoization (per-keystroke dep reuse) ────
+--
+-- The LSP runs this whole loader on EVERY didChange.  Profiling showed the
+-- `parseLocated` of the import graph is ~80% of an import-bearing keystroke's
+-- cost: a buffer that `import json` re-parses json + list + array + string
+-- (~2.3k lines) every keystroke even though ONLY the edited entry buffer
+-- changed.  `parseCachedLocated` memoizes `parseLocated` by SOURCE STRING in a
+-- session-lived Ref: identical dep source across keystrokes hits the cache, so
+-- only the (changed) entry buffer actually re-parses.
+--
+-- Keying on source content (not path) is correct AND robust: `parseLocated` is a
+-- pure function of its input, so equal source ⇒ equal located decls (same ELoc
+-- line/col).  An edited buffer has new source ⇒ a miss ⇒ a fresh parse, and its
+-- old entry is harmless dead weight (the cache is bounded below).  Bounding keeps
+-- the assoc list small over a long session of edits: keep the most-recent N (one
+-- per file in a typical graph + a little slack), dropping the oldest on overflow.
+
+parseCacheLimit : Int
+parseCacheLimit = 24
+
+-- memoizing parseLocated: consult the cache by source, else parse + insert.
+-- Most-recently-used moves to the front; the list is truncated to the limit so a
+-- long editing session does not grow it unboundedly.
+parseCachedLocated : Ref (List (String, List Decl)) -> String -> <Mut> List Decl
+parseCachedLocated cacheRef src = match lookupAssoc src cacheRef.value
+  Some decls => decls
+  None =>
+    let decls = parseLocated src
+    let _ = set_ref cacheRef (takeFirst parseCacheLimit ((src, decls) :: dropKey src cacheRef.value))
+    decls
+
+-- drop any existing entry with this key (so a re-parse refreshes its position).
+dropKey : String -> List (String, List Decl) -> List (String, List Decl)
+dropKey _ [] = []
+dropKey k ((k2, v)::rest)
+  | k == k2 = dropKey k rest
+  | otherwise = (k2, v) :: dropKey k rest
+
+takeFirst : Int -> List a -> List a
+takeFirst _ [] = []
+takeFirst n (x::xs)
+  | n <= 0 = []
+  | otherwise = x :: takeFirst (n - 1) xs
+
+-- Like loadProgramFilesLocated but parses each module through the source-keyed
+-- memo `parseCacheRef`.  Behaviourally identical (same located decls per module);
+-- only the cost differs (unchanged deps skip re-parsing).  The LSP threads a
+-- session-lived cache so reuse spans didChange events.
+export
+loadProgramFilesLocatedCached : Ref (List (String, List Decl)) -> (String -> <Mut> Option String) -> String -> List String -> <IO, Mut> Result String (List (String, String, List Decl))
+loadProgramFilesLocatedCached parseCacheRef read entry roots =
+  match visitModF (s => parseCachedLocated parseCacheRef s) read roots [] [] [] (moduleIdOfPath roots entry)
+    Err e => Err e
+    Ok (_, acc) => Ok acc

@@ -620,6 +620,7 @@ renameScoped rm bound (EListComp body quals) =
   EListComp (renameScoped rm bnd body) quals2
 -- non-binder composites: recurse children with the same bound
 renameScoped rm bound (ELoc l e) = ELoc l (renameScoped rm bound e)
+renameScoped rm bound (EDoOrigin l e) = EDoOrigin l (renameScoped rm bound e)
 renameScoped rm bound (EApp f x) =
   EApp (renameScoped rm bound f) (renameScoped rm bound x)
 renameScoped rm bound (EIf c t e) =

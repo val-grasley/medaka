@@ -80,6 +80,8 @@ public export data ResError
   -- `?` outside a `let` RHS
   | NonRecursiveValueLet String
   -- `let x = … x …` (no `rec`) referencing itself
+  | DuplicateBinding String
+  -- Phase 148: non-contiguous clauses of a top-level binding
   | AsPatternMisplaced  -- `x@..` outside a binding LHS
 
 -- ── The name environment ──────────────────────────────────────────────────
@@ -202,6 +204,7 @@ recFieldSub env (Some p) = checkPat env p
 -- ── check_expr (scope = locally-bound names) ──────────────────────────────
 checkExpr : Env -> List String -> Expr -> List ResError
 checkExpr _ _ (ELit _) = []
+checkExpr _ _ (ENumLit _ _ _) = []   -- PLAN.md #11: a literal, nothing to bind
 checkExpr _ _ (EMethodRef _) = []
 checkExpr _ _ (EDictApp _) = []
 checkExpr env scope (EVar n) = checkVar env scope n
@@ -257,6 +260,7 @@ checkExpr env scope (ESection s) = checkSection env scope s
 -- checkExpr stays pure to avoid threading <Mut> through the whole walk — a
 -- resolve-side currentLoc is a B.10.2b refinement if the LSP needs it.)
 checkExpr env scope (ELoc _ e) = checkExpr env scope e
+checkExpr env scope (EDoOrigin _ e) = checkExpr env scope e
 
 -- an `@Name` impl hint is not a value reference (resolve must not flag it)
 checkVar : Env -> List String -> String -> List ResError
@@ -681,6 +685,83 @@ whenL False _ = []
 buildErrors : List Decl -> List Decl -> List ResError
 buildErrors preludeDecls prog = externWithBodyErrors (externNames prog) prog
   ++ duplicateErrors preludeDecls prog
+  ++ contiguityErrors prog
+
+-- Phase 148: the clauses of a top-level value binding must be contiguous.  Two
+-- same-named DFunDef/DLetGroup clause-runs separated by an intervening clause-body
+-- decl are silently coalesced into one multi-clause function; flag the gap.
+-- Mirrors lib/resolve.ml's check_contiguous_bindings.  Walk decls tracking opened
+-- (names in their current contiguous run of clause bodies) and closed (a run that
+-- ended); reaching a closed name re-opens it AND is the error.  A clause-body decl
+-- closes every open name it does not itself bind.  Type signatures (DTypeSig) are
+-- TRANSPARENT — they neither open nor close a run, so the "all sigs, then all
+-- defs" grouping of a mutually-recursive pair is accepted.
+declBindNames : Decl -> List String
+declBindNames (DAttrib _ d) = declBindNames d
+declBindNames (DFunDef _ n _ _) = [n]
+declBindNames (DLetGroup _ bs) = map letBindName bs
+declBindNames _ = []
+
+-- a transparent decl (DTypeSig) is skipped entirely by the contiguity walk
+isTransparentDecl : Decl -> Bool
+isTransparentDecl (DAttrib _ d) = isTransparentDecl d
+isTransparentDecl (DTypeSig _ _ _) = True
+isTransparentDecl _ = False
+
+contiguityErrors : List Decl -> List ResError
+contiguityErrors prog = contigGo [] [] prog
+
+-- closed = names whose run ended; opened = names in their current run
+contigGo : List String -> List String -> List Decl -> List ResError
+contigGo _ _ [] = []
+contigGo closed opened (d::rest)
+  | isTransparentDecl d = contigGo closed opened rest
+  | otherwise =
+    let ns = declBindNames d
+    -- close every open name not bound by this decl
+    let stillOpen = filterKeepOpen ns opened
+    let nowClosed = appendMissing opened stillOpen closed
+    -- process this decl's bound names against the closed set
+    let errs = newlyDuplicated nowClosed ns
+    -- re-open the names this decl binds (whether fresh or re-opened)
+    let opened2 = unionStr stillOpen ns
+    -- a re-opened (previously closed) name leaves the closed set; harmless to keep,
+    -- but removing it avoids a second spurious flag on a third occurrence
+    let closed2 = removeAll ns nowClosed
+    errs ++ contigGo closed2 opened2 rest
+
+-- names from `opened` that are still bound by the current decl (stay open)
+filterKeepOpen : List String -> List String -> List String
+filterKeepOpen _ [] = []
+filterKeepOpen ns (o::os)
+  | contains o ns = o :: filterKeepOpen ns os
+  | otherwise = filterKeepOpen ns os
+
+-- add every `opened` name NOT in `stillOpen` to the closed accumulator
+appendMissing : List String -> List String -> List String -> List String
+appendMissing [] _ closed = closed
+appendMissing (o::os) stillOpen closed
+  | contains o stillOpen = appendMissing os stillOpen closed
+  | otherwise = appendMissing os stillOpen (unionStr closed [o])
+
+-- a bound name that is in the closed set is a non-contiguous re-appearance
+newlyDuplicated : List String -> List String -> List ResError
+newlyDuplicated _ [] = []
+newlyDuplicated closed (n::ns)
+  | contains n closed = DuplicateBinding n :: newlyDuplicated closed ns
+  | otherwise = newlyDuplicated closed ns
+
+unionStr : List String -> List String -> List String
+unionStr acc [] = acc
+unionStr acc (x::xs)
+  | contains x acc = unionStr acc xs
+  | otherwise = unionStr (acc ++ [x]) xs
+
+removeAll : List String -> List String -> List String
+removeAll _ [] = []
+removeAll ns (x::xs)
+  | contains x ns = removeAll ns xs
+  | otherwise = x :: removeAll ns xs
 
 externWithBodyErrors : List String -> List Decl -> List ResError
 externWithBodyErrors _ [] = []
@@ -748,6 +829,7 @@ resErrorSexp QuestionMisplaced = "QuestionMisplaced"
 resErrorSexp (NonRecursiveValueLet n) = "(NonRecursiveValueLet "
   ++ escStr n
   ++ ")"
+resErrorSexp (DuplicateBinding n) = "(DuplicateBinding " ++ escStr n ++ ")"
 resErrorSexp AsPatternMisplaced = "AsPatternMisplaced"
 
 -- ── resolve_program ───────────────────────────────────────────────────────
@@ -794,6 +876,11 @@ ppResError (NonRecursiveValueLet n) = "'"
   ++ "' is not in scope on the right-hand side of its own binding. Non-function `let` bindings are not recursive — write `let rec "
   ++ n
   ++ " = ...` to opt in to recursion (the RHS must be a lambda)."
+ppResError (DuplicateBinding n) = "the clauses of '"
+  ++ n
+  ++ "' must be contiguous: a same-named top-level binding already appears earlier, separated by an intervening declaration. Move all clauses of '"
+  ++ n
+  ++ "' (and its type signature) together, or rename one."
 
 -- one S-expression per line (the harness sorts); matches diagdump output set
 export

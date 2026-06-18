@@ -76,6 +76,12 @@ composeVar = "$cf"
 export
 lower : Expr -> CExpr
 lower (ELit l) = CLit l
+-- PLAN.md #11: dictPass rewrites every ENumLit to ELit before lowering; this
+-- arm is defensive (a non-rewritten path) — a Float-stamped ref lowers to a
+-- float constant, else an int.
+lower (ENumLit n r _) = match r.value
+  Some f => CLit (LFloat f)
+  None => CLit (LInt n)
 lower (EVar x) = CVar x AGlobal
 lower (EVarAt x addr) = CVar x addr
 lower (EApp f x) = CApp (lower f) (lower x)
@@ -114,6 +120,7 @@ lower (EDictAt name routesRef) = CDict name routesRef.value
 -- emitted IR for any program is byte-identical to the un-wrapped tree.  This is
 -- the fixpoint guarantee (the transparent strip that keeps the C3 IR stable).
 lower (ELoc _ e) = lower e
+lower (EDoOrigin _ e) = lower e
 lower other = panic ("core_ir lower: unsupported node " ++ nodeTag other)
 
 -- surface binops that are really sugar are lowered to primitive control flow /

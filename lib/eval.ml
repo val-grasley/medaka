@@ -785,7 +785,13 @@ and eval env expr =
     if !Coverage.enabled then Coverage.record_hit loc.file loc.line;
     eval env e
 
+  | EDoOrigin (_, e) -> eval env e   (* Phase 150: transparent provenance marker *)
+
   | ELit (LInt n)    -> VInt n
+  (* PLAN.md #11: Dict_pass rewrites every ENumLit to ELit before eval; this arm
+     is defensive (an untyped eval path that skips dict_pass) — a bare int. *)
+  | ENumLit (n, { contents = Some f }, _) -> ignore n; VFloat f
+  | ENumLit (n, { contents = None }, _)   -> VInt n
   | ELit (LFloat f)  -> VFloat f
   | ELit (LString s) -> VString s
   | ELit (LChar c)   -> VChar c

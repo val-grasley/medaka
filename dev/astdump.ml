@@ -71,7 +71,12 @@ and sexp_recpatfield (f, popt) =
 let rec sexp_expr e =
   match e with
   | ELoc (_, e)        -> sexp_expr e
+  | EDoOrigin (_, e)   -> sexp_expr e
   | ELit l             -> node "ELit" [sexp_lit l]
+  (* PLAN.md #11: render an `ENumLit` exactly as `(ELit (LInt n))` so the
+     OCaml astdump stays byte-identical to the selfhost sexp (which has no
+     ENumLit node) and the parse-fixture diff gate keeps passing. *)
+  | ENumLit (n, _, _)  -> node "ELit" [node "LInt" [string_of_int n]]
   | EVar x             -> node "EVar" [esc_str x]
   | EApp (f, x)        -> node "EApp" [sexp_expr f; sexp_expr x]
   | ELam (ps, b)       -> node "ELam" [slist (List.map sexp_pat ps); sexp_expr b]

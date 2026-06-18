@@ -1,1 +1,1 @@
-TYPE ERROR: Type mismatch: Int vs Bool
+TYPE ERROR: Method 'greetDefault': expected type Int but got Bool

@@ -1,4 +1,4 @@
-data T
+data T =
   -- doc for the first variant
-  = A
+  | A
   | B

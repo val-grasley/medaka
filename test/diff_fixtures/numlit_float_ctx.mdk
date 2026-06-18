@@ -1,0 +1,5 @@
+x : Float
+x = 0
+
+main : <IO> Unit
+main = println x

@@ -18,6 +18,7 @@ import frontend.ast.{
   Guard(..),
   Arm(..),
   DoStmt(..),
+  Loc(..),
   InterpPart(..),
   GuardArm(..),
   FieldAssign(..),
@@ -56,6 +57,7 @@ mapKids : (Expr -> Expr) -> Expr -> Expr
 -- of lib/desugar.ml's `map_expr` ELoc arm).  Without this the wildcard below
 -- would stop the rewrite at the wrapper and never reach the atom inside.
 mapKids f (ELoc l e) = ELoc l (mapExpr f e)
+mapKids f (EDoOrigin l e) = EDoOrigin l (mapExpr f e)
 mapKids f (EApp a b) = EApp (mapExpr f a) (mapExpr f b)
 mapKids f (ELam ps b) = ELam ps (mapExpr f b)
 mapKids f (ELet m r p e1 e2) = ELet m r p (mapExpr f e1) (mapExpr f e2)
@@ -282,8 +284,38 @@ anyQuestionStmt (_::rest) = anyQuestionStmt rest
 -- check_do_wellformed (which rejects DoAssign/DoFieldAssign/empty in a do-block)
 -- is validation-only and skipped — those never appear in a well-formed EDo.
 rewriteDo : Expr -> Expr
-rewriteDo (EDo stmts) = lowerDo stmts
+rewriteDo (EDo stmts) = wrapDoOrigin stmts (lowerDo stmts)
 rewriteDo e = e
+
+-- Phase 150: wrap the lowered chain in a transparent EDoOrigin carrying the
+-- do-block's loc (the first statement's position) so a monad-constraint failure
+-- surfaces as a tailored "do requires a monad" error instead of a baffling deep
+-- `Type mismatch`.  A single trailing `do { e }` lowers to bare `e` (no monad
+-- obligation) — leave it unwrapped so non-do expressions aren't mis-blamed.
+wrapDoOrigin : List DoStmt -> Expr -> Expr
+wrapDoOrigin [(DoExpr _)] lowered = lowered
+wrapDoOrigin stmts lowered = match firstDoStmtLoc stmts
+  Some l => EDoOrigin l lowered
+  None => lowered
+
+firstDoStmtLoc : List DoStmt -> Option Loc
+firstDoStmtLoc [] = None
+firstDoStmtLoc (s::rest) = match doStmtLoc s
+  Some l => Some l
+  None => firstDoStmtLoc rest
+
+doStmtLoc : DoStmt -> Option Loc
+doStmtLoc (DoExpr e) = exprLoc e
+doStmtLoc (DoBind _ e) = exprLoc e
+doStmtLoc (DoLet _ _ _ e) = exprLoc e
+doStmtLoc (DoAssign _ e) = exprLoc e
+doStmtLoc (DoFieldAssign _ _ e) = exprLoc e
+doStmtLoc (DoLetElse _ e _) = exprLoc e
+
+exprLoc : Expr -> Option Loc
+exprLoc (ELoc l _) = Some l
+exprLoc (EApp f _) = exprLoc f
+exprLoc _ = None
 
 lowerDo : List DoStmt -> Expr
 lowerDo [(DoExpr e)] = e
@@ -778,11 +810,13 @@ rewriteRecordPun _ e = e
 
 isVarExpr : Expr -> Bool
 isVarExpr (ELoc _ e) = isVarExpr e
+isVarExpr (EDoOrigin _ e) = isVarExpr e
 isVarExpr (EVar _) = True
 isVarExpr _ = False
 
 punField : Expr -> FieldAssign
 punField (ELoc _ e) = punField e
+punField (EDoOrigin _ e) = punField e
 punField (EVar n) = FieldAssign n (EVar n)
 punField _ = FieldAssign "" (EVar "")
 

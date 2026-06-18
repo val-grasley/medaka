@@ -938,9 +938,27 @@ dropAssoc : String -> List (String, (Bool, LTy)) -> List (String, (Bool, LTy))
 dropAssoc _ [] = []
 dropAssoc k ((n, v)::rest) = if n == k then rest else (n, v) :: dropAssoc k rest
 
--- the constructor names owned by a type, in program order.
+-- the constructor names owned by a type, in program order.  The runtime ADTs
+-- (List/Option/Result/Ordering) carry RESERVED built-in constructors that are not
+-- user-declared, so they are absent from the ctor→type table (`ctorTypeTable`); an
+-- arg-tag dispatch over such a type (e.g. an UNANNOTATED `fold`/`Foldable List`
+-- caller whose route stays RNone — `total xs = fold (+) 0 xs`) would otherwise see
+-- an empty ctor list and hit the "owns no constructors" gap.  Fall back to the
+-- reserved ctors so the tag-match discriminates on the built-in cell tags.
 ctorsOfType : Emit -> String -> <Mut> List String
-ctorsOfType e ty = ctorsOfTypeIn ty (ctorTypeTable e)
+ctorsOfType e ty = match ctorsOfTypeIn ty (ctorTypeTable e)
+  [] => reservedCtorsOfType ty
+  cs => cs
+
+-- the reserved built-in constructors of a runtime ADT, mirroring `reservedTag`'s
+-- ordinal layout (List = Cons|Nil, Option = Some|None, Result = Ok|Err,
+-- Ordering = Lt|Eq|Gt).  Empty for any other (user) type.
+reservedCtorsOfType : String -> List String
+reservedCtorsOfType "List" = ["Cons", "Nil"]
+reservedCtorsOfType "Option" = ["Some", "None"]
+reservedCtorsOfType "Result" = ["Ok", "Err"]
+reservedCtorsOfType "Ordering" = ["Lt", "Eq", "Gt"]
+reservedCtorsOfType _ = []
 
 ctorsOfTypeIn : String -> List (String, String) -> List String
 ctorsOfTypeIn _ [] = []
@@ -7329,7 +7347,7 @@ isNumPolyParam dsig i seeded = match seeded
     Some (ptyNames, _) => match nthName ptyNames i
       Some n => isTypeVarName n
       None => False
-    None => False
+    None => True
   _ => False
 
 -- a type-variable head name is lowercase-initial (`a`, `elem`); a concrete type
@@ -8051,7 +8069,14 @@ emitProgram (CProgram groups ctorArs ctorTypes implEntries) =
   let _ = emit e "  call void @mdk_set_args(i32 %argc, ptr %argv)"
   let _ = emitTopGlobals e (orderedValBinds (valBinds groups))
   let (mv, mty) = emitExpr e [] (mainBody groups)
-  let _ = emitPrint e mv mty
+  -- A Unit-returning `main` produces output ONLY through explicit print calls (or
+  -- a panic); never auto-print its `()` result.  Detected by the DECLARED return
+  -- type (`declSigOf "main"` → "Unit", robust even when the body LTy is
+  -- mis-inferred — e.g. the medaka CLI's own `match`-bodied main, which otherwise
+  -- printed a stray `0`) OR a body LTy that is already LTUnit (an unannotated IO
+  -- `main = putStrLn …`).  Value-returning mains keep auto-printing (the pp_value
+  -- differential-test contract).
+  let _ = if mainIsUnit e mty then () else emitPrint e mv mty
   let _ = emit e "  ret i32 0"
   let _ = emit e "}"
   let _ = emitFns e (fnBinds groups)
@@ -8101,6 +8126,17 @@ emitTopGlobals e ((CBind name [(CClause [] body)])::rest) =
 emitTopGlobals _ ((CBind name _)::_) =
   panic
     ("llvm spike: top-level function '" ++ name ++ "' unsupported in slice 1 (value bindings only)")
+
+-- Is `main` Unit-returning (→ suppress the auto-print of its result)?  Prefers
+-- the DECLARED return type (effects already stripped to the head by
+-- core_ir_lower.methodRetTy, so `<IO> Unit` → "Unit"); falls back to the body's
+-- emit-time LTy for an unannotated main.
+mainIsUnit : Emit -> LTy -> <Mut> Bool
+mainIsUnit e mty = match declSigOf "main"
+  Some (_, "Unit") => True
+  _ => match mty
+    LTUnit => True
+    _ => False
 
 emitPrint : Emit -> String -> LTy -> <Mut> Unit
 emitPrint e v LTInt =

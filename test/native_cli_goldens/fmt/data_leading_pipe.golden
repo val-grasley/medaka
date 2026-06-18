@@ -1,0 +1,7 @@
+data Shape =
+  | Circle Float
+  | Rectangle Float Float
+  | Triangle Float Float Float
+  | Pentagon Float Float Float Float Float
+
+data Color = Red | Green | Blue

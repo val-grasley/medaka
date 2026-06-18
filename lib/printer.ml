@@ -310,6 +310,7 @@ let is_continuation_op = function
 
 let rec expr_prec = function
   | ELit _ | EVar _ | EMethodRef _ | EDictApp _ | ETuple _ | EArrayLit _ | EListLit _ | EListComp _
+  | ENumLit _
   | EMapLit _ | ESetLit _ | EStringInterp _
   | ERecordCreate _ | ERecordUpdate _ | EVariantUpdate _
   | ERangeList _ | ERangeArray _ | ESlice _ -> prec_atom
@@ -325,6 +326,7 @@ let rec expr_prec = function
   | EMatch _ | EBlock _ | EDo (_, _) | EAnnot _ | EHeadAnnot _
   | EFunction _ | EGuards _            -> prec_top
   | ELoc (_, e)                        -> expr_prec e
+  | EDoOrigin (_, e)                   -> expr_prec e
 
 let rec strip_loc = function ELoc (_, e) -> strip_loc e | e -> e
 
@@ -346,6 +348,8 @@ let rec print_expr min_prec e =
 
 and print_expr_raw = function
   | ELit l -> print_lit l
+  | EDoOrigin (_, e) -> print_expr_raw e  (* transparent; desugar-introduced, not round-tripped *)
+  | ENumLit (n, _, _) -> text (string_of_int n)
   | EVar n -> text n
   | EMethodRef (_, n) -> text n
   | EDictApp (_, n) -> text n  (* marker-installed; transparent like EMethodRef *)

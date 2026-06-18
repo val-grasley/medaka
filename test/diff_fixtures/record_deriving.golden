@@ -215,13 +215,13 @@ otherwise : Bool
 pipe : (a -> b) -> (b -> c) -> a -> c
 print : a -> <IO> Unit
 println : a -> <IO> Unit
-product : a Int -> Int
+product : a b -> b
 pure : a -> b a
 shrink : a -> List a
 signum : a -> a
 snd : (a, b) -> b
 sub : a -> a -> a
-sum : a Int -> Int
+sum : a b -> b
 thenCmp : Ordering -> Ordering -> Ordering
 toList : a b -> List b
 toResult : a -> Option b -> Result a b

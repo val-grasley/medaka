@@ -350,6 +350,7 @@ alphaLeftPrefix Unknown = Unknown
 
 alpha : List (String, Expr) -> Expr -> KP
 alpha lets (ELoc _ e) = alpha lets e
+alpha lets (EDoOrigin _ e) = alpha lets e
 alpha lets (EAnnot e _) = alpha lets e
 alpha lets (EHeadAnnot e _) = alpha lets e
 alpha _ (ELit (LString s)) = Known s
@@ -397,6 +398,7 @@ paramOfKp Unknown = PPrefix None
 -- the FIRST argument of an application spine: `f a b c` ⇒ Some a (locked dec 1)
 spineFirstArg : Expr -> Option Expr
 spineFirstArg (ELoc _ e) = spineFirstArg e
+spineFirstArg (EDoOrigin _ e) = spineFirstArg e
 spineFirstArg (EApp f x) = match spineHeadIsApp f
   True => spineFirstArg f
   False => Some x
@@ -406,6 +408,7 @@ spineFirstArg _ = None
 -- ⇒ recurse left; `EApp (EVar/leaf) x` ⇒ x is the first arg.
 spineHeadIsApp : Expr -> Bool
 spineHeadIsApp (ELoc _ e) = spineHeadIsApp e
+spineHeadIsApp (EDoOrigin _ e) = spineHeadIsApp e
 spineHeadIsApp (EApp _ _) = True
 spineHeadIsApp _ = False
 
@@ -734,6 +737,7 @@ collectDoStmtErrors (_::rest) = collectDoStmtErrors rest
 -- Recurse into an expr, collecting the FIRST do-wellformed error found.
 collectExprErrors : Expr -> List String
 collectExprErrors (ELoc _ e) = collectExprErrors e
+collectExprErrors (EDoOrigin _ e) = collectExprErrors e
 collectExprErrors (EApp a b) = match collectExprErrors a
   [] => collectExprErrors b
   errs => errs
@@ -1045,6 +1049,54 @@ pendingRLocalSites = Ref []
 pendingImplObligations : Ref (List (String, List String, Ty, Mono))
 pendingImplObligations = Ref []
 
+-- PLAN.md #11: one entry per source integer literal (ENumLit):
+-- (litVar, fref, n, dref).  [litVar] is the literal's fresh Num-obligated type var;
+-- [fref] is the node's own Option Float cell; [n] the int value; [dref] is the
+-- node's `fromInt`-route cell (filled by resolveSites — the literal is modelled as a
+-- `fromInt n` method occurrence).  After defaulting + grounding, the post-HM pass
+-- setNumlitFloats decides the runtime rep (mirror of lib/typecheck.ml's
+-- set_numlit_floats): litVar ground Float ⇒ fref Some, dref cleared ⇒ ELit (LFloat f);
+-- litVar ground Int ⇒ both cleared ⇒ ELit (LInt n); litVar still polymorphic `Num a`
+-- (the soundness case — `1` in `inc x = x + 1`) ⇒ dref KEPT (RDictFwd onto the
+-- enclosing Num dict) ⇒ dictPass emits `EApp (EMethodAt "fromInt" …) (ELit (LInt n))`.
+numlitRefs : Ref (List (Mono, Ref (Option Float), Int, Ref Route))
+numlitRefs = Ref []
+
+-- LSP hover: every local binding (let-bound name, lambda param, function-clause
+-- param, match-arm binder) flows through inferPat's PVar/PAs arms.  Capture
+-- (name, mono var) here so hover can render a *local* variable's inferred type:
+-- `checkProgramSchemes` only returns top-level + global schemes, so without this
+-- a hover over e.g. a `let input = …` name finds nothing and returns null.  The
+-- mono var is union-find-solved by the time inference ends; checkProgramSeeded
+-- then generalizes each into `localSchemesOut`, which the LSP reads as a hover
+-- fallback.  This side-channel does NOT enter the returned env, so completion and
+-- inlay-hint output (which consume the env directly) are unaffected.
+localBindRefs : Ref (List (String, Mono))
+localBindRefs = Ref []
+
+localSchemesOut : Ref (List (String, Scheme))
+localSchemesOut = Ref []
+
+-- Hover side-channel for the SEED (runtime.mdk externs: putStrLn, readLine, …).
+-- checkProgramSeeded keeps the seed in scope for inference but excludes it from
+-- the returned env (see its comment), so externs aren't otherwise hoverable.
+seedSchemesOut : Ref (List (String, Scheme))
+seedSchemesOut = Ref []
+
+-- Getters for the LSP (cross-module).  The raw Refs are nullary value globals
+-- (@mdk_g_), which the import-aware mangling map doesn't carry, so expose them
+-- through functions — the form every other tools→typecheck import already uses.
+export
+currentLocalSchemes : Unit -> <Mut> List (String, Scheme)
+currentLocalSchemes _ = localSchemesOut.value
+
+export
+currentSeedSchemes : Unit -> <Mut> List (String, Scheme)
+currentSeedSchemes _ = seedSchemesOut.value
+
+recordLocalBind : String -> Mono -> <Mut> Unit
+recordLocalBind name v = set_ref localBindRefs ((name, v) :: localBindRefs.value)
+
 -- dict-passing state (the typed pipeline's `=>`-constraint layer):
 --   activeDictVars   : constraint tyvar id → the dict parameter name a method
 --                      occurrence at that variable's type reads (RDict).
@@ -1059,6 +1111,39 @@ activeDictVars = Ref []
 funConstraintsRef : Ref (List (String, List Int))
 funConstraintsRef = Ref []
 
+-- #11 soundness (native obligation hole): the INTERFACE names of a constrained
+-- fn's `=>` constraints, slot-parallel to funConstraintsRef's ids.  funConstraintsRef
+-- keeps only the tyvar ids (enough to pick a dict route); but to record a real impl
+-- obligation when a constrained fn is INSTANTIATED at a concrete type (`g = f "hello"`
+-- where `f : Num a => a -> a`), the call site needs the iface ("Num") so it can check
+-- `Num String` against the impl table.  Mirrors lib/typecheck.ml's fun_constraints
+-- carrying the iface name into check_constraint_obligations.  Populated at the SAME
+-- three sites as funConstraintsRef (registerMember / registerInferredFor /
+-- seedDictAritiesFromSigs), with the SAME cross-module accumulate+reseed lifecycle.
+funConstraintIfacesRef : Ref (List (String, List String))
+funConstraintIfacesRef = Ref []
+
+-- a constrained-fn CALL site's instantiated constraint obligations: (iface, the
+-- call's instantiated constraint mono).  Resolved after inference (when the mono is
+-- ground) by checkCallObligations — a CONCRETE-head mono with no matching impl is an
+-- ERROR; a still-polymorphic head is DEFERRED (left to a further-out caller).  This
+-- is the selfhost analog of the oracle's constraint_obligations + check_constraint_
+-- obligations: pendingDictApps routes the dict, this list checks the impl exists.
+pendingCallObligations : Ref (List (String, Mono))
+pendingCallObligations = Ref []
+
+-- #11 soundness (native obligation hole, ALWAYS-ON, independent of the dict-
+-- elaboration machinery): per top-level binding, the deferred impl obligations it
+-- generalizes over — (iface, the quantified-var id the obligation discriminates on).
+-- Populated UNCONDITIONALLY at generalization in processSCC/processTopGroups (unlike
+-- funConstraintsRef, which the check path leaves empty because its inferred-constraint
+-- registration is gated on dictEligibleSetRef).  At a USE site (inferVar) the binding's
+-- entry is freshened through the call's instantiation subst and checked against the
+-- impl table — the selfhost analog of lib/typecheck.ml's inferred_constraints carried
+-- on a scheme and re-checked at every instantiation.
+schemeObligationsRef : Ref (List (String, List (String, Int)))
+schemeObligationsRef = Ref []
+
 -- E6 (module emit path only): funConstraintsRef is wiped by resetState at the start
 -- of EACH module's typecheck, but a cross-module `=>`-constrained CALL site (entry
 -- calling an imported `clampU`) must still find the callee's generalized constraint
@@ -1070,6 +1155,12 @@ funConstraintsRef = Ref []
 -- ids, registered first) wins the lookupAssocSL2 first-match.
 crossModuleFunConstraintsRef : Ref (List (String, List Int))
 crossModuleFunConstraintsRef = Ref []
+
+-- cross-module accumulator for funConstraintIfacesRef, mirroring
+-- crossModuleFunConstraintsRef exactly (accumulate across the graph, NOT cleared by
+-- resetState, re-seeded after the per-module reset).
+crossModuleFunConstraintIfacesRef : Ref (List (String, List String))
+crossModuleFunConstraintIfacesRef = Ref []
 
 pendingDictApps : Ref (List (Ref (List Route), List Mono))
 pendingDictApps = Ref []
@@ -1366,6 +1457,15 @@ pushTypeError msg =
   let _ = set_ref typeErrorsSticky True
   set_ref typeErrors ((msg, currentLoc.value) :: typeErrors.value)
 
+-- #11 soundness: push an obligation error only if the SAME message isn't already
+-- accumulated.  A single missing impl can be detected by both checkImplObligations
+-- (the original deferred obligation, once it grounds) and checkCallObligations (the
+-- call-site instantiation) — the oracle raises ONE error per missing impl, so dedup
+-- by message to keep native == oracle (one TYPE ERROR line).
+pushTypeErrorOnce : String -> <Mut> Unit
+pushTypeErrorOnce msg =
+  if anyList (e => fst e == msg) typeErrors.value then () else pushTypeError msg
+
 -- Source-location attribution (Phase B.10.2): the innermost ELoc span the
 -- `infer` walk has entered.  Set by infer's transparent ELoc arm before
 -- recursing (mirror of lib/typecheck.ml's `current_loc` ref, set in its ELoc
@@ -1374,6 +1474,17 @@ pushTypeError msg =
 -- (top-level decls aren't ELoc-wrapped).
 currentLoc : Ref (Option Loc)
 currentLoc = Ref None
+
+currentDoOrigin : Ref (Option Loc)
+currentDoOrigin = Ref None
+
+-- C8b Gap 2 (diagnostic-quality parity): set to `Some methodName` around the
+-- OUTER unify of an interface default body against its declared return type, so a
+-- leaf TypeMismatch is reported as the oracle's specialized single line
+-- `Method '<name>': expected type <e> but got <a>` (lib/typecheck.ml's
+-- MethodTypeMismatch catch, :3904-3907) instead of a bare `Type mismatch: …`.
+currentMethodMismatch : Ref (Option String)
+currentMethodMismatch = Ref None
 
 occursCheckFailed : Ref Bool
 occursCheckFailed = Ref False
@@ -1430,10 +1541,17 @@ resetState _ =
   let _ = set_ref pendingBinopSites []
   let _ = set_ref methodIfaceParamsRef []
   let _ = set_ref pendingImplObligations []
+  let _ = set_ref numlitRefs []   -- PLAN.md #11
+  let _ = set_ref localBindRefs []
+  let _ = set_ref localSchemesOut []
+  let _ = set_ref seedSchemesOut []
   let _ = set_ref pendingArgStamps []
   let _ = set_ref activeDictVars []
   let _ = set_ref funConstraintsRef []
+  let _ = set_ref funConstraintIfacesRef []
   let _ = set_ref pendingDictApps []
+  let _ = set_ref pendingCallObligations []
+  let _ = set_ref schemeObligationsRef []
   let _ = set_ref methodConstraintsRef []
   let _ = set_ref pendingMethodDicts []
   let _ = set_ref pendingRecDictApps []
@@ -1547,13 +1665,45 @@ unifyList (x::xs) (y::ys) =
 unifyList _ _ = panic "unify: tuple arity mismatch"
 
 typeMismatch : Mono -> Mono -> <Mut> Unit
-typeMismatch a b =
-  pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+typeMismatch a b = match currentMethodMismatch.value
+  Some mname => pushTypeError ("Method '" ++ mname ++ "': expected type " ++ ppMono a ++ " but got " ++ ppMono b)
+  None => match currentDoOrigin.value
+    Some doLoc => typeMismatchInDo a b doLoc
+    None => pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+
+-- a mismatch inside a do-lowered chain: if it is the monad-shape (`m b`) vs
+-- non-monad obligation, retarget to the tailored "do requires a monad" error;
+-- otherwise fall back to the plain mismatch (the loc stays the do-block's).
+typeMismatchInDo : Mono -> Mono -> Loc -> <Mut> Unit
+typeMismatchInDo a b doLoc
+  | monoIsApp (normalize a) != monoIsApp (normalize b) = recordDoMonadError doLoc
+  | otherwise = pushTypeError ("Type mismatch: " ++ ppMono a ++ " vs " ++ ppMono b)
+
+recordDoMonadError : Loc -> <Mut> Unit
+recordDoMonadError doLoc =
+  let _ = set_ref currentDoOrigin None
+  let _ = set_ref typeErrorsSticky True
+  set_ref typeErrors ((doRequiresMonadMsg, Some doLoc) :: typeErrors.value)
+
+monoIsApp : Mono -> Bool
+monoIsApp (TApp _ _) = True
+monoIsApp _ = False
+
+doRequiresMonadMsg : String
+doRequiresMonadMsg = "`do` requires a monad (e.g. `Option` or `Result`). For imperative IO sequencing, use a bare indented block instead of `do` (IO is not a monad in Medaka)."
 
 -- ── generalization & instantiation ────────────────────────────────────────
 generalize : Mono -> <Mut> Scheme
 generalize t =
   Forall (dedupI (freeGenVars currentLevel.value t)) (dedupI (freeEffvars t)) t
+
+-- Generalize each captured local binding's (now-solved) mono into a Scheme for
+-- the LSP hover fallback (see localBindRefs).  Runs at the end of inference when
+-- currentLevel is back at the top, so a still-free local var quantifies cleanly
+-- to `a`; a ground var (e.g. a `let` bound to a String) renders concretely.
+mapLocalSchemes : List (String, Mono) -> <Mut> List (String, Scheme)
+mapLocalSchemes [] = []
+mapLocalSchemes ((n, m)::rest) = (n, generalize m) :: mapLocalSchemes rest
 
 -- ── value restriction (T1) ────────────────────────────────────────────────
 -- A binding RHS is *non-expansive* (a syntactic value) iff it cannot allocate a
@@ -1566,6 +1716,7 @@ generalize t =
 -- a both-sides follow-up (T1b), deliberately not handled here.
 isNonexpansive : Expr -> Bool
 isNonexpansive (ELoc _ e) = isNonexpansive e
+isNonexpansive (EDoOrigin _ e) = isNonexpansive e
 isNonexpansive (ELit _) = True
 isNonexpansive (EVar _) = True
 isNonexpansive (ELam _ _) = True
@@ -1982,6 +2133,7 @@ monoScheme t = Forall [] [] t
 inferPat : TcEnv -> Pat -> <Mut> (Mono, List (String, Scheme))
 inferPat _ (PVar x) =
   let v = freshVar ()
+  let _ = recordLocalBind x v
   (v, [(x, monoScheme v)])
 inferPat _ PWild = (freshVar (), [])
 inferPat _ (PLit l) = (litType l, [])
@@ -2108,6 +2260,7 @@ inferPatList env pats =
 inferPatAs : TcEnv -> String -> Pat -> <Mut> (Mono, List (String, Scheme))
 inferPatAs env x p =
   let pr = inferPat env p
+  let _ = recordLocalBind x (fst pr)
   (fst pr, (x, monoScheme (fst pr)) :: snd pr)
 
 unifyAll : Mono -> List Mono -> <Mut> Unit
@@ -2119,8 +2272,23 @@ unifyAll t (x::xs) =
 -- ── expression inference ──────────────────────────────────────────────────
 infer : TcEnv -> Expr -> <Mut> Mono
 infer _ (ELit l) = litType l
+-- PLAN.md #11: a source integer literal is `Num a` for a fresh `a`.  With the
+-- prelude loaded (Num registered + `fromInt` in scope), model the literal exactly
+-- as `fromInt n` — mirror of lib/typecheck.ml's e7031e6 ENumLit arm.  inferMethodAt
+-- "fromInt" records the Num impl obligation AND a pendingSite keyed on [dref] (the
+-- node's route cell), so resolveSites later stamps [dref]: RKey when the literal's
+-- type grounds to a concrete Num head, RDictFwd onto the enclosing `Num a` dict when
+-- it stays polymorphic (the soundness case, `1` in `inc x = x + 1` — exactly the
+-- route `fromInt 0` in `sum` gets).  Apply the `Int -> a` method type to an Int arg
+-- (mirror OCaml's `unify from_int_ty (TFun t_int … a)`) to recover the result var
+-- [a], and stash (a, fref, n, dref) in numlitRefs so the post-HM setNumlitFloats can
+-- decide concrete-Float / concrete-Int / still-poly.  Recording the obligation here
+-- AND (when under `+`) in numArithOp is harmless: both unify the same var, both
+-- demand `Num`.  Without the prelude (bare-HM oracle, `numIfaceRegistered` False)
+-- `fromInt` is unbound: fall back to a plain fresh var, dref stays RNone (⇒ Int).
+infer env (ENumLit n fref dref) = inferNumLit env n fref dref
 infer env (EVar x) = inferVar env x
-infer env (EApp f x) = inferApp (EApp f x) (infer env f) (infer env x)
+infer env (EApp f x) = inferAppExpr env f x
 infer env (ELam pats body) = inferLam env pats body
 infer env (ELet isMut isFun pat e1 e2) = inferLet env isMut isFun pat e1 e2
 infer env (ELetGroup binds body) = inferLetGroup env binds body
@@ -2153,6 +2321,14 @@ infer env (EHeadAnnot e ty) = inferHeadAnnot env e ty
 infer env (ELoc l e) =
   let _ = set_ref currentLoc (Some l)
   infer env e
+-- Phase 150: a do-lowered chain.  Record the do-block loc so a monad-shape
+-- mismatch during inference is retargeted to the tailored "do requires a monad"
+-- error (see typeMismatch); clear it afterwards so sibling code isn't mis-blamed.
+infer env (EDoOrigin l e) =
+  let _ = set_ref currentDoOrigin (Some l)
+  let t = infer env e
+  let _ = set_ref currentDoOrigin None
+  t
 infer _ _ = panic "typecheck: unsupported expression (slice 1)"
 
 inferArrayLit : TcEnv -> List Expr -> <Mut> Mono
@@ -2296,10 +2472,36 @@ inferDictAtFound name routesRef inst
     let monos = constraintMonosOf ids (snd inst)
     let _ = set_ref pendingDictApps ((routesRef, monos) :: pendingDictApps.value)
     let _ = set_ref dictAppFns ((currentFn.value, monos) :: dictAppFns.value)
+    -- #11 soundness: record this call's instantiated impl obligations (iface paired
+    -- with the call's constraint mono), checked after inference by checkCallObligations.
+    -- The iface list is slot-parallel to [monos]; a concrete-head mono with no impl
+    -- (`Num String` from `f "hello"` where `f : Num a => a -> a`) becomes an error.
+    let ifaces = fromOption [] (lookupAssocS name funConstraintIfacesRef.value)
+    let _ = recordCallObligations ifaces monos
     fst inst
   | otherwise =
     let _ = set_ref pendingRecDictApps (RecDictApp routesRef name currentFn.value (fst inst) :: pendingRecDictApps.value)
     fst inst
+
+-- pair each iface with its slot-parallel instantiated constraint mono, pushing onto
+-- pendingCallObligations.  Length-zips defensively (an iface list shorter than the
+-- mono list — e.g. a multi-param constraint whose ifaces weren't recorded — just
+-- stops, never over-rejecting).
+recordCallObligations : List String -> List Mono -> <Mut> Unit
+recordCallObligations [] _ = ()
+recordCallObligations _ [] = ()
+recordCallObligations (iface::ifs) (mono::ms)
+  | iface == "" = recordCallObligations ifs ms
+  | otherwise =
+    let _ = set_ref pendingCallObligations ((iface, mono) :: pendingCallObligations.value)
+    recordCallObligations ifs ms
+
+-- String-keyed assoc lookup over funConstraintIfacesRef (returns the iface name list).
+lookupAssocS : String -> List (String, List String) -> Option (List String)
+lookupAssocS _ [] = None
+lookupAssocS k ((k2, v)::rest)
+  | k == k2 = Some v
+  | otherwise = lookupAssocS k rest
 
 hasKeySL2 : String -> List (String, List Int) -> Bool
 hasKeySL2 _ [] = False
@@ -2358,18 +2560,26 @@ inferStmt _ _ = panic "typecheck: unsupported block statement"
 blockRecLet : TcEnv -> String -> Expr -> <Mut> TcEnv
 blockRecLet env x e =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let placeholder = freshVar ()
   let envSelf = extendVar env x (monoScheme placeholder)
   let t1 = infer envSelf e
   let _ = unify placeholder t1
   let _ = exitLevel ()
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultAmbiguousNum addedObls t1   -- PLAN.md #11
+  let _ = recordLocalBind x t1   -- LSP hover (block rec-let bypasses inferPat)
   extendVar env x (generalize t1)
 
 blockLet : TcEnv -> Bool -> Pat -> Expr -> <Mut> TcEnv
 blockLet env isMut (PVar x) e =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let t = infer env e
   let _ = exitLevel ()
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultAmbiguousNum addedObls t   -- PLAN.md #11
+  let _ = recordLocalBind x t   -- LSP hover (block let bypasses inferPat)
   extendVar env x (genRestricted (not isMut && isNonexpansive e) t)
 -- T1b: a `mut` binding must be monomorphic — generalizing it (when the RHS is
 -- nonexpansive, e.g. `let mut x = []`) lets later assignments re-instantiate,
@@ -2714,6 +2924,43 @@ numIfaceRegistered _ = anyList numEntry methodIfaceParamsRef.value
 numEntry : (String, (String, List String, Ty)) -> Bool
 numEntry (_, (iface, _, _)) = iface == "Num"
 
+-- PLAN.md #11 soundness arm: model an integer literal as a `fromInt n` method
+-- occurrence so its route cell [dref] gets stamped (RKey ground / RDictFwd poly) by
+-- resolveSites — exactly like core.mdk's `fromInt 0` in `sum`.  Direct mirror of
+-- lib/typecheck.ml's ENumLit infer arm.  Gated on the prelude (`Num` registered AND
+-- `fromInt` bound): with no prelude (bare-HM oracle) fall back to a plain fresh
+-- Num-obligated var, leaving [dref] RNone (⇒ a static Int literal at rewrite time).
+inferNumLit : TcEnv -> Int -> Ref (Option Float) -> Ref Route -> <Mut> Mono
+inferNumLit env n fref dref
+  | numIfaceRegistered () = match lookupVar env "fromInt"
+    None => inferNumLitBare n fref
+    Some _ =>
+      -- inferMethodAt records the Num impl obligation + a pendingSite on [dref].
+      let fromIntTy = inferMethodAt env "fromInt" dref (Ref []) (Ref [])
+      let a = freshVar ()
+      let _ = unify fromIntTy (TFun (TCon "Int") (openRow ()) a)
+      let _ = set_ref numlitRefs ((a, fref, n, dref) :: numlitRefs.value)
+      a
+  | otherwise = inferNumLitBare n fref
+
+-- no-prelude fallback: a fresh var, no route (dref untouched ⇒ stays RNone ⇒ Int).
+-- PLAN.md #11 (locked §0.2): a numeric literal is ALWAYS a `fromInt n` occurrence,
+-- so it carries a `Num` obligation on its var unconditionally — exactly the OCaml
+-- oracle, whose ENumLit infer arm `infer env (EVar "fromInt")` records the Num
+-- usage even no-prelude (`initial_env` seeds `fromInt`/`Num`).  Recording it here
+-- (vs. the prelude-gated `recordNumObligation`) lets value-level defaulting ground
+-- an AMBIGUOUS literal var to Int (`nums = [1,2,3] : List Int`) so the no-prelude
+-- `typecheck_main` matches the prelude-aware oracle golden.  The matching reject is
+-- SUPPRESSED no-prelude in checkOneImplObligation (no-prelude imposes no Num impl
+-- constraint — see its `numIfaceRegistered` guard), so a literal still types Int
+-- without a spurious `No impl of Num for Int`.
+inferNumLitBare : Int -> Ref (Option Float) -> <Mut> Mono
+inferNumLitBare n fref =
+  let a = freshVar ()
+  let _ = set_ref pendingImplObligations (("Num", ["a"], TyVar "a", a) :: pendingImplObligations.value)
+  let _ = set_ref numlitRefs ((a, fref, n, Ref RNone) :: numlitRefs.value)
+  a
+
 compareOp : Mono -> Mono -> <Mut> Mono
 compareOp lt rt =
   let _ = unify lt rt
@@ -2777,8 +3024,41 @@ inferInfix env op l r =
 
 inferVar : TcEnv -> String -> <Mut> Mono
 inferVar env x = match lookupVar env x
-  Some s => recordImplObligation x (instantiate s)
+  Some s => recordImplObligation x (instantiateVarTracked x s)
   None => unboundVarFresh x
+
+-- #11 soundness (native obligation hole, plain check path): a constrained binding used
+-- as a plain EVar (`g = f "hello"`) instantiates its DEFERRED obligations at the call.
+-- schemeObligationsRef (always-on, unlike funConstraintsRef) records each binding's
+-- (iface, quantified-var-id); here we instantiate TRACKED so each obligation var maps
+-- to this call's fresh mono, recorded as a call obligation checked after inference.
+-- A binding with no recorded obligations takes the plain instantiate path (identical
+-- mono).  Mirrors lib/typecheck.ml re-checking inferred_constraints at every use.
+instantiateVarTracked : String -> Scheme -> <Mut> Mono
+instantiateVarTracked x s = match lookupAssocS2 x schemeObligationsRef.value
+  None => instantiate s
+  Some obs =>
+    let inst = instantiateTracked s
+    let _ = recordSchemeCallObligations obs (snd inst)
+    fst inst
+
+-- map each (iface, scheme-var-id) through the instantiation subst to this call's mono,
+-- pushing onto pendingCallObligations.  An id absent from the subst (shouldn't happen
+-- for a quantified var) is skipped.
+recordSchemeCallObligations : List (String, Int) -> List (Int, Mono) -> <Mut> Unit
+recordSchemeCallObligations [] _ = ()
+recordSchemeCallObligations ((iface, id)::rest) subst = match lookupAssocI id subst
+  Some mono =>
+    let _ = set_ref pendingCallObligations ((iface, mono) :: pendingCallObligations.value)
+    recordSchemeCallObligations rest subst
+  None => recordSchemeCallObligations rest subst
+
+-- String-keyed lookup over schemeObligationsRef.
+lookupAssocS2 : String -> List (String, List (String, Int)) -> Option (List (String, Int))
+lookupAssocS2 _ [] = None
+lookupAssocS2 k ((k2, v)::rest)
+  | k == k2 = Some v
+  | otherwise = lookupAssocS2 k rest
 
 -- Error-path B4: if [x] is a registered interface method, record this occurrence's
 -- (post-instantiation) mono so checkImplObligations can verify a matching impl
@@ -2791,6 +3071,81 @@ recordImplObligation x mono = match lookupAssoc x methodIfaceParamsRef.value
   Some (iface, typarams, mty) =>
     let _ = set_ref pendingImplObligations ((iface, typarams, mty, mono) :: pendingImplObligations.value)
     mono
+
+-- Expected-type propagation for an application whose argument is a lambda.
+-- Inferring `andThen e (stream => Ok [JArray stream])` naively infers the lambda
+-- BODY first with `stream : freshVar`, so a downstream conflicting use inside the
+-- body (`JArray stream` wants `Array Json`) pins `stream` to the WRONG type before
+-- the function's declared param type (`List Json`) is ever reconciled — the later
+-- reconciliation then fails at the application with no good site, and the hover
+-- side-channel records the wrong `stream` type.  Fix (bidirectional "checking"
+-- mode, the do-bind/higher-order case): infer `f` first, peel its parameter type,
+-- and unify it onto the lambda's parameter BEFORE inferring the body.  Then the
+-- body sees `stream : List Json` and the type error localizes to the `JArray`
+-- USE, and recordLocalBind captures the right hover type.  Purely additive: the
+-- final `unify ft (TFun xt …)` in inferApp imposes the same equality regardless,
+-- so the solution is unchanged — we only make it available earlier.
+inferAppExpr : TcEnv -> Expr -> Expr -> <Mut> Mono
+inferAppExpr env f x = match lamUnderLoc x
+  Some (loc, pats, body) =>
+    let ft = infer env f
+    let _ = setLocIfSome loc
+    -- ft is `(lamType) -> result`; its FIRST domain is the lambda's expected
+    -- type.  Peel that, then peel the lambda type itself for its per-param types.
+    let lamExpected = funDomain (normalize ft)
+    let xt = inferLamChecked env (expectedParamTypes lamExpected (listLen pats)) pats body
+    inferApp (EApp f x) ft xt
+  None => inferApp (EApp f x) (infer env f) (infer env x)
+
+-- set currentLoc only when the lambda carried a span (mirror the ELoc arm), so
+-- a bare unlocated lambda doesn't blank out an enclosing position.
+setLocIfSome : Option Loc -> <Mut> Unit
+setLocIfSome None = ()
+setLocIfSome (Some l) = set_ref currentLoc (Some l)
+
+-- peek through an ELoc wrapper to a lambda; returns its loc, params and body.
+-- Non-lambda arguments (the common case) take the ordinary inference path.
+lamUnderLoc : Expr -> Option (Option Loc, List Pat, Expr)
+lamUnderLoc (ELam pats body) = Some (None, pats, body)
+lamUnderLoc (ELoc l (ELam pats body)) = Some (Some l, pats, body)
+lamUnderLoc _ = None
+
+-- the function's first parameter type (the lambda's expected type), or a fresh
+-- var when `ft` is not yet a concrete arrow (then nothing is pushed; the trailing
+-- `unify ft (TFun xt …)` reconciles).
+funDomain : Mono -> <Mut> Mono
+funDomain (TFun a _ _) = a
+funDomain _ = freshVar ()
+
+-- peel up to `n` arrow domains off the (normalized) lambda's expected type; those
+-- domains are the lambda's expected PARAM types.  Stops early if it is not (yet)
+-- an arrow — those params fall back to a fresh var in inferLamChecked, and the
+-- trailing `unify ft (TFun xt …)` reconciles them.
+expectedParamTypes : Mono -> Int -> List Mono
+expectedParamTypes _ 0 = []
+expectedParamTypes (TFun a _ b) n = a :: expectedParamTypes (normalize b) (n - 1)
+expectedParamTypes _ _ = []
+
+-- like inferLam, but each lambda param is unified with the corresponding expected
+-- param type (from the function being applied) right after inferPat — so the body
+-- and the hover side-channel see the expected type, not a bare fresh var.
+inferLamChecked : TcEnv -> List Mono -> List Pat -> Expr -> <Mut> Mono
+inferLamChecked env expected pats body =
+  let pr = inferPats env pats
+  let _ = unifyParamsExpected (fst pr) expected
+  let saved = curEffect.value
+  let _ = set_ref curEffect (openRow ())
+  let bodyTy = infer (extendVars env (snd pr)) body
+  let bodyEff = curEffect.value
+  let _ = set_ref curEffect saved
+  arrowsWithLastEffect (fst pr) bodyEff bodyTy
+
+-- unify each param type with its expected type, for the prefix both lists cover.
+unifyParamsExpected : List Mono -> List Mono -> <Mut> Unit
+unifyParamsExpected (p::ps) (e::es) =
+  let _ = unify p e
+  unifyParamsExpected ps es
+unifyParamsExpected _ _ = ()
 
 inferApp : Expr -> Mono -> Mono -> <Mut> Mono
 inferApp appExpr ft xt =
@@ -2841,22 +3196,33 @@ inferLet env isMut isFun pat e1 e2
 inferRecLet : TcEnv -> String -> Expr -> Expr -> <Mut> Mono
 inferRecLet env x e1 e2 =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let placeholder = freshVar ()
   let envSelf = extendVar env x (monoScheme placeholder)
   let t1 = infer envSelf e1
   let _ = unify placeholder t1
   let _ = exitLevel ()
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultAmbiguousNum addedObls t1   -- PLAN.md #11
+  let _ = recordLocalBind x t1   -- LSP hover (recursive PVar let bypasses inferPat)
   infer (extendVar env x (generalize t1)) e2
 
 inferLetSimple : TcEnv -> Pat -> Expr -> Expr -> <Mut> Mono
 inferLetSimple env pat e1 e2 =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let t1 = infer env e1
   let _ = exitLevel ()
+  -- PLAN.md #11: ground an ambiguous Num-only var before this inner let
+  -- generalizes, so `let z = 2 in y + z` (y:Float) is a clean type error and
+  -- never leaks an unbound Num var.  Scoped to this binding's new obligations.
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultAmbiguousNum addedObls t1
   inferLetBody env pat t1 e1 e2
 
 inferLetBody : TcEnv -> Pat -> Mono -> Expr -> Expr -> <Mut> Mono
 inferLetBody env (PVar x) t1 e1 e2 =
+  let _ = recordLocalBind x t1   -- LSP hover (PVar let bypasses inferPat)
   infer (extendVar env x (genRestricted (isNonexpansive e1) t1)) e2
 inferLetBody env pat t1 _ e2 =
   let pr = inferPat env pat
@@ -3197,10 +3563,16 @@ clausesFor name ((n, c)::rest)
 processLetGroup : TcEnv -> List LetBind -> <Mut> TcEnv
 processLetGroup env binds =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let placeholders = map letBindPlaceholder binds
   let env2 = extendVars env placeholders
   let _ = inferLetBinds env2 (zipL binds placeholders)
   let _ = exitLevel ()
+  -- PLAN.md #11: ground ambiguous Num-only vars (not arg-reachable from any
+  -- where-binding's type) before this group generalizes.  Scoped to this group's
+  -- newly added obligations.
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultGroupNum addedObls (map (p => schemeMono (snd p)) placeholders)
   generalizeGroup env (zipL binds placeholders)
 
 letBindPlaceholder : LetBind -> <Mut> (String, Scheme)
@@ -3247,6 +3619,84 @@ monoUnboundIds t = match normalize t
 
 anyIn : List Int -> List Int -> Bool
 anyIn xs ys = anyList (x => containsI x ys) xs
+
+-- PLAN.md #11 (locked §0.2): monomorphism-for-Num defaulting.  Before a type [t]
+-- is generalized at a let-binding boundary, ground every *ambiguous* tyvar carrying
+-- a `Num` constraint to `Int`.  "Ambiguous" = the var is NOT reachable from an
+-- ARGUMENT position of [t] (a caller can't fix it).  This stops a bare `n = 1` (or
+-- an inner `let z = 2`) from generalizing to `Num a => a` / leaking an unbound
+-- `Num a` to eval, while leaving a genuinely polymorphic var live: `sum`'s element
+-- var in `t a -> a` is reachable from the argument `t a`, so it stays polymorphic
+-- (`sum [1.0,…]` still works); `x : Float; x = 0`'s var is already concrete Float
+-- (not a generalizable var), so it is untouched.  Mirrors lib/typecheck.ml's
+-- default_ambiguous_num: a Num-constrained var (alone OR with another class) that is
+-- ambiguous is grounded to Int — the literal's `Num`/`fromInt` representation IS
+-- Int, so grounding keeps impl selection deterministic.
+monoArgUnboundIds : Mono -> List Int
+monoArgUnboundIds t = match normalize t
+  TFun a _ b => monoUnboundIds a ++ monoArgUnboundIds b
+  _ => []
+
+-- the unbound var ids that any pending `Num` obligation in [obls] constrains (the
+-- operand monos recorded by recordNumObligation / the literal infer arm)
+numConstrainedIds : List (String, List String, Ty, Mono) -> <Mut> List Int
+numConstrainedIds obls = concatMapList numObligIds obls
+
+numObligIds : (String, List String, Ty, Mono) -> List Int
+numObligIds (iface, _, _, occ)
+  | iface == "Num" = monoUnboundIds occ
+  | otherwise = []
+
+defaultAmbiguousNum : List (String, List String, Ty, Mono) -> Mono -> <Mut> Unit
+defaultAmbiguousNum obls t =
+  let argIds = monoArgUnboundIds t
+  let inT = monoUnboundIds t
+  let candidates = dedupI (numConstrainedIds obls)
+  groundNumVars obls (filterList (id => containsI id inT && not (containsI id argIds)) candidates)
+
+-- group-level defaulting: ground every Num-constrained var NOT reachable from an
+-- ARGUMENT position of ANY member's type.  [monos] = the group's member placeholder
+-- monos; [obls] = ONLY this group's newly-added obligations (an earlier group's
+-- already-generalized var must not be touched).  Unlike defaultAmbiguousNum this
+-- does NOT require the var to appear in a member's type (a var consumed inside a
+-- body surfaces in no type but must still ground — `let n = tag [1,2,3]`).  Mirrors
+-- process_letrec_group's group_arg_ids over added_obligs/added_methods.
+defaultGroupNum : List (String, List String, Ty, Mono) -> List Mono -> <Mut> Unit
+defaultGroupNum obls monos =
+  let argIds = concatMapList monoArgUnboundIds monos
+  let candidates = dedupI (numConstrainedIds obls)
+  groundNumVars obls (filterList (id => not (containsI id argIds)) candidates)
+
+-- per-binding defaulting: run defaultAmbiguousNum on each member's placeholder mono
+defaultEachMember : List (String, List String, Ty, Mono) -> List (String, Mono) -> <Mut> Unit
+defaultEachMember _ [] = ()
+defaultEachMember obls ((_, m)::rest) =
+  let _ = defaultAmbiguousNum obls m
+  defaultEachMember obls rest
+
+-- ground each id to Int by unifying the live var carrying it (found among [obls]'
+-- Num operand monos — refs alias post-unify, grounding any grounds all)
+groundNumVars : List (String, List String, Ty, Mono) -> List Int -> <Mut> Unit
+groundNumVars _ [] = ()
+groundNumVars obls (id::rest) =
+  let _ = match liveNumVarGo id obls
+    Some m => unify m (TCon "Int")
+    None => ()
+  groundNumVars obls rest
+
+liveNumVarGo : Int -> List (String, List String, Ty, Mono) -> <Mut> Option Mono
+liveNumVarGo _ [] = None
+liveNumVarGo id ((iface, _, _, occ)::rest)
+  | iface == "Num" = match findTvarInMono occ id
+    Some m => Some m
+    None => liveNumVarGo id rest
+  | otherwise = liveNumVarGo id rest
+
+-- the first [n] entries of a list (the newly-prepended obligations of a group)
+takeFirst : Int -> List a -> List a
+takeFirst n _ | n <= 0 = []
+takeFirst _ [] = []
+takeFirst n (x::xs) = x :: takeFirst (n - 1) xs
 
 generalizeGroup : TcEnv -> List (LetBind, (String, Scheme)) -> <Mut> TcEnv
 generalizeGroup env [] = env
@@ -3398,10 +3848,12 @@ discoverPromotedModules runtimeDecls coreDecls modules rpNames argNames =
   let grown = discoverPromotedJoint runtimeDecls joint rpNames argNames dictSeed
   let promoted = filterList (n => not (contains n dictSeed)) grown
   let snapshot = promotedConstraints promoted funConstraintsRef.value
+  let snapshotIfaces = promotedConstraintIfaces promoted funConstraintIfacesRef.value
   let _ = resetState ()
   let _ = set_ref typeErrorsSticky savedSticky
   let _ = set_ref typeErrors savedErrors
   let _ = set_ref crossModuleFunConstraintsRef snapshot
+  let _ = set_ref crossModuleFunConstraintIfacesRef snapshotIfaces
   promoted
 -- DRIVER-COLLAPSE Phase 2: discovery is a SCRATCH joint typecheck (see below); its
 -- type-error side effects must NOT leak into the STICKY accumulator that gates the
@@ -3455,6 +3907,11 @@ discoverNextJoint runtimeDecls joint rpNames argNames current next
 -- crossModuleFunConstraintsRef so dictArityOf reads the right param count.
 promotedConstraints : List String -> List (String, List Int) -> List (String, List Int)
 promotedConstraints promoted entries =
+  filterList (e => contains (fst e) promoted) entries
+
+-- iface-list analog of promotedConstraints (parallel filter for funConstraintIfacesRef).
+promotedConstraintIfaces : List String -> List (String, List String) -> List (String, List String)
+promotedConstraintIfaces promoted entries =
   filterList (e => contains (fst e) promoted) entries
 
 -- the USER modules' top-level fn names (NOT core/prelude) — the promotion-eligible
@@ -3699,6 +4156,7 @@ rewriteArgScoped rw bound (EListComp body quals) =
   EListComp (rewriteArgScoped rw bnd body) quals2
 -- non-binder composites: recurse children with the same bound
 rewriteArgScoped rw bound (ELoc l e) = ELoc l (rewriteArgScoped rw bound e)
+rewriteArgScoped rw bound (EDoOrigin l e) = EDoOrigin l (rewriteArgScoped rw bound e)
 rewriteArgScoped rw bound (EApp f x) =
   EApp (rewriteArgScoped rw bound f) (rewriteArgScoped rw bound x)
 rewriteArgScoped rw bound (EIf c t e) =
@@ -4854,6 +5312,22 @@ rewriteBinopExpr : Expr -> Expr
 rewriteBinopExpr (EBinOp op l r routeRef) = match routeRef.value
   RNone => EBinOp op l r routeRef
   _ => binopMethodApp op l r routeRef
+-- PLAN.md #11: re-tag a source integer literal to its inferred runtime rep, a 3-way
+-- decision mirroring lib/dict_pass.ml's e7031e6 ENumLit arm.  setNumlitFloats already
+-- decided: float cell `Some f` ⇒ concrete Float ⇒ `ELit (LFloat f)`; otherwise the
+-- route cell [dref] distinguishes concrete-Int (RNone, cleared) from a surviving
+-- polymorphic `Num a` (a non-RNone RDictFwd/RKey route, the soundness case) — the
+-- latter dispatches through the runtime Num dict via `fromInt n` (the SAME dict the
+-- enclosing `Num a => …` function threads), closing the hole where `inc x = x + 1`
+-- instantiated at Float crashed `VFloat + VInt`.  The constructed EMethodAt carries
+-- [dref]'s route on its tag ref; impl-dicts/method-dicts refs are empty (`Num` has no
+-- element `requires`).  Done in the same mapProg walk that rewrites binops, so
+-- eval/lower never see ENumLit and eval_arith / the emitter get matching tags.
+rewriteBinopExpr (ENumLit n fref dref) = match fref.value
+  Some f => ELit (LFloat f)
+  None => match dref.value
+    RNone => ELit (LInt n)
+    route => EApp (EMethodAt "fromInt" (Ref route) (Ref []) (Ref [])) (ELit (LInt n))
 rewriteBinopExpr e = e
 
 -- split the stamped RKey route into a bare-tag route (reqs dropped) + the element
@@ -4994,6 +5468,7 @@ routeRDictName _ = []
 collectMethodSites : Expr -> List (Ref Route)
 collectMethodSites (EMethodAt _ r _ _) = [r]
 collectMethodSites (ELoc _ e) = collectMethodSites e
+collectMethodSites (EDoOrigin _ e) = collectMethodSites e
 collectMethodSites (EApp f x) = collectMethodSites f ++ collectMethodSites x
 collectMethodSites (ELam _ b) = collectMethodSites b
 collectMethodSites (ELet _ _ _ e1 e2) = collectMethodSites e1
@@ -5066,6 +5541,7 @@ collectDictSites (EDictAt _ rs) = [rs]
 -- the matching param.  [] on the golden path (resolveArgStamp never runs).
 collectDictSites (EMethodAt _ _ implR methR) = [implR, methR]
 collectDictSites (ELoc _ e) = collectDictSites e
+collectDictSites (EDoOrigin _ e) = collectDictSites e
 collectDictSites (EApp f x) = collectDictSites f ++ collectDictSites x
 collectDictSites (ELam _ b) = collectDictSites b
 collectDictSites (ELet _ _ _ e1 e2) = collectDictSites e1 ++ collectDictSites e2
@@ -5175,6 +5651,18 @@ checkProgramSchemes prog =
   let _ = set_ref implInferEnabled False
   checkProgramSeeded [] prog
 
+-- Like checkProgramSchemes but ALSO seeds runtime.mdk's externs (putStrLn,
+-- readLine, …) into scope, so a buffer using them type-checks instead of leaving
+-- the bindings that consume them unconstrained.  Mirrors the OCaml reference's
+-- `check_program`, which seeds `Runtime.entries` into the initial env — the LSP
+-- hover/completion/inlay handlers run this so externs resolve and a `let input =
+-- readLine ()` hovers as `String`, not a free `a`.
+export
+checkProgramSchemesWithRuntime : List Decl -> List Decl -> <Mut> List (String, Scheme)
+checkProgramSchemesWithRuntime runtimeDecls prog =
+  let _ = set_ref implInferEnabled False
+  checkProgramSeeded (externSchemes runtimeDecls) prog
+
 -- [seed] are extern schemes from runtime.mdk: in scope for lookup (so core.mdk's
 -- use of putStrLn/etc. resolves) but NOT part of the output (mirrors the
 -- reference seeding Runtime.entries into initial_env, which aren't returned).
@@ -5196,6 +5684,10 @@ checkProgramSeeded seed prog =
   let _ = inferPropBodies (extendVars env1 topSchemes) prog
   let _ = groundMultiParamObligations prog pendingImplObligations.value
   let _ = checkImplObligations prog pendingImplObligations.value
+  let _ = checkCallObligations prog pendingCallObligations.value
+  let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals
+  let _ = set_ref localSchemesOut (mapLocalSchemes localBindRefs.value)
+  let _ = set_ref seedSchemesOut seed
   globalS ++ topSchemes
 -- D2: check top-level `let rec` bindings for non-function members before
 -- type-checking the DFunDef groups (mirrors oracle's LetRecNonFunction guard,
@@ -5336,7 +5828,7 @@ inferDefaultMethod env typarams (IfaceMethod mname mty (Some (MethodDefault pats
   let ids = methodConstraintSlotIds typarams mty (snd st)
   let _ = set_ref currentFn ""
   let inst = instantiateTracked (fst st)
-  let _ = inferDefaultMethodBody env (fst inst) pats body
+  let _ = inferDefaultMethodBody mname env (fst inst) pats body
   -- register AFTER body inference, so each constraint var's id in [snd inst] is
   -- its SURVIVING (normalized) union-find root — the same id the in-body return-
   -- position `empty`/`++` site normalizes to (activeDictVarOf reads that root).
@@ -5351,12 +5843,31 @@ inferDefaultMethod _ _ _ = ()
 -- that would arise when the accumulating selfhost differs from the oracle's
 -- raise-on-first behaviour: oracle's TypeMismatch from inside `infer` never
 -- reaches the outer `unify`, whereas selfhost would report both).
-inferDefaultMethodBody : TcEnv -> Mono -> List Pat -> Expr -> <Mut> Unit
-inferDefaultMethodBody env expectedTy pats body =
+--
+-- C8b Gap 2: the outer unify runs with `currentMethodMismatch = Some mname` so a
+-- leaf TypeMismatch reports the oracle's single specialized line
+-- `Method '<mname>': expected type <e> but got <a>` rather than a bare
+-- `Type mismatch`.  When that unify pushed a mismatch, the body's own added
+-- impl obligations are TRUNCATED back to the pre-body snapshot — the oracle's
+-- `fail (MethodTypeMismatch …)` RAISES, so its later check_method_usages never
+-- sees the body's `Num <wrong-type>` usage (e.g. `(5 : Bool)` ⇒ `Num Bool`);
+-- dropping them here mirrors that single-error outcome instead of cascading a
+-- spurious `No impl of Num for Bool`.
+inferDefaultMethodBody : String -> TcEnv -> Mono -> List Pat -> Expr -> <Mut> Unit
+inferDefaultMethodBody mname env expectedTy pats body =
+  let oblSnapshot = pendingImplObligations.value
   let errsBefore = listLen typeErrors.value
   let actualTy = inferClauses env [(pats, body)]
   let errsAfter = listLen typeErrors.value
-  if errsAfter == errsBefore then unify expectedTy actualTy else ()
+  if errsAfter != errsBefore then ()
+  else
+    let errsPreUnify = listLen typeErrors.value
+    let _ = set_ref currentMethodMismatch (Some mname)
+    let _ = unify expectedTy actualTy
+    let _ = set_ref currentMethodMismatch None
+    -- mismatch reported ⇒ restore the pre-body obligation list (drop the body's
+    -- own added `Num <wrong-type>` cascade, prepended at the front)
+    if listLen typeErrors.value != errsPreUnify then set_ref pendingImplObligations oblSnapshot else ()
 
 -- ── Error-path B4: missing-impl dispatch-obligation check ──────────────────
 -- Mirror lib/typecheck.ml's check_method_usages (the `No impl of … for …` reject,
@@ -5372,6 +5883,64 @@ inferDefaultMethodBody env expectedTy pats body =
 checkImplObligations : List Decl -> List (String, List String, Ty, Mono) -> <Mut> Unit
 checkImplObligations prog obligations =
   checkImplObligationsGo (implHeadsOf prog) obligations
+
+-- #11 soundness (native obligation hole): check each constrained-fn CALL site's
+-- instantiated obligation.  When `f : C a => …` is applied (`g = f "hello"`),
+-- inferDictAtFound recorded (iface, the instantiated constraint mono) here.  After
+-- inference the mono is ground: a CONCRETE-head mono (`String`) with no matching impl
+-- is an ERROR; a still-polymorphic head (`a`, the obligation propagated to a further-
+-- out caller — `id x = x; y = id 5`) is DEFERRED.  Exactly the accept/reject decision
+-- of checkOneImplObligation's tail, and the mirror of lib/typecheck.ml's
+-- check_constraint_obligations (which checks fun_constraints instantiated at the call).
+checkCallObligations : List Decl -> List (String, Mono) -> <Mut> Unit
+checkCallObligations prog obligations =
+  checkCallObligationsGo (implHeadsOf prog) [] obligations
+
+-- [seen] dedups by (iface, concrete-head-tycon): the SAME unsatisfiable obligation can
+-- be recorded by more than one path (a use marked both EVar and, on the emit path,
+-- EDictAt) or by repeated call sites, but the oracle raises ONE error per missing impl.
+checkCallObligationsGo : List (String, List Ty) -> List String -> List (String, Mono) -> <Mut> Unit
+checkCallObligationsGo _ _ [] = ()
+checkCallObligationsGo heads seen ((iface, occ)::rest) =
+  let key = iface ++ "|" ++ fromOption "" (headTyconMono occ)
+  if contains key seen then checkCallObligationsGo heads seen rest
+  else
+    let _ = checkOneCallObligation heads iface occ
+    checkCallObligationsGo heads (key :: seen) rest
+
+checkOneCallObligation : List (String, List Ty) -> String -> Mono -> <Mut> Unit
+checkOneCallObligation heads iface occ =
+  let args = [normalize occ]
+  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnce (noImplFoundMsg iface args) else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnce (noImplFoundMsg iface args)
+
+-- PLAN.md #11: after HM + defaulting every source integer literal's type var is
+-- ground (or a genuine `Num a` survivor).  Decide each literal's runtime rep
+-- (3-way, mirror of lib/typecheck.ml's set_numlit_floats):
+--   • ground Float ⇒ stamp the float cell + CLEAR the fromInt route (dref RNone) ⇒
+--     dictPass emits `ELit (LFloat f)` (eval is value-tagged; eval_arith rejects
+--     mixed int/float tags, so a Float literal must carry a real float).
+--   • ground Int (incl. via ambiguous→Int defaulting) ⇒ clear both cells ⇒
+--     `ELit (LInt n)`, no dict dispatch.
+--   • NOT a primitive head (a still-polymorphic `Num a` — the soundness case, `1`
+--     in `inc x = x + 1` — or an exotic user numeric type) ⇒ leave [dref]'s
+--     resolveSites-stamped route in place ⇒ dictPass emits
+--     `EApp (EMethodAt "fromInt" …) (ELit (LInt n))` so the literal dispatches
+--     through the runtime Num dict (Int→identity, Float→intToFloat).  A dref left
+--     RNone (route never filled, e.g. unreachable position) falls to Int below.
+-- Reads numlitRefs (populated by inferNumLit during THIS run/module's inference).
+setNumlitFloats : Unit -> <Mut> Unit
+setNumlitFloats _ = setNumlitFloatsGo numlitRefs.value
+
+setNumlitFloatsGo : List (Mono, Ref (Option Float), Int, Ref Route) -> <Mut> Unit
+setNumlitFloatsGo [] = ()
+setNumlitFloatsGo ((var, fref, n, dref)::rest) =
+  let _ = match normalize var
+    TCon "Float" =>
+      let _ = set_ref fref (Some (intToFloat n))
+      set_ref dref RNone
+    TCon "Int" => set_ref dref RNone
+    _ => ()
+  setNumlitFloatsGo rest
 
 -- ── Multi-param-interface element grounding (Shape A / gap #44) ─────────────
 -- A container LITERAL (`Set { 3,1,2 }` / `Map { 1 => "a" }`) desugars to a
@@ -5453,7 +6022,43 @@ checkImplObligationsGo heads ((iface, typarams, mty, occ)::rest) =
 checkOneImplObligation : List (String, List Ty) -> String -> List String -> Ty -> Mono -> <Mut> Unit
 checkOneImplObligation heads iface typarams mty occ =
   let args = dispatchMonosOf typarams mty occ
-  if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeError (noImplFoundMsg iface args)
+  -- PLAN.md #11 soundness: under Num-polymorphic literals a literal's var can unify
+  -- with a *function* type (`5 1` ⇒ the `5` var becomes `Int -> b`) or be forced
+  -- into an abstract HKT position (`do x <- 42` ⇒ `Num (m a)` with an unbound head
+  -- `m`).  Pre-#11 these failed at unification (the literal was concretely Int); now
+  -- the obligation is non-concrete and would be deferred-then-DROPPED → a silent
+  -- accept.  A function / unbound-headed application can never have a `Num` impl, so
+  -- REJECT here even though inner vars are still free, restoring the structural error.
+  -- Mirror of lib/typecheck.ml's check_method_usages Num guards.
+  --
+  -- No-prelude (`Num` unregistered): a numeric literal still records a Num obligation
+  -- (inferNumLitBare) so value-level defaulting can ground it to Int, but the bare-HM
+  -- oracle imposes NO `impl Num` constraint — so SKIP the reject here (there is no
+  -- `impl Num Int` to match in the prelude-free program).  This keeps the no-prelude
+  -- `typecheck_main`/tc_probe oracle parity: a grounded `Num Int` literal types Int
+  -- without a spurious `No impl of Num for Int`.  The unimplementable-head reject
+  -- (function/unbound `m`) stays even no-prelude — it is a structural unification
+  -- error, not a missing-impl one.
+  if iface == "Num" && anyList numUnimplementableHead args then pushTypeErrorOnce (noImplFoundMsg iface args) else if iface == "Num" && not (numIfaceRegistered ()) then () else if isEmptyL args then () else if not (allConcreteHeads args) then () else if implMatches heads iface args then () else pushTypeErrorOnce (noImplFoundMsg iface args)
+
+-- a mono no `Num` impl can ever match: a function type, or an application whose
+-- spine head is still an unbound tyvar (a literal forced into `m a` monad position)
+numUnimplementableHead : Mono -> Bool
+numUnimplementableHead m = match normalize m
+  TFun _ _ _ => True
+  TApp a b => unboundSpineHead (spineHeadMono (TApp a b))
+  _ => False
+
+-- True iff [m] normalizes to an unbound tyvar (the spine head of `m a`)
+unboundSpineHead : Mono -> Bool
+unboundSpineHead m = match normalize m
+  TVar _ => True
+  _ => False
+
+spineHeadMono : Mono -> Mono
+spineHeadMono t = match normalize t
+  TApp f _ => spineHeadMono f
+  other => other
 
 noImplFoundMsg : String -> List Mono -> <Mut> String
 noImplFoundMsg iface args = "No impl of "
@@ -5861,6 +6466,7 @@ allEVars (ERecordUpdate e fs) = allEVars e ++ concatMapList fieldAssignEVars fs
 allEVars (EVariantUpdate _ e fs) = allEVars e
   ++ concatMapList fieldAssignEVars fs
 allEVars (ELoc _ e) = allEVars e
+allEVars (EDoOrigin _ e) = allEVars e
 allEVars _ = []
 
 letBindEVars : LetBind -> List String
@@ -6080,6 +6686,7 @@ processSCCs env sigs grouped (scc::rest) =
 processSCC : TcEnv -> List (String, Ty) -> OrdMap (List (List Pat, Expr)) -> List String -> <Mut> (TcEnv, List (String, Scheme))
 processSCC env sigs grouped members =
   let _ = enterLevel ()
+  let oblN0 = listLen pendingImplObligations.value
   let placeholders = map (m => (m, freshVar ())) members
   let env2 = extendVars env (map placeholderBinding placeholders)
   let (regs, sigTvMaps) = preunifySigsEx sigs placeholders
@@ -6087,7 +6694,20 @@ processSCC env sigs grouped members =
   let _ = checkSigsTooGeneral sigTvMaps
   let _ = registerConstraintRegs regs
   let _ = exitLevel ()
+  -- PLAN.md #11 (locked §0.2): GROUP-LEVEL + per-binding Num defaulting.  Ground
+  -- every ambiguous Num-only var (one not reachable from an ARGUMENT position of
+  -- ANY member's type) to Int before this group generalizes.  Covers both a var
+  -- that surfaces in a member's type (`n = 1`) and one consumed entirely inside a
+  -- body (`n = tag [1,2,3]`, element var in no member type).  An arg-reachable var
+  -- (`sum`'s/`inc`'s element var) stays polymorphic.  Scoped to THIS group's newly
+  -- added obligations (prepended at the front) so an earlier group's already-
+  -- generalized var is never touched.  Mirrors lib/typecheck.ml's
+  -- process_letrec_group group-level pass + per-binding default_ambiguous_num.
+  let addedObls = takeFirst (listLen pendingImplObligations.value - oblN0) pendingImplObligations.value
+  let _ = defaultGroupNum addedObls (map snd placeholders)
+  let _ = defaultEachMember addedObls placeholders
   let schemes = sccSchemes sigs grouped (isLetrecGroup members) placeholders
+  let _ = registerSchemeObligations addedObls schemes
   let _ = registerInferredConstraints sigs schemes
   (extendVars env schemes, schemes)
 
@@ -6116,7 +6736,7 @@ preunifySigs sigs ((m, v)::rest) = preunifySig sigs m v
 -- the signature-too-general check after body inference).  Returns a pair:
 -- (constraintRegs, sigTvMaps) where sigTvMaps is [(name, sig_ast, tvs)] for
 -- each signed member.
-preunifySigsEx : List (String, Ty) -> List (String, Mono) -> <Mut> (List (String, List Mono), List (String, Ty, List (String, Mono)))
+preunifySigsEx : List (String, Ty) -> List (String, Mono) -> <Mut> (List (String, List (String, Mono)), List (String, Ty, List (String, Mono)))
 preunifySigsEx _ [] = ([], [])
 preunifySigsEx sigs ((m, v)::rest) =
   let (restRegs, restTvs) = preunifySigsEx sigs rest
@@ -6124,7 +6744,7 @@ preunifySigsEx sigs ((m, v)::rest) =
     Some ty =>
       let inst = instantiateSigTracked ty
       let _ = unify v (fst inst)
-      let regs = [(m, constraintVarMonos (sigConstraints ty) (snd inst))]
+      let regs = [(m, constraintVarIfaceMonos (sigConstraints ty) (snd inst))]
       (regs ++ restRegs, (m, ty, snd inst) :: restTvs)
     None => (restRegs, restTvs)
 
@@ -6171,21 +6791,55 @@ constraintVarMonos ((_, name)::rest) tvMap = match lookupAssoc name tvMap
   Some mono => mono :: constraintVarMonos rest tvMap
   None => constraintVarMonos rest tvMap
 
+-- like constraintVarMonos but KEEPS the iface name paired with each constraint var's
+-- mono (slot order preserved), so registerMember can register call-obligation ifaces.
+constraintVarIfaceMonos : List (String, String) -> List (String, Mono) -> List (String, Mono)
+constraintVarIfaceMonos [] _ = []
+constraintVarIfaceMonos ((iface, name)::rest) tvMap = match lookupAssoc name tvMap
+  Some mono => (iface, mono) :: constraintVarIfaceMonos rest tvMap
+  None => constraintVarIfaceMonos rest tvMap
+
 -- After body inference, register each member's constraint variables by their
 -- *surviving* (normalized) tyvar id: in activeDictVars (id → dict param name, for
 -- in-body RDict routing) and per-fn in funConstraintsRef (for call-site dict
 -- application).  Done per group so a callee's constraints are known before its
 -- (later-group) callers infer.
-registerConstraintRegs : List (String, List Mono) -> <Mut> Unit
+registerConstraintRegs : List (String, List (String, Mono)) -> <Mut> Unit
 registerConstraintRegs [] = ()
-registerConstraintRegs ((m, monos)::rest) =
-  let _ = registerMember m monos
+registerConstraintRegs ((m, ifaceMonos)::rest) =
+  let _ = registerMember m ifaceMonos
   registerConstraintRegs rest
 
-registerMember : String -> List Mono -> <Mut> Unit
-registerMember m monos =
-  let ids = registerMemberSlots m 0 monos
-  set_ref funConstraintsRef ((m, ids) :: funConstraintsRef.value)
+-- register a member's constraints: ids into funConstraintsRef + activeDictVars (the
+-- kept/abstract slots), and the SLOT-ALIGNED iface names into funConstraintIfacesRef.
+-- registerMemberSlots keeps a slot only when its mono is still an abstract TVar (a
+-- body-forced-concrete constraint takes no dict slot); the iface list is filtered the
+-- same way so it stays parallel to the id list.
+registerMember : String -> List (String, Mono) -> <Mut> Unit
+-- An UNCONSTRAINED member (empty constraint list) gets NO funConstraintsRef /
+-- funConstraintIfacesRef entry.  These refs are keyed by BARE NAME and accumulate
+-- across the per-module elaboration; an unconstrained top-level fn that shares a
+-- name with a constrained one in another module (e.g. array.mdk's `find : (a ->
+-- Bool) -> Array a -> Option a` vs core.mdk's `find : Foldable t => …`) would
+-- otherwise register a `(find, [])` entry that, prepended later, wins the
+-- first-match lookup over core's `(find, [foldableId])`.  inferDictAt then reads 0
+-- constraint ids → 0 dict args at the call site → `unbound identifier:
+-- $dict_find_0` at eval.  An unconstrained fn is never marked EDictAt, so it needs
+-- no entry (mirrors registerInferredFor's empty-ids guard).
+registerMember _ [] = ()
+registerMember m ifaceMonos =
+  let ids = registerMemberSlots m 0 (map snd ifaceMonos)
+  let keptIfaces = keptConstraintIfaces ifaceMonos
+  let _ = set_ref funConstraintsRef ((m, ids) :: funConstraintsRef.value)
+  set_ref funConstraintIfacesRef ((m, keptIfaces) :: funConstraintIfacesRef.value)
+
+-- the iface names of the constraints registerMemberSlots KEEPS (mono still a TVar),
+-- in the same slot order — parallel to registerMember's id list.
+keptConstraintIfaces : List (String, Mono) -> <Mut> List String
+keptConstraintIfaces [] = []
+keptConstraintIfaces ((iface, mono)::rest) = match normalize mono
+  TVar _ => iface :: keptConstraintIfaces rest
+  _ => keptConstraintIfaces rest
 
 -- [kept] is the next dict-param slot; a constraint variable forced concrete by the
 -- body takes no dict and doesn't advance the slot (so param names stay 0..k-1,
@@ -6431,6 +7085,39 @@ maybeInferConstraint sigs m sch
   | omHasKey m sigNameSetRef.value = ()
   | otherwise = registerInferredFor m (inferredConstraintIds m (schemeIds sch))
 
+-- #11 soundness (ALWAYS-ON): for each generalized member, record the deferred impl
+-- obligations it quantifies over — an addedObls entry whose discriminating mono is a
+-- TVar among the member's scheme ids becomes (iface, that id).  A signed member's
+-- declared `=>` constraints come from its sig instead (registered via funConstraints);
+-- but recording the inferred obligation list here too is harmless (a satisfiable
+-- concrete instantiation passes; an unsatisfiable one SHOULD error).  Runs on every
+-- path (NOT gated on dictEligibleSetRef), so the plain check path catches the hole.
+registerSchemeObligations : List (String, List String, Ty, Mono) -> List (String, Scheme) -> <Mut> Unit
+registerSchemeObligations _ [] = ()
+registerSchemeObligations addedObls ((m, sch)::rest) =
+  let obs = schemeObligationsOf (schemeIds sch) addedObls
+  let _ = if isEmptyL obs then () else set_ref schemeObligationsRef ((m, obs) :: schemeObligationsRef.value)
+  registerSchemeObligations addedObls rest
+
+-- the (iface, var-id) pairs of the obligations whose discriminating mono is one of
+-- this scheme's quantified ids (single-param interfaces only — the obligation's first
+-- dispatch arg is the constraint var).  Deduped on (iface, id).
+schemeObligationsOf : List Int -> List (String, List String, Ty, Mono) -> <Mut> List (String, Int)
+schemeObligationsOf _ [] = []
+schemeObligationsOf boundIds ((iface, typarams, mty, occ)::rest) =
+  schemeObligationOne boundIds iface typarams mty occ ++ schemeObligationsOf boundIds rest
+
+-- a single obligation contributes (iface, id) iff its (single) dispatch mono is a
+-- bound tyvar of the scheme.  Multi-param / non-var-headed dispatch is skipped (left
+-- to the existing concrete-obligation checker); this targets the `Num a => a -> a`
+-- single-param shape the hole exercises.
+schemeObligationOne : List Int -> String -> List String -> Ty -> Mono -> <Mut> List (String, Int)
+schemeObligationOne boundIds iface typarams mty occ = match dispatchMonosOf typarams mty occ
+  [d] => match normalize d
+    TVar cell => if containsI (tyvarId cell) boundIds then [(iface, tyvarId cell)] else []
+    _ => []
+  _ => []
+
 hasSig : List (String, Ty) -> String -> Bool
 hasSig sigs m = match lookupAssoc m sigs
   Some _ => True
@@ -6471,8 +7158,26 @@ registerInferredFor : String -> List Int -> <Mut> Unit
 registerInferredFor _ [] = ()
 registerInferredFor m ids =
   let _ = set_ref funConstraintsRef ((m, ids) :: funConstraintsRef.value)
+  let _ = set_ref funConstraintIfacesRef ((m, map ifaceForConstraintId ids) :: funConstraintIfacesRef.value)
   let _ = registerActiveDictVars m 0 ids
   set_ref promotedRef (m :: promotedRef.value)
+
+-- recover the interface name of an INFERRED constraint var (unsignatured fn like
+-- `f x = x + 1`): the var was recorded in a pendingImplObligation by the method
+-- occurrence that induced the constraint (`+` → a `Num <thisvar>` entry).  Slot-
+-- aligned with registerInferredFor's id list.  "" if unresolvable — recordCallObligations
+-- still pairs it positionally, and checkOneCallObligation with an empty iface finds no
+-- matching impl head ⇒ it only fires for a CONCRETE-head mono whose iface genuinely had
+-- no impl, which for an inferred Num constraint is exactly the hole we close.  A still-
+-- polymorphic head defers regardless of iface, so a blank iface never over-rejects.
+ifaceForConstraintId : Int -> <Mut> String
+ifaceForConstraintId id = ifaceForConstraintIdGo id pendingImplObligations.value
+
+ifaceForConstraintIdGo : Int -> List (String, List String, Ty, Mono) -> <Mut> String
+ifaceForConstraintIdGo _ [] = ""
+ifaceForConstraintIdGo id ((iface, _, _, occ)::rest) = match normalize occ
+  TVar cell => if tyvarId cell == id then iface else ifaceForConstraintIdGo id rest
+  _ => ifaceForConstraintIdGo id rest
 
 registerActiveDictVars : String -> Int -> List Int -> <Mut> Unit
 registerActiveDictVars _ _ [] = ()
@@ -6603,6 +7308,7 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let _ = set_ref standaloneValuesRef (dedup (importerShadows ++ definerShadows))
   let _ = set_ref methodDispatchIdxRef (argDispatchIndices implDecls)
   let _ = set_ref funConstraintsRef crossModuleFunConstraintsRef.value
+  let _ = set_ref funConstraintIfacesRef crossModuleFunConstraintIfacesRef.value
   let _ = registerMethodIfaceParamsAll implDecls
   let dataEnv = registerAllData initialEnv (accData ++ prog)
   let globalS = ifaceMethodSchemes prog ++ externSchemes prog
@@ -6616,8 +7322,16 @@ checkModuleFullImpl seedVars accData implDecls prog =
   let _ = inferDefaultBodiesIfEnabled (extendVars env1 topSchemes) prog
   let _ = inferPropBodies (extendVars env1 topSchemes) prog
   let _ = set_ref crossModuleFunConstraintsRef funConstraintsRef.value
+  let _ = set_ref crossModuleFunConstraintIfacesRef funConstraintIfacesRef.value
   let _ = set_ref crossModuleMethodConstraintsRef methodConstraintsRef.value
   let _ = groundMultiParamObligations implDecls pendingImplObligations.value
+  let _ = checkCallObligations (implDecls ++ prog) pendingCallObligations.value
+  -- LSP hover: leave THIS module's locals + seed (runtime+core+imports) in the
+  -- side-channels, mirroring checkProgramSeeded.  The entry module is checked
+  -- LAST in the multi-module path, so the channels end holding ITS values, which
+  -- is what project-aware hover reads (imported names live in seedVars).
+  let _ = set_ref localSchemesOut (mapLocalSchemes localBindRefs.value)
+  let _ = set_ref seedSchemesOut seedVars
   globalS ++ topSchemes
 -- C5: compute this module's standalone-shadow set BEFORE inference, so the
 -- inferMethodAt arg-position record can gate on it (resetState cleared it via
@@ -6920,12 +7634,16 @@ checkModuleFullDiags seedVars accData prog =
 -- ISOLATED diagnostics via checkModuleFullDiags.  Returns one
 -- (mid, (errs, warns)) per module in load order.  Core is checked ONCE (its
 -- diagnostics are not surfaced — it is the trusted prelude, as in checkModules).
-checkModulesDiagsGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, Option Loc), List String))
-checkModulesDiagsGo _ _ [] = []
-checkModulesDiagsGo accV accData ((mid, prog)::rest) =
-  let (schemes, errs, warns) = checkModuleFullDiags accV accData prog
+-- IMPORT-SCOPED seed (baseSeed ++ importSeed prog depEnv), exactly like
+-- checkModulesGo — NOT a flat union of every earlier module's publics, which let
+-- a same-named function from a non-imported module win by load order (e.g.
+-- string.reverse shadowing the list.reverse a module imports → spurious errors).
+checkModulesDiagsGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, Option Loc), List String))
+checkModulesDiagsGo _ _ _ [] = []
+checkModulesDiagsGo baseSeed depEnv accData ((mid, prog)::rest) =
+  let (schemes, errs, warns) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData prog
   let pubV = pickSchemes (publicValNames prog) schemes
-  (mid, (errs, warns)) :: checkModulesDiagsGo (accV ++ pubV) (accData ++ publicDataDecls prog) rest
+  (mid, (errs, warns)) :: checkModulesDiagsGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) rest
 
 export
 checkModulesDiags : List Decl -> List Decl -> List (String, List Decl) -> <Mut> List (String, (List (String, Option Loc), List String))
@@ -6934,10 +7652,12 @@ checkModulesDiags runtimeDecls coreDecls modules =
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
   checkModulesDiagsGo
     (runtimeSeed ++ coreSchemes)
+    []
     (publicDataDecls coreDecls)
     modules
 
 -- the entry module is last in dependency-first order
+export
 entryOwnSchemes : List (String, List (String, Scheme)) -> List (String, Scheme)
 entryOwnSchemes [] = []
 entryOwnSchemes [(_, ss)] = ss
@@ -6960,23 +7680,33 @@ checkModulesEntryFull runtimeDecls coreDecls modules =
   let coreSchemes = checkModuleFull runtimeSeed [] coreDecls
   checkModulesEntryFullGo
     (runtimeSeed ++ coreSchemes)
+    []
     (publicDataDecls coreDecls)
     modules
 
--- thread the public accumulators exactly as checkModulesDiagsGo.  The returned
+-- thread the public accumulators exactly as checkModulesGo.  The returned
 -- triple keeps the ENTRY (last) module's SCHEMES and WARNINGS (those belong to the
 -- entry's report), but ACCUMULATES type errors from EVERY module: a type error in
 -- an IMPORTED module is still a hard error of `check`ing the entry graph and must
 -- surface (otherwise it silently reaches codegen — the G1-class soundness hole).
 -- Earlier-module errors are prepended (dependency-first) to the entry's own.
-checkModulesEntryFullGo : List (String, Scheme) -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, Option Loc), List String)
-checkModulesEntryFullGo _ _ [] = ([], [], [])
-checkModulesEntryFullGo accV accData [(_, prog)] =
-  checkModuleFullDiags accV accData prog
-checkModulesEntryFullGo accV accData ((_, prog)::rest) =
-  let (schemes, errs, _) = checkModuleFullDiags accV accData prog
+--
+-- Each module's VALUE seed is IMPORT-SCOPED (`baseSeed ++ importSeed prog depEnv`,
+-- exactly like checkModulesGo), NOT the flat union of every earlier module's public
+-- schemes.  A flat union let a same-named function from a non-imported module win by
+-- load order — e.g. `string.reverse : String -> String` shadowing the `list.reverse`
+-- a module actually imported, producing spurious `String vs List a` errors (json.mdk).
+-- baseSeed (runtime + core) is always in scope; depEnv keys earlier modules' public
+-- schemes by module id for importSeed to pick from.  accData stays a flat union
+-- (data/type collisions aren't the issue here; mirrors checkModulesGo).
+checkModulesEntryFullGo : List (String, Scheme) -> List (String, List (String, Scheme)) -> List Decl -> List (String, List Decl) -> <Mut> (List (String, Scheme), List (String, Option Loc), List String)
+checkModulesEntryFullGo _ _ _ [] = ([], [], [])
+checkModulesEntryFullGo baseSeed depEnv accData [(_, prog)] =
+  checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData prog
+checkModulesEntryFullGo baseSeed depEnv accData ((mid, prog)::rest) =
+  let (schemes, errs, _) = checkModuleFullDiags (baseSeed ++ importSeed prog depEnv) accData prog
   let pubV = pickSchemes (publicValNames prog) schemes
-  let (eSchemes, eErrs, eWarns) = checkModulesEntryFullGo (accV ++ pubV) (accData ++ publicDataDecls prog) rest
+  let (eSchemes, eErrs, eWarns) = checkModulesEntryFullGo baseSeed ((mid, pubV) :: depEnv) (accData ++ publicDataDecls prog) rest
   (eSchemes, errs ++ eErrs, eWarns)
 
 -- render the entry report: type errors win (each `TYPE ERROR: …`), else the
@@ -7381,6 +8111,7 @@ markModules coreDecls modules =
 elabModuleStamp : List (String, Scheme) -> List Decl -> List Decl -> List Decl -> <Mut> List (String, Scheme)
 elabModuleStamp seedVars accData implDecls prog =
   let schemes = checkModuleFullImpl seedVars accData implDecls prog
+  let _ = setNumlitFloats ()   -- PLAN.md #11: stamp Float-typed int literals (per module, before dictPass)
   let stampImplTable = buildImplTable implDecls
   let _ = resolveSites stampImplTable (buildKeyTable implDecls) (returnPosMethodNames implDecls) pendingSites.value
   let _ = resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value

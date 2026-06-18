@@ -125,17 +125,31 @@ takeBeforeGo (c::rest) line acc =
   else
     (reverseL acc, c :: rest)
 
--- For each variant line, pop its preceding interior comments.  Returns the
--- per-variant comment lexeme lists (parallel to vls) and the leftover stream.
-vcommentsFor : List Comment -> List Int -> (List (List String), List Comment)
+-- Pop the single-line comments ON `line` (a variant's TRAILING comments, e.g.
+-- `| Field String  -- .foo`).  Without this they leak into the NEXT variant's
+-- `takeBefore` bucket and get re-rendered as a leading comment on their own line.
+takeSameLine : List Comment -> Int -> (List String, List Comment)
+takeSameLine [] _ = ([], [])
+takeSameLine (c::rest) line =
+  if commentLine c == line && isSingleLine (commentText c) then
+    match takeSameLine rest line
+      (more, leftover) => (commentText c :: more, leftover)
+  else
+    ([], c :: rest)
+
+-- For each variant line, pop its preceding (leading) comments AND its same-line
+-- (trailing) comments.  Returns per-variant (leading, trailing) lexeme lists
+-- (parallel to vls) and the leftover stream.
+vcommentsFor : List Comment -> List Int -> (List (List String, List String), List Comment)
 vcommentsFor cs [] = ([], cs)
 vcommentsFor cs (l::ls) = match takeBefore cs l
-  (these, rest) => match vcommentsFor rest ls
-    (more, leftover) => (these :: more, leftover)
+  (leading, rest1) => match takeSameLine rest1 l
+    (trailing, rest2) => match vcommentsFor rest2 ls
+      (more, leftover) => ((leading, trailing) :: more, leftover)
 
-allEmpty : List (List String) -> Bool
-allEmpty [] = True
-allEmpty (x::xs) = isEmptyL x && allEmpty xs
+allEmptyPairs : List (List String, List String) -> Bool
+allEmptyPairs [] = True
+allEmptyPairs ((ld, tr)::xs) = isEmptyL ld && isEmptyL tr && allEmptyPairs xs
 
 -- ── Per-declaration rendering ─────────────────────
 
@@ -148,7 +162,7 @@ declDoc : FmtState -> Decl -> (String, FmtState)
 declDoc (FmtState pieces cs vlines cursor started) (DData vis n params variants derives) = match takeNVariantLines vlines (listLen variants)
   (vlinesRest, vls) => match vcommentsFor cs vls
     (vcomments, csRest) =>
-      if listLen vcomments == listLen variants && not (allEmpty vcomments) then
+      if listLen vcomments == listLen variants && not (allEmptyPairs vcomments) then
         (
           render (printDataDeclCommented vis n params variants derives vcomments),
           FmtState pieces csRest vlinesRest cursor started,

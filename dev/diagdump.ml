@@ -74,6 +74,7 @@ let sexp_error : Resolve.error -> string = function
   | Resolve.QuestionMisplaced        -> "QuestionMisplaced"
   | Resolve.AsPatternMisplaced       -> "AsPatternMisplaced"
   | Resolve.NonRecursiveValueLet n   -> node "NonRecursiveValueLet" [esc_str n]
+  | Resolve.DuplicateBinding n       -> node "DuplicateBinding" [esc_str n]
 
 type mode = Resolve_m | Exhaust_m | CheckMatch_m | ResolveModules_m | Analyze_m
 

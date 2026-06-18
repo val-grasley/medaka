@@ -285,6 +285,7 @@ collectVars (EAsPat _ e0) = collectVars e0
 collectVars (EMapLit _ kvs) = concatMapList mapLitPairVars kvs
 collectVars (ESetLit _ es) = concatMapList collectVars es
 collectVars (ELoc _ e) = collectVars e
+collectVars (EDoOrigin _ e) = collectVars e
 collectVars _ = []
 
 letBindVars : LetBind -> List String

@@ -364,6 +364,9 @@ exprToPat (ELoc _ e) = exprToPat e
 exprToPat (EVar "_") = PWild
 exprToPat (EVar x) = ctorOrVar x
 exprToPat (ELit l) = PLit l
+-- PLAN.md #11 §0.4: an integer in pattern (binding-LHS) position stays a
+-- monomorphic `Int` pattern; only EXPRESSION-position integers go polymorphic.
+exprToPat (ENumLit n _ _) = PLit (LInt n)
 exprToPat (ETuple es) = PTuple (map exprToPat es)
 exprToPat (EListLit es) = PList (map exprToPat es)
 exprToPat (EBinOp "::" a b _) = PCons (exprToPat a) (exprToPat b)
@@ -597,7 +600,7 @@ parseAtomRaw : Parser Expr
 parseAtomRaw = do
   t <- peekP
   match t
-    TInt n => emit (ELit (LInt n))
+    TInt n => emit (ENumLit n (Ref None) (Ref RNone))
     TFloat f => emit (ELit (LFloat f))
     TString s => emit (ELit (LString s))
     TChar s => emit (ELit (LChar s))
@@ -2356,8 +2359,8 @@ dataBody = do
 dataBodyFor : Token -> Parser (List Variant, List String)
 dataBodyFor TEqual = do
   advance
-  vs <- dataVariants
-  pure (vs, [])
+  t <- peekP
+  dataAfterEq t
 dataBodyFor TIndent = do
   advance
   expectTok TEqual
@@ -2372,6 +2375,43 @@ dataBodyFor TIndent = do
 -- is the next token.
 
 dataBodyFor _ = pure ([], [])
+
+-- After a header-line `=` (inline `data Foo = …`) the body is EITHER an inline
+-- variant list on the same line, OR — the new multiline form — a line-final `=`
+-- followed by an indented block whose variants each carry a leading `|`:
+--   data Foo =
+--     | Bar
+--     | Baz
+-- An INDENT here means the latter (the `=` was line-final).  The leading `|`
+-- before the first variant is optional (lenient); the formatter always emits it.
+-- `deriving (…)` inside the block is consumed before the DEDENT, mirroring the
+-- old `TIndent` block form.
+dataAfterEq : Token -> Parser (List Variant, List String)
+dataAfterEq TIndent = do
+  advance
+  skipNewlines
+  _ <- optPipe
+  vs <- dataVariants
+  derives <- derivingClause
+  skipNewlines
+  expectTok TDedent
+  pure (vs, derives)
+dataAfterEq _ = do
+  vs <- dataVariants
+  pure (vs, [])
+
+-- Consume a leading `|` if present (the new multiline form's per-variant pipe
+-- also prefixes the first variant); a no-op otherwise.
+optPipe : Parser Unit
+optPipe = do
+  t <- peekP
+  optPipeFor t
+
+optPipeFor : Token -> Parser Unit
+optPipeFor TPipe = do
+  advance
+  pure ()
+optPipeFor _ = pure ()
 
 dataVariants : Parser (List Variant)
 dataVariants = do
@@ -2853,9 +2893,30 @@ variantStartsAt : Array Token -> Array Int -> Int -> Int -> Int -> Bool -> Token
 variantStartsAt toks lines i e depth seenEq t
   | isOpenDelim t = variantStartsGo toks lines (i + 1) e (depth + 1) seenEq
   | isCloseDelim t = variantStartsGo toks lines (i + 1) e (depth - 1) seenEq
-  | depth == 0 && not seenEq && t == TEqual = lineAt lines (i + 1) :: variantStartsGo toks lines (i + 1) e depth True
+  | depth == 0 && not seenEq && t == TEqual && nextSigIsPipe toks e (i + 1) =
+    -- New `data Foo =\n  | …` form: the first variant is introduced by a `|`,
+    -- not by `=`, so record NO line here (the leading `|` records it below).
+    variantStartsGo toks lines (i + 1) e depth True
+  | depth == 0 && not seenEq && t == TEqual =
+    -- Old/inline form: a constructor follows `=`, so record the line after `=`.
+    lineAt lines (i + 1) :: variantStartsGo toks lines (i + 1) e depth True
   | depth == 0 && seenEq && t == TPipe = lineAt lines (i + 1) :: variantStartsGo toks lines (i + 1) e depth seenEq
   | otherwise = variantStartsGo toks lines (i + 1) e depth seenEq
+
+-- Is the next significant token at/after `j` (skipping layout: NEWLINE/INDENT/
+-- DEDENT) a `|`?  Distinguishes the new `data Foo =\n  | V` form (pipe-introduced
+-- first variant) from the old/inline form (constructor directly after `=`).
+nextSigIsPipe : Array Token -> Int -> Int -> Bool
+nextSigIsPipe toks e j
+  | j >= e = False
+  | isLayoutTok (arrayGetUnsafe j toks) = nextSigIsPipe toks e (j + 1)
+  | otherwise = arrayGetUnsafe j toks == TPipe
+
+isLayoutTok : Token -> Bool
+isLayoutTok TNewline = True
+isLayoutTok TIndent = True
+isLayoutTok TDedent = True
+isLayoutTok _ = False
 
 isOpenDelim : Token -> Bool
 isOpenDelim TLParen = True

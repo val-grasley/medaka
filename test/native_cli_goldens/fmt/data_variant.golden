@@ -1,5 +1,5 @@
-data Expr
-  = EVar String
+data Expr =
+  | EVar String
   -- documents the next two variants
   -- (second comment line)
   | EMethodRef String

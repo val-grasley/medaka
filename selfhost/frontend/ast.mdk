@@ -224,6 +224,29 @@ public export data Expr
   -- byte-identical.  The parser never builds nested binop/app wrappers (it
   -- wraps leaves + statement forms only, exactly like parser.mly).
   | ELoc Loc Expr
+  -- Phase 150: transparent marker wrapping a do-lowered andThen/pure chain;
+  -- carries the do-block's loc so typecheck can emit a tailored "do requires a
+  -- monad" error.  Desugar-introduced, never parsed/round-tripped.
+  | EDoOrigin Loc Expr
+  -- PLAN.md #11: a *source* integer literal in EXPRESSION position, polymorphic
+  -- over `Num a` (mirror of lib/ast.ml's `ENumLit of int * float option ref`).
+  -- The parser emits this (never `ELit (LInt)`) for an integer in expression
+  -- position; pattern-position int literals stay `PLit (LInt)` Int (locked §0.4).
+  -- typecheck infers a fresh `Num`-obligated var; the post-HM defaulting pass
+  -- grounds an ambiguous Num-only var to Int; then a final pass stamps the ref
+  -- `Some f` iff the literal's inferred type ground to Float.  dictPass rewrites
+  -- the node to `ELit (LFloat f)` (float ref = Some f), `ELit (LInt n)` (both
+  -- cells empty), or — the #11 soundness arm, mirror of lib/ast.ml's third payload
+  -- `resolved option ref` — `EApp (EMethodAt "fromInt" …) (ELit (LInt n))` when the
+  -- literal stays a polymorphic `Num a` (the `1` in `inc x = x + 1`): the third
+  -- field is the `fromInt`-route cell (`Ref Route`), filled by resolveSites with
+  -- the RDictFwd route onto the enclosing `Num a` dict (exactly core.mdk's
+  -- `fromInt 0` in `sum`), so the runtime Num dict elaborates the literal and
+  -- `inc 2.5` no longer crashes `VFloat + VInt`.  Before eval/emit, dictPass
+  -- rewrites every `ENumLit` away, so eval/emit never see it.  sexp/astdump render
+  -- it identically to `(ELit (LInt n))` so the OCaml↔selfhost sexp diff is unchanged
+  -- (the selfhost AST node is new but renders to the same S-expression).
+  | ENumLit Int (Ref (Option Float)) (Ref Route)
 
 -- import paths: `import q.{members}`, `import q.path`, `import q.*`, `import q as A`
 public export data UseMember = UseMember String Bool

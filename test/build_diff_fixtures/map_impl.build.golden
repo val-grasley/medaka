@@ -3,4 +3,3 @@ False
 fromList [(1, "x"), (2, "y")]
 Map { 1 => x, 2 => y }
 Lt
-()

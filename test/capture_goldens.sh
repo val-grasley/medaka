@@ -34,7 +34,7 @@ set -u
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROBE="$ROOT/_build/default/dev/eval_probe.exe"
-MAIN="$ROOT/_build/default/bin/main.exe"
+MAIN="${MAIN:-$ROOT/_build/default/bin/main.exe}"
 CORE="$ROOT/stdlib/core.mdk"; LIST="$ROOT/stdlib/list.mdk"; RUNTIME="$ROOT/stdlib/runtime.mdk"
 # §2b front-end dev probes (location-free dumps, the OCaml leg of the front-end gates).
 ASTDUMP="$ROOT/_build/default/dev/astdump.exe"
@@ -94,6 +94,23 @@ oracle_parse_result_lc() {
 # tc_probe : bare HM, no prelude → `name : scheme` (or "TYPE ERROR: …").  Sorted,
 # matching diff_selfhost_typecheck{,_errors,_panic_errors}.sh's reference leg.
 oracle_tc_probe()       { "$TCPROBE" "$1" 2>/dev/null | LC_ALL=C sort; }
+# tc_module : PRELUDE-AWARE per-binding schemes / first TYPE ERROR via the real
+# Loader + typecheck_module (dev/tc_module_probe.exe), sorted + de-duplicated.
+# Re-rooting for feature #11 (Num-polymorphic literals): a numeric literal `1`
+# desugars to `fromInt 1`, so the bare no-prelude tc_probe oracle either errors
+# `Unbound variable: fromInt` or leaves the `Num` var ungrounded — it CANNOT
+# produce the documented prelude-dependent error/scheme.  The prelude-dependent
+# fixtures (PRELUDE_DEP_TC below) source their golden here instead; their gates
+# run only the matching prelude-aware native driver (check_main / typecheck_main
+# whichever equals this oracle — see each gate's header).  uniq drops a benign
+# tc_module_probe entry-filter artifact (a prelude name printed twice).
+oracle_tc_module()      { "$TCMODPROBE" "$1" 2>/dev/null | LC_ALL=C sort | uniq; }
+# Basenames whose tc.golden is prelude-dependent (#11) → captured via tc_module.
+# Mirrors PRELUDE_DEP in diff_selfhost_typecheck_errors.sh + the operators stale
+# golden in typecheck_fixtures (whose function-clause Num vars stay polymorphic
+# under #11 — the new schemes only differ from the stale ones, not prelude-needy,
+# but tc_probe still errors on `fromInt` so it too must source from tc_module).
+PRELUDE_DEP_TC="int_vs_string mut_generalization value_restriction tuple_arity operators default_body_type_error"
 # diagdump --analyze : structured per-fixture diagnostics (human message, no loc),
 # sorted — the OCaml leg of diff_selfhost_diagnostics.sh.
 oracle_diag_analyze()   { "$DIAGDUMP" --analyze "$1" 2>/dev/null | LC_ALL=C sort; }
@@ -177,7 +194,15 @@ for row in $ROWS; do
     # abort_exit_nonzero, abort_panic): they exit non-zero with EMPTY stdout, and
     # the gate compares that empty stdout against the native binary's empty stdout.
     # So the correct golden is an empty file, NOT a skip.
-    emit_golden "$golden" "oracle_$tag" "$f"
+    # #11 re-rooting: tc_probe (no prelude) can't source the prelude-dependent
+    # typecheck{,_error}_fixtures (it errors on the desugared `fromInt`); those
+    # basenames source from the prelude-aware tc_module oracle instead.
+    use_tag="$tag"
+    if [ "$tag" = "tc_probe" ]; then
+      base="$(basename "${f%.mdk}")"
+      case " $PRELUDE_DEP_TC " in *" $base "*) use_tag="tc_module" ;; esac
+    fi
+    emit_golden "$golden" "oracle_$use_tag" "$f"
   done
 done
 

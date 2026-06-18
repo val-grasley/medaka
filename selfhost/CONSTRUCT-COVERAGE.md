@@ -925,9 +925,16 @@ fixpoint held byte-for-byte through every fix). Fixtures: `float_annot_nolit.mdk
   `import array` (enabled by the H-a stdlib-on-build-path fix), native == oracle.
   Fixture `test/construct_fixtures/stdlib_array_ops.mdk` (debug-on-Array + length-via-
   Foldable + slice) is GREEN native==interpreter. C6/C7/C8 closed.
-- **C4 = Gap E, not Gap C:** post the E1/Fix-C declared-sig seeding, C4 now BUILDS (dict
-  promoted, `double` gets a leading dict param) but emits garbage Float — int-vs-float
-  instruction selection gated by the declared head being typevar `a`. Belongs in Gap E.
+- **C4 = Gap E, not Gap C: ✅ CLOSED 2026-06-16 (`a8b95d7`).** post the E1/Fix-C declared-sig
+  seeding, C4 BUILT but emitted garbage Float — int-vs-float instruction selection was gated on an
+  *explicit signature*. The residual was the **unannotated** poly-`Num` case: `isNumPolyParam`
+  seeded `LTNum` only when `dsig = Some`, so `dbl x = x + x` (no sig, no literal) at Float defaulted
+  to `LTInt` → integer `add` on the Float box → silent garbage on `medaka build`. Exposed (made
+  reachable) by feature #11 — bare poly-`Num` fns now typecheck at Float. Fix: seed `LTNum` for any
+  unannotated arith-used unanchored param (generalizing the G9 section-lambda special-case) +
+  `reservedCtorsOfType` fallback for the List/Option/Result/Ordering Foldable-dispatch sibling
+  (`total xs = fold (+) 0 xs` hard-errored "owns no constructors" because built-in `Cons`/`Nil`
+  live in `reservedTag`, not `ctorTypeTable`). Fixpoint C3a/C3b held byte-for-byte.
 - **Genuine Gap C = 4 sites, 2 mechanisms:**
   - *Mech 1 — no head tycon → RNone → arg-tag panic* ("owns no constructors"):
     `headTyconMono` (`typecheck.mdk:3482`) returns `None` for `TTuple`/`TVar`; arg-tag

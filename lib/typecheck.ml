@@ -211,6 +211,7 @@ type type_error =
   | LetRecNonFunction   of ident                   (* `let rec x = ...` where RHS isn't a lambda *)
   | InternalError       of string                   (* a broken compiler invariant, surfaced as a diagnostic *)
   | CannotShadowPrelude of ident                    (* Phase 78a: redefining a prelude fn the stdlib uses internally *)
+  | DoRequiresMonad                                 (* Phase 150: `do` used on a non-monad (e.g. sequencing IO) *)
   | Other              of string
 
 exception Type_error of type_error * Ast.loc option
@@ -1026,6 +1027,7 @@ let rec find_tvar_in_mono t id =
    arrays, records, maps and sets are potentially mutable, hence expansive. *)
 let rec is_nonexpansive = function
   | ELit _ | EVar _ | ELam _      -> true
+  | ENumLit _                     -> true   (* PLAN.md #11: a literal, like ELit *)
   | ELoc (_, e) | EAnnot (e, _)   -> is_nonexpansive e
   | ETuple es | EListLit es       -> List.for_all is_nonexpansive es
   | _                             -> false
@@ -1323,6 +1325,10 @@ let pp_error = function
        internally, so it cannot be shadowed. Rename your definition to a \
        different name."
       n
+  | DoRequiresMonad ->
+    "`do` requires a monad (e.g. `Option` or `Result`). For imperative IO \
+     sequencing, use a bare indented block instead of `do` (IO is not a monad \
+     in Medaka)."
   | Other msg -> msg
 
 (* ── Environment ────────────────────────────────── *)
@@ -1344,6 +1350,18 @@ type env = {
        the single-file path (no imports to fall back to). *)
   impls         : impl_entry list ref;          (* all registered impls *)
   method_usages : (ident * ident * tyvar_info ref list * string option * (ident * mono list) list * Ast.resolved option ref option * Ast.loc option * ident option) list ref;  (* (method, iface, param_var_refs, impl_hint, method_dict_args, method_occurrence_ref, call_site_loc, enclosing_fn) — enclosing_fn (Phase 136) picks the right dict among merged mutual-recursion siblings sharing a constraint var id *)
+  numlit_refs   : (tyvar_info ref * float option ref * int * Ast.resolved option ref) list ref;
+    (* PLAN.md #11: one entry per source integer literal (ENumLit).  [tyvar] is
+       the literal's fresh Num-obligated type var; [fref] is the node's own float
+       cell; [n] the int value; [dref] is the node's `fromInt`-route cell (filled
+       by check_method_usages).  After defaulting + grounding, the post-HM pass
+       set_numlit_floats decides the literal's runtime rep:
+         - tyvar ground to Int   ⇒ fref None, dref cleared ⇒ ELit (LInt n)
+         - tyvar ground to Float ⇒ fref Some f, dref cleared ⇒ ELit (LFloat f)
+         - tyvar still polymorphic `Num a` (the soundness case, e.g. the `1` in
+           `inc x = x + 1`) ⇒ fref None, dref KEPT (its RDict route onto the
+           enclosing Num dict) ⇒ Dict_pass emits `EApp (EMethodRef (dref,
+           "fromInt"), ELit (LInt n))`. *)
   fun_constraints : (ident, (ident * int list) list) Hashtbl.t;
     (* fn_name → [(iface_name, [bound_var_ids_in_scheme])] *)
   inferred_constraints : (ident, (ident * int list) list) Hashtbl.t;
@@ -1443,6 +1461,7 @@ let empty_env () = {
   standalone_values = Hashtbl.create 8;
   impls         = ref [];
   method_usages = ref [];
+  numlit_refs   = ref [];
   fun_constraints        = Hashtbl.create 8;
   inferred_constraints   = Hashtbl.create 8;
   method_constraints     = Hashtbl.create 8;
@@ -1505,6 +1524,74 @@ let t_option t = TApp (TCon "Option", t)
 let t_result a b = TApp (TApp (TCon "Result", a), b)
 let _ = t_option
 let _ = t_result
+
+(* PLAN.md #11 (locked §0.2, extended): monomorphism-for-Num defaulting.  Before
+   a type [t] is generalized at a let-binding boundary, ground every *ambiguous*
+   tyvar carrying a `Num` constraint to `Int`.  "Ambiguous" = the var is NOT
+   reachable from an ARGUMENT position of [t] (a caller can't fix it).  This stops
+   a bare `n = 1` (or an inner `let z = 2`) from generalizing to `Num a => a` /
+   leaking an unbound `Num a` to eval, while leaving a genuinely polymorphic var
+   live: `sum`'s element var in `t a -> a` is reachable from the argument `t a`,
+   so it stays polymorphic (`sum [1.0,…]` still works); `x : Float; x = 0`'s var is
+   already concrete Float (not a generalizable var), so it is untouched.
+
+   Extension beyond "ONLY Num": a var constrained by `Num` AND another class but
+   still ambiguous (e.g. `convert 5 : String` ⇒ `{Num, Convert} a`, with `a`
+   determined by nothing but the literal) is also defaulted to Int — the literal's
+   `Num`/`fromInt` representation IS Int, so grounding it keeps impl selection
+   deterministic instead of leaving an unresolvable ambiguity.  Applied at every
+   generalization site so inner lets behave like the top level (`let z = 2 in
+   y + z`, y:Float ⇒ `z:Int` ⇒ a clean type error, never an eval int/float tag
+   clash). *)
+let default_ambiguous_num env t =
+  (* vars in any ARGUMENT position of t's arrows — caller-determinable *)
+  let rec arg_ids acc t = match normalize t with
+    | TFun (a, _, b) -> arg_ids (free_unbound acc a) b
+    | _ -> acc
+  in
+  let caller_fixed = arg_ids [] t in
+  let var_id_of_ref r = match normalize (TVar r) with
+    | TVar { contents = Unbound (id, _) } -> Some id | _ -> None
+  in
+  (* per-var: the set of interfaces constraining it (from literal/operator method
+     usages and from `=>`-recorded obligations) *)
+  let ifaces_by_var : (int, string list) Hashtbl.t = Hashtbl.create 16 in
+  let note id iface =
+    let cur = match Hashtbl.find_opt ifaces_by_var id with Some l -> l | None -> [] in
+    if not (List.mem iface cur) then Hashtbl.replace ifaces_by_var id (iface :: cur)
+  in
+  List.iter (fun (_m, iface_name, param_vars, _h, _mda, _mr, _loc, _enc) ->
+    List.iter (fun r -> match var_id_of_ref r with Some id -> note id iface_name | None -> ())
+      param_vars
+  ) !(env.method_usages);
+  List.iter (fun (iface, mono_args, _loc) ->
+    List.iter (fun m -> match normalize m with
+      | TVar { contents = Unbound (id, _) } -> note id iface
+      | _ -> ()) mono_args
+  ) !(env.constraint_obligations);
+  (* default each Num-only, ambiguous, still-generalizable var to Int *)
+  let live_ref_for id =
+    (* a live tyvar ref carrying this id (refs alias post-unify; grounding any
+       grounds all) — find one among the Num method usages *)
+    let found = ref None in
+    List.iter (fun (_m, iface_name, param_vars, _h, _mda, _mr, _loc, _enc) ->
+      if iface_name = "Num" then
+        List.iter (fun r -> match var_id_of_ref r with
+          | Some id' when id' = id && !found = None -> found := Some r
+          | _ -> ()) param_vars
+    ) !(env.method_usages);
+    !found
+  in
+  let generalizable = free_unbound [] t in   (* level > current_level vars in t *)
+  Hashtbl.iter (fun id ifaces ->
+    if List.mem "Num" ifaces
+       && List.mem id generalizable
+       && not (List.mem id caller_fixed)
+    then match live_ref_for id with
+      | Some r -> unify (TVar r) t_int
+      | None -> ()
+  ) ifaces_by_var
+
 
 (* Expand type aliases in an AST type.  Collects the argument spine of a
    TyApp chain (e.g. `Parser Int` → head=TyCon "Parser", args=[TyCon "Int"]),
@@ -1970,6 +2057,26 @@ let rec infer env = function
     current_loc := Some l;
     infer env e
 
+  (* Phase 150: a `do`-lowered chain. If inference fails with a Type mismatch
+     between the monad shape (`m b`, a type application) the lowered `andThen`/
+     `pure` demand and a non-monad concrete type (e.g. `Unit` from sequencing
+     IO), retarget the baffling deep error to a tailored "do requires a monad"
+     diagnostic carrying the do-block's loc. A valid do (over Option/Result/…)
+     never raises here, so it passes through untouched. *)
+  | EDoOrigin (do_loc, e) ->
+    let rec follow t = match t with
+      | TVar v -> (match !v with Link t' -> follow t' | _ -> t)
+      | _ -> t
+    in
+    (* a type application `m b` (the monad shape andThen wants) vs anything
+       that is not itself an application — the signature of the IO/non-monad
+       sequencing mistake *)
+    let is_app t = match follow t with TApp _ -> true | _ -> false in
+    (try infer env e
+     with Type_error (TypeMismatch (a, b), _)
+            when is_app a <> is_app b ->
+       raise (Type_error (DoRequiresMonad, Some do_loc)))
+
   (* Phase 69: resolved method occurrence.  Stash the ref so the EVar method
      branch records it in method_usages; check_method_usages fills it with the
      resolved impl key once the call site's type args are ground. *)
@@ -1983,6 +2090,36 @@ let rec infer env = function
   | EDictApp (r, x) -> current_dict_ref := Some r; infer env (EVar x)
 
   | ELit l -> type_lit l
+
+  (* PLAN.md #11: a source integer literal is `Num a` for a fresh `a`.  Mirror the
+     operator path (`binop_type`'s record_iface_usage "Num" "add") so the existing
+     check_method_usages verifies a `Num` impl once `a` grounds, and the post-HM
+     defaulting pass can ground an ambiguous `Num`-only `a` to Int.  Stash the
+     var + the node's float cell in numlit_refs for the later re-tag.  Recording
+     here AND (when under `+`) in binop_type is harmless: both unify the same var
+     and both demand `Num`, which is idempotent. *)
+  | ENumLit (n, fref, dref) ->
+    (* Model the literal exactly as `fromInt n` for *typing + routing*: infer the
+       `fromInt` method occurrence (stashing [dref] as its method ref so
+       check_method_usages fills it with the resolved Num route), then apply it to
+       an Int argument.  This reuses the whole Phase-69 EMethodRef machinery: the
+       `Num` obligation, the per-call route resolution (RKey when the result
+       grounds to a concrete Num type, RDict onto the enclosing `Num a` dict when
+       the literal stays polymorphic — exactly the `fromInt 0` in core.mdk's
+       `sum`).  We unify the result var into numlit_refs so set_numlit_floats can
+       still re-tag a Float literal to a runtime float (the common, dict-free
+       fast path), and so the post-HM decision can tell concrete-Int / concrete-
+       Float / still-polymorphic apart. *)
+    let saved_mref = !current_method_ref in
+    current_method_ref := Some dref;
+    let from_int_ty = infer env (EVar "fromInt") in   (* Int -> a, records usage, will fill dref *)
+    current_method_ref := saved_mref;
+    let a = fresh_var () in
+    let r = match a with TVar r -> r | _ -> fail (InternalError "fresh_var did not yield a TVar") in
+    unify from_int_ty (TFun (t_int, open_row (), a));
+    env.numlit_refs := (r, fref, n, dref) :: !(env.numlit_refs);
+    a
+
 
   | EVar x ->
     if String.length x > 0 && x.[0] = '@' then
@@ -2216,6 +2353,7 @@ let rec infer env = function
        let t1 = infer env_self e1 in
        unify placeholder t1;
        exit_level ();
+       default_ambiguous_num env t1;   (* PLAN.md #11 *)
        let s = generalize t1 in
        let env' = mark_locals (extend_var env x s) [x] in
        let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
@@ -2226,6 +2364,7 @@ let rec infer env = function
        exit_level ();
        (match pat with
         | PVar x ->
+          default_ambiguous_num env t1;   (* PLAN.md #11 *)
           let s = gen_restricted (is_nonexpansive e1) t1 in
           let env' = mark_locals (extend_var env x s) [x] in
           let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
@@ -2255,6 +2394,7 @@ let rec infer env = function
       let t = List.assoc n placeholders in
       let is_val =
         List.for_all (fun (pats, rhs) -> pats <> [] || is_nonexpansive rhs) clauses in
+      default_ambiguous_num env t;   (* PLAN.md #11 *)
       mark_locals (extend_var e n (gen_restricted is_val t)) [n]) env bindings in
     infer env'' body
 
@@ -2498,6 +2638,7 @@ let rec infer env = function
            let t1 = infer env_self e in
            unify placeholder t1;
            exit_level ();
+           default_ambiguous_num env t1;   (* PLAN.md #11 *)
            let s = generalize t1 in
            let env' = mark_locals (extend_var env x s) [x] in
            let env' = if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env' in
@@ -2513,6 +2654,7 @@ let rec infer env = function
                   re-instantiate per assignment, so the binding would accept
                   heterogeneous values.  Force the value-restricted path. *)
                let is_value = (not mut) && is_nonexpansive e in
+               default_ambiguous_num env t1;   (* PLAN.md #11 *)
                let env' = mark_locals (extend_var env x (gen_restricted is_value t1)) [x] in
                if mut then { env' with mut_vars = StringSet.add x env'.mut_vars } else env'
              | _ ->
@@ -3308,8 +3450,59 @@ let process_letrec_group env_ref placeholders (is_letrec, members) =
   in
   let added_obligs  = take (List.length !obl_ref - oblig_n0) !obl_ref in
   let added_methods = take (List.length !mu_ref - mu_n0) !mu_ref in
+  (* PLAN.md #11 (locked §0.2): GROUP-LEVEL Num defaulting.  An ambiguous Num-only
+     var can live entirely inside a body and surface in NO binding's type — e.g.
+     `let n = tag [1,2,3]` : the list element var is consumed by `tag`, so `n :
+     Int` but the element var is unconstrained except by `Num`.  Default every
+     such var (from THIS group's own obligations) to Int unless it is reachable
+     from an ARGUMENT position of some binding's type (then a caller fixes it, so
+     it stays polymorphic — `sum`'s/`inc`'s element var).  This both keeps impl
+     selection deterministic (`tag` picks `List Int`) and closes the soundness
+     hole where a deferred non-concrete `Num` obligation (`5 1` ⇒ `Num (Int->b)`)
+     is silently dropped — defaulting forces the head concrete so
+     check_method_usages can reject it. *)
+  let group_arg_ids =
+    List.fold_left (fun acc (name, _, _, _, _) ->
+      let ph = List.assoc name placeholders in
+      let rec arg_ids acc t = match normalize t with
+        | TFun (a, _, b) -> arg_ids (free_unbound acc a) b
+        | _ -> acc
+      in
+      arg_ids acc ph
+    ) [] cs_monos_list
+  in
+  let var_id_of_ref r = match normalize (TVar r) with
+    | TVar { contents = Unbound (id, _) } -> Some id | _ -> None
+  in
+  let ifaces_by_var : (int, string list) Hashtbl.t = Hashtbl.create 16 in
+  let note id iface =
+    let cur = match Hashtbl.find_opt ifaces_by_var id with Some l -> l | None -> [] in
+    if not (List.mem iface cur) then Hashtbl.replace ifaces_by_var id (iface :: cur)
+  in
+  List.iter (fun (_m, iface_name, param_vars, _h, _mda, _mr, _loc, _enc) ->
+    List.iter (fun r -> match var_id_of_ref r with Some id -> note id iface_name | None -> ())
+      param_vars
+  ) added_methods;
+  List.iter (fun (iface, mono_args, _loc) ->
+    List.iter (fun m -> match normalize m with
+      | TVar { contents = Unbound (id, _) } -> note id iface | _ -> ()) mono_args
+  ) added_obligs;
+  Hashtbl.iter (fun id ifaces ->
+    if List.mem "Num" ifaces
+       && not (List.mem id group_arg_ids)
+    then
+      List.iter (fun (_m, iface_name, param_vars, _h, _mda, _mr, _loc, _enc) ->
+        if iface_name = "Num" then
+          List.iter (fun r -> match var_id_of_ref r with
+            | Some id' when id' = id -> unify (TVar r) t_int
+            | _ -> ()) param_vars
+      ) added_methods
+  ) ifaces_by_var;
   List.map (fun (name, cs_monos, is_val, has_sig, relaxed) ->
     let placeholder = List.assoc name placeholders in
+    (* PLAN.md #11 (locked §0.2): ground ambiguous Num-only vars to Int before
+       this top-level binding generalizes (shared with the inner-let sites). *)
+    default_ambiguous_num (!env_ref) placeholder;
     let scheme = gen_restricted is_val placeholder in
     (match scheme with
      | Forall (bound_ids, _, _) ->
@@ -4376,6 +4569,27 @@ let check_method_usages env =
          | _ -> ())
       in
       if not (List.for_all is_concrete concrete_args) then begin
+        (* PLAN.md #11: under Num-polymorphic literals a literal's var can unify
+           with a *function* type (`5 1` ⇒ the `5` var becomes `Int -> b`), which
+           pre-#11 failed at unification (literal was concretely Int).  A function
+           type can never have a `Num` impl, so reject it here even though `b` is
+           still free — restoring the structural error instead of a deferred-then-
+           dropped obligation that crashes at runtime. *)
+        (if iface_name = "Num" then
+           List.iter (fun a -> match normalize a with
+             | TFun _ -> fail_at loc (NoImplFound (iface_name, concrete_args))
+             (* `Num (m a)` with an unbound type-constructor head `m` (a numeric
+                literal forced into monad/HKT position, e.g. `do x <- 42`): a
+                literal can never be an abstract `m a`, so reject rather than
+                defer-and-drop (which crashed at runtime).  Concrete heads
+                (`Result e a`) are left to the head-key route below. *)
+             | TApp _ as h ->
+               let rec spine_head = function TApp (f, _) -> spine_head f | x -> x in
+               (match normalize (spine_head h) with
+                | TVar { contents = Unbound _ } ->
+                  fail_at loc (NoImplFound (iface_name, concrete_args))
+                | _ -> ())
+             | _ -> ()) concrete_args);
         (* Not ground at this site.  Two ways to still route it:
            - Phase 69.x-c: the discriminating type is *head-concrete* (head tycon
              fixed, args free — `pure x : Result e a`, or a do-block `pure`).  For
@@ -4492,6 +4706,32 @@ let pick_dispatch_impl env iface concrete : impl_entry option =
 let primitive_head = function
   | "Int" | "Float" | "Char" | "String" | "Bool" -> true
   | _ -> false
+
+(* PLAN.md #11: after HM + defaulting every source integer literal's type var is
+   ground.  Stamp each ENumLit's float cell `Some (float n)` iff it ground to
+   Float, so Dict_pass can re-tag it to a runtime float (eval is value-tagged and
+   `eval_arith` rejects mixed int/float tags).  All other cases (Int, or an
+   exotic user `Num` type) leave the cell None ⇒ stays `ELit (LInt n)`. *)
+let set_numlit_floats env =
+  List.iter (fun (r, fref, _n, dref) ->
+    match normalize (TVar r) with
+    | TCon "Float" ->
+      (* concrete Float: re-tag to a runtime float constant; no fromInt needed. *)
+      fref := Some (float_of_int _n); dref := None
+    | TCon "Int" ->
+      (* concrete Int (incl. via ambiguous→Int defaulting): plain int literal,
+         clear the fromInt route so Dict_pass emits ELit (LInt n) directly. *)
+      fref := None; dref := None
+    | _ ->
+      (* The var did NOT ground to a primitive: either a still-polymorphic `Num a`
+         (the soundness case — `1` in `inc x = x + 1`) or an exotic user numeric
+         type.  In both, leave the dref's `fromInt` route in place so the literal
+         dispatches through the Num dictionary at runtime (Int→identity,
+         Float→intToFloat, user→its fromInt).  A genuinely-unresolved dref (route
+         never filled, e.g. an unreachable position) is treated as Int below by
+         Dict_pass's None-dref fallback. *)
+      fref := None
+  ) !(env.numlit_refs)
 
 let check_binop_usages env =
   List.iter (fun (_op, iface_name, _method, var, dref, loc) ->
@@ -4845,6 +5085,7 @@ let check_program_impl ?(promoted : (ident, unit) Hashtbl.t option)
 
   (* Phase 4.6: verify method call sites have matching impls and constraints *)
   check_method_usages !env;
+  set_numlit_floats !env;  (* PLAN.md #11: stamp Float-typed int literals *)
   check_binop_usages !env;
   check_constraint_obligations !env;
   realize_recursive_dict_apps !env;
@@ -5199,6 +5440,7 @@ let typecheck_module
     | _ -> ()
   ) prog;
   check_method_usages !env;
+  set_numlit_floats !env;  (* PLAN.md #11: stamp Float-typed int literals *)
   check_binop_usages !env;
   check_constraint_obligations !env;
   realize_recursive_dict_apps !env;
@@ -5364,6 +5606,7 @@ let copy_tc_env (e : env) : env = {
   standalone_values = Hashtbl.copy e.standalone_values;
   impls         = ref !(e.impls);
   method_usages = ref !(e.method_usages);
+  numlit_refs   = ref !(e.numlit_refs);
   fun_constraints        = Hashtbl.copy e.fun_constraints;
   inferred_constraints   = Hashtbl.copy e.inferred_constraints;
   method_constraints     = Hashtbl.copy e.method_constraints;
@@ -5409,6 +5652,18 @@ let check_repl_decl ?(seeded=false)
      generalization for every later input.  Reset just the level at each input
      boundary; a completed check always balances its own brackets. *)
   current_level := 0;
+  (* PLAN.md #11: the per-input obligation/usage buffers are transient — they hold
+     THIS input's pending constraints, checked at the end of this call.  Pre-#11 a
+     bad input (`1 + "x"`) failed at unification before recording any, so leaving
+     them uncleared was benign.  Now `1 + "x"` records a `Num String` method usage
+     that only fails in check_method_usages; if not cleared it persists in the
+     env and re-fires on every later input.  Clear them at each input boundary. *)
+  (!env).method_usages := [];
+  (!env).binop_usages := [];
+  (!env).constraint_obligations := [];
+  (!env).dict_app_usages := [];
+  (!env).recursive_promoted_usages := [];
+  (!env).numlit_refs := [];
   register_attrs !env decls;
   (* First sub-pass: collect all type aliases *)
   List.iter (fun d -> match Ast.inner_decl d with
@@ -5470,6 +5725,7 @@ let check_repl_decl ?(seeded=false)
     | _ -> ()
   ) decls;
   check_method_usages !env;
+  set_numlit_floats !env;  (* PLAN.md #11: stamp Float-typed int literals *)
   check_binop_usages !env;
   check_constraint_obligations !env;
   realize_recursive_dict_apps !env;

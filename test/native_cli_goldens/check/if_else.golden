@@ -1,4 +1,4 @@
-abs : Int -> Int
+abs : a -> a
 abs : a -> a
 add : a -> a -> a
 all : (a -> Bool) -> b a -> Bool
@@ -12,7 +12,7 @@ arbitrary : Unit -> <Rand> a
 arbitraryList : (Unit -> <Rand> a) -> Int -> <Rand> List a
 arbitraryString : Unit -> <Rand> String
 clamp : a -> a -> a -> a
-classify : Int -> String
+classify : a -> String
 compare : a -> a -> Ordering
 compose : (a -> b) -> (c -> a) -> c -> b
 const : a -> b -> a

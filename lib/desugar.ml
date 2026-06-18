@@ -623,6 +623,7 @@ let rec map_expr f e =
   in
   let e' = match e with
     | ELoc (loc, inner)       -> ELoc (loc, map_expr f inner)
+    | EDoOrigin (loc, inner)  -> EDoOrigin (loc, map_expr f inner)
     | EApp (e1, e2)           -> EApp (map_expr f e1, map_expr f e2)
     | ELam (ps, body)         -> ELam (ps, map_expr f body)
     | ELet (m, r, p, e1, e2) -> ELet (m, r, p, map_expr f e1, map_expr f e2)
@@ -871,7 +872,21 @@ let rec lower_do = function
       assert false   (* rejected by check_do_wellformed before lowering *)
 
 let rewrite_do = function
-  | EDo (_, stmts) -> check_do_wellformed stmts; lower_do stmts
+  | EDo (_, stmts) ->
+    check_do_wellformed stmts;
+    let lowered = lower_do stmts in
+    (* Phase 150: wrap the lowered chain in a transparent provenance marker
+       carrying the do-block's loc (the first statement's position), so a
+       monad-constraint failure surfaces as a tailored "do requires a monad"
+       error instead of a baffling deep `Type mismatch`. A single trailing
+       `do { e }` lowers to bare `e` (no andThen/monad obligation) — leave it
+       unwrapped so non-do expressions aren't mis-blamed. *)
+    (match stmts with
+     | [DoExpr _] -> lowered
+     | _ ->
+       (match List.find_map do_stmt_loc stmts with
+        | Some l -> EDoOrigin (l, lowered)
+        | None -> lowered))
   | e -> e
 
 let lower_do_blocks prog = List.map (map_decl rewrite_do) prog

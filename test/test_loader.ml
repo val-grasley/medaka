@@ -324,6 +324,7 @@ let test_read_override () =
          let rec find_int = function
            | Ast.ELoc (_, e) -> find_int e
            | Ast.ELit (Ast.LInt n) -> Some n
+           | Ast.ENumLit (n, _, _) -> Some n   (* PLAN.md #11: int lits parse as ENumLit *)
            | _ -> None
          in
          (match find_int body with

@@ -62,7 +62,7 @@ let t_hm_mutual_recursion =
     {|even n = if n == 0 then True else odd (n - 1)
 odd n = if n == 0 then False else even (n - 1)
 |}
-    "even" "Int -> Bool"
+    "even" "a -> Bool"
 
 (* Top-level value vs. function — bare `x = expr` doesn't get a lambda,
    so a generalized identity bound to a value is still polymorphic via
@@ -143,7 +143,7 @@ let t_mutual_forward_ref =
   (x::rest) => x + g rest
 g xs = f xs
 |}
-    "g" "List Int -> Int"
+    "g" "List a -> a"
 
 (* Three-way mutual recursion. *)
 let t_three_way_mutual =
@@ -152,7 +152,7 @@ let t_three_way_mutual =
 g n = if n == 0 then 1 else h (n - 1)
 h n = if n == 0 then 2 else f (n - 1)
 |}
-    "h" "Int -> Int"
+    "h" "a -> Int"
 
 (* =====================================================================
    3. Record / row polymorphism corners
@@ -366,7 +366,7 @@ f x = helper x
 
 (* A function that only manipulates pure data should have no effects. *)
 let t_eff_pure_no_eff =
-  assert_type "f x = x + 1\n" "f" "Int -> Int"
+  assert_type "f x = x + 1\n" "f" "a -> a"
 
 (* A do-block in pure code (Option monad) should be pure. *)
 let t_eff_option_pure =
@@ -662,22 +662,22 @@ let e_range_non_int =
    12. Operator-section + currying corners
    ===================================================================== *)
 
-let t_section_right_add  = assert_type "f = (+ 1)\n"  "f" "Int -> Int"
+let t_section_right_add  = assert_type "f = (+ 1)\n"  "f" "a -> a"
 (* `(- 1)` is unary minus, not a section.  This matches Haskell.  To get
    the subtraction section, use `(10 - _)` or `(\x => x - 1)`. *)
 let t_section_minus_unary = assert_type "f = (- 1)\n"  "f" "Int"
-let t_section_right_eq   = assert_type "f = (== 1)\n" "f" "Int -> Bool"
-let t_section_left_sub   = assert_type "f = (10 - _)\n" "f" "Int -> Int"
-let t_section_left_div   = assert_type "f = (10 / _)\n" "f" "Int -> Int"
+let t_section_right_eq   = assert_type "f = (== 1)\n" "f" "a -> Bool"
+let t_section_left_sub   = assert_type "f = (10 - _)\n" "f" "a -> a"
+let t_section_left_div   = assert_type "f = (10 / _)\n" "f" "a -> a"
 let t_section_eq_string  = assert_type "f = (== \"x\")\n" "f" "String -> Bool"
 
 (* Partially-applied curried function. *)
 let t_partial_curry =
-  assert_type "add x y = x + y\nadd5 = add 5\n" "add5" "Int -> Int"
+  assert_type "add x y = x + y\nadd5 = add 5\n" "add5" "a -> a"
 
 (* Triple partial application. *)
 let t_triple_partial =
-  assert_type "f x y z = x + y + z\ng = f 1 2\n" "g" "Int -> Int"
+  assert_type "f x y z = x + y + z\ng = f 1 2\n" "g" "a -> a"
 
 (* =====================================================================
    13. Lambda corners
@@ -746,7 +746,7 @@ let t_match_option_full =
   Some n => n
   None => 0
 |}
-    "f" "Option Int -> Int"
+    "f" "Option a -> a"
 
 (* Match where arms produce differing concrete types: TypeMismatch. *)
 let e_match_arm_type_clash =
@@ -791,7 +791,7 @@ let t_match_guard =
   x if x < 0 => -1
   _ => 0
 |}
-    "sign" "Int -> Int"
+    "sign" "a -> Int"
 
 (* =====================================================================
    16. ADT — payload kinds & generics
@@ -925,7 +925,7 @@ let t_rec_fact =
   assert_type
     {|fact n = if n <= 1 then 1 else n * fact (n - 1)
 |}
-    "fact" "Int -> Int"
+    "fact" "a -> a"
 
 (* Mutually recursive list functions.  Multi-line let-in-match-arm
    bodies need an explicit `in`, or stand-alone tuple cons.  Use a
@@ -939,7 +939,7 @@ hasNeg xs = match xs
   [] => False
   (x::rest) => if x < 0 then True else hasPos rest
 |}
-    "hasPos" "List Int -> Bool"
+    "hasPos" "List a -> Bool"
 
 (* =====================================================================
    20. String / interpolation typing

@@ -425,6 +425,7 @@ isContinuationOp op = op == "|>"
 
 exprPrec : Expr -> Int
 exprPrec (ELit _) = precAtom
+exprPrec (ENumLit _ _ _) = precAtom
 exprPrec (EVar _) = precAtom
 exprPrec (EMethodRef _) = precAtom
 exprPrec (EDictApp _) = precAtom
@@ -494,6 +495,10 @@ printExpr minPrec e =
 
 printExprRaw : Expr -> Doc
 printExprRaw (ELit l) = printLit l
+-- ENumLit (a `Num a` expression-position integer; desugar lowers it before
+-- eval/emit, but the formatter runs pre-desugar so it reaches the printer).
+-- Renders as the bare integer, mirroring lib/printer.ml's `ENumLit (n,_,_)`.
+printExprRaw (ENumLit n _ _) = text (intToString n)
 printExprRaw (EVar n) = text n
 printExprRaw (EMethodRef n) = text n
 printExprRaw (EDictApp n) = text n
@@ -939,22 +944,34 @@ visPrefix VisPublic = text "public export "
 visPrefix VisAbstract = text "export "
 visPrefix VisPrivate = Nil
 
--- `data` body: `= V1` then `| Vn` per remaining variant, one group with the head.
+-- `data` body.  Flat: `= V1 | V2 | …`.  Broken (new multiline form): a
+-- line-final `=` on the header line, then one `| Vn` per variant (the FIRST
+-- variant also gets a leading `|`):
+--   data Foo =
+--     | Bar
+--     | Baz
+-- FlatAlt picks the per-variant separator by group mode (broken → `Line "| "`,
+-- flat → `" "` for the first / `" | "` for the rest).  The `=` stays on the
+-- header line (outside `nest`); the variants `nest` by 2.
 dataVariantDocs : List Variant -> Doc
 dataVariantDocs [] = Nil
 dataVariantDocs (v::vs) =
-  nest
-    (Cat (Cat Line (Cat (text "= ") (printVariant v))) (concatD (map (v2 => Cat Line (Cat (text "| ") (printVariant v2))) vs)))
+  Cat
+    (text " =")
+    (nest
+      (Cat
+        (Cat (FlatAlt (Cat Line (text "| ")) (text " ")) (printVariant v))
+        (concatD (map (v2 => Cat (FlatAlt (Cat Line (text "| ")) (text " | ")) (printVariant v2)) vs))))
 
--- Render a `data` declaration with interior comments interleaved before the
--- variants they document.  Mirror of lib/printer.ml's `print_data_decl_commented`.
--- `vcomments` is parallel to `variants`: entry i holds the comment lexemes (in
--- source order) immediately preceding variant i.  Any non-empty entry forces the
--- one-variant-per-line layout (a comment can't share a line), and each comment
--- lands at the variant indent.  Uses `Hardline` (always break) — never the soft
--- `Line` `dataVariantDocs` uses — so a documented `data` is never reflowed flat.
+-- Render a `data` declaration with interior comments interleaved.  Mirror of
+-- lib/printer.ml's `print_data_decl_commented`.  `vcomments` is parallel to
+-- `variants`: entry i = (leading, trailing) lexemes for variant i — LEADING
+-- comments render on their own line(s) above the variant, the TRAILING comment
+-- stays inline after it (`| Field String  -- .foo`).  Any non-empty entry forces
+-- the one-variant-per-line layout via `Hardline` (never the soft `Line`
+-- `dataVariantDocs` uses), so a documented `data` is never reflowed flat.
 export
-printDataDeclCommented : DataVis -> String -> List String -> List Variant -> List String -> List (List String) -> Doc
+printDataDeclCommented : DataVis -> String -> List String -> List Variant -> List String -> List (List String, List String) -> Doc
 printDataDeclCommented vis n params variants derives vcomments =
   let head = Cat (text "data ") (Cat (text n) (concatD (map (p => Cat (text " ") (text p)) params)))
   let variantDocs = dataVariantDocsCommented variants vcomments
@@ -965,20 +982,31 @@ printDataDeclCommented vis n params variants derives vcomments =
 commentLinesDoc : List String -> Doc
 commentLinesDoc cs = concatD (map (c => Cat Hardline (text c)) cs)
 
-dataVariantDocsCommented : List Variant -> List (List String) -> Doc
+-- Trailing comments rendered inline (each preceded by two spaces) after the
+-- variant on the same line.
+trailingCommentsDoc : List String -> Doc
+trailingCommentsDoc cs = concatD (map (c => Cat (text "  ") (text c)) cs)
+
+-- One variant line: its leading comments (own lines) + `| Variant` + any inline
+-- trailing comment.
+variantCommentedDoc : Variant -> (List String, List String) -> Doc
+variantCommentedDoc v (leading, trailing) =
+  Cat (commentLinesDoc leading) (Cat Hardline (Cat (text "| ") (Cat (printVariant v) (trailingCommentsDoc trailing))))
+
+dataVariantDocsCommented : List Variant -> List (List String, List String) -> Doc
 dataVariantDocsCommented [] _ = Nil
 dataVariantDocsCommented _ [] = Nil
 dataVariantDocsCommented (v::vs) (vc::vcs) =
-  nest
-    (Cat (Cat (commentLinesDoc vc) (Cat Hardline (Cat (text "= ") (printVariant v)))) (concatD (map2VariantComment vs vcs)))
+  Cat
+    (text " =")
+    (nest (Cat (variantCommentedDoc v vc) (concatD (map2VariantComment vs vcs))))
 
--- Mirror of List.map2 (fun v vc -> comment_lines vc ^^ Hardline ^^ "| " ^^ variant).
-map2VariantComment : List Variant -> List (List String) -> List Doc
+-- Mirror of List.map2 (fun v vc -> variantCommentedDoc v vc).
+map2VariantComment : List Variant -> List (List String, List String) -> List Doc
 map2VariantComment [] _ = []
 map2VariantComment _ [] = []
 map2VariantComment (v::vs) (vc::vcs) =
-  Cat (commentLinesDoc vc) (Cat Hardline (Cat (text "| ") (printVariant v))) ::
-    map2VariantComment vs vcs
+  variantCommentedDoc v vc :: map2VariantComment vs vcs
 
 export
 printDecl : Decl -> Doc

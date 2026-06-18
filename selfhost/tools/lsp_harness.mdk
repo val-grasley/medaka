@@ -91,6 +91,24 @@ requestMsg idn method params =
       ("params", params),
     ]
 
+-- textDocument/didChange (Full sync): the whole document is replaced by `text`.
+-- Drives the per-keystroke diagnostics path the parse-cache optimizes.
+export
+didChangeMsg : String -> String -> Json
+didChangeMsg uri text =
+  jObject
+    [
+      ("jsonrpc", JString "2.0"),
+      ("method", JString "textDocument/didChange"),
+      (
+        "params",
+        jObject [
+          ("textDocument", jObject [("uri", JString uri), ("version", JInt 2)]),
+          ("contentChanges", jArray [jObject [("text", JString text)]]),
+        ],
+      ),
+    ]
+
 -- params for a text-document request carrying a cursor position (hover etc.).
 export
 docPosParams : String -> Int -> Int -> Json
@@ -267,6 +285,55 @@ responseById idn ((Frame _ body _)::rest) = match parse body
     None => responseById idn rest
   Err _ => responseById idn rest
 
+-- result.contents.value of hover response `idn` (the markdown ```medaka\n<name> :
+-- <ty>\n``` string), or None.
+export
+hoverValue : Int -> List Frame -> Option String
+hoverValue idn frames = match responseById idn frames
+  None => None
+  Some j => match lookup "result" j
+    None => None
+    Some res => match lookup "contents" res
+      None => None
+      Some c => match lookup "value" c
+        Some v => asString v
+        None => None
+
+-- Does completion response `idn` include a CompletionItem whose label == needle?
+export
+completionHasLabel : Int -> List Frame -> String -> Bool
+completionHasLabel idn frames needle = match responseById idn frames
+  None => False
+  Some j => match lookup "result" j
+    Some (JArray items) => anyLabelEq items 0 (arrayLength items) needle
+    _ => False
+
+anyLabelEq : Array Json -> Int -> Int -> String -> Bool
+anyLabelEq items i n needle
+  | i >= n = False
+  | labelEq (arrayGetUnsafe i items) needle = True
+  | otherwise = anyLabelEq items (i + 1) n needle
+
+labelEq : Json -> String -> Bool
+labelEq it needle = match lookup "label" it
+  Some v => match asString v
+    Some s => s == needle
+    None => False
+  None => False
+
+-- Does `hay` contain `needle` as a substring? (reuses the module's matchesAt).
+export
+strContains : String -> String -> Bool
+strContains hay needle =
+  let h = stringToChars hay
+  strContainsGo h (arrayLength h) needle 0
+
+strContainsGo : Array Char -> Int -> String -> Int -> Bool
+strContainsGo h hlen needle i
+  | i >= hlen = False
+  | matchesAt h hlen i needle = True
+  | otherwise = strContainsGo h hlen needle (i + 1)
+
 {- ── semanticTokens/full decode ──────────────────────────────────────────────
    The response carries `result.data`: a flat int array, 5 ints per token
    (`deltaLine, deltaChar, length, tokenType, modifiers`).  We pull it out, undo
@@ -365,6 +432,21 @@ diagPublishedFor _ [] = False
 diagPublishedFor uri ((Frame _ body _)::rest) = match parse body
   Ok j => if isPublishFor uri j then True else diagPublishedFor uri rest
   Err _ => diagPublishedFor uri rest
+
+-- The diagnostic count of the LAST publishDiagnostics for `uri` (its CONVERGED
+-- state after a burst of edits).  Proves the parse-cache re-analyzed the changed
+-- entry buffer each keystroke rather than serving a stale parse: the final publish
+-- must reflect the final text, not an earlier cached one.  None means "never
+-- published" (the caller pairs this with diagPublishedFor to reject that).
+export
+lastDiagCountFor : String -> List Frame -> Option Int
+lastDiagCountFor uri frames = lastDiagGo uri frames None
+
+lastDiagGo : String -> List Frame -> Option Int -> Option Int
+lastDiagGo _ [] acc = acc
+lastDiagGo uri ((Frame _ body _)::rest) acc = match parse body
+  Ok j => if isPublishFor uri j then lastDiagGo uri rest (Some (jDiagLen j)) else lastDiagGo uri rest acc
+  Err _ => lastDiagGo uri rest acc
 
 methodEq : Json -> String -> Bool
 methodEq j m = match lookup "method" j

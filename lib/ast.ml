@@ -147,6 +147,33 @@ and do_stmt =
 
 and expr =
   | ELit          of literal
+  | ENumLit       of int * float option ref * resolved option ref
+                     (* PLAN.md #11: a *source* integer literal, polymorphic over
+                        `Num a`.  The parser emits this (never `ELit (LInt)`) for
+                        an integer in expression position.  typecheck infers a
+                        fresh `Num`-obligated var; the post-HM defaulting pass
+                        grounds an ambiguous Num-only var to Int; then a side-pass
+                        stamps the float ref `Some f` iff the literal's inferred
+                        type ground to Float.  `Elaborate`/`Dict_pass` rewrite the
+                        node to `ELit (LFloat f)` (float ref = Some f) or
+                        `ELit (LInt n)` (both refs None) before eval, so eval
+                        never sees `ENumLit`.
+
+                        Soundness fix (numlit-soundness-fromint): when the
+                        literal's var survives as a still-quantified `Num a` (e.g.
+                        the `1` in `inc x = x + 1`, `inc : Num a => a -> a`), it is
+                        NEITHER concrete Int NOR Float — defaulting leaves it free
+                        because it reaches an arg.  Then typecheck fills the third
+                        `resolved option ref` with the `fromInt` route (RDict onto
+                        the enclosing `Num a` dict param), and Dict_pass rewrites
+                        the node to `EApp (EMethodRef (route, "fromInt"),
+                        ELit (LInt n))` so the runtime Num dict (Int→identity,
+                        Float→intToFloat) elaborates the literal — closing the
+                        `inc 2.5 ⇒ VInt+VFloat` mixed-tag panic.
+
+                        Rendered identically to `ELit (LInt n)` by printer/astdump
+                        so it is invisible to the round-trip and the
+                        OCaml↔selfhost sexp diff. *)
   | EVar          of ident
   | EApp          of expr * expr
   | ELam          of pat list * expr                    (* pat+ => body *)
@@ -193,6 +220,7 @@ and expr =
   | ERangeArray   of expr * expr * bool                 (* [|lo..hi|] / [|lo..=hi|]; bool=inclusive *)
   | ESlice        of expr * expr * expr * bool          (* e.[lo..hi] / e.[lo..=hi]; bool=inclusive *)
   | ELoc          of loc * expr                         (* source position; transparent to semantics *)
+  | EDoOrigin     of loc * expr                         (* Phase 150: transparent marker wrapping a do-lowered chain; carries the do-block loc so typecheck can emit a tailored "do requires a monad" error. Desugar-introduced, never round-tripped. *)
   | EMethodRef    of resolved option ref * ident         (* interface-method occurrence; ref filled by typecheck (Phase 69) *)
   | EDictApp      of res_route list option ref * ident   (* constrained-function occurrence; routes filled by typecheck (Phase 69.x) *)
   (* Surface-only sugar nodes.  The parser produces these so the formatter can
@@ -399,6 +427,7 @@ let rec pp_pat = function
 
 let rec pp_expr = function
   | ELit l              -> pp_lit l
+  | ENumLit (n, _, _)   -> string_of_int n
   | EVar x              -> x
   | EApp (f, x)         -> Printf.sprintf "(%s %s)" (pp_expr f) (pp_expr x)
   | ELam (ps, e)        -> Printf.sprintf "(%s => %s)" (String.concat " " (List.map pp_pat ps)) (pp_expr e)
@@ -470,6 +499,7 @@ let rec pp_expr = function
   | ESlice (e, lo, hi, incl) ->
     Printf.sprintf "%s.[%s%s%s]" (pp_expr e) (pp_expr lo) (if incl then "..=" else "..") (pp_expr hi)
   | ELoc (_, e)          -> pp_expr e
+  | EDoOrigin (_, e)     -> pp_expr e
   | EMethodRef (_, x)    -> x
   | EDictApp (_, x)      -> x
   | EGuards arms ->
@@ -512,6 +542,7 @@ and pp_do_stmt = function
    tests so that position metadata doesn't break structural equality. *)
 let rec strip_locs_expr = function
   | ELoc (_, e)            -> strip_locs_expr e
+  | EDoOrigin (_, e)       -> strip_locs_expr e
   | EApp (f, x)            -> EApp (strip_locs_expr f, strip_locs_expr x)
   | ELam (ps, e)           -> ELam (ps, strip_locs_expr e)
   | ELet (m, f, p, e1, e2) -> ELet (m, f, p, strip_locs_expr e1, strip_locs_expr e2)

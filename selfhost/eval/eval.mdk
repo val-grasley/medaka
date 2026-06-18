@@ -951,6 +951,12 @@ isPartial _ = False
 export
 eval : EvalEnv -> Expr -> <Mut> Value
 eval _ (ELit (LInt n)) = VInt n
+-- PLAN.md #11: dictPass rewrites every ENumLit to ELit before eval; these arms
+-- are defensive for an untyped/non-elaborate eval path (a bare int → VInt; a
+-- Float-stamped ref → VFloat, matching eval_arith's value tags).
+eval _ (ENumLit n r _) = match r.value
+  Some f => VFloat f
+  None => VInt n
 eval _ (ELit (LFloat f)) = VFloat f
 eval _ (ELit (LString s)) = VString s
 eval _ (ELit (LChar c)) = VChar c
@@ -1045,6 +1051,7 @@ eval env (ERangeArray lo hi incl) =
 -- current_loc there; the self-hosted eval surfaces errors via panic, so we just
 -- recurse into the wrapped expr).
 eval env (ELoc _ e) = eval env e
+eval env (EDoOrigin _ e) = eval env e
 eval _ _ = panic "eval: unsupported node (slice 2)"
 
 export

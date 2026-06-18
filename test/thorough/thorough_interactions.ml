@@ -466,7 +466,7 @@ let t_multi_clause_ctor =
 unwrap None = 0
 r = (unwrap (Some 42), unwrap None)
 |}
-    "r" "(Int, Int)"
+    "r" "(Int, a)"
     (VTuple [VInt 42; VInt 0])
 
 let t_multi_clause_with_guard =

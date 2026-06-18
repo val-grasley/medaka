@@ -57,6 +57,11 @@ let () =
         Ast.DFunDef (false, "otherwise", [], Ast.ELit (Ast.LBool true)) in
       Eval.eval_program ~prelude:false (otherwise_decl :: parse_desugar target)
   in
+  (* A `main` whose result is Unit prints nothing — matching `main.exe run` /
+     native, which suppress the Unit-main auto-print (d0a99a9): a Unit main is an
+     effect sequence, its `()` result is not a value to render.  Value mains still
+     print their result via pp_value. *)
   match last_assoc "main" bindings with
+  | Some Eval.VUnit -> ()
   | Some v -> print_string (Eval.pp_value v); print_newline ()
   | None -> prerr_endline "eval_probe: no `main` binding"; exit 1

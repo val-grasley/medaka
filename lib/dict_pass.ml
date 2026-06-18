@@ -148,6 +148,22 @@ let rewrite_binop e = match e with
     let m = operator_method op in
     let call = EApp (EApp (EMethodRef (dref, m), l), r) in
     if op = "!=" then EApp (EVar "not", call) else call
+  (* PLAN.md #11: re-tag a source integer literal to its inferred runtime rep.
+     typecheck's set_numlit_floats decided one of three:
+       - float cell Some f       ⇒ concrete Float ⇒ ELit (LFloat f)
+       - both cells empty         ⇒ concrete Int   ⇒ ELit (LInt n)
+       - dref Some _ (a `fromInt` route) ⇒ the literal stayed a polymorphic
+         `Num a` (or an exotic user numeric type): dispatch it through the Num
+         dictionary at runtime via `fromInt n` — the SAME dict the enclosing
+         `Num a => …` function threads (RDict route) — closing the soundness hole
+         where `inc x = x + 1` instantiated at Float crashed `VFloat + VInt`.
+     Done here (the single rewrite shared by every eval driver: single-file
+     Elaborate.elaborate, eval_modules_ex, doctest) so eval never sees ENumLit
+     and eval_arith gets matching tags. *)
+  | ENumLit (_, { contents = Some f }, _) -> ELit (LFloat f)
+  | ENumLit (n, { contents = None }, ({ contents = Some _ } as dref)) ->
+    EApp (EMethodRef (dref, "fromInt"), ELit (LInt n))
+  | ENumLit (n, { contents = None }, { contents = None })   -> ELit (LInt n)
   | _ -> e
 
 let rewrite_binops (prog : program) : program =

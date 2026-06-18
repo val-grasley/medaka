@@ -1,4 +1,4 @@
-# Next-orchestrator handoff — Medaka, soak tail (2026-06-16)
+# Next-orchestrator handoff — Medaka, soak tail (2026-06-17)
 
 You are the **orchestrator** for Medaka, a self-hosting functional language whose native
 LLVM backend is now CANONICAL (compiles itself + all user code OCaml-free). You design and
@@ -7,14 +7,89 @@ coherent. You usually do NOT implement directly. **Read `.claude/ORCHESTRATING.m
 (the orchestrator playbook — core loop, agent-prompt skeleton, verification discipline,
 footguns) and `AGENTS.md` (the agent-facing router/map).
 
-## RESUME — Async monad COMPLETE through ASYNC-DESIGN §7. local `main` = 463daaa
+## Multi-session state — RECONCILED (concurrent `d0a99a9` now merged)
+This session ran alongside at least one other (several agent worktrees + a concurrent branch existed).
+As of this handoff the state is reconciled and on `main`:
+- **`main` branch tip = `76177ca`** — holds THIS session's #11 arc + QoL 148/150, the concurrent
+  `d0a99a9` work, its completion fix, and a fresh seed. **Fully gated, all diff gates 0-failing,
+  fixpoint C3a/C3b YES, `bootstrap_from_seed` C3a PASS.**
+- **Concurrent `d0a99a9` (Unit-`main` no-autoprint + native printer `ENumLit` arm/fmt SIGTRAP) — MERGED**
+  (`62e8f80`). It landed INCOMPLETE (suppressed Unit-main in native-emit only → 5 `diff_selfhost_llvm`
+  interp-vs-golden failures); **completed in `7540a7e`** by suppressing the Unit-`main` auto-print in
+  `dev/eval_probe.ml` too + recapturing the 5 stale `.eval.golden`. **Now native, interp, and CLI all
+  agree: a Unit `main` prints nothing; value `main`s print their result.** This RETIRES the old
+  "run/build print a trailing `0`, compare `head -1`" workaround — Unit mains are clean now. Memory:
+  `project_unit_main_no_autoprint`. **GOTCHA for whoever merges another concurrent branch:** that
+  Unit-main change touched the emitter graph (`llvm_emit.mdk` `mainIsUnit`) — re-mint the seed after
+  (done here). And a "native-emit-only" output change will silently fail `diff_selfhost_llvm` (golden
+  from `dev/eval_probe`) unless the OCaml probe is aligned too — always run the FULL diff battery, not
+  just the build gate, after an output-semantics change.
+- **`project_head_stale_goldens_fmt_regression` memory is now mostly stale** — its "STILL OPEN" Num
+  defaulting + `default_body` wording are CLOSED (`18176ea`); its fmt/Unit-main items are merged. Trust
+  this HANDOFF + `project_numpoly_literals_done` over it.
+- **Worktree hygiene:** several worktrees were live (`agent-af09870d`, `fluttering-jumping-platypus`,
+  `keen-stirring-lecun`, `rosy-marinating-backus`@`aeeed21`-stale, plus this session's
+  `lively-herding-gizmo`). Audit `git worktree list`; prune the ones whose branches are merged into
+  `main` (preserve any with unmerged commits + any still-running agent's).
+
+## RESUME — #11 Num-polymorphic integer literals COMPLETE (run + build, both compilers, full parity; + concurrent d0a99a9 merged). `main` = 76177ca
+**#11 SHIPPED end-to-end (2026-06-16), native == OCaml oracle on every front, all diff gates 0-failing,
+fixpoint C3a/C3b YES, seed re-minted (`bootstrap_from_seed` C3a PASS).** Expression-position integer
+literals are `Num a`-polymorphic in both compilers. Design+locked decisions: `NUMLIT-DESIGN.md` (§0).
+Memory: `project_numpoly_literals_done` (authoritative). Mechanism: transparent `ENumLit` node +
+defaulting pass (ground *ambiguous* not-arg-reachable Num var → Int, §0.2) + post-HM elaboration
+(concrete-Int→`LInt`, concrete-Float→`LFloat`, **poly-survivor→`fromInt n` dict-dispatched**). Int-only
+(no Fractional); patterns stay Int. **Landing log:** Stages 0-2 OCaml `eac278b`; Stages 3-4 selfhost
+`7424b64`; soundness fix `e7031e6`/`183b7b4`; emitter Gap E/C4 `a8b95d7`; obligation hole `68d9da1`;
+gate re-rooting `bee51ba`; value-level defaulting + default-method error `4fc5f47`/`18176ea`.
+
+**The soak found SIX real native/oracle divergences in #11 — all closed. #11 was bug-dense; the
+differential oracle earned its keep. Each was found by verifying the feature's FRONTIER, not agent
+"green" reports (see the ORCHESTRATING note added this session):**
+1. **Run-path soundness hole** — interim static-`VInt` stamp made `inc 2.5` typecheck but PANIC at
+   runtime; fixed by routing surviving-poly literals through `fromInt` (dict-dispatched). `e7031e6`/`183b7b4`.
+2. **Emitter Gap E/C4** — unannotated poly-`Num` fn at Float (`dbl x = x+x`, no literal) built to SILENT
+   GARBAGE (`LTNum` seeded only when `dsig=Some` → integer `add` on Float box); seeded `LTNum` for any
+   unannotated arith-used param + `reservedCtorsOfType` Foldable fallback. `a8b95d7`.
+3. **Obligation hole** — native `check` ACCEPTED `g = f "hello"` (`f:Num a=>a->a`, concrete `Num String`
+   at a let-binding) → typechecked then crashed; selfhost constraint tracking was fused with dict/emit
+   and empty on the plain check path; added always-on `schemeObligationsRef`/`checkCallObligations`. `68d9da1`.
+4. **Gate-blindness** — two typecheck gates' goldens came from a no-prelude probe that #11's `1`→`fromInt 1`
+   breaks (`Unbound fromInt`); re-rooted prelude-dependent fixtures onto `dev/tc_module_probe` via a
+   `PRELUDE_DEP_TC` name-list (test-only). `bee51ba`.
+5. **Value-level Num defaulting** — native left `nums=[1,2,3]` as `List a` vs oracle/§0.2 `List Int`; the
+   no-prelude HM driver wasn't recording the literal's `Num` obligation at all (so nothing to default);
+   recorded it unconditionally + suppressed the no-prelude reject for a grounded `Num Int`; + specialized
+   default-method-body error. `4fc5f47`/`18176ea`.
+6. **fmt printer ENumLit gap** — found+fixed by the CONCURRENT session (`d0a99a9`, now MERGED) +
+   its Unit-main completion `7540a7e`. See the reconciliation section at top.
+
+**QoL diagnostics (this session, on `main`):** Phase 148 (non-contiguous top-level binding clauses →
+`DuplicateBinding` error, `7d755a9`) + Phase 150 (`do` on a non-monad → tailored monad message via an
+`EDoOrigin` node, `5d11e77`), both compilers, fixpoint-clean.
+
+**Tracked follow-ups (low urgency, in PLAN.md + memory):**
+- **`capture_goldens.sh tc` footgun** — corrupts literal-bearing fixtures NOT in `PRELUDE_DEP_TC`
+  (poly_let, index_default, effects, records, signatures, missing_field, unknown_field_create) to
+  `Unbound fromInt` on recapture. Goldens are correct NOW; widen `PRELUDE_DEP_TC` before the next bulk
+  `tc` recapture. Memory: `project_numpoly_literals_done`.
+- **`sum`/`product` `fromInt` workaround STAYS** (won't-do): reverting → the frozen oracle panics on the
+  point-free Float seed while native is correct. Memory: `project_oracle_fromint_pointfree_gap`.
+- **`-0.0` interp/native divergence** — pre-existing, esoteric, deferred. Memory: `project_negzero_interp_native_divergence`.
+
+## PRIOR — Async monad COMPLETE through ASYNC-DESIGN §7. (was `main` 463daaa)
+**ASYNC FEATURE SHIPPED (2026-06-16).** Value-level effect-poly `Async e a` monad, both backends, fixpoint-clean. `ASYNC-DESIGN.md` §0 = LOCKED decisions (authoritative); §7 staging all DONE. Memory: `project_async_design.md`. The stages, in order:
+- **Stage 1** (`stdlib/async.mdk`): effect-poly `data Async e a = Done a | Suspend (Unit -> <e> Async e a)`; Mappable/Applicative/Thenable; liftIO/yield/runAsync/stepAsync/concurrent; 7 doctests both backends. §2.1 encoding validated on the binary → CPS fallback NOT needed; trampoline stack-safe for COMPILED programs (`-O2` TCO), interpreter caps deep chains ~100–500k.
+- **Effect-row params on data decls** (2c1353a / native fix 85a9cb7): new `Mono` arm `TEff EffRow` / OCaml `TEff of effrow` in type-app arg slot; KRow kind-inferred from `<e>` field tails. Native gotcha: `instantiateSigTracked` seeds etbl from `effTailNames ++ rowArgNames` else bare KRow arg collapses to pureRow → spurious `<IO>` leak. Guard: `test/diff_fixtures/effect_param.mdk`.
+- **Stage 2** (26784fb): `main : Async _` driver dispatch BOTH backends, type-directed (main head tycon == "Async"). OCaml `bin/main.ml` Run → apply root_env `runAsync` to forced main. Native: `mainSchemeRef`+`mainTypeIsAsync` (typecheck.mdk), `evalModulesOutputAsync` over root FULL env (eval.mdk), `medaka_cli` run arm picks path. Type-level only → fixpoint-safe. **PARSER LIMITATION:** `<IO>` row literal won't parse in type-app arg position → annotate `main` unannotated OR `import async.*` + `main : Async e Unit`.
+- **Stage 3 / D7** (463daaa): dropped vestigial `Async`/`Time` from `builtInEffects`/`builtin_effects` both backends; `<Async>`/`<Time>` → `UnknownEffect`. Vocabulary-only → IR unchanged, fixpoint C3a/C3b green, **no seed re-mint**. `language-design.md` `<Async>`/`<Time>` prose deliberately left (intent doc for superseded design; SYNTAX.md = binary ground truth).
 **ASYNC FEATURE SHIPPED (2026-06-16).** Value-level effect-poly `Async e a` monad, both backends, fixpoint-clean. `ASYNC-DESIGN.md` §0 = LOCKED decisions (authoritative); §7 staging all DONE. Memory: `project_async_design.md`. The stages, in order:
 - **Stage 1** (`stdlib/async.mdk`): effect-poly `data Async e a = Done a | Suspend (Unit -> <e> Async e a)`; Mappable/Applicative/Thenable; liftIO/yield/runAsync/stepAsync/concurrent; 7 doctests both backends. §2.1 encoding validated on the binary → CPS fallback NOT needed; trampoline stack-safe for COMPILED programs (`-O2` TCO), interpreter caps deep chains ~100–500k.
 - **Effect-row params on data decls** (2c1353a / native fix 85a9cb7): new `Mono` arm `TEff EffRow` / OCaml `TEff of effrow` in type-app arg slot; KRow kind-inferred from `<e>` field tails. Native gotcha: `instantiateSigTracked` seeds etbl from `effTailNames ++ rowArgNames` else bare KRow arg collapses to pureRow → spurious `<IO>` leak. Guard: `test/diff_fixtures/effect_param.mdk`.
 - **Stage 2** (26784fb): `main : Async _` driver dispatch BOTH backends, type-directed (main head tycon == "Async"). OCaml `bin/main.ml` Run → apply root_env `runAsync` to forced main. Native: `mainSchemeRef`+`mainTypeIsAsync` (typecheck.mdk), `evalModulesOutputAsync` over root FULL env (eval.mdk), `medaka_cli` run arm picks path. Type-level only → fixpoint-safe. **PARSER LIMITATION:** `<IO>` row literal won't parse in type-app arg position → annotate `main` unannotated OR `import async.*` + `main : Async e Unit`.
 - **Stage 3 / D7** (463daaa): dropped vestigial `Async`/`Time` from `builtInEffects`/`builtin_effects` both backends; `<Async>`/`<Time>` → `UnknownEffect`. Vocabulary-only → IR unchanged, fixpoint C3a/C3b green, **no seed re-mint**. `language-design.md` `<Async>`/`<Time>` prose deliberately left (intent doc for superseded design; SYNTAX.md = binary ground truth).
 
-**Known non-regression:** `@thorough` shows 25 failures = pre-existing #55 sum/product TYPES drift (`a Int -> Int` golden vs `a b -> b` actual, task #11) — NOT async-related (failure outputs grep-clean of `Async|Time|UnknownEffect`).
+**Note:** the `@thorough` 25-failure note below is RESOLVED (see #11 RESUME above — they were stale goldens from G9, recaptured).
 
 **Deferred async (per ASYNC-DESIGN non-goals):** `await`/`sleep`, real parallelism/threads, non-blocking syscalls, `spawn`/`Task` handles, cancellation/timeouts/select/race/streams. The robust-runtime swap (§5) replaces scheduler internals only — `Async`'s public face + laws + `concurrent` contract + `main : Async` must stay fixed.
 
@@ -41,9 +116,10 @@ Then the manifest/platform layer (the earlier `CAPABILITY-EFFECTS-RESEARCH.md` d
 
 **Prior (superseded) NEXT note — manifest-format design — is deferred until the v2 language features land.**
 
-## Where things stand (local `main` = 6dd74dc; nothing pushed — work lives on LOCAL main)
+## Where things stand (`main` branch = 76177ca; concurrent d0a99a9 MERGED — see top; nothing pushed)
 The big multi-session arc is essentially done. Verify current state, don't trust this verbatim:
-- `cd /Users/val/medaka && git log --oneline -20 main` (the recent landings).
+- `cd /Users/val/medaka && git log --oneline -20 main` (the recent landings) AND `git worktree list`
+  (check for the concurrent `fix/unit-main-autoprint-fmt-numlit` branch + agent worktrees still live).
 - In a worktree: `export PATH="$HOME/.opam/5.4.1/bin:$PATH" && export MEDAKA_EMITTER=$PWD/medaka_emitter && make medaka && FORCE=1 bash test/build_oracles.sh && bash test/selfcompile_fixpoint.sh` (should print C3a YES / C3b YES — the decisive emitter gate).
 
 DONE (don't re-do; full record in `PLAN.md` "Current status" + `PLAN-ARCHIVE.md` Stage-3/4 logs):
@@ -78,11 +154,15 @@ fixpoint-gated byte-identical:
 ## The standing goal: the SOAK, then gated `lib/` removal
 Native is canonical; OCaml `lib/`+`bin/` is FROZEN in-tree as the differential oracle. **The
 user's gate to delete `lib/` (memory `[[retirement-is-not-removal]]`): a clean day-or-two stretch
-of native-only dev where we STOP hitting bugs/gaps.** This session (2026-06-15) surfaced+fixed a
-real native-only correctness bug (#24 guard-binder scoping), latent helper drift, and an inherited
-golden break — so the soak clock **restarts again from this checkpoint**. Do NOT `rm lib/` until the
-user explicitly calls the soak. Until then: keep native canonical, fix what real use surfaces,
-keep all gates + fixpoint green.
+of native-only dev where we STOP hitting bugs/gaps.** **The 2026-06-16/17 #11 arc surfaced+fixed
+SIX real native/oracle divergences (run-path soundness, emitter Gap E/C4, obligation hole,
+gate-blindness, value-level defaulting, fmt-printer ENumLit) — so the soak clock RESTARTS HARD from
+this checkpoint.** #11 was a bug-dense feature and the frozen oracle caught every divergence; that is
+strong evidence the soak is NOT yet clean and `lib/` must stay. Do NOT `rm lib/` until the user
+explicitly calls the soak. Until then: keep native canonical, fix what real use surfaces, keep all
+gates + fixpoint green. **Best next soak activity = real-program use (dogfood `mq`, the jq-in-Medaka
+project) — that is exactly what surfaces these bugs and satisfies the "tooling exercised end-to-end"
+removal gate.**
 
 ## Open items (all durably documented — verify before acting; docs drift)
 - **`lib/` removal** — soak-gated (above). The endgame.
@@ -123,7 +203,9 @@ keep all gates + fixpoint green.
 - **Seed:** emitter-graph changes leave the gz seed (`selfhost/seed/emitter.ll.gz`) stale; agents
   do NOT re-mint (they rely on the fixpoint). The ORCHESTRATOR re-mints
   (`CHECK_OCAML=0 bash test/refresh_seed.sh` → verify `bootstrap_from_seed.sh`) only at real
-  checkpoints. Currently FRESH (re-minted at 6dd74dc).
+  checkpoints. Currently FRESH (re-minted at `76177ca`, after merging d0a99a9 emitter change;
+  `bootstrap_from_seed` C3a PASS byte-for-byte). NOTE: the concurrent `d0a99a9` is emit/printer work
+  — if you merge it, re-check whether its changes touched the emitter graph and re-mint if so.
 - Build in the worktree with `dune build --root .`; never `dune test` (hangs); opam env is pre-set
   (no `eval $(opam env)`). The task list is SESSION-LOCAL — durable items go in PLAN.md/docs/memory.
 
