@@ -126,10 +126,13 @@ emittingRoots (d::rest)
   | isEmittingDecl d = declRefs d ++ emittingRoots rest
   | otherwise = emittingRoots rest
 
--- Only DImpl / DInterface lower to emitted code among the non-DFunDef decls.
+-- DImpl / DInterface lower to emitted code among the non-DFunDef decls.
+-- DLetGroup also lowers to emitted code (funClausesOf/lowerGroups in core_ir_lower)
+-- so its refs must seed reachability, or DFunDefs called only from a let-group are DCE'd.
 isEmittingDecl : Decl -> Bool
 isEmittingDecl DImpl { ... } = True
 isEmittingDecl DInterface { ... } = True
+isEmittingDecl (DLetGroup _ _) = True
 isEmittingDecl _ = False
 
 -- ── worklist closure ───────────────────────────────────────────────────────

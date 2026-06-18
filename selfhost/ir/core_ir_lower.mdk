@@ -1006,7 +1006,19 @@ funClausesOf : List Decl -> List (String, CClause)
 funClausesOf [] = []
 funClausesOf ((DFunDef _ n pats body)::rest) =
   (n, CClause pats (lower body)) :: funClausesOf rest
+-- Top-level `let rec … with …` (DLetGroup): flatten each binding's clauses
+-- into (name, CClause) entries, mirroring eval.mdk's funDefs/letGroupDefs.
+funClausesOf ((DLetGroup _ binds)::rest) =
+  letGroupClausesOf binds ++ funClausesOf rest
 funClausesOf (_::rest) = funClausesOf rest
+
+letGroupClausesOf : List LetBind -> List (String, CClause)
+letGroupClausesOf [] = []
+letGroupClausesOf ((LetBind n clauses)::rest) =
+  map (lowerLetBind n) clauses ++ letGroupClausesOf rest
+
+lowerLetBind : String -> FunClause -> (String, CClause)
+lowerLetBind n (FunClause pats body) = (n, CClause pats (lower body))
 
 groupNames : List (String, CClause) -> List String -> List String
 groupNames [] _ = []

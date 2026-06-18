@@ -1,0 +1,8 @@
+-- Top-level DLetGroup (`let rec … with …`): constrained mutual-recursive build.
+let rec isEven n = if n == 0 then True else isOdd (n - 1)
+with isOdd n = if n == 0 then False else isEven (n - 1)
+
+main : <IO> Unit
+main =
+  let _ = putStrLn (if isEven 4 then "even" else "odd")
+  putStrLn (if isOdd 3 then "yes" else "no")

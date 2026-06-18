@@ -120,7 +120,7 @@ that. A result is PASS iff `native_output == oracle_output ++ "\n()"`.
 | `let x : T = e` in block (block annotated let) | GAP | see §Gaps below |
 | `let f x = e in body` (let-bound function) | PASS | (tested inline) |
 | `let rec f = x => ...` in block | GAP | see §Gaps below |
-| `let rec ... with ...` at top-level | GAP | see §Gaps below |
+| `let rec ... with ...` at top-level | PASS | `letgroup_toplevel.mdk` (eval+build) |
 | Top-level mutual recursion (separate clauses) | PASS | `toplevel_mutual_rec.mdk` |
 | `let mut x = e` + reassignment `x = e` | PASS | `let_mut_reassign.mdk` |
 | `let mut r = Ref e` + `set_ref r v` + `r.value` | PASS | `ref_let_mut.mdk` |
@@ -366,13 +366,13 @@ repros all hit A1 first, masking the real downstream behavior):**
   **No selfhost change made.**
 | A5 | `where` clause inline (at end-of-body-line) | ✅ CLOSED (2026-06-18 audit) — both ref and selfhost handle inline `where`; the block form may still differ; by-design | `f x = x where g = 1` |
 | A6 | `let rec fib = n => ...` in block (block form) | Both ref and selfhost fail; ref: `Parse error` at col 0 | N/A — both parsers reject this |
-| A7 | `let rec ... with ...` at top-level | **RESOLVE/EVAL GAP (re-classified 2026-06-18 audit — NOT a parser/emitter gap).** Native parser accepts the syntax; `selfhost/frontend/resolve.mdk` (and eval) drops the `with`-clause binding → `UnboundVariable`. Oracle runs it correctly. Fix target: `selfhost/frontend/resolve.mdk`. | `let rec isEven = n => ... with isOdd = n => ...` |
+| A7 | `let rec ... with ...` at top-level | **CLOSED (2026-06-18 — BUILD residual CLOSED).** Resolve/eval was fixed in prior work. Core IR lowering (`funClausesOf` in `core_ir_lower.mdk`) and DCE (`isEmittingDecl` in `dce.mdk`) now handle `DLetGroup` — both unconstrained and constrained `medaka build` work. Fixpoint holds. | `let rec isEven n = ... with isOdd n = ...` |
 | A8 | `do` inside a named function body when function has `<IO>` effect type | ✅ CLOSED (2026-06-18 audit) — both compilers reject `do` on IO (IO is not a monad by design; use bare indented blocks); by-design | `printTwo : <IO> Unit \n printTwo = do \n  putStrLn "x"` |
 | A9 | Record `deriving (Debug)` (block form, indent) | ✅ CLOSED (2026-06-18 audit) — works in both compilers | `record Point \n  x : Int \n  y : Int \n  deriving (Debug)` |
 | A10 | Annotated `let x : T = e` in block (block form) | Both ref and selfhost fail; ref: `Parse error` | N/A — both parsers reject this |
 | A11 | `@`-pattern in lambda / function param (e.g. `setX v p@(Pt {x,y}) = ...`) | ✅ CLOSED (2026-06-18 audit) — works in both fn params AND lambda | `f p@{x,y} = x` |
 
-**Fix target:** `selfhost/parser.mdk` for A2/A3 emit; `selfhost/frontend/resolve.mdk` for A7.
+**Fix target:** `selfhost/parser.mdk` for A2/A3 emit; A7 CLOSED (see above).
 
 ---
 
@@ -451,7 +451,7 @@ Historical table (as of 2026-06-10; statuses updated below):
 | D1 | Backtick infix `` a `divide` b `` | **PASS** (2026-06-10) — fixture `backtick_infix.mdk` |
 | D2 | Newtype constructor `UserId 42` used as a function | **PASS** (2026-06-10) — fixture `newtype_ctor_fn.mdk` |
 | D3 | Named impl `combine @Sum` hint syntax | `unbound variable '@Sum'` |
-| D4 | `let rec ... with ...` top-level mutual rec | `unbound variable 'isEven'` — mutual rec bindings not wired together |
+| D4 | `let rec ... with ...` top-level mutual rec | **CLOSED (2026-06-18)** — `funClausesOf` in `core_ir_lower.mdk` + `isEmittingDecl` in `dce.mdk` now handle `DLetGroup`; both `run` and `build` correct; fixpoint holds. |
 
 **D1 root cause + fix (2026-06-10).** `` a `f` b `` parses to `EInfix "f" a b` and
 lowers correctly to `CApp (CApp (CVar "f" AGlobal) a) b`. The bug was NOT in
