@@ -603,6 +603,11 @@ data LTy
   | LTChar
   | LTUnknown
   | LTNum
+  -- LTFloatU: the register holds an UNBOXED `double`, not an i64 word.  Used ONLY
+  -- for a let-bound float that is not captured by any lambda (so it never reaches
+  -- the pure `lookupVar`/capWords path).  Every read through `lookupVarG` boxes it
+  -- back to an i64 word (escape coercion); only `emitFloatLeaf` consumes it raw.
+  | LTFloatU
 
 -- emitter state: a fresh-name counter, the output lines (accumulated in REVERSE
 -- — prepend is O(1); reverseL'd once at the end restores program order), the
@@ -1026,6 +1031,7 @@ isLocal env x = match lookupAssoc x env
 -- dict/internal callers keep the pure `lookupVar` panic).
 lookupVarG : Emit -> List (String, (String, LTy)) -> String -> <Mut> (String, LTy)
 lookupVarG e env x = match lookupAssoc x env
+  Some (reg, LTFloatU) => (boxFloat e reg, LTFloat)
   Some vt => vt
   None => match lookupAssoc x (globalsRegRef e).value
     Some (True, ty) =>
@@ -1831,6 +1837,7 @@ staticIsFloat env ex = match ex
   CLit (LFloat _) => True
   CVar x _ => match lookupAssoc x env
     Some (_, LTFloat) => True
+    Some (_, LTFloatU) => True
     _ => False
   CBinPrim op l _ => isArithOp op && staticIsFloat env l
   _ => False
@@ -1853,9 +1860,19 @@ emitFloatD e env ex = match ex
   _ => emitFloatLeaf e env ex
 
 emitFloatLeaf : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> String
-emitFloatLeaf e env ex =
-  let (w, _) = emitExpr e env ex
-  unboxFloat e w
+emitFloatLeaf e env ex = match floatVarReg env ex
+  Some reg => reg
+  None =>
+    let (w, _) = emitExpr e env ex
+    unboxFloat e w
+
+-- the unboxed-double register for an LTFloatU let-bound CVar (a float-let kept
+-- unboxed in the env), else None — then emitFloatLeaf unboxes the boxed word.
+floatVarReg : List (String, (String, LTy)) -> CExpr -> Option String
+floatVarReg env (CVar x _) = match lookupAssoc x env
+  Some (reg, LTFloatU) => Some reg
+  _ => None
+floatVarReg _ _ = None
 
 -- arithmetic preserves operand type (well-typed: both operands share a type).
 emitArith : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
@@ -2099,8 +2116,12 @@ emitIf e env c t f =
 
 emitLet : Emit -> List (String, (String, LTy)) -> Bool -> Pat -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitLet e env False (PVar x) e1 e2 =
-  let (v, ty) = emitExpr e env e1
-  emitExpr e ((x, (v, ty)) :: env) e2
+  if staticIsFloat env e1 then
+    let d = emitFloatD e env e1
+    emitExpr e ((x, (d, LTFloatU)) :: env) e2
+  else
+    let (v, ty) = emitExpr e env e1
+    emitExpr e ((x, (v, ty)) :: env) e2
 emitLet e env False PWild e1 e2 =
   let _ = emitExpr e env e1
   emitExpr e env e2
@@ -2217,7 +2238,7 @@ emitGroupBind e env (CBind name clauses) =
   let lamName = "mdk_lam" ++ intToString (freshId e)
   let arity = clauseArity (clauseList clauses)
   let captured = keepInEnv env (removeStr name (dedupS (clausesFreeVars name clauses)))
-  let captureWords = capWords env captured
+  let captureWords = capWords e env captured
   let _ = emitGroupBindDefine e lamName name arity clauses captured
   emitClosureAlloc e lamName captureWords
 
@@ -2307,7 +2328,7 @@ knotAlloc e env cellEnv (_::rest) = knotAlloc e env cellEnv rest
 knotPatch : Emit -> List (String, (String, LTy)) -> List KnotCell -> <Mut> Unit
 knotPatch _ _ [] = ()
 knotPatch e env ((KnotCell _ cellPtr captureNames)::rest) =
-  let words = capWords env captureNames
+  let words = capWords e env captureNames
   let _ = storeFields e cellPtr words 1
   knotPatch e env rest
 
@@ -2338,8 +2359,12 @@ emitBlock e env ((CSExpr ex)::rest) =
   let _ = emitExpr e env ex
   emitBlock e env rest
 emitBlock e env ((CSLet _ (PVar x) ex)::rest) =
-  let (v, ty) = emitExpr e env ex
-  emitBlock e ((x, (v, ty)) :: env) rest
+  if staticIsFloat env ex then
+    let d = emitFloatD e env ex
+    emitBlock e ((x, (d, LTFloatU)) :: env) rest
+  else
+    let (v, ty) = emitExpr e env ex
+    emitBlock e ((x, (v, ty)) :: env) rest
 emitBlock e env ((CSLet _ PWild ex)::rest) =
   let _ = emitExpr e env ex
   emitBlock e env rest
@@ -3902,7 +3927,7 @@ emitLamGo e env pats body =
   let lamName = "mdk_lam" ++ intToString (freshId e)
   let pnames = patVarNames pats
   let captured = keepInEnv env (dedupS (freeVars pnames body))
-  let captureWords = capWords env captured
+  let captureWords = capWords e env captured
   let _ = emitLamDefine e lamName pats captured body
   emitClosureAlloc e lamName captureWords
 
@@ -3911,7 +3936,7 @@ emitLamPat e env pats body =
   let lamName = "mdk_lam" ++ intToString (freshId e)
   let pnames = patVarNames pats
   let captured = keepInEnv env (dedupS (freeVars pnames body))
-  let captureWords = capWords env captured
+  let captureWords = capWords e env captured
   let _ = emitPatLamDefine e lamName [] pats captured body
   emitClosureAlloc e lamName captureWords
 
@@ -3931,7 +3956,7 @@ emitRecLamGo e env f pats body =
   let lamName = "mdk_lam" ++ intToString (freshId e)
   let pnames = patVarNames pats
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
-  let captureWords = capWords env captured
+  let captureWords = capWords e env captured
   let _ = emitRecLamDefine e lamName f pats captured body
   emitClosureAlloc e lamName captureWords
 
@@ -3944,7 +3969,7 @@ emitRecLamPat e env f pats body =
   let lamName = "mdk_lam" ++ intToString (freshId e)
   let pnames = patVarNames pats
   let captured = keepInEnv env (removeStr f (dedupS (freeVars pnames body)))
-  let captureWords = capWords env captured
+  let captureWords = capWords e env captured
   let _ = emitPatLamDefine e lamName [(f, ("%clos", LTClosure))] pats captured body
   emitClosureAlloc e lamName captureWords
 
@@ -4284,11 +4309,14 @@ loadCaptures e (c::rest) i =
   (c, (r, LTInt)) :: loadCaptures e rest (i + 1)
 
 -- the live operand words for a captured-name list (looked up in the emit env).
-capWords : List (String, (String, LTy)) -> List String -> List String
-capWords _ [] = []
-capWords env (c::rest) =
-  let (op, _) = lookupVar env c
-  op :: capWords env rest
+-- Routed through lookupVarG (Mut) so an LTFloatU let-bound float is BOXED to an
+-- i64 word before being stored into a closure capture slot (escape coercion) —
+-- the closure ABI is uniform i64, and loadCaptures reads captures back as words.
+capWords : Emit -> List (String, (String, LTy)) -> List String -> <Mut> List String
+capWords _ _ [] = []
+capWords e env (c::rest) =
+  let (op, _) = lookupVarG e env c
+  op :: capWords e env rest
 
 -- keep only the names present as keys in the emit env (the capturable locals);
 -- drop free names that resolve to top-level globals (known fns / ctors).
@@ -6328,6 +6356,7 @@ typeOf _ _ (CLit (LChar _)) = LTChar
 typeOf _ _ (CList _) = LTCon
 typeOf _ _ (CRangeList _ _ _) = LTCon
 typeOf _ env (CVar x _) = match lookupAssoc x env
+  Some LTFloatU => LTFloat
   Some t => t
   None => LTInt
 typeOf sigs env (CBinPrim op l r)

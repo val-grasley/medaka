@@ -104,11 +104,59 @@ loop-carried-unboxing lever (next).
 emitter's own float sites changed deterministically → reproduces byte-for-byte).
 Seed goes stale (emitter graph changed); not re-minted (fixpoint-verified per policy).
 
+### Win 2 — let-bound float unboxing (2026-06-17, `selfhost/backend/llvm_emit.mdk`)
+
+Keep a `let`-bound float value **unboxed** in the emit env (`LTFloatU` — the register
+holds a native `double`, not an i64 word), so float arith/compare on it reads the
+double directly instead of unbox-from-a-just-created-box. Box lazily, only on escape.
+
+The win over Win 1 (fusion): fusion eliminates intermediate boxes *within one
+arith tree*, but a `let zr2 = zr*zr` boxed `zr2` at the binding and every reader
+re-unboxed. Real numeric code is written with lets (`let zr2 = …; let zi2 = …; zr2 -
+zi2 + cr`), so each binding cost a box. `mandel_let` (let-style mandel): 5 boxes in
+the hot `escape` loop → **2**.
+
+Mechanism (safe-by-centralization):
+- `emitLet`/`emitBlock` CSLet: if the bound RHS is `staticIsFloat`, emit it as a
+  `double` (`emitFloatD`) and bind `(reg, LTFloatU)`.
+- **Escape coercion is centralized in `lookupVarG`** (the sole `Mut` var-read path):
+  reading an `LTFloatU` var boxes it back to `(i64, LTFloat)`. So every ordinary use
+  (tuple/record field, argument, return, non-float op) gets a proper boxed word —
+  `emitExpr`'s "returns i64" invariant is preserved.
+- `capWords` (closure captures) was the one *pure* `lookupVar` reader → rerouted
+  through `lookupVarG`, so a captured float-let is boxed into the closure slot
+  (closure ABI is uniform i64). No capture analysis needed.
+- Only `emitFloatLeaf` consumes an `LTFloatU` reg raw (the fast path, via
+  `floatVarReg`). `typeOf` normalizes `LTFloatU → LTFloat` (insurance).
+
+**Numbers (min-of-3):** `mandel_let` 0.07s → **0.03s** (2.3×, now == inline mandel).
+floatsum unchanged (its float is a *param* across a tail-call, not a let — needs
+worker-wrapper unboxing, see levers). Correctness: `mandel_let`, a capture/tuple/
+arith escape stress, and clean-stress all == interpreter oracle.
+
+**Gates:** clean-stress + mandel_let == `medaka run` oracle; `diff_selfhost_llvm`
+**180/0**; `selfcompile_fixpoint` **C3a/C3b YES**.
+
 ## Dead-ends
 
 (none yet)
 
 ## Bugs / language gaps observed
+
+- **PRE-EXISTING SOUNDNESS BUG — arith on type-lost floats miscompiles.** `a + b`
+  (and `- * /`) where `a`/`b` are `Float` but their static LTy was lost — bound via
+  **tuple/record destructure** (`match p { (a,b) => a + b }`) or **closure capture**
+  (`loadCaptures` binds captures as `LTInt`) — compiles to **integer** arithmetic on
+  boxed-float *pointers* → garbage (e.g. `3.75e+255`). The native interpreter is
+  correct (dynamic). `emitCmp` already routes the ambiguous-LTy case through the
+  runtime discriminator `@mdk_value_cmp_raw`; **`emitArith` has no such fallback**
+  (`emitArithW`'s `_ =>` branch assumes `LTInt` ⇒ immediate int). Independent of the
+  float-unboxing work (that branch is unchanged). Fix: route the ambiguous
+  `LTInt`/`LTUnknown` arith case through a tag-dispatched `@mdk_num_*` (handles
+  immediate-int AND float-box), mirroring the `emitCmp` precedent — at a small cost
+  to genuine int arith unless provenance distinguishes "definitely immediate". Needs
+  a fixture (`arith` over a tuple-destructured/captured float) + full gates. Recorded;
+  not fixed tonight (esoteric, non-blocking, risks the int fast-path).
 
 - `then`/`else` may not start a continuation line (layout) — forces inline
   if-then-else in float fixtures. Known, pre-existing; recorded in memory

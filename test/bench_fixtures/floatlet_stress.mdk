@@ -1,0 +1,22 @@
+-- capture: lambda RETURNS the captured float (no arith on captured)
+capR : Float -> Float
+capR x =
+  let y = x * 2.0
+  let f = (u => y)
+  f 0.0
+-- escape into tuple, extract, RETURN (no arith on extracted)
+fstF : (Float, Float) -> Float
+fstF p = match p
+  (a, _) => a
+tupR : Float -> Float
+tupR x =
+  let y = x + 5.0
+  fstF (y, y)
+-- arith WIN + escape via return of an LTFloatU let
+calcR : Float -> Float
+calcR x =
+  let s = x * x
+  let r = s + 1.0
+  r
+main : <IO> Unit
+main = putStrLn (floatToString (capR 3.0 + tupR 1.0 + calcR 4.0))

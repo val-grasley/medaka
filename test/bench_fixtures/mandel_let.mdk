@@ -1,0 +1,21 @@
+escape : Float -> Float -> Float -> Float -> Int -> Int
+escape zr zi cr ci k = match k
+  0 => 0
+  _ =>
+    let zr2 = zr * zr
+    let zi2 = zi * zi
+    let mag = zr2 + zi2
+    if mag > 4.0 then k else escape (zr2 - zi2 + cr) (2.0 * zr * zi + ci) cr ci (k - 1)
+
+row : Float -> Float -> Float -> Int -> Int -> Int
+row cr ci dx n acc = match n
+  0 => acc
+  _ => row (cr + dx) ci dx (n - 1) (acc + escape 0.0 0.0 cr ci 255)
+
+grid : Float -> Float -> Float -> Float -> Int -> Int -> Int -> Int
+grid crLo ci dx dy w h acc = match h
+  0 => acc
+  _ => grid crLo (ci + dy) dx dy w (h - 1) (acc + row crLo ci dx w 0)
+
+main : <IO> Unit
+main = putStrLn (intToString (grid (0.0 - 2.0) (0.0 - 1.5) 0.01 0.01 300 300 0))
