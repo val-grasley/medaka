@@ -1,0 +1,19 @@
+-- Inferred-constraint recursion (build path): a recursive function WITHOUT an
+-- explicit signature whose recursion uses a constrained op (== Eq, +/- Num) must
+-- forward the inferred dict into its self/mutual recursive call.  Before the fix
+-- the recursive callee under-applied (empty EDictAt route + prepended dict param)
+-- → native build emitted wrong/garbage.  Self-rec (countDown, sumTo) + mutual-rec
+-- (isEven/isOdd) covered.
+countDown n = if n == 0 then 0 else countDown (n - 1)
+
+isEven n = if n == 0 then True else isOdd (n - 1)
+isOdd n = if n == 0 then False else isEven (n - 1)
+
+sumTo n = if n == 0 then 0 else n + sumTo (n - 1)
+
+main : <IO> Unit
+main =
+  println (countDown 5)
+  println (isEven 4)
+  println (isOdd 4)
+  println (sumTo 5)

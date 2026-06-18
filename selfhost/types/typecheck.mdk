@@ -2490,9 +2490,22 @@ inferDictAt env name routesRef = match lookupVar env name
 -- monos.  Absent ⇒ a self/mutually-recursive call (the callee is still inferring
 -- in the same group); defer it for realizeRecDictApps to forward the enclosing
 -- fn's dict.
+-- A constrained callee in funConstraintsRef is reached two ways: (1) a NORMAL call
+-- to an already-generalized fn — instantiateTracked pins each of its constraint ids
+-- to a fresh occurrence var, so `snd inst` carries them; route via pendingDictApps.
+-- (2) a SELF/MUTUALLY-RECURSIVE call — the callee is still the group's monomorphic
+-- PLACEHOLDER (Forall [] [] v), so `snd inst` is empty (none of [ids] appear).  Here
+-- the constraint var lives in the ENCLOSING fn's own type and the callee's REGISTERED
+-- ids only become valid after this pass's registerInferredConstraints re-registers
+-- them; defer to realizeRecDictApps (which forwards the enclosing dict).  We MUST NOT
+-- take the normal branch here (as a stale cross-module funConstraintsRef seed makes us
+-- do): constraintMonosOf maps the registered ids through the empty subst → [] → the
+-- recursive call's route ref stays empty while dictPass still prepends the param → the
+-- call under-applies → dispatch fails.  Detect (2) as "no registered id is pinned by
+-- the instantiation subst" (mirrors the oracle's empty-`sub` self-recursion case).
 inferDictAtFound : String -> Ref (List Route) -> (Mono, List (Int, Mono)) -> <Mut> Mono
 inferDictAtFound name routesRef inst
-  | hasKeySL2 name funConstraintsRef.value =
+  | hasKeySL2 name funConstraintsRef.value && anyIdPinned (fromOption [] (lookupAssocSL2 name funConstraintsRef.value)) (snd inst) =
     let ids = fromOption [] (lookupAssocSL2 name funConstraintsRef.value)
     let monos = constraintMonosOf ids (snd inst)
     let _ = set_ref pendingDictApps ((routesRef, monos) :: pendingDictApps.value)
@@ -2507,6 +2520,16 @@ inferDictAtFound name routesRef inst
   | otherwise =
     let _ = set_ref pendingRecDictApps (RecDictApp routesRef name currentFn.value (fst inst) :: pendingRecDictApps.value)
     fst inst
+
+-- True iff at least one of [ids] (the callee's registered constraint tyvar ids) is
+-- a key of the instantiation subst — i.e. instantiateTracked actually quantified it,
+-- so this is a normal generalized call.  False ⇒ the callee is a monomorphic
+-- placeholder (self/mutual recursion); subst can't carry its constraint occurrence.
+anyIdPinned : List Int -> List (Int, Mono) -> Bool
+anyIdPinned [] _ = False
+anyIdPinned (id::rest) subst = match lookupAssocI id subst
+  Some _ => True
+  None => anyIdPinned rest subst
 
 -- pair each iface with its slot-parallel instantiated constraint mono, pushing onto
 -- pendingCallObligations.  Length-zips defensively (an iface list shorter than the
