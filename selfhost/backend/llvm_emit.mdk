@@ -1863,11 +1863,31 @@ emitFloatD e env ex = match ex
   _ => emitFloatLeaf e env ex
 
 emitFloatLeaf : Emit -> List (String, (String, LTy)) -> CExpr -> <Mut> String
-emitFloatLeaf e env ex = match floatVarReg env ex
-  Some reg => reg
-  None =>
-    let (w, _) = emitExpr e env ex
-    unboxFloat e w
+emitFloatLeaf e env ex = match floatFromIntArg ex
+  Some a =>
+    let (aw, _) = emitExpr e env a
+    let i = untagInt e aw
+    let r = freshReg e
+    let _ = emit e ("  " ++ r ++ " = sitofp i64 " ++ i ++ " to double")
+    r
+  None => match floatVarReg env ex
+    Some reg => reg
+    None =>
+      let (w, _) = emitExpr e env ex
+      unboxFloat e w
+
+-- in a statically-Float context, `intToFloat x` / `fromInt x` (@ Float) is just an
+-- int→double conversion: emit `sitofp` directly instead of the extern/impl call's
+-- box-then-unbox. Returns the Int arg if `ex` is such a call (head name match, arity 1).
+floatFromIntArg : CExpr -> Option CExpr
+floatFromIntArg ex = match flattenApp ex []
+  (h, (a :: [])) => if headNameIs h "intToFloat" || headNameIs h "fromInt" then Some a else None
+  _ => None
+
+headNameIs : CExpr -> String -> Bool
+headNameIs (CVar n _) name = n == name
+headNameIs (CMethod n _ _ _) name = n == name
+headNameIs _ _ = False
 
 -- the unboxed-double register for an LTFloatU let-bound CVar (a float-let kept
 -- unboxed in the env), else None — then emitFloatLeaf unboxes the boxed word.

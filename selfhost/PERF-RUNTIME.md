@@ -281,6 +281,24 @@ worker-wrapper coverage.
 **Gates:** `diff_selfhost_llvm` **180/0**, `selfcompile_fixpoint` **C3a/C3b YES**; worker
 sweep (w1–w8) + small-N == interpreter.
 
+### Win 10 — `fromInt`/`intToFloat` → `sitofp` fusion (2026-06-18, `perf/fromint-fuse`)
+
+`fromInt x` (@ Float) and `intToFloat x` are int→float conversions, but in float
+context they were emitted as the extern/impl call (`sitofp` + **box**), then fusion
+unboxed the result — a box-then-unbox per evaluation. `emitFloatLeaf` now recognizes
+a `fromInt`/`intToFloat` call (head-name match, arity 1) and emits `sitofp i64 … to
+double` directly — no box. Safe: only fires inside a statically-Float `emitFloatD`
+context (so `fromInt` is the Float instance = `intToFloat` = `sitofp`); false-negative
+falls back to the boxing leaf. `fromInt` is idiomatic in numeric code (converting loop
+counters / sizes to float), so this removes a common per-iteration box.
+
+**Numbers:** `taylor` 0.07s → **0.02s** — `term__fw` now has **ZERO `mdk_alloc`** (the
+hot loop is allocation-free). Cumulative vs baseline **0.20→0.02 (~10×)**. Correctness:
+`fromInt 7 + 0.5` = 7.5, `fromInt 3 * fromInt 4` = 12.0, `fold (+fromInt) …` == interp.
+
+**Gates:** `diff_selfhost_llvm` **180/0**, `selfcompile_fixpoint` **C3a/C3b YES**,
+`diff_selfhost_eval_run` **28/0**.
+
 ## Dead-ends
 
 (none yet)
