@@ -1,0 +1,10 @@
+sq : Float -> Float
+sq x = x * x + 1.0
+
+go : Float -> Int -> Float
+go acc n = match n
+  0 => acc
+  _ => go (acc + sq (fromInt n)) (n - 1)
+
+main : <IO> Unit
+main = putStrLn (floatToString (go 0.0 30000000))

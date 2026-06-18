@@ -98,6 +98,16 @@ Constant-cell hoisting covers every safe cell type; float boxing comprehensively
 addressed across CIf/match/let-block accumulators + int→float conversion.
 
 **Remaining (structural / risky — not done):**
+- **General float-ABI for helper functions** (next float lever; medium-broad). The
+  worker-wrapper only fires for SELF-RECURSIVE float accumulators; a non-recursive float
+  helper called in a loop (`sq x = x*x+1.0`, called 30M× in `fhelp.mdk`) still **boxes
+  its return per call** (0.21s; `go__fw` itself is alloc-free, `sq` boxes 1×). Fix:
+  emit a `double`-ABI `$fw` variant for every float fn whose body `emitFnBodyD` can
+  handle (the worker eligibility minus the self-recursive requirement), keep the
+  original i64-ABI fn for normal callers (no regression), and reroute float-context
+  calls in `emitFloatLeaf` to `$fw` (like the `fromInt` fuse but general); a pre-pass
+  builds the set of fns that get a `$fw` (call sites may precede the callee), and DCE
+  drops unused `$fw`. Touches `emitApp`/call-site rerouting (route-fragile) → supervised.
 - **Monomorphization** — mostly captured by Win 5 for constant dicts; would still help
   RDict-forwarded dicts inside polymorphic fns + polymorphic-`fold` float unboxing. Big. Design (C).
 - **GC allocation density** — bintrees ~50% GC_malloc, listsum/cons churn, the emitter's
