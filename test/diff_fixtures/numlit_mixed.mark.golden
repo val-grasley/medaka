@@ -1,0 +1,2 @@
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EApp (EDictApp "println") (EBinOp "+" (ELit (LFloat 1.0)) (ELit (LInt 2)))))

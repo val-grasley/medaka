@@ -1,0 +1,3 @@
+(DFunDef false "inc" ((PVar "x")) (EBinOp "+" (EVar "x") (ELit (LInt 1))))
+(DTypeSig false "main" (TyEffect ("IO") None (TyCon "Unit")))
+(DFunDef false "main" () (EBlock (DoExpr (EApp (EVar "println") (EApp (EVar "inc") (ELit (LFloat 2.5))))) (DoExpr (EApp (EVar "println") (EApp (EVar "inc") (ELit (LInt 5)))))))

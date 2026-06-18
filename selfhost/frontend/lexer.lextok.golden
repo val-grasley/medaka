@@ -22,6 +22,41 @@ NEWLINE
 NEWLINE
 NEWLINE
 NEWLINE
+IMPORT
+IDENT "support"
+DOT
+IDENT "char"
+DOT_LBRACE
+IDENT "isSp"
+COMMA
+IDENT "isTab"
+COMMA
+IDENT "isNL"
+COMMA
+IDENT "isCR"
+COMMA
+IDENT "isQuote"
+COMMA
+IDENT "isApos"
+COMMA
+IDENT "isBackslash"
+COMMA
+IDENT "isBacktick"
+COMMA
+IDENT "isSpace"
+COMMA
+IDENT "isDigit"
+COMMA
+IDENT "isLower"
+COMMA
+IDENT "isUpper"
+COMMA
+IDENT "isAlnum"
+COMMA
+IDENT "isHexDigit"
+COMMA
+RBRACE
+NEWLINE
 PUBLIC
 EXPORT
 DATA
@@ -160,6 +195,9 @@ UPPER "TBench"
 NEWLINE
 PIPE
 UPPER "TEffect"
+NEWLINE
+PIPE
+UPPER "TInternal"
 NEWLINE
 PIPE
 UPPER "TFunction"
@@ -602,6 +640,11 @@ EQUAL
 STRING "EFFECT"
 NEWLINE
 IDENT "tokenToString"
+UPPER "TInternal"
+EQUAL
+STRING "INTERNAL"
+NEWLINE
+IDENT "tokenToString"
 UPPER "TFunction"
 EQUAL
 STRING "FUNCTION"
@@ -883,228 +926,6 @@ UPPER "Int"
 UPPER "String"
 NEWLINE
 NEWLINE
-IDENT "isSp"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isSp"
-IDENT "c"
-EQUAL
-IDENT "c"
-EQ_EQ
-CHAR " "
-NEWLINE
-IDENT "isTab"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isTab"
-IDENT "c"
-EQUAL
-IDENT "c"
-EQ_EQ
-CHAR "\t"
-NEWLINE
-IDENT "isNL"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isNL"
-IDENT "c"
-EQUAL
-IDENT "c"
-EQ_EQ
-CHAR "\n"
-NEWLINE
-IDENT "isCR"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isCR"
-IDENT "c"
-EQUAL
-IDENT "c"
-EQ_EQ
-CHAR "\r"
-NEWLINE
-IDENT "isQuote"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isQuote"
-IDENT "c"
-EQUAL
-IDENT "c"
-EQ_EQ
-CHAR "\""
-NEWLINE
-IDENT "isApos"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isApos"
-IDENT "c"
-EQUAL
-IDENT "c"
-EQ_EQ
-CHAR "'"
-NEWLINE
-IDENT "isBackslash"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isBackslash"
-IDENT "c"
-EQUAL
-IDENT "c"
-EQ_EQ
-CHAR "\\"
-NEWLINE
-IDENT "isBacktick"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isBacktick"
-IDENT "c"
-EQUAL
-IDENT "c"
-EQ_EQ
-CHAR "`"
-NEWLINE
-IDENT "isSpace"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isSpace"
-IDENT "c"
-EQUAL
-IDENT "isSp"
-IDENT "c"
-OR
-IDENT "isTab"
-IDENT "c"
-NEWLINE
-IDENT "isDigit"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isDigit"
-IDENT "c"
-EQUAL
-IDENT "c"
-GEQ
-CHAR "0"
-AND
-IDENT "c"
-LEQ
-CHAR "9"
-NEWLINE
-IDENT "isLower"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isLower"
-IDENT "c"
-EQUAL
-IDENT "c"
-GEQ
-CHAR "a"
-AND
-IDENT "c"
-LEQ
-CHAR "z"
-NEWLINE
-IDENT "isUpper"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isUpper"
-IDENT "c"
-EQUAL
-IDENT "c"
-GEQ
-CHAR "A"
-AND
-IDENT "c"
-LEQ
-CHAR "Z"
-NEWLINE
-IDENT "isAlnum"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isAlnum"
-IDENT "c"
-EQUAL
-IDENT "isLower"
-IDENT "c"
-OR
-IDENT "isUpper"
-IDENT "c"
-OR
-IDENT "isDigit"
-IDENT "c"
-OR
-IDENT "c"
-EQ_EQ
-CHAR "_"
-OR
-IDENT "isApos"
-IDENT "c"
-NEWLINE
-IDENT "isHexDigit"
-COLON
-UPPER "Char"
-ARROW
-UPPER "Bool"
-NEWLINE
-IDENT "isHexDigit"
-IDENT "c"
-EQUAL
-IDENT "isDigit"
-IDENT "c"
-OR
-IDENT "c"
-GEQ
-CHAR "a"
-AND
-IDENT "c"
-LEQ
-CHAR "f"
-OR
-IDENT "c"
-GEQ
-CHAR "A"
-AND
-IDENT "c"
-LEQ
-CHAR "F"
 NEWLINE
 NEWLINE
 IDENT "at"
@@ -1585,6 +1406,11 @@ IDENT "keywordOrIdent"
 STRING "effect"
 EQUAL
 UPPER "TEffect"
+NEWLINE
+IDENT "keywordOrIdent"
+STRING "internal"
+EQUAL
+UPPER "TInternal"
 NEWLINE
 IDENT "keywordOrIdent"
 STRING "function"
@@ -6144,6 +5970,7 @@ IDENT "tok"
 IDENT "length"
 IDENT "ddelta"
 EQUAL
+INDENT
 UPPER "RTok"
 IDENT "tok"
 IDENT "pos"
@@ -6167,6 +5994,8 @@ PLUS
 IDENT "ddelta"
 RPAREN
 IDENT "id"
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "scanOp"
 COLON
@@ -7007,6 +6836,7 @@ IDENT "depth"
 IDENT "id"
 IDENT "c"
 EQUAL
+INDENT
 IDENT "panic"
 LPAREN
 STRING "Unexpected character: "
@@ -7014,6 +6844,8 @@ PLUSPLUS
 IDENT "charToStr"
 IDENT "c"
 RPAREN
+NEWLINE
+DEDENT
 NEWLINE
 NEWLINE
 NEWLINE
@@ -7904,6 +7736,7 @@ IDENT "stack"
 IDENT "prev"
 IDENT "opener"
 EQUAL
+INDENT
 LPAREN
 IDENT "t"
 COMMA
@@ -7923,6 +7756,8 @@ OR
 IDENT "isOpener"
 IDENT "t"
 RPAREN
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "layout"
 LPAREN
@@ -8118,6 +7953,141 @@ EQUAL
 UPPER "False"
 NEWLINE
 NEWLINE
+NEWLINE
+NEWLINE
+NEWLINE
+NEWLINE
+IDENT "isTrailingContinuationOp"
+COLON
+UPPER "Token"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TPlus"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TMinus"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TStar"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TSlash"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TMod"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TPlusPlus"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TCons"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TEqEq"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TNeq"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TLt"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TGt"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TLeq"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TGeq"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TAnd"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TOr"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TPipeRight"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TRCompose"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UPPER "TLCompose"
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+LPAREN
+UPPER "TBacktickIdent"
+UNDERSCORE
+RPAREN
+EQUAL
+UPPER "True"
+NEWLINE
+IDENT "isTrailingContinuationOp"
+UNDERSCORE
+EQUAL
+UPPER "False"
+NEWLINE
+IDENT "prevIsTrailingOp"
+COLON
+UPPER "Option"
+UPPER "Token"
+ARROW
+UPPER "Bool"
+NEWLINE
+IDENT "prevIsTrailingOp"
+LPAREN
+UPPER "Some"
+IDENT "t"
+RPAREN
+EQUAL
+IDENT "isTrailingContinuationOp"
+IDENT "t"
+NEWLINE
+IDENT "prevIsTrailingOp"
+UPPER "None"
+EQUAL
+UPPER "False"
+NEWLINE
+NEWLINE
 IDENT "canStartAtom"
 COLON
 UPPER "Token"
@@ -8256,6 +8226,7 @@ RBRACKET
 IDENT "prev"
 IDENT "opener"
 EQUAL
+INDENT
 LPAREN
 UPPER "TNewline"
 COMMA
@@ -8268,6 +8239,8 @@ LBRACKET
 RBRACKET
 UPPER "None"
 UPPER "False"
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "applyNl"
 IDENT "col"
@@ -8414,6 +8387,16 @@ IDENT "prev"
 IDENT "opener"
 INDENT
 PIPE
+IDENT "prevIsTrailingOp"
+IDENT "prev"
+EQUAL
+IDENT "layout"
+IDENT "rest"
+IDENT "stack"
+IDENT "prev"
+IDENT "opener"
+NEWLINE
+PIPE
 IDENT "opener"
 OR
 IDENT "not"
@@ -8712,6 +8695,7 @@ IDENT "tl"
 RPAREN
 IDENT "off"
 EQUAL
+INDENT
 LPAREN
 UPPER "TDedent"
 COMMA
@@ -8727,6 +8711,8 @@ CONS
 IDENT "closeDedents"
 IDENT "tl"
 IDENT "off"
+NEWLINE
+DEDENT
 NEWLINE
 NEWLINE
 IDENT "elseFilter"
@@ -8762,6 +8748,7 @@ CONS
 IDENT "rest"
 RPAREN
 EQUAL
+INDENT
 LPAREN
 UPPER "TElse"
 COMMA
@@ -8770,6 +8757,8 @@ RPAREN
 CONS
 IDENT "elseFilter"
 IDENT "rest"
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "elseFilter"
 LPAREN
@@ -8929,6 +8918,7 @@ IDENT "stack"
 IDENT "prev"
 IDENT "opener"
 EQUAL
+INDENT
 LPAREN
 IDENT "t"
 COMMA
@@ -8951,6 +8941,8 @@ IDENT "isOpener"
 IDENT "t"
 RPAREN
 NEWLINE
+DEDENT
+NEWLINE
 IDENT "layoutPairs"
 LPAREN
 LPAREN
@@ -8965,11 +8957,14 @@ IDENT "stack"
 IDENT "prev"
 IDENT "opener"
 EQUAL
+INDENT
 IDENT "layoutPairs"
 IDENT "rest"
 IDENT "stack"
 IDENT "prev"
 IDENT "opener"
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "layoutPairs"
 LPAREN
@@ -9031,6 +9026,7 @@ RBRACKET
 IDENT "prev"
 IDENT "opener"
 EQUAL
+INDENT
 LPAREN
 UPPER "TNewline"
 COMMA
@@ -9045,6 +9041,8 @@ LBRACKET
 RBRACKET
 UPPER "None"
 UPPER "False"
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "applyNlPairs"
 IDENT "col"
@@ -9197,6 +9195,16 @@ IDENT "prev"
 IDENT "opener"
 INDENT
 PIPE
+IDENT "prevIsTrailingOp"
+IDENT "prev"
+EQUAL
+IDENT "layoutPairs"
+IDENT "rest"
+IDENT "stack"
+IDENT "prev"
+IDENT "opener"
+NEWLINE
+PIPE
 IDENT "opener"
 OR
 IDENT "not"
@@ -9334,11 +9342,14 @@ IDENT "rest"
 IDENT "prev"
 IDENT "opener"
 EQUAL
+INDENT
 IDENT "layoutPairs"
 IDENT "rest"
 IDENT "stack"
 UPPER "None"
 UPPER "False"
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "popDedentsPairs"
 COLON
@@ -9514,6 +9525,7 @@ IDENT "tl"
 RPAREN
 IDENT "off"
 EQUAL
+INDENT
 LPAREN
 UPPER "TDedent"
 COMMA
@@ -9533,6 +9545,8 @@ CONS
 IDENT "closeDedentsPairs"
 IDENT "tl"
 IDENT "off"
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "elseFilterPairs"
 COLON
@@ -9575,6 +9589,7 @@ CONS
 IDENT "rest"
 RPAREN
 EQUAL
+INDENT
 LPAREN
 UPPER "TElse"
 COMMA
@@ -9585,6 +9600,8 @@ RPAREN
 CONS
 IDENT "elseFilterPairs"
 IDENT "rest"
+NEWLINE
+DEDENT
 NEWLINE
 IDENT "elseFilterPairs"
 LPAREN
@@ -9869,13 +9886,11 @@ EQUAL
 IDENT "map"
 LPAREN
 LPAREN
-LPAREN
 IDENT "t"
 COMMA
 IDENT "_s"
 COMMA
 IDENT "_e"
-RPAREN
 RPAREN
 FAT_ARROW
 IDENT "t"
@@ -9888,13 +9903,11 @@ EQUAL
 IDENT "map"
 LPAREN
 LPAREN
-LPAREN
 IDENT "t"
 COMMA
 IDENT "s"
 COMMA
 IDENT "e"
-RPAREN
 RPAREN
 FAT_ARROW
 LPAREN
@@ -10005,7 +10018,6 @@ RPAREN
 IDENT "p"
 IDENT "line"
 EQUAL
-INDENT
 MATCH
 IDENT "advanceLine"
 IDENT "src"
@@ -10026,8 +10038,6 @@ IDENT "src"
 IDENT "rest"
 IDENT "p2"
 IDENT "line2"
-NEWLINE
-DEDENT
 NEWLINE
 DEDENT
 NEWLINE
@@ -10124,7 +10134,6 @@ NEWLINE
 NEWLINE
 NEWLINE
 EXPORT
-NEWLINE
 DATA
 UPPER "Comment"
 EQUAL
@@ -10304,7 +10313,6 @@ CONS
 IDENT "rest"
 RPAREN
 EQUAL
-INDENT
 MATCH
 IDENT "posLineColFrom"
 IDENT "src"
@@ -10327,8 +10335,6 @@ CONS
 IDENT "rawToComments"
 IDENT "src"
 IDENT "rest"
-NEWLINE
-DEDENT
 NEWLINE
 DEDENT
 NEWLINE

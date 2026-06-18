@@ -2126,6 +2126,37 @@ NEWLINE
 DEDENT
 NEWLINE
 PROP
+STRING "intersection preserves well-formedness"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+IDENT "wellFormed"
+LPAREN
+IDENT "intersection"
+LPAREN
+IDENT "fromList"
+IDENT "xs"
+RPAREN
+LPAREN
+IDENT "fromList"
+IDENT "ys"
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PROP
 STRING "difference elements are in the first but not the second"
 LPAREN
 IDENT "xs"
@@ -2176,6 +2207,211 @@ LPAREN
 IDENT "difference"
 IDENT "a"
 IDENT "b"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "difference preserves well-formedness"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+IDENT "wellFormed"
+LPAREN
+IDENT "difference"
+LPAREN
+IDENT "fromList"
+IDENT "xs"
+RPAREN
+LPAREN
+IDENT "fromList"
+IDENT "ys"
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "union is commutative on the sorted element list"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "a"
+EQUAL
+IDENT "fromList"
+IDENT "xs"
+NEWLINE
+LET
+IDENT "b"
+EQUAL
+IDENT "fromList"
+IDENT "ys"
+NEWLINE
+IDENT "eq"
+LPAREN
+IDENT "toList"
+LPAREN
+IDENT "union"
+IDENT "a"
+IDENT "b"
+RPAREN
+RPAREN
+LPAREN
+IDENT "toList"
+LPAREN
+IDENT "union"
+IDENT "b"
+IDENT "a"
+RPAREN
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "size of a union is at most the sum of sizes"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "a"
+EQUAL
+IDENT "fromList"
+IDENT "xs"
+NEWLINE
+LET
+IDENT "b"
+EQUAL
+IDENT "fromList"
+IDENT "ys"
+NEWLINE
+IDENT "size"
+LPAREN
+IDENT "union"
+IDENT "a"
+IDENT "b"
+RPAREN
+LEQ
+IDENT "size"
+IDENT "a"
+PLUS
+IDENT "size"
+IDENT "b"
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "difference elements stay in the first set"
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "ys"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+LET
+IDENT "a"
+EQUAL
+IDENT "fromList"
+IDENT "xs"
+NEWLINE
+LET
+IDENT "b"
+EQUAL
+IDENT "fromList"
+IDENT "ys"
+NEWLINE
+IDENT "foldrSet"
+LPAREN
+IDENT "e"
+IDENT "acc"
+FAT_ARROW
+IDENT "acc"
+AND
+IDENT "member"
+IDENT "e"
+IDENT "a"
+RPAREN
+UPPER "True"
+LPAREN
+IDENT "difference"
+IDENT "a"
+IDENT "b"
+RPAREN
+NEWLINE
+DEDENT
+NEWLINE
+PROP
+STRING "deleting a member removes it"
+LPAREN
+IDENT "x"
+COLON
+UPPER "Int"
+RPAREN
+LPAREN
+IDENT "xs"
+COLON
+UPPER "List"
+UPPER "Int"
+RPAREN
+EQUAL
+INDENT
+IDENT "not"
+LPAREN
+IDENT "member"
+IDENT "x"
+LPAREN
+IDENT "delete"
+IDENT "x"
+LPAREN
+IDENT "insert"
+IDENT "x"
+LPAREN
+IDENT "fromList"
+IDENT "xs"
+RPAREN
+RPAREN
+RPAREN
 RPAREN
 NEWLINE
 DEDENT
