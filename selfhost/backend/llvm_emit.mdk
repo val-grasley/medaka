@@ -1986,7 +1986,30 @@ floatVarReg _ _ = None
 -- arithmetic preserves operand type (well-typed: both operands share a type).
 emitArith : Emit -> List (String, (String, LTy)) -> String -> CExpr -> CExpr -> <Mut> (String, LTy)
 emitArith e env op l r =
-  if staticIsFloat env l then emitFloatArith e env op l r else emitArithW e env op l r
+  if staticIsFloat env l || isFloatFieldAccess e l || isFloatFieldAccess e r then
+    emitFloatArith e env op l r
+  else
+    emitArithW e env op l r
+
+-- True when `ex` is a record field ACCESS of a declared-Float field.  Used ONLY to
+-- route arith to the float path (emitFloatArith unboxes the boxed-float field word
+-- via emitFloatLeafVar) — `r.dx + r.dy` over Float fields otherwise defaulted both
+-- operands to LTInt (emitFieldAccess always returns LTInt) and did INTEGER arith on
+-- boxed-float pointers → garbage.  Scoped to the arith ROUTING decision (no change
+-- to emitFieldAccess's returned LTy), so field accesses flowing elsewhere — e.g.
+-- arg-tag dispatch — keep LTInt and the emitter's own self-compile is unperturbed.
+isFloatFieldAccess : Emit -> CExpr -> <Mut> Bool
+isFloatFieldAccess e (CFieldAccess _ label) = isFloatFieldLabel e label
+isFloatFieldAccess _ _ = False
+
+isFloatFieldLabel : Emit -> String -> <Mut> Bool
+isFloatFieldLabel e label = match findRecordByLabel (recFieldTable e) label
+  Some (name, labels) => match indexOfStr label labels
+    Some pos =>
+      let tns = ctorFieldTypeNamesOf name
+      if pos < listLen tns then nthStr tns pos == "Float" else False
+    None => False
+  None => False
 
 -- fused statically-Float arithmetic: both operands as unboxed doubles, one float
 -- op, box ONCE (replaces N intermediate boxes with 1).
