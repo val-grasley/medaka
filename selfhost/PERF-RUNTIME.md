@@ -425,6 +425,16 @@ at slightly lower compile (2.5s vs 3.3s); not worth changing the default.
 The real performance opportunity is RUNTIME (compiled-program speed), not build
 latency — see the float wins above and the remaining runtime levers below.
 
+## Branch certification (perf/arith-typelost-fix — all 11 wins + Win-12 fix, 2026-06-18)
+
+The full stack (11 perf wins + the Win-12 soundness fix) re-certified together on the
+top branch — all green: `selfcompile_fixpoint` C3a/C3b YES; `diff_selfhost_llvm` 180/0,
+`_typed` 37/0, `_modules` 13/0; `diff_selfhost_build` 25/0; `diff_selfhost_eval_run`
+28/0, `_dict` 25/0, `_list` 2/0, `_typed` 3/0; `diff_selfhost_core_ir_run` 28/0;
+`diff_native_stack` 7/0. Adopt-everything branch: **`perf/arith-typelost-fix`**; each
+win also isolated on its own branch for cherry-picking. Final bench: floatsum 0.03,
+mandel 0.03, dispatch 0.03, taylor 0.01, fhelp 0.02, strlit ~0; comp/shadow now correct.
+
 ## Branch certification (perf/fromint-fuse — all 10 wins stacked, 2026-06-18)
 
 The full 10-win stack re-certified together on the top branch — all green:
