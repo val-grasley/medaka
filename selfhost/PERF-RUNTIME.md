@@ -382,10 +382,17 @@ to no other cell: strings are already atomic; cons/ADT/tuple/closure carry point
   `loadCaptures` now threads the enclosing emit env (env param added to the 5
   `*Define` emitters) and binds a captured float `LTFloat` via the new `capTypeOf`
   (boxed-float convention; everything else stays `LTInt` → zero non-float change).
-  This fixed the COMMON `map (x => x * scale)` idiom (captured float). **STILL OPEN:**
-  (1) both operands tuple/record-destructured floats (`(a,b) => a + b`); (2)
-  closure-call-RESULT arith `f 1.0 + f 2.0` (closure ABI returns erased i64). Both
-  need type provenance the Core IR erased.
+  This fixed the COMMON `map (x => x * scale)` idiom (captured float). (c) 2026-06-18,
+  commit 60522ef — **tuple/record-destructured float arith fixed** (TYPED emit path):
+  pattern-bound vars (`(a,b) => a + b`, `let (a,b)=p; …`) carry no declared type, so
+  `paramUseTy` defaulted them to LTInt; now an arith operand whose sibling doesn't pin
+  a concrete Int/Float is typed **LTNum** (runtime tag-dispatched @mdk_num_*, correct
+  for int AND float). `binOperandTy`/`concreteNumTy` + block-continuation threading
+  (`CBlock rest` into bindPattern). ZERO perf regression (only pattern-bound vars; int
+  literals still pin the inline fast path). Typed gate `tuple_float_arith.mdk` 38/0.
+  **STILL OPEN (the LAST case):** closure-call-RESULT arith `f 1.0 + f 2.0` (closure
+  ABI returns erased i64; indirectResultTy can't tell numeric from string-returning
+  closures → can't blanket-LTNum → needs the closure's declared return type).
 
 - **FIXED 2026-06-18 (branch perf/closure-overapp) — over/partial-application of a
   LET-BOUND multi-level lambda.** `let g=(x => (y => x + y)); (g 7) 9` and
