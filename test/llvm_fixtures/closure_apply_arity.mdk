@@ -1,0 +1,34 @@
+-- Over-, under-, and saturated application of LET-BOUND multi-level lambdas.
+-- These previously MISCOMPILED in the native backend: `flattenApp` collapses
+-- `(g 7) 9` to `g[7,9]` and the old `emitIndirect` passed BOTH args to g's arity-1
+-- lifted code (arity mismatch -> garbage).  `emitIndirect` is now arity-aware
+-- (closureArityRef): over-application saturates then applies the surplus via
+-- emitApplyExtra; under-application builds an indirect partial-application closure
+-- (emitPapClosureIndirect); saturated is the raw call.  Interp was always correct,
+-- so this fixture pins native == interp.
+
+overApp : Int
+overApp =
+  let g = (x => (y => x + y))
+  (g 7) 9
+
+threeLevel : Int
+threeLevel =
+  let g = (x => (y => (z => x + y + z)))
+  ((g 1) 2) 3
+
+partial1 : Int
+partial1 =
+  let g = (x y => x + y + 1)
+  let h = g 7
+  h 9
+
+partial2 : Int
+partial2 =
+  let g = (x y z => x + y + z)
+  let h = g 1 2
+  h 3
+
+-- positional-weighted sum so each component is independently pinned:
+-- 16 + 6*100 + 17*10000 + 6*1000000 = 6170616
+main = overApp + threeLevel * 100 + partial1 * 10000 + partial2 * 1000000
