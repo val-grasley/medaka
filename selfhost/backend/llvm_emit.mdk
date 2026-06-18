@@ -7056,12 +7056,12 @@ isCmpOp op = op == "=="
 emitTuple : Emit -> List (String, (String, LTy)) -> List CExpr -> <Mut> (String, LTy)
 emitTuple e env es =
   let words = emitArgs e env es
-  emitCtorAlloc e "$tuple" words
+  if allConstWords words then (emitConstDictCell e (cellTag e "$tuple") words, LTCon) else emitCtorAlloc e "$tuple" words
 
 emitRecordCreate : Emit -> List (String, (String, LTy)) -> String -> List CField -> <Mut> (String, LTy)
 emitRecordCreate e env name fields =
   let words = emitFieldExprs e env fields
-  emitCtorAlloc e name words
+  if allConstWords words then (emitConstDictCell e (cellTag e name) words, LTCon) else emitCtorAlloc e name words
 
 emitFieldAccess : Emit -> List (String, (String, LTy)) -> CExpr -> String -> <Mut> (String, LTy)
 emitFieldAccess e env ex label =

@@ -240,6 +240,23 @@ Also hoists constant **string** lists (str-const elements are constant ptrtoints
 `diff_selfhost_eval_run` **28/0**, `diff_selfhost_eval_list` **2/0**. Correctness:
 `[1,2,3]==[1,2,3]` True, `map (*2) [10,20,30]` == interpreter.
 
+### Win 8 — constant tuple/record cells hoisted to globals (2026-06-18, `perf/compound-const`)
+
+Same constant-cell hoisting for tuple and record literals: `emitTuple`/`emitRecordCreate`,
+when all field words are constant, emit the cell as an `internal constant` global
+(via `emitConstDictCell`) instead of a per-eval `mdk_alloc`. Restricted to tuples +
+records (both verified structural `==`, like lists — sharing is value-safe);
+**user-ADT cells stay heap-allocated** (their `==` is pointer-ish / already broken).
+Same byte-identical layout → field access / `==` / update read it unchanged.
+
+**Numbers:** tuplit (`fst (10,20)` 10M loop) alloc/iter 1→0. Narrower than lists/strings
+(constant tuples/records in hot loops are less common) but the same proven safe pattern;
+composes (a constant tuple of constant strings/lists fully hoists).
+
+**Gates:** `diff_selfhost_llvm` **180/0**, `selfcompile_fixpoint` **C3a/C3b YES**,
+`diff_selfhost_eval_run` **28/0**. Correctness: tuple `==`/destructure, record access
+== interpreter.
+
 ## Dead-ends
 
 (none yet)
