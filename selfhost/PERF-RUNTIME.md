@@ -211,6 +211,16 @@ to no other cell: strings are already atomic; cons/ADT/tuple/closure carry point
 
 ## Bugs / language gaps observed
 
+- **PRE-EXISTING — "unbound constrained fn" on imported constrained stdlib fns.**
+  `medaka build`/`run` of a user program importing `list`/`map`/`set` and calling a
+  constrained fn like `sort : Ord a => …` or `insert` panics
+  (`typecheck.mdk:2284 "unbound constrained fn: sort"`). `sum`/`map` (also constrained)
+  work, and prelude `max` works — so it's specific to some imported constrained fns
+  (likely the recent multi-module import-scoping/mangling area; see memory
+  `project_multimodule_check_import_scoping_collision`). Typecheck-side, pre-existing,
+  unrelated to the perf work (which is emitter-only). Blocks demoing Win 5 on stdlib
+  containers, but not its validity (user-defined `gmax` shows the 5×; eval_dict 25/0).
+
 - **PRE-EXISTING SOUNDNESS BUG — arith on type-lost floats miscompiles.** `a + b`
   (and `- * /`) where `a`/`b` are `Float` but their static LTy was lost — bound via
   **tuple/record destructure** (`match p { (a,b) => a + b }`) or **closure capture**
