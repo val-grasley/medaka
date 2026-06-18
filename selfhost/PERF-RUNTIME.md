@@ -390,9 +390,14 @@ to no other cell: strings are already atomic; cons/ADT/tuple/closure carry point
   for int AND float). `binOperandTy`/`concreteNumTy` + block-continuation threading
   (`CBlock rest` into bindPattern). ZERO perf regression (only pattern-bound vars; int
   literals still pin the inline fast path). Typed gate `tuple_float_arith.mdk` 38/0.
-  **STILL OPEN (the LAST case):** closure-call-RESULT arith `f 1.0 + f 2.0` (closure
-  ABI returns erased i64; indirectResultTy can't tell numeric from string-returning
-  closures → can't blanket-LTNum → needs the closure's declared return type).
+  **STILL OPEN (tiny residual):** closure-call-RESULT arith where the closure is
+  RETURNED FROM A FUNCTION (`let f = mkAdd 100.0; f 1.0 + f 2.0`) — the direct
+  let-bound form (`let f = (x => x + base); f 1.0 + f 2.0`) is FIXED 2026-06-18
+  (commit e344efc): a closure whose body evidently returns Float (`bodyFloatRet`,
+  conservative) records LTFloat in `closureRetTyRef`, and `indirectRetTy` types the
+  saturated call result LTFloat. The returned-from-fn case misses (f's reg is the
+  call-result reg, not the lambda alloc reg) → needs ret-ty propagation through
+  fnRetTy. Typed gate `closure_ret_float.mdk` 39/0.
 
 - **FIXED 2026-06-18 (branch perf/closure-overapp) — over/partial-application of a
   LET-BOUND multi-level lambda.** `let g=(x => (y => x + y)); (g 7) 9` and
