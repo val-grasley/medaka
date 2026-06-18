@@ -1,0 +1,18 @@
+import json.{Json(..)}
+
+-- Expected-type propagation regression (bidirectional checking-mode for a lambda
+-- argument).  `do { stream <- e; … }` lowers to `andThen e (stream => …)`; the
+-- application pushes `andThen`'s continuation param type (`List Json`, the monad
+-- element fixed by `e`) onto the binder `stream` BEFORE the lambda body is
+-- inferred.  The body's `JArray stream` wants `Array Json` (JArray's field type) —
+-- WITHOUT the push, that downstream constructor use would pin `stream` to
+-- `Array Json` first (mistyping the binder, mislocalizing the `List vs Array`
+-- error to the BINDING).  WITH it, `stream : List Json`, hover reports
+-- `List Json`, and the mismatch localizes to the `JArray stream` USE.
+mkStream : Json -> Result String (List Json)
+mkStream j = Ok [j]
+
+eval0 : Json -> Result String (List Json)
+eval0 input = do
+  stream <- mkStream input
+  Ok [JArray stream]

@@ -2288,7 +2288,7 @@ infer _ (ELit l) = litType l
 -- `fromInt` is unbound: fall back to a plain fresh var, dref stays RNone (⇒ Int).
 infer env (ENumLit n fref dref) = inferNumLit env n fref dref
 infer env (EVar x) = inferVar env x
-infer env (EApp f x) = inferApp (EApp f x) (infer env f) (infer env x)
+infer env (EApp f x) = inferAppExpr env f x
 infer env (ELam pats body) = inferLam env pats body
 infer env (ELet isMut isFun pat e1 e2) = inferLet env isMut isFun pat e1 e2
 infer env (ELetGroup binds body) = inferLetGroup env binds body
@@ -3071,6 +3071,81 @@ recordImplObligation x mono = match lookupAssoc x methodIfaceParamsRef.value
   Some (iface, typarams, mty) =>
     let _ = set_ref pendingImplObligations ((iface, typarams, mty, mono) :: pendingImplObligations.value)
     mono
+
+-- Expected-type propagation for an application whose argument is a lambda.
+-- Inferring `andThen e (stream => Ok [JArray stream])` naively infers the lambda
+-- BODY first with `stream : freshVar`, so a downstream conflicting use inside the
+-- body (`JArray stream` wants `Array Json`) pins `stream` to the WRONG type before
+-- the function's declared param type (`List Json`) is ever reconciled — the later
+-- reconciliation then fails at the application with no good site, and the hover
+-- side-channel records the wrong `stream` type.  Fix (bidirectional "checking"
+-- mode, the do-bind/higher-order case): infer `f` first, peel its parameter type,
+-- and unify it onto the lambda's parameter BEFORE inferring the body.  Then the
+-- body sees `stream : List Json` and the type error localizes to the `JArray`
+-- USE, and recordLocalBind captures the right hover type.  Purely additive: the
+-- final `unify ft (TFun xt …)` in inferApp imposes the same equality regardless,
+-- so the solution is unchanged — we only make it available earlier.
+inferAppExpr : TcEnv -> Expr -> Expr -> <Mut> Mono
+inferAppExpr env f x = match lamUnderLoc x
+  Some (loc, pats, body) =>
+    let ft = infer env f
+    let _ = setLocIfSome loc
+    -- ft is `(lamType) -> result`; its FIRST domain is the lambda's expected
+    -- type.  Peel that, then peel the lambda type itself for its per-param types.
+    let lamExpected = funDomain (normalize ft)
+    let xt = inferLamChecked env (expectedParamTypes lamExpected (listLen pats)) pats body
+    inferApp (EApp f x) ft xt
+  None => inferApp (EApp f x) (infer env f) (infer env x)
+
+-- set currentLoc only when the lambda carried a span (mirror the ELoc arm), so
+-- a bare unlocated lambda doesn't blank out an enclosing position.
+setLocIfSome : Option Loc -> <Mut> Unit
+setLocIfSome None = ()
+setLocIfSome (Some l) = set_ref currentLoc (Some l)
+
+-- peek through an ELoc wrapper to a lambda; returns its loc, params and body.
+-- Non-lambda arguments (the common case) take the ordinary inference path.
+lamUnderLoc : Expr -> Option (Option Loc, List Pat, Expr)
+lamUnderLoc (ELam pats body) = Some (None, pats, body)
+lamUnderLoc (ELoc l (ELam pats body)) = Some (Some l, pats, body)
+lamUnderLoc _ = None
+
+-- the function's first parameter type (the lambda's expected type), or a fresh
+-- var when `ft` is not yet a concrete arrow (then nothing is pushed; the trailing
+-- `unify ft (TFun xt …)` reconciles).
+funDomain : Mono -> <Mut> Mono
+funDomain (TFun a _ _) = a
+funDomain _ = freshVar ()
+
+-- peel up to `n` arrow domains off the (normalized) lambda's expected type; those
+-- domains are the lambda's expected PARAM types.  Stops early if it is not (yet)
+-- an arrow — those params fall back to a fresh var in inferLamChecked, and the
+-- trailing `unify ft (TFun xt …)` reconciles them.
+expectedParamTypes : Mono -> Int -> List Mono
+expectedParamTypes _ 0 = []
+expectedParamTypes (TFun a _ b) n = a :: expectedParamTypes (normalize b) (n - 1)
+expectedParamTypes _ _ = []
+
+-- like inferLam, but each lambda param is unified with the corresponding expected
+-- param type (from the function being applied) right after inferPat — so the body
+-- and the hover side-channel see the expected type, not a bare fresh var.
+inferLamChecked : TcEnv -> List Mono -> List Pat -> Expr -> <Mut> Mono
+inferLamChecked env expected pats body =
+  let pr = inferPats env pats
+  let _ = unifyParamsExpected (fst pr) expected
+  let saved = curEffect.value
+  let _ = set_ref curEffect (openRow ())
+  let bodyTy = infer (extendVars env (snd pr)) body
+  let bodyEff = curEffect.value
+  let _ = set_ref curEffect saved
+  arrowsWithLastEffect (fst pr) bodyEff bodyTy
+
+-- unify each param type with its expected type, for the prefix both lists cover.
+unifyParamsExpected : List Mono -> List Mono -> <Mut> Unit
+unifyParamsExpected (p::ps) (e::es) =
+  let _ = unify p e
+  unifyParamsExpected ps es
+unifyParamsExpected _ _ = ()
 
 inferApp : Expr -> Mono -> Mono -> <Mut> Mono
 inferApp appExpr ft xt =

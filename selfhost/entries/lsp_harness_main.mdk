@@ -328,6 +328,46 @@ didChangeFail _ =
   let _ = check "didChange burst: BAD edit surfaces error (no stale cache hit)" False
   check "didChange burst: converges to clean on final edit" False
 
+-- Fixture 11: expected-type propagation for a do-bind/higher-order lambda
+-- argument (selfhost/types/typecheck.mdk inferAppExpr/inferLamChecked).  In
+-- hover_dobind.mdk, `do { stream <- mkStream input; Ok [JArray stream] }` lowers
+-- to `andThen e (stream => …)`; the application pushes andThen's continuation
+-- param type (`List Json`) onto the binder `stream` BEFORE the body is inferred.
+-- Even though `JArray stream` is a downstream conflicting use (wants `Array
+-- Json`), hovering `stream` at BOTH its binder site (line 16) and its use site
+-- (line 17) must report `stream : List Json` — without the push it reported
+-- `Array Json` and the error mislocalized to the binding.  The file is expected
+-- to carry exactly one diagnostic (the `List vs Array` mismatch at the USE).
+fixtureHoverDoBind : String -> String -> <IO, Mut> Unit
+fixtureHoverDoBind medaka fixDir =
+  let path = stringConcat [fixDir, "/hover_dobind.mdk"]
+  match readFile path
+    Err _ => hoverDoBindFail ()
+    Ok src =>
+      let uri = fileUri path
+      let msgs = [
+        initializeMsg 1,
+        initializedMsg,
+        didOpenMsg uri src,
+        requestMsg 2 "textDocument/hover" (docPosParams uri 16 2),
+        requestMsg 3 "textDocument/hover" (docPosParams uri 17 13),
+        shutdownMsg 9,
+        exitMsg,
+      ]
+      match runSession medaka msgs
+        Err _ => hoverDoBindFail ()
+        Ok out => match parseFrames out
+          (frames, _) =>
+            let _ = check "hover do-bind: binder site -> stream : List Json" (hoverContains 2 frames "stream : List Json")
+            let _ = check "hover do-bind: use site -> stream : List Json" (hoverContains 3 frames "stream : List Json")
+            check "hover do-bind: one diagnostic (mismatch at the use)" (diagPublishedFor uri frames && diagCountFor uri frames == 1)
+
+hoverDoBindFail : Unit -> <IO, Mut> Unit
+hoverDoBindFail _ =
+  let _ = check "hover do-bind: binder site -> stream : List Json" False
+  let _ = check "hover do-bind: use site -> stream : List Json" False
+  check "hover do-bind: one diagnostic (mismatch at the use)" False
+
 main =
   let medaka = envOr "MEDAKA" "./medaka"
   let root = envOr "MEDAKA_ROOT" "."
@@ -342,4 +382,5 @@ main =
   let _ = fixtureHoverImport medaka fixDir
   let _ = fixtureCompletionImport medaka fixDir
   let _ = fixtureDidChangeConverges medaka fixDir
-  summary 15
+  let _ = fixtureHoverDoBind medaka fixDir
+  summary 18
