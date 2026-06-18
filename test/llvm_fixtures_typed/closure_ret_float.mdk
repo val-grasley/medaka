@@ -1,0 +1,9 @@
+-- Closure-call RESULT float arith.  `f 1.0 + f 2.0` over a let-bound float-returning
+-- closure used to do INTEGER arith on the boxed-float call results -> garbage, because
+-- indirectResultTy typed every indirect-call result LTInt (erased i64 ABI).  Now a
+-- closure whose body evidently returns Float records LTFloat (closureRetTyRef), so the
+-- saturated call result types LTFloat.  Pins typed native == typed-ceval.
+main =
+  let base = 100.0
+  let f = (x => x + base)
+  f 1.0 + f 2.0
