@@ -136,6 +136,21 @@ arith escape stress, and clean-stress all == interpreter oracle.
 
 (none yet)
 
+### Win 3 — atomic float cells (2026-06-17, `llvm_emit.mdk` + `llvm_preamble.mdk`)
+
+A boxed float is `{i64 tag=2, double}` — **pointer-free**. `boxFloat` emitted
+`@mdk_alloc` (conservatively scanned); switched to `@mdk_alloc_atomic`
+(`GC_malloc_atomic`, already in the runtime + now `declare`d in the preamble) so
+Boehm never scans float payloads during mark. Sound (no Medaka pointer in the cell;
+no false retention from float bit patterns). Runtime-/codegen-only; output identical.
+
+**Numbers:** floatsum 0.19s → **0.16s** (~16%, min-of-5) — bigger than the ~3% the
+analogous string-atomic change gave (session 2), because floatsum marks 50M transient
+float cells. mandel/mandel_let unchanged (few floats live at mark time). Same applies
+to no other cell: strings are already atomic; cons/ADT/tuple/closure carry pointers.
+
+**Gates:** `diff_selfhost_llvm` **180/0**; `selfcompile_fixpoint` **C3a/C3b YES**.
+
 ## Bugs / language gaps observed
 
 - **PRE-EXISTING SOUNDNESS BUG — arith on type-lost floats miscompiles.** `a + b`

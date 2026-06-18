@@ -941,10 +941,13 @@ tagInt e v =
   r
 
 -- box a double -> a heap cell {i64 header, double}; word = pointer-as-i64.
+-- The cell is POINTER-FREE (tag + raw double), so allocate it atomic — Boehm
+-- never scans its 8 payload bytes for pointers during mark (sound; no false
+-- retention from float bit patterns).
 boxFloat : Emit -> String -> <Mut> String
 boxFloat e d =
   let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc(i64 16)")
+  let _ = emit e ("  " ++ p ++ " = call ptr @mdk_alloc_atomic(i64 16)")
   let _ = emit e ("  store i64 2, ptr " ++ p)
   let dp = freshReg e
   let _ = emit e ("  " ++ dp ++ " = getelementptr i8, ptr " ++ p ++ ", i64 8")
