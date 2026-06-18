@@ -1075,11 +1075,10 @@ emitLit e (LFloat f) =
 emitLit e (LString s) =
   let bytes = strBytes s
   let n = lengthS bytes
-  let gid = ".str." ++ intToString (freshId e)
-  let _ = emitGlobal e ("@" ++ gid ++ " = private unnamed_addr constant [" ++ intToString n ++ " x i8] c\"" ++ escBytes bytes ++ "\"")
-  let p = freshReg e
-  let _ = emit e ("  " ++ p ++ " = call i64 @mdk_str_lit(ptr @" ++ gid ++ ", i64 " ++ intToString n ++ ")")
-  (p, LTStr)
+  let cpc = arrayLength (stringToChars s)
+  let gid = ".strc." ++ intToString (freshId e)
+  let _ = emitGlobal e ("@" ++ gid ++ " = private unnamed_addr constant { i64, i64, i64, [" ++ intToString (n + 1) ++ " x i8] } { i64 1, i64 " ++ intToString n ++ ", i64 " ++ intToString cpc ++ ", [" ++ intToString (n + 1) ++ " x i8] c\"" ++ escBytes bytes ++ "\\00\" }")
+  ("ptrtoint (ptr @" ++ gid ++ " to i64)", LTStr)
 emitLit _ (LChar c) =
   let cp = charCode (arrayGetUnsafe 0 (stringToChars c))
   (intToString (cp * 2 + 1), LTChar)

@@ -161,6 +161,28 @@ witness is a runtime param). Monomorphization (design C) would turn those into
 constants too. The `lookupAssoc` dedup is linear; distinct-dict count is tiny so it's
 fine, but an SMap/OrdMap would harden it if a program has many distinct dicts.
 
+### Win 6 — constant string-literal cells hoisted to globals (2026-06-18, `perf/str-const`)
+
+A `"…"` literal emitted a private byte-array global + a runtime `@mdk_str_lit` call
+that allocated a fresh string cell (`{tag,byte_len,cp_count,bytes,NUL}`) at EVERY
+evaluation — a string literal in a loop allocated per iteration. The cell is a
+compile-time constant (cp_count is computable at emit time = `arrayLength
+(stringToChars s)`), so `emitLit (LString …)` now emits the WHOLE cell as a
+`private unnamed_addr constant { i64, i64, i64, [n+1 x i8] }` global and returns
+`ptrtoint (ptr @g to i64)` — no runtime call, no allocation. Same global count as
+before (one per literal occurrence), so no IR bloat; byte-identical cell layout, so
+every string consumer (eq/append/print/slice) reads it unchanged.
+
+**Numbers:** strlit (a `stringLength "hello world"` 10M loop) **0.07s → ~0** (the
+per-iteration string alloc is gone). Broad: every string literal across all programs.
+Self-emit unchanged (~3.1s — the emitter's string churn is dominated by `++`/
+`mdk_string_append` result allocs, not literal cells).
+
+**Gates:** `diff_selfhost_llvm` **180/0**, `selfcompile_fixpoint` **C3a/C3b YES**
+(the emitter is full of string literals — it self-compiles with cell-literals and
+reproduces byte-for-byte), `diff_selfhost_build` **25/0**, `diff_selfhost_eval_run`
+**28/0**. Correctness: concat/==/length literals == interpreter.
+
 ## Dead-ends
 
 (none yet)

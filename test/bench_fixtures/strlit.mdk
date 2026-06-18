@@ -1,0 +1,6 @@
+go : Int -> Int -> Int
+go acc n = match n
+  0 => acc
+  _ => go (acc + stringLength "hello world") (n - 1)
+main : <IO> Unit
+main = putStrLn (intToString (go 0 10000000))
