@@ -410,8 +410,8 @@ cImplEntryValue : EvalEnv -> CImplEntry -> (String, (Int, Value))
 cImplEntryValue env (CImplEntry name score body) = (name, (score, cImplBodyValue env body))
 
 cImplBodyValue : EvalEnv -> CImplBody -> Value
-cImplBodyValue env (CImplTagged tag iface positions pats body) =
-  VTypedImpl tag iface positions 0 (cImplMethodValue env positions pats body)
+cImplBodyValue env (CImplTagged tag key iface positions pats body) =
+  VTypedImpl tag key positions 0 (cImplMethodValue env positions pats body)
 cImplBodyValue env (CImplDefault pats body) = cImplMethodValue env [] pats body
 
 -- A point-free (no-param) impl/default body: defer a return-position method as a

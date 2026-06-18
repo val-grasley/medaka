@@ -511,10 +511,25 @@ tycon (the genuine collision); every single-impl-per-head site keeps the head ta
 Repro `test/eval_dict_fixtures/same_head_impls.mdk` (`Def (Pair Int Bool)` /
 `(Pair Bool Int)`): oracle = selfhost-dict-eval = `1,True / False,2` (each type picks
 its own impl). Self-compile fixpoint (C3a/C3b) holds; all eval/check/core-ir/llvm
-gates green. **Residual:** the native Core-IR/LLVM backend does not yet disambiguate
-same-head impls (its `CImplTagged`/`implFnName`/`implFor` plumbing is head-tag-keyed);
-the collision case only resolves on the tree-walking dict-eval path. Closing the
-native side would touch the emitter's tag scheme broadly (out of C7 scope).
+gates green.
+
+**Arg-position + native backend — CLOSED (2026-06-18).** The return-position fix
+above (resolveSite/keyForSite) was extended two ways: (1) `resolveArgStamp` now also
+threads `keyForSite` (was bare-head `RKey tag` — the ARG-position dispatch the C7
+repro `mydef p` actually uses), so the typechecker stamps the canonical key on a
+collision for both positions; (2) the native Core-IR/LLVM backend now disambiguates
+same-head impls. `CImplTagged` carries the canonical key as a new field (mirrors
+`VTypedImpl`'s `k`); `implFor`/`findByTag` match `t == tag || k == tag`; impl groups
+key by canonical key (own body per distinct impl) and emit under a SYMBOL tag = the
+head tag when the head is the sole impl (byte-identical to the pre-C7 IR — every
+existing symbol unchanged, fixpoint-safe) else the sanitized canonical key. The
+runtime dict-dispatch chain (`emitDispatchChain`) compares the right header word
+(head when unique, canonical key on collision) and calls the right symbol.
+`headTagUnique` counts DISTINCT canonical keys (the joint prelude+module entry list
+duplicates each prelude impl; a multi-clause impl shares one key), not raw entries.
+Repros: `test/eval_dict_fixtures/same_head_argpos.mdk` (arg-position run==oracle),
+`test/build_diff_fixtures/same_head_typeargs.mdk` (native build==oracle). All gates
+green + fixpoint C3a/C3b YES.
 
 ### C8. Module export surface incomplete on the typed path — ✅ CLOSED (2026-06-09)
 (a) `publicValNames` omits interface methods (`typecheck.mdk:3704-3710` — DFunDef/

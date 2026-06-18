@@ -833,20 +833,23 @@ implsOf e method = filterTagged method (implEntriesOf e)
 
 filterTagged : String -> List CImplEntry -> List CImplEntry
 filterTagged _ [] = []
-filterTagged method ((CImplEntry n s (CImplTagged tag iface ps pats body))::rest)
-  | n == method = CImplEntry n s (CImplTagged tag iface ps pats body) :: filterTagged method rest
+filterTagged method ((CImplEntry n s (CImplTagged tag key iface ps pats body))::rest)
+  | n == method = CImplEntry n s (CImplTagged tag key iface ps pats body) :: filterTagged method rest
   | otherwise = filterTagged method rest
 filterTagged method (_::rest) = filterTagged method rest
 
 -- the single tagged impl an RKey route names: the CImplTagged of `method` whose
--- type-head tag equals `tag`.  None ⇒ the route named an impl not in the program
+-- type-head tag `t` OR canonical full-type key `k` equals `tag`.  The typechecker
+-- stamps the canonical key (TYPECHECK-AUDIT C7) when ≥2 impls share a head tycon
+-- but differ in type args; otherwise the bare head tag.  Mirrors eval.mdk's hasTag
+-- (`t == tag || k == tag`).  None ⇒ the route named an impl not in the program
 -- (an internal error — the typechecker only stamps tags it resolved an impl for).
 implFor : Emit -> String -> String -> <Mut> Option CImplEntry
 implFor e method tag = findByTag tag (implsOf e method)
 findByTag : String -> List CImplEntry -> Option CImplEntry
 findByTag _ [] = None
-findByTag tag ((CImplEntry n s (CImplTagged t iface ps pats body))::rest)
-  | t == tag = Some (CImplEntry n s (CImplTagged t iface ps pats body))
+findByTag tag ((CImplEntry n s (CImplTagged t k iface ps pats body))::rest)
+  | t == tag || k == tag = Some (CImplEntry n s (CImplTagged t k iface ps pats body))
   | otherwise = findByTag tag rest
 findByTag tag (_::rest) = findByTag tag rest
 
@@ -877,6 +880,62 @@ defaultFnName tag method = "mdk_default_" ++ method ++ "_" ++ tag
 implFnName : String -> String -> String
 implFnName tag method = "mdk_impl_" ++ tag ++ "_" ++ method
 
+-- TYPECHECK-AUDIT C7 (native backend): the SYMBOL tag a same-head-tycon impl is
+-- emitted/dispatched under.  Two impls of one method that share a head tycon but
+-- differ in type args (`Def (MyPair Int Bool)` vs `Def (MyPair Bool Int)`) must NOT
+-- collide on `mdk_impl_<head>_<method>` — they need distinct bodies.  When the head
+-- `tag` is the SOLE impl of `(method, head)` (the common case) → the bare head tag,
+-- so every existing impl's symbol stays byte-identical (fixpoint-safe).  On a
+-- collision → the sanitized canonical full-type `key`, byte-distinct per impl.
+-- The typechecker stamps the SAME canonical key into the RKey route (keyForSite),
+-- so emitMethod's `implFnSymOf` and emitGroup's name agree.
+implFnSymTag : List CImplEntry -> String -> String -> String -> String
+implFnSymTag entries method tag key =
+  if headTagUnique entries method tag then tag else safeIdent key
+
+-- does the head tycon [tag] of [method] have a single impl, or several distinct
+-- ones (C7 collision)?  Count DISTINCT canonical keys at this head — NOT raw
+-- entries: the joint prelude+module entry list duplicates each prelude impl, and a
+-- multi-clause impl contributes several entries that share ONE key.  A genuine
+-- collision is ≥2 DIFFERENT keys at the same (method, head).
+headTagUnique : List CImplEntry -> String -> String -> Bool
+headTagUnique entries method tag = lengthS (distinctKeysAtHead entries entries method tag []) <= 1
+
+distinctKeysAtHead : List CImplEntry -> List CImplEntry -> String -> String -> List String -> List String
+distinctKeysAtHead _ [] _ _ acc = acc
+distinctKeysAtHead full ((CImplEntry n _ (CImplTagged t k _ _ _ _))::rest) method tag acc
+  | n == method && t == tag && not (contains k acc) =
+    distinctKeysAtHead full rest method tag (k :: acc)
+  | otherwise = distinctKeysAtHead full rest method tag acc
+distinctKeysAtHead full (_::rest) method tag acc = distinctKeysAtHead full rest method tag acc
+
+-- the symbol tag for the impl an RKey route resolved to (call-site side).  [tag] is
+-- the route's stamped tag — the bare head when unique, the canonical key on
+-- collision; [entry] is the matched CImplEntry (carries the real head + key).
+implFnSymOf : List CImplEntry -> String -> CImplEntry -> String
+implFnSymOf entries method (CImplEntry _ _ (CImplTagged t k _ _ _ _)) =
+  implFnSymTag entries method t k
+implFnSymOf _ _ _ = ""
+
+-- sanitize a canonical impl key to a valid LLVM identifier (mirrors
+-- private_mangle.mdk's sanitizeId: anything outside [A-Za-z0-9_] → `_`).
+safeIdent : String -> String
+safeIdent s = safeIdentGo s 0 (stringLength s) ""
+
+safeIdentGo : String -> Int -> Int -> String -> String
+safeIdentGo s i len acc =
+  if i >= len then acc
+  else
+    let c = stringSlice i (i + 1) s
+    let c2 = if safeIdentChar c then c else "_"
+    safeIdentGo s (i + 1) len (acc ++ c2)
+
+safeIdentChar : String -> Bool
+safeIdentChar c = c >= "a" && c <= "z"
+  || c >= "A" && c <= "Z"
+  || c >= "0" && c <= "9"
+  || c == "_"
+
 -- the distinct method names of the program's tagged impls (slice 7).  A bare CVar
 -- naming one of these, applied to args, is an arg-position dispatch site (return-
 -- position methods are CMethod nodes, never a bare applied CVar — so this set is
@@ -886,7 +945,7 @@ implMethodNames e = dedupS (taggedMethodNames (implEntriesOf e))
 
 taggedMethodNames : List CImplEntry -> List String
 taggedMethodNames [] = []
-taggedMethodNames ((CImplEntry m _ (CImplTagged _ _ _ _ _))::rest) =
+taggedMethodNames ((CImplEntry m _ (CImplTagged _ _ _ _ _ _))::rest) =
   m :: taggedMethodNames rest
 taggedMethodNames (_::rest) = taggedMethodNames rest
 
@@ -895,16 +954,30 @@ isImplMethod e name = contains name (implMethodNames e)
 
 -- the parameter patterns + body of an impl entry (CImplTagged or CImplDefault).
 implPats : CImplEntry -> List Pat
-implPats (CImplEntry _ _ (CImplTagged _ _ _ pats _)) = pats
+implPats (CImplEntry _ _ (CImplTagged _ _ _ _ pats _)) = pats
 implPats (CImplEntry _ _ (CImplDefault pats _)) = pats
 
 implBody : CImplEntry -> CExpr
-implBody (CImplEntry _ _ (CImplTagged _ _ _ _ body)) = body
+implBody (CImplEntry _ _ (CImplTagged _ _ _ _ _ body)) = body
 implBody (CImplEntry _ _ (CImplDefault _ body)) = body
 
 implEntryTag : CImplEntry -> String
-implEntryTag (CImplEntry _ _ (CImplTagged tag _ _ _ _)) = tag
+implEntryTag (CImplEntry _ _ (CImplTagged tag _ _ _ _ _)) = tag
 implEntryTag (CImplEntry _ _ (CImplDefault _ _)) = ""
+
+-- the canonical full-type key of a tagged impl entry.
+implEntryKey : CImplEntry -> String
+implEntryKey (CImplEntry _ _ (CImplTagged _ key _ _ _ _)) = key
+implEntryKey (CImplEntry _ _ (CImplDefault _ _)) = ""
+
+-- the ROUTE key the typechecker stamps for this impl — the bare head tag when the
+-- head is unique (byte-identical to the pre-C7 dict header), else the canonical
+-- key (C7).  Matches dictWordOfRoute's `hashName key`, so emitDispatchChain's
+-- runtime `icmp` compares against the right word.
+implEntryRouteKey : List CImplEntry -> CImplEntry -> String
+implEntryRouteKey entries (CImplEntry n _ (CImplTagged t k _ _ _ _)) =
+  if headTagUnique entries n t then t else k
+implEntryRouteKey _ _ = ""
 
 implEntryMethod : CImplEntry -> String
 implEntryMethod (CImplEntry n _ _) = n
@@ -2822,10 +2895,15 @@ emitMethod e env name route implRoutes methRoutes argOps = match route
   RKey tag _ => match implFor e name tag
     Some entry =>
       let dictWords = dictWordsOf e env (methRoutes ++ implRoutes)
-      let resTy = if methodReturnsSelf (implEntryIface entry) name then tagToLTy tag else LTInt
+      -- [tag] is the stamped route tag — the bare head when the head is unique, the
+      -- canonical key on a C7 collision.  For tagToLTy/returns-self use the matched
+      -- entry's REAL head tag; the lifted-fn symbol uses implFnSymOf (head when
+      -- unique, sanitized key on collision) so it matches emitGroup's name.
+      let headTag = implEntryTag entry
+      let resTy = if methodReturnsSelf (implEntryIface entry) name then tagToLTy headTag else LTInt
       emitImplCallSat
         e
-        (implFnName tag name)
+        (implFnName (implFnSymOf (implEntriesOf e) name entry) name)
         (dictWords ++ argOps)
         (methodArityOf name + lengthS dictWords)
         resTy
@@ -3086,7 +3164,7 @@ emitPapDefineIndirect e papName supplied remaining =
 -- the interface name a resolved impl entry belongs to (for the returns-self
 -- lookup); "" for a default entry (it carries no tag/iface — never RKey-reached).
 implEntryIface : CImplEntry -> String
-implEntryIface (CImplEntry _ _ (CImplTagged _ iface _ _ _)) = iface
+implEntryIface (CImplEntry _ _ (CImplTagged _ _ iface _ _ _)) = iface
 implEntryIface (CImplEntry _ _ (CImplDefault _ _)) = ""
 
 -- a runtime method dispatch (RDict/RDictFwd): the enclosing function's dict
@@ -3132,7 +3210,7 @@ ifaceTags e iface = dedupS (ifaceTagsGo iface (implEntriesOf e))
 
 ifaceTagsGo : String -> List CImplEntry -> List String
 ifaceTagsGo _ [] = []
-ifaceTagsGo iface ((CImplEntry _ _ (CImplTagged tag ifc _ _ _))::rest)
+ifaceTagsGo iface ((CImplEntry _ _ (CImplTagged tag _ ifc _ _ _))::rest)
   | ifc == iface = tag :: ifaceTagsGo iface rest
   | otherwise = ifaceTagsGo iface rest
 ifaceTagsGo iface (_::rest) = ifaceTagsGo iface rest
@@ -3187,9 +3265,10 @@ loadReqDicts e dictPtr n i
 emitDispatchChain : Emit -> String -> String -> List CImplEntry -> String -> List String -> String -> String -> <Mut> Unit
 emitDispatchChain e _ _ [] _ _ _ _ = emit e "  unreachable"
 emitDispatchChain e dictPtr headTag (ent::rest) name argOps slot endL =
-  let tag = implEntryTag ent
+  let routeKey = implEntryRouteKey (implEntriesOf e) ent
+  let symTag = implFnSymOf (implEntriesOf e) name ent
   let cmp = freshReg e
-  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ headTag ++ ", " ++ intToString (hashName tag))
+  let _ = emit e ("  " ++ cmp ++ " = icmp eq i64 " ++ headTag ++ ", " ++ intToString (hashName routeKey))
   let n = intToString (freshId e)
   let yes = "dispyes" ++ n
   let next = "dispnext" ++ n
@@ -3197,7 +3276,7 @@ emitDispatchChain e dictPtr headTag (ent::rest) name argOps slot endL =
   let _ = emit e (yes ++ ":")
   let reqCount = implReqCount e name ent
   let reqDicts = loadReqDicts e dictPtr reqCount 0
-  let (rv, _) = emitImplCall e (implFnName tag name) (reqDicts ++ argOps) LTInt
+  let (rv, _) = emitImplCall e (implFnName symTag name) (reqDicts ++ argOps) LTInt
   let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
@@ -3226,7 +3305,7 @@ emitMethodArgDispatch e method argOps =
   let groups = implGroupsForMethod e method
   match groups
     [] => emitDefaultArgTag e method argOps
-    [g] => emitImplCallSat e (implFnName (groupTag g) method) argOps (methodArityOf method) LTInt
+    [g] => emitImplCallSat e (implFnName (groupSymTag g) method) argOps (methodArityOf method) LTInt
     _ => emitArgTagDispatch e method groups argOps
 
 -- E19: an arg-tag site for a method with NO tagged impl groups — an interface
@@ -3275,7 +3354,7 @@ emitArgDispatchChain e method tagReg (g::rest) argOps slot endL =
   let next = "argnext" ++ n
   let _ = emit e ("  br i1 " ++ cond ++ ", label %" ++ yes ++ ", label %" ++ next)
   let _ = emit e (yes ++ ":")
-  let (rv, _) = emitImplCall e (implFnName tag method) argOps LTInt
+  let (rv, _) = emitImplCall e (implFnName (groupSymTag g) method) argOps LTInt
   let _ = emit e ("  store i64 " ++ rv ++ ", ptr " ++ slot)
   let _ = emit e ("  br label %" ++ endL)
   let _ = emit e (next ++ ":")
@@ -3311,13 +3390,16 @@ filterGroupsByMethod method (g::rest)
   | otherwise = filterGroupsByMethod method rest
 
 groupTag : ImplGroup -> String
-groupTag (ImplGroup _ tag _ _ _) = tag
+groupTag (ImplGroup _ tag _ _ _ _) = tag
+
+groupSymTag : ImplGroup -> String
+groupSymTag (ImplGroup _ _ symTag _ _ _) = symTag
 
 groupMethodOf : ImplGroup -> String
-groupMethodOf (ImplGroup m _ _ _ _) = m
+groupMethodOf (ImplGroup m _ _ _ _ _) = m
 
 groupPositionsOf : ImplGroup -> List Int
-groupPositionsOf (ImplGroup _ _ p _ _) = p
+groupPositionsOf (ImplGroup _ _ _ p _ _) = p
 
 headGroup : List ImplGroup -> ImplGroup
 headGroup (g::_) = g
@@ -3461,10 +3543,11 @@ ensureNoReqs _ = ()
 --     emitTree / bindPattern be reused VERBATIM (note (o); one extra `$tuple`
 --     cell alloc per call, acceptable for the spike).
 
--- a coalesced impl group: method, type-head tag, dispatch positions, arity, and
--- the clauses (patterns + body) in source order (leftmost-first — the priority
--- the decision tree preserves).
-data ImplGroup = ImplGroup String String (List Int) Int (List (List Pat, CExpr))
+-- a coalesced impl group: method, type-head tag, the SYMBOL tag (= head tag when
+-- this is the sole impl at that head, else the sanitized canonical key — C7), the
+-- dispatch positions, arity, and the clauses (patterns + body) in source order
+-- (leftmost-first — the priority the decision tree preserves).
+data ImplGroup = ImplGroup String String String (List Int) Int (List (List Pat, CExpr))
 
 emitImpls : Emit -> List CImplEntry -> <Mut> Unit
 emitImpls e entries = emitGroups e (groupImpls entries)
@@ -3476,8 +3559,8 @@ emitGroups e (g::rest) =
   emitGroups e rest
 
 emitGroup : Emit -> ImplGroup -> <Mut> Unit
-emitGroup e (ImplGroup method tag positions arity clauses) =
-  let fname = implFnName tag method
+emitGroup e (ImplGroup method tag symTag positions arity clauses) =
+  let fname = implFnName symTag method
   let iface = implGroupIface e method tag
   let selfFnPos = selfFnParamPositions iface method
   let _ = setCurImplSelfFns tag (selfFnParamNames clauses selfFnPos)
@@ -4056,10 +4139,12 @@ headPat (p::_) = p
 headPat [] = PWild
 
 -- ── impl coalescing (slice 7) ───────────────────────────────────────────────
--- group the per-clause CImplTagged entries by `(method, tag)`, preserving the
--- first-seen group order and the source clause order within each (the Maranget
--- priority).  CImplDefault entries (interface defaults) are skipped — they are
--- the arg-tag fallback, never a lifted static-dispatch target.
+-- group the per-clause CImplTagged entries by `(method, key)` — the canonical
+-- full-type impl key, so two impls sharing a head tycon but differing in type args
+-- (C7) land in DISTINCT groups (own body each) while a multi-clause impl (one key)
+-- stays coalesced.  Preserves first-seen group order and source clause order within
+-- each (the Maranget priority).  CImplDefault entries (interface defaults) are
+-- skipped — they are the arg-tag fallback, never a lifted static-dispatch target.
 groupImpls : List CImplEntry -> <Mut> List ImplGroup
 groupImpls entries = mapMut (gatherGroup entries) (distinctImplKeys entries [])
 
@@ -4069,12 +4154,12 @@ mapMut : (a -> <Mut> b) -> List a -> <Mut> List b
 mapMut _ [] = []
 mapMut f (x::rest) = f x :: mapMut f rest
 
--- the (method, tag) keys of tagged entries, in first-seen order.
+-- the (method, key) keys of tagged entries, in first-seen order.
 distinctImplKeys : List CImplEntry -> List (String, String) -> List (String, String)
 distinctImplKeys [] seen = reverseL seen
-distinctImplKeys ((CImplEntry method _ (CImplTagged tag _ _ _ _))::rest) seen
-  | keySeen method tag seen = distinctImplKeys rest seen
-  | otherwise = distinctImplKeys rest ((method, tag) :: seen)
+distinctImplKeys ((CImplEntry method _ (CImplTagged _ key _ _ _ _))::rest) seen
+  | keySeen method key seen = distinctImplKeys rest seen
+  | otherwise = distinctImplKeys rest ((method, key) :: seen)
 distinctImplKeys (_::rest) seen = distinctImplKeys rest seen
 
 keySeen : String -> String -> List (String, String) -> Bool
@@ -4085,21 +4170,33 @@ keySeen m t ((m2, t2)::rest) =
   else
     keySeen m t rest
 
--- build the group for one (method, tag) key: positions + arity from the first
--- matching entry, clauses (pats, body) from all matching entries in order.  A
+-- build the group for one (method, key) key: head tag + symTag + positions + arity
+-- from the first matching entry, clauses (pats, body) from all matching entries in
+-- order.  The SYMBOL tag (C7) is the head tag when this is the sole impl of the head
+-- (byte-identical to the pre-C7 scheme), else the sanitized canonical key.  A
 -- POINT-FREE impl (`length = fold f 0` — clauseArity < the method's declared
 -- arity) is ETA-EXPANDED to the method's full arity, mirroring emitDefaultDefine:
--- the lifted `@mdk_impl_<tag>_<method>` then takes every call-site arg, so the
+-- the lifted `@mdk_impl_<symTag>_<method>` then takes every call-site arg, so the
 -- RKey/arg-tag call sites (which use methodArityOf) and the define agree.  A
 -- multi-clause or already-full-arity impl is unchanged (etaExpand is a no-op when
 -- have >= arity).
 gatherGroup : List CImplEntry -> (String, String) -> <Mut> ImplGroup
-gatherGroup entries (method, tag) =
-  let cls0 = gatherClauses method tag entries
-  let positions = groupPositions method tag entries
+gatherGroup entries (method, key) =
+  let tag = headTagForKey method key entries
+  let symTag = implFnSymTag entries method tag key
+  let cls0 = gatherClauses method key entries
+  let positions = groupPositions method key entries
   let arity = maxInt (clauseArity cls0) (methodArityOf method)
   let cls = map (etaExpandClause arity) cls0
-  ImplGroup method tag positions arity cls
+  ImplGroup method tag symTag positions arity cls
+
+-- the head tycon tag of the impl whose (method, key) matches (the first such entry).
+headTagForKey : String -> String -> List CImplEntry -> String
+headTagForKey _ _ [] = ""
+headTagForKey method key ((CImplEntry m _ (CImplTagged t k _ _ _ _))::rest)
+  | m == method && k == key = t
+  | otherwise = headTagForKey method key rest
+headTagForKey method key (_::rest) = headTagForKey method key rest
 
 -- eta-expand one impl clause's (pats, body) to `arity` (no-op when already there).
 etaExpandClause : Int -> (List Pat, CExpr) -> (List Pat, CExpr)
@@ -4107,17 +4204,17 @@ etaExpandClause arity (pats, body) = etaExpand pats body arity (lengthS pats)
 
 gatherClauses : String -> String -> List CImplEntry -> List (List Pat, CExpr)
 gatherClauses _ _ [] = []
-gatherClauses method tag ((CImplEntry m _ (CImplTagged t _ _ pats body))::rest)
-  | m == method && t == tag = (pats, body) :: gatherClauses method tag rest
-  | otherwise = gatherClauses method tag rest
-gatherClauses method tag (_::rest) = gatherClauses method tag rest
+gatherClauses method key ((CImplEntry m _ (CImplTagged _ k _ _ pats body))::rest)
+  | m == method && k == key = (pats, body) :: gatherClauses method key rest
+  | otherwise = gatherClauses method key rest
+gatherClauses method key (_::rest) = gatherClauses method key rest
 
 groupPositions : String -> String -> List CImplEntry -> List Int
 groupPositions _ _ [] = []
-groupPositions method tag ((CImplEntry m _ (CImplTagged t _ positions _ _))::rest)
-  | m == method && t == tag = positions
-  | otherwise = groupPositions method tag rest
-groupPositions method tag (_::rest) = groupPositions method tag rest
+groupPositions method key ((CImplEntry m _ (CImplTagged _ k _ positions _ _))::rest)
+  | m == method && k == key = positions
+  | otherwise = groupPositions method key rest
+groupPositions method key (_::rest) = groupPositions method key rest
 
 clauseArity : List (List Pat, CExpr) -> Int
 clauseArity ((pats, _)::_) = lengthS pats

@@ -327,7 +327,7 @@ toCBind (SList ((SAtom "CBind")::name::clauses)) =
 toCBind other = panic ("core_ir_sexp_parse: bad CBind: " ++ sexprToStr other)
 
 toCImplBody : SExp -> CImplBody
-toCImplBody (SList ((SAtom "CImplTagged")::[tag, iface, (SList positions), (SList pats), body])) = CImplTagged (toStr tag) (toStr iface) (map toInt positions) (map toPat pats) (toCExpr body)
+toCImplBody (SList ((SAtom "CImplTagged")::[tag, key, iface, (SList positions), (SList pats), body])) = CImplTagged (toStr tag) (toStr key) (toStr iface) (map toInt positions) (map toPat pats) (toCExpr body)
 toCImplBody (SList ((SAtom "CImplDefault")::[(SList pats), body])) =
   CImplDefault (map toPat pats) (toCExpr body)
 toCImplBody other =

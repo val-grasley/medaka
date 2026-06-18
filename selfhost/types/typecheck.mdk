@@ -1402,18 +1402,26 @@ recordArgSiteFn _ idx mono = match nthArgMono idx mono
 -- call threads the element dict (concrete element → RKey Int; a recursive element
 -- of the SAME parametric type → RDict forwarding the in-scope dict param).  A
 -- still-unsolved free type variable → left RNone (the emitter arg-tag-dispatches).
-resolveArgStamps : List ImplEntry -> List (String, Ref Route, Ref (List Route), Mono, String) -> <Mut> Unit
-resolveArgStamps _ [] = ()
-resolveArgStamps implTable ((name, tagRef, implRef, am, encl)::rest) =
-  let _ = resolveArgStamp implTable name tagRef implRef am encl
-  resolveArgStamps implTable rest
+resolveArgStamps : List ImplEntry -> List KeyEntry -> List (String, Ref Route, Ref (List Route), Mono, String) -> <Mut> Unit
+resolveArgStamps _ _ [] = ()
+resolveArgStamps implTable keyTable ((name, tagRef, implRef, am, encl)::rest) =
+  let _ = resolveArgStamp implTable keyTable name tagRef implRef am encl
+  resolveArgStamps implTable keyTable rest
 
-resolveArgStamp : List ImplEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> <Mut> Unit
-resolveArgStamp implTable name tagRef implRef am encl = match activeDictVarOfEncl am encl
+resolveArgStamp : List ImplEntry -> List KeyEntry -> String -> Ref Route -> Ref (List Route) -> Mono -> String -> <Mut> Unit
+resolveArgStamp implTable keyTable name tagRef implRef am encl = match activeDictVarOfEncl am encl
   Some dname => set_ref tagRef (RDict dname)
   None => match headTyconMono am
     Some tag =>
-      let _ = set_ref tagRef (RKey tag [])
+      -- TYPECHECK-AUDIT C7 (arg-position): when ≥2 impls of this method share head
+      -- tycon [tag] but differ in type ARGS (e.g. `MyPair Int Bool` vs `MyPair Bool
+      -- Int`), bare-head `RKey tag` narrows to the FIRST impl (eval's hasTag matches
+      -- the head `t`).  `keyForSite` upgrades to the canonical full-type impl key
+      -- (matched against [am]) so eval's hasTag matches the right impl's `k`.  No
+      -- collision (the common single-impl case) → None → bare head, unchanged path.
+      -- Mirrors resolveSite's ground RKey case.
+      let routeKey = fromOption tag (keyForSite keyTable name am)
+      let _ = set_ref tagRef (RKey routeKey [])
       let dictName = if implDefinesMethodAt implTable name tag then name else innerDefaultMethod name
       set_ref implRef (argImplDictRoutesFor implTable dictName tag am)
     None => ()
@@ -3858,7 +3866,7 @@ elaborateDict runtimeDecls dictNames eligibleNames prog =
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps implTable pendingDictApps.value
   let _ = resolveMethodDicts implTable pendingMethodDicts.value
-  let _ = resolveArgStamps implTable pendingArgStamps.value
+  let _ = resolveArgStamps implTable keyTable pendingArgStamps.value
   dictPass allNames prog2
 
 -- With no eligible names (the RKey-only / typed path), there is nothing to
@@ -8244,7 +8252,7 @@ elabModuleStamp seedVars accData implDecls prog =
   let stampImplTable = buildImplTable implDecls
   let _ = resolveSites stampImplTable (buildKeyTable implDecls) (returnPosMethodNames implDecls) pendingSites.value
   let _ = resolveBinopSites stampImplTable (buildKeyTable implDecls) pendingBinopSites.value
-  let _ = resolveArgStamps stampImplTable pendingArgStamps.value
+  let _ = resolveArgStamps stampImplTable (buildKeyTable implDecls) pendingArgStamps.value
   let _ = resolveRLocalSites (buildKeyTable implDecls) pendingRLocalSites.value
   let _ = realizeRecDictApps pendingRecDictApps.value
   let _ = resolveDictApps stampImplTable pendingDictApps.value

@@ -1,0 +1,11 @@
+data MyPair a b = MyPair a b
+interface Def a where
+  mydef : a -> String
+impl Def (MyPair Int Bool) where
+  mydef p = "int-bool"
+impl Def (MyPair Bool Int) where
+  mydef p = "bool-int"
+main : <IO> Unit
+main =
+  putStrLn (mydef (MyPair 1 True))
+  putStrLn (mydef (MyPair True 2))

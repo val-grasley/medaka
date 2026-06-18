@@ -165,11 +165,12 @@ cclauseSexp (CClause pats body) =
 
 export
 cimplBodySexp : CImplBody -> String
-cimplBodySexp (CImplTagged tag iface positions pats body) =
+cimplBodySexp (CImplTagged tag key iface positions pats body) =
   node
     "CImplTagged"
     [
       escStr tag,
+      escStr key,
       escStr iface,
       slist (map intToString positions),
       slist (map patSexp pats),

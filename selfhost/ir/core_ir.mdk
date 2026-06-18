@@ -187,13 +187,15 @@ public export data CClause = CClause (List Pat) CExpr
 -- clauses fall through, mirroring the AST path).
 -- CImplEntry: method name, specificity score, body.
 -- CImplBody:
---   CImplTagged = a tagged impl method (concrete type-head tag, iface, dispatch
+--   CImplTagged = a tagged impl method (concrete type-head tag, the canonical
+--     full-type impl key [for type-arg-distinct same-head dispatch, mirrors
+--     eval.mdk's VTypedImpl `k`], iface, dispatch
 --     positions, the clause's patterns, its lowered body).
 --   CImplDefault = an untagged interface default (patterns + lowered body — the
 --     fallback).
 public export data CImplEntry = CImplEntry String Int CImplBody
 public export data CImplBody
-  = CImplTagged String String (List Int) (List Pat) CExpr
+  = CImplTagged String String String (List Int) (List Pat) CExpr
   | CImplDefault (List Pat) CExpr
 
 -- ── programs ───────────────────────────────────────────────────────────────

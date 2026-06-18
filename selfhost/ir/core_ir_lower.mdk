@@ -55,6 +55,7 @@ import eval.eval.{
   lookupPositions,
   tyvarsInArgs,
   headTyconHead,
+  implKeyOf,
 }
 import support.util.{
   contains,
@@ -552,11 +553,11 @@ rewriteClauseRP fo (CClause pats body) =
   CClause (map (rewritePat fo) pats) (rewriteExprRP fo body)
 
 rewriteImplRP : List (String, List String) -> CImplEntry -> CImplEntry
-rewriteImplRP fo (CImplEntry n s (CImplTagged tag iface ps pats body)) =
+rewriteImplRP fo (CImplEntry n s (CImplTagged tag key iface ps pats body)) =
   CImplEntry
     n
     s
-    (CImplTagged tag iface ps (map (rewritePat fo) pats) (rewriteExprRP fo body))
+    (CImplTagged tag key iface ps (map (rewritePat fo) pats) (rewriteExprRP fo body))
 rewriteImplRP fo (CImplEntry n s (CImplDefault pats body)) =
   CImplEntry
     n
@@ -740,20 +741,21 @@ lowerImplsWith : List ((String, String), List Int) -> List Decl -> List CImplEnt
 lowerImplsWith disp prog = concatMapList (lowerDeclImpl disp) prog
 
 lowerDeclImpl : List ((String, String), List Int) -> Decl -> List CImplEntry
-lowerDeclImpl disp DImpl { iface = ifaceName, tys = typeArgs, methods, ... } =
-  map (lowerImplMethod disp ifaceName typeArgs) methods
+lowerDeclImpl disp DImpl { iface = ifaceName, tys = typeArgs, name = implNm, methods, ... } =
+  map (lowerImplMethod disp ifaceName typeArgs implNm) methods
 lowerDeclImpl _ DInterface { typarams = typeParams, methods, ... } =
   concatMapList (lowerDefault typeParams) methods
 lowerDeclImpl _ _ = []
 
-lowerImplMethod : List ((String, String), List Int) -> String -> List Ty -> ImplMethod -> CImplEntry
-lowerImplMethod disp ifaceName typeArgs (ImplMethod mname pats body) =
+lowerImplMethod : List ((String, String), List Int) -> String -> List Ty -> Option String -> ImplMethod -> CImplEntry
+lowerImplMethod disp ifaceName typeArgs implNm (ImplMethod mname pats body) =
   let tag = fromOption noneHeadTag (headTyconHead typeArgs)
+  let key = implKeyOf ifaceName typeArgs implNm
   let positions = lookupPositions ifaceName mname disp
   CImplEntry
     mname
     (tyvarsInArgs typeArgs)
-    (CImplTagged tag ifaceName positions pats (lower body))
+    (CImplTagged tag key ifaceName positions pats (lower body))
 
 lowerDefault : List String -> IfaceMethod -> List CImplEntry
 lowerDefault _ (IfaceMethod _ _ None) = []
